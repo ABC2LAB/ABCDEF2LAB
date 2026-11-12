@@ -143,3 +143,65 @@ func TestFirstDiagnosisOpenRouterModelBudgetRejectsConsumedApprovalAtConstructio
 		t.Fatal("소비된 승인이 생성자를 통과함")
 	}
 }
+
+// 동시 모델 호출 수(C32): OpenRouter는 승인 max_concurrent 이하, 로컬 모델은 1만, 첫 호출 전에만 바꾼다. 넓힌 gate는
+// 그 수만큼 호출을 동시에 들인다.
+func TestFirstDiagnosisModelBudgetConfigureConcurrency(t *testing.T) {
+	b, path, cfg := urlExternalBudget(t, func(diagnosisprep.ModelUsage) error { return nil })
+	if b.ConfigureConcurrency(2) == nil || b.ConfigureConcurrency(0) == nil {
+		t.Fatal("concurrency above the approval or zero accepted")
+	}
+	if err := b.ConfigureConcurrency(1); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(path)
+	var manifest map[string]any
+	_ = json.Unmarshal(raw, &manifest)
+	manifest["max_concurrent"] = 2
+	raw, _ = json.Marshal(manifest)
+	if os.WriteFile(path, raw, 0600) != nil {
+		t.Fatal("manifest")
+	}
+	wide, err := NewFirstDiagnosisOpenRouterBudget(b.limits, 262144, 100, path, b.observe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := wide.ConfigureConcurrency(2); err != nil {
+		t.Fatal("approved concurrency rejected", err)
+	}
+	// 좁은 gate면 두 번째가 기다리므로 시한을 둬 실패로 끝나게 한다.
+	admit, stopAdmit := context.WithTimeout(context.Background(), time.Second)
+	defer stopAdmit()
+	first, err1 := wide.acquireCall(admit)
+	second, err2 := wide.acquireCall(admit)
+	if err1 != nil || err2 != nil {
+		t.Fatal("gate did not admit two calls", err1, err2)
+	}
+	blocked, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := wide.acquireCall(blocked); err == nil {
+		t.Fatal("gate admitted more calls than configured")
+	}
+	first()
+	second()
+	req := llm.CompletionRequest{MaxTokens: 100}
+	call, err := wide.reserve(context.Background(), cfg, &req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 정산까지 끝난 뒤에도(진행 중 호출 없음) 첫 호출 뒤에는 바꾸지 않는다.
+	_ = wide.settle(call, llm.Usage{}, errors.New("synthetic transport failure"))
+	if wide.ConfigureConcurrency(1) == nil {
+		t.Fatal("concurrency changed after a call")
+	}
+	local, err := NewFirstDiagnosisModelBudget(diagnosisprep.Budget{ModelRequests: 2, InputTokens: 524288, OutputTokens: 200}, 262144, 100, func(diagnosisprep.ModelUsage) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if local.ConfigureConcurrency(2) == nil || local.ConfigureConcurrency(1) != nil {
+		t.Fatal("local model concurrency rule")
+	}
+	if got := wide.external.Limits().MaxConcurrent; got != 2 {
+		t.Fatalf("manifest max_concurrent not exposed: %d", got)
+	}
+}

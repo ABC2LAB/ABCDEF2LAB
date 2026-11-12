@@ -7,7 +7,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Autumn-27/artex/internal/diagnosticlog"
+	"github.com/Autumn-27/norma/agentcore"
+	"github.com/Autumn-27/norma/llm"
+	"github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
+	"iter"
+	"reflect"
 )
 
 func profileToolNames(tools []actool.CoreTool) string {
@@ -107,12 +113,14 @@ func TestToolProfileMatchesOriginalToolLists(t *testing.T) {
 	if got := profileToolNames(worker); got != want || len(graph) != 6 || worker[0] != e2Bash || worker[len(worker)-1] != candidate {
 		t.Fatalf("worker tools=%s want=%s", got, want)
 	}
-	// 프로필 도입 전 Planner 필터: PlannerTools를 순서대로 보며 이 13개 이름만 남겼다.
+	// 프로필 도입 전 Planner 필터의 13개 이름에 C26 목표 도구(prove_goal·goal_met)와 add_task_scope를 더한 목록이다.
+	// 순서는 PlannerTools 순서다. kill_work·steer_work·report_finding·add_company_scope는 아직 없다.
 	previous := map[string]bool{
 		"graph_overview": true, "list_findings": true, "list_facts": true, "node_detail": true,
 		"expand_digest": true, "get_worker_output": true, "get_worker_trace": true,
 		"search_all_worker_traces": true, "list_goals": true, "add_intent": true,
-		"list_companies": true, "list_assets": true, "list_untested_assets": true,
+		"prove_goal": true, "goal_met": true,
+		"list_companies": true, "list_assets": true, "add_task_scope": true, "list_untested_assets": true,
 	}
 	for _, coverage := range []bool{true, false} {
 		ts.SetCoverageEnabled(coverage)
@@ -138,5 +146,119 @@ func TestE2HTTPWorkerToolSetHasNoSendOrConfirmHooks(t *testing.T) {
 	}
 	if toolset.taskID != 7 || toolset.ownerNode != 22 || toolset.worker != "worker-1" || toolset.CoverageDisabled() {
 		t.Fatalf("tool set binding: task=%d owner=%d", toolset.taskID, toolset.ownerNode)
+	}
+}
+
+// 진단 기록은 닫힌 도구 이름 어휘만 받는다(internal/diagnosticlog). 진단 프로필에 도구를 더하면 어휘에도 있어야 한다.
+// 없으면 그 도구를 부를 때마다 기록이 거부되어 진단 로그가 불완전으로 남는다. SDK가 붙이는 TodoWrite도 같다.
+func TestDiagnosisProfileToolNamesAreInDiagnosticLogVocabulary(t *testing.T) {
+	names := []string{"TodoWrite"}
+	for _, profile := range []toolProfile{diagnosisPlannerProfile, diagnosisWorkerProfile} {
+		for _, entry := range profile.entries {
+			names = append(names, entry.name)
+		}
+	}
+	var missing []string
+	for _, name := range names {
+		l, err := diagnosticlog.Create(t.TempDir(), "run", 42, "run")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, _ := withDiagnosticTools(diagnosticlog.With(context.Background(), l), []actool.CoreTool{e2WorkerFixtureTool(name, nil)}, "planner")
+		observeDiagnosticToolUse(ctx, name, json.RawMessage(`{}`))
+		if l.Close() != nil {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		t.Fatalf("diagnostic log rejects tool names: %v", missing)
+	}
+}
+
+// 진단 Planner의 add_task_scope는 원본 동작·스키마 그대로이고, 모델에 보이는 설명만 "송신 범위는 그대로"로 바뀐다.
+// 원본 설명("authorization boundary"·"deliberately widening")이 남으면 모델이 승인 밖 호스트로 intent를 만들어
+// 거부 상한에 닿을 수 있다.
+func TestDiagnosisPlannerTaskScopeDescriptionKeepsBehavior(t *testing.T) {
+	ts := NewToolSet(nil, "")
+	var original actool.CoreTool
+	for _, tool := range ts.PlannerTools() {
+		if tool.Name() == "add_task_scope" {
+			original = tool
+		}
+	}
+	if original == nil || !strings.Contains(original.Description(), "authorization boundary") {
+		t.Fatal("원본 add_task_scope 설명 전제가 바뀜")
+	}
+	planner, err := diagnosisPlannerProfile.selectTools(ts.PlannerTools(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var scoped actool.CoreTool
+	for _, tool := range planner {
+		if tool.Name() == "add_task_scope" {
+			scoped = tool
+		}
+	}
+	if scoped == nil || scoped.Description() != diagnosisTaskScopeDescription || strings.Contains(scoped.Description(), "authorization boundary") ||
+		!strings.Contains(scoped.Description(), "does NOT change") || !reflect.DeepEqual(scoped.InputSchema(), original.InputSchema()) || scoped.Prompt() != original.Prompt() {
+		t.Fatalf("진단 판 add_task_scope 설명·스키마가 틀림: %q", scoped.Description())
+	}
+	// 동작은 원본 그대로다: 자산 저장소가 없는 ToolSet이면 원본과 같은 오류 결과를 낸다.
+	input := json.RawMessage(`{"kind":"ip","value":"192.0.2.1","reason":"fixture"}`)
+	got, gotErr := scoped.Call(context.Background(), input, nil)
+	want, wantErr := original.Call(context.Background(), input, nil)
+	if (gotErr == nil) != (wantErr == nil) || !reflect.DeepEqual(got, want) {
+		t.Fatalf("진단 판 add_task_scope 동작이 원본과 다름: %+v / %+v", got, want)
+	}
+	// 다른 Planner 도구는 원본 설명 그대로다.
+	for _, tool := range planner {
+		if tool.Name() == "add_task_scope" {
+			continue
+		}
+		for _, base := range ts.PlannerTools() {
+			if base.Name() == tool.Name() && base.Description() != tool.Description() {
+				t.Fatalf("%s 설명이 바뀜", tool.Name())
+			}
+		}
+	}
+}
+
+// toolSchemaProvider는 모델 요청에 실린 도구 스키마를 남기고 바로 끝낸다.
+type toolSchemaProvider struct{ schemas map[string]llm.ToolSchema }
+
+func (p *toolSchemaProvider) Complete(_ context.Context, request llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+	for _, schema := range request.Tools {
+		p.schemas[schema.Name] = schema
+	}
+	return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock("done")}}, "end_turn", llm.Usage{}, nil
+}
+
+func (*toolSchemaProvider) Stream(context.Context, llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
+	return func(yield func(llm.StreamEvent, error) bool) {
+		yield(llm.StreamEvent{}, errors.New("unexpected streaming"))
+	}
+}
+
+// 진단 Planner 옵션 조립(constrainE2HTTPPlannerOptions)을 거쳐 실제로 모델에 가는 도구 스키마에서도 add_task_scope는
+// 진단 판 설명이고, 어떤 도구 설명도 "인가 경계"를 약속하지 않는다.
+func TestDiagnosisPlannerTaskScopeDescriptionReachesProvider(t *testing.T) {
+	ts := NewToolSet(nil, "")
+	provider := &toolSchemaProvider{schemas: map[string]llm.ToolSchema{}}
+	opts := agentcore.Options{Provider: provider, Tools: ts.PlannerTools(), PermissionMode: permission.ModeBypass, NonStreaming: true}
+	if err := constrainE2HTTPPlannerOptions(context.Background(), &opts); err != nil {
+		t.Fatal(err)
+	}
+	session := agentcore.NewSession(opts)
+	defer session.Close()
+	for range session.Prompt(context.Background(), "synthetic planning") {
+	}
+	scope, ok := provider.schemas["add_task_scope"]
+	if !ok || scope.Description != diagnosisTaskScopeDescription {
+		t.Fatalf("provider add_task_scope description: %q", scope.Description)
+	}
+	for name, schema := range provider.schemas {
+		if strings.Contains(schema.Description, "authorization boundary") {
+			t.Fatalf("%s promises an authorization boundary to the model", name)
+		}
 	}
 }

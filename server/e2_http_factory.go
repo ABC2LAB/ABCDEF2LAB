@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/e2config"
 	"github.com/Autumn-27/artex/e2export"
@@ -67,6 +68,8 @@ type E2HTTPFileOptions struct {
 	ObserveResult    func(context.Context, e2runner.Result) error
 	// AttemptPathObserver는 수용시험 회차(eval-e2 설정 v2)에서만 설정한다. nil이면 실행 동작은 그대로다.
 	AttemptPathObserver e2proxy.AttemptPathObserver
+	// PlannerLimits는 Plan당 상한이다(C26·C32). 0이면 기본값이다.
+	PlannerLimits agent.E2HTTPPlannerLimits
 }
 
 func (E2HTTPFileOptions) String() string   { return "server.E2HTTPFileOptions[protected]" }
@@ -462,7 +465,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		}
 		return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: release, ObserveResult: input.ObserveResult}, nil
 	}
-	options := E2HTTPRuntimeOptions{Workflow: input.Workflow, RequestApprovals: input.RequestApprovals, PolicyFingerprintSHA256: fingerprint, PolicyConfigSHA256: policyConfigSHA, HeaderMode: policy.HeaderMode, Evaluation: e2HTTPCloneEvaluation(policy.Evaluation), AuthorityContext: authorityCtx, CheckAuthority: current, AuthorizeIntent: authorize, Expected: expected, Acquire: acquire, MaxWorkerTurns: policy.Runtime.MaxWorkerTurns, MaxToolCalls: policy.Runtime.MaxToolCalls, WorkerTimeout: workerTimeout, MaxPlannerRounds: policy.Runtime.MaxPlannerRounds, MaxIntentRuns: policy.Runtime.MaxIntentRuns, DrainTimeout: drainTimeout}
+	options := E2HTTPRuntimeOptions{Workflow: input.Workflow, RequestApprovals: input.RequestApprovals, PolicyFingerprintSHA256: fingerprint, PolicyConfigSHA256: policyConfigSHA, HeaderMode: policy.HeaderMode, Evaluation: e2HTTPCloneEvaluation(policy.Evaluation), AuthorityContext: authorityCtx, CheckAuthority: current, AuthorizeIntent: authorize, Expected: expected, Acquire: acquire, MaxWorkerTurns: policy.Runtime.MaxWorkerTurns, MaxToolCalls: policy.Runtime.MaxToolCalls, WorkerTimeout: workerTimeout, MaxPlannerRounds: policy.Runtime.MaxPlannerRounds, MaxIntentRuns: policy.Runtime.MaxIntentRuns, DrainTimeout: drainTimeout, PlannerLimits: input.PlannerLimits}
 	if current(ctx) != nil {
 		clear(auditKey)
 		return empty, ErrE2HTTPHost

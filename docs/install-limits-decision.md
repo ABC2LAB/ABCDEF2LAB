@@ -49,9 +49,9 @@
 
 1. `runtime_limits` 입력·검사·`policy.json`/launch 반영(E②·루프 칸). 블록이 없으면 지금 `policy.json`과 같은 값이 나오는 것을 시험으로 고정한다(동작 차이 없음). — 구현: `productPolicyBounds`가 모드별 기본값에 덮어쓰고 `validProductPolicyTemplate`으로 검사하며, 설치 입력 검사 단계(부작용 전)와 실제 설치가 같은 함수를 쓴다.
 2. `run_seconds`(기본값 그대로, 1~600초). 적용되지 않는 설치의 `engine.workers` 쓰기를 지운다(동작 차이 없음, 지금도 기본 3). `model_requests`는 열지 않고 정책 지문 판도 올리지 않는다(위 2·5).
-3. `status_read_retries`(C10 상태 조회 재시도와 같이).
-4. `model_concurrency`(C28 결정 2의 2부 뒤).
-5. `planner_turns_per_plan`·`planner_seconds_per_plan`(C26과 같이, C08 뒤).
+3. `status_read_retries`(C10 상태 조회 재시도와 같이 열었다). URL 진단 실행 중 상태 조회(100ms 간격)가 연속으로 실패해도 다시 묻는 횟수다. 칸이 없으면 0이라 지금처럼 첫 실패에서 실행을 멈춘다(1의 규칙, 기본값은 측정 뒤). 다 써도 실패하면 실행을 멈추고 결과를 취소가 아니라 `unknown`(`status_read_failed`)으로 둔다(P3 결정안 C10). 한 번 성공하면 다시 센다. 지금 코드에 이 값의 상한이 없어서, 4의 규칙대로 새 숫자를 만들지 않고 다시 묻는 시간(횟수 × 조회 간격)이 그 launch의 정리 시간 상한(`shutdown_timeout_seconds`, 제품 20초 → 200회)을 넘지 않게 한다. 값은 launch 설정(설치 기록 해시)에 들어간다.
+4. `model_concurrency`(C28 결정 2의 2부 #458 뒤에 열었다). 기본 1. OpenRouter는 승인 `max_concurrent` 이하. 로컬 모델은 코드에 동시 호출 상한이 없어 4의 규칙대로 1만 받고, 로컬과 OpenRouter를 같이 설치하면 로컬 launch에도 같은 값이 들어가므로 1만 받는다. 값은 launch 설정(`model_concurrency`, 설치 기록 해시에 묶임)에 들어가고 실행이 모델 예산 gate 크기로 쓴다(첫 호출 전 한 번).
+5. `planner_turns_per_plan`·`planner_seconds_per_plan`(C26과 같이, C08 뒤에 열었다). 칸이 없으면 지금 값(16턴·120초)이다. 이 값은 지금 코드에 검사 상한이 없는 상수였으므로, 4의 규칙대로 새 숫자를 만들지 않고 같은 종류 값인 Worker의 코드 상한(턴 1000·시간 1시간)을 상한으로 쓴다. 실행 전체 시간은 따로 `run_seconds`와 task 기한이 자른다. E② 정책 밖 값이라 정책 지문 형식은 바꾸지 않고 launch 설정(설치 기록 해시)에 넣는다. 실행 서버는 host 설정으로 E② 실행 Runtime에, 준비 서버는 모델 설정 묶음으로 받아 준비 계획과 실행 계획 모두 같은 상한을 쓴다. 에이전트 설정의 턴 수가 더 작으면 그 값을 쓴다(원본 설정 경로, 루프 복원 결정안 §4). 상한에 닿은 뒤의 원본 마무리 단계(에이전트 설정 마무리 턴 수, 기본 10턴, 시간 상한 없음)는 이 칸 밖이다(#470). 평가 경로(워크플로·원격 eval-e2)는 칸을 받지 않아 지금 값 그대로다.
 
 ## 4. 열린 항목
 

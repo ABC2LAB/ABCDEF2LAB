@@ -22,7 +22,7 @@
 | WebSearch | 설치 설정(`webSearch`)대로. 완전 로컬 모드에서는 끈다 | 대상이 아니라 검색 제공자로 나간다(규칙 8) |
 | skills | **진단 프로필에는 넣지 않는다.** 지금 skill 중 진단 목적의 것이 없다. `api-recon`은 탐색 프로필에 준다([C30 결정안](sandbox-data-decision.md)). 진단용 skill이 생기면 지시문만 읽고 명령은 Bash(E②)로 돌린다 | `api-recon`·브라우저는 탐색 단계 몫(규칙 3) |
 | MCP(Playwright 등) | **진단에서는 계속 뺀다.** 브라우저는 탐색 프로필 | 규칙 3, #410 |
-| 그래프 도구 | 원본 Worker 목록 전부(list_findings·record_fact·insert_assets·list_assets·search_all_worker_traces·get_worker_trace·node_detail). insert_assets는 열린 항목 5 뒤. 출력 가림(`RedactOutput`)과 record_fact의 intent 일치 검사는 유지. 지금 E② 필터의 graph_overview·list_facts·get_worker_output·list_goals는 원본 Worker 목록에 없는 Planner 도구라 실제로 Worker에 들어간 적이 없고, 프로필에도 넣지 않는다 | DB 안 작업 |
+| 그래프 도구 | 원본 Worker 목록 전부(list_findings·record_fact·insert_assets·list_assets·search_all_worker_traces·get_worker_trace·node_detail). insert_assets는 열린 항목 5 결정안(§9-5) 리뷰·구현 뒤. 출력 가림(`RedactOutput`)과 record_fact의 intent 일치 검사는 유지. 지금 E② 필터의 graph_overview·list_facts·get_worker_output·list_goals는 원본 Worker 목록에 없는 Planner 도구라 실제로 Worker에 들어간 적이 없고, 프로필에도 넣지 않는다 | DB 안 작업 |
 | insert_assets의 자동 보강(DNS·HTTP) | 진단 모드에서는 끈다. 자산 기록만 한다 | 서버가 발견 자산에 직접 보낸다. 필요하면 탐색 단계 몫 |
 | report_finding | 원본 이름·입력 형식으로 복원하되 진단 모드에서는 **확정이 아니라 진단 후보로 저장**한다(지금 `submit_diagnostic_candidate`와 같은 저장). 판정은 E③이 E② 기록으로 한다 | 규칙 5. 원본 프롬프트·skills가 report_finding을 부른다 |
 | traffic_search·traffic_get·traffic_blob | **진단 프로필에 넣지 않는다.** 진단 요청은 traffic 저장소에 기록되지 않는다(열린 항목 1 결과). 근거 묶기는 후보 제출의 call_ref가, 지난 응답 다시 보기는 C29의 출력 파일이 맡는다 | 빈 결과를 "요청 없음"으로 오해하게 하지 않는다 |
@@ -40,9 +40,14 @@
 
 - 원본 `PlannerTools` 전체를 복원한다: prove_goal·goal_met·kill_work·steer_work·report_finding(진단 후보)·list_companies·list_assets·add_company_scope·add_task_scope·list_untested_assets. skills·Todo·압축·마무리 턴도 복원한다.
 - 범위 도구(add_company_scope·add_task_scope)는 커버리지 분모와 자산 소속만 바꾸고 **E② 승인 범위는 바꾸지 않는다**(규칙 4). 범위 도구를 부른 뒤에도 E② 정책 지문이 같은지 시험으로 고정한다.
+  - add_task_scope는 넣었다. 진단 경로는 task_scope를 승인 근거로 읽지 않는다. 통합 시험(`actual-engine-planner-task-scope-keeps-e2-policy`)은 Planner가 대상 호스트 IP를 작업 범위에 넣고 그 범위로 intent를 만든 뒤에도, 같은 호스트의 승인 안 된 포트로 가는 Worker 요청이 E②에서 거부되고(수신 0건) 실행 정책의 판·규칙이 승인 파일 그대로인지 본다. 원본 도구 설명은 이 도구를 "작업의 인가 경계"라고 부르고 넓히라고 권하지만 진단 경로에서는 그렇지 않다. 그대로 두면 모델이 넓힌 범위로 승인 밖 intent를 만들고, C01 전에는 거부 상한(제품 기본 2회)에 닿아 실행이 멈출 수 있다. 그래서 동작·스키마는 원본 그대로 두고 모델에 보이는 설명만 진단 판(커버리지 분모만 넓힘, 송신 범위는 그대로, 승인 밖 호스트·포트로 intent를 만들지 말 것)으로 바꾼다(`DecorateTool`).
+  - add_company_scope는 제품 DB 역할이 companies·company_scope를 SELECT만 허용해서 넣어도 늘 실패한다. 열린 항목 5(insert_assets)와 같이 정한다.
 - Planner에서는 대상으로 보내는 도구를 뺀다: 원본 기본 도구의 Bash, WebFetch, MCP. 대상 요청은 Worker(E②)만 보낸다. 호스트 파일 도구는 Worker와 같은 조건(작업 디렉터리 안)일 때만 넣는다.
 - WebSearch는 Worker와 같은 규칙이다.
 - Plan당 상한(`e2HTTPPlannerMaxTurns`·`e2HTTPPlannerMaxDuration` 상수)은 원본 설정 경로(에이전트 설정의 턴·시간)로 돌리고, 제품 기본값은 C32 설치 설정으로 둔다.
+  - 구현: 상수를 `agent.E2HTTPPlannerLimits`(기본 16턴·2분)로 바꾸고 설치 입력 `runtime_limits`의 `planner_turns_per_plan`·`planner_seconds_per_plan`을 launch 설정으로 받는다([설치 상한 결정안](install-limits-decision.md) §3-5). 에이전트 설정의 턴 수가 설치 값보다 작으면 그 값을 쓴다.
+- 마무리 턴·Todo: 원본처럼 Plan 상한에 닿으면 마무리 턴(정한 결론을 add_intent·prove_goal·TodoWrite로 남김)을 받고, 깨울 때마다 이어지는 계획 할 일(TodoWrite)을 둔다. 둘 다 이 프로세스 안 작업이라 대상 송신 경로가 없고, 마무리 턴의 도구도 프로필 도구뿐이다. 원본 Planner는 자체 시간 상한이 없어 task 기한이 있으면 시간 종료를 늘 "작업 종료" 마무리(새 intent 금지)로 보는데, 진단 Planner는 Plan당 시간 상한이 있으므로 task 기한이 이번 Plan을 실제로 자를 때만 작업 종료 마무리를 쓰고 Plan 상한으로 끝나면 "이번 라운드만 끝" 마무리를 쓴다. 마무리 단계는 Plan당 상한 밖이다: 원본처럼 에이전트 설정의 마무리 턴 수(기본 10턴)까지 돌고 시간 상한을 보지 않는다(SDK 동작). 실행 시간 상한(task 문맥)과 모델 예산은 마무리 단계도 자른다. TodoWrite는 SDK가 붙이므로 진단 기록에 등록 도구로 알린다(기록 어휘는 #472).
+- 압축: 원본 내장 대화 압축(`Compaction`, 모델 문맥 창 기준)은 진단 Planner·Worker 모두 원본 설정 그대로 켜져 있다. 빼 둔 것은 둘이다. 실험 기능 noa(`Compactor`, 설정으로 켜는 원본 실험 기능, 작업 디렉터리 밖에 대화 보관본을 남김)와 Planner 라운드마다 백그라운드로 모델을 불러 오래된 그래프 노드를 요약하는 cold-digest(`compactor.OnPlannerRound`, 실행의 모델 예산·마감 밖에서 도는 호출). 진단 실행은 시간 상한이 짧아(제품 기본 180초) 그래프가 작으므로 지금은 넣지 않는다. 넣을 필요가 보이면 모델 예산 안에서 돌게 한 뒤 정한다. skills는 진단용이 없다(C30 결정 2).
 
 ## 5. 실행 흐름 (C19·C27)
 
@@ -71,7 +76,7 @@
 2. C24 일부: Worker 그래프 조회 도구(list_findings·list_assets·search_all_worker_traces·get_worker_trace). 저장소 조회뿐이다. insert_assets는 제품 DB 역할이 assets를 SELECT만 허용해서 넣어도 항상 실패하므로 열린 항목 5와 같이 정한다.
 3. C25와 C24 나머지: 원본 프롬프트·마무리 턴, report_finding(후보)·skills·WebSearch. report_finding(후보)은 후보 저장에 실제 call_ref가 필요해 원본 입력 형식과 바로 맞지 않고, 지금 부르는 쪽(원본 skills)도 C30 전에는 없어서 skills와 같이 한다.
 4. WebFetch E② 판.
-5. C26(Planner 도구·상한 설정)은 **C08(실행 결과 상태, P3) 뒤.** goal_met은 열린 intent가 남은 채 작업을 done으로 만드는데, 지금 첫 진단 완료 판정(`generalCompletion`)은 열린 intent가 있으면 끝나지 않고 stopped·exhausted intent는 실패로 센다. Planner 라운드 상한 도달도 지금은 작업 실패다.
+5. C26(Planner 도구·상한 설정)은 **C08(실행 결과 상태, P3) 뒤.** C08이 끝나 1단계로 `prove_goal`·`goal_met`(원본처럼 `goal_met`은 기본 바인딩 없음)과 목표 달성 마감(남은 open intent는 incomplete)을 넣었다. 2단계로 add_task_scope(E② 승인 범위 불변 시험과 같이)를, 3단계로 Plan당 상한 설정(C32 `planner_turns_per_plan`·`planner_seconds_per_plan`)을, 4단계로 마무리 턴·Todo를 넣었다. 다음 단계: report_finding(후보)(실제 call_ref가 필요하고 부르는 쪽인 진단 skills가 없어 보류). goal_met은 열린 intent가 남은 채 작업을 done으로 만드는데, 지금 첫 진단 완료 판정(`generalCompletion`)은 열린 intent가 있으면 끝나지 않고 stopped·exhausted intent는 실패로 센다. Planner 라운드 상한 도달도 지금은 작업 실패다.
 6. C27(Worker 실행 중 Planner 깨우기)·kill_work·steer_work·C19는 **C01(결과 불명 1건 전체 정지 제거, 이동찬) 뒤.** Planner가 Worker 실행 중에 goal_met·kill_work를 부르면 진행 중인 E② 호출이 취소되고, 지금은 그 결과 불명이 실행 전체를 멈춘다.
 7. 파일 도구(C29와 같이). traffic 도구는 넣지 않는다(열린 항목 1 결과).
 
@@ -98,4 +103,12 @@
 2. **대화 기록 재개**: 지금 E② 모드는 사람 지시로 이전 대화를 이어가지 않는다. 대화 기록 저장의 가림과 같이 정한다.
 3. **같은 intent 안 병렬 도구 호출**: 원본 SDK가 병렬 호출을 하면 호출 단위 예약을 어떻게 나눌지. 그 전에는 하나씩이다.
 4. **탐색 프로필 도구 목록**: 탐색 실행기 결정안 2-b에서 정한다.
-5. **진단 단계 자산 쓰기(insert_assets)**: 제품 DB 역할은 assets·task_asset_links를 SELECT만 허용한다(`server/controlled_read_assembly_database_role.go`). 진단 Worker가 발견 자산을 기록하게 할지, 탐색 단계 몫으로 둘지 이동찬과 정한다.
+5. **진단 단계 자산 쓰기(insert_assets)·회사 범위(add_company_scope)** — 결정안(2026-11-12, 최민준 결정·이동찬 리뷰). DB 역할을 바꾸므로 구현은 리뷰 뒤 이동찬과 페어로 한다.
+   - 지금: 제품 DB 역할은 assets·task_asset_links·companies·company_scope를 SELECT만 허용한다(`server/controlled_read_assembly_database_role.go`, 설치의 역할 부여 `cmd/first-controlled-diagnosis/product_install_linux.go`). 탐색 단계 발견은 `diagnosisflow` 발견 기록으로만 가고 assets 표에는 들어가지 않는다. 제품 첫 진단 경로는 원본 작업 시작의 대상 자산 등록(`launchTask`의 seed)도 거치지 않는다(`createFirstDiagnosisGoals`). 그래서 진단 Planner의 list_assets·list_untested_assets(원본 커버리지 루프)는 거의 비어 있다.
+   - 결정 1: **진단 Worker에 원본 insert_assets를 넣는다.** 원본 동작(자산 upsert·작업 연결·자동 범위)은 그대로 두고 두 가지만 더한다.
+     - 자동 보강(DNS·HTTP)은 지금처럼 끈다(§2 표). 서버가 발견 자산에 직접 보내는 경로라서다.
+     - 받는 자산을 E② 실행의 승인 대상 호스트(정책 규칙 origin의 호스트)로 프로그램이 제한한다(규칙 4). 다른 호스트·IP의 자산은 기록하지 않고 모델에 "승인 대상 밖"으로 돌려준다. 기록 자체는 대상 송신이 아니지만, 승인 밖 자산이 쌓이면 Planner가 그쪽으로 intent를 만들고 C01 전에는 거부 상한(제품 2회)에 닿아 실행이 멈출 수 있다(#468 범위 도구 설명과 같은 이유).
+     - 원본 작업 시작처럼 진단 준비 때 대상 URL 자산 하나를 등록하고 작업에 연결한다(seed). 승인 대상이라 위 제한 안이다.
+     - DB 역할: assets·task_asset_links에 INSERT와 upsert가 고치는 칼럼의 UPDATE만 더한다. 설치의 역할 부여와 `checkFirstDiagnosisDatabase` 필수 권한 표를 같이 고친다. 보고서 역할은 바꾸지 않는다.
+   - 결정 2: **add_company_scope는 진단 프로필에 넣지 않는다.** company_scope는 회사 단위로 모든 작업의 자산 귀속을 바꾸는 운영 설정이라, 한 실행 안에서 모델이 바꿀 대상이 아니다. 원본과 다른 점으로 남긴다.
+   - 탐색 단계 발견을 assets 표로 옮기는 일은 이 결정과 별개다. 필요가 보이면 탐색 실행기 결정안에서 따로 정한다.

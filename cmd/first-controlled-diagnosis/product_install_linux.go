@@ -138,6 +138,15 @@ func runProductInstall(ctx context.Context, args []string, stdout, stderr io.Wri
 	if _, ok := productRunSecondsFor(c.RuntimeLimits, c.TargetPolicy.Workflow != nil); !ok {
 		return 2
 	}
+	if _, ok := productModelConcurrencyFor(c.RuntimeLimits, c.TargetPolicy.Workflow != nil, c.LocalModel != nil, productOpenRouterMaxConcurrent(c)); !ok {
+		return 2
+	}
+	if _, ok := productPlannerLimitsFor(c.RuntimeLimits, c.TargetPolicy.Workflow != nil); !ok {
+		return 2
+	}
+	if _, ok := productStatusReadRetriesFor(c.RuntimeLimits, c.TargetPolicy.Workflow != nil); !ok {
+		return 2
+	}
 	for _, d := range []string{"config", "data", "keys", "state", "runs", "ipc"} {
 		if checkDirectory(filepath.Join(*root, d), true) != nil {
 			return 1
@@ -177,6 +186,49 @@ func productPolicyBounds(c productInstallInput) (server.E2HTTPFilePolicy, bool) 
 		return server.E2HTTPFilePolicy{}, false
 	}
 	return policy, true
+}
+
+// productOpenRouterMaxConcurrent는 설치 입력의 OpenRouter 승인이 허용한 동시 호출 수다. OpenRouter가 없거나 읽을 수
+// 없으면 0이다(읽을 수 없는 승인은 설치가 따로 거부한다).
+// applyProductLaunchLimits는 runtime_limits 중 launch 설정에 들어가는 칸(동시 모델 호출 수·Plan당 상한)을 고른 모델
+// 모드의 launch에 넣는다. 로컬 launch는 동시 호출 1, OpenRouter launch는 그 승인 max_concurrent 이하만 받는다.
+// 범위 밖이면 false다(설치 거부).
+func applyProductLaunchLimits(launch *launchConfig, c productInstallInput, mode string) bool {
+	workflow := c.TargetPolicy.Workflow != nil
+	concurrency, ok := productModelConcurrencyFor(c.RuntimeLimits, workflow, mode != "openrouter", productOpenRouterMaxConcurrent(c))
+	if !ok {
+		return false
+	}
+	planner, ok := productPlannerLimitsFor(c.RuntimeLimits, workflow)
+	if !ok {
+		return false
+	}
+	retries, ok := productStatusReadRetriesFor(c.RuntimeLimits, workflow)
+	if !ok {
+		return false
+	}
+	launch.StatusReadRetries = retries
+	launch.ModelConcurrency = concurrency
+	launch.PlannerTurnsPerPlan, launch.PlannerSecondsPerPlan = planner.PlannerTurnsPerPlan, planner.PlannerSecondsPerPlan
+	return true
+}
+
+func productOpenRouterMaxConcurrent(c productInstallInput) int64 {
+	if len(c.OpenRouterManifest) == 0 {
+		return 0
+	}
+	var metadata map[string]json.RawMessage
+	if json.Unmarshal(c.OpenRouterManifest, &metadata) != nil {
+		return 0
+	}
+	// 설치 전에는 프로필 ID가 없다. 실제 설치와 같은 방식으로 자리값을 넣어 읽는다.
+	metadata["profile_id"] = json.RawMessage("1")
+	raw, _ := json.Marshal(metadata)
+	p, err := llmpolicy.ParseOpenRouterManifest(raw)
+	if err != nil {
+		return 0
+	}
+	return p.Limits().MaxConcurrent
 }
 
 func productInstall(ctx context.Context, root string, c productInstallInput) error {
@@ -290,9 +342,12 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 		if e != nil {
 			return errPreparation
 		}
-		launch := launchConfig{Format: launchFormat, Mode: "general_http", ListenAddr: "127.0.0.1:28080", DataDir: filepath.Join(root, "data"), KeyDir: filepath.Join(root, "keys"), SkillDir: "/app/skills", ModelExecutionMode: mode, ModelProfileID: id, ModelFormat: "openai", ModelBaseURL: base, ModelRef: model, RuntimeDSNFile: filepath.Join(config, "runtime.dsn"), ShutdownTimeoutSeconds: 20, HTTP: &httpLaunch{PolicyFile: filepath.Join(config, "policy.json"), AuthorityFile: filepath.Join(config, "authority-template.json"), AuthorityRoot: config}}
+		launch := launchConfig{Format: launchFormat, Mode: "general_http", ListenAddr: "127.0.0.1:28080", DataDir: filepath.Join(root, "data"), KeyDir: filepath.Join(root, "keys"), SkillDir: "/app/skills", ModelExecutionMode: mode, ModelProfileID: id, ModelFormat: "openai", ModelBaseURL: base, ModelRef: model, RuntimeDSNFile: filepath.Join(config, "runtime.dsn"), ShutdownTimeoutSeconds: productShutdownTimeoutSeconds, HTTP: &httpLaunch{PolicyFile: filepath.Join(config, "policy.json"), AuthorityFile: filepath.Join(config, "authority-template.json"), AuthorityRoot: config}}
 		runSeconds, ok := productRunSecondsFor(c.RuntimeLimits, c.TargetPolicy.Workflow != nil)
 		if !ok {
+			return errPreparation
+		}
+		if !applyProductLaunchLimits(&launch, c, mode) {
 			return errPreparation
 		}
 		budget := diagnosisprep.Budget{Requests: 4, ModelRequests: 20, InputTokens: 20 * int64(contextK) * 1024, OutputTokens: 20 * int64(output), DurationSeconds: runSeconds}

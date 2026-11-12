@@ -4,6 +4,8 @@
 // 순서: 입력 → [승인 범위 확인](초안 + 서버 범위 확인, DNS·HTTP·모델 호출 없음) → 서버가 돌려준 범위·예산을 오른쪽에서 보고
 // 동의 상자 → [점검 시작]. 시작 전에는 task · Planner · 대상 송신 · 단회 권위를 만들지 않는다(서버 계약).
 // URL 은 요청일 뿐이고 허가는 서버 설치 범위와 E② 가 정한다. 계정 로그인 · 점검 목표 · 범위 · 워커 수는 서버가 받지 않아 두지 않는다.
+// 입력은 두 쪽으로 나눈다 (시안 v64 ~ v67): 1쪽 대상 → [다음] → 2쪽 분석 모델 · 점검 설정 → [승인 범위 확인].
+// 시안의 1쪽 '로그인'(계정 A 관리자 / B 일반)은 서버 입력에 칸이 없어 아직 두지 않는다.
 
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
@@ -65,7 +67,7 @@ export const EXCLUDE_EXAMPLE = "/logout\n/delete";
 
 /** live 새 점검 (URL 진단). */
 export function UrlNewScanLive() {
-  const { goTo } = useShell();
+  const { goTo, route } = useShell();
   const cap = useUrl((st) => st.cap);
   const handle = useUrl((st) => st.handle);
   const job = useUrl((st) => st.job);
@@ -86,6 +88,11 @@ export function UrlNewScanLive() {
   const [workflowMode, setWorkflowMode] = useState<WorkflowMode>("user_approval_v1");
   const [excluded, setExcluded] = useState("");
   const [credentialReady, setCredentialReady] = useState(false);
+  // 지금 보이는 쪽 (1 대상 · 2 분석 모델 · 점검 설정). 새 점검에 다시 들어오면 1쪽부터 (시안 v64)
+  const [page, setPage] = useState<1 | 2>(1);
+  useEffect(() => {
+    if (route === "new") setPage(1);
+  }, [route]);
   const seenSeq = useRef(useWb.getState().prefill?.seq ?? 0);
   const seenReset = useRef(resetSeq);
 
@@ -121,15 +128,31 @@ export function UrlNewScanLive() {
     : draftInput(target, pv, profile?.workflow ? workflowMode : undefined, profile?.workflow ? excluded : "");
 
   const hint = urlTargetHint(tv);
-  const why: string[] = [];
+  // 막힌 이유: 1쪽(주소)과 2쪽(모델 · 키)을 나눠, 1쪽에서는 주소 이유만 보인다
+  const why1: string[] = [];
+  const why2: string[] = [];
   if (!shown) {
-    if (!target.trim()) why.push("주소를 입력하세요");
-    else if (hint) why.push(hint);
-    else if (!input && profile) why.push("주소 형식을 확인하세요");
-    if (!profiles.length) why.push("설치된 모델 프로필이 없습니다");
-    else if (!profile) why.push("모델을 고르세요");
-    if (external && !credentialReady) why.push("외부 API 키를 등록하세요");
+    if (!target.trim()) why1.push("주소를 입력하세요");
+    else if (hint) why1.push(hint);
+    else if (!input && profile) why1.push("주소 형식을 확인하세요");
+    if (!profiles.length) why2.push("설치된 모델 프로필이 없습니다");
+    else if (!profile) why2.push("모델을 고르세요");
+    if (external && !credentialReady) why2.push("외부 API 키를 등록하세요");
   }
+  const why = [...why1, ...why2];
+  // 1쪽 → 2쪽: 주소만 보고 넘긴다 (모델은 2쪽에서 고름). 조회 중인 진단은 잠긴 입력이라 그냥 넘긴다
+  const canNext = !!shown || (!!target.trim() && !hint);
+  const turn = (to: 1 | 2) => {
+    setPage(to);
+    // 쪽을 바꾸면 그 쪽 첫 칸으로 (스크롤도 맨 위)
+    requestAnimationFrame(() => {
+      document.getElementById("luForm")?.scrollTo?.({ top: 0 });
+      document.getElementById(to === 1 ? "luUrl" : "luProfile")?.focus();
+    });
+  };
+  const next = () => {
+    if (canNext) turn(2);
+  };
   const canSend = !shown && !!input && g.canValidate && !busy && (!external || credentialReady);
   const send = async () => {
     if (canSend && input) await runUrlAction("validate", input);
@@ -146,7 +169,17 @@ export function UrlNewScanLive() {
 
   // 오른쪽 아래 실행 단계 (입력 → 범위 확인 → 동의 · 시작)
   let action: ReactNode;
-  if (!handle) {
+  if (page === 1 && !handle) {
+    action = (
+      <>
+        <button className={cx(s.btn, s.pri, s.full)} type="button" disabled={!canNext} onClick={next}>
+          다음
+          <Icon name="arrow" />
+        </button>
+        <span className={s.why}>{why1.join(" · ")}</span>
+      </>
+    );
+  } else if (!handle) {
     action = (
       <>
         <button className={cx(s.btn, s.pri, s.full)} type="button" disabled={!canSend} onClick={() => void send()}>
@@ -229,18 +262,25 @@ export function UrlNewScanLive() {
             <a className={s.btn} href="#dashboard">
               취소
             </a>
+            {/* 계정 분류(시험 계정 표시, 운영자 전용·목업). 저장 위치·승인 주체는 §9-7 미정 */}
+            <a className={s.btn} href="#classify">
+              계정 분류
+            </a>
             <InspOpenButton>요약</InspOpenButton>
           </>
         }
       />
       <div className={s.vb}>
         <form
-          className={cx(s.vm, s.nform)}
+          className={cx(s.vm, s.nform, s.paged)}
           id="luForm"
           noValidate
+          data-page={page}
           onSubmit={(e) => {
             e.preventDefault();
-            void send();
+            // 1쪽에서 Enter 는 다음 쪽으로 (시안 v64)
+            if (page === 1) next();
+            else void send();
           }}
         >
           {handle ? (
@@ -259,7 +299,7 @@ export function UrlNewScanLive() {
             </div>
           ) : null}
 
-          <div className={cx(s.fsec, s["fs-target"])}>
+          <div className={cx(s.fsec, s["fs-target"])} hidden={page !== 1}>
             <div className={s["fsec-h"]}>
               <h2>대상</h2>
             </div>
@@ -298,7 +338,7 @@ export function UrlNewScanLive() {
             </div>
           </div>
 
-          <div className={cx(s.fsec, s["fs-model"])}>
+          <div className={cx(s.fsec, s["fs-model"])} hidden={page !== 2}>
             <div className={s["fsec-h"]}>
               <h2>분석 모델</h2>
             </div>
@@ -360,7 +400,7 @@ export function UrlNewScanLive() {
 
           {/* 점검 설정: 탐색 흐름이 있는 프로필만 진단 모드 · 제외 경로를 받는다(없으면 칸째 숨김) */}
           {profile?.workflow ? (
-            <div className={cx(s.fsec, s["fs-set"])}>
+            <div className={cx(s.fsec, s["fs-set"])} hidden={page !== 2}>
               <div className={s["fsec-h"]}>
                 <h2>점검 설정</h2>
               </div>
@@ -402,15 +442,33 @@ export function UrlNewScanLive() {
             </div>
           ) : null}
 
-          <div className={s.formbar}>
-            {handle ? (
-              <InspOpenButton>시작 단계 보기</InspOpenButton>
+          {/* 아래 줄: 1쪽은 [다음], 2쪽은 [이전] + (요약 패널이 안 보일 때) 실행 버튼 */}
+          <div className={cx(s.formbar, s.paged)}>
+            {page === 1 ? (
+              <>
+                <button className={cx(s.btn, s.pri)} type="submit" disabled={!canNext}>
+                  다음
+                  <Icon name="arrow" />
+                </button>
+                <span className={s.why}>{why1.join(" · ")}</span>
+              </>
             ) : (
               <>
-                <button className={cx(s.btn, s.pri)} type="submit" disabled={!canSend}>
-                  승인 범위 확인
+                <button className={s.btn} type="button" onClick={() => turn(1)}>
+                  이전
                 </button>
-                <span className={s.why}>{why.join(" · ")}</span>
+                <span className={s.fbact}>
+                  {handle ? (
+                    <InspOpenButton>시작 단계 보기</InspOpenButton>
+                  ) : (
+                    <>
+                      <button className={cx(s.btn, s.pri)} type="submit" disabled={!canSend}>
+                        승인 범위 확인
+                      </button>
+                      <span className={s.why}>{why.join(" · ")}</span>
+                    </>
+                  )}
+                </span>
               </>
             )}
           </div>
@@ -471,11 +529,13 @@ export function UrlNewScanLive() {
                     sub="그 호스트 로그에 접속 IP · 시각 · 주소 · 출처가 남습니다 · 완전 로컬 모드는 막습니다"
                     tip={
                       <HelpTip label="설명 보기">
-                        <b>대상 페이지는 스크립트 · 스타일 · 폰트 · 이미지를 외부 호스트(CDN 등)에서 불러올 수 있습니다.</b>
+                        <b>
+                          대상 페이지는 스크립트 · 스타일 · 폰트 · 이미지를 외부 호스트(CDN 등)에서 불러올 수 있습니다.
+                        </b>
                         <br />
                         <br />
-                        브라우저 탐색이 대상 페이지를 그릴 때 그 자원을 받으면, 그 외부 호스트 쪽 로그에 접속 IP · 시각 ·
-                        요청 주소 · 출처(Referer)가 남습니다. 대상 서버에 남는 기록과는 별개입니다.
+                        브라우저 탐색이 대상 페이지를 그릴 때 그 자원을 받으면, 그 외부 호스트 쪽 로그에 접속 IP · 시각
+                        · 요청 주소 · 출처(Referer)가 남습니다. 대상 서버에 남는 기록과는 별개입니다.
                         <br />
                         <br />
                         완전 로컬 모드에서는 이 외부 전송을 막습니다(절대규칙 8). 지금은 사전 고지이고, 브라우저 탐색이

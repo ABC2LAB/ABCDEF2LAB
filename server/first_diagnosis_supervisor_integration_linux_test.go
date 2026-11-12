@@ -15,12 +15,14 @@ import (
 	"iter"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/Autumn-27/artex/agent"
 	pgdb "github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/diagnosis"
 	"github.com/Autumn-27/artex/e2proxy"
@@ -150,7 +152,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	helper := firstDiagnosisNativeHelper(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	if mode == "cancel" || mode == "user-stop" || mode == "close-fail" {
+	if mode == "cancel" || mode == "user-stop" || mode == "close-fail" || mode == "plan-turns" {
 		logger, err := diagnosticlog.Create(firstDiagnosisPrivateTemp(t), "run", mustFirstDiagnosisTaskNumber(task.ID), "")
 		if err != nil {
 			t.Fatal(err)
@@ -158,7 +160,11 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		ctx = diagnosticlog.With(ctx, logger)
 		defer func() {
 			if err := logger.Close(); err != nil {
-				t.Error("실제 실패 회차 로그 마감", err)
+				t.Error("실제 회차 로그 마감", err)
+				return
+			}
+			if mode == "plan-turns" {
+				verifyPlannerTodoLog(t, logger.Path())
 				return
 			}
 			verifySupervisorFailureLog(t, logger.Path(), mode)
@@ -216,6 +222,11 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	if mode == "planner-limit" {
 		// 도구 호출 하나만 허용한다. 작업 뒤 Planner 준비가 실행 상한에 닿는다(실행 결과 상태 값 계약 budget_limited).
 		policy.Runtime.MaxToolCalls = 1
+	}
+	// 설치 입력의 Plan당 턴 상한(C26·C32)은 launch 설정에서 host 설정으로 들어온다.
+	const installedPlanTurns = 2
+	if mode == "plan-turns" {
+		cfg.PlannerLimits = agent.E2HTTPPlannerLimits{MaxTurns: installedPlanTurns}
 	}
 	raw, err := json.Marshal(policy)
 	if err != nil || os.WriteFile(cfg.PolicyFile, raw, 0600) != nil {
@@ -292,6 +303,35 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		provider.command += " | grep -q never-present-owned-fixture"
 	}
 	plannerProvider := &firstDiagnosisPlannerProbeProvider{firstDiagnosisE2Provider: firstDiagnosisE2Provider{command: "curl --silent --show-error --max-time 1 " + target.URL + "/denied"}, textOnly: mode != "planner-only"}
+	if mode == "plan-turns" {
+		plannerProvider.loopTool = "list_goals"
+		// SDK가 붙이는 TodoWrite를 한 번 불러 진단 기록에 등록 도구로 남는지 본다(C26).
+		plannerProvider.todoOnce = true
+	}
+	var otherHits atomic.Int64
+	workerCallsAtScope := -1
+	if mode == "task-scope" {
+		// Planner의 범위 도구는 커버리지 분모만 바꾸고 E② 승인 정책은 바꾸지 않는다(C26, 루프 복원 결정안 §4).
+		// Planner가 대상 호스트 IP 전체를 작업 범위에 넣은 뒤에도, 같은 호스트의 승인 안 된 포트로 가는 진단 요청은
+		// E②가 보내지 않아야 한다.
+		other := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { otherHits.Add(1) }))
+		defer other.Close()
+		otherURL, parseErr := url.Parse(other.URL)
+		if parseErr != nil {
+			t.Fatal("범위 밖 fixture 주소 해석 실패")
+		}
+		plannerProvider.scopeValue = otherURL.Hostname()
+		plannerProvider.beforeScope = func() { workerCallsAtScope = provider.calls }
+		provider.command = "curl --silent --show-error --max-time 5 " + other.URL + "/allowed"
+	}
+	if mode == "goal-met" {
+		// Planner가 prove_goal로 하나뿐인 목표를 달성시키면 작업이 done이 되고 실행은 정상 마감된다(C26).
+		factID, err := task.Store.AddNode(pgdb.KindFact, map[string]any{"text": "Owned fixture evidence for the goal."}, 0, "confirmed", "system", nil)
+		if err != nil || factID <= 0 {
+			t.Fatal("목표 근거 fixture 생성 실패")
+		}
+		plannerProvider.goalID, plannerProvider.evidenceID = goalID, factID
+	}
 	// 실제 taskLLMRuntime.current의 role/model guard를 유지하고 profile cache의 모델만 대체한다.
 	firstDiagnosisInjectProfileProvider(t, runtime.server, profileID, &firstDiagnosisRoleRoutedProvider{worker: provider, planner: plannerProvider})
 	if mode == "pre-run-stop" {
@@ -368,6 +408,43 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		}
 		return
 	}
+	if mode == "task-scope" {
+		var scopes int
+		if installer.QueryRow("SELECT count(*) FROM task_scope WHERE task_id=$1 AND source='agent' AND net=($2||'/32')::cidr", mustFirstDiagnosisTaskNumber(task.ID), plannerProvider.scopeValue).Scan(&scopes) != nil {
+			t.Fatal("작업 범위 조회 실패")
+		}
+		execution, ok := runtime.host.Runtime().Execution(task.ID)
+		// 실행 정책은 범위를 더한 뒤에 만들어졌지만 승인 파일의 판·규칙 그대로여야 한다.
+		revision, rules := "", ""
+		if ok && execution != nil {
+			view := execution.Policy()
+			revision = view.PolicyRevision
+			for _, rule := range view.Rules {
+				rules += rule.Ref + ";"
+			}
+		}
+		wantRules := ""
+		for _, rule := range policy.Rules {
+			wantRules += rule.Ref + ";"
+		}
+		closeCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stop()
+		closeErr := runtime.Close(closeCtx)
+		results := runtime.host.Runtime().Results(task.ID)
+		if runErr != nil || closeErr != nil || !plannerProvider.scoped || workerCallsAtScope != 0 || provider.calls == 0 || scopes != 1 ||
+			revision != policy.PolicyRevision || rules != wantRules || otherHits.Load() != 0 || hits.Load() != 0 ||
+			len(results) != 1 || results[0].Classification != "policy_not_executed" || results[0].Call.Counts.Denied != 1 || !results[0].Call.AuditComplete || !results[0].Final {
+			t.Fatalf("범위 도구가 E② 승인 범위를 넓힘 err=%v close=%v scoped=%v workerAtScope=%d scopes=%d other=%d hits=%d results=%d", runErr, closeErr, plannerProvider.scoped, workerCallsAtScope, scopes, otherHits.Load(), hits.Load(), len(results))
+		}
+		return
+	}
+	if mode == "goal-met" {
+		result := supervisor.RunResult()
+		if runErr != nil || result == nil || !result.Valid() || !plannerProvider.proved || task.lifecycleSnapshot().Status != "done" || hits.Load() != 0 || provider.calls != 0 {
+			t.Fatalf("목표 달성으로 끝난 실행을 정상 마감하지 않음 err=%v result=%+v proved=%v status=%s", runErr, result, plannerProvider.proved, task.lifecycleSnapshot().Status)
+		}
+		return
+	}
 	if mode == "prepare-fail" {
 		if runErr == nil || hits.Load() != 0 || provider.calls != 0 {
 			t.Fatal("Planner 또는 준비 실패가 통제 밖 대상 송신으로 이어짐")
@@ -377,6 +454,17 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	if mode == "close-fail" {
 		if runErr == nil || hits.Load() != 1 || plannerProvider.calls == 0 {
 			t.Fatal("감사 자원 해제 실패를 실행 성공으로 수용함")
+		}
+		return
+	}
+	if mode == "plan-turns" {
+		// 한 Plan 안에서 턴마다 assistant·도구 결과 두 메시지가 붙는다. 설치 상한 2턴이면 마지막 요청이 첫 요청보다
+		// 2개 많다(기본 16턴이면 30개). 턴 상한에 닿은 Plan은 원본처럼 "이번 라운드만 끝" 마무리 턴을 받는다(C26).
+		// intent가 없어 대상 송신 없이 no_intents로 마감한다.
+		result := supervisor.RunResult()
+		if runErr != nil || plannerProvider.calls < installedPlanTurns || plannerProvider.maxMessages-plannerProvider.minMessages != 2*(installedPlanTurns-1) || plannerProvider.wrapUps == 0 ||
+			result == nil || result.Outcome != diagnosis.OutcomeNoIntents || hits.Load() != 0 || provider.calls != 0 {
+			t.Fatalf("설치한 Plan당 턴 상한·마무리 턴을 쓰지 않음 err=%v calls=%d messages=%d..%d wrapUps=%d result=%+v", runErr, plannerProvider.calls, plannerProvider.minMessages, plannerProvider.maxMessages, plannerProvider.wrapUps, result)
 		}
 		return
 	}
@@ -685,6 +773,36 @@ func (p *firstDiagnosisRoleRoutedProvider) Complete(ctx context.Context, request
 func (p *firstDiagnosisRoleRoutedProvider) Stream(ctx context.Context, request llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
 	return func(yield func(llm.StreamEvent, error) bool) {
 		yield(llm.StreamEvent{}, errors.New("unexpected fixture streaming"))
+	}
+}
+
+// verifyPlannerTodoLog는 Planner가 부른 TodoWrite가 진단 기록에 등록 도구 선택으로 남고, 미등록 도구 실패가 없는지 본다.
+func verifyPlannerTodoLog(t *testing.T, path string) {
+	t.Helper()
+	file, err := os.Open(path)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	defer file.Close()
+	todo, unregistered := 0, 0
+	for decoder := json.NewDecoder(file); ; {
+		var event diagnosticlog.Event
+		if err := decoder.Decode(&event); err == io.EOF {
+			break
+		} else if err != nil {
+			t.Error("Plan 회차 JSONL 손상", err)
+			return
+		}
+		if event.Event == "tool_selected" && event.Tool == "TodoWrite" && event.Status == "succeeded" && event.Role == "planner" {
+			todo++
+		}
+		if event.ReasonCode == "unregistered_tool" {
+			unregistered++
+		}
+	}
+	if todo != 1 || unregistered != 0 {
+		t.Errorf("TodoWrite 진단 기록: 선택 %d건, 미등록 %d건", todo, unregistered)
 	}
 }
 

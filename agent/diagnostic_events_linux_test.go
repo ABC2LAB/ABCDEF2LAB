@@ -166,3 +166,29 @@ func TestDiagnosticSuccessfulToolThenMaxTurnsIsIncomplete(t *testing.T) {
 		t.Fatalf("bounded stop became success: %+v", final)
 	}
 }
+
+// SDK가 붙이는 TodoWrite는 진단 기록의 등록 도구가 된다(미등록 실패로 남지 않음). 로거가 없으면 문맥을 바꾸지 않고,
+// 원래 문맥의 등록 목록도 바꾸지 않는다. 기록 어휘에 TodoWrite를 넣는 것은 #472다.
+func TestDiagnosticSDKToolIsRegistered(t *testing.T) {
+	if withDiagnosticSDKTool(context.Background(), actool.NewTodoStore().Tool()) != context.Background() {
+		t.Fatal("진단 로거 없이 문맥을 바꿈")
+	}
+	l, err := diagnosticlog.Create(t.TempDir(), "run", 42, "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	base, _ := withDiagnosticTools(diagnosticlog.With(context.Background(), l), []actool.CoreTool{e2WorkerFixtureTool("node_detail", nil)}, "planner")
+	todo := actool.NewTodoStore().Tool()
+	ctx := withDiagnosticSDKTool(base, todo)
+	registered := func(c context.Context, name string) actool.CoreTool {
+		d, _ := c.Value(diagnosticToolsKey{}).(diagnosticTools)
+		return d.tools[name]
+	}
+	if registered(ctx, "TodoWrite") != todo || registered(ctx, "node_detail") == nil || registered(base, "TodoWrite") != nil {
+		t.Fatal("SDK 도구 등록이 틀림")
+	}
+	if d, _ := ctx.Value(diagnosticToolsKey{}).(diagnosticTools); d.role != "planner" {
+		t.Fatal("역할을 잃음")
+	}
+}

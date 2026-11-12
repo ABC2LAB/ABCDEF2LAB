@@ -187,7 +187,7 @@ describe("LiveGate", () => {
 });
 
 describe("Workbench 안의 관문", () => {
-  it("열한 화면 모두 관문으로 감싸고 레일은 남는다", async () => {
+  it("열두 화면 모두 관문으로 감싸고 레일은 남는다", async () => {
     online();
     const { container } = render(<Workbench />);
     await waitFor(() => expect(getLiveAuthState()).toBe("ready"));
@@ -200,6 +200,7 @@ describe("Workbench 안의 관문", () => {
       "탐색 결과",
       "접근통제 지도",
       "커버리지",
+      "계정 분류",
       "범위 확인",
       "점검 진행",
       "보고서",

@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"fmt"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
@@ -366,11 +367,52 @@ func TestE2HTTPUnknownAndIncompleteCallsStopFurtherRuns(t *testing.T) {
 	}
 }
 
+// Plan당 상한(C26·C32): 설치 값이 기본값을 대신하고, 에이전트 설정의 더 작은 턴 수는 그대로 두며, 코드 상한 밖은 막는다.
+func TestE2HTTPPlannerLimitsFromContext(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		limits        *E2HTTPPlannerLimits
+		agentTurns    int
+		agentDuration time.Duration
+		wantTurns     int
+		wantDuration  time.Duration
+		wantErr       bool
+	}{
+		{name: "default", wantTurns: E2HTTPPlannerDefaultTurns, wantDuration: E2HTTPPlannerDefaultDuration},
+		{name: "zero-fields-are-default", limits: &E2HTTPPlannerLimits{}, agentTurns: 500, wantTurns: E2HTTPPlannerDefaultTurns, wantDuration: E2HTTPPlannerDefaultDuration},
+		{name: "installed", limits: &E2HTTPPlannerLimits{MaxTurns: 40, MaxDuration: 5 * time.Minute}, wantTurns: 40, wantDuration: 5 * time.Minute},
+		{name: "installed-caps-agent-setting", limits: &E2HTTPPlannerLimits{MaxTurns: 40, MaxDuration: 5 * time.Minute}, agentTurns: 90, agentDuration: time.Hour, wantTurns: 40, wantDuration: 5 * time.Minute},
+		{name: "smaller-agent-setting-kept", limits: &E2HTTPPlannerLimits{MaxTurns: 40}, agentTurns: 7, agentDuration: time.Minute, wantTurns: 7, wantDuration: time.Minute},
+		{name: "code-upper-bound", limits: &E2HTTPPlannerLimits{MaxTurns: e2HTTPMaxWorkerTurns, MaxDuration: e2HTTPMaxWorkerDuration}, wantTurns: e2HTTPMaxWorkerTurns, wantDuration: e2HTTPMaxWorkerDuration},
+		{name: "turns-over-bound", limits: &E2HTTPPlannerLimits{MaxTurns: e2HTTPMaxWorkerTurns + 1}, wantErr: true},
+		{name: "duration-over-bound", limits: &E2HTTPPlannerLimits{MaxDuration: e2HTTPMaxWorkerDuration + time.Nanosecond}, wantErr: true},
+		{name: "negative", limits: &E2HTTPPlannerLimits{MaxTurns: -1}, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			if tc.limits != nil {
+				ctx = WithE2HTTPPlannerLimits(ctx, *tc.limits)
+			}
+			opts := agentcore.Options{Provider: &e2WorkerProvider{rawError: true}, MaxTurns: tc.agentTurns, MaxDuration: tc.agentDuration}
+			err := constrainE2HTTPPlannerOptions(ctx, &opts)
+			if tc.wantErr {
+				if !errors.Is(err, ErrE2HTTPBinding) {
+					t.Fatalf("err=%v", err)
+				}
+				return
+			}
+			if err != nil || opts.MaxTurns != tc.wantTurns || opts.MaxDuration != tc.wantDuration {
+				t.Fatalf("err=%v turns=%d duration=%v", err, opts.MaxTurns, opts.MaxDuration)
+			}
+		})
+	}
+}
+
 func TestE2HTTPPlannerAndWorkerFilterByOriginalToolAllowlist(t *testing.T) {
 	execution, _, _ := e2WorkerFixture(t)
 	var base []actool.CoreTool
 	// 브라우저 MCP 도구(mcp__<서버>__<도구>)는 이름 끝이 허용 이름과 같아도 진단 단계에 들어가지 않는다.
-	for _, name := range []string{"Bash", "WebFetch", "Skill", "ExecuteExtraTool", "record_fact", "add_intent", "list_facts", "node_detail", "report_finding", "insert_assets", "add_task_scope", "TodoWrite", "Monitor",
+	for _, name := range []string{"Bash", "WebFetch", "Skill", "ExecuteExtraTool", "record_fact", "add_intent", "list_facts", "node_detail", "report_finding", "insert_assets", "add_task_scope", "add_company_scope", "TodoWrite", "Monitor",
 		"mcp__browser__browser_navigate", "mcp__browser__node_detail", "mcp__browser__list_facts"} {
 		base = append(base, e2WorkerFixtureTool(name, nil))
 	}
@@ -382,8 +424,8 @@ func TestE2HTTPPlannerAndWorkerFilterByOriginalToolAllowlist(t *testing.T) {
 	for _, tool := range planner {
 		names = append(names, tool.Name())
 	}
-	// 출력은 프로필 순서(PlannerTools 순서)다.
-	if strings.Join(names, ",") != "list_facts,node_detail,add_intent" {
+	// 출력은 프로필 순서(PlannerTools 순서)다. add_company_scope는 DB 역할 결정(열린 항목 5) 전이라 빠진다.
+	if strings.Join(names, ",") != "list_facts,node_detail,add_intent,add_task_scope" {
 		t.Fatalf("planner tools=%v", names)
 	}
 	e2Bash := e2WorkerFixtureTool("Bash", nil)
@@ -783,27 +825,59 @@ func TestE2HTTPSharedControlRejectsConcurrentSameIntentAndLateResult(t *testing.
 }
 func TestE2HTTPPlannerOptionsRemoveSDKBypassToolsAndBoundTaskTime(t *testing.T) {
 	provider := &e2WorkerProvider{rawError: true}
+	todos := actool.NewTodoStore()
 	opts := agentcore.Options{
 		Provider: provider, Tools: []actool.CoreTool{e2WorkerFixtureTool("node_detail", nil), e2WorkerFixtureTool("Bash", nil)},
 		EnableWebFetch: true, EnableWebSearch: true, MaxTurns: 0, MaxDuration: 0,
-		BashEnv: []string{"HTTP_PROXY=should-not-be-used"}, Todos: actool.NewTodoStore(),
+		BashEnv: []string{"HTTP_PROXY=should-not-be-used"}, Todos: todos,
 	}
 	if err := constrainE2HTTPPlannerOptions(context.Background(), &opts); err != nil {
 		t.Fatal(err)
 	}
-	if opts.EnableWebFetch || opts.EnableWebSearch || !opts.DisableBackgroundTasks || opts.Todos != nil || len(opts.BashEnv) > 0 || opts.MaxTurns != e2HTTPPlannerMaxTurns || opts.MaxDuration != e2HTTPPlannerMaxDuration {
+	// Todos(TodoWrite)와 마무리 턴은 원본처럼 남는다(C26). 둘 다 대상 송신 경로가 없다.
+	if opts.EnableWebFetch || opts.EnableWebSearch || !opts.DisableBackgroundTasks || opts.Todos != todos || len(opts.BashEnv) > 0 || opts.MaxTurns != E2HTTPPlannerDefaultTurns || opts.MaxDuration != E2HTTPPlannerDefaultDuration ||
+		opts.Settlement == nil || opts.Settlement.Prompt != plannerWrapUpDefault || len(opts.Settlement.DisabledTools) != 0 || opts.Settlement.PromptByReason != nil {
 		t.Fatalf("unsafe planner options: maxTurns=%d duration=%v background=%v", opts.MaxTurns, opts.MaxDuration, opts.DisableBackgroundTasks)
 	}
 	session := agentcore.NewSession(opts)
 	defer session.Close()
 	for range session.Prompt(context.Background(), "synthetic planning") {
 	}
-	if strings.Join(provider.tools, ",") != "node_detail" {
+	if strings.Join(provider.tools, ",") != "node_detail,TodoWrite" {
 		t.Fatalf("planner SDK injected bypass tools: %v", provider.tools)
 	}
 	expired := WithTaskClock(context.Background(), TaskClock{DeadlineUnix: time.Now().Add(-time.Second).Unix()})
 	if err := constrainE2HTTPPlannerOptions(expired, &opts); !errors.Is(err, ErrE2HTTPBlocked) {
 		t.Fatalf("expired task: %v", err)
+	}
+}
+
+// 마무리 턴의 종류(C26): task 기한이 이번 Plan을 실제로 자를 때만 시간 종료를 "작업 종료" 마무리로 보고, Plan
+// 시간 상한으로 끝나면 "이번 라운드만 끝" 마무리다. 원본 Planner는 자체 시간 상한이 없어 기한만 있으면 늘 작업 종료로 본다.
+func TestE2HTTPPlannerWrapUpFollowsBindingLimit(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		deadlineAfter time.Duration
+		wantTaskEnd   bool
+	}{
+		{"no-deadline", 0, false},
+		{"plan-limit-binds", time.Hour, false},
+		{"deadline-binds", 30 * time.Second, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			if tc.deadlineAfter > 0 {
+				ctx = WithTaskClock(ctx, TaskClock{DeadlineUnix: time.Now().Add(tc.deadlineAfter).Unix()})
+			}
+			opts := agentcore.Options{Provider: &e2WorkerProvider{rawError: true}}
+			if err := constrainE2HTTPPlannerOptions(ctx, &opts); err != nil || opts.Settlement == nil || opts.Settlement.Prompt != plannerWrapUpDefault {
+				t.Fatalf("err=%v settlement=%+v", err, opts.Settlement)
+			}
+			timeoutPrompt, taskEnd := opts.Settlement.PromptByReason[harness.ReasonTimeout]
+			if taskEnd != tc.wantTaskEnd || taskEnd && (timeoutPrompt != plannerTaskTimeoutDefault || opts.Settlement.PromptByReason[harness.ReasonMaxTurns] != plannerWrapUpDefault || opts.MaxDuration > tc.deadlineAfter) {
+				t.Fatalf("wrap-up by reason=%v duration=%v", opts.Settlement.PromptByReason, opts.MaxDuration)
+			}
+		})
 	}
 }
 
@@ -1037,5 +1111,40 @@ func TestE2HTTPIntentOutcomeLocalRefusalAndStickyUnsupported(t *testing.T) {
 				t.Fatalf("runner calls=%d error=%v want=%v", calls, err, tc.want)
 			}
 		})
+	}
+}
+
+// toolLoopProvider는 매 호출 같은 도구를 부르고 호출 수를 센다(마무리 요청에서도 멈추지 않는 모델).
+type toolLoopProvider struct {
+	tool  string
+	calls int
+}
+
+func (p *toolLoopProvider) Complete(context.Context, llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+	p.calls++
+	return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: fmt.Sprintf("loop-%d", p.calls), Name: p.tool, Input: json.RawMessage(`{}`)}}}, "tool_use", llm.Usage{}, nil
+}
+
+func (*toolLoopProvider) Stream(context.Context, llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
+	return func(yield func(llm.StreamEvent, error) bool) {
+		yield(llm.StreamEvent{}, errors.New("unexpected streaming"))
+	}
+}
+
+// 마무리 단계(C26)는 Plan당 턴 상한 밖에서 원본처럼 마무리 턴 수(에이전트 설정, 기본 10)까지만 돈다. 모델이 마무리
+// 요청에서도 도구를 계속 불러도 Plan 상한 + 마무리 턴 수에서 멈춘다.
+func TestE2HTTPPlannerWrapUpStopsAtWrapUpTurns(t *testing.T) {
+	provider := &toolLoopProvider{tool: "node_detail"}
+	ctx := WithE2HTTPPlannerLimits(context.Background(), E2HTTPPlannerLimits{MaxTurns: 2})
+	opts := agentcore.Options{Provider: provider, Tools: []actool.CoreTool{e2WorkerFixtureTool("node_detail", nil)}, PermissionMode: permission.ModeBypass, NonStreaming: true}
+	if err := constrainE2HTTPPlannerOptions(ctx, &opts); err != nil || opts.Settlement == nil || opts.Settlement.MaxTurns <= 0 {
+		t.Fatalf("err=%v settlement=%+v", err, opts.Settlement)
+	}
+	session := agentcore.NewSession(opts)
+	defer session.Close()
+	for range session.Prompt(context.Background(), "synthetic planning") {
+	}
+	if want := 2 + opts.Settlement.MaxTurns; provider.calls != want || opts.Settlement.MaxTurns != resolveWrapupTurns(ctx, "planner") {
+		t.Fatalf("model calls=%d want=%d wrap-up turns=%d", provider.calls, want, opts.Settlement.MaxTurns)
 	}
 }

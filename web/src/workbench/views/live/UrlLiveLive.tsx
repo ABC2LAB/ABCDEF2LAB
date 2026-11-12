@@ -49,7 +49,7 @@ const SHORT: Readonly<Record<DiagnosticOutcome, string>> = {
 };
 
 /** 판정 딱지 모양 (확정 = 기본, 검토 필요 = 의심 모양, 정상 = 초록, 그 밖 = 판단 불가 모양). */
-function Outcome({ o, short = false }: { o: DiagnosticOutcome; short?: boolean }) {
+export function Outcome({ o, short = false }: { o: DiagnosticOutcome; short?: boolean }) {
   return (
     <span
       className={cx(
@@ -388,7 +388,7 @@ const RUN_OUTCOME: Readonly<Record<RequestApprovalRunState["outcome"], string>> 
 /** 판정 집계 칸. */
 const OUTCOME_CELLS = ["confirmed", "review", "not_executed", "unknown"] as const;
 /** 우선 조치 · 목록 순서: 확정 → 검토 필요 → 미실행 → 결과 불명 → 정상 대조. */
-const ORDER: readonly DiagnosticOutcome[] = ["confirmed", "review", "not_executed", "unknown", "negative"];
+export const ORDER: readonly DiagnosticOutcome[] = ["confirmed", "review", "not_executed", "unknown", "negative"];
 
 /** 증거 글을 읽기 좋게: JSON 이면 들여쓰고, 안에 든 JSON 문자열(tool_output 등)도 펼친다. 비밀 값은 가린다. */
 export function prettyEvidence(raw: string): string {
@@ -556,8 +556,8 @@ export function Download({ taskId }: { taskId: string }) {
   );
 }
 
-/** 발견 상세 (오른쪽). */
-function FindingDetail({
+/** 발견 상세 (오른쪽). 대시보드도 같이 쓴다. */
+export function FindingDetail({
   e,
   host,
   taskId,

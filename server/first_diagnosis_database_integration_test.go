@@ -219,6 +219,39 @@ func TestFirstDiagnosisRuntimeDatabaseOwnedPostgres(t *testing.T) {
 			plannerOnly.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
 			firstDiagnosisSupervisorEngineRun(t, manager, installer, plannerOnly, "planner-only")
 		})
+		t.Run("actual-engine-installed-plan-turn-limit", func(t *testing.T) {
+			turnTask, err := manager.CreateTask("Owned plan turn fixture", "Stop each plan at the installed turn limit", nil, 60, 60)
+			if err != nil || turnTask == nil {
+				t.Fatal("독립 Plan 턴 task 생성 실패")
+			}
+			if _, err := runtimePool.ExecContext(ctx, "UPDATE tasks SET paused=true WHERE id=$1", turnTask.ID); err != nil {
+				t.Fatal("Plan 턴 task 준비 상태 저장 실패")
+			}
+			turnTask.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
+			firstDiagnosisSupervisorEngineRun(t, manager, installer, turnTask, "plan-turns")
+		})
+		t.Run("actual-engine-planner-proves-goal", func(t *testing.T) {
+			goalTask, err := manager.CreateTask("Owned goal fixture", "Close when the planner proves the only goal", nil, 60, 60)
+			if err != nil || goalTask == nil {
+				t.Fatal("독립 목표 task 생성 실패")
+			}
+			if _, err := runtimePool.ExecContext(ctx, "UPDATE tasks SET paused=true WHERE id=$1", goalTask.ID); err != nil {
+				t.Fatal("목표 task 준비 상태 저장 실패")
+			}
+			goalTask.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
+			firstDiagnosisSupervisorEngineRun(t, manager, installer, goalTask, "goal-met")
+		})
+		t.Run("actual-engine-planner-task-scope-keeps-e2-policy", func(t *testing.T) {
+			scopeTask, err := manager.CreateTask("Owned task scope fixture", "Widen coverage without widening the E2 approval", nil, 60, 60)
+			if err != nil || scopeTask == nil {
+				t.Fatal("독립 범위 task 생성 실패")
+			}
+			if _, err := runtimePool.ExecContext(ctx, "UPDATE tasks SET paused=true WHERE id=$1", scopeTask.ID); err != nil {
+				t.Fatal("범위 task 준비 상태 저장 실패")
+			}
+			scopeTask.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
+			firstDiagnosisSupervisorEngineRun(t, manager, installer, scopeTask, "task-scope")
+		})
 		t.Run("actual-engine-call-limit-is-budget-limited", func(t *testing.T) {
 			limited, err := manager.CreateTask("Owned planner round limit fixture", "Close at the planner round limit without failing", nil, 60, 60)
 			if err != nil || limited == nil {

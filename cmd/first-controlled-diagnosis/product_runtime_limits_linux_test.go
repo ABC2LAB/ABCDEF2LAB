@@ -7,6 +7,7 @@ import (
 
 	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/server"
+	"time"
 )
 
 func ptr[T any](v T) *T { return &v }
@@ -83,7 +84,7 @@ func TestProductPolicyBoundsRejectsOutOfRange(t *testing.T) {
 // 설치 입력의 runtime_limits는 닫힌 형식이다. 모르는 칸·null은 거부한다.
 func TestProductInstallInputRuntimeLimitsStrict(t *testing.T) {
 	base := `{"format":"abc2lab.product-install/v2","runtime_limits":%s}`
-	for _, block := range []string{`{"product":{"worker_turns":12}}`, `{}`, `{"workflow":{"run_seconds":300}}`} {
+	for _, block := range []string{`{"product":{"worker_turns":12}}`, `{}`, `{"workflow":{"run_seconds":300}}`, `{"product":{"model_concurrency":2}}`, `{"workflow":{"planner_turns_per_plan":40,"planner_seconds_per_plan":300}}`, `{"product":{"status_read_retries":3}}`} {
 		var c productInstallInput
 		if decodeLaunchJSON([]byte(fmt.Sprintf(base, block)), &c) != nil {
 			t.Fatalf("valid block rejected: %s", block)
@@ -120,6 +121,124 @@ func TestProductRunSecondsFor(t *testing.T) {
 		got, ok := productRunSecondsFor(tc.limits, tc.workflow)
 		if ok != tc.ok || ok && got != tc.want {
 			t.Fatalf("%s: seconds=%d ok=%v", tc.name, got, ok)
+		}
+	}
+}
+
+// model_concurrency: 없으면 1, 로컬 모델이 설치에 있으면 1만, OpenRouter만이면 승인 max_concurrent 이하만 받는다(C32).
+func TestProductModelConcurrencyFor(t *testing.T) {
+	set := func(n int) *productRuntimeLimits {
+		return &productRuntimeLimits{Product: &productRuntimeLimitSet{ModelConcurrency: ptr(n)}}
+	}
+	for _, tc := range []struct {
+		name          string
+		limits        *productRuntimeLimits
+		workflow      bool
+		local         bool
+		openRouterMax int64
+		want          int
+		ok            bool
+	}{
+		{"default-local", nil, false, true, 0, 1, true},
+		{"default-openrouter", nil, false, false, 4, 1, true},
+		{"openrouter-within", set(3), false, false, 4, 3, true},
+		{"openrouter-over", set(5), false, false, 4, 0, false},
+		{"local-wide", set(2), false, true, 0, 0, false},
+		{"mixed-install-wide", set(2), false, true, 4, 0, false},
+		{"zero", set(0), false, false, 4, 0, false},
+		{"workflow-ignores-product", set(3), true, true, 0, 1, true},
+	} {
+		got, ok := productModelConcurrencyFor(tc.limits, tc.workflow, tc.local, tc.openRouterMax)
+		if ok != tc.ok || ok && got != tc.want {
+			t.Fatalf("%s: %d %v", tc.name, got, ok)
+		}
+	}
+}
+
+// planner_turns_per_plan·planner_seconds_per_plan(C26·C32 5단계): 없으면 0(agent 기본값), 고른 모드의 칸만 쓰고,
+// 1 이상 코드 상한(1000턴·3600초) 이하만 받는다.
+func TestProductPlannerLimitsFor(t *testing.T) {
+	set := func(turns *int, seconds *int64) *productRuntimeLimits {
+		return &productRuntimeLimits{Product: &productRuntimeLimitSet{PlannerTurnsPerPlan: turns, PlannerSecondsPerPlan: seconds}}
+	}
+	for _, tc := range []struct {
+		name     string
+		limits   *productRuntimeLimits
+		workflow bool
+		turns    int
+		seconds  int64
+		ok       bool
+	}{
+		{"default", nil, false, 0, 0, true},
+		{"set", set(ptr(40), ptr(int64(300))), false, 40, 300, true},
+		{"turns-only", set(ptr(40), nil), false, 40, 0, true},
+		{"workflow-ignores-product", set(ptr(40), ptr(int64(300))), true, 0, 0, true},
+		{"at-limit", set(ptr(1000), ptr(int64(3600))), false, 1000, 3600, true},
+		{"turns-over", set(ptr(1001), nil), false, 0, 0, false},
+		{"seconds-over", set(nil, ptr(int64(3601))), false, 0, 0, false},
+		{"turns-zero", set(ptr(0), nil), false, 0, 0, false},
+		{"seconds-zero", set(nil, ptr(int64(0))), false, 0, 0, false},
+	} {
+		got, ok := productPlannerLimitsFor(tc.limits, tc.workflow)
+		if ok != tc.ok || ok && (got.PlannerTurnsPerPlan != tc.turns || got.PlannerSecondsPerPlan != tc.seconds) {
+			t.Fatalf("%s: %+v %v", tc.name, got, ok)
+		}
+	}
+}
+
+// 설치가 launch 설정에 넣는 칸: 고른 모드의 동시 모델 호출 수와 Plan당 상한이 그대로 들어가고, 범위 밖이면 launch를
+// 바꾸지 않고 거부한다.
+func TestApplyProductLaunchLimits(t *testing.T) {
+	c := productInstallInput{RuntimeLimits: &productRuntimeLimits{Product: &productRuntimeLimitSet{PlannerTurnsPerPlan: ptr(40), PlannerSecondsPerPlan: ptr(int64(300))}}}
+	var launch launchConfig
+	if !applyProductLaunchLimits(&launch, c, "local_only") || launch.ModelConcurrency != 1 || launch.PlannerTurnsPerPlan != 40 || launch.PlannerSecondsPerPlan != 300 {
+		t.Fatalf("launch 칸이 설치 입력과 다름: %+v", launch)
+	}
+	limits, ok := launch.plannerLimits()
+	if !ok || limits.MaxTurns != 40 || limits.MaxDuration != 300*time.Second {
+		t.Fatal("launch의 Plan당 상한을 읽지 못함")
+	}
+	var defaults launchConfig
+	if !applyProductLaunchLimits(&defaults, productInstallInput{}, "local_only") || defaults.ModelConcurrency != 1 || defaults.PlannerTurnsPerPlan != 0 || defaults.PlannerSecondsPerPlan != 0 {
+		t.Fatalf("runtime_limits가 없는 launch가 기본값이 아님: %+v", defaults)
+	}
+	retried := launchConfig{ShutdownTimeoutSeconds: productShutdownTimeoutSeconds}
+	if !applyProductLaunchLimits(&retried, productInstallInput{RuntimeLimits: &productRuntimeLimits{Product: &productRuntimeLimitSet{StatusReadRetries: ptr(3)}}}, "local_only") || retried.StatusReadRetries != 3 {
+		t.Fatalf("상태 조회 재시도가 launch에 안 들어감: %+v", retried)
+	}
+	for _, bad := range []*productRuntimeLimitSet{{PlannerTurnsPerPlan: ptr(1001)}, {ModelConcurrency: ptr(2)}, {StatusReadRetries: ptr(-1)}} {
+		var untouched launchConfig
+		if applyProductLaunchLimits(&untouched, productInstallInput{RuntimeLimits: &productRuntimeLimits{Product: bad}}, "local_only") || untouched != (launchConfig{}) {
+			t.Fatalf("범위 밖 runtime_limits를 launch에 넣음: %+v", untouched)
+		}
+	}
+}
+
+// status_read_retries(C10·C32 3단계): 없으면 0(지금처럼 첫 실패에서 멈춤), 고른 모드의 칸만 쓰고, 다시 묻는 시간이 제품
+// 정리 시간 상한 안인 값만 받는다.
+func TestProductStatusReadRetriesFor(t *testing.T) {
+	upper := urlMaxStatusReadRetries(productShutdownTimeoutSeconds)
+	set := func(n int) *productRuntimeLimits {
+		return &productRuntimeLimits{Product: &productRuntimeLimitSet{StatusReadRetries: ptr(n)}}
+	}
+	for _, tc := range []struct {
+		name     string
+		limits   *productRuntimeLimits
+		workflow bool
+		want     int
+		ok       bool
+	}{
+		{"default", nil, false, 0, true},
+		{"set", set(3), false, 3, true},
+		{"zero", set(0), false, 0, true},
+		{"workflow-ignores-product", set(3), true, 0, true},
+		{"at-limit", set(upper), false, upper, true},
+		{"over-limit", set(upper + 1), false, 0, false},
+		{"negative", set(-1), false, 0, false},
+	} {
+		got, ok := productStatusReadRetriesFor(tc.limits, tc.workflow)
+		if ok != tc.ok || ok && got != tc.want {
+			t.Fatalf("%s: %d %v", tc.name, got, ok)
 		}
 	}
 }
