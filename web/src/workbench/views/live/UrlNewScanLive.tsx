@@ -526,23 +526,11 @@ export function UrlNewScanLive() {
                 </div>
                 <NotYet why="서버 진단 입력에 점검 목표 칸이 없습니다" />
               </div>
+              {/* 쓰기 메서드 요청 (시안 v64): 실행 허용은 E② · 설치 정책이 정하고(절대규칙 3) 상태 변경은 별도 승인
+                  시험환경이라(절대규칙 6) 화면에서 고르는 값으로 두지 않는다. 시안의 '전체 허용' 선택지는 뺐다 (리뷰 #479) */}
               <div className={s.field}>
-                <span className={s.lbl} id="nWriteL">
-                  쓰기 메서드 요청 (결제 · 수정 · 삭제)
-                </span>
-                <div className={s.opts} role="radiogroup" aria-labelledby="nWriteL">
-                  <label className={s.opt}>
-                    <input type="radio" name="nWrite" disabled />
-                    <b>승인 후 전송 · 기본</b>
-                    <small>사람이 승인한 요청만 보냅니다</small>
-                  </label>
-                  <label className={s.opt}>
-                    <input type="radio" name="nWrite" disabled />
-                    <b>전체 허용</b>
-                    <small>승인 없이 보냅니다 · 시험환경 전용</small>
-                  </label>
-                </div>
-                <NotYet why="쓰기 요청 처리는 진단 모드와 설치 정책이 정하고, 따로 고르는 서버 입력이 없습니다" />
+                <span className={s.lbl}>쓰기 메서드 요청 (결제 · 수정 · 삭제)</span>
+                <p className={s.help}>쓰기 요청 범위는 설치 정책과 진단 모드가 정합니다.</p>
               </div>
               <div className={s.two}>
                 <div className={s.field}>

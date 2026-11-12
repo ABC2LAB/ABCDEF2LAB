@@ -321,6 +321,10 @@ describe("서버 방식 확인 (catalog)", () => {
     // 점검 목표는 2쪽(숨김)에 있다
     for (const box of screen.getAllByRole("checkbox", { hidden: true })) expect(box).toBeDisabled();
     expect(screen.getAllByText(/^아직 구현 안 됨/).length).toBeGreaterThan(0);
+    // 승인 없이 쓰기 요청을 보내는 선택지는 없다 — 실행 허용은 설치 정책 · 진단 모드가 정함 (절대규칙 3 · 6, 리뷰 #479)
+    expect(screen.queryByText(/승인 없이/)).toBeNull();
+    expect(screen.queryByText("전체 허용")).toBeNull();
+    expect(screen.getByText("쓰기 요청 범위는 설치 정책과 진단 모드가 정합니다.")).toBeInTheDocument();
     // 요약 패널도 시안 줄(로그인 · 점검 범위 · 점검 목표)을 두고 '아직 구현 안 됨'
     const sum = screen.getByRole("complementary", { name: "점검 요약" });
     for (const t of ["로그인", "점검 범위", "점검 목표"])
