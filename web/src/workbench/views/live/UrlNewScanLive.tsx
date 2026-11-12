@@ -468,7 +468,7 @@ export function UrlNewScanLive() {
                   t="열면 지워지는 주소는 빼 두세요"
                   sub="조회 요청도 데이터를 바꿀 수 있고, 서버는 검증하지 않음"
                   tip={
-                    <HelpTip id="luGetTip" label="설명 보기">
+                    <HelpTip label="설명 보기">
                       <b>어떤 사이트는 주소를 열기만 해도 데이터가 지워집니다.</b>
                       <br />
                       예: <span className={s.mono}>/logout</span> (로그아웃) ·{" "}

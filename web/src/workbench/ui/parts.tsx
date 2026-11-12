@@ -3,7 +3,7 @@
 // 여러 화면이 함께 쓰는 작은 부품. 원본 js 의 문자열 헬퍼(ep · pth · sev · vd · head · isec · kv · closeBtn ·
 // buildPhases · copyText · cbCard · hlHttp)를 JSX 로 옮긴 것. 문구·속성은 원본과 같다.
 
-import { Fragment, type ReactNode, useEffect, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 import { cx } from "../lib/cx";
 import { useUrl } from "../live/urlDiagnosis";
@@ -339,30 +339,36 @@ export function CodeCard({ title, src, text, id }: { title: ReactNode; src: Reac
 /**
  * 작은 (?) 버튼 → 메모처럼 뜨는 설명 (시안 v51 · v52). 다시 누르기 · 바깥 클릭 · Esc 로 닫힌다.
  * 설명은 늘 DOM 에 있고(hidden) 버튼이 aria-controls · aria-expanded 로 가리킨다.
+ * id 는 useId 로 만들어 같은 화면에 여러 개 있어도 겹치지 않는다.
+ * Esc 는 계정 메뉴처럼 캡처 단계에서 받아 멈춘다: 메모만 닫고 상세 서랍(Workbench 전역 Esc)은 그대로 둔다.
  */
-export function HelpTip({ id, label, children }: { id: string; label: string; children: ReactNode }) {
+export function HelpTip({ label, children }: { label: string; children: ReactNode }) {
   const [open, setOpen] = useState(false);
+  const id = useId();
+  const rootRef = useRef<HTMLSpanElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      const t = e.target as Element | null;
-      if (!t?.closest?.(`[data-help-tip="${id}"]`)) setOpen(false);
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      e.stopPropagation();
       setOpen(false);
-      document.querySelector<HTMLButtonElement>(`[data-help-tip="${id}"] button`)?.focus();
+      btnRef.current?.focus();
     };
     document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey, true);
     return () => {
       document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("keydown", onKey, true);
     };
-  }, [open, id]);
+  }, [open]);
   return (
-    <span className={s["help-tip"]} data-help-tip={id}>
+    <span className={s["help-tip"]} ref={rootRef}>
       <button
+        ref={btnRef}
         className={s["help-tip-btn"]}
         type="button"
         aria-label={label}

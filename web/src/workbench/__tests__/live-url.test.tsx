@@ -852,9 +852,22 @@ it("선택적 승인 범위는 읽기 사전 승인과 쓰기 건별 확인을 �
   expect(note).toHaveTextContent("/delete처럼 경로만 넣으면 query 와 상관없이 빠집니다");
   // 경고 줄 아래 짧은 고지는 기본으로 보인다 (비차단 리뷰 반영)
   expect(screen.getByText("조회 요청도 데이터를 바꿀 수 있고, 서버는 검증하지 않음")).toBeVisible();
-  // Esc · 바깥 클릭으로 닫힌다
-  fireEvent.keyDown(document, { key: "Escape" });
+  // Esc 로 메모만 닫힌다: 바깥(상세 서랍을 닫는 전역 Esc)으로 퍼지지 않고, 포커스는 (?) 버튼으로
+  const outer = vi.fn();
+  document.addEventListener("keydown", outer);
+  tip.focus();
+  fireEvent.keyDown(tip, { key: "Escape" });
+  document.removeEventListener("keydown", outer);
   expect(note).not.toBeVisible();
+  expect(outer).not.toHaveBeenCalled();
+  expect(tip).toHaveFocus();
+  // 메모가 닫혀 있을 때의 Esc 는 그대로 전역으로 간다
+  const after = vi.fn();
+  document.addEventListener("keydown", after);
+  fireEvent.keyDown(tip, { key: "Escape" });
+  document.removeEventListener("keydown", after);
+  expect(after).toHaveBeenCalledTimes(1);
+  // 바깥 클릭으로도 닫힌다
   fireEvent.click(tip);
   fireEvent.mouseDown(document.body);
   expect(note).not.toBeVisible();
