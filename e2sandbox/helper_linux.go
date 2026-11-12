@@ -149,6 +149,12 @@ func HelperMain() int {
 	// They must not cross exec into arbitrary Bash.
 	unix.CloseOnExec(helperConfigFD)
 	unix.CloseOnExec(helperStatusFD)
+	// 작업 공간: 넣는 memfd는 명령 전에 /work에 풀고 닫는다. 빼는 pipe는 명령이 물려받지 못하게 한다.
+	stage = "workspace_in"
+	if restoreWorkspace(cfg.Limits.ScratchBytes) != nil {
+		return fail()
+	}
+	unix.CloseOnExec(helperWorkspaceOutFD)
 	if enc.Encode(helperStatus{State: "ready"}) != nil {
 		return 2
 	}
@@ -186,10 +192,63 @@ func HelperMain() int {
 	go func() { relay.wait(); close(drained) }()
 	select {
 	case <-drained:
-		return 0
 	case <-time.After(time.Duration(cfg.DrainNanos)):
 		return 3
 	}
+	if cfg.SaveWorkspace {
+		_ = enc.Encode(helperStatus{State: saveWorkspace(cfg.Limits.ScratchBytes)})
+	}
+	return 0
+}
+
+// restoreWorkspace는 호스트가 넣은 작업 공간 tar를 빈 /work에 푼다. 읽은 뒤 넣는 fd를 닫는다.
+func restoreWorkspace(contentLimit uint64) error {
+	in := os.NewFile(helperWorkspaceInFD, "workspace-in")
+	if in == nil {
+		return ErrUnavailable
+	}
+	limit := workspaceArchiveLimit(contentLimit)
+	data, err := io.ReadAll(io.LimitReader(in, limit+1))
+	in.Close()
+	if err != nil || int64(len(data)) > limit {
+		return ErrWorkspaceTooLarge
+	}
+	return unpackWorkspace(data, "/work", contentLimit)
+}
+
+// saveWorkspace는 namespace 안의 다른 프로세스를 모두 끝내고 회수한 뒤 /work를 묶어 빼는 pipe에 쓴다. 명령의
+// 프로세스 그룹만이 아니라 분리된 세션·이중 fork로 남은 것까지 PID namespace init(이 helper)이 끝낸다.
+// 돌려주는 값은 호스트에 알리는 상태다.
+func saveWorkspace(contentLimit uint64) string {
+	out := os.NewFile(helperWorkspaceOutFD, "workspace-out")
+	if out == nil {
+		return "workspace_failed"
+	}
+	defer out.Close()
+	// PID namespace의 init이 -1로 보내면 init을 뺀 namespace 안 모든 프로세스가 받는다.
+	if err := unix.Kill(-1, unix.SIGKILL); err != nil && err != unix.ESRCH {
+		return "workspace_failed"
+	}
+	for {
+		_, err := unix.Wait4(-1, nil, 0, nil)
+		if err == unix.ECHILD {
+			break
+		}
+		if err != nil && err != unix.EINTR {
+			return "workspace_failed"
+		}
+	}
+	data, err := packWorkspace("/work", contentLimit)
+	if errors.Is(err, ErrWorkspaceTooLarge) {
+		return "workspace_too_large"
+	}
+	if err != nil {
+		return "workspace_failed"
+	}
+	if _, err := out.Write(data); err != nil {
+		return "workspace_failed"
+	}
+	return "workspace_saved"
 }
 
 func emptyCapabilities() bool {

@@ -24,13 +24,17 @@ const (
 	helperProxyFD     = 5
 	helperCAFD        = 6
 	helperStatusFD    = 7
-	startupLimit      = 10 * time.Second
-	maxCommandBytes   = 1 << 20
-	maxOutputBytes    = 4 << 20
-	maxCABytes        = 1 << 20
-	maxDrainTimeout   = 2 * time.Minute
-	maxStatusBytes    = 4096
-	helperMaxProcs    = "GOMAXPROCS=2"
+	// 작업 공간을 넣는 봉인 memfd와 빼는 전용 pipe다. helper는 명령을 시작하기 전에 넣는 쪽을 닫고 빼는 쪽에
+	// close-on-exec를 건다. 빼는 쪽에는 namespace 안 프로세스가 모두 끝난 뒤에만 쓴다.
+	helperWorkspaceInFD  = 8
+	helperWorkspaceOutFD = 9
+	startupLimit         = 10 * time.Second
+	maxCommandBytes      = 1 << 20
+	maxOutputBytes       = 4 << 20
+	maxCABytes           = 1 << 20
+	maxDrainTimeout      = 2 * time.Minute
+	maxStatusBytes       = 4096
+	helperMaxProcs       = "GOMAXPROCS=2"
 )
 
 type helperConfig struct {
@@ -39,6 +43,7 @@ type helperConfig struct {
 	Root                                   string
 	Command                                string
 	DrainNanos                             int64
+	SaveWorkspace                          bool
 }
 type helperControl struct{ Action string }
 type helperStatus struct {
@@ -72,6 +77,11 @@ type Process struct {
 	output              boundedOutput
 	cancel              context.CancelFunc
 	stopContext         func() bool
+	saveWorkspace       bool
+	workspaceDone       chan struct{}
+	workspace           []byte
+	workspaceOverflow   bool
+	workspaceStatus     string
 }
 
 type boundedOutput struct {
@@ -193,6 +203,9 @@ func Launch(ctx context.Context, cfg Config) (*Process, error) {
 	if err != nil {
 		return nil, err
 	}
+	if int64(len(cfg.WorkspaceIn)) > workspaceArchiveLimit(limits.ScratchBytes) {
+		return nil, ErrConfig
+	}
 	workspace, proxy, ca, err := validateConfig(cfg)
 	if err != nil {
 		return nil, err
@@ -221,13 +234,27 @@ func Launch(ctx context.Context, cfg Config) (*Process, error) {
 		return nil, ErrUnavailable
 	}
 	defer statusWrite.Close()
+	workspaceIn, err := sealedWorkspaceInput(cfg.WorkspaceIn)
+	if err != nil {
+		configWrite.Close()
+		statusRead.Close()
+		return nil, ErrUnavailable
+	}
+	defer workspaceIn.Close()
+	workspaceRead, workspaceWrite, err := os.Pipe()
+	if err != nil {
+		configWrite.Close()
+		statusRead.Close()
+		return nil, ErrUnavailable
+	}
+	defer workspaceWrite.Close()
 	runCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	p := &Process{callbackDone: make(chan struct{}), statusDone: make(chan struct{}), pidfd: -1, root: root, control: configWrite, ready: make(chan struct{}), bashDone: make(chan struct{}), done: make(chan struct{}),
 		uid: uint32(os.Getuid()), gid: uint32(os.Getgid()), cancel: cancel, result: Result{ExitCode: -1},
-		output: boundedOutput{limit: cfg.OutputLimit}}
+		output: boundedOutput{limit: cfg.OutputLimit}, saveWorkspace: cfg.SaveWorkspace, workspaceDone: make(chan struct{})}
 	cmd := exec.Command(cfg.Helper)
 	cmd.Env = []string{helperMaxProcs, "GOTELEMETRY=off"}
-	cmd.ExtraFiles = []*os.File{configRead, workspace, proxy, ca, statusWrite}
+	cmd.ExtraFiles = []*os.File{configRead, workspace, proxy, ca, statusWrite, workspaceIn, workspaceWrite}
 	cmd.Stdout, cmd.Stderr = &p.output, &p.output
 	cmd.WaitDelay = cfg.DrainTimeout
 	cmd.SysProcAttr = &syscall.SysProcAttr{
@@ -241,11 +268,15 @@ func Launch(ctx context.Context, cfg Config) (*Process, error) {
 		cancel()
 		configWrite.Close()
 		statusRead.Close()
+		workspaceRead.Close()
 		return nil, fmt.Errorf("%w: process_start", ErrUnavailable)
 	}
 	cleanupRoot = false
 	_ = configRead.Close()
 	_ = statusWrite.Close()
+	_ = workspaceIn.Close()
+	_ = workspaceWrite.Close()
+	go p.readWorkspace(workspaceRead, workspaceArchiveLimit(limits.ScratchBytes))
 	p.pidfd, err = unix.PidfdOpen(cmd.Process.Pid, 0)
 	if err == nil {
 		err = p.pinNamespaces()
@@ -257,7 +288,7 @@ func Launch(ctx context.Context, cfg Config) (*Process, error) {
 		statusRead.Close()
 		return nil, fmt.Errorf("%w: namespace_pin", err)
 	}
-	if json.NewEncoder(configWrite).Encode(helperConfig{Limits: limits, Root: root, Command: cfg.Command, DrainNanos: int64(cfg.DrainTimeout), Workspace: cfg.Workspace, ProxySocket: cfg.ProxySocket, CACert: cfg.CACert, Helper: cfg.Helper}) != nil {
+	if json.NewEncoder(configWrite).Encode(helperConfig{Limits: limits, Root: root, Command: cfg.Command, DrainNanos: int64(cfg.DrainTimeout), Workspace: cfg.Workspace, ProxySocket: cfg.ProxySocket, CACert: cfg.CACert, Helper: cfg.Helper, SaveWorkspace: cfg.SaveWorkspace}) != nil {
 		_ = unix.PidfdSendSignal(p.pidfd, unix.SIGKILL, nil, 0)
 		_ = cmd.Wait()
 		p.release()
@@ -279,6 +310,7 @@ func Launch(ctx context.Context, cfg Config) (*Process, error) {
 	go func() {
 		waitErr := cmd.Wait()
 		<-p.statusDone
+		<-p.workspaceDone
 		p.mu.Lock()
 		p.result.Drained = p.exited()
 		if waitErr != nil && p.result.Reason == "" {
@@ -287,6 +319,7 @@ func Launch(ctx context.Context, cfg Config) (*Process, error) {
 		if p.result.Reason == "" {
 			p.result.Reason = "completed"
 		}
+		p.settleWorkspace()
 		p.output.mu.Lock()
 		p.result.Output = append([]byte(nil), p.output.bytes...)
 		p.result.OutputTruncated = p.output.truncated
@@ -375,10 +408,67 @@ func (p *Process) readStatus(f *os.File) {
 			p.result.Reason = "isolation_setup_failed:" + s.Stage
 		case "exec_failed":
 			p.result.Reason = "bash_start_failed"
+		case "workspace_saved", "workspace_too_large", "workspace_failed":
+			p.workspaceStatus = s.State
 		}
 		p.mu.Unlock()
 	}
 }
+
+// sealedWorkspaceInput은 넣을 작업 공간을 봉인한 memfd다. helper는 읽기만 할 수 있다.
+func sealedWorkspaceInput(data []byte) (*os.File, error) {
+	fd, err := unix.MemfdCreate("e2-workspace-in", unix.MFD_ALLOW_SEALING|unix.MFD_CLOEXEC)
+	if err != nil {
+		return nil, err
+	}
+	f := os.NewFile(uintptr(fd), "workspace-in")
+	if _, err = f.Write(data); err == nil {
+		_, err = f.Seek(0, io.SeekStart)
+	}
+	if err == nil {
+		_, err = unix.FcntlInt(f.Fd(), unix.F_ADD_SEALS, unix.F_SEAL_SEAL|unix.F_SEAL_SHRINK|unix.F_SEAL_GROW|unix.F_SEAL_WRITE)
+	}
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	return f, nil
+}
+
+// readWorkspace는 빼는 pipe를 끝까지 읽는다. 상한을 넘으면 내용을 버리고 넘었다는 사실만 남긴다(helper가 막히지
+// 않게 끝까지 읽어 버린다).
+func (p *Process) readWorkspace(f *os.File, limit int64) {
+	defer close(p.workspaceDone)
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	overflow := int64(len(data)) > limit
+	if overflow {
+		data = nil
+		_, _ = io.Copy(io.Discard, f)
+	}
+	p.mu.Lock()
+	p.workspace, p.workspaceOverflow = data, overflow || err != nil
+	p.mu.Unlock()
+}
+
+// settleWorkspace는 정상 마감(helper가 저장을 알렸고 namespace가 끝남)일 때만 작업 공간을 결과에 싣는다.
+// p.mu를 잡은 채 부른다.
+func (p *Process) settleWorkspace() {
+	if !p.saveWorkspace {
+		return
+	}
+	switch {
+	case p.workspaceStatus == "workspace_too_large" || p.workspaceOverflow:
+		p.result.WorkspaceState = "too_large"
+	case p.workspaceStatus == "workspace_saved" && p.result.Drained && p.result.Reason == "completed":
+		p.result.Workspace = append([]byte(nil), p.workspace...)
+		p.result.WorkspaceState = "saved"
+	default:
+		p.result.WorkspaceState = "not_saved"
+	}
+	p.workspace = nil
+}
+
 func (p *Process) exited() bool {
 	if p.pidfd < 0 {
 		return false
@@ -457,6 +547,7 @@ func (p *Process) Wait(ctx context.Context) (Result, error) {
 		p.mu.Lock()
 		r := p.result
 		r.Output = append([]byte(nil), r.Output...)
+		r.Workspace = append([]byte(nil), r.Workspace...)
 		p.mu.Unlock()
 		if !r.Drained {
 			return r, ErrUnavailable
