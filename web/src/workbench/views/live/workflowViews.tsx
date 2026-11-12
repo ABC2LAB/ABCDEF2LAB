@@ -4,7 +4,7 @@
 // 서버가 저장한 발견 · 관찰만 보인다. 묶음은 경로 규칙으로 나눈 것이라 AI 추정이라고 부르지 않는다.
 // 백분율 · 남은 시간 · 로그인 필요 여부 · 경로 설명은 서버가 주지 않아 만들지 않는다.
 
-import { type ReactNode, useMemo, useState } from "react";
+import { Fragment, type ReactNode, useMemo, useState } from "react";
 
 import { cx } from "../../lib/cx";
 import { clockOf, planState } from "../../live/map";
@@ -263,6 +263,122 @@ function EndpointDetail({ endpoint, back }: { endpoint: WorkflowEndpoint | null;
   );
 }
 
+type FlowEvent = WorkflowSnapshot["events"][number];
+
+/**
+ * 기록 줄 ↔ 저장된 원문의 관계. `endpoints`는 요청별 기록이 아니라 메서드 · 경로별 현재 상태다(서버 Controller.After 는
+ * 송신 때 Request/Response 를 덮어쓰고, 미송신 때는 이전 값을 그대로 둔다). 이벤트에 call_ref 가 없어 건별로 묶을 수 없으므로
+ * - unknown: 응답 코드가 없는 줄 → 송신 여부를 단정하지 않고 원문도 붙이지 않는다. 보냈지만 응답을 못 받은 경우
+ *   (StatusCode 0)도 status 가 빠져 미송신과 구분되지 않는다(리뷰 #473)
+ * - stale: 같은 경로에 더 나중(또는 같은 시각) 송신이 있거나 저장된 응답 코드가 이 줄과 다름 → 이 줄의 원문이 아님
+ * - latest: 이 경로의 마지막 송신 줄이고 응답 코드도 같음 → "경로의 마지막 관찰"로 분리해 보인다(같은 요청이라고 단정하지 않음)
+ */
+export type LogRaw = "unknown" | "stale" | "latest";
+export function logRawOf(events: readonly FlowEvent[], i: number, endpoint: WorkflowEndpoint | undefined): LogRaw {
+  const ev = events[i];
+  if (!ev?.status) return "unknown";
+  const at = Date.parse(ev.at);
+  const later = events.some(
+    (o, j) => j !== i && o.status && o.method === ev.method && o.path === ev.path && !(Date.parse(o.at) < at),
+  );
+  if (later || !endpoint || endpoint.status !== ev.status) return "stale";
+  return "latest";
+}
+
+/**
+ * 탐색 기록 한 줄을 펼친 칸 (시안 v75 ~ v76). 이 기록의 결과와, 같은 경로의 서버 정보(찾은 곳 · 출처 · 종류)를 줄 바로 아래에
+ * 보인다. 저장된 요청/응답 원문은 이 줄과 묶였다고 볼 수 있을 때(logRawOf = latest)만 "경로의 마지막 관찰"로 따로 보이고,
+ * 응답 코드가 없는 줄 · 나중 요청이 있는 줄에는 붙이지 않는다(값을 지어내지 않음 · 서버가 가린 그대로).
+ * Esc · 접기로 닫고 초점은 그 줄로 돌아간다.
+ */
+function LogDetail({
+  id,
+  event,
+  endpoint,
+  raw,
+  onClose,
+}: {
+  id: string;
+  event: FlowEvent;
+  endpoint: WorkflowEndpoint | undefined;
+  raw: LogRaw;
+  onClose: () => void;
+}) {
+  let rawBody: ReactNode;
+  if (raw === "unknown")
+    rawBody = (
+      <p className={s.empty}>
+        응답 코드가 없는 기록이라 보냈는지 · 응답을 받았는지 확인할 수 없습니다. 서버에 남은 원문도 이 줄의 것인지 알 수
+        없어 보이지 않습니다.
+      </p>
+    );
+  else if (raw === "stale")
+    rawBody = (
+      <p className={s.empty}>
+        이 경로에 더 나중 기록이 있어, 서버에 남은 원문은 이 줄의 것이 아닙니다. 서버는 경로마다 마지막 관찰만
+        저장합니다.
+      </p>
+    );
+  else if (endpoint?.request || endpoint?.response)
+    rawBody = (
+      <>
+        <h4 className={s["lgx-h"]}>이 경로의 마지막 관찰</h4>
+        <p className={s.help}>
+          서버가 이 줄과 원문을 묶어 주지 않아(call_ref 없음), 같은 경로의 마지막 관찰을 보입니다.
+        </p>
+        <div className={s["lgx-ex"]}>
+          {endpoint.request ? (
+            <CodeCard title="요청" src="경로의 마지막 관찰" text={endpoint.request} id={`lg-req-${endpoint.id}`} />
+          ) : null}
+          {endpoint.response ? (
+            <CodeCard title="응답" src="경로의 마지막 관찰" text={endpoint.response} id={`lg-res-${endpoint.id}`} />
+          ) : null}
+        </div>
+      </>
+    );
+  else rawBody = <p className={s.empty}>저장된 요청 · 응답이 없습니다.</p>;
+  return (
+    <section
+      className={s.lgx}
+      id={id}
+      aria-label={`${event.method} ${event.path ?? ""} 상세`}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") onClose();
+      }}
+    >
+      <div className={s["lgx-top"]}>
+        <span className={cx(s.m, event.method ? s[event.method] : undefined)}>{event.method}</span>
+        <span className={s.p}>{event.path || "—"}</span>
+        <button className={cx(s.btn, s.sm)} type="button" onClick={onClose}>
+          접기
+        </button>
+      </div>
+      <Kv rows={[["이 기록 결과", event.status ? <Sc key="sc" status={event.status} /> : event.kind]]} />
+      {endpoint ? (
+        <>
+          <h4 className={s["lgx-h"]}>경로 정보</h4>
+          <Kv
+            rows={[
+              [
+                "찾은 곳",
+                <span key="from" className={s.mono}>
+                  {endpoint.from}
+                </span>,
+              ],
+              ["출처", endpoint.source],
+              ["종류", endpoint.kind],
+              ...(endpoint.observation_error ? [["관찰 실패", endpoint.observation_error] as [string, ReactNode]] : []),
+            ]}
+          />
+          {rawBody}
+        </>
+      ) : (
+        <p className={s.empty}>이 기록과 같은 찾은 경로 기록이 없어 결과만 보입니다.</p>
+      )}
+    </section>
+  );
+}
+
 /** 찾은 경로 묶음 카드 (자산 탐색 오른쪽). */
 function EndpointCards({
   endpoints,
@@ -326,6 +442,12 @@ export function WorkflowCrawlLive() {
     { goTo, openInsp } = useShell();
   const [selected, setSelected] = useState<string | null>(null);
   const [filter, setFilter] = useState("all");
+  // 탐색 기록에서 펼친 줄 (한 번에 하나, 같은 줄을 다시 누르면 접힘 · 시안 v75 ~ v76)
+  const [openLog, setOpenLog] = useState<string | null>(null);
+  const closeLog = (i: number) => {
+    setOpenLog(null);
+    document.getElementById(`lgRow${i}`)?.focus();
+  };
   const stop = useStopConfirm("점검 취소");
   const endpoints = flow?.endpoints ?? [];
   const shown = endpoints.filter((e) => filter === "all" || kindOf(e) === filter);
@@ -429,21 +551,47 @@ export function WorkflowCrawlLive() {
                     <span>결과</span>
                   </div>
                   {flow.events.length ? (
-                    flow.events.map((event) =>
-                      event.method ? (
-                        <div className={s.lr} key={`${event.at}:${event.kind}:${event.method}:${event.path}`}>
-                          <span className={s.t}>{hms(event.at)}</span>
-                          <span className={cx(s.m, s[event.method])}>{event.method}</span>
-                          <span className={s.p}>{event.path || "—"}</span>
-                          <span>{event.status ? <Sc status={event.status} /> : event.kind}</span>
-                        </div>
-                      ) : (
+                    flow.events.map((event, i) => {
+                      if (event.method) {
+                        const key = `${event.at}:${event.kind}:${event.method}:${event.path}`;
+                        const open = openLog === key;
+                        const ep = open
+                          ? endpoints.find((e) => e.method === event.method && e.path === event.path)
+                          : undefined;
+                        return (
+                          <Fragment key={key}>
+                            <button
+                              id={`lgRow${i}`}
+                              className={cx(s.lr, open && s.on)}
+                              type="button"
+                              aria-expanded={open}
+                              aria-controls={open ? `lgx${i}` : undefined}
+                              onClick={() => setOpenLog(open ? null : key)}
+                            >
+                              <span className={s.t}>{hms(event.at)}</span>
+                              <span className={cx(s.m, s[event.method])}>{event.method}</span>
+                              <span className={s.p}>{event.path || "—"}</span>
+                              <span>{event.status ? <Sc status={event.status} /> : event.kind}</span>
+                            </button>
+                            {open ? (
+                              <LogDetail
+                                id={`lgx${i}`}
+                                event={event}
+                                endpoint={ep}
+                                raw={logRawOf(flow.events, i, ep)}
+                                onClose={() => closeLog(i)}
+                              />
+                            ) : null}
+                          </Fragment>
+                        );
+                      }
+                      return (
                         <div className={cx(s.lr, s.sys)} key={`${event.at}:${event.kind}`}>
                           <span className={s.t}>{hms(event.at)}</span>
                           <span>{event.kind}</span>
                         </div>
-                      ),
-                    )
+                      );
+                    })
                   ) : (
                     <p className={s.empty}>아직 기록이 없습니다.</p>
                   )}
