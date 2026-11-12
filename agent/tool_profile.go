@@ -34,6 +34,8 @@ type toolProfile struct {
 // 허용하지 않음)는 아직 넣지 않는다.
 var diagnosisWorkerProfile = toolProfile{name: "diagnosis_worker", entries: []toolProfileEntry{
 	{name: "Bash", source: bound, required: true},
+	// 원본 WebFetch의 E② 판. 같은 Bash 실행기로 가져온다(결정안 §2).
+	{name: "WebFetch", source: bound},
 	{name: "list_findings", source: fromBase},
 	{name: "record_fact", source: fromBase},
 	{name: "list_assets", source: fromBase},

@@ -133,7 +133,8 @@ func TestE2HTTPPromptReachesActualWorkerSession(t *testing.T) {
 		metadata[0].SystemDigest != e2HTTPPromptDigest([]byte(system)) {
 		t.Fatal("applied prompt and recorded identity differ")
 	}
-	if len(provider.request.Tools) != 1 || provider.request.Tools[0].Name != "Bash" {
+	// 저장소가 없으면 E② 판 Bash·WebFetch만 보인다.
+	if len(provider.request.Tools) != 2 || provider.request.Tools[0].Name != "Bash" || provider.request.Tools[1].Name != "WebFetch" {
 		t.Fatal("extra tools reopened")
 	}
 }
@@ -213,7 +214,7 @@ func TestE2HTTPGuidanceNamesOnlyProfileTools(t *testing.T) {
 				t.Fatalf("%s names %q outside the diagnosis worker profile", label, found)
 			}
 		}
-		for _, absent := range []string{"insert_assets", "report_finding", "WebFetch", "/tmp"} {
+		for _, absent := range []string{"insert_assets", "report_finding", "WebSearch", "/tmp"} {
 			if strings.Contains(text, absent) {
 				t.Fatalf("%s mentions %s", label, absent)
 			}

@@ -54,7 +54,7 @@ func TestToolProfileRejectsInvalidBindings(t *testing.T) {
 	e2Bash := e2WorkerFixtureTool("Bash", nil)
 	var typedNil *e2HTTPGraphTool
 	for name, bindings := range map[string]map[string]actool.CoreTool{
-		"not in profile":   {"Bash": e2Bash, "WebFetch": e2WorkerFixtureTool("WebFetch", nil)},
+		"not in profile":   {"Bash": e2Bash, "WebSearch": e2WorkerFixtureTool("WebSearch", nil)},
 		"base entry bound": {"Bash": e2Bash, "record_fact": e2WorkerFixtureTool("record_fact", nil)},
 		"name mismatch":    {"Bash": e2WorkerFixtureTool("Read", nil)},
 		"typed nil":        {"Bash": e2Bash, "submit_diagnostic_candidate": typedNil},
@@ -72,7 +72,7 @@ func TestToolProfileCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, tools := range map[string][]actool.CoreTool{
-		"outside profile": {bash, e2WorkerFixtureTool("WebFetch", nil)},
+		"outside profile": {bash, e2WorkerFixtureTool("WebSearch", nil)},
 		"duplicate":       {bash, fact, e2WorkerFixtureTool("record_fact", nil)},
 		"mcp":             {bash, e2WorkerFixtureTool("mcp__browser__browser_navigate", nil)},
 		"nil":             {bash, nil},
