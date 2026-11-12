@@ -52,6 +52,8 @@ var (
 	ErrDrain  = errors.New("e2proxy: drain incomplete")
 	// ErrWithheld는 대상이 답했지만 E2가 응답 표현을 주지 않은 요청이다(사유 withheld).
 	ErrWithheld = errors.New("e2proxy: response withheld")
+	// ErrAuthSession은 인증 준비 응답을 받았지만 설정한 세션 위치에서 세션을 찾지 못했다는 뜻이다(로그인 실패 포함).
+	ErrAuthSession = errors.New("e2proxy: auth session not found")
 )
 
 // Recorder must acknowledge durable storage, serialize concurrent writes, and
@@ -88,7 +90,14 @@ type Rule struct {
 	// CredentialHeaders explicitly declares protected values, including custom
 	// credential names. It is accepted only by the opt-in proposal mode.
 	CredentialHeaders http.Header `json:"-"`
+	// Purpose가 비면 모델 요청(Do)의 규칙이다. PurposeAuthPrep이면 프로그램이 부르는 인증 준비(Call.AuthPrep) 전용이고
+	// 모델 요청의 규칙 찾기는 이 규칙을 건너뛴다(C14 구현 설계 1). 메서드는 POST 하나, 경로는 접두가 아니라 정확히 그 경로다.
+	Purpose string `json:"-"`
 }
+
+// PurposeAuthPrep은 인증 준비(로그인) 전용 규칙 표시다.
+const PurposeAuthPrep = "auth_prep"
+
 type Limits struct {
 	// MaxAttempts는 실행 전체에서 예산을 예약하고 송신 단계로 넘어간 시도 수의 상한이다.
 	// 보내지 않은 거부·미지원은 세지 않는다. 닿으면 그 뒤 송신만 거부한다(C01).
