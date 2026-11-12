@@ -94,6 +94,10 @@ func (c *e2RemoteClient) authorize(ctx context.Context, q E2HTTPRequest) error {
 
 // 실행 자원은 E²가 소유한다. 엔진이 들고 있는 건 부르는 길뿐이라 Release할 것이 없다.
 func (c *e2RemoteClient) acquire(ctx context.Context, q E2HTTPRequest) (E2HTTPRunOptions, error) {
+	// 원격 E②는 탐색 몫을 뺀 예산 등록을 아직 받지 않는다. 몫이 있으면 회차 합계를 넘지 않게 거부한다(P1-E).
+	if q.ExplorationRequests != 0 || q.ExplorationUnknown {
+		return E2HTTPRunOptions{}, ErrE2HTTPHost
+	}
 	if _, err := c.bounded(ctx, e2RemoteIdentity(e2RemoteAcquireOp, q)); err != nil {
 		return E2HTTPRunOptions{}, err
 	}

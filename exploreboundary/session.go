@@ -188,10 +188,24 @@ func (s *Session) Check(ctx context.Context) error {
 		s.closeLocked(exploration.BoundaryUnavailable)
 		return ErrUnavailable
 	}
-	if !s.active {
+	// 조회 동안 시간이 지났을 수 있다. 조회 뒤 시각으로 다시 본다.
+	if !s.active || !s.liveLocked(ctx) {
 		return ErrUnavailable
 	}
 	return nil
+}
+
+// liveLocked는 최종 허용 직전의 시간 상한·호출 취소 검사다. 이름 풀이·대상 조회 같은 대기 뒤에도 지금 시각으로 다시 본다.
+// 시간 상한이 지났으면 세션을 닫는다. 호출자는 s.mu를 보유한다.
+func (s *Session) liveLocked(ctx context.Context) bool {
+	if !s.active || ctx.Err() != nil {
+		return false
+	}
+	if !s.policy.Now().Before(s.deadline) {
+		s.closeLocked(exploration.CapExhausted)
+		return false
+	}
+	return true
 }
 
 // Ticket은 전달을 허용한 요청 하나의 마감 핸들이다. Done은 정확히 한 번만 효과가 있다.
@@ -265,12 +279,7 @@ func (s *Session) Admit(ctx context.Context, req Request) (Decision, *Ticket) {
 	if err := s.Check(ctx); err != nil {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		reason := ReasonSessionClosed
-		if s.reason == exploration.TargetEnded {
-			reason = ReasonTargetEnded
-		} else if s.reason == exploration.CapExhausted {
-			reason = ReasonCapExhausted
-		}
+		reason := s.closedReasonLocked()
 		dest := DestExternal
 		if approvedOrigin {
 			dest = DestApproved
@@ -283,7 +292,7 @@ func (s *Session) Admit(ctx context.Context, req Request) (Decision, *Ticket) {
 		return s.denyLocked(req, DestExternal, ReasonProtocolUnsupported, ""), nil
 	}
 	if approvedOrigin {
-		return s.admitApproved(req)
+		return s.admitApproved(ctx, req)
 	}
 	if host == s.target.Host {
 		// 같은 이름의 다른 포트는 승인 origin이 아니다. 외부 자원으로도 보내지 않는다.
@@ -294,12 +303,23 @@ func (s *Session) Admit(ctx context.Context, req Request) (Decision, *Ticket) {
 	return s.admitExternal(ctx, req, host)
 }
 
-func (s *Session) admitApproved(req Request) (Decision, *Ticket) {
+// closedReasonLocked는 닫힌 세션의 차단 사유다. 호출자는 s.mu를 보유한다.
+func (s *Session) closedReasonLocked() string {
+	switch s.reason {
+	case exploration.TargetEnded:
+		return ReasonTargetEnded
+	case exploration.CapExhausted:
+		return ReasonCapExhausted
+	}
+	return ReasonSessionClosed
+}
+
+func (s *Session) admitApproved(ctx context.Context, req Request) (Decision, *Ticket) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// Check 뒤 잠금 전에 Close가 끼어들 수 있다. 닫힌 세션은 새 송신을 열지 않는다.
-	if !s.active {
-		return s.denyLocked(req, DestApproved, ReasonSessionClosed, ""), nil
+	// Check 뒤 잠금 전에 Close가 끼어들 수 있다. 닫힌 세션·지난 시간 상한은 새 송신을 열지 않는다.
+	if !s.liveLocked(ctx) {
+		return s.denyLocked(req, DestApproved, s.closedReasonLocked(), ""), nil
 	}
 	dial := netip.AddrPortFrom(s.target.ConnectIP, s.target.Port)
 	if class := s.policy.classify(dial); class == DestControl {
@@ -365,6 +385,12 @@ func (s *Session) admitExternal(ctx context.Context, req Request, host string) (
 		}
 		addresses = resolved
 	}
+	// 이름 풀이를 기다리는 동안 대상이 철회·만료됐을 수 있다. 대기 뒤 권한을 다시 확인한다.
+	if err := s.Check(ctx); err != nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.denyLocked(req, DestExternal, s.closedReasonLocked(), host), nil
+	}
 	sort.Slice(addresses, func(i, j int) bool { return addresses[i].Less(addresses[j]) })
 	// 풀린 주소 중 하나라도 내부·메타데이터·제어면 막는다. 섞인 응답으로 내부 주소를 고르게 하는 우회를 막는다.
 	for _, ip := range addresses {
@@ -374,8 +400,8 @@ func (s *Session) admitExternal(ctx context.Context, req Request, host string) (
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.active {
-		return s.denyLocked(req, DestExternal, ReasonSessionClosed, host), nil
+	if !s.liveLocked(ctx) {
+		return s.denyLocked(req, DestExternal, s.closedReasonLocked(), host), nil
 	}
 	if s.externalSent >= s.binding.Limits.MaxExternalRequests || s.inflight >= s.binding.Limits.MaxConcurrency {
 		return s.denyLocked(req, DestExternal, ReasonCapExhausted, host), nil
