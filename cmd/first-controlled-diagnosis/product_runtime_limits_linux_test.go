@@ -84,7 +84,7 @@ func TestProductPolicyBoundsRejectsOutOfRange(t *testing.T) {
 // 설치 입력의 runtime_limits는 닫힌 형식이다. 모르는 칸·null은 거부한다.
 func TestProductInstallInputRuntimeLimitsStrict(t *testing.T) {
 	base := `{"format":"abc2lab.product-install/v2","runtime_limits":%s}`
-	for _, block := range []string{`{"product":{"worker_turns":12}}`, `{}`, `{"workflow":{"run_seconds":300}}`, `{"product":{"model_concurrency":2}}`, `{"workflow":{"planner_turns_per_plan":40,"planner_seconds_per_plan":300}}`} {
+	for _, block := range []string{`{"product":{"worker_turns":12}}`, `{}`, `{"workflow":{"run_seconds":300}}`, `{"product":{"model_concurrency":2}}`, `{"workflow":{"planner_turns_per_plan":40,"planner_seconds_per_plan":300}}`, `{"product":{"status_read_retries":3}}`} {
 		var c productInstallInput
 		if decodeLaunchJSON([]byte(fmt.Sprintf(base, block)), &c) != nil {
 			t.Fatalf("valid block rejected: %s", block)
@@ -202,10 +202,43 @@ func TestApplyProductLaunchLimits(t *testing.T) {
 	if !applyProductLaunchLimits(&defaults, productInstallInput{}, "local_only") || defaults.ModelConcurrency != 1 || defaults.PlannerTurnsPerPlan != 0 || defaults.PlannerSecondsPerPlan != 0 {
 		t.Fatalf("runtime_limits가 없는 launch가 기본값이 아님: %+v", defaults)
 	}
-	for _, bad := range []*productRuntimeLimitSet{{PlannerTurnsPerPlan: ptr(1001)}, {ModelConcurrency: ptr(2)}} {
+	retried := launchConfig{ShutdownTimeoutSeconds: productShutdownTimeoutSeconds}
+	if !applyProductLaunchLimits(&retried, productInstallInput{RuntimeLimits: &productRuntimeLimits{Product: &productRuntimeLimitSet{StatusReadRetries: ptr(3)}}}, "local_only") || retried.StatusReadRetries != 3 {
+		t.Fatalf("상태 조회 재시도가 launch에 안 들어감: %+v", retried)
+	}
+	for _, bad := range []*productRuntimeLimitSet{{PlannerTurnsPerPlan: ptr(1001)}, {ModelConcurrency: ptr(2)}, {StatusReadRetries: ptr(-1)}} {
 		var untouched launchConfig
 		if applyProductLaunchLimits(&untouched, productInstallInput{RuntimeLimits: &productRuntimeLimits{Product: bad}}, "local_only") || untouched != (launchConfig{}) {
 			t.Fatalf("범위 밖 runtime_limits를 launch에 넣음: %+v", untouched)
+		}
+	}
+}
+
+// status_read_retries(C10·C32 3단계): 없으면 0(지금처럼 첫 실패에서 멈춤), 고른 모드의 칸만 쓰고, 다시 묻는 시간이 제품
+// 정리 시간 상한 안인 값만 받는다.
+func TestProductStatusReadRetriesFor(t *testing.T) {
+	upper := urlMaxStatusReadRetries(productShutdownTimeoutSeconds)
+	set := func(n int) *productRuntimeLimits {
+		return &productRuntimeLimits{Product: &productRuntimeLimitSet{StatusReadRetries: ptr(n)}}
+	}
+	for _, tc := range []struct {
+		name     string
+		limits   *productRuntimeLimits
+		workflow bool
+		want     int
+		ok       bool
+	}{
+		{"default", nil, false, 0, true},
+		{"set", set(3), false, 3, true},
+		{"zero", set(0), false, 0, true},
+		{"workflow-ignores-product", set(3), true, 0, true},
+		{"at-limit", set(upper), false, upper, true},
+		{"over-limit", set(upper + 1), false, 0, false},
+		{"negative", set(-1), false, 0, false},
+	} {
+		got, ok := productStatusReadRetriesFor(tc.limits, tc.workflow)
+		if ok != tc.ok || ok && got != tc.want {
+			t.Fatalf("%s: %d %v", tc.name, got, ok)
 		}
 	}
 }
