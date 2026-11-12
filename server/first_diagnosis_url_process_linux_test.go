@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/diagnosis"
 	"github.com/Autumn-27/artex/diagnosisapi"
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/e2proxy"
@@ -59,6 +60,7 @@ type urlProcessFixture struct {
 	multi                                                                               *urlMultiIntentModel
 	external                                                                            bool
 	externalFailure                                                                     string
+	noIntents                                                                           bool // Planner가 add_intent를 부르지 않는다(intent 0개).
 }
 
 func urlTestWrite(t *testing.T, path string, value any) string {
@@ -395,6 +397,10 @@ func (f *urlProcessFixture) model(w http.ResponseWriter, r *http.Request) {
 	case names["set_goals"] && !names["add_intent"] && !names["Bash"]:
 		if f.goalCalls.Add(1) == 1 {
 			tool("set_goals", "url-goal", map[string]any{"goals": []any{map[string]any{"text": "소유 HTTPS 응답을 관찰하고 수동 검토 후보를 저장합니다.", "vulnclass": "access_control"}}})
+		}
+	case names["add_intent"] && !names["Bash"] && f.noIntents:
+		if f.plannerCalls.Add(1) == 1 {
+			close(f.plannerEntered)
 		}
 	case names["add_intent"] && !names["Bash"]:
 		if f.plannerCalls.Add(1) == 1 {
@@ -956,6 +962,52 @@ func (f *urlProcessFixture) startPreparation() *urlOwnedProcess {
 }
 
 // 실제 모델 응답 대기 중 중지를 시험한다. 실행 전 취소를 취약점 없음이나 모델 사용량 확인으로 바꾸지 않는다.
+// 계획을 거쳐도 intent가 하나도 없으면 실패가 아니라 completed + no_intents로 마감한다(C11 결정 2, C08 2-4).
+// 준비의 첫 계획이 0개여도 실행으로 넘어가고, 실행 단계 Planner가 다시 계획한 뒤 마감한다. Worker 호출·대상 송신은 없다.
+func TestFirstDiagnosisURLNoIntentsOwnedPostgres(t *testing.T) {
+	if os.Getenv("ARTEX_URL_DIAGNOSIS_TEST") != "1" {
+		t.Skip("NOT_RUN: 소유 로컬 URL 프로세스 수용 시험 opt-in 필요")
+	}
+	f := newURLProcessFixtureMode(t, nil, false)
+	f.noIntents = true
+	f.startPreparation()
+	f.startAPI()
+	client := f.api()
+	job := client.job("POST", diagnosisapi.URLBasePath+"/drafts", "owned-no-intents-create", map[string]any{"version": diagnosisapi.URLVersion, "input": diagnosisprep.Input{TargetURL: f.target + "/allowed", ProfileID: "owned-url", DisplayName: "URL intent 없음 수용"}})
+	job = client.job("POST", diagnosisapi.URLBasePath+"/drafts/"+job.ID+"/validate", "", map[string]any{"version": diagnosisapi.URLVersion, "expected_revision": job.Revision})
+	if job.State != diagnosisprep.Ready {
+		t.Fatalf("intent 없음 fixture 승인 실패 reason=%s", job.ReasonCode)
+	}
+	client.job("POST", diagnosisapi.URLBasePath+"/drafts/"+job.ID+"/start", "owned-no-intents-start", urlStartBody(job.Revision, false))
+	var final diagnosisprep.Job
+	for deadline := time.Now().Add(75 * time.Second); ; {
+		final = client.job("GET", diagnosisapi.URLBasePath+"/drafts/"+job.ID+"/status", "", nil)
+		if final.State == diagnosisprep.Completed || final.State == diagnosisprep.Cancelled || final.State == diagnosisprep.Failed || final.State == diagnosisprep.Unknown {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("intent 없는 URL 실행 마감 시간 초과")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if final.State != diagnosisprep.Completed || !final.Started || !final.DrainComplete || !final.ResultReady || final.AuthorityState != diagnosisprep.AuthorityConsumed ||
+		final.Outcome != diagnosis.OutcomeNoIntents || final.ClosingReason != "" || final.IntentOutcomes == nil || *final.IntentOutcomes != (diagnosis.IntentOutcomes{}) {
+		t.Fatalf("intent 없는 실행 마감 불일치 state=%s phase=%s reason=%s outcome=%s closing=%s planner=%d", final.State, final.Phase, final.ReasonCode, final.Outcome, final.ClosingReason, f.plannerCalls.Load())
+	}
+	var intents int
+	if f.installer.QueryRow("SELECT count(*) FROM exploration_nodes WHERE kind='intent'").Scan(&intents) != nil {
+		t.Fatal("intent 없음 집계 조회 실패")
+	}
+	// 준비 계획 한 번 + 실행 단계 계획 한 번 이상.
+	if intents != 0 || f.plannerCalls.Load() < 2 || f.workerCalls.Load() != 0 || f.allowed.Load() != 0 || f.denied.Load() != 0 {
+		t.Fatalf("intent 없는 실행 부작용 intents=%d planner=%d worker=%d allowed=%d denied=%d", intents, f.plannerCalls.Load(), f.workerCalls.Load(), f.allowed.Load(), f.denied.Load())
+	}
+	if final.ModelUsage == nil || !final.ModelUsage.UsageKnown || final.ModelUsage.Requests != f.modelCalls.Load() {
+		t.Fatal("intent 없는 실행 모델 사용량 불일치")
+	}
+	t.Logf("URL_NO_INTENTS state=completed outcome=no_intents intents=0 planner_calls=%d worker_calls=0 target_sends=0", f.plannerCalls.Load())
+}
+
 func TestFirstDiagnosisURLStopDuringPreparationOwnedPostgres(t *testing.T) {
 	runURLStopDuringPreparation(t, false)
 }

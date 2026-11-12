@@ -108,6 +108,16 @@ func firstDiagnosisBudgetLimited(task *Task, budget *FirstDiagnosisModelBudget) 
 	return task != nil && task.firstDiagnosisBudgetLimited.Load() || budget.LimitReached()
 }
 
+// firstDiagnosisPlanned는 마지막 작업 뒤 Planner가 계획했는지 본다. 작업이 하나도 없으면 Planner가 오류 없이 한 번
+// 이상 계획했는지 본다(그래도 intent가 없으면 no_intents로 마감한다).
+func firstDiagnosisPlanned(task *Task) bool {
+	work := task.firstDiagnosisWorkSeq.Load()
+	if work == 0 {
+		return task.firstDiagnosisPlanRounds.Load() > 0
+	}
+	return task.firstDiagnosisPlannedSeq.Load() >= work
+}
+
 // firstDiagnosisClosingOutcomes는 마감 판정의 앞부분이다. 실행 중 intent가 있으면 기다린다. 실행 상한에 닿지
 // 않았으면 시작하지 않은 intent가 없고 마지막 작업 뒤 Planner가 계획했을 때만 마감한다. 실행 상한에 닿았으면
 // Planner를 기다리지 않고, 시작하지 못한 intent를 incomplete로 센다(계약 §2·§3.2).
