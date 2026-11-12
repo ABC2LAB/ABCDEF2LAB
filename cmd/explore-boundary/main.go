@@ -66,12 +66,18 @@ func readJSON(path string, v any) error {
 }
 
 // listenAddr는 입구 주소다. 망별 인터페이스 주소에 묶어야 하므로 0.0.0.0·loopback·이름은 받지 않는다.
+// IPv4-mapped 표기(::ffff:a.b.c.d)는 IPv4로 풀어서 본다. 풀지 않으면 [::ffff:0.0.0.0]이 모든 인터페이스(::)로 묶이고
+// 같은 인터페이스 두 입구도 다른 주소로 보인다(#488 리뷰).
 func listenAddr(raw string) (netip.AddrPort, error) {
 	ap, err := netip.ParseAddrPort(raw)
-	if err != nil || ap.Addr().IsUnspecified() || ap.Addr().IsLoopback() || ap.Port() == 0 {
+	if err != nil {
 		return netip.AddrPort{}, errors.New("listen_invalid")
 	}
-	return ap, nil
+	addr := ap.Addr().Unmap()
+	if addr.IsUnspecified() || addr.IsLoopback() || addr.Zone() != "" || ap.Port() == 0 {
+		return netip.AddrPort{}, errors.New("listen_invalid")
+	}
+	return netip.AddrPortFrom(addr, ap.Port()), nil
 }
 
 func loadCA(certFile, keyFile string) (*x509.Certificate, crypto.Signer, error) {
@@ -134,7 +140,8 @@ type parts struct {
 }
 
 func build(c config) (*parts, error) {
-	if c.Format != configFormat || c.ControlSocket == "" || c.MaxTunnels <= 0 || c.TimeoutMS <= 0 || c.CloseWaitMS <= 0 || c.LeafValiditySec <= 0 || c.MaxDeniedRecords <= 0 || c.MaxRequestBytes <= 0 || c.MaxResponseBytes <= 0 {
+	// engine_uid가 빠지면 0(root)이 된다. 엔진은 root로 돌지 않으므로 0은 설정 누락으로 본다(#488 리뷰).
+	if c.Format != configFormat || c.ControlSocket == "" || c.EngineUID == 0 || c.MaxTunnels <= 0 || c.TimeoutMS <= 0 || c.CloseWaitMS <= 0 || c.LeafValiditySec <= 0 || c.MaxDeniedRecords <= 0 || c.MaxRequestBytes <= 0 || c.MaxResponseBytes <= 0 {
 		return nil, errors.New("config_invalid")
 	}
 	browserAddr, err := listenAddr(c.BrowserListen)
@@ -200,9 +207,17 @@ func (p *parts) serve(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// 접속하려면 소켓 파일 쓰기 권한이 필요하다. 엔진 uid가 경계와 다르면 엔진 uid 소유로 넘긴다. 넘길 수 없으면 권한을
+	// 넓히지 않고 시작을 멈춘다(SO_PEERCRED 검사 전에 EACCES로 막히는 설정을 조용히 두지 않음, #488 리뷰).
 	if err = os.Chmod(p.socket, 0o600); err != nil {
 		control.Close()
 		return err
+	}
+	if p.uid != uint32(os.Getuid()) {
+		if err = os.Chown(p.socket, int(p.uid), -1); err != nil {
+			control.Close()
+			return errors.New("control_socket_owner")
+		}
 	}
 	errs := make(chan error, 3)
 	allow := func(conn net.Conn) bool {
@@ -215,7 +230,8 @@ func (p *parts) serve(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		server := &http.Server{Handler: handler, ReadHeaderTimeout: p.timeout, ErrorLog: log.New(io.Discard, "", 0)}
+		// 쉬는 keep-alive 연결은 터널 수에 들어가지 않으므로 시간 상한으로 닫는다(#488 리뷰).
+		server := &http.Server{Handler: handler, ReadHeaderTimeout: p.timeout, IdleTimeout: p.timeout, ErrorLog: log.New(io.Discard, "", 0)}
 		go func() { <-ctx.Done(); _ = server.Close() }()
 		go func() {
 			if err := server.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
