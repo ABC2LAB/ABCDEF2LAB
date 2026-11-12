@@ -101,7 +101,7 @@ func model(target string) http.Handler {
 	var mu sync.Mutex
 	turns := map[string]*fixtureTurns{}
 	originPattern := regexp.MustCompile(`https://(?:juice-a|juice-b|juice)\.test:9443`)
-	exactGoal := regexp.MustCompile(`Inspect the approved read-only HTTPS target (https://(?:juice-a|juice-b|juice)\.test:9443)`)
+	exactGoal := regexp.MustCompile(`Inspect the approved (?:read-only )?HTTPS target (https://(?:juice-a|juice-b|juice)\.test:9443)`)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
