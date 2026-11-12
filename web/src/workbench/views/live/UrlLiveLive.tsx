@@ -68,15 +68,16 @@ function Usage() {
   const b = job?.scope?.budget;
   if (!u) return <p className={s.empty}>모델 사용량 기록이 아직 없습니다.</p>;
   const of = (n: number, cap?: number) => (cap === undefined ? fmtCount(n) : `${fmtCount(n)} / ${fmtCount(cap)}`);
-  // 실패한 호출은 예약한 양으로 셌으므로, 그런 호출이 있으면 토큰·비용은 실제 사용의 상한이다.
-  const bound = (u.unknown_usage_calls ?? 0) > 0 ? " (상한)" : "";
+  // 실패·중지로 사용량을 못 받은 호출은 예약한 양으로 셌으므로, 그런 호출이 있으면 토큰·비용은 실제 사용의
+  // 최대치다. 예산 상한(n / 상한)과 헷갈리지 않게 "최대치로 계산"이라고 쓴다. 실행이 중지됐는지는 상태가 따로 보인다.
+  const bound = (u.unknown_usage_calls ?? 0) > 0 ? " (최대치로 계산)" : "";
   const rows: [string, string][] = [
     ["모델 요청", of(u.requests, b?.model_requests)],
     ["입력 토큰", of(u.input_tokens, b?.input_tokens) + bound],
     ["출력 토큰", of(u.output_tokens, b?.output_tokens) + bound],
     ["비용", u.usage_known ? usdText(u.cost_usd_micros) + bound : "불명"],
   ];
-  if (bound) rows.push(["실패한 호출", `${fmtCount(u.unknown_usage_calls ?? 0)}건 (예약한 양으로 계산)`]);
+  if (bound) rows.push(["예약량으로 계산한 호출", `${fmtCount(u.unknown_usage_calls ?? 0)}건`]);
   return <Kv rows={rows} />;
 }
 
