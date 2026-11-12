@@ -173,6 +173,18 @@ func TestResponseScanLimitConditionIsChecked(t *testing.T) {
 	if err := ValidatePolicyTemplate(ok); err != nil {
 		t.Fatalf("scan limit meeting the condition rejected: %v", err)
 	}
+	// 보호 값이 없어도 검사 상한은 전달 상한 이상이어야 한다(그래야 넘는 응답을 알아챈다).
+	plain := base()
+	plain.HeaderMode = HeaderPreserve
+	plain.Rules[0].CredentialHeaders = nil
+	plain.Limits.MaxResponseScanBytes = 4096
+	if err := ValidatePolicyTemplate(plain); err != nil {
+		t.Fatalf("scan equal to the response limit rejected without secrets: %v", err)
+	}
+	plain.Limits.MaxResponseScanBytes = 4095
+	if ValidatePolicyTemplate(plain) == nil {
+		t.Error("scan below the response limit accepted without secrets")
+	}
 	for name, change := range map[string]func(*Limits){
 		"scan below condition":   func(l *Limits) { l.MaxResponseScanBytes = 4096 + int64(len(secret)) - 2 },
 		"negative response":      func(l *Limits) { l.MaxResponseBodyBytes = -1 },
@@ -185,6 +197,38 @@ func TestResponseScanLimitConditionIsChecked(t *testing.T) {
 		change(&cfg.Limits)
 		if ValidatePolicyTemplate(cfg) == nil {
 			t.Errorf("%s accepted", name)
+		}
+	}
+}
+
+// 보호 값이 없는 실행에서 검사 상한 = 전달 상한이면 넘는 응답을 정상으로 자른다(완전 응답으로 기록하지 않는다).
+// 적재 검사를 거치지 않은 한도가 와도 읽기는 전달 상한 아래로 내려가지 않는다.
+func TestScanLimitAtResponseLimitStillDetectsOversize(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "20000")
+		io.WriteString(w, strings.Repeat("s", 20000))
+	}))
+	defer target.Close()
+	for _, scan := range []int64{4096, 4095} {
+		cfg := coreConfig(t, target.URL, &coreRecorder{}, 3)
+		cfg.Limits.MaxResponseBodyBytes = 4096
+		cfg.Limits.MaxResponseScanBytes = scan
+		e := &Execution{cfg: cfg}
+		if limit, read := responseLimits(cfg.Limits, e.longestSecret()); limit != 4096 || read < limit {
+			t.Fatalf("scan %d: read limit %d below the response limit %d", scan, read, limit)
+		}
+		if scan < 4096 {
+			continue // 적재 검사가 막는 값이라 실행은 만들지 않는다(위 TestResponseScanLimitConditionIsChecked).
+		}
+		_, call := coreOpen(t, cfg)
+		resp, r, err := call.Do(context.Background(), coreRequest(t, "GET", target.URL+"/allowed"))
+		if err != nil || resp == nil || !r.ResponseTruncated || r.ResponseComplete {
+			t.Fatalf("scan %d: oversize response recorded as %+v (%v)", scan, r, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if len(body) != 4096 || resp.ContentLength != 4096 {
+			t.Fatalf("scan %d: delivered %d bytes with Content-Length %d", scan, len(body), resp.ContentLength)
 		}
 	}
 }

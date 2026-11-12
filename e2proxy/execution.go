@@ -1544,6 +1544,9 @@ func responseLimits(l Limits, longestSecret int64) (body, scan int64) {
 	if l.MaxResponseScanBytes > 0 {
 		scan = l.MaxResponseScanBytes
 	}
+	// 전달 상한보다 하나 더 읽어야 상한을 넘는 응답을 알아챈다. 검사 상한이 그보다 작으면 넘는 응답을 완전 응답으로
+	// 잘못 기록하므로 적재 검사(validResponseLimits)와 별개로 여기서도 전달 상한 아래로 내려가지 않게 한다.
+	scan = max(scan, body)
 	return body, scan
 }
 
@@ -1560,5 +1563,7 @@ func validResponseLimits(l Limits, secrets [][]byte) bool {
 		longest = max(longest, len(s))
 	}
 	body, _ := responseLimits(l, 0)
-	return l.MaxResponseScanBytes >= body+int64(longest)-1
+	// 상한을 넘는 응답을 알아채려면 전달 상한 이상을 읽어야 하고(보호 값이 없어도), 전달 구간 끝에 걸친 보호 값까지
+	// 보려면 그보다 가장 긴 보호 값 길이 − 1만큼 더 읽어야 한다.
+	return l.MaxResponseScanBytes >= body+max(int64(longest)-1, 0)
 }
