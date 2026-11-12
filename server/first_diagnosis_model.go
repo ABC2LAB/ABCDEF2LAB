@@ -198,7 +198,7 @@ func (p *firstDiagnosisModelProvider) Complete(ctx context.Context, req llm.Comp
 	}
 	call, done := budget.modelCallContext(ctx)
 	defer done()
-	message, reason, usage, err := p.inner.Complete(call, req)
+	message, reason, usage, err := p.inner.Complete(reserved.requestContext(call), req)
 	if budgetErr := budget.settle(reserved, usage, err); budgetErr != nil {
 		return llm.Message{}, "", usage, budgetErr
 	}

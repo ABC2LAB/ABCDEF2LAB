@@ -80,6 +80,8 @@ type runningCall struct {
 	releaseSlot     func()
 	// workspace는 이 호출의 작업 공간 보관 결과다(PersistWorkspace일 때). 한 번만 정한다.
 	workspace string
+	// outputFile은 모델에 준 글보다 긴 출력을 남긴 작업 공간 안 경로다.
+	outputFile string
 }
 
 func New(cfg Config) (*Runner, error) {
@@ -301,6 +303,8 @@ func (s *runningCall) initialize(ctx context.Context, command string) error {
 			return ErrUnavailable
 		}
 		sandboxConfig.WorkspaceIn, sandboxConfig.SaveWorkspace = saved, true
+		// 큰 출력을 작업 공간에 남기려면 샌드박스에서 모델용 상한보다 길게 받아야 한다. 모델에는 OutputLimit까지만 준다.
+		sandboxConfig.OutputLimit = maxOutputBytes
 	}
 	process, err := e2sandbox.Launch(s.call.Context(), sandboxConfig)
 	if err != nil {
@@ -340,7 +344,10 @@ func (s *runningCall) cleanup(ctx context.Context) (Result, error) {
 	}
 	s.call.Block()
 	trusted := TrustedResult{Version: e2proxy.Version, Call: s.call.Result(), ExitCode: -1}
+	var pendingWorkspace *e2sandbox.Result
 	var output []byte
+	// captureTruncated는 샌드박스가 캡처 상한에서 출력을 잘랐다는 뜻이다(인라인 출력만 잘린 것과 다르다).
+	captureTruncated := false
 	processClosed := s.process == nil
 	if s.process != nil {
 		_ = s.process.Stop(ctx)
@@ -351,9 +358,11 @@ func (s *runningCall) cleanup(ctx context.Context) (Result, error) {
 			trusted.ExitCode = processResult.ExitCode
 		}
 		trusted.OutputTruncated = processResult.OutputTruncated
+		captureTruncated = processResult.OutputTruncated
 		output = processResult.Output
 		if s.owner.cfg.PersistWorkspace && s.workspace == "" {
-			s.workspace = s.owner.storeWorkspace(s.intentID, processResult)
+			pending := processResult
+			pendingWorkspace = &pending
 		}
 		processClosed = trusted.ProcessDrained
 		if processResult.Reason == "timeout" {
@@ -400,11 +409,26 @@ func (s *runningCall) cleanup(ctx context.Context) (Result, error) {
 	trusted.Classification = s.classification(trusted)
 	text := s.owner.cfg.Execution.RedactOutput(output)
 	clear(output)
+	if pendingWorkspace != nil {
+		// 모델에 주는 글보다 긴 출력은 가린 전체를 작업 공간 파일로 남긴다(결정안 §2-3). 보관 상한을 넘으면 남기지 않는다.
+		// 샌드박스 캡처 상한에서 이미 잘린 출력은 전체가 아니므로 파일로 남기지 않는다(전체라고 안내하지 않게).
+		if !captureTruncated && len(text) > s.owner.cfg.OutputLimit && pendingWorkspace.WorkspaceState == "saved" {
+			name := workspaceOutputDir + "/" + s.call.Ref() + ".txt"
+			if archive, err := e2sandbox.AppendWorkspaceFile(pendingWorkspace.Workspace, name, text, e2sandbox.WorkspaceLimit(e2sandbox.Config{})); err == nil {
+				pendingWorkspace.Workspace = archive
+				s.outputFile = name
+			}
+		}
+		s.workspace = s.owner.storeWorkspace(s.intentID, *pendingWorkspace)
+		if s.workspace != "saved" {
+			s.outputFile = ""
+		}
+	}
 	if len(text) > s.owner.cfg.OutputLimit {
 		text = text[:s.owner.cfg.OutputLimit]
 		trusted.OutputTruncated = true
 	}
-	s.result = Result{ToolOutput: strings.ToValidUTF8(string(text), "�"), Trusted: trusted, Workspace: s.workspace}
+	s.result = Result{ToolOutput: strings.ToValidUTF8(string(text), "�"), Trusted: trusted, Workspace: s.workspace, OutputFile: s.outputFile}
 	clear(text)
 	if !s.resourcesClosed {
 		return s.result, ErrIncomplete
@@ -659,6 +683,9 @@ func (r *Runner) workspacePath(intentID int64) string {
 }
 
 const workspaceFilePrefix = "workspace-"
+
+// workspaceOutputDir는 큰 출력 파일을 두는 작업 공간 안 디렉터리다(/work/.outputs).
+const workspaceOutputDir = ".outputs"
 
 // loadWorkspace는 intent의 보관 파일을 읽는다. 없으면 빈 작업 공간이다. 링크·일반 파일이 아닌 것·상한 밖은 거부한다.
 func (r *Runner) loadWorkspace(intentID int64, contentLimit uint64) ([]byte, error) {
