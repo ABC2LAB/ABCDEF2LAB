@@ -1925,17 +1925,40 @@ func (s *Server) seed(t *Task, text string) {
 		return
 	}
 
-	taskID, _ := strconv.ParseInt(t.ID, 10, 64)
-	// 원본은 등록 실패를 무시한다(그대로 둔다). 첫 진단 준비는 같은 본문을 쓰고 실패를 로그로 남긴다.
-	u, _ := seedTargetAsset(s.m.Assets(), t.Store, taskID, scheme, host, port)
+	u := scheme + "://" + host
+	if !(scheme == "https" && port == 443) && !(scheme == "http" && port == 80) {
+		u += ":" + strconv.Itoa(port)
+	}
+	var rootID int64
+	if as := s.m.Assets(); as != nil {
+		taskID, _ := strconv.ParseInt(t.ID, 10, 64)
+		if net.ParseIP(host) != nil {
+			rootID, _ = as.UpsertIP(db.UpsertIPReq{IP: host, TaskID: taskID})
+		} else if scheme == "https" || scheme == "http" {
+			rootID, _ = as.UpsertHTTPService(db.UpsertHTTPServiceReq{URL: u, TaskID: taskID})
+		} else {
+			rootID, _ = as.UpsertRootDomain(db.UpsertRootDomainReq{Domain: host, TaskID: taskID})
+		}
+		if rootID > 0 {
+			_ = as.SetTaskAssetSource(taskID, rootID, "task", taskAssetSourceTaskSummary, nil)
+		}
+	}
+	// anchor the seeded assets to this task's begin root as lineage/provenance
+	// (the asset graph is global and shared; anchoring no longer gates reads).
+	if rootID > 0 {
+		if begin, _ := t.Store.OriginFactID(); begin > 0 {
+			_ = t.Store.Anchor(begin, rootID)
+		}
+	}
 	log.Printf("[seed] task %s: 目标站点 %s", t.ID, u)
 	// 不在这里 Notify:首轮是否触发统一由 engine.Run 的 HasActiveIntent 决定(种子意图任务
 	// 跳过首轮)。seed 早于 Run 执行,若在此 Notify 会 buffered 到通道、被 plannerLoop 启动时
 	// 消费掉而绕过 Run 的门控 → 种子任务仍误触发首轮。
 }
 
-// seedTargetAsset은 원본 seed의 등록 본문이다. 대상 하나를 자산으로 등록해 작업에 연결하고(source task) 작업 시작
-// 근거에 묶는다. 등록한 대상 URL과 첫 오류를 돌려준다.
+// seedTargetAsset은 원본 seed(위)의 등록 본문과 같은 일을 첫 진단 준비에서 한다(C24). 대상 하나를 자산으로 등록해
+// 작업에 연결하고(source task) 작업 시작 근거에 묶으며, 원본과 달리 오류를 돌려준다. 원본 seed는 평가 러너가 작업
+// 생성 계약으로 해시를 고정하므로(scripts/eval 작업 생성 계약 가드) 바꾸지 않고 따로 둔다.
 func seedTargetAsset(as *db.AssetStore, store *db.ExplorationStore, taskID int64, scheme, host string, port int) (string, error) {
 	u := scheme + "://" + host
 	if !(scheme == "https" && port == 443) && !(scheme == "http" && port == 80) {
