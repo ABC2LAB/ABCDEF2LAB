@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"strings"
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
@@ -12,8 +13,8 @@ import (
 	"github.com/Autumn-27/artex/server"
 )
 
-// 실제 강제 경계·private reader·격리 컨테이너가 준비된 호스트만 Go 조립에서 넣는다.
-// 설치 JSON·URL·모델·환경 변수는 이 capability를 만들지 않는다. 현재 production 기본값은 nil이다.
+// 시험·보호된 Go 조립이 넣는 탐색 capability다. 제품은 설치된 대상 정책 파일(SHA-256 고정)의 exploration 블록으로
+// 실제 경계·브라우저 샌드박스를 묶는다(product_exploration_host.go). URL·모델·환경 변수로는 켜지지 않는다.
 type urlRuntimeHostCapabilities struct {
 	Exploration       server.ExplorationPipelineFactory
 	ExplorationLimits *exploration.Limits
@@ -41,6 +42,10 @@ func (b *urlPreparationRuntime) productExplorationOptions(l *urlLoadedProfile, e
 	snapshot, _ := flow.Snapshot()
 	limits := exploration.Limits{TimeBudgetSeconds: seconds, MaxRequests: uint64(requests), MaxConcurrency: l.policy.Limits.MaxConcurrent, MaxResponseBytes: int64(snapshot.Limits.MaxResponseBytes)}
 	limits.MaxConcurrency = min(limits.MaxConcurrency, int(requests))
+	if host := b.product.exploration; host != nil && b.hostCapabilities.ExplorationLimits == nil && l.launch.ModelExecutionMode == "openrouter" {
+		// 외부 통신 승인 모드에서만 렌더링용 외부 자원 상한을 준다. 완전 로컬은 0이다(규칙 8).
+		limits.MaxExternalRequests = host.maxExternalRequests
+	}
 	if b.hostCapabilities.ExplorationLimits != nil {
 		approved := *b.hostCapabilities.ExplorationLimits
 		limits.TimeBudgetSeconds = min(limits.TimeBudgetSeconds, approved.TimeBudgetSeconds)
@@ -60,6 +65,13 @@ func (b *urlPreparationRuntime) productExplorationOptions(l *urlLoadedProfile, e
 		options.OpenHost = func(ctx context.Context, got exploration.Binding, w *agent.Worker) (server.ExplorationPipelineHost, error) {
 			return factory(ctx, got, w)
 		}
+	} else if host := b.product.exploration; host != nil && b.product.targets != nil {
+		// 설치 정책에 탐색 블록이 있으면 실제 경계·브라우저 샌드박스를 쓴다. 이 실행의 대상 기록·원본 digest·제외 경로로 묶는다.
+		excluded := []string{}
+		if e.Job.Input.ExcludedPaths != "" {
+			excluded = strings.Split(e.Job.Input.ExcludedPaths, "\n")
+		}
+		options.OpenHost = host.factory(*l.productTarget, b.product.targets.current, e.Job.SourceDigest, excluded, limits.MaxResponseBytes)
 	}
 
 	return options, true

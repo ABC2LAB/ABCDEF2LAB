@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -185,5 +186,40 @@ func TestControlTargetEndedFromServerStopsSession(t *testing.T) {
 	}
 	if d, _ := s.Admit(t.Context(), approved("GET", "/app")); d.Forward || m.Current() != nil {
 		t.Fatal("revoked session kept forwarding")
+	}
+}
+
+// 기록은 쪽으로 나눠 읽어도 빠짐·중복 없이 전부 돌아온다. 닫은 뒤에도 읽는다.
+func TestControlReaderRecordsReadsAllPages(t *testing.T) {
+	m, client, source := controlFixture(t, sameUID)
+	want := recordsPerPage*2 + 3
+	// 차단 행 상한을 넉넉히 둬 세 쪽에 걸치게 한다.
+	m.Policy.MaxDeniedRecords = want
+	binding := fixtureBinding(exploration.ReadOnly, exploration.FullLocal)
+	boundary := ControlBoundary{Client: client, SourceDigest: fixtureDigest, Target: source.Current}
+	lease, err := boundary.Open(t.Context(), binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := m.Current()
+	for i := 0; i < want; i++ {
+		s.Refuse(approved("GET", "/outside-"+strconv.Itoa(i)), ReasonOutOfScopePath)
+	}
+	if _, err := lease.Close(t.Context(), exploration.Completed); err != nil {
+		t.Fatal(err)
+	}
+	reader := ControlReader{Client: client, Binding: binding}
+	records, omitted, err := reader.Records(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	direct, directOmitted := s.Records()
+	if len(records) != len(direct) || omitted != directOmitted || len(records) < want || omitted != 0 {
+		t.Fatalf("records via socket=%d omitted=%d, session=%d omitted=%d, refused=%d", len(records), omitted, len(direct), directOmitted, want)
+	}
+	for i := range records {
+		if records[i].Seq != direct[i].Seq || records[i].Reason != direct[i].Reason {
+			t.Fatalf("record %d differs: %+v vs %+v", i, records[i], direct[i])
+		}
 	}
 }

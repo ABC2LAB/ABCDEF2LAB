@@ -4,7 +4,7 @@
 
 ## 권위와 조립
 
-`urlPreparationRuntime.hostCapabilities`는 보호된 Go 조립에서만 공급한다. 기본값은 비어 있다. URL·설치 JSON·모델 출력·환경 변수를 읽어 탐색 경계나 Docker 실행 권위를 자동 생성하지 않는다. 제품 URL 회차의 실제 `ProductTarget.ID/Revision`, job/task/run, 원본 SourceDigest를 `diagnosisflow.Binding`과 탐색 Binding에 결속한다. 읽기 모드를 우선 사용한다. 시간·요청·동시성·본문 상한은 기존 설치 정책보다 넓히지 않고, 외부 자원 예산은 별도로 host 정책에 명시된 값만 받는다. 완전 로컬 모드의 외부 예산은 0이다.
+`urlPreparationRuntime.hostCapabilities`는 시험·보호된 Go 조립에서만 공급한다. 제품에서는 설치 조직이 탐색 경계(`explore-boundary`)와 브라우저 샌드박스(`explore-browser`·`explore-mcp`)를 띄웠을 때 설치 입력 `target_policy.exploration`(제어 소켓·직접 입구·경계 CA·MCP 주소, 선택적 외부 자원 상한)을 넣는다. 설치기가 경계 CA 공개 인증서를 설치 디렉터리로 복사해 SHA-256을 고정하고, 실행기는 고정된 대상 정책 파일에서만 이 블록을 읽어 `productExplorationHost`를 만든다. 블록이 없으면 지금처럼 NOT_RUN이다. URL·모델 출력·환경 변수로는 켜지지 않는다. host는 실행마다 그 실행의 대상 등록 기록(등록 때 고른 주소·SPKI·경로 접두·메서드)·원본 SourceDigest·제외 경로로 경계 `Target`을 만들어 제어 소켓으로 넘기고(대상 승인이 철회·만료되면 `target_ended`), 정적 fetch는 직접 입구(`DirectFetch`), private 관찰은 제어 소켓(`ControlReader`), 브라우저는 compose의 MCP(연결마다 새 문맥)로 연결한다. 위험 단어는 진단 흐름과 같은 파괴 동작 단어다. 외부 자원 상한은 외부 통신 승인 모드(OpenRouter)에서만 쓰고 완전 로컬은 0이다. 제품 URL 회차의 실제 `ProductTarget.ID/Revision`, job/task/run, 원본 SourceDigest를 `diagnosisflow.Binding`과 탐색 Binding에 결속한다. 읽기 모드를 우선 사용한다. 시간·요청·동시성·본문 상한은 기존 설치 정책보다 넓히지 않고, 외부 자원 예산은 별도로 host 정책에 명시된 값만 받는다. 완전 로컬 모드의 외부 예산은 0이다.
 
 `RunExplorationPipeline`은 초기 일시정지가 있으면 `Workflow.Wait`에서 재개를 기다리고 취소 시 I/O 없이 종료한다. 재개 뒤 SourceDigest의 형식·회차 일치와 TargetURL의 보호된 Controller 결속 일치를 확인한 뒤 factory를 호출한다. origin·URL 문자열을 승인 참조로 바꾸지 않는다. boundary는 승인 origin/IP/경로/메서드/TLS를 보호 저장소에서 직접 읽고 요청마다 집행해야 한다.
 

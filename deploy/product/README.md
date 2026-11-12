@@ -68,6 +68,8 @@ OpenRouter는 운영자가 `openrouter_manifest`에 [기존 보호 승인 JSON �
 
 새 설치에서만 `target_policy.max_requests`와 선택적인 `target_policy.workflow`를 함께 지정한다. 아래 설정은 회차 HTTP 상한 64, 초기 탐색 최대 8페이지, 발견 최대 32개다.
 
+탐색 경계·브라우저 샌드박스를 띄운 설치는 `target_policy.exploration` 블록을 넣는다(없으면 탐색은 `NOT_RUN`이고 E② 정적 크롤만 쓴다). `control_socket`은 엔진 uid만 닿는 경계 제어 소켓 경로, `direct_proxy`는 경계 직접 입구(`http://<이름>:<포트>`), `boundary_ca_file`은 경계가 TLS를 가로챌 때 쓰는 CA의 **공개 인증서**(설치기가 설치 디렉터리로 복사해 SHA-256을 고정한다. 개인키는 경계 컨테이너의 보호 입력에만 둔다), `mcp_url`은 `explore-mcp`의 MCP 주소(`http://explore-mcp:<포트>/mcp`)다. `max_external_requests`(선택, 0~4096)는 외부 통신 승인 모드에서만 쓰는 렌더링용 외부 자원 GET 상한이다.
+
 ```json
 {
   "max_requests": 64,
