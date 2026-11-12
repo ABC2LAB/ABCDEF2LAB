@@ -17,23 +17,25 @@ const launchFormat = "abc2lab.first-diagnosis-launch/v1"
 const maxLaunchBytes = 64 << 10
 
 type launchConfig struct {
-	Format                 string            `json:"format"`
-	Mode                   string            `json:"mode"`
-	ListenAddr             string            `json:"listen_addr"`
-	DataDir                string            `json:"data_dir"`
-	KeyDir                 string            `json:"key_dir"`
-	SkillDir               string            `json:"skill_dir"`
-	LocalLLMManifestPath   string            `json:"local_llm_manifest_path"`
-	ModelExecutionMode     string            `json:"model_execution_mode,omitempty"`
-	OpenRouterManifestPath string            `json:"openrouter_manifest_path,omitempty"`
-	ModelProfileID         int64             `json:"model_profile_id"`
-	ModelFormat            string            `json:"model_format"`
-	ModelBaseURL           string            `json:"model_base_url"`
-	ModelRef               string            `json:"model_ref"`
-	RuntimeDSNFile         string            `json:"runtime_dsn_file"`
-	ShutdownTimeoutSeconds int               `json:"shutdown_timeout_seconds"`
-	Registered             *registeredLaunch `json:"registered_get,omitempty"`
-	HTTP                   *httpLaunch       `json:"general_http,omitempty"`
+	Format                 string `json:"format"`
+	Mode                   string `json:"mode"`
+	ListenAddr             string `json:"listen_addr"`
+	DataDir                string `json:"data_dir"`
+	KeyDir                 string `json:"key_dir"`
+	SkillDir               string `json:"skill_dir"`
+	LocalLLMManifestPath   string `json:"local_llm_manifest_path"`
+	ModelExecutionMode     string `json:"model_execution_mode,omitempty"`
+	OpenRouterManifestPath string `json:"openrouter_manifest_path,omitempty"`
+	ModelProfileID         int64  `json:"model_profile_id"`
+	ModelFormat            string `json:"model_format"`
+	ModelBaseURL           string `json:"model_base_url"`
+	ModelRef               string `json:"model_ref"`
+	RuntimeDSNFile         string `json:"runtime_dsn_file"`
+	ShutdownTimeoutSeconds int    `json:"shutdown_timeout_seconds"`
+	// ModelConcurrency는 동시 모델 호출 수다(C32). 없거나 0이면 1이다.
+	ModelConcurrency int               `json:"model_concurrency,omitempty"`
+	Registered       *registeredLaunch `json:"registered_get,omitempty"`
+	HTTP             *httpLaunch       `json:"general_http,omitempty"`
 }
 type registeredLaunch struct {
 	AuthorityDSNFile string `json:"authority_dsn_file"`
