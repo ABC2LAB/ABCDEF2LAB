@@ -62,6 +62,8 @@
 | C02 | 구현·단위시험 | 연결(TLS 포함)을 맺기 전 TCP·TLS·SPKI 실패는 `transport_failed`, 연결 뒤 실패만 `unknown`. 연결 시도 자체는 `forward_attempted`로 남김. 새 계수 `Counts.Transient`, runner 분류 `transient_failure` | 연결 뒤 결과 불명은 그대로 불명, TLS 검증·SPKI 고정 | — |
 | C03 | 구현·단위시험 | `ExecutionView.IntentCounts` 추가. Worker 분류·정지·intent 마감이 실행 전체 대신 자기 intent의 불명 수를 봄 | 감사·집행 장애는 실행 상태·`AuditComplete`로 전체 반영. 자기 intent의 불명은 그 intent를 멈춤 | `firstDiagnosisClosedToolOutcome`은 실행 전체 불명 수를 계속 봄(마감 판정, C08) |
 | C13 | 구현·단위시험 | 요청 관찰(After) 저장의 일시 실패는 판을 되돌리고 다음 저장에서 다시 씀. 연속 3회 실패·판 충돌이면 이후 허용 차단 | 선택·모드·단계 같은 허용 상태 저장 실패는 즉시 이후 허용 차단. E② 감사 실패는 실행 정지 | — |
+| C17 | 구현·단위시험 | E② 경로 범위를 풀린 경로로 비교하고 정상 percent 인코딩(공백·비ASCII 등)을 보냄. 대상에는 원래 표기 그대로 감 | 인코딩한 slash·backslash·점·`%`(두 번 풀기)·NUL, 점 조각, `//`는 계속 거부 | 워크플로(diagnosisflow) 모드는 발견 경로와 정확히 같아야 해서 인코딩 경로를 아직 받지 않음(C18과 같이) |
+| C23 | 구현·단위시험 | 위험 단어를 부분 문자열 대신 경로 조각·query의 단어 단위(camelCase 포함)로 맞춤. 거래 단어(checkout·payment·purchase·transfer)는 쓰기 메서드에서만 막음 | 파괴 동작 단어(delete·remove·reset·logout·destroy·truncate·shutdown)는 GET 포함 모든 메서드에서 차단, query 이름·값의 파괴 동작도 차단(위험 query 검증), 제외 경로 그대로 | 단어 목록은 아직 코드 고정값(대상 정책 설정은 이후) |
 
 ## 4. 유지 범위 안에서 따로 볼 것
 
