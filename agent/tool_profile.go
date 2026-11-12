@@ -33,8 +33,8 @@ type toolProfile struct {
 }
 
 // 진단 Worker 프로필. 복원 단계마다 이 목록을 바꾼다(루프 복원 결정안 §2·§7).
-// 그래프 도구 순서는 원본 WorkerTools 순서다. report_finding(확정 기록)과 insert_assets(제품 DB 역할이 assets 쓰기를
-// 허용하지 않음)는 아직 넣지 않는다.
+// 그래프 도구 순서는 원본 WorkerTools 순서다. report_finding(확정 기록)은 아직 넣지 않는다. insert_assets는 승인
+// 대상 origin 안의 자산만 받는 E② 판으로만 채운다(C24, 루프 복원 결정안 §9-5). 승인 origin을 모르는 실행에는 없다.
 var diagnosisWorkerProfile = toolProfile{name: "diagnosis_worker", entries: []toolProfileEntry{
 	{name: "Bash", source: bound, required: true},
 	// 원본 WebFetch의 E② 판. 같은 Bash 실행기로 가져온다(결정안 §2).
@@ -46,6 +46,7 @@ var diagnosisWorkerProfile = toolProfile{name: "diagnosis_worker", entries: []to
 	{name: "LS", source: bound},
 	{name: "list_findings", source: fromBase},
 	{name: "record_fact", source: fromBase},
+	{name: "insert_assets", source: bound},
 	{name: "list_assets", source: fromBase},
 	{name: "search_all_worker_traces", source: fromBase},
 	{name: "get_worker_trace", source: fromBase},

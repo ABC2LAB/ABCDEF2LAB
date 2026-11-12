@@ -194,6 +194,21 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		if r.URL.Path != "/allowed" {
 			t.Error("생산 Engine의 범위 밖 요청이 대상에 도달함")
 		}
+		if mode == "result-unknown" {
+			// 요청을 받은 뒤 응답 없이 연결을 끊는다. E②는 대상이 요청을 처리했는지 알 수 없다(결과 불명).
+			hijacker, ok := w.(http.Hijacker)
+			if !ok {
+				t.Error("소유 대상 연결 끊기 불가")
+				return
+			}
+			conn, _, err := hijacker.Hijack()
+			if err != nil {
+				t.Error("소유 대상 연결 끊기 실패", err)
+				return
+			}
+			_ = conn.Close()
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"owned_fixture":true}`))
 	}))
@@ -213,6 +228,16 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	policy.Helper = helper
 	policy.HelperSHA256 = hex.EncodeToString(digest[:])
 	policy.Rules = []E2HTTPFileRule{{Ref: "owned-native-rule", Origin: target.URL, ConnectIP: "127.0.0.1", PathPrefix: "/allowed", PathScopeRef: "owned-native-path", Methods: []string{"GET"}}}
+	ruleOrigin := target.URL
+	if mode == "insert-assets" {
+		// 하위 도메인 이름의 승인 origin(연결은 고정 IP). 원본 upsert가 그 루트 도메인을 작업에 붙이지 않는지 본다(C24).
+		targetURL, parseErr := url.Parse(target.URL)
+		if parseErr != nil {
+			t.Fatal("대상 주소 해석 실패")
+		}
+		ruleOrigin = "http://app.owned-assets.test:" + targetURL.Port()
+		policy.Rules[0].Origin = ruleOrigin
+	}
 	policy.Limits.CallTimeoutMS = 10000
 	policy.Limits.RequestTimeoutMS = 5000
 	policy.Proxy.RequestTimeoutMS = 5000
@@ -222,6 +247,11 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	if mode == "planner-limit" {
 		// 도구 호출 하나만 허용한다. 작업 뒤 Planner 준비가 실행 상한에 닿는다(실행 결과 상태 값 계약 budget_limited).
 		policy.Runtime.MaxToolCalls = 1
+	}
+	if mode == "request-budget" || mode == "request-budget-overflow" {
+		// 승인 요청 예산을 한 번으로 둔다. 작업이 그 한 번을 쓰면 남은 E② 예산이 0이 된다. 예산 소진은 실패가 아니라
+		// 실행 상한 마감이다(계약 §3.1 "승인된 요청·시간·비용 예산 소진", budget_limited).
+		policy.MaxRequests = 1
 	}
 	// 설치 입력의 Plan당 턴 상한(C26·C32)은 launch 설정에서 host 설정으로 들어온다.
 	const installedPlanTurns = 2
@@ -302,6 +332,10 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	if mode == "tool-failure" {
 		provider.command += " | grep -q never-present-owned-fixture"
 	}
+	if mode == "request-budget-overflow" {
+		// 남은 예산이 하나인데 한 명령에서 두 번 보낸다. 둘째 요청은 E②가 예산 소진으로 보내지 않는다.
+		provider.command += "; curl --silent --show-error --max-time 5 " + target.URL + "/allowed"
+	}
 	plannerProvider := &firstDiagnosisPlannerProbeProvider{firstDiagnosisE2Provider: firstDiagnosisE2Provider{command: "curl --silent --show-error --max-time 1 " + target.URL + "/denied"}, textOnly: mode != "planner-only"}
 	if mode == "plan-turns" {
 		plannerProvider.loopTool = "list_goals"
@@ -323,6 +357,20 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		plannerProvider.scopeValue = otherURL.Hostname()
 		plannerProvider.beforeScope = func() { workerCallsAtScope = provider.calls }
 		provider.command = "curl --silent --show-error --max-time 5 " + other.URL + "/allowed"
+	}
+	approvedAsset, otherAsset := ruleOrigin+"/api/items", ""
+	if mode == "insert-assets" {
+		// 진단 Worker의 insert_assets(C24): 승인 origin 안의 자산만 실제 runtime 역할로 기록하고, 같은 호스트의 다른 포트
+		// 자산은 기록하지 않는다.
+		other := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+		defer other.Close()
+		otherURL, parseErr := url.Parse(other.URL)
+		if parseErr != nil {
+			t.Fatal("범위 밖 fixture 주소 해석 실패")
+		}
+		otherAsset = "http://app.owned-assets.test:" + otherURL.Port() + "/api/items"
+		provider.assets = []map[string]any{{"type": "endpoint", "url": approvedAsset, "method": "GET"}, {"type": "endpoint", "url": otherAsset, "method": "GET"}}
+		provider.command = "curl --silent --show-error --max-time 5 " + ruleOrigin + "/allowed"
 	}
 	if mode == "goal-met" {
 		// Planner가 prove_goal로 하나뿐인 목표를 달성시키면 작업이 done이 되고 실행은 정상 마감된다(C26).
@@ -408,6 +456,32 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		}
 		return
 	}
+	if mode == "insert-assets" {
+		var approved, other, linked, rootLinked int
+		taskNumber := mustFirstDiagnosisTaskNumber(task.ID)
+		if installer.QueryRow("SELECT count(*) FROM assets WHERE type='root_domain' AND domain='owned-assets.test' AND $1=ANY(task_ids)", taskNumber).Scan(&rootLinked) != nil {
+			t.Fatal("루트 도메인 조회 실패")
+		}
+		if installer.QueryRow("SELECT count(*) FROM assets WHERE type='endpoint' AND url=$1 AND $2=ANY(task_ids)", approvedAsset, taskNumber).Scan(&approved) != nil ||
+			installer.QueryRow("SELECT count(*) FROM assets WHERE url=$1", otherAsset).Scan(&other) != nil ||
+			installer.QueryRow("SELECT count(*) FROM task_asset_links l JOIN assets a ON a.id=l.asset_id WHERE l.task_id=$1 AND a.url=$2 AND l.source='agent'", taskNumber, approvedAsset).Scan(&linked) != nil {
+			t.Fatal("자산 조회 실패")
+		}
+		var result struct {
+			Results []struct {
+				Index int `json:"index"`
+			} `json:"results"`
+			Errors []struct {
+				Index int    `json:"index"`
+				Error string `json:"error"`
+			} `json:"errors"`
+		}
+		decodeErr := json.Unmarshal([]byte(provider.assetsResult), &result)
+		if runErr != nil || decodeErr != nil || approved != 1 || other != 0 || linked != 1 || rootLinked != 0 || len(result.Results) != 1 || result.Results[0].Index != 0 || len(result.Errors) != 1 || result.Errors[0].Index != 1 || provider.unsupportedTool {
+			t.Fatalf("insert_assets 기록이 승인 대상과 다름 err=%v approved=%d other=%d linked=%d root=%d result=%q", runErr, approved, other, linked, rootLinked, provider.assetsResult)
+		}
+		return
+	}
 	if mode == "task-scope" {
 		var scopes int
 		if installer.QueryRow("SELECT count(*) FROM task_scope WHERE task_id=$1 AND source='agent' AND net=($2||'/32')::cidr", mustFirstDiagnosisTaskNumber(task.ID), plannerProvider.scopeValue).Scan(&scopes) != nil {
@@ -465,6 +539,96 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		if runErr != nil || plannerProvider.calls < installedPlanTurns || plannerProvider.maxMessages-plannerProvider.minMessages != 2*(installedPlanTurns-1) || plannerProvider.wrapUps == 0 ||
 			result == nil || result.Outcome != diagnosis.OutcomeNoIntents || hits.Load() != 0 || provider.calls != 0 {
 			t.Fatalf("설치한 Plan당 턴 상한·마무리 턴을 쓰지 않음 err=%v calls=%d messages=%d..%d wrapUps=%d result=%+v", runErr, plannerProvider.calls, plannerProvider.minMessages, plannerProvider.maxMessages, plannerProvider.wrapUps, result)
+		}
+		return
+	}
+	if mode == "result-unknown" {
+		// 결과 불명 송신은 그 intent만 멈춘다(C01). 감사가 닫히면 실행은 실패가 아니라 completed + partial이고,
+		// 결과 불명 intent는 다시 보내지 않는다(계약 §6.3).
+		result := supervisor.RunResult()
+		results := runtime.host.Runtime().Results(task.ID)
+		var intentState, blockedReason string
+		if err := installer.QueryRowContext(ctx, "SELECT state,COALESCE(blocked_reason,'') FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent'", task.ExpID).Scan(&intentState, &blockedReason); err != nil {
+			t.Fatal("결과 불명 intent 조회 실패", err)
+		}
+		if runErr != nil || result == nil || !result.Valid() || result.Outcome != diagnosis.OutcomePartial || result.ClosingReason != "" ||
+			result.IntentOutcomes != (diagnosis.IntentOutcomes{Unknown: 1}) || hits.Load() != 1 ||
+			len(results) != 1 || results[0].Classification != "result_unknown" || results[0].Call.Counts.Unknown != 1 || !results[0].Final || !results[0].Call.AuditComplete ||
+			intentState != "blocked" || blockedReason != "e2_http_result_unknown" {
+			t.Fatalf("결과 불명 intent를 부분 완료로 마감하지 않음 err=%v result=%+v hits=%d results=%d intent=%s/%s", runErr, result, hits.Load(), len(results), intentState, blockedReason)
+		}
+		// 결과 불명 송신 근거가 없는 결과 불명 intent는 마감하지 않는다. 근거가 있는 intent와 끝난 intent가 섞이면
+		// 둘 다 센다.
+		for _, tc := range []struct {
+			state, reason string
+			ready         bool
+			want          diagnosis.IntentOutcomes
+		}{
+			{"blocked", "e2_http_result_unknown", false, diagnosis.IntentOutcomes{}},
+			{"done", "", true, diagnosis.IntentOutcomes{Done: 1, Unknown: 1}},
+		} {
+			extra, addErr := task.Store.AddIntent(map[string]any{"summary": "Owned unknown evidence fixture " + tc.state + tc.reason}, 1, nil, "system")
+			if addErr != nil {
+				t.Fatal("결과 불명 근거 fixture intent 생성 실패")
+			}
+			if _, err := installer.ExecContext(ctx, "UPDATE exploration_nodes SET state=$1, blocked_reason=NULLIF($2,'') WHERE exploration_id=$3 AND id=$4", tc.state, tc.reason, task.ExpID, extra); err != nil {
+				t.Fatal("결과 불명 근거 fixture 상태 설정 실패", err)
+			}
+			ready, got, err := supervisor.generalCompletion(ctx, runtime.server, task)
+			if tc.ready {
+				if err != nil || !ready || got.IntentOutcomes != tc.want || got.Outcome != diagnosis.OutcomePartial || !got.Valid() {
+					t.Fatalf("%s/%s: 근거 있는 결과 불명과 끝난 intent를 같이 세지 않음 ready=%v result=%+v err=%v", tc.state, tc.reason, ready, got, err)
+				}
+			} else if err == nil || ready {
+				t.Fatalf("%s/%s: 결과 불명 송신 근거 없는 결과 불명 intent를 마감함", tc.state, tc.reason)
+			}
+			if _, err := installer.ExecContext(ctx, "DELETE FROM exploration_nodes WHERE exploration_id=$1 AND id=$2", task.ExpID, extra); err != nil {
+				t.Fatal("결과 불명 근거 fixture 정리 실패")
+			}
+		}
+		// 결과 불명 송신이 있는 호출의 intent를 다른 결과로 바꾸면 마감하지 않는다(그 intent는 다시 보내지 않아야 한다).
+		callIntent := results[0].Call.IntentID
+		for _, state := range []string{"done", "exhausted"} {
+			if _, err := installer.ExecContext(ctx, "UPDATE exploration_nodes SET state=$1, blocked_reason=NULL WHERE exploration_id=$2 AND id=$3", state, task.ExpID, callIntent); err != nil {
+				t.Fatal("결과 불명 intent 상태 바꾸기 실패", err)
+			}
+			if ready, _, err := supervisor.generalCompletion(ctx, runtime.server, task); err == nil || ready {
+				t.Fatalf("결과 불명 송신이 있는 intent를 %s로 마감함", state)
+			}
+		}
+		// 근거 없는 다른 intent를 결과 불명으로 두어 개수를 맞춰도, 결과 불명 송신이 있는 intent가 끝난 것으로 남으면
+		// 마감하지 않는다(개수가 아니라 intent마다 대조한다).
+		swapped, addErr := task.Store.AddIntent(map[string]any{"summary": "Owned swapped unknown fixture"}, 1, nil, "system")
+		if addErr != nil {
+			t.Fatal("맞바꾼 결과 불명 fixture 생성 실패")
+		}
+		if _, err := installer.ExecContext(ctx, "UPDATE exploration_nodes SET state='blocked', blocked_reason='e2_http_result_unknown' WHERE exploration_id=$1 AND id=$2", task.ExpID, swapped); err != nil {
+			t.Fatal("맞바꾼 결과 불명 fixture 상태 설정 실패", err)
+		}
+		if ready, _, err := supervisor.generalCompletion(ctx, runtime.server, task); err == nil || ready {
+			t.Fatal("결과 불명 송신이 있는 intent 대신 근거 없는 intent를 결과 불명으로 셈")
+		}
+		if _, err := installer.ExecContext(ctx, "DELETE FROM exploration_nodes WHERE exploration_id=$1 AND id=$2", task.ExpID, swapped); err != nil {
+			t.Fatal("맞바꾼 결과 불명 fixture 정리 실패")
+		}
+		if _, err := installer.ExecContext(ctx, "UPDATE exploration_nodes SET state='blocked', blocked_reason='e2_http_result_unknown' WHERE exploration_id=$1 AND id=$2", task.ExpID, callIntent); err != nil {
+			t.Fatal("결과 불명 intent 상태 되돌리기 실패", err)
+		}
+		if ready, got, err := supervisor.generalCompletion(ctx, runtime.server, task); err != nil || !ready || got.IntentOutcomes != (diagnosis.IntentOutcomes{Unknown: 1}) {
+			t.Fatalf("되돌린 결과 불명 intent를 다시 마감하지 않음 ready=%v result=%+v err=%v", ready, got, err)
+		}
+		return
+	}
+	if mode == "request-budget" || mode == "request-budget-overflow" {
+		result := supervisor.RunResult()
+		settled := result != nil && result.IntentOutcomes.Done == 1
+		if mode == "request-budget-overflow" {
+			// 둘째 요청은 예산 소진 거부(E② 근거가 있는 정책 제한)다.
+			results := runtime.host.Runtime().Results(task.ID)
+			settled = result != nil && result.IntentOutcomes.PolicyLimited == 1 && len(results) == 1 && results[0].Call.Counts.Denied == 1 && results[0].Call.Reason == e2proxy.BudgetExhausted
+		}
+		if runErr != nil || result == nil || result.ClosingReason != diagnosis.ClosingBudgetLimited || !settled || !result.Valid() || hits.Load() != 1 {
+			t.Fatalf("E② 요청 예산 소진을 실행 상한 마감으로 처리하지 않음 err=%v result=%+v hits=%d status=%s", runErr, result, hits.Load(), task.lifecycleSnapshot().Status)
 		}
 		return
 	}
@@ -545,7 +709,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 			t.Fatal("감사에 결속된 정상 제한을 마감 실패로 처리함")
 		}
 		// 실행 결과 상태 값(C08): 불완전·운영자 중지 intent가 있으면 실패가 아니라 부분 완료다. 결과 불명 intent는
-		// E② 요청 단위 처리(C01) 전까지 지금처럼 마감하지 않는다.
+		// E②가 결과 불명 송신을 기록한 intent일 때만 센다. 이 fixture에는 그 근거가 없으므로 마감하지 않는다.
 		for _, tc := range []struct {
 			state, reason string
 			ready         bool

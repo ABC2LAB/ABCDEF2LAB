@@ -14,6 +14,7 @@ import (
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
+	"github.com/Autumn-27/artex/transmit"
 )
 
 // 실제 DB/runner 인수시험과 별개로, 획득 전 admission과 종료 불명 상태를 확인한다.
@@ -292,5 +293,51 @@ func TestE2HTTPRuntimeRejectsOutOfRangePlannerLimits(t *testing.T) {
 			_ = bad.Close(context.Background())
 			t.Fatalf("범위 밖 Plan당 상한으로 Runtime을 만듦: %+v", limits)
 		}
+	}
+}
+
+// 요청 예산 시험용 lease 실행기다. lease 판정이 쓰는 조회(Snapshot·Policy·BudgetRemaining)만 구현한다.
+type budgetLease struct {
+	E2HTTPLeaseRunner
+	view      e2proxy.ExecutionView
+	budgetRef string
+	remaining uint64
+	err       error
+}
+
+func (l *budgetLease) Snapshot() e2proxy.ExecutionView  { return l.view }
+func (l *budgetLease) Policy() e2proxy.PolicyView       { return e2proxy.PolicyView{BudgetRef: l.budgetRef} }
+func (l *budgetLease) BudgetRemaining() (uint64, error) { return l.remaining, l.err }
+
+// 결속한 lease의 승인 요청 예산이 다 쓰였으면 결속 오류가 아니라 실행 상한(budget_limited)이다. 예산 조회 실패·결속
+// 불일치는 지금처럼 결속 오류다(C08).
+func TestE2HTTPRuntimeLeaseAdmissionSeparatesSpentBudget(t *testing.T) {
+	runtime, task := e2HTTPRuntimeFixture(t, nil)
+	if err := runtime.AdmitTask(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	expected := runtime.options.Expected
+	view := e2proxy.ExecutionView{Version: e2proxy.Version, State: "active", AuditComplete: true, PolicyRevision: expected.PolicyRevision,
+		Scope: transmit.Scope{TaskRef: task.ID, RunRef: expected.RunRef, ResetRef: expected.ResetRef, PolicyRef: expected.PolicyRef, CaseRef: expected.CaseRef}}
+	release := func(context.Context) error { return nil }
+	for name, tc := range map[string]struct {
+		lease   budgetLease
+		want    error
+		limited bool
+	}{
+		"usable":            {budgetLease{view: view, budgetRef: expected.BudgetRef, remaining: 1}, nil, false},
+		"spent":             {budgetLease{view: view, budgetRef: expected.BudgetRef}, ErrE2HTTPBudgetLimited, true},
+		"budget-read-fail":  {budgetLease{view: view, budgetRef: expected.BudgetRef, err: errors.New("budget fixture failure")}, ErrE2HTTPHost, false},
+		"other-budget":      {budgetLease{view: view, budgetRef: "other-budget"}, ErrE2HTTPHost, false},
+		"blocked-and-spent": {budgetLease{view: func() e2proxy.ExecutionView { v := view; v.State = "blocked"; return v }(), budgetRef: expected.BudgetRef}, ErrE2HTTPHost, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			task.firstDiagnosisBudgetLimited.Store(false)
+			lease := tc.lease
+			err := runtime.leaseAdmission(task, runtime.task, E2HTTPRunOptions{Runner: &lease, Release: release})
+			if !errors.Is(err, tc.want) || err == nil && tc.want != nil || task.firstDiagnosisBudgetLimited.Load() != tc.limited {
+				t.Fatalf("lease admission=%v want=%v limited=%v", err, tc.want, task.firstDiagnosisBudgetLimited.Load())
+			}
+		})
 	}
 }

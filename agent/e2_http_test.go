@@ -634,69 +634,58 @@ func e2WorkerBashTool(t *testing.T, execution *e2proxy.Execution, run e2HTTPRunF
 	return newE2HTTPBashTool(execution, run, timeout, state, control, json.RawMessage(`{"summary":"synthetic intent"}`), execution.Snapshot().IntentID)
 }
 
-func TestE2HTTPSharedControlRefusesDeniedCommandAcrossNewIntentIDs(t *testing.T) {
+// C19: 정책 거부는 결과가 확인된 것이라 같은 명령(정규화 동일)을 같은 intent·다른 intent에서 다시 시도할 수 있다.
+// E②가 다시 거부하고 그 반복은 반복 차단 수로 잰다. 공유 호출 상한은 그대로 쓴다.
+func TestE2HTTPSharedControlAllowsRetryAfterPolicyRefusal(t *testing.T) {
 	execution, _, _ := e2WorkerFixture(t)
-	control, err := NewE2HTTPControl("7", 10)
+	control, err := NewE2HTTPControl("7", 3)
 	if err != nil {
 		t.Fatal(err)
 	}
 	snapshot := execution.Snapshot()
-	first, _, err := control.reserve(snapshot, json.RawMessage(`{"summary":"same intent","priority":1}`), "curl denied")
-	if err != nil {
-		t.Fatal(err)
-	}
 	result := completedE2WorkerResult()
 	result.Trusted.Execution = snapshot
 	result.Trusted.Classification = "policy_not_executed"
-	control.finish(first, result, false)
-	for _, payload := range []json.RawMessage{
+	for i, payload := range []json.RawMessage{
+		json.RawMessage(`{"summary":"same intent","priority":1}`),
 		json.RawMessage(`{"priority":1,"summary":"same intent"}`),
 		json.RawMessage(`{"summary":"different intent"}`),
 	} {
-		_, view, err := control.reserve(snapshot, payload, "  curl denied ")
-		if !errors.Is(err, ErrE2HTTPBlocked) || view.Decision != "same_action_not_retried" || view.Calls != 1 {
-			t.Fatalf("view=%+v error=%v", view, err)
+		ticket, view, err := control.reserve(snapshot, payload, "  curl denied ")
+		if err != nil || view.Decision != "admitted" || view.Calls != i+1 {
+			t.Fatalf("refused action was not retryable: attempt=%d view=%+v error=%v", i+1, view, err)
 		}
+		control.finish(ticket, result, false)
+	}
+	if _, view, err := control.reserve(snapshot, json.RawMessage(`{"summary":"fourth"}`), "curl denied"); !errors.Is(err, ErrE2HTTPBlocked) || view.Decision != "task_call_limit" || view.Calls != 3 {
+		t.Fatalf("retries renewed the shared call limit: view=%+v error=%v", view, err)
 	}
 }
-func TestE2HTTPSharedControlAllowsOnlyFirstAlternativeAndOtherIntent(t *testing.T) {
+
+// C19: 같은 intent에서 정책 거부가 이어져도 다른 명령 수(대안)를 묶지 않는다. 다른 intent도 막지 않는다.
+func TestE2HTTPSharedControlDoesNotCapAlternativesAfterRefusals(t *testing.T) {
 	execution, _, _ := e2WorkerFixture(t)
-	control, err := NewE2HTTPControl("7", 4)
+	control, err := NewE2HTTPControl("7", 5)
 	if err != nil {
 		t.Fatal(err)
 	}
 	snapshot := execution.Snapshot()
 	intent := json.RawMessage(`{"summary":"original intent"}`)
-	first, _, err := control.reserve(snapshot, intent, "curl denied")
-	if err != nil {
-		t.Fatal(err)
-	}
 	result := completedE2WorkerResult()
 	result.Trusted.Execution = snapshot
-	result.Trusted.Classification = "policy_not_executed"
-	control.finish(first, result, false)
-	alternative, view, err := control.reserve(snapshot, intent, "curl different-approved-path")
-	if err != nil || !view.AlternativeUsed {
-		t.Fatalf("alternative=%+v error=%v", view, err)
+	for i, classification := range []string{"policy_not_executed", "partial_policy_denial", "unsupported", "partial_unsupported"} {
+		ticket, view, err := control.reserve(snapshot, intent, "curl action-"+strconv.Itoa(i))
+		if err != nil || view.Decision != "admitted" {
+			t.Fatalf("alternative %d after refusals blocked: view=%+v error=%v", i, view, err)
+		}
+		result.Trusted.Classification = classification
+		control.finish(ticket, result, false)
 	}
-	result.Trusted.Classification = "completed"
-	control.finish(alternative, result, false)
-	third, _, err := control.reserve(snapshot, intent, "curl third-action")
-	if err != nil {
-		t.Fatalf("successful alternative closed intent: %v", err)
-	}
-	result.Trusted.Classification = "policy_not_executed"
-	control.finish(third, result, false)
-	if _, view, err := control.reserve(snapshot, intent, "curl fourth-action"); !errors.Is(err, ErrE2HTTPBlocked) || view.Decision != "intent_replan_exhausted" {
-		t.Fatalf("second policy alternative=%+v error=%v", view, err)
-	}
-	other, _, err := control.reserve(snapshot, json.RawMessage(`{"summary":"another allowed intent"}`), "curl other-allowed")
-	if err != nil {
+	if _, _, err := control.reserve(snapshot, json.RawMessage(`{"summary":"another allowed intent"}`), "curl other-allowed"); err != nil {
 		t.Fatalf("other intent blocked: %v", err)
 	}
-	control.finish(other, result, false)
 }
-func TestE2HTTPSharedControlToolFailuresDoNotSpendPolicyReplan(t *testing.T) {
+func TestE2HTTPSharedControlToolFailuresDoNotBlockRetry(t *testing.T) {
 	execution, _, _ := e2WorkerFixture(t)
 	control, err := NewE2HTTPControl("7", 5)
 	if err != nil {
@@ -708,19 +697,19 @@ func TestE2HTTPSharedControlToolFailuresDoNotSpendPolicyReplan(t *testing.T) {
 	result.Trusted.Execution = snapshot
 	for _, classification := range []string{"tool_failure", "transient_failure", "forward_not_attempted"} {
 		ticket, view, err := control.reserve(snapshot, intent, "curl -f check")
-		if err != nil || view.AlternativeUsed {
+		if err != nil || view.Decision != "admitted" {
 			t.Fatalf("classification=%s reserve=%+v error=%v", classification, view, err)
 		}
 		result.Trusted.Classification = classification
 		control.finish(ticket, result, false)
 	}
 	ticket, view, err := control.reserve(snapshot, intent, "curl -f check")
-	if err != nil || view.AlternativeUsed || view.Calls != 4 {
-		t.Fatalf("ordinary tool failure consumed replan quota: view=%+v error=%v", view, err)
+	if err != nil || view.Calls != 4 {
+		t.Fatalf("ordinary tool failure blocked a retry: view=%+v error=%v", view, err)
 	}
 	result.Trusted.Classification = "completed"
 	control.finish(ticket, result, false)
-	if _, view, err := control.reserve(snapshot, intent, "curl next permitted action"); err != nil || view.AlternativeUsed || view.Calls != 5 {
+	if _, view, err := control.reserve(snapshot, intent, "curl next permitted action"); err != nil || view.Calls != 5 {
 		t.Fatalf("successful work closed intent: view=%+v error=%v", view, err)
 	}
 }
@@ -786,8 +775,12 @@ func TestE2HTTPSharedControlUnknownClosesIntentAndPreservesOtherIntents(t *testi
 	result.Trusted.Execution = snapshot
 	result.Trusted.Classification = "result_unknown"
 	control.finish(ticket, result, false)
-	if _, view, err := control.reserve(snapshot, intent, "curl maybe-cleanup"); !errors.Is(err, ErrE2HTTPBlocked) || view.Decision != "intent_replan_exhausted" {
+	if _, view, err := control.reserve(snapshot, intent, "curl maybe-cleanup"); !errors.Is(err, ErrE2HTTPBlocked) || view.Decision != "intent_outcome_uncertain" {
 		t.Fatalf("unknown alternative=%+v error=%v", view, err)
+	}
+	// 결과 불명 명령은 다른 intent로도 다시 보내지 않는다(결과 불명 쓰기 자동 재전송 금지).
+	if _, view, err := control.reserve(snapshot, json.RawMessage(`{"summary":"another wrapper intent"}`), "curl state-effect"); !errors.Is(err, ErrE2HTTPBlocked) || view.Decision != "same_action_not_retried" {
+		t.Fatalf("unknown action resent under a new intent=%+v error=%v", view, err)
 	}
 	if _, _, err := control.reserve(snapshot, json.RawMessage(`{"summary":"different permitted intent"}`), "curl permitted-read"); err != nil {
 		t.Fatal(err)

@@ -18,7 +18,7 @@
 
 ## 2. 결정
 
-1. **브라우저 도구는 진단 샌드박스에 넣지 않는다.** 브라우저는 탐색 단계의 탐색 브라우저 컨테이너(`explore-browser`)가 맡고 모델은 허용 목록의 브라우저 MCP 도구로만 쓴다([탐색 계약](contracts/exploration-boundary.md) §5, 규칙 3). 진단 샌드박스에 브라우저를 넣으면 진단 단계에 E②를 거치지 않는 두 번째 HTTP 클라이언트(번들 안의 fetch·WebSocket 등)가 생긴다. 탐색 직접 샌드박스(경계 직접 입구)에도 넣지 않는다. 브라우저 입구와 직접 입구를 나눈 계약 §5의 배치가 깨지기 때문이다.
+1. **브라우저 도구는 진단 샌드박스에 넣지 않는다.** 브라우저는 탐색 단계의 탐색 브라우저 컨테이너(Chromium `explore-browser`, MCP `explore-mcp`)가 맡고 모델은 허용 목록의 브라우저 MCP 도구로만 쓴다([탐색 계약](contracts/exploration-boundary.md) §5, 규칙 3). 진단 샌드박스에 브라우저를 넣으면 진단 단계에 E②를 거치지 않는 두 번째 HTTP 클라이언트(번들 안의 fetch·WebSocket 등)가 생긴다. 탐색 직접 샌드박스(경계 직접 입구)에도 넣지 않는다. 브라우저 입구와 직접 입구를 나눈 계약 §5의 배치가 깨지기 때문이다.
 2. **skills는 단계별로 나눈다.**
    - `api-recon`: **탐색 프로필**에 준다. 지시문(`SKILL.md`·`reference.md`)과 파이썬 스크립트(`harvest_static.py`·`extract_route_map.py`·`spider_mpa.py`·`build_perm_tree.py`)를 탐색 직접 샌드박스에 읽기 전용으로 둔다. 스크립트의 요청은 경계 직접 입구로 나간다. 브라우저가 필요한 런타임 수집(`runtime_harvest.js`·`preload.js`)은 직접 샌드박스에서 돌리지 않고 브라우저 MCP 도구로 대신한다. 이 차이는 탐색 에이전트 지침에 적는다(탐색 에이전트 루프 PR).
    - `playwright-cli`: 넣지 않는다. 브라우저를 직접 띄우는 skill이라 1과 같은 이유다. 같은 일은 브라우저 MCP 도구가 한다.

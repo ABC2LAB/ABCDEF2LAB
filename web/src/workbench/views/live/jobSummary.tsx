@@ -6,6 +6,8 @@
 import type { ReactNode } from "react";
 
 import { cx } from "../../lib/cx";
+import { planState } from "../../live/map";
+import { NotYet } from "../../live/parts";
 import { disconnectUrl, useUrl } from "../../live/urlDiagnosis";
 import { scanViewFor, URL_ENDED_STATES, urlHost, urlOutcomeText, urlStateText } from "../../live/urlMap";
 import { flowStageText } from "../../live/workflow";
@@ -43,6 +45,17 @@ export function JobSummary({
   else if (job) stageText = urlStateText(job.state, verified);
   const profile = cap.kind === "v2" ? cap.catalog.profiles.find((p) => p.id === handle.input.profile_id) : undefined;
   const outcomeText = job ? urlOutcomeText(job) : "";
+  // 지금 하는 일 (시안 v55 진행 중 상세): 진행 중인 계획 → 지금 보는 경로 → 단계 순으로 서버 값만
+  const nowText = flow?.plan?.find((p) => planState(p.state).row === "run")?.title ?? flow?.current_path ?? null;
+  // 시안 상세의 시작 · 남은 시간 · 소요 · 진행률은 서버가 주지 않아 "아직 구현 안 됨"
+  const timeRows: ReadonlyArray<readonly [ReactNode, ReactNode]> = [
+    ["진행률", <NotYet key="p" why="서버가 점검 진행률을 주지 않습니다" />],
+    ["시작", <NotYet key="s" why="서버가 점검 시작 시각을 주지 않습니다" />],
+    ended
+      ? ["소요", <NotYet key="d" why="서버가 점검 소요 시간을 주지 않습니다" />]
+      : ["남은 시간", <NotYet key="r" why="서버가 남은 시간을 주지 않습니다" />],
+    ...(flow ? [["보낸 요청", `${flow.counts.sent}건`] as const] : []),
+  ];
 
   return (
     <>
@@ -51,6 +64,11 @@ export function JobSummary({
         title={name ?? host ?? "점검 정보"}
         chips={job ? <UrlPill job={job} verified={verified} /> : null}
       />
+      {!ended && job ? (
+        <Isec t="지금 하는 일">
+          <p>{nowText ?? stageText}</p>
+        </Isec>
+      ) : null}
       <Isec t="점검 정보">
         <Kv
           rows={[
@@ -65,6 +83,7 @@ export function JobSummary({
             ["단계", stageText],
             ["실제 task", job?.task_id ? `#${job.task_id}` : "아직 없음"],
             ...(outcomeText ? [["실행 결과", outcomeText] as const] : []),
+            ...timeRows,
             ...rows,
           ]}
         />
