@@ -94,7 +94,7 @@ intent 결과는 **그래프의 지금 상태에서 계산하는 투영**이다.
 2. intent 투영·새 칸·`partial`(`incomplete`·`stopped`)·`no_intents`·`budget_limited`·`diagnostic_log_incomplete` 분리. 웹 파서·표시는 같은 PR에서 이경준 리뷰(표시 문구는 이경준이 정하면 따른다). 나눠서 넣는다.
    - 2-1(먼저): 투영·`completed`의 `outcome`·`intent_outcomes`·`partial`(불완전·중지 intent가 있어도 실패가 아님)·전달 칸(`diagnosis.v2`)·진단 준비 Job·웹 파서와 결과 한 줄. 결과 없이 새로 `completed`가 되는 갱신은 받지 않는다.
    - 2-2: `cancelled`의 `intent_outcomes`(중지 마감 때 투영 읽기).
-   - 2-3: `budget_limited`(Planner 라운드·도구 호출·intent 재실행 상한·모델 예산).
+   - 2-3: `budget_limited`(Planner 라운드·도구 호출·모델 예산). E② 런타임이 Planner 라운드·실행 전체 도구 호출 상한 도달을 `ErrE2HTTPBudgetLimited`로 따로 돌려주고 task에 표시하며, 엔진은 이를 실패로 바꾸지 않는다. 승인 모델 예산이 다음 호출을 받을 만큼 남지 않은 경우(`LimitReached`, 사용량 불명·정책 차단은 제외)도 같다. 감독자는 실행 중 intent가 끝나면 Planner를 기다리지 않고 마감하고, 시작하지 못한 open intent는 incomplete로 센다. intent 하나의 재실행 상한(`MaxIntentRuns`)은 그 intent만 incomplete로 끝내고 실행 전체 상한은 아니다.
    - 2-4: `no_intents`(C11 결정 2, 첫 계획 0개).
    - 2-5: `diagnostic_log_incomplete` 칸 분리.
    - 2-6: 저장 보고서에 싣기(5절 5).
