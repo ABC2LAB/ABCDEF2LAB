@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 type Controller struct {
@@ -65,10 +66,71 @@ func has(list []string, value string) bool {
 	}
 	return false
 }
-func highRisk(path string) bool {
-	for _, segment := range strings.Split(strings.ToLower(path), "/") {
-		for _, word := range []string{"delete", "remove", "reset", "logout", "checkout", "payment", "purchase", "transfer", "destroy", "truncate", "shutdown"} {
-			if strings.Contains(segment, word) {
+
+// 위험 동작 단어(C23). 경로 조각을 단어 단위로 나눠 통째로 맞춘다. 부분 문자열로 맞추면 payments-history 같은
+// 정상 읽기 경로까지 막는다.
+var (
+	// destructiveWords는 메서드와 상관없이 막는다. GET으로도 상태가 바뀌는 경로(GET /logout, GET /delete/1)가 흔하다.
+	destructiveWords = []string{"delete", "remove", "reset", "logout", "destroy", "truncate", "shutdown"}
+	// transactionWords는 쓰기 메서드에서만 막는다. 결제·주문 내역을 읽는 GET·HEAD는 진단 범위다.
+	transactionWords = []string{"checkout", "payment", "payments", "purchase", "purchases", "transfer", "transfers"}
+)
+
+// riskTokens는 경로 조각·query 이름·값을 영문자·숫자 단어로 나눈다. camelCase 경계도 나눈다.
+func riskTokens(s string) []string {
+	var out []string
+	var b strings.Builder
+	var prevLower bool
+	flush := func() {
+		if b.Len() > 0 {
+			out = append(out, strings.ToLower(b.String()))
+			b.Reset()
+		}
+	}
+	for _, r := range s {
+		isLetter, isDigit := unicode.IsLetter(r), unicode.IsDigit(r)
+		if !isLetter && !isDigit {
+			flush()
+			prevLower = false
+			continue
+		}
+		if isLetter && unicode.IsUpper(r) && prevLower {
+			flush()
+		}
+		b.WriteRune(r)
+		prevLower = isLetter && unicode.IsLower(r)
+	}
+	flush()
+	return out
+}
+
+func anyToken(s string, words []string) bool {
+	for _, token := range riskTokens(s) {
+		if has(words, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func writeMethod(method string) bool {
+	return method != "GET" && method != "HEAD" && method != "OPTIONS"
+}
+
+// riskyRequest는 위험 동작 요청이다. 파괴 동작 단어는 경로·query 어디에 있든 모든 메서드에서, 거래 단어는
+// 쓰기 메서드의 경로에서 막는다. query는 이름과 값 모두 본다(?action=delete).
+func riskyRequest(method, path string, query url.Values) bool {
+	for _, segment := range strings.Split(path, "/") {
+		if anyToken(segment, destructiveWords) || writeMethod(method) && anyToken(segment, transactionWords) {
+			return true
+		}
+	}
+	for key, values := range query {
+		if anyToken(key, destructiveWords) {
+			return true
+		}
+		for _, v := range values {
+			if anyToken(v, destructiveWords) {
 				return true
 			}
 		}
@@ -85,8 +147,8 @@ func (c *Controller) endpointLocked(method, path string) *Endpoint {
 	}
 	return nil
 }
-func (c *Controller) allowedPath(path string) bool {
-	if highRisk(path) {
+func (c *Controller) allowedPath(method, path string) bool {
+	if riskyRequest(normalizedMethod(method), path, nil) {
 		return false
 	}
 	allowed := false
@@ -169,7 +231,7 @@ func inferredSource(source string) bool {
 
 func (c *Controller) endpointScope(method, path, kind, source string) (bool, string) {
 	// 접두사는 앱이 실제로 보내는 주소가 아니므로 전송 후보로 두지 않는다.
-	if !has(c.binding.Methods, method) || !c.allowedPath(path) || source == "script_prefix" {
+	if !has(c.binding.Methods, method) || !c.allowedPath(method, path) || source == "script_prefix" {
 		return false, "blocked"
 	}
 	// 폼과 추정 경로는 실제 요청이 다를 수 있어 자동 방문·선택하지 않는다.
@@ -446,7 +508,11 @@ func (c *Controller) Before(ctx context.Context, v e2proxy.RequestView) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e := c.endpointLocked(v.Method, path)
-	if v.BodyBytes > 65536 || e == nil || !e.InScope || e.Change == "blocked" || !c.allowedPath(path) {
+	if v.BodyBytes > 65536 || e == nil || !e.InScope || e.Change == "blocked" || !c.allowedPath(v.Method, path) {
+		return ErrDenied
+	}
+	// 경로가 범위 안이어도 query에 파괴 동작이 실리면 막는다(위험 query 검증 유지, C23).
+	if u, err := url.Parse(v.URL); err != nil || riskyRequest(normalizedMethod(v.Method), path, u.Query()) {
 		return ErrDenied
 	}
 	s := c.record.Snapshot
