@@ -86,6 +86,8 @@ E② 실행 허용을 바꾸는 2~4는 이동찬 또는 윤재상 승인 없이 
 5. **실행 결속.** 실행 시작 때 계정 목록을 `accountView`(목록과 같은 판정, 만료·판 변경이면 real)로 읽어 `test`이고 자격·로그인 방식이 있는 계정만 고른다. 고른 라벨·분류·자격 해시·로그인 방식 해시를 실행 결속(정책 지문의 계정 칸)에 넣는다. 실행 중에는 대상 승인 확인과 같은 주기로 다시 판정해, 결속한 계정이 `test`가 아니게 되면(해제·만료·판 변경) 새 송신을 멈춘다(권한 철회와 같은 사건, 사유 `manual_unmark`·`target_expired`·`target_reapproved`를 실행 종료 사유에).
 6. **헤더 모드(4단계).** 인증된 시험 계정이 하나 이상이면 `test_account_passthrough`로 둔다(`evaluation_caller_passthrough`와 같은 동작, 승인 origin 요청에만). 외부 API 모드는 사전 공지·승인 기록이 있는 실행만. 아니면 `preserve` 그대로이고 세션 줄도 주지 않는다. `refresh_session`(계정 라벨만 받음, 계정당 상한·실패도 셈)은 2의 같은 경로를 쓴다.
 
+진행(2026-11-13): (a)를 구현했다 — `e2proxy.Rule.Purpose`(`auth_prep`)·`Call.AuthPrep`·`Execution.AddRedactValues`(8바이트 이상만, 응답 보류에는 안 씀)·정책 파일 `rules[].purpose`·지문. 아직 서버가 쓰지 않는다((b)에서 연결).
+
 PR 순서: (a) E② 로그인 전용 규칙·`AuthPrep`·출력 가림 목록(E② 내부, 이동찬 페어 리뷰 필수) → (b) 서버 인증 준비·`account_auth`·실행 결속 → (c) `test_account_passthrough`·Worker 세션 줄·`refresh_session`·S07~S09 수용시험. (a)~(c)는 이동찬 또는 윤재상 승인 없이 머지하지 않는다.
 
 ## 하지 않는 것
