@@ -17,10 +17,11 @@ import { Icon } from "./ui/icons";
 import { Rail } from "./ui/Rail";
 import {
   DashboardByMode,
+  FinishedByMode,
   LiveByMode,
   NewScanByMode,
-  RecordsByMode,
   ReportByMode,
+  RunningByMode,
   ScopeByMode,
 } from "./views/live/byMode";
 import { UrlAssetsLive } from "./views/live/UrlAssetsLive";
@@ -341,7 +342,8 @@ export function Workbench() {
           <Rail />
           <main className={s.work}>
             {section("dashboard", pick("대시보드", <DashboardByMode />))}
-            {section("records", pick("점검 기록", <RecordsByMode />))}
+            {section("running", pick("진행 중인 점검", <RunningByMode />))}
+            {section("finished", pick("끝난 점검", <FinishedByMode />))}
             {section("new", pick("새 점검", <NewScanByMode />))}
             {section("crawl", pick("자산 탐색", <UrlAssetsLive />))}
             {section("scope", pick("범위 확인", <ScopeByMode />))}

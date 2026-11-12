@@ -36,6 +36,9 @@ import { DiagnosticEntrySections } from "./DiagnosticEntrySections";
 import { reasonText, UrlFacts, UrlHead, UrlNotices, UrlPill, UrlRefreshButton, useUrlHost } from "./urlParts";
 import { PauseButton, useStopConfirm, WorkflowActivity, WorkflowNotice, WorkflowReport } from "./workflowViews";
 
+/** 보고서 위치의 상위 화면 (작업대 / 끝난 점검 / 주소 / 보고서) */
+const FINISHED = { href: "#finished", label: "끝난 점검" };
+
 /** 목록 칸에 맞춘 짧은 판정 글. */
 const SHORT: Readonly<Record<DiagnosticOutcome, string>> = {
   confirmed: "확정",
@@ -626,7 +629,8 @@ export function UrlReportLive() {
       <>
         <UrlHead
           title={title}
-          crumb="점검 기록"
+          crumb="보고서"
+          parent={FINISHED}
           host={host}
           pill={job ? <UrlPill job={job} verified={verified} /> : null}
           acts={handle ? <UrlRefreshButton /> : undefined}
@@ -705,7 +709,8 @@ export function UrlReportLive() {
     <>
       <UrlHead
         title={title}
-        crumb="점검 기록"
+        crumb="보고서"
+        parent={FINISHED}
         host={host}
         pill={<UrlPill job={job} verified={verified} />}
         acts={

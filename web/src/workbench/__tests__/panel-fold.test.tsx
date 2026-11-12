@@ -36,7 +36,8 @@ vi.mock("../views/live/byMode", async () => {
   );
   return {
     DashboardByMode: View,
-    RecordsByMode: View,
+    RunningByMode: View,
+    FinishedByMode: View,
     NewScanByMode: View,
     ScopeByMode: View,
     LiveByMode: View,
