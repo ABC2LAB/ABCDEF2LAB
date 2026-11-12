@@ -61,6 +61,32 @@ func TestProductPolicyBoundsWorkflowRequestTimeoutKeepsProxy(t *testing.T) {
 	}
 }
 
+// 응답 전달 상한·검사 상한은 E② 정책에 들어가고, 상한 사이 조건을 어기면 설치를 거부한다(C16 결정안 3).
+func TestProductPolicyBoundsResponseLimits(t *testing.T) {
+	limits := &productRuntimeLimits{Product: &productRuntimeLimitSet{MaxResponseBodyBytes: ptr(int64(32 << 20)), MaxResponseScanBytes: ptr(int64(33 << 20))}}
+	p, ok := productPolicyBounds(productInstallInput{RuntimeLimits: limits})
+	if !ok || p.Limits.MaxResponseBodyBytes != 32<<20 || p.Limits.MaxResponseScanBytes != 33<<20 || p.Limits.MaxBodyBytes != 16<<20 {
+		t.Fatalf("response limits: %+v ok=%v", p.Limits, ok)
+	}
+	for name, set := range map[string]*productRuntimeLimitSet{
+		"scan below response": {MaxResponseBodyBytes: ptr(int64(32 << 20)), MaxResponseScanBytes: ptr(int64(1 << 20))},
+		"zero response":       {MaxResponseBodyBytes: ptr(int64(0))},
+		"response over cap":   {MaxResponseBodyBytes: ptr(int64(1 << 40))},
+	} {
+		if _, ok := productPolicyBounds(productInstallInput{RuntimeLimits: &productRuntimeLimits{Product: set}}); ok {
+			t.Errorf("%s accepted", name)
+		}
+	}
+	// 워크플로 모드는 대상 정책의 max_response_bytes를 넘겨 받지 않는다.
+	flow := productTargetPolicy{Workflow: &diagnosisflow.Limits{MaxResponseBytes: 65536}}
+	if w, ok := productPolicyBounds(productInstallInput{TargetPolicy: flow, RuntimeLimits: &productRuntimeLimits{Workflow: &productRuntimeLimitSet{MaxResponseBodyBytes: ptr(int64(32768))}}}); !ok || w.Limits.MaxResponseBodyBytes != 32768 {
+		t.Fatalf("workflow response limit within target policy: %+v ok=%v", w.Limits, ok)
+	}
+	if _, ok := productPolicyBounds(productInstallInput{TargetPolicy: flow, RuntimeLimits: &productRuntimeLimits{Workflow: &productRuntimeLimitSet{MaxResponseBodyBytes: ptr(int64(65537))}}}); ok {
+		t.Fatal("workflow response limit above the target policy accepted")
+	}
+}
+
 // 지금 코드의 검사 상한 밖이거나 0 이하이면 설치를 거부한다(잘라서 받지 않는다).
 func TestProductPolicyBoundsRejectsOutOfRange(t *testing.T) {
 	for name, set := range map[string]*productRuntimeLimitSet{

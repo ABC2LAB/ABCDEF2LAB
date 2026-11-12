@@ -61,7 +61,9 @@
 | `limits.max_attempts` | `uint64` 1…40000 | proxy, 포함. 예산을 예약하고 송신 단계로 넘어간 시도만 센다. 보내지 않은 거부·미지원은 세지 않는다(C01) |
 | `limits.max_calls` | 정수 1…1000 | proxy, 포함 |
 | `limits.max_concurrent` | 정수 1…100 | proxy, 포함 |
-| `limits.max_body_bytes` | 정수 1…16777216 **바이트** | proxy, 포함 |
+| `limits.max_body_bytes` | 정수 1…16777216 **바이트** | proxy, 포함. 요청 본문 상한(넘으면 송신 전 미지원). 아래 응답 칸이 없으면 응답 전달 상한도 이 값 |
+| `limits.max_response_body_bytes` | 선택, 정수 1…67108864 **바이트** | proxy. 도구에 줄 응답 본문 상한(넘으면 앞부분만 주고 `withheld` + `response_truncated`). 값을 준 정책만 지문에 들어감 |
+| `limits.max_response_scan_bytes` | 선택, 정수 1…68157440 **바이트**, 응답 상한 이상이고 보호 값이 있으면 응답 상한 + 가장 긴 보호 값 길이 − 1 이상 | proxy. 보호 값 반사를 검사할 만큼 읽는 상한. 없으면 응답 상한 + 가장 긴 보호 값 길이. 값을 준 정책만 지문에 들어감 |
 | `limits.request_timeout_ms` | 정수 1…60000 **ms** | factory에서 Duration 변환, proxy, 지문에는 ns |
 | `limits.call_timeout_ms` | 정수 1…3600000 **ms** | factory·proxy, 지문에는 ns |
 | `limits.max_denials`, `max_transient`, `max_unknown` | `uint64` 각각 1 이상 | proxy, 포함. call(Bash 명령 하나) 단위 상한이다. 닿으면 그 call의 새 요청만 막고 실행 전체는 멈추지 않는다(C01). 시도 상한이 추가로 유효 |

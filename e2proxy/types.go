@@ -92,12 +92,18 @@ type Rule struct {
 type Limits struct {
 	// MaxAttempts는 실행 전체에서 예산을 예약하고 송신 단계로 넘어간 시도 수의 상한이다.
 	// 보내지 않은 거부·미지원은 세지 않는다. 닿으면 그 뒤 송신만 거부한다(C01).
-	MaxAttempts    uint64
-	MaxCalls       int
-	MaxConcurrent  int
-	MaxBodyBytes   int64
-	RequestTimeout time.Duration
-	CallTimeout    time.Duration
+	MaxAttempts   uint64
+	MaxCalls      int
+	MaxConcurrent int
+	// MaxBodyBytes는 요청 본문 상한이다(넘으면 송신 전 미지원). 응답 상한을 따로 주지 않으면 응답 본문 상한도 된다.
+	MaxBodyBytes int64
+	// MaxResponseBodyBytes는 도구에 줄 응답 본문 상한이다(넘으면 앞부분만, C16 결정안 2·3). 0이면 MaxBodyBytes다.
+	MaxResponseBodyBytes int64
+	// MaxResponseScanBytes는 자격 반사 검사를 위해 읽는 응답 상한이다. 0이면 응답 상한 + 가장 긴 보호 값 길이다.
+	// 주면 응답 상한 + 가장 긴 보호 값 길이 − 1 이상이어야 한다(전달 구간 끝에 걸친 보호 값도 통째로 검사 범위에 듦).
+	MaxResponseScanBytes int64
+	RequestTimeout       time.Duration
+	CallTimeout          time.Duration
 	// MaxDenials·MaxTransient·MaxUnknown은 call 하나의 거부+미지원·송신 실패·결과 불명 상한이다.
 	// 닿으면 그 call의 새 요청만 막고 실행 전체와 다른 call은 계속된다(C01).
 	MaxDenials   uint64

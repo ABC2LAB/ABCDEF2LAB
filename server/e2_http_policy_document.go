@@ -96,12 +96,14 @@ func validateE2HTTPPolicyDocument(raw []byte, prepared bool) (E2HTTPFilePolicy, 
 			return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
 		}
 	}
-	for name, fields := range map[string][]string{
-		"limits":  {"max_attempts", "max_calls", "max_concurrent", "max_body_bytes", "request_timeout_ms", "call_timeout_ms", "max_denials", "max_transient", "max_unknown"},
-		"proxy":   {"header_timeout_ms", "request_timeout_ms", "max_header_bytes", "max_connections"},
-		"runtime": {"max_worker_turns", "max_tool_calls", "worker_timeout_ms", "max_planner_rounds", "max_intent_runs", "drain_timeout_ms", "output_limit"},
+	// 응답 전달·검사 상한(C16 결정안 3)은 선택 칸이다. 없으면 요청 본문 상한을 같이 쓴다.
+	for name, fields := range map[string]struct{ required, optional []string }{
+		"limits": {[]string{"max_attempts", "max_calls", "max_concurrent", "max_body_bytes", "request_timeout_ms", "call_timeout_ms", "max_denials", "max_transient", "max_unknown"},
+			[]string{"max_response_body_bytes", "max_response_scan_bytes"}},
+		"proxy":   {[]string{"header_timeout_ms", "request_timeout_ms", "max_header_bytes", "max_connections"}, nil},
+		"runtime": {[]string{"max_worker_turns", "max_tool_calls", "worker_timeout_ms", "max_planner_rounds", "max_intent_runs", "drain_timeout_ms", "output_limit"}, nil},
 	} {
-		if !e2HTTPExactJSON(document[name], fields, nil) {
+		if !e2HTTPExactJSON(document[name], fields.required, fields.optional) {
 			return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
 		}
 	}
@@ -142,7 +144,8 @@ func validateE2HTTPPolicyDocument(raw []byte, prepared bool) (E2HTTPFilePolicy, 
 	}
 	cfg := e2proxy.Config{ApprovalMode: policy.ApprovalMode, Scope: transmit.Scope{RunRef: policy.RunRef}, HeaderMode: policy.HeaderMode,
 		Evaluation: policy.Evaluation, Rules: rules, Limits: e2proxy.Limits{MaxAttempts: policy.Limits.MaxAttempts, MaxCalls: policy.Limits.MaxCalls,
-			MaxConcurrent: policy.Limits.MaxConcurrent, MaxBodyBytes: policy.Limits.MaxBodyBytes, RequestTimeout: requestTimeout, CallTimeout: callTimeout,
+			MaxConcurrent: policy.Limits.MaxConcurrent, MaxBodyBytes: policy.Limits.MaxBodyBytes, MaxResponseBodyBytes: policy.Limits.MaxResponseBodyBytes,
+			MaxResponseScanBytes: policy.Limits.MaxResponseScanBytes, RequestTimeout: requestTimeout, CallTimeout: callTimeout,
 			MaxDenials: policy.Limits.MaxDenials, MaxTransient: policy.Limits.MaxTransient, MaxUnknown: policy.Limits.MaxUnknown}}
 	fingerprint, err := e2export.PolicyFingerprint(cfg, policy.MaxRequests, e2export.PolicyBehavior{
 		MaxWorkerTurns: policy.Runtime.MaxWorkerTurns, MaxToolCalls: policy.Runtime.MaxToolCalls, WorkerTimeout: workerTimeout,
