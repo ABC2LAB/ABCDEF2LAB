@@ -685,12 +685,16 @@ func TestFirstDiagnosisPreparationOwnedPostgres(t *testing.T) {
 		if err := SeedFirstDiagnosisTarget(ctx, pool, seeded, "http://192.0.2.44:8080/"); err != nil {
 			t.Fatal("IP 대상 자산 등록 실패", err)
 		}
+		// 하위 도메인 대상이면 그 루트 도메인은 작업에 붙지 않는다(승인 밖).
+		if err := SeedFirstDiagnosisTarget(ctx, pool, seeded, "https://app.seed-root.test/"); err != nil {
+			t.Fatal("하위 도메인 대상 자산 등록 실패", err)
+		}
 		// 원본 upsert는 서비스 자산과 함께 그 루트 도메인 자산도 만들어 연결한다(출처 system). 출처 task 연결은 등록한
 		// 두 대상이고, 연결된 자산은 모두 대상 호스트 안이다.
 		if count("SELECT count(*) FROM assets a JOIN task_asset_links l ON l.asset_id=a.id WHERE l.task_id=$1 AND l.source='task' AND a.type='service' AND a.url='https://seed.test:8443'", seeded.TaskID) != 1 ||
 			count("SELECT count(*) FROM assets a JOIN task_asset_links l ON l.asset_id=a.id WHERE l.task_id=$1 AND l.source='task' AND a.type='ip' AND a.ip='192.0.2.44'", seeded.TaskID) != 1 ||
-			count("SELECT count(*) FROM task_asset_links WHERE task_id=$1 AND source='task'", seeded.TaskID) != 2 ||
-			count("SELECT count(*) FROM task_asset_links l JOIN assets a ON a.id=l.asset_id WHERE l.task_id=$1 AND COALESCE(a.domain, a.ip) NOT IN ('seed.test','192.0.2.44')", seeded.TaskID) != 0 {
+			count("SELECT count(*) FROM task_asset_links WHERE task_id=$1 AND source='task'", seeded.TaskID) != 3 ||
+			count("SELECT count(*) FROM task_asset_links l JOIN assets a ON a.id=l.asset_id WHERE l.task_id=$1 AND COALESCE(a.domain, a.ip) NOT IN ('seed.test','192.0.2.44','app.seed-root.test')", seeded.TaskID) != 0 {
 			t.Fatal("승인 대상 origin만 작업에 연결하지 않음")
 		}
 		// 작업 없이 등록하면 어느 작업에도 연결되지 않은 전역 자산만 남으므로 받지 않는다.

@@ -78,7 +78,10 @@ func SeedFirstDiagnosisTarget(ctx context.Context, pool *sql.DB, prepared FirstD
 		}
 	}
 	store := &pgdb.DB{DB: pool}
-	if _, err := seedTargetAsset(store.Assets(), store.Exploration(prepared.ExplorationID), prepared.TaskID, u.Scheme, strings.ToLower(u.Hostname()), port); err != nil {
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	// 원본 서비스 upsert는 그 호스트의 루트 도메인 자산도 작업에 붙인다. 승인 대상 호스트만 붙게 한다(#481과 같음).
+	assets := store.Assets().WithHostLinkFilter(func(name string) bool { return strings.TrimSuffix(strings.ToLower(name), ".") == host })
+	if _, err := seedTargetAsset(assets, store.Exploration(prepared.ExplorationID), prepared.TaskID, u.Scheme, host, port); err != nil {
 		return errors.Join(ErrControlledReadHostConfiguration, err)
 	}
 	return nil
