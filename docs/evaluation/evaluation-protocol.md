@@ -89,8 +89,9 @@
       11/10 실측과 남은 차이 제안은 [샌드박스 도구 동등성](e2-tool-equivalence.md)에 있다. 목록의 해시는 러너가 동결값과 대조해 `e2_product` 행에 남기고, 채점기는 조건 하나 안에서 같은지 본다. 정책 형식이 닫혀 있어 정책 내용 지문에는 넣지 않고 같은 행에서 함께 대조한다. PM 확정 전에는 공식 비교 조건이 아니다.
     - Planner·Worker 구성도 같은 수용 조건이다. 지금 dev의 E2 worker 경로(`agent/e2_http.go`)는 원본 일반 루프와 다르다(#220). 첫 진단 서버에는 #304로 연결됐고, 평가 러너에는 아직 연결되지 않았다.
       - 시스템 프롬프트가 바뀐다. DB에서 고칠 수 있는 진단 지침(`e2_worker`)과 코드가 쥔 통제 지시로 나뉜다(#312). 그래서 개선 후 회차끼리 `e2_prompt` 활동의 `source`와 template·guidance·control·tools digest가 같아야 한다. `system_digest`는 intent가 들어가므로 대조하지 않는다. 이 값을 확인하지 못한 회차는 무효(`e2_prompt_unverified`)이고, 한 조건 안에서 값이 다르면 채점기가 비교를 거부한다(2026-11-09 결정). E② 결과가 제품 실패·실행 없음인 회차는 비교할 실행이 없어 이 대조를 적용하지 않는다.
-      - Planner는 허용 도구 13개만 쓰고, `Plan` 호출당 16턴·2분 상한이 붙는다.
-      - Worker는 Bash, 그래프 도구 6개, 후보 제출 도구 `submit_diagnostic_candidate`(#315)만 쓴다. WebFetch·skills·MCP·`report_finding`이 없다.
+      - 도구 목록은 진단 도구 프로필(`agent/tool_profile.go`)이 정한다. 원본 목록에서 고르고 바꾸는 기준은 [루프 복원 결정안](../loop-restore-decision.md)에 있다(11/12 기준, 아래 두 줄).
+      - Planner는 원본 그래프 도구 16개를 쓴다(`graph_overview`·`list_findings`·`list_facts`·`node_detail`·`expand_digest`·`get_worker_output`·`get_worker_trace`·`search_all_worker_traces`·`list_goals`·`add_intent`·`prove_goal`·`goal_met`·`list_companies`·`list_assets`·`add_task_scope`·`list_untested_assets`). `goal_met`은 원본처럼 기본 바인딩이 없고, `add_task_scope`는 설명만 진단 판이다. Bash·WebFetch·WebSearch·MCP·파일 도구·`kill_work`·`steer_work`·`report_finding`·`add_company_scope`는 없다. `Plan` 호출당 기본 16턴·2분이고, 제품 설치는 `runtime_limits`로 바꿀 수 있다(C32). 평가 회차는 기본값이다.
+      - Worker는 E② 판 Bash·WebFetch, 그래프 도구 6개(`list_findings`·`record_fact`·`list_assets`·`search_all_worker_traces`·`get_worker_trace`·`node_detail`), 후보 제출 `submit_diagnostic_candidate`(#315), 작업 공간 파일 도구 Read·Write·Edit·LS(보관소를 쓰는 실행만, C29)를 쓴다. skills·MCP·WebSearch·`report_finding`·`insert_assets`가 없다.
       - 일반 HTTP 후보는 `findings` 표가 아니라 fact 노드로 저장되고 수동 검토 대상이다(#315). 그래서 findings 열은 이 경로와 baseline을 그대로 비교할 수 없다.
       - 11/05 결정은 원본 Planner·Worker 루프 유지다. 어느 항목을 원본에 맞추고 어느 항목을 선언된 차이로 둘지는 활성화 PR에서 정한다. 그 전에는 이 경로의 결과를 공식 비교에 쓰지 않는다.
   - E② 일반 HTTP 기본 모드(preserve)에는 개선 후에만 있는 현재 구현 차이가 셋 있다(#223 `e2-proxy-transfer-scope.md`).
