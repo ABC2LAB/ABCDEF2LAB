@@ -207,15 +207,7 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 		defer release()
 	}
 	var diagnostics *launchDiagnostics
-	check := func() error {
-		if diagnostics != nil && diagnostics.ready() != nil {
-			return errPreparation
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return l.current()
-	}
+	check := urlRuntimeCheck(ctx, l.current)
 	if l.hold() != nil {
 		return knownFailure("installation_check_failed", true)
 	}
@@ -254,10 +246,7 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 		}
 		_ = diagnosticlog.Emit(ctx, e)
 		diagnostics.finish(&code)
-		if diagnostics.logger.Err() != nil || u.State == diagnosisprep.Completed && (code != 0 || diagnostics.logger.Incomplete()) {
-			u.State = diagnosisprep.Unknown
-			u.ReasonCode = "diagnostic_logging_incomplete"
-		}
+		markDiagnosticLogWarning(u, diagnostics.logger.Err() != nil || code != 0, diagnostics.logger.Incomplete())
 	}
 	p.publish = func(u diagnosisprep.Update) error {
 		switch u.State {
@@ -285,24 +274,11 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	go func() {
 		ticker := time.NewTicker(250 * time.Millisecond)
 		defer ticker.Stop()
-		watchURLPreparation(hard, watchDone, diagnostics.logger.Failed(), ticker.C, l.current, cancel, stopTarget)
+		watchURLPreparation(hard, watchDone, ticker.C, l.current, cancel, stopTarget)
 	}()
-	var lastModelRequest int64
-	observe := func(usage diagnosisprep.ModelUsage) error {
-		if usage.Requests > lastModelRequest {
-			// 대상 호출 admission은 예약 전에 검사한다. 마감 usage는 종료 뒤에도 저장한다.
-			if l.productTarget == nil && check() != nil {
-				return errPreparation
-			}
-			lastModelRequest = usage.Requests
-			if usage.Requests == 1 {
-				if diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "cli", Event: "model_request_started", Stage: "model_call", Status: "started", Count: 1, DurationMS: time.Since(startedAt).Milliseconds()}) != nil {
-					return errPreparation
-				}
-			}
-		}
+	observe := urlModelObserver(ctx, startedAt, l.productTarget == nil, check, func(usage diagnosisprep.ModelUsage) error {
 		return p.set(func(u *diagnosisprep.Update) { copy := usage; u.ModelUsage = &copy })
-	}
+	})
 	var modelBudget *server.FirstDiagnosisModelBudget
 	if l.launch.ModelExecutionMode == "openrouter" {
 		modelBudget, err = server.NewFirstDiagnosisOpenRouterBudget(l.profile.Budget, l.profile.InputTokensPerCall, l.profile.OutputTokensPerCall, l.launch.OpenRouterManifestPath, observe)
@@ -336,10 +312,7 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	if execution.Job.Input.DisplayName != "" {
 		description = execution.Job.Input.DisplayName
 	}
-	goal := "Inspect the approved read-only HTTPS target " + execution.Job.Input.TargetURL + " through the enforced E2 boundary. Collect observations and manual-review candidates only. Do not request state changes or other origins."
-	if execution.Job.Input.WorkflowMode != "" {
-		goal = "Inspect the approved read-only HTTPS target " + execution.Job.Input.TargetURL + " through the enforced E2 boundary. Workbench workflow mode: " + execution.Job.Input.WorkflowMode + ". First prepare an initial discovery intent. The host will perform bounded discovery in the protected Worker. After discovery, use the server-provided exact selected endpoints for deep diagnostic intents. State-changing requests require separately granted scope and per-request confirmation; never invent that permission. Collect only supported observations and unconfirmed review candidates."
-	}
+	goal := urlDiagnosisGoal(execution.Job.Input.TargetURL, execution.Job.Input.WorkflowMode, execution.Job.Scope.Methods)
 	if check() != nil {
 		_ = pool.Close()
 		return knownFailure("installation_changed", true)
@@ -513,10 +486,8 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 		done()
 		return errPreparation
 	}
-	if diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "cli", Event: "stage_finished", Stage: "admission", Status: "succeeded", DurationMS: time.Since(startedAt).Milliseconds()}) != nil {
-		cancel()
-		return unknown("diagnostic_logging_incomplete", false)
-	}
+	// 기록 실패로 실행을 취소하지 않는다(C10).
+	_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "cli", Event: "stage_finished", Stage: "admission", Status: "succeeded", DurationMS: time.Since(startedAt).Milliseconds()})
 	diagnostics.next("execution", "execution_failed")
 	response, err := gateway.Call(ctx, diagnosis.Request{Version: diagnosis.Version, RequestID: "url-start", Command: diagnosis.Start, TaskID: taskID, PreparationRef: execution.Job.ID, IdempotencyKey: execution.Job.ID})
 	if err != nil || response.Snapshot == nil {
@@ -751,16 +722,53 @@ func (b *urlPreparationRuntime) closeReports() error {
 var _ diagnosisprep.Backend = (*urlPreparationRuntime)(nil)
 var _ http.Handler = (*urlPreparationRuntime)(nil)
 
-// Execute keeps audit watching active during a normal target drain.
-func watchURLPreparation(hard context.Context, done, auditFailed <-chan struct{}, ticks <-chan time.Time, current func() error, cancel context.CancelFunc, stopTarget context.CancelCauseFunc) {
+// markDiagnosticLogWarning은 진단 로그 상태를 실행 결과에 반영하는 유일한 곳이다. 진단 로그는 감사가 아니다
+// (P3 결정안 C10). 기록 실패·관찰 불완전 표시는 실행 상태를 바꾸지 않고, 완료 실행에 경고 사유로만 남긴다.
+// 실행 종료·감사·결과 저장의 확인은 Update의 다른 값(DrainComplete·ResultReady·ModelUsage)이 맡는다.
+func markDiagnosticLogWarning(u *diagnosisprep.Update, logFailed, observationIncomplete bool) {
+	if u.State == diagnosisprep.Completed && u.ReasonCode == "" && (logFailed || observationIncomplete) {
+		u.ReasonCode = "diagnostic_logging_incomplete"
+	}
+}
+
+// urlRuntimeCheck는 실행 중 단계마다 쓰는 공통 검사다: 문맥, 설치·위임·대상 승인(current).
+// 진단 로거 상태는 보지 않는다(P3 결정안 C10). 로거를 처음 만들 수 없으면 실행 전에 실패하는 것은 따로다.
+func urlRuntimeCheck(ctx context.Context, current func() error) func() error {
+	return func() error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return current()
+	}
+}
+
+// urlModelObserver는 모델 예산의 예약·정산 기록 콜백이다. 새 예약(요청 수 증가) 전에 admission 검사를 하고
+// (checkAdmission이면), 저장은 save가 맡는다. 진단 로그 기록 실패는 예약을 막지 않는다(C10). 이 콜백이
+// 오류를 내면 모델 예산이 영구 차단되므로, 여기에 진단 로거 의존을 넣지 않는다.
+func urlModelObserver(ctx context.Context, startedAt time.Time, checkAdmission bool, check func() error, save func(diagnosisprep.ModelUsage) error) func(diagnosisprep.ModelUsage) error {
+	var lastModelRequest int64
+	return func(usage diagnosisprep.ModelUsage) error {
+		if usage.Requests > lastModelRequest {
+			// 대상 호출 admission은 예약 전에 검사한다. 마감 usage는 종료 뒤에도 저장한다.
+			if checkAdmission && check() != nil {
+				return errPreparation
+			}
+			lastModelRequest = usage.Requests
+			if usage.Requests == 1 {
+				_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "cli", Event: "model_request_started", Stage: "model_call", Status: "started", Count: 1, DurationMS: time.Since(startedAt).Milliseconds()})
+			}
+		}
+		return save(usage)
+	}
+}
+
+// 진단 로그 기록 실패는 여기서 실행을 취소하지 않는다(P3 결정안 C10). 감사·E② 집행 장애는 실행 경로가 직접 멈춘다.
+func watchURLPreparation(hard context.Context, done <-chan struct{}, ticks <-chan time.Time, current func() error, cancel context.CancelFunc, stopTarget context.CancelCauseFunc) {
 	for {
 		select {
 		case <-done:
 			return
 		case <-hard.Done():
-			return
-		case <-auditFailed:
-			cancel()
 			return
 		case <-ticks:
 			if err := current(); err != nil {
@@ -799,4 +807,31 @@ func settleProductWorkflow(ctx context.Context, flow *diagnosisflow.Controller, 
 		}
 	}
 	return u
+}
+
+// urlDiagnosisGoal은 작업 목표 문장을 승인 기록의 메서드로 만든다(루프 복원 결정안 §3, C25). 모델이 정한 값이 아니다.
+// 읽기 메서드만 승인됐으면 읽기 전용이라고 적고, 쓰기 메서드가 승인된 범위(건별 확인 흐름)에서는 그 메서드를 밝히고
+// 요청마다 운영자 확인을 받아야 E②가 보낸다고 적는다. 실제 허용·차단은 E②가 정한다.
+func urlDiagnosisGoal(target, workflowMode string, methods []string) string {
+	var writes []string
+	for _, m := range methods {
+		if m != "GET" && m != "HEAD" {
+			writes = append(writes, m)
+		}
+	}
+	scope := "Inspect the approved read-only HTTPS target " + target + " through the enforced E2 boundary. Approved methods: " + strings.Join(methods, ", ") + "."
+	if len(writes) > 0 {
+		scope = "Inspect the approved HTTPS target " + target + " through the enforced E2 boundary. Approved methods: " + strings.Join(methods, ", ") + ". Write methods (" + strings.Join(writes, ", ") + ") are approved only per request: E2 holds each such request until the operator confirms it. Never invent that confirmation and never resend a request whose result is unknown."
+	}
+	if workflowMode == "" {
+		if len(writes) == 0 {
+			return scope + " Collect observations and manual-review candidates only. Do not request state changes or other origins."
+		}
+		return scope + " Collect observations and manual-review candidates only. Do not request other origins."
+	}
+	flow := " Workbench workflow mode: " + workflowMode + ". First prepare an initial discovery intent. The host will perform bounded discovery in the protected Worker. After discovery, use the server-provided exact selected endpoints for deep diagnostic intents."
+	if len(writes) == 0 {
+		flow += " State-changing requests require separately granted scope and per-request confirmation; never invent that permission."
+	}
+	return scope + flow + " Collect only supported observations and unconfirmed review candidates. Do not request other origins."
 }

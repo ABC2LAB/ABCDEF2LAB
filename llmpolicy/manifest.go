@@ -118,10 +118,16 @@ func manifestProfilePin(d *json.Decoder) (ProfilePin, bool) {
 // Decode keys explicitly: struct decoding would also accept case variants, and
 // maps would discard duplicates. Count plus the field visitor requires every key.
 func manifestObject(d *json.Decoder, required int, field func(string) bool) bool {
+	return manifestObjectRange(d, required, required, field)
+}
+
+// manifestObjectRange는 판마다 키 수가 다른 manifest를 위해 키 수를 [least, most]로 받는다.
+// 판별 키 수 검사는 호출자가 decode 뒤에 다시 한다.
+func manifestObjectRange(d *json.Decoder, least, most int, field func(string) bool) bool {
 	if !manifestDelimiter(d, '{') {
 		return false
 	}
-	seen := make(map[string]bool, required)
+	seen := make(map[string]bool, most)
 	for d.More() {
 		token, err := d.Token()
 		key, isString := token.(string)
@@ -130,7 +136,7 @@ func manifestObject(d *json.Decoder, required int, field func(string) bool) bool
 		}
 		seen[key] = true
 	}
-	return manifestDelimiter(d, '}') && len(seen) == required
+	return manifestDelimiter(d, '}') && len(seen) >= least && len(seen) <= most
 }
 
 func manifestDelimiter(d *json.Decoder, expected json.Delim) bool {
