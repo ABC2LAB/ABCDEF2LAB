@@ -12,6 +12,7 @@ import (
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/diagnosisflow"
+	"github.com/Autumn-27/artex/dlp"
 	"github.com/Autumn-27/artex/exploration"
 	"github.com/Autumn-27/artex/exploreboundary"
 	"github.com/Autumn-27/artex/server"
@@ -112,6 +113,8 @@ func exploreTargetOf(rec productTargetRecord, excluded []string) (exploreboundar
 		ExcludedPrefixes: append([]string(nil), excluded...)}, nil
 }
 
+func redactExplorationOutput(out []byte) []byte { return []byte(dlp.CredentialText(string(out))) }
+
 // productMCPLease는 compose가 띄운 브라우저 샌드박스의 MCP를 가리킨다. MCP는 연결마다 새 브라우저 문맥을 만들고
 // (--isolated, CDP), 탐색 단계가 MCP 세션을 지우면 그 문맥이 닫힌다. 컨테이너 수명은 compose가 가진다.
 type productMCPLease struct{ info server.ExplorationBrowserInfo }
@@ -154,8 +157,10 @@ func (h *productExplorationHost) factory(rec productTargetRecord, current func(p
 				}
 				return productMCPLease{info: browser}, nil
 			},
-			// 탐색 단계에는 아직 프로그램이 넣는 자격(인증 준비)이 없다. 들어오면 그 값을 가리는 함수로 바꾼다.
-			Redact:       func(out []byte) []byte { return out },
+			// 도구 결과(MCP 결과·오류)가 모델 입력·활동 기록으로 가기 전에 자격 형식(인증·쿠키 헤더, 비밀번호·토큰 값, Bearer,
+			// JWT, 개인키)을 가린다. 계정 분류·수용시험 S09 개정 전에는 시험 계정 세션도 모델에 넣지 않는다. 주소는 남긴다
+			// (모델이 다음 페이지를 고르는 데 필요). 인증 준비가 들어오면 프로그램이 넣은 값의 정확값 가림을 더한다.
+			Redact:       redactExplorationOutput,
 			CloseTimeout: explorationCloseTimeout, StatusInterval: explorationStatusInterval}
 		return server.ExplorationPipelineHost{Session: session, Reader: reader, Fetch: fetch.Fetch, Sequences: reader.Sequences}, nil
 	}
