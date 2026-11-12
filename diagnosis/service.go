@@ -110,6 +110,13 @@ func (s *Service) execute(ctx context.Context) {
 		s.snapshot.State = Unknown
 	case s.snapshot.State == Stopping || errors.Is(err, context.Canceled):
 		s.snapshot.State = Cancelled
+		// 중지된 실행은 마감 때 읽은 intent 결과 개수만 싣는다(끝난 것·끊긴 것). 못 읽었으면 개수 없이 중지다.
+		// 정상 마감 결과와 중지가 겹치면(중지 요청 직후 완료) outcome은 버리고 개수만 남긴다.
+		if closure.Result != nil {
+			if stopped := (RunResult{IntentOutcomes: closure.Result.IntentOutcomes}); stopped.StoppedValid() {
+				s.snapshot.Result = &stopped
+			}
+		}
 	case err != nil:
 		s.snapshot.State = Failed
 	case closure.Result == nil || !closure.Result.Valid():

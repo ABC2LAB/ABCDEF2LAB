@@ -235,7 +235,7 @@ export function UrlNewScanLive() {
       />
       <div className={s.vb}>
         <form
-          className={s.vm}
+          className={cx(s.vm, s.nform)}
           id="luForm"
           noValidate
           onSubmit={(e) => {
@@ -259,7 +259,7 @@ export function UrlNewScanLive() {
             </div>
           ) : null}
 
-          <div className={s.fsec}>
+          <div className={cx(s.fsec, s["fs-target"])}>
             <div className={s["fsec-h"]}>
               <h2>대상</h2>
             </div>
@@ -269,7 +269,7 @@ export function UrlNewScanLive() {
                   점검할 사이트 주소
                 </label>
                 <input
-                  className={cx(s.inp, s.mono)}
+                  className={cx(s.inp, s.mono, s["w-url"])}
                   id="luUrl"
                   type="url"
                   value={tv}
@@ -298,7 +298,7 @@ export function UrlNewScanLive() {
             </div>
           </div>
 
-          <div className={s.fsec}>
+          <div className={cx(s.fsec, s["fs-model"])}>
             <div className={s["fsec-h"]}>
               <h2>분석 모델</h2>
             </div>
@@ -333,7 +333,7 @@ export function UrlNewScanLive() {
                   모델
                 </label>
                 <select
-                  className={s.inp}
+                  className={cx(s.inp, s["w-sel"])}
                   id="luProfile"
                   value={pv}
                   disabled={g.inputLocked || !choices.length}
@@ -360,7 +360,7 @@ export function UrlNewScanLive() {
 
           {/* 점검 설정: 탐색 흐름이 있는 프로필만 진단 모드 · 제외 경로를 받는다(없으면 칸째 숨김) */}
           {profile?.workflow ? (
-            <div className={s.fsec}>
+            <div className={cx(s.fsec, s["fs-set"])}>
               <div className={s["fsec-h"]}>
                 <h2>점검 설정</h2>
               </div>
@@ -390,7 +390,7 @@ export function UrlNewScanLive() {
                   </label>
                   <textarea
                     id="nExcl"
-                    className={s.inp}
+                    className={cx(s.inp, s["w-path"])}
                     value={ev}
                     disabled={g.inputLocked}
                     maxLength={2048}

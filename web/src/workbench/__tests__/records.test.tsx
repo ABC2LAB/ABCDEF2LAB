@@ -1,5 +1,6 @@
-// 점검 기록 화면 (시안 v27 ~ v30): 레일에서 점검을 누르면 오고, 진행 중 · 끝난 점검 칸마다 따로 필터가 있다.
-// 줄은 이 브라우저가 이어 보는 진단 하나뿐이고, 필터는 서버 값(진단 상태 · 탐색 단계 · 요청 승인 · 팀 lib 판정)으로만 나눈다.
+// 진행 중인 점검 · 끝난 점검 화면 (시안 v54, 점검 기록을 둘로 나눔): 레일에서 점검을 누르면 알맞은 화면으로 오고,
+// 화면마다 따로 필터가 있다. 줄은 이 브라우저가 이어 보는 진단 하나뿐이고, 필터는 서버 값
+// (진단 상태 · 탐색 단계 · 요청 승인 · 팀 lib 판정)으로만 나눈다.
 
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -17,7 +18,7 @@ import * as api from "../live/api";
 import { LiveRailTasks } from "../live/rail";
 import { resetUrl, useUrl } from "../live/urlDiagnosis";
 import { type Shell, ShellContext, type View } from "../shell";
-import { recDoneKinds, recRunKind, UrlRecordsLive } from "../views/live/UrlRecordsLive";
+import { recDoneKinds, recRunKind, UrlFinishedLive, UrlRunningLive } from "../views/live/urlRecords";
 
 const noop = () => undefined;
 const shell = (route: View, over: Partial<Shell> = {}): Shell => ({
@@ -46,6 +47,7 @@ const completed = {
   phase: "report" as const,
   drain_complete: true,
   result_ready: true,
+  outcome: "complete" as const,
 };
 const zero = { confirmed: 0, review: 0, not_executed: 0, unknown: 0, negative: 0 };
 
@@ -83,7 +85,7 @@ beforeEach(() => {
 });
 afterEach(() => cleanup());
 
-describe("점검 기록 묶음 계산", () => {
+describe("진행 중 · 끝난 점검 묶음 계산", () => {
   it("진행 중: 승인 대기 → 범위 확인 대기 → 점검 중, 확인 못 했거나 어느 것도 아니면 null", () => {
     expect(recRunKind("running", true, "diagnosing", 0)).toBe("run");
     expect(recRunKind("preparing", true, null, 0)).toBe("run");
@@ -96,8 +98,14 @@ describe("점검 기록 묶음 계산", () => {
   });
 
   it("끝난 점검: 실행 마감된 점검만 팀 lib 판정 집계로 나눈다 — 발견 없음은 정상 대조 결과가 있을 때만", () => {
-    expect(recDoneKinds("completed", null)).toEqual([]);
-    expect(recDoneKinds("completed", { ...zero, negative: 3 })).toEqual(["clean"]);
+    expect(recDoneKinds("completed", null, "complete")).toEqual([]);
+    expect(recDoneKinds("completed", { ...zero, negative: 3 }, "complete")).toEqual(["clean"]);
+    // 계획한 작업 일부가 끝나지 않은 실행(partial)은 정상 대조 결과만 있어도 발견 없음이 아니다 (절대규칙 5, #440)
+    expect(recDoneKinds("completed", { ...zero, negative: 3 }, "partial")).toEqual([]);
+    expect(recDoneKinds("completed", { ...zero, negative: 3 })).toEqual([]);
+    // 발견 · 검토 · 판단 불가 묶음은 실행 결과와 상관없이 판정 기록 그대로
+    expect(recDoneKinds("completed", { ...zero, confirmed: 1, negative: 3 }, "partial")).toEqual(["hit"]);
+    expect(recDoneKinds("completed", { ...zero, unknown: 1 }, "partial")).toEqual(["und"]);
     expect(recDoneKinds("completed", { ...zero, confirmed: 1 })).toEqual(["hit"]);
     expect(recDoneKinds("completed", { ...zero, review: 2 })).toEqual(["review"]);
     expect(recDoneKinds("completed", { ...zero, not_executed: 1 })).toEqual(["und"]);
@@ -110,32 +118,34 @@ describe("점검 기록 묶음 계산", () => {
   });
 });
 
-describe("점검 기록 화면", () => {
+describe("진행 중인 점검 · 끝난 점검 화면", () => {
   it("진행 중 칸의 필터로 거르고, 레일에서 다시 오면 가려진 칸 필터만 푼다", () => {
     useUrl.setState({ handle, job: running, verified: true });
     const { rerender } = render(
-      <ShellContext.Provider value={shell("records")}>
-        <UrlRecordsLive />
+      <ShellContext.Provider value={shell("running")}>
+        <UrlRunningLive />
       </ShellContext.Provider>,
     );
-    const run = screen.getByRole("region", { name: "진행 중" });
+    const run = screen.getByRole("region", { name: "진행 중인 점검 목록" });
     expect(within(run).getByRole("button", { name: /target\.example/ })).toBeInTheDocument();
     expect(chip(run, "전체")).toHaveAttribute("aria-pressed", "true");
     expect(chip(run, "점검 중")).toHaveTextContent("1");
     expect(chip(run, "승인 대기")).toHaveTextContent("0");
     // 범위 확인 대기는 그런 점검이 있을 때만
     expect(within(run).queryByRole("button", { name: /범위 확인 대기/ })).toBeNull();
-    expect(screen.getByText("끝난 점검이 없습니다.")).toBeInTheDocument();
 
     fireEvent.click(chip(run, "승인 대기"));
     expect(within(run).queryByRole("button", { name: /target\.example/ })).toBeNull();
     expect(within(run).getByText("이 상태의 점검이 없습니다.")).toBeInTheDocument();
     expect(within(run).getByText("0 / 1건")).toBeInTheDocument();
+    // 목록에 가려졌으면 오른쪽 상세도 비운다 (목록과 상세가 어긋나지 않게)
+    const detail = screen.getByRole("complementary", { name: "선택한 점검" });
+    expect(within(detail).getByText("고른 점검이 없습니다.")).toBeInTheDocument();
 
     // 레일에서 이 화면으로 다시 오면(라우팅 순번이 오름) 가려진 칸의 필터가 풀린다
     rerender(
-      <ShellContext.Provider value={shell("records", { navSeq: 2 })}>
-        <UrlRecordsLive />
+      <ShellContext.Provider value={shell("running", { navSeq: 2 })}>
+        <UrlRunningLive />
       </ShellContext.Provider>,
     );
     expect(chip(run, "전체")).toHaveAttribute("aria-pressed", "true");
@@ -146,17 +156,16 @@ describe("점검 기록 화면", () => {
     vi.mocked(api.fetchRemediation).mockResolvedValue({ task_id: 42, entries: [candidate(1)] });
     useUrl.setState({ handle, job: completed, verified: true });
     render(
-      <ShellContext.Provider value={shell("records")}>
-        <UrlRecordsLive />
+      <ShellContext.Provider value={shell("finished")}>
+        <UrlFinishedLive />
       </ShellContext.Provider>,
     );
-    const done = screen.getByRole("region", { name: "끝난 점검" });
+    const done = screen.getByRole("region", { name: "끝난 점검 목록" });
     await waitFor(() => expect(chip(done, "검토 필요")).toHaveTextContent("1"));
     expect(api.fetchRemediation).toHaveBeenCalledWith("42", "internal");
     expect(chip(done, "발견 있음")).toHaveTextContent("0");
     expect(chip(done, "발견 없음")).toHaveTextContent("0");
     expect(chip(done, "판단 불가")).toHaveTextContent("0");
-    expect(screen.getByText("진행 중인 점검이 없습니다.")).toBeInTheDocument();
 
     fireEvent.click(chip(done, "발견 있음"));
     expect(within(done).getByText("이 결과의 끝난 점검이 없습니다.")).toBeInTheDocument();
@@ -172,11 +181,11 @@ describe("점검 기록 화면", () => {
     vi.mocked(api.fetchRemediation).mockResolvedValue({ task_id: 42, entries: [] });
     useUrl.setState({ handle, job: { ...completed, state: "cancelled" }, verified: true });
     render(
-      <ShellContext.Provider value={shell("records")}>
-        <UrlRecordsLive />
+      <ShellContext.Provider value={shell("finished")}>
+        <UrlFinishedLive />
       </ShellContext.Provider>,
     );
-    const done = screen.getByRole("region", { name: "끝난 점검" });
+    const done = screen.getByRole("region", { name: "끝난 점검 목록" });
     expect(within(done).getByRole("button", { name: /target\.example/ })).toBeInTheDocument();
     for (const c of ["발견 있음", "발견 없음", "판단 불가"]) expect(chip(done, c)).toHaveTextContent("0");
     expect(within(done).getByRole("note")).toHaveTextContent(
@@ -190,24 +199,57 @@ describe("점검 기록 화면", () => {
     vi.mocked(api.fetchRemediation).mockResolvedValue({ task_id: 42, entries: [] });
     useUrl.setState({ handle, job: completed, verified: true });
     render(
-      <ShellContext.Provider value={shell("records")}>
-        <UrlRecordsLive />
+      <ShellContext.Provider value={shell("finished")}>
+        <UrlFinishedLive />
       </ShellContext.Provider>,
     );
-    const done = screen.getByRole("region", { name: "끝난 점검" });
+    const done = screen.getByRole("region", { name: "끝난 점검 목록" });
     await waitFor(() => expect(within(done).getByRole("note")).toHaveTextContent("정상 대조 결과가 없어"));
     expect(chip(done, "발견 없음")).toHaveTextContent("0");
     expect(chip(done, "전체")).toHaveTextContent("1");
   });
 
+  it("계획한 작업 일부가 끝나지 않은 실행(partial)은 정상 대조 결과만 있어도 발견 없음으로 나누지 않고 까닭을 적는다", async () => {
+    const verdict: api.Remediation["entries"][number] = {
+      ...candidate(1),
+      entry_id: "verdict-1",
+      title: "정상 대조",
+      outcome: "negative",
+      status: "allowed",
+      verification: "stored_verification",
+    };
+    vi.mocked(api.fetchRemediation).mockResolvedValue({ task_id: 42, entries: [verdict] });
+    useUrl.setState({ handle, job: { ...completed, outcome: "partial" }, verified: true });
+    const { unmount } = render(
+      <ShellContext.Provider value={shell("finished")}>
+        <UrlFinishedLive />
+      </ShellContext.Provider>,
+    );
+    const done = screen.getByRole("region", { name: "끝난 점검 목록" });
+    await waitFor(() => expect(within(done).getByRole("note")).toHaveTextContent("계획한 작업 일부가 끝나지 않아"));
+    expect(chip(done, "발견 없음")).toHaveTextContent("0");
+    expect(chip(done, "전체")).toHaveTextContent("1");
+    unmount();
+    // 같은 판정 기록이라도 계획한 작업을 모두 마친 실행(complete)이면 발견 없음
+    useUrl.setState({ handle, job: completed, verified: true });
+    render(
+      <ShellContext.Provider value={shell("finished")}>
+        <UrlFinishedLive />
+      </ShellContext.Provider>,
+    );
+    const again = screen.getByRole("region", { name: "끝난 점검 목록" });
+    await waitFor(() => expect(chip(again, "발견 없음")).toHaveTextContent("1"));
+    expect(within(again).queryByRole("note")).toBeNull();
+  });
+
   it("보고서를 못 읽은 끝난 점검(결과 저장 미확인)은 판정을 부르지 않고 '전체' 에만 보인다", () => {
     useUrl.setState({ handle, job: { ...completed, state: "cancelled", result_ready: false }, verified: true });
     render(
-      <ShellContext.Provider value={shell("records")}>
-        <UrlRecordsLive />
+      <ShellContext.Provider value={shell("finished")}>
+        <UrlFinishedLive />
       </ShellContext.Provider>,
     );
-    const done = screen.getByRole("region", { name: "끝난 점검" });
+    const done = screen.getByRole("region", { name: "끝난 점검 목록" });
     expect(within(done).getByRole("button", { name: /target\.example/ })).toBeInTheDocument();
     expect(chip(done, "발견 없음")).toHaveTextContent("0");
     expect(api.fetchRemediation).not.toHaveBeenCalled();
@@ -255,11 +297,11 @@ describe("점검 기록 화면", () => {
     useUrl.setState({ handle, job, verified: true });
     const goTo = vi.fn<(v: View) => void>();
     render(
-      <ShellContext.Provider value={shell("records", { goTo })}>
-        <UrlRecordsLive />
+      <ShellContext.Provider value={shell("running", { goTo })}>
+        <UrlRunningLive />
       </ShellContext.Provider>,
     );
-    const run = screen.getByRole("region", { name: "진행 중" });
+    const run = screen.getByRole("region", { name: "진행 중인 점검 목록" });
     await waitFor(() => expect(chip(run, "승인 대기")).toHaveTextContent("1"));
     expect(chip(run, "점검 중")).toHaveTextContent("0");
     const detail = screen.getByRole("complementary", { name: "선택한 점검" });
@@ -280,12 +322,12 @@ describe("점검 기록 화면", () => {
     );
     useUrl.setState({ handle, job: completed, verified: true });
     const view = (navSeq: number) => (
-      <ShellContext.Provider value={shell("records", { navSeq })}>
-        <UrlRecordsLive />
+      <ShellContext.Provider value={shell("finished", { navSeq })}>
+        <UrlFinishedLive />
       </ShellContext.Provider>
     );
     const { rerender } = render(view(1));
-    const done = screen.getByRole("region", { name: "끝난 점검" });
+    const done = screen.getByRole("region", { name: "끝난 점검 목록" });
     await waitFor(() => expect(api.fetchRemediation).toHaveBeenCalledTimes(1));
     expect(chip(done, "발견 없음")).toHaveTextContent("—");
     // 이전에 고른 필터('발견 없음')를 둔 채, 보고서를 읽는 중에 레일로 다시 들어온다
@@ -314,12 +356,12 @@ describe("점검 기록 화면", () => {
     );
     useUrl.setState({ handle, job: completed, verified: true });
     const view = (navSeq: number) => (
-      <ShellContext.Provider value={shell("records", { navSeq })}>
-        <UrlRecordsLive />
+      <ShellContext.Provider value={shell("finished", { navSeq })}>
+        <UrlFinishedLive />
       </ShellContext.Provider>
     );
     const { rerender } = render(view(1));
-    const done = screen.getByRole("region", { name: "끝난 점검" });
+    const done = screen.getByRole("region", { name: "끝난 점검 목록" });
     await waitFor(() => expect(api.fetchRemediation).toHaveBeenCalledTimes(1));
     rerender(view(2));
     fireEvent.click(chip(done, "발견 있음"));
@@ -339,12 +381,12 @@ describe("점검 기록 화면", () => {
     );
     useUrl.setState({ handle, job: completed, verified: true });
     const view = (navSeq: number) => (
-      <ShellContext.Provider value={shell("records", { navSeq })}>
-        <UrlRecordsLive />
+      <ShellContext.Provider value={shell("finished", { navSeq })}>
+        <UrlFinishedLive />
       </ShellContext.Provider>
     );
     const { rerender } = render(view(1));
-    const done = screen.getByRole("region", { name: "끝난 점검" });
+    const done = screen.getByRole("region", { name: "끝난 점검 목록" });
     await waitFor(() => expect(api.fetchRemediation).toHaveBeenCalledTimes(1));
     fireEvent.click(chip(done, "발견 없음"));
     rerender(view(2));
@@ -355,20 +397,51 @@ describe("점검 기록 화면", () => {
     expect(within(done).getByRole("note")).toHaveTextContent("보고서를 읽지 못해 결과로 나누지 않고");
   });
 
-  it("이어 보는 점검이 없으면 두 칸 모두 빈 안내와 새 점검 링크", () => {
-    render(
-      <ShellContext.Provider value={shell("records")}>
-        <UrlRecordsLive />
+  it("이어 보는 점검이 없으면 두 화면 모두 빈 안내와 새 점검 링크", () => {
+    const { unmount } = render(
+      <ShellContext.Provider value={shell("running")}>
+        <UrlRunningLive />
       </ShellContext.Provider>,
     );
-    expect(screen.getByText("진행 중인 점검이 없습니다.")).toBeInTheDocument();
-    expect(screen.getByText("끝난 점검이 없습니다.")).toBeInTheDocument();
-    expect(screen.getByText("이 브라우저에서 이어 보는 점검이 없습니다.")).toBeInTheDocument();
+    const run = screen.getByRole("region", { name: "진행 중인 점검 목록" });
+    expect(within(run).getByText("진행 중인 점검이 없습니다.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "새 점검" })).toHaveAttribute("href", "#new");
+    unmount();
+    render(
+      <ShellContext.Provider value={shell("finished")}>
+        <UrlFinishedLive />
+      </ShellContext.Provider>,
+    );
+    const done = screen.getByRole("region", { name: "끝난 점검 목록" });
+    expect(within(done).getByText("끝난 점검이 없습니다.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "새 점검" })).toHaveAttribute("href", "#new");
+  });
+
+  it("진행 중인 점검은 진행 중 점검만, 끝난 점검은 끝난 점검만 보인다", () => {
+    useUrl.setState({ handle, job: running, verified: true });
+    const { unmount } = render(
+      <ShellContext.Provider value={shell("finished")}>
+        <UrlFinishedLive />
+      </ShellContext.Provider>,
+    );
+    const done = screen.getByRole("region", { name: "끝난 점검 목록" });
+    expect(within(done).queryByRole("button", { name: /target\.example/ })).toBeNull();
+    expect(within(done).getByText("끝난 점검이 없습니다.")).toBeInTheDocument();
+    unmount();
+    useUrl.setState({ handle, job: { ...completed, state: "cancelled", result_ready: false }, verified: true });
+    render(
+      <ShellContext.Provider value={shell("running")}>
+        <UrlRunningLive />
+      </ShellContext.Provider>,
+    );
+    const run = screen.getByRole("region", { name: "진행 중인 점검 목록" });
+    expect(within(run).queryByRole("button", { name: /target\.example/ })).toBeNull();
+    expect(within(run).getByText("진행 중인 점검이 없습니다.")).toBeInTheDocument();
   });
 });
 
-describe("레일 → 점검 기록", () => {
-  it("레일의 점검 줄을 누르면 점검 기록으로 가고, 점검 기록을 보는 동안 현재 표시를 단다", () => {
+describe("레일 → 진행 중인 점검 · 끝난 점검", () => {
+  it("진행 중 점검 줄을 누르면 진행 중인 점검으로 가고, 그 화면을 보는 동안 현재 표시를 단다", () => {
     useUrl.setState({ handle, job: running, verified: true });
     const goTo = vi.fn<(v: View) => void>();
     const { rerender } = render(
@@ -379,12 +452,33 @@ describe("레일 → 점검 기록", () => {
     const row = screen.getByRole("button", { name: /target\.example/ });
     expect(row).not.toHaveAttribute("aria-current");
     fireEvent.click(row);
-    expect(goTo).toHaveBeenCalledWith("records");
+    expect(goTo).toHaveBeenCalledWith("running");
     rerender(
-      <ShellContext.Provider value={shell("records", { goTo })}>
+      <ShellContext.Provider value={shell("running", { goTo })}>
         <LiveRailTasks />
       </ShellContext.Provider>,
     );
     expect(screen.getByRole("button", { name: /target\.example/ })).toHaveAttribute("aria-current", "true");
+    // 끝난 점검 화면은 이 점검의 목록이 아니다
+    rerender(
+      <ShellContext.Provider value={shell("finished", { goTo })}>
+        <LiveRailTasks />
+      </ShellContext.Provider>,
+    );
+    expect(screen.getByRole("button", { name: /target\.example/ })).not.toHaveAttribute("aria-current");
+  });
+
+  it("끝난 점검 줄을 누르면 끝난 점검으로 간다", () => {
+    useUrl.setState({ handle, job: { ...completed, state: "cancelled", result_ready: false }, verified: true });
+    const goTo = vi.fn<(v: View) => void>();
+    render(
+      <ShellContext.Provider value={shell("finished", { goTo })}>
+        <LiveRailTasks />
+      </ShellContext.Provider>,
+    );
+    const row = screen.getByRole("button", { name: /target\.example/ });
+    expect(row).toHaveAttribute("aria-current", "true");
+    fireEvent.click(row);
+    expect(goTo).toHaveBeenCalledWith("finished");
   });
 });
