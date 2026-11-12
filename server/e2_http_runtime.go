@@ -165,29 +165,30 @@ type E2HTTPRuntime struct {
 }
 
 type e2HTTPRuntimeTask struct {
-	id              string
-	number          int64
-	exploration     int64
-	store           *db.ExplorationStore
-	ctx             context.Context
-	cancel          context.CancelFunc
-	gate            chan struct{}
-	closeGate       chan struct{}
-	mu              sync.Mutex
-	closed          bool
-	blocked         bool
-	plannerRounds   uint64
-	explorationDone bool
-	explorationErr  error
-	runs            map[int64]uint64
-	active          map[int64]chan struct{}
-	lease           *E2HTTPRunOptions
-	validLease      bool
-	control         *agent.E2HTTPControl
-	results         []e2runner.TrustedResult
-	resultsFailed   bool
-	releaseCalled   bool
-	releaseErr      error
+	id                string
+	number            int64
+	exploration       int64
+	store             *db.ExplorationStore
+	ctx               context.Context
+	cancel            context.CancelFunc
+	gate              chan struct{}
+	closeGate         chan struct{}
+	mu                sync.Mutex
+	closed            bool
+	blocked           bool
+	plannerRounds     uint64
+	explorationDone   bool
+	explorationErr    error
+	explorationBudget *explorationBudgetClosure
+	runs              map[int64]uint64
+	active            map[int64]chan struct{}
+	lease             *E2HTTPRunOptions
+	validLease        bool
+	control           *agent.E2HTTPControl
+	results           []e2runner.TrustedResult
+	resultsFailed     bool
+	releaseCalled     bool
+	releaseErr        error
 
 	promptFailed     bool // mu로 보호한다. 나머지 등록 상태는 gate 안에서만 접근한다.
 	promptRegistered bool
@@ -334,7 +335,13 @@ func (r *E2HTTPRuntime) prepareExploration(ctx context.Context, task *Task, t *e
 	}
 	stop()
 	cancel()
+	proof, typedProof := err.(*explorationBudgetClosure)
+	validProof := typedProof && proof.validFlow()
 	t.mu.Lock()
+	// typed proof가 같은 task/run/Workflow에 결속되고 진단 자원이 전혀 없을 때만 보관한다.
+	if validProof && proof.workflow == r.options.Workflow && proof.binding.TaskID == t.id && proof.binding.RunRef == r.options.Expected.RunRef && t.lease == nil && !t.validLease && len(t.active) == 0 && len(t.runs) == 0 && len(t.results) == 0 && !t.resultsFailed && t.control.Snapshot().Calls == 0 {
+		t.explorationBudget = proof
+	}
 	t.explorationDone = true
 	t.explorationErr = err
 	t.mu.Unlock()

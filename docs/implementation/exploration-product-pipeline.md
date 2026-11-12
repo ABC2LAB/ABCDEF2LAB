@@ -23,3 +23,12 @@
 실제 host adapter가 없으면 `NOT_RUN / boundary_unavailable`을 영속 기록하고 기존 E② 정적 크롤을 유지한다. 이 기록은 initial discovery를 완료하거나 선택 단계를 건너뛰지 않는다. 실제 adapter가 있는 회차의 상한·경계 장애·모델 오류는 실제 종료 사유와 부분 발견을 기록한다. 정리 불명이나 관찰 저장 실패는 진단 admission 성공으로 바꾸지 않는다.
 
 인증 준비·시험 계정 분류, 스크린샷의 모델 시각 입력, 원본 대비 보존율·실제 Qwen, 운영 proxy/registry/namespace 강제는 이 연결 코드의 완료 근거가 아니다. 별도 수용 결과가 없으면 NOT_RUN 또는 미검증으로 남긴다.
+
+
+## 진단 시작 전 모델 예산 마감
+
+탐색이 공유 모델 예산을 먼저 소진한 경우에는 실패한 진단 실행을 합성하지 않는다. pipeline이 실제 Session.Close 성공, 동일 공유 원장의 한도 도달·정산 완료·사용량 확인, 보호 Controller의 같은 회차/대상/revision/저장 revision·cap_exhausted 부분 마감을 검사하여 비공개 종료 증명을 만든다. Controller 검사는 revision과 private 상태를 같은 lock 안에서 확인한다.
+
+E② runtime은 같은 task/run/workflow/budget와 lease·active·runs·results·calls의 부재를 다시 검사한다. 엔진 시작 전 admission과 Supervisor는 이 증명이 있는 경우에만 기존 미완료 intent를 `partial/budget_limited`로 마감한다. intent가 실제로 0이면 `no_intents/budget_limited`이며 수를 만들지 않는다. 일반 ErrBudget, nil Execution, 공개 Snapshot, 불명 모델 사용량만으로 이 경로를 열지 않는다. 기존 진단의 E② Receipt·감사·E③ 검증은 그대로 수행한다.
+
+실제 production constructor·독립 DB LOGIN·Supervisor.Run·CloseTask/drain·권한 반납·PersistRunOutcomeStored까지 시험했다. 시험 provider 실호출2/공유 예산2/known, observed3/inferred1이 보존되고 진단 Deep0/E② Acquire0/calls0/receipt0이었다. 결과는 incomplete1의 partial/budget_limited였다. typed 증명 제거·불명 원장·가짜 완료·stale/zero 저장 revision은 거부한다. 관련 closure/pipeline/Supervisor race 66개가 통과했다. 이는 실제 Qwen 수용이나 E② 진단 송신 성공 시험이 아니다.

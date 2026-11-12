@@ -170,6 +170,28 @@ func TestFirstDiagnosisRuntimeDatabaseOwnedPostgres(t *testing.T) {
 		if readErr != nil || row == nil || row.ExplorationID != task.ExpID {
 			t.Fatal("실제 startup GetTask가 최소 runtime 권한으로 읽히지 않음")
 		}
+		t.Run("actual-exploration-model-budget-before-diagnosis", func(t *testing.T) {
+			// 기존 역할/constructor 시험의 원래 task는 재사용하지 않는다.
+			prior := task.lifecycleSnapshot()
+			if !prior.Paused {
+				if _, err := runtimePool.ExecContext(ctx, "UPDATE tasks SET paused=true WHERE id=$1", task.ID); err != nil {
+					t.Fatal("owned preflight pause failed")
+				}
+				task.updateLifecycle(func(s *taskLifecycleState) { s.Paused = true })
+				defer func() {
+					_, _ = runtimePool.ExecContext(ctx, "UPDATE tasks SET paused=$1 WHERE id=$2", prior.Paused, task.ID)
+					task.updateLifecycle(func(s *taskLifecycleState) { s.Paused = prior.Paused })
+				}()
+			}
+			owned, err := manager.CreateTask("Owned exploration budget closure", "Preserve pre-diagnostic budget outcome", nil, 60, 60)
+			if err != nil || owned == nil {
+				t.Fatal("owned budget task create failed")
+			}
+			if _, err = owned.Store.AddIntent(map[string]any{"summary": "Owned unstarted diagnostic intent"}, 1, nil, "system"); err != nil {
+				t.Fatal("owned budget intent create failed")
+			}
+			firstDiagnosisSupervisorExplorationBudget(t, manager, installer, owned)
+		})
 		t.Run("actual-constructor-close-no-execution", func(t *testing.T) { firstDiagnosisSupervisorConstructorClose(t, manager, installer, task) })
 		t.Run("actual-engine-worker-audit-close-goal-open", func(t *testing.T) { firstDiagnosisSupervisorEngineRun(t, manager, installer, task, "allowed") })
 		t.Run("actual-engine-tool-failure-is-not-close-failure", func(t *testing.T) {

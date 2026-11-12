@@ -255,7 +255,11 @@ func (s *Server) RunExplorationPipeline(ctx context.Context, task *Task, o Explo
 			return out, e
 		}
 		if errors.Is(e, ErrFirstDiagnosisModelBudget) {
-			return out, ErrE2HTTPBudgetLimited
+			proof, proofErr := s.closedExplorationBudget(o, session)
+			if proofErr != nil {
+				return out, proofErr
+			}
+			return out, proof
 		}
 	}
 	snapshot, e = o.Workflow.Snapshot()

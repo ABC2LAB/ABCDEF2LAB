@@ -26,7 +26,7 @@ A [#451](https://github.com/ABC2LAB/ABCDEF2LAB/pull/451) → B [#453](https://gi
 | #446 | 긴 출력 저장, #444 위 스택 | 열림, head ed034bbbe1fa26a6fd926852dcd77fc8e8b2e2e2, base dev, 리뷰 없음; 최신 CI 실행은 PR에서 확인 |
 | #447 | Workbench 화면 구조 변경 | aa034c8 병합. 화면 파일 수정 없음 |
 | #450 | 중지된 실행 intent 개수 | 57020d0으로 dev 병합, 최종 통합에 포함 |
-| #454 | 저장 보고서 실행 결과 | 열림, head 4b3c920af6a2a830fec6b1114968f4906e40af88, #450 브랜치 위 스택. 리뷰·inline 없음, CI 실행 중, 변경 파일은 이 작업과 겹치지 않음 |
+| #454 | 저장 보고서 실행 결과 | 열림, head e10e01501075bab2e5394a34dd6378e24e9c351d, 현재 base dev. 리뷰·inline 없음, CI 실행 중, 변경 파일은 이 작업과 겹치지 않음 |
 
 #444/#446의 runner·sandbox 파일과 `agent/e2_http.go`는 변경하지 않는다. #450의 `url_preparation_runtime.go`는 제품 host capability 연결과 같은 파일이므로 각각의 diff를 확인하고 기존 중지 결과 분기는 유지한다. 다른 담당자의 브랜치·리뷰·PR은 변경하지 않는다. 목록과 CI는 조회 시점의 상태이며 최종 PR 설명에서 다시 확인한다.
 
@@ -44,3 +44,6 @@ A [#451](https://github.com/ABC2LAB/ABCDEF2LAB/pull/451) → B [#453](https://gi
 실제 fixture 실행 절차는 [하네스](../evaluation/browser-fixture-harness.md), 관측 저장 계약은 [API Recon 복원](../contracts/api-recon-restoration.md), 실제 실행 결과와 항목별 미검증 범위는 [결과](../evaluation/p1-browser-fixture-results.md)에 기록한다. 평가 PR D의 서명 형식은 해당 선행 커밋/PR의 문서를 따른다.
 
 실제 별도 제어망 검사에서 브라우저 컨테이너의 Node 자식이 자기 MCP 제어 포트에 TCP 연결했다(B16 **FAIL**). 도구 필터가 이 네트워크 도달을 막는다고 주장하지 않는다. 운영 어댑터를 연결하기 전에 경계 담당이 프로세스·제어 채널의 접근 통제를 완성하고 같은 음성 시험을 통과해야 한다. 현재 제품의 host capability 기본값은 nil이다.
+
+
+최종 확인 중 추가로 열린 #455(`c69e61b3c8b1bbe3cf9b9aef64a9e7ddf5271197`, dev, 설치 run_seconds)와 #456(`f297491815eea2d5b940d8eb8b7a15986c92aca6`, dev, 탐색 결과 UI seam)의 파일·리뷰·CI·병합 상태를 확인했다. 둘 다 리뷰/inline 없음, CI 실행 중이며 자체 변경 파일과 겹치지 않는다. #455의 실행 시간은 기존 승인 Scope/launch 예산에서 읽으므로 설치 키를 중복 추가하지 않는다. #456은 mock 배너가 있는 표시 화면이며 실 API 연결을 이 PR이 완료했다고 주장하지 않는다. 발견/경계 private 채널이 정해진 뒤 UI 담당 매퍼와 연결해야 한다. 다른 담당자의 PR은 수정·병합하지 않았다.

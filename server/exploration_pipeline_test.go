@@ -137,9 +137,9 @@ func (p *pipelineProvider) Complete(_ context.Context, _ llm.CompletionRequest) 
 		if n == 2 {
 			name, input = "report_discovery", `{"discoveries":[{"method":"GET","path":"/read/inferred"}]}`
 		}
-		return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: "pipeline-call", Name: name, Input: json.RawMessage(input)}}}, "tool_use", llm.Usage{}, nil
+		return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: "pipeline-call", Name: name, Input: json.RawMessage(input)}}}, "tool_use", llm.Usage{InputTokens: 1, OutputTokens: 1}, nil
 	}
-	return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock("탐색 완료")}}, "end_turn", llm.Usage{}, nil
+	return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock("탐색 완료")}}, "end_turn", llm.Usage{InputTokens: 1, OutputTokens: 1}, nil
 }
 func (p *pipelineProvider) Stream(context.Context, llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
 	return func(yield func(llm.StreamEvent, error) bool) {
@@ -149,13 +149,19 @@ func (p *pipelineProvider) Stream(context.Context, llm.CompletionRequest) iter.S
 func pipelineFixture(t *testing.T) (*Server, *Task, ExplorationPipelineOptions, *explorationFixtureBoundary, *explorationFixtureBrowser, *explorationMCPFixture, *pipelineProvider) {
 	return pipelineFixtureWithStore(t, nil, "")
 }
-func pipelineFixtureWithStore(t *testing.T, store diagnosisflow.Store, taskID string) (*Server, *Task, ExplorationPipelineOptions, *explorationFixtureBoundary, *explorationFixtureBrowser, *explorationMCPFixture, *pipelineProvider) {
+func pipelineFixtureWithStore(t *testing.T, store diagnosisflow.Store, taskID string, runRef ...string) (*Server, *Task, ExplorationPipelineOptions, *explorationFixtureBoundary, *explorationFixtureBrowser, *explorationMCPFixture, *pipelineProvider) {
 	t.Helper()
 	session, b, browser, http, _ := explorationSessionFixture(t, exploration.BrowserToolNames())
 	binding := session.Binding
 	if taskID != "" {
 		binding.TaskID = taskID
 		binding.JobID = "pipeline-owned-" + taskID
+		session.Binding = binding
+		b.lease.state.Binding = binding
+		browser.info.Binding = binding
+	}
+	if len(runRef) > 0 {
+		binding.RunRef = runRef[0]
 		session.Binding = binding
 		b.lease.state.Binding = binding
 		browser.info.Binding = binding

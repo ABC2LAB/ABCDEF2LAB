@@ -75,7 +75,8 @@ B14 양성의 navigate 완료는 false다. 페이지가 즉시 POST로 이동해
 | P05 | PASS | 소유 TLS 인증서 검증·공개 CA trust 유지 |
 | P06 | NOT_RUN | cap/실패 과금/동시 CONNECT/취소는 단위·계약 시험 PASS, 실제 Chromium cap 소진 종단은 별도 |
 | P07 | PASS | browser lease 실제 정지·연결0·회차 자원 제거 |
-| P08/P09 | PASS | CDN 역할 JS/CSS/SVG 렌더링과 완전 로컬 HTTP/TCP0 |
+| P08 | UNDECIDABLE | JS/CSS/SVG 렌더링 부분 PASS, 정본의 폰트 전달·렌더링은 NOT_RUN |
+| P09 | PASS | 완전 로컬 CDN HTTP/TCP0 |
 | B01 | PASS | 명시한 두 실행 namespace의 직접 대상 TCP 경로 |
 | B02/B03 | NOT_RUN | Chromium proxy flag 제거·독자 DNS wire 회차 미실행 |
 | B04/B05 | PASS | 위 양성 variant와 동일한 fixture 수신기/리다이렉트 |
@@ -84,7 +85,7 @@ B14 양성의 navigate 완료는 false다. 페이지가 즉시 POST로 이동해
 | B11 | NOT_RUN | Node 직접 TCP 부분은 PASS, curl/전체 자식 프로토콜 수용 아님 |
 | B12 | UNDECIDABLE | prefetch/TCP 부분은 PASS, resolver 고정이라 DNS wire 자체 미실행 |
 | B13 | PASS | 위 blob/data Worker fixture variant |
-| B14 | PASS | 쓰기 미승인 송신0 범위. 차단된 모든 경로의 발견 등록은 미검증 |
+| B14 | UNDECIDABLE | 쓰기 미승인 송신0 부분 PASS, 차단된 모든 경로의 발견 등록은 미검증 |
 | B15/B17 | NOT_RUN | CDN 탐색 이동·직접 Node/curl 헤더 위조의 정본 종단 묶음 미실행 |
 | B16 | FAIL | Node 자식의 자기 MCP 제어 TCP 도달. 키 mount 부재는 이를 대신하지 않음 |
 | B18 | UNDECIDABLE | 실제 페이지의 WebMCP API가 none. 이름 충돌 등록 자체가 일어나지 않음 |
@@ -106,6 +107,7 @@ P04/S04는 정본에서 삭제된 항목이다. fixture HTTP-over-Unix 제어 AP
 
 - 새 경계/가드 `go test -race ./internal/explorefixture`: 41 PASS/0 FAIL/0 SKIP.
 - 제품 pipeline·MCP·gate 관련: 초기 38 race PASS(PG 재연결 포함), 최신 dev 통합 뒤 선택한 탐색/제품 시험 31 PASS/0 FAIL/0 SKIP.
+- 탐색 선소진 예산 마감: private controller/실제 Supervisor/영속 마감까지 관련 race66 PASS/0 SKIP. 새 진단·receipt를 만들지 않고 partial/budget_limited를 보존.
 - 발견 경로: 225 단위 PASS, 별도 PostgreSQL16 race4 PASS, Node metadata5 PASS.
 - 평가 PR D: Python1830 PASS, 계측기/pathmask race244 PASS, vet 통과.
 - 최신 dev 통합본 Linux/Windows/Darwin `go build ./...`, 변경한 server/cmd/fixture `go vet` 통과.
