@@ -15,6 +15,7 @@ import (
 	"iter"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -292,6 +293,22 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		provider.command += " | grep -q never-present-owned-fixture"
 	}
 	plannerProvider := &firstDiagnosisPlannerProbeProvider{firstDiagnosisE2Provider: firstDiagnosisE2Provider{command: "curl --silent --show-error --max-time 1 " + target.URL + "/denied"}, textOnly: mode != "planner-only"}
+	var otherHits atomic.Int64
+	workerCallsAtScope := -1
+	if mode == "task-scope" {
+		// Planner의 범위 도구는 커버리지 분모만 바꾸고 E② 승인 정책은 바꾸지 않는다(C26, 루프 복원 결정안 §4).
+		// Planner가 대상 호스트 IP 전체를 작업 범위에 넣은 뒤에도, 같은 호스트의 승인 안 된 포트로 가는 진단 요청은
+		// E②가 보내지 않아야 한다.
+		other := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { otherHits.Add(1) }))
+		defer other.Close()
+		otherURL, parseErr := url.Parse(other.URL)
+		if parseErr != nil {
+			t.Fatal("범위 밖 fixture 주소 해석 실패")
+		}
+		plannerProvider.scopeValue = otherURL.Hostname()
+		plannerProvider.beforeScope = func() { workerCallsAtScope = provider.calls }
+		provider.command = "curl --silent --show-error --max-time 5 " + other.URL + "/allowed"
+	}
 	if mode == "goal-met" {
 		// Planner가 prove_goal로 하나뿐인 목표를 달성시키면 작업이 done이 되고 실행은 정상 마감된다(C26).
 		factID, err := task.Store.AddNode(pgdb.KindFact, map[string]any{"text": "Owned fixture evidence for the goal."}, 0, "confirmed", "system", nil)
@@ -373,6 +390,36 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		if runErr != nil || result == nil || result.Outcome != diagnosis.OutcomeNoIntents || result.IntentOutcomes != (diagnosis.IntentOutcomes{}) || !result.Valid() ||
 			hits.Load() != 0 || provider.calls != 0 || plannerProvider.calls == 0 {
 			t.Fatalf("intent 없는 실행을 no_intents로 마감하지 않음 err=%v result=%+v hits=%d", runErr, result, hits.Load())
+		}
+		return
+	}
+	if mode == "task-scope" {
+		var scopes int
+		if installer.QueryRow("SELECT count(*) FROM task_scope WHERE task_id=$1 AND source='agent' AND net=($2||'/32')::cidr", mustFirstDiagnosisTaskNumber(task.ID), plannerProvider.scopeValue).Scan(&scopes) != nil {
+			t.Fatal("작업 범위 조회 실패")
+		}
+		execution, ok := runtime.host.Runtime().Execution(task.ID)
+		// 실행 정책은 범위를 더한 뒤에 만들어졌지만 승인 파일의 판·규칙 그대로여야 한다.
+		revision, rules := "", ""
+		if ok && execution != nil {
+			view := execution.Policy()
+			revision = view.PolicyRevision
+			for _, rule := range view.Rules {
+				rules += rule.Ref + ";"
+			}
+		}
+		wantRules := ""
+		for _, rule := range policy.Rules {
+			wantRules += rule.Ref + ";"
+		}
+		closeCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stop()
+		closeErr := runtime.Close(closeCtx)
+		results := runtime.host.Runtime().Results(task.ID)
+		if runErr != nil || closeErr != nil || !plannerProvider.scoped || workerCallsAtScope != 0 || provider.calls == 0 || scopes != 1 ||
+			revision != policy.PolicyRevision || rules != wantRules || otherHits.Load() != 0 || hits.Load() != 0 ||
+			len(results) != 1 || results[0].Classification != "policy_not_executed" || results[0].Call.Counts.Denied != 1 || !results[0].Call.AuditComplete || !results[0].Final {
+			t.Fatalf("범위 도구가 E② 승인 범위를 넓힘 err=%v close=%v scoped=%v workerAtScope=%d scopes=%d other=%d hits=%d results=%d", runErr, closeErr, plannerProvider.scoped, workerCallsAtScope, scopes, otherHits.Load(), hits.Load(), len(results))
 		}
 		return
 	}
