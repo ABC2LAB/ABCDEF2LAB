@@ -402,6 +402,12 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		if err := runtime.Close(closeCtx); !errors.Is(err, ErrFirstDiagnosisOutcome) {
 			t.Fatal("취소 실패를 보존한 실제 task·자식·터널·감사 drain이 완료되지 않음")
 		}
+		// 중지된 실행은 마감 뒤 intent 결과 개수만 남긴다(C08 2-2). 정상 마감 결과는 없다. 진행 중 송신이 끊긴
+		// intent는 결과 불명(unknown)이다.
+		if stopped := supervisor.ClosureResult(); supervisor.RunResult() != nil || stopped == nil || !stopped.StoppedValid() ||
+			stopped.IntentOutcomes != (diagnosis.IntentOutcomes{Unknown: 1}) {
+			t.Fatalf("중지 실행 intent 결과 불일치: %+v", stopped)
+		}
 		select {
 		case <-targetExited:
 		case <-closeCtx.Done():
