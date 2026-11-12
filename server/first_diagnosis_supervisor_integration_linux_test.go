@@ -228,6 +228,16 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	policy.Helper = helper
 	policy.HelperSHA256 = hex.EncodeToString(digest[:])
 	policy.Rules = []E2HTTPFileRule{{Ref: "owned-native-rule", Origin: target.URL, ConnectIP: "127.0.0.1", PathPrefix: "/allowed", PathScopeRef: "owned-native-path", Methods: []string{"GET"}}}
+	ruleOrigin := target.URL
+	if mode == "insert-assets" {
+		// 하위 도메인 이름의 승인 origin(연결은 고정 IP). 원본 upsert가 그 루트 도메인을 작업에 붙이지 않는지 본다(C24).
+		targetURL, parseErr := url.Parse(target.URL)
+		if parseErr != nil {
+			t.Fatal("대상 주소 해석 실패")
+		}
+		ruleOrigin = "http://app.owned-assets.test:" + targetURL.Port()
+		policy.Rules[0].Origin = ruleOrigin
+	}
 	policy.Limits.CallTimeoutMS = 10000
 	policy.Limits.RequestTimeoutMS = 5000
 	policy.Proxy.RequestTimeoutMS = 5000
@@ -348,6 +358,20 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		plannerProvider.beforeScope = func() { workerCallsAtScope = provider.calls }
 		provider.command = "curl --silent --show-error --max-time 5 " + other.URL + "/allowed"
 	}
+	approvedAsset, otherAsset := ruleOrigin+"/api/items", ""
+	if mode == "insert-assets" {
+		// 진단 Worker의 insert_assets(C24): 승인 origin 안의 자산만 실제 runtime 역할로 기록하고, 같은 호스트의 다른 포트
+		// 자산은 기록하지 않는다.
+		other := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+		defer other.Close()
+		otherURL, parseErr := url.Parse(other.URL)
+		if parseErr != nil {
+			t.Fatal("범위 밖 fixture 주소 해석 실패")
+		}
+		otherAsset = "http://app.owned-assets.test:" + otherURL.Port() + "/api/items"
+		provider.assets = []map[string]any{{"type": "endpoint", "url": approvedAsset, "method": "GET"}, {"type": "endpoint", "url": otherAsset, "method": "GET"}}
+		provider.command = "curl --silent --show-error --max-time 5 " + ruleOrigin + "/allowed"
+	}
 	if mode == "goal-met" {
 		// Planner가 prove_goal로 하나뿐인 목표를 달성시키면 작업이 done이 되고 실행은 정상 마감된다(C26).
 		factID, err := task.Store.AddNode(pgdb.KindFact, map[string]any{"text": "Owned fixture evidence for the goal."}, 0, "confirmed", "system", nil)
@@ -429,6 +453,32 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		if runErr != nil || result == nil || result.Outcome != diagnosis.OutcomeNoIntents || result.IntentOutcomes != (diagnosis.IntentOutcomes{}) || !result.Valid() ||
 			hits.Load() != 0 || provider.calls != 0 || plannerProvider.calls == 0 {
 			t.Fatalf("intent 없는 실행을 no_intents로 마감하지 않음 err=%v result=%+v hits=%d", runErr, result, hits.Load())
+		}
+		return
+	}
+	if mode == "insert-assets" {
+		var approved, other, linked, rootLinked int
+		taskNumber := mustFirstDiagnosisTaskNumber(task.ID)
+		if installer.QueryRow("SELECT count(*) FROM assets WHERE type='root_domain' AND domain='owned-assets.test' AND $1=ANY(task_ids)", taskNumber).Scan(&rootLinked) != nil {
+			t.Fatal("루트 도메인 조회 실패")
+		}
+		if installer.QueryRow("SELECT count(*) FROM assets WHERE type='endpoint' AND url=$1 AND $2=ANY(task_ids)", approvedAsset, taskNumber).Scan(&approved) != nil ||
+			installer.QueryRow("SELECT count(*) FROM assets WHERE url=$1", otherAsset).Scan(&other) != nil ||
+			installer.QueryRow("SELECT count(*) FROM task_asset_links l JOIN assets a ON a.id=l.asset_id WHERE l.task_id=$1 AND a.url=$2 AND l.source='agent'", taskNumber, approvedAsset).Scan(&linked) != nil {
+			t.Fatal("자산 조회 실패")
+		}
+		var result struct {
+			Results []struct {
+				Index int `json:"index"`
+			} `json:"results"`
+			Errors []struct {
+				Index int    `json:"index"`
+				Error string `json:"error"`
+			} `json:"errors"`
+		}
+		decodeErr := json.Unmarshal([]byte(provider.assetsResult), &result)
+		if runErr != nil || decodeErr != nil || approved != 1 || other != 0 || linked != 1 || rootLinked != 0 || len(result.Results) != 1 || result.Results[0].Index != 0 || len(result.Errors) != 1 || result.Errors[0].Index != 1 || provider.unsupportedTool {
+			t.Fatalf("insert_assets 기록이 승인 대상과 다름 err=%v approved=%d other=%d linked=%d root=%d result=%q", runErr, approved, other, linked, rootLinked, provider.assetsResult)
 		}
 		return
 	}

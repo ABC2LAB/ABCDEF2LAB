@@ -8,11 +8,12 @@ import { createContext, useContext } from "react";
 import type { DSel } from "./store";
 
 /**
- * 열세 화면 (해시 이름 = data-view). running · finished = 진행 중인 점검 · 끝난 점검 (레일에서 점검을 누르면 오는 목록,
+ * 열네 화면 (해시 이름 = data-view). running · finished = 진행 중인 점검 · 끝난 점검 (레일에서 점검을 누르면 오는 목록,
  * 시안 v54 에서 점검 기록을 둘로 나눔). explore = 탐색 결과(발견·경계 기록 요약, 운영자 전용).
  * accessmap = 접근통제 지도(신원 × 자원 교차 접근 판정, 수평 IDOR v0.1, 운영자 전용).
  * coverage = 커버리지(검사 영역별 상태 집계 — 무엇을 얼마나 검사했나, '미시도'를 '없음'으로 칠하지 않음).
  * finding = 발견 상세(구조화 판정 레코드 — 증거·신호·다계정 비교, 증거 부족이면 보수적으로 판단 불가).
+ * e2flow = 전송 통제 흐름(E② — Bash 명령→요청→허용/차단, 3분류 fail-closed, 운영자 전용).
  * classify = 계정 분류(시험 계정 표시 등록·승인, 운영자 전용, 목업).
  */
 export type View =
@@ -25,6 +26,7 @@ export type View =
   | "accessmap"
   | "coverage"
   | "finding"
+  | "e2flow"
   | "classify"
   | "scope"
   | "live"
@@ -39,6 +41,7 @@ export const VIEWS: readonly View[] = [
   "accessmap",
   "coverage",
   "finding",
+  "e2flow",
   "classify",
   "scope",
   "live",
