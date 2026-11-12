@@ -111,6 +111,8 @@ type explorationFixtureProvider struct {
 	invalid   atomic.Bool
 	block     bool
 	started   chan struct{}
+	// firstTool·firstInput은 첫 턴에 부를 도구를 바꾼다(비면 브라우저 이동).
+	firstTool, firstInput string
 }
 
 func (p *explorationFixtureProvider) Complete(ctx context.Context, r llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
@@ -132,6 +134,9 @@ func (p *explorationFixtureProvider) Complete(ctx context.Context, r llm.Complet
 		return llm.Message{}, "", llm.Usage{}, ctx.Err()
 	}
 	name, input := "mcp__explore_browser__browser_navigate", `{"url":"https://owned.test/"}`
+	if n == 1 && p.firstTool != "" {
+		name, input = p.firstTool, p.firstInput
+	}
 	if n == 2 {
 		name, input = "report_discovery", `{"discoveries":[{"method":"GET","path":"/read/api"}]}`
 	}
@@ -725,15 +730,12 @@ func TestExplorationSessionRejectsActiveBoundaryCloseReply(t *testing.T) {
 	}
 }
 
+// 직접 Bash 칸은 typed 격리 실행(exploresandbox.DirectBash)만 받아 이름만 Bash인 CoreTool은 컴파일되지 않는다.
+// 남은 일반 칸(API Recon)은 어떤 이름이든 I/O 전에 거부한다.
 func TestExplorationSessionRejectsGenericDirectCapabilitiesBeforeAnyIO(t *testing.T) {
 	for _, name := range []string{"Bash", "Skill"} {
 		o, b, _, f, p := explorationSessionFixture(t, exploration.BrowserToolNames())
-		tool := actool.Build(actool.Spec{Name: name})
-		if name == "Bash" {
-			o.DirectBash = tool
-		} else {
-			o.APIRecon = tool
-		}
+		o.APIRecon = actool.Build(actool.Spec{Name: name})
 		if _, err := OpenExplorationSession(t.Context(), o); !errors.Is(err, exploration.ErrUnavailable) || b.opens.Load() != 0 || f.requests.Load() != 0 || p.calls.Load() != 0 {
 			t.Fatal("generic direct capability reached boundary/browser/model")
 		}
