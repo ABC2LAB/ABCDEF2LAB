@@ -11,6 +11,17 @@ import (
 
 type Postgres struct{ DB *sql.DB }
 
+const maxWorkflowWriteDuration = 5 * time.Second
+
+// 이미 소유한 저장은 호출 취소와 분리하되, 보호 마감의 명시적 시간 상한은 늘리지 않는다.
+func workflowWriteContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	deadline := time.Now().Add(maxWorkflowWriteDuration)
+	if requested, ok := ctx.Deadline(); ok && requested.Before(deadline) {
+		deadline = requested
+	}
+	return context.WithDeadline(context.WithoutCancel(ctx), deadline)
+}
+
 // Migrate는 설치자만 호출한다. API·실행 프로세스는 DDL 권한을 받지 않는다.
 func Migrate(ctx context.Context, pool *sql.DB) error {
 	if pool == nil {
@@ -36,7 +47,7 @@ func (p Postgres) write(ctx context.Context, old uint64, r Record) error {
 	if err != nil || len(raw) > 128<<10 {
 		return ErrUnavailable
 	}
-	call, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	call, cancel := workflowWriteContext(ctx)
 	defer cancel()
 	tx, err := p.DB.BeginTx(call, nil)
 	if err != nil {

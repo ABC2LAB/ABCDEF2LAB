@@ -36,22 +36,26 @@ func (l Limits) Valid() bool {
 func ValidMode(mode string) bool { return mode == Auto || mode == Manual }
 
 type Endpoint struct {
-	ObservationError string `json:"observation_error,omitempty"`
-	ID               string `json:"id"`
-	Method           string `json:"method"`
-	Path             string `json:"path"`
-	Kind             string `json:"kind"`
-	Source           string `json:"source"`
-	From             string `json:"from"`
-	InScope          bool   `json:"in_scope"`
-	Change           string `json:"change"`
-	Visited          bool   `json:"visited"`
-	Status           int    `json:"status,omitempty"`
-	Selected         bool   `json:"selected"`
-	Duplicates       int    `json:"duplicates"`
-	CallRef          string `json:"call_ref,omitempty"`
-	Request          string `json:"request,omitempty"`
-	Response         string `json:"response,omitempty"`
+	DiscoveryConfidence   string `json:"discovery_confidence,omitempty"`
+	ExplorationSessionRef string `json:"exploration_session_ref,omitempty"`
+	ExplorationSeq        uint64 `json:"exploration_seq,omitempty"`
+	Transport             string `json:"transport,omitempty"`
+	ObservationError      string `json:"observation_error,omitempty"`
+	ID                    string `json:"id"`
+	Method                string `json:"method"`
+	Path                  string `json:"path"`
+	Kind                  string `json:"kind"`
+	Source                string `json:"source"`
+	From                  string `json:"from"`
+	InScope               bool   `json:"in_scope"`
+	Change                string `json:"change"`
+	Visited               bool   `json:"visited"`
+	Status                int    `json:"status,omitempty"`
+	Selected              bool   `json:"selected"`
+	Duplicates            int    `json:"duplicates"`
+	CallRef               string `json:"call_ref,omitempty"`
+	Request               string `json:"request,omitempty"`
+	Response              string `json:"response,omitempty"`
 	// 탐색 실행기가 보고한 요청 모양(탐색 계약 §7). 이름만 있고 값은 없다.
 	QueryKeys   []string `json:"query_keys,omitempty"`
 	BodyKeys    []string `json:"body_keys,omitempty"`
@@ -65,16 +69,19 @@ type Event struct {
 	Status int       `json:"status,omitempty"`
 }
 type Counts struct {
-	Found        int    `json:"found"`
-	Visited      int    `json:"visited"`
-	Queued       int    `json:"queued"`
-	Sent         uint64 `json:"sent"`
-	Attempted    uint64 `json:"attempted"`
-	Unknown      uint64 `json:"unknown"`
-	Blocked      uint64 `json:"blocked"`
-	Held         uint64 `json:"held,omitempty"`
-	Omitted      uint64 `json:"omitted,omitempty"`
-	InvalidPaths uint64 `json:"invalid_paths,omitempty"`
+	InventoryStored     int    `json:"inventory_stored,omitempty"`
+	InventoryOmitted    uint64 `json:"inventory_omitted,omitempty"`
+	ExplorationRequests uint64 `json:"exploration_requests,omitempty"`
+	Found               int    `json:"found"`
+	Visited             int    `json:"visited"`
+	Queued              int    `json:"queued"`
+	Sent                uint64 `json:"sent"`
+	Attempted           uint64 `json:"attempted"`
+	Unknown             uint64 `json:"unknown"`
+	Blocked             uint64 `json:"blocked"`
+	Held                uint64 `json:"held,omitempty"`
+	Omitted             uint64 `json:"omitted,omitempty"`
+	InvalidPaths        uint64 `json:"invalid_paths,omitempty"`
 	// 탐색 실행기 보고 중 형식 오류·범위 밖이라 버린 수(탐색 실행기 결정안 §2-3).
 	DiscoveriesDropped uint64 `json:"discoveries_dropped,omitempty"`
 }
@@ -96,39 +103,44 @@ type Activity struct {
 	Summary string    `json:"summary"`
 }
 type Snapshot struct {
-	Failure          string     `json:"failure,omitempty"`
-	DetailTruncated  bool       `json:"detail_truncated,omitempty"`
-	ReversibleWrites bool       `json:"reversible_writes"`
-	Commands         []Command  `json:"commands"`
-	Plan             []Plan     `json:"plan,omitempty"`
-	Activity         []Activity `json:"activity,omitempty"`
-	Format           string     `json:"format"`
-	JobID            string     `json:"job_id"`
-	TaskID           string     `json:"task_id"`
-	RunRef           string     `json:"run_ref"`
-	SourceDigest     string     `json:"source_digest"`
-	Revision         uint64     `json:"revision"`
-	Mode             string     `json:"mode"`
-	Stage            string     `json:"stage"`
-	Paused           bool       `json:"paused"`
-	DeepRuns         uint64     `json:"deep_runs"`
-	DeepClosed       uint64     `json:"deep_closed"`
-	InitialCompleted bool       `json:"initial_completed"`
-	CurrentPath      string     `json:"current_path,omitempty"`
-	Limits           Limits     `json:"limits"`
-	Counts           Counts     `json:"counts"`
-	Endpoints        []Endpoint `json:"endpoints"`
-	Events           []Event    `json:"events"`
-	UpdatedAt        time.Time  `json:"updated_at"`
+	ExplorationStatus  string     `json:"exploration_status,omitempty"`
+	ExplorationReason  string     `json:"exploration_reason,omitempty"`
+	ExplorationPartial bool       `json:"exploration_partial,omitempty"`
+	Failure            string     `json:"failure,omitempty"`
+	DetailTruncated    bool       `json:"detail_truncated,omitempty"`
+	ReversibleWrites   bool       `json:"reversible_writes"`
+	Commands           []Command  `json:"commands"`
+	Plan               []Plan     `json:"plan,omitempty"`
+	Activity           []Activity `json:"activity,omitempty"`
+	Format             string     `json:"format"`
+	JobID              string     `json:"job_id"`
+	TaskID             string     `json:"task_id"`
+	RunRef             string     `json:"run_ref"`
+	SourceDigest       string     `json:"source_digest"`
+	Revision           uint64     `json:"revision"`
+	Mode               string     `json:"mode"`
+	Stage              string     `json:"stage"`
+	Paused             bool       `json:"paused"`
+	DeepRuns           uint64     `json:"deep_runs"`
+	DeepClosed         uint64     `json:"deep_closed"`
+	InitialCompleted   bool       `json:"initial_completed"`
+	CurrentPath        string     `json:"current_path,omitempty"`
+	Limits             Limits     `json:"limits"`
+	Counts             Counts     `json:"counts"`
+	Endpoints          []Endpoint `json:"endpoints"`
+	Events             []Event    `json:"events"`
+	UpdatedAt          time.Time  `json:"updated_at"`
 }
 type commandReceipt struct {
 	Fingerprint string `json:"fingerprint"`
 	Operation   string `json:"operation"`
 }
 type Record struct {
-	Snapshot Snapshot                  `json:"snapshot"`
-	Owner    string                    `json:"owner"`
-	Commands map[string]commandReceipt `json:"commands"`
+	Exploration        *explorationState         `json:"exploration,omitempty"`
+	DiscoveryInventory []DiscoveryEvidence       `json:"discovery_inventory,omitempty"`
+	Snapshot           Snapshot                  `json:"snapshot"`
+	Owner              string                    `json:"owner"`
+	Commands           map[string]commandReceipt `json:"commands"`
 }
 type Store interface {
 	Create(context.Context, Record) error
@@ -136,6 +148,8 @@ type Store interface {
 	Read(context.Context, string, string) (Record, error)
 }
 type Binding struct {
+	TargetRef                                                                string
+	TargetRevision                                                           uint64
 	JobID, TaskID, RunRef, SourceDigest, InputDigest, Owner, Mode, TargetURL string
 	PathPrefixes, Methods, Excluded                                          []string
 	ReadonlyPrefixes                                                         []string
