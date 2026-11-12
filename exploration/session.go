@@ -63,6 +63,8 @@ type Reason string
 
 const (
 	Completed           Reason = "completed"
+	ModelError          Reason = "model_error"
+	RuntimeUnavailable  Reason = "runtime_unavailable"
 	Cancelled           Reason = "cancelled"
 	TargetEnded         Reason = "target_ended"
 	CapExhausted        Reason = "cap_exhausted"
@@ -70,7 +72,7 @@ const (
 )
 
 func (r Reason) Valid() bool {
-	return r == Completed || r == Cancelled || r == TargetEnded || r == CapExhausted || r == BoundaryUnavailable
+	return r == Completed || r == Cancelled || r == TargetEnded || r == CapExhausted || r == BoundaryUnavailable || r == ModelError || r == RuntimeUnavailable
 }
 
 type State struct {
