@@ -538,6 +538,15 @@ def driver(args):
             if "provider_failure" in raw:
                 value = raw["provider_failure"]
                 report["provider_failure"] = value if isinstance(value, str) and re.fullmatch(r"[a-z_]{0,64}", value) else "invalid_failure_code"
+            if "observed_query_keys" in raw:
+                if type(raw["observed_query_keys"]) is not bool: raise HarnessError("fixture_driver_result_invalid")
+                report["observed_query_keys"] = raw["observed_query_keys"]
+            if "resource_observations" in raw:
+                resources = raw["resource_observations"]
+                if (not isinstance(resources, dict) or set(resources) != {"/assets/app.js", "/assets/app.css", "/assets/logo.svg", "/api/items"}
+                        or any(type(value) is not bool for value in resources.values())):
+                    raise HarnessError("fixture_driver_result_invalid")
+                report["resource_observations"] = resources
             for key in ("proof", "denied", "form_ref_shape"):
                 if key in raw:
                     if (not isinstance(raw[key], dict) or any(not isinstance(k, str) or not re.fullmatch(r"[A-Za-z0-9_]{1,64}", k)
