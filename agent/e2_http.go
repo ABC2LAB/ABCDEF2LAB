@@ -595,6 +595,10 @@ func (w *Worker) executeE2HTTP(ctx context.Context, name string, taskID int64, a
 	bindings := map[string]actool.CoreTool{"Bash": bash, "WebFetch": newE2HTTPWebFetchTool(bash, execution.RedactOutput)}
 	var toolset *ToolSet
 	if ts != nil {
+		// 승인 origin을 아는 실행이면 원본 upsert가 승인 밖 루트 도메인을 작업에 연결하지 않게 한다(C24).
+		if approved := e2HTTPApprovedOrigins(binding.ApprovedOrigins); as != nil && len(approved) > 0 {
+			as = as.WithHostLinkFilter(e2HTTPApprovedHostAllow(approved))
+		}
 		toolset = newE2HTTPWorkerToolSet(ts, as, name, taskID, intent.ID)
 		base = append(toolset.WorkerTools(), base...)
 		bindings["submit_diagnostic_candidate"] = newE2DiagnosticCandidateTool(ts, binding, state, func() { toolset.writes.Facts++ })

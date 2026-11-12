@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"strconv"
 )
 
 // testSetup opens a DB and returns both stores. Skips if no PG.
@@ -1122,5 +1123,47 @@ func TestQueryDSLInScopeMembership(t *testing.T) {
 	}
 	if !sawOut {
 		t.Fatalf("taskID<=0 should fall back to global and include out-of-scope asset %d", outIDs[0])
+	}
+}
+
+// 진단 실행의 자산 기록은 서비스·엔드포인트 upsert가 호스트의 루트 도메인·하위 도메인 자산을 작업에 연결하는 부수
+// 동작을 허락한 이름으로만 한다(C24). 필터가 없으면 원본처럼 모두 연결한다.
+func TestAssetHostLinkFilterLimitsDerivedHostAssets(t *testing.T) {
+	d, av2, _ := testSetup(t)
+	defer d.Close()
+	task, err := d.CreateTask("host link filter", "goal", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.DeleteTask(task.ID) })
+	taskID := task.ID
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
+	linked := func(kind, domain string) bool {
+		t.Helper()
+		var n int
+		if err := d.QueryRow(`SELECT count(*) FROM assets WHERE type=$1 AND domain=$2 AND $3=ANY(task_ids)`, kind, domain, taskID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n > 0
+	}
+	approved := "app.filter-" + suffix + ".test"
+	root := "filter-" + suffix + ".test"
+	filtered := av2.WithHostLinkFilter(func(name string) bool { return name == approved })
+	if _, err := filtered.UpsertEndpoint(UpsertEndpointReq{URL: "https://" + approved + "/api/items", Method: "GET", TaskID: taskID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := filtered.UpsertHTTPService(UpsertHTTPServiceReq{URL: "https://" + approved + ":8443", TaskID: taskID}); err != nil {
+		t.Fatal(err)
+	}
+	if linked("root_domain", root) || !linked("subdomain", approved) {
+		t.Fatalf("필터가 승인 밖 루트 도메인을 막거나 승인 호스트를 남기지 않음: root=%v sub=%v", linked("root_domain", root), linked("subdomain", approved))
+	}
+	// 필터 없는 원본 경로는 그대로 루트 도메인을 연결한다.
+	other := "app.plain-" + suffix + ".test"
+	if _, err := av2.UpsertEndpoint(UpsertEndpointReq{URL: "https://" + other + "/x", Method: "GET", TaskID: taskID}); err != nil {
+		t.Fatal(err)
+	}
+	if !linked("root_domain", "plain-"+suffix+".test") {
+		t.Fatal("필터 없는 원본 경로의 루트 도메인 연결이 바뀜")
 	}
 }

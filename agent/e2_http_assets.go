@@ -110,6 +110,20 @@ func e2HTTPAssetApproved(item assetInputItem, origins []e2HTTPApprovedOrigin) bo
 	return true
 }
 
+// e2HTTPApprovedHostAllow는 승인 origin의 호스트 이름만 허락한다. 원본 서비스·엔드포인트 upsert가 그 호스트의 루트
+// 도메인·하위 도메인 자산을 작업에 연결하는 부수 동작(db linkHostAssets)을 승인 호스트로 제한하는 데 쓴다.
+func e2HTTPApprovedHostAllow(origins []e2HTTPApprovedOrigin) func(string) bool {
+	return func(name string) bool {
+		name = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), ".")
+		for _, o := range origins {
+			if name == o.host {
+				return true
+			}
+		}
+		return false
+	}
+}
+
 type e2HTTPInsertAssetsTool struct {
 	actool.CoreTool
 	origins []e2HTTPApprovedOrigin
