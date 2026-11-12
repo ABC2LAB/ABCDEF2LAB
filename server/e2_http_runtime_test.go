@@ -276,3 +276,21 @@ func TestPlannerTargetDataUsesOnlyTheBoundLeaseRedactor(t *testing.T) {
 	// This fixture has no actual execution resources to close.
 	runtime.task.lease = nil
 }
+
+// Plan당 상한(C26·C32)은 실행 Runtime을 만들 때 검사한다. 범위 밖 값이면 Runtime을 만들지 않는다.
+func TestE2HTTPRuntimeRejectsOutOfRangePlannerLimits(t *testing.T) {
+	runtime, _ := e2HTTPRuntimeFixture(t, func(o *E2HTTPRuntimeOptions) {
+		o.PlannerLimits = agent.E2HTTPPlannerLimits{MaxTurns: 40, MaxDuration: 5 * time.Minute}
+	})
+	if runtime.options.PlannerLimits.MaxTurns != 40 {
+		t.Fatal("유효한 Plan당 상한을 Runtime에 남기지 않음")
+	}
+	for _, limits := range []agent.E2HTTPPlannerLimits{{MaxTurns: -1}, {MaxTurns: 1001}, {MaxDuration: time.Hour + time.Nanosecond}} {
+		opts := runtime.options
+		opts.PlannerLimits = limits
+		if bad, err := NewE2HTTPRuntime(context.Background(), opts); err == nil {
+			_ = bad.Close(context.Background())
+			t.Fatalf("범위 밖 Plan당 상한으로 Runtime을 만듦: %+v", limits)
+		}
+	}
+}

@@ -127,8 +127,11 @@ func startLaunchWithDatabase(ctx context.Context, c launchConfig, modelBudget *s
 		if len(workflow) == 1 {
 			flow = workflow[0]
 		}
-		o := c.HTTP
-		httpRuntime, startErr := server.StartFirstDiagnosisHTTP(ctx, manager, server.FirstDiagnosisHTTPStartOptions{Host: server.FirstDiagnosisHTTPHostConfig{PolicyFile: o.PolicyFile, AuthorityFile: o.AuthorityFile, AuthorityRoot: o.AuthorityRoot}, SkillDir: c.SkillDir, DataDir: c.DataDir, KeyDir: c.KeyDir, LocalLLMManifestPath: c.LocalLLMManifestPath, ModelExecutionMode: c.ModelExecutionMode, ModelBudget: modelBudget, Hooks: server.FirstDiagnosisHTTPHooks{Workflow: flow, CheckAuthority: current, Exploration: urlExplorationStageFrom(ctx)}, OpenRouterManifestPath: c.OpenRouterManifestPath, Supervisor: d.supervisor, Shutdown: d.supervisor.Shutdown(), CleanupTimeout: time.Duration(c.ShutdownTimeoutSeconds) * time.Second})
+		host, ok := c.httpHostConfig()
+		if !ok {
+			return fail(errPreparation)
+		}
+		httpRuntime, startErr := server.StartFirstDiagnosisHTTP(ctx, manager, server.FirstDiagnosisHTTPStartOptions{Host: host, SkillDir: c.SkillDir, DataDir: c.DataDir, KeyDir: c.KeyDir, LocalLLMManifestPath: c.LocalLLMManifestPath, ModelExecutionMode: c.ModelExecutionMode, ModelBudget: modelBudget, Hooks: server.FirstDiagnosisHTTPHooks{Workflow: flow, CheckAuthority: current, Exploration: urlExplorationStageFrom(ctx)}, OpenRouterManifestPath: c.OpenRouterManifestPath, Supervisor: d.supervisor, Shutdown: d.supervisor.Shutdown(), CleanupTimeout: time.Duration(c.ShutdownTimeoutSeconds) * time.Second})
 		err = startErr
 		if httpRuntime != nil {
 			d.runtime = httpRuntime
