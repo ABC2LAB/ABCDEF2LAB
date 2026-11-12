@@ -174,3 +174,16 @@ func TestPolicyFingerprintIncludesTLSApprovalModeWithoutRunKey(t *testing.T) {
 		t.Fatal("per-approval TLS key leaked into meaning")
 	}
 }
+
+// 응답 상한(C16 결정안 3)은 정한 정책의 지문에만 들어간다. 정하지 않은 정책의 지문은 그대로다(golden vector).
+func TestPolicyFingerprintIncludesResponseLimitsOnlyWhenSet(t *testing.T) {
+	c, b := policyFixture()
+	without := policyDigest(t, c, b)
+	c.Limits.MaxResponseBodyBytes = c.Limits.MaxBodyBytes
+	body := policyDigest(t, c, b)
+	c.Limits.MaxResponseScanBytes = c.Limits.MaxBodyBytes + 4096
+	scan := policyDigest(t, c, b)
+	if without == body || body == scan || without == scan {
+		t.Fatal("response limits did not change the policy fingerprint")
+	}
+}
