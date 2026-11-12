@@ -197,6 +197,10 @@ func TestWorkspaceNameBytesLimit(t *testing.T) {
 	if err := ValidateWorkspace(data, 1<<20); err != nil {
 		t.Fatal("name bytes at the limit not validated", err)
 	}
+	// 큰 출력 파일을 더해 이름 합계가 넘으면 보존 실패(너무 큼)다.
+	if _, err := AppendWorkspaceFile(data, dir+"/"+strings.Repeat("z", 255), nil, 1<<20); !errors.Is(err, ErrWorkspaceTooLarge) {
+		t.Fatal("append over the name bytes limit", err)
+	}
 }
 
 // 풀 때는 일반 파일·디렉터리만, 상대 정규 경로만, 중복 없이, 상한 안에서만 받는다.
@@ -243,5 +247,46 @@ func TestUnpackWorkspaceRejectsUnsafeArchives(t *testing.T) {
 	}
 	if err := unpackWorkspace(bytes.Repeat([]byte{0}, int(workspaceArchiveLimit(1024))+1), t.TempDir(), 1024); !errors.Is(err, ErrWorkspaceTooLarge) {
 		t.Fatal("oversized archive accepted", err)
+	}
+}
+
+// 큰 출력 파일을 작업 공간 tar에 더한다. 부모 디렉터리를 만들고, 같은 이름은 바꾸고, 상한을 넘으면 거부한다.
+func TestAppendWorkspaceFile(t *testing.T) {
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("alpha"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base, err := packWorkspace(src, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := AppendWorkspaceFile(base, ".outputs/call_1.txt", []byte("full output"), 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err = AppendWorkspaceFile(out, ".outputs/call_1.txt", []byte("replaced"), 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := t.TempDir()
+	if err := unpackWorkspace(out, dst, 1024); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dst, ".outputs", "call_1.txt")); string(got) != "replaced" {
+		t.Fatalf("output file: %q", got)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dst, "a.txt")); string(got) != "alpha" {
+		t.Fatalf("existing file: %q", got)
+	}
+	if _, err := AppendWorkspaceFile(nil, "x.txt", bytes.Repeat([]byte("x"), 1025), 1024); !errors.Is(err, ErrWorkspaceTooLarge) {
+		t.Fatal("content over the limit appended", err)
+	}
+	for _, bad := range []string{"../x", "/abs", "a//b", ""} {
+		if _, err := AppendWorkspaceFile(nil, bad, nil, 1024); err == nil {
+			t.Fatalf("%q appended", bad)
+		}
+	}
+	if _, err := AppendWorkspaceFile([]byte("not a tar archive at all"), "x.txt", nil, 1024); err == nil {
+		t.Fatal("invalid base archive accepted")
 	}
 }

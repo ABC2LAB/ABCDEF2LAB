@@ -746,6 +746,10 @@ func runURLProcessAcceptanceMode(t *testing.T, browser, external bool) {
 	var reportBefore, reportAfter []byte
 	reportPath := "/api/report/diagnostic?task=" + final.TaskID
 	client.call("GET", reportPath, "", nil, &reportBefore)
+	// 저장 보고서도 실행 결과 한 줄을 싣는다(C08 2-6). 이 회차는 intent 하나가 E② 거부로 정책 제한이다.
+	if !bytes.Contains(reportBefore, []byte("실행 결과: 계획한 작업 모두 마감 · 정책상 검증 안 됨 1")) {
+		t.Fatal("저장 보고서에 실행 결과 누락")
+	}
 	callsBefore, allowedBefore, deniedBefore := f.modelCalls.Load(), f.allowed.Load(), f.denied.Load()
 	// 마감 후 준비 프로세스만 재시작한다. 저장 결과 조회는 실행을 복원하거나 새로 승인하지 않는다.
 	service.stop()
@@ -1014,6 +1018,11 @@ func TestFirstDiagnosisURLNoIntentsOwnedPostgres(t *testing.T) {
 	if final.ModelUsage == nil || !final.ModelUsage.UsageKnown || final.ModelUsage.Requests != f.modelCalls.Load() {
 		t.Fatal("intent 없는 실행 모델 사용량 불일치")
 	}
+	var report []byte
+	client.call("GET", "/api/report/diagnostic?task="+final.TaskID, "", nil, &report)
+	if !bytes.Contains(report, []byte("실행 결과: 시도한 계획 없음(검사 안 함)")) {
+		t.Fatal("저장 보고서에 검사 안 함 실행 결과 누락")
+	}
 	t.Logf("URL_NO_INTENTS state=completed outcome=no_intents intents=0 planner_calls=%d worker_calls=0 target_sends=0", f.plannerCalls.Load())
 }
 
@@ -1067,6 +1076,11 @@ func TestFirstDiagnosisURLStopDuringExecutionOwnedPostgres(t *testing.T) {
 		after.IntentOutcomes == nil || *after.IntentOutcomes != (diagnosis.IntentOutcomes{Incomplete: 1}) ||
 		after.ModelUsage == nil || !after.ModelUsage.UsageKnown || after.ModelUsage.UnknownUsageCalls != 1 || f.allowed.Load() != 0 || f.denied.Load() != 0 {
 		t.Fatalf("실행 중 중지 마감 불일치 state=%s reason=%s outcome=%q counts=%+v usage=%+v", after.State, after.ReasonCode, after.Outcome, after.IntentOutcomes, after.ModelUsage)
+	}
+	var report []byte
+	client.call("GET", "/api/report/diagnostic?task="+after.TaskID, "", nil, &report)
+	if !bytes.Contains(report, []byte("실행 결과: 중지됨 · 끝난 0 / 끊긴 1")) {
+		t.Fatal("저장 보고서에 중지 실행 결과 누락")
 	}
 	t.Logf("URL_EXEC_STOP state=cancelled outcome=none intent_outcomes=%+v target_sends=0", *after.IntentOutcomes)
 }

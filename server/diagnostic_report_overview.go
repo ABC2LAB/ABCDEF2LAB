@@ -3,10 +3,35 @@ package server
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/report"
 	"strconv"
 )
+
+// readDiagnosticRun은 저장된 실행 종료 기록의 상태·실행 결과를 보고서와 같은 스냅샷에서 읽는다(실행 결과 상태 값
+// 계약 §5-5). 기록이 없으면 nil이다. 기록 형식이 맞지 않으면 상태 없는 값을 돌려 보고서에 "확인할 수 없음"으로 쓴다
+// (완료·발견 없음으로 바꾸지 않는다).
+func readDiagnosticRun(ctx context.Context, tx *sql.Tx, task int64) (*report.DiagnosticRun, error) {
+	var raw []byte
+	err := tx.QueryRowContext(ctx, `SELECT n.payload FROM tasks t JOIN exploration_nodes n ON n.exploration_id=t.exploration_id WHERE t.id=$1 AND t.deleted_at IS NULL AND n.kind='fact' AND n.state='confirmed' AND n.origin=$2 AND n.payload->>'task_id'=$3 ORDER BY n.id DESC LIMIT 1`, task, diagnosisRunOrigin, strconv.FormatInt(task, 10)).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var record diagnosisRunRecord
+	if json.Unmarshal(raw, &record) != nil || record.Version != 1 || record.TaskID != task || record.SavedAt.IsZero() || !validDiagnosisRun(record.Run) || !validDiagnosisRunResult(record.Run, record.Result) {
+		return &report.DiagnosticRun{}, nil
+	}
+	state := record.Run.Outcome
+	if record.Run.ClosureFailed {
+		state = report.DiagnosticRunClosureFailed
+	}
+	return &report.DiagnosticRun{State: state, Result: record.Result}, nil
+}
 
 type diagnosticScopeContext struct{}
 type diagnosticScopeValue struct {
@@ -32,6 +57,11 @@ func readDiagnosticOverview(ctx context.Context, tx *sql.Tx, task int64, out *re
 		scope := v.scope
 		out.ApprovedScope = &scope
 	}
+	run, err := readDiagnosticRun(ctx, tx, task)
+	if err != nil {
+		return err
+	}
+	out.Run = run
 	var readable bool
 	if err := tx.QueryRowContext(ctx, `SELECT CASE WHEN to_regclass('llm_usage') IS NULL THEN false ELSE has_table_privilege(current_user,to_regclass('llm_usage'),'SELECT') END`).Scan(&readable); err != nil {
 		return err

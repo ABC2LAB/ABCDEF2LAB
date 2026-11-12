@@ -470,7 +470,9 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	b.mu.Lock()
 	b.live[taskID] = newURLLiveHandler(d.runtime.Handler())
 	b.mu.Unlock()
-	runner := &urlGatewayRunner{backend: b, launch: d, config: launch, loaded: l, taskID: taskID}
+	runner := &urlGatewayRunner{backend: b, launch: d, config: launch, loaded: l, taskID: taskID, operatorStop: func() bool {
+		return urlOperatorStop(parent, ctx)
+	}}
 	gateway, err := diagnosis.NewPrepared(ctx, taskID, execution.Job.ID, runner, time.Duration(launch.ShutdownTimeoutSeconds)*time.Second)
 	if err != nil {
 		cleanup, done := launchCleanupContext(context.WithoutCancel(parent), launch)
@@ -568,9 +570,12 @@ type urlGatewayRunner struct {
 	config  launchConfig
 	loaded  *urlLoadedProfile
 	taskID  string
-	mu      sync.Mutex
-	closed  *diagnosis.Closure
-	runErr  error
+	// operatorStop은 실행이 운영자 중지(진단 준비 중지가 상위 문맥을 취소)나 대상 철회로 끝났는지 본다. 설치·위임
+	// 검사 실패, 상태 조회 실패, 시간 상한은 여기에 들지 않는다(저장 기록은 failed 그대로).
+	operatorStop func() bool
+	mu           sync.Mutex
+	closed       *diagnosis.Closure
+	runErr       error
 }
 
 func (r *urlGatewayRunner) Run(ctx context.Context) error {
@@ -622,7 +627,7 @@ func (r *urlGatewayRunner) Close(ctx context.Context) (diagnosis.Closure, error)
 	if drained {
 		closureErr = nil
 	}
-	stored, saveErr := r.launch.supervisor.PersistRunOutcomeStored(ctx, closureErr)
+	stored, saveErr := r.launch.supervisor.PersistRunOutcomeStoredStop(ctx, closureErr, r.operatorStop != nil && r.operatorStop())
 	result := diagnosis.Closure{DrainComplete: drained, ResultReady: stored && saveErr == nil, Result: r.launch.supervisor.ClosureResult()}
 	if drained {
 		// map 교체는 진행 중 HTTP handler가 끝난 뒤 수행한다. 실행 DB와 보고서 DB는 별개다.
@@ -817,6 +822,13 @@ func watchURLPreparation(hard context.Context, done <-chan struct{}, ticks <-cha
 			}
 		}
 	}
+}
+
+// urlOperatorStop은 실행 문맥이 운영자 중지(진단 준비 서비스가 상위 문맥을 취소)나 대상 철회
+// (ErrFirstDiagnosisTargetEnded)로 끝났는지 본다. 감시자의 설치·위임 검사 실패, 상태 조회·진행 저장 실패, 시간
+// 상한은 원인 없는 취소나 시간 초과라 운영자 중지가 아니다.
+func urlOperatorStop(parent, ctx context.Context) bool {
+	return parent.Err() != nil || errors.Is(context.Cause(ctx), server.ErrFirstDiagnosisTargetEnded)
 }
 
 // A failed read after a soft target stop must preserve an active usage drain.
