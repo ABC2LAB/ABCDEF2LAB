@@ -1261,8 +1261,7 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	diagnosticReceipt(e.ctx, r, "http_response_received", "succeeded", "")
 	// 자격 반사 검사는 전달할 앞부분이 아니라 검사 상한까지 읽은 전체에 한다. 검사 상한은 본문 상한 + 가장 긴 보호 값
 	// 길이라서, 전달 구간 끝에 걸친 보호 값도 통째로 검사 범위에 들어온다(C16 결정안 2, 상한 사이 조건).
-	limit := e.cfg.Limits.MaxBodyBytes
-	scan := limit + e.longestSecret()
+	limit, scan := responseLimits(e.cfg.Limits, e.longestSecret())
 	responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, scan+1))
 	oversized := int64(len(responseBody)) > limit
 	closeErr := resp.Body.Close()
@@ -1503,6 +1502,9 @@ func compilePolicyTemplate(cfg Config) ([]compiledRule, HeaderMode, *EvaluationC
 	if err != nil {
 		return nil, "", nil, err
 	}
+	if !validResponseLimits(l, credentialValues(rules)) {
+		return nil, "", nil, ErrConfig
+	}
 	if cfg.HeaderMode == "" {
 		cfg.HeaderMode = HeaderPreserve
 	}
@@ -1530,4 +1532,33 @@ func (e *Execution) longestSecret() int64 {
 		longest = max(longest, len(s))
 	}
 	return int64(longest)
+}
+
+// responseLimits는 응답 전달 상한과 검사 상한이다. 설정이 없으면 요청 상한과 계산값을 쓴다(C16 결정안 3 전과 같음).
+func responseLimits(l Limits, longestSecret int64) (body, scan int64) {
+	body = l.MaxBodyBytes
+	if l.MaxResponseBodyBytes > 0 {
+		body = l.MaxResponseBodyBytes
+	}
+	scan = body + longestSecret
+	if l.MaxResponseScanBytes > 0 {
+		scan = l.MaxResponseScanBytes
+	}
+	return body, scan
+}
+
+// validResponseLimits는 응답 상한·검사 상한의 범위와 상한 사이 조건이다. 어기면 정책 적재·실행 생성을 거부한다.
+func validResponseLimits(l Limits, secrets [][]byte) bool {
+	if l.MaxResponseBodyBytes < 0 || l.MaxResponseBodyBytes > maxResponseBodyBytes || l.MaxResponseScanBytes < 0 || l.MaxResponseScanBytes > maxResponseScanBytes {
+		return false
+	}
+	if l.MaxResponseScanBytes == 0 {
+		return true
+	}
+	longest := 0
+	for _, s := range secrets {
+		longest = max(longest, len(s))
+	}
+	body, _ := responseLimits(l, 0)
+	return l.MaxResponseScanBytes >= body+int64(longest)-1
 }

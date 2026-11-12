@@ -33,7 +33,7 @@ func validProductPolicyTemplate(p server.E2HTTPFilePolicy) bool {
 	if !ok1 || !ok2 || !ok3 || !ok4 || !ok5 || !ok6 {
 		return false
 	}
-	cfg := e2proxy.Config{ApprovalMode: p.ApprovalMode, HeaderMode: p.HeaderMode, Rules: []e2proxy.Rule{{Ref: "template", Origin: "https://template.invalid", ConnectIP: netip.MustParseAddr("192.0.2.1"), PathPrefix: "/", PathScopeRef: "template", Methods: []string{"GET"}}}, Limits: e2proxy.Limits{MaxAttempts: p.Limits.MaxAttempts, MaxCalls: p.Limits.MaxCalls, MaxConcurrent: p.Limits.MaxConcurrent, MaxBodyBytes: p.Limits.MaxBodyBytes, RequestTimeout: requestTimeout, CallTimeout: callTimeout, MaxDenials: p.Limits.MaxDenials, MaxTransient: p.Limits.MaxTransient, MaxUnknown: p.Limits.MaxUnknown}}
+	cfg := e2proxy.Config{ApprovalMode: p.ApprovalMode, HeaderMode: p.HeaderMode, Rules: []e2proxy.Rule{{Ref: "template", Origin: "https://template.invalid", ConnectIP: netip.MustParseAddr("192.0.2.1"), PathPrefix: "/", PathScopeRef: "template", Methods: []string{"GET"}}}, Limits: e2proxy.Limits{MaxAttempts: p.Limits.MaxAttempts, MaxCalls: p.Limits.MaxCalls, MaxConcurrent: p.Limits.MaxConcurrent, MaxBodyBytes: p.Limits.MaxBodyBytes, MaxResponseBodyBytes: p.Limits.MaxResponseBodyBytes, MaxResponseScanBytes: p.Limits.MaxResponseScanBytes, RequestTimeout: requestTimeout, CallTimeout: callTimeout, MaxDenials: p.Limits.MaxDenials, MaxTransient: p.Limits.MaxTransient, MaxUnknown: p.Limits.MaxUnknown}}
 	_, err := e2export.PolicyFingerprint(cfg, p.MaxRequests, e2export.PolicyBehavior{MaxWorkerTurns: p.Runtime.MaxWorkerTurns, MaxToolCalls: p.Runtime.MaxToolCalls, WorkerTimeout: workerTimeout, MaxPlannerRounds: p.Runtime.MaxPlannerRounds, MaxIntentRuns: p.Runtime.MaxIntentRuns, DrainTimeout: drainTimeout, OutputLimit: p.Runtime.OutputLimit, ProxyHeaderTimeout: headerTimeout, ProxyRequestTimeout: proxyTimeout, ProxyMaxHeaderBytes: p.Proxy.MaxHeaderBytes, ProxyMaxConnections: p.Proxy.MaxConnections})
 	return err == nil
 }
@@ -67,6 +67,10 @@ type productRuntimeLimitSet struct {
 	PlannerSecondsPerPlan *int64 `json:"planner_seconds_per_plan,omitempty"`
 	// 실행 상태 조회 연속 실패를 다시 묻는 횟수(C10). launch 설정에 들어간다. 0 이상, 정리 시간 상한 안.
 	StatusReadRetries *int `json:"status_read_retries,omitempty"`
+	// 응답 전달 상한·검사 상한(바이트, C16 결정안 3). E② 정책 파일(정책 지문)에 들어간다. 검사 상한은 응답 상한 + 가장 긴
+	// 보호 값 길이 − 1 이상이어야 하고 E② 정책 검사가 거부한다.
+	MaxResponseBodyBytes *int64 `json:"max_response_body_bytes,omitempty"`
+	MaxResponseScanBytes *int64 `json:"max_response_scan_bytes,omitempty"`
 }
 
 // productShutdownTimeoutSeconds는 제품 launch의 정리 시간 상한(초)이다.
@@ -192,6 +196,19 @@ func applyRuntimeLimits(policy *server.E2HTTPFilePolicy, limits *productRuntimeL
 	if v := set.IntentRuns; v != nil {
 		positive = positive && *v > 0
 		policy.Runtime.MaxIntentRuns = *v
+	}
+	if v := set.MaxResponseBodyBytes; v != nil {
+		positive = positive && *v > 0
+		// 워크플로 모드의 본문 상한은 대상 정책의 max_response_bytes(설치 조직 target_policy 상한)다.
+		// 실행 상한 칸으로 그보다 크게 받지 않는다.
+		if workflow {
+			positive = positive && *v <= policy.Limits.MaxBodyBytes
+		}
+		policy.Limits.MaxResponseBodyBytes = *v
+	}
+	if v := set.MaxResponseScanBytes; v != nil {
+		positive = positive && *v > 0
+		policy.Limits.MaxResponseScanBytes = *v
 	}
 	return positive
 }

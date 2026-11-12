@@ -129,3 +129,62 @@ func TestProxyDeliversTruncatedResponse(t *testing.T) {
 		t.Fatalf("proxy truncation: status=%d len=%d outcome=%q err=%v", resp.StatusCode, len(body), resp.Header.Get(OutcomeHeader), readErr)
 	}
 }
+
+// C16 결정안 3: 응답 전달 상한을 요청 상한과 따로 준다. 요청 본문은 요청 상한으로만, 응답은 응답 상한으로만 자른다.
+func TestSeparateResponseLimitTruncatesAtResponseLimit(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, strings.Repeat("r", 20000))
+	}))
+	defer target.Close()
+	cfg := coreConfig(t, target.URL, &coreRecorder{}, 3)
+	cfg.Limits.MaxBodyBytes = 1024
+	cfg.Limits.MaxResponseBodyBytes = 10000
+	_, call := coreOpen(t, cfg)
+	resp, r, err := call.Do(context.Background(), coreRequest(t, "GET", target.URL+"/allowed"))
+	if err != nil || resp == nil || !r.ResponseTruncated {
+		t.Fatalf("response limit: %v %+v", err, r)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if len(body) != 10000 {
+		t.Fatalf("response cut at %d, want the response limit 10000", len(body))
+	}
+	// 규칙이 GET만 허용하므로 본문을 실은 GET으로 요청 본문 상한만 따로 본다.
+	big := coreRequest(t, "GET", target.URL+"/allowed")
+	big.Body = io.NopCloser(strings.NewReader(strings.Repeat("q", 2048)))
+	big.ContentLength = 2048
+	if _, r, err := call.Do(context.Background(), big); err == nil || r.Reason != Unsupported || r.ForwardAttempted {
+		t.Fatalf("request body over the request limit was sent: %v %+v", err, r)
+	}
+}
+
+// 검사 상한은 응답 상한 + 가장 긴 보호 값 길이 − 1 이상이어야 한다. 어기거나 범위 밖이면 정책 적재를 거부한다.
+func TestResponseScanLimitConditionIsChecked(t *testing.T) {
+	const secret = "protected-value-of-32-bytes-long"
+	base := func() Config {
+		cfg := coreConfig(t, "http://127.0.0.1:1", &coreRecorder{}, 2)
+		cfg.HeaderMode = HeaderProtectedSessionProposal
+		cfg.Rules[0].CredentialHeaders = http.Header{"X-Session": {secret}}
+		cfg.Limits.MaxResponseBodyBytes = 4096
+		return cfg
+	}
+	ok := base()
+	ok.Limits.MaxResponseScanBytes = 4096 + int64(len(secret)) - 1
+	if err := ValidatePolicyTemplate(ok); err != nil {
+		t.Fatalf("scan limit meeting the condition rejected: %v", err)
+	}
+	for name, change := range map[string]func(*Limits){
+		"scan below condition":   func(l *Limits) { l.MaxResponseScanBytes = 4096 + int64(len(secret)) - 2 },
+		"negative response":      func(l *Limits) { l.MaxResponseBodyBytes = -1 },
+		"negative scan":          func(l *Limits) { l.MaxResponseScanBytes = -1 },
+		"response over cap":      func(l *Limits) { l.MaxResponseBodyBytes = maxResponseBodyBytes + 1 },
+		"scan over cap":          func(l *Limits) { l.MaxResponseScanBytes = maxResponseScanBytes + 1 },
+		"scan without body room": func(l *Limits) { l.MaxResponseBodyBytes = 0; l.MaxBodyBytes = 8192; l.MaxResponseScanBytes = 4096 },
+	} {
+		cfg := base()
+		change(&cfg.Limits)
+		if ValidatePolicyTemplate(cfg) == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
+}

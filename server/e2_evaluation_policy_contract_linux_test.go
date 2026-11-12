@@ -200,6 +200,12 @@ func TestE2EvaluationPolicyDocumentFieldFailures(t *testing.T) {
 			o["header_mode"] = "evaluation_caller_passthrough"
 		},
 		"upstream_pin_invalid": func(o map[string]any) { o["upstream_ca"] = map[string]any{"file": "ca.pem", "sha256": "bad"} },
+		"limits_unknown":       func(o map[string]any) { o["limits"].(map[string]any)["max_response_bytes"] = 1 },
+		"response_limit_null":  func(o map[string]any) { o["limits"].(map[string]any)["max_response_body_bytes"] = nil },
+		"response_scan_short": func(o map[string]any) {
+			o["limits"].(map[string]any)["max_response_body_bytes"] = 1 << 20
+			o["limits"].(map[string]any)["max_response_scan_bytes"] = 1 << 10
+		},
 	}
 	for name, change := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -217,6 +223,34 @@ func TestE2EvaluationPolicyDocumentFieldFailures(t *testing.T) {
 				t.Fatal("invalid field accepted")
 			}
 		})
+	}
+}
+
+// 응답 전달·검사 상한(C16 결정안 3)은 선택 칸이다. 설치가 쓴 정책 파일을 서버가 그대로 읽어 E② 한도에 넣는다.
+func TestE2HTTPPolicyDocumentAcceptsResponseLimits(t *testing.T) {
+	_, _, policy := e2HostPolicyFixture(t)
+	policy.Limits.MaxResponseBodyBytes = policy.Limits.MaxBodyBytes * 2
+	policy.Limits.MaxResponseScanBytes = policy.Limits.MaxBodyBytes*2 + 4096
+	raw, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 준비 전 문서에는 감사 키 pin이 없다(TestE2EvaluationPolicyDocumentFieldFailures와 같은 입력).
+	var document map[string]json.RawMessage
+	if json.Unmarshal(raw, &document) != nil {
+		t.Fatal("fixture decode")
+	}
+	delete(document, "audit_key")
+	wire, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ValidateE2HTTPPolicyDocument(wire, false)
+	if err != nil {
+		t.Fatal("response limits rejected:", err)
+	}
+	if got.Limits.MaxResponseBodyBytes != policy.Limits.MaxResponseBodyBytes || got.Limits.MaxResponseScanBytes != policy.Limits.MaxResponseScanBytes {
+		t.Fatalf("response limits not kept: %+v", got.Limits)
 	}
 }
 
