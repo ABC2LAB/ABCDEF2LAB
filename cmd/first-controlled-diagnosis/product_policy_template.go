@@ -18,3 +18,73 @@ func validProductPolicyTemplate(p server.E2HTTPFilePolicy) bool {
 	_, err := e2export.PolicyFingerprint(cfg, p.MaxRequests, e2export.PolicyBehavior{MaxWorkerTurns: p.Runtime.MaxWorkerTurns, MaxToolCalls: p.Runtime.MaxToolCalls, WorkerTimeout: time.Duration(p.Runtime.WorkerTimeoutMS) * time.Millisecond, MaxPlannerRounds: p.Runtime.MaxPlannerRounds, MaxIntentRuns: p.Runtime.MaxIntentRuns, DrainTimeout: time.Duration(p.Runtime.DrainTimeoutMS) * time.Millisecond, OutputLimit: p.Runtime.OutputLimit, ProxyHeaderTimeout: time.Duration(p.Proxy.HeaderTimeoutMS) * time.Millisecond, ProxyRequestTimeout: time.Duration(p.Proxy.RequestTimeoutMS) * time.Millisecond, ProxyMaxHeaderBytes: p.Proxy.MaxHeaderBytes, ProxyMaxConnections: p.Proxy.MaxConnections})
 	return err == nil
 }
+
+// productRuntimeLimits는 설치 입력의 선택 블록 runtime_limits다(docs/install-limits-decision.md, C32). 제품 모드와
+// 워크플로 모드에 각각 줄 수 있고, 비어 있는 칸은 지금 설치 기본값 그대로다. 상한은 새로 정하지 않고
+// validProductPolicyTemplate(E② 한도 검사와 e2export.PolicyFingerprint의 런타임 상한)이 그대로 검사한다.
+type productRuntimeLimits struct {
+	Product  *productRuntimeLimitSet `json:"product,omitempty"`
+	Workflow *productRuntimeLimitSet `json:"workflow,omitempty"`
+}
+
+type productRuntimeLimitSet struct {
+	// E② 요청 시간(E② 한도와 프록시 요청 시간을 같은 값으로).
+	RequestTimeoutMS *int64 `json:"request_timeout_ms,omitempty"`
+	CallTimeoutMS    *int64 `json:"call_timeout_ms,omitempty"`
+	// E② 호출 상한과 Worker 도구 호출 상한을 같은 값으로.
+	MaxCalls        *int    `json:"max_calls,omitempty"`
+	MaxAttempts     *uint64 `json:"max_attempts,omitempty"`
+	WorkerTurns     *int    `json:"worker_turns,omitempty"`
+	WorkerTimeoutMS *int64  `json:"worker_timeout_ms,omitempty"`
+	PlannerRounds   *uint64 `json:"planner_rounds,omitempty"`
+	IntentRuns      *uint64 `json:"intent_runs,omitempty"`
+}
+
+// applyRuntimeLimits는 고른 모드의 칸을 정책에 덮어쓴다. 0 이하는 거부한다. 덮어쓴 정책은 호출자가
+// validProductPolicyTemplate으로 다시 검사한다(범위 밖이면 설치 거부, 잘라서 받지 않는다).
+func applyRuntimeLimits(policy *server.E2HTTPFilePolicy, limits *productRuntimeLimits, workflow bool) bool {
+	if limits == nil {
+		return true
+	}
+	set := limits.Product
+	if workflow {
+		set = limits.Workflow
+	}
+	if set == nil {
+		return true
+	}
+	positive := true
+	if v := set.RequestTimeoutMS; v != nil {
+		positive = positive && *v > 0
+		policy.Limits.RequestTimeoutMS, policy.Proxy.RequestTimeoutMS = *v, *v
+	}
+	if v := set.CallTimeoutMS; v != nil {
+		positive = positive && *v > 0
+		policy.Limits.CallTimeoutMS = *v
+	}
+	if v := set.MaxCalls; v != nil {
+		positive = positive && *v > 0
+		policy.Limits.MaxCalls, policy.Runtime.MaxToolCalls = *v, *v
+	}
+	if v := set.MaxAttempts; v != nil {
+		positive = positive && *v > 0
+		policy.Limits.MaxAttempts = *v
+	}
+	if v := set.WorkerTurns; v != nil {
+		positive = positive && *v > 0
+		policy.Runtime.MaxWorkerTurns = *v
+	}
+	if v := set.WorkerTimeoutMS; v != nil {
+		positive = positive && *v > 0
+		policy.Runtime.WorkerTimeoutMS = *v
+	}
+	if v := set.PlannerRounds; v != nil {
+		positive = positive && *v > 0
+		policy.Runtime.MaxPlannerRounds = *v
+	}
+	if v := set.IntentRuns; v != nil {
+		positive = positive && *v > 0
+		policy.Runtime.MaxIntentRuns = *v
+	}
+	return positive
+}
