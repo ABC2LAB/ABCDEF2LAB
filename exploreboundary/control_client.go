@@ -115,6 +115,32 @@ type ControlReader struct {
 	Flow    diagnosisflow.ExplorationBinding
 }
 
+// maxRecordPages는 기록을 읽을 때 쪽 수 상한이다. 세션 기록은 요청 수·차단 행 상한으로 묶여 있어 이보다 훨씬 적다.
+const maxRecordPages = 1 << 16
+
+// Records는 이 결속 세션의 경계 기록 전체와 상한으로 생략한 차단 행 수다. 쪽으로 나눠 읽는다(보호 저장소로 옮길 때·
+// 수용시험의 차단 사유 대조). 세션을 닫은 뒤에도 다음 세션을 열기 전까지 읽을 수 있다.
+func (r ControlReader) Records(ctx context.Context) ([]Record, uint64, error) {
+	var out []Record
+	var offset uint64
+	for page := 0; page < maxRecordPages; page++ {
+		resp, err := r.Client.call(ctx, ControlRequest{Op: OpRecords, SessionRef: r.Binding.SessionRef, Offset: offset})
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, resp.Records...)
+		if resp.Next == 0 {
+			return out, resp.Omitted, nil
+		}
+		// 쪽 위치는 앞으로만 간다. 뒤로 가거나 제자리면 경계 응답이 어긋난 것이다.
+		if resp.Next <= offset {
+			return nil, 0, ErrUnavailable
+		}
+		offset = resp.Next
+	}
+	return nil, 0, ErrUnavailable
+}
+
 func (r ControlReader) Session(ctx context.Context) (diagnosisflow.ExplorationBinding, error) {
 	st, err := controlLease{client: r.Client, binding: r.Binding}.Status(ctx)
 	if err != nil || !st.Active {
