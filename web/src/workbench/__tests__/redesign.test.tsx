@@ -234,14 +234,51 @@ describe("자산 탐색", () => {
     expect(screen.getByText(/^찾은 경로 · 조회 1 · 데이터 변경 1$/)).toBeInTheDocument();
     expect(screen.getByText(/^보낸 요청 · 시도 1 · 결과 불명 0$/)).toBeInTheDocument();
     expect(screen.getByText(/^경과/)).toHaveTextContent("아직 구현 안 됨");
-    // 첫 탐색이 끝나면 가득
+    // 첫 탐색 단계가 끝나도 막대는 실제 방문 비율 그대로, 단계 끝은 따로 적는다 (리뷰 #479)
     useUrl.setState({ flow });
     rerender(
       <ShellContext.Provider value={shell("crawl")}>
         <WorkflowCrawlLive />
       </ShellContext.Provider>,
     );
-    expect(screen.getByRole("progressbar", { name: /탐색 진행/ })).toHaveAttribute("aria-valuenow", "100");
+    expect(screen.getByRole("progressbar", { name: /탐색 진행/ })).toHaveAttribute("aria-valuenow", "25");
+    expect(screen.getByText("첫 탐색 단계 끝남")).toBeInTheDocument();
+  });
+
+  it.each([
+    [
+      "부분 완료 · 상한 소진",
+      { exploration_status: "PARTIAL", exploration_reason: "cap_exhausted" },
+      "부분 완료 · cap_exhausted",
+    ],
+    [
+      "중지",
+      { stage: "stopped", exploration_status: "STOPPED", exploration_reason: "operator_stop" },
+      "중지됨 · operator_stop",
+    ],
+  ])("%s 로 끝나도 막대를 100%% 로 바꾸지 않고 탐색 상태를 따로 보인다 (리뷰 #479 반례)", (_n, over, text) => {
+    // 방문 2 / 페이지 상한 8 = 25% — 서버는 PARTIAL 에서도 initial_completed 를 true 로 둔다
+    useUrl.setState({
+      handle,
+      job,
+      verified: true,
+      flow: {
+        ...flow,
+        stage: "awaiting_selection",
+        initial_completed: true,
+        limits: { ...flow.limits, max_pages: 8 },
+        counts: { ...flow.counts, visited: 2 },
+        ...over,
+      } as WorkflowSnapshot,
+      flowVerified: true,
+    });
+    render(
+      <ShellContext.Provider value={shell("crawl")}>
+        <WorkflowCrawlLive />
+      </ShellContext.Provider>,
+    );
+    expect(screen.getByRole("progressbar", { name: /탐색 진행/ })).toHaveAttribute("aria-valuenow", "25");
+    expect(screen.getByText(/^탐색 상태/)).toHaveTextContent(text);
   });
 });
 

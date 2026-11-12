@@ -61,10 +61,32 @@ function crawlPill(flow: WorkflowSnapshot, verified: boolean): string {
   if (!verified) return "현재 상태 미확인";
   return flow.paused ? "일시정지" : flowStageText[flow.stage];
 }
-/** 탐색 막대 % — 페이지 상한 대비 방문 수(서버 진행률 아님). 첫 탐색이 끝나면 100, 그 전에는 99 를 넘기지 않는다. */
+/**
+ * 탐색 막대 % — 실제 방문 수 ÷ 페이지 상한(서버 진행률 아님). 첫 탐색 단계가 끝났다는 initial_completed 는 완전 탐색을
+ * 보장하지 않아(부분 완료 · 상한 소진에서도 true) 막대에 섞지 않고 따로 보인다 (리뷰 #479).
+ */
 export function crawlPct(flow: WorkflowSnapshot): number {
-  if (flow.initial_completed) return 100;
-  return Math.min(99, Math.round((flow.counts.visited / Math.max(1, flow.limits.max_pages)) * 100));
+  return Math.min(100, Math.round((flow.counts.visited / Math.max(1, flow.limits.max_pages)) * 100));
+}
+/** 서버 탐색 상태 (snapshot.exploration_status) → 글. */
+const EXPLORE_TEXT = {
+  RUNNING: "탐색 중",
+  COMPLETED: "탐색 완료",
+  PARTIAL: "부분 완료",
+  STOPPED: "중지됨",
+  NOT_RUN: "탐색 안 함",
+} as const;
+/**
+ * 서버 탐색 상태 · 사유. 파서(live/workflow.ts)에 아직 칸이 없어 응답 원본에서 아는 값만 읽는다
+ * (모르는 상태 · 형식이 다른 사유는 버림).
+ */
+export function exploreState(flow: WorkflowSnapshot): { text: string; reason?: string } | null {
+  const raw = flow as unknown as Record<string, unknown>;
+  const st = raw.exploration_status;
+  if (typeof st !== "string" || !Object.hasOwn(EXPLORE_TEXT, st)) return null;
+  const r = raw.exploration_reason;
+  const reason = typeof r === "string" && /^[a-z0-9_]{1,64}$/.test(r) ? r : undefined;
+  return { text: EXPLORE_TEXT[st as keyof typeof EXPLORE_TEXT], reason };
 }
 /** 범위 확인 화면 상태 알약 글. */
 function scopePill(flow: WorkflowSnapshot, verified: boolean): string {
@@ -580,6 +602,16 @@ export function WorkflowCrawlLive() {
                   <span>
                     페이지 상한 <b>{flow.limits.max_pages}</b>
                   </span>
+                  {flow.initial_completed ? <span>첫 탐색 단계 끝남</span> : null}
+                  {exploreState(flow) ? (
+                    <span>
+                      탐색 상태{" "}
+                      <b>
+                        {exploreState(flow)?.text}
+                        {exploreState(flow)?.reason ? ` · ${exploreState(flow)?.reason}` : ""}
+                      </b>
+                    </span>
+                  ) : null}
                   <span>
                     경과 <NotYet why="서버가 탐색 시작 시각을 주지 않습니다" />
                   </span>
