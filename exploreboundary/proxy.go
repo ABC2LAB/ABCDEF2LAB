@@ -86,6 +86,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	host, portText, err := net.SplitHostPort(r.Host)
 	port, perr := strconv.ParseUint(portText, 10, 16)
 	if err != nil || perr != nil || host == "" || port == 0 {
+		// 잘못된 CONNECT authority도 경계가 막은 요청이라 기록한다(#488 리뷰 P2). 값은 기록하지 않는다.
+		p.refuse(Request{Ingress: p.cfg.Ingress, Method: http.MethodConnect, Scheme: "https"}, ReasonProtocolUnsupported)
 		deny(w, ReasonProtocolUnsupported)
 		return
 	}
@@ -101,6 +103,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.mu.Lock()
 	if len(p.tunnels) >= p.cfg.MaxTunnels {
 		p.mu.Unlock()
+		p.refuse(Request{Ingress: p.cfg.Ingress, Method: http.MethodConnect, Scheme: "https", Host: host, Port: uint16(port)}, ReasonCapExhausted)
 		deny(w, ReasonCapExhausted)
 		return
 	}
@@ -124,7 +127,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	tlsConn := tls.Server(conn, &tls.Config{Certificates: []tls.Certificate{*leaf}, MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}})
+	// CONNECT와 같은 패킷으로 온 ClientHello가 hijack 버퍼에 남아 있을 수 있다. 그 바이트부터 읽게 한다(#488 리뷰).
+	var raw net.Conn = conn
+	if buf.Reader.Buffered() > 0 {
+		raw = &bufferedConn{Conn: conn, r: buf.Reader}
+	}
+	tlsConn := tls.Server(raw, &tls.Config{Certificates: []tls.Certificate{*leaf}, MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}})
 	handshake, cancel := context.WithTimeout(r.Context(), p.cfg.Timeout)
 	err = tlsConn.HandshakeContext(handshake)
 	cancel()
@@ -135,16 +143,23 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	inner := http.HandlerFunc(func(w http.ResponseWriter, in *http.Request) {
 		innerHost, innerPort, splitErr := net.SplitHostPort(in.Host)
 		if splitErr != nil {
-			innerHost, innerPort = in.Host, portText
+			// 포트 없는 Host다. IPv6 리터럴은 괄호를 벗겨 터널 authority와 같은 표기로 비교한다(#488 리뷰).
+			innerHost, innerPort = strings.TrimSuffix(strings.TrimPrefix(in.Host, "["), "]"), portText
 		}
 		if !strings.EqualFold(innerHost, authority) || innerPort != portText {
-			// 터널 authority와 안쪽 Host가 다르면 다른 origin으로 보내는 우회다.
+			// 터널 authority와 안쪽 Host가 다르면 다른 origin으로 보내는 우회다. 막은 요청도 기록한다(#488 리뷰 P2).
+			// 판정 대상은 터널 authority가 아니라 안쪽 Host라 그 값으로 남긴다(Refuse가 승인 origin 여부만 본다).
+			hostPort, _ := strconv.ParseUint(innerPort, 10, 16)
+			p.refuse(Request{Ingress: p.cfg.Ingress, Method: in.Method, Scheme: "https", Host: innerHost, Port: uint16(hostPort), EscapedPath: in.URL.EscapedPath(),
+				FetchMode: in.Header.Get("Sec-Fetch-Mode"), FetchDest: in.Header.Get("Sec-Fetch-Dest"),
+				HasAuth: in.Header.Get("Authorization") != "" || in.Header.Get("Cookie") != ""}, ReasonOutOfScopeOrigin)
 			deny(w, ReasonOutOfScopeOrigin)
 			return
 		}
 		p.forward(w, in, authority, uint16(port))
 	})
-	server := &http.Server{Handler: inner, ReadHeaderTimeout: p.cfg.Timeout, IdleTimeout: p.cfg.Timeout, MaxHeaderBytes: 1 << 16}
+	// ReadTimeout은 요청 본문까지 덮는다. 본문을 멈춘 요청이 터널 자리를 계속 잡지 못하게 한다(#488 리뷰).
+	server := &http.Server{Handler: inner, ReadHeaderTimeout: p.cfg.Timeout, ReadTimeout: p.cfg.Timeout, IdleTimeout: p.cfg.Timeout, MaxHeaderBytes: 1 << 16}
 	tracked := &onceConn{Conn: tlsConn, done: make(chan struct{})}
 	stop := context.AfterFunc(r.Context(), func() { _ = tracked.Close() })
 	defer stop()
@@ -239,6 +254,7 @@ func (p *Proxy) forward(w http.ResponseWriter, in *http.Request, host string, po
 		out.Header.Del(h)
 	}
 	out.Header.Del(DenialHeader)
+	out.Header.Del(ResultHeader)
 	out.Body = io.NopCloser(bytes.NewReader(body))
 	out.ContentLength = int64(len(body))
 	transport := &http.Transport{Proxy: nil, DisableKeepAlives: true, ForceAttemptHTTP2: false, TLSHandshakeTimeout: p.cfg.Timeout, ResponseHeaderTimeout: p.cfg.Timeout,
@@ -279,14 +295,22 @@ func (p *Proxy) forward(w http.ResponseWriter, in *http.Request, host string, po
 	}
 	result.ResponseSHA256 = sha256.Sum256(respBody)
 	for k, vs := range resp.Header {
-		if strings.EqualFold(k, "Connection") || strings.EqualFold(k, DenialHeader) {
+		// 경계 표시 헤더는 경계만 붙인다. 대상이 같은 이름을 보내 결과를 꾸미지 못하게 지운다(#488 리뷰).
+		if strings.EqualFold(k, "Connection") || strings.EqualFold(k, DenialHeader) || strings.EqualFold(k, ResultHeader) {
 			continue
 		}
 		for _, v := range vs {
 			w.Header().Add(k, v)
 		}
 	}
-	w.Header().Set("Content-Length", strconv.Itoa(len(respBody)))
+	if in.Method == http.MethodHead {
+		// HEAD 응답은 본문이 없고 Content-Length가 GET일 때의 크기를 알린다. 대상 값을 그대로 둔다(#488 리뷰).
+		if resp.ContentLength >= 0 {
+			w.Header().Set("Content-Length", strconv.FormatInt(resp.ContentLength, 10))
+		}
+	} else {
+		w.Header().Set("Content-Length", strconv.Itoa(len(respBody)))
+	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(respBody)
 }
@@ -363,3 +387,11 @@ func (l *singleListener) Accept() (net.Conn, error) {
 }
 func (l *singleListener) Close() error   { return nil }
 func (l *singleListener) Addr() net.Addr { return l.conn.LocalAddr() }
+
+// bufferedConn은 hijack 때 bufio가 먼저 읽어 둔 바이트를 연결보다 먼저 돌려준다.
+type bufferedConn struct {
+	net.Conn
+	r io.Reader
+}
+
+func (c *bufferedConn) Read(b []byte) (int, error) { return c.r.Read(b) }
