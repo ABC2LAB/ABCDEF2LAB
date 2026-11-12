@@ -290,3 +290,40 @@ func TestAppendWorkspaceFile(t *testing.T) {
 		t.Fatal("invalid base archive accepted")
 	}
 }
+
+// 파일 도구용 읽기·목록: 일반 파일만 읽고, 디렉터리 바로 아래를 이름 순으로 보이며, 없는 경로는 NotFound다.
+func TestWorkspaceReadAndList(t *testing.T) {
+	archive := workspaceTar(t,
+		tar.Header{Typeflag: tar.TypeDir, Name: "d/", Mode: 0o700},
+		tar.Header{Typeflag: tar.TypeReg, Name: "d/b.txt", Mode: 0o600, Size: 3},
+		tar.Header{Typeflag: tar.TypeReg, Name: "d/a.txt", Mode: 0o600, Size: 2},
+		tar.Header{Typeflag: tar.TypeReg, Name: "top.txt", Mode: 0o600, Size: 1},
+	)
+	if got, err := ReadWorkspaceFile(archive, "d/b.txt", 1<<20); err != nil || string(got) != "xxx" {
+		t.Fatalf("read: %q %v", got, err)
+	}
+	for _, missing := range []string{"d", "nope.txt", "d/c.txt"} {
+		if _, err := ReadWorkspaceFile(archive, missing, 1<<20); !errors.Is(err, ErrWorkspaceNotFound) {
+			t.Fatalf("%s: %v", missing, err)
+		}
+	}
+	for _, bad := range []string{"../x", "/abs", "d//a.txt", ""} {
+		if _, err := ReadWorkspaceFile(archive, bad, 1<<20); !errors.Is(err, ErrWorkspaceInvalid) {
+			t.Fatalf("%q: %v", bad, err)
+		}
+	}
+	entries, err := ListWorkspace(archive, "d", 1<<20)
+	if err != nil || len(entries) != 2 || entries[0] != (WorkspaceEntry{Name: "a.txt", Size: 2}) || entries[1].Name != "b.txt" {
+		t.Fatalf("list d: %+v %v", entries, err)
+	}
+	top, err := ListWorkspace(archive, "", 1<<20)
+	if err != nil || len(top) != 2 || top[0] != (WorkspaceEntry{Name: "d", Dir: true}) || top[1].Name != "top.txt" {
+		t.Fatalf("list top: %+v %v", top, err)
+	}
+	if _, err := ListWorkspace(archive, "top.txt", 1<<20); !errors.Is(err, ErrWorkspaceNotFound) {
+		t.Fatal("file listed as directory", err)
+	}
+	if empty, err := ListWorkspace(nil, "", 1<<20); err != nil || len(empty) != 0 {
+		t.Fatal("empty workspace", empty, err)
+	}
+}

@@ -183,6 +183,25 @@ func NewFirstDiagnosisOpenRouterBudget(limits diagnosisprep.Budget, inputPerCall
 // 같은 회차의 Planner/Worker가 겹쳐도 미확인 사용량을 실패로 오인하지 않는다.
 // 예약 전부터 결과 사용량의 동기 영속 확인까지 한 호출만 gate를 보유한다.
 // 대기 취소는 예약이나 모델 호출을 만들지 않으며 실제 unknown latch는 해제하지 않는다.
+// ConfigureConcurrency는 동시 모델 호출 수를 정한다(C32, P3 결정안 C28 결정 2). 첫 호출 전에 한 번만 바꾼다.
+// 호출별 예약·정산과 호출 칸 대조가 있어 gate를 넓혀도 회계가 갈리지 않는다. OpenRouter는 승인 max_concurrent를
+// 넘지 못하고, 로컬 모델은 코드에 동시 호출 상한이 없어 1만 받는다(설치 결정안 2-4).
+func (b *FirstDiagnosisModelBudget) ConfigureConcurrency(n int) error {
+	if b == nil || n < 1 {
+		return ErrFirstDiagnosisModelBudget
+	}
+	if b.external == nil && n != 1 || b.external != nil && int64(n) > b.external.Limits().MaxConcurrent {
+		return ErrFirstDiagnosisModelBudget
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.usage.Requests != 0 || b.inflight != 0 || len(b.callGate) != 0 {
+		return ErrFirstDiagnosisModelBudget
+	}
+	b.callGate = make(chan struct{}, n)
+	return nil
+}
+
 func (b *FirstDiagnosisModelBudget) acquireCall(ctx context.Context) (func(), error) {
 	if b == nil || b.callGate == nil || ctx == nil {
 		return nil, ErrFirstDiagnosisModelBudget
