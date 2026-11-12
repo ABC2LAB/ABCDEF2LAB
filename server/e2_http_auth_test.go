@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -37,8 +38,8 @@ func (r *authEventCounter) Record(_ context.Context, e e2proxy.Event) error {
 
 // authLoginTarget은 소유 로그인 fixture다. 올바른 자격이면 쿠키(또는 JSON 토큰)를 주고 아니면 401이다.
 type authLoginTarget struct {
-	mu      sync.Mutex
-	posts   int
+	// posts는 handler goroutine이 쓰고 시험 goroutine이 읽으므로 atomic이다(-race).
+	posts   atomic.Int64
 	token   string
 	noToken bool
 }
@@ -54,9 +55,7 @@ func (a *authLoginTarget) handler(t *testing.T) http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		a.mu.Lock()
-		a.posts++
-		a.mu.Unlock()
+		a.posts.Add(1)
 		var user, pass string
 		if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
 			var body map[string]string
@@ -155,8 +154,8 @@ func TestE2HTTPAuthPrepCookieAccounts(t *testing.T) {
 	if len(result.Sessions) != 1 || result.Sessions["tester-a"].Get("Cookie") != "session="+target.token {
 		t.Fatalf("sessions: %v", map[string]http.Header(result.Sessions))
 	}
-	if target.posts != 2 {
-		t.Fatalf("login posts %d, want 2 (tampered credential not sent)", target.posts)
+	if target.posts.Load() != 2 {
+		t.Fatalf("login posts %d, want 2 (tampered credential not sent)", target.posts.Load())
 	}
 	if out := string(e.RedactOutput([]byte("Set-Cookie: session=" + target.token))); strings.Contains(out, target.token) {
 		t.Fatalf("session value not redacted: %q", out)
@@ -232,9 +231,9 @@ func TestE2HTTPFileAuthValidation(t *testing.T) {
 
 // 대상이 연결을 받은 뒤 답 없이 끊으면 결과 불명이다. 다시 보내지 않는다(요청 1번).
 func TestE2HTTPAuthPrepResultUnknownIsNotRetried(t *testing.T) {
-	var posts int
+	var posts atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		posts++
+		posts.Add(1)
 		conn, _, err := w.(http.Hijacker).Hijack()
 		if err == nil {
 			conn.Close()
@@ -244,8 +243,8 @@ func TestE2HTTPAuthPrepResultUnknownIsNotRetried(t *testing.T) {
 	dir := authTestDir(t)
 	pin := authCredentialPin(t, dir, "tester-a.json", "tester@owned.test", "seeded-pass-88ff")
 	result, err := e2HTTPAuthPrep(t.Context(), authTestExecution(t, srv.URL, &authEventCounter{}), dir, srv.URL, cookieAuth(E2HTTPFileAuthAccount{Label: "tester-a", Credential: pin}))
-	if err != nil || result.AccountAuth["tester-a"] != E2HTTPAuthResultUnknown || posts != 1 || len(result.Sessions) != 0 {
-		t.Fatalf("unknown result: %v %v posts=%d", err, result.AccountAuth, posts)
+	if err != nil || result.AccountAuth["tester-a"] != E2HTTPAuthResultUnknown || posts.Load() != 1 || len(result.Sessions) != 0 {
+		t.Fatalf("unknown result: %v %v posts=%d", err, result.AccountAuth, posts.Load())
 	}
 }
 
@@ -285,8 +284,8 @@ func TestE2HTTPAuthPrepProtectsPasswordReflection(t *testing.T) {
 	short := authCredentialPin(t, dir, "tester-b.json", "tester@owned.test", "12345")
 	e := authTestExecution(t, srv.URL, &authEventCounter{})
 	result, err := e2HTTPAuthPrep(t.Context(), e, dir, srv.URL, cookieAuth(E2HTTPFileAuthAccount{Label: "tester-a", Credential: good}, E2HTTPFileAuthAccount{Label: "tester-b", Credential: short}))
-	if err != nil || result.AccountAuth["tester-a"] != E2HTTPAuthAuthenticated || result.AccountAuth["tester-b"] != E2HTTPAuthNotSent || target.posts != 1 {
-		t.Fatalf("auth prep: %v %v posts=%d", err, result.AccountAuth, target.posts)
+	if err != nil || result.AccountAuth["tester-a"] != E2HTTPAuthAuthenticated || result.AccountAuth["tester-b"] != E2HTTPAuthNotSent || target.posts.Load() != 1 {
+		t.Fatalf("auth prep: %v %v posts=%d", err, result.AccountAuth, target.posts.Load())
 	}
 	call, err := e.BeginCall(t.Context(), "model-command")
 	if err != nil {

@@ -291,3 +291,52 @@ func TestAddProtectedValuesKeepsScanCondition(t *testing.T) {
 		t.Fatal("value breaking the scan condition accepted")
 	}
 }
+
+// 응답을 읽는 도중에 더한 보호 값도 놓치지 않는다: 읽기 시작 때 정한 검사 길이가 새 값을 다 담지 못할 수 있으니 그 응답은
+// 통째로 보류한다(#518 리뷰). 요청 전에 더하면 같은 응답이 반사 검사로 보류된다(대조).
+func TestProtectedValueAddedDuringReadWithholdsResponse(t *testing.T) {
+	secret := strings.Repeat("s", 176)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, strings.Repeat("x", 32))
+		w.(http.Flusher).Flush()
+		if r.URL.Path == "/allowed/slow" {
+			close(started)
+			<-release
+		}
+		io.WriteString(w, secret)
+	}))
+	defer srv.Close()
+	cfg := coreConfig(t, srv.URL, &coreRecorder{}, 5)
+	cfg.Limits.MaxBodyBytes = 64
+	e, call := coreOpen(t, cfg)
+	type outcome struct {
+		resp *http.Response
+		r    Receipt
+		err  error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		resp, r, err := call.Do(context.Background(), coreRequest(t, "GET", srv.URL+"/allowed/slow"))
+		done <- outcome{resp, r, err}
+	}()
+	<-started
+	if err := e.AddProtectedValues([]byte(secret)); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	got := <-done
+	if !errors.Is(got.err, ErrWithheld) || got.resp != nil || got.r.Reason != Withheld {
+		var body []byte
+		if got.resp != nil {
+			body, _ = io.ReadAll(got.resp.Body)
+		}
+		t.Fatalf("response read across a protected value change was delivered: %v %+v %q", got.err, got.r, body)
+	}
+	// 대조: 이미 더해진 값은 다음 요청에서 반사 검사로 보류된다.
+	if _, r, err := call.Do(context.Background(), coreRequest(t, "GET", srv.URL+"/allowed/fast")); !errors.Is(err, ErrWithheld) || r.Reason != Withheld {
+		t.Fatalf("reflection after registration delivered: %v %+v", err, r)
+	}
+}

@@ -69,6 +69,9 @@ type Execution struct {
 	admitted     uint64
 	intentCounts map[int64]*Counts
 	secrets      [][]byte
+	// secretsGen은 보호 값 목록이 실행 뒤에 바뀐 횟수다(AddProtectedValues). 응답을 읽는 동안 바뀌면 그 응답의 검사 길이가
+	// 새 값을 담지 못할 수 있어 통째로 보류한다.
+	secretsGen uint64
 	// redactOnly는 출력에서만 가리는 값이다(인증 준비가 받은 시험 계정 세션, C14 구현 설계 4). 응답 표현 보류(반사 검사)에는
 	// 쓰지 않는다.
 	redactOnly    [][]byte
@@ -1293,6 +1296,9 @@ func (c *Call) do(ctx context.Context, req *http.Request, purpose string, extrac
 	}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	// 응답 검사 길이와 보호 값 세대는 보내기 전에 잡는다. 보낸 뒤(응답을 기다리거나 읽는 동안) 더해진 보호 값은 세대 비교로
+	// 잡아 그 응답을 보류한다.
+	longest, generation := e.protectedState()
 	resp, sendErr := client.Do(out)
 	r.ForwardAttempted = ob.forward.Load()
 	if r.ForwardAttempted {
@@ -1321,7 +1327,7 @@ func (c *Call) do(ctx context.Context, req *http.Request, purpose string, extrac
 	diagnosticReceipt(e.ctx, r, "http_response_received", "succeeded", "")
 	// 자격 반사 검사는 전달할 앞부분이 아니라 검사 상한까지 읽은 전체에 한다. 검사 상한은 본문 상한 + 가장 긴 보호 값
 	// 길이라서, 전달 구간 끝에 걸친 보호 값도 통째로 검사 범위에 들어온다(C16 결정안 2, 상한 사이 조건).
-	limit, scan := responseLimits(e.cfg.Limits, e.longestSecret())
+	limit, scan := responseLimits(e.cfg.Limits, longest)
 	responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, scan+1))
 	oversized := int64(len(responseBody)) > limit
 	closeErr := resp.Body.Close()
@@ -1352,7 +1358,8 @@ func (c *Call) do(ctx context.Context, req *http.Request, purpose string, extrac
 	// 처리한 것은 알므로 결과 불명이 아니라 보류로 센다. 결과 불명 상한에 넣지 않아 그 call을 멈추지 않는다(C16).
 	// 길이를 맞출 수 없는 부분 응답(206·Content-Range)은 자르지 않고 통째로 보류한다.
 	partial := resp.StatusCode == http.StatusPartialContent || resp.Header.Get("Content-Range") != ""
-	if !e.safeHTTPResponse(resp, responseBody) || oversized && partial {
+	// 읽는 동안 보호 값이 더해졌으면 검사 길이가 새 값을 다 담지 못했을 수 있다(전달 구간 끝에 걸친 새 값). 통째로 보류한다.
+	if e.protectedGeneration() != generation || !e.safeHTTPResponse(resp, responseBody) || oversized && partial {
 		clear(responseBody)
 		r.Reason = Withheld
 		return finish(nil, ErrWithheld)
@@ -1448,6 +1455,7 @@ func (e *Execution) AddProtectedValues(values ...[]byte) error {
 		return ErrConfig
 	}
 	e.secrets = next
+	e.secretsGen++
 	return nil
 }
 
@@ -1662,13 +1670,26 @@ func compilePolicyTemplate(cfg Config) ([]compiledRule, HeaderMode, *EvaluationC
 
 // longestSecret은 이 실행에 등록된 보호 값(명시 비밀 헤더·보호 자격) 중 가장 긴 바이트 길이다. 응답 검사 상한에 더한다.
 func (e *Execution) longestSecret() int64 {
+	longest, _ := e.protectedState()
+	return longest
+}
+
+// protectedState는 가장 긴 보호 값 길이와 지금 보호 값 목록의 세대다. 응답을 읽기 전에 함께 잡아, 읽는 동안 목록이 바뀌었는지
+// 검사 때 비교한다.
+func (e *Execution) protectedState() (int64, uint64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	longest := 0
 	for _, s := range e.secrets {
 		longest = max(longest, len(s))
 	}
-	return int64(longest)
+	return int64(longest), e.secretsGen
+}
+
+func (e *Execution) protectedGeneration() uint64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.secretsGen
 }
 
 // responseLimits는 응답 전달 상한과 검사 상한이다. 설정이 없으면 요청 상한과 계산값을 쓴다(C16 결정안 3 전과 같음).
