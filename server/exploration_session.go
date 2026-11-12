@@ -368,7 +368,7 @@ func (s *ExplorationSession) Close(parent context.Context, reason exploration.Re
 				if err != nil {
 					return err
 				}
-				if state.Validate(s.options.Binding) != nil || state.Active {
+				if state.Validate(s.options.Binding) != nil || state.Active || (reason != exploration.Completed && state.ClosedReason == exploration.Completed) {
 					return exploration.ErrBinding
 				}
 				// Close와 대상 철회가 경합하면 경계가 실제로 확정한 마감 사유를 남긴다.

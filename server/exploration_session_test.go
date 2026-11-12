@@ -739,3 +739,21 @@ func TestExplorationSessionRejectsGenericDirectCapabilitiesBeforeAnyIO(t *testin
 		}
 	}
 }
+
+func TestExplorationSessionBoundaryCannotDowngradeModelFailureToCompleted(t *testing.T) {
+	o, b, _, _, p := explorationSessionFixture(t, exploration.BrowserToolNames())
+	p.failure = errors.New("fixture-private-marker")
+	b.lease.closeReply = func(state exploration.State) exploration.State {
+		state.ClosedReason = exploration.Completed
+		return state
+	}
+	session, err := OpenExplorationSession(t.Context(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = session.Run(t.Context(), o.Worker, agent.ExplorationRunOptions{TargetURL: "https://owned.test/", Reporter: &explorationFixtureReporter{}, MaxTurns: 5, MaxDuration: time.Second}, nil)
+	var failure exploration.Failure
+	if !errors.As(err, &failure) || failure.Stage != "boundary_close" || failure.Kind != "binding_invalid" || session.ClosedReason() != exploration.ModelError {
+		t.Fatal("boundary reply downgraded failed exploration to completed")
+	}
+}
