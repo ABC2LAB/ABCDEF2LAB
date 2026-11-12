@@ -45,8 +45,10 @@
 - 고친 뒤: 탐색 `PARTIAL`(페이지 상한 8에 닿고 방문 안 한 읽기가 남음, 사유 `completed`), 경계 요청 10건(서버 정적 fetch 8 + 브라우저 2), 정적 fetch로 시작 페이지·링크·번들 8쪽을 받아 파싱(발견 목록 143, 끝점 32 상한), 자동 선택 뒤 진단 Worker 실행·회차 `completed`.
 - 직접 입구 순번으로 맞춘 서버 fetch 관찰은 발견 출처(`html_link`·`html_script`)를 유지했고 `attested_read`였다(#503 리뷰 수정 확인).
 
+- 탐색 직접 Bash(설치 정책 `direct_bash: true`, 같은 구성): 스크립트 모델이 탐색 단계에서 Bash를 한 번 불러 승인 대상과 승인 밖 호스트를 curl로 부름. 모델이 받은 가린 결과는 `exit_code=0 approved=200 outside=403`, 탐색 요청 11(서버 fetch 8·브라우저 2·Bash 1), 직접 입구 순번 관찰로 발견 출처 `api_recon_runtime` 1개가 생김, 탐색 단계 실패 로그 0, 진단 `completed`.
+
 ## 남은 일
 
 1. host adapter(P1-D): 대상 등록 기록 → `Target` 변환, `ControlBoundary`·`ControlReader`·`DirectFetch`·MCP lease로 `ExplorationPipelineHost` 조립, 설치 입력 `target_policy.exploration`으로 켜기는 했다([파이프라인 문서](exploration-product-pipeline.md#권위와-조립)). 남은 것: 서버의 대상 감시와 실행 중 `close(target_ended)` 연결(지금은 경계가 `open` 때 받은 만료 시각과 요청마다의 판정, 서버의 기존 대상 감시가 실행을 멈추는 것에 기댄다).
 2. 제품 compose의 `explore-boundary` 서비스(기본 꺼짐), 망 세 개(브라우저 입구·직접 입구·제어 소켓 볼륨), 실제 Docker 양성·음성 수용시험(B01~B18). B16(브라우저·MCP 분리)과 같은 파일을 건드리므로 그 결과 뒤에 한다.
-3. WebSocket 전달(approved_writes 회차), 탐색 단계 Bash relay(P1-C).
+3. WebSocket 전달(approved_writes 회차). 탐색 단계 Bash relay(P1-C)는 typed adapter `exploresandbox.DirectBash`와 설치 정책 `exploration.direct_bash`(기본 꺼짐)로 들어갔다. 아래 종단 확인 참고.
