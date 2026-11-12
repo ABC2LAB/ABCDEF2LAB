@@ -1,8 +1,10 @@
 "use client";
 
-// 대시보드 (시안 v90 짜임: 결정 대기 안내 · 발견된 취약점 · 진행 중인 점검 · 최근 끝난 점검 + 오른쪽 상세).
+// 대시보드 (시안 v90 짜임: 결정 대기 안내 · 발견 · 검토 대상 · 진행 중인 점검 · 최근 끝난 점검 + 오른쪽 상세).
 // 서버에 진단 목록 · 집계 API 가 없어 이 브라우저가 이어 보는 진단 하나만 실제 값으로 보인다.
-// 발견된 취약점은 그 진단의 저장된 결과(보고서와 같은 원장)에서 정상 대조를 뺀 것만 보인다. 결과가 저장되기 전에는
+// 발견 목록은 그 진단의 저장된 결과(보고서와 같은 원장)에서 정상 대조를 뺀 것만 보인다. 확정만 취약점이므로 제목은
+// 중립 이름("발견 · 검토 대상")으로 두고 건수 옆에 확정 수를 따로 보인다(검토 필요 · 미실행 · 결과 불명은 취약점이
+// 아님, 절대 규칙 5). 결과가 저장되기 전에는
 // 비워 두고 "없음"이라고 말하지 않는다(절대 규칙 5). 결정 대기 안내는 실제 상태(요청 승인 대기 · 범위 선택 대기 ·
 // 결과 불명)에서만 만든다.
 
@@ -39,7 +41,7 @@ type Sel = { kind: "job" } | { kind: "approval"; id: string } | { kind: "finding
 
 /** 대시보드는 칸마다 최대 3개만 보인다 (시안 v55). 전체는 '전체 보기' → 진행 중인 점검 · 끝난 점검 화면. */
 export const DASH_MAX = 3;
-/** 발견된 취약점은 처음에 위험한 순으로 6개만, 나머지는 '모두 보기' (시안 v88). */
+/** 발견 목록은 처음에 위험한 순으로 6개만, 나머지는 '모두 보기' (시안 v88). */
 export const FIND_MAX = 6;
 
 /** 위험도 칸. 서버가 심각도를 안 줬거나 모르는 값이면 none(등급 없음). */
@@ -163,7 +165,7 @@ export function UrlDashboardLive() {
     );
   }
 
-  // 발견된 취약점 본문 (결과가 저장되기 전에는 "없음"이라고 하지 않는다)
+  // 발견 목록 본문 (결과가 저장되기 전에는 "없음"이라고 하지 않는다)
   let findBody: ReactNode;
   if (!handle) findBody = <p className={s.empty}>이 브라우저에서 이어 보는 점검이 없습니다.</p>;
   else if (!reportTask)
@@ -326,8 +328,12 @@ export function UrlDashboardLive() {
           <section className={s.sec} aria-labelledby="dFindH">
             <div className={s.sh}>
               <div className={s["sh-t"]}>
-                <h2 id="dFindH">발견된 취약점</h2>
-                {reportTask && rem.data ? <span className={s.n}>{`${shown.length}건`}</span> : null}
+                <h2 id="dFindH">발견 · 검토 대상</h2>
+                {reportTask && rem.data ? (
+                  <span className={s.n}>
+                    {`${shown.length}건 · 확정 ${shown.filter((e) => diagnosticOutcome(e) === "confirmed").length}`}
+                  </span>
+                ) : null}
               </div>
               {shown.length > FIND_MAX ? (
                 <button className={s.aside} type="button" aria-expanded={findAll} onClick={() => setFindAll((v) => !v)}>

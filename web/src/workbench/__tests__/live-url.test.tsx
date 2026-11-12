@@ -801,7 +801,7 @@ describe("대시보드 · 인증 (URL 진단)", () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(running);
     mount("dashboard");
-    const sec = await screen.findByRole("region", { name: "발견된 취약점" });
+    const sec = await screen.findByRole("region", { name: "발견 · 검토 대상" });
     expect(await within(sec).findByText(/결과가 저장되면 여기에 나옵니다/)).toBeInTheDocument();
     expect(a.fetchRemediation).not.toHaveBeenCalled();
     expect(within(sec).queryByText(/저장된 발견이 없습니다/)).toBeNull();
@@ -824,12 +824,13 @@ describe("대시보드 · 인증 (URL 진단)", () => {
       ],
     });
     mount("dashboard");
-    const sec = await screen.findByRole("region", { name: "발견된 취약점" });
+    const sec = await screen.findByRole("region", { name: "발견 · 검토 대상" });
     await waitFor(() => expect(a.fetchRemediation).toHaveBeenCalledWith("42", "internal"));
     const titles = () =>
       Array.from(sec.querySelectorAll("[data-dsel^='fd-']"), (x) => x.textContent?.match(/(발견|후보) \d+/)?.[0]);
     await waitFor(() => expect(titles()).toEqual(["발견 2", "발견 4", "후보 1", "후보 5"]));
-    expect(within(sec).getByText("4건")).toBeInTheDocument();
+    // 건수 옆에 확정 수를 따로 (확정만 취약점 · 절대 규칙 5)
+    expect(within(sec).getByText("4건 · 확정 2")).toBeInTheDocument();
     // 심각도를 안 준 발견은 '등급 없음', 날짜는 없다 (시안 v90)
     const noSev = sec.querySelector("[data-dsel='fd-candidate-5']") as HTMLElement;
     expect(within(noSev).getByText("등급 없음")).toBeInTheDocument();
@@ -842,12 +843,33 @@ describe("대시보드 · 인증 (URL 진단)", () => {
     expect(within(chips).queryByRole("button", { name: /낮음/ })).toBeNull();
     fireEvent.click(within(chips).getByRole("button", { name: /높음/ }));
     expect(titles()).toEqual(["발견 4"]);
-    expect(within(sec).getByText("1건")).toBeInTheDocument();
+    expect(within(sec).getByText("1건 · 확정 1")).toBeInTheDocument();
     // 보던 발견(발견 2)이 걸러지면 남은 첫 줄로 상세가 바뀐다
     expect(within(detail).getByText("발견 4")).toBeInTheDocument();
     fireEvent.click(within(chips).getByRole("button", { name: /전체/ }));
     fireEvent.click(within(sec).getByRole("button", { name: /후보 5/ }));
     expect(within(detail).getByText("후보 5")).toBeInTheDocument();
+  });
+
+  it("대시보드: 확정 0 · 미실행 · 결과 불명만 있으면 '취약점 n건'으로 보이지 않는다 (절대 규칙 5)", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    a.fetchRemediation.mockResolvedValue({
+      task_id: 42,
+      entries: [
+        { ...candidate(1), outcome: "not_executed", status: "policy_not_executed" },
+        { ...candidate(2), verification: "" },
+      ],
+    });
+    mount("dashboard");
+    const sec = await screen.findByRole("region", { name: "발견 · 검토 대상" });
+    await waitFor(() => expect(sec.querySelectorAll("[data-dsel^='fd-']")).toHaveLength(2));
+    expect(within(sec).getByText("2건 · 확정 0")).toBeInTheDocument();
+    expect(within(sec).getByText("미실행")).toBeInTheDocument();
+    expect(within(sec).getByText("결과 불명")).toBeInTheDocument();
+    // 목록 제목 · 건수 어디에도 "취약점"이라 부르지 않는다
+    expect(within(sec).queryByText(/취약점/)).toBeNull();
+    expect(screen.queryByRole("heading", { name: /취약점/ })).toBeNull();
   });
 
   it("대시보드: 발견이 6개를 넘으면 처음 6개만, '모두 보기'로 전부 · '접기'로 다시 6개", async () => {
@@ -858,7 +880,7 @@ describe("대시보드 · 인증 (URL 진단)", () => {
       entries: Array.from({ length: 8 }, (_, i) => candidate(i + 1)),
     });
     mount("dashboard");
-    const sec = await screen.findByRole("region", { name: "발견된 취약점" });
+    const sec = await screen.findByRole("region", { name: "발견 · 검토 대상" });
     const rows = () => sec.querySelectorAll("[data-dsel^='fd-']").length;
     await waitFor(() => expect(rows()).toBe(6));
     fireEvent.click(within(sec).getByRole("button", { name: "모두 보기" }));
