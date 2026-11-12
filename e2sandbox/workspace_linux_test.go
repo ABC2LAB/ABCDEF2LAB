@@ -59,6 +59,9 @@ func TestWorkspaceRoundTripKeepsOnlyRegularFilesAndDirectories(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := ValidateWorkspace(data, 1<<20); err != nil {
+		t.Fatal("packed workspace failed validation", err)
+	}
 	dst := t.TempDir()
 	if err := unpackWorkspace(data, dst, 1<<20); err != nil {
 		t.Fatal(err)
@@ -157,8 +160,12 @@ func TestWorkspaceNameBytesLimit(t *testing.T) {
 	if len(headers) >= maxWorkspaceEntries {
 		t.Fatalf("fixture hits the entry limit first: %d", len(headers))
 	}
-	if err := unpackWorkspace(workspaceTar(t, headers...), t.TempDir(), 1<<20); !errors.Is(err, ErrWorkspaceTooLarge) {
+	over := workspaceTar(t, headers...)
+	if err := unpackWorkspace(over, t.TempDir(), 1<<20); !errors.Is(err, ErrWorkspaceTooLarge) {
 		t.Fatal("name bytes over the limit unpacked", err)
+	}
+	if err := ValidateWorkspace(over, 1<<20); !errors.Is(err, ErrWorkspaceTooLarge) {
+		t.Fatal("name bytes over the limit validated", err)
 	}
 	src := t.TempDir()
 	for _, h := range headers {
@@ -187,6 +194,9 @@ func TestWorkspaceNameBytesLimit(t *testing.T) {
 	if err := unpackWorkspace(data, t.TempDir(), 1<<20); err != nil {
 		t.Fatal("name bytes at the limit not unpacked", err)
 	}
+	if err := ValidateWorkspace(data, 1<<20); err != nil {
+		t.Fatal("name bytes at the limit not validated", err)
+	}
 }
 
 // 풀 때는 일반 파일·디렉터리만, 상대 정규 경로만, 중복 없이, 상한 안에서만 받는다.
@@ -213,6 +223,10 @@ func TestUnpackWorkspaceRejectsUnsafeArchives(t *testing.T) {
 		dst := t.TempDir()
 		if err := unpackWorkspace(data, dst, 1024); err == nil {
 			t.Fatalf("%s: unsafe archive accepted", name)
+		}
+		// 호스트 검사도 같은 규칙으로 거부한다(파일 시스템에 쓰지 않고).
+		if err := ValidateWorkspace(data, 1024); err == nil {
+			t.Fatalf("%s: unsafe archive validated", name)
 		}
 		if _, err := os.Stat(filepath.Join(filepath.Dir(dst), "x")); err == nil {
 			t.Fatalf("%s: wrote outside the root", name)
