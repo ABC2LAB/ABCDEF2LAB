@@ -754,7 +754,7 @@ func firstDiagnosisClosedToolOutcome(result e2runner.TrustedResult) bool {
 	if result.Classification == "result_unknown" {
 		// 최종 호출의 결과 불명 분류는 결과 불명 송신 수로만 생긴다. 사유는 마지막 요청의 것이다.
 		switch result.Call.Reason {
-		case e2proxy.Complete, e2proxy.PolicyDenied, e2proxy.Unsupported, e2proxy.Unknown, e2proxy.TransportFailed:
+		case e2proxy.Complete, e2proxy.PolicyDenied, e2proxy.Unsupported, e2proxy.Unknown, e2proxy.TransportFailed, e2proxy.BudgetExhausted, e2proxy.AttemptLimit:
 			return c.Unknown > 0
 		}
 		return false
@@ -766,12 +766,15 @@ func firstDiagnosisClosedToolOutcome(result e2runner.TrustedResult) bool {
 		// 대상 연결을 맺지 못한 송신 실패만 받는다. 송신 실패 수가 없는 transient_failure(프록시 장애·명령 시간 초과)는
 		// 신뢰 결과에서 원인을 나눌 수 없어 마감 실패로 둔다.
 		switch result.Call.Reason {
-		case e2proxy.Complete, e2proxy.PolicyDenied, e2proxy.Unsupported, e2proxy.TransportFailed:
+		case e2proxy.Complete, e2proxy.PolicyDenied, e2proxy.Unsupported, e2proxy.TransportFailed, e2proxy.BudgetExhausted, e2proxy.AttemptLimit:
 			return c.Transient > 0
 		}
 		return false
 	}
-	if result.Call.Reason != e2proxy.Complete && result.Call.Reason != e2proxy.PolicyDenied && result.Call.Reason != e2proxy.Unsupported {
+	// 예산 소진·송신 시도 상한은 그 요청만 보내지 않은 거부다(C01 뒤 실행을 멈추지 않음). 마지막 요청의 사유가 이것이면
+	// 거부 수가 있어야 하고, 아래 정책 제한 분류로만 받는다.
+	requestLimit := result.Call.Reason == e2proxy.BudgetExhausted || result.Call.Reason == e2proxy.AttemptLimit
+	if requestLimit && c.Denied == 0 || !requestLimit && result.Call.Reason != e2proxy.Complete && result.Call.Reason != e2proxy.PolicyDenied && result.Call.Reason != e2proxy.Unsupported {
 		return false
 	}
 	switch result.Classification {
