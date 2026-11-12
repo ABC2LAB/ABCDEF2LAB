@@ -24,8 +24,13 @@ type firstDiagnosisTargetDrain struct {
 	admit func() error
 }
 
-// 입력은 추정 토큰 대신 설치자가 고정한 전체 context를 매 호출 보수적으로 예약한다.
-// 출력 한도와 직렬화 크기도 호출 전에 검사하며 성공 뒤에도 예약을 환불하지 않는다.
+// 입력은 직렬화한 요청 바이트 수에 framing 여유를 더한 값으로 예약한다(P3 결정안 C28 결정 1). 토큰 하나는 1바이트
+// 이상이라 이 값이 입력 토큰의 상한이고, 설치자가 고정한 context보다 크면 거부한다. 출력은 max_tokens로 예약한다.
+// 성공 뒤에도 예약을 환불하지 않는다.
+// firstDiagnosisFramingTokens는 요청 JSON 바이트에 더하는 provider framing 여유다. 대화 템플릿의 특수 토큰은
+// 메시지마다 몇 개뿐이고 JSON의 역할·구분 바이트가 그보다 많으므로, 이 여유는 템플릿 머리말과 시스템 토큰 몫이다.
+const firstDiagnosisFramingTokens = 4096
+
 type FirstDiagnosisModelBudget struct {
 	mu            sync.Mutex
 	callGate      chan struct{}
@@ -219,7 +224,8 @@ func (b *FirstDiagnosisModelBudget) before(ctx context.Context, cfg agent.Config
 	raw, err := json.Marshal(req)
 	// 텍스트·도구 JSON의 바이트 상한에 provider framing 여유를 포함한다.
 	// provider의 모델 context pin은 설치자가 검증한 실제 로컬 서버 상한이어야 한다.
-	if err != nil || int64(len(raw))+4096 > b.inputPerCall {
+	reserveInput := int64(len(raw)) + firstDiagnosisFramingTokens
+	if err != nil || reserveInput > b.inputPerCall {
 		return ErrFirstDiagnosisModelBudget
 	}
 	clear(raw)
@@ -236,15 +242,15 @@ func (b *FirstDiagnosisModelBudget) before(ctx context.Context, cfg agent.Config
 		return ErrFirstDiagnosisModelBudget
 	}
 	if b.blocked || !b.usage.UsageKnown || b.usage.Requests >= b.limits.ModelRequests ||
-		b.inputPerCall > b.limits.InputTokens-b.usage.ReservedInputTokens ||
+		reserveInput > b.limits.InputTokens-b.usage.ReservedInputTokens ||
 		int64(req.MaxTokens) > b.limits.OutputTokens-b.usage.ReservedOutputTokens || cost > b.limits.CostUSDMicros-b.usage.ReservedCostUSDMicros {
 		return ErrFirstDiagnosisModelBudget
 	}
 	b.usage.Requests++
-	b.usage.ReservedInputTokens += b.inputPerCall
+	b.usage.ReservedInputTokens += reserveInput
 	b.usage.ReservedOutputTokens += int64(req.MaxTokens)
 	b.usage.ReservedCostUSDMicros += cost
-	b.callInput, b.callCost = b.inputPerCall, cost
+	b.callInput, b.callCost = reserveInput, cost
 	if b.external != nil {
 		b.lastExternal = b.external.Snapshot()
 	}
@@ -266,6 +272,14 @@ func failedCallBounded(callErr error, externalBlocked bool) bool {
 	return true
 }
 
+// reportedWithinReservation은 실패한 호출이 함께 보고한 사용량이 예약 안인지 본다. 보고 값이 예약보다 크면
+// 예약을 상한으로 쓴 근거(요청 크기·max_tokens)가 깨진 것이므로 예약량으로 정산하지 않고 막는다.
+// 보고 값이 없으면(0) 예약량으로 정산한다.
+func reportedWithinReservation(usage llm.Usage, reservedInput int64, outputLimit int) bool {
+	return usage.InputTokens >= 0 && usage.OutputTokens >= 0 && usage.CacheReadTokens >= 0 && usage.CacheWriteTokens >= 0 &&
+		int64(usage.InputTokens) <= reservedInput && usage.OutputTokens <= outputLimit
+}
+
 func (b *FirstDiagnosisModelBudget) after(usage llm.Usage, outputLimit int, callErr error) error {
 	if b == nil {
 		return callErr
@@ -273,7 +287,7 @@ func (b *FirstDiagnosisModelBudget) after(usage llm.Usage, outputLimit int, call
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	known := callErr == nil && usage.InputTokens > 0 && usage.OutputTokens >= 0 &&
-		int64(usage.InputTokens) <= b.inputPerCall && usage.OutputTokens <= outputLimit &&
+		int64(usage.InputTokens) <= b.callInput && usage.OutputTokens <= outputLimit &&
 		usage.CacheReadTokens >= 0 && usage.CacheWriteTokens >= 0
 	if b.external != nil {
 		next, previous := b.external.Snapshot(), b.lastExternal
@@ -288,7 +302,7 @@ func (b *FirstDiagnosisModelBudget) after(usage llm.Usage, outputLimit int, call
 		b.usage.InputTokens += int64(usage.InputTokens)
 		b.usage.OutputTokens += int64(usage.OutputTokens)
 		b.usage.UsageKnown = true
-	case failedCallBounded(callErr, b.external != nil && b.external.Snapshot().Blocked):
+	case failedCallBounded(callErr, b.external != nil && b.external.Snapshot().Blocked) && reportedWithinReservation(usage, b.callInput, outputLimit):
 		// 실패한 호출은 예약한 양을 쓴 것으로 센다(P3 결정안 C05). 재시도가 꺼져 있어 예약 하나에 HTTP 요청은
 		// 하나이고, 입력 크기·max_tokens·가격 상한을 호출 전에 검사했으므로 이 값이 실제 사용의 상한이다.
 		// 다음 호출의 예산 검사는 예약 합계로 하므로 상한은 넓어지지 않는다.

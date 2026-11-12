@@ -218,16 +218,19 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 	if err != nil || len(wire) > openRouterRequestLimit {
 		return reject()
 	}
-	if reason, reserveErr := p.reserveDiagnostic(output); reserveErr != nil {
+	// 입력 예약은 입력 상한 전체가 아니라 이 요청 크기의 상한이다(P3 결정안 C28 결정 1).
+	input := openRouterReservedInput(m, len(wire))
+	reserved := openRouterCallCost(m, input, output)
+	if reason, reserveErr := p.reserveDiagnostic(input, output); reserveErr != nil {
 		diagnostic.ReasonCode = reason
 		return reject()
 	}
 	diagnostic.Event = "model_request_finished"
 	diagnostic.Status = "failed"
 	diagnostic.ReasonCode = "transport_failure"
-	diagnostic.ReservedInputTokens = m.MaxInputPerCall
+	diagnostic.ReservedInputTokens = input
 	diagnostic.ReservedOutputTokens = output
-	diagnostic.ReservedCostMicros = openRouterReservedCost(m, output)
+	diagnostic.ReservedCostMicros = reserved
 	diagnostic.CostUncertain = true
 	begin := diagnostic
 	begin.Event, begin.Status, begin.ReasonCode = "model_request_started", "started", ""
@@ -324,12 +327,11 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 		} `json:"usage"`
 	}
 	if json.Unmarshal(data, &result) != nil || result.Model != OpenRouterModel || result.Provider != m.ExpectedProviderName ||
-		result.Usage == nil || result.Usage.Cost == nil || result.Usage.Input < 1 || result.Usage.Input > m.MaxInputPerCall ||
+		result.Usage == nil || result.Usage.Cost == nil || result.Usage.Input < 1 || result.Usage.Input > input ||
 		result.Usage.Output < 0 || result.Usage.Output > output || math.IsNaN(*result.Usage.Cost) || math.IsInf(*result.Usage.Cost, 0) || *result.Usage.Cost < 0 {
 		return nil, ErrOpenRouterPolicy
 	}
 	cost := math.Ceil(*result.Usage.Cost * 1000000)
-	reserved := openRouterReservedCost(m, output)
 	if cost > float64(reserved) {
 		return nil, ErrOpenRouterPolicy
 	}

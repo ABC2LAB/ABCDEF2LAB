@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -149,7 +150,7 @@ func TestDiagnosticFinalizationDistinguishesCancelTimeoutAndObservability(t *tes
 			} else if code != 1 {
 				t.Fatal("failure presented as success")
 			}
-			if mode == "write" && !strings.Contains(stderr.String(), "log_storage_failed") {
+			if mode == "write" && (!strings.Contains(stderr.String(), "log_storage_failed") || !strings.Contains(stderr.String(), "diagnostic_logging_dropped:")) {
 				t.Fatal("write failure missing")
 			}
 			if mode == "limit" && !strings.Contains(stderr.String(), "log_limit") {
@@ -238,6 +239,16 @@ func TestDiagnosticWriteFailureWarnsBeforeFinish(t *testing.T) {
 	if code != 1 {
 		t.Fatal("write failure became success")
 	}
+	// 끝에서는 같은 경고를 다시 내지 않고 누락 건수 한 줄만 남긴다(P3 결정안 C10).
+	select {
+	case msg := <-warnings:
+		var dropped int
+		if _, err := fmt.Sscanf(string(msg), "diagnostic_logging_dropped:%d\n", &dropped); err != nil || dropped < 2 {
+			t.Fatalf("unexpected finish warning %q", msg)
+		}
+	default:
+		t.Fatal("dropped count missing")
+	}
 	select {
 	case <-warnings:
 		t.Fatal("duplicate log failure warning")
@@ -289,5 +300,43 @@ func TestModelObserverContinuesAfterDiagnosticLogFailure(t *testing.T) {
 	cancel()
 	if urlRuntimeCheck(cancelled, func() error { return nil })() == nil {
 		t.Fatal("cancelled context passed")
+	}
+}
+
+// URL 실행 경로는 진단 stderr를 버리므로 로그 장애 사유와 누락 건수를 서버 로그로 남긴다(P3 결정안 C10).
+func TestURLDiagnosticLogLossGoesToServerLog(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, d, err := beginLaunchDiagnostics(context.Background(), launchConfig{DataDir: root}, "preparation", 7, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { code := 0; d.finish(&code) }()
+	var lines []string
+	capture := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+	urlDiagnosticLogLoss(d.logger, capture)
+	if len(lines) != 0 {
+		t.Fatalf("healthy logger reported loss: %q", lines)
+	}
+	if err := os.Chmod(d.logger.Path(), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "cli", Event: "stage_started", Stage: "execution", Status: "started"})
+	}
+	urlDiagnosticLogLoss(d.logger, capture)
+	if len(lines) != 1 || !strings.Contains(lines[0], "사유=log_storage_failed") || !strings.Contains(lines[0], "누락=2건") {
+		t.Fatalf("server log line %q", lines)
+	}
+	urlDiagnosticLogLoss(nil, capture)
+	if len(lines) != 1 {
+		t.Fatal("nil logger reported")
+	}
+	// URL 실행 마감이 이 함수를 서버 로그로 부르는지 소스로 묶는다(Execute 전체는 외부 설치 없이 못 돌린다).
+	source, err := os.ReadFile("url_preparation_runtime.go")
+	if err != nil || !strings.Contains(string(source), "urlDiagnosticLogLoss(diagnostics.logger, log.Printf)") {
+		t.Fatal("URL finish does not report diagnostic log loss to the server log")
 	}
 }

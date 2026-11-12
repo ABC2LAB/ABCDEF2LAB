@@ -6,7 +6,7 @@
 
 Start 전에 기존 preparation journal/head에 **회차 전체** 요청·토큰·USD·시간 상한을 예약한다. 같은 위임의 과거 회차 예약을 합산해 누적 한도와 MaxRuns를 검사한다. 실패·중지에도 환불하지 않고 unknown 회차가 있으면 새 Start를 차단한다. 이 저널은 지우거나 새 디렉터리로 바꿔 예산을 재사용하는 복구 수단이 아니다.
 
-회차 안에서는 `FirstDiagnosisModelBudget.callGate` 하나가 준비 Planner와 실행 Planner/Worker 모두를 직렬화한다. 기다리는 Worker는 추가 예약을 만들지 않는다. 입력은 호출당 전체 context 262144 토큰, 출력은 고정 상한을 예약한다. USD 예약은 manifest의 입력/출력 가격 상한과 같은 올림식을 사용한다. 이 예약과 unknown 상태를 동기 저장한 후에만 기존 OpenRouter transport가 승인 예산을 검사·소비한다. URL 회차 한도는 manifest 전체 한도보다 클 수 없으며 호출당 USD 예약도 회차 한도 안이어야 한다.
+회차 안에서는 `FirstDiagnosisModelBudget.callGate` 하나가 준비 Planner와 실행 Planner/Worker 모두를 직렬화한다. 기다리는 Worker는 추가 예약을 만들지 않는다. 입력은 직렬화한 요청 바이트 수 + 4096(framing 여유)을 예약하고 전체 context(262144)보다 크면 거부한다(P3 결정안 C28 결정 1). 출력은 고정 상한을 예약한다. USD 예약은 아직 호출당 전체 context 기준 견적(manifest의 입력/출력 가격 상한과 같은 올림식)이라 실제보다 크다. 실패한 호출은 예약한 양을 쓴 것으로 정산하고 다음 호출을 막지 않는다(C05). 보고된 사용량이 예약을 넘거나, 로컬·외부 정책이 막았거나, 사용량 저장이 실패하면 막는다. 이 예약과 unknown 상태를 동기 저장한 후에만 기존 OpenRouter transport가 승인 예산을 검사·소비한다. URL 회차 한도는 manifest 전체 한도보다 클 수 없으며 호출당 USD 예약도 회차 한도 안이어야 한다.
 
 Transport는 유일한 OpenRouter 승인 원장이다. URL 원장은 별도 범위인 회차·위임을 집행한다. 두 금액을 더해 비용으로 표시하지 않는다. 성공 후 정확히 한 transport 호출의 검증된 사용량과 SDK 사용량이 일치해야 실제 USD를 반영한다. 응답·model/provider·usage·cost 불일치, 저장 실패, 취소/timeout으로 결과가 불명이면 예약을 유지하고 후속 모델 호출을 막는다.
 
