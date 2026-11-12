@@ -35,6 +35,8 @@ type productTargetPolicy struct {
 	MaxRequests      int64                 `json:"max_requests"`
 	MaxTargets       int                   `json:"max_targets"`
 	UpstreamCAFile   string                `json:"upstream_ca_file,omitempty"`
+	// Exploration은 탐색 경계·브라우저 샌드박스 연결이다(선택). 없으면 탐색은 NOT_RUN이다.
+	Exploration *productExplorationPolicy `json:"exploration,omitempty"`
 }
 type productTargetRecord struct {
 	Target           diagnosisprep.ProductTarget `json:"target"`
