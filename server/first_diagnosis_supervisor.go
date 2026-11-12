@@ -10,6 +10,7 @@ import (
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/diagnosis"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
 	"github.com/Autumn-27/artex/internal/diagnosticlog"
@@ -80,10 +81,12 @@ type FirstDiagnosisSupervisor struct {
 	runErr           error
 	runLogErr        error
 	completed        bool
-	operations       sync.WaitGroup
-	ownedTask        string
-	operationCancel  context.CancelFunc
-	joinDone         chan struct{}
+	// result는 감사가 닫힌 실행의 결과다(실행 결과 상태 값 계약). completed일 때만 밖에 보인다.
+	result          *diagnosis.RunResult
+	operations      sync.WaitGroup
+	ownedTask       string
+	operationCancel context.CancelFunc
+	joinDone        chan struct{}
 }
 
 func (*FirstDiagnosisSupervisor) String() string { return "server.FirstDiagnosisSupervisor[protected]" }
@@ -555,7 +558,7 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 		terminal := registered && intentState == "done"
 		if !registered && server.engine.inflightCount(taskID) == 0 && server.engine.ActiveLLMCalls(taskID) == 0 {
 			var completionErr error
-			terminal, completionErr = s.generalCompletion(run, server, task)
+			terminal, _, completionErr = s.generalCompletion(run, server, task)
 			if completionErr != nil {
 				return completionErr
 			}
@@ -579,8 +582,10 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 				if err = s.checkRegisteredResult(run, task, intentID); err != nil {
 					return err
 				}
+				// 등록 경로는 intent 하나가 done이어야 마감된다.
+				s.setRunResult(diagnosis.IntentOutcomes{Done: 1})
 			} else {
-				ready, completionErr := s.generalCompletion(run, server, task)
+				ready, outcomes, completionErr := s.generalCompletion(run, server, task)
 				if completionErr != nil || !ready {
 					return ErrFirstDiagnosisSupervisor
 				}
@@ -588,6 +593,7 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 				if err = server.engine.e2HTTP.CloseTask(run, taskID); err != nil {
 					return firstDiagnosisFailure(err)
 				}
+				s.setRunResult(outcomes)
 			}
 			return nil
 		}
@@ -598,53 +604,53 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 	}
 }
 
-// 일반 HTTP의 nil 반환은 감사가 닫힌 실행 마감이며 목표 충족이나 E③ 판정이 아니다.
-func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server *Server, task *Task) (bool, error) {
+// 일반 HTTP의 마감 판정이다. ready는 감사가 닫힌 실행 마감을 할 수 있다는 뜻이며 목표 충족이나 E③ 판정이 아니다.
+// intent 결과는 실행 결과 상태 값 계약 §2로 센다. incomplete·stopped intent는 실패가 아니라 부분 완료다(C08).
+// 결과 불명 intent는 E② 요청 단위 처리(C01) 전까지 지금처럼 실행을 멈춘다(계약 §6.3).
+func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server *Server, task *Task) (bool, diagnosis.IntentOutcomes, error) {
+	var none diagnosis.IntentOutcomes
 	if flow := server.engine.e2HTTP.options.Workflow; flow != nil && flow.Failed() {
-		return false, ErrFirstDiagnosisOutcome
+		return false, none, ErrFirstDiagnosisOutcome
 	}
-	var active, done, bad int
-	err := s.m.pg.QueryRowContext(ctx, `SELECT
- count(*) FILTER (WHERE state IN ('open','running')),
- count(*) FILTER (WHERE state='done' OR (state='blocked' AND blocked_reason IN ('e2_http_policy_limited','e2_http_unsupported'))),
- count(*) FILTER (WHERE state NOT IN ('open','running','done') AND NOT (state='blocked' AND blocked_reason IN ('e2_http_policy_limited','e2_http_unsupported')))
- FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent'`, task.ExpID).Scan(&active, &done, &bad)
-	if err != nil || bad > 0 {
-		return false, ErrFirstDiagnosisSupervisor
+	outcomes, active, err := firstDiagnosisIntentOutcomes(ctx, s.m.pg.DB, task.ExpID)
+	if err != nil || outcomes.Unknown > 0 {
+		return false, none, ErrFirstDiagnosisSupervisor
 	}
 	if active > 0 {
-		return false, nil
+		return false, none, nil
 	}
 	if task.firstDiagnosisWorkSeq.Load() == 0 || task.firstDiagnosisPlannedSeq.Load() < task.firstDiagnosisWorkSeq.Load() {
-		return false, nil
+		return false, none, nil
 	}
-	if done == 0 {
+	settled := outcomes.Done + outcomes.PolicyLimited + outcomes.Incomplete + outcomes.Stopped
+	if settled == 0 {
 		if db.IsTerminal(task.lifecycleSnapshot().Status) {
-			return false, ErrFirstDiagnosisSupervisor
+			return false, none, ErrFirstDiagnosisSupervisor
 		}
-		return false, nil
+		return false, none, nil
 	}
 	if flow := server.engine.e2HTTP.options.Workflow; flow != nil && !flow.DeepReady() {
-		return false, ErrFirstDiagnosisOutcome
+		return false, none, ErrFirstDiagnosisOutcome
 	}
 	execution, ok := server.engine.e2HTTP.Execution(task.ID)
 	if !ok || execution == nil {
-		return false, ErrFirstDiagnosisSupervisor
+		return false, none, ErrFirstDiagnosisSupervisor
 	}
 	calls := execution.Calls()
-	if len(calls) == 0 {
-		return false, ErrFirstDiagnosisSupervisor
+	// 끝낸(done)·정책 제한 intent가 있으면 실제 E② 호출이 있어야 한다. 모두 불완전·중지면 호출이 없을 수 있다.
+	if len(calls) == 0 && outcomes.Done+outcomes.PolicyLimited > 0 {
+		return false, none, ErrFirstDiagnosisSupervisor
 	}
 	results := server.engine.e2HTTP.Results(task.ID)
 	if len(results) != len(calls) {
-		return false, ErrFirstDiagnosisSupervisor
+		return false, none, ErrFirstDiagnosisSupervisor
 	}
 	observed := make(map[string]e2proxy.CallResult, len(results))
 	limited := make(map[int64]map[string]bool)
 	for _, result := range results {
 		validToolOutcome := firstDiagnosisClosedToolOutcome(result)
 		if !result.Final || !result.Call.Final || !result.Call.AuditComplete || !result.ProcessBashExited || !result.ProcessDrained || !result.ProxyDrained || !validToolOutcome || result.Execution.Scope.TaskRef != task.ID || observed[result.Call.CallRef].CallRef != "" {
-			return false, ErrFirstDiagnosisSupervisor
+			return false, none, ErrFirstDiagnosisSupervisor
 		}
 		observed[result.Call.CallRef] = result.Call
 		if result.Call.Counts.Denied > 0 || result.Call.Counts.Unsupported > 0 {
@@ -660,28 +666,38 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 	}
 	for _, call := range calls {
 		if !e2proxy.EqualCallResults(observed[call.CallRef], call) || !call.Final || !call.AuditComplete || call.Counts.Unknown != 0 {
-			return false, ErrFirstDiagnosisSupervisor
+			return false, none, ErrFirstDiagnosisSupervisor
 		}
 		intent, err := task.Store.GetNode(call.IntentID)
-		if err != nil || intent == nil || intent.Kind != db.KindIntent || (intent.State != "done" && !(intent.State == "blocked" && limited[intent.ID][intent.BlockedReason])) {
-			return false, ErrFirstDiagnosisSupervisor
+		if err != nil || intent == nil || intent.Kind != db.KindIntent {
+			return false, none, ErrFirstDiagnosisSupervisor
+		}
+		switch firstDiagnosisIntentOutcome(intent.State, intent.BlockedReason) {
+		case intentOutcomeDone, intentOutcomeIncomplete, intentOutcomeStopped:
+		case intentOutcomePolicyLimited:
+			// 정책 제한 사유는 E②가 실제로 거부·미지원한 호출로 뒷받침돼야 한다.
+			if !limited[intent.ID][intent.BlockedReason] {
+				return false, none, ErrFirstDiagnosisSupervisor
+			}
+		default:
+			return false, none, ErrFirstDiagnosisSupervisor
 		}
 	}
-	var matchedBlocked int
+	// 정책 제한으로 표시된 intent 수가 E② 근거로 확인한 수와 같아야 한다.
+	var matched int64
 	for intentID := range limited {
 		intent, readErr := task.Store.GetNode(intentID)
 		if readErr != nil {
-			return false, ErrFirstDiagnosisSupervisor
+			return false, none, ErrFirstDiagnosisSupervisor
 		}
-		if intent != nil && intent.State == "blocked" {
-			matchedBlocked++
+		if intent != nil && firstDiagnosisIntentOutcome(intent.State, intent.BlockedReason) == intentOutcomePolicyLimited && limited[intentID][intent.BlockedReason] {
+			matched++
 		}
 	}
-	var blocked int
-	if err := s.m.pg.QueryRowContext(ctx, "SELECT count(*) FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent' AND state='blocked'", task.ExpID).Scan(&blocked); err != nil || blocked != matchedBlocked {
-		return false, ErrFirstDiagnosisSupervisor
+	if matched != outcomes.PolicyLimited {
+		return false, none, ErrFirstDiagnosisSupervisor
 	}
-	return true, nil
+	return true, outcomes, nil
 }
 
 // 감사가 닫힌 정책 제한은 진단 범위의 제한이다. 불명·미완료·알 수 없는 분류는 마감 실패다.
