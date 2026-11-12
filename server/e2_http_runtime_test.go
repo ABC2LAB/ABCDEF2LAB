@@ -316,7 +316,7 @@ func TestE2HTTPRuntimeUntrustedResultMarksOnlyItsIntent(t *testing.T) {
 		if err := runtime.AdmitTask(context.Background(), task); err != nil {
 			t.Fatal(err)
 		}
-		view := e2proxy.ExecutionView{Version: e2proxy.Version, Scope: transmit.Scope{TaskRef: task.ID}, IntentID: 19, PolicyRevision: "fixture-revision", HeaderMode: e2proxy.HeaderPreserve}
+		view := e2proxy.ExecutionView{Version: e2proxy.Version, Scope: transmit.Scope{TaskRef: task.ID}, IntentID: 19, PolicyRevision: "fixture-revision", HeaderMode: e2proxy.HeaderPreserve, AuditComplete: true}
 		lease := &E2HTTPRunOptions{Runner: &untrustedResultLease{view: view, calls: []e2proxy.CallResult{recorded}}}
 		if observerErr != nil {
 			lease.ObserveResult = func(context.Context, e2runner.Result) error { return observerErr }
@@ -348,6 +348,15 @@ func TestE2HTTPRuntimeUntrustedResultMarksOnlyItsIntent(t *testing.T) {
 			r.Trusted.Execution.PolicyRevision = "other-revision"
 		},
 		"version-mismatch": func(r *e2runner.Result) { r.Trusted.Call.Counts.Unknown = 1; r.Trusted.Version = "other" },
+		// Final만 남고 마감·드레인·감사 필드가 하나라도 빠진 결과는 내용 대조 실패로 낮추지 않는다(#492 이동찬 지적 1).
+		"process-not-drained": func(r *e2runner.Result) { r.Trusted.Call.Counts.Unknown = 1; r.Trusted.ProcessDrained = false },
+		"proxy-not-drained":   func(r *e2runner.Result) { r.Trusted.Call.Counts.Unknown = 1; r.Trusted.ProxyDrained = false },
+		"call-not-final":      func(r *e2runner.Result) { r.Trusted.Call.Counts.Unknown = 1; r.Trusted.Call.Final = false },
+		"call-audit-open":     func(r *e2runner.Result) { r.Trusted.Call.Counts.Unknown = 1; r.Trusted.Call.AuditComplete = false },
+		"execution-audit-open": func(r *e2runner.Result) {
+			r.Trusted.Call.Counts.Unknown = 1
+			r.Trusted.Execution.AuditComplete = false
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			runtime, task, lease, result := setup(t, nil)
@@ -358,6 +367,37 @@ func TestE2HTTPRuntimeUntrustedResultMarksOnlyItsIntent(t *testing.T) {
 			}
 		})
 	}
+	// 같은 호출을 두 번 최종 관찰하면 내용과 관계없이 기록 실패다(#492 이동찬 지적 2). 저장한 뒤 내용만 바꿔 다시
+	// 보내거나, 대조 실패로 표시한 호출을 다시 보내도 대조 실패로 낮추지 않는다.
+	for name, second := range map[string]func(*e2runner.Result){
+		"stored-then-different": func(r *e2runner.Result) { r.Trusted.Call.Counts.Unknown = 1 },
+		"stored-then-same":      func(*e2runner.Result) {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			runtime, task, lease, result := setup(t, nil)
+			if err := runtime.observeResult(context.Background(), runtime.task, lease, 19, result); err != nil {
+				t.Fatal("first observation", err)
+			}
+			again := result
+			again.Trusted.Call = e2proxy.CloneCallResult(result.Trusted.Call)
+			second(&again)
+			err := runtime.observeResult(context.Background(), runtime.task, lease, 19, again)
+			if !errors.Is(err, ErrE2HTTPHost) || errors.Is(err, agent.ErrE2HTTPResultUntrusted) || runtime.Results(task.ID) != nil || len(runtime.UntrustedIntents(task.ID)) != 0 {
+				t.Fatalf("duplicate observation was narrowed: %v", err)
+			}
+		})
+	}
+	t.Run("untrusted-then-again", func(t *testing.T) {
+		runtime, task, lease, result := setup(t, nil)
+		result.Trusted.Call.Counts.Unknown = 1
+		if err := runtime.observeResult(context.Background(), runtime.task, lease, 19, result); err != agent.ErrE2HTTPResultUntrusted {
+			t.Fatal("first mismatch", err)
+		}
+		err := runtime.observeResult(context.Background(), runtime.task, lease, 19, result)
+		if !errors.Is(err, ErrE2HTTPHost) || errors.Is(err, agent.ErrE2HTTPResultUntrusted) || runtime.Results(task.ID) != nil {
+			t.Fatalf("repeated mismatch was narrowed again: %v", err)
+		}
+	})
 	t.Run("observer-failure-not-narrowed", func(t *testing.T) {
 		sentinel := errors.New("private observer failure fixture")
 		runtime, task, lease, result := setup(t, sentinel)
