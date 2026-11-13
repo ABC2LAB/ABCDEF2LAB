@@ -1710,21 +1710,8 @@ a.ph:hover {
   padding-top: 22px;
   border-top: 1px solid var(--rule);
 }
-.fsec:first-of-type {
-  border-top: 0;
-  padding-top: 0;
-}
 .fsec-h h2 {
   font-size: 14.5px;
-}
-/* 제목 옆 작은 딱지 (예: 로그인 · 아직 구현 안 됨). 칸 높이만큼 늘어나지 않게 위에 붙인다 */
-.fsec-ht {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  align-content: flex-start;
-  align-self: start;
-  gap: 6px 8px;
 }
 .fsec-h p {
   font-size: 12.5px;
@@ -1742,16 +1729,48 @@ a.ph:hover {
     grid-template-columns: minmax(0, 1fr);
   }
 }
-/* 새 점검 폼은 폭을 고정하고 가운데로 (시안 v59): 넓은 화면에서도 줄마다 오른쪽이 비지 않게, 남는 공간은 폼 바깥 양쪽으로 */
+/*
+ * 새 점검은 두 쪽: 대상 → (다음) → 분석 모델 · 점검 설정. 한 번에 한 쪽(.fgrp)만 보인다.
+ * 폭은 고정하고 가운데로 (시안 .fgrps · #nForm > .formbar): 쪽 묶음 · 시작 줄 · 이어 보는 점검 안내가 같은 단에 선다
+ */
 .nform > * {
   width: 100%;
   max-width: 760px;
   margin-inline: auto;
 }
-/* 새 점검 섹션은 창 폭과 상관없이 제목 위 · 칸 아래 한 줄 (사용자가 고른 시안 화면 모양) */
-.nform > .fsec {
-  grid-template-columns: minmax(0, 1fr);
-  gap: 14px;
+.fgrps {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+.fgrp {
+  display: flex;
+  flex-direction: column;
+  gap: 30px;
+  min-width: 0;
+}
+.fgrp > .fsec:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+/* 쪽 끝의 이동 줄: 1쪽 [다음], 2쪽 [이전] */
+.stepnav {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 18px;
+  border-top: 1px solid var(--rule);
+}
+/* 아래 시작 줄(formbar)이 보이는 화면(좁은 화면 · 요약 패널 접음)에서는 그 줄의 '다음' 하나만 둔다 */
+@media (max-width: 1199px) {
+  .fgrp:first-child > .stepnav,
+  .stepnav .pri {
+    display: none;
+  }
+}
+.app.insp-hidden .fgrp:first-child > .stepnav,
+.app.insp-hidden .stepnav .pri {
+  display: none;
 }
 /* 입력칸은 넣는 값 길이만큼만 (시안 v58). 폰에서는 칸이 좁아 그대로 꽉 찬다 */
 .inp.w-url {
@@ -1762,55 +1781,6 @@ a.ph:hover {
 }
 .inp.w-path {
   max-width: 320px;
-}
-/*
- * 넓은 화면(1700px~)은 섹션을 2열로 (시안 v60 A안): 왼쪽 대상, 오른쪽 분석 모델 · 점검 설정. 섹션 제목은 칸 위로.
- * 안내 줄 · 시작 버튼 줄은 두 열을 가로지른다. 상세 패널이나 레일을 접어도 좁은 단(--cw)으로 모으지 않고 두 열을 그대로 둔다.
- */
-@media (min-width: 1700px) {
-  .vm.nform {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 620px));
-    justify-content: center;
-    align-content: start;
-    gap: 30px 56px;
-  }
-  .nform > * {
-    grid-column: 1 / -1;
-    max-width: none;
-    margin-inline: 0;
-  }
-  .nform > .fsec {
-    grid-template-columns: minmax(0, 1fr);
-    align-content: start;
-    gap: 14px;
-  }
-  .nform > .fs-target {
-    grid-column: 1;
-    grid-row: span 2;
-  }
-  .nform > .fs-model,
-  .nform > .fs-set {
-    grid-column: 2;
-  }
-  .nform > .fs-target,
-  .nform > .fs-model {
-    border-top: 0;
-    padding-top: 0;
-  }
-  /* 두 쪽으로 나눈 뒤에는 한 쪽에 섹션이 한두 개라 2열 대신 가운데 한 줄 */
-  .vm.nform.paged {
-    display: flex;
-  }
-  .nform.paged > * {
-    max-width: 760px;
-    margin-inline: auto;
-  }
-  .app.insp-hidden .vm.nform,
-  .app.rail-hidden .vm.nform {
-    padding-left: 28px;
-    padding-right: max(28px, env(safe-area-inset-right, 0px));
-  }
 }
 .field {
   display: flex;
@@ -2014,6 +1984,12 @@ select.inp {
   padding: 0;
   overflow-wrap: anywhere;
 }
+/* 주소 밑 줄의 '진행 중 점검 보기' (이미 점검 중인 사이트) */
+.busylink {
+  font-size: 12.5px;
+  color: var(--accent-ink);
+  text-underline-offset: 3px;
+}
 .chiprow {
   display: flex;
   flex-wrap: wrap;
@@ -2122,27 +2098,6 @@ select.inp {
 .why {
   font-size: 12.5px;
   color: var(--ink-3);
-}
-/* 두 쪽 새 점검 (시안 v64 ~ v67): 아래 줄은 넓은 화면에서도 보인다(1쪽 다음 · 2쪽 이전).
-   2쪽의 실행 버튼은 요약 패널이 보이면 패널에만 두고, 패널이 안 보이면(좁은 화면 · 접음) 이 줄에 둔다 */
-.formbar.paged {
-  display: flex;
-  justify-content: flex-end;
-}
-.formbar .fbact {
-  display: contents;
-}
-@media (min-width: 1200px) {
-  .formbar.paged .fbact {
-    display: none;
-  }
-  .app.insp-hidden .formbar.paged .fbact {
-    display: contents;
-  }
-}
-.nform.paged > .fs-model {
-  border-top: 0;
-  padding-top: 0;
 }
 .sumkv {
   display: grid;
@@ -4589,9 +4544,6 @@ button.smm:hover {
 /* 입력칸은 넣는 값 길이만큼만: 넓은 화면에서 끝까지 늘어나지 않게 (폰에서는 그대로 꽉 차게) */
 .fsec-b .two .inp {
   max-width: 260px;
-}
-.fsec-b .two select.workers {
-  max-width: 96px;
 }
 /* 로그인 계정 줄 (시안 v66 ~ v68): 계정 이름 · 아이디 · 비밀번호 */
 .acct {
