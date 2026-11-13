@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/e2config"
 	"github.com/Autumn-27/artex/e2export"
 	"github.com/Autumn-27/artex/e2proxy"
@@ -39,7 +40,19 @@ func E2HTTPPolicyContentFingerprint(raw []byte, prepared bool) (string, error) {
 	return fingerprint, nil
 }
 
+// ValidateE2HTTPRunPolicyDocument는 제품 실행이 쓴 정책(감사 키 pin 포함)을 실행과 같은 닫힌 형식으로 읽고 내용
+// 지문을 돌려준다. 평가 단독 E② 서비스용 ValidateE2HTTPPolicyDocument와 달리 실행 factory가 받는 것을 그대로 받는다:
+// 진단 워크플로 칸(workflow)과 승인 방식 셋(사전 승인 범위·요청마다 확인·작업대). 시간·파일 배치는 보지 않아 끝난
+// 실행도 읽는다. 작업대 실데이터 조회(계약 workbench-live-data §3·§4)가 쓴다.
+func ValidateE2HTTPRunPolicyDocument(raw []byte) (E2HTTPFilePolicy, string, error) {
+	return validateE2HTTPPolicyDocumentMode(raw, true, true)
+}
+
 func validateE2HTTPPolicyDocument(raw []byte, prepared bool) (E2HTTPFilePolicy, string, error) {
+	return validateE2HTTPPolicyDocumentMode(raw, prepared, false)
+}
+
+func validateE2HTTPPolicyDocumentMode(raw []byte, prepared, run bool) (E2HTTPFilePolicy, string, error) {
 	var policy E2HTTPFilePolicy
 	if len(raw) == 0 || len(raw) > e2config.MaxPolicyBytes || !utf8.Valid(raw) || strictJSON(raw, &policy) != nil {
 		return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
@@ -48,8 +61,14 @@ func validateE2HTTPPolicyDocument(raw []byte, prepared bool) (E2HTTPFilePolicy, 
 	if prepared {
 		top = append(top, "audit_key")
 	}
-	if !e2HTTPExactJSON(raw, top, []string{"upstream_ca", "auth"}, "evaluation", "upstream_ca") || !validE2HTTPFileAuth(policy.Auth, policy.HeaderMode, policy.Rules) ||
-		policy.Format != E2HTTPFilePolicyFormat || policy.ApprovalMode != e2proxy.ApprovalPreauthorizedScope ||
+	optional := []string{"upstream_ca", "auth"}
+	approvalMode := policy.ApprovalMode == e2proxy.ApprovalPreauthorizedScope
+	if run {
+		optional = append(optional, "workflow")
+		approvalMode = approvalMode || policy.ApprovalMode == e2proxy.ApprovalConfirmEveryRequest || policy.ApprovalMode == e2proxy.ApprovalWorkbenchV1
+	}
+	if !e2HTTPExactJSON(raw, top, optional, "evaluation", "upstream_ca") || !validE2HTTPFileAuth(policy.Auth, policy.HeaderMode, policy.Rules) ||
+		policy.Format != E2HTTPFilePolicyFormat || !approvalMode ||
 		policy.HeaderMode == "" || policy.MaxRequests == 0 || policy.MaxRequests > uint64(math.MaxInt) || len(policy.Rules) == 0 || len(policy.Rules) > 128 ||
 		!policy.ValidUntil.After(policy.ValidFrom) {
 		return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
@@ -90,6 +109,10 @@ func validateE2HTTPPolicyDocument(raw []byte, prepared bool) (E2HTTPFilePolicy, 
 		if field, ok := document[name]; ok && !bytes.Equal(field, []byte("null")) && !e2HTTPExactJSON(field, []string{"file", "sha256"}, nil) {
 			return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
 		}
+	}
+	if policy.Workflow != nil && (!run || !e2HTTPExactJSON(document["workflow"], []string{"format", "mode", "input_sha256"}, nil) ||
+		policy.Workflow.Format != diagnosisflow.Version || policy.Workflow.Mode == "" || !e2HTTPHash(policy.Workflow.InputSHA256)) {
+		return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
 	}
 	if policy.Evaluation != nil {
 		if !e2HTTPExactJSON(document["evaluation"], []string{"run_ref", "llm_backend", "target_kind"}, nil) {
