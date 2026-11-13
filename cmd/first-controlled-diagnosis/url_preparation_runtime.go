@@ -208,6 +208,11 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 			return knownFailure("target_approval_changed", true)
 		}
 		defer release()
+		// 외부 API 실행에 시험 계정을 쓰면 그 동의(진술 해시·주체·시각·작업)를 시작 전에 감사 저널에 남긴다. 남기지 못하면
+		// 시작하지 않는다.
+		if l.externalTestAccounts && b.product.targets.recordExternalConsent(execution.Principal, l.productTarget.Target.ID, execution.Job.ID) != nil {
+			return knownFailure("external_consent_unrecorded", true)
+		}
 	}
 	var diagnostics *launchDiagnostics
 	check := urlRuntimeCheck(ctx, l.current)

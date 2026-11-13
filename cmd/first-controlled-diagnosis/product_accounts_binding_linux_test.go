@@ -320,3 +320,44 @@ func TestAccountsAllowedForModelMode(t *testing.T) {
 		t.Fatal("host config consent without launch consent")
 	}
 }
+
+// 외부 API 실행의 시험 계정 동의는 대상 승인자만 남기고, 진술 해시·주체·작업이 계정 저널에 남는다. 저널을 다시 읽어도 받으며,
+// 진술 해시가 다르거나 계정 라벨·다른 줄의 작업 칸이 섞인 줄은 거부한다(#552 윤재상 리뷰).
+func TestExternalConsentRecordedInAccountJournal(t *testing.T) {
+	runtime, _, target, _ := accountRunFixture(t)
+	r := runtime.targets
+	if err := r.recordExternalConsent("someone-else", target.ID, "job-consent"); err == nil {
+		t.Fatal("non-approver recorded an external consent")
+	}
+	if err := r.recordExternalConsent("ARTEX", target.ID, "../bad"); err == nil {
+		t.Fatal("invalid job ref accepted")
+	}
+	if err := r.recordExternalConsent("ARTEX", target.ID, "job-consent"); err != nil {
+		t.Fatal(err)
+	}
+	rec := r.records[target.ID]
+	good := productAccountEvent{TargetID: target.ID, Action: accountExternalConsent, Actor: "ARTEX", At: time.Now(), TargetRevision: rec.Target.Revision,
+		StatementSHA256: productExternalConsentStatementSHA256(), JobRef: "job-replay"}
+	if err := r.replayAccount(good); err != nil {
+		t.Fatal("valid consent line rejected on replay:", err)
+	}
+	for name, change := range map[string]func(*productAccountEvent){
+		"statement": func(e *productAccountEvent) { e.StatementSHA256 = productAccountStatementSHA256() },
+		"label":     func(e *productAccountEvent) { e.Label = "tester-a" },
+		"no-job":    func(e *productAccountEvent) { e.JobRef = "" },
+		"actor":     func(e *productAccountEvent) { e.Actor = "someone-else" },
+	} {
+		bad := good
+		change(&bad)
+		if err := r.replayAccount(bad); err == nil {
+			t.Fatalf("%s: tampered consent line accepted", name)
+		}
+	}
+	// 다른 줄에 작업 칸이 섞이면 거부한다.
+	if err := r.replayAccount(productAccountEvent{TargetID: target.ID, Label: "tester-x", Action: accountRegister, Actor: "ARTEX", At: time.Now(), TargetRevision: rec.Target.Revision, JobRef: "job-x"}); err == nil {
+		t.Fatal("job ref on a register line accepted")
+	}
+	if productExternalConsentStatementSHA256() == productAccountStatementSHA256() || !strings.Contains(productExternalConsentStatement, "외부 모델 제공자") {
+		t.Fatal("consent statement not distinct")
+	}
+}
