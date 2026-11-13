@@ -9,7 +9,14 @@ import { cx } from "../../lib/cx";
 import { planState } from "../../live/map";
 import { NotYet } from "../../live/parts";
 import { disconnectUrl, useUrl } from "../../live/urlDiagnosis";
-import { scanViewFor, URL_ENDED_STATES, urlHost, urlOutcomeText, urlStateText } from "../../live/urlMap";
+import {
+  scanViewFor,
+  URL_ENDED_STATES,
+  urlAccountAuthRows,
+  urlHost,
+  urlOutcomeText,
+  urlStateText,
+} from "../../live/urlMap";
 import { flowStageText } from "../../live/workflow";
 import { useShell } from "../../shell";
 import { useWb } from "../../store";
@@ -88,6 +95,15 @@ export function JobSummary({
           ]}
         />
       </Isec>
+      {job?.account_auth ? (
+        <Isec t="시험 계정 인증">
+          <Kv rows={urlAccountAuthRows(job.account_auth)} />
+          <p className={s.help}>
+            인증하지 못한 계정은 비인증으로 진행한 것입니다. 그 계정 기준 인가 결과는 ‘접근 차단 확인’이 아니라
+            ‘비인증으로 확인 안 됨’입니다.
+          </p>
+        </Isec>
+      ) : null}
       <Isec>
         <div className={s.acts}>
           {to ? (
