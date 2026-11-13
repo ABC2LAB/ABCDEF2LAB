@@ -1,12 +1,11 @@
 "use client";
 
-// 대시보드 (시안 v91 짜임: 요약 4칸 · 결정 대기 안내 · 발견 · 검토 대상 · 진행 중인 점검 · 최근 끝난 점검 + 오른쪽 상세).
+// 대시보드 (시안 짜임: 요약 4칸 · 발견 · 검토 대상 · 진행 중인 점검 · 최근 끝난 점검 + 오른쪽 상세).
 // 서버에 진단 목록 · 집계 API 가 없어 이 브라우저가 이어 보는 진단 하나만 실제 값으로 보인다.
 // 발견 목록은 그 진단의 저장된 결과(보고서와 같은 원장)에서 정상 대조를 뺀 것만 보인다. 확정만 취약점이므로 제목은
 // 중립 이름("발견 · 검토 대상")으로 두고 건수 옆에 확정 수를 따로 보인다(검토 필요 · 미실행 · 결과 불명은 취약점이
-// 아님, 절대 규칙 5). 결과가 저장되기 전에는
-// 비워 두고 "없음"이라고 말하지 않는다(절대 규칙 5). 결정 대기 안내는 실제 상태(요청 승인 대기 · 범위 선택 대기 ·
-// 결과 불명)에서만 만든다.
+// 아님, 절대 규칙 5). 결과가 저장되기 전에는 비워 두고 "없음"이라고 말하지 않는다(절대 규칙 5).
+// 결정 대기(요청 승인 · 경로 선택)는 시안처럼 요약 칸과 점검 상세에서 보이고, 승인 요청은 상세에서 연다.
 
 import { type ReactNode, useRef, useState } from "react";
 
@@ -17,21 +16,20 @@ import type { RequestApproval } from "@/lib/diagnosis/request-approvals";
 import { SEVL, type SevKey } from "../../data/findings";
 import { cx } from "../../lib/cx";
 import { fetchRemediation } from "../../live/api";
-import { fmtCount, sevKey } from "../../live/map";
+import { fmtTokens, sevKey } from "../../live/map";
 import { maskSecrets } from "../../live/mask";
 import { ErrorNote, LoadingRow, NotYet } from "../../live/parts";
 import { refreshWorkflow, runUrlAction, useUrl, useUrlGates } from "../../live/urlDiagnosis";
 import { URL_ENDED_STATES, urlHost, urlStateText } from "../../live/urlMap";
 import { usePoll } from "../../live/usePoll";
-import { flowStageText } from "../../live/workflow";
 import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
 import { InspHead, InspOpenButton, Isec, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { ApprovalActions, ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "./approvals";
-import { JobSummary } from "./jobSummary";
-import { FindingDetail, ORDER, Outcome } from "./UrlLiveLive";
-import { UrlHead, UrlPill } from "./urlParts";
+import { JobRow, JobSummary, jobResult, pendingRows, useCoveragePct } from "./jobSummary";
+import { EntryEp, FindingDetail, ORDER, Outcome } from "./UrlLiveLive";
+import { UrlHead } from "./urlParts";
 import { type Chip, Chips } from "./urlRecords";
 
 /** 쓰기 메서드 (승인 요청 딱지). 메서드 기준 이름일 뿐, GET · HEAD · query 도 상태를 바꿀 수 있다. */
@@ -68,8 +66,9 @@ const SEV_BAR: Readonly<Record<SevF, string>> = {
 };
 
 /**
- * 대시보드 맨 위 요약 4칸 (시안 v77 ~ v91). 서버에 진단 목록 · 30일 집계가 없어 이 브라우저가 이어 보는 점검 하나의
- * 실제 값만 센다. 모르는 값은 "—", 서버에 없는 칸(토큰 30일 집계)은 "아직 구현 안 됨"으로 둔다(절대규칙 5).
+ * 대시보드 맨 위 요약 4칸 (시안 strip). 서버에 진단 목록 · 30일 집계가 없어 이 브라우저가 이어 보는 점검 하나의
+ * 실제 값만 센다. 모르는 값은 "—". 시안의 토큰 30일 집계 · 점검당 평균은 서버 집계가 없어 칸만 두고
+ * '아직 구현 안 됨' 딱지를 붙이며, 이 점검의 서버 기록(model_usage)은 보조 줄에 보인다.
  */
 function DashStrip({
   found,
@@ -94,7 +93,15 @@ function DashStrip({
     .map((k) => `${k === "none" ? "등급 없음" : SEVL[k]} ${bySev(k)}`)
     .join(" · ");
   const decide = approvals === null ? null : approvals + (selecting ? 1 : 0);
+  // 시안 결정 대기 보조 글: 남은 것만 ('승인 1 · 경로 선택 1'), 없으면 '모두 결정함'
+  const decideSub = [approvals ? `승인 ${approvals}` : null, selecting ? "경로 선택 1" : null]
+    .filter(Boolean)
+    .join(" · ");
   const check = byOutcome("unknown") + byOutcome("not_executed");
+  const tokText = (n: number) => {
+    const f = fmtTokens(n);
+    return `${f.n}${f.unit}`;
+  };
   return (
     <section className={s.strip} aria-label="요약">
       {/* 빨간 숫자는 확정이 있을 때만 (검토 필요 · 미실행 · 결과 불명은 취약점이 아님 · 리뷰 #467) */}
@@ -114,9 +121,11 @@ function DashStrip({
       </div>
       <div className={cx(s.cell, !!decide && s.warn)} id="dDecide">
         <div className={s.k}>결정 대기</div>
-        <div className={s.v}>{decide ?? "—"}</div>
-        <div className={s.sub}>
-          {decide === 0 ? "모두 결정함" : `승인 ${approvals ?? "—"} · 경로 선택 ${selecting ? 1 : 0}`}
+        <div className={s.v} id="dDecideN">
+          {decide ?? "—"}
+        </div>
+        <div className={s.sub} id="dDecideSub">
+          {decide === null ? "승인 대기를 확인하는 중" : decideSub || "모두 결정함"}
         </div>
       </div>
       <div className={s.cell}>
@@ -131,10 +140,11 @@ function DashStrip({
       <div className={s.cell}>
         <div className={s.k}>토큰 사용량 · 최근 30일</div>
         <div className={s.v}>
+          {/* 시안 큰 수는 30일 집계라 서버 값이 없다: '—' 와 딱지만 두고, 이 점검의 서버 기록은 아래 줄에 */}—{" "}
           <NotYet why="서버에 30일 토큰 집계가 없습니다" />
         </div>
         <div className={s.sub}>
-          {tokens ? `이 점검 입력 ${fmtCount(tokens.input)} · 출력 ${fmtCount(tokens.output)}` : "점검당 평균"}
+          {tokens ? `이 점검 · 입력 ${tokText(tokens.input)} · 출력 ${tokText(tokens.output)}` : "점검당 평균 —"}
         </div>
       </div>
     </section>
@@ -154,7 +164,7 @@ export function dashFindings(entries: readonly RemediationEntry[]): RemediationE
 
 /** live 대시보드 (URL 진단 서버). */
 export function UrlDashboardLive() {
-  const { route, goTo, openInsp } = useShell();
+  const { route, openInsp } = useShell();
   const handle = useUrl((st) => st.handle);
   const job = useUrl((st) => st.job);
   const verified = useUrl((st) => st.verified);
@@ -170,22 +180,26 @@ export function UrlDashboardLive() {
   const rem = usePoll(() => fetchRemediation(reportTask as string, "internal"), [reportTask], {
     enabled: visible && !!reportTask,
   });
-  const found = reportTask && rem.data ? dashFindings(rem.data.entries) : [];
+  const remFor = reportTask && rem.data && String(rem.data.task_id) === reportTask ? rem.data : null;
+  const found = remFor ? dashFindings(remFor.entries) : [];
+  const result = remFor && job ? jobResult(job, remFor.entries) : null;
   const [ff, setFf] = useState<SevF | "all">("all");
   const [findAll, setFindAll] = useState(false);
   const shown = ff === "all" ? found : found.filter((e) => sevOf(e) === ff);
   const [picked, setSel] = useState<Sel | null>(null);
   const [spin, setSpin] = useState(false);
   const vmRef = useRef<HTMLDivElement>(null);
-  // 고르기 전에는 승인 대기(보내기 전에 사람이 정해야 함)를 먼저, 없으면 가장 위험한 발견, 없으면 점검 정보
+  // 고르기 전에는 가장 위험한 발견(시안 처음 선택), 없으면 승인 대기 요청(보내기 전에 사람이 정해야 함), 없으면 점검 정보
   const first = a.pending[0];
   let sel: Sel = { kind: "job" };
   if (picked) sel = picked;
-  else if (first) sel = { kind: "approval", id: first.id };
   else if (found[0]) sel = { kind: "finding", id: found[0].entry_id };
+  else if (first) sel = { kind: "approval", id: first.id };
 
   const host = handle ? urlHost(handle.input.target_url) : null;
-  const name = handle?.input.display_name?.trim() || null;
+  // 보낼 요청 승인 대기 줄: 사용자 승인 모드가 아니면 없음([]), 아직 못 읽었으면 모름(null)
+  const pending = pendingRows(approvalsOn, a);
+  const coverage = useCoveragePct(reportTask, visible);
 
   const pick = (next: Sel) => {
     setSel(next);
@@ -200,7 +214,7 @@ export function UrlDashboardLive() {
     rem.reload();
     void Promise.allSettled(work).then(() => {
       setSpin(false);
-      // 새로 읽었음을 본문이 한 번 옅게 깜빡여 알린다 (시안 v85 dflash, 움직임 줄이기 설정이면 CSS 가 끈다)
+      // 새로 읽었음을 본문이 한 번 옅게 깜빡여 알린다 (시안 dflash, 움직임 줄이기 설정이면 CSS 가 끈다)
       const vm = vmRef.current;
       if (!vm) return;
       vm.classList.remove(s.dflash);
@@ -217,47 +231,6 @@ export function UrlDashboardLive() {
       setSel({ kind: "finding", id: rest[0].entry_id });
   };
 
-  // 결정 대기 안내 (실제 상태에서만). 발견 목록과 따로 둬서, 승인 대기가 목록에 묻히지 않게 한다
-  const notes: ReactNode[] = [];
-  if (first) {
-    notes.push(
-      <div key="appr" className={cx(s.note, s.warn)} role="note">
-        <Icon name="alert" />
-        <span className={s["lv-grow"]}>{`승인 대기 ${a.pending.length}건 · 보내기 전 승인이 필요합니다`}</span>
-        <button
-          className={cx(s.btn, s.sm)}
-          type="button"
-          data-dsel={`appr-${first.id}`}
-          onClick={() => pick({ kind: "approval", id: first.id })}
-        >
-          승인 요청 보기
-        </button>
-      </div>,
-    );
-  }
-  if (job && flow?.stage === "awaiting_selection") {
-    notes.push(
-      <div key="scope" className={cx(s.note, s.warn)} role="note">
-        <Icon name="alert" />
-        <span className={s["lv-grow"]}>{`점검할 경로 선택 대기 · 찾은 경로 ${flow.endpoints.length}개`}</span>
-        <button className={cx(s.btn, s.sm)} type="button" data-dsel="scope" onClick={() => goTo("scope")}>
-          경로 선택
-        </button>
-      </div>,
-    );
-  }
-  if (job?.state === "unknown") {
-    notes.push(
-      <div key="unknown" className={cx(s.note, s.warn)} role="note">
-        <Icon name="alert" />
-        <span className={s["lv-grow"]}>결과 불명 · 상태를 다시 조회해 확인하세요</span>
-        <button className={cx(s.btn, s.sm)} type="button" data-dsel="unknown" onClick={() => pick({ kind: "job" })}>
-          점검 정보
-        </button>
-      </div>,
-    );
-  }
-
   // 발견 목록 본문 (결과가 저장되기 전에는 "없음"이라고 하지 않는다)
   let findBody: ReactNode;
   if (!handle) findBody = <p className={s.empty}>이 브라우저에서 이어 보는 점검이 없습니다.</p>;
@@ -267,13 +240,13 @@ export function UrlDashboardLive() {
         {`점검이 끝나고 결과가 저장되면 여기에 나옵니다 · 지금 ${job ? urlStateText(job.state, verified) : "상태 확인 중"}`}
       </p>
     );
-  else if (!rem.data && rem.error) findBody = <ErrorNote error={rem.error} onRetry={rem.reload} />;
-  else if (!rem.data) findBody = <LoadingRow />;
+  else if (!remFor && rem.error) findBody = <ErrorNote error={rem.error} onRetry={rem.reload} />;
+  else if (!remFor) findBody = <LoadingRow />;
   else if (!found.length)
     findBody = <p className={s.empty}>저장된 발견이 없습니다. 결과가 없다고 안전하다는 뜻은 아닙니다.</p>;
   else
     findBody = (
-      <div className={s.list} id="dFind">
+      <div className={s.list} id="dTodo">
         {(findAll ? shown : shown.slice(0, FIND_MAX)).map((e) => {
           const k = sevOf(e);
           const on = sel.kind === "finding" && sel.id === e.entry_id;
@@ -295,6 +268,7 @@ export function UrlDashboardLive() {
                 <span className={s.ft}>{maskSecrets(e.title) || e.entry_id}</span>
                 <span className={s.fe}>
                   <span className={s.host}>{host}</span>
+                  <EntryEp e={e} />
                   {e.vuln_class ? <span>{maskSecrets(e.vuln_class)}</span> : null}
                 </span>
               </span>
@@ -307,42 +281,17 @@ export function UrlDashboardLive() {
       </div>
     );
 
-  const jobRow = handle ? (
-    <button
-      key="job"
-      className={cx(s.row, sel.kind === "job" && s.sel)}
-      type="button"
-      data-url-job={job?.id ?? ""}
-      aria-current={sel.kind === "job" ? "true" : undefined}
-      onClick={() => pick({ kind: "job" })}
-    >
-      <span className={s["r-main"]}>
-        <span className={s["r-t"]}>
-          <span className={s["r-host"]}>{host}</span>
-        </span>
-        <span className={s["r-s"]}>
-          {[name, flow && !ended ? flowStageText[flow.stage] : null, job?.task_id ? `task #${job.task_id}` : null]
-            .filter(Boolean)
-            .join(" · ") || "상태 확인 중"}
-        </span>
-        {/* 진행 중 줄의 시작 · 남은 시간 · 끝난 줄의 소요 (시안 v55): 서버가 주지 않아 칸만 둔다 */}
-        {job ? (
-          <span className={s["r-s"]}>
-            {ended ? "소요 " : "시작 · 남은 시간 "}
-            <NotYet
-              why={
-                ended ? "서버가 점검 소요 시간을 주지 않습니다" : "서버가 점검 시작 시각 · 남은 시간을 주지 않습니다"
-              }
-            />
-          </span>
-        ) : null}
-      </span>
-      <span className={s["r-side"]}>
-        {job ? <UrlPill job={job} verified={verified} /> : <span className={cx(s.pill, s.wait)}>상태 미확인</span>}
-      </span>
-    </button>
-  ) : null;
   // 칸마다 줄 목록. 진단 목록 API 가 없어 지금은 이어 보는 진단 하나뿐이다(생기면 여기를 채운다)
+  const jobRow = handle ? (
+    <JobRow
+      key="job"
+      sel={sel.kind === "job"}
+      onPick={() => pick({ kind: "job" })}
+      pending={a.pending.length}
+      result={result}
+      coverage={coverage}
+    />
+  ) : null;
   const actRows = jobRow && !ended ? [jobRow] : [];
   const doneRows = jobRow && ended ? [jobRow] : [];
 
@@ -357,13 +306,10 @@ export function UrlDashboardLive() {
         <FindingDetail e={chosenF} host={host} taskId={reportTask} onReload={rem.reload} />
         <Isec>
           <div className={s.acts}>
-            <button className={cx(s.btn, s.pri)} type="button" onClick={() => goTo("report")}>
+            <a className={cx(s.btn, s.pri)} href="#report">
               보고서 열기
               <Icon name="arrow" />
-            </button>
-            <button className={s.btn} type="button" onClick={() => goTo("live")}>
-              진행 화면 열기
-            </button>
+            </a>
           </div>
         </Isec>
       </>
@@ -397,7 +343,14 @@ export function UrlDashboardLive() {
       </>
     );
   } else if (handle) {
-    insp = <JobSummary />;
+    insp = (
+      <JobSummary
+        approvals={pending}
+        onApprovals={first ? () => pick({ kind: "approval", id: first.id }) : undefined}
+        result={result}
+        coverage={coverage}
+      />
+    );
   } else {
     insp = (
       <>
@@ -419,7 +372,7 @@ export function UrlDashboardLive() {
         crumb="대시보드"
         acts={
           <>
-            <button className={cx(s.btn, spin && s.spin)} type="button" onClick={refresh} disabled={spin}>
+            <button className={cx(s.btn, spin && s.spin)} type="button" id="dRefresh" onClick={refresh} disabled={spin}>
               <Icon name="refresh" />
               새로고침
             </button>
@@ -431,8 +384,8 @@ export function UrlDashboardLive() {
         <div className={s.vm} ref={vmRef}>
           <DashStrip
             found={found}
-            ready={!!reportTask && !!rem.data}
-            approvals={approvalsOn && !a.poll.data ? null : a.pending.length}
+            ready={!!remFor}
+            approvals={pending ? pending.length : null}
             selecting={!!job && flow?.stage === "awaiting_selection"}
             tokens={
               job?.model_usage?.usage_known
@@ -440,28 +393,29 @@ export function UrlDashboardLive() {
                 : null
             }
           />
-          {notes.length ? (
-            <section className={s.notes} aria-label="결정 대기">
-              {notes}
-            </section>
-          ) : null}
-          <section className={s.sec} aria-labelledby="dFindH">
+          <section className={s.sec} aria-labelledby="dTodoH">
             <div className={s.sh}>
               <div className={s["sh-t"]}>
-                <h2 id="dFindH">발견 · 검토 대상</h2>
-                {reportTask && rem.data ? (
-                  <span className={s.n}>
+                <h2 id="dTodoH">발견 · 검토 대상</h2>
+                {remFor ? (
+                  <span className={s.n} id="dTodoN">
                     {`${shown.length}건 · 확정 ${shown.filter((e) => diagnosticOutcome(e) === "confirmed").length}`}
                   </span>
                 ) : null}
               </div>
               {shown.length > FIND_MAX ? (
-                <button className={s.aside} type="button" aria-expanded={findAll} onClick={() => setFindAll((v) => !v)}>
+                <button
+                  className={s.aside}
+                  type="button"
+                  id="dFindMore"
+                  aria-expanded={findAll}
+                  onClick={() => setFindAll((v) => !v)}
+                >
                   {findAll ? "접기" : "모두 보기"}
                 </button>
               ) : null}
             </div>
-            {found.length ? (
+            {remFor ? (
               <Chips
                 label="위험도로 거르기"
                 chips={FIND_CHIPS}
@@ -476,7 +430,7 @@ export function UrlDashboardLive() {
             <div className={s.sh}>
               <div className={s["sh-t"]}>
                 <h2 id="dActH">진행 중인 점검</h2>
-                <span className={s.n}>{`${actRows.length}건`}</span>
+                <span className={s.n} id="dActN">{`${actRows.length}건`}</span>
               </div>
               <a className={s.aside} href="#running">
                 전체 보기
@@ -494,7 +448,7 @@ export function UrlDashboardLive() {
             <div className={s.sh}>
               <div className={s["sh-t"]}>
                 <h2 id="dDoneH">최근 끝난 점검</h2>
-                <span className={s.n}>{`${doneRows.length}건`}</span>
+                <span className={s.n} id="dDoneN">{`${doneRows.length}건`}</span>
               </div>
               <a className={s.aside} href="#finished">
                 전체 보기
