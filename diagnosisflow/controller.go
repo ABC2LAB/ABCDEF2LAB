@@ -531,7 +531,11 @@ func (c *Controller) Instructions() string {
 		}
 	}
 	data, _ := json.Marshal(selected)
-	return "\nWorkbench workflow mode: " + c.record.Snapshot.Mode + ". Workbench workflow phase: " + c.record.Snapshot.Stage + ". Only selected endpoints may be tested after initial discovery. Endpoint references below are opaque program-owned IDs. Do not expand scope for newly found endpoints. A selected endpoint also covers the same method on a path that differs only in object ID segments of the same kind (number, UUID, long hex or email), so other object IDs may be requested there. Selected endpoint references (JSON): " + string(data)
+	scope := "Only selected endpoints may be tested after initial discovery. Endpoint references below are opaque program-owned IDs. Do not expand scope for newly found endpoints. A selected endpoint also covers the same method on a path that differs only in object ID segments of the same kind (number, UUID, long hex or email), so other object IDs may be requested there."
+	if c.binding.Mode == Auto {
+		scope = "In automatic mode you may test any path and method within the approved target scope, including endpoints that discovery did not find; the selected endpoints below are discovered starting points, not a limit. Requests outside the approved origin, paths or methods, excluded paths and destructive actions are blocked by the transfer control. Endpoint references below are opaque program-owned IDs."
+	}
+	return "\nWorkbench workflow mode: " + c.record.Snapshot.Mode + ". Workbench workflow phase: " + c.record.Snapshot.Stage + ". " + scope + " Selected endpoint references (JSON): " + string(data)
 }
 func (c *Controller) Command(ctx context.Context, owner, op, key string, revision uint64, ids []string) (Snapshot, error) {
 	c.mu.Lock()
@@ -634,7 +638,7 @@ func (c *Controller) Before(ctx context.Context, v e2proxy.RequestView) error {
 		return ErrDenied
 	}
 	e := c.requestEndpointLocked(v.Method, path)
-	if v.BodyBytes > 65536 || e == nil || !e.InScope || e.Change == "blocked" || !c.allowedPath(v.Method, path) {
+	if v.BodyBytes > 65536 || e != nil && (!e.InScope || e.Change == "blocked") || !c.allowedPath(v.Method, path) {
 		return ErrDenied
 	}
 	// 경로가 범위 안이어도 query에 파괴 동작이 실리면 막는다(위험 query 검증 유지, C23).
@@ -643,17 +647,37 @@ func (c *Controller) Before(ctx context.Context, v e2proxy.RequestView) error {
 	}
 	s := c.record.Snapshot
 	if s.Stage == "crawling" {
-		if v.Method != "GET" || v.BodyPresent || e.Change != "attested_read" {
+		if e == nil || v.Method != "GET" || v.BodyPresent || e.Change != "attested_read" {
 			return ErrDenied
 		}
 		return nil
 	}
-	if s.Stage != "diagnosing" || !e.Selected {
+	if s.Stage != "diagnosing" {
 		return ErrDenied
 	}
-	// 자동 모드도 수동 모드와 같은 범위를 보낸다. 대상에 승인한 쓰기(되돌릴 수 있는 쓰기 승인)가 있으면 건별 확인 없이
-	// 보낸다(C21, 2026-11-13 결정: 자동 모드는 승인 없이 돈다). 범위·메서드·위험 요청·예산 검사는 그대로다.
-	if e.Change != "attested_read" && !c.binding.ReversibleWrites {
+	var change string
+	switch {
+	case e != nil && e.Selected:
+		change = e.Change
+	case c.binding.Mode == Auto:
+		// 자동 모드는 고르지 않은 끝점·크롤이 찾지 못한 경로도 대상 승인 범위(origin·경로 접두·메서드) 안이면 보낸다
+		// (2026-11-13 사용자 결정: 원본처럼 승인 범위 안이면 진단한다. 선택 제한은 운영자가 고르는 수동 모드만). 제외 경로·
+		// 위험 요청·결과 불명 재전송 금지·예산·감사는 그대로다. 읽기 확인 경로 밖이거나 쓰기 메서드면 부작용 가능으로 본다.
+		in, scoped := c.endpointScope(normalizedMethod(v.Method), path, "request", "diagnosis_request")
+		if !in {
+			return ErrDenied
+		}
+		change = scoped
+		// 같은 경로를 따로 발견했으면 그 근거(폼 등 부작용 가능)가 상한이다. 더 넓게(확인한 읽기로) 바꾸지 않는다.
+		if e != nil && e.Change != "attested_read" {
+			change = e.Change
+		}
+	default:
+		return ErrDenied
+	}
+	// 대상에 승인한 쓰기(되돌릴 수 있는 쓰기 승인)가 있으면 건별 확인 없이 보낸다(C21, 2026-11-13 결정: 자동 모드는
+	// 승인 없이 돈다). 범위·메서드·위험 요청·예산 검사는 그대로다.
+	if change != "attested_read" && !c.binding.ReversibleWrites {
 		return ErrDenied
 	}
 	return nil
