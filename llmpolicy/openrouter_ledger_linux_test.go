@@ -224,3 +224,29 @@ func TestOpenRouterLedgerRejectsUntrustedSettlement(t *testing.T) {
 		})
 	}
 }
+
+// 정산 줄을 장부에 쓰지 못하면 프로세스 안에서도 예약을 돌려받지 않는다(장부와 같은 합계, 안전한 쪽).
+func TestOpenRouterSettlementFailureKeepsReservationInProcess(t *testing.T) {
+	for _, settleFails := range []bool{false, true} {
+		p := openRouterFixture(t)
+		p.manifest.MaxRequests, p.manifest.MaxOutputTokens = 10, 200
+		p.ledger = func(int64, int64, int64) error { return nil }
+		p.settleLedger = func([3]int64, [3]int64) error {
+			if settleFails {
+				return ErrOpenRouterPolicy
+			}
+			return nil
+		}
+		c := openRouterClient(p, openRouterRT(func(*http.Request) (*http.Response, error) { return openRouterResponse(openRouterReply), nil }))
+		for i := 0; i < 2; i++ {
+			resp, err := c.Do(openRouterRequest())
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = resp.Body.Close()
+		}
+		if got := p.reserve(100) == nil; got == settleFails {
+			t.Fatalf("settleFails=%v: third reservation allowed=%v", settleFails, got)
+		}
+	}
+}
