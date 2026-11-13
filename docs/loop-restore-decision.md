@@ -19,13 +19,22 @@
 | WebFetch | **E② 판으로 복원.** 같은 샌드박스 실행기로 가져오고, 본문을 읽기 쉬운 글로 바꾸는 것만 호스트에서 한다 | 원본은 서버 프로세스가 대상에 직접 보낸다. 그대로 두면 E② 우회 |
 | Read·Write·Edit·LS | intent 작업 디렉터리 안에 가둔 판. C29(호출마다 지우는 작업 디렉터리)와 같이 넣어 Bash와 같은 디렉터리를 보게 한다 | 원본 Read는 호스트 경로를 다 읽는다. 서버 호스트에는 제어 비밀이 있다(규칙 2) |
 | Sleep | **넣지 않는다.** SDK `sleep`은 백그라운드 명령(`run_in_background`)을 기다렸다가 TaskOutput으로 읽는 짝인데, 진단 Bash는 백그라운드 실행을 지원하지 않는다. 기다림이 필요하면 명령 안의 `sleep`이 호출 시간 상한 안에서 한다 | 쓸 데 없이 Worker 시간만 쓴다 |
-| WebSearch | 설치 설정(`webSearch`)대로. 완전 로컬 모드에서는 끈다 | 대상이 아니라 검색 제공자로 나간다(규칙 8) |
+| WebSearch | 외부 API 설치에서 설치 입력 `web_search`를 켰을 때만 원본 검색 도구를 준다. 완전 로컬 모드에서는 끈다(아래 §2-1) | 대상이 아니라 검색 제공자로 나간다(규칙 8) |
 | skills | **진단 프로필에는 넣지 않는다.** 지금 skill 중 진단 목적의 것이 없다. `api-recon`은 탐색 프로필에 준다([C30 결정안](sandbox-data-decision.md)). 진단용 skill이 생기면 지시문만 읽고 명령은 Bash(E②)로 돌린다 | `api-recon`·브라우저는 탐색 단계 몫(규칙 3) |
 | MCP(Playwright 등) | **진단에서는 계속 뺀다.** 브라우저는 탐색 프로필 | 규칙 3, #410 |
 | 그래프 도구 | 원본 Worker 목록 전부(list_findings·record_fact·insert_assets·list_assets·search_all_worker_traces·get_worker_trace·node_detail). insert_assets는 열린 항목 5 결정안(§9-5) 리뷰·구현 뒤. 출력 가림(`RedactOutput`)과 record_fact의 intent 일치 검사는 유지. 지금 E② 필터의 graph_overview·list_facts·get_worker_output·list_goals는 원본 Worker 목록에 없는 Planner 도구라 실제로 Worker에 들어간 적이 없고, 프로필에도 넣지 않는다 | DB 안 작업 |
 | insert_assets의 자동 보강(DNS·HTTP) | 진단 모드에서는 끈다. 자산 기록만 한다 | 서버가 발견 자산에 직접 보낸다. 필요하면 탐색 단계 몫 |
 | report_finding | 원본 이름·입력 형식으로 복원하되 진단 모드에서는 **확정이 아니라 진단 후보로 저장**한다(지금 `submit_diagnostic_candidate`와 같은 저장). 판정은 E③이 E② 기록으로 한다 | 규칙 5. 원본 프롬프트·skills가 report_finding을 부른다 |
 | traffic_search·traffic_get·traffic_blob | **진단 프로필에 넣지 않는다.** 진단 요청은 traffic 저장소에 기록되지 않는다(열린 항목 1 결과). 근거 묶기는 후보 제출의 call_ref가, 지난 응답 다시 보기는 C29의 출력 파일이 맡는다 | 빈 결과를 "요청 없음"으로 오해하게 하지 않는다 |
+
+### 2-1. WebSearch 설정 (2026-11-13 사용자 결정)
+
+- 켜는 곳: 설치 입력의 선택 블록 `web_search`: `{"backend": "ddgs" | "brave-free" | "tavily", "api_key_file": "<설치 보호 입력 파일>"}`. `ddgs`(DuckDuckGo, 키 없음)는 키 파일을 받지 않고, `brave-free`·`tavily`는 키 파일이 있어야 한다. 원본 SDK의 검색 백엔드를 그대로 쓴다(`deepseek` 백엔드는 모델 호출이라 빼고, 원본 화면 설정(`webSearch` DB 설정)은 제품에서 읽지 않는다).
+- 받는 설치: 모델 실행 방식이 외부 API(OpenRouter)뿐인 설치만. 로컬 모델 프로파일이 있는 설치는 설치기가 `web_search`를 거부한다(완전 로컬 모드는 외부 송신 전면 차단, 규칙 8). 같은 설치에서 외부 API와 로컬을 섞는 경우가 생기면 로컬 실행에서는 끈다.
+- 주는 곳: 진단 Planner·Worker(원본 도구 이름·입력 그대로). 대상이 아니라 검색 제공자로만 나간다. 검색 결과에 나온 주소를 열람하려면 E② 판 WebFetch·Bash를 거치므로 승인 범위 밖 주소는 그대로 막힌다(규칙 3). 탐색 에이전트도 같은 설치 입력을 따른다.
+- 비밀: 검색 키는 제어 비밀이다(규칙 2). 설치 보호 입력 파일(0600)에서 읽어 엔진 메모리에만 두고, 모델 입력·로그·설치 기록(해시만)·화면 API에 넣지 않는다.
+- 공지: 외부 LLM 사전 공지 양식 2절에 검색 서비스(고른 백엔드)·검색어·접속 기록을 적었다. 외부 API 회차의 사전 승인이 이 표를 포함한다.
+- 기록: 검색 호출은 대상 요청이 아니라 E② 기록·대상 요청 예산에 들어가지 않는다. 진단 기록(활동)에 다른 도구 호출과 같은 방식으로 남는다.
 
 ## 3. Worker 프롬프트 (C25)
 
