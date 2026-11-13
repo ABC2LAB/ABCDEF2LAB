@@ -387,7 +387,7 @@ func TestE2HTTPFactoryRefreshedSessionReachesNextWorker(t *testing.T) {
 	if result != E2HTTPAuthAuthenticated {
 		t.Fatal("refresh", result)
 	}
-	next := e2HTTPSessionsFor(e2proxy.HeaderTestAccountPassthrough, lease.CurrentSessions())
+	next := e2HTTPWorkerSessions(e2proxy.HeaderTestAccountPassthrough, &lease)
 	if got := next["tester-a"].Get("Cookie"); got != refreshed.Get("Cookie") || got != "session=rotatingsession0002value" {
 		t.Fatalf("next worker got a stale session: %q", got)
 	}

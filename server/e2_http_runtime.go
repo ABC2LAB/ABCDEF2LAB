@@ -621,7 +621,7 @@ func (r *E2HTTPRuntime) PrepareWork(ctx context.Context, task *Task, intent *db.
 	t.mu.Unlock()
 	workCtx := e2HTTPTaskContext(ctx, t.ctx)
 	observePrompt := r.promptObserver(ctx, t, actual.ID)
-	bound := agent.WithE2HTTPExecution(workCtx, agent.E2HTTPExecution{Sessions: e2HTTPSessionsFor(r.options.HeaderMode, lease.CurrentSessions()), RefreshSession: e2HTTPRefreshFor(r.options.HeaderMode, lease), Workflow: r.options.Workflow, ObservePrompt: observePrompt, Runner: lease.Runner, Control: t.control, TaskID: t.number, IntentID: actual.ID, TaskRef: t.id, RunRef: r.options.Expected.RunRef, MaxTurns: r.options.MaxWorkerTurns, MaxDuration: r.options.WorkerTimeout, ApprovedOrigins: append([]string(nil), r.options.ApprovedOrigins...), ObserveResult: func(observeCtx context.Context, result e2runner.Result) error {
+	bound := agent.WithE2HTTPExecution(workCtx, agent.E2HTTPExecution{Sessions: e2HTTPWorkerSessions(r.options.HeaderMode, lease), RefreshSession: e2HTTPRefreshFor(r.options.HeaderMode, lease), Workflow: r.options.Workflow, ObservePrompt: observePrompt, Runner: lease.Runner, Control: t.control, TaskID: t.number, IntentID: actual.ID, TaskRef: t.id, RunRef: r.options.Expected.RunRef, MaxTurns: r.options.MaxWorkerTurns, MaxDuration: r.options.WorkerTimeout, ApprovedOrigins: append([]string(nil), r.options.ApprovedOrigins...), ObserveResult: func(observeCtx context.Context, result e2runner.Result) error {
 		return r.observeResult(observeCtx, t, lease, actual.ID, result)
 	}})
 	var once sync.Once
@@ -974,6 +974,11 @@ func e2HTTPFinalIntentError(drainErr error, calls []e2proxy.CallResult, intentID
 		}
 	}
 	return drainErr
+}
+
+// e2HTTPWorkerSessions는 Worker를 시작할 때 줄 시험 계정 세션이다. 다시 로그인이 바꾼 지금 세션을 읽는다(#550).
+func e2HTTPWorkerSessions(mode e2proxy.HeaderMode, lease *E2HTTPRunOptions) map[string]http.Header {
+	return e2HTTPSessionsFor(mode, lease.CurrentSessions())
 }
 
 // e2HTTPRefreshFor는 Worker의 refresh_session 경로다. 세션을 주는 실행(시험 계정 실행, 인증된 계정 있음)에만 준다.
