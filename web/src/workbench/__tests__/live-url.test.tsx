@@ -1132,6 +1132,18 @@ it("탐색 화면에서 중지 버전 충돌을 안내하고 GET 확인 전에�
   expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
 });
 
+// http 대상(C22)은 범위 확인 뒤 안전 장치에 평문 경고를 보인다. https 대상에는 없다(#527 이경준 리뷰).
+it.each([
+  ["http://target.example", true],
+  ["https://target.example", false],
+])("범위 origin %s 의 평문 경고 표시: %s", async (origin, warned) => {
+  u.readURLStatus.mockResolvedValue({ ...ready, scope: { ...scope, origin } });
+  saveHandle(handle);
+  mount("new");
+  await screen.findByText("승인된 사이트 · 경로에만 요청");
+  expect(screen.queryByText("암호화하지 않는 주소 (http)") !== null).toBe(warned);
+});
+
 it("선택적 승인 범위는 읽기 사전 승인과 쓰기 건별 확인을 구분해 표시한다", async () => {
   const input = { ...ready.input, workflow_mode: "user_approval_v1" as const };
   u.readURLStatus.mockResolvedValue({ ...ready, input, scope: { ...scope, approval_mode: "workbench_selective_v1" } });

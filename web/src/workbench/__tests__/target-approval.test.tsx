@@ -9,7 +9,7 @@ vi.mock("@/lib/diagnosis/api", async (original) => ({
 
 import { ApiError, apiFetch } from "@/lib/diagnosis/api";
 
-import { TargetApprovalPanel } from "../views/live/TargetApprovalPanel";
+import { PLAIN_TARGET_WARNING, TargetApprovalPanel } from "../views/live/TargetApprovalPanel";
 
 const pending = {
   id: `target-${"a".repeat(32)}`,
@@ -49,12 +49,26 @@ it("http 대상도 등록 칸을 그리고 TLS 고정값 없는 승인을 받는
   const plain = { ...approved, origin: "http://owned.example.test", port: 80, tls_spki_sha256: undefined };
   vi.mocked(apiFetch).mockResolvedValueOnce({ target: plain });
   render(<TargetApprovalPanel url={plainURL} disabled={false} />);
-  await screen.findByText(/서버가 확인한 연결/);
+  await screen.findByText(/서버가 확인한 연결 .*TLS 없음\(http\)/);
+  // http 대상은 평문 고지를 보인다(#527 이경준 리뷰)
+  expect(screen.getByText(PLAIN_TARGET_WARNING)).toBeInTheDocument();
   cleanup();
   vi.mocked(apiFetch).mockResolvedValueOnce({ target: { ...plain, tls_spki_sha256: "a".repeat(64) } });
   render(<TargetApprovalPanel url={plainURL} disabled={false} />);
   await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(2));
   expect(screen.queryByText(/서버가 확인한 연결/)).toBeNull();
+});
+it("https 승인 대상에는 평문 고지가 없고, http 등록 칸에는 있다", async () => {
+  vi.mocked(apiFetch).mockResolvedValueOnce({ target: approved });
+  render(<TargetApprovalPanel url={url} disabled={false} />);
+  await screen.findByText(/서버가 확인한 연결 .*TLS 공개키/);
+  expect(screen.queryByText(PLAIN_TARGET_WARNING)).toBeNull();
+  cleanup();
+  vi.mocked(apiFetch).mockResolvedValueOnce({});
+  render(<TargetApprovalPanel url="http://owned.example.test/read" disabled={false} />);
+  await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(2));
+  fireEvent.click(screen.getByRole("button", { name: "대상 등록하기" }));
+  expect(screen.getByText(PLAIN_TARGET_WARNING)).toBeInTheDocument();
 });
 it.each([404, 501])("API %s는 패널을 숨긴다", async (status) => {
   vi.mocked(apiFetch).mockRejectedValue(new ApiError(status, "unsupported"));

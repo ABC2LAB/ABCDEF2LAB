@@ -33,10 +33,14 @@ const reasons: Record<string, string> = {
   target_address_denied: "사설·메타데이터·보호 주소는 승인할 수 없습니다. 설치된 보안 정책을 확인하세요.",
   target_port_denied: "설치 정책이 허용하지 않는 포트입니다.",
   target_tls_unverified: "대상의 TLS 인증서를 확인하지 못했습니다.",
-  target_unreachable: "대상 주소에 연결하지 못했습니다.",
+  target_unreachable: "대상 주소에 연결하지 못했습니다. 주소·포트와 대상이 켜져 있는지 확인하세요.",
   readonly_scope_required: "GET/HEAD 경로와 비변경 승인 근거를 구체적으로 등록하세요.",
   invalid_path_scope: "허용 경로 형식을 확인하세요. query·fragment·인코딩은 허용하지 않습니다.",
 };
+/** http 대상(C22) 고지. 평문이라 요청·응답과 시험 계정 세션이 네트워크에서 보이고, 서버 신원을 TLS로 확인하지 않는다. */
+export const PLAIN_TARGET_WARNING =
+  "암호화하지 않는 주소입니다 · 요청·응답(로그인 세션 포함)이 네트워크에서 그대로 보일 수 있습니다 · 서버 신원(TLS)을 확인하지 않습니다";
+
 function originOf(raw: string): string {
   try {
     const u = new URL(raw);
@@ -244,8 +248,17 @@ export function TargetApprovalPanel({
           </button>
         </div>
         <span className={s.help}>
-          {`서버가 확인한 연결 · IP ${(selected.addresses ?? []).join(", ") || "—"} · 포트 ${selected.port} · TLS 공개키 ${selected.tls_spki_sha256 ? `${selected.tls_spki_sha256.slice(0, 16)}…` : "—"}`}
+          {`서버가 확인한 연결 · IP ${(selected.addresses ?? []).join(", ") || "—"} · 포트 ${selected.port} · ${
+            selected.origin.startsWith("http://")
+              ? "TLS 없음(http)"
+              : `TLS 공개키 ${selected.tls_spki_sha256 ? `${selected.tls_spki_sha256.slice(0, 16)}…` : "—"}`
+          }`}
         </span>
+        {selected.origin.startsWith("http://") ? (
+          <p className={cx(s.note, s.warn)} role="note">
+            {PLAIN_TARGET_WARNING}
+          </p>
+        ) : null}
         {tail}
       </div>
     );
@@ -328,6 +341,11 @@ export function TargetApprovalPanel({
               읽기 승인은 경로 단위이며 그 경로의 모든 query 를 포함합니다. 서버는 query 의 무해성을 검증하지 않으니,
               query 로 상태가 바뀔 수 있는 경로는 넣지 마세요. 승인할 때 후보 IP별 연결(https 대상은 TLS 확인)을 최대 8회 합니다.
             </p>
+            {origin.startsWith("http://") ? (
+              <p className={cx(s.note, s.warn)} role="note">
+                {PLAIN_TARGET_WARNING}
+              </p>
+            ) : null}
             <p className={s.help} id="targetHarmlessNote">
               비변경 근거는 운영자 확인입니다 · 서버는 GET/HEAD 의 무해성을 검증하지 않습니다 · 등록 후 DNS TXT 소유를
               확인합니다
