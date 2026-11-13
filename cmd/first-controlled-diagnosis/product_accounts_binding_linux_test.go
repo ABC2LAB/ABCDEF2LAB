@@ -324,8 +324,7 @@ func TestAccountsAllowedForModelMode(t *testing.T) {
 // 외부 API 실행의 시험 계정 동의는 대상 승인자만 남기고, 진술 해시·주체·작업이 계정 저널에 남는다. 저널을 다시 읽어도 받으며,
 // 진술 해시가 다르거나 계정 라벨·다른 줄의 작업 칸이 섞인 줄은 거부한다(#552 윤재상 리뷰).
 func TestExternalConsentRecordedInAccountJournal(t *testing.T) {
-	runtime, _, target, _ := accountRunFixture(t)
-	r := runtime.targets
+	r, root, target := accountTestTarget(t, true)
 	if err := r.recordExternalConsent("someone-else", target.ID, "job-consent"); err == nil {
 		t.Fatal("non-approver recorded an external consent")
 	}
@@ -335,6 +334,16 @@ func TestExternalConsentRecordedInAccountJournal(t *testing.T) {
 	if err := r.recordExternalConsent("ARTEX", target.ID, "job-consent"); err != nil {
 		t.Fatal(err)
 	}
+	// 거부한 시도는 저널에 아무것도 남기지 않고, 남긴 동의 줄은 다시 열어도 받는다.
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := newProductTargetRegistry(root, r.policy, func() error { return nil })
+	if err != nil {
+		t.Fatal("account journal does not reopen after consent attempts:", err)
+	}
+	defer reopened.Close()
+	r = reopened
 	rec := r.records[target.ID]
 	good := productAccountEvent{TargetID: target.ID, Action: accountExternalConsent, Actor: "ARTEX", At: time.Now(), TargetRevision: rec.Target.Revision,
 		StatementSHA256: productExternalConsentStatementSHA256(), JobRef: "job-replay"}
