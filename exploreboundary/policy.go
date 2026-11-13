@@ -63,7 +63,9 @@ var (
 type Target struct {
 	Ref      string
 	Revision uint64
-	// Host·Port는 승인 origin(https만)의 이름과 포트다.
+	// Scheme은 승인 origin의 scheme이다("https" 또는 "http", 비우면 https). http 대상은 TLS가 없어 SPKI 고정도 없다(C22).
+	Scheme string
+	// Host·Port는 승인 origin의 이름과 포트다.
 	Host         string
 	Port         uint16
 	PathPrefixes []string
@@ -76,6 +78,14 @@ type Target struct {
 	// RiskyWords·ExcludedPrefixes는 대상 정책의 위험 단어·제외 경로다. 쓰기 승인 회차에서도 막는다.
 	RiskyWords       []string
 	ExcludedPrefixes []string
+}
+
+// scheme은 승인 origin의 scheme이다. 이전 기록처럼 비어 있으면 https다.
+func (t Target) scheme() string {
+	if t.Scheme == "" {
+		return "https"
+	}
+	return t.Scheme
 }
 
 // TargetSource는 대상 등록 저장소의 읽기 쪽이다. 같은 ref·revision이 지금도 승인 상태일 때만 돌려준다.

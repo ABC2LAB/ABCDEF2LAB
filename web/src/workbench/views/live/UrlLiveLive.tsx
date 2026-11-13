@@ -228,12 +228,17 @@ export function UrlLiveLive() {
           ) : null}
           {!ended && job.state !== "unknown" ? (
             <div className={s.band}>
-              {/* 점검 진행률 % · 막대 (시안 v22): 서버에 진행률이 없어 칸만 둔다 */}
+              {/* 점검 진행률 % · 막대 (시안 v22): 서버에 진행률이 없어 시안 자리에 '—%' 와 빈 막대만 둔다(0% 로 지어내지 않음) */}
               {/* biome-ignore lint/a11y/useSemanticElements: 시안 마크업 그대로 */}
-              <div className={s.pct} id="lPct" role="group" aria-label="점검 진행률">
+              <div className={cx(s.pct, s.unk)} id="lPct" role="group" aria-label="점검 진행률">
+                <span aria-hidden="true">
+                  —<small>%</small>
+                </span>
                 <NotYet why="서버가 점검 진행률을 주지 않습니다" />
               </div>
               <div className={s.bt}>
+                {/* 값이 없으니 0% 처럼 읽히지 않게 빗금(모름) 막대 (리뷰 #523) */}
+                <div className={cx(s.prog, s.unk)} aria-hidden="true" />
                 <div className={s["now-l"]} aria-live="polite">
                   <span className={cx(s["now-k"], flow?.paused && s.idle)}>
                     <i />
@@ -319,17 +324,17 @@ export function UrlLiveLive() {
           <section className={s.sec} aria-labelledby="lSendH">
             <div className={s.sh}>
               <h2 id="lSendH">전송 통제</h2>
-              {c ? (
-                <span
-                  className={s.aside}
-                >{`요청 접수 ${fmtCount(c.attempts)} · 대상 전송 ${fmtCount(c.forward_attempted)}`}</span>
-              ) : null}
+              {/* 시안 v22 머리 옆 줄: 범위 밖 전송 · 승인 없는 상태 변경 수는 서버 집계에 없어 칸만 둔다 */}
+              <span className={s.aside}>
+                {"범위 밖으로 보낸 요청 · 승인 없이 보낸 상태 변경 "}
+                <NotYet why="서버 전송 집계에 이 두 수가 따로 없습니다" />
+              </span>
             </div>
-            {/* 시안 v22 머리 옆 줄: 범위 밖 전송 · 승인 없는 상태 변경 수는 서버 집계에 없어 칸만 둔다 */}
-            <p className={s.help}>
-              {"범위 밖으로 보낸 요청 · 승인 없이 보낸 상태 변경 "}
-              <NotYet why="서버 전송 집계에 이 두 수가 따로 없습니다" />
-            </p>
+            {c ? (
+              <p
+                className={s.help}
+              >{`요청 접수 ${fmtCount(c.attempts)} · 대상 전송 ${fmtCount(c.forward_attempted)}`}</p>
+            ) : null}
             {g.runReadable && a.poll.error && !a.poll.data ? (
               <ErrorNote error={a.poll.error} onRetry={a.poll.reload} />
             ) : null}

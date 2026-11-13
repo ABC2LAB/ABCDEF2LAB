@@ -717,8 +717,9 @@ export function WorkflowCrawlLive() {
                     ["cSkip", "막은 요청", flow.counts.blocked, null, "규칙으로 막음"],
                   ] as const
                 ).map(([id, label, value, tone, sub]) => (
-                  <div className={s.cn} key={id}>
-                    <div className={cx(s.v, tone && s[tone])} id={id}>
+                  // 시안 #cApTile: 승인 대기 수가 있으면 칸째 주황
+                  <div className={cx(s.cn, tone === "w" && value > 0 && s.warn)} key={id}>
+                    <div className={s.v} id={id}>
                       {value}
                     </div>
                     <div className={s.k}>{`${label} · ${sub}`}</div>
@@ -858,7 +859,7 @@ export function WorkflowCrawlLive() {
                 </div>
                 {/* 시안 v32: 아직 경로가 하나도 안 나온 묶음 (경로 규칙 묶음 기준) */}
                 {endpoints.length && missingGroups(endpoints).length ? (
-                  <p className={s["tree-hint"]}>{`아직 찾지 못한 묶음 · ${missingGroups(endpoints).join(", ")}`}</p>
+                  <p className={s["gc-empty"]}>{`아직 찾지 못한 묶음 · ${missingGroups(endpoints).join(", ")}`}</p>
                 ) : null}
               </div>
             </>

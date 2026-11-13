@@ -35,7 +35,7 @@
 - 판정 중에 요청 문맥이 끝나면(브라우저의 XHR 중단 등) 그 요청만 `request_cancelled`로 남기고 세션은 닫지 않는다(§4 목록에 없는 값). 대상 조회가 문맥 취소로 멈춘 것을 저장소 장애로 보고 `boundary_unavailable`로 닫으면, 요청 하나가 탐색 전체를 끝낸다(#482 리뷰 R4).
 - 제외 경로의 조각 하나 전체인 `*`는 제품 대상 등록·진단 흐름(`diagnosisflow` `excludedWithin`)과 같은 규칙으로 맞춘다(아무 조각 하나, 그 아래 경로 포함). 등록 검사가 `*`를 받으므로 글자 그대로 비교하면 제외가 빠진다(#482 리뷰 R1).
 - 외부 요청의 이름(또는 IP 리터럴)이 승인 대상의 `ConnectIP`로 풀리면 외부 자원으로 보내지 않고 `out_of_scope_origin`으로 막는다. 외부로 보내면 승인 경로·위험 경로·제외 경로·SPKI 고정과 대상 요청 수를 모두 건너뛴다(#482 리뷰 R3).
-- 평문 http 요청·CONNECT 내부 메서드 누락은 `protocol_unsupported`다(승인 대상은 https만).
+- CONNECT 내부 메서드 누락은 `protocol_unsupported`다. 평문 프록시 요청(절대 URI)은 http 승인 대상(`Target.Scheme`이 `http`)에만 보낸다(C22, 2026-11-13). https 대상에 평문으로 오거나 http 대상에 TLS로 온 요청, 평문 외부 요청은 `protocol_unsupported`다. http 대상은 TLS가 없어 SPKI 고정값도 없다(제어 통로 `scheme` 칸은 http일 때만 싣는다).
 
 ## 제품 compose 종단 확인(2026-11-13, 소유 Docker)
 

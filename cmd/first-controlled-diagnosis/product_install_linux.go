@@ -79,6 +79,28 @@ func productCA(name string, until time.Time) (cert, key []byte, parsed *x509.Cer
 	raw, err := x509.MarshalPKCS8PrivateKey(private)
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: raw}), parsed, private, err
 }
+
+// withTargetPolicyDefaults는 설치 입력에서 비운 대상 정책 칸에 기본값을 넣는다. 기본 포트는 http·https 기본 포트다
+// (C22: http 대상도 받는다). 다른 포트는 설치 조직이 정한다.
+func withTargetPolicyDefaults(p productTargetPolicy) productTargetPolicy {
+	if p.Format == "" {
+		p.Format = "abc2lab.product-target-policy/v1"
+	}
+	if len(p.AllowedPorts) == 0 {
+		p.AllowedPorts = []int{80, 443}
+	}
+	if p.MaxRequests == 0 {
+		p.MaxRequests = 4
+		if p.Workflow != nil {
+			p.MaxRequests = 64
+		}
+	}
+	if p.MaxTargets == 0 {
+		p.MaxTargets = 32
+	}
+	return p
+}
+
 func runProductInstall(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("install-product", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -113,21 +135,7 @@ func runProductInstall(ctx context.Context, args []string, stdout, stderr io.Wri
 	if c.LocalModel == nil && len(c.OpenRouterManifest) == 0 {
 		return 2
 	}
-	if c.TargetPolicy.Format == "" {
-		c.TargetPolicy.Format = "abc2lab.product-target-policy/v1"
-	}
-	if len(c.TargetPolicy.AllowedPorts) == 0 {
-		c.TargetPolicy.AllowedPorts = []int{443}
-	}
-	if c.TargetPolicy.MaxRequests == 0 {
-		c.TargetPolicy.MaxRequests = 4
-		if c.TargetPolicy.Workflow != nil {
-			c.TargetPolicy.MaxRequests = 64
-		}
-	}
-	if c.TargetPolicy.MaxTargets == 0 {
-		c.TargetPolicy.MaxTargets = 32
-	}
+	c.TargetPolicy = withTargetPolicyDefaults(c.TargetPolicy)
 	if !validProductTargetPolicy(c.TargetPolicy) {
 		return 2
 	}

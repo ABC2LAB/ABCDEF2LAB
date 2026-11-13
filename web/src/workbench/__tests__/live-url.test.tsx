@@ -275,7 +275,9 @@ afterEach(() => {
 describe("URL 진단 계산", () => {
   it("주소 안내: HTTPS 만 · 계정 정보 · query/fragment · 인코딩", () => {
     expect(urlTargetHint("")).toBe("");
-    expect(urlTargetHint("http://target.example/")).toBe("HTTPS 주소만 받습니다.");
+    expect(urlTargetHint("ftp://target.example/")).toBe("http 또는 https 주소만 받습니다.");
+    expect(urlTargetHint("http://target.example/app")).toBeNull();
+    expect(urlTargetHint("http://u:p@target.example/")).toBe("계정 정보(user:pass@)는 넣지 마세요.");
     expect(urlTargetHint("https://u:p@target.example/")).toBe("계정 정보(user:pass@)는 넣지 마세요.");
     expect(urlTargetHint("https://target.example/?a=1")).toBe("query · fragment(? #)는 넣지 마세요.");
     expect(urlTargetHint("https://target.example/%2e")).toBe("퍼센트 인코딩 · 역슬래시는 쓸 수 없습니다.");
@@ -467,8 +469,8 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     // 1쪽: 주소가 없거나 틀리면 '다음'이 꺼져 있고, 범위 확인 버튼은 아직 없다
     expect(nextBtn()[0]).toBeDisabled();
     expect(screen.queryAllByRole("button", { name: "승인 범위 확인" })).toHaveLength(0);
-    fireEvent.change(target, { target: { value: "http://target.example/" } });
-    expect(screen.getAllByText("HTTPS 주소만 받습니다.").length).toBeGreaterThan(0);
+    fireEvent.change(target, { target: { value: "ftp://target.example/" } });
+    expect(screen.getAllByText("http 또는 https 주소만 받습니다.").length).toBeGreaterThan(0);
     expect(nextBtn()[0]).toBeDisabled();
     fireEvent.change(target, { target: { value: "https://target.example/" } });
     fireEvent.click(nextBtn()[0]);
@@ -637,7 +639,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(u.createURLDraft).not.toHaveBeenCalled();
     expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
     // 서버에 진행률 · 범위 밖 전송 집계가 없어 시안 칸은 '아직 구현 안 됨' (시안 v22). 0 % 로 지어내지 않는다
-    expect(screen.getByRole("group", { name: "점검 진행률" })).toHaveTextContent(/^아직 구현 안 됨/);
+    expect(screen.getByRole("group", { name: "점검 진행률" })).toHaveTextContent("아직 구현 안 됨");
     expect(screen.queryByText(/^0%$/)).toBeNull();
     expect(screen.getByText(/^범위 밖으로 보낸 요청 · 승인 없이 보낸 상태 변경/)).toHaveTextContent("아직 구현 안 됨");
   });

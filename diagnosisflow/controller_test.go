@@ -376,3 +376,21 @@ func TestUnknownWriteIsNotResentWithAnotherCommand(t *testing.T) {
 		}
 	}
 }
+
+// http 대상(C22)도 진단 흐름을 연다. origin은 scheme까지 같아야 한다.
+func TestHTTPTargetFlowKeepsSchemeInOrigin(t *testing.T) {
+	store := &memoryStore{records: map[string]Record{}}
+	c, err := New(t.Context(), Binding{JobID: "prep-owned", TaskID: "1", RunRef: "run-owned", SourceDigest: strings.Repeat("a", 64), Owner: "ARTEX", Mode: Auto, TargetURL: "http://owned.test/read", PathPrefixes: []string{"/read"}, ReadonlyPrefixes: []string{"/read"}, Methods: []string{"GET", "HEAD"}, Limits: Limits{Format: Version, MaxPages: 2, MaxEndpoints: 32, MaxResponseBytes: 4096}, Current: func() error { return nil }}, store)
+	if err != nil {
+		t.Fatal("http target flow refused", err)
+	}
+	if c.Before(t.Context(), e2proxy.RequestView{Method: "GET", URL: "http://owned.test/read"}) != nil {
+		t.Fatal("http start page denied")
+	}
+	if c.Before(t.Context(), e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read"}) == nil {
+		t.Fatal("https request admitted for an http target")
+	}
+	if _, err := New(t.Context(), Binding{JobID: "prep-owned-2", TaskID: "1", RunRef: "run-owned", SourceDigest: strings.Repeat("a", 64), Owner: "ARTEX", Mode: Auto, TargetURL: "ftp://owned.test/read", PathPrefixes: []string{"/read"}, ReadonlyPrefixes: []string{"/read"}, Methods: []string{"GET"}, Limits: Limits{Format: Version, MaxPages: 2, MaxEndpoints: 32, MaxResponseBytes: 4096}, Current: func() error { return nil }}, store); err == nil {
+		t.Fatal("ftp target accepted")
+	}
+}

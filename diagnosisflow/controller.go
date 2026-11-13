@@ -45,7 +45,7 @@ type documentBase struct {
 
 func New(ctx context.Context, b Binding, store Store) (*Controller, error) {
 	u, err := url.Parse(b.TargetURL)
-	if err != nil || u.Scheme != "https" || u.User != nil || u.Host == "" || u.RawQuery != "" || u.Fragment != "" || !ValidMode(b.Mode) || !b.Limits.Valid() || b.Current == nil || b.Current() != nil || store == nil || b.JobID == "" || b.TaskID == "" || b.SourceDigest == "" || b.Owner == "" || len(b.PathPrefixes) == 0 || len(b.ReadonlyPrefixes) == 0 {
+	if err != nil || u.Scheme != "https" && u.Scheme != "http" || u.User != nil || u.Host == "" || u.RawQuery != "" || u.Fragment != "" || !ValidMode(b.Mode) || !b.Limits.Valid() || b.Current == nil || b.Current() != nil || store == nil || b.JobID == "" || b.TaskID == "" || b.SourceDigest == "" || b.Owner == "" || len(b.PathPrefixes) == 0 || len(b.ReadonlyPrefixes) == 0 {
 		return nil, ErrUnavailable
 	}
 	c := &Controller{binding: b, store: store, changed: make(chan struct{}), attempts: map[string]bool{}, uncertainWrites: map[string]bool{}, origin: u.Scheme + "://" + u.Host}
