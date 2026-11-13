@@ -26,7 +26,8 @@ type firstDiagnosisTargetDrain struct {
 
 // 입력은 직렬화한 요청 바이트 수에 framing 여유를 더한 값으로 예약한다(P3 결정안 C28 결정 1). 토큰 하나는 1바이트
 // 이상이라 이 값이 입력 토큰의 상한이고, 설치자가 고정한 context보다 크면 거부한다. 출력은 max_tokens로 예약한다.
-// 성공 뒤에도 예약을 환불하지 않는다.
+// 예산 검사는 정산한 사용량과 진행 중 예약으로 한다(P3 결정안 C28 결정 2). 정산한 호출의 남은 예약은 다시 쓸 수 있다.
+// Reserved*는 기록용 누적 예약 합계라 줄이지 않는다.
 // firstDiagnosisFramingTokens는 요청 JSON 바이트에 더하는 provider framing 여유다. 대화 템플릿의 특수 토큰은
 // 메시지마다 몇 개뿐이고 JSON의 역할·구분 바이트가 그보다 많으므로, 이 여유는 템플릿 머리말과 시스템 토큰 몫이다.
 const firstDiagnosisFramingTokens = 4096
@@ -49,9 +50,11 @@ type FirstDiagnosisModelBudget struct {
 	externalUsage func() llmpolicy.OpenRouterUsage
 	manifestPath  string
 	// inflight는 정산 전 예약 수다. 사용량이 모두 정산됐는지(UsageKnown)는 진행 중 예약이 없고 막힘이 없을 때다.
-	inflight    int
-	targetDrain *firstDiagnosisTargetDrain
-	admission   func(context.Context) error
+	inflight int
+	// inflightInput·inflightOutput·inflightCost는 정산 전 예약의 합계다. 예산 검사는 정산 사용량 + 이 합계로 한다.
+	inflightInput, inflightOutput, inflightCost int64
+	targetDrain                                 *firstDiagnosisTargetDrain
+	admission                                   func(context.Context) error
 	// limitReached는 승인 예산이 남지 않아 새 호출을 받지 못한 적이 있다는 뜻이다(budget_limited).
 	limitReached bool
 }
@@ -301,8 +304,9 @@ func (b *FirstDiagnosisModelBudget) reserve(ctx context.Context, cfg agent.Confi
 		return nil, ErrFirstDiagnosisModelBudget
 	}
 	if b.usage.Requests >= b.limits.ModelRequests ||
-		reserveInput > b.limits.InputTokens-b.usage.ReservedInputTokens ||
-		int64(req.MaxTokens) > b.limits.OutputTokens-b.usage.ReservedOutputTokens || cost > b.limits.CostUSDMicros-b.usage.ReservedCostUSDMicros {
+		reserveInput > b.limits.InputTokens-b.usage.InputTokens-b.inflightInput ||
+		int64(req.MaxTokens) > b.limits.OutputTokens-b.usage.OutputTokens-b.inflightOutput ||
+		cost > b.limits.CostUSDMicros-b.usage.CostUSDMicros-b.inflightCost {
 		// 승인 예산이 다음 호출을 받을 만큼 남지 않았다. 막힘(불명·정책)과 달리 실행 실패가 아니라 마감 사유다.
 		b.limitReached = true
 		return nil, ErrFirstDiagnosisModelBudget
@@ -312,6 +316,9 @@ func (b *FirstDiagnosisModelBudget) reserve(ctx context.Context, cfg agent.Confi
 	b.usage.ReservedInputTokens += call.input
 	b.usage.ReservedOutputTokens += call.output
 	b.usage.ReservedCostUSDMicros += call.cost
+	b.inflightInput += call.input
+	b.inflightOutput += call.output
+	b.inflightCost += call.cost
 	if b.external != nil {
 		call.slot = &llmpolicy.OpenRouterCall{}
 		call.result = call.slot.Result
@@ -391,6 +398,9 @@ func (b *FirstDiagnosisModelBudget) settle(call *firstDiagnosisModelCall, usage 
 	}
 	call.closed = true
 	b.inflight--
+	b.inflightInput -= call.input
+	b.inflightOutput -= call.output
+	b.inflightCost -= call.cost
 	outputLimit := int(call.output)
 	known := callErr == nil && usage.InputTokens > 0 && usage.OutputTokens >= 0 &&
 		int64(usage.InputTokens) <= call.input && usage.OutputTokens <= outputLimit &&
@@ -415,7 +425,7 @@ func (b *FirstDiagnosisModelBudget) settle(call *firstDiagnosisModelCall, usage 
 	case failedCallBounded(callErr, b.external != nil && b.external.Snapshot().Blocked) && reportedWithinReservation(usage, call.input, outputLimit):
 		// 실패한 호출은 예약한 양을 쓴 것으로 센다(P3 결정안 C05). 재시도가 꺼져 있어 예약 하나에 HTTP 요청은
 		// 하나이고, 입력 크기·max_tokens·가격 상한을 호출 전에 검사했으므로 이 값이 실제 사용의 상한이다.
-		// 다음 호출의 예산 검사는 예약 합계로 하므로 상한은 넓어지지 않는다.
+		// 예약량을 정산 사용량에 넣으므로 다음 호출의 예산 검사(정산 사용량 + 진행 중 예약)에서 상한은 넓어지지 않는다.
 		b.usage.InputTokens += call.input
 		b.usage.OutputTokens += call.output
 		b.usage.CostUSDMicros += call.cost
