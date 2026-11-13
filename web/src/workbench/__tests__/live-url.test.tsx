@@ -130,7 +130,6 @@ function shellValue(over: Partial<Shell> = {}): Shell {
 /** UrlFeeds(확인 · 주기 조회) + 화면 하나. */
 function mount(view: "dashboard" | "new" | "scope" | "live" | "report") {
   const goTo = vi.fn<(v: View) => void>();
-  const openInsp = vi.fn<() => void>();
   const body = {
     dashboard: <DashboardByMode />,
     new: <NewScanByMode />,
@@ -139,12 +138,12 @@ function mount(view: "dashboard" | "new" | "scope" | "live" | "report") {
     report: <ReportByMode />,
   }[view];
   const r = render(
-    <ShellContext.Provider value={shellValue({ route: view, goTo, openInsp })}>
+    <ShellContext.Provider value={shellValue({ route: view, goTo })}>
       <UrlFeeds />
       {body}
     </ShellContext.Provider>,
   );
-  return { ...r, goTo, openInsp };
+  return { ...r, goTo };
 }
 
 /** 이 브라우저에 이어 볼 진단이 있다(팀 핸들 칸). */
@@ -548,10 +547,10 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     expect(screen.getByRole("group", { name: "대상 · 로그인" })).toBeVisible();
   });
 
-  it("범위 확인 뒤 단계(승인 범위 다시 확인)는 요약 패널에, 바닥 줄 오른쪽 끝은 그대로 [다음] · 왼쪽은 패널 여는 버튼", async () => {
+  it("범위 확인 뒤 단계(승인 범위 다시 확인)는 요약 패널에, 바닥 줄 오른쪽 끝은 그대로 [다음] · 패널 여는 버튼은 없다", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue({ ...draft, revision: 2, reason_code: "approval_required" });
-    const { openInsp } = mount("new");
+    mount("new");
     const again = await screen.findByRole("button", { name: "승인 범위 다시 확인" });
     const summary = screen.getByRole("complementary", { name: "점검 요약" });
     const form = (await screen.findByLabelText(/점검할 사이트 주소/)).closest("form") as HTMLFormElement;
@@ -559,11 +558,8 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     expect(form.contains(again)).toBe(false);
     const next = within(form).getByRole("button", { name: "다음" });
     expect(next.parentElement?.lastElementChild).toBe(next);
-    // 패널이 안 보일 때(접음 · 좁은 화면)만 CSS 로 보이는 패널 여는 버튼은 바닥 줄 맨 왼쪽
-    const open = within(form).getByRole("button", { name: "시작 단계 보기" });
-    expect(next.parentElement?.firstElementChild).toBe(open);
-    fireEvent.click(open);
-    expect(openInsp).toHaveBeenCalledTimes(1);
+    // 패널을 접어도 바닥 줄에 패널 여는 버튼('시작 단계 보기')을 두지 않는다
+    expect(within(form).queryByRole("button", { name: "시작 단계 보기" })).toBeNull();
     // 2쪽은 [이전]만: 범위 확인은 이미 했고 다시 확인은 패널에 있다
     fireEvent.click(next);
     expect(within(form).getByRole("button", { name: "이전" })).toBeInTheDocument();

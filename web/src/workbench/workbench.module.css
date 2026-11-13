@@ -1758,7 +1758,7 @@ a.ph:hover {
 /*
  * 새 점검 바닥 줄: 쪽 이동 버튼(1쪽 다음 · 2쪽 이전 · 승인 범위 확인)은 이 줄 오른쪽 끝에 둔다.
  * 내용이 짧으면 칸 바닥으로 밀리고(margin-top:auto) 길면 바닥에 sticky로 붙어, 쪽을 넘기거나 오른쪽 패널을
- * 접고 펴도 버튼이 위아래로 움직이지 않는다. 왼쪽은 막힌 이유 또는 '시작 단계 보기'(패널이 안 보일 때만).
+ * 접고 펴도 버튼이 위아래로 움직이지 않는다. 왼쪽은 막힌 이유.
  */
 .vm.nform {
   padding-bottom: 0;
@@ -1770,18 +1770,8 @@ a.ph:hover {
   justify-content: flex-end;
   padding-bottom: max(14px, env(safe-area-inset-bottom, 0px));
 }
-.nform > .formbar > .why,
-.nform > .formbar > .fbinsp {
+.nform > .formbar > .why {
   margin-right: auto;
-}
-/* 범위 확인 뒤 시작 단계는 요약 패널에 있다. 패널이 보이면 숨기고, 접었거나 서랍인 화면에서만 바닥 줄에 패널 여는 버튼 */
-.fbinsp {
-  display: none;
-}
-@media (max-width: 1199px) {
-  .fbinsp {
-    display: inline-flex;
-  }
 }
 /* 입력칸은 넣는 값 길이만큼만 (시안 v58). 폰에서는 칸이 좁아 그대로 꽉 찬다 */
 .inp.w-url {
@@ -4539,9 +4529,6 @@ button.smm:hover {
   /* 패널에 있던 시작 버튼 등은 접으면 본문 아래 줄로 */
   .app.insp-min .formbar {
     display: flex;
-  }
-  .app.insp-min .fbinsp {
-    display: inline-flex;
   }
   /*
    * 레일처럼 칸 폭만 움직이고 패널 안 내용은 늘 펼친 폭(384px)으로 그린다. 칸이 좁아지는 동안 글이 줄을 바꿔

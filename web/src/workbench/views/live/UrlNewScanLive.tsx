@@ -6,7 +6,7 @@
 // URL 은 요청일 뿐이고 허가는 서버 설치 범위와 E② 가 정한다.
 // 입력은 두 쪽 묶음(시안 fgrps · fgrp)으로 나눈다: 1쪽 대상 → [다음] → 2쪽 분석 모델 · 점검 설정 → [승인 범위 확인].
 // 쪽 이동 버튼(1쪽 [다음] · 2쪽 [이전][승인 범위 확인])은 화면 바닥 줄(formbar) 오른쪽 끝에 둔다. 범위 확인 뒤 단계(승인 대기 ·
-// 승인 범위 다시 확인 · 동의 · 점검 시작)는 오른쪽 요약 패널에 두고, 패널이 안 보일 때(접음 · 좁은 화면)만 바닥 줄 왼쪽에 패널 여는 버튼.
+// 승인 범위 다시 확인 · 동의 · 점검 시작)는 오른쪽 요약 패널에만 둔다(패널을 접으면 패널을 펴서 본다).
 // 시안의 로그인(계정 A 관리자 / B 일반) · 최근 점검한 주소 · 점검 목표 · 점검 범위 · 워커 수 · LLM 서버 주소는 서버 진단
 // 입력(URLDiagnosisInput)과 catalog 에 칸이 없다. 시안 모양 그대로 그리되 꺼 두고 '연결 전' 딱지를 붙인다 — 받아도 보낼 곳이
 // 없는 값을 치게 하지 않고, 시작 조건에도 넣지 않는다. 고른 상태는 지금 실제 동작(로그인 없이)만 표시하고, 서버가 정하는
@@ -118,7 +118,7 @@ export const EXCLUDE_EXAMPLE = "/logout\n/delete";
 
 /** live 새 점검 (URL 진단). */
 export function UrlNewScanLive() {
-  const { goTo, route, openInsp } = useShell();
+  const { goTo, route } = useShell();
   const cap = useUrl((st) => st.cap);
   const handle = useUrl((st) => st.handle);
   const job = useUrl((st) => st.job);
@@ -312,18 +312,11 @@ export function UrlNewScanLive() {
   }
 
   // 바닥 줄: 쪽 이동 버튼은 오른쪽 끝 같은 자리 (1쪽 [다음], 2쪽 [이전][승인 범위 확인]). 패널을 접고 펴도 그대로다.
-  // 왼쪽은 막힌 이유, 범위 확인 뒤에는 패널이 안 보일 때만 보이는 '시작 단계 보기'(CSS fbinsp).
+  // 왼쪽은 막힌 이유.
   const why0 = page === 1 ? why1 : why;
   const bar = (
     <>
-      {handle ? (
-        <button className={cx(s.btn, s.fbinsp)} type="button" data-insp-open="" onClick={openInsp}>
-          <Icon name="panel" />
-          시작 단계 보기
-        </button>
-      ) : (
-        <span className={s.why}>{why0.join(" · ")}</span>
-      )}
+      <span className={s.why}>{why0.join(" · ")}</span>
       {page === 1 ? (
         <button className={cx(s.btn, s.pri)} type="submit" disabled={!canNext}>
           다음
