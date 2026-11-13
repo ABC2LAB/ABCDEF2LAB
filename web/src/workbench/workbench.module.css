@@ -274,25 +274,6 @@
   display: grid;
   grid-template-columns: 236px minmax(0, 1fr);
 }
-.demobar {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  padding: 7px 16px;
-  background: var(--warn-bg);
-  color: var(--warn);
-  border-bottom: 1px solid var(--warn-line);
-  font-size: 12.5px;
-  font-weight: 600;
-  line-height: 1.4;
-}
-.demobar .ic {
-  width: 15px;
-  height: 15px;
-  flex: none;
-}
 .work {
   min-width: 0;
   min-height: 0;
@@ -4355,29 +4336,6 @@ button.smm:hover {
 }
 
 /* ===== live 전용 (실제 엔진 모드) — 위의 규칙은 건드리지 않고 여기에만 더한다 ===== */
-/* 배너: live 는 경고색 대신 정보(accent) 톤 */
-.demobar.lv-bar {
-  background: var(--accent-bg);
-  color: var(--accent-ink);
-  border-bottom-color: var(--accent-line);
-}
-/* 배너 안 원천 전환 버튼 */
-.lv-bar-btn {
-  flex: none;
-  margin-left: 4px;
-  padding: 1px 9px;
-  border: 1px solid currentColor;
-  border-radius: 4px;
-  background: transparent;
-  color: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.5;
-  cursor: pointer;
-}
-.lv-bar-btn:hover {
-  background: var(--bg);
-}
 /* 관문 패널 (로그인 · 연결 실패 · 초기 설정) */
 .lv-gate {
   display: flex;

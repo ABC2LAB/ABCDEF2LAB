@@ -14,7 +14,6 @@ import { UrlFeeds, useUrl } from "./live/urlDiagnosis";
 import { URL_ENDED_STATES } from "./live/urlMap";
 import { isView, type Shell, ShellContext, type View } from "./shell";
 import { type DSel, type Panel, useWb } from "./store";
-import { Icon } from "./ui/icons";
 import { Rail } from "./ui/Rail";
 import { AccountClassifyLive } from "./views/live/AccountClassifyLive";
 import {
@@ -367,10 +366,6 @@ export function Workbench() {
         data-theme={theme === "system" ? undefined : theme}
       >
         <UrlFeeds />
-        <div className={cx(s.demobar, s["lv-bar"])} role="note">
-          <Icon name="info" />
-          <span>실제 서버 전용 · 승인 범위와 사용량은 서버가 확인한 값만 표시합니다.</span>
-        </div>
         <div className={cx(s.app, railMin && s["rail-min"], inspMin && s["insp-min"], !booted && s.booting)}>
           <Rail />
           <main className={s.work}>
