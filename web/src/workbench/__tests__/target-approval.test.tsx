@@ -156,6 +156,8 @@ it("새 origin에는 이전 대상의 쓰기 동의가 넘어가지 않는다", 
   const view = render(<TargetApprovalPanel url={url} disabled={false} allowStateChanges />);
   await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1));
   fireEvent.click(screen.getByRole("button", { name: "대상 등록하기" }));
+  // 쓰기 동의는 AI 자동 모드가 건별 확인 없이 보낸다는 뜻까지 보인다(C21, #525 이경준 리뷰)
+  expect(screen.getByRole("checkbox").closest("label")).toHaveTextContent(/AI 자동 모드는 건별 확인 없이 보냄/);
   fireEvent.click(screen.getByRole("checkbox"));
   expect(screen.getByRole("checkbox")).toBeChecked();
   view.rerender(<TargetApprovalPanel url="https://second.example.test/read" disabled={false} allowStateChanges />);

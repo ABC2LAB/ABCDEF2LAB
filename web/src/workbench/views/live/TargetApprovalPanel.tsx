@@ -339,8 +339,8 @@ export function TargetApprovalPanel({
                   onChange={(e) => setReversible(e.target.checked)}
                 />
                 <span>
-                  복구 가능한 소유 시험환경이고 POST/PUT/PATCH 검사 권한이 있음 · 요청마다 전송 전에 확인 ·
-                  삭제·초기화·결제는 제외
+                  복구 가능한 소유 시험환경이고 POST/PUT/PATCH 검사 권한이 있음 · 사용자 승인 모드는 요청마다 전송
+                  전에 확인, AI 자동 모드는 건별 확인 없이 보냄 · 삭제·초기화·결제는 제외
                 </span>
               </label>
             ) : null}

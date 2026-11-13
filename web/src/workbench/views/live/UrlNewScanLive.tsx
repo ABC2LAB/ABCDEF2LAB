@@ -192,7 +192,7 @@ export function UrlNewScanLive() {
   // 요약 '쓰기 요청': 범위 확인 뒤에는 서버 승인 방식, 그 전에는 진단 모드 기준
   let writeSummary = "승인 후 전송";
   if (scope) writeSummary = approvalRule(scope.approval_mode, scope.methods, true);
-  else if (profile?.workflow && mv === "ai_auto_v1") writeSummary = "승인한 쓰기는 건별 확인 없이";
+  else if (profile?.workflow && mv === "ai_auto_v1") writeSummary = "건별 확인 없이 (대상 쓰기 승인 시)";
   const to = job ? scanViewFor(job, flowStage) : null;
   const started = !!job && job.state !== "ready" && job.state !== "awaiting_approval";
   const ended = !!job && URL_ENDED_STATES.includes(job.state);
@@ -740,7 +740,13 @@ export function UrlNewScanLive() {
                   {external && profile?.model ? (
                     <Rule t="외부 모델로 대상 응답 전송" sub={profile.model.provider} />
                   ) : null}
-                  <Rule t="쓰기 요청은 승인 후 전송" />
+                  <Rule
+                    t={
+                      profile?.workflow && mv === "ai_auto_v1"
+                        ? "대상이 쓰기를 승인했으면 건별 확인 없이 전송"
+                        : "쓰기 요청은 승인 후 전송"
+                    }
+                  />
                   {profile?.workflow ? (
                     <Rule t="제외한 경로는 요청 안 함" sub={excludedCount ? `${excludedCount}개` : "없음"} />
                   ) : null}
