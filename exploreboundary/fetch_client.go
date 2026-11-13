@@ -59,7 +59,7 @@ func (f DirectFetch) Fetch(ctx context.Context, target string) (diagnosisflow.Ex
 		return diagnosisflow.ExplorationFetchResult{}, ErrConfig
 	}
 	u, err := url.Parse(target)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Fragment != "" {
+	if err != nil || u.Scheme != "https" && u.Scheme != "http" || u.Host == "" || u.User != nil || u.Fragment != "" {
 		return diagnosisflow.ExplorationFetchResult{}, ErrFetchRefused
 	}
 	transport := &http.Transport{Proxy: http.ProxyURL(f.Proxy), DisableKeepAlives: true, DisableCompression: true, ForceAttemptHTTP2: false,

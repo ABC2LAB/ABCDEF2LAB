@@ -29,7 +29,7 @@ type productTLSContact struct {
 }
 
 func (r *productTargetRegistry) probeWithAudit(ctx context.Context, stage string, rec productTargetRecord, host, ip string) (string, time.Time, error) {
-	if r.check() != nil || r.probe == nil {
+	if r.check() != nil || r.probe == nil || r.reach == nil {
 		return "", time.Time{}, errPreparation
 	}
 	event := productTLSContact{Format: "abc2lab.product-tls-contact/v1", ID: "tls-" + productRandom(16), TargetID: rec.Target.ID, Revision: rec.Target.Revision, Stage: stage, Phase: "attempt", Host: host, IP: ip, Port: rec.Target.Port, At: r.now()}
@@ -37,7 +37,15 @@ func (r *productTargetRegistry) probeWithAudit(ctx context.Context, stage string
 	if err != nil || r.contacts.Append(raw) != nil {
 		return "", time.Time{}, errPreparation
 	}
-	digest, until, probeErr := r.probe(ctx, host, ip, rec.Target.Port)
+	var digest string
+	var until time.Time
+	var probeErr error
+	if productTargetPlain(rec.Target) {
+		// http 대상은 연결만 확인한다. TLS 고정값·인증서 만료가 없다(C22).
+		probeErr = r.reach(ctx, ip, rec.Target.Port)
+	} else {
+		digest, until, probeErr = r.probe(ctx, host, ip, rec.Target.Port)
+	}
 	event.Phase = "completed"
 	event.At = r.now()
 	event.Result = "verified"

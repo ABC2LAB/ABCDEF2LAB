@@ -73,8 +73,10 @@ type ControlResponse struct {
 
 // WireTarget은 Target의 소켓 표현이다.
 type WireTarget struct {
-	Ref              string    `json:"ref"`
-	Revision         uint64    `json:"revision"`
+	Ref      string `json:"ref"`
+	Revision uint64 `json:"revision"`
+	// Scheme은 비우면 https다(이전 형식). http 대상만 "http"를 싣는다(C22).
+	Scheme           string    `json:"scheme,omitempty"`
 	Host             string    `json:"host"`
 	Port             uint16    `json:"port"`
 	PathPrefixes     []string  `json:"path_prefixes"`
@@ -87,7 +89,11 @@ type WireTarget struct {
 }
 
 func WireTargetOf(t Target) WireTarget {
-	return WireTarget{Ref: t.Ref, Revision: t.Revision, Host: t.Host, Port: t.Port, PathPrefixes: append([]string(nil), t.PathPrefixes...), Methods: append([]string(nil), t.Methods...),
+	scheme := t.Scheme
+	if scheme == "https" {
+		scheme = ""
+	}
+	return WireTarget{Ref: t.Ref, Revision: t.Revision, Scheme: scheme, Host: t.Host, Port: t.Port, PathPrefixes: append([]string(nil), t.PathPrefixes...), Methods: append([]string(nil), t.Methods...),
 		ConnectIP: t.ConnectIP.String(), SPKISHA256: t.SPKISHA256, ExpiresAt: t.ExpiresAt, RiskyWords: append([]string(nil), t.RiskyWords...), ExcludedPrefixes: append([]string(nil), t.ExcludedPrefixes...)}
 }
 
@@ -96,7 +102,10 @@ func (w WireTarget) target() (Target, error) {
 	if err != nil {
 		return Target{}, ErrConfig
 	}
-	return Target{Ref: w.Ref, Revision: w.Revision, Host: w.Host, Port: w.Port, PathPrefixes: append([]string(nil), w.PathPrefixes...), Methods: append([]string(nil), w.Methods...),
+	if w.Scheme != "" && w.Scheme != "http" {
+		return Target{}, ErrConfig
+	}
+	return Target{Ref: w.Ref, Revision: w.Revision, Scheme: w.Scheme, Host: w.Host, Port: w.Port, PathPrefixes: append([]string(nil), w.PathPrefixes...), Methods: append([]string(nil), w.Methods...),
 		ConnectIP: ip, SPKISHA256: w.SPKISHA256, ExpiresAt: w.ExpiresAt, RiskyWords: append([]string(nil), w.RiskyWords...), ExcludedPrefixes: append([]string(nil), w.ExcludedPrefixes...)}, nil
 }
 
