@@ -288,6 +288,21 @@ func (j *Journal) Close() error {
 // authenticates bytes, not the supplied key's operational authority. A blocking
 // Reader must itself support cancellation; no reader goroutine is abandoned.
 func VerifyJournal(ctx context.Context, source io.Reader, key []byte, expected ...JournalCheckpoint) (JournalSummary, error) {
+	return verifyJournal(ctx, source, key, nil, expected...)
+}
+
+// VerifyJournalEvents는 VerifyJournal과 같은 검증을 하고, 기록 전체가 검증됐을 때만 사건 목록을 돌려준다. 하나라도
+// 틀리면 사건을 하나도 돌려주지 않는다(일부만 보이고 "정상"으로 읽히지 않게, 작업대 흐름 화면 계약 §4).
+func VerifyJournalEvents(ctx context.Context, source io.Reader, key []byte) ([]Event, JournalSummary, error) {
+	var events []Event
+	summary, err := verifyJournal(ctx, source, key, func(e Event) { events = append(events, e) })
+	if err != nil {
+		return nil, JournalSummary{}, err
+	}
+	return events, summary, nil
+}
+
+func verifyJournal(ctx context.Context, source io.Reader, key []byte, visit func(Event), expected ...JournalCheckpoint) (JournalSummary, error) {
 	if ctx == nil || source == nil || len(key) < journalMinKeyBytes || len(key) > journalMaxKeyBytes || len(expected) > 1 {
 		return JournalSummary{}, ErrJournalConfig
 	}
@@ -368,6 +383,9 @@ func VerifyJournal(ctx context.Context, source io.Reader, key []byte, expected .
 			return JournalSummary{}, ErrJournalIntegrity
 		}
 		head.Sequence, head.MAC, head.Scope = line.Record.Index, line.MAC, line.Record.Event.Scope
+		if visit != nil {
+			visit(line.Record.Event)
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return JournalSummary{}, err
