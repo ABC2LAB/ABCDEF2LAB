@@ -102,6 +102,8 @@ function Unwired({ why }: { why: string }) {
   );
 }
 const NO_INPUT = "서버 진단 입력에 칸이 없습니다";
+/** 진단 모드를 받지 않는 프로필(탐색 흐름 없음)에서 고른 진단 모드는 보내지 않는다. */
+const NO_MODE = "이 모델 프로필은 진단 모드를 받지 않아 고른 값을 보내지 않습니다";
 
 /** 시안 로그인 계정 줄 (역할 이름만, 값은 비운다). */
 /** 시안 #nWorkers 선택지. 화면 상태만이고 서버 진단 입력에 칸이 없어 보내지 않는다(실제 값은 엔진 설정). */
@@ -194,6 +196,8 @@ export function UrlNewScanLive() {
   const external = !!profile?.model?.external_transfer;
   const lockedKind = external ? "external" : "local";
   const shownKind = shown ? lockedKind : kind;
+  // 분석 모델 칸의 짜임(모델 · 서버 주소 / 제공자 · API 키 · 경고)은 고른 쪽을 따른다. 그쪽 설치 프로필이 없어도 모양은 보인다
+  const extView = shownKind === "external";
   const input = shown
     ? null
     : draftInput(target, pv, profile?.workflow ? workflowMode : undefined, profile?.workflow ? excluded : "");
@@ -207,6 +211,8 @@ export function UrlNewScanLive() {
     else if (hint) why1.push(hint);
     else if (!input && profile) why1.push("주소 형식을 확인하세요");
     if (!profiles.length) why2.push("설치된 모델 프로필이 없습니다");
+    else if (!choices.length)
+      why2.push(kind === "external" ? "설치된 외부 모델 프로필이 없습니다" : "설치된 로컬 모델 프로필이 없습니다");
     else if (!profile) why2.push("모델을 고르세요");
     if (external && !credentialReady) why2.push("외부 API 키를 등록하세요");
   }
@@ -243,6 +249,10 @@ export function UrlNewScanLive() {
   const started = !!job && job.state !== "ready" && job.state !== "awaiting_approval";
   const ended = !!job && URL_ENDED_STATES.includes(job.state);
   const invalid = !shown && !!target.trim() && !input && !!profile;
+  // 이어 보는 점검이 있으면 입력은 그 점검 값으로 잠긴다. 왜 잠겼고 어떻게 푸는지 한 줄로 (끝남 · 진행 중 · 범위 확인 뒤)
+  let lockNote = " 범위 확인한 입력은 잠겨 있습니다. 바꾸려면 새로 입력을 누르세요.";
+  if (ended) lockNote = " 끝난 점검이라 입력이 잠겨 있습니다. 새 점검은 새로 입력을 누르세요.";
+  else if (started) lockNote = " 진행 중인 점검이라 입력이 잠겨 있습니다. 끝나거나 멈춘 뒤 새로 입력할 수 있습니다.";
   // 주소 밑 한 줄 (시안 #nHost): 이어 보는 점검이 아직 도는 중이면 그 점검으로, 아니면 주소 입력 안내
   let hostLine: ReactNode = null;
   if (shown && started && !ended) {
@@ -352,7 +362,7 @@ export function UrlNewScanLive() {
 
   // 모델 칸 옆: 로컬은 LLM 서버 주소(연결 전), 외부 API 는 API 키 (범위 확인 뒤에는 입력이 잠겨 그리지 않는다)
   let modelSide: ReactNode = null;
-  if (!external) {
+  if (!extView) {
     modelSide = (
       <div className={s.field}>
         <div className={s["fsec-ht"]}>
@@ -411,10 +421,6 @@ export function UrlNewScanLive() {
             <a className={s.btn} href="#dashboard">
               취소
             </a>
-            {/* 계정 분류(시험 계정 표시, 운영자 전용·목업). 저장 위치·승인 주체는 §9-7 미정 */}
-            <a className={s.btn} href="#classify">
-              계정 분류
-            </a>
             <InspOpenButton>요약</InspOpenButton>
           </>
         }
@@ -438,10 +444,16 @@ export function UrlNewScanLive() {
               <span className={s["lv-grow"]}>
                 <b className={s.mono}>{urlHost(handle.input.target_url)}</b>{" "}
                 {job ? <UrlPill job={job} verified={verified} /> : null}
-                {started ? " 이 브라우저가 이어 보는 점검입니다." : null}
+                {lockNote}
               </span>
               {!started || ended ? (
-                <button className={cx(s.btn, s.sm)} type="button" disabled={busy} onClick={disconnectUrl}>
+                // 끝난 점검이면 새 점검이 다음 할 일이라 강조한다
+                <button
+                  className={cx(s.btn, s.sm, ended && s.pri)}
+                  type="button"
+                  disabled={busy}
+                  onClick={disconnectUrl}
+                >
                   새로 입력
                 </button>
               ) : null}
@@ -624,21 +636,21 @@ export function UrlNewScanLive() {
                   </h2>
                 </div>
                 <div className={s["fsec-b"]}>
-                  {/* 시안처럼 늘 보인다. 설치된 프로필이 없는 쪽은 고를 수 없다 */}
+                  {/* 시안처럼 늘 보이고 늘 고를 수 있다. 설치된 프로필이 없는 쪽은 모양만 보이고 범위 확인을 보낼 수 없다 */}
                   <div className={s.seg} role="radiogroup" aria-label="LLM 실행 위치">
                     {(
                       [
-                        ["local", "로컬 실행", locals.length],
-                        ["external", "외부 API", externals.length],
+                        ["local", "로컬 실행"],
+                        ["external", "외부 API"],
                       ] as const
-                    ).map(([k, label, n]) => (
+                    ).map(([k, label]) => (
                       <label key={k}>
                         <input
                           type="radio"
                           name="nLlm"
                           value={k}
                           checked={shownKind === k}
-                          disabled={g.inputLocked || !n}
+                          disabled={g.inputLocked}
                           onChange={() => {
                             setKind(k);
                             setCredentialReady(false);
@@ -654,7 +666,7 @@ export function UrlNewScanLive() {
                   <div className={s.two}>
                     <div className={s.field}>
                       <label className={s.lbl} htmlFor="luProfile">
-                        {external ? "제공자" : "모델"}
+                        {extView ? "제공자" : "모델"}
                       </label>
                       <select
                         className={cx(s.inp, s["w-sel"])}
@@ -668,12 +680,14 @@ export function UrlNewScanLive() {
                             {profileChoiceLabel(p)}
                           </option>
                         ))}
-                        {!profiles.length ? <option value="">설치된 모델 없음</option> : null}
+                        {!shown && !choices.length ? (
+                          <option value="">{extView ? "설치된 외부 모델 없음" : "설치된 모델 없음"}</option>
+                        ) : null}
                       </select>
                     </div>
                     {modelSide}
                   </div>
-                  {external ? (
+                  {extView ? (
                     <div className={cx(s.note, s.warn)} role="note">
                       <Icon name="alert" />
                       <div>
@@ -691,29 +705,31 @@ export function UrlNewScanLive() {
                   <h2>점검 설정</h2>
                 </div>
                 <div className={s["fsec-b"]}>
-                  {profile?.workflow ? (
-                    <div className={s.field}>
+                  {/* 진단 모드: 늘 보이고 고를 수 있다. 탐색 흐름이 없는 프로필은 이 값을 받지 않아 '연결 전'(보내지 않음) */}
+                  <div className={s.field}>
+                    <div className={s["fsec-ht"]}>
                       <span className={s.lbl} id="nModeL">
                         진단 모드
                       </span>
-                      <div className={s.opts} role="radiogroup" aria-labelledby="nModeL">
-                        {MODES.map(([id, label, help]) => (
-                          <label className={s.opt} key={id}>
-                            <input
-                              type="radio"
-                              name="nMode"
-                              value={id}
-                              checked={mv === id}
-                              disabled={g.inputLocked}
-                              onChange={() => setWorkflowMode(id)}
-                            />
-                            <b>{label}</b>
-                            <small>{help}</small>
-                          </label>
-                        ))}
-                      </div>
+                      {profile?.workflow ? null : <Unwired why={NO_MODE} />}
                     </div>
-                  ) : null}
+                    <div className={s.opts} role="radiogroup" aria-labelledby="nModeL">
+                      {MODES.map(([id, label, help]) => (
+                        <label className={s.opt} key={id}>
+                          <input
+                            type="radio"
+                            name="nMode"
+                            value={id}
+                            checked={mv === id}
+                            disabled={g.inputLocked}
+                            onChange={() => setWorkflowMode(id)}
+                          />
+                          <b>{label}</b>
+                          <small>{help}</small>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
                   {/* 점검 목표 (시안 #nGoalL): 서버 진단 입력에 칸이 없어 꺼 둔다. 계정이 있어야 하는 목표는 지금 상태(로그인
                       없이)에서 고를 수 없는 모양(.off). 무엇을 점검할지 고른 것처럼 보이지 않게 체크는 하지 않는다 */}
                   <div className={s.field}>
