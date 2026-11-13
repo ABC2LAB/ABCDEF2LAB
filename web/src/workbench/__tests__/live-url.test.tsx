@@ -48,7 +48,7 @@ import * as api from "../live/api";
 import { checkLiveAuth, getLiveAuthState, setLiveAuthState } from "../live/auth";
 import { LiveFeeds } from "../live/feeds";
 import { LiveRailTasks } from "../live/rail";
-import { resetUrl, runUrlAction, URL_POLL_MS, UrlFeeds, urlGates, useUrl } from "../live/urlDiagnosis";
+import { disconnectUrl, resetUrl, runUrlAction, URL_POLL_MS, UrlFeeds, urlGates, useUrl } from "../live/urlDiagnosis";
 import { urlAccountAuthRows, urlOutcomeText, urlTargetHint, urlTone, urlViewFor } from "../live/urlMap";
 import { type Shell, ShellContext, type View } from "../shell";
 import { createInitialState, useWb } from "../store";
@@ -62,7 +62,9 @@ const noop = () => undefined;
 
 it("URL 입력 뒤 외부 LLM을 펼쳐 모델·키를 등록하고 범위 조회만 한다", async () => {
   u.readURLCatalog.mockResolvedValue({ ...catalog, profiles: [{ ...catalog.profiles[0], model: externalModel }] });
-  vi.mocked(teamApi.apiFetch).mockResolvedValue({ configured: true });
+  vi.mocked(teamApi.apiFetch).mockImplementation(
+    async (path) => (String(path).includes("targets/resolve") ? {} : { configured: true }) as never,
+  );
   mount("new");
   const target = await screen.findByLabelText(/점검할 사이트 주소/);
   fireEvent.change(target, { target: { value: "https://target.example/app" } });
@@ -1489,5 +1491,89 @@ describe("시험 계정 인증 표시(urlAccountAuthRows, §3.4·§4)", () => {
       expect(label).toMatch(/^비인증 진행/);
       expect(label).not.toMatch(/접근|차단|성공|확인됨/);
     }
+  });
+});
+
+describe("외부 모델 시험 계정 동의", () => {
+  async function externalTarget(hasTest = true, failAccounts = false) {
+    u.readURLCatalog.mockResolvedValue({
+      ...catalog,
+      profiles: [
+        { ...catalog.profiles[0], model: externalModel },
+        { ...catalog.profiles[0], id: "external-2", model: externalModel },
+      ],
+    });
+    vi.mocked(teamApi.apiFetch).mockImplementation(async (path) => {
+      const p = String(path);
+      if (p.includes("targets/resolve"))
+        return {
+          target: {
+            id: "target-1",
+            origin: new URL(new URL(p, "http://fixture.test").searchParams.get("url")!).origin,
+            state: "approved",
+          },
+        } as never;
+      if (p.endsWith("/accounts") && failAccounts) throw new Error("fixed-account-unavailable");
+      if (p.endsWith("/accounts"))
+        return { accounts: hasTest ? [{ label: "tester", classification: "test" }] : [] } as never;
+      return { credential: { configured: true, model: externalModel.model } } as never;
+    });
+    u.createURLDraft.mockImplementation(async (input) => ({ ...draft, input }));
+    u.commandURLDiagnosis.mockImplementation(async (current) => ({ ...ready, input: current.input }));
+    mount("new");
+    const target = await screen.findByLabelText(/점검할 사이트 주소/);
+    fireEvent.change(target, { target: { value: "https://target.example/app" } });
+    fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
+    await screen.findByText("등록됨");
+    return target;
+  }
+  it("기본 미선택·명시적 동의만 초안에 전송하고 저장소에는 남기지 않는다", async () => {
+    await externalTarget();
+    const checkbox = await screen.findByRole("checkbox", { name: /이 점검에서는 시험 계정 세션/ });
+    expect(checkbox).not.toBeChecked();
+    expect(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]).toBeDisabled();
+    fireEvent.click(checkbox);
+    fireEvent.click(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]);
+    await waitFor(() => expect(u.createURLDraft).toHaveBeenCalledTimes(1));
+    expect(u.createURLDraft.mock.calls[0][0].external_test_accounts).toBe(true);
+    expect(JSON.stringify(sessionStorage)).not.toContain("external_test_accounts");
+    expect(JSON.stringify(localStorage)).not.toContain("external_test_accounts");
+  });
+  it("대상 변경 뒤 돌아와도 이전 동의가 살아나지 않는다", async () => {
+    const target = await externalTarget();
+    fireEvent.click(await screen.findByRole("checkbox", { name: /이 점검에서는 시험 계정 세션/ }));
+    fireEvent.click(screen.getAllByRole("button", { name: /이전/ })[0]);
+    fireEvent.change(target, { target: { value: "https://second.example/app" } });
+    fireEvent.change(target, { target: { value: "https://target.example/app" } });
+    fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
+    expect(await screen.findByRole("checkbox", { name: /이 점검에서는 시험 계정 세션/ })).not.toBeChecked();
+  });
+  it("모델을 바꿨다가 돌아와도 동의는 초기화된다", async () => {
+    await externalTarget();
+    fireEvent.click(await screen.findByRole("checkbox", { name: /이 점검에서는 시험 계정 세션/ }));
+    fireEvent.change(screen.getByLabelText("제공자"), { target: { value: "external-2" } });
+    fireEvent.change(screen.getByLabelText("제공자"), { target: { value: "profile-1" } });
+    expect(await screen.findByRole("checkbox", { name: /이 점검에서는 시험 계정 세션/ })).not.toBeChecked();
+  });
+  it("계정 조회 실패로 동의 칸이나 성공 초안을 만들지 않는다", async () => {
+    await externalTarget(true, true);
+    expect(await screen.findByRole("alert")).toHaveTextContent("시험 계정 등록 상태를 확인하지 못했습니다");
+    expect(screen.queryByRole("checkbox", { name: /이 점검에서는 시험 계정 세션/ })).toBeNull();
+    expect(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]).toBeDisabled();
+    expect(u.createURLDraft).not.toHaveBeenCalled();
+  });
+  it("새 초안은 이전 회차 동의를 초기화한다", async () => {
+    const target = await externalTarget();
+    fireEvent.click(await screen.findByRole("checkbox", { name: /이 점검에서는 시험 계정 세션/ }));
+    act(() => disconnectUrl());
+    fireEvent.click(screen.getAllByRole("button", { name: /이전/ })[0]);
+    fireEvent.change(target, { target: { value: "https://target.example/app" } });
+    fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
+    expect(await screen.findByRole("checkbox", { name: /이 점검에서는 시험 계정 세션/ })).not.toBeChecked();
+  });
+  it("실제 시험 계정이 없으면 동의 칸을 만들지 않는다", async () => {
+    await externalTarget(false);
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]).toBeEnabled());
+    expect(screen.queryByRole("checkbox", { name: /이 점검에서는 시험 계정 세션/ })).toBeNull();
   });
 });

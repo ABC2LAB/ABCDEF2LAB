@@ -12,6 +12,7 @@ export type WorkflowLimits = {
   allow_reversible_writes: boolean;
 };
 export type URLDiagnosisInput = {
+  external_test_accounts?: true;
   target_url: string;
   profile_id: string;
   display_name?: string;
@@ -195,8 +196,10 @@ export function urlDiagnosisInput(
   name: string,
   workflowMode?: WorkflowMode,
   excludedPaths = "",
+  externalTestAccounts = false,
 ): URLDiagnosisInput {
   return parseInput({
+    ...(externalTestAccounts ? { external_test_accounts: true } : {}),
     target_url: target.trim(),
     profile_id: profile,
     ...(workflowMode ? { workflow_mode: workflowMode } : {}),
@@ -206,7 +209,8 @@ export function urlDiagnosisInput(
 }
 function parseInput(v: unknown): URLDiagnosisInput {
   if (!object(v) || !ref(v.profile_id) || (v.display_name !== undefined && !text(v.display_name))) return invalid();
-  exact(v, ["target_url", "profile_id", "display_name", "workflow_mode", "excluded_paths"]);
+  exact(v, ["target_url", "profile_id", "display_name", "workflow_mode", "excluded_paths", "external_test_accounts"]);
+  if (v.external_test_accounts !== undefined && v.external_test_accounts !== true) return invalid();
   if (v.workflow_mode !== undefined && v.workflow_mode !== "ai_auto_v1" && v.workflow_mode !== "user_approval_v1")
     return invalid();
   if (v.excluded_paths !== undefined) {
@@ -228,6 +232,7 @@ function parseInput(v: unknown): URLDiagnosisInput {
       return invalid();
   }
   return {
+    ...(v.external_test_accounts === true ? { external_test_accounts: true as const } : {}),
     target_url: targetURL(v.target_url),
     profile_id: v.profile_id,
     ...(v.workflow_mode ? { workflow_mode: v.workflow_mode as WorkflowMode } : {}),
@@ -239,6 +244,7 @@ export function sameURLInput(a: URLDiagnosisInput, b: URLDiagnosisInput): boolea
   return (
     a.target_url === b.target_url &&
     a.profile_id === b.profile_id &&
+    a.external_test_accounts === b.external_test_accounts &&
     (a.display_name ?? "") === (b.display_name ?? "") &&
     (a.workflow_mode ?? "") === (b.workflow_mode ?? "") &&
     (a.excluded_paths ?? "") === (b.excluded_paths ?? "")
@@ -772,7 +778,8 @@ export type URLDiagnosisHandle = {
 const HANDLE_KEY = "abc2lab.urlDiagnosisHandle.v2";
 export function storeURLHandle(handle: URLDiagnosisHandle | null): void {
   try {
-    if (handle) sessionStorage.setItem(HANDLE_KEY, JSON.stringify(handle));
+    // 회차별 외부 시험 계정 동의는 메모리에서만 유지한다. 새로고침으로 동의를 재사용하지 않는다.
+    if (handle && !handle.input.external_test_accounts) sessionStorage.setItem(HANDLE_KEY, JSON.stringify(handle));
     else sessionStorage.removeItem(HANDLE_KEY);
   } catch {
     /* 저장 불가 시 조회 핸들을 메모리에만 유지한다. */
@@ -796,6 +803,7 @@ export function readURLHandle(owner: string): URLDiagnosisHandle | null {
     ]);
     if (v.bindingLocked !== undefined && v.bindingLocked !== true) return invalid();
     const input = parseInput(v.input);
+    if (input.external_test_accounts) return invalid();
     if (v.id !== undefined && (!ref(v.id) || !natural(v.revision) || !v.revision || !digest(v.sourceDigest)))
       return invalid();
     if (v.id === undefined && (v.revision !== undefined || v.sourceDigest !== undefined)) return invalid();

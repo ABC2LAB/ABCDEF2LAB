@@ -22,6 +22,12 @@ import {
   type WorkflowMode,
 } from "@/lib/diagnosis/diagnosis-url";
 
+import {
+  EXTERNAL_ACCOUNT_STATEMENT,
+  EXTERNAL_ACCOUNT_PASSWORD_NOTICE,
+  readExternalTestAccountPresence,
+} from "@/lib/diagnosis/external-account-consent";
+
 import { cx } from "../../lib/cx";
 import { disconnectUrl, runUrlAction, setUrlConfirmed, useUrl, useUrlGates } from "../../live/urlDiagnosis";
 import { scanViewFor, URL_ENDED_STATES, urlHost, urlTargetHint, usdText } from "../../live/urlMap";
@@ -45,10 +51,16 @@ const APPROVAL_MODE_RULE: Readonly<
   workbench_selective_v1: "쓰기 메서드 요청은 한 건씩 승인한 것만 보냄",
 };
 // 작업 이름(display_name)은 받지 않는다 (시안 v39): 서버에서 선택 값이고 주소와 겹친다. 비우면 서버가 기본 설명을 붙인다.
-function draftInput(target: string, profile: string, mode?: WorkflowMode, excludes = ""): URLDiagnosisInput | null {
+function draftInput(
+  target: string,
+  profile: string,
+  mode?: WorkflowMode,
+  excludes = "",
+  externalTestAccounts = false,
+): URLDiagnosisInput | null {
   if (!profile) return null;
   try {
-    return urlDiagnosisInput(target, profile, "", mode, excludes);
+    return urlDiagnosisInput(target, profile, "", mode, excludes, externalTestAccounts);
   } catch {
     return null;
   }
@@ -153,6 +165,13 @@ export function UrlNewScanLive() {
   const [workflowMode, setWorkflowMode] = useState<WorkflowMode>("user_approval_v1");
   const [excluded, setExcluded] = useState("");
   const [credentialReady, setCredentialReady] = useState(false);
+  const [accountRevision, setAccountRevision] = useState(0);
+  const [accountPresence, setAccountPresence] = useState<{ key: string; value: boolean; failed: boolean }>({
+    key: "",
+    value: false,
+    failed: false,
+  });
+  const [accountConsent, setAccountConsent] = useState({ key: "", checked: false });
   // 주소 칸을 한 번이라도 고쳤는가: 처음 들어온 빈 칸에는 빨간 안내를 띄우지 않고, 지웠을 때만 띄운다 (시안 #nHost)
   const [touched, setTouched] = useState(false);
   // 지금 보이는 쪽 (1 대상 · 2 분석 모델 · 점검 설정). 새 점검에 다시 들어오면 1쪽부터 (시안 v64)
@@ -191,12 +210,39 @@ export function UrlNewScanLive() {
   const tv = shown ? shown.target_url : target;
   const mv = shown?.workflow_mode ?? workflowMode;
   const ev = shown ? (shown.excluded_paths ?? "") : excluded;
-  const external = !!profile?.model?.external_transfer;
+  const external = profile?.model?.external_transfer === true;
+  const consentKey = `${tv}\u0000${pv}\u0000${resetSeq}\u0000${accountRevision}`;
+  // 입력이 바뀐 렌더부터 이전 동의를 배제한다(늦은 effect/응답을 기다리지 않는다).
+  if (accountConsent.key !== consentKey) setAccountConsent({ key: consentKey, checked: false });
+  const hasTestAccounts = external && accountPresence.key === consentKey && accountPresence.value;
+  const consentChecked = hasTestAccounts && accountConsent.key === consentKey && accountConsent.checked;
+  useEffect(() => {
+    if (!external || shown || !tv || urlTargetHint(tv)) return;
+    const controller = new AbortController();
+    let current = true;
+    void readExternalTestAccountPresence(tv, controller.signal)
+      .then((value) => {
+        if (current) setAccountPresence({ key: consentKey, value, failed: false });
+      })
+      .catch(() => {
+        if (current) setAccountPresence({ key: consentKey, value: false, failed: true });
+      });
+    return () => {
+      current = false;
+      controller.abort();
+    };
+  }, [external, shown, tv, consentKey]);
   const lockedKind = external ? "external" : "local";
   const shownKind = shown ? lockedKind : kind;
   const input = shown
     ? null
-    : draftInput(target, pv, profile?.workflow ? workflowMode : undefined, profile?.workflow ? excluded : "");
+    : draftInput(
+        target,
+        pv,
+        profile?.workflow ? workflowMode : undefined,
+        profile?.workflow ? excluded : "",
+        consentChecked,
+      );
 
   const hint = urlTargetHint(tv);
   // 막힌 이유: 1쪽(주소)과 2쪽(모델 · 키)을 나눠, 1쪽에서는 주소 이유만 보인다
@@ -209,6 +255,9 @@ export function UrlNewScanLive() {
     if (!profiles.length) why2.push("설치된 모델 프로필이 없습니다");
     else if (!profile) why2.push("모델을 고르세요");
     if (external && !credentialReady) why2.push("외부 API 키를 등록하세요");
+    if (hasTestAccounts && !consentChecked) why2.push("시험 계정 세션의 외부 전송에 동의해 주세요");
+    if (external && accountPresence.key === consentKey && accountPresence.failed)
+      why2.push("시험 계정 등록 상태를 확인하지 못했습니다");
   }
   const why = [...why1, ...why2];
   // 1쪽 → 2쪽: 주소만 보고 넘긴다 (모델은 2쪽에서 고름). 조회 중인 진단은 잠긴 입력이라 그냥 넘긴다
@@ -224,7 +273,16 @@ export function UrlNewScanLive() {
   const next = () => {
     if (canNext) turn(2);
   };
-  const canSend = !shown && !!input && g.canValidate && !busy && (!external || credentialReady);
+  const canSend =
+    !shown &&
+    !!input &&
+    g.canValidate &&
+    !busy &&
+    (!external ||
+      (credentialReady &&
+        accountPresence.key === consentKey &&
+        (!hasTestAccounts || consentChecked) &&
+        !(accountPresence.key === consentKey && accountPresence.failed)));
   const send = async () => {
     if (canSend && input) await runUrlAction("validate", input);
   };
@@ -366,12 +424,37 @@ export function UrlNewScanLive() {
     );
   } else if (!shown) {
     modelSide = (
-      <ExternalModelSettings
-        key={`${pv}:${resetSeq}`}
-        profile={profile ?? undefined}
-        disabled={g.inputLocked}
-        onReady={setCredentialReady}
-      />
+      <>
+        <ExternalModelSettings
+          key={`${pv}:${resetSeq}`}
+          profile={profile ?? undefined}
+          disabled={g.inputLocked}
+          onReady={setCredentialReady}
+        />
+        {hasTestAccounts ? (
+          <label className={s.ckline}>
+            <input
+              type="checkbox"
+              checked={consentChecked}
+              disabled={g.inputLocked || busy}
+              onChange={(e) => setAccountConsent({ key: consentKey, checked: e.target.checked })}
+            />
+            <span>
+              {EXTERNAL_ACCOUNT_STATEMENT}
+              <br />
+              {EXTERNAL_ACCOUNT_PASSWORD_NOTICE}
+            </span>
+          </label>
+        ) : null}
+        {accountPresence.key === consentKey && accountPresence.failed ? (
+          <p role="alert" className={s.help}>
+            시험 계정 등록 상태를 확인하지 못했습니다. 계정 조회를 다시 시도하세요.
+            <button className={s.btn} type="button" onClick={() => setAccountRevision((value) => value + 1)}>
+              계정 다시 조회
+            </button>
+          </p>
+        ) : null}
+      </>
     );
   }
 
@@ -489,6 +572,7 @@ export function UrlNewScanLive() {
                     url={tv}
                     disabled={busy}
                     onChanged={() => {
+                      setAccountRevision((value) => value + 1);
                       if (handle && !job?.preparation_started) void runUrlAction("validate");
                     }}
                   />
