@@ -321,7 +321,10 @@ func (s *Service) Call(ctx context.Context, r Request) (Response, error) {
 		var used Budget
 		var runs int64
 		for _, other := range s.jobs {
-			if active(other.Job.State) || other.Job.State == Unknown {
+			// 결과 불명(Unknown)은 backend.Execute가 이미 반환한 끝난 회차라 실행 자원이 겹치지 않는다. 진행 중(active)
+			// 회차만 동시 실행을 막고, Unknown은 아래 집계 분기에서 예약 예산·run 수를 그대로 계수해 설치 전체를 brick하지 않는다
+			// (C04). 미확인 결과·예약은 해제하지 않는다(절대 규칙 5).
+			if active(other.Job.State) {
 				return responseError(r, "busy"), nil
 			}
 			if other.StartKey != "" && other.Inspection.DelegationRef == inspect.DelegationRef {
