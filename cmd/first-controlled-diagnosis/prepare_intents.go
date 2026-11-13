@@ -69,7 +69,13 @@ func runPrepareIntents(ctx context.Context, args []string, stdout, stderr io.Wri
 		fmt.Fprintln(stderr, "실행 감독을 시작할 수 없습니다")
 		return 1
 	}
-	preparation, err := server.NewFirstDiagnosisPreparationServerWithModel(ctx, manager, c.SkillDir, c.DataDir, c.KeyDir, c.modelOptions())
+	options, err := c.modelOptions()
+	if err != nil {
+		manager.Close()
+		fmt.Fprintln(stderr, "계획 준비 서버를 만들 수 없습니다")
+		return 1
+	}
+	preparation, err := server.NewFirstDiagnosisPreparationServerWithModel(ctx, manager, c.SkillDir, c.DataDir, c.KeyDir, options)
 	if err != nil {
 		manager.Close()
 		fmt.Fprintln(stderr, "계획 준비 서버를 만들 수 없습니다")

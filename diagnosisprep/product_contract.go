@@ -179,7 +179,11 @@ type ProductResponse struct {
 	// AccountStatement는 accounts 목록과 함께 주는 시험 계정 표시 진술 문장이다. 화면은 이 문장을 그대로 보여 주고 동의를
 	// 받는다(저널에는 이 문장의 SHA-256만 남는다).
 	AccountStatement string `json:"account_statement,omitempty"`
-	Reason           string `json:"reason,omitempty"`
+	// ExternalConsentStatement는 accounts 목록과 함께 주는 외부 API 시험 계정 전송 동의 진술 문장이다(초안 입력
+	// external_test_accounts). 화면은 이 문장을 그대로 보여 주고 동의를 받는다. 실행이 시작되면 저널에 이 문장의 SHA-256이
+	// 남는다(#552, #561 리뷰).
+	ExternalConsentStatement string `json:"external_consent_statement,omitempty"`
+	Reason                   string `json:"reason,omitempty"`
 }
 
 func validProductAccount(a ProductAccount) bool {
