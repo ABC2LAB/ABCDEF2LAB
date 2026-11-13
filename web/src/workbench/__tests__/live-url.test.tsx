@@ -692,17 +692,18 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(running);
     mount("live");
-    expect(await screen.findByText("엔진 실행 중")).toBeInTheDocument();
+    // 점검 진행의 상태 알약은 시안 글 (실행 중 = 진행 중)
+    expect(await screen.findByText("진행 중", { selector: "h1 + span" })).toBeInTheDocument();
     expect(u.readURLStatus).toHaveBeenCalledWith(handle.id, owner);
     expect(u.createURLDraft).not.toHaveBeenCalled();
     expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
-    // 서버에 진행률 · 범위 밖 전송 집계가 없어 시안 칸은 '연결 전' (시안 v22). 0 % 로 지어내지 않는다
-    expect(screen.getByRole("group", { name: "점검 진행률" })).toHaveTextContent("연결 전");
+    // 서버에 진행률 · 범위 밖 전송 집계가 없어 시안 칸은 값을 비우고 '연결 전'. 0 % 로 지어내지 않는다
+    expect(screen.getByRole("group", { name: "점검 진행률" })).toHaveTextContent(/^—%연결 전/);
     expect(screen.queryByText(/^0%$/)).toBeNull();
-    expect(screen.getByText(/^범위 밖으로 보낸 요청 · 승인 없이 보낸 상태 변경/)).toHaveTextContent("연결 전");
+    expect(screen.getByText(/^범위 밖으로 보낸 요청 — · 승인 없이 보낸 상태 변경 —/)).toHaveTextContent("연결 전");
   });
 
-  it("점검 진행: 토큰 · 자산 커버리지는 서버 값, 경과 · 남은 시간 · 점검 중 발견 · 판정 · 새 경로 결정은 '연결 전' (시안 v22)", async () => {
+  it("점검 진행: 토큰 · 자산 커버리지는 서버 값, 시작 · 경과 · 남은 시간 · 점검 중 발견 · 판정은 칸만 두고 비운다", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue({
       ...running,
@@ -725,17 +726,21 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
       byType: [],
     });
     mount("live");
-    expect(await screen.findByText("엔진 실행 중")).toBeInTheDocument();
+    expect(await screen.findByText("진행 중", { selector: "h1 + span" })).toBeInTheDocument();
     // 토큰: 서버 사용량 / 범위 상한 (입력 + 출력)
     expect(screen.getByText(/^토큰/)).toHaveTextContent("토큰 500 / 상한 2,000");
-    expect(screen.getByText(/^경과/)).toHaveTextContent("연결 전");
-    expect(screen.getByText(/^남은 시간/)).toHaveTextContent("연결 전");
-    const insp = screen.getByRole("complementary", { name: "진행 상황" });
+    expect(screen.getByText(/^시작/)).toHaveTextContent(/^시작 —$/);
+    expect(screen.getByText(/^경과/)).toHaveTextContent(/^경과 —$/);
+    expect(screen.getByText(/^남은 시간/)).toHaveTextContent(/^남은 시간 —$/);
+    const insp = screen.getByRole("complementary", { name: "발견" });
     await waitFor(() => expect(within(insp).getByText("4")).toBeInTheDocument());
-    expect(within(insp).getByText(/\/ 10 자산 · 40%/)).toBeInTheDocument();
+    expect(within(insp).getByText(/\/ 10 자산/)).toBeInTheDocument();
+    expect(within(insp).getByText("40%")).toBeInTheDocument();
+    // 점검 중 발견 · 판정은 서버가 결과 저장 전에 주지 않아 수를 비우고, '발견 없음'으로 보이지 않는다
+    expect(within(insp).getByRole("heading", { name: "발견 —건" })).toBeInTheDocument();
     expect(within(insp).getByText("발견 · 최근 순").parentElement).toHaveTextContent("연결 전");
-    expect(within(insp).getByText("판정").parentElement).toHaveTextContent("연결 전");
-    expect(within(insp).getByText(/^새로 찾은 경로 포함 결정/)).toHaveTextContent("연결 전");
+    expect(within(insp).getByText("판정").parentElement).toHaveTextContent("확정 —의심 —판단 불가 —");
+    expect(within(insp).queryByText(/발견이 없습니다/)).toBeNull();
   });
 
   it("영수증만 있으면(id 없음) 생성 영수증을 조회한다", async () => {
