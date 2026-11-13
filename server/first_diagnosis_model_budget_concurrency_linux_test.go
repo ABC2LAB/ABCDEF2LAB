@@ -46,6 +46,25 @@ func (*budgetConcurrentProvider) Stream(context.Context, llm.CompletionRequest) 
 	}
 }
 
+// budgetFlakyProvider는 처음 failures번은 실패하고 그 뒤로 성공한다.
+type budgetFlakyProvider struct {
+	calls    atomic.Int64
+	failures int64
+	usage    llm.Usage
+}
+
+func (p *budgetFlakyProvider) Complete(context.Context, llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+	if p.calls.Add(1) <= p.failures {
+		return llm.Message{}, "", llm.Usage{}, errors.New("합성 요청 한도")
+	}
+	return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock("owned synthetic completion")}}, "stop", p.usage, nil
+}
+func (*budgetFlakyProvider) Stream(context.Context, llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
+	return func(yield func(llm.StreamEvent, error) bool) {
+		yield(llm.StreamEvent{}, errors.New("합성 nonstreaming fixture"))
+	}
+}
+
 // Done 평가를 관측하여 두 번째 goroutine이 gate의 context select에 도착했음을 확인한다.
 type budgetWaitingContext struct {
 	context.Context
@@ -135,7 +154,7 @@ func TestFirstDiagnosisModelBudgetConcurrentWrappersOwnedPostgres(t *testing.T) 
 	if err != nil {
 		t.Fatal("합성 모델 pin 생성 실패")
 	}
-	wrap := func(t *testing.T, b *FirstDiagnosisModelBudget, inner *budgetConcurrentProvider) *firstDiagnosisModelProvider {
+	wrap := func(t *testing.T, b *FirstDiagnosisModelBudget, inner llm.Provider) *firstDiagnosisModelProvider {
 		t.Helper()
 		s := &Server{ctx: f.Context, m: manager, firstDiagnosis: true, localResolver: resolver, firstModelBudget: b, provByProfile: map[int64]*provEntry{}}
 		cfg, ok := s.loadProfileConfig(profile)
@@ -151,6 +170,8 @@ func TestFirstDiagnosisModelBudgetConcurrentWrappersOwnedPostgres(t *testing.T) 
 		if err != nil {
 			t.Fatal(err)
 		}
+		// 아래 시험들은 실패한 호출 하나의 정산(C05)과 대기를 본다. 다시 보내기는 provider_error_retried가 본다.
+		b.retryDelays = nil
 		return b
 	}
 	syntheticRequest := llm.CompletionRequest{MaxTokens: 128, Messages: []llm.Message{llm.UserText("owned synthetic request")}}
@@ -287,6 +308,24 @@ func TestFirstDiagnosisModelBudgetConcurrentWrappersOwnedPostgres(t *testing.T) 
 			}
 		})
 	}
+	t.Run("provider_error_retried", func(t *testing.T) {
+		// 실패한 호출은 예약량으로 정산하고, 새로 예약해서 다시 보낸다(P3 결정안 C06). 다시 보낸 호출이 성공하면 그 결과를 쓴다.
+		ctx, cancel := context.WithCancel(f.Context)
+		defer cancel()
+		b, err := NewFirstDiagnosisModelBudget(diagnosisprep.Budget{ModelRequests: 3, InputTokens: 3 * 65536, OutputTokens: 384}, 65536, 128, noop)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.retryDelays = []time.Duration{time.Millisecond, time.Millisecond}
+		flaky := &budgetFlakyProvider{failures: 1, usage: knownUsage}
+		if err := budgetAwaitResult(t, call(ctx, wrap(t, b, flaky))); err != nil {
+			t.Fatal("다시 보낸 호출이 성공했는데 실패로 보고됨", err)
+		}
+		u := b.Snapshot()
+		if flaky.calls.Load() != 2 || u.Requests != 2 || !u.UsageKnown || u.UnknownUsageCalls != 1 || u.InputTokens != reserve+int64(knownUsage.InputTokens) || u.ReservedInputTokens != 2*reserve {
+			t.Fatalf("다시 보내기 정산 불일치: calls=%d %+v", flaky.calls.Load(), u)
+		}
+	})
 	t.Run("request_limit_after_wait", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(f.Context)
 		defer cancel()
