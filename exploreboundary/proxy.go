@@ -82,7 +82,18 @@ func deny(w http.ResponseWriter, reason string) {
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodConnect {
-		// 평문 프록시 요청은 받지 않는다. 승인 대상은 https만이고 외부도 가로채 검증해야 판정할 수 있다.
+		// 평문 프록시 요청(절대 URI)은 http 승인 대상에만 쓴다(C22). 판정은 세션이 한다 — 외부·https 대상의 평문 요청은
+		// 세션이 막고 기록한다. 절대 URI가 아닌 요청은 프록시 요청이 아니다.
+		if r.URL.Scheme == "http" && r.URL.IsAbs() && r.URL.Hostname() != "" && r.URL.User == nil {
+			portText := r.URL.Port()
+			if portText == "" {
+				portText = "80"
+			}
+			if port, perr := strconv.ParseUint(portText, 10, 16); perr == nil && port != 0 {
+				p.forward(w, r, "http", strings.ToLower(r.URL.Hostname()), uint16(port))
+				return
+			}
+		}
 		p.refuse(Request{Ingress: p.cfg.Ingress, Method: r.Method, Scheme: r.URL.Scheme, Host: r.URL.Hostname(), EscapedPath: r.URL.EscapedPath()}, ReasonProtocolUnsupported)
 		deny(w, ReasonProtocolUnsupported)
 		return
@@ -160,7 +171,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			deny(w, ReasonOutOfScopeOrigin)
 			return
 		}
-		p.forward(w, in, authority, uint16(port))
+		p.forward(w, in, "https", authority, uint16(port))
 	})
 	// ReadTimeout은 요청 본문까지 덮는다. 본문을 멈춘 요청이 터널 자리를 계속 잡지 못하게 한다(#488 리뷰).
 	server := &http.Server{Handler: inner, ReadHeaderTimeout: p.cfg.Timeout, ReadTimeout: p.cfg.Timeout, IdleTimeout: p.cfg.Timeout, MaxHeaderBytes: 1 << 16}
@@ -211,9 +222,10 @@ func mediaType(raw string) string {
 // 대상으로 보내지 않는 연결 수준·프록시 헤더다.
 var hopHeaders = []string{"Connection", "Proxy-Connection", "Keep-Alive", "Proxy-Authorization", "Proxy-Authenticate", "TE", "Trailer", "Transfer-Encoding", "Upgrade"}
 
-func (p *Proxy) forward(w http.ResponseWriter, in *http.Request, host string, port uint16) {
+// forward는 판정을 받은 요청을 대상에 보낸다. scheme은 터널 안쪽 요청이면 https, 평문 프록시 요청이면 http다.
+func (p *Proxy) forward(w http.ResponseWriter, in *http.Request, scheme, host string, port uint16) {
 	s := p.cfg.Current()
-	req := Request{Ingress: p.cfg.Ingress, Method: in.Method, Scheme: "https", Host: host, Port: port, EscapedPath: in.URL.EscapedPath(),
+	req := Request{Ingress: p.cfg.Ingress, Method: in.Method, Scheme: scheme, Host: host, Port: port, EscapedPath: in.URL.EscapedPath(),
 		FetchMode: in.Header.Get("Sec-Fetch-Mode"), FetchDest: in.Header.Get("Sec-Fetch-Dest"),
 		HasAuth:   in.Header.Get("Authorization") != "" || in.Header.Get("Cookie") != "",
 		WebSocket: strings.EqualFold(in.Header.Get("Upgrade"), "websocket")}
@@ -252,7 +264,7 @@ func (p *Proxy) forward(w http.ResponseWriter, in *http.Request, host string, po
 	}()
 	out := in.Clone(ctx)
 	out.RequestURI = ""
-	out.URL.Scheme, out.URL.Host = "https", in.Host
+	out.URL.Scheme, out.URL.Host = scheme, in.Host
 	out.Header = in.Header.Clone()
 	for _, h := range hopHeaders {
 		out.Header.Del(h)
