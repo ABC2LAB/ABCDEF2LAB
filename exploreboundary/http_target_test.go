@@ -1,6 +1,7 @@
 package exploreboundary
 
 import (
+	"context"
 	"crypto/tls"
 	"io"
 	"net"
@@ -128,6 +129,13 @@ func TestProxyForwardsPlainRequestToHTTPTarget(t *testing.T) {
 		if err == nil && resp.Header.Get(DenialHeader) != ReasonProtocolUnsupported || hits.Load() != 1 {
 			t.Fatalf("%s reached the target or was not refused: %v hits=%d", target, err, hits.Load())
 		}
+	}
+	// 서버 정적 fetch도 같은 경계로 http 대상 쪽을 받는다. 경계가 붙인 순번이 있다.
+	fetch := DirectFetch{Proxy: proxyURL, Roots: mitm.pool, Timeout: proxyTimeout, MaxBytes: proxyMaxResponse,
+		Status: func(context.Context) (exploration.State, error) { return session.Status(), nil }}
+	result, err := fetch.Fetch(t.Context(), "http://"+fixtureHost+":"+portText+"/app")
+	if err != nil || result.Seq == 0 || !result.Complete || string(result.Body) != "plain ok" || hits.Load() != 2 {
+		t.Fatalf("static fetch of the http target: %+v %v hits=%d", result, err, hits.Load())
 	}
 	records, _ := session.Records()
 	for _, r := range records {
