@@ -459,7 +459,7 @@ describe("탐색 기록 원문 결속 (리뷰 #473)", () => {
 });
 
 describe("대시보드", () => {
-  it("승인 대기 요청은 결정 대기 안내로 알리고, 상세에 보낼 요청과 승인 · 거부를 보인다", async () => {
+  it("승인 대기 요청은 요약 칸 · 점검 상세로 알리고, 상세에 보낼 요청과 승인 · 거부를 보인다", async () => {
     useUrl.setState({ handle, job, verified: true, flow: { ...flow, stage: "diagnosing" }, flowVerified: true });
     vi.mocked(api.fetchRequestApprovals).mockResolvedValue({
       run: {
@@ -508,14 +508,15 @@ describe("대시보드", () => {
         <UrlDashboardLive />
       </ShellContext.Provider>,
     );
-    // 발견 목록과 따로, 위에 결정 대기 안내 (시안 v88: 지금 처리할 일 → 발견된 취약점)
-    const notes = await screen.findByRole("region", { name: "결정 대기" });
-    await waitFor(() => expect(within(notes).getByText(/승인 대기 1건/)).toBeInTheDocument());
-    expect(screen.queryByRole("region", { name: "지금 처리할 일" })).toBeNull();
-    // 요약 칸의 결정 대기도 같은 수 (시안 v77)
-    const decide = within(screen.getByRole("region", { name: "요약" })).getByText("결정 대기")
+    // 시안처럼 따로 안내 묶음을 두지 않는다: 요약 칸의 결정 대기 · 점검 줄 딱지 · 상세로 알린다 (시안 strip · inspFor)
+    const decide = within(await screen.findByRole("region", { name: "요약" })).getByText("결정 대기")
       .parentElement as HTMLElement;
-    expect(decide).toHaveTextContent(/^결정 대기1승인 1 · 경로 선택 0$/);
+    await waitFor(() => expect(decide).toHaveTextContent(/^결정 대기1승인 1$/));
+    expect(screen.queryByRole("region", { name: "결정 대기" })).toBeNull();
+    const act = within(screen.getByRole("region", { name: "진행 중인 점검" })).getByRole("button", {
+      name: /target\.example/,
+    });
+    expect(within(act).getByText("승인 대기")).toBeInTheDocument();
     // 고르기 전 상세는 승인 대기 요청 (보내기 전에 사람이 정해야 함)
     const detail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
     expect(within(detail).getByText("PUT /api/users/2")).toBeInTheDocument();
@@ -532,5 +533,10 @@ describe("대시보드", () => {
     expect(within(detail).getByText("attempt-1")).toBeInTheDocument();
     expect(within(detail).getByRole("button", { name: "이 요청 승인" })).toBeInTheDocument();
     expect(within(detail).getByRole("button", { name: "거부" })).toBeInTheDocument();
+    // 점검 줄을 고르면 점검 상세의 결정 대기 · '승인 요청 보기' 로 다시 승인 요청을 연다 (시안 act-api)
+    fireEvent.click(act);
+    expect(within(detail).getByText(/^보낼 요청 1건 · 가장 빠른 만료/)).toBeInTheDocument();
+    fireEvent.click(within(detail).getByRole("button", { name: "승인 요청 보기" }));
+    expect(within(detail).getByText("PUT /api/users/2")).toBeInTheDocument();
   });
 });

@@ -1274,12 +1274,6 @@ a.ph:hover {
 .sh button.aside:hover {
   color: var(--ink);
 }
-/* 대시보드 결정 대기 안내 묶음 */
-.notes {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
 /* 새로고침 중: 아이콘 회전 (움직임 줄이기 설정이면 루트 규칙이 끈다) */
 /* 시안은 0.7초 한 바퀴(가짜 새로고침 0.7초)지만 실제 새로고침은 더 걸릴 수 있어 끝날 때까지 돈다 */
 .btn.spin .ic {
@@ -3409,6 +3403,13 @@ button.smm:hover {
 .rec-sh {
   align-items: center;
   min-height: 30px;
+}
+/* 필터에 걸러 목록이 빈 칸 (시안 rec-none) */
+.rec-none {
+  padding: 14px;
+  font-size: 13px;
+  color: var(--ink-3);
+  background: var(--bg);
 }
 .search {
   flex: 1 1 180px;
