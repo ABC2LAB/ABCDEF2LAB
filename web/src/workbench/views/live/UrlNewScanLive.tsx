@@ -312,11 +312,10 @@ export function UrlNewScanLive() {
   }
 
   // 바닥 줄: 쪽 이동 버튼은 오른쪽 끝 같은 자리 (1쪽 [다음], 2쪽 [이전][승인 범위 확인]). 패널을 접고 펴도 그대로다.
-  // 왼쪽은 막힌 이유.
-  const why0 = page === 1 ? why1 : why;
+  // 2쪽만 왼쪽에 막힌 이유. 1쪽 주소 이유는 주소 칸 밑 안내(hostLine)가 이미 말해 [다음] 옆에는 두지 않는다.
   const bar = (
     <>
-      <span className={s.why}>{why0.join(" · ")}</span>
+      {page === 1 ? null : <span className={s.why}>{why.join(" · ")}</span>}
       {page === 1 ? (
         <button className={cx(s.btn, s.pri)} type="submit" disabled={!canNext}>
           다음

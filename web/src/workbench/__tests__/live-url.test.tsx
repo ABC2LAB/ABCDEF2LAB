@@ -503,8 +503,8 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     // 1쪽에는 대상만
     expect(screen.getByRole("heading", { name: "대상" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "분석 모델" })).toBeNull();
-    // 1쪽에서는 주소 이유만 보인다
-    expect(screen.getAllByText("주소를 입력하세요").length).toBeGreaterThan(0);
+    // 1쪽 [다음] 옆에는 막힌 이유를 두지 않는다 (주소 이유는 주소 칸 밑 안내가 말한다)
+    expect(screen.queryByText("주소를 입력하세요")).toBeNull();
     // 주소 칸에서 Enter(폼 제출) → 2쪽
     fireEvent.change(target, { target: { value: "https://target.example/" } });
     fireEvent.submit(target.closest("form") as HTMLFormElement);
@@ -530,7 +530,8 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     expect(next).toBeDisabled();
     expect(step1.contains(next)).toBe(false);
     expect(within(summary).queryByRole("button", { name: "다음" })).toBeNull();
-    expect(next.parentElement).toHaveTextContent("주소를 입력하세요");
+    // [다음] 옆에는 막힌 이유를 두지 않는다 (주소 칸 밑 안내가 말한다)
+    expect(next.parentElement).not.toHaveTextContent(/주소를 입력하세요|주소 형식/);
     fireEvent.change(target, { target: { value: "https://target.example/" } });
     expect(next).toBeEnabled();
     fireEvent.click(next);
