@@ -625,6 +625,7 @@ func (e productPreparationEndpoint) Call(ctx context.Context, r diagnosisprep.Re
 			control.Accounts, err = p.targets.listAccounts(r.Principal, r.Product.TargetID)
 			if err == nil {
 				control.AccountStatement = productAccountStatement
+				control.ExternalConsentStatement = productExternalConsentStatement
 			}
 		case "target_login":
 			control.Login, err = p.targets.targetLogin(r.Principal, r.Product.TargetID)

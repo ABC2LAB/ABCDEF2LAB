@@ -450,7 +450,8 @@ func TestProductControlAccountDispatch(t *testing.T) {
 		t.Fatalf("register: %+v", got)
 	}
 	list := call(&diagnosisprep.ProductRequest{Operation: "accounts", TargetID: target.ID})
-	if len(list.Accounts) != 1 || list.AccountStatement != productAccountStatement {
+	// 외부 API 전송 동의 문장도 같이 준다. 화면은 이 문장을 그대로 보여 주고, 실행은 같은 문장의 해시를 저널에 남긴다(#561 리뷰).
+	if len(list.Accounts) != 1 || list.AccountStatement != productAccountStatement || list.ExternalConsentStatement != productExternalConsentStatement {
 		t.Fatalf("accounts: %+v", list)
 	}
 	login := cookieLogin()

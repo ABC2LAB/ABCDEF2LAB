@@ -6,6 +6,7 @@ import { ApiError, apiFetch } from "@/lib/diagnosis/api";
 
 import { cx } from "../../lib/cx";
 import { Icon } from "../../ui/icons";
+import { HelpTip } from "../../ui/parts";
 import s from "../../workbench.module.css";
 
 type Target = {
@@ -331,22 +332,28 @@ export function TargetApprovalPanel({
                 />
               </div>
             </div>
-            <p className={s.help}>
-              읽기 승인은 경로 단위이며 그 경로의 모든 query 를 포함합니다. 서버는 query 의 무해성을 검증하지 않으니,
-              query 로 상태가 바뀔 수 있는 경로는 넣지 마세요. 승인할 때 후보 IP별 연결(https 대상은 TLS 확인)을 최대
-              8회 합니다.
+            {/* 오른쪽 패널 안전 장치(열면 지워지는 주소)처럼 할 일 한 줄과 핵심 고지만 보이고, 원래 고지 문장은 (?) 메모에 */}
+            <p className={cx(s.help, s.tipline)} id="targetHarmlessNote">
+              <b>상태를 바꿀 수 있는 경로는 넣지 마세요</b>{" "}
+              <HelpTip label="읽기 승인 설명 보기">
+                읽기 승인은 경로 단위이며 그 경로의 모든 query 를 포함합니다. 서버는 query 의 무해성을 검증하지 않으니,
+                query 로 상태가 바뀔 수 있는 경로는 넣지 마세요. 승인할 때 후보 IP별 연결(https 대상은 TLS 확인)을 최대
+                8회 합니다.
+                <br />
+                <br />
+                비변경 근거는 운영자 확인입니다 · 서버는 GET/HEAD 의 무해성을 검증하지 않습니다 · 등록 후 DNS TXT 소유를
+                확인합니다
+                {requestLimit ? ` · 회차 요청 상한 ${requestLimit}` : ""} · 상태 변경 범위는 별도 동의한 설치에서만
+                등록할 수 있습니다
+              </HelpTip>
+              <br />
+              서버는 GET · HEAD · query 의 무해성을 검증하지 않음
             </p>
             {origin.startsWith("http://") ? (
               <p className={cx(s.note, s.warn)} role="note">
                 {PLAIN_TARGET_WARNING}
               </p>
             ) : null}
-            <p className={s.help} id="targetHarmlessNote">
-              비변경 근거는 운영자 확인입니다 · 서버는 GET/HEAD 의 무해성을 검증하지 않습니다 · 등록 후 DNS TXT 소유를
-              확인합니다
-              {requestLimit ? ` · 회차 요청 상한 ${requestLimit}` : ""} · 상태 변경 범위는 별도 동의한 설치에서만 등록할
-              수 있습니다
-            </p>
             {allowStateChanges ? (
               <label className={s.ckline}>
                 <input

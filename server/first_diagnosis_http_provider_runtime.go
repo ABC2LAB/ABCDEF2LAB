@@ -95,6 +95,10 @@ func firstDiagnosisHTTPModelConfig(options FirstDiagnosisHTTPStartOptions) (Firs
 	}
 	host := options.Host
 	host.ExternalModel = external != nil
+	// 검색은 검색 제공자로 나가므로 외부 API 실행에서만 켠다. 완전 로컬 모드는 외부 송신 전면 차단이다(규칙 8).
+	if !host.WebSearch.Valid() || host.WebSearch.Enabled() && !host.ExternalModel {
+		return modelOptions, FirstDiagnosisHTTPHostConfig{}, ErrFirstDiagnosisModel
+	}
 	return modelOptions, host, nil
 }
 
