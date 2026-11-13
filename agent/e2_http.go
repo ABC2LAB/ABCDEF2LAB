@@ -114,6 +114,9 @@ type E2HTTPExecution struct {
 	// Sessions는 인증 준비가 얻은 시험 계정 세션이다(라벨 → 보낼 헤더, C14 결정 4). 시험 계정 실행(헤더 모드
 	// test_account_passthrough)에서만 채운다. 값은 Worker system 지침에만 들어가고, 기록·활동은 실행의 가림을 거친다.
 	Sessions map[string]http.Header
+	// RefreshSession은 세션이 끊긴 시험 계정을 호스트가 다시 로그인시키는 경로다(refresh_session, C14). Sessions가 있을
+	// 때만 채운다.
+	RefreshSession E2HTTPRefreshSession
 }
 
 type e2HTTPExecutionKey struct{}
@@ -616,6 +619,9 @@ func (w *Worker) executeE2HTTP(ctx context.Context, name string, taskID int64, a
 		toolset = newE2HTTPWorkerToolSet(ts, as, name, taskID, intent.ID)
 		base = append(toolset.WorkerTools(), base...)
 		bindings["submit_diagnostic_candidate"] = newE2DiagnosticCandidateTool(ts, binding, state, func() { toolset.writes.Facts++ })
+		if refresh := e2RefreshSessionBinding(binding); refresh != nil {
+			bindings["refresh_session"] = refresh
+		}
 		// 원본 insert_assets를 승인 대상 안의 자산만 받게 감싸 붙인다(C24). 승인 origin을 모르는 실행이면 붙이지 않는다.
 		for _, tool := range toolset.WorkerTools() {
 			if tool.Name() == "insert_assets" {
@@ -1087,7 +1093,7 @@ func e2HTTPSessionLines(sessions map[string]http.Header) string {
 	}
 	sort.Strings(labels)
 	var b strings.Builder
-	b.WriteString("\n\nTest account sessions (owned, disposable test accounts already logged in by the host). To act as an account, send its header yourself on requests to the approved origin; switch headers to compare what each account can access. Never send these headers to any other host, and do not try to log in or change passwords.\n")
+	b.WriteString("\n\nTest account sessions (owned, disposable test accounts already logged in by the host). To act as an account, send its header yourself on requests to the approved origin; switch headers to compare what each account can access. Never send these headers to any other host, and do not try to log in or change passwords yourself. If an account's session stops working, call refresh_session with its label.\n")
 	for _, label := range labels {
 		names := make([]string, 0, len(sessions[label]))
 		for name := range sessions[label] {
