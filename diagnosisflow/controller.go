@@ -655,24 +655,8 @@ func (c *Controller) Before(ctx context.Context, v e2proxy.RequestView) error {
 	if s.Stage != "diagnosing" {
 		return ErrDenied
 	}
-	var change string
-	switch {
-	case e != nil && e.Selected:
-		change = e.Change
-	case c.binding.Mode == Auto:
-		// 자동 모드는 고르지 않은 끝점·크롤이 찾지 못한 경로도 대상 승인 범위(origin·경로 접두·메서드) 안이면 보낸다
-		// (2026-11-13 사용자 결정: 원본처럼 승인 범위 안이면 진단한다. 선택 제한은 운영자가 고르는 수동 모드만). 제외 경로·
-		// 위험 요청·결과 불명 재전송 금지·예산·감사는 그대로다. 읽기 확인 경로 밖이거나 쓰기 메서드면 부작용 가능으로 본다.
-		in, scoped := c.endpointScope(normalizedMethod(v.Method), path, "request", "diagnosis_request")
-		if !in {
-			return ErrDenied
-		}
-		change = scoped
-		// 같은 경로를 따로 발견했으면 그 근거(폼 등 부작용 가능)가 상한이다. 더 넓게(확인한 읽기로) 바꾸지 않는다.
-		if e != nil && e.Change != "attested_read" {
-			change = e.Change
-		}
-	default:
+	change, ok := c.diagnosisChangeLocked(v.Method, path)
+	if !ok {
 		return ErrDenied
 	}
 	// 대상에 승인한 쓰기(되돌릴 수 있는 쓰기 승인)가 있으면 건별 확인 없이 보낸다(C21, 2026-11-13 결정: 자동 모드는
@@ -682,6 +666,42 @@ func (c *Controller) Before(ctx context.Context, v e2proxy.RequestView) error {
 	}
 	return nil
 }
+
+// uncertainSideEffectLocked는 결과 불명으로 끝난 요청이 상태를 바꿨을 수 있다고 볼지다.
+func (c *Controller) uncertainSideEffectLocked(method, path string) bool {
+	if c.record.Snapshot.Stage == "diagnosing" {
+		if change, ok := c.diagnosisChangeLocked(method, path); ok {
+			return change != "attested_read"
+		}
+	}
+	return sideEffectPossible(c.requestEndpointLocked(method, path))
+}
+
+// diagnosisChangeLocked는 진단 단계에서 보낼 수 있는 요청의 변경 분류(attested_read·possible)다. ok=false면 보낼 수 없다.
+// Before(허용)와 After(결과 불명 요청 기억)가 같은 분류를 쓴다(#557 이동찬 리뷰: 허용 때 확인한 읽기로 본 경로를 결과
+// 불명 뒤 부작용 가능으로 기억해 회차 끝까지 막지 않게).
+func (c *Controller) diagnosisChangeLocked(method, path string) (string, bool) {
+	e := c.requestEndpointLocked(method, path)
+	if e != nil && e.Selected {
+		return e.Change, true
+	}
+	if c.binding.Mode != Auto {
+		return "", false
+	}
+	// 자동 모드는 고르지 않은 끝점·크롤이 찾지 못한 경로도 대상 승인 범위(origin·경로 접두·메서드) 안이면 보낸다
+	// (2026-11-13 사용자 결정: 원본처럼 승인 범위 안이면 진단한다. 선택 제한은 운영자가 고르는 수동 모드만). 제외 경로·
+	// 위험 요청·결과 불명 재전송 금지·예산·감사는 그대로다. 읽기 확인 경로 밖이거나 쓰기 메서드면 부작용 가능으로 본다.
+	in, change := c.endpointScope(normalizedMethod(method), path, "request", "diagnosis_request")
+	if !in {
+		return "", false
+	}
+	// 같은 경로를 따로 발견했으면 그 근거(폼 등 부작용 가능)가 상한이다. 더 넓게(확인한 읽기로) 바꾸지 않는다.
+	if e != nil && e.Change != "attested_read" {
+		change = e.Change
+	}
+	return change, true
+}
+
 func (c *Controller) PreapprovedRead(v e2proxy.RequestView) bool {
 	if v.BodyPresent || v.Method != "GET" && v.Method != "HEAD" {
 		return false
@@ -718,8 +738,9 @@ func (c *Controller) After(ctx context.Context, v e2proxy.RequestView, r e2proxy
 	if r.Reason == e2proxy.Unknown {
 		c.record.Snapshot.Counts.Unknown++
 		// 쓰기 메서드만이 아니라 부작용 가능 끝점(GET 폼·추정 경로 등 attested_read가 아닌 것)도 기억한다. GET이라고 상태
-		// 변경이 없다고 보지 않는다(CLAUDE.md 규칙 6, #525 이동찬 리뷰). 끝점을 찾지 못하면 부작용 가능으로 본다.
-		if method := normalizedMethod(v.Method); ok && (writeMethod(method) || sideEffectPossible(c.requestEndpointLocked(v.Method, path))) {
+		// 변경이 없다고 보지 않는다(CLAUDE.md 규칙 6, #525 이동찬 리뷰). 진단 단계는 허용 때와 같은 분류를 쓰고, 분류할 수
+		// 없으면(그 밖의 단계·끝점 없음) 부작용 가능으로 본다.
+		if method := normalizedMethod(v.Method); ok && (writeMethod(method) || c.uncertainSideEffectLocked(v.Method, path)) {
 			c.uncertainWrites[method+" "+path] = true
 		}
 	}

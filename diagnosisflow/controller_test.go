@@ -216,6 +216,50 @@ func TestAutomaticModeSendsUndiscoveredPathsWithinApprovedScope(t *testing.T) {
 	}
 }
 
+// 자동 모드에서 처음 보는 경로라도 확인한 읽기(읽기 확인 접두 안의 GET·HEAD)로 허용한 요청은, 결과가 불명이어도
+// 발견한 읽기처럼 다시 보낼 수 있다. 허용과 결과 불명 기억이 같은 분류를 쓴다(#557 이동찬 리뷰). 부작용 가능 요청
+// (쓰기·고르지 않은 GET 폼)은 결과 불명 뒤 다시 보내지 않는다.
+func TestAutomaticUndiscoveredReadSurvivesUnknownResult(t *testing.T) {
+	for _, writes := range []bool{false, true} {
+		c, _ := flowFixture(t, Auto)
+		c.binding.ReversibleWrites = writes
+		c.mu.Lock()
+		found := c.addLocked("GET", "/read/found", "page", "html_link", "/read")
+		found.Selected, found.Change = true, "attested_read"
+		form := c.addLocked("GET", "/read/form", "form", "html_form", "/read")
+		form.Change = "possible"
+		c.record.Snapshot.Stage = "diagnosing"
+		c.mu.Unlock()
+		unknown := func(view e2proxy.RequestView, id string) {
+			t.Helper()
+			if err := c.After(t.Context(), view, e2proxy.Receipt{AttemptID: id, CallRef: "call-0", Decision: "allowed", ForwardAttempted: true, RequestWritten: true, Reason: e2proxy.Unknown}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for i, view := range []e2proxy.RequestView{{Method: "GET", URL: "https://owned.test/read/found"}, {Method: "HEAD", URL: "https://owned.test/read/found"}, {Method: "GET", URL: "https://owned.test/read/retryable"}, {Method: "HEAD", URL: "https://owned.test/read/retryable"}} {
+			if err := c.Before(t.Context(), view); err != nil {
+				t.Fatal("read denied", writes, view.Method, view.URL, err)
+			}
+			unknown(view, "read-"+statusText(i))
+			if err := c.Before(t.Context(), view); err != nil {
+				t.Fatalf("writes=%v %s %s: read blocked after an unknown result: %v", writes, view.Method, view.URL, err)
+			}
+		}
+		if !writes {
+			continue
+		}
+		for i, view := range []e2proxy.RequestView{{Method: "GET", URL: "https://owned.test/read/form?x=1"}, {Method: "POST", URL: "https://owned.test/read/new-write", BodyPresent: true, BodyBytes: 2}} {
+			if err := c.Before(t.Context(), view); err != nil {
+				t.Fatal("possible side effect denied before unknown", view.Method, view.URL, err)
+			}
+			unknown(view, "write-"+statusText(i))
+			if err := c.Before(t.Context(), view); !errors.Is(err, ErrDenied) {
+				t.Fatal("possible side effect resent after unknown", view.Method, view.URL, err)
+			}
+		}
+	}
+}
+
 // 크롤 단계는 그대로 발견해서 확인한 읽기만 보낸다. 자동 모드라도 처음 보는 경로는 진단 단계 전에는 보내지 않는다.
 func TestAutomaticModeCrawlStageKeepsDiscoveredReadsOnly(t *testing.T) {
 	c, _ := flowFixture(t, Auto)
