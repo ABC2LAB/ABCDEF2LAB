@@ -26,6 +26,7 @@ import {
 } from "@/lib/diagnosis/kg";
 
 import { cx } from "../../lib/cx";
+import { useUrl } from "../../live/urlDiagnosis";
 import { Icon } from "../../ui/icons";
 import s from "../../workbench.module.css";
 import { UrlHead } from "./urlParts";
@@ -192,13 +193,17 @@ function Legend() {
 
 /** 접근통제 지도 (운영자 전용, 예시). */
 export function UrlAccessMapLive() {
+  // 현재 이어 보는 진단의 실제 task id. 있으면 그 지도(실 KG projection, GET /api/tasks/{id}/access-map),
+  // 없으면(진단 전) 예시(MOCK_MAP) — mock 배너로 명시.
+  const taskId = useUrl((st) => st.job?.task_id ?? null);
   const [map, setMap] = useState<AccessMap | null>(null);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     let live = true;
-    // TODO(이경준): 실 KG API 연동 시 현재 task id 를 넘겨 실 지도로 점등한다(지금은 예시). getAccessMap 만 교체.
-    getAccessMap(null)
+    setMap(null);
+    setFailed(false);
+    getAccessMap(taskId)
       .then((m) => {
         if (live) setMap(m);
       })
@@ -208,7 +213,7 @@ export function UrlAccessMapLive() {
     return () => {
       live = false;
     };
-  }, []);
+  }, [taskId]);
 
   const resolve = map ? buildCellResolver(map.cells) : null;
   const hCounts = map ? countDecisions(map, "H") : null;
