@@ -372,6 +372,28 @@ describe("서버 방식 확인 (catalog)", () => {
     });
   });
 
+  // 범위 확인 전 안전 장치·요약의 쓰기 줄은 고른 모드를 따른다. AI 자동 모드는 대상이 쓰기를 승인했으면 건별 확인 없이
+  // 보낸다(C21, #525 이경준 리뷰).
+  it("범위 확인 전 쓰기 안내가 진단 모드를 따른다", async () => {
+    const limits = {
+      format: "abc2lab.workbench-flow/v1" as const,
+      max_pages: 10,
+      max_endpoints: 20,
+      max_response_bytes: 1000,
+      allow_reversible_writes: true,
+    };
+    u.readURLCatalog.mockResolvedValue({ ...catalog, profiles: [{ ...catalog.profiles[0], workflow: limits }] });
+    mount("new");
+    fireEvent.change(await screen.findByLabelText(/점검할 사이트 주소/), { target: { value: "https://target.example/" } });
+    fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
+    const sum = screen.getByRole("complementary", { name: "점검 요약" });
+    expect(within(sum).getByText("쓰기 요청은 승인 후 전송")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("radio", { name: /AI 자동/ }));
+    expect(within(sum).getByText("대상이 쓰기를 승인했으면 건별 확인 없이 전송")).toBeInTheDocument();
+    expect(within(sum).queryByText("쓰기 요청은 승인 후 전송")).toBeNull();
+    expect(within(sum).getByText("쓰기 요청").nextElementSibling).toHaveTextContent("건별 확인 없이 (대상 쓰기 승인 시)");
+  });
+
   it("제외 경로 흐린 예시는 실제 입력 검사를 통과하고, query 가 든 값은 막힌다 (경로 단위)", () => {
     const mode = "user_approval_v1" as const;
     expect(url.urlDiagnosisInput("https://target.example/", "profile-1", "", mode, EXCLUDE_EXAMPLE)).toEqual({
@@ -1130,6 +1152,20 @@ it("탐색 화면에서 중지 버전 충돌을 안내하고 GET 확인 전에�
   await waitFor(() => expect(screen.getByRole("button", { name: "점검 취소" })).toBeEnabled());
   expect(u.readURLStatus).toHaveBeenCalledTimes(1);
   expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
+});
+
+// 자동 모드(preauthorized_scope)는 범위에 쓰기 메서드가 있으면 건별 확인 없이 보낸다(C21). 시작 전 동의 문구도 그렇게 말한다.
+it.each([
+  [["GET", "HEAD", "POST"], "사전 승인한 경로와 임의 query 로 진행 · 승인한 쓰기 메서드(POST)를 건별 확인 없이 보냄", "쓰기(POST) 건별 확인 없이 보냄"],
+  [["GET"], "사전 승인한 경로와 임의 query 로 진행 · 쓰기 메서드는 범위에 없어 보내지 않음", "쓰기 요청 없음 (읽기만)"],
+])("자동 모드 범위 %j 는 쓰기를 어떻게 보내는지 표시한다", async (methods, rule, short) => {
+  const input = { ...ready.input, workflow_mode: "ai_auto_v1" as const };
+  u.readURLStatus.mockResolvedValue({ ...ready, input, scope: { ...scope, approval_mode: "preauthorized_scope", methods } });
+  saveHandle({ ...handle, input });
+  mount("new");
+  expect(await screen.findByText(rule)).toBeInTheDocument();
+  const sum = screen.getByRole("complementary", { name: "점검 요약" });
+  expect(within(sum).getByText("쓰기 요청").nextElementSibling).toHaveTextContent(short);
 });
 
 // http 대상(C22)은 범위 확인 뒤 안전 장치에 평문 경고를 보인다. https 대상에는 없다(#527 이경준 리뷰).

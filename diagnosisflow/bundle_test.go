@@ -621,8 +621,16 @@ func endpointAt(c *Controller, method, path string) Endpoint {
 	return Endpoint{}
 }
 
-func TestCrawlLeavesInferredCandidatesUnvisitedAndUnselected(t *testing.T) {
+// 추정 후보는 크롤이 방문하지 않는다. 자동 모드는 쓰기 승인이 있을 때만 수동 모드처럼 진단 대상으로 고른다(C21).
+func TestCrawlLeavesInferredCandidatesUnvisited(t *testing.T) {
+	for _, writes := range []bool{true, false} {
+		crawlInferredCandidates(t, writes)
+	}
+}
+
+func crawlInferredCandidates(t *testing.T, writes bool) {
 	c, _ := flowFixture(t, Auto)
+	c.binding.ReversibleWrites = writes
 	c.binding.Limits.MaxPages = 4
 	var order []string
 	handled, err := c.Crawl(t.Context(), func(ctx context.Context, target string) (e2runner.Result, error) {
@@ -635,8 +643,8 @@ func TestCrawlLeavesInferredCandidatesUnvisitedAndUnselected(t *testing.T) {
 	if want := []string{"/read"}; !reflect.DeepEqual(order, want) {
 		t.Fatalf("got=%q want=%q", order, want)
 	}
-	if e := endpointAt(c, "GET", "/read/guess"); !e.InScope || e.Change != "possible" || e.Selected {
-		t.Fatalf("%+v", e)
+	if e := endpointAt(c, "GET", "/read/guess"); !e.InScope || e.Change != "possible" || e.Visited || e.Selected != writes {
+		t.Fatalf("writes=%v %+v", writes, e)
 	}
 	for _, e := range []Endpoint{endpointAt(c, "GET", "/read/items"), endpointAt(c, "POST", "/read/things")} {
 		if e.Path == "" || e.InScope || e.Change != "blocked" || e.Selected {

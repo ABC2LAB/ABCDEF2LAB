@@ -28,8 +28,12 @@ type Controller struct {
 	observationFailures int
 	claimed             bool
 	attempts            map[string]bool
-	origin              string
-	nativePath          string
+	// uncertainWrites는 결과 불명으로 끝난 상태 변경 가능 요청(쓰기 메서드, attested_read가 아닌 끝점)의 "메서드 경로"다. 대상이 받았을 수 있어 이 회차에서는 같은
+	// 메서드·경로를 다시 보내지 않는다(다른 명령·다른 intent여도). 상태를 확인하는 장치가 없어 회차 끝까지 유지한다
+	// (CLAUDE.md "결과 불명 쓰기는 자동으로 다시 보내지 않는다", 계약 run-outcome-states 열린 항목 3, #525 리뷰).
+	uncertainWrites map[string]bool
+	origin          string
+	nativePath      string
 	// 문서별 <base href> 해석 결과. 초기 탐색 안에서만 쓰므로 저장하지 않는다.
 	documentBases map[string]documentBase
 }
@@ -44,7 +48,7 @@ func New(ctx context.Context, b Binding, store Store) (*Controller, error) {
 	if err != nil || u.Scheme != "https" && u.Scheme != "http" || u.User != nil || u.Host == "" || u.RawQuery != "" || u.Fragment != "" || !ValidMode(b.Mode) || !b.Limits.Valid() || b.Current == nil || b.Current() != nil || store == nil || b.JobID == "" || b.TaskID == "" || b.SourceDigest == "" || b.Owner == "" || len(b.PathPrefixes) == 0 || len(b.ReadonlyPrefixes) == 0 {
 		return nil, ErrUnavailable
 	}
-	c := &Controller{binding: b, store: store, changed: make(chan struct{}), attempts: map[string]bool{}, origin: u.Scheme + "://" + u.Host}
+	c := &Controller{binding: b, store: store, changed: make(chan struct{}), attempts: map[string]bool{}, uncertainWrites: map[string]bool{}, origin: u.Scheme + "://" + u.Host}
 	c.record = Record{Owner: b.Owner, Commands: map[string]commandReceipt{}, Snapshot: Snapshot{Format: Version, JobID: b.JobID, TaskID: b.TaskID, RunRef: b.RunRef, SourceDigest: b.SourceDigest, Mode: b.Mode, ReversibleWrites: b.ReversibleWrites, Commands: []Command{}, Stage: "crawling", Limits: b.Limits, Endpoints: []Endpoint{}, Events: []Event{}}}
 	path, ok := canonicalPath(u)
 	if !ok {
@@ -143,6 +147,18 @@ func looseQuery(raw string) url.Values {
 	}
 	return out
 }
+
+// autoSelectable은 자동 모드가 진단할 끝점이다. 수동 모드에서 사람이 고를 수 있는 끝점(controller의 선택 검사)과 같은
+// 범위에서, 대상이 쓰기를 승인했으면 폼·쓰기·추정 끝점도 고른다(C21). 스크립트 파일과 관찰이 깨진 끝점은 고르지 않는다.
+func autoSelectable(e *Endpoint, reversibleWrites bool) bool {
+	if !e.InScope || e.Change == "blocked" || e.Kind == "script" || e.ObservationError != "" && e.ObservationError != "body_incomplete" {
+		return false
+	}
+	return e.Change == "attested_read" || reversibleWrites
+}
+
+// sideEffectPossible은 끝점이 상태를 바꿀 수 있는지다. 운영자가 경로 단위로 비변경을 확인한 읽기(attested_read)만 아니다.
+func sideEffectPossible(e *Endpoint) bool { return e == nil || e.Change != "attested_read" }
 
 func writeMethod(method string) bool {
 	return method != "GET" && method != "HEAD" && method != "OPTIONS"
@@ -613,6 +629,10 @@ func (c *Controller) Before(ctx context.Context, v e2proxy.RequestView) error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// 결과 불명으로 끝난 부작용 가능 요청과 같은 메서드·경로다. 기록은 부작용 가능 요청만 남기므로 메서드로 거르지 않는다.
+	if c.uncertainWrites[normalizedMethod(v.Method)+" "+path] {
+		return ErrDenied
+	}
 	e := c.requestEndpointLocked(v.Method, path)
 	if v.BodyBytes > 65536 || e == nil || !e.InScope || e.Change == "blocked" || !c.allowedPath(v.Method, path) {
 		return ErrDenied
@@ -631,9 +651,8 @@ func (c *Controller) Before(ctx context.Context, v e2proxy.RequestView) error {
 	if s.Stage != "diagnosing" || !e.Selected {
 		return ErrDenied
 	}
-	if s.Mode == Auto && (v.BodyPresent || e.Change != "attested_read" || v.Method != "GET" && v.Method != "HEAD") {
-		return ErrDenied
-	}
+	// 자동 모드도 수동 모드와 같은 범위를 보낸다. 대상에 승인한 쓰기(되돌릴 수 있는 쓰기 승인)가 있으면 건별 확인 없이
+	// 보낸다(C21, 2026-11-13 결정: 자동 모드는 승인 없이 돈다). 범위·메서드·위험 요청·예산 검사는 그대로다.
 	if e.Change != "attested_read" && !c.binding.ReversibleWrites {
 		return ErrDenied
 	}
@@ -674,6 +693,11 @@ func (c *Controller) After(ctx context.Context, v e2proxy.RequestView, r e2proxy
 	}
 	if r.Reason == e2proxy.Unknown {
 		c.record.Snapshot.Counts.Unknown++
+		// 쓰기 메서드만이 아니라 부작용 가능 끝점(GET 폼·추정 경로 등 attested_read가 아닌 것)도 기억한다. GET이라고 상태
+		// 변경이 없다고 보지 않는다(CLAUDE.md 규칙 6, #525 이동찬 리뷰). 끝점을 찾지 못하면 부작용 가능으로 본다.
+		if method := normalizedMethod(v.Method); ok && (writeMethod(method) || sideEffectPossible(c.requestEndpointLocked(v.Method, path))) {
+			c.uncertainWrites[method+" "+path] = true
+		}
 	}
 	if r.Decision == "denied" || r.Decision == "unsupported" {
 		c.record.Snapshot.Counts.Blocked++

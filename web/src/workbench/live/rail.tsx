@@ -161,7 +161,7 @@ export function LiveAccountModel() {
           <Icon name="shield" />
           <div>
             {approval ? "사용자 승인 모드" : "AI 자동 모드"}
-            <span>{approval ? "상태 변경은 승인 후 전송" : "상태 변경은 자동 승인 안 함"}</span>
+            <span>{approval ? "상태 변경은 승인 후 전송" : "대상이 쓰기를 승인했으면 건별 확인 없이 전송"}</span>
           </div>
         </div>
       ) : null}

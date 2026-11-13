@@ -31,7 +31,7 @@ func (b *urlPreparationRuntime) createWorkflow(ctx context.Context, l *urlLoaded
 	if e.Job.Input.ExcludedPaths != "" {
 		excluded = strings.Split(e.Job.Input.ExcludedPaths, "\n")
 	}
-	binding := diagnosisflow.Binding{TargetRef: l.productTarget.Target.ID, TargetRevision: l.productTarget.Target.Revision, JobID: e.Job.ID, TaskID: taskID, RunRef: "run-" + e.Job.ID, SourceDigest: e.Job.SourceDigest, InputDigest: workflowInputDigest(e.Job.Input), Owner: e.Principal, Mode: e.Job.Input.WorkflowMode, TargetURL: e.Job.Input.TargetURL, PathPrefixes: l.productTarget.Target.PathPrefixes, ReadonlyPrefixes: l.productTarget.Target.PathPrefixes, Methods: l.productTarget.Target.Methods, Excluded: excluded, ReversibleWrites: l.productTarget.ReversibleWrites && limits.AllowReversibleWrites, Limits: limits, Current: current}
+	binding := diagnosisflow.Binding{TargetRef: l.productTarget.Target.ID, TargetRevision: l.productTarget.Target.Revision, JobID: e.Job.ID, TaskID: taskID, RunRef: "run-" + e.Job.ID, SourceDigest: e.Job.SourceDigest, InputDigest: workflowInputDigest(e.Job.Input), Owner: e.Principal, Mode: e.Job.Input.WorkflowMode, TargetURL: e.Job.Input.TargetURL, PathPrefixes: l.productTarget.Target.PathPrefixes, ReadonlyPrefixes: l.productTarget.Target.PathPrefixes, Methods: l.productTarget.Target.Methods, Excluded: excluded, ReversibleWrites: l.productTarget.ReversibleWrites && limits.AllowReversibleWrites && (e.Job.Input.WorkflowMode != diagnosisflow.Auto || l.productTarget.autoWritesAllowed()), Limits: limits, Current: current}
 	flow, err := diagnosisflow.New(ctx, binding, diagnosisflow.Postgres{DB: pool})
 	if err != nil {
 		pool.Close()
