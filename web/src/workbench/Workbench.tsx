@@ -92,6 +92,8 @@ export function Workbench() {
   const [narrow, setNarrow] = useState(false);
   const [phone, setPhone] = useState(false);
   const [reduce, setReduce] = useState(false);
+  /** 저장한 접힘을 복원해 그린 뒤에만 접기 움직임을 켠다 (처음 열 때 접히는 움직임이 보이지 않게). */
+  const [booted, setBooted] = useState(false);
 
   const narrowMq = useRef<MediaQueryList | null>(null);
   const phoneMq = useRef<MediaQueryList | null>(null);
@@ -305,6 +307,9 @@ export function Workbench() {
     } catch {
       // 저장소를 못 쓰면 기본색 · 펼친 패널
     }
+    // 복원한 접힘은 움직임 없이 바로 보인다(시안은 첫 그림부터 접힌 채). 복원이 그려진 다음 프레임부터 접기 움직임을 켠다.
+    const frame = requestAnimationFrame(() => requestAnimationFrame(() => setBooted(true)));
+    return () => cancelAnimationFrame(frame);
   }, []);
 
   // 스크림 클릭: 두 서랍 모두 닫기
@@ -366,7 +371,7 @@ export function Workbench() {
           <Icon name="info" />
           <span>실제 서버 전용 · 승인 범위와 사용량은 서버가 확인한 값만 표시합니다.</span>
         </div>
-        <div className={cx(s.app, railMin && s["rail-min"], inspMin && s["insp-min"])}>
+        <div className={cx(s.app, railMin && s["rail-min"], inspMin && s["insp-min"], !booted && s.booting)}>
           <Rail />
           <main className={s.work}>
             {section("dashboard", pick("대시보드", <DashboardByMode />))}

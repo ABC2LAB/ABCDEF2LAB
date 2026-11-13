@@ -261,6 +261,13 @@
 }
 
 /* 앱 틀 */
+/* 처음 열 때 저장한 접힘을 복원하는 동안은 움직임 없이 바로 그린다 (Workbench booted) */
+.app.booting,
+.app.booting .vb,
+.app.booting .vh,
+.app.booting .vm {
+  transition: none !important;
+}
 .app {
   flex: 1;
   min-height: 0;

@@ -1,1 +1,4 @@
 *{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:"Noto Sans KR Variable",sans-serif}button,input,select,textarea{font:inherit}button,a{-webkit-tap-highlight-color:transparent}
+/* 다크 모드에서 문서 바탕(오버스크롤 · 문서 스크롤바)도 작업대 바탕과 맞춘다. 색 토큰은 CSS 모듈 .root 에 있어 값(--bg 다크)을 여기 한 번 더 적는다 */
+@media (prefers-color-scheme:dark){html:has([data-wb-root]:not([data-theme="light"])){background:#0f1518;color-scheme:dark}}
+html:has([data-wb-root][data-theme="dark"]){background:#0f1518;color-scheme:dark}
