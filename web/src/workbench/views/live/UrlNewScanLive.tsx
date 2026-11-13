@@ -691,6 +691,13 @@ export function UrlNewScanLive() {
                   t="승인된 사이트 · 경로에만 요청"
                   sub={`${scope.origin} · ${scope.path_prefixes.join(", ")} · ${scope.methods.join("/")}`}
                 />
+                {scope.origin.startsWith("http://") ? (
+                  <Rule
+                    warn
+                    t="암호화하지 않는 주소 (http)"
+                    sub="요청·응답(로그인 세션 포함)이 네트워크에서 그대로 보일 수 있고, 서버 신원(TLS)을 확인하지 않습니다"
+                  />
+                ) : null}
                 <Rule t={approvalRule(scope.approval_mode, scope.methods, false)} />
                 {excludedCount ? <Rule t="제외한 경로는 요청 안 함" sub={`${excludedCount}개`} /> : null}
                 <Rule
