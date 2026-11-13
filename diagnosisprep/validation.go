@@ -360,6 +360,9 @@ func ValidateResponse(r Request, response Response) error {
 		if response.Product.AccountStatement != "" && (r.Product.Operation != "accounts" || !validText(response.Product.AccountStatement, 1024)) {
 			return ErrProtocol
 		}
+		if response.Product.ExternalConsentStatement != "" && (r.Product.Operation != "accounts" || !validText(response.Product.ExternalConsentStatement, 1024)) {
+			return ErrProtocol
+		}
 		if response.Product.Login != nil && !ValidTargetLogin(*response.Product.Login) {
 			return ErrProtocol
 		}
