@@ -5,7 +5,7 @@
 // 동의 상자 → [점검 시작]. 시작 전에는 task · Planner · 대상 송신 · 단회 권위를 만들지 않는다(서버 계약).
 // URL 은 요청일 뿐이고 허가는 서버 설치 범위와 E② 가 정한다.
 // 입력은 두 쪽 묶음(시안 fgrps · fgrp)으로 나눈다: 1쪽 대상 → [다음] → 2쪽 분석 모델 · 점검 설정 → [승인 범위 확인].
-// 쪽마다 아래에 쪽 이동 줄(stepnav)이 있고, 요약 패널이 안 보이면(좁은 화면 · 접음) 폼 아래 시작 줄(formbar)에 실행 버튼을 둔다.
+// 진행 버튼(다음 · 이전 · 승인 범위 확인 · 동의 · 시작)은 화면 바닥 줄(formbar) 한 곳에만 둔다. 패널을 접고 펴도 움직이지 않는다.
 // 시안의 로그인(계정 A 관리자 / B 일반) · 최근 점검한 주소 · 점검 목표 · 점검 범위 · 워커 수 · LLM 서버 주소는 서버 진단
 // 입력(URLDiagnosisInput)과 catalog 에 칸이 없다. 시안 모양 그대로 그리되 꺼 두고 '연결 전' 딱지를 붙인다 — 받아도 보낼 곳이
 // 없는 값을 치게 하지 않고, 시작 조건에도 넣지 않는다. 고른 상태는 지금 실제 동작(로그인 없이)만 표시하고, 서버가 정하는
@@ -244,27 +244,9 @@ export function UrlNewScanLive() {
   else if (!shown && touched && !target.trim())
     hostLine = <span className={s.err}>점검할 사이트 주소를 입력하세요.</span>;
 
-  // 오른쪽 아래 실행 단계 (입력 → 범위 확인 → 동의 · 시작)
+  // 범위 확인 뒤 단계 (승인 대기 · 동의 · 시작 · 점검 보기). 바닥 줄에 들어간다
   let action: ReactNode;
-  if (page === 1 && !handle) {
-    action = (
-      <>
-        <button className={cx(s.btn, s.pri, s.full)} type="button" disabled={!canNext} onClick={next}>
-          다음
-        </button>
-        <span className={s.why}>{why1.join(" · ")}</span>
-      </>
-    );
-  } else if (!handle) {
-    action = (
-      <>
-        <button className={cx(s.btn, s.pri, s.full)} type="button" disabled={!canSend} onClick={() => void send()}>
-          {busy ? "확인 중…" : "승인 범위 확인"}
-        </button>
-        <span className={s.why}>{why.join(" · ")}</span>
-      </>
-    );
-  } else if (!job) {
+  if (!job) {
     action = <p className={s.help}>{busy ? "진단 상태를 확인하는 중…" : "진단 상태를 확인하지 못했습니다."}</p>;
   } else if (job.state === "awaiting_approval") {
     action = (
@@ -328,26 +310,31 @@ export function UrlNewScanLive() {
     ) : null;
   }
 
-  // 폼 아래 시작 줄 (시안 formbar): 1쪽 [다음], 2쪽 [승인 범위 확인]. 범위 확인 뒤 시작 단계는 요약 패널에 있어 패널 여는 버튼
+  // 바닥 줄: 새 점검의 진행 버튼은 모두 여기 한 곳에만 둔다. 화면 바닥에 붙어 쪽을 넘기거나 오른쪽 패널을
+  // 접고 펴도 자리가 바뀌지 않는다. 1쪽 [다음], 2쪽 [이전][승인 범위 확인], 범위 확인 뒤에는 동의 · 시작 단계.
   let bar: ReactNode;
-  if (page === 1) {
+  if (handle) {
+    bar = <div className={s.fbstage}>{action}</div>;
+  } else if (page === 1) {
     bar = (
       <>
+        <span className={s.why}>{why1.join(" · ")}</span>
         <button className={cx(s.btn, s.pri)} type="submit" disabled={!canNext}>
           다음
+          <Icon name="arrow" />
         </button>
-        <span className={s.why}>{why1.join(" · ")}</span>
       </>
     );
-  } else if (handle) {
-    bar = <InspOpenButton>시작 단계 보기</InspOpenButton>;
   } else {
     bar = (
       <>
-        <button className={cx(s.btn, s.pri)} type="submit" disabled={!canSend}>
-          승인 범위 확인
-        </button>
         <span className={s.why}>{why.join(" · ")}</span>
+        <button className={s.btn} type="button" onClick={() => turn(1)}>
+          이전
+        </button>
+        <button className={cx(s.btn, s.pri)} type="submit" disabled={!canSend}>
+          {busy ? "확인 중…" : "승인 범위 확인"}
+        </button>
       </>
     );
   }
@@ -590,12 +577,6 @@ export function UrlNewScanLive() {
                   </div>
                 </div>
               </div>
-              <div className={s.stepnav}>
-                <button className={cx(s.btn, s.pri)} type="button" disabled={!canNext} onClick={next}>
-                  다음
-                  <Icon name="arrow" />
-                </button>
-              </div>
             </div>
 
             {/* biome-ignore lint/a11y/useSemanticElements: 시안 마크업 그대로 (fieldset 테두리 · 여백 없이 묶음만) */}
@@ -799,15 +780,10 @@ export function UrlNewScanLive() {
                   ) : null}
                 </div>
               </div>
-              <div className={s.stepnav}>
-                <button className={s.btn} type="button" onClick={() => turn(1)}>
-                  이전
-                </button>
-              </div>
             </div>
           </div>
 
-          {/* 아래 시작 줄: 요약 패널이 안 보이는 화면(좁은 화면 · 패널 접음)에서만 보인다(CSS) */}
+          {/* 바닥 줄: 모든 화면 폭 · 패널 상태에서 같은 자리 */}
           <div className={s.formbar}>{bar}</div>
         </form>
 
@@ -926,7 +902,6 @@ export function UrlNewScanLive() {
             )}
           </div>
           <div className={s.isec}>
-            {action}
             <UrlNotices />
           </div>
         </aside>

@@ -358,7 +358,9 @@ describe("서버 방식 확인 (catalog)", () => {
       expect(r).toBeEnabled();
       expect(r).not.toBeChecked();
     }
-    fireEvent.click(within(screen.getByRole("radiogroup", { name: "점검 범위" })).getByRole("radio", { name: "꼼꼼하게" }));
+    fireEvent.click(
+      within(screen.getByRole("radiogroup", { name: "점검 범위" })).getByRole("radio", { name: "꼼꼼하게" }),
+    );
     expect(screen.getByLabelText("워커 수")).toBeEnabled();
     expect(screen.getByLabelText("워커 수")).toHaveValue("");
     fireEvent.change(screen.getByLabelText("워커 수"), { target: { value: "4" } });
@@ -434,14 +436,18 @@ describe("서버 방식 확인 (catalog)", () => {
     };
     u.readURLCatalog.mockResolvedValue({ ...catalog, profiles: [{ ...catalog.profiles[0], workflow: limits }] });
     mount("new");
-    fireEvent.change(await screen.findByLabelText(/점검할 사이트 주소/), { target: { value: "https://target.example/" } });
+    fireEvent.change(await screen.findByLabelText(/점검할 사이트 주소/), {
+      target: { value: "https://target.example/" },
+    });
     fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
     const sum = screen.getByRole("complementary", { name: "점검 요약" });
     expect(within(sum).getByText("쓰기 요청은 승인 후 전송")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("radio", { name: /AI 자동/ }));
     expect(within(sum).getByText("대상이 쓰기를 승인했으면 건별 확인 없이 전송")).toBeInTheDocument();
     expect(within(sum).queryByText("쓰기 요청은 승인 후 전송")).toBeNull();
-    expect(within(sum).getByText("쓰기 요청").nextElementSibling).toHaveTextContent("건별 확인 없이 (대상 쓰기 승인 시)");
+    expect(within(sum).getByText("쓰기 요청").nextElementSibling).toHaveTextContent(
+      "건별 확인 없이 (대상 쓰기 승인 시)",
+    );
   });
 
   it("제외 경로 흐린 예시는 실제 입력 검사를 통과하고, query 가 든 값은 막힌다 (경로 단위)", () => {
@@ -511,28 +517,34 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     expect(screen.getByLabelText(/점검할 사이트 주소/)).toHaveValue("https://target.example/");
   });
 
-  it("쪽 묶음마다 끝에 이동 줄(1쪽 다음 · 2쪽 이전), 폼 아래 시작 줄은 1쪽 다음 · 2쪽 승인 범위 확인 (시안 fgrp · stepnav · formbar)", async () => {
+  it("진행 버튼은 바닥 줄 한 곳에만: 1쪽 [다음], 2쪽 [이전][승인 범위 확인] · 쪽 묶음과 요약 패널에는 없다", async () => {
     mount("new");
     const target = await screen.findByLabelText(/점검할 사이트 주소/);
-    const step1 = screen.getByRole("group", { name: "대상 · 로그인" });
-    expect(screen.queryByRole("group", { name: "분석 모델 · 점검 설정" })).toBeNull();
-    // 1쪽 이동 줄의 [다음]은 주소가 맞아야 켜진다
-    const stepNext = within(step1).getByRole("button", { name: "다음" });
-    expect(stepNext).toBeDisabled();
-    // 폼 아래 시작 줄(좁은 화면 · 패널 접음에서 보임)은 같은 '다음'을 폼 제출 버튼으로 둔다
     const form = target.closest("form") as HTMLFormElement;
-    const barNext = within(form)
-      .getAllByRole("button", { name: "다음" })
-      .find((b) => !step1.contains(b));
-    expect(barNext).toHaveAttribute("type", "submit");
-    expect(barNext?.nextElementSibling).toHaveTextContent("주소를 입력하세요");
+    const step1 = screen.getByRole("group", { name: "대상 · 로그인" });
+    const summary = screen.getByRole("complementary", { name: "점검 요약" });
+    expect(screen.queryByRole("group", { name: "분석 모델 · 점검 설정" })).toBeNull();
+    // '다음'은 하나뿐이고 바닥 줄의 폼 제출 버튼이다. 주소가 맞아야 켜진다
+    const next = within(form).getByRole("button", { name: "다음" });
+    expect(next).toHaveAttribute("type", "submit");
+    expect(next).toBeDisabled();
+    expect(step1.contains(next)).toBe(false);
+    expect(within(summary).queryByRole("button", { name: "다음" })).toBeNull();
+    expect(next.parentElement).toHaveTextContent("주소를 입력하세요");
     fireEvent.change(target, { target: { value: "https://target.example/" } });
-    fireEvent.click(stepNext);
+    expect(next).toBeEnabled();
+    fireEvent.click(next);
     expect(step1).not.toBeVisible();
     const step2 = screen.getByRole("group", { name: "분석 모델 · 점검 설정" });
-    expect(within(step2).getByRole("button", { name: "이전" })).toBeInTheDocument();
-    expect(within(step2).queryByRole("button", { name: "승인 범위 확인" })).toBeNull();
-    expect(within(form).getByRole("button", { name: "승인 범위 확인" })).toHaveAttribute("type", "submit");
+    // 2쪽: 바닥 줄에 [이전][승인 범위 확인], 쪽 묶음 · 요약 패널에는 진행 버튼이 없다
+    const back = within(form).getByRole("button", { name: "이전" });
+    const send = within(form).getByRole("button", { name: "승인 범위 확인" });
+    expect(send).toHaveAttribute("type", "submit");
+    expect(back.parentElement).toBe(send.parentElement);
+    expect(step2.contains(back) || step2.contains(send)).toBe(false);
+    expect(within(summary).queryByRole("button", { name: /승인 범위 확인|다음/ })).toBeNull();
+    fireEvent.click(back);
+    expect(screen.getByRole("group", { name: "대상 · 로그인" })).toBeVisible();
   });
 
   it("주소를 지우면 주소 밑에 입력 안내, 처음 빈 칸에는 띄우지 않는다 (시안 #nHost)", async () => {
@@ -1093,9 +1105,7 @@ describe("대시보드 · 인증 (URL 진단)", () => {
     const cell = (k: string) => within(strip).getByText(k).parentElement as HTMLElement;
     expect(cell("발견 · 검토 대상")).toHaveTextContent(/^발견 · 검토 대상—결과가 저장되면 셉니다$/);
     expect(cell("결과 확인")).toHaveTextContent(/^결과 확인—/);
-    expect(cell("토큰 사용량 · 최근 30일")).toHaveTextContent(
-      /^토큰 사용량 · 최근 30일— 연결 전.*점검당 평균 —$/,
-    );
+    expect(cell("토큰 사용량 · 최근 30일")).toHaveTextContent(/^토큰 사용량 · 최근 30일— 연결 전.*점검당 평균 —$/);
     // 진행 중 줄 (시안 activeRowHtml): 진행 막대 · % 자리는 두되 서버에 진행률이 없어 빈 막대 · '—%'(0% 로 만들지 않음)
     const act = within(screen.getByRole("region", { name: "진행 중인 점검" })).getByRole("button", {
       name: /target\.example/,
@@ -1313,11 +1323,19 @@ it("탐색 화면에서 중지 버전 충돌을 안내하고 GET 확인 전에�
 
 // 자동 모드(preauthorized_scope)는 범위에 쓰기 메서드가 있으면 건별 확인 없이 보낸다(C21). 시작 전 동의 문구도 그렇게 말한다.
 it.each([
-  [["GET", "HEAD", "POST"], "사전 승인한 경로와 임의 query 로 진행 · 승인한 쓰기 메서드(POST)를 건별 확인 없이 보냄", "쓰기(POST) 건별 확인 없이 보냄"],
+  [
+    ["GET", "HEAD", "POST"],
+    "사전 승인한 경로와 임의 query 로 진행 · 승인한 쓰기 메서드(POST)를 건별 확인 없이 보냄",
+    "쓰기(POST) 건별 확인 없이 보냄",
+  ],
   [["GET"], "사전 승인한 경로와 임의 query 로 진행 · 쓰기 메서드는 범위에 없어 보내지 않음", "쓰기 요청 없음 (읽기만)"],
 ])("자동 모드 범위 %j 는 쓰기를 어떻게 보내는지 표시한다", async (methods, rule, short) => {
   const input = { ...ready.input, workflow_mode: "ai_auto_v1" as const };
-  u.readURLStatus.mockResolvedValue({ ...ready, input, scope: { ...scope, approval_mode: "preauthorized_scope", methods } });
+  u.readURLStatus.mockResolvedValue({
+    ...ready,
+    input,
+    scope: { ...scope, approval_mode: "preauthorized_scope", methods },
+  });
   saveHandle({ ...handle, input });
   mount("new");
   expect(await screen.findByText(rule)).toBeInTheDocument();
