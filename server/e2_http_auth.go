@@ -89,6 +89,8 @@ var errAuthLoginFailed = errors.New("auth_login_failed")
 type e2HTTPSessionStore struct {
 	mu       sync.RWMutex
 	sessions E2HTTPSessions
+	gateMu   sync.Mutex
+	gates    map[string]chan struct{}
 }
 
 func newE2HTTPSessionStore(initial E2HTTPSessions) *e2HTTPSessionStore {
@@ -113,6 +115,39 @@ func (s *e2HTTPSessionStore) replace(label string, header http.Header) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sessions[label] = header.Clone()
+}
+
+func (s *e2HTTPSessionStore) gate(label string) chan struct{} {
+	s.gateMu.Lock()
+	defer s.gateMu.Unlock()
+	if s.gates == nil {
+		s.gates = map[string]chan struct{}{}
+	}
+	if s.gates[label] == nil {
+		s.gates[label] = make(chan struct{}, 1)
+	}
+	return s.gates[label]
+}
+
+// refresh는 계정 하나의 다시 로그인을 보내기부터 세션 교체까지 한 번에 하나만 한다(#550 이동찬 리뷰: 두 Worker가 같은
+// 계정을 동시에 다시 로그인시키면 먼저 보낸 쪽 응답이 늦게 와서 더 새 세션을 옛 세션으로 덮을 수 있다). 다른 계정은 막지
+// 않는다. 기다리는 동안 문맥이 끝나면 보내지 않는다.
+func (s *e2HTTPSessionStore) refresh(ctx context.Context, label string, login func() (http.Header, string)) (http.Header, string) {
+	if ctx == nil {
+		return nil, E2HTTPAuthNotSent
+	}
+	gate := s.gate(label)
+	select {
+	case gate <- struct{}{}:
+	case <-ctx.Done():
+		return nil, E2HTTPAuthNotSent
+	}
+	defer func() { <-gate }()
+	header, result := login()
+	if result == E2HTTPAuthAuthenticated && len(header) > 0 {
+		s.replace(label, header)
+	}
+	return header, result
 }
 
 // maxSessionRefreshesPerAccount는 한 실행에서 계정 하나를 다시 로그인시킬 수 있는 횟수다(C14 결정 2, 실패도 센다).

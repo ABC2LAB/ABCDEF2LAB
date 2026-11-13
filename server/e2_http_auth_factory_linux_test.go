@@ -413,3 +413,147 @@ func TestE2HTTPFactoryRefreshedSessionReachesNextWorker(t *testing.T) {
 		t.Fatalf("refreshed session not masked in display patterns: %q %v", data, err)
 	}
 }
+
+// 두 Worker가 같은 계정을 동시에 다시 로그인시켜도, 늦게 돌아온 옛 세션이 더 새 세션을 덮지 않는다(#550 이동찬 리뷰).
+// 첫 다시 로그인은 대상이 세션을 발급한 뒤 응답을 붙잡고, 둘째 다시 로그인이 끝날 기회를 준 다음 풀어 준다.
+func TestE2HTTPFactoryConcurrentRefreshKeepsNewestSession(t *testing.T) {
+	var mu sync.Mutex
+	current, issued := "", 0
+	held, release := make(chan struct{}), make(chan struct{})
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/login" {
+			_ = r.ParseForm()
+			if r.PostForm.Get("email") != "tester@owned.test" || r.PostForm.Get("password") != "seeded-pass-88ff" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			mu.Lock()
+			issued++
+			mine, n := fmt.Sprintf("rotatingsession%04dvalue", issued), issued
+			current = mine // 새로 발급하면 이전 세션은 무효
+			mu.Unlock()
+			if n == 2 { // 첫 다시 로그인(1은 인증 준비)
+				close(held)
+				<-release
+			}
+			http.SetCookie(w, &http.Cookie{Name: "session", Value: mine})
+			io.WriteString(w, "ok")
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if c, err := r.Cookie("session"); err != nil || c.Value != current {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		io.WriteString(w, "owned")
+	}))
+	defer target.Close()
+	cfg, _, policy := e2HostPolicyFixture(t)
+	policy.Rules[0].Origin = target.URL
+	policy.Rules = append(policy.Rules, E2HTTPFileRule{Ref: "auth-login", Origin: target.URL, ConnectIP: "127.0.0.1", PathPrefix: "/login", PathScopeRef: "auth-login", Methods: []string{"POST"}, Purpose: e2proxy.PurposeAuthPrep})
+	policy.HeaderMode = e2proxy.HeaderTestAccountPassthrough
+	policy.Limits.MaxAttempts, policy.Limits.MaxCalls, policy.MaxRequests = 64, 64, 64
+	policy.Limits.MaxConcurrent = 2
+	auth := cookieAuth(E2HTTPFileAuthAccount{Label: "tester-a", Credential: authCredentialPin(t, cfg.AuthorityRoot, "tester-a.json", "tester@owned.test", "seeded-pass-88ff")})
+	policy.Auth = &auth
+	raw, err := json.Marshal(policy)
+	if err != nil || os.WriteFile(cfg.PolicyFile, raw, 0o600) != nil {
+		t.Fatal("합성 정책 준비 실패")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	options, err := LoadE2HTTPRuntimeOptions(ctx, E2HTTPFileOptions{PolicyFile: cfg.PolicyFile, Authority: &e2HTTPPolicyAuthorityFixture{ctx: ctx}, Supervisor: &e2HTTPSupervisorFixture{}})
+	if err != nil {
+		t.Fatal("호스트 준비 실패", err)
+	}
+	lease, err := options.Acquire(ctx, E2HTTPRequest{TaskID: "11", TaskIDNumber: 11, ExplorationID: 27, IntentID: 31})
+	if err != nil || lease.RefreshSession == nil {
+		t.Fatal("실행 획득 실패", err)
+	}
+	defer func() {
+		cleanup, done := context.WithTimeout(context.Background(), 5*time.Second)
+		defer done()
+		_ = lease.Runner.Close(cleanup)
+		_ = lease.Execution.Stop(cleanup)
+		_ = lease.Release(cleanup)
+	}()
+	results := make(chan string, 2)
+	go func() { _, result := lease.RefreshSession(ctx, "tester-a"); results <- result }()
+	select {
+	case <-held:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first refresh never reached the target")
+	}
+	second := make(chan string, 1)
+	go func() { _, result := lease.RefreshSession(ctx, "tester-a"); second <- result }()
+	// 줄을 세우지 않으면 둘째가 여기서 끝난다. 줄을 세우면 첫째를 풀 때까지 기다린다.
+	select {
+	case result := <-second:
+		results <- result
+	case <-time.After(300 * time.Millisecond): // 요청 시간 상한(1초) 안에서 첫째를 푼다
+	}
+	close(release)
+	if len(results) < 2 {
+		results <- <-second
+	}
+	for range 2 {
+		if result := <-results; result != E2HTTPAuthAuthenticated {
+			t.Fatal("refresh", result)
+		}
+	}
+	next := e2HTTPWorkerSessions(e2proxy.HeaderTestAccountPassthrough, &lease)
+	mu.Lock()
+	want := "session=" + current
+	mu.Unlock()
+	if got := next["tester-a"].Get("Cookie"); got != want {
+		t.Fatalf("next worker got a stale session: %q want %q", got, want)
+	}
+	call, err := lease.Execution.BeginCall(ctx, "next-worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, _ := http.NewRequest("GET", target.URL+"/allowed/me", nil)
+	request.Header.Set("Cookie", next["tester-a"].Get("Cookie"))
+	response, receipt, err := call.Do(ctx, request)
+	if err != nil || response == nil || receipt.StatusCode != http.StatusOK {
+		t.Fatalf("next worker request: status=%d err=%v", receipt.StatusCode, err)
+	}
+	response.Body.Close()
+	closeCtx, done := context.WithTimeout(context.Background(), time.Second)
+	defer done()
+	_, _ = call.Close(closeCtx)
+}
+
+// 같은 계정 다시 로그인을 기다리는 동안 문맥이 끝나면 보내지 않는다. 다른 계정은 기다리지 않는다.
+func TestE2HTTPSessionStoreRefreshQueuesPerAccount(t *testing.T) {
+	store := newE2HTTPSessionStore(E2HTTPSessions{"a": http.Header{"Cookie": {"s=1"}}})
+	inside, leave := make(chan struct{}), make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		store.refresh(t.Context(), "a", func() (http.Header, string) {
+			close(inside)
+			<-leave
+			return http.Header{"Cookie": {"s=2"}}, E2HTTPAuthAuthenticated
+		})
+	}()
+	<-inside
+	waitCtx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	sent := false
+	if _, result := store.refresh(waitCtx, "a", func() (http.Header, string) { sent = true; return nil, E2HTTPAuthAuthenticated }); result != E2HTTPAuthNotSent || sent {
+		t.Fatal("waiting refresh must not send after its context ends", result, sent)
+	}
+	if _, result := store.refresh(t.Context(), "b", func() (http.Header, string) { return http.Header{"Cookie": {"t=1"}}, E2HTTPAuthAuthenticated }); result != E2HTTPAuthAuthenticated {
+		t.Fatal("other account must not wait", result)
+	}
+	close(leave)
+	<-done
+	if got := store.snapshot()["a"].Get("Cookie"); got != "s=2" {
+		t.Fatal("session not replaced", got)
+	}
+	if _, result := store.refresh(nil, "a", func() (http.Header, string) { return nil, E2HTTPAuthAuthenticated }); result != E2HTTPAuthNotSent { //nolint:staticcheck // nil 문맥 방어
+		t.Fatal("nil context", result)
+	}
+}
