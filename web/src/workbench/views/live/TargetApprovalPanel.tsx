@@ -33,13 +33,14 @@ const reasons: Record<string, string> = {
   target_address_denied: "사설·메타데이터·보호 주소는 승인할 수 없습니다. 설치된 보안 정책을 확인하세요.",
   target_port_denied: "설치 정책이 허용하지 않는 포트입니다.",
   target_tls_unverified: "대상의 TLS 인증서를 확인하지 못했습니다.",
+  target_unreachable: "대상 주소에 연결하지 못했습니다.",
   readonly_scope_required: "GET/HEAD 경로와 비변경 승인 근거를 구체적으로 등록하세요.",
   invalid_path_scope: "허용 경로 형식을 확인하세요. query·fragment·인코딩은 허용하지 않습니다.",
 };
 function originOf(raw: string): string {
   try {
     const u = new URL(raw);
-    return u.protocol === "https:" && !u.username && !u.password ? u.origin : "";
+    return (u.protocol === "https:" || u.protocol === "http:") && !u.username && !u.password ? u.origin : "";
   } catch {
     return "";
   }
@@ -54,10 +55,14 @@ function targetReply(value: Reply, origin: string): Target {
     !["pending", "approved", "revoked"].includes(t.state)
   )
     throw new Error("invalid_target_response");
+  // https 대상은 TLS 공개키 고정값이 있어야 하고, http 대상(C22)은 TLS가 없어 고정값이 비어 있어야 한다.
+  const pinValid = t.origin.startsWith("http://")
+    ? (t.tls_spki_sha256 ?? "") === ""
+    : /^[a-f0-9]{64}$/.test(t.tls_spki_sha256 ?? "");
   if (
     t.state === "approved" &&
     (!t.addresses?.length ||
-      !/^[a-f0-9]{64}$/.test(t.tls_spki_sha256 ?? "") ||
+      !pinValid ||
       !t.path_prefixes?.length ||
       !t.expires_at)
   )
@@ -321,7 +326,7 @@ export function TargetApprovalPanel({
             </div>
             <p className={s.help}>
               읽기 승인은 경로 단위이며 그 경로의 모든 query 를 포함합니다. 서버는 query 의 무해성을 검증하지 않으니,
-              query 로 상태가 바뀔 수 있는 경로는 넣지 마세요. 승인할 때 후보 IP별 TLS 연결을 최대 8회 합니다.
+              query 로 상태가 바뀔 수 있는 경로는 넣지 마세요. 승인할 때 후보 IP별 연결(https 대상은 TLS 확인)을 최대 8회 합니다.
             </p>
             <p className={s.help} id="targetHarmlessNote">
               비변경 근거는 운영자 확인입니다 · 서버는 GET/HEAD 의 무해성을 검증하지 않습니다 · 등록 후 DNS TXT 소유를
