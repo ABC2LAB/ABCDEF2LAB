@@ -239,3 +239,11 @@ func (r *FirstDiagnosisHTTPRuntime) Close(ctx context.Context) error {
 
 // ResourcesClosed는 의미상 실패와 실제 소유 자원 반환을 구분한다.
 func (r *FirstDiagnosisHTTPRuntime) ResourcesClosed() bool { return r != nil && r.closed.Load() }
+
+// AccountAuth는 이 실행의 시험 계정별 인증 준비 결과다(계정을 결속하지 않았으면 nil). 자격·세션 값은 없다.
+func (r *FirstDiagnosisHTTPRuntime) AccountAuth() map[string]string {
+	if r == nil || r.host == nil {
+		return nil
+	}
+	return r.host.runtime.AccountAuth()
+}

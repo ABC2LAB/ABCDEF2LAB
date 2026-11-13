@@ -195,6 +195,14 @@ func TestJobRunResultFields(t *testing.T) {
 		{"log_warning_on_completed", func(j *Job) { j.DiagnosticLogIncomplete = true }, true},
 		{"log_warning_with_reason", func(j *Job) { j.DiagnosticLogIncomplete, j.ReasonCode = true, "budget_limited" }, true},
 		{"log_warning_on_failed", func(j *Job) { j.State, j.DiagnosticLogIncomplete = Failed, true }, false},
+		// 시험 계정별 인증 결과(§3.4): completed·cancelled·failed만, 라벨·결과 값 규칙.
+		{"account_auth_on_completed", func(j *Job) { j.AccountAuth = map[string]string{"tester-a": "authenticated"} }, true},
+		{"account_auth_on_failed", func(j *Job) { j.State, j.AccountAuth = Failed, map[string]string{"tester-a": "login_failed"} }, true},
+		{"account_auth_on_cancelled", func(j *Job) { j.State, j.AccountAuth = Cancelled, map[string]string{"tester-a": "not_sent"} }, true},
+		{"account_auth_on_unknown", func(j *Job) { j.State, j.AccountAuth = Unknown, map[string]string{"tester-a": "authenticated"} }, false},
+		{"account_auth_bad_result", func(j *Job) { j.AccountAuth = map[string]string{"tester-a": "session=abc"} }, false},
+		{"account_auth_bad_label", func(j *Job) { j.AccountAuth = map[string]string{"Tester@x": "authenticated"} }, false},
+		{"account_auth_empty", func(j *Job) { j.AccountAuth = map[string]string{} }, false},
 	} {
 		j := completed
 		tc.change(&j)

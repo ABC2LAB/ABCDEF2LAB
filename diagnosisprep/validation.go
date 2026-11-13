@@ -314,6 +314,9 @@ func validJobResult(j Job) bool {
 	if j.DiagnosticLogIncomplete && j.State != Completed {
 		return false
 	}
+	if j.AccountAuth != nil && (j.State != Completed && j.State != Cancelled && j.State != Failed || !diagnosis.ValidAccountAuth(j.AccountAuth)) {
+		return false
+	}
 	if j.IntentOutcomes != nil && (!j.IntentOutcomes.Valid() || j.State != Completed && j.State != Cancelled) {
 		return false
 	}

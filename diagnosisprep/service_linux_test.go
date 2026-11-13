@@ -9,6 +9,7 @@ import (
 	"github.com/Autumn-27/artex/diagnosis"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -412,7 +413,7 @@ func TestTerminalReportsAndReservationsSurviveRestart(t *testing.T) {
 	}
 	defer recovered.Shutdown(context.Background())
 	got := status(t, recovered, j.ID)
-	if got != final {
+	if !reflect.DeepEqual(got, final) {
 		a, _ := json.Marshal(got)
 		c, _ := json.Marshal(final)
 		if string(a) != string(c) {
@@ -694,5 +695,46 @@ func TestPublishRejectsCompletionWithoutRunResult(t *testing.T) {
 	final := awaitState(t, s, j.ID, Unknown)
 	if completionErr == nil || final.Outcome != "" || final.IntentOutcomes != nil {
 		t.Fatalf("completion without result: err=%v job=%+v", completionErr, final)
+	}
+}
+
+// 실행이 넘긴 시험 계정별 인증 결과는 completed·cancelled·failed 작업에 남고(재시작 뒤에도), 다른 상태에는 남지 않는다(§3.4).
+func TestAccountAuthReachesTerminalJob(t *testing.T) {
+	s, b, _ := newFixture(t)
+	auth := map[string]string{"tester-a": "authenticated", "tester-b": "login_failed"}
+	b.run = func(_ context.Context, _ Execution, p Publish) error {
+		return p(Update{State: Failed, Phase: Closure, PreparationStarted: true, DrainComplete: true, AuthorityState: AuthorityNotIssued, AccountAuth: auth})
+	}
+	j := create(t, s, "create")
+	start(t, s, j, "start")
+	got := awaitState(t, s, j.ID, Failed)
+	if got.AccountAuth["tester-a"] != "authenticated" || got.AccountAuth["tester-b"] != "login_failed" || len(got.AccountAuth) != 2 {
+		t.Fatalf("failed job lost account_auth: %v", got.AccountAuth)
+	}
+	auth["tester-a"] = "not_sent"
+	if again := status(t, s, j.ID); again.AccountAuth["tester-a"] != "authenticated" {
+		t.Fatal("job shares the update map")
+	}
+}
+
+func TestAccountAuthDroppedOutsideTerminalStates(t *testing.T) {
+	s, b, _ := newFixture(t)
+	release := make(chan struct{})
+	accepted := make(chan error, 1)
+	b.run = func(ctx context.Context, _ Execution, p Publish) error {
+		// 끝나지 않은 상태의 갱신은 받되 계정별 결과 칸만 버린다(갱신 전체를 거부하지 않는다).
+		accepted <- p(Update{State: Preparing, Phase: TaskCreation, PreparationStarted: true, AuthorityState: AuthorityNotIssued, AccountAuth: map[string]string{"tester-a": "authenticated"}})
+		<-release
+		return nil
+	}
+	j := create(t, s, "create")
+	start(t, s, j, "start")
+	if err := <-accepted; err != nil {
+		t.Fatal("non-terminal update with account_auth rejected:", err)
+	}
+	got := status(t, s, j.ID)
+	close(release)
+	if got.Phase != TaskCreation || got.AccountAuth != nil {
+		t.Fatalf("preparing job: phase=%s account_auth=%v", got.Phase, got.AccountAuth)
 	}
 }
