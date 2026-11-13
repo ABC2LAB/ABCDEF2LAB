@@ -315,24 +315,61 @@ describe("URL 진단 계산", () => {
 });
 
 describe("서버 방식 확인 (catalog)", () => {
-  it("catalog 가 오면 URL 진단 폼, 서버가 받지 않는 시안 칸은 '아직 구현 안 됨'으로 막혀 있다", async () => {
+  it("catalog 가 오면 URL 진단 폼, 서버가 받지 않는 시안 칸은 꺼진 채 '연결 전'으로 그린다", async () => {
     mount("new");
-    expect(await screen.findByLabelText(/점검할 사이트 주소/)).toBeInTheDocument();
-    // 서버가 받지 않는 칸(계정 로그인 · 점검 목표 · 범위 · 워커 수)은 칸만 있고 입력은 막혀 있다. 지금 점검은 로그인 없이 진행
-    for (const el of screen.getAllByLabelText(/계정 [AB]/)) expect(el).toBeDisabled();
+    const target = await screen.findByLabelText(/점검할 사이트 주소/);
+    // 1쪽: 최근 점검한 주소는 줄 없이 빈 안내, 로그인은 지금 실제 동작(로그인 없이)으로 꺼져 있고 계정 칸은 값 없이 막힘
+    expect(screen.getByText("불러올 수 있는 최근 주소가 없습니다")).toBeInTheDocument();
+    expect(screen.queryAllByRole("button", { name: /\.(com|io)$/ })).toHaveLength(0);
+    const login = screen.getByRole("radiogroup", { name: "로그인 여부" });
+    for (const r of within(login).getAllByRole("radio")) expect(r).toBeDisabled();
+    expect(within(login).getByRole("radio", { name: "로그인 없이 점검" })).toBeChecked();
+    for (const r of within(screen.getByRole("radiogroup", { name: "로그인 방법" })).getAllByRole("radio")) {
+      expect(r).toBeDisabled();
+      expect(r).not.toBeChecked();
+    }
+    const accounts = screen.getAllByLabelText(/^계정 [AB] /);
+    expect(accounts).toHaveLength(4);
+    for (const el of accounts) {
+      expect(el).toBeDisabled();
+      expect(el).toHaveValue("");
+    }
+    expect(screen.getByText("계정이 있어야 함")).toBeInTheDocument();
+    expect(screen.getAllByText(/^연결 전/).length).toBeGreaterThanOrEqual(2);
+    // 2쪽: LLM 서버 주소 · 점검 목표 · 점검 범위 · 워커 수도 꺼진 채 고른 값 없이 (지어낸 값 · 연결 상태 없음)
+    fireEvent.change(target, { target: { value: "https://target.example/" } });
+    fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
+    expect(screen.getByLabelText("LLM 서버 주소")).toBeDisabled();
+    expect(screen.getByLabelText("LLM 서버 주소")).toHaveValue("");
+    expect(screen.queryByText(/연결됨/)).toBeNull();
+    for (const box of within(screen.getByRole("group", { name: "점검 목표" })).getAllByRole("checkbox")) {
+      expect(box).toBeDisabled();
+      expect(box).not.toBeChecked();
+    }
+    for (const r of within(screen.getByRole("radiogroup", { name: "점검 범위" })).getAllByRole("radio")) {
+      expect(r).toBeDisabled();
+      expect(r).not.toBeChecked();
+    }
     expect(screen.getByLabelText("워커 수")).toBeDisabled();
-    expect(screen.getByRole("radio", { name: "로그인 없이 점검" })).toBeChecked();
-    // 점검 목표는 2쪽(숨김)에 있다
-    for (const box of screen.getAllByRole("checkbox", { hidden: true })) expect(box).toBeDisabled();
-    expect(screen.getAllByText(/^아직 구현 안 됨/).length).toBeGreaterThan(0);
+    expect(screen.getByLabelText("워커 수")).toHaveValue("—");
+    // 꺼진 칸은 시작 조건에 들지 않는다: 주소 · 모델만으로 범위 확인을 보낼 수 있다
+    expect(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]).toBeEnabled();
     // 승인 없이 쓰기 요청을 보내는 선택지는 없다 — 실행 허용은 설치 정책 · 진단 모드가 정함 (절대규칙 3 · 6, 리뷰 #479)
     expect(screen.queryByText(/승인 없이/)).toBeNull();
     expect(screen.queryByText("전체 허용")).toBeNull();
     expect(screen.getByText("쓰기 요청 범위는 설치 정책과 진단 모드가 정합니다.")).toBeInTheDocument();
-    // 요약 패널도 시안 줄(로그인 · 점검 범위 · 점검 목표)을 두고 '아직 구현 안 됨'
+    // 요약 패널: 시안 줄 그대로, 서버 값이 없는 줄(로그인 · 점검 범위 · 점검 목표)은 '—' 와 연결 전 딱지
     const sum = screen.getByRole("complementary", { name: "점검 요약" });
+    expect([...sum.querySelectorAll("dt")].map((dt) => dt.textContent)).toEqual([
+      "사이트",
+      "로그인",
+      "분석 모델",
+      "점검 범위",
+      "점검 목표",
+      "쓰기 요청",
+    ]);
     for (const t of ["로그인", "점검 범위", "점검 목표"])
-      expect(within(sum).getByText(t).nextElementSibling).toHaveTextContent(/^아직 구현 안 됨/);
+      expect(within(sum).getByText(t).nextElementSibling).toHaveTextContent(/^— 연결 전/);
     // 워크플로 없는 프로필은 제외 경로가 없다
     expect(screen.queryByLabelText(/제외 경로/)).toBeNull();
     expect(u.readURLCatalog).toHaveBeenCalledTimes(1);
@@ -435,6 +472,51 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     fireEvent.click(screen.getByRole("button", { name: "이전" }));
     expect(screen.getByRole("heading", { name: "대상" })).toBeInTheDocument();
     expect(screen.getByLabelText(/점검할 사이트 주소/)).toHaveValue("https://target.example/");
+  });
+
+  it("쪽 묶음마다 끝에 이동 줄(1쪽 다음 · 2쪽 이전), 폼 아래 시작 줄은 1쪽 다음 · 2쪽 승인 범위 확인 (시안 fgrp · stepnav · formbar)", async () => {
+    mount("new");
+    const target = await screen.findByLabelText(/점검할 사이트 주소/);
+    const step1 = screen.getByRole("group", { name: "대상 · 로그인" });
+    expect(screen.queryByRole("group", { name: "분석 모델 · 점검 설정" })).toBeNull();
+    // 1쪽 이동 줄의 [다음]은 주소가 맞아야 켜진다
+    const stepNext = within(step1).getByRole("button", { name: "다음" });
+    expect(stepNext).toBeDisabled();
+    // 폼 아래 시작 줄(좁은 화면 · 패널 접음에서 보임)은 같은 '다음'을 폼 제출 버튼으로 둔다
+    const form = target.closest("form") as HTMLFormElement;
+    const barNext = within(form)
+      .getAllByRole("button", { name: "다음" })
+      .find((b) => !step1.contains(b));
+    expect(barNext).toHaveAttribute("type", "submit");
+    expect(barNext?.nextElementSibling).toHaveTextContent("주소를 입력하세요");
+    fireEvent.change(target, { target: { value: "https://target.example/" } });
+    fireEvent.click(stepNext);
+    expect(step1).not.toBeVisible();
+    const step2 = screen.getByRole("group", { name: "분석 모델 · 점검 설정" });
+    expect(within(step2).getByRole("button", { name: "이전" })).toBeInTheDocument();
+    expect(within(step2).queryByRole("button", { name: "승인 범위 확인" })).toBeNull();
+    expect(within(form).getByRole("button", { name: "승인 범위 확인" })).toHaveAttribute("type", "submit");
+  });
+
+  it("주소를 지우면 주소 밑에 입력 안내, 처음 빈 칸에는 띄우지 않는다 (시안 #nHost)", async () => {
+    mount("new");
+    const target = await screen.findByLabelText(/점검할 사이트 주소/);
+    const line = document.getElementById("luHost") as HTMLElement;
+    expect(line).toBeEmptyDOMElement();
+    fireEvent.change(target, { target: { value: "https://target.example/" } });
+    expect(line).toBeEmptyDOMElement();
+    fireEvent.change(target, { target: { value: "" } });
+    expect(line).toHaveTextContent("점검할 사이트 주소를 입력하세요.");
+  });
+
+  it("이어 보는 점검이 아직 도는 중이면 주소 밑에 '이미 점검 중인 사이트'와 진행 중 점검 링크", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    mount("new");
+    const link = await screen.findByRole("link", { name: "진행 중 점검 보기" });
+    expect(link).toHaveAttribute("href", "#running");
+    expect(document.getElementById("luHost")).toHaveTextContent("이미 점검 중인 사이트");
+    expect(screen.getByLabelText(/점검할 사이트 주소/)).toBeDisabled();
   });
 
   it("URL · 프로필로 초안을 한 번 만들고 범위 확인까지 한 뒤 서버가 정한 범위를 오른쪽에 보인다", async () => {
