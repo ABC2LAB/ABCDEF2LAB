@@ -318,7 +318,9 @@ func (p *productRuntime) loadBinding(principal string, input diagnosisprep.Input
 	// 찾을 때는 그 결속의 정책에서 계정을 다시 만든다.
 	var accounts productRunAccounts
 	accountDigest := ""
-	if !reportOnly {
+	// 외부 API 모델 실행은 시험 계정 세션을 모델에 주지 않는다: 사전 공지·승인 회차에서만 켤 수 있는데(CLAUDE.md 규칙 2,
+	// 결정 4) 그 동의를 담는 승인 칸이 아직 없다. 그때까지 외부 API 실행에는 계정을 결속하지 않는다(로그인도 안 함).
+	if !reportOnly && accountsAllowedFor(cfg.ModelExecutionMode) {
 		if accounts, accountDigest, e = p.targets.runAccounts(rec); e != nil {
 			return nil, e
 		}
@@ -417,6 +419,8 @@ func (p *productRuntime) loadBinding(principal string, input diagnosisprep.Input
 			auth.Accounts = append(auth.Accounts, server.E2HTTPFileAuthAccount{Label: a.Label, Credential: server.E2HTTPFilePin{File: bindingCredentialName(rec.Target.ID, a.Label, a.CredentialSHA256), SHA256: a.CredentialSHA256}})
 		}
 		policy.Auth = auth
+		// 결속한 시험 계정이 있으면 모델이 쓴 Authorization·Cookie를 승인 origin에 그대로 보낸다(C14 결정 4).
+		policy.HeaderMode = e2proxy.HeaderTestAccountPassthrough
 	}
 	oldPolicyDir := filepath.Dir(cfg.HTTP.PolicyFile)
 	cfg.HTTP.PolicyFile = filepath.Join(dir, "policy.json")
@@ -735,3 +739,7 @@ func (p *productRuntime) removeBindingCredentials(targetID, label string) {
 		}
 	}
 }
+
+// accountsAllowedFor는 그 모델 실행 방식에서 시험 계정을 결속할 수 있는지다. 외부 API(openrouter)는 사전 공지·승인 동의
+// 칸이 생기기 전까지 결속하지 않는다(CLAUDE.md 규칙 2, C14 결정 4).
+func accountsAllowedFor(modelExecutionMode string) bool { return modelExecutionMode != "openrouter" }

@@ -76,6 +76,8 @@ type Execution struct {
 	// 쓰지 않는다.
 	redactOnly    [][]byte
 	secretHeaders map[string]struct{}
+	// accountPassthroughOff는 시험 계정 모드를 이 실행에서 끈 표시다(DisableTestAccountPassthrough). 한 번 켜면 되돌리지 않는다.
+	accountPassthroughOff atomic.Bool
 }
 type Call struct {
 	diagnostics          []HTTPObservation
@@ -1419,8 +1421,22 @@ func (e *Execution) RedactOutput(b []byte) []byte {
 			}
 		}
 	}
+	if e.cfg.HeaderMode == HeaderTestAccountPassthrough {
+		// 시험 계정 실행만 대상의 자격 응답 헤더를 넘긴다. 등록 하한(8바이트)보다 짧아 값 자체로 가릴 수 없는 발급 세션도
+		// 기록에 남지 않게 Set-Cookie 줄의 쿠키 값 자리와 Authentication-Info 값 전체를 구조로 가린다. 쿠키 이름·속성은
+		// 남긴다(#522 이동찬 리뷰).
+		out = issuedCookieLine.ReplaceAll(out, []byte("${1}[REDACTED]"))
+		out = authInfoLine.ReplaceAll(out, []byte("${1}[REDACTED]"))
+	}
 	return out
 }
+
+// issuedCookieLine은 Set-Cookie·Set-Cookie2 헤더 줄의 첫 이름=값에서 값 자리다(curl -i·-v 출력의 앞 "< " 포함).
+// authInfoLine은 Authentication-Info·Proxy-Authentication-Info 헤더 값 전체다.
+var (
+	issuedCookieLine = regexp.MustCompile(`(?im)^([<>* \t]*set-cookie2?[ \t]*:[ \t]*[^=;\r\n]*=)[^;\r\n]*`)
+	authInfoLine     = regexp.MustCompile(`(?im)^([<>* \t]*(?:proxy-)?authentication-info[ \t]*:[ \t]*)[^\r\n]*`)
+)
 
 // 출력 가림 전용 값의 하한·상한이다. 짧은 값은 흔한 문자열까지 가려 출력이 망가지므로 받지 않는다.
 const (
@@ -1457,6 +1473,21 @@ func (e *Execution) AddProtectedValues(values ...[]byte) error {
 	e.secrets = next
 	e.secretsGen++
 	return nil
+}
+
+// DisableTestAccountPassthrough는 시험 계정 모드(test_account_passthrough)로 만든 실행을 preserve처럼 묶는다. 인증 준비에서
+// 인증된 계정이 하나도 없으면 서버가 첫 모델 요청 전에 부른다(C14 결정 5·6: 계정 없이 진행하는 실행은 preserve). 그 뒤로는
+// 모델이 쓴 Authorization·Cookie를 거부하고 대상의 자격 응답(Set-Cookie 등)을 보류한다. 되돌리는 방법은 없다. 정책 지문과
+// 실행 보기의 header_mode는 설정값 그대로이고, 실제로 묶였는지는 계정별 인증 결과(account_auth)로 드러난다.
+func (e *Execution) DisableTestAccountPassthrough() {
+	if e != nil {
+		e.accountPassthroughOff.Store(true)
+	}
+}
+
+// testAccountPassthrough는 이 실행이 지금 시험 계정 모드로 동작하는지다.
+func (e *Execution) testAccountPassthrough() bool {
+	return e.cfg.HeaderMode == HeaderTestAccountPassthrough && !e.accountPassthroughOff.Load()
 }
 
 // AddRedactValues는 출력 가림 전용 값을 더한다(인증 준비 세션 값). 이 값들은 도구 출력·근거·보고서에서 가리지만 응답
@@ -1653,7 +1684,7 @@ func compilePolicyTemplate(cfg Config) ([]compiledRule, HeaderMode, *EvaluationC
 	if cfg.HeaderMode == "" {
 		cfg.HeaderMode = HeaderPreserve
 	}
-	if cfg.HeaderMode != HeaderPreserve && cfg.HeaderMode != HeaderProtectedSessionProposal && cfg.HeaderMode != HeaderEvaluationCallerPassthrough {
+	if cfg.HeaderMode != HeaderPreserve && cfg.HeaderMode != HeaderProtectedSessionProposal && cfg.HeaderMode != HeaderEvaluationCallerPassthrough && cfg.HeaderMode != HeaderTestAccountPassthrough {
 		return nil, "", nil, ErrConfig
 	}
 	cfg.Evaluation, err = validateEvaluationCallerContext(cfg)

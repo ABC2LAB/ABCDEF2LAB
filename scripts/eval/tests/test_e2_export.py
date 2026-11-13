@@ -158,7 +158,7 @@ class TestManifest(unittest.TestCase):
 
     def test_expectation_itself_must_be_usable(self):
         # 러너 값이 비었으면 manifest의 빈 값과 일치해 버린다.
-        for changes in ({"llm_backend": "other"}, {"header_mode": "other"}, {"eval_run_id": ""}, {"model_tag": ""}, {"reset_generation": ""},
+        for changes in ({"llm_backend": "other"}, {"header_mode": "other"}, {"header_mode": "test_account_passthrough"}, {"eval_run_id": ""}, {"model_tag": ""}, {"reset_generation": ""},
                         {"reservation_ref": ""}, {"engine_task_id": ""}, {"policy_fingerprint_sha256": "short"}):
             with self.subTest(changes=changes):
                 manifest = good()[0] | {key: value for key, value in changes.items() if key != "llm_backend"}

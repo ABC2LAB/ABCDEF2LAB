@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Callable
 
 from e2_collect import CloseAck
-from e2_export import E2_HEADER_MODES, E2_LLM_BACKENDS, E2_REASONS, TARGET_PUBLIC_PRACTICE
+from e2_export import EVAL_HEADER_MODES, E2_LLM_BACKENDS, E2_REASONS, TARGET_PUBLIC_PRACTICE
 
 FORMAT = "abc2lab.e2-runner-control/v1"
 SOCKET_NAME = "e2-control.sock"
@@ -128,7 +128,7 @@ def _check_ready(response: dict) -> None:
         _fail("ready_reason_invalid")
     if state == READY_SERVICE:
         if not _sha256(response["config_sha256"]) or not _sha256(response["policy_fingerprint_sha256"]) \
-                or not _member(response["header_mode"], E2_HEADER_MODES):
+                or not _member(response["header_mode"], EVAL_HEADER_MODES):
             _fail("ready_fields_missing")
         if evaluation is not None and (not isinstance(evaluation, dict) or set(evaluation) != _EVALUATION_FIELDS
                                        or not _member(evaluation["llm_backend"], E2_LLM_BACKENDS)

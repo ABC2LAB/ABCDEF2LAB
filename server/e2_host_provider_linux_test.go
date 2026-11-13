@@ -516,6 +516,39 @@ func TestFirstDiagnosisHTTPHostRejectsEvaluationCallerPassthrough(t *testing.T) 
 	}
 }
 
+// 외부 API(openrouter) 모델을 쓰는 서버는 인증 준비 칸이 있는 정책을 받지 않는다. 같은 정책을 로컬 모델 서버는 받는다
+// (CLAUDE.md 규칙 2, #522 재상 지적 2: 제품 결속을 거치지 않는 정책 파일에도 같은 조건).
+func TestFirstDiagnosisHTTPHostRejectsAuthWithExternalModel(t *testing.T) {
+	for _, external := range []bool{true, false} {
+		cfg, grant, policy := e2HostPolicyFixture(t)
+		login := policy.Rules[0]
+		login.Ref, login.PathScopeRef, login.PathPrefix, login.Methods, login.Purpose = "auth-login", "auth-login-path", "/login", []string{"POST"}, e2proxy.PurposeAuthPrep
+		policy.Rules = append(policy.Rules, login)
+		auth := cookieAuth(E2HTTPFileAuthAccount{Label: "tester-a", Credential: authCredentialPin(t, cfg.AuthorityRoot, "tester-a.json", "tester@owned.test", "seeded-pass-88ff")})
+		policy.Auth, policy.HeaderMode = &auth, e2proxy.HeaderTestAccountPassthrough
+		raw, err := json.Marshal(policy)
+		if err != nil || os.WriteFile(cfg.PolicyFile, raw, 0600) != nil {
+			t.Fatal("시험 계정 정책 저장 실패")
+		}
+		digest := sha256.Sum256(raw)
+		grant.PolicySHA256 = hex.EncodeToString(digest[:])
+		e2HostWriteApproval(t, cfg, grant)
+		cfg.ExternalModel = external
+		supervisor := &e2HostTestSupervisor{}
+		supervisor.quiescent.Store(true)
+		host, err := NewFirstDiagnosisHTTPHost(t.Context(), cfg, supervisor)
+		if host != nil {
+			_ = host.Close(t.Context())
+		}
+		if external && (host != nil || !errors.Is(err, ErrFirstDiagnosisHTTPHost)) {
+			t.Fatal("외부 API 서버가 인증 준비 정책을 수용함")
+		}
+		if !external && err != nil {
+			t.Fatal("로컬 모델 서버가 인증 준비 정책을 거부함:", err)
+		}
+	}
+}
+
 func TestE2HostProviderProductionFactoryRejectsMissingOrChangedPrivateMaterial(t *testing.T) {
 	for _, mode := range []string{"ca", "key", "audit", "policy-window"} {
 		t.Run(mode, func(t *testing.T) {
