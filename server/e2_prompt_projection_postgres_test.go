@@ -45,7 +45,7 @@ func TestE2PromptProjectionWorkerPostgresPython(t *testing.T) {
 	if os.WriteFile(host.PolicyFile, raw, 0600) != nil {
 		t.Fatal("policy write")
 	}
-	options, err := LoadE2HTTPRuntimeOptions(t.Context(), E2HTTPFileOptions{PolicyFile: host.PolicyFile, Authority: &e2HTTPPolicyAuthorityFixture{ctx: t.Context()}, Supervisor: &e2HTTPSupervisorFixture{}})
+	options, err := LoadE2HTTPRuntimeOptions(t.Context(), E2HTTPFileOptions{PolicyFile: host.PolicyFile, Authority: &e2HTTPPolicyAuthorityFixture{ctx: t.Context()}, Supervisor: &e2HTTPSupervisorFixture{}, WebSearch: agent.E2HTTPWebSearch{Backend: "ddgs"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,6 +74,10 @@ func TestE2PromptProjectionWorkerPostgresPython(t *testing.T) {
 		ctx, finish, err := runtime.PrepareWork(t.Context(), task, intent)
 		if err != nil {
 			t.Fatal(err)
+		}
+		// 설치가 켠 검색 설정이 실제 factory·Runtime을 거쳐 Worker 문맥에 실린다(루프 복원 결정안 §2-1).
+		if agent.E2HTTPWebSearchBackend(ctx) != "ddgs" {
+			t.Fatal("worker context lost the installed search setting")
 		}
 		_, _, _ = worker.Execute(ctx, fmt.Sprintf("work#%d", i), row.ID, nil, task.Store, intent, nil, func(a db.Activity) {
 			if a.Kind == "e2_prompt" {

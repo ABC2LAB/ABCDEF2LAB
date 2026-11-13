@@ -191,6 +191,8 @@ type E2HTTPRuntimeOptions struct {
 	// PlannerLimits는 Planner 한 번(Plan)의 턴·시간 상한이다(C26·C32). 0인 칸은 agent 기본값(16턴·2분)이다.
 	// E② 정책 밖 값이라 정책 지문에 들어가지 않고, 제품 설치는 launch 설정(설치 기록 해시)에 묶는다.
 	PlannerLimits agent.E2HTTPPlannerLimits
+	// WebSearch는 진단 Planner·Worker의 원본 검색 도구 설정이다(루프 복원 결정안 §2-1). 비어 있으면 검색 도구가 없다.
+	WebSearch agent.E2HTTPWebSearch
 }
 
 func (E2HTTPRunOptions) String() string       { return "server.E2HTTPRunOptions[protected]" }
@@ -261,7 +263,7 @@ type e2HTTPRuntimeTask struct {
 }
 
 func NewE2HTTPRuntime(parent context.Context, options E2HTTPRuntimeOptions) (*E2HTTPRuntime, error) {
-	if parent == nil || parent.Err() != nil || options.Acquire == nil || options.MaxWorkerTurns <= 0 || options.MaxWorkerTurns > 1000 || options.MaxToolCalls <= 0 || options.MaxToolCalls > agent.E2HTTPMaxTaskCalls || options.WorkerTimeout <= 0 || options.WorkerTimeout > time.Hour || options.MaxPlannerRounds == 0 || options.MaxPlannerRounds > 100 || options.MaxIntentRuns == 0 || options.MaxIntentRuns > 10 || options.DrainTimeout <= 0 || options.DrainTimeout > 2*time.Minute || !options.PlannerLimits.Valid() {
+	if parent == nil || parent.Err() != nil || options.Acquire == nil || options.MaxWorkerTurns <= 0 || options.MaxWorkerTurns > 1000 || options.MaxToolCalls <= 0 || options.MaxToolCalls > agent.E2HTTPMaxTaskCalls || options.WorkerTimeout <= 0 || options.WorkerTimeout > time.Hour || options.MaxPlannerRounds == 0 || options.MaxPlannerRounds > 100 || options.MaxIntentRuns == 0 || options.MaxIntentRuns > 10 || options.DrainTimeout <= 0 || options.DrainTimeout > 2*time.Minute || !options.PlannerLimits.Valid() || !options.WebSearch.Valid() {
 		return nil, ErrE2HTTPHost
 	}
 	for _, ref := range []string{options.Expected.RunRef, options.Expected.ResetRef, options.Expected.PolicyRef, options.Expected.CaseRef, options.Expected.PolicyRevision, options.Expected.BudgetRef} {
@@ -465,7 +467,7 @@ func (r *E2HTTPRuntime) PreparePlanning(ctx context.Context, task *Task) (contex
 	}
 	t.plannerRounds++
 	// 실제 intent가 생기기 전 Planner의 Bash/probe는 허용하지 않는다.
-	return agent.WithE2HTTPPlannerLimits(agent.WithE2HTTPPlanning(e2HTTPTaskContext(ctx, t.ctx)), r.options.PlannerLimits), nil
+	return agent.WithE2HTTPWebSearch(agent.WithE2HTTPPlannerLimits(agent.WithE2HTTPPlanning(e2HTTPTaskContext(ctx, t.ctx)), r.options.PlannerLimits), r.options.WebSearch), nil
 }
 
 // 원격 실행에서는 러너가 대상 컨테이너 ID를 eval-e2에 bind한다. 엔진은 그 값을 알 수 없다.
@@ -621,7 +623,7 @@ func (r *E2HTTPRuntime) PrepareWork(ctx context.Context, task *Task, intent *db.
 	t.active[actual.ID] = done
 	t.runs[actual.ID]++
 	t.mu.Unlock()
-	workCtx := e2HTTPTaskContext(ctx, t.ctx)
+	workCtx := agent.WithE2HTTPWebSearch(e2HTTPTaskContext(ctx, t.ctx), r.options.WebSearch)
 	observePrompt := r.promptObserver(ctx, t, actual.ID)
 	bound := agent.WithE2HTTPExecution(workCtx, agent.E2HTTPExecution{Sessions: e2HTTPWorkerSessions(r.options.HeaderMode, lease), RefreshSession: e2HTTPRefreshFor(r.options.HeaderMode, lease), Workflow: r.options.Workflow, ObservePrompt: observePrompt, Runner: lease.Runner, Control: t.control, TaskID: t.number, IntentID: actual.ID, TaskRef: t.id, RunRef: r.options.Expected.RunRef, MaxTurns: r.options.MaxWorkerTurns, MaxDuration: r.options.WorkerTimeout, ApprovedOrigins: append([]string(nil), r.options.ApprovedOrigins...), ObserveResult: func(observeCtx context.Context, result e2runner.Result) error {
 		return r.observeResult(observeCtx, t, lease, actual.ID, result)

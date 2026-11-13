@@ -99,3 +99,33 @@ func TestFirstDiagnosisHTTPModelConfigMarksExternalModel(t *testing.T) {
 		t.Fatal("unknown model mode accepted")
 	}
 }
+
+// 검색은 검색 제공자로 나가므로 외부 API 실행에서만 켠다. 로컬 모델 실행·잘못된 설정은 준비·실행 서버 모두 거부한다
+// (루프 복원 결정안 §2-1, 규칙 8).
+func TestFirstDiagnosisWebSearchOnlyWithExternalModel(t *testing.T) {
+	path, _ := externalManifestFixture(t)
+	search := agent.E2HTTPWebSearch{Backend: "ddgs"}
+	if _, got, err := firstDiagnosisHTTPModelConfig(FirstDiagnosisHTTPStartOptions{Host: FirstDiagnosisHTTPHostConfig{WebSearch: search}, ModelExecutionMode: "openrouter", OpenRouterManifestPath: path}); err != nil || got.WebSearch != search {
+		t.Fatal("external run with search rejected", err)
+	}
+	if _, _, err := (FirstDiagnosisModelOptions{Mode: "openrouter", OpenRouterManifestPath: path, WebSearch: search}).load(); err != nil {
+		t.Fatal("external preparation with search rejected", err)
+	}
+	root := t.TempDir()
+	if err := os.Chmod(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	local := filepath.Join(root, "models.json")
+	if err := os.WriteFile(local, []byte(`{"version":1,"profiles":[{"profile_id":7,"format":"openai","model":"local:fixture","base_url":"http://127.0.0.1:11434/v1","addresses":["127.0.0.1"]}]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := firstDiagnosisHTTPModelConfig(FirstDiagnosisHTTPStartOptions{Host: FirstDiagnosisHTTPHostConfig{WebSearch: search}, LocalLLMManifestPath: local}); err == nil {
+		t.Fatal("local run accepted search")
+	}
+	if _, _, err := (FirstDiagnosisModelOptions{LocalManifestPath: local, WebSearch: search}).load(); err == nil {
+		t.Fatal("local preparation accepted search")
+	}
+	if _, _, err := firstDiagnosisHTTPModelConfig(FirstDiagnosisHTTPStartOptions{Host: FirstDiagnosisHTTPHostConfig{WebSearch: agent.E2HTTPWebSearch{Backend: "brave-free"}}, ModelExecutionMode: "openrouter", OpenRouterManifestPath: path}); err == nil {
+		t.Fatal("invalid search setting accepted")
+	}
+}
