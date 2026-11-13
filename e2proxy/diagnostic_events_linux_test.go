@@ -192,3 +192,39 @@ func TestDiagnosticCancelledDialReceiptRace(t *testing.T) {
 	}
 	readDiagnosticEvents(t, l)
 }
+
+// 보류(C16)한 응답은 진단 로그에서 결과 불명이 아니라 대상이 답한 요청(completed)이고 사유는 withheld다. 사유가 어휘
+// 밖이라 invalid로, 상태가 unknown으로 찍히던 것(11/13 실제 모델 점검)을 막는다.
+func TestDiagnosticWithheldResponseIsNotUnknown(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: "session", Value: "secret-body"})
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer target.Close()
+	l, err := diagnosticlog.Create(t.TempDir(), "run", 42, "secret-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, c := diagnosticExecution(t, l, target.URL, &coreRecorder{})
+	resp, _, err := c.Do(context.Background(), coreRequest(t, "GET", target.URL+"/allowed"))
+	if resp != nil {
+		resp.Body.Close()
+	}
+	if !errors.Is(err, ErrWithheld) {
+		t.Fatalf("credential response was not withheld: %v", err)
+	}
+	_, _ = c.Close(context.Background())
+	_ = e.Stop(context.Background())
+	if l.Incomplete() {
+		t.Fatal("withheld reason rejected by the diagnostic vocabulary")
+	}
+	var finished []diagnosticlog.Event
+	for _, event := range readDiagnosticEvents(t, l) {
+		if event.Event == "http_finished" {
+			finished = append(finished, event)
+		}
+	}
+	if len(finished) != 1 || finished[0].Status != "completed" || finished[0].ReasonCode != "withheld" {
+		t.Fatalf("withheld projection: %+v", finished)
+	}
+}
