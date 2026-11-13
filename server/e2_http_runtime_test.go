@@ -467,11 +467,32 @@ func TestE2HTTPRuntimeCarriesWebSearchToPlanner(t *testing.T) {
 			t.Fatalf("planner search backend=%q want %q err=%v", agent.E2HTTPWebSearchBackend(ctx), backend, err)
 		}
 	}
-	opts := E2HTTPRuntimeOptions{Acquire: func(context.Context, E2HTTPRequest) (E2HTTPRunOptions, error) {
+	// 다른 칸은 그대로 두고 검색 설정만 잘못되면(키 없는 brave-free) 만들어지지 않는다.
+	opts := E2HTTPRuntimeOptions{Expected: E2HTTPExpectedBinding{RunRef: "fixture-run", ResetRef: "fixture-reset", PolicyRef: "fixture-policy", CaseRef: "fixture-case", PolicyRevision: "fixture-revision", BudgetRef: "fixture-budget"}, Acquire: func(context.Context, E2HTTPRequest) (E2HTTPRunOptions, error) {
 		return E2HTTPRunOptions{}, ErrE2HTTPHost
-	}, MaxWorkerTurns: 2, MaxToolCalls: 3, WorkerTimeout: time.Second, MaxPlannerRounds: 2, MaxIntentRuns: 1, DrainTimeout: time.Second, WebSearch: agent.E2HTTPWebSearch{Backend: "brave-free"}}
-	if runtime, err := NewE2HTTPRuntime(context.Background(), opts); err == nil {
-		_ = runtime.Close(context.Background())
-		t.Fatal("runtime accepted an invalid search setting")
+	}, MaxWorkerTurns: 2, MaxToolCalls: 3, WorkerTimeout: time.Second, MaxPlannerRounds: 2, MaxIntentRuns: 1, DrainTimeout: time.Second}
+	for _, tc := range []struct {
+		search agent.E2HTTPWebSearch
+		ok     bool
+	}{{agent.E2HTTPWebSearch{Backend: "ddgs"}, true}, {agent.E2HTTPWebSearch{Backend: "brave-free"}, false}} {
+		opts.WebSearch = tc.search
+		runtime, err := NewE2HTTPRuntime(context.Background(), opts)
+		if runtime != nil {
+			_ = runtime.Close(context.Background())
+		}
+		if (err == nil) != tc.ok {
+			t.Fatalf("%q: runtime err=%v", tc.search.Backend, err)
+		}
+	}
+}
+
+// 준비 Planner 문맥에도 준비 서버의 검색 설정이 실린다(실행 Runtime이 없는 준비 단계).
+func TestFirstDiagnosisPlanningContextCarriesWebSearch(t *testing.T) {
+	s := &Server{firstWebSearch: agent.E2HTTPWebSearch{Backend: "ddgs"}}
+	if got := agent.E2HTTPWebSearchBackend(s.firstDiagnosisPlanningContext(context.Background())); got != "ddgs" {
+		t.Fatalf("preparation planner search backend=%q", got)
+	}
+	if got := agent.E2HTTPWebSearchBackend((&Server{}).firstDiagnosisPlanningContext(context.Background())); got != "" {
+		t.Fatalf("preparation planner without search got %q", got)
 	}
 }
