@@ -82,6 +82,26 @@ func validE2HTTPFileAuth(a *E2HTTPFileAuth, mode e2proxy.HeaderMode, rules []E2H
 
 var errAuthLoginFailed = errors.New("auth_login_failed")
 
+// e2HTTPAccountUsernames는 결속 시험 계정의 사용자명이다(같은 pin 검사로 읽음). 표시용 경로 패턴에서 같은 조각을 가리는
+// 데만 쓰고 메모리에만 둔다. 읽지 못한 계정은 빠진다(그 계정은 인증 준비도 보내지 않는다).
+func e2HTTPAccountUsernames(dir string, auth E2HTTPFileAuth) map[string]bool {
+	out := map[string]bool{}
+	for _, account := range auth.Accounts {
+		raw, err := e2HTTPPinnedBytes(dir, account.Credential, maxAuthCredentialBytes)
+		if err != nil {
+			continue
+		}
+		var cred struct {
+			Username string `json:"username"`
+		}
+		if json.Unmarshal(raw, &cred) == nil && cred.Username != "" {
+			out[cred.Username] = true
+		}
+		clear(raw)
+	}
+	return out
+}
+
 // e2HTTPAuthPrep는 계정마다 로그인 요청을 E② 인증 준비 규칙으로 한 번씩 보낸다. 재시도는 없다. 세션 값은 출력 가림
 // 전용 값으로 등록하고(응답 보류에는 쓰지 않음) 결과에만 담는다. 자격 값은 쓴 뒤 지운다.
 func e2HTTPAuthPrep(ctx context.Context, execution *e2proxy.Execution, dir, origin string, auth E2HTTPFileAuth) (E2HTTPAuthResult, error) {
