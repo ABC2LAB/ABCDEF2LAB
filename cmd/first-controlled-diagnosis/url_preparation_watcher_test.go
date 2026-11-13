@@ -167,3 +167,44 @@ func TestDiagnosticLogWarningNeverChangesRunState(t *testing.T) {
 		})
 	}
 }
+
+// 결속한 시험 계정이 바뀌면(해제·만료·판 변경·자격 교체) 대상 철회처럼 원인을 실어 멈추고(hard 취소 아님), 운영자 쪽
+// 중지로 본다. 실행 결과의 reason_code가 그 원인을 말한다(C14).
+func TestURLPreparationWatcherAccountBindingChangeDrains(t *testing.T) {
+	hard, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	target, stopTarget := context.WithCancelCause(hard)
+	defer stopTarget(context.Canceled)
+	done := make(chan struct{})
+	ticks := make(chan time.Time)
+	exited := make(chan struct{})
+	go func() {
+		defer close(exited)
+		watchURLPreparation(hard, done, ticks, func() error { return errAccountBindingChanged }, cancel, stopTarget)
+	}()
+	ticks <- time.Now()
+	select {
+	case <-target.Done():
+	case <-time.After(time.Second):
+		t.Fatal("watcher did not stop admission on an account binding change")
+	}
+	close(done)
+	<-exited
+	if !errors.Is(context.Cause(target), errAccountBindingChanged) || hard.Err() != nil {
+		t.Fatal("account binding change used hard cancellation or lost its cause")
+	}
+	if !urlOperatorStop(context.Background(), target) {
+		t.Fatal("account binding change not recorded as an operator-side stop")
+	}
+	if urlOperatorStop(context.Background(), hard) {
+		t.Fatal("plain run context counted as an operator stop")
+	}
+	if urlStopReason(target) != "account_binding_changed" {
+		t.Fatal("account binding stop lost its reason code")
+	}
+	revoked, stop := context.WithCancelCause(context.Background())
+	stop(server.ErrFirstDiagnosisTargetEnded)
+	if urlStopReason(revoked) != "" || urlStopReason(hard) != "" {
+		t.Fatal("other stops gained the account reason")
+	}
+}
