@@ -46,8 +46,20 @@ type productTargetRecord struct {
 	ValidHours       int64                       `json:"valid_hours"`
 	SelectedIP       string                      `json:"selected_ip,omitempty"`
 	ReversibleWrites bool                        `json:"reversible_writes,omitempty"`
-	ProofExpiresAt   time.Time                   `json:"proof_expires_at"`
+	// WriteConsent는 쓰기 동의를 받을 때 화면이 보인 뜻의 판이다. productWriteConsentAuto는 "사용자 모드는 요청마다 확인,
+	// AI 자동 모드는 건별 확인 없이 보냄"에 동의한 것이다(C21). 이 칸이 없는 이전 등록은 "요청마다 확인"에 동의한
+	// 것이라 자동 모드에서 쓰기를 쓰지 않는다(재등록하면 새 판, #525 이경준 리뷰).
+	WriteConsent   string    `json:"write_consent,omitempty"`
+	ProofExpiresAt time.Time `json:"proof_expires_at"`
 }
+
+const productWriteConsentAuto = "auto_without_confirmation_v1"
+
+// autoWritesAllowed는 이 대상의 쓰기 승인을 AI 자동 모드가 건별 확인 없이 쓸 수 있는지다.
+func (r productTargetRecord) autoWritesAllowed() bool {
+	return r.ReversibleWrites && r.WriteConsent == productWriteConsentAuto
+}
+
 type productTargetRegistry struct {
 	mu          sync.Mutex
 	policy      productTargetPolicy
@@ -188,7 +200,8 @@ func newProductTargetRegistry(dir string, p productTargetPolicy, check func() er
 func (r *productTargetRegistry) replay(next productTargetRecord) error {
 	t := next.Target
 	old, exists := r.records[t.ID]
-	if !managementReference.MatchString(t.ID) || next.Principal != "ARTEX" || t.Revision < 1 || t.Origin == "" || len(next.ReadonlyBasis) < 20 {
+	if !managementReference.MatchString(t.ID) || next.Principal != "ARTEX" || t.Revision < 1 || t.Origin == "" || len(next.ReadonlyBasis) < 20 ||
+		next.WriteConsent != "" && (next.WriteConsent != productWriteConsentAuto || !next.ReversibleWrites) {
 		return errPreparation
 	}
 	if !exists {
@@ -196,7 +209,7 @@ func (r *productTargetRegistry) replay(next productTargetRecord) error {
 			return errPreparation
 		}
 	} else {
-		if t.Revision != old.Target.Revision+1 || t.Origin != old.Target.Origin || !reflect.DeepEqual(t.PathPrefixes, old.Target.PathPrefixes) || !reflect.DeepEqual(t.Methods, old.Target.Methods) || t.Requests != old.Target.Requests || next.Principal != old.Principal || next.ReadonlyBasis != old.ReadonlyBasis || t.ChallengeName != old.Target.ChallengeName || t.ChallengeValue != old.Target.ChallengeValue || next.ValidHours != old.ValidHours || next.ProofExpiresAt != old.ProofExpiresAt {
+		if t.Revision != old.Target.Revision+1 || t.Origin != old.Target.Origin || !reflect.DeepEqual(t.PathPrefixes, old.Target.PathPrefixes) || !reflect.DeepEqual(t.Methods, old.Target.Methods) || t.Requests != old.Target.Requests || next.Principal != old.Principal || next.ReadonlyBasis != old.ReadonlyBasis || next.WriteConsent != old.WriteConsent || next.ReversibleWrites != old.ReversibleWrites || t.ChallengeName != old.Target.ChallengeName || t.ChallengeValue != old.Target.ChallengeValue || next.ValidHours != old.ValidHours || next.ProofExpiresAt != old.ProofExpiresAt {
 			return errPreparation
 		}
 		if !(old.Target.State == "pending" && t.State == "approved" || old.Target.State == "approved" && t.State == "revoked") {
@@ -290,7 +303,11 @@ func (r *productTargetRegistry) register(principal string, s diagnosisprep.Targe
 	}
 	id := "target-" + productRandom(16)
 	t := diagnosisprep.ProductTarget{ID: id, Origin: u.Scheme + "://" + u.Host, State: "pending", Revision: 1, PathPrefixes: paths, Methods: methods, Requests: s.Requests, Port: port, ChallengeName: "_abc2lab-challenge." + u.Hostname(), ChallengeValue: "abc2lab-proof-v1-" + productRandom(32)}
-	rec := productTargetRecord{Target: t, Principal: principal, ReversibleWrites: s.ReversibleWrites, ReadonlyBasis: strings.TrimSpace(s.ReadonlyBasis), ValidHours: s.ValidHours, ProofExpiresAt: r.now().Add(30 * time.Minute)}
+	consent := ""
+	if s.ReversibleWrites {
+		consent = productWriteConsentAuto
+	}
+	rec := productTargetRecord{Target: t, Principal: principal, ReversibleWrites: s.ReversibleWrites, WriteConsent: consent, ReadonlyBasis: strings.TrimSpace(s.ReadonlyBasis), ValidHours: s.ValidHours, ProofExpiresAt: r.now().Add(30 * time.Minute)}
 	if r.append(rec) != nil {
 		return diagnosisprep.ProductTarget{}, errPreparation
 	}

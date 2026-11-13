@@ -241,7 +241,9 @@ func validScope(s *Scope) bool {
 		}
 	}
 	for _, m := range s.Methods {
-		if m != "GET" && m != "HEAD" && !(s.ApprovalMode == "workbench_selective_v1" && (m == "POST" || m == "PUT" || m == "PATCH")) {
+		// 쓰기 메서드는 대상 등록이 되돌릴 수 있는 쓰기 승인과 함께 넣었을 때만 여기 온다. 자동 모드(preauthorized_scope)도
+		// 건별 확인 없이 쓴다(C21).
+		if m != "GET" && m != "HEAD" && m != "POST" && m != "PUT" && m != "PATCH" {
 			return false
 		}
 	}

@@ -390,8 +390,12 @@ func (p *productRuntime) loadBinding(principal string, input diagnosisprep.Input
 		}
 	}
 
+	// 자동 모드도 대상에 승인한 메서드를 그대로 쓴다(C21). 쓰기 메서드는 설치 정책과 대상 등록이 되돌릴 수 있는 쓰기를
+	// 함께 승인했을 때만 대상 메서드에 들어 있다. 진단 흐름이 없는 일반 모드는 위험 요청·제외 경로 검사(진단 흐름
+	// controller)를 거치지 않으므로 읽기만 둔다. 자동 모드는 "자동 모드는 건별 확인 없이 보냄"에 동의한 등록만 쓰기를
+	// 쓴다(WriteConsent, 이전 등록은 "요청마다 확인"에 동의).
 	methods := append([]string(nil), rec.Target.Methods...)
-	if input.WorkflowMode != diagnosisflow.Manual {
+	if input.WorkflowMode == "" || input.WorkflowMode == diagnosisflow.Auto && !rec.autoWritesAllowed() {
 		methods = nil
 		for _, method := range rec.Target.Methods {
 			if method == "GET" || method == "HEAD" {

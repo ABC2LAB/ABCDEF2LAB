@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
 )
 
@@ -324,7 +325,8 @@ func TestObservedGETDoesNotEraseEarlierFormSideEffectSignal(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := discoveredEndpoint(t, c, "GET", "/read/search")
-	if e.Kind != "form" || e.Change != "possible" || e.Selected {
+	// 자동 모드는 쓰기 승인이 있으면 폼도 고른다(C21). 부작용 표시(possible)는 그대로 남아 읽기 사전 승인을 받지 않는다.
+	if e.Kind != "form" || e.Change != "possible" || e.Selected != c.binding.ReversibleWrites || c.PreapprovedRead(e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/search"}) {
 		t.Fatal("observed GET erased side-effect signal")
 	}
 }

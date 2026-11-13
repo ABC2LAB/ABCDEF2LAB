@@ -223,3 +223,42 @@ func TestProductTargetExceptionsCannotAllowMetadataOrProtectedServices(t *testin
 		t.Fatal("protected endpoint acquired target approval")
 	}
 }
+
+// 쓰기 동의 판(WriteConsent)은 쓰기 승인과 함께만 있고, 아는 판만 받는다. 새 등록은 쓰기를 승인하면 자동 모드 동의 판을
+// 남긴다(#525 이경준 리뷰).
+func TestProductTargetWriteConsentVersion(t *testing.T) {
+	r, _ := targetTestRegistry(t)
+	base := productTargetRecord{Target: diagnosisprep.ProductTarget{ID: "target-" + strings.Repeat("a", 32), Origin: "https://c.example.test", State: "pending", Revision: 1}, Principal: "ARTEX", ReadonlyBasis: strings.Repeat("x", 20)}
+	for name, change := range map[string]func(*productTargetRecord){
+		"consent without writes": func(rec *productTargetRecord) { rec.WriteConsent = productWriteConsentAuto },
+		"unknown consent":        func(rec *productTargetRecord) { rec.ReversibleWrites, rec.WriteConsent = true, "auto_v0" },
+	} {
+		rec := productTargetCopy(base)
+		change(&rec)
+		if r.replay(rec) == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
+	// http 대상(C22)도 같은 동의 판 규칙이다(#525 윤재상 리뷰).
+	httpConsent := productTargetCopy(base)
+	httpConsent.Target.ID, httpConsent.Target.Origin = "target-"+strings.Repeat("c", 32), "http://c.example.test"
+	httpConsent.ReversibleWrites, httpConsent.WriteConsent = true, productWriteConsentAuto
+	httpBad := productTargetCopy(httpConsent)
+	httpBad.Target.ID, httpBad.ReversibleWrites = "target-"+strings.Repeat("d", 32), false
+	if r.replay(httpBad) == nil {
+		t.Error("http consent without writes accepted")
+	}
+	for _, rec := range []productTargetRecord{base, httpConsent, func() productTargetRecord {
+		v := productTargetCopy(base)
+		v.Target.ID = "target-" + strings.Repeat("b", 32)
+		v.ReversibleWrites, v.WriteConsent = true, productWriteConsentAuto
+		return v
+	}()} {
+		if err := r.replay(rec); err != nil {
+			t.Fatal("valid consent record rejected", err)
+		}
+	}
+	if !(productTargetRecord{ReversibleWrites: true, WriteConsent: productWriteConsentAuto}).autoWritesAllowed() || (productTargetRecord{ReversibleWrites: true}).autoWritesAllowed() {
+		t.Fatal("automatic write consent check")
+	}
+}
