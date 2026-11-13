@@ -8,7 +8,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"os"
 	"reflect"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,6 +37,9 @@ func (i storedInspection) runtime() Inspection {
 }
 
 type receipt struct {
+	ExecutionBootID           string           `json:"execution_boot_id,omitempty"`
+	ExecutionReturned         bool             `json:"execution_returned,omitempty"`
+	ResourcesRecovered        bool             `json:"resources_recovered,omitempty"`
 	ExternalTransferConfirmed bool             `json:"external_transfer_confirmed,omitempty"`
 	Principal                 string           `json:"principal"`
 	CreateKey                 string           `json:"create_key"`
@@ -96,6 +102,10 @@ func addBudget(a, b Budget) Budget {
 
 // New는 보호된 설치 루트만 받는다. 이전 실행을 다시 호출하거나 권위를 재발급하지 않는다.
 func New(ctx context.Context, root string, backend Backend) (*Service, error) {
+	return newServiceForBoot(ctx, root, backend, executionBootID())
+}
+
+func newServiceForBoot(ctx context.Context, root string, backend Backend, boot string) (*Service, error) {
 	if ctx == nil || ctx.Err() != nil || backend == nil {
 		return nil, ErrProtocol
 	}
@@ -109,7 +119,7 @@ func New(ctx context.Context, root string, backend Backend) (*Service, error) {
 	createKeys := map[string]string{}
 	for _, raw := range records {
 		var r receipt
-		if strictDecode(raw, &r) != nil || !validText(r.Principal, 256) || !reference.MatchString(r.CreateKey) || !validJob(r.Job) || !inspectionOK(r.Inspection.runtime()) || r.Job.SourceDigest != sourceDigest(r.Job.Input, r.Inspection.InstallationDigest) || !reflect.DeepEqual(r.Job.Scope, r.Inspection.Scope) || (r.StartKey != "" && (!reference.MatchString(r.StartKey) || (r.Job.Scope != nil && r.Job.Scope.Model != nil && r.Job.Scope.Model.ExternalTransfer && !r.ExternalTransferConfirmed))) || r.Job.PreparationStarted != (r.StartKey != "") {
+		if strictDecode(raw, &r) != nil || !validText(r.Principal, 256) || !reference.MatchString(r.CreateKey) || !validJob(r.Job) || r.ExecutionBootID != "" && !bootIDPattern.MatchString(r.ExecutionBootID) || r.ResourcesRecovered && !r.ExecutionReturned || (r.ExecutionReturned || r.ExecutionBootID != "") && r.StartKey == "" || !inspectionOK(r.Inspection.runtime()) || r.Job.SourceDigest != sourceDigest(r.Job.Input, r.Inspection.InstallationDigest) || !reflect.DeepEqual(r.Job.Scope, r.Inspection.Scope) || (r.StartKey != "" && (!reference.MatchString(r.StartKey) || (r.Job.Scope != nil && r.Job.Scope.Model != nil && r.Job.Scope.Model.ExternalTransfer && !r.ExternalTransferConfirmed))) || r.Job.PreparationStarted != (r.StartKey != "") {
 			return fail()
 		}
 		key := r.Principal + "\x00" + r.CreateKey
@@ -139,10 +149,37 @@ func New(ctx context.Context, root string, backend Backend) (*Service, error) {
 			s.jobs[id] = r
 		}
 	}
+	// 호스트 재부팅은 이전 커널의 실행·소켓·자식 프로세스가 종료된 증거다.
+	// 서비스/컨테이너 재시작만으로는 같은 boot ID이므로 자원 마감을 추정하지 않는다.
+	for _, r := range s.jobs {
+		if r.StartKey != "" && bootIDPattern.MatchString(boot) && r.ExecutionBootID != "" && r.ExecutionBootID != boot && (!r.ExecutionReturned || !r.Job.DrainComplete && !r.ResourcesRecovered) {
+			r.ExecutionReturned, r.ResourcesRecovered = true, true
+			if s.save(r) != nil {
+				return fail()
+			}
+		}
+	}
 	return s, nil
 }
+
+var bootIDPattern = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`)
+
+func executionBootID() string {
+	raw, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	value := strings.TrimSpace(string(raw))
+	if err != nil || !bootIDPattern.MatchString(value) {
+		return ""
+	}
+	return value
+}
 func validReceiptChange(old, next receipt) bool {
-	if old.Principal != next.Principal || old.CreateKey != next.CreateKey || old.Job.ID != next.Job.ID || next.Job.Revision != old.Job.Revision+1 || old.Job.Input != next.Job.Input {
+	if old.StartKey != "" && old.ExecutionBootID != next.ExecutionBootID {
+		return false
+	}
+	if old.ExecutionReturned && !next.ExecutionReturned || old.ResourcesRecovered && !next.ResourcesRecovered {
+		return false
+	}
+	if old.Principal != next.Principal || old.CreateKey != next.CreateKey || old.Job.ID != next.Job.ID || (next.Job.Revision != old.Job.Revision+1 && !(reflect.DeepEqual(old.Job, next.Job) && (old.ExecutionReturned != next.ExecutionReturned || old.ResourcesRecovered != next.ResourcesRecovered))) || old.Job.Input != next.Job.Input {
 		return false
 	}
 	if old.StartKey != "" {
@@ -150,7 +187,7 @@ func validReceiptChange(old, next receipt) bool {
 			return false
 		}
 		if terminal(old.Job.State) || old.Job.State == Unknown {
-			return reflect.DeepEqual(old.Job, next.Job)
+			return reflect.DeepEqual(old.Job, next.Job) && (!next.ResourcesRecovered || next.ExecutionReturned)
 		}
 	}
 	return true
@@ -320,13 +357,24 @@ func (s *Service) Call(ctx context.Context, r Request) (Response, error) {
 		if inspect.Scope == nil || inspect.ReasonCode != "" || !inspect.Scope.ExpiresAt.After(time.Now()) {
 			return responseError(r, "approval_required"), nil
 		}
+		// 복구는 실행 backend가 실제 자원 마감을 검증할 때만 가능하다. 상태·체크박스는 증거가 아니다.
+		if verifier, ok := s.backend.(ClosureVerifier); ok {
+			for _, old := range s.jobs {
+				if old.Job.State == Unknown && old.ExecutionReturned && !old.Job.DrainComplete && !old.ResourcesRecovered {
+					if verifier.VerifyClosure(ctx, Execution{Principal: old.Principal, Job: old.Job, Inspection: old.Inspection.runtime()}) == nil {
+						old.ResourcesRecovered = true
+						if s.save(old) != nil {
+							return responseError(r, "unavailable"), nil
+						}
+					}
+				}
+			}
+		}
 		var used Budget
 		var runs int64
 		for _, other := range s.jobs {
-			// 결과 불명(Unknown)은 backend.Execute가 이미 반환한 끝난 회차라 실행 자원이 겹치지 않는다. 진행 중(active)
-			// 회차만 동시 실행을 막고, Unknown은 아래 집계 분기에서 예약 예산·run 수를 그대로 계수해 설치 전체를 brick하지 않는다
-			// (C04). 미확인 결과·예약은 해제하지 않는다(절대 규칙 5).
-			if active(other.Job.State) {
+			// 상태 게시와 실제 backend 반환은 별개다. 종료와 drain 증거를 모두 요구한다.
+			if active(other.Job.State) || other.StartKey != "" && (!other.ExecutionReturned || !other.Job.DrainComplete && !other.ResourcesRecovered) {
 				return responseError(r, "busy"), nil
 			}
 			if other.StartKey != "" && other.Inspection.DelegationRef == inspect.DelegationRef {
@@ -346,6 +394,7 @@ func (s *Service) Call(ctx context.Context, r Request) (Response, error) {
 		}
 		record = cloneReceipt(record)
 		record.StartKey = r.IdempotencyKey
+		record.ExecutionBootID = executionBootID()
 		record.ExternalTransferConfirmed = r.ExternalTransferConfirmed
 		record.Job.Revision++
 		record.Job.PreparationStarted = true
@@ -518,7 +567,17 @@ func (s *Service) cancelExecution(id string) {
 	}
 }
 func (s *Service) execute(ctx context.Context, r receipt, done chan struct{}) {
-	defer close(done)
+	defer func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		// done과 영속 증거를 같은 잠금 아래 기록해 Start와 경쟁하지 않는다.
+		r := s.jobs[r.Job.ID]
+		if !s.released && !s.failed {
+			r.ExecutionReturned = true
+			_ = s.save(r)
+		}
+		close(done)
+	}()
 	defer func() {
 		s.cancelExecution(r.Job.ID)
 		if recover() != nil {

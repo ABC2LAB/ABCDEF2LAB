@@ -329,3 +329,30 @@ Sparrow 정확 호스트 전체 진단 허가는 다른 origin·port·인증 수
 비변경 API 경로 또는 인증 계약을 확정하지 않았다. 이 작업은 실제 대상 DNS·HTTP를 호출하지 않았다.
 운영 회차는 정확한 origin/port/IP pin, 실제 비변경 prefix/query/body, 지원 프로토콜,
 인증 계약, 요청·시간·모델/비용 예산과 설치 위임을 먼저 확정해야 한다.
+
+## C04·C33 운영 보완 (#543 인계)
+
+`Unknown` 게시와 backend `Execute` 반환은 다른 사실이다. 새 시작은 이전 회차의 실제 반환과
+`drain_complete`를 모두 요구한다. 반환 사실은 보호된 영수증의 `execution_returned`에 기록한다.
+실행 자원이 미마감이면 `busy`를 유지하고 모델 사용량·예약·누적 실행 횟수를 환불하지 않는다.
+결과 불명은 복구 후에도 결과 불명이다. `result_ready`가 없는 회차를 보고서 완료로 바꾸지 않는다.
+
+반환한 실행은 backend가 보관한 정확한 회차 핸들로 모델·격리 실행·E②·HTTP·DB 자원을 재마감하고
+검증할 수 있을 때만 다음 시작 시 복구한다. 복구 증거는 `resources_recovered`에 별도로 저장한다.
+서비스 재시작만으로 미확인 실행을 풀지 않는다. Linux 호스트 boot ID가 시작 때와 달라진 경우는
+이전 커널의 자원 종료 증거로 복구하며 결과·감사 성공으로 해석하지 않는다. 예전 형식처럼 시작
+boot ID/반환 증거가 없는 기록은 추정하지 않고 닫힌 상태를 유지한다. 이 경우 보호된 자원 종료
+증거를 제공할 수 없는 설치는 별도 운영 복구 검토가 필요하다. 영수증 삭제는 복구 절차가 아니다.
+
+URL v2 공개 관리 API는 영속 준비 영수증에 결속한 같은 운영자의 task에만
+`POST /api/tasks/{id}/control`의 `pause`·`resume`을 전달한다. chat·steer·rerun·설정 API는 열지 않는다.
+활동 조회·history·stream·seq 상세는 task를 명시해야 한다. 상속된 다른 task 의도 세션은 열지 않으며,
+원문 명령·도구 인자·모델 문장·자격·metadata는 공개 활동 응답에 포함하지 않는다. 스트림은 즉시
+flush하며 매 이벤트에서 인증·결속을 재검사하고 30초 후 재연결하도록 끝낸다.
+preparation-only 내부 서버 차단은 유지한다.
+
+검증: `TestUnknownPublicationDoesNotReleaseExecution`,
+`TestUnknownClosureRecoveryPreservesFactsAndReservations`,
+`TestURLManagementOperationsPublicEntryOwnedPostgres`.
+마지막 시험은 실제 설치 인증·공개 관리 mux·작업 권한 조회·소유 HTTP 수신기를 사용한다.
+합성 실행 수신기는 실제 Planner/Worker·Qwen 수용을 대신하지 않으며 유료 모델 시험은 NOT_RUN이다.

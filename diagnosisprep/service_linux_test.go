@@ -388,10 +388,10 @@ func TestRestartInterruptionsRemainUnknownAndOwned(t *testing.T) {
 			if b.calls.Load() != 1 {
 				t.Fatal("execution replayed on restart")
 			}
-			// C04: 복원된 Unknown은 새 회차 start를 막지 않는다(이전에는 busy로 설치 전체가 막혔다).
+			// 재시작은 이전 실행 반환·마감의 증거가 아니므로 새 회차를 차단한다.
 			next := create(t, recovered, "next")
-			if res := start(t, recovered, next, "newstart"); res.Error != "" {
-				t.Fatalf("recovered unknown blocked a new run: %q", res.Error)
+			if res := start(t, recovered, next, "newstart"); res.Error != "busy" {
+				t.Fatalf("unconfirmed restart allowed a new run: %q", res.Error)
 			}
 			r := request(AuthorizeTask)
 			r.TaskID = "42"
@@ -440,10 +440,13 @@ func TestAggregateReservationAndUnknownRetention(t *testing.T) {
 	s, b, _ := newFixture(t)
 	b.inspection.MaxRuns = 100
 	b.inspection.AggregateBudget = b.inspection.Scope.Budget
-	b.run = func(context.Context, Execution, Publish) error { return errors.New("unknown") }
+	b.run = func(_ context.Context, _ Execution, p Publish) error {
+		return p(Update{State: Unknown, Phase: Closure, PreparationStarted: true, AuthorityState: AuthorityNotIssued, DrainComplete: true})
+	}
 	j := create(t, s, "create")
 	start(t, s, j, "start")
 	awaitState(t, s, j.ID, Unknown)
+	awaitExecutionReturned(t, s, j.ID)
 	next := create(t, s, "next")
 	// C04: Unknown은 더 이상 busy로 막지 않는다. 다만 그 예약이 집계에 그대로 남아(집계=1회분),
 	// 다음 회차는 budget_exhausted로 막힌다(미확인 결과·예약을 해제하지 않음, 절대 규칙 5).

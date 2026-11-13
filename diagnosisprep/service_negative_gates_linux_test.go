@@ -163,7 +163,9 @@ func TestPublishRejectsTaskIDAlreadyBoundToAnotherJob(t *testing.T) {
 	if got := start(t, s, first, "first-start"); got.Error != "" {
 		t.Fatal(got.Error)
 	}
-	completed := awaitState(t, s, first.ID, Completed)
+	awaitState(t, s, first.ID, Completed)
+	awaitExecutionReturned(t, s, first.ID)
+	completed := status(t, s, first.ID)
 	r := request(Create)
 	r.Principal, r.IdempotencyKey, r.Input = "other-owner", "second", &first.Input
 	second := call(t, s, r)
@@ -282,7 +284,9 @@ func TestDrainedUnknownDoesNotBlockButRetainsReservation(t *testing.T) {
 	if got := start(t, s, first, "unknown-start"); got.Error != "" {
 		t.Fatal(got.Error)
 	}
-	before := awaitState(t, s, first.ID, Unknown)
+	awaitState(t, s, first.ID, Unknown)
+	awaitExecutionReturned(t, s, first.ID)
+	before := status(t, s, first.ID)
 	if !before.DrainComplete || before.ResultReady || before.Started || !reflect.DeepEqual(before.ModelUsage, usage) {
 		t.Fatalf("unknown facts not retained: %+v", before)
 	}
@@ -291,7 +295,9 @@ func TestDrainedUnknownDoesNotBlockButRetainsReservation(t *testing.T) {
 	if got := start(t, s, second, "second-start"); got.Error != "" {
 		t.Fatalf("drained unknown blocked a new run: %q", got.Error)
 	}
-	done := awaitState(t, s, second.ID, Completed)
+	awaitState(t, s, second.ID, Completed)
+	awaitExecutionReturned(t, s, second.ID)
+	done := status(t, s, second.ID)
 	// 새 회차가 돌아도 첫 회차의 Unknown 사실·예약은 그대로다.
 	if got := status(t, s, first.ID); !reflect.DeepEqual(got, before) {
 		t.Fatal("new run changed the retained unknown facts")

@@ -30,6 +30,7 @@ type urlPreparationRuntime struct {
 	resolver         *net.Resolver // nil이면 시스템 resolver. 시험은 전역 DNS를 변경하지 않는다.
 	mu               sync.RWMutex
 	live             map[string]*urlLiveHandler
+	recovery         map[string]*urlGatewayRunner
 	reports          map[string]*savedReportService
 	product          *productRuntime
 	hostCapabilities urlRuntimeHostCapabilities
@@ -487,6 +488,13 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	runner := &urlGatewayRunner{backend: b, launch: d, config: launch, loaded: l, taskID: taskID, operatorStop: func() bool {
 		return urlOperatorStop(parent, ctx)
 	}}
+	b.mu.Lock()
+	if b.recovery == nil {
+		b.recovery = map[string]*urlGatewayRunner{}
+	}
+	b.recovery[execution.Job.ID] = runner
+	runner.recoveryLive = b.live[taskID]
+	b.mu.Unlock()
 	gateway, err := diagnosis.NewPrepared(ctx, taskID, execution.Job.ID, runner, time.Duration(launch.ShutdownTimeoutSeconds)*time.Second)
 	if err != nil {
 		cleanup, done := launchCleanupContext(context.WithoutCancel(parent), launch)
@@ -567,11 +575,12 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 }
 
 type urlGatewayRunner struct {
-	backend *urlPreparationRuntime
-	launch  *launchedDiagnosis
-	config  launchConfig
-	loaded  *urlLoadedProfile
-	taskID  string
+	recoveryLive *urlLiveHandler
+	backend      *urlPreparationRuntime
+	launch       *launchedDiagnosis
+	config       launchConfig
+	loaded       *urlLoadedProfile
+	taskID       string
 	// operatorStop은 실행이 운영자 중지(진단 준비 중지가 상위 문맥을 취소)나 대상 철회로 끝났는지 본다. 설치·위임
 	// 검사 실패, 상태 조회 실패, 시간 상한은 여기에 들지 않는다(저장 기록은 failed 그대로).
 	operatorStop func() bool
@@ -968,4 +977,39 @@ func urlDiagnosisGoal(target, workflowMode string, methods []string) string {
 		flow += " State-changing requests require separately granted scope and per-request confirmation; never invent that permission."
 	}
 	return scope + flow + " Collect only supported observations and unconfirmed review candidates. Do not request other origins."
+}
+
+// VerifyClosure는 반환한 실행의 잔존 자원만 마감한다. 실행·권위·결과를 재생성하지 않는다.
+func (b *urlPreparationRuntime) VerifyClosure(ctx context.Context, execution diagnosisprep.Execution) error {
+	b.mu.RLock()
+	runner := b.recovery[execution.Job.ID]
+	b.mu.RUnlock()
+	if runner == nil || runner.taskID != execution.Job.TaskID {
+		return errPreparation
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	_ = runner.launch.runtime.Close(ctx)
+	state, ok := runner.launch.runtime.(interface{ ResourcesClosed() bool })
+	if !ok || !state.ResourcesClosed() {
+		return errPreparation
+	}
+	if runner.recoveryLive != nil && runner.recoveryLive.drain(ctx) != nil {
+		return errPreparation
+	}
+	if runner.launch.authorityDB != nil {
+		if runner.launch.authorityDB.Close() != nil {
+			return errPreparation
+		}
+		runner.launch.authorityDB = nil
+	}
+	if runner.launch.manager != nil {
+		runner.launch.manager.Close()
+		runner.launch.manager = nil
+	}
+	b.mu.Lock()
+	delete(b.live, runner.taskID)
+	delete(b.recovery, execution.Job.ID)
+	b.mu.Unlock()
+	return nil
 }
