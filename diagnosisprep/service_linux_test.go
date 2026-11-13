@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -412,7 +413,7 @@ func TestTerminalReportsAndReservationsSurviveRestart(t *testing.T) {
 	}
 	defer recovered.Shutdown(context.Background())
 	got := status(t, recovered, j.ID)
-	if got != final {
+	if !reflect.DeepEqual(got, final) {
 		a, _ := json.Marshal(got)
 		c, _ := json.Marshal(final)
 		if string(a) != string(c) {
@@ -694,5 +695,43 @@ func TestPublishRejectsCompletionWithoutRunResult(t *testing.T) {
 	final := awaitState(t, s, j.ID, Unknown)
 	if completionErr == nil || final.Outcome != "" || final.IntentOutcomes != nil {
 		t.Fatalf("completion without result: err=%v job=%+v", completionErr, final)
+	}
+}
+
+// 실행이 넘긴 시험 계정별 인증 결과는 completed·cancelled·failed 작업에 남고(재시작 뒤에도), 다른 상태에는 남지 않는다(§3.4).
+func TestAccountAuthReachesTerminalJob(t *testing.T) {
+	s, b, _ := newFixture(t)
+	auth := map[string]string{"tester-a": "authenticated", "tester-b": "login_failed"}
+	b.run = func(_ context.Context, _ Execution, p Publish) error {
+		return p(Update{State: Failed, Phase: Closure, PreparationStarted: true, DrainComplete: true, AuthorityState: AuthorityNotIssued, AccountAuth: auth})
+	}
+	j := create(t, s, "create")
+	start(t, s, j, "start")
+	got := awaitState(t, s, j.ID, Failed)
+	if got.AccountAuth["tester-a"] != "authenticated" || got.AccountAuth["tester-b"] != "login_failed" || len(got.AccountAuth) != 2 {
+		t.Fatalf("failed job lost account_auth: %v", got.AccountAuth)
+	}
+	auth["tester-a"] = "not_sent"
+	if again := status(t, s, j.ID); again.AccountAuth["tester-a"] != "authenticated" {
+		t.Fatal("job shares the update map")
+	}
+}
+
+func TestAccountAuthDroppedOutsideTerminalStates(t *testing.T) {
+	s, b, _ := newFixture(t)
+	release := make(chan struct{})
+	b.run = func(ctx context.Context, _ Execution, p Publish) error {
+		if err := p(Update{State: Unknown, Phase: Planning, PreparationStarted: true, AuthorityState: AuthorityNotIssued, AccountAuth: map[string]string{"tester-a": "authenticated"}}); err != nil {
+			return err
+		}
+		<-release
+		return nil
+	}
+	j := create(t, s, "create")
+	start(t, s, j, "start")
+	got := awaitState(t, s, j.ID, Unknown)
+	close(release)
+	if got.AccountAuth != nil {
+		t.Fatalf("unknown job carried account_auth: %v", got.AccountAuth)
 	}
 }

@@ -33,3 +33,27 @@ func TestURLClosingResultByState(t *testing.T) {
 		t.Fatal("cancelled without counts gained a result")
 	}
 }
+
+// 마감 갱신의 계정별 인증 결과는 completed·cancelled·failed에만 남는다(계약 §3.4). runtime이 아는 결과는 형식을
+// 확인한 사본으로 마감 결과에 실린다.
+func TestURLClosingAccountAuth(t *testing.T) {
+	auth := map[string]string{"tester-a": "authenticated"}
+	for state, kept := range map[diagnosisprep.State]bool{diagnosisprep.Completed: true, diagnosisprep.Cancelled: true, diagnosisprep.Failed: true, diagnosisprep.Unknown: false, diagnosisprep.Running: false} {
+		got := urlClosingResult(diagnosisprep.Update{State: state, AccountAuth: auth})
+		if (got.AccountAuth != nil) != kept {
+			t.Errorf("%s: account_auth kept=%v", state, got.AccountAuth != nil)
+		}
+	}
+	if got := launchAccountAuth(fakeAuthRuntime{auth: auth}); got["tester-a"] != "authenticated" {
+		t.Fatal("runtime account auth not carried", got)
+	} else if got["tester-a"] = "not_sent"; auth["tester-a"] != "authenticated" {
+		t.Fatal("closure shares the runtime map")
+	}
+	if launchAccountAuth(fakeAuthRuntime{auth: map[string]string{"Tester": "authenticated"}}) != nil || launchAccountAuth(struct{}{}) != nil {
+		t.Fatal("malformed or missing account auth carried")
+	}
+}
+
+type fakeAuthRuntime struct{ auth map[string]string }
+
+func (f fakeAuthRuntime) AccountAuth() map[string]string { return f.auth }
