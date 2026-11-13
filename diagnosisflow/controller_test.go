@@ -323,8 +323,29 @@ func TestUnknownWriteIsNotResentWithAnotherCommand(t *testing.T) {
 		}
 		read := c.addLocked("GET", "/read/cart/add", "page", "html_link", "/read")
 		read.Selected, read.Change = true, "attested_read"
+		form := c.addLocked("GET", "/read/submit", "form", "html_form", "/read")
+		form.Selected, form.Change = true, "possible"
 		c.record.Snapshot.Stage = "diagnosing"
 		c.mu.Unlock()
+		// 상태를 바꿀 수 있는 GET 폼도 결과 불명 뒤 query만 바꿔 다시 보내지 않는다(#525 이동찬 리뷰). 비변경을 확인한 읽기는
+		// 결과 불명이어도 다시 보낸다.
+		getForm := e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/submit?x=1"}
+		if err := c.Before(t.Context(), getForm); err != nil {
+			t.Fatal(mode, "GET form denied", err)
+		}
+		if err := c.After(t.Context(), getForm, e2proxy.Receipt{AttemptID: "attempt-form", CallRef: "call-0", Decision: "allowed", ForwardAttempted: true, RequestWritten: true, Reason: e2proxy.Unknown}); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Before(t.Context(), e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/submit?x=2"}); !errors.Is(err, ErrDenied) {
+			t.Fatalf("%s: GET form with an unknown result resent: %v", mode, err)
+		}
+		readView := e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/cart/add"}
+		if err := c.After(t.Context(), readView, e2proxy.Receipt{AttemptID: "attempt-read", CallRef: "call-0", Decision: "allowed", ForwardAttempted: true, RequestWritten: true, Reason: e2proxy.Unknown}); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Before(t.Context(), readView); err != nil {
+			t.Fatal(mode, "attested read blocked after an unknown result", err)
+		}
 		post := e2proxy.RequestView{Method: "POST", URL: "https://owned.test/read/cart/add", BodyPresent: true}
 		if err := c.Before(t.Context(), post); err != nil {
 			t.Fatal(mode, "first write denied", err)
