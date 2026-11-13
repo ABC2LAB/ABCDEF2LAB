@@ -1,15 +1,17 @@
-// 계정 분류(시험 계정 표시) seam — 목업.
-// 계약: docs/contracts/exploration-boundary.md §8(계정과 인증)·§9-7(저장 위치·승인 주체 = 이동찬·이경준 미정).
+// 계정 분류(시험 계정 표시) seam — 실 API 읽기 연결.
+// 계약: docs/contracts/exploration-boundary.md §8(계정과 인증)·§9-7. 서버 /api/product/targets[/{id}/accounts]
+//   (diagnosisprep ProductTarget / ProductAccount / ProductResponse).
 //
-// ※ 절대규칙 2 · 수용시험 S09: 계정 원문·비밀번호·토큰·세션 값은 다루지 않는다. ref(별칭)·대상 origin·역할·분류 상태만.
-//   값은 애초에 없다. 모델 입력·로그·근거 파일·export 에 넣지 않는다.
-// ※ §8 fail-closed: 승인된 '시험 계정' 표시가 아니면 실계정으로 본다. 표시 없음·판단 불가도 실계정.
-// ※ 효력 시점(development-plan.md 계정 분류 항목·CLAUDE.md 절대규칙 2): §8은 아직 목표 규칙이고 현행은 S09다.
-//   계정 분류 기능·S09·§8 개정이 함께 들어오기 전에는 이 분류가 어떤 계정에도 탐색·모델 입력 권한을 주지 않는다.
-//   나중에도 허용은 승인된 일회용 시험 계정에 대상이 발급한 세션만이고 비밀번호는 계속 제외된다.
-// ※ 저장 위치·승인 주체 미정(§8 "결정·구현 전", §9-7) → 이 seam 은 목업이다. 실 배선은 이동찬 정렬 후
-//   getAccounts(targetRef) 만 실 저장소에 연결한다(표현/데이터 분리 — 화면은 안 바뀐다). register/approve 는
-//   지금 저장되지 않는다(화면이 "목업"을 명시).
+// ※ 절대규칙 2 · 수용시험 S09: 계정 원문·비밀번호·토큰·세션 값은 다루지 않는다. label(별칭)·대상 origin·분류 상태·
+//   등록/표시자·사유만. 자격 값은 응답에 애초에 없다(credential_configured 는 '있음' 여부뿐). 모델 입력·로그·근거
+//   파일·export 에 넣지 않는다.
+// ※ §8 fail-closed: 서버 분류가 'test'(승인된 시험 표시)가 아니면 전부 실계정으로 본다. real·미표시·판단 불가·형식 밖 모두.
+// ※ 효력 시점(CLAUDE.md 절대규칙 2): 이 분류가 지금 탐색·모델 입력 권한을 바로 주지 않는다 — 허용은 승인된 일회용
+//   시험 계정에 대상이 발급한 세션만이고 비밀번호는 계속 제외된다.
+// ※ 읽기만 연결했다: getProductTargets(대상 목록)·getAccounts(대상)=실 GET. 등록·시험 표시·해제(POST)는 후속.
+//   표현/데이터 분리 — 파싱·분류 매핑은 전부 여기(seam), 화면은 그리기만.
+
+import { apiFetch } from "@/lib/diagnosis/api";
 
 /** §8 분류 상태. 표시는 프로그램이 보호 저장소로 확인한다(모델·도구가 쓴 문자열이 아니다). */
 export type AccountClass = "test_approved" | "test_pending" | "unmarked";
@@ -40,7 +42,7 @@ export function classLabel(cls: string): string {
 
 /**
  * 분류 판정만 한다: 승인된 '시험 계정' 표시(test_approved)인가. 승인 대기·미표시·판단 불가(미등록 값)는 false(실계정).
- * 탐색·모델 입력 권한 판정이 아니다 — 지금은 S09 현행이라 true 여도 권한이 없다(위 효력 시점).
+ * 탐색·모델 입력 권한 판정이 아니다 — true 여도 권한은 승인된 일회용 시험 계정의 대상 발급 세션에 한한다(위 효력 시점).
  */
 export function usableAsTestAccount(cls: string): boolean {
   return normalizeClass(cls) === "test_approved";
@@ -48,7 +50,7 @@ export function usableAsTestAccount(cls: string): boolean {
 
 /**
  * 분류된 계정 한 행. 자격(비밀번호·토큰·세션)은 없다(절대규칙 2 · S09) — ref·origin·역할·상태만.
- * approvedBy 는 승인 주체 ref(미정 — 목업). 사람 값이 아니라 식별 별칭이다.
+ * approvedBy 는 표시(승인) 주체 ref. 사람 값이 아니라 식별 별칭이다.
  */
 export type ClassifiedAccount = {
   ref: string;
@@ -60,9 +62,11 @@ export type ClassifiedAccount = {
   note?: string;
 };
 
-/** 한 묶음의 분류 결과. mock=true 면 예시(실 저장소 아님) — 화면이 배너로 명시. */
+/** 한 묶음의 분류 결과. mock=true 면 예시(실 저장소 아님) — 화면이 배너로 명시. 실 연결에서는 false. */
 export type AccountClassification = {
   accounts: ClassifiedAccount[];
+  /** 시험 계정 표시 진술 문장(ProductResponse.account_statement). mark-test 동의에 쓴다. 없으면 "". */
+  statement: string;
   mock: boolean;
 };
 
@@ -74,7 +78,7 @@ export type AccountSummary = {
   testPending: number;
   /** 미표시 — 실계정 취급. */
   unmarked: number;
-  /** 승인된 시험 계정 분류 수(= testApproved, 분류 판정). 지금은 탐색·모델 입력 권한을 뜻하지 않는다(S09 현행). */
+  /** 승인된 시험 계정 분류 수(= testApproved, 분류 판정). 지금은 탐색·모델 입력 권한을 뜻하지 않는다. */
   usable: number;
 };
 
@@ -90,29 +94,99 @@ export function summarizeAccounts(accounts: readonly ClassifiedAccount[]): Accou
   };
 }
 
-// ---------- 예시(mock) ----------
+// ---------- 실 API (읽기) ----------
 
-// ref 는 자격이 아니라 식별 별칭이다(절대규칙 2). 승인된 시험·승인 대기·미표시(실계정 취급)를 섞는다.
-const MOCK_ACCOUNTS: ClassifiedAccount[] = [
-  {
-    ref: "acct:test-01",
-    origin: "https://target.example",
-    role: "일반 사용자",
-    cls: "test_approved",
-    approvedBy: "operator:mock",
-    approvedAt: "2026-11-12T00:00:00Z",
-    note: "일회용 시험 계정",
-  },
-  { ref: "acct:test-02", origin: "https://target.example", role: "일반 사용자", cls: "test_pending" },
-  { ref: "acct:admin-demo", origin: "https://target.example", role: "관리자", cls: "test_pending" },
-  { ref: "acct:unknown-07", origin: "https://target.example", cls: "unmarked", note: "표시 없음 — 실계정으로 본다" },
-  { ref: "acct:legacy-03", origin: "https://target.example", role: "일반 사용자", cls: "unmarked" },
-];
+/** 분류 대상(계정 목록을 고를 승인된 대상). id 는 /api/product/targets/{id} 의 것. */
+export type ProductTargetRef = { id: string; origin: string; state: string };
+
+// 서버 계정 라벨 형식(diagnosisprep accountLabel). 소문자·숫자·_·- 만 — 사용자명·이메일 원문을 막는다.
+const ACCOUNT_LABEL = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+/** 서버와 같은 계정 라벨 형식 검사(화면 입력 사전 검증용). */
+export const isValidAccountLabel = (label: string): boolean => ACCOUNT_LABEL.test(label);
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+const asStr = (v: unknown): string => (typeof v === "string" ? v : "");
+
+/** 서버 분류(test|real) → 화면 3-state. 'test'만 승인된 시험(test_approved), 그 밖은 실계정(unmarked, §8 fail-closed). */
+export function classFromServer(classification: string): AccountClass {
+  return classification === "test" ? "test_approved" : "unmarked";
+}
 
 /**
- * 계정 분류 조회. 지금은 목업만 반환한다(저장 위치·승인 주체 미정, §9-7).
- * ※ 실 저장소·라우트는 이동찬 정렬 후 확정한다. 그때 targetRef 로 실 분류를 읽어 매핑하고, 이 함수만 교체한다.
+ * 계정 분류 대상 목록(선택용). 실 라우트 GET /api/product/targets. 형식이 깨진 행은 버린다(fail-closed).
+ * id·origin·state 만 읽는다(자격 없음).
  */
-export async function getAccounts(_targetRef: string | null): Promise<AccountClassification> {
-  return { accounts: MOCK_ACCOUNTS, mock: true };
+export async function getProductTargets(): Promise<ProductTargetRef[]> {
+  const res = await apiFetch<unknown>("/api/product/targets", { cache: "no-store", redirect: "error" });
+  const rows = isObj(res) && Array.isArray(res.targets) ? res.targets : [];
+  const out: ProductTargetRef[] = [];
+  for (const t of rows) {
+    if (isObj(t) && typeof t.id === "string" && typeof t.origin === "string") {
+      out.push({ id: t.id, origin: t.origin, state: asStr(t.state) });
+    }
+  }
+  return out;
+}
+
+/**
+ * 한 대상의 계정 분류. 실 라우트 GET /api/product/targets/{id}/accounts(ProductResponse.accounts).
+ * 응답에 자격·세션 값은 없다 — label·분류·등록/표시자·사유만. origin 은 대상 것으로 채운다(응답엔 계정별 origin 없음).
+ * 대상이 없으면 빈 목록(화면이 '대상 선택' 안내). 형식 밖 행(라벨 형식 위반 등)은 버린다(fail-closed §8).
+ */
+export async function getAccounts(target: ProductTargetRef | null): Promise<AccountClassification> {
+  if (!target) return { accounts: [], statement: "", mock: false };
+  const res = await apiFetch<unknown>(`/api/product/targets/${encodeURIComponent(target.id)}/accounts`, {
+    cache: "no-store",
+    redirect: "error",
+  });
+  const rows = isObj(res) && Array.isArray(res.accounts) ? res.accounts : [];
+  const accounts: ClassifiedAccount[] = [];
+  for (const a of rows) {
+    if (!isObj(a) || typeof a.label !== "string" || !ACCOUNT_LABEL.test(a.label)) continue;
+    const reason = asStr(a.reason);
+    let note: string | undefined;
+    if (reason) note = `실계정 전환 사유: ${reason}`;
+    else if (a.credential_configured === true) note = "자격 설정됨(값 비표시)";
+    const classifiedBy = asStr(a.classified_by);
+    accounts.push({
+      ref: a.label,
+      origin: target.origin,
+      cls: classFromServer(asStr(a.classification)),
+      approvedBy: classifiedBy || undefined,
+      approvedAt: typeof a.classified_at === "string" ? a.classified_at : undefined,
+      note,
+    });
+  }
+  return { accounts, statement: isObj(res) ? asStr(res.account_statement) : "", mock: false };
+}
+
+// ---------- 실 API (쓰기) ----------
+
+const accountsBase = (targetId: string) => `/api/product/targets/${encodeURIComponent(targetId)}/accounts`;
+
+/** 계정 등록(분류 real). 라벨 형식은 서버와 같게 미리 검사한다 — 형식 밖이면 보내지 않는다(fail-closed). */
+export async function registerAccount(targetId: string, label: string): Promise<void> {
+  if (!ACCOUNT_LABEL.test(label)) throw new Error("invalid_account_label");
+  await apiFetch<unknown>(accountsBase(targetId), {
+    method: "POST",
+    body: JSON.stringify({ label }),
+    redirect: "error",
+  });
+}
+
+/** 시험 계정 표시(account_mark_test). 승인자가 진술에 동의(statement_confirmed=true)해야 서버가 받는다(없으면 409). */
+export async function markTestAccount(targetId: string, label: string): Promise<void> {
+  await apiFetch<unknown>(`${accountsBase(targetId)}/${encodeURIComponent(label)}/mark-test`, {
+    method: "POST",
+    body: JSON.stringify({ statement_confirmed: true }),
+    redirect: "error",
+  });
+}
+
+/** 시험 표시 해제(account_unmark). 실계정 취급으로 되돌린다. */
+export async function unmarkAccount(targetId: string, label: string): Promise<void> {
+  await apiFetch<unknown>(`${accountsBase(targetId)}/${encodeURIComponent(label)}/unmark`, {
+    method: "POST",
+    body: "{}",
+    redirect: "error",
+  });
 }

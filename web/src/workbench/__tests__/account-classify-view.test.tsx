@@ -1,54 +1,130 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@/lib/diagnosis/api", () => ({ apiFetch: vi.fn() }));
+
+import { apiFetch } from "@/lib/diagnosis/api";
 
 import { AccountClassifyLive } from "../views/live/AccountClassifyLive";
 
-afterEach(cleanup);
+const api = vi.mocked(apiFetch);
 
-describe("AccountClassifyLive (목업)", () => {
-  it("미정·목업·규칙2 고지와 분류 목록을 그린다", async () => {
+/** 경로·메서드별 응답. GET=대상/계정 목록, POST=쓰기(빈 응답). 쓰기 뒤 뷰는 GET 으로 다시 읽는다. */
+function serve() {
+  api.mockImplementation((path: string, init?: RequestInit) => {
+    const method = init?.method ?? "GET";
+    if (path === "/api/product/targets")
+      return Promise.resolve({ targets: [{ id: "t1", origin: "https://a.example", state: "approved" }] }) as never;
+    if (path === "/api/product/targets/t1/accounts" && method === "GET")
+      return Promise.resolve({
+        accounts: [
+          { label: "owner", classification: "test", classified_by: "op-1" },
+          { label: "legacy", classification: "real" },
+        ],
+        account_statement: "소유·승인된 일회용 시험 계정이라는 진술",
+      }) as never;
+    if (method === "POST") return Promise.resolve({}) as never; // 등록·mark-test·unmark
+    return Promise.reject(new Error(`unexpected ${method} ${path}`)) as never;
+  });
+}
+
+afterEach(() => {
+  cleanup();
+  api.mockReset();
+});
+
+async function pickTarget() {
+  fireEvent.change(await screen.findByLabelText("분류할 대상"), { target: { value: "t1" } });
+  await screen.findByLabelText("계정 목록");
+}
+
+describe("AccountClassifyLive (실 API 읽기·쓰기)", () => {
+  it("규칙2 고지 + 대상 선택 후 분류 목록(시험/실계정)을 그린다", async () => {
+    serve();
     render(<AccountClassifyLive />);
-    expect(await screen.findByText(/저장 위치 · 승인 주체가 아직 정해지지 않았습니다/)).toBeInTheDocument();
-    expect(screen.getByText(/비밀번호 · 토큰 · 세션 값은 등록 · 표시 · 전송하지 않습니다/)).toBeInTheDocument();
-    expect(screen.getByText(/지금은 어떤 계정에도 탐색 · 모델 입력 권한을 부여하지 않습니다/)).toBeInTheDocument();
+    expect(screen.getByText(/비밀번호 · 토큰 · 세션 값은 읽지도 보이지도 않/)).toBeInTheDocument();
+    await pickTarget();
     const list = within(screen.getByLabelText("계정 목록"));
-    expect(list.getByText("acct:test-01")).toBeInTheDocument();
+    expect(list.getByText("owner")).toBeInTheDocument();
     expect(list.getAllByText("시험 계정").length).toBeGreaterThan(0);
-    // 미표시 계정은 실계정 취급으로 표시
     expect(list.getAllByText(/실계정 취급/).length).toBeGreaterThan(0);
   });
 
-  it("§2 운영자 전용: 내보내기·공유·export 버튼을 두지 않는다", async () => {
+  it("§2: 내보내기·공유·export 버튼을 두지 않는다", async () => {
+    serve();
     render(<AccountClassifyLive />);
-    await screen.findByText(/저장 위치 · 승인 주체/);
+    await pickTarget();
     for (const el of [...screen.queryAllByRole("button"), ...screen.queryAllByRole("link")]) {
       expect(el.textContent ?? "").not.toMatch(/내보내기|공유|export/i);
     }
   });
 
-  it("목업 조작(로컬): 미표시 → 시험 표시 등록 → 승인", async () => {
+  it("승인된 시험 계정도 '모델 입력 가능'으로 보이지 않는다(권한은 별도)", async () => {
+    serve();
     render(<AccountClassifyLive />);
-    const list = within(await screen.findByLabelText("계정 목록"));
-    const row = list.getByText("acct:legacy-03").closest("li") as HTMLElement;
-    fireEvent.click(within(row).getByRole("button", { name: "시험 표시 등록" }));
-    expect(within(row).getByText("표시 등록 · 승인 대기")).toBeInTheDocument();
-    fireEvent.click(within(row).getByRole("button", { name: "승인" }));
-    expect(within(row).getAllByText("시험 계정").length).toBeGreaterThan(0);
+    await pickTarget();
+    const list = within(screen.getByLabelText("계정 목록"));
+    expect(list.queryByText(/모델 입력 가능/)).toBeNull();
+    const owner = list.getByText("owner").closest("li") as HTMLElement;
+    expect(within(owner).getByText(/권한은 별도/)).toBeInTheDocument();
   });
 
-  // #465 리뷰: §8은 목표 규칙(현행 S09) — 예시 승인·로컬 승인 어느 쪽도 지금 입력 가능으로 보이지 않는다.
-  it("초기 승인 예시와 로컬 승인 뒤 모두 '모델 입력 가능'으로 표시하지 않는다", async () => {
+  it("계정 등록: 라벨 입력 → POST accounts {label}", async () => {
+    serve();
     render(<AccountClassifyLive />);
-    const list = within(await screen.findByLabelText("계정 목록"));
-    expect(screen.queryByText(/쓸 수 있음/)).toBeNull();
-    expect(list.queryByText(/모델 입력 가능/)).toBeNull();
-    const approved = list.getByText("acct:test-01").closest("li") as HTMLElement;
-    expect(within(approved).getByText(/아직 탐색 · 모델 입력 권한 없음/)).toBeInTheDocument();
-    const row = list.getByText("acct:legacy-03").closest("li") as HTMLElement;
-    fireEvent.click(within(row).getByRole("button", { name: "시험 표시 등록" }));
-    fireEvent.click(within(row).getByRole("button", { name: "승인" }));
-    expect(within(row).getByText(/아직 탐색 · 모델 입력 권한 없음/)).toBeInTheDocument();
-    expect(list.queryByText(/모델 입력 가능/)).toBeNull();
+    await pickTarget();
+    fireEvent.change(screen.getByLabelText("새 계정 라벨"), { target: { value: "newacct" } });
+    fireEvent.click(screen.getByRole("button", { name: "계정 등록" }));
+    expect(api).toHaveBeenCalledWith(
+      "/api/product/targets/t1/accounts",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ label: "newacct" }) }),
+    );
+  });
+
+  it("형식 밖 라벨이면 등록 버튼이 막힌다", async () => {
+    serve();
+    render(<AccountClassifyLive />);
+    await pickTarget();
+    fireEvent.change(screen.getByLabelText("새 계정 라벨"), { target: { value: "User@x" } });
+    expect(screen.getByRole("button", { name: "계정 등록" })).toBeDisabled();
+  });
+
+  it("시험 표시: 진술 동의 뒤에만 POST mark-test", async () => {
+    serve();
+    render(<AccountClassifyLive />);
+    await pickTarget();
+    const legacy = within(screen.getByLabelText("계정 목록")).getByText("legacy").closest("li") as HTMLElement;
+    fireEvent.click(within(legacy).getByRole("button", { name: "시험 표시" }));
+    // 진술 문장을 보여 주고 동의를 받는다
+    expect(within(legacy).getByText(/소유·승인된 일회용 시험 계정이라는 진술/)).toBeInTheDocument();
+    fireEvent.click(within(legacy).getByRole("button", { name: "동의하고 표시" }));
+    expect(api).toHaveBeenCalledWith(
+      "/api/product/targets/t1/accounts/legacy/mark-test",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ statement_confirmed: true }) }),
+    );
+  });
+
+  it("표시 해제: POST unmark", async () => {
+    serve();
+    render(<AccountClassifyLive />);
+    await pickTarget();
+    const owner = within(screen.getByLabelText("계정 목록")).getByText("owner").closest("li") as HTMLElement;
+    fireEvent.click(within(owner).getByRole("button", { name: "표시 해제" }));
+    expect(api).toHaveBeenCalledWith(
+      "/api/product/targets/t1/accounts/owner/unmark",
+      expect.objectContaining({ method: "POST", body: "{}" }),
+    );
+  });
+
+  it("승인된 대상이 없으면 안내만 보이고 계정 목록은 없다", async () => {
+    api.mockImplementation((path: string) =>
+      path === "/api/product/targets"
+        ? (Promise.resolve({ targets: [] }) as never)
+        : (Promise.reject(new Error("x")) as never),
+    );
+    render(<AccountClassifyLive />);
+    expect(await screen.findByText(/승인된 대상이 없습니다/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("계정 목록")).toBeNull();
   });
 });
