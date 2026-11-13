@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Autumn-27/artex/internal/diagnosticlog"
 	"github.com/Autumn-27/artex/llmpolicy"
 	"github.com/Autumn-27/norma/llm"
 	actool "github.com/Autumn-27/norma/tool"
@@ -53,6 +54,9 @@ func (p openRouterProvider) Stream(context.Context, llm.CompletionRequest) iter.
 }
 func (p openRouterProvider) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
 	if !validOpenRouterHistory(req) {
+		// 보내기 전 거부는 transport에 닿지 않아 다른 기록이 없다. 모델 예산은 이 실패를 예산 오류로 돌려주므로,
+		// 진단 로그에 사유를 남겨 원인을 찾을 수 있게 한다(내용은 남기지 않는다).
+		_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "openrouter", Event: "model_request_denied", Stage: "model_call", Status: "denied", ReasonCode: "history_invalid", Model: llmpolicy.OpenRouterModel, Role: diagnosticlog.RoleFrom(ctx)})
 		return llm.Message{}, "", llm.Usage{}, ErrOpenRouterProvider
 	}
 	msg, stop, usage, err := p.inner.Complete(ctx, req)
