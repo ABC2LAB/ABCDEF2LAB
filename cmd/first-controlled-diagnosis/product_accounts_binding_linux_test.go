@@ -312,10 +312,78 @@ func TestProductReportLoadsBindingAfterRevokeAndUnmark(t *testing.T) {
 	}
 }
 
-// 외부 API 모델 실행은 사전 공지·승인 동의 칸이 생기기 전까지 시험 계정을 결속하지 않는다.
+// 외부 API 모델 실행은 운영자 동의(초안 입력 external_test_accounts) 없이는 시험 계정을 결속하지 않는다.
 func TestAccountsAllowedForModelMode(t *testing.T) {
 	if accountsAllowedFor("openrouter") || !accountsAllowedFor("") || !accountsAllowedFor("local") {
 		t.Fatal("account binding gate by model mode changed")
+	}
+	consented := diagnosisprep.Input{ExternalTestAccounts: true}
+	if runBindsAccounts("openrouter", diagnosisprep.Input{}) || !runBindsAccounts("openrouter", consented) || !runBindsAccounts("", diagnosisprep.Input{}) {
+		t.Fatal("external test account consent does not gate account binding")
+	}
+	// 동의는 외부 API 실행에 계정을 실제로 결속했을 때만 서버로 넘긴다. 로컬 모델 실행에는 넘기지 않는다.
+	if !externalTestAccountsConsent("openrouter", consented, 1) || externalTestAccountsConsent("openrouter", consented, 0) ||
+		externalTestAccountsConsent("openrouter", diagnosisprep.Input{}, 1) || externalTestAccountsConsent("", consented, 1) {
+		t.Fatal("server consent derived from the wrong conditions")
+	}
+	// launch의 동의 칸은 서버 호스트 설정으로 그대로 간다.
+	c := launchConfig{HTTP: &httpLaunch{PolicyFile: "p", AuthorityFile: "a", AuthorityRoot: "r", ExternalTestAccounts: true}}
+	if host, ok := c.httpHostConfig(); !ok || !host.ExternalTestAccounts {
+		t.Fatal("launch consent not carried to the host config")
+	}
+	c.HTTP.ExternalTestAccounts = false
+	if host, ok := c.httpHostConfig(); !ok || host.ExternalTestAccounts {
+		t.Fatal("host config consent without launch consent")
+	}
+}
+
+// 외부 API 실행의 시험 계정 동의는 대상 승인자만 남기고, 진술 해시·주체·작업이 계정 저널에 남는다. 저널을 다시 읽어도 받으며,
+// 진술 해시가 다르거나 계정 라벨·다른 줄의 작업 칸이 섞인 줄은 거부한다(#552 윤재상 리뷰).
+func TestExternalConsentRecordedInAccountJournal(t *testing.T) {
+	r, root, target := accountTestTarget(t, true)
+	if err := r.recordExternalConsent("someone-else", target.ID, "job-consent"); err == nil {
+		t.Fatal("non-approver recorded an external consent")
+	}
+	if err := r.recordExternalConsent("ARTEX", target.ID, "../bad"); err == nil {
+		t.Fatal("invalid job ref accepted")
+	}
+	if err := r.recordExternalConsent("ARTEX", target.ID, "job-consent"); err != nil {
+		t.Fatal(err)
+	}
+	// 거부한 시도는 저널에 아무것도 남기지 않고, 남긴 동의 줄은 다시 열어도 받는다.
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := newProductTargetRegistry(root, r.policy, func() error { return nil })
+	if err != nil {
+		t.Fatal("account journal does not reopen after consent attempts:", err)
+	}
+	defer reopened.Close()
+	r = reopened
+	rec := r.records[target.ID]
+	good := productAccountEvent{TargetID: target.ID, Action: accountExternalConsent, Actor: "ARTEX", At: time.Now(), TargetRevision: rec.Target.Revision,
+		StatementSHA256: productExternalConsentStatementSHA256(), JobRef: "job-replay"}
+	if err := r.replayAccount(good); err != nil {
+		t.Fatal("valid consent line rejected on replay:", err)
+	}
+	for name, change := range map[string]func(*productAccountEvent){
+		"statement": func(e *productAccountEvent) { e.StatementSHA256 = productAccountStatementSHA256() },
+		"label":     func(e *productAccountEvent) { e.Label = "tester-a" },
+		"no-job":    func(e *productAccountEvent) { e.JobRef = "" },
+		"actor":     func(e *productAccountEvent) { e.Actor = "someone-else" },
+	} {
+		bad := good
+		change(&bad)
+		if err := r.replayAccount(bad); err == nil {
+			t.Fatalf("%s: tampered consent line accepted", name)
+		}
+	}
+	// 다른 줄에 작업 칸이 섞이면 거부한다.
+	if err := r.replayAccount(productAccountEvent{TargetID: target.ID, Label: "tester-x", Action: accountRegister, Actor: "ARTEX", At: time.Now(), TargetRevision: rec.Target.Revision, JobRef: "job-x"}); err == nil {
+		t.Fatal("job ref on a register line accepted")
+	}
+	if productExternalConsentStatementSHA256() == productAccountStatementSHA256() || !strings.Contains(productExternalConsentStatement, "외부 모델 제공자") {
+		t.Fatal("consent statement not distinct")
 	}
 }
 
