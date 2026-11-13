@@ -1713,6 +1713,15 @@ a.ph:hover {
 .fsec-h h2 {
   font-size: 14.5px;
 }
+/* 제목 · 칸 이름 옆 작은 딱지 (예: 로그인 · 연결 전). 칸 높이만큼 늘어나지 않게 위에 붙인다 */
+.fsec-ht {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  align-content: flex-start;
+  align-self: start;
+  gap: 6px 8px;
+}
 .fsec-h p {
   font-size: 12.5px;
   color: var(--ink-3);
@@ -1984,6 +1993,55 @@ select.inp {
   padding: 0;
   overflow-wrap: anywhere;
 }
+/* 로그인 없이 점검: 그때 점검하는 목표 · 빠지는 목표 (시안 #nPubNote) */
+.pubnote {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px 14px;
+  align-items: center;
+  margin: 0;
+  padding: 14px 16px;
+  background: var(--well);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  max-width: 488px;
+}
+.pubnote dt {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.pubnote dd {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.pubnote .pg {
+  display: inline-flex;
+  align-items: center;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--accent-line);
+  background: var(--accent-bg);
+  color: var(--accent-ink);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.pubnote .pg.off {
+  border-color: var(--rule-2);
+  background: var(--bg);
+  color: var(--ink-3);
+  text-decoration: line-through;
+  text-decoration-color: var(--rule-2);
+}
+.pubnote small {
+  font-size: 12px;
+  color: var(--ink-3);
+}
 /* 주소 밑 줄의 '진행 중 점검 보기' (이미 점검 중인 사이트) */
 .busylink {
   font-size: 12.5px;
@@ -2050,6 +2108,10 @@ select.inp {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+.goal.off {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .goal {
   position: relative;
@@ -4544,6 +4606,9 @@ button.smm:hover {
 /* 입력칸은 넣는 값 길이만큼만: 넓은 화면에서 끝까지 늘어나지 않게 (폰에서는 그대로 꽉 차게) */
 .fsec-b .two .inp {
   max-width: 260px;
+}
+.fsec-b .two select.workers {
+  max-width: 96px;
 }
 /* 로그인 계정 줄 (시안 v66 ~ v68): 계정 이름 · 아이디 · 비밀번호 */
 .acct {

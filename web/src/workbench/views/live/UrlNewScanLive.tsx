@@ -6,8 +6,10 @@
 // URL 은 요청일 뿐이고 허가는 서버 설치 범위와 E② 가 정한다.
 // 입력은 두 쪽 묶음(시안 fgrps · fgrp)으로 나눈다: 1쪽 대상 → [다음] → 2쪽 분석 모델 · 점검 설정 → [승인 범위 확인].
 // 쪽마다 아래에 쪽 이동 줄(stepnav)이 있고, 요약 패널이 안 보이면(좁은 화면 · 접음) 폼 아래 시작 줄(formbar)에 실행 버튼을 둔다.
-// 시안의 로그인(계정 A 관리자 / B 일반 · 쿠키) · 최근 점검한 주소 · 점검 목표 · 점검 범위 · 워커 수 · LLM 서버 주소 · 연결 상태는
-// 서버 진단 입력(URLDiagnosisInput)과 catalog 에 칸이 없어 그리지 않는다. 받아도 보낼 곳이 없는 값을 치게 하지 않는다.
+// 시안의 로그인(계정 A 관리자 / B 일반) · 최근 점검한 주소 · 점검 목표 · 점검 범위 · 워커 수 · LLM 서버 주소는 서버 진단
+// 입력(URLDiagnosisInput)과 catalog 에 칸이 없다. 시안 모양 그대로 그리되 꺼 두고 '연결 전' 딱지를 붙인다 — 받아도 보낼 곳이
+// 없는 값을 치게 하지 않고, 시작 조건에도 넣지 않는다. 고른 상태는 지금 실제 동작(로그인 없이)만 표시하고, 서버가 정하는
+// 값(점검 범위 · 워커 수 · 등록 날짜 · LLM 연결 상태 · 최근 주소)은 지어내지 않는다.
 
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
@@ -69,6 +71,30 @@ function Rule({ t, sub, warn = false, tip }: { t: ReactNode; sub?: string; warn?
     </li>
   );
 }
+
+/** 연결 전 딱지: 시안 칸은 있으나 서버 입력 · 데이터가 없어 꺼 둔 칸 (NotYet 과 같은 모양, 글만 '연결 전'). */
+function Unwired({ why }: { why: string }) {
+  return (
+    <span className={cx(s.tag, s.out)} title={why}>
+      연결 전<span className={s["sr-only"]}>{` · ${why}`}</span>
+    </span>
+  );
+}
+const NO_INPUT = "서버 진단 입력에 칸이 없습니다";
+
+/** 시안 로그인 계정 줄 (역할 이름만, 값은 비운다). */
+const LOGIN_ACCOUNTS = [
+  ["A", "관리자"],
+  ["B", "일반 · 테스트"],
+] as const;
+/** 시안 점검 목표. login: 계정이 있어야 하는 목표('로그인 없이 점검'이면 고를 수 없음, 시안 .goal[data-login]) */
+const GOALS = [
+  ["남의 정보 보기 (IDOR)", true],
+  ["관리자 기능 접근", true],
+  ["로그인 없이 접근", false],
+  ["민감정보 노출", false],
+] as const;
+const DEPTHS = ["빠르게", "보통", "꼼꼼하게"] as const;
 
 /** 제외 경로 칸의 흐린 예시. 경로 단위라 query(?) 없이 — 서버 · 웹 입력 검사가 '?' 를 받지 않는다. */
 export const EXCLUDE_EXAMPLE = "/logout\n/delete";
@@ -382,7 +408,7 @@ export function UrlNewScanLive() {
 
           <div className={s.fgrps}>
             {/* biome-ignore lint/a11y/useSemanticElements: 시안 마크업 그대로 (fieldset 테두리 · 여백 없이 묶음만) */}
-            <div className={s.fgrp} role="group" aria-label="대상" hidden={page !== 1}>
+            <div className={s.fgrp} role="group" aria-label="대상 · 로그인" hidden={page !== 1}>
               <div className={s.fsec}>
                 <div className={s["fsec-h"]}>
                   <h2 id="luStep1H" tabIndex={-1}>
@@ -424,6 +450,90 @@ export function UrlNewScanLive() {
                       if (handle && !job?.preparation_started) void runUrlAction("validate");
                     }}
                   />
+                  {/* 최근 점검한 주소: 서버에 점검 목록이 없어 줄을 만들지 않는다 */}
+                  <div className={s.field}>
+                    <div className={s["fsec-ht"]}>
+                      <span className={s.lbl}>최근 점검한 주소</span>
+                      <Unwired why="서버에 점검 목록이 없습니다" />
+                    </div>
+                    <div className={s.chiprow}>
+                      <span className={s.help}>불러올 수 있는 최근 주소가 없습니다</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* 로그인 (시안 #nAuth): 서버 진단 입력에 계정 칸이 없어 모두 꺼 둔다. 지금 점검은 로그인 없이 진행되므로 그 상태로
+                  두고(시안 #nPubNote), 계정 줄은 값 없이 칸만 */}
+              <div className={s.fsec}>
+                <div className={cx(s["fsec-h"], s["fsec-ht"])}>
+                  <h2>로그인</h2>
+                  <Unwired why={`${NO_INPUT} · 지금 점검은 로그인 없이 진행됩니다`} />
+                </div>
+                <div className={s["fsec-b"]}>
+                  <div className={s.seg} role="radiogroup" aria-label="로그인 여부">
+                    <label>
+                      <input type="radio" name="nAuth" value="in" disabled />
+                      <span>로그인해서 점검</span>
+                    </label>
+                    <label>
+                      <input type="radio" name="nAuth" value="pub" disabled defaultChecked />
+                      <span>로그인 없이 점검</span>
+                    </label>
+                  </div>
+                  <dl className={s.pubnote}>
+                    <dt>점검</dt>
+                    <dd>
+                      {GOALS.filter(([, login]) => !login).map(([t]) => (
+                        <span className={s.pg} key={t}>
+                          {t}
+                        </span>
+                      ))}
+                    </dd>
+                    <dt>빠짐</dt>
+                    <dd>
+                      {GOALS.filter(([, login]) => login).map(([t]) => (
+                        <span className={cx(s.pg, s.off)} key={t}>
+                          {t}
+                        </span>
+                      ))}
+                      <small>계정이 있어야 함</small>
+                    </dd>
+                  </dl>
+                  <div className={s["fsec-b"]}>
+                    <div className={s.seg} role="radiogroup" aria-label="로그인 방법">
+                      <label>
+                        <input type="radio" name="nHow" value="form" disabled />
+                        <span>아이디 · 비밀번호</span>
+                      </label>
+                      <label>
+                        <input type="radio" name="nHow" value="sess" disabled />
+                        <span>쿠키 붙여넣기</span>
+                      </label>
+                    </div>
+                    {LOGIN_ACCOUNTS.map(([id, role]) => (
+                      <div className={s.acct} key={id}>
+                        <span className={s.an}>
+                          {`계정 ${id}`}
+                          <small className={id === "A" ? s.adm : undefined}>{role}</small>
+                        </span>
+                        <input
+                          className={s.inp}
+                          disabled
+                          placeholder="아이디"
+                          aria-label={`계정 ${id} (${role}) 아이디`}
+                        />
+                        <input
+                          className={s.inp}
+                          type="password"
+                          disabled
+                          placeholder="비밀번호"
+                          autoComplete="new-password"
+                          aria-label={`계정 ${id} (${role}) 비밀번호`}
+                        />
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
               <div className={s.stepnav}>
@@ -467,8 +577,8 @@ export function UrlNewScanLive() {
                       </label>
                     ))}
                   </div>
-                  {/* 시안 #nLocal 은 모델 · LLM 서버 주소 두 칸. 서버 주소 · 연결 상태는 설치 프로필이 정하고 화면으로 받지
-                      않아 모델 칸만 둔다(칸 폭은 시안 두 칸 줄 그대로) */}
+                  {/* 시안 #nLocal: 모델 · LLM 서버 주소. 서버 주소는 설치 프로필이 정하고 화면으로 받지 않아 꺼 둔다.
+                      연결 상태(#nLocalState)는 서버가 알려 주지 않아 그리지 않는다 */}
                   <div className={s.two}>
                     <div className={s.field}>
                       <label className={s.lbl} htmlFor="luProfile">
@@ -489,6 +599,17 @@ export function UrlNewScanLive() {
                         {!profiles.length ? <option value="">설치된 모델 없음</option> : null}
                       </select>
                     </div>
+                    {external ? null : (
+                      <div className={s.field}>
+                        <div className={s["fsec-ht"]}>
+                          <label className={s.lbl} htmlFor="nSrv">
+                            LLM 서버 주소
+                          </label>
+                          <Unwired why="모델 서버 주소는 설치 프로필이 정하고, 화면에서 보거나 바꾸는 서버 입력이 없습니다" />
+                        </div>
+                        <input id="nSrv" className={cx(s.inp, s.mono)} disabled placeholder="설치 프로필이 정함" />
+                      </div>
+                    )}
                   </div>
                   {external && !shown ? (
                     <ExternalModelSettings
@@ -539,11 +660,61 @@ export function UrlNewScanLive() {
                       </div>
                     </div>
                   ) : null}
+                  {/* 점검 목표 (시안 #nGoalL): 서버 진단 입력에 칸이 없어 꺼 둔다. 계정이 있어야 하는 목표는 지금 상태(로그인
+                      없이)에서 고를 수 없는 모양(.off). 무엇을 점검할지 고른 것처럼 보이지 않게 체크는 하지 않는다 */}
+                  <div className={s.field}>
+                    <div className={s["fsec-ht"]}>
+                      <span className={s.lbl} id="nGoalL">
+                        점검 목표
+                      </span>
+                      <Unwired why={NO_INPUT} />
+                    </div>
+                    {/* biome-ignore lint/a11y/useSemanticElements: 시안 마크업 그대로 */}
+                    <div className={s.goals} role="group" aria-labelledby="nGoalL">
+                      {GOALS.map(([t, login]) => (
+                        <label className={cx(s.goal, login && s.off)} key={t}>
+                          <input type="checkbox" disabled />
+                          <span>{t}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
                   {/* 쓰기 메서드 요청 (시안 #nSend): 실행 허용은 E② · 설치 정책이 정하고(절대규칙 3) 상태 변경은 별도 승인
                       시험환경이라(절대규칙 6) 화면에서 고르는 값으로 두지 않는다. 시안의 '전체 허용' 선택지는 뺐다 (리뷰 #479) */}
                   <div className={s.field}>
                     <span className={s.lbl}>쓰기 메서드 요청 (결제 · 수정 · 삭제)</span>
                     <p className={s.help}>쓰기 요청 범위는 설치 정책과 진단 모드가 정합니다.</p>
+                  </div>
+                  {/* 점검 범위 · 워커 수 (시안 #nDepthL · #nWorkers): 서버 진단 입력에 칸이 없고 실제 값은 엔진 설정이 정해,
+                      고른 값 없이 꺼 둔다 */}
+                  <div className={s.two}>
+                    <div className={s.field}>
+                      <div className={s["fsec-ht"]}>
+                        <span className={s.lbl} id="nDepthL">
+                          점검 범위
+                        </span>
+                        <Unwired why={NO_INPUT} />
+                      </div>
+                      <div className={s.seg} role="radiogroup" aria-labelledby="nDepthL">
+                        {DEPTHS.map((t) => (
+                          <label key={t}>
+                            <input type="radio" name="nDepth" value={t} disabled />
+                            <span>{t}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                    <div className={s.field}>
+                      <div className={s["fsec-ht"]}>
+                        <label className={s.lbl} htmlFor="nWorkers">
+                          워커 수
+                        </label>
+                        <Unwired why={NO_INPUT} />
+                      </div>
+                      <select id="nWorkers" className={cx(s.inp, s.workers)} disabled>
+                        <option>—</option>
+                      </select>
+                    </div>
                   </div>
                   {profile?.workflow ? (
                     <div className={s.field}>
@@ -585,13 +756,25 @@ export function UrlNewScanLive() {
           </div>
           <div className={s.isec} style={{ borderTop: 0, marginTop: 10, paddingTop: 0 }}>
             <dl className={s.sumkv}>
-              {/* 시안의 로그인 · 점검 범위 · 점검 목표 줄은 서버 진단 입력에 칸이 없어 두지 않는다 */}
+              {/* 시안의 로그인 · 점검 범위 · 점검 목표 줄은 서버 진단 입력에 칸이 없어 값 대신 '—' 와 연결 전 딱지 */}
               <dt>사이트</dt>
               <dd className={s.mono} title={site || undefined}>
                 {site ? urlHost(site) : "—"}
               </dd>
+              <dt>로그인</dt>
+              <dd>
+                — <Unwired why={NO_INPUT} />
+              </dd>
               <dt>분석 모델</dt>
               <dd>{profile ? `${profile.model_label} (${external ? "외부 API" : "로컬"})` : "—"}</dd>
+              <dt>점검 범위</dt>
+              <dd>
+                — <Unwired why={NO_INPUT} />
+              </dd>
+              <dt>점검 목표</dt>
+              <dd>
+                — <Unwired why={NO_INPUT} />
+              </dd>
               <dt>쓰기 요청</dt>
               <dd>{writeSummary}</dd>
             </dl>
