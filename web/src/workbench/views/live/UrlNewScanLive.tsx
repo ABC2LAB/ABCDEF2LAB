@@ -14,7 +14,13 @@
 
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
-import { type URLDiagnosisInput, urlDiagnosisInput, type WorkflowMode } from "@/lib/diagnosis/diagnosis-url";
+import {
+  type URLDiagnosisInput,
+  type URLDiagnosisModel,
+  type URLDiagnosisProfile,
+  urlDiagnosisInput,
+  type WorkflowMode,
+} from "@/lib/diagnosis/diagnosis-url";
 
 import { cx } from "../../lib/cx";
 import { disconnectUrl, runUrlAction, setUrlConfirmed, useUrl, useUrlGates } from "../../live/urlDiagnosis";
@@ -115,6 +121,14 @@ const DEPTHS = ["빠르게", "보통", "꼼꼼하게"] as const;
 
 /** 제외 경로 칸의 흐린 예시. 경로 단위라 query(?) 없이 — 서버 · 웹 입력 검사가 '?' 를 받지 않는다. */
 export const EXCLUDE_EXAMPLE = "/logout\n/delete";
+
+/** 외부 모델 연결 방식(mode)의 화면 이름 (시안 #nProv). */
+const PROVIDER_NAME: Readonly<Record<URLDiagnosisModel["mode"], string>> = { openrouter: "OpenRouter" };
+
+/** 모델 고르기 칸의 이름: 외부 모델은 제공자 · 승인한 endpoint, 로컬은 모델 이름. */
+function profileChoiceLabel(p: URLDiagnosisProfile): string {
+  return p.model ? `${PROVIDER_NAME[p.model.mode]} · ${p.model.provider}` : p.model_label;
+}
 
 /** live 새 점검 (URL 진단). */
 export function UrlNewScanLive() {
@@ -335,6 +349,31 @@ export function UrlNewScanLive() {
       )}
     </>
   );
+
+  // 모델 칸 옆: 로컬은 LLM 서버 주소(연결 전), 외부 API 는 API 키 (범위 확인 뒤에는 입력이 잠겨 그리지 않는다)
+  let modelSide: ReactNode = null;
+  if (!external) {
+    modelSide = (
+      <div className={s.field}>
+        <div className={s["fsec-ht"]}>
+          <label className={s.lbl} htmlFor="nSrv">
+            LLM 서버 주소
+          </label>
+          <Unwired why="모델 서버 주소는 설치 프로필이 정하고, 화면에서 보거나 바꾸는 서버 입력이 없습니다" />
+        </div>
+        <input id="nSrv" className={cx(s.inp, s.mono)} placeholder="설치 프로필이 정함" autoComplete="off" />
+      </div>
+    );
+  } else if (!shown) {
+    modelSide = (
+      <ExternalModelSettings
+        key={`${pv}:${resetSeq}`}
+        profile={profile ?? undefined}
+        disabled={g.inputLocked}
+        onReady={setCredentialReady}
+      />
+    );
+  }
 
   // 절대규칙 6 고지 (시안 v52): 할 일을 제목으로, 자세한 설명 · 원래 고지 문장은 (?) 메모에. 범위 확인 앞뒤 모두 보인다
   const warnRule = (
@@ -610,11 +649,12 @@ export function UrlNewScanLive() {
                     ))}
                   </div>
                   {/* 시안 #nLocal: 모델 · LLM 서버 주소. 서버 주소는 설치 프로필이 정하고 화면으로 받지 않아 꺼 둔다.
-                      연결 상태(#nLocalState)는 서버가 알려 주지 않아 그리지 않는다 */}
+                      연결 상태(#nLocalState)는 서버가 알려 주지 않아 그리지 않는다.
+                      시안 #nApi(외부 API): 제공자 · API 키 · 외부 전송 경고. 제공자는 설치된 외부 프로필 중에서 고른다 */}
                   <div className={s.two}>
                     <div className={s.field}>
                       <label className={s.lbl} htmlFor="luProfile">
-                        모델
+                        {external ? "제공자" : "모델"}
                       </label>
                       <select
                         className={cx(s.inp, s["w-sel"])}
@@ -625,37 +665,14 @@ export function UrlNewScanLive() {
                       >
                         {(shown ? profiles.filter((p) => p.id === pv) : choices).map((p) => (
                           <option key={p.id} value={p.id}>
-                            {p.model_label}
+                            {profileChoiceLabel(p)}
                           </option>
                         ))}
                         {!profiles.length ? <option value="">설치된 모델 없음</option> : null}
                       </select>
                     </div>
-                    {external ? null : (
-                      <div className={s.field}>
-                        <div className={s["fsec-ht"]}>
-                          <label className={s.lbl} htmlFor="nSrv">
-                            LLM 서버 주소
-                          </label>
-                          <Unwired why="모델 서버 주소는 설치 프로필이 정하고, 화면에서 보거나 바꾸는 서버 입력이 없습니다" />
-                        </div>
-                        <input
-                          id="nSrv"
-                          className={cx(s.inp, s.mono)}
-                          placeholder="설치 프로필이 정함"
-                          autoComplete="off"
-                        />
-                      </div>
-                    )}
+                    {modelSide}
                   </div>
-                  {external && !shown ? (
-                    <ExternalModelSettings
-                      key={`${pv}:${resetSeq}`}
-                      profile={profile ?? undefined}
-                      disabled={g.inputLocked}
-                      onReady={setCredentialReady}
-                    />
-                  ) : null}
                   {external ? (
                     <div className={cx(s.note, s.warn)} role="note">
                       <Icon name="alert" />

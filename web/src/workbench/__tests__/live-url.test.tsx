@@ -74,10 +74,13 @@ it("URL 입력 뒤 외부 LLM을 펼쳐 모델·키를 등록하고 범위 조�
   const sum = screen.getByRole("complementary", { name: "점검 요약" });
   expect(within(sum).getByText(/^범위 확인 전 기본 원칙/)).toBeInTheDocument();
   expect(within(sum).getByText("외부 모델로 대상 응답 전송")).toBeInTheDocument();
-  expect(screen.getByLabelText("모델 이름")).toHaveValue(externalModel.model);
-  fireEvent.change(screen.getByLabelText("API 키"), { target: { value: "synthetic-input-provider-key" } });
+  // 시안 #nApi: 외부 API 는 모델 대신 제공자(연결 방식 · 승인한 endpoint)와 API 키
+  expect(screen.getByLabelText("제공자")).toHaveDisplayValue(`OpenRouter · ${externalModel.provider}`);
+  expect(screen.queryByLabelText("모델")).toBeNull();
+  const key = screen.getByLabelText("API 키");
+  fireEvent.change(key, { target: { value: "synthetic-input-provider-key" } });
   fireEvent.click(screen.getByRole("button", { name: "키 등록" }));
-  expect(screen.getByLabelText("API 키")).toHaveValue("");
+  expect(key).toHaveValue("");
   await waitFor(() => expect(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]).toBeEnabled());
   expect(u.createURLDraft).not.toHaveBeenCalled();
   expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
@@ -660,7 +663,9 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     u.commandURLDiagnosis.mockResolvedValue({ ...preparing, scope: externalReady.scope });
     mount("new");
     const consent = await screen.findByRole("checkbox", { name: /대상 응답·도구 출력의 외부 전송/ });
-    expect(screen.getByText(new RegExp(externalModel.provider.replace("/", "\\/")))).toBeInTheDocument();
+    // 서버가 돌려준 범위의 제공자는 요약 패널에 (분석 모델 칸의 제공자 고르기와 별개)
+    const sum = screen.getByRole("complementary", { name: "점검 요약" });
+    expect(within(sum).getByText(new RegExp(externalModel.provider.replace("/", "\\/")))).toBeInTheDocument();
     expect(consent).not.toBeChecked();
     const start = screen.getByRole("button", { name: "점검 시작" });
     expect(start).toBeDisabled();
