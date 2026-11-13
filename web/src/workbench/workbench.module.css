@@ -4560,68 +4560,29 @@ button.smm:hover {
   }
 }
 /*
- * 접으면 가운데 내용은 넓어지지 않고 좁은 단(--cw)으로 가운데에 모이며, 나머지는 양옆 여백이 된다.
- * --cw = 두 패널을 펼쳤을 때 내용 폭 - 120px (최소 560px · 최대 960px)
- * 여백은 칸의 실제 폭(100%) 기준이라 상세 패널이 없는 화면(로그인 · 연결 확인 관문)도 똑같이 가운데에 모인다.
- * 화면 머리는 왼쪽만 내용과 맞추고 오른쪽 버튼은 제자리(28px)에 둔다 — 접고 펼 때 버튼이 움직이지 않게.
- * --iw = 상세 패널 칸 폭 (펼침 384px · 접음 64px · 좁은 화면이나 패널 없는 화면 0).
- *   시안은 .app 에 늘 384px 를 주지만, 여기는 관문처럼 패널 없는 화면이 있어 패널이 있는 화면(.view:has(.vi))에만 준다.
+ * 레일 · 상세 패널을 접고 펴도 모든 화면의 가운데 내용과 화면 제목은 제자리. 패널이 줄어든 만큼 그쪽 여백을 늘려
+ * 내용 칸을 두 패널을 편 때와 같은 자리 · 폭에 둔다. 칸 폭과 여백이 같은 시간 · 같은 곡선(0.22s ease)으로 움직여
+ * 움직이는 동안에도 제자리다. 화면 머리의 오른쪽 버튼은 늘 오른쪽 끝(28px)이라 움직이지 않는다.
+ * 레일 236px → 접은 줄 64px (172px), 상세 패널 384px → 접은 줄 64px (320px).
+ * 오른쪽은 상세 패널 칸 바로 옆 본문(.vb 안 .vm)만 늘린다 — 패널 없는 화면 · 패널 밖 줄은 패널을 접어도 폭이 그대로다.
  */
 .vh,
 .vm {
+  --fold-l: 0px;
+  --fold-r: 0px;
   transition: padding 0.22s ease;
 }
 @media (min-width: 760px) {
-  .app.rail-min {
-    --cw: clamp(560px, calc(100vw - 412px), 960px);
-  }
-  .app.rail-min .vm {
-    padding-left: max(28px, calc((100% - var(--cw)) / 2));
-    padding-right: max(28px, calc((100% - var(--cw)) / 2));
-  }
+  .app.rail-min .vm,
   .app.rail-min .vh {
-    padding-left: max(28px, calc((100% - var(--iw, 0px) - var(--cw)) / 2));
-  }
-}
-@media (min-width: 1200px) {
-  .view:has(.vi) {
-    --iw: 384px;
-  }
-  .app.insp-min .view:has(.vi) {
-    --iw: 64px;
-  }
-  .app.rail-min,
-  .app.insp-min {
-    --cw: clamp(560px, calc(100vw - 796px), 960px);
-  }
-  .app.insp-min .vm {
-    padding-left: max(28px, calc((100% - var(--cw)) / 2));
-    padding-right: max(28px, calc((100% - var(--cw)) / 2));
-  }
-  .app.insp-min .vh {
-    padding-left: max(28px, calc((100% - var(--iw, 0px) - var(--cw)) / 2));
-  }
-}
-
-/*
- * 새 점검: 레일 · 상세 패널을 접고 펴도 가운데 폼과 제목은 제자리. 패널이 줄어든 만큼 그쪽 여백을 늘려 내용 칸을
- * 두 패널을 편 때와 같은 자리 · 폭에 둔다(다른 화면은 접으면 좁은 단으로 가운데에 모인다). 칸 폭과 여백이 같은 시간 ·
- * 같은 곡선(0.22s ease)으로 움직여 움직이는 동안에도 제자리다.
- * 레일 236px → 접은 줄 64px (172px), 상세 패널 384px → 접은 줄 64px (320px).
- */
-.vm.nform,
-.view[data-view="new"] .vh {
-  --fold-l: 0px;
-  --fold-r: 0px;
-}
-@media (min-width: 760px) {
-  .app.rail-min .vm.nform,
-  .app.rail-min .view[data-view="new"] .vh {
     --fold-l: 172px;
   }
-  .app .vm.nform {
+  .app .vm {
     padding-left: calc(28px + var(--fold-l));
     padding-right: calc(max(28px, env(safe-area-inset-right, 0px)) + var(--fold-r));
+  }
+  .app .vh {
+    padding-left: calc(28px + var(--fold-l));
   }
   /*
    * 제목 '새 점검'은 폼 첫 줄('대상')의 왼쪽 끝에 맞춘다. 폼은 두 패널을 편 때의 내용 칸(화면 폭 - 패널 폭 - 양옆 28px)
@@ -4633,7 +4594,7 @@ button.smm:hover {
   }
 }
 @media (min-width: 1200px) {
-  .app.insp-min .vm.nform {
+  .app.insp-min .vb:has(> .vi) > .vm {
     --fold-r: 320px;
   }
   .app .view[data-view="new"] .vh {
