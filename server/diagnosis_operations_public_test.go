@@ -45,6 +45,7 @@ func TestURLManagementOperationsPublicEntryOwnedPostgres(t *testing.T) {
 	if os.WriteFile(filepath.Join(keyDir, jwtKeyFilename), []byte("synthetic-owned-url-jwt-material"), 0600) != nil {
 		t.Fatal("키 준비 실패")
 	}
+	streamGates := make(chan chan struct{}, 2)
 	var hits atomic.Int64
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
@@ -61,10 +62,18 @@ func TestURLManagementOperationsPublicEntryOwnedPostgres(t *testing.T) {
 			w.Header().Set("Content-Type", "text/event-stream")
 			fmt.Fprintf(w, "data: %s\n\n", activity)
 			w.(http.Flusher).Flush()
+			gate := make(chan struct{})
+			streamGates <- gate
+			select {
+			case <-gate:
+				fmt.Fprintf(w, "data: %s\n\n", strings.Replace(activity, `"seq":7`, `"seq":8`, 1))
+				w.(http.Flusher).Flush()
+			case <-r.Context().Done():
+			}
 			<-r.Context().Done()
 			return
 		}
-		fmt.Fprintf(w, `{"items":[%s],"cursor":7,"snapshot_cursor":7,"earliest_cursor":7,"has_more":false}`, activity)
+		fmt.Fprintf(w, `{"items":[%s,{"seq":8,"inherited":true},{"seq":9,"source_task_id":"41"}],"cursor":9,"snapshot_cursor":9,"earliest_cursor":7,"has_more":false}`, activity)
 	}))
 	defer upstream.Close()
 	endpoint := &operationsEndpoint{}
@@ -102,6 +111,16 @@ func TestURLManagementOperationsPublicEntryOwnedPostgres(t *testing.T) {
 	}
 	for _, path := range []string{"/api/exploration/activity?task=42", "/api/exploration/activity/history?task=42&session=plan", "/api/exploration/activity/7?task=42"} {
 		code, raw := request("GET", path, "", session.Token)
+		if !strings.Contains(path, "/activity/7") {
+			var page struct {
+				Items []struct {
+					Seq int64 `json:"seq"`
+				} `json:"items"`
+			}
+			if json.Unmarshal([]byte(raw), &page) != nil || len(page.Items) != 1 || page.Items[0].Seq != 7 {
+				t.Fatal("다른 task에서 상속한 활동을 공개")
+			}
+		}
 		if code != 200 || strings.Contains(raw, "secret-") {
 			t.Fatalf("활동 결속·비밀 보호 실패: %d", code)
 		}
@@ -117,6 +136,8 @@ func TestURLManagementOperationsPublicEntryOwnedPostgres(t *testing.T) {
 		{"GET", "/api/exploration/activity?task=42&task=43", "", session.Token},
 		{"GET", "/api/exploration/activity?task=43", "", session.Token},
 		{"GET", "/api/exploration/activity?task=42&intent=99", "", session.Token},
+		{"GET", "/api/exploration/activity/history?task=42&session=intent:99", "", session.Token},
+		{"GET", "/api/exploration/activity/history?task=42&session=main:2", "", session.Token},
 		{"GET", "/api/exploration/activity?task=42", "", ""},
 	} {
 		code, _ := request(test.method, test.path, test.body, test.token)
@@ -127,33 +148,59 @@ func TestURLManagementOperationsPublicEntryOwnedPostgres(t *testing.T) {
 	if hits.Load() != before {
 		t.Fatal("금지 요청이 실행 수신기에 도달")
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
-	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, "GET", api.URL+"/api/exploration/activity/stream?task=42&since=0", nil)
-	req.Header.Set("Authorization", "Bearer "+session.Token)
-	resp, err := api.Client().Do(req)
-	if err != nil {
-		t.Fatal("활동 스트림 첫 헤더 실패")
-	}
-	scanner := bufio.NewScanner(resp.Body)
-	received := false
-	for scanner.Scan() {
-		if strings.HasPrefix(scanner.Text(), "data:") {
-			if strings.Contains(scanner.Text(), "secret-") {
-				t.Fatal("스트림 원문 유출")
+	checkStreamRevocation := func(revoke func()) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+		defer cancel()
+		req, _ := http.NewRequestWithContext(ctx, "GET", api.URL+"/api/exploration/activity/stream?task=42&since=0", nil)
+		req.Header.Set("Authorization", "Bearer "+session.Token)
+		resp, err := api.Client().Do(req)
+		if err != nil {
+			t.Fatal("활동 스트림 첫 헤더 실패")
+		}
+		defer resp.Body.Close()
+		scanner := bufio.NewScanner(resp.Body)
+		received := false
+		for scanner.Scan() {
+			if strings.HasPrefix(scanner.Text(), "data:") {
+				if strings.Contains(scanner.Text(), "secret-") {
+					t.Fatal("스트림 원문 유출")
+				}
+				received = strings.Contains(scanner.Text(), `"seq":7`)
+				break
 			}
-			received = true
-			break
+		}
+		if !received {
+			t.Fatal("스트림이 종료 전 첫 활동을 전달하지 않음")
+		}
+		var gate chan struct{}
+		select {
+		case gate = <-streamGates:
+		case <-ctx.Done():
+			t.Fatal("시험 수신기 진행 확인 실패")
+		}
+		revoke()
+		close(gate)
+		for scanner.Scan() {
+			if strings.HasPrefix(scanner.Text(), "data:") {
+				t.Fatal("철회 후 다음 활동을 전달")
+			}
+		}
+		if ctx.Err() != nil {
+			t.Fatal("철회 후 스트림이 즉시 종료되지 않음")
 		}
 	}
-	resp.Body.Close()
-	cancel()
-	if !received {
-		t.Fatal("스트림이 종료 전 활동을 전달하지 않음")
-	}
-	endpoint.revoked.Store(true)
+	checkStreamRevocation(func() { endpoint.revoked.Store(true) })
 	before = hits.Load()
 	if code, _ := request("POST", "/api/tasks/42/control", `{"action":"resume"}`, session.Token); code != 403 || hits.Load() != before {
 		t.Fatal("회수 후 제어 전달")
 	}
+	endpoint.revoked.Store(false)
+	// 대상 권한은 유지한 채 실제 설치 비밀번호를 바꿔 기존 JWT를 무효화한다.
+	checkStreamRevocation(func() {
+		replacement, err := bcrypt.GenerateFromPassword([]byte("owned-replacement-password"), bcrypt.MinCost)
+		if err != nil || installer.SetSetting(authPassKey, string(replacement)) != nil {
+			t.Fatal("설치 인증 철회 준비 실패")
+		}
+	})
 }

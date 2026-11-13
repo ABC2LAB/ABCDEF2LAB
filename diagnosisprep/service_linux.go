@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"os"
 	"reflect"
 	"regexp"
@@ -37,6 +38,7 @@ func (i storedInspection) runtime() Inspection {
 }
 
 type receipt struct {
+	ExecutionEvidenceVersion  uint8            `json:"execution_evidence_version,omitempty"`
 	RecoveryWitnessBootID     string           `json:"recovery_witness_boot_id,omitempty"`
 	ExecutionBootID           string           `json:"execution_boot_id,omitempty"`
 	ExecutionReturned         bool             `json:"execution_returned,omitempty"`
@@ -120,7 +122,7 @@ func newServiceForBoot(ctx context.Context, root string, backend Backend, boot s
 	createKeys := map[string]string{}
 	for _, raw := range records {
 		var r receipt
-		if strictDecode(raw, &r) != nil || !validText(r.Principal, 256) || !reference.MatchString(r.CreateKey) || !validJob(r.Job) || r.ExecutionBootID != "" && !bootIDPattern.MatchString(r.ExecutionBootID) || r.RecoveryWitnessBootID != "" && (!bootIDPattern.MatchString(r.RecoveryWitnessBootID) || r.ExecutionBootID != "" || r.StartKey == "") || r.ResourcesRecovered && !r.ExecutionReturned || (r.ExecutionReturned || r.ExecutionBootID != "") && r.StartKey == "" || !inspectionOK(r.Inspection.runtime()) || r.Job.SourceDigest != sourceDigest(r.Job.Input, r.Inspection.InstallationDigest) || !reflect.DeepEqual(r.Job.Scope, r.Inspection.Scope) || (r.StartKey != "" && (!reference.MatchString(r.StartKey) || (r.Job.Scope != nil && r.Job.Scope.Model != nil && r.Job.Scope.Model.ExternalTransfer && !r.ExternalTransferConfirmed))) || r.Job.PreparationStarted != (r.StartKey != "") {
+		if strictDecode(raw, &r) != nil || !validText(r.Principal, 256) || !reference.MatchString(r.CreateKey) || !validJob(r.Job) || r.ExecutionEvidenceVersion > 1 || r.ExecutionEvidenceVersion != 0 && r.StartKey == "" || r.ExecutionBootID != "" && !bootIDPattern.MatchString(r.ExecutionBootID) || r.RecoveryWitnessBootID != "" && (!bootIDPattern.MatchString(r.RecoveryWitnessBootID) || r.ExecutionBootID != "" || r.StartKey == "") || r.ResourcesRecovered && !r.ExecutionReturned || (r.ExecutionReturned || r.ExecutionBootID != "") && r.StartKey == "" || !inspectionOK(r.Inspection.runtime()) || r.Job.SourceDigest != sourceDigest(r.Job.Input, r.Inspection.InstallationDigest) || !reflect.DeepEqual(r.Job.Scope, r.Inspection.Scope) || (r.StartKey != "" && (!reference.MatchString(r.StartKey) || (r.Job.Scope != nil && r.Job.Scope.Model != nil && r.Job.Scope.Model.ExternalTransfer && !r.ExternalTransferConfirmed))) || r.Job.PreparationStarted != (r.StartKey != "") {
 			return fail()
 		}
 		key := r.Principal + "\x00" + r.CreateKey
@@ -150,10 +152,20 @@ func newServiceForBoot(ctx context.Context, root string, backend Backend, boot s
 			s.jobs[id] = r
 		}
 	}
+	// 이전 계약에서 정상 마감+drain은 새 시작을 막지 않았다. 구 형식만 그 의미를 보존한다.
+	// 새 실행은 증거 버전을 저장하므로 boot를 못 읽어도 구 형식으로 잘못 복원하지 않는다.
+	for _, r := range s.jobs {
+		if r.StartKey != "" && r.ExecutionEvidenceVersion == 0 && r.ExecutionBootID == "" && terminal(r.Job.State) && r.Job.DrainComplete && !r.ExecutionReturned {
+			r.ExecutionReturned = true
+			if s.save(r) != nil {
+				return fail()
+			}
+		}
+	}
 	// 호스트 재부팅은 이전 커널의 실행·소켓·자식 프로세스가 종료된 증거다.
 	// 서비스/컨테이너 재시작만으로는 같은 boot ID이므로 자원 마감을 추정하지 않는다.
 	for _, r := range s.jobs {
-		if r.StartKey == "" || !bootIDPattern.MatchString(boot) {
+		if r.StartKey == "" || r.ExecutionReturned && (r.Job.DrainComplete || r.ResourcesRecovered) || !bootIDPattern.MatchString(boot) {
 			continue
 		}
 		proofBoot := r.ExecutionBootID
@@ -188,6 +200,9 @@ func executionBootID() string {
 	return value
 }
 func validReceiptChange(old, next receipt) bool {
+	if old.StartKey != "" && old.ExecutionEvidenceVersion != next.ExecutionEvidenceVersion {
+		return false
+	}
 	if old.RecoveryWitnessBootID != "" && old.RecoveryWitnessBootID != next.RecoveryWitnessBootID {
 		return false
 	}
@@ -384,6 +399,8 @@ func (s *Service) Call(ctx context.Context, r Request) (Response, error) {
 						if s.save(old) != nil {
 							return responseError(r, "unavailable"), nil
 						}
+					} else {
+						log.Print("진단 준비: 자원 마감을 확인하지 못해 새 시작을 보류합니다")
 					}
 				}
 			}
@@ -412,6 +429,7 @@ func (s *Service) Call(ctx context.Context, r Request) (Response, error) {
 		}
 		record = cloneReceipt(record)
 		record.StartKey = r.IdempotencyKey
+		record.ExecutionEvidenceVersion = 1
 		record.ExecutionBootID = executionBootID()
 		record.ExternalTransferConfirmed = r.ExternalTransferConfirmed
 		record.Job.Revision++
@@ -592,7 +610,9 @@ func (s *Service) execute(ctx context.Context, r receipt, done chan struct{}) {
 		r := s.jobs[r.Job.ID]
 		if !s.released && !s.failed {
 			r.ExecutionReturned = true
-			_ = s.save(r)
+			if s.save(r) != nil {
+				log.Print("진단 준비: 실행 반환 증거 저장에 실패했습니다")
+			}
 		}
 		close(done)
 	}()

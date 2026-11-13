@@ -571,6 +571,7 @@ func TestAggregateCapSurvivesNewProfileDigest(t *testing.T) {
 	first := create(t, s, "first")
 	start(t, s, first, "first-start")
 	awaitState(t, s, first.ID, Completed)
+	awaitExecutionReturned(t, s, first.ID)
 	b.mu.Lock()
 	b.inspection.InstallationDigest = strings.Repeat("b", 64)
 	b.mu.Unlock()

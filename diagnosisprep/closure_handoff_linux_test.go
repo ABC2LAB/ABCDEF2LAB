@@ -6,8 +6,11 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/Autumn-27/artex/diagnosis"
 )
 
 func awaitExecutionReturned(t *testing.T, s *Service, id string) {
@@ -26,6 +29,8 @@ func TestUnknownPublicationDoesNotReleaseExecution(t *testing.T) {
 	for _, drained := range []bool{false, true} {
 		t.Run(map[bool]string{false: "undrained", true: "drained_publication"}[drained], func(t *testing.T) {
 			s, b, _ := newFixture(t)
+			recovery := &recoveringBackend{fakeBackend: b, verified: true}
+			s.backend = recovery
 			published, release := make(chan struct{}), make(chan struct{})
 			defer close(release)
 			b.run = func(_ context.Context, _ Execution, p Publish) error {
@@ -48,6 +53,9 @@ func TestUnknownPublicationDoesNotReleaseExecution(t *testing.T) {
 			if b.calls.Load() != 1 {
 				t.Fatal("동시 backend 실행")
 			}
+			if recovery.checks.Load() != 0 {
+				t.Fatal("Execute 반환 전에 복구를 호출")
+			}
 		})
 	}
 }
@@ -55,9 +63,11 @@ func TestUnknownPublicationDoesNotReleaseExecution(t *testing.T) {
 type recoveringBackend struct {
 	*fakeBackend
 	verified bool
+	checks   atomic.Int64
 }
 
 func (b *recoveringBackend) VerifyClosure(context.Context, Execution) error {
+	b.checks.Add(1)
 	if !b.verified {
 		return errors.New("자원 미마감")
 	}
@@ -122,6 +132,16 @@ func TestUnknownRecoveryRequiresVerifiedHostBootChange(t *testing.T) {
 		t.Fatal("종료 실패")
 	}
 	// 같은 커널의 서비스 재시작: 반환했어도 미마감 자원은 자동 복구하지 않는다.
+	invalidBoot, err := newServiceForBoot(context.Background(), root, b, "unverified-boot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if invalidBoot.jobs[first.ID].ResourcesRecovered {
+		t.Fatal("형식 밖 boot 증거로 복구")
+	}
+	if invalidBoot.Shutdown(context.Background()) != nil {
+		t.Fatal("종료 실패")
+	}
 	same, err := New(context.Background(), root, b)
 	if err != nil {
 		t.Fatal(err)
@@ -248,5 +268,96 @@ func TestLegacyUnknownRecoveryWitnessRequiresLaterHostBoot(t *testing.T) {
 	changed.RecoveryWitnessBootID = laterBoot
 	if validReceiptChange(old, changed) {
 		t.Fatal("저장된 복구 관찰 증거 교체 허용")
+	}
+}
+
+func TestLegacyDrainedTerminalUpgradeKeepsInstallationUsable(t *testing.T) {
+	for _, state := range []State{Completed, Failed, Cancelled} {
+		t.Run(string(state), func(t *testing.T) {
+			s, b, root := newFixture(t)
+			b.inspection.MaxRuns = 2
+			old := create(t, s, "legacy-terminal")
+			s.mu.Lock()
+			r := s.jobs[old.ID]
+			r.StartKey = "legacy-terminal-start"
+			r.Job.PreparationStarted = true
+			r.Job.State = Preparing
+			r.Job.Phase = ScopeCheck
+			r.Job.Revision++
+			if s.save(r) != nil {
+				s.mu.Unlock()
+				t.Fatal("구 형식 시작 저장 실패")
+			}
+			r.Job.State = state
+			r.Job.Phase = Report
+			r.Job.TaskID = "41"
+			r.Job.Started = true
+			r.Job.AuthorityState = AuthorityConsumed
+			r.Job.DrainComplete = true
+			r.Job.ResultReady = true
+			r.Job.Revision++
+			if state == Completed {
+				r.Job.ResultReady = true
+				r.Job.Outcome = "complete"
+				r.Job.IntentOutcomes = &diagnosis.IntentOutcomes{Done: 1}
+			}
+			if s.save(r) != nil {
+				s.mu.Unlock()
+				t.Fatal("구 형식 마감 저장 실패")
+			}
+			before := cloneReceipt(r).Job
+			s.mu.Unlock()
+			if s.Shutdown(context.Background()) != nil {
+				t.Fatal("종료 실패")
+			}
+			upgraded, err := New(context.Background(), root, b)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer upgraded.Shutdown(context.Background())
+			if !reflect.DeepEqual(status(t, upgraded, old.ID), before) {
+				t.Fatal("기존 마감 사실 변경")
+			}
+			next := create(t, upgraded, "legacy-terminal-next")
+			if got := start(t, upgraded, next, "legacy-terminal-next-start"); got.Error != "" {
+				t.Fatal("정상 구 형식 회차가 업그레이드 후 시작을 차단", got.Error)
+			}
+			awaitExecutionReturned(t, upgraded, next.ID)
+			last := create(t, upgraded, "legacy-terminal-last")
+			if start(t, upgraded, last, "legacy-terminal-last-start").Error != "budget_exhausted" {
+				t.Fatal("구 회차 실행 횟수 환불")
+			}
+		})
+	}
+}
+
+func TestNewEvidenceReceiptWithoutBootIsNotLegacyTerminal(t *testing.T) {
+	s, backend, root := newFixture(t)
+	old := create(t, s, "new-no-boot")
+	s.mu.Lock()
+	r := s.jobs[old.ID]
+	r.StartKey = "new-no-boot-start"
+	r.ExecutionEvidenceVersion = 1
+	r.Job.PreparationStarted = true
+	r.Job.State = Failed
+	r.Job.Phase = Closure
+	r.Job.DrainComplete = true
+	r.Job.Revision++
+	if s.save(r) != nil {
+		s.mu.Unlock()
+		t.Fatal("저장 실패")
+	}
+	s.mu.Unlock()
+	if s.Shutdown(context.Background()) != nil {
+		t.Fatal("종료 실패")
+	}
+	restored, err := New(context.Background(), root, backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Shutdown(context.Background())
+	next := create(t, restored, "new-no-boot-next")
+	if start(t, restored, next, "new-no-boot-next-start").Error != "busy" {
+		t.Fatal("새 형식 미반환을 구 형식으로 잘못 복원")
 	}
 }

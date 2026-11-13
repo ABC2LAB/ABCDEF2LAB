@@ -338,22 +338,36 @@ Sparrow 정확 호스트 전체 진단 허가는 다른 origin·port·인증 수
 결과 불명은 복구 후에도 결과 불명이다. `result_ready`가 없는 회차를 보고서 완료로 바꾸지 않는다.
 
 반환한 실행은 backend가 보관한 정확한 회차 핸들로 모델·격리 실행·E②·HTTP·DB 자원을 재마감하고
-검증할 수 있을 때만 다음 시작 시 복구한다. 복구 증거는 `resources_recovered`에 별도로 저장한다.
-서비스 재시작만으로 미확인 실행을 풀지 않는다. Linux 호스트 boot ID가 시작 때와 달라진 경우는
-이전 커널의 자원 종료 증거로 복구하며 결과·감사 성공으로 해석하지 않는다. 예전 형식처럼 시작
-boot ID/반환 증거가 없는 기록은 첫 업그레이드 기동에서 현재 boot를 미확인 자원의 관찰 증거로만
-저장한다(`recovery_witness_boot_id`). 같은 boot에서 재시작해도 닫힌 상태를 유지하고, 그 증거를
-저장한 뒤 실제 호스트 재부팅으로 boot가 바뀌었을 때만 복구한다. 과거 시작 boot를 지어내지 않는다. 영수증 삭제는 복구 절차가 아니다.
+검증할 수 있을 때만 다음 시작 시 복구한다. 원래 gateway Run의 종료까지 확인하며, 늦게 오는 Close는
+저장한 마감 증거만 읽는다. 준비 단계에서 drain을 확인하지 못한 경우에도 같은 task의 준비 자원 핸들로
+취소·drain·DB 닫기를 다시 확인한다. 결과 저장 실패를 재실행하거나 성공으로 바꾸지는 않는다.
+복구 증거는 `resources_recovered`에 별도로 저장하고 정상 마감한 회차의 복구 핸들은 제거한다.
+검증은 Start IPC의 남은 시간 안에서 수행하므로 기한 내 확인하지 못하면 `busy`를 유지한다.
+
+이전 형식의 `completed`·`failed`·`cancelled`이면서 `drain_complete=true`인 영수증은 이전 계약대로
+반환한 것으로 읽는다. 정상 마감된 기존 설치는 같은 호스트 boot의 업그레이드 직후에도 새 진단을
+시작할 수 있으며, 기존 결과와 예약은 보존한다. 새 실행은 `execution_evidence_version=1`을 먼저
+저장하므로 boot ID를 못 읽은 경우도 이전 형식으로 잘못 읽지 않는다.
+
+미확인 자원은 서비스 재시작만으로 풀지 않는다. Linux 호스트 boot ID가 시작 때와 달라진 경우는
+이전 커널의 자원 종료 증거로 복구하며 결과·감사 성공으로 해석하지 않는다. 이전 형식의 `unknown`·
+미마감 기록처럼 시작 boot 증거가 없는 경우는 첫 업그레이드 기동에서 현재 boot를 관찰 증거로만
+저장한다(`recovery_witness_boot_id`). 같은 boot에서는 잠금을 유지하고 이후 실제 호스트 재부팅으로
+boot가 바뀌었을 때 복구한다. 과거 시작 boot를 지어내지 않는다. 영수증 삭제는 복구 절차가 아니다.
 
 URL v2 공개 관리 API는 영속 준비 영수증에 결속한 같은 운영자의 task에만
 `POST /api/tasks/{id}/control`의 `pause`·`resume`을 전달한다. chat·steer·rerun·설정 API는 열지 않는다.
 활동 조회·history·stream·seq 상세는 task를 명시해야 한다. 상속된 다른 task 의도 세션은 열지 않으며,
 원문 명령·도구 인자·모델 문장·자격·metadata는 공개 활동 응답에 포함하지 않는다. 스트림은 즉시
-flush하며 매 이벤트에서 인증·결속을 재검사하고 30초 후 재연결하도록 끝낸다.
+flush하며 매 이벤트에서 인증·결속을 재검사한다. 중계 자체의 30초 상한보다 현재 준비 HTTP 요청의
+5초 상한이 먼저 적용된다(API·backend WriteTimeout은 10초). 종료 뒤 클라이언트가 커서로 다시 연결한다.
 preparation-only 내부 서버 차단은 유지한다.
 
 검증: `TestUnknownPublicationDoesNotReleaseExecution`,
 `TestUnknownClosureRecoveryPreservesFactsAndReservations`,
+`TestLegacyDrainedTerminalUpgradeKeepsInstallationUsable`,
+`TestURLClosureRecoveryWaitsForOriginalRunAndLateCloseIsSafe`,
+`TestURLPreparationRecoveryChecksExactTaskAndDrain`,
 `TestURLManagementOperationsPublicEntryOwnedPostgres`.
 마지막 시험은 실제 설치 인증·공개 관리 mux·작업 권한 조회·소유 HTTP 수신기를 사용한다.
 합성 실행 수신기는 실제 Planner/Worker·Qwen 수용을 대신하지 않으며 유료 모델 시험은 NOT_RUN이다.
