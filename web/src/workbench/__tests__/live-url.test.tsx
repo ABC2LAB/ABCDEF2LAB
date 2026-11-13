@@ -49,7 +49,7 @@ import { checkLiveAuth, getLiveAuthState, setLiveAuthState } from "../live/auth"
 import { LiveFeeds } from "../live/feeds";
 import { LiveRailTasks } from "../live/rail";
 import { resetUrl, runUrlAction, URL_POLL_MS, UrlFeeds, urlGates, useUrl } from "../live/urlDiagnosis";
-import { urlOutcomeText, urlTargetHint, urlTone, urlViewFor } from "../live/urlMap";
+import { urlAccountAuthRows, urlOutcomeText, urlTargetHint, urlTone, urlViewFor } from "../live/urlMap";
 import { type Shell, ShellContext, type View } from "../shell";
 import { createInitialState, useWb } from "../store";
 import { DashboardByMode, LiveByMode, NewScanByMode, ReportByMode, ScopeByMode } from "../views/live/byMode";
@@ -1269,5 +1269,24 @@ describe("실행 결과 한 줄(urlOutcomeText)", () => {
     [{ state: "completed" }, ""],
   ] as const)("%o → %s", (job, text) => {
     expect(urlOutcomeText(job as Parameters<typeof urlOutcomeText>[0])).toBe(text);
+  });
+});
+
+describe("시험 계정 인증 표시(urlAccountAuthRows, §3.4·§4)", () => {
+  it("결과를 §4 문구로 매핑하고 계정 라벨 순으로 정렬한다", () => {
+    expect(
+      urlAccountAuthRows({ shopper: "login_failed", "acct-a": "authenticated", admin_2: "session_not_found" }),
+    ).toEqual([
+      ["acct-a", "인증됨"],
+      ["admin_2", "비인증 진행 · 세션 없음"],
+      ["shopper", "비인증 진행 · 로그인 실패"],
+    ]);
+  });
+  it("인증 못 한 결과는 전부 '비인증 진행'으로 보인다(접근 차단·성공 아님, 절대 규칙 5)", () => {
+    const rows = urlAccountAuthRows({ a: "login_failed", b: "session_not_found", c: "result_unknown", d: "not_sent" });
+    for (const [, label] of rows) {
+      expect(label).toMatch(/^비인증 진행/);
+      expect(label).not.toMatch(/접근|차단|성공|확인됨/);
+    }
   });
 });

@@ -526,6 +526,7 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 			return p.set(func(u *diagnosisprep.Update) {
 				u.Phase = diagnosisprep.Report
 				u.State = diagnosisprep.Cancelled
+				u.ReasonCode = urlStopReason(ctx)
 				if statusLost {
 					markURLStatusLost(u)
 				}
@@ -704,6 +705,11 @@ func (b *urlPreparationRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request
 		http.Error(w, "작업 결속을 확인할 수 없습니다", 403)
 		return
 	}
+	// 작업대 실데이터(통제 정책·전송 통제 흐름)는 실행 결속 디렉터리에서 직접 읽는다(계약 workbench-live-data §3·§4).
+	if view := liveDataView(r.URL.Path); view != "" {
+		serveLiveData(w, r, b.config.RunsDir, auth.Job.ID, view)
+		return
+	}
 	if auth.Job.Scope != nil {
 		r = r.WithContext(server.WithDiagnosticReportScope(r.Context(), task, *auth.Job.Scope))
 	}
@@ -839,7 +845,9 @@ func watchURLPreparation(hard context.Context, done <-chan struct{}, ticks <-cha
 			return
 		case <-ticks:
 			if err := current(); err != nil {
-				if errors.Is(err, server.ErrFirstDiagnosisTargetEnded) {
+				// 대상 철회와 결속 계정 변경(해제·만료·판 변경·자격 교체)은 운영자 쪽 사건이다. 원인을 실어 멈추고 마감은
+				// 이어서 확인한다. 실행 결과에 원인이 남는다(C14, 계약 run-outcome-states §3.4).
+				if errors.Is(err, server.ErrFirstDiagnosisTargetEnded) || errors.Is(err, errAccountBindingChanged) {
 					stopTarget(err)
 					continue
 				}
@@ -853,8 +861,18 @@ func watchURLPreparation(hard context.Context, done <-chan struct{}, ticks <-cha
 // urlOperatorStop은 실행 문맥이 운영자 중지(진단 준비 서비스가 상위 문맥을 취소)나 대상 철회
 // (ErrFirstDiagnosisTargetEnded)로 끝났는지 본다. 감시자의 설치·위임 검사 실패, 상태 조회·진행 저장 실패, 시간
 // 상한은 원인 없는 취소나 시간 초과라 운영자 중지가 아니다.
+// urlStopReason은 중지(cancelled) 실행의 사유 코드다. 결속한 시험 계정이 해제·만료·판 변경·자격 교체되어 새 송신을
+// 멈춘 경우만 이름을 붙인다(C14). 다른 중지는 지금처럼 사유 없이 둔다.
+func urlStopReason(ctx context.Context) string {
+	if errors.Is(context.Cause(ctx), errAccountBindingChanged) {
+		return "account_binding_changed"
+	}
+	return ""
+}
+
 func urlOperatorStop(parent, ctx context.Context) bool {
-	return parent.Err() != nil || errors.Is(context.Cause(ctx), server.ErrFirstDiagnosisTargetEnded)
+	cause := context.Cause(ctx)
+	return parent.Err() != nil || errors.Is(cause, server.ErrFirstDiagnosisTargetEnded) || errors.Is(cause, errAccountBindingChanged)
 }
 
 // A failed read after a soft target stop must preserve an active usage drain.
