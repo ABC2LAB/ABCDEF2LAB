@@ -197,7 +197,66 @@ func (e *Execution) safeHTTPResponse(response *http.Response, body []byte) bool 
 			}
 		}
 	}
+	// 시험 계정 실행은 대상이 새로 발급한 세션(Set-Cookie 회전 등)도 모델에 준다. 그 값은 도구 출력·근거·활동 기록에서
+	// 가리도록 응답을 넘기기 전에 출력 가림 목록에 더한다(S09: 모델 입력만 예외, #522 이동찬 리뷰). 가릴 자리가 모자라면
+	// 기록에 남기지 않도록 응답을 통째로 보류한다.
+	if e.testAccountPassthrough() {
+		issued := issuedSessionValues(response)
+		fresh := make([][]byte, 0, len(issued))
+		for _, v := range issued {
+			known := false
+			for _, old := range e.redactOnly {
+				known = known || bytes.Equal(old, v)
+			}
+			if !known {
+				fresh = append(fresh, v)
+			}
+		}
+		if len(e.redactOnly)+len(fresh) > maxIssuedRedactValues {
+			return false
+		}
+		e.redactOnly = append(e.redactOnly, fresh...)
+	}
 	return true
+}
+
+// maxIssuedRedactValues는 실행 하나가 가릴 수 있는 세션 값 수의 상한이다(인증 준비 세션 + 대상이 새로 발급한 세션).
+// 세션을 요청마다 회전하는 대상도 회차 하나는 버티게 넉넉히 두고, 넘으면 그 응답을 보류한다.
+const maxIssuedRedactValues = 1024
+
+// issuedSessionValues는 응답이 새로 발급한 자격 값이다: Set-Cookie·Set-Cookie2의 쿠키 값, Authentication-Info·
+// Proxy-Authentication-Info 값 전체. 가림 하한(8바이트)보다 짧은 값은 세션 값으로 보지 않는다(lang=en 같은 값까지
+// 가리면 출력이 망가진다). 같은 값은 한 번만 낸다.
+func issuedSessionValues(response *http.Response) [][]byte {
+	seen := map[string]bool{}
+	var out [][]byte
+	add := func(v string) {
+		if len(v) >= minRedactValueBytes && len(v) <= maxRedactValueBytes && !seen[v] {
+			seen[v] = true
+			out = append(out, []byte(v))
+		}
+	}
+	for _, fields := range []http.Header{response.Header, response.Trailer} {
+		for name, values := range fields {
+			switch strings.ToLower(name) {
+			case "set-cookie", "set-cookie2":
+				for _, line := range values {
+					if c, err := http.ParseSetCookie(line); err == nil {
+						add(c.Value)
+					} else if _, rest, ok := strings.Cut(line, "="); ok {
+						// 형식이 어긋난 줄도 값 자리는 가린다(파싱 실패를 이유로 값을 기록에 남기지 않는다).
+						v, _, _ := strings.Cut(rest, ";")
+						add(strings.TrimSpace(v))
+					}
+				}
+			case "authentication-info", "proxy-authentication-info":
+				for _, v := range values {
+					add(strings.TrimSpace(v))
+				}
+			}
+		}
+	}
+	return out
 }
 
 func (Config) String() string   { return "e2proxy.Config[protected]" }
