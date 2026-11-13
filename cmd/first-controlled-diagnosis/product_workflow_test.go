@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +18,7 @@ import (
 	"github.com/Autumn-27/artex/e2proxy"
 )
 
-func TestWorkflowProfileBindsCompleteInputAndNarrowsAutomaticMethods(t *testing.T) {
+func TestWorkflowProfileBindsCompleteInputAndKeepsApprovedWritesInAutomaticMode(t *testing.T) {
 	f := newURLNegativeFixture(t)
 	completeProductTemplateForTest(f)
 	m := f.config.Profiles[0]
@@ -94,9 +95,13 @@ func TestWorkflowProfileBindsCompleteInputAndNarrowsAutomaticMethods(t *testing.
 	if auto.policy.ApprovalMode != e2proxy.ApprovalPreauthorizedScope {
 		t.Fatal("automatic mode changed policy")
 	}
-	for _, method := range auto.inspection.Scope.Methods {
-		if method != "GET" && method != "HEAD" {
-			t.Fatal("automatic mode inherited write authority")
+	// 자동 모드는 대상에 승인한 쓰기를 건별 확인 없이 쓴다(C21).
+	if !reflect.DeepEqual(auto.inspection.Scope.Methods, []string{"GET", "HEAD", "POST"}) {
+		t.Fatal("automatic mode lost approved write methods", auto.inspection.Scope.Methods)
+	}
+	for _, rule := range auto.policy.Rules {
+		if !reflect.DeepEqual(rule.Methods, []string{"GET", "HEAD", "POST"}) {
+			t.Fatal("automatic mode rule lost approved write methods", rule.Methods)
 		}
 	}
 	// Installation opt-in, target consent and ordinary-mode write filtering are

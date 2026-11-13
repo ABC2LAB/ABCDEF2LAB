@@ -144,6 +144,15 @@ func looseQuery(raw string) url.Values {
 	return out
 }
 
+// autoSelectable은 자동 모드가 진단할 끝점이다. 수동 모드에서 사람이 고를 수 있는 끝점(controller의 선택 검사)과 같은
+// 범위에서, 대상이 쓰기를 승인했으면 폼·쓰기·추정 끝점도 고른다(C21). 스크립트 파일과 관찰이 깨진 끝점은 고르지 않는다.
+func autoSelectable(e *Endpoint, reversibleWrites bool) bool {
+	if !e.InScope || e.Change == "blocked" || e.Kind == "script" || e.ObservationError != "" && e.ObservationError != "body_incomplete" {
+		return false
+	}
+	return e.Change == "attested_read" || reversibleWrites
+}
+
 func writeMethod(method string) bool {
 	return method != "GET" && method != "HEAD" && method != "OPTIONS"
 }
@@ -631,9 +640,8 @@ func (c *Controller) Before(ctx context.Context, v e2proxy.RequestView) error {
 	if s.Stage != "diagnosing" || !e.Selected {
 		return ErrDenied
 	}
-	if s.Mode == Auto && (v.BodyPresent || e.Change != "attested_read" || v.Method != "GET" && v.Method != "HEAD") {
-		return ErrDenied
-	}
+	// 자동 모드도 수동 모드와 같은 범위를 보낸다. 대상에 승인한 쓰기(되돌릴 수 있는 쓰기 승인)가 있으면 건별 확인 없이
+	// 보낸다(C21, 2026-11-13 결정: 자동 모드는 승인 없이 돈다). 범위·메서드·위험 요청·예산 검사는 그대로다.
 	if e.Change != "attested_read" && !c.binding.ReversibleWrites {
 		return ErrDenied
 	}

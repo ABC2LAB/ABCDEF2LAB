@@ -128,20 +128,33 @@ func TestManualCrawlSelectionAndExactRequestFence(t *testing.T) {
 		t.Fatal("selection not persisted")
 	}
 }
-func TestAutomaticModeDoesNotGrantStateChangesOrExcludedPaths(t *testing.T) {
-	c, _ := flowFixture(t, Auto)
-	syntheticCrawl(t, c)
-	s, _ := c.Snapshot()
-	if s.Stage != "diagnosing" {
-		t.Fatal(s.Stage)
-	}
-	for _, view := range []e2proxy.RequestView{{Method: "POST", URL: "https://owned.test/read/cart/add"}, {Method: "GET", URL: "https://owned.test/read/logout"}, {Method: "GET", URL: "https://owned.test/read/excluded"}, {Method: "GET", URL: "https://other.test/read"}, {Method: "GET", URL: "https://owned.test/read/newly-found"}} {
-		if c.Before(t.Context(), view) == nil {
-			t.Fatal("automatic scope widened", view)
+
+// 자동 모드는 대상에 승인한 쓰기를 건별 확인 없이 보낸다(C21). 쓰기 승인이 없으면 쓰기는 고르지도 보내지도 않는다.
+// 어느 쪽이든 제외 경로·위험 동작·다른 origin·처음 보는 경로는 막는다.
+func TestAutomaticModeSendsApprovedWritesButNotExcludedPaths(t *testing.T) {
+	for _, writes := range []bool{true, false} {
+		c, _ := flowFixture(t, Auto)
+		c.binding.ReversibleWrites = writes
+		syntheticCrawl(t, c)
+		s, _ := c.Snapshot()
+		if s.Stage != "diagnosing" {
+			t.Fatal(s.Stage)
 		}
-	}
-	if c.Before(t.Context(), e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/item"}) != nil {
-		t.Fatal("approved discovered read denied")
+		post := e2proxy.RequestView{Method: "POST", URL: "https://owned.test/read/cart/add", BodyPresent: true}
+		if err := c.Before(t.Context(), post); (err == nil) != writes || endpointAt(c, "POST", "/read/cart/add").Selected != writes {
+			t.Fatalf("writes=%v: approved write admission %v", writes, err)
+		}
+		if c.PreapprovedRead(post) {
+			t.Fatal("write counted as a preapproved read")
+		}
+		for _, view := range []e2proxy.RequestView{{Method: "GET", URL: "https://owned.test/read/logout"}, {Method: "GET", URL: "https://owned.test/read/excluded"}, {Method: "GET", URL: "https://other.test/read"}, {Method: "GET", URL: "https://owned.test/read/newly-found"}, {Method: "POST", URL: "https://owned.test/read/excluded"}} {
+			if c.Before(t.Context(), view) == nil {
+				t.Fatal("automatic scope widened", view)
+			}
+		}
+		if c.Before(t.Context(), e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/item"}) != nil {
+			t.Fatal("approved discovered read denied")
+		}
 	}
 }
 func TestPauseWaitAndFailedStorageDenyNewSideEffects(t *testing.T) {
@@ -262,34 +275,36 @@ func TestAttestedReadExemptionIsPathScopedAndDoesNotValidateQuery(t *testing.T) 
 }
 
 // Deliberately bypass upstream selection/classification to exercise the last
-// request boundary independently. The paired manual case proves no other guard
-// is responsible for the automatic-mode refusal.
-func TestAutomaticRequestBoundaryIndependentlyRejectsWrites(t *testing.T) {
+// request boundary independently. Automatic and manual modes admit the same
+// selected requests (C21); only the target's reversible-write grant decides
+// whether a possible side effect may be sent.
+func TestAutomaticRequestBoundaryMatchesManual(t *testing.T) {
 	for _, tc := range []struct {
 		name, method, change string
 		body                 bool
 	}{
-		{"selected_POST", "POST", "possible", false},
+		{"selected_POST", "POST", "possible", true},
 		{"POST_misclassified_as_read", "POST", "attested_read", false},
 		{"GET_with_body", "GET", "attested_read", true},
 		{"GET_form", "GET", "possible", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			for _, mode := range []string{Auto, Manual} {
-				c, _ := flowFixture(t, mode)
-				c.mu.Lock()
-				e := c.addLocked(tc.method, "/read/selected", "form", "html_form", "/read")
-				e.Selected = true
-				e.Change = tc.change
-				c.record.Snapshot.Stage = "diagnosing"
-				c.mu.Unlock()
-				view := e2proxy.RequestView{Method: tc.method, URL: "https://owned.test/read/selected", BodyPresent: tc.body}
-				err := c.Before(t.Context(), view)
-				if mode == Auto && !errors.Is(err, ErrDenied) {
-					t.Fatal("automatic boundary admitted a write", err)
-				}
-				if mode == Manual && err != nil {
-					t.Fatal("other guard obscured automatic-mode test", err)
+			for _, writes := range []bool{true, false} {
+				for _, mode := range []string{Auto, Manual} {
+					c, _ := flowFixture(t, mode)
+					c.binding.ReversibleWrites = writes
+					c.mu.Lock()
+					e := c.addLocked(tc.method, "/read/selected", "form", "html_form", "/read")
+					e.Selected = true
+					e.Change = tc.change
+					c.record.Snapshot.Stage = "diagnosing"
+					c.mu.Unlock()
+					view := e2proxy.RequestView{Method: tc.method, URL: "https://owned.test/read/selected", BodyPresent: tc.body}
+					err := c.Before(t.Context(), view)
+					denied := tc.change != "attested_read" && !writes
+					if denied && !errors.Is(err, ErrDenied) || !denied && err != nil {
+						t.Fatalf("%s writes=%v: %v", mode, writes, err)
+					}
 				}
 			}
 		})

@@ -410,7 +410,7 @@ func (c *Controller) Crawl(ctx context.Context, fetch Fetch) (handled bool, fail
 		c.record.Snapshot.Stage = "diagnosing"
 		for i := range c.record.Snapshot.Endpoints {
 			e := &c.record.Snapshot.Endpoints[i]
-			e.Selected = e.InScope && e.Change == "attested_read" && e.Kind != "script" && (e.ObservationError == "" || e.ObservationError == "body_incomplete")
+			e.Selected = autoSelectable(e, c.binding.ReversibleWrites)
 		}
 	}
 	return true, c.saveLocked(ctx, false, "crawl_finished", "", "", 0)

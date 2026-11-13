@@ -5,6 +5,7 @@ import (
 	"github.com/Autumn-27/artex/diagnosis"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCanonicalInputStrictLocalValidation(t *testing.T) {
@@ -198,6 +199,23 @@ func TestJobRunResultFields(t *testing.T) {
 		tc.change(&j)
 		if validJob(j) != tc.ok {
 			t.Fatalf("%s: valid=%v", tc.name, !tc.ok)
+		}
+	}
+}
+
+// 쓰기 메서드(POST·PUT·PATCH)는 승인 방식과 상관없이 범위에 둘 수 있다. 자동 모드(preauthorized_scope)도 대상에 승인한
+// 쓰기를 건별 확인 없이 쓴다(C21). DELETE 같은 다른 메서드는 그대로 받지 않는다.
+func TestScopeWriteMethodsDoNotNeedPerRequestApproval(t *testing.T) {
+	base := Scope{TargetRef: "target", ScopeRef: "scope", Origin: "https://example.test", PathPrefixes: []string{"/read"}, QueryPolicy: "any", BodyPolicy: "bounded", MaxBodyBytes: 1024, AttestationRef: "attestation", Budget: Budget{Requests: 4, ModelRequests: 3, InputTokens: 30, OutputTokens: 20, CostUSDMicros: 10, DurationSeconds: 60}, ExpiresAt: time.Now().Add(time.Hour)}
+	for _, mode := range []string{"preauthorized_scope", "workbench_selective_v1"} {
+		s := base
+		s.ApprovalMode, s.Methods = mode, []string{"GET", "HEAD", "PATCH", "POST", "PUT"}
+		if !validScope(&s) {
+			t.Fatalf("%s: approved write methods rejected", mode)
+		}
+		s.Methods = []string{"DELETE", "GET"}
+		if validScope(&s) {
+			t.Fatalf("%s: DELETE accepted", mode)
 		}
 	}
 }
