@@ -48,6 +48,7 @@
 | `rules[].origin` | 문자열 필수, `http` 또는 `https`의 정확한 host[:port] origin. userinfo·query·fragment·경로(루트 `/` 표기 예외) 금지; 포트 1…65535 | proxy가 host 소문자·기본 포트를 정규화해 승인 대상과 대조 | 포함(정규화된 scheme·host·port) |
 | `rules[].connect_ip` | 문자열 필수, 유효한 단일 IP. unspecified·multicast·zone 금지 | proxy는 IP pin으로 실제 dial; factory가 파싱 | 제외, 매회 별도 검증 |
 | `rules[].path_prefix` | 문자열 필수, `/` 또는 clean 절대 경로. 역슬래시·`%`·CR/LF·`//`·dot segment 금지; 끝 `/`은 정규화 | proxy는 요청의 clean path를 exact 또는 **세그먼트 경계** prefix로 비교 | 포함(원문 prefix) |
+| `rules[].purpose` | 선택, 문자열 `auth_prep`만 | proxy: 인증 준비(로그인) 전용 규칙(C14). 메서드는 `POST` 하나, 경로는 `/`가 아닌 정확한 경로이고 끝 `/` 금지, 보호 자격·헤더 제약 금지. 모델 요청(`Do`)의 규칙 찾기는 이 규칙을 건너뛰고, 프로그램의 `Call.AuthPrep`만 정확히 같은 경로(query 없음)로 쓴다. 진단 요청 경계·요청 승인·응답 표현 보류는 거치지 않고, 대상·IP·TLS·감사·예산은 같다 | 값이 있는 규칙만 `purpose`와 `path_match: exact_path_v1`이 들어감 |
 | `rules[].methods` | 비어 있지 않은 문자열 배열 필수, 중복 금지. `GET HEAD POST PUT PATCH DELETE OPTIONS`만 허용 | proxy는 실제 method를 확인. GET도 비변경 보장 아님 | 배열 순서대로 포함 |
 | `rules[].credentials` | 파일 pin 객체 선택, 생략/`null` 허용. 현재 `protected_session_proposal`에서만 유효 | factory는 최대 32KiB 보호 JSON `{"headers":{…}}`을 읽고 proxy는 헤더 이름·값·충돌 검사 | 헤더 **이름만** 정규화·정렬해 포함, 값 제외 |
 | `rules[].approval_display` | 객체 필수. `public_path` bool 필수, `query_keys`/`json_fields` 문자열 배열 필수(빈 배열 또는 `null` 가능) | 확인 UI 표시용. 평가 자동 승인 권한 아님 | 제외 |
