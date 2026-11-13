@@ -75,7 +75,12 @@ func (b ControlBoundary) Open(ctx context.Context, binding exploration.Binding) 
 	wire := WireTargetOf(target)
 	out, err := b.Client.call(ctx, ControlRequest{Op: OpOpen, Binding: &binding, SourceDigest: b.SourceDigest, Target: &wire})
 	if err != nil {
-		return nil, err
+		// 서버의 명시적 거절은 열리지 않은 것이다. 전송·응답 오류는 open 도착 여부가 불명이다.
+		switch out.Error {
+		case ControlErrBusy, ControlErrInvalid, ControlErrUnavailable, ControlErrTargetEnded:
+			return nil, err
+		}
+		return controlLease{client: b.Client, binding: binding}, err
 	}
 	if out.State == nil || out.State.Validate(binding) != nil || !out.State.Active {
 		// 열렸는지 확신할 수 없으면 lease를 돌려줘 호출자가 마감을 시도하게 한다.

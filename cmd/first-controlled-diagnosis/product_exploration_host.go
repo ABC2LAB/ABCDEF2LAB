@@ -103,6 +103,8 @@ func validSHA256Hex(s string) bool {
 
 // productExplorationHost는 실제 탐색 경계(제어 소켓·직접 입구)와 브라우저 샌드박스(MCP)를 서버 탐색 단계에 묶는다.
 type productExplorationHost struct {
+	leasesMu            sync.Mutex
+	leases              map[string]*productExplorationLease
 	control             exploreboundary.ControlClient
 	proxy               *url.URL
 	roots               *x509.CertPool
@@ -183,7 +185,7 @@ func (l productMCPLease) Close(context.Context) error         { return nil }
 // Boundary.Open·StartBrowser를 부를 때 시작한다. current는 대상 승인이 지금도 같은지 본다(철회·만료는 target_ended).
 func (h *productExplorationHost) factory(rec productTargetRecord, current func(productTargetRecord) error, digest string, excluded []string, maxBytes int64) server.ExplorationPipelineFactory {
 	return func(_ context.Context, b exploration.Binding, w *agent.Worker) (server.ExplorationPipelineHost, error) {
-		if b.TargetRef != rec.Target.ID || b.TargetRevision != rec.Target.Revision || w == nil || maxBytes <= 0 {
+		if b.TargetRef != rec.Target.ID || b.TargetRevision != rec.Target.Revision || w == nil || current == nil || maxBytes <= 0 {
 			return server.ExplorationPipelineHost{}, exploration.ErrBinding
 		}
 		target, err := exploreTargetOf(rec, excluded)
@@ -207,7 +209,8 @@ func (h *productExplorationHost) factory(rec productTargetRecord, current func(p
 		fetch := exploreboundary.DirectFetch{Proxy: h.proxy, Roots: h.roots, Timeout: explorationFetchTimeout, MaxBytes: maxBytes, Status: reader.Status}
 		browser := server.ExplorationBrowserInfo{Binding: b, PackageVersion: exploration.MCPPackageVersion,
 			MCP: db.MCPServer{Name: exploration.MCPServerName, Transport: "http", URL: h.mcpURL, Enabled: true}}
-		session := server.ExplorationSessionOptions{Boundary: boundary,
+		session := server.ExplorationSessionOptions{Boundary: productExplorationBoundary{host: h, inner: boundary, record: rec, current: current},
+			TargetEnded: func() bool { return errors.Is(current(rec), server.ErrFirstDiagnosisTargetEnded) },
 			StartBrowser: func(_ context.Context, got exploration.Binding) (server.ExplorationBrowserLease, error) {
 				if got != b {
 					return nil, exploration.ErrBinding

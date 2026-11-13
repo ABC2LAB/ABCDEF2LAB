@@ -55,6 +55,8 @@ type ExplorationSessionOptions struct {
 	// Finalize는 모델/도구와 브라우저 폐쇄 뒤 보호 저장소의 기존 관찰만 배출한다. 새 송신·모델 호출·원문 로그를 만들지 않으며 문맥 상한을 지킨다.
 	Finalize func(context.Context, exploration.Binding) error
 	// Observe는 각 경계 도구 결과 뒤 private 관찰만 저장하고 다음 모델 호출 전에 돌아온다.
+	// TargetEnded는 보호 대상의 철회·만료 확인이다. 모델 입력으로 만들지 않는다.
+	TargetEnded    func() bool
 	Observe        func(context.Context, exploration.Binding) error
 	CloseTimeout   time.Duration
 	StatusInterval time.Duration
@@ -361,6 +363,10 @@ func (s *ExplorationSession) Close(parent context.Context, reason exploration.Re
 		return exploration.ErrBinding
 	}
 	s.once.Do(func() {
+		// 취소 watcher와 철회가 경합해도 private 마감 전에 권한 종료를 보존한다.
+		if s.options.TargetEnded != nil && s.options.TargetEnded() {
+			reason = exploration.TargetEnded
+		}
 		s.mu.Lock()
 		s.closed = true
 		s.reason = reason

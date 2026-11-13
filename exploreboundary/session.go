@@ -104,7 +104,7 @@ func validTarget(t Target, b exploration.Binding) bool {
 // Open은 서버가 넘긴 결속으로 대상 등록 저장소에서 승인 대상을 직접 읽어 세션을 연다.
 func Open(ctx context.Context, b exploration.Binding, sourceDigest string, source TargetSource, p Policy) (*Session, error) {
 	digest, err := hex.DecodeString(sourceDigest)
-	if ctx == nil || b.Validate() != nil || err != nil || len(digest) != 32 || source == nil || !p.valid() {
+	if ctx == nil || ctx.Err() != nil || b.Validate() != nil || err != nil || len(digest) != 32 || source == nil || !p.valid() {
 		return nil, ErrConfig
 	}
 	if p.Now == nil {
@@ -115,8 +115,11 @@ func Open(ctx context.Context, b exploration.Binding, sourceDigest string, sourc
 		return nil, err
 	}
 	now := p.Now()
-	if !validTarget(target, b) || !now.Before(target.ExpiresAt) {
+	if !validTarget(target, b) {
 		return nil, ErrConfig
+	}
+	if !now.Before(target.ExpiresAt) {
+		return nil, ErrTargetEnded
 	}
 	deadline := now.Add(time.Duration(b.Limits.TimeBudgetSeconds) * time.Second)
 	if target.ExpiresAt.Before(deadline) {
@@ -143,6 +146,14 @@ func (s *Session) closeLocked(reason exploration.Reason) {
 
 func (s *Session) stateLocked() exploration.State {
 	return exploration.State{Binding: s.binding, Active: s.active, ClosedReason: s.reason, TargetRequests: s.targetCount, ExternalRequests: s.externalSent, ActiveConnections: s.inflight}
+}
+
+// 대상 승인 만료는 실행 시간 상한과 별개의 권한 종료다. 먼저 닿은 만료를 보존한다.
+func (s *Session) deadlineReasonLocked() exploration.Reason {
+	if !s.policy.Now().Before(s.target.ExpiresAt) {
+		return exploration.TargetEnded
+	}
+	return exploration.CapExhausted
 }
 
 // Status는 현재 상태다. 닫혔어도 진행 중 연결이 남아 있으면 ActiveConnections가 0이 아니다.
@@ -177,7 +188,7 @@ func (s *Session) Check(ctx context.Context) error {
 		return ErrUnavailable
 	}
 	if !s.policy.Now().Before(s.deadline) {
-		s.closeLocked(exploration.CapExhausted)
+		s.closeLocked(s.deadlineReasonLocked())
 		s.mu.Unlock()
 		return ErrUnavailable
 	}
@@ -211,7 +222,7 @@ func (s *Session) liveLocked(ctx context.Context) bool {
 		return false
 	}
 	if !s.policy.Now().Before(s.deadline) {
-		s.closeLocked(exploration.CapExhausted)
+		s.closeLocked(s.deadlineReasonLocked())
 		return false
 	}
 	return true

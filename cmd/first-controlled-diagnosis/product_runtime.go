@@ -688,14 +688,28 @@ func (p *productRuntime) attach(rec productTargetRecord, id string, cancel conte
 }
 func (p *productRuntime) revoke(principal, id string) (diagnosisprep.ProductTarget, error) {
 	p.activeMu.Lock()
-	defer p.activeMu.Unlock()
 	t, e := p.targets.revoke(principal, id)
+	var cancellations []context.CancelFunc
+	if e == nil {
+		for _, cancel := range p.active[id] {
+			cancellations = append(cancellations, cancel)
+		}
+	}
+	p.activeMu.Unlock()
 	if e != nil {
 		return t, e
 	}
 	p.removeBindingCredentials(id, "")
-	for _, cancel := range p.active[id] {
+	// 철회를 먼저 영속화하고 경계를 target_ended로 닫은 뒤 자식 실행을 취소한다.
+	// 원격 마감 동안 다른 대상의 attach를 막지 않으며, 마감 실패도 취소를 건너뛰지 않는다.
+	cleanup, stop := context.WithTimeout(context.Background(), explorationCloseTimeout)
+	defer stop()
+	closeErr := p.exploration.closeTarget(cleanup, id)
+	for _, cancel := range cancellations {
 		cancel()
+	}
+	if closeErr != nil {
+		return t, errors.New("target_revocation_close_failed")
 	}
 	return t, nil
 }

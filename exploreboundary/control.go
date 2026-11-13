@@ -151,6 +151,15 @@ func (m *Manager) session(ref string) *Session {
 
 func fail(code string) ControlResponse { return ControlResponse{Error: code} }
 
+// 마감 표식만으로 이전 요청의 실제 종료를 가정하지 않는다. 호출자는 m.mu를 보유한다.
+func (m *Manager) sessionBusyLocked() bool {
+	if m.current == nil {
+		return false
+	}
+	state := m.current.Status()
+	return state.Active || state.ActiveConnections != 0
+}
+
 // Handle은 제어 요청 하나를 처리한다. 신뢰는 소켓 배치·peer 검사로 정하고 요청 내용으로 권한을 늘리지 않는다.
 func (m *Manager) Handle(ctx context.Context, in ControlRequest) ControlResponse {
 	switch in.Op {
@@ -164,7 +173,7 @@ func (m *Manager) Handle(ctx context.Context, in ControlRequest) ControlResponse
 		}
 		source := snapshotSource{target: target}
 		m.mu.Lock()
-		if m.current != nil && m.current.Status().Active {
+		if m.sessionBusyLocked() {
 			m.mu.Unlock()
 			return fail(ControlErrBusy)
 		}
@@ -179,9 +188,15 @@ func (m *Manager) Handle(ctx context.Context, in ControlRequest) ControlResponse
 			return fail(ControlErrUnavailable)
 		}
 		m.mu.Lock()
-		if m.current != nil && m.current.Status().Active {
+		if m.sessionBusyLocked() {
 			m.mu.Unlock()
 			return fail(ControlErrBusy)
+		}
+		// 새 세션을 게시하기 전에 옛 유휴 터널도 정리한다. 지연 watcher는 새 회차에 닿지 않는다.
+		if m.current != nil {
+			for _, proxy := range m.Proxies {
+				proxy.CloseTunnels()
+			}
 		}
 		m.current = s
 		m.mu.Unlock()
@@ -252,6 +267,11 @@ func (m *Manager) Handle(ctx context.Context, in ControlRequest) ControlResponse
 // watch는 세션이 닫히면 열린 터널을 끊어 새 송신과 남은 연결을 함께 정리한다(§6).
 func (m *Manager) watch(s *Session) {
 	<-s.Closed()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.current != s {
+		return
+	}
 	for _, p := range m.Proxies {
 		p.CloseTunnels()
 	}
