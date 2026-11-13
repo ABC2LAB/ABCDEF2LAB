@@ -530,6 +530,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 			}
 		}
 		var refresh func(context.Context, string) (http.Header, string)
+		sessionStore := newE2HTTPSessionStore(auth.Sessions)
 		if policy.Auth != nil && policy.HeaderMode == e2proxy.HeaderTestAccountPassthrough && len(auth.Sessions) > 0 {
 			authPolicy, origin := *policy.Auth, ""
 			for _, rule := range policy.Rules {
@@ -538,10 +539,15 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 				}
 			}
 			refresh = func(ctx context.Context, label string) (http.Header, string) {
-				return e2HTTPRefreshSession(ctx, execution, dir, origin, authPolicy, refreshes, label)
+				header, result := e2HTTPRefreshSession(ctx, execution, dir, origin, authPolicy, refreshes, label)
+				if result == E2HTTPAuthAuthenticated && len(header) > 0 {
+					// 다음 Worker도 새 세션으로 시작한다.
+					sessionStore.replace(label, header)
+				}
+				return header, result
 			}
 		}
-		return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: release, ObserveResult: input.ObserveResult, AccountAuth: auth.AccountAuth, Sessions: auth.Sessions, RefreshSession: refresh}, nil
+		return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: release, ObserveResult: input.ObserveResult, AccountAuth: auth.AccountAuth, Sessions: auth.Sessions, RefreshSession: refresh, sessionStore: sessionStore}, nil
 	}
 	// 진단 Worker의 insert_assets가 받을 수 있는 자산 범위다(C24). 검사를 거친 정책 규칙의 origin만 쓴다.
 	approvedOrigins := make([]string, 0, len(policy.Rules))

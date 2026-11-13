@@ -83,6 +83,38 @@ func validE2HTTPFileAuth(a *E2HTTPFileAuth, mode e2proxy.HeaderMode, rules []E2H
 
 var errAuthLoginFailed = errors.New("auth_login_failed")
 
+// e2HTTPSessionStore는 실행이 들고 있는 시험 계정 세션이다. refresh_session이 성공하면 그 계정 세션을 바꾸고, Worker를
+// 시작할 때마다 사본을 읽는다(#550 이동찬 리뷰: 로그인이 이전 세션을 무효로 하는 대상에서 다음 Worker가 옛 세션으로 시작하지
+// 않게). 여러 Worker가 동시에 읽고 다시 로그인이 쓰므로 잠근다.
+type e2HTTPSessionStore struct {
+	mu       sync.RWMutex
+	sessions E2HTTPSessions
+}
+
+func newE2HTTPSessionStore(initial E2HTTPSessions) *e2HTTPSessionStore {
+	s := &e2HTTPSessionStore{sessions: E2HTTPSessions{}}
+	for label, header := range initial {
+		s.sessions[label] = header.Clone()
+	}
+	return s
+}
+
+func (s *e2HTTPSessionStore) snapshot() E2HTTPSessions {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(E2HTTPSessions, len(s.sessions))
+	for label, header := range s.sessions {
+		out[label] = header.Clone()
+	}
+	return out
+}
+
+func (s *e2HTTPSessionStore) replace(label string, header http.Header) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessions[label] = header.Clone()
+}
+
 // maxSessionRefreshesPerAccount는 한 실행에서 계정 하나를 다시 로그인시킬 수 있는 횟수다(C14 결정 2, 실패도 센다).
 // 시험 계정 잠금·로그인 폭주를 막는 상한이고 인증 준비 처음 한 번은 세지 않는다.
 const maxSessionRefreshesPerAccount = 3

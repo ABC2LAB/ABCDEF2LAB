@@ -5,6 +5,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -312,5 +314,102 @@ func TestE2HTTPRefreshForOnlyAuthenticatedTestAccountRuns(t *testing.T) {
 	}
 	if e2HTTPRefreshFor(e2proxy.HeaderPreserve, with) != nil || e2HTTPRefreshFor(e2proxy.HeaderTestAccountPassthrough, &E2HTTPRunOptions{RefreshSession: refresh}) != nil || e2HTTPRefreshFor(e2proxy.HeaderTestAccountPassthrough, nil) != nil {
 		t.Fatal("refresh path given to a run without test account sessions")
+	}
+}
+
+// 로그인할 때마다 이전 세션을 무효로 하는 대상에서, 다시 로그인한 세션이 실행 세션 저장소에 반영돼 다음 Worker가 새 세션으로
+// 시작한다(#550 이동찬 리뷰). Worker 시작(읽기)과 다시 로그인(쓰기)이 겹쳐도 경쟁하지 않는다(-race). 다시 로그인한 세션 값도
+// 실행 가림에 들어가 표시용 경로 패턴에서 가려진다(#550 윤재상 리뷰, #548).
+func TestE2HTTPFactoryRefreshedSessionReachesNextWorker(t *testing.T) {
+	var mu sync.Mutex
+	current, issued := "", 0
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.URL.Path == "/login" {
+			_ = r.ParseForm()
+			if r.PostForm.Get("email") != "tester@owned.test" || r.PostForm.Get("password") != "seeded-pass-88ff" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			issued++
+			current = fmt.Sprintf("rotatingsession%04dvalue", issued) // 새로 발급하면 이전 세션은 무효
+			http.SetCookie(w, &http.Cookie{Name: "session", Value: current})
+			io.WriteString(w, "ok")
+			return
+		}
+		if c, err := r.Cookie("session"); err != nil || c.Value != current {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		io.WriteString(w, "owned")
+	}))
+	defer target.Close()
+	cfg, _, policy := e2HostPolicyFixture(t)
+	policy.Rules[0].Origin = target.URL
+	policy.Rules = append(policy.Rules, E2HTTPFileRule{Ref: "auth-login", Origin: target.URL, ConnectIP: "127.0.0.1", PathPrefix: "/login", PathScopeRef: "auth-login", Methods: []string{"POST"}, Purpose: e2proxy.PurposeAuthPrep})
+	policy.HeaderMode = e2proxy.HeaderTestAccountPassthrough
+	policy.Limits.MaxAttempts, policy.Limits.MaxCalls, policy.MaxRequests = 64, 64, 64
+	auth := cookieAuth(E2HTTPFileAuthAccount{Label: "tester-a", Credential: authCredentialPin(t, cfg.AuthorityRoot, "tester-a.json", "tester@owned.test", "seeded-pass-88ff")})
+	policy.Auth = &auth
+	raw, err := json.Marshal(policy)
+	if err != nil || os.WriteFile(cfg.PolicyFile, raw, 0o600) != nil {
+		t.Fatal("합성 정책 준비 실패")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	options, err := LoadE2HTTPRuntimeOptions(ctx, E2HTTPFileOptions{PolicyFile: cfg.PolicyFile, Authority: &e2HTTPPolicyAuthorityFixture{ctx: ctx}, Supervisor: &e2HTTPSupervisorFixture{}})
+	if err != nil {
+		t.Fatal("호스트 준비 실패", err)
+	}
+	lease, err := options.Acquire(ctx, E2HTTPRequest{TaskID: "11", TaskIDNumber: 11, ExplorationID: 27, IntentID: 31})
+	if err != nil || lease.RefreshSession == nil {
+		t.Fatal("실행 획득 실패", err)
+	}
+	defer func() {
+		cleanup, done := context.WithTimeout(context.Background(), 5*time.Second)
+		defer done()
+		_ = lease.Runner.Close(cleanup)
+		_ = lease.Execution.Stop(cleanup)
+		_ = lease.Release(cleanup)
+	}()
+	// Worker 시작(읽기)과 다시 로그인(쓰기)을 겹친다.
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = e2HTTPSessionsFor(e2proxy.HeaderTestAccountPassthrough, lease.CurrentSessions())
+		}()
+	}
+	refreshed, result := lease.RefreshSession(ctx, "tester-a")
+	wg.Wait()
+	if result != E2HTTPAuthAuthenticated {
+		t.Fatal("refresh", result)
+	}
+	next := e2HTTPSessionsFor(e2proxy.HeaderTestAccountPassthrough, lease.CurrentSessions())
+	if got := next["tester-a"].Get("Cookie"); got != refreshed.Get("Cookie") || got != "session=rotatingsession0002value" {
+		t.Fatalf("next worker got a stale session: %q", got)
+	}
+	// 다음 Worker가 받은 세션으로 보낸 요청이 대상에서 통한다. 그 세션 값을 경로에 넣으면 표시용 패턴에서 가려진다.
+	call, err := lease.Execution.BeginCall(ctx, "next-worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/allowed/me", "/allowed/rotatingsession0002value/items"} {
+		request, _ := http.NewRequest("GET", target.URL+path, nil)
+		request.Header.Set("Cookie", next["tester-a"].Get("Cookie"))
+		response, receipt, err := call.Do(ctx, request)
+		if err != nil || response == nil || receipt.StatusCode != http.StatusOK {
+			t.Fatalf("next worker request %s: status=%d err=%v", path, receipt.StatusCode, err)
+		}
+		response.Body.Close()
+	}
+	closeCtx, done := context.WithTimeout(context.Background(), time.Second)
+	defer done()
+	_, _ = call.Close(closeCtx)
+	data, err := os.ReadFile(filepath.Join(policy.StateDir, E2AttemptPatternsFile))
+	if err != nil || strings.Contains(string(data), "rotatingsession0002value") || !strings.Contains(string(data), `"/allowed/{id}/items"`) {
+		t.Fatalf("refreshed session not masked in display patterns: %q %v", data, err)
 	}
 }
