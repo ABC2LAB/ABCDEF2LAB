@@ -26,7 +26,7 @@
 
 | 요청 | 뜻 |
 |---|---|
-| `GET /api/product/targets/{id}/accounts` | 목록 `{"accounts": ProductAccount[]}`(계정이 없으면 칸 없음) |
+| `GET /api/product/targets/{id}/accounts` | 목록 `{"accounts": ProductAccount[], "account_statement": "..."}`(계정이 없으면 `accounts` 칸 없음). `account_statement`는 시험 계정 표시 때 화면이 그대로 띄워 동의받는 진술 문장이다 |
 | `POST /api/product/targets/{id}/accounts` `{"label": "..."}` | 등록(분류 `real`). 라벨은 소문자·숫자·`_`·`-`만(사용자명·이메일 원문 금지) |
 | `POST …/accounts/{label}/mark-test` `{"statement_confirmed": true}` | 시험 계정 표시(본인 진술 동의 필수, 없으면 409 `statement_required`) |
 | `POST …/accounts/{label}/unmark` `{}` | 표시 해제 |
@@ -78,21 +78,29 @@
 
 ## 4. 전송 통제 흐름 — 새 API와 사유 enum
 
-`GET /api/tasks/{id}/e2-flow?after=<index>`
+`GET /api/tasks/{id}/e2-flow` · `GET /api/tasks/{id}/e2-flow?after=<index>`
 
-그 task의 전송 통제 감사 기록(실행 결속 디렉터리의 저널, HMAC 체인 검증 뒤)을 호출(call) 단위로 묶은 투영이다. 최근 순으로 상한(호출 200개)까지 주고, 넘으면 `truncated: true`다. 저널 검증이 실패하면 사건을 하나도 보이지 않고 `journal: "invalid"`로 답한다(일부만 보이고 "정상"으로 보이게 하지 않는다).
+그 task의 전송 통제 감사 기록(실행 결속 디렉터리의 저널, HMAC 체인 검증 뒤)을 호출(call) 단위로 묶은 투영이다. 저널 검증이 실패하면 사건을 하나도 보이지 않고 `journal: "invalid"`로 답한다(일부만 보이고 "정상"으로 보이게 하지 않는다).
+
+**커서**: 기준은 감사 저널 사건 번호 `Event.Index`다(사건마다 1씩 오른다. 시도 번호 `sequence`가 아니다 — 한 시도의 `intent`·`result` 사건은 같은 `sequence`를 쓰고 `control`·`call_closed`에는 시도 번호가 없다).
+
+- `after` 없음(처음 조회): 가장 최근 호출 200개를 그 호출의 모든 사건으로 묶어 준다. 더 오래된 호출이 있으면 `omitted_calls`에 그 수를 적는다(이 오래된 호출은 다시 받을 방법이 없다 — 화면은 "이전 호출 n개 생략"으로 보인다). `last_index`는 검증한 마지막 사건 번호다.
+- `after=N`: 번호가 N보다 큰 사건만 오래된 것부터 최대 1000개 준다. 이미 받은 호출의 이어지는 사건이면 같은 `call_ref`로 온다. `last_index`는 이번 응답에 넣은 마지막 사건 번호이고, `more: true`면 남은 사건이 있으니 바로 `after=last_index`로 다시 부른다. 넣은 사건이 없으면 `last_index`는 N 그대로다.
+- 화면은 `call_ref`로 호출을 합치고, 같은 `attempt_id`의 시도 행은 더 큰 `index`의 행으로 바꾼다. 다음 조회는 늘 직전 응답의 `last_index`로 한다.
 
 ```json
 {
   "format": "abc2lab.e2-flow-view/v1",
   "journal": "verified",
-  "truncated": false,
+  "last_index": 41,
+  "more": false,
+  "omitted_calls": 0,
   "counts": {"attempts": 12, "allowed": 9, "denied": 2, "unsupported": 1, "forward_attempted": 9,
              "responses": 8, "unknown": 1, "transient": 0, "withheld": 0, "calls": 3},
   "calls": [
-    {"call_ref": "call-…", "intent_id": 4, "closed": true,
+    {"call_ref": "call-…", "intent_id": 4, "closed": true, "closed_index": 41,
      "attempts": [
-       {"attempt_id": "…", "sequence": 7, "stage": "result", "method": "POST", "rule_ref": "target-path-a",
+       {"attempt_id": "…", "index": 40, "sequence": 7, "stage": "result", "method": "POST", "rule_ref": "target-path-a",
         "path_pattern": "/api/orders/{id}", "decision": "allowed", "reason": "unknown",
         "forward_attempted": true, "request_written": true, "response_received": false, "response_complete": false,
         "status_code": 0, "response_truncated": false, "at": "2026-11-13T01:02:03Z"}
@@ -101,6 +109,8 @@
 }
 ```
 
+- `index`는 그 시도 행을 만든 마지막 사건 번호다(`intent`만 있으면 그 사건, `result`가 오면 `result` 사건). `closed_index`는 호출 마감 사건 번호다(아직 열려 있으면 칸 없음).
+- `status_code`가 0이면 응답을 받지 못한 것이다(화면 "응답 없음").
 - `path_pattern`은 진단 흐름(워크플로) 끝점의 경로 패턴이다(값 조각은 `{id}`처럼 가림, 이름 조각은 그대로). 같은 호출의 끝점을 찾지 못하면 비운다. 원문 경로·query는 없다.
 - `stage`: `intent`(보내기 전 판정) · `result`(송신 결과) · `control`(실행 통제 사건) · `call_closed`(호출 마감).
 - `decision`: `allowed` · `denied` · `unsupported`.
