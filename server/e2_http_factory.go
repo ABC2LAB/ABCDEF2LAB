@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
@@ -247,6 +248,9 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 	} else if input.Workflow != nil {
 		return empty, ErrE2HTTPHost
 	}
+	// 제품 실행은 시도별 화면용 경로 패턴을 상태 디렉터리에 남긴다(작업대 e2-flow path_pattern). 평가 회차와 이미 관찰
+	// 훅을 받은 실행(수용시험 경로 투영)은 그대로 둔다. 허용 판단·송신·감사·계수에는 영향이 없다.
+	productPatterns := input.AttemptPathObserver == nil && policy.Evaluation == nil
 	if policy.ApprovalMode != e2proxy.ApprovalConfirmEveryRequest && policy.ApprovalMode != e2proxy.ApprovalPreauthorizedScope && policy.ApprovalMode != e2proxy.ApprovalWorkbenchV1 {
 		return empty, ErrE2HTTPHost
 	}
@@ -455,9 +459,31 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 			}
 			recorder = e2HTTPJournalObserver{next: recorder, observe: input.RequestApprovals.observe}
 		}
-		execution, createErr := e2proxy.NewExecution(taskctx, e2proxy.Config{RequestBoundary: workflowBoundary(input.Workflow), CheckAuthority: transmissionCheck, ApprovalMode: policy.ApprovalMode, RequestApproval: gate, Evaluation: policy.Evaluation, HeaderMode: policy.HeaderMode, Scope: transmit.Scope{TaskRef: request.TaskID, RunRef: policy.RunRef, CaseRef: policy.CaseRef, ResetRef: resetRef, PolicyRef: policy.PolicyRef}, IntentID: request.IntentID, OwnerRef: policy.OwnerRef, PolicyRevision: policy.PolicyRevision, AccountRef: policy.AccountRef, SessionRef: policy.SessionRef, ExpiresAt: policy.ValidUntil, Rules: rules, Budget: transmit.CumulativeBudget{Ledger: ledger, Key: grantKey, Binding: budgetBinding}, Recorder: recorder, RootCAs: upstreamRoots, Limits: limits, AttemptPathObserver: input.AttemptPathObserver})
+		// 표시용 패턴은 이 실행의 보호·가림 값(비밀번호·세션)이 든 조각과 결속 시험 계정 사용자명과 같은 조각을 가린다
+		// (S09·절대 규칙 2). 실행을 만들기 전에 관찰 훅을 넘기므로 실행 참조는 만든 뒤 채우고, 그 전에는 줄을 쓰지 않는다.
+		var patternExecution atomic.Pointer[e2proxy.Execution]
+		var patternUsernames atomic.Pointer[map[string]bool]
+		observer := input.AttemptPathObserver
+		if productPatterns {
+			observer = productAttemptPatterns(policy.StateDir, func() func(string) bool {
+				e := patternExecution.Load()
+				if e == nil {
+					return nil
+				}
+				names := patternUsernames.Load()
+				return func(segment string) bool {
+					return string(e.RedactOutput([]byte(segment))) != segment || names != nil && (*names)[segment]
+				}
+			})
+		}
+		execution, createErr := e2proxy.NewExecution(taskctx, e2proxy.Config{RequestBoundary: workflowBoundary(input.Workflow), CheckAuthority: transmissionCheck, ApprovalMode: policy.ApprovalMode, RequestApproval: gate, Evaluation: policy.Evaluation, HeaderMode: policy.HeaderMode, Scope: transmit.Scope{TaskRef: request.TaskID, RunRef: policy.RunRef, CaseRef: policy.CaseRef, ResetRef: resetRef, PolicyRef: policy.PolicyRef}, IntentID: request.IntentID, OwnerRef: policy.OwnerRef, PolicyRevision: policy.PolicyRevision, AccountRef: policy.AccountRef, SessionRef: policy.SessionRef, ExpiresAt: policy.ValidUntil, Rules: rules, Budget: transmit.CumulativeBudget{Ledger: ledger, Key: grantKey, Binding: budgetBinding}, Recorder: recorder, RootCAs: upstreamRoots, Limits: limits, AttemptPathObserver: observer})
 		if createErr != nil {
 			return failed(nil, nil)
+		}
+		patternExecution.Store(execution)
+		if policy.Auth != nil {
+			names := e2HTTPAccountUsernames(dir, *policy.Auth)
+			patternUsernames.Store(&names)
 		}
 		if input.RequestApprovals != nil {
 			input.RequestApprovals.attachExecution(request.TaskIDNumber, execution)
