@@ -88,6 +88,12 @@ export function coverageIssues(data: CoverageData): { mismatched: number } {
   for (const a of data.areas) {
     if (total(a) !== a.planned) mismatched += 1;
   }
+  if (data.endpoints && data.workflowCounts) {
+    const found = data.workflowCounts.found;
+    const visited = data.workflowCounts.visited;
+    if (typeof found === "number" && found < data.endpoints.length) mismatched++;
+    if (typeof visited === "number" && visited < data.endpoints.filter((e) => e.visited === true).length) mismatched++;
+  }
   return { mismatched };
 }
 
@@ -139,6 +145,10 @@ export const WORKFLOW_COUNT_LABEL = {
 } as const;
 const SOURCE_LABEL: Record<string, string> = {
   start: "시작 URL",
+  script_call: "스크립트 호출 표현식",
+  script_guess: "스크립트 호출 추정",
+  script_prefix: "스크립트 경로 접두부",
+  static_literal: "정적 문자열",
   html_link: "HTML 링크",
   html_form: "HTML 폼",
   html_script: "HTML 스크립트",
@@ -151,10 +161,12 @@ const SOURCE_LABEL: Record<string, string> = {
   browser_form: "브라우저 폼",
 };
 const ERROR_LABEL: Record<string, string> = {
+  fetch_failed: "가져오기 실패",
   request_failed: "요청 실패",
+  response_parse_failed: "응답 해석 실패",
+  unsupported_status: "미지원 상태 코드",
+  http_error: "HTTP 오류 응답",
   body_incomplete: "응답 본문 불완전",
-  response_too_large: "응답 크기 초과",
-  unsupported_content_type: "미지원 응답 형식",
 };
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const natural = (v: unknown): v is number => Number.isSafeInteger(v) && Number(v) >= 0;
@@ -202,7 +214,13 @@ export function parseCoverage(value: unknown, job: URLDiagnosisJob): CoverageDat
         : typeof raw.observation_error === "string" && raw.observation_error !== ""
           ? (ERROR_LABEL[raw.observation_error] ?? "관찰 오류(상세 비표시)")
           : "관찰 오류 불명";
-    const coverage: CoverageStatus = visited !== true ? "untested" : error || status === null ? "undecidable" : "blank";
+    const coverage: CoverageStatus = error
+      ? "undecidable"
+      : visited !== true
+        ? "untested"
+        : status === null
+          ? "undecidable"
+          : "blank";
     endpoints.push({
       id: raw.id,
       method: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"].includes(String(raw.method))
@@ -235,7 +253,13 @@ export function parseCoverage(value: unknown, job: URLDiagnosisJob): CoverageDat
   for (const e of endpoints) counts[e.coverage]++;
   const workflowCounts: Record<string, number | null> = {};
   for (const key of Object.keys(WORKFLOW_COUNT_LABEL))
-    workflowCounts[key] = object(snapshot.counts) && natural(snapshot.counts[key]) ? snapshot.counts[key] : null;
+    workflowCounts[key] = object(snapshot.counts)
+      ? natural(snapshot.counts[key])
+        ? snapshot.counts[key]
+        : ["held", "omitted", "invalid_paths"].includes(key) && snapshot.counts[key] === undefined
+          ? 0
+          : null
+      : null;
   const stage = ["crawling", "awaiting_selection", "diagnosing", "completed", "stopped", "failed", "unknown"].includes(
     String(snapshot.stage),
   )

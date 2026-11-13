@@ -3,7 +3,7 @@
 // 기존 workflow snapshot의 관찰 커버리지. 집계·정규화는 lib seam, 기존 표시 구조를 재사용한다.
 
 import type { CSSProperties } from "react";
-import { useEffect, useState } from "react";
+import { useMemo } from "react";
 
 import {
   attempted,
@@ -11,7 +11,7 @@ import {
   type CoverageData,
   type CoverageStatus,
   coverageIssues,
-  getCoverage,
+  parseCoverage,
   WORKFLOW_COUNT_LABEL,
   STATUS_LABEL,
   STATUS_ORDER,
@@ -165,7 +165,7 @@ function AreaBlock({ a }: { a: CoverageArea }) {
         <span style={areaName}>{a.label}</span>
         <span style={axisChip}>{AXIS_LABEL[a.axis]}</span>
         <small className={s.help}>
-          방문 관찰 {attempted(a)} / 표시 끝점 {total(a)}
+          관찰·시도 기록 {attempted(a)} / 표시 끝점 {total(a)}
         </small>
       </div>
       <CoverageBar a={a} />
@@ -177,36 +177,22 @@ function AreaBlock({ a }: { a: CoverageArea }) {
 /** 실제 task/job 결속이 있는 workflow만 표시한다. */
 export function UrlCoverageLive() {
   const job = useUrl((st) => st.job);
-  const binding = job ? `${job.id}:${job.task_id}:${job.source_digest}:${job.input.workflow_mode}` : "";
   const available = !!job?.task_id && !!job.input.workflow_mode;
-  const [state, setState] = useState<{ binding: string; data: CoverageData | null; failed: boolean }>({
-    binding: "",
-    data: null,
-    failed: false,
-  });
-  useEffect(() => {
-    if (!available || !job) return;
-    let current = true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const controller = new AbortController();
-    const poll = async () => {
-      try {
-        const data = await getCoverage(job, controller.signal);
-        if (current) setState({ binding, data, failed: false });
-      } catch {
-        if (current) setState({ binding, data: null, failed: true });
-      }
-      if (current) timer = setTimeout(() => void poll(), 2000);
-    };
-    void poll();
-    return () => {
-      current = false;
-      controller.abort();
-      clearTimeout(timer);
-    };
-  }, [available, binding, job]);
-  const data = available && state.binding === binding ? state.data : null;
-  const failed = available && state.binding === binding && state.failed;
+  const flow = useUrl((st) => st.flow);
+  const flowVerified = useUrl((st) => st.flowVerified);
+  const flowUncertain = useUrl((st) => st.flowUncertain);
+  const flowError = useUrl((st) => st.flowError);
+  // UrlFeeds가 이미 읽은 같은 workflow만 투영한다. 숨겨진 화면에서 별도 폴링하지 않는다.
+  const { data, failed } = useMemo<{ data: CoverageData | null; failed: boolean }>(() => {
+    if (!available || !job) return { data: null, failed: false };
+    if (flowError || flowUncertain || (flow && !flowVerified)) return { data: null, failed: true };
+    if (!flow || !flowVerified) return { data: null, failed: false };
+    try {
+      return { data: parseCoverage({ workflow: flow }, job), failed: false };
+    } catch {
+      return { data: null, failed: true };
+    }
+  }, [available, job, flow, flowVerified, flowUncertain, flowError]);
 
   const sum = data ? summarize(data) : null;
   const issues = data ? coverageIssues(data) : null;
@@ -232,7 +218,9 @@ export function UrlCoverageLive() {
           {data && issues && issues.mismatched > 0 ? (
             <div className={cx(s.note, s.warn)} role="alert">
               <Icon name="alert" />
-              <span>집계 불일치: 계획과 상태 합이 다른 영역 {issues.mismatched}개. 숨기지 않고 표시합니다.</span>
+              <span>
+                집계 불일치: 서버 누계 또는 표시 집계가 맞지 않는 항목 {issues.mismatched}개. 숨기지 않고 표시합니다.
+              </span>
             </div>
           ) : null}
 
@@ -248,7 +236,7 @@ export function UrlCoverageLive() {
                   표시 끝점 <b>{sum.planned}</b>
                 </span>
                 <span style={neutralChip}>
-                  방문 관찰 <b>{sum.attempted}</b>
+                  관찰·시도 기록 <b>{sum.attempted}</b>
                 </span>
               </div>
               <StatusChips counts={sum.byStatus} />
