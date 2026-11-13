@@ -70,7 +70,11 @@ func checkLaunchFilesContext(ctx context.Context, c launchConfig) error {
 		return errPreparation
 	}
 	err = diagnosticCheck(ctx, "model_profile", "model_profile_invalid", func() error {
-		return server.CheckFirstDiagnosisModelOptions(c.modelOptions(), llmpolicy.ProfileTarget{ID: c.ModelProfileID, Format: c.ModelFormat, BaseURL: c.ModelBaseURL, Model: c.ModelRef})
+		options, err := c.modelOptions()
+		if err != nil {
+			return err
+		}
+		return server.CheckFirstDiagnosisModelOptions(options, llmpolicy.ProfileTarget{ID: c.ModelProfileID, Format: c.ModelFormat, BaseURL: c.ModelBaseURL, Model: c.ModelRef})
 	})
 	if err != nil {
 		return errPreparation

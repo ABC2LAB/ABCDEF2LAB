@@ -35,6 +35,9 @@ type FirstDiagnosisHTTPHostConfig struct {
 	// ExternalTestAccounts는 외부 API 실행에 시험 계정 세션을 써도 된다는 그 실행의 동의다(초안 입력의 사전 공지·승인 진술을
 	// 실행 준비가 launch로 넘김, C14 결정 4). 파일 입력이 아니다.
 	ExternalTestAccounts bool `json:"-"`
+	// WebSearch는 진단 Planner·Worker의 원본 검색 도구 설정이다(launch 설정, 루프 복원 결정안 §2-1). 파일 입력이 아니다.
+	// 외부 API 실행에서만 켤 수 있다(firstDiagnosisHTTPModelConfig가 검사).
+	WebSearch agent.E2HTTPWebSearch `json:"-"`
 }
 
 func (FirstDiagnosisHTTPHostConfig) String() string {
@@ -134,7 +137,7 @@ func NewFirstDiagnosisHTTPHost(ctx context.Context, cfg FirstDiagnosisHTTPHostCo
 	if len(hooks) == 1 {
 		hook = hooks[0]
 	}
-	options, err := LoadE2HTTPRuntimeOptions(ctx, E2HTTPFileOptions{Workflow: hook.Workflow, RequestApprovals: hook.RequestApprovals, CheckAuthority: hook.CheckAuthority, PolicyFile: cfg.PolicyFile, Authority: authority, Supervisor: h, ObserveEvent: hook.ObserveEvent, ObserveResult: hook.ObserveResult, OnAcquire: hook.OnAcquire, PlannerLimits: cfg.PlannerLimits})
+	options, err := LoadE2HTTPRuntimeOptions(ctx, E2HTTPFileOptions{Workflow: hook.Workflow, RequestApprovals: hook.RequestApprovals, CheckAuthority: hook.CheckAuthority, PolicyFile: cfg.PolicyFile, Authority: authority, Supervisor: h, ObserveEvent: hook.ObserveEvent, ObserveResult: hook.ObserveResult, OnAcquire: hook.OnAcquire, PlannerLimits: cfg.PlannerLimits, WebSearch: cfg.WebSearch})
 	if err != nil {
 		authority.revoke()
 		_ = authority.close()

@@ -610,6 +610,14 @@ func (w *Worker) executeE2HTTP(ctx context.Context, name string, taskID int64, a
 	// 원본 Worker와 같은 도구 목록에서 진단 프로필로 고른다. 대상으로 보내는 도구는 E② 판으로만 채운다.
 	base := append([]actool.CoreTool(nil), w.extraTools...)
 	bindings := map[string]actool.CoreTool{"Bash": bash, "WebFetch": newE2HTTPWebFetchTool(bash, execution.RedactOutput)}
+	// 설치가 켠 원본 검색 도구(루프 복원 결정안 §2-1). 검색어에 이 실행의 보호 값이 있으면 보내지 않는다.
+	search, err := newE2HTTPWebSearchTool(e2HTTPWebSearchFrom(ctx), execution.RedactOutput)
+	if err != nil {
+		return harness.ReasonModelError, WriteCounts{}, err
+	}
+	if search != nil {
+		bindings[e2HTTPWebSearchToolName] = search
+	}
 	var toolset *ToolSet
 	if ts != nil {
 		// 승인 origin을 아는 실행이면 원본 upsert가 승인 밖 루트 도메인을 작업에 연결하지 않게 한다(C24).
@@ -955,7 +963,16 @@ func constrainE2HTTPPlannerOptions(ctx context.Context, opts *agentcore.Options)
 	if opts == nil {
 		return ErrE2HTTPBinding
 	}
-	tools, err := diagnosisPlannerProfile.selectTools(opts.Tools, nil, nil)
+	// 검색 도구는 Planner 도구를 고를 때 bound로 넣은 것만 다시 받는다. 설치가 켜지 않았으면 같은 이름이 있어도 뺀다.
+	var searchBound map[string]actool.CoreTool
+	if e2HTTPWebSearchFrom(ctx).Enabled() {
+		for _, t := range opts.Tools {
+			if t != nil && !isNilCoreTool(t) && t.Name() == e2HTTPWebSearchToolName {
+				searchBound = map[string]actool.CoreTool{e2HTTPWebSearchToolName: t}
+			}
+		}
+	}
+	tools, err := diagnosisPlannerProfile.selectTools(opts.Tools, searchBound, nil)
 	if err != nil {
 		return err
 	}

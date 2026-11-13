@@ -26,7 +26,7 @@
 
 | 요청 | 뜻 |
 |---|---|
-| `GET /api/product/targets/{id}/accounts` | 목록 `{"accounts": ProductAccount[], "account_statement": "..."}`(계정이 없으면 `accounts` 칸 없음). `account_statement`는 시험 계정 표시 때 화면이 그대로 띄워 동의받는 진술 문장이다 |
+| `GET /api/product/targets/{id}/accounts` | 목록 `{"accounts": ProductAccount[], "account_statement": "...", "external_consent_statement": "..."}`(계정이 없으면 `accounts` 칸 없음). `account_statement`는 시험 계정 표시 때 화면이 그대로 띄워 동의받는 진술 문장이다. `external_consent_statement`는 외부 API 실행에서 시험 계정 세션을 보내도 된다는 초안 입력 `external_test_accounts`를 받을 때 화면이 그대로 띄우는 진술 문장이다(실행이 시작되면 이 문장의 SHA-256이 보호 저널 `external_consent`에 남는다). 문장이 없으면 동의 칸을 보이지 않는다 |
 | `POST /api/product/targets/{id}/accounts` `{"label": "..."}` | 등록(분류 `real`). 라벨은 소문자·숫자·`_`·`-`만(사용자명·이메일 원문 금지) |
 | `POST …/accounts/{label}/mark-test` `{"statement_confirmed": true}` | 시험 계정 표시(본인 진술 동의 필수, 없으면 409 `statement_required`) |
 | `POST …/accounts/{label}/unmark` `{}` | 표시 해제 |
