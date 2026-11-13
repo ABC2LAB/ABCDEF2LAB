@@ -251,3 +251,45 @@ node scripts/acceptance/u01-workbench-browser.mjs
 동일 UI 소스의 독립 lockfile 설치에서 `tsc --noEmit`, 전체 Vitest **742 PASS / FAIL0 / SKIP0**
 (동시 worker 2), `npm run build:static`을 통과했다. 처음 무제한 병렬 시험의 기존 UI 3건 시간 초과는
 최종 결과에 합산하지 않았으며, timeout 값을 늘리지 않고 worker 수를 제한해 재검증했다.
+
+## 2026-11-14 U01 최신 dev·인계 PR 통합 재검증
+
+#564의 접힌 도움말 UI와 U01 쓰기 위험 고지를 함께 보존한 뒤 다시 실행했다.
+최신 dev `89ad03b5` 위 아래 head들을 순서대로 merge한 **로컬 검증 소스**이며, 공용 dev에 병합한 결과가 아니다.
+
+| PR | 검증한 head |
+|---|---|
+| #559 C04/C33 | `ef5058dc3b949f9f5ffca6febf5c62cf72681d62` |
+| #561 외부 시험 계정 동의 | `0fe4b0e92019f9257701082c949581cc5d0e4e41` |
+| #562 E② 흐름 | `22bdff465c0dba836db74d3808b7b0181377afb0` |
+| #563 커버리지 | `6f2ab18439f7189db8d025d89ec877d3d768aaaf` |
+| #565 U01 | `b869cd6d293798434f40cd265c9aeaf21a7570dc` |
+| #566 결정안(실행 코드 없음) | `7b7d9004db6cc8478e7a53f6962fe823922506b7` |
+
+로컬 통합 commit `4b780f95e558b61b82694679d7650bab07d14573`, tree `ecbec572380b888eb58f97c010d0f568aee66ff8`.
+위 head들을 같은 순서로 합쳐 동일 소스 tree를 재현할 수 있다. 독립 lockfile 설치의 `tsc --noEmit`,
+전체 Vitest **826 PASS / FAIL0 / SKIP0**(worker 1, timeout 변경 없음), `npm run build:static` 통과.
+처음 worker 2 + Go 동시 검증에서 기존 외부 모델 입력 시험 1건이 5초 시간 초과로 끝났다.
+같은 시험의 분리 재현은 428ms에 통과했고, 최종 전체 시험은 병렬도만 낮춰 통과했다. 실패를 최종 PASS에 합산하지 않았다.
+통합 준비 서비스 전체 race 134 PASS/SKIP0, darwin/arm64·windows/amd64 빌드도 통과했다.
+
+개발 서버 대신 **빌드된 `web/out` production Workbench**를 loopback 39202 정적 서버로 제공했다.
+브라우저 이미지 ID·버전·하네스 SHA256·viewport·비root/read-only/CDP/`--no-sandbox` 조건은 위 회차와 같고 MCP는 비활성이다.
+`/tmp/jindo-kyeongjun-handoff-20261113/u01-static-integration/`에 report.json(0600)과 스크린샷을 보관했다.
+보고서 SHA256은 `d8a668a7aefdbeb5f542e083582cb0b34cc6d30b6f21bb011c84a93eb638c80a`이다.
+고정 fixture SHA256은 위 표와 동일하다.
+
+| 실제 Chromium 시나리오 | 결과 | screenshot SHA256 |
+|---|---|---|
+| auto_https | PASS | `1e6b9e0db1b7721eaa56bb4e0a71745e28db8b7fa2a31edccfd8a10d6cf68ba0` |
+| manual_https | PASS | `8a2d9e1ddefe735b292f8cde06debb0d46ab65261138c3c2569b004b2649e25f` |
+| readonly_https | PASS | `682e718d39e3670aa1bbefc9a3563a302fe88349e811394b9b8b70de6f55d1c6` |
+| auto_http | PASS | `2c23e8b3f269a101bf1acfd2f39d828e8f688edab1b0a6bef5258e1d06e9fe2d` |
+| missing_scope | PASS | `f517a457b1e8d3799d94771ec0c371bce7c048367b93cb6db0cd18c15d5fbff9` |
+| invalid_delete_scope | PASS | `a697d2c39e44c891d4fbd7b6b504133850cbbfbf0b8752d91900f4aae8eca50a` |
+
+쓰기 범위·위험 고지의 실제 화면 안 가시성을 다시 확인했고 자동 HTTPS와 HTTP 스크린샷을 직접 검토했다.
+6개 모두 변경 API 요청 0건, 외부 자원 요청 0건이며 시작 전 동의하지 않은 버튼은 비활성이다.
+실제 권한 서버는 소유 준비 fixture이고, 엔진·대상 송신·실제 Qwen·유료 모델은 **NOT_RUN**이다.
+이 결과는 U01 표시 수용이며 실제 탐색 격리·전수 egress·Planner/Worker 수용으로 확대하지 않는다.
+시험 후 이 작업 전용 브라우저·정적 서버·PostgreSQL 컨테이너만 정리했다.
