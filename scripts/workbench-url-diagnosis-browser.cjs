@@ -201,7 +201,6 @@ function check(value, code) {
     check(await evaluate("document.querySelector('#lvUrl')===null"), "v1_task_form_shown_on_v2_server");
     await fill("#luUrl", targetURL);
     await select("#luProfile", FIXTURE_PROFILE);
-    await fill("#luName", "작업대 URL 브라우저 합성 수용");
     await click("승인 범위 확인");
     await wait(hasText("실행 전 검증 완료"), "approved_scope_not_ready");
     await wait(hasText("서버가 확인한 승인 범위"), "scope_projection_missing");
