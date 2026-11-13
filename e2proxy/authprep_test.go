@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -382,6 +383,58 @@ func TestTestAccountPassthroughMode(t *testing.T) {
 	_, plain := coreOpen(t, plainCfg)
 	if _, r, err := plain.Do(context.Background(), req); err == nil || r.Reason != Unsupported {
 		t.Fatalf("preserve mode sent caller credentials: %v %+v", err, r)
+	}
+}
+
+// 인증된 시험 계정이 없어 시험 계정 모드를 끈 실행은 preserve처럼 모델 자격 헤더를 거부하고 Set-Cookie 응답을 보류한다.
+// 한 번 끄면 되돌릴 수 없다(C14 결정 5·6, #522 재상 지적 1).
+func TestDisableTestAccountPassthrough(t *testing.T) {
+	var gotCookie atomicString
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		gotCookie.Store(r.Header.Get("Cookie"))
+		if r.URL.Path == "/allowed/login-like" {
+			http.SetCookie(w, &http.Cookie{Name: "next", Value: "rotated-session-value"})
+		}
+		io.WriteString(w, "profile")
+	}))
+	defer srv.Close()
+	cfg := coreConfig(t, srv.URL, &coreRecorder{}, 5)
+	cfg.HeaderMode = HeaderTestAccountPassthrough
+	e, call := coreOpen(t, cfg)
+	e.DisableTestAccountPassthrough()
+	e.DisableTestAccountPassthrough()
+	req := coreRequest(t, "GET", srv.URL+"/allowed/me")
+	req.Header.Set("Cookie", "session=tester-a-session-value")
+	if _, r, err := call.Do(context.Background(), req); err == nil || r.Reason != Unsupported || hits.Load() != 0 {
+		t.Fatalf("disabled test account mode sent a model cookie: %v %+v hits=%d", err, r, hits.Load())
+	}
+	auth := coreRequest(t, "GET", srv.URL+"/allowed/me")
+	auth.Header.Set("Authorization", "Bearer tester-a-token-value")
+	if _, r, err := call.Do(context.Background(), auth); err == nil || r.Reason != Unsupported || hits.Load() != 0 {
+		t.Fatalf("disabled test account mode sent a model authorization: %v %+v hits=%d", err, r, hits.Load())
+	}
+	if _, r, err := call.Do(context.Background(), coreRequest(t, "GET", srv.URL+"/allowed/login-like")); !errors.Is(err, ErrWithheld) || r.Reason != Withheld {
+		t.Fatalf("disabled test account mode delivered Set-Cookie: %v %+v", err, r)
+	}
+	// 대조: 끄지 않은 실행은 같은 요청을 보낸다.
+	on := coreConfig(t, srv.URL, &coreRecorder{}, 5)
+	on.HeaderMode = HeaderTestAccountPassthrough
+	_, onCall := coreOpen(t, on)
+	resp, r, err := onCall.Do(context.Background(), req)
+	if err != nil || r.Reason != Complete || gotCookie.Load() != "session=tester-a-session-value" {
+		t.Fatalf("test account mode control: %v %+v", err, r)
+	}
+	resp.Body.Close()
+	// preserve 실행에 불러도 바뀌는 것이 없다.
+	plainCfg := coreConfig(t, srv.URL, &coreRecorder{}, 2)
+	plainExec, plain := coreOpen(t, plainCfg)
+	plainExec.DisableTestAccountPassthrough()
+	if resp, r, err := plain.Do(context.Background(), coreRequest(t, "GET", srv.URL+"/allowed/me")); err != nil || r.Reason != Complete {
+		t.Fatalf("preserve run changed after disable: %v %+v", err, r)
+	} else {
+		resp.Body.Close()
 	}
 }
 

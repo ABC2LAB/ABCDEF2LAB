@@ -76,6 +76,8 @@ type Execution struct {
 	// 쓰지 않는다.
 	redactOnly    [][]byte
 	secretHeaders map[string]struct{}
+	// accountPassthroughOff는 시험 계정 모드를 이 실행에서 끈 표시다(DisableTestAccountPassthrough). 한 번 켜면 되돌리지 않는다.
+	accountPassthroughOff atomic.Bool
 }
 type Call struct {
 	diagnostics          []HTTPObservation
@@ -1457,6 +1459,21 @@ func (e *Execution) AddProtectedValues(values ...[]byte) error {
 	e.secrets = next
 	e.secretsGen++
 	return nil
+}
+
+// DisableTestAccountPassthrough는 시험 계정 모드(test_account_passthrough)로 만든 실행을 preserve처럼 묶는다. 인증 준비에서
+// 인증된 계정이 하나도 없으면 서버가 첫 모델 요청 전에 부른다(C14 결정 5·6: 계정 없이 진행하는 실행은 preserve). 그 뒤로는
+// 모델이 쓴 Authorization·Cookie를 거부하고 대상의 자격 응답(Set-Cookie 등)을 보류한다. 되돌리는 방법은 없다. 정책 지문과
+// 실행 보기의 header_mode는 설정값 그대로이고, 실제로 묶였는지는 계정별 인증 결과(account_auth)로 드러난다.
+func (e *Execution) DisableTestAccountPassthrough() {
+	if e != nil {
+		e.accountPassthroughOff.Store(true)
+	}
+}
+
+// testAccountPassthrough는 이 실행이 지금 시험 계정 모드로 동작하는지다.
+func (e *Execution) testAccountPassthrough() bool {
+	return e.cfg.HeaderMode == HeaderTestAccountPassthrough && !e.accountPassthroughOff.Load()
 }
 
 // AddRedactValues는 출력 가림 전용 값을 더한다(인증 준비 세션 값). 이 값들은 도구 출력·근거·보고서에서 가리지만 응답

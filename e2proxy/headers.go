@@ -171,7 +171,7 @@ func (e *Execution) safeHTTPResponse(response *http.Response, body []byte) bool 
 		for name := range fields {
 			_, configured := e.secretHeaders[strings.ToLower(name)]
 			// 시험 계정 실행은 대상이 발급한 자격 응답(Set-Cookie 등)도 모델에 준다(C14 결정 4). 등록한 보호 값 반사 검사는 아래서 그대로 한다.
-			if configured || credentialResponseHeader(name) && e.cfg.HeaderMode != HeaderTestAccountPassthrough {
+			if configured || credentialResponseHeader(name) && !e.testAccountPassthrough() {
 				return false
 			}
 		}
