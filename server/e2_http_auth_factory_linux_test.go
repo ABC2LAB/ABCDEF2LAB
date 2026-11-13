@@ -388,10 +388,15 @@ func TestE2HTTPFactoryRefreshedSessionReachesNextWorker(t *testing.T) {
 			_ = e2HTTPSessionsFor(e2proxy.HeaderTestAccountPassthrough, lease.CurrentSessions())
 		}()
 	}
+	before := len(lease.programCalls.snapshot())
 	refreshed, result := lease.RefreshSession(ctx, "tester-a")
 	wg.Wait()
 	if result != E2HTTPAuthAuthenticated {
 		t.Fatal("refresh", result)
+	}
+	// 다시 로그인 호출도 Worker 결과가 없는 서버 호출이라 마감 대조에서 따로 센다(#555).
+	if before != 1 || len(lease.programCalls.snapshot()) != 2 {
+		t.Fatal("refresh call must be recorded as a program call", before, len(lease.programCalls.snapshot()))
 	}
 	next := e2HTTPWorkerSessions(e2proxy.HeaderTestAccountPassthrough, &lease)
 	if got := next["tester-a"].Get("Cookie"); got != refreshed.Get("Cookie") || got != "session=rotatingsession0002value" {

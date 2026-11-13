@@ -217,7 +217,7 @@ func (c *e2HTTPRefreshCounter) take(label string) bool {
 
 // e2HTTPRefreshSession은 계정 하나를 인증 준비와 같은 경로(E② 인증 준비 규칙, 보호 값 등록, 세션 가림)로 다시
 // 로그인시킨다. 정책에 없는 라벨은 보내지 않는다. 상한에 닿으면 보내지 않는다.
-func e2HTTPRefreshSession(ctx context.Context, execution *e2proxy.Execution, dir, origin string, auth E2HTTPFileAuth, counter *e2HTTPRefreshCounter, label string) (http.Header, string) {
+func e2HTTPRefreshSession(ctx context.Context, execution *e2proxy.Execution, dir, origin string, auth E2HTTPFileAuth, counter *e2HTTPRefreshCounter, program *e2HTTPProgramCalls, label string) (http.Header, string) {
 	var account *E2HTTPFileAuthAccount
 	for i := range auth.Accounts {
 		if auth.Accounts[i].Label == label {
@@ -234,6 +234,8 @@ func e2HTTPRefreshSession(ctx context.Context, execution *e2proxy.Execution, dir
 	if err != nil {
 		return nil, E2HTTPAuthNotSent
 	}
+	// Worker Bash 결과가 없는 서버 호출이라 마감 대조에서 따로 센다(#555).
+	program.add(call.Ref())
 	defer func() {
 		if _, closeErr := call.Close(context.WithoutCancel(ctx)); closeErr != nil {
 			log.Print("[e2-http] 다시 로그인 call 마감 실패")

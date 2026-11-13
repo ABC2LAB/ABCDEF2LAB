@@ -542,7 +542,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 			refresh = func(ctx context.Context, label string) (http.Header, string) {
 				// 성공하면 다음 Worker도 새 세션으로 시작한다. 같은 계정 다시 로그인은 줄을 세운다.
 				return sessionStore.refresh(ctx, label, func() (http.Header, string) {
-					return e2HTTPRefreshSession(ctx, execution, dir, origin, authPolicy, refreshes, label)
+					return e2HTTPRefreshSession(ctx, execution, dir, origin, authPolicy, refreshes, programCalls, label)
 				})
 			}
 		}
