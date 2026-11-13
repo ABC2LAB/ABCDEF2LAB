@@ -402,6 +402,8 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 	var acquireMu sync.Mutex
 	context.AfterFunc(authorityCtx, func() { acquireMu.Lock(); clear(auditKey); acquireMu.Unlock() })
 	claimed := false
+	// 다시 로그인(refresh_session) 횟수는 실행 전체(실행 판 하나, acquire 한 번)에서 계정당 센다.
+	refreshes := &e2HTTPRefreshCounter{}
 	acquire := func(taskctx context.Context, request E2HTTPRequest) (E2HTTPRunOptions, error) {
 		acquireMu.Lock()
 		defer acquireMu.Unlock()
@@ -527,7 +529,24 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 				return failed(execution, runner)
 			}
 		}
-		return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: release, ObserveResult: input.ObserveResult, AccountAuth: auth.AccountAuth, Sessions: auth.Sessions, programCalls: newE2HTTPProgramCalls(auth.CallRefs...)}, nil
+		var refresh func(context.Context, string) (http.Header, string)
+		sessionStore := newE2HTTPSessionStore(auth.Sessions)
+		programCalls := newE2HTTPProgramCalls(auth.CallRefs...)
+		if policy.Auth != nil && policy.HeaderMode == e2proxy.HeaderTestAccountPassthrough && len(auth.Sessions) > 0 {
+			authPolicy, origin := *policy.Auth, ""
+			for _, rule := range policy.Rules {
+				if rule.Ref == authPolicy.RuleRef {
+					origin = rule.Origin
+				}
+			}
+			refresh = func(ctx context.Context, label string) (http.Header, string) {
+				// 성공하면 다음 Worker도 새 세션으로 시작한다. 같은 계정 다시 로그인은 줄을 세운다.
+				return sessionStore.refresh(ctx, label, func() (http.Header, string) {
+					return e2HTTPRefreshSession(ctx, execution, dir, origin, authPolicy, refreshes, programCalls, label)
+				})
+			}
+		}
+		return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: release, ObserveResult: input.ObserveResult, AccountAuth: auth.AccountAuth, Sessions: auth.Sessions, RefreshSession: refresh, sessionStore: sessionStore, programCalls: programCalls}, nil
 	}
 	// 진단 Worker의 insert_assets가 받을 수 있는 자산 범위다(C24). 검사를 거친 정책 규칙의 origin만 쓴다.
 	approvedOrigins := make([]string, 0, len(policy.Rules))
