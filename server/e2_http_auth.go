@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/e2proxy"
@@ -48,9 +49,11 @@ func (E2HTTPSessions) String() string   { return "server.E2HTTPSessions[protecte
 func (E2HTTPSessions) GoString() string { return "server.E2HTTPSessions[protected]" }
 
 // E2HTTPAuthResult는 인증 준비 결과다. AccountAuth는 라벨 → 결과(값 없음), Sessions는 인증된 계정의 세션 헤더다.
+// CallRefs는 인증 준비가 연 E② 호출이다. Worker Bash 결과가 없는 프로그램 호출이라 마감 대조에서 따로 센다.
 type E2HTTPAuthResult struct {
 	AccountAuth map[string]string
 	Sessions    E2HTTPSessions
+	CallRefs    []string
 }
 
 func validE2HTTPFileAuth(a *E2HTTPFileAuth, mode e2proxy.HeaderMode, rules []E2HTTPFileRule) bool {
@@ -82,6 +85,187 @@ func validE2HTTPFileAuth(a *E2HTTPFileAuth, mode e2proxy.HeaderMode, rules []E2H
 
 var errAuthLoginFailed = errors.New("auth_login_failed")
 
+// e2HTTPSessionStore는 실행이 들고 있는 시험 계정 세션이다. refresh_session이 성공하면 그 계정 세션을 바꾸고, Worker를
+// 시작할 때마다 사본을 읽는다(#550 이동찬 리뷰: 로그인이 이전 세션을 무효로 하는 대상에서 다음 Worker가 옛 세션으로 시작하지
+// 않게). 여러 Worker가 동시에 읽고 다시 로그인이 쓰므로 잠근다.
+type e2HTTPSessionStore struct {
+	mu       sync.RWMutex
+	sessions E2HTTPSessions
+	gateMu   sync.Mutex
+	gates    map[string]chan struct{}
+}
+
+func newE2HTTPSessionStore(initial E2HTTPSessions) *e2HTTPSessionStore {
+	s := &e2HTTPSessionStore{sessions: E2HTTPSessions{}}
+	for label, header := range initial {
+		s.sessions[label] = header.Clone()
+	}
+	return s
+}
+
+func (s *e2HTTPSessionStore) snapshot() E2HTTPSessions {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(E2HTTPSessions, len(s.sessions))
+	for label, header := range s.sessions {
+		out[label] = header.Clone()
+	}
+	return out
+}
+
+// e2HTTPProgramCalls는 서버가 연 E② 호출(인증 준비 등)이다. Worker Bash 결과가 없으므로 마감 때 E② 기록의 최종·감사
+// 완료만 확인하고 신뢰 결과 대조에서는 뺀다. 다시 로그인처럼 실행 중에 더해질 수 있어 잠근다.
+type e2HTTPProgramCalls struct {
+	mu   sync.Mutex
+	refs map[string]bool
+}
+
+func newE2HTTPProgramCalls(refs ...string) *e2HTTPProgramCalls {
+	p := &e2HTTPProgramCalls{refs: map[string]bool{}}
+	for _, ref := range refs {
+		p.add(ref)
+	}
+	return p
+}
+
+func (p *e2HTTPProgramCalls) add(ref string) {
+	if p == nil || ref == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.refs[ref] = true
+}
+
+func (p *e2HTTPProgramCalls) snapshot() map[string]bool {
+	out := map[string]bool{}
+	if p == nil {
+		return out
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for ref := range p.refs {
+		out[ref] = true
+	}
+	return out
+}
+
+func (s *e2HTTPSessionStore) replace(label string, header http.Header) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessions[label] = header.Clone()
+}
+
+func (s *e2HTTPSessionStore) gate(label string) chan struct{} {
+	s.gateMu.Lock()
+	defer s.gateMu.Unlock()
+	if s.gates == nil {
+		s.gates = map[string]chan struct{}{}
+	}
+	if s.gates[label] == nil {
+		s.gates[label] = make(chan struct{}, 1)
+	}
+	return s.gates[label]
+}
+
+// refresh는 계정 하나의 다시 로그인을 보내기부터 세션 교체까지 한 번에 하나만 한다(#550 이동찬 리뷰: 두 Worker가 같은
+// 계정을 동시에 다시 로그인시키면 먼저 보낸 쪽 응답이 늦게 와서 더 새 세션을 옛 세션으로 덮을 수 있다). 다른 계정은 막지
+// 않는다. 기다리는 동안 문맥이 끝나면 보내지 않는다.
+func (s *e2HTTPSessionStore) refresh(ctx context.Context, label string, login func() (http.Header, string)) (http.Header, string) {
+	if ctx == nil {
+		return nil, E2HTTPAuthNotSent
+	}
+	gate := s.gate(label)
+	select {
+	case gate <- struct{}{}:
+	case <-ctx.Done():
+		return nil, E2HTTPAuthNotSent
+	}
+	defer func() { <-gate }()
+	header, result := login()
+	if result == E2HTTPAuthAuthenticated && len(header) > 0 {
+		s.replace(label, header)
+	}
+	return header, result
+}
+
+// maxSessionRefreshesPerAccount는 한 실행에서 계정 하나를 다시 로그인시킬 수 있는 횟수다(C14 결정 2, 실패도 센다).
+// 시험 계정 잠금·로그인 폭주를 막는 상한이고 인증 준비 처음 한 번은 세지 않는다.
+const maxSessionRefreshesPerAccount = 3
+
+// E2HTTPRefreshLimit는 계정당 다시 로그인 상한에 닿은 결과다(보내지 않음).
+const E2HTTPRefreshLimit = "refresh_limit"
+
+// e2HTTPRefreshCounter는 실행(정책 하나) 전체의 계정별 다시 로그인 횟수다. Worker 도구가 동시에 부를 수 있어 잠근다.
+type e2HTTPRefreshCounter struct {
+	mu    sync.Mutex
+	count map[string]int
+}
+
+func (c *e2HTTPRefreshCounter) take(label string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.count == nil {
+		c.count = map[string]int{}
+	}
+	if c.count[label] >= maxSessionRefreshesPerAccount {
+		return false
+	}
+	c.count[label]++
+	return true
+}
+
+// e2HTTPRefreshSession은 계정 하나를 인증 준비와 같은 경로(E② 인증 준비 규칙, 보호 값 등록, 세션 가림)로 다시
+// 로그인시킨다. 정책에 없는 라벨은 보내지 않는다. 상한에 닿으면 보내지 않는다.
+func e2HTTPRefreshSession(ctx context.Context, execution *e2proxy.Execution, dir, origin string, auth E2HTTPFileAuth, counter *e2HTTPRefreshCounter, program *e2HTTPProgramCalls, label string) (http.Header, string) {
+	var account *E2HTTPFileAuthAccount
+	for i := range auth.Accounts {
+		if auth.Accounts[i].Label == label {
+			account = &auth.Accounts[i]
+		}
+	}
+	if execution == nil || ctx == nil || account == nil || counter == nil {
+		return nil, E2HTTPAuthNotSent
+	}
+	if !counter.take(label) {
+		return nil, E2HTTPRefreshLimit
+	}
+	call, err := execution.BeginCall(ctx, "auth-refresh")
+	if err != nil {
+		return nil, E2HTTPAuthNotSent
+	}
+	// Worker Bash 결과가 없는 서버 호출이라 마감 대조에서 따로 센다(#555).
+	program.add(call.Ref())
+	defer func() {
+		if _, closeErr := call.Close(context.WithoutCancel(ctx)); closeErr != nil {
+			log.Print("[e2-http] 다시 로그인 call 마감 실패")
+		}
+	}()
+	sessions := E2HTTPSessions{}
+	result := authPrepOne(ctx, call, execution, dir, origin, auth.Login, *account, sessions)
+	return sessions[label], result
+}
+
+// e2HTTPAccountUsernames는 결속 시험 계정의 사용자명이다(같은 pin 검사로 읽음). 표시용 경로 패턴에서 같은 조각을 가리는
+// 데만 쓰고 메모리에만 둔다. 읽지 못한 계정은 빠진다(그 계정은 인증 준비도 보내지 않는다).
+func e2HTTPAccountUsernames(dir string, auth E2HTTPFileAuth) map[string]bool {
+	out := map[string]bool{}
+	for _, account := range auth.Accounts {
+		raw, err := e2HTTPPinnedBytes(dir, account.Credential, maxAuthCredentialBytes)
+		if err != nil {
+			continue
+		}
+		var cred struct {
+			Username string `json:"username"`
+		}
+		if json.Unmarshal(raw, &cred) == nil && cred.Username != "" {
+			out[cred.Username] = true
+		}
+		clear(raw)
+	}
+	return out
+}
+
 // e2HTTPAuthPrep는 계정마다 로그인 요청을 E② 인증 준비 규칙으로 한 번씩 보낸다. 재시도는 없다. 세션 값은 출력 가림
 // 전용 값으로 등록하고(응답 보류에는 쓰지 않음) 결과에만 담는다. 자격 값은 쓴 뒤 지운다.
 func e2HTTPAuthPrep(ctx context.Context, execution *e2proxy.Execution, dir, origin string, auth E2HTTPFileAuth) (E2HTTPAuthResult, error) {
@@ -96,6 +280,7 @@ func e2HTTPAuthPrep(ctx context.Context, execution *e2proxy.Execution, dir, orig
 		}
 		return out, nil
 	}
+	out.CallRefs = append(out.CallRefs, call.Ref())
 	defer func() {
 		if _, closeErr := call.Close(context.WithoutCancel(ctx)); closeErr != nil {
 			log.Print("[e2-http] 인증 준비 call 마감 실패")

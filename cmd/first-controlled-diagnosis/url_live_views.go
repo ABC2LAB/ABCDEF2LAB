@@ -32,6 +32,10 @@ const (
 	e2FlowPageEvents = 1000
 	maxRunAuditKey   = 4 << 10
 	maxRunAuthority  = 64 << 10
+	// maxRunAttemptPatterns는 표시용 시도 경로 패턴 파일의 읽기 상한이다. 넘으면 패턴 없이 보인다.
+	maxRunAttemptPatterns = 4 << 20
+	// maxAttemptPatternBytes는 패턴 하나의 상한이다(pathmask 조각 상한 32 × 조각 길이 상한과 여유).
+	maxAttemptPatternBytes = 2048
 )
 
 // liveDataView는 task 경로가 작업대 실데이터 읽기 API인지다("control-policy"·"e2-flow", 아니면 "").
@@ -86,10 +90,10 @@ type controlPolicyView struct {
 
 // runBinding은 한 실행의 결속 디렉터리를 연 것이다. 정책 파일은 운영자 승인(authority.json)의 해시와 같아야 한다.
 type runBinding struct {
-	root   *os.Root
-	dir    string
-	raw    []byte
-	policy server.E2HTTPFilePolicy
+	root        *os.Root
+	dir         string
+	policy      server.E2HTTPFilePolicy
+	fingerprint string
 }
 
 func openRunBinding(runsDir, jobID string) (*runBinding, error) {
@@ -116,13 +120,20 @@ func openRunBinding(runsDir, jobID string) (*runBinding, error) {
 		_ = root.Close()
 		return nil, errPreparation
 	}
-	// 실행에 쓴 것과 같은 검증기로 읽는다(닫힌 형식·집행 의미, 감사 키 pin 포함).
-	policy, err := server.ValidateE2HTTPPolicyDocument(raw, true)
+	// 실행 factory가 받는 형식 그대로 읽는다(닫힌 형식·집행 의미·감사 키 pin, 진단 워크플로 칸·작업대 승인 방식 포함).
+	// 평가 단독 E② 서비스용 검증기는 워크플로 칸을 몰라 AI 자동 워크플로 실행을 늘 거부했다(11/13 실제 점검 409).
+	policy, fingerprint, err := server.ValidateE2HTTPRunPolicyDocument(raw)
 	if err != nil {
 		_ = root.Close()
 		return nil, errPreparation
 	}
-	return &runBinding{root: root, dir: filepath.Join(runsDir, jobID), raw: raw, policy: policy}, nil
+	// 자격 pin 규칙이 있으면 지문에 헤더 이름이 들어가 pin 파일 없이는 실행과 같은 값을 못 낸다. 그때는 비운다.
+	for _, rule := range policy.Rules {
+		if rule.Credentials != nil {
+			fingerprint = ""
+		}
+	}
+	return &runBinding{root: root, dir: filepath.Join(runsDir, jobID), policy: policy, fingerprint: fingerprint}, nil
 }
 
 func (b *runBinding) Close() error { return b.root.Close() }
@@ -151,9 +162,7 @@ func controlPolicyOf(b *runBinding) controlPolicyView {
 		// 전달 상한을 따로 정하지 않은 정책은 요청 본문 상한을 같이 쓴다(C16 결정안 3).
 		view.Limits.MaxResponseBodyBytes = p.Limits.MaxBodyBytes
 	}
-	if fp, err := server.E2HTTPPolicyContentFingerprint(b.raw, true); err == nil {
-		view.PolicyFingerprintSHA256 = fp
-	}
+	view.PolicyFingerprintSHA256 = b.fingerprint
 	for _, r := range p.Rules {
 		view.Rules = append(view.Rules, controlPolicyRule{Ref: r.Ref, Purpose: r.Purpose, Origin: r.Origin, ConnectIP: r.ConnectIP, PathPrefix: r.PathPrefix,
 			PathScopeRef: r.PathScopeRef, Methods: append([]string{}, r.Methods...), TLSPinned: r.TLSSPKISHA256 != ""})
@@ -245,6 +254,41 @@ func e2FlowEvents(r *http.Request, b *runBinding) ([]e2proxy.Event, bool, error)
 		return nil, false, nil
 	}
 	return events, true, nil
+}
+
+// attemptPatterns는 실행 상태 디렉터리의 표시용 시도 경로 패턴(server.E2AttemptPatternsFile)을 읽는다. 감사 기록이
+// 아니므로 형식이 맞는 줄만 받고, 파일이 없거나 상한을 넘거나 읽지 못하면 빈 결과다(path_pattern을 비운다).
+func attemptPatterns(b *runBinding) map[string]string {
+	out := map[string]string{}
+	raw, err := readRunFile(b.root, "state/"+server.E2AttemptPatternsFile, maxRunAttemptPatterns)
+	if err != nil {
+		return out
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		var row server.E2AttemptPatternRow
+		if line == "" || e2config.StrictJSON([]byte(line), &row) != nil || !attemptRefValid(row.AttemptID) ||
+			!strings.HasPrefix(row.PathPattern, "/") || len(row.PathPattern) > maxAttemptPatternBytes || strings.ContainsAny(row.PathPattern, "?#\r\n") {
+			continue
+		}
+		out[row.AttemptID] = row.PathPattern
+	}
+	return out
+}
+
+// attemptRefValid는 E② 시도 ID 형식(16바이트 소문자 16진수)이다.
+func attemptRefValid(v string) bool {
+	b, err := hex.DecodeString(v)
+	return err == nil && len(b) == 16 && hex.EncodeToString(b) == v
+}
+
+// withAttemptPatterns는 시도 행에 경로 패턴을 붙인다(계약 §4 path_pattern). 패턴이 없는 시도는 비운다.
+func withAttemptPatterns(view e2FlowView, patterns map[string]string) e2FlowView {
+	for i := range view.Calls {
+		for j := range view.Calls[i].Attempts {
+			view.Calls[i].Attempts[j].PathPattern = patterns[view.Calls[i].Attempts[j].AttemptID]
+		}
+	}
+	return view
 }
 
 // e2FlowOf는 검증된 사건을 호출 단위로 묶는다(계약 §4 커서 규칙). after가 없으면 최근 호출 e2FlowTailCalls개를 그
@@ -377,7 +421,7 @@ func serveLiveData(w http.ResponseWriter, r *http.Request, runsDir, jobID, view 
 		case !ok:
 			out = e2FlowView{Format: e2FlowViewFormat, Journal: "invalid", Calls: []e2FlowCall{}}
 		default:
-			out = e2FlowOf(events, after)
+			out = withAttemptPatterns(e2FlowOf(events, after), attemptPatterns(b))
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")

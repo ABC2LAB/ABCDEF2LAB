@@ -52,6 +52,8 @@ var diagnosisWorkerProfile = toolProfile{name: "diagnosis_worker", entries: []to
 	{name: "get_worker_trace", source: fromBase},
 	{name: "node_detail", source: fromBase},
 	{name: "submit_diagnostic_candidate", source: bound},
+	// 시험 계정 세션이 있는 실행에만 채운다(C14 refresh_session). 세션 없는 실행(평가 포함)의 도구 목록은 그대로다.
+	{name: "refresh_session", source: bound},
 }}
 
 // 진단 Planner 프로필. 순서는 PlannerTools 순서다. Planner에는 대상으로 보내는 도구가 없다.

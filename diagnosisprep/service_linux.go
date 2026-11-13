@@ -11,6 +11,8 @@ import (
 	"reflect"
 	"sync"
 	"time"
+
+	"github.com/Autumn-27/artex/diagnosis"
 )
 
 const maxJobs = 1024
@@ -469,6 +471,10 @@ func (s *Service) publish(id string, u Update) error {
 	next.Job.ModelUsage = u.ModelUsage
 	next.Job.Outcome, next.Job.ClosingReason, next.Job.IntentOutcomes = "", "", nil
 	next.Job.DiagnosticLogIncomplete = u.DiagnosticLogIncomplete
+	next.Job.AccountAuth = nil
+	if u.State == Completed || u.State == Cancelled || u.State == Failed {
+		next.Job.AccountAuth = diagnosis.CloneAccountAuth(u.AccountAuth)
+	}
 	if u.Result != nil {
 		counts := u.Result.IntentOutcomes
 		next.Job.Outcome, next.Job.ClosingReason, next.Job.IntentOutcomes = u.Result.Outcome, u.Result.ClosingReason, &counts

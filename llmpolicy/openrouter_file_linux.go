@@ -149,6 +149,14 @@ func loadOpenRouterManifestFile(path string, readAll func(io.Reader) ([]byte, er
 		defer unix.Close(fresh)
 		return openRouterAppendLedger(fresh, ledgerName, resolver.manifest, input, output, cost)
 	}
+	resolver.settleLedger = func(reserved, actual [3]int64) error {
+		fresh, err := openDirectory()
+		if err != nil {
+			return err
+		}
+		defer unix.Close(fresh)
+		return openRouterSettleLedger(fresh, ledgerName, resolver.manifest, reserved, actual)
+	}
 	return resolver, nil
 }
 
@@ -176,10 +184,15 @@ func openRouterProtectedDirectory(dir string) (int, error) {
 // openRouterLedgerLine은 예약 한 건이다. 사람이 읽을 수 있는 고정 형식이고 비밀을 담지 않는다.
 const openRouterLedgerLine = "r1 %d %d %d\n"
 
+// openRouterSettleLine은 끝난 호출 하나의 정산이다: 예약(입력·출력·비용)과 실제 사용량. 같은 예약 값의 정산 안 된 예약
+// 줄 하나와 짝이 되고, 합계는 그 예약 대신 실제 사용량을 센다(C07 보완). 실제는 예약을 넘지 못한다.
+const openRouterSettleLine = "s1 %d %d %d %d %d %d\n"
+
 // openRouterLedgerMaxBytes는 기록 파일 크기 상한이다. 한 줄은 최대 4개 정수와 구분자다.
 func openRouterLedgerMaxBytes(m openRouterManifest) int64 {
-	const line = 3 + 3*20 + 1
-	return m.MaxRequests * line
+	// 예약 줄 하나와 정산 줄 하나(정수 6개)가 호출마다 많아야 한 번씩이다.
+	const line, settle = 3 + 3*20 + 1, 3 + 6*20 + 1
+	return m.MaxRequests * (line + settle)
 }
 
 // openRouterLedgerFile은 기록 파일의 보호 조건을 보고 크기를 돌려준다.
@@ -210,39 +223,62 @@ func openRouterReadLedger(dir int, name string, create bool, m openRouterManifes
 }
 
 func openRouterLedgerSum(fd int, m openRouterManifest) (openRouterLedgerTotals, error) {
+	t, _, err := openRouterLedgerScan(fd, m)
+	return t, err
+}
+
+// openRouterLedgerScan은 합계와 아직 정산하지 않은 예약(예약 값별 개수)을 돌려준다.
+func openRouterLedgerScan(fd int, m openRouterManifest) (openRouterLedgerTotals, map[[3]int64]int, error) {
+	open := map[[3]int64]int{}
 	size, ok := openRouterLedgerFile(fd, m)
 	if !ok {
-		return openRouterLedgerTotals{}, ErrOpenRouterPolicy
+		return openRouterLedgerTotals{}, nil, ErrOpenRouterPolicy
 	}
 	// 잠금을 잡은 fd에서 처음부터 크기만큼만 읽는다(상한은 위에서 검사).
 	data := make([]byte, size)
 	for read := int64(0); read < size; {
 		n, err := unix.Pread(fd, data[read:], read)
 		if err != nil || n <= 0 {
-			return openRouterLedgerTotals{}, ErrOpenRouterPolicy
+			return openRouterLedgerTotals{}, nil, ErrOpenRouterPolicy
 		}
 		read += int64(n)
 	}
 	if len(data) > 0 && data[len(data)-1] != '\n' {
-		return openRouterLedgerTotals{}, ErrOpenRouterPolicy
+		return openRouterLedgerTotals{}, nil, ErrOpenRouterPolicy
 	}
 	var t openRouterLedgerTotals
+	validReservation := func(r [3]int64) bool {
+		return r[0] >= 1 && r[0] <= m.MaxInputPerCall && r[1] >= 1 && r[1] <= m.MaxOutputPerCall && r[2] >= 0 && r[2] <= openRouterReservedCost(m, m.MaxOutputPerCall)
+	}
 	for _, line := range strings.Split(strings.TrimSuffix(string(data), "\n"), "\n") {
 		if line == "" && len(data) == 0 {
 			break
 		}
-		var input, output, cost int64
-		if n, err := fmt.Sscanf(line+"\n", openRouterLedgerLine, &input, &output, &cost); err != nil || n != 3 ||
-			fmt.Sprintf(openRouterLedgerLine, input, output, cost) != line+"\n" ||
-			input < 1 || input > m.MaxInputPerCall || output < 1 || output > m.MaxOutputPerCall || cost < 0 || cost > openRouterReservedCost(m, m.MaxOutputPerCall) {
-			return openRouterLedgerTotals{}, ErrOpenRouterPolicy
+		if strings.HasPrefix(line, "s1 ") {
+			var r, a [3]int64
+			if n, err := fmt.Sscanf(line+"\n", openRouterSettleLine, &r[0], &r[1], &r[2], &a[0], &a[1], &a[2]); err != nil || n != 6 ||
+				fmt.Sprintf(openRouterSettleLine, r[0], r[1], r[2], a[0], a[1], a[2]) != line+"\n" || !validReservation(r) || open[r] == 0 ||
+				a[0] < 0 || a[0] > r[0] || a[1] < 0 || a[1] > r[1] || a[2] < 0 || a[2] > r[2] {
+				return openRouterLedgerTotals{}, nil, ErrOpenRouterPolicy
+			}
+			open[r]--
+			t.Input -= r[0] - a[0]
+			t.Output -= r[1] - a[1]
+			t.Cost -= r[2] - a[2]
+			continue
 		}
+		var r [3]int64
+		if n, err := fmt.Sscanf(line+"\n", openRouterLedgerLine, &r[0], &r[1], &r[2]); err != nil || n != 3 ||
+			fmt.Sprintf(openRouterLedgerLine, r[0], r[1], r[2]) != line+"\n" || !validReservation(r) {
+			return openRouterLedgerTotals{}, nil, ErrOpenRouterPolicy
+		}
+		open[r]++
 		t.Requests++
-		t.Input += input
-		t.Output += output
-		t.Cost += cost
+		t.Input += r[0]
+		t.Output += r[1]
+		t.Cost += r[2]
 	}
-	return t, nil
+	return t, open, nil
 }
 
 func openRouterAppendLedger(dir int, name string, m openRouterManifest, input, output, cost int64) error {
@@ -266,6 +302,39 @@ func openRouterAppendLedger(dir int, name string, m openRouterManifest, input, o
 		return ErrOpenRouterPolicy
 	}
 	if unix.Fsync(fd) != nil || unix.Fsync(dir) != nil {
+		return ErrOpenRouterPolicy
+	}
+	return nil
+}
+
+// openRouterSettleLedger는 정산 안 된 같은 예약 값의 예약이 있을 때만 정산 줄을 더해 fsync한다(배타 잠금 안에서 다시
+// 읽는다). 기록이 없거나 짝이 없으면 쓰지 않는다. 쓰지 못하면 그 예약은 그대로 다 쓴 것으로 남는다.
+func openRouterSettleLedger(dir int, name string, m openRouterManifest, reserved, actual [3]int64) error {
+	fd, err := unix.Openat(dir, name, unix.O_RDWR|unix.O_APPEND|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return ErrOpenRouterPolicy
+	}
+	defer unix.Close(fd)
+	if unix.Flock(fd, unix.LOCK_EX) != nil {
+		return ErrOpenRouterPolicy
+	}
+	_, open, err := openRouterLedgerScan(fd, m)
+	if err != nil {
+		return err
+	}
+	if open[reserved] == 0 {
+		return ErrOpenRouterPolicy
+	}
+	for i := range reserved {
+		if actual[i] < 0 || actual[i] > reserved[i] {
+			return ErrOpenRouterPolicy
+		}
+	}
+	line := []byte(fmt.Sprintf(openRouterSettleLine, reserved[0], reserved[1], reserved[2], actual[0], actual[1], actual[2]))
+	if n, err := unix.Write(fd, line); err != nil || n != len(line) {
+		return ErrOpenRouterPolicy
+	}
+	if unix.Fsync(fd) != nil {
 		return ErrOpenRouterPolicy
 	}
 	return nil

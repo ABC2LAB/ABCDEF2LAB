@@ -62,7 +62,7 @@ OpenRouter는 운영자가 `openrouter_manifest`에 [기존 보호 승인 JSON �
 
 키는 인증된 `POST /api/product/model-credentials`에서 설치된 프로필의 `api_key` 열만 갱신한다. 별도 writer 역할에는 키 읽기·모델·endpoint·예산 변경 권한이 없다. 비제어 password 입력은 전송 즉시 비우며 React 상태·URL·진단 초안·local/session storage·보고서에 키를 넣지 않는다. 시작 시 외부 전송·비용 동의는 별도로 필요하다. 키 변경·응답 유실·사용량 불명은 기존 fail-closed 계약을 따른다. 다음 진단은 인증된 GET에서 `configured`와 승인 모델 ID만 읽어 키를 재사용한다. API 키 값은 브라우저로 반환하지 않는다. 연결 실패 시 합성 모델이나 일반 ARTEX 엔진으로 자동 전환하지 않는다.
 
-유료 승인(OpenRouter manifest)은 승인 총량·만료 안에서 여러 회차가 이어 쓴다. 승인 ID마다 보호 manifest 디렉터리에 누적 예약 기록(`.openrouter-<승인 해시>.ledger`)을 두고, 매 요청 전에 잠금 안에서 다시 읽어 승인 총량을 넘지 않을 때만 예약한다(P3 결정안 C07, `docs/openrouter-first-diagnosis.md`). 한도·만료·누적 예산 소진 후에는 기존 운영자 재승인이 필요하다. 예전 1회용 표식(`.used`)·`.ledger`·journal을 지우거나 고쳐 재승인하지 않는다. `.ledger`를 지우면 그 승인의 누적 합계가 0으로 돌아가 총량 보장이 깨진다. 사용자 모델 입력은 설치된 승인 모델에 한정된다.
+유료 승인(OpenRouter manifest)은 승인 총량·만료 안에서 여러 회차가 이어 쓴다. 승인 ID마다 보호 manifest 디렉터리에 누적 예약 기록(`.openrouter-<승인 해시>.ledger`)을 두고, 매 요청 전에 잠금 안에서 다시 읽어 승인 총량을 넘지 않을 때만 예약한다. 응답을 확인한 호출은 실제 사용량으로 정산해 남은 예약을 다시 쓴다(P3 결정안 C07, `docs/openrouter-first-diagnosis.md`). 한도·만료·누적 예산 소진 후에는 기존 운영자 재승인이 필요하다. 예전 1회용 표식(`.used`)·`.ledger`·journal을 지우거나 고쳐 재승인하지 않는다. `.ledger`를 지우면 그 승인의 누적 합계가 0으로 돌아가 총량 보장이 깨진다. 사용자 모델 입력은 설치된 승인 모델에 한정된다.
 
 ## 탐색·선택 워크플로 설치
 

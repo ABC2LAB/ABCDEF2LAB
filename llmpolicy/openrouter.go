@@ -72,6 +72,11 @@ type OpenRouterPolicy struct {
 	// 승인 총량을 넘으면 errOpenRouterApprovalExhausted를 돌려준다. 보호 파일 로더만 채운다.
 	ledger    func(input, output, cost int64) error
 	available func() error
+	// settleLedger는 끝난 호출의 실제 사용량을 승인 장부에 남긴다(C07 보완: 누적 예약이 아니라 누적 사용량). 남기면
+	// 그 호출의 예약과 실제의 차이를 다시 쓸 수 있다. 보호 파일 로더만 채운다.
+	settleLedger func(reserved, actual [3]int64) error
+	// refunded는 장부에 정산을 남긴 호출들의 예약 − 실제 합계다. 프로세스 안 검사는 예약 합계에서 이것을 뺀다.
+	refunded [3]int64
 }
 type OpenRouterUsage struct {
 	Requests             int64  `json:"requests"`
@@ -202,9 +207,9 @@ func (p *OpenRouterPolicy) reserveDiagnostic(input, output int64) (string, error
 		reason = "concurrency_limit"
 	case p.usage.Requests >= m.MaxRequests:
 		reason = "request_limit"
-	case input > m.MaxInputTokens-p.usage.ReservedInputTokens || output > m.MaxOutputTokens-p.usage.ReservedOutputTokens:
+	case input > m.MaxInputTokens-(p.usage.ReservedInputTokens-p.refunded[0]) || output > m.MaxOutputTokens-(p.usage.ReservedOutputTokens-p.refunded[1]):
 		reason = "token_limit"
-	case cost > m.MaxCostMicros-p.usage.ReservedCostMicros:
+	case cost > m.MaxCostMicros-(p.usage.ReservedCostMicros-p.refunded[2]):
 		reason = "cost_limit"
 	}
 	if reason != "" {
@@ -232,6 +237,26 @@ func (p *OpenRouterPolicy) reserveDiagnostic(input, output int64) (string, error
 	p.usage.ReservedOutputTokens += output
 	p.usage.ReservedCostMicros += cost
 	return "", nil
+}
+
+// settleLocked는 응답을 확인한 호출의 실제 사용량을 승인 장부에 남기고, 남겼을 때만 그 차이를 다시 쓸 수 있게 한다
+// (P3 결정안 C07 "승인별 누적 사용량", C28 결정 2). 남기지 못하면 예약이 그대로 남는다(총량 보장은 안전한 쪽).
+// p.mu를 잡은 채 부른다.
+func (p *OpenRouterPolicy) settleLocked(reserved, actual [3]int64) {
+	if p.settleLedger == nil {
+		return
+	}
+	for i := range reserved {
+		if actual[i] < 0 || actual[i] > reserved[i] {
+			return
+		}
+	}
+	if p.settleLedger(reserved, actual) != nil {
+		return
+	}
+	for i := range reserved {
+		p.refunded[i] += reserved[i] - actual[i]
+	}
 }
 
 // ValidateCallLimits는 프로필 기본값이 승인된 요청 범위 안인지 검사한다.
@@ -267,6 +292,16 @@ func (p *OpenRouterPolicy) Quote(output int64) (int64, error) {
 	}
 	m := p.manifest
 	return openRouterReservedCost(m, output), nil
+}
+
+// QuoteInput은 입력 예약이 input인 호출 하나의 비용 상한이다. 입력 예약은 요청 크기의 상한이다(P3 결정안 C28 결정 1,
+// openRouterReservedInput과 같은 뜻). 호출당 입력 상한 전체로 견적하면 실제 사용과 무관하게 비용 승인을 몇 호출 만에
+// 다 쓴 것으로 센다(11/13 실제 모델 점검: $1 상한에서 호출당 견적이 실제 비용의 수십 배).
+func (p *OpenRouterPolicy) QuoteInput(input, output int64) (int64, error) {
+	if p == nil || input < 1 || input > p.manifest.MaxInputPerCall || output < 1 || output > p.manifest.MaxOutputPerCall || !time.Now().Before(p.manifest.ExpiresAt) {
+		return 0, ErrOpenRouterPolicy
+	}
+	return openRouterCallCost(p.manifest, input, output), nil
 }
 
 // DescribeOpenRouterManifest는 만료 후 저장 보고서 조회에 필요한 설치 메타데이터만 검증한다.

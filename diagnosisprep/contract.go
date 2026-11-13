@@ -69,6 +69,10 @@ type Input struct {
 	TargetURL     string `json:"target_url"`
 	ProfileID     string `json:"profile_id"`
 	DisplayName   string `json:"display_name,omitempty"`
+	// ExternalTestAccounts는 외부 API 모델 실행에 시험 계정 세션을 모델 입력으로 보내는 것에 대해 사전 공지·승인을 받았다는
+	// 운영자 진술이다(CLAUDE.md 규칙 2, C14 결정 4). 참이면 외부 API 실행도 시험 계정을 결속·로그인한다. 로컬 모델 실행은
+	// 이 값과 상관없이 시험 계정을 쓴다. 결속을 바꾸므로 초안 입력(원본 요약)에 들어간다.
+	ExternalTestAccounts bool `json:"external_test_accounts,omitempty"`
 }
 
 type Profile struct {
@@ -159,6 +163,8 @@ type Job struct {
 	IntentOutcomes *diagnosis.IntentOutcomes `json:"intent_outcomes,omitempty"`
 	// 진단 로그(운영 기록) 일부가 남지 않았다는 경고다(C10). 감사·결과에는 영향이 없다. completed에만 있다.
 	DiagnosticLogIncomplete bool `json:"diagnostic_log_incomplete,omitempty"`
+	// 시험 계정별 인증 준비 결과다(계약 §3.4, C14). completed·cancelled·failed, 계정을 결속한 실행만. 자격·세션 값은 없다.
+	AccountAuth map[string]string `json:"account_auth,omitempty"`
 }
 
 // Principal은 API가 기존 Bearer 인증으로 확인한 주체다. 브라우저 body에서는 받지 않는다.
@@ -232,6 +238,8 @@ type Update struct {
 	Result *diagnosis.RunResult
 	// DiagnosticLogIncomplete는 completed 실행의 진단 로그 경고다(reason_code와 따로).
 	DiagnosticLogIncomplete bool
+	// AccountAuth는 시험 계정별 인증 준비 결과다(completed·cancelled·failed에만 싣는다).
+	AccountAuth map[string]string
 }
 
 // Publish 실패는 실행 허가가 아니다. 신규 부작용을 중단하고 기존 실행은 취소·drain한다.

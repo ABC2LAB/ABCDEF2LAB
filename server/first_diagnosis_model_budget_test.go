@@ -365,9 +365,39 @@ func TestFirstDiagnosisModelBudgetReservesRequestSize(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// 승인 입력 예산은 예약 합계로 지킨다. 남은 입력 예산이 요청 하나보다 작으면 거부한다.
-	if b.before(context.Background(), cfg, &req) == nil || b.Snapshot().Requests != 3 {
-		t.Fatal("input budget exceeded")
+	// 예산 검사는 정산한 사용량 + 진행 중 예약이다(C28 결정 2). 정산한 세 호출은 10토큰씩만 썼으므로 남은 예약을
+	// 다시 써서 네 번째 호출을 받는다.
+	if err := b.before(context.Background(), cfg, &req); err != nil || b.Snapshot().Requests != 4 {
+		t.Fatal("settled reservations were not released for the next call", err)
+	}
+	if err := b.after(llm.Usage{InputTokens: 10, OutputTokens: 20}, 128, nil); err != nil {
+		t.Fatal(err)
+	}
+	// 정산 사용량과 진행 중 예약이 상한을 채우면 거부한다: 입력 예산 2·want에서 첫 호출이 want를 다 쓰고(정산),
+	// 두 번째는 남은 want로 받고, 그 예약이 진행 중인 동안 세 번째는 거부한다.
+	b, err = NewFirstDiagnosisModelBudget(diagnosisprep.Budget{ModelRequests: 4, InputTokens: 2 * want, OutputTokens: 4 * 128}, 8192, 128, func(diagnosisprep.ModelUsage) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.ConfigureConcurrency(1); err != nil {
+		t.Fatal(err)
+	}
+	first, err := b.reserve(context.Background(), cfg, &req)
+	if err != nil || b.settle(first, llm.Usage{InputTokens: int(want), OutputTokens: 1}, nil) != nil {
+		t.Fatal("first call", err)
+	}
+	second, err := b.reserve(context.Background(), cfg, &req)
+	if err != nil {
+		t.Fatal("remaining input budget not usable", err)
+	}
+	if _, err := b.reserve(context.Background(), cfg, &req); err == nil || !b.limitReached || b.Snapshot().Requests != 2 {
+		t.Fatal("settled usage plus in-flight reservation exceeded the input budget")
+	}
+	if b.settle(second, llm.Usage{InputTokens: 1, OutputTokens: 1}, nil) != nil {
+		t.Fatal("second call")
+	}
+	if _, err := b.reserve(context.Background(), cfg, &req); err == nil {
+		t.Fatal("call accepted although settled usage leaves less than one reservation")
 	}
 	// 창(65536)에 framing 여유를 더하면 넘는 요청은 보내지 않는다.
 	b, cfg = modelBudgetFixture(t, func(diagnosisprep.ModelUsage) error { return nil })
@@ -625,5 +655,78 @@ func TestFirstDiagnosisOpenRouterBudgetReconcilesTransportTotals(t *testing.T) {
 	}
 	if _, err := b.reserve(context.Background(), cfg, &req); err == nil {
 		t.Fatal("new call accepted after a reconciliation mismatch")
+	}
+}
+
+// 진행 중 예약은 출력·비용 검사에도 들어간다(C28 결정 2). 첫 예약이 진행 중이면 두 번째 예약은 남은 출력·비용이
+// 예약 하나보다 작아 거부되고, 첫 호출을 정산하면 실제 사용분만 빼고 다시 받는다.
+func TestFirstDiagnosisModelBudgetInFlightCountsOutputAndCost(t *testing.T) {
+	req := llm.CompletionRequest{MaxTokens: 100}
+	b, _, cfg := urlExternalBudget(t, func(diagnosisprep.ModelUsage) error { return nil })
+	quote := urlExternalRequestQuote(t, b, req)
+	for name, tighten := range map[string]func(){
+		"output": func() { b.limits.OutputTokens = 2*100 - 1 },
+		"cost":   func() { b.limits.CostUSDMicros = 2*quote - 1 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			b, _, cfg = urlExternalBudget(t, func(diagnosisprep.ModelUsage) error { return nil })
+			tighten()
+			first, err := b.reserve(context.Background(), cfg, &req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := b.reserve(context.Background(), cfg, &req); err == nil || !b.limitReached {
+				t.Fatal("second reservation ignored the in-flight one")
+			}
+			first.result = func() llmpolicy.OpenRouterCallResult {
+				return llmpolicy.OpenRouterCallResult{Reserved: true, Succeeded: true, InputTokens: 10, OutputTokens: 5, CostMicros: 30}
+			}
+			b.externalUsage = func() llmpolicy.OpenRouterUsage {
+				u := b.externalBase
+				u.Requests++
+				u.InputTokens, u.OutputTokens, u.CostMicros = u.InputTokens+10, u.OutputTokens+5, u.CostMicros+30
+				return u
+			}
+			if err := b.settle(first, llm.Usage{InputTokens: 10, OutputTokens: 5}, nil); err != nil {
+				t.Fatal(err)
+			}
+			b.limitReached = false
+			if _, err := b.reserve(context.Background(), cfg, &req); err != nil {
+				t.Fatal("settled call's unused reservation not released", err)
+			}
+		})
+	}
+}
+
+// transport가 사용량을 정산했지만 도구 계약 위반으로 SDK에 오류를 준 호출(C06 보완)은 그 호출만 예약량으로 닫고
+// (C05) 막지 않는다. 칸의 사용량이 transport 누적 값과 맞으므로 대조도 통과하고 다음 호출을 받는다.
+func TestFirstDiagnosisOpenRouterBudgetRejectedResponseWithUsageIsPerCall(t *testing.T) {
+	b, _, cfg := urlExternalBudget(t, func(diagnosisprep.ModelUsage) error { return nil })
+	req := llm.CompletionRequest{MaxTokens: 100}
+	call, err := b.reserve(context.Background(), cfg, &req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := llmpolicy.OpenRouterCallResult{Reserved: true, Succeeded: true, ReservedInputTokens: 5000, ReservedOutputTokens: 100, ReservedCostMicros: 5100, InputTokens: 10, OutputTokens: 5, CostMicros: 30}
+	call.result = func() llmpolicy.OpenRouterCallResult { return r }
+	b.externalUsage = func() llmpolicy.OpenRouterUsage {
+		u := b.externalBase
+		u.Requests++
+		u.ReservedInputTokens += r.ReservedInputTokens
+		u.ReservedOutputTokens += r.ReservedOutputTokens
+		u.ReservedCostMicros += r.ReservedCostMicros
+		u.InputTokens, u.OutputTokens, u.CostMicros = u.InputTokens+10, u.OutputTokens+5, u.CostMicros+30
+		u.Errors++
+		return u
+	}
+	if err := b.settle(call, llm.Usage{}, llmpolicy.ErrOpenRouterPolicy); err == nil {
+		t.Fatal("rejected response reported success")
+	}
+	u := b.Snapshot()
+	if b.blocked || !u.UsageKnown || u.UnknownUsageCalls != 1 || u.CostUSDMicros != call.cost || u.OutputTokens != call.output {
+		t.Fatalf("rejected response not closed as one bounded call: %+v blocked=%v", u, b.blocked)
+	}
+	if _, err := b.reserve(context.Background(), cfg, &req); err != nil {
+		t.Fatal("next call refused after a per-call rejection", err)
 	}
 }

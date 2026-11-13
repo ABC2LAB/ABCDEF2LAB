@@ -44,7 +44,7 @@ func (r *gatewayRunner) Close(ctx context.Context) (diagnosis.Closure, error) {
 		closureErr = nil
 	}
 	stored, saveErr := r.launch.supervisor.PersistRunOutcomeStored(ctx, closureErr)
-	result := diagnosis.Closure{DrainComplete: drained && httpErr == nil, ResultReady: stored && saveErr == nil, Result: r.launch.supervisor.ClosureResult()}
+	result := diagnosis.Closure{DrainComplete: drained && httpErr == nil, ResultReady: stored && saveErr == nil, Result: r.launch.supervisor.ClosureResult(), AccountAuth: launchAccountAuth(r.launch.runtime)}
 	if !drained {
 		return result, errors.Join(httpErr, runOutcome, saveErr)
 	}

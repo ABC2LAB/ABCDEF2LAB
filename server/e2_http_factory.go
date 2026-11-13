@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
@@ -247,6 +248,9 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 	} else if input.Workflow != nil {
 		return empty, ErrE2HTTPHost
 	}
+	// 제품 실행은 시도별 화면용 경로 패턴을 상태 디렉터리에 남긴다(작업대 e2-flow path_pattern). 평가 회차와 이미 관찰
+	// 훅을 받은 실행(수용시험 경로 투영)은 그대로 둔다. 허용 판단·송신·감사·계수에는 영향이 없다.
+	productPatterns := input.AttemptPathObserver == nil && policy.Evaluation == nil
 	if policy.ApprovalMode != e2proxy.ApprovalConfirmEveryRequest && policy.ApprovalMode != e2proxy.ApprovalPreauthorizedScope && policy.ApprovalMode != e2proxy.ApprovalWorkbenchV1 {
 		return empty, ErrE2HTTPHost
 	}
@@ -398,6 +402,8 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 	var acquireMu sync.Mutex
 	context.AfterFunc(authorityCtx, func() { acquireMu.Lock(); clear(auditKey); acquireMu.Unlock() })
 	claimed := false
+	// 다시 로그인(refresh_session) 횟수는 실행 전체(실행 판 하나, acquire 한 번)에서 계정당 센다.
+	refreshes := &e2HTTPRefreshCounter{}
 	acquire := func(taskctx context.Context, request E2HTTPRequest) (E2HTTPRunOptions, error) {
 		acquireMu.Lock()
 		defer acquireMu.Unlock()
@@ -435,8 +441,11 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 			return E2HTTPRunOptions{}, ErrE2HTTPHost
 		}
 		release := func(context.Context) error { return journal.Close() }
+		// accountAuth는 인증 준비가 돈 뒤의 계정별 결과다. 그 뒤에 실행 획득이 실패해도 실행 결과에 싣도록 실패 반환에도
+		// 넣는다(계약 §3.4: 실행을 잡지 못하고 실패해도 인증 준비가 돌았으면 싣는다, #532 이동찬 리뷰).
+		var accountAuth map[string]string
 		failed := func(execution *e2proxy.Execution, runner *e2runner.Runner) (E2HTTPRunOptions, error) {
-			return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: release}, ErrE2HTTPHost
+			return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: release, AccountAuth: accountAuth}, ErrE2HTTPHost
 		}
 		recorder := e2proxy.Recorder(journal)
 		if input.ObserveEvent != nil {
@@ -452,9 +461,31 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 			}
 			recorder = e2HTTPJournalObserver{next: recorder, observe: input.RequestApprovals.observe}
 		}
-		execution, createErr := e2proxy.NewExecution(taskctx, e2proxy.Config{RequestBoundary: workflowBoundary(input.Workflow), CheckAuthority: transmissionCheck, ApprovalMode: policy.ApprovalMode, RequestApproval: gate, Evaluation: policy.Evaluation, HeaderMode: policy.HeaderMode, Scope: transmit.Scope{TaskRef: request.TaskID, RunRef: policy.RunRef, CaseRef: policy.CaseRef, ResetRef: resetRef, PolicyRef: policy.PolicyRef}, IntentID: request.IntentID, OwnerRef: policy.OwnerRef, PolicyRevision: policy.PolicyRevision, AccountRef: policy.AccountRef, SessionRef: policy.SessionRef, ExpiresAt: policy.ValidUntil, Rules: rules, Budget: transmit.CumulativeBudget{Ledger: ledger, Key: grantKey, Binding: budgetBinding}, Recorder: recorder, RootCAs: upstreamRoots, Limits: limits, AttemptPathObserver: input.AttemptPathObserver})
+		// 표시용 패턴은 이 실행의 보호·가림 값(비밀번호·세션)이 든 조각과 결속 시험 계정 사용자명과 같은 조각을 가린다
+		// (S09·절대 규칙 2). 실행을 만들기 전에 관찰 훅을 넘기므로 실행 참조는 만든 뒤 채우고, 그 전에는 줄을 쓰지 않는다.
+		var patternExecution atomic.Pointer[e2proxy.Execution]
+		var patternUsernames atomic.Pointer[map[string]bool]
+		observer := input.AttemptPathObserver
+		if productPatterns {
+			observer = productAttemptPatterns(policy.StateDir, func() func(string) bool {
+				e := patternExecution.Load()
+				if e == nil {
+					return nil
+				}
+				names := patternUsernames.Load()
+				return func(segment string) bool {
+					return string(e.RedactOutput([]byte(segment))) != segment || names != nil && (*names)[segment]
+				}
+			})
+		}
+		execution, createErr := e2proxy.NewExecution(taskctx, e2proxy.Config{RequestBoundary: workflowBoundary(input.Workflow), CheckAuthority: transmissionCheck, ApprovalMode: policy.ApprovalMode, RequestApproval: gate, Evaluation: policy.Evaluation, HeaderMode: policy.HeaderMode, Scope: transmit.Scope{TaskRef: request.TaskID, RunRef: policy.RunRef, CaseRef: policy.CaseRef, ResetRef: resetRef, PolicyRef: policy.PolicyRef}, IntentID: request.IntentID, OwnerRef: policy.OwnerRef, PolicyRevision: policy.PolicyRevision, AccountRef: policy.AccountRef, SessionRef: policy.SessionRef, ExpiresAt: policy.ValidUntil, Rules: rules, Budget: transmit.CumulativeBudget{Ledger: ledger, Key: grantKey, Binding: budgetBinding}, Recorder: recorder, RootCAs: upstreamRoots, Limits: limits, AttemptPathObserver: observer})
 		if createErr != nil {
 			return failed(nil, nil)
+		}
+		patternExecution.Store(execution)
+		if policy.Auth != nil {
+			names := e2HTTPAccountUsernames(dir, *policy.Auth)
+			patternUsernames.Store(&names)
 		}
 		if input.RequestApprovals != nil {
 			input.RequestApprovals.attachExecution(request.TaskIDNumber, execution)
@@ -480,7 +511,9 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 				}
 			}
 			var authErr error
-			if auth, authErr = e2HTTPAuthPrep(taskctx, execution, dir, origin, *policy.Auth); authErr != nil || current(taskctx) != nil {
+			auth, authErr = e2HTTPAuthPrep(taskctx, execution, dir, origin, *policy.Auth)
+			accountAuth = auth.AccountAuth
+			if authErr != nil || current(taskctx) != nil {
 				return failed(execution, runner)
 			}
 		}
@@ -496,7 +529,24 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 				return failed(execution, runner)
 			}
 		}
-		return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: release, ObserveResult: input.ObserveResult, AccountAuth: auth.AccountAuth, Sessions: auth.Sessions}, nil
+		var refresh func(context.Context, string) (http.Header, string)
+		sessionStore := newE2HTTPSessionStore(auth.Sessions)
+		programCalls := newE2HTTPProgramCalls(auth.CallRefs...)
+		if policy.Auth != nil && policy.HeaderMode == e2proxy.HeaderTestAccountPassthrough && len(auth.Sessions) > 0 {
+			authPolicy, origin := *policy.Auth, ""
+			for _, rule := range policy.Rules {
+				if rule.Ref == authPolicy.RuleRef {
+					origin = rule.Origin
+				}
+			}
+			refresh = func(ctx context.Context, label string) (http.Header, string) {
+				// 성공하면 다음 Worker도 새 세션으로 시작한다. 같은 계정 다시 로그인은 줄을 세운다.
+				return sessionStore.refresh(ctx, label, func() (http.Header, string) {
+					return e2HTTPRefreshSession(ctx, execution, dir, origin, authPolicy, refreshes, programCalls, label)
+				})
+			}
+		}
+		return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: release, ObserveResult: input.ObserveResult, AccountAuth: auth.AccountAuth, Sessions: auth.Sessions, RefreshSession: refresh, sessionStore: sessionStore, programCalls: programCalls}, nil
 	}
 	// 진단 Worker의 insert_assets가 받을 수 있는 자산 범위다(C24). 검사를 거친 정책 규칙의 origin만 쓴다.
 	approvedOrigins := make([]string, 0, len(policy.Rules))

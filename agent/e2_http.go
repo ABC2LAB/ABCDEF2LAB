@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -113,6 +114,9 @@ type E2HTTPExecution struct {
 	// Sessions는 인증 준비가 얻은 시험 계정 세션이다(라벨 → 보낼 헤더, C14 결정 4). 시험 계정 실행(헤더 모드
 	// test_account_passthrough)에서만 채운다. 값은 Worker system 지침에만 들어가고, 기록·활동은 실행의 가림을 거친다.
 	Sessions map[string]http.Header
+	// RefreshSession은 세션이 끊긴 시험 계정을 호스트가 다시 로그인시키는 경로다(refresh_session, C14). Sessions가 있을
+	// 때만 채운다.
+	RefreshSession E2HTTPRefreshSession
 }
 
 type e2HTTPExecutionKey struct{}
@@ -573,8 +577,10 @@ func (w *Worker) executeE2HTTP(ctx context.Context, name string, taskID int64, a
 	bash := newE2HTTPBashTool(execution, runForIntent, duration, state, binding.Control, intent.Payload, binding.IntentID)
 	if binding.Workflow != nil {
 		handled, crawlErr := binding.Workflow.Crawl(ctx, func(call context.Context, target string) (e2runner.Result, error) {
-			// URL is canonical program-owned data; shell quote it independently of model output.
-			command := "curl --silent --show-error --globoff --include --suppress-connect-headers --max-redirs 0 --max-time 15 --proto '=https' --url '" + strings.ReplaceAll(target, "'", "'\"'\"'") + "'"
+			command, ok := e2HTTPCrawlCommand(target)
+			if !ok {
+				return e2runner.Result{}, ErrE2HTTPUnavailable
+			}
 			input, _ := json.Marshal(map[string]any{"command": command})
 			out, err := bash.Call(call, input, nil)
 			var result e2runner.Result
@@ -613,6 +619,9 @@ func (w *Worker) executeE2HTTP(ctx context.Context, name string, taskID int64, a
 		toolset = newE2HTTPWorkerToolSet(ts, as, name, taskID, intent.ID)
 		base = append(toolset.WorkerTools(), base...)
 		bindings["submit_diagnostic_candidate"] = newE2DiagnosticCandidateTool(ts, binding, state, func() { toolset.writes.Facts++ })
+		if refresh := e2RefreshSessionBinding(binding); refresh != nil {
+			bindings["refresh_session"] = refresh
+		}
 		// 원본 insert_assets를 승인 대상 안의 자산만 받게 감싸 붙인다(C24). 승인 origin을 모르는 실행이면 붙이지 않는다.
 		for _, tool := range toolset.WorkerTools() {
 			if tool.Name() == "insert_assets" {
@@ -687,6 +696,18 @@ func (w *Worker) executeE2HTTP(ctx context.Context, name string, taskID int64, a
 	}
 	_ = requestID // ordinary transcript/chat history is never resumed in this capability scope.
 	return w.runE2HTTPSession(ctx, name, intent, emit, opts, input, execution, state, toolset)
+}
+
+// e2HTTPCrawlCommand는 크롤 단계에서 프로그램이 보내는 GET 명령이다. URL은 프로그램 소유 데이터(승인 origin + 발견
+// 경로)라 모델 출력과 따로 셸 인용한다. --proto는 대상 스킴 하나만 연다(http 대상 허용, C22). --raw는 전송 틀
+// (chunked)을 풀지 않고 넘긴다. curl이 chunk를 풀어 내면 헤더에는 chunked가 남아, 크롤 파서(http.ReadResponse)가
+// 이미 풀린 본문을 다시 풀다가 실패한다(11/13 실제 모델 점검: chunked로 답한 첫 페이지가 body_incomplete).
+func e2HTTPCrawlCommand(target string) (string, bool) {
+	u, err := url.Parse(target)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "", false
+	}
+	return "curl --silent --show-error --globoff --raw --include --suppress-connect-headers --max-redirs 0 --max-time 15 --proto '=" + u.Scheme + "' --url '" + strings.ReplaceAll(target, "'", "'\"'\"'") + "'", true
 }
 
 func emitE2HTTPPromptActivity(emit func(db.Activity), reportStage func(string), intentID int64, worker string, info any) {
@@ -1072,7 +1093,7 @@ func e2HTTPSessionLines(sessions map[string]http.Header) string {
 	}
 	sort.Strings(labels)
 	var b strings.Builder
-	b.WriteString("\n\nTest account sessions (owned, disposable test accounts already logged in by the host). To act as an account, send its header yourself on requests to the approved origin; switch headers to compare what each account can access. Never send these headers to any other host, and do not try to log in or change passwords.\n")
+	b.WriteString("\n\nTest account sessions (owned, disposable test accounts already logged in by the host). To act as an account, send its header yourself on requests to the approved origin; switch headers to compare what each account can access. Never send these headers to any other host, and do not try to log in or change passwords yourself. If an account's session stops working, call refresh_session with its label.\n")
 	for _, label := range labels {
 		names := make([]string, 0, len(sessions[label]))
 		for name := range sessions[label] {

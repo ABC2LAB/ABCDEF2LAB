@@ -72,6 +72,8 @@ const fmtTime = (iso: string): string => {
 /** 한 전송 규칙 — 승인된 origin·IP·경로·메서드·자격 헤더(이름만). methods 가 비면 '전부'가 아니라 '차단'으로 명시. */
 function RuleBlock({ rule }: { rule: PolicyRule }) {
   const write = ruleAllowsWrite(rule);
+  // https 가 아닌 대상은 전송(자격·세션 포함)이 평문이라 경고한다(TLS 핀 결속과 별개).
+  const noTls = !rule.origin.startsWith("https://");
   return (
     <div style={ruleBox} data-rule={rule.ref}>
       <div style={ruleHead}>
@@ -82,6 +84,11 @@ function RuleBlock({ rule }: { rule: PolicyRule }) {
           {rule.connectIp || "연결 IP 미지정"}
         </span>
         {write ? <span style={writeChip}>쓰기 포함</span> : <span style={neutralChip}>읽기 전용</span>}
+        {noTls ? (
+          <span style={{ ...chipBase, background: "var(--crit-bg)", color: "var(--crit)", borderColor: "var(--crit)" }}>
+            TLS 없음 (평문 전송)
+          </span>
+        ) : null}
       </div>
       <div style={chipRow}>
         <span style={monoChip}>경로 {rule.pathPrefix || "/"}</span>

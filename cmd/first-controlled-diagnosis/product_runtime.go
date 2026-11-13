@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"log"
 	"net/netip"
 	"os"
@@ -320,7 +321,7 @@ func (p *productRuntime) loadBinding(principal string, input diagnosisprep.Input
 	accountDigest := ""
 	// 외부 API 모델 실행은 시험 계정 세션을 모델에 주지 않는다: 사전 공지·승인 회차에서만 켤 수 있는데(CLAUDE.md 규칙 2,
 	// 결정 4) 그 동의를 담는 승인 칸이 아직 없다. 그때까지 외부 API 실행에는 계정을 결속하지 않는다(로그인도 안 함).
-	if !reportOnly && accountsAllowedFor(cfg.ModelExecutionMode) {
+	if !reportOnly && runBindsAccounts(cfg.ModelExecutionMode, input) {
 		if accounts, accountDigest, e = p.targets.runAccounts(rec); e != nil {
 			return nil, e
 		}
@@ -529,6 +530,8 @@ func (p *productRuntime) loadBinding(principal string, input diagnosisprep.Input
 	loaded.productTarget = &rec
 	loaded.productRegistry = p.targets
 	loaded.productAccounts = accounts.Accounts
+	// 외부 API 실행에 시험 계정을 결속했으면 서버가 그 실행의 인증 준비 정책을 받도록 동의를 launch로 넘긴다.
+	loaded.externalTestAccounts = externalTestAccountsConsent(cfg.ModelExecutionMode, input, len(accounts.Accounts))
 	if !reportOnly && p.targets.current(rec) != nil {
 		loaded.clearMaterials()
 		return nil, urlPreparationError("target_approval_changed")
@@ -715,6 +718,28 @@ func (p *productRuntime) removeBindingCredentials(targetID, label string) {
 	if label != "" {
 		prefix = bindingCredentialPrefix(targetID, label)
 	}
+	// 진행 중·끝난 실행 디렉터리(runs/<job>)의 사본도 지운다. 진행 중 실행은 결속 계정 확인이 account_binding_changed로
+	// 멈추고, 그 사이 refresh_session은 사본이 없어 보내지 않는다(#551 윤재상 리뷰).
+	if p.config.RunsDir != "" {
+		if runs, err := os.ReadDir(p.config.RunsDir); err == nil {
+			for _, run := range runs {
+				if !run.IsDir() {
+					continue
+				}
+				files, err := os.ReadDir(filepath.Join(p.config.RunsDir, run.Name()))
+				if err != nil {
+					continue
+				}
+				for _, f := range files {
+					if strings.HasPrefix(f.Name(), prefix) {
+						if err := os.Remove(filepath.Join(p.config.RunsDir, run.Name(), f.Name())); err != nil {
+							log.Printf("[preparation] 실행 디렉터리 자격 사본 삭제 실패: 대상=%s", targetID)
+						}
+					}
+				}
+			}
+		}
+	}
 	root := filepath.Join(p.config.StateDir, "bindings")
 	for _, base := range []string{root, filepath.Join(root, "ordinary")} {
 		dirs, err := os.ReadDir(base)
@@ -740,6 +765,42 @@ func (p *productRuntime) removeBindingCredentials(targetID, label string) {
 	}
 }
 
-// accountsAllowedFor는 그 모델 실행 방식에서 시험 계정을 결속할 수 있는지다. 외부 API(openrouter)는 사전 공지·승인 동의
-// 칸이 생기기 전까지 결속하지 않는다(CLAUDE.md 규칙 2, C14 결정 4).
+// removeRunCredentials는 실행 디렉터리(runs/<job>)에 옮긴 시험 계정 자격 사본을 지운다. 이름은 정책의 pin 그대로다.
+// 못 지우면 로그만 남긴다(값은 남기지 않음).
+func removeRunCredentials(runsDir, jobID string, auth *server.E2HTTPFileAuth) {
+	if auth == nil || runsDir == "" || !managementReference.MatchString(jobID) {
+		return
+	}
+	parent, err := os.OpenRoot(runsDir)
+	if err != nil {
+		return
+	}
+	defer parent.Close()
+	root, err := parent.OpenRoot(jobID)
+	if err != nil {
+		return
+	}
+	defer root.Close()
+	for _, account := range auth.Accounts {
+		if !managementReference.MatchString(account.Credential.File) {
+			continue
+		}
+		if err := root.Remove(account.Credential.File); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			log.Printf("[preparation] 실행 디렉터리 자격 사본 삭제 실패: 작업=%s", jobID)
+		}
+	}
+}
+
+// accountsAllowedFor는 운영자 동의 없이도 그 모델 실행 방식에서 시험 계정을 결속할 수 있는지다. 외부 API 실행은 초안 입력의
+// external_test_accounts(사전 공지·승인 진술)가 있을 때만 결속한다(CLAUDE.md 규칙 2, C14 결정 4).
 func accountsAllowedFor(modelExecutionMode string) bool { return modelExecutionMode != "openrouter" }
+
+// runBindsAccounts는 그 실행에 시험 계정을 결속하는지다: 로컬 모델이거나, 외부 API면 운영자의 사전 공지·승인 진술이 있을 때.
+func runBindsAccounts(modelExecutionMode string, input diagnosisprep.Input) bool {
+	return accountsAllowedFor(modelExecutionMode) || input.ExternalTestAccounts
+}
+
+// externalTestAccountsConsent는 외부 API 실행에 시험 계정을 실제로 결속해 서버에 그 실행의 동의를 넘겨야 하는지다.
+func externalTestAccountsConsent(modelExecutionMode string, input diagnosisprep.Input, bound int) bool {
+	return !accountsAllowedFor(modelExecutionMode) && input.ExternalTestAccounts && bound > 0
+}

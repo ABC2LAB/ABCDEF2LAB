@@ -12,6 +12,7 @@ import (
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/diagnosis"
 	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
@@ -112,6 +113,24 @@ type E2HTTPRunOptions struct {
 	// Sessions는 인증된 시험 계정의 보낼 세션 헤더다(실행 메모리에만, C14). 인증 준비가 없으면 둘 다 비어 있다.
 	AccountAuth map[string]string
 	Sessions    E2HTTPSessions
+	// RefreshSession은 이 실행의 시험 계정 하나를 인증 준비 경로로 다시 로그인시킨다(refresh_session, C14). 시험 계정
+	// 실행이고 인증된 계정이 있을 때만 채운다.
+	RefreshSession func(ctx context.Context, label string) (http.Header, string)
+	// sessionStore는 다시 로그인을 반영한 지금 세션이다. 있으면 Worker 지침은 이 사본으로 만든다.
+	sessionStore *e2HTTPSessionStore
+	// programCalls는 서버가 연 E② 호출(인증 준비 등)이다. 마감 대조가 Worker 결과 없이 따로 센다.
+	programCalls *e2HTTPProgramCalls
+}
+
+// CurrentSessions는 실행이 지금 들고 있는 시험 계정 세션 사본이다(다시 로그인 반영). 저장소가 없으면 처음 인증 준비의 세션이다.
+func (o *E2HTTPRunOptions) CurrentSessions() E2HTTPSessions {
+	if o == nil {
+		return nil
+	}
+	if o.sessionStore != nil {
+		return o.sessionStore.snapshot()
+	}
+	return o.Sessions
 }
 
 type E2HTTPPolicyMetadata struct {
@@ -188,6 +207,20 @@ type E2HTTPRuntime struct {
 	mu      sync.Mutex
 	closed  bool
 	task    *e2HTTPRuntimeTask
+	// accountAuth는 실행을 잡을 때 받은 시험 계정별 인증 준비 결과다(라벨 → 결과, 값 없음). 자원을 닫은 뒤에도
+	// 실행 결과에 싣도록 남긴다. 다른 잠금과 섞이지 않게 따로 잠근다.
+	accountAuthMu sync.Mutex
+	accountAuth   map[string]string
+}
+
+// AccountAuth는 이 실행의 시험 계정별 인증 준비 결과의 사본이다(계약 §3.4). 계정을 결속하지 않았으면 nil이다.
+func (r *E2HTTPRuntime) AccountAuth() map[string]string {
+	if r == nil {
+		return nil
+	}
+	r.accountAuthMu.Lock()
+	defer r.accountAuthMu.Unlock()
+	return diagnosis.CloneAccountAuth(r.accountAuth)
 }
 
 type e2HTTPRuntimeTask struct {
@@ -551,6 +584,12 @@ func (r *E2HTTPRuntime) PrepareWork(ctx context.Context, task *Task, intent *db.
 	t.mu.Unlock()
 	if lease == nil {
 		acquired, acquireErr := r.options.Acquire(t.ctx, E2HTTPRequest{TaskID: t.id, TaskIDNumber: t.number, ExplorationID: t.exploration, IntentID: actual.ID, ExplorationRequests: explored, ExplorationUnknown: chargeUnknown})
+		// 인증 준비 결과는 실행을 잡지 못해도(실패로 끝나도) 실행 결과에 싣는다. 형식이 틀리면 싣지 않는다.
+		if auth := diagnosis.CloneAccountAuth(acquired.AccountAuth); auth != nil {
+			r.accountAuthMu.Lock()
+			r.accountAuth = auth
+			r.accountAuthMu.Unlock()
+		}
 		t.mu.Lock()
 		t.lease = &acquired
 		lease = t.lease
@@ -584,7 +623,7 @@ func (r *E2HTTPRuntime) PrepareWork(ctx context.Context, task *Task, intent *db.
 	t.mu.Unlock()
 	workCtx := e2HTTPTaskContext(ctx, t.ctx)
 	observePrompt := r.promptObserver(ctx, t, actual.ID)
-	bound := agent.WithE2HTTPExecution(workCtx, agent.E2HTTPExecution{Sessions: e2HTTPSessionsFor(r.options.HeaderMode, lease.Sessions), Workflow: r.options.Workflow, ObservePrompt: observePrompt, Runner: lease.Runner, Control: t.control, TaskID: t.number, IntentID: actual.ID, TaskRef: t.id, RunRef: r.options.Expected.RunRef, MaxTurns: r.options.MaxWorkerTurns, MaxDuration: r.options.WorkerTimeout, ApprovedOrigins: append([]string(nil), r.options.ApprovedOrigins...), ObserveResult: func(observeCtx context.Context, result e2runner.Result) error {
+	bound := agent.WithE2HTTPExecution(workCtx, agent.E2HTTPExecution{Sessions: e2HTTPWorkerSessions(r.options.HeaderMode, lease), RefreshSession: e2HTTPRefreshFor(r.options.HeaderMode, lease), Workflow: r.options.Workflow, ObservePrompt: observePrompt, Runner: lease.Runner, Control: t.control, TaskID: t.number, IntentID: actual.ID, TaskRef: t.id, RunRef: r.options.Expected.RunRef, MaxTurns: r.options.MaxWorkerTurns, MaxDuration: r.options.WorkerTimeout, ApprovedOrigins: append([]string(nil), r.options.ApprovedOrigins...), ObserveResult: func(observeCtx context.Context, result e2runner.Result) error {
 		return r.observeResult(observeCtx, t, lease, actual.ID, result)
 	}})
 	var once sync.Once
@@ -885,6 +924,25 @@ func (r *E2HTTPRuntime) observeResult(ctx context.Context, t *e2HTTPRuntimeTask,
 	return intentErr
 }
 
+// ProgramCalls는 서버가 연 E② 호출(인증 준비 등)의 CallRef 사본이다. Worker Bash 결과가 없는 호출이다. 다른 task면 nil이다.
+func (r *E2HTTPRuntime) ProgramCalls(taskID string) map[string]bool {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	t := r.task
+	r.mu.Unlock()
+	if t == nil || t.id != taskID {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.lease == nil {
+		return map[string]bool{}
+	}
+	return t.lease.programCalls.snapshot()
+}
+
 // UntrustedIntents는 최종 신뢰 결과가 E② 실행 기록과 맞지 않았던 intent의 사본이다(C09). 다른 task면 nil이다.
 func (r *E2HTTPRuntime) UntrustedIntents(taskID string) map[int64]bool {
 	if r == nil {
@@ -937,6 +995,19 @@ func e2HTTPFinalIntentError(drainErr error, calls []e2proxy.CallResult, intentID
 		}
 	}
 	return drainErr
+}
+
+// e2HTTPWorkerSessions는 Worker를 시작할 때 줄 시험 계정 세션이다. 다시 로그인이 바꾼 지금 세션을 읽는다(#550).
+func e2HTTPWorkerSessions(mode e2proxy.HeaderMode, lease *E2HTTPRunOptions) map[string]http.Header {
+	return e2HTTPSessionsFor(mode, lease.CurrentSessions())
+}
+
+// e2HTTPRefreshFor는 Worker의 refresh_session 경로다. 세션을 주는 실행(시험 계정 실행, 인증된 계정 있음)에만 준다.
+func e2HTTPRefreshFor(mode e2proxy.HeaderMode, lease *E2HTTPRunOptions) agent.E2HTTPRefreshSession {
+	if lease == nil || mode != e2proxy.HeaderTestAccountPassthrough || len(lease.CurrentSessions()) == 0 || lease.RefreshSession == nil {
+		return nil
+	}
+	return lease.RefreshSession
 }
 
 // e2HTTPSessionsFor는 Worker 지침에 줄 시험 계정 세션이다. 시험 계정 실행(test_account_passthrough)에서만 준다 — 다른

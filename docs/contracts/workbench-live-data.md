@@ -111,7 +111,7 @@
 
 - `index`는 그 시도 행을 만든 마지막 사건 번호다(`intent`만 있으면 그 사건, `result`가 오면 `result` 사건). `closed_index`는 호출 마감 사건 번호다(아직 열려 있으면 칸 없음).
 - `status_code`가 0이면 응답을 받지 못한 것이다(화면 "응답 없음").
-- `path_pattern`은 진단 흐름(워크플로) 끝점의 경로 패턴이다(값 조각은 `{id}`처럼 가림, 이름 조각은 그대로). 같은 호출의 끝점을 찾지 못하면 비운다. 원문 경로·query는 없다.
+- `path_pattern`은 그 시도의 요청 경로 패턴이다(값처럼 보이는 조각은 `{id}`로 가림, 이름 조각은 그대로, `pathmask.Readable`). E② 경계가 시도마다 실행 상태 디렉터리의 표시용 파일(`attempt-patterns.jsonl`, 감사 기록 아님)에 시도 ID와 함께 남기고, 이 조회가 시도 ID로 붙인다. 이름 조각이라도 그 실행의 보호·가림 값(비밀번호·발급 세션)이 든 조각과 결속 시험 계정 사용자명과 같은 조각은 `{id}`로 가린다(S09·절대 규칙 2). 가림 판단을 할 수 없는 시점의 시도는 줄을 남기지 않는다. 경로를 만들 수 없던 거부·기록이 빠진 시도는 비운다. 원문 경로·query는 없다.
 - `stage`: `intent`(보내기 전 판정) · `result`(송신 결과) · `control`(실행 통제 사건) · `call_closed`(호출 마감).
 - `decision`: `allowed` · `denied` · `unsupported`.
 - `reason`: 아래 16개 중 하나. 웹 `e2flow.ts`의 옛 enum(#183 제안 값)은 이것으로 바꾼다.
@@ -163,5 +163,5 @@
 ## 순서
 
 1. 화면(이경준): 1절 계정 분류와 2절 접근통제 지도는 지금 연결한다. 4절 enum·문구와 3절 `approval_mode` 키는 서버 API 전에 바꿔 둘 수 있다.
-2. 서버(최민준): 3절 `control-policy`, 4절 `e2-flow` 읽기 API를 낸다. 응답이 이 문서와 다르면 이 문서를 먼저 고친다. 구현(2026-11-13): 제품 task 경로(`urlPreparationRuntime.ServeHTTP`)가 작업 결속을 확인한 뒤 그 작업의 실행 결속 디렉터리(`runs/<job>`)에서 직접 읽는다. 정책은 승인(`authority.json`) 해시와 같고 실행에 쓴 검증기를 통과해야 하고, 흐름은 감사 키 pin을 대조한 뒤 기록 전체를 검증해야 사건을 보인다(`e2proxy.VerifyJournalEvents`). `path_pattern`은 아직 비운다(워크플로 끝점 대조는 다음 단계).
+2. 서버(최민준): 3절 `control-policy`, 4절 `e2-flow` 읽기 API를 낸다. 응답이 이 문서와 다르면 이 문서를 먼저 고친다. 구현(2026-11-13): 제품 task 경로(`urlPreparationRuntime.ServeHTTP`)가 작업 결속을 확인한 뒤 그 작업의 실행 결속 디렉터리(`runs/<job>`)에서 직접 읽는다. 정책은 승인(`authority.json`) 해시와 같고 실행에 쓴 검증기를 통과해야 하고, 흐름은 감사 키 pin을 대조한 뒤 기록 전체를 검증해야 사건을 보인다(`e2proxy.VerifyJournalEvents`). `path_pattern`은 E② 시도 관찰 훅이 제품 실행(평가 문맥 없음)에서 남긴 표시용 패턴을 시도 ID로 붙인다.
 3. 수용시험 U01(쓰기 승인 때 어떤 쓰기가 나갈지 미리 보이는지): C21(#525) 뒤 범위 확인 화면이 쓰기 메서드를 보이므로 화면 담당이 돌릴 수 있다.
