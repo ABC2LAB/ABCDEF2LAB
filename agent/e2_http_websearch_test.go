@@ -27,6 +27,8 @@ func TestE2HTTPWebSearchConfig(t *testing.T) {
 		{E2HTTPWebSearch{Backend: "tavily", TavilyKey: "synthetic-tavily-key"}, true, true},
 		{E2HTTPWebSearch{Backend: "brave-free"}, false, false},
 		{E2HTTPWebSearch{Backend: "tavily", BraveKey: "synthetic-brave-key"}, false, false},
+		{E2HTTPWebSearch{Backend: "brave-free", BraveKey: "synthetic-brave-key", TavilyKey: "synthetic-tavily-key"}, false, false},
+		{E2HTTPWebSearch{Backend: "tavily", TavilyKey: "synthetic-tavily-key", BraveKey: "synthetic-brave-key"}, false, false},
 		{E2HTTPWebSearch{Backend: "ddgs", TavilyKey: "synthetic-tavily-key"}, false, false},
 		{E2HTTPWebSearch{BraveKey: "synthetic-brave-key"}, false, false},
 		{E2HTTPWebSearch{Backend: "deepseek"}, false, false},
