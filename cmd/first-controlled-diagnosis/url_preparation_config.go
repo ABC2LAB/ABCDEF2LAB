@@ -116,6 +116,9 @@ type urlLoadedProfile struct {
 
 func (*urlLoadedProfile) String() string { return "urlLoadedProfile[protected]" }
 
+// maxRunCredentialBytes는 실행 자료로 옮기는 시험 계정 자격 파일 하나의 상한이다(서버 인증 준비의 읽기 상한과 같다).
+const maxRunCredentialBytes = 8 << 10
+
 func urlSHA(raw []byte) string { d := sha256.Sum256(raw); return hex.EncodeToString(d[:]) }
 func urlDigestValid(v string) bool {
 	b, e := hex.DecodeString(v)
@@ -541,6 +544,28 @@ func urlLoadProfileForReport(c urlPreparationInstallation, installationPin urlIn
 		}
 		l.materials[pin.File] = raw
 		l.pins = append(l.pins, held)
+	}
+	// 시험 계정 자격 사본(C14). 서버 인증 준비는 실행 디렉터리에서 pin으로 읽으므로 결속 디렉터리의 사본을 실행 자료로
+	// 옮긴다. 빠지면 실제 실행에서 계정마다 not_sent가 된다(11/13 S07 실제 회차). 저장 보고서는 인증하지 않으므로 읽지
+	// 않는다(해제·철회 때 사본을 지워도 보고서는 열린다). 실행 중 보호 입력 검사(pins)에는 넣지 않는다 — 계정 해제·자격
+	// 교체로 사본이 지워지면 계정 결속 확인(accountsCurrent)이 account_binding_changed로 멈춘다.
+	if policy.Auth != nil && !reportOnly {
+		for _, account := range policy.Auth.Accounts {
+			pin := account.Credential
+			if !managementReference.MatchString(pin.File) || !urlDigestValid(pin.SHA256) {
+				return nil, errPreparation
+			}
+			raw, held, e := urlReadPin(filepath.Join(filepath.Dir(launch.HTTP.PolicyFile), pin.File), maxRunCredentialBytes, false)
+			if e != nil || held.digest != pin.SHA256 {
+				clear(raw)
+				return nil, errPreparation
+			}
+			if _, duplicate := l.materials[pin.File]; duplicate {
+				clear(raw)
+				return nil, errPreparation
+			}
+			l.materials[pin.File] = raw
+		}
 	}
 	stage = "installation_helper_invalid"
 	helper, helperPin, err := urlReadPin(policy.Helper, 64<<20, true)

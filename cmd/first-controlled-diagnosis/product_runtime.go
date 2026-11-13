@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"log"
 	"net/netip"
 	"os"
@@ -717,6 +718,28 @@ func (p *productRuntime) removeBindingCredentials(targetID, label string) {
 	if label != "" {
 		prefix = bindingCredentialPrefix(targetID, label)
 	}
+	// 진행 중·끝난 실행 디렉터리(runs/<job>)의 사본도 지운다. 진행 중 실행은 결속 계정 확인이 account_binding_changed로
+	// 멈추고, 그 사이 refresh_session은 사본이 없어 보내지 않는다(#551 윤재상 리뷰).
+	if p.config.RunsDir != "" {
+		if runs, err := os.ReadDir(p.config.RunsDir); err == nil {
+			for _, run := range runs {
+				if !run.IsDir() {
+					continue
+				}
+				files, err := os.ReadDir(filepath.Join(p.config.RunsDir, run.Name()))
+				if err != nil {
+					continue
+				}
+				for _, f := range files {
+					if strings.HasPrefix(f.Name(), prefix) {
+						if err := os.Remove(filepath.Join(p.config.RunsDir, run.Name(), f.Name())); err != nil {
+							log.Printf("[preparation] 실행 디렉터리 자격 사본 삭제 실패: 대상=%s", targetID)
+						}
+					}
+				}
+			}
+		}
+	}
 	root := filepath.Join(p.config.StateDir, "bindings")
 	for _, base := range []string{root, filepath.Join(root, "ordinary")} {
 		dirs, err := os.ReadDir(base)
@@ -738,6 +761,32 @@ func (p *productRuntime) removeBindingCredentials(targetID, label string) {
 					}
 				}
 			}
+		}
+	}
+}
+
+// removeRunCredentials는 실행 디렉터리(runs/<job>)에 옮긴 시험 계정 자격 사본을 지운다. 이름은 정책의 pin 그대로다.
+// 못 지우면 로그만 남긴다(값은 남기지 않음).
+func removeRunCredentials(runsDir, jobID string, auth *server.E2HTTPFileAuth) {
+	if auth == nil || runsDir == "" || !managementReference.MatchString(jobID) {
+		return
+	}
+	parent, err := os.OpenRoot(runsDir)
+	if err != nil {
+		return
+	}
+	defer parent.Close()
+	root, err := parent.OpenRoot(jobID)
+	if err != nil {
+		return
+	}
+	defer root.Close()
+	for _, account := range auth.Accounts {
+		if !managementReference.MatchString(account.Credential.File) {
+			continue
+		}
+		if err := root.Remove(account.Credential.File); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			log.Printf("[preparation] 실행 디렉터리 자격 사본 삭제 실패: 작업=%s", jobID)
 		}
 	}
 }

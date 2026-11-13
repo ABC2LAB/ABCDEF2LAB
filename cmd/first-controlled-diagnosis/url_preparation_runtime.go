@@ -441,6 +441,10 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	}
 	diagnostics.next("e2_policy", "e2_policy_failed")
 	launch, err := b.issue(l, execution.Job.ID, actual)
+	// 실행 디렉터리에 옮긴 시험 계정 자격 사본은 실행이 끝나면(마감·실패·중지·결과 불명 모두) 지운다. 실행 디렉터리는
+	// 저장 보고서·작업대 조회 때문에 남으므로 사본이 쌓이지 않게 한다(#551 윤재상 리뷰). refresh_session이 실행 중에
+	// 다시 읽으므로 인증 준비 직후가 아니라 실행이 끝날 때 지운다.
+	defer removeRunCredentials(b.config.RunsDir, execution.Job.ID, l.policy.Auth)
 	if err != nil {
 		return unknown("authority_issuance_unconfirmed", true)
 	}
