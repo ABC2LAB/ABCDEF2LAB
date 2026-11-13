@@ -49,7 +49,7 @@ func TestFirstDiagnosisURLOpenRouterBrowserStopOwnedPostgres(t *testing.T) {
 	}
 	ui.run("url-stop")
 	job := client.job("GET", diagnosisapi.URLBasePath+"/drafts/"+draft.ID+"/status", "", nil)
-	if job.State != diagnosisprep.Unknown || job.Started || !job.DrainComplete || job.ModelUsage == nil || job.ModelUsage.UsageKnown || job.ModelUsage.Requests != 3 || job.ModelUsage.ReservedCostUSDMicros != 3*264192 || f.modelCalls.Load() != 3 || f.allowed.Load() != 0 || f.denied.Load() != 0 {
+	if job.State != diagnosisprep.Unknown || job.Started || !job.DrainComplete || job.ModelUsage == nil || job.ModelUsage.UsageKnown || job.ModelUsage.Requests != 3 || !urlRequestSizedReservation(job.ModelUsage.ReservedCostUSDMicros, 3) || f.modelCalls.Load() != 3 || f.allowed.Load() != 0 || f.denied.Load() != 0 {
 		t.Fatalf("browser stop facts mismatch state=%s started=%t drain=%t result=%t usage=%+v calls=%d allowed=%d denied=%d", job.State, job.Started, job.DrainComplete, job.ResultReady, job.ModelUsage, f.modelCalls.Load(), f.allowed.Load(), f.denied.Load())
 	}
 	t.Log("URL_OPENROUTER_BROWSER_STOP calls=3 additional_calls=0 target_sends=0 unknown=true reservation_preserved=true")
