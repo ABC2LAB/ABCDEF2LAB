@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AccessMap } from "@/lib/diagnosis/kg";
@@ -13,11 +13,15 @@ vi.mock("@/lib/diagnosis/kg", async (importOriginal) => {
 
 import * as kg from "@/lib/diagnosis/kg";
 
+import { useUrl } from "../live/urlDiagnosis";
 import { UrlAccessMapLive } from "../views/live/UrlAccessMapLive";
 
 const m = vi.mocked(kg);
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  useUrl.setState({ job: null }); // 다음 테스트는 다시 '진단 없음'(taskId null) 기본
+});
 
 describe("UrlAccessMapLive (예시)", () => {
   it("운영자 고지·예시 배너와 수평 판정·격자를 그린다", async () => {
@@ -76,5 +80,13 @@ describe("UrlAccessMapLive (예시)", () => {
     for (const el of [...screen.queryAllByRole("button"), ...screen.queryAllByRole("link")]) {
       expect(el.textContent ?? "").not.toMatch(/내보내기|공유|export/i);
     }
+  });
+
+  it("진행 중인 점검이 있으면 그 task id 로 지도를 읽는다(null 아님)", async () => {
+    // 실 projection 응답은 kg.test.ts 가 검증 — 여기선 현재 task id 가 getAccessMap 에 넘어가는지만 본다.
+    m.getAccessMap.mockResolvedValueOnce({ policyVersion: "v", mock: false, principals: [], resources: [], cells: [] });
+    useUrl.setState({ job: { task_id: "task-42" } as never });
+    render(<UrlAccessMapLive />);
+    await waitFor(() => expect(m.getAccessMap).toHaveBeenCalledWith("task-42"));
   });
 });
