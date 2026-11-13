@@ -86,7 +86,16 @@ type e2HTTPWebSearchTool struct {
 }
 
 func (t *e2HTTPWebSearchTool) Call(ctx context.Context, input json.RawMessage, tc *actool.ToolContext) (actool.Result, error) {
-	if !bytes.Equal(t.redact(bytes.Clone(input)), input) {
+	// 원본 도구(webSearchRunner)와 같은 JSON 의미로 검색어를 읽어 검사한다. 직렬화된 JSON만 보면 \u 이스케이프로 쓴 보호
+	// 값이 정확한 값 가림을 지나가고, 원본 도구가 풀어서 검색 제공자로 보낸다(#560 이동찬 리뷰).
+	var in struct {
+		Query string `json:"query"`
+	}
+	if json.Unmarshal(input, &in) != nil {
+		return actool.Errorf("Error: invalid web_search input."), nil
+	}
+	query := []byte(in.Query)
+	if !bytes.Equal(t.redact(bytes.Clone(query)), query) || !bytes.Equal(t.redact(bytes.Clone(input)), input) {
 		return actool.Errorf("Error: the search query contains a protected value of this run (session, credential or marker) and was not sent. Remove it and search again."), nil
 	}
 	result, err := t.CoreTool.Call(ctx, input, tc)

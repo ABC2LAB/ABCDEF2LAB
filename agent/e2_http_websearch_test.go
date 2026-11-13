@@ -62,9 +62,19 @@ func TestE2HTTPWebSearchGuardKeepsProtectedValuesOut(t *testing.T) {
 		return actool.Text("result mentions synthetic-session-value for " + string(input)), nil
 	})
 	tool := &e2HTTPWebSearchTool{CoreTool: inner, redact: redact}
-	blocked, err := tool.Call(t.Context(), json.RawMessage(`{"query":"owned app synthetic-session-value"}`), nil)
-	if err != nil || !blocked.IsError || calls != 0 {
-		t.Fatalf("protected query sent: calls=%d err=%v result=%+v", calls, err, blocked)
+	// 평문·JSON 이스케이프(\u0073 = s)·중복 키(원본처럼 마지막 값)·대소문자 다른 키(Go JSON은 이름을 대소문자 없이 맞춤)
+	// 어느 쪽으로 써도 원본 도구가 풀어 보낼 검색어에 보호 값이 있으면 보내지 않는다. 깨진 입력도 보내지 않는다.
+	for _, input := range []string{
+		`{"query":"owned app synthetic-session-value"}`,
+		`{"query":"owned app \u0073ynthetic-session-value"}`,
+		`{"query":"juice shop","query":"synthetic-\u0073ession-value"}`,
+		`{"QUERY":"synthetic-session-value"}`,
+		`{"query":`,
+	} {
+		blocked, err := tool.Call(t.Context(), json.RawMessage(input), nil)
+		if err != nil || !blocked.IsError || calls != 0 {
+			t.Fatalf("%s: protected or invalid query sent: calls=%d err=%v result=%+v", input, calls, err, blocked)
+		}
 	}
 	result, err := tool.Call(t.Context(), json.RawMessage(`{"query":"juice shop ftp"}`), nil)
 	if err != nil || result.IsError || calls != 1 || len(result.Content) != 1 || strings.Contains(result.Content[0].Text, "synthetic-session-value") || !strings.Contains(result.Content[0].Text, "[REDACTED]") {
