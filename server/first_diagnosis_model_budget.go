@@ -57,6 +57,9 @@ type FirstDiagnosisModelBudget struct {
 	admission                                   func(context.Context) error
 	// limitReached는 승인 예산이 남지 않아 새 호출을 받지 못한 적이 있다는 뜻이다(budget_limited).
 	limitReached bool
+	// retryDelays는 실패한 모델 호출을 다시 보내기 전 기다리는 간격이다(기본 firstDiagnosisModelRetryDelays). 비어 있으면
+	// 다시 보내지 않는다.
+	retryDelays []time.Duration
 }
 
 // firstDiagnosisModelCall은 호출 하나의 예약이다(P3 결정안 C28 결정 2). reserve가 만들고 settle이 한 번 닫는다.
@@ -157,7 +160,7 @@ func NewFirstDiagnosisModelBudget(limits diagnosisprep.Budget, inputPerCall, out
 		inputPerCall > limits.InputTokens || outputPerCall > limits.OutputTokens || observe == nil {
 		return nil, ErrFirstDiagnosisModelBudget
 	}
-	return &FirstDiagnosisModelBudget{callGate: make(chan struct{}, 1), limits: limits, inputPerCall: inputPerCall, outputPerCall: outputPerCall, usage: diagnosisprep.ModelUsage{UsageKnown: true}, observe: observe}, nil
+	return &FirstDiagnosisModelBudget{callGate: make(chan struct{}, 1), limits: limits, inputPerCall: inputPerCall, outputPerCall: outputPerCall, usage: diagnosisprep.ModelUsage{UsageKnown: true}, observe: observe, retryDelays: firstDiagnosisModelRetryDelays}, nil
 }
 
 // 준비에서 실행으로 넘어가도 정책과 호출 gate 하나를 공유한다.

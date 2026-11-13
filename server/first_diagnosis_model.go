@@ -202,12 +202,12 @@ func (p *firstDiagnosisModelProvider) Complete(ctx context.Context, req llm.Comp
 		message, reason, usage, callErr := p.inner.Complete(reserved.requestContext(call), req)
 		return message, reason, usage, callErr, budget.settle(reserved, usage, callErr)
 	}
-	return firstDiagnosisRetryModelCall(ctx, firstDiagnosisModelRetryDelays, once, budget.retryable)
+	return firstDiagnosisRetryModelCall(ctx, budget.retryDelays, once, budget.retryable)
 }
 
 // firstDiagnosisModelRetryDelays는 실패한 모델 호출을 다시 보내기 전 기다리는 시간이다(429·5xx·연결 실패 등). 원본 SDK가
 // 하던 재시도를 되살리되, 다시 보낼 때마다 새로 예약하고 실패한 호출은 예약량으로 정산한다(P3 결정안 C05·C06 "다시 보낼
-// 때는 같은 예약 규칙으로 새로 예약"). 제공자 요청 한도(429)는 몇 초 단위로 풀려서 짧게 두 번 기다린다. 시험이 바꾼다.
+// 때는 같은 예약 규칙으로 새로 예약"). 제공자 요청 한도(429)는 몇 초 단위로 풀려서 짧게 두 번 기다린다. 예산마다 이 값을 가진다.
 var firstDiagnosisModelRetryDelays = []time.Duration{2 * time.Second, 6 * time.Second}
 
 // firstDiagnosisRetryModelCall은 호출 하나를 보내고, 호출이 실패했지만(callErr) 예산·승인이 막히지 않았으면 정한 간격으로
