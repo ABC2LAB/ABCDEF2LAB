@@ -442,7 +442,7 @@ func validE2ControlReady(v E2ControlReady) bool {
 		return false
 	}
 	switch v.HeaderMode {
-	case e2proxy.HeaderPreserve, e2proxy.HeaderProtectedSessionProposal:
+	case e2proxy.HeaderPreserve, e2proxy.HeaderProtectedSessionProposal, e2proxy.HeaderTestAccountPassthrough:
 		return v.Evaluation == nil
 	case e2proxy.HeaderEvaluationCallerPassthrough:
 		return v.Evaluation != nil && (v.Evaluation.LLMBackend == "local" || v.Evaluation.LLMBackend == "api") && v.Evaluation.TargetKind == "public_practice"

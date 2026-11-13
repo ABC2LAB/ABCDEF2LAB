@@ -39,7 +39,7 @@ func TestURLOpenRouterFailuresStopFurtherCallsOwnedPostgres(t *testing.T) {
 				time.Sleep(20 * time.Millisecond)
 			}
 			usage := final.ModelUsage
-			if final.Started || usage == nil || usage.UsageKnown || usage.Requests != 1 || usage.ReservedCostUSDMicros != 264192 || f.modelCalls.Load() != 1 || f.allowed.Load() != 0 || f.denied.Load() != 0 {
+			if final.Started || usage == nil || usage.UsageKnown || usage.Requests != 1 || !urlRequestSizedReservation(usage.ReservedCostUSDMicros, 1) || f.modelCalls.Load() != 1 || f.allowed.Load() != 0 || f.denied.Load() != 0 {
 				t.Fatal("unverified usage caused another model or target request")
 			}
 			// 반복 Start는 영수증만 조회하며, 청구 결과가 불명인 호출을 재시도하지 않는다.

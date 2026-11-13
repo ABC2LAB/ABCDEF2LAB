@@ -535,7 +535,7 @@ class TestE2Product(unittest.TestCase):
         for changes, code in (({"image": {"ref": "x", "id": "bad"}}, "config.e2.image.id: INVALID"), ({"policy_path": "relative.json"}, "config.e2.policy_path: EXPECTED_ABSOLUTE_PATH"),
                               ({"verify_tool": "e2-audit-verify"}, "config.e2.verify_tool: EXPECTED_ABSOLUTE_PATH"),
                               ({"policy_fingerprint_sha256": "x"}, "config.e2.policy_fingerprint_sha256: INVALID"), ({"policy_fingerprint_sha256": 7}, "config.e2.policy_fingerprint_sha256: INVALID"),
-                              ({"header_mode": "other"}, "config.e2.header_mode: UNSUPPORTED"), ({"header_mode": []}, "config.e2.header_mode: UNSUPPORTED"),
+                              ({"header_mode": "other"}, "config.e2.header_mode: UNSUPPORTED"), ({"header_mode": "test_account_passthrough"}, "config.e2.header_mode: UNSUPPORTED"), ({"header_mode": []}, "config.e2.header_mode: UNSUPPORTED"),
                               ({"ready_timeout_seconds": 0}, "config.e2.ready_timeout_seconds: INVALID"), ({"close_ack_timeout_seconds": True}, "config.e2.close_ack_timeout_seconds: INVALID"),
                               ({"close_timeout_seconds": "5"}, "config.e2.close_timeout_seconds: INVALID"), ({"poll_seconds": -1}, "config.e2.poll_seconds: INVALID"),
                               ({"exchange_timeout_seconds": 0}, "config.e2.exchange_timeout_seconds: INVALID"), ({"verify_timeout_seconds": 0}, "config.e2.verify_timeout_seconds: INVALID"),

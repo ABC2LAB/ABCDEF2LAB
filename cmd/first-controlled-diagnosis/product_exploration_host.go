@@ -156,14 +156,15 @@ func (h *productExplorationHost) sessionBash() (*exploresandbox.DirectBash, erro
 }
 
 // exploreTargetOf는 승인된 대상 등록 기록을 경계가 판정에 쓰는 대상 값으로 바꾼다. 연결은 등록 때 고른 주소로만 하고
-// SPKI 고정값을 붙인다. 위험 단어는 진단 흐름과 같은 파괴 동작 단어, 제외 경로는 이 실행의 입력이다.
+// https 대상은 SPKI 고정값을 붙인다(http 대상은 TLS가 없어 고정값도 없다, C22). 위험 단어는 진단 흐름과 같은 파괴 동작
+// 단어, 제외 경로는 이 실행의 입력이다.
 func exploreTargetOf(rec productTargetRecord, excluded []string) (exploreboundary.Target, error) {
 	u, err := url.Parse(rec.Target.Origin)
 	ip, ipErr := netip.ParseAddr(rec.SelectedIP)
-	if err != nil || ipErr != nil || u.Scheme != "https" || u.Hostname() == "" || rec.Target.Port <= 0 || rec.Target.Port > 65535 || rec.Target.TLSSPKISHA256 == "" {
+	if err != nil || ipErr != nil || u.Scheme != "https" && u.Scheme != "http" || u.Hostname() == "" || rec.Target.Port <= 0 || rec.Target.Port > 65535 || !productTargetTLSValid(rec.Target) {
 		return exploreboundary.Target{}, exploreboundary.ErrConfig
 	}
-	return exploreboundary.Target{Ref: rec.Target.ID, Revision: rec.Target.Revision, Host: u.Hostname(), Port: uint16(rec.Target.Port),
+	return exploreboundary.Target{Ref: rec.Target.ID, Revision: rec.Target.Revision, Scheme: u.Scheme, Host: u.Hostname(), Port: uint16(rec.Target.Port),
 		PathPrefixes: append([]string(nil), rec.Target.PathPrefixes...), Methods: append([]string(nil), rec.Target.Methods...), ConnectIP: ip,
 		SPKISHA256: rec.Target.TLSSPKISHA256, ExpiresAt: rec.Target.ExpiresAt, RiskyWords: diagnosisflow.DestructiveWords(),
 		ExcludedPrefixes: append([]string(nil), excluded...)}, nil

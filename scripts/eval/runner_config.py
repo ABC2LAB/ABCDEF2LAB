@@ -21,7 +21,7 @@ from urllib.parse import urlsplit
 
 from baseline_extract import MAX_INPUT_BYTES
 from baseline_pages_collector import MAX_PAGE_SIZE
-from e2_export import E2_HEADER_MODES
+from e2_export import EVAL_HEADER_MODES
 from isolation_proof import PURPOSE_BROWSER_ACCEPTANCE, PURPOSE_OFFICIAL, PURPOSES
 from path_mask import PathKeyError, key_ref, read_path_key
 from preservation_record import PreservationRecordError, validate_options
@@ -554,7 +554,7 @@ def _e2_product(block: dict, errors: list[str]) -> dict | None:
     if "policy_fingerprint_sha256" in block and not (isinstance(block["policy_fingerprint_sha256"], str)
                                                      and _SHA256_HEX.fullmatch(block["policy_fingerprint_sha256"])):
         errors.append("config.e2.policy_fingerprint_sha256: INVALID")
-    if "header_mode" in block and not (isinstance(block["header_mode"], str) and block["header_mode"] in E2_HEADER_MODES):
+    if "header_mode" in block and not (isinstance(block["header_mode"], str) and block["header_mode"] in EVAL_HEADER_MODES):
         errors.append("config.e2.header_mode: UNSUPPORTED")
     for name in ("ready_timeout_seconds", "close_ack_timeout_seconds", "close_timeout_seconds", "poll_seconds", "exchange_timeout_seconds",
                  "verify_timeout_seconds", "policy_tool_timeout_seconds", "prompt_wait_seconds"):

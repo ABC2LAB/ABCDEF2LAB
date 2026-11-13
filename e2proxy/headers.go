@@ -170,7 +170,8 @@ func (e *Execution) safeHTTPResponse(response *http.Response, body []byte) bool 
 	for _, fields := range []http.Header{response.Header, response.Trailer} {
 		for name := range fields {
 			_, configured := e.secretHeaders[strings.ToLower(name)]
-			if configured || credentialResponseHeader(name) {
+			// 시험 계정 실행은 대상이 발급한 자격 응답(Set-Cookie 등)도 모델에 준다(C14 결정 4). 등록한 보호 값 반사 검사는 아래서 그대로 한다.
+			if configured || credentialResponseHeader(name) && !e.testAccountPassthrough() {
 				return false
 			}
 		}
@@ -196,7 +197,76 @@ func (e *Execution) safeHTTPResponse(response *http.Response, body []byte) bool 
 			}
 		}
 	}
+	// 시험 계정 실행은 대상이 새로 발급한 세션(Set-Cookie 회전 등)도 모델에 준다. 그 값은 도구 출력·근거·활동 기록에서
+	// 가리도록 응답을 넘기기 전에 출력 가림 목록에 더한다(S09: 모델 입력만 예외, #522 이동찬 리뷰). 가릴 자리가 모자라면
+	// 기록에 남기지 않도록 응답을 통째로 보류한다.
+	if e.testAccountPassthrough() {
+		issued, short := issuedSessionValues(response)
+		if short {
+			// 8바이트보다 짧은 발급 값은 값으로 가릴 수 없다(흔한 문자열까지 가려짐). 헤더 줄이 아닌 모양(curl 쿠키 파일
+			// 등)으로 기록에 남을 수 있으니 그 응답을 보류한다. preserve 실행은 자격 응답을 늘 보류하므로 그보다 더 막지
+			// 않는다(#522 이동찬·윤재상 리뷰).
+			return false
+		}
+		fresh := make([][]byte, 0, len(issued))
+		for _, v := range issued {
+			known := false
+			for _, old := range e.redactOnly {
+				known = known || bytes.Equal(old, v)
+			}
+			if !known {
+				fresh = append(fresh, v)
+			}
+		}
+		if len(e.redactOnly)+len(fresh) > maxIssuedRedactValues {
+			return false
+		}
+		e.redactOnly = append(e.redactOnly, fresh...)
+	}
 	return true
+}
+
+// maxIssuedRedactValues는 실행 하나가 가릴 수 있는 세션 값 수의 상한이다(인증 준비 세션 + 대상이 새로 발급한 세션).
+// 세션을 요청마다 회전하는 대상도 회차 하나는 버티게 넉넉히 두고, 넘으면 그 응답을 보류한다.
+const maxIssuedRedactValues = 1024
+
+// issuedSessionValues는 응답이 새로 발급한 자격 값이다: Set-Cookie·Set-Cookie2의 쿠키 값, Authentication-Info·
+// Proxy-Authentication-Info 값 전체. 같은 값은 한 번만 낸다. 가림 하한(8바이트)보다 짧거나 상한보다 긴 값이 있으면
+// short가 참이다(값으로 가릴 수 없어 응답을 보류한다).
+func issuedSessionValues(response *http.Response) (out [][]byte, short bool) {
+	seen := map[string]bool{}
+	add := func(v string) {
+		switch {
+		case v == "":
+			// 빈 값(쿠키 지우기)은 비밀이 없다.
+		case len(v) < minRedactValueBytes || len(v) > maxRedactValueBytes:
+			short = true
+		case !seen[v]:
+			seen[v] = true
+			out = append(out, []byte(v))
+		}
+	}
+	for _, fields := range []http.Header{response.Header, response.Trailer} {
+		for name, values := range fields {
+			switch strings.ToLower(name) {
+			case "set-cookie", "set-cookie2":
+				for _, line := range values {
+					if c, err := http.ParseSetCookie(line); err == nil {
+						add(c.Value)
+					} else if _, rest, ok := strings.Cut(line, "="); ok {
+						// 형식이 어긋난 줄도 값 자리는 가린다(파싱 실패를 이유로 값을 기록에 남기지 않는다).
+						v, _, _ := strings.Cut(rest, ";")
+						add(strings.TrimSpace(v))
+					}
+				}
+			case "authentication-info", "proxy-authentication-info":
+				for _, v := range values {
+					add(strings.TrimSpace(v))
+				}
+			}
+		}
+	}
+	return out, short
 }
 
 func (Config) String() string   { return "e2proxy.Config[protected]" }

@@ -207,8 +207,12 @@ func TestE2HTTPFileAuthValidation(t *testing.T) {
 		{Ref: "plain-login", PathPrefix: "/login", Methods: []string{"POST"}}}
 	pin := E2HTTPFilePin{File: "tester-a.json", SHA256: strings.Repeat("a", 64)}
 	good := cookieAuth(E2HTTPFileAuthAccount{Label: "tester-a", Credential: pin})
-	if !validE2HTTPFileAuth(&good, rules) || !validE2HTTPFileAuth(nil, rules) {
+	if !validE2HTTPFileAuth(&good, e2proxy.HeaderTestAccountPassthrough, rules) || !validE2HTTPFileAuth(&good, e2proxy.HeaderPreserve, rules) || !validE2HTTPFileAuth(nil, e2proxy.HeaderPreserve, rules) {
 		t.Fatal("valid auth rejected")
+	}
+	// 시험 계정 모드는 인증 준비 칸 없이 받지 않는다(#522 재상 지적 2).
+	if validE2HTTPFileAuth(nil, e2proxy.HeaderTestAccountPassthrough, rules) {
+		t.Fatal("test account mode accepted without auth")
 	}
 	for name, change := range map[string]func(*E2HTTPFileAuth){
 		"missing rule":          func(a *E2HTTPFileAuth) { a.RuleRef = "nope" },
@@ -223,7 +227,7 @@ func TestE2HTTPFileAuthValidation(t *testing.T) {
 	} {
 		a := cookieAuth(E2HTTPFileAuthAccount{Label: "tester-a", Credential: pin})
 		change(&a)
-		if validE2HTTPFileAuth(&a, rules) {
+		if validE2HTTPFileAuth(&a, e2proxy.HeaderTestAccountPassthrough, rules) {
 			t.Errorf("%s accepted", name)
 		}
 	}
@@ -298,5 +302,18 @@ func TestE2HTTPAuthPrepProtectsPasswordReflection(t *testing.T) {
 	}
 	if out := string(e.RedactOutput([]byte("seeded-pass-88ff"))); strings.Contains(out, "seeded-pass-88ff") {
 		t.Fatal("password not redacted from output")
+	}
+}
+
+// Worker 세션 줄은 시험 계정 실행에서만 준다.
+func TestE2HTTPSessionsOnlyInTestAccountMode(t *testing.T) {
+	sessions := E2HTTPSessions{"tester-a": {"Cookie": {"session=value-a"}}}
+	if got := e2HTTPSessionsFor(e2proxy.HeaderTestAccountPassthrough, sessions); got["tester-a"].Get("Cookie") != "session=value-a" {
+		t.Fatalf("sessions in test account mode: %v", got)
+	}
+	for _, mode := range []e2proxy.HeaderMode{e2proxy.HeaderPreserve, e2proxy.HeaderEvaluationCallerPassthrough, e2proxy.HeaderProtectedSessionProposal} {
+		if got := e2HTTPSessionsFor(mode, sessions); got != nil {
+			t.Errorf("%s got sessions", mode)
+		}
 	}
 }

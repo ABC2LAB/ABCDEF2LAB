@@ -186,8 +186,9 @@ func TestTemplateKeepsStricterExactSibling(t *testing.T) {
 		if c.PreapprovedRead(form) {
 			t.Fatalf("%s: GET form sibling inherited the selected link's read exemption", mode)
 		}
-		if mode == Auto && c.Before(t.Context(), form) == nil {
-			t.Fatalf("%s: automatic mode admitted a possible GET form", mode)
+		// 자동 모드는 쓰기 승인이 있으면 폼을 그 자체 끝점으로 고른다(C21). 링크의 읽기 사전 승인은 물려받지 않는다.
+		if e := endpointAt(c, "GET", "/read/users/2"); mode == Auto && (e.Change != "possible" || !e.Selected) {
+			t.Fatalf("%s: GET form classification changed %+v", mode, e)
 		}
 		link := e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/users/3"}
 		if c.Before(t.Context(), link) != nil || !c.PreapprovedRead(link) {

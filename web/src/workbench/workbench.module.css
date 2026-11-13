@@ -3628,6 +3628,14 @@ button.smm:hover {
   gap: 6px;
   color: var(--ink-3);
 }
+/* 큰 숫자 칸의 좁은 글자 간격이 딱지 글에 물려 '아직구현안됨'처럼 붙지 않게 */
+.band .pct.unk .tag {
+  letter-spacing: normal;
+}
+/* 진행률을 모르는 막대: 빈 트랙(0%) 대신 빗금 */
+.prog.unk {
+  background: repeating-linear-gradient(135deg, var(--rule-2) 0 3px, transparent 3px 6px);
+}
 .band .pct small {
   font-size: 18px;
   color: var(--ink-3);

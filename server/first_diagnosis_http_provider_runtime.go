@@ -85,14 +85,28 @@ func firstDiagnosisHTTPTask(ctx context.Context, m *Manager, host *FirstDiagnosi
 	return t, nil
 }
 
+// firstDiagnosisHTTPModelConfig는 모델 설정을 검사하고, 외부 API(openrouter) 여부를 호스트 설정에 싣는다. 호스트는 그 값으로
+// 인증 준비(auth)가 있는 정책을 거부한다(CLAUDE.md 규칙 2, C14).
+func firstDiagnosisHTTPModelConfig(options FirstDiagnosisHTTPStartOptions) (FirstDiagnosisModelOptions, FirstDiagnosisHTTPHostConfig, error) {
+	modelOptions := FirstDiagnosisModelOptions{Mode: options.ModelExecutionMode, LocalManifestPath: options.LocalLLMManifestPath, OpenRouterManifestPath: options.OpenRouterManifestPath, Budget: options.ModelBudget}
+	_, external, err := modelOptions.load()
+	if err != nil {
+		return modelOptions, FirstDiagnosisHTTPHostConfig{}, err
+	}
+	host := options.Host
+	host.ExternalModel = external != nil
+	return modelOptions, host, nil
+}
+
 func StartFirstDiagnosisHTTP(ctx context.Context, manager *Manager, options FirstDiagnosisHTTPStartOptions) (*FirstDiagnosisHTTPRuntime, error) {
 	if ctx == nil || ctx.Err() != nil || manager == nil || manager.pg == nil || manager.pg.DB == nil || e2HTTPNil(options.Supervisor) || options.CleanupTimeout <= 0 || options.CleanupTimeout > 2*time.Minute || options.Shutdown.BlockAdmission == nil || options.Shutdown.CancelAndDrain == nil || options.Shutdown.CheckResults == nil {
 		return nil, ErrFirstDiagnosisHTTPHost
 	}
-	modelOptions := FirstDiagnosisModelOptions{Mode: options.ModelExecutionMode, LocalManifestPath: options.LocalLLMManifestPath, OpenRouterManifestPath: options.OpenRouterManifestPath, Budget: options.ModelBudget}
-	if _, _, err := modelOptions.load(); err != nil {
+	modelOptions, hostConfig, err := firstDiagnosisHTTPModelConfig(options)
+	if err != nil {
 		return nil, ErrFirstDiagnosisHTTPHost
 	}
+	options.Host = hostConfig
 	if privateinput.CheckDirectory(options.SkillDir, false) != nil || privateinput.CheckDirectory(options.DataDir, false) != nil || privateinput.CheckDirectory(options.KeyDir, true) != nil {
 		return nil, ErrFirstDiagnosisHTTPHost
 	}
@@ -225,3 +239,11 @@ func (r *FirstDiagnosisHTTPRuntime) Close(ctx context.Context) error {
 
 // ResourcesClosed는 의미상 실패와 실제 소유 자원 반환을 구분한다.
 func (r *FirstDiagnosisHTTPRuntime) ResourcesClosed() bool { return r != nil && r.closed.Load() }
+
+// AccountAuth는 이 실행의 시험 계정별 인증 준비 결과다(계정을 결속하지 않았으면 nil). 자격·세션 값은 없다.
+func (r *FirstDiagnosisHTTPRuntime) AccountAuth() map[string]string {
+	if r == nil || r.host == nil {
+		return nil
+	}
+	return r.host.runtime.AccountAuth()
+}

@@ -37,7 +37,9 @@ describe("URL 진단 v2 공개 계약", () => {
     ).toThrow();
   });
   it.each([
-    "http://target.example/",
+    "ftp://target.example/",
+    "http://user:pass@target.example/",
+    "http://target.example/?token=x",
     "https://user:pass@target.example/",
     "https://target.example/#x",
     "https://target.example/?token=x",
@@ -55,6 +57,10 @@ describe("URL 진단 v2 공개 계약", () => {
   });
   it("UTF8 이름 상한을 지켜 서버에서 거절될 이름을 저장하지 않는다", () => {
     expect(() => urlDiagnosisInput("https://target.example/", "profile-1", "가".repeat(54))).toThrow();
+  });
+  it("http 대상도 받는다(C22). 기본 포트는 지운다", () => {
+    expect(urlDiagnosisInput("http://target.example:80/read", "profile-1", "").target_url).toBe("http://target.example/read");
+    expect(urlDiagnosisInput("http://target.example:8080/", "profile-1", "").target_url).toBe("http://target.example:8080/");
   });
   it("시작 전 URL canonicalization은 실행 권위를 만들지 않는다", () => {
     expect(urlDiagnosisInput(" https://TARGET.example ", "profile-1", " 진단 ")).toEqual({
@@ -328,6 +334,42 @@ describe("실행 결과 칸(docs/contracts/run-outcome-states.md §3.2)", () => 
     { ...completed, diagnostic_log_incomplete: false },
     { ...completed, diagnostic_log_incomplete: "yes" },
   ])("계약 밖 결과는 fail closed 한다: %o", (value) => {
+    expect(() => parseURLJob(envelope(value), owner)).toThrow();
+  });
+  it.each([
+    "completed",
+    "cancelled",
+    "failed",
+  ] as const)("account_auth(§3.4): %s 에 계정별 인증 결과 맵을 받는다(자격·세션 값 없이)", (state) => {
+    const account_auth = {
+      "acct-a": "authenticated",
+      admin_2: "login_failed",
+      "shop-3": "not_sent",
+      [`a${"b".repeat(31)}`]: "result_unknown", // 32자(서버 상한)
+    };
+    expect(parseURLJob(envelope({ ...completed, state, account_auth }), owner).account_auth).toEqual(account_auth);
+  });
+  it("account_auth 없는 실행은 그대로 받는다(계정 미결속)", () => {
+    expect(parseURLJob(envelope(completed), owner).account_auth).toBeUndefined();
+  });
+  it.each([
+    { ...completed, account_auth: {} }, // 0개
+    {
+      ...completed,
+      account_auth: Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`a${i}`, "authenticated"])),
+    }, // 17개(상한 초과)
+    { ...completed, account_auth: { "acct-a": "ok" } }, // 모르는 결과값
+    { ...completed, account_auth: { Acct: "authenticated" } }, // 대문자 라벨(사용자명 원문 방지)
+    { ...completed, account_auth: { "a b": "authenticated" } }, // 공백 라벨
+    { ...completed, account_auth: { "-acct": "authenticated" } }, // '-' 로 시작(서버 등록 규칙 밖)
+    { ...completed, account_auth: { _acct: "authenticated" } }, // '_' 로 시작
+    { ...completed, account_auth: { [`a${"b".repeat(32)}`]: "authenticated" } }, // 33자(서버 상한 32자 초과)
+    { ...completed, account_auth: JSON.parse('{"__proto__":"authenticated"}') }, // 프로토타입 오염 시도
+    { ...completed, account_auth: { "acct-a": 1 } }, // 비문자 값
+    { ...completed, account_auth: ["authenticated"] }, // 배열
+    { ...completed, account_auth: "authenticated" }, // 문자열
+    { ...running, account_auth: { "acct-a": "authenticated" } }, // "있는 state" 밖(running)
+  ])("account_auth 계약 밖은 fail closed 한다: %o", (value) => {
     expect(() => parseURLJob(envelope(value), owner)).toThrow();
   });
 });

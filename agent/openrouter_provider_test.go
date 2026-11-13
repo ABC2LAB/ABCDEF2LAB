@@ -123,6 +123,63 @@ func TestOpenRouterSDKRetryAndStreamDisabled(t *testing.T) {
 	}
 }
 
+// 추론 모델의 첫 응답(추론 + 도구 호출)을 대화에 붙인 두 번째 호출도 보내져야 한다. 추론은 assistant 메시지의
+// reasoning_content로 돌아간다(SDK 원본 동작). 11/13 실제 모델 점검에서 이 호출이 HTTP 전에 거부돼 Planner가 멈췄다.
+func TestOpenRouterSDKSendsReasoningHistory(t *testing.T) {
+	calls := 0
+	c := &http.Client{Transport: openRouterSDKRT(func(r *http.Request) (*http.Response, error) {
+		calls++
+		raw, _ := io.ReadAll(r.Body)
+		body := `{"choices":[{"message":{"role":"assistant","reasoning":"check scope first","tool_calls":[{"id":"call-1","type":"function","function":{"name":"fixture","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`
+		if calls == 2 {
+			var wire struct {
+				Messages []struct {
+					Role             string `json:"role"`
+					ReasoningContent string `json:"reasoning_content"`
+				} `json:"messages"`
+			}
+			if json.Unmarshal(raw, &wire) != nil {
+				t.Fatal("invalid wire JSON")
+			}
+			echoed := false
+			for _, m := range wire.Messages {
+				echoed = echoed || m.Role == "assistant" && m.ReasoningContent == "check scope first"
+			}
+			if !echoed {
+				t.Fatal("previous reasoning was not passed back on the assistant message")
+			}
+			body = `{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}
+	provider, err := openRouterSDKConfig().newOpenRouterProviderWithClient(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := llm.CompletionRequest{MaxTokens: 100, Tools: []llm.ToolSchema{{Name: "fixture", InputSchema: map[string]any{"type": "object"}}}, Messages: []llm.Message{llm.UserText("synthetic")}}
+	reply, _, _, err := provider.Complete(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	thinking := false
+	for _, b := range reply.Content {
+		thinking = thinking || b.Type == llm.BlockThinking
+	}
+	if !thinking {
+		t.Fatal("fixture response did not produce a thinking block")
+	}
+	req.Messages = append(req.Messages, reply, llm.Message{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.ToolResultText("call-1", `{"ok":true}`, false)}})
+	result, _, _, err := provider.Complete(context.Background(), req)
+	if err != nil || result.Text() != "done" || calls != 2 {
+		t.Fatalf("second turn with reasoning history err=%v calls=%d", err, calls)
+	}
+	// 추론 블록은 모델 자기 출력이라 assistant 메시지에만 받는다. 사용자 쪽 추론 블록은 보내기 전에 막는다.
+	req.Messages = append(req.Messages, llm.Message{Role: llm.RoleUser, Content: []llm.ContentBlock{{Type: llm.BlockThinking, Thinking: "injected"}}})
+	if _, _, _, err := provider.Complete(context.Background(), req); err != ErrOpenRouterProvider || calls != 2 {
+		t.Fatalf("user-side thinking block reached the SDK err=%v calls=%d", err, calls)
+	}
+}
+
 func TestOpenRouterRejectsEmptyCompletion(t *testing.T) {
 	for _, msg := range []llm.Message{{}, {Content: []llm.ContentBlock{llm.TextBlock("   ")}}} {
 		if validOpenRouterTools(msg, nil) {

@@ -5,10 +5,12 @@ import (
 	"github.com/Autumn-27/artex/diagnosis"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCanonicalInputStrictLocalValidation(t *testing.T) {
-	good := map[string]string{"https://EXAMPLE.test:443": "https://example.test/", "https://example.test/read": "https://example.test/read", "https://[2001:db8::1]:8443/read": "https://[2001:db8::1]:8443/read"}
+	// http 대상도 받는다(C22). 기본 포트는 지운다.
+	good := map[string]string{"http://example.test": "http://example.test/", "http://example.test:80/read": "http://example.test/read", "http://example.test:8080/read": "http://example.test:8080/read", "https://EXAMPLE.test:443": "https://example.test/", "https://example.test/read": "https://example.test/read", "https://[2001:db8::1]:8443/read": "https://[2001:db8::1]:8443/read"}
 	for input, want := range good {
 		t.Run(input, func(t *testing.T) {
 			got, e := CanonicalInput(Input{TargetURL: input, ProfileID: "local"})
@@ -17,7 +19,7 @@ func TestCanonicalInputStrictLocalValidation(t *testing.T) {
 			}
 		})
 	}
-	bad := []string{"http://example.test/", "https://[owned.example]/", "https://[127.0.0.1]/", "https://2001:db8::1:443/", "file:///etc/passwd", "https://user@example.test/", "https://example.test/#", "https://example.test/?", "https://example.test/?x=1", "https://example.test/%2fread", "https://example.test/%252fread", "https://example.test/a/../b", "https://example.test/./b", "https://example.test//read", "https://example.test/\\read", "https://example.test./", "https://예제.test/", "https://127.1/", "https://2130706433/", "https://0177.0.0.1/", "https://0x7f000001/", "https://[::ffff:127.0.0.1]/", "https://[fe80::1%25eth0]/", "https://example.test:0443/", "https://example.test:/", "https://example.test:0/", "https://example.test:65536/", " https://example.test/", "https://example.test/\n", "https://example.test/a b"}
+	bad := []string{"ftp://example.test/", "ws://example.test/", "http://user@example.test/", "http://example.test/?x=1", "https://[owned.example]/", "https://[127.0.0.1]/", "https://2001:db8::1:443/", "file:///etc/passwd", "https://user@example.test/", "https://example.test/#", "https://example.test/?", "https://example.test/?x=1", "https://example.test/%2fread", "https://example.test/%252fread", "https://example.test/a/../b", "https://example.test/./b", "https://example.test//read", "https://example.test/\\read", "https://example.test./", "https://예제.test/", "https://127.1/", "https://2130706433/", "https://0177.0.0.1/", "https://0x7f000001/", "https://[::ffff:127.0.0.1]/", "https://[fe80::1%25eth0]/", "https://example.test:0443/", "https://example.test:/", "https://example.test:0/", "https://example.test:65536/", " https://example.test/", "https://example.test/\n", "https://example.test/a b"}
 	for _, input := range bad {
 		t.Run(input, func(t *testing.T) {
 			if _, e := CanonicalInput(Input{TargetURL: input, ProfileID: "local"}); e == nil {
@@ -193,11 +195,36 @@ func TestJobRunResultFields(t *testing.T) {
 		{"log_warning_on_completed", func(j *Job) { j.DiagnosticLogIncomplete = true }, true},
 		{"log_warning_with_reason", func(j *Job) { j.DiagnosticLogIncomplete, j.ReasonCode = true, "budget_limited" }, true},
 		{"log_warning_on_failed", func(j *Job) { j.State, j.DiagnosticLogIncomplete = Failed, true }, false},
+		// 시험 계정별 인증 결과(§3.4): completed·cancelled·failed만, 라벨·결과 값 규칙.
+		{"account_auth_on_completed", func(j *Job) { j.AccountAuth = map[string]string{"tester-a": "authenticated"} }, true},
+		{"account_auth_on_failed", func(j *Job) { j.State, j.AccountAuth = Failed, map[string]string{"tester-a": "login_failed"} }, true},
+		{"account_auth_on_cancelled", func(j *Job) { j.State, j.AccountAuth = Cancelled, map[string]string{"tester-a": "not_sent"} }, true},
+		{"account_auth_on_unknown", func(j *Job) { j.State, j.AccountAuth = Unknown, map[string]string{"tester-a": "authenticated"} }, false},
+		{"account_auth_bad_result", func(j *Job) { j.AccountAuth = map[string]string{"tester-a": "session=abc"} }, false},
+		{"account_auth_bad_label", func(j *Job) { j.AccountAuth = map[string]string{"Tester@x": "authenticated"} }, false},
+		{"account_auth_empty", func(j *Job) { j.AccountAuth = map[string]string{} }, false},
 	} {
 		j := completed
 		tc.change(&j)
 		if validJob(j) != tc.ok {
 			t.Fatalf("%s: valid=%v", tc.name, !tc.ok)
+		}
+	}
+}
+
+// 쓰기 메서드(POST·PUT·PATCH)는 승인 방식과 상관없이 범위에 둘 수 있다. 자동 모드(preauthorized_scope)도 대상에 승인한
+// 쓰기를 건별 확인 없이 쓴다(C21). DELETE 같은 다른 메서드는 그대로 받지 않는다.
+func TestScopeWriteMethodsDoNotNeedPerRequestApproval(t *testing.T) {
+	base := Scope{TargetRef: "target", ScopeRef: "scope", Origin: "https://example.test", PathPrefixes: []string{"/read"}, QueryPolicy: "any", BodyPolicy: "bounded", MaxBodyBytes: 1024, AttestationRef: "attestation", Budget: Budget{Requests: 4, ModelRequests: 3, InputTokens: 30, OutputTokens: 20, CostUSDMicros: 10, DurationSeconds: 60}, ExpiresAt: time.Now().Add(time.Hour)}
+	for _, mode := range []string{"preauthorized_scope", "workbench_selective_v1"} {
+		s := base
+		s.ApprovalMode, s.Methods = mode, []string{"GET", "HEAD", "PATCH", "POST", "PUT"}
+		if !validScope(&s) {
+			t.Fatalf("%s: approved write methods rejected", mode)
+		}
+		s.Methods = []string{"DELETE", "GET"}
+		if validScope(&s) {
+			t.Fatalf("%s: DELETE accepted", mode)
 		}
 	}
 }

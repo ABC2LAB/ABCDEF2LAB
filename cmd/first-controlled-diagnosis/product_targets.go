@@ -46,8 +46,20 @@ type productTargetRecord struct {
 	ValidHours       int64                       `json:"valid_hours"`
 	SelectedIP       string                      `json:"selected_ip,omitempty"`
 	ReversibleWrites bool                        `json:"reversible_writes,omitempty"`
-	ProofExpiresAt   time.Time                   `json:"proof_expires_at"`
+	// WriteConsent는 쓰기 동의를 받을 때 화면이 보인 뜻의 판이다. productWriteConsentAuto는 "사용자 모드는 요청마다 확인,
+	// AI 자동 모드는 건별 확인 없이 보냄"에 동의한 것이다(C21). 이 칸이 없는 이전 등록은 "요청마다 확인"에 동의한
+	// 것이라 자동 모드에서 쓰기를 쓰지 않는다(재등록하면 새 판, #525 이경준 리뷰).
+	WriteConsent   string    `json:"write_consent,omitempty"`
+	ProofExpiresAt time.Time `json:"proof_expires_at"`
 }
+
+const productWriteConsentAuto = "auto_without_confirmation_v1"
+
+// autoWritesAllowed는 이 대상의 쓰기 승인을 AI 자동 모드가 건별 확인 없이 쓸 수 있는지다.
+func (r productTargetRecord) autoWritesAllowed() bool {
+	return r.ReversibleWrites && r.WriteConsent == productWriteConsentAuto
+}
+
 type productTargetRegistry struct {
 	mu          sync.Mutex
 	policy      productTargetPolicy
@@ -66,10 +78,25 @@ type productTargetRegistry struct {
 	roots     *x509.CertPool
 	now       func() time.Time
 	// 시험 의존성은 HTTP나 설치 JSON에서 받지 않는다.
-	lookupTXT       func(context.Context, string) ([]string, error)
-	lookupIP        func(context.Context, string) ([]netip.Addr, error)
-	probe           func(context.Context, string, string, int) (string, time.Time, error)
+	lookupTXT func(context.Context, string) ([]string, error)
+	lookupIP  func(context.Context, string) ([]netip.Addr, error)
+	probe     func(context.Context, string, string, int) (string, time.Time, error)
+	// reach는 http 대상의 연결 확인이다. TLS가 없어 SPKI·인증서 만료를 얻지 않는다(C22).
+	reach           func(context.Context, string, int) error
 	endpointAllowed func(string, netip.Addr) bool
+}
+
+// productTargetPlain은 http 대상인지다. http 대상은 TLS 고정(SPKI) 없이 DNS 증명·주소 집합으로 승인한다(C22).
+func productTargetPlain(t diagnosisprep.ProductTarget) bool {
+	return strings.HasPrefix(t.Origin, "http://")
+}
+
+// productTargetTLSValid는 승인 대상의 TLS 고정값이 scheme과 맞는지다. https는 SPKI가 있어야 하고 http는 비어 있어야 한다.
+func productTargetTLSValid(t diagnosisprep.ProductTarget) bool {
+	if productTargetPlain(t) {
+		return t.TLSSPKISHA256 == ""
+	}
+	return urlDigestValid(t.TLSSPKISHA256)
 }
 
 func productTargetDigest(r productTargetRecord) string { b, _ := json.Marshal(r); return urlSHA(b) }
@@ -152,6 +179,7 @@ func newProductTargetRegistry(dir string, p productTargetPolicy, check func() er
 		return resolver.LookupNetIP(ctx, "ip", host)
 	}
 	r.probe = r.probeTLS
+	r.reach = r.reachTCP
 	for _, event := range events {
 		var rec productTargetRecord
 		if decodeLaunchJSON(event, &rec) != nil || r.replay(rec) != nil {
@@ -172,7 +200,8 @@ func newProductTargetRegistry(dir string, p productTargetPolicy, check func() er
 func (r *productTargetRegistry) replay(next productTargetRecord) error {
 	t := next.Target
 	old, exists := r.records[t.ID]
-	if !managementReference.MatchString(t.ID) || next.Principal != "ARTEX" || t.Revision < 1 || t.Origin == "" || len(next.ReadonlyBasis) < 20 {
+	if !managementReference.MatchString(t.ID) || next.Principal != "ARTEX" || t.Revision < 1 || t.Origin == "" || len(next.ReadonlyBasis) < 20 ||
+		next.WriteConsent != "" && (next.WriteConsent != productWriteConsentAuto || !next.ReversibleWrites) {
 		return errPreparation
 	}
 	if !exists {
@@ -180,7 +209,7 @@ func (r *productTargetRegistry) replay(next productTargetRecord) error {
 			return errPreparation
 		}
 	} else {
-		if t.Revision != old.Target.Revision+1 || t.Origin != old.Target.Origin || !reflect.DeepEqual(t.PathPrefixes, old.Target.PathPrefixes) || !reflect.DeepEqual(t.Methods, old.Target.Methods) || t.Requests != old.Target.Requests || next.Principal != old.Principal || next.ReadonlyBasis != old.ReadonlyBasis || t.ChallengeName != old.Target.ChallengeName || t.ChallengeValue != old.Target.ChallengeValue || next.ValidHours != old.ValidHours || next.ProofExpiresAt != old.ProofExpiresAt {
+		if t.Revision != old.Target.Revision+1 || t.Origin != old.Target.Origin || !reflect.DeepEqual(t.PathPrefixes, old.Target.PathPrefixes) || !reflect.DeepEqual(t.Methods, old.Target.Methods) || t.Requests != old.Target.Requests || next.Principal != old.Principal || next.ReadonlyBasis != old.ReadonlyBasis || next.WriteConsent != old.WriteConsent || next.ReversibleWrites != old.ReversibleWrites || t.ChallengeName != old.Target.ChallengeName || t.ChallengeValue != old.Target.ChallengeValue || next.ValidHours != old.ValidHours || next.ProofExpiresAt != old.ProofExpiresAt {
 			return errPreparation
 		}
 		if !(old.Target.State == "pending" && t.State == "approved" || old.Target.State == "approved" && t.State == "revoked") {
@@ -188,7 +217,7 @@ func (r *productTargetRegistry) replay(next productTargetRecord) error {
 		}
 	}
 	if t.State == "approved" {
-		if !urlDigestValid(t.TLSSPKISHA256) || next.SelectedIP == "" || len(t.Addresses) < 1 || t.ApprovedAt.IsZero() || !t.ExpiresAt.After(t.ApprovedAt) {
+		if !productTargetTLSValid(t) || next.SelectedIP == "" || len(t.Addresses) < 1 || t.ApprovedAt.IsZero() || !t.ExpiresAt.After(t.ApprovedAt) {
 			return errPreparation
 		}
 		r.approvals[t.ID] = productTargetCopy(next)
@@ -274,7 +303,11 @@ func (r *productTargetRegistry) register(principal string, s diagnosisprep.Targe
 	}
 	id := "target-" + productRandom(16)
 	t := diagnosisprep.ProductTarget{ID: id, Origin: u.Scheme + "://" + u.Host, State: "pending", Revision: 1, PathPrefixes: paths, Methods: methods, Requests: s.Requests, Port: port, ChallengeName: "_abc2lab-challenge." + u.Hostname(), ChallengeValue: "abc2lab-proof-v1-" + productRandom(32)}
-	rec := productTargetRecord{Target: t, Principal: principal, ReversibleWrites: s.ReversibleWrites, ReadonlyBasis: strings.TrimSpace(s.ReadonlyBasis), ValidHours: s.ValidHours, ProofExpiresAt: r.now().Add(30 * time.Minute)}
+	consent := ""
+	if s.ReversibleWrites {
+		consent = productWriteConsentAuto
+	}
+	rec := productTargetRecord{Target: t, Principal: principal, ReversibleWrites: s.ReversibleWrites, WriteConsent: consent, ReadonlyBasis: strings.TrimSpace(s.ReadonlyBasis), ValidHours: s.ValidHours, ProofExpiresAt: r.now().Add(30 * time.Minute)}
 	if r.append(rec) != nil {
 		return diagnosisprep.ProductTarget{}, errPreparation
 	}
@@ -340,6 +373,13 @@ func (r *productTargetRegistry) probeTLS(ctx context.Context, host, ip string, p
 	sum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
 	return hex.EncodeToString(sum[:]), cert.NotAfter, nil
 }
+func (r *productTargetRegistry) reachTCP(ctx context.Context, ip string, port int) error {
+	conn, e := (&net.Dialer{Timeout: 3 * time.Second}).DialContext(ctx, "tcp", net.JoinHostPort(ip, strconv.Itoa(port)))
+	if e != nil {
+		return errors.New("target_unreachable")
+	}
+	return conn.Close()
+}
 func (r *productTargetRegistry) approve(ctx context.Context, principal, id string) (diagnosisprep.ProductTarget, error) {
 	if r.check() != nil {
 		return diagnosisprep.ProductTarget{}, errPreparation
@@ -380,6 +420,9 @@ func (r *productTargetRegistry) approve(ctx context.Context, principal, id strin
 		}
 	}
 	if e != nil || selected == "" {
+		if productTargetPlain(rec.Target) {
+			return diagnosisprep.ProductTarget{}, errors.New("target_unreachable")
+		}
 		return diagnosisprep.ProductTarget{}, errors.New("target_tls_unverified")
 	}
 	next := productTargetCopy(rec)
@@ -390,7 +433,8 @@ func (r *productTargetRegistry) approve(ctx context.Context, principal, id strin
 	next.SelectedIP = selected
 	next.Target.ApprovedAt = r.now()
 	next.Target.ExpiresAt = next.Target.ApprovedAt.Add(time.Duration(rec.ValidHours) * time.Hour)
-	if expiry.Before(next.Target.ExpiresAt) {
+	// http 대상은 인증서가 없어 만료 상한을 받지 않는다.
+	if !expiry.IsZero() && expiry.Before(next.Target.ExpiresAt) {
 		next.Target.ExpiresAt = expiry
 	}
 	if !next.Target.ApprovedAt.Before(next.Target.ExpiresAt) {
@@ -480,6 +524,9 @@ func (r *productTargetRegistry) recheck(ctx context.Context, rec productTargetRe
 		return errors.New("target_dns_changed")
 	}
 	spki, _, e := r.probeWithAudit(ctx, "start", rec, u.Hostname(), rec.SelectedIP)
+	if e != nil && productTargetPlain(rec.Target) {
+		return errors.New("target_unreachable")
+	}
 	if e != nil || spki != rec.Target.TLSSPKISHA256 {
 		return errors.New("target_tls_changed")
 	}

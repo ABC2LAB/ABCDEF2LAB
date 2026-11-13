@@ -74,8 +74,9 @@ func CanonicalInput(input Input) (Input, error) {
 	if strings.ContainsAny(raw, "\\%?#") {
 		return Input{}, ErrProtocol
 	}
+	// http 대상도 받는다(C22, 2026-11-13 결정). 대상 소유는 DNS 증명·본인 진술로 확인하고, TLS 고정은 https 대상에만 쓴다.
 	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Opaque != "" || u.RawPath != "" || u.RawQuery != "" || u.Fragment != "" {
+	if err != nil || u.Scheme != "https" && u.Scheme != "http" || u.Host == "" || u.User != nil || u.Opaque != "" || u.RawPath != "" || u.RawQuery != "" || u.Fragment != "" {
 		return Input{}, ErrProtocol
 	}
 	host := strings.ToLower(u.Hostname())
@@ -240,7 +241,9 @@ func validScope(s *Scope) bool {
 		}
 	}
 	for _, m := range s.Methods {
-		if m != "GET" && m != "HEAD" && !(s.ApprovalMode == "workbench_selective_v1" && (m == "POST" || m == "PUT" || m == "PATCH")) {
+		// 쓰기 메서드는 대상 등록이 되돌릴 수 있는 쓰기 승인과 함께 넣었을 때만 여기 온다. 자동 모드(preauthorized_scope)도
+		// 건별 확인 없이 쓴다(C21).
+		if m != "GET" && m != "HEAD" && m != "POST" && m != "PUT" && m != "PATCH" {
 			return false
 		}
 	}
@@ -309,6 +312,9 @@ func validJob(j Job) bool {
 // validJobResult는 실행 결과 칸의 계약 규칙이다(docs/contracts/run-outcome-states.md §3.2).
 func validJobResult(j Job) bool {
 	if j.DiagnosticLogIncomplete && j.State != Completed {
+		return false
+	}
+	if j.AccountAuth != nil && (j.State != Completed && j.State != Cancelled && j.State != Failed || !diagnosis.ValidAccountAuth(j.AccountAuth)) {
 		return false
 	}
 	if j.IntentOutcomes != nil && (!j.IntentOutcomes.Valid() || j.State != Completed && j.State != Cancelled) {

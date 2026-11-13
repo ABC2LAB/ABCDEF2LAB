@@ -237,7 +237,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 	if strictJSON(raw, &policy) != nil || policy.Format != E2HTTPFilePolicyFormat || len(policy.Rules) == 0 || len(policy.Rules) > 256 || policy.MaxRequests == 0 || !policy.ValidUntil.After(policy.ValidFrom) || !policy.ValidUntil.After(time.Now()) || policy.ValidFrom.After(time.Now()) || privateinput.CheckDirectory(policy.StateDir, true) != nil {
 		return empty, ErrE2HTTPHost
 	}
-	if !validE2HTTPFileAuth(policy.Auth, policy.Rules) {
+	if !validE2HTTPFileAuth(policy.Auth, policy.HeaderMode, policy.Rules) {
 		return empty, ErrE2HTTPHost
 	}
 	if policy.Workflow != nil {
@@ -435,8 +435,11 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 			return E2HTTPRunOptions{}, ErrE2HTTPHost
 		}
 		release := func(context.Context) error { return journal.Close() }
+		// accountAuth는 인증 준비가 돈 뒤의 계정별 결과다. 그 뒤에 실행 획득이 실패해도 실행 결과에 싣도록 실패 반환에도
+		// 넣는다(계약 §3.4: 실행을 잡지 못하고 실패해도 인증 준비가 돌았으면 싣는다, #532 이동찬 리뷰).
+		var accountAuth map[string]string
 		failed := func(execution *e2proxy.Execution, runner *e2runner.Runner) (E2HTTPRunOptions, error) {
-			return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: release}, ErrE2HTTPHost
+			return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: release, AccountAuth: accountAuth}, ErrE2HTTPHost
 		}
 		recorder := e2proxy.Recorder(journal)
 		if input.ObserveEvent != nil {
@@ -480,9 +483,15 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 				}
 			}
 			var authErr error
-			if auth, authErr = e2HTTPAuthPrep(taskctx, execution, dir, origin, *policy.Auth); authErr != nil || current(taskctx) != nil {
+			auth, authErr = e2HTTPAuthPrep(taskctx, execution, dir, origin, *policy.Auth)
+			accountAuth = auth.AccountAuth
+			if authErr != nil || current(taskctx) != nil {
 				return failed(execution, runner)
 			}
+		}
+		// 인증된 시험 계정이 없으면 이 실행은 계정 없이 진행한다. 첫 모델 요청 전에 E②를 preserve처럼 묶는다(C14 결정 5·6).
+		if policy.HeaderMode == e2proxy.HeaderTestAccountPassthrough && len(auth.Sessions) == 0 {
+			execution.DisableTestAccountPassthrough()
 		}
 		if input.OnAcquire != nil {
 			verifierKey := append([]byte(nil), auditKey...)

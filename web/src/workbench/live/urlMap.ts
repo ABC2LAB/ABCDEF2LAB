@@ -2,6 +2,8 @@
 // 여기서는 화면 글·딱지 색·갈 화면만 정한다. 진행률·남은 시간은 서버가 주지 않으므로 만들지 않는다.
 
 import {
+  type URLAccountAuth,
+  type URLAccountAuthResult,
   type URLDiagnosisJob,
   type URLDiagnosisScope,
   urlPhaseLabels,
@@ -77,6 +79,25 @@ export function urlOutcomeText(
   return parts.join(" · ");
 }
 
+/**
+ * 시험 계정 인증 결과 표시 라벨(계약 §3.4·§4, 이경준 원칙). 인증 못 한 계정은 "비인증 진행"으로만 보이고,
+ * 그 계정 기준 인가 결과를 "접근 차단 확인"으로 읽지 않는다(절대 규칙 5).
+ */
+export const ACCOUNT_AUTH_LABEL: Record<URLAccountAuthResult, string> = {
+  authenticated: "인증됨",
+  login_failed: "비인증 진행 · 로그인 실패",
+  session_not_found: "비인증 진행 · 세션 없음",
+  result_unknown: "비인증 진행 · 결과 불명",
+  not_sent: "비인증 진행 · 보내지 않음",
+};
+
+/** 계정별 인증 결과를 라벨 순으로 정렬해 [계정라벨, 결과 문구] 행으로. 자격·세션 값은 애초에 없다(라벨·결과뿐). */
+export function urlAccountAuthRows(auth: URLAccountAuth): ReadonlyArray<readonly [string, string]> {
+  return Object.entries(auth)
+    .sort(([a], [b]) => (a < b ? -1 : Number(a > b)))
+    .map(([label, result]) => [label, ACCOUNT_AUTH_LABEL[result]] as const);
+}
+
 /** 엔진이 아직 움직이는가. */
 export function isUrlActive(job: Pick<URLDiagnosisJob, "state">): boolean {
   return URL_ACTIVE_STATES.includes(job.state);
@@ -125,8 +146,8 @@ export function urlHost(target: string): string {
 export function urlTargetHint(raw: string): string | null {
   const v = raw.trim();
   if (!v) return "";
-  if (!/^https:\/\//i.test(v)) return "HTTPS 주소만 받습니다.";
-  if (/^https:\/\/[^/]*@/i.test(v)) return "계정 정보(user:pass@)는 넣지 마세요.";
+  if (!/^https?:\/\//i.test(v)) return "http 또는 https 주소만 받습니다.";
+  if (/^https?:\/\/[^/]*@/i.test(v)) return "계정 정보(user:pass@)는 넣지 마세요.";
   if (/[?#]/.test(v)) return "query · fragment(? #)는 넣지 마세요.";
   if (/[%\\]/.test(v)) return "퍼센트 인코딩 · 역슬래시는 쓸 수 없습니다.";
   return null;

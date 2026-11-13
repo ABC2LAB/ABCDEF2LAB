@@ -132,7 +132,48 @@ func TestOpenRouterTransientFailuresBlockOnlyAtConsecutiveLimit(t *testing.T) {
 	}
 }
 
-// 설정 오류(4xx)·응답 형식 위반·주소 정책 위반은 상한과 무관하게 첫 번에 막는다.
+// 모델 출력이 도구 호출 계약에 어긋난 응답(finish_reason·등록 도구 이름·인수)은 사용량을 정산한 그 호출만
+// 실패이고, 연속되면 일시 오류 상한에서 막는다(P3 결정안 C06 보완, 11/13 실제 모델 점검).
+func TestOpenRouterToolContractViolationIsPerCall(t *testing.T) {
+	badTool := strings.Replace(openRouterReply, `"finish_reason":"stop"`, `"finish_reason":"tool_calls"`, 1)
+	p := openRouterV2Fixture(t, 2)
+	script := []bool{false, true, false, false} // 위반, 정상, 위반, 위반
+	hits := 0
+	client := openRouterClient(p, openRouterRT(func(*http.Request) (*http.Response, error) {
+		ok := script[hits]
+		hits++
+		if ok {
+			return openRouterResponse(openRouterReply), nil
+		}
+		return openRouterResponse(badTool), nil
+	}))
+	slots := make([]*OpenRouterCall, len(script))
+	for i, ok := range script {
+		slots[i] = &OpenRouterCall{}
+		resp, err := client.Do(openRouterRequest().WithContext(WithOpenRouterCall(context.Background(), slots[i])))
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		if ok != (err == nil) {
+			t.Fatalf("call %d err=%v", i, err)
+		}
+		if blocked := p.Snapshot().Blocked; blocked != (i == 3) {
+			t.Fatalf("call %d blocked=%v", i, blocked)
+		}
+		// 위반한 호출도 제공자가 청구한 사용량은 호출 칸에 남아 예산 대조가 맞는다.
+		if r := slots[i].Result(); !r.Reserved || !r.Succeeded || r.CostMicros <= 0 {
+			t.Fatalf("call %d usage not settled: %+v", i, r)
+		}
+	}
+	if _, err := client.Do(openRouterRequest()); err == nil || hits != 4 {
+		t.Fatal("send after the consecutive limit")
+	}
+	if u := p.Snapshot(); u.Requests != 4 || u.Errors != 3 || u.CostMicros != 4*12 || u.FailureReason != "response_invalid" {
+		t.Fatalf("usage of rejected calls lost: %+v", u)
+	}
+}
+
+// 설정 오류(4xx)·응답 형식 위반(JSON 깨짐·모델/제공자 불일치·사용량 없음)·주소 정책 위반은 상한과 무관하게 첫 번에 막는다.
 func TestOpenRouterConfigurationFailuresBlockImmediately(t *testing.T) {
 	for name, fail := range map[string]func(*http.Request) (*http.Response, error){
 		"401": func(*http.Request) (*http.Response, error) { return openRouterStatus(401), nil },

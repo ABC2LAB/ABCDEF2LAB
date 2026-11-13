@@ -33,7 +33,7 @@ import { reasonText, UrlHead, UrlNotices, UrlPill } from "./urlParts";
 const APPROVAL_MODE_RULE: Readonly<
   Record<"preauthorized_scope" | "confirm_every_request" | "workbench_selective_v1", string>
 > = {
-  preauthorized_scope: "사전 승인한 경로와 임의 query 로 진행 · 상태 변경은 자동 승인 안 함",
+  preauthorized_scope: "사전 승인한 경로와 임의 query 로 진행 · 쓰기 메서드는 범위에 없어 보내지 않음",
   confirm_every_request: "모든 요청을 한 건씩 승인한 것만 보냄",
   workbench_selective_v1: "쓰기 메서드 요청은 한 건씩 승인한 것만 보냄",
 };
@@ -49,15 +49,25 @@ function draftInput(target: string, profile: string, mode?: WorkflowMode, exclud
 
 const MODES = [
   ["user_approval_v1", "사용자 승인", "탐색 뒤 점검할 경로를 고르고, 쓰기 메서드 요청은 한 건씩 승인합니다"],
-  ["ai_auto_v1", "AI 자동", "승인 범위 안에서 탐색과 점검을 이어 갑니다 · 데이터 변경은 자동 승인 안 함"],
+  ["ai_auto_v1", "AI 자동", "승인 범위 안에서 탐색과 점검을 이어 갑니다 · 대상에 승인한 쓰기는 건별 확인 없이 보냅니다"],
 ] as const;
 
 // 요약 '쓰기 요청' 줄의 짧은 말 (범위 확인 뒤 scope.approval_mode, 위 APPROVAL_MODE_RULE 과 같은 뜻)
 const APPROVAL_MODE_SHORT: Readonly<Record<keyof typeof APPROVAL_MODE_RULE, string>> = {
-  preauthorized_scope: "상태 변경은 자동 승인 안 함",
+  preauthorized_scope: "쓰기 요청 없음 (읽기만)",
   confirm_every_request: "모든 요청 한 건씩 승인",
   workbench_selective_v1: "쓰기 요청 한 건씩 승인",
 };
+// 자동 모드(preauthorized_scope)는 범위에 쓰기 메서드가 있으면 그 쓰기를 건별 확인 없이 보낸다(C21).
+const WRITE_METHODS = ["POST", "PUT", "PATCH", "DELETE"];
+function approvalRule(mode: keyof typeof APPROVAL_MODE_RULE, methods: readonly string[], short: boolean): string {
+  const writes = methods.filter((m) => WRITE_METHODS.includes(m));
+  if (mode === "preauthorized_scope" && writes.length > 0)
+    return short
+      ? `쓰기(${writes.join("·")}) 건별 확인 없이 보냄`
+      : `사전 승인한 경로와 임의 query 로 진행 · 승인한 쓰기 메서드(${writes.join("·")})를 건별 확인 없이 보냄`;
+  return short ? APPROVAL_MODE_SHORT[mode] : APPROVAL_MODE_RULE[mode];
+}
 /** 안전 정책 한 줄 (시안 ilist). */
 function Rule({ t, sub, warn = false, tip }: { t: ReactNode; sub?: string; warn?: boolean; tip?: ReactNode }) {
   return (
@@ -203,8 +213,8 @@ export function UrlNewScanLive() {
   const scope = job?.scope;
   // 요약 '쓰기 요청': 범위 확인 뒤에는 서버 승인 방식, 그 전에는 진단 모드 기준
   let writeSummary = "승인 후 전송";
-  if (scope) writeSummary = APPROVAL_MODE_SHORT[scope.approval_mode];
-  else if (profile?.workflow && mv === "ai_auto_v1") writeSummary = "자동 승인 안 함";
+  if (scope) writeSummary = approvalRule(scope.approval_mode, scope.methods, true);
+  else if (profile?.workflow && mv === "ai_auto_v1") writeSummary = "건별 확인 없이 (대상 쓰기 승인 시)";
   const to = job ? scanViewFor(job, flowStage) : null;
   const started = !!job && job.state !== "ready" && job.state !== "awaiting_approval";
   const ended = !!job && URL_ENDED_STATES.includes(job.state);
@@ -788,7 +798,14 @@ export function UrlNewScanLive() {
                   t="승인된 사이트 · 경로에만 요청"
                   sub={`${scope.origin} · ${scope.path_prefixes.join(", ")} · ${scope.methods.join("/")}`}
                 />
-                <Rule t={APPROVAL_MODE_RULE[scope.approval_mode]} />
+                {scope.origin.startsWith("http://") ? (
+                  <Rule
+                    warn
+                    t="암호화하지 않는 주소 (http)"
+                    sub="요청·응답(로그인 세션 포함)이 네트워크에서 그대로 보일 수 있고, 서버 신원(TLS)을 확인하지 않습니다"
+                  />
+                ) : null}
+                <Rule t={approvalRule(scope.approval_mode, scope.methods, false)} />
                 {excludedCount ? <Rule t="제외한 경로는 요청 안 함" sub={`직접 넣은 ${excludedCount}개`} /> : null}
                 <Rule
                   t="요청 · 시간 상한"
@@ -837,7 +854,13 @@ export function UrlNewScanLive() {
                   {external && profile?.model ? (
                     <Rule t="외부 모델로 대상 응답 전송" sub={profile.model.provider} />
                   ) : null}
-                  <Rule t="쓰기 요청은 승인 후 전송" />
+                  <Rule
+                    t={
+                      profile?.workflow && mv === "ai_auto_v1"
+                        ? "대상이 쓰기를 승인했으면 건별 확인 없이 전송"
+                        : "쓰기 요청은 승인 후 전송"
+                    }
+                  />
                   {profile?.workflow ? (
                     <Rule t="제외한 경로는 요청 안 함" sub={excludedCount ? `직접 넣은 ${excludedCount}개` : "없음"} />
                   ) : null}

@@ -74,6 +74,9 @@ const (
 	// This opt-in host seam is a Draft proposal, not an adopted general-mode
 	// contract or an authorization to activate protected session injection.
 	HeaderProtectedSessionProposal HeaderMode = "protected_session_proposal"
+	// 시험 계정 실행(C14 결정 4): 모델이 쓴 Authorization·Cookie를 승인 origin에 그대로 보낸다(평가 caller 전달과 같은 검사).
+	// 평가 문맥은 받지 않는다. 자격 응답 헤더(Set-Cookie 등)도 보류하지 않는다. 보호 값 반사 보류·출력 가림은 그대로다.
+	HeaderTestAccountPassthrough HeaderMode = "test_account_passthrough"
 )
 
 type Rule struct {

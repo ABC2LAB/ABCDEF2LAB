@@ -87,8 +87,10 @@ type Session struct {
 
 func validTarget(t Target, b exploration.Binding) bool {
 	spki, err := hex.DecodeString(t.SPKISHA256)
+	// https 대상은 SPKI 고정값이 있어야 하고, http 대상은 TLS가 없어 고정값이 비어 있어야 한다(C22).
+	pinned := t.scheme() == "https" && err == nil && len(spki) == 32 || t.scheme() == "http" && t.SPKISHA256 == ""
 	if t.Ref != b.TargetRef || t.Revision != b.TargetRevision || t.Host == "" || t.Host != strings.ToLower(t.Host) || t.Port == 0 ||
-		!t.ConnectIP.IsValid() || err != nil || len(spki) != 32 || len(t.PathPrefixes) == 0 || len(t.Methods) == 0 || t.ExpiresAt.IsZero() {
+		!t.ConnectIP.IsValid() || !pinned || len(t.PathPrefixes) == 0 || len(t.Methods) == 0 || t.ExpiresAt.IsZero() {
 		return false
 	}
 	for _, p := range append(append([]string{}, t.PathPrefixes...), t.ExcludedPrefixes...) {
@@ -190,7 +192,7 @@ func (s *Session) Check(ctx context.Context) error {
 	case errors.Is(err, ErrTargetEnded):
 		s.closeLocked(exploration.TargetEnded)
 		return ErrTargetEnded
-	case err != nil || !validTarget(target, s.binding) || target.ConnectIP != s.target.ConnectIP || target.SPKISHA256 != s.target.SPKISHA256:
+	case err != nil || !validTarget(target, s.binding) || target.ConnectIP != s.target.ConnectIP || target.SPKISHA256 != s.target.SPKISHA256 || target.scheme() != s.target.scheme():
 		// 저장소 장애나 같은 판인데 값이 다르면 승인 근거를 잃은 것이다. 새 송신을 열지 않는다.
 		s.closeLocked(exploration.BoundaryUnavailable)
 		return ErrUnavailable
@@ -296,13 +298,20 @@ func (s *Session) Admit(ctx context.Context, req Request) (Decision, *Ticket) {
 		}
 		return s.denyLocked(req, dest, reason, ""), nil
 	}
-	if req.Scheme != "https" || req.Method == "" || req.Method == "CONNECT" {
+	if req.Method == "" || req.Method == "CONNECT" || req.Scheme != "https" && req.Scheme != "http" {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		return s.denyLocked(req, DestExternal, ReasonProtocolUnsupported, ""), nil
 	}
-	if approvedOrigin {
+	if approvedOrigin && req.Scheme == s.target.scheme() {
 		return s.admitApproved(ctx, req)
+	}
+	if approvedOrigin || req.Scheme != "https" {
+		// 같은 이름·포트라도 scheme이 다르면 승인 origin이 아니다(https 대상을 평문으로, http 대상을 TLS로). 외부 자원은
+		// 가로채 검증한 https만 보낸다. 둘 다 지원하지 않는 프로토콜로 막는다.
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.denyLocked(req, DestExternal, ReasonProtocolUnsupported, ""), nil
 	}
 	if host == s.target.Host {
 		// 같은 이름의 다른 포트는 승인 origin이 아니다. 외부 자원으로도 보내지 않는다.
