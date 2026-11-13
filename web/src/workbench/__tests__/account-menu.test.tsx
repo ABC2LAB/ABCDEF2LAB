@@ -15,6 +15,7 @@ import { setLiveAuthState, useLiveAuth } from "../live/auth";
 import { LiveRailTasks } from "../live/rail";
 import { createInitialState, useWb } from "../store";
 import { AccountMenu } from "../ui/AccountMenu";
+import s from "../workbench.module.css";
 
 const m = vi.mocked(teamApi);
 
@@ -96,6 +97,46 @@ describe("계정 메뉴", () => {
     fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
     expect(screen.queryByRole("dialog", { name: "계정" })).toBeNull();
     expect(btn).toHaveFocus();
+  });
+
+  it("시안처럼 메뉴가 계정 버튼 바로 뒤에 있는 Tab 순서: 끝 항목에서 Tab 이면 닫히고, 첫 항목에서 Shift+Tab 이면 버튼으로", () => {
+    localStorage.setItem("abc2lab.accountName", "ABC2LAB");
+    setLiveAuthState("ready");
+    render(<Foot />);
+    const btn = screen.getByRole("button", { name: /ABC2LAB/ });
+    fireEvent.click(btn);
+    let menu = screen.getByRole("dialog", { name: "계정" });
+    // 첫 항목 = 메뉴 안 첫 버튼 (로그인 상태면 다크 모드 스위치)
+    const first = within(menu).getByRole("switch", { name: "다크 모드" });
+    // 열면 첫 항목에 포커스, Shift+Tab 이면 계정 버튼으로 가고 메뉴는 열린 채
+    expect(first).toHaveFocus();
+    fireEvent.keyDown(first, { key: "Tab", shiftKey: true });
+    expect(btn).toHaveFocus();
+    expect(screen.getByRole("dialog", { name: "계정" })).toBeInTheDocument();
+    // 끝 항목(로그아웃)에서 Tab: 메뉴를 닫고 버튼에서 다음 칸으로 (기본 동작은 막지 않음)
+    menu = screen.getByRole("dialog", { name: "계정" });
+    const last = within(menu).getByRole("button", { name: "로그아웃" });
+    last.focus();
+    const ev = fireEvent.keyDown(last, { key: "Tab" });
+    expect(ev).toBe(true);
+    expect(screen.queryByRole("dialog", { name: "계정" })).toBeNull();
+    expect(btn).toHaveFocus();
+  });
+
+  it("계정 버튼은 시안 짜임(.who > b · .chev)이고, 레일을 접으면 '계정' 이름표가 붙는다", () => {
+    localStorage.setItem("abc2lab.accountName", "ABC2LAB");
+    setLiveAuthState("ready");
+    render(<Foot />);
+    const btn = screen.getByRole("button", { name: /ABC2LAB/ });
+    expect(btn.querySelector(`.${s.who} > b`)).toHaveTextContent("ABC2LAB");
+    expect(btn.querySelector(`svg.${s.chev}`)).not.toBeNull();
+    expect(btn).not.toHaveAttribute("title");
+    act(() => useWb.getState().setPanelMin("rail", true));
+    expect(btn).toHaveAttribute("title", "계정");
+    // 메뉴 머리: 머리글자 + 이름 칸(div > b)
+    fireEvent.click(btn);
+    const head = screen.getByRole("dialog", { name: "계정" }).querySelector(`.${s["am-head"]}`);
+    expect(head?.querySelector(":scope > div > b")).toHaveTextContent("ABC2LAB");
   });
 
   it("로그아웃하면 '로그인 안 됨'이 되고, 기억한 이름도 지우며, 메뉴에는 로그인 항목만 남는다", async () => {

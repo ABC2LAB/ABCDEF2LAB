@@ -93,19 +93,19 @@ export function InspOpenButton({ children, id }: { children: ReactNode; id?: str
 }
 
 /**
- * 넓은 화면의 상세 패널 접기 · 펼치기 (레일 접기와 같은 짜임, 시안 v25). 접으면 패널은 64px 줄로 남고
+ * 넓은 화면의 상세 패널 접기 · 펼치기 (레일 접기와 같은 짜임, 시안 insp-min · `[data-insp-fold]`). 접으면 패널은 64px 줄로 남고
  * 이 버튼은 패널 칸 오른쪽 위 같은 자리에 있어서, 화면 머리의 버튼(취소 · 시작 등)은 움직이지 않는다.
  * 좁은 화면은 서랍이라 보이지 않는다(CSS).
  */
 export function PaneToggle() {
   const { openInsp, closeInsp } = useShell();
-  const folded = useWb((st) => st.inspHidden);
+  const folded = useWb((st) => st.inspMin);
   const text = folded ? "오른쪽 패널 펼치기" : "오른쪽 패널 접기";
   return (
     <button
       className={cx(s["icon-btn"], s["pane-toggle"])}
       type="button"
-      data-pane-toggle=""
+      data-insp-fold=""
       aria-expanded={!folded}
       aria-label={text}
       title={text}
@@ -167,7 +167,13 @@ export function Phases({ phase }: { phase: PhaseKey }) {
           );
         }
         return (
-          <a key={k} className={cx(s.ph, done && s.done)} href={`#${k}`} aria-current={i === at ? "step" : undefined}>
+          <a
+            key={k}
+            className={cx(s.ph, done && s.done)}
+            href={`#${k}`}
+            aria-current={i === at ? "step" : undefined}
+            title={done ? "이 점검에서 끝난 단계" : undefined}
+          >
             {inner}
           </a>
         );

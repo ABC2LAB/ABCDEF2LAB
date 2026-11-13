@@ -3,7 +3,7 @@
 // URL 진단(v2) 화면 넷(새 점검 · 범위 확인 · 점검 진행 · 보고서)이 함께 쓰는 부품.
 // 서버가 준 값만 그대로 보이고(텍스트로만), 진행률 · 남은 시간 · 판정은 만들지 않는다.
 
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 
 import { type URLDiagnosisJob, urlReasonLabels } from "@/lib/diagnosis/diagnosis-url";
 
@@ -40,26 +40,36 @@ export function UrlHead({
   /** 점검 하나를 보는 네 화면이면 단계 표시를 붙인다 */
   phase?: PhaseKey;
 }) {
-  const path = !!parent || !!host || crumb !== title;
+  // crumb 이 빈 글이면 위치 끝에 화면 이름을 붙이지 않는다 (시안 보고서: 끝난 점검 / 주소)
+  const items: Array<readonly [string, ReactNode]> = [];
+  if (parent)
+    items.push([
+      "parent",
+      <a key="parent" href={parent.href}>
+        {parent.label}
+      </a>,
+    ]);
+  if (host)
+    items.push([
+      "host",
+      <span key="host" className={s.host}>
+        {host}
+      </span>,
+    ]);
+  if (crumb && (items.length || crumb !== title)) items.push(["crumb", <span key="crumb">{crumb}</span>]);
+  const path = items.length > 0;
   return (
     <header className={cx(s.vh, phase && s["has-ph"])}>
       <div className={cx(s["vh-top"], !path && s["menu-only"])}>
         <MenuButton />
         {path ? (
           <nav className={s.crumb} aria-label="위치">
-            {parent ? (
-              <>
-                <a href={parent.href}>{parent.label}</a>
-                <span className={s.sep}>/</span>
-              </>
-            ) : null}
-            {host ? (
-              <>
-                <span className={s.host}>{host}</span>
-                <span className={s.sep}>/</span>
-              </>
-            ) : null}
-            <span>{crumb}</span>
+            {items.map(([k, x], i) => (
+              <Fragment key={k}>
+                {i ? <span className={s.sep}>/</span> : null}
+                {x}
+              </Fragment>
+            ))}
           </nav>
         ) : null}
       </div>
