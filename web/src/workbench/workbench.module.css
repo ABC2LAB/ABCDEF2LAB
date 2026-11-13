@@ -261,11 +261,11 @@
 }
 
 /* 앱 틀 */
-/* 처음 열 때 저장한 접힘을 복원하는 동안은 움직임 없이 바로 그린다 (Workbench booted) */
-.app.booting,
-.app.booting .vb,
-.app.booting .vh,
-.app.booting .vm {
+/* 처음 열 때 저장한 접힘을 복원할 때 · 상세 패널을 접고 펼 때는 움직임 없이 바로 그린다 (Workbench still) */
+.app.still,
+.app.still .vb,
+.app.still .vh,
+.app.still .vm {
   transition: none !important;
 }
 .app {
@@ -4590,31 +4590,6 @@ button.smm:hover {
   }
 }
 
-/*
- * 새 점검: 오른쪽 패널을 접고 펴도 단(폼)과 바닥 줄 버튼이 옆으로 움직이지 않게, 단을 패널을 편 때의 자리에 둔다
- * (다른 화면은 접으면 좁은 단으로 가운데에 모인다). 레일을 접은 때는 패널을 편 때와 같은 왼쪽 여백 · 같은 단 폭.
- * 448px = 접은 레일 64px + 편 상세 패널 384px.
- */
-@media (min-width: 1200px) {
-  .nform > * {
-    margin-inline: 0 auto;
-  }
-  .app.insp-min .vm.nform,
-  .app.insp-min .view[data-view="new"] .vh {
-    padding-left: 28px;
-    padding-right: max(28px, env(safe-area-inset-right, 0px));
-  }
-  .app.rail-min .vm.nform,
-  .app.rail-min .view[data-view="new"] .vh {
-    padding-left: max(28px, calc((100vw - 448px - var(--cw)) / 2));
-  }
-  .app.rail-min .vm.nform {
-    padding-right: max(28px, env(safe-area-inset-right, 0px));
-  }
-  .app.rail-min .nform > * {
-    max-width: min(760px, var(--cw));
-  }
-}
 /* ---- 시안 v91 전수 대조로 옮긴 것 ---- */
 /* 펼친 탐색 기록의 원문은 길면 칸 안에서 스크롤 (.cb-b 뒤에 둬야 특이성 순서가 맞다) */
 .lgx .cb-b {
