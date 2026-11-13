@@ -68,6 +68,17 @@ func TestE2HTTPFactoryRunsAuthPrepOnAcquire(t *testing.T) {
 	if _, err := LoadE2HTTPRuntimeOptions(t.Context(), input); err == nil {
 		t.Fatal("auth section that does not match the auth rule accepted")
 	}
+	// 시험 계정 모드는 인증 준비 칸 없이 적재하지 않는다(#522 재상 지적 2). 같은 정책을 preserve로는 적재한다.
+	policy.Auth, policy.HeaderMode = nil, e2proxy.HeaderTestAccountPassthrough
+	write()
+	if _, err := LoadE2HTTPRuntimeOptions(t.Context(), input); err == nil {
+		t.Fatal("test account mode without auth loaded")
+	}
+	policy.HeaderMode = e2proxy.HeaderPreserve
+	write()
+	if _, err := LoadE2HTTPRuntimeOptions(t.Context(), input); err != nil {
+		t.Fatal("preserve policy without auth rejected:", err)
+	}
 }
 
 // 실제 factory에서 인증 준비 결과가 E② 헤더 모드를 정한다. 인증된 시험 계정이 하나도 없으면 첫 모델 요청 전에 preserve로
