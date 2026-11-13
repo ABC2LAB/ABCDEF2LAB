@@ -1,4 +1,4 @@
-// 계정 분류(시험 계정 표시) seam — 실 API 읽기 연결.
+// 계정 분류(시험 계정 표시) seam — 실 API 읽기·쓰기 연결.
 // 계약: docs/contracts/exploration-boundary.md §8(계정과 인증)·§9-7. 서버 /api/product/targets[/{id}/accounts]
 //   (diagnosisprep ProductTarget / ProductAccount / ProductResponse).
 //
@@ -8,7 +8,9 @@
 // ※ §8 fail-closed: 서버 분류가 'test'(승인된 시험 표시)가 아니면 전부 실계정으로 본다. real·미표시·판단 불가·형식 밖 모두.
 // ※ 효력 시점(CLAUDE.md 절대규칙 2): 이 분류가 지금 탐색·모델 입력 권한을 바로 주지 않는다 — 허용은 승인된 일회용
 //   시험 계정에 대상이 발급한 세션만이고 비밀번호는 계속 제외된다.
-// ※ 읽기만 연결했다: getProductTargets(대상 목록)·getAccounts(대상)=실 GET. 등록·시험 표시·해제(POST)는 후속.
+// ※ 읽기: getProductTargets(대상 목록)·getAccounts(대상)=실 GET. 쓰기: registerAccount·markTestAccount·unmarkAccount=실 POST.
+// ※ 시험 표시 동의는 서버 진술 문장(account_statement)으로만 받는다. 서버는 그 문장의 SHA-256을 동의 기록으로 남기므로,
+//   문장이 없거나 형식 밖이면 화면이 대체 문구로 동의를 받지 않는다(fail-closed, 계약 workbench-live-data §1).
 //   표현/데이터 분리 — 파싱·분류 매핑은 전부 여기(seam), 화면은 그리기만.
 
 import { apiFetch } from "@/lib/diagnosis/api";
@@ -65,7 +67,7 @@ export type ClassifiedAccount = {
 /** 한 묶음의 분류 결과. mock=true 면 예시(실 저장소 아님) — 화면이 배너로 명시. 실 연결에서는 false. */
 export type AccountClassification = {
   accounts: ClassifiedAccount[];
-  /** 시험 계정 표시 진술 문장(ProductResponse.account_statement). mark-test 동의에 쓴다. 없으면 "". */
+  /** 시험 계정 표시 진술 문장(ProductResponse.account_statement). mark-test 동의에 쓴다. 없거나 형식 밖이면 ""(표시 불가). */
   statement: string;
   mock: boolean;
 };
@@ -105,6 +107,13 @@ const ACCOUNT_LABEL = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 export const isValidAccountLabel = (label: string): boolean => ACCOUNT_LABEL.test(label);
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const asStr = (v: unknown): string => (typeof v === "string" ? v : "");
+
+/** 서버 진술 문장 검사 — 문자열, 앞뒤 공백 아닌 1…1024자, 제어 문자 없음. 밖이면 ""(진술 없음 = 시험 표시 불가). */
+export function validStatement(v: unknown): string {
+  if (typeof v !== "string" || v.length < 1 || v.length > 1024 || v.trim() !== v) return "";
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: 제어 문자를 거르려는 검사
+  return /[\u0000-\u001f\u007f]/.test(v) ? "" : v;
+}
 
 /** 서버 분류(test|real) → 화면 3-state. 'test'만 승인된 시험(test_approved), 그 밖은 실계정(unmarked, §8 fail-closed). */
 export function classFromServer(classification: string): AccountClass {
@@ -156,7 +165,7 @@ export async function getAccounts(target: ProductTargetRef | null): Promise<Acco
       note,
     });
   }
-  return { accounts, statement: isObj(res) ? asStr(res.account_statement) : "", mock: false };
+  return { accounts, statement: isObj(res) ? validStatement(res.account_statement) : "", mock: false };
 }
 
 // ---------- 실 API (쓰기) ----------

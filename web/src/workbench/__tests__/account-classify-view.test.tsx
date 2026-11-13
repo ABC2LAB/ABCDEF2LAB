@@ -11,7 +11,8 @@ import { AccountClassifyLive } from "../views/live/AccountClassifyLive";
 const api = vi.mocked(apiFetch);
 
 /** 경로·메서드별 응답. GET=대상/계정 목록, POST=쓰기(빈 응답). 쓰기 뒤 뷰는 GET 으로 다시 읽는다. */
-function serve() {
+const OMIT = Symbol("진술 칸 없음");
+function serve(statement: unknown = "소유·승인된 일회용 시험 계정이라는 진술") {
   api.mockImplementation((path: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
     if (path === "/api/product/targets")
@@ -22,7 +23,7 @@ function serve() {
           { label: "owner", classification: "test", classified_by: "op-1" },
           { label: "legacy", classification: "real" },
         ],
-        account_statement: "소유·승인된 일회용 시험 계정이라는 진술",
+        ...(statement === OMIT ? {} : { account_statement: statement }),
       }) as never;
     if (method === "POST") return Promise.resolve({}) as never; // 등록·mark-test·unmark
     return Promise.reject(new Error(`unexpected ${method} ${path}`)) as never;
@@ -103,6 +104,26 @@ describe("AccountClassifyLive (실 API 읽기·쓰기)", () => {
       "/api/product/targets/t1/accounts/legacy/mark-test",
       expect.objectContaining({ method: "POST", body: JSON.stringify({ statement_confirmed: true }) }),
     );
+  });
+
+  // 서버는 mark-test 때 자기 진술 문장의 해시를 동의 기록으로 남긴다. 화면이 그 문장을 못 받았으면 대체 문구로 동의를
+  // 받지 않는다(fail-closed, #538 윤재상 리뷰).
+  it.each([
+    ["없음", OMIT],
+    ["빈 문자열", ""],
+    ["제어 문자", "진술\u0000문장"],
+    ["문자열 아님", 7],
+  ])("진술이 %s 이면 시험 표시 동의 버튼이 막히고 mark-test 를 보내지 않는다", async (_name, statement) => {
+    serve(statement);
+    render(<AccountClassifyLive />);
+    await pickTarget();
+    const legacy = within(screen.getByLabelText("계정 목록")).getByText("legacy").closest("li") as HTMLElement;
+    fireEvent.click(within(legacy).getByRole("button", { name: "시험 표시" }));
+    expect(within(legacy).getByText(/진술을 받지 못해 시험 표시할 수 없습니다/)).toBeInTheDocument();
+    const agree = within(legacy).getByRole("button", { name: "동의하고 표시" });
+    expect(agree).toBeDisabled();
+    fireEvent.click(agree);
+    expect(api).not.toHaveBeenCalledWith(expect.stringContaining("/mark-test"), expect.anything());
   });
 
   it("표시 해제: POST unmark", async () => {

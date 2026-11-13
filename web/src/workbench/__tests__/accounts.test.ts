@@ -19,6 +19,7 @@ import {
   summarizeAccounts,
   unmarkAccount,
   usableAsTestAccount,
+  validStatement,
 } from "../live/accounts";
 
 const api = vi.mocked(apiFetch);
@@ -185,5 +186,27 @@ describe("쓰기(등록·시험 표시·해제) — 자격 값 없이 label만",
       "/api/product/targets/t1/accounts/owner/unmark",
       expect.objectContaining({ method: "POST", body: "{}" }),
     );
+  });
+});
+
+// 서버 진술 문장은 그대로 쓰고, 형식 밖이면 ""(시험 표시 불가). 화면이 대체 문구로 동의를 받지 않게 한다(#538).
+describe("validStatement (진술 fail-closed)", () => {
+  it("정상 문장은 그대로", () => {
+    expect(validStatement("이 계정은 우리 조직이 소유한 일회용 시험 계정이다.")).toBe(
+      "이 계정은 우리 조직이 소유한 일회용 시험 계정이다.",
+    );
+  });
+  it.each([
+    undefined,
+    null,
+    7,
+    "",
+    " 앞 공백",
+    "뒤 공백 ",
+    "줄\n바꿈",
+    "널\u0000",
+    "x".repeat(1025),
+  ])("형식 밖은 빈 값: %j", (v) => {
+    expect(validStatement(v)).toBe("");
   });
 });

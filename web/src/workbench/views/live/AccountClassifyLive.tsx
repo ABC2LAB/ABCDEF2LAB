@@ -237,14 +237,17 @@ export function AccountClassifyLive() {
                               <div className={cx(s.note, s.warn)}>
                                 <Icon name="alert" />
                                 <span>
+                                  {/* 동의는 서버 진술 문장으로만 받는다(서버가 그 문장의 해시를 동의 기록으로 남김). 없으면 막는다 */}
                                   {statement ||
-                                    "이 계정을 시험 계정으로 표시합니다. 소유 · 승인된 일회용 시험 계정이라는 진술에 동의해야 적용됩니다."}
+                                    "진술을 받지 못해 시험 표시할 수 없습니다 · 서버 진술 문장이 있어야 동의를 기록합니다"}
                                   <br />
                                   <button
                                     className={cx(s.btn, s.sm)}
                                     type="button"
-                                    disabled={busy}
-                                    onClick={() => doWrite(markTestAccount, a.ref)}
+                                    disabled={busy || !statement}
+                                    onClick={() => {
+                                      if (statement) doWrite(markTestAccount, a.ref);
+                                    }}
                                   >
                                     동의하고 표시
                                   </button>
