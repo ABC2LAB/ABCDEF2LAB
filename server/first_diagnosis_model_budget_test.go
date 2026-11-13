@@ -657,3 +657,43 @@ func TestFirstDiagnosisOpenRouterBudgetReconcilesTransportTotals(t *testing.T) {
 		t.Fatal("new call accepted after a reconciliation mismatch")
 	}
 }
+
+// 진행 중 예약은 출력·비용 검사에도 들어간다(C28 결정 2). 첫 예약이 진행 중이면 두 번째 예약은 남은 출력·비용이
+// 예약 하나보다 작아 거부되고, 첫 호출을 정산하면 실제 사용분만 빼고 다시 받는다.
+func TestFirstDiagnosisModelBudgetInFlightCountsOutputAndCost(t *testing.T) {
+	req := llm.CompletionRequest{MaxTokens: 100}
+	b, _, cfg := urlExternalBudget(t, func(diagnosisprep.ModelUsage) error { return nil })
+	quote := urlExternalRequestQuote(t, b, req)
+	for name, tighten := range map[string]func(){
+		"output": func() { b.limits.OutputTokens = 2*100 - 1 },
+		"cost":   func() { b.limits.CostUSDMicros = 2*quote - 1 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			b, _, cfg = urlExternalBudget(t, func(diagnosisprep.ModelUsage) error { return nil })
+			tighten()
+			first, err := b.reserve(context.Background(), cfg, &req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := b.reserve(context.Background(), cfg, &req); err == nil || !b.limitReached {
+				t.Fatal("second reservation ignored the in-flight one")
+			}
+			first.result = func() llmpolicy.OpenRouterCallResult {
+				return llmpolicy.OpenRouterCallResult{Reserved: true, Succeeded: true, InputTokens: 10, OutputTokens: 5, CostMicros: 30}
+			}
+			b.externalUsage = func() llmpolicy.OpenRouterUsage {
+				u := b.externalBase
+				u.Requests++
+				u.InputTokens, u.OutputTokens, u.CostMicros = u.InputTokens+10, u.OutputTokens+5, u.CostMicros+30
+				return u
+			}
+			if err := b.settle(first, llm.Usage{InputTokens: 10, OutputTokens: 5}, nil); err != nil {
+				t.Fatal(err)
+			}
+			b.limitReached = false
+			if _, err := b.reserve(context.Background(), cfg, &req); err != nil {
+				t.Fatal("settled call's unused reservation not released", err)
+			}
+		})
+	}
+}

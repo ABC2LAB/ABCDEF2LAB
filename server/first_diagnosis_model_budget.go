@@ -425,7 +425,7 @@ func (b *FirstDiagnosisModelBudget) settle(call *firstDiagnosisModelCall, usage 
 	case failedCallBounded(callErr, b.external != nil && b.external.Snapshot().Blocked) && reportedWithinReservation(usage, call.input, outputLimit):
 		// 실패한 호출은 예약한 양을 쓴 것으로 센다(P3 결정안 C05). 재시도가 꺼져 있어 예약 하나에 HTTP 요청은
 		// 하나이고, 입력 크기·max_tokens·가격 상한을 호출 전에 검사했으므로 이 값이 실제 사용의 상한이다.
-		// 다음 호출의 예산 검사는 예약 합계로 하므로 상한은 넓어지지 않는다.
+		// 예약량을 정산 사용량에 넣으므로 다음 호출의 예산 검사(정산 사용량 + 진행 중 예약)에서 상한은 넓어지지 않는다.
 		b.usage.InputTokens += call.input
 		b.usage.OutputTokens += call.output
 		b.usage.CostUSDMicros += call.cost
