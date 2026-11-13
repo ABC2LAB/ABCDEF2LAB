@@ -158,9 +158,11 @@ type E2HTTPFilePolicy struct {
 	AuditKey       E2HTTPFilePin                    `json:"audit_key"`
 	UpstreamCA     *E2HTTPFilePin                   `json:"upstream_ca,omitempty"`
 	Rules          []E2HTTPFileRule                 `json:"rules"`
-	Limits         E2HTTPFileLimits                 `json:"limits"`
-	Proxy          E2HTTPFileProxy                  `json:"proxy"`
-	Runtime        E2HTTPFileRuntime                `json:"runtime"`
+	// Auth는 인증 준비 칸이다(C14). 없으면 로그인하지 않는다.
+	Auth    *E2HTTPFileAuth   `json:"auth,omitempty"`
+	Limits  E2HTTPFileLimits  `json:"limits"`
+	Proxy   E2HTTPFileProxy   `json:"proxy"`
+	Runtime E2HTTPFileRuntime `json:"runtime"`
 }
 
 func e2HTTPNil(value any) bool {
@@ -233,6 +235,9 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 	}
 	var policy E2HTTPFilePolicy
 	if strictJSON(raw, &policy) != nil || policy.Format != E2HTTPFilePolicyFormat || len(policy.Rules) == 0 || len(policy.Rules) > 256 || policy.MaxRequests == 0 || !policy.ValidUntil.After(policy.ValidFrom) || !policy.ValidUntil.After(time.Now()) || policy.ValidFrom.After(time.Now()) || privateinput.CheckDirectory(policy.StateDir, true) != nil {
+		return empty, ErrE2HTTPHost
+	}
+	if !validE2HTTPFileAuth(policy.Auth, policy.Rules) {
 		return empty, ErrE2HTTPHost
 	}
 	if policy.Workflow != nil {
@@ -464,6 +469,21 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		if createErr != nil || current(taskctx) != nil {
 			return failed(execution, runner)
 		}
+		// 인증 준비(C14): 계정마다 로그인 요청을 E② 인증 준비 규칙으로 한 번 보낸다. 세션 값은 출력 가림 전용 값으로 등록되고
+		// 실행 메모리에만 있다. 결과(값 없음)는 계정별로 실행 기록에 남긴다.
+		var auth E2HTTPAuthResult
+		if policy.Auth != nil {
+			origin := ""
+			for _, rule := range policy.Rules {
+				if rule.Ref == policy.Auth.RuleRef {
+					origin = rule.Origin
+				}
+			}
+			var authErr error
+			if auth, authErr = e2HTTPAuthPrep(taskctx, execution, dir, origin, *policy.Auth); authErr != nil || current(taskctx) != nil {
+				return failed(execution, runner)
+			}
+		}
 		if input.OnAcquire != nil {
 			verifierKey := append([]byte(nil), auditKey...)
 			acquireErr := input.OnAcquire(taskctx, E2HTTPAcquired{Execution: execution, Runner: runner, Journal: journal, JournalDirectory: policy.StateDir, JournalName: "events.jsonl", AuditKey: verifierKey, PolicyFingerprintSHA256: fingerprint, PolicyConfigSHA256: policyConfigSHA, HeaderMode: policy.HeaderMode, Evaluation: e2HTTPCloneEvaluation(policy.Evaluation)})
@@ -472,7 +492,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 				return failed(execution, runner)
 			}
 		}
-		return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: release, ObserveResult: input.ObserveResult}, nil
+		return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: release, ObserveResult: input.ObserveResult, AccountAuth: auth.AccountAuth, Sessions: auth.Sessions}, nil
 	}
 	// 진단 Worker의 insert_assets가 받을 수 있는 자산 범위다(C24). 검사를 거친 정책 규칙의 origin만 쓴다.
 	approvedOrigins := make([]string, 0, len(policy.Rules))
