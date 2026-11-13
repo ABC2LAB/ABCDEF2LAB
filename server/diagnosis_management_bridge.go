@@ -69,6 +69,9 @@ func managementBridgeTask(r *http.Request) (string, bool) {
 	if id, ok := diagnosisRunRequestTask(r); ok {
 		return strconv.FormatInt(id, 10), true
 	}
+	if task, ok := managementLiveViewTask(r); ok {
+		return task, true
+	}
 	allowed := map[string]bool{"task": true, "audience": true}
 	switch r.URL.Path {
 	case "/api/report/diagnostic":
@@ -103,6 +106,36 @@ func managementBridgeTask(r *http.Request) (string, bool) {
 	}
 	number, ok := firstDiagnosisReportRequestTask(r)
 	return strconv.FormatInt(number, 10), ok
+}
+
+// managementLiveViewTask는 작업대 실데이터 조회(통제 정책·전송 통제 흐름, 계약 workbench-live-data §3·§4)다.
+// 읽기만 받고, 전송 통제 흐름만 커서 after 하나를 받는다. 값 검사는 실행 쪽 serveLiveData가 한다.
+func managementLiveViewTask(r *http.Request) (string, bool) {
+	if r.Method != http.MethodGet {
+		return "", false
+	}
+	tail, ok := strings.CutPrefix(r.URL.Path, "/api/tasks/")
+	if !ok {
+		return "", false
+	}
+	parts := strings.Split(tail, "/")
+	if len(parts) != 2 || parts[1] != "control-policy" && parts[1] != "e2-flow" {
+		return "", false
+	}
+	n, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || n <= 0 || strconv.FormatInt(n, 10) != parts[0] {
+		return "", false
+	}
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		return "", false
+	}
+	for key, values := range query {
+		if parts[1] != "e2-flow" || key != "after" || len(values) != 1 {
+			return "", false
+		}
+	}
+	return parts[0], true
 }
 func (b *diagnosisManagementBridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	owner, err := b.authenticate(r)

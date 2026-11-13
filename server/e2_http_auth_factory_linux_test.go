@@ -179,3 +179,41 @@ func TestE2HTTPFactoryTestAccountModeFollowsAuthResult(t *testing.T) {
 		})
 	}
 }
+
+// 로그인을 한 뒤 실행 획득이 실패해도(OnAcquire 실패) 계정별 인증 결과는 실패 반환에 남는다(계약 §3.4, #532 리뷰).
+func TestE2HTTPFactoryKeepsAccountAuthWhenAcquireFails(t *testing.T) {
+	login := &authLoginTarget{token: "seeded-factory-session-33dd"}
+	target := httptest.NewServer(login.handler(t))
+	defer target.Close()
+	cfg, _, policy := e2HostPolicyFixture(t)
+	policy.Rules[0].Origin = target.URL
+	policy.Rules[0].PathPrefix = "/read"
+	auth := policy.Rules[0]
+	auth.Ref, auth.PathScopeRef, auth.PathPrefix, auth.Methods, auth.Purpose, auth.Credentials = "auth-login", "auth-login-path", "/login", []string{"POST"}, e2proxy.PurposeAuthPrep, nil
+	policy.Rules = append(policy.Rules, auth)
+	pin := authCredentialPin(t, filepath.Dir(cfg.PolicyFile), "account-tester-a.json", "tester@owned.test", "seeded-pass-88ff")
+	a := cookieAuth(E2HTTPFileAuthAccount{Label: "tester-a", Credential: pin})
+	policy.Auth = &a
+	raw, err := json.Marshal(policy)
+	if err != nil || os.WriteFile(cfg.PolicyFile, raw, 0o600) != nil {
+		t.Fatal("policy write")
+	}
+	input := E2HTTPFileOptions{PolicyFile: cfg.PolicyFile, Authority: &e2HTTPPolicyAuthorityFixture{ctx: t.Context()}, Supervisor: &e2HTTPSupervisorFixture{},
+		OnAcquire: func(context.Context, E2HTTPAcquired) error { return ErrE2HTTPHost }}
+	options, err := LoadE2HTTPRuntimeOptions(t.Context(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	acquired, err := options.Acquire(run, E2HTTPRequest{TaskID: "17", TaskIDNumber: 17, ExplorationID: 1, IntentID: 1})
+	if acquired.Release != nil {
+		defer acquired.Release(context.Background())
+	}
+	if err == nil || login.posts.Load() != 1 || acquired.AccountAuth["tester-a"] != E2HTTPAuthAuthenticated {
+		t.Fatalf("acquire failure lost account auth: err=%v posts=%d auth=%v", err, login.posts.Load(), acquired.AccountAuth)
+	}
+	if len(acquired.Sessions) != 0 {
+		t.Fatal("failed acquire returned session headers")
+	}
+}

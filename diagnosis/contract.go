@@ -51,6 +51,45 @@ type Snapshot struct {
 	DrainComplete  bool       `json:"drain_complete"`
 	ResultReady    bool       `json:"result_ready"`
 	Result         *RunResult `json:"result,omitempty"`
+	// AccountAuth는 시험 계정별 인증 준비 결과다(계약 §3.4, C14). completed·cancelled·failed, 계정을 결속한 실행만.
+	AccountAuth map[string]string `json:"account_auth,omitempty"`
+}
+
+// 시험 계정 인증 준비 결과 값이다(계약 §3.4). 자격·세션 값은 없다.
+var accountAuthResults = map[string]bool{"authenticated": true, "login_failed": true, "session_not_found": true, "result_unknown": true, "not_sent": true}
+
+// accountLabel은 대상 계정 등록 라벨 규칙이다(diagnosisprep 등록 규칙과 같음, 사용자명 원문이 아님).
+var accountLabel = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+
+// MaxAccountAuth는 실행 하나에 결속하는 계정 수 상한이다(대상 계정 상한과 같음).
+const MaxAccountAuth = 16
+
+// ValidAccountAuth는 계정별 인증 결과 맵의 형식이다: 1…16개, 라벨은 등록 라벨 규칙, 값은 결과 값뿐.
+func ValidAccountAuth(m map[string]string) bool {
+	if len(m) < 1 || len(m) > MaxAccountAuth {
+		return false
+	}
+	for label, result := range m {
+		if !accountLabel.MatchString(label) || !accountAuthResults[result] {
+			return false
+		}
+	}
+	return true
+}
+
+// AccountAuthState는 이 칸이 실릴 수 있는 실행 상태다.
+func AccountAuthState(s State) bool { return s == Completed || s == Cancelled || s == Failed }
+
+// CloneAccountAuth는 형식에 맞는 맵의 사본이다. 비었거나 형식이 틀리면 nil이다(싣지 않는다).
+func CloneAccountAuth(m map[string]string) map[string]string {
+	if !ValidAccountAuth(m) {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
 
 // 실행 결과 값(docs/contracts/run-outcome-states.md §3.2). 실행이 끝났다는 것은 취약점이 없다는 뜻이 아니다.
@@ -143,6 +182,9 @@ func errorResponse(r Request, code string) Response {
 // validSnapshot은 상대 구현의 상태 문자열을 그대로 UI 상태로 승격하지 않는다.
 func validSnapshot(s Snapshot) bool {
 	if !validTask(s.TaskID) || !reference.MatchString(s.PreparationRef) {
+		return false
+	}
+	if s.AccountAuth != nil && (!AccountAuthState(s.State) || !ValidAccountAuth(s.AccountAuth)) {
 		return false
 	}
 	switch s.State {

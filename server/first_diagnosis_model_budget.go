@@ -286,7 +286,8 @@ func (b *FirstDiagnosisModelBudget) reserve(ctx context.Context, cfg agent.Confi
 	clear(raw)
 	var cost int64
 	if b.external != nil {
-		cost, err = b.external.Quote(int64(req.MaxTokens))
+		// 비용 예약도 입력 예약(요청 크기 상한)으로 견적한다(C28 결정 1).
+		cost, err = b.external.QuoteInput(reserveInput, int64(req.MaxTokens))
 		if err != nil {
 			return nil, ErrFirstDiagnosisModelBudget
 		}

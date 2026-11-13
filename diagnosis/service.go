@@ -13,6 +13,8 @@ type Closure struct {
 	ResultReady   bool
 	// Result는 실행이 정상 마감됐을 때의 결과다. 없거나 계약에 맞지 않으면 완료로 보이지 않는다.
 	Result *RunResult
+	// AccountAuth는 시험 계정별 인증 준비 결과다(계정을 결속하지 않은 실행은 nil). 형식이 틀리면 싣지 않는다.
+	AccountAuth map[string]string
 }
 
 type Runner interface {
@@ -126,6 +128,10 @@ func (s *Service) execute(ctx context.Context) {
 		s.snapshot.State = Completed
 		result := *closure.Result
 		s.snapshot.Result = &result
+	}
+	// 계정별 인증 결과는 실행 결과와 따로 싣는다. 실패한 실행에도 싣는다(어느 계정으로 돌았는지). 상태를 정하지 않는다.
+	if AccountAuthState(s.snapshot.State) {
+		s.snapshot.AccountAuth = CloneAccountAuth(closure.AccountAuth)
 	}
 	// 실행 종료는 취약점 없음과 다르다. Close에는 기존 감사·저장 마감이 포함된다.
 	s.snapshot.DrainComplete = closure.DrainComplete

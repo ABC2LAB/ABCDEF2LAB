@@ -757,3 +757,33 @@ func TestJournalExecutionResultFailureLatchesWithoutOrdinalGap(t *testing.T) {
 		t.Fatalf("unacknowledged tail accepted with confirmed head: %v", err)
 	}
 }
+
+// VerifyJournalEvents는 전체 기록이 검증됐을 때만 사건을 순서대로 돌려주고, 하나라도 틀리면 하나도 돌려주지 않는다.
+func TestVerifyJournalEventsAllOrNothing(t *testing.T) {
+	w := newJournalTestWriter()
+	j, err := newJournal(w, journalTestKey, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	for i := 0; i < 3; i++ {
+		e := journalTestEvent()
+		e.Index = j.Checkpoint().Sequence + 1
+		e.Sequence = uint64(i + 1)
+		if err := j.Record(context.Background(), e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data := w.bytes()
+	events, summary, err := VerifyJournalEvents(context.Background(), bytes.NewReader(data), journalTestKey)
+	if err != nil || len(events) != 3 || summary.Events != 3 || events[0].Index != 1 || events[2].Index != 3 || events[2].Sequence != 3 {
+		t.Fatalf("events=%d summary=%+v err=%v", len(events), summary, err)
+	}
+	tampered := bytes.Replace(data, []byte(`"status_code":200`), []byte(`"status_code":201`), 1)
+	if events, _, err := VerifyJournalEvents(context.Background(), bytes.NewReader(tampered), journalTestKey); !errors.Is(err, ErrJournalIntegrity) || events != nil {
+		t.Fatalf("tampered journal leaked %d events: %v", len(events), err)
+	}
+	if events, _, err := VerifyJournalEvents(context.Background(), bytes.NewReader(data), bytes.Repeat([]byte{1}, 32)); err == nil || events != nil {
+		t.Fatal("wrong key returned events")
+	}
+}

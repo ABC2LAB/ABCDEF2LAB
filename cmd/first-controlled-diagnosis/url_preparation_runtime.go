@@ -523,27 +523,7 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 			if state == nil {
 				return unknown("execution_closure_unconfirmed", false)
 			}
-			return p.set(func(u *diagnosisprep.Update) {
-				u.Phase = diagnosisprep.Report
-				u.State = diagnosisprep.Cancelled
-				if statusLost {
-					markURLStatusLost(u)
-				}
-				u.ModelUsage = &usage
-				u.Started = true
-				u.DrainComplete = state.DrainComplete
-				u.ResultReady = state.ResultReady
-				// 마감 때 읽은 intent 결과 개수(C08 2-2). urlClosingResult가 중지에는 개수만 남긴다.
-				u.Result = state.Result
-				if !state.DrainComplete || !state.ResultReady {
-					u.State = diagnosisprep.Unknown
-					u.ReasonCode = "execution_closure_unconfirmed"
-				}
-				if !usage.UsageKnown {
-					u.State = diagnosisprep.Unknown
-					u.ReasonCode = "model_usage_unknown"
-				}
-			})
+			return p.set(urlStoppedUpdate(ctx, state, usage, statusLost))
 		case <-ticker.C:
 			status, e := gateway.Call(ctx, diagnosis.Request{Version: diagnosis.Version, RequestID: "url-status", Command: diagnosis.Status, TaskID: taskID, PreparationRef: execution.Job.ID})
 			if e != nil || status.Snapshot == nil {
@@ -566,6 +546,7 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 					u.ResultReady = s.ResultReady
 					u.ModelUsage = &usage
 					u.Result = s.Result
+					u.AccountAuth = s.AccountAuth
 					if !usage.UsageKnown {
 						u.State = diagnosisprep.Unknown
 						u.ReasonCode = "model_usage_unknown"
@@ -607,6 +588,34 @@ func (r *urlGatewayRunner) final() *diagnosis.Closure {
 	return &value
 }
 
+// urlStoppedUpdate는 실행 문맥이 끝나 멈춘 실행(운영자 중지·대상 철회·결속 계정 변경·상태 조회 포기)의 마감 갱신이다.
+// 마감과 사용량을 확인하지 못하면 결과 불명으로 둔다.
+func urlStoppedUpdate(ctx context.Context, state *diagnosis.Closure, usage diagnosisprep.ModelUsage, statusLost bool) func(*diagnosisprep.Update) {
+	return func(u *diagnosisprep.Update) {
+		u.Phase = diagnosisprep.Report
+		u.State = diagnosisprep.Cancelled
+		u.ReasonCode = urlStopReason(ctx)
+		if statusLost {
+			markURLStatusLost(u)
+		}
+		u.ModelUsage = &usage
+		u.Started = true
+		u.DrainComplete = state.DrainComplete
+		u.ResultReady = state.ResultReady
+		// 마감 때 읽은 intent 결과 개수(C08 2-2). urlClosingResult가 중지에는 개수만 남긴다.
+		u.Result = state.Result
+		u.AccountAuth = state.AccountAuth
+		if !state.DrainComplete || !state.ResultReady {
+			u.State = diagnosisprep.Unknown
+			u.ReasonCode = "execution_closure_unconfirmed"
+		}
+		if !usage.UsageKnown {
+			u.State = diagnosisprep.Unknown
+			u.ReasonCode = "model_usage_unknown"
+		}
+	}
+}
+
 // urlClosingResult는 마감 갱신의 실행 결과 칸을 상태에 맞춘다. 결과는 completed로 마감한 경우에 싣고, 중지
 // (cancelled)에는 intent 결과 개수만 싣는다(계약 §3.2). 마감 확인 실패 등으로 상태가 바뀌었으면 지운다.
 func urlClosingResult(u diagnosisprep.Update) diagnosisprep.Update {
@@ -621,7 +630,19 @@ func urlClosingResult(u diagnosisprep.Update) diagnosisprep.Update {
 		u.Result = nil
 		u.DiagnosticLogIncomplete = false
 	}
+	// 계정별 인증 결과는 completed·cancelled·failed에 싣는다(계약 §3.4). 결과 불명 등에는 싣지 않는다.
+	if u.State != diagnosisprep.Completed && u.State != diagnosisprep.Cancelled && u.State != diagnosisprep.Failed {
+		u.AccountAuth = nil
+	}
 	return u
+}
+
+// launchAccountAuth는 실행 runtime이 아는 시험 계정별 인증 준비 결과다. 계정을 결속하지 않았거나 모르면 nil이다.
+func launchAccountAuth(runtime any) map[string]string {
+	if a, ok := runtime.(interface{ AccountAuth() map[string]string }); ok {
+		return diagnosis.CloneAccountAuth(a.AccountAuth())
+	}
+	return nil
 }
 
 func (r *urlGatewayRunner) Close(ctx context.Context) (diagnosis.Closure, error) {
@@ -640,7 +661,7 @@ func (r *urlGatewayRunner) Close(ctx context.Context) (diagnosis.Closure, error)
 		closureErr = nil
 	}
 	stored, saveErr := r.launch.supervisor.PersistRunOutcomeStoredStop(ctx, closureErr, r.operatorStop != nil && r.operatorStop())
-	result := diagnosis.Closure{DrainComplete: drained, ResultReady: stored && saveErr == nil, Result: r.launch.supervisor.ClosureResult()}
+	result := diagnosis.Closure{DrainComplete: drained, ResultReady: stored && saveErr == nil, Result: r.launch.supervisor.ClosureResult(), AccountAuth: launchAccountAuth(r.launch.runtime)}
 	if drained {
 		// map 교체는 진행 중 HTTP handler가 끝난 뒤 수행한다. 실행 DB와 보고서 DB는 별개다.
 		r.backend.mu.Lock()
@@ -688,6 +709,11 @@ func (b *urlPreparationRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request
 	auth, err := b.endpoint.Call(r.Context(), diagnosisprep.Request{Version: diagnosisprep.Version, RequestID: "report-binding", Command: diagnosisprep.AuthorizeTask, Principal: "ARTEX", TaskID: task})
 	if err != nil || auth.Authorized == nil || !*auth.Authorized || auth.Job == nil || auth.Job.TaskID != task {
 		http.Error(w, "작업 결속을 확인할 수 없습니다", 403)
+		return
+	}
+	// 작업대 실데이터(통제 정책·전송 통제 흐름)는 실행 결속 디렉터리에서 직접 읽는다(계약 workbench-live-data §3·§4).
+	if view := liveDataView(r.URL.Path); view != "" {
+		serveLiveData(w, r, b.config.RunsDir, auth.Job.ID, view)
 		return
 	}
 	if auth.Job.Scope != nil {
@@ -825,7 +851,9 @@ func watchURLPreparation(hard context.Context, done <-chan struct{}, ticks <-cha
 			return
 		case <-ticks:
 			if err := current(); err != nil {
-				if errors.Is(err, server.ErrFirstDiagnosisTargetEnded) {
+				// 대상 철회와 결속 계정 변경(해제·만료·판 변경·자격 교체)은 운영자 쪽 사건이다. 원인을 실어 멈추고 마감은
+				// 이어서 확인한다. 실행 결과에 원인이 남는다(C14, 계약 run-outcome-states §3.4).
+				if errors.Is(err, server.ErrFirstDiagnosisTargetEnded) || errors.Is(err, errAccountBindingChanged) {
 					stopTarget(err)
 					continue
 				}
@@ -836,11 +864,21 @@ func watchURLPreparation(hard context.Context, done <-chan struct{}, ticks <-cha
 	}
 }
 
-// urlOperatorStop은 실행 문맥이 운영자 중지(진단 준비 서비스가 상위 문맥을 취소)나 대상 철회
-// (ErrFirstDiagnosisTargetEnded)로 끝났는지 본다. 감시자의 설치·위임 검사 실패, 상태 조회·진행 저장 실패, 시간
-// 상한은 원인 없는 취소나 시간 초과라 운영자 중지가 아니다.
+// urlStopReason은 중지(cancelled) 실행의 사유 코드다. 결속한 시험 계정이 해제·만료·판 변경·자격 교체되어 새 송신을
+// 멈춘 경우만 이름을 붙인다(C14). 다른 중지는 지금처럼 사유 없이 둔다.
+func urlStopReason(ctx context.Context) string {
+	if errors.Is(context.Cause(ctx), errAccountBindingChanged) {
+		return "account_binding_changed"
+	}
+	return ""
+}
+
+// urlOperatorStop은 실행 문맥이 운영자 중지(진단 준비 서비스가 상위 문맥을 취소)·대상 철회
+// (ErrFirstDiagnosisTargetEnded)·결속 계정 변경으로 끝났는지 본다. 감시자의 설치·위임 검사 실패, 상태 조회·진행 저장
+// 실패, 시간 상한은 원인 없는 취소나 시간 초과라 운영자 중지가 아니다.
 func urlOperatorStop(parent, ctx context.Context) bool {
-	return parent.Err() != nil || errors.Is(context.Cause(ctx), server.ErrFirstDiagnosisTargetEnded)
+	cause := context.Cause(ctx)
+	return parent.Err() != nil || errors.Is(cause, server.ErrFirstDiagnosisTargetEnded) || errors.Is(cause, errAccountBindingChanged)
 }
 
 // A failed read after a soft target stop must preserve an active usage drain.

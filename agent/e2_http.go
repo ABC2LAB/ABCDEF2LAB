@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -573,8 +574,10 @@ func (w *Worker) executeE2HTTP(ctx context.Context, name string, taskID int64, a
 	bash := newE2HTTPBashTool(execution, runForIntent, duration, state, binding.Control, intent.Payload, binding.IntentID)
 	if binding.Workflow != nil {
 		handled, crawlErr := binding.Workflow.Crawl(ctx, func(call context.Context, target string) (e2runner.Result, error) {
-			// URL is canonical program-owned data; shell quote it independently of model output.
-			command := "curl --silent --show-error --globoff --include --suppress-connect-headers --max-redirs 0 --max-time 15 --proto '=https' --url '" + strings.ReplaceAll(target, "'", "'\"'\"'") + "'"
+			command, ok := e2HTTPCrawlCommand(target)
+			if !ok {
+				return e2runner.Result{}, ErrE2HTTPUnavailable
+			}
 			input, _ := json.Marshal(map[string]any{"command": command})
 			out, err := bash.Call(call, input, nil)
 			var result e2runner.Result
@@ -687,6 +690,18 @@ func (w *Worker) executeE2HTTP(ctx context.Context, name string, taskID int64, a
 	}
 	_ = requestID // ordinary transcript/chat history is never resumed in this capability scope.
 	return w.runE2HTTPSession(ctx, name, intent, emit, opts, input, execution, state, toolset)
+}
+
+// e2HTTPCrawlCommand는 크롤 단계에서 프로그램이 보내는 GET 명령이다. URL은 프로그램 소유 데이터(승인 origin + 발견
+// 경로)라 모델 출력과 따로 셸 인용한다. --proto는 대상 스킴 하나만 연다(http 대상 허용, C22). --raw는 전송 틀
+// (chunked)을 풀지 않고 넘긴다. curl이 chunk를 풀어 내면 헤더에는 chunked가 남아, 크롤 파서(http.ReadResponse)가
+// 이미 풀린 본문을 다시 풀다가 실패한다(11/13 실제 모델 점검: chunked로 답한 첫 페이지가 body_incomplete).
+func e2HTTPCrawlCommand(target string) (string, bool) {
+	u, err := url.Parse(target)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "", false
+	}
+	return "curl --silent --show-error --globoff --raw --include --suppress-connect-headers --max-redirs 0 --max-time 15 --proto '=" + u.Scheme + "' --url '" + strings.ReplaceAll(target, "'", "'\"'\"'") + "'", true
 }
 
 func emitE2HTTPPromptActivity(emit func(db.Activity), reportStage func(string), intentID int64, worker string, info any) {
