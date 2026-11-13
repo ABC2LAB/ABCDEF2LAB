@@ -13,7 +13,7 @@ import {
 const base: ControlPolicy = {
   policyRef: "p1",
   policyRevision: "r1",
-  approvalMode: "workbench_v1",
+  approvalMode: "workbench_selective_v1",
   validFrom: "2026-11-01T00:00:00Z",
   validUntil: "2026-12-01T00:00:00Z",
   rules: [
@@ -88,7 +88,7 @@ describe("normalizePolicy (fail-closed)", () => {
       approvalMode: "weird",
       rules: [{ origin: "http://h" }, { ref: "ok", origin: "http://h", methods: ["get"] }],
     });
-    expect(n.approvalMode).toBe("confirm_every");
+    expect(n.approvalMode).toBe("confirm_every_request");
     expect(n.rules).toHaveLength(1); // ref 없는 규칙 탈락
     expect(n.rules[0].methods).toEqual(["GET"]); // 대문자 정규화
   });
