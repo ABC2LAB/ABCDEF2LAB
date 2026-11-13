@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/e2proxy"
@@ -81,6 +82,61 @@ func validE2HTTPFileAuth(a *E2HTTPFileAuth, mode e2proxy.HeaderMode, rules []E2H
 }
 
 var errAuthLoginFailed = errors.New("auth_login_failed")
+
+// maxSessionRefreshesPerAccount는 한 실행에서 계정 하나를 다시 로그인시킬 수 있는 횟수다(C14 결정 2, 실패도 센다).
+// 시험 계정 잠금·로그인 폭주를 막는 상한이고 인증 준비 처음 한 번은 세지 않는다.
+const maxSessionRefreshesPerAccount = 3
+
+// E2HTTPRefreshLimit는 계정당 다시 로그인 상한에 닿은 결과다(보내지 않음).
+const E2HTTPRefreshLimit = "refresh_limit"
+
+// e2HTTPRefreshCounter는 실행(정책 하나) 전체의 계정별 다시 로그인 횟수다. Worker 도구가 동시에 부를 수 있어 잠근다.
+type e2HTTPRefreshCounter struct {
+	mu    sync.Mutex
+	count map[string]int
+}
+
+func (c *e2HTTPRefreshCounter) take(label string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.count == nil {
+		c.count = map[string]int{}
+	}
+	if c.count[label] >= maxSessionRefreshesPerAccount {
+		return false
+	}
+	c.count[label]++
+	return true
+}
+
+// e2HTTPRefreshSession은 계정 하나를 인증 준비와 같은 경로(E② 인증 준비 규칙, 보호 값 등록, 세션 가림)로 다시
+// 로그인시킨다. 정책에 없는 라벨은 보내지 않는다. 상한에 닿으면 보내지 않는다.
+func e2HTTPRefreshSession(ctx context.Context, execution *e2proxy.Execution, dir, origin string, auth E2HTTPFileAuth, counter *e2HTTPRefreshCounter, label string) (http.Header, string) {
+	var account *E2HTTPFileAuthAccount
+	for i := range auth.Accounts {
+		if auth.Accounts[i].Label == label {
+			account = &auth.Accounts[i]
+		}
+	}
+	if execution == nil || ctx == nil || account == nil || counter == nil {
+		return nil, E2HTTPAuthNotSent
+	}
+	if !counter.take(label) {
+		return nil, E2HTTPRefreshLimit
+	}
+	call, err := execution.BeginCall(ctx, "auth-refresh")
+	if err != nil {
+		return nil, E2HTTPAuthNotSent
+	}
+	defer func() {
+		if _, closeErr := call.Close(context.WithoutCancel(ctx)); closeErr != nil {
+			log.Print("[e2-http] 다시 로그인 call 마감 실패")
+		}
+	}()
+	sessions := E2HTTPSessions{}
+	result := authPrepOne(ctx, call, execution, dir, origin, auth.Login, *account, sessions)
+	return sessions[label], result
+}
 
 // e2HTTPAuthPrep는 계정마다 로그인 요청을 E② 인증 준비 규칙으로 한 번씩 보낸다. 재시도는 없다. 세션 값은 출력 가림
 // 전용 값으로 등록하고(응답 보류에는 쓰지 않음) 결과에만 담는다. 자격 값은 쓴 뒤 지운다.

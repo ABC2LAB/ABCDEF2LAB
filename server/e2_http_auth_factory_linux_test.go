@@ -217,3 +217,100 @@ func TestE2HTTPFactoryKeepsAccountAuthWhenAcquireFails(t *testing.T) {
 		t.Fatal("failed acquire returned session headers")
 	}
 }
+
+// 시험 계정 실행은 Worker의 refresh_session 경로를 받는다. 같은 인증 준비 경로로 다시 로그인하고, 실행 전체에서 계정당
+// 상한(실패도 셈)을 지키며, 정책에 없는 라벨은 보내지 않는다. 인증된 계정이 없으면 경로가 없다.
+func TestE2HTTPFactoryRefreshSession(t *testing.T) {
+	var logins atomic.Int64
+	login := (&authLoginTarget{token: "refresh-session-cookie-77bb"}).handler(t)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/login" {
+			logins.Add(1)
+		}
+		login.ServeHTTP(w, r)
+	}))
+	defer target.Close()
+	cfg, _, policy := e2HostPolicyFixture(t)
+	policy.Rules[0].Origin = target.URL
+	policy.Rules = append(policy.Rules, E2HTTPFileRule{Ref: "auth-login", Origin: target.URL, ConnectIP: "127.0.0.1", PathPrefix: "/login", PathScopeRef: "auth-login", Methods: []string{"POST"}, Purpose: e2proxy.PurposeAuthPrep})
+	policy.HeaderMode = e2proxy.HeaderTestAccountPassthrough
+	policy.Limits.MaxAttempts, policy.Limits.MaxCalls, policy.MaxRequests = 64, 64, 64
+	// tester-b는 비밀번호가 틀려 로그인에 실패한다. 실패한 다시 로그인도 상한에 센다.
+	auth := cookieAuth(E2HTTPFileAuthAccount{Label: "tester-a", Credential: authCredentialPin(t, cfg.AuthorityRoot, "tester-a.json", "tester@owned.test", "seeded-pass-88ff")},
+		E2HTTPFileAuthAccount{Label: "tester-b", Credential: authCredentialPin(t, cfg.AuthorityRoot, "tester-b.json", "tester@owned.test", "wrong-pass-value")})
+	policy.Auth = &auth
+	raw, err := json.Marshal(policy)
+	if err != nil || os.WriteFile(cfg.PolicyFile, raw, 0o600) != nil {
+		t.Fatal("합성 정책 준비 실패")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	options, err := LoadE2HTTPRuntimeOptions(ctx, E2HTTPFileOptions{PolicyFile: cfg.PolicyFile, Authority: &e2HTTPPolicyAuthorityFixture{ctx: ctx}, Supervisor: &e2HTTPSupervisorFixture{}})
+	if err != nil {
+		t.Fatal("호스트 준비 실패", err)
+	}
+	acquire := func(intent int64) E2HTTPRunOptions {
+		lease, err := options.Acquire(ctx, E2HTTPRequest{TaskID: "11", TaskIDNumber: 11, ExplorationID: 27, IntentID: intent})
+		if err != nil || lease.RefreshSession == nil {
+			t.Fatal("refresh path missing for an authenticated test account run", err)
+		}
+		return lease
+	}
+	// intent는 하나씩 돈다. 다음 intent 전에 앞 실행 판을 닫는다.
+	release := func(lease E2HTTPRunOptions) {
+		cleanup, done := context.WithTimeout(context.Background(), 5*time.Second)
+		defer done()
+		if lease.Runner != nil {
+			_ = lease.Runner.Close(cleanup)
+		}
+		if lease.Execution != nil {
+			_ = lease.Execution.Stop(cleanup)
+		}
+		if lease.Release != nil {
+			_ = lease.Release(cleanup)
+		}
+	}
+	first := acquire(31)
+	before := logins.Load()
+	if header, result := first.RefreshSession(ctx, "tester-a"); result != E2HTTPAuthAuthenticated || header.Get("Cookie") != "session=refresh-session-cookie-77bb" || logins.Load() != before+1 {
+		t.Fatalf("refresh: %s %v logins=%d", result, header, logins.Load()-before)
+	}
+	if out := string(first.Execution.RedactOutput([]byte("refresh-session-cookie-77bb"))); strings.Contains(out, "77bb") {
+		t.Fatal("refreshed session not registered for output redaction")
+	}
+	if _, result := first.RefreshSession(ctx, "someone-else"); result != E2HTTPAuthNotSent || logins.Load() != before+1 {
+		t.Fatal("unknown label reached the target")
+	}
+	defer release(first)
+	// 상한은 실행 전체에서 계정당이고 실패도 센다. 처음 인증 준비는 세지 않는다.
+	sent := logins.Load()
+	for i := 1; i < maxSessionRefreshesPerAccount; i++ {
+		if _, result := first.RefreshSession(ctx, "tester-a"); result != E2HTTPAuthAuthenticated {
+			t.Fatalf("refresh %d: %s", i, result)
+		}
+	}
+	if _, result := first.RefreshSession(ctx, "tester-a"); result != E2HTTPRefreshLimit || logins.Load() != sent+int64(maxSessionRefreshesPerAccount-1) {
+		t.Fatalf("refresh limit: %s logins=%d", result, logins.Load()-sent)
+	}
+	failed := logins.Load()
+	for i := 0; i < maxSessionRefreshesPerAccount; i++ {
+		if _, result := first.RefreshSession(ctx, "tester-b"); result != E2HTTPAuthLoginFailed {
+			t.Fatalf("failed refresh %d: %s", i, result)
+		}
+	}
+	if _, result := first.RefreshSession(ctx, "tester-b"); result != E2HTTPRefreshLimit || logins.Load() != failed+int64(maxSessionRefreshesPerAccount) {
+		t.Fatalf("failed logins not counted: %s logins=%d", result, logins.Load()-failed)
+	}
+}
+
+// 인증된 계정이 없거나 시험 계정 실행이 아니면 Worker에게 다시 로그인 경로를 주지 않는다.
+func TestE2HTTPRefreshForOnlyAuthenticatedTestAccountRuns(t *testing.T) {
+	refresh := func(context.Context, string) (http.Header, string) { return nil, "" }
+	with := &E2HTTPRunOptions{Sessions: E2HTTPSessions{"tester-a": http.Header{"Cookie": {"session=x"}}}, RefreshSession: refresh}
+	if e2HTTPRefreshFor(e2proxy.HeaderTestAccountPassthrough, with) == nil {
+		t.Fatal("authenticated test account run lost its refresh path")
+	}
+	if e2HTTPRefreshFor(e2proxy.HeaderPreserve, with) != nil || e2HTTPRefreshFor(e2proxy.HeaderTestAccountPassthrough, &E2HTTPRunOptions{RefreshSession: refresh}) != nil || e2HTTPRefreshFor(e2proxy.HeaderTestAccountPassthrough, nil) != nil {
+		t.Fatal("refresh path given to a run without test account sessions")
+	}
+}
