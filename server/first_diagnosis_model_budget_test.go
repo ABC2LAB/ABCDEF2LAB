@@ -697,3 +697,36 @@ func TestFirstDiagnosisModelBudgetInFlightCountsOutputAndCost(t *testing.T) {
 		})
 	}
 }
+
+// transport가 사용량을 정산했지만 도구 계약 위반으로 SDK에 오류를 준 호출(C06 보완)은 그 호출만 예약량으로 닫고
+// (C05) 막지 않는다. 칸의 사용량이 transport 누적 값과 맞으므로 대조도 통과하고 다음 호출을 받는다.
+func TestFirstDiagnosisOpenRouterBudgetRejectedResponseWithUsageIsPerCall(t *testing.T) {
+	b, _, cfg := urlExternalBudget(t, func(diagnosisprep.ModelUsage) error { return nil })
+	req := llm.CompletionRequest{MaxTokens: 100}
+	call, err := b.reserve(context.Background(), cfg, &req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := llmpolicy.OpenRouterCallResult{Reserved: true, Succeeded: true, ReservedInputTokens: 5000, ReservedOutputTokens: 100, ReservedCostMicros: 5100, InputTokens: 10, OutputTokens: 5, CostMicros: 30}
+	call.result = func() llmpolicy.OpenRouterCallResult { return r }
+	b.externalUsage = func() llmpolicy.OpenRouterUsage {
+		u := b.externalBase
+		u.Requests++
+		u.ReservedInputTokens += r.ReservedInputTokens
+		u.ReservedOutputTokens += r.ReservedOutputTokens
+		u.ReservedCostMicros += r.ReservedCostMicros
+		u.InputTokens, u.OutputTokens, u.CostMicros = u.InputTokens+10, u.OutputTokens+5, u.CostMicros+30
+		u.Errors++
+		return u
+	}
+	if err := b.settle(call, llm.Usage{}, llmpolicy.ErrOpenRouterPolicy); err == nil {
+		t.Fatal("rejected response reported success")
+	}
+	u := b.Snapshot()
+	if b.blocked || !u.UsageKnown || u.UnknownUsageCalls != 1 || u.CostUSDMicros != call.cost || u.OutputTokens != call.output {
+		t.Fatalf("rejected response not closed as one bounded call: %+v blocked=%v", u, b.blocked)
+	}
+	if _, err := b.reserve(context.Background(), cfg, &req); err != nil {
+		t.Fatal("next call refused after a per-call rejection", err)
+	}
+}

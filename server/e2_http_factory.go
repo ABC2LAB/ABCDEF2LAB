@@ -435,8 +435,11 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 			return E2HTTPRunOptions{}, ErrE2HTTPHost
 		}
 		release := func(context.Context) error { return journal.Close() }
+		// accountAuth는 인증 준비가 돈 뒤의 계정별 결과다. 그 뒤에 실행 획득이 실패해도 실행 결과에 싣도록 실패 반환에도
+		// 넣는다(계약 §3.4: 실행을 잡지 못하고 실패해도 인증 준비가 돌았으면 싣는다, #532 이동찬 리뷰).
+		var accountAuth map[string]string
 		failed := func(execution *e2proxy.Execution, runner *e2runner.Runner) (E2HTTPRunOptions, error) {
-			return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: release}, ErrE2HTTPHost
+			return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: release, AccountAuth: accountAuth}, ErrE2HTTPHost
 		}
 		recorder := e2proxy.Recorder(journal)
 		if input.ObserveEvent != nil {
@@ -480,7 +483,9 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 				}
 			}
 			var authErr error
-			if auth, authErr = e2HTTPAuthPrep(taskctx, execution, dir, origin, *policy.Auth); authErr != nil || current(taskctx) != nil {
+			auth, authErr = e2HTTPAuthPrep(taskctx, execution, dir, origin, *policy.Auth)
+			accountAuth = auth.AccountAuth
+			if authErr != nil || current(taskctx) != nil {
 				return failed(execution, runner)
 			}
 		}

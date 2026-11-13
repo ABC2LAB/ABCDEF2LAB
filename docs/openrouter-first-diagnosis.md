@@ -54,6 +54,8 @@ manifest와 부모는 기존 보호 파일 계약(실행 UID 소유, 파일0600/
 
 신뢰된 모델 클라이언트가 다음을 고정 삽입한다: `provider.only=[승인 tag]`, `allow_fallbacks=false`, `require_parameters=true`, `data_collection=deny`, `zdr=true`, 승인 단가의 `max_price`. 실패 시 조건을 느슨하게 재요청하지 않는다. 응답의 모델과 제공사 표시 이름도 대조한다.
 
+`zdr=true`를 늘 넣으므로 승인 tag는 그 모델의 ZDR endpoint여야 한다. 아니면 OpenRouter가 맞는 endpoint를 찾지 못해 첫 호출이 HTTP 404로 끝나고 실행은 결과 불명(`model_usage_unknown`)이 된다(2026-11-13 실제 점검 회차, `atlas-cloud/fp8`). 같은 날 [ZDR endpoint 목록](https://openrouter.ai/api/v1/endpoints/zdr)에서 이 모델의 ZDR tag는 `deepinfra/fp8`·`parasail/fp8`·`siliconflow/fp8`·`venice`였고, 그중 endpoint 목록에서 tools를 광고한 것은 `parasail/fp8`(표시 이름 `Parasail`)·`venice`였다. 제품 점검 회차는 `parasail/fp8`로 끝까지 돌았다. 목록은 바뀌므로 설치 전에 두 목록을 다시 대조한다. 평가 프로토콜 §6의 공식 비교 고정 제공자(`atlas-cloud/fp8`)는 평가 게이트웨이 경로라 이 제약과 상관없다.
+
 **중요:** 현재 [ZDR 문서](https://openrouter.ai/docs/guides/features/zdr)는 `zdr:true`만으로 Safety Retention endpoint까지 제외되는 것은 아니라고 설명한다. 계정/guardrail의 ZDR-only 선택과 승인한 제공사의 실제 조건을 별도로 확인해야 한다. 공개 endpoint metadata만으로 해당 확인을 대체할 수 없다. `strict_privacy_ack`는 검증을 자동 수행하는 값이 아니라 설치자의 확인 선언이다. 비민감 연습 자료만 승인된 제공사에 보내며 실대상 인증값·고객 기밀을 prompt에 넣지 않는다.
 
 참고: [provider routing](https://openrouter.ai/docs/guides/routing/provider-selection), [tool calling](https://openrouter.ai/docs/guides/features/tool-calling), [reasoning](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens), [errors](https://openrouter.ai/docs/api_reference/errors-and-debugging).

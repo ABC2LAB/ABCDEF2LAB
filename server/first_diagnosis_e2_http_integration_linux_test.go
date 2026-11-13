@@ -492,7 +492,8 @@ func TestFirstDiagnosisE2ProductionRuntimeNativeAcceptance(t *testing.T) {
 					runRef = "foreign-acceptance-run"
 				}
 				actual = firstDiagnosisAcquiredRunner(t, ctx, request, helper, target.URL, runRef)
-				return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(actual), Release: func(context.Context) error { released.Add(1); return nil }}, nil
+				// 인증 준비 결과(라벨 → 결과)가 실행 결과까지 남는지 본다(계약 §3.4).
+				return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(actual), Release: func(context.Context) error { released.Add(1); return nil }, AccountAuth: map[string]string{"tester-a": "authenticated", "tester-b": "login_failed"}}, nil
 			}, MaxWorkerTurns: 4, MaxToolCalls: 4, WorkerTimeout: 10 * time.Second, MaxPlannerRounds: 4, MaxIntentRuns: 4, DrainTimeout: 5 * time.Second})
 			if err != nil {
 				t.Fatal("생산 E2 Runtime 생성 실패")
@@ -607,6 +608,11 @@ func TestFirstDiagnosisE2ProductionRuntimeNativeAcceptance(t *testing.T) {
 			execution, ok := runtime.Execution(task.ID)
 			if !ok || execution != actual.Execution() || len(execution.Calls()) != 1 || acquired.Load() != 1 {
 				t.Fatal("새 실행/승인으로 호출 귀속을 바꿈")
+			}
+			if auth := runtime.AccountAuth(); auth["tester-a"] != "authenticated" || auth["tester-b"] != "login_failed" || len(auth) != 2 {
+				t.Fatalf("실행이 받은 계정별 인증 결과를 남기지 않음: %v", auth)
+			} else if auth["tester-a"] = "not_sent"; runtime.AccountAuth()["tester-a"] != "authenticated" {
+				t.Fatal("계정별 인증 결과 사본이 아님")
 			}
 			results := runtime.Results(task.ID)
 			calls := execution.Calls()

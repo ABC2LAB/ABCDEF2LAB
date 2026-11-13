@@ -12,6 +12,7 @@ import (
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/diagnosis"
 	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
@@ -188,6 +189,20 @@ type E2HTTPRuntime struct {
 	mu      sync.Mutex
 	closed  bool
 	task    *e2HTTPRuntimeTask
+	// accountAuth는 실행을 잡을 때 받은 시험 계정별 인증 준비 결과다(라벨 → 결과, 값 없음). 자원을 닫은 뒤에도
+	// 실행 결과에 싣도록 남긴다. 다른 잠금과 섞이지 않게 따로 잠근다.
+	accountAuthMu sync.Mutex
+	accountAuth   map[string]string
+}
+
+// AccountAuth는 이 실행의 시험 계정별 인증 준비 결과의 사본이다(계약 §3.4). 계정을 결속하지 않았으면 nil이다.
+func (r *E2HTTPRuntime) AccountAuth() map[string]string {
+	if r == nil {
+		return nil
+	}
+	r.accountAuthMu.Lock()
+	defer r.accountAuthMu.Unlock()
+	return diagnosis.CloneAccountAuth(r.accountAuth)
 }
 
 type e2HTTPRuntimeTask struct {
@@ -551,6 +566,12 @@ func (r *E2HTTPRuntime) PrepareWork(ctx context.Context, task *Task, intent *db.
 	t.mu.Unlock()
 	if lease == nil {
 		acquired, acquireErr := r.options.Acquire(t.ctx, E2HTTPRequest{TaskID: t.id, TaskIDNumber: t.number, ExplorationID: t.exploration, IntentID: actual.ID, ExplorationRequests: explored, ExplorationUnknown: chargeUnknown})
+		// 인증 준비 결과는 실행을 잡지 못해도(실패로 끝나도) 실행 결과에 싣는다. 형식이 틀리면 싣지 않는다.
+		if auth := diagnosis.CloneAccountAuth(acquired.AccountAuth); auth != nil {
+			r.accountAuthMu.Lock()
+			r.accountAuth = auth
+			r.accountAuthMu.Unlock()
+		}
 		t.mu.Lock()
 		t.lease = &acquired
 		lease = t.lease
