@@ -153,6 +153,7 @@ func newHostFixture(t *testing.T) hostFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	h.bashRootParent = dir
 	origin := "https://" + host + ":" + portText
 	rec := productTargetRecord{SelectedIP: "127.0.0.1", Target: diagnosisprep.ProductTarget{ID: "target-1", Revision: 2, Origin: origin, State: "approved", Port: port,
 		PathPrefixes: []string{"/read"}, Methods: []string{"GET", "HEAD"}, TLSSPKISHA256: spki, ExpiresAt: time.Now().Add(time.Hour)}}
