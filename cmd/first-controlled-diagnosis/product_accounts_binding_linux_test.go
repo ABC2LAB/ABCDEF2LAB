@@ -109,6 +109,11 @@ func TestProductRunBindsTestAccountsAndStopsOnUnmark(t *testing.T) {
 	if !rule {
 		t.Fatalf("auth rule missing: %+v", loaded.policy.Rules)
 	}
+	// 서버 인증 준비는 실행 디렉터리에서 자격 사본을 pin으로 읽는다. 실행 자료에 pin과 같은 사본이 있어야 한다(S07 실제 회차).
+	cred := auth.Accounts[0].Credential
+	if raw, ok := loaded.materials[cred.File]; !ok || urlSHA(raw) != cred.SHA256 {
+		t.Fatal("test account credential copy missing from run materials")
+	}
 	copies, _ := filepath.Glob(filepath.Join(cfg.StateDir, "bindings", "*", "account-"+target.ID+".tester-a.*"))
 	if len(copies) != 1 {
 		t.Fatalf("credential copy in binding: %v", copies)
