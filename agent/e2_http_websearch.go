@@ -52,6 +52,10 @@ func WithE2HTTPWebSearch(ctx context.Context, w E2HTTPWebSearch) context.Context
 	return context.WithValue(ctx, e2HTTPWebSearchKey{}, w)
 }
 
+// E2HTTPWebSearchBackend는 문맥에 실린 검색 백엔드 이름이다. 키는 돌려주지 않는다. 엔진 조립(서버가 Planner·Worker 문맥에
+// 설정을 싣는지) 시험이 쓴다.
+func E2HTTPWebSearchBackend(ctx context.Context) string { return e2HTTPWebSearchFrom(ctx).Backend }
+
 func e2HTTPWebSearchFrom(ctx context.Context) E2HTTPWebSearch {
 	if ctx == nil {
 		return E2HTTPWebSearch{}

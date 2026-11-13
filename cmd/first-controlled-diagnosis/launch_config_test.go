@@ -108,7 +108,8 @@ func TestLaunchConfigPlannerLimits(t *testing.T) {
 	}
 	// 준비 서버는 모델 설정 묶음으로, 실행 서버는 host 설정으로 같은 값을 받는다.
 	host, hostOK := got.httpHostConfig()
-	if got.modelOptions().PlannerLimits != limits || !hostOK || host.PlannerLimits != limits || host.PolicyFile != got.HTTP.PolicyFile || host.AuthorityFile != got.HTTP.AuthorityFile || host.AuthorityRoot != got.HTTP.AuthorityRoot {
+	model, modelErr := got.modelOptions()
+	if modelErr != nil || model.PlannerLimits != limits || !hostOK || host.PlannerLimits != limits || host.PolicyFile != got.HTTP.PolicyFile || host.AuthorityFile != got.HTTP.AuthorityFile || host.AuthorityRoot != got.HTTP.AuthorityRoot {
 		t.Fatal("준비·실행 서버 설정에 Plan당 상한이 빠짐")
 	}
 	if _, ok := (launchConfig{HTTP: got.HTTP, PlannerTurnsPerPlan: 1001}).httpHostConfig(); ok {

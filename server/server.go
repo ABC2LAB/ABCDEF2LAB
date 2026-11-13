@@ -127,6 +127,7 @@ type Server struct {
 	openRouterBaseline             llmpolicy.OpenRouterUsage
 	firstModelBudget               *FirstDiagnosisModelBudget
 	firstPlannerLimits             agent.E2HTTPPlannerLimits // 준비 서버의 Plan당 상한(C26·C32). 실행 서버는 E② Runtime 값
+	firstWebSearch                 agent.E2HTTPWebSearch     // 준비 Planner의 검색 도구 설정(루프 복원 결정안 §2-1). 실행 서버는 E② Runtime 값
 	firstDiagnosisPreparation      bool
 	firstModelMu                   sync.RWMutex
 	firstModel                     *firstDiagnosisModelPin
@@ -261,6 +262,7 @@ type serverStartupOptions struct {
 	openRouterPolicy     *llmpolicy.OpenRouterPolicy
 	firstModelBudget     *FirstDiagnosisModelBudget
 	firstPlannerLimits   agent.E2HTTPPlannerLimits
+	firstWebSearch       agent.E2HTTPWebSearch
 	existingAuthOnly     bool
 	assemblyStore        *controlledReadStore
 	noAutomaticAdmission bool
@@ -286,7 +288,7 @@ func newServerConfiguredWithOptions(ctx context.Context, m *Manager, skillDir st
 	if err != nil {
 		return nil, fmt.Errorf("[auth] JWT key: %w", err)
 	}
-	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, skillDir: skillDir, jwtKey: key, localResolver: localResolver, openRouterPolicy: startup.openRouterPolicy, firstModelBudget: startup.firstModelBudget, firstPlannerLimits: startup.firstPlannerLimits, chatBusy: map[string]bool{},
+	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, skillDir: skillDir, jwtKey: key, localResolver: localResolver, openRouterPolicy: startup.openRouterPolicy, firstModelBudget: startup.firstModelBudget, firstPlannerLimits: startup.firstPlannerLimits, firstWebSearch: startup.firstWebSearch, chatBusy: map[string]bool{},
 		chatCancel: map[string]context.CancelCauseFunc{}, triggerQ: map[string][]triggeredRun{},
 		triggerActive: map[string]int{}, triggerCfg: map[string]triggerBehavior{},
 		profChatAgents: map[int64]*agent.ChatAgent{},

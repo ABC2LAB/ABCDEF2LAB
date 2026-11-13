@@ -454,3 +454,24 @@ func TestE2HTTPRuntimeLeaseAdmissionSeparatesSpentBudget(t *testing.T) {
 		})
 	}
 }
+
+// 실행 Runtime은 설치가 켠 검색 설정을 진단 Planner 문맥에 싣고, 잘못된 설정으로는 만들어지지 않는다(루프 복원 결정안 §2-1).
+func TestE2HTTPRuntimeCarriesWebSearchToPlanner(t *testing.T) {
+	for _, backend := range []string{"", "ddgs"} {
+		runtime, task := e2HTTPRuntimeFixture(t, func(o *E2HTTPRuntimeOptions) { o.WebSearch = agent.E2HTTPWebSearch{Backend: backend} })
+		if err := runtime.AdmitTask(context.Background(), task); err != nil {
+			t.Fatal(err)
+		}
+		ctx, err := runtime.PreparePlanning(context.Background(), task)
+		if err != nil || agent.E2HTTPWebSearchBackend(ctx) != backend {
+			t.Fatalf("planner search backend=%q want %q err=%v", agent.E2HTTPWebSearchBackend(ctx), backend, err)
+		}
+	}
+	opts := E2HTTPRuntimeOptions{Acquire: func(context.Context, E2HTTPRequest) (E2HTTPRunOptions, error) {
+		return E2HTTPRunOptions{}, ErrE2HTTPHost
+	}, MaxWorkerTurns: 2, MaxToolCalls: 3, WorkerTimeout: time.Second, MaxPlannerRounds: 2, MaxIntentRuns: 1, DrainTimeout: time.Second, WebSearch: agent.E2HTTPWebSearch{Backend: "brave-free"}}
+	if runtime, err := NewE2HTTPRuntime(context.Background(), opts); err == nil {
+		_ = runtime.Close(context.Background())
+		t.Fatal("runtime accepted an invalid search setting")
+	}
+}
