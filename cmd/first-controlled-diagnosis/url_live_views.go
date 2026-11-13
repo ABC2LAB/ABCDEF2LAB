@@ -86,10 +86,10 @@ type controlPolicyView struct {
 
 // runBinding은 한 실행의 결속 디렉터리를 연 것이다. 정책 파일은 운영자 승인(authority.json)의 해시와 같아야 한다.
 type runBinding struct {
-	root   *os.Root
-	dir    string
-	raw    []byte
-	policy server.E2HTTPFilePolicy
+	root        *os.Root
+	dir         string
+	policy      server.E2HTTPFilePolicy
+	fingerprint string
 }
 
 func openRunBinding(runsDir, jobID string) (*runBinding, error) {
@@ -116,13 +116,20 @@ func openRunBinding(runsDir, jobID string) (*runBinding, error) {
 		_ = root.Close()
 		return nil, errPreparation
 	}
-	// 실행에 쓴 것과 같은 검증기로 읽는다(닫힌 형식·집행 의미, 감사 키 pin 포함).
-	policy, err := server.ValidateE2HTTPPolicyDocument(raw, true)
+	// 실행 factory가 받는 형식 그대로 읽는다(닫힌 형식·집행 의미·감사 키 pin, 진단 워크플로 칸·작업대 승인 방식 포함).
+	// 평가 단독 E② 서비스용 검증기는 워크플로 칸을 몰라 AI 자동 워크플로 실행을 늘 거부했다(11/13 실제 점검 409).
+	policy, fingerprint, err := server.ValidateE2HTTPRunPolicyDocument(raw)
 	if err != nil {
 		_ = root.Close()
 		return nil, errPreparation
 	}
-	return &runBinding{root: root, dir: filepath.Join(runsDir, jobID), raw: raw, policy: policy}, nil
+	// 자격 pin 규칙이 있으면 지문에 헤더 이름이 들어가 pin 파일 없이는 실행과 같은 값을 못 낸다. 그때는 비운다.
+	for _, rule := range policy.Rules {
+		if rule.Credentials != nil {
+			fingerprint = ""
+		}
+	}
+	return &runBinding{root: root, dir: filepath.Join(runsDir, jobID), policy: policy, fingerprint: fingerprint}, nil
 }
 
 func (b *runBinding) Close() error { return b.root.Close() }
@@ -151,9 +158,7 @@ func controlPolicyOf(b *runBinding) controlPolicyView {
 		// 전달 상한을 따로 정하지 않은 정책은 요청 본문 상한을 같이 쓴다(C16 결정안 3).
 		view.Limits.MaxResponseBodyBytes = p.Limits.MaxBodyBytes
 	}
-	if fp, err := server.E2HTTPPolicyContentFingerprint(b.raw, true); err == nil {
-		view.PolicyFingerprintSHA256 = fp
-	}
+	view.PolicyFingerprintSHA256 = b.fingerprint
 	for _, r := range p.Rules {
 		view.Rules = append(view.Rules, controlPolicyRule{Ref: r.Ref, Purpose: r.Purpose, Origin: r.Origin, ConnectIP: r.ConnectIP, PathPrefix: r.PathPrefix,
 			PathScopeRef: r.PathScopeRef, Methods: append([]string{}, r.Methods...), TLSPinned: r.TLSSPKISHA256 != ""})
