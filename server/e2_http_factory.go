@@ -237,7 +237,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 	if strictJSON(raw, &policy) != nil || policy.Format != E2HTTPFilePolicyFormat || len(policy.Rules) == 0 || len(policy.Rules) > 256 || policy.MaxRequests == 0 || !policy.ValidUntil.After(policy.ValidFrom) || !policy.ValidUntil.After(time.Now()) || policy.ValidFrom.After(time.Now()) || privateinput.CheckDirectory(policy.StateDir, true) != nil {
 		return empty, ErrE2HTTPHost
 	}
-	if !validE2HTTPFileAuth(policy.Auth, policy.Rules) {
+	if !validE2HTTPFileAuth(policy.Auth, policy.HeaderMode, policy.Rules) {
 		return empty, ErrE2HTTPHost
 	}
 	if policy.Workflow != nil {
@@ -483,6 +483,10 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 			if auth, authErr = e2HTTPAuthPrep(taskctx, execution, dir, origin, *policy.Auth); authErr != nil || current(taskctx) != nil {
 				return failed(execution, runner)
 			}
+		}
+		// 인증된 시험 계정이 없으면 이 실행은 계정 없이 진행한다. 첫 모델 요청 전에 E②를 preserve처럼 묶는다(C14 결정 5·6).
+		if policy.HeaderMode == e2proxy.HeaderTestAccountPassthrough && len(auth.Sessions) == 0 {
+			execution.DisableTestAccountPassthrough()
 		}
 		if input.OnAcquire != nil {
 			verifierKey := append([]byte(nil), auditKey...)

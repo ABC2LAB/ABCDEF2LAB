@@ -289,6 +289,16 @@ func TestE2HTTPPolicyDocumentAcceptsAuthPrepRule(t *testing.T) {
 		t.Fatal("auth section that does not match its rule accepted")
 	}
 	a.Login.Path = "/login"
+	// 시험 계정 모드는 인증 준비 칸이 있을 때만 받는다(#522 재상 지적 2).
+	policy.HeaderMode = e2proxy.HeaderTestAccountPassthrough
+	if _, err := ValidateE2HTTPPolicyDocument(encode(policy), false); err != nil {
+		t.Fatal("test account mode with auth rejected:", err)
+	}
+	policy.Auth = nil
+	if _, err := ValidateE2HTTPPolicyDocument(encode(policy), false); err == nil {
+		t.Fatal("test account mode without auth accepted")
+	}
+	policy.Auth, policy.HeaderMode = &a, e2proxy.HeaderPreserve
 	policy.Rules[len(policy.Rules)-1].Purpose = "admin"
 	if _, err := ValidateE2HTTPPolicyDocument(encode(policy), false); err == nil {
 		t.Fatal("unknown purpose accepted")

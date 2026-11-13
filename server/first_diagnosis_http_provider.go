@@ -28,6 +28,9 @@ type FirstDiagnosisHTTPHostConfig struct {
 	AuthorityRoot string `json:"authority_root"`
 	// PlannerLimits는 launch 설정의 Plan당 상한이다(C26·C32). 파일 입력이 아니다.
 	PlannerLimits agent.E2HTTPPlannerLimits `json:"-"`
+	// ExternalModel은 이 서버의 모델이 외부 API(openrouter)인지다. 파일 입력이 아니라 StartFirstDiagnosisHTTP가 모델 설정에서
+	// 채운다. 외부 API 실행은 시험 계정 동의 칸이 생길 때까지 인증 준비(auth)가 있는 정책을 받지 않는다(CLAUDE.md 규칙 2, C14).
+	ExternalModel bool `json:"-"`
 }
 
 func (FirstDiagnosisHTTPHostConfig) String() string {
@@ -152,7 +155,7 @@ func NewFirstDiagnosisHTTPHost(ctx context.Context, cfg FirstDiagnosisHTTPHostCo
 	digest := sha256.Sum256(raw)
 	clear(raw)
 	approval := authority.approval()
-	if decodeErr != nil || authority.AuthorizePolicy(ctx, digest) != nil || policy.ValidFrom.Before(approval.ValidFrom) || policy.ValidUntil.After(approval.ValidUntil) {
+	if decodeErr != nil || authority.AuthorizePolicy(ctx, digest) != nil || policy.ValidFrom.Before(approval.ValidFrom) || policy.ValidUntil.After(approval.ValidUntil) || policy.Auth != nil && cfg.ExternalModel {
 		authority.revoke()
 		_ = authority.close()
 		return nil, ErrFirstDiagnosisHTTPHost
