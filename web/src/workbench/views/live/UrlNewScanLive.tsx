@@ -30,6 +30,7 @@ import { useWb } from "../../store";
 import { Icon } from "../../ui/icons";
 import { CloseInspButton, HelpTip, InspOpenButton, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
+import { ApprovedWriteNotice } from "./ApprovedWriteNotice";
 import { ExternalModelSettings } from "./ExternalModelSettings";
 import { TargetApprovalPanel } from "./TargetApprovalPanel";
 import { reasonText, UrlHead, UrlNotices, UrlPill } from "./urlParts";
@@ -916,6 +917,7 @@ export function UrlNewScanLive() {
             )}
           </div>
           <div className={s.isec}>
+            <ApprovedWriteNotice scope={scope} />
             {handle ? action : null}
             <UrlNotices />
           </div>

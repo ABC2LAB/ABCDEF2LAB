@@ -281,7 +281,7 @@ function model(v: unknown): URLDiagnosisModel {
     output_tokens_per_call: v.output_tokens_per_call,
   };
 }
-function scope(v: unknown): URLDiagnosisScope {
+function scope(v: unknown, workflowMode?: WorkflowMode): URLDiagnosisScope {
   if (
     !object(v) ||
     !ref(v.target_ref) ||
@@ -298,7 +298,9 @@ function scope(v: unknown): URLDiagnosisScope {
       (m) =>
         m === "GET" ||
         m === "HEAD" ||
-        (v.approval_mode === "workbench_selective_v1" && ["POST", "PUT", "PATCH"].includes(String(m))),
+        (["POST", "PUT", "PATCH"].includes(String(m)) &&
+          ((v.approval_mode === "workbench_selective_v1" && workflowMode === "user_approval_v1") ||
+            (v.approval_mode === "preauthorized_scope" && workflowMode === "ai_auto_v1"))),
     ) ||
     v.query_policy !== "any" ||
     v.body_policy !== "bounded" ||
@@ -465,7 +467,7 @@ export function parseURLJob(raw: unknown, owner: string): URLDiagnosisJob {
   const outcomes = d.intent_outcomes === undefined ? undefined : intentOutcomes(d.intent_outcomes);
   if (!validRunResult(String(d.state), d.outcome, d.closing_reason, outcomes)) return invalid();
   const input = parseInput(d.input);
-  const approved = d.scope === undefined ? undefined : scope(d.scope);
+  const approved = d.scope === undefined ? undefined : scope(d.scope, input.workflow_mode);
   if (
     approved &&
     (approved.origin !== new URL(input.target_url).origin ||
