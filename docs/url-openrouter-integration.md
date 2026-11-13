@@ -26,7 +26,7 @@ Transport는 유일한 OpenRouter 승인 원장이다. URL 원장은 별도 범�
 
 Start 요청은 비용·외부 전송 동의를 `external_transfer_confirmed: true`로 보내며 서버가 scope와 revision에 대조해 영속 receipt에 저장한다.
 
-시험 계정 세션(대상이 발급한 쿠키·토큰)을 외부 API 모델 입력에 넣는 것은 별도 동의다(CLAUDE.md 규칙 2, C14 결정 4). 초안 입력의 `external_test_accounts: true`는 "이 회차에 대해 고객사 사전 공지·승인을 받았다"는 운영자 진술이고, 결속을 바꾸므로 초안을 만들 때 넣는다(원본 요약에 들어감, 시작 때 바꿀 수 없음). 이 값이 있어야 외부 API 실행도 그 대상의 시험 계정을 결속·로그인하고, 실행 준비가 그 실행의 launch(`general_http.external_test_accounts`)로 서버에 넘긴다. 서버는 이 값 없이 인증 준비 칸이 있는 외부 API 실행 정책을 시작 때 거부한다. 비밀번호는 이 값과 상관없이 모델에 가지 않는다. 로컬 모델 실행은 이 값과 상관없이 시험 계정을 쓴다. 키·manifest 경로·provider 선택값은 진단 body, React state, local/session storage, URL, 결과·보고서·로그에 전달하지 않는다. 공개 model projection은 mode/model/provider와 호출당 한도뿐이다. 기존 브라우저 복원 handle에도 model 자격을 추가하지 않는다.
+시험 계정 세션(대상이 발급한 쿠키·토큰)을 외부 API 모델 입력에 넣는 것은 별도 동의다(CLAUDE.md 규칙 2, C14 결정 4). 초안 입력의 `external_test_accounts: true`는 "이 회차에 대해 고객사 사전 공지·승인을 받았다"는 운영자 진술이고, 결속을 바꾸므로 초안을 만들 때 넣는다(원본 요약에 들어감, 시작 때 바꿀 수 없음). 이 값이 있어야 외부 API 실행도 그 대상의 시험 계정을 결속·로그인하고, 실행 준비가 그 실행의 launch(`general_http.external_test_accounts`)로 서버에 넘긴다. 서버는 이 값 없이 인증 준비 칸이 있는 외부 API 실행 정책을 시작 때 거부한다. 이 값은 고정 진술 "이 점검 회차에서 시험 계정 세션(대상이 발급한 쿠키·토큰)을 외부 모델 제공자에게 보내는 것을 대상 운영 주체에게 사전 공지했고 승인을 받았다. 비밀번호는 보내지 않는다."에 대한 동의다. 실행이 시작될 때 그 대상의 계정 저널에 `external_consent` 줄(진술 SHA-256, 주체, 시각, 작업 ID)을 남기고, 남기지 못하면 `external_consent_unrecorded`로 시작하지 않는다. 남길 수 있는 주체는 대상 승인자(등록 운영자)뿐이다(시험 계정 표시와 같은 수준). 비밀번호는 이 값과 상관없이 모델에 가지 않는다. 로컬 모델 실행은 이 값과 상관없이 시험 계정을 쓴다. 키·manifest 경로·provider 선택값은 진단 body, React state, local/session storage, URL, 결과·보고서·로그에 전달하지 않는다. 공개 model projection은 mode/model/provider와 호출당 한도뿐이다. 기존 브라우저 복원 handle에도 model 자격을 추가하지 않는다.
 
 ## Workbench 제품의 키 등록 정책 제안
 
