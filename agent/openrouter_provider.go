@@ -128,6 +128,13 @@ func validOpenRouterHistory(req llm.CompletionRequest) bool {
 						return false
 					}
 				}
+			case llm.BlockThinking:
+				// 추론 모델(Qwen3.5 등)이 앞 턴에 낸 추론이다. SDK는 이를 assistant 메시지의 reasoning_content로
+				// 돌려보낸다(원본 동작). 이걸 거부하면 첫 응답 뒤 모든 호출이 보내기도 전에 실패한다(11/13 실제 모델 점검).
+				// 모델이 쓴 자기 출력이라 assistant 메시지에만 둔다.
+				if msg.Role != llm.RoleAssistant {
+					return false
+				}
 			case llm.BlockText:
 			default:
 				return false
