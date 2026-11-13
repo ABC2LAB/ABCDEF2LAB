@@ -1324,6 +1324,16 @@ func (c *Call) do(ctx context.Context, req *http.Request, purpose string, extrac
 		}
 		return finish(nil, ErrDenied)
 	}
+	if resp.StatusCode < 100 || resp.StatusCode > 599 {
+		// Go HTTP 클라이언트는 세 자리 상태 코드를 모두 받지만 HTTP 상태는 1xx~5xx뿐이고 감사 기록도 그 범위만 받는다. 범위
+		// 밖 응답은 해석할 수 없으니 그 요청만 결과 불명으로 끝낸다(다시 보내지 않음). 그대로 기록하면 감사 쓰기가 거부돼 대상
+		// 응답 하나가 새 송신을 모두 멈추게 된다(요청 하나의 실패는 그 요청만 실패, #562 리뷰에서 발견).
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			log.Print("[e2proxy] response_close_failed after=nonstandard_status")
+		}
+		r.Reason = Unknown
+		return finish(nil, ErrDenied)
+	}
 	r.ResponseReceived = true
 	r.StatusCode = resp.StatusCode
 	diagnosticReceipt(e.ctx, r, "http_response_received", "succeeded", "")

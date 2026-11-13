@@ -530,6 +530,9 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     const step1 = screen.getByRole("group", { name: "대상 · 로그인" });
     const summary = screen.getByRole("complementary", { name: "점검 요약" });
     expect(screen.queryByRole("group", { name: "분석 모델 · 점검 설정" })).toBeNull();
+    // 화면 머리에는 [취소]만 (계정 분류 버튼은 두지 않는다)
+    expect(screen.getByRole("link", { name: "취소" })).toHaveAttribute("href", "#dashboard");
+    expect(screen.queryByRole("link", { name: "계정 분류" })).toBeNull();
     // '다음'은 하나뿐이고 바닥 줄의 폼 제출 버튼이다. 주소가 맞아야 켜진다
     const next = within(form).getByRole("button", { name: "다음" });
     expect(next).toHaveAttribute("type", "submit");
@@ -552,6 +555,75 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     expect(within(summary).queryByRole("button", { name: /승인 범위 확인|다음/ })).toBeNull();
     fireEvent.click(back);
     expect(screen.getByRole("group", { name: "대상 · 로그인" })).toBeVisible();
+  });
+
+  it("외부 API 는 설치된 외부 프로필이 없어도 눌러 칸 모양(제공자 · API 키 · 경고)을 보고, 범위 확인은 보내지 않는다", async () => {
+    mount("new");
+    const target = await screen.findByLabelText(/점검할 사이트 주소/);
+    fireEvent.change(target, { target: { value: "https://target.example/" } });
+    fireEvent.click(screen.getByRole("button", { name: /다음/ }));
+    const ext = screen.getByRole("radio", { name: "외부 API" });
+    expect(ext).toBeEnabled();
+    fireEvent.click(ext);
+    expect(ext).toBeChecked();
+    expect(screen.getByLabelText("제공자")).toHaveDisplayValue("설치된 외부 모델 없음");
+    expect(screen.getByText(/운영자가 외부 모델 승인/)).toBeInTheDocument();
+    expect(screen.getByText(/대상 데이터와 프롬프트가 외부 제공자로 전송됩니다/)).toBeInTheDocument();
+    const send = screen.getByRole("button", { name: "승인 범위 확인" });
+    expect(send).toBeDisabled();
+    expect(send.parentElement).toHaveTextContent("설치된 외부 모델 프로필이 없습니다");
+    // 로컬로 돌아오면 모델 칸 · 범위 확인이 그대로
+    fireEvent.click(screen.getByRole("radio", { name: "로컬 실행" }));
+    expect(screen.getByLabelText("모델")).toBeInTheDocument();
+    expect(send).toBeEnabled();
+  });
+
+  it("진단 모드는 탐색 흐름이 없는 프로필에서도 보이고 고를 수 있지만 '연결 전' · 초안에 넣지 않는다", async () => {
+    mount("new");
+    const target = await screen.findByLabelText(/점검할 사이트 주소/);
+    fireEvent.change(target, { target: { value: "https://target.example/" } });
+    fireEvent.click(screen.getByRole("button", { name: /다음/ }));
+    const modes = screen.getByRole("radiogroup", { name: "진단 모드" });
+    expect(modes.parentElement).toHaveTextContent("연결 전");
+    const auto = within(modes).getByRole("radio", { name: /^AI 자동/ });
+    const user = within(modes).getByRole("radio", { name: /^사용자 승인/ });
+    expect(auto).toBeEnabled();
+    fireEvent.click(auto);
+    expect(auto).toBeChecked();
+    fireEvent.click(user);
+    expect(user).toBeChecked();
+    fireEvent.click(auto);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "승인 범위 확인" }));
+    });
+    expect(u.createURLDraft.mock.calls[0][0]).toEqual({
+      target_url: "https://target.example/",
+      profile_id: "profile-1",
+    });
+  });
+
+  it("범위 확인한 진단을 이어 보면 입력이 잠긴 이유와 [새로 입력]을 알린다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue({ ...draft, revision: 2, reason_code: "approval_required" });
+    mount("new");
+    expect(await screen.findByText(/범위 확인한 입력은 잠겨 있습니다/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "새로 입력" })).toBeEnabled();
+    expect(screen.getByLabelText(/점검할 사이트 주소/)).toBeDisabled();
+  });
+
+  it("끝난 점검을 이어 보면 입력이 잠긴 이유와 [새로 입력]으로 새 점검을 안내하고, 누르면 진단 모드를 고를 수 있다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    mount("new");
+    expect(await screen.findByText(/끝난 점검이라 입력이 잠겨 있습니다/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/점검할 사이트 주소/)).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "새로 입력" }));
+    await waitFor(() => expect(screen.getByLabelText(/점검할 사이트 주소/)).toBeEnabled());
+    fireEvent.change(screen.getByLabelText(/점검할 사이트 주소/), { target: { value: "https://target.example/" } });
+    fireEvent.click(screen.getByRole("button", { name: /다음/ }));
+    const auto = screen.getByRole("radio", { name: /^AI 자동/ });
+    fireEvent.click(auto);
+    expect(auto).toBeChecked();
   });
 
   it("범위 확인 뒤 단계(승인 범위 다시 확인)는 요약 패널에, 바닥 줄 오른쪽 끝은 그대로 [다음] · 패널 여는 버튼은 없다", async () => {

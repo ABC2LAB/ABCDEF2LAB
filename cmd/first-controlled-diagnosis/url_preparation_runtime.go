@@ -378,7 +378,12 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 		manager.Close()
 		return knownFailure("preparation_host_failed", true)
 	}
-	options := l.launch.modelOptions()
+	options, optionsErr := l.launch.modelOptions()
+	if optionsErr != nil {
+		finishPrepare()
+		manager.Close()
+		return knownFailure("preparation_host_failed", true)
+	}
 	options.Budget = modelBudget
 	preparation, err := server.NewFirstDiagnosisPreparationServerWithModel(prepareCtx, manager, l.launch.SkillDir, l.launch.DataDir, l.launch.KeyDir, options)
 	if err != nil || supervisor.Attach(preparation) != nil {
