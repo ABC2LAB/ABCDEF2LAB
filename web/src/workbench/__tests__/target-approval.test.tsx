@@ -81,6 +81,12 @@ it("등록 화면에 GET/HEAD · query 무해성을 서버가 검증하지 않�
   render(<TargetApprovalPanel url={url} disabled={false} />);
   await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1));
   fireEvent.click(screen.getByRole("button", { name: "대상 등록하기" }));
+  // 할 일 한 줄과 핵심 고지는 늘 보이고, 원래 고지 문장은 (?) 메모를 열면 보인다
+  const note = document.getElementById("targetHarmlessNote") as HTMLElement;
+  expect(note).toHaveTextContent("상태를 바꿀 수 있는 경로는 넣지 마세요");
+  expect(note).toHaveTextContent("서버는 GET · HEAD · query 의 무해성을 검증하지 않음");
+  expect(screen.getByText(/서버는 GET\/HEAD 의 무해성을 검증하지 않습니다/)).not.toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "읽기 승인 설명 보기" }));
   expect(screen.getByText(/서버는 GET\/HEAD 의 무해성을 검증하지 않습니다/)).toBeVisible();
   expect(screen.getByText(/서버는 query 의 무해성을 검증하지 않으니/)).toBeVisible();
   expect(screen.getByText(/상태 변경 범위는 별도 동의한 설치에서만 등록할 수 있습니다/)).toBeVisible();
@@ -90,6 +96,7 @@ it("등록의 읽기 범위와 TLS 사전 접촉을 안내한다", async () => {
   render(<TargetApprovalPanel url={url} disabled={false} />);
   await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1));
   fireEvent.click(screen.getByRole("button", { name: "대상 등록하기" }));
+  fireEvent.click(screen.getByRole("button", { name: "읽기 승인 설명 보기" }));
   expect(screen.getByText(/후보 IP별 연결\(https 대상은 TLS 확인\)/)).toBeVisible();
   fireEvent.change(screen.getByLabelText("진단 권한 · 비변경 근거"), {
     target: { value: "승인된 테스트 소유 환경의 읽기 전용 GET 경로입니다." },
