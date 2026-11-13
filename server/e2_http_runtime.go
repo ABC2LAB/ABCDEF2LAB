@@ -113,6 +113,8 @@ type E2HTTPRunOptions struct {
 	// Sessions는 인증된 시험 계정의 보낼 세션 헤더다(실행 메모리에만, C14). 인증 준비가 없으면 둘 다 비어 있다.
 	AccountAuth map[string]string
 	Sessions    E2HTTPSessions
+	// programCalls는 서버가 연 E② 호출(인증 준비 등)이다. 마감 대조가 Worker 결과 없이 따로 센다.
+	programCalls *e2HTTPProgramCalls
 }
 
 type E2HTTPPolicyMetadata struct {
@@ -904,6 +906,25 @@ func (r *E2HTTPRuntime) observeResult(ctx context.Context, t *e2HTTPRuntimeTask,
 	}
 	// 대조 실패만 있으면 같은 값을 돌려준다. Worker는 이 값일 때만 intent 단위 결과 불명으로 처리한다.
 	return intentErr
+}
+
+// ProgramCalls는 서버가 연 E② 호출(인증 준비 등)의 CallRef 사본이다. Worker Bash 결과가 없는 호출이다. 다른 task면 nil이다.
+func (r *E2HTTPRuntime) ProgramCalls(taskID string) map[string]bool {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	t := r.task
+	r.mu.Unlock()
+	if t == nil || t.id != taskID {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.lease == nil {
+		return map[string]bool{}
+	}
+	return t.lease.programCalls.snapshot()
 }
 
 // UntrustedIntents는 최종 신뢰 결과가 E② 실행 기록과 맞지 않았던 intent의 사본이다(C09). 다른 task면 nil이다.
