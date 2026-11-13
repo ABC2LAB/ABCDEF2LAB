@@ -336,4 +336,40 @@ describe("실행 결과 칸(docs/contracts/run-outcome-states.md §3.2)", () => 
   ])("계약 밖 결과는 fail closed 한다: %o", (value) => {
     expect(() => parseURLJob(envelope(value), owner)).toThrow();
   });
+  it.each([
+    "completed",
+    "cancelled",
+    "failed",
+  ] as const)("account_auth(§3.4): %s 에 계정별 인증 결과 맵을 받는다(자격·세션 값 없이)", (state) => {
+    const account_auth = {
+      "acct-a": "authenticated",
+      admin_2: "login_failed",
+      "shop-3": "not_sent",
+      [`a${"b".repeat(31)}`]: "result_unknown", // 32자(서버 상한)
+    };
+    expect(parseURLJob(envelope({ ...completed, state, account_auth }), owner).account_auth).toEqual(account_auth);
+  });
+  it("account_auth 없는 실행은 그대로 받는다(계정 미결속)", () => {
+    expect(parseURLJob(envelope(completed), owner).account_auth).toBeUndefined();
+  });
+  it.each([
+    { ...completed, account_auth: {} }, // 0개
+    {
+      ...completed,
+      account_auth: Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`a${i}`, "authenticated"])),
+    }, // 17개(상한 초과)
+    { ...completed, account_auth: { "acct-a": "ok" } }, // 모르는 결과값
+    { ...completed, account_auth: { Acct: "authenticated" } }, // 대문자 라벨(사용자명 원문 방지)
+    { ...completed, account_auth: { "a b": "authenticated" } }, // 공백 라벨
+    { ...completed, account_auth: { "-acct": "authenticated" } }, // '-' 로 시작(서버 등록 규칙 밖)
+    { ...completed, account_auth: { _acct: "authenticated" } }, // '_' 로 시작
+    { ...completed, account_auth: { [`a${"b".repeat(32)}`]: "authenticated" } }, // 33자(서버 상한 32자 초과)
+    { ...completed, account_auth: JSON.parse('{"__proto__":"authenticated"}') }, // 프로토타입 오염 시도
+    { ...completed, account_auth: { "acct-a": 1 } }, // 비문자 값
+    { ...completed, account_auth: ["authenticated"] }, // 배열
+    { ...completed, account_auth: "authenticated" }, // 문자열
+    { ...running, account_auth: { "acct-a": "authenticated" } }, // "있는 state" 밖(running)
+  ])("account_auth 계약 밖은 fail closed 한다: %o", (value) => {
+    expect(() => parseURLJob(envelope(value), owner)).toThrow();
+  });
 });

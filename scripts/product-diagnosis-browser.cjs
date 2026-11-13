@@ -261,7 +261,6 @@ function check(value, code) {
     check(noLegacyExecution(),"approval_used_generic_engine");
   } else if (phase === "url-draft") {
     await openNew();
-    await fill("#luName", "작업대 URL 브라우저 합성 수용");
     await click("승인 범위 확인");
     await wait(hasText("실행 전 검증 완료"), "approved_scope_not_ready");
     await wait(hasText("서버가 확인한 승인 범위"), "scope_projection_missing");
