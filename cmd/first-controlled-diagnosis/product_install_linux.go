@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -58,6 +59,58 @@ type productInstallInput struct {
 	UpstreamCAFile string `json:"upstream_ca_file,omitempty"`
 	// RuntimeLimits는 실행 상한을 설치 조직이 고르는 선택 블록이다(C32). 없으면 지금 기본값이다.
 	RuntimeLimits *productRuntimeLimits `json:"runtime_limits,omitempty"`
+	// WebSearch는 진단 Planner·Worker의 원본 검색 도구를 켜는 선택 블록이다(루프 복원 결정안 §2-1). 외부 API(OpenRouter)만
+	// 쓰는 설치만 받는다. 로컬 모델이 있는 설치(완전 로컬 모드)는 외부 송신 전면 차단이라 거부한다(규칙 8).
+	WebSearch *productWebSearch `json:"web_search,omitempty"`
+}
+
+// productWebSearch는 검색 백엔드와 키 파일이다. ddgs(DuckDuckGo)는 키가 없고, brave-free·tavily는 키 파일(설치 보호
+// 입력)이 있어야 한다. 키는 제어 비밀이라 설치 디렉터리의 보호 파일에만 옮기고 설치 기록에는 해시만 남긴다.
+type productWebSearch struct {
+	Backend    string `json:"backend"`
+	APIKeyFile string `json:"api_key_file,omitempty"`
+}
+
+func validProductWebSearch(c productInstallInput) bool {
+	w := c.WebSearch
+	if w == nil {
+		return true
+	}
+	if c.LocalModel != nil || len(c.OpenRouterManifest) == 0 {
+		return false
+	}
+	switch w.Backend {
+	case "ddgs":
+		return w.APIKeyFile == ""
+	case "brave-free", "tavily":
+		return w.APIKeyFile != ""
+	}
+	return false
+}
+
+// productWebSearchLaunch는 설치 입력의 검색 설정을 launch 설정으로 바꾼다. 키는 설치 디렉터리의 보호 파일로 옮기고 pin만
+// launch에 적는다. 키 값은 다른 곳에 쓰지 않는다.
+func productWebSearchLaunch(w *productWebSearch, pins *productPinWriter, config string) (*launchWebSearch, error) {
+	if w == nil {
+		return nil, nil
+	}
+	if w.Backend == "ddgs" {
+		return &launchWebSearch{Backend: w.Backend}, nil
+	}
+	raw, err := readPrivateFile(w.APIKeyFile, maxWebSearchKeyBytes)
+	defer clear(raw)
+	if err != nil {
+		return nil, errPreparation
+	}
+	key := bytes.TrimSpace(raw)
+	if len(key) == 0 || !plainText(string(key), maxWebSearchKeyBytes) {
+		return nil, errPreparation
+	}
+	pin := pins.write("web-search.key", key)
+	if pins.err != nil {
+		return nil, errPreparation
+	}
+	return &launchWebSearch{Backend: w.Backend, KeyFile: filepath.Join(config, pin.File), KeySHA256: pin.SHA256}, nil
 }
 
 func productKeyword(s string) string {
@@ -133,6 +186,9 @@ func runProductInstall(ctx context.Context, args []string, stdout, stderr io.Wri
 		return 2
 	}
 	if c.LocalModel == nil && len(c.OpenRouterManifest) == 0 {
+		return 2
+	}
+	if !validProductWebSearch(c) {
 		return 2
 	}
 	c.TargetPolicy = withTargetPolicyDefaults(c.TargetPolicy)
@@ -364,6 +420,10 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 		return e
 	}
 	installation.Product = &urlProductInstallation{Format: "abc2lab.product-runtime/v2", TargetPolicy: urlProtectedPin{File: securityPath, SHA256: securitySHA}}
+	webSearch, err := productWebSearchLaunch(c.WebSearch, &pins, config)
+	if err != nil {
+		return errPreparation
+	}
 	var first launchConfig
 	add := func(mode, model, base string, contextK, output int, manifest json.RawMessage) error {
 		profile := &pgdb.LLMProfile{Name: "product-" + mode, Format: "openai", Model: model, BaseURL: base, APIKey: "local-managed", ContextWindowK: contextK, MaxTokens: output, Streaming: false}
@@ -381,6 +441,10 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 		}
 		if !applyProductLaunchLimits(&launch, c, mode) {
 			return errPreparation
+		}
+		// 검색은 외부 API 실행만 켠다(설치 입력 검사가 로컬 모델 설치를 이미 거부했다).
+		if mode == "openrouter" {
+			launch.WebSearch = webSearch
 		}
 		budget := diagnosisprep.Budget{Requests: 4, ModelRequests: 20, InputTokens: 20 * int64(contextK) * 1024, OutputTokens: 20 * int64(output), DurationSeconds: runSeconds}
 		if c.TargetPolicy.Workflow != nil {

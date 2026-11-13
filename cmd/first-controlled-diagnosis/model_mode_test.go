@@ -19,7 +19,8 @@ func TestOpenRouterLaunchModeRequiresExplicitScope(t *testing.T) {
 	good := openRouterLaunchConfig()
 	data, _ := json.Marshal(good)
 	c, err := parseLaunchConfig(data)
-	if err != nil || c.modelOptions().Mode != "openrouter" || c.LocalLLMManifestPath != "" {
+	model, modelErr := c.modelOptions()
+	if err != nil || modelErr != nil || model.Mode != "openrouter" || c.LocalLLMManifestPath != "" {
 		t.Fatal("explicit external configuration rejected")
 	}
 	cases := map[string]func(map[string]any){

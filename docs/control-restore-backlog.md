@@ -68,9 +68,9 @@
 | C14 | 2단계 일부(계정 등록·분류, 결정안 #500) | 대상별 계정 라벨 등록, 시험 계정 표시(대상 승인자·진술 동의·그 대상 판에만 묶임)·해제, 판이 바뀌면 real(`target_reapproved`), 해제는 `manual_unmark`, 보호 저널이 감사 기록, 관리 API `/api/product/targets/{id}/accounts`. 대상 로그인 방식 설정과 계정 자격 보호 파일 저장(저널엔 해시만, `…/login`·`…/credential`). E② 인증 준비 전용 규칙·`AuthPrep`, 실행 정책 `auth` 칸으로 실행 시작 때 계정별 로그인, 실행 결속(test·자격 있는 계정만, 실행 중 해제·만료·자격 교체면 새 송신 정지) | 기본 real, 모델 입력·E② 헤더 모드는 아직 그대로(시험 계정 세션도 모델에 안 감) | 실행 결과 `account_auth` 칸·정지 사유(3단계 나머지), `test_account_passthrough`·세션 줄(4단계), 화면(이경준) |
 | C15 | 구현·단위시험 (#399) | `Accept-Encoding`을 거부 대신 `identity`로 바꿔 보냄 | 압축 응답은 표현 보류(C16 1단계부터 `withheld`) | — |
 | C19 | 구현·통합시험 (#491) | 정책 거부 뒤 고친 재시도 허용. 결과 불명·실행기 실패만 재전송 금지(`intent_outcome_uncertain`) | 결과 불명 쓰기 자동 재전송 없음 | — |
-| C24 | 구현·단위시험 (#415·#427·#461·#481) | Worker에 원본 그래프 조회 도구, E② 경유 WebFetch, 보관소 파일 도구(Read·Write·Edit·LS), 승인 대상 안의 `insert_assets` | 대상 요청은 E② 경유, 파일 도구는 intent 보관소 안만 | WebSearch·skills·MCP는 진단 Worker에 없음 |
+| C24 | 구현·단위시험 (#415·#427·#461·#481) | Worker에 원본 그래프 조회 도구, E② 경유 WebFetch, 보관소 파일 도구(Read·Write·Edit·LS), 승인 대상 안의 `insert_assets` | 대상 요청은 E② 경유, 파일 도구는 intent 보관소 안만. 원본 `web_search`는 외부 API 설치가 설치 입력 `web_search`로 켰을 때만(검색어에 실행 보호 값이 있으면 안 보냄, 루프 복원 결정안 §2-1) | skills·MCP는 진단 Worker에 없음 |
 | C25 | 구현·단위시험 (#416·#425) | Worker 프롬프트를 원본 지침·문맥(제약·intent 번호·범위 안 자산·개요)으로, 목표 문장을 승인 메서드로 | 후보는 확정이 아님(규칙 5) | `report_finding`은 `submit_diagnostic_candidate`로 남음 |
-| C26 | 구현·통합시험 (#466·#468·#469·#470) | Planner에 `prove_goal`·`goal_met`(목표 달성 마감), `add_task_scope`(E② 범위 불변), Plan당 상한 설정, 원본 마무리 턴·Todo | 범위 도구는 E② 승인 범위를 바꾸지 않음 | `report_finding`(후보)·skills·MCP·WebSearch |
+| C26 | 구현·통합시험 (#466·#468·#469·#470) | Planner에 `prove_goal`·`goal_met`(목표 달성 마감), `add_task_scope`(E② 범위 불변), Plan당 상한 설정, 원본 마무리 턴·Todo | 범위 도구는 E② 승인 범위를 바꾸지 않음. `web_search`는 Worker와 같은 설치 조건 | `report_finding`(후보)·skills·MCP |
 | C27 | 구현·통합시험 (#494) | Planner가 Worker 실행 중에도 돌고 `kill_work`·`steer_work`로 진행 중 작업을 멈추거나 고침 | kill로 끊긴 E② 호출은 그 intent만 결과 불명 | — |
 | C28 | 구현·단위시험 (#420·#430·#431·#458·#464) | 입력 예약을 컨텍스트 전체 대신 요청 크기 상한(요청 JSON 바이트 + 4096)으로, 호출별 예약·정산, OpenRouter 호출 칸·비용 대조, 동시 모델 호출 수 설정(`model_concurrency`, 기본 1) | 모델 예산 총량·승인 동시성 상한 | 로컬 모델은 동시 1 |
 | C29 | 구현·단위시험 (#443·#444·#446·#460·#461) | intent별 작업 공간 보관소(호출마다 넣고 빼기), 긴 출력을 `.outputs/<call_ref>.txt`로 남김, 보관소 파일 연산·도구 | 샌드박스 격리, 보관 상한 | — |
