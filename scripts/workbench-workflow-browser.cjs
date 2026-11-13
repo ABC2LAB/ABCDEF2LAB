@@ -58,7 +58,7 @@ async function eventually(read,predicate,code,ms=60000){const end=Date.now()+ms;
  }else{
   const receivedBefore=await stats();const initialPOST=receivedBefore['POST /api/Users']||0;
   if(await evaluate("sessionStorage.getItem('abc2lab.urlDiagnosisHandle.v2')!==null")){await wait(`!!(${button('다른 진단 만들기 · 조회 연결 해제')})`,'stored_handle_restore_in_progress');await click('다른 진단 만들기 · 조회 연결 해제');}
-  await wait("document.querySelector('#luUrl')?.disabled===false",'new_input_locked');await fill('#luUrl',origin+'/workflow');await fill('#luName','소유 '+mode+' 워크플로 검증');
+  await wait("document.querySelector('#luUrl')?.disabled===false",'new_input_locked');await fill('#luUrl',origin+'/workflow');
   await evaluate(`document.querySelector('input[name=nSend][value=${mode==='auto'?'ai_auto_v1':'user_approval_v1'}]').click()`);await fill('#nExcl','/excluded');
   await wait(`!!document.querySelector('#targetReadonlyPaths')||!!document.querySelector('#targetChallengeName')||document.querySelector('${visible}').innerText.includes('승인된 대상:')`,'target_state_missing');
   if(await evaluate("!!document.querySelector('#targetReadonlyPaths')")){
