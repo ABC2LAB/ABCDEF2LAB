@@ -40,6 +40,22 @@ func urlExternalBudget(t *testing.T, observe func(diagnosisprep.ModelUsage) erro
 	}
 	return b, path, agent.Config{Format: llm.FormatOpenAI, Model: llmpolicy.OpenRouterModel, BaseURL: llmpolicy.OpenRouterBaseURL, APIKey: "synthetic", ContextWindowK: 256, MaxTokens: 100}
 }
+
+// urlExternalRequestQuote는 요청 하나의 비용 예약이다. 입력 예약(요청 JSON 바이트 + framing 여유)과 출력 상한으로
+// 견적한다(C28 결정 1). 호출당 입력 상한 전체로 한 견적보다 작아야 한다.
+func urlExternalRequestQuote(t *testing.T, b *FirstDiagnosisModelBudget, req llm.CompletionRequest) int64 {
+	t.Helper()
+	raw, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	quote, err := b.external.QuoteInput(int64(len(raw))+firstDiagnosisFramingTokens, int64(req.MaxTokens))
+	full, fullErr := b.external.Quote(int64(req.MaxTokens))
+	if err != nil || fullErr != nil || quote >= full {
+		t.Fatal("request-size quote is not below the full-context quote")
+	}
+	return quote
+}
 func TestFirstDiagnosisOpenRouterModelBudgetHandoffUsesOnePolicy(t *testing.T) {
 	b, path, _ := urlExternalBudget(t, func(diagnosisprep.ModelUsage) error { return nil })
 	options := FirstDiagnosisModelOptions{Mode: "openrouter", OpenRouterManifestPath: path, Budget: b}
@@ -68,8 +84,8 @@ func TestFirstDiagnosisOpenRouterModelBudgetPersistsUSDOnceBeforeTransport(t *te
 	if err := b.before(context.Background(), cfg, &req); err != nil {
 		t.Fatal(err)
 	}
-	quote, err := b.external.Quote(100)
-	if err != nil || quote != 262244 || len(persisted) != 1 || persisted[0].ReservedCostUSDMicros != quote || persisted[0].UsageKnown || b.external.Snapshot().Requests != 0 {
+	quote := urlExternalRequestQuote(t, b, req)
+	if len(persisted) != 1 || persisted[0].ReservedCostUSDMicros != quote || persisted[0].UsageKnown || b.external.Snapshot().Requests != 0 {
 		t.Fatal("reservation did not precede transport exactly once")
 	}
 	// SDK 응답이 성공처럼 보여도 transport 비용 검증이 없으면 불명으로 남긴다.
@@ -83,11 +99,11 @@ func TestFirstDiagnosisOpenRouterModelBudgetPersistsUSDOnceBeforeTransport(t *te
 func TestFirstDiagnosisOpenRouterModelBudgetStorageFailureAndCostExhaustion(t *testing.T) {
 	b, _, cfg := urlExternalBudget(t, func(diagnosisprep.ModelUsage) error { return errors.New("synthetic storage failure") })
 	req := llm.CompletionRequest{MaxTokens: 100}
-	if b.before(context.Background(), cfg, &req) == nil || b.external.Snapshot().Requests != 0 || b.Snapshot().ReservedCostUSDMicros != 262244 {
+	if b.before(context.Background(), cfg, &req) == nil || b.external.Snapshot().Requests != 0 || b.Snapshot().ReservedCostUSDMicros != urlExternalRequestQuote(t, b, req) {
 		t.Fatal("unpersisted reservation reached transport")
 	}
 	b, _, cfg = urlExternalBudget(t, func(diagnosisprep.ModelUsage) error { return nil })
-	b.limits.CostUSDMicros = 262243
+	b.limits.CostUSDMicros = urlExternalRequestQuote(t, b, req) - 1
 	if b.before(context.Background(), cfg, &req) == nil || b.Snapshot().Requests != 0 || b.external.Snapshot().Requests != 0 {
 		t.Fatal("insufficient USD reserved")
 	}
@@ -96,13 +112,13 @@ func TestFirstDiagnosisOpenRouterModelBudgetStorageFailureAndCostExhaustion(t *t
 func TestFirstDiagnosisOpenRouterModelBudgetUSDOnlyBoundary(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
-		cap     int64
+		offset  int64
 		allowed bool
-	}{{"exact", 262244, true}, {"one_micro_short", 262243, false}} {
+	}{{"exact", 0, true}, {"one_micro_short", -1, false}} {
 		t.Run(tc.name, func(t *testing.T) {
 			var writes int
 			b, _, cfg := urlExternalBudget(t, func(diagnosisprep.ModelUsage) error { writes++; return nil })
-			b.limits.CostUSDMicros = tc.cap
+			b.limits.CostUSDMicros = urlExternalRequestQuote(t, b, llm.CompletionRequest{MaxTokens: 100}) + tc.offset
 			// 요청·입출력 토큰은 첫 호출 예약보다 넉넉하며 USD만 달라진다.
 			if b.limits.ModelRequests != 2 || b.limits.InputTokens != 524288 || b.limits.OutputTokens != 200 {
 				t.Fatal("다른 한도에 막힐 수 있는 fixture")
@@ -114,7 +130,7 @@ func TestFirstDiagnosisOpenRouterModelBudgetUSDOnlyBoundary(t *testing.T) {
 			}
 			u := b.Snapshot()
 			if tc.allowed {
-				if writes != 1 || u.Requests != 1 || u.ReservedCostUSDMicros != 262244 {
+				if writes != 1 || u.Requests != 1 || u.ReservedCostUSDMicros != urlExternalRequestQuote(t, b, req) {
 					t.Fatal("경계값의 예약 누락")
 				}
 			} else if writes != 0 || u.Requests != 0 || u.ReservedInputTokens != 0 || u.ReservedOutputTokens != 0 || u.ReservedCostUSDMicros != 0 {

@@ -66,6 +66,15 @@ type urlProcessFixture struct {
 	workerEntered chan struct{}
 }
 
+// urlFullContextQuote는 이 시험 manifest에서 호출당 입력 상한 전체로 한 비용 견적이다(입력 262144 + 출력 2048, 가격 1).
+const urlFullContextQuote = 262144 + 2048
+
+// urlRequestSizedReservation은 calls번 호출의 비용 예약이 요청 크기로 견적됐는지 본다(C28 결정 1): 호출마다 출력 상한과
+// framing 여유보다는 크고, 입력 상한 전체 견적보다는 작다.
+func urlRequestSizedReservation(reserved, calls int64) bool {
+	return calls > 0 && reserved > calls*(2048+firstDiagnosisFramingTokens) && reserved < calls*urlFullContextQuote
+}
+
 func urlTestWrite(t *testing.T, path string, value any) string {
 	t.Helper()
 	raw, err := json.Marshal(value)
@@ -736,7 +745,7 @@ func runURLProcessAcceptanceMode(t *testing.T, browser, external bool) {
 			t.Fatal("saved stage usage missing")
 		}
 		prep := record.ModelPreparation[0].Usage
-		if prep.Requests != 4 || record.Model.Requests != f.modelCalls.Load()-4 || prep.CostMicros+record.Model.CostMicros != final.ModelUsage.CostUSDMicros || final.ModelUsage.ReservedCostUSDMicros != f.modelCalls.Load()*264192 {
+		if prep.Requests != 4 || record.Model.Requests != f.modelCalls.Load()-4 || prep.CostMicros+record.Model.CostMicros != final.ModelUsage.CostUSDMicros || !urlRequestSizedReservation(final.ModelUsage.ReservedCostUSDMicros, f.modelCalls.Load()) || final.ModelUsage.ReservedCostUSDMicros < final.ModelUsage.CostUSDMicros {
 			t.Fatal("preparation double-counted in execution usage")
 		}
 	}

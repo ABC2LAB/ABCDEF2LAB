@@ -511,3 +511,29 @@ func TestOpenRouterReserveRejectsInputOutsideCallLimit(t *testing.T) {
 		t.Fatalf("large request reservation %d", got)
 	}
 }
+
+// 입력 예약 기준 견적은 그 입력·출력의 비용 상한이고, 호출당 상한 밖이나 만료된 승인은 견적하지 않는다(C28 결정 1).
+func TestOpenRouterQuoteInput(t *testing.T) {
+	p := openRouterFixture(t)
+	m := p.manifest
+	full, err := p.Quote(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	small, err := p.QuoteInput(5000, 10)
+	if err != nil || small != openRouterCallCost(m, 5000, 10) || small >= full {
+		t.Fatalf("request-size quote=%d full=%d err=%v", small, full, err)
+	}
+	if top, err := p.QuoteInput(m.MaxInputPerCall, 10); err != nil || top != full {
+		t.Fatal("quote at the per-call input limit differs from the full quote")
+	}
+	for _, c := range [][2]int64{{0, 10}, {m.MaxInputPerCall + 1, 10}, {5000, 0}, {5000, m.MaxOutputPerCall + 1}} {
+		if _, err := p.QuoteInput(c[0], c[1]); err == nil {
+			t.Fatalf("out-of-range quote accepted: %v", c)
+		}
+	}
+	p.manifest.ExpiresAt = time.Now().Add(-time.Second)
+	if _, err := p.QuoteInput(5000, 10); err == nil {
+		t.Fatal("expired approval quoted")
+	}
+}

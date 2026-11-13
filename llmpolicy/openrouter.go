@@ -269,6 +269,16 @@ func (p *OpenRouterPolicy) Quote(output int64) (int64, error) {
 	return openRouterReservedCost(m, output), nil
 }
 
+// QuoteInput은 입력 예약이 input인 호출 하나의 비용 상한이다. 입력 예약은 요청 크기의 상한이다(P3 결정안 C28 결정 1,
+// openRouterReservedInput과 같은 뜻). 호출당 입력 상한 전체로 견적하면 실제 사용과 무관하게 비용 승인을 몇 호출 만에
+// 다 쓴 것으로 센다(11/13 실제 모델 점검: $1 상한에서 호출당 견적이 실제 비용의 수십 배).
+func (p *OpenRouterPolicy) QuoteInput(input, output int64) (int64, error) {
+	if p == nil || input < 1 || input > p.manifest.MaxInputPerCall || output < 1 || output > p.manifest.MaxOutputPerCall || !time.Now().Before(p.manifest.ExpiresAt) {
+		return 0, ErrOpenRouterPolicy
+	}
+	return openRouterCallCost(p.manifest, input, output), nil
+}
+
 // DescribeOpenRouterManifest는 만료 후 저장 보고서 조회에 필요한 설치 메타데이터만 검증한다.
 // 호출 가능한 정책이나 자격 증명은 반환하지 않는다.
 func DescribeOpenRouterManifest(data []byte, output int64) (ProfileTarget, OpenRouterLimits, int64, error) {
