@@ -66,9 +66,15 @@ type Execution struct {
 	slots chan struct{}
 	// admitted는 예산을 예약하고 송신 단계로 넘어간 시도 수다. MaxAttempts는 이 값만 센다.
 	// 보내지 않은 거부·미지원은 송신 상한을 쓰지 않고 call 단위 차단으로만 제한한다(C01).
-	admitted      uint64
-	intentCounts  map[int64]*Counts
-	secrets       [][]byte
+	admitted     uint64
+	intentCounts map[int64]*Counts
+	secrets      [][]byte
+	// secretsGen은 보호 값 목록이 실행 뒤에 바뀐 횟수다(AddProtectedValues). 응답을 읽는 동안 바뀌면 그 응답의 검사 길이가
+	// 새 값을 담지 못할 수 있어 통째로 보류한다.
+	secretsGen uint64
+	// redactOnly는 출력에서만 가리는 값이다(인증 준비가 받은 시험 계정 세션, C14 구현 설계 4). 응답 표현 보류(반사 검사)에는
+	// 쓰지 않는다.
+	redactOnly    [][]byte
 	secretHeaders map[string]struct{}
 }
 type Call struct {
@@ -176,6 +182,11 @@ func compileRules(rules []Rule) ([]compiledRule, error) {
 			m[method] = true
 		}
 		if len(m) == 0 {
+			return nil, ErrConfig
+		}
+		// 인증 준비 규칙은 로그인 경로 하나에 POST만, 보호 자격·헤더 제약 없이 둔다.
+		if r.Purpose != "" && (r.Purpose != PurposeAuthPrep || len(m) != 1 || !m["POST"] || r.PathPrefix == "/" || strings.HasSuffix(r.PathPrefix, "/") ||
+			len(r.CredentialHeaders) != 0 || len(r.Headers) != 0) {
 			return nil, ErrConfig
 		}
 		r.Methods = append([]string(nil), r.Methods...)
@@ -896,7 +907,26 @@ func (e *Execution) matchLocked(req *http.Request) (compiledRule, bool) {
 		return compiledRule{}, false
 	}
 	for _, r := range e.rules {
+		// 목적 규칙(인증 준비)은 모델 요청이 쓰지 못한다.
+		if r.Purpose != "" {
+			continue
+		}
 		if req.URL.Scheme == r.origin.Scheme && a == r.authority && r.methods[req.Method] && (r.PathPrefix == "/" || p == strings.TrimSuffix(r.PathPrefix, "/") || strings.HasPrefix(p, strings.TrimSuffix(r.PathPrefix, "/")+"/")) {
+			return r, true
+		}
+	}
+	return compiledRule{}, false
+}
+
+// matchPurposeLocked는 목적 규칙만 본다. 경로는 정확히 같아야 한다(접두·형제 경로 불가).
+func (e *Execution) matchPurposeLocked(req *http.Request, purpose string) (compiledRule, bool) {
+	a, err := canonicalAuthority(req.URL)
+	p, ok := requestPath(req.URL)
+	if err != nil || !ok || purpose == "" {
+		return compiledRule{}, false
+	}
+	for _, r := range e.rules {
+		if r.Purpose == purpose && req.URL.Scheme == r.origin.Scheme && a == r.authority && r.methods[req.Method] && p == r.PathPrefix && req.URL.RawQuery == "" {
 			return r, true
 		}
 	}
@@ -953,8 +983,27 @@ func (g *guardedConn) Write(p []byte) (int, error) {
 	return g.Conn.Write(p)
 }
 func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Receipt, error) {
-	if ctx == nil {
+	resp, _, r, err := c.do(ctx, req, "", nil)
+	return resp, r, err
+}
+
+// AuthExtractor는 인증 준비 응답(상태·헤더·상한까지 읽은 본문)에서 보낼 세션 헤더만 뽑는다. 응답은 도구·모델로 가지 않는다.
+type AuthExtractor func(*http.Response, []byte) (http.Header, error)
+
+// AuthPrep는 프로그램이 부르는 인증 준비 요청 하나를 인증 준비 규칙으로만 보낸다(C14 구현 설계 2). 대상·IP·TLS·감사·예산
+// 계수는 Do와 같고, 진단 요청 경계(워크플로 훅)·요청 승인·응답 표현 보류는 거치지 않는다. 응답은 extract만 보고, 돌려주는
+// 것은 보낼 세션 헤더다. 자동 재시도는 없다. 결과 불명이면 Receipt.Reason이 Unknown이고 다시 보내지 않는 것은 호출자 몫이다.
+func (c *Call) AuthPrep(ctx context.Context, req *http.Request, extract AuthExtractor) (http.Header, Receipt, error) {
+	if extract == nil {
 		return nil, Receipt{}, ErrConfig
+	}
+	_, session, r, err := c.do(ctx, req, PurposeAuthPrep, extract)
+	return session, r, err
+}
+
+func (c *Call) do(ctx context.Context, req *http.Request, purpose string, extract AuthExtractor) (*http.Response, http.Header, Receipt, error) {
+	if ctx == nil {
+		return nil, nil, Receipt{}, ErrConfig
 	}
 	method := ""
 	if req != nil {
@@ -964,14 +1013,16 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	}
 	r, err := c.start(method)
 	if err != nil {
-		return nil, r, err
+		return nil, nil, r, err
 	}
-	finish := func(resp *http.Response, cause error) (*http.Response, Receipt, error) {
+	var session http.Header
+	finish := func(resp *http.Response, cause error) (*http.Response, http.Header, Receipt, error) {
 		var boundaryErr error
 		rr, aerr := c.finish(ctx, r, func(rr Receipt) {
 			c.observeHTTP(req, resp, rr)
 			c.observeAttemptPath(req, rr)
-			if c.e.cfg.RequestBoundary != nil && req != nil && req.URL != nil {
+			// 인증 준비는 진단 요청이 아니라 워크플로 요청 경계에 알리지 않는다(진단 쓰기 수와 따로 셈).
+			if purpose == "" && c.e.cfg.RequestBoundary != nil && req != nil && req.URL != nil {
 				boundaryErr = c.e.cfg.RequestBoundary.After(context.WithoutCancel(ctx), RequestView{Method: req.Method, URL: req.URL.String(), BodyPresent: req.ContentLength != 0}, rr)
 			}
 		})
@@ -979,12 +1030,12 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 			c.e.mu.Lock()
 			c.e.auditFailed = true
 			c.e.mu.Unlock()
-			return nil, rr, ErrAudit
+			return nil, nil, rr, ErrAudit
 		}
 		if aerr != nil {
-			return nil, rr, aerr
+			return nil, nil, rr, aerr
 		}
-		return resp, rr, cause
+		return resp, session, rr, cause
 	}
 	if req != nil && req.URL != nil && req.URL.Path == "" {
 		copyReq := req.Clone(ctx)
@@ -1013,7 +1064,13 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	if reason == Complete {
 		reason = c.blockedLocked()
 	}
-	rule, ok := e.matchLocked(req)
+	var rule compiledRule
+	var ok bool
+	if purpose == "" {
+		rule, ok = e.matchLocked(req)
+	} else {
+		rule, ok = e.matchPurposeLocked(req, purpose)
+	}
 	revision := e.cfg.PolicyRevision
 	if reason == Complete && !ok {
 		reason = PolicyDenied
@@ -1044,11 +1101,17 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	r.RuleRef = rule.Ref
 	r.PolicyRevision = revision
 	view := RequestView{Method: method, URL: req.URL.String(), BodyPresent: len(body) > 0, BodyBytes: len(body)}
-	if e.cfg.RequestBoundary != nil && e.cfg.RequestBoundary.Before(ctx, view) != nil {
+	// 진단 요청 경계(워크플로 선택·쓰기 승인)와 요청 승인은 모델 요청에만 적용한다. 인증 준비는 대상 등록 때 승인한 로그인
+	// 경로 하나로만 나간다.
+	boundary := e.cfg.RequestBoundary
+	if purpose != "" {
+		boundary = nil
+	}
+	if boundary != nil && boundary.Before(ctx, view) != nil {
 		r.Decision, r.Reason = "denied", PolicyDenied
 		return finish(nil, ErrDenied)
 	}
-	needsApproval := e.cfg.RequestApproval != nil
+	needsApproval := e.cfg.RequestApproval != nil && purpose == ""
 	if needsApproval && e.cfg.ApprovalMode == ApprovalWorkbenchV1 && (method == "GET" || method == "HEAD") && len(body) == 0 && e.cfg.RequestBoundary.PreapprovedRead(view) {
 		needsApproval = false
 	}
@@ -1077,7 +1140,7 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 			return finish(nil, ErrDenied)
 		}
 	}
-	if e.cfg.RequestBoundary != nil && e.cfg.RequestBoundary.Before(ctx, view) != nil {
+	if boundary != nil && boundary.Before(ctx, view) != nil {
 		r.Decision, r.Reason = "denied", PolicyDenied
 		return finish(nil, ErrDenied)
 	}
@@ -1103,7 +1166,7 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	defer func() { <-e.slots }()
 	// 자리를 기다리는 동안 워크플로 일시정지·단계 종료·선택 해제가 있었을 수 있다. 기다린 요청은 요청 경계를 다시
 	// 본다(#487 리뷰 P2). 기다리지 않은 요청은 위 검사 그대로다.
-	if waited && e.cfg.RequestBoundary != nil && e.cfg.RequestBoundary.Before(ctx, view) != nil {
+	if waited && boundary != nil && boundary.Before(ctx, view) != nil {
 		r.Decision, r.Reason = "denied", PolicyDenied
 		return finish(nil, ErrDenied)
 	}
@@ -1233,6 +1296,9 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	// 응답 검사 길이와 보호 값 세대는 보내기 전에 잡는다. 보낸 뒤(응답을 기다리거나 읽는 동안) 더해진 보호 값은 세대 비교로
+	// 잡아 그 응답을 보류한다.
+	longest, generation := e.protectedState()
 	resp, sendErr := client.Do(out)
 	r.ForwardAttempted = ob.forward.Load()
 	if r.ForwardAttempted {
@@ -1261,7 +1327,7 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 	diagnosticReceipt(e.ctx, r, "http_response_received", "succeeded", "")
 	// 자격 반사 검사는 전달할 앞부분이 아니라 검사 상한까지 읽은 전체에 한다. 검사 상한은 본문 상한 + 가장 긴 보호 값
 	// 길이라서, 전달 구간 끝에 걸친 보호 값도 통째로 검사 범위에 들어온다(C16 결정안 2, 상한 사이 조건).
-	limit, scan := responseLimits(e.cfg.Limits, e.longestSecret())
+	limit, scan := responseLimits(e.cfg.Limits, longest)
 	responseBody, readErr := io.ReadAll(io.LimitReader(resp.Body, scan+1))
 	oversized := int64(len(responseBody)) > limit
 	closeErr := resp.Body.Close()
@@ -1271,11 +1337,29 @@ func (c *Call) Do(ctx context.Context, req *http.Request) (*http.Response, Recei
 		r.Reason = Unknown
 		return finish(nil, ErrDenied)
 	}
+	if purpose != "" {
+		// 인증 준비 응답은 도구로 가지 않는다. extract가 보낼 세션 헤더만 뽑고 본문은 지운다. 상한을 넘은 응답은 끝까지 보지
+		// 못했으니 세션을 뽑지 않는다(대상은 답했으므로 결과 불명이 아니라 보류).
+		if oversized {
+			clear(responseBody)
+			r.Reason, r.ResponseTruncated = Withheld, true
+			return finish(nil, ErrWithheld)
+		}
+		extracted, extractErr := extract(resp, responseBody)
+		clear(responseBody)
+		r.ResponseComplete, r.Reason = true, Complete
+		if extractErr != nil {
+			return finish(nil, ErrAuthSession)
+		}
+		session = extracted
+		return finish(nil, nil)
+	}
 	// 대상이 답했지만(상태 줄·헤더 수신) 본문 상한·자격 응답·보호 값 반사·압축 때문에 표현을 주지 않는다. 대상이 요청을
 	// 처리한 것은 알므로 결과 불명이 아니라 보류로 센다. 결과 불명 상한에 넣지 않아 그 call을 멈추지 않는다(C16).
 	// 길이를 맞출 수 없는 부분 응답(206·Content-Range)은 자르지 않고 통째로 보류한다.
 	partial := resp.StatusCode == http.StatusPartialContent || resp.Header.Get("Content-Range") != ""
-	if !e.safeHTTPResponse(resp, responseBody) || oversized && partial {
+	// 읽는 동안 보호 값이 더해졌으면 검사 길이가 새 값을 다 담지 못했을 수 있다(전달 구간 끝에 걸친 새 값). 통째로 보류한다.
+	if e.protectedGeneration() != generation || !e.safeHTTPResponse(resp, responseBody) || oversized && partial {
 		clear(responseBody)
 		r.Reason = Withheld
 		return finish(nil, ErrWithheld)
@@ -1328,12 +1412,73 @@ func (e *Execution) RedactOutput(b []byte) []byte {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	out := bytes.Clone(b)
-	for _, v := range e.secrets {
-		if len(v) > 0 {
-			out = bytes.ReplaceAll(out, v, []byte("[REDACTED]"))
+	for _, set := range [][][]byte{e.secrets, e.redactOnly} {
+		for _, v := range set {
+			if len(v) > 0 {
+				out = bytes.ReplaceAll(out, v, []byte("[REDACTED]"))
+			}
 		}
 	}
 	return out
+}
+
+// 출력 가림 전용 값의 하한·상한이다. 짧은 값은 흔한 문자열까지 가려 출력이 망가지므로 받지 않는다.
+const (
+	minRedactValueBytes = 8
+	maxRedactValueBytes = 8 << 10
+	maxRedactValues     = 64
+)
+
+// 응답 보류(반사 검사)와 출력 가림에 함께 쓰는 보호 값의 하한이다. 짧은 값은 흔한 문자열과 겹쳐 응답을 과하게 보류한다.
+const minProtectedValueBytes = 6
+
+// AddProtectedValues는 실행을 만든 뒤에 알게 된 보호 값(인증 준비에 쓴 비밀번호)을 더한다(C14, S09). 이 값이 대상 응답에
+// 그대로 있으면 그 응답은 통째로 보류하고(withheld), 도구 출력에서도 가린다. 너무 짧거나 길거나 많거나, 검사 상한을
+// 설정으로 고정한 실행에서 상한 사이 조건(검사 상한 ≥ 응답 상한 + 가장 긴 보호 값 − 1)을 깨면 하나도 더하지 않고 ErrConfig다.
+func (e *Execution) AddProtectedValues(values ...[]byte) error {
+	if e == nil {
+		return ErrConfig
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(values) == 0 || len(values) > maxRedactValues {
+		return ErrConfig
+	}
+	next := append([][]byte(nil), e.secrets...)
+	for _, v := range values {
+		if len(v) < minProtectedValueBytes || len(v) > maxRedactValueBytes {
+			return ErrConfig
+		}
+		next = append(next, bytes.Clone(v))
+	}
+	if !validResponseLimits(e.cfg.Limits, next) {
+		return ErrConfig
+	}
+	e.secrets = next
+	e.secretsGen++
+	return nil
+}
+
+// AddRedactValues는 출력 가림 전용 값을 더한다(인증 준비 세션 값). 이 값들은 도구 출력·근거·보고서에서 가리지만 응답
+// 표현 보류에는 쓰지 않는다. 너무 짧거나 길거나 많으면 하나도 더하지 않고 ErrConfig다.
+func (e *Execution) AddRedactValues(values ...[]byte) error {
+	if e == nil {
+		return ErrConfig
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.redactOnly)+len(values) > maxRedactValues {
+		return ErrConfig
+	}
+	for _, v := range values {
+		if len(v) < minRedactValueBytes || len(v) > maxRedactValueBytes {
+			return ErrConfig
+		}
+	}
+	for _, v := range values {
+		e.redactOnly = append(e.redactOnly, bytes.Clone(v))
+	}
+	return nil
 }
 func credentialValues(rules []compiledRule) [][]byte {
 	seen := map[string]bool{}
@@ -1525,13 +1670,26 @@ func compilePolicyTemplate(cfg Config) ([]compiledRule, HeaderMode, *EvaluationC
 
 // longestSecret은 이 실행에 등록된 보호 값(명시 비밀 헤더·보호 자격) 중 가장 긴 바이트 길이다. 응답 검사 상한에 더한다.
 func (e *Execution) longestSecret() int64 {
+	longest, _ := e.protectedState()
+	return longest
+}
+
+// protectedState는 가장 긴 보호 값 길이와 지금 보호 값 목록의 세대다. 응답을 읽기 전에 함께 잡아, 읽는 동안 목록이 바뀌었는지
+// 검사 때 비교한다.
+func (e *Execution) protectedState() (int64, uint64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	longest := 0
 	for _, s := range e.secrets {
 		longest = max(longest, len(s))
 	}
-	return int64(longest)
+	return int64(longest), e.secretsGen
+}
+
+func (e *Execution) protectedGeneration() uint64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.secretsGen
 }
 
 // responseLimits는 응답 전달 상한과 검사 상한이다. 설정이 없으면 요청 상한과 계산값을 쓴다(C16 결정안 3 전과 같음).

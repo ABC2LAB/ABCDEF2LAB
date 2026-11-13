@@ -89,6 +89,8 @@ type E2HTTPFileRule struct {
 	PathScopeRef    string                 `json:"path_scope_ref"`
 	Methods         []string               `json:"methods"`
 	Credentials     *E2HTTPFilePin         `json:"credentials,omitempty"`
+	// Purpose는 인증 준비 전용 규칙 표시다(e2proxy.PurposeAuthPrep). 비면 모델 요청 규칙이다.
+	Purpose string `json:"purpose,omitempty"`
 }
 type E2HTTPFileLimits struct {
 	MaxAttempts   uint64 `json:"max_attempts"`
@@ -323,7 +325,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 			}
 			credentials = secret.Headers
 		}
-		rules = append(rules, e2proxy.Rule{Ref: rule.Ref, Origin: rule.Origin, ConnectIP: ip, TLSSPKISHA256: rule.TLSSPKISHA256, PathPrefix: rule.PathPrefix, PathScopeRef: rule.PathScopeRef, Methods: append([]string(nil), rule.Methods...), CredentialHeaders: credentials})
+		rules = append(rules, e2proxy.Rule{Ref: rule.Ref, Purpose: rule.Purpose, Origin: rule.Origin, ConnectIP: ip, TLSSPKISHA256: rule.TLSSPKISHA256, PathPrefix: rule.PathPrefix, PathScopeRef: rule.PathScopeRef, Methods: append([]string(nil), rule.Methods...), CredentialHeaders: credentials})
 	}
 	requestTimeout, ok1 := e2HTTPMilliseconds(policy.Limits.RequestTimeoutMS, time.Minute)
 	callTimeout, ok2 := e2HTTPMilliseconds(policy.Limits.CallTimeoutMS, time.Hour)

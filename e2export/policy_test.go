@@ -187,3 +187,17 @@ func TestPolicyFingerprintIncludesResponseLimitsOnlyWhenSet(t *testing.T) {
 		t.Fatal("response limits did not change the policy fingerprint")
 	}
 }
+
+// 인증 준비 규칙(C14)은 목적과 정확 경로 일치로 지문에 들어간다. 같은 경로라도 목적이 있으면 지문이 다르다.
+func TestPolicyFingerprintIncludesAuthPrepPurpose(t *testing.T) {
+	c, b := policyFixture()
+	login := e2proxy.Rule{Ref: "auth-login", PathScopeRef: "auth-login-path", Origin: "https://example.invalid", ConnectIP: netip.MustParseAddr("192.0.2.1"), PathPrefix: "/read/login", Methods: []string{"POST"}}
+	plain := c
+	plain.Rules = append(append([]e2proxy.Rule(nil), c.Rules...), login)
+	login.Purpose = e2proxy.PurposeAuthPrep
+	purpose := c
+	purpose.Rules = append(append([]e2proxy.Rule(nil), c.Rules...), login)
+	if policyDigest(t, plain, b) == policyDigest(t, purpose, b) {
+		t.Fatal("auth prep purpose did not change the policy fingerprint")
+	}
+}
