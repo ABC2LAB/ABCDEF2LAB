@@ -201,7 +201,13 @@ func (e *Execution) safeHTTPResponse(response *http.Response, body []byte) bool 
 	// 가리도록 응답을 넘기기 전에 출력 가림 목록에 더한다(S09: 모델 입력만 예외, #522 이동찬 리뷰). 가릴 자리가 모자라면
 	// 기록에 남기지 않도록 응답을 통째로 보류한다.
 	if e.testAccountPassthrough() {
-		issued := issuedSessionValues(response)
+		issued, short := issuedSessionValues(response)
+		if short {
+			// 8바이트보다 짧은 발급 값은 값으로 가릴 수 없다(흔한 문자열까지 가려짐). 헤더 줄이 아닌 모양(curl 쿠키 파일
+			// 등)으로 기록에 남을 수 있으니 그 응답을 보류한다. preserve 실행은 자격 응답을 늘 보류하므로 그보다 더 막지
+			// 않는다(#522 이동찬·윤재상 리뷰).
+			return false
+		}
 		fresh := make([][]byte, 0, len(issued))
 		for _, v := range issued {
 			known := false
@@ -225,13 +231,17 @@ func (e *Execution) safeHTTPResponse(response *http.Response, body []byte) bool 
 const maxIssuedRedactValues = 1024
 
 // issuedSessionValues는 응답이 새로 발급한 자격 값이다: Set-Cookie·Set-Cookie2의 쿠키 값, Authentication-Info·
-// Proxy-Authentication-Info 값 전체. 가림 하한(8바이트)보다 짧은 값은 세션 값으로 보지 않는다(lang=en 같은 값까지
-// 가리면 출력이 망가진다). 같은 값은 한 번만 낸다.
-func issuedSessionValues(response *http.Response) [][]byte {
+// Proxy-Authentication-Info 값 전체. 같은 값은 한 번만 낸다. 가림 하한(8바이트)보다 짧거나 상한보다 긴 값이 있으면
+// short가 참이다(값으로 가릴 수 없어 응답을 보류한다).
+func issuedSessionValues(response *http.Response) (out [][]byte, short bool) {
 	seen := map[string]bool{}
-	var out [][]byte
 	add := func(v string) {
-		if len(v) >= minRedactValueBytes && len(v) <= maxRedactValueBytes && !seen[v] {
+		switch {
+		case v == "":
+			// 빈 값(쿠키 지우기)은 비밀이 없다.
+		case len(v) < minRedactValueBytes || len(v) > maxRedactValueBytes:
+			short = true
+		case !seen[v]:
 			seen[v] = true
 			out = append(out, []byte(v))
 		}
@@ -256,7 +266,7 @@ func issuedSessionValues(response *http.Response) [][]byte {
 			}
 		}
 	}
-	return out
+	return out, short
 }
 
 func (Config) String() string   { return "e2proxy.Config[protected]" }
