@@ -134,9 +134,15 @@ describe("진행 중인 점검 · 끝난 점검 화면", () => {
     // 범위 확인 대기는 그런 점검이 있을 때만
     expect(within(run).queryByRole("button", { name: /범위 확인 대기/ })).toBeNull();
 
+    // 줄 오른쪽은 시안 딱지 (엔진 실행 중 → 점검 중) + 진행률 자리 '—%' (서버에 진행률이 없어 만들지 않음)
+    const row = within(run).getByRole("button", { name: /target\.example/ });
+    expect(within(row).getByText("점검 중")).toBeInTheDocument();
+    expect(within(row).getByText("—%")).toBeInTheDocument();
+
     fireEvent.click(chip(run, "승인 대기"));
     expect(within(run).queryByRole("button", { name: /target\.example/ })).toBeNull();
-    expect(within(run).getByText("이 상태의 점검이 없습니다.")).toBeInTheDocument();
+    // 시안 rec-none: 승인 대기 칩이면 승인 문구
+    expect(within(run).getByText("승인을 기다리는 점검이 없습니다.")).toBeInTheDocument();
     expect(within(run).getByText("0 / 1건")).toBeInTheDocument();
     // 목록에 가려졌으면 오른쪽 상세도 비운다 (목록과 상세가 어긋나지 않게)
     const detail = screen.getByRole("complementary", { name: "선택한 점검" });
@@ -171,12 +177,62 @@ describe("진행 중인 점검 · 끝난 점검 화면", () => {
     expect(within(done).getByText("이 결과의 끝난 점검이 없습니다.")).toBeInTheDocument();
     fireEvent.click(chip(done, "검토 필요"));
     const row = within(done).getByRole("button", { name: /target\.example/ });
-    // 끝난 점검 줄의 소요 · 커버리지 (시안 v55) 는 서버가 목록에 주지 않아 '아직 구현 안 됨'
-    expect(within(row).getByText(/^소요/)).toHaveTextContent(/^소요 아직 구현 안 됨.* · 자산 커버리지 아직 구현 안 됨/);
+    // 끝난 점검 줄 (시안 doneRowHtml): 상태 · 판정 한 줄, 오른쪽은 '발견 n'. 서버가 주지 않는 날짜 · 소요는 그리지 않는다
+    expect(within(row).getByText("실행 마감 · 확정 0 · 검토 필요 1 · 미실행 0 · 결과 불명 0")).toBeInTheDocument();
+    expect(within(row).getByText("발견 1")).toBeInTheDocument();
+    expect(row).not.toHaveTextContent(/소요|연결 전/);
+    // 확정이 아닌 후보는 위험도 딱지로 세지 않는다
+    expect(within(row).queryByText(/^(심각|높음) \d/)).toBeNull();
 
+    // 상세 (시안 inspFor 끝난 점검): 끝난 점검 · 주소, 발견 n건, 판정, 보고서 열기 · 다시 점검
     const detail = screen.getByRole("complementary", { name: "선택한 점검" });
+    expect(within(detail).getByRole("heading", { level: 2, name: "발견 1건" })).toBeInTheDocument();
+    expect(within(detail).getByText(/^끝난 점검 ·/)).toBeInTheDocument();
     expect(within(detail).getByText("확정 0 · 검토 필요 1 · 미실행 0 · 결과 불명 0")).toBeInTheDocument();
+    expect(within(detail).getByRole("button", { name: /보고서 열기/ })).toBeInTheDocument();
     expect(within(detail).getByRole("button", { name: "이 주소로 다시 점검" })).toBeInTheDocument();
+  });
+
+  it("끝난 점검 줄 오른쪽은 확정 발견의 위험도 딱지 + 발견 수, 미실행만 있으면 '판단 불가 n' (시안 doneRowHtml)", async () => {
+    const found: api.Remediation["entries"][number] = {
+      ...candidate(1),
+      entry_id: "finding-1",
+      title: "확정 발견",
+      outcome: "confirmed",
+      verification: "stored_verification",
+      severity: "critical",
+    };
+    vi.mocked(api.fetchRemediation).mockResolvedValue({ task_id: 42, entries: [found, candidate(2)] });
+    useUrl.setState({ handle, job: completed, verified: true });
+    const { unmount } = render(
+      <ShellContext.Provider value={shell("finished")}>
+        <UrlFinishedLive />
+      </ShellContext.Provider>,
+    );
+    const done = screen.getByRole("region", { name: "끝난 점검 목록" });
+    const row = await within(done).findByText("발견 2");
+    expect(within(row.parentElement as HTMLElement).getByText("심각 1")).toBeInTheDocument();
+    const detail = screen.getByRole("complementary", { name: "선택한 점검" });
+    expect(within(detail).getByRole("heading", { level: 2, name: "발견 2건" })).toBeInTheDocument();
+    unmount();
+
+    const skipped: api.Remediation["entries"][number] = {
+      ...candidate(3),
+      outcome: "not_executed",
+      status: "policy_not_executed",
+    };
+    vi.mocked(api.fetchRemediation).mockResolvedValue({ task_id: 42, entries: [skipped] });
+    render(
+      <ShellContext.Provider value={shell("finished")}>
+        <UrlFinishedLive />
+      </ShellContext.Provider>,
+    );
+    const again = screen.getByRole("region", { name: "끝난 점검 목록" });
+    expect(await within(again).findByText("판단 불가 1")).toBeInTheDocument();
+    // 판단 불가만 있으면 시안처럼 '결과 확인' 머리
+    const d2 = screen.getByRole("complementary", { name: "선택한 점검" });
+    expect(within(d2).getByRole("heading", { level: 2, name: "판단 불가 1건" })).toBeInTheDocument();
+    expect(within(d2).getByText(/^결과 확인 ·/)).toBeInTheDocument();
   });
 
   it("결과 저장이 확인된 중지 점검도 결과로 나누지 않고 '전체' 에만 보인다 (판정 0건이어도 발견 없음 아님)", async () => {

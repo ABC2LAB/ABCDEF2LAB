@@ -14,7 +14,6 @@ import { UrlFeeds, useUrl } from "./live/urlDiagnosis";
 import { URL_ENDED_STATES } from "./live/urlMap";
 import { isView, type Shell, ShellContext, type View } from "./shell";
 import { type DSel, type Panel, useWb } from "./store";
-import { Icon } from "./ui/icons";
 import { Rail } from "./ui/Rail";
 import { AccountClassifyLive } from "./views/live/AccountClassifyLive";
 import {
@@ -44,8 +43,10 @@ interface Nav {
   railNewVisible: boolean;
 }
 
-/** 넓은 화면에서 접은 패널을 이 브라우저에 기억하는 키. */
-const PANEL_KEY: Readonly<Record<Panel, string>> = { rail: "abc2lab-rail-hidden", insp: "abc2lab-insp-hidden" };
+/** 넓은 화면에서 접은 패널을 이 브라우저에 기억하는 키 (시안과 같은 키 · 값 '1' 접음 / '0' 펼침). */
+const PANEL_KEY: Readonly<Record<Panel, string>> = { rail: "abc2lab-rail-min", insp: "abc2lab-insp-min" };
+/** 시안 v91 까지 쓰던 키 ('1' 만 저장). 한 번 읽어 새 키로 옮기고 지운다. */
+const OLD_PANEL_KEY: Readonly<Record<Panel, string>> = { rail: "abc2lab-rail-hidden", insp: "abc2lab-insp-hidden" };
 /** 패널을 접거나 펼친 뒤 다음 버튼으로 포커스를 옮기기까지 (화면이 다시 그려질 시간). */
 const FOCUS_DELAY_MS = 30;
 
@@ -55,23 +56,32 @@ const FOCUS_DELAY_MS = 30;
  */
 const wider = (mq: MediaQueryList | null) => !!mq && !mq.matches;
 
-/** 넓은 화면 패널 접기 · 펼치기를 스토어와 이 브라우저 저장소에 같이 쓴다. */
-function setPanel(panel: Panel, hidden: boolean) {
-  useWb.getState().setPanelHidden(panel, hidden);
+/** 넓은 화면 패널 접기 · 펼치기를 스토어와 이 브라우저 저장소에 같이 쓴다 (시안 setRailMin · setInspMin 의 save). */
+function setPanel(panel: Panel, min: boolean) {
+  useWb.getState().setPanelMin(panel, min);
   try {
-    if (hidden) localStorage.setItem(PANEL_KEY[panel], "1");
-    else localStorage.removeItem(PANEL_KEY[panel]);
+    localStorage.setItem(PANEL_KEY[panel], min ? "1" : "0");
   } catch {
     // 저장소를 못 쓰면 이번만 적용
   }
+}
+
+/** 저장해 둔 접기 상태를 읽는다. 새 키가 없으면 옛 키를 한 번 옮겨 온다. */
+function readPanel(panel: Panel): boolean {
+  const saved = localStorage.getItem(PANEL_KEY[panel]);
+  if (saved !== null) return saved === "1";
+  const old = localStorage.getItem(OLD_PANEL_KEY[panel]) === "1";
+  localStorage.removeItem(OLD_PANEL_KEY[panel]);
+  if (old) localStorage.setItem(PANEL_KEY[panel], "1");
+  return old;
 }
 
 export function Workbench() {
   useLiveAuthBoot();
   const accent = useWb((st) => st.accent);
   const theme = useWb((st) => st.theme);
-  const railHidden = useWb((st) => st.railHidden);
-  const inspHidden = useWb((st) => st.inspHidden);
+  const railMin = useWb((st) => st.railMin);
+  const inspMin = useWb((st) => st.inspMin);
   const [route, setRoute] = useState<View>("dashboard");
   const [nav, setNav] = useState<Nav>({ seq: 0, byUser: false, railNewVisible: false });
   // 두 서랍을 한 상태로: Esc 는 상세 먼저, 없으면 레일 (원본 keydown)
@@ -81,6 +91,8 @@ export function Workbench() {
   const [narrow, setNarrow] = useState(false);
   const [phone, setPhone] = useState(false);
   const [reduce, setReduce] = useState(false);
+  /** 저장한 접힘을 복원해 그린 뒤에만 접기 움직임을 켠다 (처음 열 때 접히는 움직임이 보이지 않게). */
+  const [booted, setBooted] = useState(false);
 
   const narrowMq = useRef<MediaQueryList | null>(null);
   const phoneMq = useRef<MediaQueryList | null>(null);
@@ -89,7 +101,7 @@ export function Workbench() {
   const rootRef = useRef<HTMLDivElement>(null);
   const views = useRef<Partial<Record<View, HTMLElement | null>>>({});
 
-  /** 지금 화면 안에서 고른 버튼에 잠시 뒤 포커스 (접은 패널의 버튼이 사라지므로 다시 펼칠 버튼으로 옮긴다). */
+  /** 지금 화면 안에서 고른 버튼에 잠시 뒤 포커스 (접고 펴도 같은 자리의 버튼에 포커스를 둔다). */
   const focusLater = useCallback((selector: string, inView: boolean) => {
     window.setTimeout(() => {
       const scope = inView ? views.current[routeRef.current] : rootRef.current;
@@ -103,7 +115,7 @@ export function Workbench() {
   // 상세 패널: 넓지 않은 화면에서는 서랍, 넓은 화면에서는 접기 · 펼치기(항목을 고르면 다시 펼친다)
   const openInsp = useCallback(() => {
     if (wider(narrowMq.current)) {
-      if (!useWb.getState().inspHidden) return;
+      if (!useWb.getState().inspMin) return;
       setPanel("insp", false);
       setInspFocus((n) => n + 1);
       return;
@@ -115,12 +127,12 @@ export function Workbench() {
   const closeInsp = useCallback(() => {
     if (wider(narrowMq.current)) {
       setPanel("insp", true);
-      focusLater("[data-pane-toggle]", true);
+      focusLater("[data-insp-fold]", true);
       return;
     }
     setDrawers((d) => (d.insp ? { ...d, insp: false } : d));
   }, [focusLater]);
-  // 레일: 휴대폰에서는 서랍, 그보다 넓으면 접기 · 펼치기
+  // 레일: 휴대폰에서는 서랍, 그보다 넓으면 아이콘 줄로 접기 · 펼치기
   const openRail = useCallback(() => {
     if (wider(phoneMq.current)) {
       setPanel("rail", false);
@@ -289,11 +301,14 @@ export function Workbench() {
       const savedTheme = localStorage.getItem("abc2lab-theme");
       if (savedTheme === "light" || savedTheme === "dark") useWb.getState().setTheme(savedTheme);
       for (const panel of ["rail", "insp"] as const) {
-        if (localStorage.getItem(PANEL_KEY[panel]) === "1") useWb.getState().setPanelHidden(panel, true);
+        if (readPanel(panel)) useWb.getState().setPanelMin(panel, true);
       }
     } catch {
       // 저장소를 못 쓰면 기본색 · 펼친 패널
     }
+    // 복원한 접힘은 움직임 없이 바로 보인다(시안은 첫 그림부터 접힌 채). 복원이 그려진 다음 프레임부터 접기 움직임을 켠다.
+    const frame = requestAnimationFrame(() => requestAnimationFrame(() => setBooted(true)));
+    return () => cancelAnimationFrame(frame);
   }, []);
 
   // 스크림 클릭: 두 서랍 모두 닫기
@@ -351,11 +366,7 @@ export function Workbench() {
         data-theme={theme === "system" ? undefined : theme}
       >
         <UrlFeeds />
-        <div className={cx(s.demobar, s["lv-bar"])} role="note">
-          <Icon name="info" />
-          <span>실제 서버 전용 · 승인 범위와 사용량은 서버가 확인한 값만 표시합니다.</span>
-        </div>
-        <div className={cx(s.app, railHidden && s["rail-hidden"], inspHidden && s["insp-hidden"])}>
+        <div className={cx(s.app, railMin && s["rail-min"], inspMin && s["insp-min"], !booted && s.booting)}>
           <Rail />
           <main className={s.work}>
             {section("dashboard", pick("대시보드", <DashboardByMode />))}

@@ -1,8 +1,10 @@
 "use client";
 
-// 레일 맨 아래 계정 버튼 + 위로 열리는 계정 메뉴 (시안 v21 · v22).
+// 레일 맨 아래 계정 버튼 + 위로 열리는 계정 메뉴 (시안 #acctBtn · #acctMenu). 레일을 아이콘 줄로 접으면 메뉴는 줄 오른쪽에 열린다.
 // 메뉴: 계정 이름 · 분석 모델 · 진단 모드 · 다크 모드 · 강조색 시안 · 로그아웃(로그인 안 됐으면 로그인 · 다시 확인).
 // 메뉴는 화면 모드 · 강조색 변수가 있는 작업대 뿌리([data-wb-root]) 안에 그린다 — 휴대폰 레일 서랍(transform) 밖에 두려고.
+// 그래서 문서 순서가 시안(계정 버튼 바로 뒤)과 달라, Tab 순서는 키 처리로 시안처럼 맞춘다.
+// 시안 문구 '시안 화면 · 숫자와 기록은 예시입니다'(.am-note)는 실제 서버 화면에 맞지 않아 두지 않는다.
 // 서버에 계정 정보 API 가 없어 이름은 마지막으로 로그인한 아이디만 보인다(비밀번호 · 토큰은 저장하지 않음).
 
 import {
@@ -106,6 +108,8 @@ export function AccountMenu() {
   const { route } = useShell();
   const { state, logout, retry } = useLiveAuth();
   const accent = useWb((st) => st.accent);
+  // 접은 레일(아이콘 줄)에서는 글자가 없으니 마우스를 올리면 '계정'이 뜬다 (시안 RAIL_TIPS)
+  const railMin = useWb((st) => st.railMin);
   const dark = useIsDark();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState<string | null>(null);
@@ -133,7 +137,7 @@ export function AccountMenu() {
     if (!b || !m) return;
     const r = b.getBoundingClientRect();
     const strip =
-      useWb.getState().railHidden &&
+      useWb.getState().railMin &&
       (typeof window.matchMedia !== "function" || window.matchMedia("(min-width: 760px)").matches);
     const w = Math.min(Math.max(248, strip ? 0 : r.width), window.innerWidth - 16);
     m.style.width = `${w}px`;
@@ -184,10 +188,22 @@ export function AccountMenu() {
   }
 
   const onMenuKey = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
-    e.preventDefault();
     const list = menuItems(menuRef.current);
     const i = list.indexOf(document.activeElement as HTMLElement);
+    // 시안은 메뉴가 계정 버튼 바로 뒤에 있다: 끝 항목에서 Tab 이면 메뉴를 닫고 버튼 다음 칸으로,
+    // 첫 항목에서 Shift+Tab 이면 계정 버튼으로 (메뉴는 열린 채)
+    if (e.key === "Tab") {
+      if (!e.shiftKey && i === list.length - 1) {
+        // 기본 동작(다음 칸으로 이동)은 막지 않는다 → 버튼에서 한 칸 나아간다
+        close(true);
+      } else if (e.shiftKey && i === 0) {
+        e.preventDefault();
+        btnRef.current?.focus();
+      }
+      return;
+    }
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    e.preventDefault();
     list[stepIndex(i, list.length, e.key === "ArrowDown" ? 1 : -1)]?.focus();
   };
 
@@ -204,7 +220,9 @@ export function AccountMenu() {
             <span className={s.avatar} aria-hidden="true">
               {initials(shown)}
             </span>
-            <b>{shown}</b>
+            <div>
+              <b>{shown}</b>
+            </div>
           </div>
           <div className={s["am-sep"]} />
           <LiveAccountModel />
@@ -250,6 +268,7 @@ export function AccountMenu() {
       >
         <Icon name="moon" />
         <span>다크 모드</span>
+        {/* 시안은 .tg 지만 같은 이름의 경로 묶음 .tg(위 경계선) 규칙이 겹쳐 손잡이가 1px 내려가므로 이름을 나눈다 */}
         <i className={s["am-tg"]} aria-hidden="true" />
       </button>
       {/* biome-ignore lint/a11y/useSemanticElements: 원본 마크업 그대로 (fieldset 으로 바꾸면 모양이 달라짐) */}
@@ -293,13 +312,16 @@ export function AccountMenu() {
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-controls={open ? "acctMenu" : undefined}
+        title={railMin ? "계정" : undefined}
         onClick={toggle}
       >
         <span className={s.avatar} aria-hidden="true">
           {ready ? initials(shown) : "?"}
         </span>
-        <span className={s["am-who"]}>{label}</span>
-        <Icon name="updown" />
+        <span className={s.who}>
+          <b>{label}</b>
+        </span>
+        <Icon name="updown" className={s.chev} />
       </button>
       {open && host ? createPortal(menu, host) : null}
     </>

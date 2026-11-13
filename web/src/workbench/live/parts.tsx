@@ -34,7 +34,7 @@ export function Unsupported({ what, chip = false }: { what?: string; chip?: bool
 }
 
 /** 시안에는 있으나 서버 · 화면 연결이 아직 없는 칸에 넣는 글. */
-export const NOT_YET = "아직 구현 안 됨";
+export const NOT_YET = "연결 전";
 
 /**
  * 시안 칸 자리 표시 — 서버에 입력 · 데이터가 없어 아직 못 채운 칸에 가짜 값 대신 둔다(절대규칙 5).
