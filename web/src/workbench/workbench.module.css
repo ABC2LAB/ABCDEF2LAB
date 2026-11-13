@@ -4605,13 +4605,21 @@ button.smm:hover {
     padding-left: calc(28px + var(--fold-l));
     padding-right: calc(max(28px, env(safe-area-inset-right, 0px)) + var(--fold-r));
   }
+  /*
+   * 제목 '새 점검'은 폼 첫 줄('대상')의 왼쪽 끝에 맞춘다. 폼은 두 패널을 편 때의 내용 칸(화면 폭 - 패널 폭 - 양옆 28px)
+   * 안에서 760px 단으로 가운데라, 그 남는 폭의 절반만큼 더 민다. --panels-w = 편 레일 236px (+ 편 상세 패널 384px).
+   */
   .app .view[data-view="new"] .vh {
-    padding-left: calc(28px + var(--fold-l));
+    --panels-w: 236px;
+    padding-left: calc(28px + var(--fold-l) + max(0px, (100vw - var(--panels-w) - 56px - 760px) / 2));
   }
 }
 @media (min-width: 1200px) {
   .app.insp-min .vm.nform {
     --fold-r: 320px;
+  }
+  .app .view[data-view="new"] .vh {
+    --panels-w: 620px;
   }
 }
 /* ---- 시안 v91 전수 대조로 옮긴 것 ---- */
