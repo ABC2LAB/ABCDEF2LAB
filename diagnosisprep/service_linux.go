@@ -37,6 +37,7 @@ func (i storedInspection) runtime() Inspection {
 }
 
 type receipt struct {
+	RecoveryWitnessBootID     string           `json:"recovery_witness_boot_id,omitempty"`
 	ExecutionBootID           string           `json:"execution_boot_id,omitempty"`
 	ExecutionReturned         bool             `json:"execution_returned,omitempty"`
 	ResourcesRecovered        bool             `json:"resources_recovered,omitempty"`
@@ -119,7 +120,7 @@ func newServiceForBoot(ctx context.Context, root string, backend Backend, boot s
 	createKeys := map[string]string{}
 	for _, raw := range records {
 		var r receipt
-		if strictDecode(raw, &r) != nil || !validText(r.Principal, 256) || !reference.MatchString(r.CreateKey) || !validJob(r.Job) || r.ExecutionBootID != "" && !bootIDPattern.MatchString(r.ExecutionBootID) || r.ResourcesRecovered && !r.ExecutionReturned || (r.ExecutionReturned || r.ExecutionBootID != "") && r.StartKey == "" || !inspectionOK(r.Inspection.runtime()) || r.Job.SourceDigest != sourceDigest(r.Job.Input, r.Inspection.InstallationDigest) || !reflect.DeepEqual(r.Job.Scope, r.Inspection.Scope) || (r.StartKey != "" && (!reference.MatchString(r.StartKey) || (r.Job.Scope != nil && r.Job.Scope.Model != nil && r.Job.Scope.Model.ExternalTransfer && !r.ExternalTransferConfirmed))) || r.Job.PreparationStarted != (r.StartKey != "") {
+		if strictDecode(raw, &r) != nil || !validText(r.Principal, 256) || !reference.MatchString(r.CreateKey) || !validJob(r.Job) || r.ExecutionBootID != "" && !bootIDPattern.MatchString(r.ExecutionBootID) || r.RecoveryWitnessBootID != "" && (!bootIDPattern.MatchString(r.RecoveryWitnessBootID) || r.ExecutionBootID != "" || r.StartKey == "") || r.ResourcesRecovered && !r.ExecutionReturned || (r.ExecutionReturned || r.ExecutionBootID != "") && r.StartKey == "" || !inspectionOK(r.Inspection.runtime()) || r.Job.SourceDigest != sourceDigest(r.Job.Input, r.Inspection.InstallationDigest) || !reflect.DeepEqual(r.Job.Scope, r.Inspection.Scope) || (r.StartKey != "" && (!reference.MatchString(r.StartKey) || (r.Job.Scope != nil && r.Job.Scope.Model != nil && r.Job.Scope.Model.ExternalTransfer && !r.ExternalTransferConfirmed))) || r.Job.PreparationStarted != (r.StartKey != "") {
 			return fail()
 		}
 		key := r.Principal + "\x00" + r.CreateKey
@@ -152,7 +153,21 @@ func newServiceForBoot(ctx context.Context, root string, backend Backend, boot s
 	// 호스트 재부팅은 이전 커널의 실행·소켓·자식 프로세스가 종료된 증거다.
 	// 서비스/컨테이너 재시작만으로는 같은 boot ID이므로 자원 마감을 추정하지 않는다.
 	for _, r := range s.jobs {
-		if r.StartKey != "" && bootIDPattern.MatchString(boot) && r.ExecutionBootID != "" && r.ExecutionBootID != boot && (!r.ExecutionReturned || !r.Job.DrainComplete && !r.ResourcesRecovered) {
+		if r.StartKey == "" || !bootIDPattern.MatchString(boot) {
+			continue
+		}
+		proofBoot := r.ExecutionBootID
+		if proofBoot == "" {
+			// 구 형식은 과거의 실행 boot를 추정하지 않는다. 현재 미확인 자원을 관찰한 boot만 저장한다.
+			if r.RecoveryWitnessBootID == "" {
+				r.RecoveryWitnessBootID = boot
+				if s.save(r) != nil {
+					return fail()
+				}
+			}
+			proofBoot = r.RecoveryWitnessBootID
+		}
+		if proofBoot != boot && (!r.ExecutionReturned || !r.Job.DrainComplete && !r.ResourcesRecovered) {
 			r.ExecutionReturned, r.ResourcesRecovered = true, true
 			if s.save(r) != nil {
 				return fail()
@@ -173,13 +188,16 @@ func executionBootID() string {
 	return value
 }
 func validReceiptChange(old, next receipt) bool {
+	if old.RecoveryWitnessBootID != "" && old.RecoveryWitnessBootID != next.RecoveryWitnessBootID {
+		return false
+	}
 	if old.StartKey != "" && old.ExecutionBootID != next.ExecutionBootID {
 		return false
 	}
 	if old.ExecutionReturned && !next.ExecutionReturned || old.ResourcesRecovered && !next.ResourcesRecovered {
 		return false
 	}
-	if old.Principal != next.Principal || old.CreateKey != next.CreateKey || old.Job.ID != next.Job.ID || (next.Job.Revision != old.Job.Revision+1 && !(reflect.DeepEqual(old.Job, next.Job) && (old.ExecutionReturned != next.ExecutionReturned || old.ResourcesRecovered != next.ResourcesRecovered))) || old.Job.Input != next.Job.Input {
+	if old.Principal != next.Principal || old.CreateKey != next.CreateKey || old.Job.ID != next.Job.ID || (next.Job.Revision != old.Job.Revision+1 && !(reflect.DeepEqual(old.Job, next.Job) && (old.ExecutionReturned != next.ExecutionReturned || old.ResourcesRecovered != next.ResourcesRecovered || old.RecoveryWitnessBootID != next.RecoveryWitnessBootID))) || old.Job.Input != next.Job.Input {
 		return false
 	}
 	if old.StartKey != "" {

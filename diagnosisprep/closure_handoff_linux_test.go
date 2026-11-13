@@ -154,3 +154,99 @@ func TestUnknownRecoveryRequiresVerifiedHostBootChange(t *testing.T) {
 	}
 	awaitExecutionReturned(t, recovered, next.ID)
 }
+
+// 구 버전이 남긴 보호 영수증을 만들고 업그레이드한다. backend 실행/종료를 꾸며 반환 증거를 넣지 않는다.
+func TestLegacyUnknownRecoveryWitnessRequiresLaterHostBoot(t *testing.T) {
+	s, b, root := newFixture(t)
+	b.inspection.MaxRuns = 2
+	legacy := create(t, s, "legacy-create")
+	s.mu.Lock()
+	r := s.jobs[legacy.ID]
+	r.StartKey = "legacy-start"
+	r.Job.PreparationStarted = true
+	r.Job.State = Preparing
+	r.Job.Phase = ScopeCheck
+	r.Job.Revision++
+	if err := s.save(r); err != nil {
+		s.mu.Unlock()
+		t.Fatal(err)
+	}
+	r.Job.State = Unknown
+	r.Job.Phase = Closure
+	r.Job.ReasonCode = "execution_closure_unconfirmed"
+	r.Job.Revision++
+	if err := s.save(r); err != nil {
+		s.mu.Unlock()
+		t.Fatal(err)
+	}
+	before := cloneReceipt(r).Job
+	s.mu.Unlock()
+	if s.Shutdown(context.Background()) != nil {
+		t.Fatal("기존 설치 종료 실패")
+	}
+	const firstBoot = "00000000-0000-0000-0000-000000000001"
+	const laterBoot = "00000000-0000-0000-0000-000000000002"
+	// boot를 못 읽으면 증거를 만들지 않고 조회만 복원한다.
+	missing, err := newServiceForBoot(context.Background(), root, b, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if missing.jobs[legacy.ID].ResourcesRecovered || missing.jobs[legacy.ID].RecoveryWitnessBootID != "" {
+		t.Fatal("누락된 boot 증거를 추정")
+	}
+	if missing.Shutdown(context.Background()) != nil {
+		t.Fatal("종료 실패")
+	}
+	upgraded, err := newServiceForBoot(context.Background(), root, b, firstBoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(status(t, upgraded, legacy.ID), before) {
+		t.Fatal("업그레이드가 원래 결과를 변경")
+	}
+	if upgraded.jobs[legacy.ID].RecoveryWitnessBootID != firstBoot {
+		t.Fatal("보호된 복구 관찰 증거 미저장")
+	}
+	next := create(t, upgraded, "legacy-next")
+	if start(t, upgraded, next, "legacy-next-start").Error != "busy" {
+		t.Fatal("관찰만으로 잠금 해제")
+	}
+	if upgraded.Shutdown(context.Background()) != nil {
+		t.Fatal("종료 실패")
+	}
+	same, err := newServiceForBoot(context.Background(), root, b, firstBoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if start(t, same, next, "legacy-next-start").Error != "busy" {
+		t.Fatal("같은 boot 재시작으로 구 실행 복구")
+	}
+	if same.Shutdown(context.Background()) != nil {
+		t.Fatal("종료 실패")
+	}
+	recovered, err := newServiceForBoot(context.Background(), root, b, laterBoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recovered.Shutdown(context.Background())
+	if !reflect.DeepEqual(status(t, recovered, legacy.ID), before) {
+		t.Fatal("호스트 복구가 원래 사실/예약을 변경")
+	}
+	if b.calls.Load() != 0 {
+		t.Fatal("이전 실행 재생")
+	}
+	if start(t, recovered, next, "legacy-next-start").Error != "" {
+		t.Fatal("실제 호스트 종료 후 구 형식 복구 실패")
+	}
+	awaitExecutionReturned(t, recovered, next.ID)
+	last := create(t, recovered, "legacy-exhausted")
+	if start(t, recovered, last, "legacy-exhausted-start").Error != "budget_exhausted" {
+		t.Fatal("구 형식의 실행 횟수를 환불")
+	}
+	old := recovered.jobs[legacy.ID]
+	changed := cloneReceipt(old)
+	changed.RecoveryWitnessBootID = laterBoot
+	if validReceiptChange(old, changed) {
+		t.Fatal("저장된 복구 관찰 증거 교체 허용")
+	}
+}
