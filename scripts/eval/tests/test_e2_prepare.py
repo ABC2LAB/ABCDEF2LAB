@@ -176,7 +176,7 @@ class TestPrepare(Case):
 class TestRejected(Case):
     def test_bad_values_write_nothing(self):
         cases = (({"eval_run_id": ""}, "run_values_invalid"), ({"eval_run_id": "http://x"}, "run_values_invalid"), ({"model_tag": 7}, "run_values_invalid"),
-                 ({"model_tag": "a b"}, "run_values_invalid"), ({"header_mode": "other"}, "header_mode_invalid"), ({"header_mode": []}, "header_mode_invalid"),
+                 ({"model_tag": "a b"}, "run_values_invalid"), ({"header_mode": "other"}, "header_mode_invalid"), ({"header_mode": "test_account_passthrough"}, "header_mode_invalid"), ({"header_mode": []}, "header_mode_invalid"),
                  ({"port": 0}, "port_invalid"), ({"port": 65536}, "port_invalid"), ({"port": "8080"}, "port_invalid"), ({"port": True}, "port_invalid"),
                  ({"evaluation": None}, "evaluation_invalid"), ({"evaluation": {}}, "evaluation_invalid"), ({"evaluation": "api"}, "evaluation_invalid"), ({"evaluation": 7}, "evaluation_invalid"),
                  ({"evaluation": EVALUATION | {"run_ref": "x"}}, "evaluation_invalid"), ({"evaluation": EVALUATION | {"llm_backend": "other"}}, "evaluation_invalid"),

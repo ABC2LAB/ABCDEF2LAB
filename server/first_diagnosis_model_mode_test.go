@@ -74,3 +74,28 @@ func TestFirstDiagnosisExternalModeKeepsLocalPolicy(t *testing.T) {
 		t.Fatal("external policy escaped first-diagnosis startup")
 	}
 }
+
+// 서버 시작이 모델 설정의 외부 API 여부를 호스트 설정에 싣는다. 호스트는 그 값으로 인증 준비 정책을 거부한다(#522 재상 지적 2).
+func TestFirstDiagnosisHTTPModelConfigMarksExternalModel(t *testing.T) {
+	path, _ := externalManifestFixture(t)
+	host := FirstDiagnosisHTTPHostConfig{PolicyFile: "policy.json"}
+	_, got, err := firstDiagnosisHTTPModelConfig(FirstDiagnosisHTTPStartOptions{Host: host, ModelExecutionMode: "openrouter", OpenRouterManifestPath: path})
+	if err != nil || !got.ExternalModel || got.PolicyFile != host.PolicyFile {
+		t.Fatalf("external model not marked: %v %+v", err, got.ExternalModel)
+	}
+	root := t.TempDir()
+	if err := os.Chmod(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	local := filepath.Join(root, "models.json")
+	if err := os.WriteFile(local, []byte(`{"version":1,"profiles":[{"profile_id":7,"format":"openai","model":"local:fixture","base_url":"http://127.0.0.1:11434/v1","addresses":["127.0.0.1"]}]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, got, err = firstDiagnosisHTTPModelConfig(FirstDiagnosisHTTPStartOptions{Host: host, LocalLLMManifestPath: local})
+	if err != nil || got.ExternalModel {
+		t.Fatalf("local model marked external: %v %+v", err, got.ExternalModel)
+	}
+	if _, _, err := firstDiagnosisHTTPModelConfig(FirstDiagnosisHTTPStartOptions{Host: host, ModelExecutionMode: "external", OpenRouterManifestPath: path}); err == nil {
+		t.Fatal("unknown model mode accepted")
+	}
+}

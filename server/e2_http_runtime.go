@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http"
 	"regexp"
 	"strconv"
 	"sync"
@@ -583,7 +584,7 @@ func (r *E2HTTPRuntime) PrepareWork(ctx context.Context, task *Task, intent *db.
 	t.mu.Unlock()
 	workCtx := e2HTTPTaskContext(ctx, t.ctx)
 	observePrompt := r.promptObserver(ctx, t, actual.ID)
-	bound := agent.WithE2HTTPExecution(workCtx, agent.E2HTTPExecution{Workflow: r.options.Workflow, ObservePrompt: observePrompt, Runner: lease.Runner, Control: t.control, TaskID: t.number, IntentID: actual.ID, TaskRef: t.id, RunRef: r.options.Expected.RunRef, MaxTurns: r.options.MaxWorkerTurns, MaxDuration: r.options.WorkerTimeout, ApprovedOrigins: append([]string(nil), r.options.ApprovedOrigins...), ObserveResult: func(observeCtx context.Context, result e2runner.Result) error {
+	bound := agent.WithE2HTTPExecution(workCtx, agent.E2HTTPExecution{Sessions: e2HTTPSessionsFor(r.options.HeaderMode, lease.Sessions), Workflow: r.options.Workflow, ObservePrompt: observePrompt, Runner: lease.Runner, Control: t.control, TaskID: t.number, IntentID: actual.ID, TaskRef: t.id, RunRef: r.options.Expected.RunRef, MaxTurns: r.options.MaxWorkerTurns, MaxDuration: r.options.WorkerTimeout, ApprovedOrigins: append([]string(nil), r.options.ApprovedOrigins...), ObserveResult: func(observeCtx context.Context, result e2runner.Result) error {
 		return r.observeResult(observeCtx, t, lease, actual.ID, result)
 	}})
 	var once sync.Once
@@ -936,4 +937,17 @@ func e2HTTPFinalIntentError(drainErr error, calls []e2proxy.CallResult, intentID
 		}
 	}
 	return drainErr
+}
+
+// e2HTTPSessionsFor는 Worker 지침에 줄 시험 계정 세션이다. 시험 계정 실행(test_account_passthrough)에서만 준다 — 다른
+// 헤더 모드에서는 모델이 쓴 자격 헤더를 E②가 거부하므로 세션을 줄 이유가 없다.
+func e2HTTPSessionsFor(mode e2proxy.HeaderMode, sessions E2HTTPSessions) map[string]http.Header {
+	if mode != e2proxy.HeaderTestAccountPassthrough || len(sessions) == 0 {
+		return nil
+	}
+	out := make(map[string]http.Header, len(sessions))
+	for label, header := range sessions {
+		out[label] = header.Clone()
+	}
+	return out
 }

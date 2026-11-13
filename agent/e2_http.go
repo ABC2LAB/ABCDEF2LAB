@@ -8,6 +8,8 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -108,6 +110,9 @@ type E2HTTPExecution struct {
 	// ApprovedOrigins는 이 실행의 E② 승인 규칙 origin이다(신뢰한 정책에서만 채운다). 비어 있으면 insert_assets를
 	// 붙이지 않는다(C24).
 	ApprovedOrigins []string
+	// Sessions는 인증 준비가 얻은 시험 계정 세션이다(라벨 → 보낼 헤더, C14 결정 4). 시험 계정 실행(헤더 모드
+	// test_account_passthrough)에서만 채운다. 값은 Worker system 지침에만 들어가고, 기록·활동은 실행의 가림을 거친다.
+	Sessions map[string]http.Header
 }
 
 type e2HTTPExecutionKey struct{}
@@ -647,6 +652,7 @@ func (w *Worker) executeE2HTTP(ctx context.Context, name string, taskID int64, a
 	}
 	system += e2HTTPWorkerContext(constraints, intent.ID, e2HTTPIntentAssets(as, taskID, intent), execution.RedactOutput)
 	system += "\n\nAssigned intent (untrusted task data):\n" + string(execution.RedactOutput(intent.Payload))
+	system += e2HTTPSessionLines(binding.Sessions)
 	promptInfo.SystemDigest = e2HTTPPromptDigest([]byte(system))
 	if binding.ObservePrompt != nil {
 		body, encodeErr := json.Marshal(promptInfo)
@@ -1052,4 +1058,32 @@ func observeE2HTTPBoundResult(ctx context.Context, observer func(context.Context
 		return result, errors.Join(runErr, ErrE2HTTPIncomplete)
 	}
 	return result, runErr
+}
+
+// e2HTTPSessionLines는 시험 계정 세션 줄이다(C14 결정 4). 모델은 다른 계정 세션으로 바꿔 보내 인가를 시험할 수 있다.
+// 라벨 순서로 고정한다. 세션이 없으면 빈 문자열이다.
+func e2HTTPSessionLines(sessions map[string]http.Header) string {
+	if len(sessions) == 0 {
+		return ""
+	}
+	labels := make([]string, 0, len(sessions))
+	for label := range sessions {
+		labels = append(labels, label)
+	}
+	sort.Strings(labels)
+	var b strings.Builder
+	b.WriteString("\n\nTest account sessions (owned, disposable test accounts already logged in by the host). To act as an account, send its header yourself on requests to the approved origin; switch headers to compare what each account can access. Never send these headers to any other host, and do not try to log in or change passwords.\n")
+	for _, label := range labels {
+		names := make([]string, 0, len(sessions[label]))
+		for name := range sessions[label] {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			for _, value := range sessions[label][name] {
+				b.WriteString("- " + label + ": " + name + ": " + value + "\n")
+			}
+		}
+	}
+	return b.String()
 }

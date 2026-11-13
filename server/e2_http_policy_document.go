@@ -48,7 +48,7 @@ func validateE2HTTPPolicyDocument(raw []byte, prepared bool) (E2HTTPFilePolicy, 
 	if prepared {
 		top = append(top, "audit_key")
 	}
-	if !e2HTTPExactJSON(raw, top, []string{"upstream_ca", "auth"}, "evaluation", "upstream_ca") || !validE2HTTPFileAuth(policy.Auth, policy.Rules) ||
+	if !e2HTTPExactJSON(raw, top, []string{"upstream_ca", "auth"}, "evaluation", "upstream_ca") || !validE2HTTPFileAuth(policy.Auth, policy.HeaderMode, policy.Rules) ||
 		policy.Format != E2HTTPFilePolicyFormat || policy.ApprovalMode != e2proxy.ApprovalPreauthorizedScope ||
 		policy.HeaderMode == "" || policy.MaxRequests == 0 || policy.MaxRequests > uint64(math.MaxInt) || len(policy.Rules) == 0 || len(policy.Rules) > 128 ||
 		!policy.ValidUntil.After(policy.ValidFrom) {
