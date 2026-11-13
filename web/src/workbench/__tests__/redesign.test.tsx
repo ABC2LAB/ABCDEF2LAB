@@ -155,7 +155,7 @@ describe("범위 확인", () => {
     expect(screen.queryByText(/AI 추정/)).toBeNull();
   });
 
-  it("시안의 시작 전 점검 · 새 경로 처리 규칙은 서버 계약이 없어 '아직 구현 안 됨'으로 보인다 (시안 v28)", () => {
+  it("시안의 시작 전 점검 · 새 경로 처리 규칙은 서버 계약이 없어 '연결 전'으로 보인다 (시안 v28)", () => {
     useUrl.setState({ handle, job, verified: true, flow, flowVerified: true });
     render(
       <ShellContext.Provider value={shell("scope")}>
@@ -163,12 +163,12 @@ describe("범위 확인", () => {
       </ShellContext.Provider>,
     );
     const pre = screen.getByLabelText("시작 전 점검");
-    expect(pre).toHaveTextContent(/모델 연결 아직 구현 안 됨/);
-    expect(pre).toHaveTextContent(/대상 연결 아직 구현 안 됨/);
-    expect(pre).toHaveTextContent(/계정 로그인 아직 구현 안 됨/);
+    expect(pre).toHaveTextContent(/모델 연결 연결 전/);
+    expect(pre).toHaveTextContent(/대상 연결 연결 전/);
+    expect(pre).toHaveTextContent(/계정 로그인 연결 전/);
     const rules = screen.getByText("점검 중 새로 찾은 경로 처리 규칙").closest("details") as HTMLElement;
     expect(within(rules).getAllByRole("listitem")).toHaveLength(6);
-    expect(within(rules).getByRole("note")).toHaveTextContent(/^아직 구현 안 됨 · 서버가 점검 중 새 경로를/);
+    expect(within(rules).getByRole("note")).toHaveTextContent(/^연결 전 · 서버가 점검 중 새 경로를/);
   });
 });
 
@@ -203,7 +203,7 @@ describe("자산 탐색", () => {
     expect(within(aside).getByText(/^아직 찾지 못한 묶음 · /)).toHaveTextContent(
       "계정·인증, 장바구니·주문, 관리자, 정적 자원, 공개 페이지·API",
     );
-    expect(within(aside).getByText(/^로그인/)).toHaveTextContent("아직 구현 안 됨");
+    expect(within(aside).getByText(/^로그인/)).toHaveTextContent("연결 전");
     fireEvent.click(within(aside).getByRole("radio", { name: "승인 필요" }));
     expect(within(aside).getByText("승인이 필요한 경로가 아직 없습니다.")).toBeInTheDocument();
     fireEvent.click(within(aside).getByRole("radio", { name: "제외" }));
@@ -211,11 +211,11 @@ describe("자산 탐색", () => {
     fireEvent.click(within(aside).getByRole("radio", { name: "전체" }));
     fireEvent.click(within(aside).getByRole("button", { name: /\/api\/products\/1/ }));
     const detail = screen.getByRole("complementary", { name: "찾은 경로" });
-    expect(within(detail).getByText("요청 횟수").nextElementSibling).toHaveTextContent("아직 구현 안 됨");
-    expect(within(detail).getByText("기능").nextElementSibling).toHaveTextContent("아직 구현 안 됨");
+    expect(within(detail).getByText("요청 횟수").nextElementSibling).toHaveTextContent("연결 전");
+    expect(within(detail).getByText("기능").nextElementSibling).toHaveTextContent("연결 전");
   });
 
-  it("탐색 막대는 페이지 상한 대비 방문 수, 숫자 칸 보조 글은 서버 값, 경과는 '아직 구현 안 됨' (시안 v24)", () => {
+  it("탐색 막대는 페이지 상한 대비 방문 수, 숫자 칸 보조 글은 서버 값, 경과는 '연결 전' (시안 v24)", () => {
     useUrl.setState({
       handle,
       job,
@@ -233,7 +233,7 @@ describe("자산 탐색", () => {
     expect(bar).toHaveAttribute("aria-valuenow", "25");
     expect(screen.getByText(/^찾은 경로 · 조회 1 · 데이터 변경 1$/)).toBeInTheDocument();
     expect(screen.getByText(/^보낸 요청 · 시도 1 · 결과 불명 0$/)).toBeInTheDocument();
-    expect(screen.getByText(/^경과/)).toHaveTextContent("아직 구현 안 됨");
+    expect(screen.getByText(/^경과/)).toHaveTextContent("연결 전");
     // 첫 탐색 단계가 끝나도 막대는 실제 방문 비율 그대로, 단계 끝은 따로 적는다 (리뷰 #479)
     useUrl.setState({ flow });
     rerender(

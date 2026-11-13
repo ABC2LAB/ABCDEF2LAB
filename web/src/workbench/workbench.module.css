@@ -3611,7 +3611,7 @@ button.smm:hover {
   line-height: 1;
   letter-spacing: -0.02em;
 }
-/* 진행률을 모를 때 (서버 값 없음): 시안 자리에 흐린 '—%' 와 '아직 구현 안 됨' 딱지 */
+/* 진행률을 모를 때 (서버 값 없음): 시안 자리에 흐린 '—%' 와 '연결 전' 딱지 */
 .band .pct.unk {
   display: flex;
   flex-direction: column;

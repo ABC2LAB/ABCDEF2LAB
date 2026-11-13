@@ -3,7 +3,7 @@
 // 이어 보는 진단 한 줄 · 오른쪽 상세 (시안 activeRowHtml · doneRowHtml · inspFor 의 진행 중 · 끝난 점검 칸).
 // 대시보드 · 진행 중인 점검 · 끝난 점검이 같이 쓴다. 값은 서버 스토어(useUrl)와 저장된 판정(보고서 원장)만 쓴다.
 // 시안 줄 · 상세의 칸은 모두 둔다. 서버가 주지 않는 값(시작 · 남은 시간 · 소요 · 진행률 % · 막대 · 점검 중 발견)은
-// 만들지 않고 "—" · 빈 막대 · '아직 구현 안 됨' 딱지로 둔다.
+// 만들지 않고 "—" · 빈 막대 · '연결 전' 딱지로 둔다.
 // 묶음 계산(recRunKind · recDoneKinds)도 여기 둔다: 줄 딱지와 목록 필터가 같은 기준을 쓴다.
 
 import type { ReactNode } from "react";
@@ -381,7 +381,7 @@ export function JobSummary({
   const decide = job && !ended ? decideText(job, verified, stage, approvals ?? null) : null;
 
   // 시안 점검 정보 줄을 먼저 (진행 중: 시작 · 남은 시간 · 발견 · 결정 대기 / 끝난 점검: 점검일 · 소요 · 커버리지 · 판정).
-  // 서버가 주지 않는 값은 '아직 구현 안 됨'. 그 뒤에 서버가 확인한 진단 정보.
+  // 서버가 주지 않는 값은 '연결 전'. 그 뒤에 서버가 확인한 진단 정보.
   const mockRows: Array<readonly [ReactNode, ReactNode]> = ended
     ? [
         ["점검일", <NotYet key="d" why="서버가 점검 시작 시각을 주지 않습니다" />],

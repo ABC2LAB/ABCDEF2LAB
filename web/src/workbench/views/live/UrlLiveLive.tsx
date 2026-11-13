@@ -104,7 +104,7 @@ export function UrlLiveLive() {
   const host = useUrlHost();
   const stop = useStopConfirm("종료");
   const a = useRequestApprovals(job?.task_id ?? "", visible && g.runReadable);
-  // 자산 커버리지 (시안 v22 진행 상세): 실제 task 가 생긴 뒤 서버 값. 꺼졌거나 못 읽으면 "아직 구현 안 됨"
+  // 자산 커버리지 (시안 v22 진행 상세): 실제 task 가 생긴 뒤 서버 값. 꺼졌거나 못 읽으면 "연결 전"
   const cov = usePoll(() => fetchCoverage(job?.task_id as string), [job?.task_id], {
     enabled: visible && !!job?.task_id,
     intervalMs: 15000,
@@ -770,7 +770,7 @@ export function FindingDetail({
   );
 }
 
-/** 보고서 탭 (시안 rTabs). 자산 지식 그래프 · 접근통제 지도는 이 점검의 서버 자료가 없어 탭만 두고 '아직 구현 안 됨'. */
+/** 보고서 탭 (시안 rTabs). 자산 지식 그래프 · 접근통제 지도는 이 점검의 서버 자료가 없어 탭만 두고 '연결 전'. */
 const R_TABS = [
   ["list", "발견 목록"],
   ["graph", "자산 지식 그래프"],
@@ -916,7 +916,7 @@ export function UrlReportLive() {
       </div>
     );
 
-  // 머리 줄 (시안: 시작 · 소요 · 모델 · 커버리지). 서버가 주지 않는 시작 · 소요는 '아직 구현 안 됨'
+  // 머리 줄 (시안: 시작 · 소요 · 모델 · 커버리지). 서버가 주지 않는 시작 · 소요는 '연결 전'
   const meta = [
     <span key="start">
       시작 <NotYet why="서버가 점검 시작 시각을 주지 않습니다" />

@@ -180,7 +180,7 @@ describe("진행 중인 점검 · 끝난 점검 화면", () => {
     // 끝난 점검 줄 (시안 doneRowHtml): 상태 · 판정 한 줄, 오른쪽은 '발견 n'. 서버가 주지 않는 날짜 · 소요는 그리지 않는다
     expect(within(row).getByText("실행 마감 · 확정 0 · 검토 필요 1 · 미실행 0 · 결과 불명 0")).toBeInTheDocument();
     expect(within(row).getByText("발견 1")).toBeInTheDocument();
-    expect(row).not.toHaveTextContent(/소요|아직 구현 안 됨/);
+    expect(row).not.toHaveTextContent(/소요|연결 전/);
     // 확정이 아닌 후보는 위험도 딱지로 세지 않는다
     expect(within(row).queryByText(/^(심각|높음) \d/)).toBeNull();
 
