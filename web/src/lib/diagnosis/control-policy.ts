@@ -6,13 +6,13 @@
 //   원문은 애초에 투영에 없다(결속 여부/참조만). 승인된 origin·경로·메서드는 비밀이 아니라 운영자가 봐야 할
 //   '무엇이 승인됐는지'이므로 그대로 보인다. 이 seam 은 비밀 저장소가 아니라 통제 상태 투영이다.
 
-/** 요청 승인 방식 — 엔진 ApprovalMode(요청마다 확인 / 사전 승인 범위 / 작업대 승인)와 1:1. */
-export type ApprovalMode = "confirm_every" | "preauthorized_scope" | "workbench_v1";
+/** 요청 승인 방식 — 엔진 e2proxy.ApprovalMode 값과 동일(서버가 그대로 투영). */
+export type ApprovalMode = "confirm_every_request" | "preauthorized_scope" | "workbench_selective_v1";
 
 export const APPROVAL_LABEL: Record<ApprovalMode, string> = {
-  confirm_every: "요청마다 확인",
+  confirm_every_request: "요청마다 확인",
   preauthorized_scope: "사전 승인 범위",
-  workbench_v1: "작업대 승인(v1)",
+  workbench_selective_v1: "작업대 승인(v1)",
 };
 
 /** 어디로·무엇을 — 한 전송 규칙(승인된 origin·연결 IP·경로·메서드). credentialHeaderNames 는 '이름'만. */
@@ -118,7 +118,9 @@ export function normalizePolicy(raw: unknown): ControlPolicy | null {
   if (typeof o.policyRef !== "string") return null;
   const rules = Array.isArray(o.rules) ? o.rules.map(normalizeRule).filter((r): r is PolicyRule => r !== null) : [];
   const mode: ApprovalMode =
-    o.approvalMode === "preauthorized_scope" || o.approvalMode === "workbench_v1" ? o.approvalMode : "confirm_every";
+    o.approvalMode === "preauthorized_scope" || o.approvalMode === "workbench_selective_v1"
+      ? o.approvalMode
+      : "confirm_every_request";
   const l = (typeof o.limits === "object" && o.limits !== null ? o.limits : {}) as Record<string, unknown>;
   const n = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0);
   return {
@@ -143,7 +145,7 @@ export function normalizePolicy(raw: unknown): ControlPolicy | null {
 const MOCK_POLICY: ControlPolicy = {
   policyRef: "pol-demo-0001",
   policyRevision: "rev-7",
-  approvalMode: "workbench_v1",
+  approvalMode: "workbench_selective_v1",
   validFrom: "2026-11-01T00:00:00Z",
   validUntil: "2026-12-31T00:00:00Z",
   rules: [
