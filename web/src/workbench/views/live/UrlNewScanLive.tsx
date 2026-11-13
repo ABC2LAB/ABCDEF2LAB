@@ -166,10 +166,16 @@ export function UrlNewScanLive() {
   const [excluded, setExcluded] = useState("");
   const [credentialReady, setCredentialReady] = useState(false);
   const [accountRevision, setAccountRevision] = useState(0);
-  const [accountPresence, setAccountPresence] = useState<{ key: string; value: boolean; failed: boolean }>({
+  const [accountPresence, setAccountPresence] = useState<{
+    key: string;
+    value: boolean;
+    failed: boolean;
+    statement: string;
+  }>({
     key: "",
     value: false,
     failed: false,
+    statement: "",
   });
   const [accountConsent, setAccountConsent] = useState({ key: "", checked: false });
   // 주소 칸을 한 번이라도 고쳤는가: 처음 들어온 빈 칸에는 빨간 안내를 띄우지 않고, 지웠을 때만 띄운다 (시안 #nHost)
@@ -215,17 +221,24 @@ export function UrlNewScanLive() {
   // 입력이 바뀐 렌더부터 이전 동의를 배제한다(늦은 effect/응답을 기다리지 않는다).
   if (accountConsent.key !== consentKey) setAccountConsent({ key: consentKey, checked: false });
   const hasTestAccounts = external && accountPresence.key === consentKey && accountPresence.value;
-  const consentChecked = hasTestAccounts && accountConsent.key === consentKey && accountConsent.checked;
+  const consentChecked =
+    hasTestAccounts && !!accountPresence.statement && accountConsent.key === consentKey && accountConsent.checked;
   useEffect(() => {
     if (!external || shown || !tv || urlTargetHint(tv)) return;
     const controller = new AbortController();
     let current = true;
     void readExternalTestAccountPresence(tv, controller.signal)
       .then((value) => {
-        if (current) setAccountPresence({ key: consentKey, value, failed: false });
+        if (current)
+          setAccountPresence({
+            key: consentKey,
+            value: value.hasTestAccounts,
+            statement: value.statement,
+            failed: false,
+          });
       })
       .catch(() => {
-        if (current) setAccountPresence({ key: consentKey, value: false, failed: true });
+        if (current) setAccountPresence({ key: consentKey, value: false, statement: "", failed: true });
       });
     return () => {
       current = false;
@@ -255,9 +268,6 @@ export function UrlNewScanLive() {
     if (!profiles.length) why2.push("설치된 모델 프로필이 없습니다");
     else if (!profile) why2.push("모델을 고르세요");
     if (external && !credentialReady) why2.push("외부 API 키를 등록하세요");
-    if (hasTestAccounts && !consentChecked) why2.push("시험 계정 세션의 외부 전송에 동의해 주세요");
-    if (external && accountPresence.key === consentKey && accountPresence.failed)
-      why2.push("시험 계정 등록 상태를 확인하지 못했습니다");
   }
   const why = [...why1, ...why2];
   // 1쪽 → 2쪽: 주소만 보고 넘긴다 (모델은 2쪽에서 고름). 조회 중인 진단은 잠긴 입력이라 그냥 넘긴다
@@ -273,16 +283,7 @@ export function UrlNewScanLive() {
   const next = () => {
     if (canNext) turn(2);
   };
-  const canSend =
-    !shown &&
-    !!input &&
-    g.canValidate &&
-    !busy &&
-    (!external ||
-      (credentialReady &&
-        accountPresence.key === consentKey &&
-        (!hasTestAccounts || consentChecked) &&
-        !(accountPresence.key === consentKey && accountPresence.failed)));
+  const canSend = !shown && !!input && g.canValidate && !busy && (!external || credentialReady);
   const send = async () => {
     if (canSend && input) await runUrlAction("validate", input);
   };
@@ -431,24 +432,32 @@ export function UrlNewScanLive() {
           disabled={g.inputLocked}
           onReady={setCredentialReady}
         />
-        {hasTestAccounts ? (
-          <label className={s.ckline}>
-            <input
-              type="checkbox"
-              checked={consentChecked}
-              disabled={g.inputLocked || busy}
-              onChange={(e) => setAccountConsent({ key: consentKey, checked: e.target.checked })}
-            />
-            <span>
-              {EXTERNAL_ACCOUNT_STATEMENT}
-              <br />
-              {EXTERNAL_ACCOUNT_PASSWORD_NOTICE}
-            </span>
-          </label>
+        {hasTestAccounts && accountPresence.statement ? (
+          <>
+            <p className={s.help}>{EXTERNAL_ACCOUNT_STATEMENT}</p>
+            <label className={s.ckline}>
+              <input
+                type="checkbox"
+                checked={consentChecked}
+                disabled={g.inputLocked || busy}
+                onChange={(e) => setAccountConsent({ key: consentKey, checked: e.target.checked })}
+              />
+              <span>
+                {accountPresence.statement}
+                <br />
+                {EXTERNAL_ACCOUNT_PASSWORD_NOTICE}
+              </span>
+            </label>
+            <p className={s.help}>체크하지 않으면 시험 계정 없이 진행합니다.</p>
+          </>
+        ) : null}
+        {hasTestAccounts && !accountPresence.statement ? (
+          <p className={s.help}>외부 전송 동의 문장을 받지 못해 시험 계정 없이 진행합니다.</p>
         ) : null}
         {accountPresence.key === consentKey && accountPresence.failed ? (
           <p role="alert" className={s.help}>
-            시험 계정 등록 상태를 확인하지 못했습니다. 계정 조회를 다시 시도하세요.
+            시험 계정 등록 상태를 확인하지 못했습니다. 동의를 만들지 않고 시험 계정 없이 진행합니다. 계정 조회를 다시
+            시도할 수 있습니다.
             <button className={s.btn} type="button" onClick={() => setAccountRevision((value) => value + 1)}>
               계정 다시 조회
             </button>

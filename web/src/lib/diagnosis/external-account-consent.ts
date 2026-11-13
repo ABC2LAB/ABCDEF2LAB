@@ -7,7 +7,10 @@ const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v ===
 const ref = (v: unknown): v is string => typeof v === "string" && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(v);
 
 /** 현재 URL의 서버 승인 대상과 실제 계정 API만 조회한다. 조회 실패는 계정 없음이 아니다. */
-export async function readExternalTestAccountPresence(target: string, signal?: AbortSignal): Promise<boolean> {
+export async function readExternalTestAccountPresence(
+  target: string,
+  signal?: AbortSignal,
+): Promise<{ hasTestAccounts: boolean; statement: string }> {
   const origin = new URL(target).origin;
   const resolved = await apiFetch<unknown>(
     `/api/product/targets/resolve?url=${encodeURIComponent(target)}`,
@@ -19,7 +22,7 @@ export async function readExternalTestAccountPresence(target: string, signal?: A
     resolved.target === undefined &&
     (Object.keys(resolved).length === 0 || (Array.isArray(resolved.targets) && resolved.targets.length === 0))
   )
-    return false;
+    return { hasTestAccounts: false, statement: "" };
   const t = resolved.target;
   if (!object(t) || !ref(t.id) || t.origin !== origin || t.state !== "approved")
     throw new ApiError(422, "invalid_target_contract");
@@ -41,5 +44,12 @@ export async function readExternalTestAccountPresence(target: string, signal?: A
     )
   )
     throw new ApiError(422, "invalid_account_contract");
-  return accounts.some((a) => object(a) && a.classification === "test");
+  const statement =
+    typeof result.external_consent_statement === "string" &&
+    result.external_consent_statement.length > 0 &&
+    new TextEncoder().encode(result.external_consent_statement).length <= 1024 &&
+    !/[\x00-\x1f\x7f]/.test(result.external_consent_statement)
+      ? result.external_consent_statement
+      : "";
+  return { hasTestAccounts: accounts.some((a) => object(a) && a.classification === "test"), statement };
 }
