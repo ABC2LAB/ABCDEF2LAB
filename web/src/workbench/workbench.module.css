@@ -2360,19 +2360,21 @@ button.lr.on {
   gap: 8px;
   min-width: 0;
 }
-.lgx-top .p {
+.lgx-top .m {
   font-family: var(--mono);
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.lgx-top button {
-  margin-left: auto;
-}
-.lgx-h {
   font-size: 12px;
   font-weight: 600;
-  color: var(--ink-2);
-  margin: 2px 0 -4px;
+}
+.lgx-top code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  margin-right: auto;
+}
+.lgx-top .btn .ic {
+  width: 12px;
+  height: 12px;
 }
 .lgx-ex {
   display: grid;

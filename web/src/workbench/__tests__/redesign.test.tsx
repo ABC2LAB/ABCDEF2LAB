@@ -18,7 +18,15 @@ import { FLOW_VERSION, type WorkflowSnapshot } from "../live/workflow";
 import { type Shell, ShellContext, type View } from "../shell";
 import { UrlDashboardLive } from "../views/live/UrlDashboardLive";
 import { prettyEvidence } from "../views/live/UrlLiveLive";
-import { WorkflowCrawlLive, WorkflowScopeLive } from "../views/live/workflowViews";
+import {
+  crawlElapsed,
+  durText,
+  eventText,
+  group,
+  Pth,
+  WorkflowCrawlLive,
+  WorkflowScopeLive,
+} from "../views/live/workflowViews";
 
 const noop = () => undefined;
 const shell = (route: View, over: Partial<Shell> = {}): Shell => ({
@@ -151,11 +159,15 @@ describe("범위 확인", () => {
     expect(write).toBeChecked();
     expect(screen.getByText("승인 필요").parentElement).toHaveTextContent("1");
     for (const b of screen.getAllByRole("button", { name: /선택한 범위로 점검 시작/ })) expect(b).toBeEnabled();
-    // 묶음을 AI 추정이라고 부르지 않는다
-    expect(screen.queryByText(/AI 추정/)).toBeNull();
+    // 묶음은 경로 규칙으로 나눈 것이라 AI 추정 묶음이라고 부르지 않는다
+    expect(screen.getAllByText("경로 규칙 묶음").length).toBeGreaterThan(0);
+    expect(screen.queryByText("AI 추정 묶음")).toBeNull();
+    // 상세는 표의 첫 경로를 기본으로 보이고, 묶음 줄은 경로 규칙이라고 적는다
+    const insp = screen.getByRole("complementary", { name: "선택한 경로 상세" });
+    expect(within(insp).getByText("묶음").nextElementSibling).toHaveTextContent(/ · 경로 규칙$/);
   });
 
-  it("시안의 시작 전 점검 · 새 경로 처리 규칙은 서버 계약이 없어 '아직 구현 안 됨'으로 보인다 (시안 v28)", () => {
+  it("시안의 로그인 필요 · 시작 전 점검 · 새 경로 처리 규칙은 서버 값이 없어 칸만 두고 '연결 전'으로 보인다", () => {
     useUrl.setState({ handle, job, verified: true, flow, flowVerified: true });
     render(
       <ShellContext.Provider value={shell("scope")}>
@@ -163,12 +175,18 @@ describe("범위 확인", () => {
       </ShellContext.Provider>,
     );
     const pre = screen.getByLabelText("시작 전 점검");
-    expect(pre).toHaveTextContent(/모델 연결 아직 구현 안 됨/);
-    expect(pre).toHaveTextContent(/대상 연결 아직 구현 안 됨/);
-    expect(pre).toHaveTextContent(/계정 로그인 아직 구현 안 됨/);
+    // 연결 결과를 지어내지 않는다: 값은 비우고 성공 표시(체크)도 두지 않는다
+    expect(pre).toHaveTextContent("대상 연결 —계정 로그인 —모델 연결 —");
+    expect(pre).toHaveTextContent("연결 전");
+    expect(pre.querySelector("svg")).toBeNull();
+    expect(screen.getByText("로그인 필요", { selector: "#sCount span" })).toHaveTextContent("로그인 필요—");
+    expect(screen.getByRole("button", { name: /^로그인 필요/ })).toBeDisabled();
     const rules = screen.getByText("점검 중 새로 찾은 경로 처리 규칙").closest("details") as HTMLElement;
     expect(within(rules).getAllByRole("listitem")).toHaveLength(6);
-    expect(within(rules).getByRole("note")).toHaveTextContent(/^아직 구현 안 됨 · 서버가 점검 중 새 경로를/);
+    expect(within(rules).getByText("연결 전")).toHaveAttribute(
+      "title",
+      expect.stringMatching(/^서버가 점검 중 새 경로를/),
+    );
   });
 });
 
@@ -190,7 +208,12 @@ describe("자산 탐색", () => {
       handle,
       job,
       verified: true,
-      flow: { ...flow, endpoints: [ep("read", "GET", "/api/products/1", "attested_read")] },
+      flow: {
+        ...flow,
+        stage: "crawling",
+        initial_completed: false,
+        endpoints: [ep("read", "GET", "/api/products/1", "attested_read")],
+      },
       flowVerified: true,
     });
     render(
@@ -199,11 +222,12 @@ describe("자산 탐색", () => {
       </ShellContext.Provider>,
     );
     const aside = screen.getByRole("complementary", { name: "찾은 경로" });
-    // 상품·리뷰 하나만 나왔으면 나머지 다섯 묶음이 '아직 찾지 못한 묶음'
+    // 탐색 중 상품·리뷰 하나만 나왔으면 나머지 묶음이 '아직 찾지 못한 묶음' (시안 카드 순서)
     expect(within(aside).getByText(/^아직 찾지 못한 묶음 · /)).toHaveTextContent(
-      "계정·인증, 장바구니·주문, 관리자, 정적 자원, 공개 페이지·API",
+      "공개 페이지·API, 계정·인증, 장바구니·주문, 결제·쿠폰, 관리자, 정적 자원",
     );
-    expect(within(aside).getByText(/^로그인/)).toHaveTextContent("아직 구현 안 됨");
+    // 범례의 로그인 수는 서버가 나누지 않아 값을 비운다
+    expect(within(aside).getByText(/^로그인/)).toHaveTextContent("로그인 —");
     fireEvent.click(within(aside).getByRole("radio", { name: "승인 필요" }));
     expect(within(aside).getByText("승인이 필요한 경로가 아직 없습니다.")).toBeInTheDocument();
     fireEvent.click(within(aside).getByRole("radio", { name: "제외" }));
@@ -211,11 +235,11 @@ describe("자산 탐색", () => {
     fireEvent.click(within(aside).getByRole("radio", { name: "전체" }));
     fireEvent.click(within(aside).getByRole("button", { name: /\/api\/products\/1/ }));
     const detail = screen.getByRole("complementary", { name: "찾은 경로" });
-    expect(within(detail).getByText("요청 횟수").nextElementSibling).toHaveTextContent("아직 구현 안 됨");
-    expect(within(detail).getByText("기능").nextElementSibling).toHaveTextContent("아직 구현 안 됨");
+    expect(within(detail).getByText("요청 횟수").nextElementSibling).toHaveTextContent(/^—$/);
+    expect(within(detail).getByText("기능").nextElementSibling).toHaveTextContent("— 연결 전");
   });
 
-  it("탐색 막대는 페이지 상한 대비 방문 수, 숫자 칸 보조 글은 서버 값, 경과는 '아직 구현 안 됨' (시안 v24)", () => {
+  it("탐색 막대는 페이지 상한 대비 방문 수, 숫자 칸 보조 글은 서버 값, 경과는 기록이 없으면 — (시안 v24)", () => {
     useUrl.setState({
       handle,
       job,
@@ -232,8 +256,9 @@ describe("자산 탐색", () => {
     const bar = screen.getByRole("progressbar", { name: /탐색 진행/ });
     expect(bar).toHaveAttribute("aria-valuenow", "25");
     expect(screen.getByText(/^찾은 경로 · 조회 1 · 데이터 변경 1$/)).toBeInTheDocument();
-    expect(screen.getByText(/^보낸 요청 · 시도 1 · 결과 불명 0$/)).toBeInTheDocument();
-    expect(screen.getByText(/^경과/)).toHaveTextContent("아직 구현 안 됨");
+    // 탐색 단계에서는 GET 만 보낸다 (서버 Controller.Before)
+    expect(screen.getByText(/^보낸 요청 · 조회만$/)).toBeInTheDocument();
+    expect(screen.getByText(/^경과/)).toHaveTextContent(/^경과 —$/);
     // 첫 탐색 단계가 끝나도 막대는 실제 방문 비율 그대로, 단계 끝은 따로 적는다 (리뷰 #479)
     useUrl.setState({ flow });
     rerender(
@@ -313,28 +338,30 @@ describe("탐색 기록 펼치기", () => {
     expect(getRow).toHaveAttribute("aria-expanded", "false");
     fireEvent.click(getRow);
     expect(getRow).toHaveAttribute("aria-expanded", "true");
-    const box = screen.getByRole("region", { name: "GET /api/products/1 상세" });
+    const box = screen.getByRole("region", { name: "GET /api/products/1 요청 · 응답" });
     expect(within(box).getByText("html_link")).toBeInTheDocument();
     expect(within(box).getByText("GET /api/products/1 HTTP/1.1")).toBeInTheDocument();
     expect(within(box).getByText("HTTP/1.1 200 OK")).toBeInTheDocument();
     // 한 번에 하나: 다른 줄을 열면 앞 줄은 접힌다. 응답 코드가 없는 줄은 기록 결과만, 송신 여부는 단정하지 않는다
     fireEvent.click(putRow);
-    expect(screen.queryByRole("region", { name: "GET /api/products/1 상세" })).toBeNull();
-    const put = screen.getByRole("region", { name: "PUT /api/users/2 상세" });
+    expect(screen.queryByRole("region", { name: "GET /api/products/1 요청 · 응답" })).toBeNull();
+    const put = screen.getByRole("region", { name: "PUT /api/users/2 요청 · 응답" });
     expect(within(put).getByText("held")).toBeInTheDocument();
     expect(within(put).getByText(/보냈는지 · 응답을 받았는지 확인할 수 없습니다/)).toBeInTheDocument();
     // 같은 줄을 다시 누르면 접힘
     fireEvent.click(putRow);
-    expect(screen.queryByRole("region", { name: "PUT /api/users/2 상세" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "PUT /api/users/2 요청 · 응답" })).toBeNull();
     // Esc 로 접고 초점은 그 줄로
     fireEvent.click(getRow);
     fireEvent.keyDown(
-      within(screen.getByRole("region", { name: "GET /api/products/1 상세" })).getByRole("button", { name: "접기" }),
+      within(screen.getByRole("region", { name: "GET /api/products/1 요청 · 응답" })).getByRole("button", {
+        name: "접기",
+      }),
       {
         key: "Escape",
       },
     );
-    expect(screen.queryByRole("region", { name: "GET /api/products/1 상세" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "GET /api/products/1 요청 · 응답" })).toBeNull();
     expect(getRow).toHaveFocus();
   });
 });
@@ -374,13 +401,13 @@ describe("탐색 기록 원문 결속 (리뷰 #473)", () => {
       },
     );
     fireEvent.click(rows[0]);
-    const first = screen.getByRole("region", { name: "GET /api/a 상세" });
+    const first = screen.getByRole("region", { name: "GET /api/a 요청 · 응답" });
     expect(within(first).queryByText("HTTP status 403")).toBeNull();
     expect(within(first).getByText(/서버에 남은 원문은 이 줄의 것이 아닙니다/)).toBeInTheDocument();
     // 나중(403) 줄에는 '경로의 마지막 관찰'로 분리해 보인다
     fireEvent.click(rows[1]);
-    const last = screen.getByRole("region", { name: "GET /api/a 상세" });
-    expect(within(last).getByText("이 경로의 마지막 관찰")).toBeInTheDocument();
+    const last = screen.getByRole("region", { name: "GET /api/a 요청 · 응답" });
+    expect(within(last).getAllByText("이 경로의 마지막 관찰").length).toBeGreaterThan(0);
     expect(within(last).getByText("HTTP status 403")).toBeInTheDocument();
   });
 
@@ -398,12 +425,12 @@ describe("탐색 기록 원문 결속 (리뷰 #473)", () => {
       },
     );
     fireEvent.click(rows[1]);
-    const nostatus = screen.getByRole("region", { name: "GET /api/a 상세" });
+    const nostatus = screen.getByRole("region", { name: "GET /api/a 요청 · 응답" });
     expect(within(nostatus).queryByText("HTTP/1.1 200 OK")).toBeNull();
     expect(within(nostatus).getByText(/보냈는지 · 응답을 받았는지 확인할 수 없습니다/)).toBeInTheDocument();
     // 보낸 200 줄은 이 경로의 마지막 송신이라 원문을 '경로의 마지막 관찰'로 보인다
     fireEvent.click(rows[0]);
-    const sent = screen.getByRole("region", { name: "GET /api/a 상세" });
+    const sent = screen.getByRole("region", { name: "GET /api/a 요청 · 응답" });
     expect(within(sent).getByText("HTTP/1.1 200 OK")).toBeInTheDocument();
   });
 
@@ -418,7 +445,7 @@ describe("탐색 기록 원문 결속 (리뷰 #473)", () => {
       },
     );
     fireEvent.click(rows[0]);
-    return screen.getByRole("region", { name: "GET /api/a 상세" });
+    return screen.getByRole("region", { name: "GET /api/a 요청 · 응답" });
   };
 
   it("펼친 칸의 원문은 화면에서도 비밀 값을 가린다 (리뷰 #473 비차단)", () => {
@@ -433,7 +460,7 @@ describe("탐색 기록 원문 결속 (리뷰 #473)", () => {
     document.addEventListener("keydown", global);
     fireEvent.keyDown(within(box).getByRole("button", { name: "접기" }), { key: "Escape" });
     document.removeEventListener("keydown", global);
-    expect(screen.queryByRole("region", { name: "GET /api/a 상세" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "GET /api/a 요청 · 응답" })).toBeNull();
     expect(global).not.toHaveBeenCalled();
   });
 
@@ -451,10 +478,130 @@ describe("탐색 기록 원문 결속 (리뷰 #473)", () => {
       { ...flow.counts, sent: 1, attempted: 1, unknown: 1 },
     );
     fireEvent.click(rows[0]);
-    const box = screen.getByRole("region", { name: "GET /api/a 상세" });
+    const box = screen.getByRole("region", { name: "GET /api/a 요청 · 응답" });
     expect(within(box).queryByText(/보내지 않은/)).toBeNull();
     expect(within(box).getByText(/보냈는지 · 응답을 받았는지 확인할 수 없습니다/)).toBeInTheDocument();
     expect(within(box).queryByText("HTTP status 0 · response incomplete")).toBeNull();
+  });
+});
+
+describe("시안 짜임 (자산 탐색 · 범위 확인 기록 · 묶음)", () => {
+  it("탐색 기록 종류는 글로 바꾸고 모르는 종류는 코드 그대로, 경과는 탐색 시작 ~ 끝 기록으로만 잰다", () => {
+    expect(eventText("crawl_started")).toBe("탐색 시작");
+    expect(eventText("page_failed")).toBe("관찰 실패");
+    expect(eventText("awaiting_selection")).toBe("탐색 완료 · 범위 확인 대기");
+    expect(eventText("constructor")).toBe("constructor");
+    expect(eventText("new_server_kind")).toBe("new_server_kind");
+    const at = (s: number) => `2026-11-11T01:00:${String(s).padStart(2, "0")}Z`;
+    const base = { ...flow, stage: "awaiting_selection" as const };
+    expect(
+      crawlElapsed({
+        ...base,
+        events: [
+          { at: at(1), kind: "crawl_started" },
+          { at: at(42), kind: "crawl_finished" },
+        ],
+      }),
+    ).toBe(41);
+    // 끝 기록이 없는데 탐색이 끝났으면 모른다 (지어내지 않음)
+    expect(crawlElapsed({ ...base, events: [{ at: at(1), kind: "crawl_started" }] })).toBeNull();
+    // 탐색 중이면 마지막 갱신 시각까지
+    expect(
+      crawlElapsed({
+        ...base,
+        stage: "crawling",
+        updated_at: at(11),
+        events: [{ at: at(1), kind: "crawl_started" }],
+      }),
+    ).toBe(10);
+    // 시작 기록이 잘려 나갔으면 모른다
+    expect(crawlElapsed({ ...base, events: [] })).toBeNull();
+    expect(durText(10)).toBe("10초");
+    expect(durText(185)).toBe("3분 5초");
+    expect(durText(3720)).toBe("1시간 2분");
+  });
+
+  it("묶음 규칙: 관리자 · 결제를 먼저 보고, {변수}는 따로 표시한다", () => {
+    expect(group(ep("a", "GET", "/admin/users", "attested_read"))).toBe("관리자");
+    expect(group(ep("b", "POST", "/api/checkout", "possible"))).toBe("결제·쿠폰");
+    expect(group(ep("c", "GET", "/api/orders/{id}", "attested_read"))).toBe("장바구니·주문");
+    render(<Pth p="/api/orders/{id}/items" />);
+    expect(screen.getByText("{id}").tagName).toBe("I");
+  });
+
+  it("자산 탐색: 결과 칸은 응답 코드 · 실패 딱지 · —, 줄 아래에 기록 글, 범례 · 숫자 칸은 시안 글", () => {
+    useUrl.setState({
+      handle,
+      job,
+      verified: true,
+      flow: {
+        ...flow,
+        events: [
+          { at: "2026-11-11T01:00:00Z", kind: "crawl_started" },
+          { at: "2026-11-11T01:00:01Z", kind: "visit_started", method: "GET", path: "/a" },
+          { at: "2026-11-11T01:00:02Z", kind: "page_failed", method: "GET", path: "/b" },
+          { at: "2026-11-11T01:00:03Z", kind: "exploration_observed", method: "GET", path: "/c", status: 403 },
+        ],
+      },
+      flowVerified: true,
+    });
+    render(
+      <ShellContext.Provider value={shell("crawl")}>
+        <WorkflowCrawlLive />
+      </ShellContext.Provider>,
+    );
+    const log = document.getElementById("cLog") as HTMLElement;
+    expect(within(log).getByText("탐색 시작")).toBeInTheDocument();
+    const [a, b, c] = within(log).getAllByRole("button");
+    expect(a).toHaveTextContent(/\/a—방문 시작$/);
+    expect(b).toHaveTextContent(/\/b실패관찰 실패$/);
+    expect(c).toHaveTextContent(/\/c403관찰함$/);
+    expect(screen.getByText(/^승인 후 전송 · 보내기 전에 승인$/)).toBeInTheDocument();
+    expect(screen.getByText(/^요청 안 함 · 규칙으로 막음$/)).toBeInTheDocument();
+    // 탐색 완료 · 확인 대기 (시안 cState)
+    expect(screen.getByText("탐색 완료 · 확인 대기")).toBeInTheDocument();
+  });
+
+  it("점검 취소: 시안처럼 보통 버튼, 확인 상자가 열리면 초점은 취소 버튼으로, 계속 점검이면 처음 버튼으로", () => {
+    useUrl.setState({ handle, job, verified: true, flow, flowVerified: true });
+    render(
+      <ShellContext.Provider value={shell("crawl")}>
+        <WorkflowCrawlLive />
+      </ShellContext.Provider>,
+    );
+    const open = screen.getByRole("button", { name: "점검 취소" });
+    expect(open.querySelector("svg")).toBeNull();
+    fireEvent.click(open);
+    const box = screen.getByRole("alertdialog");
+    expect(box).toHaveTextContent("점검을 취소할까요? 취소하면 다시 시작할 수 없습니다.");
+    expect(box).toHaveTextContent("응답을 받지 못한 요청은 전송 불명으로 기록합니다");
+    // 범위 확인 대기에는 일시정지가 없어 이어 하기 안내를 붙이지 않는다
+    expect(box).not.toHaveTextContent("일시정지");
+    expect(within(box).getByRole("button", { name: "점검 취소" })).toHaveFocus();
+    fireEvent.click(within(box).getByRole("button", { name: "계속 점검" }));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(open).toHaveFocus();
+  });
+
+  it("범위 확인: 빠진 경로는 제외 딱지 · 제외 수 · 제외됨 거르기에 들어가고, 상세 딱지도 고른 상태를 따른다", () => {
+    useUrl.setState({ handle, job, verified: true, flow, flowVerified: true });
+    render(
+      <ShellContext.Provider value={shell("scope")}>
+        <WorkflowScopeLive />
+      </ShellContext.Provider>,
+    );
+    // 읽기 1 포함, 쓰기 1 은 아직 안 고름, 삭제 1 은 고를 수 없음 → 제외 2
+    expect(screen.getByText("제외", { selector: "#sCount span" })).toHaveTextContent("제외2");
+    expect(screen.getByRole("button", { name: /^제외됨/ })).toHaveTextContent("제외됨2");
+    fireEvent.click(screen.getByRole("button", { name: "모두 펼치기" }));
+    const write = screen.getByRole("checkbox", { name: "PUT /api/users/2 점검에 포함" });
+    const row = write.closest("div") as HTMLElement;
+    expect(within(row).getByText("제외")).toBeInTheDocument();
+    fireEvent.click(write);
+    expect(within(row).getByText("포함 · 보낼 때 승인")).toBeInTheDocument();
+    // 체크한 경로가 오른쪽 상세에 오고, 상세 딱지도 같다
+    const insp = screen.getByRole("complementary", { name: "선택한 경로 상세" });
+    expect(within(insp).getByText("포함 · 보낼 때 승인")).toBeInTheDocument();
   });
 });
 

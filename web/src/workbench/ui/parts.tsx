@@ -167,7 +167,13 @@ export function Phases({ phase }: { phase: PhaseKey }) {
           );
         }
         return (
-          <a key={k} className={cx(s.ph, done && s.done)} href={`#${k}`} aria-current={i === at ? "step" : undefined}>
+          <a
+            key={k}
+            className={cx(s.ph, done && s.done)}
+            href={`#${k}`}
+            aria-current={i === at ? "step" : undefined}
+            title={done ? "이 점검에서 끝난 단계" : undefined}
+          >
             {inner}
           </a>
         );
