@@ -80,6 +80,9 @@ type httpLaunch struct {
 	PolicyFile    string `json:"policy_file"`
 	AuthorityFile string `json:"authority_file"`
 	AuthorityRoot string `json:"authority_root"`
+	// ExternalTestAccounts는 외부 API 모델 실행이 시험 계정 세션을 써도 된다는 그 실행의 동의다(초안 입력의 사전 공지·승인
+	// 진술, C14 결정 4). 실행 준비가 결속에서 채우고, 서버는 이 값이 없으면 외부 API 실행의 인증 준비 정책을 거부한다.
+	ExternalTestAccounts bool `json:"external_test_accounts,omitempty"`
 }
 
 type taskPreparation struct {

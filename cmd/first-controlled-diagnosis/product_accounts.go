@@ -24,6 +24,16 @@ import (
 // productAccountStatement는 시험 계정 표시 때 승인자가 동의하는 진술이다. 저널에는 이 문장의 SHA-256만 남긴다.
 const productAccountStatement = "이 계정은 우리 조직이 소유한 일회용 시험 계정이고 실제 사용자 데이터가 없으며, 대상 운영 주체가 이 계정으로 시험하는 것을 허락했다."
 
+// productExternalConsentStatement는 외부 API 모델 실행에 시험 계정 세션을 보내는 것에 대한 진술이다(CLAUDE.md 규칙 2,
+// C14 결정 4, docs/external-llm-notice-ko.md). 초안 입력 external_test_accounts가 이 진술에 동의한다는 뜻이고, 저널에는
+// 이 문장의 SHA-256과 주체·시각·작업만 남긴다.
+const productExternalConsentStatement = "이 점검 회차에서 시험 계정 세션(대상이 발급한 쿠키·토큰)을 외부 모델 제공자에게 보내는 것을 대상 운영 주체에게 사전 공지했고 승인을 받았다. 비밀번호는 보내지 않는다."
+
+func productExternalConsentStatementSHA256() string {
+	sum := sha256.Sum256([]byte(productExternalConsentStatement))
+	return hex.EncodeToString(sum[:])
+}
+
 func productAccountStatementSHA256() string {
 	sum := sha256.Sum256([]byte(productAccountStatement))
 	return hex.EncodeToString(sum[:])
@@ -40,6 +50,8 @@ type productAccountEvent struct {
 	// Login은 login_config 줄의 대상 로그인 방식(자격 값 없음), CredentialSHA256은 credential 줄의 보호 파일 해시다.
 	Login            *diagnosisprep.TargetLogin `json:"login,omitempty"`
 	CredentialSHA256 string                     `json:"credential_sha256,omitempty"`
+	// JobRef는 external_consent 줄의 진단 작업이다(그 실행에서 동의를 확인함).
+	JobRef string `json:"job_ref,omitempty"`
 }
 
 const (
@@ -48,6 +60,8 @@ const (
 	accountUnmark      = "unmark"
 	accountLoginConfig = "login_config"
 	accountCredential  = "credential"
+	// accountExternalConsent는 외부 API 실행의 시험 계정 동의다(감사만, 계정 상태는 바꾸지 않음).
+	accountExternalConsent = "external_consent"
 )
 
 type productAccountState struct {
@@ -67,6 +81,15 @@ type productAccountState struct {
 func (r *productTargetRegistry) replayAccount(e productAccountEvent) error {
 	rec, ok := r.records[e.TargetID]
 	if !ok || e.Actor != rec.Principal || e.At.IsZero() || e.TargetRevision < 1 || e.TargetRevision > rec.Target.Revision {
+		return errPreparation
+	}
+	if e.Action == accountExternalConsent {
+		if e.Label != "" || e.Login != nil || e.CredentialSHA256 != "" || e.StatementSHA256 != productExternalConsentStatementSHA256() || !managementReference.MatchString(e.JobRef) {
+			return errPreparation
+		}
+		return nil
+	}
+	if e.JobRef != "" {
 		return errPreparation
 	}
 	if e.Action == accountLoginConfig {
@@ -226,6 +249,23 @@ func (r *productTargetRegistry) markTestAccount(principal, id, label string, sta
 		return diagnosisprep.ProductAccount{}, errPreparation
 	}
 	return accountView(rec, st, r.now()), nil
+}
+
+// recordExternalConsent는 외부 API 실행의 시험 계정 동의를 대상 계정 저널에 남긴다(진술 해시·주체·시각·작업). 남길 수
+// 있는 주체는 대상 승인자(등록 운영자, accountTarget)뿐이고 대상은 지금 승인 상태여야 한다. 남기지 못하면 그 실행은
+// 시작하지 않는다(#552 윤재상 리뷰: 시험 계정 표시와 같은 수준의 기록).
+func (r *productTargetRegistry) recordExternalConsent(principal, id, jobRef string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec, _, err := r.accountTarget(principal, id)
+	if err != nil {
+		return err
+	}
+	if rec.Target.State != "approved" || !r.now().Before(rec.Target.ExpiresAt) || !managementReference.MatchString(jobRef) {
+		return errors.New("target_not_approved")
+	}
+	return r.appendAccount(productAccountEvent{TargetID: id, Action: accountExternalConsent, Actor: principal, At: r.now(), TargetRevision: rec.Target.Revision,
+		StatementSHA256: productExternalConsentStatementSHA256(), JobRef: jobRef})
 }
 
 // unmarkAccount는 시험 계정 표시를 뗀다(더 안전한 쪽이라 대상 상태와 관계없이 받는다). 표시가 없으면 기록하지 않는다.

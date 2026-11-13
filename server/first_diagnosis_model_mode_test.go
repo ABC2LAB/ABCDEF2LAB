@@ -78,9 +78,9 @@ func TestFirstDiagnosisExternalModeKeepsLocalPolicy(t *testing.T) {
 // 서버 시작이 모델 설정의 외부 API 여부를 호스트 설정에 싣는다. 호스트는 그 값으로 인증 준비 정책을 거부한다(#522 재상 지적 2).
 func TestFirstDiagnosisHTTPModelConfigMarksExternalModel(t *testing.T) {
 	path, _ := externalManifestFixture(t)
-	host := FirstDiagnosisHTTPHostConfig{PolicyFile: "policy.json"}
+	host := FirstDiagnosisHTTPHostConfig{PolicyFile: "policy.json", ExternalTestAccounts: true}
 	_, got, err := firstDiagnosisHTTPModelConfig(FirstDiagnosisHTTPStartOptions{Host: host, ModelExecutionMode: "openrouter", OpenRouterManifestPath: path})
-	if err != nil || !got.ExternalModel || got.PolicyFile != host.PolicyFile {
+	if err != nil || !got.ExternalModel || got.PolicyFile != host.PolicyFile || !got.ExternalTestAccounts {
 		t.Fatalf("external model not marked: %v %+v", err, got.ExternalModel)
 	}
 	root := t.TempDir()
