@@ -48,7 +48,7 @@ export function UrlE2FlowLive() {
         const after = flow?.journal === "verified" ? flow.last_index : undefined;
         const next = await getE2Flow(task, after, controller.signal);
         if (!current) return;
-        if (next.more && after !== undefined && next.last_index <= after) throw new Error("invalid_e2_cursor");
+        if (next.more && next.last_index <= (after ?? 0)) throw new Error("invalid_e2_cursor");
         flow = mergeE2Flow(flow, next);
         setState({ task, flow, failed: false });
         // invalid 저널에서는 사건·커서를 지우고 첫 페이지부터 다시 확인한다.
@@ -149,17 +149,31 @@ export function UrlE2FlowLive() {
                               {a.method} {a.path_pattern || "경로 없음"}
                             </code>
                           </p>
-                          <p>
-                            판정 {DECISIONS[a.decision]} · 사유 {REASON_LABEL[a.reason]} · 단계 {STAGE_LABEL[a.stage]} (
-                            {a.stage})
-                          </p>
-                          <p>
-                            송신 시도 {a.forward_attempted ? "있음" : "없음"} · 요청 쓰기{" "}
-                            {a.request_written ? "관찰" : "없음"} · 응답 {a.status_code || "응답 없음"} · 수신{" "}
-                            {a.response_received ? "있음" : "없음"} · 완전 수신{" "}
-                            {a.response_complete ? "확인" : "미확인"} · 응답 잘림{" "}
-                            {a.response_truncated ? "있음" : "없음"}
-                          </p>
+                          {a.stage === "intent" ? (
+                            <p>
+                              송신 전 감사(intent)만 있습니다. 송신·쓰기·응답 결과는 미확인이며,{" "}
+                              {call.closed
+                                ? "호출은 마감됐습니다."
+                                : "결과 사건을 기다리는 중이거나 결과가 불명입니다."}
+                            </p>
+                          ) : (
+                            <>
+                              <p>
+                                판정 {DECISIONS[a.decision]} · 사유{" "}
+                                {a.reason === "complete" && !a.response_received
+                                  ? "응답 미확인"
+                                  : REASON_LABEL[a.reason]}{" "}
+                                · 단계 {STAGE_LABEL[a.stage]} ({a.stage})
+                              </p>
+                              <p>
+                                송신 시도(연결 포함) {a.forward_attempted ? "있음" : "없음"} · 요청 쓰기{" "}
+                                {a.request_written ? "관찰" : "없음"} · 응답 {a.status_code || "응답 없음"} · 수신{" "}
+                                {a.response_received ? "있음" : "없음"} · 완전 수신{" "}
+                                {a.response_complete ? "확인" : "미확인"} · 응답 잘림{" "}
+                                {a.response_truncated ? "있음" : "없음"}
+                              </p>
+                            </>
+                          )}
                           <p className={s.help}>
                             규칙 {a.rule_ref || "없음"} · {a.at}
                           </p>

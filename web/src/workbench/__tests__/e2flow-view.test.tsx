@@ -79,6 +79,7 @@ it("task 변경은 사건·커서를 초기화하고 늦은 이전 task 응답�
   act(() => useUrl.setState({ job: { task_id: "43" } as never }));
   await screen.findByText(/기록된 호출이 없습니다/);
   await act(async () => release(e2Flow()));
+  expect(screen.getByText(/기록된 호출이 없습니다/)).toBeInTheDocument();
   expect(screen.queryByText("a".repeat(32))).toBeNull();
   expect(vi.mocked(apiFetch).mock.calls[1][0]).toBe("/api/tasks/43/e2-flow");
 });
@@ -87,4 +88,105 @@ it("실제 작업 없이는 호출이나 예시 데이터가 없다", () => {
   render(<UrlE2FlowLive />);
   expect(screen.getByText(/실제 진단 작업을 선택/)).toBeInTheDocument();
   expect(apiFetch).not.toHaveBeenCalled();
+});
+
+it("실제 allowed+complete intent는 응답 받음이나 송신 없음으로 표시하지 않는다", async () => {
+  const f = e2Flow();
+  f.counts = {
+    attempts: 0,
+    allowed: 0,
+    denied: 0,
+    unsupported: 0,
+    forward_attempted: 0,
+    responses: 0,
+    unknown: 0,
+    transient: 0,
+    withheld: 0,
+    calls: 1,
+  };
+  f.calls[0].attempts = [
+    e2Attempt({
+      stage: "intent",
+      reason: "complete",
+      decision: "allowed",
+      forward_attempted: false,
+      request_written: false,
+      response_received: false,
+      response_complete: false,
+      status_code: 0,
+    }),
+  ];
+  vi.mocked(apiFetch).mockResolvedValue(f);
+  const { container } = render(<UrlE2FlowLive />);
+  await screen.findByText("a".repeat(32));
+  expect(screen.getByText(/송신 전 감사\(intent\)만 있습니다/)).toBeInTheDocument();
+  expect(container.querySelector('[data-class="allow"]')).toBeNull();
+  expect(screen.queryByText(/사유 응답 받음/)).toBeNull();
+  expect(screen.queryByText(/요청 쓰기 없음/)).toBeNull();
+});
+it("실제 연결 시도 true인 TCP/TLS 실패를 송신 실패로 표시한다", async () => {
+  const f = e2Flow();
+  f.counts = { ...f.counts, responses: 0, transient: 1 };
+  f.calls[0].attempts = [
+    e2Attempt({
+      reason: "transport_failed",
+      forward_attempted: true,
+      request_written: false,
+      response_received: false,
+      response_complete: false,
+      status_code: 0,
+    }),
+  ];
+  vi.mocked(apiFetch).mockResolvedValue(f);
+  const { container } = render(<UrlE2FlowLive />);
+  await screen.findByText("a".repeat(32));
+  expect(container.querySelector('[data-class="transient"]')).not.toBeNull();
+});
+it("more인데 커서가 늘지 않으면 반복을 중단하고 이전 사건을 지운다", async () => {
+  vi.useFakeTimers();
+  vi.mocked(apiFetch)
+    .mockResolvedValueOnce(e2Flow())
+    .mockResolvedValueOnce(e2Flow({ more: true }))
+    .mockResolvedValue(e2Flow({ last_index: 3, calls: [] }));
+  render(<UrlE2FlowLive />);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  expect(screen.getByText("a".repeat(32))).toBeInTheDocument();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(2000);
+  });
+  expect(screen.getByRole("alert")).toHaveTextContent("확인하지 못했습니다");
+  expect(screen.queryByText("a".repeat(32))).toBeNull();
+  expect(apiFetch).toHaveBeenCalledTimes(2);
+});
+it("조회 실패 후 이전 사건·커서를 버리고 첫 페이지로 재조회한다", async () => {
+  vi.useFakeTimers();
+  vi.mocked(apiFetch)
+    .mockResolvedValueOnce(e2Flow())
+    .mockRejectedValueOnce(new Error("fixed-failure"))
+    .mockResolvedValue(e2Flow({ last_index: 3, calls: [] }));
+  render(<UrlE2FlowLive />);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(2000);
+  });
+  expect(screen.queryByText("a".repeat(32))).toBeNull();
+  expect(screen.getByRole("alert")).toBeInTheDocument();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(2000);
+  });
+  expect(vi.mocked(apiFetch).mock.calls[2][0]).toBe("/api/tasks/42/e2-flow");
+  expect(screen.queryByText("a".repeat(32))).toBeNull();
+});
+it("task가 바뀐 렌더부터 이전 사건을 숨긴다", async () => {
+  vi.mocked(apiFetch)
+    .mockResolvedValueOnce(e2Flow())
+    .mockImplementation(() => new Promise(() => {}));
+  render(<UrlE2FlowLive />);
+  await screen.findByText("a".repeat(32));
+  act(() => useUrl.setState({ job: { task_id: "43" } as never }));
+  expect(screen.queryByText("a".repeat(32))).toBeNull();
 });

@@ -59,7 +59,7 @@ export const COUNT_LABEL = {
   allowed: "허용",
   denied: "거부",
   unsupported: "미지원",
-  forward_attempted: "송신 시도",
+  forward_attempted: "송신 시도(연결 포함)",
   responses: "응답",
   unknown: "결과 불명",
   transient: "송신 실패",
@@ -231,15 +231,25 @@ const BLOCKED = new Set<E2Reason>([
   "revoked",
 ]);
 export function decisionClass(a: E2Attempt): DecisionClass {
-  if (a.stage === "unknown" || a.reason === "unknown" || a.reason === "audit_failed" || a.decision === "unknown")
+  // intent의 false 관측은 보내지 않았다는 증거가 아니다. 결과 사건이 없으면 불명이다.
+  if (
+    a.stage === "intent" ||
+    a.stage === "unknown" ||
+    a.reason === "unknown" ||
+    a.reason === "audit_failed" ||
+    a.decision === "unknown"
+  )
     return "unknown";
-  if (a.reason === "transport_failed")
-    return !a.forward_attempted && !a.request_written && !a.response_received ? "transient" : "unknown";
+  // C02의 forward_attempted는 연결 시도를 포함한다. 연결 뒤 끊김은 서버가 unknown으로 남긴다.
+  if (a.reason === "transport_failed") return !a.request_written && !a.response_received ? "transient" : "unknown";
   if (BLOCKED.has(a.reason))
-    return !a.forward_attempted && !a.request_written && !a.response_received && a.decision !== "allowed"
-      ? "deny"
-      : "unknown";
-  return a.decision === "allowed" && (a.reason === "complete" || a.reason === "withheld") ? "allow" : "unknown";
+    return !a.forward_attempted && !a.request_written && !a.response_received ? "deny" : "unknown";
+  return a.stage === "result" &&
+    a.response_received &&
+    a.decision === "allowed" &&
+    (a.reason === "complete" || a.reason === "withheld")
+    ? "allow"
+    : "unknown";
 }
 /** 같은 시도는 마지막 사건 번호로 교체한다. 누계 counts는 매 응답의 전체 저널 값이며 더하지 않는다. */
 export function mergeE2Flow(previous: E2Flow | null, next: E2Flow): E2Flow {

@@ -45,7 +45,9 @@ describe("계약 §4 사유·단계와 송신 관측", () => {
       response_received: false,
     });
     expect(decisionClass(a)).toBe("transient");
-    expect(decisionClass({ ...a, forward_attempted: true })).toBe("unknown");
+    expect(decisionClass({ ...a, forward_attempted: true })).toBe("transient");
+    expect(decisionClass({ ...a, forward_attempted: true, request_written: true })).toBe("unknown");
+    expect(decisionClass({ ...a, forward_attempted: true, response_received: true })).toBe("unknown");
   });
   it.each(["audit_failed", "unknown"] as const)("%s는 성공·차단으로 승격하지 않는다", (reason) =>
     expect(decisionClass(e2Attempt({ reason }))).toBe("unknown"));
@@ -117,5 +119,67 @@ describe("사건 번호 커서와 증분 병합", () => {
   it("서버 거절은 합성 흐름으로 바꾸지 않는다", async () => {
     vi.mocked(apiFetch).mockRejectedValue(new Error("fixed-failure"));
     await expect(getE2Flow("42")).rejects.toThrow();
+  });
+});
+
+describe("실제 intent/마감 사건과 계약 엄격성", () => {
+  it("allowed+complete intent는 송신 전 기록이며 응답 성공이 아니다", () => {
+    expect(
+      decisionClass(
+        e2Attempt({
+          stage: "intent",
+          reason: "complete",
+          decision: "allowed",
+          forward_attempted: false,
+          request_written: false,
+          response_received: false,
+          response_complete: false,
+          status_code: 0,
+        }),
+      ),
+    ).toBe("unknown");
+  });
+  it("intent 뒤 allowed+closed 결과가 송신 전이면 실행 닫힘 차단이다", () => {
+    expect(
+      decisionClass(
+        e2Attempt({
+          stage: "result",
+          reason: "closed",
+          decision: "allowed",
+          forward_attempted: false,
+          request_written: false,
+          response_received: false,
+          response_complete: false,
+          status_code: 0,
+        }),
+      ),
+    ).toBe("deny");
+  });
+  it("결과 행도 응답 관측 없이는 응답 성공으로 올리지 않는다", () =>
+    expect(decisionClass(e2Attempt({ response_received: false, response_complete: false, status_code: 0 }))).toBe(
+      "unknown",
+    ));
+  it.each([
+    "attempt-extra",
+    "counts-extra",
+    "future-index",
+    "future-close-index",
+  ])("계약 밖 키/사건 번호를 거절한다: %s", (kind) => {
+    const f = e2Flow();
+    if (kind === "attempt-extra") Object.assign(f.calls[0].attempts[0], { command: "private" });
+    if (kind === "counts-extra") Object.assign(f.counts, { extra: 1 });
+    if (kind === "future-index") f.calls[0].attempts[0].index = f.last_index + 1;
+    if (kind === "future-close-index") Object.assign(f.calls[0], { closed: true, closed_index: f.last_index + 1 });
+    expect(() => parseE2Flow(f)).toThrow();
+  });
+  it("중복 이전 사건은 최신 시도를 덮지 않고 마감도 되돌리지 않는다", () => {
+    const closed = e2Flow({ last_index: 3 });
+    Object.assign(closed.calls[0], { closed: true, closed_index: 3 });
+    closed.calls[0].attempts = [e2Attempt({ index: 2, path_pattern: "/latest" })];
+    const late = e2Flow({ last_index: 4 });
+    late.calls[0].attempts = [e2Attempt({ index: 1, path_pattern: "/old" })];
+    const merged = mergeE2Flow(closed, late);
+    expect(merged.calls[0]).toMatchObject({ closed: true, closed_index: 3 });
+    expect(merged.calls[0].attempts[0].path_pattern).toBe("/latest");
   });
 });
