@@ -237,9 +237,8 @@ export function UrlLiveLive() {
                 <NotYet why="서버가 점검 진행률을 주지 않습니다" />
               </div>
               <div className={s.bt}>
-                <div className={s.prog} aria-hidden="true">
-                  <i />
-                </div>
+                {/* 값이 없으니 0% 처럼 읽히지 않게 빗금(모름) 막대 (리뷰 #523) */}
+                <div className={cx(s.prog, s.unk)} aria-hidden="true" />
                 <div className={s["now-l"]} aria-live="polite">
                   <span className={cx(s["now-k"], flow?.paused && s.idle)}>
                     <i />
