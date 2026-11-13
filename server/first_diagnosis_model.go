@@ -192,17 +192,43 @@ func (p *firstDiagnosisModelProvider) Complete(ctx context.Context, req llm.Comp
 	if budget == nil {
 		return p.inner.Complete(ctx, req)
 	}
-	reserved, err := budget.reserve(ctx, p.config, &req)
-	if err != nil {
-		return llm.Message{}, "", llm.Usage{}, err
+	once := func() (llm.Message, string, llm.Usage, error, error) {
+		reserved, err := budget.reserve(ctx, p.config, &req)
+		if err != nil {
+			return llm.Message{}, "", llm.Usage{}, nil, err
+		}
+		call, done := budget.modelCallContext(ctx)
+		defer done()
+		message, reason, usage, callErr := p.inner.Complete(reserved.requestContext(call), req)
+		return message, reason, usage, callErr, budget.settle(reserved, usage, callErr)
 	}
-	call, done := budget.modelCallContext(ctx)
-	defer done()
-	message, reason, usage, err := p.inner.Complete(reserved.requestContext(call), req)
-	if budgetErr := budget.settle(reserved, usage, err); budgetErr != nil {
-		return llm.Message{}, "", usage, budgetErr
+	return firstDiagnosisRetryModelCall(ctx, firstDiagnosisModelRetryDelays, once, budget.retryable)
+}
+
+// firstDiagnosisModelRetryDelays는 실패한 모델 호출을 다시 보내기 전 기다리는 시간이다(429·5xx·연결 실패 등). 원본 SDK가
+// 하던 재시도를 되살리되, 다시 보낼 때마다 새로 예약하고 실패한 호출은 예약량으로 정산한다(P3 결정안 C05·C06 "다시 보낼
+// 때는 같은 예약 규칙으로 새로 예약"). 제공자 요청 한도(429)는 몇 초 단위로 풀려서 짧게 두 번 기다린다. 시험이 바꾼다.
+var firstDiagnosisModelRetryDelays = []time.Duration{2 * time.Second, 6 * time.Second}
+
+// firstDiagnosisRetryModelCall은 호출 하나를 보내고, 호출이 실패했지만(callErr) 예산·승인이 막히지 않았으면 정한 간격으로
+// 다시 보낸다. 예산 거부(예약 실패·상한)·막힘·문맥 취소는 다시 보내지 않는다. 마지막 결과의 예산 오류를 돌려준다.
+func firstDiagnosisRetryModelCall(ctx context.Context, delays []time.Duration, once func() (llm.Message, string, llm.Usage, error, error), retryable func() bool) (llm.Message, string, llm.Usage, error) {
+	for attempt := 0; ; attempt++ {
+		message, reason, usage, callErr, budgetErr := once()
+		if budgetErr == nil {
+			return message, reason, usage, nil
+		}
+		if callErr == nil || attempt >= len(delays) || ctx.Err() != nil || !retryable() {
+			return llm.Message{}, "", usage, budgetErr
+		}
+		timer := time.NewTimer(delays[attempt])
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return llm.Message{}, "", usage, budgetErr
+		case <-timer.C:
+		}
 	}
-	return message, reason, usage, nil
 }
 func (p *firstDiagnosisModelProvider) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
 	return func(yield func(llm.StreamEvent, error) bool) {

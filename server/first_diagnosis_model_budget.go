@@ -231,6 +231,18 @@ func (*FirstDiagnosisModelBudget) String() string {
 
 // LimitReached는 승인 모델 예산이 다음 호출을 받을 만큼 남지 않아 거부한 적이 있는지 본다. 막힘(사용량 불명·
 // 정책 차단)은 여기에 들지 않는다.
+// retryable은 실패한 호출을 새 예약으로 다시 보내도 되는지다: 이 예산과 외부 승인 정책이 막히지 않았다(일시 오류는
+// 정산 뒤에도 막히지 않고, 설정 오류·회계 불일치·연속 일시 오류 상한은 막힌다).
+func (b *FirstDiagnosisModelBudget) retryable() bool {
+	if b == nil {
+		return false
+	}
+	b.mu.Lock()
+	blocked := b.blocked
+	b.mu.Unlock()
+	return !blocked && (b.external == nil || !b.external.Snapshot().Blocked)
+}
+
 func (b *FirstDiagnosisModelBudget) LimitReached() bool {
 	if b == nil {
 		return false
