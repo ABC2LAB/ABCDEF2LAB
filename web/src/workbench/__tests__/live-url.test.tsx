@@ -317,24 +317,74 @@ describe("URL 진단 계산", () => {
 });
 
 describe("서버 방식 확인 (catalog)", () => {
-  it("catalog 가 오면 URL 진단 폼, 서버가 받지 않는 시안 칸은 '아직 구현 안 됨'으로 막혀 있다", async () => {
+  it("catalog 가 오면 URL 진단 폼, 서버가 받지 않는 시안 칸은 '연결 전'이지만 고칠 수 있고 서버로 보내지 않는다", async () => {
     mount("new");
-    expect(await screen.findByLabelText(/점검할 사이트 주소/)).toBeInTheDocument();
-    // 서버가 받지 않는 칸(계정 로그인 · 점검 목표 · 범위 · 워커 수)은 칸만 있고 입력은 막혀 있다. 지금 점검은 로그인 없이 진행
-    for (const el of screen.getAllByLabelText(/계정 [AB]/)) expect(el).toBeDisabled();
-    expect(screen.getByLabelText("워커 수")).toBeDisabled();
-    expect(screen.getByRole("radio", { name: "로그인 없이 점검" })).toBeChecked();
-    // 점검 목표는 2쪽(숨김)에 있다
-    for (const box of screen.getAllByRole("checkbox", { hidden: true })) expect(box).toBeDisabled();
-    expect(screen.getAllByText(/^아직 구현 안 됨/).length).toBeGreaterThan(0);
+    const target = await screen.findByLabelText(/점검할 사이트 주소/);
+    // 1쪽: 최근 점검한 주소는 줄 없이 빈 안내. 로그인은 지금 실제 동작(로그인 없이)이 기본이고 시안처럼 바꿀 수 있다
+    expect(screen.getByText("불러올 수 있는 최근 주소가 없습니다")).toBeInTheDocument();
+    expect(screen.queryAllByRole("button", { name: /\.(com|io)$/ })).toHaveLength(0);
+    const login = screen.getByRole("radiogroup", { name: "로그인 여부" });
+    for (const r of within(login).getAllByRole("radio")) expect(r).toBeEnabled();
+    expect(within(login).getByRole("radio", { name: "로그인 없이 점검" })).toBeChecked();
+    expect(screen.getByText("계정이 있어야 함")).toBeVisible();
+    expect(screen.queryByRole("radiogroup", { name: "로그인 방법" })).toBeNull();
+    expect(screen.getAllByText(/^연결 전/).length).toBeGreaterThanOrEqual(2);
+    // 로그인해서 점검: 시안처럼 방법 · 계정 칸이 나오고 입력할 수 있다
+    fireEvent.click(within(login).getByRole("radio", { name: "로그인해서 점검" }));
+    const how = screen.getByRole("radiogroup", { name: "로그인 방법" });
+    expect(within(how).getByRole("radio", { name: "아이디 · 비밀번호" })).toBeChecked();
+    const accounts = screen.getAllByLabelText(/^계정 [AB] /);
+    expect(accounts).toHaveLength(4);
+    for (const el of accounts) {
+      expect(el).toBeEnabled();
+      expect(el).toHaveValue("");
+    }
+    fireEvent.change(accounts[0], { target: { value: "typed-local-id" } });
+    fireEvent.change(accounts[1], { target: { value: "typed-local-secret" } });
+    fireEvent.click(within(how).getByRole("radio", { name: "쿠키 붙여넣기" }));
+    expect(screen.getAllByPlaceholderText("Cookie: session=…")).toHaveLength(2);
+    fireEvent.click(within(how).getByRole("radio", { name: "아이디 · 비밀번호" }));
+    // 2쪽: LLM 서버 주소 · 점검 목표 · 점검 범위 · 워커 수도 고를 수 있다 (지어낸 값 · 연결 상태 없음)
+    fireEvent.change(target, { target: { value: "https://target.example/" } });
+    fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
+    expect(screen.getByLabelText("LLM 서버 주소")).toBeEnabled();
+    expect(screen.getByLabelText("LLM 서버 주소")).toHaveValue("");
+    expect(screen.queryByText(/연결됨/)).toBeNull();
+    for (const box of within(screen.getByRole("group", { name: "점검 목표" })).getAllByRole("checkbox")) {
+      expect(box).toBeEnabled();
+      expect(box).not.toBeChecked();
+    }
+    for (const r of within(screen.getByRole("radiogroup", { name: "점검 범위" })).getAllByRole("radio")) {
+      expect(r).toBeEnabled();
+      expect(r).not.toBeChecked();
+    }
+    fireEvent.click(within(screen.getByRole("radiogroup", { name: "점검 범위" })).getByRole("radio", { name: "꼼꼼하게" }));
+    expect(screen.getByLabelText("워커 수")).toBeEnabled();
+    expect(screen.getByLabelText("워커 수")).toHaveValue("");
+    fireEvent.change(screen.getByLabelText("워커 수"), { target: { value: "4" } });
+    // 꺼진 칸은 시작 조건에 들지 않는다: 주소 · 모델만으로 범위 확인을 보낼 수 있다
+    expect(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]).toBeEnabled();
     // 승인 없이 쓰기 요청을 보내는 선택지는 없다 — 실행 허용은 설치 정책 · 진단 모드가 정함 (절대규칙 3 · 6, 리뷰 #479)
     expect(screen.queryByText(/승인 없이/)).toBeNull();
     expect(screen.queryByText("전체 허용")).toBeNull();
     expect(screen.getByText("쓰기 요청 범위는 설치 정책과 진단 모드가 정합니다.")).toBeInTheDocument();
-    // 요약 패널도 시안 줄(로그인 · 점검 범위 · 점검 목표)을 두고 '아직 구현 안 됨'
+    // 연결 전 칸에 넣은 값은 서버 요청 어디에도 실리지 않는다
+    fireEvent.click(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]);
+    await waitFor(() => expect(u.createURLDraft).toHaveBeenCalled());
+    const sent = JSON.stringify(u.createURLDraft.mock.calls);
+    for (const v of ["typed-local-id", "typed-local-secret", "꼼꼼하게", '"4"']) expect(sent).not.toContain(v);
+    // 요약 패널: 시안 줄 그대로, 서버 값이 없는 줄(로그인 · 점검 범위 · 점검 목표)은 '—' 와 연결 전 딱지
     const sum = screen.getByRole("complementary", { name: "점검 요약" });
+    expect([...sum.querySelectorAll("dt")].map((dt) => dt.textContent)).toEqual([
+      "사이트",
+      "로그인",
+      "분석 모델",
+      "점검 범위",
+      "점검 목표",
+      "쓰기 요청",
+    ]);
     for (const t of ["로그인", "점검 범위", "점검 목표"])
-      expect(within(sum).getByText(t).nextElementSibling).toHaveTextContent(/^아직 구현 안 됨/);
+      expect(within(sum).getByText(t).nextElementSibling).toHaveTextContent(/^— 연결 전/);
     // 워크플로 없는 프로필은 제외 경로가 없다
     expect(screen.queryByLabelText(/제외 경로/)).toBeNull();
     expect(u.readURLCatalog).toHaveBeenCalledTimes(1);
@@ -459,6 +509,51 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     fireEvent.click(screen.getByRole("button", { name: "이전" }));
     expect(screen.getByRole("heading", { name: "대상" })).toBeInTheDocument();
     expect(screen.getByLabelText(/점검할 사이트 주소/)).toHaveValue("https://target.example/");
+  });
+
+  it("쪽 묶음마다 끝에 이동 줄(1쪽 다음 · 2쪽 이전), 폼 아래 시작 줄은 1쪽 다음 · 2쪽 승인 범위 확인 (시안 fgrp · stepnav · formbar)", async () => {
+    mount("new");
+    const target = await screen.findByLabelText(/점검할 사이트 주소/);
+    const step1 = screen.getByRole("group", { name: "대상 · 로그인" });
+    expect(screen.queryByRole("group", { name: "분석 모델 · 점검 설정" })).toBeNull();
+    // 1쪽 이동 줄의 [다음]은 주소가 맞아야 켜진다
+    const stepNext = within(step1).getByRole("button", { name: "다음" });
+    expect(stepNext).toBeDisabled();
+    // 폼 아래 시작 줄(좁은 화면 · 패널 접음에서 보임)은 같은 '다음'을 폼 제출 버튼으로 둔다
+    const form = target.closest("form") as HTMLFormElement;
+    const barNext = within(form)
+      .getAllByRole("button", { name: "다음" })
+      .find((b) => !step1.contains(b));
+    expect(barNext).toHaveAttribute("type", "submit");
+    expect(barNext?.nextElementSibling).toHaveTextContent("주소를 입력하세요");
+    fireEvent.change(target, { target: { value: "https://target.example/" } });
+    fireEvent.click(stepNext);
+    expect(step1).not.toBeVisible();
+    const step2 = screen.getByRole("group", { name: "분석 모델 · 점검 설정" });
+    expect(within(step2).getByRole("button", { name: "이전" })).toBeInTheDocument();
+    expect(within(step2).queryByRole("button", { name: "승인 범위 확인" })).toBeNull();
+    expect(within(form).getByRole("button", { name: "승인 범위 확인" })).toHaveAttribute("type", "submit");
+  });
+
+  it("주소를 지우면 주소 밑에 입력 안내, 처음 빈 칸에는 띄우지 않는다 (시안 #nHost)", async () => {
+    mount("new");
+    const target = await screen.findByLabelText(/점검할 사이트 주소/);
+    const line = document.getElementById("luHost") as HTMLElement;
+    expect(line).toBeEmptyDOMElement();
+    fireEvent.change(target, { target: { value: "https://target.example/" } });
+    expect(line).toBeEmptyDOMElement();
+    fireEvent.change(target, { target: { value: "" } });
+    expect(line).toHaveTextContent("점검할 사이트 주소를 입력하세요.");
+  });
+
+  it("이어 보는 점검이 아직 도는 중이면 주소 밑에 '이미 점검 중인 사이트'와 진행 중 점검 링크", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    mount("new");
+    const link = await screen.findByRole("link", { name: "진행 중 점검 보기" });
+    expect(link).toHaveAttribute("href", "#running");
+    expect(document.getElementById("luHost")).toHaveTextContent("이미 점검 중인 사이트");
+    expect(screen.getByLabelText(/점검할 사이트 주소/)).toBeDisabled();
   });
 
   it("URL · 프로필로 초안을 한 번 만들고 범위 확인까지 한 뒤 서버가 정한 범위를 오른쪽에 보인다", async () => {
@@ -634,17 +729,18 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(running);
     mount("live");
-    expect(await screen.findByText("엔진 실행 중")).toBeInTheDocument();
+    // 점검 진행의 상태 알약은 시안 글 (실행 중 = 진행 중)
+    expect(await screen.findByText("진행 중", { selector: "h1 + span" })).toBeInTheDocument();
     expect(u.readURLStatus).toHaveBeenCalledWith(handle.id, owner);
     expect(u.createURLDraft).not.toHaveBeenCalled();
     expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
-    // 서버에 진행률 · 범위 밖 전송 집계가 없어 시안 칸은 '아직 구현 안 됨' (시안 v22). 0 % 로 지어내지 않는다
-    expect(screen.getByRole("group", { name: "점검 진행률" })).toHaveTextContent("아직 구현 안 됨");
+    // 서버에 진행률 · 범위 밖 전송 집계가 없어 시안 칸은 값을 비우고 '연결 전'. 0 % 로 지어내지 않는다
+    expect(screen.getByRole("group", { name: "점검 진행률" })).toHaveTextContent(/^—%연결 전/);
     expect(screen.queryByText(/^0%$/)).toBeNull();
-    expect(screen.getByText(/^범위 밖으로 보낸 요청 · 승인 없이 보낸 상태 변경/)).toHaveTextContent("아직 구현 안 됨");
+    expect(screen.getByText(/^범위 밖으로 보낸 요청 — · 승인 없이 보낸 상태 변경 —/)).toHaveTextContent("연결 전");
   });
 
-  it("점검 진행: 토큰 · 자산 커버리지는 서버 값, 경과 · 남은 시간 · 점검 중 발견 · 판정 · 새 경로 결정은 '아직 구현 안 됨' (시안 v22)", async () => {
+  it("점검 진행: 토큰 · 자산 커버리지는 서버 값, 시작 · 경과 · 남은 시간 · 점검 중 발견 · 판정은 칸만 두고 비운다", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue({
       ...running,
@@ -667,17 +763,21 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
       byType: [],
     });
     mount("live");
-    expect(await screen.findByText("엔진 실행 중")).toBeInTheDocument();
+    expect(await screen.findByText("진행 중", { selector: "h1 + span" })).toBeInTheDocument();
     // 토큰: 서버 사용량 / 범위 상한 (입력 + 출력)
     expect(screen.getByText(/^토큰/)).toHaveTextContent("토큰 500 / 상한 2,000");
-    expect(screen.getByText(/^경과/)).toHaveTextContent("아직 구현 안 됨");
-    expect(screen.getByText(/^남은 시간/)).toHaveTextContent("아직 구현 안 됨");
-    const insp = screen.getByRole("complementary", { name: "진행 상황" });
+    expect(screen.getByText(/^시작/)).toHaveTextContent(/^시작 —$/);
+    expect(screen.getByText(/^경과/)).toHaveTextContent(/^경과 —$/);
+    expect(screen.getByText(/^남은 시간/)).toHaveTextContent(/^남은 시간 —$/);
+    const insp = screen.getByRole("complementary", { name: "발견" });
     await waitFor(() => expect(within(insp).getByText("4")).toBeInTheDocument());
-    expect(within(insp).getByText(/\/ 10 자산 · 40%/)).toBeInTheDocument();
-    expect(within(insp).getByText("발견 · 최근 순").parentElement).toHaveTextContent("아직 구현 안 됨");
-    expect(within(insp).getByText("판정").parentElement).toHaveTextContent("아직 구현 안 됨");
-    expect(within(insp).getByText(/^새로 찾은 경로 포함 결정/)).toHaveTextContent("아직 구현 안 됨");
+    expect(within(insp).getByText(/\/ 10 자산/)).toBeInTheDocument();
+    expect(within(insp).getByText("40%")).toBeInTheDocument();
+    // 점검 중 발견 · 판정은 서버가 결과 저장 전에 주지 않아 수를 비우고, '발견 없음'으로 보이지 않는다
+    expect(within(insp).getByRole("heading", { name: "발견 —건" })).toBeInTheDocument();
+    expect(within(insp).getByText("발견 · 최근 순").parentElement).toHaveTextContent("연결 전");
+    expect(within(insp).getByText("판정").parentElement).toHaveTextContent("확정 —의심 —판단 불가 —");
+    expect(within(insp).queryByText(/발견이 없습니다/)).toBeNull();
   });
 
   it("영수증만 있으면(id 없음) 생성 영수증을 조회한다", async () => {
@@ -821,7 +921,17 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     cleanup();
     resetUrl();
     u.readURLStatus.mockResolvedValue(completed);
-    a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [candidate(1)] });
+    // 맥락에 경로 템플릿 · 관찰 메서드가 있으면 시안 ep(m,p) 처럼 줄 · 상세에 엔드포인트를 보인다
+    a.fetchRemediation.mockResolvedValue({
+      task_id: 42,
+      entries: [
+        {
+          ...candidate(1),
+          vuln_class: "idor",
+          context: { endpoint: "/api/items/{id}", observations: [{ endpoint: "/api/items/{id}", method: "get" }] },
+        },
+      ],
+    });
     a.fetchCoverage.mockResolvedValue({
       enabled: true,
       scopeRows: 1,
@@ -832,38 +942,68 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     });
     mount("report");
     expect(await screen.findByRole("heading", { level: 1, name: "target.example 보고서" })).toBeInTheDocument();
-    // 위치: 끝난 점검 / 주소 / 보고서 (시안 v83: "작업대" 뿌리는 뺐다)
+    // 위치: 끝난 점검 / 주소 (시안: 보고서 이름은 제목에만, "작업대" 뿌리는 뺐다)
     const crumb = screen.getByRole("navigation", { name: "위치" });
     expect(within(crumb).getByRole("link", { name: "끝난 점검" })).toHaveAttribute("href", "#finished");
-    expect(crumb).toHaveTextContent("끝난 점검/target.example/보고서");
+    expect(crumb).toHaveTextContent(/^끝난 점검\/target\.example$/);
     expect(crumb).not.toHaveTextContent("작업대");
     await waitFor(() => expect(a.fetchRemediation).toHaveBeenCalledWith("42", "internal"));
     expect(a.fetchDiagnosisRun).toHaveBeenCalledWith("42");
-    // 판정 집계 (시안 v20 짜임): 후보는 검토 필요, 확정 0 (팀 lib 분류). 커버리지는 서버 값 그대로
+    // 판정 집계 (시안 짜임: 발견 · 판정 확정 · 의심/판단 불가 · 커버리지): 후보는 검토 필요, 확정 0 (팀 lib 분류).
+    // 판단 불가 = 미실행 + 결과 불명. 커버리지는 서버 값 그대로
     const strip = await screen.findByRole("region", { name: "판정 집계" });
     const cell = (label: string) => within(strip).getByText(label).parentElement as HTMLElement;
-    await waitFor(() => expect(cell("검토 필요 / 결과 불명")).toHaveTextContent(/^검토 필요 \/ 결과 불명1\/ 0/));
-    expect(within(cell("확정")).getByText("0")).toBeInTheDocument();
-    expect(within(cell("발견 · 검토 대상")).getByText("1")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(cell("검토 필요 / 판단 불가")).toHaveTextContent(/^검토 필요 \/ 판단 불가1\/ 0추가 확인 권장$/),
+    );
+    expect(cell("판정 확정")).toHaveTextContent(/^판정 확정0증거 충분$/);
+    expect(within(cell("발견")).getByText("1")).toBeInTheDocument();
     // 자산 커버리지(방문 · 검사한 자산 비율)라고 이름 붙인다 — 판정 커버리지로 읽히지 않게 (리뷰 #479)
     await waitFor(() => expect(cell("자산 커버리지")).toHaveTextContent("40%"));
     expect(cell("자산 커버리지")).toHaveTextContent("미검사 60%");
-    // 서버가 주지 않는 시작 · 소요는 '아직 구현 안 됨'
-    expect(screen.getByText(/^시작/).closest("span")).toHaveTextContent("아직 구현 안 됨");
-    // 발견 목록에 후보가 있다. 위험도 딱지가 맨 앞(심각도 없으면 '등급 없음')
+    // 머리 줄 (시안: 시작 · 소요 · 모델 · 커버리지). 서버가 주지 않는 시작 · 소요는 '연결 전'(값을 만들지 않음)
+    const header = screen
+      .getByRole("heading", { level: 1, name: "target.example 보고서" })
+      .closest("header") as HTMLElement;
+    await waitFor(() => expect(header).toHaveTextContent("자산 커버리지 40%"));
+    expect(header).toHaveTextContent("모델 합성 모델 · 로컬");
+    expect(within(header).getByText(/^시작/)).toHaveTextContent("연결 전");
+    expect(within(header).getByText(/^소요/)).toHaveTextContent("연결 전");
+    expect(header).not.toHaveTextContent(/task #|모델 요청/);
+    // 시안 머리 버튼은 '발견 상세'(좁은 화면) 하나
+    expect(within(header).queryByRole("button", { name: /새로고침/ })).toBeNull();
+    // 발견 목록에 후보가 있다. 위험도 딱지가 맨 앞(심각도 없으면 '등급 없음'), 아래 줄은 엔드포인트 · 유형
     const row = within(screen.getByRole("tabpanel", { name: "발견 목록" })).getByRole("button", { name: /후보 1/ });
     expect(row.firstElementChild).toHaveTextContent("등급 없음");
-    // 시안의 자산 지식 그래프 · 접근통제 지도 탭은 서버 연결이 없어 '아직 구현 안 됨' (지도 화면 바로가기는 있다)
-    fireEvent.click(screen.getByRole("tab", { name: "자산 지식 그래프" }));
+    expect(row).toHaveTextContent("GET /api/items/{id}idor");
+    expect(within(row).getByText("{id}").tagName).toBe("I");
+    // 상세 머리: 유형 · 주소, 엔드포인트 (시안 findingHtml)
+    const insp = screen.getByRole("complementary", { name: "발견 상세" });
+    expect(within(insp).getByText(/^idor ·/)).toBeInTheDocument();
+    expect(within(insp).getByText("GET")).toBeInTheDocument();
+    // 시안 상세의 계정별 응답 비교 표는 머리글만, 다음 단계는 '연결 전', 분류는 서버 유형
+    expect(within(insp).getByRole("columnheader", { name: "요청 주체" })).toBeInTheDocument();
+    expect(within(insp).getByText("계정별 응답 비교").parentElement).toHaveTextContent("연결 전");
+    expect(within(insp).getByText("다음 단계").parentElement).toHaveTextContent("연결 전");
+    expect(within(insp).getByText("분류").parentElement).toHaveTextContent("idor");
+    // 탭은 화살표로 옮긴다 (시안 selTab): 발견 목록 → 자산 지식 그래프, 고른 탭만 Tab 순서에
+    const listTab = screen.getByRole("tab", { name: /발견 목록/ });
+    expect(listTab).toHaveAttribute("tabindex", "0");
+    fireEvent.keyDown(listTab, { key: "ArrowRight" });
+    expect(screen.getByRole("tab", { name: "자산 지식 그래프" })).toHaveAttribute("aria-selected", "true");
+    expect(listTab).toHaveAttribute("tabindex", "-1");
+    // 시안의 자산 지식 그래프 · 접근통제 지도 탭은 서버 연결이 없어 '연결 전' (지도 화면 바로가기는 있다)
     expect(within(screen.getByRole("tabpanel", { name: "자산 지식 그래프" })).getByRole("note")).toHaveTextContent(
-      /^아직 구현 안 됨/,
+      /^연결 전/,
     );
     fireEvent.click(screen.getByRole("tab", { name: "접근통제 지도" }));
     const mapTab = screen.getByRole("tabpanel", { name: "접근통제 지도" });
-    expect(within(mapTab).getByRole("note")).toHaveTextContent(/^아직 구현 안 됨/);
+    expect(within(mapTab).getByRole("note")).toHaveTextContent(/^연결 전/);
     expect(within(mapTab).getByRole("button", { name: /접근통제 지도 화면 열기/ })).toBeInTheDocument();
-    // 실행 종료 기록: 실행 ID · 정상 종료 · 감사 · E② 집계는 저장 값 그대로 (증거 · 감사 탭)
     fireEvent.click(screen.getByRole("tab", { name: "증거 · 감사" }));
+    // 시안 증거 목록: 발견마다 저장된 증거 버전 · 재현 단계 수
+    expect(within(screen.getByRole("list", { name: "발견별 증거" })).getByText("candidate-1")).toBeInTheDocument();
+    // 실행 종료 기록: 실행 ID · 정상 종료 · 감사 · E② 집계는 저장 값 그대로 (증거 · 감사 탭)
     const record = await screen.findByRole("region", { name: "실행 종료 기록" });
     expect(within(record).getByText("정상 종료")).toBeInTheDocument();
     expect(within(record).getByText("run-1")).toBeInTheDocument();
@@ -926,9 +1066,14 @@ describe("대시보드 · 인증 (URL 진단)", () => {
     const done = screen.getByRole("region", { name: "최근 끝난 점검" });
     expect(within(done).getByText("0건")).toBeInTheDocument();
     expect(within(done).getByRole("link", { name: "전체 보기" })).toHaveAttribute("href", "#finished");
+    // 줄 오른쪽은 시안 딱지 '점검 중'
+    expect(within(row).getByText("점검 중")).toBeInTheDocument();
     fireEvent.click(row);
     expect(screen.getByText("합성 모델")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /점검 보기/ }));
+    // 상세 (시안 act-shop): 진행 중 · 주소, 점검 진행, 진행 화면 열기
+    const detail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
+    expect(within(detail).getByRole("heading", { level: 2, name: "점검 진행" })).toBeInTheDocument();
+    fireEvent.click(within(detail).getByRole("button", { name: /진행 화면 열기/ }));
     expect(goTo).toHaveBeenCalledWith("live");
   });
 
@@ -948,17 +1093,22 @@ describe("대시보드 · 인증 (URL 진단)", () => {
     const cell = (k: string) => within(strip).getByText(k).parentElement as HTMLElement;
     expect(cell("발견 · 검토 대상")).toHaveTextContent(/^발견 · 검토 대상—결과가 저장되면 셉니다$/);
     expect(cell("결과 확인")).toHaveTextContent(/^결과 확인—/);
-    expect(cell("토큰 사용량 · 최근 30일")).toHaveTextContent("아직 구현 안 됨");
-    // 진행 중 줄 · 상세 (시안 v55): 지금 하는 일은 서버 단계, 진행률 · 시작 · 남은 시간은 '아직 구현 안 됨', 보낸 요청 수는 없음(탐색 없음)
+    expect(cell("토큰 사용량 · 최근 30일")).toHaveTextContent(
+      /^토큰 사용량 · 최근 30일— 연결 전.*점검당 평균 —$/,
+    );
+    // 진행 중 줄 (시안 activeRowHtml): 진행 막대 · % 자리는 두되 서버에 진행률이 없어 빈 막대 · '—%'(0% 로 만들지 않음)
     const act = within(screen.getByRole("region", { name: "진행 중인 점검" })).getByRole("button", {
       name: /target\.example/,
     });
-    expect(within(act).getByText(/^시작 · 남은 시간/)).toHaveTextContent("아직 구현 안 됨");
+    expect(within(act).getByText("—%")).toBeInTheDocument();
+    expect(act).not.toHaveTextContent(/\d+%/);
     fireEvent.click(act);
+    // 상세 (시안 act-shop): 지금 하는 일은 서버 단계, 시작 · 남은 시간 · 발견은 '연결 전', 결정 대기는 서버 값
     const detail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
     expect(within(detail).getByText("지금 하는 일")).toBeInTheDocument();
-    for (const k of ["진행률", "시작", "남은 시간"])
-      expect(within(detail).getByText(k).nextElementSibling).toHaveTextContent("아직 구현 안 됨");
+    for (const k of ["시작", "남은 시간", "발견"])
+      expect(within(detail).getByText(k).nextElementSibling).toHaveTextContent("연결 전");
+    expect(within(detail).getByText("결정 대기").nextElementSibling).toHaveTextContent("없음");
     expect(within(detail).queryByText("소요")).toBeNull();
   });
 
@@ -995,13 +1145,20 @@ describe("대시보드 · 인증 (URL 진단)", () => {
     expect(cell("결과 확인")).toHaveTextContent("결과 불명 0 · 미실행 0");
     // 끝난 점검이라 결정할 것이 없다 (시안 v77 '모두 결정함')
     expect(cell("결정 대기")).toHaveTextContent(/^결정 대기0모두 결정함$/);
-    // 처음 상세는 가장 위험한 발견. 보고서 · 진행 화면으로 갈 수 있다 (시안 v88)
+    // 처음 상세는 가장 위험한 발견. 끝난 점검의 발견이라 보고서로 간다 (시안 inspFor fd-blog)
     const detail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
     expect(within(detail).getByText("발견 2")).toBeInTheDocument();
-    expect(within(detail).getByRole("button", { name: "진행 화면 열기" })).toBeInTheDocument();
+    expect(within(detail).getByRole("link", { name: /보고서 열기/ })).toHaveAttribute("href", "#report");
     // 시안 발견 상세의 계정별 응답 비교 · 다음 단계는 서버가 따로 주지 않아 자리만
-    expect(within(detail).getByText("계정별 응답 비교").parentElement).toHaveTextContent("아직 구현 안 됨");
-    expect(within(detail).getByText("다음 단계").parentElement).toHaveTextContent("아직 구현 안 됨");
+    expect(within(detail).getByText("계정별 응답 비교").parentElement).toHaveTextContent("연결 전");
+    expect(within(detail).getByText("다음 단계").parentElement).toHaveTextContent("연결 전");
+    // 최근 끝난 점검 줄 (시안 doneRowHtml): 확정 발견의 위험도 딱지 + 발견 수
+    const done = within(screen.getByRole("region", { name: "최근 끝난 점검" })).getByRole("button", {
+      name: /target\.example/,
+    });
+    expect(within(done).getByText("심각 1")).toBeInTheDocument();
+    expect(within(done).getByText("높음 1")).toBeInTheDocument();
+    expect(within(done).getByText("발견 4")).toBeInTheDocument();
     // 칩: 전체 4 · 심각 1 · 높음 1 · 중간 1 · 등급 없음 1 (0건인 낮음은 숨김)
     const chips = within(sec).getByRole("group", { name: "위험도로 거르기" });
     expect(within(chips).queryByRole("button", { name: /낮음/ })).toBeNull();
