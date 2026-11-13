@@ -58,7 +58,7 @@ Planner가 만든 초기 intent를 보호 Worker가 받아 프로그램 소유�
 
 저장 항목은 method/path/kind/source/from/in_scope/change/visited/status/duplicates/selected/call_ref와 제한된 비민감 요청·응답 요약이다. 원문 body·헤더·쿠키를 snapshot으로 복사하지 않는다. 최대 32 endpoint, 페이지 1~32, 응답 4KiB~2MiB, 최근 event32/plan20/activity20 상한이 있다. UI의 요청 상한은 설치 catalog에서 받는다.
 
-사용자 모드는 초기 탐색 완료 후 모델·심화 전송 admission을 대기시키고 선택 저장 후 같은 Planner/Worker를 재개한다. 자동 모드는 사전 확인된 읽기 범위의 적격 발견만 선택한다. 어떤 모드도 새로운 origin/IP/메서드/예산/쓰기 권한을 AI가 발급하지 못한다.
+사용자 모드는 초기 탐색 완료 후 모델·심화 전송 admission을 대기시키고 선택 저장 후 같은 Planner/Worker를 재개한다. 자동 모드는 사전 확인된 읽기 범위의 적격 발견만 선택한다(2026-11-13 C21부터: 대상이 되돌릴 수 있는 쓰기를 승인했으면 사용자 모드에서 고를 수 있는 폼·쓰기 끝점도 고르고 그 쓰기를 건별 확인 없이 보낸다. 결과 불명으로 끝난 쓰기와 같은 메서드·경로는 그 회차에서 다시 보내지 않는다). 어떤 모드도 새로운 origin/IP/메서드/예산/쓰기 권한을 AI가 발급하지 못한다.
 
 ## 5. 실제 두 모드 실행
 
@@ -88,7 +88,7 @@ Planner가 만든 초기 intent를 보호 Worker가 받아 프로그램 소유�
 
 ## 6. E②·승인 경계
 
-`confirm_every_request`의 모든 요청 승인 의미를 유지했다. 별도 `workbench_selective_v1` 정책만 사전 확인 읽기 범위의 본문 없는 GET/HEAD를 자동 허용한다. GET의 의미적 무해성을 메서드만으로 판단하지 않는다. 사용자 모드의 복구 가능한 쓰기는 설치 상한과 대상 동의 둘 다 필요하고 실제 전송 전 별도 확인을 거친다. POST는 분류기가 읽기라고 하더라도 자동 bypass하지 않는다.
+`confirm_every_request`의 모든 요청 승인 의미를 유지했다. 별도 `workbench_selective_v1` 정책만 사전 확인 읽기 범위의 본문 없는 GET/HEAD를 자동 허용한다. GET의 의미적 무해성을 메서드만으로 판단하지 않는다. 사용자 모드의 복구 가능한 쓰기는 설치 상한과 대상 동의 둘 다 필요하고 실제 전송 전 별도 확인을 거친다. POST는 분류기가 읽기라고 하더라도 자동 bypass하지 않는다. (2026-11-13 C21: 자동 모드는 같은 쓰기를 건별 확인 없이 보낸다. 사용자 모드의 건별 확인은 그대로다.)
 
 원래 E② origin/IP/port/TLS/path/method/예산 검사에 workflow 단계·선택·제외를 추가한다. 승인 후 전송 직전 다시 범위를 검사한다. DELETE 및 삭제/초기화/로그아웃/결제/송금 등의 고위험 경로는 거부한다. UI의 선택은 HTTP 송신 승인과 별개다. 수동 workflow의 새 호스트 정책은 `ApprovalDisplay.PublicPath`를 켜고 선택 화면과 같은 DLP 마스킹을 적용한 경로를 표시한다. query·본문 원문은 공개하지 않는다. 기존 비공개 정책의 마스킹을 UI에서 풀지 않으며, 결정은 exact attempt·요청 지문에 결속한다. 아래 기존 종단 실측은 이 리뷰 수정 전 SHA의 기록이다.
 
