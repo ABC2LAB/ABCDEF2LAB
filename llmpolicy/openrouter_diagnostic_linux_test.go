@@ -118,6 +118,12 @@ func TestOpenRouterDiagnosticRequestOutcomes(t *testing.T) {
 				if end.Status != "succeeded" || end.CostUncertain {
 					t.Fatal("valid response not reported")
 				}
+			} else if tc.name == "bad_tool" {
+				// 도구 계약 위반은 사용량을 확인한 호출 하나의 실패다(C06 보완): 비용은 확정이다. 막힘은 연속 일시 오류
+				// 상한을 따르고(v1 manifest는 1), 상한 시험은 TestOpenRouterToolContractViolationIsPerCall이 본다.
+				if end.Status != "failed" || end.CostUncertain || usage.CostMicros == 0 || usage.FailureReason != "response_invalid" {
+					t.Fatal("tool contract violation blocked the approval or lost its usage")
+				}
 			} else if end.Status != "failed" || !end.CostUncertain || !usage.Blocked {
 				t.Fatal("unknown cost represented as actual success")
 			}
