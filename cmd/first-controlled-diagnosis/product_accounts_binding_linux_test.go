@@ -134,7 +134,12 @@ func TestProductRunBindsTestAccountsAndStopsOnUnmark(t *testing.T) {
 	if loaded.current() != nil {
 		t.Fatal("marking an unrelated account stopped the run")
 	}
-	// 결속한 계정을 해제하면 확인이 실패한다(새 송신 정지). 결속 디렉터리의 사본도 지운다.
+	// 결속한 계정을 해제하면 확인이 실패한다(새 송신 정지). 결속 디렉터리와 실행 디렉터리의 사본도 지운다(다른 계정 사본은 둔다).
+	runCopy := filepath.Join(cfg.RunsDir, "job-unmark", bindingCredentialName(target.ID, "tester-a", strings.Repeat("c", 64)))
+	otherCopy := filepath.Join(cfg.RunsDir, "job-unmark", bindingCredentialName(target.ID, "real-b", strings.Repeat("d", 64)))
+	if os.MkdirAll(filepath.Dir(runCopy), 0o700) != nil || os.WriteFile(runCopy, []byte("{}"), 0o600) != nil || os.WriteFile(otherCopy, []byte("{}"), 0o600) != nil {
+		t.Fatal("run copy fixture")
+	}
 	endpoint := productPreparationEndpoint{product: runtime}
 	req := diagnosisprep.Request{Version: diagnosisprep.Version, RequestID: "product-control", Principal: "ARTEX", Command: diagnosisprep.ProductControl,
 		Product: &diagnosisprep.ProductRequest{Operation: "account_unmark", TargetID: target.ID, Account: &diagnosisprep.AccountRequest{Label: "tester-a"}}}
@@ -143,6 +148,12 @@ func TestProductRunBindsTestAccountsAndStopsOnUnmark(t *testing.T) {
 	}
 	if err := loaded.current(); !errors.Is(err, errAccountBindingChanged) {
 		t.Fatalf("unmarked bound account did not stop the run: %v", err)
+	}
+	if _, err := os.Stat(runCopy); !os.IsNotExist(err) {
+		t.Fatal("run directory credential copy left after unmark")
+	}
+	if _, err := os.Stat(otherCopy); err != nil {
+		t.Fatal("another account's run copy removed")
 	}
 	if copies, _ := filepath.Glob(filepath.Join(cfg.StateDir, "bindings", "*", "account-"+target.ID+".tester-a.*")); len(copies) != 0 {
 		t.Fatalf("credential copy left after unmark: %v", copies)
@@ -306,4 +317,31 @@ func TestAccountsAllowedForModelMode(t *testing.T) {
 	if accountsAllowedFor("openrouter") || !accountsAllowedFor("") || !accountsAllowedFor("local") {
 		t.Fatal("account binding gate by model mode changed")
 	}
+}
+
+// 실행이 끝나면 실행 디렉터리의 자격 사본(정책 pin 이름)을 지우고 다른 실행 자료는 둔다(#551 윤재상 리뷰).
+func TestRemoveRunCredentials(t *testing.T) {
+	runs := t.TempDir()
+	dir := filepath.Join(runs, "job-1")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cred := "account-target-1.tester-a.0123456789abcdef.json"
+	for _, name := range []string{cred, "policy.json", "audit-key"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	auth := &server.E2HTTPFileAuth{Accounts: []server.E2HTTPFileAuthAccount{{Label: "tester-a", Credential: server.E2HTTPFilePin{File: cred}}, {Label: "gone", Credential: server.E2HTTPFilePin{File: "account-target-1.gone.0123456789abcdef.json"}}}}
+	removeRunCredentials(runs, "job-1", auth)
+	if _, err := os.Stat(filepath.Join(dir, cred)); !os.IsNotExist(err) {
+		t.Fatal("credential copy left in the run directory")
+	}
+	for _, name := range []string{"policy.json", "audit-key"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Fatal("other run material removed:", name)
+		}
+	}
+	removeRunCredentials(runs, "../escape", auth)
+	removeRunCredentials(runs, "job-1", nil)
 }
