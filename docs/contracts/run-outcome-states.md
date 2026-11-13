@@ -51,7 +51,7 @@ intent 결과는 **그래프의 지금 상태에서 계산하는 투영**이다.
 | `closing_reason` | `completed` (없을 수 있음) | `budget_limited` | Planner 라운드·도구 호출·intent 재실행 상한, 승인 모델 예산 또는 E② 승인 요청 예산에 닿아 새 작업 없이 마감했다. 찾은 후보·근거는 보존한다. |
 | `intent_outcomes` | `completed` · `cancelled` | `{done, policy_limited, incomplete, unknown, stopped}` 정수 | 위 2절 투영의 개수. 모두 0 이상. `cancelled`에서는 "끝난 것·끊긴 것"을 보이는 데 쓴다(#429 이경준 제안). |
 | `diagnostic_log_incomplete` | `completed` | 참·거짓 | 진단 로그 기록 실패·관찰 불완전(C10). `reason_code`에 넣던 경고를 여기로 옮긴다(#418 이경준 지적: 다른 사유가 있으면 경고가 덮였다). |
-| `account_auth` | `completed` · `cancelled` · `failed` (시험 계정을 결속한 실행만) | 라벨 → `authenticated` · `login_failed` · `session_not_found` · `result_unknown` · `not_sent` | 실행 시작 때 인증 준비의 계정별 결과(C14 결정 3, S08). 라벨은 계정 등록 라벨(소문자·숫자·`_`·`-`, 사용자명 원문 아님), 값은 결과뿐이고 자격·세션 값은 없다. 1…16개. 인증 준비가 없던 실행(계정 미결속·외부 API 실행)에는 칸이 없다. 아래 3.4. |
+| `account_auth` | `completed` · `cancelled` · `failed` (시험 계정을 결속한 실행만) | 라벨 → `authenticated` · `login_failed` · `session_not_found` · `result_unknown` · `not_sent` | 실행 시작 때 인증 준비의 계정별 결과(C14 결정 3, S08). 라벨은 계정 등록 라벨(소문자·숫자·`_`·`-`, 사용자명 원문 아님), 값은 결과뿐이고 자격·세션 값은 없다. 1…16개. 인증 준비가 없던 실행(계정 미결속, 그리고 지금은 외부 API 실행 — 사전 공지·승인 동의 칸이 생기기 전까지 결속하지 않음)에는 칸이 없다. 받는 쪽은 모드로 거부하지 않는다(동의 칸이 생기면 외부 API 실행에도 실림). 아래 3.4. |
 
 `outcome`과 `intent_outcomes` 대조식(받는 쪽이 검사하고, 맞지 않으면 응답을 거부한다):
 
@@ -76,7 +76,7 @@ intent 결과는 **그래프의 지금 상태에서 계산하는 투영**이다.
 
 - `authenticated`: 로그인했고 설정한 세션 위치에서 세션을 얻었다. 그 계정으로 진단할 수 있었다.
 - `login_failed`: 대상이 4xx·5xx로 답했다(자격 틀림·잠금 등).
-- `session_not_found`: 대상은 성공으로 답했지만 설정한 세션 위치(쿠키 이름·JSON 필드)에 값이 없거나 가릴 수 없을 만큼 짧았다.
+- `session_not_found`: 대상은 성공으로 답했지만 설정한 세션 위치(쿠키 이름·JSON 필드)에 값이 없거나 가릴 수 없을 만큼 짧았다. 고칠 곳(세션 위치 설정 vs 대상 세션 형식)을 화면에서 나눠야 하면 값을 둘로 나눈다(#521 이경준 메모, 지금은 한 값).
 - `result_unknown`: 로그인 요청이 대상에 닿았는지 모른다(연결 뒤 끊김). 다시 보내지 않았다.
 - `not_sent`: 보내지 않았다(자격 파일 대조 실패, 보호할 수 없는 비밀번호, E② 거부·예산 소진 등).
 - `authenticated`가 아닌 계정은 그 실행에서 비인증으로 진행한 것이다. 그 계정 기준의 인가 결과를 "접근 차단 확인"으로 읽지 않는다(절대 규칙 5). 실행 중 결속 계정이 해제·만료·자격 교체되어 새 송신이 멈춘 것은 이 칸이 아니라 실행 `state`·`reason_code`가 말한다.
