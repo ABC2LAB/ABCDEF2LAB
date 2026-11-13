@@ -33,14 +33,28 @@ const url = `${pending.origin}/read`;
 beforeEach(() => vi.resetAllMocks());
 afterEach(cleanup);
 it.each([
-  "http://owned.example.test/read",
+  "ftp://owned.example.test/read",
+  "http://user:password@owned.example.test/read",
   "https://user:password@owned.example.test/read",
-])("불가한 HTTPS origin은 조회·등록하지 않는다: %s", (url) => {
+])("불가한 origin은 조회·등록하지 않는다: %s", (url) => {
   render(<TargetApprovalPanel url={url} disabled={false} />);
-  // 정본 HTTPS origin 이 아니면 대상 승인 칸을 아예 그리지 않는다 (등록 버튼 없음)
+  // 정본 http·https origin 이 아니면 대상 승인 칸을 아예 그리지 않는다 (등록 버튼 없음). http 대상은 받는다(C22).
   expect(screen.queryByRole("button", { name: "대상 등록 · 소유 확인 준비" })).toBeNull();
   expect(screen.queryByRole("button", { name: "대상 등록하기" })).toBeNull();
   expect(apiFetch).not.toHaveBeenCalled();
+});
+// http 대상(C22)도 등록할 수 있고, 승인 응답에는 TLS 고정값이 없다. 고정값이 붙은 http 승인 응답은 받지 않는다.
+it("http 대상도 등록 칸을 그리고 TLS 고정값 없는 승인을 받는다", async () => {
+  const plainURL = "http://owned.example.test/read";
+  const plain = { ...approved, origin: "http://owned.example.test", port: 80, tls_spki_sha256: undefined };
+  vi.mocked(apiFetch).mockResolvedValueOnce({ target: plain });
+  render(<TargetApprovalPanel url={plainURL} disabled={false} />);
+  await screen.findByText(/서버가 확인한 연결/);
+  cleanup();
+  vi.mocked(apiFetch).mockResolvedValueOnce({ target: { ...plain, tls_spki_sha256: "a".repeat(64) } });
+  render(<TargetApprovalPanel url={plainURL} disabled={false} />);
+  await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(2));
+  expect(screen.queryByText(/서버가 확인한 연결/)).toBeNull();
 });
 it.each([404, 501])("API %s는 패널을 숨긴다", async (status) => {
   vi.mocked(apiFetch).mockRejectedValue(new ApiError(status, "unsupported"));
@@ -62,7 +76,7 @@ it("등록의 읽기 범위와 TLS 사전 접촉을 안내한다", async () => {
   render(<TargetApprovalPanel url={url} disabled={false} />);
   await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1));
   fireEvent.click(screen.getByRole("button", { name: "대상 등록하기" }));
-  expect(screen.getByText(/후보 IP별 TLS 연결/)).toBeVisible();
+  expect(screen.getByText(/후보 IP별 연결\(https 대상은 TLS 확인\)/)).toBeVisible();
   fireEvent.change(screen.getByLabelText("진단 권한 · 비변경 근거"), {
     target: { value: "승인된 테스트 소유 환경의 읽기 전용 GET 경로입니다." },
   });

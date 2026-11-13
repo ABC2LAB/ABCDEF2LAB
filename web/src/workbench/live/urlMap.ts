@@ -125,8 +125,8 @@ export function urlHost(target: string): string {
 export function urlTargetHint(raw: string): string | null {
   const v = raw.trim();
   if (!v) return "";
-  if (!/^https:\/\//i.test(v)) return "HTTPS 주소만 받습니다.";
-  if (/^https:\/\/[^/]*@/i.test(v)) return "계정 정보(user:pass@)는 넣지 마세요.";
+  if (!/^https?:\/\//i.test(v)) return "http 또는 https 주소만 받습니다.";
+  if (/^https?:\/\/[^/]*@/i.test(v)) return "계정 정보(user:pass@)는 넣지 마세요.";
   if (/[?#]/.test(v)) return "query · fragment(? #)는 넣지 마세요.";
   if (/[%\\]/.test(v)) return "퍼센트 인코딩 · 역슬래시는 쓸 수 없습니다.";
   return null;
