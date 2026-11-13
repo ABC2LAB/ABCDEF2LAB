@@ -310,3 +310,48 @@ func TestAutomaticRequestBoundaryMatchesManual(t *testing.T) {
 		})
 	}
 }
+
+// 결과 불명으로 끝난 상태 변경 요청과 같은 메서드·경로는 다른 명령(본문·query가 달라도)으로도 이 회차에서 다시 보내지
+// 않는다. 결과를 받은 쓰기와 읽기는 막지 않는다(CLAUDE.md "결과 불명 쓰기는 자동으로 다시 보내지 않는다", #525 리뷰).
+func TestUnknownWriteIsNotResentWithAnotherCommand(t *testing.T) {
+	for _, mode := range []string{Auto, Manual} {
+		c, _ := flowFixture(t, mode)
+		c.mu.Lock()
+		for _, path := range []string{"/read/cart/add", "/read/cart/other"} {
+			e := c.addLocked("POST", path, "form", "html_form", "/read")
+			e.Selected, e.Change = true, "possible"
+		}
+		read := c.addLocked("GET", "/read/cart/add", "page", "html_link", "/read")
+		read.Selected, read.Change = true, "attested_read"
+		c.record.Snapshot.Stage = "diagnosing"
+		c.mu.Unlock()
+		post := e2proxy.RequestView{Method: "POST", URL: "https://owned.test/read/cart/add", BodyPresent: true}
+		if err := c.Before(t.Context(), post); err != nil {
+			t.Fatal(mode, "first write denied", err)
+		}
+		unknown := e2proxy.Receipt{AttemptID: "attempt-unknown", CallRef: "call-1", Decision: "allowed", ForwardAttempted: true, RequestWritten: true, Reason: e2proxy.Unknown}
+		if err := c.After(t.Context(), post, unknown); err != nil {
+			t.Fatal(err)
+		}
+		for _, again := range []e2proxy.RequestView{post, {Method: "post", URL: "https://owned.test/read/cart/add?retry=1", BodyPresent: true}} {
+			if err := c.Before(t.Context(), again); !errors.Is(err, ErrDenied) {
+				t.Fatalf("%s: write with an unknown result resent: %v", mode, err)
+			}
+		}
+		// 다른 경로의 쓰기, 같은 경로의 읽기, 결과를 받은 쓰기는 그대로 보낸다.
+		other := e2proxy.RequestView{Method: "POST", URL: "https://owned.test/read/cart/other", BodyPresent: true}
+		if err := c.Before(t.Context(), other); err != nil {
+			t.Fatal(mode, "unrelated write denied", err)
+		}
+		done := e2proxy.Receipt{AttemptID: "attempt-done", CallRef: "call-2", Decision: "allowed", ForwardAttempted: true, RequestWritten: true, ResponseReceived: true, ResponseComplete: true, StatusCode: 200, Reason: e2proxy.Complete}
+		if err := c.After(t.Context(), other, done); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Before(t.Context(), other); err != nil {
+			t.Fatal(mode, "completed write blocked", err)
+		}
+		if err := c.Before(t.Context(), e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/cart/add"}); err != nil {
+			t.Fatal(mode, "read of the same path denied", err)
+		}
+	}
+}
