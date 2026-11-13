@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/diagnosis/api", () => ({ apiFetch: vi.fn() }));
@@ -147,5 +147,65 @@ describe("AccountClassifyLive (실 API 읽기·쓰기)", () => {
     render(<AccountClassifyLive />);
     expect(await screen.findByText(/승인된 대상이 없습니다/)).toBeInTheDocument();
     expect(screen.queryByLabelText("계정 목록")).toBeNull();
+  });
+});
+
+// 쓰기 중 대상을 바꾸면, 늦게 온 이전 대상의 쓰기·재조회 응답(성공·실패)이 지금 대상 화면을 덮지 않는다(#538 이동찬 리뷰).
+describe("AccountClassifyLive 지연 응답 귀속", () => {
+  function serveTwo() {
+    let settle: { resolve: () => void; reject: () => void } | null = null;
+    api.mockImplementation((path: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (path === "/api/product/targets")
+        return Promise.resolve({
+          targets: [
+            { id: "t1", origin: "https://a.example", state: "approved" },
+            { id: "t2", origin: "https://b.example", state: "approved" },
+          ],
+        }) as never;
+      if (path === "/api/product/targets/t1/accounts" && method === "GET")
+        return Promise.resolve({
+          accounts: [{ label: "account-a", classification: "test", classified_by: "op-1" }],
+          account_statement: "진술",
+        }) as never;
+      if (path === "/api/product/targets/t2/accounts" && method === "GET")
+        return Promise.resolve({
+          accounts: [{ label: "account-b", classification: "test", classified_by: "op-1" }],
+          account_statement: "진술",
+        }) as never;
+      if (path === "/api/product/targets/t1/accounts/account-a/unmark" && method === "POST")
+        return new Promise((resolve, reject) => {
+          settle = { resolve: () => resolve({}), reject: () => reject(new Error("boom")) };
+        }) as never;
+      return Promise.reject(new Error(`unexpected ${method} ${path}`)) as never;
+    });
+    return () => settle as unknown as { resolve: () => void; reject: () => void };
+  }
+
+  async function startUnmarkOnAThenSwitchToB() {
+    render(<AccountClassifyLive />);
+    const pick = await screen.findByLabelText("분류할 대상");
+    fireEvent.change(pick, { target: { value: "t1" } });
+    const a = (await screen.findByText("account-a")).closest("li") as HTMLElement;
+    fireEvent.click(within(a).getByRole("button", { name: "표시 해제" }));
+    fireEvent.change(pick, { target: { value: "t2" } });
+    await screen.findByText("account-b");
+  }
+
+  it.each([
+    "resolve",
+    "reject",
+  ] as const)("이전 대상 쓰기가 늦게 %s 되어도 지금 대상 목록·오류를 바꾸지 않는다", async (how) => {
+    const settle = serveTwo();
+    await startUnmarkOnAThenSwitchToB();
+    await act(async () => {
+      settle()[how]();
+    });
+    // 선택은 B, 목록도 B 그대로. A의 목록·오류 문구가 끼어들지 않는다.
+    await waitFor(() => expect(screen.getByLabelText("분류할 대상")).toHaveValue("t2"));
+    const list = screen.getByLabelText("계정 목록");
+    expect(within(list).getByText("account-b")).toBeInTheDocument();
+    expect(within(list).queryByText("account-a")).toBeNull();
+    expect(screen.queryByText(/작업을 처리하지 못했습니다/)).toBeNull();
   });
 });

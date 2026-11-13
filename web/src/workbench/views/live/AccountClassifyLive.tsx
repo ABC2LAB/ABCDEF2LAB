@@ -6,7 +6,7 @@
 // ※ 이 분류가 지금 탐색·모델 입력 권한을 바로 주지 않는다(허용은 승인된 일회용 시험 계정의 대상 발급 세션에 한함).
 // ※ 쓰기: 등록(label)·시험 표시(mark-test, 진술 동의 필요)·표시 해제(unmark). 자격 값은 보내지 않는다. export 없음.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { cx } from "../../lib/cx";
 import {
@@ -51,6 +51,8 @@ export function AccountClassifyLive() {
   const [writeError, setWriteError] = useState("");
   const [confirming, setConfirming] = useState<string | null>(null);
   const [newLabel, setNewLabel] = useState("");
+  // 지금 화면에 결속된 대상 id. 쓰기·재조회 응답은 이 값과 같을 때만 반영한다(대상을 바꾼 뒤 늦게 온 이전 대상 응답은 버림).
+  const current = useRef<string | null>(null);
 
   // 승인된 대상 목록(선택용).
   useEffect(() => {
@@ -76,6 +78,7 @@ export function AccountClassifyLive() {
     setConfirming(null);
     setNewLabel("");
     setWriteError("");
+    current.current = selected?.id ?? null;
     if (!selected) return;
     getAccounts(selected)
       .then((r) => {
@@ -93,20 +96,26 @@ export function AccountClassifyLive() {
   }, [selected]);
 
   // 쓰기 공통: 작업 → 성공하면 목록 다시 읽기. 자격 값은 어떤 작업도 보내지 않는다.
+  // 응답(성공·실패 모두)은 쓰기를 시작한 대상이 아직 화면 대상일 때만 반영한다. 그사이 대상을 바꿨으면 버린다
+  // (다른 대상 목록을 보고 같은 라벨의 계정을 표시·해제하는 일을 막는다, #538 이동찬 리뷰).
   function doWrite(action: (id: string, label: string) => Promise<void>, label: string) {
     if (busy || !selected) return;
     const t = selected;
+    const stillHere = () => current.current === t.id;
     setBusy(true);
     setWriteError("");
     action(t.id, label)
       .then(() => getAccounts(t))
       .then((r) => {
+        if (!stillHere()) return;
         setAccounts(r.accounts);
         setStatement(r.statement);
         setConfirming(null);
         setNewLabel("");
       })
-      .catch(() => setWriteError("작업을 처리하지 못했습니다. 권한 · 대상 상태를 확인하고 다시 시도하세요."))
+      .catch(() => {
+        if (stillHere()) setWriteError("작업을 처리하지 못했습니다. 권한 · 대상 상태를 확인하고 다시 시도하세요.");
+      })
       .finally(() => setBusy(false));
   }
 
