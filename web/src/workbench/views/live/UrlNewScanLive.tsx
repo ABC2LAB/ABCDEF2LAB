@@ -421,10 +421,6 @@ export function UrlNewScanLive() {
             <a className={s.btn} href="#dashboard">
               취소
             </a>
-            {/* 계정 분류(시험 계정 표시, 운영자 전용·목업). 저장 위치·승인 주체는 §9-7 미정 */}
-            <a className={s.btn} href="#classify">
-              계정 분류
-            </a>
             <InspOpenButton>요약</InspOpenButton>
           </>
         }

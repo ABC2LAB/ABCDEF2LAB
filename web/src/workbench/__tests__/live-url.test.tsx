@@ -527,6 +527,9 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     const step1 = screen.getByRole("group", { name: "대상 · 로그인" });
     const summary = screen.getByRole("complementary", { name: "점검 요약" });
     expect(screen.queryByRole("group", { name: "분석 모델 · 점검 설정" })).toBeNull();
+    // 화면 머리에는 [취소]만 (계정 분류 버튼은 두지 않는다)
+    expect(screen.getByRole("link", { name: "취소" })).toHaveAttribute("href", "#dashboard");
+    expect(screen.queryByRole("link", { name: "계정 분류" })).toBeNull();
     // '다음'은 하나뿐이고 바닥 줄의 폼 제출 버튼이다. 주소가 맞아야 켜진다
     const next = within(form).getByRole("button", { name: "다음" });
     expect(next).toHaveAttribute("type", "submit");
