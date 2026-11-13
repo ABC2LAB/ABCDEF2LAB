@@ -488,13 +488,15 @@ func TestE2HTTPFactoryConcurrentRefreshKeepsNewestSession(t *testing.T) {
 	second := make(chan string, 1)
 	go func() { _, result := lease.RefreshSession(ctx, "tester-a"); second <- result }()
 	// 줄을 세우지 않으면 둘째가 여기서 끝난다. 줄을 세우면 첫째를 풀 때까지 기다린다.
+	secondDone := false
 	select {
 	case result := <-second:
 		results <- result
+		secondDone = true
 	case <-time.After(300 * time.Millisecond): // 요청 시간 상한(1초) 안에서 첫째를 푼다
 	}
 	close(release)
-	if len(results) < 2 {
+	if !secondDone {
 		results <- <-second
 	}
 	for range 2 {
