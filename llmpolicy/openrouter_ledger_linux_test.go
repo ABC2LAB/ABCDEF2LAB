@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
@@ -127,5 +128,125 @@ func TestOpenRouterLedgerSerializesConcurrentReservations(t *testing.T) {
 	info, err := os.Stat(ledger)
 	if err != nil || info.Mode().Perm() != 0600 {
 		t.Fatal("record not protected")
+	}
+}
+
+// openRouterSettleFixture는 요청 수는 넉넉하고 출력 승인은 예약 두 개분(200)인 보호 manifest다.
+func openRouterSettleFixture(t *testing.T) (string, string) {
+	t.Helper()
+	p := openRouterFixture(t)
+	p.manifest.MaxRequests = 10
+	p.manifest.MaxInputTokens = 10 * openRouterContext
+	p.manifest.MaxOutputTokens = 200
+	raw, _ := json.Marshal(p.manifest)
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "approval.json")
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path, filepath.Join(dir, fmt.Sprintf(".openrouter-%x.ledger", sha256.Sum256([]byte(p.manifest.ApprovalID))))
+}
+
+// 응답을 확인한 호출은 실제 사용량을 장부에 남겨, 예약과 실제의 차이를 다시 쓴다(C07 "승인별 누적 사용량", C28 결정 2).
+// 출력 승인이 예약 두 개분이어도 실제 출력이 작으면 더 보낸다. 다른 프로세스·재시작도 같은 합계를 읽는다.
+func TestOpenRouterLedgerSettlementReleasesUnusedReservation(t *testing.T) {
+	path, ledger := openRouterSettleFixture(t)
+	p := loadForLedger(t, path)
+	hits := 0
+	c := openRouterClient(p, openRouterRT(func(*http.Request) (*http.Response, error) {
+		hits++
+		return openRouterResponse(openRouterReply), nil // 출력 2토큰
+	}))
+	for i := 0; i < 5; i++ {
+		resp, err := c.Do(openRouterRequest())
+		if err != nil {
+			t.Fatalf("call %d refused although actual output is far below the approval: %v", i, err)
+		}
+		_ = resp.Body.Close()
+	}
+	reloaded := loadForLedger(t, path)
+	if err := reloaded.CheckAvailable(); err != nil {
+		t.Fatal("settled approval not available after reload", err)
+	}
+	fd, err := os.Open(ledger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fd.Close()
+	totals, err := openRouterLedgerSum(int(fd.Fd()), reloaded.manifest)
+	if err != nil || totals.Requests != 5 || totals.Output != 5*2 || totals.Cost != 5*12 {
+		t.Fatalf("ledger totals after settlement: %+v err=%v", totals, err)
+	}
+	if hits != 5 {
+		t.Fatal("unexpected sends", hits)
+	}
+}
+
+// 실패한 호출은 정산하지 않아 예약이 그대로 다 쓴 것으로 남는다(안전한 쪽). 출력 승인 두 개분이면 실패 두 번 뒤 막힌다.
+func TestOpenRouterLedgerFailedCallKeepsReservation(t *testing.T) {
+	path, _ := openRouterSettleFixture(t)
+	p := loadForLedger(t, path)
+	p.manifest.Version, p.manifest.MaxConsecutiveTransient = 2, 16
+	c := openRouterClient(p, openRouterRT(func(*http.Request) (*http.Response, error) { return openRouterStatus(503), nil }))
+	for i := 0; i < 2; i++ {
+		if _, err := c.Do(openRouterRequest()); err == nil {
+			t.Fatal("failure accepted")
+		}
+	}
+	if err := p.reserve(100); err == nil || p.Snapshot().FailureReason != "token_limit" {
+		t.Fatalf("failed calls' reservations released: %+v", p.Snapshot())
+	}
+}
+
+// 장부의 정산 줄은 짝이 되는 정산 안 된 예약이 있고 실제가 예약 이하일 때만 믿는다.
+func TestOpenRouterLedgerRejectsUntrustedSettlement(t *testing.T) {
+	m := openRouterFixture(t).manifest
+	cost := openRouterReservedCost(m, 100)
+	r := fmt.Sprintf(openRouterLedgerLine, int64(openRouterContext), int64(100), cost)
+	for name, body := range map[string]string{
+		"no-reservation": fmt.Sprintf(openRouterSettleLine, int64(openRouterContext), int64(100), cost, int64(10), int64(2), int64(12)),
+		"double":         r + fmt.Sprintf(openRouterSettleLine, int64(openRouterContext), int64(100), cost, int64(10), int64(2), int64(12)) + fmt.Sprintf(openRouterSettleLine, int64(openRouterContext), int64(100), cost, int64(10), int64(2), int64(12)),
+		"over-reserved":  r + fmt.Sprintf(openRouterSettleLine, int64(openRouterContext), int64(100), cost, int64(10), int64(101), int64(12)),
+		"other-value":    r + fmt.Sprintf(openRouterSettleLine, int64(openRouterContext), int64(99), cost, int64(10), int64(2), int64(12)),
+		"negative":       r + "s1 262144 100 " + fmt.Sprint(cost) + " -1 2 12\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path, ledger := openRouterLedgerFixture(t, 3)
+			if err := os.WriteFile(ledger, []byte(body), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if loadForLedger(t, path).CheckAvailable() == nil {
+				t.Fatal("untrusted settlement accepted")
+			}
+		})
+	}
+}
+
+// 정산 줄을 장부에 쓰지 못하면 프로세스 안에서도 예약을 돌려받지 않는다(장부와 같은 합계, 안전한 쪽).
+func TestOpenRouterSettlementFailureKeepsReservationInProcess(t *testing.T) {
+	for _, settleFails := range []bool{false, true} {
+		p := openRouterFixture(t)
+		p.manifest.MaxRequests, p.manifest.MaxOutputTokens = 10, 200
+		p.ledger = func(int64, int64, int64) error { return nil }
+		p.settleLedger = func([3]int64, [3]int64) error {
+			if settleFails {
+				return ErrOpenRouterPolicy
+			}
+			return nil
+		}
+		c := openRouterClient(p, openRouterRT(func(*http.Request) (*http.Response, error) { return openRouterResponse(openRouterReply), nil }))
+		for i := 0; i < 2; i++ {
+			resp, err := c.Do(openRouterRequest())
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = resp.Body.Close()
+		}
+		if got := p.reserve(100) == nil; got == settleFails {
+			t.Fatalf("settleFails=%v: third reservation allowed=%v", settleFails, got)
+		}
 	}
 }

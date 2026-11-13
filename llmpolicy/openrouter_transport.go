@@ -347,6 +347,7 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 	p.usage.InputTokens += result.Usage.Input
 	p.usage.OutputTokens += result.Usage.Output
 	p.usage.CostMicros += int64(cost)
+	p.settleLocked([3]int64{input, output, reserved}, [3]int64{result.Usage.Input, result.Usage.Output, int64(cost)})
 	p.mu.Unlock()
 	slot.succeeded(result.Usage.Input, result.Usage.Output, int64(cost))
 	diagnostic.InputTokens, diagnostic.OutputTokens = result.Usage.Input, result.Usage.Output
