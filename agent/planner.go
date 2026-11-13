@@ -383,7 +383,15 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	var def DeferredInfo
 	cleanup := func() {}
 	if isE2HTTPPlanning(ctx) {
-		selected, selectErr := diagnosisPlannerProfile.selectTools(base, nil, nil)
+		search, searchErr := newE2HTTPWebSearchTool(e2HTTPWebSearchFrom(ctx), nil)
+		if searchErr != nil {
+			return false, "", searchErr
+		}
+		var bound map[string]actool.CoreTool
+		if search != nil {
+			bound = map[string]actool.CoreTool{e2HTTPWebSearchToolName: search}
+		}
+		selected, selectErr := diagnosisPlannerProfile.selectTools(base, bound, nil)
 		if selectErr != nil {
 			return false, "", selectErr
 		}
