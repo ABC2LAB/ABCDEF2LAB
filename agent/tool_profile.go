@@ -39,6 +39,8 @@ var diagnosisWorkerProfile = toolProfile{name: "diagnosis_worker", entries: []to
 	{name: "Bash", source: bound, required: true},
 	// 원본 WebFetch의 E② 판. 같은 Bash 실행기로 가져온다(결정안 §2).
 	{name: "WebFetch", source: bound},
+	// 원본 검색 도구. 외부 API 설치에서 설치 입력 web_search를 켰을 때만 채운다(루프 복원 결정안 §2-1).
+	{name: "web_search", source: bound},
 	// 보관소 안만 보는 파일 도구(C29, 작업 공간 결정안 §2-4). 러너가 보관소를 쓸 때만 채워진다.
 	{name: "Read", source: bound},
 	{name: "Write", source: bound},
@@ -56,7 +58,7 @@ var diagnosisWorkerProfile = toolProfile{name: "diagnosis_worker", entries: []to
 	{name: "refresh_session", source: bound},
 }}
 
-// 진단 Planner 프로필. 순서는 PlannerTools 순서다. Planner에는 대상으로 보내는 도구가 없다.
+// 진단 Planner 프로필. 순서는 PlannerTools 순서다. Planner에는 대상으로 보내는 도구가 없다(web_search는 검색 제공자로만).
 var diagnosisPlannerProfile = toolProfile{name: "diagnosis_planner", entries: []toolProfileEntry{
 	{name: "graph_overview", source: fromBase}, {name: "list_findings", source: fromBase},
 	{name: "list_facts", source: fromBase}, {name: "node_detail", source: fromBase},
@@ -76,6 +78,9 @@ var diagnosisPlannerProfile = toolProfile{name: "diagnosis_planner", entries: []
 	// insert_assets와 같이 DB 역할 결정(열린 항목 5) 뒤에 넣는다.
 	{name: "add_task_scope", source: fromBase, description: diagnosisTaskScopeDescription},
 	{name: "list_untested_assets", source: fromBase},
+	// 원본 검색 도구. 외부 API 설치에서 설치 입력 web_search를 켰을 때만 채운다(루프 복원 결정안 §2-1). 검색 제공자로만
+	// 나가고 대상으로 보내지 않는다.
+	{name: "web_search", source: bound},
 }}
 
 const diagnosisTaskScopeDescription = "Add test scope to [this task]. In this diagnosis run, scope only widens the asset-coverage denominator and asset membership. " +
