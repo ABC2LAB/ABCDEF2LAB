@@ -108,6 +108,7 @@ func TestE2HTTPFactoryTestAccountModeFollowsAuthResult(t *testing.T) {
 				}
 				// 대상이 세션을 새로 발급(회전)한다. 모델에는 가지만 기록에서는 가려져야 한다(#522 이동찬 리뷰).
 				http.SetCookie(w, &http.Cookie{Name: "session", Value: "factory-rotated-session-55ee"})
+				http.SetCookie(w, &http.Cookie{Name: "sid", Value: "ab12cd"})
 				io.WriteString(w, "owned")
 			}))
 			defer target.Close()
@@ -168,7 +169,7 @@ func TestE2HTTPFactoryTestAccountModeFollowsAuthResult(t *testing.T) {
 				if err != nil || cookieHits.Load() != 1 || !strings.Contains(string(dump), "factory-rotated-session-55ee") {
 					t.Fatalf("인증된 시험 계정 실행이 모델 Cookie를 보내지 않거나 새 세션을 모델에 주지 않음: %+v %v", receipt, err)
 				}
-				if out := string(lease.Execution.RedactOutput(dump)); strings.Contains(out, "factory-rotated-session-55ee") || strings.Contains(out, "seeded-session-cookie-99aa") {
+				if out := string(lease.Execution.RedactOutput(dump)); strings.Contains(out, "factory-rotated-session-55ee") || strings.Contains(out, "seeded-session-cookie-99aa") || strings.Contains(out, "ab12cd") {
 					t.Fatal("새로 발급된 세션이 기록용 출력에 남음")
 				}
 				return

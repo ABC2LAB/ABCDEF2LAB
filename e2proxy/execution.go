@@ -1421,8 +1421,22 @@ func (e *Execution) RedactOutput(b []byte) []byte {
 			}
 		}
 	}
+	if e.cfg.HeaderMode == HeaderTestAccountPassthrough {
+		// 시험 계정 실행만 대상의 자격 응답 헤더를 넘긴다. 등록 하한(8바이트)보다 짧아 값 자체로 가릴 수 없는 발급 세션도
+		// 기록에 남지 않게 Set-Cookie 줄의 쿠키 값 자리와 Authentication-Info 값 전체를 구조로 가린다. 쿠키 이름·속성은
+		// 남긴다(#522 이동찬 리뷰).
+		out = issuedCookieLine.ReplaceAll(out, []byte("${1}[REDACTED]"))
+		out = authInfoLine.ReplaceAll(out, []byte("${1}[REDACTED]"))
+	}
 	return out
 }
+
+// issuedCookieLine은 Set-Cookie·Set-Cookie2 헤더 줄의 첫 이름=값에서 값 자리다(curl -i·-v 출력의 앞 "< " 포함).
+// authInfoLine은 Authentication-Info·Proxy-Authentication-Info 헤더 값 전체다.
+var (
+	issuedCookieLine = regexp.MustCompile(`(?im)^([<>* \t]*set-cookie2?[ \t]*:[ \t]*[^=;\r\n]*=)[^;\r\n]*`)
+	authInfoLine     = regexp.MustCompile(`(?im)^([<>* \t]*(?:proxy-)?authentication-info[ \t]*:[ \t]*)[^\r\n]*`)
+)
 
 // 출력 가림 전용 값의 하한·상한이다. 짧은 값은 흔한 문자열까지 가려 출력이 망가지므로 받지 않는다.
 const (

@@ -451,6 +451,7 @@ func TestIssuedSessionsAreRedactedFromRecords(t *testing.T) {
 			return
 		}
 		http.SetCookie(w, &http.Cookie{Name: "session", Value: "rotated-session-token-77aa"})
+		http.SetCookie(w, &http.Cookie{Name: "sid", Value: "abc1234"})
 		http.SetCookie(w, &http.Cookie{Name: "lang", Value: "en"})
 		w.Header().Set("Authentication-Info", "nextnonce=issued-nonce-value-88bb")
 		io.WriteString(w, "profile rotated-session-token-77aa")
@@ -474,13 +475,25 @@ func TestIssuedSessionsAreRedactedFromRecords(t *testing.T) {
 		t.Fatal("model input lost the issued session")
 	}
 	out := string(e.RedactOutput(raw))
-	for _, secret := range []string{"rotated-session-token-77aa", "nextnonce=issued-nonce-value-88bb", "initial-session-value-11cc"} {
+	for _, secret := range []string{"rotated-session-token-77aa", "issued-nonce-value-88bb", "initial-session-value-11cc", "abc1234"} {
 		if strings.Contains(out, secret) {
 			t.Fatalf("issued session %q reached the record: %s", secret, out)
 		}
 	}
-	if !strings.Contains(out, "lang=en") {
-		t.Fatal("short non-session cookie redacted")
+	// 짧은 발급 값(7바이트)은 값으로 가릴 수 없어 Set-Cookie 줄의 값 자리를 구조로 가린다. 쿠키 이름은 남는다(#522 리뷰).
+	if !strings.Contains(out, "sid=[REDACTED]") || !strings.Contains(out, "lang=[REDACTED]") {
+		t.Fatalf("Set-Cookie value positions not masked: %s", out)
+	}
+	// curl -v 형식(앞에 "< ")도 같다. 시험 계정 실행이 아니면 구조 가림을 하지 않는다(자격 응답은 그 전에 보류된다).
+	if got := string(e.RedactOutput([]byte("< Set-Cookie: sid=short1; Path=/\r\n"))); got != "< Set-Cookie: sid=[REDACTED]; Path=/\r\n" {
+		t.Fatalf("curl -v cookie line: %q", got)
+	}
+	if got := string(e.RedactOutput([]byte("Authentication-Info: nn=a1"))); got != "Authentication-Info: [REDACTED]" {
+		t.Fatalf("short Authentication-Info value: %q", got)
+	}
+	plainExec, _ := coreOpen(t, coreConfig(t, srv.URL, &coreRecorder{}, 1))
+	if got := string(plainExec.RedactOutput([]byte("Set-Cookie: sid=short1"))); got != "Set-Cookie: sid=short1" {
+		t.Fatalf("non test-account run masked structurally: %q", got)
 	}
 	// 가릴 자리가 모자라면 새 세션을 담은 응답은 보류한다.
 	e.mu.Lock()
