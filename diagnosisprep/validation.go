@@ -74,8 +74,9 @@ func CanonicalInput(input Input) (Input, error) {
 	if strings.ContainsAny(raw, "\\%?#") {
 		return Input{}, ErrProtocol
 	}
+	// http 대상도 받는다(C22, 2026-11-13 결정). 대상 소유는 DNS 증명·본인 진술로 확인하고, TLS 고정은 https 대상에만 쓴다.
 	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Opaque != "" || u.RawPath != "" || u.RawQuery != "" || u.Fragment != "" {
+	if err != nil || u.Scheme != "https" && u.Scheme != "http" || u.Host == "" || u.User != nil || u.Opaque != "" || u.RawPath != "" || u.RawQuery != "" || u.Fragment != "" {
 		return Input{}, ErrProtocol
 	}
 	host := strings.ToLower(u.Hostname())

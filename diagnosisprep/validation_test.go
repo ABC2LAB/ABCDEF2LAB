@@ -8,7 +8,8 @@ import (
 )
 
 func TestCanonicalInputStrictLocalValidation(t *testing.T) {
-	good := map[string]string{"https://EXAMPLE.test:443": "https://example.test/", "https://example.test/read": "https://example.test/read", "https://[2001:db8::1]:8443/read": "https://[2001:db8::1]:8443/read"}
+	// http 대상도 받는다(C22). 기본 포트는 지운다.
+	good := map[string]string{"http://example.test": "http://example.test/", "http://example.test:80/read": "http://example.test/read", "http://example.test:8080/read": "http://example.test:8080/read", "https://EXAMPLE.test:443": "https://example.test/", "https://example.test/read": "https://example.test/read", "https://[2001:db8::1]:8443/read": "https://[2001:db8::1]:8443/read"}
 	for input, want := range good {
 		t.Run(input, func(t *testing.T) {
 			got, e := CanonicalInput(Input{TargetURL: input, ProfileID: "local"})
@@ -17,7 +18,7 @@ func TestCanonicalInputStrictLocalValidation(t *testing.T) {
 			}
 		})
 	}
-	bad := []string{"http://example.test/", "https://[owned.example]/", "https://[127.0.0.1]/", "https://2001:db8::1:443/", "file:///etc/passwd", "https://user@example.test/", "https://example.test/#", "https://example.test/?", "https://example.test/?x=1", "https://example.test/%2fread", "https://example.test/%252fread", "https://example.test/a/../b", "https://example.test/./b", "https://example.test//read", "https://example.test/\\read", "https://example.test./", "https://예제.test/", "https://127.1/", "https://2130706433/", "https://0177.0.0.1/", "https://0x7f000001/", "https://[::ffff:127.0.0.1]/", "https://[fe80::1%25eth0]/", "https://example.test:0443/", "https://example.test:/", "https://example.test:0/", "https://example.test:65536/", " https://example.test/", "https://example.test/\n", "https://example.test/a b"}
+	bad := []string{"ftp://example.test/", "ws://example.test/", "http://user@example.test/", "http://example.test/?x=1", "https://[owned.example]/", "https://[127.0.0.1]/", "https://2001:db8::1:443/", "file:///etc/passwd", "https://user@example.test/", "https://example.test/#", "https://example.test/?", "https://example.test/?x=1", "https://example.test/%2fread", "https://example.test/%252fread", "https://example.test/a/../b", "https://example.test/./b", "https://example.test//read", "https://example.test/\\read", "https://example.test./", "https://예제.test/", "https://127.1/", "https://2130706433/", "https://0177.0.0.1/", "https://0x7f000001/", "https://[::ffff:127.0.0.1]/", "https://[fe80::1%25eth0]/", "https://example.test:0443/", "https://example.test:/", "https://example.test:0/", "https://example.test:65536/", " https://example.test/", "https://example.test/\n", "https://example.test/a b"}
 	for _, input := range bad {
 		t.Run(input, func(t *testing.T) {
 			if _, e := CanonicalInput(Input{TargetURL: input, ProfileID: "local"}); e == nil {

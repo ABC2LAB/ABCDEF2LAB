@@ -247,6 +247,9 @@ func urlOrigin(raw string) (string, error) {
 	return u.Scheme + "://" + u.Host, nil
 }
 func urlPort(u *url.URL) int {
+	if u.Port() == "" && u.Scheme == "http" {
+		return 80
+	}
 	if u.Port() == "" {
 		return 443
 	}
