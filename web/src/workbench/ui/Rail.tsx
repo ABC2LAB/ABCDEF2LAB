@@ -14,8 +14,9 @@ import { BrandMark, Icon } from "./icons";
 
 export function Rail() {
   const { route, railOpen, closeRail, foldRail, openRail } = useShell();
-  // 넓은 화면에서 접으면 아이콘 줄(64px)만 남는다 (시안 v19). 글자는 가리고 마우스를 올리면 이름이 뜬다.
-  const folded = useWb((st) => st.railHidden);
+  // 넓은 화면에서 접으면 아이콘 줄(64px)만 남는다 (시안 rail-min). 글자는 가리고 마우스를 올리면 이름이 뜬다.
+  // 글자 칸은 시안의 .lbl 대신 .rlbl: 시안은 .app.rail-min .lbl 로 숨겨 새 점검 폼의 칸 이름(.lbl)까지 같이 숨긴다.
+  const folded = useWb((st) => st.railMin);
   const tip = (t: string) => (folded ? t : undefined);
   const foldText = folded ? "메뉴 펼치기" : "메뉴 접기";
   return (
