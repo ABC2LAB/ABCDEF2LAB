@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from e2_export import E2_HEADER_MODES, E2_LLM_BACKENDS, HEADER_PASSTHROUGH, TARGET_PUBLIC_PRACTICE
+from e2_export import EVAL_HEADER_MODES, E2_LLM_BACKENDS, HEADER_PASSTHROUGH, TARGET_PUBLIC_PRACTICE
 
 CONFIG_FORMAT = "abc2lab.e2-runner-config/v1"
 # v1에 수용시험 경로 가림 키 파일을 더한 판(e2config.FormatPathKey). 공식 회차는 v1만 쓴다.
@@ -103,7 +103,7 @@ def _ref(value: object) -> bool:
 def _check_values(values: E2RunValues) -> None:
     if not _ref(values.eval_run_id) or not _ref(values.model_tag):
         _fail("run_values_invalid")
-    if not isinstance(values.header_mode, str) or values.header_mode not in E2_HEADER_MODES:
+    if not isinstance(values.header_mode, str) or values.header_mode not in EVAL_HEADER_MODES:
         _fail("header_mode_invalid")
     if type(values.port) is not int or not _MIN_PORT <= values.port <= _MAX_PORT:
         _fail("port_invalid")

@@ -34,7 +34,12 @@ E2_REASONS = frozenset({"complete", "unsupported", "policy_denied", "closed", "a
                         "transport_failed", "unknown", "attempt_limit", "denial_limit", "transient_limit", "unknown_limit", "invalid",
                         WITHHELD})
 HEADER_PASSTHROUGH = "evaluation_caller_passthrough"
-E2_HEADER_MODES = frozenset({"preserve", "protected_session_proposal", HEADER_PASSTHROUGH})
+HEADER_TEST_ACCOUNT = "test_account_passthrough"
+# Go e2proxy.HeaderMode 값 전체다(형식 대조용).
+E2_HEADER_MODES = frozenset({"preserve", "protected_session_proposal", HEADER_PASSTHROUGH, HEADER_TEST_ACCOUNT})
+# 평가 회차가 받는 값이다. 시험 계정 모드는 제품의 프로그램 로그인(인증 준비)과 묶인 모드라 평가 조건(프로토콜 §2의 caller
+# 자격 통과 모드) 밖이다.
+EVAL_HEADER_MODES = E2_HEADER_MODES - {HEADER_TEST_ACCOUNT}
 E2_LLM_BACKENDS = frozenset({"local", "api"})
 TARGET_PUBLIC_PRACTICE = "public_practice"
 _SCOPE_KEYS = frozenset({"RunRef", "TaskRef", "CaseRef", "ResetRef", "PolicyRef"})
@@ -169,7 +174,7 @@ def _check_expectation(expected: E2Expectation) -> None:
         _fail("EXPECTATION_INVALID")
     if not isinstance(expected.policy_fingerprint_sha256, str) or not _SHA256.fullmatch(expected.policy_fingerprint_sha256):
         _fail("EXPECTATION_INVALID")
-    if expected.header_mode not in E2_HEADER_MODES or expected.llm_backend not in E2_LLM_BACKENDS:
+    if expected.header_mode not in EVAL_HEADER_MODES or expected.llm_backend not in E2_LLM_BACKENDS:
         _fail("EXPECTATION_INVALID")
 
 

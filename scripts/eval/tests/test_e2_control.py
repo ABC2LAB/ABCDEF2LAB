@@ -306,7 +306,7 @@ class TestReadyShape(ReplyCase):
     def test_bad_shapes(self):
         self.replies(((ready("other"), "ready_state_invalid"), (ready(reason=SECRET_LIKE), "ready_reason_invalid"), (ready("failed", reason="synthetic_secret_123"), "ready_reason_invalid"),
                       (ready("failed", reason=[]), "ready_reason_invalid"), (ready(state=[]), "ready_state_invalid"),
-                      (ready(header_mode="synthetic_secret_123"), "ready_fields_missing"), (ready(header_mode=[]), "ready_fields_missing"),
+                      (ready(header_mode="synthetic_secret_123"), "ready_fields_missing"), (ready(header_mode="test_account_passthrough", evaluation=None), "ready_fields_missing"), (ready(header_mode=[]), "ready_fields_missing"),
                       (ready(evaluation=EVALUATION | {"llm_backend": "synthetic_secret_123"}), "ready_evaluation_invalid"),
                       (ready(evaluation=EVALUATION | {"target_kind": "synthetic_secret_123"}), "ready_evaluation_invalid"),
                       (ready(config_sha256=None), "ready_fields_missing"), (ready(policy_fingerprint_sha256="x"), "ready_fields_missing"),
