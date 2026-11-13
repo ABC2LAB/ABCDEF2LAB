@@ -1130,6 +1130,20 @@ it("탐색 화면에서 중지 버전 충돌을 안내하고 GET 확인 전에�
   expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
 });
 
+// 자동 모드(preauthorized_scope)는 범위에 쓰기 메서드가 있으면 건별 확인 없이 보낸다(C21). 시작 전 동의 문구도 그렇게 말한다.
+it.each([
+  [["GET", "HEAD", "POST"], "사전 승인한 경로와 임의 query 로 진행 · 승인한 쓰기 메서드(POST)를 건별 확인 없이 보냄", "쓰기(POST) 건별 확인 없이 보냄"],
+  [["GET"], "사전 승인한 경로와 임의 query 로 진행 · 쓰기 메서드는 범위에 없어 보내지 않음", "쓰기 요청 없음 (읽기만)"],
+])("자동 모드 범위 %j 는 쓰기를 어떻게 보내는지 표시한다", async (methods, rule, short) => {
+  const input = { ...ready.input, workflow_mode: "ai_auto_v1" as const };
+  u.readURLStatus.mockResolvedValue({ ...ready, input, scope: { ...scope, approval_mode: "preauthorized_scope", methods } });
+  saveHandle({ ...handle, input });
+  mount("new");
+  expect(await screen.findByText(rule)).toBeInTheDocument();
+  const sum = screen.getByRole("complementary", { name: "점검 요약" });
+  expect(within(sum).getByText("쓰기 요청").nextElementSibling).toHaveTextContent(short);
+});
+
 it("선택적 승인 범위는 읽기 사전 승인과 쓰기 건별 확인을 구분해 표시한다", async () => {
   const input = { ...ready.input, workflow_mode: "user_approval_v1" as const };
   u.readURLStatus.mockResolvedValue({ ...ready, input, scope: { ...scope, approval_mode: "workbench_selective_v1" } });
