@@ -108,6 +108,8 @@ type urlLoadedProfile struct {
 	releaseInputs   func()
 	productTarget   *productTargetRecord
 	productRegistry *productTargetRegistry
+	// productAccounts는 이 실행에 결속한 시험 계정이다(C14). 각각이 지금도 같은 자격으로 test여야 송신을 이어 간다.
+	productAccounts []productRunAccount
 }
 
 func (*urlLoadedProfile) String() string { return "urlLoadedProfile[protected]" }
@@ -362,6 +364,14 @@ func urlLoadProfileForReport(c urlPreparationInstallation, installationPin urlIn
 		if e != nil || normalized.TargetURL != origin+rule.PathPrefix {
 			return nil, errPreparation
 		}
+		// 인증 준비 규칙(C14)은 진단 범위(증명한 읽기 경로·메서드) 비교에서 빼고 따로 본다: auth_prep·POST 하나·인증 칸이
+		// 가리키는 규칙·증명한 경로 접두 안. 모델 요청은 이 규칙을 쓰지 못한다(E② Purpose).
+		if rule.Purpose != "" {
+			if !urlAuthRuleValid(policy, rule, p.Attestation.PathPrefixes) {
+				return nil, errPreparation
+			}
+			continue
+		}
 		paths = append(paths, rule.PathPrefix)
 		for _, method := range rule.Methods {
 			if method != "GET" && method != "HEAD" && !(p.WorkflowMode != "" && (method == "POST" || method == "PUT" || method == "PATCH")) {
@@ -573,7 +583,10 @@ func (l *urlLoadedProfile) current() error {
 		}
 	}
 	if l.productTarget != nil {
-		return l.productRegistry.current(*l.productTarget)
+		if err := l.productRegistry.current(*l.productTarget); err != nil {
+			return err
+		}
+		return l.productRegistry.accountsCurrent(*l.productTarget, l.productAccounts)
 	}
 	return nil
 }
@@ -641,4 +654,16 @@ func urlDatabaseProtected(c urlPreparationInstallation, conn *pgx.ConnConfig) bo
 		}
 	}
 	return true
+}
+
+func urlAuthRuleValid(policy server.E2HTTPFilePolicy, rule server.E2HTTPFileRule, prefixes []string) bool {
+	if rule.Purpose != e2proxy.PurposeAuthPrep || len(rule.Methods) != 1 || rule.Methods[0] != "POST" || policy.Auth == nil || policy.Auth.RuleRef != rule.Ref || policy.Auth.Login.Path != rule.PathPrefix {
+		return false
+	}
+	for _, prefix := range prefixes {
+		if prefix == "/" || rule.PathPrefix == prefix || strings.HasPrefix(rule.PathPrefix, strings.TrimSuffix(prefix, "/")+"/") {
+			return true
+		}
+	}
+	return false
 }
