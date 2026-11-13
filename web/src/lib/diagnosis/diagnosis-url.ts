@@ -146,7 +146,8 @@ function targetURL(v: unknown): string {
     Array.from(v).some((char) => char.charCodeAt(0) <= 32 || char.charCodeAt(0) > 126)
   )
     return invalid();
-  const parts = /^https:\/\/([^/]+)(\/.*)?$/.exec(v);
+  // http 대상도 받는다(C22). 서버가 같은 규칙으로 다시 검사한다.
+  const parts = /^https?:\/\/([^/]+)(\/.*)?$/.exec(v);
   if (!parts) return invalid();
   const authority = parts[1];
   const path = parts[2] ?? "/";
@@ -164,7 +165,7 @@ function targetURL(v: unknown): string {
   }
   // WHATWG URL이 정수·축약 IPv4, userinfo, trailing dot를 조용히 바꾸는 입력은 거부한다.
   if (
-    parsed.protocol !== "https:" ||
+    (parsed.protocol !== "https:" && parsed.protocol !== "http:") ||
     parsed.username ||
     parsed.password ||
     parsed.hostname !== host ||

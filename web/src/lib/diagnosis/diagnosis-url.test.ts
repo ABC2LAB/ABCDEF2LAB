@@ -37,7 +37,9 @@ describe("URL 진단 v2 공개 계약", () => {
     ).toThrow();
   });
   it.each([
-    "http://target.example/",
+    "ftp://target.example/",
+    "http://user:pass@target.example/",
+    "http://target.example/?token=x",
     "https://user:pass@target.example/",
     "https://target.example/#x",
     "https://target.example/?token=x",
@@ -55,6 +57,10 @@ describe("URL 진단 v2 공개 계약", () => {
   });
   it("UTF8 이름 상한을 지켜 서버에서 거절될 이름을 저장하지 않는다", () => {
     expect(() => urlDiagnosisInput("https://target.example/", "profile-1", "가".repeat(54))).toThrow();
+  });
+  it("http 대상도 받는다(C22). 기본 포트는 지운다", () => {
+    expect(urlDiagnosisInput("http://target.example:80/read", "profile-1", "").target_url).toBe("http://target.example/read");
+    expect(urlDiagnosisInput("http://target.example:8080/", "profile-1", "").target_url).toBe("http://target.example:8080/");
   });
   it("시작 전 URL canonicalization은 실행 권위를 만들지 않는다", () => {
     expect(urlDiagnosisInput(" https://TARGET.example ", "profile-1", " 진단 ")).toEqual({
