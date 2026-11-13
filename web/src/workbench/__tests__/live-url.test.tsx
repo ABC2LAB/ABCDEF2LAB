@@ -615,7 +615,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(u.createURLDraft).not.toHaveBeenCalled();
     expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
     // 서버에 진행률 · 범위 밖 전송 집계가 없어 시안 칸은 '아직 구현 안 됨' (시안 v22). 0 % 로 지어내지 않는다
-    expect(screen.getByRole("group", { name: "점검 진행률" })).toHaveTextContent(/^아직 구현 안 됨/);
+    expect(screen.getByRole("group", { name: "점검 진행률" })).toHaveTextContent("아직 구현 안 됨");
     expect(screen.queryByText(/^0%$/)).toBeNull();
     expect(screen.getByText(/^범위 밖으로 보낸 요청 · 승인 없이 보낸 상태 변경/)).toHaveTextContent("아직 구현 안 됨");
   });
