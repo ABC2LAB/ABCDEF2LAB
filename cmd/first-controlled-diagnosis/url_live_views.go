@@ -32,6 +32,10 @@ const (
 	e2FlowPageEvents = 1000
 	maxRunAuditKey   = 4 << 10
 	maxRunAuthority  = 64 << 10
+	// maxRunAttemptPatterns는 표시용 시도 경로 패턴 파일의 읽기 상한이다. 넘으면 패턴 없이 보인다.
+	maxRunAttemptPatterns = 4 << 20
+	// maxAttemptPatternBytes는 패턴 하나의 상한이다(pathmask 조각 상한 32 × 조각 길이 상한과 여유).
+	maxAttemptPatternBytes = 2048
 )
 
 // liveDataView는 task 경로가 작업대 실데이터 읽기 API인지다("control-policy"·"e2-flow", 아니면 "").
@@ -252,6 +256,41 @@ func e2FlowEvents(r *http.Request, b *runBinding) ([]e2proxy.Event, bool, error)
 	return events, true, nil
 }
 
+// attemptPatterns는 실행 상태 디렉터리의 표시용 시도 경로 패턴(server.E2AttemptPatternsFile)을 읽는다. 감사 기록이
+// 아니므로 형식이 맞는 줄만 받고, 파일이 없거나 상한을 넘거나 읽지 못하면 빈 결과다(path_pattern을 비운다).
+func attemptPatterns(b *runBinding) map[string]string {
+	out := map[string]string{}
+	raw, err := readRunFile(b.root, "state/"+server.E2AttemptPatternsFile, maxRunAttemptPatterns)
+	if err != nil {
+		return out
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		var row server.E2AttemptPatternRow
+		if line == "" || e2config.StrictJSON([]byte(line), &row) != nil || !attemptRefValid(row.AttemptID) ||
+			!strings.HasPrefix(row.PathPattern, "/") || len(row.PathPattern) > maxAttemptPatternBytes || strings.ContainsAny(row.PathPattern, "?#\r\n") {
+			continue
+		}
+		out[row.AttemptID] = row.PathPattern
+	}
+	return out
+}
+
+// attemptRefValid는 E② 시도 ID 형식(16바이트 소문자 16진수)이다.
+func attemptRefValid(v string) bool {
+	b, err := hex.DecodeString(v)
+	return err == nil && len(b) == 16 && hex.EncodeToString(b) == v
+}
+
+// withAttemptPatterns는 시도 행에 경로 패턴을 붙인다(계약 §4 path_pattern). 패턴이 없는 시도는 비운다.
+func withAttemptPatterns(view e2FlowView, patterns map[string]string) e2FlowView {
+	for i := range view.Calls {
+		for j := range view.Calls[i].Attempts {
+			view.Calls[i].Attempts[j].PathPattern = patterns[view.Calls[i].Attempts[j].AttemptID]
+		}
+	}
+	return view
+}
+
 // e2FlowOf는 검증된 사건을 호출 단위로 묶는다(계약 §4 커서 규칙). after가 없으면 최근 호출 e2FlowTailCalls개를 그
 // 호출의 모든 사건으로, after가 있으면 그보다 큰 번호의 사건만 오래된 것부터 e2FlowPageEvents개까지 준다.
 func e2FlowOf(events []e2proxy.Event, after *uint64) e2FlowView {
@@ -382,7 +421,7 @@ func serveLiveData(w http.ResponseWriter, r *http.Request, runsDir, jobID, view 
 		case !ok:
 			out = e2FlowView{Format: e2FlowViewFormat, Journal: "invalid", Calls: []e2FlowCall{}}
 		default:
-			out = e2FlowOf(events, after)
+			out = withAttemptPatterns(e2FlowOf(events, after), attemptPatterns(b))
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")

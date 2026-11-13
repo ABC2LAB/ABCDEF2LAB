@@ -78,10 +78,8 @@ func Pseudonym(segment string, key []byte) string {
 // 안전 문자 밖(이메일의 @, base64의 +·= 등)이나 32자를 넘는 조각(UUID 포함)은 `{id}`로 가린다.
 // 가린 조각에도 정적 자원 확장자는 남겨서 해시가 긴 번들 이름(main.<hex32>.js)이 API로 세이지 않게 한다.
 // 가린 조각만 masked로 센다. HMAC으로 바꾼 조각은 값이 아니라 이름일 수도 있어서 세지 않는다.
-func maskSegment(raw string, key []byte) (string, bool) {
-	if raw == "" {
-		return "", false
-	}
+// valueSegment는 경로 조각 하나를 풀어 값처럼 보이는지 본다. 값이면 가린 자리 표시를, 아니면 푼 이름을 돌려준다.
+func valueSegment(raw string) (string, bool) {
 	segment, err := url.PathUnescape(raw)
 	if err != nil {
 		return MaskedSegment + staticSuffix(raw), true
@@ -90,7 +88,40 @@ func maskSegment(raw string, key []byte) (string, bool) {
 		digitSegment.MatchString(segment) || hexSegment.MatchString(segment) || looksEncoded(segment) {
 		return MaskedSegment + staticSuffix(segment), true
 	}
+	return segment, false
+}
+
+func maskSegment(raw string, key []byte) (string, bool) {
+	if raw == "" {
+		return "", false
+	}
+	segment, value := valueSegment(raw)
+	if value {
+		return segment, true
+	}
 	return Pseudonym(segment, key), false
+}
+
+// Readable은 제품 화면용 경로 패턴이다(작업대 전송 통제 흐름의 path_pattern). Mask와 같은 규칙으로 값처럼 보이는 조각만
+// `{id}`로 가리고, 이름 조각은 가명으로 바꾸지 않고 그대로 둔다(운영자가 자기 서비스 경로를 읽는다). 이름 조각은
+// 안전 문자만·32자 이하이고, 길거나 섞인 조각은 값으로 본다. query는 받지 않는다(EscapedPath만). 평가 기록에는 Mask를 쓴다.
+func Readable(escaped string) string {
+	segments := strings.Split(escaped, "/")
+	values := 0
+	for _, segment := range segments {
+		if segment != "" {
+			values++
+		}
+	}
+	if values > MaxSegments {
+		return LongPath
+	}
+	for i, raw := range segments {
+		if raw != "" {
+			segments[i], _ = valueSegment(raw)
+		}
+	}
+	return strings.Join(segments, "/")
 }
 
 // Mask는 percent 인코딩이 남은 경로(url.URL.EscapedPath())를 패턴과 가린 조각 수로 바꾼다.

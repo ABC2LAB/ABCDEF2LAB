@@ -247,6 +247,11 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 	} else if input.Workflow != nil {
 		return empty, ErrE2HTTPHost
 	}
+	// 제품 실행은 시도별 화면용 경로 패턴을 상태 디렉터리에 남긴다(작업대 e2-flow path_pattern). 평가 회차와 이미 관찰
+	// 훅을 받은 실행(수용시험 경로 투영)은 그대로 둔다. 허용 판단·송신·감사·계수에는 영향이 없다.
+	if input.AttemptPathObserver == nil && policy.Evaluation == nil {
+		input.AttemptPathObserver = productAttemptPatterns(policy.StateDir)
+	}
 	if policy.ApprovalMode != e2proxy.ApprovalConfirmEveryRequest && policy.ApprovalMode != e2proxy.ApprovalPreauthorizedScope && policy.ApprovalMode != e2proxy.ApprovalWorkbenchV1 {
 		return empty, ErrE2HTTPHost
 	}

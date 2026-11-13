@@ -59,3 +59,28 @@ func TestMaskPathBoundsSegments(t *testing.T) {
 		t.Fatal(pattern, masked)
 	}
 }
+
+// 제품 화면용 패턴은 값 조각만 가리고 이름 조각은 그대로 둔다. 원문 값·query는 남지 않는다.
+func TestReadableMasksValuesKeepsNames(t *testing.T) {
+	for in, want := range map[string]string{
+		"/api/orders/42":                              "/api/orders/{id}",
+		"/rest/products/search":                       "/rest/products/search",
+		"/api/users/0123456789abcdef0123/basket":      "/api/users/{id}/basket",
+		"/files/eyJhbGciOiJIUzI1NiJ9abcdefgh/x.js":    "/files/{id}/x.js",
+		"/assets/9f86d081884c7d659a2feaa0c55ad015.js": "/assets/{id}.js",
+		"/a%2Fb/c":        "/{id}/c",
+		"/":               "/",
+		"/api/orders/42/": "/api/orders/{id}/",
+	} {
+		if got := Readable(in); got != want {
+			t.Errorf("Readable(%q)=%q want %q", in, got, want)
+		}
+	}
+	long := strings.Repeat("/a", MaxSegments+1)
+	if Readable(long) != LongPath {
+		t.Fatal("over-long path not collapsed")
+	}
+	if got := Readable("/search/" + strings.Repeat("x", 33)); got != "/search/{id}" {
+		t.Fatal("long segment kept as a name:", got)
+	}
+}

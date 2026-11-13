@@ -340,3 +340,39 @@ func TestControlPolicyViewOmitsFingerprintWithCredentialPins(t *testing.T) {
 		t.Fatalf("credential-pinned policy exposed a fingerprint or pin file: %s", w.Body.String())
 	}
 }
+
+// 시도 행의 path_pattern은 실행 상태 디렉터리의 표시용 패턴 파일에서 시도 ID로 붙인다. 형식이 틀린 줄은 버리고, 패턴이
+// 없는 시도는 비운다. 파일이 없어도 흐름은 그대로 보인다.
+func TestE2FlowViewAttachesAttemptPatterns(t *testing.T) {
+	a1, a2 := strings.Repeat("1", 32), strings.Repeat("2", 32)
+	runsDir, policy := liveRunFixture(t, func(record func(e2proxy.Event)) {
+		record(liveEvent("result", "call-1", a1, 1, "allowed", e2proxy.Complete))
+		record(liveEvent("result", "call-1", a2, 2, "denied", e2proxy.PolicyDenied))
+	})
+	rows := []string{
+		`{"attempt_id":"` + a1 + `","path_pattern":"/api/orders/{id}"}`,
+		`{"attempt_id":"` + a2 + `","path_pattern":"/x?token=secret"}`, // query가 섞인 줄은 버린다
+		`{"attempt_id":"zz","path_pattern":"/y"}`,
+		`not json`,
+	}
+	write := func(body string) {
+		if err := os.WriteFile(filepath.Join(policy.StateDir, server.E2AttemptPatternsFile), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pattern := func() (string, string) {
+		w, out := liveGet(t, runsDir, "/api/tasks/9/e2-flow")
+		if w.Code != http.StatusOK {
+			t.Fatal(w.Code, w.Body.String())
+		}
+		attempts := out["calls"].([]any)[0].(map[string]any)["attempts"].([]any)
+		return attempts[0].(map[string]any)["path_pattern"].(string), attempts[1].(map[string]any)["path_pattern"].(string)
+	}
+	if p1, p2 := pattern(); p1 != "" || p2 != "" {
+		t.Fatal("patterns without a pattern file")
+	}
+	write(strings.Join(rows, "\n") + "\n")
+	if p1, p2 := pattern(); p1 != "/api/orders/{id}" || p2 != "" {
+		t.Fatalf("patterns: %q %q", p1, p2)
+	}
+}
