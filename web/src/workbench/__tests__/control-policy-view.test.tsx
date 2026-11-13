@@ -18,7 +18,7 @@ afterEach(cleanup);
 const good: ControlPolicy = {
   policyRef: "pol-1",
   policyRevision: "rev-1",
-  approvalMode: "workbench_v1",
+  approvalMode: "workbench_selective_v1",
   validFrom: "2000-01-01T00:00:00Z",
   validUntil: "2999-01-01T00:00:00Z",
   rules: [
@@ -50,6 +50,19 @@ describe("UrlControlPolicyLive (예시)", () => {
     expect(container.textContent ?? "").toContain("Authorization");
     expect(container.textContent ?? "").not.toMatch(/Bearer /);
     expect(container.textContent ?? "").not.toMatch(/Cookie:/i);
+  });
+
+  it("http(비-https) 대상은 'TLS 없음(평문 전송)' 경고를 보인다", async () => {
+    render(<UrlControlPolicyLive />);
+    await screen.findByText(/예시 데이터/);
+    expect(screen.getAllByText(/TLS 없음/).length).toBeGreaterThan(0);
+  });
+
+  it("https 대상은 TLS 없음 경고가 없다", async () => {
+    g.mockResolvedValueOnce({ ...good, rules: [{ ...good.rules[0], origin: "https://secure.example" }] });
+    render(<UrlControlPolicyLive />);
+    await screen.findByText("https://secure.example");
+    expect(screen.queryByText(/TLS 없음/)).toBeNull();
   });
 
   it("빈 메서드 규칙은 '전부 허용'이 아니라 차단으로 명시(fail-closed)", async () => {
