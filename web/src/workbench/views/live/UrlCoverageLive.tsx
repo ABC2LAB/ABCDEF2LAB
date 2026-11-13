@@ -1,11 +1,6 @@
 "use client";
 
-// 커버리지 시각화 화면 ("무엇을 얼마나 검사했나", 지금은 예시). 영역별 세그먼트 바 + 상태별 집계.
-// 데이터는 lib/diagnosis/coverage seam(getCoverage)에서만 온다. 집계·무결성 규칙은 전부 seam(lib),
-// 이 화면은 표현만 한다(표현/데이터 분리 — coverage.test.ts 가 집계를 이미 검증).
-// 핵심(절대규칙 5): '미시도(untested)'는 조회 안 함이지 '취약 없음·안전'이 아니다 — 정상색으로 칠하지 않는다.
-// ※ live 점등은 커버리지 집계 API(검사계획+시도상태) 연동 시 getCoverage(taskId) 만 교체(이 화면은 안 바뀐다).
-//   지금은 getCoverage(null)=예시(MOCK_COVERAGE), mock 배너를 띄운다.
+// 기존 workflow snapshot의 관찰 커버리지. 집계·정규화는 lib seam, 기존 표시 구조를 재사용한다.
 
 import type { CSSProperties } from "react";
 import { useEffect, useState } from "react";
@@ -17,12 +12,14 @@ import {
   type CoverageStatus,
   coverageIssues,
   getCoverage,
+  WORKFLOW_COUNT_LABEL,
   STATUS_LABEL,
   STATUS_ORDER,
   summarize,
   total,
 } from "@/lib/diagnosis/coverage";
 
+import { useUrl } from "../../live/urlDiagnosis";
 import { cx } from "../../lib/cx";
 import { Icon } from "../../ui/icons";
 import s from "../../workbench.module.css";
@@ -46,6 +43,7 @@ const STATUS_STYLE: Record<CoverageStatus, CSSProperties> = {
 };
 
 const AXIS_LABEL: Record<CoverageArea["axis"], string> = {
+  workflow: "워크플로 관찰",
   horizontal: "수평",
   vertical: "수직",
   "state-change": "상태 변경",
@@ -167,7 +165,7 @@ function AreaBlock({ a }: { a: CoverageArea }) {
         <span style={areaName}>{a.label}</span>
         <span style={axisChip}>{AXIS_LABEL[a.axis]}</span>
         <small className={s.help}>
-          시도 {attempted(a)} / 전체 {total(a)} · 계획 {a.planned}
+          방문 관찰 {attempted(a)} / 표시 끝점 {total(a)}
         </small>
       </div>
       <CoverageBar a={a} />
@@ -176,25 +174,39 @@ function AreaBlock({ a }: { a: CoverageArea }) {
   );
 }
 
-/** 커버리지 시각화 (예시). */
+/** 실제 task/job 결속이 있는 workflow만 표시한다. */
 export function UrlCoverageLive() {
-  const [data, setData] = useState<CoverageData | null>(null);
-  const [failed, setFailed] = useState(false);
-
+  const job = useUrl((st) => st.job);
+  const binding = job ? `${job.id}:${job.task_id}:${job.source_digest}:${job.input.workflow_mode}` : "";
+  const available = !!job?.task_id && !!job.input.workflow_mode;
+  const [state, setState] = useState<{ binding: string; data: CoverageData | null; failed: boolean }>({
+    binding: "",
+    data: null,
+    failed: false,
+  });
   useEffect(() => {
-    let live = true;
-    // TODO(이경준): 커버리지 집계 API 연동 시 현재 task id 를 넘겨 실 집계로 점등한다(지금은 예시). getCoverage 만 교체.
-    getCoverage(null)
-      .then((d) => {
-        if (live) setData(d);
-      })
-      .catch(() => {
-        if (live) setFailed(true);
-      });
-    return () => {
-      live = false;
+    if (!available || !job) return;
+    let current = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const controller = new AbortController();
+    const poll = async () => {
+      try {
+        const data = await getCoverage(job, controller.signal);
+        if (current) setState({ binding, data, failed: false });
+      } catch {
+        if (current) setState({ binding, data: null, failed: true });
+      }
+      if (current) timer = setTimeout(() => void poll(), 2000);
     };
-  }, []);
+    void poll();
+    return () => {
+      current = false;
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [available, binding, job]);
+  const data = available && state.binding === binding ? state.data : null;
+  const failed = available && state.binding === binding && state.failed;
 
   const sum = data ? summarize(data) : null;
   const issues = data ? coverageIssues(data) : null;
@@ -211,7 +223,10 @@ export function UrlCoverageLive() {
             </div>
           ) : null}
           {failed ? <p className={s.empty}>커버리지를 불러오지 못했습니다.</p> : null}
-          {!data && !failed ? <p className={s.empty}>불러오는 중…</p> : null}
+          {!available ? (
+            <p className={s.empty}>실제 워크플로 진단을 선택하세요. 미실행을 안전으로 판단하지 않습니다.</p>
+          ) : null}
+          {available && !data && !failed ? <p className={s.empty}>불러오는 중…</p> : null}
 
           {/* 집계 무결성 경고 — 계획과 상태 합이 다른 영역을 숨기지 않고 센다(fail-closed) */}
           {data && issues && issues.mismatched > 0 ? (
@@ -225,15 +240,15 @@ export function UrlCoverageLive() {
             <section className={s.isec} aria-label="커버리지 요약">
               <h2>검사 커버리지 요약</h2>
               <p className={s.help}>
-                무엇을 얼마나 검사했는지입니다. ‘미시도’는 조회 안 함이며 ‘취약 없음·안전’이 아닙니다 — 후속
-                축(수직·상태 변경)은 미시도가 큽니다.
+                현재 workflow의 방문·선택·응답 관찰입니다. ‘미시도’는 조회 안 함이며 ‘취약 없음·안전’이 아닙니다. 방문과
+                HTTP 응답은 취약점 검사 완료나 E③ 판정을 뜻하지 않습니다.
               </p>
               <div style={chipRow}>
                 <span style={neutralChip}>
-                  계획 <b>{sum.planned}</b>
+                  표시 끝점 <b>{sum.planned}</b>
                 </span>
                 <span style={neutralChip}>
-                  시도 <b>{sum.attempted}</b>
+                  방문 관찰 <b>{sum.attempted}</b>
                 </span>
               </div>
               <StatusChips counts={sum.byStatus} />
@@ -241,6 +256,59 @@ export function UrlCoverageLive() {
             </section>
           ) : null}
 
+          {data?.workflowCounts ? (
+            <section className={s.isec} aria-label="워크플로 서버 누계">
+              <h2>워크플로 서버 누계</h2>
+              <p className={s.help}>
+                관찰 갱신판 {data.snapshotRevision} · 상태{" "}
+                {
+                  (
+                    {
+                      crawling: "탐색 중",
+                      awaiting_selection: "대상 선택 대기",
+                      diagnosing: "진단 중",
+                      completed: "마감",
+                      stopped: "중지",
+                      failed: "실패",
+                      unknown: "불명",
+                    } as Record<string, string>
+                  )[data.stage ?? "unknown"]
+                }{" "}
+                · 누계와 표시 끝점 수는 다를 수 있습니다.
+              </p>
+              <div style={chipRow}>
+                {Object.entries(WORKFLOW_COUNT_LABEL).map(([key, label]) => (
+                  <span key={key} style={neutralChip}>
+                    {label} <b>{data.workflowCounts?.[key] ?? "불명"}</b>
+                  </span>
+                ))}
+              </div>
+            </section>
+          ) : null}
+          {data?.endpoints ? (
+            <section className={s.isec} aria-label="끝점별 관찰">
+              <h2>끝점별 관찰</h2>
+              {!data.endpoints.length ? (
+                <p className={s.empty}>표시할 끝점이 없습니다. 검사 완료나 안전을 뜻하지 않습니다.</p>
+              ) : null}
+              {data.endpoints.map((e) => (
+                <article key={e.id} style={areaBox}>
+                  <p>
+                    <code>
+                      {e.method} {e.path || "경로 불명"}
+                    </code>{" "}
+                    · {e.source}
+                  </p>
+                  <p>
+                    {e.visited === null ? "방문 불명" : e.visited ? "방문함" : "미방문"} ·{" "}
+                    {e.selected === null ? "선택 불명" : e.selected ? "선택됨" : "미선택"} · 응답{" "}
+                    {e.status ?? "관찰 없음"} · {STATUS_LABEL[e.coverage]}
+                  </p>
+                  {e.observationError ? <p className={s.help}>{e.observationError}</p> : null}
+                </article>
+              ))}
+            </section>
+          ) : null}
           {data ? (
             <section className={s.isec} aria-label="영역별 커버리지">
               <h2>영역별 커버리지</h2>
@@ -251,7 +319,7 @@ export function UrlCoverageLive() {
               )}
               {/* 스코프 표기 — 정책 버전을 변형·절단 없이 그대로(감사 표기와 1:1) */}
               <p className={s.help}>
-                정책 버전: <span className={s.mono}>{data.policyVersion}</span>
+                자료 범위: 워크플로 관찰 · E③ 판정 아님 · 정책 판은 이 자료에서 제공하지 않습니다.
               </p>
             </section>
           ) : null}
