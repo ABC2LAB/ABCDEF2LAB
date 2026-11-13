@@ -335,7 +335,12 @@ describe("실행 결과 칸(docs/contracts/run-outcome-states.md §3.2)", () => 
     "cancelled",
     "failed",
   ] as const)("account_auth(§3.4): %s 에 계정별 인증 결과 맵을 받는다(자격·세션 값 없이)", (state) => {
-    const account_auth = { "acct-a": "authenticated", admin_2: "login_failed", "shop-3": "not_sent" };
+    const account_auth = {
+      "acct-a": "authenticated",
+      admin_2: "login_failed",
+      "shop-3": "not_sent",
+      [`a${"b".repeat(31)}`]: "result_unknown", // 32자(서버 상한)
+    };
     expect(parseURLJob(envelope({ ...completed, state, account_auth }), owner).account_auth).toEqual(account_auth);
   });
   it("account_auth 없는 실행은 그대로 받는다(계정 미결속)", () => {
@@ -350,6 +355,9 @@ describe("실행 결과 칸(docs/contracts/run-outcome-states.md §3.2)", () => 
     { ...completed, account_auth: { "acct-a": "ok" } }, // 모르는 결과값
     { ...completed, account_auth: { Acct: "authenticated" } }, // 대문자 라벨(사용자명 원문 방지)
     { ...completed, account_auth: { "a b": "authenticated" } }, // 공백 라벨
+    { ...completed, account_auth: { "-acct": "authenticated" } }, // '-' 로 시작(서버 등록 규칙 밖)
+    { ...completed, account_auth: { _acct: "authenticated" } }, // '_' 로 시작
+    { ...completed, account_auth: { [`a${"b".repeat(32)}`]: "authenticated" } }, // 33자(서버 상한 32자 초과)
     { ...completed, account_auth: JSON.parse('{"__proto__":"authenticated"}') }, // 프로토타입 오염 시도
     { ...completed, account_auth: { "acct-a": 1 } }, // 비문자 값
     { ...completed, account_auth: ["authenticated"] }, // 배열

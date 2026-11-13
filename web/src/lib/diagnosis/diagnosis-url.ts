@@ -534,7 +534,9 @@ function intentOutcomes(v: unknown): URLIntentOutcomes {
     stopped: v.stopped as number,
   };
 }
-/** 계정별 인증 결과 맵(§3.4). 라벨은 등록 라벨(소문자·숫자·_·-), 값은 결과 enum뿐, 1…16개. 자격·세션 값은 안 받는다. */
+/** 계정별 인증 결과 맵(§3.4). 라벨은 서버 등록 라벨 규칙 그대로(`diagnosisprep.ValidAccountLabel`: 영숫자로 시작,
+ *  소문자·숫자·_·- 32자), 값은 결과 enum뿐, 1…16개. 자격·세션 값은 안 받는다. 서버가 만들 수 없는 라벨은 계약 밖이다. */
+const ACCOUNT_LABEL = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 function accountAuth(v: unknown): URLAccountAuth {
   if (!object(v)) return invalid();
   const labels = Object.keys(v);
@@ -543,8 +545,7 @@ function accountAuth(v: unknown): URLAccountAuth {
   for (const label of labels) {
     const result = v[label];
     if (
-      label === "__proto__" ||
-      !/^[a-z0-9_-]{1,64}$/.test(label) ||
+      !ACCOUNT_LABEL.test(label) ||
       typeof result !== "string" ||
       !(URL_ACCOUNT_AUTH_RESULTS as readonly string[]).includes(result)
     )
