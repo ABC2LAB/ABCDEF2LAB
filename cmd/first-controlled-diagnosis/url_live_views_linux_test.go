@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/server"
@@ -26,6 +27,12 @@ const liveJob = "job-live-fixture"
 
 // liveRunFixture는 실행 결속 디렉터리(runs/<job>)를 실제 형식으로 만든다: 승인 해시가 맞는 정책, 감사 키, 감사 기록.
 func liveRunFixture(t *testing.T, events func(record func(e2proxy.Event))) (runsDir string, policy server.E2HTTPFilePolicy) {
+	t.Helper()
+	return liveRunFixtureWith(t, events, nil)
+}
+
+// liveRunFixtureWith는 실행 정책을 바꿔 쓸 수 있는 실행 디렉터리다(진단 워크플로 칸·승인 방식 등).
+func liveRunFixtureWith(t *testing.T, events func(record func(e2proxy.Event)), change func(*server.E2HTTPFilePolicy)) (runsDir string, policy server.E2HTTPFilePolicy) {
 	t.Helper()
 	runsDir = t.TempDir()
 	runDir := filepath.Join(runsDir, liveJob)
@@ -54,6 +61,9 @@ func liveRunFixture(t *testing.T, events func(record func(e2proxy.Event))) (runs
 		Limits:  server.E2HTTPFileLimits{MaxAttempts: 200, MaxCalls: 10, MaxConcurrent: 1, MaxBodyBytes: 65536, RequestTimeoutMS: 5000, CallTimeoutMS: 60000, MaxDenials: 8, MaxTransient: 4, MaxUnknown: 2},
 		Proxy:   server.E2HTTPFileProxy{HeaderTimeoutMS: 5000, RequestTimeoutMS: 10000, MaxHeaderBytes: 16384, MaxConnections: 4},
 		Runtime: server.E2HTTPFileRuntime{MaxWorkerTurns: 8, MaxToolCalls: 8, WorkerTimeoutMS: 60000, MaxPlannerRounds: 6, MaxIntentRuns: 1, DrainTimeoutMS: 10000, OutputLimit: 32768}}
+	if change != nil {
+		change(&policy)
+	}
 	raw, err := json.Marshal(policy)
 	if err != nil || os.WriteFile(filepath.Join(runDir, "policy.json"), raw, 0o600) != nil {
 		t.Fatal("policy write")
@@ -280,5 +290,53 @@ func TestTaskRouteServesLiveDataAfterBinding(t *testing.T) {
 	b.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/tasks/10/control-policy", nil))
 	if w.Code != http.StatusForbidden || strings.Contains(w.Body.String(), controlPolicyViewFormat) {
 		t.Fatalf("unbound task: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// 제품 기본 경로(AI 자동 워크플로)와 작업대 승인 방식 실행의 정책에도 작업대 조회가 열린다. 평가용 검증기를 쓰면
+// workflow 칸 때문에 늘 409였다(11/13 실제 점검). 지문은 실행 factory와 같은 내용 지문이다.
+func TestControlPolicyViewReadsWorkflowRunPolicies(t *testing.T) {
+	for name, change := range map[string]func(*server.E2HTTPFilePolicy){
+		"ai_auto": func(p *server.E2HTTPFilePolicy) {
+			p.Workflow = &server.E2HTTPWorkflowPolicy{Format: diagnosisflow.Version, Mode: "ai_auto_v1", InputSHA256: strings.Repeat("f", 64)}
+		},
+		"workbench": func(p *server.E2HTTPFilePolicy) {
+			p.ApprovalMode = e2proxy.ApprovalWorkbenchV1
+			p.Workflow = &server.E2HTTPWorkflowPolicy{Format: diagnosisflow.Version, Mode: "manual_v1", InputSHA256: strings.Repeat("f", 64)}
+		},
+		"confirm_every_request": func(p *server.E2HTTPFilePolicy) { p.ApprovalMode = e2proxy.ApprovalConfirmEveryRequest },
+	} {
+		t.Run(name, func(t *testing.T) {
+			runsDir, policy := liveRunFixtureWith(t, nil, change)
+			w, out := liveGet(t, runsDir, "/api/tasks/9/control-policy")
+			if w.Code != http.StatusOK {
+				t.Fatal(w.Code, w.Body.String())
+			}
+			raw, _ := json.Marshal(policy)
+			_, want, err := server.ValidateE2HTTPRunPolicyDocument(raw)
+			if err != nil || out["approval_mode"] != string(policy.ApprovalMode) || out["policy_fingerprint_sha256"] != want || want == "" {
+				t.Fatalf("workflow run policy view: %v %s", err, w.Body.String())
+			}
+			if f, _ := liveGet(t, runsDir, "/api/tasks/9/e2-flow"); f.Code == http.StatusConflict {
+				t.Fatal("e2-flow rejected the workflow run policy")
+			}
+		})
+	}
+}
+
+// 자격 pin 규칙이 있는 정책은 pin 파일 없이 실행과 같은 지문을 낼 수 없어 지문을 비운다(다른 칸은 그대로 보인다).
+func TestControlPolicyViewOmitsFingerprintWithCredentialPins(t *testing.T) {
+	runsDir, _ := liveRunFixtureWith(t, nil, func(p *server.E2HTTPFilePolicy) {
+		p.HeaderMode = e2proxy.HeaderProtectedSessionProposal
+		p.Auth = nil
+		p.Rules = p.Rules[:1]
+		p.Rules[0].Credentials = &server.E2HTTPFilePin{File: "session-pin.json", SHA256: strings.Repeat("9", 64)}
+	})
+	w, out := liveGet(t, runsDir, "/api/tasks/9/control-policy")
+	if w.Code != http.StatusOK {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	if _, ok := out["policy_fingerprint_sha256"]; ok || strings.Contains(w.Body.String(), "session-pin.json") {
+		t.Fatalf("credential-pinned policy exposed a fingerprint or pin file: %s", w.Body.String())
 	}
 }
