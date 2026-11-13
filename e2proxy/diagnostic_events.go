@@ -15,7 +15,7 @@ func diagnosticReceipt(ctx context.Context, r Receipt, event, status, reason str
 }
 func diagnosticReason(reason Reason) string {
 	switch reason {
-	case Complete, Unsupported, PolicyDenied, Closed, AuditFailed, Expired, Revoked, BudgetExhausted, TransportFailed, Unknown, AttemptLimit, DenialLimit, TransientLimit, UnknownLimit, Invalid:
+	case Complete, Withheld, Unsupported, PolicyDenied, Closed, AuditFailed, Expired, Revoked, BudgetExhausted, TransportFailed, Unknown, AttemptLimit, DenialLimit, TransientLimit, UnknownLimit, Invalid:
 		return string(reason)
 	}
 	return "invalid"
@@ -33,7 +33,8 @@ func diagnosticAudit(ctx context.Context, ev Event, err error) {
 	case "result":
 		status := "not_sent"
 		switch {
-		case ev.ResponseComplete:
+		case ev.ResponseComplete, ev.Reason == Withheld:
+			// 보류(C16)는 대상이 답한 요청이다. 표현을 주지 않았거나 잘랐을 뿐 결과 불명이 아니다(사유 withheld).
 			status = "completed"
 		case ev.ForwardAttempted:
 			status = "unknown"
