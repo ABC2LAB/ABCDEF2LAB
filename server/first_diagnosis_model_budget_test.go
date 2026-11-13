@@ -365,9 +365,39 @@ func TestFirstDiagnosisModelBudgetReservesRequestSize(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// 승인 입력 예산은 예약 합계로 지킨다. 남은 입력 예산이 요청 하나보다 작으면 거부한다.
-	if b.before(context.Background(), cfg, &req) == nil || b.Snapshot().Requests != 3 {
-		t.Fatal("input budget exceeded")
+	// 예산 검사는 정산한 사용량 + 진행 중 예약이다(C28 결정 2). 정산한 세 호출은 10토큰씩만 썼으므로 남은 예약을
+	// 다시 써서 네 번째 호출을 받는다.
+	if err := b.before(context.Background(), cfg, &req); err != nil || b.Snapshot().Requests != 4 {
+		t.Fatal("settled reservations were not released for the next call", err)
+	}
+	if err := b.after(llm.Usage{InputTokens: 10, OutputTokens: 20}, 128, nil); err != nil {
+		t.Fatal(err)
+	}
+	// 정산 사용량과 진행 중 예약이 상한을 채우면 거부한다: 입력 예산 2·want에서 첫 호출이 want를 다 쓰고(정산),
+	// 두 번째는 남은 want로 받고, 그 예약이 진행 중인 동안 세 번째는 거부한다.
+	b, err = NewFirstDiagnosisModelBudget(diagnosisprep.Budget{ModelRequests: 4, InputTokens: 2 * want, OutputTokens: 4 * 128}, 8192, 128, func(diagnosisprep.ModelUsage) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.ConfigureConcurrency(1); err != nil {
+		t.Fatal(err)
+	}
+	first, err := b.reserve(context.Background(), cfg, &req)
+	if err != nil || b.settle(first, llm.Usage{InputTokens: int(want), OutputTokens: 1}, nil) != nil {
+		t.Fatal("first call", err)
+	}
+	second, err := b.reserve(context.Background(), cfg, &req)
+	if err != nil {
+		t.Fatal("remaining input budget not usable", err)
+	}
+	if _, err := b.reserve(context.Background(), cfg, &req); err == nil || !b.limitReached || b.Snapshot().Requests != 2 {
+		t.Fatal("settled usage plus in-flight reservation exceeded the input budget")
+	}
+	if b.settle(second, llm.Usage{InputTokens: 1, OutputTokens: 1}, nil) != nil {
+		t.Fatal("second call")
+	}
+	if _, err := b.reserve(context.Background(), cfg, &req); err == nil {
+		t.Fatal("call accepted although settled usage leaves less than one reservation")
 	}
 	// 창(65536)에 framing 여유를 더하면 넘는 요청은 보내지 않는다.
 	b, cfg = modelBudgetFixture(t, func(diagnosisprep.ModelUsage) error { return nil })
