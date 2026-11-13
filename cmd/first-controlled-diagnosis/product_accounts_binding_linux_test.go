@@ -296,9 +296,27 @@ func TestProductReportLoadsBindingAfterRevokeAndUnmark(t *testing.T) {
 	}
 }
 
-// 외부 API 모델 실행은 사전 공지·승인 동의 칸이 생기기 전까지 시험 계정을 결속하지 않는다.
+// 외부 API 모델 실행은 운영자 동의(초안 입력 external_test_accounts) 없이는 시험 계정을 결속하지 않는다.
 func TestAccountsAllowedForModelMode(t *testing.T) {
 	if accountsAllowedFor("openrouter") || !accountsAllowedFor("") || !accountsAllowedFor("local") {
 		t.Fatal("account binding gate by model mode changed")
+	}
+	consented := diagnosisprep.Input{ExternalTestAccounts: true}
+	if runBindsAccounts("openrouter", diagnosisprep.Input{}) || !runBindsAccounts("openrouter", consented) || !runBindsAccounts("", diagnosisprep.Input{}) {
+		t.Fatal("external test account consent does not gate account binding")
+	}
+	// 동의는 외부 API 실행에 계정을 실제로 결속했을 때만 서버로 넘긴다. 로컬 모델 실행에는 넘기지 않는다.
+	if !externalTestAccountsConsent("openrouter", consented, 1) || externalTestAccountsConsent("openrouter", consented, 0) ||
+		externalTestAccountsConsent("openrouter", diagnosisprep.Input{}, 1) || externalTestAccountsConsent("", consented, 1) {
+		t.Fatal("server consent derived from the wrong conditions")
+	}
+	// launch의 동의 칸은 서버 호스트 설정으로 그대로 간다.
+	c := launchConfig{HTTP: &httpLaunch{PolicyFile: "p", AuthorityFile: "a", AuthorityRoot: "r", ExternalTestAccounts: true}}
+	if host, ok := c.httpHostConfig(); !ok || !host.ExternalTestAccounts {
+		t.Fatal("launch consent not carried to the host config")
+	}
+	c.HTTP.ExternalTestAccounts = false
+	if host, ok := c.httpHostConfig(); !ok || host.ExternalTestAccounts {
+		t.Fatal("host config consent without launch consent")
 	}
 }

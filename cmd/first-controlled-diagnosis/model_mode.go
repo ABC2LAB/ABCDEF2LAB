@@ -8,7 +8,7 @@ func (c launchConfig) httpHostConfig() (server.FirstDiagnosisHTTPHostConfig, boo
 	if c.HTTP == nil || !ok {
 		return server.FirstDiagnosisHTTPHostConfig{}, false
 	}
-	return server.FirstDiagnosisHTTPHostConfig{PolicyFile: c.HTTP.PolicyFile, AuthorityFile: c.HTTP.AuthorityFile, AuthorityRoot: c.HTTP.AuthorityRoot, PlannerLimits: limits}, true
+	return server.FirstDiagnosisHTTPHostConfig{PolicyFile: c.HTTP.PolicyFile, AuthorityFile: c.HTTP.AuthorityFile, AuthorityRoot: c.HTTP.AuthorityRoot, PlannerLimits: limits, ExternalTestAccounts: c.HTTP.ExternalTestAccounts}, true
 }
 
 func (c launchConfig) modelOptions() server.FirstDiagnosisModelOptions {

@@ -110,6 +110,8 @@ type urlLoadedProfile struct {
 	productRegistry *productTargetRegistry
 	// productAccounts는 이 실행에 결속한 시험 계정이다(C14). 각각이 지금도 같은 자격으로 test여야 송신을 이어 간다.
 	productAccounts []productRunAccount
+	// externalTestAccounts는 외부 API 실행에 시험 계정을 결속했다는 뜻이다(초안 입력의 사전 공지·승인 진술, C14 결정 4).
+	externalTestAccounts bool
 }
 
 func (*urlLoadedProfile) String() string { return "urlLoadedProfile[protected]" }

@@ -107,7 +107,7 @@ func (b *urlPreparationRuntime) issue(l *urlLoadedProfile, jobID string, actual 
 	if syncErr != nil || closeErr != nil || parentSync != nil || parentClose != nil || l.current() != nil {
 		return c, errPreparation
 	}
-	c.HTTP = &httpLaunch{PolicyFile: filepath.Join(runRoot, "policy.json"), AuthorityFile: filepath.Join(runRoot, "authority.json"), AuthorityRoot: runRoot}
+	c.HTTP = &httpLaunch{PolicyFile: filepath.Join(runRoot, "policy.json"), AuthorityFile: filepath.Join(runRoot, "authority.json"), AuthorityRoot: runRoot, ExternalTestAccounts: l.externalTestAccounts}
 	return c, nil
 }
 
