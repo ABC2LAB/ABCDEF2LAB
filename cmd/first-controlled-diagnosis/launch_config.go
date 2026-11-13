@@ -56,6 +56,64 @@ type launchConfig struct {
 	StatusReadRetries int               `json:"status_read_retries,omitempty"`
 	Registered        *registeredLaunch `json:"registered_get,omitempty"`
 	HTTP              *httpLaunch       `json:"general_http,omitempty"`
+	// WebSearch는 진단 Planner·Worker의 원본 검색 도구 설정이다(루프 복원 결정안 §2-1). 외부 API(openrouter) 일반 HTTP
+	// launch만 받는다. 키는 설치 보호 파일 pin으로만 싣는다.
+	WebSearch *launchWebSearch `json:"web_search,omitempty"`
+}
+
+type launchWebSearch struct {
+	Backend   string `json:"backend"`
+	KeyFile   string `json:"key_file,omitempty"`
+	KeySHA256 string `json:"key_sha256,omitempty"`
+}
+
+// maxWebSearchKeyBytes는 검색 키 파일 상한이다(Brave·Tavily 키는 수십 바이트).
+const maxWebSearchKeyBytes = 4096
+
+func (w *launchWebSearch) valid() bool {
+	if w == nil {
+		return true
+	}
+	switch w.Backend {
+	case "ddgs":
+		return w.KeyFile == "" && w.KeySHA256 == ""
+	case "brave-free", "tavily":
+		return filepath.IsAbs(w.KeyFile) && filepath.Clean(w.KeyFile) == w.KeyFile && plainText(w.KeyFile, maxPathBytes) && validSHA256Hex(w.KeySHA256)
+	}
+	return false
+}
+
+// webSearch는 launch의 검색 설정을 읽는다. 키는 pin(SHA-256)이 맞을 때만 메모리로 읽고, 값은 어디에도 남기지 않는다.
+func (c launchConfig) webSearch() (agent.E2HTTPWebSearch, error) {
+	w := c.WebSearch
+	if w == nil {
+		return agent.E2HTTPWebSearch{}, nil
+	}
+	if !w.valid() {
+		return agent.E2HTTPWebSearch{}, errPreparation
+	}
+	out := agent.E2HTTPWebSearch{Backend: w.Backend}
+	if w.Backend == "ddgs" {
+		return out, nil
+	}
+	raw, pin, err := urlReadPin(w.KeyFile, maxWebSearchKeyBytes, false)
+	defer clear(raw)
+	if err != nil || pin.digest != w.KeySHA256 {
+		return agent.E2HTTPWebSearch{}, errPreparation
+	}
+	key := strings.TrimSpace(string(raw))
+	if key == "" || !plainText(key, maxWebSearchKeyBytes) {
+		return agent.E2HTTPWebSearch{}, errPreparation
+	}
+	if w.Backend == "brave-free" {
+		out.BraveKey = key
+	} else {
+		out.TavilyKey = key
+	}
+	if !out.Valid() {
+		return agent.E2HTTPWebSearch{}, errPreparation
+	}
+	return out, nil
 }
 
 // plannerLimits는 launch의 Plan당 상한이다. 음수·코드 상한 밖이면 false이고, 돌려준 값도 받는 쪽 검사(Valid)에서
@@ -145,6 +203,10 @@ func parseLaunchConfig(data []byte) (launchConfig, error) {
 		return launchConfig{}, errPreparation
 	}
 	if c.StatusReadRetries < 0 || c.StatusReadRetries > urlMaxStatusReadRetries(c.ShutdownTimeoutSeconds) || c.Mode != "general_http" && c.StatusReadRetries != 0 {
+		return launchConfig{}, errPreparation
+	}
+	// 검색은 검색 제공자로 나가므로 외부 API 일반 HTTP launch만 받는다(완전 로컬 모드는 외부 송신 전면 차단, 규칙 8).
+	if c.WebSearch != nil && (!c.WebSearch.valid() || c.ModelExecutionMode != "openrouter" || c.Mode != "general_http") {
 		return launchConfig{}, errPreparation
 	}
 	return c, nil

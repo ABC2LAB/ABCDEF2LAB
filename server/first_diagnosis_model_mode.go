@@ -14,6 +14,9 @@ type FirstDiagnosisModelOptions struct {
 	Budget                 *FirstDiagnosisModelBudget
 	// PlannerLimits는 준비 계획의 Plan당 상한이다(C26·C32). 실행 서버는 host 설정의 값을 쓴다. 0이면 기본값이다.
 	PlannerLimits agent.E2HTTPPlannerLimits
+	// WebSearch는 준비 Planner의 원본 검색 도구 설정이다(루프 복원 결정안 §2-1). 외부 API(openrouter) 모드에서만 켤 수 있다.
+	// 실행 서버는 host 설정의 값을 쓴다.
+	WebSearch agent.E2HTTPWebSearch
 }
 
 func (FirstDiagnosisModelOptions) String() string {
@@ -28,6 +31,10 @@ func (s *Server) hasModelPolicy() bool {
 // 기존 설정의 빈 mode는 로컬 manifest가 있을 때만 로컬 모드로 해석한다.
 // 외부 설정이 섞였거나 mode가 알 수 없는 값이면 다른 provider로 대체하지 않는다.
 func (o FirstDiagnosisModelOptions) load() (*llmpolicy.ProfileResolver, *llmpolicy.OpenRouterPolicy, error) {
+	// 검색은 검색 제공자로 나가므로 외부 API 모드만 켤 수 있다. 완전 로컬 모드는 외부 송신 전면 차단이다(규칙 8).
+	if !o.WebSearch.Valid() || o.WebSearch.Enabled() && o.Mode != "openrouter" {
+		return nil, nil, ErrFirstDiagnosisModel
+	}
 	switch o.Mode {
 	case "", "local_only":
 		if o.LocalManifestPath == "" || o.OpenRouterManifestPath != "" {
@@ -106,7 +113,7 @@ func NewFirstDiagnosisPreparationServerWithModel(ctx context.Context, m *Manager
 	if err != nil {
 		return nil, err
 	}
-	return newServerConfiguredWithOptions(ctx, m, skillDir, dataDir, keyDir, local, serverStartupOptions{existingAuthOnly: true, noAutomaticAdmission: true, preparationOnly: true, openRouterPolicy: external, firstModelBudget: o.Budget, firstPlannerLimits: o.PlannerLimits}, nil)
+	return newServerConfiguredWithOptions(ctx, m, skillDir, dataDir, keyDir, local, serverStartupOptions{existingAuthOnly: true, noAutomaticAdmission: true, preparationOnly: true, openRouterPolicy: external, firstModelBudget: o.Budget, firstPlannerLimits: o.PlannerLimits, firstWebSearch: o.WebSearch}, nil)
 }
 
 // 집계 정보만 반환한다. 키·프롬프트·대상 응답 원문은 포함하지 않는다.
