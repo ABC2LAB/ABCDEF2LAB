@@ -104,6 +104,36 @@ func TestWorkflowProfileBindsCompleteInputAndKeepsApprovedWritesInAutomaticMode(
 			t.Fatal("automatic mode rule lost approved write methods", rule.Methods)
 		}
 	}
+	// "요청마다 확인"에 동의한 이전 등록(WriteConsent 없음)은 자동 모드에서 쓰기를 쓰지 않는다. 사용자 모드는 그대로 쓴다
+	// (#525 이경준 리뷰). 같은 기록을 다시 읽어도 결과가 같다.
+	r.mu.Lock()
+	legacy := r.records[target.ID]
+	if legacy.WriteConsent != productWriteConsentAuto {
+		r.mu.Unlock()
+		t.Fatal("new registration did not record the automatic-write consent")
+	}
+	legacy.WriteConsent = ""
+	r.records[target.ID], r.approvals[target.ID] = legacy, legacy
+	r.mu.Unlock()
+	input.DisplayName = "Legacy consent run"
+	old, err := runtime.load("ARTEX", input, false, "")
+	if err != nil {
+		t.Fatal("legacy automatic scope", err)
+	}
+	old.clearMaterials()
+	if !reflect.DeepEqual(old.inspection.Scope.Methods, []string{"GET", "HEAD"}) {
+		t.Fatal("legacy consent sent writes in automatic mode", old.inspection.Scope.Methods)
+	}
+	input.WorkflowMode = diagnosisflow.Manual
+	manualLegacy, err := runtime.load("ARTEX", input, false, "")
+	if err != nil {
+		t.Fatal("legacy manual scope", err)
+	}
+	manualLegacy.clearMaterials()
+	if !reflect.DeepEqual(manualLegacy.inspection.Scope.Methods, []string{"GET", "HEAD", "POST"}) {
+		t.Fatal("legacy consent lost writes in manual mode", manualLegacy.inspection.Scope.Methods)
+	}
+	input.WorkflowMode = diagnosisflow.Auto
 	// Installation opt-in, target consent and ordinary-mode write filtering are
 	// separate boundaries: a signed POST target must not widen the legacy path.
 	input.WorkflowMode = ""
