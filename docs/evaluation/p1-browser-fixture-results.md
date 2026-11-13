@@ -191,3 +191,63 @@ READY 전에 하네스가 `docker top`으로 Chromium 컨테이너에 MCP 프로
 | 정리한 소유 컨테이너/망 · 잔여 | 11 / 5 · 0 | 11 / 5 · 0 |
 
 전달 수가 앞 절(22)보다 하나 많은 것은 driver가 `/bypass/B09` 페이지를 하나 더 열기 때문이다. 통제 회차의 Chromium namespace에는 경계 입구망과 CDP 연결망 말고 경로가 없어 STUN UDP가 나가지 못한다. 범위는 내부망 역할 수신기 하나다. 메타데이터 역할로 가는 STUN·TURN(TCP/TLS 포함)은 미실행이다.
+
+
+## 2026-11-13 U01 실제 Workbench 브라우저 수용
+
+**U01 PASS — 실제 Workbench 화면 + 소유 준비 API fixture의 표시 범위.** 실제 엔진/대상 쓰기·E② 전송·실제 Qwen·유료 모델은 모두 NOT_RUN이다.
+단위시험만으로 PASS를 매기지 않았다. production `Workbench`를 실제 Chromium에서 열고 인증/준비 영수증 API만 결정적 소유 fixture로 대조했다.
+이 시험의 localhost UI origin과 화면에 표시한 `u01-owned.example.test` 승인 origin은 다르며, 표시 대상에는 접속하지 않았다.
+
+| 항목 | 고정 조건 |
+|---|---|
+| 앱/하네스 소스 | `904f36330cf0c9ad28150abdfcf2401d6734c7fb` (UI 동작 소스 `4b8bc4f`, 하네스 포함 커밋) |
+| 하네스 SHA256 | `d45d1a827f9ff35fdf68ed1b01da591aa1e4be2f8a3f1c230a3d5af1a4683415` |
+| Chromium 이미지 | `jindo-p1-explore-browser:b679f7b`, `sha256:17b7b5f0fa7ed1caf03e1385deadab742b076735436a72a8aa83d05b48acc811` |
+| 실제 브라우저 | HeadlessChrome/157.0.8103.15 · CDP 1.3 · 1440×1000 · scale 1 |
+| 실행 방식 | 전용 비root·읽기 전용 컨테이너, cap-drop ALL, no-new-privileges, native CDP, MCP 비활성 |
+| 브라우저 제약 | UI 시험용 `--no-sandbox`, host network에서 loopback UI/CDP만 사용. Fetch interception은 외부 자원을 거절. 이 구성을 제품 탐색 격리/전수 egress 통제 수용으로 세지 않음 |
+| 웹 실행 | Node v22.23.4, lockfile의 독립 `npm ci --ignore-scripts --legacy-peer-deps`, Next 개발 서버 `--webpack`, loopback 39202 |
+| 근거 저장 | 보호된 `/tmp/jindo-u01-browser-results-v4/`의 report.json/스크린샷, 원문 산출물은 커밋하지 않음 |
+
+C21의 이미 승인된 자동 workflow 쓰기 범위를 웹 파서가 거절하던 연결 누락을 고쳤다.
+`ai_auto_v1` + 서버 `preauthorized_scope`에만 자동 쓰기를 표시하고, 일반 회차·다른 모드·DELETE는 계속 거절한다.
+승인 안내에는 실제 origin·경로·메서드, 예측할 수 없는 쓰기와 대상 상태 변경 가능성, 자동/건별 수동 확인을 시작 직전에 표시한다.
+
+| 실제 Chromium 시나리오 | 결과 | 관찰 |
+|---|---|---|
+| auto_https | PASS | origin·/owned,/api/safe·GET/HEAD/POST/PUT/PATCH, 상태 변경 위험과 건별 확인 없는 자동 전송 문구가 화면 안에 보임 |
+| manual_https | PASS | 동일 실제 승인 범위, 쓰기마다 사람이 확인·승인한 뒤 보낸다는 문구 |
+| readonly_https | PASS | GET/HEAD에 승인된 쓰기 영역 없음. 조회도 상태를 바꿀 수 있다는 기존 고지 유지 |
+| auto_http | PASS | 자동 쓰기 고지와 ‘암호화하지 않는 주소(http)’·서버 신원 미검증 고지 동시 유지 |
+| missing_scope | PASS | 실제 범위 없는 영수증에서 승인된 쓰기나 활성 시작 버튼을 만들지 않음 |
+| invalid_delete_scope | PASS | 미지원 DELETE 범위의 준비 응답을 웹 계약이 거절, 쓰기 권한/활성 시작 없음 |
+
+모든 시나리오에서 변경 API 요청·진단 시작·모델 호출 0. 실제 권한 서버는 fixture이며 이 시험은 DNS 소유 증명이나
+Planner/Worker 성공을 증명하지 않는다. 초기 링크/누락 폰트 개발 환경 및 숨겨진 h1을 고르던 하네스 실패는 최종 PASS에 포함하지 않았다.
+최종 스크린샷의 가시성은 DOM 존재뿐 아니라 실제 bounds/viewport로 검사했고 자동 HTTPS 이미지를 직접 확인했다.
+
+| 시나리오 | fixture SHA256 | screenshot SHA256 |
+|---|---|---|
+| auto_https | `1a894f9f0e738ea2a07ca589f339c0c88838897daf83b1629f24ac33a4b8b4cd` | `a055d3a2b2a3228e11a602c6160b00060adb71592bfa19ff579eef72b9862b60` |
+| manual_https | `94deba63443d7c65efd6376016e66a4c3b39a5d3bb2124ca17694398cf61f28b` | `7b42941ffc93cddf8fff93f5169d770f6e8db80daa49ff6f7553ad83b79fbbef` |
+| readonly_https | `caa0dbbee371aaf6f562eb3a256a97a29fd00ae45415085292cf495ccc813782` | `f74156483d0575bad365f673f16749f891e3b77ee8d0e05cfc3783096322cb6a` |
+| auto_http | `393f438035ef676ac3fd4c66a60adb5293629adfb1c2e24a1e74227b40833962` | `f27d3eb16424518df3f1847345b9587ea8c35d44ea534f19422d1b105c4342d5` |
+| missing_scope | `d04666ff5276d387aba15b7eb3293c52fe5c4e37c3178ca5eb46bb6ebfe5503c` | `1f5406880911ae92d80fdf8f6bb410d7335f7125e643ec22d2e5ef2c3e556991` |
+| invalid_delete_scope | `9c9c6629884cdb30154bd5a99ac729073b4c83c80d4f2fb30005a7d7bfe467d4` | `2b01120154f83a5edccd4aadd167137ddda82739a72c22dab7a03a70add91b0c` |
+
+재현: 같은 이미지/Node/lockfile을 준비하고 소유 Workbench를 loopback에서 기동한다.
+CDP `/json/version`이 준비된 뒤 아래 하네스를 실행한다. 하네스는 loopback URL만 받고 준비 fixture를 격리하며 모든 변경 API를 거절한다.
+
+```sh
+JINDO_U01_UI_URL=http://127.0.0.1:39202 \
+JINDO_U01_CDP_URL=http://127.0.0.1:39421/json/version \
+JINDO_U01_OUTPUT=/tmp/jindo-u01-browser-results \
+node scripts/acceptance/u01-workbench-browser.mjs
+```
+
+이 절은 U01 화면 수용만 갱신한다. 다른 B/S/P 항목과 실제 모델/보존율의 기존 상태를 확대하지 않는다.
+
+동일 UI 소스의 독립 lockfile 설치에서 `tsc --noEmit`, 전체 Vitest **742 PASS / FAIL0 / SKIP0**
+(동시 worker 2), `npm run build:static`을 통과했다. 처음 무제한 병렬 시험의 기존 UI 3건 시간 초과는
+최종 결과에 합산하지 않았으며, timeout 값을 늘리지 않고 worker 수를 제한해 재검증했다.
