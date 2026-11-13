@@ -49,7 +49,11 @@ function draftInput(target: string, profile: string, mode?: WorkflowMode, exclud
 
 const MODES = [
   ["user_approval_v1", "사용자 승인", "탐색 뒤 점검할 경로를 고르고, 쓰기 메서드 요청은 한 건씩 승인합니다"],
-  ["ai_auto_v1", "AI 자동", "승인 범위 안에서 탐색과 점검을 이어 갑니다 · 대상에 승인한 쓰기는 건별 확인 없이 보냅니다"],
+  [
+    "ai_auto_v1",
+    "AI 자동",
+    "승인 범위 안에서 탐색과 점검을 이어 갑니다 · 대상에 승인한 쓰기는 건별 확인 없이 보냅니다",
+  ],
 ] as const;
 
 // 요약 '쓰기 요청' 줄의 짧은 말 (범위 확인 뒤 scope.approval_mode, 위 APPROVAL_MODE_RULE 과 같은 뜻)
@@ -93,6 +97,8 @@ function Unwired({ why }: { why: string }) {
 const NO_INPUT = "서버 진단 입력에 칸이 없습니다";
 
 /** 시안 로그인 계정 줄 (역할 이름만, 값은 비운다). */
+/** 시안 #nWorkers 선택지. 화면 상태만이고 서버 진단 입력에 칸이 없어 보내지 않는다(실제 값은 엔진 설정). */
+const WORKER_CHOICES = [1, 2, 3, 4, 6, 8] as const;
 const LOGIN_ACCOUNTS = [
   ["A", "관리자"],
   ["B", "일반 · 테스트"],
@@ -136,6 +142,9 @@ export function UrlNewScanLive() {
   const [touched, setTouched] = useState(false);
   // 지금 보이는 쪽 (1 대상 · 2 분석 모델 · 점검 설정). 새 점검에 다시 들어오면 1쪽부터 (시안 v64)
   const [page, setPage] = useState<1 | 2>(1);
+  // 연결 전 칸의 화면 상태(시안 nAuth · nHow). 서버 입력에 칸이 없어 보내지 않는다. 지금 점검은 로그인 없이 진행된다.
+  const [auth, setAuth] = useState<"in" | "pub">("pub");
+  const [how, setHow] = useState<"form" | "sess">("form");
   useEffect(() => {
     if (route === "new") setPage(1);
   }, [route]);
@@ -473,8 +482,8 @@ export function UrlNewScanLive() {
                 </div>
               </div>
 
-              {/* 로그인 (시안 #nAuth): 서버 진단 입력에 계정 칸이 없어 모두 꺼 둔다. 지금 점검은 로그인 없이 진행되므로 그 상태로
-                  두고(시안 #nPubNote), 계정 줄은 값 없이 칸만 */}
+              {/* 로그인 (시안 #nAuth): 서버 진단 입력에 계정 칸이 아직 없다. 화면은 시안처럼 고르고 고칠 수 있게 두되,
+                  여기 넣은 값은 이 화면 상태에만 있고 서버·저장소로 보내지 않는다(연결 전) */}
               <div className={s.fsec}>
                 <div className={cx(s["fsec-h"], s["fsec-ht"])}>
                   <h2>로그인</h2>
@@ -483,15 +492,27 @@ export function UrlNewScanLive() {
                 <div className={s["fsec-b"]}>
                   <div className={s.seg} role="radiogroup" aria-label="로그인 여부">
                     <label>
-                      <input type="radio" name="nAuth" value="in" disabled />
+                      <input
+                        type="radio"
+                        name="nAuth"
+                        value="in"
+                        checked={auth === "in"}
+                        onChange={() => setAuth("in")}
+                      />
                       <span>로그인해서 점검</span>
                     </label>
                     <label>
-                      <input type="radio" name="nAuth" value="pub" disabled defaultChecked />
+                      <input
+                        type="radio"
+                        name="nAuth"
+                        value="pub"
+                        checked={auth === "pub"}
+                        onChange={() => setAuth("pub")}
+                      />
                       <span>로그인 없이 점검</span>
                     </label>
                   </div>
-                  <dl className={s.pubnote}>
+                  <dl className={s.pubnote} hidden={auth !== "pub"}>
                     <dt>점검</dt>
                     <dd>
                       {GOALS.filter(([, login]) => !login).map(([t]) => (
@@ -510,39 +531,62 @@ export function UrlNewScanLive() {
                       <small>계정이 있어야 함</small>
                     </dd>
                   </dl>
-                  <div className={s["fsec-b"]}>
+                  <div className={s["fsec-b"]} hidden={auth !== "in"}>
                     <div className={s.seg} role="radiogroup" aria-label="로그인 방법">
                       <label>
-                        <input type="radio" name="nHow" value="form" disabled />
+                        <input
+                          type="radio"
+                          name="nHow"
+                          value="form"
+                          checked={how === "form"}
+                          onChange={() => setHow("form")}
+                        />
                         <span>아이디 · 비밀번호</span>
                       </label>
                       <label>
-                        <input type="radio" name="nHow" value="sess" disabled />
+                        <input
+                          type="radio"
+                          name="nHow"
+                          value="sess"
+                          checked={how === "sess"}
+                          onChange={() => setHow("sess")}
+                        />
                         <span>쿠키 붙여넣기</span>
                       </label>
                     </div>
-                    {LOGIN_ACCOUNTS.map(([id, role]) => (
-                      <div className={s.acct} key={id}>
-                        <span className={s.an}>
-                          {`계정 ${id}`}
-                          <small className={id === "A" ? s.adm : undefined}>{role}</small>
-                        </span>
-                        <input
-                          className={s.inp}
-                          disabled
-                          placeholder="아이디"
-                          aria-label={`계정 ${id} (${role}) 아이디`}
-                        />
-                        <input
-                          className={s.inp}
-                          type="password"
-                          disabled
-                          placeholder="비밀번호"
-                          autoComplete="new-password"
-                          aria-label={`계정 ${id} (${role}) 비밀번호`}
-                        />
-                      </div>
-                    ))}
+                    {how === "form"
+                      ? LOGIN_ACCOUNTS.map(([id, role]) => (
+                          <div className={s.acct} key={id}>
+                            <span className={s.an}>
+                              {`계정 ${id}`}
+                              <small className={id === "A" ? s.adm : undefined}>{role}</small>
+                            </span>
+                            <input
+                              className={s.inp}
+                              placeholder="아이디"
+                              autoComplete="off"
+                              aria-label={`계정 ${id} (${role}) 아이디`}
+                            />
+                            <input
+                              className={s.inp}
+                              type="password"
+                              placeholder="비밀번호"
+                              autoComplete="new-password"
+                              aria-label={`계정 ${id} (${role}) 비밀번호`}
+                            />
+                          </div>
+                        ))
+                      : LOGIN_ACCOUNTS.map(([id, role]) => (
+                          <div className={s.field} key={id}>
+                            <label className={s.lbl} htmlFor={`nS${id}`}>{`계정 ${id} 쿠키 · ${role}`}</label>
+                            <textarea
+                              className={s.inp}
+                              id={`nS${id}`}
+                              placeholder="Cookie: session=…"
+                              autoComplete="off"
+                            />
+                          </div>
+                        ))}
                   </div>
                 </div>
               </div>
@@ -617,7 +661,12 @@ export function UrlNewScanLive() {
                           </label>
                           <Unwired why="모델 서버 주소는 설치 프로필이 정하고, 화면에서 보거나 바꾸는 서버 입력이 없습니다" />
                         </div>
-                        <input id="nSrv" className={cx(s.inp, s.mono)} disabled placeholder="설치 프로필이 정함" />
+                        <input
+                          id="nSrv"
+                          className={cx(s.inp, s.mono)}
+                          placeholder="설치 프로필이 정함"
+                          autoComplete="off"
+                        />
                       </div>
                     )}
                   </div>
@@ -682,8 +731,9 @@ export function UrlNewScanLive() {
                     {/* biome-ignore lint/a11y/useSemanticElements: 시안 마크업 그대로 */}
                     <div className={s.goals} role="group" aria-labelledby="nGoalL">
                       {GOALS.map(([t, login]) => (
-                        <label className={cx(s.goal, login && s.off)} key={t}>
-                          <input type="checkbox" disabled />
+                        // 시안처럼 계정이 있어야 하는 목표는 '로그인 없이'일 때 흐리게 막는다
+                        <label className={cx(s.goal, login && auth !== "in" && s.off)} key={t}>
+                          <input type="checkbox" disabled={login && auth !== "in"} />
                           <span>{t}</span>
                         </label>
                       ))}
@@ -696,7 +746,7 @@ export function UrlNewScanLive() {
                     <p className={s.help}>쓰기 요청 범위는 설치 정책과 진단 모드가 정합니다.</p>
                   </div>
                   {/* 점검 범위 · 워커 수 (시안 #nDepthL · #nWorkers): 서버 진단 입력에 칸이 없고 실제 값은 엔진 설정이 정해,
-                      고른 값 없이 꺼 둔다 */}
+                      고를 수는 있지만 이 화면 상태에만 있고 보내지 않는다 */}
                   <div className={s.two}>
                     <div className={s.field}>
                       <div className={s["fsec-ht"]}>
@@ -708,7 +758,7 @@ export function UrlNewScanLive() {
                       <div className={s.seg} role="radiogroup" aria-labelledby="nDepthL">
                         {DEPTHS.map((t) => (
                           <label key={t}>
-                            <input type="radio" name="nDepth" value={t} disabled />
+                            <input type="radio" name="nDepth" value={t} />
                             <span>{t}</span>
                           </label>
                         ))}
@@ -721,8 +771,13 @@ export function UrlNewScanLive() {
                         </label>
                         <Unwired why={NO_INPUT} />
                       </div>
-                      <select id="nWorkers" className={cx(s.inp, s.workers)} disabled>
-                        <option>—</option>
+                      <select id="nWorkers" className={cx(s.inp, s.workers)} defaultValue="">
+                        <option value="">—</option>
+                        {WORKER_CHOICES.map((n) => (
+                          <option key={n} value={n}>
+                            {n}
+                          </option>
+                        ))}
                       </select>
                     </div>
                   </div>

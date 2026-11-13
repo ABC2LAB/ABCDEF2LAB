@@ -317,49 +317,62 @@ describe("URL 진단 계산", () => {
 });
 
 describe("서버 방식 확인 (catalog)", () => {
-  it("catalog 가 오면 URL 진단 폼, 서버가 받지 않는 시안 칸은 꺼진 채 '연결 전'으로 그린다", async () => {
+  it("catalog 가 오면 URL 진단 폼, 서버가 받지 않는 시안 칸은 '연결 전'이지만 고칠 수 있고 서버로 보내지 않는다", async () => {
     mount("new");
     const target = await screen.findByLabelText(/점검할 사이트 주소/);
-    // 1쪽: 최근 점검한 주소는 줄 없이 빈 안내, 로그인은 지금 실제 동작(로그인 없이)으로 꺼져 있고 계정 칸은 값 없이 막힘
+    // 1쪽: 최근 점검한 주소는 줄 없이 빈 안내. 로그인은 지금 실제 동작(로그인 없이)이 기본이고 시안처럼 바꿀 수 있다
     expect(screen.getByText("불러올 수 있는 최근 주소가 없습니다")).toBeInTheDocument();
     expect(screen.queryAllByRole("button", { name: /\.(com|io)$/ })).toHaveLength(0);
     const login = screen.getByRole("radiogroup", { name: "로그인 여부" });
-    for (const r of within(login).getAllByRole("radio")) expect(r).toBeDisabled();
+    for (const r of within(login).getAllByRole("radio")) expect(r).toBeEnabled();
     expect(within(login).getByRole("radio", { name: "로그인 없이 점검" })).toBeChecked();
-    for (const r of within(screen.getByRole("radiogroup", { name: "로그인 방법" })).getAllByRole("radio")) {
-      expect(r).toBeDisabled();
-      expect(r).not.toBeChecked();
-    }
+    expect(screen.getByText("계정이 있어야 함")).toBeVisible();
+    expect(screen.queryByRole("radiogroup", { name: "로그인 방법" })).toBeNull();
+    expect(screen.getAllByText(/^연결 전/).length).toBeGreaterThanOrEqual(2);
+    // 로그인해서 점검: 시안처럼 방법 · 계정 칸이 나오고 입력할 수 있다
+    fireEvent.click(within(login).getByRole("radio", { name: "로그인해서 점검" }));
+    const how = screen.getByRole("radiogroup", { name: "로그인 방법" });
+    expect(within(how).getByRole("radio", { name: "아이디 · 비밀번호" })).toBeChecked();
     const accounts = screen.getAllByLabelText(/^계정 [AB] /);
     expect(accounts).toHaveLength(4);
     for (const el of accounts) {
-      expect(el).toBeDisabled();
+      expect(el).toBeEnabled();
       expect(el).toHaveValue("");
     }
-    expect(screen.getByText("계정이 있어야 함")).toBeInTheDocument();
-    expect(screen.getAllByText(/^연결 전/).length).toBeGreaterThanOrEqual(2);
-    // 2쪽: LLM 서버 주소 · 점검 목표 · 점검 범위 · 워커 수도 꺼진 채 고른 값 없이 (지어낸 값 · 연결 상태 없음)
+    fireEvent.change(accounts[0], { target: { value: "typed-local-id" } });
+    fireEvent.change(accounts[1], { target: { value: "typed-local-secret" } });
+    fireEvent.click(within(how).getByRole("radio", { name: "쿠키 붙여넣기" }));
+    expect(screen.getAllByPlaceholderText("Cookie: session=…")).toHaveLength(2);
+    fireEvent.click(within(how).getByRole("radio", { name: "아이디 · 비밀번호" }));
+    // 2쪽: LLM 서버 주소 · 점검 목표 · 점검 범위 · 워커 수도 고를 수 있다 (지어낸 값 · 연결 상태 없음)
     fireEvent.change(target, { target: { value: "https://target.example/" } });
     fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
-    expect(screen.getByLabelText("LLM 서버 주소")).toBeDisabled();
+    expect(screen.getByLabelText("LLM 서버 주소")).toBeEnabled();
     expect(screen.getByLabelText("LLM 서버 주소")).toHaveValue("");
     expect(screen.queryByText(/연결됨/)).toBeNull();
     for (const box of within(screen.getByRole("group", { name: "점검 목표" })).getAllByRole("checkbox")) {
-      expect(box).toBeDisabled();
+      expect(box).toBeEnabled();
       expect(box).not.toBeChecked();
     }
     for (const r of within(screen.getByRole("radiogroup", { name: "점검 범위" })).getAllByRole("radio")) {
-      expect(r).toBeDisabled();
+      expect(r).toBeEnabled();
       expect(r).not.toBeChecked();
     }
-    expect(screen.getByLabelText("워커 수")).toBeDisabled();
-    expect(screen.getByLabelText("워커 수")).toHaveValue("—");
+    fireEvent.click(within(screen.getByRole("radiogroup", { name: "점검 범위" })).getByRole("radio", { name: "꼼꼼하게" }));
+    expect(screen.getByLabelText("워커 수")).toBeEnabled();
+    expect(screen.getByLabelText("워커 수")).toHaveValue("");
+    fireEvent.change(screen.getByLabelText("워커 수"), { target: { value: "4" } });
     // 꺼진 칸은 시작 조건에 들지 않는다: 주소 · 모델만으로 범위 확인을 보낼 수 있다
     expect(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]).toBeEnabled();
     // 승인 없이 쓰기 요청을 보내는 선택지는 없다 — 실행 허용은 설치 정책 · 진단 모드가 정함 (절대규칙 3 · 6, 리뷰 #479)
     expect(screen.queryByText(/승인 없이/)).toBeNull();
     expect(screen.queryByText("전체 허용")).toBeNull();
     expect(screen.getByText("쓰기 요청 범위는 설치 정책과 진단 모드가 정합니다.")).toBeInTheDocument();
+    // 연결 전 칸에 넣은 값은 서버 요청 어디에도 실리지 않는다
+    fireEvent.click(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]);
+    await waitFor(() => expect(u.createURLDraft).toHaveBeenCalled());
+    const sent = JSON.stringify(u.createURLDraft.mock.calls);
+    for (const v of ["typed-local-id", "typed-local-secret", "꼼꼼하게", '"4"']) expect(sent).not.toContain(v);
     // 요약 패널: 시안 줄 그대로, 서버 값이 없는 줄(로그인 · 점검 범위 · 점검 목표)은 '—' 와 연결 전 딱지
     const sum = screen.getByRole("complementary", { name: "점검 요약" });
     expect([...sum.querySelectorAll("dt")].map((dt) => dt.textContent)).toEqual([

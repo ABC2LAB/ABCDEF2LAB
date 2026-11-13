@@ -1201,7 +1201,9 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
     ["id", "ID 포함", (e: WorkflowEndpoint) => hasId(e.path)],
     ["off", "제외됨", (e: WorkflowEndpoint) => !isOn(e)],
   ] as const;
-  const test = FILTERS.find(([id]) => id === filter)?.[2] ?? (() => true);
+  // '로그인 필요' 거르기는 누를 수 있지만 서버가 경로별 로그인 필요 여부를 아직 주지 않아(연결 전) 맞는 경로가 없다
+  const pick = FILTERS.find(([id]) => id === filter)?.[2] ?? (() => true);
+  const test = (e: WorkflowEndpoint) => filter !== "auth" && pick(e);
   const q = query.trim().toLowerCase();
   const shown = flow.endpoints.filter((e) => test(e) && `${e.method} ${e.path}`.toLowerCase().includes(q));
   const groups = orderGroups(shown.map(group), SCOPE_GROUPS);
@@ -1264,14 +1266,17 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
             <div className={s.filters} role="group" aria-label="보기 필터" id="sFilters">
               {FILTERS.map(([id, label, f]) => (
                 <Fragment key={id}>
-                  {/* 시안의 '로그인 필요' 거르기 (제외됨 앞): 서버가 경로의 로그인 필요 여부를 주지 않아 누를 수 없다 */}
+                  {/* 시안의 '로그인 필요' 거르기 (제외됨 앞): 누를 수 있지만 서버가 경로의 로그인 필요 여부를 아직 주지 않는다(연결 전) */}
                   {id === "off" ? (
                     <button
                       className={s.fchip}
                       type="button"
-                      aria-pressed={false}
-                      disabled
-                      title="서버가 경로의 로그인 필요 여부를 주지 않습니다"
+                      aria-pressed={filter === "auth"}
+                      title="서버가 경로의 로그인 필요 여부를 아직 주지 않습니다"
+                      onClick={() => {
+                        setFilter("auth");
+                        setOpen({});
+                      }}
                     >
                       로그인 필요<span className={s.c}>{NONE}</span>
                     </button>
@@ -1376,7 +1381,9 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
               })
             ) : (
               <p className={s.empty} style={{ padding: 14 }}>
-                조건에 맞는 경로가 없습니다.
+                {filter === "auth"
+                  ? "연결 전 · 서버가 경로별 로그인 필요 여부를 아직 주지 않습니다."
+                  : "조건에 맞는 경로가 없습니다."}
               </p>
             )}
           </div>

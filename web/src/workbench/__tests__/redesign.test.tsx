@@ -167,7 +167,7 @@ describe("범위 확인", () => {
     expect(within(insp).getByText("묶음").nextElementSibling).toHaveTextContent(/ · 경로 규칙$/);
   });
 
-  it("시안의 로그인 필요 · 시작 전 점검 · 새 경로 처리 규칙은 서버 값이 없어 칸만 두고 '연결 전'으로 보인다", () => {
+  it("시안의 로그인 필요 · 시작 전 점검 · 새 경로 처리 규칙은 서버 값이 없어 '연결 전'으로 보이고, 로그인 필요 거르기는 누를 수 있다", () => {
     useUrl.setState({ handle, job, verified: true, flow, flowVerified: true });
     render(
       <ShellContext.Provider value={shell("scope")}>
@@ -180,7 +180,12 @@ describe("범위 확인", () => {
     expect(pre).toHaveTextContent("연결 전");
     expect(pre.querySelector("svg")).toBeNull();
     expect(screen.getByText("로그인 필요", { selector: "#sCount span" })).toHaveTextContent("로그인 필요—");
-    expect(screen.getByRole("button", { name: /^로그인 필요/ })).toBeDisabled();
+    // '로그인 필요' 거르기는 누를 수 있지만 서버 값이 없어 맞는 경로 대신 연결 전 안내가 나온다
+    const authChip = screen.getByRole("button", { name: /^로그인 필요/ });
+    expect(authChip).toBeEnabled();
+    fireEvent.click(authChip);
+    expect(authChip).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText(/^연결 전 · 서버가 경로별 로그인 필요 여부를 아직 주지 않습니다/)).toBeInTheDocument();
     const rules = screen.getByText("점검 중 새로 찾은 경로 처리 규칙").closest("details") as HTMLElement;
     expect(within(rules).getAllByRole("listitem")).toHaveLength(6);
     expect(within(rules).getByText("연결 전")).toHaveAttribute(
