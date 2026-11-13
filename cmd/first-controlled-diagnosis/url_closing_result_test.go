@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"testing"
 
 	"github.com/Autumn-27/artex/diagnosis"
@@ -57,3 +58,34 @@ func TestURLClosingAccountAuth(t *testing.T) {
 type fakeAuthRuntime struct{ auth map[string]string }
 
 func (f fakeAuthRuntime) AccountAuth() map[string]string { return f.auth }
+
+// 결속 계정 변경으로 멈춘 실행은 cancelled + account_binding_changed로 저장되고, 그 실행의 계정별 인증 결과가 같이
+// 남는다(#532 재상 지적). 마감을 확인하지 못하면 결과 불명이 우선하고 계정 결과는 빠진다.
+func TestURLAccountBindingStopCarriesAccountAuth(t *testing.T) {
+	stopped, stop := context.WithCancelCause(context.Background())
+	stop(errAccountBindingChanged)
+	auth := map[string]string{"tester-a": "authenticated", "tester-b": "login_failed"}
+	closed := &diagnosis.Closure{DrainComplete: true, ResultReady: true, AccountAuth: auth}
+	known := diagnosisprep.ModelUsage{UsageKnown: true}
+	var u diagnosisprep.Update
+	urlStoppedUpdate(stopped, closed, known, false)(&u)
+	u = urlClosingResult(u)
+	if u.State != diagnosisprep.Cancelled || u.ReasonCode != "account_binding_changed" || u.AccountAuth["tester-a"] != "authenticated" || u.AccountAuth["tester-b"] != "login_failed" {
+		t.Fatalf("binding stop state=%s reason=%q auth=%v", u.State, u.ReasonCode, u.AccountAuth)
+	}
+	for name, tc := range map[string]struct {
+		closure *diagnosis.Closure
+		usage   diagnosisprep.ModelUsage
+		reason  string
+	}{
+		"closure-unconfirmed": {&diagnosis.Closure{DrainComplete: false, ResultReady: true, AccountAuth: auth}, known, "execution_closure_unconfirmed"},
+		"usage-unknown":       {closed, diagnosisprep.ModelUsage{}, "model_usage_unknown"},
+	} {
+		var v diagnosisprep.Update
+		urlStoppedUpdate(stopped, tc.closure, tc.usage, false)(&v)
+		v = urlClosingResult(v)
+		if v.State != diagnosisprep.Unknown || v.ReasonCode != tc.reason || v.AccountAuth != nil {
+			t.Fatalf("%s: state=%s reason=%q auth=%v", name, v.State, v.ReasonCode, v.AccountAuth)
+		}
+	}
+}
