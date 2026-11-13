@@ -5,7 +5,8 @@
 // 동의 상자 → [점검 시작]. 시작 전에는 task · Planner · 대상 송신 · 단회 권위를 만들지 않는다(서버 계약).
 // URL 은 요청일 뿐이고 허가는 서버 설치 범위와 E② 가 정한다.
 // 입력은 두 쪽 묶음(시안 fgrps · fgrp)으로 나눈다: 1쪽 대상 → [다음] → 2쪽 분석 모델 · 점검 설정 → [승인 범위 확인].
-// 쪽마다 아래에 쪽 이동 줄(stepnav)이 있고, 요약 패널이 안 보이면(좁은 화면 · 접음) 폼 아래 시작 줄(formbar)에 실행 버튼을 둔다.
+// 쪽 이동 버튼(1쪽 [다음] · 2쪽 [이전][승인 범위 확인])은 화면 바닥 줄(formbar) 오른쪽 끝에 둔다. 범위 확인 뒤 단계(승인 대기 ·
+// 승인 범위 다시 확인 · 동의 · 점검 시작)는 오른쪽 요약 패널에만 둔다(패널을 접으면 패널을 펴서 본다).
 // 시안의 로그인(계정 A 관리자 / B 일반) · 최근 점검한 주소 · 점검 목표 · 점검 범위 · 워커 수 · LLM 서버 주소는 서버 진단
 // 입력(URLDiagnosisInput)과 catalog 에 칸이 없다. 시안 모양 그대로 그리되 꺼 두고 '연결 전' 딱지를 붙인다 — 받아도 보낼 곳이
 // 없는 값을 치게 하지 않고, 시작 조건에도 넣지 않는다. 고른 상태는 지금 실제 동작(로그인 없이)만 표시하고, 서버가 정하는
@@ -13,7 +14,13 @@
 
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
-import { type URLDiagnosisInput, urlDiagnosisInput, type WorkflowMode } from "@/lib/diagnosis/diagnosis-url";
+import {
+  type URLDiagnosisInput,
+  type URLDiagnosisModel,
+  type URLDiagnosisProfile,
+  urlDiagnosisInput,
+  type WorkflowMode,
+} from "@/lib/diagnosis/diagnosis-url";
 
 import { cx } from "../../lib/cx";
 import { disconnectUrl, runUrlAction, setUrlConfirmed, useUrl, useUrlGates } from "../../live/urlDiagnosis";
@@ -114,6 +121,14 @@ const DEPTHS = ["빠르게", "보통", "꼼꼼하게"] as const;
 
 /** 제외 경로 칸의 흐린 예시. 경로 단위라 query(?) 없이 — 서버 · 웹 입력 검사가 '?' 를 받지 않는다. */
 export const EXCLUDE_EXAMPLE = "/logout\n/delete";
+
+/** 외부 모델 연결 방식(mode)의 화면 이름 (시안 #nProv). */
+const PROVIDER_NAME: Readonly<Record<URLDiagnosisModel["mode"], string>> = { openrouter: "OpenRouter" };
+
+/** 모델 고르기 칸의 이름: 외부 모델은 제공자 · 승인한 endpoint, 로컬은 모델 이름. */
+function profileChoiceLabel(p: URLDiagnosisProfile): string {
+  return p.model ? `${PROVIDER_NAME[p.model.mode]} · ${p.model.provider}` : p.model_label;
+}
 
 /** live 새 점검 (URL 진단). */
 export function UrlNewScanLive() {
@@ -244,27 +259,9 @@ export function UrlNewScanLive() {
   else if (!shown && touched && !target.trim())
     hostLine = <span className={s.err}>점검할 사이트 주소를 입력하세요.</span>;
 
-  // 오른쪽 아래 실행 단계 (입력 → 범위 확인 → 동의 · 시작)
+  // 범위 확인 뒤 단계 (승인 대기 · 승인 범위 다시 확인 · 동의 · 시작 · 점검 보기). 오른쪽 요약 패널에 들어간다
   let action: ReactNode;
-  if (page === 1 && !handle) {
-    action = (
-      <>
-        <button className={cx(s.btn, s.pri, s.full)} type="button" disabled={!canNext} onClick={next}>
-          다음
-        </button>
-        <span className={s.why}>{why1.join(" · ")}</span>
-      </>
-    );
-  } else if (!handle) {
-    action = (
-      <>
-        <button className={cx(s.btn, s.pri, s.full)} type="button" disabled={!canSend} onClick={() => void send()}>
-          {busy ? "확인 중…" : "승인 범위 확인"}
-        </button>
-        <span className={s.why}>{why.join(" · ")}</span>
-      </>
-    );
-  } else if (!job) {
+  if (!job) {
     action = <p className={s.help}>{busy ? "진단 상태를 확인하는 중…" : "진단 상태를 확인하지 못했습니다."}</p>;
   } else if (job.state === "awaiting_approval") {
     action = (
@@ -328,27 +325,53 @@ export function UrlNewScanLive() {
     ) : null;
   }
 
-  // 폼 아래 시작 줄 (시안 formbar): 1쪽 [다음], 2쪽 [승인 범위 확인]. 범위 확인 뒤 시작 단계는 요약 패널에 있어 패널 여는 버튼
-  let bar: ReactNode;
-  if (page === 1) {
-    bar = (
-      <>
+  // 바닥 줄: 쪽 이동 버튼은 오른쪽 끝 같은 자리 (1쪽 [다음], 2쪽 [이전][승인 범위 확인]). 패널을 접고 펴도 그대로다.
+  // 2쪽만 왼쪽에 막힌 이유. 1쪽 주소 이유는 주소 칸 밑 안내(hostLine)가 이미 말해 [다음] 옆에는 두지 않는다.
+  const bar = (
+    <>
+      {page === 1 ? null : <span className={s.why}>{why.join(" · ")}</span>}
+      {page === 1 ? (
         <button className={cx(s.btn, s.pri)} type="submit" disabled={!canNext}>
           다음
+          <Icon name="arrow" />
         </button>
-        <span className={s.why}>{why1.join(" · ")}</span>
-      </>
+      ) : (
+        <>
+          <button className={s.btn} type="button" onClick={() => turn(1)}>
+            이전
+          </button>
+          {handle ? null : (
+            <button className={cx(s.btn, s.pri)} type="submit" disabled={!canSend}>
+              {busy ? "확인 중…" : "승인 범위 확인"}
+            </button>
+          )}
+        </>
+      )}
+    </>
+  );
+
+  // 모델 칸 옆: 로컬은 LLM 서버 주소(연결 전), 외부 API 는 API 키 (범위 확인 뒤에는 입력이 잠겨 그리지 않는다)
+  let modelSide: ReactNode = null;
+  if (!external) {
+    modelSide = (
+      <div className={s.field}>
+        <div className={s["fsec-ht"]}>
+          <label className={s.lbl} htmlFor="nSrv">
+            LLM 서버 주소
+          </label>
+          <Unwired why="모델 서버 주소는 설치 프로필이 정하고, 화면에서 보거나 바꾸는 서버 입력이 없습니다" />
+        </div>
+        <input id="nSrv" className={cx(s.inp, s.mono)} placeholder="설치 프로필이 정함" autoComplete="off" />
+      </div>
     );
-  } else if (handle) {
-    bar = <InspOpenButton>시작 단계 보기</InspOpenButton>;
-  } else {
-    bar = (
-      <>
-        <button className={cx(s.btn, s.pri)} type="submit" disabled={!canSend}>
-          승인 범위 확인
-        </button>
-        <span className={s.why}>{why.join(" · ")}</span>
-      </>
+  } else if (!shown) {
+    modelSide = (
+      <ExternalModelSettings
+        key={`${pv}:${resetSeq}`}
+        profile={profile ?? undefined}
+        disabled={g.inputLocked}
+        onReady={setCredentialReady}
+      />
     );
   }
 
@@ -590,12 +613,6 @@ export function UrlNewScanLive() {
                   </div>
                 </div>
               </div>
-              <div className={s.stepnav}>
-                <button className={cx(s.btn, s.pri)} type="button" disabled={!canNext} onClick={next}>
-                  다음
-                  <Icon name="arrow" />
-                </button>
-              </div>
             </div>
 
             {/* biome-ignore lint/a11y/useSemanticElements: 시안 마크업 그대로 (fieldset 테두리 · 여백 없이 묶음만) */}
@@ -632,11 +649,12 @@ export function UrlNewScanLive() {
                     ))}
                   </div>
                   {/* 시안 #nLocal: 모델 · LLM 서버 주소. 서버 주소는 설치 프로필이 정하고 화면으로 받지 않아 꺼 둔다.
-                      연결 상태(#nLocalState)는 서버가 알려 주지 않아 그리지 않는다 */}
+                      연결 상태(#nLocalState)는 서버가 알려 주지 않아 그리지 않는다.
+                      시안 #nApi(외부 API): 제공자 · API 키 · 외부 전송 경고. 제공자는 설치된 외부 프로필 중에서 고른다 */}
                   <div className={s.two}>
                     <div className={s.field}>
                       <label className={s.lbl} htmlFor="luProfile">
-                        모델
+                        {external ? "제공자" : "모델"}
                       </label>
                       <select
                         className={cx(s.inp, s["w-sel"])}
@@ -647,37 +665,14 @@ export function UrlNewScanLive() {
                       >
                         {(shown ? profiles.filter((p) => p.id === pv) : choices).map((p) => (
                           <option key={p.id} value={p.id}>
-                            {p.model_label}
+                            {profileChoiceLabel(p)}
                           </option>
                         ))}
                         {!profiles.length ? <option value="">설치된 모델 없음</option> : null}
                       </select>
                     </div>
-                    {external ? null : (
-                      <div className={s.field}>
-                        <div className={s["fsec-ht"]}>
-                          <label className={s.lbl} htmlFor="nSrv">
-                            LLM 서버 주소
-                          </label>
-                          <Unwired why="모델 서버 주소는 설치 프로필이 정하고, 화면에서 보거나 바꾸는 서버 입력이 없습니다" />
-                        </div>
-                        <input
-                          id="nSrv"
-                          className={cx(s.inp, s.mono)}
-                          placeholder="설치 프로필이 정함"
-                          autoComplete="off"
-                        />
-                      </div>
-                    )}
+                    {modelSide}
                   </div>
-                  {external && !shown ? (
-                    <ExternalModelSettings
-                      key={`${pv}:${resetSeq}`}
-                      profile={profile ?? undefined}
-                      disabled={g.inputLocked}
-                      onReady={setCredentialReady}
-                    />
-                  ) : null}
                   {external ? (
                     <div className={cx(s.note, s.warn)} role="note">
                       <Icon name="alert" />
@@ -799,15 +794,10 @@ export function UrlNewScanLive() {
                   ) : null}
                 </div>
               </div>
-              <div className={s.stepnav}>
-                <button className={s.btn} type="button" onClick={() => turn(1)}>
-                  이전
-                </button>
-              </div>
             </div>
           </div>
 
-          {/* 아래 시작 줄: 요약 패널이 안 보이는 화면(좁은 화면 · 패널 접음)에서만 보인다(CSS) */}
+          {/* 바닥 줄: 모든 화면 폭 · 패널 상태에서 늘 바닥 */}
           <div className={s.formbar}>{bar}</div>
         </form>
 
@@ -926,7 +916,7 @@ export function UrlNewScanLive() {
             )}
           </div>
           <div className={s.isec}>
-            {action}
+            {handle ? action : null}
             <UrlNotices />
           </div>
         </aside>
