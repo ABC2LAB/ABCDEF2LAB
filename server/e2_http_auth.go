@@ -49,9 +49,11 @@ func (E2HTTPSessions) String() string   { return "server.E2HTTPSessions[protecte
 func (E2HTTPSessions) GoString() string { return "server.E2HTTPSessions[protected]" }
 
 // E2HTTPAuthResult는 인증 준비 결과다. AccountAuth는 라벨 → 결과(값 없음), Sessions는 인증된 계정의 세션 헤더다.
+// CallRefs는 인증 준비가 연 E② 호출이다. Worker Bash 결과가 없는 프로그램 호출이라 마감 대조에서 따로 센다.
 type E2HTTPAuthResult struct {
 	AccountAuth map[string]string
 	Sessions    E2HTTPSessions
+	CallRefs    []string
 }
 
 func validE2HTTPFileAuth(a *E2HTTPFileAuth, mode e2proxy.HeaderMode, rules []E2HTTPFileRule) bool {
@@ -107,6 +109,43 @@ func (s *e2HTTPSessionStore) snapshot() E2HTTPSessions {
 	out := make(E2HTTPSessions, len(s.sessions))
 	for label, header := range s.sessions {
 		out[label] = header.Clone()
+	}
+	return out
+}
+
+// e2HTTPProgramCalls는 서버가 연 E② 호출(인증 준비 등)이다. Worker Bash 결과가 없으므로 마감 때 E② 기록의 최종·감사
+// 완료만 확인하고 신뢰 결과 대조에서는 뺀다. 다시 로그인처럼 실행 중에 더해질 수 있어 잠근다.
+type e2HTTPProgramCalls struct {
+	mu   sync.Mutex
+	refs map[string]bool
+}
+
+func newE2HTTPProgramCalls(refs ...string) *e2HTTPProgramCalls {
+	p := &e2HTTPProgramCalls{refs: map[string]bool{}}
+	for _, ref := range refs {
+		p.add(ref)
+	}
+	return p
+}
+
+func (p *e2HTTPProgramCalls) add(ref string) {
+	if p == nil || ref == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.refs[ref] = true
+}
+
+func (p *e2HTTPProgramCalls) snapshot() map[string]bool {
+	out := map[string]bool{}
+	if p == nil {
+		return out
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for ref := range p.refs {
+		out[ref] = true
 	}
 	return out
 }
@@ -239,6 +278,7 @@ func e2HTTPAuthPrep(ctx context.Context, execution *e2proxy.Execution, dir, orig
 		}
 		return out, nil
 	}
+	out.CallRefs = append(out.CallRefs, call.Ref())
 	defer func() {
 		if _, closeErr := call.Close(context.WithoutCancel(ctx)); closeErr != nil {
 			log.Print("[e2-http] 인증 준비 call 마감 실패")

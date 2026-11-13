@@ -62,6 +62,12 @@ func TestE2HTTPFactoryRunsAuthPrepOnAcquire(t *testing.T) {
 	if acquired.AccountAuth["tester-a"] != E2HTTPAuthAuthenticated || acquired.Sessions["tester-a"].Get("Cookie") != "session="+login.token || login.posts.Load() != 1 {
 		t.Fatalf("auth prep on acquire: %v posts=%d", acquired.AccountAuth, login.posts.Load())
 	}
+	// 인증 준비가 연 E② 호출은 서버 호출로 기록돼 마감 대조가 Worker 결과 없이 센다(C14).
+	program := acquired.programCalls.snapshot()
+	calls := acquired.Execution.Calls()
+	if len(program) != 1 || len(calls) != 1 || !program[calls[0].CallRef] {
+		t.Fatalf("auth prep call not recorded as a program call: program=%d calls=%d", len(program), len(calls))
+	}
 	if out := string(acquired.Execution.RedactOutput([]byte(login.token))); strings.Contains(out, login.token) {
 		t.Fatal("session not registered for output redaction")
 	}

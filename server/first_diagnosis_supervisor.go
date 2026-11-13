@@ -605,6 +605,15 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 	}
 }
 
+// firstDiagnosisProgramCall은 호출이 서버가 연 호출(인증 준비 등)인지와, 그렇다면 마감해도 되는지(최종·감사 완료이고
+// Worker 신뢰 결과가 붙지 않음) 본다.
+func firstDiagnosisProgramCall(call e2proxy.CallResult, program map[string]bool, observed map[string]e2proxy.CallResult) (settled, isProgram bool) {
+	if !program[call.CallRef] {
+		return false, false
+	}
+	return call.Final && call.AuditComplete && observed[call.CallRef].CallRef == "", true
+}
+
 // 일반 HTTP의 마감 판정이다. ready는 감사가 닫힌 실행 마감을 할 수 있다는 뜻이며 목표 충족이나 E③ 판정이 아니다.
 // intent 결과는 실행 결과 상태 값 계약 §2로 센다. incomplete·stopped·unknown intent는 실패가 아니라 부분 완료다(C08).
 // 결과 불명 송신은 그 intent만 멈추므로(C01) 결과 불명 intent도 부분 완료로 센다(계약 §6.3). 단 결과 불명 intent
@@ -693,8 +702,19 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 		}
 		unknownIntents[id] = true
 	}
+	// 서버가 연 호출(인증 준비 등)은 Worker Bash 결과가 없다. E② 기록이 최종·감사 완료인지만 보고 intent 결과 대조에서
+	// 뺀다(C14: 시험 계정을 결속한 실행이 마감 대조에서 늘 실패하던 것, 11/13 S07 실제 회차).
+	program := server.engine.e2HTTP.ProgramCalls(task.ID)
+	programCalls := 0
 	missing := 0
 	for _, call := range calls {
+		if settled, isProgram := firstDiagnosisProgramCall(call, program, observed); isProgram {
+			if !settled {
+				return false, none, ErrFirstDiagnosisSupervisor
+			}
+			programCalls++
+			continue
+		}
 		result, ok := observed[call.CallRef]
 		if !call.Final || !call.AuditComplete || ok && !e2proxy.EqualCallResults(result, call) || !ok && !untrusted[call.IntentID] {
 			return false, none, ErrFirstDiagnosisSupervisor
@@ -733,7 +753,7 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 		}
 	}
 	// 저장된 신뢰 결과는 모두 서로 다른 실제 호출이어야 한다.
-	if len(results)+missing != len(calls) {
+	if len(results)+missing+programCalls != len(calls) {
 		return false, none, ErrFirstDiagnosisSupervisor
 	}
 	// 결과 불명 intent 수가 E② 근거로 확인한 수와 같아야 한다. 결과 불명 송신 없이 결과 불명으로 표시된 intent(모르는
