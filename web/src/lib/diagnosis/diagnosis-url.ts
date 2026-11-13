@@ -116,6 +116,8 @@ export type URLDiagnosisJob = {
   intent_outcomes?: URLIntentOutcomes;
   /** 진단 로그(운영 기록) 일부가 남지 않았다는 경고. completed에만 있고 reason_code와 따로다. */
   diagnostic_log_incomplete?: true;
+  /** 시험 계정별 인증 준비 결과(§3.4, C14 S08). completed·cancelled·failed, 계정 결속 실행만. 자격·세션 값은 없다. */
+  account_auth?: URLAccountAuth;
 };
 export type URLIntentOutcomes = {
   done: number;
@@ -124,6 +126,16 @@ export type URLIntentOutcomes = {
   unknown: number;
   stopped: number;
 };
+export const URL_ACCOUNT_AUTH_RESULTS = [
+  "authenticated",
+  "login_failed",
+  "session_not_found",
+  "result_unknown",
+  "not_sent",
+] as const;
+export type URLAccountAuthResult = (typeof URL_ACCOUNT_AUTH_RESULTS)[number];
+/** 계정 등록 라벨(소문자·숫자·_·-, 사용자명 원문 아님) → 인증 결과. 1…16개. */
+export type URLAccountAuth = Record<string, URLAccountAuthResult>;
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const ref = (v: unknown): v is string => typeof v === "string" && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(v);
 const digest = (v: unknown): v is string => typeof v === "string" && /^[a-f0-9]{64}$/.test(v);
@@ -442,9 +454,13 @@ export function parseURLJob(raw: unknown, owner: string): URLDiagnosisJob {
     "closing_reason",
     "intent_outcomes",
     "diagnostic_log_incomplete",
+    "account_auth",
   ]);
   if (d.diagnostic_log_incomplete !== undefined && (d.diagnostic_log_incomplete !== true || d.state !== "completed"))
     return invalid();
+  // §3.4·§3 "있는 state" 밖에서 오면 거부한다. 모드(워크플로·외부 API)로는 거부하지 않는다(계약 §3.2 account_auth 행).
+  if (d.account_auth !== undefined && !["completed", "cancelled", "failed"].includes(String(d.state))) return invalid();
+  const auth = d.account_auth === undefined ? undefined : accountAuth(d.account_auth);
   const outcomes = d.intent_outcomes === undefined ? undefined : intentOutcomes(d.intent_outcomes);
   if (!validRunResult(String(d.state), d.outcome, d.closing_reason, outcomes)) return invalid();
   const input = parseInput(d.input);
@@ -503,6 +519,7 @@ export function parseURLJob(raw: unknown, owner: string): URLDiagnosisJob {
     ...(d.closing_reason === undefined ? {} : { closing_reason: "budget_limited" as const }),
     ...(outcomes ? { intent_outcomes: outcomes } : {}),
     ...(d.diagnostic_log_incomplete === true ? { diagnostic_log_incomplete: true as const } : {}),
+    ...(auth ? { account_auth: auth } : {}),
   };
 }
 function intentOutcomes(v: unknown): URLIntentOutcomes {
@@ -516,6 +533,25 @@ function intentOutcomes(v: unknown): URLIntentOutcomes {
     unknown: v.unknown as number,
     stopped: v.stopped as number,
   };
+}
+/** 계정별 인증 결과 맵(§3.4). 라벨은 등록 라벨(소문자·숫자·_·-), 값은 결과 enum뿐, 1…16개. 자격·세션 값은 안 받는다. */
+function accountAuth(v: unknown): URLAccountAuth {
+  if (!object(v)) return invalid();
+  const labels = Object.keys(v);
+  if (labels.length < 1 || labels.length > 16) return invalid();
+  const out: URLAccountAuth = {};
+  for (const label of labels) {
+    const result = v[label];
+    if (
+      label === "__proto__" ||
+      !/^[a-z0-9_-]{1,64}$/.test(label) ||
+      typeof result !== "string" ||
+      !(URL_ACCOUNT_AUTH_RESULTS as readonly string[]).includes(result)
+    )
+      return invalid();
+    out[label] = result as URLAccountAuthResult;
+  }
+  return out;
 }
 /** 서버 계약 대조식(§3.2): no_intents ⇔ 모두 0, complete ⇔ done+policy_limited ≥ 1이고 나머지 0, partial ⇔ 나머지 ≥ 1. */
 export function runOutcome(c: URLIntentOutcomes): "complete" | "partial" | "no_intents" {
