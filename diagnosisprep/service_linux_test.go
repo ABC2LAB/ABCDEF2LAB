@@ -720,18 +720,21 @@ func TestAccountAuthReachesTerminalJob(t *testing.T) {
 func TestAccountAuthDroppedOutsideTerminalStates(t *testing.T) {
 	s, b, _ := newFixture(t)
 	release := make(chan struct{})
+	accepted := make(chan error, 1)
 	b.run = func(ctx context.Context, _ Execution, p Publish) error {
-		if err := p(Update{State: Unknown, Phase: Planning, PreparationStarted: true, AuthorityState: AuthorityNotIssued, AccountAuth: map[string]string{"tester-a": "authenticated"}}); err != nil {
-			return err
-		}
+		// 끝나지 않은 상태의 갱신은 받되 계정별 결과 칸만 버린다(갱신 전체를 거부하지 않는다).
+		accepted <- p(Update{State: Preparing, Phase: TaskCreation, PreparationStarted: true, AuthorityState: AuthorityNotIssued, AccountAuth: map[string]string{"tester-a": "authenticated"}})
 		<-release
 		return nil
 	}
 	j := create(t, s, "create")
 	start(t, s, j, "start")
-	got := awaitState(t, s, j.ID, Unknown)
+	if err := <-accepted; err != nil {
+		t.Fatal("non-terminal update with account_auth rejected:", err)
+	}
+	got := status(t, s, j.ID)
 	close(release)
-	if got.AccountAuth != nil {
-		t.Fatalf("unknown job carried account_auth: %v", got.AccountAuth)
+	if got.Phase != TaskCreation || got.AccountAuth != nil {
+		t.Fatalf("preparing job: phase=%s account_auth=%v", got.Phase, got.AccountAuth)
 	}
 }
