@@ -65,7 +65,7 @@
 | C10 | 구현·단위시험 (#418·#426·#471) | 진단 로그·감시자·admission 기록 실패가 실행을 취소하지 않음(마감 때 경고 사유·누락 건수). 상태 조회 실패를 설치 설정 횟수만큼 다시 물음(`status_read_retries`, 기본 0) | E② 감사 실패는 그대로 실행 정지 | — |
 | C11 | 구현·단위시험 (#417·#449) | 목표 분해가 실패하거나 0개여도 원래 목표로 준비 계속. intent 없이 끝난 실행은 실패 대신 `no_intents` | 계획 전 task 재확인 | — |
 | C12 | 구현·단위시험 (#421) | 깨진 허용 규칙만 건너뜀 | 깨진 막기·확인 규칙은 전체 차단(`rule_invalid`·규칙 ID) | — |
-| C14 | 2단계 일부(계정 등록·분류, 결정안 #500) | 대상별 계정 라벨 등록, 시험 계정 표시(대상 승인자·진술 동의·그 대상 판에만 묶임)·해제, 판이 바뀌면 real(`target_reapproved`), 해제는 `manual_unmark`, 보호 저널이 감사 기록, 관리 API `/api/product/targets/{id}/accounts`. 대상 로그인 방식 설정과 계정 자격 보호 파일 저장(저널엔 해시만, `…/login`·`…/credential`) | 기본 real, 모델 입력·E② 헤더 모드는 아직 그대로(시험 계정 세션도 모델에 안 감) | 인증 준비 요청(E② 경유)·실행 결속(3단계 나머지), `test_account_passthrough`(4단계), 화면(이경준) |
+| C14 | 2단계 일부(계정 등록·분류, 결정안 #500) | 대상별 계정 라벨 등록, 시험 계정 표시(대상 승인자·진술 동의·그 대상 판에만 묶임)·해제, 판이 바뀌면 real(`target_reapproved`), 해제는 `manual_unmark`, 보호 저널이 감사 기록, 관리 API `/api/product/targets/{id}/accounts`. 대상 로그인 방식 설정과 계정 자격 보호 파일 저장(저널엔 해시만, `…/login`·`…/credential`). E② 인증 준비 전용 규칙·`AuthPrep`, 실행 정책 `auth` 칸으로 실행 시작 때 계정별 로그인, 실행 결속(test·자격 있는 계정만, 실행 중 해제·만료·자격 교체면 새 송신 정지) | 기본 real, 모델 입력·E② 헤더 모드는 아직 그대로(시험 계정 세션도 모델에 안 감) | 실행 결과 `account_auth` 칸·정지 사유(3단계 나머지), `test_account_passthrough`·세션 줄(4단계), 화면(이경준) |
 | C15 | 구현·단위시험 (#399) | `Accept-Encoding`을 거부 대신 `identity`로 바꿔 보냄 | 압축 응답은 표현 보류(C16 1단계부터 `withheld`) | — |
 | C19 | 구현·통합시험 (#491) | 정책 거부 뒤 고친 재시도 허용. 결과 불명·실행기 실패만 재전송 금지(`intent_outcome_uncertain`) | 결과 불명 쓰기 자동 재전송 없음 | — |
 | C24 | 구현·단위시험 (#415·#427·#461·#481) | Worker에 원본 그래프 조회 도구, E② 경유 WebFetch, 보관소 파일 도구(Read·Write·Edit·LS), 승인 대상 안의 `insert_assets` | 대상 요청은 E② 경유, 파일 도구는 intent 보관소 안만 | WebSearch·skills·MCP는 진단 Worker에 없음 |

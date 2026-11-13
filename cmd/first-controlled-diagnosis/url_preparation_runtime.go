@@ -97,7 +97,8 @@ func (b *urlPreparationRuntime) loadForReport(principal string, input diagnosisp
 		if len(reportTarget) > 0 {
 			id = reportTarget[0]
 		}
-		return b.product.load(principal, input, reportOnly, id)
+		// 두 번째 값은 저장 보고서 작업의 원본 요약이다. 계정을 결속한 실행의 결속을 찾을 때 쓴다(C14).
+		return b.product.load(principal, input, reportOnly, id, reportTarget[min(len(reportTarget), 1):]...)
 	}
 	for _, p := range c.Profiles {
 		if p.ID == input.ProfileID && p.Principal == principal {
@@ -711,7 +712,7 @@ func (b *urlPreparationRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request
 		if auth.Job.Scope != nil {
 			targetRef = auth.Job.Scope.TargetRef
 		}
-		loaded, loadErr := b.loadForReport("ARTEX", auth.Job.Input, true, targetRef)
+		loaded, loadErr := b.loadForReport("ARTEX", auth.Job.Input, true, targetRef, auth.Job.SourceDigest)
 		if loadErr == nil {
 			defer loaded.clearMaterials()
 			// 만료는 저장 보고서를 지우지 않지만 설치/DB pin 교체를 과거 task에 적용하지 않는다.
