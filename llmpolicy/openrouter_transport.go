@@ -320,7 +320,7 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 	}
 	failureReason = "accounting_unknown"
 	diagnostic.ReasonCode = "accounting_unknown"
-	if !validOpenRouterJSON(data) || !validOpenRouterWireTools(data, body["tools"]) {
+	if !validOpenRouterJSON(data) {
 		diagnostic.ReasonCode = "response_invalid"
 		return nil, ErrOpenRouterPolicy
 	}
@@ -349,10 +349,19 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 	p.usage.CostMicros += int64(cost)
 	p.mu.Unlock()
 	slot.succeeded(result.Usage.Input, result.Usage.Output, int64(cost))
-	valid = true
-	diagnostic.Status, diagnostic.ReasonCode = "succeeded", ""
 	diagnostic.InputTokens, diagnostic.OutputTokens = result.Usage.Input, result.Usage.Output
 	diagnostic.CostMicros, diagnostic.CostUncertain = int64(cost), false
+	if !validOpenRouterWireTools(data, body["tools"]) {
+		// 모델 출력이 도구 호출 계약(finish_reason·등록 도구 이름·인수 객체)에 어긋난 응답이다. 제공자가 청구한 사용량은
+		// 위에서 확인·정산했으므로 회계는 깨지지 않았다. 이 호출만 실패로 두고, 연속되면 일시 오류 상한으로 막는다
+		// (P3 결정안 C06 보완). JSON 깨짐·모델/제공자 불일치·사용량 없음·예약 초과는 위에서 그대로 막는다.
+		failureReason = "response_invalid"
+		diagnostic.ReasonCode = "response_invalid"
+		transient = true
+		return nil, ErrOpenRouterPolicy
+	}
+	valid = true
+	diagnostic.Status, diagnostic.ReasonCode = "succeeded", ""
 	resp.Body = io.NopCloser(bytes.NewReader(data))
 	resp.ContentLength = int64(len(data))
 	return resp, nil
