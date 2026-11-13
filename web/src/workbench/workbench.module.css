@@ -631,17 +631,12 @@
   border: 0;
   color: var(--rail-ink);
   font: inherit;
-  font-size: 13px;
-  font-weight: 600;
   text-align: left;
   cursor: pointer;
 }
 .acct-btn:hover,
 .acct-btn[aria-expanded="true"] {
   background: var(--rail-2);
-}
-.acct-btn > .ic {
-  color: var(--rail-mut);
 }
 .avatar {
   width: 30px;
@@ -660,12 +655,23 @@
   background: var(--rail-line);
   color: var(--rail-mut);
 }
-.am-who {
+/* 이름 칸: 시안처럼 .rail-foot b(고정폭 글꼴) 위에 굵기 · 크기만 바꾼다 */
+.acct-btn .who {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.35;
+}
+.acct-btn .who b {
+  font-weight: 600;
+  font-size: 13px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.acct-btn .chev {
+  color: var(--rail-mut);
 }
 .acct-menu {
   position: fixed;
@@ -686,7 +692,6 @@
   align-items: center;
   gap: 10px;
   padding: 8px 10px;
-  font-weight: 600;
 }
 .am-sep {
   height: 1px;
@@ -700,12 +705,16 @@
   padding: 7px 10px;
   font-size: 13px;
 }
+.am-head > div,
 .am-info > div,
 .am-item > span {
   display: flex;
   flex-direction: column;
   min-width: 0;
   line-height: 1.35;
+}
+.am-head b {
+  font-weight: 600;
 }
 .am-info b {
   font-family: var(--mono);
@@ -783,7 +792,7 @@
   font-size: 12px;
   color: var(--ink-3);
 }
-.am-accent .sw-row {
+.acct-menu .sw-row {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 5px;
@@ -1244,6 +1253,7 @@ a.ph:hover {
   color: var(--ink-3);
 }
 .sh a.aside {
+  color: var(--ink-3);
   text-decoration: underline;
   text-underline-offset: 3px;
 }
@@ -1271,7 +1281,8 @@ a.ph:hover {
   gap: 8px;
 }
 /* 새로고침 중: 아이콘 회전 (움직임 줄이기 설정이면 루트 규칙이 끈다) */
-.btn.spin svg {
+/* 시안은 0.7초 한 바퀴(가짜 새로고침 0.7초)지만 실제 새로고침은 더 걸릴 수 있어 끝날 때까지 돈다 */
+.btn.spin .ic {
   animation: spin 0.7s linear infinite;
 }
 @keyframes spin {
@@ -1806,8 +1817,8 @@ a.ph:hover {
     max-width: 760px;
     margin-inline: auto;
   }
-  .app.insp-hidden .vm.nform,
-  .app.rail-hidden .vm.nform {
+  .app.insp-min .vm.nform,
+  .app.rail-min .vm.nform {
     padding-left: 28px;
     padding-right: max(28px, env(safe-area-inset-right, 0px));
   }
@@ -2136,7 +2147,7 @@ select.inp {
   .formbar.paged .fbact {
     display: none;
   }
-  .app.insp-hidden .formbar.paged .fbact {
+  .app.insp-min .formbar.paged .fbact {
     display: contents;
   }
 }
@@ -4383,9 +4394,15 @@ button.smm:hover {
   overflow-wrap: anywhere;
 }
 
-/* 넓은 화면 패널 접기 (이 브라우저에 기억). 좁은 화면 · 휴대폰의 서랍과는 별개라 각 폭 안에서만 적용한다. */
-/* 레일: 휴대폰보다 넓으면 통째로 숨기고, 화면 머리의 메뉴 버튼으로 다시 펼친다 */
-/* 레일: 휴대폰보다 넓으면 아이콘 줄(64px)로 접고, 줄 안의 같은 버튼으로 다시 펼친다 (시안 v19) */
+/*
+ * 넓은 화면 패널 접기 (시안 rail-min · insp-min, 이 브라우저에 기억). 접어도 사라지지 않고 64px 줄로 남는다.
+ * 좁은 화면 · 휴대폰의 서랍과는 별개라 접힌 모양은 각 폭 안에서만 적용하고, 움직임(transition)은 시안처럼 폭과 상관없이 건다.
+ */
+/* 레일: 휴대폰보다 넓으면 아이콘 줄(64px)로 접고, 줄 안의 같은 버튼으로 다시 펼친다.
+ * 글자 칸은 시안의 .lbl 대신 .rlbl (시안의 .app.rail-min .lbl 은 새 점검 폼의 칸 이름 .lbl 까지 숨긴다) */
+.app {
+  transition: grid-template-columns 0.22s ease;
+}
 .rail .icon-btn.rail-fold {
   width: 30px;
   height: 30px;
@@ -4398,26 +4415,23 @@ button.smm:hover {
   color: var(--rail-ink);
 }
 @media (min-width: 760px) {
-  .app {
-    transition: grid-template-columns 0.22s ease;
-  }
-  .app.rail-hidden {
+  .app.rail-min {
     grid-template-columns: 64px minmax(0, 1fr);
   }
-  .app.rail-hidden > .rail {
+  .app.rail-min .rail {
     align-items: center;
     overflow-x: hidden;
     padding-left: max(12px, env(safe-area-inset-left, 0px));
     padding-right: 12px;
   }
-  .app.rail-hidden .rail-top {
+  .app.rail-min .rail-top {
     flex-direction: column;
     gap: 10px;
   }
-  .app.rail-hidden .brand {
+  .app.rail-min .brand {
     padding: 4px;
   }
-  .app.rail-hidden .rlbl {
+  .app.rail-min .rlbl {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -4425,19 +4439,19 @@ button.smm:hover {
     clip: rect(0 0 0 0);
     white-space: nowrap;
   }
-  .app.rail-hidden .new-btn {
+  .app.rail-min .new-btn {
     width: 40px;
     height: 40px;
     padding: 0;
   }
-  .app.rail-hidden .rl {
+  .app.rail-min .rl {
     position: relative;
     width: 40px;
     height: 40px;
     padding: 0;
     justify-content: center;
   }
-  .app.rail-hidden .rl .badge {
+  .app.rail-min .rl .badge {
     position: absolute;
     top: 1px;
     right: -2px;
@@ -4448,44 +4462,42 @@ button.smm:hover {
     font-size: 10.5px;
     text-align: center;
   }
-  .app.rail-hidden .rsec {
+  .app.rail-min .rsec {
     display: none;
   }
-  .app.rail-hidden .rail-foot {
+  .app.rail-min .rail-foot {
     align-self: stretch;
     align-items: center;
   }
-  .app.rail-hidden .acct-btn {
+  .app.rail-min .acct-btn {
     width: 40px;
     height: 40px;
     padding: 0;
     justify-content: center;
   }
-  .app.rail-hidden .acct-btn .am-who,
-  .app.rail-hidden .acct-btn > .ic {
+  .app.rail-min .acct-btn .who,
+  .app.rail-min .acct-btn .chev {
     display: none;
   }
 }
 /* 휴대폰은 레일이 서랍이라 접기 버튼 대신 닫기(rail-x)를 쓴다 */
 @media (max-width: 759px) {
-  .icon-btn.rail-fold {
+  .rail .icon-btn.rail-fold {
     display: none;
   }
 }
 /*
- * 상세 패널 접기 (레일 접기와 같은 짜임, 시안 v25): 넓은 화면에서 패널 칸 오른쪽 위의 접기 버튼(PaneToggle)으로 접으면
- * 64px 줄로 남고, 같은 자리의 버튼으로 다시 펼친다. 화면 머리의 상세 버튼(insp-only)은 좁은 화면 서랍에서만 쓴다.
+ * 상세 패널 접기 (레일 접기와 같은 짜임, 시안 insp-min): 넓은 화면에서 패널 칸 오른쪽 위의 접기 버튼(PaneToggle,
+ * data-insp-fold)으로 접으면 64px 줄로 남고, 같은 자리의 버튼으로 다시 펼친다. 화면 머리의 상세 버튼(insp-only)은 좁은 화면 서랍에서만 쓴다.
  */
 .vb {
   position: relative;
+  transition: grid-template-columns 0.22s ease;
 }
 .pane-toggle {
   display: none;
 }
 @media (min-width: 1200px) {
-  .vb {
-    transition: grid-template-columns 0.22s ease;
-  }
   .icon-btn.pane-toggle {
     display: inline-grid;
     position: absolute;
@@ -4510,43 +4522,44 @@ button.smm:hover {
     width: 34px;
     height: 30px;
   }
-  .app.insp-hidden .vb {
+  .app.insp-min .vb {
     grid-template-columns: minmax(0, 1fr) 64px;
   }
   /* 줄(64px)은 패널 바탕 · 경계선만 남기고 안의 내용은 가린다 */
-  .app.insp-hidden .vi {
+  .app.insp-min .vi {
     overflow: hidden;
     padding-left: 0;
     padding-right: 0;
   }
-  .app.insp-hidden .vi > * {
+  .app.insp-min .vi > * {
     visibility: hidden;
   }
   /* 패널에 있던 시작 버튼 등은 접으면 본문 아래 줄로 */
-  .app.insp-hidden .formbar {
+  .app.insp-min .formbar {
     display: flex;
   }
 }
 /*
- * 접으면 가운데 내용은 넓어지지 않고 좁은 단(--cw)으로 가운데에 모이며, 나머지는 양옆 여백이 된다 (시안 v23 · v24).
+ * 접으면 가운데 내용은 넓어지지 않고 좁은 단(--cw)으로 가운데에 모이며, 나머지는 양옆 여백이 된다.
  * --cw = 두 패널을 펼쳤을 때 내용 폭 - 120px (최소 560px · 최대 960px)
  * 여백은 칸의 실제 폭(100%) 기준이라 상세 패널이 없는 화면(로그인 · 연결 확인 관문)도 똑같이 가운데에 모인다.
  * 화면 머리는 왼쪽만 내용과 맞추고 오른쪽 버튼은 제자리(28px)에 둔다 — 접고 펼 때 버튼이 움직이지 않게.
- * --iw = 상세 패널 칸 폭 (펼침 384px · 접음 64px · 좁은 화면이나 패널 없는 화면 0)
+ * --iw = 상세 패널 칸 폭 (펼침 384px · 접음 64px · 좁은 화면이나 패널 없는 화면 0).
+ *   시안은 .app 에 늘 384px 를 주지만, 여기는 관문처럼 패널 없는 화면이 있어 패널이 있는 화면(.view:has(.vi))에만 준다.
  */
+.vh,
+.vm {
+  transition: padding 0.22s ease;
+}
 @media (min-width: 760px) {
-  .vh,
-  .vm {
-    transition: padding 0.22s ease;
-  }
-  .app.rail-hidden {
+  .app.rail-min {
     --cw: clamp(560px, calc(100vw - 412px), 960px);
   }
-  .app.rail-hidden .vm {
+  .app.rail-min .vm {
     padding-left: max(28px, calc((100% - var(--cw)) / 2));
     padding-right: max(28px, calc((100% - var(--cw)) / 2));
   }
-  .app.rail-hidden .vh {
+  .app.rail-min .vh {
     padding-left: max(28px, calc((100% - var(--iw, 0px) - var(--cw)) / 2));
   }
 }
@@ -4554,18 +4567,18 @@ button.smm:hover {
   .view:has(.vi) {
     --iw: 384px;
   }
-  .app.insp-hidden .view:has(.vi) {
+  .app.insp-min .view:has(.vi) {
     --iw: 64px;
   }
-  .app.rail-hidden,
-  .app.insp-hidden {
+  .app.rail-min,
+  .app.insp-min {
     --cw: clamp(560px, calc(100vw - 796px), 960px);
   }
-  .app.insp-hidden .vm {
+  .app.insp-min .vm {
     padding-left: max(28px, calc((100% - var(--cw)) / 2));
     padding-right: max(28px, calc((100% - var(--cw)) / 2));
   }
-  .app.insp-hidden .vh {
+  .app.insp-min .vh {
     padding-left: max(28px, calc((100% - var(--iw, 0px) - var(--cw)) / 2));
   }
 }
