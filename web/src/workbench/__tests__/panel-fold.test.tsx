@@ -147,24 +147,6 @@ it("넓은 화면: 상세 패널 칸의 접기 버튼(data-insp-fold)으로 64px
   expect(view).not.toHaveClass(s.io);
 });
 
-it("넓은 화면: 상세 패널은 누르면 움직임 없이 바로 접히고 바로 펼쳐진다(그 프레임만 still) · 레일 접기 움직임은 그대로", async () => {
-  screenWidth({ narrow: false, phone: false });
-  const c = await mount();
-  await waitFor(() => expect(app(c)).not.toHaveClass(s.still));
-  const view = dashboard(c);
-  fireEvent.click(within(view).getByRole("button", { name: "오른쪽 패널 접기" }));
-  expect(app(c)).toHaveClass(s["insp-min"]);
-  expect(app(c)).toHaveClass(s.still);
-  await waitFor(() => expect(app(c)).not.toHaveClass(s.still));
-  fireEvent.click(within(view).getByRole("button", { name: "오른쪽 패널 펼치기" }));
-  expect(app(c)).not.toHaveClass(s["insp-min"]);
-  expect(app(c)).toHaveClass(s.still);
-  await waitFor(() => expect(app(c)).not.toHaveClass(s.still));
-  fireEvent.click(c.querySelector("[data-rail-fold]") as HTMLElement);
-  expect(app(c)).toHaveClass(s["rail-min"]);
-  expect(app(c)).not.toHaveClass(s.still);
-});
-
 it("상세 패널 접기 버튼(PaneToggle): 펼쳐져 있으면 접고, 접혀 있으면 같은 버튼이 펼친다", () => {
   const open = vi.fn();
   const close = vi.fn();

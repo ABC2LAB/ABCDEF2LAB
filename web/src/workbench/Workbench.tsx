@@ -91,12 +91,8 @@ export function Workbench() {
   const [narrow, setNarrow] = useState(false);
   const [phone, setPhone] = useState(false);
   const [reduce, setReduce] = useState(false);
-  /**
-   * 접기 움직임 없이 바로 그리는 동안 참: 처음 열 때 저장한 접힘을 복원할 때, 상세 패널을 접고 펼 때.
-   * 상세 패널은 폭이 바뀌는 동안 안의 글이 줄을 바꾸며 위아래로 밀려 보여서, 누르면 바로 숨기고 바로 보인다.
-   */
-  const [still, setStill] = useState(true);
-  const stillFrame = useRef(0);
+  /** 저장한 접힘을 복원해 그린 뒤에만 접기 움직임을 켠다 (처음 열 때 접히는 움직임이 보이지 않게). */
+  const [booted, setBooted] = useState(false);
 
   const narrowMq = useRef<MediaQueryList | null>(null);
   const phoneMq = useRef<MediaQueryList | null>(null);
@@ -104,23 +100,6 @@ export function Workbench() {
   const openAfter = useRef(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const views = useRef<Partial<Record<View, HTMLElement | null>>>({});
-
-  /** 바뀐 접힘이 그려진 다음 프레임부터 접기 움직임을 다시 켠다. */
-  const settle = useCallback(() => {
-    cancelAnimationFrame(stillFrame.current);
-    stillFrame.current = requestAnimationFrame(() => {
-      stillFrame.current = requestAnimationFrame(() => setStill(false));
-    });
-  }, []);
-  /** 상세 패널 접기 · 펼치기는 움직임 없이 한 번에 */
-  const setInspNow = useCallback(
-    (min: boolean) => {
-      setStill(true);
-      setPanel("insp", min);
-      settle();
-    },
-    [settle],
-  );
 
   /** 지금 화면 안에서 고른 버튼에 잠시 뒤 포커스 (접고 펴도 같은 자리의 버튼에 포커스를 둔다). */
   const focusLater = useCallback((selector: string, inView: boolean) => {
@@ -137,22 +116,22 @@ export function Workbench() {
   const openInsp = useCallback(() => {
     if (wider(narrowMq.current)) {
       if (!useWb.getState().inspMin) return;
-      setInspNow(false);
+      setPanel("insp", false);
       setInspFocus((n) => n + 1);
       return;
     }
     if (!narrowMq.current?.matches) return;
     setDrawers((d) => ({ ...d, insp: true }));
     setInspFocus((n) => n + 1);
-  }, [setInspNow]);
+  }, []);
   const closeInsp = useCallback(() => {
     if (wider(narrowMq.current)) {
-      setInspNow(true);
+      setPanel("insp", true);
       focusLater("[data-insp-fold]", true);
       return;
     }
     setDrawers((d) => (d.insp ? { ...d, insp: false } : d));
-  }, [focusLater, setInspNow]);
+  }, [focusLater]);
   // 레일: 휴대폰에서는 서랍, 그보다 넓으면 아이콘 줄로 접기 · 펼치기
   const openRail = useCallback(() => {
     if (wider(phoneMq.current)) {
@@ -328,9 +307,9 @@ export function Workbench() {
       // 저장소를 못 쓰면 기본색 · 펼친 패널
     }
     // 복원한 접힘은 움직임 없이 바로 보인다(시안은 첫 그림부터 접힌 채). 복원이 그려진 다음 프레임부터 접기 움직임을 켠다.
-    settle();
-    return () => cancelAnimationFrame(stillFrame.current);
-  }, [settle]);
+    const frame = requestAnimationFrame(() => requestAnimationFrame(() => setBooted(true)));
+    return () => cancelAnimationFrame(frame);
+  }, []);
 
   // 스크림 클릭: 두 서랍 모두 닫기
   useEffect(() => {
@@ -387,7 +366,7 @@ export function Workbench() {
         data-theme={theme === "system" ? undefined : theme}
       >
         <UrlFeeds />
-        <div className={cx(s.app, railMin && s["rail-min"], inspMin && s["insp-min"], still && s.still)}>
+        <div className={cx(s.app, railMin && s["rail-min"], inspMin && s["insp-min"], !booted && s.booting)}>
           <Rail />
           <main className={s.work}>
             {section("dashboard", pick("대시보드", <DashboardByMode />))}

@@ -130,6 +130,7 @@ function shellValue(over: Partial<Shell> = {}): Shell {
 /** UrlFeeds(확인 · 주기 조회) + 화면 하나. */
 function mount(view: "dashboard" | "new" | "scope" | "live" | "report") {
   const goTo = vi.fn<(v: View) => void>();
+  const openInsp = vi.fn<() => void>();
   const body = {
     dashboard: <DashboardByMode />,
     new: <NewScanByMode />,
@@ -138,12 +139,12 @@ function mount(view: "dashboard" | "new" | "scope" | "live" | "report") {
     report: <ReportByMode />,
   }[view];
   const r = render(
-    <ShellContext.Provider value={shellValue({ route: view, goTo })}>
+    <ShellContext.Provider value={shellValue({ route: view, goTo, openInsp })}>
       <UrlFeeds />
       {body}
     </ShellContext.Provider>,
   );
-  return { ...r, goTo };
+  return { ...r, goTo, openInsp };
 }
 
 /** 이 브라우저에 이어 볼 진단이 있다(팀 핸들 칸). */
@@ -517,7 +518,7 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     expect(screen.getByLabelText(/점검할 사이트 주소/)).toHaveValue("https://target.example/");
   });
 
-  it("진행 버튼은 바닥 줄 한 곳에만: 1쪽 [다음], 2쪽 [이전][승인 범위 확인] · 쪽 묶음과 요약 패널에는 없다", async () => {
+  it("쪽 이동 버튼은 바닥 줄 한 곳에만: 1쪽 [다음], 2쪽 [이전][승인 범위 확인] · 쪽 묶음과 요약 패널에는 없다", async () => {
     mount("new");
     const target = await screen.findByLabelText(/점검할 사이트 주소/);
     const form = target.closest("form") as HTMLFormElement;
@@ -545,6 +546,28 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     expect(within(summary).queryByRole("button", { name: /승인 범위 확인|다음/ })).toBeNull();
     fireEvent.click(back);
     expect(screen.getByRole("group", { name: "대상 · 로그인" })).toBeVisible();
+  });
+
+  it("범위 확인 뒤 단계(승인 범위 다시 확인)는 요약 패널에, 바닥 줄 오른쪽 끝은 그대로 [다음] · 왼쪽은 패널 여는 버튼", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue({ ...draft, revision: 2, reason_code: "approval_required" });
+    const { openInsp } = mount("new");
+    const again = await screen.findByRole("button", { name: "승인 범위 다시 확인" });
+    const summary = screen.getByRole("complementary", { name: "점검 요약" });
+    const form = (await screen.findByLabelText(/점검할 사이트 주소/)).closest("form") as HTMLFormElement;
+    expect(summary.contains(again)).toBe(true);
+    expect(form.contains(again)).toBe(false);
+    const next = within(form).getByRole("button", { name: "다음" });
+    expect(next.parentElement?.lastElementChild).toBe(next);
+    // 패널이 안 보일 때(접음 · 좁은 화면)만 CSS 로 보이는 패널 여는 버튼은 바닥 줄 맨 왼쪽
+    const open = within(form).getByRole("button", { name: "시작 단계 보기" });
+    expect(next.parentElement?.firstElementChild).toBe(open);
+    fireEvent.click(open);
+    expect(openInsp).toHaveBeenCalledTimes(1);
+    // 2쪽은 [이전]만: 범위 확인은 이미 했고 다시 확인은 패널에 있다
+    fireEvent.click(next);
+    expect(within(form).getByRole("button", { name: "이전" })).toBeInTheDocument();
+    expect(within(form).queryByRole("button", { name: /승인 범위/ })).toBeNull();
   });
 
   it("주소를 지우면 주소 밑에 입력 안내, 처음 빈 칸에는 띄우지 않는다 (시안 #nHost)", async () => {
@@ -613,6 +636,7 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
       screen.getByText(/^대상 요청 3회 · 60초 · 모델 요청 2회 · 토큰 입력 \d+ · 출력 \d+ · body 최대 \d+ bytes$/),
     ).toBeInTheDocument();
     const start = screen.getByRole("button", { name: "점검 시작" });
+    expect(screen.getByRole("complementary", { name: "점검 요약" }).contains(start)).toBe(true);
     expect(start).toBeDisabled();
     fireEvent.click(screen.getByRole("checkbox"));
     expect(start).toBeEnabled();

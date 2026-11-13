@@ -5,7 +5,8 @@
 // 동의 상자 → [점검 시작]. 시작 전에는 task · Planner · 대상 송신 · 단회 권위를 만들지 않는다(서버 계약).
 // URL 은 요청일 뿐이고 허가는 서버 설치 범위와 E② 가 정한다.
 // 입력은 두 쪽 묶음(시안 fgrps · fgrp)으로 나눈다: 1쪽 대상 → [다음] → 2쪽 분석 모델 · 점검 설정 → [승인 범위 확인].
-// 진행 버튼(다음 · 이전 · 승인 범위 확인 · 동의 · 시작)은 화면 바닥 줄(formbar) 한 곳에만 둔다. 쪽을 넘기거나 패널을 접고 펴도 늘 바닥에 있다.
+// 쪽 이동 버튼(1쪽 [다음] · 2쪽 [이전][승인 범위 확인])은 화면 바닥 줄(formbar) 오른쪽 끝에 둔다. 범위 확인 뒤 단계(승인 대기 ·
+// 승인 범위 다시 확인 · 동의 · 점검 시작)는 오른쪽 요약 패널에 두고, 패널이 안 보일 때(접음 · 좁은 화면)만 바닥 줄 왼쪽에 패널 여는 버튼.
 // 시안의 로그인(계정 A 관리자 / B 일반) · 최근 점검한 주소 · 점검 목표 · 점검 범위 · 워커 수 · LLM 서버 주소는 서버 진단
 // 입력(URLDiagnosisInput)과 catalog 에 칸이 없다. 시안 모양 그대로 그리되 꺼 두고 '연결 전' 딱지를 붙인다 — 받아도 보낼 곳이
 // 없는 값을 치게 하지 않고, 시작 조건에도 넣지 않는다. 고른 상태는 지금 실제 동작(로그인 없이)만 표시하고, 서버가 정하는
@@ -117,7 +118,7 @@ export const EXCLUDE_EXAMPLE = "/logout\n/delete";
 
 /** live 새 점검 (URL 진단). */
 export function UrlNewScanLive() {
-  const { goTo, route } = useShell();
+  const { goTo, route, openInsp } = useShell();
   const cap = useUrl((st) => st.cap);
   const handle = useUrl((st) => st.handle);
   const job = useUrl((st) => st.job);
@@ -244,7 +245,7 @@ export function UrlNewScanLive() {
   else if (!shown && touched && !target.trim())
     hostLine = <span className={s.err}>점검할 사이트 주소를 입력하세요.</span>;
 
-  // 범위 확인 뒤 단계 (승인 대기 · 동의 · 시작 · 점검 보기). 바닥 줄에 들어간다
+  // 범위 확인 뒤 단계 (승인 대기 · 승인 범위 다시 확인 · 동의 · 시작 · 점검 보기). 오른쪽 요약 패널에 들어간다
   let action: ReactNode;
   if (!job) {
     action = <p className={s.help}>{busy ? "진단 상태를 확인하는 중…" : "진단 상태를 확인하지 못했습니다."}</p>;
@@ -310,34 +311,38 @@ export function UrlNewScanLive() {
     ) : null;
   }
 
-  // 바닥 줄: 새 점검의 진행 버튼은 모두 여기 한 곳에만 둔다. 화면 바닥에 붙어 쪽을 넘기거나 오른쪽 패널을
-  // 접고 펴도 위아래로 움직이지 않는다(단이 가운데로 다시 모이면 옆으로만 따라간다). 1쪽 [다음], 2쪽 [이전][승인 범위 확인], 범위 확인 뒤에는 동의 · 시작 단계.
-  let bar: ReactNode;
-  if (handle) {
-    bar = <div className={s.fbstage}>{action}</div>;
-  } else if (page === 1) {
-    bar = (
-      <>
-        <span className={s.why}>{why1.join(" · ")}</span>
+  // 바닥 줄: 쪽 이동 버튼은 오른쪽 끝 같은 자리 (1쪽 [다음], 2쪽 [이전][승인 범위 확인]). 패널을 접고 펴도 그대로다.
+  // 왼쪽은 막힌 이유, 범위 확인 뒤에는 패널이 안 보일 때만 보이는 '시작 단계 보기'(CSS fbinsp).
+  const why0 = page === 1 ? why1 : why;
+  const bar = (
+    <>
+      {handle ? (
+        <button className={cx(s.btn, s.fbinsp)} type="button" data-insp-open="" onClick={openInsp}>
+          <Icon name="panel" />
+          시작 단계 보기
+        </button>
+      ) : (
+        <span className={s.why}>{why0.join(" · ")}</span>
+      )}
+      {page === 1 ? (
         <button className={cx(s.btn, s.pri)} type="submit" disabled={!canNext}>
           다음
           <Icon name="arrow" />
         </button>
-      </>
-    );
-  } else {
-    bar = (
-      <>
-        <span className={s.why}>{why.join(" · ")}</span>
-        <button className={s.btn} type="button" onClick={() => turn(1)}>
-          이전
-        </button>
-        <button className={cx(s.btn, s.pri)} type="submit" disabled={!canSend}>
-          {busy ? "확인 중…" : "승인 범위 확인"}
-        </button>
-      </>
-    );
-  }
+      ) : (
+        <>
+          <button className={s.btn} type="button" onClick={() => turn(1)}>
+            이전
+          </button>
+          {handle ? null : (
+            <button className={cx(s.btn, s.pri)} type="submit" disabled={!canSend}>
+              {busy ? "확인 중…" : "승인 범위 확인"}
+            </button>
+          )}
+        </>
+      )}
+    </>
+  );
 
   // 절대규칙 6 고지 (시안 v52): 할 일을 제목으로, 자세한 설명 · 원래 고지 문장은 (?) 메모에. 범위 확인 앞뒤 모두 보인다
   const warnRule = (
@@ -902,6 +907,7 @@ export function UrlNewScanLive() {
             )}
           </div>
           <div className={s.isec}>
+            {handle ? action : null}
             <UrlNotices />
           </div>
         </aside>
