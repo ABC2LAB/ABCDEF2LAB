@@ -105,7 +105,11 @@ func maskSegment(raw string, key []byte) (string, bool) {
 // Readable은 제품 화면용 경로 패턴이다(작업대 전송 통제 흐름의 path_pattern). Mask와 같은 규칙으로 값처럼 보이는 조각만
 // `{id}`로 가리고, 이름 조각은 가명으로 바꾸지 않고 그대로 둔다(운영자가 자기 서비스 경로를 읽는다). 이름 조각은
 // 안전 문자만·32자 이하이고, 길거나 섞인 조각은 값으로 본다. query는 받지 않는다(EscapedPath만). 평가 기록에는 Mask를 쓴다.
-func Readable(escaped string) string {
+func Readable(escaped string) string { return ReadableWith(escaped, nil) }
+
+// ReadableWith는 Readable에 호출자가 아는 민감 조각 판단을 더한다. sensitive가 참인 이름 조각도 `{id}`로 가린다(실행의
+// 보호·가림 값이 든 조각, 시험 계정 사용자명 등). 판단은 조각 단위라 값이 조각 일부에만 있어도 조각 전체를 가린다.
+func ReadableWith(escaped string, sensitive func(segment string) bool) string {
 	segments := strings.Split(escaped, "/")
 	values := 0
 	for _, segment := range segments {
@@ -117,9 +121,14 @@ func Readable(escaped string) string {
 		return LongPath
 	}
 	for i, raw := range segments {
-		if raw != "" {
-			segments[i], _ = valueSegment(raw)
+		if raw == "" {
+			continue
 		}
+		segment, value := valueSegment(raw)
+		if !value && sensitive != nil && sensitive(segment) {
+			segment = MaskedSegment + staticSuffix(segment)
+		}
+		segments[i] = segment
 	}
 	return strings.Join(segments, "/")
 }

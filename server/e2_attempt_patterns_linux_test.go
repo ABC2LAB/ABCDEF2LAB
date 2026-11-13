@@ -16,12 +16,16 @@ import (
 // 영수증은 남기지 않고, 링크는 따라가지 않는다.
 func TestProductAttemptPatternsWritesMaskedRows(t *testing.T) {
 	dir := t.TempDir()
-	observe := productAttemptPatterns(dir)
+	judge := func() func(string) bool { return func(segment string) bool { return segment == "secretname" } }
+	observe := productAttemptPatterns(dir, judge)
 	a, b := strings.Repeat("a", 32), strings.Repeat("b", 32)
 	observe(e2proxy.Receipt{AttemptID: a}, "/api/orders/42")
 	observe(e2proxy.Receipt{AttemptID: b}, "/rest/products/search")
 	observe(e2proxy.Receipt{AttemptID: strings.Repeat("c", 32)}, "")
 	observe(e2proxy.Receipt{}, "/api/orders/43")
+	// 민감 조각 판단을 아직 모르면 줄을 쓰지 않는다.
+	productAttemptPatterns(dir, func() func(string) bool { return nil })(e2proxy.Receipt{AttemptID: strings.Repeat("d", 32)}, "/api/x")
+	observe(e2proxy.Receipt{AttemptID: strings.Repeat("e", 32)}, "/users/secretname/basket")
 	path := filepath.Join(dir, E2AttemptPatternsFile)
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -31,7 +35,7 @@ func TestProductAttemptPatternsWritesMaskedRows(t *testing.T) {
 		t.Fatal("pattern file not private")
 	}
 	lines := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
-	if len(lines) != 2 || strings.Contains(string(raw), "42") {
+	if len(lines) != 3 || strings.Contains(string(raw), "42") || strings.Contains(string(raw), "secretname") || !strings.Contains(lines[2], `"/users/{id}/basket"`) {
 		t.Fatalf("rows: %q", raw)
 	}
 	var first, second E2AttemptPatternRow
@@ -45,7 +49,7 @@ func TestProductAttemptPatternsWritesMaskedRows(t *testing.T) {
 	if err := os.WriteFile(target, nil, 0o600); err != nil || os.Symlink(target, filepath.Join(linked, E2AttemptPatternsFile)) != nil {
 		t.Fatal("fixture")
 	}
-	productAttemptPatterns(linked)(e2proxy.Receipt{AttemptID: a}, "/x")
+	productAttemptPatterns(linked, judge)(e2proxy.Receipt{AttemptID: a}, "/x")
 	if data, _ := os.ReadFile(target); len(data) != 0 {
 		t.Fatal("pattern written through a symlink")
 	}

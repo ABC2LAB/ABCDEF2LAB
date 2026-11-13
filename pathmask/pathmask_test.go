@@ -84,3 +84,14 @@ func TestReadableMasksValuesKeepsNames(t *testing.T) {
 		t.Fatal("long segment kept as a name:", got)
 	}
 }
+
+// 호출자가 민감하다고 본 이름 조각도 가린다(조각 일부만 맞아도 조각 전체).
+func TestReadableWithSensitiveSegments(t *testing.T) {
+	sensitive := func(segment string) bool { return strings.Contains(segment, "sessval") }
+	if got := ReadableWith("/read/sessval/x-sessval-y/items.js", sensitive); got != "/read/{id}/{id}/items.js" {
+		t.Fatal(got)
+	}
+	if got := ReadableWith("/read/items", sensitive); got != "/read/items" {
+		t.Fatal(got)
+	}
+}

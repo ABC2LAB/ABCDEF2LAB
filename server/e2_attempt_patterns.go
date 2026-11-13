@@ -19,11 +19,13 @@ type E2AttemptPatternRow struct {
 	PathPattern string `json:"path_pattern"`
 }
 
-func e2AttemptPatternLine(r e2proxy.Receipt, escaped string) ([]byte, bool) {
-	if escaped == "" || r.AttemptID == "" {
+// e2AttemptPatternLine은 한 줄을 만든다. sensitive는 실행이 아는 민감 조각 판단이다(보호·가림 값, 시험 계정 사용자명).
+// 판단할 수 없으면(nil) 줄을 쓰지 않는다 — 이름 조각을 원문으로 남기는 표시라 가림을 거치지 않은 줄은 남기지 않는다.
+func e2AttemptPatternLine(r e2proxy.Receipt, escaped string, sensitive func(string) bool) ([]byte, bool) {
+	if escaped == "" || r.AttemptID == "" || sensitive == nil {
 		return nil, false
 	}
-	row, err := json.Marshal(E2AttemptPatternRow{AttemptID: r.AttemptID, PathPattern: pathmask.Readable(escaped)})
+	row, err := json.Marshal(E2AttemptPatternRow{AttemptID: r.AttemptID, PathPattern: pathmask.ReadableWith(escaped, sensitive)})
 	if err != nil {
 		return nil, false
 	}
