@@ -239,7 +239,16 @@ func TestProductTargetWriteConsentVersion(t *testing.T) {
 			t.Errorf("%s accepted", name)
 		}
 	}
-	for _, rec := range []productTargetRecord{base, func() productTargetRecord {
+	// http 대상(C22)도 같은 동의 판 규칙이다(#525 윤재상 리뷰).
+	httpConsent := productTargetCopy(base)
+	httpConsent.Target.ID, httpConsent.Target.Origin = "target-"+strings.Repeat("c", 32), "http://c.example.test"
+	httpConsent.ReversibleWrites, httpConsent.WriteConsent = true, productWriteConsentAuto
+	httpBad := productTargetCopy(httpConsent)
+	httpBad.Target.ID, httpBad.ReversibleWrites = "target-"+strings.Repeat("d", 32), false
+	if r.replay(httpBad) == nil {
+		t.Error("http consent without writes accepted")
+	}
+	for _, rec := range []productTargetRecord{base, httpConsent, func() productTargetRecord {
 		v := productTargetCopy(base)
 		v.Target.ID = "target-" + strings.Repeat("b", 32)
 		v.ReversibleWrites, v.WriteConsent = true, productWriteConsentAuto
