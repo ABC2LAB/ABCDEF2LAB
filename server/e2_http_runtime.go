@@ -107,6 +107,10 @@ type E2HTTPRunOptions struct {
 	ObserveResult func(context.Context, e2runner.Result) error
 	Runner        E2HTTPLeaseRunner
 	Release       func(context.Context) error
+	// AccountAuth는 인증 준비의 계정별 결과(라벨 → authenticated·login_failed·session_not_found·result_unknown·not_sent),
+	// Sessions는 인증된 시험 계정의 보낼 세션 헤더다(실행 메모리에만, C14). 인증 준비가 없으면 둘 다 비어 있다.
+	AccountAuth map[string]string
+	Sessions    E2HTTPSessions
 }
 
 type E2HTTPPolicyMetadata struct {
