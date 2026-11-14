@@ -23,6 +23,14 @@ type FirstDiagnosisPreparedTask struct {
 // 이보다 크면 설치를 거부한다(C32, 2026-11-14 900초에서 올림).
 const MaxFirstDiagnosisTaskSeconds = 3600
 
+// MaxFirstDiagnosisShutdownSeconds는 launch 정리 시간(shutdown_timeout_seconds)의 상한이다.
+const MaxFirstDiagnosisShutdownSeconds = 60
+
+// MaxFirstDiagnosisHTTPAuthority는 일반 HTTP 회차 권한(authority)의 최대 구간이다. 권한은 회차 실행 시간 + 정리 시간 동안
+// 유효해야 하므로 두 상한을 더한 값이다. 그래서 설치가 고를 수 있는 가장 긴 회차도 권한 안에서 끝난다(2026-11-14 15분에서
+// 올림: 실행 시간 상한을 3600초로 올린 뒤 약 880초를 넘는 회차가 권한 발급에서 실패했다).
+const MaxFirstDiagnosisHTTPAuthority = time.Duration(MaxFirstDiagnosisTaskSeconds+MaxFirstDiagnosisShutdownSeconds) * time.Second
+
 func PrepareFirstDiagnosisTask(ctx context.Context, pool *sql.DB, description, goal string, profileID int64, timeoutSeconds int) (FirstDiagnosisPreparedTask, error) {
 	refuse := func() (FirstDiagnosisPreparedTask, error) {
 		return FirstDiagnosisPreparedTask{}, ErrControlledReadHostConfiguration
