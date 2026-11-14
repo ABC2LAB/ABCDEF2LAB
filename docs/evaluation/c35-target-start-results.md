@@ -55,3 +55,28 @@ ARTEX_C35_OWNED_IPS=<소유_IP_A>,<소유_IP_B> go test -race -json \
 - 정상 커밋 뒤 별도 Go overlay 변이 **11/11 검출**: 과거 DNS 집합 정확 일치 재도입, 과거 SPKI 정확 일치 재도입, 전체 보호 주소 검사 제거, TXT 생략, TLS hostname/chain 검증 생략, 감사 직후 철회 검사 제거, issue job 결속 제거, 탐색 job 결속 제거, DNS 상한 8개로 축소, 승인 상한 24시간으로 축소, 감사 실패 뒤 다른 IP 순회 허용. 모두 컴파일 실패가 아닌 독립 시험 assertion 실패로 검출했다. TLS 검증 생략 변이는 소유 hostname 음성 fixture에만 사용했으며 제품 소스에 적용하지 않았다. 최신 dev 병합 소스 `1a8b6726`에도 같은 변이 11/11 검출과 전체 build/vet/교차 빌드 성공을 다시 확인했다.
 
 실제 OpenRouter/Qwen·Planner/Worker 전체 진단·새 Docker 제품 종단 수용은 **NOT_RUN**이다. 이 기록은 C35 로컬 DNS/TLS·실행 정책·탐색 경계 수용으로 한정한다. 유료 호출 승인은 이 작업에 포함되지 않는다.
+
+## 2026-11-14 재리뷰 보완
+
+정상 소스 `6a379716`에서 승인 기간 상한을 요청 계약과 레지스트리의 공통 `MaxTargetApprovalHours=720`으로 연결했다.
+HTTP 핸들러→준비 요청과 실제 productPreparationEndpoint→레지스트리에서 24·25·720시간을 허용하고 721시간을 입구에서 거절한다.
+등록은 pending만 만들며 소유 증명·실제 승인 없이 실행 권위를 만들지 않는다. Workbench 기본값4시간은 유지한다.
+
+전체 TXT/DNS/TLS 검사 기한8초를 유지하면서 주소마다 최대3초와 남은 시간/남은 주소 수 중 짧은 기한을 적용한다.
+실제 probeTLS도 연결·핸드셰이크 전체를 주소별 기한으로 묶는다. 주소2개/4개 풀에서 앞 주소가 정체돼도 뒤 정상 주소를 선택하고,
+이미 기한이 종료된 뒤에는 남은 주소의 attempt/completed 감사 기록을 추가하지 않는 것을 대조했다.
+TLS 접촉 중 철회와 철회 뒤 TXT/DNS0도 고정했다. 미확인 감사·SPKI·설치 오류를 DNS 불일치라고 추정하지 않고
+`target_connection_unavailable`로 보존하며, 후보 순회 중 기한 소진은 `target_connection_timeout`, 취소는 일반 연결 검증 불가로 구분한다. 두 새 사유는 한국어로 안내한다.
+
+`AllowPrivateTarget`은 승인 시점 프로파일·과거 보고서 입력 검증용 값임을 주석에 명시했다. 새 실행 IP의 실제 사설망 허용은
+`addressAllowed`·`checkDestinations`가 검사한다. HTTP는 TCP 연결 가능성만 확인하고 서버 신원을 인증하지 않는다는 한계를 계약에 적었다.
+
+- 제품 명령 전체 race: 개별 test/subtest **356 PASS / FAIL0 / SKIP4**. SKIP은 기존 PG3건과 소유 주소 opt-in1건이다.
+- 소유 주소 opt-in은 호스트 소유가 확인된 사설 IPv4 두 개로 별도 실행해 **7 PASS / FAIL0 / SKIP0**.
+  실제 DNS/TLS·E② 수신기에서 주소/인증서 교체·이전 실행 격리·TLS 오류·철회 뒤 전송 차단을 다시 확인했다.
+- HTTP 요청 경계 race **6 PASS**, 준비 계약/서비스 전체 race **125 PASS**, 각각 FAIL0/SKIP0.
+- 관련 웹118 PASS/FAIL0/SKIP0, 변경 파일 Biome·tsc·정적 빌드, 전체 Go build/vet·공백 검사 통과.
+- 정상 커밋을 보존한 Go overlay에서 요청 상한·레지스트리 상한·주소별 문맥·실제 핸드셰이크 기한·TLS 뒤 철회·사유 분류를
+  각각 되돌려 **6/6 단언 실패로 검출**했다. 원본은 변경하지 않았다.
+
+이 보완의 실제 모델·유료 API·새 Docker 제품 종단·브라우저 수용은 NOT_RUN이다. 기존 회차의 UI 수용을 이번 실행으로 계산하지 않는다.

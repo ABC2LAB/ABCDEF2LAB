@@ -209,7 +209,10 @@ func TestC35TLSHandshakeHasIndividualDeadline(t *testing.T) {
 }
 
 func TestC35ConnectionFailureReasonDoesNotInventDNSMismatch(t *testing.T) {
-	for _, err := range []error{errPreparation, errors.New("owned private audit detail"), errors.New("owned invalid SPKI detail")} {
+	if got := targetConnectionFailure(context.DeadlineExceeded); got != "target_connection_timeout" {
+		t.Fatal("기한 소진을 취소·일반 장애와 구분하지 못함", got)
+	}
+	for _, err := range []error{errPreparation, context.Canceled, errors.New("owned private audit detail"), errors.New("owned invalid SPKI detail")} {
 		if got := targetConnectionFailure(err); got != "target_connection_unavailable" {
 			t.Fatal("검증/감사 실패를 DNS 불일치로 오기", got)
 		}

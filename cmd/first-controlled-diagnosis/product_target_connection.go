@@ -54,6 +54,9 @@ func (l *urlLoadedProfile) prepareTargetConnection(ctx context.Context, resolver
 
 // 원문 오류는 내보내지 않고 검증한 고정 사유만 준비 Job에 싣는다.
 func targetConnectionFailure(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "target_connection_timeout"
+	}
 	if err != nil {
 		switch err.Error() {
 		case "target_approval_changed", "ownership_not_verified", "target_dns_unavailable", "target_dns_mismatch", "target_address_denied", "target_unreachable", "target_tls_unverified", "target_connection_timeout":

@@ -434,12 +434,12 @@ func (r *productTargetRegistry) approve(ctx context.Context, principal, id strin
 	var selected string
 	for index, ip := range addresses {
 		if ctx.Err() != nil {
-			return diagnosisprep.ProductTarget{}, errors.New("target_connection_timeout")
+			return diagnosisprep.ProductTarget{}, ctx.Err()
 		}
 		probeCtx, stopProbe := productTargetProbeContext(ctx, len(addresses)-index)
-		if probeCtx.Err() != nil {
+		if err := probeCtx.Err(); err != nil {
 			stopProbe()
-			return diagnosisprep.ProductTarget{}, errors.New("target_connection_timeout")
+			return diagnosisprep.ProductTarget{}, err
 		}
 		spki, _, e = r.probeWithAudit(probeCtx, "approve", rec, u.Hostname(), ip)
 		stopProbe()
@@ -564,15 +564,15 @@ func (r *productTargetRegistry) connectionForStart(ctx context.Context, rec prod
 	}
 	for index, ip := range addresses {
 		if ctx.Err() != nil {
-			return nil, errors.New("target_connection_timeout")
+			return nil, ctx.Err()
 		}
 		if r.current(rec) != nil {
 			return nil, errors.New("target_approval_changed")
 		}
 		probeCtx, stopProbe := productTargetProbeContext(ctx, len(addresses)-index)
-		if probeCtx.Err() != nil {
+		if err := probeCtx.Err(); err != nil {
 			stopProbe()
-			return nil, errors.New("target_connection_timeout")
+			return nil, err
 		}
 		spki, _, err := r.probeWithAuditForRun(probeCtx, "start", rec, u.Hostname(), ip, jobID)
 		stopProbe()
@@ -583,7 +583,7 @@ func (r *productTargetRegistry) connectionForStart(ctx context.Context, rec prod
 			continue
 		}
 		if ctx.Err() != nil {
-			return nil, errors.New("target_connection_timeout")
+			return nil, ctx.Err()
 		}
 		if err := r.current(rec); err != nil {
 			return nil, errors.New("target_approval_changed")
