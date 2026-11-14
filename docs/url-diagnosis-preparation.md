@@ -158,17 +158,15 @@ result_ready=true인 실제 저장 결과만 보고서로 연결하고 마감 �
 
 ### unknown 이후 운영 정지와 복구 한계
 
-unknown 영수증이 하나라도 있으면 같은 준비 서비스 설치의 모든 새 Start는 busy로 닫힌다.
-drain_complete=true는 로컬 실행 수명이 마감됐다는 사실이며, 모델 사용량이나 이미 전송한 외부 요청의
-실제 결과를 확정하는 증거는 아니다. 이번 구현은 마감된 unknown만 예외로 새 시작을 허용하지 않는다.
+Unknown 게시만으로 새 시작을 허용하지 않는다. 실제 Execute 반환과 drain 또는 검증된 자원 복구를
+함께 확인한다. 확인되지 않은 자원이 있으면 같은 준비 서비스 설치의 새 Start는 `busy`로 닫힌다.
+`drain_complete=true`는 로컬 실행 수명 마감이며, 모델 사용량이나 이미 전송한 외부 요청의 실제 결과를
+확정하는 증거는 아니다. 복구 뒤에도 Unknown 결과·기존 예약·누적 실행 횟수는 보존한다.
 
-현재 지원되는 in-place 영수증 재분류·강제 해제·재개 명령은 없다.
-운영자는 보존된 영수증·감사·provider/대상 기록으로 미확인 실행과 사용량을 대조하고,
-기존 예약을 계속 차감한 상태에서 복구 정책을 별도로 승인·검토해야 한다.
-그 뒤 사용할 reconciliation 절차/API는 후속 설계·구현 대상이다.
-journal/head 삭제, state_dir 교체, delegation_ref 변경으로 기존 예약이나 unknown을 우회하는 방식은
+현재 지원하는 backend 핸들/호스트 boot 기반 복구 조건과 구 형식 영수증의 처리 범위는
+[아래 C04·C33 운영 보완](#c04c33-운영-보완-543-인계)을 따른다. 강제 성공 재분류·재실행 명령은 제공하지 않는다.
+`journal/head` 삭제, `state_dir` 교체, `delegation_ref` 변경으로 기존 예약이나 Unknown을 우회하는 방식은
 지원 복구가 아니다. 새 설치·새 위임만 만들면 이전 불명 실행이 해소된 것으로 처리하지 않는다.
-이 운영 정지·복구 정책은 첫 실제 대상 수용 전에 팀이 확인해야 할 조건이다.
 
 URL 경로는 설치된 로컬 OpenAI 호환 비스트리밍 profile과 명시적인 OpenRouter 모드를 지원한다.
 OpenRouter 보호 설치·키·회차/누적 USD·외부 전송 동의와 수용 범위는 [통합 계약](url-openrouter-integration.md)을 따른다.
@@ -359,13 +357,15 @@ URL v2 공개 관리 API는 영속 준비 영수증에 결속한 같은 운영�
 `POST /api/tasks/{id}/control`의 `pause`·`resume`을 전달한다. chat·steer·rerun·설정 API는 열지 않는다.
 활동 조회·history·stream·seq 상세는 task를 명시해야 한다. 상속된 다른 task 의도 세션은 열지 않으며,
 원문 명령·도구 인자·모델 문장·자격·metadata는 공개 활동 응답에 포함하지 않는다. 스트림은 즉시
-flush하며 매 이벤트에서 인증·결속을 재검사한다. 중계 자체의 30초 상한보다 현재 준비 HTTP 요청의
-5초 상한이 먼저 적용된다(API·backend WriteTimeout은 10초). 종료 뒤 클라이언트가 커서로 다시 연결한다.
+flush하며 매 이벤트에서 인증·결속을 재검사한다. 현재 스트림은 준비 HTTP 요청마다 **최대 5초**이며
+API·backend WriteTimeout은 10초다. 요청 종료 뒤 클라이언트가 커서로 다시 연결한다.
 preparation-only 내부 서버 차단은 유지한다.
 
 검증: `TestUnknownPublicationDoesNotReleaseExecution`,
 `TestUnknownClosureRecoveryPreservesFactsAndReservations`,
 `TestLegacyDrainedTerminalUpgradeKeepsInstallationUsable`,
+`TestLegacyUnknownRecoveryWitnessRequiresLaterHostBoot`(drain 여부 두 경우),
+`TestStartPersistsExecutionEvidenceVersion`,
 `TestURLClosureRecoveryWaitsForOriginalRunAndLateCloseIsSafe`,
 `TestURLPreparationRecoveryChecksExactTaskAndDrain`,
 `TestURLManagementOperationsPublicEntryOwnedPostgres`.
