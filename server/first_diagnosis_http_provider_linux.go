@@ -144,7 +144,7 @@ func newFirstDiagnosisHTTPAuthority(ctx context.Context, cfg FirstDiagnosisHTTPH
 	clear(raw)
 	digest, err := hex.DecodeString(grant.PolicySHA256)
 	now := time.Now()
-	if decodeErr != nil || grant.Format != FirstDiagnosisHTTPAuthorityFormat || !e2HTTPHostRef.MatchString(grant.ApprovalRef) || grant.OperatorUID != uint32(os.Geteuid()) || grant.TaskID <= 0 || grant.ExplorationID <= 0 || err != nil || len(digest) != sha256.Size || hex.EncodeToString(digest) != grant.PolicySHA256 || grant.ValidFrom.IsZero() || grant.ValidFrom.After(now) || !grant.ValidUntil.After(now) || !grant.ValidUntil.After(grant.ValidFrom) || grant.ValidUntil.Sub(grant.ValidFrom) > 15*time.Minute {
+	if decodeErr != nil || grant.Format != FirstDiagnosisHTTPAuthorityFormat || !e2HTTPHostRef.MatchString(grant.ApprovalRef) || grant.OperatorUID != uint32(os.Geteuid()) || grant.TaskID <= 0 || grant.ExplorationID <= 0 || err != nil || len(digest) != sha256.Size || hex.EncodeToString(digest) != grant.PolicySHA256 || grant.ValidFrom.IsZero() || grant.ValidFrom.After(now) || !grant.ValidUntil.After(now) || !grant.ValidUntil.After(grant.ValidFrom) || grant.ValidUntil.Sub(grant.ValidFrom) > MaxFirstDiagnosisHTTPAuthority {
 		return failed()
 	}
 	a.grant = grant
