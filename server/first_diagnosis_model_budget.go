@@ -246,6 +246,17 @@ func (b *FirstDiagnosisModelBudget) retryable() bool {
 	return !blocked && (b.external == nil || !b.external.Snapshot().Blocked)
 }
 
+// closesExploration은 탐색의 모델 호출 실패를 예산 종료로 다룰지 본다: 승인 예산 한도에 닿았거나 회계가 막혔다.
+// 예산이 없는 경로(nil)는 예전처럼 예산 종료 판정에 맡긴다.
+func (b *FirstDiagnosisModelBudget) closesExploration() bool {
+	if b == nil {
+		return true
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.limitReached || b.blocked
+}
+
 func (b *FirstDiagnosisModelBudget) LimitReached() bool {
 	if b == nil {
 		return false
