@@ -1443,7 +1443,9 @@ func (e *Execution) RedactOutput(b []byte) []byte {
 		// 서명이 맞지 않는 변형 토큰이 활동 기록에 남은 것을 발견).
 		out = requestAuthValue.ReplaceAll(out, []byte("${1}[REDACTED]"))
 		out = requestCookieValue.ReplaceAll(out, []byte("${1}${2}[REDACTED]"))
-		out = curlCookieArg.ReplaceAll(out, []byte("${1}[REDACTED]"))
+		out = requestHeaderPair.ReplaceAll(out, []byte("${1}[REDACTED]"))
+		out = curlCookieQuoted.ReplaceAll(out, []byte("${1}[REDACTED]"))
+		out = curlCookieBare.ReplaceAll(out, []byte("${1}[REDACTED]"))
 	}
 	return out
 }
@@ -1453,13 +1455,21 @@ func (e *Execution) RedactOutput(b []byte) []byte {
 var (
 	issuedCookieLine = regexp.MustCompile(`(?im)^([<>* \t]*set-cookie2?[ \t]*:[ \t]*[^=;\r\n]*=)[^;\r\n]*`)
 	authInfoLine     = regexp.MustCompile(`(?im)^([<>* \t]*(?:proxy-)?authentication-info[ \t]*:[ \t]*)[^\r\n]*`)
-	// requestAuthValue는 Authorization·Proxy-Authorization 헤더 값이다. 줄 머리(curl -v의 "> ")에서든 명령 인수
-	// (-H "Authorization: …", JSON으로 이스케이프된 \"…\" 포함) 안에서든, 따옴표·백슬래시·줄바꿈 전까지 가린다.
-	requestAuthValue = regexp.MustCompile(`(?i)((?:proxy-)?authorization[ \t]*:[ \t]*)[^"'\\\r\n]+`)
-	// requestCookieValue는 요청 Cookie 헤더 값이다. Set-Cookie는 위 issuedCookieLine이 이름·속성을 남기고 따로 가린다.
-	requestCookieValue = regexp.MustCompile(`(?i)(^|[^a-z0-9-])(cookie[ \t]*:[ \t]*)[^"'\\\r\n]+`)
-	// curlCookieArg는 curl -b·--cookie 인수 값이다.
-	curlCookieArg = regexp.MustCompile(`(?i)((?:^|\s)(?:-b|--cookie)[ \t]+\\?["']?)[^"'\\\s]+`)
+	// requestAuthValue는 Authorization·Proxy-Authorization 헤더 값이다. 줄 머리(curl -v의 "> "), 명령 인수
+	// (-H "Authorization: …", wget --header=…, httpie Authorization:'…'), 코드 안 헤더 객체(python dict
+	// {'Authorization': '…'}, JSON "Authorization": "…") 어디서든 이름 뒤 닫는 따옴표와 값 앞 여는 따옴표를 건너뛰고
+	// (JSON으로 이스케이프된 \" 포함), 값을 따옴표·백슬래시·줄바꿈 전까지 가린다. 따옴표 안 값은 따옴표를 담지 않는다.
+	requestAuthValue = regexp.MustCompile(`(?i)((?:proxy-)?authorization(?:\\*["'])?[ \t]*:[ \t]*(?:\\*["'])?[ \t]*)[^"'\\\r\n]+`)
+	// requestCookieValue는 요청 Cookie 헤더 값이다(형태는 위와 같음). Set-Cookie는 위 issuedCookieLine이 이름·속성을
+	// 남기고 따로 가린다.
+	requestCookieValue = regexp.MustCompile(`(?i)(^|[^a-z0-9-])(cookie(?:\\*["'])?[ \t]*:[ \t]*(?:\\*["'])?[ \t]*)[^"'\\\r\n]+`)
+	// requestHeaderPair는 이름과 값을 쉼표로 나눈 코드 형태다(python req.add_header('Cookie', '…'),
+	// [('Authorization', '…')]). 이름이 따옴표로 닫혀 있을 때만 본다.
+	requestHeaderPair = regexp.MustCompile(`(?i)((?:^|[^a-z0-9-])\\*["'](?:(?:proxy-)?authorization|cookie)\\*["'][ \t]*,[ \t]*\\*["'])[^"'\\\r\n]+`)
+	// curlCookieQuoted·curlCookieBare는 curl -b·--cookie(--cookie=) 인수 값이다. 따옴표로 시작한 값은 쿠키 여러 개
+	// (a=1; token=…)가 공백을 담으므로 닫는 따옴표 전까지, 따옴표 없는 값은 공백 전까지 가린다.
+	curlCookieQuoted = regexp.MustCompile(`(?i)((?:^|\s)(?:-b[ \t]+|--cookie(?:[ \t]+|=))\\*["'])[^"'\\\r\n]+`)
+	curlCookieBare   = regexp.MustCompile(`(?i)((?:^|\s)(?:-b[ \t]+|--cookie(?:[ \t]+|=)))[^"'\\\s]+`)
 )
 
 // 출력 가림 전용 값의 하한·상한이다. 짧은 값은 흔한 문자열까지 가려 출력이 망가지므로 받지 않는다.
