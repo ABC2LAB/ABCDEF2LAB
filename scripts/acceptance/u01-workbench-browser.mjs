@@ -340,7 +340,7 @@ try {
 			} else if (c.missing) {
 				await waitFor(
 					sessionId,
-					`document.querySelector('[data-view="new"] [role="note"]')?.textContent?.includes('아직 시작할 수 없습니다')`,
+					`[...document.querySelectorAll('[data-view="new"] [role="note"]')].some(el=>el.textContent?.includes('아직 시작할 수 없습니다'))`,
 				);
 			} else {
 				await waitFor(
