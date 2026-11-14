@@ -29,6 +29,19 @@ func TestExplorationSkillSeedFromRepositorySkill(t *testing.T) {
 			t.Fatalf("%s not carried unchanged: %v", name, err)
 		}
 	}
+	// 작업 공간의 지시문이 스크립트 실행을 막으면 탐색 지시문과 반대로 읽혀 효과가 없다(#579 윤재상 리뷰). 파이썬 스크립트는
+	// 실행하라고, node 스크립트는 실행하지 말라고 적혀 있어야 한다.
+	skill, _ := e2sandbox.ReadWorkspaceFile(seed, "api-recon/SKILL.md", limit)
+	reference, _ := e2sandbox.ReadWorkspaceFile(seed, "api-recon/reference.md", limit)
+	text := string(skill) + "\n" + string(reference)
+	for _, banned := range []string{"Do not run copied versions", "not enabled product transports", "Never run direct fetch"} {
+		if strings.Contains(text, banned) {
+			t.Fatalf("workspace instructions still forbid running the scripts: %q", banned)
+		}
+	}
+	if !strings.Contains(string(skill), "run the Python scripts") || !strings.Contains(string(skill), "Do not run the Node/Puppeteer scripts") {
+		t.Fatal("workspace SKILL.md does not tell how to run the scripts")
+	}
 	for _, name := range []string{"api-recon/scripts/runtime_harvest.js", "api-recon/scripts/preload.js", "api-recon/scripts/package.json"} {
 		if _, err := e2sandbox.ReadWorkspaceFile(seed, name, limit); err == nil {
 			t.Fatalf("%s must not be in the exploration sandbox", name)
