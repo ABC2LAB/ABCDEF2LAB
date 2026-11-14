@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -124,6 +125,10 @@ func TestOpenRouterTransientFailuresBlockOnlyAtConsecutiveLimit(t *testing.T) {
 			if _, err := client.Do(openRouterRequest()); err == nil || hits != 4 {
 				t.Fatal("send after the consecutive limit")
 			}
+			// 막힘 원인이 연속 일시 오류 상한뿐임을 알린다(예산은 이 경우 회계를 계속 믿는다).
+			if !p.Snapshot().TransientLimited {
+				t.Fatal("transient-only lock not marked")
+			}
 			u := p.Snapshot()
 			if u.Requests != 4 || u.Errors != 3 || u.ReservedInputTokens != 4*(wire+openRouterFramingTokens) || u.CostMicros != 12 {
 				t.Fatalf("reservation refunded or usage lost: %+v", u)
@@ -199,7 +204,7 @@ func TestOpenRouterConfigurationFailuresBlockImmediately(t *testing.T) {
 			if _, err := client.Do(openRouterRequest()); !errors.Is(err, ErrOpenRouterPolicy) {
 				t.Fatal("failure accepted")
 			}
-			if !p.Snapshot().Blocked {
+			if u := p.Snapshot(); !u.Blocked || u.TransientLimited {
 				t.Fatal("configuration failure counted as transient")
 			}
 			if _, err := client.Do(openRouterRequest()); err == nil || hits != 1 {
@@ -271,6 +276,51 @@ func TestOpenRouterBrokenBodyKeepsStatusClassification(t *testing.T) {
 			}
 			if p.Snapshot().Blocked != tc.blocked {
 				t.Fatalf("status %d with broken body blocked=%v", tc.status, p.Snapshot().Blocked)
+			}
+		})
+	}
+}
+
+// 동시에 나간 두 호출이 서로 다른 원인으로 실패하면, 막힘 원인이 연속 일시 오류 상한뿐일 때만 TransientLimited다.
+// 일시 오류로 잠긴 뒤 다른 호출이 설정 오류로 끝나거나, 설정 오류로 막힌 뒤 일시 오류가 상한에 닿아도 회계 막힘으로 남는다.
+func TestOpenRouterTransientLimitedOnlyWhenTransientAlone(t *testing.T) {
+	for name, order := range map[string][2]int{"transient-then-config": {429, 401}, "config-then-transient": {401, 429}} {
+		t.Run(name, func(t *testing.T) {
+			p := openRouterV2Fixture(t, 1)
+			p.manifest.MaxConcurrent = 2
+			arrived := make(chan struct{}, 2)
+			release := [2]chan struct{}{make(chan struct{}), make(chan struct{})}
+			var mu sync.Mutex
+			n := 0
+			client := openRouterClient(p, openRouterRT(func(*http.Request) (*http.Response, error) {
+				mu.Lock()
+				i := n
+				n++
+				mu.Unlock()
+				arrived <- struct{}{}
+				<-release[i]
+				return openRouterStatus(order[i]), nil
+			}))
+			done := [2]chan struct{}{make(chan struct{}), make(chan struct{})}
+			for i := range 2 {
+				go func() {
+					defer close(done[i])
+					if resp, err := client.Do(openRouterRequest()); err == nil {
+						_ = resp.Body.Close()
+						t.Error("failure accepted")
+					}
+				}()
+				<-arrived
+			}
+			close(release[0])
+			<-done[0]
+			if u := p.Snapshot(); !u.Blocked || u.TransientLimited != (order[0] == 429) {
+				t.Fatalf("after first failure: %+v", u)
+			}
+			close(release[1])
+			<-done[1]
+			if u := p.Snapshot(); !u.Blocked || u.TransientLimited {
+				t.Fatalf("mixed failure marked transient-only: %+v", u)
 			}
 		})
 	}

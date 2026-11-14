@@ -221,3 +221,48 @@ func TestFirstDiagnosisModelBudgetConfigureConcurrency(t *testing.T) {
 		t.Fatalf("manifest max_concurrent not exposed: %d", got)
 	}
 }
+
+// 연속 일시 오류 상한(C06)만으로 잠긴 승인은 회계를 의심할 이유가 아니다. 잠그게 만든 실패 호출은 예약량으로 닫고(C05)
+// 사용량은 계속 안다. 잠긴 뒤 새 호출은 예약 없이 거절한다. 다른 원인의 막힘은 지금처럼 회계 막힘이다
+// (2026-11-14 점검 회차: 429 연속으로 잠긴 뒤 실행이 model_usage_unknown으로 끝남).
+func TestFirstDiagnosisOpenRouterBudgetTransientLockKeepsUsageKnown(t *testing.T) {
+	for _, transientOnly := range []bool{true, false} {
+		b, _, cfg := urlExternalBudget(t, func(diagnosisprep.ModelUsage) error { return nil })
+		req := llm.CompletionRequest{MaxTokens: 100}
+		call, err := b.reserve(context.Background(), cfg, &req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := llmpolicy.OpenRouterCallResult{Reserved: true, ReservedInputTokens: 5000, ReservedOutputTokens: 100, ReservedCostMicros: 5100}
+		call.result = func() llmpolicy.OpenRouterCallResult { return r }
+		b.externalUsage = func() llmpolicy.OpenRouterUsage {
+			u := b.externalBase
+			u.Requests++
+			u.ReservedInputTokens += r.ReservedInputTokens
+			u.ReservedOutputTokens += r.ReservedOutputTokens
+			u.ReservedCostMicros += r.ReservedCostMicros
+			u.Errors++
+			u.Blocked, u.TransientLimited = true, transientOnly
+			return u
+		}
+		if err := b.settle(call, llm.Usage{}, errors.New("synthetic 429")); err == nil {
+			t.Fatal("failed call reported success")
+		}
+		u := b.Snapshot()
+		if !transientOnly {
+			if !b.blocked || u.UsageKnown {
+				t.Fatalf("non-transient external block accepted as known: %+v", u)
+			}
+			continue
+		}
+		if b.blocked || !u.UsageKnown || u.UnknownUsageCalls != 1 || u.CostUSDMicros != call.cost {
+			t.Fatalf("transient lock closed as unknown accounting: %+v blocked=%v", u, b.blocked)
+		}
+		if _, err := b.reserve(context.Background(), cfg, &req); err == nil {
+			t.Fatal("new call reserved after the transient lock")
+		}
+		if after := b.Snapshot(); after.Requests != u.Requests || !after.UsageKnown || b.blocked {
+			t.Fatalf("refused call changed accounting: %+v blocked=%v", after, b.blocked)
+		}
+	}
+}
