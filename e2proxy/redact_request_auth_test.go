@@ -51,6 +51,13 @@ func TestTestAccountRunMasksRequestCredentialsStructurally(t *testing.T) {
 		// 따옴표 없이 시작한 값은 JSON 구조 문자 앞 따옴표에서 끝난다. 한 줄 JSON의 뒤 칸은 남는다.
 		`{"tool_output":"> Cookie: token=review-credential-tail","trusted":{"state":"active"}}`: `{"tool_output":"> Cookie: [REDACTED]","trusted":{"state":"active"}}`,
 		`{\"out\":\"> Cookie: token=review-credential-tail\",\"trusted\":1}`:                    `{\"out\":\"> Cookie: [REDACTED]\",\"trusted\":1}`,
+		// 이름이 따옴표로 닫혔고 값은 따옴표 없이 시작하면 이름 앞 따옴표로 끝내지 않는다(YAML 같은 형태).
+		`"Cookie": lang="en"; token=review-credential-tail`: `"Cookie": [REDACTED]`,
+		// 값을 연 따옴표보다 얕게 이스케이프된 따옴표는 바깥 문자열의 끝이다.
+		`{\"cmd\": \"curl -H \\\"Authorization: Bearer review-credential-tail\", \"next\": 1}`: `{\"cmd\": \"curl -H \\\"Authorization: [REDACTED]\", \"next\": 1}`,
+		// 입력 끝의 따옴표는 바깥 문자열의 끝이다. 같은 줄에 자리가 또 나오면 앞 값과 겹치므로 한 번만 가린다.
+		`"> Cookie: token=review-credential-tail"`:                        `"> Cookie: [REDACTED]"`,
+		"> Authorization: Bearer review-credential-tail Authorization: x": "> Authorization: [REDACTED]",
 		// 대상 응답의 Set-Cookie JSON 이름은 요청 Cookie로 보지 않는다.
 		`{"Set-Cookie": "sid=short1"}`:                                         `{"Set-Cookie": "sid=short1"}`,
 		"Proxy-Authorization: Basic eHl6":                                      "Proxy-Authorization: [REDACTED]",
