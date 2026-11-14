@@ -311,7 +311,7 @@ func urlLoadProfileForReport(c urlPreparationInstallation, installationPin urlIn
 			return nil, errPreparation
 		}
 	}
-	if !p.DeriveRuns || !p.Attestation.Verified || p.MaxRuns < 1 || p.MaxRuns > 1000 || p.ValidFrom.IsZero() || !p.ValidUntil.After(p.ValidFrom) ||
+	if !p.DeriveRuns || !p.Attestation.Verified || p.MaxRuns < 1 || p.MaxRuns > productMaxDelegatedRuns || p.ValidFrom.IsZero() || !p.ValidUntil.After(p.ValidFrom) ||
 		!urlBudgetWithin(p.Budget, p.AggregateBudget) || p.Budget.DurationSeconds > urlMaxRunSeconds || !urlDigestValid(p.PolicySHA256) ||
 		!urlDigestValid(p.ManifestSHA256) || !urlDigestValid(p.Launch.SHA256) ||
 		p.Attestation.QueryPolicy != "any" || p.Attestation.BodyPolicy != "bounded" || p.Attestation.MaxBodyBytes < 1 ||

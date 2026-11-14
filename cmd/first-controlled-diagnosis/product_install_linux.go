@@ -175,7 +175,7 @@ func runProductInstall(ctx context.Context, args []string, stdout, stderr io.Wri
 	}
 	defer clear(raw)
 	var c productInstallInput
-	if decodeLaunchJSON(raw, &c) != nil || c.Format != "abc2lab.product-install/v2" || len(c.AdminPassword) < 12 || c.ValidForHours < 1 || c.ValidForHours > 168 || c.MaxRuns < 1 || c.MaxRuns > 1000 {
+	if decodeLaunchJSON(raw, &c) != nil || c.Format != "abc2lab.product-install/v2" || len(c.AdminPassword) < 12 || c.ValidForHours < 1 || c.ValidForHours > productMaxInstallHours || c.MaxRuns < 1 || c.MaxRuns > productMaxDelegatedRuns {
 		return 2
 	}
 	if c.DatabasePasswordFile == "" {
