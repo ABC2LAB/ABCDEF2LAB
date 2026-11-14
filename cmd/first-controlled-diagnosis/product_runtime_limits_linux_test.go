@@ -145,6 +145,9 @@ func TestProductRunSecondsFor(t *testing.T) {
 		{"workflow-set", &productRuntimeLimits{Workflow: &productRuntimeLimitSet{RunSeconds: ptr(int64(120))}}, true, 120, true},
 		{"at-limit", &productRuntimeLimits{Product: &productRuntimeLimitSet{RunSeconds: ptr(int64(urlMaxRunSeconds))}}, false, urlMaxRunSeconds, true},
 		{"over-limit", &productRuntimeLimits{Product: &productRuntimeLimitSet{RunSeconds: ptr(int64(urlMaxRunSeconds + 1))}}, false, 0, false},
+		// 코드 상한 값 자체를 고정한다(C32, 2026-11-14 600초에서 3600초로 올림).
+		{"hour", &productRuntimeLimits{Workflow: &productRuntimeLimitSet{RunSeconds: ptr(int64(3600))}}, true, 3600, true},
+		{"over-hour", &productRuntimeLimits{Workflow: &productRuntimeLimitSet{RunSeconds: ptr(int64(3601))}}, true, 0, false},
 		{"zero", &productRuntimeLimits{Workflow: &productRuntimeLimitSet{RunSeconds: ptr(int64(0))}}, true, 0, false},
 		{"negative", &productRuntimeLimits{Product: &productRuntimeLimitSet{RunSeconds: ptr(int64(-1))}}, false, 0, false},
 	} {
