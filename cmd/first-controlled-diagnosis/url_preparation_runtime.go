@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -322,7 +323,7 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	if execution.Job.Input.DisplayName != "" {
 		description = execution.Job.Input.DisplayName
 	}
-	goal := urlDiagnosisGoal(execution.Job.Input.TargetURL, execution.Job.Input.WorkflowMode, execution.Job.Scope.Methods)
+	goal := urlDiagnosisGoal(execution.Job.Input.TargetURL, execution.Job.Input.WorkflowMode, execution.Job.Scope.Methods, urlGoalAccountLabels(l.policy.Auth))
 	if check() != nil {
 		_ = pool.Close()
 		return knownFailure("installation_changed", true)
@@ -968,29 +969,59 @@ func settleProductWorkflow(ctx context.Context, flow *diagnosisflow.Controller, 
 	return u
 }
 
-// urlDiagnosisGoal은 작업 목표 문장을 승인 기록의 메서드로 만든다(루프 복원 결정안 §3, C25). 모델이 정한 값이 아니다.
-// 읽기 메서드만 승인됐으면 읽기 전용이라고 적고, 쓰기 메서드가 승인된 범위(건별 확인 흐름)에서는 그 메서드를 밝히고
-// 요청마다 운영자 확인을 받아야 E②가 보낸다고 적는다. 실제 허용·차단은 E②가 정한다.
-func urlDiagnosisGoal(target, workflowMode string, methods []string) string {
+// urlDiagnosisGoal은 작업 목표 문장을 승인 기록의 메서드·작업 방식·결속 계정 라벨로 만든다(루프 복원 결정안 §3, C25). 모델이 정한
+// 값이 아니다. 읽기 메서드만 승인됐으면 읽기 전용이라고 적는다. 쓰기 메서드가 승인됐으면 그 메서드를 밝히고, 건별 확인 흐름
+// (수동 모드, 작업 방식 없는 실행)에서는 요청마다 운영자 확인을 받아야 E②가 보낸다고, 자동 모드에서는 사전 승인 범위 안에서
+// 건별 확인 없이 보낸다고 적는다(C21). 실제 허용·차단은 E②가 정한다.
+//
+// 목적 문장은 취약점 찾기다. 원본 ARTEX는 사람이 쓴 목표("대상의 취약점을 찾아라")를 목표 분해기가 결과로 나누는데, 이
+// 문장이 관찰·후보 모으기만 말하면 분해기가 "엔드포인트 정리" 같은 목표를 만들고 Planner가 탐색이 끝나자마자 그 목표를
+// 달성으로 마감한다(2026-11-14 소유 Juice Shop 회차: 목표 하나가 탐색 뒤 met, 진단 Worker 둘이 명령 1·3번 만에 멈춤,
+// 후보 제출 0). 인가(IDOR·접근통제)를 먼저 적는 것은 개발 계획의 초기 집중 순서다. 계정 라벨은 이름만이고 세션 값은
+// Worker 실행에서만 준다(CLAUDE.md 규칙 2).
+func urlDiagnosisGoal(target, workflowMode string, methods, accountLabels []string) string {
 	var writes []string
 	for _, m := range methods {
 		if m != "GET" && m != "HEAD" {
 			writes = append(writes, m)
 		}
 	}
-	scope := "Inspect the approved read-only HTTPS target " + target + " through the enforced E2 boundary. Approved methods: " + strings.Join(methods, ", ") + "."
+	scope := "Inspect the approved read-only HTTPS target " + target + " through the enforced E2 boundary and find its security vulnerabilities. Approved methods: " + strings.Join(methods, ", ") + "."
 	if len(writes) > 0 {
-		scope = "Inspect the approved HTTPS target " + target + " through the enforced E2 boundary. Approved methods: " + strings.Join(methods, ", ") + ". Write methods (" + strings.Join(writes, ", ") + ") are approved only per request: E2 holds each such request until the operator confirms it. Never invent that confirmation and never resend a request whose result is unknown."
+		scope = "Inspect the approved HTTPS target " + target + " through the enforced E2 boundary and find its security vulnerabilities. Approved methods: " + strings.Join(methods, ", ") + "."
+		if workflowMode == diagnosisflow.Auto {
+			scope += " Write methods (" + strings.Join(writes, ", ") + ") are pre-approved for this automatic run within the approved scope: E2 sends them without per-request confirmation and still blocks requests outside the scope. Never resend a request whose result is unknown."
+		} else {
+			scope += " Write methods (" + strings.Join(writes, ", ") + ") are approved only per request: E2 holds each such request until the operator confirms it. Never invent that confirmation and never resend a request whose result is unknown."
+		}
 	}
+	objective := " Objective: find vulnerabilities and back each one with actual request evidence. Test authorization first: IDOR (one account reading or using another account's objects by changing an object ID) and broken access control (reaching admin or other-role data and functions without that role). Then test other web vulnerability types the approved methods can reach, such as injection, sensitive data exposure and security misconfiguration. Endpoint discovery and mapping are a means, not the objective: the task is done only when the discovered attack surface has been tested for these vulnerability types, not when it has been mapped."
+	if len(accountLabels) > 0 {
+		objective += " The host logs in owned disposable test accounts (labels: " + strings.Join(accountLabels, ", ") + ") before diagnosis and gives Workers their sessions, so plan authorization intents that compare what each account can access."
+	}
+	report := " Report each potential vulnerability as an unconfirmed review candidate with its evidence; confirmation is decided separately from trusted evidence."
 	if workflowMode == "" {
 		if len(writes) == 0 {
-			return scope + " Collect observations and manual-review candidates only. Do not request state changes or other origins."
+			return scope + objective + report + " Do not request state changes or other origins."
 		}
-		return scope + " Collect observations and manual-review candidates only. Do not request other origins."
+		return scope + objective + report + " Do not request other origins."
 	}
-	flow := " Workbench workflow mode: " + workflowMode + ". First prepare an initial discovery intent. The host will perform bounded discovery in the protected Worker. After discovery, use the server-provided exact selected endpoints for deep diagnostic intents."
+	flow := " Workbench workflow mode: " + workflowMode + ". First prepare an initial discovery intent. The host will perform bounded discovery in the protected Worker. After discovery, plan deep diagnostic intents from the endpoints the server lists, following the workflow instructions given with them."
 	if len(writes) == 0 {
-		flow += " State-changing requests require separately granted scope and per-request confirmation; never invent that permission."
+		flow += " State-changing requests require separately granted scope; never invent that permission."
 	}
-	return scope + flow + " Collect only supported observations and unconfirmed review candidates. Do not request other origins."
+	return scope + flow + objective + report + " Do not request other origins."
+}
+
+// urlGoalAccountLabels는 실행에 결속된 시험 계정 라벨이다(이름만, 정렬). 결속 계정이 없으면 nil이다.
+func urlGoalAccountLabels(auth *server.E2HTTPFileAuth) []string {
+	if auth == nil {
+		return nil
+	}
+	labels := make([]string, 0, len(auth.Accounts))
+	for _, a := range auth.Accounts {
+		labels = append(labels, a.Label)
+	}
+	slices.Sort(labels)
+	return labels
 }
