@@ -54,9 +54,6 @@ func captureRunSessionWith(ctx context.Context, s *agentcore.Session, input stri
 		}
 		return redact(text)
 	}
-	// 결과 행의 화면용 글(metadata)은 JSON으로 직렬화되므로, 넣기 전에 오류·중단 직전 글을 가린다. 직렬화한 뒤 정확한 값으로
-	// 가리면 이스케이프된 값을 놓칠 수 있다.
-	shownErr := func(err error) error { return redactedError(err, redact) }
 	ctx, auditTrace := intercept.WithTrace(ctx, input, approvalHistory(s.Messages()))
 	defer auditTrace.Finish()
 	var reason harness.TerminalReason
@@ -101,13 +98,14 @@ func captureRunSessionWith(ctx context.Context, s *agentcore.Session, input stri
 	var rerr error
 	for ev, err := range s.Prompt(ctx, input) {
 		if err != nil {
+			// 지금 SDK(harness.Query)는 오류를 반복자로 넘기지 않고 종료 사건에 싣는다. 이 분기는 방어용이고 같은 가림을 쓴다.
 			flush()
 			if ctx.Err() != nil { // engine/user cancellation, not a provider failure
 				record := terminalText(ctx, redactedTerminal(&harness.Terminal{Reason: reason, Err: ctx.Err()}, redact), lastTool)
 				rec(activityWithUsage(record.activity(db.Activity{Kind: "result"}), lastUsage))
 				return finalText, reason, ctx.Err()
 			}
-			rec(activityWithUsage(executionErrorActivity(shownErr(err)), lastUsage))
+			rec(activityWithUsage(executionErrorActivity(redactedError(err, redact)), lastUsage))
 			return finalText, reason, err
 		}
 		switch ev.Kind {
@@ -186,6 +184,9 @@ func captureRunSessionWith(ctx context.Context, s *agentcore.Session, input stri
 	return finalText, reason, rerr
 }
 
+// 결과 행의 화면용 글(metadata)은 JSON으로 직렬화되므로, 넣기 전에 오류·중단 직전 글을 가린다. 직렬화한 뒤 정확한 값으로
+// 가리면 이스케이프된 값을 놓칠 수 있다.
+//
 // redactedError는 기록·화면에 넣을 글만 가린 오류다. 반환·판정(errors.Is)에는 원래 오류를 쓴다.
 type redactedErrorText string
 
