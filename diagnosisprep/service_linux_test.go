@@ -636,7 +636,7 @@ func TestConfirmedFailureBeforeTaskDoesNotInventTaskOrReport(t *testing.T) {
 
 func TestExternalTransferConsentIsRequiredAndDurable(t *testing.T) {
 	s, b, root := newFixture(t)
-	b.inspection.Scope.Model = &ModelInfo{Mode: "openrouter", Model: "qwen/qwen3.5-35b-a3b", Provider: "fixture/endpoint", ExternalTransfer: true, InputPerCall: 262144, OutputPerCall: 100}
+	b.inspection.Scope.Model = &ModelInfo{Mode: "openrouter", Model: "qwen/qwen3.6-35b-a3b", Provider: "fixture/endpoint", ExternalTransfer: true, InputPerCall: 262144, OutputPerCall: 100}
 	j := create(t, s, "external-create")
 	denied := start(t, s, j, "external-start")
 	if denied.Error != "approval_required" || b.calls.Load() != 0 {

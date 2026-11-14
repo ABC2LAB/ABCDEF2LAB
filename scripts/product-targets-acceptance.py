@@ -65,7 +65,7 @@ def main():
     catalog=request("/api/product/targets")
     check(len(catalog.get("targets",[]))==2,"two_target_catalog_private_wire")
     credential=request("/api/product/model-credentials?profile_id=product-model-openrouter")["credential"]
-    check(set(credential)=={"profile_id","model","configured"} and credential["configured"] and credential["model"]=="qwen/qwen3.5-35b-a3b","private_model_policy_key_projection")
+    check(set(credential)=={"profile_id","model","configured"} and credential["configured"] and credential["model"]=="qwen/qwen3.6-35b-a3b","private_model_policy_key_projection")
     prefix = "/api/diagnoses/v2/drafts"
 
     def snapshot():

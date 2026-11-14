@@ -20,8 +20,8 @@ func TestOpenRouterCallSlotsSeparateOverlappingRequests(t *testing.T) {
 	p.manifest.MaxConcurrent = 2
 	inside, release := make(chan struct{}, 2), make(chan struct{})
 	replies := map[string]string{
-		"first":  `{"model":"qwen/qwen3.5-35b-a3b","provider":"Fixture","choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2,"cost":0.000012}}`,
-		"second": `{"model":"qwen/qwen3.5-35b-a3b","provider":"Fixture","choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":3,"cost":0.000023}}`,
+		"first":  `{"model":"qwen/qwen3.6-35b-a3b","provider":"Fixture","choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2,"cost":0.000012}}`,
+		"second": `{"model":"qwen/qwen3.6-35b-a3b","provider":"Fixture","choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":3,"cost":0.000023}}`,
 	}
 	c := openRouterClient(p, openRouterRT(func(r *http.Request) (*http.Response, error) {
 		inside <- struct{}{}

@@ -30,7 +30,7 @@ func diagnosticCallRole(ctx context.Context, worker string) string {
 // 실제 task 문맥만 사용한다. exploration 세션 ID를 task ID로 추정하지 않는다.
 func (r *Recorder) startDiagnostic(ctx context.Context, capture *Capture) func(llm.Usage, error, bool, string) {
 	event := diagnosticlog.Event{Component: "llmrec", Event: "model_call_started", Stage: "model_call", Status: "started", Role: diagnosticlog.RoleFrom(ctx), ModelRef: r.model}
-	if r.model == "qwen/qwen3.5-35b-a3b" {
+	if r.model == "qwen/qwen3.6-35b-a3b" {
 		event.Model = r.model
 	}
 	if task := TaskIDFrom(ctx); task != "" {

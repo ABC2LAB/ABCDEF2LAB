@@ -92,7 +92,7 @@ TestFirstDiagnosisGatewayIndependentProcessOwnedPostgres로 검증한다.
 - 새 초안을 실제 준비 task/intent/단회 권위로 승인해 주는 운영자 업무
 - Planner/Worker 전체를 기존 server 패키지에서 물리적으로 이동
 - 표준 이벤트 스트림 전체 구현과 모든 엔진 교체 수용
-- 실모델 Qwen3.5 또는 외부 대상 수용
+- 실모델 Qwen3.6 또는 외부 대상 수용
 
 운영자 승인 자료가 없으면 초안/검증 표시까지만 허용해야 하며,
 미연결 Gateway나 권위 대응을 성공 실행으로 표시하면 안 된다.

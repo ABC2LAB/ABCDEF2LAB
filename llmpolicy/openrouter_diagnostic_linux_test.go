@@ -94,7 +94,7 @@ func TestOpenRouterDiagnosticRequestOutcomes(t *testing.T) {
 			})}
 			req := openRouterRequest().WithContext(ctx)
 			req.Header.Set("Authorization", "private-key-marker")
-			req.Body = io.NopCloser(strings.NewReader(strings.Replace(`{"model":"qwen/qwen3.5-35b-a3b","messages":[{"role":"user","content":"private-request-marker"}],"max_tokens":100,"stream":false}`, "unused", "", 1)))
+			req.Body = io.NopCloser(strings.NewReader(strings.Replace(`{"model":"qwen/qwen3.6-35b-a3b","messages":[{"role":"user","content":"private-request-marker"}],"max_tokens":100,"stream":false}`, "unused", "", 1)))
 			resp, err := tr.RoundTrip(req)
 			if resp != nil {
 				_ = resp.Body.Close()

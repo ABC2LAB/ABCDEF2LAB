@@ -62,7 +62,7 @@ export const envelope = (value: unknown) => ({ version: "diagnosis-api.v2", owne
 
 export const externalModel = {
   mode: "openrouter",
-  model: "qwen/qwen3.5-35b-a3b",
+  model: "qwen/qwen3.6-35b-a3b",
   provider: "fixture/endpoint",
   external_transfer: true,
   input_tokens_per_call: 262144,
