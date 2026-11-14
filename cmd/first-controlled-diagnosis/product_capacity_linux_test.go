@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Autumn-27/artex/diagnosisprep"
 )
 
 func TestProductInstallCapacityBoundariesBeforeSideEffects(t *testing.T) {
@@ -186,5 +188,43 @@ func TestProductTargetCapacityReusesOnlyInactiveRecords(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestProductInstallMaximumDelegationReachesPreparationAdmission(t *testing.T) {
+	f := newURLNegativeFixture(t)
+	profile := f.config.Profiles[0]
+	profile.ValidUntil = time.Now().UTC().Add(8760 * time.Hour)
+	f.policy.ValidUntil = profile.ValidUntil
+	// 실제 설치기와 같은 생성 함수에서 보호 파일·실제 로더·준비 검증까지 통과시킨다.
+	f.config.Profiles[0] = productDelegateProfile(profile, "local_only", 100000)
+	f.write()
+	backend := f.runtime()
+	inspection := f.inspect(backend)
+	want := diagnosisprep.Budget{Requests: 200000, ModelRequests: 200000, InputTokens: 819200000, OutputTokens: 204800000, DurationSeconds: 3000000}
+	if inspection.MaxRuns != 100000 || inspection.AggregateBudget != want || inspection.Scope.Budget != profile.Budget {
+		t.Fatal("최대 회차 설치 프로파일의 회계 불일치")
+	}
+	root := t.TempDir()
+	if err := os.Chmod(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	service, err := diagnosisprep.New(t.Context(), root, backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Shutdown(t.Context())
+	response, err := service.Call(t.Context(), diagnosisprep.Request{Version: diagnosisprep.Version, RequestID: "capacity-request", Principal: "ARTEX", Command: diagnosisprep.Create, IdempotencyKey: "maximum-capacity", Input: &f.input})
+	if err != nil || response.Error != "" || response.Job == nil || response.Job.State != diagnosisprep.Ready {
+		t.Fatal("상한 설치 프로파일의 준비 검증 실패", err, response.Error)
+	}
+	f.assertNoConnections()
+}
+
+func TestProductInstallExternalDelegationRemainsSingleRun(t *testing.T) {
+	budget := diagnosisprep.Budget{Requests: 4, ModelRequests: 20, InputTokens: 8192, OutputTokens: 2048, CostUSDMicros: 300, DurationSeconds: 30}
+	profile := productDelegateProfile(urlPreparationProfile{Budget: budget}, "openrouter", 100000)
+	if profile.MaxRuns != 1 || profile.AggregateBudget != budget {
+		t.Fatal("외부 API 회차를 설치 상한으로 확대")
 	}
 }

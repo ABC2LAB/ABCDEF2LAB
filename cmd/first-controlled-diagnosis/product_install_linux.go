@@ -300,6 +300,22 @@ func productOpenRouterMaxConcurrent(c productInstallInput) int64 {
 	return p.Limits().MaxConcurrent
 }
 
+// 설치가 저장하는 위임 프로파일의 회차·합산 예산을 한 경로에서 완성한다.
+func productDelegateProfile(profile urlPreparationProfile, mode string, runs int64) urlPreparationProfile {
+	if mode == "openrouter" {
+		runs = 1
+	}
+	profile.MaxRuns = runs
+	profile.AggregateBudget = profile.Budget
+	profile.AggregateBudget.Requests *= runs
+	profile.AggregateBudget.ModelRequests *= runs
+	profile.AggregateBudget.InputTokens *= runs
+	profile.AggregateBudget.OutputTokens *= runs
+	profile.AggregateBudget.CostUSDMicros *= runs
+	profile.AggregateBudget.DurationSeconds *= runs
+	return profile
+}
+
 func productInstall(ctx context.Context, root string, c productInstallInput) error {
 	password, err := readPrivateFile(c.DatabasePasswordFile, 4096)
 	if err != nil {
@@ -504,18 +520,7 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 		if e != nil {
 			return errPreparation
 		}
-		runs := c.MaxRuns
-		if mode == "openrouter" {
-			runs = 1
-		}
-		aggregate := budget
-		aggregate.Requests *= runs
-		aggregate.ModelRequests *= runs
-		aggregate.InputTokens *= runs
-		aggregate.OutputTokens *= runs
-		aggregate.CostUSDMicros *= runs
-		aggregate.DurationSeconds *= runs
-		installation.Product.Models = append(installation.Product.Models, urlPreparationProfile{ID: "product-model-" + mode, Label: "승인된 URL 진단", Principal: "ARTEX", ModelProfileRef: "model-" + mode, ModelLabel: model, DelegationRef: "product-" + mode, DeriveRuns: true, ValidFrom: now.Add(-30 * time.Second), ValidUntil: end, MaxRuns: runs, AggregateBudget: aggregate, Budget: budget, Launch: urlProtectedPin{File: launchPath, SHA256: launchSHA}, PolicySHA256: policySHA, ManifestSHA256: manifestSHA, ModelLimitsRef: "installed-model-limits", InputTokensPerCall: int64(contextK) * 1024, OutputTokensPerCall: int64(output)})
+		installation.Product.Models = append(installation.Product.Models, productDelegateProfile(urlPreparationProfile{ID: "product-model-" + mode, Label: "승인된 URL 진단", Principal: "ARTEX", ModelProfileRef: "model-" + mode, ModelLabel: model, DelegationRef: "product-" + mode, DeriveRuns: true, ValidFrom: now.Add(-30 * time.Second), ValidUntil: end, Budget: budget, Launch: urlProtectedPin{File: launchPath, SHA256: launchSHA}, PolicySHA256: policySHA, ManifestSHA256: manifestSHA, ModelLimitsRef: "installed-model-limits", InputTokensPerCall: int64(contextK) * 1024, OutputTokensPerCall: int64(output)}, mode, c.MaxRuns))
 		if first.Format == "" {
 			first = launch
 			if admin.SetActiveProfile(id) != nil {
