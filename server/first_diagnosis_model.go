@@ -192,7 +192,10 @@ func (p *firstDiagnosisModelProvider) Complete(ctx context.Context, req llm.Comp
 	if budget == nil {
 		return p.inner.Complete(ctx, req)
 	}
+	// rateLimited는 이 호출의 마지막 실패가 제공자 요청 한도(429, 청구 없음)였는지다. 그때는 더 길게 기다렸다 다시 보낸다.
+	rateLimited := false
 	once := func() (llm.Message, string, llm.Usage, error, error) {
+		rateLimited = false
 		reserved, err := budget.reserve(ctx, p.config, &req)
 		if err != nil {
 			return llm.Message{}, "", llm.Usage{}, nil, err
@@ -200,9 +203,11 @@ func (p *firstDiagnosisModelProvider) Complete(ctx context.Context, req llm.Comp
 		call, done := budget.modelCallContext(ctx)
 		defer done()
 		message, reason, usage, callErr := p.inner.Complete(reserved.requestContext(call), req)
-		return message, reason, usage, callErr, budget.settle(reserved, usage, callErr)
+		settleErr := budget.settle(reserved, usage, callErr)
+		rateLimited = callErr != nil && budget.callRateLimited(reserved)
+		return message, reason, usage, callErr, settleErr
 	}
-	return firstDiagnosisRetryModelCall(ctx, budget.retryDelays, once, budget.retryable)
+	return firstDiagnosisRetryModelCallWith(ctx, budget.retryDelays, budget.rateLimitDelays, func() bool { return rateLimited }, once, budget.retryable)
 }
 
 // firstDiagnosisModelRetryDelays는 실패한 모델 호출을 다시 보내기 전 기다리는 시간이다(429·5xx·연결 실패 등). 원본 SDK가
@@ -210,18 +215,34 @@ func (p *firstDiagnosisModelProvider) Complete(ctx context.Context, req llm.Comp
 // 때는 같은 예약 규칙으로 새로 예약"). 제공자 요청 한도(429)는 몇 초 단위로 풀려서 짧게 두 번 기다린다. 예산마다 이 값을 가진다.
 var firstDiagnosisModelRetryDelays = []time.Duration{2 * time.Second, 6 * time.Second}
 
+// firstDiagnosisRateLimitRetryDelays는 마지막 실패가 제공자 요청 한도(429)일 때 다시 보내기 전 기다리는 시간이다. 429는
+// 청구되지 않으므로(#584) 더 오래·더 여러 번 기다려도 승인 예산이 줄지 않는다. 2026-11-14 점검 회차에서 2초·6초 두 번으로는
+// 요청 한도 구간을 넘기지 못해 준비 계획이 실패했고(429 여섯 번), 수십 분 뒤 같은 요청은 정상이었다. 합계는 준비 계획 상한
+// (2분)보다 짧게 둔다.
+var firstDiagnosisRateLimitRetryDelays = []time.Duration{2 * time.Second, 6 * time.Second, 15 * time.Second, 30 * time.Second}
+
 // firstDiagnosisRetryModelCall은 호출 하나를 보내고, 호출이 실패했지만(callErr) 예산·승인이 막히지 않았으면 정한 간격으로
 // 다시 보낸다. 예산 거부(예약 실패·상한)·막힘·문맥 취소는 다시 보내지 않는다. 마지막 결과의 예산 오류를 돌려준다.
 func firstDiagnosisRetryModelCall(ctx context.Context, delays []time.Duration, once func() (llm.Message, string, llm.Usage, error, error), retryable func() bool) (llm.Message, string, llm.Usage, error) {
+	return firstDiagnosisRetryModelCallWith(ctx, delays, nil, nil, once, retryable)
+}
+
+// firstDiagnosisRetryModelCallWith는 위와 같되, 마지막 실패가 요청 한도(rateLimited)이면 rateLimitDelays 간격을 쓴다.
+// 시도 횟수는 두 간격에 함께 센다.
+func firstDiagnosisRetryModelCallWith(ctx context.Context, delays, rateLimitDelays []time.Duration, rateLimited func() bool, once func() (llm.Message, string, llm.Usage, error, error), retryable func() bool) (llm.Message, string, llm.Usage, error) {
 	for attempt := 0; ; attempt++ {
 		message, reason, usage, callErr, budgetErr := once()
 		if budgetErr == nil {
 			return message, reason, usage, nil
 		}
-		if callErr == nil || attempt >= len(delays) || ctx.Err() != nil || !retryable() {
+		schedule := delays
+		if rateLimited != nil && rateLimitDelays != nil && rateLimited() {
+			schedule = rateLimitDelays
+		}
+		if callErr == nil || attempt >= len(schedule) || ctx.Err() != nil || !retryable() {
 			return llm.Message{}, "", usage, budgetErr
 		}
-		timer := time.NewTimer(delays[attempt])
+		timer := time.NewTimer(schedule[attempt])
 		select {
 		case <-ctx.Done():
 			timer.Stop()
