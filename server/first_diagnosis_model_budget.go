@@ -60,6 +60,18 @@ type FirstDiagnosisModelBudget struct {
 	// retryDelays는 실패한 모델 호출을 다시 보내기 전 기다리는 간격이다(기본 firstDiagnosisModelRetryDelays). 비어 있으면
 	// 다시 보내지 않는다.
 	retryDelays []time.Duration
+	// rateLimitDelays는 마지막 실패가 요청 한도(429)일 때의 간격이다(기본 firstDiagnosisRateLimitRetryDelays).
+	rateLimitDelays []time.Duration
+	// rateLimitedCall은 호출이 요청 한도로 처리되지 않았는지 본다(시험이 바꿔 끼운다). nil이면 호출 칸의 표시다.
+	rateLimitedCall func(*firstDiagnosisModelCall) bool
+}
+
+// callRateLimited는 정산한 호출이 요청 한도(429)로 처리되지 않았는지 본다.
+func (b *FirstDiagnosisModelBudget) callRateLimited(call *firstDiagnosisModelCall) bool {
+	if b != nil && b.rateLimitedCall != nil {
+		return b.rateLimitedCall(call)
+	}
+	return call.rateLimited()
 }
 
 // firstDiagnosisModelCall은 호출 하나의 예약이다(P3 결정안 C28 결정 2). reserve가 만들고 settle이 한 번 닫는다.
@@ -72,6 +84,11 @@ type firstDiagnosisModelCall struct {
 	// result는 이 호출 칸의 transport 결과를 읽는다(시험이 바꿔 끼운다).
 	result func() llmpolicy.OpenRouterCallResult
 	closed bool
+}
+
+// rateLimited는 이 호출이 제공자 요청 한도(429)로 처리되지 않았다고 transport가 확인했는지 본다.
+func (c *firstDiagnosisModelCall) rateLimited() bool {
+	return c != nil && c.result != nil && c.result().NotBilled
 }
 
 // requestContext는 모델 요청 문맥에 이 호출의 칸을 붙인다.
@@ -160,7 +177,7 @@ func NewFirstDiagnosisModelBudget(limits diagnosisprep.Budget, inputPerCall, out
 		inputPerCall > limits.InputTokens || outputPerCall > limits.OutputTokens || observe == nil {
 		return nil, ErrFirstDiagnosisModelBudget
 	}
-	return &FirstDiagnosisModelBudget{callGate: make(chan struct{}, 1), limits: limits, inputPerCall: inputPerCall, outputPerCall: outputPerCall, usage: diagnosisprep.ModelUsage{UsageKnown: true}, observe: observe, retryDelays: firstDiagnosisModelRetryDelays}, nil
+	return &FirstDiagnosisModelBudget{callGate: make(chan struct{}, 1), limits: limits, inputPerCall: inputPerCall, outputPerCall: outputPerCall, usage: diagnosisprep.ModelUsage{UsageKnown: true}, observe: observe, retryDelays: firstDiagnosisModelRetryDelays, rateLimitDelays: firstDiagnosisRateLimitRetryDelays}, nil
 }
 
 // 준비에서 실행으로 넘어가도 정책과 호출 gate 하나를 공유한다.

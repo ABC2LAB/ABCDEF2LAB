@@ -326,6 +326,23 @@ func TestFirstDiagnosisModelBudgetConcurrentWrappersOwnedPostgres(t *testing.T) 
 			t.Fatalf("다시 보내기 정산 불일치: calls=%d %+v", flaky.calls.Load(), u)
 		}
 	})
+	t.Run("rate_limited_retried_longer", func(t *testing.T) {
+		// 요청 한도(429)로 처리되지 않은 호출은 더 긴 간격표로 더 여러 번 다시 보낸다. 실패 셋 뒤 넷째 시도가 성공한다
+		// (짧은 간격표면 둘까지만 다시 보내 실패로 끝난다).
+		ctx, cancel := context.WithCancel(f.Context)
+		defer cancel()
+		b, err := NewFirstDiagnosisModelBudget(diagnosisprep.Budget{ModelRequests: 4, InputTokens: 4 * 65536, OutputTokens: 512}, 65536, 128, noop)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.retryDelays = []time.Duration{time.Millisecond, time.Millisecond}
+		b.rateLimitDelays = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond, time.Millisecond}
+		b.rateLimitedCall = func(*firstDiagnosisModelCall) bool { return true }
+		flaky := &budgetFlakyProvider{failures: 3, usage: knownUsage}
+		if err := budgetAwaitResult(t, call(ctx, wrap(t, b, flaky))); err != nil || flaky.calls.Load() != 4 {
+			t.Fatalf("rate-limited call not retried with the longer schedule: calls=%d err=%v", flaky.calls.Load(), err)
+		}
+	})
 	t.Run("request_limit_after_wait", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(f.Context)
 		defer cancel()
