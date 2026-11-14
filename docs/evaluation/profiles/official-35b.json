@@ -11,8 +11,8 @@
     "llm": {
       "backend": "api",
       "base_url": "https://openrouter.ai/api/v1",
-      "model": "qwen/qwen3.5-35b-a3b",
-      "provider": "atlas-cloud/fp8",
+      "model": "qwen/qwen3.6-35b-a3b",
+      "provider": "deepinfra/fp8",
       "fallbacks": false
     },
     "temperature": 1.0,

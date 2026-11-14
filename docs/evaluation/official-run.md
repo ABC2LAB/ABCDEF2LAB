@@ -63,7 +63,7 @@
 
    ```bash
    D=$(mktemp -d) && curl -sS --max-time 20 -o "$D/endpoints.json" \
-     https://openrouter.ai/api/v1/models/qwen/qwen3.5-35b-a3b/endpoints
+     https://openrouter.ai/api/v1/models/qwen/qwen3.6-35b-a3b/endpoints
    cd "$T" && python3 -I -B scripts/eval/provider_recheck.py "$D/endpoints.json"
    ```
 
@@ -230,7 +230,7 @@ python3 -I -B scripts/eval/score.py /srv/abc2lab-eval/official-<날짜>/manifest
 
 | 값 | 어디에 | 정하는 법 |
 |---|---|---|
-| 모델 태그·digest | 프로파일 `llm.model`·`llm.model_digest` | 프로토콜 §6의 Qwen3.5 35B-A3B. 정확한 양자화 태그는 그 GPU에 전부 올라가는 것으로 고르고, digest는 적재 뒤 `/api/ps`에서 옮긴다. 추측해서 적지 않는다 |
+| 모델 태그·digest | 프로파일 `llm.model`·`llm.model_digest` | 프로토콜 §6의 Qwen3.6 35B-A3B. 정확한 양자화 태그는 그 GPU에 전부 올라가는 것으로 고르고, digest는 적재 뒤 `/api/ps`에서 옮긴다. 추측해서 적지 않는다 |
 | 서버 버전 | `llm.server_version` | `/api/version` 값. 세션 동안 바꾸지 않는다 |
 | 컨텍스트 | `llm.context_length`, 서버 `OLLAMA_CONTEXT_LENGTH` | 긴 회차에서 입력이 잘리지 않을 만큼. 넘친 입력은 오류 없이 절반쯤으로 잘린다 |
 | 압축 기준 창 | `context_window_k` | ×1000이 `context_length` 이하. 사전검사가 넘으면 거부한다 |
