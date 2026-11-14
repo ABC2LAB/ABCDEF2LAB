@@ -27,3 +27,15 @@ func TestWorkflowProfileRequestLimitUpToCodeCap(t *testing.T) {
 		}
 	}
 }
+
+// 회차당 요청 상한은 워크플로가 없는 제품 프로필에도 실린다(화면이 그 값으로 대상을 등록). 있으면 1부터 코드 상한까지만
+// 받고, 없으면(0) 다른 실행 모드 프로필이라 받는다. 워크플로 프로필에는 반드시 있어야 한다.
+func TestProfileRequestLimitWithoutWorkflow(t *testing.T) {
+	r := Request{Version: Version, RequestID: "r", Principal: "owner", Command: Catalog}
+	for limit, ok := range map[int64]bool{0: true, 1: true, 400: true, 1000: true, 1001: false, -1: false} {
+		response := Response{Version: Version, RequestID: "r", Profiles: []Profile{{ID: "product-model-local", Label: "fixture", ModelProfileRef: "model-local", ModelLabel: "fixture", WorkflowRequestLimit: limit}}}
+		if (ValidateResponse(r, response) == nil) != ok {
+			t.Fatalf("request limit %d without workflow: ok=%v", limit, !ok)
+		}
+	}
+}

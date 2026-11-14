@@ -24,7 +24,6 @@ type Target = {
   expires_at?: string;
 };
 type Reply = { targets?: Target[]; target?: Target; reason?: string };
-const TARGET_REQUEST_LIMIT = 4;
 const TARGET_APPROVAL_VALID_HOURS = 4;
 const reasons: Record<string, string> = {
   dns_ownership_required: "IP 주소 직접 등록은 지원하지 않습니다. DNS 소유 확인이 가능한 호스트를 사용하세요.",
@@ -74,12 +73,13 @@ export function TargetApprovalPanel({
   url,
   disabled,
   onChanged,
-  requestLimit = TARGET_REQUEST_LIMIT,
+  requestLimit,
   allowStateChanges = false,
 }: {
   url: string;
   disabled: boolean;
   onChanged?: () => void;
+  // 설치의 회차당 요청 상한(서버 프로필 workflow_request_limit, 모드와 상관없음). 없으면 등록하지 않는다.
   requestLimit?: number;
   allowStateChanges?: boolean;
 }) {
@@ -236,7 +236,7 @@ export function TargetApprovalPanel({
         <div className={s.hostline}>
           <span className={cx(s.pill, s.ok)}>승인된 대상</span>
           <span className={s.help}>
-            {`${(selected.path_prefixes ?? []).join(", ")} · ${(selected.methods ?? []).join("/")} · 회차 요청 ${selected.requests}회 · 만료 ${selected.expires_at}`}
+            {`${(selected.path_prefixes ?? []).join(", ")} · ${(selected.methods ?? []).join("/")} · 회차당 요청 상한 ${selected.requests} · 만료 ${selected.expires_at}`}
           </span>
           <button className={cx(s.btn, s.sm)} type="button" disabled={off} onClick={() => void change("revoke")}>
             승인 철회
@@ -277,6 +277,7 @@ export function TargetApprovalPanel({
         </div>
         {pending ? (
           <>
+            <p className={s.help} id="targetPendingRequestLimit">{`회차당 요청 상한 ${pending.requests}`}</p>
             <div className={s.rec}>
               <span className={s.k}>이름</span>
               <code id="targetChallengeName">{pending.challenge_name}</code>
@@ -343,7 +344,7 @@ export function TargetApprovalPanel({
                 <br />
                 비변경 근거는 운영자 확인입니다 · 서버는 GET/HEAD 의 무해성을 검증하지 않습니다 · 등록 후 DNS TXT 소유를
                 확인합니다
-                {requestLimit ? ` · 회차 요청 상한 ${requestLimit}` : ""} · 상태 변경 범위는 별도 동의한 설치에서만
+                {requestLimit ? ` · 회차당 요청 상한 ${requestLimit}` : ""} · 상태 변경 범위는 별도 동의한 설치에서만
                 등록할 수 있습니다
               </HelpTip>
               <br />
@@ -369,11 +370,16 @@ export function TargetApprovalPanel({
                 </span>
               </label>
             ) : null}
+            <p className={s.help} id="targetRequestLimit">
+              {requestLimit
+                ? `회차당 요청 상한 ${requestLimit}`
+                : "설치의 회차당 요청 상한을 받지 못해 대상을 등록할 수 없습니다"}
+            </p>
             <div className={s.acts}>
               <button
                 className={cx(s.btn, s.pri, s.sm)}
                 type="button"
-                disabled={off || basis.trim().length < 20}
+                disabled={off || basis.trim().length < 20 || !requestLimit}
                 onClick={() => void change("register")}
               >
                 대상 등록 · 소유 확인 준비
