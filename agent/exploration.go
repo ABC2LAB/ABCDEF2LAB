@@ -147,8 +147,16 @@ Do not log in, supply a password, add authentication headers, upload files, chan
 const explorationShell = `Bash runs in an isolated exploration sandbox whose only network path is the exploration boundary. HTTP_PROXY and HTTPS_PROXY already point to it and its CA is trusted, so plain curl works; do not unset them. Use Bash to fetch and read scripts, source maps, API documents (OpenAPI, GraphQL schemas), robots.txt and sitemaps of the approved target. The boundary refuses out-of-scope hosts and paths, applies this run's write approval and counts every request toward the exploration budget; a refused request is not retried unchanged. The sandbox has no browser; use the browser tools for pages that need JavaScript. Generic Skill execution is unavailable.
 Do not log in, supply a password, add authentication headers, upload files, change browser routing, or enable additional MCP tools. Authentication and unsafe diagnostic/reproduction work are unavailable here.`
 
+// explorationAPIRecon은 직접 Bash 작업 공간에 원본 api-recon skill 파일을 둔 세션에만 붙는 안내다
+// (docs/sandbox-data-decision.md §2-2). 브라우저 런타임 수집 스크립트는 넣지 않고 브라우저 도구가 대신한다.
+const explorationAPIRecon = `The original api-recon skill is in the sandbox at /work/api-recon: read SKILL.md and reference.md first, then run its Python scripts in /work/api-recon/scripts (standard library only; their requests go through the boundary like curl). Its browser runtime harvest (runtime_harvest.js, preload.js) is not included; use the browser tools for that step. /work is recreated for every command, so report what you find with report_discovery instead of keeping files.`
+
 // explorationSystemPrompt는 직접 Bash가 결속된 세션에만 Bash 안내를 준다. 없는 세션은 지금처럼 셸이 없다고 말한다.
-func explorationSystemPrompt(shell bool) string {
+// apiRecon은 직접 Bash 작업 공간에 api-recon 파일이 있을 때만 참이다.
+func explorationSystemPrompt(shell, apiRecon bool) string {
+	if shell && apiRecon {
+		return explorationSystemBase + "\n" + explorationShell + "\n" + explorationAPIRecon
+	}
 	if shell {
 		return explorationSystemBase + "\n" + explorationShell
 	}
@@ -187,7 +195,7 @@ func (w *Worker) ExecuteExploration(ctx context.Context, o ExplorationRunOptions
 	}
 	ctx = WithRunInfo(ctx, RunInfo{TaskID: mustExplorationTask(o.Binding.TaskID)})
 	target, _ := json.Marshal(map[string]string{"target_url": o.TargetURL})
-	opts := agentcore.Options{Provider: w.prov, SystemPrompt: []string{explorationSystemPrompt(o.DirectBash != nil)}, Tools: tools, PermissionMode: permission.ModeBypass, DisableBackgroundTasks: true, MaxTurns: o.MaxTurns, MaxDuration: o.MaxDuration, Compaction: compactionConfig(w.compactionWindow()), NonStreaming: w.nonStreaming(), MaxTokens: w.maxTokens(), SessionID: "explore-" + o.Binding.SessionRef, Settlement: &harness.Settlement{Prompt: "Report only discovered endpoint metadata through report_discovery, then stop. Do not navigate or send more requests.", MaxTurns: 1, DisabledTools: explorationSettlementDisabled(tools)}}
+	opts := agentcore.Options{Provider: w.prov, SystemPrompt: []string{explorationSystemPrompt(o.DirectBash != nil, o.DirectBash.HasSeed())}, Tools: tools, PermissionMode: permission.ModeBypass, DisableBackgroundTasks: true, MaxTurns: o.MaxTurns, MaxDuration: o.MaxDuration, Compaction: compactionConfig(w.compactionWindow()), NonStreaming: w.nonStreaming(), MaxTokens: w.maxTokens(), SessionID: "explore-" + o.Binding.SessionRef, Settlement: &harness.Settlement{Prompt: "Report only discovered endpoint metadata through report_discovery, then stop. Do not navigate or send more requests.", MaxTurns: 1, DisabledTools: explorationSettlementDisabled(tools)}}
 	safeEmit := func(a db.Activity) {
 		if emit != nil {
 			a.Summary = string(o.Redact([]byte(a.Summary)))

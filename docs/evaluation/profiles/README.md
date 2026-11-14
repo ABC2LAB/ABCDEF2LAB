@@ -1,6 +1,6 @@
 # 공식 비교 선언
 
-> **현재 파일의 용도:** `official-35b.json`은 **공식 비교 프로파일**이다(2026-11-09 결정, [평가 프로토콜 §6](../evaluation-protocol.md)). `environment.llm.backend`는 `api`, `base_url`은 `https://openrouter.ai/api/v1`, 모델은 `qwen/qwen3.5-35b-a3b`이며 `fixture.preparation_id`는 `anonymous`다. 기존 근거와 과거 모델 기록은 보존한다.
+> **현재 파일의 용도:** `official-35b.json`은 **공식 비교 프로파일**이다(2026-11-09 결정, [평가 프로토콜 §6](../evaluation-protocol.md)). `environment.llm.backend`는 `api`, `base_url`은 `https://openrouter.ai/api/v1`, 모델은 `qwen/qwen3.6-35b-a3b`(고정 제공자 `primeintellect/fp8`, 2026-11-14부터)이며 `fixture.preparation_id`는 `anonymous`다. 기존 근거와 과거 모델 기록은 보존한다.
 
 [평가 프로토콜 §5.1](../evaluation-protocol.md)에 따라 결과를 보기 전에 고정하는 비민감 선언만 둔다. 커밋 예외는 `official-*.json`과 그 근거 파일에만 해당한다. 계정·자원 원문, 결과, 회차 기록은 넣지 않는다.
 
@@ -10,9 +10,10 @@
 | `official-e2-policy.json` | 개선 후 회차의 E② 정책 의미 템플릿. 범위는 위 프로파일의 scope, 한도는 러너 예산보다 크게 둔다. 바이트 해시와 내용 지문은 [실행 절차](../official-run.md) 4절에 있다 |
 | `official-e2-declared-differences.json` | 개선 후 회차가 원본과 다른 점 중 맞추지 못해 선언하는 목록. 러너가 해시를 대조해 회차 기록에 남긴다. PM 확정 전에는 `status`가 `proposed`다 |
 | `evidence/openrouter-endpoints-*.json` | 고정 제공자 slug가 엔드포인트 하나·정밀도 하나에만 매칭됐다는 조회 근거(조회 시각·원문 응답 SHA-256 포함) |
-| `evidence/qwen3.5-35b-a3b-model-card-*.json` | 샘플링 고정값의 근거: 모델 공식 카드 커밋·README SHA-256·권장 샘플링 원문·고른 모드와 이유·고정 제공자의 파라미터 지원 |
+| `evidence/qwen3.6-35b-a3b-model-card-*.json` | 샘플링 고정값의 근거: 모델 공식 카드 커밋·README SHA-256·권장 샘플링 원문·고른 모드와 이유·고정 제공자의 파라미터 지원 |
 | `evidence/openrouter-endpoint-params-*.json` | 고정 엔드포인트의 지원 파라미터 목록(게이트웨이가 `require_parameters:true`로 넣는 일곱 값이 모두 있어야 함) |
-| `evidence/*qwen3.6-35b-a3b*.json` | 2026-11-06 이전 고정(Qwen3.6, `deepinfra/fp8`)의 근거. 이력으로 남기며 지금의 프로파일·도구는 읽지 않는다 |
+| `evidence/*qwen3.6-35b-a3b*-20261114.json`, `evidence/qwen3.6-35b-a3b-model-card-20261104.json` | 지금 고정(2026-11-14부터 Qwen3.6, `primeintellect/fp8`)의 근거(제공자 선택 속도 측정 `openrouter-throughput-…-20261114.json` 포함). 프로파일 시험·`provider_recheck.py`가 읽는다. 모델 카드는 11/04 조회본을 그대로 쓴다(샘플링 값 같음) |
+| `evidence/*qwen3.6-35b-a3b*-20261104.json`(카드 제외), `evidence/*qwen3.5-35b-a3b*.json` | 이전 고정의 근거: 2026-11-06 이전 Qwen3.6·`deepinfra/fp8`, 2026-11-06~11-13 Qwen3.5·`atlas-cloud/fp8`. 이력으로 남기며 지금의 프로파일·도구는 읽지 않는다 |
 | `evidence/ollama-openai-sampling-*.json` | 로컬 서버의 OpenAI 호환 경로가 어떤 샘플링 값을 실제로 적용하는지 잰 결과. local 프로파일의 `sampling` 묶음 근거 |
 | `evidence/ollama-keep-alive-*.json` | 적재 때 준 유지 기간이 OpenAI 호환 요청에도 이어지고, 기본 유지 기간을 넘는 공백 뒤에도 모델이 남는다는 실측 |
 | `evidence/observer-readonly-*.json` | 관측 front의 스코어보드 GET이 대상 해결 상태를 바꾸지 않는다는 근거(러너 `observer_readonly_ref`) |

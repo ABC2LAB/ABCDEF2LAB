@@ -94,7 +94,7 @@ func TestOpenRouterDiagnosticRequestOutcomes(t *testing.T) {
 			})}
 			req := openRouterRequest().WithContext(ctx)
 			req.Header.Set("Authorization", "private-key-marker")
-			req.Body = io.NopCloser(strings.NewReader(strings.Replace(`{"model":"qwen/qwen3.5-35b-a3b","messages":[{"role":"user","content":"private-request-marker"}],"max_tokens":100,"stream":false}`, "unused", "", 1)))
+			req.Body = io.NopCloser(strings.NewReader(strings.Replace(`{"model":"qwen/qwen3.6-35b-a3b","messages":[{"role":"user","content":"private-request-marker"}],"max_tokens":100,"stream":false}`, "unused", "", 1)))
 			resp, err := tr.RoundTrip(req)
 			if resp != nil {
 				_ = resp.Body.Close()
@@ -123,6 +123,11 @@ func TestOpenRouterDiagnosticRequestOutcomes(t *testing.T) {
 				// 상한을 따르고(v1 manifest는 1), 상한 시험은 TestOpenRouterToolContractViolationIsPerCall이 본다.
 				if end.Status != "failed" || end.CostUncertain || usage.CostMicros == 0 || usage.FailureReason != "response_invalid" {
 					t.Fatal("tool contract violation blocked the approval or lost its usage")
+				}
+			} else if tc.name == "rate_limit" {
+				// 요청 한도(429)는 제공자가 처리하지 않아 청구가 없다: 비용 0 확정(C05 보완).
+				if end.Status != "failed" || end.CostUncertain || end.CostMicros != 0 || !usage.Blocked {
+					t.Fatal("rate-limited call cost not settled as zero")
 				}
 			} else if end.Status != "failed" || !end.CostUncertain || !usage.Blocked {
 				t.Fatal("unknown cost represented as actual success")

@@ -60,6 +60,18 @@ type FirstDiagnosisModelBudget struct {
 	// retryDelays는 실패한 모델 호출을 다시 보내기 전 기다리는 간격이다(기본 firstDiagnosisModelRetryDelays). 비어 있으면
 	// 다시 보내지 않는다.
 	retryDelays []time.Duration
+	// rateLimitDelays는 마지막 실패가 요청 한도(429)일 때의 간격이다(기본 firstDiagnosisRateLimitRetryDelays).
+	rateLimitDelays []time.Duration
+	// rateLimitedCall은 호출이 요청 한도로 처리되지 않았는지 본다(시험이 바꿔 끼운다). nil이면 호출 칸의 표시다.
+	rateLimitedCall func(*firstDiagnosisModelCall) bool
+}
+
+// callRateLimited는 정산한 호출이 요청 한도(429)로 처리되지 않았는지 본다.
+func (b *FirstDiagnosisModelBudget) callRateLimited(call *firstDiagnosisModelCall) bool {
+	if b != nil && b.rateLimitedCall != nil {
+		return b.rateLimitedCall(call)
+	}
+	return call.rateLimited()
 }
 
 // firstDiagnosisModelCall은 호출 하나의 예약이다(P3 결정안 C28 결정 2). reserve가 만들고 settle이 한 번 닫는다.
@@ -72,6 +84,11 @@ type firstDiagnosisModelCall struct {
 	// result는 이 호출 칸의 transport 결과를 읽는다(시험이 바꿔 끼운다).
 	result func() llmpolicy.OpenRouterCallResult
 	closed bool
+}
+
+// rateLimited는 이 호출이 제공자 요청 한도(429)로 처리되지 않았다고 transport가 확인했는지 본다.
+func (c *firstDiagnosisModelCall) rateLimited() bool {
+	return c != nil && c.result != nil && c.result().NotBilled
 }
 
 // requestContext는 모델 요청 문맥에 이 호출의 칸을 붙인다.
@@ -160,7 +177,7 @@ func NewFirstDiagnosisModelBudget(limits diagnosisprep.Budget, inputPerCall, out
 		inputPerCall > limits.InputTokens || outputPerCall > limits.OutputTokens || observe == nil {
 		return nil, ErrFirstDiagnosisModelBudget
 	}
-	return &FirstDiagnosisModelBudget{callGate: make(chan struct{}, 1), limits: limits, inputPerCall: inputPerCall, outputPerCall: outputPerCall, usage: diagnosisprep.ModelUsage{UsageKnown: true}, observe: observe, retryDelays: firstDiagnosisModelRetryDelays}, nil
+	return &FirstDiagnosisModelBudget{callGate: make(chan struct{}, 1), limits: limits, inputPerCall: inputPerCall, outputPerCall: outputPerCall, usage: diagnosisprep.ModelUsage{UsageKnown: true}, observe: observe, retryDelays: firstDiagnosisModelRetryDelays, rateLimitDelays: firstDiagnosisRateLimitRetryDelays}, nil
 }
 
 // 준비에서 실행으로 넘어가도 정책과 호출 gate 하나를 공유한다.
@@ -246,6 +263,17 @@ func (b *FirstDiagnosisModelBudget) retryable() bool {
 	return !blocked && (b.external == nil || !b.external.Snapshot().Blocked)
 }
 
+// closesExploration은 탐색의 모델 호출 실패를 예산 종료로 다룰지 본다: 승인 예산 한도에 닿았거나 회계가 막혔다.
+// 예산이 없는 경로(nil)는 예전처럼 예산 종료 판정에 맡긴다.
+func (b *FirstDiagnosisModelBudget) closesExploration() bool {
+	if b == nil {
+		return true
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.limitReached || b.blocked
+}
+
 func (b *FirstDiagnosisModelBudget) LimitReached() bool {
 	if b == nil {
 		return false
@@ -318,6 +346,13 @@ func (b *FirstDiagnosisModelBudget) reserve(ctx context.Context, cfg agent.Confi
 	if b.blocked {
 		return nil, ErrFirstDiagnosisModelBudget
 	}
+	if b.external != nil {
+		// 연속 일시 오류 상한으로 잠긴 승인은 새 호출을 보내지 않는다. 예약하지 않고 거절하므로 회계는 그대로 알고 있다.
+		// 그대로 보내면 transport가 정책 거부로 돌려주고 그 호출이 회계 막힘으로 남아 실행 전체가 결과 불명이 된다.
+		if snap := b.externalSnapshot(); snap.Blocked && snap.TransientLimited {
+			return nil, ErrFirstDiagnosisModelBudget
+		}
+	}
 	if b.usage.Requests >= b.limits.ModelRequests ||
 		reserveInput > b.limits.InputTokens-b.usage.InputTokens-b.inflightInput ||
 		int64(req.MaxTokens) > b.limits.OutputTokens-b.usage.OutputTokens-b.inflightOutput ||
@@ -351,6 +386,24 @@ func (b *FirstDiagnosisModelBudget) reserve(ctx context.Context, cfg agent.Confi
 // failedCallBounded는 실패한 호출을 예약 상한으로 정산해도 되는지 본다. 호출이 성공했는데 사용량이 예약을
 // 넘거나 형식이 틀리면 상한을 믿을 수 없어 막는다. 로컬 모델 정책이 막은 요청과 외부 제공자 정책이 막힌 상태도
 // 막는다(통제 경계 사건이지 일시 실패가 아니다). 외부 제공자의 일시 오류 구분은 C06에서 한다.
+// externalAccountingBlocked는 외부 승인이 회계를 믿을 수 없는 원인으로 막혔는지 본다. 연속 일시 오류 상한(C06)만으로
+// 잠긴 것은 제공자가 처리하지 않은 호출이 이어진 것이라 실패 호출을 예약량으로 정산할 수 있다.
+func (b *FirstDiagnosisModelBudget) externalAccountingBlocked() bool {
+	if b.external == nil {
+		return false
+	}
+	snap := b.externalSnapshot()
+	return snap.Blocked && !snap.TransientLimited
+}
+
+// externalSnapshot은 transport 상태를 읽는다(externalUsage가 있으면 그것, 대조와 같은 출처).
+func (b *FirstDiagnosisModelBudget) externalSnapshot() llmpolicy.OpenRouterUsage {
+	if b.externalUsage != nil {
+		return b.externalUsage()
+	}
+	return b.external.Snapshot()
+}
+
 func failedCallBounded(callErr error, externalBlocked bool) bool {
 	if callErr == nil || externalBlocked || errors.Is(callErr, llmpolicy.ErrRequestBlocked) || errors.Is(callErr, llmpolicy.ErrClientOptions) {
 		return false
@@ -420,12 +473,16 @@ func (b *FirstDiagnosisModelBudget) settle(call *firstDiagnosisModelCall, usage 
 	known := callErr == nil && usage.InputTokens > 0 && usage.OutputTokens >= 0 &&
 		int64(usage.InputTokens) <= call.input && usage.OutputTokens <= outputLimit &&
 		usage.CacheReadTokens >= 0 && usage.CacheWriteTokens >= 0
+	unbilled := false
 	if b.external != nil {
 		var r llmpolicy.OpenRouterCallResult
 		if call.result != nil {
 			r = call.result()
 		}
 		b.addExternal(r)
+		// 보내지 않았거나(transport가 예약하지 않음: 보내기 전 거부) 제공자가 처리하지 않았다고 응답으로 확인한(429)
+		// 실패 호출은 청구가 없다. 예약량을 쓴 것으로 세지 않는다(C05 보완, 2026-11-14 실측).
+		unbilled = callErr != nil && !r.Succeeded && (!r.Reserved || r.NotBilled)
 		// 이 SDK 응답은 이 호출 칸에 남은 transport 결과(정상 응답 하나)와 정확히 같아야 한다. 다른 호출의 누적 값은
 		// 보지 않는다.
 		known = known && r.Succeeded && r.InputTokens == int64(usage.InputTokens) && r.OutputTokens == int64(usage.OutputTokens) && r.CostMicros >= 0 && r.CostMicros <= call.cost
@@ -437,7 +494,9 @@ func (b *FirstDiagnosisModelBudget) settle(call *firstDiagnosisModelCall, usage 
 	case known:
 		b.usage.InputTokens += int64(usage.InputTokens)
 		b.usage.OutputTokens += int64(usage.OutputTokens)
-	case failedCallBounded(callErr, b.external != nil && b.external.Snapshot().Blocked) && reportedWithinReservation(usage, call.input, outputLimit):
+	case unbilled && !b.externalAccountingBlocked() && usage == (llm.Usage{}):
+		// 사용량 0으로 닫는다. 예약만 풀리고 사용량을 모르는 호출로 세지 않는다.
+	case failedCallBounded(callErr, b.externalAccountingBlocked()) && reportedWithinReservation(usage, call.input, outputLimit):
 		// 실패한 호출은 예약한 양을 쓴 것으로 센다(P3 결정안 C05). 재시도가 꺼져 있어 예약 하나에 HTTP 요청은
 		// 하나이고, 입력 크기·max_tokens·가격 상한을 호출 전에 검사했으므로 이 값이 실제 사용의 상한이다.
 		// 예약량을 정산 사용량에 넣으므로 다음 호출의 예산 검사(정산 사용량 + 진행 중 예약)에서 상한은 넓어지지 않는다.

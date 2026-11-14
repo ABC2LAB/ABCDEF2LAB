@@ -39,13 +39,13 @@ type openRouterRT func(*http.Request) (*http.Response, error)
 
 func (f openRouterRT) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-const openRouterReply = `{"model":"qwen/qwen3.5-35b-a3b","provider":"Fixture","choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2,"cost":0.000012}}`
+const openRouterReply = `{"model":"qwen/qwen3.6-35b-a3b","provider":"Fixture","choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2,"cost":0.000012}}`
 
 func openRouterResponse(body string) *http.Response {
 	return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}
 }
 func openRouterRequest() *http.Request {
-	r, _ := http.NewRequest("POST", openRouterEndpoint, strings.NewReader(`{"model":"qwen/qwen3.5-35b-a3b","messages":[{"role":"user","content":"synthetic"}],"max_tokens":100,"stream":false}`))
+	r, _ := http.NewRequest("POST", openRouterEndpoint, strings.NewReader(`{"model":"qwen/qwen3.6-35b-a3b","messages":[{"role":"user","content":"synthetic"}],"max_tokens":100,"stream":false}`))
 	return r
 }
 func TestOpenRouterWirePrivacyBudget(t *testing.T) {
@@ -90,10 +90,10 @@ func TestOpenRouterRejectsUnsafeRequests(t *testing.T) {
 			r.Body = io.NopCloser(strings.NewReader(`{"model":"other","messages":[],"max_tokens":1}`))
 		},
 		func(r *http.Request) {
-			r.Body = io.NopCloser(strings.NewReader(`{"model":"qwen/qwen3.5-35b-a3b","messages":[{"content":"x"}],"max_tokens":101}`))
+			r.Body = io.NopCloser(strings.NewReader(`{"model":"qwen/qwen3.6-35b-a3b","messages":[{"content":"x"}],"max_tokens":101}`))
 		},
 		func(r *http.Request) {
-			r.Body = io.NopCloser(strings.NewReader(`{"model":"qwen/qwen3.5-35b-a3b","messages":[{"content":"x"}],"max_tokens":1,"stream":true}`))
+			r.Body = io.NopCloser(strings.NewReader(`{"model":"qwen/qwen3.6-35b-a3b","messages":[{"content":"x"}],"max_tokens":1,"stream":true}`))
 		},
 	} {
 		p := openRouterFixture(t)

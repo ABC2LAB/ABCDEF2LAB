@@ -13,9 +13,9 @@ from profile_fingerprint import generate_fingerprints  # noqa: E402
 
 PROFILES = Path(__file__).resolve().parents[3] / "docs/evaluation/profiles"
 OFFICIAL = PROFILES / "official-35b.json"
-EVIDENCE = PROFILES / "evidence/openrouter-endpoints-qwen3.5-35b-a3b-20261106.json"
-CARD = PROFILES / "evidence/qwen3.5-35b-a3b-model-card-20261106.json"
-PARAMS = PROFILES / "evidence/openrouter-endpoint-params-qwen3.5-35b-a3b-20261106.json"
+EVIDENCE = PROFILES / "evidence/openrouter-endpoints-qwen3.6-35b-a3b-20261114.json"
+CARD = PROFILES / "evidence/qwen3.6-35b-a3b-model-card-20261104.json"
+PARAMS = PROFILES / "evidence/openrouter-endpoint-params-qwen3.6-35b-a3b-20261114.json"
 
 
 class TestOfficialProfile(unittest.TestCase):

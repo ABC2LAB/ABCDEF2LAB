@@ -89,6 +89,30 @@ type FirstDiagnosisSupervisor struct {
 	ownedTask       string
 	operationCancel context.CancelFunc
 	joinDone        chan struct{}
+	// timeCloseAt·timeDrain은 회차 실행 시간 상한의 마감 시작 시각과 진행 중 작업 마무리 유예다(SetTimeBudget).
+	// 0이면 시간 마감을 하지 않는다(엔진 자체 기한과 실행 문맥만 남음).
+	timeCloseAt time.Time
+	timeDrain   time.Duration
+}
+
+// FirstDiagnosisTimeBudgetDrain은 시간 상한 마감 때 진행 중 작업을 기다리는 유예의 상한이다. 엔진 원래 정리 순서의
+// 유예(settleDrainGrace)와 같다. 호출자는 회차 실행 시간 안에 마감이 끝나도록 이보다 짧게 줄 수 있다.
+const FirstDiagnosisTimeBudgetDrain = settleDrainGrace
+
+// SetTimeBudget은 회차 실행 시간 상한의 마감을 정한다(실행 결과 상태 값 계약 §3.4). closeAt부터 새 계획·새 intent를
+// 시작하지 않고(budget_limited), 진행 중 작업은 drain 동안 마무리한 뒤 끝나지 않았으면 멈춘다. 진행 중 작업이 끝나면
+// 실행을 budget_limited로 마감한다. Run 전에 한 번만 부른다.
+func (s *FirstDiagnosisSupervisor) SetTimeBudget(closeAt time.Time, drain time.Duration) error {
+	if s == nil || closeAt.IsZero() || drain < 0 || drain > FirstDiagnosisTimeBudgetDrain {
+		return ErrFirstDiagnosisSupervisor
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing || s.closed || s.running || s.runStarted || !s.timeCloseAt.IsZero() {
+		return ErrFirstDiagnosisSupervisor
+	}
+	s.timeCloseAt, s.timeDrain = closeAt, drain
+	return nil
 }
 
 func (*FirstDiagnosisSupervisor) String() string { return "server.FirstDiagnosisSupervisor[protected]" }
@@ -423,6 +447,7 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 	s.runTask = taskID
 	s.runIntent = intentID
 	s.registered = snapshotRef != ""
+	timeCloseAt, timeDrain := s.timeCloseAt, s.timeDrain
 	s.operations.Add(1)
 	s.mu.Unlock()
 	_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "supervisor", Event: "run_started", TaskID: mustFirstDiagnosisTaskNumber(taskID), IntentID: intentID, Stage: "admission", Status: "started"})
@@ -448,7 +473,7 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 		s.mu.Unlock()
 		s.operations.Done()
 	}()
-	run, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	run, cancel := firstDiagnosisRunContext(ctx)
 	s.trackCancel(cancel)
 	defer cancel()
 	stop := context.AfterFunc(s.ctx, cancel)
@@ -534,6 +559,8 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 	setStage("execution")
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
+	var timeClosing, timeStopped bool
+	var drainUntil time.Time
 	for {
 		if !registered && server.requestApprovals.userStopped(number) {
 			return firstDiagnosisFailure(context.Canceled)
@@ -541,6 +568,22 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 		if run.Err() != nil {
 			server.engine.Pause(taskID, agent.AbortPausedRaceGuard)
 			return firstDiagnosisFailure(run.Err())
+		}
+		if !registered && !timeCloseAt.IsZero() {
+			now := time.Now()
+			if !timeClosing && !now.Before(timeCloseAt) {
+				// 시간 상한(계약 §3.4): 엔진의 원래 정리 순서를 켜서 새 계획·새 intent를 시작하지 않고, 실행 상한으로
+				// 표시해 진행 중 작업이 끝나면 budget_limited로 마감한다. 엔진 자체 기한의 정리는 이미 켜져 있으면 하지 않는다.
+				timeClosing, drainUntil = true, now.Add(timeDrain)
+				server.engine.markSettling(taskID)
+				task.firstDiagnosisBudgetLimited.Store(true)
+				_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "supervisor", Event: "stage_started", TaskID: mustFirstDiagnosisTaskNumber(taskID), Stage: "drain", Status: "started", ReasonCode: "time_budget_reached"})
+			}
+			if timeClosing && !timeStopped && !now.Before(drainUntil) && server.engine.inflightCount(taskID) > 0 {
+				// 유예 안에 끝나지 않은 작업은 엔진 정리 순서의 마지막 단계처럼 멈춘다. 그 intent는 exhausted(미완료)로 남는다.
+				timeStopped = true
+				server.engine.cancelExec(taskID, agent.AbortSettleDrainTimeout)
+			}
 		}
 		intentState := ""
 		if intentID > 0 {
@@ -810,8 +853,20 @@ func firstDiagnosisClosedToolOutcome(result e2runner.TrustedResult) bool {
 		}
 		return false
 	}
-	// 아래 분류는 bash가 끝까지 실행돼 종료 코드가 있는 명령에만 붙는다.
-	if !result.ProcessBashExited {
+	if result.Classification == "transient_failure" && result.Termination == e2runner.TerminationTimeout {
+		// 명령 시간 상한에 닿아 호스트가 멈춘 명령이다(계약 열린 항목 2). 결과 불명 송신은 위에서 걸렀고 프로세스·프록시
+		// 드레인과 감사는 위·호출자가 확인하므로 그 intent의 미완료다. 프록시 장애(proxy_unavailable)는 집행 장애라
+		// 그대로 마감 실패다.
+		switch result.Call.Reason {
+		case e2proxy.Complete, e2proxy.Withheld, e2proxy.PolicyDenied, e2proxy.Unsupported, e2proxy.TransportFailed, e2proxy.BudgetExhausted, e2proxy.AttemptLimit:
+			return true
+		}
+		return false
+	}
+	// 아래 분류는 bash가 끝까지 실행돼 종료 코드가 있는 명령에만 붙는다. 예외: 정책 거부·미지원 뒤 명령 시간 상한에 닿은
+	// 명령은 실행기가 거부·미지원 분류를 먼저 붙인다(종료 원인 timeout). 그 분류는 종료 코드가 아니라 E② 수로 정해지므로
+	// 아래에서 같은 수 대조로 받는다(#578 이동찬 리뷰).
+	if !result.ProcessBashExited && !(result.Termination == e2runner.TerminationTimeout && (result.Classification == "policy_not_executed" || result.Classification == "unsupported")) {
 		return false
 	}
 	if result.Classification == "transient_failure" {
@@ -1028,4 +1083,9 @@ func (s *FirstDiagnosisSupervisor) checkResults(ctx context.Context, server *Ser
 // 검색 설정(루프 복원 결정안 §2-1)을 싣는다. 실행 계획은 Runtime.PreparePlanning이 싣는다.
 func (s *Server) firstDiagnosisPlanningContext(ctx context.Context) context.Context {
 	return agent.WithE2HTTPWebSearch(agent.WithE2HTTPPlannerLimits(agent.WithE2HTTPPlanning(ctx), s.firstPlannerLimits), s.firstWebSearch)
+}
+
+// firstDiagnosisRunContext는 감독자 Run 하나의 문맥이다(뒷받침 기한 FirstDiagnosisRunTimeout).
+func firstDiagnosisRunContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, FirstDiagnosisRunTimeout)
 }

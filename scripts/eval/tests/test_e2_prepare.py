@@ -22,7 +22,7 @@ from e2_prepare import (AUDIT_KEY_BYTES, CONFIG_NAME, KEY_NAME, MAX_POLICY_BYTES
 ROOT = Path(__file__).resolve().parents[3]
 OVERLAY = ROOT / "deploy/eval/compose.e2-product.yaml"
 EVALUATION = {"llm_backend": "api", "target_kind": "public_practice"}
-VALUES = E2RunValues(eval_run_id="eval-run-1", model_tag="qwen/qwen3.5-35b-a3b", header_mode="evaluation_caller_passthrough",
+VALUES = E2RunValues(eval_run_id="eval-run-1", model_tag="qwen/qwen3.6-35b-a3b", header_mode="evaluation_caller_passthrough",
                      evaluation=EVALUATION, port=8080)
 POLICY = b'{"approval_mode": "preauthorized_scope", "rules": ["synthetic"]}\n'
 
@@ -94,7 +94,7 @@ class TestPrepare(Case):
         self.assertEqual(prepared.config_sha256, hashlib.sha256(data).hexdigest())
         config = json.loads(data)
         self.assertEqual(config, {"format": "abc2lab.e2-runner-config/v1", "eval_run_id": "eval-run-1", "reservation_ref": prepared.reservation_ref,
-                                  "model_tag": "qwen/qwen3.5-35b-a3b", "header_mode": "evaluation_caller_passthrough", "evaluation": EVALUATION,
+                                  "model_tag": "qwen/qwen3.6-35b-a3b", "header_mode": "evaluation_caller_passthrough", "evaluation": EVALUATION,
                                   "policy_file": "policy.json", "audit_key_file": "audit.key", "listen": ":8080",
                                   "upstream": "http://eval-meter-upstream:8080", "evidence_dir": "/evidence", "control_dir": "/run/e2-control"})
         self.assertTrue(prepared.reservation_ref.startswith("reservation-"))

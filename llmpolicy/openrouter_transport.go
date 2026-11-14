@@ -263,6 +263,10 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 			if p.transient < m.transientLimit() {
 				return
 			}
+			// 이미 다른 원인으로 막혀 있으면 그 원인을 그대로 둔다.
+			p.transientLimited = !p.blocked || p.transientLimited
+		} else {
+			p.transientLimited = false
 		}
 		p.blocked = true
 	}()
@@ -307,6 +311,14 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 			diagnostic.ReasonCode = "http_unauthorized"
 		case resp.StatusCode == 429:
 			diagnostic.ReasonCode = "http_rate_limited"
+			// 요청 한도(429)는 제공자가 처리하지 않은 요청이라 청구되지 않는다(2026-11-14 점검 회차 실측: 429 4번이 키
+			// 사용량에 잡히지 않음). 상태를 받았으면 본문이 끊겨도 같다. 예약을 사용량 0으로 정산해 승인 총량에 되돌리고
+			// 호출 칸에 남긴다. 5xx·연결 끊김은 처리 여부를 알 수 없어 지금처럼 예약량을 쓴 것으로 둔다(C05).
+			p.mu.Lock()
+			p.settleLocked([3]int64{input, output, reserved}, [3]int64{})
+			p.mu.Unlock()
+			slot.notBilled()
+			diagnostic.CostMicros, diagnostic.CostUncertain = 0, false
 		case resp.StatusCode >= 500 && resp.StatusCode <= 599:
 			diagnostic.ReasonCode = "http_server_error"
 		case resp.StatusCode >= 400 && resp.StatusCode <= 499:

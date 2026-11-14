@@ -204,3 +204,38 @@ func TestOpenRouterValidatesRegisteredToolSchema(t *testing.T) {
 		t.Fatal("valid registered schema input rejected")
 	}
 }
+
+// 마무리 턴 요청(도구 목록에는 report_discovery만, 기록에는 앞 턴의 Bash 호출)이 보내기 전에 거부되지 않고 실제로 나간다.
+// 보낸 요청의 도구 목록에는 숨긴 도구가 없다.
+func TestOpenRouterSDKSendsSettlementWithHiddenToolHistory(t *testing.T) {
+	calls := 0
+	c := &http.Client{Transport: openRouterSDKRT(func(r *http.Request) (*http.Response, error) {
+		calls++
+		raw, _ := io.ReadAll(r.Body)
+		var wire struct {
+			Tools []struct {
+				Function struct {
+					Name string `json:"name"`
+				} `json:"function"`
+			} `json:"tools"`
+		}
+		if json.Unmarshal(raw, &wire) != nil || len(wire.Tools) != 1 || wire.Tools[0].Function.Name != "report_discovery" {
+			t.Fatalf("settlement request tools: %s", raw)
+		}
+		body := `{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}
+	provider, err := openRouterSDKConfig().newOpenRouterProviderWithClient(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := llm.CompletionRequest{MaxTokens: 100, Tools: []llm.ToolSchema{{Name: "report_discovery", InputSchema: map[string]any{"type": "object"}}}, Messages: []llm.Message{
+		llm.UserText("synthetic"),
+		{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: "call-1", Name: "Bash", Input: json.RawMessage(`{"command":"curl -s http://owned.test/"}`)}}},
+		{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.ToolResultText("call-1", "exit_code=0", false)}},
+		llm.UserText("Report only discovered endpoint metadata."),
+	}}
+	if result, _, _, err := provider.Complete(context.Background(), req); err != nil || result.Text() != "done" || calls != 1 {
+		t.Fatalf("settlement request err=%v calls=%d", err, calls)
+	}
+}

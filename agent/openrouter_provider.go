@@ -117,7 +117,14 @@ func validOpenRouterHistory(req llm.CompletionRequest) bool {
 		for _, b := range msg.Content {
 			switch b.Type {
 			case llm.BlockToolUse:
-				if msg.Role != llm.RoleAssistant || b.ID == "" || seen[b.ID] || names[b.Name] == nil || !validOpenRouterObject(b.Input) || !validOpenRouterSchemaInput(names[b.Name], b.Input) {
+				if msg.Role != llm.RoleAssistant || b.ID == "" || seen[b.ID] || b.Name == "" || !validOpenRouterObject(b.Input) {
+					return false
+				}
+				// 마무리 턴(settlement)은 일부 도구를 요청에서 숨기지만(예: Worker의 Bash, 탐색의 Bash·브라우저), 앞 턴의
+				// 호출은 기록에 남는다. 지금 요청에 있는 도구만 스키마로 검사하고, 숨긴 도구의 지난 호출은 객체인지까지만 본다.
+				// 이걸 거부하면 턴 상한에 닿은 모든 세션이 마무리 요청을 보내기도 전에 실패한다(2026-11-14 실제 회차). 모델 응답이
+				// 숨긴 도구를 부르면 transport의 등록 도구 이름 검사가 막는다.
+				if schema := names[b.Name]; schema != nil && !validOpenRouterSchemaInput(schema, b.Input) {
 					return false
 				}
 				seen[b.ID] = true
@@ -133,7 +140,7 @@ func validOpenRouterHistory(req llm.CompletionRequest) bool {
 					}
 				}
 			case llm.BlockThinking:
-				// 추론 모델(Qwen3.5 등)이 앞 턴에 낸 추론이다. SDK는 이를 assistant 메시지의 reasoning_content로
+				// 추론 모델(Qwen3.5·Qwen3.6 등)이 앞 턴에 낸 추론이다. SDK는 이를 assistant 메시지의 reasoning_content로
 				// 돌려보낸다(원본 동작). 이걸 거부하면 첫 응답 뒤 모든 호출이 보내기도 전에 실패한다(11/13 실제 모델 점검).
 				// 모델이 쓴 자기 출력이라 assistant 메시지에만 둔다.
 				if msg.Role != llm.RoleAssistant {

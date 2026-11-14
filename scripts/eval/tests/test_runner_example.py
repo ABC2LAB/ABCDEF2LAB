@@ -17,7 +17,7 @@ from runner_engine import task_request  # noqa: E402
 
 DOCS = Path(__file__).resolve().parents[3] / "docs/evaluation"
 PROFILE = DOCS / "profiles/official-35b.json"
-ENDPOINTS = DOCS / "profiles/evidence/openrouter-endpoints-qwen3.5-35b-a3b-20261106.json"
+ENDPOINTS = DOCS / "profiles/evidence/openrouter-endpoints-qwen3.6-35b-a3b-20261114.json"
 EXAMPLE = DOCS / "runner.example.json"
 RUNBOOK = DOCS / "official-run.md"
 BASE, OURS = "1" * 40, "2" * 40

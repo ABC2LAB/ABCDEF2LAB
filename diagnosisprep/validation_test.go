@@ -228,3 +228,13 @@ func TestScopeWriteMethodsDoNotNeedPerRequestApproval(t *testing.T) {
 		}
 	}
 }
+
+// 지금 보내는 모델은 3.6이지만, 2026-11-14 전에 만든 작업·설치 기록(3.5)도 읽을 수 있어야 한다. 다른 모델은 받지 않는다.
+func TestModelInfoAcceptsCurrentAndRecordedModels(t *testing.T) {
+	for model, ok := range map[string]bool{"qwen/qwen3.6-35b-a3b": true, "qwen/qwen3.5-35b-a3b": true, "qwen/qwen3.7-35b-a3b": false, "": false} {
+		m := &ModelInfo{Mode: "openrouter", Model: model, Provider: "deepinfra/fp8", ExternalTransfer: true, InputPerCall: 262144, OutputPerCall: 100}
+		if validModel(m) != ok {
+			t.Fatalf("%q: valid=%v", model, !ok)
+		}
+	}
+}
