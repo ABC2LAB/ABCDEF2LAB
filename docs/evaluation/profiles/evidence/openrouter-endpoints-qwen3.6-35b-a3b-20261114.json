@@ -1,0 +1,101 @@
+{
+  "purpose": "공식 비교 제공자 고정 근거(평가 프로토콜 §6). OpenRouter slug는 접두 매칭이라 고정 직전 조회로 단일 엔드포인트·정밀도를 확인한다.",
+  "source": "GET https://openrouter.ai/api/v1/models/qwen/qwen3.6-35b-a3b/endpoints (공개, 키 없음)",
+  "fetched_at": "2026-11-14T03:52:52Z",
+  "response_sha256": "6fed875b22ee1e99935834d0cd6f1d95aa1533063bb1fb12bd29a5f1d66a8074",
+  "model": "qwen/qwen3.6-35b-a3b",
+  "pinned_slug": "deepinfra/fp8",
+  "matched_endpoints": [
+    {
+      "provider_name": "DeepInfra",
+      "tag": "deepinfra/fp8",
+      "quantization": "fp8",
+      "seed": true,
+      "temperature": true,
+      "tools": true
+    }
+  ],
+  "match_rule": "tag == slug 또는 tag가 slug + '/'로 시작",
+  "all_endpoints": [
+    {
+      "provider_name": "PrimeIntellect",
+      "tag": "primeintellect/fp8",
+      "quantization": "fp8",
+      "seed": true,
+      "temperature": true,
+      "tools": true
+    },
+    {
+      "provider_name": "Darkbloom",
+      "tag": "darkbloom/fp4",
+      "quantization": "fp4",
+      "seed": true,
+      "temperature": true,
+      "tools": true
+    },
+    {
+      "provider_name": "CoreWeave",
+      "tag": "coreweave/fp8",
+      "quantization": "fp8",
+      "seed": true,
+      "temperature": true,
+      "tools": false
+    },
+    {
+      "provider_name": "AkashML",
+      "tag": "akashml/fp8",
+      "quantization": "fp8",
+      "seed": true,
+      "temperature": true,
+      "tools": true
+    },
+    {
+      "provider_name": "Parasail",
+      "tag": "parasail/fp8",
+      "quantization": "fp8",
+      "seed": true,
+      "temperature": true,
+      "tools": true
+    },
+    {
+      "provider_name": "DeepInfra",
+      "tag": "deepinfra/fp8",
+      "quantization": "fp8",
+      "seed": true,
+      "temperature": true,
+      "tools": true
+    },
+    {
+      "provider_name": "DekaLLM",
+      "tag": "dekallm",
+      "quantization": "unknown",
+      "seed": true,
+      "temperature": true,
+      "tools": true
+    },
+    {
+      "provider_name": "Venice",
+      "tag": "venice/fp8",
+      "quantization": "fp8",
+      "seed": false,
+      "temperature": true,
+      "tools": true
+    },
+    {
+      "provider_name": "SiliconFlow",
+      "tag": "siliconflow/fp8",
+      "quantization": "fp8",
+      "seed": false,
+      "temperature": true,
+      "tools": false
+    },
+    {
+      "provider_name": "AtlasCloud",
+      "tag": "atlas-cloud/fp8",
+      "quantization": "fp8",
+      "seed": true,
+      "temperature": true,
+      "tools": true
+    }
+  ]
+}
