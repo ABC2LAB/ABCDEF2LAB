@@ -399,7 +399,9 @@ export function parseURLCatalog(raw: unknown): URLDiagnosisCatalog {
       !text(p.model_label) ||
       !p.model_label ||
       (p.workflow !== undefined &&
-        (!natural(p.workflow_request_limit) || p.workflow_request_limit < 1 || p.workflow_request_limit > MAX_TARGET_REQUESTS))
+        (!natural(p.workflow_request_limit) ||
+          p.workflow_request_limit < 1 ||
+          p.workflow_request_limit > MAX_TARGET_REQUESTS))
     )
       return invalid();
     exact(p, ["id", "label", "model_profile_ref", "model_label", "model", "workflow", "workflow_request_limit"]);
@@ -856,6 +858,8 @@ export const urlReasonLabels: Record<string, string> = {
   model_mode_unsupported: "이 모델 실행 방식은 현재 자동 준비에서 지원하지 않아요. 다른 모델로 전환하지 않아요.",
   path_not_approved: "이 URL 경로는 설치된 승인 범위에 없어요.",
   target_not_approved: "이 대상은 설치된 승인 범위에 없어요.",
+  target_connection_unavailable: "대상 연결 검증을 완료하지 못했어요. 승인 상태와 보호 기록을 확인해 주세요.",
+  target_connection_timeout: "대상 연결 검증이 제한 시간 안에 끝나지 않았어요.",
   profile_not_found: "이 모델 프로필을 사용할 수 없어요.",
   protocol_unsupported: "이 대상의 프로토콜은 현재 진단 경로에서 지원하지 않아요.",
   unsupported_protocol: "이 대상의 프로토콜은 현재 진단 경로에서 지원하지 않아요.",

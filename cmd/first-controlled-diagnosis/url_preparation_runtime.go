@@ -275,8 +275,8 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	if check() != nil || p.set(func(u *diagnosisprep.Update) { u.Phase = diagnosisprep.ScopeCheck }) != nil {
 		return errPreparation
 	}
-	if l.dnsCheck(ctx, b.resolver) != nil {
-		return knownFailure("target_dns_mismatch", true)
+	if err := l.prepareTargetConnection(ctx, b.resolver, execution.Job.ID); err != nil {
+		return knownFailure(targetConnectionFailure(err), true)
 	}
 	// 위임 삭제·교체·만료는 실행 중에도 신규 전송을 중단하는 context 철회다.
 	watchDone := make(chan struct{})

@@ -19,7 +19,7 @@ func TestProductTargetApprovalExpiryBoundaries(t *testing.T) {
 		certificateLife, lifetime time.Duration
 	}{
 		{"valid_hours", 1, 24 * time.Hour, time.Hour},
-		{"certificate_not_after", 4, 20 * time.Minute, 20 * time.Minute},
+		{"certificate_rotation_independent", 4, 20 * time.Minute, 4 * time.Hour},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, _ := targetTestRegistry(t)
@@ -49,7 +49,7 @@ func TestProductTargetApprovalExpiryBoundaries(t *testing.T) {
 				t.Fatal(err)
 			}
 			if !approved.ExpiresAt.Equal(approvedAt.Add(tc.lifetime)) {
-				t.Fatalf("승인 만료가 요청 시간·인증서 만료 중 빠른 값이 아님: %v", approved.ExpiresAt)
+				t.Fatalf("승인 만료가 요청한 기간과 다름: %v", approved.ExpiresAt)
 			}
 			rec, err := r.lookup("ARTEX", "https://expiry.example.test/read", "")
 			if err != nil {
@@ -139,7 +139,7 @@ func TestProductTargetProtectedCheckerRequired(t *testing.T) {
 
 func TestProductTargetValidityRangeBeforePersistence(t *testing.T) {
 	r, _ := targetTestRegistry(t)
-	for _, hours := range []int64{0, 25} {
+	for _, hours := range []int64{0, 721} {
 		spec := targetTestSpec("owned.example.test")
 		spec.ValidHours = hours
 		if _, err := r.register("ARTEX", spec); err == nil || err.Error() != "readonly_scope_required" {
@@ -150,9 +150,9 @@ func TestProductTargetValidityRangeBeforePersistence(t *testing.T) {
 		}
 	}
 	spec := targetTestSpec("owned.example.test")
-	spec.ValidHours = 24
+	spec.ValidHours = 720
 	if _, err := r.register("ARTEX", spec); err != nil {
-		t.Fatal("24시간 정상 경계 거부", err)
+		t.Fatal("720시간 정상 경계 거부", err)
 	}
 }
 

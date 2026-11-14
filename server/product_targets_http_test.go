@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -149,5 +150,30 @@ func TestProductLoginAndCredentialHTTP(t *testing.T) {
 		if w := invoke(c[0], c[1], c[2]); w.Code < 400 || len(p.requests) != before {
 			t.Errorf("%s reached preparation (code %d)", name, w.Code)
 		}
+	}
+}
+
+func TestProductTargetHTTPApprovalPeriod720ReachesPreparation(t *testing.T) {
+	for _, hours := range []int{24, 25, 720, 721} {
+		t.Run(fmt.Sprint(hours), func(t *testing.T) {
+			endpoint := &productControlRecorder{}
+			body := fmt.Sprintf(`{"url":"https://owned.example/read","path_prefixes":["/read"],"methods":["GET","HEAD"],"readonly_basis":"Owned read-only product listing approved by operator","requests":4,"valid_hours":%d}`, hours)
+			req := httptest.NewRequest("POST", "/api/product/targets", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			productTargetsHTTP(response, req, "ARTEX", endpoint)
+			if hours == 721 {
+				if response.Code != 400 || len(endpoint.requests) != 0 {
+					t.Fatal("상한 밖 HTTP 요청이 준비로 전달")
+				}
+				return
+			}
+			if response.Code != 200 || len(endpoint.requests) != 1 || endpoint.requests[0].Product.Registration.ValidHours != int64(hours) {
+				t.Fatal("720시간 이하 HTTP 요청이 준비에 미도달", response.Code)
+			}
+			if err := diagnosisprep.ValidateRequest(endpoint.requests[0]); err != nil {
+				t.Fatal("HTTP가 만든 IPC 요청 계약 불일치", err)
+			}
+		})
 	}
 }

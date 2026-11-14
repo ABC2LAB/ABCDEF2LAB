@@ -91,8 +91,8 @@ func TestProductTargetsOwnershipDNSAndRoundIsolation(t *testing.T) {
 		t.Fatal("unapproved origin acquired authority")
 	}
 	ips["a.example.test"] = []netip.Addr{netip.MustParseAddr("10.200.1.11")}
-	if e = r.recheck(ctx, ar); e == nil || e.Error() != "target_dns_changed" {
-		t.Fatal("DNS change was not fenced")
+	if e = r.recheck(ctx, ar); e != nil {
+		t.Fatal("검증된 같은 origin의 DNS 변경 거부", e)
 	}
 	ips["a.example.test"] = []netip.Addr{netip.MustParseAddr("169.254.169.254")}
 	before := probes
@@ -101,8 +101,8 @@ func TestProductTargetsOwnershipDNSAndRoundIsolation(t *testing.T) {
 	}
 	ips["a.example.test"] = []netip.Addr{netip.MustParseAddr("10.200.1.10")}
 	spki = strings.Repeat("b", 64)
-	if e = r.recheck(ctx, ar); e == nil || e.Error() != "target_tls_changed" {
-		t.Fatal("TLS identity change was not fenced")
+	if e = r.recheck(ctx, ar); e != nil {
+		t.Fatal("검증된 같은 origin의 인증서 교체 거부", e)
 	}
 	spki = strings.Repeat("a", 64)
 	if e = r.Close(); e != nil {

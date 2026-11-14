@@ -39,7 +39,7 @@ func TestProductTargetTLSContactsDurableAndRedacted(t *testing.T) {
 		t.Fatal(err)
 	}
 	failure = errors.New("synthetic-peer-private-detail")
-	if err = r.recheck(t.Context(), rec); err == nil || err.Error() != "target_tls_changed" {
+	if err = r.recheck(t.Context(), rec); err == nil || err.Error() != "target_tls_unverified" {
 		t.Fatal("TLS 실패가 시작을 막지 않음", err)
 	}
 	if err = r.Close(); err != nil {

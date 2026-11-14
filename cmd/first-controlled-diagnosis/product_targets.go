@@ -53,6 +53,10 @@ type productTargetRecord struct {
 	ProofExpiresAt time.Time `json:"proof_expires_at"`
 }
 
+const productMaxTargetAddresses = 32
+const productMaxTargetApprovalHours = diagnosisprep.MaxTargetApprovalHours
+const productTargetProbeTimeout = 3 * time.Second
+
 const productWriteConsentAuto = "auto_without_confirmation_v1"
 
 // autoWritesAllowed는 이 대상의 쓰기 승인을 AI 자동 모드가 건별 확인 없이 쓸 수 있는지다.
@@ -264,7 +268,7 @@ func (r *productTargetRegistry) register(principal string, s diagnosisprep.Targe
 	if !allowed {
 		return diagnosisprep.ProductTarget{}, errors.New("target_port_denied")
 	}
-	if s.Requests < 1 || s.Requests > r.policy.MaxRequests || s.ValidHours < 1 || s.ValidHours > 24 || len(strings.TrimSpace(s.ReadonlyBasis)) < 20 || len(s.ReadonlyBasis) > 1024 || len(s.PathPrefixes) < 1 || len(s.PathPrefixes) > 16 || len(s.Methods) < 1 || len(s.Methods) > 5 {
+	if s.Requests < 1 || s.Requests > r.policy.MaxRequests || s.ValidHours < 1 || s.ValidHours > productMaxTargetApprovalHours || len(strings.TrimSpace(s.ReadonlyBasis)) < 20 || len(s.ReadonlyBasis) > 1024 || len(s.PathPrefixes) < 1 || len(s.PathPrefixes) > 16 || len(s.Methods) < 1 || len(s.Methods) > 5 {
 		return diagnosisprep.ProductTarget{}, errors.New("readonly_scope_required")
 	}
 	paths := []string{}
@@ -315,7 +319,7 @@ func (r *productTargetRegistry) register(principal string, s diagnosisprep.Targe
 }
 func (r *productTargetRegistry) addresses(ctx context.Context, host string) ([]string, error) {
 	ips, e := r.lookupIP(ctx, host)
-	if e != nil || len(ips) < 1 || len(ips) > 8 {
+	if e != nil || len(ips) < 1 {
 		return nil, errors.New("target_dns_unavailable")
 	}
 	set := map[string]bool{}
@@ -325,6 +329,9 @@ func (r *productTargetRegistry) addresses(ctx context.Context, host string) ([]s
 			return nil, errors.New("target_address_denied")
 		}
 		set[ip.String()] = true
+	}
+	if len(set) > productMaxTargetAddresses {
+		return nil, errors.New("target_dns_unavailable")
 	}
 	out := []string{}
 	for ip := range set {
@@ -360,7 +367,9 @@ func (r *productTargetRegistry) proof(ctx context.Context, t diagnosisprep.Produ
 	return errors.New("ownership_not_verified")
 }
 func (r *productTargetRegistry) probeTLS(ctx context.Context, host, ip string, port int) (string, time.Time, error) {
-	conn, e := (&net.Dialer{Timeout: 3 * time.Second}).DialContext(ctx, "tcp", net.JoinHostPort(ip, strconv.Itoa(port)))
+	ctx, cancel := context.WithTimeout(ctx, productTargetProbeTimeout)
+	defer cancel()
+	conn, e := (&net.Dialer{Timeout: productTargetProbeTimeout}).DialContext(ctx, "tcp", net.JoinHostPort(ip, strconv.Itoa(port)))
 	if e != nil {
 		return "", time.Time{}, errors.New("target_tls_unavailable")
 	}
@@ -373,8 +382,20 @@ func (r *productTargetRegistry) probeTLS(ctx context.Context, host, ip string, p
 	sum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
 	return hex.EncodeToString(sum[:]), cert.NotAfter, nil
 }
+
+// Share the remaining overall deadline so an early stalled address cannot use
+// every later address's time. The existing three-second dial limit also bounds TLS.
+func productTargetProbeContext(ctx context.Context, remaining int) (context.Context, context.CancelFunc) {
+	timeout := productTargetProbeTimeout
+	if deadline, ok := ctx.Deadline(); ok && remaining > 0 {
+		if share := time.Until(deadline) / time.Duration(remaining); share < timeout {
+			timeout = share
+		}
+	}
+	return context.WithTimeout(ctx, timeout)
+}
 func (r *productTargetRegistry) reachTCP(ctx context.Context, ip string, port int) error {
-	conn, e := (&net.Dialer{Timeout: 3 * time.Second}).DialContext(ctx, "tcp", net.JoinHostPort(ip, strconv.Itoa(port)))
+	conn, e := (&net.Dialer{Timeout: productTargetProbeTimeout}).DialContext(ctx, "tcp", net.JoinHostPort(ip, strconv.Itoa(port)))
 	if e != nil {
 		return errors.New("target_unreachable")
 	}
@@ -410,16 +431,30 @@ func (r *productTargetRegistry) approve(ctx context.Context, principal, id strin
 		return diagnosisprep.ProductTarget{}, errors.New("target_address_denied")
 	}
 	var spki string
-	var expiry time.Time
 	var selected string
-	for _, ip := range addresses {
-		spki, expiry, e = r.probeWithAudit(ctx, "approve", rec, u.Hostname(), ip)
+	for index, ip := range addresses {
+		if ctx.Err() != nil {
+			return diagnosisprep.ProductTarget{}, ctx.Err()
+		}
+		probeCtx, stopProbe := productTargetProbeContext(ctx, len(addresses)-index)
+		if err := probeCtx.Err(); err != nil {
+			stopProbe()
+			return diagnosisprep.ProductTarget{}, err
+		}
+		spki, _, e = r.probeWithAudit(probeCtx, "approve", rec, u.Hostname(), ip)
+		stopProbe()
+		if errors.Is(e, errPreparation) {
+			return diagnosisprep.ProductTarget{}, errPreparation
+		}
 		if e == nil {
 			selected = ip
 			break
 		}
 	}
 	if e != nil || selected == "" {
+		if errors.Is(e, errTargetCertificateExpired) {
+			return diagnosisprep.ProductTarget{}, e
+		}
 		if productTargetPlain(rec.Target) {
 			return diagnosisprep.ProductTarget{}, errors.New("target_unreachable")
 		}
@@ -433,10 +468,6 @@ func (r *productTargetRegistry) approve(ctx context.Context, principal, id strin
 	next.SelectedIP = selected
 	next.Target.ApprovedAt = r.now()
 	next.Target.ExpiresAt = next.Target.ApprovedAt.Add(time.Duration(rec.ValidHours) * time.Hour)
-	// http 대상은 인증서가 없어 만료 상한을 받지 않는다.
-	if !expiry.IsZero() && expiry.Before(next.Target.ExpiresAt) {
-		next.Target.ExpiresAt = expiry
-	}
 	if !next.Target.ApprovedAt.Before(next.Target.ExpiresAt) {
 		return diagnosisprep.ProductTarget{}, errors.New("target_approval_expired")
 	}
@@ -503,35 +534,68 @@ func (r *productTargetRegistry) current(rec productTargetRecord) error {
 	}
 	return nil
 }
+
+// recheck는 조회·시험용 재검증이다. 실행은 connectionForStart가 돌려준 증거를 그 회차에 결속한다.
 func (r *productTargetRegistry) recheck(ctx context.Context, rec productTargetRecord) error {
+	_, err := r.connectionForStart(ctx, rec, "")
+	return err
+}
+
+// connectionForStart는 승인 기록을 바꾸지 않는다. 현재 origin 권한 아래 새 연결 증거만 만든다.
+func (r *productTargetRegistry) connectionForStart(ctx context.Context, rec productTargetRecord, jobID string) (*productTargetConnection, error) {
 	if r.current(rec) != nil {
-		return errors.New("target_approval_changed")
+		return nil, errors.New("target_approval_changed")
+	}
+	if jobID != "" && !managementReference.MatchString(jobID) {
+		return nil, errPreparation
 	}
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	if e := r.proof(ctx, rec.Target); e != nil {
-		return e
+	if err := r.proof(ctx, rec.Target); err != nil {
+		return nil, err
 	}
 	u, _ := url.Parse(rec.Target.Origin)
-	addresses, e := r.addresses(ctx, u.Hostname())
-	if e != nil {
-		return e
+	addresses, err := r.addresses(ctx, u.Hostname())
+	if err != nil {
+		return nil, err
 	}
 	if r.checkDestinations(rec.Target.Origin, addresses) != nil {
-		return errors.New("target_address_denied")
+		return nil, errors.New("target_address_denied")
 	}
-	if !reflect.DeepEqual(addresses, rec.Target.Addresses) {
-		return errors.New("target_dns_changed")
+	for index, ip := range addresses {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if r.current(rec) != nil {
+			return nil, errors.New("target_approval_changed")
+		}
+		probeCtx, stopProbe := productTargetProbeContext(ctx, len(addresses)-index)
+		if err := probeCtx.Err(); err != nil {
+			stopProbe()
+			return nil, err
+		}
+		spki, _, err := r.probeWithAuditForRun(probeCtx, "start", rec, u.Hostname(), ip, jobID)
+		stopProbe()
+		if errors.Is(err, errPreparation) {
+			return nil, errPreparation
+		}
+		if err != nil {
+			continue
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if err := r.current(rec); err != nil {
+			return nil, errors.New("target_approval_changed")
+		}
+		return &productTargetConnection{IP: ip, SPKI: spki, Addresses: append([]string(nil), addresses...), jobID: jobID}, nil
 	}
-	spki, _, e := r.probeWithAudit(ctx, "start", rec, u.Hostname(), rec.SelectedIP)
-	if e != nil && productTargetPlain(rec.Target) {
-		return errors.New("target_unreachable")
+	if productTargetPlain(rec.Target) {
+		return nil, errors.New("target_unreachable")
 	}
-	if e != nil || spki != rec.Target.TLSSPKISHA256 {
-		return errors.New("target_tls_changed")
-	}
-	return r.current(rec)
+	return nil, errors.New("target_tls_unverified")
 }
+
 func (r *productTargetRegistry) view(principal, id string) (*diagnosisprep.ProductTarget, []diagnosisprep.ProductTarget, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
