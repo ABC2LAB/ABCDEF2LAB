@@ -22,6 +22,10 @@ var errStorage = errors.New("진단 준비 기록의 무결성을 확인할 수 
 const journalName = "preparation.journal"
 const headName = "preparation.head"
 const maxJournalBytes = 32 << 20
+
+// C34: 준비 작업만 128 MiB까지 읽는다. 대상·계정·접촉 저널의 32 MiB 상한은 유지한다.
+const maxPreparationJournalBytes = 128 << 20
+const currentJournalDirectory = "preparation.current"
 const maxRecordBytes = 128 << 10
 
 type protectedRoot struct {
@@ -110,14 +114,19 @@ type journalHead struct {
 	Digest   string `json:"digest"`
 }
 type journal struct {
-	root     *protectedRoot
-	file     *os.File
-	head     *os.File
-	stat     syscall.Stat_t
-	headStat syscall.Stat_t
-	sequence uint64
-	digest   string
-	poisoned bool
+	lease          *protectedRoot
+	maxBytes       int64
+	snapshotCount  int
+	sourceSequence uint64
+	sourceDigest   string
+	root           *protectedRoot
+	file           *os.File
+	head           *os.File
+	stat           syscall.Stat_t
+	headStat       syscall.Stat_t
+	sequence       uint64
+	digest         string
+	poisoned       bool
 }
 
 func recordDigest(sequence uint64, previous string, raw []byte) string {
@@ -125,74 +134,116 @@ func recordDigest(sequence uint64, previous string, raw []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 func openJournal(path string) (*journal, []json.RawMessage, error) {
+	return openJournalWithLimit(path, maxJournalBytes, false)
+}
+func openPreparationJournal(path string) (*journal, []json.RawMessage, error) {
+	return openJournalWithLimit(path, maxPreparationJournalBytes, true)
+}
+func openJournalWithLimit(path string, limit int64, snapshots bool) (*journal, []json.RawMessage, error) {
 	root, err := openProtectedRoot(path)
 	if err != nil {
 		return nil, nil, errStorage
 	}
-	j := &journal{root: root}
+	j := &journal{root: root, lease: root, maxBytes: limit}
 	fail := func() (*journal, []json.RawMessage, error) { _ = j.close(); return nil, nil, errStorage }
-	// 같은 설치 루트의 두 준비 프로세스가 총량을 따로 예약하지 못한다.
 	if syscall.Flock(int(root.file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil {
 		return fail()
 	}
-	f, st, err := root.open(journalName, syscall.O_RDWR|syscall.O_APPEND|syscall.O_CREAT|syscall.O_EXCL)
-	fresh := err == nil
-	if errors.Is(err, syscall.EEXIST) {
-		f, st, err = root.open(journalName, syscall.O_RDWR|syscall.O_APPEND)
-	}
-	if err != nil {
+	generation := false
+	if _, err := os.Lstat(filepath.Join(path, currentJournalDirectory)); err == nil {
+		if !snapshots {
+			return fail()
+		}
+		child, err := openProtectedRoot(filepath.Join(path, currentJournalDirectory))
+		if err != nil {
+			return fail()
+		}
+		j.root = child
+		generation = true
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return fail()
+	}
+	if !generation {
+		f, st, err := root.open(journalName, syscall.O_RDWR|syscall.O_APPEND|syscall.O_CREAT|syscall.O_EXCL)
+		if err == nil {
+			j.file, j.stat = f, st
+			if previous, _, e := root.open(headName, syscall.O_RDONLY); e == nil {
+				_ = previous.Close()
+				return fail()
+			} else if !errors.Is(e, syscall.ENOENT) {
+				return fail()
+			}
+			if j.append(json.RawMessage(`{"format":"diagnosis-preparation-journal.v1"}`)) != nil {
+				return fail()
+			}
+			return j, nil, nil
+		}
+		if !errors.Is(err, syscall.EEXIST) {
+			return fail()
+		}
+	}
+	records, err := readJournalData(j)
+	if err != nil || generation != (j.snapshotCount > 0) {
+		return fail()
+	}
+	return j, records, nil
+}
+
+// chain/head/descriptor 검사는 옛 저널과 압축 후보에 똑같이 적용한다.
+func readJournalData(j *journal) ([]json.RawMessage, error) {
+	f, st, err := j.root.open(journalName, syscall.O_RDWR|syscall.O_APPEND)
+	if err != nil {
+		return nil, errStorage
 	}
 	j.file, j.stat = f, st
-	if fresh {
-		// 초기 기록도 봉인한다. 기존의 빈 파일은 새 저장소로 취급하지 않는다.
-		if previous, _, err := root.open(headName, syscall.O_RDONLY); err == nil {
-			_ = previous.Close()
-			return fail()
-		} else if !errors.Is(err, syscall.ENOENT) {
-			return fail()
-		}
-		if err := j.append(json.RawMessage(`{"format":"diagnosis-preparation-journal.v1"}`)); err != nil {
-			return fail()
-		}
-		return j, nil, nil
+	if st.Size <= 0 || st.Size > j.maxBytes {
+		return nil, errStorage
 	}
-	if st.Size <= 0 || st.Size > maxJournalBytes {
-		return fail()
-	}
-	raw, err := io.ReadAll(io.LimitReader(f, maxJournalBytes+1))
-	if err != nil || int64(len(raw)) != st.Size || raw[len(raw)-1] != '\n' || !root.matches(journalName, f, st) {
-		return fail()
+	raw, err := io.ReadAll(io.LimitReader(f, j.maxBytes+1))
+	if err != nil || int64(len(raw)) != st.Size || raw[len(raw)-1] != '\n' || !j.root.matches(journalName, f, st) {
+		return nil, errStorage
 	}
 	lines := bytes.Split(raw[:len(raw)-1], []byte{'\n'})
 	records := make([]json.RawMessage, 0, len(lines))
 	for i, line := range lines {
 		var record journalRecord
 		if len(line) > maxRecordBytes || strictDecode(line, &record) != nil || record.Sequence != j.sequence+1 || record.Previous != j.digest || record.Digest != recordDigest(record.Sequence, record.Previous, record.Payload) {
-			return fail()
+			return nil, errStorage
 		}
 		if i == 0 {
 			if string(record.Payload) != `{"format":"diagnosis-preparation-journal.v1"}` {
-				return fail()
+				var header compactionHeader
+				if strictDecode(record.Payload, &header) != nil || header.Format != compactionFormat || header.SnapshotCount < 1 || header.SnapshotCount > maxJobs || header.SourceSequence < uint64(header.SnapshotCount+1) || !digestPattern.MatchString(header.SourceDigest) {
+					return nil, errStorage
+				}
+				j.snapshotCount = header.SnapshotCount
+				j.sourceSequence, j.sourceDigest = header.SourceSequence, header.SourceDigest
 			}
 		} else {
 			records = append(records, record.Payload)
 		}
 		j.sequence, j.digest = record.Sequence, record.Digest
 	}
-	j.head, j.headStat, err = root.open(headName, syscall.O_RDONLY)
+	if len(records) < j.snapshotCount {
+		return nil, errStorage
+	}
+	j.head, j.headStat, err = j.root.open(headName, syscall.O_RDONLY)
 	if err != nil || j.headStat.Size > 1024 {
-		return fail()
+		return nil, errStorage
 	}
 	headRaw, err := io.ReadAll(io.LimitReader(j.head, 1025))
 	var head journalHead
-	if err != nil || strictDecode(headRaw, &head) != nil || head.Sequence != j.sequence || head.Digest != j.digest || !root.matches(headName, j.head, j.headStat) {
-		return fail()
+	if err != nil || strictDecode(headRaw, &head) != nil || head.Sequence != j.sequence || head.Digest != j.digest || !j.root.matches(headName, j.head, j.headStat) {
+		return nil, errStorage
 	}
-	return j, records, nil
+	return records, nil
 }
+func (j *journal) current() bool {
+	return j.root != nil && j.lease != nil && j.root.current() && (j.root == j.lease || j.lease.current()) && j.file != nil && j.root.matches(journalName, j.file, j.stat) && (j.head == nil || j.root.matches(headName, j.head, j.headStat))
+}
+
 func (j *journal) append(payload json.RawMessage) error {
-	if j.poisoned || j.file == nil || !j.root.current() || !j.root.matches(journalName, j.file, j.stat) || (j.head != nil && !j.root.matches(headName, j.head, j.headStat)) {
+	if j.poisoned || j.file == nil || !j.current() {
 		j.poisoned = true
 		return errStorage
 	}
@@ -200,7 +251,7 @@ func (j *journal) append(payload json.RawMessage) error {
 	record := journalRecord{Sequence: j.sequence + 1, Previous: j.digest, Payload: payload}
 	record.Digest = recordDigest(record.Sequence, record.Previous, record.Payload)
 	raw, err := json.Marshal(record)
-	if err != nil || len(raw)+1 > maxRecordBytes || j.stat.Size+int64(len(raw))+1 > maxJournalBytes {
+	if err != nil || len(raw)+1 > maxRecordBytes || j.stat.Size+int64(len(raw))+1 > j.maxBytes {
 		return errStorage
 	}
 	raw = append(raw, '\n')
@@ -237,7 +288,7 @@ func (j *journal) append(payload json.RawMessage) error {
 	j.poisoned = false
 	return nil
 }
-func (j *journal) close() error {
+func (j *journal) closeData() error {
 	var errs []error
 	if j.file != nil {
 		errs = append(errs, j.file.Close())
@@ -247,9 +298,19 @@ func (j *journal) close() error {
 		errs = append(errs, j.head.Close())
 		j.head = nil
 	}
-	if j.root != nil {
+	if j.root != nil && j.root != j.lease {
 		errs = append(errs, j.root.file.Close())
 		j.root = nil
 	}
 	return errors.Join(errs...)
+}
+
+func (j *journal) close() error {
+	err := j.closeData()
+	if j.lease != nil {
+		err = errors.Join(err, j.lease.file.Close())
+		j.lease = nil
+	}
+	j.root = nil
+	return err
 }

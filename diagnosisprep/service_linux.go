@@ -19,7 +19,8 @@ import (
 	"github.com/Autumn-27/artex/diagnosis"
 )
 
-const maxJobs = 1024
+// C34: 메모리·복원 시험과 128 MiB 입력 상한을 함께 둔다.
+const maxJobs = 8192
 
 type storedInspection struct {
 	Scope              *Scope `json:"scope,omitempty"`
@@ -112,36 +113,34 @@ func newServiceForBoot(ctx context.Context, root string, backend Backend, boot s
 	if ctx == nil || ctx.Err() != nil || backend == nil {
 		return nil, ErrProtocol
 	}
-	j, records, err := openJournal(root)
+	j, records, err := openPreparationJournal(root)
 	if err != nil {
 		return nil, err
 	}
 	lifetime, cancel := context.WithCancel(ctx)
 	s := &Service{ctx: lifetime, cancel: cancel, backend: backend, journal: j, jobs: map[string]receipt{}, executions: map[string]executionHandle{}}
 	fail := func() (*Service, error) { cancel(); _ = j.close(); return nil, errStorage }
-	createKeys := map[string]string{}
-	for _, raw := range records {
-		var r receipt
-		if strictDecode(raw, &r) != nil || !validText(r.Principal, 256) || !reference.MatchString(r.CreateKey) || !validJob(r.Job) || r.ExecutionEvidenceVersion > 1 || r.ExecutionEvidenceVersion != 0 && r.StartKey == "" || r.ExecutionBootID != "" && !bootIDPattern.MatchString(r.ExecutionBootID) || r.RecoveryWitnessBootID != "" && (!bootIDPattern.MatchString(r.RecoveryWitnessBootID) || r.ExecutionBootID != "" || r.StartKey == "") || r.ResourcesRecovered && !r.ExecutionReturned || (r.ExecutionReturned || r.ExecutionBootID != "") && r.StartKey == "" || !inspectionOK(r.Inspection.runtime()) || r.Job.SourceDigest != sourceDigest(r.Job.Input, r.Inspection.InstallationDigest) || !reflect.DeepEqual(r.Job.Scope, r.Inspection.Scope) || (r.StartKey != "" && (!reference.MatchString(r.StartKey) || (r.Job.Scope != nil && r.Job.Scope.Model != nil && r.Job.Scope.Model.ExternalTransfer && !r.ExternalTransferConfirmed))) || r.Job.PreparationStarted != (r.StartKey != "") {
-			return fail()
-		}
-		key := r.Principal + "\x00" + r.CreateKey
-		if id, ok := createKeys[key]; ok && id != r.Job.ID {
-			return fail()
-		}
-		if old, exists := s.jobs[r.Job.ID]; exists {
-			if !validReceiptChange(old, r) {
-				return fail()
+	jobs, err := replayPreparationReceipts(ctx, records, j.snapshotCount)
+	if err != nil {
+		return fail()
+	}
+	s.jobs = jobs
+	if len(records) > len(jobs) {
+		snapshots, err := preparationSnapshots(jobs)
+		if err != nil || j.compact(ctx, snapshots, func(candidate []json.RawMessage, count int) error {
+			restored, err := replayPreparationReceipts(ctx, candidate, count)
+			if err != nil || !reflect.DeepEqual(restored, jobs) {
+				return errStorage
 			}
-		} else if r.Job.Revision != 1 || r.StartKey != "" {
-			return fail()
-		}
-		createKeys[key] = r.Job.ID
-		s.jobs[r.Job.ID] = r
-		if len(s.jobs) > maxJobs {
+			return nil
+		}, nil) != nil {
 			return fail()
 		}
 	}
+	if j.snapshotCount > 0 && j.blockLegacyReader(nil) != nil {
+		return fail()
+	}
+	records = nil
 	// 실행 중단의 결과를 추정하지 않는다. 저장된 사실을 유지하고 재실행을 금지한다.
 	for id, r := range s.jobs {
 		if active(r.Job.State) {
@@ -701,4 +700,44 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		return errors.Join(err, ErrUnavailable)
 	}
 	return err
+}
+
+// 압축 후보도 부팅과 동일한 영수증·참조·상태 전이 검증기를 쓴다.
+func replayPreparationReceipts(ctx context.Context, records []json.RawMessage, snapshotCount int) (map[string]receipt, error) {
+	if snapshotCount < 0 || snapshotCount > maxJobs || snapshotCount > len(records) {
+		return nil, errStorage
+	}
+	jobs := map[string]receipt{}
+	createKeys := map[string]string{}
+	for index, raw := range records {
+		if ctx.Err() != nil {
+			return nil, errStorage
+		}
+		var r receipt
+		if strictDecode(raw, &r) != nil || !validText(r.Principal, 256) || !reference.MatchString(r.CreateKey) || !validJob(r.Job) || r.ExecutionEvidenceVersion > 1 || r.ExecutionEvidenceVersion != 0 && r.StartKey == "" || r.ExecutionBootID != "" && !bootIDPattern.MatchString(r.ExecutionBootID) || r.RecoveryWitnessBootID != "" && (!bootIDPattern.MatchString(r.RecoveryWitnessBootID) || r.ExecutionBootID != "" || r.StartKey == "") || r.ResourcesRecovered && !r.ExecutionReturned || (r.ExecutionReturned || r.ExecutionBootID != "") && r.StartKey == "" || !inspectionOK(r.Inspection.runtime()) || r.Job.SourceDigest != sourceDigest(r.Job.Input, r.Inspection.InstallationDigest) || !reflect.DeepEqual(r.Job.Scope, r.Inspection.Scope) || (r.StartKey != "" && (!reference.MatchString(r.StartKey) || (r.Job.Scope != nil && r.Job.Scope.Model != nil && r.Job.Scope.Model.ExternalTransfer && !r.ExternalTransferConfirmed))) || r.Job.PreparationStarted != (r.StartKey != "") {
+			return nil, errStorage
+		}
+		key := r.Principal + "\x00" + r.CreateKey
+		if id, ok := createKeys[key]; ok && id != r.Job.ID {
+			return nil, errStorage
+		}
+		if index < snapshotCount {
+			if _, exists := jobs[r.Job.ID]; exists {
+				return nil, errStorage
+			}
+		} else if old, exists := jobs[r.Job.ID]; exists {
+			if !validReceiptChange(old, r) {
+				return nil, errStorage
+			}
+		} else if r.Job.Revision != 1 || r.StartKey != "" {
+			return nil, errStorage
+		}
+		createKeys[key] = r.Job.ID
+		jobs[r.Job.ID] = r
+		if len(jobs) > maxJobs {
+			return nil, errStorage
+		}
+	}
+
+	return jobs, nil
 }
