@@ -531,7 +531,11 @@ func (c *Controller) Instructions() string {
 		}
 	}
 	data, _ := json.Marshal(selected)
-	return "\nWorkbench workflow mode: " + c.record.Snapshot.Mode + ". Workbench workflow phase: " + c.record.Snapshot.Stage + ". Only selected endpoints may be tested after initial discovery. Endpoint references below are opaque program-owned IDs. Do not expand scope for newly found endpoints. A selected endpoint also covers the same method on a path that differs only in object ID segments of the same kind (number, UUID, long hex or email), so other object IDs may be requested there. Selected endpoint references (JSON): " + string(data)
+	scope := "Only selected endpoints may be tested after initial discovery. Endpoint references below are opaque program-owned IDs. Do not expand scope for newly found endpoints. A selected endpoint also covers the same method on a path that differs only in object ID segments of the same kind (number, UUID, long hex or email), so other object IDs may be requested there."
+	if c.binding.Mode == Auto {
+		scope = "In automatic mode you may test any path and method within the approved target scope, including endpoints that discovery did not find; the selected endpoints below are discovered starting points, not a limit. Requests outside the approved origin, paths or methods, excluded paths and destructive actions are blocked by the transfer control. Endpoint references below are opaque program-owned IDs."
+	}
+	return "\nWorkbench workflow mode: " + c.record.Snapshot.Mode + ". Workbench workflow phase: " + c.record.Snapshot.Stage + ". " + scope + " Selected endpoint references (JSON): " + string(data)
 }
 func (c *Controller) Command(ctx context.Context, owner, op, key string, revision uint64, ids []string) (Snapshot, error) {
 	c.mu.Lock()
@@ -634,7 +638,7 @@ func (c *Controller) Before(ctx context.Context, v e2proxy.RequestView) error {
 		return ErrDenied
 	}
 	e := c.requestEndpointLocked(v.Method, path)
-	if v.BodyBytes > 65536 || e == nil || !e.InScope || e.Change == "blocked" || !c.allowedPath(v.Method, path) {
+	if v.BodyBytes > 65536 || e != nil && (!e.InScope || e.Change == "blocked") || !c.allowedPath(v.Method, path) {
 		return ErrDenied
 	}
 	// 경로가 범위 안이어도 query에 파괴 동작이 실리면 막는다(위험 query 검증 유지, C23).
@@ -643,21 +647,61 @@ func (c *Controller) Before(ctx context.Context, v e2proxy.RequestView) error {
 	}
 	s := c.record.Snapshot
 	if s.Stage == "crawling" {
-		if v.Method != "GET" || v.BodyPresent || e.Change != "attested_read" {
+		if e == nil || v.Method != "GET" || v.BodyPresent || e.Change != "attested_read" {
 			return ErrDenied
 		}
 		return nil
 	}
-	if s.Stage != "diagnosing" || !e.Selected {
+	if s.Stage != "diagnosing" {
 		return ErrDenied
 	}
-	// 자동 모드도 수동 모드와 같은 범위를 보낸다. 대상에 승인한 쓰기(되돌릴 수 있는 쓰기 승인)가 있으면 건별 확인 없이
-	// 보낸다(C21, 2026-11-13 결정: 자동 모드는 승인 없이 돈다). 범위·메서드·위험 요청·예산 검사는 그대로다.
-	if e.Change != "attested_read" && !c.binding.ReversibleWrites {
+	change, ok := c.diagnosisChangeLocked(v.Method, path)
+	if !ok {
+		return ErrDenied
+	}
+	// 대상에 승인한 쓰기(되돌릴 수 있는 쓰기 승인)가 있으면 건별 확인 없이 보낸다(C21, 2026-11-13 결정: 자동 모드는
+	// 승인 없이 돈다). 범위·메서드·위험 요청·예산 검사는 그대로다.
+	if change != "attested_read" && !c.binding.ReversibleWrites {
 		return ErrDenied
 	}
 	return nil
 }
+
+// uncertainSideEffectLocked는 결과 불명으로 끝난 요청이 상태를 바꿨을 수 있다고 볼지다.
+func (c *Controller) uncertainSideEffectLocked(method, path string) bool {
+	if c.record.Snapshot.Stage == "diagnosing" {
+		if change, ok := c.diagnosisChangeLocked(method, path); ok {
+			return change != "attested_read"
+		}
+	}
+	return sideEffectPossible(c.requestEndpointLocked(method, path))
+}
+
+// diagnosisChangeLocked는 진단 단계에서 보낼 수 있는 요청의 변경 분류(attested_read·possible)다. ok=false면 보낼 수 없다.
+// Before(허용)와 After(결과 불명 요청 기억)가 같은 분류를 쓴다(#557 이동찬 리뷰: 허용 때 확인한 읽기로 본 경로를 결과
+// 불명 뒤 부작용 가능으로 기억해 회차 끝까지 막지 않게).
+func (c *Controller) diagnosisChangeLocked(method, path string) (string, bool) {
+	e := c.requestEndpointLocked(method, path)
+	if e != nil && e.Selected {
+		return e.Change, true
+	}
+	if c.binding.Mode != Auto {
+		return "", false
+	}
+	// 자동 모드는 고르지 않은 끝점·크롤이 찾지 못한 경로도 대상 승인 범위(origin·경로 접두·메서드) 안이면 보낸다
+	// (2026-11-13 사용자 결정: 원본처럼 승인 범위 안이면 진단한다. 선택 제한은 운영자가 고르는 수동 모드만). 제외 경로·
+	// 위험 요청·결과 불명 재전송 금지·예산·감사는 그대로다. 읽기 확인 경로 밖이거나 쓰기 메서드면 부작용 가능으로 본다.
+	in, change := c.endpointScope(normalizedMethod(method), path, "request", "diagnosis_request")
+	if !in {
+		return "", false
+	}
+	// 같은 경로를 따로 발견했으면 그 근거(폼 등 부작용 가능)가 상한이다. 더 넓게(확인한 읽기로) 바꾸지 않는다.
+	if e != nil && e.Change != "attested_read" {
+		change = e.Change
+	}
+	return change, true
+}
+
 func (c *Controller) PreapprovedRead(v e2proxy.RequestView) bool {
 	if v.BodyPresent || v.Method != "GET" && v.Method != "HEAD" {
 		return false
@@ -694,8 +738,9 @@ func (c *Controller) After(ctx context.Context, v e2proxy.RequestView, r e2proxy
 	if r.Reason == e2proxy.Unknown {
 		c.record.Snapshot.Counts.Unknown++
 		// 쓰기 메서드만이 아니라 부작용 가능 끝점(GET 폼·추정 경로 등 attested_read가 아닌 것)도 기억한다. GET이라고 상태
-		// 변경이 없다고 보지 않는다(CLAUDE.md 규칙 6, #525 이동찬 리뷰). 끝점을 찾지 못하면 부작용 가능으로 본다.
-		if method := normalizedMethod(v.Method); ok && (writeMethod(method) || sideEffectPossible(c.requestEndpointLocked(v.Method, path))) {
+		// 변경이 없다고 보지 않는다(CLAUDE.md 규칙 6, #525 이동찬 리뷰). 진단 단계는 허용 때와 같은 분류를 쓰고, 분류할 수
+		// 없으면(그 밖의 단계·끝점 없음) 부작용 가능으로 본다.
+		if method := normalizedMethod(v.Method); ok && (writeMethod(method) || c.uncertainSideEffectLocked(v.Method, path)) {
 			c.uncertainWrites[method+" "+path] = true
 		}
 	}
