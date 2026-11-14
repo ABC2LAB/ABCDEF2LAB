@@ -26,15 +26,34 @@ import (
 // contiguous run is coalesced into a single record so the trace shows whole
 // messages, not dozens of fragments.
 func captureRun(ctx context.Context, opts agentcore.Options, input string, emit func(db.Activity)) (string, harness.TerminalReason, error) {
+	return captureRunWith(ctx, opts, input, nil, emit)
+}
+
+// captureRunWith는 captureRun과 같되, 활동 기록의 글을 redact로 먼저 가린 뒤 요약을 만든다(redact가 nil이면 captureRun).
+func captureRunWith(ctx context.Context, opts agentcore.Options, input string, redact func(string) string, emit func(db.Activity)) (string, harness.TerminalReason, error) {
 	s := agentcore.NewSession(opts)
 	defer s.Close() // release the session's background-task manager (temp dir + processes)
-	return captureRunSession(ctx, s, input, emit)
+	return captureRunSessionWith(ctx, s, input, redact, emit)
 }
 
 // captureRunSession is captureRun over an existing session, so a caller can run
 // multiple prompts on the SAME conversation (e.g. a settlement round that reuses
 // the worker's accumulated context after the main run hit max_turns).
 func captureRunSession(ctx context.Context, s *agentcore.Session, input string, emit func(db.Activity)) (string, harness.TerminalReason, error) {
+	return captureRunSessionWith(ctx, s, input, nil, emit)
+}
+
+// captureRunSessionWith는 활동 기록에 넣을 글(모델 글·도구 입력·도구 결과·최종 답)을 redact로 먼저 가리고, 가린 글에서
+// 요약(첫 줄 앞부분)을 자른다. 요약을 먼저 자르고 나중에 가리면 잘린 보호 값(예: 시험 계정 세션 토큰 앞부분)이 정확한 값
+// 가림에 걸리지 않고 남는다(2026-11-14 Qwen3.6 소유 Juice Shop 점검 회차: 명령 첫 줄 TOKEN="…"이 200자에서 잘려 활동
+// 요약 4줄에 토큰 머리와 내용 일부가 남음). 감사 추적(auditTrace)과 반환하는 최종 답은 원문 그대로다.
+func captureRunSessionWith(ctx context.Context, s *agentcore.Session, input string, redact func(string) string, emit func(db.Activity)) (string, harness.TerminalReason, error) {
+	shown := func(text string) string {
+		if redact == nil {
+			return text
+		}
+		return redact(text)
+	}
 	ctx, auditTrace := intercept.WithTrace(ctx, input, approvalHistory(s.Messages()))
 	defer auditTrace.Finish()
 	var reason harness.TerminalReason
@@ -54,7 +73,7 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 		if tbuf.Len() == 0 {
 			return
 		}
-		s := strings.TrimSpace(tbuf.String())
+		s := shown(strings.TrimSpace(tbuf.String()))
 		k := tkind
 		tbuf.Reset()
 		tkind = ""
@@ -96,7 +115,7 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 			flush()
 			observeDiagnosticToolUse(ctx, ev.ToolUse.Name, ev.ToolUse.Input)
 			toolNames[ev.ToolUse.ID] = ev.ToolUse.Name
-			in := string(ev.ToolUse.Input)
+			in := shown(string(ev.ToolUse.Input))
 			lastTool.start(ev.ToolUse.ID, ev.ToolUse.Name, in)
 			auditTrace.Start(ev.ToolUse.ID, ev.ToolUse.Name, ev.ToolUse.Input)
 			rec(db.Activity{Kind: "tool_use", Tool: ev.ToolUse.Name, ToolUseID: ev.ToolUse.ID,
@@ -109,6 +128,7 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 			out := blocksText(ev.ToolResult.Content)
 			lastTool.done(ev.ToolResult.ToolUseID)
 			auditTrace.Complete(ev.ToolResult.ToolUseID, out, ev.ToolResult.IsError)
+			out = shown(out)
 			rec(db.Activity{Kind: "tool_result", Tool: toolNames[ev.ToolResult.ToolUseID], ToolUseID: ev.ToolResult.ToolUseID,
 				IsError: ev.ToolResult.IsError, Summary: firstLine(out, 200), Detail: out})
 		case harness.KindText:
@@ -143,8 +163,9 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 					tkind = ""
 				}
 				flush() // flush any trailing thinking / non-final text
+				answer := shown(ev.Terminal.Text)
 				result := db.Activity{Kind: "result", IsError: ev.Terminal.Err != nil,
-					Summary: firstLine(ev.Terminal.Text, resultSummaryRunes), Detail: ev.Terminal.Text}
+					Summary: firstLine(answer, resultSummaryRunes), Detail: answer}
 				if ev.Terminal.Text == "" || ev.Terminal.Reason == harness.ReasonAbortedTools || ev.Terminal.Reason == harness.ReasonAbortedStreaming {
 					result = terminalText(ctx, ev.Terminal, lastTool).activity(result)
 				}
