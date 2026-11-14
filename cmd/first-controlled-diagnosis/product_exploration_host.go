@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/x509"
 	"errors"
+	"io"
+	"log"
 	"net/netip"
 	"net/url"
 	"os"
@@ -57,7 +59,15 @@ const (
 	explorationBashTimeout = 2 * time.Minute
 	explorationBashDrain   = 10 * time.Second
 	explorationBashOutput  = 32 << 10
+	// 탐색 직접 Bash 작업 공간에 둘 원본 api-recon skill(이미지의 /app/skills, docs/sandbox-data-decision.md §2-2).
+	// 파일 하나의 읽기 상한은 작업 공간 상한보다 훨씬 작게 둔다.
+	explorationSkillDir      = "/app/skills/api-recon"
+	maxExplorationSkillBytes = 1 << 20
 )
+
+// explorationSkillFiles는 탐색 직접 Bash에 두는 api-recon 파일이다. 지시문과 표준 라이브러리만 쓰는 파이썬 스크립트만
+// 넣고, 브라우저 런타임 수집(runtime_harvest.js·preload.js)과 node 의존 파일은 넣지 않는다(브라우저 도구가 대신한다).
+var explorationSkillFiles = []string{"SKILL.md", "reference.md", "scripts/harvest_static.py", "scripts/extract_route_map.py", "scripts/spider_mpa.py", "scripts/build_perm_tree.py"}
 
 var errExplorationPolicy = errors.New("exploration_policy_invalid")
 
@@ -118,6 +128,9 @@ type productExplorationHost struct {
 	bashOnce       sync.Once
 	bashRoot       string
 	bashErr        error
+	// skillDir는 api-recon 파일을 읽을 곳이다(비면 explorationSkillDir). bashSeed는 처음 쓸 때 한 번 만든 작업 공간 tar다.
+	skillDir string
+	bashSeed []byte
 }
 
 func newProductExplorationHost(p productExplorationPolicy, caPEM []byte) (*productExplorationHost, error) {
@@ -147,12 +160,51 @@ func (h *productExplorationHost) sessionBash() (*exploresandbox.DirectBash, erro
 	h.bashOnce.Do(func() {
 		// MkdirTemp는 0700으로 만든다(exploresandbox가 정확히 0700을 요구).
 		h.bashRoot, h.bashErr = os.MkdirTemp(h.bashRootParent, "explore-bash-")
+		var seedErr error
+		if h.bashSeed, seedErr = explorationSkillSeed(h.skillDir); seedErr != nil {
+			// skill 파일이 없어도 탐색은 Bash만으로 계속한다(지시문도 skill을 안내하지 않는다).
+			log.Printf("탐색 직접 Bash: api-recon 파일을 작업 공간에 두지 못해 없이 진행합니다: %v", seedErr)
+		}
 	})
 	if h.bashErr != nil {
 		return nil, h.bashErr
 	}
 	return exploresandbox.New(exploresandbox.Config{Helper: h.bashHelper, RootDir: h.bashRoot, DirectProxy: h.proxy, CACert: h.caPEM,
-		Timeout: explorationBashTimeout, DrainTimeout: explorationBashDrain, OutputLimit: explorationBashOutput})
+		Timeout: explorationBashTimeout, DrainTimeout: explorationBashDrain, OutputLimit: explorationBashOutput, Seed: h.bashSeed})
+}
+
+// explorationSkillSeed는 api-recon 파일을 읽어 작업 공간 tar(작업 공간 안 api-recon/ 아래)로 만든다. 파일 하나라도
+// 없거나 일반 파일이 아니거나 상한을 넘으면 만들지 않는다.
+func explorationSkillSeed(dir string) ([]byte, error) {
+	if dir == "" {
+		dir = explorationSkillDir
+	}
+	files := map[string][]byte{}
+	for _, name := range explorationSkillFiles {
+		data, err := readExplorationSkillFile(filepath.Join(dir, filepath.FromSlash(name)))
+		if err != nil {
+			return nil, err
+		}
+		files["api-recon/"+name] = data
+	}
+	return exploresandbox.SeedFiles(files)
+}
+
+func readExplorationSkillFile(path string) ([]byte, error) {
+	// 링크는 따라가지 않는다(이미지 밖 파일을 작업 공간에 옮기지 않게).
+	if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() {
+		return nil, errExplorationPolicy
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxExplorationSkillBytes+1))
+	if err != nil || len(data) > maxExplorationSkillBytes {
+		return nil, errExplorationPolicy
+	}
+	return data, nil
 }
 
 // exploreTargetOf는 승인된 대상 등록 기록을 경계가 판정에 쓰는 대상 값으로 바꾼다. 연결은 등록 때 고른 주소로만 하고

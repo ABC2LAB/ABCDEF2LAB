@@ -45,6 +45,9 @@ type Config struct {
 	DrainTimeout time.Duration
 	// OutputLimit은 명령 출력 캡처 상한(바이트)이다.
 	OutputLimit int
+	// Seed는 명령마다 /work에 미리 풀어 두는 작업 공간 tar다(비면 빈 작업 공간). 탐색 프로필의 api-recon 지시문·
+	// 파이썬 스크립트를 둔다(docs/sandbox-data-decision.md §2-2). 명령마다 새로 풀므로 명령이 바꿔도 다음 명령에 남지 않는다.
+	Seed []byte
 }
 
 // Result는 프로세스 근거다. Output은 신뢰하지 않는 도구 출력이라 모델·화면에 주기 전에 가려야 한다.
