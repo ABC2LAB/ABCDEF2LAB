@@ -486,6 +486,14 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 		done()
 		return errPreparation
 	}
+	// 회차 실행 시간 상한에 닿기 전에 budget_limited 마감을 시작해, 끝난 작업의 결과를 버리지 않고 실행 시간 안에서
+	// 마감한다(실행 결과 상태 값 계약 §3.4). 실행 끝 시각은 위 hard 문맥의 기한이다.
+	if end, ok := hard.Deadline(); !ok || d.supervisor == nil || d.supervisor.SetTimeBudget(urlTimeBudgetClose(end, time.Duration(l.profile.Budget.DurationSeconds)*time.Second, time.Duration(launch.ShutdownTimeoutSeconds)*time.Second)) != nil {
+		cleanup, done := launchCleanupContext(context.WithoutCancel(parent), launch)
+		closeErr := d.Close(cleanup)
+		done()
+		return unknown("gateway_unavailable", closeErr == nil)
+	}
 	b.mu.Lock()
 	b.live[taskID] = newURLLiveHandler(d.runtime.Handler())
 	b.mu.Unlock()
@@ -600,6 +608,18 @@ func (r *urlGatewayRunner) final() *diagnosis.Closure {
 	}
 	value := *r.closed
 	return &value
+}
+
+// urlTimeCloseShare는 시간 상한 마감에 쓰는 유예·결과 저장 여유가 각각 회차 실행 시간에서 차지할 수 있는 몫의
+// 분모다. 짧은 회차도 실행 시간의 절반 이상은 작업에 쓴다.
+const urlTimeCloseShare = 4
+
+// urlTimeBudgetClose는 시간 상한 마감 시작 시각과 진행 중 작업 유예를 정한다. 유예(엔진 정리 유예 상한)와 결과
+// 저장 여유(launch 정리 시간 상한)를 실행 끝 시각에서 빼서, 마감이 승인한 실행 시간 안에서 끝나게 한다.
+func urlTimeBudgetClose(end time.Time, budget, shutdown time.Duration) (time.Time, time.Duration) {
+	drain := min(server.FirstDiagnosisTimeBudgetDrain, budget/urlTimeCloseShare)
+	margin := min(shutdown, budget/urlTimeCloseShare)
+	return end.Add(-drain - margin), drain
 }
 
 // urlStoppedUpdate는 실행 문맥이 끝나 멈춘 실행(운영자 중지·대상 철회·결속 계정 변경·상태 조회 포기)의 마감 갱신이다.

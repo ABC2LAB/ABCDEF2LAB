@@ -48,7 +48,7 @@ intent 결과는 **그래프의 지금 상태에서 계산하는 투영**이다.
 | 칸 | 있는 `state` | 값 | 규칙 |
 |---|---|---|---|
 | `outcome` | `completed` | `complete` · `partial` · `no_intents` | 아래 대조식. |
-| `closing_reason` | `completed` (없을 수 있음) | `budget_limited` | Planner 라운드·도구 호출·intent 재실행 상한, 승인 모델 예산 또는 E② 승인 요청 예산에 닿아 새 작업 없이 마감했다. 찾은 후보·근거는 보존한다. |
+| `closing_reason` | `completed` (없을 수 있음) | `budget_limited` | Planner 라운드·도구 호출·intent 재실행 상한, 승인 모델 예산, E② 승인 요청 예산 또는 회차 실행 시간(3.5)에 닿아 새 작업 없이 마감했다. 찾은 후보·근거는 보존한다. |
 | `intent_outcomes` | `completed` · `cancelled` | `{done, policy_limited, incomplete, unknown, stopped}` 정수 | 위 2절 투영의 개수. 모두 0 이상. `cancelled`에서는 "끝난 것·끊긴 것"을 보이는 데 쓴다(#429 이경준 제안). |
 | `diagnostic_log_incomplete` | `completed` | 참·거짓 | 진단 로그 기록 실패·관찰 불완전(C10). `reason_code`에 넣던 경고를 여기로 옮긴다(#418 이경준 지적: 다른 사유가 있으면 경고가 덮였다). |
 | `account_auth` | `completed` · `cancelled` · `failed` (시험 계정을 결속한 실행만) | 라벨 → `authenticated` · `login_failed` · `session_not_found` · `result_unknown` · `not_sent` | 실행 시작 때 인증 준비의 계정별 결과(C14 결정 3, S08). 라벨은 계정 등록 라벨(소문자·숫자·`_`·`-`, 사용자명 원문 아님), 값은 결과뿐이고 자격·세션 값은 없다. 1…16개. 인증 준비가 없던 실행(계정 미결속, 그리고 지금은 외부 API 실행 — 사전 공지·승인 동의 칸이 생기기 전까지 결속하지 않음)에는 칸이 없다. 받는 쪽은 모드로 거부하지 않는다(동의 칸이 생기면 외부 API 실행에도 실림). 아래 3.4. |
@@ -65,7 +65,7 @@ intent 결과는 **그래프의 지금 상태에서 계산하는 투영**이다.
 
 - 결정안은 `no_intents`를 마감 사유로 적었다. intent가 없으면 `complete`·`partial` 어느 쪽도 맞지 않아서 `outcome` 값으로 둔다. `closing_reason`은 `budget_limited` 하나로 시작한다.
 - `budget_limited`와 `outcome`은 따로다. 상한에 닿았어도 시작한 intent가 모두 `done`이면 `complete` + `budget_limited`다(상한 때문에 더 못 했다는 뜻은 `closing_reason`이 말한다).
-- 시간 상한(task deadline)은 이 계약에 넣지 않는다. 지금처럼 `failed`다. 시간 예산을 `budget_limited`로 볼지는 열린 항목 1.
+- 회차 실행 시간(`Budget.DurationSeconds`)도 실행 상한이다. 시간에 닿으면 `budget_limited`로 마감한다(3.5, 열린 항목 1 결정).
 - 위 표의 "있는 `state`" 밖에서 새 칸이 오면 받는 쪽은 거부한다.
 
 ### 3.3 사용량 회계와 실행 결과는 다른 축이다
@@ -81,6 +81,19 @@ intent 결과는 **그래프의 지금 상태에서 계산하는 투영**이다.
 - `not_sent`: 보내지 않았다(자격 파일 대조 실패, 보호할 수 없는 비밀번호, E② 거부·예산 소진 등).
 - `authenticated`가 아닌 계정은 그 실행에서 비인증으로 진행한 것이다. 그 계정 기준의 인가 결과를 "접근 차단 확인"으로 읽지 않는다(절대 규칙 5). 실행 중 결속 계정이 해제·만료·자격 교체되어 새 송신이 멈춘 것은 이 칸이 아니라 실행 `state`·`reason_code`가 말한다: `cancelled` + `reason_code: account_binding_changed`(대상 철회처럼 운영자 쪽 중지로 저장되고, 마감·결과 불명 확인이 우선하면 그 사유로 바뀐다).
 - 보내는 순서: 웹 파서가 이 칸을 받는 변경(이경준)이 먼저 들어가고, 그 뒤 서버가 싣는다. 웹 파서는 칸을 정확히 검사하므로 서버가 먼저 실으면 상태 화면이 응답을 거부한다. 웹 파서는 #530으로 들어갔고, 서버는 실행이 잡을 때 받은 결과를 실행 서비스 마감(`diagnosis.Closure`·`Snapshot.account_auth`)과 준비 작업(`diagnosisprep.Job.account_auth`)으로 넘긴다. 실행을 잡지 못하고 실패해도 인증 준비가 돌았으면 싣는다. 결과 불명 상태에는 싣지 않는다.
+
+### 3.5 시간 상한 마감 (열린 항목 1 결정, 2026-11-14)
+
+회차 실행 시간은 승인한 예산의 한 칸이라, 닿으면 다른 실행 상한과 같이 `completed` + `budget_limited`로 마감한다. 끝난 작업의 결과를 버리지 않는다.
+
+- 마감 시작 시각 = 회차 실행 끝 시각(승인한 실행 시간) − 진행 중 작업 유예 − 결과 저장 여유. 유예는 엔진 원래 정리 유예(90초) 상한, 결과 저장 여유는 launch 정리 시간(`shutdown_timeout_seconds`) 상한이고, 둘 다 실행 시간의 1/4을 넘지 않는다. 그래서 마감이 승인한 실행 시간 안에서 끝난다(실행 문맥·권한 기한은 지금 그대로).
+- 마감 시작 시각부터 엔진의 원래 정리 순서를 켠다: 새 Planner 라운드·새 intent를 시작하지 않는다. 진행 중 작업은 유예 동안 마무리한다.
+- 유예가 지나도 끝나지 않은 작업은 엔진 정리 순서의 마지막 단계처럼 멈춘다. 그 intent는 `incomplete`(엔진 `exhausted`)로 세고, 진행 중이던 E② 송신이 있었으면 그 intent만 `unknown`이다(결과 불명 송신은 다시 보내지 않는다).
+- 진행 중 작업이 끝나면 감독자가 `budget_limited`로 마감한다. `outcome`은 intent 결과대로 `complete`·`partial`이다.
+- 실행 시간 안에 마감을 끝내지 못하면 지금과 같다(실행 문맥 종료로 멈춤).
+- 엔진 자체 기한(첫 실행 + 실행 시간)은 마감 시작 시각보다 늦게 오고, 이미 정리 중이면 다시 정리하지 않는다.
+- 화면에 새 값은 없다(`budget_limited` "예산 상한에서 마감"). 시간 상한이었다는 세부는 진단 로그(`stage_started`·`drain`·`time_budget_reached`)에 남는다.
+- URL 진단 경로(진단 준비 서비스)가 이 마감을 켠다. CLI 단발 실행은 지금처럼 엔진 기한만 쓴다.
 
 ## 4. 화면 표시 원칙 (이경준, #411 리뷰)
 
@@ -120,7 +133,7 @@ intent 결과는 **그래프의 지금 상태에서 계산하는 투영**이다.
 
 ## 7. 열린 항목
 
-1. **시간 상한**(이동찬): task deadline 도달을 `budget_limited`로 볼지. 지금은 마감 과정(settlement)과 얽혀 있어 이 계약에서 뺐다.
+1. ~~**시간 상한**: task deadline 도달을 `budget_limited`로 볼지.~~ 결정함(3.5, 2026-11-14): 실행 시간은 예산 칸이라 `budget_limited`로 마감한다.
 2. **명령 시간 초과**(E② 실행기 담당): Bash 명령 하나가 시간 상한에 닿으면 실행기는 `transient_failure`로 분류하는데, 신뢰 결과에 종료 원인이 없어 E② 프록시 장애(집행 장애, 실행 `failed`)와 구분되지 않는다. 그래서 지금은 명령 시간 초과도 마감 실패다. 신뢰 결과에 종료 원인(시간 초과·프록시 장애)을 싣으면 시간 초과는 그 intent의 `incomplete`로 센다.
 3. **결과 불명 상태 변경 요청의 후속 보류**(E② 실행 허용 판단 담당과 정함, #489 윤재상 지적): 같은 메서드·경로의 재전송 차단은 진단 흐름에 넣었다(6절 3, #525 — 상태 확인 장치가 없어 회차 끝까지 거부). 남은 것은 그 intent에 기대는 후속 intent를 보류하는 것이다.
 

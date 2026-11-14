@@ -89,6 +89,30 @@ type FirstDiagnosisSupervisor struct {
 	ownedTask       string
 	operationCancel context.CancelFunc
 	joinDone        chan struct{}
+	// timeCloseAt·timeDrain은 회차 실행 시간 상한의 마감 시작 시각과 진행 중 작업 마무리 유예다(SetTimeBudget).
+	// 0이면 시간 마감을 하지 않는다(엔진 자체 기한과 실행 문맥만 남음).
+	timeCloseAt time.Time
+	timeDrain   time.Duration
+}
+
+// FirstDiagnosisTimeBudgetDrain은 시간 상한 마감 때 진행 중 작업을 기다리는 유예의 상한이다. 엔진 원래 정리 순서의
+// 유예(settleDrainGrace)와 같다. 호출자는 회차 실행 시간 안에 마감이 끝나도록 이보다 짧게 줄 수 있다.
+const FirstDiagnosisTimeBudgetDrain = settleDrainGrace
+
+// SetTimeBudget은 회차 실행 시간 상한의 마감을 정한다(실행 결과 상태 값 계약 §3.4). closeAt부터 새 계획·새 intent를
+// 시작하지 않고(budget_limited), 진행 중 작업은 drain 동안 마무리한 뒤 끝나지 않았으면 멈춘다. 진행 중 작업이 끝나면
+// 실행을 budget_limited로 마감한다. Run 전에 한 번만 부른다.
+func (s *FirstDiagnosisSupervisor) SetTimeBudget(closeAt time.Time, drain time.Duration) error {
+	if s == nil || closeAt.IsZero() || drain < 0 || drain > FirstDiagnosisTimeBudgetDrain {
+		return ErrFirstDiagnosisSupervisor
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing || s.closed || s.running || s.runStarted || !s.timeCloseAt.IsZero() {
+		return ErrFirstDiagnosisSupervisor
+	}
+	s.timeCloseAt, s.timeDrain = closeAt, drain
+	return nil
 }
 
 func (*FirstDiagnosisSupervisor) String() string { return "server.FirstDiagnosisSupervisor[protected]" }
@@ -423,6 +447,7 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 	s.runTask = taskID
 	s.runIntent = intentID
 	s.registered = snapshotRef != ""
+	timeCloseAt, timeDrain := s.timeCloseAt, s.timeDrain
 	s.operations.Add(1)
 	s.mu.Unlock()
 	_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "supervisor", Event: "run_started", TaskID: mustFirstDiagnosisTaskNumber(taskID), IntentID: intentID, Stage: "admission", Status: "started"})
@@ -534,6 +559,8 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 	setStage("execution")
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
+	var timeClosing, timeStopped bool
+	var drainUntil time.Time
 	for {
 		if !registered && server.requestApprovals.userStopped(number) {
 			return firstDiagnosisFailure(context.Canceled)
@@ -541,6 +568,22 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 		if run.Err() != nil {
 			server.engine.Pause(taskID, agent.AbortPausedRaceGuard)
 			return firstDiagnosisFailure(run.Err())
+		}
+		if !registered && !timeCloseAt.IsZero() {
+			now := time.Now()
+			if !timeClosing && !now.Before(timeCloseAt) {
+				// 시간 상한(계약 §3.4): 엔진의 원래 정리 순서를 켜서 새 계획·새 intent를 시작하지 않고, 실행 상한으로
+				// 표시해 진행 중 작업이 끝나면 budget_limited로 마감한다. 엔진 자체 기한의 정리는 이미 켜져 있으면 하지 않는다.
+				timeClosing, drainUntil = true, now.Add(timeDrain)
+				server.engine.markSettling(taskID)
+				task.firstDiagnosisBudgetLimited.Store(true)
+				_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "supervisor", Event: "stage_started", TaskID: mustFirstDiagnosisTaskNumber(taskID), Stage: "drain", Status: "started", ReasonCode: "time_budget_reached"})
+			}
+			if timeClosing && !timeStopped && !now.Before(drainUntil) && server.engine.inflightCount(taskID) > 0 {
+				// 유예 안에 끝나지 않은 작업은 엔진 정리 순서의 마지막 단계처럼 멈춘다. 그 intent는 exhausted(미완료)로 남는다.
+				timeStopped = true
+				server.engine.cancelExec(taskID, agent.AbortSettleDrainTimeout)
+			}
 		}
 		intentState := ""
 		if intentID > 0 {
