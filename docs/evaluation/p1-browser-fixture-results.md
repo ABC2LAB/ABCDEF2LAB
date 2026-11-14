@@ -333,3 +333,40 @@ node scripts/acceptance/u01-workbench-browser.mjs
 | invalid_delete_scope | PASS — 명시적 계약 오류·서버 범위 없음·시작 버튼 없음 | `26ee234905993ee9db5598db9dcc52d6440c696af677566916df9c57c6f2c822` |
 
 모든 시나리오의 변경 API 요청·진단 시작·모델 호출은 0이다. 실제 엔진·대상 송신·Qwen/유료 모델 수용은 **NOT_RUN**이다.
+
+
+## U01 — 최신 인계 9개 PR 통합 재수용 (2026-11-14)
+
+공용 dev에 병합한 결과가 아니라 아래 head들을 순서대로 merge한 로컬 검증 소스다. 소스 SHA `a210bc857fd92371401fcf1b1935a816f4c24512`, tree `dbec393fe3a39cd93f17263a55f355da34de3d05`다. 각 PR의 기존 정상 커밋과 원격 보완을 보존했으며 통합 merge 충돌은 없었다.
+
+| 순서 | 기준/PR | 정확한 head |
+|---|---|---|
+| 기준 | dev | `7187ba577c3eae57f935d1e33ebed4ffbb3975b0` |
+| 1 | #559 C04·C33 | `0408f4e89cf3dc3de75e404048d7373fea99b802` |
+| 2 | #561 외부 시험 계정 동의 | `53c97545ce3dda9fa7e8cf3e83cb216f03e4ae20` |
+| 3 | #562 E② 흐름 | `22bdff465c0dba836db74d3808b7b0181377afb0` |
+| 4 | #563 커버리지 | `6f2ab18439f7189db8d025d89ec877d3d768aaaf` |
+| 5 | #565 U01 | `1b127851446c67cb2288d5ffa9f1b85846a9a51f` |
+| 6 | #566 결정 | `f1d53b6cfcdbb1a56fd5bf12bb9f000a1d089497` |
+| 7 | #576 C34 상한 | `d6e15190499c2cb2bd39febd4c2f1b480ad2a432` |
+| 8 | #580 C34 압축 | `2f7781dc39124d9a49d7a757fb0dcb72aaf3aecd` |
+| 9 | #586 C35 | `9f3cd92449f3bbdf479d0ebc91d95619c7baff4e` |
+
+환경은 Linux 비root·Go1.26.3·Node22.23.4다. 실제 production 정적 빌드(`NEXT_PUBLIC_MOCK=0`, `NEXT_EXPORT=1`)의 Workbench를 loopback 39205에서 열었다. 브라우저는 기존 고정 이미지 `sha256:17b7b5f0fa7ed1caf03e1385deadab742b076735436a72a8aa83d05b48acc811`의 Chrome157.0.8103.15/CDP1.3이며 1440×1000이다. 비root·read-only·cap-drop ALL·no-new-privileges·native CDP, UI 시험용 --no-sandbox/host network 조건은 이전 회차와 같다. HOME/config/cache는 컨테이너 tmpfs만 사용했고 MCP는 켜지 않았다. 이 배치를 제품 탐색 격리·전수 egress 통제 수용으로 세지 않는다.
+
+하네스는 기존 보강판 그대로(SHA256 `19c3c6fcd8ecd915db35db7a91bc8d1a2fb5d2a898545e00a5c2e2079bff63f7`)다. 준비 API는 소유 결정적 fixture이며 변경 API 요청 합계0, 실제 진단 시작·모델 호출0이다. 대상 scope와 위험 고지·자동/건별 승인 구분·HTTP 평문 고지·범위 없음/미지원 DELETE 거절을 실제 브라우저에서 확인했다.
+
+| 시나리오 | 결과 | screenshot SHA256 |
+|---|---|---|
+| auto_https | PASS | `5533c18909d7f1f8a9e10912e5c17d68acd12b392cb6f02395076b6ea4a58feb` |
+| manual_https | PASS | `63ee7b1052301e75620d23c86f63d379011a57d5320611771e5a450f268545f6` |
+| readonly_https | PASS | `c5e02c5099080d3dddea3b194b16b4bb42cbfd695a0646a35a827d6d1768d532` |
+| auto_http | PASS | `ab8fd753be2e12b734e752f1763721a0a19b10e88a862cddb8db9005cea8e82e` |
+| missing_scope | PASS | `15b7bc7e96225817697e7559ee19411ca425d6ccffc83aec7ba2e71c8cb0b473` |
+| invalid_delete_scope | PASS | `26ee234905993ee9db5598db9dcc52d6440c696af677566916df9c57c6f2c822` |
+
+report.json SHA256은 `a865cbfbfaa279662fc2737cc9288e8df4e47d99f90b491769d3c2c01f239b09`다. fixture 해시는 앞선 보강 회차와 같다. 원문 report/스크린샷은 보호된 `/tmp/jindo-kyeongjun-lifecycle-20261114/integrated-u01/`에만 보존하고 커밋하지 않았다. 초기 실행은 이미지에 없는 최신 Chromium 경로를 사용해 기동 전 실패했고, 실제 이미지 경로를 확인한 뒤 read-only HOME의 CDP 준비 실패를 바로잡았다. 이 두 시도는 NOT_RUN이며 위 PASS6건에 포함하지 않는다. 전용 UI 컨테이너·정적 서버를 정리했다.
+
+통합 회귀: 준비 서비스 race PASS209/SKIP1(대용량 측정 opt-in), 제품 명령 race PASS369/SKIP3(기존 PostgreSQL 의존 시험), FAIL0. 숫자는 패키지·상위 subtest를 포함한 go test -json pass 이벤트다. 웹 tsc·전체 Vitest833/833·정적 production 빌드·전체 Go build/vet 통과. C34 constructor I/O fallback·회계 변조 거절 보완과 C35 실제 소유 DNS/TLS 시험을 포함했다.
+
+별도 PostgreSQL16 fixture는 네트워크/TCP를 열지 않고 tmpfs DB·소유 Unix socket만 사용했다. 실제 로그인→공개 관리 mux→작업 권한→pause/resume/활동 수신기와 모델 키 보호 시험은 race PASS8/FAIL0/SKIP0이다. 앞선 DB 환경 실패를 통과로 바꾸지 않고 socket 구성을 바로잡은 별도 실행으로 기록한다. DB fixture는 제거했다. 이 결과를 Planner/Worker·실제 Qwen·새 Docker 제품 종단 진단의 수용으로 사용하지 않는다(모두 NOT_RUN).
