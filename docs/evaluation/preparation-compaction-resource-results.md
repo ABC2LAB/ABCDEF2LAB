@@ -54,6 +54,7 @@ ARTEX_PREPARATION_RESOURCE_TEST=1 go test -json ./diagnosisprep \
 - 쓰기·fsync·후보 재검증·게시 전 9지점 오류 주입에서 원본 바이트가 보존됐다. 게시 후 부모 동기화·구버전 가드 실패는 writer 중단 뒤 재기동으로 복원했다. 실제 전원 차단 시험은 NOT_RUN이다.
 - 후보 source anchor 교체·다른 source/중복/누락 영수증·head/data 손실·권한/심볼릭 링크/하드링크/부분 쓰기·구버전 reader를 음성 시험했다.
 - 정상 커밋 뒤 별도 Go overlay 변이 **7/7 검출**: 후보 영수증 검증 제거, 원본 chain anchor 비교 제거, 구버전 reader 가드 제거, 개수 상한을 1,024로 되돌림, replay 개수 제한 제거, 신규 생성 개수 제한 제거, 파일 크기 조기 검사 제거. 모두 컴파일 실패가 아닌 해당 독립 시험의 assertion 실패로 검출했다. 원본 코드는 수정하지 않았다.
-- 제품/서버 전체 race에서 서버의 `TestLocalOnlyModelListDoesNotSendFormOrStoredKey`는 전용 PostgreSQL 부재로 FAIL이었다. 환경 의존 시험을 통과로 계산하지 않는다. 최종 집계와 제품 중계·저장 경계의 별도 실행 결과는 후속 검증 기록에 적는다.
+- 제품 명령 패키지 전체 race: PASS 이벤트 324, SKIP 3, FAIL 0. 서버 전체 race: PASS 이벤트 1,759, SKIP 305, 시험 FAIL 1(패키지도 FAIL). `TestLocalOnlyModelListDoesNotSendFormOrStoredKey`가 전용 PostgreSQL 부재로 실패했다. 환경 의존 시험을 통과로 계산하지 않는다.
+- 별도 제품 관리 중계·입구 race: PASS 이벤트 42, SKIP 1, FAIL 0. 인증·task 결속·허용 라우트·재시도 금지·크기 제한·권한 재검사 회귀를 통과했다. 위 숫자는 `go test -json`의 pass 이벤트이며 패키지/상위 subtest 이벤트를 포함한다.
 
 이 문서는 파일 저장·복원 수용 근거다. 실제 Qwen, 대상 진단, 브라우저 U01의 근거로 사용하지 않는다(이 검증에서 모두 NOT_RUN).
