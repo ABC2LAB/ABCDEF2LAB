@@ -746,12 +746,54 @@ func TestRunnerProxyDeathIsTransientFailure(t *testing.T) {
 	select {
 	case result := <-done:
 		cancel()
-		if !result.Trusted.Final || result.Trusted.Classification != "transient_failure" {
-			t.Fatal("proxy listener death was not reported as a transient failure")
+		if !result.Trusted.Final || result.Trusted.Classification != "transient_failure" || result.Trusted.Termination != TerminationProxyUnavailable {
+			t.Fatal("proxy listener death was not reported as a transient failure", result.Trusted.Termination)
 		}
 	case <-time.After(6 * time.Second):
 		cancel()
 		t.Fatal("runner did not observe proxy listener death")
+	}
+}
+
+// 명령 시간 상한(호출 문맥 기한)에 닿아 멈춘 명령은 원인을 신뢰 결과에 timeout으로 남긴다(계약 열린 항목 2). 대상 송신이
+// 없었으므로 결과 불명이 아니고, 드레인·감사가 끝나 최종이다.
+func TestRunnerCommandTimeoutRecordsTermination(t *testing.T) {
+	base := runnerTestDirectory(t)
+	helper := runnerTestHelper(t, base)
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer target.Close()
+	fixture := newRunnerFixture(t, base, helper, target.URL, nil)
+	// 끝까지 실행된 명령에는 종료 원인을 남기지 않는다.
+	if result, err := fixture.runner.Run(t.Context(), "true"); err != nil || result.Trusted.Termination != "" {
+		t.Fatalf("ordinary command recorded a termination: err=%v termination=%q", err, result.Trusted.Termination)
+	}
+	caller, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer cancel()
+	result, err := fixture.runner.Run(caller, "sleep 10")
+	trusted := result.Trusted
+	if !errors.Is(err, ErrUnavailable) || trusted.Classification != "transient_failure" || trusted.Termination != TerminationTimeout ||
+		!trusted.Final || !trusted.ProcessDrained || !trusted.ProxyDrained || trusted.ProcessBashExited || trusted.Call.Counts.Unknown != 0 {
+		t.Fatalf("timed-out command: err=%v classification=%s termination=%q final=%v drained=%v/%v bash=%v counts=%+v", err, trusted.Classification, trusted.Termination, trusted.Final, trusted.ProcessDrained, trusted.ProxyDrained, trusted.ProcessBashExited, trusted.Call.Counts)
+	}
+}
+
+// 정책 거부 뒤 시간 상한에 닿은 명령: 분류는 거부가 먼저(policy_not_executed)이고 종료 원인은 timeout으로 남는다.
+// Worker·마감은 이 조합을 그 명령·intent의 결과로 받는다(#578 이동찬 리뷰의 재현).
+func TestRunnerTimeoutAfterPolicyDenialKeepsBothFacts(t *testing.T) {
+	base := runnerTestDirectory(t)
+	helper := runnerTestHelper(t, base)
+	var received atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { received.Add(1) }))
+	defer target.Close()
+	fixture := newRunnerFixture(t, base, helper, target.URL, nil)
+	caller, cancel := context.WithTimeout(t.Context(), 1500*time.Millisecond)
+	defer cancel()
+	result, err := fixture.runner.Run(caller, "curl --silent --max-time 1 '"+target.URL+"/denied'; sleep 10")
+	trusted := result.Trusted
+	if !errors.Is(err, ErrUnavailable) || trusted.Classification != "policy_not_executed" || trusted.Termination != TerminationTimeout ||
+		!trusted.Final || !trusted.ProcessDrained || !trusted.ProxyDrained || trusted.ProcessBashExited ||
+		trusted.Call.Counts.Denied != 1 || trusted.Call.Counts.Unknown != 0 || received.Load() != 0 {
+		t.Fatalf("timeout after denial: err=%v class=%s termination=%q final=%v bash=%v counts=%+v received=%d", err, trusted.Classification, trusted.Termination, trusted.Final, trusted.ProcessBashExited, trusted.Call.Counts, received.Load())
 	}
 }
 

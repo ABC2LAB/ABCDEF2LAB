@@ -333,6 +333,10 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	if mode == "tool-failure" {
 		provider.command += " | grep -q never-present-owned-fixture"
 	}
+	if mode == "command-timeout" {
+		// 대상은 바로 답하고, 명령은 호출 시간 상한을 넘겨 호스트가 멈춘다(결과 불명 송신 없음).
+		provider.command += "; sleep 30"
+	}
 	if mode == "request-budget-overflow" {
 		// 남은 예산이 하나인데 한 명령에서 두 번 보낸다. 둘째 요청은 E②가 예산 소진으로 보내지 않는다.
 		provider.command += "; curl --silent --show-error --max-time 5 " + target.URL + "/allowed"
@@ -712,6 +716,19 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 			result.IntentOutcomes != (diagnosis.IntentOutcomes{Unknown: 1}) || hits.Load() != 1 || !entered || !exited ||
 			intentState != "blocked" || blockedReason != "e2_http_result_unknown" || !runtime.server.engine.isSettling(task.ID) {
 			t.Fatalf("시간 상한을 budget_limited 마감으로 처리하지 않음 err=%v result=%+v hits=%d entered=%v exited=%v intent=%s/%s status=%s", runErr, result, hits.Load(), entered, exited, intentState, blockedReason, task.lifecycleSnapshot().Status)
+		}
+		return
+	}
+	if mode == "command-timeout" {
+		// 명령 시간 상한은 그 명령·intent의 미완료다(계약 열린 항목 2). 실행은 마감 실패가 아니라 partial로 끝난다.
+		result := supervisor.RunResult()
+		var trusted e2runner.TrustedResult
+		if provider.result != nil {
+			trusted = provider.result.Trusted
+		}
+		if runErr != nil || result == nil || !result.Valid() || result.Outcome != diagnosis.OutcomePartial || result.IntentOutcomes != (diagnosis.IntentOutcomes{Incomplete: 1}) ||
+			hits.Load() != 1 || trusted.Classification != "transient_failure" || trusted.Termination != e2runner.TerminationTimeout || trusted.Call.Counts.Unknown != 0 {
+			t.Fatalf("명령 시간 상한을 intent 미완료로 마감하지 않음 err=%v result=%+v hits=%d class=%s termination=%q counts=%+v status=%s", runErr, result, hits.Load(), trusted.Classification, trusted.Termination, trusted.Call.Counts, task.lifecycleSnapshot().Status)
 		}
 		return
 	}

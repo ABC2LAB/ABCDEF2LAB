@@ -853,8 +853,20 @@ func firstDiagnosisClosedToolOutcome(result e2runner.TrustedResult) bool {
 		}
 		return false
 	}
-	// 아래 분류는 bash가 끝까지 실행돼 종료 코드가 있는 명령에만 붙는다.
-	if !result.ProcessBashExited {
+	if result.Classification == "transient_failure" && result.Termination == e2runner.TerminationTimeout {
+		// 명령 시간 상한에 닿아 호스트가 멈춘 명령이다(계약 열린 항목 2). 결과 불명 송신은 위에서 걸렀고 프로세스·프록시
+		// 드레인과 감사는 위·호출자가 확인하므로 그 intent의 미완료다. 프록시 장애(proxy_unavailable)는 집행 장애라
+		// 그대로 마감 실패다.
+		switch result.Call.Reason {
+		case e2proxy.Complete, e2proxy.Withheld, e2proxy.PolicyDenied, e2proxy.Unsupported, e2proxy.TransportFailed, e2proxy.BudgetExhausted, e2proxy.AttemptLimit:
+			return true
+		}
+		return false
+	}
+	// 아래 분류는 bash가 끝까지 실행돼 종료 코드가 있는 명령에만 붙는다. 예외: 정책 거부·미지원 뒤 명령 시간 상한에 닿은
+	// 명령은 실행기가 거부·미지원 분류를 먼저 붙인다(종료 원인 timeout). 그 분류는 종료 코드가 아니라 E② 수로 정해지므로
+	// 아래에서 같은 수 대조로 받는다(#578 이동찬 리뷰).
+	if !result.ProcessBashExited && !(result.Termination == e2runner.TerminationTimeout && (result.Classification == "policy_not_executed" || result.Classification == "unsupported")) {
 		return false
 	}
 	if result.Classification == "transient_failure" {

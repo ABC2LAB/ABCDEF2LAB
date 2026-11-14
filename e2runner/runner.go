@@ -31,6 +31,12 @@ var (
 // ClassificationForwardNotAttempted marks allowed policy intent that never reached a forward attempt.
 const ClassificationForwardNotAttempted = "forward_not_attempted"
 
+// TrustedResult.Termination 값이다.
+const (
+	TerminationTimeout          = "timeout"
+	TerminationProxyUnavailable = "proxy_unavailable"
+)
+
 type Config struct {
 	Execution      *e2proxy.Execution
 	Helper         string
@@ -58,6 +64,10 @@ type TrustedResult struct {
 	OutputTruncated   bool                  `json:"output_truncated"`
 	Final             bool                  `json:"final"`
 	Classification    string                `json:"classification"`
+	// Termination은 호스트가 명령을 멈춘 원인 중 E② 결과 분류에서 나눠야 하는 것이다: timeout(명령 시간 상한)·
+	// proxy_unavailable(E② 프록시 장애). 둘 다 transient_failure로 분류되지만 시간 상한은 그 명령만 끝나지 않은
+	// 것이고 프록시 장애는 집행 장애다(실행 결과 상태 값 계약 열린 항목 2). 그 밖에는 비운다.
+	Termination string `json:"termination,omitempty"`
 }
 
 type Result struct {
