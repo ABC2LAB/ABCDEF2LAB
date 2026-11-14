@@ -218,10 +218,10 @@ C21의 이미 승인된 자동 workflow 쓰기 범위를 웹 파서가 거절하
 |---|---|---|
 | auto_https | PASS | origin·/owned,/api/safe·GET/HEAD/POST/PUT/PATCH, 상태 변경 위험과 건별 확인 없는 자동 전송 문구가 화면 안에 보임 |
 | manual_https | PASS | 동일 실제 승인 범위, 쓰기마다 사람이 확인·승인한 뒤 보낸다는 문구 |
-| readonly_https | PASS | GET/HEAD에 승인된 쓰기 영역 없음. 조회도 상태를 바꿀 수 있다는 기존 고지 유지 |
+| readonly_https | PASS | 승인된 쓰기 영역 없음. 당시 하네스는 정상 읽기 범위 처리·조회 위험 고지 자체를 검증하지 않음 |
 | auto_http | PASS | 자동 쓰기 고지와 ‘암호화하지 않는 주소(http)’·서버 신원 미검증 고지 동시 유지 |
-| missing_scope | PASS | 실제 범위 없는 영수증에서 승인된 쓰기나 활성 시작 버튼을 만들지 않음 |
-| invalid_delete_scope | PASS | 미지원 DELETE 범위의 준비 응답을 웹 계약이 거절, 쓰기 권한/활성 시작 없음 |
+| missing_scope | PASS | 당시 고지 없음·활성 시작 없음만 확인. 승인 대기 처리 자체는 검증하지 않음 |
+| invalid_delete_scope | PASS | 당시 고지 없음·활성 시작 없음만 확인. 계약 거부 표시 자체는 검증하지 않음 |
 
 모든 시나리오에서 변경 API 요청·진단 시작·모델 호출 0. 실제 권한 서버는 fixture이며 이 시험은 DNS 소유 증명이나
 Planner/Worker 성공을 증명하지 않는다. 초기 링크/누락 폰트 개발 환경 및 숨겨진 h1을 고르던 하네스 실패는 최종 PASS에 포함하지 않았다.
@@ -293,3 +293,43 @@ node scripts/acceptance/u01-workbench-browser.mjs
 실제 권한 서버는 소유 준비 fixture이고, 엔진·대상 송신·실제 Qwen·유료 모델은 **NOT_RUN**이다.
 이 결과는 U01 표시 수용이며 실제 탐색 격리·전수 egress·Planner/Worker 수용으로 확대하지 않는다.
 시험 후 이 작업 전용 브라우저·정적 서버·PostgreSQL 컨테이너만 정리했다.
+
+
+## 2026-11-14 U01 재리뷰 후 음성 대조 보강
+
+이 회차는 #565 단독 브랜치의 production `web/out`을 사용했다. 이전 통합 회차의 소스와 구분한다.
+기존 회차 표에서 하네스가 직접 확인하지 않았던 읽기 범위 처리·조회 위험 고지·승인 대기/계약 거부 주장은 위에 한계를 정정했다.
+
+- UI·회귀시험 소스: `cfdc84a06b22558d2650c9be4eb1e0437fb52660`. 관련 131 PASS/FAIL0/SKIP0, 변경 파일 Biome·tsc·정적 빌드 통과.
+- 최종 하네스/실행 소스: `0cf7636a7b8e8fe0530f6ce47961120e90a1b04b`, tree `9bfa624da7612d758c028cfd1753785e74427863`.
+  UI 소스는 위 빌드와 같고 하네스의 승인 대기 note 선택만 보완했다. 전체 웹 749 PASS/FAIL0/SKIP0(worker 1).
+- 자동 `ai_auto_v1` + `confirm_every_request` + POST 거절 시험과 등록 checkbox 위험 고지 단언을 보강했다.
+  별도 소스 복사본에서 승인 모드 조건·등록 위험 문장을 각각 제거하면 해당 시험이 1건씩 실패한다(2/2 검출). 원본 소스는 변경하지 않았다.
+- 표시에서 파서가 거부하는 DELETE·모든 요청 확인 모드 문구를 정리했다. 서버 권한·승인 범위는 바꾸지 않았다.
+- 등록 위험 문장은 기존 쓰기 동의의 설명 보강이다. `write_consent=auto_without_confirmation_v1` 판을 유지하며
+  기존 대상 등록에 재동의를 요구하지 않는다. 이 판의 동의가 없는 등록은 자동 모드에서 계속 GET·HEAD만 사용한다.
+- Node `v22.23.4`, 동일 Chromium 이미지 `sha256:17b7b5f0fa7ed1caf03e1385deadab742b076735436a72a8aa83d05b48acc811`,
+  실제 `Chrome/157.0.8103.15`, CDP 1.3, 1440×1000. 전용 비root·읽기 전용 컨테이너·cap-drop ALL·no-new-privileges,
+  임시 설정/캐시 경로를 사용했다. UI fixture용 `--no-sandbox`·host network이며 MCP는 비활성이다.
+  이 배치를 제품 탐색 격리·전수 egress 통제 수용으로 계산하지 않는다.
+- loopback 정적 UI `39203`·CDP `39423`에서 실행했다. 준비 API는 결정적 소유 fixture이며 실제 대상에는 접속하지 않는다.
+  산출물은 보호된 `/tmp/codex-u01-review-20261114-v2/`에 보관하고 원문 로그·이미지는 커밋하지 않는다.
+- 하네스 SHA256: `19c3c6fcd8ecd915db35db7a91bc8d1a2fb5d2a898545e00a5c2e2079bff63f7`.
+- report.json SHA256: `f821266f1eacf715d4cf8c1e9c8eac696e1f0edf9cb8e022c24a474653b7569f`. fixture SHA256은 위 6개 표와 동일하다.
+
+고정 500ms 대기를 제거했다. 정상/읽기 전용은 서버 범위가 처리된 표시와 시작 버튼을, 범위 없음은 명시적 승인 대기를,
+잘못된 DELETE 범위는 명시적 응답 계약 오류를 기다린 뒤 고지·시작 상태를 대조한다.
+읽기 전용은 조회도 상태를 바꿀 수 있다는 실제 표시까지 확인하며 스크린샷에서도 직접 확인했다.
+첫 보강 하네스는 첫 note만 골라 `missing_scope`가 시간 초과했다. 모든 note에서 승인 대기를 찾도록 고친 뒤
+전체 6개를 재실행했으며 실패 회차를 최종 PASS에 합산하지 않았다.
+
+| 실제 Chromium 시나리오 | 최종 확인 | screenshot SHA256 |
+|---|---|---|
+| auto_https | PASS — 실제 범위·쓰기 위험·자동 전송 고지와 미동의 시작 비활성 | `5533c18909d7f1f8a9e10912e5c17d68acd12b392cb6f02395076b6ea4a58feb` |
+| manual_https | PASS — 실제 범위·쓰기 위험·건별 승인 고지와 미동의 시작 비활성 | `63ee7b1052301e75620d23c86f63d379011a57d5320611771e5a450f268545f6` |
+| readonly_https | PASS — 정상 읽기 범위 처리·조회 위험 고지·쓰기 고지 없음·미동의 시작 비활성 | `c5e02c5099080d3dddea3b194b16b4bb42cbfd695a0646a35a827d6d1768d532` |
+| auto_http | PASS — 자동 쓰기 고지·HTTP 평문 고지 | `ab8fd753be2e12b734e752f1763721a0a19b10e88a862cddb8db9005cea8e82e` |
+| missing_scope | PASS — 명시적 승인 대기·서버 범위 없음·시작 버튼 없음 | `15b7bc7e96225817697e7559ee19411ca425d6ccffc83aec7ba2e71c8cb0b473` |
+| invalid_delete_scope | PASS — 명시적 계약 오류·서버 범위 없음·시작 버튼 없음 | `26ee234905993ee9db5598db9dcc52d6440c696af677566916df9c57c6f2c822` |
+
+모든 시나리오의 변경 API 요청·진단 시작·모델 호출은 0이다. 실제 엔진·대상 송신·Qwen/유료 모델 수용은 **NOT_RUN**이다.
