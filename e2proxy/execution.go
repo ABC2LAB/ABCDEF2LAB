@@ -1458,18 +1458,28 @@ var (
 	// requestAuthValue는 Authorization·Proxy-Authorization 헤더 값이다. 줄 머리(curl -v의 "> "), 명령 인수
 	// (-H "Authorization: …", wget --header=…, httpie Authorization:'…'), 코드 안 헤더 객체(python dict
 	// {'Authorization': '…'}, JSON "Authorization": "…") 어디서든 이름 뒤 닫는 따옴표와 값 앞 여는 따옴표를 건너뛰고
-	// (JSON으로 이스케이프된 \" 포함), 값을 따옴표·백슬래시·줄바꿈 전까지 가린다. 따옴표 안 값은 따옴표를 담지 않는다.
-	requestAuthValue = regexp.MustCompile(`(?i)((?:proxy-)?authorization(?:\\*["'])?[ \t]*:[ \t]*(?:\\*["'])?[ \t]*)[^"'\\\r\n]+`)
+	// (JSON으로 이스케이프된 \" 포함), 값을 requestValueQuoted로 가린다. 따옴표 안 값은 따옴표를 담지 않는다.
+	requestAuthValue = regexp.MustCompile(`(?i)((?:proxy-)?authorization(?:\\*["'])?[ \t]*:[ \t]*(?:\\*["'])?[ \t]*)` + requestValueQuoted)
 	// requestCookieValue는 요청 Cookie 헤더 값이다(형태는 위와 같음). Set-Cookie는 위 issuedCookieLine이 이름·속성을
 	// 남기고 따로 가린다.
-	requestCookieValue = regexp.MustCompile(`(?i)(^|[^a-z0-9-])(cookie(?:\\*["'])?[ \t]*:[ \t]*(?:\\*["'])?[ \t]*)[^"'\\\r\n]+`)
+	requestCookieValue = regexp.MustCompile(`(?i)(^|[^a-z0-9-])(cookie(?:\\*["'])?[ \t]*:[ \t]*(?:\\*["'])?[ \t]*)` + requestValueQuoted)
 	// requestHeaderPair는 이름과 값을 쉼표로 나눈 코드 형태다(python req.add_header('Cookie', '…'),
 	// [('Authorization', '…')]). 이름이 따옴표로 닫혀 있을 때만 본다.
-	requestHeaderPair = regexp.MustCompile(`(?i)((?:^|[^a-z0-9-])\\*["'](?:(?:proxy-)?authorization|cookie)\\*["'][ \t]*,[ \t]*\\*["'])[^"'\\\r\n]+`)
+	requestHeaderPair = regexp.MustCompile(`(?i)((?:^|[^a-z0-9-])\\*["'](?:(?:proxy-)?authorization|cookie)\\*["'][ \t]*,[ \t]*\\*["'])` + requestValueQuoted)
 	// curlCookieQuoted·curlCookieBare는 curl -b·--cookie(--cookie=) 인수 값이다. 따옴표로 시작한 값은 쿠키 여러 개
 	// (a=1; token=…)가 공백을 담으므로 닫는 따옴표 전까지, 따옴표 없는 값은 공백 전까지 가린다.
-	curlCookieQuoted = regexp.MustCompile(`(?i)((?:^|\s)(?:-b[ \t]+|--cookie(?:[ \t]+|=))\\*["'])[^"'\\\r\n]+`)
-	curlCookieBare   = regexp.MustCompile(`(?i)((?:^|\s)(?:-b[ \t]+|--cookie(?:[ \t]+|=)))[^"'\\\s]+`)
+	curlCookieQuoted = regexp.MustCompile(`(?i)((?:^|\s)(?:-b[ \t]+|--cookie(?:[ \t]+|=))\\*["'])` + requestValueQuoted)
+	curlCookieBare   = regexp.MustCompile(`(?i)((?:^|\s)(?:-b[ \t]+|--cookie(?:[ \t]+|=)))` + requestValueBare)
+)
+
+// requestValueQuoted는 요청 자격 값 자리다. 따옴표·줄바꿈 전까지이고, 값 안의 백슬래시 이스케이프(JSON \u002e·\/, 겹
+// 이스케이프 \\u002e)는 값으로 본다. JSON으로 해석하면 한 값이라 이스케이프에서 멈추면 뒷부분이 남는다(#571 이동찬 리뷰).
+// 따옴표 이스케이프(\", \\\")와 JSON 줄바꿈·탭 이스케이프(\n·\r·\t)는 값의 끝으로 본다. 줄바꿈 이스케이프까지 값으로
+// 보면 JSON으로 감싼 curl -v 출력에서 다음 헤더 줄들까지 지워져 모델이 읽을 출력이 줄어든다. requestValueBare는 따옴표
+// 없는 값이라 공백에서도 끝난다.
+const (
+	requestValueQuoted = `(?:[^"'\\\r\n]|\\+[^"'\\\r\nnrt])+`
+	requestValueBare   = `(?:[^"'\\\s]|\\+[^"'\\\snrt])+`
 )
 
 // 출력 가림 전용 값의 하한·상한이다. 짧은 값은 흔한 문자열까지 가려 출력이 망가지므로 받지 않는다.

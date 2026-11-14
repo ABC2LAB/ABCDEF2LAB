@@ -28,6 +28,17 @@ func TestTestAccountRunMasksRequestCredentialsStructurally(t *testing.T) {
 		"http GET https://owned.test/a Authorization:'Bearer eyJx.eyJy.z'":                                                                                "http GET https://owned.test/a Authorization:'[REDACTED]'",
 		"wget --header='Cookie: language=en; token=eyJx.eyJy.z' https://owned.test/a":                                                                     "wget --header='Cookie: [REDACTED]' https://owned.test/a",
 		`r.add_header(\"Cookie\", \"token=eyJx.eyJy.z\")`:                                                                                                 `r.add_header(\"Cookie\", \"[REDACTED]\")`,
+		// 값 안의 JSON 이스케이프(\u002e·\/)와 겹 이스케이프는 값으로 본다(#571 이동찬 리뷰). 해석하면 한 값이다.
+		`{"Authorization":"Bearer changed\u002ecredential-tail-0123456789"}`:                                    `{"Authorization":"[REDACTED]"}`,
+		`{\"Authorization\":\"Bearer changed\\u002ecredential-tail-0123456789\"}`:                               `{\"Authorization\":\"[REDACTED]\"}`,
+		`{"Cookie":"language=en; token=abc\u002ecredential-tail-0123"}`:                                         `{"Cookie":"[REDACTED]"}`,
+		`curl -H "Authorization: Bearer a\/credential-tail" https://owned.test/a`:                               `curl -H "Authorization: [REDACTED]" https://owned.test/a`,
+		`req.add_header('Cookie', 'token=abc\u002ecredential-tail')`:                                            `req.add_header('Cookie', '[REDACTED]')`,
+		`curl -b "token=abc\u002ecredential-tail" https://owned.test/c`:                                         `curl -b "[REDACTED]" https://owned.test/c`,
+		`curl -b token=abc\u002ecredential-tail https://owned.test/c`:                                           `curl -b [REDACTED] https://owned.test/c`,
+		`{\"command\": \"curl -H \\\"Authorization: Bearer a\\u002ecredential-tail\\\" https://owned.test/a\"}`: `{\"command\": \"curl -H \\\"Authorization: [REDACTED]\\\" https://owned.test/a\"}`,
+		// JSON으로 감싼 curl -v 출력의 줄바꿈 이스케이프는 값의 끝이다. 다음 헤더 줄은 남는다.
+		`"> Authorization: Bearer abc.def\r\n> Host: owned.test\r\n> Cookie: token=abc\r\n> Accept: */*"`: `"> Authorization: [REDACTED]\r\n> Host: owned.test\r\n> Cookie: [REDACTED]\r\n> Accept: */*"`,
 		// 대상 응답의 Set-Cookie JSON 이름은 요청 Cookie로 보지 않는다.
 		`{"Set-Cookie": "sid=short1"}`:                                         `{"Set-Cookie": "sid=short1"}`,
 		"Proxy-Authorization: Basic eHl6":                                      "Proxy-Authorization: [REDACTED]",
