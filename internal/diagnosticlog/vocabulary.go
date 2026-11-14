@@ -23,5 +23,7 @@ var reasons = vocabulary(`tool_failure withheld policy_not_executed partial_poli
  scope_denied approval_denied approval_expired unsupported_request result_unknown tool_unknown tool_schema_invalid tool_execution_failed evidence_invalid candidate_storage_failed duplicate`)
 var tools = vocabulary("graph_overview list_findings list_facts node_detail expand_digest get_worker_output get_worker_trace search_all_worker_traces list_goals add_intent list_companies list_assets list_untested_assets record_fact Bash bash submit_diagnostic_candidate WebFetch insert_assets prove_goal goal_met kill_work steer_work add_task_scope TodoWrite Read Write Edit LS refresh_session web_search")
 var roles = vocabulary("goals planner worker mainagent judge reporter unknown")
-var models = vocabulary("qwen/qwen3.6-35b-a3b")
+
+// 지금 보내는 모델은 3.6이다. 3.5는 2026-11-14 전 진단 기록을 다시 읽을 때만 나온다.
+var models = vocabulary("qwen/qwen3.6-35b-a3b qwen/qwen3.5-35b-a3b")
 var providers = vocabulary("openrouter local")
