@@ -1,8 +1,9 @@
 import { ApiError, apiFetch } from "./api";
 
-export const EXTERNAL_ACCOUNT_STATEMENT =
-  "이 점검에서는 시험 계정 세션(쿠키·토큰)이 외부 모델 제공자에게 전달될 수 있습니다. 고객사에 사전 공지하고 승인을 받았습니다.";
+export const EXTERNAL_ACCOUNT_STATEMENT = "체크하면 시험 계정 세션(쿠키·토큰)을 외부 모델 제공자에게 보냅니다.";
 export const EXTERNAL_ACCOUNT_PASSWORD_NOTICE = "계정 비밀번호는 모델에 전달되지 않습니다.";
+// biome-ignore lint/suspicious/noControlCharactersInRegex: Reject C0 and DEL in server consent statements.
+const statementControls = /[\x00-\x1f\x7f]/;
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const ref = (v: unknown): v is string => typeof v === "string" && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(v);
 
@@ -48,7 +49,7 @@ export async function readExternalTestAccountPresence(
     typeof result.external_consent_statement === "string" &&
     result.external_consent_statement.length > 0 &&
     new TextEncoder().encode(result.external_consent_statement).length <= 1024 &&
-    !/[\x00-\x1f\x7f]/.test(result.external_consent_statement)
+    !statementControls.test(result.external_consent_statement)
       ? result.external_consent_statement
       : "";
   return { hasTestAccounts: accounts.some((a) => object(a) && a.classification === "test"), statement };
