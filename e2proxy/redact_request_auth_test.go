@@ -37,6 +37,8 @@ func TestTestAccountRunMasksRequestCredentialsStructurally(t *testing.T) {
 		`curl -b "token=abc\u002ecredential-tail" https://owned.test/c`:                                         `curl -b "[REDACTED]" https://owned.test/c`,
 		`curl -b token=abc\u002ecredential-tail https://owned.test/c`:                                           `curl -b [REDACTED] https://owned.test/c`,
 		`{\"command\": \"curl -H \\\"Authorization: Bearer a\\u002ecredential-tail\\\" https://owned.test/a\"}`: `{\"command\": \"curl -H \\\"Authorization: [REDACTED]\\\" https://owned.test/a\"}`,
+		`{\"command\": \"curl -b token=abc\\u002ecredential-tail https://owned.test/c\"}`:                       `{\"command\": \"curl -b [REDACTED] https://owned.test/c\"}`,
+		`{"command": "curl -b token=abc\necho done"}`:                                                           `{"command": "curl -b [REDACTED]\necho done"}`,
 		// JSON으로 감싼 curl -v 출력의 줄바꿈 이스케이프는 값의 끝이다. 다음 헤더 줄은 남는다.
 		`"> Authorization: Bearer abc.def\r\n> Host: owned.test\r\n> Cookie: token=abc\r\n> Accept: */*"`: `"> Authorization: [REDACTED]\r\n> Host: owned.test\r\n> Cookie: [REDACTED]\r\n> Accept: */*"`,
 		// 대상 응답의 Set-Cookie JSON 이름은 요청 Cookie로 보지 않는다.
