@@ -128,7 +128,7 @@ func TestProductInstallInputRuntimeLimitsStrict(t *testing.T) {
 	}
 }
 
-// run_seconds: 없으면 지금 기본값(제품 180초·워크플로 600초), 고른 모드의 칸만 쓰고, 1 이상 urlMaxRunSeconds 이하만
+// run_seconds: 없으면 지금 기본값(제품 180초·워크플로 1800초), 고른 모드의 칸만 쓰고, 1 이상 urlMaxRunSeconds 이하만
 // 받는다(C32 2단계). model_requests는 로컬 모델 상한이 코드에 없어 아직 칸을 열지 않는다(결정안 2-4).
 func TestProductRunSecondsFor(t *testing.T) {
 	for _, tc := range []struct {
@@ -139,12 +139,15 @@ func TestProductRunSecondsFor(t *testing.T) {
 		ok       bool
 	}{
 		{"product-default", nil, false, 180, true},
-		{"workflow-default", nil, true, 600, true},
+		{"workflow-default", nil, true, 1800, true},
 		{"product-set", &productRuntimeLimits{Product: &productRuntimeLimitSet{RunSeconds: ptr(int64(300))}}, false, 300, true},
-		{"workflow-ignores-product", &productRuntimeLimits{Product: &productRuntimeLimitSet{RunSeconds: ptr(int64(300))}}, true, 600, true},
+		{"workflow-ignores-product", &productRuntimeLimits{Product: &productRuntimeLimitSet{RunSeconds: ptr(int64(300))}}, true, 1800, true},
 		{"workflow-set", &productRuntimeLimits{Workflow: &productRuntimeLimitSet{RunSeconds: ptr(int64(120))}}, true, 120, true},
 		{"at-limit", &productRuntimeLimits{Product: &productRuntimeLimitSet{RunSeconds: ptr(int64(urlMaxRunSeconds))}}, false, urlMaxRunSeconds, true},
 		{"over-limit", &productRuntimeLimits{Product: &productRuntimeLimitSet{RunSeconds: ptr(int64(urlMaxRunSeconds + 1))}}, false, 0, false},
+		// 코드 상한 값 자체를 고정한다(C32, 2026-11-14 600초에서 3600초로 올림).
+		{"hour", &productRuntimeLimits{Workflow: &productRuntimeLimitSet{RunSeconds: ptr(int64(3600))}}, true, 3600, true},
+		{"over-hour", &productRuntimeLimits{Workflow: &productRuntimeLimitSet{RunSeconds: ptr(int64(3601))}}, true, 0, false},
 		{"zero", &productRuntimeLimits{Workflow: &productRuntimeLimitSet{RunSeconds: ptr(int64(0))}}, true, 0, false},
 		{"negative", &productRuntimeLimits{Product: &productRuntimeLimitSet{RunSeconds: ptr(int64(-1))}}, false, 0, false},
 	} {

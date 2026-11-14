@@ -340,6 +340,20 @@ func TestFirstDiagnosisRuntimeDatabaseOwnedPostgres(t *testing.T) {
 			}
 			firstDiagnosisSupervisorEngineRun(t, manager, installer, limited, "planner-limit")
 		})
+		t.Run("actual-engine-command-timeout-is-intent-incomplete", func(t *testing.T) {
+			slow, err := manager.CreateTask("Owned command timeout fixture", "Keep a timed-out command as that intent's incomplete result", nil, 60, 60)
+			if err != nil || slow == nil {
+				t.Fatal("독립 명령 시간 상한 task 생성 실패")
+			}
+			if _, err := runtimePool.ExecContext(ctx, "UPDATE tasks SET paused=true WHERE id=$1", slow.ID); err != nil {
+				t.Fatal("명령 시간 상한 task 준비 상태 저장 실패")
+			}
+			slow.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
+			if id, err := slow.Store.AddIntent(map[string]any{"summary": "Read the owned fixture then wait"}, 1, nil, "system"); err != nil || id <= 0 {
+				t.Fatal("실제 명령 시간 상한 intent 생성 실패")
+			}
+			firstDiagnosisSupervisorEngineRun(t, manager, installer, slow, "command-timeout")
+		})
 		t.Run("actual-engine-planner-kills-running-work", func(t *testing.T) {
 			killed, err := manager.CreateTask("Owned planner kill fixture", "Let the planner stop work that is still running", nil, 60, 60)
 			if err != nil || killed == nil {
@@ -353,6 +367,20 @@ func TestFirstDiagnosisRuntimeDatabaseOwnedPostgres(t *testing.T) {
 				t.Fatal("실제 Planner 동시 실행 intent 생성 실패")
 			}
 			firstDiagnosisSupervisorEngineRun(t, manager, installer, killed, "planner-kill")
+		})
+		t.Run("actual-engine-time-budget-is-budget-limited", func(t *testing.T) {
+			timed, err := manager.CreateTask("Owned time budget fixture", "Close when the run time budget is reached", nil, 60, 60)
+			if err != nil || timed == nil {
+				t.Fatal("독립 시간 상한 task 생성 실패")
+			}
+			if _, err := runtimePool.ExecContext(ctx, "UPDATE tasks SET paused=true WHERE id=$1", timed.ID); err != nil {
+				t.Fatal("시간 상한 task 준비 상태 저장 실패")
+			}
+			timed.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
+			if id, err := timed.Store.AddIntent(map[string]any{"summary": "Read the owned slow fixture"}, 1, nil, "system"); err != nil || id <= 0 {
+				t.Fatal("실제 시간 상한 intent 생성 실패")
+			}
+			firstDiagnosisSupervisorEngineRun(t, manager, installer, timed, "time-budget")
 		})
 		for _, mode := range []string{"request-budget", "request-budget-overflow"} {
 			t.Run("actual-engine-"+mode+"-is-budget-limited", func(t *testing.T) {

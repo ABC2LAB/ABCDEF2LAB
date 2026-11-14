@@ -123,10 +123,12 @@ func productModelConcurrencyFor(limits *productRuntimeLimits, workflow, local bo
 	return n, true
 }
 
-// 회차 실행 시간 기본값(초). 측정(P0) 전에는 바꾸지 않는다.
+// 회차 실행 시간 기본값(초). 워크플로 기본값은 2026-11-14 점검 회차 실측으로 600 → 1800초로 올렸다: 600초 회차 둘이
+// 모델 승인 요청(150)의 절반도 안 쓴 채(66·61번) 시간 상한에 닿았고, 그 속도(600초에 약 60번)면 1800초에서 모델 예산과
+// 비슷하게 닿는다(docs/install-limits-decision.md §6). 제품(일반 HTTP) 기본값은 측정 전이라 그대로다.
 const (
 	productRunSeconds  = 180
-	workflowRunSeconds = 600
+	workflowRunSeconds = 1800
 )
 
 // productRunSecondsFor는 고른 모드의 회차 실행 시간이다. runtime_limits에 없으면 기본값, 있으면 1 이상

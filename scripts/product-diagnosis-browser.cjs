@@ -217,7 +217,7 @@ function check(value, code) {
     check(config.openrouter_manifest?.provider_slug === "fixture/endpoint" && config.openrouter_manifest?.approval_id === "product-key-registration-fixture", "synthetic_configuration_only_fixture_required");
     await openNew();
     await click("외부 LLM 사용하기");
-    await wait("document.querySelector('#externalModelName')?.value==='qwen/qwen3.5-35b-a3b'", "fixed_qwen_policy_missing");
+    await wait("document.querySelector('#externalModelName')?.value==='qwen/qwen3.6-35b-a3b'", "fixed_qwen_policy_missing");
     check(await evaluate("document.querySelector('#externalModelName').readOnly"), "unapproved_model_editable");
     if (phase === "external-key-save") {
       await fill("#externalModelKey", "owned-synthetic-key-no-real-account");
@@ -234,7 +234,7 @@ function check(value, code) {
       await click("승인 범위 확인");
       await wait(hasText("실행 전 검증 완료"), "external_scope_not_ready");
       await wait(hasText("fixture/endpoint"), "external_provider_policy_missing");
-      await wait(hasText("qwen/qwen3.5-35b-a3b"), "external_model_policy_missing");
+      await wait(hasText("qwen/qwen3.6-35b-a3b"), "external_model_policy_missing");
       check((await evaluate(fact("비용 상한"))).includes("6"), "external_cost_policy_missing");
       check(await evaluate("Array.from(document.querySelectorAll('section[data-view=scope] button')).find(b=>b.textContent.trim()==='진단 시작')?.disabled===true"), "external_start_without_consent");
     }
@@ -272,7 +272,7 @@ function check(value, code) {
       "start_without_explicit_confirmation",
     );
     if (OPENROUTER) {
-      await wait(hasText("qwen/qwen3.5-35b-a3b"),"approved_model_missing");
+      await wait(hasText("qwen/qwen3.6-35b-a3b"),"approved_model_missing");
       await wait(hasText("fixture/endpoint"),"approved_provider_missing");
       await wait(hasText("외부 전송"),"external_transfer_notice_missing");
       check((await evaluate(fact("비용 상한"))).includes("6"),"approved_usd_cap_missing");

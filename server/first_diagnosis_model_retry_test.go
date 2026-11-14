@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"github.com/Autumn-27/artex/llmpolicy"
 	"testing"
 	"time"
 
@@ -66,5 +67,70 @@ func TestFirstDiagnosisModelBudgetRetryable(t *testing.T) {
 	b.blocked = true
 	if b.retryable() || (*FirstDiagnosisModelBudget)(nil).retryable() {
 		t.Fatal("blocked budget retryable")
+	}
+}
+
+// 마지막 실패가 요청 한도(429, 청구 없음)이면 더 긴 간격표로 더 여러 번 다시 보낸다. 그 밖의 실패는 지금 간격표 그대로다.
+func TestFirstDiagnosisRetryModelCallRateLimitSchedule(t *testing.T) {
+	transient := errors.New("synthetic failure")
+	short := []time.Duration{time.Millisecond, time.Millisecond}
+	long := []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond, time.Millisecond}
+	always := func() bool { return true }
+	for name, tc := range map[string]struct {
+		rateLimited bool
+		attempts    int
+	}{
+		"rate-limited": {true, len(long) + 1},
+		"other":        {false, len(short) + 1},
+	} {
+		n := 0
+		once := func() (llm.Message, string, llm.Usage, error, error) {
+			n++
+			return llm.Message{}, "", llm.Usage{}, transient, ErrFirstDiagnosisModelBudget
+		}
+		limited := tc.rateLimited
+		if _, _, _, err := firstDiagnosisRetryModelCallWith(t.Context(), short, long, func() bool { return limited }, once, always); err == nil || n != tc.attempts {
+			t.Fatalf("%s: attempts=%d want %d", name, n, tc.attempts)
+		}
+	}
+	// 요청 한도가 풀리면 다음 시도의 결과를 쓴다.
+	n := 0
+	once := func() (llm.Message, string, llm.Usage, error, error) {
+		n++
+		if n < 4 {
+			return llm.Message{}, "", llm.Usage{}, transient, ErrFirstDiagnosisModelBudget
+		}
+		return llm.Message{Content: []llm.ContentBlock{llm.TextBlock("ok")}}, "stop", llm.Usage{InputTokens: 1}, nil, nil
+	}
+	if msg, _, _, err := firstDiagnosisRetryModelCallWith(t.Context(), short, long, func() bool { return true }, once, always); err != nil || msg.Text() != "ok" || n != 4 {
+		t.Fatalf("rate limit recovery: err=%v attempts=%d", err, n)
+	}
+	// 기본 간격표는 요청 한도 쪽이 더 길고, 합계가 준비 계획 상한(2분)보다 짧다.
+	var total time.Duration
+	for _, d := range firstDiagnosisRateLimitRetryDelays {
+		total += d
+	}
+	if len(firstDiagnosisRateLimitRetryDelays) <= len(firstDiagnosisModelRetryDelays) || total >= 2*time.Minute {
+		t.Fatalf("rate limit schedule %v", firstDiagnosisRateLimitRetryDelays)
+	}
+}
+
+// 호출의 요청 한도 여부는 transport 칸의 청구 없음 표시(429)에서만 온다.
+func TestFirstDiagnosisModelCallRateLimited(t *testing.T) {
+	for name, tc := range map[string]struct {
+		call *firstDiagnosisModelCall
+		want bool
+	}{
+		"rate-limited": {&firstDiagnosisModelCall{result: func() llmpolicy.OpenRouterCallResult {
+			return llmpolicy.OpenRouterCallResult{Reserved: true, NotBilled: true}
+		}}, true},
+		"server-error": {&firstDiagnosisModelCall{result: func() llmpolicy.OpenRouterCallResult { return llmpolicy.OpenRouterCallResult{Reserved: true} }}, false},
+		"not-sent":     {&firstDiagnosisModelCall{result: func() llmpolicy.OpenRouterCallResult { return llmpolicy.OpenRouterCallResult{} }}, false},
+		"local":        {&firstDiagnosisModelCall{}, false},
+		"nil":          {nil, false},
+	} {
+		if got := tc.call.rateLimited(); got != tc.want {
+			t.Fatalf("%s: rateLimited=%v", name, got)
+		}
 	}
 }

@@ -135,7 +135,7 @@ func TestDiagnosticUsesMetadataCaptureWithRecordingDisabled(t *testing.T) {
 				t.Fatal(err)
 			}
 			ctx := diagnosticlog.With(context.Background(), log)
-			recorder := Wrap(diagnosticHTTPProvider{status: tc.status}, nil, "qwen/qwen3.5-35b-a3b", "", "", "", func() bool { return false })
+			recorder := Wrap(diagnosticHTTPProvider{status: tc.status}, nil, "qwen/qwen3.6-35b-a3b", "", "", "", func() bool { return false })
 			_, _, _, _ = recorder.Complete(ctx, llm.CompletionRequest{})
 			if err := log.Close(); err != nil {
 				t.Fatal(err)

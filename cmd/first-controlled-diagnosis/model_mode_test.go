@@ -12,7 +12,7 @@ func openRouterLaunchConfig() map[string]any {
 	c["openrouter_manifest_path"] = "/srv/diagnosis/private/openrouter.json"
 	c["model_format"] = "openai"
 	c["model_base_url"] = "https://openrouter.ai/api/v1"
-	c["model_ref"] = "qwen/qwen3.5-35b-a3b"
+	c["model_ref"] = "qwen/qwen3.6-35b-a3b"
 	return c
 }
 func TestOpenRouterLaunchModeRequiresExplicitScope(t *testing.T) {

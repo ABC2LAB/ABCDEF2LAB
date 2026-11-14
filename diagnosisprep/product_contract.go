@@ -7,6 +7,11 @@ import (
 	"time"
 )
 
+// MaxTargetRequests는 대상 하나·회차 하나에 승인할 수 있는 E② 요청 수의 코드 상한이다. 설치 정책(target_policy.max_requests)·
+// 대상 등록(requests)·워크플로 프로파일이 같은 값을 쓴다. 기본값이 아니라 설치 조직이 고를 수 있는 최대치다(C32). 100이던
+// 상한을 2026-11-14에 올렸다: 느린 모델·넓은 대상에서 진단이 승인 요청 수에 먼저 막혀 성능을 깎았다.
+const MaxTargetRequests = 1000
+
 // ProductControl is private IPC, never an execution grant or a public v2 command.
 // Only the installed product wrapper implements it; generic coordinators reject it.
 const ProductControl Command = "product_control"
@@ -251,7 +256,7 @@ func validProductRequest(r *ProductRequest) bool {
 		return r.TargetID == "" && r.ProfileID == "" && r.Registration == nil
 	case "register":
 		s := r.Registration
-		if r.TargetID != "" || r.ProfileID != "" || s == nil || !validText(s.ReadonlyBasis, 1024) || len(s.ReadonlyBasis) < 20 || s.Requests < 1 || s.Requests > 100 || s.ValidHours < 1 || s.ValidHours > 24 || len(s.PathPrefixes) < 1 || len(s.PathPrefixes) > 16 || len(s.Methods) < 1 || len(s.Methods) > 5 {
+		if r.TargetID != "" || r.ProfileID != "" || s == nil || !validText(s.ReadonlyBasis, 1024) || len(s.ReadonlyBasis) < 20 || s.Requests < 1 || s.Requests > MaxTargetRequests || s.ValidHours < 1 || s.ValidHours > 24 || len(s.PathPrefixes) < 1 || len(s.PathPrefixes) > 16 || len(s.Methods) < 1 || len(s.Methods) > 5 {
 			return false
 		}
 		if _, e := CanonicalInput(Input{TargetURL: s.URL, ProfileID: "target"}); e != nil {

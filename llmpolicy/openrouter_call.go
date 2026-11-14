@@ -19,7 +19,9 @@ type OpenRouterCallResult struct {
 	// Reserved는 transport가 승인 예약을 만들고 송신을 시도했다는 뜻이다. 예약 전에 거부됐으면 false다.
 	Reserved bool
 	// Succeeded는 사용량·비용을 확인한 정상 응답이다.
-	Succeeded                                                     bool
+	Succeeded bool
+	// NotBilled는 제공자가 처리하지 않았다고 응답으로 확인한 실패(요청 한도 429)다. 사용량 0으로 정산했다.
+	NotBilled                                                     bool
 	ReservedInputTokens, ReservedOutputTokens, ReservedCostMicros int64
 	InputTokens, OutputTokens, CostMicros                         int64
 }
@@ -71,6 +73,15 @@ func (c *OpenRouterCall) reserved(input, output, cost int64) {
 	defer c.mu.Unlock()
 	c.result.Reserved = true
 	c.result.ReservedInputTokens, c.result.ReservedOutputTokens, c.result.ReservedCostMicros = input, output, cost
+}
+
+func (c *OpenRouterCall) notBilled() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.result.NotBilled = true
 }
 
 func (c *OpenRouterCall) succeeded(input, output, cost int64) {

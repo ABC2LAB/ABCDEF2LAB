@@ -177,7 +177,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	releaseTarget := make(chan struct{})
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
-		if mode == "cancel" || mode == "user-stop" || mode == "planner-kill" {
+		if mode == "cancel" || mode == "user-stop" || mode == "planner-kill" || mode == "time-budget" {
 			select {
 			case targetEntered <- struct{}{}:
 			default:
@@ -333,6 +333,10 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	if mode == "tool-failure" {
 		provider.command += " | grep -q never-present-owned-fixture"
 	}
+	if mode == "command-timeout" {
+		// 대상은 바로 답하고, 명령은 호출 시간 상한을 넘겨 호스트가 멈춘다(결과 불명 송신 없음).
+		provider.command += "; sleep 30"
+	}
 	if mode == "request-budget-overflow" {
 		// 남은 예산이 하나인데 한 명령에서 두 번 보낸다. 둘째 요청은 E②가 예산 소진으로 보내지 않는다.
 		provider.command += "; curl --silent --show-error --max-time 5 " + target.URL + "/allowed"
@@ -466,6 +470,20 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		case runErr = <-done:
 		case <-ctx.Done():
 			t.Fatal("Planner 동시 실행 시험의 Supervisor Run이 반환하지 않음")
+		}
+	} else if mode == "time-budget" {
+		// 회차 실행 시간 상한(계약 §3.4): 마감 시작 시각이 오면 새 계획·새 intent 없이, 대상에 붙잡힌 작업은 유예 뒤
+		// 멈추고 실행을 budget_limited로 마감한다. 시작 시각은 Worker 요청이 대상에 붙잡힌 뒤에 오도록 둔다.
+		const timeBudgetStart, timeBudgetDrain = 3 * time.Second, 300 * time.Millisecond
+		if err := supervisor.SetTimeBudget(time.Now().Add(timeBudgetStart), timeBudgetDrain); err != nil {
+			t.Fatal("시간 상한 설정 실패", err)
+		}
+		started := time.Now()
+		runErr = supervisor.Run(ctx, task.ID, 0, "")
+		// 붙잡힌 요청은 Run 시작 뒤에 나갔으므로, E② 요청 시간 상한으로 끝났다면 Run은 그 상한보다 늦게 돌아온다.
+		// 유예 뒤 멈췄다면 그 전에 돌아온다.
+		if elapsed := time.Since(started); elapsed >= time.Duration(policy.Limits.RequestTimeoutMS)*time.Millisecond {
+			t.Fatalf("시간 상한 유예 뒤 진행 중 작업을 멈추지 않음(E② 요청 시간 상한으로 끝남) elapsed=%s", elapsed)
 		}
 	} else if mode == "planner-only" {
 		short, stopRun := context.WithTimeout(ctx, 4*time.Second)
@@ -673,6 +691,44 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 				}
 			}
 			t.Fatalf("실행 중 작업을 Planner가 멈추지 못함 err=%v killed=%v kill_result=%q result=%+v hits=%d exited=%v intent=%s/%s trusted=%v calls=%v", runErr, plannerProvider.killed, plannerProvider.killResult, result, hits.Load(), exited, intentState, blockedReason, trusted, calls)
+		}
+		return
+	}
+	if mode == "time-budget" {
+		result := supervisor.RunResult()
+		entered, exited := false, false
+		select {
+		case <-targetEntered:
+			entered = true
+		default:
+		}
+		select {
+		case <-targetExited:
+			exited = true
+		default:
+		}
+		var intentState, blockedReason string
+		if err := installer.QueryRowContext(ctx, "SELECT state,COALESCE(blocked_reason,'') FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent'", task.ExpID).Scan(&intentState, &blockedReason); err != nil {
+			t.Fatal("시간 상한 intent 조회 실패", err)
+		}
+		if runErr != nil || result == nil || !result.Valid() || result.ClosingReason != diagnosis.ClosingBudgetLimited || result.Outcome != diagnosis.OutcomePartial ||
+			// 유예 뒤 멈춘 작업의 진행 중 송신은 결과 불명이라 그 intent만 결과 불명이다(C01·C08). 정리 상태는 새 계획·새 intent를 막는다.
+			result.IntentOutcomes != (diagnosis.IntentOutcomes{Unknown: 1}) || hits.Load() != 1 || !entered || !exited ||
+			intentState != "blocked" || blockedReason != "e2_http_result_unknown" || !runtime.server.engine.isSettling(task.ID) {
+			t.Fatalf("시간 상한을 budget_limited 마감으로 처리하지 않음 err=%v result=%+v hits=%d entered=%v exited=%v intent=%s/%s status=%s", runErr, result, hits.Load(), entered, exited, intentState, blockedReason, task.lifecycleSnapshot().Status)
+		}
+		return
+	}
+	if mode == "command-timeout" {
+		// 명령 시간 상한은 그 명령·intent의 미완료다(계약 열린 항목 2). 실행은 마감 실패가 아니라 partial로 끝난다.
+		result := supervisor.RunResult()
+		var trusted e2runner.TrustedResult
+		if provider.result != nil {
+			trusted = provider.result.Trusted
+		}
+		if runErr != nil || result == nil || !result.Valid() || result.Outcome != diagnosis.OutcomePartial || result.IntentOutcomes != (diagnosis.IntentOutcomes{Incomplete: 1}) ||
+			hits.Load() != 1 || trusted.Classification != "transient_failure" || trusted.Termination != e2runner.TerminationTimeout || trusted.Call.Counts.Unknown != 0 {
+			t.Fatalf("명령 시간 상한을 intent 미완료로 마감하지 않음 err=%v result=%+v hits=%d class=%s termination=%q counts=%+v status=%s", runErr, result, hits.Load(), trusted.Classification, trusted.Termination, trusted.Call.Counts, task.lifecycleSnapshot().Status)
 		}
 		return
 	}

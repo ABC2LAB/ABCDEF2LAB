@@ -1,6 +1,6 @@
 # URL v2 · OpenRouter 설치와 수용 계약
 
-기준 dev는 `8f479109af72200b665605927c18af1b5fbccb97`이다. 기존 `/workbench` URL 준비 서비스, 실제 task/intent, Planner/Worker, E②, 저장 보고서를 사용한다. OpenRouter 송신은 `agent.NewOpenRouterProvider`와 `llmpolicy.NewOpenRouterClient`만 사용한다. 모델은 저장소 허용 목록의 `qwen/qwen3.5-35b-a3b`, base는 `https://openrouter.ai/api/v1`이며 제공자는 보호 manifest가 고정한다. 임의 모델·provider fallback, 스트리밍, 재시도, redirect는 허용하지 않는다.
+기준 dev는 `8f479109af72200b665605927c18af1b5fbccb97`이다. 기존 `/workbench` URL 준비 서비스, 실제 task/intent, Planner/Worker, E②, 저장 보고서를 사용한다. OpenRouter 송신은 `agent.NewOpenRouterProvider`와 `llmpolicy.NewOpenRouterClient`만 사용한다. 모델은 저장소 허용 목록의 `qwen/qwen3.6-35b-a3b`(2026-11-14부터, 기준 dev 당시는 `qwen/qwen3.5-35b-a3b`), base는 `https://openrouter.ai/api/v1`이며 제공자는 보호 manifest가 고정한다. 임의 모델·provider fallback, 스트리밍, 재시도, redirect는 허용하지 않는다.
 
 ## 예산과 승인 수명
 
@@ -20,7 +20,7 @@ Transport는 유일한 OpenRouter 승인 원장이다. URL 원장은 별도 범�
 2. 운영자가 기존 신뢰된 DB 모델 프로필에 API 키를 등록한다. `format=openai`, 위 exact model/base, `streaming=false`, `context_window_k=256`, 양수 `max_tokens`, `max_tokens_field=max_tokens`, proxy/session header/thinking/reasoning override 없음으로 고정한다. goals/planner/worker 역할 pin은 비어 있거나 같은 profile ID여야 한다. 독립 CLI 설치는 이 DB 등록 방식을 사용한다. Workbench 제품은 [인증된 키 설정 UI](../deploy/product/README.md#사용-흐름과-외부-llm)를 제공하며, 보호된 모델·provider·비용 승인과 진단 입력의 분리는 유지한다.
 3. [기존 OpenRouter manifest](openrouter-first-diagnosis.md)의 보호 파일 형식으로 profile ID, provider slug와 정확한 응답 provider name, privacy/ZDR 확인, 계정 spend cap 확인, 만료, 요청·토큰·USD·timeout·동시성·가격 상한을 설치한다. 파일은 UID 소유 0600, 전용 디렉터리는 0700이고 symlink·교체를 거부한다. 키는 manifest에도 넣지 않는다.
 4. URL launch에 `model_execution_mode: "openrouter"`, `local_llm_manifest_path: ""`, `openrouter_manifest_path: "/설치자/보호/manifest.json"`과 같은 DB profile/model/base를 설정한다. installation의 launch SHA256·manifest SHA256을 갱신한다. `input_tokens_per_call=262144`, 출력은 DB/manifest 한도 이하, 회차·누적 USD는 양수이며 승인 manifest 한도 이내로 설정한다. local_only는 기존대로 비용 0만 허용한다.
-5. 보호 installation의 model label에 Qwen3.5/OpenRouter를 지정하고 기존 `prepare-service`와 `serve-url-api`를 실행한다. `AUTOPENTEST_API`가 이 API를 향하는 Workbench에서 프로필·URL을 선택한다. 범위 확인에서 대상, provider, 토큰·USD 상한과 외부 전송을 확인하고 동의한 뒤 명시적으로 시작한다.
+5. 보호 installation의 model label에 Qwen3.6/OpenRouter를 지정하고 기존 `prepare-service`와 `serve-url-api`를 실행한다. `AUTOPENTEST_API`가 이 API를 향하는 Workbench에서 프로필·URL을 선택한다. 범위 확인에서 대상, provider, 토큰·USD 상한과 외부 전송을 확인하고 동의한 뒤 명시적으로 시작한다.
 
 키는 backend DB 조회에만 사용한다. 실제 task/profile chain과 역할 pin, 매 호출의 최신 DB config(키 포함)를 다시 대조한다. 키 교체·빈 키·프로필 교체는 현재 회차의 다음 호출을 차단하며 재시작/새 승인으로 설치를 다시 확인한다. provider가 반환한 401/429/5xx는 재시도하지 않고 비용 불명으로 처리한다. provider의 실제 계정 키 만료 시점은 호출 전 로컬 검사만으로 확인할 수 없다.
 
@@ -46,6 +46,6 @@ Workbench는 시작·중지·상태 재조회·저장 결과/HTML 조회를 제�
 
 합성 시험은 실제 SDK/transport 검증·보호 파일·URL API·실제 PostgreSQL·Planner/Worker·격리 helper·E②·결과 저장·HTML을 사용한다. 시험 바이너리의 Go overlay만 이미 허가된 transport의 물리 연결을 소유 loopback 서버로 고정한다. 제품 바이너리에 테스트 endpoint·환경 변수·TLS 우회나 범용 client 주입을 추가하지 않는다. 기존 llmpolicy/agent 회귀가 잘못된 model/provider/usage/tool-call, 예산, 재시도·redirect와 실패 후 추가 전송을 검사한다.
 
-실제 OpenRouter 유료 수용은 **NOT_RUN**이다. 별도 명시적 유료 호출 승인, 실제 USD 총액, 실제 키·계정 spend cap/privacy/provider 설정, 소유 대상 범위를 받은 뒤에만 수행한다. 합성 응답은 Qwen3.5의 실제 추론·청구·진단 능력을 증명하지 않는다.
+실제 OpenRouter 유료 수용은 **NOT_RUN**이다. 별도 명시적 유료 호출 승인, 실제 USD 총액, 실제 키·계정 spend cap/privacy/provider 설정, 소유 대상 범위를 받은 뒤에만 수행한다. 합성 응답은 Qwen3.6의 실제 추론·청구·진단 능력을 증명하지 않는다.
 
 `https://mcp.ondemand.sparrowcloud.ai/` 진단도 **NOT_RUN**이다. MCP POST/JSON-RPC/SSE·인증 요구사항과 승인된 비변경 경로가 확인되지 않았다. 현재 GET/HEAD 계약으로 MCP 진단 가능하다고 판정하지 않으며, 별도 대상 프로필·허용 요청·인증·예산 승인이 필요하다. 이번 작업에서 그 주소에 요청하지 않는다.

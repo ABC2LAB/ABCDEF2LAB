@@ -18,9 +18,12 @@ export type URLDiagnosisInput = {
   workflow_mode?: WorkflowMode;
   excluded_paths?: string;
 };
+// 대상 하나·회차 하나의 E② 승인 요청 수 코드 상한이다(서버 diagnosisprep.MaxTargetRequests와 같음, C32 2026-11-14 100에서 올림).
+export const MAX_TARGET_REQUESTS = 1000;
 export type URLDiagnosisModel = {
   mode: "openrouter";
-  model: "qwen/qwen3.5-35b-a3b";
+  // 지금 보내는 모델은 3.6이다. 3.5는 2026-11-14 전에 만든 작업·설치 기록을 읽을 때만 나온다.
+  model: "qwen/qwen3.6-35b-a3b" | "qwen/qwen3.5-35b-a3b";
   provider: string;
   external_transfer: true;
   input_tokens_per_call: number;
@@ -261,7 +264,7 @@ function model(v: unknown): URLDiagnosisModel {
   if (
     !object(v) ||
     v.mode !== "openrouter" ||
-    v.model !== "qwen/qwen3.5-35b-a3b" ||
+    (v.model !== "qwen/qwen3.6-35b-a3b" && v.model !== "qwen/qwen3.5-35b-a3b") ||
     !text(v.provider, 128) ||
     !v.provider ||
     v.external_transfer !== true ||
@@ -274,7 +277,7 @@ function model(v: unknown): URLDiagnosisModel {
   exact(v, ["mode", "model", "provider", "external_transfer", "input_tokens_per_call", "output_tokens_per_call"]);
   return {
     mode: "openrouter",
-    model: "qwen/qwen3.5-35b-a3b",
+    model: v.model,
     provider: v.provider,
     external_transfer: true,
     input_tokens_per_call: 262144,
@@ -396,7 +399,7 @@ export function parseURLCatalog(raw: unknown): URLDiagnosisCatalog {
       !text(p.model_label) ||
       !p.model_label ||
       (p.workflow !== undefined &&
-        (!natural(p.workflow_request_limit) || p.workflow_request_limit < 1 || p.workflow_request_limit > 100))
+        (!natural(p.workflow_request_limit) || p.workflow_request_limit < 1 || p.workflow_request_limit > MAX_TARGET_REQUESTS))
     )
       return invalid();
     exact(p, ["id", "label", "model_profile_ref", "model_label", "model", "workflow", "workflow_request_limit"]);

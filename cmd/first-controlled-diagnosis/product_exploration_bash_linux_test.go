@@ -53,6 +53,7 @@ func TestProductExplorationHostDirectBashThroughRealBoundary(t *testing.T) {
 	f := newHostFixture(t)
 	f.host.directBash = true
 	f.host.bashHelper = buildExplorationBashHelper(t)
+	f.host.skillDir = filepath.Join("..", "..", "skills", "api-recon")
 	host, err := f.host.factory(f.rec, f.current, f.digest, []string{"/read/admin"}, 4096)(t.Context(), f.binding, &agent.Worker{})
 	if err != nil {
 		t.Fatal(err)
@@ -93,13 +94,25 @@ func TestProductExplorationHostDirectBashThroughRealBoundary(t *testing.T) {
 	if o, err := host.Reader.ReadObservation(t.Context(), f.flow, seqs[0]); err != nil || o.Path != "/read" {
 		t.Fatalf("observation: %+v %v", o, err)
 	}
+	// 원본 api-recon 스크립트가 작업 공간에 있고, 그 요청도 경계를 거친다(승인 경로 안 진입점 하나).
+	if !shell.HasSeed() {
+		t.Fatal("api-recon skill was not placed in the direct Bash workspace")
+	}
+	recon, err := shell.Run(t.Context(), "head -n 2 /work/api-recon/SKILL.md; python3 /work/api-recon/scripts/harvest_static.py "+f.target+"/read /tmp/recon >/dev/null; echo harvest_exit=$?", 0)
+	if err != nil || !strings.Contains(string(recon.Output), "name: api-recon") || !strings.Contains(string(recon.Output), "harvest_exit=0") {
+		t.Fatalf("api-recon script in the sandbox: %v %q", err, recon.Output)
+	}
+	if f.hits.Load() < 2 {
+		t.Fatalf("api-recon request did not reach the approved target through the boundary: hits=%d", f.hits.Load())
+	}
 	state, err := lease.Close(t.Context(), exploration.Completed)
-	if err != nil || state.TargetRequests != 1 {
-		t.Fatalf("close: %+v %v", state, err)
+	if err != nil || int64(state.TargetRequests) != f.hits.Load() {
+		t.Fatalf("close: %+v %v hits=%d", state, err, f.hits.Load())
 	}
 	// 마감 뒤에는 경계가 새 요청을 받지 않는다.
+	closedHits := f.hits.Load()
 	after, err := shell.Run(t.Context(), code(f.target+"/read"), 0)
-	if err != nil || strings.TrimSpace(string(after.Output)) == "200" || f.hits.Load() != 1 {
+	if err != nil || strings.TrimSpace(string(after.Output)) == "200" || f.hits.Load() != closedHits {
 		t.Fatalf("closed session still reached the target: %v %q hits=%d", err, after.Output, f.hits.Load())
 	}
 }

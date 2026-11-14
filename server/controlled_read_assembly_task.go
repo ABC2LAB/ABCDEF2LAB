@@ -19,11 +19,28 @@ type FirstDiagnosisPreparedTask struct {
 
 // 실제 DB ID를 발급받되 intent, 모델 호출, 엔진 실행은 시작하지 않는다.
 // 생성과 paused 표시는 같은 트랜잭션이며 부분 task가 admission에 노출되지 않는다.
+// MaxFirstDiagnosisTaskSeconds는 첫 진단 task 시간(회차 실행 시간)의 코드 상한이다. 설치 runtime_limits.run_seconds가
+// 이보다 크면 설치를 거부한다(C32, 2026-11-14 900초에서 올림).
+const MaxFirstDiagnosisTaskSeconds = 3600
+
+// MaxFirstDiagnosisShutdownSeconds는 launch 정리 시간(shutdown_timeout_seconds)의 상한이다.
+const MaxFirstDiagnosisShutdownSeconds = 60
+
+// MaxFirstDiagnosisHTTPAuthority는 일반 HTTP 회차 권한(authority)의 최대 구간이다. 권한은 회차 실행 시간 + 정리 시간 동안
+// 유효해야 하므로 두 상한을 더한 값이다. 그래서 설치가 고를 수 있는 가장 긴 회차도 권한 안에서 끝난다(2026-11-14 15분에서
+// 올림: 실행 시간 상한을 3600초로 올린 뒤 약 880초를 넘는 회차가 권한 발급에서 실패했다).
+const MaxFirstDiagnosisHTTPAuthority = time.Duration(MaxFirstDiagnosisTaskSeconds+MaxFirstDiagnosisShutdownSeconds) * time.Second
+
+// FirstDiagnosisRunTimeout은 감독자 Run 하나의 뒷받침 기한이다. 회차 실행 시간은 호출자 문맥(URL 실행의 실행 시간)과
+// 시간 상한 마감이 정하므로, 이 기한은 가장 긴 회차(권한 구간과 같은 값)보다 먼저 끊지 않아야 한다(이전 30분 고정은
+// 실행 시간 약 1950초를 넘는 회차를 시간 상한 마감 전에 실패로 끊었다, #581 윤재상 리뷰).
+const FirstDiagnosisRunTimeout = MaxFirstDiagnosisHTTPAuthority
+
 func PrepareFirstDiagnosisTask(ctx context.Context, pool *sql.DB, description, goal string, profileID int64, timeoutSeconds int) (FirstDiagnosisPreparedTask, error) {
 	refuse := func() (FirstDiagnosisPreparedTask, error) {
 		return FirstDiagnosisPreparedTask{}, ErrControlledReadHostConfiguration
 	}
-	if ctx == nil || ctx.Err() != nil || pool == nil || !validControlledPreparationText(description, 16<<10) || !validControlledPreparationText(goal, 16<<10) || profileID <= 0 || timeoutSeconds < 1 || timeoutSeconds > 900 {
+	if ctx == nil || ctx.Err() != nil || pool == nil || !validControlledPreparationText(description, 16<<10) || !validControlledPreparationText(goal, 16<<10) || profileID <= 0 || timeoutSeconds < 1 || timeoutSeconds > MaxFirstDiagnosisTaskSeconds {
 		return refuse()
 	}
 	bounded, cancel := context.WithTimeout(ctx, 10*time.Second)
