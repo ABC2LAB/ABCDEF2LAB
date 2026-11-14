@@ -741,18 +741,25 @@ func emitE2HTTPPromptActivity(emit func(db.Activity), reportStage func(string), 
 func (w *Worker) runE2HTTPSession(ctx context.Context, name string, intent *db.Node, emit func(db.Activity), opts agentcore.Options, input string, execution E2HTTPScope, state *e2HTTPToolState, toolset *ToolSet) (harness.TerminalReason, WriteCounts, error) {
 	session := agentcore.NewSession(opts)
 	defer session.Close()
-	_, reason, runErr := captureRunSession(ctx, session, input, func(activity db.Activity) {
+	// 요약은 가린 글에서 자른다(captureRunSessionWith). 아래 emit의 가림은 그 밖의 칸을 위한 두 번째 층이다.
+	redactText := func(text string) string { return string(execution.RedactOutput([]byte(text))) }
+	_, reason, runErr := captureRunSessionWith(ctx, session, input, redactText, func(activity db.Activity) {
 		if emit == nil {
 			return
 		}
 		activity.NodeID = &intent.ID
 		activity.Worker = name
 		if activity.Kind == "result" && activity.IsError {
+			// 화면 경계(ForDisplay)는 metadata가 있으면 Summary·Detail을 그것으로 바꾸므로, 고정 문구가 화면에도 가게 비운다.
 			activity.Summary = ErrE2HTTPWorker.Error()
 			activity.Detail = ErrE2HTTPWorker.Error()
+			activity.Metadata = nil
 		} else {
 			activity.Summary = string(execution.RedactOutput([]byte(activity.Summary)))
 			activity.Detail = string(execution.RedactOutput([]byte(activity.Detail)))
+			if len(activity.Metadata) > 0 {
+				activity.Metadata = execution.RedactOutput(activity.Metadata)
+			}
 		}
 		emit(activity)
 	})
