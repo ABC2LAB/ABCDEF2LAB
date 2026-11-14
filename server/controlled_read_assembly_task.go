@@ -31,6 +31,11 @@ const MaxFirstDiagnosisShutdownSeconds = 60
 // 올림: 실행 시간 상한을 3600초로 올린 뒤 약 880초를 넘는 회차가 권한 발급에서 실패했다).
 const MaxFirstDiagnosisHTTPAuthority = time.Duration(MaxFirstDiagnosisTaskSeconds+MaxFirstDiagnosisShutdownSeconds) * time.Second
 
+// FirstDiagnosisRunTimeout은 감독자 Run 하나의 뒷받침 기한이다. 회차 실행 시간은 호출자 문맥(URL 실행의 실행 시간)과
+// 시간 상한 마감이 정하므로, 이 기한은 가장 긴 회차(권한 구간과 같은 값)보다 먼저 끊지 않아야 한다(이전 30분 고정은
+// 실행 시간 약 1950초를 넘는 회차를 시간 상한 마감 전에 실패로 끊었다, #581 윤재상 리뷰).
+const FirstDiagnosisRunTimeout = MaxFirstDiagnosisHTTPAuthority
+
 func PrepareFirstDiagnosisTask(ctx context.Context, pool *sql.DB, description, goal string, profileID int64, timeoutSeconds int) (FirstDiagnosisPreparedTask, error) {
 	refuse := func() (FirstDiagnosisPreparedTask, error) {
 		return FirstDiagnosisPreparedTask{}, ErrControlledReadHostConfiguration
