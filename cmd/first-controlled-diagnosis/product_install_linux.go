@@ -143,10 +143,7 @@ func withTargetPolicyDefaults(p productTargetPolicy) productTargetPolicy {
 		p.AllowedPorts = []int{80, 443}
 	}
 	if p.MaxRequests == 0 {
-		p.MaxRequests = 4
-		if p.Workflow != nil {
-			p.MaxRequests = 64
-		}
+		p.MaxRequests = productTargetRequests
 	}
 	if p.MaxTargets == 0 {
 		p.MaxTargets = 32
@@ -233,23 +230,59 @@ func runProductInstall(ctx context.Context, args []string, stdout, stderr io.Wri
 // 보통 크기의 페이지 응답도 상한을 넘어 결과 불명으로 끝나 그 intent가 멈췄다. 코드 상한(e2proxy)과 같은 값이다.
 const productMaxBodyBytes = 16 << 20
 
+// 제품 설치 기본 상한(C32 결정안 §8). 근거는 원본 ARTEX(포크 기준 fdfb7a17)와 공식 평가 정책(official-e2-policy.json)이다.
+// 안전 통제가 아닌 상한(Bash 호출·턴·라운드·Worker 시간)은 요청 예산·실행 시간·동시성·모델 예산보다 먼저 걸리지 않게
+// 공식 평가 값이나 원본 값으로 두고, 설치 조직은 runtime_limits로 더 낮게 둘 수 있다. 코드 상한은 그대로다.
+const (
+	// productTargetRequests는 대상 정책 max_requests가 없을 때 회차 하나의 대상 요청 상한이다(공식 프로파일 request_budget).
+	productTargetRequests = 400
+	// productMaxCalls는 회차 전체의 E② Bash 실행 수다(E②판 WebFetch 포함, 그래프·파일 도구·후보 제출은 세지 않음).
+	productMaxCalls = 1000
+	// productMaxConcurrent는 E② 동시 송신 수다. 프록시 연결 수는 이 값 이상이어야 한다(validProductPolicyTemplate).
+	productMaxConcurrent    = 16
+	productRequestTimeoutMS = 60000
+	productCallTimeoutMS    = 120000
+	productWorkerTurns      = 1000
+	productWorkerTimeoutMS  = 1200000
+	productPlannerRounds    = 100
+	// Bash 호출 하나 안에서만 새 요청을 막는 상한(C01). 결과 불명은 쓰기 안전 때문에 1이다.
+	productMaxDenials   = 16
+	productMaxTransient = 4
+	productMaxUnknown   = 1
+	// productLocalModelRequests는 로컬 모델 설치의 회차 모델 요청 상한이다(OpenRouter는 승인 manifest가 정한다).
+	productLocalModelRequests = 200
+)
+
+// productRunBudget은 설치가 모델 프로파일에 적는 회차 예산이다. 대상 요청 예산은 대상 정책 상한이다(대상 등록 값은 그
+// 이하라서 회차 불러오기의 총량 검사를 넘지 않는다, 모드와 상관없이). 모델 요청은 로컬 모델 기본값이고 OpenRouter
+// 설치는 뒤에서 승인 manifest 값으로 바꾼다.
+func productRunBudget(p productTargetPolicy, contextK, output int, runSeconds int64) diagnosisprep.Budget {
+	return diagnosisprep.Budget{Requests: productTargetRequestLimit(p), ModelRequests: productLocalModelRequests, InputTokens: productLocalModelRequests * int64(contextK) * 1024, OutputTokens: productLocalModelRequests * int64(output), DurationSeconds: runSeconds}
+}
+
+// productTargetRequestLimit은 대상 정책의 회차 요청 상한이다. 비어 있으면 기본값이다(설치는 withTargetPolicyDefaults로
+// 먼저 채운다).
+func productTargetRequestLimit(p productTargetPolicy) int64 {
+	if p.MaxRequests > 0 {
+		return p.MaxRequests
+	}
+	return productTargetRequests
+}
+
 // productPolicyBounds는 설치의 E② 한도·프록시·런타임 상한이다. 모드별 기본값에 runtime_limits를 덮어쓰고
 // validProductPolicyTemplate으로 검사한다(C32). 설치 입력 검사와 실제 설치가 같은 값을 쓴다.
 func productPolicyBounds(c productInstallInput) (server.E2HTTPFilePolicy, bool) {
-	policy := server.E2HTTPFilePolicy{MaxRequests: 4, HeaderMode: e2proxy.HeaderPreserve, ApprovalMode: e2proxy.ApprovalPreauthorizedScope,
-		Limits: server.E2HTTPFileLimits{MaxAttempts: 8, MaxCalls: 8, MaxConcurrent: 1, MaxBodyBytes: productMaxBodyBytes, RequestTimeoutMS: 5000, CallTimeoutMS: 10000, MaxDenials: 2, MaxTransient: 1, MaxUnknown: 1}, Proxy: server.E2HTTPFileProxy{HeaderTimeoutMS: 1000, RequestTimeoutMS: 5000, MaxHeaderBytes: 32768, MaxConnections: 4}, Runtime: server.E2HTTPFileRuntime{MaxWorkerTurns: 8, MaxToolCalls: 8, WorkerTimeoutMS: 30000, MaxPlannerRounds: 6, MaxIntentRuns: 1, DrainTimeoutMS: 10000, OutputLimit: 32768}}
+	// 송신 시도 상한은 대상 정책의 회차 요청 상한과 같게 둔다. 회차 요청 수(대상 등록 값)는 그 상한 이하라서 시도 상한이
+	// 요청 예산보다 먼저 걸리지 않는다(C32 결정안 §8).
+	requests := productTargetRequestLimit(c.TargetPolicy)
+	policy := server.E2HTTPFilePolicy{MaxRequests: uint64(requests), HeaderMode: e2proxy.HeaderPreserve, ApprovalMode: e2proxy.ApprovalPreauthorizedScope,
+		Limits:  server.E2HTTPFileLimits{MaxAttempts: uint64(requests), MaxCalls: productMaxCalls, MaxConcurrent: productMaxConcurrent, MaxBodyBytes: productMaxBodyBytes, RequestTimeoutMS: productRequestTimeoutMS, CallTimeoutMS: productCallTimeoutMS, MaxDenials: productMaxDenials, MaxTransient: productMaxTransient, MaxUnknown: productMaxUnknown},
+		Proxy:   server.E2HTTPFileProxy{HeaderTimeoutMS: 1000, RequestTimeoutMS: productRequestTimeoutMS, MaxHeaderBytes: 32768, MaxConnections: productMaxConcurrent},
+		Runtime: server.E2HTTPFileRuntime{MaxWorkerTurns: productWorkerTurns, MaxToolCalls: productMaxCalls, WorkerTimeoutMS: productWorkerTimeoutMS, MaxPlannerRounds: productPlannerRounds, MaxIntentRuns: 1, DrainTimeoutMS: 10000, OutputLimit: 32768}}
+	// 워크플로 모드는 응답 크기만 대상 정책의 워크플로 칸을 따른다. 나머지 상한은 제품 모드와 같다(§8).
 	if flow := c.TargetPolicy.Workflow; flow != nil {
 		policy.Limits.MaxBodyBytes = int64(flow.MaxResponseBytes)
-		policy.Limits.MaxAttempts = 200
-		policy.Limits.MaxCalls = 64
-		policy.Limits.CallTimeoutMS = 60000
-		policy.Proxy.RequestTimeoutMS = 60000
-		policy.Limits.MaxDenials = 16
 		policy.Runtime.OutputLimit = flow.MaxResponseBytes + 8192
-		policy.Runtime.MaxToolCalls = 64
-		policy.Runtime.MaxWorkerTurns = 16
-		policy.Runtime.WorkerTimeoutMS = 180000
-		policy.Runtime.MaxPlannerRounds = 12
 	}
 	if !applyRuntimeLimits(&policy, c.RuntimeLimits, c.TargetPolicy.Workflow != nil) || !validProductPolicyTemplate(policy) {
 		return server.E2HTTPFilePolicy{}, false
@@ -402,7 +435,7 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 		return errPreparation
 	}
 	helperSHA := sha256.Sum256(helper)
-	policy := server.E2HTTPFilePolicy{Format: server.E2HTTPFilePolicyFormat, RunRef: "installation-template", ResetRef: "operator-target", PolicyRef: "installed-scope", CaseRef: "first-diagnosis", PolicyRevision: "v1", BudgetRef: "installed-target-budget", OwnerRef: "ARTEX", AccountRef: "operator", SessionRef: "operator", ValidFrom: now.Add(-time.Minute), ValidUntil: until, MaxRequests: 4, HeaderMode: e2proxy.HeaderPreserve, StateDir: filepath.Join(root, "state"), Helper: "/app/e2-bash-sandbox", HelperSHA256: hex.EncodeToString(helperSHA[:]), CACert: caPin, CAKey: keyPin, AuditKey: auditPin, UpstreamCA: upstream, ApprovalMode: e2proxy.ApprovalPreauthorizedScope}
+	policy := server.E2HTTPFilePolicy{Format: server.E2HTTPFilePolicyFormat, RunRef: "installation-template", ResetRef: "operator-target", PolicyRef: "installed-scope", CaseRef: "first-diagnosis", PolicyRevision: "v1", BudgetRef: "installed-target-budget", OwnerRef: "ARTEX", AccountRef: "operator", SessionRef: "operator", ValidFrom: now.Add(-time.Minute), ValidUntil: until, MaxRequests: uint64(productTargetRequestLimit(c.TargetPolicy)), HeaderMode: e2proxy.HeaderPreserve, StateDir: filepath.Join(root, "state"), Helper: "/app/e2-bash-sandbox", HelperSHA256: hex.EncodeToString(helperSHA[:]), CACert: caPin, CAKey: keyPin, AuditKey: auditPin, UpstreamCA: upstream, ApprovalMode: e2proxy.ApprovalPreauthorizedScope}
 	bounds, ok := productPolicyBounds(c)
 	if !ok {
 		return errPreparation
@@ -446,10 +479,7 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 		if mode == "openrouter" {
 			launch.WebSearch = webSearch
 		}
-		budget := diagnosisprep.Budget{Requests: 4, ModelRequests: 20, InputTokens: 20 * int64(contextK) * 1024, OutputTokens: 20 * int64(output), DurationSeconds: runSeconds}
-		if c.TargetPolicy.Workflow != nil {
-			budget.Requests = c.TargetPolicy.MaxRequests
-		}
+		budget := productRunBudget(c.TargetPolicy, contextK, output, runSeconds)
 		manifestPath := filepath.Join(config, mode+"-model.json")
 		var manifestSHA string
 		end := until
