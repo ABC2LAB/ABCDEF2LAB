@@ -1,7 +1,7 @@
 import { beforeEach, expect, it, vi } from "vitest";
 
 import { apiFetch } from "./api";
-import { commandURLDiagnosis, matchURLJob, parseURLCatalog, parseURLJob } from "./diagnosis-url";
+import { MAX_TARGET_REQUESTS, commandURLDiagnosis, matchURLJob, parseURLCatalog, parseURLJob } from "./diagnosis-url";
 import {
   catalog,
   envelope,
@@ -120,4 +120,23 @@ it.each(["validate", "stop"] as const)("%s 요청은 외부 전송 동의를 담
     version: "diagnosis-api.v2",
     expected_revision: current.revision,
   });
+});
+
+// 워크플로 프로파일 요청 한도는 서버와 같은 코드 상한(1000)까지 받는다.
+it.each([
+  [1000, true],
+  [1001, false],
+])("workflow request limit %i accepted=%s", (limit, ok) => {
+  const workflow = {
+    format: "abc2lab.workbench-flow/v1",
+    max_pages: 8,
+    max_endpoints: 32,
+    max_response_bytes: 65536,
+    allow_reversible_writes: false,
+  };
+  const profiles = [{ ...catalog.profiles[0], workflow, workflow_request_limit: limit }];
+  const parse = () => parseURLCatalog({ version: "diagnosis-api.v2", owner_context: owner, profiles });
+  if (ok) expect(parse().profiles[0].workflow_request_limit).toBe(limit);
+  else expect(parse).toThrow();
+  expect(MAX_TARGET_REQUESTS).toBe(1000);
 });
