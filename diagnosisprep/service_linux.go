@@ -110,6 +110,11 @@ func New(ctx context.Context, root string, backend Backend) (*Service, error) {
 }
 
 func newServiceForBoot(ctx context.Context, root string, backend Backend, boot string) (*Service, error) {
+	return newServiceForBootWithCompactionHook(ctx, root, backend, boot, nil)
+}
+
+// hook는 시험에서만 전달하며 제품 설정이나 RPC에 노출하지 않는다.
+func newServiceForBootWithCompactionHook(ctx context.Context, root string, backend Backend, boot string, hook compactionHook) (*Service, error) {
 	if ctx == nil || ctx.Err() != nil || backend == nil {
 		return nil, ErrProtocol
 	}
@@ -127,14 +132,21 @@ func newServiceForBoot(ctx context.Context, root string, backend Backend, boot s
 	s.jobs = jobs
 	if len(records) > len(jobs) {
 		snapshots, err := preparationSnapshots(jobs)
-		if err != nil || j.compact(ctx, snapshots, func(candidate []json.RawMessage, count int) error {
+		if err != nil {
+			return fail()
+		}
+		err = j.compact(ctx, snapshots, func(candidate []json.RawMessage, count int) error {
 			restored, err := replayPreparationReceipts(ctx, candidate, count)
 			if err != nil || !reflect.DeepEqual(restored, jobs) {
 				return errStorage
 			}
 			return nil
-		}, nil) != nil {
-			return fail()
+		}, hook)
+		if err != nil {
+			if errors.Is(err, errCompactionValidation) || ctx.Err() != nil || j.poisoned || !j.current() {
+				return fail()
+			}
+			log.Print("준비 기록: 압축을 보류하고 검증된 이전 저널로 기동합니다")
 		}
 	}
 	if j.snapshotCount > 0 && j.blockLegacyReader(nil) != nil {

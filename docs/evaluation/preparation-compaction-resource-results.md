@@ -20,7 +20,7 @@
 
 기동 시 기존 chain·head·파일 소유자·권한·inode/link·영수증·상태 전이를 전부 검증한다. 작업마다 마지막 영수증을 정렬해 사설 임시 디렉터리에 기록하고 data/head/디렉터리를 fsync한다. 후보를 같은 저장·영수증 검증기로 다시 읽고, 원본 sequence/digest 및 전체 작업 map과 일치해야 채택한다. 작업·예약·실행 횟수·Unknown·실행 반환·drain·task/보고서 참조는 지우지 않는다. E③ 판정·감사·증거 파일은 수정하지 않는다.
 
-`preparation.current/` 아래 data/head를 한 세대로 묶는다. 첫 채택은 디렉터리 rename, 다음 채택은 Linux `RENAME_EXCHANGE`로 교환하고 부모를 fsync한다. 부모 루트 flock은 교환 중에도 유지된다. 게시 전 실패는 옛 data/head를 바이트 그대로 보존하고 기동을 거절한다. 게시 후 동기화·호환 가드 실패는 현재 writer를 중단하며, 재기동은 검증된 전체 세대만 읽는다. 정리 실패는 고정 문구로 알리고 옛 세대를 남긴다.
+`preparation.current/` 아래 data/head를 한 세대로 묶는다. 첫 채택은 디렉터리 rename, 다음 채택은 Linux `RENAME_EXCHANGE`로 교환하고 부모를 fsync한다. 부모 루트 flock은 교환 중에도 유지된다. 게시 전 I/O 실패는 옛 data/head가 검증된 current이고 writer가 poisoned가 아닐 때 압축을 보류하고 기존 저널로 기동한다. 후보의 무결성·원본 결속·전체 작업/회계 불일치, 현재 저널 교체, context 취소는 기동을 거절한다. 게시 후 동기화·호환 가드 실패는 기동을 거절하고 현재 writer를 중단하며, 재기동은 검증된 전체 세대만 읽는다. 정리 실패는 고정 문구로 알리고 옛 세대를 남긴다.
 
 새 형식은 `diagnosis-preparation-snapshot.v2`이며 원본 chain의 끝을 헤더에 보존한다. 과거 평면 head는 구버전 reader가 오래된 회계로 재개하지 못하도록 가드로 닫는다. 정상 압축 뒤 구버전으로의 직접 downgrade는 지원하지 않는다. 업데이트·복구에는 이 형식을 읽는 제품을 사용해야 하며, 불완전 게시 뒤 구버전으로 강제 rollback하는 경로를 제공하지 않는다. 전체 설치 디렉터리를 임의로 과거 복사본으로 되돌리는 공격에 대한 외부 rollback 방지 장치는 이 변경의 범위가 아니다.
 

@@ -19,6 +19,8 @@ import (
 const compactionFormat = "diagnosis-preparation-snapshot.v2"
 const legacyCompactionGuard = "requires-preparation-snapshot-reader.v2\n"
 
+var errCompactionValidation = errors.New("준비 기록 압축 후보가 원본과 일치하지 않습니다")
+
 type compactionHeader struct {
 	Format         string `json:"format"`
 	SnapshotCount  int    `json:"snapshot_count"`
@@ -203,10 +205,16 @@ func (j *journal) compact(ctx context.Context, records []json.RawMessage, valida
 		return errStorage
 	}
 	checked, err := readJournalData(next)
-	if err != nil || next.snapshotCount != len(records) || next.sourceSequence != j.sequence || next.sourceDigest != j.digest || compactionStep(hook, "validate_snapshot") != nil || validate(checked, next.snapshotCount) != nil {
+	if err != nil || next.snapshotCount != len(records) || next.sourceSequence != j.sequence || next.sourceDigest != j.digest {
+		return errors.Join(errStorage, errCompactionValidation)
+	}
+	if compactionStep(hook, "validate_snapshot") != nil {
 		return errStorage
 	}
-	if ctx.Err() != nil || !j.current() || !next.current() || compactionStep(hook, "publish") != nil {
+	if validate(checked, next.snapshotCount) != nil || !next.current() {
+		return errors.Join(errStorage, errCompactionValidation)
+	}
+	if ctx.Err() != nil || !j.current() || compactionStep(hook, "publish") != nil {
 		return errStorage
 	}
 	old := *j
