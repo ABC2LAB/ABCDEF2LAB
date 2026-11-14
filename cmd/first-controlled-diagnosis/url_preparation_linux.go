@@ -76,11 +76,8 @@ func (b *urlPreparationRuntime) issue(l *urlLoadedProfile, jobID string, actual 
 	policy.PolicyRef = "policy-" + jobID
 	policy.StateDir = filepath.Join(runRoot, "state")
 	policy.ValidFrom = now
-	policy.ValidUntil = now.Add(time.Duration(l.profile.Budget.DurationSeconds+int64(c.ShutdownTimeoutSeconds)) * time.Second)
-	if policy.ValidUntil.After(l.profile.ValidUntil) {
-		policy.ValidUntil = l.profile.ValidUntil
-	}
-	if !policy.ValidUntil.After(now) || policy.ValidUntil.Sub(now) > 15*time.Minute {
+	var ok bool
+	if policy.ValidUntil, ok = urlAuthorityUntil(now, l.profile.Budget.DurationSeconds, int64(c.ShutdownTimeoutSeconds), l.profile.ValidUntil); !ok {
 		return c, errPreparation
 	}
 	raw, err := json.Marshal(policy)
@@ -298,4 +295,14 @@ func runURLDiagnosisAPI(ctx context.Context, args []string, stdout, stderr io.Wr
 		return 1
 	}
 	return 0
+}
+
+// urlAuthorityUntil은 회차 권한의 끝 시각이다: 실행 시간 + 정리 시간이고, 설치 위임 기한을 넘지 않는다. 구간이 비거나 일반
+// HTTP 권한 상한(server.MaxFirstDiagnosisHTTPAuthority)을 넘으면 거부한다.
+func urlAuthorityUntil(now time.Time, runSeconds, shutdownSeconds int64, delegationUntil time.Time) (time.Time, bool) {
+	until := now.Add(time.Duration(runSeconds+shutdownSeconds) * time.Second)
+	if until.After(delegationUntil) {
+		until = delegationUntil
+	}
+	return until, until.After(now) && until.Sub(now) <= server.MaxFirstDiagnosisHTTPAuthority
 }
