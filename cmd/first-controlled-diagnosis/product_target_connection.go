@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/netip"
 
@@ -18,7 +19,11 @@ type productTargetConnection struct {
 
 func (l *urlLoadedProfile) prepareTargetConnection(ctx context.Context, resolver *net.Resolver, jobID string) error {
 	if l.productTarget == nil {
-		return l.dnsCheck(ctx, resolver)
+		// Legacy profiles only perform their existing DNS pin check here.
+		if l.dnsCheck(ctx, resolver) != nil {
+			return errors.New("target_dns_mismatch")
+		}
+		return nil
 	}
 	if l.productRegistry == nil || l.productConnection != nil || len(l.policy.Rules) == 0 || !managementReference.MatchString(jobID) {
 		return errPreparation
@@ -51,9 +56,9 @@ func (l *urlLoadedProfile) prepareTargetConnection(ctx context.Context, resolver
 func targetConnectionFailure(err error) string {
 	if err != nil {
 		switch err.Error() {
-		case "target_approval_changed", "ownership_not_verified", "target_dns_unavailable", "target_address_denied", "target_unreachable", "target_tls_unverified":
+		case "target_approval_changed", "ownership_not_verified", "target_dns_unavailable", "target_dns_mismatch", "target_address_denied", "target_unreachable", "target_tls_unverified", "target_connection_timeout":
 			return err.Error()
 		}
 	}
-	return "target_dns_mismatch"
+	return "target_connection_unavailable"
 }

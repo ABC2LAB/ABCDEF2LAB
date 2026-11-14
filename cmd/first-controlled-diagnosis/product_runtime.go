@@ -379,6 +379,8 @@ func (p *productRuntime) loadBinding(principal string, input diagnosisprep.Input
 	if derived.ValidUntil.After(rec.Target.ExpiresAt) {
 		derived.ValidUntil = rec.Target.ExpiresAt
 	}
+	// This flag validates the approval-time profile and historical report inputs.
+	// C35 authorizes each execution IP through addressAllowed/checkDestinations.
 	derived.AllowPrivateTarget = netip.MustParseAddr(rec.SelectedIP).IsPrivate()
 	derived.Budget.Requests = rec.Target.Requests
 	policy.ValidFrom = derived.ValidFrom

@@ -12,6 +12,10 @@ import (
 // 상한을 2026-11-14에 올렸다: 느린 모델·넓은 대상에서 진단이 승인 요청 수에 먼저 막혀 성능을 깎았다.
 const MaxTargetRequests = 1000
 
+// MaxTargetApprovalHours is shared by HTTP/IPC validation and the registry.
+// It is an upper bound; the Workbench default remains four hours.
+const MaxTargetApprovalHours = 720
+
 // ProductControl is private IPC, never an execution grant or a public v2 command.
 // Only the installed product wrapper implements it; generic coordinators reject it.
 const ProductControl Command = "product_control"
@@ -256,7 +260,7 @@ func validProductRequest(r *ProductRequest) bool {
 		return r.TargetID == "" && r.ProfileID == "" && r.Registration == nil
 	case "register":
 		s := r.Registration
-		if r.TargetID != "" || r.ProfileID != "" || s == nil || !validText(s.ReadonlyBasis, 1024) || len(s.ReadonlyBasis) < 20 || s.Requests < 1 || s.Requests > MaxTargetRequests || s.ValidHours < 1 || s.ValidHours > 24 || len(s.PathPrefixes) < 1 || len(s.PathPrefixes) > 16 || len(s.Methods) < 1 || len(s.Methods) > 5 {
+		if r.TargetID != "" || r.ProfileID != "" || s == nil || !validText(s.ReadonlyBasis, 1024) || len(s.ReadonlyBasis) < 20 || s.Requests < 1 || s.Requests > MaxTargetRequests || s.ValidHours < 1 || s.ValidHours > MaxTargetApprovalHours || len(s.PathPrefixes) < 1 || len(s.PathPrefixes) > 16 || len(s.Methods) < 1 || len(s.Methods) > 5 {
 			return false
 		}
 		if _, e := CanonicalInput(Input{TargetURL: s.URL, ProfileID: "target"}); e != nil {

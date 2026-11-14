@@ -54,7 +54,8 @@ type productTargetRecord struct {
 }
 
 const productMaxTargetAddresses = 32
-const productMaxTargetApprovalHours = 720
+const productMaxTargetApprovalHours = diagnosisprep.MaxTargetApprovalHours
+const productTargetProbeTimeout = 3 * time.Second
 
 const productWriteConsentAuto = "auto_without_confirmation_v1"
 
@@ -366,7 +367,9 @@ func (r *productTargetRegistry) proof(ctx context.Context, t diagnosisprep.Produ
 	return errors.New("ownership_not_verified")
 }
 func (r *productTargetRegistry) probeTLS(ctx context.Context, host, ip string, port int) (string, time.Time, error) {
-	conn, e := (&net.Dialer{Timeout: 3 * time.Second}).DialContext(ctx, "tcp", net.JoinHostPort(ip, strconv.Itoa(port)))
+	ctx, cancel := context.WithTimeout(ctx, productTargetProbeTimeout)
+	defer cancel()
+	conn, e := (&net.Dialer{Timeout: productTargetProbeTimeout}).DialContext(ctx, "tcp", net.JoinHostPort(ip, strconv.Itoa(port)))
 	if e != nil {
 		return "", time.Time{}, errors.New("target_tls_unavailable")
 	}
@@ -379,8 +382,20 @@ func (r *productTargetRegistry) probeTLS(ctx context.Context, host, ip string, p
 	sum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
 	return hex.EncodeToString(sum[:]), cert.NotAfter, nil
 }
+
+// Share the remaining overall deadline so an early stalled address cannot use
+// every later address's time. The existing three-second dial limit also bounds TLS.
+func productTargetProbeContext(ctx context.Context, remaining int) (context.Context, context.CancelFunc) {
+	timeout := productTargetProbeTimeout
+	if deadline, ok := ctx.Deadline(); ok && remaining > 0 {
+		if share := time.Until(deadline) / time.Duration(remaining); share < timeout {
+			timeout = share
+		}
+	}
+	return context.WithTimeout(ctx, timeout)
+}
 func (r *productTargetRegistry) reachTCP(ctx context.Context, ip string, port int) error {
-	conn, e := (&net.Dialer{Timeout: 3 * time.Second}).DialContext(ctx, "tcp", net.JoinHostPort(ip, strconv.Itoa(port)))
+	conn, e := (&net.Dialer{Timeout: productTargetProbeTimeout}).DialContext(ctx, "tcp", net.JoinHostPort(ip, strconv.Itoa(port)))
 	if e != nil {
 		return errors.New("target_unreachable")
 	}
@@ -417,8 +432,17 @@ func (r *productTargetRegistry) approve(ctx context.Context, principal, id strin
 	}
 	var spki string
 	var selected string
-	for _, ip := range addresses {
-		spki, _, e = r.probeWithAudit(ctx, "approve", rec, u.Hostname(), ip)
+	for index, ip := range addresses {
+		if ctx.Err() != nil {
+			return diagnosisprep.ProductTarget{}, errors.New("target_connection_timeout")
+		}
+		probeCtx, stopProbe := productTargetProbeContext(ctx, len(addresses)-index)
+		if probeCtx.Err() != nil {
+			stopProbe()
+			return diagnosisprep.ProductTarget{}, errors.New("target_connection_timeout")
+		}
+		spki, _, e = r.probeWithAudit(probeCtx, "approve", rec, u.Hostname(), ip)
+		stopProbe()
 		if errors.Is(e, errPreparation) {
 			return diagnosisprep.ProductTarget{}, errPreparation
 		}
@@ -538,16 +562,28 @@ func (r *productTargetRegistry) connectionForStart(ctx context.Context, rec prod
 	if r.checkDestinations(rec.Target.Origin, addresses) != nil {
 		return nil, errors.New("target_address_denied")
 	}
-	for _, ip := range addresses {
+	for index, ip := range addresses {
+		if ctx.Err() != nil {
+			return nil, errors.New("target_connection_timeout")
+		}
 		if r.current(rec) != nil {
 			return nil, errors.New("target_approval_changed")
 		}
-		spki, _, err := r.probeWithAuditForRun(ctx, "start", rec, u.Hostname(), ip, jobID)
+		probeCtx, stopProbe := productTargetProbeContext(ctx, len(addresses)-index)
+		if probeCtx.Err() != nil {
+			stopProbe()
+			return nil, errors.New("target_connection_timeout")
+		}
+		spki, _, err := r.probeWithAuditForRun(probeCtx, "start", rec, u.Hostname(), ip, jobID)
+		stopProbe()
 		if errors.Is(err, errPreparation) {
 			return nil, errPreparation
 		}
 		if err != nil {
 			continue
+		}
+		if ctx.Err() != nil {
+			return nil, errors.New("target_connection_timeout")
 		}
 		if err := r.current(rec); err != nil {
 			return nil, errors.New("target_approval_changed")
