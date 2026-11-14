@@ -1,6 +1,11 @@
 package e2proxy
 
-import "testing"
+import (
+	"bytes"
+	"encoding/json"
+	"strings"
+	"testing"
+)
 
 // 시험 계정 실행에서는 모델이 보내는 요청 자격 자리를 값이 무엇이든 가린다. 모델이 받은 세션을 바꿔 보내면(서명이 다른 변형
 // JWT 등) 정확한 값 가림을 지나가기 때문이다. Set-Cookie는 이름·속성을 남기는 기존 구조 가림을 그대로 따르고, 대상 응답의
@@ -58,6 +63,10 @@ func TestTestAccountRunMasksRequestCredentialsStructurally(t *testing.T) {
 		// 입력 끝의 따옴표는 바깥 문자열의 끝이다. 같은 줄에 자리가 또 나오면 앞 값과 겹치므로 한 번만 가린다.
 		`"> Cookie: token=review-credential-tail"`:                        `"> Cookie: [REDACTED]"`,
 		"> Authorization: Bearer review-credential-tail Authorization: x": "> Authorization: [REDACTED]",
+		// 따옴표 없이 시작한 값의 닫는 따옴표 뒤에 JSON 공백·줄바꿈이 와도 구조 문자 앞이면 끝이다(#571 재상·이동찬 리뷰).
+		"{\"text\":\"needs Authorization: Bearer synthetic-review-value\"\n}":                  "{\"text\":\"needs Authorization: [REDACTED]\"\n}",
+		`{"text":"needs Authorization: Bearer synthetic-review-value" , "kind":"observation"}`: `{"text":"needs Authorization: [REDACTED]" , "kind":"observation"}`,
+		`{\"text\":\"needs Authorization: Bearer synthetic-review-value\"\n}`:                  `{\"text\":\"needs Authorization: [REDACTED]\"\n}`,
 		// 대상 응답의 Set-Cookie JSON 이름은 요청 Cookie로 보지 않는다.
 		`{"Set-Cookie": "sid=short1"}`:                                         `{"Set-Cookie": "sid=short1"}`,
 		"Proxy-Authorization: Basic eHl6":                                      "Proxy-Authorization: [REDACTED]",
@@ -73,5 +82,29 @@ func TestTestAccountRunMasksRequestCredentialsStructurally(t *testing.T) {
 	in := "> Authorization: Bearer modified.token.value"
 	if got := string(plain.RedactOutput([]byte(in))); got != in {
 		t.Fatalf("non test-account run masked structurally: %q", got)
+	}
+}
+
+// 가림은 JSON 문서(그래프 도구 인수 등)를 깨지 않는다. 자격 값 자리만 바뀌고 다른 칸은 남는다. 들여쓰기·한 줄·칸 사이 공백
+// 형태 모두 같다(#571 재상·이동찬 리뷰: record_fact 인수가 가림 뒤 JSON이 깨져 거절됨).
+func TestTestAccountRedactionKeepsJSONValid(t *testing.T) {
+	e := &Execution{cfg: Config{HeaderMode: HeaderTestAccountPassthrough}}
+	type fact struct {
+		Text string `json:"text"`
+		Kind string `json:"kind"`
+	}
+	for _, text := range []string{"needs Authorization: Bearer synthetic-review-value", "sent Cookie: lang=\"en\"; token=synthetic-review-value", "Kind first"} {
+		for _, v := range []any{fact{Text: text, Kind: "observation"}, map[string]any{"kind": "observation", "text": text}} {
+			compact, _ := json.Marshal(v)
+			indented, _ := json.MarshalIndent(v, "", "  ")
+			spaced := bytes.ReplaceAll(compact, []byte(`","`), []byte(`" , "`))
+			for _, doc := range [][]byte{compact, indented, spaced} {
+				out := e.RedactOutput(doc)
+				var got fact
+				if !json.Valid(out) || json.Unmarshal(out, &got) != nil || got.Kind != "observation" || strings.Contains(string(out), "synthetic-review-value") {
+					t.Errorf("redaction broke JSON or kept the value:\n in %s\nout %s", doc, out)
+				}
+			}
+		}
 	}
 }

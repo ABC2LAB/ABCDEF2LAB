@@ -131,8 +131,27 @@ func credentialValueEnd(b []byte, start int, q credentialQuote, bare bool) int {
 	return i
 }
 
-// credentialStructuralAt은 i가 끝이거나 JSON·코드 구조 문자인지다. 따옴표 없이 시작한 값에서 이 앞 따옴표는 바깥 문자열의 끝이다
-// (한 줄 JSON {"tool_output":"> Cookie: …","trusted":…}).
+// credentialStructuralAt은 i부터 공백을 건너뛴 자리가 끝이거나 JSON·코드 구조 문자인지다. 따옴표 없이 시작한 값에서 이
+// 앞 따옴표는 바깥 문자열의 끝이다(한 줄 JSON {"tool_output":"> Cookie: …","trusted":…}). 들여쓴 JSON처럼 닫는 따옴표
+// 뒤에 공백·줄바꿈(원문 또는 이스케이프된 \n·\r·\t)이 와도 같다(#571 재상·이동찬 리뷰: 공백 뒤 쉼표·줄바꿈 뒤 중괄호를
+// 놓쳐 닫는 따옴표까지 가려 그래프 도구 인수 JSON이 깨짐).
 func credentialStructuralAt(b []byte, i int) bool {
+	for i < len(b) {
+		switch c := b[i]; {
+		case c == ' ' || c == '\t' || c == '\r' || c == '\n':
+			i++
+			continue
+		case c == '\\':
+			n := 1
+			for i+n < len(b) && b[i+n] == '\\' {
+				n++
+			}
+			if i+n < len(b) && strings.IndexByte("nrt", b[i+n]) >= 0 {
+				i += n + 1
+				continue
+			}
+		}
+		break
+	}
 	return i >= len(b) || strings.IndexByte(",}]:)", b[i]) >= 0
 }
