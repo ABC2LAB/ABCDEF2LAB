@@ -140,6 +140,32 @@ func TestFirstDiagnosisClosedToolOutcome(t *testing.T) {
 			r.ProcessBashExited = false
 			r.Execution.AuditComplete = false
 		}, false},
+		// 정책 거부·미지원 뒤 시간 상한: 실행기는 거부·미지원 분류를 먼저 붙인다. E② 수로 그 intent의 결과다(#578 리뷰).
+		{"timeout-after-denial", func(r *e2runner.TrustedResult) {
+			r.Classification = "policy_not_executed"
+			r.Termination = e2runner.TerminationTimeout
+			r.ProcessBashExited = false
+			r.Call.Counts.Denied = 1
+			r.Call.Reason = e2proxy.PolicyDenied
+		}, true},
+		{"timeout-after-unsupported", func(r *e2runner.TrustedResult) {
+			r.Classification = "unsupported"
+			r.Termination = e2runner.TerminationTimeout
+			r.ProcessBashExited = false
+			r.Call.Counts.Unsupported = 1
+			r.Call.Reason = e2proxy.Unsupported
+		}, true},
+		// 시간 상한이 아닌데 bash가 끝나지 않은 거부 분류, 시간 상한인데 완료 분류는 지금처럼 받지 않는다.
+		{"denial-without-bash-exit", func(r *e2runner.TrustedResult) {
+			r.Classification = "policy_not_executed"
+			r.ProcessBashExited = false
+			r.Call.Counts.Denied = 1
+			r.Call.Reason = e2proxy.PolicyDenied
+		}, false},
+		{"timeout-completed", func(r *e2runner.TrustedResult) {
+			r.Termination = e2runner.TerminationTimeout
+			r.ProcessBashExited = false
+		}, false},
 		{"proxy-unavailable", func(r *e2runner.TrustedResult) {
 			r.Classification = "transient_failure"
 			r.Termination = e2runner.TerminationProxyUnavailable

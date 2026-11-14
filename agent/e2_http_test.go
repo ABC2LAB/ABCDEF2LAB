@@ -316,6 +316,20 @@ func TestE2HTTPBashCommandTimeoutIsNotRunnerFailure(t *testing.T) {
 	if e2HTTPRunnerFailed(e2runner.ErrUnavailable, timedOut(e2runner.TerminationTimeout)) {
 		t.Fatal("timed-out command treated as runner failure")
 	}
+	// 정책 거부·미지원 뒤 시간 상한(실행기 분류가 거부·미지원)도 그 명령의 실패다(#578 이동찬 리뷰).
+	for class, counts := range map[string]e2proxy.Counts{"policy_not_executed": {Denied: 1}, "unsupported": {Unsupported: 1}} {
+		result := timedOut(e2runner.TerminationTimeout)
+		result.Trusted.Classification, result.Trusted.Call.Counts = class, counts
+		if e2HTTPRunnerFailed(e2runner.ErrUnavailable, result) {
+			t.Fatalf("%s after a timeout treated as runner failure", class)
+		}
+	}
+	// 시간 상한이 아니거나 결과 불명 송신이 있으면 거부 분류도 지금처럼 runner 장애다(bash가 끝나지 않음).
+	denied := timedOut("")
+	denied.Trusted.Classification, denied.Trusted.Call.Counts = "policy_not_executed", e2proxy.Counts{Denied: 1}
+	if !e2HTTPRunnerFailed(e2runner.ErrUnavailable, denied) {
+		t.Fatal("denial without bash exit or timeout accepted")
+	}
 	for name, change := range map[string]func(*e2runner.Result){
 		"proxy-unavailable": func(r *e2runner.Result) { r.Trusted.Termination = e2runner.TerminationProxyUnavailable },
 		"no-termination":    func(r *e2runner.Result) { r.Trusted.Termination = "" },

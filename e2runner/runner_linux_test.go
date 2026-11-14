@@ -777,6 +777,26 @@ func TestRunnerCommandTimeoutRecordsTermination(t *testing.T) {
 	}
 }
 
+// 정책 거부 뒤 시간 상한에 닿은 명령: 분류는 거부가 먼저(policy_not_executed)이고 종료 원인은 timeout으로 남는다.
+// Worker·마감은 이 조합을 그 명령·intent의 결과로 받는다(#578 이동찬 리뷰의 재현).
+func TestRunnerTimeoutAfterPolicyDenialKeepsBothFacts(t *testing.T) {
+	base := runnerTestDirectory(t)
+	helper := runnerTestHelper(t, base)
+	var received atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { received.Add(1) }))
+	defer target.Close()
+	fixture := newRunnerFixture(t, base, helper, target.URL, nil)
+	caller, cancel := context.WithTimeout(t.Context(), 1500*time.Millisecond)
+	defer cancel()
+	result, err := fixture.runner.Run(caller, "curl --silent --max-time 1 '"+target.URL+"/denied'; sleep 10")
+	trusted := result.Trusted
+	if !errors.Is(err, ErrUnavailable) || trusted.Classification != "policy_not_executed" || trusted.Termination != TerminationTimeout ||
+		!trusted.Final || !trusted.ProcessDrained || !trusted.ProxyDrained || trusted.ProcessBashExited ||
+		trusted.Call.Counts.Denied != 1 || trusted.Call.Counts.Unknown != 0 || received.Load() != 0 {
+		t.Fatalf("timeout after denial: err=%v class=%s termination=%q final=%v bash=%v counts=%+v received=%d", err, trusted.Classification, trusted.Termination, trusted.Final, trusted.ProcessBashExited, trusted.Call.Counts, received.Load())
+	}
+}
+
 func TestRunnerServeErrorRetainsProtectedState(t *testing.T) {
 	base := runnerTestDirectory(t)
 	helper := runnerTestHelper(t, base)

@@ -863,8 +863,10 @@ func firstDiagnosisClosedToolOutcome(result e2runner.TrustedResult) bool {
 		}
 		return false
 	}
-	// 아래 분류는 bash가 끝까지 실행돼 종료 코드가 있는 명령에만 붙는다.
-	if !result.ProcessBashExited {
+	// 아래 분류는 bash가 끝까지 실행돼 종료 코드가 있는 명령에만 붙는다. 예외: 정책 거부·미지원 뒤 명령 시간 상한에 닿은
+	// 명령은 실행기가 거부·미지원 분류를 먼저 붙인다(종료 원인 timeout). 그 분류는 종료 코드가 아니라 E② 수로 정해지므로
+	// 아래에서 같은 수 대조로 받는다(#578 이동찬 리뷰).
+	if !result.ProcessBashExited && !(result.Termination == e2runner.TerminationTimeout && (result.Classification == "policy_not_executed" || result.Classification == "unsupported")) {
 		return false
 	}
 	if result.Classification == "transient_failure" {

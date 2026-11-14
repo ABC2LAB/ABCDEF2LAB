@@ -244,7 +244,9 @@ func e2HTTPRunnerFailed(runErr error, result e2runner.Result) bool {
 	closed := t.Final && t.ProcessDrained && t.ProxyDrained && t.Call.AuditComplete && t.Execution.AuditComplete
 	// 명령 시간 상한에 닿아 호스트가 멈춘 명령은 runner 장애가 아니라 그 명령의 실패다(원본처럼 모델에 돌려주고 계속).
 	// 결과 불명 송신이 없고 드레인·감사가 끝났을 때만이다. 프록시 장애는 계속 runner 장애다.
-	timedOut := t.Classification == "transient_failure" && t.Termination == e2runner.TerminationTimeout && t.Call.Counts.Unknown == 0
+	// 정책 거부·미지원 뒤 시간 상한에 닿은 명령은 실행기가 거부·미지원 분류를 먼저 붙인다(#578 이동찬 리뷰). 그 경우도 같다.
+	timedOut := t.Termination == e2runner.TerminationTimeout && t.Call.Counts.Unknown == 0 &&
+		(t.Classification == "transient_failure" || t.Classification == "policy_not_executed" || t.Classification == "unsupported")
 	if errors.Is(runErr, e2runner.ErrUnavailable) && timedOut && closed {
 		return false
 	}
