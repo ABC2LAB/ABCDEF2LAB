@@ -84,7 +84,7 @@ func TestFirstDiagnosisClosedToolOutcome(t *testing.T) {
 			r.Classification = "transient_failure"
 			r.Call.Counts.Transient = 1
 		}, true},
-		// 송신 실패 수가 없는 transient_failure는 프록시 장애·명령 시간 초과라 원인을 나눌 수 없다.
+		// 송신 실패 수도 종료 원인도 없는 transient_failure는 원인을 알 수 없다.
 		{"transient-without-connect-failure", func(r *e2runner.TrustedResult) {
 			r.Classification = "transient_failure"
 			r.Call.Reason = e2proxy.TransportFailed
@@ -108,6 +108,42 @@ func TestFirstDiagnosisClosedToolOutcome(t *testing.T) {
 			r.Classification = "transient_failure"
 			r.Call.Counts.Transient = 1
 			r.Call.Reason = e2proxy.AuditFailed
+		}, false},
+		// 명령 시간 상한에 닿아 호스트가 멈춘 명령(계약 열린 항목 2): 결과 불명 송신이 없으면 그 intent의 미완료다.
+		// 프록시 장애는 원인이 따로 남아도 집행 장애라 마감 실패다.
+		{"timeout-no-send", func(r *e2runner.TrustedResult) {
+			r.Classification = "transient_failure"
+			r.Termination = e2runner.TerminationTimeout
+			r.ProcessBashExited = false
+		}, true},
+		{"timeout-after-answered", func(r *e2runner.TrustedResult) {
+			r.Classification = "transient_failure"
+			r.Termination = e2runner.TerminationTimeout
+			r.ProcessBashExited = false
+			r.Call.Counts.ForwardAttempted, r.Call.Counts.Responses = 1, 1
+		}, true},
+		{"timeout-with-unknown", func(r *e2runner.TrustedResult) {
+			r.Classification = "transient_failure"
+			r.Termination = e2runner.TerminationTimeout
+			r.ProcessBashExited = false
+			r.Call.Counts.Unknown = 1
+		}, false},
+		{"timeout-expired", func(r *e2runner.TrustedResult) {
+			r.Classification = "transient_failure"
+			r.Termination = e2runner.TerminationTimeout
+			r.ProcessBashExited = false
+			r.Call.Reason = e2proxy.Expired
+		}, false},
+		{"timeout-audit-open", func(r *e2runner.TrustedResult) {
+			r.Classification = "transient_failure"
+			r.Termination = e2runner.TerminationTimeout
+			r.ProcessBashExited = false
+			r.Execution.AuditComplete = false
+		}, false},
+		{"proxy-unavailable", func(r *e2runner.TrustedResult) {
+			r.Classification = "transient_failure"
+			r.Termination = e2runner.TerminationProxyUnavailable
+			r.ProcessBashExited = false
 		}, false},
 		// 호스트가 멈춘 명령(C27 kill_work): bash가 끝나기 전에 끊겼다. 결과 불명 송신이 있으면 결과 불명, 없으면 terminated.
 		{"killed-mid-request", func(r *e2runner.TrustedResult) {

@@ -241,8 +241,14 @@ func e2HTTPRunnerFailed(runErr error, result e2runner.Result) bool {
 	knownExit := t.Classification == "tool_failure" || t.Classification == "policy_not_executed" ||
 		t.Classification == "partial_policy_denial" || t.Classification == "unsupported" ||
 		t.Classification == "partial_unsupported" || t.Classification == "transient_failure" && t.Call.Counts.Transient > 0
-	return !(errors.Is(runErr, e2runner.ErrUnavailable) && knownExit && t.ProcessBashExited && t.ExitCode != 0 &&
-		t.Final && t.ProcessDrained && t.ProxyDrained && t.Call.AuditComplete && t.Execution.AuditComplete)
+	closed := t.Final && t.ProcessDrained && t.ProxyDrained && t.Call.AuditComplete && t.Execution.AuditComplete
+	// 명령 시간 상한에 닿아 호스트가 멈춘 명령은 runner 장애가 아니라 그 명령의 실패다(원본처럼 모델에 돌려주고 계속).
+	// 결과 불명 송신이 없고 드레인·감사가 끝났을 때만이다. 프록시 장애는 계속 runner 장애다.
+	timedOut := t.Classification == "transient_failure" && t.Termination == e2runner.TerminationTimeout && t.Call.Counts.Unknown == 0
+	if errors.Is(runErr, e2runner.ErrUnavailable) && timedOut && closed {
+		return false
+	}
+	return !(errors.Is(runErr, e2runner.ErrUnavailable) && knownExit && t.ProcessBashExited && t.ExitCode != 0 && closed)
 }
 
 // The program-owned per-call counts take precedence over a nonzero shell exit.

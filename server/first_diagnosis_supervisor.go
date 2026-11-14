@@ -853,6 +853,16 @@ func firstDiagnosisClosedToolOutcome(result e2runner.TrustedResult) bool {
 		}
 		return false
 	}
+	if result.Classification == "transient_failure" && result.Termination == e2runner.TerminationTimeout {
+		// 명령 시간 상한에 닿아 호스트가 멈춘 명령이다(계약 열린 항목 2). 결과 불명 송신은 위에서 걸렀고 프로세스·프록시
+		// 드레인과 감사는 위·호출자가 확인하므로 그 intent의 미완료다. 프록시 장애(proxy_unavailable)는 집행 장애라
+		// 그대로 마감 실패다.
+		switch result.Call.Reason {
+		case e2proxy.Complete, e2proxy.Withheld, e2proxy.PolicyDenied, e2proxy.Unsupported, e2proxy.TransportFailed, e2proxy.BudgetExhausted, e2proxy.AttemptLimit:
+			return true
+		}
+		return false
+	}
 	// 아래 분류는 bash가 끝까지 실행돼 종료 코드가 있는 명령에만 붙는다.
 	if !result.ProcessBashExited {
 		return false
