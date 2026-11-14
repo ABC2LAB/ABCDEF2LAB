@@ -175,7 +175,7 @@ func (f hostFixture) current(productTargetRecord) error {
 // 브라우저 MCP 정보를 결속대로 주고, 마감하면 새 요청을 받지 않는다.
 func TestProductExplorationHostDrivesRealBoundary(t *testing.T) {
 	f := newHostFixture(t)
-	host, err := f.host.factory(f.rec, f.current, f.digest, []string{"/read/admin"}, 4096)(t.Context(), f.binding, &agent.Worker{})
+	host, err := f.host.factory(f.rec, f.current, f.digest, []string{"/read/admin"}, 4096, &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID})(t.Context(), f.binding, &agent.Worker{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +239,7 @@ func TestProductExplorationHostDrivesRealBoundary(t *testing.T) {
 func TestProductExplorationHostHonorsTargetApproval(t *testing.T) {
 	f := newHostFixture(t)
 	f.ended.Store(true)
-	host, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096)(t.Context(), f.binding, &agent.Worker{})
+	host, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID})(t.Context(), f.binding, &agent.Worker{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +248,7 @@ func TestProductExplorationHostHonorsTargetApproval(t *testing.T) {
 	}
 	wrong := f.binding
 	wrong.TargetRevision = 3
-	if _, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096)(t.Context(), wrong, &agent.Worker{}); !errors.Is(err, exploration.ErrBinding) {
+	if _, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID})(t.Context(), wrong, &agent.Worker{}); !errors.Is(err, exploration.ErrBinding) {
 		t.Fatal("host accepted another target revision")
 	}
 }

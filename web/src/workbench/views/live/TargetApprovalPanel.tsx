@@ -338,7 +338,7 @@ export function TargetApprovalPanel({
               <HelpTip label="읽기 승인 설명 보기">
                 읽기 승인은 경로 단위이며 그 경로의 모든 query 를 포함합니다. 서버는 query 의 무해성을 검증하지 않으니,
                 query 로 상태가 바뀔 수 있는 경로는 넣지 마세요. 승인할 때 후보 IP별 연결(https 대상은 TLS 확인)을 최대
-                8회 합니다.
+                32회 합니다.
                 <br />
                 <br />
                 비변경 근거는 운영자 확인입니다 · 서버는 GET/HEAD 의 무해성을 검증하지 않습니다 · 등록 후 DNS TXT 소유를

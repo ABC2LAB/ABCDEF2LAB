@@ -181,12 +181,23 @@ func (l productMCPLease) Close(context.Context) error         { return nil }
 
 // factory는 한 실행의 결속(대상 기록·원본 digest·제외 경로)으로 탐색 host를 조립한다. 실제 연결·송신은 탐색 단계가
 // Boundary.Open·StartBrowser를 부를 때 시작한다. current는 대상 승인이 지금도 같은지 본다(철회·만료는 target_ended).
-func (h *productExplorationHost) factory(rec productTargetRecord, current func(productTargetRecord) error, digest string, excluded []string, maxBytes int64) server.ExplorationPipelineFactory {
+func (h *productExplorationHost) factory(rec productTargetRecord, current func(productTargetRecord) error, digest string, excluded []string, maxBytes int64, connection *productTargetConnection) server.ExplorationPipelineFactory {
+	// 검증한 IP·SPKI를 값으로 복사하여 다음 실행의 증거가 섞이지 않게 한다.
+	var selected productTargetConnection
+	if connection != nil {
+		selected = *connection
+	}
 	return func(_ context.Context, b exploration.Binding, w *agent.Worker) (server.ExplorationPipelineHost, error) {
 		if b.TargetRef != rec.Target.ID || b.TargetRevision != rec.Target.Revision || w == nil || maxBytes <= 0 {
 			return server.ExplorationPipelineHost{}, exploration.ErrBinding
 		}
-		target, err := exploreTargetOf(rec, excluded)
+		if connection == nil || selected.IP == "" || selected.jobID != b.JobID {
+			return server.ExplorationPipelineHost{}, exploration.ErrBinding
+		}
+		networkTarget := productTargetCopy(rec)
+		networkTarget.SelectedIP = selected.IP
+		networkTarget.Target.TLSSPKISHA256 = selected.SPKI
+		target, err := exploreTargetOf(networkTarget, excluded)
 		if err != nil {
 			return server.ExplorationPipelineHost{}, err
 		}
