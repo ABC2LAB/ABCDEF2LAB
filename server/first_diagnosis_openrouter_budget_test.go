@@ -266,3 +266,68 @@ func TestFirstDiagnosisOpenRouterBudgetTransientLockKeepsUsageKnown(t *testing.T
 		}
 	}
 }
+
+// 보내지 않은 호출(transport 예약 전 거부)과 제공자가 처리하지 않았다고 확인한 429는 사용량 0으로 닫는다. 사용량을 모르는
+// 호출로 세지 않고 예산을 깎지 않는다. 처리 여부를 모르는 5xx는 지금처럼 예약량으로 센다(C05 보완, 2026-11-14 실측).
+func TestFirstDiagnosisOpenRouterBudgetUnbilledFailuresCostNothing(t *testing.T) {
+	reservedResult := llmpolicy.OpenRouterCallResult{Reserved: true, ReservedInputTokens: 5000, ReservedOutputTokens: 100, ReservedCostMicros: 5100}
+	rateLimited := reservedResult
+	rateLimited.NotBilled = true
+	for name, tc := range map[string]struct {
+		result   llmpolicy.OpenRouterCallResult
+		usage    llm.Usage
+		blocked  bool
+		charged  bool
+		accounts bool // 회계가 막히지 않고 사용량을 아는지
+		success  bool // SDK가 성공으로 돌려줌
+	}{
+		// SDK는 성공인데 transport 칸에 기록이 없으면 칸 없이 나간 응답이라 회계 막힘이다(청구 없음으로 닫지 않음).
+		"success-without-transport": {result: llmpolicy.OpenRouterCallResult{}, success: true},
+		"not-sent":                  {result: llmpolicy.OpenRouterCallResult{}, accounts: true},
+		"rate-limited":              {result: rateLimited, accounts: true},
+		"server-error":              {result: reservedResult, charged: true, accounts: true},
+		// 사용량을 함께 보고한 실패는 청구 없음으로 닫지 않고 예약량으로 센다.
+		"rate-limited-with-usage": {result: rateLimited, usage: llm.Usage{InputTokens: 10}, charged: true, accounts: true},
+		// transport가 회계 원인으로 막혀 있으면 보내지 않은 호출도 지금처럼 막힘이다.
+		"not-sent-accounting-blocked": {result: llmpolicy.OpenRouterCallResult{}, blocked: true},
+	} {
+		b, _, cfg := urlExternalBudget(t, func(diagnosisprep.ModelUsage) error { return nil })
+		req := llm.CompletionRequest{MaxTokens: 100}
+		call, err := b.reserve(context.Background(), cfg, &req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := tc.result
+		call.result = func() llmpolicy.OpenRouterCallResult { return r }
+		blockedTransport := tc.blocked
+		b.externalUsage = func() llmpolicy.OpenRouterUsage {
+			u := b.externalBase
+			u.Blocked = blockedTransport
+			if r.Reserved {
+				u.Requests++
+				u.ReservedInputTokens += r.ReservedInputTokens
+				u.ReservedOutputTokens += r.ReservedOutputTokens
+				u.ReservedCostMicros += r.ReservedCostMicros
+				u.Errors++
+			}
+			return u
+		}
+		var callErr error
+		if !tc.success {
+			callErr = errors.New("synthetic failed call")
+		}
+		if err := b.settle(call, tc.usage, callErr); err == nil {
+			t.Fatalf("%s: unsettled call reported success", name)
+		}
+		u := b.Snapshot()
+		if tc.accounts == (b.blocked || !u.UsageKnown) {
+			t.Fatalf("%s: accounting state blocked=%v usage=%+v", name, b.blocked, u)
+		}
+		if !tc.accounts {
+			continue
+		}
+		if tc.charged != (u.CostUSDMicros == call.cost && u.UnknownUsageCalls == 1) || !tc.charged && (u.CostUSDMicros != 0 || u.InputTokens != 0 || u.OutputTokens != 0 || u.UnknownUsageCalls != 0) {
+			t.Fatalf("%s: charged=%v usage=%+v reserved cost=%d", name, tc.charged, u, call.cost)
+		}
+	}
+}
