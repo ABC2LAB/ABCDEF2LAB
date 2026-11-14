@@ -1,7 +1,8 @@
 # C35 실행별 DNS·TLS 재검증 수용 기록
 
 검증일: 2026-11-14(KST). 정상 구현 SHA: `446f8a8c44a04e4da09dd79704a5f0cd61d6a876`.
-기준 dev: `85b3217477c82f414771f9332e5a70394ea999fd`.
+최종 재검증 소스: `1a8b6726be3502aebc844c17daed049176fb9e40`.
+기준 dev는 최초 `85b32174`에서 최신 `974ef30910a6d6a829d7fbbb16969ec81cdda17f`로 merge했다. API Recon skillDir와 C35 실행 증거 인자를 모두 보존해 시험 충돌을 해결했다.
 계약: [#566 결정](https://github.com/ABC2LAB/ABCDEF2LAB/pull/566)의 C35 1~6. 최민준이 `f1d53b6c` 문서를 승인한 범위를 구현한다. 사용자가 로컬 구현·시험·PR 제출 재개를 승인했으며, **병합은 윤재상 리뷰 후 팀원이 merge commit으로 수행한다.**
 
 ## 구현
@@ -46,11 +47,11 @@ ARTEX_C35_OWNED_IPS=<소유_IP_A>,<소유_IP_B> go test -race -json \
 
 ## 회귀·음성 검증
 
-- 제품 명령 패키지 전체 race: PASS 이벤트 348, FAIL 0, SKIP 3. 제외는 전용 PostgreSQL이 필요한 기존 검사/보고서 시험 3개다.
+- 제품 명령 패키지 전체 race: 최초 PASS 이벤트 348, 최신 dev 병합 뒤 **351**, FAIL 0, SKIP 3. 제외는 전용 PostgreSQL이 필요한 기존 검사/보고서 시험 3개다.
 - 최종 관련 race: PASS 이벤트 59, FAIL 0, SKIP 0. 실제 수신기 opt-in을 포함했다. 숫자는 go test -json의 패키지·상위 subtest를 포함한 pass 이벤트다.
 - DNS 중복 제거 32/33개, 0/720/721시간, 풀의 두 번째 보호 주소, DNS 도중/감사 저장 직후 철회, 감사 첫/두 번째 append 실패와 다른 IP 재시도 금지를 독립 시험했다. 오류 원문 비노출·과거 승인/보고서 참조·계정 결속 회귀도 제품 전체 시험에 포함된다.
 - 전체 go build ./...·go vet ./..., darwin/arm64·windows/amd64 빌드 통과.
 - 웹 tsc 통과, 대상 승인 패널 18/18 PASS, 전체 Vitest 48파일·740/740 PASS. 최초 일반 샌드박스 실행은 기존 localhost 수신기 시험 3개가 listen EPERM으로 실패했다. 동일 코드·시간 제한으로 로컬 수신기 권한을 허용한 실행에서 전부 통과했으며 timeout을 늘리지 않았다.
-- 정상 커밋 뒤 별도 Go overlay 변이 **11/11 검출**: 과거 DNS 집합 정확 일치 재도입, 과거 SPKI 정확 일치 재도입, 전체 보호 주소 검사 제거, TXT 생략, TLS hostname/chain 검증 생략, 감사 직후 철회 검사 제거, issue job 결속 제거, 탐색 job 결속 제거, DNS 상한 8개로 축소, 승인 상한 24시간으로 축소, 감사 실패 뒤 다른 IP 순회 허용. 모두 컴파일 실패가 아닌 독립 시험 assertion 실패로 검출했다. TLS 검증 생략 변이는 소유 hostname 음성 fixture에만 사용했으며 제품 소스에 적용하지 않았다.
+- 정상 커밋 뒤 별도 Go overlay 변이 **11/11 검출**: 과거 DNS 집합 정확 일치 재도입, 과거 SPKI 정확 일치 재도입, 전체 보호 주소 검사 제거, TXT 생략, TLS hostname/chain 검증 생략, 감사 직후 철회 검사 제거, issue job 결속 제거, 탐색 job 결속 제거, DNS 상한 8개로 축소, 승인 상한 24시간으로 축소, 감사 실패 뒤 다른 IP 순회 허용. 모두 컴파일 실패가 아닌 독립 시험 assertion 실패로 검출했다. TLS 검증 생략 변이는 소유 hostname 음성 fixture에만 사용했으며 제품 소스에 적용하지 않았다. 최신 dev 병합 소스 `1a8b6726`에도 같은 변이 11/11 검출과 전체 build/vet/교차 빌드 성공을 다시 확인했다.
 
 실제 OpenRouter/Qwen·Planner/Worker 전체 진단·새 Docker 제품 종단 수용은 **NOT_RUN**이다. 이 기록은 C35 로컬 DNS/TLS·실행 정책·탐색 경계 수용으로 한정한다. 유료 호출 승인은 이 작업에 포함되지 않는다.
