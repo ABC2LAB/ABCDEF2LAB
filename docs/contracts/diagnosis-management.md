@@ -122,7 +122,7 @@ Gateway는 기동 때 기존 startLaunch 준비·단회 권위를 획득한다. 
 - 별도 PG 시험은 기존 JWT 로그인·최소 settings SELECT·초안 생성·승인 없는 시작 거부·만료/비밀번호변경을 검증한다.
 - 보호 registry와 inherited pipe 검사는 CLI 별도 시험이다.
 - 별도 프로세스 Gateway 시험, 실제 supervisor/E② 합성 대상 시험, Next/브라우저 시험의 결과는 서로 구분한다. 같은 테스트 프로세스에 넣은 시험을 독립 배포 완료로 세지 않는다.
-- 실제 운영자 보호 registry와 launch의 의미 일치, 운영 장비의 private pipe 배치, 내구성 저장·복구, 실제 Qwen3.5·외부 대상·비용 승인은 별도 수용이다. 미실행은 NOT_RUN으로 남긴다.
+- 실제 운영자 보호 registry와 launch의 의미 일치, 운영 장비의 private pipe 배치, 내구성 저장·복구, 실제 Qwen3.6·외부 대상·비용 승인은 별도 수용이다. 미실행은 NOT_RUN으로 남긴다.
 
 ## 기존 실행·보고서 연결용 과도기 adapter
 

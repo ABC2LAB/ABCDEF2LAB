@@ -19,8 +19,8 @@ from provider_recheck import main as recheck_main, recheck  # noqa: E402
 
 DOCS = Path(__file__).resolve().parents[3] / "docs/evaluation"
 PROFILE = DOCS / "profiles/official-35b.json"
-ENDPOINTS = DOCS / "profiles/evidence/openrouter-endpoints-qwen3.5-35b-a3b-20261106.json"
-PARAMS = DOCS / "profiles/evidence/openrouter-endpoint-params-qwen3.5-35b-a3b-20261106.json"
+ENDPOINTS = DOCS / "profiles/evidence/openrouter-endpoints-qwen3.6-35b-a3b-20261114.json"
+PARAMS = DOCS / "profiles/evidence/openrouter-endpoint-params-qwen3.6-35b-a3b-20261114.json"
 BASE, OURS = "1" * 40, "2" * 40
 
 
@@ -104,13 +104,13 @@ def without(name: str) -> list:
     return [p for p in required_parameters() + ["tool_choice"] if p != name]
 
 
-def endpoint(tag: str = "atlas-cloud/fp8", provider: str = "AtlasCloud", quantization: str = "fp8",
+def endpoint(tag: str = "primeintellect/fp8", provider: str = "PrimeIntellect", quantization: str = "fp8",
              parameters: list | None = None) -> dict:
     params = required_parameters() + ["tool_choice"] if parameters is None else parameters
     return {"tag": tag, "provider_name": provider, "quantization": quantization, "supported_parameters": params}
 
 
-def response(*endpoints: dict, model: str = "qwen/qwen3.5-35b-a3b") -> bytes:
+def response(*endpoints: dict, model: str = "qwen/qwen3.6-35b-a3b") -> bytes:
     return json.dumps({"data": {"id": model, "endpoints": list(endpoints)}}).encode()
 
 
@@ -119,18 +119,18 @@ class TestProviderRecheck(TempDir):
         return recheck(raw, load(PROFILE), load(ENDPOINTS), load(PARAMS))
 
     def test_same_single_endpoint_passes(self):
-        others = [endpoint("primeintellect/fp8", "PrimeIntellect"), endpoint("atlas-cloud", "AtlasCloud", "bf16"),
-                  endpoint("atlas-cloud/fp8x", "AtlasCloud")]
-        # "atlas-cloud"·"atlas-cloud/fp8x"는 "atlas-cloud/fp8"에 매칭되지 않는다(같거나 slug + "/"로 시작해야 함).
+        others = [endpoint("deepinfra/fp8", "DeepInfra"), endpoint("primeintellect", "PrimeIntellect", "bf16"),
+                  endpoint("primeintellect/fp8x", "PrimeIntellect")]
+        # "primeintellect"·"primeintellect/fp8x"는 "primeintellect/fp8"에 매칭되지 않는다(같거나 slug + "/"로 시작해야 함).
         self.assertEqual(self.differences(response(endpoint(), *others)), [])
 
     def test_each_change_since_pin_time_is_reported(self):
         cases = {
             "model": response(endpoint(), model="qwen/other"),
-            "none": response(endpoint("primeintellect/fp8")),
-            "two": response(endpoint(), endpoint("atlas-cloud/fp8/turbo")),
+            "none": response(endpoint("deepinfra/fp8")),
+            "two": response(endpoint(), endpoint("primeintellect/fp8/turbo")),
             "quantization": response(endpoint(quantization="fp4")),
-            "provider": response(endpoint(provider="AtlasCloud2")),
+            "provider": response(endpoint(provider="PrimeIntellect2")),
             "parameter": response(endpoint(parameters=without("top_k"))),
             "tools": response(endpoint(parameters=without("tools"))),
             "not-a-list": response(endpoint(parameters="top_k")),

@@ -212,7 +212,7 @@ function check(value, code) {
       "start_without_explicit_confirmation",
     );
     if (OPENROUTER) {
-      await wait(hasText("qwen/qwen3.5-35b-a3b"),"approved_model_missing");
+      await wait(hasText("qwen/qwen3.6-35b-a3b"),"approved_model_missing");
       await wait(hasText("fixture/endpoint"),"approved_provider_missing");
       await wait(hasText("외부 전송"),"external_transfer_notice_missing");
       check((await evaluate(fact("비용 상한"))).includes("6"),"approved_usd_cap_missing");

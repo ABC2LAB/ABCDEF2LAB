@@ -14,7 +14,7 @@ import (
 )
 
 const OpenRouterBaseURL = "https://openrouter.ai/api/v1"
-const OpenRouterModel = "qwen/qwen3.5-35b-a3b"
+const OpenRouterModel = "qwen/qwen3.6-35b-a3b"
 const openRouterContext = 262144
 
 var ErrOpenRouterPolicy = errors.New("llmpolicy: OpenRouter 정책 또는 예산이 유효하지 않습니다")

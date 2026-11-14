@@ -214,11 +214,18 @@ func ValidateRequest(r Request) error {
 func validBudget(b Budget) bool {
 	return b.Requests >= 0 && b.ModelRequests >= 0 && b.InputTokens >= 0 && b.OutputTokens >= 0 && b.CostUSDMicros >= 0 && b.DurationSeconds >= 0
 }
+
+// openRouterRecordModel은 기록에서 읽을 수 있는 외부 모델이다. 지금 보내는 모델은 3.6 하나다(llmpolicy.OpenRouterModel,
+// launch·전송이 정확히 대조). 3.5는 2026-11-14 전에 만든 작업·설치 기록을 읽기 위한 값이고, 그 모델로는 보내지 못한다.
+func openRouterRecordModel(model string) bool {
+	return model == "qwen/qwen3.6-35b-a3b" || model == "qwen/qwen3.5-35b-a3b"
+}
+
 func validModel(m *ModelInfo) bool {
 	if m == nil {
 		return true
 	}
-	return m.Mode == "openrouter" && m.Model == "qwen/qwen3.5-35b-a3b" && validText(m.Provider, 128) && m.Provider != "" && m.ExternalTransfer && m.InputPerCall == 262144 && m.OutputPerCall > 0 && m.OutputPerCall <= m.InputPerCall
+	return m.Mode == "openrouter" && openRouterRecordModel(m.Model) && validText(m.Provider, 128) && m.Provider != "" && m.ExternalTransfer && m.InputPerCall == 262144 && m.OutputPerCall > 0 && m.OutputPerCall <= m.InputPerCall
 }
 func validScope(s *Scope) bool {
 	if s == nil {

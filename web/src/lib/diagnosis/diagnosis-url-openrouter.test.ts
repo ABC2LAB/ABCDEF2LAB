@@ -31,7 +31,13 @@ it("catalog and scope preserve installed provider and USD cap without credential
     parseURLJob(envelope({ ...ready, scope: { ...scope, model: { ...model, api_key: "synthetic" } } }), owner),
   ).toThrow();
 });
+// 지금 보내는 모델은 3.6이지만 2026-11-14 전에 만든 작업 기록(3.5)도 그 모델 그대로 읽는다.
+it("reads a job recorded with the previous model as recorded", () => {
+  const recorded = { ...model, model: "qwen/qwen3.5-35b-a3b" };
+  expect(parseURLJob(envelope({ ...ready, scope: { ...scope, model: recorded } }), owner).scope?.model).toEqual(recorded);
+});
 it.each([
+  { ...model, model: "qwen/qwen3.7-35b-a3b" },
   { ...model, mode: "other" },
   { ...model, model: "unapproved" },
   { ...model, external_transfer: false },

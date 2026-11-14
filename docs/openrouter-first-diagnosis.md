@@ -9,7 +9,7 @@
 - 과거 개발 출발점(현재 checkout 지침 아님): [#317](https://github.com/ABC2LAB/ABCDEF2LAB/pull/317) `2646aa9ab3195203ab841d2cb34859c56462e788`, dev `3dfe4375d9c7b86c7d73da8a866c4a8c84e4cd72` 결합.
 - 외부 모델 변경은 당시 `feature/dongchan-openrouter-first-diagnosis-20261108`에서 검토한 뒤 #323으로 병합했다. 현재 실행은 최신 `origin/dev`를 재확인한 뒤 시작하며, 병합 전 브랜치나 CI 통과를 실모델 진단 성공 근거로 쓰지 않는다.
 - 외부 모드는 `general_http`와 그 `prepare-intents`만 지원한다. 등록 GET/IDOR의 기존 로컬 E③ 경로를 그대로 두며 외부 모드와 `registered_get` 조합을 거부한다.
-- 프로토콜은 OpenAI 호환 Chat Completions, 모델은 `qwen/qwen3.5-35b-a3b`, base는 정확히 `https://openrouter.ai/api/v1`다.
+- 프로토콜은 OpenAI 호환 Chat Completions, 모델은 `qwen/qwen3.6-35b-a3b`(2026-11-14부터, 그 전은 `qwen/qwen3.5-35b-a3b`), base는 정확히 `https://openrouter.ai/api/v1`다.
 - `llmpolicy.OpenRouterBaseURL`·`OpenRouterModel`은 이번 외부 모드의 **송신 허용 목록(allowlist)** 이며 실행 기본 설정이 아니다. 실제 모델·base는 launch config·DB profile·보호 manifest에서 받고 이 목록과 정확히 일치해야 송신할 수 있다. 설정만 바꿔 임의 모델·endpoint로 허용 범위를 넓히지 않으며, 이 경계는 기존 로컬 모델의 설정 선택을 바꾸지 않는다.
 - 첫 외부 모드는 **non-streaming만** 지원한다. profile의 `streaming=false`, 양수 `max_tokens`, `context_window_k=1..262`를 설정한다. 도구 선택은 SDK의 자동 선택만 지원하며 명시적 `tool_choice`는 거부한다. 스트리밍·thinking/reasoning override·proxy·session header·다른 토큰 필드·멀티모달·유료 plugin은 거부한다. 외부 스트리밍을 검증했다고 주장하지 않는다.
 - 기존 provider SDK를 재사용한다. profile/task/goals/planner/worker 단일 결속, 현재 DB 설정 재검사, 승인·중지·감사·마감 순서는 유지한다. 모델·provider·다른 키로 자동 fallback하지 않으며 새 외부 요청 자동 재시도도 하지 않는다.
@@ -50,11 +50,11 @@ manifest와 부모는 기존 보호 파일 계약(실행 UID 소유, 파일0600/
 
 ## 라우팅·개인정보 조건
 
-2026-11-08 공식 [endpoint 목록](https://openrouter.ai/api/v1/models/qwen/qwen3.5-35b-a3b/endpoints)에서 tools/tool_choice를 광고한 tag는 `darkbloom/fp4`, `parasail/fp8`, `venice`, `alibaba`, `atlas-cloud/fp8`였다. 이 목록은 설치 승인이나 현재 수용 시험을 대신하지 않는다. required/named-function choice 지원도 제공사별로 다르므로 실행 전 최신 metadata와 선택한 도구 모드를 다시 대조한다.
+2026-11-14 공식 [endpoint 목록](https://openrouter.ai/api/v1/models/qwen/qwen3.6-35b-a3b/endpoints)에서 tools/tool_choice를 광고한 tag는 `primeintellect/fp8`, `darkbloom/fp4`, `akashml/fp8`, `parasail/fp8`, `deepinfra/fp8`, `dekallm`, `venice/fp8`, `atlas-cloud/fp8`였다(`atlas-cloud/fp8`는 조회 시점 상태 값 -5). 2026-11-08 Qwen3.5 목록(`darkbloom/fp4`, `parasail/fp8`, `venice`, `alibaba`, `atlas-cloud/fp8`)은 이력이다. 이 목록은 설치 승인이나 현재 수용 시험을 대신하지 않는다. required/named-function choice 지원도 제공사별로 다르므로 실행 전 최신 metadata와 선택한 도구 모드를 다시 대조한다.
 
 신뢰된 모델 클라이언트가 다음을 고정 삽입한다: `provider.only=[승인 tag]`, `allow_fallbacks=false`, `require_parameters=true`, `data_collection=deny`, `zdr=true`, 승인 단가의 `max_price`. 실패 시 조건을 느슨하게 재요청하지 않는다. 응답의 모델과 제공사 표시 이름도 대조한다.
 
-`zdr=true`를 늘 넣으므로 승인 tag는 그 모델의 ZDR endpoint여야 한다. 아니면 OpenRouter가 맞는 endpoint를 찾지 못해 첫 호출이 HTTP 404로 끝나고 실행은 결과 불명(`model_usage_unknown`)이 된다(2026-11-13 실제 점검 회차, `atlas-cloud/fp8`). 같은 날 [ZDR endpoint 목록](https://openrouter.ai/api/v1/endpoints/zdr)에서 이 모델의 ZDR tag는 `deepinfra/fp8`·`parasail/fp8`·`siliconflow/fp8`·`venice`였고, 그중 endpoint 목록에서 tools를 광고한 것은 `parasail/fp8`(표시 이름 `Parasail`)·`venice`였다. 제품 점검 회차는 `parasail/fp8`로 끝까지 돌았다. 목록은 바뀌므로 설치 전에 두 목록을 다시 대조한다. 평가 프로토콜 §6의 공식 비교 고정 제공자(`atlas-cloud/fp8`)는 평가 게이트웨이 경로라 이 제약과 상관없다.
+`zdr=true`를 늘 넣으므로 승인 tag는 그 모델의 ZDR endpoint여야 한다. 아니면 OpenRouter가 맞는 endpoint를 찾지 못해 첫 호출이 HTTP 404로 끝나고 실행은 결과 불명(`model_usage_unknown`)이 된다(2026-11-13 실제 점검 회차, Qwen3.5·`atlas-cloud/fp8`). 그날 Qwen3.5의 ZDR tag 중 tools를 광고한 것은 `parasail/fp8`·`venice`였고, 제품 점검 회차는 `parasail/fp8`로 끝까지 돌았다(이력). 2026-11-14 [ZDR endpoint 목록](https://openrouter.ai/api/v1/endpoints/zdr)에서 `qwen/qwen3.6-35b-a3b`의 ZDR tag는 `primeintellect/fp8`·`dekallm`·`deepinfra/fp8`·`coreweave/fp8`·`venice/fp8`·`siliconflow/fp8`·`akashml/fp8`·`parasail/fp8`였다. 그중 tools를 광고하고 평가 샘플링 일곱 값(`temperature`·`top_p`·`top_k`·`min_p`·`presence_penalty`·`repetition_penalty`·`seed`)까지 모두 지원 표시한 것은 `deepinfra/fp8`(표시 이름 `DeepInfra`)·`primeintellect/fp8`(`PrimeIntellect`) 둘이고, `parasail/fp8`은 `min_p` 표시가 없었다. 제품 OpenRouter 경로(ZDR + tools)도 평가 프로토콜 §6의 고정 제공자와 같은 `primeintellect/fp8`(표시 이름 `PrimeIntellect`)을 승인 tag로 쓴다. 같은 날 출력 속도가 `deepinfra/fp8`의 약 3.4배였고, `deepinfra/fp8` 제품 점검 회차는 첫 목표 분해 호출(91.7초)로 Plan당 120초 상한에 닿아 `planning_failed`로 끝났다. 목록은 바뀌므로 설치 전에 두 목록을 다시 대조한다. 평가 게이트웨이는 `zdr`을 넣지 않으므로 이 제약은 제품 경로에만 해당한다.
 
 **중요:** 현재 [ZDR 문서](https://openrouter.ai/docs/guides/features/zdr)는 `zdr:true`만으로 Safety Retention endpoint까지 제외되는 것은 아니라고 설명한다. 계정/guardrail의 ZDR-only 선택과 승인한 제공사의 실제 조건을 별도로 확인해야 한다. 공개 endpoint metadata만으로 해당 확인을 대체할 수 없다. `strict_privacy_ack`는 검증을 자동 수행하는 값이 아니라 설치자의 확인 선언이다. 비민감 연습 자료만 승인된 제공사에 보내며 실대상 인증값·고객 기밀을 prompt에 넣지 않는다.
 
@@ -87,7 +87,7 @@ API·인증·상태·승인·중지·HTML·복사·stale 계약은 [기존 UI �
 
 ## 수용 판정
 
-- 합성 SDK/transport/DB/E② 회귀 PASS는 **실제 Qwen3.5 추론 PASS가 아니다**.
+- 합성 SDK/transport/DB/E② 회귀 PASS는 **실제 Qwen3.6 추론 PASS가 아니다**.
 - 실모델 스모크, 실모델 tool-call+tool-result+후속 판단, 실제 E② 허용/거절 수신, 전체 연습 회차, 저장 보고서/프롬프트를 각각 기록한다.
 - 실제 키·사전 고지 승인·제공사 privacy 검증·비용 상한·승인 대상·설치 runtime이 부족하면 해당 단계를 NOT_RUN으로 남긴다.
 - 첫 일반 HTTP 후보는 E③ 확정 취약점이 아니다. 실제 회차와 비UI 차단 해소가 모두 확인되기 전까지 백엔드 준비 완료 또는 UI 연결만 남음이라고 쓰지 않는다.
