@@ -104,7 +104,7 @@ def without(name: str) -> list:
     return [p for p in required_parameters() + ["tool_choice"] if p != name]
 
 
-def endpoint(tag: str = "deepinfra/fp8", provider: str = "DeepInfra", quantization: str = "fp8",
+def endpoint(tag: str = "primeintellect/fp8", provider: str = "PrimeIntellect", quantization: str = "fp8",
              parameters: list | None = None) -> dict:
     params = required_parameters() + ["tool_choice"] if parameters is None else parameters
     return {"tag": tag, "provider_name": provider, "quantization": quantization, "supported_parameters": params}
@@ -119,18 +119,18 @@ class TestProviderRecheck(TempDir):
         return recheck(raw, load(PROFILE), load(ENDPOINTS), load(PARAMS))
 
     def test_same_single_endpoint_passes(self):
-        others = [endpoint("primeintellect/fp8", "PrimeIntellect"), endpoint("deepinfra", "DeepInfra", "bf16"),
-                  endpoint("deepinfra/fp8x", "DeepInfra")]
-        # "deepinfra"·"deepinfra/fp8x"는 "deepinfra/fp8"에 매칭되지 않는다(같거나 slug + "/"로 시작해야 함).
+        others = [endpoint("deepinfra/fp8", "DeepInfra"), endpoint("primeintellect", "PrimeIntellect", "bf16"),
+                  endpoint("primeintellect/fp8x", "PrimeIntellect")]
+        # "primeintellect"·"primeintellect/fp8x"는 "primeintellect/fp8"에 매칭되지 않는다(같거나 slug + "/"로 시작해야 함).
         self.assertEqual(self.differences(response(endpoint(), *others)), [])
 
     def test_each_change_since_pin_time_is_reported(self):
         cases = {
             "model": response(endpoint(), model="qwen/other"),
-            "none": response(endpoint("primeintellect/fp8")),
-            "two": response(endpoint(), endpoint("deepinfra/fp8/turbo")),
+            "none": response(endpoint("deepinfra/fp8")),
+            "two": response(endpoint(), endpoint("primeintellect/fp8/turbo")),
             "quantization": response(endpoint(quantization="fp4")),
-            "provider": response(endpoint(provider="DeepInfra2")),
+            "provider": response(endpoint(provider="PrimeIntellect2")),
             "parameter": response(endpoint(parameters=without("top_k"))),
             "tools": response(endpoint(parameters=without("tools"))),
             "not-a-list": response(endpoint(parameters="top_k")),
