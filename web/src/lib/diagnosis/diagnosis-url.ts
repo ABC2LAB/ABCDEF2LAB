@@ -18,6 +18,8 @@ export type URLDiagnosisInput = {
   workflow_mode?: WorkflowMode;
   excluded_paths?: string;
 };
+// 대상 하나·회차 하나의 E② 승인 요청 수 코드 상한이다(서버 diagnosisprep.MaxTargetRequests와 같음, C32 2026-11-14 100에서 올림).
+export const MAX_TARGET_REQUESTS = 1000;
 export type URLDiagnosisModel = {
   mode: "openrouter";
   // 지금 보내는 모델은 3.6이다. 3.5는 2026-11-14 전에 만든 작업·설치 기록을 읽을 때만 나온다.
@@ -397,7 +399,7 @@ export function parseURLCatalog(raw: unknown): URLDiagnosisCatalog {
       !text(p.model_label) ||
       !p.model_label ||
       (p.workflow !== undefined &&
-        (!natural(p.workflow_request_limit) || p.workflow_request_limit < 1 || p.workflow_request_limit > 100))
+        (!natural(p.workflow_request_limit) || p.workflow_request_limit < 1 || p.workflow_request_limit > MAX_TARGET_REQUESTS))
     )
       return invalid();
     exact(p, ["id", "label", "model_profile_ref", "model_label", "model", "workflow", "workflow_request_limit"]);

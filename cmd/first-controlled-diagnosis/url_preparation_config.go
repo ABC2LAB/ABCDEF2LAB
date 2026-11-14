@@ -30,8 +30,10 @@ import (
 const urlPreparationFormat = "abc2lab.url-preparation-installation/v1"
 
 // urlMaxRunSeconds는 회차 하나의 실행 시간 상한(초)이다. 설치 프로파일 검사와 설치 입력 runtime_limits.run_seconds
-// 검사가 같은 값을 쓴다.
-const urlMaxRunSeconds = 600
+// 검사가 같은 값을 쓴다. 기본값(제품 180초·워크플로 600초)이 아니라 고를 수 있는 최대치다(C32). 600초이던 상한을
+// 2026-11-14에 올렸다: 출력이 느린 모델(점검 회차 실측 초당 ~19토큰)에서는 600초 안에 모델 호출 몇 번만 하고 끝났다.
+// 준비 task 시간 상한(server.MaxFirstDiagnosisTaskSeconds)과 같다.
+const urlMaxRunSeconds = server.MaxFirstDiagnosisTaskSeconds
 
 type urlProtectedPin struct {
 	File   string `json:"file"`
