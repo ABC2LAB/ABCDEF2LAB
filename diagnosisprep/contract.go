@@ -256,3 +256,11 @@ type Backend interface {
 	Inspect(context.Context, string, Input) (Inspection, error)
 	Execute(context.Context, Execution, Publish) error
 }
+
+// ClosureVerifier는 반환한 Unknown 실행의 잔존 자원을 다시 마감한다.
+// nil은 해당 회차의 모델·Bash·E②·감사·HTTP·DB 자원이 실제로 모두 닫힌 증거다.
+// 재시작 뒤 핸들이 없거나 확인할 수 없으면 반드시 오류를 반환한다.
+// 원래 결과 불명 사실과 예약을 수정하거나 실행을 다시 시작하지 않는다.
+type ClosureVerifier interface {
+	VerifyClosure(context.Context, Execution) error
+}
