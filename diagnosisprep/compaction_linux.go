@@ -21,6 +21,13 @@ const legacyCompactionGuard = "requires-preparation-snapshot-reader.v2\n"
 
 var errCompactionValidation = errors.New("준비 기록 압축 후보가 원본과 일치하지 않습니다")
 
+func compactionCandidateFailure(err error) error {
+	if errors.Is(err, errStorageIO) {
+		return err
+	}
+	return errors.Join(errStorage, errCompactionValidation)
+}
+
 type compactionHeader struct {
 	Format         string `json:"format"`
 	SnapshotCount  int    `json:"snapshot_count"`
@@ -167,9 +174,18 @@ func (j *journal) compact(ctx context.Context, records []json.RawMessage, valida
 	if compactionStep(hook, "temporary_directory") != nil || syscall.Mkdirat(int(parent.file.Fd()), name, 0700) != nil {
 		return errStorage
 	}
-	child, err := openProtectedRoot(filepath.Join(parent.path, name))
+	var child *protectedRoot
+	if err = compactionStep(hook, "candidate_directory_open"); err != nil {
+		err = storageReadFailure(err)
+	} else {
+		child, err = openProtectedRoot(filepath.Join(parent.path, name))
+	}
 	if err != nil {
-		return errStorage
+		// Only remove the empty directory created by this attempt; never recurse.
+		if unix.Unlinkat(int(parent.file.Fd()), name, unix.AT_REMOVEDIR) != nil {
+			log.Print("준비 기록: 열지 못한 빈 압축 후보를 정리하지 못했습니다")
+		}
+		return compactionCandidateFailure(err)
 	}
 	var next *journal
 	published := false
@@ -205,14 +221,23 @@ func (j *journal) compact(ctx context.Context, records []json.RawMessage, valida
 		return errStorage
 	}
 	checked, err := readJournalData(next)
-	if err != nil || next.snapshotCount != len(records) || next.sourceSequence != j.sequence || next.sourceDigest != j.digest {
+	if err != nil {
+		return compactionCandidateFailure(err)
+	}
+	if next.snapshotCount != len(records) || next.sourceSequence != j.sequence || next.sourceDigest != j.digest {
 		return errors.Join(errStorage, errCompactionValidation)
 	}
 	if compactionStep(hook, "validate_snapshot") != nil {
 		return errStorage
 	}
-	if validate(checked, next.snapshotCount) != nil || !next.current() {
+	if validate(checked, next.snapshotCount) != nil {
 		return errors.Join(errStorage, errCompactionValidation)
+	}
+	if err := compactionStep(hook, "candidate_recheck"); err != nil {
+		return storageReadFailure(err)
+	}
+	if err := next.checkCurrent(); err != nil {
+		return compactionCandidateFailure(err)
 	}
 	if ctx.Err() != nil || !j.current() || compactionStep(hook, "publish") != nil {
 		return errStorage

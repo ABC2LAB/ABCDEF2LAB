@@ -78,7 +78,7 @@ func compactionCandidateDirectory(t *testing.T, root string) string {
 }
 
 func TestStartupCompactionIOFailureUsesVerifiedOriginal(t *testing.T) {
-	stages := []string{"temporary_directory", "journal_write", "journal_sync", "head_write", "head_sync", "directory_sync", "candidate_ready", "validate_snapshot", "publish"}
+	stages := []string{"temporary_directory", "candidate_directory_open", "journal_write", "journal_sync", "head_write", "head_sync", "directory_sync", "candidate_ready", "validate_snapshot", "candidate_recheck", "publish"}
 	for _, generation := range []string{"flat", "snapshot"} {
 		for _, stage := range stages {
 			t.Run(generation+"/"+stage, func(t *testing.T) {
@@ -143,6 +143,15 @@ func TestStartupCompactionIOFailureUsesVerifiedOriginal(t *testing.T) {
 				}
 				if !bytes.Equal(data, beforeData) || !bytes.Equal(head, beforeHead) {
 					t.Fatal("기동 보류가 옛 저널 바이트 변경")
+				}
+				entries, err := os.ReadDir(root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, entry := range entries {
+					if strings.HasPrefix(entry.Name(), ".preparation-compact-") {
+						t.Fatal("기동 보류 뒤 압축 후보 잔류")
+					}
 				}
 				next := create(t, restored, "continue-original")
 				if got := start(t, restored, next, "continue-original-start"); got.Error != "" {
@@ -407,5 +416,177 @@ func TestPreparationGenerationRequiresMatchingFormat(t *testing.T) {
 				t.Fatal("파일 위치와 스냅샷 형식 불일치 허용")
 			}
 		})
+	}
+}
+
+func TestStartupCompactionCurrentJournalChangedBlocks(t *testing.T) {
+	s, b, root := compactionFixture(t)
+	if err := s.Shutdown(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	replaced := false
+	restored, err := newServiceForBootWithCompactionHook(t.Context(), root, b, executionBootID(), func(stage string) error {
+		if stage != "candidate_ready" {
+			return nil
+		}
+		path := filepath.Join(root, journalName)
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		temp := filepath.Join(root, "owned-journal-replacement")
+		if err := os.WriteFile(temp, raw, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(temp, path); err != nil {
+			t.Fatal(err)
+		}
+		replaced = true
+		return nil
+	})
+	if restored != nil {
+		defer restored.Shutdown(t.Context())
+	}
+	if !replaced {
+		t.Fatal("현재 저널 교체 hook 미도달")
+	}
+	if err == nil {
+		t.Fatal("게시 전 현재 저널 교체 뒤 기동 허용")
+	}
+}
+
+func TestStartupCompactionCancelledBlocks(t *testing.T) {
+	s, b, root := compactionFixture(t)
+	if err := s.Shutdown(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	reached := false
+	restored, err := newServiceForBootWithCompactionHook(ctx, root, b, executionBootID(), func(stage string) error {
+		if stage == "journal_write" {
+			reached = true
+			cancel()
+		}
+		return nil
+	})
+	if restored != nil {
+		defer restored.Shutdown(t.Context())
+	}
+	if !reached {
+		t.Fatal("취소 hook 미도달")
+	}
+	if err == nil {
+		t.Fatal("기동 압축 중 취소 뒤 기동 허용")
+	}
+}
+
+func TestStartupCompactionCandidateReadIOUsesOriginal(t *testing.T) {
+	for _, kind := range []string{"open_head", "recheck_directory"} {
+		t.Run(kind, func(t *testing.T) {
+			s, b, root := compactionFixture(t)
+			expected := copyPreparationJobs(s.jobs)
+			beforeData, err := os.ReadFile(filepath.Join(root, journalName))
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeHead, err := os.ReadFile(filepath.Join(root, headName))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Shutdown(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			reached := false
+			restored, err := newServiceForBootWithCompactionHook(t.Context(), root, b, executionBootID(), func(stage string) error {
+				wanted := "candidate_recheck"
+				if kind == "open_head" {
+					wanted = "candidate_ready"
+				}
+				if stage != wanted {
+					return nil
+				}
+				dir := compactionCandidateDirectory(t, root)
+				from := filepath.Join(dir, headName)
+				if kind == "recheck_directory" {
+					from = dir
+				}
+				if err := os.Rename(from, filepath.Join(root, "owned-unavailable-candidate")); err != nil {
+					t.Fatal(err)
+				}
+				reached = true
+				return nil
+			})
+			if restored != nil {
+				defer restored.Shutdown(t.Context())
+			}
+			if err != nil || !reached {
+				t.Fatal("후보 읽기 I/O 실패로 검증된 원본 기동 거절", err)
+			}
+			if !reflect.DeepEqual(restored.jobs, expected) || !restored.journal.current() || restored.journal.snapshotCount != 0 || b.calls.Load() != 1 {
+				t.Fatal("후보 읽기 실패 뒤 원본 회계·세대 변경")
+			}
+			data, err := os.ReadFile(filepath.Join(root, journalName))
+			if err != nil {
+				t.Fatal(err)
+			}
+			head, err := os.ReadFile(filepath.Join(root, headName))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(data, beforeData) || !bytes.Equal(head, beforeHead) {
+				t.Fatal("후보 읽기 실패 뒤 원본 바이트 변경")
+			}
+		})
+	}
+}
+
+func TestStartupCompactionCandidateMetadataChangeBlocks(t *testing.T) {
+	s, b, root := compactionFixture(t)
+	if err := s.Shutdown(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	reached := false
+	restored, err := newServiceForBootWithCompactionHook(t.Context(), root, b, executionBootID(), func(stage string) error {
+		if stage != "candidate_recheck" {
+			return nil
+		}
+		dir := compactionCandidateDirectory(t, root)
+		if err := os.Rename(filepath.Join(dir, headName), filepath.Join(root, "owned-changed-head")); err != nil {
+			t.Fatal(err)
+		}
+		reached = true
+		return nil
+	})
+	if restored != nil {
+		defer restored.Shutdown(t.Context())
+	}
+	if !reached || err == nil {
+		t.Fatal("후보 파일 metadata 변경을 I/O 보류로 처리")
+	}
+}
+
+func TestProtectedReadIOIsDistinctFromInodeChange(t *testing.T) {
+	s, _, root := compactionFixture(t)
+	j := s.journal
+	err := j.root.checkMatch("owned-unavailable-file", j.file, j.stat)
+	if !errors.Is(err, errStorageIO) {
+		t.Fatal("보호 파일 경로 열기 실패를 내용 불일치로 분류", err)
+	}
+	path := filepath.Join(root, journalName)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := filepath.Join(root, "owned-inode-replacement")
+	if err := os.WriteFile(replacement, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, path); err != nil {
+		t.Fatal(err)
+	}
+	err = j.root.checkMatch(journalName, j.file, j.stat)
+	if err == nil || errors.Is(err, errStorageIO) {
+		t.Fatal("원본 inode 변경을 일시 I/O로 처리", err)
 	}
 }
