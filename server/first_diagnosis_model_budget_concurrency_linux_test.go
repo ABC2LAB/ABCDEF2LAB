@@ -343,6 +343,30 @@ func TestFirstDiagnosisModelBudgetConcurrentWrappersOwnedPostgres(t *testing.T) 
 			t.Fatalf("rate-limited call not retried with the longer schedule: calls=%d err=%v", flaky.calls.Load(), err)
 		}
 	})
+	t.Run("request_rejected_not_retried", func(t *testing.T) {
+		// 제공자가 요청 내용을 거부한 호출(400 등)은 같은 요청을 다시 보내도 같은 결과라 다시 보내지 않는다. 실패 호출은
+		// 예약량으로 정산하고 다음 호출을 막지 않는다(P3 결정안 C06 보완).
+		ctx, cancel := context.WithCancel(f.Context)
+		defer cancel()
+		b, err := NewFirstDiagnosisModelBudget(diagnosisprep.Budget{ModelRequests: 3, InputTokens: 3 * 65536, OutputTokens: 384}, 65536, 128, noop)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.retryDelays = []time.Duration{time.Millisecond, time.Millisecond}
+		b.rejectedCall = func(*firstDiagnosisModelCall) bool { return true }
+		flaky := &budgetFlakyProvider{failures: 1, usage: knownUsage}
+		if err := budgetAwaitResult(t, call(ctx, wrap(t, b, flaky))); !errors.Is(err, ErrFirstDiagnosisModelBudget) || flaky.calls.Load() != 1 {
+			t.Fatalf("rejected call retried: calls=%d err=%v", flaky.calls.Load(), err)
+		}
+		u := b.Snapshot()
+		if u.Requests != 1 || !u.UsageKnown || u.UnknownUsageCalls != 1 || u.InputTokens != reserve {
+			t.Fatalf("rejected call accounting %+v", u)
+		}
+		// 다음 호출은 막히지 않는다.
+		if err := budgetAwaitResult(t, call(ctx, wrap(t, b, &budgetFlakyProvider{usage: knownUsage}))); err != nil {
+			t.Fatal("call after a rejected request blocked", err)
+		}
+	})
 	t.Run("request_limit_after_wait", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(f.Context)
 		defer cancel()

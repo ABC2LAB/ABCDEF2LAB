@@ -134,3 +134,25 @@ func TestFirstDiagnosisModelCallRateLimited(t *testing.T) {
 		}
 	}
 }
+
+// 호출의 요청 거부 여부는 transport 칸의 거부 표시(400·413·422)에서만 온다.
+func TestFirstDiagnosisModelCallRequestRejected(t *testing.T) {
+	for name, tc := range map[string]struct {
+		call *firstDiagnosisModelCall
+		want bool
+	}{
+		"rejected": {&firstDiagnosisModelCall{result: func() llmpolicy.OpenRouterCallResult {
+			return llmpolicy.OpenRouterCallResult{Reserved: true, Rejected: true}
+		}}, true},
+		"rate-limited": {&firstDiagnosisModelCall{result: func() llmpolicy.OpenRouterCallResult {
+			return llmpolicy.OpenRouterCallResult{Reserved: true, NotBilled: true}
+		}}, false},
+		"server-error": {&firstDiagnosisModelCall{result: func() llmpolicy.OpenRouterCallResult { return llmpolicy.OpenRouterCallResult{Reserved: true} }}, false},
+		"local":        {&firstDiagnosisModelCall{}, false},
+		"nil":          {nil, false},
+	} {
+		if got := tc.call.requestRejected(); got != tc.want {
+			t.Fatalf("%s: requestRejected=%v", name, got)
+		}
+	}
+}
