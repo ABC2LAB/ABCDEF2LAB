@@ -218,7 +218,7 @@ func validModel(m *ModelInfo) bool {
 	if m == nil {
 		return true
 	}
-	return m.Mode == "openrouter" && m.Model == "qwen/qwen3.5-35b-a3b" && validText(m.Provider, 128) && m.Provider != "" && m.ExternalTransfer && m.InputPerCall == 262144 && m.OutputPerCall > 0 && m.OutputPerCall <= m.InputPerCall
+	return m.Mode == "openrouter" && m.Model == "qwen/qwen3.6-35b-a3b" && validText(m.Provider, 128) && m.Provider != "" && m.ExternalTransfer && m.InputPerCall == 262144 && m.OutputPerCall > 0 && m.OutputPerCall <= m.InputPerCall
 }
 func validScope(s *Scope) bool {
 	if s == nil {

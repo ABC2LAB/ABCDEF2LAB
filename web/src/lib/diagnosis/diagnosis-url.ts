@@ -20,7 +20,7 @@ export type URLDiagnosisInput = {
 };
 export type URLDiagnosisModel = {
   mode: "openrouter";
-  model: "qwen/qwen3.5-35b-a3b";
+  model: "qwen/qwen3.6-35b-a3b";
   provider: string;
   external_transfer: true;
   input_tokens_per_call: number;
@@ -261,7 +261,7 @@ function model(v: unknown): URLDiagnosisModel {
   if (
     !object(v) ||
     v.mode !== "openrouter" ||
-    v.model !== "qwen/qwen3.5-35b-a3b" ||
+    v.model !== "qwen/qwen3.6-35b-a3b" ||
     !text(v.provider, 128) ||
     !v.provider ||
     v.external_transfer !== true ||
@@ -274,7 +274,7 @@ function model(v: unknown): URLDiagnosisModel {
   exact(v, ["mode", "model", "provider", "external_transfer", "input_tokens_per_call", "output_tokens_per_call"]);
   return {
     mode: "openrouter",
-    model: "qwen/qwen3.5-35b-a3b",
+    model: "qwen/qwen3.6-35b-a3b",
     provider: v.provider,
     external_transfer: true,
     input_tokens_per_call: 262144,
