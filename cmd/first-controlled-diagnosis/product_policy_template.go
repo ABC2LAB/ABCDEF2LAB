@@ -24,6 +24,10 @@ func validProductPolicyTemplate(p server.E2HTTPFilePolicy) bool {
 	if p.Limits.RequestTimeoutMS > 60000 {
 		return false
 	}
+	// 프록시 연결 수가 동시 송신 수보다 작으면 동시 송신 상한을 쓸 수 없다(C32 결정안 §8).
+	if p.Proxy.MaxConnections < p.Limits.MaxConcurrent {
+		return false
+	}
 	requestTimeout, ok1 := productMillis(p.Limits.RequestTimeoutMS)
 	callTimeout, ok2 := productMillis(p.Limits.CallTimeoutMS)
 	workerTimeout, ok3 := productMillis(p.Runtime.WorkerTimeoutMS)
@@ -125,9 +129,10 @@ func productModelConcurrencyFor(limits *productRuntimeLimits, workflow, local bo
 
 // 회차 실행 시간 기본값(초). 워크플로 기본값은 2026-11-14 점검 회차 실측으로 600 → 1800초로 올렸다: 600초 회차 둘이
 // 모델 승인 요청(150)의 절반도 안 쓴 채(66·61번) 시간 상한에 닿았고, 그 속도(600초에 약 60번)면 1800초에서 모델 예산과
-// 비슷하게 닿는다(docs/install-limits-decision.md §6). 제품(일반 HTTP) 기본값은 측정 전이라 그대로다.
+// 비슷하게 닿는다(docs/install-limits-decision.md §6). 제품(일반 HTTP) 기본값도 같은 값으로 올렸다(§8, 측정 전 기본값
+// 고정 원칙은 §7에서 철회).
 const (
-	productRunSeconds  = 180
+	productRunSeconds  = 1800
 	workflowRunSeconds = 1800
 )
 
