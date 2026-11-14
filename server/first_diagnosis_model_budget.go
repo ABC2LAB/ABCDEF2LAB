@@ -318,6 +318,13 @@ func (b *FirstDiagnosisModelBudget) reserve(ctx context.Context, cfg agent.Confi
 	if b.blocked {
 		return nil, ErrFirstDiagnosisModelBudget
 	}
+	if b.external != nil {
+		// 연속 일시 오류 상한으로 잠긴 승인은 새 호출을 보내지 않는다. 예약하지 않고 거절하므로 회계는 그대로 알고 있다.
+		// 그대로 보내면 transport가 정책 거부로 돌려주고 그 호출이 회계 막힘으로 남아 실행 전체가 결과 불명이 된다.
+		if snap := b.externalSnapshot(); snap.Blocked && snap.TransientLimited {
+			return nil, ErrFirstDiagnosisModelBudget
+		}
+	}
 	if b.usage.Requests >= b.limits.ModelRequests ||
 		reserveInput > b.limits.InputTokens-b.usage.InputTokens-b.inflightInput ||
 		int64(req.MaxTokens) > b.limits.OutputTokens-b.usage.OutputTokens-b.inflightOutput ||
@@ -351,6 +358,24 @@ func (b *FirstDiagnosisModelBudget) reserve(ctx context.Context, cfg agent.Confi
 // failedCallBounded는 실패한 호출을 예약 상한으로 정산해도 되는지 본다. 호출이 성공했는데 사용량이 예약을
 // 넘거나 형식이 틀리면 상한을 믿을 수 없어 막는다. 로컬 모델 정책이 막은 요청과 외부 제공자 정책이 막힌 상태도
 // 막는다(통제 경계 사건이지 일시 실패가 아니다). 외부 제공자의 일시 오류 구분은 C06에서 한다.
+// externalAccountingBlocked는 외부 승인이 회계를 믿을 수 없는 원인으로 막혔는지 본다. 연속 일시 오류 상한(C06)만으로
+// 잠긴 것은 제공자가 처리하지 않은 호출이 이어진 것이라 실패 호출을 예약량으로 정산할 수 있다.
+func (b *FirstDiagnosisModelBudget) externalAccountingBlocked() bool {
+	if b.external == nil {
+		return false
+	}
+	snap := b.externalSnapshot()
+	return snap.Blocked && !snap.TransientLimited
+}
+
+// externalSnapshot은 transport 상태를 읽는다(externalUsage가 있으면 그것, 대조와 같은 출처).
+func (b *FirstDiagnosisModelBudget) externalSnapshot() llmpolicy.OpenRouterUsage {
+	if b.externalUsage != nil {
+		return b.externalUsage()
+	}
+	return b.external.Snapshot()
+}
+
 func failedCallBounded(callErr error, externalBlocked bool) bool {
 	if callErr == nil || externalBlocked || errors.Is(callErr, llmpolicy.ErrRequestBlocked) || errors.Is(callErr, llmpolicy.ErrClientOptions) {
 		return false
@@ -437,7 +462,7 @@ func (b *FirstDiagnosisModelBudget) settle(call *firstDiagnosisModelCall, usage 
 	case known:
 		b.usage.InputTokens += int64(usage.InputTokens)
 		b.usage.OutputTokens += int64(usage.OutputTokens)
-	case failedCallBounded(callErr, b.external != nil && b.external.Snapshot().Blocked) && reportedWithinReservation(usage, call.input, outputLimit):
+	case failedCallBounded(callErr, b.externalAccountingBlocked()) && reportedWithinReservation(usage, call.input, outputLimit):
 		// 실패한 호출은 예약한 양을 쓴 것으로 센다(P3 결정안 C05). 재시도가 꺼져 있어 예약 하나에 HTTP 요청은
 		// 하나이고, 입력 크기·max_tokens·가격 상한을 호출 전에 검사했으므로 이 값이 실제 사용의 상한이다.
 		// 예약량을 정산 사용량에 넣으므로 다음 호출의 예산 검사(정산 사용량 + 진행 중 예약)에서 상한은 넓어지지 않는다.

@@ -263,6 +263,10 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 			if p.transient < m.transientLimit() {
 				return
 			}
+			// 이미 다른 원인으로 막혀 있으면 그 원인을 그대로 둔다.
+			p.transientLimited = !p.blocked || p.transientLimited
+		} else {
+			p.transientLimited = false
 		}
 		p.blocked = true
 	}()

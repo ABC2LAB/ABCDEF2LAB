@@ -68,6 +68,9 @@ type OpenRouterPolicy struct {
 	blocked  bool
 	// 연속 일시 오류 수. 정상 응답 하나가 0으로 되돌린다.
 	transient int64
+	// transientLimited는 막힘의 원인이 연속 일시 오류 상한(C06)뿐이라는 뜻이다. 다른 원인으로 막히면 거짓으로 돌아간다.
+	// 일시 오류(429·5xx·연결 실패)는 제공자가 처리하지 않은 호출이라 회계 자체를 의심할 이유가 아니다.
+	transientLimited bool
 	// ledger는 승인별 누적 예약 기록에 이번 예약을 더한다(P3 결정안 C07). 다른 프로세스·재시작의 예약까지 합쳐
 	// 승인 총량을 넘으면 errOpenRouterApprovalExhausted를 돌려준다. 보호 파일 로더만 채운다.
 	ledger    func(input, output, cost int64) error
@@ -93,6 +96,7 @@ type OpenRouterUsage struct {
 	Provider             string `json:"provider_slug"`
 	ReturnedProvider     string `json:"returned_provider"`
 	Blocked              bool   `json:"blocked"`
+	TransientLimited     bool   `json:"transient_limited,omitempty"`
 	FailureReason        string `json:"failure_reason,omitempty"`
 }
 
@@ -117,6 +121,7 @@ func (p *OpenRouterPolicy) Snapshot() OpenRouterUsage {
 	defer p.mu.Unlock()
 	u := p.usage
 	u.Blocked = p.blocked
+	u.TransientLimited = p.blocked && p.transientLimited
 	return u
 }
 func (*OpenRouterPolicy) String() string     { return "llmpolicy.OpenRouterPolicy{[REDACTED]}" }
@@ -218,12 +223,12 @@ func (p *OpenRouterPolicy) reserveDiagnostic(input, output int64) (string, error
 	}
 	// 승인 총량은 이 프로세스 밖의 예약까지 누적 기록으로 확인한다. 기록할 수 없거나 총량을 넘으면 막는다.
 	if p.ledger == nil {
-		p.blocked = true
+		p.blocked, p.transientLimited = true, false
 		p.usage.FailureReason = "approval_unavailable"
 		return "approval_unavailable", ErrOpenRouterPolicy
 	}
 	if err := p.ledger(input, output, cost); err != nil {
-		p.blocked = true
+		p.blocked, p.transientLimited = true, false
 		reason = "approval_unavailable"
 		if errors.Is(err, errOpenRouterApprovalExhausted) {
 			reason = "approval_consumed"
