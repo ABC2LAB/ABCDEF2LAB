@@ -354,6 +354,20 @@ func TestFirstDiagnosisRuntimeDatabaseOwnedPostgres(t *testing.T) {
 			}
 			firstDiagnosisSupervisorEngineRun(t, manager, installer, killed, "planner-kill")
 		})
+		t.Run("actual-engine-time-budget-is-budget-limited", func(t *testing.T) {
+			timed, err := manager.CreateTask("Owned time budget fixture", "Close when the run time budget is reached", nil, 60, 60)
+			if err != nil || timed == nil {
+				t.Fatal("독립 시간 상한 task 생성 실패")
+			}
+			if _, err := runtimePool.ExecContext(ctx, "UPDATE tasks SET paused=true WHERE id=$1", timed.ID); err != nil {
+				t.Fatal("시간 상한 task 준비 상태 저장 실패")
+			}
+			timed.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
+			if id, err := timed.Store.AddIntent(map[string]any{"summary": "Read the owned slow fixture"}, 1, nil, "system"); err != nil || id <= 0 {
+				t.Fatal("실제 시간 상한 intent 생성 실패")
+			}
+			firstDiagnosisSupervisorEngineRun(t, manager, installer, timed, "time-budget")
+		})
 		for _, mode := range []string{"request-budget", "request-budget-overflow"} {
 			t.Run("actual-engine-"+mode+"-is-budget-limited", func(t *testing.T) {
 				spent, err := manager.CreateTask("Owned request budget fixture", "Close when the approved request budget is spent", nil, 60, 60)
