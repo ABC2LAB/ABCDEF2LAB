@@ -76,6 +76,7 @@ type Input struct {
 }
 
 type Profile struct {
+	// WorkflowRequestLimit은 설치의 회차당 요청 상한이다. 이름과 달리 제품 설치 프로필이면 워크플로 여부와 상관없이 싣는다.
 	WorkflowRequestLimit int64                 `json:"workflow_request_limit,omitempty"`
 	Workflow             *diagnosisflow.Limits `json:"workflow,omitempty"`
 	ID                   string                `json:"id"`

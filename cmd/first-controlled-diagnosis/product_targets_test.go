@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"net/netip"
 	"os"
@@ -260,5 +261,19 @@ func TestProductTargetWriteConsentVersion(t *testing.T) {
 	}
 	if !(productTargetRecord{ReversibleWrites: true, WriteConsent: productWriteConsentAuto}).autoWritesAllowed() || (productTargetRecord{ReversibleWrites: true}).autoWritesAllowed() {
 		t.Fatal("automatic write consent check")
+	}
+}
+
+// 대상 등록의 회차 요청 수는 설치 대상 정책 상한(max_requests) 이하만 받는다. 화면이 설치 값으로 등록해도 서버가 다시
+// 검사한다(화면 값은 데이터).
+func TestProductTargetRegistrationRequestsWithinInstallLimit(t *testing.T) {
+	r, _ := targetTestRegistry(t)
+	limit := r.policy.MaxRequests
+	for requests, ok := range map[int64]bool{1: true, limit: true, limit + 1: false, 0: false} {
+		s := targetTestSpec(fmt.Sprintf("r%d.example.test", requests))
+		s.Requests = requests
+		if _, e := r.register("ARTEX", s); (e == nil) != ok {
+			t.Fatalf("requests %d with install limit %d: registered=%v", requests, limit, e == nil)
+		}
 	}
 }
