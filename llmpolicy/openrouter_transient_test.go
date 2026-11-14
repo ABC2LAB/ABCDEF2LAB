@@ -313,7 +313,7 @@ func TestOpenRouterBrokenBodyKeepsStatusClassification(t *testing.T) {
 	for _, tc := range []struct {
 		status  int
 		blocked bool
-	}{{400, true}, {401, true}, {403, true}, {302, true}, {200, false}, {429, false}, {503, false}} {
+	}{{400, false}, {413, false}, {422, false}, {401, true}, {402, true}, {403, true}, {404, true}, {302, true}, {200, false}, {429, false}, {503, false}} {
 		t.Run(http.StatusText(tc.status), func(t *testing.T) {
 			p := openRouterV2Fixture(t, 3)
 			client := openRouterClient(p, openRouterRT(func(*http.Request) (*http.Response, error) {
