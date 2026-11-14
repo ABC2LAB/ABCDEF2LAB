@@ -79,3 +79,18 @@ ARTEX_PREPARATION_RESOURCE_TEST=1 go test -json ./diagnosisprep \
 
 대상 저널은 `OpenProtectedJournal`의 일반 32MiB 상한을 계속 사용한다. 준비 저널 압축으로 대상 이력을 지우거나
 대상 저장 한도를 우회하지 않는다. 실제 전원 차단·외부 모델/대상 진단은 이번 보완에서도 NOT_RUN이다.
+
+
+## 2026-11-14 추가 재리뷰 — 취소·교체·후보 읽기 장애
+
+정상 소스 `47f39ba7`에서 부팅 압축 중 context 취소와 현재 저널 inode 교체를 직접 재현해 기동 거절을 고정했다.
+후보의 open/read·경로 재확인 I/O 오류는 정합성 실패와 구분해, 원래 저널이 검증된 current일 때만 보류한다.
+내용·inode/metadata·권한 불일치는 계속 거절하며 오류에는 원문 경로나 OS 상세를 넣지 않는다.
+Mkdirat 뒤 후보 디렉터리를 열지 못하면 이번 시도에서 만든 빈 디렉터리만 AT_REMOVEDIR로 정리한다. 재귀 삭제하지 않는다.
+
+- 평면/압축 세대 각각 게시 전 11단계 I/O fault 뒤 기동·작업 계속·재기동 회계를 대조하고 후보 잔류가 없는지 확인했다.
+- 후보 head 열기·디렉터리 경로 재확인 실패는 원본으로 복귀한다. 후보 head의 metadata 변경과 원본 inode 변경은 별도로 차단한다.
+- 준비 전체 race: 개별 test/subtest **219 PASS / FAIL0 / SKIP1**(기존 대용량 opt-in). 대상·계정·접촉 소비 경로 race **43 PASS / FAIL0 / SKIP0**.
+- 전체 Go build/vet·공백 검사 통과. 정상 커밋을 보존한 별도 overlay에서 취소·기동 current·게시 직전 current·후보 I/O 분류·
+  빈 디렉터리 정리·metadata 차단을 각각 제거해 **6/6 단언 실패로 검출**했다.
+- 이 회차는 대용량 자원 수치를 새로 측정하지 않았다. 실제 전원 차단·외부 모델·대상 진단은 NOT_RUN이다.
