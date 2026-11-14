@@ -387,6 +387,14 @@ describe("C21 서버가 승인한 자동 workflow 쓰기 범위", () => {
     };
     expect(parseURLJob(envelope(job), owner).scope?.methods).toEqual(["GET", "POST", "PUT", "PATCH"]);
   });
+  it("자동 workflow라도 모든 요청 확인 모드의 쓰기 범위는 거절한다", () => {
+    const job = {
+      ...ready,
+      input: { ...ready.input, workflow_mode: "ai_auto_v1" },
+      scope: { ...scope, approval_mode: "confirm_every_request", methods: ["GET", "POST"] },
+    };
+    expect(() => parseURLJob(envelope(job), owner)).toThrow();
+  });
   it.each([undefined, "user_approval_v1"])("일반/다른 모드에서 자동 쓰기를 추정하지 않는다: %s", (workflow_mode) => {
     const job = { ...ready, input: { ...ready.input, workflow_mode }, scope: { ...scope, methods: ["GET", "POST"] } };
     expect(() => parseURLJob(envelope(job), owner)).toThrow();

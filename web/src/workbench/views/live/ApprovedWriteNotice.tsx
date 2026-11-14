@@ -1,12 +1,14 @@
 "use client";
 
 import type { URLDiagnosisScope } from "@/lib/diagnosis/diagnosis-url";
+
 import s from "../../workbench.module.css";
 
 /** 서버가 반환한 실제 범위만 고지한다. 입력·모드 선택으로 쓰기 권한을 만들지 않는다. */
 export function ApprovedWriteNotice({ scope }: { scope: URLDiagnosisScope | undefined }) {
   if (!scope?.origin || !scope.path_prefixes.length || !scope.methods.length) return null;
-  const writes = scope.methods.filter((m) => ["POST", "PUT", "PATCH", "DELETE"].includes(m));
+  if (scope.approval_mode !== "preauthorized_scope" && scope.approval_mode !== "workbench_selective_v1") return null;
+  const writes = scope.methods.filter((m) => ["POST", "PUT", "PATCH"].includes(m));
   if (!writes.length) return null;
   return (
     <section className={s.isec} aria-label="쓰기 승인 안내">
@@ -27,9 +29,7 @@ export function ApprovedWriteNotice({ scope }: { scope: URLDiagnosisScope | unde
       <p>
         {scope.approval_mode === "preauthorized_scope"
           ? `자동 모드: 사전 승인된 쓰기 메서드(${writes.join(" / ")})는 요청마다 수동 확인하지 않고 보냅니다.`
-          : scope.approval_mode === "workbench_selective_v1"
-            ? "사용자 승인 모드: 쓰기 요청은 요청마다 사람이 내용을 확인하고 승인한 뒤 보냅니다."
-            : "모든 요청 확인 모드: 읽기와 쓰기 모두 요청마다 사람이 승인해야 합니다. 이 작업대에서는 시작할 수 없습니다."}
+          : "사용자 승인 모드: 쓰기 요청은 요청마다 사람이 내용을 확인하고 승인한 뒤 보냅니다."}
       </p>
     </section>
   );

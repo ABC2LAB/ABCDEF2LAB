@@ -1,8 +1,11 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
+
 import { scope } from "@/lib/diagnosis/diagnosis-url-fixtures";
+
 import { ApprovedWriteNotice } from "../views/live/ApprovedWriteNotice";
+
 afterEach(cleanup);
 it("실제 승인 origin·경로·메서드와 예측 불가능한 쓰기·상태 변경을 고지한다", () => {
   render(
@@ -30,6 +33,8 @@ it.each([
   { ...scope, methods: ["GET", "HEAD"] },
   { ...scope, methods: [] },
   { ...scope, path_prefixes: [], methods: ["POST"] },
+  { ...scope, methods: ["DELETE"] },
+  { ...scope, methods: ["POST"], approval_mode: "confirm_every_request" as const },
 ])("실제 쓰기 범위가 없으면 승인된 쓰기를 표시하지 않는다", (value) => {
   render(<ApprovedWriteNotice scope={value} />);
   expect(screen.queryByRole("region", { name: "쓰기 승인 안내" })).toBeNull();

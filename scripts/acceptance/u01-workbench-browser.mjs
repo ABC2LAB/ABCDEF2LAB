@@ -331,24 +331,42 @@ try {
 			while (!state.receiptRead && Date.now() < deadline)
 				await new Promise((resolve) => setTimeout(resolve, 100));
 			if (!state.receiptRead) throw new Error("real_receipt_not_read");
-			if (c.writes && !c.missing && !c.invalid)
+			// 각 fixture의 처리 결과를 기다린다. 범위 확인 전에도 있는 #luPolicy만으로 성공을 세지 않는다.
+			if (c.invalid) {
 				await waitFor(
 					sessionId,
-					`!!document.querySelector('[aria-label="쓰기 승인 안내"]')`,
+					`document.querySelector('[data-view="new"] [role="alert"]')?.textContent?.includes('입력 또는 서버 응답 계약을 확인하지 못했어요')`,
 				);
-			else await new Promise((resolve) => setTimeout(resolve, 500));
+			} else if (c.missing) {
+				await waitFor(
+					sessionId,
+					`document.querySelector('[data-view="new"] [role="note"]')?.textContent?.includes('아직 시작할 수 없습니다')`,
+				);
+			} else {
+				await waitFor(
+					sessionId,
+					`(()=>{const text=document.querySelector('[data-view="new"] #luPolicy')?.textContent??"";return text.includes('승인된 사이트 · 경로에만 요청')&&text.includes(${JSON.stringify(f.origin)})&&text.includes(${JSON.stringify(f.methods.join("/"))});})()`,
+				);
+				if (c.writes)
+					await waitFor(
+						sessionId,
+						`!!document.querySelector('[aria-label="쓰기 승인 안내"]')`,
+					);
+			}
 			await evaluate(
 				sessionId,
 				`document.querySelector('[aria-label="쓰기 승인 안내"]')?.scrollIntoView({block:"center",behavior:"instant"})`,
 			);
 			const observed = await evaluate(
 				sessionId,
-				`(()=>{const el=document.querySelector('[aria-label="쓰기 승인 안내"]');const text=el?.innerText??"";const rect=el?.getBoundingClientRect();const start=[...document.querySelectorAll('button')].find(b=>b.textContent.trim()==="점검 시작");return {notice:!!el,noticeVisible:!!rect&&rect.width>0&&rect.top>=0&&rect.bottom<=innerHeight,origin:text.includes(${JSON.stringify(f.origin)}),paths:text.includes('/owned, /api/safe'),methods:text.includes(${JSON.stringify(f.methods.join(" / "))}),risk:text.includes('어떤 쓰기 요청이 나갈지 미리 모두 알 수 없으며, 대상 데이터나 상태가 바뀔 수 있습니다'),automatic:text.includes('요청마다 수동 확인하지 않고 보냅니다'),manual:text.includes('요청마다 사람이 내용을 확인하고 승인한 뒤'),plain:document.body.innerText.includes('암호화하지 않는 주소 (http)'),startPresent:!!start,startDisabled:!start||start.disabled};})()`,
+				`(()=>{const el=document.querySelector('[aria-label="쓰기 승인 안내"]');const text=el?.innerText??"";const rect=el?.getBoundingClientRect();const start=[...document.querySelectorAll('button')].find(b=>b.textContent.trim()==="점검 시작");return {notice:!!el,noticeVisible:!!rect&&rect.width>0&&rect.top>=0&&rect.bottom<=innerHeight,origin:text.includes(${JSON.stringify(f.origin)}),paths:text.includes('/owned, /api/safe'),methods:text.includes(${JSON.stringify(f.methods.join(" / "))}),risk:text.includes('어떤 쓰기 요청이 나갈지 미리 모두 알 수 없으며, 대상 데이터나 상태가 바뀔 수 있습니다'),automatic:text.includes('요청마다 수동 확인하지 않고 보냅니다'),manual:text.includes('요청마다 사람이 내용을 확인하고 승인한 뒤'),plain:document.body.innerText.includes('암호화하지 않는 주소 (http)'),scopeResolved:(document.querySelector('[data-view="new"] #luPolicy')?.textContent??"").includes('승인된 사이트 · 경로에만 요청'),readRisk:document.body.innerText.includes('조회 요청도 데이터를 바꿀 수 있고, 서버는 검증하지 않음'),missingRejected:document.body.innerText.includes('아직 시작할 수 없습니다'),contractRejected:(document.querySelector('[data-view="new"] [role="alert"]')?.textContent??"").includes('입력 또는 서버 응답 계약을 확인하지 못했어요'),startPresent:!!start,startDisabled:!start||start.disabled};})()`,
 			);
 			const shouldShow = c.writes && !c.missing && !c.invalid;
 			if (
 				shouldShow &&
-				(!observed.noticeVisible ||
+				(!observed.scopeResolved ||
+					!observed.startPresent ||
+					!observed.noticeVisible ||
 					!observed.origin ||
 					!observed.paths ||
 					!observed.methods ||
@@ -364,11 +382,27 @@ try {
 			if (!shouldShow && observed.notice)
 				throw new Error("unsupported_write_grant_shown");
 			if (
-				(c.missing || c.invalid) &&
-				observed.startPresent &&
-				!observed.startDisabled
+				!c.writes &&
+				(!observed.scopeResolved ||
+					!observed.startPresent ||
+					!observed.startDisabled ||
+					!observed.readRisk)
 			)
-				throw new Error("unapproved_start_enabled");
+				throw new Error("readonly_scope_or_warning_not_verified");
+			if (
+				c.missing &&
+				(!observed.missingRejected ||
+					observed.scopeResolved ||
+					observed.startPresent)
+			)
+				throw new Error("missing_scope_not_rejected");
+			if (
+				c.invalid &&
+				(!observed.contractRejected ||
+					observed.scopeResolved ||
+					observed.startPresent)
+			)
+				throw new Error("invalid_scope_not_rejected");
 			if (c.scheme === "http" && !observed.plain)
 				throw new Error("plaintext_warning_missing");
 			if (state.mutations !== 0 || state.failure)
