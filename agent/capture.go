@@ -54,6 +54,9 @@ func captureRunSessionWith(ctx context.Context, s *agentcore.Session, input stri
 		}
 		return redact(text)
 	}
+	// 결과 행의 화면용 글(metadata)은 JSON으로 직렬화되므로, 넣기 전에 오류·중단 직전 글을 가린다. 직렬화한 뒤 정확한 값으로
+	// 가리면 이스케이프된 값을 놓칠 수 있다.
+	shownErr := func(err error) error { return redactedError(err, redact) }
 	ctx, auditTrace := intercept.WithTrace(ctx, input, approvalHistory(s.Messages()))
 	defer auditTrace.Finish()
 	var reason harness.TerminalReason
@@ -100,11 +103,11 @@ func captureRunSessionWith(ctx context.Context, s *agentcore.Session, input stri
 		if err != nil {
 			flush()
 			if ctx.Err() != nil { // engine/user cancellation, not a provider failure
-				record := terminalText(ctx, &harness.Terminal{Reason: reason, Err: ctx.Err()}, lastTool)
+				record := terminalText(ctx, redactedTerminal(&harness.Terminal{Reason: reason, Err: ctx.Err()}, redact), lastTool)
 				rec(activityWithUsage(record.activity(db.Activity{Kind: "result"}), lastUsage))
 				return finalText, reason, ctx.Err()
 			}
-			rec(activityWithUsage(executionErrorActivity(err), lastUsage))
+			rec(activityWithUsage(executionErrorActivity(shownErr(err)), lastUsage))
 			return finalText, reason, err
 		}
 		switch ev.Kind {
@@ -167,7 +170,7 @@ func captureRunSessionWith(ctx context.Context, s *agentcore.Session, input stri
 				result := db.Activity{Kind: "result", IsError: ev.Terminal.Err != nil,
 					Summary: firstLine(answer, resultSummaryRunes), Detail: answer}
 				if ev.Terminal.Text == "" || ev.Terminal.Reason == harness.ReasonAbortedTools || ev.Terminal.Reason == harness.ReasonAbortedStreaming {
-					result = terminalText(ctx, ev.Terminal, lastTool).activity(result)
+					result = terminalText(ctx, redactedTerminal(ev.Terminal, redact), lastTool).activity(result)
 				}
 				u := ev.Terminal.Usage // cumulative token usage for this session
 				result.InputTokens, result.OutputTokens = &u.InputTokens, &u.OutputTokens
@@ -181,6 +184,29 @@ func captureRunSessionWith(ctx context.Context, s *agentcore.Session, input stri
 	}
 	flush() // safety: any unflushed text if the stream ended without KindResult
 	return finalText, reason, rerr
+}
+
+// redactedError는 기록·화면에 넣을 글만 가린 오류다. 반환·판정(errors.Is)에는 원래 오류를 쓴다.
+type redactedErrorText string
+
+func (e redactedErrorText) Error() string { return string(e) }
+
+func redactedError(err error, redact func(string) string) error {
+	if err == nil || redact == nil {
+		return err
+	}
+	return redactedErrorText(redact(err.Error()))
+}
+
+// redactedTerminal은 결과 행을 만들 종료 사건의 사본이다. 중단 직전 모델 글과 오류 글을 가리고 나머지(사유·턴·사용량)는 그대로다.
+func redactedTerminal(term *harness.Terminal, redact func(string) string) *harness.Terminal {
+	if term == nil || redact == nil {
+		return term
+	}
+	shown := *term
+	shown.Text = redact(term.Text)
+	shown.Err = redactedError(term.Err, redact)
+	return &shown
 }
 
 func activityWithUsage(activity db.Activity, usage *llm.Usage) db.Activity {

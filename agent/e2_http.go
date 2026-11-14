@@ -742,11 +742,16 @@ func (w *Worker) runE2HTTPSession(ctx context.Context, name string, intent *db.N
 		activity.NodeID = &intent.ID
 		activity.Worker = name
 		if activity.Kind == "result" && activity.IsError {
+			// 화면 경계(ForDisplay)는 metadata가 있으면 Summary·Detail을 그것으로 바꾸므로, 고정 문구가 화면에도 가게 비운다.
 			activity.Summary = ErrE2HTTPWorker.Error()
 			activity.Detail = ErrE2HTTPWorker.Error()
+			activity.Metadata = nil
 		} else {
 			activity.Summary = string(execution.RedactOutput([]byte(activity.Summary)))
 			activity.Detail = string(execution.RedactOutput([]byte(activity.Detail)))
+			if len(activity.Metadata) > 0 {
+				activity.Metadata = execution.RedactOutput(activity.Metadata)
+			}
 		}
 		emit(activity)
 	})
