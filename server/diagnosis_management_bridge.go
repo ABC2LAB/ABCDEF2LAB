@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"mime"
@@ -51,6 +52,9 @@ func newDiagnosisManagementBridge(ctx context.Context, origin string, authentica
 func managementBridgeTask(r *http.Request) (string, bool) {
 	if r.URL.RawPath != "" || r.Method != http.MethodGet && r.Method != http.MethodPost {
 		return "", false
+	}
+	if task, ok := managementOperationsTask(r); ok {
+		return task, true
 	}
 	if requestApprovalRoute(r) {
 		if r.URL.RawQuery != "" {
@@ -160,6 +164,19 @@ func (b *diagnosisManagementBridge) ServeHTTP(w http.ResponseWriter, r *http.Req
 			writeErr(w, 413, "요청 크기를 확인할 수 없습니다")
 			return
 		}
+
+		if firstDiagnosisControlRoute(r) {
+			var control struct {
+				Action string `json:"action"`
+			}
+			decoder := json.NewDecoder(bytes.NewReader(raw))
+			decoder.DisallowUnknownFields()
+			if decoder.Decode(&control) != nil || decoder.Decode(new(any)) != io.EOF || control.Action != "pause" && control.Action != "resume" {
+				writeErr(w, 400, "일시정지·재개만 요청할 수 있습니다")
+				return
+			}
+			raw, _ = json.Marshal(control)
+		}
 	} else if r.ContentLength > 0 || len(r.TransferEncoding) > 0 {
 		writeErr(w, 400, "조회 요청 본문은 사용할 수 없습니다")
 		return
@@ -182,11 +199,25 @@ func (b *diagnosisManagementBridge) ServeHTTP(w http.ResponseWriter, r *http.Req
 		writeErr(w, 502, "진단 API 요청을 만들 수 없습니다")
 		return
 	}
+	if last := r.Header.Get("Last-Event-ID"); last != "" && r.URL.Path == "/api/exploration/activity/stream" {
+		if len(r.Header.Values("Last-Event-ID")) != 1 || !canonicalNatural(last) {
+			writeErr(w, 400, "잘못된 활동 커서입니다")
+			return
+		}
+		out.Header.Set("Last-Event-ID", last)
+	}
 	out.Header.Set("Authorization", r.Header.Get("Authorization"))
 	if r.Method == http.MethodPost {
 		out.Header.Set("Content-Type", "application/json")
 	}
-	response, err := b.client.Do(out)
+	client := *b.client
+	if r.URL.Path == "/api/exploration/activity/stream" {
+		streamContext, cancel := context.WithTimeout(out.Context(), 30*time.Second)
+		defer cancel()
+		out = out.WithContext(streamContext)
+		client.Timeout = 0
+	}
+	response, err := client.Do(out)
 	if err != nil {
 		writeErr(w, 503, "진단 API 응답을 확인할 수 없습니다. 변경 요청은 재전송하지 않았습니다")
 		return
@@ -194,6 +225,10 @@ func (b *diagnosisManagementBridge) ServeHTTP(w http.ResponseWriter, r *http.Req
 	defer response.Body.Close()
 	if response.StatusCode >= 300 && response.StatusCode < 400 {
 		writeErr(w, 502, "진단 API redirect를 허용하지 않습니다")
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/exploration/activity") {
+		b.servePublicActivity(w, r, response, owner, task)
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, managementBridgeResponseLimit+1))

@@ -163,7 +163,9 @@ func TestPublishRejectsTaskIDAlreadyBoundToAnotherJob(t *testing.T) {
 	if got := start(t, s, first, "first-start"); got.Error != "" {
 		t.Fatal(got.Error)
 	}
-	completed := awaitState(t, s, first.ID, Completed)
+	awaitState(t, s, first.ID, Completed)
+	awaitExecutionReturned(t, s, first.ID)
+	completed := status(t, s, first.ID)
 	r := request(Create)
 	r.Principal, r.IdempotencyKey, r.Input = "other-owner", "second", &first.Input
 	second := call(t, s, r)
@@ -262,52 +264,43 @@ func TestStartRejectsChangedInstallationOrDelegationBeforeExecute(t *testing.T) 
 	}
 }
 
-// 로컬 마감이 확인돼도 외부 모델/대상의 미확인 결과와 예약을 해제하지 않는다.
-func TestDrainedUnknownKeepsInstallationBlocked(t *testing.T) {
+// C04: 결과 불명(Unknown) 회차는 설치 전체의 새 회차를 막지 않는다. 단 로컬 drain이 확인돼도 외부 모델/대상의
+// 미확인 결과와 예약은 해제하지 않는다(절대 규칙 5) — 예약은 집계에 남고, 새 회차는 그 예약을 집계에 포함한 채 진행한다.
+func TestDrainedUnknownDoesNotBlockButRetainsReservation(t *testing.T) {
 	s, b, root := newFixture(t)
-	published := make(chan error, 1)
-	release := make(chan struct{})
-	var once sync.Once
-	t.Cleanup(func() { once.Do(func() { close(release) }) })
 	usage := &ModelUsage{Requests: 1, ReservedInputTokens: 30, ReservedOutputTokens: 20}
-	b.run = func(ctx context.Context, _ Execution, p Publish) error {
-		err := p(Update{State: Unknown, Phase: Closure, PreparationStarted: true, DrainComplete: true, AuthorityState: AuthorityNotIssued, ModelUsage: usage, ReasonCode: "model_usage_unknown"})
-		published <- err
-		select {
-		case <-release:
-		case <-ctx.Done():
+	b.run = func(ctx context.Context, e Execution, p Publish) error {
+		// 첫 회차는 로컬 drain을 마쳤지만 모델 사용량이 불명이라 Unknown으로 남는다.
+		if b.calls.Load() == 1 {
+			if err := p(Update{State: Unknown, Phase: Closure, PreparationStarted: true, DrainComplete: true, AuthorityState: AuthorityNotIssued, ModelUsage: usage, ReasonCode: "model_usage_unknown"}); err != nil {
+				return err
+			}
+			return errors.New("usage unknown")
 		}
-		return err
+		// 두 번째(복구) 회차는 정상 마감한다 — 설치가 brick되지 않았음을 보인다.
+		return completeRun(ctx, e, p)
 	}
 	first := create(t, s, "unknown-create")
 	if got := start(t, s, first, "unknown-start"); got.Error != "" {
 		t.Fatal(got.Error)
 	}
-	if err := awaitNegativeGateResult(t, published); err != nil {
-		t.Fatal(err)
-	}
-	s.mu.Lock()
-	handle := s.executions[first.ID]
-	s.mu.Unlock()
-	once.Do(func() { close(release) })
-	select {
-	case <-handle.done:
-	case <-time.After(time.Second):
-		t.Fatal("backend did not finish after the unknown publication")
-	}
+	awaitState(t, s, first.ID, Unknown)
+	awaitExecutionReturned(t, s, first.ID)
 	before := status(t, s, first.ID)
-	if before.State != Unknown || !before.DrainComplete || before.ResultReady || before.Started || !reflect.DeepEqual(before.ModelUsage, usage) {
-		t.Fatalf("unknown facts changed: %+v", before)
+	if !before.DrainComplete || before.ResultReady || before.Started || !reflect.DeepEqual(before.ModelUsage, usage) {
+		t.Fatalf("unknown facts not retained: %+v", before)
 	}
+	// C04: Unknown이 있어도 새 회차를 시작할 수 있다(이전에는 busy로 설치 전체가 막혔다).
 	second := create(t, s, "second-create")
-	if got := start(t, s, second, "second-start").Error; got != "busy" {
-		t.Fatalf("drained unknown start = %q, want busy", got)
+	if got := start(t, s, second, "second-start"); got.Error != "" {
+		t.Fatalf("drained unknown blocked a new run: %q", got.Error)
 	}
-	if got := status(t, s, second.ID); !reflect.DeepEqual(got, second) {
-		t.Fatal("blocked draft changed")
-	}
+	awaitState(t, s, second.ID, Completed)
+	awaitExecutionReturned(t, s, second.ID)
+	done := status(t, s, second.ID)
+	// 새 회차가 돌아도 첫 회차의 Unknown 사실·예약은 그대로다.
 	if got := status(t, s, first.ID); !reflect.DeepEqual(got, before) {
-		t.Fatal("unknown usage or reservation changed")
+		t.Fatal("new run changed the retained unknown facts")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -322,11 +315,11 @@ func TestDrainedUnknownKeepsInstallationBlocked(t *testing.T) {
 	if got := status(t, restarted, first.ID); !reflect.DeepEqual(got, before) {
 		t.Fatal("restart erased unknown or reservations")
 	}
-	if got := start(t, restarted, second, "second-start").Error; got != "busy" {
-		t.Fatalf("restart bypassed unknown: %q", got)
+	if got := status(t, restarted, second.ID); !reflect.DeepEqual(got, done) {
+		t.Fatal("restart changed the recovery run")
 	}
-	if b.calls.Load() != 1 {
-		t.Fatal("unknown caused another Execute")
+	if b.calls.Load() != 2 {
+		t.Fatalf("Execute count = %d, want 2 (unknown + recovery, no replay)", b.calls.Load())
 	}
 }
 

@@ -23,16 +23,18 @@ import (
 )
 
 type urlPreparationRuntime struct {
-	ctx              context.Context
-	path             string
-	config           urlPreparationInstallation
-	endpoint         diagnosisprep.Endpoint
-	resolver         *net.Resolver // nil이면 시스템 resolver. 시험은 전역 DNS를 변경하지 않는다.
-	mu               sync.RWMutex
-	live             map[string]*urlLiveHandler
-	reports          map[string]*savedReportService
-	product          *productRuntime
-	hostCapabilities urlRuntimeHostCapabilities
+	ctx                 context.Context
+	path                string
+	config              urlPreparationInstallation
+	endpoint            diagnosisprep.Endpoint
+	resolver            *net.Resolver // nil이면 시스템 resolver. 시험은 전역 DNS를 변경하지 않는다.
+	mu                  sync.RWMutex
+	live                map[string]*urlLiveHandler
+	recovery            map[string]*urlGatewayRunner
+	preparationRecovery map[string]*urlPreparationRecovery
+	reports             map[string]*savedReportService
+	product             *productRuntime
+	hostCapabilities    urlRuntimeHostCapabilities
 }
 
 func newURLPreparationRuntime(ctx context.Context, path string) (*urlPreparationRuntime, error) {
@@ -425,10 +427,34 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	saveErr := supervisor.PersistPreparationModelUsage(cleanup, taskID, errors.Join(planErr, closeErr))
 	done()
 	finishPrepare()
-	if closeErr == nil {
-		manager.Close()
+	if closeErr == nil && manager.Close() != nil {
+		closeErr = errPreparation
 	}
 	if closeErr != nil || saveErr != nil {
+		if closeErr == nil {
+			return unknown("preparation_drain_unconfirmed", true)
+		}
+		// 결과·사용량은 바꾸지 않고 이미 취소한 준비 자원의 drain만 다시 검증한다.
+		recovery := &urlPreparationRecovery{taskID: taskID, closeResources: func(recoveryCtx context.Context) error {
+			for _, phase := range []func(context.Context, *server.Server) error{shutdown.BlockAdmission, shutdown.CancelAndDrain} {
+				if phase == nil {
+					return errPreparation
+				}
+				if err := phase(recoveryCtx, preparation); err != nil {
+					return errPreparation
+				}
+			}
+			if manager.Close() != nil {
+				return errPreparation
+			}
+			return nil
+		}}
+		b.mu.Lock()
+		if b.preparationRecovery == nil {
+			b.preparationRecovery = map[string]*urlPreparationRecovery{}
+		}
+		b.preparationRecovery[execution.Job.ID] = recovery
+		b.mu.Unlock()
 		return unknown("preparation_drain_unconfirmed", false)
 	}
 	usage := modelBudget.Snapshot()
@@ -492,6 +518,13 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	runner := &urlGatewayRunner{backend: b, launch: d, config: launch, loaded: l, taskID: taskID, operatorStop: func() bool {
 		return urlOperatorStop(parent, ctx)
 	}}
+	b.mu.Lock()
+	if b.recovery == nil {
+		b.recovery = map[string]*urlGatewayRunner{}
+	}
+	b.recovery[execution.Job.ID] = runner
+	runner.recoveryLive = b.live[taskID]
+	b.mu.Unlock()
 	gateway, err := diagnosis.NewPrepared(ctx, taskID, execution.Job.ID, runner, time.Duration(launch.ShutdownTimeoutSeconds)*time.Second)
 	if err != nil {
 		cleanup, done := launchCleanupContext(context.WithoutCancel(parent), launch)
@@ -572,11 +605,15 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 }
 
 type urlGatewayRunner struct {
-	backend *urlPreparationRuntime
-	launch  *launchedDiagnosis
-	config  launchConfig
-	loaded  *urlLoadedProfile
-	taskID  string
+	runDone      chan struct{}
+	runStarted   bool
+	closing      bool
+	recoveryLive *urlLiveHandler
+	backend      *urlPreparationRuntime
+	launch       *launchedDiagnosis
+	config       launchConfig
+	loaded       *urlLoadedProfile
+	taskID       string
 	// operatorStop은 실행이 운영자 중지(진단 준비 중지가 상위 문맥을 취소)나 대상 철회로 끝났는지 본다. 설치·위임
 	// 검사 실패, 상태 조회 실패, 시간 상한은 여기에 들지 않는다(저장 기록은 failed 그대로).
 	operatorStop func() bool
@@ -586,9 +623,20 @@ type urlGatewayRunner struct {
 }
 
 func (r *urlGatewayRunner) Run(ctx context.Context) error {
+	r.mu.Lock()
+	if r.closing || r.runStarted || r.launch == nil || r.launch.supervisor == nil {
+		r.mu.Unlock()
+		return errPreparation
+	}
+	r.runStarted = true
+	if r.runDone == nil {
+		r.runDone = make(chan struct{})
+	}
+	r.mu.Unlock()
 	err := r.launch.supervisor.Run(ctx, r.taskID, 0, "")
 	r.mu.Lock()
 	r.runErr = err
+	close(r.runDone)
 	r.mu.Unlock()
 	return err
 }
@@ -662,6 +710,7 @@ func launchAccountAuth(runtime any) map[string]string {
 func (r *urlGatewayRunner) Close(ctx context.Context) (diagnosis.Closure, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.closing = true
 	if r.closed != nil {
 		return *r.closed, nil
 	}
@@ -698,10 +747,16 @@ func (r *urlGatewayRunner) Close(ctx context.Context) (diagnosis.Closure, error)
 				r.backend.mu.Unlock()
 			}
 		}
-		r.launch.manager.Close()
-		r.launch.manager = nil
+		if r.closeStores() != nil {
+			result.DrainComplete = false
+			r.closed = &result
+			return result, errors.Join(errPreparation, saveErr)
+		}
 	}
 	r.closed = &result
+	if result.DrainComplete {
+		r.forgetRecovery()
+	}
 	if !drained {
 		return result, errors.Join(resultErr, saveErr)
 	}
@@ -973,4 +1028,125 @@ func urlDiagnosisGoal(target, workflowMode string, methods []string) string {
 		flow += " State-changing requests require separately granted scope and per-request confirmation; never invent that permission."
 	}
 	return scope + flow + " Collect only supported observations and unconfirmed review candidates. Do not request other origins."
+}
+
+// 준비 자원은 gateway가 만들어지기 전에도 별도로 검증·마감할 수 있다.
+type urlPreparationRecovery struct {
+	mu             sync.Mutex
+	taskID         string
+	closed         bool
+	closeResources func(context.Context) error
+}
+
+func (r *urlPreparationRecovery) verify(ctx context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return nil
+	}
+	if r.closeResources == nil || r.closeResources(ctx) != nil {
+		return errPreparation
+	}
+	r.closed = true
+	return nil
+}
+
+// 호출자는 runner.mu를 소유한다. manager/권위 DB를 한 번씩 닫고 실패는 확인될 때까지 보존한다.
+func (r *urlGatewayRunner) closeStores() error {
+	if r.launch.authorityDB != nil {
+		if r.launch.authorityDB.Close() != nil {
+			return errPreparation
+		}
+		r.launch.authorityDB = nil
+	}
+	if r.launch.manager != nil {
+		if r.launch.manager.Close() != nil {
+			return errPreparation
+		}
+		r.launch.manager = nil
+	}
+	return nil
+}
+func (r *urlGatewayRunner) forgetRecovery() {
+	if r.backend == nil {
+		return
+	}
+	r.backend.mu.Lock()
+	defer r.backend.mu.Unlock()
+	for id, runner := range r.backend.recovery {
+		if runner == r {
+			delete(r.backend.recovery, id)
+		}
+	}
+}
+
+// VerifyClosure는 Execute 반환 뒤 원래 Run 종료와 자원 마감을 모두 검증한다. 결과는 재작성하지 않는다.
+func (b *urlPreparationRuntime) VerifyClosure(ctx context.Context, execution diagnosisprep.Execution) error {
+	if ctx == nil || ctx.Err() != nil {
+		return errPreparation
+	}
+	b.mu.RLock()
+	runner := b.recovery[execution.Job.ID]
+	preparation := b.preparationRecovery[execution.Job.ID]
+	b.mu.RUnlock()
+	if runner == nil {
+		if preparation == nil || preparation.taskID != execution.Job.TaskID || preparation.verify(ctx) != nil {
+			return errPreparation
+		}
+		b.mu.Lock()
+		if b.preparationRecovery[execution.Job.ID] == preparation {
+			delete(b.preparationRecovery, execution.Job.ID)
+		}
+		b.mu.Unlock()
+		return nil
+	}
+	if runner.taskID != execution.Job.TaskID || runner.launch == nil || runner.launch.runtime == nil {
+		return errPreparation
+	}
+	runner.mu.Lock()
+	runner.closing = true // 아직 진입하지 않은 늦은 Run도 실행을 다시 시작하지 못한다.
+	done, started := runner.runDone, runner.runStarted
+	closeErr := runner.launch.runtime.Close(ctx)
+	state, ok := runner.launch.runtime.(interface{ ResourcesClosed() bool })
+	drained := ok && state.ResourcesClosed()
+	// 원래 Run은 이 잠금 아래 done을 닫으므로 기다리기 전에 반드시 푼다.
+	runner.mu.Unlock()
+	if !drained {
+		return errPreparation
+	}
+	if closeErr != nil {
+		log.Print("진단 복구: 실행 결과 오류를 유지하며 닫힌 자원을 확인합니다")
+	}
+	if started {
+		if done == nil {
+			return errPreparation
+		}
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return errPreparation
+		}
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	if runner.recoveryLive != nil && runner.recoveryLive.drain(ctx) != nil {
+		return errPreparation
+	}
+	if runner.closeStores() != nil {
+		return errPreparation
+	}
+	closure := diagnosis.Closure{}
+	if runner.closed != nil {
+		closure = *runner.closed
+	}
+	closure.DrainComplete = true
+	// 늦은 gateway Close는 같은 마감 증거만 읽는다. 결과·저장 성공을 새로 만들지 않는다.
+	runner.closed = &closure
+	b.mu.Lock()
+	delete(b.live, runner.taskID)
+	if b.recovery[execution.Job.ID] == runner {
+		delete(b.recovery, execution.Job.ID)
+	}
+	b.mu.Unlock()
+	return nil
 }
