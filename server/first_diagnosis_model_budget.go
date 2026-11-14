@@ -445,12 +445,16 @@ func (b *FirstDiagnosisModelBudget) settle(call *firstDiagnosisModelCall, usage 
 	known := callErr == nil && usage.InputTokens > 0 && usage.OutputTokens >= 0 &&
 		int64(usage.InputTokens) <= call.input && usage.OutputTokens <= outputLimit &&
 		usage.CacheReadTokens >= 0 && usage.CacheWriteTokens >= 0
+	unbilled := false
 	if b.external != nil {
 		var r llmpolicy.OpenRouterCallResult
 		if call.result != nil {
 			r = call.result()
 		}
 		b.addExternal(r)
+		// 보내지 않았거나(transport가 예약하지 않음: 보내기 전 거부) 제공자가 처리하지 않았다고 응답으로 확인한(429)
+		// 실패 호출은 청구가 없다. 예약량을 쓴 것으로 세지 않는다(C05 보완, 2026-11-14 실측).
+		unbilled = callErr != nil && !r.Succeeded && (!r.Reserved || r.NotBilled)
 		// 이 SDK 응답은 이 호출 칸에 남은 transport 결과(정상 응답 하나)와 정확히 같아야 한다. 다른 호출의 누적 값은
 		// 보지 않는다.
 		known = known && r.Succeeded && r.InputTokens == int64(usage.InputTokens) && r.OutputTokens == int64(usage.OutputTokens) && r.CostMicros >= 0 && r.CostMicros <= call.cost
@@ -462,6 +466,8 @@ func (b *FirstDiagnosisModelBudget) settle(call *firstDiagnosisModelCall, usage 
 	case known:
 		b.usage.InputTokens += int64(usage.InputTokens)
 		b.usage.OutputTokens += int64(usage.OutputTokens)
+	case unbilled && !b.externalAccountingBlocked() && usage == (llm.Usage{}):
+		// 사용량 0으로 닫는다. 예약만 풀리고 사용량을 모르는 호출로 세지 않는다.
 	case failedCallBounded(callErr, b.externalAccountingBlocked()) && reportedWithinReservation(usage, call.input, outputLimit):
 		// 실패한 호출은 예약한 양을 쓴 것으로 센다(P3 결정안 C05). 재시도가 꺼져 있어 예약 하나에 HTTP 요청은
 		// 하나이고, 입력 크기·max_tokens·가격 상한을 호출 전에 검사했으므로 이 값이 실제 사용의 상한이다.
