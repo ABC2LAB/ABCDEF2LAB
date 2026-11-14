@@ -273,10 +273,13 @@ func TestFirstDiagnosisOpenRouterBudgetUnbilledFailuresCostNothing(t *testing.T)
 	reservedResult := llmpolicy.OpenRouterCallResult{Reserved: true, ReservedInputTokens: 5000, ReservedOutputTokens: 100, ReservedCostMicros: 5100}
 	rateLimited := reservedResult
 	rateLimited.NotBilled = true
+	rejected := reservedResult
+	rejected.Rejected = true
 	for name, tc := range map[string]struct {
 		result   llmpolicy.OpenRouterCallResult
 		usage    llm.Usage
 		blocked  bool
+		limited  bool // transport 막힘이 연속 상한(일시 오류·요청 거부)뿐인지
 		charged  bool
 		accounts bool // 회계가 막히지 않고 사용량을 아는지
 		success  bool // SDK가 성공으로 돌려줌
@@ -290,6 +293,10 @@ func TestFirstDiagnosisOpenRouterBudgetUnbilledFailuresCostNothing(t *testing.T)
 		"rate-limited-with-usage": {result: rateLimited, usage: llm.Usage{InputTokens: 10}, charged: true, accounts: true},
 		// transport가 회계 원인으로 막혀 있으면 보내지 않은 호출도 지금처럼 막힘이다.
 		"not-sent-accounting-blocked": {result: llmpolicy.OpenRouterCallResult{}, blocked: true},
+		// 요청 내용 거부(400 등)는 청구 여부를 확인하지 않았으므로 예약량으로 세고, 회계는 막지 않는다(C06 보완). 거부가
+		// 이어져 transport가 연속 상한에서 잠겨도 회계는 믿는다.
+		"request-rejected":          {result: rejected, charged: true, accounts: true},
+		"request-rejected-at-limit": {result: rejected, blocked: true, limited: true, charged: true, accounts: true},
 	} {
 		b, _, cfg := urlExternalBudget(t, func(diagnosisprep.ModelUsage) error { return nil })
 		req := llm.CompletionRequest{MaxTokens: 100}
@@ -299,10 +306,11 @@ func TestFirstDiagnosisOpenRouterBudgetUnbilledFailuresCostNothing(t *testing.T)
 		}
 		r := tc.result
 		call.result = func() llmpolicy.OpenRouterCallResult { return r }
-		blockedTransport := tc.blocked
+		blockedTransport, limitedTransport := tc.blocked, tc.limited
 		b.externalUsage = func() llmpolicy.OpenRouterUsage {
 			u := b.externalBase
 			u.Blocked = blockedTransport
+			u.TransientLimited = limitedTransport
 			if r.Reserved {
 				u.Requests++
 				u.ReservedInputTokens += r.ReservedInputTokens

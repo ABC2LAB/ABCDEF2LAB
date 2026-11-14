@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -178,12 +179,59 @@ func TestOpenRouterToolContractViolationIsPerCall(t *testing.T) {
 	}
 }
 
-// 설정 오류(4xx)·응답 형식 위반(JSON 깨짐·모델/제공자 불일치·사용량 없음)·주소 정책 위반은 상한과 무관하게 첫 번에 막는다.
+// 요청 내용 거부(400·413·422)는 그 호출만 실패로 두고 연속 상한에서 막는다. 같은 요청을 다시 보내지 않게 호출 칸에 남기고,
+// 청구 여부를 확인하지 않았으므로 예약은 되돌리지 않는다(P3 결정안 C06 보완, 2026-11-14 점검 회차의 Worker 400).
+func TestOpenRouterRequestRejectionIsPerCall(t *testing.T) {
+	for _, status := range []int{400, 413, 422} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			p := openRouterV2Fixture(t, 2)
+			script := []bool{false, true, false, false} // 거부, 정상, 거부, 거부
+			hits := 0
+			var wire int64
+			client := openRouterClient(p, openRouterRT(func(r *http.Request) (*http.Response, error) {
+				ok := script[hits]
+				hits++
+				wire = r.ContentLength
+				if ok {
+					return openRouterResponse(openRouterReply), nil
+				}
+				return openRouterStatus(status), nil
+			}))
+			for i, ok := range script {
+				slot := &OpenRouterCall{}
+				resp, err := client.Do(openRouterRequest().WithContext(WithOpenRouterCall(context.Background(), slot)))
+				if resp != nil {
+					_ = resp.Body.Close()
+				}
+				if ok != (err == nil) {
+					t.Fatalf("call %d err=%v", i, err)
+				}
+				if blocked := p.Snapshot().Blocked; blocked != (i == 3) {
+					t.Fatalf("call %d blocked=%v", i, blocked)
+				}
+				if r := slot.Result(); r.Rejected == ok || !r.Reserved || r.NotBilled || r.Succeeded == !ok {
+					t.Fatalf("call %d slot %+v", i, r)
+				}
+			}
+			if _, err := client.Do(openRouterRequest()); err == nil || hits != 4 {
+				t.Fatal("send after the consecutive limit")
+			}
+			// 거부만 이어져 막힌 것은 회계를 계속 믿는다(예약을 쓴 것으로 둔 실패 호출).
+			u := p.Snapshot()
+			if !u.TransientLimited || u.Requests != 4 || u.Errors != 3 || u.ReservedInputTokens != 4*(wire+openRouterFramingTokens) || u.CostMicros != 12 {
+				t.Fatalf("rejection accounting %+v", u)
+			}
+		})
+	}
+}
+
+// 설정 오류(그 밖의 4xx)·응답 형식 위반(JSON 깨짐·모델/제공자 불일치·사용량 없음)·주소 정책 위반은 상한과 무관하게 첫 번에 막는다.
 func TestOpenRouterConfigurationFailuresBlockImmediately(t *testing.T) {
 	for name, fail := range map[string]func(*http.Request) (*http.Response, error){
 		"401": func(*http.Request) (*http.Response, error) { return openRouterStatus(401), nil },
+		"402": func(*http.Request) (*http.Response, error) { return openRouterStatus(402), nil },
 		"403": func(*http.Request) (*http.Response, error) { return openRouterStatus(403), nil },
-		"400": func(*http.Request) (*http.Response, error) { return openRouterStatus(400), nil },
+		"404": func(*http.Request) (*http.Response, error) { return openRouterStatus(404), nil },
 		"302": func(*http.Request) (*http.Response, error) { return openRouterStatus(302), nil },
 		"accounting": func(*http.Request) (*http.Response, error) {
 			return openRouterResponse(strings.Replace(openRouterReply, `"Fixture"`, `"Fallback"`, 1)), nil

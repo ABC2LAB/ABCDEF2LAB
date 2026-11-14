@@ -129,9 +129,17 @@ func openRouterTransientError(err error) bool {
 	return true
 }
 
-// openRouterTransientStatus는 429와 5xx다. 그 밖의 비정상 상태는 설정 오류로 보고 막는다.
+// openRouterTransientStatus는 429와 5xx다. 그 밖의 비정상 상태는 설정 오류로 보고 막는다(요청 거부는 아래).
 func openRouterTransientStatus(status int) bool {
 	return status == http.StatusTooManyRequests || status >= 500 && status <= 599
+}
+
+// openRouterRejectedStatus는 제공자가 이 요청의 내용을 거부한 상태(400·413·422)다. 승인·키 설정 오류(401·402·403)나
+// 모델·엔드포인트 없음(404)과 달리 다른 요청은 정상일 수 있어서, 한 번으로 승인 전체를 막지 않고 그 호출만 실패로 둔다.
+// 모든 요청이 같은 이유로 거부되는 설정 오류는 연속 상한에서 막힌다(C06 보완, 2026-11-14 점검 회차: Worker 호출 하나의
+// 400으로 승인이 잠겨 진단 Worker 셋이 함께 멈추고 실행이 결과 불명으로 끝남).
+func openRouterRejectedStatus(status int) bool {
+	return status == http.StatusBadRequest || status == http.StatusRequestEntityTooLarge || status == http.StatusUnprocessableEntity
 }
 func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	// 진단 관측은 송신 권한이나 기존 사용량 집계를 대신하지 않는다.
@@ -294,13 +302,14 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 	data, readErr := io.ReadAll(io.LimitReader(resp.Body, openRouterResponseLimit+1))
 	_ = resp.Body.Close()
 	// 상태를 먼저 본다. 크기 초과와 영구 상태(4xx·1xx·3xx)는 본문이 끊겨도 설정 오류로 막는다. 정상 200의 본문이
-	// 끊긴 경우와 429·5xx만 일시 오류다(P3 결정안 C06).
+	// 끊긴 경우와 429·5xx만 일시 오류다(P3 결정안 C06). 요청 내용 거부(400·413·422)는 그 호출만 실패로 두고 연속 상한에
+	// 넣는다(C06 보완).
 	switch {
 	case len(data) > openRouterResponseLimit:
 		transient = false
 	case resp.StatusCode == http.StatusOK:
 		transient = readErr != nil && openRouterTransientError(readErr)
-	case openRouterTransientStatus(resp.StatusCode):
+	case openRouterTransientStatus(resp.StatusCode), openRouterRejectedStatus(resp.StatusCode):
 		transient = readErr == nil || openRouterTransientError(readErr)
 	default:
 		transient = false
@@ -321,6 +330,11 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 			diagnostic.CostMicros, diagnostic.CostUncertain = 0, false
 		case resp.StatusCode >= 500 && resp.StatusCode <= 599:
 			diagnostic.ReasonCode = "http_server_error"
+		case openRouterRejectedStatus(resp.StatusCode):
+			// 요청 내용 거부는 같은 요청을 다시 보내도 같은 결과라 호출 칸에 남겨 다시 보내지 않게 한다. 처리 여부(청구)는
+			// 확인하지 않았으므로 5xx처럼 예약량을 쓴 것으로 둔다(C05).
+			diagnostic.ReasonCode = "http_client_error"
+			slot.rejected()
 		case resp.StatusCode >= 400 && resp.StatusCode <= 499:
 			diagnostic.ReasonCode = "http_client_error"
 		case readErr != nil:
