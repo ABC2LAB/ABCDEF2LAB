@@ -1437,6 +1437,13 @@ func (e *Execution) RedactOutput(b []byte) []byte {
 		// 남긴다(#522 이동찬 리뷰).
 		out = issuedCookieLine.ReplaceAll(out, []byte("${1}[REDACTED]"))
 		out = authInfoLine.ReplaceAll(out, []byte("${1}[REDACTED]"))
+		// 모델은 받은 세션을 바꿔(예: JWT 내용을 고쳐 다시 붙임) 보내기도 해서 정확한 값 가림을 지나간다. 그래서 모델이 보내는
+		// 요청 자격 자리 — 명령의 Authorization·Cookie 헤더 값, curl --cookie 값, curl -v가 되찍는 요청 헤더 줄 — 는 값이
+		// 무엇이든 구조로 가린다. 대상이 응답으로 준 내용은 그대로 둔다(CLAUDE.md 규칙 2, 2026-11-14 Qwen3.6 점검 회차에서
+		// 서명이 맞지 않는 변형 토큰이 활동 기록에 남은 것을 발견).
+		out = requestAuthValue.ReplaceAll(out, []byte("${1}[REDACTED]"))
+		out = requestCookieValue.ReplaceAll(out, []byte("${1}${2}[REDACTED]"))
+		out = curlCookieArg.ReplaceAll(out, []byte("${1}[REDACTED]"))
 	}
 	return out
 }
@@ -1446,6 +1453,13 @@ func (e *Execution) RedactOutput(b []byte) []byte {
 var (
 	issuedCookieLine = regexp.MustCompile(`(?im)^([<>* \t]*set-cookie2?[ \t]*:[ \t]*[^=;\r\n]*=)[^;\r\n]*`)
 	authInfoLine     = regexp.MustCompile(`(?im)^([<>* \t]*(?:proxy-)?authentication-info[ \t]*:[ \t]*)[^\r\n]*`)
+	// requestAuthValue는 Authorization·Proxy-Authorization 헤더 값이다. 줄 머리(curl -v의 "> ")에서든 명령 인수
+	// (-H "Authorization: …", JSON으로 이스케이프된 \"…\" 포함) 안에서든, 따옴표·백슬래시·줄바꿈 전까지 가린다.
+	requestAuthValue = regexp.MustCompile(`(?i)((?:proxy-)?authorization[ \t]*:[ \t]*)[^"'\\\r\n]+`)
+	// requestCookieValue는 요청 Cookie 헤더 값이다. Set-Cookie는 위 issuedCookieLine이 이름·속성을 남기고 따로 가린다.
+	requestCookieValue = regexp.MustCompile(`(?i)(^|[^a-z0-9-])(cookie[ \t]*:[ \t]*)[^"'\\\r\n]+`)
+	// curlCookieArg는 curl -b·--cookie 인수 값이다.
+	curlCookieArg = regexp.MustCompile(`(?i)((?:^|\s)(?:-b|--cookie)[ \t]+\\?["']?)[^"'\\\s]+`)
 )
 
 // 출력 가림 전용 값의 하한·상한이다. 짧은 값은 흔한 문자열까지 가려 출력이 망가지므로 받지 않는다.
