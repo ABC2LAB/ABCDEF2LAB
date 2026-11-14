@@ -1,0 +1,110 @@
+package e2proxy
+
+import (
+	"bytes"
+	"encoding/json"
+	"strings"
+	"testing"
+)
+
+// 시험 계정 실행에서는 모델이 보내는 요청 자격 자리를 값이 무엇이든 가린다. 모델이 받은 세션을 바꿔 보내면(서명이 다른 변형
+// JWT 등) 정확한 값 가림을 지나가기 때문이다. Set-Cookie는 이름·속성을 남기는 기존 구조 가림을 그대로 따르고, 대상 응답의
+// 다른 내용은 그대로 둔다. 시험 계정 실행이 아니면 구조 가림을 하지 않는다.
+func TestTestAccountRunMasksRequestCredentialsStructurally(t *testing.T) {
+	e := &Execution{cfg: Config{HeaderMode: HeaderTestAccountPassthrough}}
+	for in, want := range map[string]string{
+		`{"command": "curl -sv -H \"Authorization: Bearer eyJhbGc.eyJtb2RpZmllZA.c2ln\" https://owned.test/rest/basket/2"}`: `{"command": "curl -sv -H \"Authorization: [REDACTED]\" https://owned.test/rest/basket/2"}`,
+		"curl -H 'authorization: Basic dXNlcjpwYXNz' https://owned.test/a":                                                  "curl -H 'authorization: [REDACTED]' https://owned.test/a",
+		"> GET /rest/basket/2 HTTP/1.1\r\n> Authorization: Bearer modified.token.value\r\n> Cookie: token=abc; sid=def\r\n": "> GET /rest/basket/2 HTTP/1.1\r\n> Authorization: [REDACTED]\r\n> Cookie: [REDACTED]\r\n",
+		`curl -H "Cookie: token=eyJx.eyJy.z" https://owned.test/b`:                                                          `curl -H "Cookie: [REDACTED]" https://owned.test/b`,
+		"curl -b 'token=eyJx.eyJy.z' --cookie sid=abc https://owned.test/c":                                                 "curl -b '[REDACTED]' --cookie [REDACTED] https://owned.test/c",
+		// 쿠키 여러 개·--cookie= 형태(#571 재상 리뷰).
+		"curl -b 'language=en; token=eyJx.eyJy.z' https://owned.test/c":                     "curl -b '[REDACTED]' https://owned.test/c",
+		"curl --cookie=token=eyJx.eyJy.z https://owned.test/c":                              "curl --cookie=[REDACTED] https://owned.test/c",
+		`curl --cookie="language=en; token=eyJx.eyJy.z" https://owned.test/c`:               `curl --cookie="[REDACTED]" https://owned.test/c`,
+		`{"command": "curl -s -b \"language=en; token=eyJx.eyJy.z\" https://owned.test/c"}`: `{"command": "curl -s -b \"[REDACTED]\" https://owned.test/c"}`,
+		// curl 밖 형태: python 표준 라이브러리 dict·add_header·튜플, JSON 헤더 객체, httpie, wget.
+		"urllib.request.Request(u, headers={'Authorization': 'Bearer eyJx.eyJy.z', 'Accept': '*/*'})":                                                     "urllib.request.Request(u, headers={'Authorization': '[REDACTED]', 'Accept': '*/*'})",
+		"req.add_header('Cookie', 'language=en; token=eyJx.eyJy.z')":                                                                                      "req.add_header('Cookie', '[REDACTED]')",
+		"opener.addheaders = [('Authorization', 'Bearer eyJx.eyJy.z')]":                                                                                   "opener.addheaders = [('Authorization', '[REDACTED]')]",
+		`{"Authorization": "Bearer eyJx.eyJy.z", "Accept": "application/json"}`:                                                                           `{"Authorization": "[REDACTED]", "Accept": "application/json"}`,
+		`{"command": "python3 -c \"import urllib.request as r; r.urlopen(r.Request('https://owned.test/a', headers={'Cookie': 'token=eyJx.eyJy.z'}))\""}`: `{"command": "python3 -c \"import urllib.request as r; r.urlopen(r.Request('https://owned.test/a', headers={'Cookie': '[REDACTED]'}))\""}`,
+		`{\"Cookie\": \"token=eyJx.eyJy.z\"}`:                                                                                                             `{\"Cookie\": \"[REDACTED]\"}`,
+		"http GET https://owned.test/a Authorization:'Bearer eyJx.eyJy.z'":                                                                                "http GET https://owned.test/a Authorization:'[REDACTED]'",
+		"wget --header='Cookie: language=en; token=eyJx.eyJy.z' https://owned.test/a":                                                                     "wget --header='Cookie: [REDACTED]' https://owned.test/a",
+		`r.add_header(\"Cookie\", \"token=eyJx.eyJy.z\")`:                                                                                                 `r.add_header(\"Cookie\", \"[REDACTED]\")`,
+		// 값 안의 JSON 이스케이프(\u002e·\/)와 겹 이스케이프는 값으로 본다(#571 이동찬 리뷰). 해석하면 한 값이다.
+		`{"Authorization":"Bearer changed\u002ecredential-tail-0123456789"}`:                                    `{"Authorization":"[REDACTED]"}`,
+		`{\"Authorization\":\"Bearer changed\\u002ecredential-tail-0123456789\"}`:                               `{\"Authorization\":\"[REDACTED]\"}`,
+		`{"Cookie":"language=en; token=abc\u002ecredential-tail-0123"}`:                                         `{"Cookie":"[REDACTED]"}`,
+		`curl -H "Authorization: Bearer a\/credential-tail" https://owned.test/a`:                               `curl -H "Authorization: [REDACTED]" https://owned.test/a`,
+		`req.add_header('Cookie', 'token=abc\u002ecredential-tail')`:                                            `req.add_header('Cookie', '[REDACTED]')`,
+		`curl -b "token=abc\u002ecredential-tail" https://owned.test/c`:                                         `curl -b "[REDACTED]" https://owned.test/c`,
+		`curl -b token=abc\u002ecredential-tail https://owned.test/c`:                                           `curl -b [REDACTED] https://owned.test/c`,
+		`{\"command\": \"curl -H \\\"Authorization: Bearer a\\u002ecredential-tail\\\" https://owned.test/a\"}`: `{\"command\": \"curl -H \\\"Authorization: [REDACTED]\\\" https://owned.test/a\"}`,
+		`{\"command\": \"curl -b token=abc\\u002ecredential-tail https://owned.test/c\"}`:                       `{\"command\": \"curl -b [REDACTED] https://owned.test/c\"}`,
+		`{"command": "curl -b token=abc\necho done"}`:                                                           `{"command": "curl -b [REDACTED]\necho done"}`,
+		// JSON으로 감싼 curl -v 출력의 줄바꿈 이스케이프는 값의 끝이다. 다음 헤더 줄은 남는다.
+		`"> Authorization: Bearer abc.def\r\n> Host: owned.test\r\n> Cookie: token=abc\r\n> Accept: */*"`: `"> Authorization: [REDACTED]\r\n> Host: owned.test\r\n> Cookie: [REDACTED]\r\n> Accept: */*"`,
+		// 값을 연 따옴표에서만 끝난다. 다른 종류의 따옴표와 더 깊게 이스케이프된 같은 따옴표는 값 안의 글자다(#571 이동찬 리뷰).
+		`{"Cookie":"language=\"en\"; token=review-credential-tail-0123456789"}`:          `{"Cookie":"[REDACTED]"}`,
+		`{\"Cookie\":\"language=\\\"en\\\"; token=review-credential-tail\"}`:             `{\"Cookie\":\"[REDACTED]\"}`,
+		`curl -H 'Cookie: lang="en"; token=review-credential-tail' https://owned.test/a`: `curl -H 'Cookie: [REDACTED]' https://owned.test/a`,
+		`curl -b 'lang="en"; token=review-credential-tail' https://owned.test/c`:         `curl -b '[REDACTED]' https://owned.test/c`,
+		`{'Cookie': 'lang=\'en\'; token=review-credential-tail'}`:                        `{'Cookie': '[REDACTED]'}`,
+		"> Cookie: lang=\"en\"; token=review-credential-tail\r\n> Accept: */*\r\n":       "> Cookie: [REDACTED]\r\n> Accept: */*\r\n",
+		// 따옴표 없이 시작한 값은 JSON 구조 문자 앞 따옴표에서 끝난다. 한 줄 JSON의 뒤 칸은 남는다.
+		`{"tool_output":"> Cookie: token=review-credential-tail","trusted":{"state":"active"}}`: `{"tool_output":"> Cookie: [REDACTED]","trusted":{"state":"active"}}`,
+		`{\"out\":\"> Cookie: token=review-credential-tail\",\"trusted\":1}`:                    `{\"out\":\"> Cookie: [REDACTED]\",\"trusted\":1}`,
+		// 이름이 따옴표로 닫혔고 값은 따옴표 없이 시작하면 이름 앞 따옴표로 끝내지 않는다(YAML 같은 형태).
+		`"Cookie": lang="en"; token=review-credential-tail`: `"Cookie": [REDACTED]`,
+		// 값을 연 따옴표보다 얕게 이스케이프된 따옴표는 바깥 문자열의 끝이다.
+		`{\"cmd\": \"curl -H \\\"Authorization: Bearer review-credential-tail\", \"next\": 1}`: `{\"cmd\": \"curl -H \\\"Authorization: [REDACTED]\", \"next\": 1}`,
+		// 입력 끝의 따옴표는 바깥 문자열의 끝이다. 같은 줄에 자리가 또 나오면 앞 값과 겹치므로 한 번만 가린다.
+		`"> Cookie: token=review-credential-tail"`:                        `"> Cookie: [REDACTED]"`,
+		"> Authorization: Bearer review-credential-tail Authorization: x": "> Authorization: [REDACTED]",
+		// 따옴표 없이 시작한 값의 닫는 따옴표 뒤에 JSON 공백·줄바꿈이 와도 구조 문자 앞이면 끝이다(#571 재상·이동찬 리뷰).
+		"{\"text\":\"needs Authorization: Bearer synthetic-review-value\"\n}":                  "{\"text\":\"needs Authorization: [REDACTED]\"\n}",
+		`{"text":"needs Authorization: Bearer synthetic-review-value" , "kind":"observation"}`: `{"text":"needs Authorization: [REDACTED]" , "kind":"observation"}`,
+		`{\"text\":\"needs Authorization: Bearer synthetic-review-value\"\n}`:                  `{\"text\":\"needs Authorization: [REDACTED]\"\n}`,
+		// 대상 응답의 Set-Cookie JSON 이름은 요청 Cookie로 보지 않는다.
+		`{"Set-Cookie": "sid=short1"}`:                                         `{"Set-Cookie": "sid=short1"}`,
+		"Proxy-Authorization: Basic eHl6":                                      "Proxy-Authorization: [REDACTED]",
+		"< Set-Cookie: sid=short1; Path=/\r\n":                                 "< Set-Cookie: sid=[REDACTED]; Path=/\r\n",
+		`{"products":[{"name":"Apple Juice","token":"public-catalog-value"}]}`: `{"products":[{"name":"Apple Juice","token":"public-catalog-value"}]}`,
+		"WWW-Authenticate: Bearer realm=\"owned\"":                             "WWW-Authenticate: Bearer realm=\"owned\"",
+	} {
+		if got := string(e.RedactOutput([]byte(in))); got != want {
+			t.Errorf("redact %q\n got %q\nwant %q", in, got, want)
+		}
+	}
+	plain := &Execution{cfg: Config{HeaderMode: HeaderPreserve}}
+	in := "> Authorization: Bearer modified.token.value"
+	if got := string(plain.RedactOutput([]byte(in))); got != in {
+		t.Fatalf("non test-account run masked structurally: %q", got)
+	}
+}
+
+// 가림은 JSON 문서(그래프 도구 인수 등)를 깨지 않는다. 자격 값 자리만 바뀌고 다른 칸은 남는다. 들여쓰기·한 줄·칸 사이 공백
+// 형태 모두 같다(#571 재상·이동찬 리뷰: record_fact 인수가 가림 뒤 JSON이 깨져 거절됨).
+func TestTestAccountRedactionKeepsJSONValid(t *testing.T) {
+	e := &Execution{cfg: Config{HeaderMode: HeaderTestAccountPassthrough}}
+	type fact struct {
+		Text string `json:"text"`
+		Kind string `json:"kind"`
+	}
+	for _, text := range []string{"needs Authorization: Bearer synthetic-review-value", "sent Cookie: lang=\"en\"; token=synthetic-review-value", "Kind first"} {
+		for _, v := range []any{fact{Text: text, Kind: "observation"}, map[string]any{"kind": "observation", "text": text}} {
+			compact, _ := json.Marshal(v)
+			indented, _ := json.MarshalIndent(v, "", "  ")
+			spaced := bytes.ReplaceAll(compact, []byte(`","`), []byte(`" , "`))
+			for _, doc := range [][]byte{compact, indented, spaced} {
+				out := e.RedactOutput(doc)
+				var got fact
+				if !json.Valid(out) || json.Unmarshal(out, &got) != nil || got.Kind != "observation" || strings.Contains(string(out), "synthetic-review-value") {
+					t.Errorf("redaction broke JSON or kept the value:\n in %s\nout %s", doc, out)
+				}
+			}
+		}
+	}
+}

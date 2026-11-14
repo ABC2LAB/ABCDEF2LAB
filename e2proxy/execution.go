@@ -1437,6 +1437,11 @@ func (e *Execution) RedactOutput(b []byte) []byte {
 		// 남긴다(#522 이동찬 리뷰).
 		out = issuedCookieLine.ReplaceAll(out, []byte("${1}[REDACTED]"))
 		out = authInfoLine.ReplaceAll(out, []byte("${1}[REDACTED]"))
+		// 모델은 받은 세션을 바꿔(예: JWT 내용을 고쳐 다시 붙임) 보내기도 해서 정확한 값 가림을 지나간다. 그래서 모델이 보내는
+		// 요청 자격 자리 — 명령의 Authorization·Cookie 헤더 값, curl --cookie 값, curl -v가 되찍는 요청 헤더 줄 — 는 값이
+		// 무엇이든 구조로 가린다. 대상이 응답으로 준 내용은 그대로 둔다(CLAUDE.md 규칙 2, 2026-11-14 Qwen3.6 점검 회차에서
+		// 서명이 맞지 않는 변형 토큰이 활동 기록에 남은 것을 발견).
+		out = redactRequestCredentials(out)
 	}
 	return out
 }
