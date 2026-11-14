@@ -1441,11 +1441,7 @@ func (e *Execution) RedactOutput(b []byte) []byte {
 		// 요청 자격 자리 — 명령의 Authorization·Cookie 헤더 값, curl --cookie 값, curl -v가 되찍는 요청 헤더 줄 — 는 값이
 		// 무엇이든 구조로 가린다. 대상이 응답으로 준 내용은 그대로 둔다(CLAUDE.md 규칙 2, 2026-11-14 Qwen3.6 점검 회차에서
 		// 서명이 맞지 않는 변형 토큰이 활동 기록에 남은 것을 발견).
-		out = requestAuthValue.ReplaceAll(out, []byte("${1}[REDACTED]"))
-		out = requestCookieValue.ReplaceAll(out, []byte("${1}${2}[REDACTED]"))
-		out = requestHeaderPair.ReplaceAll(out, []byte("${1}[REDACTED]"))
-		out = curlCookieQuoted.ReplaceAll(out, []byte("${1}[REDACTED]"))
-		out = curlCookieBare.ReplaceAll(out, []byte("${1}[REDACTED]"))
+		out = redactRequestCredentials(out)
 	}
 	return out
 }
@@ -1455,31 +1451,6 @@ func (e *Execution) RedactOutput(b []byte) []byte {
 var (
 	issuedCookieLine = regexp.MustCompile(`(?im)^([<>* \t]*set-cookie2?[ \t]*:[ \t]*[^=;\r\n]*=)[^;\r\n]*`)
 	authInfoLine     = regexp.MustCompile(`(?im)^([<>* \t]*(?:proxy-)?authentication-info[ \t]*:[ \t]*)[^\r\n]*`)
-	// requestAuthValue는 Authorization·Proxy-Authorization 헤더 값이다. 줄 머리(curl -v의 "> "), 명령 인수
-	// (-H "Authorization: …", wget --header=…, httpie Authorization:'…'), 코드 안 헤더 객체(python dict
-	// {'Authorization': '…'}, JSON "Authorization": "…") 어디서든 이름 뒤 닫는 따옴표와 값 앞 여는 따옴표를 건너뛰고
-	// (JSON으로 이스케이프된 \" 포함), 값을 requestValueQuoted로 가린다. 따옴표 안 값은 따옴표를 담지 않는다.
-	requestAuthValue = regexp.MustCompile(`(?i)((?:proxy-)?authorization(?:\\*["'])?[ \t]*:[ \t]*(?:\\*["'])?[ \t]*)` + requestValueQuoted)
-	// requestCookieValue는 요청 Cookie 헤더 값이다(형태는 위와 같음). Set-Cookie는 위 issuedCookieLine이 이름·속성을
-	// 남기고 따로 가린다.
-	requestCookieValue = regexp.MustCompile(`(?i)(^|[^a-z0-9-])(cookie(?:\\*["'])?[ \t]*:[ \t]*(?:\\*["'])?[ \t]*)` + requestValueQuoted)
-	// requestHeaderPair는 이름과 값을 쉼표로 나눈 코드 형태다(python req.add_header('Cookie', '…'),
-	// [('Authorization', '…')]). 이름이 따옴표로 닫혀 있을 때만 본다.
-	requestHeaderPair = regexp.MustCompile(`(?i)((?:^|[^a-z0-9-])\\*["'](?:(?:proxy-)?authorization|cookie)\\*["'][ \t]*,[ \t]*\\*["'])` + requestValueQuoted)
-	// curlCookieQuoted·curlCookieBare는 curl -b·--cookie(--cookie=) 인수 값이다. 따옴표로 시작한 값은 쿠키 여러 개
-	// (a=1; token=…)가 공백을 담으므로 닫는 따옴표 전까지, 따옴표 없는 값은 공백 전까지 가린다.
-	curlCookieQuoted = regexp.MustCompile(`(?i)((?:^|\s)(?:-b[ \t]+|--cookie(?:[ \t]+|=))\\*["'])` + requestValueQuoted)
-	curlCookieBare   = regexp.MustCompile(`(?i)((?:^|\s)(?:-b[ \t]+|--cookie(?:[ \t]+|=)))` + requestValueBare)
-)
-
-// requestValueQuoted는 요청 자격 값 자리다. 따옴표·줄바꿈 전까지이고, 값 안의 백슬래시 이스케이프(JSON \u002e·\/, 겹
-// 이스케이프 \\u002e)는 값으로 본다. JSON으로 해석하면 한 값이라 이스케이프에서 멈추면 뒷부분이 남는다(#571 이동찬 리뷰).
-// 따옴표 이스케이프(\", \\\")와 JSON 줄바꿈·탭 이스케이프(\n·\r·\t)는 값의 끝으로 본다. 줄바꿈 이스케이프까지 값으로
-// 보면 JSON으로 감싼 curl -v 출력에서 다음 헤더 줄들까지 지워져 모델이 읽을 출력이 줄어든다. requestValueBare는 따옴표
-// 없는 값이라 공백에서도 끝난다.
-const (
-	requestValueQuoted = `(?:[^"'\\\r\n]|\\+[^"'\\\r\nnrt])+`
-	requestValueBare   = `(?:[^"'\\\s]|\\+[^"'\\\snrt])+`
 )
 
 // 출력 가림 전용 값의 하한·상한이다. 짧은 값은 흔한 문자열까지 가려 출력이 망가지므로 받지 않는다.

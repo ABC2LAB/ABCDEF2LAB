@@ -41,6 +41,16 @@ func TestTestAccountRunMasksRequestCredentialsStructurally(t *testing.T) {
 		`{"command": "curl -b token=abc\necho done"}`:                                                           `{"command": "curl -b [REDACTED]\necho done"}`,
 		// JSON으로 감싼 curl -v 출력의 줄바꿈 이스케이프는 값의 끝이다. 다음 헤더 줄은 남는다.
 		`"> Authorization: Bearer abc.def\r\n> Host: owned.test\r\n> Cookie: token=abc\r\n> Accept: */*"`: `"> Authorization: [REDACTED]\r\n> Host: owned.test\r\n> Cookie: [REDACTED]\r\n> Accept: */*"`,
+		// 값을 연 따옴표에서만 끝난다. 다른 종류의 따옴표와 더 깊게 이스케이프된 같은 따옴표는 값 안의 글자다(#571 이동찬 리뷰).
+		`{"Cookie":"language=\"en\"; token=review-credential-tail-0123456789"}`:          `{"Cookie":"[REDACTED]"}`,
+		`{\"Cookie\":\"language=\\\"en\\\"; token=review-credential-tail\"}`:             `{\"Cookie\":\"[REDACTED]\"}`,
+		`curl -H 'Cookie: lang="en"; token=review-credential-tail' https://owned.test/a`: `curl -H 'Cookie: [REDACTED]' https://owned.test/a`,
+		`curl -b 'lang="en"; token=review-credential-tail' https://owned.test/c`:         `curl -b '[REDACTED]' https://owned.test/c`,
+		`{'Cookie': 'lang=\'en\'; token=review-credential-tail'}`:                        `{'Cookie': '[REDACTED]'}`,
+		"> Cookie: lang=\"en\"; token=review-credential-tail\r\n> Accept: */*\r\n":       "> Cookie: [REDACTED]\r\n> Accept: */*\r\n",
+		// 따옴표 없이 시작한 값은 JSON 구조 문자 앞 따옴표에서 끝난다. 한 줄 JSON의 뒤 칸은 남는다.
+		`{"tool_output":"> Cookie: token=review-credential-tail","trusted":{"state":"active"}}`: `{"tool_output":"> Cookie: [REDACTED]","trusted":{"state":"active"}}`,
+		`{\"out\":\"> Cookie: token=review-credential-tail\",\"trusted\":1}`:                    `{\"out\":\"> Cookie: [REDACTED]\",\"trusted\":1}`,
 		// 대상 응답의 Set-Cookie JSON 이름은 요청 Cookie로 보지 않는다.
 		`{"Set-Cookie": "sid=short1"}`:                                         `{"Set-Cookie": "sid=short1"}`,
 		"Proxy-Authorization: Basic eHl6":                                      "Proxy-Authorization: [REDACTED]",
