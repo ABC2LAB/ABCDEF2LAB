@@ -93,3 +93,60 @@ func TestFirstDiagnosisReportQueryRejectsDuplicateValues(t *testing.T) {
 		}
 	}
 }
+
+// C33: 제품 경로에서 활동 조회(읽기)와 일시정지·재개(control)를 연다. 채팅·intent 조종·rerun·활동 쓰기는
+// admission/전송 인접이라 막힌 채로 둔다(E² 담당 정렬 전까지). preparation 서버는 그대로 전부 막는다.
+func TestFirstDiagnosisC33OperatorRoutes(t *testing.T) {
+	for _, tc := range []struct {
+		method, path string
+		allowed      bool
+	}{
+		// 활동 조회(읽기 전용) — 연다.
+		{"GET", "/api/exploration/activity", true},
+		{"GET", "/api/exploration/activity/history", true},
+		{"GET", "/api/exploration/activity/stream", true},
+		{"GET", "/api/exploration/activity/5", true},
+		// 일시정지·재개(핸들러가 action을 pause|resume로 제한) — 연다.
+		{"POST", "/api/tasks/17/control", true},
+		{"POST", "/api/tasks/9/control", true},
+		// 아직 막는 것: 쓰기 메서드의 활동, 비숫자 seq, 잘못된 모양.
+		{"POST", "/api/exploration/activity", false},
+		{"GET", "/api/exploration/activity/abc", false},
+		{"GET", "/api/tasks/17/control", false},
+		{"POST", "/api/tasks/17/control/extra", false},
+		{"POST", "/api/tasks/abc/control", false},
+		// admission/전송 인접 — 이동찬 허용 판단으로 보류(게이트가 의도적으로 막는 "수정 API").
+		{"POST", "/api/tasks/17/intents/3/messages", false},    // 채팅
+		{"POST", "/api/tasks/17/intents/3/control", false},     // intent 조종(steer)
+		{"POST", "/api/tasks/17/intents/3/rerun", false},       // rerun(종료 task 재admission)
+		{"POST", "/api/tasks/17/intents/rerun-blocked", false}, // rerun 일괄
+	} {
+		t.Run(tc.method+tc.path, func(t *testing.T) {
+			s := &Server{firstDiagnosis: true, firstModel: &firstDiagnosisModelPin{TaskID: "17", TaskNumber: 17, ExplorationID: 9}}
+			calls := 0
+			handler := s.firstDiagnosisRoutes(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls++; w.WriteHeader(http.StatusNoContent) }))
+			w := httptest.NewRecorder()
+			request := httptest.NewRequest(tc.method, tc.path, nil)
+			request.Header.Set("Authorization", "Bearer synthetic-route-test")
+			request.Header.Set("Content-Type", "application/json")
+			handler.ServeHTTP(w, request)
+			if tc.allowed && (w.Code != http.StatusNoContent || calls != 1) || !tc.allowed && (w.Code != http.StatusForbidden || calls != 0) {
+				t.Fatalf("c33 route status=%d calls=%d allowed=%v", w.Code, calls, tc.allowed)
+			}
+		})
+	}
+	// preparation 서버는 활동·control도 전부 막는다(단락 평가 유지).
+	t.Run("preparation blocks operator routes", func(t *testing.T) {
+		s := &Server{firstDiagnosis: true, firstDiagnosisPreparation: true, firstModel: &firstDiagnosisModelPin{TaskID: "17", TaskNumber: 17, ExplorationID: 9}}
+		for _, req := range []*http.Request{
+			httptest.NewRequest("GET", "/api/exploration/activity", nil),
+			httptest.NewRequest("POST", "/api/tasks/17/control", nil),
+		} {
+			w := httptest.NewRecorder()
+			s.firstDiagnosisRoutes(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("preparation admitted operator route") })).ServeHTTP(w, req)
+			if w.Code != http.StatusForbidden {
+				t.Fatal("preparation did not block", req.URL.Path)
+			}
+		}
+	})
+}

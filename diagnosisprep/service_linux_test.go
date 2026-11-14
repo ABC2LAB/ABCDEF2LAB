@@ -331,6 +331,11 @@ func TestRestartInterruptionsRemainUnknownAndOwned(t *testing.T) {
 			b := &fakeBackend{inspection: fixtureInspection()}
 			published := make(chan struct{})
 			b.run = func(ctx context.Context, e Execution, p Publish) error {
+				if b.calls.Load() != 1 {
+					// 복구 회차(C04): 복원된 Unknown이 새 start를 막지 않음을 보이는 용도라 블록만 한다.
+					<-ctx.Done()
+					return ctx.Err()
+				}
 				u := Update{State: Preparing, Phase: phase, PreparationStarted: true, AuthorityState: AuthorityNotIssued}
 				if phase != TaskCreation {
 					u.TaskID = "42"
@@ -379,9 +384,14 @@ func TestRestartInterruptionsRemainUnknownAndOwned(t *testing.T) {
 			if res := start(t, recovered, j, "start"); res.Error != "" || res.Job.State != Unknown {
 				t.Fatal("same claim was not recovered")
 			}
+			// 복원은 중단된 실행을 재생하지 않는다(New가 Execute를 다시 부르지 않음).
+			if b.calls.Load() != 1 {
+				t.Fatal("execution replayed on restart")
+			}
+			// C04: 복원된 Unknown은 새 회차 start를 막지 않는다(이전에는 busy로 설치 전체가 막혔다).
 			next := create(t, recovered, "next")
-			if got := start(t, recovered, next, "newstart").Error; got != "busy" {
-				t.Fatal(got)
+			if res := start(t, recovered, next, "newstart"); res.Error != "" {
+				t.Fatalf("recovered unknown blocked a new run: %q", res.Error)
 			}
 			r := request(AuthorizeTask)
 			r.TaskID = "42"
@@ -391,9 +401,6 @@ func TestRestartInterruptionsRemainUnknownAndOwned(t *testing.T) {
 			r.Principal = "other"
 			if *call(t, recovered, r).Authorized {
 				t.Fatal("cross-owner task authorized")
-			}
-			if b.calls.Load() != 1 {
-				t.Fatal("execution replayed")
 			}
 		})
 	}
@@ -438,7 +445,9 @@ func TestAggregateReservationAndUnknownRetention(t *testing.T) {
 	start(t, s, j, "start")
 	awaitState(t, s, j.ID, Unknown)
 	next := create(t, s, "next")
-	if got := start(t, s, next, "start2").Error; got != "busy" {
+	// C04: Unknown은 더 이상 busy로 막지 않는다. 다만 그 예약이 집계에 그대로 남아(집계=1회분),
+	// 다음 회차는 budget_exhausted로 막힌다(미확인 결과·예약을 해제하지 않음, 절대 규칙 5).
+	if got := start(t, s, next, "start2").Error; got != "budget_exhausted" {
 		t.Fatal(got)
 	}
 }
