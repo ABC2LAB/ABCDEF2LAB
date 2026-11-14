@@ -602,7 +602,7 @@ func validProductTargetPolicy(p productTargetPolicy) bool {
 	if p.Workflow != nil && !p.Workflow.Valid() {
 		return false
 	}
-	if p.Format != "abc2lab.product-target-policy/v1" || p.MaxRequests < 1 || p.MaxRequests > 100 || p.MaxTargets < 2 || p.MaxTargets > 64 || len(p.AllowedPorts) < 1 || len(p.AllowedPorts) > 8 {
+	if p.Format != "abc2lab.product-target-policy/v1" || p.MaxRequests < 1 || p.MaxRequests > diagnosisprep.MaxTargetRequests || p.MaxTargets < 2 || p.MaxTargets > 64 || len(p.AllowedPorts) < 1 || len(p.AllowedPorts) > 8 {
 		return false
 	}
 	for _, port := range p.AllowedPorts {
