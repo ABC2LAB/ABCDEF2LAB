@@ -31,7 +31,7 @@
 
 1. 루프 복원 결정안 skills 줄 정정(이 PR).
 2. 탐색 직접 샌드박스에 `api-recon` 지시문·파이썬 스크립트 읽기 전용 마운트와 탐색 프로필의 skills 도구(탐색 에이전트 루프 PR과 같이).
-   - 진행(2026-11-13): 탐색 직접 Bash의 typed adapter(`exploresandbox.DirectBash`)와 탐색 프로필의 Bash 도구를 넣었다. 제품 host 연결은 실제 경계 양성/음성 대조 뒤다. `api-recon` 스크립트 마운트와 skills 도구는 아직이고, [host 의무](contracts/exploration-host-adapter-obligations.md#직접-도구와-api-recon)의 metadata-only 조건과 같이 정한다. 정적 수집은 서버 fetch의 Go 파서가 이미 한다.
+   - 진행(2026-11-13): 탐색 직접 Bash의 typed adapter(`exploresandbox.DirectBash`)와 탐색 프로필의 Bash 도구를 넣었다. 제품 host 연결은 실제 경계 양성/음성 대조 뒤다. `api-recon` 지시문·스크립트는 2026-11-14에 명령 작업 공간(`/work/api-recon`, 명령마다 새로 풂)으로 넣었다(`exploresandbox.Config.Seed`, 제품 host가 이미지의 `/app/skills/api-recon`에서 읽음, 하나라도 없으면 skill 없이 탐색). 실제 경계를 거친 `harvest_static.py` 실행을 시험으로 확인했다. generic Skill 도구는 주지 않고 탐색 지시문이 파일 위치를 안내한다. [host 의무](contracts/exploration-host-adapter-obligations.md#직접-도구와-api-recon)도 이에 맞췄다. 정적 수집은 서버 fetch의 Go 파서도 한다.
 
 ## 4. 열린 항목
 

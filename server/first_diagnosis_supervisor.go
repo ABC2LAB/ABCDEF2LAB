@@ -473,7 +473,7 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 		s.mu.Unlock()
 		s.operations.Done()
 	}()
-	run, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	run, cancel := firstDiagnosisRunContext(ctx)
 	s.trackCancel(cancel)
 	defer cancel()
 	stop := context.AfterFunc(s.ctx, cancel)
@@ -1083,4 +1083,9 @@ func (s *FirstDiagnosisSupervisor) checkResults(ctx context.Context, server *Ser
 // 검색 설정(루프 복원 결정안 §2-1)을 싣는다. 실행 계획은 Runtime.PreparePlanning이 싣는다.
 func (s *Server) firstDiagnosisPlanningContext(ctx context.Context) context.Context {
 	return agent.WithE2HTTPWebSearch(agent.WithE2HTTPPlannerLimits(agent.WithE2HTTPPlanning(ctx), s.firstPlannerLimits), s.firstWebSearch)
+}
+
+// firstDiagnosisRunContext는 감독자 Run 하나의 문맥이다(뒷받침 기한 FirstDiagnosisRunTimeout).
+func firstDiagnosisRunContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, FirstDiagnosisRunTimeout)
 }
