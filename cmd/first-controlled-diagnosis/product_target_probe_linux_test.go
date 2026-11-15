@@ -389,3 +389,17 @@ func TestC35PoolSelectionCancelsPendingProbe(t *testing.T) {
 		t.Fatal("선택 뒤 대기 접촉 미종료")
 	}
 }
+
+func TestC35ContactCancellationDuringCheckPreventsAudit(t *testing.T) {
+	ips := c35PoolIPs()[:1]
+	r, rec, _ := c35StartPool(t, ips)
+	contacts := &c35RecordingContacts{productContactJournal: r.contacts}
+	r.contacts = contacts
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	r.policyCheck = func() error { cancel(); return nil }
+	_, err := r.beginTargetContact(ctx, "start", rec, "accounts.example.test", ips[0].String(), "job-pool-cancelled-in-check")
+	if !errors.Is(err, context.Canceled) || len(contacts.events) != 0 {
+		t.Fatal("설정 검사 중 취소를 확인한 뒤 새 접촉 감사", err, len(contacts.events))
+	}
+}

@@ -42,6 +42,9 @@ func (r *productTargetRegistry) beginTargetContact(ctx context.Context, stage st
 	if r.check() != nil || r.probe == nil || r.reach == nil {
 		return productTLSContact{}, errPreparation
 	}
+	if err := ctx.Err(); err != nil {
+		return productTLSContact{}, err
+	}
 	event := productTLSContact{JobID: jobID, Format: "abc2lab.product-tls-contact/v1", ID: "tls-" + productRandom(16), TargetID: rec.Target.ID, Revision: rec.Target.Revision, Stage: stage, Phase: "attempt", Host: host, IP: ip, Port: rec.Target.Port, At: r.now()}
 	raw, err := json.Marshal(event)
 	if err != nil || r.contacts.Append(raw) != nil {
