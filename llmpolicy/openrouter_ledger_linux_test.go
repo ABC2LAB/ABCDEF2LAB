@@ -3,6 +3,7 @@
 package llmpolicy
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -248,5 +249,45 @@ func TestOpenRouterSettlementFailureKeepsReservationInProcess(t *testing.T) {
 		if got := p.reserve(100) == nil; got == settleFails {
 			t.Fatalf("settleFails=%v: third reservation allowed=%v", settleFails, got)
 		}
+	}
+}
+
+// 요청 한도(429)는 제공자가 처리하지 않은 요청이라 사용량 0으로 정산해 예약을 되돌린다(2026-11-14 실측: 429는 키 사용량에
+// 잡히지 않음). 같은 출력 승인 두 개분이라도 429 두 번 뒤 다음 예약을 받는다. 호출 칸에는 청구 없음이 남는다. 5xx는 위
+// 시험처럼 예약을 그대로 둔다.
+func TestOpenRouterLedgerRateLimitedCallReleasesReservation(t *testing.T) {
+	path, _ := openRouterSettleFixture(t)
+	p := loadForLedger(t, path)
+	p.manifest.Version, p.manifest.MaxConsecutiveTransient = 2, 16
+	c := openRouterClient(p, openRouterRT(func(*http.Request) (*http.Response, error) { return openRouterStatus(429), nil }))
+	for i := 0; i < 2; i++ {
+		slot := &OpenRouterCall{}
+		if _, err := c.Do(openRouterRequest().WithContext(WithOpenRouterCall(context.Background(), slot))); err == nil {
+			t.Fatal("rate-limited call accepted")
+		}
+		if r := slot.Result(); !r.Reserved || !r.NotBilled || r.Succeeded || r.CostMicros != 0 {
+			t.Fatalf("rate-limited call slot: %+v", r)
+		}
+	}
+	if err := p.reserve(100); err != nil {
+		t.Fatalf("rate-limited calls kept their reservations: %+v %v", p.Snapshot(), err)
+	}
+	if u := p.Snapshot(); u.CostMicros != 0 || u.Errors != 2 {
+		t.Fatalf("rate-limited usage: %+v", u)
+	}
+}
+
+// 5xx 호출 칸은 청구 없음으로 표시하지 않는다.
+func TestOpenRouterServerErrorIsNotMarkedUnbilled(t *testing.T) {
+	path, _ := openRouterSettleFixture(t)
+	p := loadForLedger(t, path)
+	p.manifest.Version, p.manifest.MaxConsecutiveTransient = 2, 16
+	c := openRouterClient(p, openRouterRT(func(*http.Request) (*http.Response, error) { return openRouterStatus(503), nil }))
+	slot := &OpenRouterCall{}
+	if _, err := c.Do(openRouterRequest().WithContext(WithOpenRouterCall(context.Background(), slot))); err == nil {
+		t.Fatal("server error accepted")
+	}
+	if r := slot.Result(); !r.Reserved || r.NotBilled {
+		t.Fatalf("server error slot: %+v", r)
 	}
 }

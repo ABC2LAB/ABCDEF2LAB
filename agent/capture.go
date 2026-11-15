@@ -26,15 +26,34 @@ import (
 // contiguous run is coalesced into a single record so the trace shows whole
 // messages, not dozens of fragments.
 func captureRun(ctx context.Context, opts agentcore.Options, input string, emit func(db.Activity)) (string, harness.TerminalReason, error) {
+	return captureRunWith(ctx, opts, input, nil, emit)
+}
+
+// captureRunWith는 captureRun과 같되, 활동 기록의 글을 redact로 먼저 가린 뒤 요약을 만든다(redact가 nil이면 captureRun).
+func captureRunWith(ctx context.Context, opts agentcore.Options, input string, redact func(string) string, emit func(db.Activity)) (string, harness.TerminalReason, error) {
 	s := agentcore.NewSession(opts)
 	defer s.Close() // release the session's background-task manager (temp dir + processes)
-	return captureRunSession(ctx, s, input, emit)
+	return captureRunSessionWith(ctx, s, input, redact, emit)
 }
 
 // captureRunSession is captureRun over an existing session, so a caller can run
 // multiple prompts on the SAME conversation (e.g. a settlement round that reuses
 // the worker's accumulated context after the main run hit max_turns).
 func captureRunSession(ctx context.Context, s *agentcore.Session, input string, emit func(db.Activity)) (string, harness.TerminalReason, error) {
+	return captureRunSessionWith(ctx, s, input, nil, emit)
+}
+
+// captureRunSessionWith는 활동 기록에 넣을 글(모델 글·도구 입력·도구 결과·최종 답)을 redact로 먼저 가리고, 가린 글에서
+// 요약(첫 줄 앞부분)을 자른다. 요약을 먼저 자르고 나중에 가리면 잘린 보호 값(예: 시험 계정 세션 토큰 앞부분)이 정확한 값
+// 가림에 걸리지 않고 남는다(2026-11-14 Qwen3.6 소유 Juice Shop 점검 회차: 명령 첫 줄 TOKEN="…"이 200자에서 잘려 활동
+// 요약 4줄에 토큰 머리와 내용 일부가 남음). 감사 추적(auditTrace)과 반환하는 최종 답은 원문 그대로다.
+func captureRunSessionWith(ctx context.Context, s *agentcore.Session, input string, redact func(string) string, emit func(db.Activity)) (string, harness.TerminalReason, error) {
+	shown := func(text string) string {
+		if redact == nil {
+			return text
+		}
+		return redact(text)
+	}
 	ctx, auditTrace := intercept.WithTrace(ctx, input, approvalHistory(s.Messages()))
 	defer auditTrace.Finish()
 	var reason harness.TerminalReason
@@ -54,7 +73,7 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 		if tbuf.Len() == 0 {
 			return
 		}
-		s := strings.TrimSpace(tbuf.String())
+		s := shown(strings.TrimSpace(tbuf.String()))
 		k := tkind
 		tbuf.Reset()
 		tkind = ""
@@ -79,13 +98,14 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 	var rerr error
 	for ev, err := range s.Prompt(ctx, input) {
 		if err != nil {
+			// 지금 SDK(harness.Query)는 오류를 반복자로 넘기지 않고 종료 사건에 싣는다. 이 분기는 방어용이고 같은 가림을 쓴다.
 			flush()
 			if ctx.Err() != nil { // engine/user cancellation, not a provider failure
-				record := terminalText(ctx, &harness.Terminal{Reason: reason, Err: ctx.Err()}, lastTool)
+				record := terminalText(ctx, redactedTerminal(&harness.Terminal{Reason: reason, Err: ctx.Err()}, redact), lastTool)
 				rec(activityWithUsage(record.activity(db.Activity{Kind: "result"}), lastUsage))
 				return finalText, reason, ctx.Err()
 			}
-			rec(activityWithUsage(executionErrorActivity(err), lastUsage))
+			rec(activityWithUsage(executionErrorActivity(redactedError(err, redact)), lastUsage))
 			return finalText, reason, err
 		}
 		switch ev.Kind {
@@ -96,7 +116,7 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 			flush()
 			observeDiagnosticToolUse(ctx, ev.ToolUse.Name, ev.ToolUse.Input)
 			toolNames[ev.ToolUse.ID] = ev.ToolUse.Name
-			in := string(ev.ToolUse.Input)
+			in := shown(string(ev.ToolUse.Input))
 			lastTool.start(ev.ToolUse.ID, ev.ToolUse.Name, in)
 			auditTrace.Start(ev.ToolUse.ID, ev.ToolUse.Name, ev.ToolUse.Input)
 			rec(db.Activity{Kind: "tool_use", Tool: ev.ToolUse.Name, ToolUseID: ev.ToolUse.ID,
@@ -109,6 +129,7 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 			out := blocksText(ev.ToolResult.Content)
 			lastTool.done(ev.ToolResult.ToolUseID)
 			auditTrace.Complete(ev.ToolResult.ToolUseID, out, ev.ToolResult.IsError)
+			out = shown(out)
 			rec(db.Activity{Kind: "tool_result", Tool: toolNames[ev.ToolResult.ToolUseID], ToolUseID: ev.ToolResult.ToolUseID,
 				IsError: ev.ToolResult.IsError, Summary: firstLine(out, 200), Detail: out})
 		case harness.KindText:
@@ -143,10 +164,11 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 					tkind = ""
 				}
 				flush() // flush any trailing thinking / non-final text
+				answer := shown(ev.Terminal.Text)
 				result := db.Activity{Kind: "result", IsError: ev.Terminal.Err != nil,
-					Summary: firstLine(ev.Terminal.Text, resultSummaryRunes), Detail: ev.Terminal.Text}
+					Summary: firstLine(answer, resultSummaryRunes), Detail: answer}
 				if ev.Terminal.Text == "" || ev.Terminal.Reason == harness.ReasonAbortedTools || ev.Terminal.Reason == harness.ReasonAbortedStreaming {
-					result = terminalText(ctx, ev.Terminal, lastTool).activity(result)
+					result = terminalText(ctx, redactedTerminal(ev.Terminal, redact), lastTool).activity(result)
 				}
 				u := ev.Terminal.Usage // cumulative token usage for this session
 				result.InputTokens, result.OutputTokens = &u.InputTokens, &u.OutputTokens
@@ -160,6 +182,32 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 	}
 	flush() // safety: any unflushed text if the stream ended without KindResult
 	return finalText, reason, rerr
+}
+
+// 결과 행의 화면용 글(metadata)은 JSON으로 직렬화되므로, 넣기 전에 오류·중단 직전 글을 가린다. 직렬화한 뒤 정확한 값으로
+// 가리면 이스케이프된 값을 놓칠 수 있다.
+//
+// redactedError는 기록·화면에 넣을 글만 가린 오류다. 반환·판정(errors.Is)에는 원래 오류를 쓴다.
+type redactedErrorText string
+
+func (e redactedErrorText) Error() string { return string(e) }
+
+func redactedError(err error, redact func(string) string) error {
+	if err == nil || redact == nil {
+		return err
+	}
+	return redactedErrorText(redact(err.Error()))
+}
+
+// redactedTerminal은 결과 행을 만들 종료 사건의 사본이다. 중단 직전 모델 글과 오류 글을 가리고 나머지(사유·턴·사용량)는 그대로다.
+func redactedTerminal(term *harness.Terminal, redact func(string) string) *harness.Terminal {
+	if term == nil || redact == nil {
+		return term
+	}
+	shown := *term
+	shown.Text = redact(term.Text)
+	shown.Err = redactedError(term.Err, redact)
+	return &shown
 }
 
 func activityWithUsage(activity db.Activity, usage *llm.Usage) db.Activity {

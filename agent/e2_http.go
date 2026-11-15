@@ -241,8 +241,16 @@ func e2HTTPRunnerFailed(runErr error, result e2runner.Result) bool {
 	knownExit := t.Classification == "tool_failure" || t.Classification == "policy_not_executed" ||
 		t.Classification == "partial_policy_denial" || t.Classification == "unsupported" ||
 		t.Classification == "partial_unsupported" || t.Classification == "transient_failure" && t.Call.Counts.Transient > 0
-	return !(errors.Is(runErr, e2runner.ErrUnavailable) && knownExit && t.ProcessBashExited && t.ExitCode != 0 &&
-		t.Final && t.ProcessDrained && t.ProxyDrained && t.Call.AuditComplete && t.Execution.AuditComplete)
+	closed := t.Final && t.ProcessDrained && t.ProxyDrained && t.Call.AuditComplete && t.Execution.AuditComplete
+	// 명령 시간 상한에 닿아 호스트가 멈춘 명령은 runner 장애가 아니라 그 명령의 실패다(원본처럼 모델에 돌려주고 계속).
+	// 결과 불명 송신이 없고 드레인·감사가 끝났을 때만이다. 프록시 장애는 계속 runner 장애다.
+	// 정책 거부·미지원 뒤 시간 상한에 닿은 명령은 실행기가 거부·미지원 분류를 먼저 붙인다(#578 이동찬 리뷰). 그 경우도 같다.
+	timedOut := t.Termination == e2runner.TerminationTimeout && t.Call.Counts.Unknown == 0 &&
+		(t.Classification == "transient_failure" || t.Classification == "policy_not_executed" || t.Classification == "unsupported")
+	if errors.Is(runErr, e2runner.ErrUnavailable) && timedOut && closed {
+		return false
+	}
+	return !(errors.Is(runErr, e2runner.ErrUnavailable) && knownExit && t.ProcessBashExited && t.ExitCode != 0 && closed)
 }
 
 // The program-owned per-call counts take precedence over a nonzero shell exit.
@@ -733,18 +741,25 @@ func emitE2HTTPPromptActivity(emit func(db.Activity), reportStage func(string), 
 func (w *Worker) runE2HTTPSession(ctx context.Context, name string, intent *db.Node, emit func(db.Activity), opts agentcore.Options, input string, execution E2HTTPScope, state *e2HTTPToolState, toolset *ToolSet) (harness.TerminalReason, WriteCounts, error) {
 	session := agentcore.NewSession(opts)
 	defer session.Close()
-	_, reason, runErr := captureRunSession(ctx, session, input, func(activity db.Activity) {
+	// 요약은 가린 글에서 자른다(captureRunSessionWith). 아래 emit의 가림은 그 밖의 칸을 위한 두 번째 층이다.
+	redactText := func(text string) string { return string(execution.RedactOutput([]byte(text))) }
+	_, reason, runErr := captureRunSessionWith(ctx, session, input, redactText, func(activity db.Activity) {
 		if emit == nil {
 			return
 		}
 		activity.NodeID = &intent.ID
 		activity.Worker = name
 		if activity.Kind == "result" && activity.IsError {
+			// 화면 경계(ForDisplay)는 metadata가 있으면 Summary·Detail을 그것으로 바꾸므로, 고정 문구가 화면에도 가게 비운다.
 			activity.Summary = ErrE2HTTPWorker.Error()
 			activity.Detail = ErrE2HTTPWorker.Error()
+			activity.Metadata = nil
 		} else {
 			activity.Summary = string(execution.RedactOutput([]byte(activity.Summary)))
 			activity.Detail = string(execution.RedactOutput([]byte(activity.Detail)))
+			if len(activity.Metadata) > 0 {
+				activity.Metadata = execution.RedactOutput(activity.Metadata)
+			}
 		}
 		emit(activity)
 	})

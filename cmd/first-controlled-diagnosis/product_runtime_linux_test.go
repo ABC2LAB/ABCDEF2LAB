@@ -41,6 +41,9 @@ func TestProductModelsBindIndependentTargetsWithoutNetworkOnInspect(t *testing.T
 	defer runtime.targets.Close()
 	if profiles, e := runtime.profiles(); e != nil || len(profiles) != 1 {
 		t.Fatal("targetless model catalog", e)
+	} else if profiles[0].Workflow != nil || profiles[0].WorkflowRequestLimit != 4 {
+		// 일반 HTTP 모드 프로필에도 설치의 회차당 요청 상한(대상 정책 max_requests)을 싣는다. 화면은 이 값으로 등록한다.
+		t.Fatalf("general profile request limit %d", profiles[0].WorkflowRequestLimit)
 	}
 	r := runtime.targets
 	txt := map[string][]string{}

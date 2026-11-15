@@ -48,10 +48,21 @@ CODEX.local.md
 
 # 内嵌前端的单二进制产物
 /artex
-# E② 감사 CLI를 레포 루트에서 go build 하면 생기는 바이너리
+# cmd/ 아래 명령을 레포 루트에서 go build 하면 생기는 바이너리(작업 트리 루트 포함)
+/browser-fixture
 /e2-audit-verify
 /e2-audit-keygen
+/e2-bash-sandbox
+/e2-budget-approve
 /e2-eval-policy
+/e2-eval-service
+/e2-runner-config-check
+/engine-metrics
+/eval-meter
+/exploration-contract-fixture
+/explore-boundary
+/first-controlled-diagnosis
+/product-fixture
 # 一键更新在可执行文件旁留下的中间产物（暂存件 / 备份 / 失败版本 / 升级标记）
 /artex.new
 /artex.new.sha256

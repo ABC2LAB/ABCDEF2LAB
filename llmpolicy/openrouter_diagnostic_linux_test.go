@@ -124,6 +124,11 @@ func TestOpenRouterDiagnosticRequestOutcomes(t *testing.T) {
 				if end.Status != "failed" || end.CostUncertain || usage.CostMicros == 0 || usage.FailureReason != "response_invalid" {
 					t.Fatal("tool contract violation blocked the approval or lost its usage")
 				}
+			} else if tc.name == "rate_limit" {
+				// 요청 한도(429)는 제공자가 처리하지 않아 청구가 없다: 비용 0 확정(C05 보완).
+				if end.Status != "failed" || end.CostUncertain || end.CostMicros != 0 || !usage.Blocked {
+					t.Fatal("rate-limited call cost not settled as zero")
+				}
 			} else if end.Status != "failed" || !end.CostUncertain || !usage.Blocked {
 				t.Fatal("unknown cost represented as actual success")
 			}
