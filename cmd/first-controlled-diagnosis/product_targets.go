@@ -383,17 +383,6 @@ func (r *productTargetRegistry) probeTLS(ctx context.Context, host, ip string, p
 	return hex.EncodeToString(sum[:]), cert.NotAfter, nil
 }
 
-// Share the remaining overall deadline so an early stalled address cannot use
-// every later address's time. The existing three-second dial limit also bounds TLS.
-func productTargetProbeContext(ctx context.Context, remaining int) (context.Context, context.CancelFunc) {
-	timeout := productTargetProbeTimeout
-	if deadline, ok := ctx.Deadline(); ok && remaining > 0 {
-		if share := time.Until(deadline) / time.Duration(remaining); share < timeout {
-			timeout = share
-		}
-	}
-	return context.WithTimeout(ctx, timeout)
-}
 func (r *productTargetRegistry) reachTCP(ctx context.Context, ip string, port int) error {
 	conn, e := (&net.Dialer{Timeout: productTargetProbeTimeout}).DialContext(ctx, "tcp", net.JoinHostPort(ip, strconv.Itoa(port)))
 	if e != nil {
@@ -430,35 +419,9 @@ func (r *productTargetRegistry) approve(ctx context.Context, principal, id strin
 	if r.checkDestinations(rec.Target.Origin, addresses) != nil {
 		return diagnosisprep.ProductTarget{}, errors.New("target_address_denied")
 	}
-	var spki string
-	var selected string
-	for index, ip := range addresses {
-		if ctx.Err() != nil {
-			return diagnosisprep.ProductTarget{}, ctx.Err()
-		}
-		probeCtx, stopProbe := productTargetProbeContext(ctx, len(addresses)-index)
-		if err := probeCtx.Err(); err != nil {
-			stopProbe()
-			return diagnosisprep.ProductTarget{}, err
-		}
-		spki, _, e = r.probeWithAudit(probeCtx, "approve", rec, u.Hostname(), ip)
-		stopProbe()
-		if errors.Is(e, errPreparation) {
-			return diagnosisprep.ProductTarget{}, errPreparation
-		}
-		if e == nil {
-			selected = ip
-			break
-		}
-	}
-	if e != nil || selected == "" {
-		if errors.Is(e, errTargetCertificateExpired) {
-			return diagnosisprep.ProductTarget{}, e
-		}
-		if productTargetPlain(rec.Target) {
-			return diagnosisprep.ProductTarget{}, errors.New("target_unreachable")
-		}
-		return diagnosisprep.ProductTarget{}, errors.New("target_tls_unverified")
+	selected, spki, e := r.probeTargetPool(ctx, "approve", rec, u.Hostname(), addresses, "")
+	if e != nil {
+		return diagnosisprep.ProductTarget{}, e
 	}
 	next := productTargetCopy(rec)
 	next.Target.State = "approved"
@@ -562,38 +525,11 @@ func (r *productTargetRegistry) connectionForStart(ctx context.Context, rec prod
 	if r.checkDestinations(rec.Target.Origin, addresses) != nil {
 		return nil, errors.New("target_address_denied")
 	}
-	for index, ip := range addresses {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		if r.current(rec) != nil {
-			return nil, errors.New("target_approval_changed")
-		}
-		probeCtx, stopProbe := productTargetProbeContext(ctx, len(addresses)-index)
-		if err := probeCtx.Err(); err != nil {
-			stopProbe()
-			return nil, err
-		}
-		spki, _, err := r.probeWithAuditForRun(probeCtx, "start", rec, u.Hostname(), ip, jobID)
-		stopProbe()
-		if errors.Is(err, errPreparation) {
-			return nil, errPreparation
-		}
-		if err != nil {
-			continue
-		}
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		if err := r.current(rec); err != nil {
-			return nil, errors.New("target_approval_changed")
-		}
-		return &productTargetConnection{IP: ip, SPKI: spki, Addresses: append([]string(nil), addresses...), jobID: jobID}, nil
+	ip, spki, err := r.probeTargetPool(ctx, "start", rec, u.Hostname(), addresses, jobID)
+	if err != nil {
+		return nil, err
 	}
-	if productTargetPlain(rec.Target) {
-		return nil, errors.New("target_unreachable")
-	}
-	return nil, errors.New("target_tls_unverified")
+	return &productTargetConnection{IP: ip, SPKI: spki, Addresses: append([]string(nil), addresses...), jobID: jobID}, nil
 }
 
 func (r *productTargetRegistry) view(principal, id string) (*diagnosisprep.ProductTarget, []diagnosisprep.ProductTarget, error) {

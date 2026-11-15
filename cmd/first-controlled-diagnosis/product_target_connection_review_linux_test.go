@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -63,12 +64,15 @@ func TestC35StalledAddressDoesNotConsumePoolBudget(t *testing.T) {
 			defer cancel()
 			overall, _ := ctx.Deadline()
 			var contacted []string
+			var contactMu sync.Mutex
 			r.probe = func(probeCtx context.Context, _ string, ip string, _ int) (string, time.Time, error) {
+				contactMu.Lock()
 				contacted = append(contacted, ip)
+				contactMu.Unlock()
 				if ip != addresses[len(addresses)-1].String() {
 					deadline, ok := probeCtx.Deadline()
-					if !ok || !deadline.Before(overall) {
-						t.Fatal("주소별 기한이 전체 기한과 분리되지 않음")
+					if !ok || deadline.After(overall) || time.Until(deadline) < time.Second {
+						t.Fatal("주소별 기한이 전체 기한을 넘거나 주소 수로 축소됨")
 					}
 					<-probeCtx.Done()
 					return "", time.Time{}, probeCtx.Err()

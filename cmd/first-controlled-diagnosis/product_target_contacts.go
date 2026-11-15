@@ -33,32 +33,31 @@ type productTLSContact struct {
 	Result        string    `json:"result,omitempty"`
 }
 
-func (r *productTargetRegistry) probeWithAudit(ctx context.Context, stage string, rec productTargetRecord, host, ip string) (string, time.Time, error) {
-	return r.probeWithAuditForRun(ctx, stage, rec, host, ip, "")
-}
-func (r *productTargetRegistry) probeWithAuditForRun(ctx context.Context, stage string, rec productTargetRecord, host, ip, jobID string) (string, time.Time, error) {
+// The pool coordinator serializes all journal writes. Network workers never
+// append directly, so a failed append closes admission before another attempt.
+func (r *productTargetRegistry) beginTargetContact(ctx context.Context, stage string, rec productTargetRecord, host, ip, jobID string) (productTLSContact, error) {
+	if err := ctx.Err(); err != nil {
+		return productTLSContact{}, err
+	}
 	if r.check() != nil || r.probe == nil || r.reach == nil {
-		return "", time.Time{}, errPreparation
+		return productTLSContact{}, errPreparation
 	}
 	event := productTLSContact{JobID: jobID, Format: "abc2lab.product-tls-contact/v1", ID: "tls-" + productRandom(16), TargetID: rec.Target.ID, Revision: rec.Target.Revision, Stage: stage, Phase: "attempt", Host: host, IP: ip, Port: rec.Target.Port, At: r.now()}
 	raw, err := json.Marshal(event)
 	if err != nil || r.contacts.Append(raw) != nil {
-		return "", time.Time{}, errPreparation
+		return event, errPreparation
 	}
 	// DNS·감사 기록 사이에 철회된 시작 접촉은 실제 연결 전에 다시 막는다.
 	if stage == "start" && r.current(rec) != nil {
-		return "", time.Time{}, errPreparation
+		return event, errors.New("target_approval_changed")
 	}
-	var digest string
-	var until time.Time
-	var probeErr error
-	if productTargetPlain(rec.Target) {
-		// http 대상은 연결만 확인한다. TLS 고정값·인증서 만료가 없다(C22).
-		probeErr = r.reach(ctx, ip, rec.Target.Port)
-	} else {
-		digest, until, probeErr = r.probe(ctx, host, ip, rec.Target.Port)
-	}
-	if probeErr == nil && !productTargetPlain(rec.Target) {
+	return event, ctx.Err()
+}
+
+// A probe failure and an audit failure are distinct: after the latter, leave
+// outstanding attempts incomplete rather than retrying the failed journal.
+func (r *productTargetRegistry) completeTargetContact(event productTLSContact, plain bool, digest string, until time.Time, probeErr error) (error, error) {
+	if probeErr == nil && !plain {
 		if !urlDigestValid(digest) {
 			probeErr = errPreparation
 		} else if !until.After(r.now()) {
@@ -74,9 +73,9 @@ func (r *productTargetRegistry) probeWithAuditForRun(ctx context.Context, stage 
 	if probeErr != nil {
 		event.Result = "unverified"
 	}
-	raw, err = json.Marshal(event)
+	raw, err := json.Marshal(event)
 	if err != nil || r.contacts.Append(raw) != nil {
-		return "", time.Time{}, errPreparation
+		return probeErr, errPreparation
 	}
-	return digest, until, probeErr
+	return probeErr, nil
 }
