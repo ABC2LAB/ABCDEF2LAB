@@ -302,9 +302,15 @@ func TestC35PoolDeadlineJoinsAllProbes(t *testing.T) {
 		t.Fatal("전체 기한/병렬 접촉 마감 위반", err, started.Load(), active.Load())
 	}
 	attempts, completed := map[string]bool{}, map[string]bool{}
+	deadline, _ := ctx.Deadline()
+	lastAttempt := ""
 	for _, e := range contacts.events {
 		if e.Phase == "attempt" {
+			if !e.At.Before(deadline) {
+				t.Fatal("전체 기한 뒤 새 주소의 접촉 시도 기록")
+			}
 			attempts[e.ID] = true
+			lastAttempt = e.ID
 		} else {
 			if e.Result != "unverified" {
 				t.Fatal("취소된 접촉 검증 성공 기록")
@@ -312,12 +318,19 @@ func TestC35PoolDeadlineJoinsAllProbes(t *testing.T) {
 			completed[e.ID] = true
 		}
 	}
-	if len(attempts) != int(started.Load()) || len(completed) != len(attempts) {
-		t.Fatal("미접촉 감사 생성 또는 취소 접촉 마감 유실", len(attempts), len(completed), started.Load())
+	// A synchronous attempt append can cross the deadline before admission.
+	// That final attempt stays incomplete; admitted workers still all finish.
+	if len(attempts) < int(started.Load()) || len(completed) < int(started.Load()) || len(attempts)-len(completed) > 1 {
+		t.Fatal("취소 접촉 마감 유실", len(attempts), len(completed), started.Load())
 	}
 	for id := range attempts {
-		if !completed[id] {
-			t.Fatal("취소 접촉 미마감")
+		if !completed[id] && id != lastAttempt {
+			t.Fatal("마지막 admission 전 시도 이외의 접촉 미마감")
+		}
+	}
+	for id := range completed {
+		if !attempts[id] {
+			t.Fatal("시도 없는 취소 완료 기록")
 		}
 	}
 }
@@ -340,5 +353,39 @@ func TestC35PoolCancellationAfterAuditPreventsContact(t *testing.T) {
 	err := loaded.prepareTargetConnection(ctx, nil, "job-pool-cancelled-at-audit")
 	if !errors.Is(err, context.Canceled) || loaded.productConnection != nil || probes.Load() != 0 || len(journal.events) != 1 || journal.events[0].Phase != "attempt" {
 		t.Fatal("감사 도중 취소 뒤 접촉 또는 가짜 완료", err, probes.Load(), len(journal.events))
+	}
+}
+
+func TestC35PoolSelectionCancelsPendingProbe(t *testing.T) {
+	ips := c35PoolIPs()[:2]
+	r, _, loaded := c35StartPool(t, ips)
+	secondStarted := make(chan struct{})
+	peerResult := make(chan error, 1)
+	r.probe = func(ctx context.Context, _ string, ip string, _ int) (string, time.Time, error) {
+		if ip == ips[0].String() {
+			select {
+			case <-ctx.Done():
+				return "", time.Time{}, ctx.Err()
+			case <-secondStarted:
+				return strings.Repeat("b", 64), time.Now().Add(time.Hour), nil
+			}
+		}
+		close(secondStarted)
+		<-ctx.Done()
+		peerResult <- ctx.Err()
+		return "", time.Time{}, ctx.Err()
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 6*time.Second)
+	defer cancel()
+	if err := loaded.prepareTargetConnection(ctx, nil, "job-pool-select"); err != nil || loaded.productConnection == nil || loaded.productConnection.IP != ips[0].String() {
+		t.Fatal("정상 선택 또는 마감 실패", err)
+	}
+	select {
+	case err := <-peerResult:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatal("선택 뒤 대기 접촉을 취소하지 않고 자체 기한까지 기다림", err)
+		}
+	default:
+		t.Fatal("선택 뒤 대기 접촉 미종료")
 	}
 }
