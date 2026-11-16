@@ -25,7 +25,7 @@ import (
 	"golang.org/x/net/dns/dnsmessage"
 )
 
-func fixtureInit() error {
+func fixtureInit(hosts []fixtureHost) error {
 	dir := "/target-tls"
 	if e := os.MkdirAll(dir, 0700); e != nil {
 		return e
@@ -69,7 +69,7 @@ func fixtureInit() error {
 	if e != nil {
 		return e
 	}
-	leaf := &x509.Certificate{SerialNumber: big.NewInt(now.UnixNano() + 1), Subject: pkix.Name{CommonName: "Owned Juice Shop fixtures"}, DNSNames: []string{"juice-a.test", "juice-b.test", "juice.test"}, NotBefore: now.Add(-time.Minute), NotAfter: until, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	leaf := &x509.Certificate{SerialNumber: big.NewInt(now.UnixNano() + 1), Subject: pkix.Name{CommonName: fixtureLeafCommonName}, DNSNames: fixtureHostNames(hosts), NotBefore: now.Add(-time.Minute), NotAfter: until, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
 	leafDer, e := x509.CreateCertificate(rand.Reader, leaf, ca, leafPub, key)
 	if e != nil {
 		return e
@@ -92,14 +92,17 @@ func fixtureInit() error {
 	}
 	return nil
 }
-func fixtureDNS() error {
+func fixtureDNS(hosts []fixtureHost) error {
 	token, e := os.ReadFile("/target-tls/control-token")
 	if e != nil {
 		return e
 	}
 	var mu sync.RWMutex
 	records := map[string][]string{}
-	addresses := map[string]netip.Addr{"juice-a.test.": netip.MustParseAddr("172.31.253.20"), "juice-b.test.": netip.MustParseAddr("172.31.253.22"), "juice.test.": netip.MustParseAddr("172.31.253.20")}
+	addresses := map[string]netip.Addr{}
+	for _, h := range hosts {
+		addresses[h.name+"."] = h.addr
+	}
 	var queries atomic.Int64
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /stats", func(w http.ResponseWriter, r *http.Request) {

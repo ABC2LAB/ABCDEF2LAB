@@ -28,15 +28,20 @@ var exploreBashSeen atomic.Value
 func main() {
 	mode := flag.String("mode", "model", "acceptance role")
 	target := flag.String("target", "https://juice.test:9443", "owned target")
-	upstream := flag.String("upstream", "http://juice-shop:3000", "owned Juice Shop")
+	upstream := flag.String("upstream", "http://juice-shop:3000", "owned target upstream")
 	pidsForks := flag.Int("pids-forks", -1, "owned PID fixture children; -1 fills the namespace limit")
+	// 인증서 이름과 DNS 응답은 대상 이름 목록에서 만든다. 기본값은 Juice Shop 수용시험의 이름이고, 연습 대상 회차는
+	// overlay가 바꾼다. 대상 이름이 제품 목표 문장으로 모델에 가므로 대상마다 맞춘다.
+	hostsFlag := flag.String("hosts", defaultFixtureHosts, "owned target names: name=ipv4,...")
 	flag.Parse()
+	hosts, e := parseFixtureHosts(*hostsFlag)
+	must(e)
 	if *mode == "init" {
-		must(fixtureInit())
+		must(fixtureInit(hosts))
 		return
 	}
 	if *mode == "dns" {
-		must(fixtureDNS())
+		must(fixtureDNS(hosts))
 		return
 	}
 	if *mode == "pids-model" {
@@ -47,10 +52,14 @@ func main() {
 		must(servePidsTarget())
 		return
 	}
+	u, e := url.Parse(*upstream)
+	must(e)
+	readyAddress, e := upstreamDialAddress(u)
+	must(e)
 	stats := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ready := true
 		if *mode == "target" || *mode == "workflow-target" {
-			c, e := net.DialTimeout("tcp", "juice-shop:3000", time.Second)
+			c, e := net.DialTimeout("tcp", readyAddress, time.Second)
 			ready = e == nil
 			if c != nil {
 				c.Close()
@@ -69,8 +78,6 @@ func main() {
 		must(http.ListenAndServe(":8080", mux))
 		return
 	}
-	u, e := url.Parse(*upstream)
-	must(e)
 	proxy := httputil.NewSingleHostReverseProxy(u)
 	proxy.Transport = &http.Transport{Proxy: nil}
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, e error) { http.Error(w, "owned_target_unavailable", 503) }

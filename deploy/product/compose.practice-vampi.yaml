@@ -1,0 +1,31 @@
+# 연습 대상 VAmPI로 제품 회차를 돌리는 overlay다. compose.acceptance.yaml 뒤에 둔다.
+# 개선 반복은 연습 대상으로 하고 공식 측정 대상(Juice Shop)에서는 돌리지 않는다(docs/evaluation/practice-targets.md).
+# 대상 이름이 제품 목표 문장으로 모델에 가므로, Juice Shop 수용시험의 이름 대신 중립 이름 하나만 쓴다.
+services:
+  fixture-init:
+    command: [-mode, init, -hosts, vampi.test=172.31.253.20]
+  fixture-dns:
+    command: [-mode, dns, -hosts, vampi.test=172.31.253.20]
+  vampi:
+    image: abc2lab-practice-vampi:${PRODUCT_TAG:-local}
+    build:
+      context: ../eval/practice
+      dockerfile: vampi.Dockerfile
+    networks:
+      target: {ipv4_address: 172.31.253.21}
+    security_opt: [no-new-privileges:true]
+  # Juice Shop 수용시험의 대상과 두 번째 앞단은 이 회차에 띄우지 않는다.
+  juice-shop:
+    profiles: [juice-acceptance]
+  target-front-b:
+    profiles: [juice-acceptance]
+  target-front:
+    command: [-mode, target, -upstream, 'http://vampi:5000']
+    depends_on: !override
+      fixture-init: {condition: service_completed_successfully}
+      vampi: {condition: service_started}
+    networks: !override
+      target:
+        ipv4_address: 172.31.253.20
+        aliases: [vampi.test]
+      fixture-control: {}
