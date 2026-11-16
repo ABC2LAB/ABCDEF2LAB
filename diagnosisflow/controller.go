@@ -603,6 +603,7 @@ func (c *Controller) Command(ctx context.Context, owner, op, key string, revisio
 		for i := range s.Endpoints {
 			s.Endpoints[i].Selected = has(ids, s.Endpoints[i].ID)
 		}
+		c.recordModelOmittedLocked()
 		s.Stage = "diagnosing"
 	case "pause":
 		if len(c.record.Commands) >= 31 || s.Paused || (s.Stage != "crawling" && s.Stage != "diagnosing") {
@@ -913,6 +914,12 @@ func (c *Controller) SelectedData() string {
 // 추정 출처 읽기까지 고르면서 목록이 길어져도 모델 입력이 그만큼 커지지 않게 묶는다. 공개 끝점 목록 상한
 // (MaxWorkflowEndpoints 64)에서 행 하나는 보통 100바이트 안팎이라 대개 전부 들어가고, 보고된 이름 목록이 클 때만 덜어 낸다.
 const MaxSelectedDataBytes = 16 << 10
+
+// recordModelOmittedLocked는 선택이 정해질 때 모델 목록에서 빠지는 고른 끝점 수를 스냅숏에 남긴다.
+func (c *Controller) recordModelOmittedLocked() {
+	_, omitted := c.modelEndpointsLocked()
+	c.record.Snapshot.Counts.ModelOmitted = uint64(omitted)
+}
 
 // modelEndpointsLocked는 모델에게 줄 고른 끝점 행과 길이 때문에 뺀 수다. 관찰한 끝점을 앞에, 추정 출처 끝점을 뒤에
 // 둔다. 상한을 넘으면 뒤쪽 행의 이름 목록(보조 정보)부터 덜고, 그래도 넘으면 뒤쪽 행을 뺀다. 빠진 끝점도 허용 판정은

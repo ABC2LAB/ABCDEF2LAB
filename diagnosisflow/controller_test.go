@@ -389,7 +389,52 @@ func TestModelEndpointListByteCap(t *testing.T) {
 	if omitted <= 0 || !strings.Contains(many.Instructions(), strconv.Itoa(omitted)+" more selected endpoints were left out") {
 		t.Fatalf("omitted=%d not reported", omitted)
 	}
+	// 선택이 정해지는 때(여기서는 수동 선택 명령과 같은 기록 함수) 회차 결과 스냅숏에 뺀 수가 남는다.
+	many.mu.Lock()
+	many.recordModelOmittedLocked()
+	recorded := many.record.Snapshot.Counts.ModelOmitted
+	many.mu.Unlock()
+	if recorded != uint64(omitted) {
+		t.Fatalf("snapshot model_omitted=%d want %d", recorded, omitted)
+	}
 	observedFirst(rows)
+}
+
+// 선택이 정해지는 실제 경로(자동 모드 크롤 종료, 수동 선택 명령)에서 모델 목록에서 빠진 고른 끝점 수가 회차 결과
+// 스냅숏(counts.model_omitted)에 남는다. 공개 목록 상한보다 많은 끝점은 스냅숏에 직접 넣어 흉내 낸다.
+func TestModelOmittedRecordedWhenSelectionSettles(t *testing.T) {
+	many := func(c *Controller) []string {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		var ids []string
+		for i := 0; i < 256; i++ {
+			path := "/read/" + strings.Repeat("p", 100) + "/" + strconv.Itoa(i)
+			id := endpointID(c.origin, "GET", path)
+			c.record.Snapshot.Endpoints = append(c.record.Snapshot.Endpoints, Endpoint{ID: id, Method: "GET", Path: path, Kind: "request", Source: "html_link", InScope: true, Change: "attested_read", Visited: true})
+			ids = append(ids, id)
+		}
+		return ids
+	}
+	auto, _ := flowFixture(t, Auto)
+	auto.binding.Limits.MaxPages = 1
+	many(auto)
+	if handled, err := auto.Crawl(t.Context(), func(context.Context, string) (e2runner.Result, error) { return crawlResult("<p>owned</p>"), nil }); !handled || err != nil {
+		t.Fatal("crawl", handled, err)
+	}
+	s, _ := auto.Snapshot()
+	if s.Stage != "diagnosing" || s.Counts.ModelOmitted == 0 {
+		t.Fatalf("auto crawl finish: stage=%s model_omitted=%d", s.Stage, s.Counts.ModelOmitted)
+	}
+	manual, _ := flowFixture(t, Manual)
+	ids := many(manual)
+	manual.mu.Lock()
+	manual.record.Snapshot.Stage = "awaiting_selection"
+	revision := manual.record.Snapshot.Revision
+	manual.mu.Unlock()
+	selected, err := manual.Command(t.Context(), "ARTEX", "selection", "select-many", revision, ids)
+	if err != nil || selected.Counts.ModelOmitted == 0 {
+		t.Fatalf("manual selection: err=%v model_omitted=%d", err, selected.Counts.ModelOmitted)
+	}
 }
 
 // 자동 모드에서 처음 보는 경로라도 확인한 읽기(읽기 확인 접두 안의 GET·HEAD)로 허용한 요청은, 결과가 불명이어도

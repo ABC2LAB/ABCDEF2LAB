@@ -412,6 +412,7 @@ func (c *Controller) Crawl(ctx context.Context, fetch Fetch) (handled bool, fail
 			e := &c.record.Snapshot.Endpoints[i]
 			e.Selected = c.autoSelectableLocked(e)
 		}
+		c.recordModelOmittedLocked()
 	}
 	return true, c.saveLocked(ctx, false, "crawl_finished", "", "", 0)
 }

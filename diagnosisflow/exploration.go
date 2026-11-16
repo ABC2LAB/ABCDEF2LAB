@@ -383,6 +383,7 @@ func (c *Controller) FinishExploration(ctx context.Context, b ExplorationBinding
 			e := &s.Endpoints[i]
 			e.Selected = c.autoSelectableLocked(e)
 		}
+		c.recordModelOmittedLocked()
 	}
 	return c.saveLocked(ctx, false, "exploration_finished", "", "", 0)
 }
