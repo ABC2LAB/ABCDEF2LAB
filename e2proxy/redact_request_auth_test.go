@@ -75,6 +75,14 @@ func TestTestAccountRunMasksRequestCredentialsStructurally(t *testing.T) {
 		`curl -b token="synthetic review value" https://owned.test/c`:                                               `curl -b [REDACTED] https://owned.test/c`,
 		// 인용부가 닫히기 전에 바깥 JSON 문자열이 끝나면(더 얕은 이스케이프 따옴표) 거기서 끝나고 뒤 칸은 남는다.
 		`{"stdout":"> Cookie: lang=\"synthetic-review-value","next":1}`: `{"stdout":"> Cookie: [REDACTED]","next":1}`,
+		// 퍼즈로 찾은 경계(#571). 붙여 쓴 인용부 뒤에 값이 이어지면 닫힘이 아니다. 이름이 닫히지 않은 줄의 콜론 뒤 공백 다음
+		// 따옴표는 값의 첫 글자다. JSON 안 값의 홑따옴표는 글자다. 안쪽 문자열이 닫히기 전에 바깥이 끝나면 거기서 끝난다.
+		// JSON 안 -b 값은 이스케이프 탭에서 끝난다.
+		"curl -s -H Cookie:'a=x'b; token=synthetic-review-value https://owned.test/x":         "curl -s -H Cookie:'[REDACTED]",
+		"> Cookie: '=/['}; token=synthetic-review-value\r\n> Accept: */*\r\n":                 "> Cookie: [REDACTED]\r\n> Accept: */*\r\n",
+		`{"stdout":"> Cookie: a={[x y'}; token=synthetic-review-value\r\n> Accept: */*\r\n"}`: `{"stdout":"> Cookie: [REDACTED]\r\n> Accept: */*\r\n"}`,
+		`{"payload":"{\"stdout\":\"> Cookie: token=synthetic-review-value","next":1}`:         `{"payload":"{\"stdout\":\"> Cookie: [REDACTED]","next":1}`,
+		`{"command":"curl -b tok=synthetic-review-value\thttps://owned.test/x"}`:              `{"command":"curl -b [REDACTED]\thttps://owned.test/x"}`,
 		// 대상 응답의 Set-Cookie JSON 이름은 요청 Cookie로 보지 않는다.
 		`{"Set-Cookie": "sid=short1"}`:                                         `{"Set-Cookie": "sid=short1"}`,
 		"Proxy-Authorization: Basic eHl6":                                      "Proxy-Authorization: [REDACTED]",
