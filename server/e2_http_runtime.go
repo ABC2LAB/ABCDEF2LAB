@@ -16,6 +16,7 @@ import (
 	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
+	"github.com/Autumn-27/artex/internal/diagnosticlog"
 )
 
 var (
@@ -441,39 +442,83 @@ func (r *E2HTTPRuntime) diagnosisAllowanceLocked(t *e2HTTPRuntimeTask) (requests
 	return charge.Requests, false, charge.Requests >= r.options.RunRequests
 }
 
+// planningFailure는 검사 분기만 고정 어휘로 기록한다. 호출자가 준 task ID·오류 원문은 쓰지 않고 로거의 기존 결속을 쓴다.
+// 진단 로그가 없거나 기록에 실패해도 기존 오류·예산·마감 의미는 바꾸지 않는다(C10).
+func (r *E2HTTPRuntime) planningFailure(ctx context.Context, status, reason string) {
+	logContext := ctx
+	if diagnosticlog.From(logContext) == nil && r != nil {
+		logContext = r.ctx
+	}
+	_ = diagnosticlog.Emit(logContext, diagnosticlog.Event{Component: "planner", Event: "stage_finished", Stage: "planning", Status: status, ReasonCode: reason})
+}
 func (r *E2HTTPRuntime) PreparePlanning(ctx context.Context, task *Task) (context.Context, error) {
 	t, err := r.taskFor(task)
-	if err != nil || ctx == nil || ctx.Err() != nil {
+	if err != nil {
+		r.planningFailure(ctx, "failed", "planning_task_unavailable")
+		return ctx, ErrE2HTTPHost
+	}
+	if ctx == nil || ctx.Err() != nil {
+		status := "failed"
+		if ctx != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				status = "timeout"
+			} else if errors.Is(ctx.Err(), context.Canceled) {
+				status = "cancelled"
+			}
+		}
+		r.planningFailure(ctx, status, "planning_context_closed")
 		return ctx, ErrE2HTTPHost
 	}
 	if r.options.CheckAuthority != nil && r.options.CheckAuthority(ctx) != nil {
+		r.planningFailure(ctx, "failed", "planning_authority_rejected")
 		return ctx, ErrE2HTTPHost
 	}
 	if err := r.prepareExploration(ctx, task, t); err != nil {
+		r.planningFailure(ctx, "failed", "planning_exploration_failed")
 		return ctx, err
 	}
 	if r.options.Workflow != nil {
 		if err := r.options.Workflow.BeforePlanning(ctx); err != nil {
+			r.planningFailure(ctx, "blocked", "planning_workflow_blocked")
 			return ctx, err
 		}
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.closed || t.blocked || t.ctx.Err() != nil {
+	if t.closed {
+		r.planningFailure(ctx, "failed", "planning_task_closed")
 		return ctx, ErrE2HTTPHost
 	}
-	if t.plannerRounds >= r.options.MaxPlannerRounds || t.control.Snapshot().Calls >= r.options.MaxToolCalls {
+	if t.blocked {
+		r.planningFailure(ctx, "blocked", "planning_task_blocked")
+		return ctx, ErrE2HTTPHost
+	}
+	if t.ctx.Err() != nil {
+		r.planningFailure(ctx, "cancelled", "planning_task_cancelled")
+		return ctx, ErrE2HTTPHost
+	}
+	if t.plannerRounds >= r.options.MaxPlannerRounds {
 		task.firstDiagnosisBudgetLimited.Store(true)
+		r.planningFailure(ctx, "blocked", "planning_round_limit")
 		return ctx, ErrE2HTTPBudgetLimited
 	}
-	// Worker가 실행 중이어도 Planner를 깨운다(C27, 원본처럼). Planner는 대상으로 보내지 않고, 모델 호출은 실행의
-	// 동시 호출 수 안에서 차례로 나간다. 마감 판정은 Worker가 끝날 때 올라가는 작업 순서로 "마지막 작업 뒤 계획"을 본다.
+	if t.control.Snapshot().Calls >= r.options.MaxToolCalls {
+		task.firstDiagnosisBudgetLimited.Store(true)
+		r.planningFailure(ctx, "blocked", "planning_tool_limit")
+		return ctx, ErrE2HTTPBudgetLimited
+	}
+	// Worker가 실행 중이어도 Planner를 깨운다(C27). 모델 동시성·예산·기존 lease 판정은 바꾸지 않는다.
 	if t.lease != nil {
 		if !t.validLease {
+			r.planningFailure(ctx, "failed", "planning_lease_invalid")
 			return ctx, ErrE2HTTPHost
 		}
-		// 승인 요청 예산을 다 썼으면 새 계획 없이, 진행 중 작업이 끝나는 대로 감독자가 budget_limited로 마감한다.
 		if err := r.leaseAdmission(task, t, *t.lease); err != nil {
+			status, reason := "failed", "planning_lease_invalid"
+			if errors.Is(err, ErrE2HTTPBudgetLimited) {
+				status, reason = "blocked", "planning_request_budget"
+			}
+			r.planningFailure(ctx, status, reason)
 			return ctx, err
 		}
 	}
