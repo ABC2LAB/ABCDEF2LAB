@@ -107,7 +107,7 @@ type Budget struct {
 	DurationSeconds int64 `json:"duration_seconds"`
 }
 
-// prefix는 자신과 하위 경로를 포함한다. query/body의 실제 E② 범위를 축소해 표시하지 않는다.
+// 경로 표현 /prefix는 자신과 하위 경로, =/exact는 query 없는 경로 하나다. 실제 E② 범위를 축소해 표시하지 않는다.
 // 이 projection에는 연결 IP·보호 경로·키·승인 원문을 넣지 않는다.
 type Scope struct {
 	TargetRef      string     `json:"target_ref"`

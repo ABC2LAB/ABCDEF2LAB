@@ -21,7 +21,7 @@ func ptr[T any](v T) *T { return &v }
 // 않게 둔다. 본문 상한은 C16 결정안 3대로 공식 평가 정책 템플릿과 같은 16MiB다.
 func TestProductPolicyBoundsDefaults(t *testing.T) {
 	product, ok := productPolicyBounds(productInstallInput{})
-	want := server.E2HTTPFilePolicy{MaxRequests: 400, Limits: server.E2HTTPFileLimits{MaxAttempts: 400, MaxCalls: 1000, MaxConcurrent: 16, MaxBodyBytes: 16 << 20, RequestTimeoutMS: 60000, CallTimeoutMS: 120000, MaxDenials: 16, MaxTransient: 4, MaxUnknown: 1},
+	want := server.E2HTTPFilePolicy{MaxRequests: 400, Limits: server.E2HTTPFileLimits{MaxAttempts: 400, MaxCalls: 1000, MaxConcurrent: 16, MaxBodyBytes: 16 << 20, RequestTimeoutMS: 60000, CallTimeoutMS: 600000, MaxDenials: 16, MaxTransient: 4, MaxUnknown: 1},
 		Proxy:   server.E2HTTPFileProxy{HeaderTimeoutMS: 1000, RequestTimeoutMS: 60000, MaxHeaderBytes: 32768, MaxConnections: 16},
 		Runtime: server.E2HTTPFileRuntime{MaxWorkerTurns: 1000, MaxToolCalls: 1000, WorkerTimeoutMS: 1200000, MaxPlannerRounds: 100, MaxIntentRuns: 1, DrainTimeoutMS: 10000, OutputLimit: 32768}}
 	if !ok || product.MaxRequests != want.MaxRequests || product.Limits != want.Limits || product.Proxy != want.Proxy || product.Runtime != want.Runtime {

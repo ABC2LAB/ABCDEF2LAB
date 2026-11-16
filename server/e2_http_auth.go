@@ -337,7 +337,7 @@ func authPrepOne(ctx context.Context, call *e2proxy.Call, execution *e2proxy.Exe
 	}
 	values := authSessionValues(login, session)
 	if len(values) == 0 || execution.AddRedactValues(values...) != nil {
-		// 가릴 수 없는 세션(너무 짧음)은 쓰지 않는다.
+		// 가릴 수 없는 세션(길이·JWT 조각까지 포함한 개수 상한)은 모델용 세션으로 내보내지 않는다.
 		return E2HTTPAuthSessionNotFound
 	}
 	sessions[account.Label] = session
@@ -395,7 +395,8 @@ func authExtractor(login diagnosisprep.TargetLogin) e2proxy.AuthExtractor {
 	}
 }
 
-// authSessionValues는 출력에서 가릴 세션 값이다: 쿠키 값 각각, 또는 토큰 값(접두 없이)과 헤더 값 전체.
+// authSessionValues는 인증 준비가 추출한 세션 값이다(쿠키 각각 또는 접두 없는 토큰). AddRedactValues가 시험 계정
+// 실행에서만 유효한 JWT의 payload·signature를 출력 전용 가림에 더한다. 응답 보류용 보호 값에는 넣지 않는다.
 func authSessionValues(login diagnosisprep.TargetLogin, session http.Header) [][]byte {
 	var values []string
 	if len(login.Cookies) > 0 {

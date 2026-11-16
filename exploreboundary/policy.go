@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Autumn-27/artex/internal/pathscope"
 	"github.com/Autumn-27/artex/targetaddr"
 )
 
@@ -125,6 +126,7 @@ type Request struct {
 	Port   uint16
 	// EscapedPath는 url.URL.EscapedPath() 값이다. 정규화로 바뀌는 경로는 승인 경로로 보지 않는다.
 	EscapedPath string
+	HasQuery    bool // query 값은 기록하지 않고 존재 여부만 경계에 넘긴다.
 	FetchMode   string
 	FetchDest   string
 	HasAuth     bool
@@ -156,8 +158,7 @@ func canonicalPath(escaped string) (string, bool) {
 }
 
 func within(p, prefix string) bool {
-	prefix = strings.TrimSuffix(prefix, "/")
-	return prefix == "" || p == prefix || strings.HasPrefix(p, prefix+"/")
+	return pathscope.Allows(p, false, prefix)
 }
 
 // excludedWithin은 제외 경로 패턴 매칭이다. 제품의 대상 등록·진단 흐름과 같은 규칙이다(diagnosisflow excludedWithin):

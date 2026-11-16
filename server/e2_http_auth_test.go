@@ -79,7 +79,11 @@ func (a *authLoginTarget) handler(t *testing.T) http.Handler {
 	})
 }
 
-func authTestExecution(t *testing.T, origin string, rec *authEventCounter) *e2proxy.Execution {
+func authTestExecution(t *testing.T, origin string, rec *authEventCounter, modes ...e2proxy.HeaderMode) *e2proxy.Execution {
+	var mode e2proxy.HeaderMode
+	if len(modes) > 0 {
+		mode = modes[0]
+	}
 	t.Helper()
 	now := time.Now()
 	ledger, err := budget.New(budget.Limits{MaxApprovals: 1, MaxRequestsPerApproval: 20})
@@ -91,7 +95,7 @@ func authTestExecution(t *testing.T, origin string, rec *authEventCounter) *e2pr
 		t.Fatal(err)
 	}
 	ip := netip.MustParseAddr("127.0.0.1")
-	e, err := e2proxy.NewExecution(t.Context(), e2proxy.Config{ApprovalMode: e2proxy.ApprovalPreauthorizedScope, Scope: transmit.Scope{TaskRef: "task", RunRef: "run", CaseRef: "case", ResetRef: "reset", PolicyRef: "policy"},
+	e, err := e2proxy.NewExecution(t.Context(), e2proxy.Config{HeaderMode: mode, ApprovalMode: e2proxy.ApprovalPreauthorizedScope, Scope: transmit.Scope{TaskRef: "task", RunRef: "run", CaseRef: "case", ResetRef: "reset", PolicyRef: "policy"},
 		IntentID: 1, OwnerRef: "ARTEX", PolicyRevision: "revision1", AccountRef: "anonymous", SessionRef: "anonymous-session", ExpiresAt: now.Add(time.Hour),
 		Rules: []e2proxy.Rule{{Ref: "read", Origin: origin, ConnectIP: ip, PathPrefix: "/read", PathScopeRef: "read", Methods: []string{"GET"}},
 			{Ref: "auth-login", Origin: origin, ConnectIP: ip, PathPrefix: "/login", PathScopeRef: "auth-login", Methods: []string{"POST"}, Purpose: e2proxy.PurposeAuthPrep}},

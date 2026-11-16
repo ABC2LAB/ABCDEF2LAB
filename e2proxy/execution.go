@@ -27,6 +27,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/Autumn-27/artex/internal/pathscope"
 	"github.com/Autumn-27/artex/transmit/budget"
 )
 
@@ -173,7 +174,7 @@ func compileRules(rules []Rule) ([]compiledRule, error) {
 		if err != nil || u.RawQuery != "" || u.ForceQuery || (u.Path != "" && u.Path != "/") {
 			return nil, ErrConfig
 		}
-		if !validPath(r.PathPrefix) {
+		if !validPath(r.PathPrefix) || r.PathMatch != "" && r.PathMatch != "exact" || r.Purpose != "" && r.PathMatch != "" {
 			return nil, ErrConfig
 		}
 		m := map[string]bool{}
@@ -962,7 +963,7 @@ func (e *Execution) matchLocked(req *http.Request) (compiledRule, bool) {
 		if r.Purpose != "" {
 			continue
 		}
-		if req.URL.Scheme == r.origin.Scheme && a == r.authority && r.methods[req.Method] && (r.PathPrefix == "/" || p == strings.TrimSuffix(r.PathPrefix, "/") || strings.HasPrefix(p, strings.TrimSuffix(r.PathPrefix, "/")+"/")) {
+		if req.URL.Scheme == r.origin.Scheme && a == r.authority && r.methods[req.Method] && (pathscope.Scope{Path: r.PathPrefix, Mode: pathscope.Mode(r.PathMatch)}).Allows(p, req.URL.RawQuery != "" || req.URL.ForceQuery) {
 			return r, true
 		}
 	}
@@ -1473,7 +1474,15 @@ func (e *Execution) RedactOutput(b []byte) []byte {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	out := bytes.Clone(b)
-	for _, set := range [][][]byte{e.secrets, e.redactOnly} {
+	sets := [][][]byte{e.secrets, e.redactOnly}
+	if e.cfg.HeaderMode == HeaderTestAccountPassthrough {
+		// 전체 토큰을 조각보다 먼저 가린다. 계정·갱신 간에 같은 claims를 공유해도 전체 토큰 가림이 깨지지 않는다.
+		values := append(append([][]byte(nil), e.secrets...), e.redactOnly...)
+		sort.SliceStable(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
+		sets = [][][]byte{values}
+		out = redactEscapedJSONValues(out, values)
+	}
+	for _, set := range sets {
 		for _, v := range set {
 			if len(v) > 0 {
 				out = bytes.ReplaceAll(out, v, []byte("[REDACTED]"))
@@ -1555,14 +1564,15 @@ func (e *Execution) testAccountPassthrough() bool {
 }
 
 // AddRedactValues는 출력 가림 전용 값을 더한다(인증 준비 세션 값). 이 값들은 도구 출력·근거·보고서에서 가리지만 응답
-// 표현 보류에는 쓰지 않는다. 너무 짧거나 길거나 많으면 하나도 더하지 않고 ErrConfig다.
+// 표현 보류에는 쓰지 않는다. 시험 계정 세션의 정규 JWT는 payload·signature도 함께 등록한다(머리·짧은 조각 제외).
+// 너무 짧거나 길거나, 조각까지 포함해 많으면 하나도 더하지 않고 ErrConfig다.
 func (e *Execution) AddRedactValues(values ...[]byte) error {
 	if e == nil {
 		return ErrConfig
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if len(e.redactOnly)+len(values) > maxRedactValues {
+	if len(values) > maxRedactValues {
 		return ErrConfig
 	}
 	for _, v := range values {
@@ -1570,11 +1580,23 @@ func (e *Execution) AddRedactValues(values ...[]byte) error {
 			return ErrConfig
 		}
 	}
+	if e.cfg.HeaderMode == HeaderTestAccountPassthrough {
+		fresh, ok := freshSessionRedactions(e.redactOnly, values, maxRedactValues)
+		if !ok {
+			return ErrConfig
+		}
+		e.redactOnly = append(e.redactOnly, fresh...)
+		return nil
+	}
+	if len(e.redactOnly)+len(values) > maxRedactValues {
+		return ErrConfig
+	}
 	for _, v := range values {
 		e.redactOnly = append(e.redactOnly, bytes.Clone(v))
 	}
 	return nil
 }
+
 func credentialValues(rules []compiledRule) [][]byte {
 	seen := map[string]bool{}
 	add := func(v string) {
