@@ -1,18 +1,20 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { SERVER_EXTERNAL_ACCOUNT_STATEMENT } from "./external-account-consent-fixtures";
 import { beforeEach, expect, it, vi } from "vitest";
+
 import { apiFetch } from "./api";
 import {
   createURLDraft,
   parseURLJob,
+  readURLHandle,
   sameURLInput,
   storeURLHandle,
-  readURLHandle,
   urlDiagnosisInput,
 } from "./diagnosis-url";
 import { draft, envelope, handle, owner } from "./diagnosis-url-fixtures";
 import { readExternalTestAccountPresence } from "./external-account-consent";
+import { SERVER_EXTERNAL_ACCOUNT_STATEMENT } from "./external-account-consent-fixtures";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 vi.mock("./api", async (original) => ({ ...(await original<typeof import("./api")>()), apiFetch: vi.fn() }));
 beforeEach(() => {
   vi.resetAllMocks();
@@ -44,6 +46,21 @@ it("동의는 메모리용 핸들에만 두고 브라우저 저장소로 복원�
   expect(localStorage.length).toBe(0);
   sessionStorage.setItem("abc2lab.urlDiagnosisHandle.v2", JSON.stringify(consented));
   expect(readURLHandle(owner)).toBeNull();
+});
+it("시작을 보낸 동의 회차는 새로고침 뒤에도 이어 보도록 저장하고, 시작 전 동의는 여전히 남기지 않는다", () => {
+  const consented = { ...handle, input: { ...handle.input, external_test_accounts: true as const } };
+  // 시작 키가 있으면 같은 진단을 다시 시작할 수 없어 동의가 다시 쓰이지 않는다 → 이어 보기용으로 저장
+  const started = { ...consented, startKey: "start-1", startRevision: handle.revision };
+  storeURLHandle(started);
+  const restored = readURLHandle(owner);
+  if (!restored) throw new Error("시작한 동의 회차의 핸들이 저장소에 없다");
+  expect(restored.startKey).toBe("start-1");
+  expect(restored.input.external_test_accounts).toBe(true);
+  expect(localStorage.length).toBe(0);
+  // 시작 전(시작 키 없음) 동의 핸들로 바꾸면 저장소에서 지운다
+  storeURLHandle(consented);
+  expect(readURLHandle(owner)).toBeNull();
+  expect(sessionStorage.length).toBe(0);
 });
 it("정확한 승인 대상의 실제 시험 계정 등록만 조회한다", async () => {
   vi.mocked(apiFetch)
