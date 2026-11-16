@@ -20,6 +20,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"slices"
 	"syscall"
 	"time"
 
@@ -61,6 +62,9 @@ type config struct {
 	// 않는다(제품). 바이트 상한은 회차 정책이 정하고 코드 기본값이 없다.
 	EvidenceDir      string `json:"evidence_dir,omitempty"`
 	EvidenceMaxBytes int64  `json:"evidence_max_bytes,omitempty"`
+	// EvalUpstream은 평가·수용시험 배치의 계측기 탐색 입구(IP:포트 리터럴)다(계약 §4.2). 원자료 칸과 같이 줄 때만 받는다.
+	// 제품 설정에는 넣지 않는다.
+	EvalUpstream string `json:"eval_upstream,omitempty"`
 }
 
 func readJSON(path string, v any) error {
@@ -184,6 +188,10 @@ func build(c config) (*parts, error) {
 		}
 		controls = append(controls, ap)
 	}
+	evalUpstream, err := parseEvalUpstream(c, browserAddr, directAddr, controls)
+	if err != nil {
+		return nil, err
+	}
 	res, err := resolver(c.ResolverAddress)
 	if err != nil {
 		return nil, err
@@ -202,7 +210,8 @@ func build(c config) (*parts, error) {
 		CloseWait: time.Duration(c.CloseWaitMS) * time.Millisecond}
 	proxy := func(ingress exploreboundary.Ingress) (*exploreboundary.Proxy, error) {
 		return exploreboundary.NewProxy(exploreboundary.ProxyConfig{Ingress: ingress, Current: m.Current, CA: ca, CAKey: key, Roots: roots,
-			MaxRequestBytes: c.MaxRequestBytes, MaxResponseBytes: c.MaxResponseBytes, MaxTunnels: c.MaxTunnels, Timeout: timeout, LeafValidity: time.Duration(c.LeafValiditySec) * time.Second})
+			MaxRequestBytes: c.MaxRequestBytes, MaxResponseBytes: c.MaxResponseBytes, MaxTunnels: c.MaxTunnels, Timeout: timeout, LeafValidity: time.Duration(c.LeafValiditySec) * time.Second,
+			EvalUpstream: evalUpstream})
 	}
 	browser, err := proxy(exploreboundary.BrowserIngress)
 	if err != nil {
@@ -215,6 +224,25 @@ func build(c config) (*parts, error) {
 	m.Proxies = []*exploreboundary.Proxy{browser, direct}
 	return &parts{manager: m, browser: browser, direct: direct, listens: [2]netip.AddrPort{browserAddr, directAddr}, conns: exploreboundary.NewIngressConns(),
 		socket: c.ControlSocket, uid: c.EngineUID, gid: c.EngineGID, timeout: timeout}, nil
+}
+
+// parseEvalUpstream은 평가 upstream 칸을 읽는다. 비어 있으면 제품 동작(판정 주소로 연결)이다. 평가 upstream은 원자료를
+// 쓰는 평가·수용시험 회차 전용이라, 원자료 칸 없이 주면 제품 설정에 잘못 들어간 것으로 보고 시작하지 않는다. 이름은 받지
+// 않는다(경계 밖 이름 풀이를 쓰지 않음). 입구 자신이나 차단할 제어 통로를 가리키면 거부한다.
+func parseEvalUpstream(c config, browser, direct netip.AddrPort, controls []netip.AddrPort) (netip.AddrPort, error) {
+	if c.EvalUpstream == "" {
+		return netip.AddrPort{}, nil
+	}
+	ap, err := netip.ParseAddrPort(c.EvalUpstream)
+	if err != nil || c.EvidenceDir == "" || c.EvidenceMaxBytes == 0 {
+		return netip.AddrPort{}, errors.New("eval_upstream_invalid")
+	}
+	ap = netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port())
+	a := ap.Addr()
+	if ap.Port() == 0 || a.IsUnspecified() || a.IsMulticast() || a.Zone() != "" || ap == browser || ap == direct || slices.Contains(controls, ap) {
+		return netip.AddrPort{}, errors.New("eval_upstream_invalid")
+	}
+	return ap, nil
 }
 
 func (p *parts) serve(ctx context.Context) error {

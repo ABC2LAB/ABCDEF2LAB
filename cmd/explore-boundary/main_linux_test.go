@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"math/big"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"testing"
@@ -104,6 +105,44 @@ func TestBuildEvidenceNeedsBothFields(t *testing.T) {
 	c := validConfig(t)
 	if p, err := build(c); err != nil || p.manager.Policy.Evidence != nil {
 		t.Fatal("boundary without evidence fields must not write evidence", err)
+	}
+}
+
+// 평가 upstream(계약 §4.2)은 원자료를 쓰는 평가·수용시험 회차에서만 켠다. 원자료 칸 없이 주면 제품 설정에 잘못 들어간
+// 것으로 보고 시작하지 않는다. 주면 두 입구 Proxy가 같은 주소를 받고, 이름·입구 자신·제어 통로·모양이 틀린 주소는 거부한다.
+func TestBuildEvalUpstreamOnlyWithEvidence(t *testing.T) {
+	withEvidence := func(t *testing.T) config {
+		c := validConfig(t)
+		c.EvidenceDir = filepath.Join(protectedDir(t), "evidence")
+		if err := os.Mkdir(c.EvidenceDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		c.EvidenceMaxBytes = 1 << 20
+		return c
+	}
+	c := validConfig(t)
+	c.EvalUpstream = "10.94.243.10:8081"
+	if _, err := build(c); err == nil || err.Error() != "eval_upstream_invalid" {
+		t.Fatal("eval upstream without boundary evidence accepted", err)
+	}
+	if p, err := build(validConfig(t)); err != nil || p.browser.EvalUpstream().IsValid() || p.direct.EvalUpstream().IsValid() {
+		t.Fatal("product boundary has an eval upstream", err)
+	}
+	c = withEvidence(t)
+	c.EvalUpstream = "10.94.243.10:8081"
+	p, err := build(c)
+	want := netip.MustParseAddrPort("10.94.243.10:8081")
+	if err != nil || p.browser.EvalUpstream() != want || p.direct.EvalUpstream() != want {
+		t.Fatal("eval upstream not passed to both ingress proxies", err)
+	}
+	for name, raw := range map[string]string{"name": "eval-meter:8081", "no_port": "10.94.243.10", "port_zero": "10.94.243.10:0",
+		"unspecified": "0.0.0.0:8081", "browser_ingress": c.BrowserListen, "direct_ingress": "[::ffff:10.94.242.10]:8080",
+		"control_endpoint": c.ControlEndpoints[0], "zone": "[fe80::1%eth0]:8081"} {
+		bad := withEvidence(t)
+		bad.EvalUpstream = raw
+		if _, err := build(bad); err == nil || err.Error() != "eval_upstream_invalid" {
+			t.Errorf("%s eval upstream accepted: %v", name, err)
+		}
 	}
 }
 
