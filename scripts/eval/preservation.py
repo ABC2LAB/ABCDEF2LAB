@@ -293,6 +293,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="원본 서명 sidecar 디렉터리(각 --baseline과 같은 순서)")
     parser.add_argument("--improved-record-dir", action="append", type=Path,
                         help="개선 후 서명 sidecar 디렉터리(각 --improved와 같은 순서)")
+    parser.add_argument("--improved-boundary-dir", action="append", type=Path,
+                        help="개선 후 회차의 탐색 경계 원자료 디렉터리(각 --improved와 같은 순서, exploration-split/v1 기록에 필수)")
     parser.add_argument("--runner-key-file", help="sidecar를 검증할 보호 러너 키(자료 디렉터리 밖)")
     parser.add_argument("--profile", choices=("R-P", "R-F", "R-R"), help="서명 자료의 기존 수용시험 기준")
     args = parser.parse_args(argv)
@@ -317,22 +319,26 @@ def main(argv: list[str] | None = None) -> int:
                 raise PreservationError("signed_round_arguments_incomplete")
             if len(args.baseline_record_dir) != len(args.baseline) or len(args.improved_record_dir) != len(args.improved):
                 raise PreservationError("signed_round_count_mismatch")
+            if args.improved_boundary_dir is not None and len(args.improved_boundary_dir) != len(args.improved):
+                raise PreservationError("signed_round_count_mismatch")
             runner_key = read_runner_key(args.runner_key_file)
             # 두 보호 키는 원자료·sidecar와 함께 배포하지 않는다.
-            roots = args.baseline + args.improved + args.baseline_record_dir + args.improved_record_dir
+            boundaries = args.improved_boundary_dir or [None] * len(args.improved)
+            roots = args.baseline + args.improved + args.baseline_record_dir + args.improved_record_dir + [d for d in boundaries if d]
             for key_file in (Path(args.runner_key_file), Path(args.path_key_file)):
                 if any(key_file.resolve().is_relative_to(root.resolve()) for root in roots):
                     raise PreservationError("key_inside_evidence_directory")
             b = [load_record(directory, MeterFiles(meter), runner_key)
                  for directory, meter in zip(args.baseline_record_dir, args.baseline)]
-            o = [load_record(directory, MeterFiles(meter), runner_key)
-                 for directory, meter in zip(args.improved_record_dir, args.improved)]
+            o = [load_record(directory, MeterFiles(meter), runner_key, boundary)
+                 for directory, meter, boundary in zip(args.improved_record_dir, args.improved, boundaries)]
             if args.profile == "R-P" and args.budget != 100:
                 raise PreservationError("preservation_profile_budget_mismatch")
             if args.read_only != (args.profile == "R-R"):
                 raise PreservationError("preservation_profile_domain_mismatch")
             verified = validate_series(b, o, request_budget=args.budget, read_only=args.read_only)
-            summary.update(format="abc2lab.preservation-summary/v7", signed_evidence=verified,
+            # v8: signed_evidence.exploration_boundary가 검증된 경계 원자료(회차별 카운터·계측기 대조)를 담을 수 있다.
+            summary.update(format="abc2lab.preservation-summary/v8", signed_evidence=verified,
                            assessment=assessment(summary, args.profile, verified))
     except (PreservationError, PreservationRecordError, RunRecordError, EvidenceError, OSError) as exc:
         reason = "preservation_files_unavailable" if isinstance(exc, OSError) else str(exc)
