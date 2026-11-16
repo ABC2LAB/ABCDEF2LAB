@@ -339,7 +339,7 @@ export function TargetApprovalPanel({
               <HelpTip label="읽기 승인 설명 보기">
                 읽기 승인은 경로 단위이며 그 경로의 모든 query 를 포함합니다. 서버는 query 의 무해성을 검증하지 않으니,
                 query 로 상태가 바뀔 수 있는 경로는 넣지 마세요. 승인할 때 후보 IP별 연결(https 대상은 TLS 확인)을 최대
-                8회 합니다.
+                32회 합니다.
                 <br />
                 <br />
                 비변경 근거는 운영자 확인입니다 · 서버는 GET/HEAD 의 무해성을 검증하지 않습니다 · 등록 후 DNS TXT 소유를
@@ -366,7 +366,8 @@ export function TargetApprovalPanel({
                 />
                 <span>
                   복구 가능한 소유 시험환경이고 POST/PUT/PATCH 검사 권한이 있음 · 사용자 승인 모드는 요청마다 전송 전에
-                  확인, AI 자동 모드는 건별 확인 없이 보냄 · 삭제·초기화·결제는 제외
+                  확인, AI 자동 모드는 건별 확인 없이 보냄 · 어떤 쓰기 요청이 나갈지 미리 모두 알 수 없고 대상 데이터나
+                  상태가 바뀔 수 있음 · 삭제·초기화·결제는 제외
                 </span>
               </label>
             ) : null}

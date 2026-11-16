@@ -59,7 +59,7 @@ func TestManagementBridgeRouteClosure(t *testing.T) {
 		{"POST", "/api/report/diagnostic/remediation?task=42&audience=internal", true},
 		{"GET", "/api/report/diagnostic/remediation/prompt?task=42&entry=e&record=1&digest=x", true},
 		{"POST", "/api/tasks", false},
-		{"POST", "/api/tasks/42/control", false},
+		{"POST", "/api/tasks/42/control", true},
 		{"GET", "/api/tasks/42", false},
 		{"GET", "/api/tasks/042/diagnosis-run", false},
 		{"GET", "/api/tasks/42/request-approvals?token=secret", false},

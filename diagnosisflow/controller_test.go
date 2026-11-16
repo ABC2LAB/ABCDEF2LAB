@@ -130,7 +130,7 @@ func TestManualCrawlSelectionAndExactRequestFence(t *testing.T) {
 }
 
 // 자동 모드는 대상에 승인한 쓰기를 건별 확인 없이 보낸다(C21). 쓰기 승인이 없으면 쓰기는 고르지도 보내지도 않는다.
-// 어느 쪽이든 제외 경로·위험 동작·다른 origin·처음 보는 경로는 막는다.
+// 어느 쪽이든 제외 경로·위험 동작·다른 origin은 막는다. 처음 보는 경로도 승인 범위 안이면 보낸다(2026-11-13 결정).
 func TestAutomaticModeSendsApprovedWritesButNotExcludedPaths(t *testing.T) {
 	for _, writes := range []bool{true, false} {
 		c, _ := flowFixture(t, Auto)
@@ -147,7 +147,7 @@ func TestAutomaticModeSendsApprovedWritesButNotExcludedPaths(t *testing.T) {
 		if c.PreapprovedRead(post) {
 			t.Fatal("write counted as a preapproved read")
 		}
-		for _, view := range []e2proxy.RequestView{{Method: "GET", URL: "https://owned.test/read/logout"}, {Method: "GET", URL: "https://owned.test/read/excluded"}, {Method: "GET", URL: "https://other.test/read"}, {Method: "GET", URL: "https://owned.test/read/newly-found"}, {Method: "POST", URL: "https://owned.test/read/excluded"}} {
+		for _, view := range []e2proxy.RequestView{{Method: "GET", URL: "https://owned.test/read/logout"}, {Method: "GET", URL: "https://owned.test/read/excluded"}, {Method: "GET", URL: "https://other.test/read"}, {Method: "POST", URL: "https://owned.test/read/excluded"}} {
 			if c.Before(t.Context(), view) == nil {
 				t.Fatal("automatic scope widened", view)
 			}
@@ -155,6 +155,131 @@ func TestAutomaticModeSendsApprovedWritesButNotExcludedPaths(t *testing.T) {
 		if c.Before(t.Context(), e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/item"}) != nil {
 			t.Fatal("approved discovered read denied")
 		}
+	}
+}
+
+// 자동 모드는 크롤이 찾지 못했거나 고르지 않은 경로·메서드도 대상 승인 범위(경로 접두·메서드) 안이면 보낸다(2026-11-13
+// 사용자 결정). 승인 범위 밖·제외 경로·위험 동작·결과 불명 쓰기 재전송은 그대로 막고, 쓰기 승인이 없으면 부작용 가능
+// 요청은 보내지 않는다. 운영자가 고르는 수동 모드는 고른 끝점만 보낸다.
+func TestAutomaticModeSendsUndiscoveredPathsWithinApprovedScope(t *testing.T) {
+	for _, writes := range []bool{true, false} {
+		for _, mode := range []string{Auto, Manual} {
+			c, _ := flowFixture(t, mode)
+			c.binding.ReversibleWrites = writes
+			c.mu.Lock()
+			item := c.addLocked("GET", "/read/item", "page", "html_link", "/read")
+			item.Selected, item.Change = true, "attested_read"
+			form := c.addLocked("GET", "/read/search", "form", "html_form", "/read")
+			form.Change = "possible" // 발견했지만 고르지 않은 GET 폼
+			c.record.Snapshot.Stage = "diagnosing"
+			c.mu.Unlock()
+			auto := mode == Auto
+			for _, tc := range []struct {
+				view  e2proxy.RequestView
+				allow bool
+			}{
+				{e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/newly-found"}, auto},
+				{e2proxy.RequestView{Method: "HEAD", URL: "https://owned.test/read/item"}, auto},
+				{e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/api/Users/7?q=1"}, auto},
+				{e2proxy.RequestView{Method: "POST", URL: "https://owned.test/read/newly-found", BodyPresent: true, BodyBytes: 2}, auto && writes},
+				{e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/search?q=x"}, auto && writes},
+				{e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/item"}, true},
+				{e2proxy.RequestView{Method: "GET", URL: "https://owned.test/admin"}, false},
+				{e2proxy.RequestView{Method: "PUT", URL: "https://owned.test/read/newly-found"}, false},
+				{e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/excluded/deeper"}, false},
+				{e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/newly-found?action=delete"}, false},
+				{e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/account/delete"}, false},
+				{e2proxy.RequestView{Method: "GET", URL: "https://other.test/read/newly-found"}, false},
+				{e2proxy.RequestView{Method: "POST", URL: "https://owned.test/read/big", BodyPresent: true, BodyBytes: 65537}, false},
+			} {
+				if err := c.Before(t.Context(), tc.view); (err == nil) != tc.allow {
+					t.Fatalf("%s writes=%v %s %s: allow=%v err=%v", mode, writes, tc.view.Method, tc.view.URL, tc.allow, err)
+				}
+			}
+			if !auto {
+				continue
+			}
+			// 처음 보는 경로라도 결과 불명으로 끝난 쓰기는 같은 메서드·경로로 다시 보내지 않는다.
+			post := e2proxy.RequestView{Method: "POST", URL: "https://owned.test/read/new-write", BodyPresent: true, BodyBytes: 2}
+			if writes {
+				if err := c.Before(t.Context(), post); err != nil {
+					t.Fatal("approved write to an undiscovered path denied", err)
+				}
+				if err := c.After(t.Context(), post, e2proxy.Receipt{AttemptID: "unknown-write", CallRef: "call-0", Decision: "allowed", ForwardAttempted: true, RequestWritten: true, Reason: e2proxy.Unknown}); err != nil {
+					t.Fatal(err)
+				}
+				if err := c.Before(t.Context(), post); !errors.Is(err, ErrDenied) {
+					t.Fatal("unknown write to an undiscovered path resent", err)
+				}
+			}
+		}
+	}
+}
+
+// 자동 모드에서 처음 보는 경로라도 확인한 읽기(읽기 확인 접두 안의 GET·HEAD)로 허용한 요청은, 결과가 불명이어도
+// 발견한 읽기처럼 다시 보낼 수 있다. 허용과 결과 불명 기억이 같은 분류를 쓴다(#557 이동찬 리뷰). 부작용 가능 요청
+// (쓰기·고르지 않은 GET 폼)은 결과 불명 뒤 다시 보내지 않는다.
+func TestAutomaticUndiscoveredReadSurvivesUnknownResult(t *testing.T) {
+	for _, writes := range []bool{false, true} {
+		c, _ := flowFixture(t, Auto)
+		c.binding.ReversibleWrites = writes
+		c.mu.Lock()
+		found := c.addLocked("GET", "/read/found", "page", "html_link", "/read")
+		found.Selected, found.Change = true, "attested_read"
+		form := c.addLocked("GET", "/read/form", "form", "html_form", "/read")
+		form.Change = "possible"
+		c.record.Snapshot.Stage = "diagnosing"
+		c.mu.Unlock()
+		unknown := func(view e2proxy.RequestView, id string) {
+			t.Helper()
+			if err := c.After(t.Context(), view, e2proxy.Receipt{AttemptID: id, CallRef: "call-0", Decision: "allowed", ForwardAttempted: true, RequestWritten: true, Reason: e2proxy.Unknown}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for i, view := range []e2proxy.RequestView{{Method: "GET", URL: "https://owned.test/read/found"}, {Method: "HEAD", URL: "https://owned.test/read/found"}, {Method: "GET", URL: "https://owned.test/read/retryable"}, {Method: "HEAD", URL: "https://owned.test/read/retryable"}} {
+			if err := c.Before(t.Context(), view); err != nil {
+				t.Fatal("read denied", writes, view.Method, view.URL, err)
+			}
+			unknown(view, "read-"+statusText(i))
+			if err := c.Before(t.Context(), view); err != nil {
+				t.Fatalf("writes=%v %s %s: read blocked after an unknown result: %v", writes, view.Method, view.URL, err)
+			}
+		}
+		if !writes {
+			continue
+		}
+		for i, view := range []e2proxy.RequestView{{Method: "GET", URL: "https://owned.test/read/form?x=1"}, {Method: "POST", URL: "https://owned.test/read/new-write", BodyPresent: true, BodyBytes: 2}} {
+			if err := c.Before(t.Context(), view); err != nil {
+				t.Fatal("possible side effect denied before unknown", view.Method, view.URL, err)
+			}
+			unknown(view, "write-"+statusText(i))
+			if err := c.Before(t.Context(), view); !errors.Is(err, ErrDenied) {
+				t.Fatal("possible side effect resent after unknown", view.Method, view.URL, err)
+			}
+		}
+	}
+}
+
+// 크롤 단계는 그대로 발견해서 확인한 읽기만 보낸다. 자동 모드라도 처음 보는 경로는 진단 단계 전에는 보내지 않는다.
+func TestAutomaticModeCrawlStageKeepsDiscoveredReadsOnly(t *testing.T) {
+	c, _ := flowFixture(t, Auto)
+	if s, _ := c.Snapshot(); s.Stage != "crawling" {
+		t.Fatal(s.Stage)
+	}
+	if err := c.Before(t.Context(), e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/newly-found"}); !errors.Is(err, ErrDenied) {
+		t.Fatal("undiscovered path sent during crawling", err)
+	}
+}
+
+// 모델 지침도 모드에 맞춘다: 자동 모드는 승인 범위 안 어디든, 수동 모드는 고른 끝점만이라고 말한다.
+func TestWorkflowInstructionsFollowMode(t *testing.T) {
+	auto, _ := flowFixture(t, Auto)
+	manual, _ := flowFixture(t, Manual)
+	if a := auto.Instructions(); !strings.Contains(a, "any path and method within the approved target scope") || strings.Contains(a, "Only selected endpoints may be tested") {
+		t.Fatal("automatic instructions still limit the model to selected endpoints")
+	}
+	if m := manual.Instructions(); !strings.Contains(m, "Only selected endpoints may be tested") || strings.Contains(m, "any path and method") {
+		t.Fatal("manual instructions widened")
 	}
 }
 func TestPauseWaitAndFailedStorageDenyNewSideEffects(t *testing.T) {

@@ -299,6 +299,7 @@ export async function runUrlAction(kind: UrlAction, input?: URLDiagnosisInput): 
           input.display_name ?? "",
           input.workflow_mode,
           input.excluded_paths ?? "",
+          input.external_test_accounts === true,
         );
         const cap = st.cap;
         if (cap.kind !== "v2" || !cap.catalog.profiles.some((p) => p.id === checked.profile_id)) return false;

@@ -59,8 +59,12 @@ describe("URL 진단 v2 공개 계약", () => {
     expect(() => urlDiagnosisInput("https://target.example/", "profile-1", "가".repeat(54))).toThrow();
   });
   it("http 대상도 받는다(C22). 기본 포트는 지운다", () => {
-    expect(urlDiagnosisInput("http://target.example:80/read", "profile-1", "").target_url).toBe("http://target.example/read");
-    expect(urlDiagnosisInput("http://target.example:8080/", "profile-1", "").target_url).toBe("http://target.example:8080/");
+    expect(urlDiagnosisInput("http://target.example:80/read", "profile-1", "").target_url).toBe(
+      "http://target.example/read",
+    );
+    expect(urlDiagnosisInput("http://target.example:8080/", "profile-1", "").target_url).toBe(
+      "http://target.example:8080/",
+    );
   });
   it("시작 전 URL canonicalization은 실행 권위를 만들지 않는다", () => {
     expect(urlDiagnosisInput(" https://TARGET.example ", "profile-1", " 진단 ")).toEqual({
@@ -371,5 +375,40 @@ describe("실행 결과 칸(docs/contracts/run-outcome-states.md §3.2)", () => 
     { ...running, account_auth: { "acct-a": "authenticated" } }, // "있는 state" 밖(running)
   ])("account_auth 계약 밖은 fail closed 한다: %o", (value) => {
     expect(() => parseURLJob(envelope(value), owner)).toThrow();
+  });
+});
+
+describe("C21 서버가 승인한 자동 workflow 쓰기 범위", () => {
+  it("자동 workflow의 사전 승인 범위를 그대로 읽는다", () => {
+    const job = {
+      ...ready,
+      input: { ...ready.input, workflow_mode: "ai_auto_v1" },
+      scope: { ...scope, methods: ["GET", "POST", "PUT", "PATCH"] },
+    };
+    expect(parseURLJob(envelope(job), owner).scope?.methods).toEqual(["GET", "POST", "PUT", "PATCH"]);
+  });
+  it("자동 workflow라도 모든 요청 확인 모드의 쓰기 범위는 거절한다", () => {
+    const job = {
+      ...ready,
+      input: { ...ready.input, workflow_mode: "ai_auto_v1" },
+      scope: { ...scope, approval_mode: "confirm_every_request", methods: ["GET", "POST"] },
+    };
+    expect(() => parseURLJob(envelope(job), owner)).toThrow();
+  });
+  it.each([undefined, "user_approval_v1"])("일반/다른 모드에서 자동 쓰기를 추정하지 않는다: %s", (workflow_mode) => {
+    const job = { ...ready, input: { ...ready.input, workflow_mode }, scope: { ...scope, methods: ["GET", "POST"] } };
+    expect(() => parseURLJob(envelope(job), owner)).toThrow();
+  });
+  it("DELETE는 승인된 자동 workflow에도 추가하지 않는다", () => {
+    expect(() =>
+      parseURLJob(
+        envelope({
+          ...ready,
+          input: { ...ready.input, workflow_mode: "ai_auto_v1" },
+          scope: { ...scope, methods: ["GET", "DELETE"] },
+        }),
+        owner,
+      ),
+    ).toThrow();
   });
 });

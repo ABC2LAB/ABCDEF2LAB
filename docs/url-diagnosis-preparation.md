@@ -158,17 +158,15 @@ result_ready=true인 실제 저장 결과만 보고서로 연결하고 마감 �
 
 ### unknown 이후 운영 정지와 복구 한계
 
-unknown 영수증이 하나라도 있으면 같은 준비 서비스 설치의 모든 새 Start는 busy로 닫힌다.
-drain_complete=true는 로컬 실행 수명이 마감됐다는 사실이며, 모델 사용량이나 이미 전송한 외부 요청의
-실제 결과를 확정하는 증거는 아니다. 이번 구현은 마감된 unknown만 예외로 새 시작을 허용하지 않는다.
+Unknown 게시만으로 새 시작을 허용하지 않는다. 실제 Execute 반환과 drain 또는 검증된 자원 복구를
+함께 확인한다. 확인되지 않은 자원이 있으면 같은 준비 서비스 설치의 새 Start는 `busy`로 닫힌다.
+`drain_complete=true`는 로컬 실행 수명 마감이며, 모델 사용량이나 이미 전송한 외부 요청의 실제 결과를
+확정하는 증거는 아니다. 복구 뒤에도 Unknown 결과·기존 예약·누적 실행 횟수는 보존한다.
 
-현재 지원되는 in-place 영수증 재분류·강제 해제·재개 명령은 없다.
-운영자는 보존된 영수증·감사·provider/대상 기록으로 미확인 실행과 사용량을 대조하고,
-기존 예약을 계속 차감한 상태에서 복구 정책을 별도로 승인·검토해야 한다.
-그 뒤 사용할 reconciliation 절차/API는 후속 설계·구현 대상이다.
-journal/head 삭제, state_dir 교체, delegation_ref 변경으로 기존 예약이나 unknown을 우회하는 방식은
+현재 지원하는 backend 핸들/호스트 boot 기반 복구 조건과 구 형식 영수증의 처리 범위는
+[아래 C04·C33 운영 보완](#c04c33-운영-보완-543-인계)을 따른다. 강제 성공 재분류·재실행 명령은 제공하지 않는다.
+`journal/head` 삭제, `state_dir` 교체, `delegation_ref` 변경으로 기존 예약이나 Unknown을 우회하는 방식은
 지원 복구가 아니다. 새 설치·새 위임만 만들면 이전 불명 실행이 해소된 것으로 처리하지 않는다.
-이 운영 정지·복구 정책은 첫 실제 대상 수용 전에 팀이 확인해야 할 조건이다.
 
 URL 경로는 설치된 로컬 OpenAI 호환 비스트리밍 profile과 명시적인 OpenRouter 모드를 지원한다.
 OpenRouter 보호 설치·키·회차/누적 USD·외부 전송 동의와 수용 범위는 [통합 계약](url-openrouter-integration.md)을 따른다.
@@ -329,3 +327,47 @@ Sparrow 정확 호스트 전체 진단 허가는 다른 origin·port·인증 수
 비변경 API 경로 또는 인증 계약을 확정하지 않았다. 이 작업은 실제 대상 DNS·HTTP를 호출하지 않았다.
 운영 회차는 정확한 origin/port/IP pin, 실제 비변경 prefix/query/body, 지원 프로토콜,
 인증 계약, 요청·시간·모델/비용 예산과 설치 위임을 먼저 확정해야 한다.
+
+## C04·C33 운영 보완 (#543 인계)
+
+`Unknown` 게시와 backend `Execute` 반환은 다른 사실이다. 새 시작은 이전 회차의 실제 반환과
+`drain_complete`를 모두 요구한다. 반환 사실은 보호된 영수증의 `execution_returned`에 기록한다.
+실행 자원이 미마감이면 `busy`를 유지하고 모델 사용량·예약·누적 실행 횟수를 환불하지 않는다.
+결과 불명은 복구 후에도 결과 불명이다. `result_ready`가 없는 회차를 보고서 완료로 바꾸지 않는다.
+
+반환한 실행은 backend가 보관한 정확한 회차 핸들로 모델·격리 실행·E②·HTTP·DB 자원을 재마감하고
+검증할 수 있을 때만 다음 시작 시 복구한다. 원래 gateway Run의 종료까지 확인하며, 늦게 오는 Close는
+저장한 마감 증거만 읽는다. 준비 단계에서 drain을 확인하지 못한 경우에도 같은 task의 준비 자원 핸들로
+취소·drain·DB 닫기를 다시 확인한다. 결과 저장 실패를 재실행하거나 성공으로 바꾸지는 않는다.
+복구 증거는 `resources_recovered`에 별도로 저장하고 정상 마감한 회차의 복구 핸들은 제거한다.
+검증은 Start IPC의 남은 시간 안에서 수행하므로 기한 내 확인하지 못하면 `busy`를 유지한다.
+
+이전 형식의 `completed`·`failed`·`cancelled`이면서 `drain_complete=true`인 영수증은 이전 계약대로
+반환한 것으로 읽는다. 정상 마감된 기존 설치는 같은 호스트 boot의 업그레이드 직후에도 새 진단을
+시작할 수 있으며, 기존 결과와 예약은 보존한다. 새 실행은 `execution_evidence_version=1`을 먼저
+저장하므로 boot ID를 못 읽은 경우도 이전 형식으로 잘못 읽지 않는다.
+
+미확인 자원은 서비스 재시작만으로 풀지 않는다. Linux 호스트 boot ID가 시작 때와 달라진 경우는
+이전 커널의 자원 종료 증거로 복구하며 결과·감사 성공으로 해석하지 않는다. 이전 형식의 `unknown`·
+미마감 기록처럼 시작 boot 증거가 없는 경우는 첫 업그레이드 기동에서 현재 boot를 관찰 증거로만
+저장한다(`recovery_witness_boot_id`). 같은 boot에서는 잠금을 유지하고 이후 실제 호스트 재부팅으로
+boot가 바뀌었을 때 복구한다. 과거 시작 boot를 지어내지 않는다. 영수증 삭제는 복구 절차가 아니다.
+
+URL v2 공개 관리 API는 영속 준비 영수증에 결속한 같은 운영자의 task에만
+`POST /api/tasks/{id}/control`의 `pause`·`resume`을 전달한다. chat·steer·rerun·설정 API는 열지 않는다.
+활동 조회·history·stream·seq 상세는 task를 명시해야 한다. 상속된 다른 task 의도 세션은 열지 않으며,
+원문 명령·도구 인자·모델 문장·자격·metadata는 공개 활동 응답에 포함하지 않는다. 스트림은 즉시
+flush하며 매 이벤트에서 인증·결속을 재검사한다. 현재 스트림은 준비 HTTP 요청마다 **최대 5초**이며
+API·backend WriteTimeout은 10초다. 요청 종료 뒤 클라이언트가 커서로 다시 연결한다.
+preparation-only 내부 서버 차단은 유지한다.
+
+검증: `TestUnknownPublicationDoesNotReleaseExecution`,
+`TestUnknownClosureRecoveryPreservesFactsAndReservations`,
+`TestLegacyDrainedTerminalUpgradeKeepsInstallationUsable`,
+`TestLegacyUnknownRecoveryWitnessRequiresLaterHostBoot`(drain 여부 두 경우),
+`TestStartPersistsExecutionEvidenceVersion`,
+`TestURLClosureRecoveryWaitsForOriginalRunAndLateCloseIsSafe`,
+`TestURLPreparationRecoveryChecksExactTaskAndDrain`,
+`TestURLManagementOperationsPublicEntryOwnedPostgres`.
+마지막 시험은 실제 설치 인증·공개 관리 mux·작업 권한 조회·소유 HTTP 수신기를 사용한다.
+합성 실행 수신기는 실제 Planner/Worker·Qwen 수용을 대신하지 않으며 유료 모델 시험은 NOT_RUN이다.

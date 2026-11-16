@@ -24,6 +24,9 @@ func urlOperatorUID() uint32 { return uint32(os.Geteuid()) }
 
 func (b *urlPreparationRuntime) issue(l *urlLoadedProfile, jobID string, actual server.FirstDiagnosisPreparedTask) (launchConfig, error) {
 	c := l.launch
+	if l.productTarget != nil && (l.productConnection == nil || l.productConnection.jobID != jobID) {
+		return c, errPreparation
+	}
 	if l.current() != nil || !managementReference.MatchString(jobID) || filepath.Base(jobID) != jobID || jobID == "." || jobID == ".." || actual.TaskID <= 0 || actual.ExplorationID <= 0 || checkDirectory(b.config.RunsDir, true) != nil {
 		return c, errPreparation
 	}
