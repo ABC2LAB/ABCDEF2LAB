@@ -20,7 +20,9 @@ from __future__ import annotations
 import hashlib
 import http.client
 import json
+import os
 import re
+import stat
 from contextlib import closing
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -47,6 +49,8 @@ ADMIN_USERNAME = "ABC2LAB"
 BASELINE_ADMIN_USERNAME = "ARTEX"
 MAX_LOGIN_RESPONSE_BYTES = 64 * 1024
 MAX_PASSWORD_LENGTH = 1024
+# 비밀번호 파일은 UTF-8 한 글자 최대 4바이트 + 끝 줄바꿈 하나까지만 읽는다.
+MAX_PASSWORD_FILE_BYTES = MAX_PASSWORD_LENGTH * 4 + 1
 FINDINGS_FORMAT = "abc2lab-eval-runner-findings-v1"
 MAX_TASK_RESPONSE_BYTES = 1024 * 1024
 INTERCEPT_RULES_PATH = "/api/intercept/rules"
@@ -155,6 +159,31 @@ def e2_prompt_projection(port: int, secret: AdminSecret, task_id: str, run_ref: 
     if status != 200:
         raise E2PromptUnverified(f"http_{status}")
     return data
+
+
+def read_admin_password_file(path: str) -> str:
+    """비대화형 실행에서 관리자 비밀번호를 파일로 받는다(getpass 대신).
+
+    러너 uid 소유·정확히 0600·링크 아닌 일반 파일만 받고, 끝 줄바꿈 하나만 뗀다. 형식 검사는 AdminSecret이 한다.
+    값·경로는 오류에 넣지 않는다. 터미널 없이 돌릴 때 표준 입력으로 비밀번호를 흘려 넣지 않게 하려는 것이다.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+    except (OSError, TypeError, ValueError):
+        raise EngineAPIError("engine_password_file_unreadable") from None
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600:
+            raise EngineAPIError("engine_password_file_untrusted")
+        data = stream.read(MAX_PASSWORD_FILE_BYTES + 1)
+    if len(data) > MAX_PASSWORD_FILE_BYTES:
+        raise EngineAPIError("engine_password_file_invalid")
+    if data.endswith(b"\n"):
+        data = data[:-1]
+    try:
+        return data.decode("utf-8")
+    except UnicodeError:
+        raise EngineAPIError("engine_password_file_invalid") from None
 
 
 def login(port: int, secret: AdminSecret, timeout: float) -> str:

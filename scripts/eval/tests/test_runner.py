@@ -2351,6 +2351,90 @@ class TestMainKeepsTheAdminPasswordInMemory(unittest.TestCase):
                 if written.is_file():
                     self.assertNotIn(PASSWORD, written.read_text(errors="ignore"))
 
+    def test_password_file_replaces_the_prompt_and_stays_in_memory(self):
+        import contextlib
+        import io
+        from test_runner_engine import PASSWORD
+        with tempfile.TemporaryDirectory() as tmp:
+            root, argv = self.inputs(tmp)
+            secret_file = Path(tmp, "admin.pw")
+            secret_file.write_text(PASSWORD + "\n")
+            secret_file.chmod(0o600)
+            seen = {}
+
+            def fake_start(port, secret, request, timeout):
+                seen["start"] = secret.reveal()
+                return "17"
+
+            def fake_execute(spec, ports, meter, gateway, evidence, clock):
+                ports.start_task()
+                return {"run_id": spec.run_id, "status": INVALID, "reasons": ["x"]}
+
+            out, err = io.StringIO(), io.StringIO()
+            with patch.object(runner.getpass, "getpass") as ask, \
+                    patch.object(runner, "Docker", return_value=object()), \
+                    patch.object(runner, "start_task", side_effect=fake_start), \
+                    patch.object(runner, "execute_run", side_effect=fake_execute), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = runner.main(argv + ["--admin-password-file", str(secret_file)])
+            self.assertEqual(code, 1)
+            ask.assert_not_called()
+            # 끝 줄바꿈 하나만 뗀 값이 그대로 간다.
+            self.assertEqual(seen["start"], PASSWORD)
+            self.assertNotIn(PASSWORD, out.getvalue() + err.getvalue())
+            for written in root.rglob("*"):
+                if written.is_file():
+                    self.assertNotIn(PASSWORD, written.read_text(errors="ignore"))
+
+    def test_password_file_must_be_private_and_apart_from_runs_and_keys(self):
+        import contextlib
+        import io
+        from test_runner_engine import PASSWORD
+
+        def private(path, text=PASSWORD, mode=0o600):
+            path.write_text(text)
+            path.chmod(mode)
+            return path
+
+        def readable(tmp):
+            return private(Path(tmp, "admin.pw"), mode=0o644)
+
+        def linked(tmp):
+            target = private(Path(tmp, "real.pw"))
+            Path(tmp, "admin.pw").symlink_to(target)
+            return Path(tmp, "admin.pw")
+
+        def inside_runs(tmp):
+            return private(Path(tmp, "runs", "admin.pw"))
+
+        def runner_key(tmp):
+            return private(Path(tmp, "k"))
+
+        def too_long(tmp):
+            return private(Path(tmp, "admin.pw"), text="a" * (4 * 1024 + 2))
+
+        def control(tmp):
+            return private(Path(tmp, "admin.pw"), text=PASSWORD + "\r\n")
+
+        cases = ((readable, "engine_password_file_untrusted"), (linked, "engine_password_file_unreadable"),
+                 (lambda tmp: Path(tmp, "missing.pw"), "engine_password_file_unreadable"),
+                 (inside_runs, "admin_password_file: INSIDE_RUNS_ROOT"),
+                 (runner_key, "admin_password_file: SAME_AS_RUNNER_KEY"),
+                 (too_long, "engine_password_file_invalid"), (control, "engine_password_invalid"))
+        for make, code in cases:
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as tmp:
+                root, argv = self.inputs(tmp)
+                path = make(tmp)
+                err = io.StringIO()
+                with patch.object(runner.getpass, "getpass") as ask, patch.object(runner, "Docker") as docker, \
+                        contextlib.redirect_stderr(err):
+                    self.assertEqual(runner.main(argv + ["--admin-password-file", str(path)]), 2)
+                ask.assert_not_called()
+                docker.assert_not_called()
+                self.assertEqual(err.getvalue().strip(), code)
+                self.assertNotIn(PASSWORD, err.getvalue())
+                self.assertEqual([entry for entry in root.iterdir() if entry.name != "admin.pw"], [])
+
     def test_task_target_is_checked_against_this_run_origin(self):
         # 계측기 포트가 다른 구성이면 작업 대상도 그 origin이어야 한다(고정 문자열과 비교하지 않는다).
         def use_8081(payload):

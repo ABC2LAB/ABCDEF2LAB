@@ -50,7 +50,7 @@ from runner_checks import (  # noqa: E402
 from runner_config import (  # noqa: E402
     API_FRONT_SERVICE, E2_PRODUCT, E2_SERVICE, E2_STUB, ENGINE_DATA_PATH, ENGINE_DB_DATA_PATH, ENGINE_DB_SERVICE, ENGINE_SERVICE, LLM_GW_SERVICE,
     METER_SERVICE, OBS_SERVICE, OBSERVER_OPAQUE, OBSERVER_SCOREBOARD, TARGET_SERVICE, POLICY_SWITCH_SIDE, RunDirectory, RunnerConfig, RunnerConfigError,
-    RunPlan, check_key_files, compose_base_args, compose_environment, create_run_directory, load_runner_config, new_run_id,
+    RunPlan, check_admin_password_file, check_key_files, compose_base_args, compose_environment, create_run_directory, load_runner_config, new_run_id,
     plan_run,
 )
 from isolation_proof import PURPOSE_BROWSER_ACCEPTANCE, PURPOSE_OFFICIAL, blocked_attempts, valid_output_language  # noqa: E402
@@ -58,7 +58,7 @@ from runner_docker import Docker, DockerError, client_environment, run_docker  #
 from tool_tree import collect_tree, tree_sha256  # noqa: E402
 from runner_engine import (  # noqa: E402
     ADMIN_USERNAME, BASELINE_ADMIN_USERNAME, AdminSecret, EngineAPIError, EngineLLMProfile, apply_engine_rules, apply_engine_settings, collect_findings, e2_prompt_projection, engine_settings, intercept_summary, load_engine_rules,
-    load_vocabulary, start_task, task_request,
+    load_vocabulary, read_admin_password_file, start_task, task_request,
 )
 from runner_evidence import (  # noqa: E402
     DRAINED_MARKER, SEALED_MARKER, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles,
@@ -1346,6 +1346,8 @@ def main(argv: list[str] | None = None) -> int:
     # 측정 매트릭스 행 이름(예 "우리@35b")과 반복 번호. v1.1 기록에 서명되고 채점 manifest와 정확히 같아야 한다.
     parser.add_argument("--condition", required=True)
     parser.add_argument("--repeat", required=True, type=int)
+    parser.add_argument("--admin-password-file", default=None,
+                        help="터미널 없이 돌릴 때 getpass 대신 읽을 관리자 비밀번호 파일(러너 uid·0600, runs_root 밖)")
     args = parser.parse_args(argv)
     if (not 0 < len(args.condition) <= MAX_CONDITION_LENGTH or args.condition.strip() != args.condition
             or any(ord(c) < 32 or ord(c) == 127 for c in args.condition)):
@@ -1365,8 +1367,12 @@ def main(argv: list[str] | None = None) -> int:
         vocabulary, vocabulary_sha256 = load_vocabulary(config.findings["vocabulary_path"])
         rules = None if config.engine_rules is None else load_engine_rules(config.engine_rules)
         # 설정이 통과한 뒤에만 묻는다. 비밀번호는 이 프로세스 메모리에만 있고 어디에도 쓰지 않는다.
-        secret = AdminSecret(getpass.getpass("엔진 관리자 비밀번호(화면에 표시되지 않음): "),
-                             username=BASELINE_ADMIN_USERNAME if plan.side == "baseline" else ADMIN_USERNAME)
+        if args.admin_password_file is None:
+            password = getpass.getpass("엔진 관리자 비밀번호(화면에 표시되지 않음): ")
+        else:
+            check_admin_password_file(config, args.admin_password_file)
+            password = read_admin_password_file(args.admin_password_file)
+        secret = AdminSecret(password, username=BASELINE_ADMIN_USERNAME if plan.side == "baseline" else ADMIN_USERNAME)
         directory = create_run_directory(config.runs_root, plan.run_id, plan.e2_mode)
         e2_link = None
         if plan.e2_mode == E2_PRODUCT:
