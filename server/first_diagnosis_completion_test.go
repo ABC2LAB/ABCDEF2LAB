@@ -7,7 +7,16 @@ import (
 )
 
 func TestFirstDiagnosisClosedToolOutcome(t *testing.T) {
-	base := e2runner.TrustedResult{Classification: "completed", ProcessBashExited: true, Execution: e2proxy.ExecutionView{AuditComplete: true}, Call: e2proxy.CallResult{Reason: e2proxy.Complete}}
+	// 마감 대조가 보는 닫힘 표시(최종·드레인·감사 완료)는 채워 둔다. 그래야 기존 분류 검사가 받지 않는 결과가 시도 단위
+	// 검사(firstDiagnosisStoppedToolOutcome)로 넘어가도 시도 기록 없이는 받지 않는지까지 본다.
+	base := e2runner.TrustedResult{Classification: "completed", ProcessBashExited: true, Final: true, ProcessDrained: true, ProxyDrained: true,
+		Execution: e2proxy.ExecutionView{AuditComplete: true, Reason: e2proxy.Complete},
+		Call:      e2proxy.CallResult{CallRef: stoppedFixtureCall, IntentID: stoppedFixtureIntent, Final: true, AuditComplete: true, Reason: e2proxy.Complete}}
+	// 시도 기록이 있는 경우만 이름으로 준다. 나머지는 시도 기록 없이 본다.
+	attemptsFor := map[string][]e2proxy.Receipt{
+		"denial-without-bash-exit": {stoppedDenied(1, e2proxy.PolicyDenied)},
+		"policy-without-bash-exit": {stoppedDenied(1, e2proxy.PolicyDenied)},
+	}
 	cases := []struct {
 		name   string
 		change func(*e2runner.TrustedResult)
@@ -200,13 +209,16 @@ func TestFirstDiagnosisClosedToolOutcome(t *testing.T) {
 			r.Call.Counts.Unsupported = 1
 			r.Call.Reason = e2proxy.Unsupported
 		}, true},
-		// 시간 상한이 아닌데 bash가 끝나지 않은 거부 분류, 시간 상한인데 완료 분류는 지금처럼 받지 않는다.
+		// 시간 상한이 아닌데 bash가 끝나지 않은 거부 분류(#578에서는 받지 않음): 시도 단위로 미전송·응답 완료를 확인하므로
+		// 종료 원인과 무관하게 안전하다. 거부 하나가 보내지 않은 시도로 기록돼 있으면 받는다(Planner kill_work 등).
 		{"denial-without-bash-exit", func(r *e2runner.TrustedResult) {
 			r.Classification = "policy_not_executed"
 			r.ProcessBashExited = false
+			r.Call.Counts.Attempts = 1
 			r.Call.Counts.Denied = 1
 			r.Call.Reason = e2proxy.PolicyDenied
-		}, false},
+		}, true},
+		// 시간 상한인데 완료 분류는 지금처럼 받지 않는다.
 		{"timeout-completed", func(r *e2runner.TrustedResult) {
 			r.Termination = e2runner.TerminationTimeout
 			r.ProcessBashExited = false
@@ -253,8 +265,18 @@ func TestFirstDiagnosisClosedToolOutcome(t *testing.T) {
 			r.ProcessBashExited = false
 			r.ExitCode = -1
 		}, false},
+		// #578에서는 받지 않던 조합이다. 시도 단위로 미전송·응답 완료를 확인하므로 종료 원인과 무관하게 안전하다.
 		{"policy-without-bash-exit", func(r *e2runner.TrustedResult) {
 			r.Classification = "policy_not_executed"
+			r.Call.Counts.Attempts = 1
+			r.Call.Counts.Denied = 1
+			r.Call.Reason = e2proxy.PolicyDenied
+			r.ProcessBashExited = false
+		}, true},
+		// 같은 명령이라도 시도 기록이 없으면(E② 감사와 대조할 수 없으면) 받지 않는다.
+		{"policy-without-bash-exit-no-attempts", func(r *e2runner.TrustedResult) {
+			r.Classification = "policy_not_executed"
+			r.Call.Counts.Attempts = 1
 			r.Call.Counts.Denied = 1
 			r.Call.Reason = e2proxy.PolicyDenied
 			r.ProcessBashExited = false
@@ -330,8 +352,233 @@ func TestFirstDiagnosisClosedToolOutcome(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			r := base
 			tt.change(&r)
-			if got := firstDiagnosisClosedToolOutcome(r); got != tt.want {
-				t.Fatalf("closed outcome = %v, want %v", got, tt.want)
+			// 이 표의 시도 기록에는 보낸 뒤 응답을 끝까지 받지 못한 시도가 없다. 받아도 시도 단위 결과 불명은 아니다.
+			if got, unknown := firstDiagnosisToolOutcome(r, attemptsFor[tt.name]); got != tt.want || unknown {
+				t.Fatalf("closed outcome = %v (attempt unknown %v), want %v", got, unknown, tt.want)
+			}
+		})
+	}
+}
+
+// 시도 단위 마감 시험의 호출·intent다.
+const (
+	stoppedFixtureCall   = "call_stopped_fixture"
+	stoppedFixtureIntent = int64(7)
+)
+
+// stoppedAttempt는 E② 결과 단계 영수증 하나다(e2proxy Call.finish가 남기는 모양). not_sent는 forward_attempted의 반대다.
+func stoppedAttempt(seq uint64, decision string, reason e2proxy.Reason, forward, written, received, complete bool) e2proxy.Receipt {
+	return e2proxy.Receipt{IntentID: stoppedFixtureIntent, CallRef: stoppedFixtureCall, AttemptID: "attempt-" + string(rune('a'+seq)), Sequence: seq,
+		Decision: decision, Reason: reason, ForwardAttempted: forward, RequestWritten: written, ResponseReceived: received, ResponseComplete: complete,
+		NotSent: !forward, AuditComplete: true}
+}
+
+// 보내지 않은 거부(정책 거부·자리 대기 취소 closed·호출 상한·예산 소진).
+func stoppedDenied(seq uint64, reason e2proxy.Reason) e2proxy.Receipt {
+	return stoppedAttempt(seq, "denied", reason, false, false, false, false)
+}
+
+// 대상이 끝까지 답한 시도.
+func stoppedAnswered(seq uint64) e2proxy.Receipt {
+	return stoppedAttempt(seq, "allowed", e2proxy.Complete, true, true, true, true)
+}
+
+// 연결을 시도했지만 연결 전에 거부·실패한 송신(transport_failed, forward_attempted). E②는 전달하지 않은 송신 실패로 본다.
+func stoppedConnectFailed(seq uint64) e2proxy.Receipt {
+	return stoppedAttempt(seq, "allowed", e2proxy.TransportFailed, true, false, false, false)
+}
+
+// 응답을 받는 도중 끊긴 시도(결과 불명).
+func stoppedMidResponse(seq uint64) e2proxy.Receipt {
+	return stoppedAttempt(seq, "allowed", e2proxy.Unknown, true, true, true, false)
+}
+
+// 허용됐지만 송신 전에 닫힌 시도(감사 intent 기록 뒤 취소, 연결 시도 전 검사 거부).
+func stoppedAllowedNotSent(seq uint64, reason e2proxy.Reason) e2proxy.Receipt {
+	return stoppedAttempt(seq, "allowed", reason, false, false, false, false)
+}
+
+// stoppedResult는 시도 기록으로 호출 수를 채운 감사 완료·드레인 완료 신뢰 결과다. 분류·종료 상태는 시험이 정한다.
+func stoppedResult(class string, bashExited bool, exitCode int, termination string, attempts ...e2proxy.Receipt) e2runner.TrustedResult {
+	var c e2proxy.Counts
+	reason := e2proxy.Complete
+	for _, a := range attempts {
+		c.Attempts++
+		switch a.Decision {
+		case "allowed":
+			c.Allowed++
+		case "denied":
+			c.Denied++
+		case "unsupported":
+			c.Unsupported++
+		}
+		if a.ForwardAttempted {
+			c.ForwardAttempted++
+		}
+		if a.ResponseReceived {
+			c.Responses++
+		}
+		switch a.Reason {
+		case e2proxy.Unknown:
+			c.Unknown++
+		case e2proxy.TransportFailed:
+			c.Transient++
+		case e2proxy.Withheld:
+			c.Withheld++
+		}
+		reason = a.Reason
+	}
+	r := e2runner.TrustedResult{Classification: class, ProcessBashExited: bashExited, ExitCode: exitCode, Termination: termination, Final: true, ProcessDrained: true, ProxyDrained: true,
+		Execution: e2proxy.ExecutionView{AuditComplete: true, Reason: e2proxy.Complete},
+		Call:      e2proxy.CallResult{CallRef: stoppedFixtureCall, IntentID: stoppedFixtureIntent, Final: true, AuditComplete: true, Reason: reason, Counts: c}}
+	if c.Unknown > 0 {
+		r.Execution.IntentCounts.Unknown = c.Unknown
+	}
+	return r
+}
+
+// 멈춘 명령(bash 미종료)과 닫힘·호출 상한 사유는 시도 단위로만 받는다. 모든 시도가 보내지 않음·응답 완료면 받고(거부가
+// 있으면 정책 제한 근거, 없으면 미완료), 보낸 뒤 응답을 끝까지 받지 못한 시도가 하나라도 있으면 그 intent는 결과
+// 불명이어야 한다. 감사·집행 장애·대조 불일치는 지금처럼 받지 않는다.
+func TestFirstDiagnosisStoppedToolOutcome(t *testing.T) {
+	type verdict struct{ accepted, unknown bool }
+	accept, unknown, reject := verdict{true, false}, verdict{true, true}, verdict{false, false}
+	cases := []struct {
+		name     string
+		result   e2runner.TrustedResult
+		attempts []e2proxy.Receipt
+		change   func(*e2runner.TrustedResult, []e2proxy.Receipt) []e2proxy.Receipt
+		want     verdict
+	}{
+		// 보내지 않음만: 받는다.
+		{name: "killed-after-denial", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.PolicyDenied)}, result: stoppedResult("policy_not_executed", false, -1, ""), want: accept},
+		{name: "killed-after-unsupported", attempts: []e2proxy.Receipt{stoppedAttempt(1, "unsupported", e2proxy.Unsupported, false, false, false, false)}, result: stoppedResult("unsupported", false, -1, ""), want: accept},
+		{name: "forward-not-attempted-closed", attempts: []e2proxy.Receipt{stoppedAllowedNotSent(1, e2proxy.Closed)}, result: stoppedResult(e2runner.ClassificationForwardNotAttempted, false, -1, ""), want: accept},
+		{name: "forward-not-attempted-dial-refused-before-connect", attempts: []e2proxy.Receipt{stoppedAnswered(1), stoppedAllowedNotSent(2, e2proxy.TransportFailed)}, result: stoppedResult(e2runner.ClassificationForwardNotAttempted, true, 0, ""), want: accept},
+		{name: "slot-wait-closed-bash-exited", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.Closed)}, result: stoppedResult("policy_not_executed", true, 0, ""), want: accept},
+		{name: "terminated-closed", attempts: []e2proxy.Receipt{stoppedAnswered(1), stoppedDenied(2, e2proxy.Closed)}, result: stoppedResult("terminated", false, -1, ""), want: accept},
+		{name: "timeout-closed", attempts: []e2proxy.Receipt{stoppedAnswered(1), stoppedDenied(2, e2proxy.Closed)}, result: stoppedResult("transient_failure", false, -1, e2runner.TerminationTimeout), want: accept},
+		{name: "denial-limit-after-answer", attempts: []e2proxy.Receipt{stoppedAnswered(1), stoppedDenied(2, e2proxy.PolicyDenied), stoppedDenied(3, e2proxy.DenialLimit)}, result: stoppedResult("partial_policy_denial", true, 0, ""), want: accept},
+		{name: "transient-limit-not-sent", attempts: []e2proxy.Receipt{stoppedAllowedNotSent(1, e2proxy.TransportFailed), stoppedDenied(2, e2proxy.TransientLimit)}, result: stoppedResult(e2runner.ClassificationForwardNotAttempted, true, 7, ""), want: accept},
+		{name: "withheld-then-closed", attempts: []e2proxy.Receipt{stoppedAttempt(1, "allowed", e2proxy.Withheld, true, true, true, false), stoppedDenied(2, e2proxy.Closed)}, result: stoppedResult("terminated", false, -1, ""), want: accept},
+		// 연결 전 송신 실패(transport_failed, 연결을 시도해 forward_attempted가 켜졌어도)는 E②가 전달하지 않은 송신
+		// 실패로 기록한다(C02). 결과 불명이 아니라 그 intent의 미완료(거부가 있으면 정책 제한 근거)다.
+		{name: "killed-after-connect-failure", attempts: []e2proxy.Receipt{stoppedConnectFailed(1)}, result: stoppedResult("transient_failure", false, -1, ""), want: accept},
+		{name: "killed-after-denial-and-connect-failure", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.PolicyDenied), stoppedConnectFailed(2)}, result: stoppedResult("transient_failure", false, -1, ""), want: accept},
+		{name: "forward-not-attempted-after-connect-failure", attempts: []e2proxy.Receipt{stoppedConnectFailed(1), stoppedAllowedNotSent(2, e2proxy.Closed)}, result: stoppedResult(e2runner.ClassificationForwardNotAttempted, false, -1, ""), want: accept},
+		{name: "slot-wait-closed-after-connect-failure", attempts: []e2proxy.Receipt{stoppedConnectFailed(1), stoppedDenied(2, e2proxy.Closed)}, result: stoppedResult("transient_failure", true, 0, ""), want: accept},
+		// 같은 조합에 연결 뒤 전달된 시도(응답 미완료)가 하나 섞이면 정책 제한·미완료가 아니라 결과 불명이다.
+		{name: "killed-after-denial-and-forwarded-closed", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.PolicyDenied), stoppedAttempt(2, "allowed", e2proxy.Closed, true, true, false, false)}, result: stoppedResult("terminated", false, -1, ""), want: unknown},
+		{name: "killed-after-connect-failure-and-forwarded-closed", attempts: []e2proxy.Receipt{stoppedConnectFailed(1), stoppedAttempt(2, "allowed", e2proxy.Closed, true, true, false, false)}, result: stoppedResult("transient_failure", false, -1, ""), want: unknown},
+		{name: "connect-failure-then-mid-response-closed", attempts: []e2proxy.Receipt{stoppedConnectFailed(1), stoppedMidResponse(2), stoppedDenied(3, e2proxy.Closed)}, result: stoppedResult("result_unknown", false, -1, ""), want: unknown},
+		{name: "connected-no-response-then-closed", attempts: []e2proxy.Receipt{stoppedAttempt(1, "allowed", e2proxy.Unknown, true, true, false, false), stoppedDenied(2, e2proxy.Closed)}, result: stoppedResult("result_unknown", false, -1, ""), want: unknown},
+		{name: "mid-response-then-closed", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.PolicyDenied), stoppedMidResponse(2), stoppedDenied(3, e2proxy.Closed)}, result: stoppedResult("result_unknown", false, -1, ""), want: unknown},
+		{name: "unknown-limit", attempts: []e2proxy.Receipt{stoppedMidResponse(1), stoppedDenied(2, e2proxy.UnknownLimit)}, result: stoppedResult("result_unknown", true, 0, ""), want: unknown},
+		// E② 코드에서는 생기지 않지만, 보낸 시도에 닫힘·호출 상한 사유가 붙어도 보내지 않은 것으로 보지 않는다.
+		{name: "forwarded-closed", attempts: []e2proxy.Receipt{stoppedAttempt(1, "allowed", e2proxy.Closed, true, true, false, false)}, result: stoppedResult("terminated", false, -1, ""), want: unknown},
+		{name: "forwarded-denial-limit", attempts: []e2proxy.Receipt{stoppedAnswered(1), stoppedAttempt(2, "allowed", e2proxy.DenialLimit, true, false, false, false)}, result: stoppedResult("terminated", false, -1, ""), want: unknown},
+		// 집행 장애·감사 미완료는 지금처럼 받지 않는다.
+		{name: "execution-audit-incomplete", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.PolicyDenied)}, result: stoppedResult("policy_not_executed", false, -1, ""),
+			change: func(r *e2runner.TrustedResult, a []e2proxy.Receipt) []e2proxy.Receipt {
+				r.Execution.AuditComplete = false
+				return a
+			}, want: reject},
+		{name: "call-audit-incomplete", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.PolicyDenied)}, result: stoppedResult("policy_not_executed", false, -1, ""),
+			change: func(r *e2runner.TrustedResult, a []e2proxy.Receipt) []e2proxy.Receipt {
+				r.Call.AuditComplete = false
+				return a
+			}, want: reject},
+		{name: "not-drained", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.PolicyDenied)}, result: stoppedResult("policy_not_executed", false, -1, ""),
+			change: func(r *e2runner.TrustedResult, a []e2proxy.Receipt) []e2proxy.Receipt {
+				r.ProxyDrained = false
+				return a
+			}, want: reject},
+		{name: "execution-revoked", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.PolicyDenied)}, result: stoppedResult("policy_not_executed", false, -1, ""),
+			change: func(r *e2runner.TrustedResult, a []e2proxy.Receipt) []e2proxy.Receipt {
+				r.Execution.Reason = e2proxy.Revoked
+				return a
+			}, want: reject},
+		{name: "execution-expired", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.PolicyDenied)}, result: stoppedResult("policy_not_executed", false, -1, ""),
+			change: func(r *e2runner.TrustedResult, a []e2proxy.Receipt) []e2proxy.Receipt {
+				r.Execution.Reason = e2proxy.Expired
+				return a
+			}, want: reject},
+		{name: "execution-audit-failed", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.PolicyDenied)}, result: stoppedResult("policy_not_executed", false, -1, ""),
+			change: func(r *e2runner.TrustedResult, a []e2proxy.Receipt) []e2proxy.Receipt {
+				r.Execution.Reason = e2proxy.AuditFailed
+				return a
+			}, want: reject},
+		{name: "execution-invalid", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.PolicyDenied)}, result: stoppedResult("policy_not_executed", false, -1, ""),
+			change: func(r *e2runner.TrustedResult, a []e2proxy.Receipt) []e2proxy.Receipt {
+				r.Execution.Reason = e2proxy.Invalid
+				return a
+			}, want: reject},
+		{name: "proxy-unavailable", attempts: []e2proxy.Receipt{stoppedAnswered(1)}, result: stoppedResult("transient_failure", false, -1, e2runner.TerminationProxyUnavailable), want: reject},
+		{name: "isolation-unavailable", attempts: nil, result: stoppedResult("isolation_unavailable", false, -1, ""), want: reject},
+		{name: "attempt-revoked", attempts: []e2proxy.Receipt{stoppedAllowedNotSent(1, e2proxy.Revoked)}, result: stoppedResult(e2runner.ClassificationForwardNotAttempted, false, -1, ""), want: reject},
+		{name: "attempt-expired", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.Expired)}, result: stoppedResult("policy_not_executed", false, -1, ""), want: reject},
+		// 마지막 사유가 닫힘이어도 앞선 시도가 권한 철회로 끝났으면 받지 않는다(마지막 사유만 보지 않는다).
+		{name: "earlier-attempt-revoked", attempts: []e2proxy.Receipt{stoppedAllowedNotSent(1, e2proxy.Revoked), stoppedDenied(2, e2proxy.Closed)}, result: stoppedResult(e2runner.ClassificationForwardNotAttempted, false, -1, ""), want: reject},
+		// 대조 불일치는 받지 않는다.
+		{name: "same-intent-unknown-before", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.PolicyDenied)}, result: stoppedResult("policy_not_executed", false, -1, ""),
+			change: func(r *e2runner.TrustedResult, a []e2proxy.Receipt) []e2proxy.Receipt {
+				r.Execution.IntentCounts.Unknown = 1
+				return a
+			}, want: reject},
+		{name: "classification-mismatch", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.PolicyDenied)}, result: stoppedResult("unsupported", false, -1, ""), want: reject},
+		{name: "count-mismatch", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.PolicyDenied)}, result: stoppedResult("policy_not_executed", false, -1, ""),
+			change: func(r *e2runner.TrustedResult, a []e2proxy.Receipt) []e2proxy.Receipt {
+				r.Call.Counts.Denied++
+				return a
+			}, want: reject},
+		{name: "missing-attempt", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.PolicyDenied), stoppedConnectFailed(2)}, result: stoppedResult("transient_failure", false, -1, ""),
+			change: func(_ *e2runner.TrustedResult, a []e2proxy.Receipt) []e2proxy.Receipt { return a[:1] }, want: reject},
+		{name: "foreign-call-attempt", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.PolicyDenied)}, result: stoppedResult("policy_not_executed", false, -1, ""),
+			change: func(_ *e2runner.TrustedResult, a []e2proxy.Receipt) []e2proxy.Receipt {
+				a[0].CallRef = "call_other"
+				return a
+			}, want: reject},
+		{name: "foreign-intent-attempt", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.PolicyDenied)}, result: stoppedResult("policy_not_executed", false, -1, ""),
+			change: func(_ *e2runner.TrustedResult, a []e2proxy.Receipt) []e2proxy.Receipt { a[0].IntentID = 8; return a }, want: reject},
+		{name: "attempt-audit-incomplete", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.PolicyDenied)}, result: stoppedResult("policy_not_executed", false, -1, ""),
+			change: func(_ *e2runner.TrustedResult, a []e2proxy.Receipt) []e2proxy.Receipt {
+				a[0].AuditComplete = false
+				return a
+			}, want: reject},
+		{name: "not-sent-but-written", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.PolicyDenied)}, result: stoppedResult("policy_not_executed", false, -1, ""),
+			change: func(_ *e2runner.TrustedResult, a []e2proxy.Receipt) []e2proxy.Receipt {
+				a[0].RequestWritten = true
+				return a
+			}, want: reject},
+		{name: "not-sent-flag-contradicts-forward", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.PolicyDenied)}, result: stoppedResult("policy_not_executed", false, -1, ""),
+			change: func(_ *e2runner.TrustedResult, a []e2proxy.Receipt) []e2proxy.Receipt { a[0].NotSent = false; return a }, want: reject},
+		{name: "complete-without-response", attempts: []e2proxy.Receipt{stoppedAttempt(1, "allowed", e2proxy.Complete, true, true, true, false), stoppedDenied(2, e2proxy.Closed)}, result: stoppedResult("terminated", false, -1, ""), want: reject},
+		// 연결 전 송신 실패에 요청 쓰기·응답 수신 흔적이 있으면 E② 기록과 맞지 않는다(연결 뒤 실패는 unknown이어야 한다).
+		{name: "transport-failed-but-written", attempts: []e2proxy.Receipt{stoppedAttempt(1, "allowed", e2proxy.TransportFailed, true, true, false, false)}, result: stoppedResult("transient_failure", false, -1, ""), want: reject},
+		{name: "complete-without-forward", attempts: []e2proxy.Receipt{stoppedAttempt(1, "allowed", e2proxy.Complete, false, false, false, false)}, result: stoppedResult(e2runner.ClassificationForwardNotAttempted, false, -1, ""), want: reject},
+		{name: "last-reason-not-recorded", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.PolicyDenied)}, result: stoppedResult("policy_not_executed", false, -1, ""),
+			change: func(r *e2runner.TrustedResult, a []e2proxy.Receipt) []e2proxy.Receipt {
+				r.Call.Reason = e2proxy.Closed
+				return a
+			}, want: reject},
+		{name: "attempt-id-missing", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.PolicyDenied)}, result: stoppedResult("policy_not_executed", false, -1, ""),
+			change: func(_ *e2runner.TrustedResult, a []e2proxy.Receipt) []e2proxy.Receipt { a[0].AttemptID = ""; return a }, want: reject},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			attempts := append([]e2proxy.Receipt(nil), tt.attempts...)
+			// 신뢰 결과의 호출 수는 고치기 전 시도 기록으로 채운다. 시험은 그 뒤 한쪽만 바꿔 대조 불일치를 만든다.
+			r := stoppedResult(tt.result.Classification, tt.result.ProcessBashExited, tt.result.ExitCode, tt.result.Termination, attempts...)
+			if tt.change != nil {
+				attempts = tt.change(&r, attempts)
+			}
+			accepted, attemptUnknown := firstDiagnosisToolOutcome(r, attempts)
+			if (verdict{accepted, attemptUnknown}) != tt.want {
+				t.Fatalf("accepted=%v unknown=%v, want %+v", accepted, attemptUnknown, tt.want)
+			}
+			// 결과 불명 송신 수가 없는 조합은 기존 분류 검사가 받지 않던 것이다(이 판정은 새 검사에서 나온다).
+			if tt.want.accepted && r.Call.Counts.Unknown == 0 && firstDiagnosisClosedToolOutcome(r) {
+				t.Fatal("기존 분류 검사가 이미 받는 조합이라 시도 단위 검사를 시험하지 않음")
 			}
 		})
 	}

@@ -320,6 +320,25 @@ func TestFirstDiagnosisRuntimeDatabaseOwnedPostgres(t *testing.T) {
 			}
 			firstDiagnosisSupervisorEngineRun(t, manager, installer, goalTask, "goal-met-after-work")
 		})
+		// 실제 회차 24b: Bash 자리가 여럿인 회차에서 한 intent가 목표를 증명하는 순간 다른 Worker의 명령이 아직 진행 중이었다.
+		for _, mode := range []string{"goal-met-concurrent-denied", "goal-met-concurrent-mid-response"} {
+			t.Run("actual-engine-"+mode, func(t *testing.T) {
+				goalTask, err := manager.CreateTask("Owned concurrent goal fixture "+mode, "Close when the planner proves the goal while other work still runs", nil, 60, 60)
+				if err != nil || goalTask == nil {
+					t.Fatal("독립 동시 명령 목표 task 생성 실패")
+				}
+				if _, err := runtimePool.ExecContext(ctx, "UPDATE tasks SET paused=true WHERE id=$1", goalTask.ID); err != nil {
+					t.Fatal("동시 명령 목표 task 준비 상태 저장 실패")
+				}
+				goalTask.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
+				for _, work := range firstDiagnosisGoalConcurrentWork(mode) {
+					if id, err := goalTask.Store.AddIntent(map[string]any{"summary": work.marker}, 1, nil, "system"); err != nil || id <= 0 {
+						t.Fatal("동시 명령 목표 intent 생성 실패")
+					}
+				}
+				firstDiagnosisSupervisorEngineRun(t, manager, installer, goalTask, mode)
+			})
+		}
 		t.Run("actual-engine-goal-met-unmatched-limit-logs-check", func(t *testing.T) {
 			goalTask, err := manager.CreateTask("Owned goal after work mismatch fixture", "Fail closure on an unbacked limitation after the goal is met", nil, 60, 60)
 			if err != nil || goalTask == nil {
@@ -403,6 +422,23 @@ func TestFirstDiagnosisRuntimeDatabaseOwnedPostgres(t *testing.T) {
 			}
 			firstDiagnosisSupervisorEngineRun(t, manager, installer, killed, "planner-kill")
 		})
+		// 멈춘 명령의 시도 단위 마감: 거부만·연결 전 송신 실패면 미완료, 연결 뒤 응답 수신 도중 멈춤은 결과 불명이다.
+		for _, mode := range []string{"planner-kill-denied", "planner-kill-refused", "planner-kill-mid-response"} {
+			t.Run("actual-engine-"+mode, func(t *testing.T) {
+				stopped, err := manager.CreateTask("Owned stopped command fixture "+mode, "Close a command the planner stopped by its per-attempt record", nil, 60, 60)
+				if err != nil || stopped == nil {
+					t.Fatal("독립 멈춘 명령 task 생성 실패")
+				}
+				if _, err := runtimePool.ExecContext(ctx, "UPDATE tasks SET paused=true WHERE id=$1", stopped.ID); err != nil {
+					t.Fatal("멈춘 명령 task 준비 상태 저장 실패")
+				}
+				stopped.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
+				if id, err := stopped.Store.AddIntent(map[string]any{"summary": "Read the owned fixture then wait"}, 1, nil, "system"); err != nil || id <= 0 {
+					t.Fatal("실제 멈춘 명령 intent 생성 실패")
+				}
+				firstDiagnosisSupervisorEngineRun(t, manager, installer, stopped, mode)
+			})
+		}
 		t.Run("actual-engine-time-budget-is-budget-limited", func(t *testing.T) {
 			timed, err := manager.CreateTask("Owned time budget fixture", "Close when the run time budget is reached", nil, 60, 60)
 			if err != nil || timed == nil {
