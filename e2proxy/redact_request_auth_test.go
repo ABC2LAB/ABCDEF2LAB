@@ -67,6 +67,14 @@ func TestTestAccountRunMasksRequestCredentialsStructurally(t *testing.T) {
 		"{\"text\":\"needs Authorization: Bearer synthetic-review-value\"\n}":                  "{\"text\":\"needs Authorization: [REDACTED]\"\n}",
 		`{"text":"needs Authorization: Bearer synthetic-review-value" , "kind":"observation"}`: `{"text":"needs Authorization: [REDACTED]" , "kind":"observation"}`,
 		`{\"text\":\"needs Authorization: Bearer synthetic-review-value\"\n}`:                  `{\"text\":\"needs Authorization: [REDACTED]\"\n}`,
+		// `=` 바로 뒤 따옴표는 인용부를 연다. 안의 구조 문자(`}`)로 끝내지 않는다(#571 이동찬 리뷰). 원문·JSON 둘 다 다음
+		// 헤더 줄은 남는다. Digest 매개변수와 따옴표 없는 -b 값 안의 인용부도 같다.
+		"> Cookie: lang=\"}\"; token=synthetic-review79-credential-tail\r\n> Accept: */*\r\n":                       "> Cookie: [REDACTED]\r\n> Accept: */*\r\n",
+		`{"stdout":"> Cookie: lang=\"}\"; token=synthetic-review79-credential-tail\r\n> Accept: */*\r\n"}`:          `{"stdout":"> Cookie: [REDACTED]\r\n> Accept: */*\r\n"}`,
+		"> Authorization: Digest username=\"a\", realm=\"}\", response=\"synthetic-review-value\"\r\n> Accept: */*": "> Authorization: [REDACTED]\r\n> Accept: */*",
+		`curl -b token="synthetic review value" https://owned.test/c`:                                               `curl -b [REDACTED] https://owned.test/c`,
+		// 인용부가 닫히기 전에 바깥 JSON 문자열이 끝나면(더 얕은 이스케이프 따옴표) 거기서 끝나고 뒤 칸은 남는다.
+		`{"stdout":"> Cookie: lang=\"synthetic-review-value","next":1}`: `{"stdout":"> Cookie: [REDACTED]","next":1}`,
 		// 대상 응답의 Set-Cookie JSON 이름은 요청 Cookie로 보지 않는다.
 		`{"Set-Cookie": "sid=short1"}`:                                         `{"Set-Cookie": "sid=short1"}`,
 		"Proxy-Authorization: Basic eHl6":                                      "Proxy-Authorization: [REDACTED]",
@@ -93,7 +101,7 @@ func TestTestAccountRedactionKeepsJSONValid(t *testing.T) {
 		Text string `json:"text"`
 		Kind string `json:"kind"`
 	}
-	for _, text := range []string{"needs Authorization: Bearer synthetic-review-value", "sent Cookie: lang=\"en\"; token=synthetic-review-value", "Kind first"} {
+	for _, text := range []string{"needs Authorization: Bearer synthetic-review-value", "sent Cookie: lang=\"en\"; token=synthetic-review-value", "sent Cookie: lang=\"}\"; token=synthetic-review-value", "Kind first"} {
 		for _, v := range []any{fact{Text: text, Kind: "observation"}, map[string]any{"kind": "observation", "text": text}} {
 			compact, _ := json.Marshal(v)
 			indented, _ := json.MarshalIndent(v, "", "  ")

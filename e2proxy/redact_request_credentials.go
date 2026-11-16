@@ -90,43 +90,51 @@ func credentialQuoteAt(b []byte, m []int, group int) credentialQuote {
 //   - 값을 연 따옴표가 있으면 같은 종류이고 이스케이프 단계가 같거나 얕은 따옴표에서 끝난다. 다른 종류의 따옴표와 더 깊게
 //     이스케이프된 같은 따옴표는 값 안의 글자다(JSON 값 "language=\"en\"; token=…").
 //   - 따옴표 없이 시작한 값(curl -v 줄)은 따옴표가 JSON 구조 문자 앞에 올 때만 끝난다. 그 밖의 따옴표는 쿠키 값의 일부다
-//     (a="x"; token=…). bare 자리는 따옴표와 공백에서 끝난다.
+//     (a="x"; token=…). `=` 바로 뒤 따옴표는 인용부를 열고, 닫을 때까지 안의 글자는 구조 문자여도 값이다(lang="}").
+//     bare 자리는 인용부 밖의 따옴표와 공백에서 끝난다(-b token="…"는 인용부까지 값).
 func credentialValueEnd(b []byte, start int, q credentialQuote, bare bool) int {
+	// inner는 따옴표 없이 시작한 값 안에서 `=` 바로 뒤에 연 인용부다(쿠키 값 lang="…", Digest 매개변수 realm="…", 셸
+	// 인수 -b token="…"). 같은 종류·같은 이스케이프 단계의 따옴표가 닫을 때까지 안의 글자는 구조 문자여도 값이다(#571 이동찬
+	// 리뷰: lang="}"에서 여는 따옴표 뒤 `}`를 바깥 구조로 보고 뒤 token을 남김).
+	var inner credentialQuote
 	i := start
 	for i < len(b) {
-		c := b[i]
+		// 이 글자 앞의 백슬래시를 같이 읽는다(n개, 0이면 원문 글자).
+		j := i
+		for j < len(b) && b[j] == '\\' {
+			j++
+		}
+		if j == len(b) {
+			return len(b)
+		}
+		n, c := j-i, b[j]
 		switch {
 		case c == '\r' || c == '\n':
 			return i
-		case c == '\\':
-			n := 1
-			for i+n < len(b) && b[i+n] == '\\' {
-				n++
-			}
-			if i+n == len(b) {
-				return len(b)
-			}
-			switch next := b[i+n]; {
-			case next == 'n' || next == 'r' || next == 't' || next == '\r' || next == '\n':
-				return i
-			case next == '"' || next == '\'':
-				if q.char == next && n <= q.escapes || q.char == 0 && (bare || credentialStructuralAt(b, i+n+1)) {
+		case n > 0 && (c == 'n' || c == 'r' || c == 't'):
+			return i
+		case c == '"' || c == '\'':
+			switch {
+			case q.char != 0:
+				if c == q.char && n <= q.escapes {
 					return i
 				}
-			case bare && (next == ' ' || next == '\t'):
+			case inner.char != 0:
+				if c == inner.char && n == inner.escapes {
+					inner = credentialQuote{}
+				} else if n < inner.escapes {
+					// 인용부보다 얕게 이스케이프된 따옴표는 바깥 문자열의 끝이다.
+					return i
+				}
+			case i > start && b[i-1] == '=':
+				inner = credentialQuote{char: c, escapes: n}
+			case bare || credentialStructuralAt(b, j+1):
 				return i
 			}
-			i += n + 1
-		case c == '"' || c == '\'':
-			if q.char == c || q.char == 0 && (bare || credentialStructuralAt(b, i+1)) {
-				return i
-			}
-			i++
-		case bare && (c == ' ' || c == '\t'):
+		case bare && inner.char == 0 && (c == ' ' || c == '\t'):
 			return i
-		default:
-			i++
 		}
+		i = j + 1
 	}
 	return i
 }
