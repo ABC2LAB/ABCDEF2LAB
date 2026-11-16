@@ -904,10 +904,10 @@ export function parseWorkflowLimits(v: unknown): WorkflowLimits {
     v.format !== "abc2lab.workbench-flow/v1" ||
     !natural(v.max_pages) ||
     v.max_pages < 1 ||
-    v.max_pages > 32 ||
+    v.max_pages > 256 ||
     !natural(v.max_endpoints) ||
     v.max_endpoints < 1 ||
-    v.max_endpoints > 32 ||
+    v.max_endpoints > 64 ||
     !natural(v.max_response_bytes) ||
     v.max_response_bytes < 4096 ||
     v.max_response_bytes > 2097152 ||
