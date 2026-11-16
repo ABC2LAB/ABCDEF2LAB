@@ -77,6 +77,7 @@ func TestRunListRestartUnknownAndReportFacts(t *testing.T) {
 		t.Fatal(response.Error)
 	}
 	awaitState(t, service, completed.ID, Completed)
+	awaitExecutionReturned(t, service, completed.ID)
 	// 두 번째 실행은 반환했지만 마감 근거를 게시하지 않았다. 목록에서 완료로 승격하면 안 된다.
 	backend.run = func(context.Context, Execution, Publish) error { return nil }
 	unknown := create(t, service, "unknown")
