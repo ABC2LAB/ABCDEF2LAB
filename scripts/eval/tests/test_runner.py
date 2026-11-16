@@ -2447,6 +2447,21 @@ class TestMainKeepsTheAdminPasswordInMemory(unittest.TestCase):
                 self.assertNotIn(PASSWORD, err.getvalue())
                 self.assertEqual([entry for entry in root.iterdir() if entry.name != "admin.pw"], [])
 
+    def test_password_file_cannot_be_the_path_key(self):
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as tmp:
+            key = Path(tmp, "path.key")
+            key.write_bytes(bytes(range(32)))
+            key.chmod(0o600)
+            root, argv = self.inputs(tmp, lambda payload: payload.update(purpose="browser_acceptance", path_key_file=str(key)))
+            err = io.StringIO()
+            with patch.object(runner.getpass, "getpass") as ask, contextlib.redirect_stderr(err):
+                self.assertEqual(runner.main(argv + ["--admin-password-file", str(key)]), 2)
+            ask.assert_not_called()
+            self.assertEqual(err.getvalue().strip(), "admin_password_file: SAME_AS_PATH_KEY")
+            self.assertEqual(list(root.iterdir()), [])
+
     def test_task_target_is_checked_against_this_run_origin(self):
         # 계측기 포트가 다른 구성이면 작업 대상도 그 origin이어야 한다(고정 문자열과 비교하지 않는다).
         def use_8081(payload):
