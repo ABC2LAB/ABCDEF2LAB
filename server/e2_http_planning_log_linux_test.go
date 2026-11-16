@@ -7,6 +7,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/diagnosisflow"
@@ -14,10 +19,6 @@ import (
 	"github.com/Autumn-27/artex/e2runner"
 	"github.com/Autumn-27/artex/internal/diagnosticlog"
 	"github.com/Autumn-27/artex/transmit"
-	"os"
-	"strings"
-	"testing"
-	"time"
 )
 
 func planningLogRows(t *testing.T, logger *diagnosticlog.Logger) []map[string]any {
@@ -57,9 +58,7 @@ func TestPlanningFailureReasonsPreserveReturnAndBudgets(t *testing.T) {
 	}{
 		{"normal", "", "", nil, false, nil},
 		{"unbound", "planning_task_unavailable", "failed", ErrE2HTTPHost, false, func(r *E2HTTPRuntime, task *Task, ctx context.Context) (*Task, context.Context) {
-			bad := *task
-			bad.ID = "untrusted-task"
-			return &bad, ctx
+			return &Task{ID: "untrusted-task"}, ctx
 		}},
 		{"nil-context", "planning_context_closed", "failed", ErrE2HTTPHost, false, func(r *E2HTTPRuntime, task *Task, _ context.Context) (*Task, context.Context) { return task, nil }},
 		{"cancelled", "planning_context_closed", "cancelled", ErrE2HTTPHost, false, func(r *E2HTTPRuntime, task *Task, ctx context.Context) (*Task, context.Context) {
