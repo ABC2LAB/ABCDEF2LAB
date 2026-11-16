@@ -320,6 +320,25 @@ func TestFirstDiagnosisRuntimeDatabaseOwnedPostgres(t *testing.T) {
 			}
 			firstDiagnosisSupervisorEngineRun(t, manager, installer, goalTask, "goal-met-after-work")
 		})
+		// 실제 회차 24b: Bash 자리가 여럿인 회차에서 한 intent가 목표를 증명하는 순간 다른 Worker의 명령이 아직 진행 중이었다.
+		for _, mode := range []string{"goal-met-concurrent-denied", "goal-met-concurrent-mid-response"} {
+			t.Run("actual-engine-"+mode, func(t *testing.T) {
+				goalTask, err := manager.CreateTask("Owned concurrent goal fixture "+mode, "Close when the planner proves the goal while other work still runs", nil, 60, 60)
+				if err != nil || goalTask == nil {
+					t.Fatal("독립 동시 명령 목표 task 생성 실패")
+				}
+				if _, err := runtimePool.ExecContext(ctx, "UPDATE tasks SET paused=true WHERE id=$1", goalTask.ID); err != nil {
+					t.Fatal("동시 명령 목표 task 준비 상태 저장 실패")
+				}
+				goalTask.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
+				for _, work := range firstDiagnosisGoalConcurrentWork(mode) {
+					if id, err := goalTask.Store.AddIntent(map[string]any{"summary": work.marker}, 1, nil, "system"); err != nil || id <= 0 {
+						t.Fatal("동시 명령 목표 intent 생성 실패")
+					}
+				}
+				firstDiagnosisSupervisorEngineRun(t, manager, installer, goalTask, mode)
+			})
+		}
 		t.Run("actual-engine-goal-met-unmatched-limit-logs-check", func(t *testing.T) {
 			goalTask, err := manager.CreateTask("Owned goal after work mismatch fixture", "Fail closure on an unbacked limitation after the goal is met", nil, 60, 60)
 			if err != nil || goalTask == nil {
