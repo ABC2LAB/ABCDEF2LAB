@@ -759,16 +759,34 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 	}
 	observed := make(map[string]e2proxy.CallResult, len(results))
 	limited := make(map[int64]map[string]bool)
+	// 시도 단위 기록으로 받은 멈춘 명령 중 대상에 전달됐는데 응답을 끝까지 받지 못한 시도가 있는 호출이다. 그 intent는 결과 불명이어야
+	// 한다(아래 호출 대조). 시도 기록은 기존 분류 검사가 받지 않은 결과가 있을 때만 읽는다.
+	attemptUnknown := make(map[string]bool)
+	var attempts map[string][]e2proxy.Receipt
 	for _, result := range results {
-		switch {
-		case !result.Final || !result.Call.Final || !result.Call.AuditComplete || !result.ProcessDrained || !result.ProxyDrained:
+		if !result.Final || !result.Call.Final || !result.Call.AuditComplete || !result.ProcessDrained || !result.ProxyDrained {
 			return fail(reasonClosureResultNotClosed)
-		case !firstDiagnosisClosedToolOutcome(result):
+		}
+		accepted := firstDiagnosisClosedToolOutcome(result)
+		unknownByAttempt := false
+		if !accepted {
+			if attempts == nil {
+				attempts = firstDiagnosisCallAttempts(execution)
+			}
+			accepted, unknownByAttempt = firstDiagnosisStoppedToolOutcome(result, attempts[result.Call.CallRef])
+		}
+		switch {
+		case !accepted:
 			return fail(reasonClosureToolOutcomeInvalid)
 		case result.Execution.Scope.TaskRef != task.ID || observed[result.Call.CallRef].CallRef != "":
 			return fail(reasonClosureResultMismatch)
 		}
 		observed[result.Call.CallRef] = result.Call
+		if unknownByAttempt {
+			// 결과 불명 근거다. 거부 수가 있어도 정책 제한 근거로 쓰지 않는다(그 intent는 정책 제한으로 마감하지 않는다).
+			attemptUnknown[result.Call.CallRef] = true
+			continue
+		}
 		if result.Call.Counts.Denied > 0 || result.Call.Counts.Unsupported > 0 {
 			if limited[result.Call.IntentID] == nil {
 				limited[result.Call.IntentID] = make(map[string]bool)
@@ -817,7 +835,7 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 			return fail(reasonClosureIntentReadFailed)
 		}
 		outcome := firstDiagnosisIntentOutcome(intent.State, intent.BlockedReason)
-		if call.Counts.Unknown != 0 {
+		if call.Counts.Unknown != 0 || attemptUnknown[call.CallRef] {
 			if outcome != intentOutcomeUnknown || intent.BlockedReason != "e2_http_result_unknown" {
 				return fail(reasonClosureUnknownIntentMismatch)
 			}
@@ -844,8 +862,8 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 	if len(results)+missing+programCalls != len(calls) {
 		return fail(reasonClosureCallCountMismatch)
 	}
-	// 결과 불명 intent 수가 E② 근거로 확인한 수와 같아야 한다. 결과 불명 송신 없이 결과 불명으로 표시된 intent(모르는
-	// 그래프 상태 포함)는 근거가 없으므로 마감하지 않는다.
+	// 결과 불명 intent 수가 E② 근거로 확인한 수와 같아야 한다. 근거는 결과 불명 송신 수와, 멈춘 명령의 시도 단위 기록에서
+	// 대상에 전달됐는데 응답을 끝까지 받지 못한 시도다. 근거 없이 결과 불명으로 표시된 intent(모르는 그래프 상태 포함)는 마감하지 않는다.
 	if int64(len(unknownIntents)) != outcomes.Unknown {
 		return fail(reasonClosureUnknownIntentMismatch)
 	}
@@ -874,6 +892,7 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 // 그 호출과 intent의 결과다(C01·C02). 미완료·알 수 없는 분류는 마감 실패다.
 // 실행 전체 누계(Execution.Counts)의 결과 불명은 다른 intent의 것이라 보지 않는다(C03). 이 intent의 앞선 호출에
 // 결과 불명이 있었다면 그 intent는 더 보내지 않으므로(C01) 이 호출도 결과 불명이어야 한다.
+// 여기서 받지 않는 멈춘 명령·닫힘 사유는 firstDiagnosisStoppedToolOutcome이 시도 단위 기록으로 다시 본다.
 func firstDiagnosisClosedToolOutcome(result e2runner.TrustedResult) bool {
 	c := result.Call.Counts
 	if !result.Execution.AuditComplete {
