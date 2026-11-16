@@ -324,7 +324,7 @@ func TestURLPreparationLoadProfileRejectsUnsafePolicy(t *testing.T) {
 		{"zero_concurrency", "installation_policy_invalid", func(f *urlNegativeFixture) {
 			f.policy.Limits.MaxConcurrent = 0
 		}},
-		{"multiple_concurrency", "installation_policy_invalid", func(f *urlNegativeFixture) {
+		{"insufficient_proxy_concurrency", "installation_policy_invalid", func(f *urlNegativeFixture) {
 			f.policy.Limits.MaxConcurrent = 2
 		}},
 	}
