@@ -137,7 +137,7 @@ docker compose -f deploy/product/compose.yaml -f deploy/product/compose.acceptan
 
 초기 구현 검증: E② 세 패키지 전체 race **617 PASS / FAIL 0 / SKIP 0**(test/subtest), 서버·모델 예산/1-E 및 실제 Manager PostgreSQL race **107 PASS / FAIL 0 / SKIP 0**. 전체 빌드·vet 통과. 전용 DB 없이 실행한 서버·제품 전체 시험은 **2193 PASS / FAIL 1 / SKIP 309**였으며 실패는 기존 모델 목록 시험의 DB 미설정이었다. 해당 시험은 일회용 DB 재실행에서 통과했다. 최종 통합 SHA·검증은 PR에 기록한다.
 
-Docker 제품 이미지의 새 종단 회차, 유료 Qwen3.6 회차, 운영 대상 송신, 성능/RSS 측정은 **NOT_RUN**이다. 로컬 실제 수신·E② 감사 확인을 외부 모델 종단 성공으로 옮기지 않는다.
+아래 초기 1-D 검증 당시 Docker 제품 이미지의 새 종단 회차는 NOT_RUN이었다. P1 후속에서는 아래처럼 실제 제품 Compose의 새 설치·로컬 합성 모델 회차를 추가했다. 유료 Qwen3.6·외부 모델 회차, 운영 대상 송신, 성능/RSS 측정은 여전히 **NOT_RUN**이다.
 
 최신 dev 통합 검증(기능 코드 `39cfe792`, 추가 예산 시험 `b7cfe815`, dev `83c3cb66`):
 
@@ -161,3 +161,31 @@ Docker 수용 이미지는 `sha256:20da572366b86dc99605d1afaee7d2a0fefc02741a28d
 가드 변이는 전체 슬롯을 1로 되돌림, 동일 intent 동시 허용, 최종 저장 전 슬롯 반환, drain 대기 세대 검사 제거, factory의 Worker 최솟값 무시를 각각 독립 시험이 검출했다. 정상 코드를 커밋한 뒤 저장소 밖 overlay에서만 바꿨다.
 
 #571 최신 소스의 기존 반례·코퍼스·두 30초 fuzz는 통과했지만, 별도 Unicode 헤더 이름 반례는 실제 `record_fact` 작성기에서 실패했다. [병합된 #571의 후속 리뷰](https://github.com/ABC2LAB/ABCDEF2LAB/pull/571#pullrequestreview-5914635014)에 인계했으며 이 PR에서 다른 담당의 가림 구현을 바꾸지 않았다. 위 1-D 회귀 통과를 모든 자격 가림 입력의 안전성 완료로 해석하지 않는다.
+
+
+### #598 P1 후속: 실제 제품 PID256 수용 (2026-11-16)
+
+검증 소스는 `2ec38bbe09d7ce4d69e3466b797ddb39205fdbd3`다. 최신 dev `14e0c817`의 #597 fixture 이름 정비와 #600 제품 로더 수정·시험을 일반 merge로 포함했다. 로더 변경은 1-D와 같은 검사였고, fixture 충돌은 대상 이름/업스트림 처리와 PID 수용 모드를 모두 보존했다. 뒤 문서 커밋은 실행 코드를 바꾸지 않는다.
+
+실제 `deploy/product/Dockerfile`의 product-runtime 이미지 ID는 `sha256:7093e5b12f64a9da20a1b5cc89584c0fa2eb5f8f5547eafb3e675fde36b7e125`, 실행 helper SHA256은 `62c9c8ce82ca4a1dd1c245479298fe3edb90c4f8d7df5fc1fba4b01678cce1bc`다. Go 시험 바이너리로 제품 엔진을 대체하지 않았다. 제품 installer→preflight→prepare-service→API/workbench를 새 PostgreSQL16·볼륨·내부망에서 시작했다. preparation은 UID1000, read-only rootfs, cap_drop ALL, no-new-privileges, 기존 seccomp, PID256·메모리2GiB 그대로다. 제어기/합성 서버는 별도 수용 서비스이며 모델·Bash에 설치 비밀번호나 제어 토큰을 주지 않았다.
+
+실행 환경은 Docker 29.9.3, 커널 `6.18.58.1-microsoft-standard-WSL2`, 논리 CPU14다. 실측 범위는 다음과 같다.
+
+| 관찰 | 결과 |
+| --- | --- |
+| Worker/슬롯 | 실제 Manager3 / Bash3, HTTP 동시성16 |
+| 회차 조건 파일 | task256·엔진 예비64·호출64·명령 hard/soft48·helper 여유16, queue_consumes_command_timeout=true |
+| 첫 단계 | 두 무거운 명령이 한도에서 대기한 뒤 가벼운 세 번째가 응답·종료하고 다음 명령에 진입 |
+| 다음 단계 | 세 명령 모두 NPROC48에서 fork EAGAIN을 확인한 채 동시에 GET 응답 대기. 자식 수42~43(기존 helper/부모 task 수에 따라 다름) |
+| 엔진 스레드 최고 | 20. 초기 실측18보다 높지만 2배40을 다음 2의 거듭제곱으로 올려도 예비64는 동일 |
+| cgroup 최고 | pids.current 관찰 최고와 pids.peak 모두 **167/256**(관찰용 Python1 포함), pids.events:max 증가 **0** |
+| 결과 대조 | 실제 target 수신/송신/응답/호출 **6**, unknown/transient/unsupported **0** |
+| 저장 마감 | 6개 tool_result 모두 completed·Final·ProcessDrained·ProxyDrained, 실행 audit_complete, 저장 run completed·drain_complete |
+
+이보다 앞선 동일 실행 코드 `fed2dee6`의 새 제품 설치에서도 같은 6개 호출·응답·마감을 확인했고 최고163/256·엔진15·고갈0이었다. 실제 최대 한도까지 채운 짧은 두 단계 수용이며, 장시간 처리량/RSS 수용으로 확대하지 않는다. 유료/외부 LLM과 운영 대상은 사용하지 않았다.
+
+추가 회귀: 코어 변경 패키지 전체 race **1120 PASS / 0 FAIL / 17 SKIP**, 실제 PG16 서버 경로·마감 집중 race **80 PASS / 0 FAIL / 0 SKIP**, 두 hard/soft 한도 실측 factory race **6 PASS / 0 FAIL**, dev 병합 제품 로더·제품 진입 race **124 PASS / 0 FAIL / 0 SKIP**. 전체 build/vet·gofmt·diff 검사와 평가 Python **1840개**가 통과했다. 코어 SKIP은 기존 DB 미공급/선택 환경 시험이며 필수 서버 Worker 결속·제품 생성자와 실제 제품 수용은 SKIP 없이 실행했다. 전체 저장소 PG16/race·크로스빌드는 최종 PR CI에서 확인한다.
+
+외부 Go overlay 변이 6개(intent 잠금 반환, 이미 막힌 대기자의 Drain 깨움, 서버 admission Worker 결속, 제품 조기 admission Worker 결속, 명령의 helper 여유 전달, helper 전체 task 상한 전달)를 각각 **컴파일 성공 후 시험 실패**로 검출했다. 마지막 helper 전체 상한 변이는 처음 명령 ulimit만 읽던 시험에서 살아남아, 실제 PID1의 /proc/1/limits까지 읽는 시험을 추가한 뒤 검출했다. 원본 정상 커밋은 변이 중 수정하지 않았다.
+
+실패도 별도로 남긴다. 최초 CONNECT 시험 클라이언트는 Python의 CONNECT 형식 때문에 미지원이었고, HTTP/1.1로 고쳤다. 그 뒤 호출 상한64만 적용한 제품 수용은 엔진 고갈 없이 helper 스레드 생성 실패로 끝났으며 **수용 실패**다. helper 여유16을 분리한 뒤 새 설치로 위 두 회차를 통과했다. 로컬 PG16 임시 설치의 LLVM/JIT 의존성 누락으로 전체 서버 시험 중 두 시험이 실패했으나, 같은 소스에서 라이브러리를 보완하고 해당 시험 4개(test/subtest)를 모두 재검증했다. 보호 저널 삭제·실패 회차 덮어쓰기로 수용 결과를 만들지 않았다.
