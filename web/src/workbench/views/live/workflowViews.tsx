@@ -680,7 +680,7 @@ interface ScopePick {
   /** 고를 수 있는 경로인가 (범위 안 · 읽기이거나 사전 쓰기 승인이 있는 데이터 변경) */
   eligible: (e: WorkflowEndpoint) => boolean;
   locked: boolean;
-  /** 선택 모드: 알약을 누르면 상세 대신 고르기를 토글한다 */
+  /** 여러 개 고르기 모드(버튼 "삭제"): 알약을 누르면 상세 대신 고르기를 토글한다 */
   multi: boolean;
   picked: ReadonlySet<string>;
   /** 오른쪽 상세에 보이는 경로 */
@@ -688,14 +688,19 @@ interface ScopePick {
   /** 알약 누름. order 는 그 묶음 알약의 보이는 순서(Shift 범위 고르기용) */
   press: (e: WorkflowEndpoint, shift: boolean, order: readonly string[]) => void;
   /** 묶음 전체 넣기 · 빼기 */
-  setGroup: (name: string, rows: readonly WorkflowEndpoint[], on: boolean) => void;
+  setGroup: (rows: readonly WorkflowEndpoint[], on: boolean) => void;
+  /** 여러 개 고르기에서 묶음의 보이는 알약을 한꺼번에 고르거나 푼다 */
+  pickGroup: (ids: readonly string[], on: boolean) => void;
+  /** 사용자가 점검에서 뺀 경로 (다시 넣으면 빠진다). 처음부터 안 들어가 있던 경로는 들지 않는다 */
+  dropped: ReadonlySet<string>;
 }
 
 /**
- * 찾은 경로 묶음 카드 (범위 확인 가운데, 시안 renderTree). 묶음 머리 · 막대의 수는 거르기와 상관없이 그 묶음 전체,
+ * 찾은 경로 묶음 카드 (범위 확인 가운데, 시안 renderTree). 묶음 머리의 수는 거르기와 상관없이 그 묶음 전체,
  * 알약은 거른 경로만 메서드 · 경로 순으로. 탐색 중 · 전체 보기에서는 아직 경로가 안 나온 묶음을 아래에 적는다.
- * 점검에 넣은 경로의 알약은 체크로, 오른쪽 상세에 보이는 경로의 알약은 aria-current 로, 선택 모드에서 고른
- * 알약은 aria-pressed 로 표시한다. 묶음 머리의 체크는 그 묶음 전체(거르기와 상관없이)를 넣고 뺀다.
+ * 점검에 넣은 경로의 알약은 체크로, 오른쪽 상세에 보이는 경로의 알약은 aria-current 로, 여러 개 고르기 모드(버튼 "삭제")에서 고른
+ * 알약은 aria-pressed 로 표시한다. 묶음 머리의 체크는 평소에는 그 묶음 전체(거르기와 상관없이)를 넣고 빼고, 여러 개
+ * 고르기(삭제)를 켜면 그 묶음에 보이는 알약의 네모칸을 전부 고르거나 푼다(넣기 · 빼기는 거르기 옆 버튼으로).
  */
 function EndpointCards({
   all,
@@ -719,20 +724,25 @@ function EndpointCards({
         const can = rows.filter(pick.eligible);
         const onN = can.filter(pick.isOn).length;
         const full = can.length > 0 && onN === can.length;
+        // 여러 개 고르기(삭제)에서는 묶음 체크가 이 묶음에 보이는 알약 고르기를 따른다
+        const pickedN = order.filter((id) => pick.picked.has(id)).length;
+        const allPicked = order.length > 0 && pickedN === order.length;
+        const checked = pick.multi ? allPicked : full;
+        const partial = pick.multi ? pickedN > 0 && !allPicked : onN > 0 && !full;
         return (
           <section className={s.gc} key={name} aria-label={`${name} ${rows.length}개`}>
             <div className={s["gc-h"]}>
               <input
                 type="checkbox"
                 className={s["gc-ck"]}
-                aria-label={`${name} 묶음 전체 점검에 포함`}
-                checked={full}
+                aria-label={pick.multi ? `${name} 묶음 경로 전부 고르기` : `${name} 묶음 전체 점검에 포함`}
+                checked={checked}
                 ref={(el) => {
-                  // 일부만 넣었으면 반쯤 체크 (속성이 아니라 DOM 값이라 직접 쓴다)
-                  if (el) el.indeterminate = onN > 0 && !full;
+                  // 일부만이면 반쯤 체크 (속성이 아니라 DOM 값이라 직접 쓴다)
+                  if (el) el.indeterminate = partial;
                 }}
-                disabled={pick.locked || !can.length}
-                onChange={() => pick.setGroup(name, rows, !full)}
+                disabled={pick.locked || (pick.multi ? !order.length : !can.length)}
+                onChange={() => (pick.multi ? pick.pickGroup(order, !allPicked) : pick.setGroup(rows, !full))}
               />
               <b>{name}</b>
               <span className={s.n}>{rows.length}</span>
@@ -741,27 +751,38 @@ function EndpointCards({
                 {n("ex") ? <span>{`제외 ${n("ex")}`}</span> : null}
               </span>
             </div>
-            <div className={s.kbar} aria-hidden="true">
-              {(["get", "ap", "ex"] as const).map((k) =>
-                n(k) ? <i key={k} className={s[`k-${k}`]} style={{ flex: n(k) }} /> : null,
-              )}
-            </div>
             <div className={s.pills}>
               {pills.map((e) => {
                 const k = kindOf(e);
                 const on = pick.isOn(e);
+                const got = pick.picked.has(e.id);
+                const out = !on && pick.dropped.has(e.id);
                 return (
                   <button
-                    className={cx(s.pp, k === "ap" && s.ap, k === "ex" && s.ex, k === "get" && s.get, on && s.inc)}
+                    className={cx(
+                      s.pp,
+                      k === "ap" && s.ap,
+                      k === "ex" && s.ex,
+                      k === "get" && s.get,
+                      on && s.inc,
+                      out && s.drop,
+                    )}
                     key={e.id}
                     type="button"
                     data-ep={e.id}
                     aria-current={!pick.multi && pick.current === e.id ? "true" : undefined}
-                    aria-pressed={pick.multi ? pick.picked.has(e.id) : undefined}
-                    aria-label={`${e.method} ${e.path}${PILL_FLAG[k]}${on ? ", 점검에 포함" : ""}${pick.multi ? "" : ", 요청·응답 보기"}`}
+                    aria-pressed={pick.multi ? got : undefined}
+                    aria-label={`${e.method} ${e.path}${PILL_FLAG[k]}${on ? ", 점검에 포함" : ""}${out ? ", 점검에서 뺌" : ""}${pick.multi ? "" : ", 요청·응답 보기"}`}
                     onClick={(ev) => pick.press(e, ev.shiftKey, order)}
                   >
-                    {on ? <Icon name="check" className={s.pk} /> : null}
+                    {/* 여러 개 고르기(삭제)에서는 알약 전체를 칠하지 않고 메서드 옆 네모칸에만 체크한다. 그동안 점검 포함 ✓ 는
+                        네모칸과 겹쳐 보이지 않게 숨기고, 포함 여부는 알약 테두리(inc)와 읽기 글로 남긴다 */}
+                    {pick.multi ? (
+                      <span className={cx(s.pck, got && s.on)} data-pick={got ? "on" : "off"} aria-hidden="true">
+                        {got ? <Icon name="check" /> : null}
+                      </span>
+                    ) : null}
+                    {!pick.multi && on ? <Icon name="check" className={s.pk} /> : null}
                     <span className={cx(s.pm, s[e.method])}>{e.method === "DELETE" ? "DEL" : e.method}</span>
                     <span className={s.pt}>
                       <Pth p={e.path} />
@@ -780,8 +801,9 @@ function EndpointCards({
 }
 
 /**
- * 찾은 경로 (범위 확인 가운데, 시안 renderTree — 자산 탐색 오른쪽 패널에서 옮김): 처리 종류 막대 · 범례 · 거르기 · 묶음 카드.
- * 알약을 누르면 오른쪽 경로 상세에서 점검에 넣을지 고른다. 머리 오른쪽(tools)과 카드 위(bar)는 부모가 채운다.
+ * 찾은 경로 (범위 확인 가운데, 시안 renderTree — 자산 탐색 오른쪽 패널에서 옮김): 거르기 · 검색 · 묶음 카드.
+ * 알약을 누르면 오른쪽 경로 상세에서 점검에 넣을지 고른다. 거르기 옆(tools)과 카드 위(bar)는 부모가 채운다.
+ * 검색은 메서드 · 경로 글자로 알약을 거른다(대소문자 무시). 검색으로 안 보이게 된 알약의 고르기는 그대로 둔다(직접 고른 것).
  */
 function FoundPaths({
   endpoints,
@@ -800,8 +822,13 @@ function FoundPaths({
   tools?: ReactNode;
   bar?: ReactNode;
 }) {
-  const shown = endpoints.filter((e) => filter === "all" || kindOf(e) === filter);
-  const count = (k: Kind) => endpoints.filter((e) => kindOf(e) === k).length;
+  const [query, setQuery] = useState("");
+  const q = query.trim().toLowerCase();
+  const shown = endpoints.filter(
+    (e) => (filter === "all" || kindOf(e) === filter) && (!q || `${e.method} ${e.path}`.toLowerCase().includes(q)),
+  );
+  let empty = treeEmpty(filter, endpoints.length);
+  if (q && endpoints.length) empty = "검색과 맞는 경로가 없습니다.";
   return (
     <section className={s.sec} aria-labelledby="sFoundH">
       <div className={s.sh}>
@@ -810,38 +837,6 @@ function FoundPaths({
           <h2 id="sFoundH">
             찾은 경로 <span className={s.num}>{endpoints.length}</span>
           </h2>
-        </div>
-        {tools}
-      </div>
-      {/* 시안 범례의 '로그인'(시험 계정 로그인 경로) 수는 서버가 경로를 그렇게 나누지 않아 값을 비운다 */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 7, marginTop: 10 }}>
-        <div className={s.kbar} aria-hidden="true">
-          {(["get", "ap", "ex"] as const).map((k) =>
-            count(k) ? <i key={k} className={s[`k-${k}`]} style={{ flex: count(k) }} /> : null,
-          )}
-        </div>
-        <div className={s.kleg}>
-          <span>
-            <i style={{ background: "var(--accent-line)" }} />
-            {`자동 포함 ${count("get")}`}
-          </span>
-          <span title="서버가 시험 계정 로그인 경로를 따로 나누지 않습니다">
-            <i style={{ background: "var(--accent)" }} />
-            {`로그인 ${NONE}`}
-          </span>
-          <span>
-            <i style={{ background: "var(--warn)" }} />
-            {`승인 후 전송 ${count("ap")}`}
-          </span>
-          <span>
-            <i
-              className={s["k-ex"]}
-              style={{
-                background: "repeating-linear-gradient(135deg,var(--rule-2) 0 3px,transparent 3px 6px)",
-              }}
-            />
-            {`제외 ${count("ex")}`}
-          </span>
         </div>
       </div>
       <div className={s.isec} style={{ gap: 12 }}>
@@ -859,6 +854,16 @@ function FoundPaths({
               </label>
             ))}
           </div>
+          {/* 삭제(여러 개 고르기)는 거르기(전체 · 승인 필요 · 제외) 바로 옆, 검색은 오른쪽 끝 */}
+          {tools}
+          <input
+            className={cx(s.inp, s.search, s["fctl-q"])}
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="경로 검색"
+            aria-label="경로 검색"
+          />
         </div>
         {bar}
         <div id="sTree">
@@ -866,14 +871,13 @@ function FoundPaths({
             <EndpointCards
               all={endpoints}
               shown={shown}
-              missing={filter === "all" && crawling ? missingGroups(endpoints) : []}
+              missing={filter === "all" && !q && crawling ? missingGroups(endpoints) : []}
               pick={pick}
             />
           ) : (
-            <p className={s.empty}>{treeEmpty(filter, endpoints.length)}</p>
+            <p className={s.empty}>{empty}</p>
           )}
         </div>
-        <p className={s["tree-hint"]}>묶음 이름 · 경로 규칙</p>
       </div>
     </section>
   );
@@ -1258,24 +1262,38 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
   const [peek, setPeek] = useState(false);
   // 찾은 경로 카드의 거르기
   const [treeFilter, setTreeFilter] = useState("all");
-  // 선택 모드: 알약을 눌러 여럿 고른 뒤 한 번에 넣거나 뺀다. anchor 는 Shift 범위의 시작 알약
+  // 여러 개 고르기 모드(버튼 "삭제"): 알약을 눌러 여럿 고른 뒤 한 번에 넣거나 뺀다. anchor 는 Shift 범위의 시작 알약
   const [multi, setMulti] = useState(false);
   const [picked, setPicked] = useState<ReadonlySet<string>>(() => new Set());
   const [anchor, setAnchor] = useState<string | null>(null);
-  // 한 번에 넣기 · 빼기의 결과 안내 (건너뛴 경로 수 포함)
-  const [note, setNote] = useState("");
+  // 사용자가 점검에서 뺀 경로 — 알약을 흐리게 하고 경로에 취소선을 긋는다. 다시 넣으면 지운다
+  const [dropped, setDropped] = useState<ReadonlySet<string>>(() => new Set());
   const busy = useUrl((st) => st.flowBusy),
     verified = useUrl((st) => st.flowVerified),
     uncertain = useUrl((st) => st.flowUncertain),
     { openInsp } = useShell();
   const isOn = (e: WorkflowEndpoint) => (waiting ? selected.has(e.id) : e.selected);
-  const toggle = (id: string) =>
+  /** 점검 포함을 바꾸고, 들어 있던 경로를 빼면 뺀 경로로 기억한다(다시 넣으면 지운다). 원래 빠져 있던 경로는 들지 않는다 */
+  const include = (ids: readonly string[], on: boolean) => {
+    const was = new Set(ids.filter((id) => selected.has(id)));
     setSelected((old) => {
       const next = new Set(old);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      for (const id of ids) {
+        if (on) next.add(id);
+        else next.delete(id);
+      }
       return next;
     });
+    setDropped((old) => {
+      const next = new Set(old);
+      for (const id of ids) {
+        if (on) next.delete(id);
+        else if (was.has(id)) next.add(id);
+      }
+      return next;
+    });
+  };
+  const toggle = (id: string) => include([id], !selected.has(id));
   const locked = !waiting || busy || uncertain || !verified;
   const current = flow.endpoints.find((e) => e.id === detail) ?? null;
   // 고른 경로가 없고 직접 펼치지도 않았으면 이 화면 패널을 접는다
@@ -1289,24 +1307,15 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
     setAnchor(null);
   };
   /**
-   * 여러 경로를 한 번에 넣거나 뺀다. 고를 수 없는 경로(범위 밖 · 사전 쓰기 승인 없는 데이터 변경)는 건너뛰고 수를 알린다.
+   * 여러 경로를 한 번에 넣거나 뺀다. 고를 수 없는 경로(범위 밖 · 사전 쓰기 승인 없는 데이터 변경)는 건너뛴다.
+   * 결과는 알약의 체크 · 흐림으로 바로 보여 따로 안내 글을 두지 않는다.
    * 넣어도 데이터 변경 경로는 보낼 때 승인 그대로다 (선택은 개별 송신 승인을 대신하지 않는다).
    */
-  const setMany = (list: readonly WorkflowEndpoint[], on: boolean, label: string) => {
-    const ok = list.filter(eligible);
-    const skip = list.length - ok.length;
-    setSelected((old) => {
-      const next = new Set(old);
-      for (const e of ok) {
-        if (on) next.add(e.id);
-        else next.delete(e.id);
-      }
-      return next;
-    });
-    setNote(
-      `${label} ${ok.length}개를 점검${on ? "에 넣었습니다" : "에서 뺐습니다"}${skip ? ` · ${skip}개는 고를 수 없는 경로라 건너뜀` : ""}`,
+  const setMany = (list: readonly WorkflowEndpoint[], on: boolean) =>
+    include(
+      list.filter(eligible).map((e) => e.id),
+      on,
     );
-  };
   const press = (e: WorkflowEndpoint, shift: boolean, order: readonly string[]) => {
     if (!multi) {
       showDetail(e);
@@ -1333,13 +1342,45 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
     picked,
     current: current?.id ?? null,
     press,
-    setGroup: (name, rows, on) => setMany(rows, on, `${name} 묶음`),
+    setGroup: (rows, on) => setMany(rows, on),
+    pickGroup: (ids, on) => {
+      setPicked((old) => {
+        const next = new Set(old);
+        for (const id of ids) {
+          if (on) next.add(id);
+          else next.delete(id);
+        }
+        return next;
+      });
+      setAnchor(null);
+    },
+    dropped,
   };
   const pickedList = flow.endpoints.filter((e) => picked.has(e.id));
   const applyPicked = (on: boolean) => {
-    setMany(pickedList, on, "고른 경로");
+    setMany(pickedList, on);
     unpick();
   };
+  // 아래 줄의 '점검에 넣기' · '점검에서 빼기': 여러 개 고르기(삭제)를 켰으면 고른 알약들, 아니면 오른쪽 상세에 떠 있는
+  // 경로 하나에 한다. 고를 수 없는 경로(범위 밖 · 사전 쓰기 승인 없는 데이터 변경)는 넣지도 빼지도 않는다
+  const canAddOne = !!current && !isOn(current) && eligible(current);
+  const canDropOne = !!current && isOn(current) && eligible(current);
+  const setOne = (on: boolean) => {
+    if (multi) {
+      applyPicked(on);
+      return;
+    }
+    if (!current || !(on ? canAddOne : canDropOne)) return;
+    include([current.id], on);
+  };
+  // 아래 줄 머리글: 삭제를 끄면 오른쪽 상세에 떠 있는 경로(고른 수는 보이지 않는다)
+  let barLegend: ReactNode = "경로를 고르세요";
+  if (current)
+    barLegend = (
+      <>
+        <b>{current.method}</b> {current.path}
+      </>
+    );
   /** 경로 딱지 (시안 scopeTag): 빠진 경로는 제외, 넣은 경로는 자동 포함 · 포함 · 보낼 때 승인. */
   const tag = (e: WorkflowEndpoint) => {
     if (!eligible(e) || !isOn(e)) return <span className={cx(s.tag, s.ex)}>제외</span>;
@@ -1364,54 +1405,45 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
             }}
             pick={pick}
             tools={
-              <button
-                className={cx(s.btn, s.sm)}
-                type="button"
-                aria-pressed={multi}
-                disabled={locked}
-                onClick={() => {
-                  setMulti((m) => !m);
-                  unpick();
-                  setNote("");
-                }}
-              >
-                선택
-              </button>
+              <div className={s["sh-tools"]}>
+                <button
+                  className={cx(s.btn, s.sm)}
+                  type="button"
+                  aria-pressed={multi}
+                  disabled={locked}
+                  onClick={() => {
+                    setMulti((m) => !m);
+                    unpick();
+                  }}
+                >
+                  삭제
+                </button>
+              </div>
             }
             bar={
               <>
-                {multi ? (
-                  <fieldset className={s.pickbar}>
-                    <legend>
-                      <b>{picked.size}</b>개 고름
-                    </legend>
-                    <button
-                      className={cx(s.btn, s.sm, s.pri)}
-                      type="button"
-                      disabled={locked || !picked.size}
-                      onClick={() => applyPicked(true)}
-                    >
-                      점검에 넣기
-                    </button>
-                    <button
-                      className={cx(s.btn, s.sm)}
-                      type="button"
-                      disabled={locked || !picked.size}
-                      onClick={() => applyPicked(false)}
-                    >
-                      점검에서 빼기
-                    </button>
-                    <button className={cx(s.btn, s.sm)} type="button" disabled={!picked.size} onClick={unpick}>
-                      고르기 해제
-                    </button>
-                    <span className={s.help}>Shift 를 누른 채 누르면 같은 묶음 안의 범위를 고릅니다</span>
-                  </fieldset>
-                ) : null}
-                {note ? (
-                  <p className={s.help} role="status">
-                    {note}
-                  </p>
-                ) : null}
+                {/* 넣기 · 빼기 줄은 늘 보인다. 삭제를 켜면 고른 알약들, 끄면 오른쪽 상세에 떠 있는 경로 하나에 한다 */}
+                <fieldset className={s.pickbar} aria-label={multi ? "고른 경로 넣기 · 빼기" : undefined}>
+                  {multi ? null : <legend>{barLegend}</legend>}
+                  <button
+                    className={cx(s.btn, s.sm, s.pri)}
+                    type="button"
+                    title={multi ? "고른 경로들을 점검에 넣습니다" : "오른쪽 상세에 보이는 경로를 점검에 넣습니다"}
+                    disabled={locked || (multi ? !picked.size : !canAddOne)}
+                    onClick={() => setOne(true)}
+                  >
+                    점검에 넣기
+                  </button>
+                  <button
+                    className={cx(s.btn, s.sm)}
+                    type="button"
+                    title={multi ? "고른 경로들을 점검에서 뺍니다" : "오른쪽 상세에 보이는 경로를 점검에서 뺍니다"}
+                    disabled={locked || (multi ? !picked.size : !canDropOne)}
+                    onClick={() => setOne(false)}
+                  >
+                    점검에서 빼기
+                  </button>
+                </fieldset>
               </>
             }
           />
@@ -1443,7 +1475,7 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
                 <CloseInspButton label="경로 상세" />
               </div>
               <p className={s.empty}>
-                가운데 찾은 경로에서 알약을 누르면 그 경로 상세가 나오고, 점검에 넣을지 고를 수 있습니다.
+                가운데 찾은 경로에서 경로를 누르면 그 경로 상세가 나오고, 점검에 넣을지 고를 수 있습니다.
               </p>
             </>
           )}

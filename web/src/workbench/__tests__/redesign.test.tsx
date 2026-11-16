@@ -162,10 +162,14 @@ describe("범위 확인", () => {
     expect(document.getElementById("sCount")).toBeNull();
     expect(document.getElementById("sTable")).toBeNull();
     expect(screen.queryByLabelText("시작 전 점검")).toBeNull();
-    expect(screen.queryByRole("searchbox", { name: "경로 검색" })).toBeNull();
     expect(screen.queryByText("점검 중 새로 찾은 경로 처리 규칙")).toBeNull();
-    // 묶음은 경로 규칙으로 나눈 것이라 AI 추정 묶음이라고 부르지 않는다
-    expect(within(found).getByText("묶음 이름 · 경로 규칙")).toBeInTheDocument();
+    // 검색은 거르기 줄의 오른쪽 끝에 하나
+    const filterRow = within(found).getByRole("radiogroup", { name: "보이는 경로" }).parentElement as HTMLElement;
+    expect(filterRow).toContainElement(within(found).getByRole("searchbox", { name: "경로 검색" }));
+    // 막대 · 범례(자동 포함 · 로그인 …) · 아래 '묶음 이름 · 경로 규칙' 글은 없다
+    expect(within(found).queryByText(/^자동 포함/)).toBeNull();
+    expect(within(found).queryByText(/^로그인/)).toBeNull();
+    expect(within(found).queryByText("묶음 이름 · 경로 규칙")).toBeNull();
     expect(screen.queryByText("AI 추정 묶음")).toBeNull();
   });
 
@@ -228,9 +232,8 @@ describe("범위 확인 · 한 번에 고르기", () => {
     expect(box).toBeChecked();
     fireEvent.click(box);
     expect(box).not.toBeChecked();
-    expect(within(found).getByRole("status")).toHaveTextContent(
-      `${products} 묶음 1개를 점검에서 뺐습니다 · 1개는 고를 수 없는 경로라 건너뜀`,
-    );
+    // 결과 안내 글은 두지 않는다(알약 표시로 보인다)
+    expect(within(found).queryByRole("status")).toBeNull();
     expect(within(found).queryAllByRole("button", { name: /점검에 포함/ })).toHaveLength(0);
     fireEvent.click(box);
     expect(box).toBeChecked();
@@ -251,38 +254,197 @@ describe("범위 확인 · 한 번에 고르기", () => {
     expect(box.indeterminate).toBe(false);
   });
 
-  it("선택 모드: 알약은 상세 대신 고르기를 토글하고, 고른 것을 한 번에 넣고 빼며, 끄면 다시 상세", () => {
+  it("삭제(여러 개 고르기): 알약은 상세 대신 고르기를 토글하고, 고른 것을 한 번에 넣고 빼며, 끄면 다시 상세", () => {
     const openInsp = vi.fn();
     const found = mount({ openInsp });
-    const mode = within(found).getByRole("button", { name: "선택" });
+    const mode = within(found).getByRole("button", { name: "삭제" });
     fireEvent.click(mode);
     expect(mode).toHaveAttribute("aria-pressed", "true");
     const getPill = within(found).getByRole("button", { name: /^GET \/api\/products\/1/ });
     const putPill = within(found).getByRole("button", { name: /^PUT \/api\/users\/2/ });
+    // 알약 전체가 아니라 메서드 옆 네모칸에만 체크가 뜬다
+    const box = (pill: HTMLElement) => pill.querySelector("[data-pick]");
+    expect(box(getPill)).toHaveAttribute("data-pick", "off");
+    expect(box(getPill)?.nextElementSibling).toHaveTextContent("GET");
     fireEvent.click(getPill);
+    expect(box(getPill)).toHaveAttribute("data-pick", "on");
     fireEvent.click(putPill);
     expect(openInsp).not.toHaveBeenCalled();
     expect(getPill).toHaveAttribute("aria-pressed", "true");
     expect(putPill).toHaveAttribute("aria-pressed", "true");
-    const bar = within(found).getByRole("group", { name: /2개 고름/ });
+    const bar = within(found).getByRole("group", { name: "고른 경로 넣기 · 빼기" });
+    // 몇 개 골랐는지는 보이지 않는다
+    expect(within(found).queryByText(/개 고름/)).toBeNull();
     fireEvent.click(within(bar).getByRole("button", { name: "점검에 넣기" }));
-    expect(within(found).getByRole("status")).toHaveTextContent("고른 경로 2개를 점검에 넣었습니다");
+    expect(within(found).queryByRole("status")).toBeNull();
     // 넣고 나면 고르기는 비워진다. 데이터 변경 경로도 들어간다(보낼 때 승인은 그대로)
     expect(getPill).toHaveAttribute("aria-pressed", "false");
     expect(within(found).getAllByRole("button", { name: /점검에 포함/ })).toHaveLength(2);
-    // 범위 밖 경로가 섞이면 건너뛰고 알린다
+    // 범위 밖 경로가 섞이면 그 경로는 건너뛴다(그대로 제외)
     fireEvent.click(putPill);
     fireEvent.click(within(found).getByRole("button", { name: /^DELETE \/api\/products\/1/ }));
-    fireEvent.click(within(found).getByRole("button", { name: "점검에서 빼기" }));
-    expect(within(found).getByRole("status")).toHaveTextContent(
-      "고른 경로 1개를 점검에서 뺐습니다 · 1개는 고를 수 없는 경로라 건너뜀",
+    fireEvent.click(within(bar).getByRole("button", { name: "점검에서 빼기" }));
+    expect(putPill).not.toHaveAccessibleName(/점검에 포함/);
+    expect(getPill).toHaveAccessibleName(/점검에 포함/);
+    expect(within(found).getByRole("button", { name: /^DELETE \/api\/products\/1/ })).not.toHaveAccessibleName(
+      /점검에 포함/,
     );
-    // 끄면 알약은 다시 상세를 연다
+    // 끄면 알약은 다시 상세를 연다(네모칸도 사라진다)
     fireEvent.click(mode);
     expect(mode).toHaveAttribute("aria-pressed", "false");
-    expect(within(found).queryByRole("group", { name: /개 고름/ })).toBeNull();
+    expect(box(getPill)).toBeNull();
+    expect(within(found).queryByRole("group", { name: "고른 경로 넣기 · 빼기" })).toBeNull();
     fireEvent.click(getPill);
     expect(openInsp).toHaveBeenCalledTimes(1);
+  });
+
+  it("삭제(여러 개 고르기)를 안 켜도 아래 줄이 늘 보이고, '점검에서 빼기'는 오른쪽 상세에 떠 있는 경로 하나를 뺀다", () => {
+    const found = mount();
+    const drop = within(found).getByRole("button", { name: "점검에서 빼기" });
+    // 거르기(전체 · 승인 필요 · 제외) 옆에는 삭제만, 넣기 · 빼기는 아래 줄에 늘 있다
+    const filterRow = within(found).getByRole("radiogroup", { name: "보이는 경로" }).parentElement as HTMLElement;
+    expect(filterRow).toContainElement(within(found).getByRole("button", { name: "삭제" }));
+    expect(filterRow).not.toContainElement(drop);
+    const bar = within(found).getByRole("group", { name: "경로를 고르세요" });
+    expect(bar).toContainElement(drop);
+    expect(bar).toContainElement(within(found).getByRole("button", { name: "점검에 넣기" }));
+    // 상세에 띄운 경로가 없으면 뺄 것이 없다
+    expect(drop).toBeDisabled();
+    const getPill = within(found).getByRole("button", { name: /^GET \/api\/products\/1, 점검에 포함/ });
+    fireEvent.click(getPill);
+    expect(drop).toBeEnabled();
+    fireEvent.click(drop);
+    expect(within(found).queryByRole("status")).toBeNull();
+    expect(within(found).queryAllByRole("button", { name: /점검에 포함/ })).toHaveLength(0);
+    const insp = screen.getByRole("complementary", { name: "경로 상세" });
+    expect(within(insp).getByText("제외")).toBeInTheDocument();
+    // 이미 빠진 경로 · 고를 수 없는 경로는 뺄 것이 없다
+    expect(drop).toBeDisabled();
+    fireEvent.click(within(found).getByRole("button", { name: /^DELETE \/api\/products\/1/ }));
+    expect(drop).toBeDisabled();
+  });
+
+  it("삭제를 안 켜도 아래 줄의 '점검에 넣기'가 오른쪽 상세에 떠 있는 빠진 경로 하나를 넣는다", () => {
+    const found = mount();
+    const add = within(found).getByRole("button", { name: "점검에 넣기" });
+    expect(add).toBeDisabled();
+    // 이미 들어 있는 읽기 경로는 넣을 것이 없다
+    fireEvent.click(within(found).getByRole("button", { name: /^GET \/api\/products\/1, 점검에 포함/ }));
+    expect(add).toBeDisabled();
+    // 빠져 있는 데이터 변경 경로는 넣는다(보낼 때 승인은 그대로)
+    fireEvent.click(within(found).getByRole("button", { name: /^PUT \/api\/users\/2/ }));
+    expect(add).toBeEnabled();
+    fireEvent.click(add);
+    expect(within(found).queryByRole("status")).toBeNull();
+    expect(within(found).getByRole("button", { name: /^PUT \/api\/users\/2.*점검에 포함/ })).toBeInTheDocument();
+    const insp = screen.getByRole("complementary", { name: "경로 상세" });
+    expect(within(insp).getByText("포함 · 보낼 때 승인")).toBeInTheDocument();
+    expect(add).toBeDisabled();
+    // 범위 밖 경로는 넣을 수 없다
+    fireEvent.click(within(found).getByRole("button", { name: /^DELETE \/api\/products\/1/ }));
+    expect(add).toBeDisabled();
+  });
+
+  it("삭제를 누르면 눌린 상태로 보이고, 줄 머리글은 고른 수 · 상세 경로를 따른다", () => {
+    const found = mount();
+    const mode = within(found).getByRole("button", { name: "삭제" });
+    expect(mode).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(within(found).getByRole("button", { name: /^GET \/api\/products\/1/ }));
+    expect(within(found).getByRole("group", { name: "GET /api/products/1" })).toBeInTheDocument();
+    fireEvent.click(mode);
+    expect(mode).toHaveAttribute("aria-pressed", "true");
+    expect(within(found).getByRole("group", { name: "고른 경로 넣기 · 빼기" })).toBeInTheDocument();
+    expect(within(found).queryByText(/개 고름/)).toBeNull();
+  });
+
+  it("내가 점검에서 뺀 알약만 흐리게 · 취소선으로 표시하고, 다시 넣으면 사라진다 (처음부터 빠진 경로와 구분)", () => {
+    const found = mount();
+    const putPill = within(found).getByRole("button", { name: /^PUT \/api\/users\/2/ });
+    const isDropped = (pill: HTMLElement) => /점검에서 뺌/.test(pill.getAttribute("aria-label") ?? "");
+    // 처음부터 빠져 있던 데이터 변경 경로는 뺀 표시가 없다
+    expect(isDropped(putPill)).toBe(false);
+    const getPill = within(found).getByRole("button", { name: /^GET \/api\/products\/1/ });
+    fireEvent.click(getPill);
+    fireEvent.click(within(found).getByRole("button", { name: "점검에서 빼기" }));
+    expect(isDropped(getPill)).toBe(true);
+    expect(getPill.className).toMatch(/drop/);
+    // '뺌' 글자는 붙이지 않는다
+    expect(getPill).not.toHaveTextContent("뺌");
+    fireEvent.click(within(found).getByRole("button", { name: "점검에 넣기" }));
+    expect(isDropped(getPill)).toBe(false);
+    expect(getPill.className).not.toMatch(/drop/);
+    // 여러 개 고르기로 뺀 것도 같다
+    fireEvent.click(within(found).getByRole("button", { name: "삭제" }));
+    fireEvent.click(getPill);
+    fireEvent.click(within(found).getByRole("button", { name: "점검에서 빼기" }));
+    expect(isDropped(getPill)).toBe(true);
+    expect(isDropped(putPill)).toBe(false);
+  });
+
+  it("삭제(여러 개 고르기)를 켜면 '점검에서 빼기'는 고른 알약들을 한꺼번에 뺀다", () => {
+    const found = mount();
+    fireEvent.click(within(found).getByRole("button", { name: "삭제" }));
+    const header = within(found).getAllByRole("button", { name: "점검에서 빼기" })[0];
+    expect(header).toBeDisabled();
+    fireEvent.click(within(found).getByRole("button", { name: /^GET \/api\/products\/1/ }));
+    fireEvent.click(within(found).getByRole("button", { name: /^PUT \/api\/users\/2/ }));
+    expect(header).toBeEnabled();
+    fireEvent.click(header);
+    expect(within(found).queryByRole("status")).toBeNull();
+    expect(within(found).queryAllByRole("button", { name: /점검에 포함/ })).toHaveLength(0);
+    // 같은 줄의 '점검에 넣기'도 고른 알약들에 한다
+    fireEvent.click(within(found).getByRole("button", { name: /^GET \/api\/products\/1/ }));
+    fireEvent.click(within(found).getByRole("button", { name: /^PUT \/api\/users\/2/ }));
+    fireEvent.click(within(found).getAllByRole("button", { name: "점검에 넣기" })[0]);
+    expect(within(found).getAllByRole("button", { name: /점검에 포함/ })).toHaveLength(2);
+  });
+
+  it("삭제를 켜면 묶음 머리 체크는 그 묶음 알약의 네모칸을 전부 고르고(넣기 · 빼기는 아님), 다시 누르면 푼다", () => {
+    const f: WorkflowSnapshot = {
+      ...flow,
+      endpoints: [1, 2, 3].map((n) => ep(`p${n}`, "GET", `/api/products/${n}`, "attested_read")),
+    };
+    const found = mount({}, f);
+    fireEvent.click(within(found).getByRole("button", { name: "삭제" }));
+    const box = within(found).getByRole("checkbox", { name: `${products} 묶음 경로 전부 고르기` }) as HTMLInputElement;
+    expect(box.checked).toBe(false);
+    const pills = within(found).getAllByRole("button", { name: /^GET \/api\/products\// });
+    // 하나만 고르면 반쯤 체크
+    fireEvent.click(pills[0]);
+    expect(box.indeterminate).toBe(true);
+    fireEvent.click(box);
+    expect(box.checked).toBe(true);
+    for (const pill of pills) expect(pill.querySelector("[data-pick]")).toHaveAttribute("data-pick", "on");
+    expect(within(found).getByRole("group", { name: "고른 경로 넣기 · 빼기" })).toBeInTheDocument();
+    // 고르기만 했지 점검 포함은 그대로(읽기 경로 3개 모두 포함)
+    expect(within(found).getAllByRole("button", { name: /점검에 포함/ })).toHaveLength(3);
+    fireEvent.click(box);
+    expect(box.checked).toBe(false);
+    for (const pill of pills) expect(pill.querySelector("[data-pick]")).toHaveAttribute("data-pick", "off");
+    // 삭제를 끄면 묶음 체크는 다시 묶음 전체 넣기 · 빼기
+    fireEvent.click(within(found).getByRole("button", { name: "삭제" }));
+    expect(within(found).getByRole("checkbox", { name: `${products} 묶음 전체 점검에 포함` })).toBeChecked();
+  });
+
+  it("검색창은 메서드 · 경로 글자로 알약을 거르고(대소문자 무시), 맞는 게 없으면 알린다", () => {
+    const found = mount();
+    const search = within(found).getByRole("searchbox", { name: "경로 검색" });
+    fireEvent.change(search, { target: { value: "USERS" } });
+    expect(within(found).getByRole("button", { name: /^PUT \/api\/users\/2/ })).toBeInTheDocument();
+    expect(within(found).queryByRole("button", { name: /^GET \/api\/products\/1/ })).toBeNull();
+    fireEvent.change(search, { target: { value: "delete" } });
+    expect(within(found).getByRole("button", { name: /^DELETE \/api\/products\/1/ })).toBeInTheDocument();
+    expect(within(found).queryByRole("button", { name: /^PUT / })).toBeNull();
+    fireEvent.change(search, { target: { value: "/nothing-here" } });
+    expect(within(found).getByText("검색과 맞는 경로가 없습니다.")).toBeInTheDocument();
+    fireEvent.change(search, { target: { value: "" } });
+    expect(within(found).getAllByRole("button", { name: /^(GET|PUT|DELETE) \// })).toHaveLength(3);
+  });
+
+  it("삭제를 켜도 Shift 안내 글은 없다", () => {
+    const found = mount();
+    fireEvent.click(within(found).getByRole("button", { name: "삭제" }));
+    expect(within(found).queryByText(/Shift/)).toBeNull();
   });
 
   it("Shift 를 누른 채 누르면 같은 묶음 안에서 앞서 누른 알약부터 그 알약까지 고른다", () => {
@@ -291,19 +453,21 @@ describe("범위 확인 · 한 번에 고르기", () => {
       endpoints: [1, 2, 3].map((n) => ep(`p${n}`, "GET", `/api/products/${n}`, "attested_read")),
     };
     const found = mount({}, f);
-    fireEvent.click(within(found).getByRole("button", { name: "선택" }));
+    fireEvent.click(within(found).getByRole("button", { name: "삭제" }));
     fireEvent.click(within(found).getByRole("button", { name: /^GET \/api\/products\/1/ }));
     fireEvent.click(within(found).getByRole("button", { name: /^GET \/api\/products\/3/ }), { shiftKey: true });
     expect(within(found).getByRole("button", { name: /^GET \/api\/products\/2/ })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
-    expect(within(found).getByRole("group", { name: /3개 고름/ })).toBeInTheDocument();
+    expect(within(found).getByRole("group", { name: "고른 경로 넣기 · 빼기" })).toBeInTheDocument();
   });
 
-  it("범위 확인이 끝난 뒤(선택 대기 아님)에는 묶음 체크와 선택 모드를 쓸 수 없다", () => {
+  it("범위 확인이 끝난 뒤(선택 대기 아님)에는 묶음 체크와 삭제 · 점검에 넣기 · 점검에서 빼기를 쓸 수 없다", () => {
     const found = mount({}, { ...flow, stage: "diagnosing" });
-    expect(within(found).getByRole("button", { name: "선택" })).toBeDisabled();
+    expect(within(found).getByRole("button", { name: "삭제" })).toBeDisabled();
+    expect(within(found).getByRole("button", { name: "점검에서 빼기" })).toBeDisabled();
+    expect(within(found).getByRole("button", { name: "점검에 넣기" })).toBeDisabled();
     for (const box of within(found).getAllByRole("checkbox", { name: /묶음 전체 점검에 포함/ }))
       expect(box).toBeDisabled();
   });
@@ -346,8 +510,6 @@ describe("범위 확인 · 찾은 경로 (자산 탐색 오른쪽 패널에서 �
     expect(within(found).getByText(/^아직 찾지 못한 묶음 · /)).toHaveTextContent(
       "공개 페이지·API, 계정·인증, 장바구니·주문, 결제·쿠폰, 관리자, 정적 자원",
     );
-    // 범례의 로그인 수는 서버가 나누지 않아 값을 비운다
-    expect(within(found).getByText(/^로그인/)).toHaveTextContent("로그인 —");
     fireEvent.click(within(found).getByRole("radio", { name: "승인 필요" }));
     expect(within(found).getByText("승인이 필요한 경로가 아직 없습니다.")).toBeInTheDocument();
     fireEvent.click(within(found).getByRole("radio", { name: "제외" }));

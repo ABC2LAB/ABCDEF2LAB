@@ -1236,6 +1236,19 @@ a.ph:hover {
   gap: 8px;
   min-width: 0;
 }
+/* 버튼 묶음 (범위 확인 찾은 경로 거르기 옆의 삭제) */
+.sh-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+/* 눌러 둔 삭제(여러 개 고르기): 진하게 채워 켜진 걸 보인다 */
+.sh-tools .btn[aria-pressed="true"] {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--bg);
+}
 .sh .aside {
   font-size: 12.5px;
   color: var(--ink-3);
@@ -2544,16 +2557,21 @@ button.lr.on {
   height: 6px;
   border-radius: 2px;
 }
+/* 찾은 경로 거르기 줄: 거르기 바로 옆에 중복 선택 · 점검에서 빼기 (양 끝으로 벌리지 않는다) */
 .fctl {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
 }
 .fctl .seg span {
   padding: 4px 10px;
   font-size: 12.5px;
+}
+/* 찾은 경로 검색: 거르기 줄의 오른쪽 끝 */
+.fctl .fctl-q {
+  margin-left: auto;
 }
 /* 범위 확인 가운데의 묶음 카드: 3열 격자 (묶음은 최대 7개라 3 · 3 · 1). 칸이 좁으면 2열 · 1열로 */
 .gcs {
@@ -2589,11 +2607,12 @@ button.lr.on {
 .gc-h b {
   font-size: 13.5px;
 }
-/* 묶음 머리의 묶음 전체 넣기 · 빼기 체크 (일부만 넣었으면 반쯤 체크) */
+/* 묶음 머리의 묶음 전체 넣기 · 빼기 체크 (일부만 넣었으면 반쯤 체크). 체크해도 파랗게 칠하지 않고 체크 안 한 칸과
+   같은 회색 계열로 둔다 */
 .gc-h .gc-ck {
   margin: 0;
   align-self: center;
-  accent-color: var(--accent);
+  accent-color: var(--ink-3);
 }
 .gc-h .n {
   font-family: var(--mono);
@@ -2690,10 +2709,26 @@ button.lr.on {
 .pp[aria-current="true"] {
   background: var(--accent-bg);
 }
-/* 여러 개 고르기에서 고른 알약: 바탕 + 2px 테두리 (알약 칸 바깥 여백 2px 안에 그려져 잘리지 않는다) */
-.pp[aria-pressed="true"] {
-  background: var(--accent-bg);
-  outline: 2px solid var(--accent);
+/* 여러 개 고르기(삭제)의 고르기 네모칸: 알약 전체를 칠하지 않고 메서드 옆 네모칸에만 체크한다 */
+.pp .pck {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  margin-left: 3px;
+  display: inline-grid;
+  place-items: center;
+  border: 1.5px solid var(--ink-3);
+  border-radius: 3px;
+  background: var(--bg);
+}
+.pp .pck.on {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--bg);
+}
+.pp .pck .ic {
+  width: 10px;
+  height: 10px;
 }
 /* 고른 경로 한 번에 넣기 · 빼기 줄: 카드가 길어도 보이게 가운데 칸 위에 붙는다 */
 .pickbar {
@@ -2745,6 +2780,13 @@ button.lr.on {
 }
 .pp.ex .pf {
   color: var(--ink-3);
+}
+/* 사용자가 점검에서 뺀 알약: 흐리게 · 경로 취소선 (처음부터 빠져 있던 경로와 구분) */
+.pp.drop {
+  opacity: 0.55;
+}
+.pp.drop .pt {
+  text-decoration: line-through;
 }
 .pp.fresh {
   animation: ppIn 0.7s ease-out;
