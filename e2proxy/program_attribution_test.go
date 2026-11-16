@@ -2,6 +2,7 @@ package e2proxy
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -13,12 +14,16 @@ func TestProgramCallAttributionIsExplicitAndExclusive(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, id := range []int64{0, -1, 2} {
-		if _, err := e.BeginCallForIntent(t.Context(), id, "invalid-worker"); err == nil {
+		want := ErrConfig
+		if id == 2 {
+			want = ErrClosed
+		}
+		if _, err := e.BeginCallForIntent(t.Context(), id, "invalid-worker"); !errors.Is(err, want) {
 			t.Fatal("등록 intent 검사 우회", id)
 		}
 	}
 	for _, kind := range []ProgramCallKind{"", "unknown"} {
-		if _, err := e.BeginProgramCall(t.Context(), kind, "invalid-program"); err == nil {
+		if _, err := e.BeginProgramCall(t.Context(), kind, "invalid-program"); !errors.Is(err, ErrConfig) {
 			t.Fatal("미등록 프로그램 종류 허용")
 		}
 	}
@@ -30,18 +35,18 @@ func TestProgramCallAttributionIsExplicitAndExclusive(t *testing.T) {
 		if c.Result().IntentID != 0 || c.Result().Program != kind {
 			t.Fatal("프로그램에 Worker 귀속을 합성함")
 		}
-		if _, _, err := c.Do(t.Context(), nil); err == nil {
+		if _, _, err := c.Do(t.Context(), coreRequest(t, "GET", cfg.Rules[0].Origin+"/allowed")); !errors.Is(err, ErrConfig) {
 			t.Fatal("프로그램 호출이 Worker 전송 API를 사용함")
 		}
 		if _, err := c.Close(context.Background()); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := e.BeginCallForIntent(t.Context(), 1, "over-budget-worker"); err == nil {
+	if _, err := e.BeginCallForIntent(t.Context(), 1, "over-budget-worker"); !errors.Is(err, ErrClosed) {
 		t.Fatal("프로그램 호출이 전체 호출 상한을 우회함")
 	}
 	v := e.SnapshotForIntent(1)
-	if v.Counts.Calls != 2 || v.ProgramCounts.Calls != 2 || v.IntentCounts != (Counts{}) {
+	if v.Counts.Calls != 2 || v.Counts.Attempts != 0 || v.ProgramCounts.Calls != 2 || v.ProgramCounts.Attempts != 0 || v.IntentCounts != (Counts{}) {
 		t.Fatal("프로그램/Worker 전체 호출 집계 불일치")
 	}
 }
