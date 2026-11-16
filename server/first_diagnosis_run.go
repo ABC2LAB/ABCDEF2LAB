@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -29,7 +30,20 @@ type diagnosisRunRecord struct {
 	// Result는 실행 결과 칸이다(실행 결과 상태 값 계약 §5-5). completed는 outcome·intent 결과, cancelled는 intent 결과
 	// 개수만 있다. 이 칸 이전에 저장된 기록이나 결과를 확인하지 못한 실행에는 없다.
 	Result *diagnosis.RunResult `json:"result,omitempty"`
+	// Goal은 작업 목표 문장의 공통 부분·제품 전용 부분 SHA다. 이 칸 이전 기록과 목표를 정하지 않은 실행에는 없다.
+	Goal *diagnosisGoalDigests `json:"goal,omitempty"`
 }
+
+const diagnosisGoalDigestVersion = "goal-digest/v1"
+
+// diagnosisGoalDigests는 목표 문장 두 부분의 SHA-256이다. 원문은 실행 기록에 싣지 않는다(task 목표에 이미 있음).
+type diagnosisGoalDigests struct {
+	Version       string `json:"version"`
+	CommonSHA256  string `json:"common_sha256"`
+	ProductSHA256 string `json:"product_sha256"`
+}
+
+var sha256HexPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // PersistRunOutcome는 drain 뒤의 감독자 상태만 저장한다. 조회 서버는 이 상태로 실행 권한을 복구하지 않는다.
 func (s *FirstDiagnosisSupervisor) PersistRunOutcome(ctx context.Context, closureErr error) error {
@@ -84,7 +98,7 @@ func (s *FirstDiagnosisSupervisor) PersistRunOutcomeStoredStop(ctx context.Conte
 	if !validDiagnosisRunResult(state, result) {
 		result = nil
 	}
-	err := saveDiagnosisRunRecord(ctx, s.m.pg.DB, mustFirstDiagnosisTaskNumber(task), state, server.FirstDiagnosisModelUsage(), result)
+	err := saveDiagnosisRunRecordGoal(ctx, s.m.pg.DB, mustFirstDiagnosisTaskNumber(task), state, server.FirstDiagnosisModelUsage(), result, s.goalDigests())
 	status, reason := diagnosisLogOutcome(ctx, err, "result_storage_failed")
 	stored := err == nil
 	_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "server", Event: "result_save_finished", TaskID: mustFirstDiagnosisTaskNumber(task), RunRef: state.RunRef, Stage: "result_storage", Status: status, ReasonCode: reason, DurationMS: time.Since(startedAt).Milliseconds(), ResultStored: &stored})
@@ -138,6 +152,12 @@ func saveDiagnosisRunWithModel(ctx context.Context, pool *sql.DB, task int64, st
 	return saveDiagnosisRunRecord(ctx, pool, task, state, model, nil)
 }
 func saveDiagnosisRunRecord(ctx context.Context, pool *sql.DB, task int64, state requestApprovalRunState, model *llmpolicy.OpenRouterUsage, result *diagnosis.RunResult) error {
+	return saveDiagnosisRunRecordGoal(ctx, pool, task, state, model, result, nil)
+}
+
+// saveDiagnosisRunRecordGoal은 saveDiagnosisRunRecord에 목표 SHA 칸을 더한다. 같은 task의 기록이 이미 있으면 목표 칸까지
+// 같아야 같은 기록으로 본다.
+func saveDiagnosisRunRecordGoal(ctx context.Context, pool *sql.DB, task int64, state requestApprovalRunState, model *llmpolicy.OpenRouterUsage, result *diagnosis.RunResult, goal *diagnosisGoalDigests) error {
 	if ctx == nil || pool == nil || task <= 0 || !validDiagnosisRun(state) || !validDiagnosisRunResult(state, result) {
 		return ErrFirstDiagnosisOutcome
 	}
@@ -170,7 +190,9 @@ func saveDiagnosisRunRecord(ctx context.Context, pool *sql.DB, task int64, state
 		modelB, errB := json.Marshal(old.Model)
 		resultA, errC := json.Marshal(result)
 		resultB, errD := json.Marshal(old.Result)
-		if !bytes.Equal(a, b) || errA != nil || errB != nil || !bytes.Equal(modelA, modelB) || errC != nil || errD != nil || !bytes.Equal(resultA, resultB) {
+		goalA, errE := json.Marshal(goal)
+		goalB, errF := json.Marshal(old.Goal)
+		if !bytes.Equal(a, b) || errA != nil || errB != nil || !bytes.Equal(modelA, modelB) || errC != nil || errD != nil || !bytes.Equal(resultA, resultB) || errE != nil || errF != nil || !bytes.Equal(goalA, goalB) {
 			return ErrFirstDiagnosisOutcome
 		}
 		return tx.Commit()
@@ -178,7 +200,7 @@ func saveDiagnosisRunRecord(ctx context.Context, pool *sql.DB, task int64, state
 	if !errors.Is(err, sql.ErrNoRows) {
 		return ErrFirstDiagnosisOutcome
 	}
-	payload, err := json.Marshal(diagnosisRunRecord{Version: 1, TaskID: task, SavedAt: time.Now().UTC(), Run: state, Model: model, Result: result})
+	payload, err := json.Marshal(diagnosisRunRecord{Version: 1, TaskID: task, SavedAt: time.Now().UTC(), Run: state, Model: model, Result: result, Goal: goal})
 	if err != nil {
 		return ErrFirstDiagnosisOutcome
 	}
@@ -280,4 +302,15 @@ func (s *Server) serveDiagnosisRun(w http.ResponseWriter, r *http.Request, bound
 	}
 	querySucceeded = true
 	writeJSON(w, 200, result)
+}
+
+// goalDigests는 실행 기록에 실을 목표 SHA 사본이다(정하지 않았으면 nil).
+func (s *FirstDiagnosisSupervisor) goalDigests() *diagnosisGoalDigests {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.goal == nil {
+		return nil
+	}
+	copy := *s.goal
+	return &copy
 }

@@ -7,6 +7,7 @@ import (
 	"github.com/Autumn-27/artex/diagnosis"
 	"github.com/Autumn-27/artex/llmpolicy"
 	"github.com/Autumn-27/artex/report"
+	"strings"
 	"testing"
 )
 
@@ -168,5 +169,61 @@ func TestDiagnosisRunPreservesRunResultOwnedPostgres(t *testing.T) {
 	_ = tx.Rollback()
 	if err != nil || run == nil || run.State != report.DiagnosticRunClosureFailed || run.Result != nil {
 		t.Fatalf("closure failure report run: %+v err=%v", run, err)
+	}
+}
+
+// 실행 기록은 목표 문장의 공통 부분·제품 전용 부분 SHA를 남기고, 같은 task의 다시 저장은 목표 칸까지 같아야 한다.
+// 감독자는 SHA 형식이 맞을 때 실행 시작 전에 한 번만 정할 수 있다(평가 러너가 원본 본문의 공통 부분과 대조).
+func TestDiagnosisRunRecordsGoalDigestsOwnedPostgres(t *testing.T) {
+	pg := approvalTestDB(t)
+	task, err := pg.CreateTask("synthetic goal digest", "fixture", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := pg.DeleteTask(task.ID); err != nil {
+			t.Error(err)
+		}
+	})
+	common, product := strings.Repeat("a", 64), strings.Repeat("b", 64)
+	goal := &diagnosisGoalDigests{Version: diagnosisGoalDigestVersion, CommonSHA256: common, ProductSHA256: product}
+	state := requestApprovalRunState{RunRef: "synthetic-run", Phase: "closed", Outcome: "completed", DrainComplete: true}
+	for i := 0; i < 2; i++ {
+		if err := saveDiagnosisRunRecordGoal(t.Context(), pg.DB, task.ID, state, nil, nil, goal); err != nil {
+			t.Fatal("same goal record not idempotent", err)
+		}
+	}
+	var raw []byte
+	if err := pg.QueryRowContext(t.Context(), `SELECT payload FROM exploration_nodes WHERE exploration_id=$1 AND origin=$2`, task.ExplorationID, diagnosisRunOrigin).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var stored diagnosisRunRecord
+	if json.Unmarshal(raw, &stored) != nil || stored.Goal == nil || *stored.Goal != *goal {
+		t.Fatal("goal digests not stored", string(raw))
+	}
+	changed := *goal
+	changed.CommonSHA256 = strings.Repeat("c", 64)
+	if err := saveDiagnosisRunRecordGoal(t.Context(), pg.DB, task.ID, state, nil, nil, &changed); !errors.Is(err, ErrFirstDiagnosisOutcome) {
+		t.Fatal("different goal digest accepted as the same record", err)
+	}
+	if err := saveDiagnosisRunRecordGoal(t.Context(), pg.DB, task.ID, state, nil, nil, nil); !errors.Is(err, ErrFirstDiagnosisOutcome) {
+		t.Fatal("dropping the goal digest accepted as the same record", err)
+	}
+
+	s := &FirstDiagnosisSupervisor{}
+	for _, bad := range [][2]string{{"short", product}, {common, strings.Repeat("G", 64)}, {strings.ToUpper(common), product}} {
+		if s.SetGoalDigests(bad[0], bad[1]) == nil {
+			t.Fatal("malformed digest accepted", bad)
+		}
+	}
+	if s.SetGoalDigests(common, product) != nil || s.SetGoalDigests(common, product) == nil {
+		t.Fatal("goal digests must be set exactly once")
+	}
+	if got := s.goalDigests(); got == nil || *got != *goal {
+		t.Fatal("supervisor goal digests differ", got)
+	}
+	started := &FirstDiagnosisSupervisor{runStarted: true}
+	if started.SetGoalDigests(common, product) == nil {
+		t.Fatal("goal digests changed after the run started")
 	}
 }
