@@ -7,6 +7,22 @@ import (
 	"time"
 )
 
+// 시작 중지는 오류 문자열이 아니라 호스트의 문맥·프로세스 종료 근거로만 만든다.
+type startupInterruption struct{ cause error }
+
+func (e *startupInterruption) Error() string { return "e2sandbox: startup interrupted" }
+func (e *startupInterruption) Unwrap() error { return e.cause }
+
+// StartupInterruption은 시작 전에 관측했거나 실제로 중지시킨 초기화의 문맥 원인이다.
+// 호출자는 별도로 Process의 Stop·Wait·Close와 감사 마감을 확인해야 한다.
+func StartupInterruption(err error) error {
+	var stopped *startupInterruption
+	if errors.As(err, &stopped) {
+		return stopped.cause
+	}
+	return nil
+}
+
 var (
 	ErrConfig      = errors.New("e2sandbox: invalid configuration")
 	ErrUnavailable = errors.New("e2sandbox: isolation unavailable")
@@ -53,6 +69,7 @@ type Result struct {
 	OutputTruncated bool
 	BashExited      bool
 	Drained         bool
+	HelperFailed    bool
 	Reason          string
 	// Workspace는 SaveWorkspace일 때 마감된 /work의 tar다. WorkspaceState가 "saved"일 때만 있다.
 	// "too_large"는 상한을 넘어 묶지 않음, "not_saved"는 정상 마감이 아니라 묶지 않음이다.

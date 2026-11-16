@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf16"
 	"unicode/utf8"
 )
@@ -187,18 +188,70 @@ func passwordNormalize(input []byte, kind int, form bool) (passwordView, bool) {
 	return view, true
 }
 
+// passwordFold는 Unicode simple fold의 같은 순환에 속한 rune을 한 값으로 모은다.
+// UTF-8 길이가 바뀐 자리만 위치표에 넣어, 검색 사본의 위치를 원문 바이트로 되돌린다.
+// ASCII 대소문자처럼 길이가 같은 치환은 위치표/변환 상한을 쓰지 않는다.
+func passwordFold(input []byte) (passwordView, bool) {
+	if !utf8.Valid(input) {
+		return passwordView{}, false
+	}
+	view := passwordView{data: input}
+	var out []byte
+	copied := 0
+	for at := 0; at < len(input); {
+		r, size := utf8.DecodeRune(input[at:])
+		fold := r
+		for next := unicode.SimpleFold(r); next != r; next = unicode.SimpleFold(next) {
+			fold = min(fold, next)
+		}
+		if fold >= 'A' && fold <= 'Z' {
+			fold += 'a' - 'A'
+		}
+		if fold != r {
+			if out == nil {
+				out = make([]byte, 0, len(input))
+			}
+			out = append(out, input[copied:at]...)
+			begin := len(out)
+			out = utf8.AppendRune(out, fold)
+			if utf8.RuneLen(fold) != size {
+				if len(view.edits) >= maxPasswordTransforms {
+					return passwordView{}, false
+				}
+				view.edits = append(view.edits, passwordEdit{at, at + size, begin, len(out)})
+			}
+			copied = at + size
+		}
+		at += size
+	}
+	if out != nil {
+		view.data = append(out, input[copied:]...)
+	}
+	return view, true
+}
+
 func passwordSpans(input []byte, passwords [][]byte, form bool) ([]passwordSpan, bool) {
 	if !utf8.Valid(input) {
 		return nil, false
 	}
+	foldedPasswords := make([][]byte, 0, len(passwords))
 	for _, password := range passwords {
 		if len(password) < minProtectedValueBytes || len(password) > maxRedactValueBytes {
 			return nil, false
 		}
+		folded, ok := passwordFold(password)
+		if !ok {
+			return nil, false
+		}
+		foldedPasswords = append(foldedPasswords, folded.data)
 	}
 	spans := []passwordSpan{}
 	collect := func(view passwordView) bool {
-		for _, password := range passwords {
+		folded, ok := passwordFold(view.data)
+		if !ok {
+			return false
+		}
+		for i, password := range passwords {
 			// 지원하지 않는 알려진 base64 표현도 일치 없음으로 처리하지 않는다. 범용 인코딩 DLP는 아니다.
 			for _, encoding := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
 				if bytes.Contains(view.data, []byte(encoding.EncodeToString(password))) {
@@ -206,14 +259,14 @@ func passwordSpans(input []byte, passwords [][]byte, form bool) ([]passwordSpan,
 				}
 			}
 			offset := 0
-			for offset < len(view.data) {
-				index := bytes.Index(view.data[offset:], password)
+			for offset < len(folded.data) {
+				index := bytes.Index(folded.data[offset:], foldedPasswords[i])
 				if index < 0 {
 					break
 				}
 				start := offset + index
-				end := start + len(password)
-				spans = append(spans, passwordSpan{view.sourceIndex(start, false), view.sourceIndex(end, true)})
+				end := start + len(foldedPasswords[i])
+				spans = append(spans, passwordSpan{view.sourceIndex(folded.sourceIndex(start, false), false), view.sourceIndex(folded.sourceIndex(end, true), true)})
 				if len(spans) > maxPasswordSpans {
 					return false
 				}
@@ -227,22 +280,29 @@ func passwordSpans(input []byte, passwords [][]byte, form bool) ([]passwordSpan,
 	}
 	// 이미 일치한 값의 리터럴 특수문자는 추가 인코딩으로 오인하지 않는다.
 	// 같은 길이의 NUL 사본만 검사하므로 다른 구간의 원문 위치는 그대로다.
-	blankKnown := func(value []byte) []byte {
+	blankKnown := func(value []byte) ([]byte, bool) {
+		folded, ok := passwordFold(value)
+		if !ok {
+			return nil, false
+		}
 		out := bytes.Clone(value)
-		for _, password := range passwords {
-			for at := 0; at < len(value); {
-				found := bytes.Index(value[at:], password)
+		for _, password := range foldedPasswords {
+			for at := 0; at < len(folded.data); {
+				found := bytes.Index(folded.data[at:], password)
 				if found < 0 {
 					break
 				}
 				at += found
-				clear(out[at : at+len(password)])
+				clear(out[folded.sourceIndex(at, false):folded.sourceIndex(at+len(password), true)])
 				at += len(password)
 			}
 		}
-		return out
+		return out, true
 	}
-	inputWithoutKnown := blankKnown(input)
+	inputWithoutKnown, ok := blankKnown(input)
+	if !ok {
+		return nil, false
+	}
 	for kind := 0; kind < 3; kind++ {
 		view, ok := passwordNormalize(input, kind, form)
 		if !ok {
@@ -258,7 +318,10 @@ func passwordSpans(input []byte, passwords [][]byte, form bool) ([]passwordSpan,
 			return nil, false
 		}
 		// 첫 변환이 새 escape/entity/percent 표현을 만들면 이중 해석이다. 독립된 다른 필드와 구별한다.
-		withoutKnown := blankKnown(view.data)
+		withoutKnown, ok := blankKnown(view.data)
+		if !ok {
+			return nil, false
+		}
 		for nextKind := 0; nextKind < 3; nextKind++ {
 			next, ok := passwordNormalize(withoutKnown, nextKind, form)
 			if !ok {

@@ -685,10 +685,10 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 // firstDiagnosisProgramCall은 호출이 서버가 연 호출(인증 준비 등)인지와, 그렇다면 마감해도 되는지(최종·감사 완료이고
 // Worker 신뢰 결과가 붙지 않음) 본다.
 func firstDiagnosisProgramCall(call e2proxy.CallResult, program map[string]bool, observed map[string]e2proxy.CallResult) (settled, isProgram bool) {
-	if !program[call.CallRef] {
+	if !program[call.CallRef] && call.Program == "" {
 		return false, false
 	}
-	return call.Final && call.AuditComplete && observed[call.CallRef].CallRef == "", true
+	return program[call.CallRef] && call.Program.Valid() && call.IntentID == 0 && call.Final && call.AuditComplete && observed[call.CallRef].CallRef == "", true
 }
 
 // 일반 HTTP의 마감 판정이다. ready는 감사가 닫힌 실행 마감을 할 수 있다는 뜻이며 목표 충족이나 E③ 판정이 아니다.
@@ -733,8 +733,22 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 	if settled == 0 {
 		// 계획을 거쳤는데 intent가 하나도 없다. 실패가 아니라 no_intents로 마감한다(C11 결정 2). 작업이 없으므로
 		// 대조할 E② 호출도 없어야 한다.
-		if execution, ok := server.engine.e2HTTP.Execution(task.ID); ok && execution != nil && len(execution.Calls()) != 0 {
-			return fail(reasonClosureCallsWithoutIntents)
+		if execution, ok := server.engine.e2HTTP.Execution(task.ID); ok && execution != nil {
+			program := server.engine.e2HTTP.ProgramCalls(task.ID)
+			calls := execution.Calls()
+			if len(calls) > 0 {
+				if results := server.engine.e2HTTP.Results(task.ID); results == nil || len(results) != 0 {
+					return fail(reasonClosureResultsUnavailable)
+				}
+			}
+			for _, call := range calls {
+				if settled, isProgram := firstDiagnosisProgramCall(call, program, nil); !settled || !isProgram {
+					return fail(reasonClosureCallsWithoutIntents)
+				}
+			}
+			if len(program) != len(calls) {
+				return fail(reasonClosureCallCountMismatch)
+			}
 		}
 		result := diagnosis.RunResult{Outcome: diagnosis.OutcomeNoIntents}
 		if budgetLimited {
@@ -859,7 +873,7 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 		}
 	}
 	// 저장된 신뢰 결과는 모두 서로 다른 실제 호출이어야 한다.
-	if len(results)+missing+programCalls != len(calls) {
+	if len(program) != programCalls || len(results)+missing+programCalls != len(calls) {
 		return fail(reasonClosureCallCountMismatch)
 	}
 	// 결과 불명 intent 수가 E② 근거로 확인한 수와 같아야 한다. 근거는 결과 불명 송신 수와, 멈춘 명령의 시도 단위 기록에서
@@ -895,7 +909,7 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 // 여기서 받지 않는 멈춘 명령·닫힘 사유는 firstDiagnosisStoppedToolOutcome이 시도 단위 기록으로 다시 본다.
 func firstDiagnosisClosedToolOutcome(result e2runner.TrustedResult) bool {
 	c := result.Call.Counts
-	if !result.Execution.AuditComplete {
+	if result.Call.Program != "" || !result.Execution.AuditComplete {
 		return false
 	}
 	if result.Classification == "result_unknown" {

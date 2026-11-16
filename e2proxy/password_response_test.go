@@ -321,7 +321,7 @@ func TestPasswordAuthPrepKeepsSessionAndRejectsPasswordAsSession(t *testing.T) {
 				io.WriteString(w, `{"ok":true}`)
 			}))
 			defer srv.Close()
-			e, c := coreOpen(t, passwordConfig(t, srv.URL, &coreRecorder{}))
+			e, c := authProgramOpen(t, passwordConfig(t, srv.URL, &coreRecorder{}))
 			if e.AddProtectedPasswords([]byte(password)) != nil {
 				t.Fatal("등록 실패")
 			}

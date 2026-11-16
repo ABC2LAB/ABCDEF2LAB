@@ -69,9 +69,10 @@ type Execution struct {
 	slots chan struct{}
 	// admitted는 예산을 예약하고 송신 단계로 넘어간 시도 수다. MaxAttempts는 이 값만 센다.
 	// 보내지 않은 거부·미지원은 송신 상한을 쓰지 않고 call 단위 차단으로만 제한한다(C01).
-	admitted     uint64
-	intentCounts map[int64]*Counts
-	secrets      [][]byte
+	admitted      uint64
+	intentCounts  map[int64]*Counts
+	programCounts Counts
+	secrets       [][]byte
 	// secretsGen은 일반 보호 값·비밀번호 목록이 실행 뒤에 바뀐 횟수다. 응답을 읽는 동안 바뀌면 그 응답의 검사 길이가
 	// 새 값을 담지 못할 수 있어 통째로 보류한다.
 	secretsGen uint64
@@ -92,6 +93,7 @@ type Call struct {
 	ref                  string
 	commandRef           string
 	intentID             int64
+	program              ProgramCallKind
 	expires              time.Time
 	closing              bool
 	finalized            bool
@@ -317,6 +319,19 @@ func (e *Execution) BeginCallForIntent(parent context.Context, id int64, command
 	if e == nil || parent == nil || id <= 0 || !validRef(commandRef) {
 		return nil, ErrConfig
 	}
+	return e.beginCall(parent, id, "", commandRef)
+}
+
+// BeginProgramCall은 실제 intent를 만들거나 빌리지 않는다. 실행 전체의 기존
+// 호출·시도·요청 예산과 감사는 공유하고 프로그램 누계만 따로 기록한다.
+func (e *Execution) BeginProgramCall(parent context.Context, program ProgramCallKind, commandRef string) (*Call, error) {
+	if e == nil || parent == nil || !program.Valid() || !validRef(commandRef) {
+		return nil, ErrConfig
+	}
+	return e.beginCall(parent, 0, program, commandRef)
+}
+
+func (e *Execution) beginCall(parent context.Context, id int64, program ProgramCallKind, commandRef string) (*Call, error) {
 	if parent.Err() != nil {
 		return nil, ErrClosed
 	}
@@ -324,7 +339,7 @@ func (e *Execution) BeginCallForIntent(parent context.Context, id int64, command
 	if err != nil {
 		return nil, err
 	}
-	c := &Call{e: e, ref: ref, commandRef: commandRef, intentID: id, auditComplete: true, reason: Complete, idle: make(chan struct{}), closeGate: make(chan struct{}, 1)}
+	c := &Call{e: e, ref: ref, commandRef: commandRef, intentID: id, program: program, auditComplete: true, reason: Complete, idle: make(chan struct{}), closeGate: make(chan struct{}, 1)}
 	accepted := false
 	defer func() {
 		if !accepted {
@@ -338,7 +353,7 @@ func (e *Execution) BeginCallForIntent(parent context.Context, id int64, command
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	_, registered := e.intents[id]
-	if parent.Err() != nil || !registered || e.blockedLocked() != Complete || len(e.calls) >= e.cfg.Limits.MaxCalls {
+	if parent.Err() != nil || !ValidCallAttribution(id, program) || program == "" && !registered || e.blockedLocked() != Complete || len(e.calls) >= e.cfg.Limits.MaxCalls {
 		return nil, ErrClosed
 	}
 	expires := time.Now().Add(e.cfg.Limits.CallTimeout)
@@ -353,6 +368,9 @@ func (e *Execution) BeginCallForIntent(parent context.Context, id int64, command
 	e.counts.Calls++
 	if counts := e.intentCounts[id]; counts != nil {
 		counts.Calls++
+	}
+	if program.Valid() {
+		e.programCounts.Calls++
 	}
 	accepted = true
 	return c, nil
@@ -383,7 +401,7 @@ func (e *Execution) blockedLocked() Reason {
 	return Complete
 }
 func (c *Call) blockedLocked() Reason {
-	if _, registered := c.e.intents[c.intentID]; !registered {
+	if _, registered := c.e.intents[c.intentID]; !ValidCallAttribution(c.intentID, c.program) || c.program == "" && !registered {
 		return Invalid
 	}
 	if r := c.e.blockedLocked(); r != Complete {
@@ -625,7 +643,7 @@ func (c *Call) Close(ctx context.Context) (CallResult, error) {
 			return c.Result(), ErrDrain
 		}
 		c.e.mu.Lock()
-		r := Receipt{Version: Version, Scope: c.e.cfg.Scope, IntentID: c.intentID, CallRef: c.ref, CommandRef: c.commandRef, PolicyRevision: c.e.cfg.PolicyRevision, Reason: c.reason, NotSent: true}
+		r := Receipt{Version: Version, Scope: c.e.cfg.Scope, IntentID: c.intentID, Program: c.program, CallRef: c.ref, CommandRef: c.commandRef, PolicyRevision: c.e.cfg.PolicyRevision, Reason: c.reason, NotSent: true}
 		c.e.mu.Unlock()
 		if err := c.e.recordBounded(ctx, Event{Stage: "call_closed", Receipt: r}); err != nil {
 			return c.Result(), err
@@ -646,7 +664,7 @@ func (c *Call) resultLocked() CallResult {
 	if c.finalized {
 		state = "closed"
 	}
-	return CallResult{Observations: cloneHTTPObservations(c.diagnostics), ObservationsTruncated: c.diagnosticsTruncated, IntentID: c.intentID, CallRef: c.ref, CommandRef: c.commandRef, State: state, Counts: c.counts, AuditComplete: c.auditComplete && !c.e.auditFailed, Final: c.finalized, Reason: c.reason}
+	return CallResult{Observations: cloneHTTPObservations(c.diagnostics), ObservationsTruncated: c.diagnosticsTruncated, IntentID: c.intentID, Program: c.program, CallRef: c.ref, CommandRef: c.commandRef, State: state, Counts: c.counts, AuditComplete: c.auditComplete && !c.e.auditFailed, Final: c.finalized, Reason: c.reason}
 }
 
 // Snapshot uses the original approval anchor. Counts remain execution-wide;
@@ -687,7 +705,7 @@ func (e *Execution) snapshotLocked(id int64) ExecutionView {
 		intentCounts = *counts
 	}
 	return ExecutionView{ApprovalMode: e.cfg.ApprovalMode, Evaluation: cloneEvaluationCallerContext(e.cfg.Evaluation), HeaderMode: e.cfg.HeaderMode, Version: Version, Scope: e.cfg.Scope, IntentID: id, IntentIDs: ids, OwnerRef: e.cfg.OwnerRef, PolicyRevision: e.cfg.PolicyRevision,
-		State: state, ExpiresAt: e.cfg.ExpiresAt, Counts: e.counts, IntentCounts: intentCounts, Reason: reason, AuditComplete: !e.auditFailed && e.cfg.Recorder != nil}
+		State: state, ExpiresAt: e.cfg.ExpiresAt, Counts: e.counts, IntentCounts: intentCounts, ProgramCounts: e.programCounts, Reason: reason, AuditComplete: !e.auditFailed && e.cfg.Recorder != nil}
 }
 func (e *Execution) Policy() PolicyView {
 	e.mu.Lock()
@@ -783,7 +801,7 @@ func (c *Call) start(method string) (Receipt, error) {
 	// 상한에 닿은 call의 새 요청은 시도 번호·감사 기록 없이 거절한다. 기록되는 거절이 call마다
 	// 상한으로 묶이므로 실행 전체의 기록도 MaxCalls와 call 상한의 곱 안에 머문다(C01).
 	if c.fence != "" {
-		return Receipt{Version: Version, Scope: e.cfg.Scope, IntentID: c.intentID, CallRef: c.ref, CommandRef: c.commandRef, PolicyRevision: e.cfg.PolicyRevision, Reason: c.fence, NotSent: true}, ErrClosed
+		return Receipt{Version: Version, Scope: e.cfg.Scope, IntentID: c.intentID, Program: c.program, CallRef: c.ref, CommandRef: c.commandRef, PolicyRevision: e.cfg.PolicyRevision, Reason: c.fence, NotSent: true}, ErrClosed
 	}
 	id, err := randomRef("")
 	if err != nil || e.issued[id] {
@@ -794,7 +812,7 @@ func (c *Call) start(method string) (Receipt, error) {
 	}
 	e.issued[id] = true
 	e.next++
-	r := Receipt{Version: Version, Scope: e.cfg.Scope, IntentID: c.intentID, CallRef: c.ref, CommandRef: c.commandRef, AttemptID: id, PolicyRevision: e.cfg.PolicyRevision, Sequence: e.next, Method: method, NotSent: true, Reason: Complete}
+	r := Receipt{Version: Version, Scope: e.cfg.Scope, IntentID: c.intentID, Program: c.program, CallRef: c.ref, CommandRef: c.commandRef, AttemptID: id, PolicyRevision: e.cfg.PolicyRevision, Sequence: e.next, Method: method, NotSent: true, Reason: Complete}
 	if !supportedMethod(method) {
 		r.Method = ""
 		r.Decision = "unsupported"
@@ -808,6 +826,9 @@ func (c *Call) start(method string) (Receipt, error) {
 	e.counts.Attempts++
 	if counts := e.intentCounts[c.intentID]; counts != nil {
 		counts.Attempts++
+	}
+	if c.program.Valid() {
+		e.programCounts.Attempts++
 	}
 	return r, nil
 }
@@ -865,6 +886,9 @@ func (c *Call) finish(ctx context.Context, r Receipt, observe ...func(Receipt)) 
 	add(&e.counts)
 	if counts := e.intentCounts[c.intentID]; counts != nil {
 		add(counts)
+	}
+	if c.program.Valid() {
+		add(&e.programCounts)
 	}
 	if (r.Decision == "denied" || r.Decision == "unsupported") && r.Reason == Closed {
 		c.closedRefusals++
@@ -1056,7 +1080,7 @@ func (c *Call) AuthPrep(ctx context.Context, req *http.Request, extract AuthExtr
 }
 
 func (c *Call) do(ctx context.Context, req *http.Request, purpose string, extract AuthExtractor) (*http.Response, http.Header, Receipt, error) {
-	if ctx == nil {
+	if ctx == nil || c == nil || (purpose == PurposeAuthPrep) != c.program.Valid() {
 		return nil, nil, Receipt{}, ErrConfig
 	}
 	method := ""

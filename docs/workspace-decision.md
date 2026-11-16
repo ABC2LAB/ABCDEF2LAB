@@ -99,7 +99,7 @@
 
 ### 호출별 PID 예산 (#598 P1 수정)
 
-`CallTasks = min(128, floor((256 − 64) / BashSlots))`를 신뢰 호스트가 계산해 helper의 `RLIMIT_NPROC` soft/hard 양쪽에 넘긴다. 이 수는 helper·Bash·자식의 **스레드까지 포함한 task** 상한이다. 슬롯 1/2/3이면 호출별 128/96/64다. 병렬 호출은 이 안에서 helper에 16 task 여유를 남겨, 명령 자식에만 별도 hard/soft NPROC 80(2슬롯)/48(3슬롯)을 건다. 명령 8개와 helper 여유16도 배정할 수 없는 9슬롯 이상은 시작 전에 거부한다. 1슬롯은 기존 NPROC128을 유지한다. 같은 intent 직렬화와 마감 불명 슬롯 보유는 그대로다.
+`CallTasks = min(128, floor((256 − 64) / BashSlots))`를 신뢰 호스트가 계산해 helper의 `RLIMIT_NPROC` soft/hard 양쪽에 넘긴다. 이 수는 helper·Bash·자식의 **스레드까지 포함한 task** 상한이다. 슬롯 1/2/3이면 호출별 128/96/64다. 병렬 호출은 이 안에서 helper에 16 task 여유를 남겨, 명령 자식에만 별도 hard/soft NPROC 80(2슬롯)/48(3슬롯)을 건다. 명령 8개와 helper 여유16도 배정할 수 없는 9슬롯 이상은 시작 전에 거부한다. 1슬롯도 helper 여유16을 보존해 명령 NPROC112를 적용한다. 같은 intent 직렬화와 마감 불명 슬롯 보유는 그대로다.
 
 엔진 몫 64는 실제 제품 Compose 이미지 `ab50cb1f`의 preparation에서 Worker3+Planner, 3개 호출의 준비·TLS 송신·마감 중 PID 1의 `/proc/1/status`를 20ms 간격으로 읽어 측정한 최고 **18개 스레드**에 근거한다. 실측의 2배(36)를 다음 2의 거듭제곱(64)으로 올려 여유를 둔다. 관찰용 Python은 별도 1 task이며 엔진 스레드에는 포함하지 않았다. 제한 없는 전체 부하에 대한 최대 엔진 task 수를 증명한 값은 아니다. 다른 배치의 PID 한도가 256보다 작으면 이 조건을 그대로 적용할 수 없다. Runner 생성 때 보이는 cgroup v2 루트의 `/sys/fs/cgroup/pids.max`를 읽어 256 미만이면 시작 전에 거부한다. 파일이 있는데 읽기 실패·형식 오류면 거부하며, `max`/256 이상은 허용한다. 이 파일이 없는 기존 비컨테이너/v1 호스트 경로는 유지한다. 숨겨진 조상 cgroup의 한도를 찾아내는 검사는 아니다.
 

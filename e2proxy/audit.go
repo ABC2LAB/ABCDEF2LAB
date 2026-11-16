@@ -476,7 +476,7 @@ func validJournalEvent(event Event, version string) bool {
 	if event.Index == 0 || event.Version != version || !knownJournalVersion(version) || !validJournalTime(event.At) {
 		return false
 	}
-	if version == VersionV1 && (event.Reason == Withheld || event.ResponseTruncated) {
+	if version == VersionV1 && (event.Reason == Withheld || event.ResponseTruncated || event.Program != "") {
 		return false
 	}
 	// 보류 결과는 허용해서 보냈고 대상이 답한 뒤 표현만 주지 않은 것이다. 끝까지 전달한 응답이 아니다. call_closed 행은
@@ -497,7 +497,7 @@ func validJournalEvent(event Event, version string) bool {
 	}
 	switch event.Stage {
 	case "intent", "result":
-		if event.IntentID <= 0 || event.Sequence == 0 || !validJournalRef(event.CallRef) || !validJournalHex(event.AttemptID, randomRefBytes) {
+		if !ValidCallAttribution(event.IntentID, event.Program) || event.Sequence == 0 || !validJournalRef(event.CallRef) || !validJournalHex(event.AttemptID, randomRefBytes) {
 			return false
 		}
 		if event.Decision != "allowed" && event.Decision != "denied" && event.Decision != "unsupported" {
@@ -513,11 +513,11 @@ func validJournalEvent(event Event, version string) bool {
 			return false
 		}
 	case "control":
-		if event.IntentID < 0 || event.AttemptID != "" || event.Sequence != 0 || event.Decision != "" {
+		if event.Program != "" || event.IntentID < 0 || event.AttemptID != "" || event.Sequence != 0 || event.Decision != "" {
 			return false
 		}
 	case "call_closed":
-		if event.IntentID <= 0 || !validJournalRef(event.CallRef) || event.AttemptID != "" || event.Sequence != 0 || event.Decision != "" {
+		if !ValidCallAttribution(event.IntentID, event.Program) || !validJournalRef(event.CallRef) || event.AttemptID != "" || event.Sequence != 0 || event.Decision != "" {
 			return false
 		}
 	default:
