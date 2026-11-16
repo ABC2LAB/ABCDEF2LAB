@@ -15,7 +15,8 @@ const SourceAPIReconStatic = "api_recon_static"
 const discoveryKind = "api"
 
 const (
-	// 한 번의 보고에 받는 발견 수. 회차 발견 상한(Limits.MaxEndpoints, 최대 32)과 같은 크기다.
+	// 한 번의 보고에 받는 발견 수. 회차 공개 끝점 상한(MaxWorkflowEndpoints 64)보다 작아서, 그보다 많이 찾으면
+	// 탐색 에이전트가 보고를 나눠 보낸다(발견 보고 도구 설명에 적음). 넘는 보고는 통째로 거부한다.
 	maxDiscoveriesPerReport = 32
 	// 엔드포인트 하나에 남기는 query·본문 키 이름 수.
 	maxDiscoveryKeys = 32

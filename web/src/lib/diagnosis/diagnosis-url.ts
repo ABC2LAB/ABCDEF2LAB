@@ -21,6 +21,10 @@ export type URLDiagnosisInput = {
 };
 // 대상 하나·회차 하나의 E② 승인 요청 수 코드 상한이다(서버 diagnosisprep.MaxTargetRequests와 같음, C32 2026-11-14 100에서 올림).
 export const MAX_TARGET_REQUESTS = 1000;
+// 워크플로 크롤 페이지·공개 끝점 목록의 코드 상한이다(서버 diagnosisflow.MaxWorkflowPages·MaxWorkflowEndpoints와 같음,
+// VAmPI 실제 회차 24b 뒤 32에서 올림). 한도 스냅숏(parseWorkflowLimits)과 실제 스냅숏(parseWorkflow)이 같이 쓴다.
+export const MAX_WORKFLOW_PAGES = 256;
+export const MAX_WORKFLOW_ENDPOINTS = 64;
 export type URLDiagnosisModel = {
   mode: "openrouter";
   // 지금 보내는 모델은 3.6이다. 3.5는 2026-11-14 전에 만든 작업·설치 기록을 읽을 때만 나온다.
@@ -904,10 +908,10 @@ export function parseWorkflowLimits(v: unknown): WorkflowLimits {
     v.format !== "abc2lab.workbench-flow/v1" ||
     !natural(v.max_pages) ||
     v.max_pages < 1 ||
-    v.max_pages > 256 ||
+    v.max_pages > MAX_WORKFLOW_PAGES ||
     !natural(v.max_endpoints) ||
     v.max_endpoints < 1 ||
-    v.max_endpoints > 64 ||
+    v.max_endpoints > MAX_WORKFLOW_ENDPOINTS ||
     !natural(v.max_response_bytes) ||
     v.max_response_bytes < 4096 ||
     v.max_response_bytes > 2097152 ||

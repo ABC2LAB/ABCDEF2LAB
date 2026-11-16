@@ -30,7 +30,8 @@ func newExploreDiscoveryTool(reporter exploreDiscoveryReporter) actool.CoreTool 
 		Description: "Report endpoint metadata of the approved target from scripts, pages, API documents or page runtime hooks. " +
 			"Give only the method, the absolute path on this origin, and the names of query parameters and JSON body fields; never values. " +
 			"Use source api_recon_static for static analysis or api_recon_runtime for page hooks. Runtime reports are still inferred; only host-owned boundary records establish observed requests. " +
-			"The program re-checks the approved scope and drops anything outside it or malformed. Reported endpoints are unverified discoveries, not vulnerabilities. This tool sends no request.",
+			"The program re-checks the approved scope and drops anything outside it or malformed. Reported endpoints are unverified discoveries, not vulnerabilities. This tool sends no request. " +
+			"Each call accepts at most 32 discoveries; when you found more, report the rest in further calls.",
 		Schema: map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
 			"discoveries": map[string]any{"type": "array", "minItems": 1, "maxItems": 32, "items": map[string]any{
 				"type": "object", "additionalProperties": false, "properties": map[string]any{

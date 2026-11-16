@@ -1,5 +1,6 @@
 import { ApiError, apiFetch } from "@/lib/diagnosis/api";
 import {
+  MAX_WORKFLOW_ENDPOINTS,
   parseWorkflowLimits,
   type URLDiagnosisJob,
   type WorkflowLimits,
@@ -107,7 +108,7 @@ export function parseWorkflow(value: unknown, job: URLDiagnosisJob): WorkflowSna
   }
   if (
     !Array.isArray(s.endpoints) ||
-    s.endpoints.length > 32 ||
+    s.endpoints.length > MAX_WORKFLOW_ENDPOINTS ||
     !Array.isArray(s.events) ||
     s.events.length > 32 ||
     !Array.isArray(s.commands) ||
