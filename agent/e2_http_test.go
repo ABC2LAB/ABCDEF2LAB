@@ -39,7 +39,7 @@ import (
 
 // e2WorkerCredentialFixture keeps this synthetic test valid across the
 // pre- and post-header-mode e2proxy contract. It does not select a product mode.
-func e2WorkerCredentialFixture(t *testing.T, cfg e2proxy.Config) e2proxy.Config {
+func e2WorkerCredentialFixture(t *testing.T, cfg e2proxy.Config, modes ...e2proxy.HeaderMode) e2proxy.Config {
 	t.Helper()
 	mode := reflect.ValueOf(&cfg).Elem().FieldByName("HeaderMode")
 	if !mode.IsValid() {
@@ -48,8 +48,16 @@ func e2WorkerCredentialFixture(t *testing.T, cfg e2proxy.Config) e2proxy.Config 
 	if mode.Kind() != reflect.String || !mode.CanSet() {
 		t.Fatal("unexpected e2proxy header mode field")
 	}
-	mode.SetString("protected_session_proposal")
+	selected := e2proxy.HeaderProtectedSessionProposal
+	if len(modes) > 0 && modes[0] != "" {
+		selected = modes[0]
+	}
+	mode.SetString(string(selected))
 	for i := range cfg.Rules {
+		if selected == e2proxy.HeaderTestAccountPassthrough {
+			cfg.Rules[i].Headers = nil
+			continue
+		}
 		credentialHeaders := reflect.ValueOf(&cfg.Rules[i]).Elem().FieldByName("CredentialHeaders")
 		if !credentialHeaders.IsValid() || !credentialHeaders.CanSet() || credentialHeaders.Type() != reflect.TypeOf(http.Header{}) {
 			t.Fatal("unexpected e2proxy credential header field")
@@ -64,6 +72,10 @@ func e2WorkerFixture(t *testing.T, ids ...int64) (*e2proxy.Execution, *e2runner.
 	return e2WorkerFixtureTarget(t, "http://example.invalid", "/", ids...)
 }
 func e2WorkerFixtureTarget(t *testing.T, origin, prefix string, ids ...int64) (*e2proxy.Execution, *e2runner.Runner, E2HTTPExecution) {
+	return e2WorkerFixtureTargetMode(t, origin, prefix, "", ids...)
+}
+
+func e2WorkerFixtureTargetMode(t *testing.T, origin, prefix string, mode e2proxy.HeaderMode, ids ...int64) (*e2proxy.Execution, *e2runner.Runner, E2HTTPExecution) {
 	t.Helper()
 	taskID, intentID := int64(7), int64(22)
 	if len(ids) == 2 {
@@ -99,7 +111,7 @@ func e2WorkerFixtureTarget(t *testing.T, origin, prefix string, ids ...int64) (*
 		Rules:  []e2proxy.Rule{{Ref: "rule-1", Origin: origin, ConnectIP: netip.MustParseAddr("127.0.0.1"), PathPrefix: prefix, PathScopeRef: "path-1", Methods: []string{"GET"}, Headers: http.Header{"Authorization": {"Bearer keep-secret"}}}},
 		Budget: transmit.CumulativeBudget{Ledger: ledger, Key: key, Binding: binding}, Recorder: journal,
 		Limits: e2proxy.Limits{MaxAttempts: 20, MaxCalls: 10, MaxConcurrent: 2, MaxBodyBytes: 4096, RequestTimeout: time.Second, CallTimeout: 2 * time.Second, MaxDenials: 4, MaxTransient: 4, MaxUnknown: 4},
-	}))
+	}, mode))
 	if err != nil {
 		t.Fatal(err)
 	}
