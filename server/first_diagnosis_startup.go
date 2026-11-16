@@ -77,6 +77,9 @@ func (s *Server) firstDiagnosisRoutes(next http.Handler) http.Handler {
 		if requestApprovalRoute(r) {
 			allowed = true
 		}
+		if firstDiagnosisControlRoute(r) {
+			allowed = true
+		}
 		if s.firstDiagnosisPreparation || !allowed {
 			writeErr(w, http.StatusForbidden, "첫 진단 전용 서버에서는 이 작업을 사용할 수 없습니다")
 			return
@@ -149,7 +152,9 @@ func (s *Server) createFirstDiagnosisGoals(ctx context.Context, t *Task, emit fu
 // 조회라는 HTTP 메서드만으로 외부 동기화·자가 갱신·MCP 발견을 허용하지 않는다.
 func firstDiagnosisReadRoute(path string) bool {
 	switch path {
-	case "/api/health", "/api/auth/status", "/api/tasks", "/api/exploration/findings", "/api/exploration/findings/groups", "/api/exploration/findings/asset-tree", "/api/exploration/findings/stats":
+	case "/api/health", "/api/auth/status", "/api/tasks", "/api/exploration/findings", "/api/exploration/findings/groups", "/api/exploration/findings/asset-tree", "/api/exploration/findings/stats",
+		// 활동 조회(실시간·이력·스트림)는 읽기 전용이라 새 전송·admission을 열지 않는다(C33). 운영자가 돌아가는 진단을 지켜본다.
+		"/api/exploration/activity", "/api/exploration/activity/history", "/api/exploration/activity/stream":
 		return true
 	}
 	if tail, ok := strings.CutPrefix(path, "/api/tasks/"); ok {
@@ -171,7 +176,27 @@ func firstDiagnosisReadRoute(path string) bool {
 		parts := strings.Split(tail, "/")
 		return numericID.MatchString(parts[0]) && (len(parts) == 1 || len(parts) == 2 && parts[1] == "lineage")
 	}
+	if tail, ok := strings.CutPrefix(path, "/api/exploration/activity/"); ok {
+		// 활동 상세(activity/{seq}). history·stream은 위 switch가 이미 받았다.
+		return numericID.MatchString(tail)
+	}
 	return false
+}
+
+// firstDiagnosisControlRoute는 제품 경로에서 운영자가 admitted 회차를 일시정지·재개하는 조작만 허용한다(C33).
+// 핸들러(control)가 action을 pause|resume로 제한하므로 실행 "시작"·재admission이나 새 전송을 열지 않는다(개발 계획
+// 11/11 §"새 송신을 멈추는 경우": 일시정지는 같은 권한 결속을 유지한 채 재개 전까지 신규 전송·모델 호출 admission을 대기시킨다).
+// 채팅·intent 조종·rerun(종료 task 재admission)·설정 쓰기는 admission/전송 인접 허용 판단이라 여기서 열지 않는다(E² 담당 정렬).
+func firstDiagnosisControlRoute(r *http.Request) bool {
+	if r.Method != http.MethodPost {
+		return false
+	}
+	tail, ok := strings.CutPrefix(r.URL.Path, "/api/tasks/")
+	if !ok {
+		return false
+	}
+	parts := strings.Split(tail, "/")
+	return len(parts) == 2 && numericID.MatchString(parts[0]) && parts[1] == "control"
 }
 
 // 보고서만 기존 생성기와 저장소로 연결한다. 모델 또는 대상 실행 admission은 열지 않는다.
