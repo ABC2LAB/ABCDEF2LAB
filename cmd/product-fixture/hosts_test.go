@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/netip"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -63,5 +64,35 @@ func TestParseFixtureHostsRejects(t *testing.T) {
 func TestFixtureLeafCommonNameIsNeutral(t *testing.T) {
 	if strings.Contains(strings.ToLower(fixtureLeafCommonName), "juice") {
 		t.Fatal(fixtureLeafCommonName)
+	}
+}
+
+// 준비 확인 주소는 프록시와 같은 대상이어야 한다: 포트가 없으면 scheme 기본값, 있으면 그대로(#597 이동찬 리뷰).
+func TestUpstreamDialAddress(t *testing.T) {
+	for raw, want := range map[string]string{
+		"http://juice-shop:3000": "juice-shop:3000",
+		"http://vampi:5000":      "vampi:5000",
+		"http://127.0.0.1":       "127.0.0.1:80",
+		"https://127.0.0.1":      "127.0.0.1:443",
+		"http://127.0.0.1:80":    "127.0.0.1:80",
+		"https://upstream.test":  "upstream.test:443",
+		"http://[::1]":           "[::1]:80",
+	} {
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := upstreamDialAddress(u); err != nil || got != want {
+			t.Errorf("%s -> %q %v, want %q", raw, got, err, want)
+		}
+	}
+	for _, raw := range []string{"ftp://upstream.test", "ftp://upstream.test:21", "http://", "upstream:3000"} {
+		u, err := url.Parse(raw)
+		if err != nil {
+			continue
+		}
+		if got, err := upstreamDialAddress(u); err == nil {
+			t.Errorf("%s accepted: %q", raw, got)
+		}
 	}
 }

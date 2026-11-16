@@ -2,7 +2,9 @@ package main
 
 import (
 	"errors"
+	"net"
 	"net/netip"
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -51,4 +53,19 @@ func fixtureHostNames(hosts []fixtureHost) []string {
 		names[i] = h.name
 	}
 	return names
+}
+
+var errFixtureUpstream = errors.New("fixture_upstream_invalid")
+
+// upstreamDialAddress는 준비 확인이 연결할 upstream 주소다. 프록시(http.Transport)와 같게 포트가 없으면 scheme 기본값
+// (http 80, https 443)을 쓴다. 그 밖의 scheme이나 호스트 없는 URL은 시작할 때 거부한다.
+func upstreamDialAddress(u *url.URL) (string, error) {
+	if u.Hostname() == "" || u.Scheme != "http" && u.Scheme != "https" {
+		return "", errFixtureUpstream
+	}
+	port := u.Port()
+	if port == "" {
+		port = map[string]string{"http": "80", "https": "443"}[u.Scheme]
+	}
+	return net.JoinHostPort(u.Hostname(), port), nil
 }

@@ -45,10 +45,12 @@ func main() {
 	}
 	u, e := url.Parse(*upstream)
 	must(e)
+	readyAddress, e := upstreamDialAddress(u)
+	must(e)
 	stats := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ready := true
 		if *mode == "target" || *mode == "workflow-target" {
-			c, e := net.DialTimeout("tcp", u.Host, time.Second)
+			c, e := net.DialTimeout("tcp", readyAddress, time.Second)
 			ready = e == nil
 			if c != nil {
 				c.Close()
