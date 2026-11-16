@@ -9,7 +9,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from runner_llm import LLMMarkerError, judge_llm
+from runner_llm import PRODUCT_VERIFY_ROLE, LLMMarkerError, judge_llm, judge_product_llm
 
 SLUG, NAME = "example-provider", "Example"
 # 사전검사 픽스처(test_preflight.configuration)의 temperature·sampling·seed로 만든 기대 적용값.
@@ -203,3 +203,39 @@ class TestMarkerShape(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestJudgeProduct(unittest.TestCase):
+    """O(제품 OpenRouter 경로) 호출 기록 사후 검증 표식은 B 게이트웨이 표식과 같은 규칙으로 판정하고, 샘플링은 B 적용값과 대조한다."""
+
+    def product(self, **overrides):
+        return marker(**({"role": PRODUCT_VERIFY_ROLE, "rejected_after_seal": 0} | overrides))
+
+    def test_same_sampling_as_baseline_gateway_passes(self):
+        reasons, summary = judge_product_llm(self.product(), dict(SAMPLING), SLUG, NAME)
+        self.assertEqual(reasons, [])
+        self.assertEqual(summary["sampling_applied"], SAMPLING)
+
+    def test_sampling_is_compared_with_the_baseline_not_a_declaration(self):
+        # O가 보낸 값이 B 게이트웨이 적용값과 다르면(한 칸이라도) 불일치다. v1·v2 승인(null)도 불일치다.
+        other = dict(SAMPLING, seed=7)
+        self.assertIn("llm_sampling_mismatch", judge_product_llm(self.product(sampling=other), dict(SAMPLING), SLUG, NAME)[0])
+        self.assertIn("llm_sampling_mismatch", judge_product_llm(self.product(sampling=None), dict(SAMPLING), SLUG, NAME)[0])
+        self.assertEqual(judge_product_llm(self.product(sampling=other), other, SLUG, NAME)[0], [])
+
+    def test_same_provider_rules_as_gateway(self):
+        cut = dict(NO_ENDS, upstream_cut_before_done=1)
+        reasons, summary = judge_product_llm(self.product(generations=[generation("gen-1", provider="Other"), generation("gen-2", status="unverified")],
+                                                          responses_without_generation_id=1, upstream_errors=1, upstream_error_ends=cut),
+                                             dict(SAMPLING), SLUG, NAME)
+        self.assertEqual(reasons, sorted({"llm_provider_mismatch", "llm_generation_unverified", "llm_generation_unverifiable"}))
+        self.assertEqual(summary["upstream_error_ends"]["upstream_cut_before_done"], 1)
+
+    def test_role_and_baseline_shape(self):
+        for bad in (marker(), self.product(role="llm-gateway"), None):
+            with self.subTest(role=None if bad is None else bad["role"]), self.assertRaises(LLMMarkerError):
+                judge_product_llm(bad, dict(SAMPLING), SLUG, NAME)
+        for baseline in (None, {"temperature": 1.0}, dict(SAMPLING, seed="42"), dict(SAMPLING, frequency_penalty=0)):
+            with self.subTest(baseline=baseline), self.assertRaises(LLMMarkerError):
+                judge_product_llm(self.product(), baseline, SLUG, NAME)
+

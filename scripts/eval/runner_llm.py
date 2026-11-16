@@ -109,3 +109,25 @@ def judge_llm(marker: object, backend: str, provider_slug: str, provider_name: s
         "sealed_at": marker["sealed_at"], "drained_at": marker["drained_at"], "verified_at": marker["verified_at"],
     }
     return sorted(reasons), summary
+
+
+# 제품(O) OpenRouter 호출 기록 사후 검증 표식(eval-meter -role generation-verify)의 역할 값. 게이트웨이 표식과 같은 모양이고
+# 같은 조회 코드로 만든다(탐색 분리 배치 결정안 D(b)).
+PRODUCT_VERIFY_ROLE = "generation-verify"
+
+
+def judge_product_llm(marker: object, baseline_applied: dict | None, provider_slug: str,
+                      provider_name: str) -> tuple[list[str], dict]:
+    """O의 호출 기록 사후 검증 표식을 B와 같은 규칙(judge_llm)으로 판정한다.
+
+    샘플링은 선언이 아니라 같은 회차 묶음의 원본(B) 게이트웨이가 실제로 넣은 값(B 표식의 `sampling`)과 대조한다. O 표식의
+    `sampling`은 제품 transport가 실제로 보낸 바이트에서 읽은 값이다(manifest v3). v1·v2 승인이면 null이라 불일치로 남는다.
+    게이트웨이 표식을 O 자리에 넣지 못하게 역할을 본다. 제품이 기록을 남기지 못한 수는 이 표식 밖이라 호출자가 따로 본다.
+    """
+    if not isinstance(marker, dict) or marker.get("role") != PRODUCT_VERIFY_ROLE:
+        raise LLMMarkerError("llm_marker_invalid")
+    if not isinstance(baseline_applied, dict) or set(baseline_applied) != SAMPLING_KEYS or any(
+            type(value) not in (int, float) for value in baseline_applied.values()):
+        raise LLMMarkerError("llm_marker_invalid")
+    return judge_llm(marker, "api", provider_slug, provider_name, baseline_applied)
+
