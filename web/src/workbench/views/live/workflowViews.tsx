@@ -44,7 +44,7 @@ export const NONE = "—";
 
 /** 찾은 경로 칸이 비었을 때 글 (시안 v32: 거르기마다 다르게). */
 function treeEmpty(filter: string, total: number): string {
-  if (!total) return "아직 찾은 경로가 없습니다.";
+  if (!total) return "아직 발견한 API가 없습니다.";
   if (filter === "ap") return "승인이 필요한 경로가 아직 없습니다.";
   if (filter === "ex") return "제외한 경로가 아직 없습니다.";
   return "조건에 맞는 경로가 없습니다.";
@@ -439,7 +439,7 @@ function EndpointDetail({
     <>
       <div className={s["vi-head"]}>
         <div>
-          <div className={s.eyebrow}>{`찾은 경로 · ${group(e)}`}</div>
+          <div className={s.eyebrow}>{`발견한 API · ${group(e)}`}</div>
           <h2>
             <span className={cx(s.m, s[e.method])}>{e.method}</span>{" "}
             <span className={s.p}>
@@ -585,7 +585,7 @@ function LogDetail({
   if (!endpoint)
     cards = (
       <>
-        <NoneCard title="요청" text="이 기록과 같은 찾은 경로 기록이 없어 결과만 보입니다." />
+        <NoneCard title="요청" text="이 기록과 같은 발견한 API가 없어 결과만 보입니다." />
         <NoneCard title="응답" text="저장된 응답이 없습니다." />
       </>
     );
@@ -833,9 +833,8 @@ function FoundPaths({
     <section className={s.sec} aria-labelledby="sFoundH">
       <div className={s.sh}>
         <div>
-          <div className={s.eyebrow}>탐색하는 대로 채워짐</div>
           <h2 id="sFoundH">
-            찾은 경로 <span className={s.num}>{endpoints.length}</span>
+            발견한 API <span className={s.num}>{endpoints.length}</span>
           </h2>
         </div>
       </div>
@@ -1137,7 +1136,7 @@ export function WorkflowCrawlLive() {
                   [
                     [
                       "cFound",
-                      "찾은 경로",
+                      "발견한 API",
                       flow.counts.found,
                       null,
                       `조회 ${endpoints.filter((e) => e.change === "attested_read").length} · 데이터 변경 ${endpoints.filter((e) => e.change === "possible").length}`,
@@ -1412,8 +1411,9 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
                   aria-pressed={multi}
                   disabled={locked}
                   onClick={() => {
+                    // 껐다 켜도 전에 골라 둔 경로는 그대로 둔다(꺼진 동안은 네모칸만 숨고 넣기 · 빼기는 상세 경로에만 한다)
                     setMulti((m) => !m);
-                    unpick();
+                    setAnchor(null);
                   }}
                 >
                   삭제
@@ -1475,7 +1475,7 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
                 <CloseInspButton label="경로 상세" />
               </div>
               <p className={s.empty}>
-                가운데 찾은 경로에서 경로를 누르면 그 경로 상세가 나오고, 점검에 넣을지 고를 수 있습니다.
+                가운데 발견한 API에서 경로를 누르면 그 경로 상세가 나오고, 점검에 넣을지 고를 수 있습니다.
               </p>
             </>
           )}
@@ -1570,7 +1570,7 @@ export function WorkflowScopeLive() {
         <UrlNotices />
         <WorkflowNotice />
         <p className={s.empty}>
-          {job ? "탐색이 끝나면 찾은 경로가 여기에 나옵니다." : "이 브라우저에서 이어 보는 점검이 없습니다."}
+          {job ? "탐색이 끝나면 발견한 API가 여기에 나옵니다." : "이 브라우저에서 이어 보는 점검이 없습니다."}
         </p>
         {job ? null : (
           <div>
@@ -1685,7 +1685,7 @@ export function WorkflowReport() {
       <div className={s.meters}>
         {(
           [
-            ["찾은 경로", flow.counts.found],
+            ["발견한 API", flow.counts.found],
             ["방문", flow.counts.visited],
             ["보낸 요청", flow.counts.sent],
             ["막은 요청", flow.counts.blocked],

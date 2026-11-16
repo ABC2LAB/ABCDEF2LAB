@@ -151,18 +151,22 @@ describe("범위 확인", () => {
       </ShellContext.Provider>,
     );
     return {
-      found: screen.getByRole("region", { name: /^찾은 경로/ }),
+      found: screen.getByRole("region", { name: /^발견한 API/ }),
       insp: screen.getByRole("complementary", { name: "경로 상세" }),
     };
   };
 
-  it("가운데는 찾은 경로 카드만 있고, 옛 요약 · 시작 전 점검 · 거르기 · 표 · 새 경로 처리 규칙은 없다", () => {
+  it("가운데는 발견한 API 카드만 있고, 옛 요약 · 시작 전 점검 · 거르기 · 표 · 새 경로 처리 규칙은 없다", () => {
     const { found } = mountScope();
     expect(within(found).getByRole("radiogroup", { name: "보이는 경로" })).toBeInTheDocument();
     expect(document.getElementById("sCount")).toBeNull();
     expect(document.getElementById("sTable")).toBeNull();
     expect(screen.queryByLabelText("시작 전 점검")).toBeNull();
     expect(screen.queryByText("점검 중 새로 찾은 경로 처리 규칙")).toBeNull();
+    // 제목은 '발견한 API', 그 위 '탐색하는 대로 채워짐' 글은 없다
+    expect(within(found).getByRole("heading", { name: /^발견한 API/ })).toBeInTheDocument();
+    expect(screen.queryByText("탐색하는 대로 채워짐")).toBeNull();
+    expect(screen.queryByText(/찾은 경로/)).toBeNull();
     // 검색은 거르기 줄의 오른쪽 끝에 하나
     const filterRow = within(found).getByRole("radiogroup", { name: "보이는 경로" }).parentElement as HTMLElement;
     expect(filterRow).toContainElement(within(found).getByRole("searchbox", { name: "경로 검색" }));
@@ -221,7 +225,7 @@ describe("범위 확인 · 한 번에 고르기", () => {
         <WorkflowScopeLive />
       </ShellContext.Provider>,
     );
-    return screen.getByRole("region", { name: /^찾은 경로/ });
+    return screen.getByRole("region", { name: /^발견한 API/ });
   };
   const products = group(ep("x", "GET", "/api/products/1", "attested_read"));
 
@@ -426,6 +430,25 @@ describe("범위 확인 · 한 번에 고르기", () => {
     expect(within(found).getByRole("checkbox", { name: `${products} 묶음 전체 점검에 포함` })).toBeChecked();
   });
 
+  it("삭제를 껐다 다시 켜도 전에 골라 둔 경로만 그대로 체크돼 있다", () => {
+    const found = mount();
+    const mode = within(found).getByRole("button", { name: "삭제" });
+    fireEvent.click(mode);
+    const getPill = within(found).getByRole("button", { name: /^GET \/api\/products\/1/ });
+    const putPill = within(found).getByRole("button", { name: /^PUT \/api\/users\/2/ });
+    fireEvent.click(putPill);
+    const box = (pill: HTMLElement) => pill.querySelector("[data-pick]");
+    expect(box(putPill)).toHaveAttribute("data-pick", "on");
+    // 끄면 네모칸만 숨고, 넣기 · 빼기는 상세 경로 하나에만(고른 것에는 안 함)
+    fireEvent.click(mode);
+    expect(box(putPill)).toBeNull();
+    expect(within(found).getByRole("button", { name: "점검에서 빼기" })).toBeDisabled();
+    // 다시 켜면 전에 고른 경로만 체크
+    fireEvent.click(mode);
+    expect(box(putPill)).toHaveAttribute("data-pick", "on");
+    expect(box(getPill)).toHaveAttribute("data-pick", "off");
+  });
+
   it("검색창은 메서드 · 경로 글자로 알약을 거르고(대소문자 무시), 맞는 게 없으면 알린다", () => {
     const found = mount();
     const search = within(found).getByRole("searchbox", { name: "경로 검색" });
@@ -473,21 +496,21 @@ describe("범위 확인 · 한 번에 고르기", () => {
   });
 });
 
-describe("범위 확인 · 찾은 경로 (자산 탐색 오른쪽 패널에서 옮김)", () => {
-  it("찾은 경로는 묶음 카드로만 보이고 '주소 구조' 보기 전환은 없다 (시안 v32)", () => {
+describe("범위 확인 · 발견한 API (자산 탐색 오른쪽 패널에서 옮김)", () => {
+  it("발견한 API는 묶음 카드로만 보이고 '주소 구조' 보기 전환은 없다 (시안 v32)", () => {
     useUrl.setState({ handle, job, verified: true, flow, flowVerified: true });
     render(
       <ShellContext.Provider value={shell("scope")}>
         <WorkflowScopeLive />
       </ShellContext.Provider>,
     );
-    const found = screen.getByRole("region", { name: /^찾은 경로/ });
+    const found = screen.getByRole("region", { name: /^발견한 API/ });
     expect(within(found).getByRole("radiogroup", { name: "보이는 경로" })).toBeInTheDocument();
     expect(screen.queryByRole("radiogroup", { name: "보기 방식" })).toBeNull();
     expect(screen.queryByText("주소 구조")).toBeNull();
   });
 
-  it("찾은 경로: 아직 안 나온 묶음 · 거르기별 빈 글 · 로그인 범례 자리 · 경로 상세의 요청 횟수 · 기능 자리 (시안 v24 · v32)", () => {
+  it("발견한 API: 아직 안 나온 묶음 · 거르기별 빈 글 · 로그인 범례 자리 · 경로 상세의 요청 횟수 · 기능 자리 (시안 v24 · v32)", () => {
     useUrl.setState({
       handle,
       job,
@@ -505,7 +528,7 @@ describe("범위 확인 · 찾은 경로 (자산 탐색 오른쪽 패널에서 �
         <WorkflowScopeLive />
       </ShellContext.Provider>,
     );
-    const found = screen.getByRole("region", { name: /^찾은 경로/ });
+    const found = screen.getByRole("region", { name: /^발견한 API/ });
     // 탐색 중 상품·리뷰 하나만 나왔으면 나머지 묶음이 '아직 찾지 못한 묶음' (시안 카드 순서)
     expect(within(found).getByText(/^아직 찾지 못한 묶음 · /)).toHaveTextContent(
       "공개 페이지·API, 계정·인증, 장바구니·주문, 결제·쿠폰, 관리자, 정적 자원",
@@ -528,7 +551,7 @@ describe("자산 탐색", () => {
     events: [{ at: "2026-11-11T01:00:01Z", kind: "sent", method: "GET", path: "/api/products/1", status: 200 }],
   };
 
-  it("오른쪽 패널은 기록을 고르기 전엔 접어 두고, 찾은 경로 목록은 자산 탐색에 없다", () => {
+  it("오른쪽 패널은 기록을 고르기 전엔 접어 두고, 발견한 API 목록은 자산 탐색에 없다", () => {
     const openInsp = vi.fn();
     useUrl.setState({ handle, job, verified: true, flow: withRow, flowVerified: true });
     render(
@@ -604,7 +627,7 @@ describe("자산 탐색", () => {
     // 방문 1 / 페이지 상한 4 → 25%
     const bar = screen.getByRole("progressbar", { name: /탐색 진행/ });
     expect(bar).toHaveAttribute("aria-valuenow", "25");
-    expect(screen.getByText(/^찾은 경로 · 조회 1 · 데이터 변경 1$/)).toBeInTheDocument();
+    expect(screen.getByText(/^발견한 API · 조회 1 · 데이터 변경 1$/)).toBeInTheDocument();
     // 탐색 단계에서는 GET 만 보낸다 (서버 Controller.Before)
     expect(screen.getByText(/^보낸 요청 · 조회만$/)).toBeInTheDocument();
     expect(screen.getByText(/^경과/)).toHaveTextContent(/^경과 —$/);
@@ -959,7 +982,7 @@ describe("시안 짜임 (자산 탐색 · 범위 확인 기록 · 묶음)", () =
         <WorkflowScopeLive />
       </ShellContext.Provider>,
     );
-    const found = screen.getByRole("region", { name: /^찾은 경로/ });
+    const found = screen.getByRole("region", { name: /^발견한 API/ });
     const marked = () => within(found).queryAllByRole("button", { name: /점검에 포함/ });
     // 읽기 1 포함, 쓰기 1 은 아직 안 고름, 삭제 1 은 고를 수 없음 → 체크 1
     expect(marked()).toHaveLength(1);
