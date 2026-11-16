@@ -49,7 +49,16 @@ import * as api from "../live/api";
 import { checkLiveAuth, getLiveAuthState, setLiveAuthState } from "../live/auth";
 import { LiveFeeds } from "../live/feeds";
 import { LiveRailTasks } from "../live/rail";
-import { disconnectUrl, resetUrl, runUrlAction, URL_POLL_MS, UrlFeeds, urlGates, useUrl } from "../live/urlDiagnosis";
+import {
+  disconnectUrl,
+  recheckUrl,
+  resetUrl,
+  runUrlAction,
+  URL_POLL_MS,
+  UrlFeeds,
+  urlGates,
+  useUrl,
+} from "../live/urlDiagnosis";
 import { urlAccountAuthRows, urlOutcomeText, urlTargetHint, urlTone, urlViewFor } from "../live/urlMap";
 import { type Shell, ShellContext, type View } from "../shell";
 import { createInitialState, useWb } from "../store";
@@ -965,6 +974,66 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     });
     expect(u.commandURLDiagnosis).toHaveBeenCalledTimes(1);
     expect(u.commandURLDiagnosis.mock.calls[0][1]).toBe("stop");
+  });
+
+  /** 주기 조회 하나를 붙잡아 두고, 그 사이에 중지를 누른 상태로 만든다. 붙잡은 조회를 풀 함수와 중지 약속을 준다. */
+  async function stopDuringQuietRefresh(next: (id: string) => Promise<url.URLDiagnosisJob> | null = () => null) {
+    vi.useFakeTimers();
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    mount("live");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    let release: (job: typeof running) => void = () => undefined;
+    u.readURLStatus.mockImplementation(
+      (id: string) =>
+        next(id) ??
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(URL_POLL_MS);
+    });
+    u.commandURLDiagnosis.mockResolvedValue({ ...running, revision: running.revision + 1 });
+    let sent: Promise<boolean> = Promise.resolve(false);
+    act(() => {
+      sent = runUrlAction("stop");
+    });
+    return { release: (job: typeof running) => release(job), sent: () => sent };
+  }
+
+  it("조회를 기다리는 사이 다른 진단으로 다시 붙었으면(진단 교체) 기다리던 중지는 새 진단으로 보내지 않는다 (리뷰 #601)", async () => {
+    const other = { ...running, id: "job-2" };
+    const pending = await stopDuringQuietRefresh((id) => (id === other.id ? Promise.resolve(other) : null));
+    // 다른 탭에서 저장한 job-2 핸들로 다시 확인 → 재연결
+    url.storeURLHandle({ ...handle, id: other.id });
+    await act(async () => {
+      recheckUrl();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(useUrl.getState().job?.id).toBe(other.id);
+    await act(async () => {
+      pending.release(running);
+      await pending.sent();
+    });
+    expect(await pending.sent()).toBe(false);
+    expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
+  });
+
+  it("조회를 기다리는 사이 로그아웃했으면 기다리던 중지는 보내지 않는다 (리뷰 #601)", async () => {
+    const pending = await stopDuringQuietRefresh();
+    await act(async () => {
+      setLiveAuthState("login");
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await act(async () => {
+      pending.release(running);
+      await pending.sent();
+    });
+    expect(await pending.sent()).toBe(false);
+    expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
   });
 
   it("이미 진행 중인 요청별 확인 회차는 실제 요청 승인 목록과 중지를 제공한다", async () => {

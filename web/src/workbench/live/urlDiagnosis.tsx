@@ -276,8 +276,9 @@ let quietRun: Promise<boolean> | null = null;
  * - start: 확인 상자가 켜진 ready 진단만. 시작 키를 먼저 저장하고 한 번만 보낸다.
  * - stop · refresh: 같은 진단에. 실패하면 결과 불명으로 두고 자동 재전송하지 않는다.
  * - opts.quiet(refresh 만): 주기 조회용. 화면의 busy 를 켜지 않는다 — 켜면 조회하는 동안 취소 버튼(canStop)이 사라졌다
- *   나타나고 옆 일시정지 버튼이 밀려 2초마다 깜빡인다. 겹침은 lock 이 그대로 막고, 그 사이 누른 동작은 버리지 않고
- *   조회가 끝난 뒤 그 결과로 조건을 다시 본 다음 한다.
+ *   나타나고 옆 일시정지 버튼이 밀려 2초마다 깜빡인다. 겹침은 lock 이 그대로 막고, 그 사이 누른 동작은 조회가 끝난 뒤
+ *   그 결과로 조건을 다시 본 다음 한다. 단 누른 순간의 결속(소유자 · 진단 · 핸들 · 세대)이 기다리는 사이 바뀌었으면
+ *   (재연결 · 로그아웃 · 진단 교체) 그 동작은 버린다 — 다른 진단으로 보내지 않는다 (리뷰 #601).
  */
 export async function runUrlAction(
   kind: UrlAction,
@@ -294,8 +295,32 @@ export async function runUrlAction(
       if (quietRun === run) quietRun = null;
     }
   }
-  if (quietRun !== null) await quietRun.catch(() => false);
+  if (quietRun !== null) {
+    const pressed = actionBinding();
+    await quietRun.catch(() => false);
+    if (!sameBinding(pressed, actionBinding())) return false;
+  }
   return runUrlActionNow(kind, input, false);
+}
+
+/** 사용자 동작이 어느 진단에 대한 것인지: 소유자 · 핸들(영수증 키) · 진단 ID · 세대. */
+interface ActionBinding {
+  owner: string | null;
+  creationKey: string | null;
+  jobID: string | null;
+  generation: number;
+}
+function actionBinding(): ActionBinding {
+  const st = useUrl.getState();
+  return {
+    owner: ownerOf(st.cap),
+    creationKey: st.handle?.creationKey ?? null,
+    jobID: st.job?.id ?? st.handle?.id ?? null,
+    generation,
+  };
+}
+function sameBinding(a: ActionBinding, b: ActionBinding): boolean {
+  return a.owner === b.owner && a.creationKey === b.creationKey && a.jobID === b.jobID && a.generation === b.generation;
 }
 
 async function runUrlActionNow(
