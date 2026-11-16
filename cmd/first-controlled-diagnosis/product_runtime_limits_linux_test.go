@@ -224,7 +224,12 @@ func TestProductModelConcurrencyFor(t *testing.T) {
 		ok            bool
 	}{
 		{"default-local", nil, false, true, 0, 1, true},
-		{"default-openrouter", nil, false, false, 4, 1, true},
+		// OpenRouter launch 기본값은 Worker 3 + Planner 1이고 승인 max_concurrent를 넘지 않는다(설치 결정안 §9).
+		{"default-openrouter", nil, false, false, 16, 4, true},
+		{"default-openrouter-workflow", nil, true, false, 16, 4, true},
+		{"default-openrouter-capped", nil, false, false, 2, 2, true},
+		{"default-openrouter-unread", nil, false, false, 0, 1, true},
+		{"default-mixed-local-launch", nil, false, true, 16, 1, true},
 		{"openrouter-within", set(3), false, false, 4, 3, true},
 		{"openrouter-over", set(5), false, false, 4, 0, false},
 		{"local-wide", set(2), false, true, 0, 0, false},
