@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/Autumn-27/artex/diagnosisprep"
@@ -305,7 +304,7 @@ func validTargetLoginFor(rec productTargetRecord, l diagnosisprep.TargetLogin) b
 		return false
 	}
 	for _, prefix := range rec.Target.PathPrefixes {
-		if prefix == "/" || l.Path == prefix || strings.HasPrefix(l.Path, strings.TrimSuffix(prefix, "/")+"/") {
+		if urlPathWithin(l.Path, prefix) {
 			return true
 		}
 	}

@@ -1,10 +1,12 @@
 package diagnosisprep
 
 import (
-	"github.com/Autumn-27/artex/diagnosisflow"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/Autumn-27/artex/diagnosisflow"
+	"github.com/Autumn-27/artex/internal/pathscope"
 )
 
 // MaxTargetRequests는 대상 하나·회차 하나에 승인할 수 있는 E② 요청 수의 코드 상한이다. 설치 정책(target_policy.max_requests)·
@@ -267,7 +269,7 @@ func validProductRequest(r *ProductRequest) bool {
 			return false
 		}
 		for _, p := range s.PathPrefixes {
-			if len(p) < 1 || len(p) > 512 {
+			if _, ok := pathscope.Parse(p); !ok || len(p) > 512 {
 				return false
 			}
 		}

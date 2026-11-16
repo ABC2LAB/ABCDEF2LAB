@@ -90,10 +90,14 @@ func canonicalPolicy(cfg e2proxy.Config, maxRequests uint64, b PolicyBehavior) (
 			credentials = append(credentials, http.CanonicalHeaderKey(name))
 		}
 		sort.Strings(credentials)
-		if !utf8.ValidString(r.PathPrefix) {
+		if !utf8.ValidString(r.PathPrefix) || r.PathMatch != "" && r.PathMatch != "exact" {
 			return nil, ErrConfig
 		}
 		rule := map[string]any{"origin": map[string]any{"scheme": u.Scheme, "host": host, "port": n}, "path_prefix": r.PathPrefix, "path_match": "clean_segment_prefix_v1", "methods": append([]string{}, r.Methods...), "headers": headers, "credential_header_names": credentials, "credential_handling": string(mode)}
+		// 정확 경로는 query 없는 한 경로다. 기존 접두 정책의 정본 바이트·지문은 바꾸지 않는다.
+		if r.PathMatch == "exact" {
+			rule["path_match"] = "exact_path_no_query_v1"
+		}
 		// 승인 공개키 값은 회차별 결속이며, 내용 지문에는 집행 방식만 포함한다.
 		if r.TLSSPKISHA256 != "" {
 			rule["tls_approval_binding"] = "exact_leaf_spki_sha256_v1"

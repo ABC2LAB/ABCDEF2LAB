@@ -89,6 +89,7 @@ type E2HTTPFileRule struct {
 	Ref             string                 `json:"ref"`
 	Origin          string                 `json:"origin"`
 	ConnectIP       string                 `json:"connect_ip"`
+	PathMatch       string                 `json:"path_match,omitempty"`
 	PathPrefix      string                 `json:"path_prefix"`
 	PathScopeRef    string                 `json:"path_scope_ref"`
 	Methods         []string               `json:"methods"`
@@ -238,7 +239,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		return empty, ErrE2HTTPHost
 	}
 	var policy E2HTTPFilePolicy
-	if strictJSON(raw, &policy) != nil || policy.Format != E2HTTPFilePolicyFormat || len(policy.Rules) == 0 || len(policy.Rules) > 256 || policy.MaxRequests == 0 || !policy.ValidUntil.After(policy.ValidFrom) || !policy.ValidUntil.After(time.Now()) || policy.ValidFrom.After(time.Now()) || privateinput.CheckDirectory(policy.StateDir, true) != nil {
+	if strictJSON(raw, &policy) != nil || !validE2HTTPPathMatchFields(raw) || policy.Format != E2HTTPFilePolicyFormat || len(policy.Rules) == 0 || len(policy.Rules) > 256 || policy.MaxRequests == 0 || !policy.ValidUntil.After(policy.ValidFrom) || !policy.ValidUntil.After(time.Now()) || policy.ValidFrom.After(time.Now()) || privateinput.CheckDirectory(policy.StateDir, true) != nil {
 		return empty, ErrE2HTTPHost
 	}
 	if !validE2HTTPFileAuth(policy.Auth, policy.HeaderMode, policy.Rules) {
@@ -337,7 +338,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 			}
 			credentials = secret.Headers
 		}
-		rules = append(rules, e2proxy.Rule{Ref: rule.Ref, Purpose: rule.Purpose, Origin: rule.Origin, ConnectIP: ip, TLSSPKISHA256: rule.TLSSPKISHA256, PathPrefix: rule.PathPrefix, PathScopeRef: rule.PathScopeRef, Methods: append([]string(nil), rule.Methods...), CredentialHeaders: credentials})
+		rules = append(rules, e2proxy.Rule{Ref: rule.Ref, Purpose: rule.Purpose, Origin: rule.Origin, ConnectIP: ip, TLSSPKISHA256: rule.TLSSPKISHA256, PathPrefix: rule.PathPrefix, PathMatch: rule.PathMatch, PathScopeRef: rule.PathScopeRef, Methods: append([]string(nil), rule.Methods...), CredentialHeaders: credentials})
 	}
 	requestTimeout, ok1 := e2HTTPMilliseconds(policy.Limits.RequestTimeoutMS, time.Minute)
 	callTimeout, ok2 := e2HTTPMilliseconds(policy.Limits.CallTimeoutMS, time.Hour)
