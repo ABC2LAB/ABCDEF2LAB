@@ -13,13 +13,16 @@ import (
 
 // E2HTTPRefreshSession은 시험 계정 하나를 호스트의 인증 준비 경로로 다시 로그인시킨다(C14 결정 2·6). 라벨만 받고
 // 자격 값은 모델에 오지 않는다. 결과는 새 세션 헤더와 인증 준비 결과 값(authenticated·login_failed·session_not_found·
-// result_unknown·not_sent·refresh_limit)이다. 상한은 실행 전체에서 계정당이고 실패한 로그인도 센다.
+// result_unknown·not_sent·refresh_limit·refresh_cooldown)이다. 계정별 연속 실패만 제한하고 성공하면 초기화한다.
 type E2HTTPRefreshSession func(ctx context.Context, label string) (http.Header, string)
 
 const e2RefreshSessionDescription = "Logs one owned test account in again through the host and returns its new session headers. " +
 	"Use it only when that account's session has stopped working (the target treats requests with its headers as logged out). " +
-	"Give only the account label from the test account sessions list; the host holds the credentials. Attempts are limited per account " +
-	"and failed logins count. After it succeeds, send the returned headers instead of the old ones."
+	"Give only the account label from the test account sessions list; the host holds the credentials. Successful refreshes reset the " +
+	"consecutive failure count. After three consecutive failures the host returns refresh_limit for that account for the rest of the run. " +
+	"The host also requires at least 10 seconds after the previous refresh finishes for that account: refresh_cooldown means no login was sent. " +
+	"A failed refresh ends only this tool command. Continue other permitted work within remaining run budgets; existing run stop conditions still apply. " +
+	"After it succeeds, send the returned headers instead of the old ones."
 
 // newE2RefreshSessionTool은 시험 계정 세션이 있는 Worker에만 붙인다. 모르는 라벨은 호스트에 넘기지 않는다.
 func newE2RefreshSessionTool(labels []string, refresh E2HTTPRefreshSession) actool.CoreTool {
