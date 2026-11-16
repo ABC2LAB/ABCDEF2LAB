@@ -1529,6 +1529,12 @@ a.ph:hover {
   flex-direction: column;
   gap: 8px;
 }
+/* 위에 제목이 없는 칸 (범위 확인 발견한 API): 제목 아래 구분 줄과 위 여백을 두지 않는다 */
+.isec.nohead {
+  border-top: 0;
+  padding-top: 0;
+  margin-top: 0;
+}
 .isec h3 {
   font-size: 12.5px;
   font-weight: 600;

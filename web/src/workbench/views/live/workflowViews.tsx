@@ -826,7 +826,7 @@ function FoundPaths({
   return (
     // 제목(발견한 API · 수)은 화면에 두지 않는다. 읽기 이름만 둔다
     <section className={s.sec} aria-label="발견한 API">
-      <div className={s.isec} style={{ gap: 12 }}>
+      <div className={cx(s.isec, s.nohead)} style={{ gap: 12 }}>
         {/* 찾은 경로는 묶음 카드로만 본다 (시안 v32: 주소 구조 보기 뺌) */}
         <div className={s.fctl}>
           <div className={s.seg} role="radiogroup" aria-label="보이는 경로">
