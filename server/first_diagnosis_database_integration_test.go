@@ -19,6 +19,7 @@ import (
 	"github.com/Autumn-27/artex/evidencerevision"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // 설치자는 일회용 시험 DB만 초기화한다. 제품의 실행 역할에는 DDL을 부여하지 않는다.
@@ -322,6 +323,26 @@ func TestFirstDiagnosisRuntimeDatabaseOwnedPostgres(t *testing.T) {
 		})
 		t.Run("actual-engine-auth-unknown-does-not-contaminate-worker", func(t *testing.T) {
 			// 인증 프로그램의 불명 두 건이 있어도 Worker intent와 감독자 그래프는 실제 작업 결과로 마감한다.
+			// 앞선 constructor 시험에 기대지 않고 제품 기동에 필요한 설치자 인증 자료를 준비한다.
+			preserveRevisionWireAuth(t, installer)
+			hash, err := bcrypt.GenerateFromPassword([]byte("synthetic-owned-program-fixture"), bcrypt.MinCost)
+			if err != nil || installer.SetSetting(authPassKey, string(hash)) != nil {
+				t.Fatal("소유 fixture 사전 인증 자료 설치 실패")
+			}
+			// 이 하위 시험만 골라도 부모 fixture의 미시작 task가 HTTP 기동을 막지 않게 한다.
+			prior := task.lifecycleSnapshot()
+			if !prior.Paused {
+				if _, err := runtimePool.ExecContext(ctx, "UPDATE tasks SET paused=true WHERE id=$1", task.ID); err != nil {
+					t.Fatal("부모 fixture 일시정지 실패")
+				}
+				task.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
+				defer func() {
+					if _, err := runtimePool.ExecContext(ctx, "UPDATE tasks SET paused=$1 WHERE id=$2", prior.Paused, task.ID); err != nil {
+						t.Error("부모 fixture 상태 복구 실패")
+					}
+					task.updateLifecycle(func(state *taskLifecycleState) { state.Paused = prior.Paused })
+				}()
+			}
 			goalTask, err := manager.CreateTask("Owned program unknown fixture", "Keep program unknown separate from Worker results", nil, 60, 60)
 			if err != nil || goalTask == nil {
 				t.Fatal("독립 작업 뒤 목표 task 생성 실패")
