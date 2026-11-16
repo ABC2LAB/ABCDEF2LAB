@@ -173,6 +173,22 @@ class SignedFixture(unittest.TestCase):
         with self.assertRaisesRegex(EvidenceError, "meter_explore_ingress_unexpected"):
             load_record(directory, meter, RUNNER_KEY)
 
+    def test_initial_state_takes_exactly_one_well_formed_target_state(self):
+        from preservation_record import initial_state_digest
+        good = initial_state_digest(solved={"k": False})
+        self.assertNotEqual(good, initial_state_digest(solved={"k": True}))
+        self.assertNotEqual(initial_state_digest(observation_sha256="a" * 64, observation_bytes=3),
+                            initial_state_digest(observation_sha256="a" * 64, observation_bytes=4))
+        for kwargs in ({}, {"solved": {}}, {"solved": {"k": 1}}, {"solved": {"k": "false"}}, {"solved": [("k", False)]},
+                       {"solved": {"k": False}, "observation_sha256": "a" * 64, "observation_bytes": 3},
+                       {"observation_sha256": "a" * 63, "observation_bytes": 3},
+                       {"observation_sha256": "a" * 64, "observation_bytes": 0},
+                       {"observation_sha256": "a" * 64, "observation_bytes": True},
+                       {"observation_sha256": "a" * 64}):
+            with self.subTest(kwargs=sorted(kwargs)), self.assertRaisesRegex(PreservationRecordError,
+                                                                             "preservation_initial_state_invalid"):
+                initial_state_digest(**kwargs)
+
     def test_model_pins_modes_policy_mcp_and_layout_cannot_be_pooled(self):
         b, o = self.series()
         changes = {"model_pin_sha256": "a" * 64, "comm_mode": "external_allowed", "write_mode": "read_only",
