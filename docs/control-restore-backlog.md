@@ -69,7 +69,7 @@
 | C15 | 구현·단위시험 (#399) | `Accept-Encoding`을 거부 대신 `identity`로 바꿔 보냄 | 압축 응답은 표현 보류(C16 1단계부터 `withheld`) | — |
 | C19 | 구현·통합시험 (#491) | 정책 거부 뒤 고친 재시도 허용. 결과 불명·실행기 실패만 재전송 금지(`intent_outcome_uncertain`) | 결과 불명 쓰기 자동 재전송 없음 | — |
 | C24 | 구현·단위시험 (#415·#427·#461·#481) | Worker에 원본 그래프 조회 도구, E② 경유 WebFetch, 보관소 파일 도구(Read·Write·Edit·LS), 승인 대상 안의 `insert_assets` | 대상 요청은 E② 경유, 파일 도구는 intent 보관소 안만. 원본 `web_search`는 외부 API 설치가 설치 입력 `web_search`로 켰을 때만(검색어에 실행 보호 값이 있으면 안 보냄, 루프 복원 결정안 §2-1) | skills·MCP는 진단 Worker에 없음 |
-| C25 | 구현·단위시험 (#416·#425) | Worker 프롬프트를 원본 지침·문맥(제약·intent 번호·범위 안 자산·개요)으로, 목표 문장을 승인 메서드로 | 후보는 확정이 아님(규칙 5) | `report_finding`은 `submit_diagnostic_candidate`로 남음 |
+| C25 | 구현·단위시험 (#416·#425) | Worker 프롬프트를 원본 지침·문맥(제약·intent 번호·범위 안 자산·개요)으로, 목표 문장을 승인 메서드로, 목적은 취약점 찾기(인가 먼저, 탐색은 수단)로 | 후보는 확정이 아님(규칙 5) | `report_finding`은 `submit_diagnostic_candidate`로 남음 |
 | C26 | 구현·통합시험 (#466·#468·#469·#470) | Planner에 `prove_goal`·`goal_met`(목표 달성 마감), `add_task_scope`(E② 범위 불변), Plan당 상한 설정, 원본 마무리 턴·Todo | 범위 도구는 E② 승인 범위를 바꾸지 않음. `web_search`는 Worker와 같은 설치 조건 | `report_finding`(후보)·skills·MCP |
 | C27 | 구현·통합시험 (#494) | Planner가 Worker 실행 중에도 돌고 `kill_work`·`steer_work`로 진행 중 작업을 멈추거나 고침 | kill로 끊긴 E② 호출은 그 intent만 결과 불명 | — |
 | C28 | 구현·단위시험 (#420·#430·#431·#458·#464) | 입력 예약을 컨텍스트 전체 대신 요청 크기 상한(요청 JSON 바이트 + 4096)으로, 호출별 예약·정산, OpenRouter 호출 칸·비용 대조, 동시 모델 호출 수 설정(`model_concurrency`, 기본 1) | 모델 예산 총량·승인 동시성 상한 | 로컬 모델은 동시 1 |

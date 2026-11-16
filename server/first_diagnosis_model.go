@@ -193,9 +193,10 @@ func (p *firstDiagnosisModelProvider) Complete(ctx context.Context, req llm.Comp
 		return p.inner.Complete(ctx, req)
 	}
 	// rateLimited는 이 호출의 마지막 실패가 제공자 요청 한도(429, 청구 없음)였는지다. 그때는 더 길게 기다렸다 다시 보낸다.
-	rateLimited := false
+	// rejected는 마지막 실패가 요청 내용 거부(400 등)였는지다. 그때는 다시 보내지 않는다.
+	rateLimited, rejected := false, false
 	once := func() (llm.Message, string, llm.Usage, error, error) {
-		rateLimited = false
+		rateLimited, rejected = false, false
 		reserved, err := budget.reserve(ctx, p.config, &req)
 		if err != nil {
 			return llm.Message{}, "", llm.Usage{}, nil, err
@@ -205,9 +206,11 @@ func (p *firstDiagnosisModelProvider) Complete(ctx context.Context, req llm.Comp
 		message, reason, usage, callErr := p.inner.Complete(reserved.requestContext(call), req)
 		settleErr := budget.settle(reserved, usage, callErr)
 		rateLimited = callErr != nil && budget.callRateLimited(reserved)
+		rejected = callErr != nil && budget.callRejected(reserved)
 		return message, reason, usage, callErr, settleErr
 	}
-	return firstDiagnosisRetryModelCallWith(ctx, budget.retryDelays, budget.rateLimitDelays, func() bool { return rateLimited }, once, budget.retryable)
+	retryable := func() bool { return !rejected && budget.retryable() }
+	return firstDiagnosisRetryModelCallWith(ctx, budget.retryDelays, budget.rateLimitDelays, func() bool { return rateLimited }, once, retryable)
 }
 
 // firstDiagnosisModelRetryDelays는 실패한 모델 호출을 다시 보내기 전 기다리는 시간이다(429·5xx·연결 실패 등). 원본 SDK가

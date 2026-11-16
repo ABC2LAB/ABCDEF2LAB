@@ -9,28 +9,79 @@ import (
 	"testing"
 
 	"github.com/Autumn-27/artex/diagnosisflow"
+	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/server"
 	"time"
 )
 
 func ptr[T any](v T) *T { return &v }
 
-// runtime_limits가 없으면 지금 설치 기본값 그대로다(C32, 측정 전에는 기본값을 바꾸지 않는다). 본문 상한만 C16 결정안
-// 3대로 공식 평가 정책 템플릿과 같은 16MiB다(C32 결정안이 본문 상한은 C16에서 정한다고 둠).
-func TestProductPolicyBoundsDefaultsUnchanged(t *testing.T) {
+// runtime_limits가 없으면 설치 기본값이다(C32 결정안 §8: 원본 ARTEX·공식 평가 정책 값 근거, 측정 전 기본값 고정 원칙은 §7에서
+// 철회). 안전 통제가 아닌 상한(Bash 호출·턴·라운드·Worker 시간)이 요청 예산·실행 시간·동시성·모델 예산보다 먼저 걸리지
+// 않게 둔다. 본문 상한은 C16 결정안 3대로 공식 평가 정책 템플릿과 같은 16MiB다.
+func TestProductPolicyBoundsDefaults(t *testing.T) {
 	product, ok := productPolicyBounds(productInstallInput{})
-	want := server.E2HTTPFilePolicy{Limits: server.E2HTTPFileLimits{MaxAttempts: 8, MaxCalls: 8, MaxConcurrent: 1, MaxBodyBytes: 16 << 20, RequestTimeoutMS: 5000, CallTimeoutMS: 10000, MaxDenials: 2, MaxTransient: 1, MaxUnknown: 1},
-		Proxy:   server.E2HTTPFileProxy{HeaderTimeoutMS: 1000, RequestTimeoutMS: 5000, MaxHeaderBytes: 32768, MaxConnections: 4},
-		Runtime: server.E2HTTPFileRuntime{MaxWorkerTurns: 8, MaxToolCalls: 8, WorkerTimeoutMS: 30000, MaxPlannerRounds: 6, MaxIntentRuns: 1, DrainTimeoutMS: 10000, OutputLimit: 32768}}
-	if !ok || product.Limits != want.Limits || product.Proxy != want.Proxy || product.Runtime != want.Runtime {
-		t.Fatalf("product defaults changed: %+v %+v %+v", product.Limits, product.Proxy, product.Runtime)
+	want := server.E2HTTPFilePolicy{MaxRequests: 400, Limits: server.E2HTTPFileLimits{MaxAttempts: 400, MaxCalls: 1000, MaxConcurrent: 16, MaxBodyBytes: 16 << 20, RequestTimeoutMS: 60000, CallTimeoutMS: 120000, MaxDenials: 16, MaxTransient: 4, MaxUnknown: 1},
+		Proxy:   server.E2HTTPFileProxy{HeaderTimeoutMS: 1000, RequestTimeoutMS: 60000, MaxHeaderBytes: 32768, MaxConnections: 16},
+		Runtime: server.E2HTTPFileRuntime{MaxWorkerTurns: 1000, MaxToolCalls: 1000, WorkerTimeoutMS: 1200000, MaxPlannerRounds: 100, MaxIntentRuns: 1, DrainTimeoutMS: 10000, OutputLimit: 32768}}
+	if !ok || product.MaxRequests != want.MaxRequests || product.Limits != want.Limits || product.Proxy != want.Proxy || product.Runtime != want.Runtime {
+		t.Fatalf("product defaults: %d %+v %+v %+v", product.MaxRequests, product.Limits, product.Proxy, product.Runtime)
 	}
+	// 워크플로 모드는 응답 크기만 워크플로 칸을 따르고 나머지는 제품 모드와 같다.
 	flow := productInstallInput{TargetPolicy: productTargetPolicy{Workflow: &diagnosisflow.Limits{MaxResponseBytes: 65536}}}
 	workflow, ok := productPolicyBounds(flow)
-	if !ok || workflow.Limits.MaxAttempts != 200 || workflow.Limits.MaxCalls != 64 || workflow.Limits.CallTimeoutMS != 60000 || workflow.Proxy.RequestTimeoutMS != 60000 ||
-		workflow.Limits.MaxDenials != 16 || workflow.Runtime.MaxToolCalls != 64 || workflow.Runtime.MaxWorkerTurns != 16 || workflow.Runtime.WorkerTimeoutMS != 180000 ||
-		workflow.Runtime.MaxPlannerRounds != 12 || workflow.Runtime.OutputLimit != 65536+8192 {
-		t.Fatalf("workflow defaults changed: %+v %+v %+v", workflow.Limits, workflow.Proxy, workflow.Runtime)
+	wantFlow := want
+	wantFlow.Limits.MaxBodyBytes, wantFlow.Runtime.OutputLimit = 65536, 65536+8192
+	if !ok || workflow.Limits != wantFlow.Limits || workflow.Proxy != wantFlow.Proxy || workflow.Runtime != wantFlow.Runtime {
+		t.Fatalf("workflow defaults: %+v %+v %+v", workflow.Limits, workflow.Proxy, workflow.Runtime)
+	}
+	// 송신 시도 상한과 정책 요청 상한은 대상 정책의 회차 요청 상한을 따른다(시도 상한이 요청 예산보다 먼저 걸리지 않게).
+	for _, requests := range []int64{1, 400, 1000} {
+		p, ok := productPolicyBounds(productInstallInput{TargetPolicy: productTargetPolicy{MaxRequests: requests}})
+		if !ok || p.MaxRequests != uint64(requests) || p.Limits.MaxAttempts != uint64(requests) {
+			t.Fatalf("requests %d: policy %d attempts %d", requests, p.MaxRequests, p.Limits.MaxAttempts)
+		}
+	}
+}
+
+// 설치 회차 예산의 대상 요청은 모드와 상관없이 대상 정책 상한이다. 예전에는 일반 HTTP 모드가 4로 고정돼, 대상을 더 큰
+// 요청 수로 등록하면 회차 불러오기의 총량 검사(urlBudgetWithin)를 넘었다.
+func TestProductRunBudgetFollowsTargetPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		policy productTargetPolicy
+		want   int64
+	}{
+		{productTargetPolicy{}, 400},
+		{productTargetPolicy{MaxRequests: 700}, 700},
+		{productTargetPolicy{MaxRequests: 700, Workflow: &diagnosisflow.Limits{MaxResponseBytes: 65536}}, 700},
+	} {
+		b := productRunBudget(tc.policy, 128, 4096, 1800)
+		if b.Requests != tc.want || b.ModelRequests != 200 || b.InputTokens != 200*128*1024 || b.OutputTokens != 200*4096 || b.DurationSeconds != 1800 {
+			t.Fatalf("budget for %+v: %+v", tc.policy, b)
+		}
+		registered := diagnosisprep.Budget{Requests: tc.want, ModelRequests: 1, InputTokens: 1, OutputTokens: 1, DurationSeconds: 1}
+		if !urlBudgetWithin(registered, b) {
+			t.Fatalf("registration at the target policy limit exceeds the run budget: %+v", b)
+		}
+	}
+	if withTargetPolicyDefaults(productTargetPolicy{}).MaxRequests != 400 || withTargetPolicyDefaults(productTargetPolicy{Workflow: &diagnosisflow.Limits{}}).MaxRequests != 400 {
+		t.Fatal("target policy default request limit")
+	}
+}
+
+// 프록시 연결 수가 동시 송신 수보다 작으면 동시 송신 상한을 쓸 수 없어 설치를 거부한다. 같으면 받는다.
+func TestProductPolicyTemplateProxyConnectionsCoverConcurrency(t *testing.T) {
+	p, ok := productPolicyBounds(productInstallInput{})
+	if !ok || p.Proxy.MaxConnections < p.Limits.MaxConcurrent {
+		t.Fatalf("defaults: connections %d concurrent %d", p.Proxy.MaxConnections, p.Limits.MaxConcurrent)
+	}
+	p.Proxy.MaxConnections = p.Limits.MaxConcurrent - 1
+	if validProductPolicyTemplate(p) {
+		t.Fatal("proxy connections below concurrent sends accepted")
+	}
+	p.Proxy.MaxConnections = p.Limits.MaxConcurrent
+	if !validProductPolicyTemplate(p) {
+		t.Fatal("proxy connections equal to concurrent sends rejected")
 	}
 }
 
@@ -46,7 +97,7 @@ func TestProductPolicyBoundsAppliesSelectedMode(t *testing.T) {
 		t.Fatalf("product overrides: %+v %+v %+v", p.Limits, p.Proxy, p.Runtime)
 	}
 	w, ok := productPolicyBounds(productInstallInput{RuntimeLimits: limits, TargetPolicy: productTargetPolicy{Workflow: &diagnosisflow.Limits{MaxResponseBytes: 65536}}})
-	if !ok || w.Runtime.MaxWorkerTurns != 30 || w.Limits.RequestTimeoutMS != 5000 || w.Limits.MaxCalls != 64 {
+	if !ok || w.Runtime.MaxWorkerTurns != 30 || w.Limits.RequestTimeoutMS != 60000 || w.Limits.MaxCalls != 1000 {
 		t.Fatalf("workflow mode took product overrides: %+v %+v", w.Limits, w.Runtime)
 	}
 }
@@ -138,7 +189,7 @@ func TestProductRunSecondsFor(t *testing.T) {
 		want     int64
 		ok       bool
 	}{
-		{"product-default", nil, false, 180, true},
+		{"product-default", nil, false, 1800, true},
 		{"workflow-default", nil, true, 1800, true},
 		{"product-set", &productRuntimeLimits{Product: &productRuntimeLimitSet{RunSeconds: ptr(int64(300))}}, false, 300, true},
 		{"workflow-ignores-product", &productRuntimeLimits{Product: &productRuntimeLimitSet{RunSeconds: ptr(int64(300))}}, true, 1800, true},

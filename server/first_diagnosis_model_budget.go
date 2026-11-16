@@ -64,6 +64,8 @@ type FirstDiagnosisModelBudget struct {
 	rateLimitDelays []time.Duration
 	// rateLimitedCall은 호출이 요청 한도로 처리되지 않았는지 본다(시험이 바꿔 끼운다). nil이면 호출 칸의 표시다.
 	rateLimitedCall func(*firstDiagnosisModelCall) bool
+	// rejectedCall은 호출이 요청 내용 거부로 끝났는지 본다(시험이 바꿔 끼운다). nil이면 호출 칸의 표시다.
+	rejectedCall func(*firstDiagnosisModelCall) bool
 }
 
 // callRateLimited는 정산한 호출이 요청 한도(429)로 처리되지 않았는지 본다.
@@ -89,6 +91,20 @@ type firstDiagnosisModelCall struct {
 // rateLimited는 이 호출이 제공자 요청 한도(429)로 처리되지 않았다고 transport가 확인했는지 본다.
 func (c *firstDiagnosisModelCall) rateLimited() bool {
 	return c != nil && c.result != nil && c.result().NotBilled
+}
+
+// callRejected는 호출이 요청 내용 거부로 끝났는지다.
+func (b *FirstDiagnosisModelBudget) callRejected(call *firstDiagnosisModelCall) bool {
+	if b != nil && b.rejectedCall != nil {
+		return b.rejectedCall(call)
+	}
+	return call.requestRejected()
+}
+
+// requestRejected는 이 호출이 제공자의 요청 내용 거부(400·413·422)로 끝났는지다. 같은 요청을 다시 보내도 같은
+// 결과라 다시 보내지 않는다(P3 결정안 C06 보완).
+func (c *firstDiagnosisModelCall) requestRejected() bool {
+	return c != nil && c.result != nil && c.result().Rejected
 }
 
 // requestContext는 모델 요청 문맥에 이 호출의 칸을 붙인다.

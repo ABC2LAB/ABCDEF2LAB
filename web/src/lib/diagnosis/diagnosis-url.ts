@@ -31,6 +31,7 @@ export type URLDiagnosisModel = {
 };
 export type URLDiagnosisProfile = {
   workflow?: WorkflowLimits;
+  // 설치의 회차당 요청 상한이다. 이름과 달리 워크플로 여부와 상관없이 제품 설치 프로필이면 서버가 싣는다.
   workflow_request_limit?: number;
   id: string;
   label: string;
@@ -398,7 +399,8 @@ export function parseURLCatalog(raw: unknown): URLDiagnosisCatalog {
       !ref(p.model_profile_ref) ||
       !text(p.model_label) ||
       !p.model_label ||
-      (p.workflow !== undefined &&
+      (p.workflow !== undefined && p.workflow_request_limit === undefined) ||
+      (p.workflow_request_limit !== undefined &&
         (!natural(p.workflow_request_limit) || p.workflow_request_limit < 1 || p.workflow_request_limit > MAX_TARGET_REQUESTS))
     )
       return invalid();
@@ -410,9 +412,8 @@ export function parseURLCatalog(raw: unknown): URLDiagnosisCatalog {
       model_profile_ref: p.model_profile_ref,
       model_label: p.model_label,
       ...(p.model === undefined ? {} : { model: model(p.model) }),
-      ...(p.workflow === undefined
-        ? {}
-        : { workflow: parseWorkflowLimits(p.workflow), workflow_request_limit: Number(p.workflow_request_limit) }),
+      ...(p.workflow === undefined ? {} : { workflow: parseWorkflowLimits(p.workflow) }),
+      ...(p.workflow_request_limit === undefined ? {} : { workflow_request_limit: Number(p.workflow_request_limit) }),
     };
   });
   return { ownerContext: String(e.owner_context), profiles };
