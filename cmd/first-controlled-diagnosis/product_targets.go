@@ -298,7 +298,15 @@ func (r *productTargetRegistry) register(principal string, s diagnosisprep.Targe
 	if r.check() != nil {
 		return diagnosisprep.ProductTarget{}, errPreparation
 	}
-	if len(r.records) >= r.policy.MaxTargets {
+	// 철회·만료 이력은 남긴다. 승인과 소유 확인이 아직 살아 있는 대상만 자리를 차지한다.
+	now, active := r.now(), 0
+	for _, existing := range r.records {
+		if existing.Target.State == "pending" && now.Before(existing.ProofExpiresAt) ||
+			existing.Target.State == "approved" && now.Before(existing.Target.ExpiresAt) {
+			active++
+		}
+	}
+	if active >= r.policy.MaxTargets {
 		return diagnosisprep.ProductTarget{}, errors.New("target_capacity")
 	}
 	id := "target-" + productRandom(16)
@@ -602,7 +610,7 @@ func validProductTargetPolicy(p productTargetPolicy) bool {
 	if p.Workflow != nil && !p.Workflow.Valid() {
 		return false
 	}
-	if p.Format != "abc2lab.product-target-policy/v1" || p.MaxRequests < 1 || p.MaxRequests > diagnosisprep.MaxTargetRequests || p.MaxTargets < 2 || p.MaxTargets > 64 || len(p.AllowedPorts) < 1 || len(p.AllowedPorts) > 8 {
+	if p.Format != "abc2lab.product-target-policy/v1" || p.MaxRequests < 1 || p.MaxRequests > diagnosisprep.MaxTargetRequests || p.MaxTargets < 2 || p.MaxTargets > productMaxActiveTargets || len(p.AllowedPorts) < 1 || len(p.AllowedPorts) > 8 {
 		return false
 	}
 	for _, port := range p.AllowedPorts {

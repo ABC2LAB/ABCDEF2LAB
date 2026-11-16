@@ -56,6 +56,10 @@ Workbench는 `http://127.0.0.1:8787/`, 사용자명은 `ABC2LAB`, 비밀번호�
 
 설치자는 빈 전용 DB, 최소 권한 역할, 로그인 해시·JWT 키, E② CA·감사 키·helper pin, 대상 보안 상한·모델 정책, 위임·private IPC를 생성한다. 설치와 헬스체크는 모델 completion·대상 HTTP를 호출하지 않는다. 재기동은 기존 installation을 검증하고 재사용한다. API는 `product-state`의 `api` 하위 경로와 private IPC만 읽기 전용으로 마운트한다. 투영에는 API launch·설치 메타데이터·모델 launch·JWT·API 및 model-writer DSN만 있으며 CA 개인키·HMAC 감사 키·runtime DSN·실행 저널은 없다. 기존 설치도 installer 재실행 시 원본을 검증해 투영을 생성하며, 불일치한 기존 투영은 덮어쓰지 않는다. [Compose의 volume.subpath](https://docs.docker.com/reference/compose-file/services/#volumes)를 사용한다. 부분 실패의 `.installing`은 자동 삭제하지 않는다. 사용하지 않은 전용 설치인지 운영자가 확인한 뒤 새 볼륨으로 다시 설치한다.
 
+설치 수명 `valid_for_hours`는 1…8760시간, 위임 실행 `max_runs`는 1…100000회까지 설정할 수 있다.
+`target_policy.max_targets`는 2…1024이며 기본값 32를 유지한다. 승인·소유 확인 기한이 남은 대상만
+자리를 차지하고 철회·만료 이력은 보존한다. 코드 상한 확대가 기존 설정값·실행 예산을 자동 확대하지 않는다.
+
 ## 사용 흐름과 외부 LLM
 
 **새 점검 → URL 입력 → 외부 LLM 사용하기 → 승인 모델 선택·API 키 등록/재사용 → 대상 권한·범위 등록 및 소유 확인 → 서버 승인 범위·비용 확인 → 명시적 동의 → 진단 시작.** 로컬 승인 프로필이 하나면 기본 선택한다. 키 저장과 범위 확인만으로 진단을 실행하지 않는다.
