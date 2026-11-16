@@ -928,6 +928,45 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
   });
 
+  it("주기 조회 중에도 종료 버튼은 사라지지 않고(깜빡임 없음), 그 사이 누른 중지는 조회가 끝난 뒤 한 번만 보낸다", async () => {
+    vi.useFakeTimers();
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    mount("live");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    const stop = screen.getByRole("button", { name: /종료/ });
+    // 다음 주기 조회를 붙잡아 둔다
+    let release: (job: typeof running) => void = () => undefined;
+    u.readURLStatus.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(URL_POLL_MS);
+    });
+    expect(u.readURLStatus).toHaveBeenCalledTimes(2);
+    expect(useUrl.getState().busy).toBe(false);
+    expect(stop).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /종료/ })).toBeEnabled();
+    // 조회 중에 누른 중지는 버리지 않고 기다린다
+    u.commandURLDiagnosis.mockResolvedValue({ ...running, revision: running.revision + 1 });
+    let sent: Promise<boolean> = Promise.resolve(false);
+    act(() => {
+      sent = runUrlAction("stop");
+    });
+    expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
+    await act(async () => {
+      release(running);
+      await sent;
+    });
+    expect(u.commandURLDiagnosis).toHaveBeenCalledTimes(1);
+    expect(u.commandURLDiagnosis.mock.calls[0][1]).toBe("stop");
+  });
+
   it("이미 진행 중인 요청별 확인 회차는 실제 요청 승인 목록과 중지를 제공한다", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue({
