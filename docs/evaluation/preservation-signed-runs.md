@@ -9,13 +9,13 @@
 - 실제 탐색 분리 배치에서 E② 시도별 대조는 `main`만 받는다. 현행 공식·원본 직접·`e2-legacy/v1` 배치에 `forwarded_by_ingress.explore > 0`이 있으면 배치 위반으로 회차를 무효화하고 대조에서 조용히 빼지 않는다. `explore`의 AttemptID 부재는 정상이다. 탐색 입구에서 E② ID가 보이거나 입구가 미등록·혼합되면 추정으로 고치지 않고 거부한다. 입구 칸이 없던 과거 기록은 기존 main 의미로 읽되 새 서명 계약에는 쓰지 않는다.
 - 원자료 서명·변조·조건 혼입·기존 판정 경계 시험은 합성 fixture로 실행한다. 합성 자료의 `execution_source=synthetic_fixture`는 실측으로 승격하지 않는다.
 - 현행 Docker 평가 러너는 개선 후 배치를 `e2-legacy/v1`로 발행한다. 설정에 새 배치 이름을 적어 우회할 수 없다. 새 실행기는 실제 배치·망·허용 도구·마감 검증 뒤 공통 발행 함수를 사용할 수 있다.
-- 검증된 제품 탐색 경계 exporter는 아직 없다. `signed_evidence.exploration_boundary`는 `NOT_RUN / verified_boundary_export_unavailable`이다. 탐색 차단 건수를 0으로 채우거나 E② 진단 차단·`repeat_denials`와 합치지 않는다. 실제 MCP fixture 연결도 제품 경계 검증이나 원본 모델 실측을 대신하지 않는다.
+- 탐색 경계 원자료(계약 [§4.1](../contracts/exploration-boundary.md#41-평가수용시험-회차의-경계-원자료-abc2labexplore-boundary-exportv1))를 러너가 경계 종료 뒤 검증해 sidecar에 hash·카운터로 결속한다(아래 "경계 원자료"). 지금 러너는 개선 후를 `e2-legacy/v1`로만 띄워서 실제 회차의 `signed_evidence.exploration_boundary`는 아직 `NOT_RUN / verified_boundary_export_unavailable`이다(러너의 탐색 분리 배치는 [개발 계획](../development-plan.md)의 공식 측정 전 필수). 탐색 차단 건수를 0으로 채우거나 E② 진단 차단·`repeat_denials`와 합치지 않는다. 실제 MCP fixture 연결도 제품 경계 검증이나 원본 모델 실측을 대신하지 않는다.
 
 실제 모델·원본 엔진·승인 대상·제품 탐색 경계 근거를 갖춘 비교는 **NOT_RUN**이다. 서명은 발행자의 출처와 바이트 무결성 근거이며, 실제 모델 실행이나 네트워크 격리를 증명하는 대체물이 아니다.
 
 ## 별도 sidecar
 
-`purpose=browser_acceptance` 설정에 선택 필드 `preservation`을 넣으면 `preservation-round.json`을 발행한다. 공식 설정에서는 거부하고, 필드를 생략하면 기존 동작이다. 형식은 `abc2lab.preservation-round/v1`이다. `run-record.json`의 v1.1·기존 HMAC 방식과 공식 채점기는 그대로다.
+`purpose=browser_acceptance` 설정에 선택 필드 `preservation`을 넣으면 `preservation-round.json`을 발행한다. 공식 설정에서는 거부하고, 필드를 생략하면 기존 동작이다. 형식은 `abc2lab.preservation-round/v2`이다(v1에 `exploration_boundary`를 더함. v1 기록은 읽되 경계 근거가 없는 것으로 본다. 한 묶음 안에서 v1과 v2를 섞지 않는다). `run-record.json`의 v1.1·기존 HMAC 방식과 공식 채점기는 그대로다.
 
 ```json
 "preservation": {
@@ -38,7 +38,33 @@
 
 원자료는 고정 파일 네 개(`engine-requests.jsonl`, `engine-paths.jsonl`, `engine-sealed.json`, `engine-drained.json`)의 정확한 바이트 SHA-256과 크기로 결속한다. 발행·읽기 모두 봉인/drain·순번·전달 수·경로/입구 대조를 확인한다. 러너는 post 단계에 공개 발행 조건만 보관하고, 기존 격리·모델·마감 검증과 `down` 성공 뒤에 원자료를 다시 읽어 최종 바이트의 hash를 계산한 다음 sidecar를 서명하며, 결과의 서명된 근거 목록에도 넣는다. 봉인·drain 뒤부터 `down`까지 생긴 `rejected_after_seal` 행도 최종 hash에 포함된다. 이 거부는 전달 수·도달 패턴을 늘리지 않으며, 기존 meter 요약은 측정 마감 시점의 관측값이다. 개인 근거 디렉터리(러너 소유·0700), 경로 가림 키와 별도 러너 키(근거 밖 보호 파일)를 유지한다.
 
-새 배치 실행기 연동점은 `preservation_record.build_payload(...)`이다. `conditions.layout=exploration-split/v1`은 실제 검증한 호출자만 전달한다. 이 함수는 writer가 종료된 뒤 호출해야 하며 배치를 만들거나 브라우저를 켜지 않는다. `layout` 이름과 입구 대조만으로 실제 네트워크 격리를 증명하지 않는다. 제품 경계 exporter 계약이 확정되면 호스트가 검증한 경계 원자료의 hash·카운터를 별도 공급하는 확장이 필요하다. 현재 API에는 임의 경계 정본 형식을 넣지 않는다.
+새 배치 실행기 연동점은 `preservation_record.build_payload(...)`이다. `conditions.layout=exploration-split/v1`은 실제 검증한 호출자만 전달한다. 이 함수는 writer(계측기·경계)가 종료된 뒤 호출해야 하며 배치를 만들거나 브라우저를 켜지 않는다. `layout` 이름과 입구 대조만으로 실제 네트워크 격리를 증명하지 않는다. `exploration-split/v1`이면 경계 원자료 인자 `boundary={"directory", "task_id", "path_key_ref"}`가 필수이고(없으면 `preservation_boundary_missing`), 다른 배치에 주면 `preservation_boundary_unexpected`다.
+
+## 경계 원자료
+
+경계는 러너가 만든 근거 디렉터리(러너 uid·0700, 경계 컨테이너에만 붙임)에 `boundary-records.jsonl`과 봉인 표식 `boundary-sealed.json`을 쓴다(형식·쓰는 규칙은 계약 §4.1). 경계는 키를 갖지 않는다. 러너는 `down` 뒤 `scripts/eval/boundary_export.py`로 최종 바이트를 읽어 다음을 확인하고, 요약을 sidecar의 `exploration_boundary`에 넣어 기존 러너 키로 서명한다.
+
+- 표식의 형식·가림 판, 행 파일 hash·바이트·행 수가 표식과 같다. 행은 닫힌 칸·어휘(차단 사유 18개, 입구, 목적지)만 받고 중복 키·NaN·중복 seq·다른 세션 행을 거부한다.
+- 표식의 카운터는 믿지 않고 행에서 다시 센다: 승인 대상·외부 자원 전달(입구별), 응답 없는 승인 대상 전달, 차단(합계·사유별·입구별), 외부 호스트 종류 수, 인증 헤더 붙은 전달 수, 세션 마감 뒤 행 수. 차단 수는 E② 진단 차단·`repeat_denials`와 다른 칸이고 합치지 않는다.
+- 결속: 표식 세션의 `task_id`가 러너가 만든 작업과 같고, 결속 7개의 hash(`binding_sha256`)를 서명한다. `path_key_ref`가 러너 경로 키와 계측기 경로 행의 키와 같다.
+- 계측기 대조(수용시험 P03): (메서드, 가린 경로)별 건수로 맞춘다. 계측기에만 있는 탐색 입구 행이 하나라도 있으면 경계 미경유로 실패다. 경계에만 있는 승인 대상 전달 행 수는 경계가 응답을 못 받은 전달 수와 계측기 봉인 뒤 거부 수(경로 행이 없어 건수로만)의 합 이하여야 하고, 응답을 받은 행은 봉인 뒤 거부 수 이하여야 한다(같은 묶음의 응답 없는 행을 먼저 뺀다). 넘으면 실패다. 경계 기록 경로는 1024바이트에서 잘리므로 그보다 긴 경로는 대조에 실패한다(조용히 통과하지 않는다).
+
+| 회차 상태 | 뜻 | 카운터 |
+|---|---|---|
+| `verified` | 원자료가 완결이고 계측기와 맞음 | 행에서 센 값 |
+| `not_opened` | 경계 세션이 열리지 않음(탐색 입구 트래픽도 0이어야 함) | `null` |
+| `truncated` | `evidence_max_bytes`에 닿아 뒤 행을 못 씀 | `null` |
+
+원자료가 없거나(`boundary_export_missing`), 표식 없이 행만 있거나 경계가 스스로 멈췄거나 봉인 때 진행 중 요청이 남았거나(`boundary_export_incomplete`), 쓰기가 실패했거나(`boundary_sink_failed`), 구조가 틀렸거나(`boundary_export_invalid`), 작업·키가 다르거나(`boundary_binding_mismatch`·`boundary_path_key_mismatch`), 계측기와 안 맞으면(`boundary_meter_mismatch`) 회차를 무효로 한다(러너 사유 코드). 묶음의 `signed_evidence.exploration_boundary`는 회차별 상태·카운터·대조를 따로 싣고, 다음 하나다.
+
+| 상태 / 사유 | 언제 |
+|---|---|
+| `NOT_RUN / verified_boundary_export_unavailable` | 개선 후가 탐색 분리 배치가 아니거나 v1 기록 |
+| `NOT_RUN / boundary_session_not_opened` | 한 회차라도 세션이 열리지 않음 |
+| `UNDECIDABLE / boundary_export_truncated` | 한 회차라도 잘림 |
+| `PASS / boundary_export_verified` | 모든 회차 `verified` |
+
+`PASS`는 탐색 입구 트래픽이 경계를 지났다는 장부 대조다. 네트워크 격리 증명이 아니다(격리는 배치 검사·B16 프로브). 판정(`assessment`)은 경계가 `PASS`가 아니면 그 사유로 `NOT_RUN`이다.
 
 ## 재계산
 
@@ -51,20 +77,23 @@ python3 -I -B scripts/eval/preservation.py \
   --budget 100 --profile R-P \
   --exclusions /private/eval/exclusions.json \
   --path-key-file /private/eval-keys/path.key \
+  --improved-boundary-dir /private/eval/o1/boundary \
   --runner-key-file /private/eval-keys/runner.key
 ```
 
-반복 회차는 각 `--baseline`/`--improved`와 `--*-record-dir`를 같은 짝 순서로 반복한다. 공개 대상·유료 모델 호출 없이 검증하려면 다음 합성 시험을 실행한다. 원자료나 runtime 로그를 터미널에 출력할 필요가 없다.
+반복 회차는 각 `--baseline`/`--improved`와 `--*-record-dir`(경계 원자료가 있으면 `--improved-boundary-dir`도)를 같은 짝 순서로 반복한다. 경계 원자료 요약이 있는 기록은 그 디렉터리의 최종 파일로 요약을 다시 계산해 서명된 값과 같아야 한다(없으면 `preservation_boundary_files_missing`, 다르면 `preservation_boundary_mismatch`). 공개 대상·유료 모델 호출 없이 검증하려면 다음 합성 시험을 실행한다. 원자료나 runtime 로그를 터미널에 출력할 필요가 없다.
 
 ```bash
 python3 -I -B -m unittest discover -s scripts/eval/tests -p test_preservation_record.py
+python3 -I -B -m unittest discover -s scripts/eval/tests -p test_boundary_export.py
+go test -race ./exploreboundary ./cmd/explore-boundary
 python3 -I -B -m unittest discover -s scripts/eval/tests -p test_runner_evidence.py
 go test -race ./cmd/eval-meter ./pathmask
 ```
 
 새 인자 중 하나를 쓰면 모두 필수다. 검증기는 서명, 정확한 JSON 구조, 원자료 바이트, 마감 상태, 경로 키, 짝 순서/회차 중복, 세션, 각 조건의 엔진 핀, 모델·머신·초기 상태·예산·통신 모드·MCP 조건, 조건 안의 배치·정책 고정을 확인한다. 다른 조건이 섞이면 종료 코드 2이며 요약은 출력하지 않는다. 서명은 소문자 64 hex만 받고 비 ASCII·다른 타입도 traceback 없이 고정 validation 오류로 거부한다. 원본/개선 후 사이에서 달라야 하는 배치·정책과 R-R의 쓰기 모드는 각 조건 안에서 따로 고정한다.
 
-서명 검증을 켠 출력만 `abc2lab.preservation-summary/v7`이고 기존 지표에 `signed_evidence`, `assessment`가 추가된다. 기존 원자료 전용 CLI는 `v6` 그대로다. v6는 새 서명/조건 검증 완료로 읽지 않는다. 검증된 경계 export가 없는 현재 v7의 완료 판정도 `NOT_RUN`이다.
+서명 검증을 켠 출력만 `abc2lab.preservation-summary/v8`이고 기존 지표에 `signed_evidence`, `assessment`가 추가된다(v8은 `signed_evidence.exploration_boundary`에 검증된 경계 원자료의 회차별 카운터·대조를 담을 수 있다. v7은 늘 `NOT_RUN`이었다). 기존 원자료 전용 CLI는 `v6` 그대로다. v6는 새 서명/조건 검증 완료로 읽지 않는다. 실제 회차는 러너의 탐색 분리 배치 전까지 경계가 `NOT_RUN`이라 완료 판정도 `NOT_RUN`이다.
 
 ## 기존 기준과 남은 검증
 
