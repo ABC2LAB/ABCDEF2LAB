@@ -680,7 +680,7 @@ interface ScopePick {
   /** 고를 수 있는 경로인가 (범위 안 · 읽기이거나 사전 쓰기 승인이 있는 데이터 변경) */
   eligible: (e: WorkflowEndpoint) => boolean;
   locked: boolean;
-  /** 여러 개 고르기 모드(버튼 "삭제"): 알약을 누르면 상세 대신 고르기를 토글한다 */
+  /** 여러 개 고르기 모드(버튼 "제외 경로"): 알약을 누르면 상세 대신 고르기를 토글한다 */
   multi: boolean;
   picked: ReadonlySet<string>;
   /** 오른쪽 상세에 보이는 경로 */
@@ -698,9 +698,9 @@ interface ScopePick {
 /**
  * 찾은 경로 묶음 카드 (범위 확인 가운데, 시안 renderTree). 묶음 머리의 수는 거르기와 상관없이 그 묶음 전체,
  * 알약은 거른 경로만 메서드 · 경로 순으로. 탐색 중 · 전체 보기에서는 아직 경로가 안 나온 묶음을 아래에 적는다.
- * 점검에 넣은 경로의 알약은 체크로, 오른쪽 상세에 보이는 경로의 알약은 aria-current 로, 여러 개 고르기 모드(버튼 "삭제")에서 고른
+ * 점검에 넣은 경로의 알약은 체크로, 오른쪽 상세에 보이는 경로의 알약은 aria-current 로, 여러 개 고르기 모드(버튼 "제외 경로")에서 고른
  * 알약은 aria-pressed 로 표시한다. 묶음 머리의 체크는 평소에는 그 묶음 전체(거르기와 상관없이)를 넣고 빼고, 여러 개
- * 고르기(삭제)를 켜면 그 묶음에 보이는 알약의 네모칸을 전부 고르거나 푼다(넣기 · 빼기는 거르기 옆 버튼으로).
+ * 고르기(제외 경로)를 켜면 그 묶음에 보이는 알약의 네모칸을 전부 고르거나 푼다(넣기 · 빼기는 거르기 옆 버튼으로).
  */
 function EndpointCards({
   all,
@@ -720,15 +720,14 @@ function EndpointCards({
         const rows = all.filter((e) => group(e) === name);
         const pills = shown.filter((e) => group(e) === name).sort(byMethodPath);
         const order = pills.map((e) => e.id);
-        const n = (k: Kind) => rows.filter((e) => kindOf(e) === k).length;
         const can = rows.filter(pick.eligible);
         const onN = can.filter(pick.isOn).length;
         const full = can.length > 0 && onN === can.length;
-        // 여러 개 고르기(삭제)에서는 묶음 체크가 이 묶음에 보이는 알약 고르기를 따른다
+        // 여러 개 고르기(제외 경로)에서는 묶음 체크가 이 묶음에 보이는 알약 고르기를 따른다
         const pickedN = order.filter((id) => pick.picked.has(id)).length;
         const allPicked = order.length > 0 && pickedN === order.length;
+        // 묶음 체크는 ✓ 아니면 빈칸만 쓴다(반쯤 체크 '−' 없음): 전부 들어 있거나 전부 골랐을 때만 ✓
         const checked = pick.multi ? allPicked : full;
-        const partial = pick.multi ? pickedN > 0 && !allPicked : onN > 0 && !full;
         return (
           <section className={s.gc} key={name} aria-label={`${name} ${rows.length}개`}>
             <div className={s["gc-h"]}>
@@ -737,18 +736,13 @@ function EndpointCards({
                 className={s["gc-ck"]}
                 aria-label={pick.multi ? `${name} 묶음 경로 전부 고르기` : `${name} 묶음 전체 점검에 포함`}
                 checked={checked}
-                ref={(el) => {
-                  // 일부만이면 반쯤 체크 (속성이 아니라 DOM 값이라 직접 쓴다)
-                  if (el) el.indeterminate = partial;
-                }}
                 disabled={pick.locked || (pick.multi ? !order.length : !can.length)}
                 onChange={() => (pick.multi ? pick.pickGroup(order, !allPicked) : pick.setGroup(rows, !full))}
               />
               <b>{name}</b>
-              <span className={s.n}>{rows.length}</span>
-              <span className={s["gc-s"]}>
-                {n("ap") ? <span className={s.w}>{`승인 ${n("ap")}`}</span> : null}
-                {n("ex") ? <span>{`제외 ${n("ex")}`}</span> : null}
+              {/* 제외 경로(여러 개 고르기)를 켜면 이 묶음에서 고른 수/묶음 경로 수, 아니면 묶음 경로 수 */}
+              <span className={s.n}>
+                {pick.multi ? `${rows.filter((e) => pick.picked.has(e.id)).length}/${rows.length}` : rows.length}
               </span>
             </div>
             <div className={s.pills}>
@@ -772,10 +766,10 @@ function EndpointCards({
                     data-ep={e.id}
                     aria-current={!pick.multi && pick.current === e.id ? "true" : undefined}
                     aria-pressed={pick.multi ? got : undefined}
-                    aria-label={`${e.method} ${e.path}${PILL_FLAG[k]}${on ? ", 점검에 포함" : ""}${out ? ", 점검에서 뺌" : ""}${pick.multi ? "" : ", 요청·응답 보기"}`}
+                    aria-label={`${e.method} ${e.path}${PILL_FLAG[k]}${on ? ", 점검에 포함" : ""}${out ? ", 점검에서 제외함" : ""}${pick.multi ? "" : ", 요청·응답 보기"}`}
                     onClick={(ev) => pick.press(e, ev.shiftKey, order)}
                   >
-                    {/* 여러 개 고르기(삭제)에서는 알약 전체를 칠하지 않고 메서드 옆 네모칸에만 체크한다. 그동안 점검 포함 ✓ 는
+                    {/* 여러 개 고르기(제외 경로)에서는 알약 전체를 칠하지 않고 메서드 옆 네모칸에만 체크한다. 그동안 점검 포함 ✓ 는
                         네모칸과 겹쳐 보이지 않게 숨기고, 포함 여부는 알약 테두리(inc)와 읽기 글로 남긴다 */}
                     {pick.multi ? (
                       <span className={cx(s.pck, got && s.on)} data-pick={got ? "on" : "off"} aria-hidden="true">
@@ -853,7 +847,7 @@ function FoundPaths({
               </label>
             ))}
           </div>
-          {/* 삭제(여러 개 고르기)는 거르기(전체 · 승인 필요 · 제외) 바로 옆, 검색은 오른쪽 끝 */}
+          {/* 제외 경로(여러 개 고르기)는 거르기(전체 · 승인 필요 · 제외) 바로 옆, 검색은 오른쪽 끝 */}
           {tools}
           <input
             className={cx(s.inp, s.search, s["fctl-q"])}
@@ -1261,7 +1255,7 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
   const [peek, setPeek] = useState(false);
   // 찾은 경로 카드의 거르기
   const [treeFilter, setTreeFilter] = useState("all");
-  // 여러 개 고르기 모드(버튼 "삭제"): 알약을 눌러 여럿 고른 뒤 한 번에 넣거나 뺀다. anchor 는 Shift 범위의 시작 알약
+  // 여러 개 고르기 모드(버튼 "제외 경로"): 알약을 눌러 여럿 고른 뒤 한 번에 넣거나 뺀다. anchor 는 Shift 범위의 시작 알약
   const [multi, setMulti] = useState(false);
   const [picked, setPicked] = useState<ReadonlySet<string>>(() => new Set());
   const [anchor, setAnchor] = useState<string | null>(null);
@@ -1360,7 +1354,7 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
     setMany(pickedList, on);
     unpick();
   };
-  // 아래 줄의 '점검에 넣기' · '점검에서 빼기': 여러 개 고르기(삭제)를 켰으면 고른 알약들, 아니면 오른쪽 상세에 떠 있는
+  // 아래 줄의 '포함하기' · '제외하기': 여러 개 고르기(제외 경로)를 켰으면 고른 알약들, 아니면 오른쪽 상세에 떠 있는
   // 경로 하나에 한다. 고를 수 없는 경로(범위 밖 · 사전 쓰기 승인 없는 데이터 변경)는 넣지도 빼지도 않는다
   const canAddOne = !!current && !isOn(current) && eligible(current);
   const canDropOne = !!current && isOn(current) && eligible(current);
@@ -1372,14 +1366,6 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
     if (!current || !(on ? canAddOne : canDropOne)) return;
     include([current.id], on);
   };
-  // 아래 줄 머리글: 삭제를 끄면 오른쪽 상세에 떠 있는 경로(고른 수는 보이지 않는다)
-  let barLegend: ReactNode = "경로를 고르세요";
-  if (current)
-    barLegend = (
-      <>
-        <b>{current.method}</b> {current.path}
-      </>
-    );
   /** 경로 딱지 (시안 scopeTag): 빠진 경로는 제외, 넣은 경로는 자동 포함 · 포함 · 보낼 때 승인. */
   const tag = (e: WorkflowEndpoint) => {
     if (!eligible(e) || !isOn(e)) return <span className={cx(s.tag, s.ex)}>제외</span>;
@@ -1416,15 +1402,15 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
                     setAnchor(null);
                   }}
                 >
-                  삭제
+                  제외 경로
                 </button>
               </div>
             }
             bar={
               <>
-                {/* 넣기 · 빼기 줄은 늘 보인다. 삭제를 켜면 고른 알약들, 끄면 오른쪽 상세에 떠 있는 경로 하나에 한다 */}
-                <fieldset className={s.pickbar} aria-label={multi ? "고른 경로 넣기 · 빼기" : undefined}>
-                  {multi ? null : <legend>{barLegend}</legend>}
+                {/* 넣기 · 빼기 줄은 늘 보인다. 제외 경로를 켜면 고른 경로들, 끄면 오른쪽 상세에 떠 있는 경로 하나에 한다 */}
+                {/* 머리글(상세 경로 · 고른 수)은 보이지 않는다. 읽기 이름만 둔다 */}
+                <fieldset className={s.pickbar} aria-label={multi ? "고른 경로 포함 · 제외" : "상세 경로 포함 · 제외"}>
                   <button
                     className={cx(s.btn, s.sm, s.pri)}
                     type="button"
@@ -1432,7 +1418,7 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
                     disabled={locked || (multi ? !picked.size : !canAddOne)}
                     onClick={() => setOne(true)}
                   >
-                    점검에 넣기
+                    포함하기
                   </button>
                   <button
                     className={cx(s.btn, s.sm)}
@@ -1441,7 +1427,7 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
                     disabled={locked || (multi ? !picked.size : !canDropOne)}
                     onClick={() => setOne(false)}
                   >
-                    점검에서 빼기
+                    제외하기
                   </button>
                 </fieldset>
               </>
