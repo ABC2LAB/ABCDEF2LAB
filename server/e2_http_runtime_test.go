@@ -228,6 +228,48 @@ func TestE2HTTPFinalIntentErrorDoesNotInventUnknown(t *testing.T) {
 	}
 }
 
+// 취소된 Worker 세션은 도구 결과 관찰보다 먼저 끝날 수 있다(SDK가 중단 결과를 먼저 만든다). intent 마감은 이 intent의
+// 최종 호출 결과가 관찰될 때까지 기다려야 멈춘 명령의 시도 단위 결과 불명을 놓치지 않는다.
+func TestE2HTTPAwaitIntentResultsWaitsForLateObservation(t *testing.T) {
+	const wait, poll, short = 10 * time.Second, time.Millisecond, 50 * time.Millisecond
+	task := &e2HTTPRuntimeTask{}
+	ctx, cancel := context.WithTimeout(t.Context(), wait)
+	defer cancel()
+	waiting := make(chan []e2runner.TrustedResult, 1)
+	go func() { waiting <- task.awaitIntentResults(ctx, 7, []string{"call_late"}) }()
+	// 기다리는 쪽이 깨움 채널을 만든 뒤(아직 관찰 전) 결과를 넣고 깨운다.
+	for armed := false; !armed; {
+		task.mu.Lock()
+		armed = task.observedWake != nil
+		task.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			t.Fatal("결과 관찰을 기다리지 않음")
+		case <-time.After(poll):
+		}
+	}
+	task.mu.Lock()
+	task.results = append(task.results, e2runner.TrustedResult{Call: e2proxy.CallResult{CallRef: "call_other", IntentID: 8}}, e2runner.TrustedResult{Call: e2proxy.CallResult{CallRef: "call_late", IntentID: 7}})
+	task.mu.Unlock()
+	task.wakeObservers()
+	if got := <-waiting; len(got) != 1 || got[0].Call.CallRef != "call_late" {
+		t.Fatalf("늦게 관찰된 이 intent의 결과를 받지 못함: %+v", got)
+	}
+	// 끝내 관찰되지 않는 호출은 기한까지만 기다리고 저장된 것만 돌려준다.
+	bounded, stop := context.WithTimeout(t.Context(), short)
+	defer stop()
+	if got := task.awaitIntentResults(bounded, 7, []string{"call_late", "call_never"}); len(got) != 1 || bounded.Err() == nil {
+		t.Fatalf("관찰되지 않은 호출을 기다리지 않거나 저장된 결과를 잃음: %d", len(got))
+	}
+	// 대조 실패로 표시된 호출도 관찰된 것이다.
+	task.mu.Lock()
+	task.untrustedCalls = map[string]bool{"call_never": true}
+	task.mu.Unlock()
+	if got := task.awaitIntentResults(ctx, 7, []string{"call_late", "call_never"}); len(got) != 1 || ctx.Err() != nil {
+		t.Fatal("대조 실패로 표시된 호출을 계속 기다림")
+	}
+}
+
 type plannerRedactionLease struct {
 	E2HTTPLeaseRunner
 	seen string
