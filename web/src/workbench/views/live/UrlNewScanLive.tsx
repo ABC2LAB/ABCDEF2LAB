@@ -223,15 +223,26 @@ export function UrlNewScanLive() {
   const consentKey = `${tv}\u0000${pv}\u0000${resetSeq}\u0000${accountRevision}`;
   // 입력이 바뀐 렌더부터 이전 동의를 배제한다(늦은 effect/응답을 기다리지 않는다).
   if (accountConsent.key !== consentKey) setAccountConsent({ key: consentKey, checked: false });
-  const hasTestAccounts = external && accountPresence.key === consentKey && accountPresence.value;
+  // 대상에 시험 계정이 있는지는 로컬·외부 모두 조회한다 (서버 runBindsAccounts: 로컬 모드는 동의 없이도, 외부 모드는 external_test_accounts 동의 시 결속).
+  const hasTestAccounts = accountPresence.key === consentKey && accountPresence.value;
   const consentChecked =
-    hasTestAccounts && !!accountPresence.statement && accountConsent.key === consentKey && accountConsent.checked;
-  // 로그인 칸 '연결 전' 설명: 시험 계정 동의가 있으면 점검이 실제로 그 계정으로 로그인한다 → '로그인 없이' 라고 단정하지 않는다.
-  const loginUnwiredWhy = consentChecked
+    external &&
+    hasTestAccounts &&
+    !!accountPresence.statement &&
+    accountConsent.key === consentKey &&
+    accountConsent.checked;
+  // 이 회차가 시험 계정으로 로그인(결속)하는가. 결속된 회차는 저장된 서버 입력을, 새 초안은 조회+모드로 판단한다 (정규화·새로고침에도 유지).
+  //  - 외부 모델: 외부 전송 동의(external_test_accounts)가 있어야 결속. 로컬 모델: 동의 없이도 대상에 시험 계정이 있으면 결속.
+  const testAccountLogin = shown
+    ? shown.external_test_accounts === true || (!external && hasTestAccounts)
+    : hasTestAccounts && (!external || consentChecked);
+  // 로그인 칸 '연결 전' 설명: 시험 계정으로 로그인하면 '로그인 없이' 라고 단정하지 않는다.
+  const loginUnwiredWhy = testAccountLogin
     ? `${NO_INPUT} · 시험 계정으로 로그인해 점검합니다`
     : `${NO_INPUT} · 지금 점검은 로그인 없이 진행됩니다`;
   useEffect(() => {
-    if (!external || shown || !tv || urlTargetHint(tv)) return;
+    // 로컬·외부 모두, 새 초안·결속 회차 모두 대상의 시험 계정 유무를 조회한다 (결속 회차는 정규화된 저장 주소로 다시 확인된다).
+    if (!tv || urlTargetHint(tv)) return;
     const controller = new AbortController();
     let current = true;
     void readExternalTestAccountPresence(tv, controller.signal)
@@ -251,7 +262,7 @@ export function UrlNewScanLive() {
       current = false;
       controller.abort();
     };
-  }, [external, shown, tv, consentKey]);
+  }, [tv, consentKey]);
   const lockedKind = external ? "external" : "local";
   const shownKind = shown ? lockedKind : kind;
   // 분석 모델 칸의 짜임(모델 · 서버 주소 / 제공자 · API 키 · 경고)은 고른 쪽을 따른다. 그쪽 설치 프로필이 없어도 모양은 보인다
@@ -361,11 +372,12 @@ export function UrlNewScanLive() {
   } else if (job.state === "ready") {
     action = (
       <>
-        {hasTestAccounts && !consentChecked ? (
+        {external && hasTestAccounts && !testAccountLogin ? (
           <div className={cx(s.note, s.warn)} role="note">
             <Icon name="alert" />
             <span>
-              시험 계정 동의를 하지 않아 시험 계정(로그인) 없이 점검합니다. 시험 계정으로 점검하려면 새로 입력하세요.
+              시험 계정 외부 전송 동의를 하지 않아 시험 계정(로그인) 없이 점검합니다. 시험 계정으로 점검하려면 새로
+              입력하세요.
             </span>
           </div>
         ) : null}
@@ -950,7 +962,7 @@ export function UrlNewScanLive() {
               </dd>
               <dt>로그인</dt>
               <dd>
-                {consentChecked ? "시험 계정 로그인" : "—"} <Unwired why={loginUnwiredWhy} />
+                {testAccountLogin ? "시험 계정 로그인" : "—"} <Unwired why={loginUnwiredWhy} />
               </dd>
               <dt>분석 모델</dt>
               <dd>{profile ? `${profile.model_label} (${external ? "외부 API" : "로컬"})` : "—"}</dd>
