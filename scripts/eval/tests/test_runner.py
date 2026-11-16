@@ -1994,15 +1994,22 @@ class TestInitialStateFollowsTheTargetNotTheRunIdentity(unittest.TestCase):
             return out
 
     def pair_verdict(self, baseline_state: str, improved_state: str) -> str:
-        from preservation_record import PreservationRecordError, load_record, validate_series
-        from test_preservation_record import RUNNER_KEY, SignedFixture
+        from preservation_record import PreservationRecordError, build_payload, validate_series
+        from test_preservation_record import SignedFixture, conditions, options
         fixture = SignedFixture()
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
         records = []
         for side, state in (("baseline", baseline_state), ("ours", improved_state)):
-            directory, meter, _ = fixture.fixture(side, 0, meta={"initial_state_sha256": state})
-            records.append(load_record(directory, meter, RUNNER_KEY))
+            # 이 러너가 발행하는 배치(원본 직접·e2-legacy)와 같은 본 입구 원자료로 짝을 만든다.
+            _, meter, _ = fixture.fixture("baseline", 0)
+            layout = {} if side == "baseline" else {"layout": "e2-legacy/v1", "diagnosis_policy_sha256": None}
+            payload = build_payload(meter=meter, options=options(), run_id=f"{side}-pair", side=side, repeat_index=0,
+                                    engine_source_sha=("a" if side == "baseline" else "b") * 40,
+                                    engine_image_id="sha256:" + ("a" if side == "baseline" else "b") * 64,
+                                    conditions=conditions(side, initial_state_sha256=state, **layout),
+                                    stop_reason="request_budget")
+            records.append(payload)  # 서명 확인 뒤 load_record가 돌려주는 것과 같은 모양(서명 칸 없음)
         try:
             validate_series([records[0]], [records[1]], request_budget=3, read_only=False)
         except PreservationRecordError as exc:
