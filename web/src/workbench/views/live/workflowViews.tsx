@@ -152,18 +152,24 @@ const EXPLORE_TEXT = {
   NOT_RUN: "탐색 안 함",
 } as const;
 /**
- * 서버 탐색 사유(exploration_reason) 중 status 의 뜻을 '명확히' 더해 주는 것만 글로 보인다(팀 결정: 화면은 status 중심,
- * 사유는 뜻을 더할 때만). status 와 겹치거나(stopped) 모순되는(PARTIAL 의 completed) · 모르는 토큰은 화면에서 숨긴다.
- * 원본 reason 은 서버 진단 기록에 그대로 남는다 — 여기서 버리는 건 화면 표시뿐이다.
+ * 서버가 실제 내보내는 탐색 종료·미실행 사유만 한글로 매핑한다(팀 결정: 화면은 status 중심, 사유는 뜻을 더할 때만).
+ *  - 부분/중지 종료 (diagnosisflow FinishExploration): cap_exhausted · time_budget · page_limit · model_error ·
+ *    boundary_unavailable · runtime_unavailable · target_ended · cancelled
+ *  - 실행 전 미가용 (RecordExplorationUnavailable, NOT_RUN): boundary_unavailable · model_unavailable ·
+ *    runtime_unavailable · browser_unavailable
+ * completed 처럼 status 와 겹치거나 모순되는 사유 · 모르는 토큰은 화면에서 숨긴다. 원본 reason 은 서버 진단 기록에 그대로 남는다.
  */
 const EXPLORE_REASON_TEXT: Record<string, string> = {
-  startup_failed: "시작 실패",
-  audit_incomplete: "감사 기록 불완전",
-  policy_rejected: "정책에 막힘",
-  browser_unavailable: "브라우저 사용 불가",
+  cap_exhausted: "요청 상한 소진",
+  time_budget: "시간 상한 도달",
+  page_limit: "페이지 상한 도달",
+  model_error: "모델 오류",
+  boundary_unavailable: "탐색 경계 사용 불가",
+  runtime_unavailable: "실행 런타임 사용 불가",
   model_unavailable: "모델 사용 불가",
-  drain_timeout: "정리 시간 초과",
-  unsupported: "미지원",
+  browser_unavailable: "브라우저 사용 불가",
+  target_ended: "대상 연결 종료",
+  cancelled: "취소됨",
 };
 /**
  * 서버 탐색 상태 · 사유. 파서(live/workflow.ts)에 아직 칸이 없어 응답 원본에서 아는 값만 읽는다

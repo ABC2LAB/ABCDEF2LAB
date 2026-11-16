@@ -492,14 +492,14 @@ describe("자산 탐색", () => {
 
   it.each([
     [
-      "뜻을 더하는 사유는 status 뒤에 보인다",
-      { exploration_status: "PARTIAL", exploration_reason: "model_unavailable" },
-      "탐색 상태 부분 완료 · 모델 사용 불가",
+      "한도 소진 사유는 status 뒤에 보인다",
+      { exploration_status: "PARTIAL", exploration_reason: "cap_exhausted" },
+      "탐색 상태 부분 완료 · 요청 상한 소진",
     ],
     [
-      "status 와 겹치는 사유(stopped)는 화면에서 숨긴다",
-      { stage: "stopped", exploration_status: "STOPPED", exploration_reason: "stopped" },
-      "탐색 상태 중지됨",
+      "모델 오류 사유는 status 뒤에 보인다",
+      { exploration_status: "PARTIAL", exploration_reason: "model_error" },
+      "탐색 상태 부분 완료 · 모델 오류",
     ],
     [
       "status 와 모순되는 사유(PARTIAL 의 completed)는 화면에서 숨긴다",
