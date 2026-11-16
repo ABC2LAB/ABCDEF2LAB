@@ -163,8 +163,9 @@ describe("범위 확인", () => {
     expect(document.getElementById("sTable")).toBeNull();
     expect(screen.queryByLabelText("시작 전 점검")).toBeNull();
     expect(screen.queryByText("점검 중 새로 찾은 경로 처리 규칙")).toBeNull();
-    // 제목은 '발견한 API', 그 위 '탐색하는 대로 채워짐' 글은 없다
-    expect(within(found).getByRole("heading", { name: /^발견한 API/ })).toBeInTheDocument();
+    // 제목(발견한 API · 수)과 그 위 '탐색하는 대로 채워짐' 글은 화면에 없다
+    expect(within(found).queryByRole("heading")).toBeNull();
+    expect(within(found).queryByText(/발견한 API/)).toBeNull();
     expect(screen.queryByText("탐색하는 대로 채워짐")).toBeNull();
     expect(screen.queryByText(/찾은 경로/)).toBeNull();
     // 검색은 거르기 줄의 오른쪽 끝에 하나
@@ -447,15 +448,12 @@ describe("범위 확인 · 한 번에 고르기", () => {
     expect(count()).toBe("3");
     // 카드 머리 오른쪽의 '승인 N · 제외 N'은 없다
     expect(card.querySelector("b")?.parentElement).not.toHaveTextContent(/승인 \d|제외 \d/);
-    // 제목 숫자는 그대로
-    expect(within(found).getByRole("heading", { name: /^발견한 API/ })).toHaveTextContent(/^발견한 API 3$/);
     const mode = within(found).getByRole("button", { name: "제외 경로" });
     fireEvent.click(mode);
     expect(count()).toBe("0/3");
     fireEvent.click(within(found).getByRole("button", { name: /^GET \/api\/products\/1/ }));
     fireEvent.click(within(found).getByRole("button", { name: /^GET \/api\/products\/3/ }));
     expect(count()).toBe("2/3");
-    expect(within(found).getByRole("heading", { name: /^발견한 API/ })).toHaveTextContent(/^발견한 API 3$/);
     // 끄면 묶음 경로 수, 다시 켜면 골라 둔 수 그대로
     fireEvent.click(mode);
     expect(count()).toBe("3");
