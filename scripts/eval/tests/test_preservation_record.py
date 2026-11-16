@@ -17,6 +17,7 @@ from preservation_record import (NAME, OPTIONS_FORMAT, PreservationRecordError, 
                                  full_budget_from_pilots, load_record, preservation_verdict, validate_options, validate_series)
 from run_record import sign_run_record
 from runner_evidence import MeterFiles, EvidenceError, PATH_PROFILE
+import boundary_fixture as bf
 
 # 시험 전용 값이다. 어떤 실제 인증값도 fixture에 넣지 않는다.
 PATH_KEY = bytes(range(32))
@@ -73,20 +74,31 @@ class SignedFixture(unittest.TestCase):
         self.write(directory, "engine-drained.json", {"role": "engine", "forwarded_requests": 3,
                    "log_complete": True, "inflight_at_drain": 0, "forced_cancelled_requests": 0})
         meter = MeterFiles(directory)
+        boundary = None
+        if side == "ours" and (meta or {}).get("layout", "exploration-split/v1") == "exploration-split/v1":
+            # 계측기 탐색 입구 행(/b·/c)과 맞는 경계 원자료. 차단·외부 자원 행은 대조에 들지 않는다.
+            rows = [bf.approved(1, "/b", PATH_KEY), bf.approved(2, "/c", PATH_KEY, ingress="direct"),
+                    bf.denied(3, "out_of_scope_path"), bf.external(4)]
+            boundary = {"directory": bf.write(directory / "boundary", rows, PATH_KEY), "task_id": bf.TASK_ID,
+                        "path_key_ref": key_ref(PATH_KEY)}
         payload = build_payload(meter=meter, options=options() | {"execution_source": source},
             run_id=f"{side}-{self.serial}", side=side, repeat_index=repeat,
             engine_source_sha=("a" if side == "baseline" else "b") * 40,
             engine_image_id="sha256:" + ("a" if side == "baseline" else "b") * 64,
-            conditions=conditions(side, **(meta or {})), stop_reason="request_budget")
+            conditions=conditions(side, **(meta or {})), stop_reason="request_budget", boundary=boundary)
         self.write(directory, NAME, sign_run_record(payload, RUNNER_KEY))
         return directory, meter, payload
+
+    def load(self, directory, meter):
+        boundary = directory / "boundary"
+        return load_record(directory, meter, RUNNER_KEY, boundary if boundary.exists() else None)
 
     def series(self):
         baseline, improved = [], []
         for i in range(3):
             for side, records in (("baseline", baseline), ("ours", improved)):
                 directory, meter, _ = self.fixture(side, i)
-                records.append(load_record(directory, meter, RUNNER_KEY))
+                records.append(self.load(directory, meter))
         return baseline, improved
 
     def test_signed_raw_round_traces_both_ingresses_and_synthetic_not_run(self):
@@ -94,8 +106,9 @@ class SignedFixture(unittest.TestCase):
         self.assertEqual(o[0]["forwarded_by_ingress"], {"main": 1, "explore": 2})
         verified = validate_series(b, o, request_budget=3, read_only=False)
         self.assertEqual(verified["verified_signed_rounds"], 6)
-        self.assertEqual(verified["exploration_boundary"]["status"], "NOT_RUN")
-        self.assertEqual(assessment({}, "R-F", verified)["status"], "NOT_RUN")
+        # 합성 경계 원자료도 장부 대조는 통과하지만, 합성 자료는 실측으로 승격하지 않는다.
+        self.assertEqual(verified["exploration_boundary"]["status"], "PASS")
+        self.assertEqual(assessment({}, "R-F", verified), {"profile": "R-F", "status": "NOT_RUN", "reason": "real_split_model_measurement_not_run"})
         self.assertNotIn("api_key", json.dumps(verified))
 
     def test_raw_bytes_tamper_even_semantically_equal_json_is_rejected(self):
@@ -103,25 +116,25 @@ class SignedFixture(unittest.TestCase):
         path = directory / "engine-requests.jsonl"
         path.write_bytes(path.read_bytes().replace(b'"seq": 1', b'"seq":  1'))
         with self.assertRaisesRegex(PreservationRecordError, "preservation_raw_digest_mismatch"):
-            load_record(directory, meter, RUNNER_KEY)
+            self.load(directory, meter)
 
     def test_signature_and_duplicate_json_rejected(self):
         directory, meter, payload = self.fixture()
         self.write(directory, NAME, sign_run_record(payload | {"stop_reason": "time_budget"}, b"x" * 32))
         with self.assertRaisesRegex(PreservationRecordError, "preservation_signature_invalid"):
-            load_record(directory, meter, RUNNER_KEY)
+            self.load(directory, meter)
         self.write(directory, NAME, b'{"format":1,"format":2}')
         with self.assertRaisesRegex(PreservationRecordError, "preservation_duplicate_key"):
-            load_record(directory, meter, RUNNER_KEY)
+            self.load(directory, meter)
 
     def test_missing_final_files_or_public_directory_rejected(self):
         directory, meter, _ = self.fixture()
         directory.chmod(0o750)
-        with self.assertRaises(EvidenceError): load_record(directory, meter, RUNNER_KEY)
+        with self.assertRaises(EvidenceError): self.load(directory, meter)
         directory.chmod(0o700)
         (directory / "engine-drained.json").unlink()
         with self.assertRaisesRegex(PreservationRecordError, "preservation_raw_missing"):
-            load_record(directory, meter, RUNNER_KEY)
+            self.load(directory, meter)
 
     def test_hashed_but_inconsistent_drain_and_ingress_are_rejected(self):
         for field, change in (("engine-drained.json", {"role": "engine", "forwarded_requests": 9,
@@ -138,21 +151,21 @@ class SignedFixture(unittest.TestCase):
             payload["files"][field] = {"sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw)}
             self.write(directory, NAME, sign_run_record(payload, RUNNER_KEY))
             with self.assertRaises((PreservationRecordError, EvidenceError)):
-                load_record(directory, meter, RUNNER_KEY)
+                self.load(directory, meter)
 
     def test_reader_rejects_signed_ingress_counts_that_disagree_with_raw_rows(self):
         directory, meter, payload = self.fixture("ours")
         payload["forwarded_by_ingress"] = {"main": 2, "explore": 1}
         self.write(directory, NAME, sign_run_record(payload, RUNNER_KEY))
         with self.assertRaisesRegex(PreservationRecordError, "preservation_ingress_mismatch"):
-            load_record(directory, meter, RUNNER_KEY)
+            self.load(directory, meter)
 
     def test_ours_cannot_impersonate_artex_direct_even_with_all_main_rows(self):
         directory, meter, payload = self.fixture("baseline")
         payload["side"] = "ours"
         self.write(directory, NAME, sign_run_record(payload, RUNNER_KEY))
         with self.assertRaisesRegex(PreservationRecordError, "preservation_conditions_invalid"):
-            load_record(directory, meter, RUNNER_KEY)
+            self.load(directory, meter)
 
     def test_reader_requires_ingress_before_any_later_count_comparison(self):
         directory, meter, payload = self.fixture("baseline")
@@ -164,14 +177,15 @@ class SignedFixture(unittest.TestCase):
         payload["files"][path.name] = {"sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw)}
         self.write(directory, NAME, sign_run_record(payload, RUNNER_KEY))
         with self.assertRaisesRegex(EvidenceError, "meter_ingress_missing_or_mixed"):
-            load_record(directory, meter, RUNNER_KEY)
+            self.load(directory, meter)
 
     def test_legacy_sidecar_cannot_hide_exploration_forwarding(self):
         directory, meter, payload = self.fixture("ours")
         payload["conditions"]["layout"] = "e2-legacy/v1"
+        payload["exploration_boundary"] = None
         self.write(directory, NAME, sign_run_record(payload, RUNNER_KEY))
         with self.assertRaisesRegex(EvidenceError, "meter_explore_ingress_unexpected"):
-            load_record(directory, meter, RUNNER_KEY)
+            self.load(directory, meter)
 
     def test_model_pins_modes_policy_mcp_and_layout_cannot_be_pooled(self):
         b, o = self.series()
@@ -208,6 +222,13 @@ class SignedFixture(unittest.TestCase):
     def test_declarations_do_not_claim_boundary_or_original_model_measurement(self):
         b, o = self.series()
         for record in b + o: record["execution_source"] = "model_run"
+        # 경계 원자료 요약이 없는(v1) 개선 후 기록은 선언만으로 경계를 주장하지 못한다.
+        for record in o:
+            record["format"] = "abc2lab.preservation-round/v1"
+            del record["exploration_boundary"]
+        for record in b:
+            record["format"] = "abc2lab.preservation-round/v1"
+            del record["exploration_boundary"]
         evidence = validate_series(b, o, request_budget=3, read_only=False)
         self.assertEqual(assessment({}, "R-F", evidence), {"profile": "R-F", "status": "NOT_RUN",
                                                         "reason": "verified_boundary_export_unavailable"})
@@ -229,13 +250,14 @@ class SignedFixture(unittest.TestCase):
         raw = subprocess.run(args, capture_output=True)
         self.assertEqual(raw.returncode, 0)
         self.assertEqual(json.loads(raw.stdout)["format"], "abc2lab.preservation-summary/v6")
-        signed = args + ["--baseline-record-dir", str(b), "--improved-record-dir", str(o),
+        signed = args + ["--baseline-record-dir", str(b), "--improved-record-dir", str(o), "--improved-boundary-dir", str(o / "boundary"),
                          "--runner-key-file", str(self.root / "runner.key"), "--profile", "R-F"]
         result = subprocess.run(signed, capture_output=True)
         self.assertEqual(result.returncode, 0)
         data = json.loads(result.stdout)
-        self.assertEqual(data["format"], "abc2lab.preservation-summary/v7")
+        self.assertEqual(data["format"], "abc2lab.preservation-summary/v8")
         self.assertEqual(data["assessment"]["status"], "NOT_RUN")
+        self.assertEqual(data["signed_evidence"]["exploration_boundary"]["status"], "PASS")
         self.assertEqual(data["signed_evidence"]["verified_signed_rounds"], 2)
         # 타입이 잘못되거나 비 ASCII인 서명도 traceback 없이 같은 validation 코드로 닫힌다.
         record = json.loads((o / NAME).read_text())
