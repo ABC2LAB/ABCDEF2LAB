@@ -88,12 +88,17 @@ def _digest(value) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
 
 
+def _enum(value, allowed) -> bool:
+    """닫힌 어휘 칸은 문자열일 때만 집합에 묻는다. 배열·객체가 오면 unhashable TypeError로 새지 않고 형식 오류가 된다."""
+    return isinstance(value, str) and value in allowed
+
+
 def _marker(raw: bytes) -> dict:
     m = _json(raw)
     if (not isinstance(m, dict) or set(m) != _MARKER_FIELDS or m["format"] != FORMAT or m["path_profile"] != PATH_PROFILE
             or not isinstance(m["path_key_ref"], str) or not _KEY_REF.fullmatch(m["path_key_ref"])
             or type(m["max_bytes"]) is not int or not 0 < m["max_bytes"] <= MAX_METER_FILE_BYTES
-            or not isinstance(m["sealed_at"], str) or not _STAMP.fullmatch(m["sealed_at"]) or m["sealed_by"] not in SEALED_BY
+            or not isinstance(m["sealed_at"], str) or not _STAMP.fullmatch(m["sealed_at"]) or not _enum(m["sealed_by"], SEALED_BY)
             or not all(_count(m[k]) for k in ("rows", "bytes", "rows_not_written", "inflight_at_seal"))
             or not isinstance(m["rows_sha256"], str) or not _HEX.fullmatch(m["rows_sha256"])
             or type(m["truncated"]) is not bool or type(m["log_complete"]) is not bool
@@ -109,7 +114,7 @@ def _marker(raw: bytes) -> dict:
             or not isinstance(s["source_digest"], str) or not _HEX.fullmatch(s["source_digest"])
             or not isinstance(s["opened_at"], str) or not _STAMP.fullmatch(s["opened_at"])
             # 봉인은 열린 세션을 닫은 뒤 쓰므로 표식의 세션은 늘 닫혀 있다.
-            or not isinstance(s["closed_at"], str) or not _STAMP.fullmatch(s["closed_at"]) or s["closed_reason"] not in CLOSE_REASONS
+            or not isinstance(s["closed_at"], str) or not _STAMP.fullmatch(s["closed_at"]) or not _enum(s["closed_reason"], CLOSE_REASONS)
             or not _count(s["rows_at_close"]) or s["rows_at_close"] > m["rows"] + m["rows_not_written"]
             or type(s["closed_at_seal"]) is not bool):
         _fail("boundary_export_invalid")
@@ -122,7 +127,8 @@ def _row(row, session_ref: str) -> dict:
     forwarded = row["decision"] == "forwarded"
     if (row["session_ref"] != session_ref or type(row["seq"]) is not int or row["seq"] < 1
             or not isinstance(row["at"], str) or not _STAMP.fullmatch(row["at"])
-            or row["decision"] not in ("forwarded", "denied") or row["ingress"] not in INGRESSES or row["dest_class"] not in DESTS
+            or not _enum(row["decision"], ("forwarded", "denied")) or not _enum(row["ingress"], INGRESSES)
+            or not _enum(row["dest_class"], DESTS)
             or not isinstance(row["method"], str) or not _METHOD.fullmatch(row["method"]) or type(row["has_auth_header"]) is not bool
             or any(k in row and (not isinstance(row[k], str) or not row[k] or len(row[k].encode()) > _TEXT_LIMIT)
                    for k in ("path_pattern", "external_host", "fetch_dest", "fetch_mode"))
@@ -135,7 +141,7 @@ def _row(row, session_ref: str) -> dict:
                 or row["dest_class"] == "approved" and ("path_pattern" not in row or "external_host" in row)
                 or row["dest_class"] == "external" and ("external_host" not in row or "path_pattern" in row)):
             _fail("boundary_export_invalid")
-    elif row.get("reason") not in REASONS or "status" in row or "bytes" in row:
+    elif not _enum(row.get("reason"), REASONS) or "status" in row or "bytes" in row:
         _fail("boundary_export_invalid")
     return row
 
@@ -227,6 +233,11 @@ def verify(directory: Path, meter_rows: list[dict], meter_paths: list[dict], *, 
     if marker["truncated"]:
         # 잘린 원자료로는 차단 수도 대조도 확정할 수 없다. 0으로 채우지 않는다.
         return out | {"status": "truncated", "counters": None, "reconciliation": None}
+    # 잘리지 않고 진행 중 0으로 봉인한 원자료에는 경계가 세션에서 준 순번(1부터 연속)이 모두 있어야 한다. 전달 행은
+    # 끝날 때 쓰므로 물리적 순서는 동시 완료로 바뀔 수 있어 집합으로 본다. 빠진 번호는 행 손실이다(#617 리뷰: 중간
+    # 차단 행을 빼고 행 수·hash를 맞춘 원자료가 차단 수를 줄인 채 verified로 통과했다).
+    if {row["seq"] for row in rows} != set(range(1, len(rows) + 1)):
+        _fail("boundary_export_incomplete")
     return out | {"status": "verified", "counters": _counters(rows, session["rows_at_close"]),
                   "reconciliation": _reconcile(rows, meter_rows, meter_paths)}
 

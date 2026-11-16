@@ -205,6 +205,32 @@ class StrictStructure(BoundaryExportFixture):
                 self.assertCode("boundary_export_invalid", self.verify, self.write(rows))
         self.assertCode("boundary_export_invalid", self.verify, self.write([base[0], dict(base[1], seq=1)] + base[2:]))
 
+    def test_sequence_gap_is_row_loss(self):
+        # 중간 차단 행(seq 3)만 빼고 표식의 행 수·바이트·hash를 그 파일에 맞춘 원자료다. 차단 수를 줄인 채 통과하면 안 된다.
+        rows = [r for r in self.rows() if r["seq"] != 3]
+        self.assertCode("boundary_export_incomplete", self.verify, self.write(rows))
+        # 끝 행이나 첫 행을 빼도 같다(1부터 연속이어야 한다).
+        self.assertCode("boundary_export_incomplete", self.verify, self.write(self.rows()[1:]))
+        self.assertCode("boundary_export_incomplete", self.verify, self.write([dict(r, seq=r["seq"] + 1) for r in self.rows()]))
+        # 동시 완료로 물리적 순서만 바뀐 행은 그대로 받는다.
+        self.assertEqual(self.verify(self.write(list(reversed(self.rows()))))["status"], "verified")
+        # 잘린 원자료는 뒤 행이 빠지는 것이 정상이라 순번을 묻지 않는다.
+        block = self.verify(self.write(self.rows()[:2], marker_changes={"truncated": True, "rows_not_written": 3}))
+        self.assertEqual(block["status"], "truncated")
+
+    def test_closed_vocabulary_fields_reject_other_json_types(self):
+        # 어휘 칸에 배열·객체·null·숫자가 오면 TypeError로 새지 않고 고정 오류 코드다.
+        base = self.rows()
+        for value in ([], {}, None, 1):
+            for name, write in (("sealed_by", lambda v: self.write(marker_changes={"sealed_by": v})),
+                                ("closed_reason", lambda v: self.write(session_changes={"closed_reason": v})),
+                                ("dest_class", lambda v: self.write([dict(base[0], dest_class=v)] + base[1:])),
+                                ("ingress", lambda v: self.write([dict(base[0], ingress=v)] + base[1:])),
+                                ("decision", lambda v: self.write([dict(base[0], decision=v)] + base[1:])),
+                                ("reason", lambda v: self.write(base[:2] + [dict(base[2], reason=v)] + base[3:]))):
+                with self.subTest(field=name, value=value):
+                    self.assertCode("boundary_export_invalid", self.verify, write(value))
+
     def test_byte_level_violations(self):
         good = b"".join(json.dumps(r).encode() + b"\n" for r in self.rows())
         for name, raw in {"duplicate_key": good.replace(b'"seq": 1,', b'"seq": 1, "seq": 9,'),
