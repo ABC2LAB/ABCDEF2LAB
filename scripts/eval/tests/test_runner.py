@@ -2410,6 +2410,15 @@ class TestMainKeepsTheAdminPasswordInMemory(unittest.TestCase):
         def runner_key(tmp):
             return private(Path(tmp, "k"))
 
+        def directory(tmp):
+            path = Path(tmp, "admin.pw")
+            path.mkdir(mode=0o700)
+            path.chmod(0o600)  # 권한 칸만 맞춘 빈 디렉터리: 일반 파일 검사만 거른다
+            return path
+
+        def secrets_env(tmp):
+            return private(Path(tmp, "eval.secrets.env"))
+
         def too_long(tmp):
             return private(Path(tmp, "admin.pw"), text="a" * (4 * 1024 + 2))
 
@@ -2420,10 +2429,13 @@ class TestMainKeepsTheAdminPasswordInMemory(unittest.TestCase):
                  (lambda tmp: Path(tmp, "missing.pw"), "engine_password_file_unreadable"),
                  (inside_runs, "admin_password_file: INSIDE_RUNS_ROOT"),
                  (runner_key, "admin_password_file: SAME_AS_RUNNER_KEY"),
+                 (secrets_env, "admin_password_file: SAME_AS_SECRETS_FILE"),
+                 (directory, "engine_password_file_untrusted"),
                  (too_long, "engine_password_file_invalid"), (control, "engine_password_invalid"))
         for make, code in cases:
             with self.subTest(code=code), tempfile.TemporaryDirectory() as tmp:
-                root, argv = self.inputs(tmp)
+                root, argv = self.inputs(tmp, lambda payload: payload.update(
+                    secrets_env_file=str(Path(tmp, "eval.secrets.env"))))
                 path = make(tmp)
                 err = io.StringIO()
                 with patch.object(runner.getpass, "getpass") as ask, patch.object(runner, "Docker") as docker, \

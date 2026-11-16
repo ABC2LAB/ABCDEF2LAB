@@ -171,10 +171,12 @@ def read_admin_password_file(path: str) -> str:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
     except (OSError, TypeError, ValueError):
         raise EngineAPIError("engine_password_file_unreadable") from None
+    # 연 fd로 먼저 확인한다(디렉터리는 fdopen에서 다른 예외로 샌다).
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600:
+        os.close(fd)
+        raise EngineAPIError("engine_password_file_untrusted")
     with os.fdopen(fd, "rb") as stream:
-        info = os.fstat(stream.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600:
-            raise EngineAPIError("engine_password_file_untrusted")
         data = stream.read(MAX_PASSWORD_FILE_BYTES + 1)
     if len(data) > MAX_PASSWORD_FILE_BYTES:
         raise EngineAPIError("engine_password_file_invalid")
