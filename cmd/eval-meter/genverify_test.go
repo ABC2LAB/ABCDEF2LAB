@@ -116,7 +116,8 @@ func TestGenerationVerifyRejectsMalformedRecords(t *testing.T) {
 		"forwarded_status_zero": strings.Replace(first, `"status":200`, `"status":0`, 1),
 		"completed_before":      strings.Replace(first, `"completed_at":"2026-11-16T00:00:01.5Z"`, `"completed_at":"2026-11-15T00:00:00Z"`, 1),
 		"no_final_newline":      strings.TrimSuffix(first, "\n"),
-		"line_too_long":         strings.Replace(first, `"seq":1,`, `"seq":1,"generation_id":"`+strings.Repeat("a", 600)+`",`, 1),
+		// 칸은 모두 맞고 JSON 공백으로 줄만 길다. 줄 상한만 거부한다.
+		"line_too_long": strings.Replace(first, `"seq":1,`, `"seq":1,`+strings.Repeat(" ", 600), 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			path, dir := privateTestDir(t)
@@ -150,6 +151,17 @@ func TestGenerationVerifyFlags(t *testing.T) {
 	}
 	if err := os.Remove(filepath.Join(path, llmVerifiedName)); err != nil {
 		t.Fatal("marker not written by the valid run", err)
+	}
+	// 제품이 실제로 보낸 샘플링(-sampling)은 표식에 그대로 실린다. 주지 않으면 null이다(위 실행).
+	if code := run(append(append([]string{}, base...), "-sampling", pinnedSampling), strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatal("valid sampling refused", code)
+	}
+	want, _ := parseSampling(pinnedSampling)
+	if m := readVerified(t, path); !sameSampling(t, m.Sampling, want) {
+		t.Fatalf("marker sampling %v", m.Sampling)
+	}
+	if err := os.Remove(filepath.Join(path, llmVerifiedName)); err != nil {
+		t.Fatal(err)
 	}
 	for name, extra := range map[string][]string{
 		"listen": {"-listen", "127.0.0.1:0"}, "allow_path": {"-allow-path", chatPath}, "backend": {"-backend", backendAPI},
