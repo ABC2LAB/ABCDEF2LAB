@@ -114,3 +114,26 @@
 초기 구현 검증: E② 세 패키지 전체 race **617 PASS / FAIL 0 / SKIP 0**(test/subtest), 서버·모델 예산/1-E 및 실제 Manager PostgreSQL race **107 PASS / FAIL 0 / SKIP 0**. 전체 빌드·vet 통과. 전용 DB 없이 실행한 서버·제품 전체 시험은 **2193 PASS / FAIL 1 / SKIP 309**였으며 실패는 기존 모델 목록 시험의 DB 미설정이었다. 해당 시험은 일회용 DB 재실행에서 통과했다. 최종 통합 SHA·검증은 PR에 기록한다.
 
 Docker 제품 이미지의 새 종단 회차, 유료 Qwen3.6 회차, 운영 대상 송신, 성능/RSS 측정은 **NOT_RUN**이다. 로컬 실제 수신·E② 감사 확인을 외부 모델 종단 성공으로 옮기지 않는다.
+
+최신 dev 통합 검증(기능 코드 `39cfe792`, 추가 예산 시험 `b7cfe815`, dev `83c3cb66`):
+
+| 검사 | PASS | FAIL | SKIP |
+|---|---:|---:|---:|
+| E② Runner·프록시·샌드박스 전체, 일반/race 각각 | 691 | 0 | 0 |
+| 추가 실제 Bash 3개 × 11회 구성의 공유 요청 예산 소진, race | 1 | 0 | 0 |
+| agent 전체 일반 시험 | 336 | 0 | 17 |
+| server 전체, 격리 PostgreSQL 16·race | 2266 | 0 | 54 |
+| 제품 명령 전체, 격리 PostgreSQL 16·race | 404 | 0 | 1 |
+| diagnosisprep 전체, 격리 PostgreSQL 16·race | 220 | 0 | 1 |
+| Docker 실제 Runner/helper의 1-D 수용 | 21 | 0 | 0 |
+| 별도 Go overlay의 가드 변이 검출 | 5/5 | 미검출 0 | 0 |
+
+건수는 개별 test/subtest 사건 수다. 정상 전체 시험과 독립 반례·변이는 별도 실행이며 합산 성공률로 쓰지 않는다. 전용 DSN/명시적 opt-in이 없는 기존 수용시험은 건너뜀으로 남겼다. 첫 PostgreSQL 실행에서 URL을 요구하는 기존 시험 4건은 keyword DSN을 거부했고, CI와 같은 URL DSN으로 고쳐 위 전체 결과를 얻었다. 최종 전체 build·vet·darwin/arm64·windows/amd64 크로스빌드와 gofmt·diff 검사를 통과했다.
+
+Docker 수용 이미지는 `sha256:20da572366b86dc99605d1afaee7d2a0fefc02741a28d75e6b803955dbff3ffe`다. 로컬 브라우저 기반 이미지에 curl을 넣은 **시험용 런타임**이며 완성 제품 이미지 종단 수용과 구분한다. 실행한 helper는 같은 소스 빌드 SHA256 `52408311128b8dbdbbe0ff058bbb4fedb52031003fc4772aee7b4685ff7edfbe`다. UID1000, read-only rootfs, cap_drop ALL, no-new-privileges, 기존 `seccomp-preparation.json`, PID256·메모리2GiB·`/tmp`64MiB, 외부망 없음으로 실행했다. 소스·Go 캐시·제어 비밀을 컨테이너에 넣지 않고 시험 바이너리/helper만 읽기 전용으로 넣었다.
+
+최초 Docker 시험은 helper를 `/tmp`에 빌드해 **20 FAIL / 1 PASS**였다. 단일 Bash 대조에서 `process_start`의 EACCES를 확인했다. 제품의 `/tmp` noexec를 유지하고, **시험 fixture의 helper 선택만** 같은 소스의 읽기 전용 실행 위치로 바꾼 Go overlay로 재실행해 21건이 통과했다. 생산 코드·helper·격리 정책을 완화한 결과가 아니다.
+
+가드 변이는 전체 슬롯을 1로 되돌림, 동일 intent 동시 허용, 최종 저장 전 슬롯 반환, drain 대기 세대 검사 제거, factory의 Worker 최솟값 무시를 각각 독립 시험이 검출했다. 정상 코드를 커밋한 뒤 저장소 밖 overlay에서만 바꿨다.
+
+#571 최신 소스의 기존 반례·코퍼스·두 30초 fuzz는 통과했지만, 별도 Unicode 헤더 이름 반례는 실제 `record_fact` 작성기에서 실패했다. [병합된 #571의 후속 리뷰](https://github.com/ABC2LAB/ABCDEF2LAB/pull/571#pullrequestreview-5914635014)에 인계했으며 이 PR에서 다른 담당의 가림 구현을 바꾸지 않았다. 위 1-D 회귀 통과를 모든 자격 가림 입력의 안전성 완료로 해석하지 않는다.
