@@ -56,7 +56,7 @@ API Recon 스크립트는 조사했으나 TLS 검증 우회·브라우저/직접
 
 Planner가 만든 초기 intent를 보호 Worker가 받아 프로그램 소유의 bounded 탐색을 실행한다. TLS 검증 curl → 실제 E② request/call/attempt/drain 근거 → 실제 HTML의 링크·폼·script 및 제한된 정적 API literal 해석 → PostgreSQL endpoint projection 순서다. redirect는 따라가지 않는다. 폼의 action을 GET으로 만들지 않으며 명시적 메서드가 없는 문자열은 UNKNOWN·자동 방문 제외다.
 
-저장 항목은 method/path/kind/source/from/in_scope/change/visited/status/duplicates/selected/call_ref와 제한된 비민감 요청·응답 요약이다. 원문 body·헤더·쿠키를 snapshot으로 복사하지 않는다. 최대 32 endpoint, 페이지 1~32, 응답 4KiB~2MiB, 최근 event32/plan20/activity20 상한이 있다. UI의 요청 상한은 설치 catalog에서 받는다.
+저장 항목은 method/path/kind/source/from/in_scope/change/visited/status/duplicates/selected/call_ref와 제한된 비민감 요청·응답 요약이다. 원문 body·헤더·쿠키를 snapshot으로 복사하지 않는다. 최대 64 endpoint(공개 목록 코드 상한, 개수 대신 투영 바이트로 자르는 것은 공식 측정 고정 전 필수 항목), 페이지 1~256, 응답 4KiB~2MiB, 최근 event32/plan20/activity20 상한이 있다. UI의 요청 상한은 설치 catalog에서 받는다.
 
 사용자 모드는 초기 탐색 완료 후 모델·심화 전송 admission을 대기시키고 선택 저장 후 같은 Planner/Worker를 재개한다. 자동 모드는 사전 확인된 읽기 범위의 적격 발견만 선택한다(2026-11-13 C21부터: 대상이 되돌릴 수 있는 쓰기를 승인했으면 사용자 모드에서 고를 수 있는 폼·쓰기 끝점도 고르고 그 쓰기를 건별 확인 없이 보낸다. 결과 불명으로 끝난 쓰기와 같은 메서드·경로는 그 회차에서 다시 보내지 않는다). 2026-11-13 사용자 결정부터 자동 모드 진단은 고른 끝점 밖이라도 대상 승인 범위 안의 경로·메서드면 보낸다([워크플로 계약](contracts/workbench-engine-workflow.md)). 어떤 모드도 새로운 origin/IP/메서드/예산/쓰기 권한을 AI가 발급하지 못한다.
 
