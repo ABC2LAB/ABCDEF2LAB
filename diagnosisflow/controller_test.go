@@ -6,6 +6,7 @@ import (
 	"errors"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -258,6 +259,137 @@ func TestAutomaticModeInferredDiscoveryIsNotSideEffectEvidence(t *testing.T) {
 			}
 		}
 	}
+}
+
+// 자동 모드는 추정 출처 끝점도 읽기 확인 접두 안의 GET이면 고르고(모델 목록에 들어감), 고른 추정 끝점의 GET은
+// 고르지 않은 경로와 같이 읽기로 보낸다. 폼·쓰기 메서드·읽기 확인 접두 밖 경로는 쓰기 승인 없이는 고르지 않는다
+// (VAmPI 실제 회차 24b: 정찰 끝점 31개가 고르지 않아 모델 지시에 들어가지 않음).
+func TestAutomaticModeSelectsInferredReadsForModel(t *testing.T) {
+	c, _ := flowFixture(t, Auto)
+	c.binding.ReversibleWrites = false
+	c.binding.PathPrefixes = append(c.binding.PathPrefixes, "/other")
+	c.mu.Lock()
+	c.addLocked("GET", "/read/inferred-read", "request", SourceAPIReconRuntime, "/read")
+	c.addLocked("GET", "/other/inferred-read", "request", SourceAPIReconRuntime, "/read")
+	c.addLocked("GET", "/read/inferred-form", "form", SourceAPIReconRuntime, "/read")
+	c.addLocked("POST", "/read/inferred-post", "request", SourceAPIReconRuntime, "/read")
+	c.addLocked("GET", "/read/observed", "page", "html_link", "/read")
+	// addLocked가 돌려준 포인터는 다음 추가로 슬라이스가 커지면 낡으므로 다 넣은 뒤 다시 찾는다.
+	read, other, form := c.endpointLocked("GET", "/read/inferred-read"), c.endpointLocked("GET", "/other/inferred-read"), c.endpointLocked("GET", "/read/inferred-form")
+	post, observed := c.endpointLocked("POST", "/read/inferred-post"), c.endpointLocked("GET", "/read/observed")
+	for name, e := range map[string]*Endpoint{"read": read, "other": other, "form": form, "post": post, "observed": observed} {
+		if e == nil || !e.InScope {
+			t.Fatalf("%s fixture endpoint %+v", name, e)
+		}
+	}
+	want := map[*Endpoint]bool{read: true, other: false, form: false, post: false, observed: true}
+	for e, selected := range want {
+		if got := c.autoSelectableLocked(e); got != selected {
+			t.Fatalf("%s %s selected=%v want %v (change=%s)", e.Method, e.Path, got, selected, e.Change)
+		}
+		e.Selected = selected
+	}
+	c.record.Snapshot.Stage = "diagnosing"
+	c.mu.Unlock()
+	if read.Change != "possible" {
+		t.Fatal("selection must not rewrite the discovery classification", read.Change)
+	}
+	var rows []map[string]any
+	if json.Unmarshal([]byte(c.SelectedData()), &rows) != nil || len(rows) != 2 || rows[0]["path"] != "/read/observed" || rows[1]["path"] != "/read/inferred-read" {
+		t.Fatalf("model endpoint rows (observed first) %v", rows)
+	}
+	for _, tc := range []struct {
+		view  e2proxy.RequestView
+		allow bool
+	}{
+		{e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/inferred-read"}, true},
+		{e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/inferred-read?q=1"}, true},
+		{e2proxy.RequestView{Method: "POST", URL: "https://owned.test/read/inferred-read", BodyPresent: true, BodyBytes: 2}, false},
+		{e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/inferred-form"}, false},
+	} {
+		if err := c.Before(t.Context(), tc.view); (err == nil) != tc.allow {
+			t.Fatalf("%s %s allow=%v err=%v", tc.view.Method, tc.view.URL, tc.allow, err)
+		}
+	}
+}
+
+// 모델에게 주는 고른 끝점 목록은 MaxSelectedDataBytes 안이다. 관찰한 끝점이 앞에 오고, 넘치면 뒤쪽 행의 이름
+// 목록부터 덜고, 그래도 넘치면 뒤쪽(추정) 행을 빼며 지시에 뺀 수를 적는다. 작은 목록은 그대로다.
+func TestModelEndpointListByteCap(t *testing.T) {
+	names := make([]string, 32)
+	for i := range names {
+		names[i] = strings.Repeat("n", 60) + strconv.Itoa(i)
+	}
+	selected := func(c *Controller, n int, direct bool) int {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if !direct {
+			n = min(n, c.binding.Limits.MaxEndpoints-len(c.record.Snapshot.Endpoints))
+		}
+		for i := 0; i < n; i++ {
+			source := "html_link"
+			if i%2 == 1 {
+				source = SourceAPIReconRuntime
+			}
+			path := "/read/" + strings.Repeat("p", 90) + "/" + strconv.Itoa(i)
+			if direct {
+				// 공개 목록 상한보다 많은 고른 끝점(앞으로 개수 상한을 올릴 때)을 흉내 낸다.
+				c.record.Snapshot.Endpoints = append(c.record.Snapshot.Endpoints, Endpoint{ID: endpointID(c.origin, "GET", path), Method: "GET", Path: path, Kind: "request", Source: source, InScope: true, Change: "attested_read", Selected: true, QueryKeys: names})
+				continue
+			}
+			if c.addLocked("GET", path, "request", source, "/read") == nil {
+				t.Fatal("fixture endpoint", i)
+			}
+			e := c.endpointLocked("GET", path)
+			e.Selected, e.QueryKeys = true, names
+		}
+		c.record.Snapshot.Stage = "diagnosing"
+		return n
+	}
+	rowsOf := func(c *Controller) []map[string]any {
+		var rows []map[string]any
+		data := c.SelectedData()
+		if len(data) > MaxSelectedDataBytes || json.Unmarshal([]byte(data), &rows) != nil {
+			t.Fatalf("model endpoint list bytes=%d", len(data))
+		}
+		return rows
+	}
+	observedFirst := func(rows []map[string]any) {
+		inferredSeen := false
+		for _, row := range rows {
+			n, _ := strconv.Atoi(row["path"].(string)[strings.LastIndex(row["path"].(string), "/")+1:])
+			if n%2 == 0 && inferredSeen {
+				t.Fatal("observed endpoint after inferred ones", row["path"])
+			}
+			inferredSeen = inferredSeen || n%2 == 1
+		}
+	}
+
+	small, _ := flowFixture(t, Auto)
+	selected(small, 2, false)
+	if rows := rowsOf(small); len(rows) != 2 || rows[0]["query_keys"] == nil || rows[1]["query_keys"] == nil || strings.Contains(small.Instructions(), "left out") {
+		t.Fatalf("small list must be unchanged: %v", rows)
+	}
+
+	// 공개 목록 상한(64)에서는 이름 목록만 뒤쪽부터 덜고 행은 빠지지 않는다(경로 128자 상한).
+	full, _ := flowFixture(t, Auto)
+	full.binding.Limits.MaxEndpoints = MaxWorkflowEndpoints
+	added := selected(full, MaxWorkflowEndpoints, false)
+	rows := rowsOf(full)
+	if added < MaxWorkflowEndpoints-1 || len(rows) != added || rows[0]["query_keys"] == nil || rows[len(rows)-1]["query_keys"] != nil || strings.Contains(full.Instructions(), "left out") {
+		t.Fatalf("64 endpoints: rows=%d first keys=%v last keys=%v", len(rows), rows[0]["query_keys"] != nil, rows[len(rows)-1]["query_keys"] != nil)
+	}
+	observedFirst(rows)
+
+	// 그보다 많으면 뒤쪽(추정) 행을 빼고 지시에 뺀 수를 적는다.
+	many, _ := flowFixture(t, Auto)
+	selected(many, 256, true)
+	rows = rowsOf(many)
+	omitted := 256 - len(rows)
+	if omitted <= 0 || !strings.Contains(many.Instructions(), strconv.Itoa(omitted)+" more selected endpoints were left out") {
+		t.Fatalf("omitted=%d not reported", omitted)
+	}
+	observedFirst(rows)
 }
 
 // 자동 모드에서 처음 보는 경로라도 확인한 읽기(읽기 확인 접두 안의 GET·HEAD)로 허용한 요청은, 결과가 불명이어도

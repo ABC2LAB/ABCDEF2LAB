@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -155,6 +156,22 @@ func autoSelectable(e *Endpoint, reversibleWrites bool) bool {
 		return false
 	}
 	return e.Change == "attested_read" || reversibleWrites
+}
+
+// autoSelectableLocked는 자동 모드가 진단 시작 때 고르는 끝점이다. autoSelectable에 더해, 추정 출처(API 정찰·번들
+// 추측)라 possible인 끝점도 그 경로의 GET·HEAD가 운영자의 읽기 전용 승인으로 확인한 읽기이면 고른다. 추정 표시는
+// 크롤이 자동 방문하지 않게 하는 표시일 뿐 부작용 근거가 아니다(#602). 자동 모드는 이미 승인 범위 안이면 보내므로
+// 보낼 수 있는 요청은 늘지 않고, 모델이 받는 출발점 목록만 늘어난다(VAmPI 실제 회차 24b: 정찰 끝점 31개가 고르지
+// 않아 모델 지시에 들어가지 않음). 폼·스크립트·쓰기 메서드·관찰 오류 끝점은 고르지 않는다.
+func (c *Controller) autoSelectableLocked(e *Endpoint) bool {
+	if autoSelectable(e, c.binding.ReversibleWrites) {
+		return true
+	}
+	if !e.InScope || e.Change != "possible" || sideEffectEvidence(*e) || e.Kind == "script" || e.ObservationError != "" && e.ObservationError != "body_incomplete" {
+		return false
+	}
+	in, change := c.endpointScope(e.Method, e.Path, "request", "diagnosis_request")
+	return in && change == "attested_read"
 }
 
 // sideEffectPossible은 끝점이 상태를 바꿀 수 있는지다. 운영자가 경로 단위로 비변경을 확인한 읽기(attested_read)만 아니다.
@@ -524,18 +541,21 @@ func (c *Controller) BeforeWork(ctx context.Context) error {
 func (c *Controller) Instructions() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	rows, omitted := c.modelEndpointsLocked()
 	var selected []string
-	for _, e := range c.record.Snapshot.Endpoints {
-		if e.Selected {
-			selected = append(selected, e.ID)
-		}
+	for _, row := range rows {
+		selected = append(selected, row["endpoint_ref"].(string))
 	}
 	data, _ := json.Marshal(selected)
 	scope := "Only selected endpoints may be tested after initial discovery. Endpoint references below are opaque program-owned IDs. Do not expand scope for newly found endpoints. A selected endpoint also covers the same method on a path that differs only in object ID segments of the same kind (number, UUID, long hex or email), so other object IDs may be requested there."
 	if c.binding.Mode == Auto {
 		scope = "In automatic mode you may test any path and method within the approved target scope, including endpoints that discovery did not find; the selected endpoints below are discovered starting points, not a limit. Requests outside the approved origin, paths or methods, excluded paths and destructive actions are blocked by the transfer control. Endpoint references below are opaque program-owned IDs."
 	}
-	return "\nWorkbench workflow mode: " + c.record.Snapshot.Mode + ". Workbench workflow phase: " + c.record.Snapshot.Stage + ". " + scope + " Selected endpoint references (JSON): " + string(data)
+	more := ""
+	if omitted > 0 {
+		more = " " + strconv.Itoa(omitted) + " more selected endpoints were left out of this list for length; the same scope rules apply to them."
+	}
+	return "\nWorkbench workflow mode: " + c.record.Snapshot.Mode + ". Workbench workflow phase: " + c.record.Snapshot.Stage + ". " + scope + " Selected endpoint references (JSON): " + string(data) + more
 }
 func (c *Controller) Command(ctx context.Context, owner, op, key string, revision uint64, ids []string) (Snapshot, error) {
 	c.mu.Lock()
@@ -682,7 +702,9 @@ func (c *Controller) uncertainSideEffectLocked(method, path string) bool {
 // 불명 뒤 부작용 가능으로 기억해 회차 끝까지 막지 않게).
 func (c *Controller) diagnosisChangeLocked(method, path string) (string, bool) {
 	e := c.requestEndpointLocked(method, path)
-	if e != nil && e.Selected {
+	// 자동 모드에서 추정 출처라 고른 끝점(autoSelectableLocked)의 possible은 부작용 근거가 아니므로, 고르지 않은 경로와
+	// 같은 아래 자동 모드 판정을 따른다(고른 끝점이라고 더 막히지 않게). 수동 모드는 고른 끝점의 분류 그대로다.
+	if e != nil && e.Selected && !(c.binding.Mode == Auto && e.Change == "possible" && !sideEffectEvidence(*e)) {
 		return e.Change, true
 	}
 	if c.binding.Mode != Auto {
@@ -882,23 +904,53 @@ func (c *Controller) Fail(ctx context.Context, reason string) error {
 func (c *Controller) SelectedData() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var rows []map[string]any
-	for _, e := range c.record.Snapshot.Endpoints {
-		if e.Selected {
-			row := map[string]any{"endpoint_ref": e.ID, "method": e.Method, "path": e.Path}
-			// 보고된 요청 모양은 이름뿐이고 대상에서 온 데이터다(값 없음).
-			if len(e.QueryKeys) > 0 {
-				row["query_keys"] = e.QueryKeys
-			}
-			if len(e.BodyKeys) > 0 {
-				row["body_keys"] = e.BodyKeys
-			}
-			if e.ContentType != "" {
-				row["content_type"] = e.ContentType
-			}
-			rows = append(rows, row)
-		}
-	}
+	rows, _ := c.modelEndpointsLocked()
 	raw, _ := json.Marshal(rows)
 	return string(raw)
+}
+
+// MaxSelectedDataBytes는 모델 지시(Planner 목표·Worker 입력)에 넣는 고른 끝점 데이터의 바이트 상한이다. 자동 모드가
+// 추정 출처 읽기까지 고르면서 목록이 길어져도 모델 입력이 그만큼 커지지 않게 묶는다. 공개 끝점 목록 상한
+// (MaxWorkflowEndpoints 64)에서 행 하나는 보통 100바이트 안팎이라 대개 전부 들어가고, 보고된 이름 목록이 클 때만 덜어 낸다.
+const MaxSelectedDataBytes = 16 << 10
+
+// modelEndpointsLocked는 모델에게 줄 고른 끝점 행과 길이 때문에 뺀 수다. 관찰한 끝점을 앞에, 추정 출처 끝점을 뒤에
+// 둔다. 상한을 넘으면 뒤쪽 행의 이름 목록(보조 정보)부터 덜고, 그래도 넘으면 뒤쪽 행을 뺀다. 빠진 끝점도 허용 판정은
+// 그대로다(모델이 모를 뿐이다).
+func (c *Controller) modelEndpointsLocked() ([]map[string]any, int) {
+	var observed, inferred []map[string]any
+	for _, e := range c.record.Snapshot.Endpoints {
+		if !e.Selected {
+			continue
+		}
+		row := map[string]any{"endpoint_ref": e.ID, "method": e.Method, "path": e.Path}
+		// 보고된 요청 모양은 이름뿐이고 대상에서 온 데이터다(값 없음).
+		if len(e.QueryKeys) > 0 {
+			row["query_keys"] = e.QueryKeys
+		}
+		if len(e.BodyKeys) > 0 {
+			row["body_keys"] = e.BodyKeys
+		}
+		if e.ContentType != "" {
+			row["content_type"] = e.ContentType
+		}
+		if inferredSource(e.Source) {
+			inferred = append(inferred, row)
+		} else {
+			observed = append(observed, row)
+		}
+	}
+	rows := append(observed, inferred...)
+	fits := func() bool { raw, _ := json.Marshal(rows); return len(raw) <= MaxSelectedDataBytes }
+	for i := len(rows) - 1; i >= 0 && !fits(); i-- {
+		delete(rows[i], "query_keys")
+		delete(rows[i], "body_keys")
+		delete(rows[i], "content_type")
+	}
+	omitted := 0
+	for len(rows) > 0 && !fits() {
+		rows = rows[:len(rows)-1]
+		omitted++
+	}
+	return rows, omitted
 }

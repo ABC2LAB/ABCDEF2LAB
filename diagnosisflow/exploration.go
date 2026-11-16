@@ -381,7 +381,7 @@ func (c *Controller) FinishExploration(ctx context.Context, b ExplorationBinding
 		s.Stage = "diagnosing"
 		for i := range s.Endpoints {
 			e := &s.Endpoints[i]
-			e.Selected = autoSelectable(e, c.binding.ReversibleWrites)
+			e.Selected = c.autoSelectableLocked(e)
 		}
 	}
 	return c.saveLocked(ctx, false, "exploration_finished", "", "", 0)
