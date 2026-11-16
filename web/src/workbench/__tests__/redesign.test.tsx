@@ -492,16 +492,21 @@ describe("자산 탐색", () => {
 
   it.each([
     [
-      "부분 완료 · 상한 소진",
-      { exploration_status: "PARTIAL", exploration_reason: "cap_exhausted" },
-      "부분 완료 · cap_exhausted",
+      "뜻을 더하는 사유는 status 뒤에 보인다",
+      { exploration_status: "PARTIAL", exploration_reason: "model_unavailable" },
+      "탐색 상태 부분 완료 · 모델 사용 불가",
     ],
     [
-      "중지",
-      { stage: "stopped", exploration_status: "STOPPED", exploration_reason: "operator_stop" },
-      "중지됨 · operator_stop",
+      "status 와 겹치는 사유(stopped)는 화면에서 숨긴다",
+      { stage: "stopped", exploration_status: "STOPPED", exploration_reason: "stopped" },
+      "탐색 상태 중지됨",
     ],
-  ])("%s 로 끝나도 막대를 100%% 로 바꾸지 않고 탐색 상태를 따로 보인다 (리뷰 #479 반례)", (_n, over, text) => {
+    [
+      "status 와 모순되는 사유(PARTIAL 의 completed)는 화면에서 숨긴다",
+      { exploration_status: "PARTIAL", exploration_reason: "completed" },
+      "탐색 상태 부분 완료",
+    ],
+  ])("%s · 막대는 100%% 로 바꾸지 않고 탐색 상태를 따로 보인다 (리뷰 #479)", (_n, over, text) => {
     // 방문 2 / 페이지 상한 8 = 25% — 서버는 PARTIAL 에서도 initial_completed 를 true 로 둔다
     useUrl.setState({
       handle,
@@ -523,7 +528,8 @@ describe("자산 탐색", () => {
       </ShellContext.Provider>,
     );
     expect(screen.getByRole("progressbar", { name: /탐색 진행/ })).toHaveAttribute("aria-valuenow", "25");
-    expect(screen.getByText(/^탐색 상태/)).toHaveTextContent(text);
+    // 화면은 status 중심: 뜻을 더하는 사유만 뒤에 붙고, 겹치거나 모순되는 토큰은 빠진다(원본 영문 토큰 노출 금지)
+    expect(screen.getByText(/^탐색 상태/).textContent).toBe(text);
   });
 });
 

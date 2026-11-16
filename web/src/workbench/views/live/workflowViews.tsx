@@ -16,7 +16,7 @@ import { useShell, type View } from "../../shell";
 import { Icon } from "../../ui/icons";
 import { CloseInspButton, CodeCard, InspOpenButton, Kv, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
-import { UrlHead, UrlNotices, UrlRefreshButton, useUrlHost } from "./urlParts";
+import { reasonText, UrlHead, UrlNotices, UrlRefreshButton, useUrlHost } from "./urlParts";
 
 /** 경로 규칙 묶음 전체 (group 이 돌려줄 수 있는 이름). 자산 탐색 묶음 카드 순서 (시안 GORD + 정적 자원). */
 export const GROUPS = [
@@ -151,6 +151,20 @@ const EXPLORE_TEXT = {
   STOPPED: "중지됨",
   NOT_RUN: "탐색 안 함",
 } as const;
+/**
+ * 서버 탐색 사유(exploration_reason) 중 status 의 뜻을 '명확히' 더해 주는 것만 글로 보인다(팀 결정: 화면은 status 중심,
+ * 사유는 뜻을 더할 때만). status 와 겹치거나(stopped) 모순되는(PARTIAL 의 completed) · 모르는 토큰은 화면에서 숨긴다.
+ * 원본 reason 은 서버 진단 기록에 그대로 남는다 — 여기서 버리는 건 화면 표시뿐이다.
+ */
+const EXPLORE_REASON_TEXT: Record<string, string> = {
+  startup_failed: "시작 실패",
+  audit_incomplete: "감사 기록 불완전",
+  policy_rejected: "정책에 막힘",
+  browser_unavailable: "브라우저 사용 불가",
+  model_unavailable: "모델 사용 불가",
+  drain_timeout: "정리 시간 초과",
+  unsupported: "미지원",
+};
 /**
  * 서버 탐색 상태 · 사유. 파서(live/workflow.ts)에 아직 칸이 없어 응답 원본에서 아는 값만 읽는다
  * (모르는 상태 · 형식이 다른 사유는 버림).
@@ -1052,6 +1066,7 @@ export function WorkflowCrawlLive() {
           {stop.box}
           <UrlNotices />
           <WorkflowNotice />
+          {job?.reason_code ? <p className={s.help}>{`서버 사유: ${reasonText(job.reason_code)}`}</p> : null}
           {!job ? <p className={s.empty}>이 브라우저에서 이어 보는 점검이 없습니다.</p> : null}
           {job && !flow ? (
             <p className={s.empty}>
@@ -1101,7 +1116,8 @@ export function WorkflowCrawlLive() {
                       탐색 안 함은 '탐색을 마쳤습니다'만으로는 다 돌지 못한 걸 알 수 없어 사유와 함께 남긴다(절대규칙 5) */}
                   {explore && explore.status !== "RUNNING" && explore.status !== "COMPLETED" ? (
                     <span>
-                      탐색 상태 <b>{`${explore.text}${explore.reason ? ` · ${explore.reason}` : ""}`}</b>
+                      탐색 상태{" "}
+                      <b>{`${explore.text}${explore.reason && EXPLORE_REASON_TEXT[explore.reason] ? ` · ${EXPLORE_REASON_TEXT[explore.reason]}` : ""}`}</b>
                     </span>
                   ) : null}
                 </div>
