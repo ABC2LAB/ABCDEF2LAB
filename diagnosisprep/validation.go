@@ -162,12 +162,19 @@ func ValidateRequest(r Request) error {
 		return ErrProtocol
 	}
 	noInput := r.Input == nil
+	if r.Command != ListRuns && r.Runs != nil {
+		return ErrProtocol
+	}
 	if r.Command != ProductControl && r.Product != nil {
 		return ErrProtocol
 	}
 	switch r.Command {
 	case ProductControl:
 		if r.JobID != "" || r.ExpectedRevision != 0 || r.IdempotencyKey != "" || !noInput || r.TaskID != "" || !validProductRequest(r.Product) {
+			return ErrProtocol
+		}
+	case ListRuns:
+		if r.JobID != "" || r.ExpectedRevision != 0 || r.IdempotencyKey != "" || !noInput || r.TaskID != "" || !validRunListRequest(r.Runs) {
 			return ErrProtocol
 		}
 	case Catalog:
@@ -337,7 +344,7 @@ func validJobResult(j Job) bool {
 }
 func validError(code string) bool {
 	switch code {
-	case "invalid_request", "not_found", "forbidden", "revision_conflict", "idempotency_conflict", "approval_changed", "approval_required", "busy", "budget_exhausted", "capacity", "unavailable", "unknown", "service_closed":
+	case "invalid_request", "not_found", "forbidden", "revision_conflict", "idempotency_conflict", "approval_changed", "approval_required", "busy", "budget_exhausted", "capacity", "unavailable", "unknown", "service_closed", "snapshot_changed":
 		return true
 	}
 	return false
@@ -346,11 +353,14 @@ func ValidateResponse(r Request, response Response) error {
 	if ValidateRequest(r) != nil || response.Version != Version || response.RequestID != r.RequestID {
 		return ErrProtocol
 	}
+	if r.Command != ListRuns && response.RunPage != nil {
+		return ErrProtocol
+	}
 	if r.Command != ProductControl && response.Product != nil {
 		return ErrProtocol
 	}
 	if response.Error != "" {
-		if response.Product != nil {
+		if response.Product != nil || response.RunPage != nil {
 			return ErrProtocol
 		}
 		if !validError(response.Error) || response.Job != nil || response.Authorized != nil || len(response.Profiles) != 0 {
@@ -359,6 +369,11 @@ func ValidateResponse(r Request, response Response) error {
 		return nil
 	}
 	switch r.Command {
+	case ListRuns:
+		if response.Job != nil || response.Authorized != nil || len(response.Profiles) != 0 || !validRunPage(r, response.RunPage) {
+			return ErrProtocol
+		}
+
 	case ProductControl:
 		if response.Product == nil || response.Job != nil || response.Authorized != nil || len(response.Profiles) != 0 || len(response.Product.Targets) > 128 ||
 			len(response.Product.Accounts) > MaxTargetAccounts {

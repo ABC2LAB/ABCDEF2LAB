@@ -17,6 +17,7 @@ type Command string
 
 const (
 	Catalog       Command = "catalog"
+	ListRuns      Command = "list_runs"
 	Create        Command = "create"
 	Lookup        Command = "lookup"
 	Validate      Command = "validate"
@@ -171,6 +172,7 @@ type Job struct {
 // Principal은 API가 기존 Bearer 인증으로 확인한 주체다. 브라우저 body에서는 받지 않는다.
 // socket 주소·descriptor·파일 경로·환경 변수·명령·권위 자료는 요청 필드가 아니다.
 type Request struct {
+	Runs                      *RunListRequest `json:"runs,omitempty"`
 	Version                   string          `json:"version"`
 	RequestID                 string          `json:"request_id"`
 	Command                   Command         `json:"command"`
@@ -185,6 +187,7 @@ type Request struct {
 }
 
 type Response struct {
+	RunPage    *RunPage         `json:"run_page,omitempty"`
 	Version    string           `json:"version"`
 	RequestID  string           `json:"request_id"`
 	Profiles   []Profile        `json:"profiles,omitempty"`
