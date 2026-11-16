@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -94,6 +95,10 @@ type runningCall struct {
 }
 
 func New(cfg Config) (*Runner, error) {
+	return newWithProcessFS(cfg, os.DirFS("/sys/fs/cgroup"))
+}
+
+func newWithProcessFS(cfg Config, processFS fs.FS) (*Runner, error) {
 	if cfg.BashSlots == 0 {
 		cfg.BashSlots = 1
 	}
@@ -103,6 +108,9 @@ func New(cfg Config) (*Runner, error) {
 	limits, err := processLimits(cfg.BashSlots)
 	if err != nil {
 		return nil, err
+	}
+	if checkProcessBudget(processFS, limits.ContainerTasks) != nil {
+		return nil, ErrConfig
 	}
 
 	if cfg.CommandTimeout <= 0 || cfg.CommandTimeout > maxRunnerCommandTimeout ||
