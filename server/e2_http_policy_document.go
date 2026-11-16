@@ -54,7 +54,7 @@ func validateE2HTTPPolicyDocument(raw []byte, prepared bool) (E2HTTPFilePolicy, 
 
 func validateE2HTTPPolicyDocumentMode(raw []byte, prepared, run bool) (E2HTTPFilePolicy, string, error) {
 	var policy E2HTTPFilePolicy
-	if len(raw) == 0 || len(raw) > e2config.MaxPolicyBytes || !utf8.Valid(raw) || strictJSON(raw, &policy) != nil {
+	if len(raw) == 0 || len(raw) > e2config.MaxPolicyBytes || !validE2HTTPPathMatchFields(raw) || !utf8.Valid(raw) || strictJSON(raw, &policy) != nil {
 		return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
 	}
 	top := []string{"approval_mode", "format", "run_ref", "reset_ref", "policy_ref", "case_ref", "policy_revision", "budget_ref", "owner_ref", "account_ref", "session_ref", "valid_from", "valid_until", "max_requests", "header_mode", "evaluation", "state_dir", "helper", "helper_sha256", "ca_cert", "ca_key", "rules", "limits", "proxy", "runtime"}
@@ -136,11 +136,15 @@ func validateE2HTTPPolicyDocumentMode(raw []byte, prepared, run bool) (E2HTTPFil
 	}
 	rules := make([]e2proxy.Rule, 0, len(policy.Rules))
 	for i, rule := range policy.Rules {
-		if !e2HTTPExactJSON(ruleJSON[i], []string{"approval_display", "ref", "origin", "connect_ip", "path_prefix", "path_scope_ref", "methods"}, []string{"credentials", "tls_spki_sha256", "purpose"}, "credentials") {
+		if !e2HTTPExactJSON(ruleJSON[i], []string{"approval_display", "ref", "origin", "connect_ip", "path_prefix", "path_scope_ref", "methods"}, []string{"credentials", "tls_spki_sha256", "purpose", "path_match"}, "credentials") {
 			return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
 		}
 		var obj map[string]json.RawMessage
 		_ = json.Unmarshal(ruleJSON[i], &obj)
+		// 선택 칸이 명시됐다면 exact 하나만 받는다. null/빈 값이 접두 기본값으로 바뀌어 권한이 넓어지지 않는다.
+		if value, present := obj["path_match"]; present && !bytes.Equal(value, []byte(`"exact"`)) {
+			return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
+		}
 		if !e2HTTPExactJSON(obj["approval_display"], []string{"public_path", "query_keys", "json_fields"}, nil, "query_keys", "json_fields") {
 			return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
 		}
@@ -154,7 +158,7 @@ func validateE2HTTPPolicyDocumentMode(raw []byte, prepared, run bool) (E2HTTPFil
 		if err != nil {
 			return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
 		}
-		rules = append(rules, e2proxy.Rule{Ref: rule.Ref, Purpose: rule.Purpose, Origin: rule.Origin, ConnectIP: ip, TLSSPKISHA256: rule.TLSSPKISHA256, PathPrefix: rule.PathPrefix, PathScopeRef: rule.PathScopeRef, Methods: rule.Methods})
+		rules = append(rules, e2proxy.Rule{Ref: rule.Ref, Purpose: rule.Purpose, Origin: rule.Origin, ConnectIP: ip, TLSSPKISHA256: rule.TLSSPKISHA256, PathPrefix: rule.PathPrefix, PathMatch: rule.PathMatch, PathScopeRef: rule.PathScopeRef, Methods: rule.Methods})
 	}
 	requestTimeout, ok1 := e2HTTPMilliseconds(policy.Limits.RequestTimeoutMS, time.Minute)
 	callTimeout, ok2 := e2HTTPMilliseconds(policy.Limits.CallTimeoutMS, time.Hour)
@@ -219,6 +223,26 @@ func e2HTTPExactJSON(raw []byte, required, optional []string, nullable ...string
 				permit = permit || name == key
 			}
 			if !permit {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// validE2HTTPPathMatchFields는 파일 factory와 정적 문서 검증이 선택 칸 null을 접두 기본값으로 읽지 않게 한다.
+func validE2HTTPPathMatchFields(raw []byte) bool {
+	var document map[string]json.RawMessage
+	if json.Unmarshal(raw, &document) != nil {
+		return false
+	}
+	var rules []map[string]json.RawMessage
+	if json.Unmarshal(document["rules"], &rules) != nil || rules == nil {
+		return false
+	}
+	for _, rule := range rules {
+		for name, value := range rule {
+			if strings.EqualFold(name, "path_match") && (name != "path_match" || !bytes.Equal(value, []byte(`"exact"`))) {
 				return false
 			}
 		}

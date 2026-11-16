@@ -27,6 +27,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/Autumn-27/artex/internal/pathscope"
 	"github.com/Autumn-27/artex/transmit/budget"
 )
 
@@ -173,7 +174,7 @@ func compileRules(rules []Rule) ([]compiledRule, error) {
 		if err != nil || u.RawQuery != "" || u.ForceQuery || (u.Path != "" && u.Path != "/") {
 			return nil, ErrConfig
 		}
-		if !validPath(r.PathPrefix) {
+		if !validPath(r.PathPrefix) || r.PathMatch != "" && r.PathMatch != "exact" || r.Purpose != "" && r.PathMatch != "" {
 			return nil, ErrConfig
 		}
 		m := map[string]bool{}
@@ -962,7 +963,7 @@ func (e *Execution) matchLocked(req *http.Request) (compiledRule, bool) {
 		if r.Purpose != "" {
 			continue
 		}
-		if req.URL.Scheme == r.origin.Scheme && a == r.authority && r.methods[req.Method] && (r.PathPrefix == "/" || p == strings.TrimSuffix(r.PathPrefix, "/") || strings.HasPrefix(p, strings.TrimSuffix(r.PathPrefix, "/")+"/")) {
+		if req.URL.Scheme == r.origin.Scheme && a == r.authority && r.methods[req.Method] && (pathscope.Scope{Path: r.PathPrefix, Mode: pathscope.Mode(r.PathMatch)}).Allows(p, req.URL.RawQuery != "" || req.URL.ForceQuery) {
 			return r, true
 		}
 	}

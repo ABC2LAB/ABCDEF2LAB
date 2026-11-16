@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"log"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -18,9 +19,9 @@ import (
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/e2config"
 	"github.com/Autumn-27/artex/e2proxy"
+	"github.com/Autumn-27/artex/internal/pathscope"
 	"github.com/Autumn-27/artex/llmpolicy"
 	"github.com/Autumn-27/artex/server"
-	"net/url"
 )
 
 type urlProductInstallation struct {
@@ -411,7 +412,11 @@ func (p *productRuntime) loadBinding(principal string, input diagnosisprep.Input
 	derived.Attestation.Methods = append([]string(nil), methods...)
 	policy.Rules = nil
 	for i, path := range rec.Target.PathPrefixes {
-		policy.Rules = append(policy.Rules, server.E2HTTPFileRule{Ref: "target-path-" + string(rune('a'+i)), Origin: rec.Target.Origin, ConnectIP: rec.SelectedIP, PathPrefix: path, PathScopeRef: "readonly-path-" + string(rune('a'+i)), Methods: methods, ApprovalDisplay: server.RequestApprovalDisplay{PublicPath: input.WorkflowMode == diagnosisflow.Manual, QueryKeys: []string{}, JSONFields: []string{}}, TLSSPKISHA256: rec.Target.TLSSPKISHA256})
+		scope, ok := pathscope.Parse(path)
+		if !ok {
+			return nil, errPreparation
+		}
+		policy.Rules = append(policy.Rules, server.E2HTTPFileRule{Ref: "target-path-" + string(rune('a'+i)), Origin: rec.Target.Origin, ConnectIP: rec.SelectedIP, PathPrefix: scope.Path, PathMatch: string(scope.Mode), PathScopeRef: "readonly-path-" + string(rune('a'+i)), Methods: methods, ApprovalDisplay: server.RequestApprovalDisplay{PublicPath: input.WorkflowMode == diagnosisflow.Manual, QueryKeys: []string{}, JSONFields: []string{}}, TLSSPKISHA256: rec.Target.TLSSPKISHA256})
 	}
 	if len(accounts.Accounts) > 0 {
 		// 로그인 경로 하나만 정확히 가리키는 인증 준비 규칙. 모델 요청은 이 규칙을 쓰지 못한다(E② Purpose).

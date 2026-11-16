@@ -5,8 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"github.com/Autumn-27/artex/diagnosis"
-	"github.com/Autumn-27/artex/diagnosisflow"
 	"io"
 	"net"
 	"net/netip"
@@ -18,6 +16,10 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/Autumn-27/artex/diagnosis"
+	"github.com/Autumn-27/artex/diagnosisflow"
+	"github.com/Autumn-27/artex/internal/pathscope"
 )
 
 var reference = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
@@ -239,11 +241,12 @@ func validScope(s *Scope) bool {
 		return false
 	}
 	for _, p := range s.PathPrefixes {
-		if len(p) == 0 || p[0] != '/' {
+		scope, ok := pathscope.Parse(p)
+		if !ok {
 			return false
 		}
-		c, e := CanonicalInput(Input{TargetURL: s.Origin + p, ProfileID: "scope"})
-		if e != nil || c.TargetURL != s.Origin+p {
+		c, e := CanonicalInput(Input{TargetURL: s.Origin + scope.Path, ProfileID: "scope"})
+		if e != nil || c.TargetURL != s.Origin+scope.Path {
 			return false
 		}
 	}

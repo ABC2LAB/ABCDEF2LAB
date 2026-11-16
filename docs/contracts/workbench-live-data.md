@@ -76,6 +76,8 @@
 - `audit_bound`: 감사 키가 결속됐는지 여부만. 키 경로·해시는 없다.
 - 넣지 않는 것: 자격 파일 pin·CA·helper·상태 디렉터리 경로, 감사 키 pin, 평가 문맥.
 
+규칙의 선택 칸 `path_match: "exact"`는 query 없는 단일 `path_prefix` 경로만 승인한다. 생략은 기존 경로 조각 접두다. `null`·빈 값·미지원 모드는 거부한다. 대상 등록/준비 scope의 `=/` 표현과 정책·내용 지문·감사 `rule_ref` 결속은 [정확 경로 승인 계약](exact-path-approval.md)을 따른다. 화면 파서는 이 칸과 정확/접두 구분을 먼저 지원한 뒤 exact 등록을 연다. 기존 prefix 응답에는 이 칸이 추가되지 않는다.
+
 ## 4. 전송 통제 흐름 — 새 API와 사유 enum
 
 `GET /api/tasks/{id}/e2-flow` · `GET /api/tasks/{id}/e2-flow?after=<index>`
