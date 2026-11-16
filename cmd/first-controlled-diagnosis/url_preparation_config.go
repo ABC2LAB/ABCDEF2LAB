@@ -30,7 +30,7 @@ import (
 const urlPreparationFormat = "abc2lab.url-preparation-installation/v1"
 
 // urlMaxRunSeconds는 회차 하나의 실행 시간 상한(초)이다. 설치 프로파일 검사와 설치 입력 runtime_limits.run_seconds
-// 검사가 같은 값을 쓴다. 기본값(제품 180초·워크플로 600초)이 아니라 고를 수 있는 최대치다(C32). 600초이던 상한을
+// 검사가 같은 값을 쓴다. 기본값(제품 180초·워크플로 1800초)이 아니라 고를 수 있는 최대치다(C32). 600초이던 상한을
 // 2026-11-14에 올렸다: 출력이 느린 모델(점검 회차 실측 초당 ~19토큰)에서는 600초 안에 모델 호출 몇 번만 하고 끝났다.
 // 준비 task 시간 상한(server.MaxFirstDiagnosisTaskSeconds)과 같다.
 const urlMaxRunSeconds = server.MaxFirstDiagnosisTaskSeconds
@@ -98,18 +98,19 @@ type urlInputPin struct {
 	executable   bool
 }
 type urlLoadedProfile struct {
-	profile         urlPreparationProfile
-	launch          launchConfig
-	policy          server.E2HTTPFilePolicy
-	origin          string
-	address         netip.Addr
-	pins            []urlInputPin
-	materials       map[string][]byte
-	inspection      diagnosisprep.Inspection
-	heldCheck       func() error
-	releaseInputs   func()
-	productTarget   *productTargetRecord
-	productRegistry *productTargetRegistry
+	profile           urlPreparationProfile
+	launch            launchConfig
+	policy            server.E2HTTPFilePolicy
+	origin            string
+	address           netip.Addr
+	pins              []urlInputPin
+	materials         map[string][]byte
+	inspection        diagnosisprep.Inspection
+	heldCheck         func() error
+	releaseInputs     func()
+	productConnection *productTargetConnection
+	productTarget     *productTargetRecord
+	productRegistry   *productTargetRegistry
 	// productAccounts는 이 실행에 결속한 시험 계정이다(C14). 각각이 지금도 같은 자격으로 test여야 송신을 이어 간다.
 	productAccounts []productRunAccount
 	// externalTestAccounts는 외부 API 실행에 시험 계정을 결속했다는 뜻이다(초안 입력의 사전 공지·승인 진술, C14 결정 4).
@@ -311,7 +312,7 @@ func urlLoadProfileForReport(c urlPreparationInstallation, installationPin urlIn
 			return nil, errPreparation
 		}
 	}
-	if !p.DeriveRuns || !p.Attestation.Verified || p.MaxRuns < 1 || p.MaxRuns > 1000 || p.ValidFrom.IsZero() || !p.ValidUntil.After(p.ValidFrom) ||
+	if !p.DeriveRuns || !p.Attestation.Verified || p.MaxRuns < 1 || p.MaxRuns > productMaxDelegatedRuns || p.ValidFrom.IsZero() || !p.ValidUntil.After(p.ValidFrom) ||
 		!urlBudgetWithin(p.Budget, p.AggregateBudget) || p.Budget.DurationSeconds > urlMaxRunSeconds || !urlDigestValid(p.PolicySHA256) ||
 		!urlDigestValid(p.ManifestSHA256) || !urlDigestValid(p.Launch.SHA256) ||
 		p.Attestation.QueryPolicy != "any" || p.Attestation.BodyPolicy != "bounded" || p.Attestation.MaxBodyBytes < 1 ||

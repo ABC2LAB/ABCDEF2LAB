@@ -21,6 +21,7 @@ type explorationProvider struct {
 	failure  error
 	calls    int
 	requests []llm.CompletionRequest
+	answer   string // 비어 있지 않으면 마지막 답을 이것으로 바꾼다.
 }
 
 func (p *explorationProvider) Complete(_ context.Context, r llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
@@ -38,7 +39,11 @@ func (p *explorationProvider) Complete(_ context.Context, r llm.CompletionReques
 		}
 		return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: "owned-call", Name: name, Input: json.RawMessage(input)}}}, "tool_use", llm.Usage{}, nil
 	}
-	return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock("탐색 발견 보고 완료")}}, "end_turn", llm.Usage{}, nil
+	answer := "탐색 발견 보고 완료"
+	if p.answer != "" {
+		answer = p.answer
+	}
+	return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock(answer)}}, "end_turn", llm.Usage{}, nil
 }
 func (p *explorationProvider) Stream(context.Context, llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
 	return func(yield func(llm.StreamEvent, error) bool) { yield(llm.StreamEvent{}, errors.New("stream not used")) }

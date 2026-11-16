@@ -14,6 +14,7 @@ import (
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/llmpolicy"
+	"github.com/Autumn-27/artex/server"
 )
 
 const launchFormat = "abc2lab.first-diagnosis-launch/v1"
@@ -151,7 +152,7 @@ type taskPreparation struct {
 
 func parseLaunchConfig(data []byte) (launchConfig, error) {
 	var c launchConfig
-	if len(data) == 0 || len(data) > maxLaunchBytes || !utf8.Valid(data) || decodeLaunchJSON(data, &c) != nil || c.Format != launchFormat || c.ModelProfileID <= 0 || c.ShutdownTimeoutSeconds < 1 || c.ShutdownTimeoutSeconds > 60 {
+	if len(data) == 0 || len(data) > maxLaunchBytes || !utf8.Valid(data) || decodeLaunchJSON(data, &c) != nil || c.Format != launchFormat || c.ModelProfileID <= 0 || c.ShutdownTimeoutSeconds < 1 || c.ShutdownTimeoutSeconds > server.MaxFirstDiagnosisShutdownSeconds {
 		return launchConfig{}, errPreparation
 	}
 	paths := []string{c.DataDir, c.KeyDir, c.SkillDir, c.RuntimeDSNFile}

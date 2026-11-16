@@ -104,7 +104,7 @@ go build -o /srv/first-diagnosis/bin/first-controlled-diagnosis ./cmd/first-cont
 
 `policy.json`은 `server.E2HTTPFilePolicy`의 폐쇄 형식 `abc2lab.e2-http-host-policy/v1`이다. 실제 approval/run/reset/case/policy/budget 참조, 승인 기간·한도, 계정/세션, CA 인증서·개인키·감사키·credential 보호 파일과 각 SHA256, 실제 격리 helper·state 경로를 공급한다. 실제 task/intent는 정책 파일이 임의로 정하지 않고 기동/Planner/Store 경로에서 확인한다.
 
-`authority.json`은 `abc2lab.first-http-authority/v1`이며 `approval_ref`, 실제 `operator_uid`, 실제 `task_id`·`exploration_id`, 정책 파일 원문의 `policy_sha256`, `valid_from`·`valid_until`을 포함한다. 운영자가 실제 행과 보호된 정책 바이트를 확인하고 승인한다. 승인 구간은 최대 15분이며 정책 유효 구간을 포함해야 한다. 같은 전용 authority root에서 단회 시작 marker와 실제 FD·배타 잠금을 유지한다. 이 M01 lease는 해당 보호 namespace와 단일 writer의 근거이며, 같은 UID의 모든 외부 프로세스에 대한 독립 인증이나 전체 호스트 격리 수용의 증거가 아니다. 종료·실패 뒤 기존 승인으로 재기동하지 않는다. 새 회차는 새 승인과 새 전용 경로가 필요하다.
+`authority.json`은 `abc2lab.first-http-authority/v1`이며 `approval_ref`, 실제 `operator_uid`, 실제 `task_id`·`exploration_id`, 정책 파일 원문의 `policy_sha256`, `valid_from`·`valid_until`을 포함한다. 운영자가 실제 행과 보호된 정책 바이트를 확인하고 승인한다. 승인 구간은 최대 61분(회차 실행 시간 상한 3600초 + 정리 시간 상한 60초, `server.MaxFirstDiagnosisHTTPAuthority`)이며 정책 유효 구간을 포함해야 한다. 같은 전용 authority root에서 단회 시작 marker와 실제 FD·배타 잠금을 유지한다. 이 M01 lease는 해당 보호 namespace와 단일 writer의 근거이며, 같은 UID의 모든 외부 프로세스에 대한 독립 인증이나 전체 호스트 격리 수용의 증거가 아니다. 종료·실패 뒤 기존 승인으로 재기동하지 않는다. 새 회차는 새 승인과 새 전용 경로가 필요하다.
 
 일반 HTTP에는 등록 GET snapshot/KG/Receipt/E③ 권위를 필수로 넣지 않는다. 허용·거부·대상 응답·도구 오류·전송 불명을 구분하고, 통제 구성이 없으면 Planner/Worker가 무통제 Bash로 떨어지지 않는다. 격리 helper와 실제 namespace 검증이 필요하며 proxy 환경변수만으로 우회 차단을 주장하지 않는다.
 

@@ -71,7 +71,7 @@ func (b *urlPreparationRuntime) productExplorationOptions(l *urlLoadedProfile, e
 		if e.Job.Input.ExcludedPaths != "" {
 			excluded = strings.Split(e.Job.Input.ExcludedPaths, "\n")
 		}
-		options.OpenHost = host.factory(*l.productTarget, b.product.targets.current, e.Job.SourceDigest, excluded, limits.MaxResponseBytes)
+		options.OpenHost = host.factory(*l.productTarget, b.product.targets.current, e.Job.SourceDigest, excluded, limits.MaxResponseBytes, l.productConnection)
 	}
 
 	return options, true

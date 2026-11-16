@@ -132,7 +132,9 @@
 | `audit_failed` | 불명 | 감사 기록 실패 |
 | `unknown` | 불명 | 결과 불명(대상이 받았을 수 있음) |
 
-분류 규칙(fail-closed): "차단"은 `forward_attempted`가 false일 때만이다. 송신을 시도한 뒤의 거부·실패는 불명으로 보인다. 모르는 `reason`·`stage` 값은 불명이다. `transport_failed`는 대상에 닿지 않은 송신 실패이고, 결과 불명과 따로 보인다(C02).
+intent 행의 `complete`는 송신 전 감사의 초기 값이며 응답 성공이 아니다. 결과 사건이 없으면 송신·쓰기·응답 여부를 미확인으로 표시하고, 응답 받음/송신 없음으로 단정하지 않는다.
+
+분류 규칙(fail-closed): "차단"은 `forward_attempted`가 false일 때만이다. 송신을 시도한 뒤의 거부·실패는 불명으로 보인다. 모르는 `reason`·`stage` 값은 불명이다. `transport_failed`는 대상에 닿지 않은 송신 실패이고 결과 불명과 따로 보인다(C02). 이 사유의 `forward_attempted=true`는 연결 시도를 포함하며 요청 송신의 증거가 아니다. `request_written=false && response_received=false`이면 연결 시도 여부와 관계없이 송신 실패로 표시한다. 연결 뒤 끊김은 서버가 `unknown`으로 남긴다.
 
 ## 5. 커버리지 — 1단계는 기존 워크플로 snapshot
 

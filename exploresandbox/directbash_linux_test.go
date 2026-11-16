@@ -448,3 +448,41 @@ func TestDirectBashCancelStopsCommand(t *testing.T) {
 		t.Fatalf("next run after cancel: %v", err)
 	}
 }
+
+// Seed는 명령마다 /work에 새로 풀린다. 명령이 바꾼 내용은 다음 명령에 남지 않고, 파이썬 스크립트도 샌드박스 안에서 돈다
+// (탐색 프로필 api-recon, docs/sandbox-data-decision.md §2-2).
+func TestDirectBashSeedIsFreshForEveryCommand(t *testing.T) {
+	dir := testDir(t)
+	helper := testHelper(t, dir)
+	entrance := newFakeEntrance(t)
+	seed, err := SeedFiles(map[string][]byte{
+		"api-recon/SKILL.md":         []byte("owned-seed-instructions\n"),
+		"api-recon/scripts/probe.py": []byte("import urllib.parse\nprint('seed-script-ran', urllib.parse.quote('a b'))\n"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig(t, dir, helper, entrance.listener.Addr().String())
+	cfg.Seed = seed
+	bash, err := New(cfg)
+	if err != nil || !bash.HasSeed() {
+		t.Fatal("seeded configuration rejected", err)
+	}
+	first, err := bash.Run(t.Context(), "cat /work/api-recon/SKILL.md; python3 /work/api-recon/scripts/probe.py; echo changed > /work/api-recon/SKILL.md; cat /work/api-recon/SKILL.md", 0)
+	if err != nil || !strings.Contains(string(first.Output), "owned-seed-instructions") || !strings.Contains(string(first.Output), "seed-script-ran a%20b") || !strings.Contains(string(first.Output), "changed") {
+		t.Fatalf("seed not visible in the command: err=%v out=%q", err, first.Output)
+	}
+	second, err := bash.Run(t.Context(), "cat /work/api-recon/SKILL.md", 0)
+	if err != nil || strings.TrimSpace(string(second.Output)) != "owned-seed-instructions" {
+		t.Fatalf("seed change leaked to the next command: err=%v out=%q", err, second.Output)
+	}
+	plain := testConfig(t, t.TempDir(), helper, entrance.listener.Addr().String())
+	if b, err := New(plain); err != nil || b.HasSeed() {
+		t.Fatal("unseeded configuration reports a seed")
+	}
+	bad := testConfig(t, t.TempDir(), helper, entrance.listener.Addr().String())
+	bad.Seed = []byte("not a workspace archive")
+	if _, err := New(bad); !errors.Is(err, ErrConfig) {
+		t.Fatal("invalid seed accepted")
+	}
+}

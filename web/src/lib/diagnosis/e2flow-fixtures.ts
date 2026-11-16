@@ -1,0 +1,42 @@
+// 시험 전용 계약 응답. 제품 화면의 fallback으로 사용하지 않는다.
+import type { E2Attempt, E2Flow } from "./e2flow";
+export const e2Attempt = (over: Partial<E2Attempt> = {}): E2Attempt => ({
+  attempt_id: "a".repeat(32),
+  index: 2,
+  sequence: 1,
+  stage: "result",
+  method: "GET",
+  rule_ref: "read",
+  path_pattern: "/orders/{id}",
+  decision: "allowed",
+  reason: "complete",
+  forward_attempted: true,
+  request_written: true,
+  response_received: true,
+  response_complete: true,
+  status_code: 200,
+  response_truncated: false,
+  at: "2026-11-13T01:02:03Z",
+  ...over,
+});
+export const e2Flow = (over: Partial<E2Flow> = {}): E2Flow => ({
+  format: "abc2lab.e2-flow-view/v1",
+  journal: "verified",
+  last_index: 2,
+  more: false,
+  omitted_calls: 0,
+  counts: {
+    attempts: 1,
+    allowed: 1,
+    denied: 0,
+    unsupported: 0,
+    forward_attempted: 1,
+    responses: 1,
+    unknown: 0,
+    transient: 0,
+    withheld: 0,
+    calls: 1,
+  },
+  calls: [{ call_ref: "call-1", intent_id: 9, closed: false, attempts: [e2Attempt()] }],
+  ...over,
+});

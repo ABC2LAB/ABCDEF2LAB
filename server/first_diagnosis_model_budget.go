@@ -60,6 +60,20 @@ type FirstDiagnosisModelBudget struct {
 	// retryDelays는 실패한 모델 호출을 다시 보내기 전 기다리는 간격이다(기본 firstDiagnosisModelRetryDelays). 비어 있으면
 	// 다시 보내지 않는다.
 	retryDelays []time.Duration
+	// rateLimitDelays는 마지막 실패가 요청 한도(429)일 때의 간격이다(기본 firstDiagnosisRateLimitRetryDelays).
+	rateLimitDelays []time.Duration
+	// rateLimitedCall은 호출이 요청 한도로 처리되지 않았는지 본다(시험이 바꿔 끼운다). nil이면 호출 칸의 표시다.
+	rateLimitedCall func(*firstDiagnosisModelCall) bool
+	// rejectedCall은 호출이 요청 내용 거부로 끝났는지 본다(시험이 바꿔 끼운다). nil이면 호출 칸의 표시다.
+	rejectedCall func(*firstDiagnosisModelCall) bool
+}
+
+// callRateLimited는 정산한 호출이 요청 한도(429)로 처리되지 않았는지 본다.
+func (b *FirstDiagnosisModelBudget) callRateLimited(call *firstDiagnosisModelCall) bool {
+	if b != nil && b.rateLimitedCall != nil {
+		return b.rateLimitedCall(call)
+	}
+	return call.rateLimited()
 }
 
 // firstDiagnosisModelCall은 호출 하나의 예약이다(P3 결정안 C28 결정 2). reserve가 만들고 settle이 한 번 닫는다.
@@ -72,6 +86,25 @@ type firstDiagnosisModelCall struct {
 	// result는 이 호출 칸의 transport 결과를 읽는다(시험이 바꿔 끼운다).
 	result func() llmpolicy.OpenRouterCallResult
 	closed bool
+}
+
+// rateLimited는 이 호출이 제공자 요청 한도(429)로 처리되지 않았다고 transport가 확인했는지 본다.
+func (c *firstDiagnosisModelCall) rateLimited() bool {
+	return c != nil && c.result != nil && c.result().NotBilled
+}
+
+// callRejected는 호출이 요청 내용 거부로 끝났는지다.
+func (b *FirstDiagnosisModelBudget) callRejected(call *firstDiagnosisModelCall) bool {
+	if b != nil && b.rejectedCall != nil {
+		return b.rejectedCall(call)
+	}
+	return call.requestRejected()
+}
+
+// requestRejected는 이 호출이 제공자의 요청 내용 거부(400·413·422)로 끝났는지다. 같은 요청을 다시 보내도 같은
+// 결과라 다시 보내지 않는다(P3 결정안 C06 보완).
+func (c *firstDiagnosisModelCall) requestRejected() bool {
+	return c != nil && c.result != nil && c.result().Rejected
 }
 
 // requestContext는 모델 요청 문맥에 이 호출의 칸을 붙인다.
@@ -160,7 +193,7 @@ func NewFirstDiagnosisModelBudget(limits diagnosisprep.Budget, inputPerCall, out
 		inputPerCall > limits.InputTokens || outputPerCall > limits.OutputTokens || observe == nil {
 		return nil, ErrFirstDiagnosisModelBudget
 	}
-	return &FirstDiagnosisModelBudget{callGate: make(chan struct{}, 1), limits: limits, inputPerCall: inputPerCall, outputPerCall: outputPerCall, usage: diagnosisprep.ModelUsage{UsageKnown: true}, observe: observe, retryDelays: firstDiagnosisModelRetryDelays}, nil
+	return &FirstDiagnosisModelBudget{callGate: make(chan struct{}, 1), limits: limits, inputPerCall: inputPerCall, outputPerCall: outputPerCall, usage: diagnosisprep.ModelUsage{UsageKnown: true}, observe: observe, retryDelays: firstDiagnosisModelRetryDelays, rateLimitDelays: firstDiagnosisRateLimitRetryDelays}, nil
 }
 
 // 준비에서 실행으로 넘어가도 정책과 호출 gate 하나를 공유한다.
@@ -244,6 +277,17 @@ func (b *FirstDiagnosisModelBudget) retryable() bool {
 	blocked := b.blocked
 	b.mu.Unlock()
 	return !blocked && (b.external == nil || !b.external.Snapshot().Blocked)
+}
+
+// closesExploration은 탐색의 모델 호출 실패를 예산 종료로 다룰지 본다: 승인 예산 한도에 닿았거나 회계가 막혔다.
+// 예산이 없는 경로(nil)는 예전처럼 예산 종료 판정에 맡긴다.
+func (b *FirstDiagnosisModelBudget) closesExploration() bool {
+	if b == nil {
+		return true
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.limitReached || b.blocked
 }
 
 func (b *FirstDiagnosisModelBudget) LimitReached() bool {
@@ -445,12 +489,16 @@ func (b *FirstDiagnosisModelBudget) settle(call *firstDiagnosisModelCall, usage 
 	known := callErr == nil && usage.InputTokens > 0 && usage.OutputTokens >= 0 &&
 		int64(usage.InputTokens) <= call.input && usage.OutputTokens <= outputLimit &&
 		usage.CacheReadTokens >= 0 && usage.CacheWriteTokens >= 0
+	unbilled := false
 	if b.external != nil {
 		var r llmpolicy.OpenRouterCallResult
 		if call.result != nil {
 			r = call.result()
 		}
 		b.addExternal(r)
+		// 보내지 않았거나(transport가 예약하지 않음: 보내기 전 거부) 제공자가 처리하지 않았다고 응답으로 확인한(429)
+		// 실패 호출은 청구가 없다. 예약량을 쓴 것으로 세지 않는다(C05 보완, 2026-11-14 실측).
+		unbilled = callErr != nil && !r.Succeeded && (!r.Reserved || r.NotBilled)
 		// 이 SDK 응답은 이 호출 칸에 남은 transport 결과(정상 응답 하나)와 정확히 같아야 한다. 다른 호출의 누적 값은
 		// 보지 않는다.
 		known = known && r.Succeeded && r.InputTokens == int64(usage.InputTokens) && r.OutputTokens == int64(usage.OutputTokens) && r.CostMicros >= 0 && r.CostMicros <= call.cost
@@ -462,6 +510,8 @@ func (b *FirstDiagnosisModelBudget) settle(call *firstDiagnosisModelCall, usage 
 	case known:
 		b.usage.InputTokens += int64(usage.InputTokens)
 		b.usage.OutputTokens += int64(usage.OutputTokens)
+	case unbilled && !b.externalAccountingBlocked() && usage == (llm.Usage{}):
+		// 사용량 0으로 닫는다. 예약만 풀리고 사용량을 모르는 호출로 세지 않는다.
 	case failedCallBounded(callErr, b.externalAccountingBlocked()) && reportedWithinReservation(usage, call.input, outputLimit):
 		// 실패한 호출은 예약한 양을 쓴 것으로 센다(P3 결정안 C05). 재시도가 꺼져 있어 예약 하나에 HTTP 요청은
 		// 하나이고, 입력 크기·max_tokens·가격 상한을 호출 전에 검사했으므로 이 값이 실제 사용의 상한이다.

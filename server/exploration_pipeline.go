@@ -230,9 +230,13 @@ func (s *Server) RunExplorationPipeline(ctx context.Context, task *Task, o Explo
 						settledLimit = budget.limitReached && !budget.blocked && budget.inflight == 0 && budget.usage.UsageKnown
 						budget.mu.Unlock()
 					}
-					if settledLimit {
+					switch {
+					case settledLimit:
 						reason = string(exploration.CapExhausted)
-					} else {
+					case !s.firstModelBudget.closesExploration():
+						// 예산 한도도 회계 막힘도 아닌 모델 호출 실패(429·5xx·보내기 전 거부)는 모델 오류다.
+						reason = string(exploration.ModelError)
+					default:
 						reason = string(exploration.RuntimeUnavailable)
 					}
 				} else if result.Reason == harness.ReasonMaxTurns || result.Reason == harness.ReasonTimeout {
@@ -344,7 +348,10 @@ func (s *Server) RunExplorationPipeline(ctx context.Context, task *Task, o Explo
 		if errors.Is(e, ErrExplorationObservation) {
 			return out, e
 		}
-		if errors.Is(e, ErrFirstDiagnosisModelBudget) {
+		// 제품 모델 호출은 첫 진단 모델 예산을 거쳐서, 예산 한도가 아닌 실패(429·5xx·보내기 전 거부)에도
+		// ErrFirstDiagnosisModelBudget이 붙는다. 예산 한도에 닿았거나 회계가 막혔을 때만 예산 종료로 다루고, 그 밖의
+		// 모델 호출 실패는 탐색 모델 오류(PARTIAL)로 남겨 지금까지의 발견으로 진단을 잇는다.
+		if errors.Is(e, ErrFirstDiagnosisModelBudget) && s.firstModelBudget.closesExploration() {
 			proof, proofErr := s.closedExplorationBudget(o, session)
 			if proofErr != nil {
 				return out, proofErr

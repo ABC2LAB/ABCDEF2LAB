@@ -170,9 +170,9 @@ func (p *productRuntime) profiles() ([]diagnosisprep.Profile, error) {
 		}
 		v := urlProfilePublic(m)
 		v.Workflow = p.targets.policy.Workflow
-		if v.Workflow != nil {
-			v.WorkflowRequestLimit = p.targets.policy.MaxRequests
-		}
+		// 화면은 이 값으로 대상을 등록한다(회차당 요청 상한). 워크플로 여부와 상관없이 싣는다. 예전에는 워크플로 모드만
+		// 실어서 일반 HTTP 모드 화면이 고정값 4로 등록했다.
+		v.WorkflowRequestLimit = p.targets.policy.MaxRequests
 		if cfg.ModelExecutionMode == "openrouter" {
 			raw, e := readPrivateFile(cfg.OpenRouterManifestPath, 64<<10)
 			if e != nil {
@@ -379,6 +379,8 @@ func (p *productRuntime) loadBinding(principal string, input diagnosisprep.Input
 	if derived.ValidUntil.After(rec.Target.ExpiresAt) {
 		derived.ValidUntil = rec.Target.ExpiresAt
 	}
+	// This flag validates the approval-time profile and historical report inputs.
+	// C35 authorizes each execution IP through addressAllowed/checkDestinations.
 	derived.AllowPrivateTarget = netip.MustParseAddr(rec.SelectedIP).IsPrivate()
 	derived.Budget.Requests = rec.Target.Requests
 	policy.ValidFrom = derived.ValidFrom

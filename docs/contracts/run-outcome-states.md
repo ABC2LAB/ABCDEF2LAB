@@ -127,14 +127,14 @@ intent 결과는 **그래프의 지금 상태에서 계산하는 투영**이다.
 3. `unknown` intent가 있는 실행을 `completed` + `partial`로 마감한다(C01 #477 뒤). 결과 불명 송신이 나오면 그 intent는 멈추고 더 보내지 않는다. 다른 intent에서 다시 보내는 것은 결과 불명 명령과 글자가 같은 명령을 막고(진단 Worker 공유 제어 `same_action_not_retried`), 진단 흐름(workflow 회차)은 결과 불명으로 끝난 상태 변경 가능 요청(쓰기 메서드, 그리고 GET 폼처럼 비변경 확인 `attested_read`가 아닌 끝점)과 같은 메서드·경로를 명령이 달라도 그 회차 끝까지 거부한다(`diagnosisflow`, #525). workflow 없는 일반 회차는 GET·HEAD만 보내므로 상태 변경 요청이 없다. 그 intent에 기대는 후속 intent 보류(2절 끝 문장)는 아직 없다(열린 항목 3).
    - 근거 대조: 결과 불명 송신(`Counts.Unknown`)이 있는 호출의 intent는 `blocked` + `e2_http_result_unknown`이어야 하고, `unknown` intent 수는 그런 호출이 있는 intent 수(와 C09의 신뢰 결과 대조 실패 intent)와 같아야 한다. 결과 불명 송신 없이 `unknown`으로 표시된 intent가 있으면 마감하지 않는다(`partial`·`policy_limited`처럼 개수를 E② 기록으로 뒷받침한다).
    - 호출 결과: `result_unknown`(결과 불명 송신 수가 있음)과, 대상 연결을 맺지 못한 송신 실패(`transient_failure` + 송신 실패 수, C02)는 그 호출의 결과로 받는다. 실행 전체 누계의 결과 불명은 다른 intent의 것이라 다른 intent의 마감을 막지 않는다(C03).
-   - 그대로 실패인 것: 감사 저장 실패, 실행 권한 철회·만료, 송신 실패 수가 없는 `transient_failure`(프록시 장애와 명령 시간 초과를 신뢰 결과에서 나눌 수 없음 — 열린 항목 2), 비최종·미드레인 호출.
+   - 그대로 실패인 것: 감사 저장 실패, 실행 권한 철회·만료, 송신 실패 수도 명령 시간 상한 원인도 없는 `transient_failure`(E② 프록시 장애 `termination: proxy_unavailable` 포함), 비최종·미드레인 호출. 명령 시간 상한(`termination: timeout`)은 결과 불명 송신이 없으면 그 intent의 `incomplete`다(열린 항목 2 결정).
 4. C09(intent 결과를 모든 호출 분류로, #428)와 C26(Worker 마무리 보고)은 이 투영을 그대로 쓴다.
 5. C26 1단계(Planner `prove_goal`·`goal_met`): Planner가 목표 달성으로 작업을 끝내면(작업 `done`) 실행 상한과 같이 Planner를 기다리지 않고 실행 중 intent가 끝나는 대로 마감하고, 남은 `open` intent는 `incomplete`로 센다(그래서 `partial`). `closing_reason`은 붙이지 않는다(`budget_limited`는 실행 상한일 때만).
 
 ## 7. 열린 항목
 
 1. ~~**시간 상한**: task deadline 도달을 `budget_limited`로 볼지.~~ 결정함(3.5, 2026-11-14): 실행 시간은 예산 칸이라 `budget_limited`로 마감한다.
-2. **명령 시간 초과**(E② 실행기 담당): Bash 명령 하나가 시간 상한에 닿으면 실행기는 `transient_failure`로 분류하는데, 신뢰 결과에 종료 원인이 없어 E② 프록시 장애(집행 장애, 실행 `failed`)와 구분되지 않는다. 그래서 지금은 명령 시간 초과도 마감 실패다. 신뢰 결과에 종료 원인(시간 초과·프록시 장애)을 싣으면 시간 초과는 그 intent의 `incomplete`로 센다.
+2. ~~**명령 시간 초과**: 신뢰 결과에 종료 원인이 없어 E② 프록시 장애와 구분되지 않아 마감 실패.~~ 결정함(2026-11-14): 신뢰 결과에 `termination`(`timeout`·`proxy_unavailable`)을 싣는다. 시간 상한은 runner 장애가 아니라 그 명령의 실패로 모델에 돌려주고(같은 intent에서 계속), 마감 때는 결과 불명 송신이 없으면 그 intent의 `incomplete`로 센다. 프록시 장애는 그대로 집행 장애(마감 실패)다.
 3. **결과 불명 상태 변경 요청의 후속 보류**(E② 실행 허용 판단 담당과 정함, #489 윤재상 지적): 같은 메서드·경로의 재전송 차단은 진단 흐름에 넣었다(6절 3, #525 — 상태 확인 장치가 없어 회차 끝까지 거부). 남은 것은 그 intent에 기대는 후속 intent를 보류하는 것이다.
 
 정해진 것(#429 이경준 답): `budget_limited` 세부는 처음에는 보이지 않는다("예산 상한에서 마감"만). 세부를 넣을 때는 `closing_reason`을 늘리지 않고 별도 칸을 둔다. 저장 보고서에는 싣는다(5절 5).

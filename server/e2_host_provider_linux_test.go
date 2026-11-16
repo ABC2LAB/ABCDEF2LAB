@@ -97,6 +97,22 @@ func TestE2HostProviderAuthorityHeldAndSingleStart(t *testing.T) {
 		t.Fatal("restart reused consumed authority")
 	}
 }
+
+// 가장 긴 회차(실행 시간 상한 + 정리 시간 상한)의 권한도 받는다. 15분 상한일 때는 약 880초를 넘는 회차가 권한 발급에서
+// 실패했다(2026-11-14 실제 회차).
+func TestE2HostProviderAcceptsTheLongestRunAuthority(t *testing.T) {
+	cfg, grant := e2HostAuthorityFixture(t)
+	grant.ValidUntil = grant.ValidFrom.Add(MaxFirstDiagnosisHTTPAuthority)
+	e2HostWriteApproval(t, cfg, grant)
+	auth, err := newFirstDiagnosisHTTPAuthority(t.Context(), cfg)
+	if err != nil || auth == nil {
+		t.Fatal("longest-run authority rejected", err)
+	}
+	if err := auth.close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestE2HostProviderRejectsUnprotectedOrUnboundAuthority(t *testing.T) {
 	modes := []string{"wrong-uid", "zero-task", "zero-exploration", "future", "expired", "overlong", "digest", "format", "unknown", "duplicate", "authority-mode", "policy-mode", "root-mode", "hardlink", "symlink", "root-alias", "marker", "lock-mode"}
 	for _, mode := range modes {
@@ -116,7 +132,7 @@ func TestE2HostProviderRejectsUnprotectedOrUnboundAuthority(t *testing.T) {
 				grant.ValidFrom = time.Now().Add(-2 * time.Minute)
 				grant.ValidUntil = time.Now().Add(-time.Minute)
 			case "overlong":
-				grant.ValidUntil = grant.ValidFrom.Add(15*time.Minute + time.Second)
+				grant.ValidUntil = grant.ValidFrom.Add(MaxFirstDiagnosisHTTPAuthority + time.Second)
 			case "digest":
 				grant.PolicySHA256 = strings.Repeat("0", 64)
 			case "format":

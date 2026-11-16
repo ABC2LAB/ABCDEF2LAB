@@ -225,7 +225,7 @@ func TestExplorationRunsTypedDirectBashThroughTheBoundary(t *testing.T) {
 
 // 직접 Bash가 없는 세션은 지금처럼 셸이 없다고 안내하고, 감싸개가 Bash를 바꾸거나 없애면 프로필을 거부한다.
 func TestExplorationDirectBashProfileChecks(t *testing.T) {
-	if got := explorationSystemPrompt(false); !strings.Contains(got, "Direct shell commands and generic Skill execution are unavailable") || strings.Contains(got, "Bash runs") {
+	if got := explorationSystemPrompt(false, false); !strings.Contains(got, "Direct shell commands and generic Skill execution are unavailable") || strings.Contains(got, "Bash runs") {
 		t.Fatal("shell-less prompt changed")
 	}
 	shell := exploreBashShell(t, "")
@@ -260,5 +260,54 @@ func TestExplorationDirectBashProfileChecks(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("Bash stays enabled in the settlement turn")
+	}
+}
+
+// 직접 Bash 작업 공간에 api-recon 파일을 둔 세션만 그 안내를 받는다(docs/sandbox-data-decision.md §2-2).
+func TestExplorationPromptMentionsAPIReconOnlyWhenSeeded(t *testing.T) {
+	if got := explorationSystemPrompt(true, true); !strings.Contains(got, "/work/api-recon") || !strings.Contains(got, "Bash runs") {
+		t.Fatal("seeded prompt lacks the api-recon guidance")
+	}
+	if got := explorationSystemPrompt(true, false); strings.Contains(got, "/work/api-recon") {
+		t.Fatal("unseeded prompt mentions api-recon")
+	}
+	if got := explorationSystemPrompt(false, true); strings.Contains(got, "/work/api-recon") {
+		t.Fatal("shell-less prompt mentions api-recon")
+	}
+	// 이 시험은 Bash를 부르지 않으므로 helper 파일만 있으면 된다(프로필·지시문 검사).
+	helper := filepath.Join(exploreBashDir(t), "helper")
+	if err := os.WriteFile(helper, []byte("#!/bin/sh\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	seed, err := exploresandbox.SeedFiles(map[string][]byte{"api-recon/SKILL.md": []byte("owned")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, seeded := range []bool{true, false} {
+		root := filepath.Join(exploreBashDir(t), "calls")
+		if err := os.Mkdir(root, 0700); err != nil {
+			t.Fatal(err)
+		}
+		cfg := exploresandbox.Config{Helper: helper, RootDir: root, DirectProxy: &url.URL{Scheme: "http", Host: "127.0.0.1:9"},
+			CACert: exploreBashCA(t), Timeout: 20 * time.Second, DrainTimeout: 10 * time.Second, OutputLimit: 64 << 10}
+		if seeded {
+			cfg.Seed = seed
+		}
+		shell, err := exploresandbox.New(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		provider := &explorationProvider{}
+		w := NewWorker(provider, "owned", t.TempDir(), nil, 0, 10)
+		w.SetNonStreaming(func() bool { return true })
+		o := explorationOptions(&recordingDiscoveryReporter{n: 1})
+		o.DirectBash = shell
+		if _, err := w.ExecuteExploration(t.Context(), o, nil); err != nil || len(provider.requests) == 0 {
+			t.Fatal("exploration run", err)
+		}
+		mentioned := strings.Contains(strings.Join(provider.requests[0].System, "\n"), "/work/api-recon")
+		if mentioned != seeded {
+			t.Fatalf("seeded=%v but prompt mention=%v", seeded, mentioned)
+		}
 	}
 }

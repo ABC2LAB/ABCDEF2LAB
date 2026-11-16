@@ -1,6 +1,6 @@
 # api-recon — reference manual
 
-> Product mode: follow the safety and integration section at the start of [SKILL.md](SKILL.md). The old scripts and curl/TLS examples below are reference methodology, not enabled product transports. Use `metadata_only.js` for page-side inferred metadata and the private host boundary reader for observed metadata. Never run direct fetch/TLS-disable/raw-recording templates through the product exploration tools. See [the integration contract](../../docs/contracts/api-recon-restoration.md).
+> Product mode: follow the safety and integration section at the start of [SKILL.md](SKILL.md). In the product exploration Bash sandbox the Python scripts and curl examples below run through the exploration boundary (it enforces scope, write approval and budget and verifies target TLS). Do not run the Node/Puppeteer templates; use `metadata_only.js` for page-side inferred metadata. Never record or report credential, cookie, token or session values. Report endpoints only through `report_discovery`. See [the integration contract](../../docs/contracts/api-recon-restoration.md).
 
 
 Grep recipes, `config.json` template, and troubleshooting. All greps run against the `js/` directory. When a bundle is on a single line, first `js-beautify` or `sed 's/}/}\n/g'`; usually a raw grep with a context window is enough.

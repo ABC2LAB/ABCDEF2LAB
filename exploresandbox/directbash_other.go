@@ -18,4 +18,8 @@ func (*DirectBash) Run(context.Context, string, time.Duration) (Result, error) {
 
 func (*DirectBash) CommandTimeout() time.Duration { return 0 }
 
+func (*DirectBash) HasSeed() bool { return false }
+
+func SeedFiles(map[string][]byte) ([]byte, error) { return nil, ErrUnavailable }
+
 func (*DirectBash) String() string { return "exploresandbox.DirectBash[unavailable]" }

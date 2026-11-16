@@ -302,6 +302,62 @@ func TestE2HTTPBashNonzeroExitDoesNotBecomeRunnerFailure(t *testing.T) {
 	}
 }
 
+// 명령 시간 상한에 닿아 멈춘 명령은 runner 장애가 아니라 그 명령의 실패다(계약 열린 항목 2). 모델에 오류로 돌려주고
+// 같은 intent에서 다음 명령을 받는다. 프록시 장애는 원인이 남아도 runner 장애로 멈춘다.
+func TestE2HTTPBashCommandTimeoutIsNotRunnerFailure(t *testing.T) {
+	timedOut := func(termination string) e2runner.Result {
+		result := completedE2WorkerResult()
+		result.Trusted.Classification = "transient_failure"
+		result.Trusted.Termination = termination
+		result.Trusted.ProcessBashExited = false
+		result.Trusted.Execution.AuditComplete = true
+		return result
+	}
+	if e2HTTPRunnerFailed(e2runner.ErrUnavailable, timedOut(e2runner.TerminationTimeout)) {
+		t.Fatal("timed-out command treated as runner failure")
+	}
+	// 정책 거부·미지원 뒤 시간 상한(실행기 분류가 거부·미지원)도 그 명령의 실패다(#578 이동찬 리뷰).
+	for class, counts := range map[string]e2proxy.Counts{"policy_not_executed": {Denied: 1}, "unsupported": {Unsupported: 1}} {
+		result := timedOut(e2runner.TerminationTimeout)
+		result.Trusted.Classification, result.Trusted.Call.Counts = class, counts
+		if e2HTTPRunnerFailed(e2runner.ErrUnavailable, result) {
+			t.Fatalf("%s after a timeout treated as runner failure", class)
+		}
+	}
+	// 시간 상한이 아니거나 결과 불명 송신이 있으면 거부 분류도 지금처럼 runner 장애다(bash가 끝나지 않음).
+	denied := timedOut("")
+	denied.Trusted.Classification, denied.Trusted.Call.Counts = "policy_not_executed", e2proxy.Counts{Denied: 1}
+	if !e2HTTPRunnerFailed(e2runner.ErrUnavailable, denied) {
+		t.Fatal("denial without bash exit or timeout accepted")
+	}
+	for name, change := range map[string]func(*e2runner.Result){
+		"proxy-unavailable": func(r *e2runner.Result) { r.Trusted.Termination = e2runner.TerminationProxyUnavailable },
+		"no-termination":    func(r *e2runner.Result) { r.Trusted.Termination = "" },
+		"unknown-send":      func(r *e2runner.Result) { r.Trusted.Call.Counts.Unknown = 1 },
+		"not-drained":       func(r *e2runner.Result) { r.Trusted.ProxyDrained = false },
+		"audit-open":        func(r *e2runner.Result) { r.Trusted.Call.AuditComplete = false },
+	} {
+		result := timedOut(e2runner.TerminationTimeout)
+		change(&result)
+		if !e2HTTPRunnerFailed(e2runner.ErrUnavailable, result) {
+			t.Fatalf("%s accepted as an ordinary timed-out command", name)
+		}
+	}
+	execution, _, _ := e2WorkerFixture(t)
+	state := &e2HTTPToolState{}
+	calls := 0
+	tool := e2WorkerBashTool(t, execution, func(context.Context, string) (e2runner.Result, error) {
+		calls++
+		return timedOut(e2runner.TerminationTimeout), e2runner.ErrUnavailable
+	}, time.Second, state)
+	for i := 0; i < 2; i++ {
+		result, err := tool.Call(context.Background(), json.RawMessage(`{"command":"sleep 100"}`), nil)
+		if err != nil || !result.IsError || state.runnerFailed || state.halted || calls != i+1 {
+			t.Fatalf("timed-out command i=%d calls=%d state=%+v err=%v", i, calls, state, err)
+		}
+	}
+}
+
 func TestE2HTTPBashSeparatesUntrustedOutputAndProgramResult(t *testing.T) {
 	execution, _, _ := e2WorkerFixture(t)
 	called := 0

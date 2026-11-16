@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -33,12 +34,14 @@ type DirectBash struct {
 func New(cfg Config) (*DirectBash, error) {
 	if !trustedPath(cfg.Helper, false) || !trustedPath(cfg.RootDir, true) || !validProxy(cfg.DirectProxy) ||
 		cfg.Timeout <= 0 || cfg.Timeout > maxCommandTime || cfg.DrainTimeout <= 0 || cfg.DrainTimeout > maxDrainTime ||
-		cfg.OutputLimit < 1 || cfg.OutputLimit > maxOutputBytes || !validCA(cfg.CACert) {
+		cfg.OutputLimit < 1 || cfg.OutputLimit > maxOutputBytes || !validCA(cfg.CACert) ||
+		len(cfg.Seed) > 0 && e2sandbox.ValidateWorkspace(cfg.Seed, e2sandbox.WorkspaceLimit(e2sandbox.Config{})) != nil {
 		return nil, ErrConfig
 	}
 	proxy := *cfg.DirectProxy
 	cfg.DirectProxy = &proxy
 	cfg.CACert = append([]byte(nil), cfg.CACert...)
+	cfg.Seed = append([]byte(nil), cfg.Seed...)
 	return &DirectBash{cfg: cfg, slot: make(chan struct{}, 1)}, nil
 }
 
@@ -85,7 +88,7 @@ func (b *DirectBash) Run(ctx context.Context, command string, timeout time.Durat
 		return Result{}, ErrUnavailable
 	}
 	process, err := e2sandbox.Launch(ctx, e2sandbox.Config{Helper: b.cfg.Helper, Workspace: call.workspace, ProxySocket: call.socket,
-		CACert: call.ca, Command: command, Timeout: timeout, DrainTimeout: b.cfg.DrainTimeout, OutputLimit: b.cfg.OutputLimit})
+		CACert: call.ca, Command: command, Timeout: timeout, DrainTimeout: b.cfg.DrainTimeout, OutputLimit: b.cfg.OutputLimit, WorkspaceIn: b.cfg.Seed})
 	if err != nil {
 		call.listener.Close()
 		if removeErr := call.remove(); removeErr != nil {
@@ -381,4 +384,27 @@ func trustedPath(path string, directory bool) bool {
 		return info.Mode().Perm() == 0700
 	}
 	return info.Mode().Perm()&0022 == 0
+}
+
+// HasSeed는 명령 작업 공간에 미리 둔 파일이 있는지 본다(탐색 지시문이 그 파일을 안내할지).
+func (b *DirectBash) HasSeed() bool { return b != nil && len(b.cfg.Seed) > 0 }
+
+// SeedFiles는 이름(작업 공간 기준 상대 경로)→내용 파일들로 Seed용 작업 공간 tar를 만든다. 이름 순서로 넣어 같은
+// 입력은 같은 tar가 된다. 작업 공간 풀기 규칙·상한을 지키지 못하면 오류다.
+func SeedFiles(files map[string][]byte) ([]byte, error) {
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	limit := e2sandbox.WorkspaceLimit(e2sandbox.Config{})
+	var archive []byte
+	for _, name := range names {
+		next, err := e2sandbox.AppendWorkspaceFile(archive, name, files[name], limit)
+		if err != nil {
+			return nil, ErrConfig
+		}
+		archive = next
+	}
+	return archive, nil
 }

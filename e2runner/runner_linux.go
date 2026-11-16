@@ -250,12 +250,12 @@ func (r *Runner) RunForIntent(ctx context.Context, intentID int64, command strin
 		case <-runCtx.Done():
 			state.setTermination("canceled")
 			if runCtx.Err() == context.DeadlineExceeded {
-				state.setTermination("timeout")
+				state.setTermination(TerminationTimeout)
 			}
 		case <-processWait:
 			state.setTermination("process_exited")
 		case <-state.serveDone:
-			state.setTermination("proxy_unavailable")
+			state.setTermination(TerminationProxyUnavailable)
 		}
 	}
 	drainCtx, drainCancel := context.WithTimeout(context.WithoutCancel(ctx), r.cfg.DrainTimeout)
@@ -378,7 +378,7 @@ func (s *runningCall) cleanup(ctx context.Context) (Result, error) {
 		}
 		processClosed = trusted.ProcessDrained
 		if processResult.Reason == "timeout" {
-			s.setTermination("timeout")
+			s.setTermination(TerminationTimeout)
 		}
 	}
 	proxyClosed := s.proxy == nil
@@ -393,13 +393,13 @@ func (s *runningCall) cleanup(ctx context.Context) (Result, error) {
 		}
 		if proxyClosed && s.serveErr != nil {
 			proxyClosed = false
-			s.setTermination("proxy_unavailable")
+			s.setTermination(TerminationProxyUnavailable)
 		}
 	} else if s.listener != nil {
 		closeErr := s.listener.Close()
 		proxyClosed = closeErr == nil || errors.Is(closeErr, net.ErrClosed)
 		if !proxyClosed {
-			s.setTermination("proxy_unavailable")
+			s.setTermination(TerminationProxyUnavailable)
 		}
 	}
 	trusted.ProxyDrained = proxyClosed && s.proxy != nil
@@ -419,6 +419,9 @@ func (s *runningCall) cleanup(ctx context.Context) (Result, error) {
 	trusted.Execution = s.owner.cfg.Execution.SnapshotForIntent(s.call.IntentID())
 	trusted.Final = trusted.ProcessDrained && trusted.ProxyDrained && trusted.Call.Final && trusted.Call.AuditComplete
 	trusted.Classification = s.classification(trusted)
+	if termination := s.getTermination(); termination == TerminationTimeout || termination == TerminationProxyUnavailable {
+		trusted.Termination = termination
+	}
 	text := s.owner.cfg.Execution.RedactOutput(output)
 	clear(output)
 	if pendingWorkspace != nil {
@@ -487,10 +490,10 @@ func (s *runningCall) classification(trusted TrustedResult) string {
 	if counts.Transient > 0 {
 		return "transient_failure"
 	}
-	if s.getTermination() == "proxy_unavailable" {
+	if s.getTermination() == TerminationProxyUnavailable {
 		return "transient_failure"
 	}
-	if s.getTermination() == "timeout" {
+	if s.getTermination() == TerminationTimeout {
 		return "transient_failure"
 	}
 	if !trusted.ProcessBashExited {

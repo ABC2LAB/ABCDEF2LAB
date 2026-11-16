@@ -128,6 +128,33 @@ it.each(["validate", "stop"] as const)("%s 요청은 외부 전송 동의를 담
   });
 });
 
+// 회차당 요청 상한은 워크플로 여부와 상관없이 받는다(일반 HTTP 모드 화면도 설치 값으로 등록). 범위 밖이면 거부하고,
+// 워크플로 프로파일에는 반드시 있어야 한다.
+it.each([
+  ["general-400", false, 400, true],
+  ["general-absent", false, undefined, true],
+  ["general-1001", false, 1001, false],
+  ["general-0", false, 0, false],
+  ["workflow-absent", true, undefined, false],
+] as const)("request limit %s", (_name, withWorkflow, limit, ok) => {
+  const workflow = {
+    format: "abc2lab.workbench-flow/v1",
+    max_pages: 8,
+    max_endpoints: 32,
+    max_response_bytes: 65536,
+    allow_reversible_writes: false,
+  };
+  const profile: Record<string, unknown> = { ...catalog.profiles[0] };
+  if (withWorkflow) profile.workflow = workflow;
+  if (limit !== undefined) profile.workflow_request_limit = limit;
+  const parse = () => parseURLCatalog({ version: "diagnosis-api.v2", owner_context: owner, profiles: [profile] });
+  if (!ok) {
+    expect(parse).toThrow();
+    return;
+  }
+  expect(parse().profiles[0].workflow_request_limit).toBe(limit);
+  expect(parse().profiles[0].workflow).toBeUndefined();
+});
 // 워크플로 프로파일 요청 한도는 서버와 같은 코드 상한(1000)까지 받는다.
 it.each([
   [1000, true],

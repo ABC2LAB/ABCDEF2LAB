@@ -8,12 +8,12 @@
 
 | 원본 기능 | 재사용한 부분 | 이 변경의 실행 범위 |
 |---|---|---|
-| `harvest_static.py` | API dialect(`api/rest/service/gateway/graphql/vN` 등), route literal, webpack/Vite 청크 발견 방식 | 기존 Go bundle parser와 순수 정적 metadata parser. 직접 urllib, TLS 검증 해제, 고정 동시성은 실행하지 않음 |
+| `harvest_static.py` | API dialect(`api/rest/service/gateway/graphql/vN` 등), route literal, webpack/Vite 청크 발견 방식 | 기존 Go bundle parser와 순수 정적 metadata parser. 2026-11-14부터 원본 스크립트도 탐색 직접 Bash 작업 공간(`/work/api-recon`)에서 실행: 요청은 경계 직접 입구로만 나가고 대상 TLS 검증은 경계가 한다 |
 | `spider_mpa.py` | 링크·폼 이름 발견 | 기존 Go HTML parser에 form field 이름·query 이름 수집 추가. 쿠키나 입력값 저장 없음 |
 | `preload.js`, `runtime_harvest.js` | 페이지 내부 fetch/XHR hook, 동적 URL/폼/WS/SSE 구분 | 별도 `metadata_only.js`. 이미 열린 페이지의 native 호출을 그대로 전달하고 메타데이터만 기록 |
 | route/permission helper | 정적 route 후보 방식 | route literal을 추정 후보로 보존. 대상별 메뉴 위조·권한 트리·로그인 성공은 구현 완료로 계산하지 않음 |
 
-제품의 별도 explore-browser 이미지 단계는 skills를 복사하지 않고, Compose는 경계 CA만 읽기 전용으로 마운트한다. 이 범위는 `scripts/ci/test_product_explore_browser.py`가 검사한다. 제품 이미지에는 원본 skills가 참고자료로 남는다. [탐색 실행기 A 후속](https://github.com/ABC2LAB/ABCDEF2LAB/pull/451)은 generic DirectBash/APIRecon의 nonnil 주입을 도구 이름과 관계없이 프로필·서버 양쪽에서 초기 I/O 전에 거부했다. 지금 `DirectBash`는 typed 격리 실행(`exploresandbox.DirectBash`, [host 의무](exploration-host-adapter-obligations.md#직접-도구와-api-recon))만 받고, `APIRecon`은 계속 거부한다. 따라서 원본 unsafe script를 generic Skill/Bash로 여는 경로는 현재 지원하지 않는다. 프로그램 소유 Fetch와 브라우저의 metadata-only hook은 유지한다. 향후 이 capability를 복원하려면 typed sandbox adapter, metadata-only 파일만 보이는 별도 mount, 원본 unsafe script 실행 불가를 실제 코드·시험으로 먼저 검증해야 한다(B16 미완료). 도구 이름 검사나 SKILL 문장은 이 증명의 대체가 아니다. metadata-only 어댑터는 브라우저 프로세스나 네트워크를 새로 만들지 않는다.
+제품의 별도 explore-browser 이미지 단계는 skills를 복사하지 않고, Compose는 경계 CA만 읽기 전용으로 마운트한다. 이 범위는 `scripts/ci/test_product_explore_browser.py`가 검사한다. 제품 이미지에는 원본 skills가 참고자료로 남는다. [탐색 실행기 A 후속](https://github.com/ABC2LAB/ABCDEF2LAB/pull/451)은 generic DirectBash/APIRecon의 nonnil 주입을 도구 이름과 관계없이 프로필·서버 양쪽에서 초기 I/O 전에 거부했다. 지금 `DirectBash`는 typed 격리 실행(`exploresandbox.DirectBash`, [host 의무](exploration-host-adapter-obligations.md#직접-도구와-api-recon))만 받고, `APIRecon`은 계속 거부한다. generic Skill 도구는 여전히 주지 않는다. 대신 typed 격리 실행이 생긴 뒤(직접 Bash, C30) 원본 `api-recon` 지시문과 표준 라이브러리 파이썬 스크립트 네 개를 직접 Bash 명령 작업 공간에 명령마다 새로 둔다([샌드박스 데이터 결정안](../sandbox-data-decision.md) §2-2, 2026-11-14). 스크립트는 같은 격리 실행·relay·경계 직접 입구로만 나가므로 curl로 할 수 있는 것 밖의 능력이 생기지 않고, 대상 범위·쓰기·예산·기록과 대상 TLS 검증은 경계가 맡는다. 브라우저 런타임 수집(`preload.js`·`runtime_harvest.js`)과 node 의존 파일은 넣지 않는다. 프로그램 소유 Fetch와 브라우저의 metadata-only hook은 유지한다. metadata-only 어댑터는 브라우저 프로세스나 네트워크를 새로 만들지 않는다.
 
 ## 추정과 실제 관측
 
