@@ -267,13 +267,67 @@ export function setUrlConfirmed(value: boolean): void {
 
 export type UrlAction = "validate" | "start" | "stop" | "refresh";
 
+/** 바탕 주기 조회(quiet refresh)가 도는 중이면 그 약속. 그 사이 누른 사용자 동작은 이것이 끝난 뒤에 한다. */
+let quietRun: Promise<boolean> | null = null;
+
 /**
  * 진단 요청 (팀 패널 action 과 같은 전이). 성공해서 새 상태를 받아들였으면 true.
  * - validate: 핸들이 없으면 input 으로 초안을 만들고(영수증 키 새로) 바로 범위 확인. 있으면 지금 초안을 다시 확인.
  * - start: 확인 상자가 켜진 ready 진단만. 시작 키를 먼저 저장하고 한 번만 보낸다.
  * - stop · refresh: 같은 진단에. 실패하면 결과 불명으로 두고 자동 재전송하지 않는다.
+ * - opts.quiet(refresh 만): 주기 조회용. 화면의 busy 를 켜지 않는다 — 켜면 조회하는 동안 취소 버튼(canStop)이 사라졌다
+ *   나타나고 옆 일시정지 버튼이 밀려 2초마다 깜빡인다. 겹침은 lock 이 그대로 막고, 그 사이 누른 동작은 조회가 끝난 뒤
+ *   그 결과로 조건을 다시 본 다음 한다. 단 누른 순간의 결속(소유자 · 진단 · 핸들 · 세대)이 기다리는 사이 바뀌었으면
+ *   (재연결 · 로그아웃 · 진단 교체) 그 동작은 버린다 — 다른 진단으로 보내지 않는다 (리뷰 #601).
  */
-export async function runUrlAction(kind: UrlAction, input?: URLDiagnosisInput): Promise<boolean> {
+export async function runUrlAction(
+  kind: UrlAction,
+  input?: URLDiagnosisInput,
+  opts: { quiet?: boolean } = {},
+): Promise<boolean> {
+  if (kind === "refresh" && opts.quiet === true) {
+    if (quietRun !== null) return quietRun;
+    const run = runUrlActionNow(kind, input, true);
+    quietRun = run;
+    try {
+      return await run;
+    } finally {
+      if (quietRun === run) quietRun = null;
+    }
+  }
+  if (quietRun !== null) {
+    const pressed = actionBinding();
+    await quietRun.catch(() => false);
+    if (!sameBinding(pressed, actionBinding())) return false;
+  }
+  return runUrlActionNow(kind, input, false);
+}
+
+/** 사용자 동작이 어느 진단에 대한 것인지: 소유자 · 핸들(영수증 키) · 진단 ID · 세대. */
+interface ActionBinding {
+  owner: string | null;
+  creationKey: string | null;
+  jobID: string | null;
+  generation: number;
+}
+function actionBinding(): ActionBinding {
+  const st = useUrl.getState();
+  return {
+    owner: ownerOf(st.cap),
+    creationKey: st.handle?.creationKey ?? null,
+    jobID: st.job?.id ?? st.handle?.id ?? null,
+    generation,
+  };
+}
+function sameBinding(a: ActionBinding, b: ActionBinding): boolean {
+  return a.owner === b.owner && a.creationKey === b.creationKey && a.jobID === b.jobID && a.generation === b.generation;
+}
+
+async function runUrlActionNow(
+  kind: UrlAction,
+  input: URLDiagnosisInput | undefined,
+  quiet: boolean,
+): Promise<boolean> {
   const st = useUrl.getState();
   const owner = ownerOf(st.cap);
   if (!owner || lock || (kind !== "refresh" && st.uncertain)) return false;
@@ -282,7 +336,7 @@ export async function runUrlAction(kind: UrlAction, input?: URLDiagnosisInput): 
   const job = st.job;
   const current = ++generation;
   lock = true;
-  useUrl.setState({ busy: true, error: "", confirmed: false });
+  if (!quiet) useUrl.setState({ busy: true, error: "", confirmed: false });
   try {
     let saved = st.handle;
     let next: URLDiagnosisJob;
@@ -336,6 +390,8 @@ export async function runUrlAction(kind: UrlAction, input?: URLDiagnosisInput): 
       });
     }
     accept(next, saved);
+    // 바탕 조회는 시작 때 오류 글을 지우지 않으므로(지웠다 다시 뜨면 깜빡인다) 성공했을 때 지운다
+    if (quiet) useUrl.setState({ error: "" });
     return true;
   } catch (cause) {
     if (current !== generation) return false;
@@ -350,7 +406,7 @@ export async function runUrlAction(kind: UrlAction, input?: URLDiagnosisInput): 
   } finally {
     if (current === generation) {
       lock = false;
-      useUrl.setState({ busy: false });
+      if (!quiet) useUrl.setState({ busy: false });
     }
   }
 }
@@ -407,7 +463,8 @@ export function UrlFeeds() {
         timer = window.setTimeout(tick, URL_POLL_MS);
         return;
       }
-      void runUrlAction("refresh");
+      // 바탕 조회: busy 를 켜지 않아 머리의 취소 · 일시정지 버튼이 깜빡이지 않는다
+      void runUrlAction("refresh", undefined, { quiet: true });
     };
     timer = window.setTimeout(tick, URL_POLL_MS);
     return () => window.clearTimeout(timer);

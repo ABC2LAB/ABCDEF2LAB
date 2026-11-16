@@ -30,8 +30,19 @@ type Limits struct {
 	AllowReversibleWrites bool   `json:"allow_reversible_writes"`
 }
 
+// MaxWorkflowPages는 크롤 페이지 수의 코드 상한이다. 페이지마다 요청 하나라 송신량은 E② 요청 예산이 묶고(제품은
+// 요청 예산/2로 더 줄임, product_workflow.go), 페이지 크기는 MaxResponseBytes가 묶는다. 그래서 탐색 인벤토리 상한과
+// 같은 256으로 둔다(VAmPI 실제 회차 24b).
+const MaxWorkflowPages = 256
+
+// MaxWorkflowEndpoints는 공개 끝점 목록(모델 지시·화면 선택 목록)의 코드 상한이다. 송신량이 아니라 발견만 자르는
+// 상한이라 넉넉해야 하지만, 목록이 공개 투영(MaxProjectionBytes 48KiB)과 저장 기록(128KiB)에 들어가야 한다.
+// 실측(24b) 끝점 하나 평균 366·최대 495바이트로 64개가 투영에 들어간다. 인벤토리 상한(256)까지 늘리려면 개수 대신
+// 투영 바이트로 자르는 방식이 먼저다(개발 계획).
+const MaxWorkflowEndpoints = 64
+
 func (l Limits) Valid() bool {
-	return l.Format == Version && l.MaxPages >= 1 && l.MaxPages <= 32 && l.MaxEndpoints >= 1 && l.MaxEndpoints <= 32 && l.MaxResponseBytes >= 4096 && l.MaxResponseBytes <= 2<<20
+	return l.Format == Version && l.MaxPages >= 1 && l.MaxPages <= MaxWorkflowPages && l.MaxEndpoints >= 1 && l.MaxEndpoints <= MaxWorkflowEndpoints && l.MaxResponseBytes >= 4096 && l.MaxResponseBytes <= 2<<20
 }
 func ValidMode(mode string) bool { return mode == Auto || mode == Manual }
 
