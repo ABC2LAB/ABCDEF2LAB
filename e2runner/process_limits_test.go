@@ -12,9 +12,6 @@ func TestProcessLimitsReserveEngineAcrossSlots(t *testing.T) {
 			t.Fatalf("슬롯 %d의 호출별 PID 배분 오류: %+v, %v", tc.slots, got, err)
 		}
 		reserve := uint64(16)
-		if tc.slots == 1 {
-			reserve = 0
-		}
 		if got.HelperReserveTasks != reserve || got.CommandTasks+reserve != got.CallTasks {
 			t.Fatal("relay task 예비 누락")
 		}

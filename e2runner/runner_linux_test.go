@@ -903,6 +903,9 @@ func TestRunnerCanceledCallerStillFinalizesAudit(t *testing.T) {
 		if !result.Trusted.Final || !result.Trusted.Call.AuditComplete || result.Trusted.Execution.Reason == e2proxy.AuditFailed {
 			t.Fatal("caller cancellation poisoned final audit or retained live resources")
 		}
+		if result.Trusted.Termination != "" {
+			t.Fatal("초기화 뒤 중지에 초기화 전용 종료 값을 기록함", result.Trusted.Termination)
+		}
 	case <-time.After(6 * time.Second):
 		t.Fatal("canceled caller did not complete cleanup")
 	}

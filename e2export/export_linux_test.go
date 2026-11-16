@@ -185,6 +185,30 @@ func TestPublisherActualClosureAndWire(t *testing.T) {
 		t.Fatal("정리 뒤 고정 결과 소실")
 	}
 }
+
+func TestPublisherRequiresClosedInterruptedProcessEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name, termination, classification string
+		accept                            bool
+	}{
+		{"canceled", e2runner.TerminationCanceled, "terminated", true},
+		{"timeout", e2runner.TerminationTimeout, "transient_failure", true},
+		{"unproven", "", "terminated", false},
+		{"proxy", e2runner.TerminationProxyUnavailable, "transient_failure", false},
+		{"isolation", e2runner.TerminationCanceled, "isolation_unavailable", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newPublisherFixture(t)
+			result := f.run(t)
+			result.Trusted.ProcessBashExited = false
+			result.Trusted.Termination = tc.termination
+			result.Trusted.Classification = tc.classification
+			if err := f.publisher.ObserveResult(t.Context(), result); (err == nil) != tc.accept {
+				t.Fatal("중지 근거와 exporter 수용 불일치", err)
+			}
+		})
+	}
+}
 func TestPublisherRefusesMissingTrustedResult(t *testing.T) {
 	f := newPublisherFixture(t)
 	_ = f.run(t)

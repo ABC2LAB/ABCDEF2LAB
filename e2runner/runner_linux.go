@@ -81,6 +81,7 @@ type runningCall struct {
 	serveDone       chan struct{}
 	serveErr        error
 	initFailed      bool
+	initInterrupted bool
 	termination     string
 	terminationMu   sync.Mutex
 	resourcesClosed bool
@@ -294,11 +295,20 @@ func (r *Runner) RunForIntent(ctx context.Context, intentID int64, command strin
 	r.mu.Unlock()
 	if stopped {
 		state.initFailed = true
-		state.setTermination("stopped")
+		state.initInterrupted = true
+		state.setTermination(TerminationCanceled)
 	} else {
-		if state.initialize(runCtx, command) != nil {
+		if err := state.initialize(runCtx, command); err != nil {
 			state.initFailed = true
-			state.setTermination("isolation_unavailable")
+			if cause := e2sandbox.StartupInterruption(err); cause != nil {
+				state.initInterrupted = true
+				state.setTermination(TerminationCanceled)
+				if errors.Is(cause, context.DeadlineExceeded) || errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+					state.setTermination(TerminationTimeout)
+				}
+			} else {
+				state.setTermination("isolation_unavailable")
+			}
 		}
 	}
 	close(state.ready)
@@ -393,11 +403,11 @@ func (s *runningCall) initialize(ctx context.Context, command string) error {
 		// 큰 출력을 작업 공간에 남기려면 샌드박스에서 모델용 상한보다 길게 받아야 한다. 모델에는 OutputLimit까지만 준다.
 		sandboxConfig.OutputLimit = maxOutputBytes
 	}
-	process, err := e2sandbox.Launch(s.call.Context(), sandboxConfig)
-	if err != nil {
-		return ErrUnavailable
-	}
+	process, err := e2sandbox.Prepare(s.call.Context(), sandboxConfig)
 	s.process = process
+	if err != nil {
+		return err
+	}
 	proxy, err := e2proxy.NewProxy(s.call, s.owner.cfg.Proxy)
 	if err != nil {
 		return ErrUnavailable
@@ -410,8 +420,8 @@ func (s *runningCall) initialize(ctx context.Context, command string) error {
 		return ErrUnavailable
 	default:
 	}
-	if process.Start(s.call.Context()) != nil {
-		return ErrUnavailable
+	if err := process.Start(s.call.Context()); err != nil {
+		return err
 	}
 	return nil
 }
@@ -437,9 +447,14 @@ func (s *runningCall) cleanup(ctx context.Context) (Result, error) {
 	// captureTruncated는 샌드박스가 캡처 상한에서 출력을 잘랐다는 뜻이다(인라인 출력만 잘린 것과 다르다).
 	captureTruncated := false
 	processClosed := s.process == nil
+	trusted.ProcessDrained = processClosed && s.initInterrupted
 	if s.process != nil {
 		_ = s.process.Stop(ctx)
 		processResult, err := s.process.Wait(ctx)
+		if processResult.HelperFailed {
+			s.initFailed, s.initInterrupted = true, false
+			s.setTermination("isolation_unavailable")
+		}
 		trusted.ProcessBashExited = processResult.BashExited
 		trusted.ProcessDrained = err == nil && processResult.Drained
 		if trusted.ProcessBashExited && trusted.ProcessDrained {
@@ -478,7 +493,7 @@ func (s *runningCall) cleanup(ctx context.Context) (Result, error) {
 			s.setTermination(TerminationProxyUnavailable)
 		}
 	}
-	trusted.ProxyDrained = proxyClosed && s.proxy != nil
+	trusted.ProxyDrained = proxyClosed && (s.proxy != nil || s.initInterrupted)
 	if processClosed && proxyClosed {
 		result, err := s.call.Close(ctx)
 		trusted.Call = result
@@ -490,9 +505,10 @@ func (s *runningCall) cleanup(ctx context.Context) (Result, error) {
 		}
 	}
 	trusted.Execution = s.owner.cfg.Execution.SnapshotForIntent(s.call.IntentID())
-	trusted.Final = trusted.ProcessDrained && trusted.ProxyDrained && trusted.Call.Final && trusted.Call.AuditComplete
+	trusted.Final = s.resourcesClosed && trusted.ProcessDrained && trusted.ProxyDrained && trusted.Call.Final && trusted.Call.AuditComplete
 	trusted.Classification = s.classification(trusted)
-	if termination := s.getTermination(); termination == TerminationTimeout || termination == TerminationProxyUnavailable {
+	// 실행 중 Planner 중지의 기존 계약은 유지하고, 새 취소 값은 초기화 중지에만 기록한다.
+	if termination := s.getTermination(); termination == TerminationTimeout || termination == TerminationProxyUnavailable || termination == TerminationCanceled && s.initInterrupted {
 		trusted.Termination = termination
 	}
 	text := s.owner.cfg.Execution.RedactOutput(output)
@@ -540,7 +556,7 @@ func (s *runningCall) releaseWorkspace() {
 }
 
 func (s *runningCall) classification(trusted TrustedResult) string {
-	if s.initFailed {
+	if s.initFailed && !s.initInterrupted {
 		return "isolation_unavailable"
 	}
 	if trusted.Call.Reason == e2proxy.AuditFailed || trusted.Execution.Reason == e2proxy.AuditFailed {
