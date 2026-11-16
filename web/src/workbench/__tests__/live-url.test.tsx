@@ -1806,3 +1806,38 @@ it("외부 모델에서 실제 시험 계정이 있어도 미선택이면 동의
   await waitFor(() => expect(u.createURLDraft).toHaveBeenCalledTimes(1));
   expect(u.createURLDraft.mock.calls[0][0]).not.toHaveProperty("external_test_accounts");
 });
+
+it("결속된 외부 시험 계정 동의 회차는 정규화·새로고침 뒤에도 '시험 계정 로그인'으로 보인다 (리뷰 이동찬)", async () => {
+  // 저장된 회차 입력은 external_test_accounts=true(끝에 / 로 정규화된 target_url). 새 초안용 consentChecked 는 false 지만,
+  // 안내·요약은 저장된 서버 입력을 기준으로 한다(정규화로 consentKey 가 달라지거나 새로고침으로 로컬 상태가 초기화돼도).
+  u.readURLCatalog.mockResolvedValue({ ...catalog, profiles: [{ ...catalog.profiles[0], model: externalModel }] });
+  vi.mocked(teamApi.apiFetch).mockResolvedValue({} as never);
+  const consented = { ...draft.input, external_test_accounts: true as const };
+  saveHandle({ ...handle, input: consented, startKey: "start-1", startRevision: handle.revision });
+  u.readURLStatus.mockResolvedValue({ ...running, input: consented });
+  mount("new");
+  const sum = await screen.findByRole("complementary", { name: "점검 요약" });
+  const login = () => within(sum).getByText("로그인").nextElementSibling;
+  await waitFor(() => expect(login()).toHaveTextContent("시험 계정 로그인"));
+  expect(login()).not.toHaveTextContent("로그인 없이 진행");
+});
+
+it("로컬 모델 회차도 대상에 시험 계정이 있으면 '시험 계정 로그인'으로 안내한다 (리뷰 윤재상)", async () => {
+  // 로컬 모델(external_transfer 없음)은 외부 전송 동의 없이도 시험 계정을 결속한다(서버 runBindsAccounts). 조회해서 있으면 로그인으로 안내한다.
+  vi.mocked(teamApi.apiFetch).mockImplementation(async (path) => {
+    const p = String(path);
+    if (p.includes("targets/resolve"))
+      return { target: { id: "target-1", origin: "https://target.example", state: "approved" } } as never;
+    if (p.endsWith("/accounts")) return { accounts: [{ label: "tester", classification: "test" }] } as never;
+    return { configured: true } as never;
+  });
+  mount("new");
+  fireEvent.change(await screen.findByLabelText(/점검할 사이트 주소/), {
+    target: { value: "https://target.example/app" },
+  });
+  fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
+  const sum = screen.getByRole("complementary", { name: "점검 요약" });
+  await waitFor(() => expect(within(sum).getByText("로그인").nextElementSibling).toHaveTextContent("시험 계정 로그인"));
+  // 로컬은 외부 전송 동의 체크 칸을 만들지 않는다(동의 없이 결속)
+  expect(screen.queryByRole("checkbox", { name: /이 점검 회차에서 시험 계정 세션/ })).toBeNull();
+});

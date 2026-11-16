@@ -227,15 +227,38 @@ func TestE2HTTPFactoryKeepsAccountAuthWhenAcquireFails(t *testing.T) {
 }
 
 // 시험 계정 실행은 Worker의 refresh_session 경로를 받는다. 같은 인증 준비 경로로 다시 로그인하고, 실행 전체에서 계정당
-// 상한(실패도 셈)을 지키며, 정책에 없는 라벨은 보내지 않는다. 인증된 계정이 없으면 경로가 없다.
+// 60초 세션이 여러 번 만료돼도 성공한 갱신은 막지 않는다. 실패 상한·간격은 계정별이며 새 HTTP/call을 쓰지 않는다.
 func TestE2HTTPFactoryRefreshSession(t *testing.T) {
+	clock := &e2RefreshClock{at: time.Now()}
 	var logins atomic.Int64
-	login := (&authLoginTarget{token: "refresh-session-cookie-77bb"}).handler(t)
+	var rejectA atomic.Bool
+	var mu sync.Mutex
+	var token string
+	var expires time.Time
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/login" {
-			logins.Add(1)
+			n := logins.Add(1)
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body["email"] != "tester@owned.test" || body["password"] != "seeded-pass-88ff" || rejectA.Load() {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			mu.Lock()
+			token, expires = fmt.Sprintf("ownedtoken%04dvalue", n), clock.Now().Add(time.Minute)
+			fresh := token
+			mu.Unlock()
+			fmt.Fprintf(w, `{"data":{"token":%q}}`, fresh)
+			return
 		}
-		login.ServeHTTP(w, r)
+		mu.Lock()
+		valid := r.Header.Get("Authorization") == "Bearer "+token && clock.Now().Before(expires)
+		mu.Unlock()
+		if !valid {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		io.WriteString(w, "owned")
 	}))
 	defer target.Close()
 	cfg, _, policy := e2HostPolicyFixture(t)
@@ -243,9 +266,10 @@ func TestE2HTTPFactoryRefreshSession(t *testing.T) {
 	policy.Rules = append(policy.Rules, E2HTTPFileRule{Ref: "auth-login", Origin: target.URL, ConnectIP: "127.0.0.1", PathPrefix: "/login", PathScopeRef: "auth-login", Methods: []string{"POST"}, Purpose: e2proxy.PurposeAuthPrep})
 	policy.HeaderMode = e2proxy.HeaderTestAccountPassthrough
 	policy.Limits.MaxAttempts, policy.Limits.MaxCalls, policy.MaxRequests = 64, 64, 64
-	// tester-b는 비밀번호가 틀려 로그인에 실패한다. 실패한 다시 로그인도 상한에 센다.
+	// tester-b는 비밀번호가 틀린다. 첫 인증 준비 실패는 재로그인 연속 실패에 포함하지 않는다.
 	auth := cookieAuth(E2HTTPFileAuthAccount{Label: "tester-a", Credential: authCredentialPin(t, cfg.AuthorityRoot, "tester-a.json", "tester@owned.test", "seeded-pass-88ff")},
 		E2HTTPFileAuthAccount{Label: "tester-b", Credential: authCredentialPin(t, cfg.AuthorityRoot, "tester-b.json", "tester@owned.test", "wrong-pass-value")})
+	auth.Login.Cookies, auth.Login.Format, auth.Login.JSONField, auth.Login.Header, auth.Login.Prefix = nil, "json", "data.token", "Authorization", "Bearer "
 	policy.Auth = &auth
 	raw, err := json.Marshal(policy)
 	if err != nil || os.WriteFile(cfg.PolicyFile, raw, 0o600) != nil {
@@ -257,58 +281,95 @@ func TestE2HTTPFactoryRefreshSession(t *testing.T) {
 	if err != nil {
 		t.Fatal("호스트 준비 실패", err)
 	}
-	acquire := func(intent int64) E2HTTPRunOptions {
-		lease, err := options.Acquire(ctx, E2HTTPRequest{TaskID: "11", TaskIDNumber: 11, ExplorationID: 27, IntentID: intent})
-		if err != nil || lease.RefreshSession == nil {
-			t.Fatal("refresh path missing for an authenticated test account run", err)
-		}
-		return lease
+	lease, err := options.Acquire(ctx, E2HTTPRequest{TaskID: "11", TaskIDNumber: 11, ExplorationID: 27, IntentID: 31})
+	if err != nil || lease.RefreshSession == nil {
+		t.Fatal("refresh path missing", err)
 	}
-	// intent는 하나씩 돈다. 다음 intent 전에 앞 실행 판을 닫는다.
-	release := func(lease E2HTTPRunOptions) {
+	defer func() {
 		cleanup, done := context.WithTimeout(context.Background(), 5*time.Second)
 		defer done()
-		if lease.Runner != nil {
-			_ = lease.Runner.Close(cleanup)
+		_ = lease.Runner.Close(cleanup)
+		_ = lease.Execution.Stop(cleanup)
+		_ = lease.Release(cleanup)
+	}()
+	lease.sessionStore.refreshes.now = clock.Now
+	read := func(header http.Header, want int) {
+		t.Helper()
+		call, err := lease.Execution.BeginCall(ctx, "owned-read")
+		if err != nil {
+			t.Fatal(err)
 		}
-		if lease.Execution != nil {
-			_ = lease.Execution.Stop(cleanup)
+		request, _ := http.NewRequest("GET", target.URL+"/allowed/me", nil)
+		request.Header = header.Clone()
+		response, receipt, err := call.Do(ctx, request)
+		if err != nil || response == nil || receipt.StatusCode != want {
+			t.Fatalf("owned read: status=%d want=%d err=%v", receipt.StatusCode, want, err)
 		}
-		if lease.Release != nil {
-			_ = lease.Release(cleanup)
-		}
-	}
-	first := acquire(31)
-	before := logins.Load()
-	if header, result := first.RefreshSession(ctx, "tester-a"); result != E2HTTPAuthAuthenticated || header.Get("Cookie") != "session=refresh-session-cookie-77bb" || logins.Load() != before+1 {
-		t.Fatalf("refresh: %s %v logins=%d", result, header, logins.Load()-before)
-	}
-	if out := string(first.Execution.RedactOutput([]byte("refresh-session-cookie-77bb"))); strings.Contains(out, "77bb") {
-		t.Fatal("refreshed session not registered for output redaction")
-	}
-	if _, result := first.RefreshSession(ctx, "someone-else"); result != E2HTTPAuthNotSent || logins.Load() != before+1 {
-		t.Fatal("unknown label reached the target")
-	}
-	defer release(first)
-	// 상한은 실행 전체에서 계정당이고 실패도 센다. 처음 인증 준비는 세지 않는다.
-	sent := logins.Load()
-	for i := 1; i < maxSessionRefreshesPerAccount; i++ {
-		if _, result := first.RefreshSession(ctx, "tester-a"); result != E2HTTPAuthAuthenticated {
-			t.Fatalf("refresh %d: %s", i, result)
+		response.Body.Close()
+		if _, err := call.Close(ctx); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if _, result := first.RefreshSession(ctx, "tester-a"); result != E2HTTPRefreshLimit || logins.Load() != sent+int64(maxSessionRefreshesPerAccount-1) {
-		t.Fatalf("refresh limit: %s logins=%d", result, logins.Load()-sent)
-	}
-	failed := logins.Load()
-	for i := 0; i < maxSessionRefreshesPerAccount; i++ {
-		if _, result := first.RefreshSession(ctx, "tester-b"); result != E2HTTPAuthLoginFailed {
-			t.Fatalf("failed refresh %d: %s", i, result)
+	unsent := func(label, want string) {
+		t.Helper()
+		before, calls := logins.Load(), len(lease.Execution.Calls())
+		counts := lease.Execution.Snapshot().Counts
+		if header, result := lease.RefreshSession(ctx, label); result != want || len(header) != 0 {
+			t.Fatalf("refresh %s: %s want %s", label, result, want)
+		}
+		if logins.Load() != before || len(lease.Execution.Calls()) != calls || lease.Execution.Snapshot().Counts != counts {
+			t.Fatal("refused refresh spent a call/request")
 		}
 	}
-	if _, result := first.RefreshSession(ctx, "tester-b"); result != E2HTTPRefreshLimit || logins.Load() != failed+int64(maxSessionRefreshesPerAccount) {
-		t.Fatalf("failed logins not counted: %s logins=%d", result, logins.Load()-failed)
+	refresh := func(label, want string) {
+		t.Helper()
+		before := logins.Load()
+		header, result := lease.RefreshSession(ctx, label)
+		if result != want || logins.Load() != before+1 {
+			t.Fatalf("refresh %s: %s want %s logins=%d", label, result, want, logins.Load()-before)
+		}
+		if result == E2HTTPAuthAuthenticated {
+			if value := strings.TrimPrefix(header.Get("Authorization"), "Bearer "); value == "" || strings.Contains(string(lease.Execution.RedactOutput([]byte(value))), value) {
+				t.Fatal("new session missing or not redacted")
+			}
+			read(e2HTTPWorkerSessions(e2proxy.HeaderTestAccountPassthrough, &lease)[label], http.StatusOK)
+		}
 	}
+	// 초기 인증 뒤 60초 만료를 8번 진행한다. 가상 시계만 앞당기고 HTTP·E②는 실제 경로를 쓴다.
+	for range 8 {
+		old := e2HTTPWorkerSessions(e2proxy.HeaderTestAccountPassthrough, &lease)["tester-a"]
+		clock.Advance(time.Minute)
+		read(old, http.StatusUnauthorized)
+		refresh("tester-a", E2HTTPAuthAuthenticated)
+		unsent("tester-a", E2HTTPRefreshCooldown)
+	}
+	unsent("someone-else", E2HTTPAuthNotSent)
+	// A의 2회 실패와 B의 3회 실패는 합산하지 않는다. B의 상한 뒤에도 A는 성공할 수 있다.
+	rejectA.Store(true)
+	for range 2 {
+		clock.Advance(minSessionRefreshInterval)
+		refresh("tester-a", E2HTTPAuthLoginFailed)
+	}
+	for range maxSessionRefreshFailuresPerAccount {
+		clock.Advance(minSessionRefreshInterval)
+		refresh("tester-b", E2HTTPAuthLoginFailed)
+	}
+	unsent("tester-b", E2HTTPRefreshLimit)
+	rejectA.Store(false)
+	refresh("tester-a", E2HTTPAuthAuthenticated)
+	// 성공으로 실패 수가 초기화된다. 다시 2회 실패한 뒤에도 세 번째 실제 로그인을 허용한다.
+	rejectA.Store(true)
+	for i := range maxSessionRefreshFailuresPerAccount {
+		clock.Advance(minSessionRefreshInterval)
+		refresh("tester-a", E2HTTPAuthLoginFailed)
+		want := E2HTTPRefreshCooldown
+		if i == maxSessionRefreshFailuresPerAccount-1 {
+			want = E2HTTPRefreshLimit
+		}
+		unsent("tester-a", want)
+	}
+	clock.Advance(time.Minute)
+	unsent("tester-a", E2HTTPRefreshLimit)
 }
 
 // 인증된 계정이 없거나 시험 계정 실행이 아니면 Worker에게 다시 로그인 경로를 주지 않는다.
@@ -510,10 +571,15 @@ func TestE2HTTPFactoryConcurrentRefreshKeepsNewestSession(t *testing.T) {
 	if !secondDone {
 		results <- <-second
 	}
+	seen := map[string]int{}
 	for range 2 {
-		if result := <-results; result != E2HTTPAuthAuthenticated {
-			t.Fatal("refresh", result)
-		}
+		seen[<-results]++
+	}
+	mu.Lock()
+	loginCount := issued
+	mu.Unlock()
+	if secondDone || seen[E2HTTPAuthAuthenticated] != 1 || seen[E2HTTPRefreshCooldown] != 1 || loginCount != 2 {
+		t.Fatalf("concurrent refresh: results=%v logins=%d bypassed queue=%v", seen, loginCount, secondDone)
 	}
 	next := e2HTTPWorkerSessions(e2proxy.HeaderTestAccountPassthrough, &lease)
 	mu.Lock()

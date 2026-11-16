@@ -621,7 +621,9 @@ func endpointAt(c *Controller, method, path string) Endpoint {
 	return Endpoint{}
 }
 
-// 추정 후보는 크롤이 방문하지 않는다. 자동 모드는 쓰기 승인이 있을 때만 수동 모드처럼 진단 대상으로 고른다(C21).
+// 추정 후보는 크롤이 방문하지 않는다. 자동 모드는 읽기 확인 접두 안의 추정 GET을 쓰기 승인과 상관없이 진단 출발점으로
+// 고른다(모델 목록에 넣음). 추정 표시는 부작용 근거가 아니고 자동 모드는 이미 승인 범위 안이면 보내므로 보낼 수 있는
+// 요청은 늘지 않는다(VAmPI 실제 회차 24b, 2026-11-16 사용자 결정; 전에는 C21대로 쓰기 승인이 있을 때만 골랐다).
 func TestCrawlLeavesInferredCandidatesUnvisited(t *testing.T) {
 	for _, writes := range []bool{true, false} {
 		crawlInferredCandidates(t, writes)
@@ -643,7 +645,7 @@ func crawlInferredCandidates(t *testing.T, writes bool) {
 	if want := []string{"/read"}; !reflect.DeepEqual(order, want) {
 		t.Fatalf("got=%q want=%q", order, want)
 	}
-	if e := endpointAt(c, "GET", "/read/guess"); !e.InScope || e.Change != "possible" || e.Visited || e.Selected != writes {
+	if e := endpointAt(c, "GET", "/read/guess"); !e.InScope || e.Change != "possible" || e.Visited || !e.Selected {
 		t.Fatalf("writes=%v %+v", writes, e)
 	}
 	for _, e := range []Endpoint{endpointAt(c, "GET", "/read/items"), endpointAt(c, "POST", "/read/things")} {

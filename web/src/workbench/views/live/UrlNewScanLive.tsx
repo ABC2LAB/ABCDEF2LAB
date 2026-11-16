@@ -223,11 +223,26 @@ export function UrlNewScanLive() {
   const consentKey = `${tv}\u0000${pv}\u0000${resetSeq}\u0000${accountRevision}`;
   // 입력이 바뀐 렌더부터 이전 동의를 배제한다(늦은 effect/응답을 기다리지 않는다).
   if (accountConsent.key !== consentKey) setAccountConsent({ key: consentKey, checked: false });
-  const hasTestAccounts = external && accountPresence.key === consentKey && accountPresence.value;
+  // 대상에 시험 계정이 있는지는 로컬·외부 모두 조회한다 (서버 runBindsAccounts: 로컬 모드는 동의 없이도, 외부 모드는 external_test_accounts 동의 시 결속).
+  const hasTestAccounts = accountPresence.key === consentKey && accountPresence.value;
   const consentChecked =
-    hasTestAccounts && !!accountPresence.statement && accountConsent.key === consentKey && accountConsent.checked;
+    external &&
+    hasTestAccounts &&
+    !!accountPresence.statement &&
+    accountConsent.key === consentKey &&
+    accountConsent.checked;
+  // 이 회차가 시험 계정으로 로그인(결속)하는가. 결속된 회차는 저장된 서버 입력을, 새 초안은 조회+모드로 판단한다 (정규화·새로고침에도 유지).
+  //  - 외부 모델: 외부 전송 동의(external_test_accounts)가 있어야 결속. 로컬 모델: 동의 없이도 대상에 시험 계정이 있으면 결속.
+  const testAccountLogin = shown
+    ? shown.external_test_accounts === true || (!external && hasTestAccounts)
+    : hasTestAccounts && (!external || consentChecked);
+  // 로그인 칸 '연결 전' 설명: 시험 계정으로 로그인하면 '로그인 없이' 라고 단정하지 않는다.
+  const loginUnwiredWhy = testAccountLogin
+    ? `${NO_INPUT} · 시험 계정으로 로그인해 점검합니다`
+    : `${NO_INPUT} · 지금 점검은 로그인 없이 진행됩니다`;
   useEffect(() => {
-    if (!external || shown || !tv || urlTargetHint(tv)) return;
+    // 로컬·외부 모두, 새 초안·결속 회차 모두 대상의 시험 계정 유무를 조회한다 (결속 회차는 정규화된 저장 주소로 다시 확인된다).
+    if (!tv || urlTargetHint(tv)) return;
     const controller = new AbortController();
     let current = true;
     void readExternalTestAccountPresence(tv, controller.signal)
@@ -247,7 +262,7 @@ export function UrlNewScanLive() {
       current = false;
       controller.abort();
     };
-  }, [external, shown, tv, consentKey]);
+  }, [tv, consentKey]);
   const lockedKind = external ? "external" : "local";
   const shownKind = shown ? lockedKind : kind;
   // 분석 모델 칸의 짜임(모델 · 서버 주소 / 제공자 · API 키 · 경고)은 고른 쪽을 따른다. 그쪽 설치 프로필이 없어도 모양은 보인다
@@ -357,6 +372,15 @@ export function UrlNewScanLive() {
   } else if (job.state === "ready") {
     action = (
       <>
+        {external && hasTestAccounts && !testAccountLogin ? (
+          <div className={cx(s.note, s.warn)} role="note">
+            <Icon name="alert" />
+            <span>
+              시험 계정 외부 전송 동의를 하지 않아 시험 계정(로그인) 없이 점검합니다. 시험 계정으로 점검하려면 새로
+              입력하세요.
+            </span>
+          </div>
+        ) : null}
         {scope?.approval_mode === "confirm_every_request" ? (
           <div className={cx(s.note, s.warn)} role="note">
             <Icon name="alert" />
@@ -553,6 +577,16 @@ export function UrlNewScanLive() {
             </div>
           ) : null}
 
+          {handle && job?.state === "ready" ? (
+            <div className={cx(s.note, s.warn)} role="note">
+              <Icon name="alert" />
+              <span className={s["lv-grow"]}>
+                검증이 끝났습니다. 오른쪽 <b>점검 요약</b> 패널에서 동의한 뒤 <b>점검 시작</b>을 누르세요.
+              </span>
+              <InspOpenButton>점검 요약</InspOpenButton>
+            </div>
+          ) : null}
+
           <div className={s.fgrps}>
             {/* biome-ignore lint/a11y/useSemanticElements: 시안 마크업 그대로 (fieldset 테두리 · 여백 없이 묶음만) */}
             <div className={s.fgrp} role="group" aria-label="대상 · 로그인" hidden={page !== 1}>
@@ -616,7 +650,7 @@ export function UrlNewScanLive() {
               <div className={s.fsec}>
                 <div className={cx(s["fsec-h"], s["fsec-ht"])}>
                   <h2>로그인</h2>
-                  <Unwired why={`${NO_INPUT} · 지금 점검은 로그인 없이 진행됩니다`} />
+                  <Unwired why={loginUnwiredWhy} />
                 </div>
                 <div className={s["fsec-b"]}>
                   <div className={s.seg} role="radiogroup" aria-label="로그인 여부">
@@ -928,7 +962,7 @@ export function UrlNewScanLive() {
               </dd>
               <dt>로그인</dt>
               <dd>
-                — <Unwired why={NO_INPUT} />
+                {testAccountLogin ? "시험 계정 로그인" : "—"} <Unwired why={loginUnwiredWhy} />
               </dd>
               <dt>분석 모델</dt>
               <dd>{profile ? `${profile.model_label} (${external ? "외부 API" : "로컬"})` : "—"}</dd>
