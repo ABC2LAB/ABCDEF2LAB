@@ -314,6 +314,32 @@ func TestE2HTTPBashNonzeroExitDoesNotBecomeRunnerFailure(t *testing.T) {
 	}
 }
 
+func TestE2HTTPInitializationCancellationRequiresClosedEvidence(t *testing.T) {
+	closed := completedE2WorkerResult()
+	closed.Trusted.Execution.AuditComplete = true
+	closed.Trusted.ProcessBashExited = false
+	closed.Trusted.Classification = "terminated"
+	closed.Trusted.Termination = e2runner.TerminationCanceled
+	if e2HTTPRunnerFailed(e2runner.ErrUnavailable, closed) {
+		t.Fatal("확인된 초기화 중지를 격리 장애로 처리")
+	}
+	for name, mutate := range map[string]func(*e2runner.Result){
+		"call-open": func(r *e2runner.Result) { r.Trusted.Call.Final = false },
+		"process":   func(r *e2runner.Result) { r.Trusted.ProcessDrained = false },
+		"proxy":     func(r *e2runner.Result) { r.Trusted.ProxyDrained = false },
+		"audit":     func(r *e2runner.Result) { r.Trusted.Call.AuditComplete = false },
+		"unknown":   func(r *e2runner.Result) { r.Trusted.Call.Counts.Unknown = 1 },
+		"failure":   func(r *e2runner.Result) { r.Trusted.Classification = "isolation_unavailable" },
+		"cause":     func(r *e2runner.Result) { r.Trusted.Termination = "" },
+	} {
+		changed := closed
+		mutate(&changed)
+		if !e2HTTPRunnerFailed(e2runner.ErrUnavailable, changed) {
+			t.Fatal("미확인 중지·장애를 정상 중지로 처리", name)
+		}
+	}
+}
+
 // 명령 시간 상한에 닿아 멈춘 명령은 runner 장애가 아니라 그 명령의 실패다(계약 열린 항목 2). 모델에 오류로 돌려주고
 // 같은 intent에서 다음 명령을 받는다. 프록시 장애는 원인이 남아도 runner 장애로 멈춘다.
 func TestE2HTTPBashCommandTimeoutIsNotRunnerFailure(t *testing.T) {

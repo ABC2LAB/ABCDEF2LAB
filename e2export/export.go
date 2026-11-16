@@ -296,7 +296,8 @@ func (p *Publisher) ObserveResult(ctx context.Context, result e2runner.Result) e
 	view := p.cfg.Execution.Snapshot()
 	valid := trusted.Version == e2proxy.Version && trusted.Execution.Scope == view.Scope && trusted.Execution.HeaderMode == view.HeaderMode &&
 		trusted.Call.IntentID > 0 && p.cfg.Execution.HasIntent(trusted.Call.IntentID) && trusted.Final && trusted.Call.Final && trusted.Call.AuditComplete &&
-		trusted.ProcessBashExited && trusted.ProcessDrained && trusted.ProxyDrained
+		(trusted.ProcessBashExited || trusted.Termination == e2runner.TerminationCanceled && trusted.Classification == "terminated" && trusted.Call.Counts.Unknown == 0 ||
+			trusted.Termination == e2runner.TerminationTimeout && trusted.Classification == "transient_failure" && trusted.Call.Counts.Unknown == 0) && trusted.ProcessDrained && trusted.ProxyDrained
 	found := false
 	for _, call := range p.cfg.Execution.Calls() {
 		if call.CallRef == trusted.Call.CallRef && sameCallResult(call, trusted.Call) {

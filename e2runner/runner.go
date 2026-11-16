@@ -35,6 +35,7 @@ const ClassificationForwardNotAttempted = "forward_not_attempted"
 const (
 	TerminationTimeout          = "timeout"
 	TerminationProxyUnavailable = "proxy_unavailable"
+	TerminationCanceled         = "canceled"
 )
 
 type Config struct {
@@ -72,7 +73,7 @@ type TrustedResult struct {
 	Final             bool                  `json:"final"`
 	Classification    string                `json:"classification"`
 	// Termination은 호스트가 명령을 멈춘 원인 중 E② 결과 분류에서 나눠야 하는 것이다: timeout(명령 시간 상한)·
-	// proxy_unavailable(E② 프록시 장애). 둘 다 transient_failure로 분류되지만 시간 상한은 그 명령만 끝나지 않은
+	// proxy_unavailable(E② 프록시 장애)·canceled(확인된 초기화 중지). 시간 상한과 프록시 장애는 transient_failure로 분류되지만 시간 상한은 그 명령만 끝나지 않은
 	// 것이고 프록시 장애는 집행 장애다(실행 결과 상태 값 계약 열린 항목 2). 그 밖에는 비운다.
 	Termination string `json:"termination,omitempty"`
 }
@@ -96,9 +97,8 @@ func processLimits(slots int) (ProcessLimits, error) {
 		return ProcessLimits{}, ErrConfig
 	}
 	l := ProcessLimits{BashSlots: slots, ContainerTasks: container, EngineReserveTasks: reserve, CallTasks: min(maximum, uint64((container-reserve)/slots))}
-	if slots > 1 {
-		l.HelperReserveTasks = helperReserve
-	}
+	// 한 슬롯에서도 명령이 relay·마감 스레드의 몫을 소비하면 안 된다.
+	l.HelperReserveTasks = helperReserve
 	l.CommandTasks = l.CallTasks - l.HelperReserveTasks
 	return l, nil
 }

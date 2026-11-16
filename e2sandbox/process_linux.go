@@ -73,6 +73,9 @@ type Process struct {
 	done                chan struct{}
 	readyOnce, bashOnce sync.Once
 	started             bool
+	setupFailed         bool
+	interruptCause      error
+	stopSent            bool
 	result              Result
 	output              boundedOutput
 	cancel              context.CancelFunc
@@ -196,8 +199,24 @@ func validateConfig(cfg Config) (workspace, proxy, ca *os.File, err error) {
 // Launch establishes isolation and returns before Bash starts, so the caller
 // can install the exact helper's peer binding in its call proxy first.
 func Launch(ctx context.Context, cfg Config) (*Process, error) {
-	if ctx == nil || ctx.Err() != nil {
+	p, err := Prepare(ctx, cfg)
+	if err != nil && p != nil {
+		if closeErr := p.Close(); closeErr != nil {
+			return p, err // 미확인 자원의 소유권을 버리지 않는다.
+		}
+		return nil, err
+	}
+	return p, err
+}
+
+// Prepare는 시작 실패 때도 생성된 Process의 소유권을 돌려준다. Runner는
+// 초기화의 중지와 장애를 나눈 뒤 Stop·Wait·Close가 끝날 때까지 슬롯을 보유한다.
+func Prepare(ctx context.Context, cfg Config) (*Process, error) {
+	if ctx == nil {
 		return nil, ErrConfig
+	}
+	if ctx.Err() != nil {
+		return nil, &startupInterruption{cause: ctx.Err()}
 	}
 	limits, err := limitsFor(cfg)
 	if err != nil {
@@ -269,7 +288,11 @@ func Launch(ctx context.Context, cfg Config) (*Process, error) {
 		configWrite.Close()
 		statusRead.Close()
 		workspaceRead.Close()
-		return nil, fmt.Errorf("%w: process_start", ErrUnavailable)
+		cleanupRoot = false
+		p.result.Drained, p.result.HelperFailed = true, true // Start 오류면 실행 중인 자식이 없다.
+		p.result.Reason = "helper_failed"
+		close(p.done)
+		return p, fmt.Errorf("%w: process_start", ErrUnavailable)
 	}
 	cleanupRoot = false
 	_ = configRead.Close()
@@ -277,35 +300,46 @@ func Launch(ctx context.Context, cfg Config) (*Process, error) {
 	_ = workspaceIn.Close()
 	_ = workspaceWrite.Close()
 	go p.readWorkspace(workspaceRead, workspaceArchiveLimit(limits.ScratchBytes))
+	// PID pin·설정 전달 실패도 시작한 자원의 소유권을 Runner에 남긴다.
+	// 제거 실패를 삼킨 채 nil을 돌려주면 Runner가 슬롯을 조기 반환할 수 있다.
+	abortStartup := func(cause error) (*Process, error) {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		_ = statusRead.Close()
+		<-p.workspaceDone
+		p.result.Drained = cmd.ProcessState != nil
+		p.result.HelperFailed = true
+		p.result.Reason = "helper_failed"
+		p.settleWorkspace()
+		cancel()
+		close(p.done)
+		return p, cause
+	}
 	p.pidfd, err = unix.PidfdOpen(cmd.Process.Pid, 0)
 	if err == nil {
 		err = p.pinNamespaces()
 	}
 	if err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		p.release()
-		statusRead.Close()
-		return nil, fmt.Errorf("%w: namespace_pin", err)
+		return abortStartup(fmt.Errorf("%w: namespace_pin", err))
 	}
 	if json.NewEncoder(configWrite).Encode(helperConfig{Limits: limits, Root: root, Command: cfg.Command, DrainNanos: int64(cfg.DrainTimeout), Workspace: cfg.Workspace, ProxySocket: cfg.ProxySocket, CACert: cfg.CACert, Helper: cfg.Helper, SaveWorkspace: cfg.SaveWorkspace}) != nil {
-		_ = unix.PidfdSendSignal(p.pidfd, unix.SIGKILL, nil, 0)
-		_ = cmd.Wait()
-		p.release()
-		statusRead.Close()
-		return nil, fmt.Errorf("%w: config_write", ErrUnavailable)
+		return abortStartup(fmt.Errorf("%w: config_write", ErrUnavailable))
 	}
 	go p.readStatus(statusRead)
 	p.stopContext = context.AfterFunc(runCtx, func() {
 		defer close(p.callbackDone)
 		p.mu.Lock()
-		if runCtx.Err() == context.DeadlineExceeded {
-			p.result.Reason = "timeout"
-		} else {
-			p.result.Reason = "canceled"
+		defer p.mu.Unlock()
+		signaled := !p.exited() && unix.PidfdSendSignal(p.pidfd, unix.SIGKILL, nil, 0) == nil
+		p.stopSent = p.stopSent || signaled
+		if p.result.Reason == "" && signaled {
+			p.interruptCause = runCtx.Err()
+			if runCtx.Err() == context.DeadlineExceeded {
+				p.result.Reason = "timeout"
+			} else {
+				p.result.Reason = "canceled"
+			}
 		}
-		p.mu.Unlock()
-		p.kill()
 	})
 	go func() {
 		waitErr := cmd.Wait()
@@ -313,6 +347,20 @@ func Launch(ctx context.Context, cfg Config) (*Process, error) {
 		<-p.workspaceDone
 		p.mu.Lock()
 		p.result.Drained = p.exited()
+		var status syscall.WaitStatus
+		statusKnown := false
+		if cmd.ProcessState != nil {
+			status, statusKnown = cmd.ProcessState.Sys().(syscall.WaitStatus)
+		}
+		stoppedByHost := statusKnown && status.Signaled() && status.Signal() == syscall.SIGKILL && p.stopSent
+		p.result.HelperFailed = waitErr != nil && !stoppedByHost
+		// 취소와 실제 helper 장애가 경쟁해도 비정상 종료를 정상 중지로 덮지 않는다.
+		if p.interruptCause != nil && (!stoppedByHost || p.setupFailed) {
+			p.interruptCause = nil
+			if !p.setupFailed {
+				p.result.Reason = "helper_failed"
+			}
+		}
 		if waitErr != nil && p.result.Reason == "" {
 			p.result.Reason = "helper_failed"
 		}
@@ -339,21 +387,24 @@ func Launch(ctx context.Context, cfg Config) (*Process, error) {
 	case <-p.ready:
 		return p, nil
 	case <-p.done:
-		reason := p.result.Reason
-		p.release()
-		return nil, fmt.Errorf("%w: %s", ErrUnavailable, reason)
+		return p, p.startupError()
 	case <-runCtx.Done():
-		p.kill()
 		<-p.done
-		reason := p.result.Reason
-		p.release()
-		return nil, fmt.Errorf("%w: %s", ErrUnavailable, reason)
+		return p, p.startupError()
 	case <-timer.C:
 		p.kill()
 		<-p.done
-		p.release()
-		return nil, ErrUnavailable
+		return p, ErrUnavailable
 	}
+}
+
+func (p *Process) startupError() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.interruptCause != nil && !p.setupFailed && p.result.Drained {
+		return &startupInterruption{cause: p.interruptCause}
+	}
+	return fmt.Errorf("%w: %s", ErrUnavailable, p.result.Reason)
 }
 
 func (p *Process) pinNamespaces() error {
@@ -405,6 +456,7 @@ func (p *Process) readStatus(f *os.File) {
 			p.result.ExitCode = s.ExitCode
 			p.bashOnce.Do(func() { close(p.bashDone) })
 		case "setup_failed":
+			p.setupFailed = true
 			p.result.Reason = "isolation_setup_failed:" + s.Stage
 		case "exec_failed":
 			p.result.Reason = "bash_start_failed"
@@ -485,19 +537,30 @@ func (p *Process) kill() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.pidfd >= 0 {
-		_ = unix.PidfdSendSignal(p.pidfd, unix.SIGKILL, nil, 0)
+		live := !p.exited()
+		if unix.PidfdSendSignal(p.pidfd, unix.SIGKILL, nil, 0) == nil && live {
+			p.stopSent = true
+		}
 	}
 }
 
 // Start permits one Bash invocation after the host proxy has bound this PID.
 func (p *Process) Start(ctx context.Context) error {
-	if p == nil || ctx == nil || ctx.Err() != nil {
+	if p == nil || ctx == nil || p.cmd == nil || p.cmd.Process == nil {
 		return ErrState
 	}
 	p.mu.Lock()
+	if p.exited() {
+		p.mu.Unlock()
+		<-p.done
+		return p.startupError()
+	}
 	defer p.mu.Unlock()
-	if p.started || p.exited() {
+	if p.started {
 		return ErrState
+	}
+	if ctx.Err() != nil {
+		return &startupInterruption{cause: ctx.Err()}
 	}
 	if json.NewEncoder(p.control).Encode(helperControl{Action: "start"}) != nil {
 		return ErrUnavailable
@@ -506,7 +569,7 @@ func (p *Process) Start(ctx context.Context) error {
 	return nil
 }
 func (p *Process) PID() int {
-	if p == nil || p.cmd == nil {
+	if p == nil || p.cmd == nil || p.cmd.Process == nil {
 		return 0
 	}
 	return p.cmd.Process.Pid
@@ -584,13 +647,12 @@ func (p *Process) Close() error {
 	case <-p.done:
 		p.mu.Lock()
 		defer p.mu.Unlock()
-		p.release()
-		return nil
+		return p.release()
 	default:
 		return ErrState
 	}
 }
-func (p *Process) release() {
+func (p *Process) release() error {
 	if p.cancel != nil {
 		p.cancel()
 	}
@@ -607,7 +669,10 @@ func (p *Process) release() {
 		p.pidfd = -1
 	}
 	if p.root != "" {
-		_ = os.Remove(p.root)
+		if err := os.Remove(p.root); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 		p.root = ""
 	}
+	return nil
 }
