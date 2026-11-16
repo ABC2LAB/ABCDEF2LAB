@@ -86,6 +86,10 @@ class VerifiedRound(BoundaryExportFixture):
         (directory / be.ROWS).write_bytes(raw)
         self.assertCode("boundary_export_invalid", self.verify, directory)
 
+    def test_external_hosts_are_distinct_names(self):
+        rows = self.rows() + [bf.external(6), bf.external(7, host="fonts.example")]
+        self.assertEqual(self.verify(self.write(rows))["counters"]["external_hosts"], 2)
+
     def test_rows_after_close_are_counted(self):
         block = self.verify(self.write(rows_at_close=3))
         self.assertEqual(block["counters"]["rows_after_close"], 2)

@@ -54,7 +54,7 @@ class SignedFixture(unittest.TestCase):
         path.write_bytes(value if isinstance(value, bytes) else json.dumps(value, sort_keys=True).encode() + b"\n")
         path.chmod(0o600)
 
-    def fixture(self, side="baseline", repeat=0, *, meta=None, source="synthetic_fixture"):
+    def fixture(self, side="baseline", repeat=0, *, meta=None, source="synthetic_fixture", boundary=None):
         self.serial += 1
         directory = self.root / str(self.serial)
         directory.mkdir(mode=0o700)
@@ -74,8 +74,9 @@ class SignedFixture(unittest.TestCase):
         self.write(directory, "engine-drained.json", {"role": "engine", "forwarded_requests": 3,
                    "log_complete": True, "inflight_at_drain": 0, "forced_cancelled_requests": 0})
         meter = MeterFiles(directory)
+        want = boundary if boundary is not None else side == "ours" and (meta or {}).get("layout", "exploration-split/v1") == "exploration-split/v1"
         boundary = None
-        if side == "ours" and (meta or {}).get("layout", "exploration-split/v1") == "exploration-split/v1":
+        if want:
             # 계측기 탐색 입구 행(/b·/c)과 맞는 경계 원자료. 차단·외부 자원 행은 대조에 들지 않는다.
             rows = [bf.approved(1, "/b", PATH_KEY), bf.approved(2, "/c", PATH_KEY, ingress="direct"),
                     bf.denied(3, "out_of_scope_path"), bf.external(4)]
@@ -232,6 +233,66 @@ class SignedFixture(unittest.TestCase):
         evidence = validate_series(b, o, request_budget=3, read_only=False)
         self.assertEqual(assessment({}, "R-F", evidence), {"profile": "R-F", "status": "NOT_RUN",
                                                         "reason": "verified_boundary_export_unavailable"})
+
+    def test_split_layout_requires_boundary_and_other_layouts_refuse_it(self):
+        with self.assertRaisesRegex(PreservationRecordError, "preservation_boundary_missing"):
+            self.fixture("ours", meta={"layout": "exploration-split/v1"}, boundary=False)
+        with self.assertRaisesRegex(PreservationRecordError, "preservation_boundary_unexpected"):
+            self.fixture("baseline", boundary=True)
+
+    def test_signed_boundary_block_must_match_final_boundary_files(self):
+        directory, meter, payload = self.fixture("ours")
+        # 표식과 행을 서로 맞게 다시 써도(차단 사유를 바꿈) 서명된 요약과 다르면 거부한다.
+        bf.write(directory / "boundary_new", [bf.approved(1, "/b", PATH_KEY), bf.approved(2, "/c", PATH_KEY, ingress="direct"),
+                                               bf.denied(3, "risky_path"), bf.external(4)], PATH_KEY)
+        for name in (bf.ROWS, bf.MARKER):
+            (directory / "boundary_new" / name).replace(directory / "boundary" / name)
+        with self.assertRaisesRegex(PreservationRecordError, "preservation_boundary_mismatch"):
+            self.load(directory, meter)
+        with self.assertRaisesRegex(PreservationRecordError, "preservation_boundary_files_missing"):
+            load_record(directory, meter, RUNNER_KEY)
+        b, bm, _ = self.fixture("baseline")
+        with self.assertRaisesRegex(PreservationRecordError, "preservation_boundary_unexpected"):
+            load_record(b, bm, RUNNER_KEY, directory / "boundary")
+
+    def test_boundary_block_on_non_split_layout_is_invalid(self):
+        directory, meter, payload = self.fixture("ours")
+        payload["conditions"]["layout"] = "e2-legacy/v1"
+        self.write(directory, NAME, sign_run_record(payload, RUNNER_KEY))
+        with self.assertRaisesRegex(PreservationRecordError, "preservation_boundary_invalid"):
+            self.load(directory, meter)
+
+    def test_series_boundary_status_and_assessment_reason(self):
+        b, o = self.series()
+        for record in b + o: record["execution_source"] = "model_run"
+        not_opened = {"status": "not_opened", "binding_sha256": None, "closed_reason": None, "counters": None, "reconciliation": None}
+        truncated = {"status": "truncated", "counters": None, "reconciliation": None}
+        for change, status, reason in ((not_opened, "NOT_RUN", "boundary_session_not_opened"),
+                                       (truncated, "UNDECIDABLE", "boundary_export_truncated")):
+            with self.subTest(reason=reason):
+                changed = copy.deepcopy(o)
+                changed[1]["exploration_boundary"] |= change
+                evidence = validate_series(b, changed, request_budget=3, read_only=False)
+                boundary = evidence["exploration_boundary"]
+                self.assertEqual((boundary["status"], boundary["reason"]), (status, reason))
+                # 원자료를 못 쓴 회차의 카운터는 0이 아니라 null이다.
+                self.assertIsNone(boundary["rounds"][1]["counters"])
+                self.assertEqual(assessment({}, "R-F", evidence), {"profile": "R-F", "status": "NOT_RUN", "reason": reason})
+        evidence = validate_series(b, o, request_budget=3, read_only=False)
+        self.assertEqual((evidence["exploration_boundary"]["status"], evidence["exploration_boundary"]["reason"]), ("PASS", "boundary_export_verified"))
+        self.assertEqual([r["counters"]["denied"]["total"] for r in evidence["exploration_boundary"]["rounds"]], [1, 1, 1])
+        # 경계가 PASS여도 판정은 기존 수용선(유효 짝 3개 이상)만 쓴다.
+        summary = {"read_only": False, "pair_ratios": [1.0, 1.0], "pair_mean": 1.0}
+        self.assertEqual(assessment(summary, "R-F", evidence)["reason"], "valid_pairs_lt_3")
+
+    def test_v1_and_v2_records_cannot_be_pooled(self):
+        b, o = self.series()
+        changed = copy.deepcopy(o)
+        changed[0]["format"] = "abc2lab.preservation-round/v1"
+        del changed[0]["exploration_boundary"]
+        changed[0]["conditions"]["layout"] = "exploration-split/v1"
+        with self.assertRaisesRegex(PreservationRecordError, "preservation_series_mismatch"):
+            validate_series(b, changed, request_budget=3, read_only=False)
 
     def test_options_schema_is_closed_and_contains_no_free_secret_fields(self):
         for value in (options() | {"api_key": "not-a-secret"}, options() | {"mcp_version": "latest"},
