@@ -371,6 +371,11 @@ func (e *Execution) prepareResponse(response *http.Response, body []byte, genera
 		if partial || oversized || response == nil || response.Uncompressed || !identityEncoding(response.Header, "Content-Encoding") || !identityEncoding(response.Trailer, "Content-Encoding") {
 			return nil, false, false
 		}
+		// 이름의 기존 ToLower 대조는 simple fold와 일부 문자(İ 등)에서 다르다.
+		// 메타데이터의 기존 검출을 먼저 보존하고, 본문은 아래에서 구간 가림한다.
+		if !e.protectedHTTPValuesSafeLocked(response, nil, e.passwords) {
+			return nil, false, false
+		}
 		for _, fields := range []http.Header{response.Header, response.Trailer} {
 			for name, values := range fields {
 				if strings.EqualFold(name, "Content-Transfer-Encoding") {

@@ -101,7 +101,7 @@ func TestPasswordResponseNeverWeakensLegacyDetection(t *testing.T) {
 	for _, place := range []string{"body", "header-value", "header-name", "trailer-value", "trailer-name", "status", "protocol"} {
 		t.Run(place, func(t *testing.T) {
 			legacyHits := 0
-			for _, password := range []string{"myPass123", "lowercasepw1", "secret-word-9"} {
+			for _, password := range []string{"myPass123", "lowercasepw1", "secret-word-9", "seeded-İ-value"} {
 				for _, reflected := range []string{password, strings.ToUpper(password), strings.ToLower(password)} {
 					response := &http.Response{Header: http.Header{"Content-Type": {"text/plain"}}, Trailer: http.Header{}, Status: "200 OK", Proto: "HTTP/1.1"}
 					body := []byte("public")
@@ -129,6 +129,12 @@ func TestPasswordResponseNeverWeakensLegacyDetection(t *testing.T) {
 					out, masked, safe := e.prepareResponse(response, body, 0, 1024, false, false)
 					if !legacySafe && safe && !masked {
 						t.Fatalf("기존 검사가 찾은 반사를 전달: %s", place)
+					}
+					if legacySafe && !strings.EqualFold(password, reflected) {
+						if !safe || masked || string(out) != string(body) {
+							t.Fatal("단순 fold 밖의 비민감 표현을 변경")
+						}
+						continue
 					}
 					if place == "body" {
 						if !safe || !masked || string(out) != "before [REDACTED] after" {
