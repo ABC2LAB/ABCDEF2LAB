@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"math/big"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Autumn-27/artex/exploreboundary"
 	"github.com/Autumn-27/artex/pathmask"
 )
 
@@ -75,5 +77,66 @@ func TestBuildRejectsUnsafeConfiguration(t *testing.T) {
 		if _, err := build(c); err == nil {
 			t.Fatal("unsafe boundary configuration accepted:", name)
 		}
+	}
+}
+
+// 원자료 출력은 두 칸을 함께 줄 때만 켜진다. 한쪽만 준 설정은 켜려다 빠뜨린 것이라 시작하지 않는다.
+func TestBuildEvidenceNeedsBothFields(t *testing.T) {
+	evidence := func(t *testing.T) string {
+		dir := filepath.Join(protectedDir(t), "evidence")
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	for name, mutate := range map[string]func(*config){
+		"dir_only":     func(c *config) { c.EvidenceDir = evidence(t) },
+		"max_only":     func(c *config) { c.EvidenceMaxBytes = 1 << 20 },
+		"negative_max": func(c *config) { c.EvidenceDir, c.EvidenceMaxBytes = evidence(t), -1 },
+		"missing_dir":  func(c *config) { c.EvidenceDir, c.EvidenceMaxBytes = filepath.Join(t.TempDir(), "absent"), 1<<20 },
+	} {
+		c := validConfig(t)
+		mutate(&c)
+		if _, err := build(c); err == nil {
+			t.Fatal("incomplete evidence configuration accepted:", name)
+		}
+	}
+	c := validConfig(t)
+	if p, err := build(c); err != nil || p.manager.Policy.Evidence != nil {
+		t.Fatal("boundary without evidence fields must not write evidence", err)
+	}
+}
+
+// 원자료를 켠 경계는 내릴 때 입구를 닫은 뒤 표식을 마지막에 쓴다. 표식의 키 참조는 경로 가림 키에서 나온다.
+func TestShutdownSealsEvidence(t *testing.T) {
+	c := validConfig(t)
+	c.EvidenceDir = filepath.Join(protectedDir(t), "evidence")
+	if err := os.Mkdir(c.EvidenceDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	c.EvidenceMaxBytes = 1 << 20
+	p, err := build(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(c.EvidenceDir, exploreboundary.EvidenceRowsName)); err != nil {
+		t.Fatal("rows file not created at start", err)
+	}
+	if err := p.shutdown(nil, exploreboundary.SealedByShutdown); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(c.EvidenceDir, exploreboundary.EvidenceMarkerName))
+	if err != nil {
+		t.Fatal("marker missing after shutdown", err)
+	}
+	var marker exploreboundary.EvidenceMarker
+	key, _ := os.ReadFile(c.PathMaskKeyFile)
+	if err := json.Unmarshal(raw, &marker); err != nil || marker.Format != exploreboundary.EvidenceFormat || marker.PathKeyRef != pathmask.KeyRef(key) ||
+		marker.SealedBy != exploreboundary.SealedByShutdown || marker.Session != nil {
+		t.Fatalf("shutdown marker: %+v %v", marker, err)
+	}
+	// 같은 디렉터리로 다시 띄우면 이전 회차 원자료에 이어 쓰지 않는다.
+	if _, err := build(c); err == nil {
+		t.Fatal("boundary reused a sealed evidence directory")
 	}
 }
