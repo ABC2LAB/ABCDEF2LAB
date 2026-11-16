@@ -786,8 +786,11 @@ export type URLDiagnosisHandle = {
 const HANDLE_KEY = "abc2lab.urlDiagnosisHandle.v2";
 export function storeURLHandle(handle: URLDiagnosisHandle | null): void {
   try {
-    // 회차별 외부 시험 계정 동의는 메모리에서만 유지한다. 새로고침으로 동의를 재사용하지 않는다.
-    if (handle && !handle.input.external_test_accounts) sessionStorage.setItem(HANDLE_KEY, JSON.stringify(handle));
+    // 회차별 외부 시험 계정 동의는 시작을 보내기 전까지 메모리에서만 유지한다. 새로고침으로 동의를 재사용해 시작하지 않는다.
+    // 시작을 보낸 뒤(startKey)에는 같은 진단을 다시 시작할 수 없으므로(canStart 가 startSent 로 막힘) 동의가 다시 쓰일
+    // 길이 없다. 그때는 저장해 새로고침해도 진행 중 점검을 이어 보고 중지할 수 있게 한다.
+    if (handle && (!handle.input.external_test_accounts || handle.startKey !== undefined))
+      sessionStorage.setItem(HANDLE_KEY, JSON.stringify(handle));
     else sessionStorage.removeItem(HANDLE_KEY);
   } catch {
     /* 저장 불가 시 조회 핸들을 메모리에만 유지한다. */
@@ -811,7 +814,8 @@ export function readURLHandle(owner: string): URLDiagnosisHandle | null {
     ]);
     if (v.bindingLocked !== undefined && v.bindingLocked !== true) return invalid();
     const input = parseInput(v.input);
-    if (input.external_test_accounts) return invalid();
+    // 시작을 보내지 않은 동의 핸들은 저장하지 않으므로, 저장소에 있으면 버린다(시작 키 형식은 아래에서 따로 본다)
+    if (input.external_test_accounts && v.startKey === undefined) return invalid();
     if (v.id !== undefined && (!ref(v.id) || !natural(v.revision) || !v.revision || !digest(v.sourceDigest)))
       return invalid();
     if (v.id === undefined && (v.revision !== undefined || v.sourceDigest !== undefined)) return invalid();

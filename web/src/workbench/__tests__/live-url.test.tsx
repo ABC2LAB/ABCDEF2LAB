@@ -862,6 +862,19 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(screen.getByText(/^범위 밖으로 보낸 요청 — · 승인 없이 보낸 상태 변경 —/)).toHaveTextContent("연결 전");
   });
 
+  it("시작을 보낸 외부 시험 계정 동의 회차도 새로고침 뒤 이어 보고(중지 가능), 다시 시작하지 않는다", async () => {
+    const consentedRun = { ...running, input: { ...running.input, external_test_accounts: true as const } };
+    saveHandle({ ...handle, input: consentedRun.input, startKey: "start-1", startRevision: handle.revision });
+    expect(url.readURLHandle(owner)).not.toBeNull();
+    u.readURLStatus.mockResolvedValue(consentedRun);
+    mount("live");
+    expect(await screen.findByRole("button", { name: /종료/ })).toBeEnabled();
+    expect(u.readURLStatus).toHaveBeenCalledWith(handle.id, owner);
+    expect(u.createURLDraft).not.toHaveBeenCalled();
+    expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
+    expect(urlGates(useUrl.getState()).canStart).toBe(false);
+  });
+
   it("점검 진행: 토큰 · 자산 커버리지는 서버 값, 시작 · 경과 · 남은 시간 · 점검 중 발견 · 판정은 칸만 두고 비운다", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue({
