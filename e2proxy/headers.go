@@ -159,14 +159,16 @@ func credentialResponseHeader(name string) bool {
 	return false
 }
 
-// This is a bounded known-value guard, not universal encoded-data DLP. Unsafe
-// representations are withheld whole; a successful HTTP response is never edited.
+// 기존 보호 값의 제한된 검사다. 비밀번호 구간 가림은 명시 정책의 prepareResponse에서만 수행한다.
 func (e *Execution) safeHTTPResponse(response *http.Response, body []byte) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.safeHTTPResponseLocked(response, body)
+}
+func (e *Execution) safeHTTPResponseLocked(response *http.Response, body []byte) bool {
 	if response == nil || !identityEncoding(response.Header, "Content-Encoding") || !identityEncoding(response.Trailer, "Content-Encoding") || response.Uncompressed {
 		return false
 	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
 	for _, fields := range []http.Header{response.Header, response.Trailer} {
 		for name := range fields {
 			_, configured := e.secretHeaders[strings.ToLower(name)]
@@ -176,7 +178,41 @@ func (e *Execution) safeHTTPResponse(response *http.Response, body []byte) bool 
 			}
 		}
 	}
-	for _, secret := range e.secrets {
+	secrets := e.secrets
+	if e.cfg.PasswordResponse == "" {
+		secrets = append(append([][]byte(nil), secrets...), e.passwords...)
+	}
+	if !e.protectedHTTPValuesSafeLocked(response, body, secrets) {
+		return false
+	}
+
+	// 시험 계정 실행은 대상이 새로 발급한 세션(Set-Cookie 회전 등)도 모델에 준다. 그 값은 도구 출력·근거·활동 기록에서
+	// 가리도록 응답을 넘기기 전에 출력 가림 목록에 더한다(S09: 모델 입력만 예외, #522 이동찬 리뷰). 가릴 자리가 모자라면
+	// 기록에 남기지 않도록 응답을 통째로 보류한다.
+	if e.testAccountPassthrough() {
+		issued, short := issuedSessionValues(response)
+		if short {
+			// 8바이트보다 짧은 발급 값은 값으로 가릴 수 없다(흔한 문자열까지 가려짐). 헤더 줄이 아닌 모양(curl 쿠키 파일
+			// 등)으로 기록에 남을 수 있으니 그 응답을 보류한다. preserve 실행은 자격 응답을 늘 보류하므로 그보다 더 막지
+			// 않는다(#522 이동찬·윤재상 리뷰).
+			return false
+		}
+		// 회전 발급한 JWT도 인증 준비와 같은 출력 전용 조각 가림을 적용한다. 응답 보류용 보호 값은 늘리지 않는다.
+		fresh, ok := freshSessionRedactions(e.redactOnly, issued, maxIssuedRedactValues)
+		if !ok {
+			return false
+		}
+		e.redactOnly = append(e.redactOnly, fresh...)
+	}
+	return true
+}
+
+// protectedHTTPValuesSafeLocked는 일반 보호 값의 기존 전체 보류 규칙이다.
+func (e *Execution) protectedHTTPValuesSafeLocked(response *http.Response, body []byte, secrets [][]byte) bool {
+	if response == nil {
+		return false
+	}
+	for _, secret := range secrets {
 		if len(secret) == 0 {
 			continue
 		}
@@ -196,24 +232,6 @@ func (e *Execution) safeHTTPResponse(response *http.Response, body []byte) bool 
 				}
 			}
 		}
-	}
-	// 시험 계정 실행은 대상이 새로 발급한 세션(Set-Cookie 회전 등)도 모델에 준다. 그 값은 도구 출력·근거·활동 기록에서
-	// 가리도록 응답을 넘기기 전에 출력 가림 목록에 더한다(S09: 모델 입력만 예외, #522 이동찬 리뷰). 가릴 자리가 모자라면
-	// 기록에 남기지 않도록 응답을 통째로 보류한다.
-	if e.testAccountPassthrough() {
-		issued, short := issuedSessionValues(response)
-		if short {
-			// 8바이트보다 짧은 발급 값은 값으로 가릴 수 없다(흔한 문자열까지 가려짐). 헤더 줄이 아닌 모양(curl 쿠키 파일
-			// 등)으로 기록에 남을 수 있으니 그 응답을 보류한다. preserve 실행은 자격 응답을 늘 보류하므로 그보다 더 막지
-			// 않는다(#522 이동찬·윤재상 리뷰).
-			return false
-		}
-		// 회전 발급한 JWT도 인증 준비와 같은 출력 전용 조각 가림을 적용한다. 응답 보류용 보호 값은 늘리지 않는다.
-		fresh, ok := freshSessionRedactions(e.redactOnly, issued, maxIssuedRedactValues)
-		if !ok {
-			return false
-		}
-		e.redactOnly = append(e.redactOnly, fresh...)
 	}
 	return true
 }

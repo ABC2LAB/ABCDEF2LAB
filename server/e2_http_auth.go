@@ -21,9 +21,10 @@ import (
 // 계정마다 로그인 요청을 한 번 보낸다. 로그인 방식(앱별 설정)과 인증 준비 규칙 참조, 계정별 자격 보호 파일 pin만 담고
 // 자격 값은 담지 않는다. 자격 파일은 실행 결속 디렉터리 안에 있고 SHA-256으로 고정한다.
 type E2HTTPFileAuth struct {
-	RuleRef  string                    `json:"rule_ref"`
-	Login    diagnosisprep.TargetLogin `json:"login"`
-	Accounts []E2HTTPFileAuthAccount   `json:"accounts"`
+	PasswordResponse string                    `json:"password_response,omitempty"`
+	RuleRef          string                    `json:"rule_ref"`
+	Login            diagnosisprep.TargetLogin `json:"login"`
+	Accounts         []E2HTTPFileAuthAccount   `json:"accounts"`
 }
 
 type E2HTTPFileAuthAccount struct {
@@ -62,7 +63,7 @@ func validE2HTTPFileAuth(a *E2HTTPFileAuth, mode e2proxy.HeaderMode, rules []E2H
 		// 시험 계정 모드는 인증 준비 칸이 있는 정책에서만 받는다(C14 결정 6). 계정 없이 모델이 쓴 자격을 그대로 보내는 실행은 없다.
 		return mode != e2proxy.HeaderTestAccountPassthrough
 	}
-	if !diagnosisprep.ValidTargetLogin(a.Login) || len(a.Accounts) < 1 || len(a.Accounts) > diagnosisprep.MaxTargetAccounts {
+	if a.PasswordResponse != "" && (a.PasswordResponse != e2proxy.PasswordResponseMaskSpans || mode != e2proxy.HeaderTestAccountPassthrough) || !diagnosisprep.ValidTargetLogin(a.Login) || len(a.Accounts) < 1 || len(a.Accounts) > diagnosisprep.MaxTargetAccounts {
 		return false
 	}
 	found := false
@@ -353,7 +354,7 @@ func authPrepOne(ctx context.Context, call *e2proxy.Call, execution *e2proxy.Exe
 	// 비밀번호는 보내기 전에 이 실행의 보호 값으로 등록한다. 대상이 나중에 다른 응답에 비밀번호를 그대로 되돌려 주면 그
 	// 응답은 보류되고 출력에서도 가려진다(S09: 비밀번호는 모델 입력에 없다). 보호할 수 없는 비밀번호(너무 짧음 등)면
 	// 로그인하지 않는다.
-	if execution.AddProtectedValues([]byte(cred.Password)) != nil {
+	if execution.AddProtectedPasswords([]byte(cred.Password)) != nil {
 		cred.Username, cred.Password = "", ""
 		return E2HTTPAuthNotSent
 	}
@@ -462,4 +463,11 @@ func authSessionValues(login diagnosisprep.TargetLogin, session http.Header) [][
 		out = append(out, []byte(v))
 	}
 	return out
+}
+
+func e2HTTPPasswordResponse(auth *E2HTTPFileAuth) string {
+	if auth == nil {
+		return ""
+	}
+	return auth.PasswordResponse
 }

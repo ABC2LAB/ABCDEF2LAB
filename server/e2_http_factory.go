@@ -239,7 +239,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		return empty, ErrE2HTTPHost
 	}
 	var policy E2HTTPFilePolicy
-	if strictJSON(raw, &policy) != nil || !validE2HTTPPathMatchFields(raw) || policy.Format != E2HTTPFilePolicyFormat || len(policy.Rules) == 0 || len(policy.Rules) > 256 || policy.MaxRequests == 0 || !policy.ValidUntil.After(policy.ValidFrom) || !policy.ValidUntil.After(time.Now()) || policy.ValidFrom.After(time.Now()) || privateinput.CheckDirectory(policy.StateDir, true) != nil {
+	if strictJSON(raw, &policy) != nil || !validE2HTTPPathMatchFields(raw) || !validE2HTTPPasswordResponseField(raw) || policy.Format != E2HTTPFilePolicyFormat || len(policy.Rules) == 0 || len(policy.Rules) > 256 || policy.MaxRequests == 0 || !policy.ValidUntil.After(policy.ValidFrom) || !policy.ValidUntil.After(time.Now()) || policy.ValidFrom.After(time.Now()) || privateinput.CheckDirectory(policy.StateDir, true) != nil {
 		return empty, ErrE2HTTPHost
 	}
 	if !validE2HTTPFileAuth(policy.Auth, policy.HeaderMode, policy.Rules) {
@@ -359,11 +359,11 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		policy.HeaderMode = e2proxy.HeaderPreserve
 	}
 	limits := e2proxy.Limits{MaxAttempts: policy.Limits.MaxAttempts, MaxCalls: policy.Limits.MaxCalls, MaxConcurrent: policy.Limits.MaxConcurrent, MaxBodyBytes: policy.Limits.MaxBodyBytes, MaxResponseBodyBytes: policy.Limits.MaxResponseBodyBytes, MaxResponseScanBytes: policy.Limits.MaxResponseScanBytes, RequestTimeout: requestTimeout, CallTimeout: callTimeout, MaxDenials: policy.Limits.MaxDenials, MaxTransient: policy.Limits.MaxTransient, MaxUnknown: policy.Limits.MaxUnknown}
-	if e2proxy.ValidatePolicyTemplate(e2proxy.Config{ApprovalMode: policy.ApprovalMode, Scope: transmit.Scope{RunRef: policy.RunRef}, Rules: rules, Limits: limits, HeaderMode: policy.HeaderMode, Evaluation: policy.Evaluation}) != nil {
+	if e2proxy.ValidatePolicyTemplate(e2proxy.Config{ApprovalMode: policy.ApprovalMode, Scope: transmit.Scope{RunRef: policy.RunRef}, Rules: rules, Limits: limits, HeaderMode: policy.HeaderMode, PasswordResponse: e2HTTPPasswordResponse(policy.Auth), Evaluation: policy.Evaluation}) != nil {
 		clear(auditKey)
 		return empty, ErrE2HTTPHost
 	}
-	fingerprint, fingerprintErr := e2export.PolicyFingerprint(e2proxy.Config{ApprovalMode: policy.ApprovalMode, Scope: transmit.Scope{RunRef: policy.RunRef}, Rules: rules, Limits: limits, HeaderMode: policy.HeaderMode, Evaluation: policy.Evaluation}, policy.MaxRequests, e2export.PolicyBehavior{MaxWorkerTurns: policy.Runtime.MaxWorkerTurns, MaxToolCalls: policy.Runtime.MaxToolCalls, WorkerTimeout: workerTimeout, MaxPlannerRounds: policy.Runtime.MaxPlannerRounds, MaxIntentRuns: policy.Runtime.MaxIntentRuns, DrainTimeout: drainTimeout, OutputLimit: policy.Runtime.OutputLimit, ProxyHeaderTimeout: headerTimeout, ProxyRequestTimeout: proxyTimeout, ProxyMaxHeaderBytes: policy.Proxy.MaxHeaderBytes, ProxyMaxConnections: policy.Proxy.MaxConnections})
+	fingerprint, fingerprintErr := e2export.PolicyFingerprint(e2proxy.Config{ApprovalMode: policy.ApprovalMode, Scope: transmit.Scope{RunRef: policy.RunRef}, Rules: rules, Limits: limits, HeaderMode: policy.HeaderMode, PasswordResponse: e2HTTPPasswordResponse(policy.Auth), Evaluation: policy.Evaluation}, policy.MaxRequests, e2export.PolicyBehavior{MaxWorkerTurns: policy.Runtime.MaxWorkerTurns, MaxToolCalls: policy.Runtime.MaxToolCalls, WorkerTimeout: workerTimeout, MaxPlannerRounds: policy.Runtime.MaxPlannerRounds, MaxIntentRuns: policy.Runtime.MaxIntentRuns, DrainTimeout: drainTimeout, OutputLimit: policy.Runtime.OutputLimit, ProxyHeaderTimeout: headerTimeout, ProxyRequestTimeout: proxyTimeout, ProxyMaxHeaderBytes: policy.Proxy.MaxHeaderBytes, ProxyMaxConnections: policy.Proxy.MaxConnections})
 	if fingerprintErr != nil {
 		clear(auditKey)
 		return empty, ErrE2HTTPHost
@@ -481,7 +481,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 				}
 			})
 		}
-		execution, createErr := e2proxy.NewExecution(taskctx, e2proxy.Config{RequestBoundary: workflowBoundary(input.Workflow), CheckAuthority: transmissionCheck, ApprovalMode: policy.ApprovalMode, RequestApproval: gate, Evaluation: policy.Evaluation, HeaderMode: policy.HeaderMode, Scope: transmit.Scope{TaskRef: request.TaskID, RunRef: policy.RunRef, CaseRef: policy.CaseRef, ResetRef: resetRef, PolicyRef: policy.PolicyRef}, IntentID: request.IntentID, OwnerRef: policy.OwnerRef, PolicyRevision: policy.PolicyRevision, AccountRef: policy.AccountRef, SessionRef: policy.SessionRef, ExpiresAt: policy.ValidUntil, Rules: rules, Budget: transmit.CumulativeBudget{Ledger: ledger, Key: grantKey, Binding: budgetBinding}, Recorder: recorder, RootCAs: upstreamRoots, Limits: limits, AttemptPathObserver: observer})
+		execution, createErr := e2proxy.NewExecution(taskctx, e2proxy.Config{RequestBoundary: workflowBoundary(input.Workflow), CheckAuthority: transmissionCheck, ApprovalMode: policy.ApprovalMode, RequestApproval: gate, Evaluation: policy.Evaluation, HeaderMode: policy.HeaderMode, PasswordResponse: e2HTTPPasswordResponse(policy.Auth), Scope: transmit.Scope{TaskRef: request.TaskID, RunRef: policy.RunRef, CaseRef: policy.CaseRef, ResetRef: resetRef, PolicyRef: policy.PolicyRef}, IntentID: request.IntentID, OwnerRef: policy.OwnerRef, PolicyRevision: policy.PolicyRevision, AccountRef: policy.AccountRef, SessionRef: policy.SessionRef, ExpiresAt: policy.ValidUntil, Rules: rules, Budget: transmit.CumulativeBudget{Ledger: ledger, Key: grantKey, Binding: budgetBinding}, Recorder: recorder, RootCAs: upstreamRoots, Limits: limits, AttemptPathObserver: observer})
 		if createErr != nil {
 			return failed(nil, nil)
 		}

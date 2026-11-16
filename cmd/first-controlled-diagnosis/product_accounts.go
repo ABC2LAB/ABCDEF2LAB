@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/diagnosisprep"
+	"github.com/Autumn-27/artex/e2proxy"
 )
 
 // 대상 계정 분류(C14 결정 1·2, docs/account-login-decision.md). 계정은 대상 등록에 붙고 다른 대상에서 쓸 수 없다.
@@ -475,8 +476,9 @@ type productRunAccount struct {
 
 // productRunAccounts는 실행 시작 때 고른 인증 준비 대상이다(C14 구현 설계 5).
 type productRunAccounts struct {
-	Login    *diagnosisprep.TargetLogin
-	Accounts []productRunAccount
+	PasswordResponse string
+	Login            *diagnosisprep.TargetLogin
+	Accounts         []productRunAccount
 }
 
 // runAccounts는 실행에 결속할 계정을 고른다: 목록과 같은 판정(accountView)으로 test이고 자격 파일이 저널 해시와 같은
@@ -514,6 +516,7 @@ func (r *productTargetRegistry) runAccounts(rec productTargetRecord) (productRun
 	}
 	login.Cookies = append([]string(nil), login.Cookies...)
 	out.Login = &login
+	out.PasswordResponse = e2proxy.PasswordResponseMaskSpans
 	digest, err := runAccountsDigest(out)
 	if err != nil {
 		return productRunAccounts{}, "", errPreparation
@@ -523,13 +526,14 @@ func (r *productTargetRegistry) runAccounts(rec productTargetRecord) (productRun
 
 // runAccountsDigest는 결속 계정 요약이다(로그인 방식 + 라벨·자격 해시). 저장 보고서가 결속 정책에서 같은 값을 다시 만든다.
 func runAccountsDigest(a productRunAccounts) (string, error) {
-	if a.Login == nil {
+	if a.Login == nil || a.PasswordResponse != "" && a.PasswordResponse != e2proxy.PasswordResponseMaskSpans {
 		return "", errPreparation
 	}
 	raw, err := json.Marshal(struct {
-		Login    diagnosisprep.TargetLogin `json:"login"`
-		Accounts []productRunAccount       `json:"accounts"`
-	}{*a.Login, a.Accounts})
+		Login            diagnosisprep.TargetLogin `json:"login"`
+		Accounts         []productRunAccount       `json:"accounts"`
+		PasswordResponse string                    `json:"password_response,omitempty"`
+	}{*a.Login, a.Accounts, a.PasswordResponse})
 	if err != nil {
 		return "", err
 	}

@@ -125,6 +125,9 @@ func canonicalPolicy(cfg e2proxy.Config, maxRequests uint64, b PolicyBehavior) (
 		"runtime":   map[string]any{"max_worker_turns": b.MaxWorkerTurns, "max_tool_calls": b.MaxToolCalls, "worker_timeout_ns": int64(b.WorkerTimeout), "max_planner_rounds": b.MaxPlannerRounds, "max_intent_runs": b.MaxIntentRuns, "drain_timeout_ns": int64(b.DrainTimeout), "output_limit": b.OutputLimit, "proxy_header_timeout_ns": int64(b.ProxyHeaderTimeout), "proxy_request_timeout_ns": int64(b.ProxyRequestTimeout), "proxy_max_header_bytes": b.ProxyMaxHeaderBytes, "proxy_max_connections": b.ProxyMaxConnections},
 		"tools":     map[string]any{"network_tools": []string{"bash"}, "planner_tools": []string{"graph_overview", "list_findings", "list_facts", "node_detail", "expand_digest", "get_worker_output", "get_worker_trace", "search_all_worker_traces", "list_goals", "add_intent", "list_companies", "list_assets", "list_untested_assets"}, "worker_graph_tools": []string{"graph_overview", "list_facts", "node_detail", "get_worker_output", "list_goals", "record_fact"}, "external_augmentation": "disabled_v1", "other_tools": "disabled_v1", "planner_bash": "disabled_before_real_intent_v1", "egress": "native_network_namespace_no_direct_route_v1", "scope": "http_https_only_v1"},
 	}
+	if cfg.PasswordResponse != "" {
+		content["password_response"] = cfg.PasswordResponse
+	}
 	// map의 키는 encoding/json의 사전순, 정수는 10진수, UTF-8 문자열은 Go JSON escape로 고정한다.
 	// HTML escape를 끄며 개행 없이 고정한다. 배열은 입력 순서를 그대로 보존한다.
 	var out bytes.Buffer
