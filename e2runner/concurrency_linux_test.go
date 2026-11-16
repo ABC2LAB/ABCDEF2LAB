@@ -584,3 +584,48 @@ func TestRunnerBashSlotConfigurationBounds(t *testing.T) {
 		t.Fatal("누락한 슬롯 설정이 기본 확대됨")
 	}
 }
+
+// 각 Bash가 여러 HTTP 요청을 내도 회차 예산은 하나다. 33개 제안 중 실제 대상 수신은 승인 30개뿐이다.
+func TestRunnerParallelCallsCannotResetRequestBudget(t *testing.T) {
+	entered := make(chan struct{}, 3)
+	release := make(chan struct{})
+	var once sync.Once
+	var seen sync.Map
+	var hits atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if _, loaded := seen.LoadOrStore(r.URL.Path, true); !loaded {
+			entered <- struct{}{}
+			select {
+			case <-release:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		io.WriteString(w, "observed")
+	}))
+	defer target.Close()
+	defer once.Do(func() { close(release) })
+	f := parallelRunnerFixture(t, target.URL, 3, 3, nil, true)
+	results := make([]<-chan bashOutcome, 3)
+	for i := range 3 {
+		results[i] = startBash(f.runner, t.Context(), int64(i+1), fmt.Sprintf("for n in {1..11}; do curl -sS --max-time 2 '%s/allowed/%d' >/dev/null 2>&1; done; exit 0", target.URL, i+1))
+	}
+	for range 3 {
+		awaitSignal(t, entered)
+	}
+	once.Do(func() { close(release) })
+	var forwarded, responses uint64
+	for _, done := range results {
+		out := awaitBash(t, done)
+		if !out.result.Trusted.Final || !out.result.Trusted.Call.AuditComplete {
+			t.Fatal("예산 소진 뒤 호출 감사 마감 실패")
+		}
+		forwarded += out.result.Trusted.Call.Counts.ForwardAttempted
+		responses += out.result.Trusted.Call.Counts.Responses
+	}
+	remaining, err := f.execution.BudgetRemaining()
+	if err != nil || remaining != 0 || hits.Load() != 30 || forwarded != 30 || responses != 30 {
+		t.Fatalf("병렬 호출의 공유 예산 우회: 수신=%d 송신=%d 응답=%d 잔여=%d", hits.Load(), forwarded, responses, remaining)
+	}
+}
