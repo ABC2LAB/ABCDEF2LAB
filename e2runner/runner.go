@@ -86,14 +86,21 @@ type ProcessLimits struct {
 	ContainerTasks     uint64 `json:"container_tasks"`
 	EngineReserveTasks uint64 `json:"engine_reserve_tasks"`
 	CallTasks          uint64 `json:"call_tasks"`
+	CommandTasks       uint64 `json:"command_tasks"`
+	HelperReserveTasks uint64 `json:"helper_reserve_tasks"`
 }
 
 func processLimits(slots int) (ProcessLimits, error) {
-	const container, reserve, maximum, minimum = 256, 64, 128, 8
-	if slots < 1 || slots > (container-reserve)/minimum {
+	const container, reserve, maximum, minimum, helperReserve = 256, 64, 128, 8, 16
+	if slots < 1 || slots > (container-reserve)/(minimum+helperReserve) {
 		return ProcessLimits{}, ErrConfig
 	}
-	return ProcessLimits{BashSlots: slots, ContainerTasks: container, EngineReserveTasks: reserve, CallTasks: min(maximum, uint64((container-reserve)/slots))}, nil
+	l := ProcessLimits{BashSlots: slots, ContainerTasks: container, EngineReserveTasks: reserve, CallTasks: min(maximum, uint64((container-reserve)/slots))}
+	if slots > 1 {
+		l.HelperReserveTasks = helperReserve
+	}
+	l.CommandTasks = l.CallTasks - l.HelperReserveTasks
+	return l, nil
 }
 
 type Result struct {

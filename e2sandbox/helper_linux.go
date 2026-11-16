@@ -164,6 +164,13 @@ func HelperMain() int {
 	}
 	relay.start()
 	cmd := exec.Command("/bin/bash", "--noprofile", "--norc", "-c", cfg.Command)
+	if cfg.Limits.CommandTaskCeiling < cfg.Limits.TaskCeiling {
+		// Only this child lowers its hard limit before exec. The trusted helper
+		// retains its larger ceiling, so an untrusted fork burst cannot prevent
+		// the relay from creating its own runtime thread or completing cleanup.
+		limit := strconv.FormatUint(cfg.Limits.CommandTaskCeiling, 10)
+		cmd = exec.Command("/usr/bin/prlimit", "--nproc="+limit+":"+limit, "--", "/bin/bash", "--noprofile", "--norc", "-c", cfg.Command)
+	}
 	cmd.Dir = "/work"
 	proxy := "http://" + listener.Addr().String()
 	cmd.Env = []string{

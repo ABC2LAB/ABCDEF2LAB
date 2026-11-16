@@ -99,13 +99,15 @@
 
 ### 호출별 PID 예산 (#598 P1 수정)
 
-`CallTasks = min(128, floor((256 − 64) / BashSlots))`를 신뢰 호스트가 계산해 helper의 `RLIMIT_NPROC` soft/hard 양쪽에 넘긴다. 이 수는 helper·Bash·자식의 **스레드까지 포함한 task** 상한이다. 슬롯 1/2/3이면 호출별 128/96/64다. helper가 지원하는 최소 8 task도 배정할 수 없는 슬롯 수는 시작 전에 거부한다. 같은 intent 직렬화와 마감 불명 슬롯 보유는 그대로다.
+`CallTasks = min(128, floor((256 − 64) / BashSlots))`를 신뢰 호스트가 계산해 helper의 `RLIMIT_NPROC` soft/hard 양쪽에 넘긴다. 이 수는 helper·Bash·자식의 **스레드까지 포함한 task** 상한이다. 슬롯 1/2/3이면 호출별 128/96/64다. 병렬 호출은 이 안에서 helper에 16 task 여유를 남겨, 명령 자식에만 별도 hard/soft NPROC 80(2슬롯)/48(3슬롯)을 건다. 명령 8개와 helper 여유16도 배정할 수 없는 9슬롯 이상은 시작 전에 거부한다. 1슬롯은 기존 NPROC128을 유지한다. 같은 intent 직렬화와 마감 불명 슬롯 보유는 그대로다.
 
 엔진 몫 64는 실제 제품 Compose 이미지 `ab50cb1f`의 preparation에서 Worker3+Planner, 3개 호출의 준비·TLS 송신·마감 중 PID 1의 `/proc/1/status`를 20ms 간격으로 읽어 측정한 최고 **18개 스레드**에 근거한다. 실측의 2배(36)를 다음 2의 거듭제곱(64)으로 올려 여유를 둔다. 관찰용 Python은 별도 1 task이며 엔진 스레드에는 포함하지 않았다. 제한 없는 전체 부하에 대한 최대 엔진 task 수를 증명한 값은 아니다. 다른 배치의 PID 한도가 256보다 작으면 이 조건을 그대로 적용할 수 없다.
 
+최초 최대 부하에서 명령이 공유 NPROC64까지 채우자 helper가 5개 스레드 상태에서 다음 스레드를 만들지 못하고 종료되는 것을 관찰했다. 엔진 cgroup 고갈은 없었으나 호출의 relay가 실패했으므로 수용 성공으로 세지 않았다. 병렬 호출에서는 실측 helper 스레드5의 2배(10)를 다음 2의 거듭제곱(16)으로 올려 helper 여유를 둔다. helper는 호출 상한64를 유지하고, 신뢰한 `/usr/bin/prlimit`(기존 util-linux)이 자식의 hard/soft NPROC만 48로 낮춘 뒤 `/bin/bash`를 exec한다. 자식은 hard 한도를 다시64로 올릴 수 없고 helper의 여유는 명령의 fork 폭증으로 소비되지 않는다. 실제 제품 이미지에는 util-linux가 이미 포함돼 있다.
+
 새 권한·cgroup 쓰기 마운트 없이 기존 user namespace별 `RLIMIT_NPROC`를 사용한다. 제품 cgroup은 읽기 전용으로, 호출별 자식 cgroup 위임을 이 변경에서 추가하지 않는다. `pids_limit: 256`·슬롯3·cap_drop ALL·no-new-privileges·seccomp는 유지한다.
 
-factory는 첫 Bash 실행 전 보호 상태 디렉터리에 `runtime-conditions.json`을 배타 생성·fsync한다. 실행 scope·정책 판·결속 Worker 수·Bash 슬롯·컨테이너 task256·엔진 예비64·호출별 상한·대기의 명령 시간 포함 여부를 남긴다. 기록 실패·기존 파일 재사용은 시작 실패다. 각 Runner 신뢰 결과에도 `process_limits`를 남긴다. 승인 정책 바이트와 기존 평가 manifest 형식은 바꾸지 않는다.
+factory는 첫 Bash 실행 전 보호 상태 디렉터리에 `runtime-conditions.json`을 배타 생성·fsync한다. 실행 scope·정책 판·결속 Worker 수·Bash 슬롯·컨테이너 task256·엔진 예비64·호출별 상한·명령별 상한·helper 여유·대기의 명령 시간 포함 여부를 남긴다. 기록 실패·기존 파일 재사용은 시작 실패다. 각 Runner 신뢰 결과에도 `process_limits`를 남긴다. 승인 정책 바이트와 기존 평가 manifest 형식은 바꾸지 않는다.
 
 실제 제품 수용은 [PID 전용 Compose 오버레이](../deploy/product/compose.pids-acceptance.yaml), [제어 클라이언트](../scripts/product-pids-acceptance.py), [읽기 전용 관찰기](../scripts/product-pids-observe.py)를 쓴다. 새 1회용 local-only 설치에 소유 fixture DNS/TLS CA를 공급하고 기본 제품 Compose와 기존 acceptance 오버레이 뒤에 PID 오버레이를 붙인다. `pids-model`은 유료/외부 모델 대신 세 intent에 고정 Python fork 명령을 돌려주는 로컬 합성 모델이다. `pids-target`은 두 무거운 호출이 도착한 뒤 세 번째의 가벼운 요청을 돌려주며, 이어 세 호출 모두 자기 상한에서 `fork`의 EAGAIN을 확인한 채 GET 응답을 보류한다. 제어기는 그동안 실제 제품 health를 읽고 두 단계를 해제한 뒤 6개 호출·응답·감사·drain을 대조한다.
 

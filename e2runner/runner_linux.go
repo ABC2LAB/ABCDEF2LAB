@@ -374,6 +374,7 @@ func (s *runningCall) initialize(ctx context.Context, command string) error {
 		Helper: s.owner.cfg.Helper, Workspace: workspace, ProxySocket: socket, CACert: caPath,
 		Command: command, Timeout: s.owner.cfg.CommandTimeout, DrainTimeout: s.owner.cfg.DrainTimeout,
 		OutputLimit: s.owner.cfg.OutputLimit, MaxProcesses: s.owner.processLimits.CallTasks,
+		MaxCommandProcesses: s.owner.processLimits.CommandTasks,
 	}
 	if s.owner.cfg.PersistWorkspace {
 		saved, err := s.owner.loadWorkspace(s.intentID, e2sandbox.WorkspaceLimit(sandboxConfig))

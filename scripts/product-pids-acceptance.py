@@ -13,7 +13,7 @@ p.add_argument('install',type=Path)
 p.add_argument('control_token',type=Path)
 p.add_argument('--base',default='http://preparation:8787')
 p.add_argument('--target-ip',default='172.31.253.20')
-p.add_argument('--expected-tasks',type=int,default=64)
+p.add_argument('--expected-tasks',type=int,default=48)
 p.add_argument('--sample-children',type=int,default=-1)
 a=p.parse_args()
 root=a.install.parent
@@ -93,7 +93,7 @@ try:
  for key,value in {'calls':6,'attempts':6,'forward_attempted':6,'responses':6,'unknown':0,'transient':0,'unsupported':0}.items():
   check(counts[key]==value,'unexpected_'+key)
  check(run['execution']['audit_complete'],'audit_incomplete')
- print(json.dumps({'passed':True,'task':job['task_id'],'outcome':run['outcome'],'counts':counts,'expected_call_tasks':a.expected_tasks}),flush=True)
+ print(json.dumps({'passed':True,'task':job['task_id'],'outcome':run['outcome'],'counts':counts,'expected_command_tasks':a.expected_tasks}),flush=True)
 finally:
  release(1)
  release(2)

@@ -160,6 +160,10 @@ func TestE2HTTPFactoryDerivesBashSlotsFromWorkersAndPolicy(t *testing.T) {
 			actual := lease.Runner.(localE2HTTPRun).runner
 			limits := actual.ProcessLimits()
 			wantTasks := min(uint64(128), uint64(192/tc.want))
+			wantCommandTasks := wantTasks
+			if tc.want > 1 {
+				wantCommandTasks -= 16
+			}
 			if limits.BashSlots != tc.want || limits.CallTasks != wantTasks || limits.EngineReserveTasks != 64 || limits.ContainerTasks != 256 {
 				t.Fatal("회차 task 배분이 계산된 슬롯에 결속되지 않음")
 			}
@@ -201,7 +205,7 @@ func TestE2HTTPFactoryDerivesBashSlotsFromWorkersAndPolicy(t *testing.T) {
 			for range tc.want {
 				select {
 				case out := <-finished:
-					if out.Trusted.ProcessLimits != limits || out.ToolOutput != fmt.Sprintf("tasks=%d/%d;owned", wantTasks, wantTasks) {
+					if out.Trusted.ProcessLimits != limits || out.ToolOutput != fmt.Sprintf("tasks=%d/%d;owned", wantCommandTasks, wantCommandTasks) {
 						t.Fatal("호출별 soft/hard RLIMIT_NPROC 또는 신뢰 조건이 실제 helper와 불일치", out.ToolOutput)
 					}
 					if !out.Trusted.Final || !out.Trusted.Call.AuditComplete || out.Trusted.Call.Counts.Responses != 1 {

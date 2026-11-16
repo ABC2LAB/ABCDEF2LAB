@@ -28,6 +28,7 @@ const (
 type resourceLimits struct {
 	ScratchBytes, TempBytes, FileBytes uint64
 	TaskCeiling, CPUSeconds, OpenFiles uint64
+	CommandTaskCeiling                 uint64
 }
 
 func limitsFor(cfg Config) (resourceLimits, error) {
@@ -45,6 +46,10 @@ func limitsFor(cfg Config) (resourceLimits, error) {
 	if tasks == 0 {
 		tasks = defaultNamespaceTasks
 	}
+	l.CommandTaskCeiling = cfg.MaxCommandProcesses
+	if l.CommandTaskCeiling == 0 {
+		l.CommandTaskCeiling = tasks
+	}
 	if l.OpenFiles == 0 {
 		l.OpenFiles = defaultOpenFiles
 	}
@@ -57,7 +62,7 @@ func limitsFor(cfg Config) (resourceLimits, error) {
 	}
 	if l.ScratchBytes < minScratchBytes || l.ScratchBytes > maxScratchBytes || l.TempBytes < minTempBytes || l.TempBytes > maxTempBytes ||
 		l.FileBytes == 0 || l.FileBytes > l.ScratchBytes || tasks < minNamespaceTasks || tasks > maxNamespaceTasks || l.CPUSeconds > wallSeconds ||
-		l.OpenFiles < minOpenFiles || l.OpenFiles > maxOpenFiles {
+		l.OpenFiles < minOpenFiles || l.OpenFiles > maxOpenFiles || l.CommandTaskCeiling < minNamespaceTasks || l.CommandTaskCeiling > tasks {
 		return l, ErrConfig
 	}
 	// RLIMIT_NPROC is applied after CLONE_NEWUSER in the isolated helper.
