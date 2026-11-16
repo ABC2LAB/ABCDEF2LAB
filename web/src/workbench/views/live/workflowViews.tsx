@@ -132,10 +132,16 @@ export function durText(sec: number): string {
 }
 /**
  * 탐색 막대 % — 실제 방문 수 ÷ 페이지 상한(서버 진행률 아님). 첫 탐색 단계가 끝났다는 initial_completed 는 완전 탐색을
- * 보장하지 않아(부분 완료 · 상한 소진에서도 true) 막대에 섞지 않고 따로 보인다 (리뷰 #479).
+ * 보장하지 않아(부분 완료 · 상한 소진에서도 true) 막대에 섞지 않는다 (리뷰 #479). 서버가 탐색을 끝까지 마쳤다고 할 때
+ * (exploration_status COMPLETED — 부분 완료면 PARTIAL 이라 여기 들지 않음)만 찾은 링크를 다 돈 것이라 끝까지 채운다.
  */
 export function crawlPct(flow: WorkflowSnapshot): number {
+  if (exploreCompleted(flow)) return 100;
   return Math.min(100, Math.round((flow.counts.visited / Math.max(1, flow.limits.max_pages)) * 100));
+}
+/** 서버가 탐색을 끝까지 마쳤다고 했는가 (exploration_status COMPLETED). */
+function exploreCompleted(flow: WorkflowSnapshot): boolean {
+  return (flow as unknown as Record<string, unknown>).exploration_status === "COMPLETED";
 }
 /** 서버 탐색 상태 (snapshot.exploration_status) → 글. */
 const EXPLORE_TEXT = {
@@ -149,13 +155,16 @@ const EXPLORE_TEXT = {
  * 서버 탐색 상태 · 사유. 파서(live/workflow.ts)에 아직 칸이 없어 응답 원본에서 아는 값만 읽는다
  * (모르는 상태 · 형식이 다른 사유는 버림).
  */
-export function exploreState(flow: WorkflowSnapshot): { text: string; reason?: string } | null {
+export function exploreState(
+  flow: WorkflowSnapshot,
+): { status: keyof typeof EXPLORE_TEXT; text: string; reason?: string } | null {
   const raw = flow as unknown as Record<string, unknown>;
   const st = raw.exploration_status;
   if (typeof st !== "string" || !Object.hasOwn(EXPLORE_TEXT, st)) return null;
+  const status = st as keyof typeof EXPLORE_TEXT;
   const r = raw.exploration_reason;
   const reason = typeof r === "string" && /^[a-z0-9_]{1,64}$/.test(r) ? r : undefined;
-  return { text: EXPLORE_TEXT[st as keyof typeof EXPLORE_TEXT], reason };
+  return { status, text: EXPLORE_TEXT[status], reason };
 }
 /** 범위 확인 화면 상태 알약 글. */
 function scopePill(flow: WorkflowSnapshot, verified: boolean): string {
@@ -1058,7 +1067,8 @@ export function WorkflowCrawlLive() {
                   <span className={s.k}>지금 보는 곳</span>
                   <span id="cNow">{now}</span>
                 </div>
-                {/* 탐색 진행: 서버에 진행률이 없어 페이지 상한 대비 방문 수로 그린다 (리뷰 #479) */}
+                {/* 탐색 진행: 서버에 진행률이 없어 페이지 상한 대비 방문 수로 그린다 (리뷰 #479). 서버가 탐색 완료라고
+                    하면 끝까지 채운다 */}
                 <div
                   className={s.prog}
                   id="cBar"
@@ -1067,7 +1077,9 @@ export function WorkflowCrawlLive() {
                   aria-valuemin={0}
                   aria-valuemax={100}
                   aria-valuenow={crawlPct(flow)}
-                  aria-valuetext={`${crawlPct(flow)}% · 페이지 상한 대비 방문`}
+                  aria-valuetext={
+                    explore?.status === "COMPLETED" ? "100% · 탐색 완료" : `${crawlPct(flow)}% · 페이지 상한 대비 방문`
+                  }
                 >
                   <i style={{ width: `${crawlPct(flow)}%` }} />
                 </div>
@@ -1085,8 +1097,9 @@ export function WorkflowCrawlLive() {
                   <span>
                     경과 <b id="cEl">{elapsed !== null ? durText(elapsed) : NONE}</b>
                   </span>
-                  {flow.initial_completed ? <span>첫 탐색 단계 끝남</span> : null}
-                  {explore ? (
+                  {/* 탐색 중 · 탐색 완료는 위 '지금 보는 곳'과 상태 알약이 이미 말하므로 적지 않는다. 부분 완료 · 중지 ·
+                      탐색 안 함은 '탐색을 마쳤습니다'만으로는 다 돌지 못한 걸 알 수 없어 사유와 함께 남긴다(절대규칙 5) */}
+                  {explore && explore.status !== "RUNNING" && explore.status !== "COMPLETED" ? (
                     <span>
                       탐색 상태 <b>{`${explore.text}${explore.reason ? ` · ${explore.reason}` : ""}`}</b>
                     </span>

@@ -446,7 +446,8 @@ describe("자산 탐색", () => {
     // 탐색 단계에서는 GET 만 보낸다 (서버 Controller.Before)
     expect(screen.getByText(/^보낸 요청 · 조회만$/)).toBeInTheDocument();
     expect(screen.getByText(/^경과/)).toHaveTextContent(/^경과 —$/);
-    // 첫 탐색 단계가 끝나도 막대는 실제 방문 비율 그대로, 단계 끝은 따로 적는다 (리뷰 #479)
+    // 첫 탐색 단계가 끝나도(서버가 탐색 완료라고 하지 않으면) 막대는 실제 방문 비율 그대로 (리뷰 #479).
+    // '첫 탐색 단계 끝남' 글은 위 '탐색을 마쳤습니다'와 겹쳐 적지 않는다
     useUrl.setState({ flow });
     rerender(
       <ShellContext.Provider value={shell("crawl")}>
@@ -454,7 +455,39 @@ describe("자산 탐색", () => {
       </ShellContext.Provider>,
     );
     expect(screen.getByRole("progressbar", { name: /탐색 진행/ })).toHaveAttribute("aria-valuenow", "25");
-    expect(screen.getByText("첫 탐색 단계 끝남")).toBeInTheDocument();
+    expect(screen.queryByText("첫 탐색 단계 끝남")).toBeNull();
+  });
+
+  it("서버가 탐색 완료(COMPLETED)라고 하면 막대를 끝까지 채우고, 겹치는 '탐색 상태' 글은 적지 않는다", () => {
+    // 방문 9 / 페이지 상한 12 = 75% 지만 알려진 링크를 다 돌아 서버가 완료라고 했다
+    useUrl.setState({
+      handle,
+      job,
+      verified: true,
+      flow: {
+        ...flow,
+        stage: "awaiting_selection",
+        initial_completed: true,
+        limits: { ...flow.limits, max_pages: 12 },
+        counts: { ...flow.counts, visited: 9, queued: 0 },
+        exploration_status: "COMPLETED",
+        exploration_reason: "completed",
+      } as WorkflowSnapshot,
+      flowVerified: true,
+    });
+    render(
+      <ShellContext.Provider value={shell("crawl")}>
+        <WorkflowCrawlLive />
+      </ShellContext.Provider>,
+    );
+    const bar = screen.getByRole("progressbar", { name: /탐색 진행/ });
+    expect(bar).toHaveAttribute("aria-valuenow", "100");
+    expect(bar).toHaveAttribute("aria-valuetext", "100% · 탐색 완료");
+    expect(document.getElementById("cNow")).toHaveTextContent(/^탐색을 마쳤습니다$/);
+    expect(screen.queryByText(/^탐색 상태/)).toBeNull();
+    expect(screen.queryByText("첫 탐색 단계 끝남")).toBeNull();
+    // 방문 · 대기 · 상한 숫자는 그대로 남긴다
+    expect(document.getElementById("cVis")).toHaveTextContent("9");
   });
 
   it.each([
