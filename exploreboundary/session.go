@@ -13,6 +13,7 @@ import (
 
 	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/exploration"
+	"github.com/Autumn-27/artex/internal/pathscope"
 )
 
 // ReasonUnresolved는 경계가 직접 푼 이름에 주소가 없을 때다. 계약 §4 목록에 더한 값이다.
@@ -93,7 +94,13 @@ func validTarget(t Target, b exploration.Binding) bool {
 		!t.ConnectIP.IsValid() || !pinned || len(t.PathPrefixes) == 0 || len(t.Methods) == 0 || t.ExpiresAt.IsZero() {
 		return false
 	}
-	for _, p := range append(append([]string{}, t.PathPrefixes...), t.ExcludedPrefixes...) {
+	for _, p := range t.PathPrefixes {
+		scope, ok := pathscope.Parse(p)
+		if _, valid := canonicalPath(scope.Path); !ok || !valid {
+			return false
+		}
+	}
+	for _, p := range t.ExcludedPrefixes {
 		if _, ok := canonicalPath(p); !ok {
 			return false
 		}
@@ -356,7 +363,7 @@ func (s *Session) admitApproved(ctx context.Context, req Request) (Decision, *Ti
 	canonical, ok := canonicalPath(req.EscapedPath)
 	inScope := false
 	for _, prefix := range s.target.PathPrefixes {
-		inScope = inScope || within(canonical, prefix)
+		inScope = inScope || pathscope.Allows(canonical, req.HasQuery, prefix)
 	}
 	for _, prefix := range s.target.ExcludedPrefixes {
 		inScope = inScope && !excludedWithin(canonical, prefix)

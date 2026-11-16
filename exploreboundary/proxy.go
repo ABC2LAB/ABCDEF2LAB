@@ -165,7 +165,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// 터널 authority와 안쪽 Host가 다르면 다른 origin으로 보내는 우회다. 막은 요청도 기록한다(#488 리뷰 P2).
 			// 판정 대상은 터널 authority가 아니라 안쪽 Host라 그 값으로 남긴다(Refuse가 승인 origin 여부만 본다).
 			hostPort, _ := strconv.ParseUint(innerPort, 10, 16)
-			p.refuse(Request{Ingress: p.cfg.Ingress, Method: in.Method, Scheme: "https", Host: innerHost, Port: uint16(hostPort), EscapedPath: in.URL.EscapedPath(),
+			p.refuse(Request{Ingress: p.cfg.Ingress, Method: in.Method, Scheme: "https", Host: innerHost, Port: uint16(hostPort), EscapedPath: in.URL.EscapedPath(), HasQuery: in.URL.RawQuery != "" || in.URL.ForceQuery,
 				FetchMode: in.Header.Get("Sec-Fetch-Mode"), FetchDest: in.Header.Get("Sec-Fetch-Dest"),
 				HasAuth: in.Header.Get("Authorization") != "" || in.Header.Get("Cookie") != ""}, ReasonOutOfScopeOrigin)
 			deny(w, ReasonOutOfScopeOrigin)
@@ -225,7 +225,7 @@ var hopHeaders = []string{"Connection", "Proxy-Connection", "Keep-Alive", "Proxy
 // forward는 판정을 받은 요청을 대상에 보낸다. scheme은 터널 안쪽 요청이면 https, 평문 프록시 요청이면 http다.
 func (p *Proxy) forward(w http.ResponseWriter, in *http.Request, scheme, host string, port uint16) {
 	s := p.cfg.Current()
-	req := Request{Ingress: p.cfg.Ingress, Method: in.Method, Scheme: scheme, Host: host, Port: port, EscapedPath: in.URL.EscapedPath(),
+	req := Request{Ingress: p.cfg.Ingress, Method: in.Method, Scheme: scheme, Host: host, Port: port, EscapedPath: in.URL.EscapedPath(), HasQuery: in.URL.RawQuery != "" || in.URL.ForceQuery,
 		FetchMode: in.Header.Get("Sec-Fetch-Mode"), FetchDest: in.Header.Get("Sec-Fetch-Dest"),
 		HasAuth:   in.Header.Get("Authorization") != "" || in.Header.Get("Cookie") != "",
 		WebSocket: strings.EqualFold(in.Header.Get("Upgrade"), "websocket")}
