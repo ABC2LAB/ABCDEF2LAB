@@ -131,3 +131,25 @@ jq -c 'select(.status == "failed" or .status == "timeout" or .status == "incompl
 조사·사고 보존이 필요하면 기관 정책을 우선한다. 실행 중 파일을 삭제/교체하거나 다른 UID에 읽기 권한을 주지 않는다.
 정리 대상은 이 `diagnostic-logs` 아래의 종료된 개발자용 JSONL에 한정한다.
 E② 감사 저널, 체크포인트, 증거, 결과 DB, 원래 보호 설정은 용량 정리 대상으로 삭제하지 않는다.
+
+
+### Planner 준비의 고정 실패 사유 (VAmPI 후속 E)
+
+`PreparePlanning`은 기존 반환 오류·예산/호출 횟수·goal_met 마감 의미를 유지하고 실패한 검사 분기만 `component: planner`, `event: stage_finished`, `stage: planning`으로 남긴다. task ID는 호출자 객체에서 가져오지 않고 로거의 기존 회차 결속을 사용한다. 원문 오류·URL·query·본문·자격 값은 넣지 않는다. 로거 부재/실패는 새 중지 조건이 아니다(C10).
+
+| reason_code | 검사 |
+|---|---|
+| `planning_task_unavailable` | task/실행 등록·문맥 결속 조회 실패 |
+| `planning_context_closed` | 입력 context 없음·취소·기한 종료 |
+| `planning_authority_rejected` | 실행 권한 확인 거부 |
+| `planning_exploration_failed` | 탐색 준비 실패(원래 typed 오류 반환) |
+| `planning_workflow_blocked` | workflow BeforePlanning 차단(원래 typed 오류 반환) |
+| `planning_task_closed` | 닫힌 task |
+| `planning_task_blocked` | 차단된 task |
+| `planning_task_cancelled` | task context 종료 |
+| `planning_round_limit` | Planner 라운드 상한 |
+| `planning_tool_limit` | 도구 호출 상한 |
+| `planning_lease_invalid` | lease 결속·조회 검증 실패 |
+| `planning_request_budget` | 검증된 lease의 승인 요청 예산 소진 |
+
+context 취소/기한 종료의 status는 cancelled/timeout이고, 권한 거부는 failed다. 라운드·도구·요청 예산은 blocked로 관측해도 반환은 기존 `ErrE2HTTPBudgetLimited`다. 검증된 복구나 재시작을 새로 허용하지 않는다. 실제 24b 마감 실패 원인의 확정이나 목표 달성 수정의 성능 근거로 계산하지 않는다.
