@@ -8,10 +8,10 @@ import (
 // 이 파일은 멈춘 명령(Planner kill_work, 목표 달성 뒤 실행 취소, 시간 상한 정리, 호출 시간 상한 call_stopped 등)과
 // 마지막 요청 사유가 닫힘(closed)·호출 상한(denial/transient/unknown_limit)인 명령의 마감 판정이다. 기존 분류 검사
 // (firstDiagnosisClosedToolOutcome)는 이런 명령을 받지 않아 실행 전체가 closure_tool_outcome_invalid로 실패했다.
-// 집계 수로는 "보낸 뒤 응답을 끝까지 받지 못한 시도"를 다른 시도와 나눌 수 없으므로 E② 감사 기록의 시도 하나하나
-// (결과 단계 영수증)를 본다. 모든 시도가 보내지 않았거나(forward_attempted=false) 응답을 끝까지 받았으면 명령이
-// 왜 멈췄는지와 관계없이 대상 쪽에 남은 모르는 결과가 없다. 그런 시도가 하나라도 있으면 그 intent는 결과 불명이다
-// (C01·C08, docs/contracts/run-outcome-states.md).
+// 집계 수로는 "대상에 전달됐는데 응답을 끝까지 받지 못한 시도"를 다른 시도와 나눌 수 없으므로 E② 감사 기록의 시도
+// 하나하나(결과 단계 영수증)를 본다. 모든 시도가 대상에 전달되지 않았거나(보내지 않음, 연결 전 송신 실패) 응답을 끝까지
+// 받았으면 명령이 왜 멈췄는지와 관계없이 대상 쪽에 남은 모르는 결과가 없다. 그런 시도가 하나라도 있으면 그 intent는
+// 결과 불명이다(C01·C02·C08, docs/contracts/run-outcome-states.md).
 
 // firstDiagnosisCallAttempts는 실행 감사 기록에서 호출별 결과 단계 영수증을 모은다. 시도 하나는 결과 단계 기록을
 // 정확히 하나 남긴다(e2proxy Call.finish). 송신 직전 단계(intent)는 같은 시도의 중간 기록이라 세지 않는다.
@@ -73,9 +73,14 @@ func firstDiagnosisRunnerClassification(result e2runner.TrustedResult) string {
 	return "completed"
 }
 
-// firstDiagnosisAttemptUnknown은 시도 하나를 본다. ok=false는 영수증이 E② 송신 규칙과 맞지 않는다는 뜻이다(마감 실패).
-// unknown은 보낸 뒤 응답을 끝까지 받지 못한 시도다. 송신 실패(transport_failed)도 연결을 시도했으면(forward_attempted)
-// 여기에 든다. 시도 단위로 보내지 않음·응답 완료만 안전으로 본다(사용자 결정 11/16).
+// firstDiagnosisAttemptUnknown은 시도 하나가 대상에 전달됐는데 응답을 끝까지 받지 못했는지 본다(감독자 마감 판정과
+// E② 런타임의 intent 마감이 같이 쓰는 한 기준이다). ok=false는 영수증이 E② 송신 규칙과 맞지 않는다는 뜻이다(마감 실패).
+// 기준은 E②의 송신 분류와 같은 의미다(C02). E②는 연결(TLS 포함)이 맺어진 뒤의 송신 오류만 결과 불명(unknown)으로,
+// 그 전의 TCP 연결·TLS 검증 실패는 전달하지 않은 송신 실패(transport_failed)로 기록한다. 연결을 시도했으면
+// forward_attempted가 켜져 있어도 마찬가지다(e2proxy Call.do 송신 오류 분류, 도구 결과 헤더 proxyOutcomeOf도
+// forward이면서 transport_failed가 아닐 때만 outcome_unknown). 그래서 안전한 시도는 셋이다: 보내지 않음
+// (forward_attempted=false), 연결 전 송신 실패(transport_failed), 응답 완료(complete·withheld). 그 밖의 전달된 시도
+// (연결 뒤 응답 미완료 unknown, 전달된 뒤 닫힘·호출 상한 사유 등)는 결과 불명이다.
 func firstDiagnosisAttemptUnknown(attempt e2proxy.Receipt) (unknown, ok bool) {
 	// 보내지 않은 시도는 쓰거나 받은 것이 없어야 하고, 결과 영수증의 not_sent는 forward_attempted의 반대다.
 	if attempt.NotSent == attempt.ForwardAttempted || !attempt.ForwardAttempted && (attempt.RequestWritten || attempt.ResponseReceived || attempt.ResponseComplete) {
@@ -88,6 +93,9 @@ func firstDiagnosisAttemptUnknown(attempt e2proxy.Receipt) (unknown, ok bool) {
 	case e2proxy.Withheld:
 		// 보류는 대상 응답을 받았지만 표현만 주지 않은 것이다(C16). 대상이 처리한 것은 안다.
 		return false, attempt.ForwardAttempted && attempt.ResponseReceived
+	case e2proxy.TransportFailed:
+		// 연결 전 송신 실패다. 연결이 없었으니 요청을 쓰거나 응답을 받았을 수 없다.
+		return false, !attempt.RequestWritten && !attempt.ResponseReceived && !attempt.ResponseComplete
 	case e2proxy.Unknown:
 		return true, true
 	}
@@ -96,8 +104,8 @@ func firstDiagnosisAttemptUnknown(attempt e2proxy.Receipt) (unknown, ok bool) {
 
 // firstDiagnosisStoppedToolOutcome은 기존 분류 검사가 받지 않은 호출 결과를 시도 단위 기록으로 다시 본다.
 // accepted면 마감할 수 있고, unknown이면 그 호출의 intent는 결과 불명이어야 한다(정책 제한·미완료로 마감하지 않는다).
-// 종료 원인(kill·취소·시간 상한·호출 시간 상한)은 보지 않는다. 시도 단위로 미전송·응답 완료를 확인하므로 원인과
-// 무관하게 안전하다. 감사·집행 장애와 대조 불일치는 지금처럼 받지 않는다.
+// 종료 원인(kill·취소·시간 상한·호출 시간 상한)은 보지 않는다. 시도 단위로 미전송(연결 전 송신 실패 포함)·응답 완료를
+// 확인하므로 원인과 무관하게 안전하다. 감사·집행 장애와 대조 불일치는 지금처럼 받지 않는다.
 func firstDiagnosisStoppedToolOutcome(result e2runner.TrustedResult, attempts []e2proxy.Receipt) (accepted, unknown bool) {
 	call := result.Call
 	if !result.Final || !result.ProcessDrained || !result.ProxyDrained || !call.Final || !call.AuditComplete || !result.Execution.AuditComplete {

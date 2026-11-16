@@ -759,7 +759,7 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 	}
 	observed := make(map[string]e2proxy.CallResult, len(results))
 	limited := make(map[int64]map[string]bool)
-	// 시도 단위 기록으로 받은 멈춘 명령 중 보낸 뒤 응답을 끝까지 받지 못한 시도가 있는 호출이다. 그 intent는 결과 불명이어야
+	// 시도 단위 기록으로 받은 멈춘 명령 중 대상에 전달됐는데 응답을 끝까지 받지 못한 시도가 있는 호출이다. 그 intent는 결과 불명이어야
 	// 한다(아래 호출 대조). 시도 기록은 기존 분류 검사가 받지 않은 결과가 있을 때만 읽는다.
 	attemptUnknown := make(map[string]bool)
 	var attempts map[string][]e2proxy.Receipt
@@ -863,7 +863,7 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 		return fail(reasonClosureCallCountMismatch)
 	}
 	// 결과 불명 intent 수가 E② 근거로 확인한 수와 같아야 한다. 근거는 결과 불명 송신 수와, 멈춘 명령의 시도 단위 기록에서
-	// 보낸 뒤 응답을 끝까지 받지 못한 시도다. 근거 없이 결과 불명으로 표시된 intent(모르는 그래프 상태 포함)는 마감하지 않는다.
+	// 대상에 전달됐는데 응답을 끝까지 받지 못한 시도다. 근거 없이 결과 불명으로 표시된 intent(모르는 그래프 상태 포함)는 마감하지 않는다.
 	if int64(len(unknownIntents)) != outcomes.Unknown {
 		return fail(reasonClosureUnknownIntentMismatch)
 	}

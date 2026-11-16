@@ -448,7 +448,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		// 정책 거부(보내지 않음) 뒤 명령이 아직 돈다. 명령 시간 상한(5초) 전에 Planner가 kill_work로 멈춘다.
 		provider.command = "curl --silent --show-error --max-time 5 " + target.URL + "/forbidden; sleep 30"
 	case "planner-kill-refused":
-		// 연결을 시도했지만 거부된 송신 뒤 명령이 아직 돈다. 보낸 뒤 응답을 끝까지 받지 못한 시도라 그 intent는 결과 불명이다.
+		// 연결을 시도했지만 연결 전에 거부된 송신 뒤 명령이 아직 돈다. 전달하지 않은 송신 실패라 그 intent의 미완료다(C02).
 		provider.command = "curl --silent --show-error --max-time 5 " + refusedOrigin + "/allowed; sleep 30"
 	case "planner-kill-mid-response":
 		// 정책 거부 하나 뒤의 요청이 응답을 받는 도중 멈춘다. 거부가 있어도 그 intent는 정책 제한이 아니라 결과 불명이다.
@@ -1470,8 +1470,9 @@ func firstDiagnosisWaitForCall(t *testing.T, ctx context.Context, runtime *First
 }
 
 // firstDiagnosisCheckStoppedCommand는 Planner kill_work로 멈춘 명령(bash 미종료, 명령 시간 상한 아님)의 마감을 본다.
-// 시도 단위로 모두 보내지 않았으면 실행은 실패가 아니라 그 intent의 미완료(partial)다. 보낸 뒤 응답을 끝까지 받지 못한
-// 시도(연결 거부·응답 수신 도중 멈춤)가 있으면 거부가 섞여도 그 intent는 정책 제한·미완료가 아니라 결과 불명이다(C08).
+// 시도 단위로 모두 대상에 전달되지 않았으면(보내지 않음, 연결 전 송신 실패) 실행은 실패가 아니라 그 intent의
+// 미완료(partial)다. 연결 뒤 응답 수신 도중 멈춘 시도가 있으면 거부가 섞여도 그 intent는 정책 제한·미완료가 아니라
+// 결과 불명이다(C02·C08).
 func firstDiagnosisCheckStoppedCommand(t *testing.T, ctx context.Context, mode string, runErr error, supervisor *FirstDiagnosisSupervisor, runtime *FirstDiagnosisHTTPRuntime, installer *pgdb.DB, task *Task, planner *firstDiagnosisPlannerProbeProvider, hits int64, targetExited <-chan struct{}) {
 	t.Helper()
 	result := supervisor.RunResult()
@@ -1485,6 +1486,19 @@ func firstDiagnosisCheckStoppedCommand(t *testing.T, ctx context.Context, mode s
 		trusted = results[0]
 	}
 	c := trusted.Call.Counts
+	// 시도 단위 영수증으로 연결 성립 여부를 직접 본다(연결 전 송신 실패인지, 연결 뒤 응답 수신 도중인지).
+	var attempts []e2proxy.Receipt
+	if execution, found := runtime.host.Runtime().Execution(task.ID); found && execution != nil {
+		attempts = firstDiagnosisCallAttempts(execution)[trusted.Call.CallRef]
+	}
+	attemptWith := func(reason e2proxy.Reason) (e2proxy.Receipt, bool) {
+		for _, a := range attempts {
+			if a.Reason == reason {
+				return a, true
+			}
+		}
+		return e2proxy.Receipt{}, false
+	}
 	stopped := runErr == nil && planner.killed && result != nil && result.Valid() && result.Outcome == diagnosis.OutcomePartial && result.ClosingReason == "" &&
 		len(results) == 1 && trusted.Final && trusted.ProcessDrained && trusted.ProxyDrained && !trusted.ProcessBashExited && trusted.Termination == "" &&
 		trusted.Call.AuditComplete && trusted.Execution.AuditComplete
@@ -1494,8 +1508,12 @@ func firstDiagnosisCheckStoppedCommand(t *testing.T, ctx context.Context, mode s
 		ok = stopped && hits == 0 && trusted.Classification == "policy_not_executed" && c.Denied == 1 && c.ForwardAttempted == 0 && c.Unknown == 0 &&
 			result.IntentOutcomes == (diagnosis.IntentOutcomes{Incomplete: 1}) && intentState == "stopped"
 	case "planner-kill-refused":
-		ok = stopped && hits == 0 && trusted.Classification == "transient_failure" && c.Transient == 1 && c.ForwardAttempted == 1 && c.Responses == 0 && c.Unknown == 0 &&
-			result.IntentOutcomes == (diagnosis.IntentOutcomes{Unknown: 1}) && intentState == "blocked" && blockedReason == "e2_http_result_unknown"
+		// 연결을 시도했지만(forward_attempted) 연결 전에 거부된 송신이다. E②는 전달하지 않은 송신 실패로 기록하므로(C02)
+		// 결과 불명이 아니라 그 intent의 미완료다.
+		refused, found := attemptWith(e2proxy.TransportFailed)
+		ok = stopped && hits == 0 && found && refused.ForwardAttempted && !refused.RequestWritten && !refused.ResponseReceived &&
+			trusted.Classification == "transient_failure" && c.Transient == 1 && c.ForwardAttempted == 1 && c.Responses == 0 && c.Unknown == 0 &&
+			result.IntentOutcomes == (diagnosis.IntentOutcomes{Incomplete: 1}) && intentState == "stopped"
 	case "planner-kill-mid-response":
 		// 대상 연결은 멈춘 뒤 끊긴다. 서버 쪽 감지는 비동기라 잠깐 기다린다.
 		const exitWait = 2 * time.Second
@@ -1505,7 +1523,10 @@ func firstDiagnosisCheckStoppedCommand(t *testing.T, ctx context.Context, mode s
 			exited = true
 		case <-time.After(exitWait):
 		}
-		ok = stopped && hits == 1 && exited && trusted.Classification == "result_unknown" && c.Denied == 1 && c.ForwardAttempted == 1 && c.Responses == 1 && c.Unknown == 1 &&
+		// 연결이 맺어지고 요청을 쓴 뒤 상태 줄·헤더를 받았고 본문을 끝까지 받지 못했다(연결 뒤 응답 수신 도중).
+		mid, found := attemptWith(e2proxy.Unknown)
+		ok = stopped && hits == 1 && exited && found && mid.ForwardAttempted && mid.RequestWritten && mid.ResponseReceived && !mid.ResponseComplete &&
+			trusted.Classification == "result_unknown" && c.Denied == 1 && c.ForwardAttempted == 1 && c.Responses == 1 && c.Unknown == 1 &&
 			result.IntentOutcomes == (diagnosis.IntentOutcomes{Unknown: 1}) && intentState == "blocked" && blockedReason == "e2_http_result_unknown"
 	}
 	if !ok {

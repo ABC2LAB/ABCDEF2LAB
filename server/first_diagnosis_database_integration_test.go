@@ -422,7 +422,7 @@ func TestFirstDiagnosisRuntimeDatabaseOwnedPostgres(t *testing.T) {
 			}
 			firstDiagnosisSupervisorEngineRun(t, manager, installer, killed, "planner-kill")
 		})
-		// 멈춘 명령의 시도 단위 마감: 거부만 있으면 미완료, 연결 거부·응답 수신 도중 멈춤은 결과 불명이다.
+		// 멈춘 명령의 시도 단위 마감: 거부만·연결 전 송신 실패면 미완료, 연결 뒤 응답 수신 도중 멈춤은 결과 불명이다.
 		for _, mode := range []string{"planner-kill-denied", "planner-kill-refused", "planner-kill-mid-response"} {
 			t.Run("actual-engine-"+mode, func(t *testing.T) {
 				stopped, err := manager.CreateTask("Owned stopped command fixture "+mode, "Close a command the planner stopped by its per-attempt record", nil, 60, 60)

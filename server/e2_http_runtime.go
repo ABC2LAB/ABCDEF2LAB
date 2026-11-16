@@ -1074,10 +1074,11 @@ func (t *e2HTTPRuntimeTask) wakeObservers() {
 }
 
 // attemptUnknownIntentError는 멈춘 명령(Planner kill_work·목표 달성 취소·시간 상한 정리·호출 시간 상한 등)의 시도 단위
-// 기록에 보낸 뒤 응답을 끝까지 받지 못한 시도가 있으면 그 intent를 결과 불명으로 고정한다. 마감 판정과 같은 규칙
-// (firstDiagnosisToolOutcome)이라 그 intent는 미완료·정책 제한으로 마감되지 않는다(C01·C08). 결과 불명 송신 수가
-// 있는 호출은 e2HTTPFinalIntentError가 이미 고정했다. 연결을 시도했다 실패한 송신(transport_failed)은 결과 불명 송신
-// 수에 들지 않으므로 신뢰 결과의 종료 상태와 같이 봐야 한다. Worker 세션은 도구 완료보다 먼저 끝날 수 있어서
+// 기록에 대상에 전달됐는데 응답을 끝까지 받지 못한 시도가 있으면 그 intent를 결과 불명으로 고정한다. 마감 판정과 같은
+// 규칙(firstDiagnosisStoppedToolOutcome의 firstDiagnosisAttemptUnknown)이라 그 intent는 미완료·정책 제한으로 마감되지
+// 않는다(C01·C08). 연결 뒤 끊긴 송신(결과 불명 송신 수가 있는 호출)은 e2HTTPFinalIntentError가 이미 고정했고, 연결 전
+// 송신 실패(transport_failed)는 전달하지 않은 것이라 결과 불명이 아니다(C02). 이 검사는 그 밖의 전달된 시도까지 같은
+// 기준으로 본다. 어느 결과가 기존 분류 검사로 받혔는지는 신뢰 결과의 종료 상태가 있어야 알 수 있다. Worker 세션은 도구 완료보다 먼저 끝날 수 있어서
 // (취소 때 SDK가 중단 결과를 먼저 만든다) 이 intent의 최종 호출 결과가 모두 관찰될 때까지 ctx 기한 안에서 기다린다.
 // 기다리다 기한이 지나면 관찰된 결과만 본다. 관찰되지 않은 호출은 마감 대조가 따로 실패시킨다.
 func (r *E2HTTPRuntime) attemptUnknownIntentError(ctx context.Context, t *e2HTTPRuntimeTask, lease *E2HTTPRunOptions, intentID int64, finalErr error) error {

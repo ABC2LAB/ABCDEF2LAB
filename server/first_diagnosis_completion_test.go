@@ -383,7 +383,7 @@ func stoppedAnswered(seq uint64) e2proxy.Receipt {
 	return stoppedAttempt(seq, "allowed", e2proxy.Complete, true, true, true, true)
 }
 
-// 연결을 시도했지만 거부·실패한 송신(transport_failed, forward_attempted).
+// 연결을 시도했지만 연결 전에 거부·실패한 송신(transport_failed, forward_attempted). E②는 전달하지 않은 송신 실패로 본다.
 func stoppedConnectFailed(seq uint64) e2proxy.Receipt {
 	return stoppedAttempt(seq, "allowed", e2proxy.TransportFailed, true, false, false, false)
 }
@@ -461,11 +461,17 @@ func TestFirstDiagnosisStoppedToolOutcome(t *testing.T) {
 		{name: "denial-limit-after-answer", attempts: []e2proxy.Receipt{stoppedAnswered(1), stoppedDenied(2, e2proxy.PolicyDenied), stoppedDenied(3, e2proxy.DenialLimit)}, result: stoppedResult("partial_policy_denial", true, 0, ""), want: accept},
 		{name: "transient-limit-not-sent", attempts: []e2proxy.Receipt{stoppedAllowedNotSent(1, e2proxy.TransportFailed), stoppedDenied(2, e2proxy.TransientLimit)}, result: stoppedResult(e2runner.ClassificationForwardNotAttempted, true, 7, ""), want: accept},
 		{name: "withheld-then-closed", attempts: []e2proxy.Receipt{stoppedAttempt(1, "allowed", e2proxy.Withheld, true, true, true, false), stoppedDenied(2, e2proxy.Closed)}, result: stoppedResult("terminated", false, -1, ""), want: accept},
-		// 같은 조합에 보낸 뒤 응답을 끝까지 받지 못한 시도가 하나 섞이면 정책 제한·미완료가 아니라 결과 불명이다.
-		{name: "killed-after-denial-and-connect-failure", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.PolicyDenied), stoppedConnectFailed(2)}, result: stoppedResult("transient_failure", false, -1, ""), want: unknown},
-		{name: "killed-after-connect-failure", attempts: []e2proxy.Receipt{stoppedConnectFailed(1)}, result: stoppedResult("transient_failure", false, -1, ""), want: unknown},
-		{name: "forward-not-attempted-after-connect-failure", attempts: []e2proxy.Receipt{stoppedConnectFailed(1), stoppedAllowedNotSent(2, e2proxy.Closed)}, result: stoppedResult(e2runner.ClassificationForwardNotAttempted, false, -1, ""), want: unknown},
-		{name: "slot-wait-closed-after-connect-failure", attempts: []e2proxy.Receipt{stoppedConnectFailed(1), stoppedDenied(2, e2proxy.Closed)}, result: stoppedResult("transient_failure", true, 0, ""), want: unknown},
+		// 연결 전 송신 실패(transport_failed, 연결을 시도해 forward_attempted가 켜졌어도)는 E②가 전달하지 않은 송신
+		// 실패로 기록한다(C02). 결과 불명이 아니라 그 intent의 미완료(거부가 있으면 정책 제한 근거)다.
+		{name: "killed-after-connect-failure", attempts: []e2proxy.Receipt{stoppedConnectFailed(1)}, result: stoppedResult("transient_failure", false, -1, ""), want: accept},
+		{name: "killed-after-denial-and-connect-failure", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.PolicyDenied), stoppedConnectFailed(2)}, result: stoppedResult("transient_failure", false, -1, ""), want: accept},
+		{name: "forward-not-attempted-after-connect-failure", attempts: []e2proxy.Receipt{stoppedConnectFailed(1), stoppedAllowedNotSent(2, e2proxy.Closed)}, result: stoppedResult(e2runner.ClassificationForwardNotAttempted, false, -1, ""), want: accept},
+		{name: "slot-wait-closed-after-connect-failure", attempts: []e2proxy.Receipt{stoppedConnectFailed(1), stoppedDenied(2, e2proxy.Closed)}, result: stoppedResult("transient_failure", true, 0, ""), want: accept},
+		// 같은 조합에 연결 뒤 전달된 시도(응답 미완료)가 하나 섞이면 정책 제한·미완료가 아니라 결과 불명이다.
+		{name: "killed-after-denial-and-forwarded-closed", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.PolicyDenied), stoppedAttempt(2, "allowed", e2proxy.Closed, true, true, false, false)}, result: stoppedResult("terminated", false, -1, ""), want: unknown},
+		{name: "killed-after-connect-failure-and-forwarded-closed", attempts: []e2proxy.Receipt{stoppedConnectFailed(1), stoppedAttempt(2, "allowed", e2proxy.Closed, true, true, false, false)}, result: stoppedResult("transient_failure", false, -1, ""), want: unknown},
+		{name: "connect-failure-then-mid-response-closed", attempts: []e2proxy.Receipt{stoppedConnectFailed(1), stoppedMidResponse(2), stoppedDenied(3, e2proxy.Closed)}, result: stoppedResult("result_unknown", false, -1, ""), want: unknown},
+		{name: "connected-no-response-then-closed", attempts: []e2proxy.Receipt{stoppedAttempt(1, "allowed", e2proxy.Unknown, true, true, false, false), stoppedDenied(2, e2proxy.Closed)}, result: stoppedResult("result_unknown", false, -1, ""), want: unknown},
 		{name: "mid-response-then-closed", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.PolicyDenied), stoppedMidResponse(2), stoppedDenied(3, e2proxy.Closed)}, result: stoppedResult("result_unknown", false, -1, ""), want: unknown},
 		{name: "unknown-limit", attempts: []e2proxy.Receipt{stoppedMidResponse(1), stoppedDenied(2, e2proxy.UnknownLimit)}, result: stoppedResult("result_unknown", true, 0, ""), want: unknown},
 		// E② 코드에서는 생기지 않지만, 보낸 시도에 닫힘·호출 상한 사유가 붙어도 보내지 않은 것으로 보지 않는다.
@@ -547,6 +553,8 @@ func TestFirstDiagnosisStoppedToolOutcome(t *testing.T) {
 		{name: "not-sent-flag-contradicts-forward", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.PolicyDenied)}, result: stoppedResult("policy_not_executed", false, -1, ""),
 			change: func(_ *e2runner.TrustedResult, a []e2proxy.Receipt) []e2proxy.Receipt { a[0].NotSent = false; return a }, want: reject},
 		{name: "complete-without-response", attempts: []e2proxy.Receipt{stoppedAttempt(1, "allowed", e2proxy.Complete, true, true, true, false), stoppedDenied(2, e2proxy.Closed)}, result: stoppedResult("terminated", false, -1, ""), want: reject},
+		// 연결 전 송신 실패에 요청 쓰기·응답 수신 흔적이 있으면 E② 기록과 맞지 않는다(연결 뒤 실패는 unknown이어야 한다).
+		{name: "transport-failed-but-written", attempts: []e2proxy.Receipt{stoppedAttempt(1, "allowed", e2proxy.TransportFailed, true, true, false, false)}, result: stoppedResult("transient_failure", false, -1, ""), want: reject},
 		{name: "complete-without-forward", attempts: []e2proxy.Receipt{stoppedAttempt(1, "allowed", e2proxy.Complete, false, false, false, false)}, result: stoppedResult(e2runner.ClassificationForwardNotAttempted, false, -1, ""), want: reject},
 		{name: "last-reason-not-recorded", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.PolicyDenied)}, result: stoppedResult("policy_not_executed", false, -1, ""),
 			change: func(r *e2runner.TrustedResult, a []e2proxy.Receipt) []e2proxy.Receipt {
