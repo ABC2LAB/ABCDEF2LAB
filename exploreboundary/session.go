@@ -146,6 +146,9 @@ func (s *Session) closeLocked(reason exploration.Reason) {
 	s.active = false
 	s.reason = reason
 	close(s.closedCh)
+	if s.policy.Evidence != nil {
+		s.policy.Evidence.closed(reason, s.policy.Now().UTC())
+	}
 }
 
 func (s *Session) stateLocked() exploration.State {
@@ -237,6 +240,10 @@ type Ticket struct {
 
 func (s *Session) recordLocked(r Record) {
 	r = boundRecord(r)
+	// 원자료에는 메모리 차단 행 상한과 별개로 모든 행을 쓴다. 쓰지 못하면 원자료가 불완전해졌으므로 새 송신을 멈춘다.
+	if s.policy.Evidence != nil && s.policy.Evidence.row(r) != nil {
+		s.closeLocked(exploration.BoundaryUnavailable)
+	}
 	if r.Decision == "denied" {
 		if s.deniedRows >= s.policy.MaxDeniedRecords {
 			s.omitted++

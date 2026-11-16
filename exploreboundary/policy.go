@@ -110,6 +110,8 @@ type Policy struct {
 	// MaxDeniedRecords는 차단 기록 행의 상한이다. 넘친 행은 수만 센다. 0이면 설정 오류다.
 	MaxDeniedRecords int
 	Now              func() time.Time
+	// Evidence는 평가·수용시험 회차에서만 켜는 경계 원자료 쓰기다(§4.1). nil이면 원자료를 쓰지 않는다(제품).
+	Evidence *Evidence
 }
 
 func (p Policy) valid() bool {

@@ -56,6 +56,11 @@ type config struct {
 	TimeoutMS        int      `json:"timeout_ms"`
 	CloseWaitMS      int      `json:"close_wait_ms"`
 	LeafValiditySec  int      `json:"leaf_validity_seconds"`
+	// EvidenceDir·EvidenceMaxBytes는 평가·수용시험 회차에서만 쓰는 경계 원자료 출력이다(계약 §4.1). 러너가 자기 uid·0700으로
+	// 만든 디렉터리를 이 컨테이너에만 붙이고, 경계도 같은 uid로 띄운다(계측기와 같은 방식). 둘 다 비우면 원자료를 쓰지
+	// 않는다(제품). 바이트 상한은 회차 정책이 정하고 코드 기본값이 없다.
+	EvidenceDir      string `json:"evidence_dir,omitempty"`
+	EvidenceMaxBytes int64  `json:"evidence_max_bytes,omitempty"`
 }
 
 func readJSON(path string, v any) error {
@@ -185,7 +190,14 @@ func build(c config) (*parts, error) {
 	timeout := time.Duration(c.TimeoutMS) * time.Millisecond
 	// 경계 기록의 경로는 키로 가린다. 같은 키를 쓰는 회차 기록끼리만 패턴을 맞춰 볼 수 있다(§4).
 	pattern := func(escaped string) string { p, _ := pathmask.Mask(escaped, maskKey); return p }
-	m := &exploreboundary.Manager{Policy: exploreboundary.Policy{ControlEndpoints: controls, Resolver: res, PathPattern: pattern, MaxDeniedRecords: c.MaxDeniedRecords},
+	var evidence *exploreboundary.Evidence
+	// 한쪽 칸만 준 설정은 원자료를 켜려다 빠뜨린 것이다. 조용히 끈 채로 띄우지 않고 OpenEvidence의 인자 검사로 거부한다.
+	if c.EvidenceDir != "" || c.EvidenceMaxBytes != 0 {
+		if evidence, err = exploreboundary.OpenEvidence(c.EvidenceDir, c.EvidenceMaxBytes, maskKey); err != nil {
+			return nil, errors.New("evidence_unavailable")
+		}
+	}
+	m := &exploreboundary.Manager{Policy: exploreboundary.Policy{ControlEndpoints: controls, Resolver: res, PathPattern: pattern, MaxDeniedRecords: c.MaxDeniedRecords, Evidence: evidence},
 		CloseWait: time.Duration(c.CloseWaitMS) * time.Millisecond}
 	proxy := func(ingress exploreboundary.Ingress) (*exploreboundary.Proxy, error) {
 		return exploreboundary.NewProxy(exploreboundary.ProxyConfig{Ingress: ingress, Current: m.Current, CA: ca, CAKey: key, Roots: roots,
@@ -242,13 +254,15 @@ func (p *parts) serve(ctx context.Context) error {
 		return err == nil && uid == p.uid
 	}
 	go func() { errs <- p.manager.Serve(ctx, control, allow) }()
+	var servers []*http.Server
 	for i, handler := range []http.Handler{p.browser, p.direct} {
 		l, err := net.Listen("tcp", p.listens[i].String())
 		if err != nil {
-			return err
+			return errors.Join(err, p.shutdown(servers, exploreboundary.SealedByFailure))
 		}
 		// 쉬는 keep-alive 연결은 터널 수에 들어가지 않으므로 시간 상한으로 닫는다(#488 리뷰).
 		server := &http.Server{Handler: handler, ReadHeaderTimeout: p.timeout, IdleTimeout: p.timeout, ErrorLog: log.New(io.Discard, "", 0)}
+		servers = append(servers, server)
 		go func() { <-ctx.Done(); _ = server.Close() }()
 		go func() {
 			if err := server.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -258,12 +272,27 @@ func (p *parts) serve(ctx context.Context) error {
 	}
 	select {
 	case <-ctx.Done():
-		p.browser.CloseTunnels()
-		p.direct.CloseTunnels()
-		return nil
+		return p.shutdown(servers, exploreboundary.SealedByShutdown)
 	case err := <-errs:
-		return err
+		return errors.Join(err, p.shutdown(servers, exploreboundary.SealedByFailure))
 	}
+}
+
+// shutdown은 새 요청이 들어오지 않게 입구와 터널을 닫은 뒤 원자료를 봉인한다(원자료를 쓰지 않는 설치는 봉인이 없다).
+// 봉인을 입구보다 먼저 하면 봉인 뒤 들어온 요청의 행이 원자료에서 빠진다.
+func (p *parts) shutdown(servers []*http.Server, by string) error {
+	var errs []error
+	for _, server := range servers {
+		if err := server.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	p.browser.CloseTunnels()
+	p.direct.CloseTunnels()
+	if err := p.manager.Seal(by); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
 }
 
 func main() {
