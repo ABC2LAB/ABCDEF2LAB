@@ -114,10 +114,18 @@ func productPlannerLimitsFor(limits *productRuntimeLimits, workflow bool) (launc
 	return out, true
 }
 
-// productModelConcurrencyFor는 고른 모드의 동시 모델 호출 수다. 없으면 지금과 같은 1이다. 로컬 모델이 설치에 있으면
-// 1만 받고(코드에 로컬 동시 호출 상한이 없음, 설치 결정안 2-4), OpenRouter만이면 승인 max_concurrent 이하만 받는다.
+// productAPIModelConcurrency는 외부 API(OpenRouter) launch의 기본 동시 모델 호출 수다. Worker 3(엔진 기본) + Planner 1이다
+// (공식 평가 절차의 동시 슬롯 규칙 "worker_count에 Planner를 더한 수 이상", docs/evaluation/official-run.md, 설치 결정안 §9).
+const productAPIModelConcurrency = 4
+
+// productModelConcurrencyFor는 고른 모드의 동시 모델 호출 수다. 없으면 기본값이다: 로컬 모델 launch는 1(코드에 로컬 동시
+// 호출 상한이 없음, 설치 결정안 2-4), OpenRouter launch는 productAPIModelConcurrency(승인 max_concurrent가 더 작으면 그 값).
+// 값을 주면 로컬 모델이 설치에 있을 때 1만, OpenRouter만이면 승인 max_concurrent 이하만 받는다.
 func productModelConcurrencyFor(limits *productRuntimeLimits, workflow, local bool, openRouterMax int64) (int, bool) {
 	n := 1
+	if !local && openRouterMax > 0 {
+		n = int(min(productAPIModelConcurrency, openRouterMax))
+	}
 	if set := limits.mode(workflow); set != nil && set.ModelConcurrency != nil {
 		n = *set.ModelConcurrency
 	}
