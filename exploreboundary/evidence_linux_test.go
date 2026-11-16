@@ -123,7 +123,7 @@ func TestEvidenceKeepsEveryRowAndSealsLast(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, EvidenceMarkerName)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("marker written before seal")
 	}
-	if err := m.Seal(SealedByShutdown); err != nil {
+	if err := m.Seal(SealedByShutdown, nil); err != nil {
 		t.Fatal(err)
 	}
 	rows, raw := readRows(t, dir)
@@ -151,7 +151,7 @@ func TestEvidenceKeepsEveryRowAndSealsLast(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatal("rows file mode", info, err)
 	}
-	if err := m.Seal(SealedByShutdown); err == nil {
+	if err := m.Seal(SealedByShutdown, nil); err == nil {
 		t.Fatal("second seal accepted")
 	}
 	// 거부된 두 번째 봉인은 표식을 바꾸지 않고 반쯤 쓴 표식도 남기지 않는다.
@@ -210,7 +210,7 @@ func TestEvidenceSessionClosedByControlAndSingleSession(t *testing.T) {
 	if resp := openVia(t, m, source); resp.OK || resp.Error != ControlErrUnavailable {
 		t.Fatal("second session opened on used evidence", resp)
 	}
-	if err := m.Seal(SealedByShutdown); err != nil {
+	if err := m.Seal(SealedByShutdown, nil); err != nil {
 		t.Fatal(err)
 	}
 	got := readMarker(t, dir).Session
@@ -227,7 +227,7 @@ func TestEvidenceSealWithoutSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	m, _, _ := evidenceManager(t, ev, time.Second)
-	if err := m.Seal(SealedByFailure); err != nil {
+	if err := m.Seal(SealedByFailure, nil); err != nil {
 		t.Fatal(err)
 	}
 	marker := readMarker(t, dir)
@@ -263,7 +263,7 @@ func TestEvidenceTruncatesAtByteCapWithoutStopping(t *testing.T) {
 	} else {
 		ticket.Done(Result{Status: 200, ResponseReceived: true})
 	}
-	if err := m.Seal(SealedByShutdown); err != nil {
+	if err := m.Seal(SealedByShutdown, nil); err != nil {
 		t.Fatal(err)
 	}
 	rows, raw := readRows(t, dir)
@@ -313,7 +313,7 @@ func TestEvidenceWriteFailureStopsNewSends(t *testing.T) {
 	if d, _ := s.Admit(t.Context(), approved("GET", "/app/items")); d.Forward {
 		t.Fatal("request forwarded after evidence loss")
 	}
-	if err := m.Seal(SealedByShutdown); err != nil {
+	if err := m.Seal(SealedByShutdown, nil); err != nil {
 		t.Fatal(err)
 	}
 	var marker EvidenceMarker
@@ -330,7 +330,7 @@ func TestEvidenceSyncFailureMarksIncomplete(t *testing.T) {
 		t.Fatal(err)
 	}
 	m, _, _ := evidenceManager(t, ev, time.Second)
-	if err := m.Seal(SealedByShutdown); err != nil {
+	if err := m.Seal(SealedByShutdown, nil); err != nil {
 		t.Fatal(err)
 	}
 	var marker EvidenceMarker
@@ -354,7 +354,7 @@ func TestEvidenceInflightAtSealIsCountedNotAppended(t *testing.T) {
 	if !d.Forward {
 		t.Fatal(d)
 	}
-	if err := m.Seal(SealedByShutdown); err != nil {
+	if err := m.Seal(SealedByShutdown, nil); err != nil {
 		t.Fatal(err)
 	}
 	ticket.Done(Result{Status: 200, ResponseReceived: true})
@@ -368,7 +368,7 @@ func TestEvidenceInflightAtSealIsCountedNotAppended(t *testing.T) {
 // 원자료를 켜지 않은 경계(제품)는 봉인이 아무것도 쓰지 않는다.
 func TestNoEvidenceSealIsNoop(t *testing.T) {
 	m, _, _ := evidenceManager(t, nil, time.Second)
-	if err := m.Seal(SealedByShutdown); err != nil {
+	if err := m.Seal(SealedByShutdown, nil); err != nil {
 		t.Fatal(err)
 	}
 }
