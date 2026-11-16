@@ -226,6 +226,10 @@ export function UrlNewScanLive() {
   const hasTestAccounts = external && accountPresence.key === consentKey && accountPresence.value;
   const consentChecked =
     hasTestAccounts && !!accountPresence.statement && accountConsent.key === consentKey && accountConsent.checked;
+  // 로그인 칸 '연결 전' 설명: 시험 계정 동의가 있으면 점검이 실제로 그 계정으로 로그인한다 → '로그인 없이' 라고 단정하지 않는다.
+  const loginUnwiredWhy = consentChecked
+    ? `${NO_INPUT} · 시험 계정으로 로그인해 점검합니다`
+    : `${NO_INPUT} · 지금 점검은 로그인 없이 진행됩니다`;
   useEffect(() => {
     if (!external || shown || !tv || urlTargetHint(tv)) return;
     const controller = new AbortController();
@@ -357,6 +361,14 @@ export function UrlNewScanLive() {
   } else if (job.state === "ready") {
     action = (
       <>
+        {hasTestAccounts && !consentChecked ? (
+          <div className={cx(s.note, s.warn)} role="note">
+            <Icon name="alert" />
+            <span>
+              시험 계정 동의를 하지 않아 시험 계정(로그인) 없이 점검합니다. 시험 계정으로 점검하려면 새로 입력하세요.
+            </span>
+          </div>
+        ) : null}
         {scope?.approval_mode === "confirm_every_request" ? (
           <div className={cx(s.note, s.warn)} role="note">
             <Icon name="alert" />
@@ -553,6 +565,16 @@ export function UrlNewScanLive() {
             </div>
           ) : null}
 
+          {handle && job?.state === "ready" ? (
+            <div className={cx(s.note, s.warn)} role="note">
+              <Icon name="alert" />
+              <span className={s["lv-grow"]}>
+                검증이 끝났습니다. 오른쪽 <b>점검 요약</b> 패널에서 동의한 뒤 <b>점검 시작</b>을 누르세요.
+              </span>
+              <InspOpenButton>점검 요약</InspOpenButton>
+            </div>
+          ) : null}
+
           <div className={s.fgrps}>
             {/* biome-ignore lint/a11y/useSemanticElements: 시안 마크업 그대로 (fieldset 테두리 · 여백 없이 묶음만) */}
             <div className={s.fgrp} role="group" aria-label="대상 · 로그인" hidden={page !== 1}>
@@ -616,7 +638,7 @@ export function UrlNewScanLive() {
               <div className={s.fsec}>
                 <div className={cx(s["fsec-h"], s["fsec-ht"])}>
                   <h2>로그인</h2>
-                  <Unwired why={`${NO_INPUT} · 지금 점검은 로그인 없이 진행됩니다`} />
+                  <Unwired why={loginUnwiredWhy} />
                 </div>
                 <div className={s["fsec-b"]}>
                   <div className={s.seg} role="radiogroup" aria-label="로그인 여부">
@@ -928,7 +950,7 @@ export function UrlNewScanLive() {
               </dd>
               <dt>로그인</dt>
               <dd>
-                — <Unwired why={NO_INPUT} />
+                {consentChecked ? "시험 계정 로그인" : "—"} <Unwired why={loginUnwiredWhy} />
               </dd>
               <dt>분석 모델</dt>
               <dd>{profile ? `${profile.model_label} (${external ? "외부 API" : "로컬"})` : "—"}</dd>
