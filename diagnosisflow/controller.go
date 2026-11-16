@@ -306,7 +306,18 @@ func (c *Controller) allowedPath(method, path string) bool {
 			return false
 		}
 	}
-	return allowed
+	if !allowed {
+		return false
+	}
+	// path는 정규 표기(%가 없는 경로를 다시 인코딩한 것)라 단어 경계가 달라지고(%3Cdelete는 "3"·"cdelete"로 나뉘어
+	// delete를 놓침) 비ASCII 제외 경로와 표기가 다르다(%C3%BCber ↔ über). 크롤·발견 분류도 대상이 처리하는 풀린 경로로
+	// 위험 동작·제외 경로·범위를 다시 본다(#626 진단 단계와 같은 함수). 크롤 요청은 E②를 거치지만 E②는 위험 단어·
+	// 제외 경로를 보지 않아 여기가 유일한 방어선이다(#627, 재현: 크롤이 %3Cdelete·%C3%BCber를 방문했음).
+	decoded, err := url.PathUnescape(path)
+	if err != nil {
+		return false
+	}
+	return decoded == path || c.decodedPathAllowed(normalizedMethod(method), decoded, false)
 }
 func (c *Controller) allowedURLPath(path string, hasQuery bool) bool {
 	for _, expression := range c.binding.PathPrefixes {

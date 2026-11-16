@@ -3,7 +3,9 @@
 package llmpolicy
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -104,6 +106,7 @@ func loadOpenRouterManifestFile(path string, readAll func(io.Reader) ([]byte, er
 	// 이전 1회용 표식이 있는 승인은 예약 기록 없이 이미 쓴 것이므로 다 쓴 승인으로 본다.
 	legacyMarker := ".openrouter-" + approval + ".used"
 	ledgerName := ".openrouter-" + approval + ".ledger"
+	callsName := ".openrouter-" + approval + ".calls"
 	openDirectory := func() (int, error) {
 		fresh, err := openRouterProtectedDirectory(dir)
 		if err != nil {
@@ -157,7 +160,54 @@ func loadOpenRouterManifestFile(path string, readAll func(io.Reader) ([]byte, er
 		defer unix.Close(fresh)
 		return openRouterSettleLedger(fresh, ledgerName, resolver.manifest, reserved, actual)
 	}
+	resolver.callLog = func(rec OpenRouterCallRecord) error {
+		fresh, err := openDirectory()
+		if err != nil {
+			return err
+		}
+		defer unix.Close(fresh)
+		return openRouterAppendCall(fresh, callsName, resolver.manifest, rec)
+	}
 	return resolver, nil
+}
+
+// openRouterCallLineMax는 호출 기록 한 줄의 상한이다. 칸은 정수·고정 어휘·시각·모양을 제한한 id뿐이다.
+const openRouterCallLineMax = 512
+
+// openRouterAppendCall은 호출 기록 한 줄을 더하고 fsync한다. 순번은 배타 잠금 안에서 센 기존 줄 수 + 1이라 재시작·다른
+// 프로세스를 합쳐도 겹치지 않는다. 보호 조건(소유자·0600·단일 링크·정규 파일)과 크기 상한(승인 요청 수 × 줄 상한)을
+// 지킨다. 실패해도 호출 결과는 바꾸지 않는다(OpenRouterPolicy.recordCall).
+func openRouterAppendCall(dir int, name string, m openRouterManifest, rec OpenRouterCallRecord) error {
+	fd, err := unix.Openat(dir, name, unix.O_RDWR|unix.O_CREAT|unix.O_APPEND|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0600)
+	if err != nil {
+		return ErrOpenRouterPolicy
+	}
+	defer unix.Close(fd)
+	if unix.Flock(fd, unix.LOCK_EX) != nil {
+		return ErrOpenRouterPolicy
+	}
+	var st unix.Stat_t
+	limit := m.MaxRequests * openRouterCallLineMax
+	if unix.Fstat(fd, &st) != nil || !ownedManifestFile(st) || st.Size < 0 || st.Size > limit {
+		return ErrOpenRouterPolicy
+	}
+	data := make([]byte, st.Size)
+	if n, err := unix.Pread(fd, data, 0); err != nil || int64(n) != st.Size {
+		return ErrOpenRouterPolicy
+	}
+	rec.Seq = uint64(bytes.Count(data, []byte("\n"))) + 1
+	line, err := json.Marshal(rec)
+	if err != nil || len(line)+1 > openRouterCallLineMax || st.Size+int64(len(line))+1 > limit {
+		return ErrOpenRouterPolicy
+	}
+	line = append(line, '\n')
+	if n, err := unix.Write(fd, line); err != nil || n != len(line) {
+		return ErrOpenRouterPolicy
+	}
+	if unix.Fsync(fd) != nil || (st.Size == 0 && unix.Fsync(dir) != nil) {
+		return ErrOpenRouterPolicy
+	}
+	return nil
 }
 
 // 경로의 모든 조상을 다시 열어 소비 시점의 심볼릭 링크 교체도 차단한다.

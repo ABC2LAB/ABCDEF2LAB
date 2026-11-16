@@ -78,6 +78,10 @@ type OpenRouterPolicy struct {
 	// settleLedger는 끝난 호출의 실제 사용량을 승인 장부에 남긴다(C07 보완: 누적 예약이 아니라 누적 사용량). 남기면
 	// 그 호출의 예약과 실제의 차이를 다시 쓸 수 있다. 보호 파일 로더만 채운다.
 	settleLedger func(reserved, actual [3]int64) error
+	// callLog는 보낸 호출 하나의 기록을 승인 장부 옆 보호 파일에 더한다(openrouter_calls.go). 보호 파일 로더만 채운다.
+	callLog func(OpenRouterCallRecord) error
+	// callLogFailures는 호출 기록을 남기지 못한 수다.
+	callLogFailures int64
 	// refunded는 장부에 정산을 남긴 호출들의 예약 − 실제 합계다. 프로세스 안 검사는 예약 합계에서 이것을 뺀다.
 	refunded [3]int64
 }
