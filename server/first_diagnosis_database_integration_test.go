@@ -320,6 +320,23 @@ func TestFirstDiagnosisRuntimeDatabaseOwnedPostgres(t *testing.T) {
 			}
 			firstDiagnosisSupervisorEngineRun(t, manager, installer, goalTask, "goal-met-after-work")
 		})
+		t.Run("actual-engine-auth-unknown-does-not-contaminate-worker", func(t *testing.T) {
+			// 인증 프로그램의 불명 두 건이 있어도 Worker intent와 감독자 그래프는 실제 작업 결과로 마감한다.
+			goalTask, err := manager.CreateTask("Owned program unknown fixture", "Keep program unknown separate from Worker results", nil, 60, 60)
+			if err != nil || goalTask == nil {
+				t.Fatal("독립 작업 뒤 목표 task 생성 실패")
+			}
+			if _, err := runtimePool.ExecContext(ctx, "UPDATE tasks SET paused=true WHERE id=$1", goalTask.ID); err != nil {
+				t.Fatal("작업 뒤 목표 task 준비 상태 저장 실패")
+			}
+			goalTask.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
+			for _, work := range firstDiagnosisGoalMetWork {
+				if id, err := goalTask.Store.AddIntent(map[string]any{"summary": work.marker}, 1, nil, "system"); err != nil || id <= 0 {
+					t.Fatal("작업 뒤 목표 intent 생성 실패")
+				}
+			}
+			firstDiagnosisSupervisorEngineRun(t, manager, installer, goalTask, "goal-met-auth-unknown")
+		})
 		t.Run("actual-engine-goal-met-unmatched-limit-logs-check", func(t *testing.T) {
 			goalTask, err := manager.CreateTask("Owned goal after work mismatch fixture", "Fail closure on an unbacked limitation after the goal is met", nil, 60, 60)
 			if err != nil || goalTask == nil {

@@ -916,7 +916,7 @@ func (r *E2HTTPRuntime) observeResult(ctx context.Context, t *e2HTTPRuntimeTask,
 		execution := lease.Runner
 		{
 			view := execution.Snapshot()
-			valid := trusted.Version == e2proxy.Version && trusted.Execution.Scope == view.Scope && view.Scope.TaskRef == t.id && trusted.Execution.PolicyRevision == view.PolicyRevision && trusted.Execution.HeaderMode == view.HeaderMode && trusted.Execution.IntentID == intentID && trusted.Call.IntentID == intentID && execution.HasIntent(intentID)
+			valid := trusted.Version == e2proxy.Version && trusted.Execution.Scope == view.Scope && view.Scope.TaskRef == t.id && trusted.Execution.PolicyRevision == view.PolicyRevision && trusted.Execution.HeaderMode == view.HeaderMode && trusted.Execution.IntentID == intentID && trusted.Call.Program == "" && trusted.Call.IntentID == intentID && execution.HasIntent(intentID)
 			found, sameCall := false, false
 			for _, call := range execution.Calls() {
 				if e2proxy.EqualCallResults(call, trusted.Call) {
@@ -992,6 +992,9 @@ func (r *E2HTTPRuntime) ProgramCalls(taskID string) map[string]bool {
 	defer t.mu.Unlock()
 	if t.lease == nil {
 		return map[string]bool{}
+	}
+	if remote, ok := t.lease.Runner.(interface{ ProgramCalls() map[string]bool }); ok {
+		return remote.ProgramCalls()
 	}
 	return t.lease.programCalls.snapshot()
 }

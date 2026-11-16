@@ -13,7 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from attempt_reconcile import reconcile  # noqa: E402
-from e2_export import E2_DECISIONS, E2_HEADER_MODES, E2_REASONS, E2Expectation, E2ExportError, parse_attempts, parse_export, parse_manifest  # noqa: E402
+from e2_export import PROGRAM_CALL_KINDS, E2_DECISIONS, E2_HEADER_MODES, E2_REASONS, E2Expectation, E2ExportError, parse_attempts, parse_export, parse_manifest  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[3]
 A1, A2, A3 = "0" * 31 + "1", "0" * 31 + "2", "0" * 31 + "3"
@@ -25,8 +25,8 @@ EXPECTED = E2Expectation(eval_run_id="eval-run-1", model_tag="model-1", reset_ge
                          engine_task_id="17", policy_fingerprint_sha256=FINGERPRINT, header_mode="evaluation_caller_passthrough",
                          llm_backend="api")
 # 파서가 따라가는 Go 정의. 바뀌면 파서를 다시 맞추고 값을 갱신한다.
-GO_SHAPES = {"e2proxy/audit.go": {"func validJournalEvent(": "c20657d8b3b1673a0fd42215bdb43e802f5064a44d63d0d52d02646072e6baac", "func validJournalRef(": "19e535e1f750fa71646b37c58e528f0a2409c5d182d45e2f57889e7f2e26fb77", "func validJournalTime(": "ba9dc33173dcd0c3498013c1ddb3a9dfa93539240a5371212e42ed7b104740a6"},
-             "e2proxy/types.go": {"type Receipt struct": "08bd39a92b8dd6e9f2796575d3b3553fe4b09a81085eface30081c37608a1adc", "type Event struct": "b76400d2b19d095202ef7f2be6a32264645d6104f4f8aa274fe60701c23df7a2"}}
+GO_SHAPES = {"e2proxy/audit.go": {"func validJournalEvent(": "003ec100acf7d859ee76ad421a19d2c8291304b1b46774e1f764a47864bb6dc0", "func validJournalRef(": "19e535e1f750fa71646b37c58e528f0a2409c5d182d45e2f57889e7f2e26fb77", "func validJournalTime(": "ba9dc33173dcd0c3498013c1ddb3a9dfa93539240a5371212e42ed7b104740a6"},
+             "e2proxy/types.go": {"type Receipt struct": "0a572d2d4690c25cbdabafc3bbbd8b28730ffe25e14e3d8ca7c14179b146f846", "type Event struct": "b76400d2b19d095202ef7f2be6a32264645d6104f4f8aa274fe60701c23df7a2", 'func ValidCallAttribution(': '30a25655f3e9b634a1209da141699ae569b8f0863239e76227db428a8d2b5c0c', 'func (k ProgramCallKind) Valid()': '05da99ce0defdbf8c0f480f736a2778134709159e0e7ffdd54f872ed34cda5ce'}}
 
 
 def go_block(text, start):
@@ -193,6 +193,18 @@ class TestAttempts(unittest.TestCase):
         with self.assertRaises(E2ExportError) as caught:
             self.parse(attempt_rows, **changes)
         self.assertEqual(str(caught.exception), f"e2_export: {code}")
+
+    def test_program_attribution_is_explicit_and_bound(self):
+        for kind in ("auth_prep", "refresh_session"):
+            rows = [attempt(1,"intent",A1,1,"allowed",intent_id=0,program=kind),
+                    attempt(2,"result",A1,1,"allowed",intent_id=0,program=kind,**SENT),
+                    closed(3,intent_id=0,program=kind)]
+            self.assertEqual(len(self.parse(rows).decisions), 1)
+            self.rejected([rows[0] | {"intent_id":1}], "ROW_ATTEMPT_FIELDS")
+            self.rejected([rows[0] | {"program":"unknown"}], "ROW_ATTEMPT_FIELDS")
+            self.rejected([rows[0] | {"version":"e2-http-v1"}], "ROW_ATTRIBUTION")
+            self.rejected([control(1,intent_id=0,program=kind)], "ROW_ADMINISTRATIVE_FIELDS")
+            self.rejected([rows[0],rows[1] | {"program":("refresh_session" if kind=="auth_prep" else "auth_prep")}], "ATTEMPT_BINDING_MISMATCH")
 
     def test_rows_group_into_one_decision_per_attempt(self):
         result = self.parse(normal_rows())
@@ -401,6 +413,7 @@ class TestGoDefinitions(unittest.TestCase):
         types = (ROOT / "e2proxy/types.go").read_text(encoding="utf-8")
         self.assertEqual(set(re.findall(r'\bReason\s*=\s*"([a-z_]+)"', types)), set(E2_REASONS))
         self.assertEqual(set(re.findall(r'\bHeaderMode\s*=\s*"([a-z_]+)"', types)), set(E2_HEADER_MODES))
+        self.assertEqual(set(re.findall(r'\bProgramCallKind\s*=\s*"([a-z_]+)"', types)), set(PROGRAM_CALL_KINDS))
         audit = (ROOT / "e2proxy/audit.go").read_text(encoding="utf-8")
         self.assertEqual(set(re.findall(r'event\.Decision != "([a-z]+)"', audit)), set(E2_DECISIONS))
 

@@ -156,7 +156,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	helper := firstDiagnosisNativeHelper(t)
 	// 작업 뒤 목표 달성 순서를 쓰는 모드다. goal-met-unmatched-limit는 같은 순서에 E② 근거 없는 정책 제한 intent를 하나
 	// 더 둬서, 목표 달성 마감에서도 근거 대조 실패는 마감 실패이고 그 사유 코드가 진단 로그에 남는지 본다.
-	goalAfterWork := mode == "goal-met-after-work" || mode == "goal-met-unmatched-limit"
+	goalAfterWork := mode == "goal-met-after-work" || mode == "goal-met-unmatched-limit" || mode == "goal-met-auth-unknown"
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	if mode == "cancel" || mode == "user-stop" || mode == "close-fail" || mode == "plan-turns" || goalAfterWork {
@@ -186,6 +186,14 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if goalAfterWork && r.URL.Path == "/login" {
 			// 서버가 실행을 잡을 때 시험 계정마다 보내는 인증 준비 로그인이다(C14). 진단 요청 수와 따로 센다.
+			if mode == "goal-met-auth-unknown" {
+				login.posts.Add(1)
+				conn, _, err := w.(http.Hijacker).Hijack()
+				if err == nil {
+					conn.Close()
+				}
+				return
+			}
 			loginHandler.ServeHTTP(w, r)
 			return
 		}
@@ -268,6 +276,9 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		policy.MaxRequests = 1
 	}
 	if goalAfterWork {
+		if mode == "goal-met-auth-unknown" {
+			policy.Limits.MaxUnknown = 4
+		}
 		// 세 intent의 작업이 모두 끝난 뒤 Planner가 목표 달성을 판정해야 한다. 그 전에 실행 상한(요청 예산·도구 호출·
 		// Planner 라운드)에 닿으면 목표 달성이 아니라 budget_limited 마감이 되므로 상한을 넉넉히 둔다.
 		policy.MaxRequests = 8
@@ -637,7 +648,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		}
 		return
 	}
-	if mode == "goal-met-after-work" {
+	if mode == "goal-met-after-work" || mode == "goal-met-auth-unknown" {
 		// 목표 달성은 Planner의 판정이고 실행 마감 실패가 아니다. 정책 거부로 끝난 intent는 정책 제한, 정상 작업은 done이다.
 		// 남은 intent가 없으므로 계약(C08 §3.2) 대조식대로 complete다(정책 제한은 실패도 미완료도 아니다).
 		result := supervisor.RunResult()
@@ -652,7 +663,15 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		want := diagnosis.IntentOutcomes{Done: 1, PolicyLimited: 2}
 		auth := runtime.host.Runtime().AccountAuth()
 		program := runtime.host.Runtime().ProgramCalls(task.ID)
-		if login.posts.Load() != 2 || auth["tester-a"] != E2HTTPAuthAuthenticated || auth["tester-b"] != E2HTTPAuthAuthenticated || len(program) == 0 {
+		wantAuth := E2HTTPAuthAuthenticated
+		if mode == "goal-met-auth-unknown" {
+			wantAuth = E2HTTPAuthResultUnknown
+			execution, ok := runtime.host.Runtime().Execution(task.ID)
+			if !ok || execution == nil || execution.Snapshot().ProgramCounts.Unknown != 2 || execution.Snapshot().IntentCounts.Unknown != 0 {
+				t.Fatal("프로그램 불명이 Worker 그래프에 섞이거나 누계에서 누락됨")
+			}
+		}
+		if login.posts.Load() != 2 || auth["tester-a"] != wantAuth || auth["tester-b"] != wantAuth || len(program) == 0 {
 			t.Fatalf("시험 계정 인증 준비가 실제 회차와 다름 logins=%d auth=%v program=%d", login.posts.Load(), auth, len(program))
 		}
 		if runErr != nil || result == nil || !result.Valid() || result.Outcome != diagnosis.OutcomeComplete || result.ClosingReason != "" || result.IntentOutcomes != want ||
@@ -1323,7 +1342,7 @@ func verifySupervisorFailureLog(t *testing.T, path, mode string) {
 			if event.Status != "failed" || event.Stage != "audit_close" || event.ReasonCode != "audit_failed" {
 				t.Error("실제 감사 마감 실패와 로그 상태 불일치")
 			}
-		case "goal-met-after-work":
+		case "goal-met-after-work", "goal-met-auth-unknown":
 			if event.Status != "succeeded" || event.ReasonCode != "" {
 				t.Errorf("목표 달성 마감의 로그 상태 불일치: stage=%s status=%s reason=%s", event.Stage, event.Status, event.ReasonCode)
 			}

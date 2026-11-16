@@ -274,7 +274,7 @@ func e2HTTPRefreshSession(ctx context.Context, execution *e2proxy.Execution, dir
 		return nil, status
 	}
 	defer func() { counter.finish(label, result == E2HTTPAuthAuthenticated && len(header) > 0) }()
-	call, err := execution.BeginCall(ctx, "auth-refresh")
+	call, err := execution.BeginProgramCall(ctx, e2proxy.ProgramRefreshSession, "auth-refresh")
 	if err != nil {
 		return nil, E2HTTPAuthNotSent
 	}
@@ -317,7 +317,7 @@ func e2HTTPAuthPrep(ctx context.Context, execution *e2proxy.Execution, dir, orig
 	if execution == nil || ctx == nil {
 		return out, ErrE2HTTPHost
 	}
-	call, err := execution.BeginCall(ctx, "auth-prep")
+	call, err := execution.BeginProgramCall(ctx, e2proxy.ProgramAuthPrep, "auth-prep")
 	if err != nil {
 		for _, account := range auth.Accounts {
 			out.AccountAuth[account.Label] = E2HTTPAuthNotSent

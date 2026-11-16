@@ -10,7 +10,7 @@ import (
 // 막는다. 서버가 열지 않은 호출은 이 판정을 받지 않는다(C14, 11/13 S07 실제 회차).
 func TestFirstDiagnosisProgramCall(t *testing.T) {
 	program := map[string]bool{"auth-call": true}
-	final := e2proxy.CallResult{CallRef: "auth-call", Final: true, AuditComplete: true}
+	final := e2proxy.CallResult{CallRef: "auth-call", Program: e2proxy.ProgramAuthPrep, Final: true, AuditComplete: true}
 	if settled, isProgram := firstDiagnosisProgramCall(final, program, nil); !settled || !isProgram {
 		t.Fatal("final audited program call not settled")
 	}
@@ -27,5 +27,14 @@ func TestFirstDiagnosisProgramCall(t *testing.T) {
 	}
 	if _, isProgram := firstDiagnosisProgramCall(e2proxy.CallResult{CallRef: "worker-call", Final: true, AuditComplete: true}, program, nil); isProgram {
 		t.Fatal("worker call treated as a program call")
+	}
+	for _, call := range []e2proxy.CallResult{
+		{CallRef: "auth-call", IntentID: 1, Final: true, AuditComplete: true},
+		{CallRef: "auth-call", IntentID: 1, Program: e2proxy.ProgramAuthPrep, Final: true, AuditComplete: true},
+		{CallRef: "unregistered-program", Program: e2proxy.ProgramAuthPrep, Final: true, AuditComplete: true},
+	} {
+		if settled, _ := firstDiagnosisProgramCall(call, program, nil); settled {
+			t.Fatal("귀속·등록 대조 없이 프로그램 호출을 마감함")
+		}
 	}
 }
