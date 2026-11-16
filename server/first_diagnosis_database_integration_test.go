@@ -301,6 +301,41 @@ func TestFirstDiagnosisRuntimeDatabaseOwnedPostgres(t *testing.T) {
 			goalTask.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
 			firstDiagnosisSupervisorEngineRun(t, manager, installer, goalTask, "goal-met")
 		})
+		t.Run("actual-engine-goal-met-after-policy-limited-work", func(t *testing.T) {
+			// 실제 회차(11/16): 정책 거부로 끝난 intent와 정상 intent가 끝난 뒤 Planner가 모든 목표를 달성으로 판정하자
+			// 엔진이 실행 문맥을 취소했고, 감독자가 그 실행을 실패로 마감했다. 목표 달성 취소만으로는 마감이 실패하지 않고,
+			// 거부된 요청과 0이 아닌 종료 코드가 섞인 명령(tool_failure)이 있으면 실패했다. 이 시험은 그 순서를 그대로 돈다.
+			goalTask, err := manager.CreateTask("Owned goal after work fixture", "Close when the planner proves the goal after work", nil, 60, 60)
+			if err != nil || goalTask == nil {
+				t.Fatal("독립 작업 뒤 목표 task 생성 실패")
+			}
+			if _, err := runtimePool.ExecContext(ctx, "UPDATE tasks SET paused=true WHERE id=$1", goalTask.ID); err != nil {
+				t.Fatal("작업 뒤 목표 task 준비 상태 저장 실패")
+			}
+			goalTask.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
+			for _, work := range firstDiagnosisGoalMetWork {
+				if id, err := goalTask.Store.AddIntent(map[string]any{"summary": work.marker}, 1, nil, "system"); err != nil || id <= 0 {
+					t.Fatal("작업 뒤 목표 intent 생성 실패")
+				}
+			}
+			firstDiagnosisSupervisorEngineRun(t, manager, installer, goalTask, "goal-met-after-work")
+		})
+		t.Run("actual-engine-goal-met-unmatched-limit-logs-check", func(t *testing.T) {
+			goalTask, err := manager.CreateTask("Owned goal after work mismatch fixture", "Fail closure on an unbacked limitation after the goal is met", nil, 60, 60)
+			if err != nil || goalTask == nil {
+				t.Fatal("독립 근거 없는 제한 task 생성 실패")
+			}
+			if _, err := runtimePool.ExecContext(ctx, "UPDATE tasks SET paused=true WHERE id=$1", goalTask.ID); err != nil {
+				t.Fatal("근거 없는 제한 task 준비 상태 저장 실패")
+			}
+			goalTask.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
+			for _, work := range firstDiagnosisGoalMetWork {
+				if id, err := goalTask.Store.AddIntent(map[string]any{"summary": work.marker}, 1, nil, "system"); err != nil || id <= 0 {
+					t.Fatal("근거 없는 제한 시험 intent 생성 실패")
+				}
+			}
+			firstDiagnosisSupervisorEngineRun(t, manager, installer, goalTask, "goal-met-unmatched-limit")
+		})
 		t.Run("actual-engine-worker-insert-assets-approved-target", func(t *testing.T) {
 			assetTask, err := manager.CreateTask("Owned asset fixture", "Record only approved target assets", nil, 60, 60)
 			if err != nil || assetTask == nil {

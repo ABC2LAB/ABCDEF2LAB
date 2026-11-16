@@ -2370,49 +2370,6 @@ button.lr:hover {
 button.lr.on {
   background: var(--accent-bg);
 }
-.lgx {
-  border-top: 1px solid var(--rule);
-  background: var(--well);
-  padding: 12px 12px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.lgx .kv {
-  margin: 0;
-}
-.lgx-top {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-.lgx-top .m {
-  font-family: var(--mono);
-  font-size: 12px;
-  font-weight: 600;
-}
-.lgx-top code {
-  font-family: var(--mono);
-  font-size: 12.5px;
-  min-width: 0;
-  overflow-wrap: anywhere;
-  margin-right: auto;
-}
-.lgx-top .btn .ic {
-  width: 12px;
-  height: 12px;
-}
-.lgx-ex {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-@container (max-width: 760px) {
-  .lgx-ex {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
 .lr.sys {
   grid-template-columns: 62px minmax(0, 1fr);
   color: var(--ink-2);
@@ -2598,10 +2555,21 @@ button.lr.on {
   padding: 4px 10px;
   font-size: 12.5px;
 }
+/* 범위 확인 가운데의 묶음 카드: 3열 격자 (묶음은 최대 7개라 3 · 3 · 1). 칸이 좁으면 2열 · 1열로 */
 .gcs {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
+}
+@container (max-width: 760px) {
+  .gcs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@container (max-width: 480px) {
+  .gcs {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 .gc {
   border: 1px solid var(--rule);
@@ -2621,6 +2589,12 @@ button.lr.on {
 .gc-h b {
   font-size: 13.5px;
 }
+/* 묶음 머리의 묶음 전체 넣기 · 빼기 체크 (일부만 넣었으면 반쯤 체크) */
+.gc-h .gc-ck {
+  margin: 0;
+  align-self: center;
+  accent-color: var(--accent);
+}
 .gc-h .n {
   font-family: var(--mono);
   font-size: 12px;
@@ -2637,10 +2611,21 @@ button.lr.on {
   color: var(--warn);
   font-weight: 600;
 }
+/*
+ * 묶음 카드의 알약 칸: 알약이 많아도 카드(와 같은 줄 카드)가 끝없이 길어지지 않게 높이를 두고 칸 안에서 스크롤한다.
+ * 묶음 이름 · 수 · 막대는 칸 밖이라 늘 보인다. 168px ≈ 알약 5줄 반 — 반쯤 걸린 줄로 더 있다는 걸 알린다.
+ * 바깥 2px 여백은 초점 테두리가 스크롤 칸에 잘리지 않게 둔 것이다.
+ */
 .pills {
   display: flex;
   flex-wrap: wrap;
+  align-content: flex-start;
   gap: 5px;
+  max-height: 168px;
+  overflow-y: auto;
+  padding: 2px;
+  margin: -2px;
+  scrollbar-width: thin;
 }
 .pp {
   display: inline-flex;
@@ -2691,6 +2676,47 @@ button.lr.on {
   font-style: normal;
   color: var(--accent-ink);
 }
+/* 범위 확인: 점검에 넣은 경로는 체크 · 강조 테두리, 오른쪽 상세에 보이는 경로는 바탕색 */
+.pp.inc {
+  border-color: var(--accent);
+}
+.pp .pk {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  margin-left: 3px;
+  color: var(--accent-ink);
+}
+.pp[aria-current="true"] {
+  background: var(--accent-bg);
+}
+/* 여러 개 고르기에서 고른 알약: 바탕 + 2px 테두리 (알약 칸 바깥 여백 2px 안에 그려져 잘리지 않는다) */
+.pp[aria-pressed="true"] {
+  background: var(--accent-bg);
+  outline: 2px solid var(--accent);
+}
+/* 고른 경로 한 번에 넣기 · 빼기 줄: 카드가 길어도 보이게 가운데 칸 위에 붙는다 */
+.pickbar {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  min-inline-size: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--well);
+}
+.pickbar legend {
+  float: left;
+  padding: 0;
+  margin-right: 4px;
+  font-size: 12.5px;
+}
 .pp .pf {
   font-family: var(--sans);
   font-size: 10.5px;
@@ -2736,6 +2762,10 @@ button.lr.on {
   border: 1px dashed var(--rule-2);
   border-radius: 8px;
   padding: 9px 12px;
+}
+/* 묶음 카드 격자 안의 '아직 찾지 못한 묶음' 줄은 한 줄 전체 */
+.gcs > .gc-empty {
+  grid-column: 1 / -1;
 }
 /*
  * TODO(윤재상): 자산 탐색 '주소 구조' 보기를 뺀 뒤(#394) 안 쓰는 트리 전용 규칙(.sm-head ~ .sm-leg, .smm).
@@ -4532,16 +4562,20 @@ button.smm:hover {
     width: 34px;
     height: 30px;
   }
-  .app.insp-min .vb {
+  /* .vb-fold: 그 화면만 접은 모양 (자산 탐색은 기록을 고르기 전에 접어 둔다). 공통 접힘(insp-min)과 같은 모양이다 */
+  .app.insp-min .vb,
+  .vb.vb-fold {
     grid-template-columns: minmax(0, 1fr) 64px;
   }
   /* 줄(64px)은 패널 바탕 · 경계선만 남기고 안의 내용은 가린다 */
-  .app.insp-min .vi {
+  .app.insp-min .vi,
+  .vb.vb-fold > .vi {
     overflow: hidden;
     padding-left: 0;
     padding-right: 0;
   }
-  .app.insp-min .vi > * {
+  .app.insp-min .vi > *,
+  .vb.vb-fold > .vi > * {
     visibility: hidden;
   }
   /* 패널에 있던 시작 버튼 등은 접으면 본문 아래 줄로 */
@@ -4594,7 +4628,8 @@ button.smm:hover {
   }
 }
 @media (min-width: 1200px) {
-  .app.insp-min .vb:has(> .vi) > .vm {
+  .app.insp-min .vb:has(> .vi) > .vm,
+  .vb.vb-fold > .vm {
     --fold-r: 320px;
   }
   .app .view[data-view="new"] .vh {
@@ -4602,11 +4637,6 @@ button.smm:hover {
   }
 }
 /* ---- 시안 v91 전수 대조로 옮긴 것 ---- */
-/* 펼친 탐색 기록의 원문은 길면 칸 안에서 스크롤 (.cb-b 뒤에 둬야 특이성 순서가 맞다) */
-.lgx .cb-b {
-  max-height: 240px;
-  overflow: auto;
-}
 .rs[aria-current="true"] .host {
   font-weight: 600;
 }

@@ -18,6 +18,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -151,9 +154,12 @@ func firstDiagnosisSupervisorConstructorClose(t *testing.T, manager *Manager, in
 func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer *pgdb.DB, task *Task, mode string) {
 	t.Helper()
 	helper := firstDiagnosisNativeHelper(t)
+	// 작업 뒤 목표 달성 순서를 쓰는 모드다. goal-met-unmatched-limit는 같은 순서에 E② 근거 없는 정책 제한 intent를 하나
+	// 더 둬서, 목표 달성 마감에서도 근거 대조 실패는 마감 실패이고 그 사유 코드가 진단 로그에 남는지 본다.
+	goalAfterWork := mode == "goal-met-after-work" || mode == "goal-met-unmatched-limit"
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	if mode == "cancel" || mode == "user-stop" || mode == "close-fail" || mode == "plan-turns" {
+	if mode == "cancel" || mode == "user-stop" || mode == "close-fail" || mode == "plan-turns" || goalAfterWork {
 		logger, err := diagnosticlog.Create(firstDiagnosisPrivateTemp(t), "run", mustFirstDiagnosisTaskNumber(task.ID), "")
 		if err != nil {
 			t.Fatal(err)
@@ -175,7 +181,14 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	targetEntered := make(chan struct{}, 1)
 	targetExited := make(chan struct{}, 1)
 	releaseTarget := make(chan struct{})
+	login := &authLoginTarget{token: "goal-met-owned-session-77cc"}
+	loginHandler := login.handler(t)
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if goalAfterWork && r.URL.Path == "/login" {
+			// 서버가 실행을 잡을 때 시험 계정마다 보내는 인증 준비 로그인이다(C14). 진단 요청 수와 따로 센다.
+			loginHandler.ServeHTTP(w, r)
+			return
+		}
 		hits.Add(1)
 		if mode == "cancel" || mode == "user-stop" || mode == "planner-kill" || mode == "time-budget" {
 			select {
@@ -254,6 +267,24 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		// 실행 상한 마감이다(계약 §3.1 "승인된 요청·시간·비용 예산 소진", budget_limited).
 		policy.MaxRequests = 1
 	}
+	if goalAfterWork {
+		// 세 intent의 작업이 모두 끝난 뒤 Planner가 목표 달성을 판정해야 한다. 그 전에 실행 상한(요청 예산·도구 호출·
+		// Planner 라운드)에 닿으면 목표 달성이 아니라 budget_limited 마감이 되므로 상한을 넉넉히 둔다.
+		policy.MaxRequests = 8
+		policy.Limits.MaxAttempts = 10
+		policy.Limits.MaxCalls = 8
+		policy.Runtime.MaxToolCalls = 8
+		policy.Runtime.MaxPlannerRounds = 8
+		// 실제 회차처럼 시험 계정 둘을 결속한다. 서버가 실행을 잡을 때 계정마다 로그인하고(프로그램 호출), Worker는 시험
+		// 계정 세션 헤더를 그대로 보낼 수 있다.
+		policy.Rules = append(policy.Rules, E2HTTPFileRule{Ref: "auth-login", Origin: target.URL, ConnectIP: "127.0.0.1", PathPrefix: "/login", PathScopeRef: "auth-login", Methods: []string{"POST"}, Purpose: e2proxy.PurposeAuthPrep})
+		policy.HeaderMode = e2proxy.HeaderTestAccountPassthrough
+		auth := cookieAuth(
+			E2HTTPFileAuthAccount{Label: "tester-a", Credential: authCredentialPin(t, cfg.AuthorityRoot, "tester-a.json", "tester@owned.test", "seeded-pass-88ff")},
+			E2HTTPFileAuthAccount{Label: "tester-b", Credential: authCredentialPin(t, cfg.AuthorityRoot, "tester-b.json", "tester@owned.test", "seeded-pass-88ff")},
+		)
+		policy.Auth = &auth
+	}
 	// 설치 입력의 Plan당 턴 상한(C26·C32)은 launch 설정에서 host 설정으로 들어온다.
 	const installedPlanTurns = 2
 	if mode == "plan-turns" {
@@ -310,7 +341,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	defer func() {
 		closeCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
 		defer stop()
-		if err := runtime.Close(closeCtx); err != nil && !(((mode == "cancel" || mode == "user-stop") || mode == "prepare-fail" || mode == "pre-run-stop") && errors.Is(err, ErrFirstDiagnosisOutcome) || mode == "close-fail" && errors.Is(err, ErrE2HTTPClosure)) {
+		if err := runtime.Close(closeCtx); err != nil && !(((mode == "cancel" || mode == "user-stop") || mode == "prepare-fail" || mode == "pre-run-stop" || mode == "goal-met-unmatched-limit") && errors.Is(err, ErrFirstDiagnosisOutcome) || mode == "close-fail" && errors.Is(err, ErrE2HTTPClosure)) {
 			t.Error("실제 Engine 경로 최종 종료 실패")
 		}
 
@@ -390,8 +421,40 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		}
 		plannerProvider.goalID, plannerProvider.evidenceID = goalID, factID
 	}
+	var worker llm.Provider = provider
+	var intentWorker *firstDiagnosisIntentWorker
+	if goalAfterWork {
+		// 실제 회차 순서: Worker들이 정책 거부가 섞인 작업과 정상 작업을 끝낸 뒤에야 Planner가 모든 목표를 달성으로
+		// 판정한다. 엔진은 원본대로 작업을 done으로 두고 실행 문맥을 취소한다(AbortGoalMet). 그 뒤 감독자가 마감한다.
+		factID, err := task.Store.AddNode(pgdb.KindFact, map[string]any{"text": "Owned fixture evidence for the goal."}, 0, "confirmed", "system", nil)
+		if err != nil || factID <= 0 {
+			t.Fatal("목표 근거 fixture 생성 실패")
+		}
+		plannerProvider.goalID, plannerProvider.evidenceID = goalID, factID
+		plannerProvider.proveWhen = func() bool {
+			var pending int
+			if err := installer.QueryRowContext(ctx, "SELECT count(*) FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent' AND state IN ('open','running')", task.ExpID).Scan(&pending); err != nil {
+				return false
+			}
+			return pending == 0
+		}
+		intentWorker = &firstDiagnosisIntentWorker{steps: map[string][]string{}}
+		for _, work := range firstDiagnosisGoalMetWork {
+			for _, step := range work.steps {
+				intentWorker.steps[work.marker] = append(intentWorker.steps[work.marker], strings.ReplaceAll(step, "{T}", target.URL))
+			}
+		}
+		worker = intentWorker
+		if mode == "goal-met-unmatched-limit" {
+			// 실행 전에 이미 정책 제한으로 표시된 intent다. Worker가 집지 않고, 이 intent의 E② 거부 호출은 없다.
+			unmatched, err := task.Store.AddIntent(map[string]any{"summary": "Owned goal-met unmatched limitation"}, 1, nil, "system")
+			if err != nil || task.Store.SetIntentBlockedReason(unmatched, "e2_http_policy_limited") != nil {
+				t.Fatal("근거 없는 제한 intent fixture 생성 실패")
+			}
+		}
+	}
 	// 실제 taskLLMRuntime.current의 role/model guard를 유지하고 profile cache의 모델만 대체한다.
-	firstDiagnosisInjectProfileProvider(t, runtime.server, profileID, &firstDiagnosisRoleRoutedProvider{worker: provider, planner: plannerProvider})
+	firstDiagnosisInjectProfileProvider(t, runtime.server, profileID, &firstDiagnosisRoleRoutedProvider{worker: worker, planner: plannerProvider})
 	if mode == "pre-run-stop" {
 		hash, err := runtime.server.reloadPassHash()
 		if err != nil {
@@ -564,6 +627,46 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		}
 		return
 	}
+	if mode == "goal-met-unmatched-limit" {
+		// 목표 달성으로 마감해도 E② 근거 대조는 그대로다. 근거 없는 정책 제한 intent가 있으면 실행은 마감 실패이고 결과가 없다.
+		if !errors.Is(runErr, ErrFirstDiagnosisSupervisor) || supervisor.RunResult() != nil || !plannerProvider.proved || task.lifecycleSnapshot().Status != "done" || hits.Load() != 3 {
+			t.Fatalf("근거 없는 정책 제한을 목표 달성 마감으로 수용함 err=%v result=%+v proved=%v status=%s hits=%d", runErr, supervisor.RunResult(), plannerProvider.proved, task.lifecycleSnapshot().Status, hits.Load())
+		}
+		if reason, _ := diagnosisCheckReason(runErr); reason != reasonClosurePolicyLimitedUnmatched {
+			t.Fatalf("목표 달성 마감 실패의 검사 사유 코드: %q", reason)
+		}
+		return
+	}
+	if mode == "goal-met-after-work" {
+		// 목표 달성은 Planner의 판정이고 실행 마감 실패가 아니다. 정책 거부로 끝난 intent는 정책 제한, 정상 작업은 done이다.
+		// 남은 intent가 없으므로 계약(C08 §3.2) 대조식대로 complete다(정책 제한은 실패도 미완료도 아니다).
+		result := supervisor.RunResult()
+		results := runtime.host.Runtime().Results(task.ID)
+		classes := map[string]int{}
+		for _, r := range results {
+			classes[r.Classification]++
+		}
+		intentWorker.mu.Lock()
+		workerCalls, unmatched := intentWorker.calls, intentWorker.unmatched
+		intentWorker.mu.Unlock()
+		want := diagnosis.IntentOutcomes{Done: 1, PolicyLimited: 2}
+		auth := runtime.host.Runtime().AccountAuth()
+		program := runtime.host.Runtime().ProgramCalls(task.ID)
+		if login.posts.Load() != 2 || auth["tester-a"] != E2HTTPAuthAuthenticated || auth["tester-b"] != E2HTTPAuthAuthenticated || len(program) == 0 {
+			t.Fatalf("시험 계정 인증 준비가 실제 회차와 다름 logins=%d auth=%v program=%d", login.posts.Load(), auth, len(program))
+		}
+		if runErr != nil || result == nil || !result.Valid() || result.Outcome != diagnosis.OutcomeComplete || result.ClosingReason != "" || result.IntentOutcomes != want ||
+			!plannerProvider.proved || task.lifecycleSnapshot().Status != "done" || hits.Load() != 3 || unmatched || workerCalls == 0 ||
+			len(results) != 4 || classes["completed"] != 1 || classes["tool_failure"] != 1 || classes["partial_policy_denial"] != 1 || classes["policy_not_executed"] != 1 {
+			t.Fatalf("작업 뒤 목표 달성으로 끝난 실행을 정상 마감하지 않음 err=%v result=%+v proved=%v status=%s hits=%d classes=%v unmatched=%v", runErr, result, plannerProvider.proved, task.lifecycleSnapshot().Status, hits.Load(), classes, unmatched)
+		}
+		closeCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stop()
+		if err := runtime.Close(closeCtx); err != nil {
+			t.Fatal("목표 달성 마감 뒤 자원 반환 실패")
+		}
+		return
+	}
 	if mode == "prepare-fail" {
 		if runErr == nil || hits.Load() != 0 || provider.calls != 0 {
 			t.Fatal("Planner 또는 준비 실패가 통제 밖 대상 송신으로 이어짐")
@@ -639,6 +742,8 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 			}
 			if ready, _, err := supervisor.generalCompletion(ctx, runtime.server, task); err == nil || ready {
 				t.Fatalf("결과 불명 송신이 있는 intent를 %s로 마감함", state)
+			} else if reason, _ := diagnosisCheckReason(err); reason != reasonClosureUnknownIntentMismatch {
+				t.Fatalf("결과 불명 송신이 있는 %s intent 마감 실패의 사유 코드: %q", state, reason)
 			}
 		}
 		// 근거 없는 다른 intent를 결과 불명으로 두어 개수를 맞춰도, 결과 불명 송신이 있는 intent가 끝난 것으로 남으면
@@ -814,6 +919,8 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		}
 		if ready, _, err := supervisor.generalCompletion(ctx, runtime.server, task); err == nil || ready {
 			t.Fatal("call 감사 없는 제한 intent를 정상 마감으로 수용함")
+		} else if reason, _ := diagnosisCheckReason(err); reason != reasonClosurePolicyLimitedUnmatched || !errors.Is(err, ErrFirstDiagnosisSupervisor) {
+			t.Fatalf("근거 없는 정책 제한 마감 실패의 사유 코드: %q", reason)
 		}
 		if _, err := installer.ExecContext(ctx, "DELETE FROM exploration_nodes WHERE exploration_id=$1 AND id=$2", task.ExpID, unmatched); err != nil {
 			t.Fatal("이 시험이 만든 미결속 intent 정리 실패")
@@ -849,6 +956,8 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 				}
 			} else if err == nil || ready {
 				t.Fatalf("%s/%s: 결과 불명 intent를 마감함", tc.state, tc.reason)
+			} else if reason, _ := diagnosisCheckReason(err); reason != reasonClosureUnknownIntentMismatch {
+				t.Fatalf("%s/%s: 근거 없는 결과 불명 마감 실패의 사유 코드: %q", tc.state, tc.reason, reason)
 			}
 			if _, err := installer.ExecContext(ctx, "DELETE FROM exploration_nodes WHERE exploration_id=$1 AND id=$2", task.ExpID, extra); err != nil {
 				t.Fatal("결과 fixture intent 정리 실패")
@@ -978,6 +1087,101 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	defer stop()
 	if err := runtime.Close(closeCtx); err != nil {
 		t.Fatal("실제 마감 뒤 authority·서버 자원 반환 실패")
+	}
+}
+
+// 감독자 검사의 사유 코드는 모두 진단 로그 어휘에 있어야 한다. 어휘에 없는 사유는 로거가 기록 전체를 장애로 바꾼다.
+func TestFirstDiagnosisCheckReasonsAreLoggable(t *testing.T) {
+	logger, err := diagnosticlog.Create(firstDiagnosisPrivateTemp(t), "run", 1, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := diagnosticlog.With(t.Context(), logger)
+	for _, reason := range []string{reasonClosureWorkflowFailed, reasonClosureWorkflowNotReady, reasonClosureIntentReadFailed, reasonClosureCallsWithoutIntents,
+		reasonClosureExecutionMissing, reasonClosureCallsMissing, reasonClosureResultsUnavailable, reasonClosureResultNotClosed, reasonClosureToolOutcomeInvalid,
+		reasonClosureResultMismatch, reasonClosureUntrustedIntentMismatch, reasonClosureProgramCallOpen, reasonClosureCallMismatch, reasonClosureUnknownIntentMismatch,
+		reasonClosurePolicyLimitedUnmatched, reasonClosureIntentStateInvalid, reasonClosureCallCountMismatch, reasonClosureNotReady, reasonEngineTaskFailed} {
+		failed := firstDiagnosisCheckFailed(reason, ErrFirstDiagnosisSupervisor)
+		diagnosisStage(ctx, 1, "execution", failed, diagnosisFailureReason("execution", failed), time.Now())
+		if logger.Err() != nil {
+			t.Fatalf("진단 로그 어휘에 없는 검사 사유: %s", reason)
+		}
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// firstDiagnosisGoalMetWork는 목표 달성 마감 시험의 intent다. marker로 Worker 모델이 배정된 intent를 고르고, steps의
+// Bash 명령을 차례로 한 번씩 보낸다({T}는 소유 대상 주소). 순서대로 전부 거부(policy_not_executed), 0이 아닌 종료 코드와
+// 거부가 섞인 명령(tool_failure) 뒤 거부 뒤 허용(partial_policy_denial), 허용(completed)이다. 실제 회차의 Worker 명령처럼
+// 거부된 요청이 있는 명령도 종료 코드가 0이 아닐 수 있다(curl --fail, 파이프 뒤 파서 실패 등).
+var firstDiagnosisGoalMetWork = []struct {
+	marker string
+	steps  []string
+}{
+	{"Owned goal-met refused read", []string{"curl --silent --show-error --max-time 5 {T}/forbidden"}},
+	{"Owned goal-met mixed read", []string{
+		"curl --silent --show-error --max-time 5 {T}/allowed; curl --silent --show-error --fail --max-time 5 {T}/forbidden",
+		"curl --silent --show-error --max-time 5 {T}/forbidden; curl --silent --show-error --max-time 5 {T}/allowed",
+	}},
+	{"Owned goal-met allowed read", []string{"curl --silent --show-error --max-time 5 {T}/allowed"}},
+}
+
+// firstDiagnosisIntentWorkerToolID는 intent별 Worker 모델이 부르는 Bash 호출 ID의 앞부분이다. 뒤에 단계 번호가 붙는다.
+const firstDiagnosisIntentWorkerToolID = "goal-met-bash-"
+
+// firstDiagnosisIntentWorker는 intent마다 정해진 Bash 명령들을 차례로 한 번씩 보내고, 마지막 결과를 받으면 끝내는 Worker
+// 모델이다. Worker 여럿이 함께 부를 수 있어 잠근다. 배정된 intent는 시스템 프롬프트의 배정 줄로만 고른다(그래프 개요에는
+// 다른 intent도 보인다).
+type firstDiagnosisIntentWorker struct {
+	mu        sync.Mutex
+	steps     map[string][]string
+	calls     int
+	unmatched bool
+}
+
+func (p *firstDiagnosisIntentWorker) Complete(_ context.Context, request llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.calls++
+	marker := ""
+	if _, assigned, ok := strings.Cut(strings.Join(request.System, "\n\n"), "Assigned intent (untrusted task data):\n"); ok {
+		line, _, _ := strings.Cut(assigned, "\n")
+		for m := range p.steps {
+			if strings.Contains(line, m) {
+				marker = m
+			}
+		}
+	}
+	steps, ok := p.steps[marker]
+	if !ok {
+		p.unmatched = true
+		return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock("No assigned owned fixture intent.")}}, "end_turn", llm.Usage{}, nil
+	}
+	// 이 intent 세션이 이미 받은 Bash 결과 수가 다음 단계 번호다. 결과 내용(신뢰 결과)은 시험이 런타임에서 따로 읽는다.
+	done := 0
+	for _, message := range request.Messages {
+		for _, block := range message.Content {
+			if block.Type == llm.BlockToolResult && strings.HasPrefix(block.ToolUseID, firstDiagnosisIntentWorkerToolID) {
+				done++
+			}
+		}
+	}
+	if done >= len(steps) {
+		return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock("The owned fixture step is complete.")}}, "end_turn", llm.Usage{}, nil
+	}
+	input, err := json.Marshal(map[string]any{"command": steps[done], "timeout_ms": 5000})
+	if err != nil {
+		return llm.Message{}, "", llm.Usage{}, err
+	}
+	id := firstDiagnosisIntentWorkerToolID + strconv.Itoa(done)
+	return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: id, Name: "Bash", Input: input}}}, "tool_use", llm.Usage{}, nil
+}
+
+func (*firstDiagnosisIntentWorker) Stream(context.Context, llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
+	return func(yield func(llm.StreamEvent, error) bool) {
+		yield(llm.StreamEvent{}, errors.New("unexpected fixture streaming"))
 	}
 }
 
@@ -1119,6 +1323,15 @@ func verifySupervisorFailureLog(t *testing.T, path, mode string) {
 			if event.Status != "failed" || event.Stage != "audit_close" || event.ReasonCode != "audit_failed" {
 				t.Error("실제 감사 마감 실패와 로그 상태 불일치")
 			}
+		case "goal-met-after-work":
+			if event.Status != "succeeded" || event.ReasonCode != "" {
+				t.Errorf("목표 달성 마감의 로그 상태 불일치: stage=%s status=%s reason=%s", event.Stage, event.Status, event.ReasonCode)
+			}
+		case "goal-met-unmatched-limit":
+			// 어느 검사가 마감을 막았는지 일반 execution_failed가 아니라 검사 사유 코드로 남는다.
+			if event.Status != "failed" || event.Stage != "execution" || event.ReasonCode != reasonClosurePolicyLimitedUnmatched {
+				t.Errorf("마감 검사 실패의 로그 사유 불일치: stage=%s status=%s reason=%s", event.Stage, event.Status, event.ReasonCode)
+			}
 		}
 	}
 	if found != 1 {
@@ -1151,21 +1364,23 @@ func firstDiagnosisUntrustedClosure(t *testing.T, ctx context.Context, superviso
 		setRuntime(saved, nil)
 		setIntent(oldState, oldReason)
 	}()
-	expect := func(name string, ready bool, want diagnosis.IntentOutcomes) {
+	// reason은 마감하지 않을 때 진단 로그에 남을 검사 사유 코드다.
+	expect := func(name string, ready bool, want diagnosis.IntentOutcomes, reason string) {
 		t.Helper()
 		got, result, err := supervisor.generalCompletion(ctx, runtime.server, task)
-		if ready && (err != nil || !got || result.IntentOutcomes != want || !result.Valid()) || !ready && (err == nil || got) {
-			t.Fatalf("%s: ready=%v result=%+v err=%v", name, got, result, err)
+		logged, _ := diagnosisCheckReason(err)
+		if ready && (err != nil || !got || result.IntentOutcomes != want || !result.Valid()) || !ready && (err == nil || got || logged != reason) {
+			t.Fatalf("%s: ready=%v result=%+v err=%v reason=%q", name, got, result, err, logged)
 		}
 	}
 	untrusted := map[int64]bool{callIntent: true}
 	// 결과가 빠졌는데 대조 실패 표시가 없으면, intent가 불완전으로 끝났어도 마감하지 않는다.
 	setIntent("exhausted", nil)
 	setRuntime([]e2runner.TrustedResult{}, nil)
-	expect("missing-without-mark", false, diagnosis.IntentOutcomes{})
+	expect("missing-without-mark", false, diagnosis.IntentOutcomes{}, reasonClosureCallMismatch)
 	// 대조 실패 표시가 있어도 그 intent가 결과 불명이 아니면 마감하지 않는다.
 	setRuntime([]e2runner.TrustedResult{}, untrusted)
-	expect("mark-without-unknown-intent", false, diagnosis.IntentOutcomes{})
+	expect("mark-without-unknown-intent", false, diagnosis.IntentOutcomes{}, reasonClosureUntrustedIntentMismatch)
 	// 근거 없는 다른 intent를 결과 불명으로 두어 개수를 맞춰도 마감하지 않는다(intent마다 대조).
 	swapped, addErr := task.Store.AddIntent(map[string]any{"summary": "Owned swapped untrusted fixture"}, 1, nil, "system")
 	if addErr != nil {
@@ -1174,31 +1389,37 @@ func firstDiagnosisUntrustedClosure(t *testing.T, ctx context.Context, superviso
 	if _, err := installer.ExecContext(ctx, "UPDATE exploration_nodes SET state='blocked', blocked_reason='e2_http_result_unknown' WHERE exploration_id=$1 AND id=$2", task.ExpID, swapped); err != nil {
 		t.Fatal("맞바꾼 대조 실패 fixture 상태 설정 실패", err)
 	}
-	expect("swapped-unknown-intent", false, diagnosis.IntentOutcomes{})
+	expect("swapped-unknown-intent", false, diagnosis.IntentOutcomes{}, reasonClosureUntrustedIntentMismatch)
 	if _, err := installer.ExecContext(ctx, "DELETE FROM exploration_nodes WHERE exploration_id=$1 AND id=$2", task.ExpID, swapped); err != nil {
 		t.Fatal("맞바꾼 대조 실패 fixture 정리 실패")
 	}
 	// 결과 불명으로 끝난 intent는 부분 완료로 센다(실행 전체 실패 아님).
 	setIntent("blocked", "e2_http_result_unknown")
-	expect("marked-unknown-intent", true, diagnosis.IntentOutcomes{Unknown: 1})
+	expect("marked-unknown-intent", true, diagnosis.IntentOutcomes{Unknown: 1}, "")
 	// 실제 호출에 없는 결과가 섞이면 마감하지 않는다.
 	if len(saved) != 1 {
 		t.Fatal("대조 실패 fixture는 실제 결과 하나가 필요함")
 	}
+	// 마감할 수 없는 호출 분류(실행기가 붙이는 forward_not_attempted)는 그 검사 사유로 남는다.
+	invalid := saved[0]
+	invalid.Call = e2proxy.CloneCallResult(invalid.Call)
+	invalid.Classification = e2runner.ClassificationForwardNotAttempted
+	setRuntime([]e2runner.TrustedResult{invalid}, nil)
+	expect("invalid-tool-outcome", false, diagnosis.IntentOutcomes{}, reasonClosureToolOutcomeInvalid)
 	stray := saved[0]
 	stray.Call = e2proxy.CloneCallResult(stray.Call)
 	stray.Call.CallRef = "stray-owned-call"
 	setRuntime([]e2runner.TrustedResult{stray}, untrusted)
-	expect("stray-result", false, diagnosis.IntentOutcomes{})
+	expect("stray-result", false, diagnosis.IntentOutcomes{}, reasonClosureCallCountMismatch)
 	// 같은 결과가 두 번 저장되면 마감하지 않는다.
 	setRuntime(append(append([]e2runner.TrustedResult{}, saved...), saved...), untrusted)
-	expect("duplicate-result", false, diagnosis.IntentOutcomes{})
+	expect("duplicate-result", false, diagnosis.IntentOutcomes{}, reasonClosureResultMismatch)
 	// 결과 기록 자체가 실패했으면(nil) 대조 실패 표시로 덮지 않는다.
 	setRuntime(nil, untrusted)
 	owned.mu.Lock()
 	owned.resultsFailed = true
 	owned.mu.Unlock()
-	expect("results-failed", false, diagnosis.IntentOutcomes{})
+	expect("results-failed", false, diagnosis.IntentOutcomes{}, reasonClosureResultsUnavailable)
 	owned.mu.Lock()
 	owned.resultsFailed = false
 	owned.mu.Unlock()
