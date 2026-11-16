@@ -68,7 +68,13 @@ func cookieFuzzJSON(v any, indent bool) string {
 func cookieFuzzCheck(t *testing.T, e *Execution, name, value string, strict bool) {
 	t.Helper()
 	pair := name + "=" + value + "; token=" + cookieFuzzSecret
-	plain := map[string]string{"curl -v": "> Cookie: " + pair + "\r\n> Accept: */*\r\n"}
+	// 문자열 끝 형태: 자격 값이 `=`(base64 패딩)로 끝나고 그 뒤에 아무것도 없다. JSON으로 감싸면 바로 닫는 따옴표가 온다
+	// (#571 이동찬 리뷰). 헤더 줄 형태(CRLF 뒤 다음 헤더)와 따로 본다.
+	plain := map[string]string{
+		"curl -v":           "> Cookie: " + pair + "\r\n> Accept: */*\r\n",
+		"cookie end padded": "> Cookie: " + pair + "=",
+		"basic end padded":  "needs Authorization: Basic " + cookieFuzzSecret + "==",
+	}
 	if !strings.Contains(pair, "'") {
 		plain["-b single"] = "curl -s -b '" + pair + "' https://owned.test/x"
 	}
@@ -82,12 +88,10 @@ func cookieFuzzCheck(t *testing.T, e *Execution, name, value string, strict bool
 		docs[cookieFuzzJSON(inner, false)] = true
 		docs[cookieFuzzJSON(inner, true)] = true
 		docs[cookieFuzzJSON(map[string]string{"payload": cookieFuzzJSON(inner, false)}, false)] = true
-		if strict {
+		// 문자열 끝 형태는 뒤에 남을 글이 없어 과다 가림을 보지 않는다.
+		keep := map[string]string{"curl -v": "\r\n> Accept: */*\r\n", "-b single": "https://owned.test/x", "-b double": "https://owned.test/x"}[form]
+		if strict && keep != "" {
 			out := string(e.RedactOutput([]byte(text)))
-			keep := "https://owned.test/x"
-			if form == "curl -v" {
-				keep = "\r\n> Accept: */*\r\n"
-			}
 			if !strings.HasSuffix(out, keep) {
 				t.Errorf("%s over-redacted the following text:\n in %q\nout %q", form, text, out)
 			}
@@ -140,5 +144,143 @@ func FuzzTestAccountRedactionCookie(f *testing.F) {
 			t.Skip()
 		}
 		cookieFuzzCheck(t, e, name, value, false)
+	})
+}
+
+// 자격 값의 모양과 값 뒤에 오는 것을 축으로 나눠 조합한다(#571 이동찬 리뷰: `=`로 끝나는 값 뒤 문자열 끝). 값 모양은 실제
+// 세션 값에서 흔한 것이고 모두 유효한 쿠키 값이다.
+var credentialFuzzShapes = []struct {
+	name string
+	gen  func(*rand.Rand) string
+}{
+	{"base64 =", func(r *rand.Rand) string { return credentialFuzzPick(r, credentialFuzzBase64, 23) + "=" }},
+	{"base64 ==", func(r *rand.Rand) string { return credentialFuzzPick(r, credentialFuzzBase64, 22) + "==" }},
+	{"base64url", func(r *rand.Rand) string { return credentialFuzzPick(r, credentialFuzzBase64URL, 27) }},
+	{"hex", func(r *rand.Rand) string { return credentialFuzzPick(r, "0123456789abcdef", 32) }},
+	{"jwt", func(r *rand.Rand) string {
+		return "eyJ" + credentialFuzzPick(r, credentialFuzzBase64URL, 14) + "." + credentialFuzzPick(r, credentialFuzzBase64URL, 16) + "." + credentialFuzzPick(r, credentialFuzzBase64URL, 12)
+	}},
+	{"bytes", func(r *rand.Rand) string { return credentialFuzzPick(r, credentialFuzzCookieBytes, 24) }},
+}
+
+// credentialFuzzFollows는 값 바로 뒤에 오는 것이다: 문자열 끝, 공백·탭, 줄바꿈 뒤 다음 헤더, 구조 문자, 다른 쿠키.
+var credentialFuzzFollows = []string{"", " next", "\tnext", "\r\n> Accept: */*\r\n", ",next", "}next", "]next", ":next", ";next", "; other=1"}
+
+const (
+	credentialFuzzBase64    = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	credentialFuzzBase64URL = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	// 쿠키 값으로 유효한 바이트 중 앞뒤 공백 자르기를 피하려고 공백만 뺀 것(net/http validCookieValueByte).
+	credentialFuzzCookieBytes = "!#$%&'()*+,-./0123456789:<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+)
+
+func credentialFuzzPick(r *rand.Rand, alphabet string, n int) string {
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = alphabet[r.Intn(len(alphabet))]
+	}
+	return string(b)
+}
+
+// credentialFuzzLeaked는 자격 값이 출력에 남았는지 본다. 값이 중간에서 잘려 뒷부분만 남는 것도 잡으려고 패딩을 뺀 값의
+// 8글자 창마다 본다. 입력의 다른 곳(쿠키 이름·다른 값)에 원래 있던 창은 세지 않는다.
+func credentialFuzzLeaked(in, out, secret string) bool {
+	core := strings.TrimRight(secret, "=")
+	rest := strings.ReplaceAll(in, secret, "")
+	for k := 0; k+8 <= len(core); k++ {
+		if w := core[k : k+8]; strings.Contains(out, w) && !strings.Contains(rest, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// credentialFuzzCheck는 값 하나를 쿠키 줄·Bearer·Basic·-b 인수에 넣고, 각각을 원문과 JSON(한 줄·들여쓰기·두 겹)으로 가린다.
+// 자격 값이 남지 않아야 하고 JSON이면 결과도 유효해야 한다. 줄바꿈 뒤 다음 헤더와 -b 뒤 URL은 남아야 한다(과다 가림).
+func credentialFuzzCheck(t *testing.T, e *Execution, name, value, secret, follow string) {
+	t.Helper()
+	pair := name + "=" + value + "; token=" + secret + follow
+	plain := map[string]string{
+		"cookie": "> Cookie: " + pair,
+		"bearer": "> Authorization: Bearer " + secret + follow,
+		"basic":  "needs Authorization: Basic " + secret + follow,
+	}
+	if !strings.ContainsAny(follow, "\r\n") {
+		if !strings.Contains(pair, "'") {
+			plain["-b single"] = "curl -s -b '" + pair + "' https://owned.test/x"
+		}
+		if !strings.Contains(pair, "\"") {
+			plain["-b double"] = "curl -s -b \"" + pair + "\" https://owned.test/x"
+		}
+	}
+	for form, text := range plain {
+		inner := map[string]string{"stdout": text, "kind": "observation"}
+		docs := map[string]bool{text: false, cookieFuzzJSON(inner, false): true, cookieFuzzJSON(inner, true): true,
+			cookieFuzzJSON(map[string]string{"payload": cookieFuzzJSON(inner, false)}, false): true}
+		for doc, isJSON := range docs {
+			out := string(e.RedactOutput([]byte(doc)))
+			if credentialFuzzLeaked(doc, out, secret) {
+				t.Errorf("%s: credential left:\n in %q\nout %q", form, doc, out)
+			}
+			if isJSON && !json.Valid([]byte(out)) {
+				t.Errorf("%s: redaction broke JSON:\n in %q\nout %q", form, doc, out)
+			}
+		}
+		keep := ""
+		switch {
+		case strings.HasPrefix(follow, "\r\n"):
+			keep = follow
+		case strings.HasPrefix(form, "-b"):
+			keep = "https://owned.test/x"
+		}
+		if out := string(e.RedactOutput([]byte(text))); keep != "" && !strings.HasSuffix(out, keep) {
+			t.Errorf("%s over-redacted the following text:\n in %q\nout %q", form, text, out)
+		}
+	}
+}
+
+// 값 모양 × 값 뒤에 오는 것의 모든 조합을 고정 시드로 확인한다(CI 회귀). 조합마다 무작위 앞 쿠키를 여러 개 붙인다.
+func TestTestAccountRedactionCredentialAxes(t *testing.T) {
+	e := &Execution{cfg: Config{HeaderMode: HeaderTestAccountPassthrough}}
+	rng := rand.New(rand.NewSource(57101))
+	for _, shape := range credentialFuzzShapes {
+		for _, follow := range credentialFuzzFollows {
+			checked := 0
+			for tries := 0; checked < 8 && tries < 4000; tries++ {
+				name := cookieFuzzString(rng, cookieFuzzNamePieces, 1, 3)
+				value := cookieFuzzString(rng, cookieFuzzValuePieces, 0, 5)
+				if rng.Intn(3) == 0 {
+					value = "\"" + value + "\""
+				}
+				secret := shape.gen(rng)
+				if !cookieFuzzValid(name, value) || strings.Contains(name+value, secret) {
+					continue
+				}
+				checked++
+				credentialFuzzCheck(t, e, name, value, secret, follow)
+				if t.Failed() {
+					t.Fatalf("shape %s follow %q", shape.name, follow)
+				}
+			}
+			// 조합마다 유효한 앞 쿠키를 충분히 만들지 못하면 이 시험은 그 조합을 보지 않은 것이다.
+			if checked < 8 {
+				t.Fatalf("shape %s follow %q: only %d cases", shape.name, follow, checked)
+			}
+		}
+	}
+}
+
+func FuzzTestAccountRedactionCredential(f *testing.F) {
+	for i := range credentialFuzzShapes {
+		for j := range credentialFuzzFollows {
+			f.Add("lang", `"}"`, int64(i*len(credentialFuzzFollows)+j), uint8(i), uint8(j))
+		}
+	}
+	e := &Execution{cfg: Config{HeaderMode: HeaderTestAccountPassthrough}}
+	f.Fuzz(func(t *testing.T, name, value string, seed int64, shape, follow uint8) {
+		secret := credentialFuzzShapes[int(shape)%len(credentialFuzzShapes)].gen(rand.New(rand.NewSource(seed)))
+		if !cookieFuzzValid(name, value) || strings.Contains(name+value, secret) {
+			t.Skip()
+		}
+		credentialFuzzCheck(t, e, name, value, secret, credentialFuzzFollows[int(follow)%len(credentialFuzzFollows)])
 	})
 }

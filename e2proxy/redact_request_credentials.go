@@ -134,6 +134,17 @@ func credentialValueEnd(b []byte, start int, q credentialQuote, bare bool, level
 				if c == q.char && (n < q.escapes || n == q.escapes && credentialClosingAt(b, j+1)) {
 					return i
 				}
+			case c == '"' && level >= 0 && n < level:
+				// 줄 값을 감싼 JSON 문자열보다 얕은 단계의 `"`는 그 문자열이 이미 끝난 바깥 경계다.
+				return i
+			case c == '"' && n == level && credentialStructuralAt(b, j+1):
+				// 따옴표 없이 시작한 줄 값을 감싼 바깥 문자열은 JSON이라 `"`로만 끝나고, 그 문자열의 이스케이프 단계(level)의
+				// `"`만 끝 후보다. 원문 curl -v 줄(level -1)의 `"`와 한 겹 JSON 안의 \"는 값의 글자다(Cookie: 0=;"); token=…).
+				// 홑따옴표는 값 안의 글자다(쿠키 값 {[x y'}). 홑따옴표로 감싼 바깥(python repr)이면 줄 끝까지 더 가린다(유출 없음).
+				// 인용부·`=` 뒤 인용부보다 먼저 본다: 올바른 JSON에서 같은 단계의 원문 `"`는 늘 문자열 끝이고 그 안의 인용부도
+				// 함께 끝난다. 그래서 `=`로 끝나는 값(base64 패딩 Basic cmV2…=, token=…=)의 닫는 따옴표를 인용부로 열지 않는다
+				// (#571 이동찬 리뷰).
+				return i
 			case inner.char != 0:
 				// 다른 종류의 따옴표는 이스케이프 단계와 상관없이 값 안의 글자다(JSON은 '를 이스케이프하지 않는다).
 				if c == inner.char && n == inner.escapes {
@@ -145,14 +156,6 @@ func credentialValueEnd(b []byte, start int, q credentialQuote, bare bool, level
 			case i > start && b[i-1] == '=':
 				inner = credentialQuote{char: c, escapes: n}
 			case bare:
-				return i
-			case c == '"' && level >= 0 && n < level:
-				// 줄 값을 감싼 JSON 문자열보다 얕은 단계의 `"`는 그 문자열이 이미 끝난 바깥 경계다.
-				return i
-			case c == '"' && n == level && credentialStructuralAt(b, j+1):
-				// 따옴표 없이 시작한 줄 값을 감싼 바깥 문자열은 JSON이라 `"`로만 끝나고, 그 문자열의 이스케이프 단계(level)의
-				// `"`만 끝 후보다. 원문 curl -v 줄(level -1)의 `"`와 한 겹 JSON 안의 \"는 값의 글자다(Cookie: 0=;"); token=…).
-				// 홑따옴표는 값 안의 글자다(쿠키 값 {[x y'}). 홑따옴표로 감싼 바깥(python repr)이면 줄 끝까지 더 가린다(유출 없음).
 				return i
 			}
 		case bare && inner.char == 0 && (c == ' ' || c == '\t'):

@@ -83,6 +83,9 @@ func TestTestAccountRunMasksRequestCredentialsStructurally(t *testing.T) {
 		`{"stdout":"> Cookie: a={[x y'}; token=synthetic-review-value\r\n> Accept: */*\r\n"}`: `{"stdout":"> Cookie: [REDACTED]\r\n> Accept: */*\r\n"}`,
 		`{"payload":"{\"stdout\":\"> Cookie: token=synthetic-review-value","next":1}`:         `{"payload":"{\"stdout\":\"> Cookie: [REDACTED]","next":1}`,
 		`{"command":"curl -b tok=synthetic-review-value\thttps://owned.test/x"}`:              `{"command":"curl -b [REDACTED]\thttps://owned.test/x"}`,
+		// `=`로 끝나는 값(base64 패딩)이 JSON 문자열의 마지막이면 닫는 따옴표는 문자열 끝이다(#571 이동찬 리뷰).
+		`{"intent_id":42,"summary":"Observed request","detail":"needs Authorization: Basic cmV2aWV3ODI="}`: `{"intent_id":42,"summary":"Observed request","detail":"needs Authorization: [REDACTED]"}`,
+		`{"stdout":"> Cookie: token=cmV2aWV3ODI="}`:                                                        `{"stdout":"> Cookie: [REDACTED]"}`,
 		// 대상 응답의 Set-Cookie JSON 이름은 요청 Cookie로 보지 않는다.
 		`{"Set-Cookie": "sid=short1"}`:                                         `{"Set-Cookie": "sid=short1"}`,
 		"Proxy-Authorization: Basic eHl6":                                      "Proxy-Authorization: [REDACTED]",
@@ -109,7 +112,7 @@ func TestTestAccountRedactionKeepsJSONValid(t *testing.T) {
 		Text string `json:"text"`
 		Kind string `json:"kind"`
 	}
-	for _, text := range []string{"needs Authorization: Bearer synthetic-review-value", "sent Cookie: lang=\"en\"; token=synthetic-review-value", "sent Cookie: lang=\"}\"; token=synthetic-review-value", "Kind first"} {
+	for _, text := range []string{"needs Authorization: Bearer synthetic-review-value", "sent Cookie: lang=\"en\"; token=synthetic-review-value", "sent Cookie: lang=\"}\"; token=synthetic-review-value", "needs Authorization: Basic synthetic-review-value=", "sent Cookie: token=synthetic-review-value==", "Kind first"} {
 		for _, v := range []any{fact{Text: text, Kind: "observation"}, map[string]any{"kind": "observation", "text": text}} {
 			compact, _ := json.Marshal(v)
 			indented, _ := json.MarshalIndent(v, "", "  ")
