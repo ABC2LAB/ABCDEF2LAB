@@ -40,12 +40,13 @@ E2_HEADER_MODES = frozenset({"preserve", "protected_session_proposal", HEADER_PA
 # 평가 회차가 받는 값이다. 시험 계정 모드는 제품의 프로그램 로그인(인증 준비)과 묶인 모드라 평가 조건(프로토콜 §2의 caller
 # 자격 통과 모드) 밖이다.
 EVAL_HEADER_MODES = E2_HEADER_MODES - {HEADER_TEST_ACCOUNT}
+PROGRAM_CALL_KINDS = frozenset({"auth_prep", "refresh_session"})
 E2_LLM_BACKENDS = frozenset({"local", "api"})
 TARGET_PUBLIC_PRACTICE = "public_practice"
 _SCOPE_KEYS = frozenset({"RunRef", "TaskRef", "CaseRef", "ResetRef", "PolicyRef"})
 _REQUIRED_ROW = frozenset({"index", "stage", "intent_id", "version", "scope", "policy_revision", "sequence", "reason", "forward_attempted",
                            "request_written", "response_received", "response_complete", "not_sent", "audit_complete", "at"})
-_OPTIONAL_TEXT = ("call_ref", "command_ref", "attempt_id", "rule_ref", "method", "decision")
+_OPTIONAL_TEXT = ("call_ref", "command_ref", "attempt_id", "rule_ref", "method", "decision", "program")
 _OPTIONAL_ROW = frozenset(_OPTIONAL_TEXT) | {"status_code", "response_truncated"}
 _TRANSIT_BITS = ("forward_attempted", "request_written", "response_received", "response_complete")
 _ROW_BITS = _TRANSIT_BITS + ("not_sent", "audit_complete")
@@ -238,8 +239,12 @@ def _check_evaluation(manifest: dict, expected: E2Expectation) -> None:
 
 def _check_stage(row: dict) -> None:
     stage, decision, attempt, call_ref = row["stage"], row.get("decision", ""), row.get("attempt_id", ""), row.get("call_ref", "")
+    program = row.get("program", "")
+    if program and row["version"] == JOURNAL_VERSION_V1:
+        _fail("ROW_ATTRIBUTION")
+    attributed = row["intent_id"] > 0 and program == "" or row["intent_id"] == 0 and program in PROGRAM_CALL_KINDS
     if stage in (STAGE_INTENT, STAGE_RESULT):
-        if row["intent_id"] <= 0 or row["sequence"] == 0 or not _ref(call_ref):
+        if not attributed or row["sequence"] == 0 or not _ref(call_ref):
             _fail("ROW_ATTEMPT_FIELDS")
         if not _ATTEMPT_ID.fullmatch(attempt):
             _fail("ROW_ATTEMPT_ID")
@@ -254,7 +259,7 @@ def _check_stage(row: dict) -> None:
     elif stage in (STAGE_CONTROL, STAGE_CALL_CLOSED):
         if attempt or row["sequence"] != 0 or decision:
             _fail("ROW_ADMINISTRATIVE_FIELDS")
-        if row["intent_id"] < 0 or (stage == STAGE_CALL_CLOSED and (row["intent_id"] == 0 or not _ref(call_ref))):
+        if row["intent_id"] < 0 or stage == STAGE_CONTROL and program or (stage == STAGE_CALL_CLOSED and (not attributed or not _ref(call_ref))):
             _fail("ROW_ADMINISTRATIVE_FIELDS")
     else:
         _fail("ROW_STAGE")
@@ -324,7 +329,7 @@ def _attempt_final(rows: list[dict]) -> tuple[dict, bool]:
     stages = [row["stage"] for row in rows]
     if stages not in ([STAGE_RESULT], [STAGE_INTENT], [STAGE_INTENT, STAGE_RESULT]):
         _fail("ATTEMPT_ROWS_INVALID")
-    if len({(row["sequence"], row["call_ref"], row["intent_id"]) for row in rows}) != 1:
+    if len({(row["sequence"], row["call_ref"], row["intent_id"], row.get("program", "")) for row in rows}) != 1:
         _fail("ATTEMPT_BINDING_MISMATCH")
     final = rows[-1]
     # 허용은 intent 저장이 끝난 뒤에만 나간다. 허용 result만 있으면 앞 행이 빠진 것이다.

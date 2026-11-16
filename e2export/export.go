@@ -184,7 +184,11 @@ func (p *Publisher) publish(ctx context.Context, closeRef string) (Result, error
 		return Result{}, ErrAudit
 	}
 	for _, call := range p.cfg.Execution.Calls() {
-		if !p.observed[call.CallRef] || !call.Final || !call.AuditComplete {
+		program := call.Program.Valid() && call.IntentID == 0
+		if call.Program != "" && (!program || p.observed[call.CallRef]) {
+			return Result{}, ErrAudit
+		}
+		if !program && !p.observed[call.CallRef] || !call.Final || !call.AuditComplete {
 			return Result{}, ErrDrain
 		}
 	}
@@ -277,6 +281,12 @@ func (p *Publisher) ObserveResult(ctx context.Context, result e2runner.Result) e
 		return ErrAudit
 	}
 	trusted := result.Trusted
+	if trusted.Call.Program != "" {
+		p.observeMu.Lock()
+		p.observerFailed = true
+		p.observeMu.Unlock()
+		return ErrAudit
+	}
 	if trusted.AdmissionNotSent != nil {
 		view := p.cfg.Execution.SnapshotForIntent(trusted.Execution.IntentID)
 		if !e2runner.AdmissionNotSent(result) || !p.cfg.Execution.HasAdmissionNotSent(*trusted.AdmissionNotSent) || view.Scope != trusted.Execution.Scope || view.HeaderMode != trusted.Execution.HeaderMode {

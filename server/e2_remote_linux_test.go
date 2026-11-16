@@ -44,7 +44,7 @@ type e2RemoteFixture struct {
 	received *atomic.Int64
 }
 
-func startE2RemoteFixture(t *testing.T) e2RemoteFixture {
+func startE2RemoteFixture(t *testing.T, adjust ...func(*E2HTTPFilePolicy)) e2RemoteFixture {
 	t.Helper()
 	if os.Geteuid() == 0 {
 		t.Skip("비특권 Linux 격리 fixture")
@@ -52,7 +52,7 @@ func startE2RemoteFixture(t *testing.T) e2RemoteFixture {
 	received := &atomic.Int64{}
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { received.Add(1); _, _ = w.Write([]byte("fixture")) }))
 	t.Cleanup(target.Close)
-	backend, _, _ := standaloneFixture(t, target.URL, true)
+	backend, _, _ := standaloneFixture(t, target.URL, true, adjust...)
 	if err := backend.BindReset(t.Context(), strings.Repeat("a", 64)); err != nil {
 		t.Fatal(err)
 	}
@@ -94,6 +94,62 @@ func (f e2RemoteFixture) acquire(t *testing.T) *e2RemoteRun {
 
 func (f e2RemoteFixture) curl(path string) string {
 	return fmt.Sprintf("curl --silent --max-time 2 '%s%s' >/dev/null", f.target.URL, path)
+}
+
+// 실제 보호 backend·인증 RPC에서 새 귀속과 누계를 보내고 최종 exporter까지 마감한다.
+func TestE2RemoteProgramCallsStaySeparateAndExported(t *testing.T) {
+	f := startE2RemoteFixture(t, func(p *E2HTTPFilePolicy) {
+		rule := p.Rules[0]
+		rule.Ref = "auth-remote"
+		rule.PathPrefix = "/login"
+		rule.Methods = []string{"POST"}
+		rule.Purpose = e2proxy.PurposeAuthPrep
+		rule.Credentials = nil
+		p.Rules = append(p.Rules, rule)
+	})
+	run := f.acquire(t)
+	lease, err := f.backend.remoteLease(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease.programCalls = newE2HTTPProgramCalls()
+	call, err := lease.Execution.BeginProgramCall(t.Context(), e2proxy.ProgramAuthPrep, "remote-auth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease.programCalls.add(call.Ref())
+	req, _ := http.NewRequest("POST", f.target.URL+"/login", nil)
+	_, receipt, err := call.AuthPrep(t.Context(), req, func(*http.Response, []byte) (http.Header, error) { return nil, errors.New("session not found") })
+	if !errors.Is(err, e2proxy.ErrAuthSession) || !receipt.ResponseComplete {
+		t.Fatal("program request not completed", err)
+	}
+	if _, err := call.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	view := run.SnapshotForIntent(17)
+	if view.IntentCounts != (e2proxy.Counts{}) || view.ProgramCounts.Calls != 1 || view.ProgramCounts.Responses != 1 || !run.ProgramCalls()[call.Ref()] {
+		t.Fatal("RPC lost program attribution/counts")
+	}
+	calls := run.Calls()
+	if len(calls) != 1 || calls[0].Program != e2proxy.ProgramAuthPrep || calls[0].IntentID != 0 || !calls[0].Final || !calls[0].AuditComplete {
+		t.Fatal("RPC lost final audited program call")
+	}
+	if settled, isProgram := firstDiagnosisProgramCall(calls[0], run.ProgramCalls(), nil); !settled || !isProgram {
+		t.Fatal("RPC program omitted from supervisor reconciliation")
+	}
+	if _, err := run.RunForIntent(t.Context(), 17, "printf remote-worker"); err != nil {
+		t.Fatal(err)
+	}
+	if view := run.SnapshotForIntent(17); view.Counts.Calls != 2 || view.IntentCounts.Calls != 1 || view.ProgramCounts.Calls != 1 {
+		t.Fatal("RPC Worker counts contaminated")
+	}
+	if _, err := f.backend.CloseAdmission(t.Context(), "close-program"); err != nil {
+		t.Fatal(err)
+	}
+	final, err := f.backend.Finalize(t.Context(), "close-program")
+	if err != nil || final.State != "complete" || final.Checkpoint == nil {
+		t.Fatal("program final audit/export incomplete", err, final.State)
+	}
 }
 
 func TestE2RemoteRunsThroughTheBackend(t *testing.T) {

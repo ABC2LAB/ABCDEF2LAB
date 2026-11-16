@@ -120,7 +120,7 @@ func AdmissionNotSent(result Result) bool {
 	return r != nil && t.Version == e2proxy.Version && t.Classification == "not_sent" &&
 		t.Final && !t.ProcessBashExited && t.ProcessDrained && t.ProxyDrained &&
 		t.Execution.AuditComplete && e2proxy.EqualCallResults(t.Call, e2proxy.CallResult{}) && r.Version == e2proxy.Version &&
-		r.Scope == t.Execution.Scope && r.IntentID == t.Execution.IntentID && r.PolicyRevision == t.Execution.PolicyRevision &&
+		r.Program == "" && r.Scope == t.Execution.Scope && r.IntentID == t.Execution.IntentID && r.PolicyRevision == t.Execution.PolicyRevision &&
 		r.NotSent && r.AuditComplete && !r.ForwardAttempted && !r.RequestWritten && !r.ResponseReceived &&
 		!r.ResponseComplete && r.CallRef == "" && r.CommandRef != "" && r.AttemptID == "" && r.Sequence == 0 && !r.At.IsZero()
 }

@@ -86,6 +86,7 @@ type e2RemoteView struct {
 	BudgetRemaining uint64                `json:"budget_remaining"`
 	BudgetKnown     bool                  `json:"budget_known"`
 	Calls           []e2proxy.CallResult  `json:"calls"`
+	ProgramCalls    map[string]bool       `json:"program_calls,omitempty"`
 }
 
 type e2RemoteResponse struct {
@@ -314,7 +315,7 @@ func (b *E2StandaloneBackend) remoteView(ctx context.Context, intent int64) (e2R
 	}
 	execution := lease.Execution
 	remaining, budgetErr := execution.BudgetRemaining()
-	view := e2RemoteView{Snapshot: execution.Snapshot(), Policy: execution.Policy(), BudgetRemaining: remaining, BudgetKnown: budgetErr == nil, Calls: execution.Calls()}
+	view := e2RemoteView{Snapshot: execution.Snapshot(), Policy: execution.Policy(), BudgetRemaining: remaining, BudgetKnown: budgetErr == nil, Calls: execution.Calls(), ProgramCalls: lease.programCalls.snapshot()}
 	if intent > 0 {
 		view.Intent, view.HasIntent = execution.SnapshotForIntent(intent), execution.HasIntent(intent)
 	}
