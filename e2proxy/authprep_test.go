@@ -119,7 +119,7 @@ func TestAuthPrepSendsOnlyToLoginPathAndReturnsSession(t *testing.T) {
 	cfg := authConfig(t, srv.URL)
 	boundary := &denyAllBoundary{}
 	cfg.RequestBoundary = boundary
-	_, call := coreOpen(t, cfg)
+	_, call := authProgramOpen(t, cfg)
 	before, _ := cfg.Budget.Ledger.Remaining(cfg.Budget.Key, cfg.Budget.Binding, time.Now())
 	session, r, err := call.AuthPrep(context.Background(), loginRequest(t, srv.URL+"/login"), cookieExtractor("session"))
 	if err != nil || r.RuleRef != "auth-login" || r.Reason != Complete || !r.ResponseComplete || session.Get("Cookie") != "session=seeded-session-value-55cc" {
@@ -153,7 +153,7 @@ func TestAuthPrepSendsOnlyToLoginPathAndReturnsSession(t *testing.T) {
 // 세션을 찾지 못하면 ErrAuthSession이고(로그인 실패), 응답은 받았으니 결과 불명이 아니다.
 func TestAuthPrepSessionNotFound(t *testing.T) {
 	_, srv := newAuthTarget(t)
-	_, call := coreOpen(t, authConfig(t, srv.URL))
+	_, call := authProgramOpen(t, authConfig(t, srv.URL))
 	session, r, err := call.AuthPrep(context.Background(), loginRequest(t, srv.URL+"/login"), cookieExtractor("other"))
 	if !errors.Is(err, ErrAuthSession) || session != nil || r.Reason != Complete || r.RuleRef != "auth-login" {
 		t.Fatalf("missing session: %v %+v %v", err, r, session)
@@ -169,7 +169,7 @@ func TestAuthPrepOversizedResponseIsNotExtracted(t *testing.T) {
 	defer srv.Close()
 	cfg := authConfig(t, srv.URL)
 	cfg.Limits.MaxBodyBytes = 1024
-	_, call := coreOpen(t, cfg)
+	_, call := authProgramOpen(t, cfg)
 	called := false
 	extract := func(*http.Response, []byte) (http.Header, error) {
 		called = true
@@ -235,11 +235,16 @@ func TestAuthPrepSkipsPerRequestApproval(t *testing.T) {
 	cfg := authConfig(t, srv.URL)
 	gate := &refuseApproval{}
 	cfg.ApprovalMode, cfg.RequestApproval = ApprovalConfirmEveryRequest, gate
-	_, call := coreOpen(t, cfg)
+	e, call := authProgramOpen(t, cfg)
 	if _, r, err := call.AuthPrep(context.Background(), loginRequest(t, srv.URL+"/login"), cookieExtractor("session")); err != nil || r.Reason != Complete || gate.asked != 0 {
 		t.Fatalf("auth prep waited on approval: %v %+v asked=%d", err, r, gate.asked)
 	}
-	if _, r, err := call.Do(context.Background(), coreRequest(t, "GET", srv.URL+"/allowed")); err == nil || gate.asked != 1 || r.Reason != PolicyDenied {
+	worker, err := e.BeginCallForIntent(t.Context(), 1, "worker-approval")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Close(context.Background())
+	if _, r, err := worker.Do(context.Background(), coreRequest(t, "GET", srv.URL+"/allowed")); err == nil || gate.asked != 1 || r.Reason != PolicyDenied {
 		t.Fatalf("model request skipped approval: %v %+v asked=%d", err, r, gate.asked)
 	}
 	if got := target.requests(); len(got) != 1 {
@@ -550,3 +555,21 @@ type atomicString struct {
 
 func (a *atomicString) Store(v string) { a.mu.Lock(); a.v = v; a.mu.Unlock() }
 func (a *atomicString) Load() string   { a.mu.Lock(); defer a.mu.Unlock(); return a.v }
+
+func authProgramOpen(t testing.TB, cfg Config) (*Execution, *Call) {
+	t.Helper()
+	e, err := NewExecution(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := e.BeginProgramCall(context.Background(), ProgramAuthPrep, "auth-command")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_, _ = c.Close(ctx)
+	})
+	return e, c
+}

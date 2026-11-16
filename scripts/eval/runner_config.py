@@ -762,6 +762,20 @@ def check_key_files(config: RunnerConfig) -> str | None:
         raise RunnerConfigError([f"config.path_key_file: {exc}"]) from None
 
 
+def check_admin_password_file(config: RunnerConfig, path: str) -> None:
+    """관리자 비밀번호 파일의 실제 위치를 읽기 전에 확인한다.
+
+    링크를 푼 위치가 runs_root 안이면 회차 근거 묶음에 섞일 수 있어 거부한다. 러너 서명 키·경로 가림 키·비밀 env
+    파일과 같은 파일이어도 거부한다(비밀 하나가 두 역할을 하지 않게).
+    """
+    if _inside(os.path.realpath(path), os.path.realpath(config.runs_root)):
+        raise RunnerConfigError(["admin_password_file: INSIDE_RUNS_ROOT"])
+    for other, code in ((config.runner_key_path, "SAME_AS_RUNNER_KEY"), (config.path_key_file, "SAME_AS_PATH_KEY"),
+                        (config.secrets_env_file, "SAME_AS_SECRETS_FILE")):
+        if other is not None and _same_file(Path(path), Path(other)):
+            raise RunnerConfigError([f"admin_password_file: {code}"])
+
+
 def new_run_id(side: str, now: datetime | None = None) -> str:
     """compose project 이름 규칙(소문자·숫자·-)을 지키고 회차마다 다르다."""
     if side not in SIDES:

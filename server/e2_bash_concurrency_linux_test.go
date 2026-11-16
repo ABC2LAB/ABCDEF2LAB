@@ -160,10 +160,7 @@ func TestE2HTTPFactoryDerivesBashSlotsFromWorkersAndPolicy(t *testing.T) {
 			actual := lease.Runner.(localE2HTTPRun).runner
 			limits := actual.ProcessLimits()
 			wantTasks := min(uint64(128), uint64(192/tc.want))
-			wantCommandTasks := wantTasks
-			if tc.want > 1 {
-				wantCommandTasks -= 16
-			}
+			wantCommandTasks := wantTasks - 16
 			if limits.BashSlots != tc.want || limits.CallTasks != wantTasks || limits.EngineReserveTasks != 64 || limits.ContainerTasks != 256 {
 				t.Fatal("회차 task 배분이 계산된 슬롯에 결속되지 않음")
 			}

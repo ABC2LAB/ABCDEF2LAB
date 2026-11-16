@@ -146,6 +146,14 @@ func (r *e2RemoteRun) HasIntent(id int64) bool {
 	return ok && view.HasIntent
 }
 
+func (r *e2RemoteRun) ProgramCalls() map[string]bool {
+	view, ok := r.view(0)
+	if !ok {
+		return nil
+	}
+	return view.ProgramCalls
+}
+
 // 가리지 못한 원문을 돌려주면 안 되므로 실패하면 비운다.
 func (r *e2RemoteRun) RedactOutput(data []byte) []byte {
 	request := r.identity(e2RemoteRedactOp, 0)

@@ -155,26 +155,43 @@ type Restriction struct {
 	RuleRefs       []string  `json:"rule_refs"`
 	Methods        []string  `json:"methods"`
 }
+
+// ProgramCallKind는 호스트가 연 인증 호출의 귀속이다. Worker intent와 배타적이다.
+type ProgramCallKind string
+
+const (
+	ProgramAuthPrep       ProgramCallKind = "auth_prep"
+	ProgramRefreshSession ProgramCallKind = "refresh_session"
+)
+
+func (k ProgramCallKind) Valid() bool { return k == ProgramAuthPrep || k == ProgramRefreshSession }
+
+// ValidCallAttribution은 실재 Worker intent 또는 명시적인 프로그램 호출 중 하나만 허용한다.
+func ValidCallAttribution(intentID int64, program ProgramCallKind) bool {
+	return intentID > 0 && program == "" || intentID == 0 && program.Valid()
+}
+
 type Receipt struct {
-	IntentID         int64          `json:"intent_id"`
-	Version          string         `json:"version"`
-	Scope            transmit.Scope `json:"scope"`
-	CallRef          string         `json:"call_ref,omitempty"`
-	CommandRef       string         `json:"command_ref,omitempty"`
-	AttemptID        string         `json:"attempt_id,omitempty"`
-	PolicyRevision   string         `json:"policy_revision"`
-	RuleRef          string         `json:"rule_ref,omitempty"`
-	Sequence         uint64         `json:"sequence"`
-	Method           string         `json:"method,omitempty"`
-	Decision         string         `json:"decision,omitempty"`
-	Reason           Reason         `json:"reason"`
-	ForwardAttempted bool           `json:"forward_attempted"`
-	RequestWritten   bool           `json:"request_written"`
-	ResponseReceived bool           `json:"response_received"`
-	ResponseComplete bool           `json:"response_complete"`
-	NotSent          bool           `json:"not_sent"`
-	AuditComplete    bool           `json:"audit_complete"`
-	StatusCode       int            `json:"status_code,omitempty"`
+	Program          ProgramCallKind `json:"program,omitempty"`
+	IntentID         int64           `json:"intent_id"`
+	Version          string          `json:"version"`
+	Scope            transmit.Scope  `json:"scope"`
+	CallRef          string          `json:"call_ref,omitempty"`
+	CommandRef       string          `json:"command_ref,omitempty"`
+	AttemptID        string          `json:"attempt_id,omitempty"`
+	PolicyRevision   string          `json:"policy_revision"`
+	RuleRef          string          `json:"rule_ref,omitempty"`
+	Sequence         uint64          `json:"sequence"`
+	Method           string          `json:"method,omitempty"`
+	Decision         string          `json:"decision,omitempty"`
+	Reason           Reason          `json:"reason"`
+	ForwardAttempted bool            `json:"forward_attempted"`
+	RequestWritten   bool            `json:"request_written"`
+	ResponseReceived bool            `json:"response_received"`
+	ResponseComplete bool            `json:"response_complete"`
+	NotSent          bool            `json:"not_sent"`
+	AuditComplete    bool            `json:"audit_complete"`
+	StatusCode       int             `json:"status_code,omitempty"`
 	// ResponseTruncated는 응답 본문 앞부분만 도구에 준 것이다(e2-http-v2, 사유는 withheld).
 	ResponseTruncated bool      `json:"response_truncated,omitempty"`
 	At                time.Time `json:"at"`
@@ -215,6 +232,7 @@ type ExecutionView struct {
 	// IntentCounts는 IntentID에 결속된 call들만의 누계다. Counts는 실행 전체 누계로 그대로 둔다.
 	// Worker는 다른 intent의 불명·거부로 멈추지 않도록 이 값을 본다(C03).
 	IntentCounts  Counts `json:"intent_counts"`
+	ProgramCounts Counts `json:"program_counts"`
 	Reason        Reason `json:"reason"`
 	AuditComplete bool   `json:"audit_complete"`
 }
@@ -236,6 +254,7 @@ type PolicyView struct {
 	Rules             []RuleView               `json:"rules"`
 }
 type CallResult struct {
+	Program               ProgramCallKind   `json:"program,omitempty"`
 	Observations          []HTTPObservation `json:"observations,omitempty"`
 	ObservationsTruncated bool              `json:"observations_truncated,omitempty"`
 	IntentID              int64             `json:"intent_id"`

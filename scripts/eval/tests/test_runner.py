@@ -349,7 +349,7 @@ class FakePorts:
                 "normalized": dict(context, path=f"{phase}/normalized.json", sha256="n" + phase, size=5, phase=phase),
                 "requested_at": f"2026-11-02T00:00:0{1 if phase == 'pre' else 8}+00:00",
                 "received_at": f"2026-11-02T00:00:0{2 if phase == 'pre' else 9}+00:00",
-                "solved": dict(self.solved[phase])}
+                "solved": dict(self.solved[phase]), "state_sha256": "state-" + phase}
 
     def tool_tree(self):
         self._call("tool_tree")
@@ -1092,6 +1092,8 @@ class TestCompleteRun(unittest.TestCase):
         self.assertEqual(evidence.files["preservation-round.json"]["signature"], "sig")
         self.assertEqual(evidence.files["run-record.json"]["version"], "1.1")
         self.assertEqual(seen["conditions"]["layout"], "e2-legacy/v1")
+        # 시작 상태는 점수판 port의 대상 상태 지문이다. 회차 신원이 든 정규화 봉투 hash("npre")가 아니다.
+        self.assertEqual(seen["conditions"]["initial_state_sha256"], "state-pre")
         self.assertEqual(seen["engine_source_sha"], spec.engine_source_sha)
         self.assertIn("preservation-round.json", result["evidence"])
 
@@ -1190,6 +1192,9 @@ class TestCompleteRun(unittest.TestCase):
         # 해결 상태 맵(평가 전용 key)은 결과 요약에 넣지 않는다.
         self.assertNotIn("solved", result["scoreboards"]["pre"])
         self.assertNotIn("solved", result["scoreboards"]["post"])
+        # 대상 상태 지문은 보존 조건에만 쓴다. 결과 요약 점수판 칸은 그대로다.
+        self.assertNotIn("state_sha256", result["scoreboards"]["pre"])
+        self.assertNotIn("state_sha256", result["scoreboards"]["post"])
         self.assertNotIn("basket", json.dumps(result))
 
     def test_invalid_runs_write_no_v11_record(self):
@@ -1935,6 +1940,118 @@ class TestFailures(unittest.TestCase):
         self.assertEqual(ports.calls[-1], "down")
 
 
+def observation_body(opaque: bool, *, changed: bool = False, stamp: str = "2026-11-16T00:00:00Z",
+                     indent: int | None = 2) -> bytes:
+    """관측 응답 본문. 점수판이면 GT key 행(갱신 시각 칸 포함), opaque면 앱 응답 모양의 임의 바이트다.
+
+    changed면 대상 상태가 다른 본문이다(점수판은 첫 key가 해결됨, opaque는 다른 바이트).
+    """
+    if opaque:
+        # 크기가 같은 다른 바이트다(크기만으로 갈리지 않게).
+        return b'{"users":[{"username":"name2"}]}' if changed else b'{"users":[{"username":"name1"}]}'
+    from ground_truth import bac_category, core_gt
+    keys = sorted({challenge.key for challenge in core_gt() + bac_category()})
+    rows = [{"key": key, "solved": changed and key == keys[0], "updatedAt": stamp} for key in keys]
+    return json.dumps({"data": rows}, indent=indent).encode()
+
+
+def stored_snapshot(body: bytes):
+    """네트워크 수집만 대신하고 저장은 실제 write_snapshot으로 한다(실제 봉투·raw.json 모양)."""
+    from snapshot_collector import CollectedSnapshot
+    from snapshot_writer import write_snapshot
+
+    def collect(endpoint, run_directory, phase, context, *, opaque):
+        artifacts = write_snapshot(run_directory, phase, body, context, max_bytes=endpoint.max_bytes, opaque=opaque)
+        return CollectedSnapshot(artifacts, "2026-11-16T00:00:01+00:00", "2026-11-16T00:00:02+00:00")
+    return collect
+
+
+def board_for(config, plan, directory, target_id: str, engine_id: str) -> dict:
+    ports = DockerPorts(config, plan, directory, docker=None, findings=dict, start=lambda: "1", settings=dict)
+    return ports.scoreboard("pre", {"services": {"target": {"id": target_id}, "engine": {"id": engine_id}}})
+
+
+class TestInitialStateFollowsTheTargetNotTheRunIdentity(unittest.TestCase):
+    """보존 조건의 시작 상태 지문은 회차 신원(run_id·대상/엔진 컨테이너 ID)을 빼고 대상 상태만 본다.
+
+    수집 저장·port·짝 대조는 실제 구현이다. 정규화 봉투 hash를 쓰던 때는 상태가 같은 짝도 대조에서 멈췄다
+    (2026-11-16 VAmPI e2-legacy 파일럿, preservation_conditions_mismatch).
+    """
+
+    def boards(self, observer_format: str, bodies: dict) -> dict:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "runs"
+            root.mkdir(mode=0o700)
+            os.chmod(root, 0o700)
+            config = parse_runner_config(runner_config() | {"runs_root": str(root), "observer_format": observer_format})
+            out = {}
+            for index, (name, body) in enumerate(bodies.items(), 1):
+                run_id = f"ours-{index}"
+                plan = plan_run(config, configuration(), "ours", run_id)
+                with patch.object(runner, "collect_snapshot", side_effect=stored_snapshot(body)):
+                    out[name] = board_for(config, plan, create_run_directory(root, run_id),
+                                          format(index, "x") * 64, format(index + 8, "x") * 64)
+            return out
+
+    def pair_verdict(self, baseline_state: str, improved_state: str) -> str:
+        from preservation_record import PreservationRecordError, build_payload, validate_series
+        from test_preservation_record import SignedFixture, conditions, options
+        fixture = SignedFixture()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        records = []
+        for side, state in (("baseline", baseline_state), ("ours", improved_state)):
+            # 이 러너가 발행하는 배치(원본 직접·e2-legacy)와 같은 본 입구 원자료로 짝을 만든다.
+            _, meter, _ = fixture.fixture("baseline", 0)
+            layout = {} if side == "baseline" else {"layout": "e2-legacy/v1", "diagnosis_policy_sha256": None}
+            payload = build_payload(meter=meter, options=options(), run_id=f"{side}-pair", side=side, repeat_index=0,
+                                    engine_source_sha=("a" if side == "baseline" else "b") * 40,
+                                    engine_image_id="sha256:" + ("a" if side == "baseline" else "b") * 64,
+                                    conditions=conditions(side, initial_state_sha256=state, **layout),
+                                    stop_reason="request_budget")
+            records.append(payload)  # 서명 확인 뒤 load_record가 돌려주는 것과 같은 모양(서명 칸 없음)
+        try:
+            validate_series([records[0]], [records[1]], request_budget=3, read_only=False)
+        except PreservationRecordError as exc:
+            return str(exc)
+        return "ok"
+
+    def test_same_target_state_matches_and_a_different_state_mismatches(self):
+        cases = (("challenge_scoreboard", False, observation_body(False, stamp="2026-11-16T00:00:00Z", indent=2),
+                  observation_body(False, stamp="2026-11-16T09:59:59Z", indent=None)),
+                 ("opaque", True, observation_body(True), observation_body(True)))
+        for observer_format, opaque, first, second in cases:
+            with self.subTest(observer_format):
+                changed = observation_body(opaque, changed=True)
+                boards = self.boards(observer_format, {"a": first, "b": second, "c": changed})
+                a, b, c = boards["a"], boards["b"], boards["c"]
+                # 봉투는 회차 신원 때문에 다르다(이전 계산이 짝을 막은 이유).
+                self.assertNotEqual(a["normalized"]["sha256"], b["normalized"]["sha256"])
+                self.assertEqual(self.pair_verdict(a["normalized"]["sha256"], b["normalized"]["sha256"]),
+                                 "preservation_conditions_mismatch")
+                # 대상 상태가 같으면 신원·갱신 시각·직렬화가 달라도 같은 지문이고 짝 대조를 지난다.
+                self.assertEqual(a["state_sha256"], b["state_sha256"])
+                self.assertEqual(self.pair_verdict(a["state_sha256"], b["state_sha256"]), "ok")
+                # 대상 상태가 다르면 지문이 다르고 짝 대조가 멈춘다.
+                self.assertNotEqual(a["state_sha256"], c["state_sha256"])
+                self.assertEqual(self.pair_verdict(a["state_sha256"], c["state_sha256"]), "preservation_conditions_mismatch")
+
+    def test_opaque_observation_record_must_have_the_collector_shape(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            phase = Path(temporary) / "pre"
+            phase.mkdir(mode=0o700)
+            for raw in ({"format": "other/v1", "sha256": "a" * 64, "bytes": 3}, {"sha256": "a" * 64, "bytes": 3},
+                        {"format": runner.OPAQUE_OBSERVATION_FORMAT, "sha256": "A" * 64, "bytes": 3},
+                        {"format": runner.OPAQUE_OBSERVATION_FORMAT, "sha256": "a" * 64, "bytes": 0}):
+                with self.subTest(raw=sorted(raw)):
+                    path = phase / "raw.json"
+                    path.write_text(json.dumps(raw))
+                    path.chmod(0o600)
+                    with self.assertRaises(Exception):
+                        runner.snapshot_state_sha256(phase, True, {})
+                    path.unlink()
+
+
 class TestIsolationOfRunDirectory(unittest.TestCase):
     """절대규칙 7: scoreboard(GT)는 회차 디렉터리에만. 엔진 컨테이너에는 어떤 회차 디렉터리도 마운트되지 않는다."""
 
@@ -2060,12 +2177,8 @@ class TestIsolationOfRunDirectory(unittest.TestCase):
                 os.chmod(root, 0o700)
                 config = parse_runner_config(runner_config() | {"runs_root": str(root), "observer_format": observer_format})
                 plan = plan_run(config, configuration(), "ours", "ours-1")
-                directory = create_run_directory(root, "ours-1")
-                ports = DockerPorts(config, plan, directory, docker=None, findings=dict, start=lambda: "1", settings=dict)
-                snapshot = {"services": {"target": {"id": "3" * 64}, "engine": {"id": "1" * 64}}}
-                with patch.object(runner, "collect_snapshot") as collect, \
-                        patch.object(runner, "read_private_json", return_value={"solved": {}}):
-                    ports.scoreboard("pre", snapshot)
+                with patch.object(runner, "collect_snapshot", side_effect=stored_snapshot(observation_body(opaque))) as collect:
+                    board_for(config, plan, create_run_directory(root, "ours-1"), "3" * 64, "1" * 64)
                 self.assertIs(collect.call_args.kwargs["opaque"], opaque)
                 spec = build_spec(config, plan, configuration(), "t" * 64, "c", 0)
                 self.assertEqual(spec.observer_format, observer_format)
@@ -2244,6 +2357,117 @@ class TestMainKeepsTheAdminPasswordInMemory(unittest.TestCase):
             for written in root.rglob("*"):
                 if written.is_file():
                     self.assertNotIn(PASSWORD, written.read_text(errors="ignore"))
+
+    def test_password_file_replaces_the_prompt_and_stays_in_memory(self):
+        import contextlib
+        import io
+        from test_runner_engine import PASSWORD
+        with tempfile.TemporaryDirectory() as tmp:
+            root, argv = self.inputs(tmp)
+            secret_file = Path(tmp, "admin.pw")
+            secret_file.write_text(PASSWORD + "\n")
+            secret_file.chmod(0o600)
+            seen = {}
+
+            def fake_start(port, secret, request, timeout):
+                seen["start"] = secret.reveal()
+                return "17"
+
+            def fake_execute(spec, ports, meter, gateway, evidence, clock):
+                ports.start_task()
+                return {"run_id": spec.run_id, "status": INVALID, "reasons": ["x"]}
+
+            out, err = io.StringIO(), io.StringIO()
+            with patch.object(runner.getpass, "getpass") as ask, \
+                    patch.object(runner, "Docker", return_value=object()), \
+                    patch.object(runner, "start_task", side_effect=fake_start), \
+                    patch.object(runner, "execute_run", side_effect=fake_execute), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = runner.main(argv + ["--admin-password-file", str(secret_file)])
+            self.assertEqual(code, 1)
+            ask.assert_not_called()
+            # 끝 줄바꿈 하나만 뗀 값이 그대로 간다.
+            self.assertEqual(seen["start"], PASSWORD)
+            self.assertNotIn(PASSWORD, out.getvalue() + err.getvalue())
+            for written in root.rglob("*"):
+                if written.is_file():
+                    self.assertNotIn(PASSWORD, written.read_text(errors="ignore"))
+
+    def test_password_file_must_be_private_and_apart_from_runs_and_keys(self):
+        import contextlib
+        import io
+        from test_runner_engine import PASSWORD
+
+        def private(path, text=PASSWORD, mode=0o600):
+            path.write_text(text)
+            path.chmod(mode)
+            return path
+
+        def readable(tmp):
+            return private(Path(tmp, "admin.pw"), mode=0o644)
+
+        def linked(tmp):
+            target = private(Path(tmp, "real.pw"))
+            Path(tmp, "admin.pw").symlink_to(target)
+            return Path(tmp, "admin.pw")
+
+        def inside_runs(tmp):
+            return private(Path(tmp, "runs", "admin.pw"))
+
+        def runner_key(tmp):
+            return private(Path(tmp, "k"))
+
+        def directory(tmp):
+            path = Path(tmp, "admin.pw")
+            path.mkdir(mode=0o700)
+            path.chmod(0o600)  # 권한 칸만 맞춘 빈 디렉터리: 일반 파일 검사만 거른다
+            return path
+
+        def secrets_env(tmp):
+            return private(Path(tmp, "eval.secrets.env"))
+
+        def too_long(tmp):
+            return private(Path(tmp, "admin.pw"), text="a" * (4 * 1024 + 2))
+
+        def control(tmp):
+            return private(Path(tmp, "admin.pw"), text=PASSWORD + "\r\n")
+
+        cases = ((readable, "engine_password_file_untrusted"), (linked, "engine_password_file_unreadable"),
+                 (lambda tmp: Path(tmp, "missing.pw"), "engine_password_file_unreadable"),
+                 (inside_runs, "admin_password_file: INSIDE_RUNS_ROOT"),
+                 (runner_key, "admin_password_file: SAME_AS_RUNNER_KEY"),
+                 (secrets_env, "admin_password_file: SAME_AS_SECRETS_FILE"),
+                 (directory, "engine_password_file_untrusted"),
+                 (too_long, "engine_password_file_invalid"), (control, "engine_password_invalid"))
+        for make, code in cases:
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as tmp:
+                root, argv = self.inputs(tmp, lambda payload: payload.update(
+                    secrets_env_file=str(Path(tmp, "eval.secrets.env"))))
+                path = make(tmp)
+                err = io.StringIO()
+                with patch.object(runner.getpass, "getpass") as ask, patch.object(runner, "Docker") as docker, \
+                        contextlib.redirect_stderr(err):
+                    self.assertEqual(runner.main(argv + ["--admin-password-file", str(path)]), 2)
+                ask.assert_not_called()
+                docker.assert_not_called()
+                self.assertEqual(err.getvalue().strip(), code)
+                self.assertNotIn(PASSWORD, err.getvalue())
+                self.assertEqual([entry for entry in root.iterdir() if entry.name != "admin.pw"], [])
+
+    def test_password_file_cannot_be_the_path_key(self):
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as tmp:
+            key = Path(tmp, "path.key")
+            key.write_bytes(bytes(range(32)))
+            key.chmod(0o600)
+            root, argv = self.inputs(tmp, lambda payload: payload.update(purpose="browser_acceptance", path_key_file=str(key)))
+            err = io.StringIO()
+            with patch.object(runner.getpass, "getpass") as ask, contextlib.redirect_stderr(err):
+                self.assertEqual(runner.main(argv + ["--admin-password-file", str(key)]), 2)
+            ask.assert_not_called()
+            self.assertEqual(err.getvalue().strip(), "admin_password_file: SAME_AS_PATH_KEY")
+            self.assertEqual(list(root.iterdir()), [])
 
     def test_task_target_is_checked_against_this_run_origin(self):
         # 계측기 포트가 다른 구성이면 작업 대상도 그 origin이어야 한다(고정 문자열과 비교하지 않는다).

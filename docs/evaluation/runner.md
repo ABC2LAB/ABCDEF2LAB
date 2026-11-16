@@ -22,6 +22,9 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   `EVAL_ENGINE_ADMIN_PASSWORD`와 같은 값이다. 비밀번호는 러너 프로세스 메모리에만 있고 argv·환경변수·docker 호출·회차 파일·
   출력·예외 문구에 넣지 않는다. 토큰은 작업 생성 직전과 findings 직전에 각각 루프백 엔진 API(`127.0.0.1:ports.engine_api_host`)로
   새로 로그인해 받고 그 호출 안에서만 쓴다.
+- 터미널 없이 돌릴 때는 `--admin-password-file <파일>`로 getpass 대신 파일에서 읽는다. 러너 uid 소유·정확히 0600·링크 아닌 일반
+  파일만 받고 끝 줄바꿈 하나만 뗀다. 링크를 푼 위치가 `runs_root` 안이거나 러너 서명 키·경로 가림 키·비밀 env 파일과 같은 파일이면
+  읽기 전에 거부한다(종료 코드 `2`, 회차를 만들지 않음). 값은 위와 같이 메모리에만 있다. 세션이 끝나면 파일을 지운다.
 - stdout은 `run_id 상태 사유…` 한 줄이다. docker의 진단(stderr)은 운영자 터미널로만 가고 러너 기록에는 남지 않는다.
 - 회차 중간에 운영자가 할 일은 없다. 작업은 러너가 설정의 `task` 내용으로 엔진 API에 만든다(아래 "작업 생성").
 
