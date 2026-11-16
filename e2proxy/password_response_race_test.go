@@ -88,3 +88,16 @@ func TestPasswordResponseChunkedTrailersAndBodyCeiling(t *testing.T) {
 		})
 	}
 }
+
+func TestPasswordResponseOverlappingRawAndEncodedAccounts(t *testing.T) {
+	e, _ := coreOpen(t, passwordConfig(t, "http://127.0.0.1:1", &coreRecorder{}))
+	if e.AddProtectedPasswords([]byte("seeded"), []byte("seeded-password")) != nil {
+		t.Fatal("등록 실패")
+	}
+	_, generation := e.protectedState()
+	response := &http.Response{Header: http.Header{"Content-Type": {"application/json"}}, Status: "200 OK", Proto: "HTTP/1.1"}
+	body, masked, safe := e.prepareResponse(response, []byte(`{"value":"seeded\u002dpassword","public":7}`), generation, 1024, false, false)
+	if !safe || !masked || string(body) != `{"value":"[REDACTED]","public":7}` {
+		t.Fatal("접두 비밀번호 때문에 긴 값의 일부가 남음")
+	}
+}

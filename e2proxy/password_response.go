@@ -244,7 +244,10 @@ func passwordSpans(input []byte, passwords [][]byte, form bool) ([]passwordSpan,
 	}
 	inputWithoutKnown := blankKnown(input)
 	for kind := 0; kind < 3; kind++ {
-		view, ok := passwordNormalize(inputWithoutKnown, kind, form)
+		view, ok := passwordNormalize(input, kind, form)
+		if !ok {
+			view, ok = passwordNormalize(inputWithoutKnown, kind, form)
+		}
 		if !ok {
 			return nil, false
 		}
