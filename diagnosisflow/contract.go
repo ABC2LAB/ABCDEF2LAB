@@ -95,6 +95,9 @@ type Counts struct {
 	InvalidPaths        uint64 `json:"invalid_paths,omitempty"`
 	// 탐색 실행기 보고 중 형식 오류·범위 밖이라 버린 수(탐색 실행기 결정안 §2-3).
 	DiscoveriesDropped uint64 `json:"discoveries_dropped,omitempty"`
+	// 고른 끝점 중 모델 지시 목록의 바이트 상한(MaxSelectedDataBytes) 때문에 빠진 수다. 회차 결과에 늘 남긴다
+	// (2026-11-16 사용자 결정, 공식 프로토콜 고정 전에 상한을 다시 정한다).
+	ModelOmitted uint64 `json:"model_omitted,omitempty"`
 }
 type Command struct {
 	Key       string `json:"key"`

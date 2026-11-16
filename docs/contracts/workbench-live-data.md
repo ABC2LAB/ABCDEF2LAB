@@ -154,7 +154,7 @@ intent 행의 `complete`는 송신 전 감사의 초기 값이며 응답 성공�
 | 경로·메서드·쓰기 동의·요청 수·유효 시간 | 대상을 새로 등록하고 소유 확인·승인을 다시 받는다(`POST /api/product/targets` → `…/approve`) |
 | 제외 경로 | 점검마다 입력(`excluded_paths`) |
 | 시험 계정·로그인 방식 | 1절 계정 API |
-| 설치 상한(실행 상한 `runtime_limits`, 허용 포트, 사설망 대역, 되돌릴 수 있는 쓰기 허용, 탐색 설정) | 설치 입력에서만(`update.sh`). 화면 저장 없음 |
+| 설치 상한(실행 상한 `runtime_limits`, 허용 포트, 사설망 대역, 되돌릴 수 있는 쓰기 허용, 탐색 설정) | 설치 입력에서만(새 설치. `update.sh`는 기존 설치를 재사용해 반영하지 않음). 화면 저장 없음 |
 
 `control-policy.ts`의 편집·저장 칸은 두지 않는다. 대상 등록 패널(`TargetApprovalPanel`)이 그 역할이다.
 

@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/e2proxy"
@@ -90,14 +91,15 @@ var errAuthLoginFailed = errors.New("auth_login_failed")
 // 시작할 때마다 사본을 읽는다(#550 이동찬 리뷰: 로그인이 이전 세션을 무효로 하는 대상에서 다음 Worker가 옛 세션으로 시작하지
 // 않게). 여러 Worker가 동시에 읽고 다시 로그인이 쓰므로 잠근다.
 type e2HTTPSessionStore struct {
-	mu       sync.RWMutex
-	sessions E2HTTPSessions
-	gateMu   sync.Mutex
-	gates    map[string]chan struct{}
+	mu        sync.RWMutex
+	sessions  E2HTTPSessions
+	gateMu    sync.Mutex
+	gates     map[string]chan struct{}
+	refreshes *e2HTTPRefreshCounter
 }
 
 func newE2HTTPSessionStore(initial E2HTTPSessions) *e2HTTPSessionStore {
-	s := &e2HTTPSessionStore{sessions: E2HTTPSessions{}}
+	s := &e2HTTPSessionStore{sessions: E2HTTPSessions{}, refreshes: &e2HTTPRefreshCounter{}}
 	for label, header := range initial {
 		s.sessions[label] = header.Clone()
 	}
@@ -190,47 +192,89 @@ func (s *e2HTTPSessionStore) refresh(ctx context.Context, label string, login fu
 	return header, result
 }
 
-// maxSessionRefreshesPerAccount는 한 실행에서 계정 하나를 다시 로그인시킬 수 있는 횟수다(C14 결정 2, 실패도 센다).
-// 시험 계정 잠금·로그인 폭주를 막는 상한이고 인증 준비 처음 한 번은 세지 않는다.
-const maxSessionRefreshesPerAccount = 3
+// 성공 횟수는 제한하지 않는다. 같은 실행·계정의 연속 실패와 로그인 폭주만 제한하며,
+// 처음 인증 준비는 세지 않는다. 간격은 이전 재로그인 종료부터 다음 시작까지다.
+const (
+	maxSessionRefreshFailuresPerAccount = 3
+	minSessionRefreshInterval           = 10 * time.Second
+)
 
-// E2HTTPRefreshLimit는 계정당 다시 로그인 상한에 닿은 결과다(보내지 않음).
+// E2HTTPRefreshLimit는 계정별 연속 실패 상한이다. E2HTTPRefreshCooldown은 짧은 간격/실행 중 거부다.
+// 둘 다 새 로그인 요청을 보내지 않고 해당 명령만 실패시킨다.
 const E2HTTPRefreshLimit = "refresh_limit"
+const E2HTTPRefreshCooldown = "refresh_cooldown"
 
-// e2HTTPRefreshCounter는 실행(정책 하나) 전체의 계정별 다시 로그인 횟수다. Worker 도구가 동시에 부를 수 있어 잠근다.
+// e2HTTPRefreshCounter는 실행 전체의 계정별 연속 실패·재로그인 간격을 보호한다.
+// now는 신뢰 호스트 내부 시계다(없으면 time.Now). 외부 정책/모델 입력이 아니다.
 type e2HTTPRefreshCounter struct {
-	mu    sync.Mutex
-	count map[string]int
+	mu       sync.Mutex
+	accounts map[string]*e2HTTPRefreshState
+	now      func() time.Time
 }
 
-func (c *e2HTTPRefreshCounter) take(label string) bool {
+type e2HTTPRefreshState struct {
+	failures int
+	running  bool
+	next     time.Time
+}
+
+func (c *e2HTTPRefreshCounter) timeLocked() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}
+
+func (c *e2HTTPRefreshCounter) begin(label string) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.count == nil {
-		c.count = map[string]int{}
+	if c.accounts == nil {
+		c.accounts = map[string]*e2HTTPRefreshState{}
 	}
-	if c.count[label] >= maxSessionRefreshesPerAccount {
-		return false
+	s := c.accounts[label]
+	if s == nil {
+		s = &e2HTTPRefreshState{}
+		c.accounts[label] = s
 	}
-	c.count[label]++
-	return true
+	if s.failures >= maxSessionRefreshFailuresPerAccount {
+		return E2HTTPRefreshLimit
+	}
+	if s.running || c.timeLocked().Before(s.next) {
+		return E2HTTPRefreshCooldown
+	}
+	s.running = true
+	return ""
+}
+
+func (c *e2HTTPRefreshCounter) finish(label string, success bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	s := c.accounts[label]
+	if success {
+		s.failures = 0
+	} else {
+		s.failures++
+	}
+	s.running = false
+	s.next = c.timeLocked().Add(minSessionRefreshInterval)
 }
 
 // e2HTTPRefreshSession은 계정 하나를 인증 준비와 같은 경로(E② 인증 준비 규칙, 보호 값 등록, 세션 가림)로 다시
 // 로그인시킨다. 정책에 없는 라벨은 보내지 않는다. 상한에 닿으면 보내지 않는다.
-func e2HTTPRefreshSession(ctx context.Context, execution *e2proxy.Execution, dir, origin string, auth E2HTTPFileAuth, counter *e2HTTPRefreshCounter, program *e2HTTPProgramCalls, label string) (http.Header, string) {
+func e2HTTPRefreshSession(ctx context.Context, execution *e2proxy.Execution, dir, origin string, auth E2HTTPFileAuth, counter *e2HTTPRefreshCounter, program *e2HTTPProgramCalls, label string) (header http.Header, result string) {
 	var account *E2HTTPFileAuthAccount
 	for i := range auth.Accounts {
 		if auth.Accounts[i].Label == label {
 			account = &auth.Accounts[i]
 		}
 	}
-	if execution == nil || ctx == nil || account == nil || counter == nil {
+	if execution == nil || ctx == nil || ctx.Err() != nil || account == nil || counter == nil {
 		return nil, E2HTTPAuthNotSent
 	}
-	if !counter.take(label) {
-		return nil, E2HTTPRefreshLimit
+	if status := counter.begin(label); status != "" {
+		return nil, status
 	}
+	defer func() { counter.finish(label, result == E2HTTPAuthAuthenticated && len(header) > 0) }()
 	call, err := execution.BeginCall(ctx, "auth-refresh")
 	if err != nil {
 		return nil, E2HTTPAuthNotSent
@@ -243,7 +287,7 @@ func e2HTTPRefreshSession(ctx context.Context, execution *e2proxy.Execution, dir
 		}
 	}()
 	sessions := E2HTTPSessions{}
-	result := authPrepOne(ctx, call, execution, dir, origin, auth.Login, *account, sessions)
+	result = authPrepOne(ctx, call, execution, dir, origin, auth.Login, *account, sessions)
 	return sessions[label], result
 }
 

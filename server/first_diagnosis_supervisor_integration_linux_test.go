@@ -13,6 +13,7 @@ import (
 	"github.com/Autumn-27/norma/llm"
 	"io"
 	"iter"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -157,9 +158,12 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	// 작업 뒤 목표 달성 순서를 쓰는 모드다. goal-met-unmatched-limit는 같은 순서에 E② 근거 없는 정책 제한 intent를 하나
 	// 더 둬서, 목표 달성 마감에서도 근거 대조 실패는 마감 실패이고 그 사유 코드가 진단 로그에 남는지 본다.
 	goalAfterWork := mode == "goal-met-after-work" || mode == "goal-met-unmatched-limit"
+	// 한 intent가 목표를 증명하는 순간 다른 Worker의 Bash 명령이 아직 진행 중인 모드다(실제 회차 24b). denied는 그 명령의
+	// 시도가 모두 보내지 않은 거부, mid-response는 그 명령이 보낸 요청의 응답을 받는 도중이다.
+	goalConcurrent := mode == "goal-met-concurrent-denied" || mode == "goal-met-concurrent-mid-response"
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	if mode == "cancel" || mode == "user-stop" || mode == "close-fail" || mode == "plan-turns" || goalAfterWork {
+	if mode == "cancel" || mode == "user-stop" || mode == "close-fail" || mode == "plan-turns" || goalAfterWork || goalConcurrent {
 		logger, err := diagnosticlog.Create(firstDiagnosisPrivateTemp(t), "run", mustFirstDiagnosisTaskNumber(task.ID), "")
 		if err != nil {
 			t.Fatal(err)
@@ -181,6 +185,11 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	targetEntered := make(chan struct{}, 1)
 	targetExited := make(chan struct{}, 1)
 	releaseTarget := make(chan struct{})
+	// 목표를 증명할 intent의 요청은 다른 Worker의 명령이 자리를 잡을 때까지 대상에서 붙잡는다. 두 명령이 실제로 겹쳤는지
+	// overlapped로 남긴다.
+	concurrentGate := make(chan struct{})
+	openConcurrentGate := sync.OnceFunc(func() { close(concurrentGate) })
+	var overlapped atomic.Bool
 	login := &authLoginTarget{token: "goal-met-owned-session-77cc"}
 	loginHandler := login.handler(t)
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -190,7 +199,51 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 			return
 		}
 		hits.Add(1)
-		if mode == "cancel" || mode == "user-stop" || mode == "planner-kill" || mode == "time-budget" {
+		if goalConcurrent {
+			switch r.URL.Query().Get("owned") {
+			case "hold":
+				// 다른 Worker의 요청: 상태 줄·헤더와 본문 앞부분만 보내고 붙잡는다(응답 수신 도중).
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Content-Length", "4096")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"owned_fixture":`))
+				if flusher, ok := w.(http.Flusher); ok {
+					flusher.Flush()
+				}
+				select {
+				case targetEntered <- struct{}{}:
+				default:
+				}
+				openConcurrentGate()
+				select {
+				case <-r.Context().Done():
+					select {
+					case targetExited <- struct{}{}:
+					default:
+					}
+				case <-releaseTarget:
+				}
+				return
+			case "gate":
+				select {
+				case <-concurrentGate:
+					overlapped.Store(true)
+				case <-r.Context().Done():
+					return
+				}
+			}
+		}
+		if mode == "planner-kill-mid-response" {
+			// 상태 줄·헤더와 본문 앞부분만 보내고 나머지를 붙잡는다. E②는 응답을 받는 중이다(응답 수신 도중 Planner kill).
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Length", "4096")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"owned_fixture":`))
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		}
+		if mode == "cancel" || mode == "user-stop" || mode == "planner-kill" || mode == "time-budget" || mode == "planner-kill-mid-response" {
 			select {
 			case targetEntered <- struct{}{}:
 			default:
@@ -243,6 +296,19 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	policy.HelperSHA256 = hex.EncodeToString(digest[:])
 	policy.Rules = []E2HTTPFileRule{{Ref: "owned-native-rule", Origin: target.URL, ConnectIP: "127.0.0.1", PathPrefix: "/allowed", PathScopeRef: "owned-native-path", Methods: []string{"GET"}}}
 	ruleOrigin := target.URL
+	refusedOrigin := ""
+	if mode == "planner-kill-refused" {
+		// 승인했지만 아무도 듣지 않는 포트다. E②는 연결을 시도하고(forward_attempted) 연결이 거부돼 송신 실패로 끝난다.
+		closed, listenErr := net.Listen("tcp", "127.0.0.1:0")
+		if listenErr != nil {
+			t.Fatal("닫힌 포트 fixture 준비 실패", listenErr)
+		}
+		refusedOrigin = "http://" + closed.Addr().String()
+		if err := closed.Close(); err != nil {
+			t.Fatal("닫힌 포트 fixture 정리 실패", err)
+		}
+		policy.Rules = append(policy.Rules, E2HTTPFileRule{Ref: "owned-refused-rule", Origin: refusedOrigin, ConnectIP: "127.0.0.1", PathPrefix: "/allowed", PathScopeRef: "owned-refused-path", Methods: []string{"GET"}})
+	}
 	if mode == "insert-assets" {
 		// 하위 도메인 이름의 승인 origin(연결은 고정 IP). 원본 upsert가 그 루트 도메인을 작업에 붙이지 않는지 본다(C24).
 		targetURL, parseErr := url.Parse(target.URL)
@@ -266,6 +332,15 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		// 승인 요청 예산을 한 번으로 둔다. 작업이 그 한 번을 쓰면 남은 E② 예산이 0이 된다. 예산 소진은 실패가 아니라
 		// 실행 상한 마감이다(계약 §3.1 "승인된 요청·시간·비용 예산 소진", budget_limited).
 		policy.MaxRequests = 1
+	}
+	if goalConcurrent {
+		policy.MaxRequests = 8
+		policy.Limits.MaxAttempts = 10
+		policy.Limits.MaxCalls = 8
+		policy.Runtime.MaxToolCalls = 8
+		policy.Runtime.MaxPlannerRounds = 8
+		// Bash 자리는 min(Worker 수, 동시 송신 상한)이다(#598). 제품 기본 Worker 3에 맞춰 3자리가 되게 한다.
+		policy.Limits.MaxConcurrent = firstDiagnosisConcurrentBashSlots
 	}
 	if goalAfterWork {
 		// 세 intent의 작업이 모두 끝난 뒤 Planner가 목표 달성을 판정해야 한다. 그 전에 실행 상한(요청 예산·도구 호출·
@@ -368,6 +443,17 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		// 대상은 바로 답하고, 명령은 호출 시간 상한을 넘겨 호스트가 멈춘다(결과 불명 송신 없음).
 		provider.command += "; sleep 30"
 	}
+	switch mode {
+	case "planner-kill-denied":
+		// 정책 거부(보내지 않음) 뒤 명령이 아직 돈다. 명령 시간 상한(5초) 전에 Planner가 kill_work로 멈춘다.
+		provider.command = "curl --silent --show-error --max-time 5 " + target.URL + "/forbidden; sleep 30"
+	case "planner-kill-refused":
+		// 연결을 시도했지만 연결 전에 거부된 송신 뒤 명령이 아직 돈다. 전달하지 않은 송신 실패라 그 intent의 미완료다(C02).
+		provider.command = "curl --silent --show-error --max-time 5 " + refusedOrigin + "/allowed; sleep 30"
+	case "planner-kill-mid-response":
+		// 정책 거부 하나 뒤의 요청이 응답을 받는 도중 멈춘다. 거부가 있어도 그 intent는 정책 제한이 아니라 결과 불명이다.
+		provider.command = "curl --silent --show-error --max-time 5 " + target.URL + "/forbidden; curl --silent --show-error --max-time 5 " + target.URL + "/allowed"
+	}
 	if mode == "request-budget-overflow" {
 		// 남은 예산이 하나인데 한 명령에서 두 번 보낸다. 둘째 요청은 E②가 예산 소진으로 보내지 않는다.
 		provider.command += "; curl --silent --show-error --max-time 5 " + target.URL + "/allowed"
@@ -409,8 +495,10 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		provider.command = "curl --silent --show-error --max-time 5 " + ruleOrigin + "/allowed"
 	}
 	var killIntent atomic.Int64
-	if mode == "planner-kill" {
-		// Worker의 요청이 대상에 붙잡혀 있는 동안 Planner가 깨어나 kill_work로 그 작업을 멈춘다(C27).
+	plannerKill := mode == "planner-kill" || mode == "planner-kill-denied" || mode == "planner-kill-refused" || mode == "planner-kill-mid-response"
+	if plannerKill {
+		// Worker의 요청이 대상에 붙잡혀 있는 동안(또는 거부·송신 실패 뒤 명령이 아직 도는 동안) Planner가 깨어나
+		// kill_work로 그 작업을 멈춘다(C27).
 		plannerProvider.killIntent = killIntent.Load
 	}
 	if mode == "goal-met" {
@@ -452,6 +540,23 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 				t.Fatal("근거 없는 제한 intent fixture 생성 실패")
 			}
 		}
+	}
+	var proveReady atomic.Bool
+	if goalConcurrent {
+		// 시험이 두 명령의 겹침을 확인한 뒤에만 Planner가 목표를 증명한다(prove_goal → 엔진 목표 달성 취소).
+		factID, err := task.Store.AddNode(pgdb.KindFact, map[string]any{"text": "Owned fixture evidence for the goal."}, 0, "confirmed", "system", nil)
+		if err != nil || factID <= 0 {
+			t.Fatal("목표 근거 fixture 생성 실패")
+		}
+		plannerProvider.goalID, plannerProvider.evidenceID = goalID, factID
+		plannerProvider.proveWhen = proveReady.Load
+		intentWorker = &firstDiagnosisIntentWorker{steps: map[string][]string{}}
+		for _, work := range firstDiagnosisGoalConcurrentWork(mode) {
+			for _, step := range work.steps {
+				intentWorker.steps[work.marker] = append(intentWorker.steps[work.marker], strings.ReplaceAll(step, "{T}", target.URL))
+			}
+		}
+		worker = intentWorker
 	}
 	// 실제 taskLLMRuntime.current의 role/model guard를 유지하고 profile cache의 모델만 대체한다.
 	firstDiagnosisInjectProfileProvider(t, runtime.server, profileID, &firstDiagnosisRoleRoutedProvider{worker: worker, planner: plannerProvider})
@@ -513,13 +618,23 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		case <-ctx.Done():
 			t.Fatal("실제 Supervisor Run 취소가 반환하지 않음")
 		}
-	} else if mode == "planner-kill" {
+	} else if plannerKill {
 		done := make(chan error, 1)
 		go func() { done <- supervisor.Run(ctx, task.ID, 0, "") }()
-		select {
-		case <-targetEntered:
-		case <-ctx.Done():
-			t.Fatal("Planner 동시 실행 시험의 실제 대상 요청이 시작되지 않음")
+		if mode == "planner-kill-denied" || mode == "planner-kill-refused" {
+			// 대상에는 아무것도 닿지 않는다. E② 기록에 거부·송신 실패 시도가 남으면(명령은 sleep 중) 멈춘다.
+			firstDiagnosisWaitForCall(t, ctx, runtime, task, func(c e2proxy.CallResult) bool {
+				if mode == "planner-kill-denied" {
+					return c.Counts.Denied > 0
+				}
+				return c.Counts.Transient > 0
+			})
+		} else {
+			select {
+			case <-targetEntered:
+			case <-ctx.Done():
+				t.Fatal("Planner 동시 실행 시험의 실제 대상 요청이 시작되지 않음")
+			}
 		}
 		// Worker의 Bash가 대상에서 붙잡혀 있다. 그 intent를 Planner에 알리고 Planner를 깨운다. C27 전에는 이 라운드가
 		// 실행 중 작업 때문에 건너뛰어진다.
@@ -533,6 +648,39 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		case runErr = <-done:
 		case <-ctx.Done():
 			t.Fatal("Planner 동시 실행 시험의 Supervisor Run이 반환하지 않음")
+		}
+	} else if goalConcurrent {
+		done := make(chan error, 1)
+		go func() { done <- supervisor.Run(ctx, task.ID, 0, "") }()
+		// 다른 Worker의 명령이 자리를 잡는다: 거부 시도가 기록된 채 명령이 sleep 중이거나, 보낸 요청의 응답을 받는 중이다.
+		if mode == "goal-met-concurrent-denied" {
+			firstDiagnosisWaitForCall(t, ctx, runtime, task, func(c e2proxy.CallResult) bool { return c.Counts.Denied > 0 && !c.Final })
+			openConcurrentGate()
+		} else {
+			select {
+			case <-targetEntered:
+			case <-ctx.Done():
+				t.Fatal("다른 Worker의 요청이 대상에 붙잡히지 않음")
+			}
+		}
+		// 목표를 증명할 intent의 작업이 끝나기를 기다린다. 그동안 다른 Worker의 명령은 계속 돈다.
+		slowIntent := firstDiagnosisWaitIntentStates(t, ctx, installer, task)
+		// 증명 직전에 다른 Worker의 E② 호출이 아직 열려 있어야 한다(명령 진행 중).
+		busyAtProve := false
+		if execution, ok := runtime.host.Runtime().Execution(task.ID); ok && execution != nil {
+			for _, call := range execution.Calls() {
+				busyAtProve = busyAtProve || call.IntentID == slowIntent && !call.Final
+			}
+		}
+		if !busyAtProve || !overlapped.Load() {
+			t.Fatalf("목표 증명 때 두 명령이 겹치지 않음 busy=%v overlapped=%v", busyAtProve, overlapped.Load())
+		}
+		proveReady.Store(true)
+		task.Notify()
+		select {
+		case runErr = <-done:
+		case <-ctx.Done():
+			t.Fatal("목표 달성 뒤 Supervisor Run이 반환하지 않음")
 		}
 	} else if mode == "time-budget" {
 		// 회차 실행 시간 상한(계약 §3.4): 마감 시작 시각이 오면 새 계획·새 intent 없이, 대상에 붙잡힌 작업은 유예 뒤
@@ -635,6 +783,10 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		if reason, _ := diagnosisCheckReason(runErr); reason != reasonClosurePolicyLimitedUnmatched {
 			t.Fatalf("목표 달성 마감 실패의 검사 사유 코드: %q", reason)
 		}
+		return
+	}
+	if goalConcurrent {
+		firstDiagnosisCheckGoalConcurrent(t, ctx, mode, runErr, supervisor, runtime, installer, task, plannerProvider, intentWorker, hits.Load(), targetExited)
 		return
 	}
 	if mode == "goal-met-after-work" {
@@ -797,6 +949,10 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 			}
 			t.Fatalf("실행 중 작업을 Planner가 멈추지 못함 err=%v killed=%v kill_result=%q result=%+v hits=%d exited=%v intent=%s/%s trusted=%v calls=%v", runErr, plannerProvider.killed, plannerProvider.killResult, result, hits.Load(), exited, intentState, blockedReason, trusted, calls)
 		}
+		return
+	}
+	if plannerKill {
+		firstDiagnosisCheckStoppedCommand(t, ctx, mode, runErr, supervisor, runtime, installer, task, plannerProvider, hits.Load(), targetExited)
 		return
 	}
 	if mode == "time-budget" {
@@ -1290,6 +1446,228 @@ func verifyPlannerTodoLog(t *testing.T, path string) {
 	}
 }
 
+// firstDiagnosisWaitForCall은 이 실행의 E② 호출 중 match가 참인 수가 생길 때까지 기다린다. 대상에 닿지 않는 요청(정책
+// 거부·연결 거부)을 낸 명령이 아직 도는 동안 Planner를 깨우는 데 쓴다.
+func firstDiagnosisWaitForCall(t *testing.T, ctx context.Context, runtime *FirstDiagnosisHTTPRuntime, task *Task, match func(e2proxy.CallResult) bool) {
+	t.Helper()
+	const poll = 10 * time.Millisecond
+	ticker := time.NewTicker(poll)
+	defer ticker.Stop()
+	for {
+		if execution, ok := runtime.host.Runtime().Execution(task.ID); ok && execution != nil {
+			for _, call := range execution.Calls() {
+				if match(call) {
+					return
+				}
+			}
+		}
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			t.Fatal("멈출 명령의 E② 시도 기록이 생기지 않음")
+		}
+	}
+}
+
+// firstDiagnosisCheckStoppedCommand는 Planner kill_work로 멈춘 명령(bash 미종료, 명령 시간 상한 아님)의 마감을 본다.
+// 시도 단위로 모두 대상에 전달되지 않았으면(보내지 않음, 연결 전 송신 실패) 실행은 실패가 아니라 그 intent의
+// 미완료(partial)다. 연결 뒤 응답 수신 도중 멈춘 시도가 있으면 거부가 섞여도 그 intent는 정책 제한·미완료가 아니라
+// 결과 불명이다(C02·C08).
+func firstDiagnosisCheckStoppedCommand(t *testing.T, ctx context.Context, mode string, runErr error, supervisor *FirstDiagnosisSupervisor, runtime *FirstDiagnosisHTTPRuntime, installer *pgdb.DB, task *Task, planner *firstDiagnosisPlannerProbeProvider, hits int64, targetExited <-chan struct{}) {
+	t.Helper()
+	result := supervisor.RunResult()
+	results := runtime.host.Runtime().Results(task.ID)
+	var intentState, blockedReason string
+	if err := installer.QueryRowContext(ctx, "SELECT state,COALESCE(blocked_reason,'') FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent'", task.ExpID).Scan(&intentState, &blockedReason); err != nil {
+		t.Fatal("멈춘 intent 조회 실패", err)
+	}
+	var trusted e2runner.TrustedResult
+	if len(results) == 1 {
+		trusted = results[0]
+	}
+	c := trusted.Call.Counts
+	// 시도 단위 영수증으로 연결 성립 여부를 직접 본다(연결 전 송신 실패인지, 연결 뒤 응답 수신 도중인지).
+	var attempts []e2proxy.Receipt
+	if execution, found := runtime.host.Runtime().Execution(task.ID); found && execution != nil {
+		attempts = firstDiagnosisCallAttempts(execution)[trusted.Call.CallRef]
+	}
+	attemptWith := func(reason e2proxy.Reason) (e2proxy.Receipt, bool) {
+		for _, a := range attempts {
+			if a.Reason == reason {
+				return a, true
+			}
+		}
+		return e2proxy.Receipt{}, false
+	}
+	stopped := runErr == nil && planner.killed && result != nil && result.Valid() && result.Outcome == diagnosis.OutcomePartial && result.ClosingReason == "" &&
+		len(results) == 1 && trusted.Final && trusted.ProcessDrained && trusted.ProxyDrained && !trusted.ProcessBashExited && trusted.Termination == "" &&
+		trusted.Call.AuditComplete && trusted.Execution.AuditComplete
+	var ok bool
+	switch mode {
+	case "planner-kill-denied":
+		ok = stopped && hits == 0 && trusted.Classification == "policy_not_executed" && c.Denied == 1 && c.ForwardAttempted == 0 && c.Unknown == 0 &&
+			result.IntentOutcomes == (diagnosis.IntentOutcomes{Incomplete: 1}) && intentState == "stopped"
+	case "planner-kill-refused":
+		// 연결을 시도했지만(forward_attempted) 연결 전에 거부된 송신이다. E②는 전달하지 않은 송신 실패로 기록하므로(C02)
+		// 결과 불명이 아니라 그 intent의 미완료다.
+		refused, found := attemptWith(e2proxy.TransportFailed)
+		ok = stopped && hits == 0 && found && refused.ForwardAttempted && !refused.RequestWritten && !refused.ResponseReceived &&
+			trusted.Classification == "transient_failure" && c.Transient == 1 && c.ForwardAttempted == 1 && c.Responses == 0 && c.Unknown == 0 &&
+			result.IntentOutcomes == (diagnosis.IntentOutcomes{Incomplete: 1}) && intentState == "stopped"
+	case "planner-kill-mid-response":
+		// 대상 연결은 멈춘 뒤 끊긴다. 서버 쪽 감지는 비동기라 잠깐 기다린다.
+		const exitWait = 2 * time.Second
+		exited := false
+		select {
+		case <-targetExited:
+			exited = true
+		case <-time.After(exitWait):
+		}
+		// 연결이 맺어지고 요청을 쓴 뒤 상태 줄·헤더를 받았고 본문을 끝까지 받지 못했다(연결 뒤 응답 수신 도중).
+		mid, found := attemptWith(e2proxy.Unknown)
+		ok = stopped && hits == 1 && exited && found && mid.ForwardAttempted && mid.RequestWritten && mid.ResponseReceived && !mid.ResponseComplete &&
+			trusted.Classification == "result_unknown" && c.Denied == 1 && c.ForwardAttempted == 1 && c.Responses == 1 && c.Unknown == 1 &&
+			result.IntentOutcomes == (diagnosis.IntentOutcomes{Unknown: 1}) && intentState == "blocked" && blockedReason == "e2_http_result_unknown"
+	}
+	if !ok {
+		check, _ := diagnosisCheckReason(runErr)
+		t.Fatalf("%s: 멈춘 명령의 마감이 시도 단위 결과와 다름 err=%v check=%q killed=%v result=%+v hits=%d intent=%s/%s class=%s bash=%v termination=%q reason=%s counts=%+v",
+			mode, runErr, check, planner.killed, result, hits, intentState, blockedReason, trusted.Classification, trusted.ProcessBashExited, trusted.Termination, trusted.Call.Reason, c)
+	}
+}
+
+// firstDiagnosisConcurrentBashSlots는 동시 명령 시험의 Bash 자리 수다(제품 기본 Worker 수 3).
+const firstDiagnosisConcurrentBashSlots = 3
+
+// firstDiagnosisGoalConcurrentWork는 진행 중 명령이 있는 목표 달성 시험의 intent다. 빠른 intent는 다른 Worker의 명령이
+// 자리를 잡은 뒤에야 대상이 답하는 요청 하나로 끝난다(done). 느린 intent는 denied면 거부 뒤 sleep, mid-response면 거부 뒤
+// 대상이 응답 도중 붙잡는 요청이다. 목표 증명은 빠른 intent가 끝나고 느린 intent의 명령이 아직 돌 때 한다.
+func firstDiagnosisGoalConcurrentWork(mode string) []struct {
+	marker string
+	steps  []string
+} {
+	slow := "curl --silent --show-error --max-time 5 {T}/forbidden; sleep 30"
+	if mode == "goal-met-concurrent-mid-response" {
+		slow = "curl --silent --show-error --max-time 5 {T}/forbidden; curl --silent --show-error --max-time 5 '{T}/allowed?owned=hold'"
+	}
+	return []struct {
+		marker string
+		steps  []string
+	}{
+		{"Owned concurrent goal quick read", []string{"curl --silent --show-error --max-time 5 '{T}/allowed?owned=gate'"}},
+		{"Owned concurrent goal slow read", []string{slow}},
+	}
+}
+
+// firstDiagnosisWaitIntentStates는 intent 하나가 done이고 하나가 running일 때까지 기다리고 running intent를 돌려준다.
+func firstDiagnosisWaitIntentStates(t *testing.T, ctx context.Context, installer *pgdb.DB, task *Task) int64 {
+	t.Helper()
+	const poll = 10 * time.Millisecond
+	ticker := time.NewTicker(poll)
+	defer ticker.Stop()
+	for {
+		var done, running int
+		var runningID int64
+		rows, err := installer.QueryContext(ctx, "SELECT id,state FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent'", task.ExpID)
+		if err != nil {
+			t.Fatal("intent 상태 조회 실패", err)
+		}
+		for rows.Next() {
+			var id int64
+			var state string
+			if err := rows.Scan(&id, &state); err != nil {
+				_ = rows.Close()
+				t.Fatal("intent 상태 읽기 실패", err)
+			}
+			switch state {
+			case "done":
+				done++
+			case "running":
+				running++
+				runningID = id
+			}
+		}
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			t.Fatal("intent 상태 조회 마감 실패", err)
+		}
+		if done == 1 && running == 1 {
+			return runningID
+		}
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			t.Fatal("목표를 증명할 intent가 끝나지 않거나 다른 Worker의 명령이 먼저 끝남")
+		}
+	}
+}
+
+// firstDiagnosisCheckGoalConcurrent는 다른 Worker의 Bash 명령이 진행 중일 때 목표 달성으로 끝난 실행의 마감을 본다.
+// 진행 중이던 명령의 시도가 모두 보내지 않은 거부면 실행은 실패가 아니라 그 intent의 미완료(C08 partial)다. 그 명령이 보낸
+// 요청의 응답을 받는 도중이었으면 거부가 섞여도 그 intent는 결과 불명이다.
+func firstDiagnosisCheckGoalConcurrent(t *testing.T, ctx context.Context, mode string, runErr error, supervisor *FirstDiagnosisSupervisor, runtime *FirstDiagnosisHTTPRuntime, installer *pgdb.DB, task *Task, planner *firstDiagnosisPlannerProbeProvider, worker *firstDiagnosisIntentWorker, hits int64, targetExited <-chan struct{}) {
+	t.Helper()
+	result := supervisor.RunResult()
+	results := runtime.host.Runtime().Results(task.ID)
+	var slow e2runner.TrustedResult
+	completed, slots := 0, true
+	for _, r := range results {
+		slots = slots && r.ProcessLimits.BashSlots == firstDiagnosisConcurrentBashSlots
+		if r.Classification == "completed" {
+			completed++
+			continue
+		}
+		slow = r
+	}
+	states := map[string]int{}
+	var slowState, slowReason string
+	rows, err := installer.QueryContext(ctx, "SELECT state,COALESCE(blocked_reason,'') FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent'", task.ExpID)
+	if err != nil {
+		t.Fatal("intent 조회 실패", err)
+	}
+	for rows.Next() {
+		var state, reason string
+		if err := rows.Scan(&state, &reason); err != nil {
+			_ = rows.Close()
+			t.Fatal("intent 읽기 실패", err)
+		}
+		states[state]++
+		if state != "done" {
+			slowState, slowReason = state, reason
+		}
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		t.Fatal("intent 조회 마감 실패", err)
+	}
+	worker.mu.Lock()
+	unmatched := worker.unmatched
+	worker.mu.Unlock()
+	c := slow.Call.Counts
+	closed := runErr == nil && result != nil && result.Valid() && result.Outcome == diagnosis.OutcomePartial && result.ClosingReason == "" &&
+		planner.proved && task.lifecycleSnapshot().Status == "done" && !unmatched && slots && len(results) == 2 && completed == 1 && states["done"] == 1 &&
+		slow.Final && slow.ProcessDrained && slow.ProxyDrained && !slow.ProcessBashExited && slow.Termination == "" && slow.Call.AuditComplete && slow.Execution.AuditComplete
+	var ok bool
+	switch mode {
+	case "goal-met-concurrent-denied":
+		ok = closed && hits == 1 && slow.Classification == "policy_not_executed" && c.Denied == 1 && c.ForwardAttempted == 0 && c.Unknown == 0 &&
+			result.IntentOutcomes == (diagnosis.IntentOutcomes{Done: 1, Incomplete: 1}) && slowState == "stopped"
+	case "goal-met-concurrent-mid-response":
+		const exitWait = 2 * time.Second
+		exited := false
+		select {
+		case <-targetExited:
+			exited = true
+		case <-time.After(exitWait):
+		}
+		ok = closed && hits == 2 && exited && slow.Classification == "result_unknown" && c.Denied == 1 && c.ForwardAttempted == 1 && c.Responses == 1 && c.Unknown == 1 &&
+			result.IntentOutcomes == (diagnosis.IntentOutcomes{Done: 1, Unknown: 1}) && slowState == "blocked" && slowReason == "e2_http_result_unknown"
+	}
+	if !ok {
+		check, _ := diagnosisCheckReason(runErr)
+		t.Fatalf("%s: 진행 중 명령이 있는 목표 달성 마감이 시도 단위 결과와 다름 err=%v check=%q result=%+v proved=%v status=%s hits=%d slots=%v results=%d completed=%d states=%v slow=%s/%s class=%s bash=%v termination=%q reason=%s counts=%+v",
+			mode, runErr, check, result, planner.proved, task.lifecycleSnapshot().Status, hits, slots, len(results), completed, states, slowState, slowReason, slow.Classification, slow.ProcessBashExited, slow.Termination, slow.Call.Reason, c)
+	}
+}
+
 func verifySupervisorFailureLog(t *testing.T, path, mode string) {
 	t.Helper()
 	file, err := os.Open(path)
@@ -1326,6 +1704,10 @@ func verifySupervisorFailureLog(t *testing.T, path, mode string) {
 		case "goal-met-after-work":
 			if event.Status != "succeeded" || event.ReasonCode != "" {
 				t.Errorf("목표 달성 마감의 로그 상태 불일치: stage=%s status=%s reason=%s", event.Stage, event.Status, event.ReasonCode)
+			}
+		case "goal-met-concurrent-denied", "goal-met-concurrent-mid-response":
+			if event.Status != "succeeded" || event.ReasonCode != "" {
+				t.Errorf("%s: 진행 중 명령이 있는 목표 달성 마감의 로그 상태 불일치: stage=%s status=%s reason=%s", mode, event.Stage, event.Status, event.ReasonCode)
 			}
 		case "goal-met-unmatched-limit":
 			// 어느 검사가 마감을 막았는지 일반 execution_failed가 아니라 검사 사유 코드로 남는다.
