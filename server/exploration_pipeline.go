@@ -32,9 +32,11 @@ type ExplorationPipelineOptions struct {
 	Binding      exploration.Binding
 	SourceDigest string
 	TargetURL    string
-	MaxTurns     int
-	MaxDuration  time.Duration
-	OpenHost     ExplorationPipelineFactory
+	// ApprovedPaths는 대상 승인 경로 표현이다. 탐색 에이전트가 승인 경로마다 시작하게 넘긴다(통제는 탐색 경계 그대로).
+	ApprovedPaths []string
+	MaxTurns      int
+	MaxDuration   time.Duration
+	OpenHost      ExplorationPipelineFactory
 }
 type ExplorationPipelineResult struct {
 	Status      string
@@ -333,7 +335,7 @@ func (s *Server) RunExplorationPipeline(ctx context.Context, task *Task, o Explo
 			return out, e
 		}
 	} else {
-		_, e = session.Run(ctx, worker, agent.ExplorationRunOptions{TargetURL: o.TargetURL, Reporter: o.Workflow, MaxTurns: o.MaxTurns, MaxDuration: o.MaxDuration}, func(a db.Activity) {
+		_, e = session.Run(ctx, worker, agent.ExplorationRunOptions{TargetURL: o.TargetURL, ApprovedPaths: o.ApprovedPaths, Reporter: o.Workflow, MaxTurns: o.MaxTurns, MaxDuration: o.MaxDuration}, func(a db.Activity) {
 			if s.engine != nil && s.engine.m != nil {
 				a.Worker = "exploration"
 				s.engine.emitActivity(task, a)

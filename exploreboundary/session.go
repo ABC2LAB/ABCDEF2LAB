@@ -146,6 +146,9 @@ func (s *Session) closeLocked(reason exploration.Reason) {
 	s.active = false
 	s.reason = reason
 	close(s.closedCh)
+	if s.policy.Evidence != nil {
+		s.policy.Evidence.closed(reason, s.policy.Now().UTC())
+	}
 }
 
 func (s *Session) stateLocked() exploration.State {
@@ -237,6 +240,10 @@ type Ticket struct {
 
 func (s *Session) recordLocked(r Record) {
 	r = boundRecord(r)
+	// 원자료에는 메모리 차단 행 상한과 별개로 모든 행을 쓴다. 쓰지 못하면 원자료가 불완전해졌으므로 새 송신을 멈춘다.
+	if s.policy.Evidence != nil && s.policy.Evidence.row(r) != nil {
+		s.closeLocked(exploration.BoundaryUnavailable)
+	}
 	if r.Decision == "denied" {
 		if s.deniedRows >= s.policy.MaxDeniedRecords {
 			s.omitted++
@@ -264,10 +271,21 @@ func (s *Session) Refuse(req Request, reason string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	dest := DestExternal
-	if strings.ToLower(strings.TrimSuffix(req.Host, ".")) == s.target.Host && req.Port == s.target.Port {
+	if s.approvedOriginLocked(req.Host, req.Port) {
 		dest = DestApproved
 	}
 	s.denyLocked(req, dest, reason, "")
+}
+
+// approvedOrigin은 요청 이름·포트가 승인 대상과 같은지 본다(Refuse와 같은 정규화, 스킴은 보지 않음).
+func (s *Session) approvedOrigin(host string, port uint16) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.approvedOriginLocked(host, port)
+}
+
+func (s *Session) approvedOriginLocked(host string, port uint16) bool {
+	return strings.ToLower(strings.TrimSuffix(host, ".")) == s.target.Host && port == s.target.Port
 }
 
 func (s *Session) admitLocked(req Request, dest DestClass, dial netip.AddrPort, spki, canonical, external string) (Decision, *Ticket) {

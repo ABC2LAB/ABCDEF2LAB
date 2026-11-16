@@ -151,6 +151,8 @@ sudo chmod 0600 "$D"/*
 export EXPLORE_BOUNDARY_CONFIG_FILE=$D/boundary.json EXPLORE_CA_CERT_FILE=$D/ca.pem EXPLORE_CA_KEY_FILE=$D/ca.key EXPLORE_PATH_KEY_FILE=$D/path.key
 ```
 
+경계 설정의 `evidence_dir`·`evidence_max_bytes`(경계 원자료, [계약 §4.1](../../docs/contracts/exploration-boundary.md#41-평가수용시험-회차의-경계-원자료-abc2labexplore-boundary-exportv1))는 평가·수용시험 회차 전용이다. 제품 설정에는 넣지 않는다(제품 경계 기록은 export하지 않는다). 평가 배치용 `eval_upstream`([계약 §4.2](../../docs/contracts/exploration-boundary.md#42-평가-배치의-경계-upstream-eval_upstream))도 제품 설정에는 넣지 않는다. 원자료 칸 없이 주면 경계가 시작하지 않는다.
+
 설치 입력에는 다음 블록을 넣는다(`boundary_ca_file`은 installer 안의 경로다. installer 진입점이 `EXPLORE_CA_CERT_FILE`을 이 경로로 옮기고, 설치기가 설치 디렉터리로 복사해 SHA-256을 고정한다).
 
 ```json

@@ -67,6 +67,29 @@
 
 이 기록이 "실제로 보냈다"의 정본이다. 탐색 경계 차단 수는 E② 진단 차단과 따로 집계한다(#387).
 
+### 4.1 평가·수용시험 회차의 경계 원자료 (`abc2lab.explore-boundary-export/v1`)
+
+보존 시험 서명 근거(`signed_evidence.exploration_boundary`, [서명된 보존 원자료](../evaluation/preservation-signed-runs.md))가 쓰는 원자료다. 계측기 원자료와 같은 방식으로 만든다. 경계는 서명 키를 갖지 않고, 러너가 경계 종료 뒤 최종 바이트를 읽어 hash·카운터를 계산하고 자기 키로 서명한다. 엔진은 이 원자료를 중계하지 않는다(측정 대상이 경계 근거를 바꿀 수 없게).
+
+- **켜는 곳**: 경계 설정(`jindo.explore-boundary-config/v1`)의 `evidence_dir`·`evidence_max_bytes`를 함께 줄 때만 쓴다. 한쪽만 주면 시작하지 않는다. 바이트 상한은 회차 정책이 정하고 코드 기본값이 없다. **제품 설치는 켜지 않는다**(제품 compose의 경계는 보호 입력·제어 소켓 볼륨만 붙고, 예시 설정에 이 칸이 없다 — `scripts/ci/test_product_explore_boundary.py`). 제품 회차의 경계 기록은 export하지 않는다.
+- **디렉터리 소유**: 계측기와 같다. 소유를 넘기지 않는다. 러너가 자기 uid·0700으로 근거 디렉터리를 만들고, 그 디렉터리를 **경계 컨테이너에만** 붙이며, 경계를 같은 uid로 띄운다. 경계는 디렉터리가 정확히 0700이고 소유자가 자기 euid가 아니면, 또는 이전 회차 파일이 남아 있으면 시작하지 않는다. 엔진·브라우저·MCP 컨테이너에는 이 디렉터리를 붙이지 않는다(평가 배치 시험으로 고정한다).
+- **파일 두 개**:
+  - `boundary-records.jsonl`: 한 줄이 §4 기록 한 행 그대로다. 메모리 차단 행 상한(`max_denied_records`, 제어 소켓 `records`의 `omitted`)과 별개로 모든 행을 쓴다. 경로는 계측기와 같은 키로 가린 path-mask/v2다(평가 회차의 `path_mask_key_file`은 계측기 `-path-key-file`과 같은 키). 행마다 fsync하지 않는다. 버퍼에 쓰고 세션 마감과 봉인 때 flush·fsync한다.
+  - `boundary-sealed.json`: 경계를 내릴 때(러너 `down`의 SIGTERM, 또는 경계가 스스로 멈출 때) 입구·터널을 닫고, 열린 세션이 있으면 `cancelled`로 닫아 진행 중 송신을 `close_wait_ms`까지 기다린다. 그다음 아직 행을 남길 수 있는 입구 처리(송신 판정 전 본문을 읽던 핸들러, 입구를 닫기 전에 읽혀 늦게 시작한 핸들러, 터널)가 끝나길 같은 상한까지 기다린 뒤(드레인), 행 파일을 flush·fsync하고 **마지막에** 원자적으로 쓴다. 세션을 먼저 닫으므로 드레인 중 새 송신은 없고 그 요청들은 차단 행으로 남는다. 칸: `format`, `path_profile`, `path_key_ref`, `max_bytes`, `session`(결속 7개 — `session_ref`·`run_ref`·`job_id`·`task_id`·`target_ref`·`target_revision`·`source_digest` — 와 `opened_at`·`closed_at`·`closed_reason`·`rows_at_close`·`closed_at_seal`, 세션을 열지 못했으면 `null`), `sealed_at`, `sealed_by`(`shutdown`·`failure`), 실제로 쓴 `rows`·`bytes`·`rows_sha256`, `truncated`·`rows_not_written`, `inflight_at_seal`, `log_complete`.
+- **세션 하나**: 원자료 디렉터리 하나에는 세션 하나만 남긴다. 세션을 한 번 받은 뒤의 `open`은 `unavailable`로 거부한다(평가는 회차마다 경계를 새로 띄운다).
+- **잘림·실패**: 행 파일이 `evidence_max_bytes`에 닿으면 그 뒤 행은 쓰지 않고 `rows_not_written`만 센다. 송신은 멈추지 않는다(회차 판정은 러너가 `UNDECIDABLE`로 둔다). 쓰기·flush·fsync가 실패하면 원자료가 불완전해진 것이라 그 세션을 `boundary_unavailable`로 닫아 새 송신을 멈추고 표식에 `log_complete=false`를 남긴다. 봉인 때 끝나지 않은 송신과 드레인 상한 안에 끝나지 않은 입구 처리는 원자료에 행이 없을 수 있고, 그 합이 `inflight_at_seal`이다(0이 아니면 원자료가 불완전하다). 표식이 없으면 경계가 봉인 전에 죽은 것이다.
+- **러너가 하는 일**(검증·대조 규칙·상태값은 [서명된 보존 원자료](../evaluation/preservation-signed-runs.md)와 [수용시험 P03](../evaluation/browser-acceptance.md)): 표식의 카운터를 믿지 않고 행에서 다시 센다. 결속은 러너가 만든 작업과 맞아야 하고, `path_key_ref`는 계측기 경로 행과 같아야 한다. 차단 수는 E② 진단 차단·반복 차단 수와 따로 싣고 합치지 않는다. 원자료를 못 쓴 회차의 차단 수를 0으로 채우지 않는다.
+- 이 원자료와 계측기 대조는 탐색 입구 트래픽이 경계를 지났는지의 장부 대조다. 네트워크 격리 증명이 아니다(격리는 배치 검사·B16 프로브가 따로 본다).
+
+### 4.2 평가 배치의 경계 upstream (`eval_upstream`)
+
+평가 러너의 탐색 분리 배치(결정안 #624 `docs/evaluation/exploration-split-decision.md` §2)에서는 경계가 승인 대상에 직접 닿지 않고 계측기 탐색 입구를 거쳐야 한다. 계측기가 탐색 트래픽을 진단 트래픽(본 입구)과 나눠 세고 경계 원자료와 대조(P03)하기 위해서다.
+
+- 경계 설정 `eval_upstream`(IP:포트 리터럴)을 주면, 판정이 승인 대상으로 보낸 **http** 요청만 대상 주소 대신 이 주소로 연결한다. 요청은 origin-form이고 `Host`는 승인 대상 그대로다. 판정·기록·상한은 바뀌지 않고 연결 주소만 바뀐다. 외부 자원은 판정 주소 그대로다.
+- 평가 upstream은 평문이라, 이 모드에서 승인 대상 **https** 요청은 판정 전에 `protocol_unsupported`로 막고 기록한다. 대상 주소로 우회하지 않는다(계측기 본 입구로 새면 입구 대조가 깨진다). 평가 배치의 대상은 http로 등록한다(C22).
+- `eval_upstream`은 원자료 칸(`evidence_dir`·`evidence_max_bytes`, §4.1)과 같이 줄 때만 받는다. 원자료 없이 주거나, 이름·포트 0·지정되지 않은 주소·멀티캐스트·zone·경계 입구 자신·차단할 제어 통로를 가리키면 경계가 시작하지 않는다.
+- 제품 설정에는 넣지 않는다. 제품 예시 설정·README·compose에 이 칸이 없음을 `scripts/ci/test_product_explore_boundary.py`가 확인한다. 제품 경계는 지금처럼 판정 주소로만 연결하고 https 대상의 TLS·SPKI 고정을 그대로 둔다.
+
 ## 5. 실행 환경 분리
 
 - 탐색 실행기 프로세스(브라우저, MCP, API Recon, 자식 프로세스)는 경계 하나만 닿는 네트워크 namespace에서 돈다. 브라우저는 브라우저 입구만, Bash·Node·API Recon은 직접 입구만 닿는 서로 다른 샌드박스에 둔다. 직접 샌드박스에서는 브라우저 프로세스의 명령줄·환경·프로필을 읽지 못한다.

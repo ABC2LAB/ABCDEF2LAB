@@ -18,6 +18,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,11 +51,22 @@ type ProxyConfig struct {
 	MaxTunnels       int
 	Timeout          time.Duration
 	LeafValidity     time.Duration
+	// EvalUpstream은 평가·수용시험 배치에서만 주는 계측기 탐색 입구 주소다(계약 §4.2). 주면 판정이 승인 대상으로 보낸
+	// http 요청을 대상 주소 대신 이 주소로 연결한다. 판정·기록은 그대로이고 연결 주소만 바뀐다. 평가 upstream은 평문이라
+	// 승인 대상 https 요청은 이 모드에서 열지 않는다. 비어 있으면(제품) 늘 판정이 정한 대상 주소로 연결한다.
+	EvalUpstream netip.AddrPort
 }
 
 func (c ProxyConfig) valid() bool {
 	return (c.Ingress == BrowserIngress || c.Ingress == DirectIngress) && c.Current != nil && c.CA != nil && c.CAKey != nil &&
-		c.MaxRequestBytes > 0 && c.MaxResponseBytes > 0 && c.MaxTunnels > 0 && c.Timeout > 0 && c.LeafValidity > 0
+		c.MaxRequestBytes > 0 && c.MaxResponseBytes > 0 && c.MaxTunnels > 0 && c.Timeout > 0 && c.LeafValidity > 0 &&
+		(!c.EvalUpstream.IsValid() || validEvalUpstream(c.EvalUpstream))
+}
+
+// validEvalUpstream은 평가 upstream 주소 모양을 본다: 포트가 있고, 지정되지 않은·멀티캐스트 주소·zone이 아니다.
+func validEvalUpstream(ap netip.AddrPort) bool {
+	a := ap.Addr()
+	return ap.Port() != 0 && !a.IsUnspecified() && !a.IsMulticast() && a.Zone() == ""
 }
 
 // Proxy는 CONNECT를 받아 TLS를 가로채고 안쪽 요청마다 Session.Admit 판정을 받은 뒤에만 대상에 보낸다.
@@ -239,6 +251,13 @@ func (p *Proxy) forward(w http.ResponseWriter, in *http.Request, scheme, host st
 		deny(w, ReasonProtocolUnsupported)
 		return
 	}
+	if p.cfg.EvalUpstream.IsValid() && scheme != "http" && s.approvedOrigin(host, port) {
+		// 평가 upstream(계측기 탐색 입구)은 평문 http라 승인 대상 https 전달을 그대로 옮길 수 없다. 지원하지 않는 경로는
+		// 대상 주소로 우회하지 않고 막는다(계측기 본 입구로 새면 입구 대조가 깨진다).
+		s.Refuse(req, ReasonProtocolUnsupported)
+		deny(w, ReasonProtocolUnsupported)
+		return
+	}
 	body, err := io.ReadAll(io.LimitReader(in.Body, p.cfg.MaxRequestBytes+1))
 	if err != nil || int64(len(body)) > p.cfg.MaxRequestBytes {
 		s.Refuse(req, ReasonProtocolUnsupported)
@@ -274,11 +293,12 @@ func (p *Proxy) forward(w http.ResponseWriter, in *http.Request, scheme, host st
 	out.Header.Del(SeqHeader)
 	out.Body = io.NopCloser(bytes.NewReader(body))
 	out.ContentLength = int64(len(body))
+	dial := p.dialAddr(d)
 	transport := &http.Transport{Proxy: nil, DisableKeepAlives: true, ForceAttemptHTTP2: false, TLSHandshakeTimeout: p.cfg.Timeout, ResponseHeaderTimeout: p.cfg.Timeout,
 		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, ServerName: host, RootCAs: p.cfg.Roots, NextProtos: []string{"http/1.1"}},
 		DialContext: func(dctx context.Context, network, _ string) (net.Conn, error) {
 			// 판정이 정한 주소로만 연결한다. 실행기·요청의 이름 풀이를 쓰지 않는다.
-			return (&net.Dialer{Timeout: p.cfg.Timeout}).DialContext(dctx, "tcp", d.Dial.String())
+			return (&net.Dialer{Timeout: p.cfg.Timeout}).DialContext(dctx, "tcp", dial.String())
 		}}
 	if d.VerifySPKI != "" {
 		pin := d.VerifySPKI
@@ -379,6 +399,18 @@ func (p *Proxy) CloseTunnels() {
 		_ = c.Close()
 	}
 }
+
+// dialAddr는 판정이 허용한 요청을 연결할 주소다. 평가 배치에서는 승인 대상 전달만 계측기 탐색 입구로 보내고,
+// 외부 자원은 판정 주소 그대로다. 제품(평가 upstream 없음)은 늘 판정 주소다.
+func (p *Proxy) dialAddr(d Decision) netip.AddrPort {
+	if p.cfg.EvalUpstream.IsValid() && d.Dest == DestApproved {
+		return p.cfg.EvalUpstream
+	}
+	return d.Dial
+}
+
+// EvalUpstream은 설정된 평가 upstream이다(제품이면 비어 있다). 경계 조립 시험이 설정 전달을 확인하는 데 쓴다.
+func (p *Proxy) EvalUpstream() netip.AddrPort { return p.cfg.EvalUpstream }
 
 // Tunnels는 열린 터널 수다.
 func (p *Proxy) Tunnels() int { p.mu.Lock(); defer p.mu.Unlock(); return len(p.tunnels) }

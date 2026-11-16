@@ -54,7 +54,7 @@ func validateE2HTTPPolicyDocument(raw []byte, prepared bool) (E2HTTPFilePolicy, 
 
 func validateE2HTTPPolicyDocumentMode(raw []byte, prepared, run bool) (E2HTTPFilePolicy, string, error) {
 	var policy E2HTTPFilePolicy
-	if len(raw) == 0 || len(raw) > e2config.MaxPolicyBytes || !validE2HTTPPathMatchFields(raw) || !utf8.Valid(raw) || strictJSON(raw, &policy) != nil {
+	if len(raw) == 0 || len(raw) > e2config.MaxPolicyBytes || !validE2HTTPPathMatchFields(raw) || !validE2HTTPPasswordResponseField(raw) || !utf8.Valid(raw) || strictJSON(raw, &policy) != nil {
 		return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
 	}
 	top := []string{"approval_mode", "format", "run_ref", "reset_ref", "policy_ref", "case_ref", "policy_revision", "budget_ref", "owner_ref", "account_ref", "session_ref", "valid_from", "valid_until", "max_requests", "header_mode", "evaluation", "state_dir", "helper", "helper_sha256", "ca_cert", "ca_key", "rules", "limits", "proxy", "runtime"}
@@ -169,7 +169,7 @@ func validateE2HTTPPolicyDocumentMode(raw []byte, prepared, run bool) (E2HTTPFil
 	if !ok1 || !ok2 || !ok3 || !ok4 || !ok5 || !ok6 {
 		return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
 	}
-	cfg := e2proxy.Config{ApprovalMode: policy.ApprovalMode, Scope: transmit.Scope{RunRef: policy.RunRef}, HeaderMode: policy.HeaderMode,
+	cfg := e2proxy.Config{ApprovalMode: policy.ApprovalMode, Scope: transmit.Scope{RunRef: policy.RunRef}, HeaderMode: policy.HeaderMode, PasswordResponse: e2HTTPPasswordResponse(policy.Auth),
 		Evaluation: policy.Evaluation, Rules: rules, Limits: e2proxy.Limits{MaxAttempts: policy.Limits.MaxAttempts, MaxCalls: policy.Limits.MaxCalls,
 			MaxConcurrent: policy.Limits.MaxConcurrent, MaxBodyBytes: policy.Limits.MaxBodyBytes, MaxResponseBodyBytes: policy.Limits.MaxResponseBodyBytes,
 			MaxResponseScanBytes: policy.Limits.MaxResponseScanBytes, RequestTimeout: requestTimeout, CallTimeout: callTimeout,
@@ -245,6 +245,31 @@ func validE2HTTPPathMatchFields(raw []byte) bool {
 			if strings.EqualFold(name, "path_match") && (name != "path_match" || !bytes.Equal(value, []byte(`"exact"`))) {
 				return false
 			}
+		}
+	}
+	return true
+}
+
+// 선택 모드의 null·별칭이 이전 전체 보류 기본값으로 해석되지 않게 factory와 정적 검증이 함께 쓴다.
+func validE2HTTPPasswordResponseField(raw []byte) bool {
+	var document map[string]json.RawMessage
+	if json.Unmarshal(raw, &document) != nil {
+		return false
+	}
+	for name := range document {
+		if strings.EqualFold(name, "auth") && name != "auth" {
+			return false
+		}
+	}
+	var auth map[string]json.RawMessage
+	if value, ok := document["auth"]; ok && !bytes.Equal(value, []byte("null")) {
+		if json.Unmarshal(value, &auth) != nil {
+			return false
+		}
+	}
+	for name, value := range auth {
+		if strings.EqualFold(name, "password_response") && (name != "password_response" || !bytes.Equal(value, []byte(`"mask_spans_v1"`))) {
+			return false
 		}
 	}
 	return true

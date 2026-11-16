@@ -12,11 +12,14 @@ import math
 import re
 from pathlib import Path
 
+import boundary_export
 from run_record import sign_run_record
 from runner_evidence import (DRAINED_MARKER, ENGINE_LOG, PATH_LOG, SEALED_MARKER, EvidenceError, MeterFiles,
                              _read_owned, drain_complete, final_log_consistent, ingress_counts, validate_ingress_layout)
 
-FORMAT = "abc2lab.preservation-round/v1"
+# v2는 탐색 경계 원자료 요약(exploration_boundary)을 더했다. v1 기록은 읽되 경계 근거가 없는 것으로 본다.
+FORMAT = "abc2lab.preservation-round/v2"
+FORMAT_V1 = "abc2lab.preservation-round/v1"
 NAME = "preservation-round.json"
 OPTIONS_FORMAT = "abc2lab.preservation-options/v1"
 _HEX = re.compile(r"[a-f0-9]{64}\Z")
@@ -29,8 +32,9 @@ OPTION_FIELDS = frozenset({"format", "series_ref", "comm_mode", "write_mode", "m
 CONDITION_FIELDS = frozenset({"layout", "request_budget", "time_budget_seconds", "model_pin_sha256", "target_image_id",
                              "initial_state_sha256", "machine_sha256", "runner_settings_sha256", "comm_mode", "write_mode", "mcp_version", "mcp_tools_sha256",
                              "browser_image_id", "exploration_policy_sha256", "diagnosis_policy_sha256", "declared_model_budget_sha256"})
-TOP_FIELDS = frozenset({"format", "purpose", "series_ref", "run_id", "side", "repeat_index", "engine_source_sha", "engine_image_id",
-                       "execution_source", "conditions", "stop_reason", "files", "forwarded_by_ingress", "signature"})
+TOP_FIELDS_V1 = frozenset({"format", "purpose", "series_ref", "run_id", "side", "repeat_index", "engine_source_sha", "engine_image_id",
+                          "execution_source", "conditions", "stop_reason", "files", "forwarded_by_ingress", "signature"})
+TOP_FIELDS = TOP_FIELDS_V1 | {"exploration_boundary"}
 
 
 class PreservationRecordError(ValueError):
@@ -99,12 +103,22 @@ def _raw_files(meter: MeterFiles) -> dict:
     return out
 
 
+def _boundary(directory: Path, rows: list[dict], meter: MeterFiles, path_key_ref: str, task_id: str | None) -> dict:
+    try:
+        return boundary_export.verify(directory, rows, meter.path_rows(rows), path_key_ref=path_key_ref, task_id=task_id)
+    except boundary_export.BoundaryExportError as exc:
+        _fail(str(exc))
+
+
 def build_payload(*, meter: MeterFiles, options: dict, run_id: str, side: str, repeat_index: int,
-                  engine_source_sha: str, engine_image_id: str, conditions: dict, stop_reason: str) -> dict:
+                  engine_source_sha: str, engine_image_id: str, conditions: dict, stop_reason: str,
+                  boundary: dict | None = None) -> dict:
     """writer 정리 뒤 호출하는 서명 전 자료다. 최종 바이트를 읽고 기존 ports.sign으로 서명한다.
 
     layout은 호출자가 확인한 배치다. 현행 Docker 러너는 e2-legacy/v1만 발행하며, 탐색 경계가
     들어온 새 실행기는 자기 배치 검증 뒤 exploration-split/v1을 넘긴다. 옵션이 망을 열지 않는다.
+    exploration-split/v1은 경계 원자료가 필수다(boundary = {"directory", "task_id", "path_key_ref"}, 경계 종료 뒤).
+    다른 배치에는 경계 원자료를 붙이지 않는다.
     """
     options = validate_options(options)
     for field in ("comm_mode", "write_mode", "mcp_version", "mcp_tools_sha256", "browser_image_id", "declared_model_budget_sha256"):
@@ -118,18 +132,26 @@ def build_payload(*, meter: MeterFiles, options: dict, run_id: str, side: str, r
     drained = meter.marker(DRAINED_MARKER)
     if drained is None or not drain_complete(drained) or not final_log_consistent(rows, meter.marker(SEALED_MARKER), drained):
         _fail("preservation_meter_incomplete")
+    split = conditions.get("layout") == "exploration-split/v1"
+    if split != (boundary is not None):
+        _fail("preservation_boundary_missing" if split else "preservation_boundary_unexpected")
+    if boundary is not None and (not isinstance(boundary, dict) or set(boundary) != {"directory", "task_id", "path_key_ref"}
+                                 or not isinstance(boundary["task_id"], str) or not isinstance(boundary["path_key_ref"], str)):
+        _fail("preservation_boundary_missing")
+    block = None if boundary is None else _boundary(Path(boundary["directory"]), rows, meter, boundary["path_key_ref"], boundary["task_id"])
     payload = {"format": FORMAT, "purpose": "browser_acceptance", "series_ref": options["series_ref"],
                "run_id": run_id, "side": side, "repeat_index": repeat_index,
                "engine_source_sha": engine_source_sha, "engine_image_id": engine_image_id,
                "execution_source": options["execution_source"], "conditions": dict(conditions), "stop_reason": stop_reason,
-               "files": _raw_files(meter), "forwarded_by_ingress": ingress_counts(rows)}
+               "files": _raw_files(meter), "forwarded_by_ingress": ingress_counts(rows), "exploration_boundary": block}
     # metadata의 형식도 발행 전에 같은 검증기로 확인한다. 키 참조는 파일 행에서만 가져온다.
     _validate_payload(payload)
     return payload
 
 
 def _validate_payload(p: object):
-    if not isinstance(p, dict) or set(p) != TOP_FIELDS - {"signature"} or p["format"] != FORMAT or p["purpose"] != "browser_acceptance":
+    top = {FORMAT: TOP_FIELDS, FORMAT_V1: TOP_FIELDS_V1}.get(p.get("format")) if isinstance(p, dict) else None
+    if top is None or set(p) != top - {"signature"} or p["purpose"] != "browser_acceptance":
         _fail("preservation_record_invalid")
     if (p["side"] not in ("baseline", "ours") or type(p["repeat_index"]) is not int or p["repeat_index"] < 0
             or p["execution_source"] not in ("synthetic_fixture", "model_run")
@@ -167,6 +189,15 @@ def _validate_payload(p: object):
     counts = p["forwarded_by_ingress"]
     if not isinstance(counts, dict) or set(counts) != {"main", "explore"} or any(type(n) is not int or n < 0 for n in counts.values()):
         _fail("preservation_ingress_invalid")
+    if p["format"] == FORMAT:
+        block = p["exploration_boundary"]
+        if (c["layout"] == "exploration-split/v1") != (block is not None):
+            _fail("preservation_boundary_invalid")
+        if block is not None:
+            try:
+                boundary_export.validate_block(block)
+            except boundary_export.BoundaryExportError:
+                _fail("preservation_boundary_invalid")
 
 
 def _unique(pairs):
@@ -177,8 +208,11 @@ def _unique(pairs):
     return out
 
 
-def load_record(directory: Path, meter: MeterFiles, key: bytes) -> dict:
-    """먼저 서명, 그다음 엄격한 조건과 원자료 해시를 확인한다. 파일 경로는 계약의 고정 이름뿐이다."""
+def load_record(directory: Path, meter: MeterFiles, key: bytes, boundary_dir: Path | None = None) -> dict:
+    """먼저 서명, 그다음 엄격한 조건과 원자료 해시를 확인한다. 파일 경로는 계약의 고정 이름뿐이다.
+
+    경계 원자료 요약이 있는 기록은 boundary_dir의 최종 파일로 같은 요약을 다시 계산해 서명된 값과 맞춘다.
+    """
     raw = _read_owned(directory, NAME)
     if raw is None or len(raw) > 65536: _fail("preservation_record_missing_or_large")
     try:
@@ -200,6 +234,13 @@ def load_record(directory: Path, meter: MeterFiles, key: bytes) -> dict:
     if drained is None or not drain_complete(drained) or not final_log_consistent(rows, meter.marker(SEALED_MARKER), drained):
         _fail("preservation_meter_incomplete")
     if ingress_counts(rows) != payload["forwarded_by_ingress"]: _fail("preservation_ingress_mismatch")
+    block = payload.get("exploration_boundary")
+    if block is None:
+        if boundary_dir is not None: _fail("preservation_boundary_unexpected")
+        return payload
+    if boundary_dir is None: _fail("preservation_boundary_files_missing")
+    # 작업 결속은 발행 때 러너가 확인했다. 재검증은 결속 hash까지 포함한 요약 전체가 같은지로 본다.
+    if _boundary(boundary_dir, rows, meter, block["path_key_ref"], None) != block: _fail("preservation_boundary_mismatch")
     return payload
 
 
@@ -209,7 +250,7 @@ def validate_series(baseline: list[dict], improved: list[dict], *, request_budge
     all_records = baseline + improved
     for record in all_records:
         _validate_payload(record)
-    common = ("series_ref", "execution_source")
+    common = ("format", "series_ref", "execution_source")
     if any(len({r[f] for r in all_records}) != 1 for f in common): _fail("preservation_series_mismatch")
     differing = {"layout", "exploration_policy_sha256", "diagnosis_policy_sha256", "write_mode"}
     for field in CONDITION_FIELDS - differing:
@@ -231,8 +272,27 @@ def validate_series(baseline: list[dict], improved: list[dict], *, request_budge
     return {"format": FORMAT, "verified_signed_rounds": len(all_records), "series_ref": baseline[0]["series_ref"],
             "execution_source": baseline[0]["execution_source"], "layout": improved[0]["conditions"]["layout"],
             "mcp_version": improved[0]["conditions"]["mcp_version"],
-            "exploration_boundary": {"status": "NOT_RUN", "reason": "verified_boundary_export_unavailable"},
+            "exploration_boundary": _boundary_series(improved),
             "round_digests": [digest(r) for r in all_records]}
+
+
+def _boundary_series(improved: list[dict]) -> dict:
+    """개선 후 회차의 경계 원자료 상태. 회차마다 카운터를 따로 싣고 합산·0 채우기를 하지 않는다.
+
+    PASS는 모든 회차의 원자료가 검증되고 계측기 탐색 입구와 맞았다는 뜻이다. 네트워크 격리 증명이 아니다.
+    """
+    blocks = [r.get("exploration_boundary") for r in improved]
+    if any(block is None for block in blocks):
+        return {"status": "NOT_RUN", "reason": "verified_boundary_export_unavailable"}
+    rounds = [{"repeat_index": r["repeat_index"], "status": b["status"], "closed_reason": b["closed_reason"],
+               "counters": b["counters"], "reconciliation": b["reconciliation"]} for r, b in zip(improved, blocks)]
+    if any(b["status"] == "not_opened" for b in blocks):
+        status, reason = "NOT_RUN", "boundary_session_not_opened"
+    elif any(b["status"] == "truncated" for b in blocks):
+        status, reason = "UNDECIDABLE", "boundary_export_truncated"
+    else:
+        status, reason = "PASS", "boundary_export_verified"
+    return {"status": status, "reason": reason, "rounds": rounds}
 
 
 def assessment(summary: dict, profile: str, evidence: dict) -> dict:
@@ -244,8 +304,9 @@ def assessment(summary: dict, profile: str, evidence: dict) -> dict:
         return {"profile": profile, "status": "UNDECIDABLE", "reason": "mcp_version_not_reviewed"}
     if profile == "R-P":
         return {"profile": profile, "status": "UNDECIDABLE", "reason": "report_only_not_completion_criterion"}
-    if evidence.get("exploration_boundary", {}).get("status") != "PASS":
-        return {"profile": profile, "status": "NOT_RUN", "reason": "verified_boundary_export_unavailable"}
+    boundary = evidence.get("exploration_boundary", {})
+    if boundary.get("status") != "PASS":
+        return {"profile": profile, "status": "NOT_RUN", "reason": boundary.get("reason", "verified_boundary_export_unavailable")}
     return preservation_verdict(summary, profile)
 
 

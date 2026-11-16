@@ -24,6 +24,8 @@
 - 정적 fetch(`DirectFetch`, `diagnosisflow.ExplorationFetch`): 서버가 직접 입구 프록시로 GET을 보내고 경계 CA로 검증한다. 경계는 승인 대상으로 전달한 요청의 응답에 기록 순번(`X-Explore-Boundary-Seq`)을 붙이고, **응답을 쓰기 전에** private 관찰을 남긴다. 그래서 fetch가 받은 본문을 곧바로 같은 순번 관찰의 응답 해시와 맞출 수 있다. 같은 이름 헤더는 요청·대상 응답에서 지운다. 막힘이 `cap_exhausted`·`target_ended`·`session_closed`이면 세션 상태를 읽어 닫혔을 때만 그 사유로 탐색을 마감하고(동시 연결·터널 상한은 그 요청만 실패), 다른 막힘은 그 요청만 실패(`ErrFetchRefused`)다. 리다이렉트는 따라가지 않는다.
 - `cmd/explore-boundary`: 보호 설정 파일 하나(`privateinput`)로 시작한다. 두 입구를 서로 다른 인터페이스 주소에 묶어야 하고(같은 주소·loopback·0.0.0.0 거부, IPv4-mapped 표기는 IPv4로 풀어서 본다), `engine_uid`가 없거나 0이면 거부한다. 제어 소켓은 0600이고 엔진 uid가 경계와 다르면 엔진 uid 소유로 넘긴다. 넘길 수 없으면(CAP_CHOWN 없음) 권한을 넓히지 않고 시작을 멈춘다(`control_socket_owner`). 입구 서버는 쉬는 keep-alive 연결을 시간 상한으로 닫는다. 경계 CA 개인키·경로 가림 키는 보호 파일에서만 읽는다. 경계 기록 경로는 설치 키로 가린다(계약 §4의 제품 "표시용 패턴" 대신 키 가림을 쓴다. 원문 조각이 남지 않는 대신 운영자 화면에서 읽기 어렵다).
 
+- 평가·수용시험 회차의 경계 원자료(계약 §4.1, `exploreboundary/evidence*.go`): 설정 `evidence_dir`·`evidence_max_bytes`를 함께 줄 때만 켠다(한쪽만이면 시작 거부, 코드 기본값 없음). 시작할 때 디렉터리(정확히 0700, 소유자 = 경계 euid, 이전 회차 파일 없음)에 `boundary-records.jsonl`을 O_EXCL로 만들고, 기록 행마다 버퍼에 쓴다(메모리 차단 행 상한과 별개, 행마다 fsync 안 함). 세션 마감 때 flush·fsync, 경계를 내릴 때 입구·터널을 닫고 열린 세션을 `cancelled`로 닫은 뒤 `boundary-sealed.json`을 마지막에 쓴다. 바이트 상한에 닿으면 `truncated`(송신은 계속), 쓰기 실패면 세션을 `boundary_unavailable`로 닫는다. 원자료 하나에 세션 하나다. 제품 설치는 켜지 않는다.
+
 ## 대상 값 전달 — 서버가 제어 소켓으로 넘긴다(2026-11-12 결정)
 
 대상 등록 저널은 쓰는 프로세스가 디렉터리에 배타 `flock`을 계속 잡아 별도 경계 컨테이너가 직접 열 수 없다. 그래서 `open` 요청에 서버가 보호 저장소에서 같은 ref·revision으로 읽은 승인 스냅샷(`WireTarget`)을 싣는다. 이 소켓은 엔진 서버 uid만 닿고 실행기는 닿지 못하므로 "실행기는 참조만 넘기고 값을 넘기지 않는다"는 그대로다. 철회는 서버의 기존 대상 감시가 `close(target_ended)`로 알리고, 만료는 경계가 스냅샷의 만료 시각으로 스스로 감지한다. 계약 §2의 "경계가 대상 등록 저장소에서 직접 읽는다"는 이렇게 바꿔야 한다(계약 개정 필요).

@@ -120,6 +120,28 @@ class ExploreBoundaryCompose(unittest.TestCase):
             ip = self.on["services"][service]["networks"][network]["ipv4_address"]
             self.assertTrue(ip + ":0" in controls or any(c.startswith(ip + ":") for c in controls), service + " " + network)
 
+    def test_product_never_writes_boundary_evidence(self):
+        # 경계 원자료(계약 §4.1)는 평가·수용시험 전용이다. 제품 예시 설정에 켜는 칸이 없고, 어느 제품 서비스에도
+        # 원자료 디렉터리가 붙지 않는다(경계는 보호 입력·제어 소켓 볼륨만, 위 시험).
+        self.assertNotIn("evidence_dir", self.example)
+        self.assertNotIn("evidence_max_bytes", self.example)
+        for name, svc in self.on["services"].items():
+            for mount in svc.get("volumes", []):
+                self.assertNotIn("evidence", str(mount.get("target", "")) + str(mount.get("source", "")), name)
+        readme = (ROOT / "deploy/product/README.md").read_text(encoding="utf-8")
+        self.assertIn("제품 설정에는 넣지 않는다", readme)
+
+    def test_product_never_sets_eval_upstream(self):
+        # 평가 배치의 경계 upstream(계약 §4.2)은 평가·수용시험 전용이다. 제품 예시 설정·compose 어디에도 없고,
+        # README는 제품 설정에 넣지 않는다고 적는다(경계는 원자료 칸 없이 주면 시작하지 않는다, Go 시험).
+        self.assertNotIn("eval_upstream", self.example)
+        rendered = json.dumps(self.on)
+        self.assertNotIn("eval_upstream", rendered)
+        self.assertNotIn("eval-upstream", rendered)
+        readme = (ROOT / "deploy/product/README.md").read_text(encoding="utf-8")
+        self.assertIn("`eval_upstream`", readme)
+        self.assertIn("제품 설정에는 넣지 않는다. 원자료 칸 없이 주면 경계가 시작하지 않는다", readme)
+
     def test_dockerfile_ships_boundary_and_init(self):
         text = DOCKERFILE.read_text(encoding="utf-8")
         self.assertIn("-o /out/explore-boundary ./cmd/explore-boundary", text)
