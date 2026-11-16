@@ -280,9 +280,11 @@ type firstDiagnosisPlannerProbeProvider struct {
 	wrapUps                  int
 	// todoOnce면 loopTool 전에 TodoWrite를 한 번 부른다(한 턴으로 센다).
 	todoOnce, todoDone bool
-	// goalID·evidenceID가 있으면 첫 호출에서 prove_goal로 그 목표를 달성시킨다(C26).
+	// goalID·evidenceID가 있으면 첫 호출에서 prove_goal로 그 목표를 달성시킨다(C26). proveWhen이 있으면 그것이 참을
+	// 돌려준 호출에서만 증명한다(작업이 끝난 뒤 목표를 달성시키는 실제 순서).
 	goalID, evidenceID int64
 	proved             bool
+	proveWhen          func() bool
 	// scopeValue가 있으면 첫 호출에서 add_task_scope로 그 IP를 작업 범위에 더하고, 다음 호출에서 add_intent로 그 범위를
 	// 시험하는 intent를 만든다. beforeScope는 범위를 더하기 직전에 부른다.
 	scopeValue   string
@@ -343,7 +345,7 @@ func (p *firstDiagnosisPlannerProbeProvider) Complete(ctx context.Context, reque
 		input, _ := json.Marshal(map[string]any{"summary": "Probe the newly scoped host on a port the run never approved."})
 		return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: "scoped-intent", Name: "add_intent", Input: input}}}, "tool_use", llm.Usage{}, nil
 	}
-	if p.goalID > 0 && !p.proved {
+	if p.goalID > 0 && !p.proved && (p.proveWhen == nil || p.proveWhen()) {
 		for _, tool := range request.Tools {
 			if tool.Name == "prove_goal" {
 				p.proved = true

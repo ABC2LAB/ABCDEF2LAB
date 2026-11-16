@@ -53,6 +53,30 @@ func (firstDiagnosisOutcomeFailure) MarshalJSON() ([]byte, error) { return []byt
 func (e firstDiagnosisOutcomeFailure) Unwrap() error              { return e.cause }
 func (firstDiagnosisOutcomeFailure) Is(target error) bool         { return target == ErrFirstDiagnosisOutcome }
 
+// firstDiagnosisCheckFailure는 감독자의 어느 검사가 실행을 멈췄는지 고정 사유 코드로 싣는다. 진단 로그의 실패 행이
+// 단계의 일반 사유(execution_failed 등) 대신 이 코드를 남긴다(11/16 실제 회차: 마감 실패 사유가 남지 않음). 호출자에게는
+// 감싼 원래 오류(감독 실패·결과 실패)로 보인다. 사유 코드는 진단 로그 어휘에 있어야 한다.
+type firstDiagnosisCheckFailure struct {
+	reason string
+	err    error
+}
+
+func (e firstDiagnosisCheckFailure) Error() string { return e.err.Error() }
+func (e firstDiagnosisCheckFailure) Unwrap() error { return e.err }
+
+func firstDiagnosisCheckFailed(reason string, err error) error {
+	return firstDiagnosisCheckFailure{reason: reason, err: err}
+}
+
+// diagnosisCheckReason은 오류에 실린 검사 실패 사유 코드다. 없으면 false다.
+func diagnosisCheckReason(err error) (string, bool) {
+	var failure firstDiagnosisCheckFailure
+	if errors.As(err, &failure) && failure.reason != "" {
+		return failure.reason, true
+	}
+	return "", false
+}
+
 type firstDiagnosisRegistrationKey struct{}
 type firstDiagnosisRegistrationTicket struct{ taskID string }
 
@@ -456,8 +480,9 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 		if observedRunErr != nil {
 			loggedErr = observedRunErr
 		}
-		diagnosisStage(ctx, mustFirstDiagnosisTaskNumber(taskID), diagnosisLogStage(stage), loggedErr, diagnosisLogStageReason(stage), stageStartedAt)
-		status, reason := diagnosisLogOutcome(ctx, loggedErr, diagnosisLogStageReason(stage))
+		fallback := diagnosisFailureReason(stage, loggedErr)
+		diagnosisStage(ctx, mustFirstDiagnosisTaskNumber(taskID), diagnosisLogStage(stage), loggedErr, fallback, stageStartedAt)
+		status, reason := diagnosisLogOutcome(ctx, loggedErr, fallback)
 		_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "supervisor", Event: "run_finished", TaskID: mustFirstDiagnosisTaskNumber(taskID), IntentID: intentID, Stage: diagnosisLogStage(stage), Status: status, ReasonCode: reason, DurationMS: time.Since(runStartedAt).Milliseconds()})
 		if err != nil {
 			log.Printf("[first-diagnosis] task %s 단계 %s 실패", taskID, stage)
@@ -595,7 +620,12 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 		}
 		state := task.lifecycleSnapshot()
 		if (registered && (intentState == "failed" || intentState == "blocked" || intentState == "timeout")) || state.Status == "failed" || state.Status == "timeout" {
-			observedRunErr = diagnosisRunObservedError(ErrFirstDiagnosisSupervisor, state.Status, intentState)
+			observed := ErrFirstDiagnosisSupervisor
+			if state.Status == "failed" {
+				// 엔진이 작업을 실패로 표시했다(Planner 준비 거부 등). 감독자의 마감 판정 실패와 나눠 보인다.
+				observed = firstDiagnosisCheckFailed(reasonEngineTaskFailed, ErrFirstDiagnosisSupervisor)
+			}
+			observedRunErr = diagnosisRunObservedError(observed, state.Status, intentState)
 			return ErrFirstDiagnosisSupervisor
 		}
 		terminal := registered && intentState == "done"
@@ -630,7 +660,12 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 			} else {
 				ready, result, completionErr := s.generalCompletion(run, server, task)
 				if completionErr != nil || !ready {
-					return ErrFirstDiagnosisSupervisor
+					// 정지·드레인 뒤 다시 본 마감 판정이다. 실패한 검사의 사유를 남기고, 호출자에게는 지금처럼 감독 실패다.
+					reason, ok := diagnosisCheckReason(completionErr)
+					if !ok {
+						reason = reasonClosureNotReady
+					}
+					return firstDiagnosisCheckFailed(reason, ErrFirstDiagnosisSupervisor)
 				}
 				setStage("audit-close")
 				if err = server.engine.e2HTTP.CloseTask(run, taskID); err != nil {
@@ -664,13 +699,20 @@ func firstDiagnosisProgramCall(call e2proxy.CallResult, program map[string]bool,
 // 못한 intent는 incomplete로 센다(closing_reason budget_limited).
 func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server *Server, task *Task) (bool, diagnosis.RunResult, error) {
 	var none diagnosis.RunResult
+	// 어느 검사가 마감을 막았는지 사유 코드로 싣는다(진단 로그). 호출자에게는 지금처럼 감독 실패·결과 실패다.
+	fail := func(reason string) (bool, diagnosis.RunResult, error) {
+		return false, none, firstDiagnosisCheckFailed(reason, ErrFirstDiagnosisSupervisor)
+	}
+	failOutcome := func(reason string) (bool, diagnosis.RunResult, error) {
+		return false, none, firstDiagnosisCheckFailed(reason, ErrFirstDiagnosisOutcome)
+	}
 	if flow := server.engine.e2HTTP.options.Workflow; flow != nil && flow.Failed() {
-		return false, none, ErrFirstDiagnosisOutcome
+		return failOutcome(reasonClosureWorkflowFailed)
 	}
 	counts, err := firstDiagnosisIntentOutcomes(ctx, s.m.pg.DB, task.ExpID)
 	outcomes := counts.outcomes
 	if err != nil {
-		return false, none, ErrFirstDiagnosisSupervisor
+		return fail(reasonClosureIntentReadFailed)
 	}
 	budgetLimited := firstDiagnosisBudgetLimited(task, server.firstModelBudget)
 	// 실행 상한이나 목표 달성이면 Planner를 기다리지 않고, 실행 중 intent가 끝나는 대로 마감한다. 마감 사유
@@ -685,14 +727,14 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 		return true, result, nil
 	}
 	if flow := server.engine.e2HTTP.options.Workflow; flow != nil && !flow.DeepReady() {
-		return false, none, ErrFirstDiagnosisOutcome
+		return failOutcome(reasonClosureWorkflowNotReady)
 	}
 	settled := outcomes.Done + outcomes.PolicyLimited + outcomes.Incomplete + outcomes.Unknown + outcomes.Stopped
 	if settled == 0 {
 		// 계획을 거쳤는데 intent가 하나도 없다. 실패가 아니라 no_intents로 마감한다(C11 결정 2). 작업이 없으므로
 		// 대조할 E② 호출도 없어야 한다.
 		if execution, ok := server.engine.e2HTTP.Execution(task.ID); ok && execution != nil && len(execution.Calls()) != 0 {
-			return false, none, ErrFirstDiagnosisSupervisor
+			return fail(reasonClosureCallsWithoutIntents)
 		}
 		result := diagnosis.RunResult{Outcome: diagnosis.OutcomeNoIntents}
 		if budgetLimited {
@@ -702,25 +744,29 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 	}
 	execution, ok := server.engine.e2HTTP.Execution(task.ID)
 	if !ok || execution == nil {
-		return false, none, ErrFirstDiagnosisSupervisor
+		return fail(reasonClosureExecutionMissing)
 	}
 	calls := execution.Calls()
 	// 끝낸(done)·정책 제한 intent가 있으면 실제 E② 호출이 있어야 한다. 모두 불완전·중지면 호출이 없을 수 있다.
 	if len(calls) == 0 && outcomes.Done+outcomes.PolicyLimited > 0 {
-		return false, none, ErrFirstDiagnosisSupervisor
+		return fail(reasonClosureCallsMissing)
 	}
 	results := server.engine.e2HTTP.Results(task.ID)
 	// 신뢰 결과가 같은 호출의 E② 기록과 맞지 않았던 intent다(C09). 그 호출에는 저장된 신뢰 결과가 없다.
 	untrusted := server.engine.e2HTTP.UntrustedIntents(task.ID)
 	if results == nil && len(calls) != 0 {
-		return false, none, ErrFirstDiagnosisSupervisor
+		return fail(reasonClosureResultsUnavailable)
 	}
 	observed := make(map[string]e2proxy.CallResult, len(results))
 	limited := make(map[int64]map[string]bool)
 	for _, result := range results {
-		validToolOutcome := firstDiagnosisClosedToolOutcome(result)
-		if !result.Final || !result.Call.Final || !result.Call.AuditComplete || !result.ProcessDrained || !result.ProxyDrained || !validToolOutcome || result.Execution.Scope.TaskRef != task.ID || observed[result.Call.CallRef].CallRef != "" {
-			return false, none, ErrFirstDiagnosisSupervisor
+		switch {
+		case !result.Final || !result.Call.Final || !result.Call.AuditComplete || !result.ProcessDrained || !result.ProxyDrained:
+			return fail(reasonClosureResultNotClosed)
+		case !firstDiagnosisClosedToolOutcome(result):
+			return fail(reasonClosureToolOutcomeInvalid)
+		case result.Execution.Scope.TaskRef != task.ID || observed[result.Call.CallRef].CallRef != "":
+			return fail(reasonClosureResultMismatch)
 		}
 		observed[result.Call.CallRef] = result.Call
 		if result.Call.Counts.Denied > 0 || result.Call.Counts.Unsupported > 0 {
@@ -740,7 +786,7 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 	for id := range untrusted {
 		intent, err := task.Store.GetNode(id)
 		if err != nil || intent == nil || intent.Kind != db.KindIntent || firstDiagnosisIntentOutcome(intent.State, intent.BlockedReason) != intentOutcomeUnknown || intent.BlockedReason != "e2_http_result_unknown" {
-			return false, none, ErrFirstDiagnosisSupervisor
+			return fail(reasonClosureUntrustedIntentMismatch)
 		}
 		unknownIntents[id] = true
 	}
@@ -752,14 +798,14 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 	for _, call := range calls {
 		if settled, isProgram := firstDiagnosisProgramCall(call, program, observed); isProgram {
 			if !settled {
-				return false, none, ErrFirstDiagnosisSupervisor
+				return fail(reasonClosureProgramCallOpen)
 			}
 			programCalls++
 			continue
 		}
 		result, ok := observed[call.CallRef]
 		if !call.Final || !call.AuditComplete || ok && !e2proxy.EqualCallResults(result, call) || !ok && !untrusted[call.IntentID] {
-			return false, none, ErrFirstDiagnosisSupervisor
+			return fail(reasonClosureCallMismatch)
 		}
 		if !ok {
 			// 대조가 깨진 호출이다. 그 intent는 위에서 결과 불명인지 확인했다. E② 실행 기록은 위처럼 최종·감사 완료여야 한다.
@@ -768,12 +814,12 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 		}
 		intent, err := task.Store.GetNode(call.IntentID)
 		if err != nil || intent == nil || intent.Kind != db.KindIntent {
-			return false, none, ErrFirstDiagnosisSupervisor
+			return fail(reasonClosureIntentReadFailed)
 		}
 		outcome := firstDiagnosisIntentOutcome(intent.State, intent.BlockedReason)
 		if call.Counts.Unknown != 0 {
 			if outcome != intentOutcomeUnknown || intent.BlockedReason != "e2_http_result_unknown" {
-				return false, none, ErrFirstDiagnosisSupervisor
+				return fail(reasonClosureUnknownIntentMismatch)
 			}
 			unknownIntents[intent.ID] = true
 			continue
@@ -783,39 +829,39 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 		case intentOutcomePolicyLimited:
 			// 정책 제한 사유는 E②가 실제로 거부·미지원한 호출로 뒷받침돼야 한다.
 			if !limited[intent.ID][intent.BlockedReason] {
-				return false, none, ErrFirstDiagnosisSupervisor
+				return fail(reasonClosurePolicyLimitedUnmatched)
 			}
 		case intentOutcomeUnknown:
 			// 결과 불명 송신·대조 실패 앞의 호출이다. 결과 불명 근거는 아래에서 intent 단위로 대조한다. 모르는 그래프 상태는 받지 않는다.
 			if intent.BlockedReason != "e2_http_result_unknown" {
-				return false, none, ErrFirstDiagnosisSupervisor
+				return fail(reasonClosureUnknownIntentMismatch)
 			}
 		default:
-			return false, none, ErrFirstDiagnosisSupervisor
+			return fail(reasonClosureIntentStateInvalid)
 		}
 	}
 	// 저장된 신뢰 결과는 모두 서로 다른 실제 호출이어야 한다.
 	if len(results)+missing+programCalls != len(calls) {
-		return false, none, ErrFirstDiagnosisSupervisor
+		return fail(reasonClosureCallCountMismatch)
 	}
 	// 결과 불명 intent 수가 E② 근거로 확인한 수와 같아야 한다. 결과 불명 송신 없이 결과 불명으로 표시된 intent(모르는
 	// 그래프 상태 포함)는 근거가 없으므로 마감하지 않는다.
 	if int64(len(unknownIntents)) != outcomes.Unknown {
-		return false, none, ErrFirstDiagnosisSupervisor
+		return fail(reasonClosureUnknownIntentMismatch)
 	}
 	// 정책 제한으로 표시된 intent 수가 E② 근거로 확인한 수와 같아야 한다.
 	var matched int64
 	for intentID := range limited {
 		intent, readErr := task.Store.GetNode(intentID)
 		if readErr != nil {
-			return false, none, ErrFirstDiagnosisSupervisor
+			return fail(reasonClosureIntentReadFailed)
 		}
 		if intent != nil && firstDiagnosisIntentOutcome(intent.State, intent.BlockedReason) == intentOutcomePolicyLimited && limited[intentID][intent.BlockedReason] {
 			matched++
 		}
 	}
 	if matched != outcomes.PolicyLimited {
-		return false, none, ErrFirstDiagnosisSupervisor
+		return fail(reasonClosurePolicyLimitedUnmatched)
 	}
 	result := diagnosis.RunResult{Outcome: outcomes.Outcome(), IntentOutcomes: outcomes}
 	if budgetLimited {
@@ -890,7 +936,11 @@ func firstDiagnosisClosedToolOutcome(result e2runner.TrustedResult) bool {
 	case "completed":
 		return result.ExitCode == 0 && c.Denied == 0 && c.Unsupported == 0 && answered
 	case "tool_failure":
-		return result.ExitCode != 0 && c.Denied == 0 && c.Unsupported == 0 && answered
+		// 실행기는 종료 코드를 거부·미지원보다 먼저 본다(e2runner). 그래서 거부된 요청이 섞인 명령도 종료 코드가 0이
+		// 아니면 tool_failure다(curl --fail로 거부 응답을 받음, 파이프 뒤 파서가 거부 본문에서 실패 등). 거부·미지원은
+		// 그 호출의 정책 제한 근거이고 명령 실패는 도구 결과라 둘 다 마감할 수 있다(전에는 이 호출 하나로 실행 전체가 마감
+		// 실패였다). 마지막 요청의 사유가 거부·미지원이면 그 수가 있어야 한다. 예산 소진·시도 상한은 위에서 거부 수를 확인했다.
+		return result.ExitCode != 0 && (answered || requestLimit || result.Call.Reason == e2proxy.PolicyDenied && c.Denied > 0 || result.Call.Reason == e2proxy.Unsupported && c.Unsupported > 0)
 	case "policy_not_executed":
 		return c.Denied > 0 && c.ForwardAttempted == 0
 	case "partial_policy_denial":
