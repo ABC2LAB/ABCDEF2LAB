@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -107,6 +108,45 @@ func TestPasswordResponseFactoryPrepRefreshAndPolicyBinding(t *testing.T) {
 			if out := run.Execution.RedactOutput([]byte("seeded-pass-88ff synthetic-password-mask-session")); strings.Contains(string(out), "seeded-pass-88ff") || strings.Contains(string(out), "synthetic-password-mask-session") {
 				t.Fatal("비밀번호·세션이 공유 출력에 남음")
 			}
+			if _, err := call.Close(ctx); err != nil {
+				t.Fatal("진단 호출 감사 마감 실패")
+			}
+			if err := run.Release(ctx); err != nil {
+				t.Fatal("감사 파일 마감 실패")
+			}
+			key, err := os.ReadFile(filepath.Join(cfg.AuthorityRoot, policy.AuditKey.File))
+			if err != nil {
+				t.Fatal("합성 감사 키 읽기 실패")
+			}
+			defer clear(key)
+			journal, err := os.Open(filepath.Join(policy.StateDir, "events.jsonl"))
+			if err != nil {
+				t.Fatal("감사 파일 읽기 실패")
+			}
+			defer journal.Close()
+			events, summary, err := e2proxy.VerifyJournalEvents(ctx, journal, key)
+			if err != nil || summary.Checkpoint.Version != e2proxy.Version {
+				t.Fatal("기존 v2 감사 무결성 검증 실패", err)
+			}
+			results := 0
+			for _, event := range events {
+				if event.Stage == "result" {
+					results++
+					if !event.ResponseReceived || event.Reason == e2proxy.Unknown {
+						t.Fatal("실제 수신과 감사 불일치")
+					}
+				}
+			}
+			if results != 3 {
+				t.Fatal("인증 준비·재로그인·진단 감사 수 불일치")
+			}
+			audit, _ := json.Marshal(events)
+			for _, value := range []string{"seeded-pass-88ff", "synthetic-password-mask-session"} {
+				if strings.Contains(string(audit), value) {
+					t.Fatal("비밀값이 감사에 남음")
+				}
+			}
+
 			for _, bad := range []string{`null`, `false`, `""`, `"unknown"`, `12`} {
 				mutated := strings.Replace(string(raw), `"password_response":"mask_spans_v1"`, `"password_response":`+bad, 1)
 				if mode == "" {
