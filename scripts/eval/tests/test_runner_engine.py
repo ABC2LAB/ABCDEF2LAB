@@ -27,7 +27,7 @@ from e2_prompt_collect import E2PromptNotReady, E2PromptUnverified  # noqa: E402
 from runner_engine import (
     _TARGET_DOMAIN, _TARGET_IP, _TARGET_URL, ADMIN_USERNAME, BASELINE_ADMIN_USERNAME, AdminSecret, EngineAPIError, TaskRequest, collect_findings,
     EngineLLMProfile, apply_engine_settings, engine_settings, findings_record, load_vocabulary, login, start_task,
-    task_request,
+    task_request, LOGIN_PATH, TaskStatusReader,
 )
 from test_runner_config import runner_config
 from test_baseline_extract import finding, vocabulary
@@ -158,6 +158,10 @@ class FakeEngine:
         self.apply = apply or {}
         self.login_status, self.login_body = login_status, login_body
         self.task_status, self.task_body = task_status, task_body
+        # GET /api/tasks/{id} 응답: (status, 본문 bytes)를 차례로. 하나 남으면 계속 그것.
+        self.task_views = [(200, json.dumps({"id": 17, "name": "회차", "description": "설명", "goal": "목표",
+                                             "status": "running", "completed_at": "", "goals_total": 1, "goals_met": 0,
+                                             "in_flight": 2, "llm_failover_state": "ok", "tokens": {"input": 9}}).encode())]
         self.requests = []
         engine = self
 
@@ -206,6 +210,17 @@ class FakeEngine:
 
             def do_GET(self):
                 engine.requests.append(("GET", self.path, dict(self.headers), b""))
+                if self.path.startswith("/api/tasks/"):
+                    view = engine.task_views[0] if len(engine.task_views) == 1 else engine.task_views.pop(0)
+                    status, payload = view
+                    if self.headers.get("Authorization") != f"Bearer {TOKEN}":
+                        status = 401
+                    self.send_response(status)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
                 if self.path in ("/api/settings", "/api/llm"):
                     authorized = self.headers.get("Authorization") == f"Bearer {TOKEN}"
                     status, payload = engine.settings.get(self.path, (200, json.dumps(
@@ -636,3 +651,69 @@ class TestEngineSettings(unittest.TestCase):
             self.assertIn(key, llm)
         for block in (settings, llm):
             self.assertNotRegex(block, r'"(api_key|brave_search_api_key|tavily_search_api_key|password|token)":')
+
+
+class TestTaskStatusReader(unittest.TestCase):
+    """엔진 끝 신호 읽기(결정안 §3.1): 끝 신호 칸만 옮기고, 토큰을 다시 쓰며, 401이면 한 번만 다시 로그인한다."""
+
+    def engine(self, **kwargs):
+        engine = FakeEngine(**kwargs)
+        self.addCleanup(engine.close)
+        return engine
+
+    def logins(self, engine):
+        return sum(1 for method, path, *_ in engine.requests if method == "POST" and path == LOGIN_PATH)
+
+    def test_reads_only_end_signal_fields_and_reuses_the_token(self):
+        engine = self.engine()
+        reader = TaskStatusReader(engine.port, AdminSecret(PASSWORD), 5)
+        first, second = reader.read("17"), reader.read("17")
+        self.assertEqual(first, {"status": "running", "completed_at": "", "goals_total": 1, "goals_met": 0, "in_flight": 2,
+                                 "llm_failover_state": "ok"})
+        self.assertEqual(first, second)
+        self.assertEqual(self.logins(engine), 1)
+        self.assertEqual([path for method, path, *_ in engine.requests if method == "GET"], ["/api/tasks/17"] * 2)
+
+    def test_stale_token_logs_in_once_more_and_persistent_401_stops(self):
+        engine = self.engine()
+        reader = TaskStatusReader(engine.port, AdminSecret(PASSWORD), 5)
+        reader._token = "stale-token"
+        self.assertEqual(reader.read("17")["status"], "running")
+        self.assertEqual(self.logins(engine), 1)
+        engine.task_views = [(401, b"{}")]
+        with self.assertRaises(EngineAPIError) as caught:
+            reader.read("17")
+        self.assertEqual(str(caught.exception), "engine_task_status_http_401")
+        self.assertEqual(self.logins(engine), 2)  # 한 번만 다시 로그인한다(무한 반복 없음)
+
+    def test_errors_and_malformed_views_use_fixed_codes(self):
+        good = {"status": "done", "completed_at": "2026-11-16T00:00:03Z", "goals_total": 1, "goals_met": 1, "in_flight": 0,
+                "llm_failover_state": ""}
+        cases = {"engine_task_status_http_500": (500, b"{}"), "engine_task_status_invalid": (200, b"not json")}
+        for name, change in {"missing": {"in_flight": None}, "string_count": {"goals_met": "1"}, "negative": {"in_flight": -1},
+                             "bool_count": {"goals_total": True}, "status_shape": {"status": "Done Now"}, "empty_status": {"status": ""},
+                             "long_stamp": {"completed_at": "2" * 41}, "stamp_chars": {"completed_at": "<script>"}}.items():
+            view = dict(good, **change)
+            if change.get("in_flight", 0) is None:
+                view.pop("in_flight")
+            cases[f"engine_task_status_invalid:{name}"] = (200, json.dumps(view).encode())
+        cases["engine_task_status_invalid:too_large"] = (200, json.dumps(dict(good, pad="a" * (300 * 1024))).encode())
+        for code, response in cases.items():
+            with self.subTest(code=code):
+                engine = self.engine()
+                engine.task_views = [response]
+                with self.assertRaises(EngineAPIError) as caught:
+                    TaskStatusReader(engine.port, AdminSecret(PASSWORD), 5).read("17")
+                self.assertEqual(str(caught.exception), code.split(":")[0])
+        engine = self.engine()
+        engine.task_views = [(200, json.dumps(good).encode())]
+        self.assertEqual(TaskStatusReader(engine.port, AdminSecret(PASSWORD), 5).read("17"), good)
+
+    def test_task_id_shape_is_checked_before_any_request(self):
+        engine = self.engine()
+        reader = TaskStatusReader(engine.port, AdminSecret(PASSWORD), 5)
+        for bad in ("0", "../17", "17/x", "", "1" * 20, 17):
+            with self.subTest(task_id=bad), self.assertRaises(EngineAPIError) as caught:
+                reader.read(bad)
+            self.assertEqual(str(caught.exception), "engine_task_id_invalid")
+        self.assertEqual(engine.requests, [])

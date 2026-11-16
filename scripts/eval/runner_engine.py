@@ -208,6 +208,63 @@ def login(port: int, secret: AdminSecret, timeout: float) -> str:
     return token
 
 
+# 엔진 끝 신호(탐색 분리 배치 결정안 §3.1). 원본 작업 조회 API(GET /api/tasks/{id})의 상태 칸만 옮긴다. 원본과 개선 후
+# 엔진의 응답 구조(server/dto.go taskDTO)·끝 상태 집합(db.IsTerminal)이 같다.
+TASK_STATUS_PATH = "/api/tasks/"
+TERMINAL_TASK_STATUSES = frozenset({"done", "failed", "timeout"})
+END_SIGNAL_FIELDS = ("status", "completed_at", "goals_total", "goals_met", "in_flight", "llm_failover_state")
+MAX_TASK_STATUS_BYTES = 256 * 1024
+_END_SIGNAL_WORD = re.compile(r"[a-z_]{0,32}", re.ASCII)
+_END_SIGNAL_STAMP = re.compile(r"[0-9T:.+\-Z]{0,40}", re.ASCII)
+
+
+def task_end_signal(data: bytes) -> dict:
+    """작업 조회 응답에서 끝 신호 칸만 골라 검사한다. 이름·설명·목표 같은 다른 칸은 옮기지 않는다. 값은 원본 그대로다."""
+    try:
+        if len(data) > MAX_TASK_STATUS_BYTES:
+            raise ValueError
+        view = json.loads(data.decode("utf-8"))
+    except (UnicodeError, ValueError):
+        raise EngineAPIError("engine_task_status_invalid") from None
+    if not isinstance(view, dict) or any(name not in view for name in END_SIGNAL_FIELDS):
+        raise EngineAPIError("engine_task_status_invalid")
+    out = {name: view[name] for name in END_SIGNAL_FIELDS}
+    if (not isinstance(out["status"], str) or not out["status"] or not _END_SIGNAL_WORD.fullmatch(out["status"])
+            or not isinstance(out["llm_failover_state"], str) or not _END_SIGNAL_WORD.fullmatch(out["llm_failover_state"])
+            or not isinstance(out["completed_at"], str) or not _END_SIGNAL_STAMP.fullmatch(out["completed_at"])
+            or any(type(out[name]) is not int or out[name] < 0 for name in ("goals_total", "goals_met", "in_flight"))):
+        raise EngineAPIError("engine_task_status_invalid")
+    return out
+
+
+class TaskStatusReader:
+    """회차 창 동안 엔진 작업 상태를 읽는다. 토큰 하나를 다시 쓰고, 401이면 한 번만 다시 로그인한다."""
+
+    def __init__(self, port: int, secret: AdminSecret, timeout: float):
+        self._port, self._secret, self._timeout = port, secret, timeout
+        self._token: str | None = None
+
+    def read(self, task_id: str) -> dict:
+        # start_task가 받은 작업 ID와 같은 모양만 경로에 넣는다.
+        if not isinstance(task_id, str) or not _TASK_ID.match(task_id):
+            raise EngineAPIError("engine_task_id_invalid")
+        status, data = 0, b""
+        for _ in range(2):
+            if self._token is None:
+                self._token = login(self._port, self._secret, self._timeout)
+            try:
+                status, data = _get(self._port, TASK_STATUS_PATH + task_id, {"Authorization": f"Bearer {self._token}"},
+                                    self._timeout, MAX_TASK_STATUS_BYTES)
+            except (OSError, http.client.HTTPException, ValueError, OverflowError):
+                raise EngineAPIError("engine_task_status_unreachable") from None
+            if status != 401:
+                break
+            self._token = None
+        if status != 200:
+            raise EngineAPIError(f"engine_task_status_http_{status}")
+        return task_end_signal(data)
+
+
 @dataclass(frozen=True)
 class TaskRequest:
     """엔진에 보낼 작업 생성 본문(정규 JSON)과 그 SHA-256. 같은 설정이면 baseline·개선 후가 같은 바이트다."""
