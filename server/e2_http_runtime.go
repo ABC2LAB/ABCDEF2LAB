@@ -40,6 +40,8 @@ type E2HTTPExpectedBinding struct {
 }
 
 type E2HTTPRequest struct {
+	// WorkerCount는 Manager에서 결속한 실제 회차 Worker 수이며 외부 입력이 아니다.
+	WorkerCount   int `json:"-"`
 	TaskID        string
 	TaskIDNumber  int64
 	ExplorationID int64
@@ -226,6 +228,9 @@ func (r *E2HTTPRuntime) AccountAuth() map[string]string {
 }
 
 type e2HTTPRuntimeTask struct {
+	notSentCommands map[string]bool
+
+	workerCount       int
 	id                string
 	number            int64
 	exploration       int64
@@ -296,8 +301,13 @@ func e2HTTPTaskIdentity(task *Task) (int64, error) {
 // AdmitTask는 실제 Manager task가 생성된 뒤, launch 전에 한 번 실행한다.
 // 호출자의 짧은 HTTP context를 실행의 권위 수명으로 저장하지 않는다.
 func (r *E2HTTPRuntime) AdmitTask(ctx context.Context, task *Task) error {
+	return r.admitTaskWithWorkers(ctx, task, 1)
+}
+
+// 실제 Engine/Manager 시작 경로만 Worker 수를 결속한다. 같은 회차에서 바꾸지 않는다.
+func (r *E2HTTPRuntime) admitTaskWithWorkers(ctx context.Context, task *Task, workers int) error {
 	number, err := e2HTTPTaskIdentity(task)
-	if err != nil || r == nil || ctx == nil || ctx.Err() != nil {
+	if err != nil || r == nil || ctx == nil || ctx.Err() != nil || workers < 1 {
 		return ErrE2HTTPHost
 	}
 	if r.options.CheckAuthority != nil && r.options.CheckAuthority(ctx) != nil {
@@ -309,7 +319,7 @@ func (r *E2HTTPRuntime) AdmitTask(ctx context.Context, task *Task) error {
 		return ErrE2HTTPHost
 	}
 	if r.task != nil {
-		if r.task.id != task.ID || r.task.number != number || r.task.exploration != task.ExpID || r.task.store != task.Store {
+		if r.task.workerCount != workers || r.task.id != task.ID || r.task.number != number || r.task.exploration != task.ExpID || r.task.store != task.Store {
 			return ErrE2HTTPHost
 		}
 		r.task.mu.Lock()
@@ -331,7 +341,7 @@ func (r *E2HTTPRuntime) AdmitTask(ctx context.Context, task *Task) error {
 			return err
 		}
 	}
-	r.task = &e2HTTPRuntimeTask{id: task.ID, number: number, exploration: task.ExpID, store: task.Store, ctx: taskctx, cancel: cancel, gate: make(chan struct{}, 1), closeGate: make(chan struct{}, 1), runs: make(map[int64]uint64), active: make(map[int64]chan struct{}), control: control}
+	r.task = &e2HTTPRuntimeTask{workerCount: workers, id: task.ID, number: number, exploration: task.ExpID, store: task.Store, ctx: taskctx, cancel: cancel, gate: make(chan struct{}, 1), closeGate: make(chan struct{}, 1), runs: make(map[int64]uint64), active: make(map[int64]chan struct{}), control: control}
 	return nil
 }
 
@@ -585,7 +595,7 @@ func (r *E2HTTPRuntime) PrepareWork(ctx context.Context, task *Task, intent *db.
 	explored, chargeUnknown, _ := r.diagnosisAllowanceLocked(t)
 	t.mu.Unlock()
 	if lease == nil {
-		acquired, acquireErr := r.options.Acquire(t.ctx, E2HTTPRequest{TaskID: t.id, TaskIDNumber: t.number, ExplorationID: t.exploration, IntentID: actual.ID, ExplorationRequests: explored, ExplorationUnknown: chargeUnknown})
+		acquired, acquireErr := r.options.Acquire(t.ctx, E2HTTPRequest{WorkerCount: t.workerCount, TaskID: t.id, TaskIDNumber: t.number, ExplorationID: t.exploration, IntentID: actual.ID, ExplorationRequests: explored, ExplorationUnknown: chargeUnknown})
 		// 인증 준비 결과는 실행을 잡지 못해도(실패로 끝나도) 실행 결과에 싣는다. 형식이 틀리면 싣지 않는다.
 		if auth := diagnosis.CloneAccountAuth(acquired.AccountAuth); auth != nil {
 			r.accountAuthMu.Lock()
@@ -848,6 +858,10 @@ func (r *E2HTTPRuntime) PolicyMetadata() E2HTTPPolicyMetadata {
 }
 
 func e2HTTPCloneTrusted(value e2runner.TrustedResult) e2runner.TrustedResult {
+	if value.AdmissionNotSent != nil {
+		receipt := *value.AdmissionNotSent
+		value.AdmissionNotSent = &receipt
+	}
 	value.Call = e2proxy.CloneCallResult(value.Call)
 	value.Execution.IntentIDs = append([]int64(nil), value.Execution.IntentIDs...)
 	value.Execution.Evaluation = e2HTTPCloneEvaluation(value.Execution.Evaluation)
@@ -858,6 +872,43 @@ func e2HTTPCloneTrusted(value e2runner.TrustedResult) e2runner.TrustedResult {
 func (r *E2HTTPRuntime) observeResult(ctx context.Context, t *e2HTTPRuntimeTask, lease *E2HTTPRunOptions, intentID int64, result e2runner.Result) error {
 	result.ToolOutput = ""
 	trusted := result.Trusted
+	if trusted.AdmissionNotSent != nil {
+		valid := lease != nil && lease.Runner != nil && e2runner.AdmissionNotSent(result) &&
+			trusted.Execution.Scope.TaskRef == t.id && trusted.Execution.IntentID == intentID
+		if valid {
+			if lease.Execution != nil {
+				valid = lease.Execution.HasAdmissionNotSent(*trusted.AdmissionNotSent)
+			} else if remote, ok := lease.Runner.(interface{ takeAdmissionNotSent(e2proxy.Receipt) bool }); ok {
+				valid = remote.takeAdmissionNotSent(*trusted.AdmissionNotSent)
+			} else {
+				valid = false
+			}
+			view := lease.Runner.SnapshotForIntent(intentID)
+			valid = valid && view.Scope == trusted.Execution.Scope && view.PolicyRevision == trusted.Execution.PolicyRevision && view.HeaderMode == trusted.Execution.HeaderMode
+		}
+		t.mu.Lock()
+		if t.notSentCommands == nil {
+			t.notSentCommands = make(map[string]bool)
+		}
+		if !valid || t.notSentCommands[trusted.AdmissionNotSent.CommandRef] || len(t.notSentCommands) >= r.options.MaxToolCalls {
+			t.resultsFailed = true
+			t.mu.Unlock()
+			return ErrE2HTTPHost
+		}
+		t.notSentCommands[trusted.AdmissionNotSent.CommandRef] = true
+		t.mu.Unlock()
+		if lease.ObserveResult != nil {
+			if err := lease.ObserveResult(ctx, result); err != nil {
+				t.mu.Lock()
+				t.resultsFailed = true
+				t.mu.Unlock()
+				return err
+			}
+		}
+		// This control event is already durably published by ObserveEvent. It
+		// has no Call and must not enter the closed-call result projection.
+		return nil
+	}
 	var recordErr, intentErr error
 	if lease == nil || lease.Runner == nil {
 		recordErr = ErrE2HTTPHost

@@ -166,7 +166,7 @@ func (s *Server) admitTaskWhen(t *Task, mode string, requirePaused bool) (queued
 			return false, ErrControlledReadHostConfiguration
 		}
 	}
-	if s.engine.e2HTTP != nil && s.engine.e2HTTP.AdmitTask(s.ctx, t) != nil {
+	if s.engine.e2HTTP != nil && s.engine.e2HTTP.admitTaskWithWorkers(s.ctx, t, s.m.Workers()) != nil {
 		return false, ErrE2HTTPHost
 	}
 	if !s.engine.beginTaskOperation(t.ID) {

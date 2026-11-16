@@ -216,6 +216,50 @@ func TestAutomaticModeSendsUndiscoveredPathsWithinApprovedScope(t *testing.T) {
 	}
 }
 
+// 추정 출처(API 정찰·번들 추측)로 발견한 경로는 자동 방문·선택하지 않을 뿐 부작용 근거가 아니다. 자동 모드에서
+// 승인 접두 안의 GET은 발견하지 않은 경로와 같이 읽기로 보낸다(VAmPI 실제 회차 24b: 정찰로 찾은 GET 23건이 읽기
+// 전용 대상에서 거부됨). 쓰기 메서드는 메서드로 쓰기이고, 폼 등 실제 부작용 근거의 possible은 지금처럼 제한한다.
+func TestAutomaticModeInferredDiscoveryIsNotSideEffectEvidence(t *testing.T) {
+	for _, writes := range []bool{false, true} {
+		c, _ := flowFixture(t, Auto)
+		c.binding.ReversibleWrites = writes
+		c.mu.Lock()
+		for _, source := range []string{SourceAPIReconRuntime, SourceAPIReconStatic, "script_guess"} {
+			e := c.addLocked("GET", "/read/inferred-"+source, "request", source, "/read")
+			if e == nil || e.Change != "possible" {
+				t.Fatalf("%s: inferred discovery must stay out of auto visit (possible), got %+v", source, e)
+			}
+		}
+		write := c.addLocked("POST", "/read/inferred-write", "request", SourceAPIReconRuntime, "/read")
+		form := c.addLocked("GET", "/read/search", "form", "html_form", "/read")
+		formInferred := c.addLocked("GET", "/read/guessed-form", "form", SourceAPIReconRuntime, "/read")
+		if write == nil || form == nil || formInferred == nil || form.Change != "possible" || formInferred.Change != "possible" {
+			t.Fatalf("fixture endpoints: write=%+v form=%+v formInferred=%+v", write, form, formInferred)
+		}
+		c.record.Snapshot.Stage = "diagnosing"
+		c.mu.Unlock()
+		for _, tc := range []struct {
+			name  string
+			view  e2proxy.RequestView
+			allow bool
+		}{
+			// 1. 추정 출처 GET(범위 안)은 읽기로 허용한다.
+			{"recon runtime GET", e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/inferred-" + SourceAPIReconRuntime}, true},
+			{"recon static GET", e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/inferred-" + SourceAPIReconStatic}, true},
+			{"script guess GET", e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/inferred-script_guess"}, true},
+			// 2. 추정 출처 쓰기 메서드는 지금처럼 쓰기다(되돌릴 수 있는 쓰기 승인일 때만).
+			{"recon runtime POST", e2proxy.RequestView{Method: "POST", URL: "https://owned.test/read/inferred-write", BodyPresent: true, BodyBytes: 2}, writes},
+			// 3. 폼 등 실제 부작용 근거의 possible은 지금처럼 제한한다(추정 출처 폼 포함).
+			{"html form GET", e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/search?q=x"}, writes},
+			{"inferred form GET", e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/guessed-form"}, writes},
+		} {
+			if err := c.Before(t.Context(), tc.view); (err == nil) != tc.allow {
+				t.Fatalf("writes=%v %s: allow=%v err=%v", writes, tc.name, tc.allow, err)
+			}
+		}
+	}
+}
+
 // 자동 모드에서 처음 보는 경로라도 확인한 읽기(읽기 확인 접두 안의 GET·HEAD)로 허용한 요청은, 결과가 불명이어도
 // 발견한 읽기처럼 다시 보낼 수 있다. 허용과 결과 불명 기억이 같은 분류를 쓴다(#557 이동찬 리뷰). 부작용 가능 요청
 // (쓰기·고르지 않은 GET 폼)은 결과 불명 뒤 다시 보내지 않는다.

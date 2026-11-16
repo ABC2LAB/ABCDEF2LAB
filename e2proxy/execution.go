@@ -284,6 +284,12 @@ func (e *Execution) RegisterIntent(ctx context.Context, id int64) error {
 	return nil
 }
 
+// Done은 실행 취소·철회·감사 실패를 기다리는 호스트 전용 수명 신호다.
+func (e *Execution) Done() <-chan struct{} { return e.ctx.Done() }
+
+// MaxConcurrent는 승인된 실제 HTTP 송신 상한이며 Bash 슬롯 확대 권위가 아니다.
+func (e *Execution) MaxConcurrent() int { return e.cfg.Limits.MaxConcurrent }
+
 func (e *Execution) HasIntent(id int64) bool {
 	if e == nil || id <= 0 {
 		return false
@@ -388,14 +394,19 @@ func (c *Call) blockedLocked() Reason {
 	}
 	return Complete
 }
-func (e *Execution) record(ctx context.Context, ev Event) (resultErr error) {
+func (e *Execution) record(ctx context.Context, ev Event) error {
+	_, err := e.recordEvent(ctx, ev)
+	return err
+}
+
+func (e *Execution) recordEvent(ctx context.Context, ev Event) (_ Event, resultErr error) {
 	defer func() { diagnosticAudit(e.ctx, ev, resultErr) }()
 	e.recordMu.Lock()
 	defer e.recordMu.Unlock()
 	e.mu.Lock()
 	if e.auditFailed {
 		e.mu.Unlock()
-		return ErrAudit
+		return Event{}, ErrAudit
 	}
 	ev.Index = e.eventIndex + 1
 	ev.At = time.Now().UTC()
@@ -408,13 +419,51 @@ func (e *Execution) record(ctx context.Context, ev Event) (resultErr error) {
 		e.auditFailed = true
 		e.stopReason = AuditFailed
 		e.cancel()
-		return ErrAudit
+		return Event{}, ErrAudit
 	}
 	// A failed candidate is not a normal event or a committed ordinal. The
 	// failure remains in the receipt/execution latch; recovery is not attempted.
 	e.eventIndex = ev.Index
 	e.events = append(e.events, ev)
-	return nil
+	return ev, nil
+}
+
+// RecordAdmissionNotSent records a host command rejected before a Call exists.
+// It spends no HTTP/call reservation and cannot authorize transmission.
+func (e *Execution) RecordAdmissionNotSent(ctx context.Context, intentID int64, commandRef string) (Receipt, error) {
+	if e == nil || ctx == nil || intentID <= 0 || !validRef(commandRef) {
+		return Receipt{}, ErrConfig
+	}
+	e.mu.Lock()
+	_, registered := e.intents[intentID]
+	reason := e.blockedLocked()
+	if reason == Complete {
+		reason = Closed
+	}
+	r := Receipt{Version: Version, Scope: e.cfg.Scope, IntentID: intentID, CommandRef: commandRef, PolicyRevision: e.cfg.PolicyRevision, Reason: reason, NotSent: true}
+	e.mu.Unlock()
+	if !registered {
+		return Receipt{}, ErrConfig
+	}
+	auditCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), e.cfg.Limits.RequestTimeout)
+	defer cancel()
+	ev, err := e.recordEvent(auditCtx, Event{Stage: "control", Receipt: r})
+	return ev.Receipt, err
+}
+
+// HasAdmissionNotSent requires the exact acknowledged event, not caller fields.
+func (e *Execution) HasAdmissionNotSent(r Receipt) bool {
+	if e == nil || !r.NotSent || !r.AuditComplete || r.CallRef != "" || r.CommandRef == "" || r.AttemptID != "" || r.ForwardAttempted || r.Sequence != 0 {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, ev := range e.events {
+		if ev.Stage == "control" && ev.Receipt == r {
+			return true
+		}
+	}
+	return false
 }
 
 // recordBounded persists control and completion events independently from

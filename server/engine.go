@@ -819,11 +819,11 @@ func (e *Engine) Run(ctx context.Context, t *Task) {
 	if t == nil || (e.firstDiagnosis && (e.firstDiagnosisAdmission == nil || e.firstDiagnosisAdmission(t) != nil)) {
 		return
 	}
-	if e.e2HTTP != nil && e.e2HTTP.AdmitTask(ctx, t) != nil {
+	workers := e.m.Workers()
+	if e.e2HTTP != nil && e.e2HTTP.admitTaskWithWorkers(ctx, t, workers) != nil {
 		return
 	}
 	ctx = e.withRuntimeHooks(ctx)
-	workers := e.m.Workers()
 	e.deleteMu.RLock()
 	if e.IsDeleting(t.ID) {
 		e.deleteMu.RUnlock()

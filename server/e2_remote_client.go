@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/Autumn-27/artex/e2proxy"
@@ -110,6 +111,11 @@ type e2RemoteRun struct {
 	client *e2RemoteClient
 	ctx    context.Context
 	q      E2HTTPRequest
+	mu     sync.Mutex
+	// Only acknowledged results received on this authenticated RPC enter here.
+	// The producer verifies its durable control event before replying. A local
+	// callback cannot invent a receipt, and each receipt can be consumed once.
+	notSent map[string]e2proxy.Receipt
 }
 
 func (r *e2RemoteRun) identity(op string, intent int64) e2RemoteRequest {
@@ -162,9 +168,29 @@ func (r *e2RemoteRun) RunForIntent(ctx context.Context, id int64, command string
 	case "":
 		return *response.Result, nil
 	case e2RemoteRunUnavailable:
+		if e2runner.AdmissionNotSent(*response.Result) && response.Result.Trusted.Execution.Scope.TaskRef == r.q.TaskID && response.Result.Trusted.Execution.IntentID == id {
+			receipt := *response.Result.Trusted.AdmissionNotSent
+			r.mu.Lock()
+			if r.notSent == nil {
+				r.notSent = make(map[string]e2proxy.Receipt)
+			}
+			r.notSent[receipt.CommandRef] = receipt
+			r.mu.Unlock()
+		}
 		return *response.Result, e2runner.ErrUnavailable
 	}
 	return *response.Result, ErrE2Control
+}
+
+func (r *e2RemoteRun) takeAdmissionNotSent(receipt e2proxy.Receipt) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ack, ok := r.notSent[receipt.CommandRef]
+	if !ok || ack != receipt {
+		return false
+	}
+	delete(r.notSent, receipt.CommandRef)
+	return true
 }
 
 func (r *e2RemoteRun) Snapshot() e2proxy.ExecutionView {

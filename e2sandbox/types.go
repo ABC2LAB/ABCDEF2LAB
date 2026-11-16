@@ -27,14 +27,18 @@ type Config struct {
 	// MaxProcesses caps all tasks in the isolated user namespace, including
 	// the trusted helper; it is not an extra Bash-process allowance.
 	MaxProcesses, CPUSeconds, OpenFiles uint64
-	Helper                              string
-	Workspace                           string
-	ProxySocket                         string
-	CACert                              string
-	Command                             string
-	Timeout                             time.Duration
-	DrainTimeout                        time.Duration
-	OutputLimit                         int
+	// MaxCommandProcesses optionally lowers the command's hard NPROC limit
+	// below the helper's, preserving task headroom for the trusted relay.
+	// Zero keeps the existing shared limit.
+	MaxCommandProcesses uint64
+	Helper              string
+	Workspace           string
+	ProxySocket         string
+	CACert              string
+	Command             string
+	Timeout             time.Duration
+	DrainTimeout        time.Duration
+	OutputLimit         int
 	// WorkspaceIn은 /work에 미리 풀 작업 공간 tar다(packWorkspace 형식, 비면 빈 작업 공간). SaveWorkspace면
 	// 명령과 그 하위 프로세스가 모두 끝난 뒤 /work를 묶어 Result.Workspace로 돌려준다(docs/workspace-decision.md).
 	WorkspaceIn   []byte
