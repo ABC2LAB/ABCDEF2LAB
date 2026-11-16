@@ -13,7 +13,7 @@ Finding 상세에서 저장된 오라클 원값, 증거 충분성, 진단 요청
 최초 코드 조사 기준은 당시 `origin/dev` **`bfbabf7b06c8cec47319f34b3d388040dcee611c`**다.
 요청의 확인 기준 `83c3cb66f36a`는 이 커밋의 조상이다. 그 뒤 변경은 #595의 C14 문서와
 #597의 fixture 대상 이름 정비이며, 이 초안의 저장·화면 조사 대상 코드 변경은 없다.
-아래 PR 상태는 작성 시 확인한 스냅샷이다.
+아래 PR 상태는 최초 작성 때의 스냅샷이며, #596 행과 §9는 후속 리뷰의 최종 병합 문서로 갱신했다.
 
 | 구분 | 실제 확인한 범위 | 이 문서에서의 취급 |
 | --- | --- | --- |
@@ -57,7 +57,7 @@ Finding 상세에서 저장된 오라클 원값, 증거 충분성, 진단 요청
 
 | 확인한 PR | 상태·변경 파일 | 이 초안과의 관계 |
 | --- | --- | --- |
-| [#596](https://github.com/ABC2LAB/ABCDEF2LAB/pull/596), head `ce42c65b83e83c829215149832904208a30fce91` | open, 미병합. `docs/e3-confirm-path-decision.md` 한 개 | §9의 선행 결정안. 수정·구현하지 않음 |
+| [#596](https://github.com/ABC2LAB/ABCDEF2LAB/pull/596), head `2ed0d262a63ae547ad35c9a014dd1b76faf00ff2` | merged (`b5ce51ec`, 2026-11-16). 결정 문서 한 개이며 구현은 측정 뒤 | §9의 후속 반영 기준. 선행 코드는 구현하지 않음 |
 | [#595](https://github.com/ABC2LAB/ABCDEF2LAB/pull/595) | merged. `docs/account-login-decision.md`, `docs/control-restore-backlog.md` | C14 상태·인증 회차 기록의 현재 사실 |
 | [#598](https://github.com/ABC2LAB/ABCDEF2LAB/pull/598) | open. `e2runner/`·`e2proxy/execution.go`·server factory/engine·제품 준비 로더·시험·작업공간/상한 문서 | 1-D Bash 병렬 실행 담당 영역. 수정하지 않음 |
 | [#594](https://github.com/ABC2LAB/ABCDEF2LAB/pull/594) | open. 평가 원본② 규칙 JSON·설명·시험 | 평가 영역. 수정하지 않음 |
@@ -273,6 +273,7 @@ verified는 키·scope·저널·독립 마감 근거가 함께 확인된 경우�
 
 | 경우 | 응답 제안 | 화면 |
 | --- | --- | --- |
+| 확정 단계 전에 회차 실패·중지, 선택 범위의 단계 계획/미시작/종료가 검증됨 | 200, availability=not_executed, evaluation_status=not_executed, record/record_checks=null | “확정 단계가 실행되지 않음”. 판정 행 생성 0, 기존 후보의 전송 상태는 별도 보존 |
 | 일반 finding만 존재, E③ link 없음 | 200, `availability=no_link`, record=null, finding 유지 | “연결된 E③ 판정 없음”, 일반 finding의 triage 표시 유지 |
 | E③ 판정은 있지만 finding link 없음 | 200, availability=recorded, ids.finding_id=null | verdict ID로 표시. suspected/undecidable/allowed에서 정상 상태 |
 | 현재 최초 저장 경로의 confirmed에 finding link 없음 | 422 `verdict_detail_integrity_failed` | 현재 원자 저장 불변식 위반. #596의 제품 미연결 판정은 별도 source/link 규약 채택 뒤에만 허용 |
@@ -581,8 +582,10 @@ KG 유실을 확인한 경우의 정상 읽기 예시(제안·축약)는
 
 ## 9. #596 결정안과의 관계
 
-#596의 문서는 자체 상태를 “결정”으로 적고 있으나, **조사 시점에는 dev 미병합 선행 결정안**이다.
-확인한 원문은 [고정 head의 결정안](https://github.com/ABC2LAB/ABCDEF2LAB/blob/ce42c65b83e83c829215149832904208a30fce91/docs/e3-confirm-path-decision.md)이다.
+#596은 후속 확인 시 **dev에 병합된 결정 문서**다(merge `b5ce51ec`, 2026-11-16 06:16 UTC).
+최초 초안 작성 때는 미병합이었지만 이후 상태를 갱신했다. 구현은 여전히 측정 뒤다.
+확인한 원문은 [고정 head의 결정안](https://github.com/ABC2LAB/ABCDEF2LAB/blob/2ed0d262a63ae547ad35c9a014dd1b76faf00ff2/docs/e3-confirm-path-decision.md)이다.
+`a45c26cd`의 모델 단계 뒤 확정·예비 몫 결정과, 최종 `2ed0d262`의 다음 회차 리셋 확인 보완을 함께 반영한다.
 이 초안이 #596의 판정 규칙이나 구현 소유를 대신 확정하지 않는다.
 
 | 구분 | 현재 경로 | #596 이후 의존 |
@@ -603,8 +606,13 @@ v1/v2를 읽을 수 있다는 사실은 v3 제품 확정 근거가 있다는 뜻
 
 ### 9.1 제품 확정 경로 추가 시: UNDECIDABLE 세부 사유와 추가 칸
 
-#596 `ce42c65b`의 §5~§7·§9를 반영하는 **후속 제품 투영 제안**이다. 현재 서버·오라클 enum·
+#596 최종 `2ed0d262`의 §5~§7·§9를 반영하는 **후속 제품 투영 제안**이다. 현재 서버·오라클 enum·
 영수증 v1/v2에 아래 코드나 칸이 이미 있다고 주장하지 않는다. 구현은 측정 뒤다.
+
+확정 단계는 탐색·Planner·Worker와 마무리 턴까지 **모든 모델 활동이 끝나고 모델 승인 예약이
+닫힌 뒤에만** 시작한다. 표식도 그때 처음 만든다. 회차 시작 시 E②가 시간·대상 요청의 확정 몫을
+미리 떼어 두며, 모델 단계는 그 몫을 뺀 범위에서만 돈다. 남은 예산이 있으면 확정한다는 흐름이 아니다.
+확정 단계는 모델을 부르지 않으므로 모델 예산은 따로 예약하지 않는다.
 
 기존 canonical의 `record.reason_codes`는 그대로 보존한다. 제품 v3 생산자가 기록한 구체적 사유를
 `record_checks.reason_codes`에 아래 제품 전용 코드로 투영하는 안을 제안한다. GET에서 실패를
@@ -622,11 +630,22 @@ v1/v2를 읽을 수 있다는 사실은 v3 제품 확정 근거가 있다는 뜻
 | A·B 식별자 digest 비교가 같음 | `product_subjects_identical` | 서로 다른 시험 주체를 확인하지 못함. 대상 UNDECIDABLE, 뒤 단계 미실행. 다른 계정 공급 필요. oracle 신원 원값을 조회에서 재계산하지 않음 |
 | 사용자 승인 모드의 프로그램 생성 요청 거절 | `product_create_approval_denied` | 해당 종류 UNDECIDABLE. 명시적 미전송 영수증으로 확인하며 이후 A/B 조회를 만들지 않음. 거절 사실을 시간 초과와 구분 |
 | 같은 생성 요청의 확인 시간 초과 | `product_create_approval_timeout` | 해당 종류 UNDECIDABLE. 보내지 않은 확인 만료와 결과 불명 쓰기를 구분. 원래 요청을 자동 재전송하지 않음 |
+| 시작 때 떼어 둔 확정 단계 전용 시간·요청 상한 소진 | `product_confirmation_budget_exhausted` | 확정 단계만 끝내고 남은 종류를 UNDECIDABLE로 둔다. 완료된 판정은 보존한다. 회차 전체 예산 소진 때 새 송신을 멈추는 규칙과 구분 |
 
 코드에는 단계·적용 범위가 들어가므로 데이터 검사 실패를 모두 `data_unverifiable`로 뭉치지 않는다.
 실제 판정 행이 없으면 위 사유만으로 `record.oracle_value=undecidable`을 만들어 내지 않고
 §6의 부재/미실행 envelope와 신뢰된 실행 상태를 사용한다. 반대로 저장된 UNDECIDABLE이 있으면
 원값을 유지하고 위 세부 사유를 함께 읽는다. 인프라 읽기 실패·손상은 각각 503/422의 별도 경계다.
+
+확정 단계 **전에** 회차가 실패·중지로 끝난 경우는 위 예산 소진 판정과 다르다. 확정 단계가
+실제로 시작되지 않았으므로 판정 행을 만들지 않고, §6의 `record=null`·`evaluation_status=not_executed`로
+읽는다. 이는 해당 선택 범위의 신뢰된 확정 단계 계획·미시작·회차 종료 근거를 확인한 경우에만 쓴다.
+근거가 없으면 `evaluation_status=unknown`이며 판정 행 부재로 미실행을 추정하지 않는다.
+모델 단계의 기존 후보 call이 보낸 요청은 별도 전송 사실로 보존하며 확정 미실행을 전체 진단 미송신으로
+바꾸지 않는다. 이 경우를 UNDECIDABLE 사유 코드로 꾸며 새 판정을 저장하지 않는다.
+
+`previous_markers_present`와 다음 회차의 필수 리셋 확인 부재(최종 #596 §6.1)는 **회차 시작 거절**이다.
+이 단건 판정 API의 새 oracle 사유가 아니며, 시작 실패 흐름에서 표시하고 기존 과거 판정을 덮지 않는다.
 
 추가 칸도 제품 경로 공급 시에만 연다(현재 경로는 null/미공급).
 
@@ -670,6 +689,8 @@ v1/v2를 읽을 수 있다는 사실은 v3 제품 확정 근거가 있다는 뜻
 | FVD22 | 사용자 승인 모드 프로그램 생성 거절 대 확인 만료 | 서로 다른 승인 코드, 생성 송신·후속 조회·자동 재전송 0 |
 | FVD23 | 제품 선언 동결본 대 평가 KG snapshot, 후보 조회 틀 일치 0/1/복수 | 출처를 명시 검증. 후보 연결은 정확히 1개일 때만, 후보 상태 불변 |
 | FVD24 | #598 실제 미전송 제어 영수증 대 빈 Call/감사 미확인 | 전자만 결속·마감 확인 뒤 held_pre_send, 후자는 unknown. 가짜 시도 생성 0 |
+| FVD25 | 확정 단계 전용 시간·요청 예비 몫 소진 | product_confirmation_budget_exhausted, 그 단계만 종료·남은 종류 UNDECIDABLE·완료 판정 보존 |
+| FVD26 | 확정 전에 회차 실패/중지, 미시작 근거 있음/없음, 모델 후보의 이미 송신된 call | 판정 행 생성 0. 검증된 미시작만 evaluation_status=not_executed, 그 밖은 unknown. 후보의 기존 송신 사실 보존 |
 
 ## 11. Open Decisions
 
@@ -685,7 +706,7 @@ v1/v2를 읽을 수 있다는 사실은 v3 제품 확정 근거가 있다는 뜻
 | OD06 증거 revision/digest/KG 검증 실패 | digest reader만으로 출처 전부 확인 못 함. 일부 기존 helper는 오라클 재계산 | 읽기 전용 검사 분리, 역사적 버전 표시/200 unavailable/409/422/503 경계·고정 코드 확정 | §1·§6·§8, access_map.go, e3record/manifest.go, e3-storage-gate §9.1 | 최민준·이동찬, 화면 이경준 | 예 |
 | OD07 비평가 제품 vs 평가 run | eval_run_id는 NULL 가능. 평가 API는 동결 export | UI 단건에 export 동결/러너 권한을 강제하지 않음. source별 읽기 권위 설치 | §1·§9, verdict-record-page-api-proposal.md | 최민준·이동찬 | 예 |
 | OD08 추가 공급·projection 필드 | 기본 저장 있음. 제품 시도 link·검사별 미실행 정본·새 envelope 없음 | 신뢰 reader·전체 응답/배열 상한·DLP allowlist·wire 타입 확정. 새 E③ 테이블은 제안하지 않음 | §3·§5·§7·§8, e3record/model.go | 서버/송신 인터페이스 이동찬, 정본/issuance·검증 최민준, 필드/표시 이경준 | 예 |
-| OD09 #596 반영 순서 | 선행 결정안 미병합·미구현 | 결정안 리뷰→source/link/v3 구현·수용→상세 reader→UI 연결. 등록 GET 단건 부분 착수 여부 별도 합의 | §9, #596 고정 head | 최민준·이경준·이동찬 | 예 |
+| OD09 #596 반영 순서 | 결정 문서 dev 병합·구현은 측정 뒤 | source/link/v3 구현·수용→상세 reader→UI 연결. 등록 GET 단건 부분 착수 여부 별도 합의 | §9, #596 고정 head | 최민준·이경준·이동찬 | 예 |
 | OD10 읽기 권한·설치 위치 | 제품 AuthorizeTask, 보고서 boundTask, 단일 ARTEX 신원 | 인증된 task/job/execution 문맥의 별도 읽기 handler로만 설치. 재시작 시 실행 복구 금지 | §2·§7, diagnosisprep/service_linux.go, first_diagnosis_report.go | 이동찬·최민준 | 예 |
 | OD11 공개 필드의 적격성 | canonical safeText는 문자열 형식 검사이며 전체 DLP 보장 아님 | canary 필드 경로·계정 라벨·논리 ref·심각도/제목의 안전 투영 규칙 확인 | §3·§7, e3record/prepare.go, #596 §6 | 최민준·이경준·이동찬 | 예 |
 
