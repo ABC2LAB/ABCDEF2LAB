@@ -222,6 +222,12 @@ class FakeEvidence:
         return "h-" + name, len(json.dumps(self.files[name]))
 
 
+def task_view(status, goals_met=0, goals_total=1, in_flight=0, completed_at="", failover="ok"):
+    """원본 작업 조회 응답에서 러너가 옮기는 끝 신호 칸."""
+    return {"status": status, "completed_at": completed_at, "goals_total": goals_total, "goals_met": goals_met,
+            "in_flight": in_flight, "llm_failover_state": failover}
+
+
 class FakePorts:
     def __init__(self, spec):
         self.serving = {}
@@ -233,6 +239,9 @@ class FakePorts:
         self.fake_clock, self.verdict_call_seconds = None, 0
         self.rules_sha256 = None
         self.spec = spec
+        # 엔진 끝 신호: 차례로 돌려줄 작업 상태 칸(하나 남으면 계속 그것, 예외는 raise). 읽은 시점은 calls 길이로 남긴다
+        # (calls 순서를 대조하는 시험을 흔들지 않게 따로 둔다).
+        self.task_views, self.status_positions = [task_view("running")], []
         self.calls = []
         self.fail = {}
         self.started = self.sealed = False
@@ -377,6 +386,13 @@ class FakePorts:
             self.on_start()
         self.started = True
         return "17"
+
+    def task_status(self, task_id):
+        self.status_positions.append(len(self.calls))
+        view = self.task_views[0] if len(self.task_views) == 1 else self.task_views.pop(0)
+        if isinstance(view, Exception):
+            raise view
+        return dict(view, task=task_id)
 
     def start_host_watch(self):
         self._call("watch:start")
@@ -1046,7 +1062,7 @@ class TestCompleteRun(unittest.TestCase):
         self.assertEqual(evidence.files[RESULT_NAME], result)
         self.assertEqual(set(evidence.files), {"pre-checks.json", "pre-probe.json", "post-checks.json",
                                                "post-probe.json", "meter-summary.json", "llm-summary.json",
-                                               "findings.json", "task.json", "window-watch.json",
+                                               "findings.json", "task.json", "window-watch.json", "engine-end.json",
                                                "isolation-evidence.json", "solve-events.json", "run-record.json", "intercept-summary.json",
                                                "engine-settings.json", RESULT_NAME})
         # 서명 대상 근거 목록에는 결과 파일 자신이 없다(서명 뒤에 쓴다).
@@ -2806,3 +2822,54 @@ class AcceptancePathKeyTests(unittest.TestCase):
             with self.assertRaises(RunnerConfigError) as caught:
                 acceptance_path_key(self.config("browser_acceptance", key))
             self.assertEqual(caught.exception.errors, ["config.path_key_file: UNREADABLE"])
+
+
+class TestEngineEndSignal(unittest.TestCase):
+    """엔진 끝 신호(결정안 §3.1): 창 동안 작업 상태를 읽어 첫 끝 상태를 남기고, down 전에 마지막 상태를 읽어 서명 근거로 둔다."""
+
+    def test_first_terminal_and_final_read_before_down(self):
+        def setup(ports, meter, clock):
+            ports.task_views = [task_view("running"), task_view("done", goals_met=1, completed_at="2026-11-16T00:00:03Z"),
+                                task_view("done", goals_met=1, completed_at="2026-11-16T00:00:03Z")]
+        result, ports, _, evidence = run(setup)
+        self.assertEqual(result["status"], COMPLETE)
+        end = evidence.files["engine-end.json"]
+        self.assertEqual(end["format"], "abc2lab-eval-runner-engine-end-v1")
+        self.assertEqual(end["task_id"], "17")
+        self.assertEqual(end["first_terminal"]["status"], "done")
+        self.assertEqual((end["final"]["status"], end["final"]["goals_met"], end["final"]["goals_total"]), ("done", 1, 1))
+        self.assertIn("read_at", end["final"])
+        self.assertNotIn("task", end["final"])  # 끝 신호 칸만 옮긴다
+        self.assertEqual((end["window_read_failures"], end["final_error"]), (0, None))
+        # 마지막 읽기는 봉인·drain 뒤, down 전이다.
+        last = ports.status_positions[-1]
+        self.assertIn("seal", ports.calls[:last])
+        self.assertNotIn("down", ports.calls[:last])
+        self.assertIn("engine-end.json", result["evidence"])
+
+    def test_running_engine_has_no_terminal_and_values_are_not_interpreted(self):
+        result, _, _, evidence = run()
+        end = evidence.files["engine-end.json"]
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertIsNone(end["first_terminal"])
+        self.assertEqual(end["final"]["status"], "running")
+        self.assertGreater(end["window_reads"], 0)
+
+    def test_read_failures_are_counted_not_turned_into_invalid_rounds(self):
+        def setup(ports, meter, clock):
+            ports.task_views = [EngineAPIError("engine_task_status_http_503")]
+        result, _, _, evidence = run(setup)
+        end = evidence.files["engine-end.json"]
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertGreater(end["window_read_failures"], 0)
+        self.assertEqual(end["window_last_error"], "engine_task_status_http_503")
+        self.assertEqual((end["final"], end["final_error"]), (None, "engine_task_status_http_503"))
+        self.assertIsNone(end["first_terminal"])
+
+    def test_unexpected_port_error_gets_a_fixed_code(self):
+        def setup(ports, meter, clock):
+            ports.task_views = [RuntimeError("socket path /secret leaked")]
+        _, _, _, evidence = run(setup)
+        end = evidence.files["engine-end.json"]
+        self.assertEqual((end["window_last_error"], end["final_error"]), ("engine_task_status_failed", "engine_task_status_failed"))
+        self.assertNotIn("secret", json.dumps(end))
