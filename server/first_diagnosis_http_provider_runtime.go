@@ -79,7 +79,7 @@ func firstDiagnosisHTTPTask(ctx context.Context, m *Manager, host *FirstDiagnosi
 	if t.ID != taskID || t.ExpID != expID || t.Store == nil || t.Store.ID() != expID || !state.Paused || state.Queued || state.FirstRunAt != 0 || state.CompletedAt != 0 || db.IsTerminal(state.Status) {
 		return nil, ErrFirstDiagnosisHTTPHost
 	}
-	if err = host.runtime.AdmitTask(ctx, t); err != nil {
+	if err = host.runtime.admitTaskWithWorkers(ctx, t, m.Workers()); err != nil {
 		return nil, ErrFirstDiagnosisHTTPHost
 	}
 	return t, nil

@@ -56,3 +56,61 @@
 ## 6. 열린 항목
 
 1. **빼는 통로와 수명의 구현**(이동찬과 페어): 처음에는 helper가 샌드박스 안 모든 프로세스 종료 뒤 새로 만든 파이프로 보내는 방식을 1안으로 뒀다. #443은 대신 helper를 띄울 때 만든 pipe(fd 9)를 쓴다. 종료 뒤에 새 fd를 helper에 건네려면 fd를 넘길 수 있는 소켓 통로가 새로 필요하고, helper가 명령 동안 들고 있는 설정·상태 pipe가 이미 같은 근거(close-on-exec, helper dumpable 아님, 명령의 capability 없음)로 보호되기 때문이다. 묶기는 PID namespace init인 helper가 `kill(-1)`·`wait4`로 모든 프로세스를 회수한 뒤 한다. 이 방식은 이동찬 페어 리뷰로 확정한다.
+
+## 7. 회차별 Bash 동시 실행 (1-D, 2026-11-16)
+
+### 실행 슬롯과 신뢰 경로
+
+회차의 Bash 슬롯은 `min(승인된 E② Limits.MaxConcurrent, 실제 Worker 수)`다. HTTP 동시 송신 제한과 Bash 프로세스 제한은 별개이며, Bash 슬롯을 늘려도 E②의 `MaxConcurrent`나 요청·호출·시간·모델 비용 예산을 바꾸지 않는다.
+
+`Engine.Run`은 `Manager.Workers()`가 읽은 DB `workers` 설정(누락 시 기존 기본값 3)을 한 번 읽어 Worker 실행과 E② task admission에 같은 값을 쓴다. 제품의 조기 admission도 Manager 경로로 같은 값을 결속한다. 회차 도중 설정이 달라지면 재입장을 거절하며 기존 실행의 수를 바꾸지 않는다. `E2HTTPRequest.WorkerCount`는 JSON에서 읽거나 내보내지 않는 Go 내부 값이다. 실제 intent를 획득할 때 결속한 수를 factory로 전달하고, factory가 검증한 정책 상한과의 최솟값을 `e2runner.Config.BashSlots`에 넣는다. 모델 출력·HTTP·환경 변수는 이 값을 정하지 않는다.
+
+| 승인 HTTP 동시성 | 실제 Worker | Bash 슬롯 |
+|---|---|---|
+| 16 | 3 | 3 |
+| 2 | 3 | 2 |
+| 1 | 3 | 1 |
+| 4 | 2 | 2 |
+
+기존 Go 호출자가 Worker 수나 Bash 슬롯을 생략하면 1개다. 음수·정책 상한 밖 슬롯·결속 뒤 다른 Worker 수는 오류로 닫는다. 슬롯 계산은 승인 정책 바이트와 fingerprint를 수정하지 않는다. 새 URL 준비 로더의 `MaxConcurrent == 1` 검사는 제품 기본 정책(16)도 지나는 공통 경로였으므로, 양수 동시성과 이를 수용하는 프록시 연결 수 검사로 바꿨다. 정책의 전체 유한 상한과 지문 검증은 기존 factory·제품 정책 검증을 계속 지난다. 평가·구형 호출은 Worker 결속이 없으면 1개를 유지한다.
+
+### intent 직렬화와 마감
+
+- 서로 다른 intent는 슬롯 수 안에서 별도 call_ref·namespace·프록시·결과·감사를 가진다. 예산은 회차의 기존 누적 예산을 함께 사용한다.
+- 같은 intent는 **intent 잠금 → 회차 슬롯** 순서로 확보한다. 같은 intent의 대기자가 다른 Worker의 슬롯을 차지하지 않으며, 앞 호출의 최종 cleanup·보관소 저장이 끝난 뒤에만 다음 호출이 `/work`를 읽는다. 파일 도구는 마지막 저장까지 `workspaceBusy`에 의해 쓰기·수정을 거부한다.
+- 호출은 프로세스·분리 자식·프록시·감사 마감과 보관소 저장 처리가 끝난 뒤 active 목록과 슬롯에서 빠진다. 마감이 불명하면 슬롯과 intent 소유권을 보유한다. 보관소 저장 실패는 기존 계약대로 `not_saved`로 표시하고 검증된 이전 보관본을 유지하며, 실행 마감 성공으로 파일 저장 성공을 추정하지 않는다.
+- 대기 중 취소·실행 철회·만료·Close를 확인한다. 전체 Drain과 DrainIntent는 기존 대기 세대를 무효화한다. 마감 후 다시 열린 슬롯으로 옛 대기 호출이 시작되지 않는다. 불완전 drain은 barrier를 유지하며, 이후 마감 재시도로 확인된 경우에만 새 세대를 받는다.
+- intent 보관 파일은 회차의 보호 디렉터리 아래 intent ID마다 분리한다. intent 마감 뒤 해당 보관본을 지우며 다른 intent의 실행·보관본은 유지한다. 전체 Close는 모든 호출의 마감 뒤 남은 보관본을 지운다.
+
+### 자원 용량과 남는 한계
+
+호출당 기본 `/work`는 32MiB, `/tmp`는 16MiB다. 다음 값은 **tmpfs 설정 상한의 합계이며 실제 RSS 측정값이 아니다**.
+
+| Bash 슬롯 | `/work` 합산 상한 | `/tmp` 합산 상한 |
+|---|---|---|
+| 1 | 32MiB | 16MiB |
+| 2 | 64MiB | 32MiB |
+| 3 | 96MiB | 48MiB |
+
+설치가 다른 자원 프로필을 지원하면 합산식은 각각 `BashSlots × ScratchBytes`, `BashSlots × TempBytes`다. **현재 제품 설치 입력·정책에는 ScratchBytes/TempBytes 선택 칸이 없으므로 이 경로는 기존 기본값을 사용한다.** §2-6의 크기 설정화는 별도 미완료 항목이며, 새 설정 칸을 임의로 허용하거나 입력을 조용히 무시하지 않는다. `OutputLimit` 등 이미 지원하는 보호 정책 값은 그대로 전달된다.
+
+동시에 호출별 프록시/TLS 버퍼, 가린 출력(보존 시 캡처 상한 4MiB), workspace tar 복사본, helper·도구·자식 프로세스 메모리가 더 생긴다. namespace당 기본 task 상한 128도 호출마다 적용되므로 전체 RSS·프로세스 수의 회차 상한으로 해석하지 않는다. 보관소 교체는 기존 mutex로 보호하며 짧은 저장 구간은 차례로 처리한다. 처리량·최고 RSS·장시간 부하는 측정하지 않았다.
+
+`noexec`, namespace·seccomp·capability 제한, helper FD/호스트 쓰기 경로 보호는 유지한다. 임의 모델 슬롯 설정, 같은 intent의 병렬 Bash, 임의 호스트 파일 접근과 비지원 송신 경로는 지원하지 않는다.
+
+### 검증 기록
+
+검증 환경: Linux 비특권 UID, 실제 소스 빌드 `e2-bash-sandbox`, 소유 loopback HTTP 수신기, 실제 E② 보호 저널/누적 예산, 격리 PostgreSQL 16 Unix 소켓. 수신 보류 채널과 call cleanup/workspace 잠금으로 겹침과 저장 순서를 확인했다. 단순 sleep 경과를 병렬성 근거로 쓰지 않는다.
+
+- `TestRunnerParallelIntentSlotsAndAudit`: 슬롯 1·2·3의 실제 수신 중첩, 초과 실행 거부, call/intent별 송신·응답·마감 감사, 누적 예산 보존.
+- `TestRunnerParallelSameIntentSerializesWorkspace`: 같은 intent 직렬성·파일 이어쓰기, 다른 intent의 진행·파일 격리, 실행 중 파일 도구 변경 거부.
+- `TestRunnerParallelQueuedLifecycle`: 대기 중 사용자 취소·철회·전체 Drain·Close, 새 세대만 재시작 허용. 기존 intent drain 대기 세대 회귀시험도 실행했다.
+- `TestRunnerParallelDrainOneIntent`, `TestRunnerParallelSlotHeldThroughWorkspaceCommit`: 다른 intent 실행 유지, 최종 보관소 저장 전 active/슬롯 보유.
+- `TestRunnerParallelCleanupFailuresRetainSlots`, `TestRunnerParallelWorkspaceStoreFailureAndInitFailure`: 실제 helper 실행의 프록시·감사 마감 장애 및 보관소 읽기·원자 저장 실패 주입, 미확인 마감 슬롯 보유와 오류 분류.
+- `TestRunnerParallelDetachedChildrenAndTimeout`: setsid 자식과 다른 intent가 실제 수신한 뒤 정상 종료/timeout에서 namespace·프록시 drain 및 슬롯 반환.
+- `TestE2HTTPFactoryDerivesBashSlotsFromWorkersAndPolicy`: 실제 제품 factory→Runner→helper에서 표의 네 구성과 Worker 미지정 1개를 대조. 승인 정책 바이트·HTTP 상한 보존.
+- `TestE2HTTPBashWorkersFollowActualEngineManagerOwnedPostgres`: 실제 Engine/Manager/intent 획득의 Worker 결속과 실행 중 설정 변경 격리.
+
+초기 구현 검증: E② 세 패키지 전체 race **617 PASS / FAIL 0 / SKIP 0**(test/subtest), 서버·모델 예산/1-E 및 실제 Manager PostgreSQL race **107 PASS / FAIL 0 / SKIP 0**. 전체 빌드·vet 통과. 전용 DB 없이 실행한 서버·제품 전체 시험은 **2193 PASS / FAIL 1 / SKIP 309**였으며 실패는 기존 모델 목록 시험의 DB 미설정이었다. 해당 시험은 일회용 DB 재실행에서 통과했다. 최종 통합 SHA·검증은 PR에 기록한다.
+
+Docker 제품 이미지의 새 종단 회차, 유료 Qwen3.6 회차, 운영 대상 송신, 성능/RSS 측정은 **NOT_RUN**이다. 로컬 실제 수신·E② 감사 확인을 외부 모델 종단 성공으로 옮기지 않는다.

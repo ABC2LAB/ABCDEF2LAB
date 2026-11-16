@@ -38,17 +38,19 @@ const maxUnixSocketPathBytes = 106
 type Runner struct{ *runnerState }
 
 type runnerState struct {
-	cfg           Config
-	caCertificate []byte
-	mu            sync.Mutex
-	stopped       bool
-	active        map[string]*runningCall
-	callGate      chan struct{}
-	stop          chan struct{}
-	stopOnce      sync.Once
-	draining      bool
-	drainGate     chan struct{}
-	intentDrains  map[int64]*intentDrainState
+	cfg            Config
+	caCertificate  []byte
+	mu             sync.Mutex
+	stopped        bool
+	active         map[string]*runningCall
+	callGate       chan struct{}
+	stop           chan struct{}
+	stopOnce       sync.Once
+	draining       bool
+	drainGate      chan struct{}
+	intentDrains   map[int64]*intentDrainState
+	intentGates    map[int64]chan struct{}
+	admissionEpoch chan struct{}
 	// workspaceMu는 intent별 작업 공간 보관 파일의 읽기·교체·삭제를 차례로 한다.
 	workspaceMu sync.Mutex
 	// workspaceBusy는 보관소를 읽고 끝에 다시 저장할 호출이 진행 중인 intent별 수다(mu로 보호). 파일 도구는 이 값이
@@ -61,6 +63,7 @@ type intentDrainState struct {
 	active     bool
 	fenced     bool
 	generation uint64
+	changed    chan struct{}
 }
 
 type runningCall struct {
@@ -90,7 +93,14 @@ type runningCall struct {
 }
 
 func New(cfg Config) (*Runner, error) {
-	if cfg.Execution == nil || cfg.CommandTimeout <= 0 || cfg.CommandTimeout > maxRunnerCommandTimeout ||
+	if cfg.BashSlots == 0 {
+		cfg.BashSlots = 1
+	}
+	if cfg.Execution == nil || cfg.BashSlots < 1 || cfg.BashSlots > cfg.Execution.MaxConcurrent() {
+		return nil, ErrConfig
+	}
+
+	if cfg.CommandTimeout <= 0 || cfg.CommandTimeout > maxRunnerCommandTimeout ||
 		cfg.DrainTimeout <= 0 || cfg.DrainTimeout > maxRunnerDrainTimeout || cfg.OutputLimit <= 0 || cfg.OutputLimit > maxOutputBytes ||
 		e2proxy.ValidateProxyConfig(cfg.Proxy) != nil || !trustedPath(cfg.RootDir, true) || !trustedPath(cfg.Helper, false) ||
 		!trustedPath(cfg.CACert, false) {
@@ -119,7 +129,7 @@ func New(cfg Config) (*Runner, error) {
 	if ValidateRootDirLayout(cfg.RootDir) != nil {
 		return nil, ErrConfig
 	}
-	return &Runner{runnerState: &runnerState{cfg: cfg, caCertificate: pem.EncodeToMemory(block), active: make(map[string]*runningCall), callGate: make(chan struct{}, 1), stop: make(chan struct{}), drainGate: make(chan struct{}, 1), intentDrains: make(map[int64]*intentDrainState), workspaceBusy: make(map[int64]int)}}, nil
+	return &Runner{runnerState: &runnerState{cfg: cfg, caCertificate: pem.EncodeToMemory(block), active: make(map[string]*runningCall), callGate: make(chan struct{}, cfg.BashSlots), stop: make(chan struct{}), drainGate: make(chan struct{}, 1), intentDrains: make(map[int64]*intentDrainState), workspaceBusy: make(map[int64]int), intentGates: make(map[int64]chan struct{}), admissionEpoch: make(chan struct{})}}, nil
 }
 
 func trustedPath(path string, directory bool) bool {
@@ -171,23 +181,55 @@ func (r *Runner) RunForIntent(ctx context.Context, intentID int64, command strin
 	}
 	r.mu.Lock()
 	admissionGeneration := r.intentGenerationLocked(intentID)
+	admissionEpoch := r.admissionEpoch
+	scope := r.intentDrains[intentID]
+	if scope == nil {
+		scope = &intentDrainState{gate: make(chan struct{}, 1), changed: make(chan struct{})}
+		r.intentDrains[intentID] = scope
+	}
+	intentEpoch := scope.changed
 	temporarilyBlocked := r.stopped || r.draining || r.intentFencedLocked(intentID)
 	r.mu.Unlock()
 	if temporarilyBlocked {
 		return Result{}, ErrUnavailable
 	}
-	// One installed Runner is shared by every Worker for this execution.
-	// A queued caller acquires neither a Call nor a fresh budget. The slot is
-	// retained across an incomplete drain and released only by final cleanup.
-	select {
-	case r.callGate <- struct{}{}:
-	case <-ctx.Done():
+	// intent → 전체 슬롯 순서다. 같은 intent 대기는 다른 intent의 슬롯을 점유하지 않는다.
+	r.mu.Lock()
+	intentGate := r.intentGates[intentID]
+	if intentGate == nil {
+		intentGate = make(chan struct{}, 1)
+		r.intentGates[intentID] = intentGate
+	}
+	r.mu.Unlock()
+	expiry := time.NewTimer(time.Until(r.cfg.Execution.Snapshot().ExpiresAt))
+	defer expiry.Stop()
+	acquire := func(gate chan struct{}) bool {
+		select {
+		case gate <- struct{}{}:
+			return true
+		case <-ctx.Done():
+		case <-r.stop:
+		case <-admissionEpoch:
+		case <-intentEpoch:
+		case <-r.cfg.Execution.Done():
+		case <-expiry.C:
+		}
+		return false
+	}
+	if !acquire(intentGate) {
 		return Result{}, ErrUnavailable
-	case <-r.stop:
+	}
+	if !acquire(r.callGate) {
+		<-intentGate
 		return Result{}, ErrUnavailable
 	}
 	var releaseOnce sync.Once
-	releaseSlot := func() { releaseOnce.Do(func() { <-r.callGate }) }
+	releaseSlot := func() {
+		releaseOnce.Do(func() {
+			<-r.callGate
+			<-intentGate
+		})
+	}
 	stateOwnsSlot := false
 	defer func() {
 		if !stateOwnsSlot {
@@ -195,9 +237,9 @@ func (r *Runner) RunForIntent(ctx context.Context, intentID int64, command strin
 		}
 	}()
 	r.mu.Lock()
-	stopped := r.stopped || r.draining || r.intentFencedLocked(intentID) || r.intentGenerationLocked(intentID) != admissionGeneration
+	stopped := r.stopped || r.draining || r.admissionEpoch != admissionEpoch || r.intentFencedLocked(intentID) || r.intentGenerationLocked(intentID) != admissionGeneration
 	r.mu.Unlock()
-	if stopped {
+	if stopped || ctx.Err() != nil {
 		return Result{}, ErrUnavailable
 	}
 	ref, err := commandRef()
@@ -209,7 +251,7 @@ func (r *Runner) RunForIntent(ctx context.Context, intentID int64, command strin
 	// Publish admission atomically with Close's snapshot, so Close cannot
 	// release execution resources while an unregistered call is being created.
 	r.mu.Lock()
-	if r.stopped || r.draining || r.intentFencedLocked(intentID) || r.intentGenerationLocked(intentID) != admissionGeneration {
+	if r.stopped || r.draining || r.admissionEpoch != admissionEpoch || r.intentFencedLocked(intentID) || r.intentGenerationLocked(intentID) != admissionGeneration {
 		r.mu.Unlock()
 		return Result{}, ErrUnavailable
 	}
@@ -348,10 +390,10 @@ func (s *runningCall) cleanup(ctx context.Context) (Result, error) {
 		return Result{Trusted: TrustedResult{Version: e2proxy.Version, Execution: s.owner.cfg.Execution.SnapshotForIntent(s.call.IntentID()), Call: s.call.Result(), Classification: "result_unknown"}}, ErrIncomplete
 	}
 	if s.resourcesClosed {
+		s.releaseWorkspace()
 		if s.releaseSlot != nil {
 			s.releaseSlot()
 		}
-		s.releaseWorkspace()
 		return s.result, nil
 	}
 	s.call.Block()
@@ -410,9 +452,6 @@ func (s *runningCall) cleanup(ctx context.Context) (Result, error) {
 			processReleased := s.process == nil || s.process.Close() == nil
 			if processReleased && s.removeOwnedRoot() == nil {
 				s.resourcesClosed = true
-				s.owner.mu.Lock()
-				delete(s.owner.active, s.call.Ref())
-				s.owner.mu.Unlock()
 			}
 		}
 	}
@@ -448,10 +487,13 @@ func (s *runningCall) cleanup(ctx context.Context) (Result, error) {
 	if !s.resourcesClosed {
 		return s.result, ErrIncomplete
 	}
+	s.releaseWorkspace()
+	s.owner.mu.Lock()
+	delete(s.owner.active, s.call.Ref())
+	s.owner.mu.Unlock()
 	if s.releaseSlot != nil {
 		s.releaseSlot()
 	}
-	s.releaseWorkspace()
 	return s.result, nil
 }
 
@@ -542,6 +584,8 @@ func (r *Runner) Drain(ctx context.Context) error {
 	}
 	r.mu.Lock()
 	r.draining = true
+	close(r.admissionEpoch)
+	r.admissionEpoch = make(chan struct{})
 	states := make([]*runningCall, 0, len(r.active))
 	for _, state := range r.active {
 		states = append(states, state)
@@ -584,7 +628,7 @@ func (r *Runner) DrainIntent(ctx context.Context, intentID int64) error {
 	r.mu.Lock()
 	scope := r.intentDrains[intentID]
 	if scope == nil {
-		scope = &intentDrainState{gate: make(chan struct{}, 1)}
+		scope = &intentDrainState{gate: make(chan struct{}, 1), changed: make(chan struct{})}
 		r.intentDrains[intentID] = scope
 	}
 	r.mu.Unlock()
@@ -601,6 +645,8 @@ func (r *Runner) DrainIntent(ctx context.Context, intentID int64) error {
 		defer func() { r.mu.Lock(); scope.active = false; r.mu.Unlock(); <-scope.gate }()
 		return ErrIncomplete
 	}
+	close(scope.changed)
+	scope.changed = make(chan struct{})
 	scope.generation++
 	scope.active = true
 	scope.fenced = true

@@ -126,6 +126,7 @@ func newURLNegativeFixture(t *testing.T) *urlNegativeFixture {
 			ApprovalDisplay: server.RequestApprovalDisplay{QueryKeys: []string{}, JSONFields: []string{}},
 		}},
 		Limits: server.E2HTTPFileLimits{MaxConcurrent: 1, MaxBodyBytes: 1024},
+		Proxy:  server.E2HTTPFileProxy{MaxConnections: 1},
 	}
 	f.launch = launchConfig{
 		Format: launchFormat, Mode: "general_http", ListenAddr: "127.0.0.1:28080",
@@ -323,7 +324,7 @@ func TestURLPreparationLoadProfileRejectsUnsafePolicy(t *testing.T) {
 		{"zero_concurrency", "installation_policy_invalid", func(f *urlNegativeFixture) {
 			f.policy.Limits.MaxConcurrent = 0
 		}},
-		{"multiple_concurrency", "installation_policy_invalid", func(f *urlNegativeFixture) {
+		{"insufficient_proxy_concurrency", "installation_policy_invalid", func(f *urlNegativeFixture) {
 			f.policy.Limits.MaxConcurrent = 2
 		}},
 	}
@@ -494,5 +495,23 @@ func TestURLPreparationOpenRouterInspectProtectedManifest(t *testing.T) {
 	got, err = b.Inspect(t.Context(), "ARTEX", f.input)
 	if err != nil || got.Scope != nil || got.ReasonCode != "installation_model_invalid" {
 		t.Fatal("replaced manifest accepted")
+	}
+}
+
+// 제품 기본 정책과 같이 동시성 1보다 큰 승인도 로더를 지나며, 연결 수가 모자라면 기존 음성 시험에서 거부한다.
+func TestURLPreparationLoadProfileAcceptsApprovedConcurrency(t *testing.T) {
+	for _, n := range []int{1, 2, 3, 16} {
+		t.Run(fmt.Sprint(n), func(t *testing.T) {
+			f := newURLNegativeFixture(t)
+			f.policy.Limits.MaxConcurrent = n
+			f.policy.Proxy.MaxConnections = n
+			f.write()
+			loaded, err := f.load()
+			if err != nil || loaded == nil {
+				t.Fatal("승인된 동시성 로더 거부", err)
+			}
+			loaded.clearMaterials()
+			f.assertNoConnections()
+		})
 	}
 }

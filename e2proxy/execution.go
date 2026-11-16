@@ -284,6 +284,12 @@ func (e *Execution) RegisterIntent(ctx context.Context, id int64) error {
 	return nil
 }
 
+// Done은 실행 취소·철회·감사 실패를 기다리는 호스트 전용 수명 신호다.
+func (e *Execution) Done() <-chan struct{} { return e.ctx.Done() }
+
+// MaxConcurrent는 승인된 실제 HTTP 송신 상한이며 Bash 슬롯 확대 권위가 아니다.
+func (e *Execution) MaxConcurrent() int { return e.cfg.Limits.MaxConcurrent }
+
 func (e *Execution) HasIntent(id int64) bool {
 	if e == nil || id <= 0 {
 		return false

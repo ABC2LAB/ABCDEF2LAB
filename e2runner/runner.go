@@ -38,6 +38,9 @@ const (
 )
 
 type Config struct {
+	// BashSlots는 신뢰 호스트가 Worker 수와 승인 HTTP 동시성의 최솟값으로 정한다. 0은 기존 1개다.
+	BashSlots int
+
 	Execution      *e2proxy.Execution
 	Helper         string
 	RootDir        string

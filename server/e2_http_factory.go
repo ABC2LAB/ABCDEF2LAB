@@ -496,7 +496,14 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		if e2HTTPCreatePrivateDirectory(callRoot) != nil {
 			return failed(execution, nil)
 		}
-		runner, createErr := e2runner.New(e2runner.Config{Execution: execution, Helper: policy.Helper, RootDir: callRoot, CACert: filepath.Join(dir, policy.CACert.File), Proxy: proxy, CommandTimeout: workerTimeout, DrainTimeout: drainTimeout, OutputLimit: policy.Runtime.OutputLimit,
+		if request.WorkerCount < 0 {
+			return failed(execution, nil)
+		}
+		slots := 1
+		if request.WorkerCount > 0 {
+			slots = min(request.WorkerCount, limits.MaxConcurrent)
+		}
+		runner, createErr := e2runner.New(e2runner.Config{BashSlots: slots, Execution: execution, Helper: policy.Helper, RootDir: callRoot, CACert: filepath.Join(dir, policy.CACert.File), Proxy: proxy, CommandTimeout: workerTimeout, DrainTimeout: drainTimeout, OutputLimit: policy.Runtime.OutputLimit,
 			// 같은 intent의 Bash 호출 사이에 /work를 잇는다(C29, docs/workspace-decision.md).
 			PersistWorkspace: true})
 		if createErr != nil || current(taskctx) != nil {
