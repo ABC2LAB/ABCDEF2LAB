@@ -507,7 +507,8 @@ func (s *runningCall) cleanup(ctx context.Context) (Result, error) {
 	trusted.Execution = s.owner.cfg.Execution.SnapshotForIntent(s.call.IntentID())
 	trusted.Final = s.resourcesClosed && trusted.ProcessDrained && trusted.ProxyDrained && trusted.Call.Final && trusted.Call.AuditComplete
 	trusted.Classification = s.classification(trusted)
-	if termination := s.getTermination(); termination == TerminationTimeout || termination == TerminationProxyUnavailable || termination == TerminationCanceled {
+	// 실행 중 Planner 중지의 기존 계약은 유지하고, 새 취소 값은 초기화 중지에만 기록한다.
+	if termination := s.getTermination(); termination == TerminationTimeout || termination == TerminationProxyUnavailable || termination == TerminationCanceled && s.initInterrupted {
 		trusted.Termination = termination
 	}
 	text := s.owner.cfg.Execution.RedactOutput(output)
