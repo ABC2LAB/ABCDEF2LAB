@@ -1002,6 +1002,10 @@ export function WorkflowCrawlLive() {
         </>
       );
     else if (crawling) now = flowStageText.crawling;
+    // AI 자동 모드는 첫 탐색이 끝나면 바로 심화 진단으로 넘어가고(서버 diagnosisflow crawl.go), 그 요청도 아래 기록에
+    // 이어서 쌓인다. '탐색을 마쳤습니다'만 두면 탐색이 계속되는 것처럼 보여 지금 하는 일을 같이 적는다
+    else if (flow.initial_completed && flow.stage === "diagnosing")
+      now = "탐색을 마쳤습니다 · 지금은 심화 진단 중 (아래 기록에 심화 진단 요청이 이어서 쌓입니다)";
     else now = flow.initial_completed ? "탐색을 마쳤습니다" : flowStageText[flow.stage];
   }
   return (

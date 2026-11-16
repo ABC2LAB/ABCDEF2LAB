@@ -406,6 +406,26 @@ describe("자산 탐색", () => {
     expect(within(log).queryByRole("region")).toBeNull();
   });
 
+  it("AI 자동 모드에서 첫 탐색 뒤 심화 진단 중이면 '지금 보는 곳'에 심화 진단 중이라고 같이 적는다", () => {
+    const auto = { ...job, input: { ...job.input, workflow_mode: "ai_auto_v1" as const } };
+    const view = (f: WorkflowSnapshot) => {
+      useUrl.setState({ handle, job: auto, verified: true, flow: f, flowVerified: true });
+      return render(
+        <ShellContext.Provider value={shell("crawl")}>
+          <WorkflowCrawlLive />
+        </ShellContext.Provider>,
+      );
+    };
+    const { unmount } = view({ ...flow, mode: "ai_auto_v1", stage: "diagnosing", initial_completed: true });
+    expect(document.getElementById("cNow")).toHaveTextContent(
+      "탐색을 마쳤습니다 · 지금은 심화 진단 중 (아래 기록에 심화 진단 요청이 이어서 쌓입니다)",
+    );
+    unmount();
+    // 사용자 승인 모드의 범위 확인 대기는 지금처럼 '탐색을 마쳤습니다'
+    view({ ...flow, stage: "awaiting_selection", initial_completed: true });
+    expect(document.getElementById("cNow")).toHaveTextContent(/^탐색을 마쳤습니다$/);
+  });
+
   it("탐색 막대는 페이지 상한 대비 방문 수, 숫자 칸 보조 글은 서버 값, 경과는 기록이 없으면 — (시안 v24)", () => {
     useUrl.setState({
       handle,
