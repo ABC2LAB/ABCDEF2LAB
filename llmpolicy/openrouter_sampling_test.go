@@ -146,3 +146,20 @@ func TestOpenRouterV2ManifestKeepsPreviousSampling(t *testing.T) {
 		t.Fatalf("v2 wire changed: %s", wire)
 	}
 }
+
+// 기록은 실제로 보낸 요청의 값이다. 예약에서 막혀 보내지 않은 요청은 샘플링을 남기지 않는다.
+func TestOpenRouterSamplingNotRecordedWithoutSending(t *testing.T) {
+	p := samplingPolicy(t, samplingManifest(t, 3, defaultSamplingJSON))
+	p.ledger = func(int64, int64, int64) error { return errOpenRouterApprovalExhausted }
+	hits := 0
+	c := openRouterClient(p, openRouterRT(func(*http.Request) (*http.Response, error) {
+		hits++
+		return openRouterResponse(openRouterReply), nil
+	}))
+	if _, err := c.Do(openRouterRequest()); err == nil {
+		t.Fatal("request sent past an exhausted approval")
+	}
+	if hits != 0 || p.Snapshot().Sampling != nil {
+		t.Fatalf("hits %d, recorded sampling %+v for an unsent request", hits, p.Snapshot().Sampling)
+	}
+}
