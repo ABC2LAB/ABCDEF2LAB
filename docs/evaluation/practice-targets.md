@@ -44,6 +44,16 @@ docker build -f deploy/eval/practice/vampi.Dockerfile -t abc2lab-practice-vampi:
 
 알려진 취약점 목록(원본 README)은 사람이 결과를 읽을 때만 본다. 엔진 입력에 넣지 않는다.
 
+### 제품 회차(Workbench)
+
+제품 설치로 VAmPI를 돌릴 때는 `deploy/product/compose.practice-vampi.yaml`을 `compose.acceptance.yaml` 뒤에 둔다. 이 overlay는 다음과 같이 바꾼다.
+
+- 수용 fixture의 대상 이름을 `vampi.test` 하나로 바꾼다(`-hosts`). 인증서 이름과 DNS 증명 응답이 이 이름을 따른다.
+- 앞단(`target-front`)이 VAmPI를 가리키게 한다.
+- Juice Shop 대상과 두 번째 앞단은 띄우지 않는다.
+
+대상 이름은 제품 목표 문장으로 모델에 가므로, 연습 회차에 Juice Shop 수용시험의 이름을 쓰지 않는다.
+
 ## 스모크 기록
 
 2026-11-06 개발 머신에서 `scripted_llm.py`(가짜 LLM)가 정한 실제 Bash curl 요청으로 baseline·ours를 1회씩 돌렸다. ours는 가짜 E²다. 모델 동작이나 통제 효과의 근거가 아니라 경로 확인이다.
