@@ -40,6 +40,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from preflight import PreflightError, load_preflight  # noqa: E402
 from preservation_record import build_payload as preservation_payload, digest as preservation_digest, NAME as PRESERVATION_NAME
+from preservation_record import initial_state_digest  # noqa: E402
 from run_record import read_runner_key, sign_run_record  # noqa: E402
 from runner_checks import (  # noqa: E402
     ExpectedTopology, Listener, allowed_host_listens, check_host_listeners, check_namespace_sharing,
@@ -91,7 +92,7 @@ from runner_serving import (  # noqa: E402
     KEEP_ALIVE_SLACK_SECONDS, PLACEMENT_GPU, judge_serving, read_gpu_used_bytes, read_serving, unload_model,
 )
 from snapshot_collector import SnapshotEndpoint, collect_snapshot  # noqa: E402
-from snapshot_writer import SnapshotContext  # noqa: E402
+from snapshot_writer import OPAQUE_OBSERVATION_FORMAT, SnapshotContext  # noqa: E402
 
 RESULT_FORMAT = "abc2lab-eval-runner-result-v1"
 TASK_EVIDENCE_FORMAT = "abc2lab-eval-runner-task-v1"
@@ -357,6 +358,19 @@ def _state_fingerprint(ports: RunPorts, key: bytes, phase: str, snapshot: dict) 
         discard_copy(copy)
 
 
+def snapshot_state_sha256(phase_directory: Path, opaque: bool, solved: dict) -> str:
+    """한 phase 관측의 대상 상태 지문(회차 신원 제외)이다. opaque면 수집기가 남긴 관측 원문 hash·크기를 읽는다.
+
+    정규화 봉투의 hash는 run_id·컨테이너 ID 때문에 회차마다 달라 보존 조건 대조에 쓸 수 없다.
+    """
+    if not opaque:
+        return initial_state_digest(solved=solved)
+    raw = read_private_json(phase_directory, "raw.json")
+    if not isinstance(raw, dict) or set(raw) != {"format", "sha256", "bytes"} or raw["format"] != OPAQUE_OBSERVATION_FORMAT:
+        raise EvidenceError("snapshot_observation_invalid")
+    return initial_state_digest(observation_sha256=raw["sha256"], observation_bytes=raw["bytes"])
+
+
 def _step(state: _State, code: str, action: Callable):
     """port 호출의 예외를 그 단계의 고정 사유로 바꾼다. 원래 메시지(경로·값 가능)는 버린다."""
     state.step = code
@@ -504,6 +518,8 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     state.observer_calls += 1
     pre_board = _step(state, "pre_scoreboard_failed", lambda: ports.scoreboard("pre", pre))
     pre_solved = pre_board.pop("solved")
+    # 대상 상태 지문은 보존 조건 대조용이다. 결과 요약·v1.1 기록의 점수판 칸은 바꾸지 않는다.
+    pre_state = pre_board.pop("state_sha256")
     pre_forwarded = _step(state, "meter_read_failed", meter.forwarded)
     if pre_forwarded != 0:
         raise RunFailure("pre_requests_nonzero")  # 작업 시작 전에 엔진이 대상으로 보냈다
@@ -565,6 +581,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     state.observer_calls += 1
     post_board = _step(state, "post_scoreboard_failed", lambda: ports.scoreboard("post", post))
     post_solved = post_board.pop("solved")
+    post_board.pop("state_sha256")
     stopped = _step(state, "window_watch_failed", lambda: _stop_watch(state))
     window_end = clock.now()
     streamed = _step(state, "window_events_failed", lambda: _stop_events(state, _ns(window_end)))
@@ -698,7 +715,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
               "model_pin_sha256": preservation_digest({"backend": spec.llm_backend, "model": spec.model_tag,
                   "provider_slug": spec.llm_provider_slug, "provider_name": spec.llm_provider_name,
                   "sampling": llm_summary["sampling_applied"], "serving": spec.llm_serving}),
-              "target_image_id": spec.image_ids["target"], "initial_state_sha256": pre_board["normalized"]["sha256"],
+              "target_image_id": spec.image_ids["target"], "initial_state_sha256": pre_state,
               "machine_sha256": preservation_digest(state.host),
               "runner_settings_sha256": preservation_digest({name: getattr(spec, name) for name in (
                   "poll_seconds", "drain_timeout_seconds", "drain_grace_seconds", "post_settle_seconds",
@@ -1136,9 +1153,11 @@ class DockerPorts:
         normalized = read_private_json(self.directory.run / phase, "normalized.json")
         if not isinstance(normalized, dict) or not isinstance(normalized.get("solved"), dict):
             raise EvidenceError("snapshot_normalized_invalid")
+        state = snapshot_state_sha256(self.directory.run / phase, self.config.observer_format == OBSERVER_OPAQUE,
+                                      normalized["solved"])
         return {"raw": collected.artifacts.raw, "normalized": collected.artifacts.normalized,
                 "requested_at": collected.requested_at, "received_at": collected.received_at,
-                "solved": normalized["solved"]}
+                "solved": normalized["solved"], "state_sha256": state}
 
     def apply_engine_settings(self) -> None:
         self._apply_settings()

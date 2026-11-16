@@ -349,7 +349,7 @@ class FakePorts:
                 "normalized": dict(context, path=f"{phase}/normalized.json", sha256="n" + phase, size=5, phase=phase),
                 "requested_at": f"2026-11-02T00:00:0{1 if phase == 'pre' else 8}+00:00",
                 "received_at": f"2026-11-02T00:00:0{2 if phase == 'pre' else 9}+00:00",
-                "solved": dict(self.solved[phase])}
+                "solved": dict(self.solved[phase]), "state_sha256": "state-" + phase}
 
     def tool_tree(self):
         self._call("tool_tree")
@@ -1092,6 +1092,8 @@ class TestCompleteRun(unittest.TestCase):
         self.assertEqual(evidence.files["preservation-round.json"]["signature"], "sig")
         self.assertEqual(evidence.files["run-record.json"]["version"], "1.1")
         self.assertEqual(seen["conditions"]["layout"], "e2-legacy/v1")
+        # 시작 상태는 점수판 port의 대상 상태 지문이다. 회차 신원이 든 정규화 봉투 hash("npre")가 아니다.
+        self.assertEqual(seen["conditions"]["initial_state_sha256"], "state-pre")
         self.assertEqual(seen["engine_source_sha"], spec.engine_source_sha)
         self.assertIn("preservation-round.json", result["evidence"])
 
@@ -1190,6 +1192,9 @@ class TestCompleteRun(unittest.TestCase):
         # 해결 상태 맵(평가 전용 key)은 결과 요약에 넣지 않는다.
         self.assertNotIn("solved", result["scoreboards"]["pre"])
         self.assertNotIn("solved", result["scoreboards"]["post"])
+        # 대상 상태 지문은 보존 조건에만 쓴다. 결과 요약 점수판 칸은 그대로다.
+        self.assertNotIn("state_sha256", result["scoreboards"]["pre"])
+        self.assertNotIn("state_sha256", result["scoreboards"]["post"])
         self.assertNotIn("basket", json.dumps(result))
 
     def test_invalid_runs_write_no_v11_record(self):
@@ -1935,6 +1940,111 @@ class TestFailures(unittest.TestCase):
         self.assertEqual(ports.calls[-1], "down")
 
 
+def observation_body(opaque: bool, *, changed: bool = False, stamp: str = "2026-11-16T00:00:00Z",
+                     indent: int | None = 2) -> bytes:
+    """관측 응답 본문. 점수판이면 GT key 행(갱신 시각 칸 포함), opaque면 앱 응답 모양의 임의 바이트다.
+
+    changed면 대상 상태가 다른 본문이다(점수판은 첫 key가 해결됨, opaque는 다른 바이트).
+    """
+    if opaque:
+        # 크기가 같은 다른 바이트다(크기만으로 갈리지 않게).
+        return b'{"users":[{"username":"name2"}]}' if changed else b'{"users":[{"username":"name1"}]}'
+    from ground_truth import bac_category, core_gt
+    keys = sorted({challenge.key for challenge in core_gt() + bac_category()})
+    rows = [{"key": key, "solved": changed and key == keys[0], "updatedAt": stamp} for key in keys]
+    return json.dumps({"data": rows}, indent=indent).encode()
+
+
+def stored_snapshot(body: bytes):
+    """네트워크 수집만 대신하고 저장은 실제 write_snapshot으로 한다(실제 봉투·raw.json 모양)."""
+    from snapshot_collector import CollectedSnapshot
+    from snapshot_writer import write_snapshot
+
+    def collect(endpoint, run_directory, phase, context, *, opaque):
+        artifacts = write_snapshot(run_directory, phase, body, context, max_bytes=endpoint.max_bytes, opaque=opaque)
+        return CollectedSnapshot(artifacts, "2026-11-16T00:00:01+00:00", "2026-11-16T00:00:02+00:00")
+    return collect
+
+
+def board_for(config, plan, directory, target_id: str, engine_id: str) -> dict:
+    ports = DockerPorts(config, plan, directory, docker=None, findings=dict, start=lambda: "1", settings=dict)
+    return ports.scoreboard("pre", {"services": {"target": {"id": target_id}, "engine": {"id": engine_id}}})
+
+
+class TestInitialStateFollowsTheTargetNotTheRunIdentity(unittest.TestCase):
+    """보존 조건의 시작 상태 지문은 회차 신원(run_id·대상/엔진 컨테이너 ID)을 빼고 대상 상태만 본다.
+
+    수집 저장·port·짝 대조는 실제 구현이다. 정규화 봉투 hash를 쓰던 때는 상태가 같은 짝도 대조에서 멈췄다
+    (2026-11-16 VAmPI e2-legacy 파일럿, preservation_conditions_mismatch).
+    """
+
+    def boards(self, observer_format: str, bodies: dict) -> dict:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "runs"
+            root.mkdir(mode=0o700)
+            os.chmod(root, 0o700)
+            config = parse_runner_config(runner_config() | {"runs_root": str(root), "observer_format": observer_format})
+            out = {}
+            for index, (name, body) in enumerate(bodies.items(), 1):
+                run_id = f"ours-{index}"
+                plan = plan_run(config, configuration(), "ours", run_id)
+                with patch.object(runner, "collect_snapshot", side_effect=stored_snapshot(body)):
+                    out[name] = board_for(config, plan, create_run_directory(root, run_id),
+                                          format(index, "x") * 64, format(index + 8, "x") * 64)
+            return out
+
+    def pair_verdict(self, baseline_state: str, improved_state: str) -> str:
+        from preservation_record import PreservationRecordError, load_record, validate_series
+        from test_preservation_record import RUNNER_KEY, SignedFixture
+        fixture = SignedFixture()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        records = []
+        for side, state in (("baseline", baseline_state), ("ours", improved_state)):
+            directory, meter, _ = fixture.fixture(side, 0, meta={"initial_state_sha256": state})
+            records.append(load_record(directory, meter, RUNNER_KEY))
+        try:
+            validate_series([records[0]], [records[1]], request_budget=3, read_only=False)
+        except PreservationRecordError as exc:
+            return str(exc)
+        return "ok"
+
+    def test_same_target_state_matches_and_a_different_state_mismatches(self):
+        cases = (("challenge_scoreboard", False, observation_body(False, stamp="2026-11-16T00:00:00Z", indent=2),
+                  observation_body(False, stamp="2026-11-16T09:59:59Z", indent=None)),
+                 ("opaque", True, observation_body(True), observation_body(True)))
+        for observer_format, opaque, first, second in cases:
+            with self.subTest(observer_format):
+                changed = observation_body(opaque, changed=True)
+                boards = self.boards(observer_format, {"a": first, "b": second, "c": changed})
+                a, b, c = boards["a"], boards["b"], boards["c"]
+                # 봉투는 회차 신원 때문에 다르다(이전 계산이 짝을 막은 이유).
+                self.assertNotEqual(a["normalized"]["sha256"], b["normalized"]["sha256"])
+                self.assertEqual(self.pair_verdict(a["normalized"]["sha256"], b["normalized"]["sha256"]),
+                                 "preservation_conditions_mismatch")
+                # 대상 상태가 같으면 신원·갱신 시각·직렬화가 달라도 같은 지문이고 짝 대조를 지난다.
+                self.assertEqual(a["state_sha256"], b["state_sha256"])
+                self.assertEqual(self.pair_verdict(a["state_sha256"], b["state_sha256"]), "ok")
+                # 대상 상태가 다르면 지문이 다르고 짝 대조가 멈춘다.
+                self.assertNotEqual(a["state_sha256"], c["state_sha256"])
+                self.assertEqual(self.pair_verdict(a["state_sha256"], c["state_sha256"]), "preservation_conditions_mismatch")
+
+    def test_opaque_observation_record_must_have_the_collector_shape(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            phase = Path(temporary) / "pre"
+            phase.mkdir(mode=0o700)
+            for raw in ({"format": "other/v1", "sha256": "a" * 64, "bytes": 3}, {"sha256": "a" * 64, "bytes": 3},
+                        {"format": runner.OPAQUE_OBSERVATION_FORMAT, "sha256": "A" * 64, "bytes": 3},
+                        {"format": runner.OPAQUE_OBSERVATION_FORMAT, "sha256": "a" * 64, "bytes": 0}):
+                with self.subTest(raw=sorted(raw)):
+                    path = phase / "raw.json"
+                    path.write_text(json.dumps(raw))
+                    path.chmod(0o600)
+                    with self.assertRaises(Exception):
+                        runner.snapshot_state_sha256(phase, True, {})
+                    path.unlink()
+
+
 class TestIsolationOfRunDirectory(unittest.TestCase):
     """절대규칙 7: scoreboard(GT)는 회차 디렉터리에만. 엔진 컨테이너에는 어떤 회차 디렉터리도 마운트되지 않는다."""
 
@@ -2060,12 +2170,8 @@ class TestIsolationOfRunDirectory(unittest.TestCase):
                 os.chmod(root, 0o700)
                 config = parse_runner_config(runner_config() | {"runs_root": str(root), "observer_format": observer_format})
                 plan = plan_run(config, configuration(), "ours", "ours-1")
-                directory = create_run_directory(root, "ours-1")
-                ports = DockerPorts(config, plan, directory, docker=None, findings=dict, start=lambda: "1", settings=dict)
-                snapshot = {"services": {"target": {"id": "3" * 64}, "engine": {"id": "1" * 64}}}
-                with patch.object(runner, "collect_snapshot") as collect, \
-                        patch.object(runner, "read_private_json", return_value={"solved": {}}):
-                    ports.scoreboard("pre", snapshot)
+                with patch.object(runner, "collect_snapshot", side_effect=stored_snapshot(observation_body(opaque))) as collect:
+                    board_for(config, plan, create_run_directory(root, "ours-1"), "3" * 64, "1" * 64)
                 self.assertIs(collect.call_args.kwargs["opaque"], opaque)
                 spec = build_spec(config, plan, configuration(), "t" * 64, "c", 0)
                 self.assertEqual(spec.observer_format, observer_format)

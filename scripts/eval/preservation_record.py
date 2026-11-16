@@ -49,6 +49,29 @@ def digest(value: object) -> str:
         _fail("preservation_json_invalid")
 
 
+INITIAL_STATE_FORMAT = "abc2lab.preservation-initial-state/v1"
+
+
+def initial_state_digest(*, solved: dict | None = None, observation_sha256: str | None = None,
+                         observation_bytes: int | None = None) -> str:
+    """회차 신원을 뺀 대상 시작 상태 지문이다. 점수판이면 해결 맵, opaque면 관측 원문의 hash·크기만 넣는다.
+
+    관측 정규화 봉투(normalized.json)의 hash는 쓰지 않는다. 봉투에 run_id·대상/엔진 컨테이너 ID가 들어 있어 회차마다
+    달라지므로, 같은 상태에서 시작한 짝도 preservation_conditions_mismatch로 멈춘다(2026-11-16 VAmPI e2-legacy 파일럿:
+    관측 원문이 같은 두 회차가 서명 재계산에서 멈춤). 두 입력 중 하나만 받는다.
+    """
+    if solved is not None:
+        if (observation_sha256 is not None or observation_bytes is not None or not isinstance(solved, dict) or not solved
+                or any(not isinstance(key, str) or type(value) is not bool for key, value in solved.items())):
+            _fail("preservation_initial_state_invalid")
+        return digest({"format": INITIAL_STATE_FORMAT, "observer": "scoreboard", "solved": solved})
+    if (not isinstance(observation_sha256, str) or not _HEX.fullmatch(observation_sha256)
+            or type(observation_bytes) is not int or observation_bytes < 1):
+        _fail("preservation_initial_state_invalid")
+    return digest({"format": INITIAL_STATE_FORMAT, "observer": "opaque",
+                   "observation_sha256": observation_sha256, "observation_bytes": observation_bytes})
+
+
 def validate_options(raw: object) -> dict:
     if not isinstance(raw, dict) or set(raw) != OPTION_FIELDS or raw["format"] != OPTIONS_FORMAT:
         _fail("preservation_options_invalid")
