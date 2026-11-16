@@ -82,7 +82,8 @@ class VerifiedRound(BoundaryExportFixture):
     def test_marker_counters_are_not_trusted(self):
         # 표식에는 행 수·hash만 있고 차단 수는 없다. 행을 바꾸면 hash가 어긋난다.
         directory = self.write()
-        raw = (directory / be.ROWS).read_bytes().replace(b'"out_of_scope_path"', b'"risky_path"')
+        # 길이·행 수가 같은 변조다(바이트 수 검사로 잡히지 않고 hash로만 잡힌다).
+        raw = (directory / be.ROWS).read_bytes().replace(b'"internal_address"', b'"metadata_address"')
         (directory / be.ROWS).write_bytes(raw)
         self.assertCode("boundary_export_invalid", self.verify, directory)
 
@@ -160,6 +161,8 @@ class StatusValues(BoundaryExportFixture):
 
     def test_key_and_binding(self):
         self.assertCode("boundary_path_key_mismatch", self.verify, self.write(), ref=key_ref(OTHER_KEY))
+        # 계측기·러너 키는 같고 표식만 다른 키를 말하면 그것만으로 거부한다.
+        self.assertCode("boundary_path_key_mismatch", self.verify, self.write(marker_changes={"path_key_ref": key_ref(OTHER_KEY)}))
         paths = self.meter_paths[:2] + [meter_path(3, "/c", "explore", key=OTHER_KEY)]
         self.assertCode("boundary_path_key_mismatch", self.verify, self.write(), meter_paths=paths)
         self.assertCode("boundary_binding_mismatch", self.verify, self.write(), task_id="8")
@@ -178,22 +181,28 @@ class StatusValues(BoundaryExportFixture):
 class StrictStructure(BoundaryExportFixture):
     def test_row_violations(self):
         base = self.rows()
+        # (바꿀 행 위치, 바꾼 행). 다른 행은 그대로라 그 칸 하나의 검사만 걸린다.
         bad = {
-            "unknown_reason": dict(base[2], reason="because"),
-            "forwarded_with_reason": dict(base[0], reason="risky_path"),
-            "denied_with_status": dict(base[2], status=200),
-            "approved_without_path": {k: v for k, v in base[0].items() if k != "path_pattern"},
-            "external_without_host": {k: v for k, v in base[4].items() if k != "external_host"},
-            "forwarded_internal": dict(base[0], dest_class="internal"),
-            "other_session": dict(base[0], session_ref="session-2"),
-            "extra_field": dict(base[0], query="a=1"),
-            "bad_ingress": dict(base[0], ingress="other"),
-            "bad_status": dict(base[0], status=42),
-            "bad_time": dict(base[0], at="yesterday"),
+            "unknown_reason": (2, dict(base[2], reason="because")),
+            "forwarded_with_reason": (0, dict(base[0], reason="risky_path")),
+            "denied_with_status": (2, dict(base[2], status=200)),
+            "denied_with_bytes": (2, dict(base[2], bytes=5)),
+            "approved_without_path": (0, {k: v for k, v in base[0].items() if k != "path_pattern"}),
+            "approved_with_host": (0, dict(base[0], external_host="cdn.example")),
+            "external_without_host": (4, {k: v for k, v in base[4].items() if k != "external_host"}),
+            "external_with_path": (4, dict(base[4], path_pattern="/x")),
+            "forwarded_internal": (0, dict(base[0], dest_class="internal")),
+            "other_session": (0, dict(base[0], session_ref="session-2")),
+            "extra_field": (0, dict(base[0], query="a=1")),
+            "bad_ingress": (0, dict(base[0], ingress="other")),
+            "bad_status": (0, dict(base[0], status=42)),
+            "bad_time": (0, dict(base[0], at="yesterday")),
         }
-        for name, row in bad.items():
+        for name, (index, row) in bad.items():
             with self.subTest(name=name):
-                self.assertCode("boundary_export_invalid", self.verify, self.write([row] + base[1:]))
+                rows = list(base)
+                rows[index] = row
+                self.assertCode("boundary_export_invalid", self.verify, self.write(rows))
         self.assertCode("boundary_export_invalid", self.verify, self.write([base[0], dict(base[1], seq=1)] + base[2:]))
 
     def test_byte_level_violations(self):
@@ -217,7 +226,8 @@ class StrictStructure(BoundaryExportFixture):
 
     def test_block_shape(self):
         block = self.verify(self.write())
-        for name, changed in (("status", block | {"status": "PASS"}), ("counts_on_truncated", block | {"status": "truncated"}),
+        for name, changed in (("status", block | {"status": "PASS"}), ("counts_on_truncated", block | {"status": "truncated", "reconciliation": None}),
+                              ("reconciliation_on_truncated", block | {"status": "truncated", "counters": None}),
                               ("files", block | {"files": {}}), ("binding", block | {"binding_sha256": None})):
             with self.subTest(name=name):
                 self.assertCode("boundary_export_invalid", be.validate_block, changed)
