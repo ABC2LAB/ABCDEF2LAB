@@ -2829,15 +2829,16 @@ class TestEngineEndSignal(unittest.TestCase):
 
     def test_first_terminal_and_final_read_before_down(self):
         def setup(ports, meter, clock):
+            # 첫 끝 상태 뒤에 다른 끝 상태가 와도 처음 것을 남긴다.
             ports.task_views = [task_view("running"), task_view("done", goals_met=1, completed_at="2026-11-16T00:00:03Z"),
-                                task_view("done", goals_met=1, completed_at="2026-11-16T00:00:03Z")]
+                                task_view("failed", goals_met=1, completed_at="2026-11-16T00:00:03Z")]
         result, ports, _, evidence = run(setup)
         self.assertEqual(result["status"], COMPLETE)
         end = evidence.files["engine-end.json"]
         self.assertEqual(end["format"], "abc2lab-eval-runner-engine-end-v1")
         self.assertEqual(end["task_id"], "17")
         self.assertEqual(end["first_terminal"]["status"], "done")
-        self.assertEqual((end["final"]["status"], end["final"]["goals_met"], end["final"]["goals_total"]), ("done", 1, 1))
+        self.assertEqual((end["final"]["status"], end["final"]["goals_met"], end["final"]["goals_total"]), ("failed", 1, 1))
         self.assertIn("read_at", end["final"])
         self.assertNotIn("task", end["final"])  # 끝 신호 칸만 옮긴다
         self.assertEqual((end["window_read_failures"], end["final_error"]), (0, None))

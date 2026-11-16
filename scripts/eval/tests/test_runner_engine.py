@@ -27,7 +27,7 @@ from e2_prompt_collect import E2PromptNotReady, E2PromptUnverified  # noqa: E402
 from runner_engine import (
     _TARGET_DOMAIN, _TARGET_IP, _TARGET_URL, ADMIN_USERNAME, BASELINE_ADMIN_USERNAME, AdminSecret, EngineAPIError, TaskRequest, collect_findings,
     EngineLLMProfile, apply_engine_settings, engine_settings, findings_record, load_vocabulary, login, start_task,
-    task_request, LOGIN_PATH, TaskStatusReader,
+    task_request, LOGIN_PATH, MAX_TASK_STATUS_BYTES, TaskStatusReader,
 )
 from test_runner_config import runner_config
 from test_baseline_extract import finding, vocabulary
@@ -698,6 +698,11 @@ class TestTaskStatusReader(unittest.TestCase):
                 view.pop("in_flight")
             cases[f"engine_task_status_invalid:{name}"] = (200, json.dumps(view).encode())
         cases["engine_task_status_invalid:too_large"] = (200, json.dumps(dict(good, pad="a" * (300 * 1024))).encode())
+        # 완결된 JSON인데 상한보다 정확히 1바이트 큰 응답(잘림으로 깨지지 않는 경우)도 거부한다.
+        base = json.dumps(dict(good, pad="")).encode()
+        exact = json.dumps(dict(good, pad="a" * (MAX_TASK_STATUS_BYTES + 1 - len(base)))).encode()
+        assert len(exact) == MAX_TASK_STATUS_BYTES + 1
+        cases["engine_task_status_invalid:one_byte_over"] = (200, exact)
         for code, response in cases.items():
             with self.subTest(code=code):
                 engine = self.engine()
