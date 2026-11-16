@@ -16,6 +16,18 @@ func TestLimitsForCapsTasksInsideUserNamespace(t *testing.T) {
 	}
 }
 
+func TestLimitsForCommandCannotSpendHelperHeadroom(t *testing.T) {
+	l, err := limitsFor(Config{Timeout: time.Minute, MaxProcesses: 64, MaxCommandProcesses: 48})
+	if err != nil || l.TaskCeiling != 64 || l.CommandTaskCeiling != 48 {
+		t.Fatal("helper/command 상한 분리 실패", err)
+	}
+	for _, limit := range []uint64{7, 65} {
+		if _, err := limitsFor(Config{Timeout: time.Minute, MaxProcesses: 64, MaxCommandProcesses: limit}); err == nil {
+			t.Fatal("범위 밖 명령 상한 수용", limit)
+		}
+	}
+}
+
 func TestSandboxAppliesNamespaceTaskCeiling(t *testing.T) {
 	f := newSandboxFixture(t, `if [ "$(ulimit -u)" != "24" ]; then exit 1; fi; printf namespace-task-cap-ok`)
 	f.cfg.MaxProcesses = 24

@@ -696,10 +696,19 @@ func (c *Controller) diagnosisChangeLocked(method, path string) (string, bool) {
 		return "", false
 	}
 	// 같은 경로를 따로 발견했으면 그 근거(폼 등 부작용 가능)가 상한이다. 더 넓게(확인한 읽기로) 바꾸지 않는다.
-	if e != nil && e.Change != "attested_read" {
+	// 다만 추정 출처(번들 추측·API 정찰)의 possible은 "자동 방문·선택하지 않는다"는 표시일 뿐 부작용 근거가 아니다.
+	// 승인 접두 안 GET·HEAD의 비변경 근거는 운영자의 읽기 전용 승인이므로 그대로 둔다. 쓰기 메서드의 판정은 위
+	// endpointScope가 메서드로 정하고 여기서 바꾸지 않는다(VAmPI 실제 회차 24b: 정찰로 찾은 GET 23건이 거부됨).
+	if e != nil && e.Change != "attested_read" && sideEffectEvidence(*e) {
 		change = e.Change
 	}
 	return change, true
+}
+
+// sideEffectEvidence는 발견한 끝점이 부작용 가능의 실제 근거인지다. 폼은 실제 요청이 다를 수 있어 근거이고, 추정
+// 출처가 아닌 발견의 possible도 근거다. 추정 출처의 possible은 근거가 아니다.
+func sideEffectEvidence(e Endpoint) bool {
+	return e.Kind == "form" || !inferredSource(e.Source)
 }
 
 func (c *Controller) PreapprovedRead(v e2proxy.RequestView) bool {
