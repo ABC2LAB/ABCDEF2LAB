@@ -44,10 +44,12 @@ type openRouterManifest struct {
 	// v2 전용. 연속 일시 오류(429·5xx·연결 실패)가 이 수에 닿으면 정책을 막는다(P3 결정안 C06).
 	// v1은 이 키가 없고 1로 본다(첫 일시 오류에 막는 이전 동작).
 	MaxConsecutiveTransient int64 `json:"max_consecutive_transient_errors,omitempty"`
+	// v3 전용. 매 요청에 넣는 샘플링 값(openrouter_sampling.go). v1·v2는 이 키가 없고 샘플링을 넣지 않는다(이전 동작).
+	Sampling *OpenRouterSampling `json:"sampling,omitempty"`
 }
 
-// openRouterManifestKeys는 판별 manifest 키 수다. v2는 연속 일시 오류 상한 하나가 더 있다.
-var openRouterManifestKeys = map[int]int{1: 21, 2: 22}
+// openRouterManifestKeys는 판별 manifest 키 수다. v2는 연속 일시 오류 상한 하나, v3은 샘플링 하나가 더 있다.
+var openRouterManifestKeys = map[int]int{1: 21, 2: 22, 3: 23}
 
 // openRouterMaxConsecutiveTransient는 v2 상한의 형식 범위다. 실제 값은 설치자가 manifest에 고정한다.
 const openRouterMaxConsecutiveTransient = 16
@@ -97,7 +99,10 @@ type OpenRouterUsage struct {
 	ReturnedProvider     string `json:"returned_provider"`
 	Blocked              bool   `json:"blocked"`
 	TransientLimited     bool   `json:"transient_limited,omitempty"`
-	FailureReason        string `json:"failure_reason,omitempty"`
+	// Sampling은 실제로 보낸 요청 본문에 들어간 샘플링 값이다(manifest v3, 보낸 바이트에서 다시 읽음). 평가 러너가 원본
+	// 게이트웨이의 적용값과 대조한다. v1·v2 승인과 아직 보내지 않은 정책은 비어 있다.
+	Sampling      *OpenRouterSampling `json:"sampling,omitempty"`
+	FailureReason string              `json:"failure_reason,omitempty"`
 }
 
 func (p *OpenRouterPolicy) Target() ProfileTarget {
@@ -140,7 +145,7 @@ func parseOpenRouterManifestAt(data []byte, now time.Time) (*OpenRouterPolicy, e
 	d := json.NewDecoder(bytes.NewReader(data))
 	// 중복 키와 대소문자 별칭도 거부한다.
 	var raw = map[string]json.RawMessage{}
-	if !manifestObjectRange(d, openRouterManifestKeys[1], openRouterManifestKeys[2], func(k string) bool {
+	if !manifestObjectRange(d, openRouterManifestKeys[1], openRouterManifestKeys[3], func(k string) bool {
 		var v json.RawMessage
 		if d.Decode(&v) != nil {
 			return false
@@ -170,8 +175,15 @@ func parseOpenRouterManifestAt(data []byte, now time.Time) (*OpenRouterPolicy, e
 	}
 	if keys, known := openRouterManifestKeys[m.Version]; !known || len(raw) != keys ||
 		m.Version == 1 && m.MaxConsecutiveTransient != 0 ||
-		m.Version == 2 && (m.MaxConsecutiveTransient < 1 || m.MaxConsecutiveTransient > openRouterMaxConsecutiveTransient) {
+		m.Version >= 2 && (m.MaxConsecutiveTransient < 1 || m.MaxConsecutiveTransient > openRouterMaxConsecutiveTransient) ||
+		(m.Version == 3) != (m.Sampling != nil) {
 		return nil, ErrOpenRouterPolicy
+	}
+	if m.Sampling != nil {
+		// 구조체 디코딩은 안쪽 중복 키·정수 칸 소수 표기를 다 잡지 못하므로 원문을 따로 엄격하게 읽어 같은지 본다.
+		if s, ok := parseOpenRouterSampling(raw["sampling"]); !ok || s != *m.Sampling {
+			return nil, ErrOpenRouterPolicy
+		}
 	}
 	if m.ProfileID <= 0 || m.Format != "openai" || m.BaseURL != OpenRouterBaseURL || m.Model != OpenRouterModel ||
 		!validProfileValue(m.ExpectedProviderName, 128) || !openRouterSlug.MatchString(m.ProviderSlug) || !openRouterSlug.MatchString(m.ApprovalID) || !m.StrictPrivacyAck || !m.AccountSpendCapAck ||
