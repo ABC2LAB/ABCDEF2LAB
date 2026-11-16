@@ -12,6 +12,7 @@ export type WorkflowLimits = {
   allow_reversible_writes: boolean;
 };
 export type URLDiagnosisInput = {
+  external_test_accounts?: true;
   target_url: string;
   profile_id: string;
   display_name?: string;
@@ -199,8 +200,10 @@ export function urlDiagnosisInput(
   name: string,
   workflowMode?: WorkflowMode,
   excludedPaths = "",
+  externalTestAccounts = false,
 ): URLDiagnosisInput {
   return parseInput({
+    ...(externalTestAccounts ? { external_test_accounts: true } : {}),
     target_url: target.trim(),
     profile_id: profile,
     ...(workflowMode ? { workflow_mode: workflowMode } : {}),
@@ -210,7 +213,8 @@ export function urlDiagnosisInput(
 }
 function parseInput(v: unknown): URLDiagnosisInput {
   if (!object(v) || !ref(v.profile_id) || (v.display_name !== undefined && !text(v.display_name))) return invalid();
-  exact(v, ["target_url", "profile_id", "display_name", "workflow_mode", "excluded_paths"]);
+  exact(v, ["target_url", "profile_id", "display_name", "workflow_mode", "excluded_paths", "external_test_accounts"]);
+  if (v.external_test_accounts !== undefined && v.external_test_accounts !== true) return invalid();
   if (v.workflow_mode !== undefined && v.workflow_mode !== "ai_auto_v1" && v.workflow_mode !== "user_approval_v1")
     return invalid();
   if (v.excluded_paths !== undefined) {
@@ -232,6 +236,7 @@ function parseInput(v: unknown): URLDiagnosisInput {
       return invalid();
   }
   return {
+    ...(v.external_test_accounts === true ? { external_test_accounts: true as const } : {}),
     target_url: targetURL(v.target_url),
     profile_id: v.profile_id,
     ...(v.workflow_mode ? { workflow_mode: v.workflow_mode as WorkflowMode } : {}),
@@ -243,6 +248,7 @@ export function sameURLInput(a: URLDiagnosisInput, b: URLDiagnosisInput): boolea
   return (
     a.target_url === b.target_url &&
     a.profile_id === b.profile_id &&
+    a.external_test_accounts === b.external_test_accounts &&
     (a.display_name ?? "") === (b.display_name ?? "") &&
     (a.workflow_mode ?? "") === (b.workflow_mode ?? "") &&
     (a.excluded_paths ?? "") === (b.excluded_paths ?? "")
@@ -285,7 +291,7 @@ function model(v: unknown): URLDiagnosisModel {
     output_tokens_per_call: v.output_tokens_per_call,
   };
 }
-function scope(v: unknown): URLDiagnosisScope {
+function scope(v: unknown, workflowMode?: WorkflowMode): URLDiagnosisScope {
   if (
     !object(v) ||
     !ref(v.target_ref) ||
@@ -302,7 +308,9 @@ function scope(v: unknown): URLDiagnosisScope {
       (m) =>
         m === "GET" ||
         m === "HEAD" ||
-        (v.approval_mode === "workbench_selective_v1" && ["POST", "PUT", "PATCH"].includes(String(m))),
+        (["POST", "PUT", "PATCH"].includes(String(m)) &&
+          ((v.approval_mode === "workbench_selective_v1" && workflowMode === "user_approval_v1") ||
+            (v.approval_mode === "preauthorized_scope" && workflowMode === "ai_auto_v1"))),
     ) ||
     v.query_policy !== "any" ||
     v.body_policy !== "bounded" ||
@@ -401,7 +409,9 @@ export function parseURLCatalog(raw: unknown): URLDiagnosisCatalog {
       !p.model_label ||
       (p.workflow !== undefined && p.workflow_request_limit === undefined) ||
       (p.workflow_request_limit !== undefined &&
-        (!natural(p.workflow_request_limit) || p.workflow_request_limit < 1 || p.workflow_request_limit > MAX_TARGET_REQUESTS))
+        (!natural(p.workflow_request_limit) ||
+          p.workflow_request_limit < 1 ||
+          p.workflow_request_limit > MAX_TARGET_REQUESTS))
     )
       return invalid();
     exact(p, ["id", "label", "model_profile_ref", "model_label", "model", "workflow", "workflow_request_limit"]);
@@ -469,7 +479,7 @@ export function parseURLJob(raw: unknown, owner: string): URLDiagnosisJob {
   const outcomes = d.intent_outcomes === undefined ? undefined : intentOutcomes(d.intent_outcomes);
   if (!validRunResult(String(d.state), d.outcome, d.closing_reason, outcomes)) return invalid();
   const input = parseInput(d.input);
-  const approved = d.scope === undefined ? undefined : scope(d.scope);
+  const approved = d.scope === undefined ? undefined : scope(d.scope, input.workflow_mode);
   if (
     approved &&
     (approved.origin !== new URL(input.target_url).origin ||
@@ -776,7 +786,8 @@ export type URLDiagnosisHandle = {
 const HANDLE_KEY = "abc2lab.urlDiagnosisHandle.v2";
 export function storeURLHandle(handle: URLDiagnosisHandle | null): void {
   try {
-    if (handle) sessionStorage.setItem(HANDLE_KEY, JSON.stringify(handle));
+    // 회차별 외부 시험 계정 동의는 메모리에서만 유지한다. 새로고침으로 동의를 재사용하지 않는다.
+    if (handle && !handle.input.external_test_accounts) sessionStorage.setItem(HANDLE_KEY, JSON.stringify(handle));
     else sessionStorage.removeItem(HANDLE_KEY);
   } catch {
     /* 저장 불가 시 조회 핸들을 메모리에만 유지한다. */
@@ -800,6 +811,7 @@ export function readURLHandle(owner: string): URLDiagnosisHandle | null {
     ]);
     if (v.bindingLocked !== undefined && v.bindingLocked !== true) return invalid();
     const input = parseInput(v.input);
+    if (input.external_test_accounts) return invalid();
     if (v.id !== undefined && (!ref(v.id) || !natural(v.revision) || !v.revision || !digest(v.sourceDigest)))
       return invalid();
     if (v.id === undefined && (v.revision !== undefined || v.sourceDigest !== undefined)) return invalid();
@@ -857,6 +869,8 @@ export const urlReasonLabels: Record<string, string> = {
   model_mode_unsupported: "이 모델 실행 방식은 현재 자동 준비에서 지원하지 않아요. 다른 모델로 전환하지 않아요.",
   path_not_approved: "이 URL 경로는 설치된 승인 범위에 없어요.",
   target_not_approved: "이 대상은 설치된 승인 범위에 없어요.",
+  target_connection_unavailable: "대상 연결 검증을 완료하지 못했어요. 승인 상태와 보호 기록을 확인해 주세요.",
+  target_connection_timeout: "대상 연결 검증이 제한 시간 안에 끝나지 않았어요.",
   profile_not_found: "이 모델 프로필을 사용할 수 없어요.",
   protocol_unsupported: "이 대상의 프로토콜은 현재 진단 경로에서 지원하지 않아요.",
   unsupported_protocol: "이 대상의 프로토콜은 현재 진단 경로에서 지원하지 않아요.",

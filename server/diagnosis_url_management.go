@@ -35,6 +35,8 @@ func NewURLDiagnosisManagementHandler(ctx context.Context, pool *sql.DB, keyDir,
 			return nil, err
 		}
 		mux.Handle("/api/tasks/", bridge)
+		mux.Handle("/api/exploration/activity", bridge)
+		mux.Handle("/api/exploration/activity/", bridge)
 		mux.Handle("/api/report/", bridge)
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

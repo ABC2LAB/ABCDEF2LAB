@@ -54,7 +54,7 @@ func TestProductExplorationHostDirectBashThroughRealBoundary(t *testing.T) {
 	f.host.directBash = true
 	f.host.bashHelper = buildExplorationBashHelper(t)
 	f.host.skillDir = filepath.Join("..", "..", "skills", "api-recon")
-	host, err := f.host.factory(f.rec, f.current, f.digest, []string{"/read/admin"}, 4096)(t.Context(), f.binding, &agent.Worker{})
+	host, err := f.host.factory(f.rec, f.current, f.digest, []string{"/read/admin"}, 4096, &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID})(t.Context(), f.binding, &agent.Worker{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestProductExplorationHostDirectBashDefaultAndOptOut(t *testing.T) {
 			t.Fatal(err)
 		}
 		h.bashHelper, h.bashRootParent = helperPath, t.TempDir()
-		host, err := h.factory(f.rec, f.current, f.digest, nil, 4096)(t.Context(), f.binding, &agent.Worker{})
+		host, err := h.factory(f.rec, f.current, f.digest, nil, 4096, &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID})(t.Context(), f.binding, &agent.Worker{})
 		if err != nil || host.Session.Boundary == nil {
 			t.Fatalf("host: %v", err)
 		}
@@ -167,7 +167,7 @@ func TestProductExplorationHostDirectBashDefaultAndOptOut(t *testing.T) {
 	}
 	parent := t.TempDir()
 	h.bashHelper, h.bashRootParent = filepath.Join(parent, "missing-helper"), parent
-	if _, err := h.factory(f.rec, f.current, f.digest, nil, 4096)(t.Context(), f.binding, &agent.Worker{}); err != nil {
+	if _, err := h.factory(f.rec, f.current, f.digest, nil, 4096, &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID})(t.Context(), f.binding, &agent.Worker{}); err != nil {
 		t.Fatal(err)
 	}
 	if entries, err := os.ReadDir(parent); err != nil || len(entries) != 0 {
