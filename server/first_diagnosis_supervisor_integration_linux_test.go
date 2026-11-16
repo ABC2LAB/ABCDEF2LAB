@@ -365,9 +365,13 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		// 계정 세션 헤더를 그대로 보낼 수 있다.
 		policy.Rules = append(policy.Rules, E2HTTPFileRule{Ref: "auth-login", Origin: target.URL, ConnectIP: "127.0.0.1", PathPrefix: "/login", PathScopeRef: "auth-login", Methods: []string{"POST"}, Purpose: e2proxy.PurposeAuthPrep})
 		policy.HeaderMode = e2proxy.HeaderTestAccountPassthrough
+		secondUser := "tester@owned.test"
+		if mode == "goal-met-auth-unknown" {
+			secondUser = "tester-b@owned.test"
+		}
 		auth := cookieAuth(
 			E2HTTPFileAuthAccount{Label: "tester-a", Credential: authCredentialPin(t, cfg.AuthorityRoot, "tester-a.json", "tester@owned.test", "seeded-pass-88ff")},
-			E2HTTPFileAuthAccount{Label: "tester-b", Credential: authCredentialPin(t, cfg.AuthorityRoot, "tester-b.json", "tester@owned.test", "seeded-pass-88ff")},
+			E2HTTPFileAuthAccount{Label: "tester-b", Credential: authCredentialPin(t, cfg.AuthorityRoot, "tester-b.json", secondUser, "seeded-pass-88ff")},
 		)
 		policy.Auth = &auth
 	}
