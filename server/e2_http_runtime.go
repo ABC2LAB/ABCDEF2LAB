@@ -259,8 +259,10 @@ type e2HTTPRuntimeTask struct {
 	untrusted map[int64]bool
 	// untrustedCalls는 대조 실패로 표시한 호출이다. 같은 호출을 다시 관찰하면 중복 기록 실패로 본다. mu로 보호한다.
 	untrustedCalls map[string]bool
-	releaseCalled  bool
-	releaseErr     error
+	// observedWake는 다음 결과 관찰 때 닫힌다. intent 마감이 이 intent의 호출 결과 관찰을 기다릴 때 쓴다. mu로 보호한다.
+	observedWake  chan struct{}
+	releaseCalled bool
+	releaseErr    error
 
 	promptFailed     bool // mu로 보호한다. 나머지 등록 상태는 gate 안에서만 접근한다.
 	promptRegistered bool
@@ -646,6 +648,7 @@ func (r *E2HTTPRuntime) PrepareWork(ctx context.Context, task *Task, intent *db.
 			finalErr = lease.Runner.DrainIntent(cleanupCtx, actual.ID)
 			// 세션 취소는 도구 완료보다 먼저 반환할 수 있다. drain 뒤의 실제 call을 다시 확인한다.
 			finalErr = e2HTTPFinalIntentError(finalErr, lease.Runner.Calls(), actual.ID)
+			finalErr = r.attemptUnknownIntentError(cleanupCtx, t, lease, actual.ID, finalErr)
 			cancel()
 			t.mu.Lock()
 			delete(t.active, actual.ID)
@@ -870,6 +873,8 @@ func e2HTTPCloneTrusted(value e2runner.TrustedResult) e2runner.TrustedResult {
 
 // 결과는 agent가 concrete Runner에서 직접 받은 callback으로만 기록한다. 원문 출력은 보관하지 않는다.
 func (r *E2HTTPRuntime) observeResult(ctx context.Context, t *e2HTTPRuntimeTask, lease *E2HTTPRunOptions, intentID int64, result e2runner.Result) error {
+	// 저장·대조 실패 표시가 끝난 뒤 이 결과를 기다리는 intent 마감을 깨운다.
+	defer t.wakeObservers()
 	result.ToolOutput = ""
 	trusted := result.Trusted
 	if trusted.AdmissionNotSent != nil {
@@ -1048,6 +1053,96 @@ func e2HTTPFinalIntentError(drainErr error, calls []e2proxy.CallResult, intentID
 		}
 	}
 	return drainErr
+}
+
+// observedWaitLocked는 다음 결과 관찰 때 닫히는 채널이다. 호출자는 mu를 보유한다.
+func (t *e2HTTPRuntimeTask) observedWaitLocked() <-chan struct{} {
+	if t.observedWake == nil {
+		t.observedWake = make(chan struct{})
+	}
+	return t.observedWake
+}
+
+// wakeObservers는 결과 관찰을 기다리는 쪽을 깨운다.
+func (t *e2HTTPRuntimeTask) wakeObservers() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.observedWake != nil {
+		close(t.observedWake)
+		t.observedWake = nil
+	}
+}
+
+// attemptUnknownIntentError는 멈춘 명령(Planner kill_work·목표 달성 취소·시간 상한 정리·호출 시간 상한 등)의 시도 단위
+// 기록에 대상에 전달됐는데 응답을 끝까지 받지 못한 시도가 있으면 그 intent를 결과 불명으로 고정한다. 마감 판정과 같은
+// 규칙(firstDiagnosisStoppedToolOutcome의 firstDiagnosisAttemptUnknown)이라 그 intent는 미완료·정책 제한으로 마감되지
+// 않는다(C01·C08). 연결 뒤 끊긴 송신(결과 불명 송신 수가 있는 호출)은 e2HTTPFinalIntentError가 이미 고정했고, 연결 전
+// 송신 실패(transport_failed)는 전달하지 않은 것이라 결과 불명이 아니다(C02). 이 검사는 그 밖의 전달된 시도까지 같은
+// 기준으로 본다. 어느 결과가 기존 분류 검사로 받혔는지는 신뢰 결과의 종료 상태가 있어야 알 수 있다. Worker 세션은 도구 완료보다 먼저 끝날 수 있어서
+// (취소 때 SDK가 중단 결과를 먼저 만든다) 이 intent의 최종 호출 결과가 모두 관찰될 때까지 ctx 기한 안에서 기다린다.
+// 기다리다 기한이 지나면 관찰된 결과만 본다. 관찰되지 않은 호출은 마감 대조가 따로 실패시킨다.
+func (r *E2HTTPRuntime) attemptUnknownIntentError(ctx context.Context, t *e2HTTPRuntimeTask, lease *E2HTTPRunOptions, intentID int64, finalErr error) error {
+	// 원격 실행은 이 프로세스에 시도 기록이 없다. 마감 판정도 원격 실행을 받지 않는다(closure_execution_missing).
+	if errors.Is(finalErr, agent.ErrE2HTTPUnknown) || t == nil || lease == nil || lease.Execution == nil || e2HTTPNil(lease.Runner) {
+		return finalErr
+	}
+	program := lease.programCalls.snapshot()
+	var pending []string
+	for _, call := range lease.Runner.Calls() {
+		// 서버가 연 호출(인증 준비·다시 로그인)은 Worker 결과가 없다.
+		if call.IntentID == intentID && call.Final && !program[call.CallRef] {
+			pending = append(pending, call.CallRef)
+		}
+	}
+	var attempts map[string][]e2proxy.Receipt
+	for _, result := range t.awaitIntentResults(ctx, intentID, pending) {
+		if firstDiagnosisClosedToolOutcome(result) {
+			continue
+		}
+		if attempts == nil {
+			attempts = firstDiagnosisCallAttempts(lease.Execution)
+		}
+		if accepted, unknown := firstDiagnosisStoppedToolOutcome(result, attempts[result.Call.CallRef]); accepted && unknown {
+			return errors.Join(finalErr, agent.ErrE2HTTPUnknown)
+		}
+	}
+	return finalErr
+}
+
+// awaitIntentResults는 pending 호출이 모두 관찰(저장 또는 대조 실패 표시)되거나 결과 기록이 실패하거나 ctx가 끝날 때까지
+// 기다린 뒤 이 intent의 저장된 신뢰 결과 사본을 돌려준다. 기한이 지나면 그때까지 저장된 것만 돌려준다.
+func (t *e2HTTPRuntimeTask) awaitIntentResults(ctx context.Context, intentID int64, pending []string) []e2runner.TrustedResult {
+	for {
+		t.mu.Lock()
+		stored := make(map[string]bool, len(t.results))
+		var mine []e2runner.TrustedResult
+		for _, result := range t.results {
+			stored[result.Call.CallRef] = true
+			if result.Call.IntentID == intentID {
+				mine = append(mine, e2HTTPCloneTrusted(result))
+			}
+		}
+		done := t.resultsFailed
+		if !done {
+			done = true
+			for _, ref := range pending {
+				if !stored[ref] && !t.untrustedCalls[ref] {
+					done = false
+					break
+				}
+			}
+		}
+		wake := t.observedWaitLocked()
+		t.mu.Unlock()
+		if done {
+			return mine
+		}
+		select {
+		case <-wake:
+		case <-ctx.Done():
+			return mine
+		}
+	}
 }
 
 // e2HTTPWorkerSessions는 Worker를 시작할 때 줄 시험 계정 세션이다. 다시 로그인이 바꾼 지금 세션을 읽는다(#550).
