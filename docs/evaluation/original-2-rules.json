@@ -1,6 +1,27 @@
 {
   "format": "abc2lab.engine-intercept-rules/v1",
-  "enabled_tools": null,
+  "enabled_tools": [
+    "Bash",
+    "WebFetch",
+    "web_search",
+    "shell_open",
+    "shell_send",
+    "Write",
+    "Edit",
+    "MultiEdit",
+    "bash",
+    "BASH",
+    "webfetch",
+    "web_fetch",
+    "WEBFETCH",
+    "write",
+    "WRITE",
+    "edit",
+    "EDIT",
+    "multiedit",
+    "multi_edit",
+    "MULTIEDIT"
+  ],
   "rules": [
     {
       "name": "orig2-method-option",

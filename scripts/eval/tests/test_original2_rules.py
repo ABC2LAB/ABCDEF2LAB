@@ -21,7 +21,38 @@ from runner_engine import load_engine_rules  # noqa: E402
 RULES_PATH = Path(__file__).resolve().parents[3] / "docs" / "evaluation" / "original-2-rules.json"
 # 원본(e53a79f) 내장 규칙의 가장 낮은 우선순위. 파일 규칙은 이보다 낮아야 내장 규칙이 먼저 맞아 차단 출처가 원본 ① 몫으로 남는다
 LOWEST_SEEDED_PRIORITY = 80
+# 원본(e53a79f) intercept/intercept.go defaultEnabledTools — 저장된 도구 설정이 없을 때 규칙을 타는 도구
+DEFAULT_ENABLED_TOOLS = ("Bash", "WebFetch", "web_search", "shell_open", "shell_send", "Write", "Edit", "MultiEdit")
 U = "http://target.test"
+
+
+def camel_to_snake(name: str) -> str:
+    """원본 agent/toolcatalog.go camelToSnake 이식 (WebFetch → web_fetch, MultiEdit → multi_edit, LS → ls)."""
+    out = []
+    for i, ch in enumerate(name):
+        if "A" <= ch <= "Z":
+            if i > 0:
+                prev, nxt = name[i - 1], name[i + 1] if i + 1 < len(name) else ""
+                if "a" <= prev <= "z" or (nxt != "" and "a" <= nxt <= "z"):
+                    out.append("_")
+            out.append(ch.lower())
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def tool_alias_names(name: str) -> list[str]:
+    """원본 agent/toolcatalog.go toolAliasNames 이식: 소문자 · snake_case · 대문자, 원래 이름과 중복은 뺀다.
+    이미 소문자인 이름은 별칭이 없다. 엔진은 이 별칭도 도구로 등록하고(assembly.go addToolAliases), 가드는 모델이
+    실제로 부른 이름으로 규칙 대상인지 본다(guard.go IsToolEnabled)."""
+    if name == name.lower():
+        return []
+    seen, out = {name}, []
+    for alias in (name.lower(), camel_to_snake(name), name.upper()):
+        if alias and alias not in seen:
+            seen.add(alias)
+            out.append(alias)
+    return out
 
 # (도구, 입력 문자열). 막혀야 하는 것
 BLOCK = [
@@ -93,6 +124,9 @@ PASS = [
 # 알려진 과차단: 요청이 아니거나 GET 인데 막힌다. engine-rules.md 에 공개한다
 OVERBLOCK = [
     ("Bash", f"curl -G {U}/search --data-urlencode 'q=x'"),
+    ("Bash", f"curl -sG -d q=x {U}/search"),
+    # orig2-curl-body-flag 의 [^|]{0,800}? 가 ; · && 를 넘어 같은 줄 다른 명령의 -d 까지 본다
+    ("Bash", f"curl -s {U}/export -o out.csv; cut -d, -f1 out.csv"),
     ("Write", "Notes: POST /api/items creates an item\n"),
     ("Bash", "grep -c '\"POST\"' traffic.log"),
 ]
@@ -132,14 +166,28 @@ class TestOriginal2Rules(unittest.TestCase):
         return hits
 
     def test_file_passes_the_runner_format_check(self):
-        self.assertIsNone(self.loaded.enabled_tools)  # 엔진 기본 목록 그대로(줄이지도 늘리지도 않음)
+        self.assertIsNotNone(self.loaded.enabled_tools)  # 별칭까지 넣으려고 목록을 둔다
         self.assertGreater(len(self.loaded.rules), 0)
+
+    def test_enabled_tools_cover_default_tools_and_their_aliases(self):
+        tools = self.loaded.enabled_tools
+        self.assertEqual(len(set(tools)), len(tools))
+        # 기본 목록을 줄이지 않는다(줄이면 러너가 engine_rules_failed 로 막는다)
+        self.assertLessEqual(set(DEFAULT_ENABLED_TOOLS), set(tools))
+        # 모델이 bash · write 처럼 별칭으로 불러도 규칙을 탄다 (손으로 적은 목록이 아니라 엔진 규칙으로 만든 집합)
+        aliases = {alias for name in DEFAULT_ENABLED_TOOLS for alias in tool_alias_names(name)}
+        self.assertTrue(aliases)
+        self.assertLessEqual(aliases, set(tools))
+        self.assertEqual(camel_to_snake("WebFetch"), "web_fetch")
+        self.assertEqual(camel_to_snake("LS"), "ls")
+        self.assertEqual(tool_alias_names("web_search"), [])
 
     def test_only_deny_rules_below_seeded_priority(self):
         for rule in self.loaded.rules:
             with self.subTest(rule=rule["name"]):
                 self.assertEqual(rule["action"], "deny")  # allow 0 → allow_over_seeded 0
                 self.assertLess(rule["priority"], LOWEST_SEEDED_PRIORITY)
+                # 규칙은 도구 이름이 아니라 도구 입력을 본다 → 별칭을 enabled_tools 에 넣는 것만으로 별칭 호출도 같은 규칙을 탄다
                 self.assertEqual(rule["match_target"], "tool_input")
                 self.assertTrue(rule["name"].startswith("orig2-"))  # 내장 규칙 이름과 겹치지 않게
 
