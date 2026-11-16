@@ -84,9 +84,11 @@ type Rule struct {
 	Ref           string
 	Origin        string
 	ConnectIP     netip.Addr
-	PathPrefix    string
-	PathScopeRef  string
-	Methods       []string
+	// PathMatch가 비면 기존 경로 조각 접두, exact면 query 없는 경로 하나만 승인한다.
+	PathMatch    string `json:"path_match,omitempty"`
+	PathPrefix   string
+	PathScopeRef string
+	Methods      []string
 	// Headers explicitly declares ordinary, noncredential constraints. Values
 	// must already match the caller; they are never injected or overwritten.
 	Headers http.Header `json:"-"`

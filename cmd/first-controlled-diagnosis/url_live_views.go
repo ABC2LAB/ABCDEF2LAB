@@ -58,6 +58,7 @@ type controlPolicyRule struct {
 	Purpose      string   `json:"purpose"`
 	Origin       string   `json:"origin"`
 	ConnectIP    string   `json:"connect_ip"`
+	PathMatch    string   `json:"path_match,omitempty"`
 	PathPrefix   string   `json:"path_prefix"`
 	PathScopeRef string   `json:"path_scope_ref"`
 	Methods      []string `json:"methods"`
@@ -164,7 +165,7 @@ func controlPolicyOf(b *runBinding) controlPolicyView {
 	}
 	view.PolicyFingerprintSHA256 = b.fingerprint
 	for _, r := range p.Rules {
-		view.Rules = append(view.Rules, controlPolicyRule{Ref: r.Ref, Purpose: r.Purpose, Origin: r.Origin, ConnectIP: r.ConnectIP, PathPrefix: r.PathPrefix,
+		view.Rules = append(view.Rules, controlPolicyRule{Ref: r.Ref, Purpose: r.Purpose, Origin: r.Origin, ConnectIP: r.ConnectIP, PathPrefix: r.PathPrefix, PathMatch: r.PathMatch,
 			PathScopeRef: r.PathScopeRef, Methods: append([]string{}, r.Methods...), TLSPinned: r.TLSSPKISHA256 != ""})
 	}
 	if p.Auth != nil {

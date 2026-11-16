@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"github.com/Autumn-27/artex/targetaddr"
 	"io"
 	"net"
 	"net/netip"
@@ -22,8 +21,10 @@ import (
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/e2config"
 	"github.com/Autumn-27/artex/e2proxy"
+	"github.com/Autumn-27/artex/internal/pathscope"
 	"github.com/Autumn-27/artex/llmpolicy"
 	"github.com/Autumn-27/artex/server"
+	"github.com/Autumn-27/artex/targetaddr"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -265,7 +266,7 @@ func urlPort(u *url.URL) int {
 	return n
 }
 func urlPathWithin(p, prefix string) bool {
-	return prefix == "/" || p == strings.TrimSuffix(prefix, "/") || strings.HasPrefix(p, strings.TrimSuffix(prefix, "/")+"/")
+	return pathscope.Allows(p, false, prefix)
 }
 
 // 대상 등록과 탐색 경계가 같은 규칙을 쓰도록 targetaddr에 둔다.
@@ -383,7 +384,11 @@ func urlLoadProfileForReport(c urlPreparationInstallation, installationPin urlIn
 			}
 			continue
 		}
-		paths = append(paths, rule.PathPrefix)
+		mode := pathscope.Mode(rule.PathMatch)
+		if mode != pathscope.Prefix && mode != pathscope.Exact {
+			return nil, errPreparation
+		}
+		paths = append(paths, (pathscope.Scope{Path: rule.PathPrefix, Mode: mode}).Expression())
 		for _, method := range rule.Methods {
 			if method != "GET" && method != "HEAD" && !(p.WorkflowMode != "" && (method == "POST" || method == "PUT" || method == "PATCH")) {
 				return nil, errPreparation
@@ -694,7 +699,7 @@ func urlAuthRuleValid(policy server.E2HTTPFilePolicy, rule server.E2HTTPFileRule
 		return false
 	}
 	for _, prefix := range prefixes {
-		if prefix == "/" || rule.PathPrefix == prefix || strings.HasPrefix(rule.PathPrefix, strings.TrimSuffix(prefix, "/")+"/") {
+		if urlPathWithin(rule.PathPrefix, prefix) {
 			return true
 		}
 	}

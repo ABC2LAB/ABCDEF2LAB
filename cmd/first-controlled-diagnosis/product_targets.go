@@ -23,6 +23,7 @@ import (
 
 	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/diagnosisprep"
+	"github.com/Autumn-27/artex/internal/pathscope"
 	"github.com/Autumn-27/artex/server"
 )
 
@@ -274,8 +275,9 @@ func (r *productTargetRegistry) register(principal string, s diagnosisprep.Targe
 	paths := []string{}
 	size := 0
 	for _, p := range s.PathPrefixes {
-		v, e := diagnosisprep.CanonicalInput(diagnosisprep.Input{TargetURL: u.Scheme + "://" + u.Host + p, ProfileID: "target"})
-		if !strings.HasPrefix(p, "/") || strings.HasPrefix(p, "//") || e != nil || v.TargetURL != u.Scheme+"://"+u.Host+p {
+		scope, ok := pathscope.Parse(p)
+		v, e := diagnosisprep.CanonicalInput(diagnosisprep.Input{TargetURL: u.Scheme + "://" + u.Host + scope.Path, ProfileID: "target"})
+		if !ok || e != nil || v.TargetURL != u.Scheme+"://"+u.Host+scope.Path {
 			return diagnosisprep.ProductTarget{}, errors.New("invalid_path_scope")
 		}
 		size += len(p)

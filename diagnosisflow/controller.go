@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/Autumn-27/artex/dlp"
-	"github.com/Autumn-27/artex/e2proxy"
 	"log"
 	"net/url"
 	"regexp"
@@ -14,6 +12,10 @@ import (
 	"sync"
 	"time"
 	"unicode"
+
+	"github.com/Autumn-27/artex/dlp"
+	"github.com/Autumn-27/artex/e2proxy"
+	"github.com/Autumn-27/artex/internal/pathscope"
 )
 
 type Controller struct {
@@ -48,6 +50,11 @@ func New(ctx context.Context, b Binding, store Store) (*Controller, error) {
 	if err != nil || u.Scheme != "https" && u.Scheme != "http" || u.User != nil || u.Host == "" || u.RawQuery != "" || u.Fragment != "" || !ValidMode(b.Mode) || !b.Limits.Valid() || b.Current == nil || b.Current() != nil || store == nil || b.JobID == "" || b.TaskID == "" || b.SourceDigest == "" || b.Owner == "" || len(b.PathPrefixes) == 0 || len(b.ReadonlyPrefixes) == 0 {
 		return nil, ErrUnavailable
 	}
+	for _, expression := range append(append([]string{}, b.PathPrefixes...), b.ReadonlyPrefixes...) {
+		if _, ok := pathscope.Parse(expression); !ok {
+			return nil, ErrDenied
+		}
+	}
 	c := &Controller{binding: b, store: store, changed: make(chan struct{}), attempts: map[string]bool{}, uncertainWrites: map[string]bool{}, origin: u.Scheme + "://" + u.Host}
 	c.record = Record{Owner: b.Owner, Commands: map[string]commandReceipt{}, Snapshot: Snapshot{Format: Version, JobID: b.JobID, TaskID: b.TaskID, RunRef: b.RunRef, SourceDigest: b.SourceDigest, Mode: b.Mode, ReversibleWrites: b.ReversibleWrites, Commands: []Command{}, Stage: "crawling", Limits: b.Limits, Endpoints: []Endpoint{}, Events: []Event{}}}
 	path, ok := canonicalPath(u)
@@ -61,7 +68,7 @@ func New(ctx context.Context, b Binding, store Store) (*Controller, error) {
 	return c, nil
 }
 func within(path, prefix string) bool {
-	return prefix == "/" || path == strings.TrimSuffix(prefix, "/") || strings.HasPrefix(path, strings.TrimSuffix(prefix, "/")+"/")
+	return pathscope.Allows(path, false, prefix)
 }
 func has(list []string, value string) bool {
 	for _, v := range list {
@@ -283,6 +290,14 @@ func (c *Controller) allowedPath(method, path string) bool {
 		}
 	}
 	return allowed
+}
+func (c *Controller) allowedURLPath(path string, hasQuery bool) bool {
+	for _, expression := range c.binding.PathPrefixes {
+		if pathscope.Allows(path, hasQuery, expression) {
+			return true
+		}
+	}
+	return false
 }
 func (c *Controller) readPath(path string) bool {
 	for _, p := range c.binding.ReadonlyPrefixes {
@@ -642,7 +657,7 @@ func (c *Controller) Before(ctx context.Context, v e2proxy.RequestView) error {
 		return ErrDenied
 	}
 	// 경로가 범위 안이어도 query에 파괴 동작이 실리면 막는다(위험 query 검증 유지, C23).
-	if u, err := url.Parse(v.URL); err != nil || riskyRequest(normalizedMethod(v.Method), path, looseQuery(u.RawQuery)) {
+	if u, err := url.Parse(v.URL); err != nil || !c.allowedURLPath(path, u.RawQuery != "" || u.ForceQuery) || riskyRequest(normalizedMethod(v.Method), path, looseQuery(u.RawQuery)) {
 		return ErrDenied
 	}
 	s := c.record.Snapshot
