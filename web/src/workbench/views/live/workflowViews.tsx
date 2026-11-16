@@ -28,16 +28,6 @@ export const GROUPS = [
   "관리자",
   "정적 자원",
 ] as const;
-/** 범위 확인 표의 묶음 순서 (시안 SG + 정적 자원). */
-const SCOPE_GROUPS: readonly string[] = [
-  "계정·인증",
-  "장바구니·주문",
-  "결제·쿠폰",
-  "관리자",
-  "상품·리뷰",
-  "공개 페이지·API",
-  "정적 자원",
-];
 /** 찾은 경로가 아직 없는 묶음. */
 export const missingGroups = (endpoints: readonly WorkflowEndpoint[]) =>
   GROUPS.filter((g) => !endpoints.some((e) => group(e) === g));
@@ -396,46 +386,28 @@ const EP_TABS = [
 ] as const;
 
 /**
- * 경로 상세 (범위 확인 · 자산 탐색 공통, 시안 apiDetail): 기본 정보 · 실제 요청 · 응답 탭.
+ * 경로 상세 (범위 확인 오른쪽 패널, 시안 apiDetail): 기본 정보 · 실제 요청 · 응답 탭.
  * 시안의 요청 횟수 · 근거 · 기능(AI 추정)은 서버가 경로마다 주지 않아 뺀다. 요청 · 응답은 예시가 아니라 서버가 저장한 관찰이다.
  */
 function EndpointDetail({
   endpoint,
-  back,
   chip,
+  extra,
 }: {
-  endpoint: WorkflowEndpoint | null;
-  back?: () => void;
+  endpoint: WorkflowEndpoint;
   /** 처리 딱지 (범위 확인은 고른 상태를 따른다, 시안 scopeTag). 없으면 경로 종류 딱지 */
   chip?: ReactNode;
+  /** 딱지 줄 아래 (범위 확인의 점검 포함 체크) */
+  extra?: ReactNode;
 }) {
   const [tab, setTab] = useState<"info" | "http">("info");
   const uid = useId();
   const e = endpoint;
-  if (!e) {
-    return (
-      <>
-        <div className={s["vi-head"]}>
-          <div>
-            <h2>경로를 고르세요</h2>
-          </div>
-          <CloseInspButton label="경로 상세" />
-        </div>
-        <p className={s.empty}>왼쪽에서 경로를 누르면 서버가 저장한 관찰이 나옵니다.</p>
-      </>
-    );
-  }
   const k = kindOf(e);
   const tabId = (id: string) => `${uid}-t-${id}`;
   const panelId = (id: string) => `${uid}-p-${id}`;
   return (
     <>
-      {back ? (
-        <button className={s.back} type="button" onClick={back}>
-          <Icon name="chev" />
-          찾은 경로 목록
-        </button>
-      ) : null}
       <div className={s["vi-head"]}>
         <div>
           <div className={s.eyebrow}>{`찾은 경로 · ${group(e)}`}</div>
@@ -452,6 +424,7 @@ function EndpointDetail({
         {chip ?? <span className={cx(s.tag, kindTag(k))}>{KIND_TEXT[k]}</span>}
         {hasId(e.path) ? <span className={cx(s.tag, s.out)}>ID 포함</span> : null}
       </div>
+      {extra}
       <div
         className={cx(s["seg-tabs"], s["api-tabs"])}
         role="tablist"
@@ -562,24 +535,22 @@ export function logRawOf(events: readonly FlowEvent[], i: number, endpoint: Work
   return "latest";
 }
 
+/** 탐색 기록 줄을 가리키는 키. 서버 기록에 id 가 없어 시각 · 종류 · 메서드 · 경로로 가리킨다. */
+const logKeyOf = (ev: FlowEvent) => `${ev.at}:${ev.kind}:${ev.method}:${ev.path}`;
+
 /**
- * 탐색 기록 한 줄을 펼친 칸 (시안 logDetail). 이 기록의 결과와, 같은 경로의 서버 정보(찾은 곳 · 출처 · 종류)를 줄 바로 아래에
+ * 탐색 기록 한 줄의 상세 (자산 탐색 오른쪽 패널, 시안 logDetail). 이 기록의 결과와, 같은 경로의 서버 정보(찾은 곳 · 출처 · 종류)를
  * 보인다. 저장된 요청/응답 원문은 이 줄과 묶였다고 볼 수 있을 때(logRawOf = latest)만 "이 경로의 마지막 관찰"로 보이고,
  * 응답 코드가 없는 줄 · 나중 요청이 있는 줄에는 붙이지 않는다(값을 지어내지 않음 · 서버가 가린 그대로).
- * Esc · 접기로 닫고 초점은 그 줄로 돌아간다.
  */
 function LogDetail({
-  id,
   event,
   endpoint,
   raw,
-  onClose,
 }: {
-  id: string;
   event: FlowEvent;
   endpoint: WorkflowEndpoint | undefined;
   raw: LogRaw;
-  onClose: () => void;
 }) {
   let cards: ReactNode;
   if (!endpoint)
@@ -629,48 +600,42 @@ function LogDetail({
       </>
     );
   return (
-    <section
-      className={s.lgx}
-      id={id}
-      aria-label={`${event.method} ${event.path ?? ""} 요청 · 응답`}
-      onKeyDown={(e) => {
-        if (e.key !== "Escape") return;
-        // 작업대 전역 Esc(상세 서랍 닫기)까지 가지 않게 여기서 멈춘다 (리뷰 #473 · HelpTip 과 같은 처리)
-        e.stopPropagation();
-        onClose();
-      }}
-    >
-      <div className={s["lgx-top"]}>
-        <span className={cx(s.m, event.method ? s[event.method] : undefined)}>{event.method}</span>
-        <code>{event.path || "—"}</code>
-        <button className={cx(s.btn, s.sm)} type="button" onClick={onClose}>
-          <Icon name="x" />
-          접기
-        </button>
+    <section aria-label={`${event.method} ${event.path ?? ""} 요청 · 응답`}>
+      <div className={s["vi-head"]}>
+        <div>
+          <div className={s.eyebrow}>{`탐색 기록 · ${hms(event.at)}`}</div>
+          <h2>
+            <span className={cx(s.m, event.method ? s[event.method] : undefined)}>{event.method}</span>{" "}
+            <span className={s.p}>{event.path ? <Pth p={event.path} /> : "—"}</span>
+          </h2>
+        </div>
+        <CloseInspButton label="기록 상세" />
       </div>
-      <Kv
-        rows={[
-          ["응답", event.status ? <Sc key="sc" status={event.status} /> : "코드 없음"],
-          ["기록", <span key="kind">{eventText(event.kind)}</span>],
-          ...(endpoint
-            ? ([
-                [
-                  "찾은 곳",
-                  <span key="from" className={s.mono}>
-                    {endpoint.from}
-                  </span>,
-                ],
-                ["출처", endpoint.source],
-                ["종류", endpoint.kind],
-                ...(endpoint.observation_error ? [["관찰 실패", endpoint.observation_error]] : []),
-              ] as [string, ReactNode][])
-            : []),
-          // 시안의 근거 · 기능(AI 추정)은 서버가 주지 않아 값을 비운다
-          ["근거", NONE],
-          ["기능 (AI 추정)", NONE],
-        ]}
-      />
-      <div className={s["lgx-ex"]}>{cards}</div>
+      <div className={s.isec}>
+        <Kv
+          rows={[
+            ["응답", event.status ? <Sc key="sc" status={event.status} /> : "코드 없음"],
+            ["기록", <span key="kind">{eventText(event.kind)}</span>],
+            ...(endpoint
+              ? ([
+                  [
+                    "찾은 곳",
+                    <span key="from" className={s.mono}>
+                      {endpoint.from}
+                    </span>,
+                  ],
+                  ["출처", endpoint.source],
+                  ["종류", endpoint.kind],
+                  ...(endpoint.observation_error ? [["관찰 실패", endpoint.observation_error]] : []),
+                ] as [string, ReactNode][])
+              : []),
+            // 시안의 근거 · 기능(AI 추정)은 서버가 주지 않아 값을 비운다
+            ["근거", NONE],
+            ["기능 (AI 추정)", NONE],
+          ]}
+        />
+      </div>
+      <div className={s.expanel}>{cards}</div>
       {endpoint && raw === "latest" && (endpoint.request || endpoint.response) ? (
         <p className={s.help}>
           서버가 이 줄과 원문을 묶어 주지 않아(call_ref 없음), 같은 경로의 마지막 관찰을 보입니다.
@@ -680,20 +645,39 @@ function LogDetail({
   );
 }
 
+/** 범위 확인의 점검 포함 고르기 (가운데 묶음 카드가 쓴다). 실제 상태는 ScopeSelection 이 쥔다. */
+interface ScopePick {
+  isOn: (e: WorkflowEndpoint) => boolean;
+  /** 고를 수 있는 경로인가 (범위 안 · 읽기이거나 사전 쓰기 승인이 있는 데이터 변경) */
+  eligible: (e: WorkflowEndpoint) => boolean;
+  locked: boolean;
+  /** 선택 모드: 알약을 누르면 상세 대신 고르기를 토글한다 */
+  multi: boolean;
+  picked: ReadonlySet<string>;
+  /** 오른쪽 상세에 보이는 경로 */
+  current: string | null;
+  /** 알약 누름. order 는 그 묶음 알약의 보이는 순서(Shift 범위 고르기용) */
+  press: (e: WorkflowEndpoint, shift: boolean, order: readonly string[]) => void;
+  /** 묶음 전체 넣기 · 빼기 */
+  setGroup: (name: string, rows: readonly WorkflowEndpoint[], on: boolean) => void;
+}
+
 /**
- * 찾은 경로 묶음 카드 (자산 탐색 오른쪽, 시안 renderTree). 묶음 머리 · 막대의 수는 거르기와 상관없이 그 묶음 전체,
+ * 찾은 경로 묶음 카드 (범위 확인 가운데, 시안 renderTree). 묶음 머리 · 막대의 수는 거르기와 상관없이 그 묶음 전체,
  * 알약은 거른 경로만 메서드 · 경로 순으로. 탐색 중 · 전체 보기에서는 아직 경로가 안 나온 묶음을 아래에 적는다.
+ * 점검에 넣은 경로의 알약은 체크로, 오른쪽 상세에 보이는 경로의 알약은 aria-current 로, 선택 모드에서 고른
+ * 알약은 aria-pressed 로 표시한다. 묶음 머리의 체크는 그 묶음 전체(거르기와 상관없이)를 넣고 뺀다.
  */
 function EndpointCards({
   all,
   shown,
   missing,
-  onSelect,
+  pick,
 }: {
   all: WorkflowEndpoint[];
   shown: WorkflowEndpoint[];
   missing: readonly string[];
-  onSelect: (e: WorkflowEndpoint) => void;
+  pick: ScopePick;
 }) {
   const groups = orderGroups(shown.map(group), GROUPS);
   return (
@@ -701,10 +685,26 @@ function EndpointCards({
       {groups.map((name) => {
         const rows = all.filter((e) => group(e) === name);
         const pills = shown.filter((e) => group(e) === name).sort(byMethodPath);
+        const order = pills.map((e) => e.id);
         const n = (k: Kind) => rows.filter((e) => kindOf(e) === k).length;
+        const can = rows.filter(pick.eligible);
+        const onN = can.filter(pick.isOn).length;
+        const full = can.length > 0 && onN === can.length;
         return (
           <section className={s.gc} key={name} aria-label={`${name} ${rows.length}개`}>
             <div className={s["gc-h"]}>
+              <input
+                type="checkbox"
+                className={s["gc-ck"]}
+                aria-label={`${name} 묶음 전체 점검에 포함`}
+                checked={full}
+                ref={(el) => {
+                  // 일부만 넣었으면 반쯤 체크 (속성이 아니라 DOM 값이라 직접 쓴다)
+                  if (el) el.indeterminate = onN > 0 && !full;
+                }}
+                disabled={pick.locked || !can.length}
+                onChange={() => pick.setGroup(name, rows, !full)}
+              />
               <b>{name}</b>
               <span className={s.n}>{rows.length}</span>
               <span className={s["gc-s"]}>
@@ -720,15 +720,19 @@ function EndpointCards({
             <div className={s.pills}>
               {pills.map((e) => {
                 const k = kindOf(e);
+                const on = pick.isOn(e);
                 return (
                   <button
-                    className={cx(s.pp, k === "ap" && s.ap, k === "ex" && s.ex, k === "get" && s.get)}
+                    className={cx(s.pp, k === "ap" && s.ap, k === "ex" && s.ex, k === "get" && s.get, on && s.inc)}
                     key={e.id}
                     type="button"
                     data-ep={e.id}
-                    aria-label={`${e.method} ${e.path}${PILL_FLAG[k]}, 요청·응답 보기`}
-                    onClick={() => onSelect(e)}
+                    aria-current={!pick.multi && pick.current === e.id ? "true" : undefined}
+                    aria-pressed={pick.multi ? pick.picked.has(e.id) : undefined}
+                    aria-label={`${e.method} ${e.path}${PILL_FLAG[k]}${on ? ", 점검에 포함" : ""}${pick.multi ? "" : ", 요청·응답 보기"}`}
+                    onClick={(ev) => pick.press(e, ev.shiftKey, order)}
                   >
+                    {on ? <Icon name="check" className={s.pk} /> : null}
                     <span className={cx(s.pm, s[e.method])}>{e.method === "DELETE" ? "DEL" : e.method}</span>
                     <span className={s.pt}>
                       <Pth p={e.path} />
@@ -743,6 +747,127 @@ function EndpointCards({
       })}
       {missing.length ? <p className={s["gc-empty"]}>{`아직 찾지 못한 묶음 · ${missing.join(", ")}`}</p> : null}
     </div>
+  );
+}
+
+/**
+ * 찾은 경로 (범위 확인 가운데, 시안 renderTree — 자산 탐색 오른쪽 패널에서 옮김): 처리 종류 막대 · 범례 · 거르기 · 묶음 카드.
+ * 알약을 누르면 오른쪽 경로 상세에서 점검에 넣을지 고른다. 머리 오른쪽(tools)과 카드 위(bar)는 부모가 채운다.
+ */
+function FoundPaths({
+  endpoints,
+  crawling,
+  filter,
+  onFilter,
+  pick,
+  tools,
+  bar,
+}: {
+  endpoints: WorkflowEndpoint[];
+  crawling: boolean;
+  filter: string;
+  onFilter: (id: string) => void;
+  pick: ScopePick;
+  tools?: ReactNode;
+  bar?: ReactNode;
+}) {
+  const shown = endpoints.filter((e) => filter === "all" || kindOf(e) === filter);
+  const count = (k: Kind) => endpoints.filter((e) => kindOf(e) === k).length;
+  return (
+    <section className={s.sec} aria-labelledby="sFoundH">
+      <div className={s.sh}>
+        <div>
+          <div className={s.eyebrow}>탐색하는 대로 채워짐</div>
+          <h2 id="sFoundH">
+            찾은 경로 <span className={s.num}>{endpoints.length}</span>
+          </h2>
+        </div>
+        {tools}
+      </div>
+      {/* 시안 범례의 '로그인'(시험 계정 로그인 경로) 수는 서버가 경로를 그렇게 나누지 않아 값을 비운다 */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 7, marginTop: 10 }}>
+        <div className={s.kbar} aria-hidden="true">
+          {(["get", "ap", "ex"] as const).map((k) =>
+            count(k) ? <i key={k} className={s[`k-${k}`]} style={{ flex: count(k) }} /> : null,
+          )}
+        </div>
+        <div className={s.kleg}>
+          <span>
+            <i style={{ background: "var(--accent-line)" }} />
+            {`자동 포함 ${count("get")}`}
+          </span>
+          <span title="서버가 시험 계정 로그인 경로를 따로 나누지 않습니다">
+            <i style={{ background: "var(--accent)" }} />
+            {`로그인 ${NONE}`}
+          </span>
+          <span>
+            <i style={{ background: "var(--warn)" }} />
+            {`승인 후 전송 ${count("ap")}`}
+          </span>
+          <span>
+            <i
+              className={s["k-ex"]}
+              style={{
+                background: "repeating-linear-gradient(135deg,var(--rule-2) 0 3px,transparent 3px 6px)",
+              }}
+            />
+            {`제외 ${count("ex")}`}
+          </span>
+        </div>
+      </div>
+      <div className={s.isec} style={{ gap: 12 }}>
+        {/* 찾은 경로는 묶음 카드로만 본다 (시안 v32: 주소 구조 보기 뺌) */}
+        <div className={s.fctl}>
+          <div className={s.seg} role="radiogroup" aria-label="보이는 경로">
+            {[
+              ["all", "전체"],
+              ["ap", "승인 필요"],
+              ["ex", "제외"],
+            ].map(([id, label]) => (
+              <label key={id}>
+                <input type="radio" name="sKf" checked={filter === id} onChange={() => onFilter(id)} />
+                <span>{label}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+        {bar}
+        <div id="sTree">
+          {shown.length ? (
+            <EndpointCards
+              all={endpoints}
+              shown={shown}
+              missing={filter === "all" && crawling ? missingGroups(endpoints) : []}
+              pick={pick}
+            />
+          ) : (
+            <p className={s.empty}>{treeEmpty(filter, endpoints.length)}</p>
+          )}
+        </div>
+        <p className={s["tree-hint"]}>묶음 이름 · 경로 규칙</p>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * 고르기 전 접어 둔 오른쪽 패널의 펼치기 버튼 (자산 탐색은 기록, 범위 확인은 경로를 고르기 전). PaneToggle 과 같은 자리 · 모양이다.
+ * 그 화면만 접은 것이라 작업대 공통 접힘(inspMin)은 건드리지 않는다 → 다른 화면 패널은 그대로.
+ */
+function UnfoldPane({ onOpen }: { onOpen: () => void }) {
+  const text = "오른쪽 패널 펼치기";
+  return (
+    <button
+      className={cx(s["icon-btn"], s["pane-toggle"])}
+      type="button"
+      data-insp-fold=""
+      aria-expanded={false}
+      aria-label={text}
+      title={text}
+      onClick={onOpen}
+    >
+      <Icon name="unfoldRight" />
+    </button>
   );
 }
 
@@ -838,41 +963,24 @@ export function WorkflowCrawlLive() {
     verified = useUrl((st) => st.flowVerified),
     host = useUrlHost(),
     { goTo, openInsp } = useShell();
-  const [selected, setSelected] = useState<string | null>(null);
-  const [filter, setFilter] = useState("all");
-  // 탐색 기록에서 펼친 줄 (한 번에 하나, 같은 줄을 다시 누르면 접힘 · 시안 v75 ~ v76)
-  const [openLog, setOpenLog] = useState<string | null>(null);
-  const closeLog = (i: number) => {
-    setOpenLog(null);
-    document.getElementById(`lgRow${i}`)?.focus();
-  };
-  // 펼친 내용이 보이게 기록 칸을 내리되, 누른 줄은 머리줄 바로 아래까지만 (다시 눌러 접을 수 있게 늘 보이게 · 시안)
-  useEffect(() => {
-    if (!openLog) return;
-    const log = document.getElementById("cLog");
-    const row = log?.querySelector<HTMLElement>('button[aria-expanded="true"]');
-    const box = row?.nextElementSibling;
-    if (!log || !row || !box) return;
-    const hh = log.firstElementChild instanceof HTMLElement ? log.firstElementChild.offsetHeight : 0;
-    const rr = row.getBoundingClientRect(),
-      rb = box.getBoundingClientRect(),
-      lb = log.getBoundingClientRect();
-    if (rb.bottom > lb.bottom) log.scrollTop += Math.max(0, Math.min(rb.bottom - lb.bottom + 8, rr.top - lb.top - hh));
-  }, [openLog]);
+  // 오른쪽 패널에 보이는 탐색 기록 줄 (한 번에 하나). 고르기 전에는 패널을 접어 둔다
+  const [logKey, setLogKey] = useState<string | null>(null);
+  // 기록을 고르지 않고 패널을 직접 펼쳤는가 (펼치면 고르라는 안내가 보인다)
+  const [peek, setPeek] = useState(false);
   const stop = useStopConfirm("점검 취소");
   const endpoints = flow?.endpoints ?? [];
-  const shown = endpoints.filter((e) => filter === "all" || kindOf(e) === filter);
-  const detail = endpoints.find((e) => e.id === selected) ?? null;
+  const events = flow?.events ?? [];
   const count = (k: Kind) => endpoints.filter((e) => kindOf(e) === k).length;
-  const select = (e: WorkflowEndpoint) => {
-    setSelected(e.id);
+  const logAt = logKey ? events.findIndex((ev) => logKeyOf(ev) === logKey) : -1;
+  const logEvent = logAt >= 0 ? events[logAt] : undefined;
+  const logEndpoint = logEvent
+    ? endpoints.find((e) => e.method === logEvent.method && e.path === logEvent.path)
+    : undefined;
+  // 고른 기록이 없고 직접 펼치지도 않았으면 이 화면 패널을 접는다 (고른 기록이 새 기록에 밀려 사라져도 접힘)
+  const fold = !logEvent && !peek;
+  const pickLog = (key: string) => {
+    setLogKey(key);
     openInsp();
-  };
-  // 상세에서 목록으로 돌아오면 누른 알약으로 초점을 돌린다 (시안 cApiClose)
-  const back = () => {
-    const id = selected;
-    setSelected(null);
-    window.requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-ep="${id}"]`)?.focus());
   };
   const next = flow?.mode === "user_approval_v1" ? "scope" : "live";
   const ready = verified && !!flow?.initial_completed;
@@ -910,7 +1018,7 @@ export function WorkflowCrawlLive() {
           <>
             <PauseButton />
             {stop.button}
-            <InspOpenButton>찾은 경로</InspOpenButton>
+            <InspOpenButton>기록 상세</InspOpenButton>
             {/* 탐색 결과(발견·경계 기록, 운영자 전용). 지금은 예시, live 점등은 탐색 실행기 착륙 후 */}
             <button className={s.btn} type="button" onClick={() => goTo("explore")}>
               탐색 결과
@@ -926,7 +1034,7 @@ export function WorkflowCrawlLive() {
           </>
         }
       />
-      <div className={s.vb}>
+      <div className={cx(s.vb, fold && s["vb-fold"])}>
         <div className={s.vm}>
           {stop.box}
           <UrlNotices />
@@ -1023,41 +1131,27 @@ export function WorkflowCrawlLive() {
                     <span>결과</span>
                   </div>
                   {flow.events.length ? (
-                    flow.events.map((event, i) => {
+                    flow.events.map((event) => {
                       if (event.method) {
-                        const key = `${event.at}:${event.kind}:${event.method}:${event.path}`;
-                        const open = openLog === key;
-                        const ep = open
-                          ? endpoints.find((e) => e.method === event.method && e.path === event.path)
-                          : undefined;
+                        const key = logKeyOf(event);
+                        const on = logKey === key;
+                        // 누르면 그 기록이 오른쪽 패널에 (줄 아래로 펼치지 않는다)
                         return (
-                          <Fragment key={key}>
-                            <button
-                              id={`lgRow${i}`}
-                              className={cx(s.lr, open && s.on)}
-                              type="button"
-                              aria-expanded={open}
-                              aria-controls={open ? `lgx${i}` : undefined}
-                              onClick={() => setOpenLog(open ? null : key)}
-                            >
-                              <span className={s.t}>{hms(event.at)}</span>
-                              <span className={cx(s.m, s[event.method])}>{event.method}</span>
-                              <span className={s.p}>{event.path ? <Pth p={event.path} /> : "—"}</span>
-                              <span>
-                                <EventResult event={event} />
-                              </span>
-                              <span className={s.ln}>{eventText(event.kind)}</span>
-                            </button>
-                            {open ? (
-                              <LogDetail
-                                id={`lgx${i}`}
-                                event={event}
-                                endpoint={ep}
-                                raw={logRawOf(flow.events, i, ep)}
-                                onClose={() => closeLog(i)}
-                              />
-                            ) : null}
-                          </Fragment>
+                          <button
+                            key={key}
+                            className={cx(s.lr, on && s.on)}
+                            type="button"
+                            aria-current={on ? "true" : undefined}
+                            onClick={() => pickLog(key)}
+                          >
+                            <span className={s.t}>{hms(event.at)}</span>
+                            <span className={cx(s.m, s[event.method])}>{event.method}</span>
+                            <span className={s.p}>{event.path ? <Pth p={event.path} /> : "—"}</span>
+                            <span>
+                              <EventResult event={event} />
+                            </span>
+                            <span className={s.ln}>{eventText(event.kind)}</span>
+                          </button>
                         );
                       }
                       return (
@@ -1075,106 +1169,40 @@ export function WorkflowCrawlLive() {
             </>
           ) : null}
         </div>
-        <aside className={s.vi} aria-label="찾은 경로">
-          {detail ? (
-            <EndpointDetail endpoint={detail} back={back} />
+        <aside className={s.vi} aria-label="기록 상세">
+          {logEvent ? (
+            <LogDetail event={logEvent} endpoint={logEndpoint} raw={logRawOf(events, logAt, logEndpoint)} />
           ) : (
             <>
               <div className={s["vi-head"]}>
                 <div>
-                  <div className={s.eyebrow}>탐색하는 대로 채워짐</div>
-                  <h2>
-                    찾은 경로 <span className={s.num}>{endpoints.length}</span>
-                  </h2>
+                  <h2>기록을 고르세요</h2>
                 </div>
-                <CloseInspButton label="찾은 경로" />
+                <CloseInspButton label="기록 상세" />
               </div>
-              {/* 시안 범례의 '로그인'(시험 계정 로그인 경로) 수는 서버가 경로를 그렇게 나누지 않아 값을 비운다 */}
-              <div style={{ display: "flex", flexDirection: "column", gap: 7, marginTop: 10 }}>
-                <div className={s.kbar} aria-hidden="true">
-                  {(["get", "ap", "ex"] as const).map((k) =>
-                    count(k) ? <i key={k} className={s[`k-${k}`]} style={{ flex: count(k) }} /> : null,
-                  )}
-                </div>
-                <div className={s.kleg}>
-                  <span>
-                    <i style={{ background: "var(--accent-line)" }} />
-                    {`자동 포함 ${count("get")}`}
-                  </span>
-                  <span title="서버가 시험 계정 로그인 경로를 따로 나누지 않습니다">
-                    <i style={{ background: "var(--accent)" }} />
-                    {`로그인 ${NONE}`}
-                  </span>
-                  <span>
-                    <i style={{ background: "var(--warn)" }} />
-                    {`승인 후 전송 ${count("ap")}`}
-                  </span>
-                  <span>
-                    <i
-                      className={s["k-ex"]}
-                      style={{
-                        background: "repeating-linear-gradient(135deg,var(--rule-2) 0 3px,transparent 3px 6px)",
-                      }}
-                    />
-                    {`제외 ${count("ex")}`}
-                  </span>
-                </div>
-              </div>
-              <div className={s.isec} style={{ gap: 12 }}>
-                {/* 찾은 경로는 묶음 카드로만 본다 (시안 v32: 주소 구조 보기 뺌) */}
-                <div className={s.fctl}>
-                  <div className={s.seg} role="radiogroup" aria-label="보이는 경로">
-                    {[
-                      ["all", "전체"],
-                      ["ap", "승인 필요"],
-                      ["ex", "제외"],
-                    ].map(([id, label]) => (
-                      <label key={id}>
-                        <input type="radio" name="cKf" checked={filter === id} onChange={() => setFilter(id)} />
-                        <span>{label}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-                <div id="cTree">
-                  {shown.length ? (
-                    <EndpointCards
-                      all={endpoints}
-                      shown={shown}
-                      missing={filter === "all" && crawling ? missingGroups(endpoints) : []}
-                      onSelect={select}
-                    />
-                  ) : (
-                    <p className={s.empty}>{treeEmpty(filter, endpoints.length)}</p>
-                  )}
-                </div>
-                <p className={s["tree-hint"]}>묶음 이름 · 경로 규칙</p>
-              </div>
+              <p className={s.empty}>탐색 기록을 누르면 그 기록의 결과와 요청 · 응답이 여기에 나옵니다.</p>
             </>
           )}
         </aside>
-        <PaneToggle />
+        {fold ? (
+          <UnfoldPane
+            onOpen={() => {
+              setPeek(true);
+              openInsp();
+            }}
+          />
+        ) : (
+          <PaneToggle />
+        )}
       </div>
     </>
   );
 }
 
-/** 시작 전 점검 칸 (시안 pre). 서버가 시작 전 연결 확인 결과를 주지 않아 값은 비운다. */
-const PRECHECKS = ["대상 연결", "계정 로그인", "모델 연결"] as const;
-/** 점검 중 새로 찾은 경로 처리 규칙 (시안 규칙표 · 서버 계약 아님). */
-const NEW_PATH_RULES = [
-  ["허용 주소 밖", "요청 안 함 · 기록만", "out"],
-  ["제외 규칙과 같은 모양", "자동 제외", "ex"],
-  ["GET · 보기만 하는 요청", "자동 포함", "in"],
-  ["POST · PUT · PATCH", "포함 · 보낼 때 승인", "ap"],
-  ["DELETE · 초기화 · 로그아웃", "자동 제외", "ex"],
-  ["관리자 · 처음 보는 권한 영역", "확인 요청", "ap"],
-] as const;
-
 /**
  * 범위 확인 (시안 data-view="scope"): 찾은 경로 중 심화 점검할 경로를 고른다. 선택은 개별 HTTP 송신 승인을 대신하지 않는다.
- * 시안의 '로그인 필요' 수 · 거르기, 시작 전 점검 줄, 점검 중 새 경로 처리 규칙은 서버가 주지 않거나 계약이 없어
- * 칸 모양만 두고 값은 비운다('연결 전').
+ * 가운데는 찾은 경로 묶음 카드(자산 탐색 오른쪽 패널에서 옮김)이고, 알약을 누르면 오른쪽 경로 상세에서 점검에 넣을지 고른다.
+ * 오른쪽 패널은 경로를 고르기 전에는 접어 둔다.
  */
 function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: ReactNode) => ReactNode }) {
   const eligible = (e: WorkflowEndpoint) => e.in_scope && (e.change === "attested_read" || flow.reversible_writes);
@@ -1185,31 +1213,23 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
     if (server.length || !waiting) return new Set(server);
     return new Set(flow.endpoints.filter((e) => eligible(e) && e.change === "attested_read").map((e) => e.id));
   });
-  const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState("all");
-  // 묶음은 기본으로 접는다. 거르기 · 검색 중에는 맞는 묶음을 펼친다. 직접 연 상태는 거르기 · 검색을 바꾸면 처음으로 (시안 sOpen)
-  const [open, setOpen] = useState<Record<string, boolean>>({});
+  // 오른쪽 상세에 보이는 경로
   const [detail, setDetail] = useState<string | null>(null);
+  // 경로를 고르지 않고 오른쪽 패널을 직접 펼쳤는가 (펼치면 고르라는 안내가 보인다)
+  const [peek, setPeek] = useState(false);
+  // 찾은 경로 카드의 거르기
+  const [treeFilter, setTreeFilter] = useState("all");
+  // 선택 모드: 알약을 눌러 여럿 고른 뒤 한 번에 넣거나 뺀다. anchor 는 Shift 범위의 시작 알약
+  const [multi, setMulti] = useState(false);
+  const [picked, setPicked] = useState<ReadonlySet<string>>(() => new Set());
+  const [anchor, setAnchor] = useState<string | null>(null);
+  // 한 번에 넣기 · 빼기의 결과 안내 (건너뛴 경로 수 포함)
+  const [note, setNote] = useState("");
   const busy = useUrl((st) => st.flowBusy),
     verified = useUrl((st) => st.flowVerified),
     uncertain = useUrl((st) => st.flowUncertain),
     { openInsp } = useShell();
   const isOn = (e: WorkflowEndpoint) => (waiting ? selected.has(e.id) : e.selected);
-  const FILTERS = [
-    ["all", "전체", () => true],
-    ["chg", "데이터 변경", (e: WorkflowEndpoint) => e.change === "possible"],
-    ["id", "ID 포함", (e: WorkflowEndpoint) => hasId(e.path)],
-    ["off", "제외됨", (e: WorkflowEndpoint) => !isOn(e)],
-  ] as const;
-  // '로그인 필요' 거르기는 누를 수 있지만 서버가 경로별 로그인 필요 여부를 아직 주지 않아(연결 전) 맞는 경로가 없다
-  const pick = FILTERS.find(([id]) => id === filter)?.[2] ?? (() => true);
-  const test = (e: WorkflowEndpoint) => filter !== "auth" && pick(e);
-  const q = query.trim().toLowerCase();
-  const shown = flow.endpoints.filter((e) => test(e) && `${e.method} ${e.path}`.toLowerCase().includes(q));
-  const groups = orderGroups(shown.map(group), SCOPE_GROUPS);
-  const forced = filter !== "all" || !!q;
-  const isOpen = (g: string) => open[g] ?? forced;
-  const allOpen = groups.length > 0 && groups.every(isOpen);
   const toggle = (id: string) =>
     setSelected((old) => {
       const next = new Set(old);
@@ -1218,11 +1238,69 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
       return next;
     });
   const locked = !waiting || busy || uncertain || !verified;
-  const inCount = flow.endpoints.filter(isOn).length;
-  const apCount = flow.endpoints.filter((e) => isOn(e) && e.change === "possible").length;
-  // 오른쪽 상세는 고른 경로, 아직 안 골랐으면 표의 첫 경로 (시안은 늘 한 경로를 보인다)
-  const firstShown = groups.length ? shown.find((e) => group(e) === groups[0]) : undefined;
-  const current = flow.endpoints.find((e) => e.id === detail) ?? firstShown ?? null;
+  const current = flow.endpoints.find((e) => e.id === detail) ?? null;
+  // 고른 경로가 없고 직접 펼치지도 않았으면 이 화면 패널을 접는다
+  const fold = !current && !peek;
+  const showDetail = (e: WorkflowEndpoint) => {
+    setDetail(e.id);
+    openInsp();
+  };
+  const unpick = () => {
+    setPicked(new Set());
+    setAnchor(null);
+  };
+  /**
+   * 여러 경로를 한 번에 넣거나 뺀다. 고를 수 없는 경로(범위 밖 · 사전 쓰기 승인 없는 데이터 변경)는 건너뛰고 수를 알린다.
+   * 넣어도 데이터 변경 경로는 보낼 때 승인 그대로다 (선택은 개별 송신 승인을 대신하지 않는다).
+   */
+  const setMany = (list: readonly WorkflowEndpoint[], on: boolean, label: string) => {
+    const ok = list.filter(eligible);
+    const skip = list.length - ok.length;
+    setSelected((old) => {
+      const next = new Set(old);
+      for (const e of ok) {
+        if (on) next.add(e.id);
+        else next.delete(e.id);
+      }
+      return next;
+    });
+    setNote(
+      `${label} ${ok.length}개를 점검${on ? "에 넣었습니다" : "에서 뺐습니다"}${skip ? ` · ${skip}개는 고를 수 없는 경로라 건너뜀` : ""}`,
+    );
+  };
+  const press = (e: WorkflowEndpoint, shift: boolean, order: readonly string[]) => {
+    if (!multi) {
+      showDetail(e);
+      return;
+    }
+    const from = anchor ? order.indexOf(anchor) : -1;
+    const to = order.indexOf(e.id);
+    setPicked((old) => {
+      const next = new Set(old);
+      // Shift: 같은 묶음 안에서 앞서 누른 알약부터 이 알약까지 고른다
+      if (shift && from >= 0 && to >= 0)
+        for (const id of order.slice(Math.min(from, to), Math.max(from, to) + 1)) next.add(id);
+      else if (next.has(e.id)) next.delete(e.id);
+      else next.add(e.id);
+      return next;
+    });
+    setAnchor(e.id);
+  };
+  const pick: ScopePick = {
+    isOn,
+    eligible,
+    locked,
+    multi,
+    picked,
+    current: current?.id ?? null,
+    press,
+    setGroup: (name, rows, on) => setMany(rows, on, `${name} 묶음`),
+  };
+  const pickedList = flow.endpoints.filter((e) => picked.has(e.id));
+  const applyPicked = (on: boolean) => {
+    setMany(pickedList, on, "고른 경로");
+    unpick();
+  };
   /** 경로 딱지 (시안 scopeTag): 빠진 경로는 제외, 넣은 경로는 자동 포함 · 포함 · 보낼 때 승인. */
   const tag = (e: WorkflowEndpoint) => {
     if (!eligible(e) || !isOn(e)) return <span className={cx(s.tag, s.ex)}>제외</span>;
@@ -1232,183 +1310,115 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
   return (
     <>
       {head(<ScopeStart flow={flow} ids={[...selected]} id="sStart" />)}
-      <div className={s.vb}>
+      <div className={cx(s.vb, fold && s["vb-fold"])}>
         <div className={s.vm}>
           <UrlNotices />
           <WorkflowNotice />
-          <div className={s.scount} id="sCount">
-            <span>
-              엔드포인트<b>{flow.endpoints.length}</b>
-            </span>
-            <span>
-              포함<b>{inCount}</b>
-            </span>
-            <span>
-              제외<b>{flow.endpoints.length - inCount}</b>
-            </span>
-            <span className={s.ap}>
-              승인 필요<b>{apCount}</b>
-            </span>
-            <span title="서버가 경로의 로그인 필요 여부를 주지 않습니다">
-              로그인 필요<b>{NONE}</b>
-            </span>
-          </div>
-          {/* biome-ignore lint/a11y/useSemanticElements: 시안 마크업 그대로 */}
-          <div className={s.pre} role="group" aria-label="시작 전 점검">
-            <span className={s.k}>시작 전 점검</span>
-            {PRECHECKS.map((k) => (
-              <span key={k}>{`${k} ${NONE}`}</span>
-            ))}
-            <Soon why="서버가 시작 전 연결 확인 결과를 주지 않습니다" />
-          </div>
-          <div className={s.filters}>
-            {/* biome-ignore lint/a11y/useSemanticElements: 시안 마크업 그대로 */}
-            <div className={s.filters} role="group" aria-label="보기 필터" id="sFilters">
-              {FILTERS.map(([id, label, f]) => (
-                <Fragment key={id}>
-                  {/* 시안의 '로그인 필요' 거르기 (제외됨 앞): 누를 수 있지만 서버가 경로의 로그인 필요 여부를 아직 주지 않는다(연결 전) */}
-                  {id === "off" ? (
+          <FoundPaths
+            endpoints={flow.endpoints}
+            crawling={flow.stage === "crawling"}
+            filter={treeFilter}
+            onFilter={(id) => {
+              // 거르기로 안 보이게 된 알약이 고른 채 남지 않게 고르기를 비운다
+              setTreeFilter(id);
+              unpick();
+            }}
+            pick={pick}
+            tools={
+              <button
+                className={cx(s.btn, s.sm)}
+                type="button"
+                aria-pressed={multi}
+                disabled={locked}
+                onClick={() => {
+                  setMulti((m) => !m);
+                  unpick();
+                  setNote("");
+                }}
+              >
+                선택
+              </button>
+            }
+            bar={
+              <>
+                {multi ? (
+                  <fieldset className={s.pickbar}>
+                    <legend>
+                      <b>{picked.size}</b>개 고름
+                    </legend>
                     <button
-                      className={s.fchip}
+                      className={cx(s.btn, s.sm, s.pri)}
                       type="button"
-                      aria-pressed={filter === "auth"}
-                      title="서버가 경로의 로그인 필요 여부를 아직 주지 않습니다"
-                      onClick={() => {
-                        setFilter("auth");
-                        setOpen({});
-                      }}
+                      disabled={locked || !picked.size}
+                      onClick={() => applyPicked(true)}
                     >
-                      로그인 필요<span className={s.c}>{NONE}</span>
+                      점검에 넣기
                     </button>
-                  ) : null}
-                  <button
-                    className={s.fchip}
-                    type="button"
-                    aria-pressed={filter === id}
-                    onClick={() => {
-                      setFilter(id);
-                      setOpen({});
-                    }}
-                  >
-                    {label}
-                    <span className={s.c}>{flow.endpoints.filter(f).length}</span>
-                  </button>
-                </Fragment>
-              ))}
-            </div>
-            <input
-              className={cx(s.inp, s.search)}
-              id="sQ"
-              type="search"
-              value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
-                setOpen({});
-              }}
-              placeholder="경로 검색"
-              aria-label="경로 검색"
-            />
-            <button
-              className={s.sall}
-              type="button"
-              id="sAll"
-              aria-controls="sTable"
-              hidden={!groups.length}
-              onClick={() => setOpen(Object.fromEntries(groups.map((g) => [g, !allOpen])))}
-            >
-              {allOpen ? "모두 접기" : "모두 펼치기"}
-            </button>
-          </div>
-          <div className={s.stbl} id="sTable">
-            {groups.length ? (
-              groups.map((name, gi) => {
-                const rows = shown.filter((e) => group(e) === name);
-                const expanded = isOpen(name);
-                const gid = `sg-${gi}`;
-                const on = rows.filter(isOn);
-                const ap = on.filter((e) => e.change === "possible").length;
-                return (
-                  <Fragment key={name}>
                     <button
+                      className={cx(s.btn, s.sm)}
                       type="button"
-                      className={s.sgh}
-                      aria-expanded={expanded}
-                      aria-controls={gid}
-                      onClick={() => setOpen((v) => ({ ...v, [name]: !expanded }))}
+                      disabled={locked || !picked.size}
+                      onClick={() => applyPicked(false)}
                     >
-                      <Icon name="chev" />
-                      {name}
-                      <span className={s.c}>{rows.length}</span>
-                      <span className={s.sum}>{`포함 ${on.length}${ap ? ` · 승인 필요 ${ap}` : ""}`}</span>
-                      <span className={s.ai}>경로 규칙 묶음</span>
+                      점검에서 빼기
                     </button>
-                    <div className={s.sgrp} id={gid} hidden={!expanded}>
-                      {rows.map((e) => (
-                        <div className={cx(s.srow, !isOn(e) && s.out, current?.id === e.id && s.sel)} key={e.id}>
-                          <span className={s.ck}>
-                            <input
-                              type="checkbox"
-                              aria-label={`${e.method} ${e.path} 점검에 포함`}
-                              checked={isOn(e)}
-                              disabled={locked || !eligible(e)}
-                              onChange={() => {
-                                toggle(e.id);
-                                setDetail(e.id);
-                              }}
-                            />
-                          </span>
-                          <button
-                            className={s.sb}
-                            type="button"
-                            aria-current={current?.id === e.id ? "true" : undefined}
-                            onClick={() => {
-                              setDetail(e.id);
-                              openInsp();
-                            }}
-                          >
-                            <span className={cx(s.m, s[e.method])}>{e.method}</span>
-                            <span className={s.p}>
-                              <Pth p={e.path} />
-                            </span>
-                            <span className={s.d}>{e.visited ? (e.status ?? "응답") : "미방문"}</span>
-                            {tag(e)}
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  </Fragment>
-                );
-              })
-            ) : (
-              <p className={s.empty} style={{ padding: 14 }}>
-                {filter === "auth"
-                  ? "연결 전 · 서버가 경로별 로그인 필요 여부를 아직 주지 않습니다."
-                  : "조건에 맞는 경로가 없습니다."}
-              </p>
-            )}
-          </div>
-          {/* 점검 중 새로 찾은 경로 처리 규칙: 시안의 규칙표다. 서버가 점검 중 새 경로를 이 규칙대로 다룬다는 계약이
-              아직 없어 '연결 전'으로 둔다 */}
-          <details className={s.rulebox}>
-            <summary>
-              <Icon name="chev" />
-              점검 중 새로 찾은 경로 처리 규칙<span className={s.c}>{NEW_PATH_RULES.length}</span>
-              <Soon why="서버가 점검 중 새 경로를 이 규칙대로 다룬다는 계약이 아직 없습니다" />
-            </summary>
-            <ul className={s.rules}>
-              {NEW_PATH_RULES.map(([r, label, tone]) => (
-                <li key={r}>
-                  <span>{r}</span>
-                  <span className={cx(s.tag, s[tone])}>{label}</span>
-                </li>
-              ))}
-            </ul>
-          </details>
+                    <button className={cx(s.btn, s.sm)} type="button" disabled={!picked.size} onClick={unpick}>
+                      고르기 해제
+                    </button>
+                    <span className={s.help}>Shift 를 누른 채 누르면 같은 묶음 안의 범위를 고릅니다</span>
+                  </fieldset>
+                ) : null}
+                {note ? (
+                  <p className={s.help} role="status">
+                    {note}
+                  </p>
+                ) : null}
+              </>
+            }
+          />
         </div>
-        <aside className={s.vi} id="sInsp" aria-label="선택한 경로 상세">
-          <EndpointDetail endpoint={current} chip={current ? tag(current) : undefined} />
+        <aside className={s.vi} id="sInsp" aria-label="경로 상세">
+          {current ? (
+            <EndpointDetail
+              endpoint={current}
+              chip={tag(current)}
+              extra={
+                <label className={s.ckline}>
+                  <input
+                    type="checkbox"
+                    aria-label={`${current.method} ${current.path} 점검에 포함`}
+                    checked={isOn(current)}
+                    disabled={locked || !eligible(current)}
+                    onChange={() => toggle(current.id)}
+                  />
+                  <span>점검에 포함</span>
+                </label>
+              }
+            />
+          ) : (
+            <>
+              <div className={s["vi-head"]}>
+                <div>
+                  <h2>경로를 고르세요</h2>
+                </div>
+                <CloseInspButton label="경로 상세" />
+              </div>
+              <p className={s.empty}>
+                가운데 찾은 경로에서 알약을 누르면 그 경로 상세가 나오고, 점검에 넣을지 고를 수 있습니다.
+              </p>
+            </>
+          )}
         </aside>
-        <PaneToggle />
+        {fold ? (
+          <UnfoldPane
+            onOpen={() => {
+              setPeek(true);
+              openInsp();
+            }}
+          />
+        ) : (
+          <PaneToggle />
+        )}
       </div>
     </>
   );
