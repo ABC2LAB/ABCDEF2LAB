@@ -12,11 +12,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/e2runner"
 )
 
@@ -51,6 +53,51 @@ func TestE2HTTPRuntimeBindsWorkersWithoutExternalInput(t *testing.T) {
 	if err != nil || strings.Contains(string(raw), "99") {
 		t.Fatal("Worker 설정이 외부 요청 칸으로 노출됨")
 	}
+}
+
+func TestE2HTTPBashWorkersFollowServerAdmissionOwnedPostgres(t *testing.T) {
+	manager, task, _ := firstDiagnosisActualTask(t)
+	before := manager.Workers()
+	defer manager.SetWorkers(before)
+	defer restoreConcurrencySetting(t, manager)()
+	if manager.SetWorkers(3) != nil || manager.SetConcurrency(true, 1) != nil {
+		t.Fatal("실제 admission 설정 실패")
+	}
+	runtime, _ := e2HTTPRuntimeFixture(t, nil)
+	s := newAdmissionTestServer(manager, func(*Task) bool { return false })
+	s.ctx = t.Context()
+	s.engine.e2HTTP = runtime
+	defer s.engine.StopTask(task.ID)
+	if queued, err := s.admitTask(task, "resume"); err != nil || !queued {
+		t.Fatal("실제 서버 admission 경로 미도달", err)
+	}
+	if runtime.task == nil || runtime.task.workerCount != 3 {
+		t.Fatal("서버 admission이 실제 Manager Worker 수를 결속하지 않음")
+	}
+}
+
+func TestE2HTTPBashWorkersFollowProductConstructorOwnedPostgres(t *testing.T) {
+	f := newControlledLocalDatabaseFixture(t)
+	manager, err := NewFirstDiagnosisManager(f.Context, t.TempDir(), f.Runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	installer := &db.DB{DB: f.Installer}
+	before := manager.Workers()
+	defer installer.SetSetting("workers", fmt.Sprint(before))
+	if installer.SetSetting("workers", "3") != nil || manager.Workers() != 3 {
+		t.Fatal("실제 제품 Worker 설정 실패")
+	}
+	task, err := manager.CreateTask("Owned three-worker admission", "Bind the actual product Manager worker count", nil, 60, 60)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstDiagnosisSupervisorConstructorClose(t, manager, installer, task, func(runtime *FirstDiagnosisHTTPRuntime) {
+		if runtime.host.runtime.task == nil || runtime.host.runtime.task.workerCount != 3 {
+			t.Fatal("제품 조기 admission이 Manager Worker 수를 결속하지 않음")
+		}
+	})
 }
 
 // 설치 정책을 적재하는 실제 factory부터 helper·대상 수신·감사 마감까지 지난다.
@@ -111,13 +158,26 @@ func TestE2HTTPFactoryDerivesBashSlotsFromWorkersAndPolicy(t *testing.T) {
 				t.Fatal("Bash 슬롯이 HTTP 상한을 변경함")
 			}
 			actual := lease.Runner.(localE2HTTPRun).runner
+			limits := actual.ProcessLimits()
+			wantTasks := min(uint64(128), uint64(192/tc.want))
+			if limits.BashSlots != tc.want || limits.CallTasks != wantTasks || limits.EngineReserveTasks != 64 || limits.ContainerTasks != 256 {
+				t.Fatal("회차 task 배분이 계산된 슬롯에 결속되지 않음")
+			}
+			conditions, err := os.ReadFile(filepath.Join(policy.StateDir, "runtime-conditions.json"))
+			var recorded struct {
+				ProcessLimits e2runner.ProcessLimits `json:"process_limits"`
+				Queue         bool                   `json:"queue_consumes_command_timeout"`
+			}
+			if err != nil || json.Unmarshal(conditions, &recorded) != nil || recorded.ProcessLimits != limits || !recorded.Queue {
+				t.Fatal("실제 회차 조건 기록 누락")
+			}
 			finished := make(chan e2runner.Result, tc.want)
 			for i := range tc.want {
 				if i > 0 && lease.Execution.RegisterIntent(t.Context(), int64(i+1)) != nil {
 					t.Fatal("intent 등록 실패")
 				}
 				go func(id int64) {
-					out, _ := lease.Runner.RunForIntent(t.Context(), id, "curl -fsS --max-time 7 '"+target.URL+"/'")
+					out, _ := lease.Runner.RunForIntent(t.Context(), id, "printf 'tasks=%s/%s;' \"$(ulimit -Su)\" \"$(ulimit -Hu)\"; curl -fsS --max-time 7 '"+target.URL+"/'")
 					finished <- out
 				}(int64(i + 1))
 			}
@@ -141,6 +201,9 @@ func TestE2HTTPFactoryDerivesBashSlotsFromWorkersAndPolicy(t *testing.T) {
 			for range tc.want {
 				select {
 				case out := <-finished:
+					if out.Trusted.ProcessLimits != limits || out.ToolOutput != fmt.Sprintf("tasks=%d/%d;owned", wantTasks, wantTasks) {
+						t.Fatal("호출별 soft/hard RLIMIT_NPROC 또는 신뢰 조건이 실제 helper와 불일치", out.ToolOutput)
+					}
 					if !out.Trusted.Final || !out.Trusted.Call.AuditComplete || out.Trusted.Call.Counts.Responses != 1 {
 						t.Fatal("실제 송신·감사 마감 실패")
 					}

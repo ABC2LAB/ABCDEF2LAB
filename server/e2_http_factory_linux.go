@@ -42,3 +42,33 @@ func e2HTTPCreatePrivateDirectory(path string) error {
 	}
 	return nil
 }
+
+// Record run conditions before the first Bash call. O_EXCL refuses replacement
+// or reuse, and the file and directory must both reach durable storage.
+func e2HTTPRecordRuntimeConditions(dir string, data []byte) error {
+	if privateinput.CheckDirectory(dir, true) != nil {
+		return ErrE2HTTPHost
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return ErrE2HTTPHost
+	}
+	defer root.Close()
+	f, err := root.OpenFile("runtime-conditions.json", os.O_CREATE|os.O_EXCL|os.O_WRONLY|unix.O_NOFOLLOW, 0600)
+	if err != nil {
+		return ErrE2HTTPHost
+	}
+	n, writeErr := f.Write(data)
+	syncErr := f.Sync()
+	closeErr := f.Close()
+	d, err := root.Open(".")
+	if err != nil {
+		return ErrE2HTTPHost
+	}
+	dirSyncErr := d.Sync()
+	dirCloseErr := d.Close()
+	if n != len(data) || writeErr != nil || syncErr != nil || closeErr != nil || dirSyncErr != nil || dirCloseErr != nil || privateinput.CheckDirectory(dir, true) != nil {
+		return ErrE2HTTPHost
+	}
+	return nil
+}

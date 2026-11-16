@@ -39,6 +39,7 @@ type Runner struct{ *runnerState }
 
 type runnerState struct {
 	cfg            Config
+	processLimits  ProcessLimits
 	caCertificate  []byte
 	mu             sync.Mutex
 	stopped        bool
@@ -99,6 +100,10 @@ func New(cfg Config) (*Runner, error) {
 	if cfg.Execution == nil || cfg.BashSlots < 1 || cfg.BashSlots > cfg.Execution.MaxConcurrent() {
 		return nil, ErrConfig
 	}
+	limits, err := processLimits(cfg.BashSlots)
+	if err != nil {
+		return nil, err
+	}
 
 	if cfg.CommandTimeout <= 0 || cfg.CommandTimeout > maxRunnerCommandTimeout ||
 		cfg.DrainTimeout <= 0 || cfg.DrainTimeout > maxRunnerDrainTimeout || cfg.OutputLimit <= 0 || cfg.OutputLimit > maxOutputBytes ||
@@ -129,7 +134,14 @@ func New(cfg Config) (*Runner, error) {
 	if ValidateRootDirLayout(cfg.RootDir) != nil {
 		return nil, ErrConfig
 	}
-	return &Runner{runnerState: &runnerState{cfg: cfg, caCertificate: pem.EncodeToMemory(block), active: make(map[string]*runningCall), callGate: make(chan struct{}, cfg.BashSlots), stop: make(chan struct{}), drainGate: make(chan struct{}, 1), intentDrains: make(map[int64]*intentDrainState), workspaceBusy: make(map[int64]int), intentGates: make(map[int64]chan struct{}), admissionEpoch: make(chan struct{})}}, nil
+	return &Runner{runnerState: &runnerState{cfg: cfg, processLimits: limits, caCertificate: pem.EncodeToMemory(block), active: make(map[string]*runningCall), callGate: make(chan struct{}, cfg.BashSlots), stop: make(chan struct{}), drainGate: make(chan struct{}, 1), intentDrains: make(map[int64]*intentDrainState), workspaceBusy: make(map[int64]int), intentGates: make(map[int64]chan struct{}), admissionEpoch: make(chan struct{})}}, nil
+}
+
+func (r *Runner) ProcessLimits() ProcessLimits {
+	if r == nil || r.runnerState == nil {
+		return ProcessLimits{}
+	}
+	return r.processLimits
 }
 
 func trustedPath(path string, directory bool) bool {
@@ -191,7 +203,7 @@ func (r *Runner) RunForIntent(ctx context.Context, intentID int64, command strin
 	temporarilyBlocked := r.stopped || r.draining || r.intentFencedLocked(intentID)
 	r.mu.Unlock()
 	if temporarilyBlocked {
-		return Result{}, ErrUnavailable
+		return r.admissionNotSent(ctx, intentID)
 	}
 	// intent → 전체 슬롯 순서다. 같은 intent 대기는 다른 intent의 슬롯을 점유하지 않는다.
 	r.mu.Lock()
@@ -201,6 +213,8 @@ func (r *Runner) RunForIntent(ctx context.Context, intentID int64, command strin
 		r.intentGates[intentID] = intentGate
 	}
 	r.mu.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, r.cfg.CommandTimeout)
+	defer cancel()
 	expiry := time.NewTimer(time.Until(r.cfg.Execution.Snapshot().ExpiresAt))
 	defer expiry.Stop()
 	acquire := func(gate chan struct{}) bool {
@@ -217,11 +231,11 @@ func (r *Runner) RunForIntent(ctx context.Context, intentID int64, command strin
 		return false
 	}
 	if !acquire(intentGate) {
-		return Result{}, ErrUnavailable
+		return r.admissionNotSent(ctx, intentID)
 	}
 	if !acquire(r.callGate) {
 		<-intentGate
-		return Result{}, ErrUnavailable
+		return r.admissionNotSent(ctx, intentID)
 	}
 	var releaseOnce sync.Once
 	releaseSlot := func() {
@@ -240,20 +254,19 @@ func (r *Runner) RunForIntent(ctx context.Context, intentID int64, command strin
 	stopped := r.stopped || r.draining || r.admissionEpoch != admissionEpoch || r.intentFencedLocked(intentID) || r.intentGenerationLocked(intentID) != admissionGeneration
 	r.mu.Unlock()
 	if stopped || ctx.Err() != nil {
-		return Result{}, ErrUnavailable
+		return r.admissionNotSent(ctx, intentID)
 	}
 	ref, err := commandRef()
 	if err != nil {
 		return Result{}, err
 	}
-	runCtx, cancel := context.WithTimeout(ctx, r.cfg.CommandTimeout)
-	defer cancel()
+	runCtx := ctx
 	// Publish admission atomically with Close's snapshot, so Close cannot
 	// release execution resources while an unregistered call is being created.
 	r.mu.Lock()
 	if r.stopped || r.draining || r.admissionEpoch != admissionEpoch || r.intentFencedLocked(intentID) || r.intentGenerationLocked(intentID) != admissionGeneration {
 		r.mu.Unlock()
-		return Result{}, ErrUnavailable
+		return r.admissionNotSent(ctx, intentID)
 	}
 	call, err := r.cfg.Execution.BeginCallForIntent(runCtx, intentID, ref)
 	if err != nil {
@@ -312,6 +325,18 @@ func (r *Runner) RunForIntent(ctx context.Context, intentID int64, command strin
 	return result, nil
 }
 
+func (r *Runner) admissionNotSent(ctx context.Context, intentID int64) (Result, error) {
+	ref, err := commandRef()
+	if err != nil {
+		return Result{}, err
+	}
+	receipt, err := r.cfg.Execution.RecordAdmissionNotSent(ctx, intentID, ref)
+	if err != nil {
+		return Result{}, errors.Join(ErrUnavailable, ErrIncomplete)
+	}
+	return Result{Trusted: TrustedResult{Version: e2proxy.Version, ProcessLimits: r.processLimits, Execution: r.cfg.Execution.SnapshotForIntent(intentID), AdmissionNotSent: &receipt, Final: true, ProcessDrained: true, ProxyDrained: true, Classification: "not_sent"}}, ErrUnavailable
+}
+
 func (s *runningCall) initialize(ctx context.Context, command string) error {
 	dir, err := os.MkdirTemp(s.owner.cfg.RootDir, "call-")
 	if err != nil {
@@ -348,7 +373,7 @@ func (s *runningCall) initialize(ctx context.Context, command string) error {
 	sandboxConfig := e2sandbox.Config{
 		Helper: s.owner.cfg.Helper, Workspace: workspace, ProxySocket: socket, CACert: caPath,
 		Command: command, Timeout: s.owner.cfg.CommandTimeout, DrainTimeout: s.owner.cfg.DrainTimeout,
-		OutputLimit: s.owner.cfg.OutputLimit,
+		OutputLimit: s.owner.cfg.OutputLimit, MaxProcesses: s.owner.processLimits.CallTasks,
 	}
 	if s.owner.cfg.PersistWorkspace {
 		saved, err := s.owner.loadWorkspace(s.intentID, e2sandbox.WorkspaceLimit(sandboxConfig))
@@ -397,7 +422,7 @@ func (s *runningCall) cleanup(ctx context.Context) (Result, error) {
 		return s.result, nil
 	}
 	s.call.Block()
-	trusted := TrustedResult{Version: e2proxy.Version, Call: s.call.Result(), ExitCode: -1}
+	trusted := TrustedResult{Version: e2proxy.Version, ProcessLimits: s.owner.processLimits, Call: s.call.Result(), ExitCode: -1}
 	var pendingWorkspace *e2sandbox.Result
 	var output []byte
 	// captureTruncated는 샌드박스가 캡처 상한에서 출력을 잘랐다는 뜻이다(인라인 출력만 잘린 것과 다르다).

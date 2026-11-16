@@ -29,6 +29,7 @@ func main() {
 	mode := flag.String("mode", "model", "acceptance role")
 	target := flag.String("target", "https://juice.test:9443", "owned target")
 	upstream := flag.String("upstream", "http://juice-shop:3000", "owned Juice Shop")
+	pidsForks := flag.Int("pids-forks", -1, "owned PID fixture children; -1 fills the namespace limit")
 	flag.Parse()
 	if *mode == "init" {
 		must(fixtureInit())
@@ -36,6 +37,14 @@ func main() {
 	}
 	if *mode == "dns" {
 		must(fixtureDNS())
+		return
+	}
+	if *mode == "pids-model" {
+		must(pidsModelHandler(*target, *pidsForks))
+		return
+	}
+	if *mode == "pids-target" {
+		must(servePidsTarget())
 		return
 	}
 	stats := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

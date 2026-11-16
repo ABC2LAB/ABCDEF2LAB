@@ -1,0 +1,30 @@
+# Compose with compose.yaml and compose.acceptance.yaml, using a fresh owned
+# local-only install. Product preparation and its pids_limit: 256 stay unchanged.
+services:
+  target-front:
+    command: [-mode, pids-target]
+    depends_on: !override
+      fixture-init: {condition: service_completed_successfully}
+  synthetic-model:
+    command: [-mode, pids-model]
+  pids-controller:
+    image: abc2lab-product:${PRODUCT_TAG:-local}
+    user: '1000:1000'
+    entrypoint: [python3, /fixture/product-pids-acceptance.py]
+    command: [/fixture/install.json, /target-tls/control-token]
+    depends_on:
+      workbench: {condition: service_healthy}
+      fixture-dns: {condition: service_started}
+      synthetic-model: {condition: service_started}
+      target-front: {condition: service_started}
+    volumes:
+      - ../../scripts/product-pids-acceptance.py:/fixture/product-pids-acceptance.py:ro
+      - ${PRODUCT_INSTALL_FILE:?}:/fixture/install.json:ro
+      - target-tls:/target-tls:ro
+    networks: [frontend, fixture-control]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 32
+    mem_limit: 128m
+    restart: 'no'

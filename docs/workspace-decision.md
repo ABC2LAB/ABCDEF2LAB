@@ -79,6 +79,7 @@
 - 서로 다른 intent는 슬롯 수 안에서 별도 call_ref·namespace·프록시·결과·감사를 가진다. 예산은 회차의 기존 누적 예산을 함께 사용한다.
 - 같은 intent는 **intent 잠금 → 회차 슬롯** 순서로 확보한다. 같은 intent의 대기자가 다른 Worker의 슬롯을 차지하지 않으며, 앞 호출의 최종 cleanup·보관소 저장이 끝난 뒤에만 다음 호출이 `/work`를 읽는다. 파일 도구는 마지막 저장까지 `workspaceBusy`에 의해 쓰기·수정을 거부한다.
 - 호출은 프로세스·분리 자식·프록시·감사 마감과 보관소 저장 처리가 끝난 뒤 active 목록과 슬롯에서 빠진다. 마감이 불명하면 슬롯과 intent 소유권을 보유한다. 보관소 저장 실패는 기존 계약대로 `not_saved`로 표시하고 검증된 이전 보관본을 유지하며, 실행 마감 성공으로 파일 저장 성공을 추정하지 않는다.
+- intent 잠금·전체 Bash 슬롯 대기는 명령 시간 상한에 포함한다. 대기 뒤 새 시간 상한을 주지 않는다. 프로세스·Call을 만들기 전에 만료·취소·Drain으로 빠진 명령은 기존 `not_sent` 영수증의 제어 이벤트로 ACK를 남기고, `admission_not_sent` 신뢰 필드로 돌려준다. call_ref·attempt_id·송신 예약·전송/결과 불명 계수는 만들지 않는다. 감사 ACK를 못 받으면 미전송 확정으로 취급하지 않고 기존 감사 실패로 닫는다. Worker는 이를 집행 장애/결과 불명으로 멈추지 않으며 같은 명령을 남은 도구 호출 예산 안에서 재시도할 수 있다. 재시도 없이 끝나면 그 intent는 완료되지 않은 것으로 남는다.
 - 대기 중 취소·실행 철회·만료·Close를 확인한다. 전체 Drain과 DrainIntent는 기존 대기 세대를 무효화한다. 마감 후 다시 열린 슬롯으로 옛 대기 호출이 시작되지 않는다. 불완전 drain은 barrier를 유지하며, 이후 마감 재시도로 확인된 경우에만 새 세대를 받는다.
 - intent 보관 파일은 회차의 보호 디렉터리 아래 intent ID마다 분리한다. intent 마감 뒤 해당 보관본을 지우며 다른 intent의 실행·보관본은 유지한다. 전체 Close는 모든 호출의 마감 뒤 남은 보관본을 지운다.
 
@@ -94,7 +95,28 @@
 
 설치가 다른 자원 프로필을 지원하면 합산식은 각각 `BashSlots × ScratchBytes`, `BashSlots × TempBytes`다. **현재 제품 설치 입력·정책에는 ScratchBytes/TempBytes 선택 칸이 없으므로 이 경로는 기존 기본값을 사용한다.** §2-6의 크기 설정화는 별도 미완료 항목이며, 새 설정 칸을 임의로 허용하거나 입력을 조용히 무시하지 않는다. `OutputLimit` 등 이미 지원하는 보호 정책 값은 그대로 전달된다.
 
-동시에 호출별 프록시/TLS 버퍼, 가린 출력(보존 시 캡처 상한 4MiB), workspace tar 복사본, helper·도구·자식 프로세스 메모리가 더 생긴다. namespace당 기본 task 상한 128도 호출마다 적용되므로 전체 RSS·프로세스 수의 회차 상한으로 해석하지 않는다. 보관소 교체는 기존 mutex로 보호하며 짧은 저장 구간은 차례로 처리한다. 처리량·최고 RSS·장시간 부하는 측정하지 않았다.
+동시에 호출별 프록시/TLS 버퍼, 가린 출력(보존 시 캡처 상한 4MiB), workspace tar 복사본, helper·도구·자식 프로세스 메모리가 더 생긴다. 제품 preparation의 `pids_limit: 256`은 엔진과 모든 호출이 함께 쓴다. 호출별 task 상한은 아래 식으로 나눠 다른 호출이 엔진 몫까지 쓰지 못하게 한다. 보관소 교체는 기존 mutex로 보호하며 짧은 저장 구간은 차례로 처리한다. 처리량·최고 RSS·장시간 부하는 측정하지 않았다.
+
+### 호출별 PID 예산 (#598 P1 수정)
+
+`CallTasks = min(128, floor((256 − 64) / BashSlots))`를 신뢰 호스트가 계산해 helper의 `RLIMIT_NPROC` soft/hard 양쪽에 넘긴다. 이 수는 helper·Bash·자식의 **스레드까지 포함한 task** 상한이다. 슬롯 1/2/3이면 호출별 128/96/64다. helper가 지원하는 최소 8 task도 배정할 수 없는 슬롯 수는 시작 전에 거부한다. 같은 intent 직렬화와 마감 불명 슬롯 보유는 그대로다.
+
+엔진 몫 64는 실제 제품 Compose 이미지 `ab50cb1f`의 preparation에서 Worker3+Planner, 3개 호출의 준비·TLS 송신·마감 중 PID 1의 `/proc/1/status`를 20ms 간격으로 읽어 측정한 최고 **18개 스레드**에 근거한다. 실측의 2배(36)를 다음 2의 거듭제곱(64)으로 올려 여유를 둔다. 관찰용 Python은 별도 1 task이며 엔진 스레드에는 포함하지 않았다. 제한 없는 전체 부하에 대한 최대 엔진 task 수를 증명한 값은 아니다. 다른 배치의 PID 한도가 256보다 작으면 이 조건을 그대로 적용할 수 없다.
+
+새 권한·cgroup 쓰기 마운트 없이 기존 user namespace별 `RLIMIT_NPROC`를 사용한다. 제품 cgroup은 읽기 전용으로, 호출별 자식 cgroup 위임을 이 변경에서 추가하지 않는다. `pids_limit: 256`·슬롯3·cap_drop ALL·no-new-privileges·seccomp는 유지한다.
+
+factory는 첫 Bash 실행 전 보호 상태 디렉터리에 `runtime-conditions.json`을 배타 생성·fsync한다. 실행 scope·정책 판·결속 Worker 수·Bash 슬롯·컨테이너 task256·엔진 예비64·호출별 상한·대기의 명령 시간 포함 여부를 남긴다. 기록 실패·기존 파일 재사용은 시작 실패다. 각 Runner 신뢰 결과에도 `process_limits`를 남긴다. 승인 정책 바이트와 기존 평가 manifest 형식은 바꾸지 않는다.
+
+실제 제품 수용은 [PID 전용 Compose 오버레이](../deploy/product/compose.pids-acceptance.yaml), [제어 클라이언트](../scripts/product-pids-acceptance.py), [읽기 전용 관찰기](../scripts/product-pids-observe.py)를 쓴다. 새 1회용 local-only 설치에 소유 fixture DNS/TLS CA를 공급하고 기본 제품 Compose와 기존 acceptance 오버레이 뒤에 PID 오버레이를 붙인다. `pids-model`은 유료/외부 모델 대신 세 intent에 고정 Python fork 명령을 돌려주는 로컬 합성 모델이다. `pids-target`은 두 무거운 호출이 도착한 뒤 세 번째의 가벼운 요청을 돌려주며, 이어 세 호출 모두 자기 상한에서 `fork`의 EAGAIN을 확인한 채 GET 응답을 보류한다. 제어기는 그동안 실제 제품 health를 읽고 두 단계를 해제한 뒤 6개 호출·응답·감사·drain을 대조한다.
+
+```bash
+# 별도 터미널에서 먼저 시작(외부 파일에 저장, preparation에는 파일을 쓰지 않음)
+docker compose -f deploy/product/compose.yaml -f deploy/product/compose.acceptance.yaml -f deploy/product/compose.pids-acceptance.yaml exec -T preparation python3 - < scripts/product-pids-observe.py > pids-observed.jsonl
+# 위와 같은 새 프로젝트/설치와 fixture 이미지로 1회만 실행
+docker compose -f deploy/product/compose.yaml -f deploy/product/compose.acceptance.yaml -f deploy/product/compose.pids-acceptance.yaml run --rm --no-deps pids-controller
+```
+
+컨테이너 `pids.current`/`pids.peak`와 `pids.events:max`를 읽으며 관찰기 1 task를 명시한다. 커널 계수 의미는 [Linux cgroup v2 PID 문서](https://docs.kernel.org/admin-guide/cgroup-v2.html#pid)에 따른다. 빈 프로젝트·새 fixture 상태에서만 수용 수치를 남기고, 기존 보호 저널을 지워 재시도하지 않는다.
 
 `noexec`, namespace·seccomp·capability 제한, helper FD/호스트 쓰기 경로 보호는 유지한다. 임의 모델 슬롯 설정, 같은 intent의 병렬 Bash, 임의 호스트 파일 접근과 비지원 송신 경로는 지원하지 않는다.
 

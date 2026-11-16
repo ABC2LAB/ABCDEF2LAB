@@ -144,7 +144,7 @@ func diagnosticWorkerReason(err error) string {
 
 func diagnosticToolClassification(class string) string {
 	switch class {
-	case "completed", "tool_failure", "policy_not_executed", "partial_policy_denial", "unsupported", "partial_unsupported", "result_unknown", "transient_failure", "forward_not_attempted", "isolation_unavailable", "terminated":
+	case "completed", "tool_failure", "policy_not_executed", "partial_policy_denial", "unsupported", "partial_unsupported", "result_unknown", "transient_failure", "forward_not_attempted", "not_sent", "isolation_unavailable", "terminated":
 		return class
 	}
 	return "invalid"

@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"net/http"
 	"net/netip"
@@ -507,6 +508,17 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 			// 같은 intent의 Bash 호출 사이에 /work를 잇는다(C29, docs/workspace-decision.md).
 			PersistWorkspace: true})
 		if createErr != nil || current(taskctx) != nil {
+			return failed(execution, runner)
+		}
+		conditions, createErr := json.Marshal(struct {
+			Version                     string                 `json:"version"`
+			Scope                       transmit.Scope         `json:"scope"`
+			PolicyRevision              string                 `json:"policy_revision"`
+			WorkerCount                 int                    `json:"worker_count"`
+			ProcessLimits               e2runner.ProcessLimits `json:"process_limits"`
+			QueueConsumesCommandTimeout bool                   `json:"queue_consumes_command_timeout"`
+		}{"e2-runtime-conditions/v1", execution.Snapshot().Scope, policy.PolicyRevision, request.WorkerCount, runner.ProcessLimits(), true})
+		if createErr != nil || e2HTTPRecordRuntimeConditions(policy.StateDir, append(conditions, '\n')) != nil {
 			return failed(execution, runner)
 		}
 		// 인증 준비(C14): 계정마다 로그인 요청을 E② 인증 준비 규칙으로 한 번 보낸다. 세션 값은 출력 가림 전용 값으로 등록되고

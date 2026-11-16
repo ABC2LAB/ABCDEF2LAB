@@ -9,6 +9,8 @@ import (
 
 type Runner struct{}
 
+func (*Runner) ProcessLimits() ProcessLimits { return ProcessLimits{} }
+
 func New(Config) (*Runner, error)                           { return nil, ErrUnavailable }
 func (*Runner) Run(context.Context, string) (Result, error) { return Result{}, ErrUnavailable }
 func (*Runner) Close(context.Context) error                 { return ErrUnavailable }

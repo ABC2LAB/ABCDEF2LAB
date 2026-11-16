@@ -57,6 +57,10 @@ type Config struct {
 // TrustedResult is built by the host, separately from the tool's stdout. Final
 // means process, proxy and audit closure have all been observed for this call.
 type TrustedResult struct {
+	// AdmissionNotSent is the acknowledged control receipt for a command that
+	// never acquired a Bash slot or started a Call/process/proxy.
+	AdmissionNotSent  *e2proxy.Receipt      `json:"admission_not_sent,omitempty"`
+	ProcessLimits     ProcessLimits         `json:"process_limits"`
 	Version           string                `json:"version"`
 	Execution         e2proxy.ExecutionView `json:"execution"`
 	Call              e2proxy.CallResult    `json:"call"`
@@ -73,6 +77,25 @@ type TrustedResult struct {
 	Termination string `json:"termination,omitempty"`
 }
 
+// ProcessLimits are host-selected run conditions, never model input. The
+// product preparation service has 256 tasks; reserve 64 for the engine (measured
+// peak 18, plus headroom; docs/workspace-decision.md §7). A single call retains
+// the sandbox's existing 128-task ceiling. Tasks include helper/child threads.
+type ProcessLimits struct {
+	BashSlots          int    `json:"bash_slots"`
+	ContainerTasks     uint64 `json:"container_tasks"`
+	EngineReserveTasks uint64 `json:"engine_reserve_tasks"`
+	CallTasks          uint64 `json:"call_tasks"`
+}
+
+func processLimits(slots int) (ProcessLimits, error) {
+	const container, reserve, maximum, minimum = 256, 64, 128, 8
+	if slots < 1 || slots > (container-reserve)/minimum {
+		return ProcessLimits{}, ErrConfig
+	}
+	return ProcessLimits{BashSlots: slots, ContainerTasks: container, EngineReserveTasks: reserve, CallTasks: min(maximum, uint64((container-reserve)/slots))}, nil
+}
+
 type Result struct {
 	ToolOutput string        `json:"tool_output"`
 	Trusted    TrustedResult `json:"trusted"`
@@ -82,6 +105,17 @@ type Result struct {
 	// OutputFile은 tool_output보다 긴 출력의 가린 전체를 남긴 작업 공간 안 경로다(예: .outputs/<call_ref>.txt).
 	// 다음 Bash 호출에서 읽을 수 있다. 남기지 못했으면 비어 있다.
 	OutputFile string `json:"output_file,omitempty"`
+}
+
+func AdmissionNotSent(result Result) bool {
+	t := result.Trusted
+	r := t.AdmissionNotSent
+	return r != nil && t.Version == e2proxy.Version && t.Classification == "not_sent" &&
+		t.Final && !t.ProcessBashExited && t.ProcessDrained && t.ProxyDrained &&
+		t.Execution.AuditComplete && e2proxy.EqualCallResults(t.Call, e2proxy.CallResult{}) && r.Version == e2proxy.Version &&
+		r.Scope == t.Execution.Scope && r.IntentID == t.Execution.IntentID && r.PolicyRevision == t.Execution.PolicyRevision &&
+		r.NotSent && r.AuditComplete && !r.ForwardAttempted && !r.RequestWritten && !r.ResponseReceived &&
+		!r.ResponseComplete && r.CallRef == "" && r.CommandRef != "" && r.AttemptID == "" && r.Sequence == 0 && !r.At.IsZero()
 }
 
 // Executor is the Worker seam; it returns program-owned execution evidence
