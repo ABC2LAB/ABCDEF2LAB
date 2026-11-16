@@ -82,3 +82,28 @@ func TestDiagnosisLogCompletedStepIgnoresLaterCancellation(t *testing.T) {
 		t.Fatal("완료된 단계가 늦은 취소로 다시 분류됨")
 	}
 }
+
+// 감독자 검사가 실은 사유 코드가 실패 행에 남고, 사유가 없으면 단계의 일반 사유로 돌아간다. 호출자가 보는 오류 종류는 그대로다.
+func TestDiagnosisFailureReasonKeepsCheckReason(t *testing.T) {
+	failed := firstDiagnosisCheckFailed(reasonClosureToolOutcomeInvalid, ErrFirstDiagnosisSupervisor)
+	if got := diagnosisFailureReason("execution", failed); got != reasonClosureToolOutcomeInvalid {
+		t.Fatalf("검사 사유가 실패 행에 남지 않음: %s", got)
+	}
+	if status, reason := diagnosisLogOutcome(context.Background(), failed, diagnosisFailureReason("execution", failed)); status != "failed" || reason != reasonClosureToolOutcomeInvalid {
+		t.Fatalf("검사 사유가 실행 마감 행에 남지 않음: %s %s", status, reason)
+	}
+	if got := diagnosisFailureReason("execution", ErrFirstDiagnosisSupervisor); got != "execution_failed" {
+		t.Fatalf("사유 없는 실패가 일반 사유로 돌아가지 않음: %s", got)
+	}
+	if got := diagnosisFailureReason("drain", firstDiagnosisCheckFailed(reasonClosureNotReady, ErrFirstDiagnosisSupervisor)); got != reasonClosureNotReady {
+		t.Fatalf("드레인 뒤 마감 판정 사유가 단계 사유로 덮임: %s", got)
+	}
+	if !errors.Is(failed, ErrFirstDiagnosisSupervisor) || errors.Is(failed, ErrFirstDiagnosisOutcome) ||
+		!errors.Is(firstDiagnosisCheckFailed(reasonClosureWorkflowFailed, ErrFirstDiagnosisOutcome), ErrFirstDiagnosisOutcome) {
+		t.Fatal("검사 사유가 원래 오류 종류를 바꿈")
+	}
+	// 저장 timeout은 검사 사유보다 앞선다.
+	if status, reason := diagnosisLogOutcome(context.Background(), diagnosisRunObservedError(firstDiagnosisCheckFailed(reasonEngineTaskFailed, ErrFirstDiagnosisSupervisor), "timeout", ""), "execution_failed"); status != "timeout" || reason != "timeout" {
+		t.Fatalf("저장 timeout이 검사 사유로 바뀜: %s %s", status, reason)
+	}
+}

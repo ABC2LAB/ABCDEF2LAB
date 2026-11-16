@@ -111,6 +111,38 @@ func diagnosisLogStageReason(stage string) string {
 	}
 }
 
+// 감독자 검사의 실패 사유 코드다. 일반 HTTP 마감 판정(generalCompletion)과 실행 감시가 어느 검사에서 멈췄는지 진단 로그의
+// 실패 행(stage_finished·run_finished·run_summary)에 단계의 일반 사유 대신 남는다. 값은 진단 로그 어휘에 있어야 한다.
+const (
+	reasonClosureWorkflowFailed          = "closure_workflow_failed"
+	reasonClosureWorkflowNotReady        = "closure_workflow_not_ready"
+	reasonClosureIntentReadFailed        = "closure_intent_read_failed"
+	reasonClosureCallsWithoutIntents     = "closure_calls_without_intents"
+	reasonClosureExecutionMissing        = "closure_execution_missing"
+	reasonClosureCallsMissing            = "closure_calls_missing"
+	reasonClosureResultsUnavailable      = "closure_results_unavailable"
+	reasonClosureResultNotClosed         = "closure_result_not_closed"
+	reasonClosureToolOutcomeInvalid      = "closure_tool_outcome_invalid"
+	reasonClosureResultMismatch          = "closure_result_mismatch"
+	reasonClosureUntrustedIntentMismatch = "closure_untrusted_intent_mismatch"
+	reasonClosureProgramCallOpen         = "closure_program_call_open"
+	reasonClosureCallMismatch            = "closure_call_mismatch"
+	reasonClosureUnknownIntentMismatch   = "closure_unknown_intent_mismatch"
+	reasonClosurePolicyLimitedUnmatched  = "closure_policy_limited_unmatched"
+	reasonClosureIntentStateInvalid      = "closure_intent_state_invalid"
+	reasonClosureCallCountMismatch       = "closure_call_count_mismatch"
+	reasonClosureNotReady                = "closure_not_ready_after_drain"
+	reasonEngineTaskFailed               = "engine_task_failed"
+)
+
+// diagnosisFailureReason은 실패 행의 사유 코드다. 감독자의 검사가 사유를 실었으면 그 코드를, 아니면 단계의 일반 사유를 쓴다.
+func diagnosisFailureReason(stage string, err error) string {
+	if reason, ok := diagnosisCheckReason(err); ok {
+		return reason
+	}
+	return diagnosisLogStageReason(stage)
+}
+
 // 마감 호출자가 별도 문맥을 쓰더라도 같은 첫 진단의 관측기만 보존한다.
 func diagnosisLogContext(ctx, parent context.Context) context.Context {
 	if ctx != nil && diagnosticlog.From(ctx) == nil && diagnosticlog.From(parent) != nil {
@@ -133,6 +165,9 @@ func (s *FirstDiagnosisSupervisor) logRunSummary(ctx context.Context, task int64
 		s.mu.Lock()
 		observedErr := s.runLogErr
 		s.mu.Unlock()
+		if reason, ok := diagnosisCheckReason(observedErr); ok {
+			event.ReasonCode = reason
+		}
 		if errors.Is(observedErr, context.DeadlineExceeded) {
 			event.Status, event.ReasonCode = "timeout", "timeout"
 		}
