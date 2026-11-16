@@ -181,7 +181,7 @@ func TestE2HTTPFactoryDerivesBashSlotsFromWorkersAndPolicy(t *testing.T) {
 					t.Fatal("intent 등록 실패")
 				}
 				go func(id int64) {
-					out, _ := lease.Runner.RunForIntent(t.Context(), id, "printf 'tasks=%s/%s;' \"$(ulimit -Su)\" \"$(ulimit -Hu)\"; curl -fsS --max-time 7 '"+target.URL+"/'")
+					out, _ := lease.Runner.RunForIntent(t.Context(), id, "printf 'tasks=%s/%s;helper=' \"$(ulimit -Su)\" \"$(ulimit -Hu)\"; awk '/Max processes/ {printf \"%s/%s;\", $3, $4}' /proc/1/limits; curl -fsS --max-time 7 '"+target.URL+"/'")
 					finished <- out
 				}(int64(i + 1))
 			}
@@ -205,7 +205,7 @@ func TestE2HTTPFactoryDerivesBashSlotsFromWorkersAndPolicy(t *testing.T) {
 			for range tc.want {
 				select {
 				case out := <-finished:
-					if out.Trusted.ProcessLimits != limits || out.ToolOutput != fmt.Sprintf("tasks=%d/%d;owned", wantCommandTasks, wantCommandTasks) {
+					if out.Trusted.ProcessLimits != limits || out.ToolOutput != fmt.Sprintf("tasks=%d/%d;helper=%d/%d;owned", wantCommandTasks, wantCommandTasks, wantTasks, wantTasks) {
 						t.Fatal("호출별 soft/hard RLIMIT_NPROC 또는 신뢰 조건이 실제 helper와 불일치", out.ToolOutput)
 					}
 					if !out.Trusted.Final || !out.Trusted.Call.AuditComplete || out.Trusted.Call.Counts.Responses != 1 {
