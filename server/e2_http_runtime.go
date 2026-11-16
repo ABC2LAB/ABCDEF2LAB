@@ -873,12 +873,18 @@ func (r *E2HTTPRuntime) observeResult(ctx context.Context, t *e2HTTPRuntimeTask,
 	result.ToolOutput = ""
 	trusted := result.Trusted
 	if trusted.AdmissionNotSent != nil {
-		valid := lease != nil && lease.Execution != nil && e2runner.AdmissionNotSent(result) &&
-			trusted.Execution.Scope.TaskRef == t.id && trusted.Execution.IntentID == intentID &&
-			lease.Execution.HasAdmissionNotSent(*trusted.AdmissionNotSent)
+		valid := lease != nil && lease.Runner != nil && e2runner.AdmissionNotSent(result) &&
+			trusted.Execution.Scope.TaskRef == t.id && trusted.Execution.IntentID == intentID
 		if valid {
-			view := lease.Execution.SnapshotForIntent(intentID)
-			valid = view.Scope == trusted.Execution.Scope && view.PolicyRevision == trusted.Execution.PolicyRevision && view.HeaderMode == trusted.Execution.HeaderMode
+			if lease.Execution != nil {
+				valid = lease.Execution.HasAdmissionNotSent(*trusted.AdmissionNotSent)
+			} else if remote, ok := lease.Runner.(interface{ takeAdmissionNotSent(e2proxy.Receipt) bool }); ok {
+				valid = remote.takeAdmissionNotSent(*trusted.AdmissionNotSent)
+			} else {
+				valid = false
+			}
+			view := lease.Runner.SnapshotForIntent(intentID)
+			valid = valid && view.Scope == trusted.Execution.Scope && view.PolicyRevision == trusted.Execution.PolicyRevision && view.HeaderMode == trusted.Execution.HeaderMode
 		}
 		t.mu.Lock()
 		if t.notSentCommands == nil {
