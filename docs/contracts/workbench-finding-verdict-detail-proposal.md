@@ -10,7 +10,7 @@
 Finding 상세에서 저장된 오라클 원값, 증거 충분성, 진단 요청의 송신 사실을 서로 구별하여 읽는다.
 일반 finding의 severity/status/vulnclass, LLM 설명, HTTP 200으로 E③ 판정을 만들지 않는다.
 
-조사 기준은 최신 `origin/dev` **`bfbabf7b06c8cec47319f34b3d388040dcee611c`**다.
+최초 코드 조사 기준은 당시 `origin/dev` **`bfbabf7b06c8cec47319f34b3d388040dcee611c`**다.
 요청의 확인 기준 `83c3cb66f36a`는 이 커밋의 조상이다. 그 뒤 변경은 #595의 C14 문서와
 #597의 fixture 대상 이름 정비이며, 이 초안의 저장·화면 조사 대상 코드 변경은 없다.
 아래 PR 상태는 작성 시 확인한 스냅샷이다.
@@ -51,12 +51,13 @@ Finding 상세에서 저장된 오라클 원값, 증거 충분성, 진단 요청
 - [평가 판정 페이지 제안](verdict-record-page-api-proposal.md)은 별도 목적이다.
   정본 바이트/결속 검사 원칙만 공유 가능하며 export 생성·동결·cursor·러너 capability를
   Workbench 단건 조회의 선행 조건으로 붙이지 않는다.
+  **이 단건 API는 평가 채점 입력이 아니다. 평가 채점 입력은 판정 페이지 export가 맡는다.**
 
 ### 1.2 동시 작업과의 경계
 
 | 확인한 PR | 상태·변경 파일 | 이 초안과의 관계 |
 | --- | --- | --- |
-| [#596](https://github.com/ABC2LAB/ABCDEF2LAB/pull/596), head `8f142bb997e535e2ffed7df580d626581cfa58eb` | open, 미병합. `docs/e3-confirm-path-decision.md` 한 개 | §9의 선행 결정안. 수정·구현하지 않음 |
+| [#596](https://github.com/ABC2LAB/ABCDEF2LAB/pull/596), head `ce42c65b83e83c829215149832904208a30fce91` | open, 미병합. `docs/e3-confirm-path-decision.md` 한 개 | §9의 선행 결정안. 수정·구현하지 않음 |
 | [#595](https://github.com/ABC2LAB/ABCDEF2LAB/pull/595) | merged. `docs/account-login-decision.md`, `docs/control-restore-backlog.md` | C14 상태·인증 회차 기록의 현재 사실 |
 | [#598](https://github.com/ABC2LAB/ABCDEF2LAB/pull/598) | open. `e2runner/`·`e2proxy/execution.go`·server factory/engine·제품 준비 로더·시험·작업공간/상한 문서 | 1-D Bash 병렬 실행 담당 영역. 수정하지 않음 |
 | [#594](https://github.com/ABC2LAB/ABCDEF2LAB/pull/594) | open. 평가 원본② 규칙 JSON·설명·시험 | 평가 영역. 수정하지 않음 |
@@ -230,6 +231,13 @@ UI가 받은 마지막 페이지나 `counts.allowed`로 판정 한 건의 송신
 검증된 시도별 사실만 `steps`에 보존하는 보수안을 제안한다.
 이 집계 규칙과 범위 선택은 OD03이며, 원래 4값을 조용히 늘리지 않는다.
 
+[#598](https://github.com/ABC2LAB/ABCDEF2LAB/pull/598)의 Bash 자리 대기 만료도 `held_pre_send`의 예다.
+명령 시간에는 대기가 포함되며, 프로세스·Call·프록시를 시작하지 않은 명령은 ACK된 제어 영수증의
+`not_sent`와 `admission_not_sent`로 구분한다. 이 경우 call_ref·attempt_id가 없을 수 있으므로
+가짜 시도 ID를 만들지 않고 실제 CommandRef와 task/run/intent 결속·독립 감사 마감을 확인한다.
+이 투영은 #598 병합과 해당 영수증 reader 연결 뒤에만 쓰며, 빈 Call이나 ErrUnavailable만으로
+`held_pre_send`를 추정하지 않는다. 대기 만료는 승인 거절·미지원 사유와 별도 사유로 표시한다.
+
 `decision=allowed`만 있는 intent는 sent가 아니다.
 `reason=withheld`는 대상 응답 표현을 보류·자른 결과이므로 **held_pre_send가 아니다**.
 `response_truncated=true`도 미송신 근거가 아니다.
@@ -354,7 +362,8 @@ ref/hash라도 내부 경로나 제어 비밀의 fingerprint이면 보내지 않
 | availability | recorded / no_link / not_executed. 조회 장애를 부재로 넣지 않음 |
 | evaluation_status | recorded / not_executed / unknown. no_link만으로 미실행 결정 금지 |
 | record | 오라클 원값·체크·6신호·필드명·정책/주체/시각 등. 판정 없으면 null |
-| record_checks | status=verified/unavailable, reason_codes, binding_status=current/historical. 판정 없으면 null |
+| record_checks | status=verified/unavailable, reason_codes, binding_status=current/historical. 판정 없으면 null. 제품 확정 경로 추가 시 §9.1의 세부 사유를 공급 |
+| policy_source, candidate_link | 제품 확정 경로 추가 시 §9.1의 명시적 출처·검증된 연결을 공급. 현재는 미공급/null |
 | presentation | 안전한 제목과 초기 심각도(nullable), mock=false. triage severity는 필요시 별도로 |
 | view | display_verdict(nullable), confirmation_evidence_complete(bool|null), missing_requirements. 원값 변경 아님 |
 | transmission | §5의 state/source/scope_role/coverage/audit_status/steps |
@@ -392,6 +401,8 @@ HTTP/코드와 200 내 unavailable의 경계는 **OD06 필수 결정**이다.
   "task_id": "17",
   "selection": {"kind": "verdict", "id": "101"},
   "ids": {"verdict_id": "101", "issuance_id": "201", "manifest_id": "301", "finding_id": "401", "candidate_id": null},
+  "policy_source": null,
+  "candidate_link": null,
   "availability": "recorded",
   "evaluation_status": "recorded",
   "record": {
@@ -454,6 +465,8 @@ traffic ID는 manifest의 owner/cross 관찰 참조와 별개이므로 빈 배�
 
 ~~~json
 {
+  "policy_source": null,
+  "candidate_link": null,
   "availability": "recorded",
   "evaluation_status": "recorded",
   "ids": {"verdict_id": "102", "issuance_id": "202", "manifest_id": "302", "finding_id": null, "candidate_id": null},
@@ -476,6 +489,8 @@ traffic ID는 manifest의 owner/cross 관찰 참조와 별개이므로 빈 배�
 
 ~~~json
 {
+  "policy_source": null,
+  "candidate_link": null,
   "availability": "recorded", "evaluation_status": "recorded",
   "record": {
     "oracle_value": "allowed", "vuln_verdict": null, "access_policy_result": "위반_미관찰",
@@ -497,6 +512,8 @@ traffic ID는 manifest의 owner/cross 관찰 참조와 별개이므로 빈 배�
 ~~~json
 {
   "selection": {"kind": "candidate", "id": "501"},
+  "policy_source": null,
+  "candidate_link": null,
   "availability": "not_executed", "evaluation_status": "not_executed",
   "record": null, "record_checks": null,
   "candidate": {"id": "501", "verification": "manual_review_required"},
@@ -517,6 +534,8 @@ E② 요청 시도/송신 전 거부는 서로 다른 단계의 사실이다.
 ~~~json
 {
   "selection": {"kind": "finding", "id": "402"},
+  "policy_source": null,
+  "candidate_link": null,
   "availability": "no_link", "evaluation_status": "unknown",
   "ids": {"verdict_id": null, "issuance_id": null, "manifest_id": null, "finding_id": "402", "candidate_id": null},
   "record": null, "record_checks": null,
@@ -535,6 +554,8 @@ verdict selector의 ID 자체가 없으면 위 200 부재 응답과 구분하여
 {
   "selection": {"kind": "verdict", "id": "103"},
   "ids": {"verdict_id": "103", "issuance_id": "203", "manifest_id": "303", "finding_id": null, "candidate_id": null},
+  "policy_source": null,
+  "candidate_link": null,
   "availability": "recorded", "evaluation_status": "recorded",
   "record": {"oracle_value": "suspected", "vuln_verdict": "suspected", "access_policy_result": "위반_후보"},
   "record_checks": {"status": "verified", "binding_status": "current", "reason_codes": []},
@@ -561,7 +582,7 @@ KG 유실을 확인한 경우의 정상 읽기 예시(제안·축약)는
 ## 9. #596 결정안과의 관계
 
 #596의 문서는 자체 상태를 “결정”으로 적고 있으나, **조사 시점에는 dev 미병합 선행 결정안**이다.
-확인한 원문은 [고정 head의 결정안](https://github.com/ABC2LAB/ABCDEF2LAB/blob/8f142bb997e535e2ffed7df580d626581cfa58eb/docs/e3-confirm-path-decision.md)이다.
+확인한 원문은 [고정 head의 결정안](https://github.com/ABC2LAB/ABCDEF2LAB/blob/ce42c65b83e83c829215149832904208a30fce91/docs/e3-confirm-path-decision.md)이다.
 이 초안이 #596의 판정 규칙이나 구현 소유를 대신 확정하지 않는다.
 
 | 구분 | 현재 경로 | #596 이후 의존 |
@@ -579,6 +600,44 @@ v1/v2를 읽을 수 있다는 사실은 v3 제품 확정 근거가 있다는 뜻
 후보 참조·정책 출처 칸의 저장 형식·새 source version은 #596 담당 구현에서 정하며
 이 문서에서는 새 테이블·영수증 필드·프로그램 요청을 선행 구현하지 않는다.
 보존율·공식 비교에 이 제품 확정 경로가 자동으로 들어간다고도 가정하지 않는다.
+
+### 9.1 제품 확정 경로 추가 시: UNDECIDABLE 세부 사유와 추가 칸
+
+#596 `ce42c65b`의 §5~§7·§9를 반영하는 **후속 제품 투영 제안**이다. 현재 서버·오라클 enum·
+영수증 v1/v2에 아래 코드나 칸이 이미 있다고 주장하지 않는다. 구현은 측정 뒤다.
+
+기존 canonical의 `record.reason_codes`는 그대로 보존한다. 제품 v3 생산자가 기록한 구체적 사유를
+`record_checks.reason_codes`에 아래 제품 전용 코드로 투영하는 안을 제안한다. GET에서 실패를
+추정하거나 `oracle.Evaluate`를 다시 호출하지 않는다. `record_checks.status=verified`는 저장·결속의
+읽기 검증이 성공했다는 뜻이며, 정책·신원·데이터 확인이 모두 성공했다는 뜻이 아니다.
+원래 `data_unverifiable`만 있는 구형 근거에서 아래 세부 코드를 역산하지 않는다.
+
+| 제품 단계의 저장된 관찰 | 세부 사유 코드 제안 | 신호·적용 범위와 운영자에게 보일 뜻 |
+| --- | --- | --- |
+| 지원 밖 인코딩(압축·base64·겹친 인코딩·비텍스트 등) | `product_data_encoding_unsupported` | 검사하지 못한 데이터 신호는 unknown. 표식 없음(no)으로 만들지 않음. 해당 A/B 쌍 UNDECIDABLE, 지원 응답 형식 확인 필요 |
+| 부분 응답 | `product_data_partial_response` | 부분 본문 digest를 전체 근거로 쓰지 않음. 관련 데이터 신호 unknown, 해당 쌍 UNDECIDABLE. 완전 응답 근거 필요 |
+| 파싱·검사 실패 | `product_data_check_failed` | 관련 데이터 신호 unknown. 표식 없음으로 보충하지 않음. 해당 쌍 UNDECIDABLE, 선언한 응답 위치/검사 실패 확인 필요 |
+| A 대조에서 지원 방식의 표식이 관찰되지 않음 | `product_owner_marker_unobserved` | B 결과와 관계없이 **그 자원 종류 전체 UNDECIDABLE**. A에서 표식이 보이지 않으면 B의 미관찰을 차단 근거로 쓸 수 없음 |
+| 신원 경로 실패·식별자 누락·확인 불가 | `product_identity_unverified` | 인증 성공만으로 검증된 신원으로 삼지 않음. 대상 UNDECIDABLE, 뒤 생성·A/B 조회를 시작하지 않음. 신원 선언/응답 확인 필요 |
+| A·B 식별자 digest 비교가 같음 | `product_subjects_identical` | 서로 다른 시험 주체를 확인하지 못함. 대상 UNDECIDABLE, 뒤 단계 미실행. 다른 계정 공급 필요. oracle 신원 원값을 조회에서 재계산하지 않음 |
+| 사용자 승인 모드의 프로그램 생성 요청 거절 | `product_create_approval_denied` | 해당 종류 UNDECIDABLE. 명시적 미전송 영수증으로 확인하며 이후 A/B 조회를 만들지 않음. 거절 사실을 시간 초과와 구분 |
+| 같은 생성 요청의 확인 시간 초과 | `product_create_approval_timeout` | 해당 종류 UNDECIDABLE. 보내지 않은 확인 만료와 결과 불명 쓰기를 구분. 원래 요청을 자동 재전송하지 않음 |
+
+코드에는 단계·적용 범위가 들어가므로 데이터 검사 실패를 모두 `data_unverifiable`로 뭉치지 않는다.
+실제 판정 행이 없으면 위 사유만으로 `record.oracle_value=undecidable`을 만들어 내지 않고
+§6의 부재/미실행 envelope와 신뢰된 실행 상태를 사용한다. 반대로 저장된 UNDECIDABLE이 있으면
+원값을 유지하고 위 세부 사유를 함께 읽는다. 인프라 읽기 실패·손상은 각각 503/422의 별도 경계다.
+
+추가 칸도 제품 경로 공급 시에만 연다(현재 경로는 null/미공급).
+
+| 제안 칸 | 출처와 검증 규칙 |
+| --- | --- |
+| `policy_source` | 구분자 `kind=product_declaration`이면 실행 때 동결한 `declaration_digest_sha256`와 대상 승인 판을 검증한다. `kind=kg_snapshot`이면 평가 레지스트리의 `snapshot_digest_sha256`·정책 판을 검증한다. 두 출처는 상호 배타적이며 policy_version의 문자열 모양으로 추정하지 않는다. 원문 선언·레지스트리·키는 응답하지 않는다 |
+| `candidate_link` | #596 §9의 후보 **메서드와 call_ref의 E② 경로 패턴**이 선언된 조회 틀 정확히 하나와 맞고 동일 실행·정책에 결속될 때만 비민감 `candidate_ref`와 조회 틀 참조를 채운다. 판정의 후보 참조 칸도 그 검증된 연결에서만 채운다. 0개/복수 일치면 candidate_link는 null로 두고 후보와 판정을 따로 표시한다. candidate selector의 selection/ids.candidate_id는 선택한 후보 ID를 보존할 수 있지만, 그 ID 자체를 판정 연결 성공으로 간주하지 않는다 |
+
+연결 뒤에도 후보는 `manual_review_required` 그대로이고 판정은 별도 레코드다.
+새 칸·생산자 사유 코드와 읽기 검증 enum의 최종 형식은 OD06·OD08·OD09에서 최민준·이동찬이,
+표시 문구·null 상태는 이경준과 합의한다. 이 초안 변경은 프로그램 생성·v3·새 테이블을 구현하지 않는다.
 
 ## 10. 수용시험 계획
 
@@ -605,6 +664,12 @@ v1/v2를 읽을 수 있다는 사실은 v3 제품 확정 근거가 있다는 뜻
 | FVD16 | 조회 중 link commit·큰 payload·response 상한 초과 | 일관 snapshot 또는 명시 실패. 부분 성공/잘린 판정 0 |
 | FVD17 | 서로 다른 Job/run/model/reset·같은 자원 이름·traffic 빈 배열 | 권위와 scope로만 결속. ID·경로 이름 유사도에 의한 혼입 0 |
 | FVD18 | all unknown지만 실행됨, 비교 배열 없지만 송신됨, 판정 없이 송신 차단 | 사실에 맞는 별도 상태. 목업 서사로 미실행/무응답을 단정하지 않음 |
+| FVD19 | 지원 밖 인코딩·부분 응답·검사 실패 | 각각 §9.1의 다른 데이터 코드, 관련 신호 unknown. 가짜 no/차단 근거 0 |
+| FVD20 | A 표식 미관찰, B 관찰 있음/없음 | B와 관계없이 해당 종류 UNDECIDABLE, 코드 `product_owner_marker_unobserved` |
+| FVD21 | 신원 확인 실패 대 A/B 식별자 동일 | 서로 다른 코드, 대상 UNDECIDABLE, 후속 생성·조회 0 |
+| FVD22 | 사용자 승인 모드 프로그램 생성 거절 대 확인 만료 | 서로 다른 승인 코드, 생성 송신·후속 조회·자동 재전송 0 |
+| FVD23 | 제품 선언 동결본 대 평가 KG snapshot, 후보 조회 틀 일치 0/1/복수 | 출처를 명시 검증. 후보 연결은 정확히 1개일 때만, 후보 상태 불변 |
+| FVD24 | #598 실제 미전송 제어 영수증 대 빈 Call/감사 미확인 | 전자만 결속·마감 확인 뒤 held_pre_send, 후자는 unknown. 가짜 시도 생성 0 |
 
 ## 11. Open Decisions
 
