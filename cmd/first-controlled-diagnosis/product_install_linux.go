@@ -241,10 +241,13 @@ const (
 	// productMaxConcurrent는 E② 동시 송신 수다. 프록시 연결 수는 이 값 이상이어야 한다(validProductPolicyTemplate).
 	productMaxConcurrent    = 16
 	productRequestTimeoutMS = 60000
-	productCallTimeoutMS    = 120000
-	productWorkerTurns      = 1000
-	productWorkerTimeoutMS  = 1200000
-	productPlannerRounds    = 100
+	// productCallTimeoutMS는 E② Bash 호출 하나의 시간 상한이다. 원본 ARTEX Bash 도구 상한(10분)·진단 도구 상한
+	// (agent e2HTTPMaxToolDuration)과 같게 둔다. 120초였을 때는 모델이 timeout_ms로 더 길게 줘도 E②가 먼저 끊었다.
+	// 송신량은 회차 시간·대상 요청 예산이 묶으므로 이 값을 올려도 통제 범위는 그대로다(2026-11-16 사용자 결정).
+	productCallTimeoutMS   = 600000
+	productWorkerTurns     = 1000
+	productWorkerTimeoutMS = 1200000
+	productPlannerRounds   = 100
 	// Bash 호출 하나 안에서만 새 요청을 막는 상한(C01). 결과 불명은 쓰기 안전 때문에 1이다.
 	productMaxDenials   = 16
 	productMaxTransient = 4
