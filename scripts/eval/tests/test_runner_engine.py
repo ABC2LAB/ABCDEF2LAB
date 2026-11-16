@@ -435,6 +435,8 @@ class TestTaskRequest(unittest.TestCase):
             "first_url_has_path": task(description=f"대상 {TARGET}/users/v1", goal=f"{TARGET} 도"),
             "first_url_other_case": task(description="대상 http://EVAL-METER:8080 진단", goal="권한"),
             "userinfo": task(description=description, goal=f"{TARGET}@evil.example/x 도"),
+            # 같은 호스트 앞의 userinfo도 받지 않는다(호스트가 같아도 본문에 자격 꼴 authority를 남기지 않는다).
+            "userinfo_same_host": task(description=description, goal="http://attacker@eval-meter:8080/x 도"),
             "host_tail": task(description=description, goal=f"{TARGET}.evil.com/x 도"),
             "port_only": task(description=description, goal="http://eval-meter:9090/x 도"),
             "scheme": task(description=description, goal="https://eval-meter:8080/x 도"),
@@ -446,6 +448,9 @@ class TestTaskRequest(unittest.TestCase):
             with self.subTest(name), self.assertRaises(EngineAPIError) as caught:
                 task_request(value, TARGET)
             self.assertEqual(str(caught.exception), "task_target_mismatch")
+        # 점검 주소 자체의 포트가 범위 밖이면 어떤 본문도 받지 않는다.
+        with self.assertRaises(EngineAPIError):
+            task_request(task(description="대상 http://eval-meter:99999 진단", goal="권한"), "http://eval-meter:99999")
 
     def test_patterns_match_like_go_ascii_classes(self):
         # Go regexp의 \b·\s는 ASCII다. 한글 사이에 붙은 대상도 엔진과 같이 본다.
