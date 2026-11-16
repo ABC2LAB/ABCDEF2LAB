@@ -15,6 +15,51 @@ func TestFirstDiagnosisClosedToolOutcome(t *testing.T) {
 	}{
 		{"completed", func(r *e2runner.TrustedResult) {}, true},
 		{"audited-tool-failure", func(r *e2runner.TrustedResult) { r.Classification = "tool_failure"; r.ExitCode = 1 }, true},
+		// 실행기는 종료 코드를 거부보다 먼저 본다. 거부·미지원이 섞인 명령도 종료 코드가 0이 아니면 tool_failure이고, 그
+		// 거부 수가 E② 근거라 마감한다. 마지막 요청 사유가 거부·미지원이면 그 수가 있어야 한다.
+		{"tool-failure-after-denial", func(r *e2runner.TrustedResult) {
+			r.Classification, r.ExitCode = "tool_failure", 22
+			r.Call.Counts.Denied, r.Call.Counts.ForwardAttempted = 1, 1
+			r.Call.Reason = e2proxy.PolicyDenied
+		}, true},
+		{"tool-failure-denial-not-sent", func(r *e2runner.TrustedResult) {
+			r.Classification, r.ExitCode = "tool_failure", 1
+			r.Call.Counts.Denied = 1
+			r.Call.Reason = e2proxy.PolicyDenied
+		}, true},
+		{"tool-failure-answer-after-denial", func(r *e2runner.TrustedResult) {
+			r.Classification, r.ExitCode = "tool_failure", 1
+			r.Call.Counts.Denied, r.Call.Counts.ForwardAttempted = 1, 1
+		}, true},
+		{"tool-failure-after-unsupported", func(r *e2runner.TrustedResult) {
+			r.Classification, r.ExitCode = "tool_failure", 1
+			r.Call.Counts.Unsupported = 1
+			r.Call.Reason = e2proxy.Unsupported
+		}, true},
+		{"tool-failure-after-budget-exhausted", func(r *e2runner.TrustedResult) {
+			r.Classification, r.ExitCode = "tool_failure", 1
+			r.Call.Counts.Denied, r.Call.Counts.ForwardAttempted = 1, 1
+			r.Call.Reason = e2proxy.BudgetExhausted
+		}, true},
+		{"tool-failure-denial-reason-without-count", func(r *e2runner.TrustedResult) {
+			r.Classification, r.ExitCode = "tool_failure", 1
+			r.Call.Reason = e2proxy.PolicyDenied
+		}, false},
+		{"tool-failure-unsupported-reason-without-count", func(r *e2runner.TrustedResult) {
+			r.Classification, r.ExitCode = "tool_failure", 1
+			r.Call.Counts.Denied = 1
+			r.Call.Reason = e2proxy.Unsupported
+		}, false},
+		{"tool-failure-denial-zero-exit", func(r *e2runner.TrustedResult) {
+			r.Classification = "tool_failure"
+			r.Call.Counts.Denied = 1
+			r.Call.Reason = e2proxy.PolicyDenied
+		}, false},
+		{"tool-failure-expired-denial", func(r *e2runner.TrustedResult) {
+			r.Classification, r.ExitCode = "tool_failure", 1
+			r.Call.Counts.Denied = 1
+			r.Call.Reason = e2proxy.Expired
+		}, false},
 		{"policy-not-sent", func(r *e2runner.TrustedResult) {
 			r.Classification = "policy_not_executed"
 			r.Call.Counts.Denied = 1
