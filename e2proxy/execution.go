@@ -41,6 +41,8 @@ type compiledRule struct {
 	methods   map[string]bool
 }
 type Execution struct {
+	// passwords는 호스트가 등록한 비밀번호다. 일반 제어 비밀과 응답 처리 의미를 분리한다.
+	passwords      [][]byte
 	issued         map[string]bool
 	intents        map[int64]struct{}
 	intentGate     chan struct{}
@@ -70,7 +72,7 @@ type Execution struct {
 	admitted     uint64
 	intentCounts map[int64]*Counts
 	secrets      [][]byte
-	// secretsGen은 보호 값 목록이 실행 뒤에 바뀐 횟수다(AddProtectedValues). 응답을 읽는 동안 바뀌면 그 응답의 검사 길이가
+	// secretsGen은 일반 보호 값·비밀번호 목록이 실행 뒤에 바뀐 횟수다. 응답을 읽는 동안 바뀌면 그 응답의 검사 길이가
 	// 새 값을 담지 못할 수 있어 통째로 보류한다.
 	secretsGen uint64
 	// redactOnly는 출력에서만 가리는 값이다(인증 준비가 받은 시험 계정 세션, C14 구현 설계 4). 응답 표현 보류(반사 검사)에는
@@ -1410,7 +1412,7 @@ func (c *Call) do(ctx context.Context, req *http.Request, purpose string, extrac
 		extracted, extractErr := extract(resp, responseBody)
 		clear(responseBody)
 		r.ResponseComplete, r.Reason = true, Complete
-		if extractErr != nil {
+		if extractErr != nil || !e.authSessionSafe(extracted) {
 			return finish(nil, ErrAuthSession)
 		}
 		session = extracted
@@ -1421,10 +1423,24 @@ func (c *Call) do(ctx context.Context, req *http.Request, purpose string, extrac
 	// 길이를 맞출 수 없는 부분 응답(206·Content-Range)은 자르지 않고 통째로 보류한다.
 	partial := resp.StatusCode == http.StatusPartialContent || resp.Header.Get("Content-Range") != ""
 	// 읽는 동안 보호 값이 더해졌으면 검사 길이가 새 값을 다 담지 못했을 수 있다(전달 구간 끝에 걸친 새 값). 통째로 보류한다.
-	if e.protectedGeneration() != generation || !e.safeHTTPResponse(resp, responseBody) || oversized && partial {
+	prepared, masked, safe := e.prepareResponse(resp, responseBody, generation, limit, partial, oversized)
+	if !safe || oversized && partial {
 		clear(responseBody)
 		r.Reason = Withheld
 		return finish(nil, ErrWithheld)
+	}
+	if masked {
+		clear(responseBody)
+		responseBody = prepared
+		resp.TransferEncoding = nil
+		resp.Header.Del("Transfer-Encoding")
+		resp.Header.Del("Trailer")
+		resp.Trailer = nil
+		for _, name := range []string{"ETag", "Content-MD5", "Digest", "Content-Digest", "Repr-Digest"} {
+			resp.Header.Del(name)
+		}
+		resp.ContentLength = int64(len(responseBody))
+		resp.Header.Set("Content-Length", strconv.Itoa(len(responseBody)))
 	}
 	if oversized {
 		// 본문 상한을 넘으면 앞부분만 준다. 도구의 HTTP 읽기가 연결 중단으로 보지 않도록 길이를 맞추고 chunked·trailer를
@@ -1450,6 +1466,9 @@ func (c *Call) do(ctx context.Context, req *http.Request, purpose string, extrac
 	resp.Close = true
 	resp.Request = &http.Request{Method: req.Method}
 	r.Reason = Complete
+	if masked {
+		r.Reason, r.ResponseComplete = Withheld, false
+	} // 원래 표현은 일부 보류했다. 기존 v2 보류 영수증 모양을 유지하며 결과 불명으로 세지 않는다.
 	return finish(resp, nil)
 }
 func stripHeaders(h http.Header) {
@@ -1474,10 +1493,10 @@ func (e *Execution) RedactOutput(b []byte) []byte {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	out := bytes.Clone(b)
-	sets := [][][]byte{e.secrets, e.redactOnly}
+	sets := [][][]byte{e.secrets, e.passwords, e.redactOnly}
 	if e.cfg.HeaderMode == HeaderTestAccountPassthrough {
 		// 전체 토큰을 조각보다 먼저 가린다. 계정·갱신 간에 같은 claims를 공유해도 전체 토큰 가림이 깨지지 않는다.
-		values := append(append([][]byte(nil), e.secrets...), e.redactOnly...)
+		values := append(append(append([][]byte(nil), e.secrets...), e.passwords...), e.redactOnly...)
 		sort.SliceStable(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
 		sets = [][][]byte{values}
 		out = redactEscapedJSONValues(out, values)
@@ -1540,7 +1559,7 @@ func (e *Execution) AddProtectedValues(values ...[]byte) error {
 		}
 		next = append(next, bytes.Clone(v))
 	}
-	if !validResponseLimits(e.cfg.Limits, next) {
+	if !validResponseLimits(e.cfg.Limits, append(append([][]byte(nil), next...), e.passwords...)) {
 		return ErrConfig
 	}
 	e.secrets = next
@@ -1773,6 +1792,16 @@ func compilePolicyTemplate(cfg Config) ([]compiledRule, HeaderMode, *EvaluationC
 	if cfg.HeaderMode != HeaderPreserve && cfg.HeaderMode != HeaderProtectedSessionProposal && cfg.HeaderMode != HeaderEvaluationCallerPassthrough && cfg.HeaderMode != HeaderTestAccountPassthrough {
 		return nil, "", nil, ErrConfig
 	}
+	if cfg.PasswordResponse != "" {
+		login := false
+		for _, rule := range rules {
+			login = login || rule.Purpose == PurposeAuthPrep
+		}
+		if cfg.PasswordResponse != PasswordResponseMaskSpans || cfg.HeaderMode != HeaderTestAccountPassthrough || !login {
+			return nil, "", nil, ErrConfig
+		}
+	}
+
 	cfg.Evaluation, err = validateEvaluationCallerContext(cfg)
 	if err != nil {
 		return nil, "", nil, err
@@ -1797,8 +1826,10 @@ func (e *Execution) protectedState() (int64, uint64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	longest := 0
-	for _, s := range e.secrets {
-		longest = max(longest, len(s))
+	for _, set := range [][][]byte{e.secrets, e.passwords} {
+		for _, s := range set {
+			longest = max(longest, len(s))
+		}
 	}
 	return int64(longest), e.secretsGen
 }

@@ -286,7 +286,7 @@ func accountsFromBinding(dir, suffix string) (productRunAccounts, string, error)
 		return productRunAccounts{}, "", errPreparation
 	}
 	login := stored.Auth.Login
-	out := productRunAccounts{Login: &login}
+	out := productRunAccounts{Login: &login, PasswordResponse: stored.Auth.PasswordResponse}
 	for _, a := range stored.Auth.Accounts {
 		out.Accounts = append(out.Accounts, productRunAccount{Label: a.Label, CredentialSHA256: a.Credential.SHA256})
 	}
@@ -422,7 +422,7 @@ func (p *productRuntime) loadBinding(principal string, input diagnosisprep.Input
 		// 로그인 경로 하나만 정확히 가리키는 인증 준비 규칙. 모델 요청은 이 규칙을 쓰지 못한다(E② Purpose).
 		policy.Rules = append(policy.Rules, server.E2HTTPFileRule{Ref: "auth-login", Origin: rec.Target.Origin, ConnectIP: rec.SelectedIP, PathPrefix: accounts.Login.Path, PathScopeRef: "auth-login-path",
 			Methods: []string{accounts.Login.Method}, Purpose: e2proxy.PurposeAuthPrep, ApprovalDisplay: server.RequestApprovalDisplay{QueryKeys: []string{}, JSONFields: []string{}}, TLSSPKISHA256: rec.Target.TLSSPKISHA256})
-		auth := &server.E2HTTPFileAuth{RuleRef: "auth-login", Login: *accounts.Login}
+		auth := &server.E2HTTPFileAuth{RuleRef: "auth-login", Login: *accounts.Login, PasswordResponse: accounts.PasswordResponse}
 		for _, a := range accounts.Accounts {
 			auth.Accounts = append(auth.Accounts, server.E2HTTPFileAuthAccount{Label: a.Label, Credential: server.E2HTTPFilePin{File: bindingCredentialName(rec.Target.ID, a.Label, a.CredentialSHA256), SHA256: a.CredentialSHA256}})
 		}

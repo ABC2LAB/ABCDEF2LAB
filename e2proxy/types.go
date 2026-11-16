@@ -135,19 +135,21 @@ type Config struct {
 	// RequestApproval은 호스트가 명시적으로 연결하는 요청별 확인 경계다.
 	RequestApproval RequestApprovalGate `json:"-"`
 	Evaluation      *EvaluationCallerContext
-	HeaderMode      HeaderMode
-	Scope           transmit.Scope
-	IntentID        int64
-	OwnerRef        string
-	PolicyRevision  string
-	AccountRef      string
-	SessionRef      string
-	ExpiresAt       time.Time
-	Rules           []Rule
-	Budget          transmit.CumulativeBudget `json:"-"`
-	Recorder        Recorder                  `json:"-"`
-	RootCAs         *x509.CertPool            `json:"-"`
-	Limits          Limits
+	// PasswordResponse는 보호된 호스트 정책이다. 빈 값은 기존 전체 보류다.
+	PasswordResponse string
+	HeaderMode       HeaderMode
+	Scope            transmit.Scope
+	IntentID         int64
+	OwnerRef         string
+	PolicyRevision   string
+	AccountRef       string
+	SessionRef       string
+	ExpiresAt        time.Time
+	Rules            []Rule
+	Budget           transmit.CumulativeBudget `json:"-"`
+	Recorder         Recorder                  `json:"-"`
+	RootCAs          *x509.CertPool            `json:"-"`
+	Limits           Limits
 }
 type Restriction struct {
 	PolicyRevision string    `json:"policy_revision"`
