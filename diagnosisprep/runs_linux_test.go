@@ -17,6 +17,53 @@ func runList(t *testing.T, endpoint Endpoint, principal string, input RunListReq
 	r.Runs = &input
 	return call(t, endpoint, r)
 }
+
+// 다른 주체의 문법상 유효한 cursor도 거절한다. 빈 목록의 지문 비교는 마지막 Job ID 검사와
+// 독립적으로 principal 결속을 고정한다(주체를 hash에서 빼는 회귀를 잡는다).
+func TestRunListBindsSnapshotsAndValidCursorsToPrincipal(t *testing.T) {
+	service, backend, _ := newFixture(t)
+	ownerEmpty := runList(t, service, "owner", RunListRequest{})
+	otherEmpty := runList(t, service, "other", RunListRequest{})
+	if ownerEmpty.Error != "" || otherEmpty.Error != "" || ownerEmpty.RunPage.Snapshot == otherEmpty.RunPage.Snapshot {
+		t.Fatal("같은 빈 목록의 snapshot이 주체를 구분하지 않음")
+	}
+	for _, principal := range []string{"owner", "other"} {
+		for i := range 3 {
+			r := request(Create)
+			r.Principal = principal
+			r.IdempotencyKey = fmt.Sprintf("%s-key-%d", principal, i)
+			r.Input = &Input{TargetURL: "https://example.test/read", ProfileID: "local"}
+			if response := call(t, service, r); response.Error != "" {
+				t.Fatal("합성 목록 준비 실패", response.Error)
+			}
+		}
+	}
+	inspects := backend.inspectCalls.Load()
+	for _, principal := range []string{"owner", "other"} {
+		page := runList(t, service, principal, RunListRequest{Limit: 1})
+		if page.Error != "" || !page.RunPage.More {
+			t.Fatal("유효한 cursor를 발급하지 못함", page.Error)
+		}
+		cursor := page.RunPage.NextCursor
+		if _, valid := decodeRunCursor(cursor); !valid {
+			t.Fatal("음성 시험의 cursor가 유효하지 않음")
+		}
+		if own := runList(t, service, principal, RunListRequest{Cursor: cursor}); own.Error != "" || len(own.RunPage.Runs) != 1 {
+			t.Fatal("발급받은 주체가 자기 cursor를 쓰지 못함", own.Error)
+		}
+		other := "owner"
+		if principal == "owner" {
+			other = "other"
+		}
+		if foreign := runList(t, service, other, RunListRequest{Cursor: cursor}); foreign.Error != "snapshot_changed" || foreign.RunPage != nil {
+			t.Fatal("다른 사용자의 유효한 cursor로 목록 반환", foreign.Error)
+		}
+	}
+	if backend.calls.Load() != 0 || backend.inspectCalls.Load() != inspects {
+		t.Fatal("cursor 검증이 실행·준비를 발급함")
+	}
+}
+
 func TestRunListOwnedPaginationSnapshotAndNoExecution(t *testing.T) {
 	service, backend, _ := newFixture(t)
 	ids := map[string]bool{}
