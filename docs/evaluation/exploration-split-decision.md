@@ -97,7 +97,7 @@
   - 제품 쪽(#625): 공통 부분은 `urlDiagnosisCommonGoal(origin, approvedPaths, accountLabels)`(`cmd/first-controlled-diagnosis/url_preparation_runtime.go`)가 만든다. 순서는 승인 경로 문장 → 목적(인가 먼저 + 시험했다고 볼 범위) → 시험 계정 라벨 문장 → 보고 문장이다. 예시 출력은 `cmd/first-controlled-diagnosis/testdata/goal-common-example.txt`에 바이트 그대로 고정돼 있다. O 실행 기록(`first_diagnosis_run_v1`)의 `goal` 칸(`goal-digest/v1`)에 `common_sha256`(공통 부분 바이트, 앞 공백 포함)과 `product_sha256`(제품 전용 앞부분 + 끝 문장)이 남는다. 러너는 O의 공통 SHA를 이 칸에서 읽는다.
   - 승인 경로 목록은 러너가 만드는 설치·대상 승인 입력(§3)의 값이고, O 승인과 B 본문에 같은 목록을 쓴다. B에서는 글로만 들어가고 집행되지 않는다(집행 차이는 통제 효과로 잰다).
   - B 본문의 목표는 같은 공통 부분 바이트다. 러너(Python)는 Go 함수를 직접 부를 수 없으므로 렌더를 따로 두되, 두 겹으로 어긋남을 막는다.
-    - 같은 testdata 파일(`goal-common-example.txt`)과 바이트를 대조하는 러너 시험. 제품 문장이 바뀌면 testdata가 바뀌고 러너 시험이 실패한다.
+    - 같은 testdata 파일(`goal-common-example.txt`)과 바이트를 대조하는 러너 시험. 제품 쪽은 Go 시험 `TestURLDiagnosisCommonGoalIsSharedAndPinned`(`cmd/first-controlled-diagnosis/url_goal_test.go`, #625)가 예시 입력(origin `https://owned.example:8443`, 경로 `/api/v1`·`/openapi.json`·`=/`, 라벨 `tester-a`·`tester-b`)의 Go 렌더 + 끝 줄바꿈 하나 = 파일 바이트를 고정한다. 러너 시험은 같은 입력의 Python 렌더 + 끝 줄바꿈 하나를 같은 파일과 비교한다. 그래서 Go 렌더가 바뀌면 파일 갱신이 강제되고, Python 렌더가 어긋나면 회차 SHA 대조까지 가지 않고 CI에서 잡힌다.
     - 회차마다 B 본문 공통 부분의 SHA와 O `goal.common_sha256`을 공통 지문에 넣는다. 다르면 짝으로 묶지 않는다.
   - origin 문자열: 제품 `urlGoalOrigin`은 대상 URL의 `scheme://host[:port]`를 적힌 그대로 쓴다(소문자화·기본 포트 정리 없음). 그래서 B·O가 같은 대상 origin 문자열을 써야 공통 SHA가 같다. overlay에서 두 쪽 모두 같은 대상 이름(계측기 본 입구 별칭)을 쓰고, 러너 사전검사의 `target_origin` 조건(지금 `NOT_EVAL_METER`)은 PR 4에서 그 별칭에 맞춘다.
   - 시험 계정 라벨 문장은 "호스트가 시험 계정으로 로그인해 Worker에 세션을 준다"고 말한다. 원본은 그런 준비가 없으므로, B 본문에는 B에도 같은 세션을 주는 조건(프로토콜 §2 caller 자격 통과 모드)에서만 라벨을 넣는다. 그 밖에 O에만 계정이 결속된 회차는 공통 SHA가 달라 짝으로 묶이지 않는다(의도한 거부). 공식 프로파일은 익명 준비라 두 쪽 모두 라벨이 없다.
