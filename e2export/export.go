@@ -277,6 +277,16 @@ func (p *Publisher) ObserveResult(ctx context.Context, result e2runner.Result) e
 		return ErrAudit
 	}
 	trusted := result.Trusted
+	if trusted.AdmissionNotSent != nil {
+		view := p.cfg.Execution.SnapshotForIntent(trusted.Execution.IntentID)
+		if !e2runner.AdmissionNotSent(result) || !p.cfg.Execution.HasAdmissionNotSent(*trusted.AdmissionNotSent) || view.Scope != trusted.Execution.Scope || view.HeaderMode != trusted.Execution.HeaderMode {
+			p.observeMu.Lock()
+			p.observerFailed = true
+			p.observeMu.Unlock()
+			return ErrAudit
+		}
+		return nil
+	}
 	if trusted.Call.CallRef == "" {
 		if sameCallResult(trusted.Call, e2proxy.CallResult{}) && !trusted.Final && !trusted.ProcessBashExited && !trusted.ProcessDrained && !trusted.ProxyDrained {
 			return nil

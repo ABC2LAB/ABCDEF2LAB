@@ -105,6 +105,11 @@ func newRunnerFixtureWithRecorder(t *testing.T, base, helper, target string, roo
 
 func newRunnerFixtureConfigured(t *testing.T, base, helper, target string, roots *x509.CertPool, decorate func(e2proxy.Recorder) e2proxy.Recorder, cleanupRunner bool, configure func(*Config)) *runnerFixture {
 	t.Helper()
+	return newRunnerFixtureWithLimits(t, base, helper, target, roots, decorate, cleanupRunner, configure, nil)
+}
+
+func newRunnerFixtureWithLimits(t *testing.T, base, helper, target string, roots *x509.CertPool, decorate func(e2proxy.Recorder) e2proxy.Recorder, cleanupRunner bool, configure func(*Config), configureExecution func(*e2proxy.Config)) *runnerFixture {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -161,7 +166,7 @@ func newRunnerFixtureConfigured(t *testing.T, base, helper, target string, roots
 	if decorate != nil {
 		recorder = decorate(recorder)
 	}
-	execution, err := e2proxy.NewExecution(t.Context(), e2proxy.Config{ApprovalMode: e2proxy.ApprovalPreauthorizedScope,
+	executionConfig := e2proxy.Config{ApprovalMode: e2proxy.ApprovalPreauthorizedScope,
 		HeaderMode: e2proxy.HeaderProtectedSessionProposal,
 		Scope:      scope, IntentID: 1, OwnerRef: "ARTEX", PolicyRevision: "revision_runner", AccountRef: "account_runner", SessionRef: "session_runner",
 		ExpiresAt: now.Add(time.Minute), RootCAs: roots, Recorder: recorder,
@@ -171,7 +176,11 @@ func newRunnerFixtureConfigured(t *testing.T, base, helper, target string, roots
 		Budget: transmit.CumulativeBudget{Ledger: ledger, Key: grantKey, Binding: binding},
 		Limits: e2proxy.Limits{MaxAttempts: 100, MaxCalls: 10, MaxConcurrent: 8, MaxBodyBytes: 8192, RequestTimeout: 3 * time.Second,
 			CallTimeout: 20 * time.Second, MaxDenials: 20, MaxTransient: 20, MaxUnknown: 20},
-	})
+	}
+	if configureExecution != nil {
+		configureExecution(&executionConfig)
+	}
+	execution, err := e2proxy.NewExecution(t.Context(), executionConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
