@@ -416,6 +416,37 @@ class TestTaskRequest(unittest.TestCase):
                 task_request(value, TARGET)
             self.assertEqual(str(caught.exception), "task_target_mismatch")
 
+    def test_same_origin_paths_after_the_inspection_address(self):
+        # 결정안 §6 가드(2026-11-16): 첫 URL은 점검 주소와 정확히 같고, 뒤 URL은 같은 origin이면 경로를 받는다.
+        from runner_goal import common_goal
+        description = f"평가 대상 {TARGET} 웹앱을 진단한다."
+        goal = common_goal(TARGET, ["/users/v1", "/openapi.json", "/static/main.js", "=/"], [])
+        accepted = [
+            task(description=description, goal=goal),  # 점이 든 경로 이름도 같은 origin URL이면 받는다
+            task(description=description, goal="http://EVAL-METER:8080/users/v1 도 승인 경로다"),  # 호스트 대소문자
+        ]
+        for value in accepted:
+            with self.subTest(goal=value["goal"][:40]):
+                self.assertIsInstance(task_request(value, TARGET), TaskRequest)
+        # 기본 포트를 쓰는 점검 주소: 뒤 URL에 :80을 적어도 같은 origin이다.
+        self.assertIsInstance(task_request(task(description="대상 http://eval-meter 진단", goal="http://eval-meter:80/x 도 본다"),
+                                           "http://eval-meter"), TaskRequest)
+        rejected = {
+            "first_url_has_path": task(description=f"대상 {TARGET}/users/v1", goal=f"{TARGET} 도"),
+            "first_url_other_case": task(description="대상 http://EVAL-METER:8080 진단", goal="권한"),
+            "userinfo": task(description=description, goal=f"{TARGET}@evil.example/x 도"),
+            "host_tail": task(description=description, goal=f"{TARGET}.evil.com/x 도"),
+            "port_only": task(description=description, goal="http://eval-meter:9090/x 도"),
+            "scheme": task(description=description, goal="https://eval-meter:8080/x 도"),
+            "other_origin": task(description=description, goal="http://juice-shop:3000/x 도"),
+            "bare_dotted_path": task(description=description, goal="openapi.json 도 본다"),
+            "bad_port": task(description=description, goal="http://eval-meter:99999/x 도"),
+        }
+        for name, value in rejected.items():
+            with self.subTest(name), self.assertRaises(EngineAPIError) as caught:
+                task_request(value, TARGET)
+            self.assertEqual(str(caught.exception), "task_target_mismatch")
+
     def test_patterns_match_like_go_ascii_classes(self):
         # Go regexp의 \b·\s는 ASCII다. 한글 사이에 붙은 대상도 엔진과 같이 본다.
         self.assertEqual(_TARGET_URL.findall(f"대상{TARGET}을"), [f"{TARGET}을"])
