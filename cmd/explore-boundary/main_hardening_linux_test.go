@@ -104,6 +104,55 @@ func TestIngressKeepAliveTimesOut(t *testing.T) {
 	t.Fatal("plaintext keep-alive connection survived 15x timeout_ms idle (no IdleTimeout, not counted in max_tunnels)")
 }
 
+// 입구 서버의 연결은 봉인 전 드레인 수에 들어간다(#615 리뷰). 서버가 도는 동안 기준은 Serve 루프 수(입구 둘)이고,
+// 요청 머리를 다 보내지 않은 연결이 열려 있으면 그보다 많으며, 연결이 끝나면 기준으로 돌아온다.
+func TestIngressConnectionsCountTowardSealDrain(t *testing.T) {
+	c := validConfig(t)
+	p, err := build(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	free := func() netip.AddrPort {
+		l, _ := net.Listen("tcp", "127.0.0.1:0")
+		defer l.Close()
+		return netip.MustParseAddrPort(l.Addr().String())
+	}
+	p.listens = [2]netip.AddrPort{free(), free()}
+	p.socket = filepath.Join(filepath.Dir(c.CACertFile), "c.sock")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.serve(ctx)
+	for _, ingress := range p.listens {
+		var conn net.Conn
+		for i := 0; i < 50 && conn == nil; i++ {
+			conn, _ = net.Dial("tcp", ingress.String())
+			if conn == nil {
+				time.Sleep(20 * time.Millisecond)
+			}
+		}
+		if conn == nil {
+			t.Fatal("ingress did not start", ingress)
+		}
+		io.WriteString(conn, "GET http://x.example/ HTTP/1.1\r\n")
+		pending := 0
+		for i := 0; i < 50 && pending <= len(p.listens); i++ {
+			pending = p.drain(time.Millisecond)
+		}
+		if pending != len(p.listens)+1 {
+			t.Fatal("open ingress connection not counted by the seal drain", ingress, pending)
+		}
+		conn.Close()
+		left := pending
+		for i := 0; i < 100 && left != len(p.listens); i++ {
+			left = p.drain(time.Millisecond)
+			time.Sleep(10 * time.Millisecond)
+		}
+		if left != len(p.listens) {
+			t.Fatal("closed connection still counted by the seal drain", ingress, left)
+		}
+	}
+}
+
 // R13: 제어 소켓을 경계 uid 소유 0600으로만 만들고 engine_uid로 chown하지 않는다. engine_uid가 경계 uid와 다르고
 // root가 아니면 connect(2)가 쓰기 권한(unix(7))에서 먼저 막혀 SO_PEERCRED 검사까지 가지 못한다.
 // 제어 소켓 접속에는 소켓 파일 쓰기 권한이 필요하다. 엔진 uid가 경계와 같으면 0600 그대로, 다르면 엔진 uid 소유로 넘기고,

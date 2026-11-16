@@ -143,6 +143,7 @@ type parts struct {
 	browser *exploreboundary.Proxy
 	direct  *exploreboundary.Proxy
 	listens [2]netip.AddrPort
+	conns   *exploreboundary.IngressConns
 	socket  string
 	uid     uint32
 	gid     uint32
@@ -212,7 +213,8 @@ func build(c config) (*parts, error) {
 		return nil, err
 	}
 	m.Proxies = []*exploreboundary.Proxy{browser, direct}
-	return &parts{manager: m, browser: browser, direct: direct, listens: [2]netip.AddrPort{browserAddr, directAddr}, socket: c.ControlSocket, uid: c.EngineUID, gid: c.EngineGID, timeout: timeout}, nil
+	return &parts{manager: m, browser: browser, direct: direct, listens: [2]netip.AddrPort{browserAddr, directAddr}, conns: exploreboundary.NewIngressConns(),
+		socket: c.ControlSocket, uid: c.EngineUID, gid: c.EngineGID, timeout: timeout}, nil
 }
 
 func (p *parts) serve(ctx context.Context) error {
@@ -261,11 +263,13 @@ func (p *parts) serve(ctx context.Context) error {
 			return errors.Join(err, p.shutdown(servers, exploreboundary.SealedByFailure))
 		}
 		// 쉬는 keep-alive 연결은 터널 수에 들어가지 않으므로 시간 상한으로 닫는다(#488 리뷰).
-		server := &http.Server{Handler: handler, ReadHeaderTimeout: p.timeout, IdleTimeout: p.timeout, ErrorLog: log.New(io.Discard, "", 0)}
+		// ConnState로 끝나지 않은 입구 연결을 센다. 봉인 전 드레인이 승인 전 핸들러까지 기다리는 데 쓴다(#615 리뷰).
+		server := &http.Server{Handler: handler, ReadHeaderTimeout: p.timeout, IdleTimeout: p.timeout, ErrorLog: log.New(io.Discard, "", 0),
+			ConnState: p.conns.ConnState}
 		servers = append(servers, server)
 		go func() { <-ctx.Done(); _ = server.Close() }()
 		go func() {
-			if err := server.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			if err := p.conns.Serve(server, l); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				errs <- err
 			}
 		}()
@@ -279,7 +283,8 @@ func (p *parts) serve(ctx context.Context) error {
 }
 
 // shutdown은 새 요청이 들어오지 않게 입구와 터널을 닫은 뒤 원자료를 봉인한다(원자료를 쓰지 않는 설치는 봉인이 없다).
-// 봉인을 입구보다 먼저 하면 봉인 뒤 들어온 요청의 행이 원자료에서 빠진다.
+// 봉인을 입구보다 먼저 하면 봉인 뒤 들어온 요청의 행이 원자료에서 빠진다. http.Server.Close는 실행 중 핸들러를 기다리지
+// 않으므로, 봉인은 세션을 닫은 뒤 입구 연결·터널이 끝나길 드레인하고 나서 한다(#615 리뷰).
 func (p *parts) shutdown(servers []*http.Server, by string) error {
 	var errs []error
 	for _, server := range servers {
@@ -289,10 +294,15 @@ func (p *parts) shutdown(servers []*http.Server, by string) error {
 	}
 	p.browser.CloseTunnels()
 	p.direct.CloseTunnels()
-	if err := p.manager.Seal(by); err != nil {
+	if err := p.manager.Seal(by, p.drain); err != nil {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
+}
+
+// drain은 입구를 닫은 뒤 아직 원자료 행을 남길 수 있는 입구 연결·Serve 루프·터널이 끝나길 wait까지 기다리고 남은 수를 돌려준다.
+func (p *parts) drain(wait time.Duration) int {
+	return exploreboundary.Drain(wait, p.conns, p.browser, p.direct)
 }
 
 func main() {

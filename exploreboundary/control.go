@@ -258,9 +258,13 @@ func (m *Manager) Handle(ctx context.Context, in ControlRequest) ControlResponse
 }
 
 // Seal은 경계를 내릴 때 원자료를 봉인한다. 입구·터널을 먼저 닫은 뒤 부른다. 열린 세션이 있으면 cancelled로 닫고
-// 진행 중 요청을 CloseWait까지 기다린 다음, 행 파일을 flush·fsync하고 표식을 마지막에 쓴다. 원자료를 쓰지 않는
-// 설치(제품)는 아무것도 하지 않는다. 봉인 뒤 늦게 끝난 요청은 원자료에 없고, 그 수가 표식의 inflight_at_seal이다.
-func (m *Manager) Seal(by string) error {
+// 진행 중 송신을 CloseWait까지 기다린다. 그다음 drain으로 아직 행을 남길 수 있는 입구 처리(송신 ticket 전 본문 읽기,
+// 입구를 닫은 뒤 늦게 시작한 핸들러, 터널)가 끝나길 같은 상한까지 기다린다. 세션을 먼저 닫으므로 그동안 새 송신은
+// 없고 그 요청들은 차단 행으로 남는다. 그 뒤 행 파일을 flush·fsync하고 표식을 마지막에 쓴다. 원자료를 쓰지 않는
+// 설치(제품)는 아무것도 하지 않는다. 봉인 때 끝나지 않은 송신과 drain이 돌려준 남은 처리는 원자료에 행이 없을 수
+// 있으므로, 그 합이 표식의 inflight_at_seal이다(0이 아니면 원자료가 불완전하다, #615 리뷰). drain이 nil이면 기다릴
+// 입구 처리가 없는 것이다.
+func (m *Manager) Seal(by string, drain func(wait time.Duration) int) error {
 	ev := m.Policy.Evidence
 	if ev == nil {
 		return nil
@@ -282,10 +286,14 @@ func (m *Manager) Seal(by string) error {
 	if err != nil {
 		return err
 	}
+	pending := 0
+	if drain != nil {
+		pending = drain(m.CloseWait)
+	}
 	// 세션 잠금 안에서 진행 중 수를 읽고 봉인해, 그 사이에 끝난 요청의 행이 수와 어긋나지 않게 한다.
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return ev.seal(s.inflight, closedAtSeal, by, s.policy.Now().UTC())
+	return ev.seal(s.inflight+pending, closedAtSeal, by, s.policy.Now().UTC())
 }
 
 // watch는 세션이 닫히면 열린 터널을 끊어 새 송신과 남은 연결을 함께 정리한다(§6).

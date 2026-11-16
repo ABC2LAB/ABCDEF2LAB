@@ -135,7 +135,7 @@ func TestEvidencePathPatternMatchesMeterMasking(t *testing.T) {
 			}
 			m := &Manager{Policy: session.policy, CloseWait: time.Second}
 			m.current = session
-			if err := m.Seal(SealedByShutdown); err != nil {
+			if err := m.Seal(SealedByShutdown, nil); err != nil {
 				t.Fatal(err)
 			}
 			rows, _ := readRows(t, dir)
