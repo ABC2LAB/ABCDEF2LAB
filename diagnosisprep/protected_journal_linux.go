@@ -24,7 +24,7 @@ func OpenProtectedJournal(path string) (*ProtectedJournal, []json.RawMessage, er
 func (p *ProtectedJournal) Check() error { p.mu.Lock(); defer p.mu.Unlock(); return p.check() }
 func (p *ProtectedJournal) check() error {
 	j := p.journal
-	if j == nil || j.poisoned || !j.root.current() || !j.root.matches(journalName, j.file, j.stat) || !j.root.matches(headName, j.head, j.headStat) {
+	if j == nil || j.poisoned || !j.current() {
 		return ErrUnavailable
 	}
 	return nil
