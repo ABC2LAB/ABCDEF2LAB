@@ -140,8 +140,10 @@ def _text(value: object, code: str) -> str:
 def healthcheck_actions(rendered: dict) -> dict[str, str]:
     """compose 렌더 결과(`docker compose config --format json`)에서 서비스마다 Docker가 healthcheck exec 이벤트에 적는 명령.
 
-    CMD 배열은 인자를 공백으로 이은 것, CMD-SHELL은 `/bin/sh -c <명령>`이다(ENGINE_DB_HEALTHCHECK와 같은 규칙). NONE이거나
-    disable이면 healthcheck가 없다. 모양이 다르면 거부한다(허용 목록이 실제와 어긋나면 정상 healthcheck가 위반으로 보인다)."""
+    Docker(Moby daemon/health.go)는 이벤트 동작을 `실행 파일 + " " + 인자들을 공백으로 이은 것`으로 적는다. 그래서 CMD
+    [x, a, b]는 `x a b`, 인자 없는 CMD [x]는 끝 공백이 붙은 `x `, CMD-SHELL은 실행 파일 /bin/sh와 인자 [-c, 명령]이라
+    `/bin/sh -c <명령>`이다(ENGINE_DB_HEALTHCHECK와 같은 규칙). NONE이거나 disable이면 healthcheck가 없다. 모양이 다르면
+    거부한다(허용 목록이 실제와 어긋나면 정상 healthcheck가 위반으로 보인다)."""
     services = rendered.get("services") if isinstance(rendered, dict) else None
     if not isinstance(services, dict):
         raise WindowError("healthcheck_render_invalid")
@@ -156,9 +158,9 @@ def healthcheck_actions(rendered: dict) -> dict[str, str]:
         if test == ["NONE"]:
             continue
         if test[0] == "CMD" and len(test) > 1:
-            actions[name] = " ".join(test[1:])
+            actions[name] = test[1] + " " + " ".join(test[2:])
         elif test[0] == "CMD-SHELL" and len(test) == 2:
-            actions[name] = "/bin/sh -c " + test[1]
+            actions[name] = "/bin/sh" + " " + " ".join(["-c", test[1]])
         else:
             raise WindowError("healthcheck_render_invalid")
     return actions

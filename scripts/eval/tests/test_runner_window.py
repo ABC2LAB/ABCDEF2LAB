@@ -47,8 +47,10 @@ class TestHealthcheckActions(unittest.TestCase):
             "b": {"healthcheck": {"test": ["CMD-SHELL", 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"']}},
             "c": {"healthcheck": {"test": ["NONE"]}},
             "d": {"healthcheck": {"test": ["CMD", "true"], "disable": True}},
-            "e": {"image": "x"}}}
-        self.assertEqual(healthcheck_actions(rendered), {"a": "curl --fail http://x/health", "b": ENGINE_DB_HEALTHCHECK})
+            "e": {"image": "x"},
+            # 인자 없는 CMD: Docker는 `실행 파일 + " " + 인자 이음`이라 끝 공백이 남는다(#663 리뷰, moby daemon/health.go).
+            "f": {"healthcheck": {"test": ["CMD", "true"]}}}}
+        self.assertEqual(healthcheck_actions(rendered), {"a": "curl --fail http://x/health", "b": ENGINE_DB_HEALTHCHECK, "f": "true "})
 
     def test_unknown_shapes_are_refused(self):
         for test in (["CMD"], ["CMD-SHELL", "a", "b"], ["BOGUS", "x"], [], "curl x", ["CMD", 1]):
@@ -100,6 +102,18 @@ class TestPerServiceHealthchecks(unittest.TestCase):
         self.assertEqual(self.judge(created + die)["boundary_events"], [])
         wrong = [event("container", "exec_create: id", self.PG, at=before, execID="L2")]
         self.assertTrue(self.judge(wrong + [event("container", "exec_die", self.PG, execID="L2", exitCode="0")])["boundary_events"])
+
+    def test_single_executable_cmd_keeps_the_trailing_space(self):
+        # 리뷰 반례: 인자 없는 CMD의 create/start/die와 lookback exec ID가 끝 공백 문자열로 통과해야 한다.
+        command = healthcheck_actions({"services": {"preparation": {"healthcheck": {"test": ["CMD", "true"]}}}})["preparation"]
+        self.assertEqual(command, "true ")
+        checks = {"preparation": command}
+        before = START - 5
+        events = [event("container", "exec_create: " + command, self.PREP, at=before, execID="t0"),
+                  event("container", "exec_die", self.PREP, execID="t0", exitCode="0")] + self.lifecycle(self.PREP, command, "t1")
+        self.assertEqual(self.judge(events, checks=checks)["boundary_events"], [])
+        # 끝 공백 없는 문자열은 Docker가 내지 않는 동작이다.
+        self.assertTrue(self.judge([event("container", "exec_create: true", self.PREP, execID="t2")], checks=checks)["boundary_events"])
 
     def test_default_keeps_the_engine_db_rule(self):
         events = self.lifecycle(IDS["engine-db"], ENGINE_DB_HEALTHCHECK, "d1")
