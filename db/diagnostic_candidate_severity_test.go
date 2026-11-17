@@ -1,0 +1,176 @@
+package db
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+)
+
+func observedSeverityCandidate(t *testing.T, task, intent int64) DiagnosticCandidate {
+	t.Helper()
+	c := syntheticDiagnosticCandidate(task, intent, "severity-call")
+	var e map[string]any
+	if json.Unmarshal([]byte(c.Evidence), &e) != nil {
+		t.Fatal("합성 관찰 준비 실패")
+	}
+	trusted := e["trusted"].(map[string]any)
+	for _, k := range []string{"final", "process_bash_exited", "process_drained", "proxy_drained"} {
+		trusted[k] = true
+	}
+	call := trusted["call"].(map[string]any)
+	call["final"], call["audit_complete"] = true, true
+	call["counts"] = map[string]any{"responses": 1, "forward_attempted": 1, "unknown": 0}
+	call["observations"] = []any{map[string]any{"sequence": 1, "attempt_ref": "severity-attempt", "method": "GET", "endpoint": "/documents", "rule_ref": "approved-rule", "decision": "allowed", "status_code": 200, "response_complete": true, "forward_attempted": true, "audit_complete": true, "observed_at": time.Now().UTC().Format(time.RFC3339Nano)}}
+	raw, _ := json.Marshal(e)
+	c.Evidence = string(raw)
+	c.EvidenceDigest = DiagnosticEvidenceDigest(c.Evidence)
+	c.SuggestedSeverity, c.SeverityRationale, c.SeveritySource = "high", "인증되지 않은 관찰에서 비공개 문서 내용이 노출되어 접근통제 영향을 검토해야 합니다.", WorkerEstimate
+	return c
+}
+
+func TestDiagnosticCandidateSeverityConservativeNormalization(t *testing.T) {
+	good := observedSeverityCandidate(t, 1, 2)
+	if n := good.NormalizedSeverity(); n.SuggestedSeverity != "high" || n.Verification != "manual_review_required" || n.EvidenceDigest != good.EvidenceDigest {
+		t.Fatal("평가 보존 또는 판정 분리 실패")
+	}
+	tests := map[string]func(*DiagnosticCandidate){
+		"legacy":           func(c *DiagnosticCandidate) { c.SuggestedSeverity = "" },
+		"enum":             func(c *DiagnosticCandidate) { c.SuggestedSeverity = "HIGH" },
+		"no rationale":     func(c *DiagnosticCandidate) { c.SeverityRationale = "" },
+		"short":            func(c *DiagnosticCandidate) { c.SeverityRationale = "높음" },
+		"not Korean":       func(c *DiagnosticCandidate) { c.SeverityRationale = "No verified impact is available" },
+		"multiline":        func(c *DiagnosticCandidate) { c.SeverityRationale += "\n추측" },
+		"large":            func(c *DiagnosticCandidate) { c.SeverityRationale = strings.Repeat("문", 400) },
+		"source claim":     func(c *DiagnosticCandidate) { c.SeveritySource = "confirmed" },
+		"digest":           func(c *DiagnosticCandidate) { c.Evidence += " " },
+		"scope":            func(c *DiagnosticCandidate) { c.TaskID++ },
+		"output truncated": func(c *DiagnosticCandidate) { c.OutputTruncated = true },
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			c := good
+			mutate(&c)
+			n := c.NormalizedSeverity()
+			if n.SuggestedSeverity != "" || n.SeveritySource != "" || n.SeverityRationale != "" {
+				t.Fatal("부족한 근거의 평가를 수용함")
+			}
+			if n.Evidence != c.Evidence || n.Name != c.Name {
+				t.Fatal("평가 거부가 후보를 바꿈")
+			}
+		})
+	}
+	for _, status := range []string{"policy_not_executed", "result_unknown", "unsupported", "partial_policy_denial", "tool_failure"} {
+		t.Run(status, func(t *testing.T) {
+			c := good
+			c.Classification = status
+			var evidence map[string]any
+			json.Unmarshal([]byte(c.Evidence), &evidence)
+			evidence["trusted"].(map[string]any)["classification"] = status
+			raw, _ := json.Marshal(evidence)
+			c.Evidence = string(raw)
+			c.EvidenceDigest = DiagnosticEvidenceDigest(c.Evidence)
+			if c.NormalizedSeverity().SuggestedSeverity != "" {
+				t.Fatal("실행 상태를 평가로 승격함")
+			}
+		})
+	}
+	for _, field := range []string{"final", "process_bash_exited", "process_drained", "proxy_drained"} {
+		t.Run(field, func(t *testing.T) {
+			c := good
+			var e map[string]any
+			json.Unmarshal([]byte(c.Evidence), &e)
+			e["trusted"].(map[string]any)[field] = false
+			raw, _ := json.Marshal(e)
+			c.Evidence = string(raw)
+			c.EvidenceDigest = DiagnosticEvidenceDigest(c.Evidence)
+			if c.NormalizedSeverity().SuggestedSeverity != "" {
+				t.Fatal("마감 없는 평가")
+			}
+		})
+	}
+	for _, field := range []string{"final", "audit_complete", "observations", "counts"} {
+		t.Run("call-"+field, func(t *testing.T) {
+			c := good
+			var e map[string]any
+			json.Unmarshal([]byte(c.Evidence), &e)
+			delete(e["trusted"].(map[string]any)["call"].(map[string]any), field)
+			raw, _ := json.Marshal(e)
+			c.Evidence = string(raw)
+			c.EvidenceDigest = DiagnosticEvidenceDigest(c.Evidence)
+			if c.NormalizedSeverity().SuggestedSeverity != "" {
+				t.Fatal("HTTP·감사 근거 없는 평가")
+			}
+		})
+	}
+	c := good
+	c.SeverityRationale += " Authorization: Bearer synthetic-severity-secret"
+	n := c.NormalizedSeverity()
+	if strings.Contains(n.SeverityRationale, "synthetic-severity-secret") {
+		t.Fatal("평가 근거 자격정보 노출")
+	}
+}
+
+func TestDiagnosticCandidateSeverityPostgresIdempotencyLegacyAndStale(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	task, err := d.CreateTask("합성 평가 저장", "저장 조회 시험", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.DeleteTask(task.ID)
+	store := d.Exploration(task.ExplorationID)
+	intent, err := store.AddIntent(map[string]any{"summary": "합성 평가"}, 5, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := observedSeverityCandidate(t, task.ID, intent)
+	id, err := store.RecordDiagnosticCandidate(t.Context(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := c
+	changed.SuggestedSeverity = "critical"
+	again, err := store.RecordDiagnosticCandidate(t.Context(), changed)
+	if err != nil || again != id {
+		t.Fatal("중복 평가 덮어쓰기", err)
+	}
+	rows, err := store.ListDiagnosticCandidates(task.ID, "", 10)
+	if err != nil || len(rows) != 1 || rows[0].SuggestedSeverity != "high" || rows[0].Verification != "manual_review_required" {
+		t.Fatal("DB 평가 왕복 실패", err)
+	}
+	ref := fmt.Sprintf("candidate-%d", id)
+	before, err := LoadDiagnosticRemediationSource(context.Background(), d, task.ID, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := d.SaveDiagnosticRemediation(t.Context(), task.ID, ref, before.SourceDigest, nil)
+	if err != nil {
+		t.Fatal("조치 저장 실패", err)
+	}
+
+	if _, err = d.Exec(`UPDATE exploration_nodes SET payload=jsonb_set(payload,'{diagnostic_candidate_v1,severity_rationale}',to_jsonb('관측된 비공개 문서에 대한 접근통제 영향의 추가 설명입니다.'::text)) WHERE id=$1`, id); err != nil {
+		t.Fatal(err)
+	}
+	after, err := LoadDiagnosticRemediationSource(t.Context(), d, task.ID, ref)
+	if err != nil || before.SourceDigest == after.SourceDigest || before.EvidenceDigest != after.EvidenceDigest {
+		t.Fatal("평가 변경의 원본 지문·증거 분리 실패", err)
+	}
+	records, err := ListDiagnosticRemediationRecords(t.Context(), d, task.ID, 10)
+	if err != nil || len(records) != 1 || records[0].ID != record.ID || !records[0].Stale {
+		t.Fatal("평가 변경 뒤 조치 stale 미탐지", err)
+	}
+
+	if _, err = d.Exec(`UPDATE exploration_nodes SET payload=jsonb_set(payload,'{diagnostic_candidate_v1}',(payload->'diagnostic_candidate_v1')-'suggested_severity'-'severity_rationale'-'severity_source') WHERE id=$1`, id); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = store.ListDiagnosticCandidates(task.ID, "", 10)
+	if err != nil || len(rows) != 1 || rows[0].SuggestedSeverity != "" {
+		t.Fatal("구버전 호환 실패", err)
+	}
+}

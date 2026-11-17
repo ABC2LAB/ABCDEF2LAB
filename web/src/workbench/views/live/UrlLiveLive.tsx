@@ -19,6 +19,7 @@ import {
 } from "@/lib/diagnosis/diagnostic-results";
 import type { RemediationEntry } from "@/lib/diagnosis/remediation";
 import { type RequestApprovalRunState, RUN_COUNT_ROWS } from "@/lib/diagnosis/request-approvals";
+import { entrySeverity, entrySeverityLabel } from "@/lib/diagnosis/severity";
 
 import { SEVL, type SevKey } from "../../data/findings";
 import { cx } from "../../lib/cx";
@@ -464,15 +465,22 @@ const RUN_OUTCOME: Readonly<Record<RequestApprovalRunState["outcome"], string>> 
 /** 우선 조치 · 목록 순서: 확정 → 검토 필요 → 미실행 → 결과 불명 → 정상 대조. */
 export const ORDER: readonly DiagnosticOutcome[] = ["confirmed", "review", "not_executed", "unknown", "negative"];
 /** 위험도 순서 (시안 v20 "위험도와 판정 순"). 서버가 심각도를 안 줬으면 맨 뒤. */
-const SEV_KEYS: readonly SevKey[] = ["crit", "hi", "mid", "lo"];
+const SEV_KEYS: readonly SevKey[] = ["crit", "hi", "mid", "lo", "info"];
 const sevRank = (e: RemediationEntry) => {
-  const k = sevKey(e.severity ?? "");
+  const k = sevKey(entrySeverity(e) ?? "");
   return k ? SEV_KEYS.indexOf(k) : SEV_KEYS.length;
 };
 /** 위험도 딱지. 서버가 심각도를 주지 않았으면 "등급 없음". */
 export function Sev({ e }: { e: RemediationEntry }) {
-  const k = sevKey(e.severity ?? "");
-  return k ? <span className={cx(s.sev, s[k])}>{SEVL[k]}</span> : <span className={s.sev}>등급 없음</span>;
+  const k = sevKey(entrySeverity(e) ?? "");
+  return (
+    <span
+      className={cx(s.sev, k && s[k])}
+      title={e.severity_source === "worker_estimate" ? maskSecrets(e.severity_rationale ?? "") : undefined}
+    >
+      {entrySeverityLabel(e)}
+    </span>
+  );
 }
 
 /** 서버가 값을 모른다고 적은 맥락 칸 ("unknown" · "미확인…")은 없는 것으로 본다. */
@@ -721,6 +729,12 @@ export function FindingDetail({
           <EntryEp e={e} />
         </div>
       ) : null}
+      {entrySeverity(e) && e.severity_source === "worker_estimate" ? (
+        <Isec t="예상 심각도 근거 · 모델 제안">
+          <p>{maskSecrets(e.severity_rationale ?? "")}</p>
+          <p className={s.help}>이 등급은 검토 우선순위 제안이며 취약점 확정이나 CVSS 점수가 아닙니다.</p>
+        </Isec>
+      ) : null}
       {/* 시안 계정별 응답 비교 표: 서버가 계정별 비교를 따로 주지 않아 머리글만 두고 값은 채우지 않는다 */}
       <Isec t="계정별 응답 비교">
         <table className={s.cmp}>
@@ -845,8 +859,24 @@ export function UrlReportLive() {
     .sort(
       (x, y) => sevRank(x) - sevRank(y) || ORDER.indexOf(diagnosticOutcome(x)) - ORDER.indexOf(diagnosticOutcome(y)),
     );
-  const bySev = SEV_KEYS.map((k) => [k, findings.filter((e) => sevKey(e.severity ?? "") === k).length] as const);
-  const noSev = findings.filter((e) => !sevKey(e.severity ?? "")).length;
+  const bySev = SEV_KEYS.map(
+    (k) =>
+      [
+        k,
+        findings.filter((e) => diagnosticOutcome(e) === "confirmed" && sevKey(entrySeverity(e) ?? "") === k).length,
+      ] as const,
+  );
+  const estimateSummary = SEV_KEYS.map(
+    (k) =>
+      [
+        k,
+        findings.filter((e) => diagnosticOutcome(e) === "review" && sevKey(entrySeverity(e) ?? "") === k).length,
+      ] as const,
+  )
+    .filter(([, n]) => n > 0)
+    .map(([k, n]) => `예상 ${SEVL[k]} ${n}`)
+    .join(" · ");
+  const noSev = findings.filter((e) => !sevKey(entrySeverity(e) ?? "")).length;
   const chosen = sorted.find((e) => e.entry_id === sel) ?? findings[0] ?? sorted[0];
   const profile = cap.kind === "v2" ? cap.catalog.profiles.find((p) => p.id === job.input.profile_id) : undefined;
   let covSub = "읽는 중";
@@ -953,7 +983,11 @@ export function UrlReportLive() {
                 <div className={s.k}>발견</div>
                 <div className={s.v}>{findings.length}</div>
                 <div className={s.sub}>
-                  {[...bySev.map(([k, n]) => `${SEVL[k]} ${n}`), ...(noSev ? [`등급 없음 ${noSev}`] : [])].join(" · ")}
+                  {[
+                    ...bySev.map(([k, n]) => `확정 ${SEVL[k]} ${n}`),
+                    ...(estimateSummary ? [estimateSummary] : []),
+                    ...(noSev ? [`위험도 미평가 ${noSev}`] : []),
+                  ].join(" · ")}
                 </div>
               </div>
               <div className={s.cell}>

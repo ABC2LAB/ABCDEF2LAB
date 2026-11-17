@@ -126,7 +126,9 @@ describe("발견", () => {
     expect(sevKey("high")).toBe("hi");
     expect(sevKey("MEDIUM")).toBe("mid");
     expect(sevKey("low")).toBe("lo");
-    expect(sevKey("info")).toBeNull();
+    expect(sevKey("info")).toBe("info");
+    expect(sevKey("constructor")).toBeNull();
+    expect(sevKey("unknown")).toBeNull();
   });
 
   it("처리 상태 이름은 판정 낱말(확정·의심·판단 불가)을 쓰지 않는다", () => {

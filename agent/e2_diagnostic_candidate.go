@@ -80,14 +80,16 @@ func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTP
 	var mu sync.Mutex
 	return actool.Build(actool.Spec{
 		Name:        "submit_diagnostic_candidate",
-		Description: "Preserve a potential vulnerability for manual review using an actual Bash call_ref from this intent. This tool cannot confirm a vulnerability, change approval, send requests, or invent evidence. Display text must be Korean.",
+		Description: "Preserve a potential vulnerability for manual review using an actual Bash call_ref from this intent. This tool cannot confirm a vulnerability, change approval, send requests, or invent evidence. Display text must be Korean. Optionally suggest severity only from observed impact, resource sensitivity and known prerequisites in a completed HTTP observation; never infer a rating from the vulnerability class alone. Omit the estimate when evidence is insufficient. Estimates never confirm a finding.",
 		Schema: map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
-			"related_call_refs": map[string]any{"type": "array", "maxItems": 8, "items": map[string]any{"type": "string", "maxLength": 256}},
-			"call_ref":          map[string]any{"type": "string", "maxLength": 256},
-			"vulnclass":         map[string]any{"type": "string", "maxLength": 128},
-			"name":              map[string]any{"type": "string", "maxLength": 512},
-			"summary":           map[string]any{"type": "string", "maxLength": 8192},
-			"remediation":       map[string]any{"type": "string", "maxLength": 8192},
+			"suggested_severity": map[string]any{"type": "string", "enum": []string{"critical", "high", "medium", "low", "info"}},
+			"severity_rationale": map[string]any{"type": "string", "maxLength": db.MaxSeverityRationaleBytes, "description": "A short single-line Korean explanation grounded in actual observed impact and known prerequisites. No credentials or invented CVSS."},
+			"related_call_refs":  map[string]any{"type": "array", "maxItems": 8, "items": map[string]any{"type": "string", "maxLength": 256}},
+			"call_ref":           map[string]any{"type": "string", "maxLength": 256},
+			"vulnclass":          map[string]any{"type": "string", "maxLength": 128},
+			"name":               map[string]any{"type": "string", "maxLength": 512},
+			"summary":            map[string]any{"type": "string", "maxLength": 8192},
+			"remediation":        map[string]any{"type": "string", "maxLength": 8192},
 		}, "required": []string{"call_ref", "vulnclass", "name", "summary"}},
 		Concurrent: func(json.RawMessage) bool { return false },
 		Run: func(ctx context.Context, input json.RawMessage, _ *actool.ToolContext) (actool.Result, error) {
@@ -107,12 +109,14 @@ func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTP
 				return actool.Errorf("diagnostic_candidate_unavailable"), nil
 			}
 			var in struct {
-				RelatedCallRefs []string `json:"related_call_refs"`
-				CallRef         string   `json:"call_ref"`
-				VulnClass       string   `json:"vulnclass"`
-				Name            string   `json:"name"`
-				Summary         string   `json:"summary"`
-				Remediation     string   `json:"remediation"`
+				SuggestedSeverity json.RawMessage `json:"suggested_severity"`
+				SeverityRationale json.RawMessage `json:"severity_rationale"`
+				RelatedCallRefs   []string        `json:"related_call_refs"`
+				CallRef           string          `json:"call_ref"`
+				VulnClass         string          `json:"vulnclass"`
+				Name              string          `json:"name"`
+				Summary           string          `json:"summary"`
+				Remediation       string          `json:"remediation"`
 			}
 			decoder := json.NewDecoder(bytes.NewReader(input))
 			decoder.DisallowUnknownFields()
@@ -173,6 +177,11 @@ func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTP
 				Evidence: observed.Evidence, EvidenceDigest: db.DiagnosticEvidenceDigest(observed.Evidence), ObservedAt: observed.At,
 				OutputTruncated: observed.Truncated,
 			}
+			var severity, rationale string
+			if json.Unmarshal(in.SuggestedSeverity, &severity) == nil && json.Unmarshal(in.SeverityRationale, &rationale) == nil {
+				candidate.SuggestedSeverity, candidate.SeverityRationale, candidate.SeveritySource = severity, redact(rationale), db.WorkerEstimate
+			}
+			candidate = candidate.NormalizedSeverity()
 			if candidate.Validate() != nil {
 				event("candidate_validated", "failed", "candidate_binding_invalid", "")
 				return actool.Errorf("diagnostic_candidate_binding_invalid"), nil

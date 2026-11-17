@@ -108,6 +108,8 @@ export type RemediationEntry = {
   truncated?: boolean;
   vuln_class?: string;
   severity?: string;
+  severity_source?: string;
+  severity_rationale?: string;
   context?: RemediationContext;
   technologies?: Technology[];
   entry_id: string;
@@ -341,6 +343,11 @@ const entrySchema = z.object({
   truncated: z.boolean().optional(),
   vuln_class: text.optional(),
   severity: text.optional(),
+  severity_source: text.optional(),
+  severity_rationale: text
+    .max(1024)
+    .refine((v) => new TextEncoder().encode(v).length <= 1024)
+    .optional(),
   entry_id: text.regex(/^(candidate|finding|verdict)-[1-9][0-9]*$/),
   title: text.catch("제목 미확인"),
   outcome: text.catch("unknown"),
@@ -375,7 +382,9 @@ export function parseRemediationData(value: unknown, task: string, audience: str
     ids.add(entry.entry_id);
     if (
       audience === "shared" &&
-      (entry.source_digest ||
+      (entry.severity_source ||
+        entry.severity_rationale ||
+        entry.source_digest ||
         entry.context ||
         entry.technologies?.length ||
         entry.record?.bundle ||

@@ -158,15 +158,22 @@ export function fmtTokensShort(n: number): string {
 // ---------- 발견 ----------
 
 /** 엔진 심각도 순서 (높은 것부터). */
-export const SEVERITIES = ["critical", "high", "medium", "low"] as const;
+export const SEVERITIES = ["critical", "high", "medium", "low", "info"] as const;
 /** 엔진 심각도 값. */
 export type Severity = (typeof SEVERITIES)[number];
 
-const SEV: Readonly<Record<Severity, SevKey>> = { critical: "crit", high: "hi", medium: "mid", low: "lo" };
+const SEV: Readonly<Record<Severity, SevKey>> = {
+  critical: "crit",
+  high: "hi",
+  medium: "mid",
+  low: "lo",
+  info: "info",
+};
 
-/** 엔진 심각도 → 작업대 Sev 키 (`<Sev k=…/>`). 모르는 값(info 등)은 null → 원문 표시. */
+/** 엔진 심각도 → 작업대 Sev 키 (`<Sev k=…/>`). 모르는 값은 null → 원문 표시. */
 export function sevKey(severity: string): SevKey | null {
-  return SEV[severity.toLowerCase() as Severity] ?? null;
+  const key = severity.toLowerCase();
+  return Object.hasOwn(SEV, key) ? SEV[key as Severity] : null;
 }
 
 /** 발견 처리 상태 이름 (워크플로 상태). **판정이 아니다** — 화면에서는 "처리 상태" 칸으로만 보인다. */
