@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from path_mask import key_ref  # noqa: E402
 from preservation_record import (FORMAT_V3, NAME, PreservationRecordError, _validate_v3, build_payload_v3,  # noqa: E402
+                                 expected_first_limit,
                                  load_record, validate_series)
 from run_record import sign_run_record  # noqa: E402
 from runner_evidence import MeterFiles  # noqa: E402
@@ -134,6 +135,14 @@ class TestBuildAndLoad(V3Fixture):
         with self.assertRaisesRegex(PreservationRecordError, "preservation_product_invalid"):
             self.load(directory, meter)
 
+    def test_signed_contradicting_first_limit_is_rejected_on_load(self):
+        # #676 리뷰: 끝 관측이 없는데 엔진 우선으로 적힌 서명 기록은 읽기에서 거부한다.
+        directory, meter, payload = self.fixture_v3("baseline")
+        bad = dict(payload, run=dict(payload["run"], first_limit=dict(payload["run"]["first_limit"], value="engine_completed")))
+        self.write(directory, NAME, sign_run_record(bad, RUNNER_KEY))
+        with self.assertRaisesRegex(PreservationRecordError, "preservation_run_invalid"):
+            self.load(directory, meter)
+
     def test_boundary_required_only_for_ours(self):
         with self.assertRaisesRegex(PreservationRecordError, "preservation_boundary_missing"):
             self.fixture_v3("ours", boundary=None)
@@ -179,10 +188,11 @@ class TestShape(V3Fixture):
         engine = {"value": "engine_completed", "runner_limit": "runner_time_budget", "runner_limit_elapsed_seconds": 60,
                   "engine_terminal_elapsed_seconds": 42.5}
         ok_b = copy.deepcopy(self.b)
-        ok_b["run"] = run("baseline", first_limit=engine, end_signal={"status": "done", "elapsed_seconds": 42.5, "closing_reason": None})
+        ok_b["run"] = run("baseline", stop_reason="time_budget", first_limit=engine,
+                          end_signal={"status": "done", "elapsed_seconds": 42.5, "closing_reason": None})
         _validate_v3(ok_b)
         ok_o = copy.deepcopy(self.o)
-        ok_o["run"] = run("ours", first_limit=dict(engine, value="product_limit:budget_limited"),
+        ok_o["run"] = run("ours", stop_reason="time_budget", first_limit=dict(engine, value="product_limit:budget_limited"),
                           end_signal={"status": "completed", "elapsed_seconds": 42.5, "closing_reason": "budget_limited"})
         _validate_v3(ok_o)
         self.reject(ok_b, "preservation_run_invalid", lambda r: r["run"]["first_limit"].__setitem__("value", "product_limit:budget_limited"))
@@ -195,6 +205,49 @@ class TestShape(V3Fixture):
         b_null = copy.deepcopy(self.b)
         b_null["run"]["rate_limited"] = None
         _validate_v3(b_null)
+
+    def test_first_limit_must_match_the_observations(self):
+        # #676 리뷰 반례: 서명돼 있어도 관측 시각·마감 사유와 모순된 분류는 거부한다.
+        def first(value, runner_at, engine_at, limit="runner_request_budget"):
+            return {"value": value, "runner_limit": limit, "runner_limit_elapsed_seconds": runner_at,
+                    "engine_terminal_elapsed_seconds": engine_at}
+
+        def end(at, closing=None):
+            return None if at is None else {"status": "done", "elapsed_seconds": at, "closing_reason": closing}
+
+        cases = [
+            ("baseline", first("engine_completed", 40.0, None), end(None)),           # 끝 관측 없이 엔진 우선
+            ("baseline", first("engine_completed", 40.0, 60.0), end(60.0)),           # 엔진이 늦게 끝남
+            ("baseline", first("runner_request_budget", 40.0, 20.0), end(20.0)),      # 엔진이 먼저 끝났는데 러너 상한
+            ("ours", first("product_limit:budget_limited", 40.0, 20.0), end(20.0)),   # 마감 사유 없이 제품 상한
+            ("ours", first("engine_completed", 40.0, 20.0), end(20.0, "budget_limited")),  # 제품 예산 마감인데 엔진 완료
+            ("baseline", first("runner_time_budget", 40.0, None, "runner_time_budget"), end(None)),  # 종료 사유와 상한 이름
+        ]
+        for side, limit, signal in cases:
+            with self.subTest(side=side, limit=limit):
+                record = copy.deepcopy(self.b if side == "baseline" else self.o)
+                record["run"] = run(side, first_limit=limit, end_signal=signal)
+                with self.assertRaisesRegex(PreservationRecordError, "preservation_run_invalid"):
+                    _validate_v3(record)
+        timed = copy.deepcopy(self.b)  # 시간 예산 종료면 러너 상한 시각은 시간 예산 값 그대로다
+        timed["run"] = run("baseline", stop_reason="time_budget", first_limit=first("runner_time_budget", 59.0, None,
+                                                                                      "runner_time_budget"))
+        with self.assertRaisesRegex(PreservationRecordError, "preservation_run_invalid"):
+            _validate_v3(timed)
+
+    def test_first_limit_rule_matches_the_runner(self):
+        # 기록 검사의 재계산이 러너가 회차 때 쓰는 runner.first_limit과 같은 결과다(격자 대조).
+        import runner
+        for stop in ("request_budget", "time_budget"):
+            for stop_elapsed in (10.0, 40.0):
+                for engine in (None, 5.0, 40.0, 40.001, 70.0):
+                    for closing in (None, "budget_limited", "complete"):
+                        terminal = None if engine is None else {"status": "x", "elapsed_seconds": engine, "closing_reason": closing}
+                        got = runner.first_limit(stop, stop_elapsed, 60.0, terminal)
+                        with self.subTest(stop=stop, stop_elapsed=stop_elapsed, engine=engine, closing=closing):
+                            self.assertEqual(expected_first_limit(stop, got["runner_limit_elapsed_seconds"], 60.0, engine,
+                                                                  None if engine is None else closing, got["runner_limit"]),
+                                             got["value"])
 
     def test_product_block(self):
         self.reject(self.o, "preservation_product_invalid", lambda r: r["product"]["call_records"].__setitem__("lines", 4))

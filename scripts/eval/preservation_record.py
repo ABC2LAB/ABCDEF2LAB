@@ -49,6 +49,8 @@ SIDE_FIELDS_V3 = frozenset({"layout", "driver_sha256", "driver_settings_sha256",
 RUN_FIELDS_V3 = frozenset({"stop_reason", "first_limit", "end_signal", "rate_limited"})
 FIRST_LIMIT_FIELDS = frozenset({"value", "runner_limit", "runner_limit_elapsed_seconds", "engine_terminal_elapsed_seconds"})
 RUNNER_LIMITS = frozenset({"runner_request_budget", "runner_time_budget"})
+# runner.first_limit과 같은 규칙(시험이 격자로 대조한다). 러너 종료 사유 → 러너 상한 이름.
+_LIMIT_BY_STOP = {"request_budget": "runner_request_budget", "time_budget": "runner_time_budget"}
 PRODUCT_FIELDS_V3 = frozenset({"source_sha", "image_ids", "file_sha256", "split_conditions", "sampling_overwrites", "call_records"})
 PRODUCT_IMAGES = frozenset({"product", "explore_browser", "fixture"})
 PRODUCT_FILES = frozenset({"installation", "policy", "api_launch", "target_policy", "runtime_conditions", "control_limits"})
@@ -238,6 +240,20 @@ def _seconds(value) -> bool:
     return type(value) in (int, float) and math.isfinite(value) and value >= 0
 
 
+def expected_first_limit(stop_reason: str, runner_elapsed: float, time_budget_seconds: float, engine_elapsed: float | None,
+                         closing_reason: str | None, runner_limit: str) -> str | None:
+    """기록에 적힌 관측으로 first_limit 분류를 다시 계산한다(runner.first_limit과 같은 규칙). 러너 상한 이름·시각이 종료
+    사유와 맞지 않으면 None(모순)이다. 엔진 끝 시각이 러너 상한 시각 이하일 때만 엔진이 먼저이고, 그 끝 상태의 마감
+    사유가 budget_limited(O 제품 예산 마감)면 제품 상한이다."""
+    if _LIMIT_BY_STOP.get(stop_reason) != runner_limit:
+        return None
+    if stop_reason == "time_budget" and runner_elapsed != round(time_budget_seconds, 3):
+        return None
+    if engine_elapsed is not None and engine_elapsed <= runner_elapsed:
+        return "product_limit:budget_limited" if closing_reason == "budget_limited" else "engine_completed"
+    return runner_limit
+
+
 def _validate_v3(p: dict) -> None:
     """v3 모양 검사. 쪽(B=artex-direct, O=exploration-split)에 따라 null이어야 하는 칸과 있어야 하는 칸이 정해진다."""
     if set(p) != TOP_FIELDS_V3 - {"signature"} or p["purpose"] != "browser_acceptance":
@@ -290,6 +306,10 @@ def _validate_v3(p: dict) -> None:
         _fail("preservation_run_invalid")
     if (e is None) != (f["engine_terminal_elapsed_seconds"] is None) or e is not None and e["elapsed_seconds"] != f["engine_terminal_elapsed_seconds"]:
         _fail("preservation_run_invalid")  # 끝 신호와 first_limit의 엔진 끝 시각은 같은 읽기다
+    if f["value"] != expected_first_limit(r["stop_reason"], f["runner_limit_elapsed_seconds"], c["time_budget_seconds"],
+                                         f["engine_terminal_elapsed_seconds"], None if e is None else e["closing_reason"],
+                                         f["runner_limit"]):
+        _fail("preservation_run_invalid")  # 서명돼 있어도 관측 시각·마감 사유와 모순된 분류는 받지 않는다(#676 리뷰)
     if r["rate_limited"] is not None and not _count(r["rate_limited"]):
         _fail("preservation_run_invalid")
     _validate_product(p["product"], baseline)
