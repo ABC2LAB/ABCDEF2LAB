@@ -216,16 +216,44 @@ class TaskRequest:
     sha256: str
 
 
+# _ORIGIN_NETLOC은 userinfo·IPv6 괄호·이스케이프 없이 호스트와 선택 포트만 있는 authority다. 호스트 꼬리
+# (http://eval-meter:8080.evil.com)는 포트 자리가 숫자가 아니라 여기서 걸린다.
+_ORIGIN_NETLOC = re.compile(r"([A-Za-z0-9](?:[A-Za-z0-9.-]{0,253}[A-Za-z0-9])?)(?::([0-9]{1,5}))?", re.ASCII)
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _origin_key(url: str) -> tuple[str, str, int] | None:
+    """URL의 (scheme, 소문자 호스트, 포트). 포트를 안 쓰면 scheme 기본 포트다. 모양이 다르면 None."""
+    scheme, sep, rest = url.partition("://")
+    scheme = scheme.lower()
+    if not sep or scheme not in _DEFAULT_PORTS:
+        return None
+    netloc = rest.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    match = _ORIGIN_NETLOC.fullmatch(netloc)
+    if match is None:
+        return None
+    port = int(match.group(2)) if match.group(2) is not None else _DEFAULT_PORTS[scheme]
+    if not 0 < port <= 65535:
+        return None
+    return scheme, match.group(1).lower(), port
+
+
 def task_request(task: dict, target_origin: str) -> TaskRequest:
     """러너 설정의 작업 내용을 생성 요청 본문으로 만든다.
 
-    엔진은 설명+" "+목표에서 parseTarget으로 대상을 뽑아 자산으로 심는다. 그 규칙으로 보이는 대상이 회차의 대상
-    origin 하나뿐이어야 한다: URL은 전부 그 origin(끝 '/' 허용)이고, URL 밖에 IP·도메인 꼴이 없어야 한다.
+    엔진은 설명+" "+목표에서 parseTarget으로 대상을 뽑아 자산으로 심는다(첫 URL의 scheme·host·port). 그 규칙으로
+    보이는 대상이 회차의 대상 origin 하나뿐이어야 한다(탐색 분리 배치 결정안 §6, 2026-11-16 사용자 결정):
+    1. 첫 URL은 점검 주소(origin, 끝 '/' 허용)와 정확히 같다.
+    2. 나머지 URL은 같은 origin이면 경로를 받는다(B 본문의 승인 경로 목록). 호스트 대소문자·기본 포트 명시 여부는 같은
+       origin으로 보고, userinfo·호스트 꼬리·포트만 다른 URL은 거부한다.
+    3. 다른 origin URL과 URL 밖 IP·도메인 꼴 글은 거부한다.
     """
     origin = target_origin.rstrip("/")
     text = task["description"] + " " + task["goal"]  # 엔진 createTask가 seed에 넘기는 문자열과 같은 꼴
     urls = _TARGET_URL.findall(text)
-    if not urls or any(url not in (origin, origin + "/") for url in urls):
+    want = _origin_key(origin)
+    if (not urls or urls[0] not in (origin, origin + "/") or want is None
+            or any(_origin_key(url) != want for url in urls)):
         raise EngineAPIError("task_target_mismatch")
     rest = _TARGET_URL.sub(" ", text)
     if _TARGET_IP.search(rest) or _TARGET_DOMAIN.search(rest):

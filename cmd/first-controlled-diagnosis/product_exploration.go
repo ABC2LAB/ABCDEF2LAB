@@ -60,7 +60,7 @@ func (b *urlPreparationRuntime) productExplorationOptions(l *urlLoadedProfile, e
 	}
 	binding := exploration.Binding{SessionRef: "explore-" + rand.Text(), RunRef: "run-" + e.Job.ID, JobID: e.Job.ID, TaskID: taskID, TargetRef: l.productTarget.Target.ID, TargetRevision: l.productTarget.Target.Revision, WriteMode: exploration.ReadOnly, CommMode: mode, Limits: limits}
 	maxDuration := min(timeout, time.Duration(limits.TimeBudgetSeconds)*time.Second)
-	options := server.ExplorationPipelineOptions{Workflow: flow, Binding: binding, SourceDigest: e.Job.SourceDigest, TargetURL: e.Job.Input.TargetURL, MaxTurns: l.policy.Runtime.MaxWorkerTurns, MaxDuration: maxDuration}
+	options := server.ExplorationPipelineOptions{Workflow: flow, Binding: binding, SourceDigest: e.Job.SourceDigest, TargetURL: e.Job.Input.TargetURL, ApprovedPaths: productExplorationPaths(e.Job), MaxTurns: l.policy.Runtime.MaxWorkerTurns, MaxDuration: maxDuration}
 	if factory := b.hostCapabilities.Exploration; factory != nil {
 		options.OpenHost = func(ctx context.Context, got exploration.Binding, w *agent.Worker) (server.ExplorationPipelineHost, error) {
 			return factory(ctx, got, w)
@@ -91,4 +91,12 @@ func (b *urlPreparationRuntime) productExplorationStage(l *urlLoadedProfile, e d
 			return result.Charge, err
 		}
 	}
+}
+
+// productExplorationPaths는 실행에 결속된 대상 승인 경로다(승인 기록 그대로, 순서 유지). 없으면 nil이다.
+func productExplorationPaths(job diagnosisprep.Job) []string {
+	if job.Scope == nil {
+		return nil
+	}
+	return append([]string(nil), job.Scope.PathPrefixes...)
 }

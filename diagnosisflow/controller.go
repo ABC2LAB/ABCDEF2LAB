@@ -306,7 +306,18 @@ func (c *Controller) allowedPath(method, path string) bool {
 			return false
 		}
 	}
-	return allowed
+	if !allowed {
+		return false
+	}
+	// path는 정규 표기(%가 없는 경로를 다시 인코딩한 것)라 단어 경계가 달라지고(%3Cdelete는 "3"·"cdelete"로 나뉘어
+	// delete를 놓침) 비ASCII 제외 경로와 표기가 다르다(%C3%BCber ↔ über). 크롤·발견 분류도 대상이 처리하는 풀린 경로로
+	// 위험 동작·제외 경로·범위를 다시 본다(#626 진단 단계와 같은 함수). 크롤 요청은 E②를 거치지만 E②는 위험 단어·
+	// 제외 경로를 보지 않아 여기가 유일한 방어선이다(#627, 재현: 크롤이 %3Cdelete·%C3%BCber를 방문했음).
+	decoded, err := url.PathUnescape(path)
+	if err != nil {
+		return false
+	}
+	return decoded == path || c.decodedPathAllowed(normalizedMethod(method), decoded, false)
 }
 func (c *Controller) allowedURLPath(path string, hasQuery bool) bool {
 	for _, expression := range c.binding.PathPrefixes {
@@ -651,6 +662,36 @@ func (c *Controller) requestEndpoint(v e2proxy.RequestView) (string, bool) {
 	}
 	return canonicalPath(u)
 }
+
+// requestPathLocked는 허용 판단에 쓸 요청 경로다. path는 끝점 대조·결과 불명 기억 키에 쓰는 정규 표기, decoded는 한 번
+// 푼 경로다. 진단 단계(Worker 진단 요청)만 인코딩한 경로 조각을 받는다(diagnosisPath). 그 밖의 단계(크롤)는 지금처럼
+// requestEndpoint만 받고 두 값이 같다.
+func (c *Controller) requestPathLocked(v e2proxy.RequestView) (path, decoded string, ok bool) {
+	if c.record.Snapshot.Stage != "diagnosing" {
+		path, ok = c.requestEndpoint(v)
+		return path, path, ok
+	}
+	u, err := url.Parse(v.URL)
+	if err != nil || u.User != nil || u.Scheme+"://"+u.Host != c.origin {
+		return "", "", false
+	}
+	return diagnosisPath(u)
+}
+
+// decodedPathAllowed는 풀린 경로가 승인 범위 안이고 제외 경로·위험 동작이 아닌지다. 진단 단계에서 정규 표기 검사에 더해
+// 본다. 대상이 처리하는 것은 풀린 경로이고, 다시 인코딩한 표기는 단어 경계가 달라진다(%3Cdelete는 "3"·"cdelete"로
+// 나뉘어 delete를 놓친다). 범위는 E②처럼 풀린 경로로 맞춘다(pathscope).
+func (c *Controller) decodedPathAllowed(method, decoded string, hasQuery bool) bool {
+	if riskyRequest(method, decoded, nil) {
+		return false
+	}
+	for _, p := range c.binding.Excluded {
+		if excludedWithin(decoded, p) {
+			return false
+		}
+	}
+	return c.allowedURLPath(decoded, hasQuery)
+}
 func (c *Controller) Before(ctx context.Context, v e2proxy.RequestView) error {
 	path, ok := c.requestEndpoint(v)
 	c.mu.Lock()
@@ -663,12 +704,13 @@ func (c *Controller) Before(ctx context.Context, v e2proxy.RequestView) error {
 	} else if err := c.Wait(ctx); err != nil {
 		return err
 	}
-	path, ok = c.requestEndpoint(v)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// 단계에 따라 받는 경로 표기가 다르므로 단계를 읽는 잠금 안에서 경로를 정한다.
+	path, decoded, ok := c.requestPathLocked(v)
 	if !ok {
 		return ErrDenied
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	// 결과 불명으로 끝난 부작용 가능 요청과 같은 메서드·경로다. 기록은 부작용 가능 요청만 남기므로 메서드로 거르지 않는다.
 	if c.uncertainWrites[normalizedMethod(v.Method)+" "+path] {
 		return ErrDenied
@@ -678,7 +720,12 @@ func (c *Controller) Before(ctx context.Context, v e2proxy.RequestView) error {
 		return ErrDenied
 	}
 	// 경로가 범위 안이어도 query에 파괴 동작이 실리면 막는다(위험 query 검증 유지, C23).
-	if u, err := url.Parse(v.URL); err != nil || !c.allowedURLPath(path, u.RawQuery != "" || u.ForceQuery) || riskyRequest(normalizedMethod(v.Method), path, looseQuery(u.RawQuery)) {
+	u, err := url.Parse(v.URL)
+	if err != nil || !c.allowedURLPath(path, u.RawQuery != "" || u.ForceQuery) || riskyRequest(normalizedMethod(v.Method), path, looseQuery(u.RawQuery)) {
+		return ErrDenied
+	}
+	// 인코딩한 경로 조각(진단 단계만)은 풀린 경로로도 범위·제외·위험 단어를 본다. 둘 중 하나라도 걸리면 막는다.
+	if decoded != path && !c.decodedPathAllowed(normalizedMethod(v.Method), decoded, u.RawQuery != "" || u.ForceQuery) {
 		return ErrDenied
 	}
 	s := c.record.Snapshot
@@ -753,12 +800,12 @@ func (c *Controller) PreapprovedRead(v e2proxy.RequestView) bool {
 	if v.BodyPresent || v.Method != "GET" && v.Method != "HEAD" {
 		return false
 	}
-	path, ok := c.requestEndpoint(v)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	path, _, ok := c.requestPathLocked(v)
 	if !ok {
 		return false
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	e := c.requestEndpointLocked(v.Method, path)
 	return !c.poisoned && e != nil && e.InScope && e.Change == "attested_read"
 }
@@ -772,7 +819,8 @@ func (c *Controller) After(ctx context.Context, v e2proxy.RequestView, r e2proxy
 		return nil
 	}
 	c.attempts[r.AttemptID] = true
-	path, ok := c.requestEndpoint(v)
+	// Before와 같은 정규 표기로 기억한다. 인코딩만 다른 같은 경로를 결과 불명 뒤 다시 보내지 못하게 한다.
+	path, _, ok := c.requestPathLocked(v)
 	if !ok {
 		path = "/{outside}"
 	}

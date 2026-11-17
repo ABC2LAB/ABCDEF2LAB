@@ -212,3 +212,46 @@ func TestExplorationRejectsGenericBashAndSkillUntilTypedSandboxExists(t *testing
 		t.Fatal("unsupported direct capability activated model or script")
 	}
 }
+
+// 승인 경로가 있으면 탐색 에이전트의 첫 입력이 승인 경로 전체와 같은 origin의 시작점(정확 일치 포함)을 주고, 점검 주소
+// 하나가 아니라 시작점마다 탐색하라고 지시한다(VAmPI 2차 회차: 점검 주소 경로에서만 탐색). 잘못된 승인 경로는 거부한다.
+func TestExplorationStartsFromEveryApprovedPath(t *testing.T) {
+	provider := &explorationProvider{}
+	w := NewWorker(provider, "owned", t.TempDir(), nil, 0, 10)
+	w.SetNonStreaming(func() bool { return true })
+	o := explorationOptions(&recordingDiscoveryReporter{n: 1})
+	o.TargetURL = "https://owned.test:8443/api/v1"
+	o.ApprovedPaths = []string{"/api/v1", "/openapi.json", "=/"}
+	if _, err := w.ExecuteExploration(t.Context(), o, nil); err != nil || len(provider.requests) == 0 {
+		t.Fatal("exploration run failed", err)
+	}
+	first := ""
+	for _, msg := range provider.requests[0].Messages {
+		for _, block := range msg.Content {
+			first += block.Text
+		}
+	}
+	for _, w := range []string{"starting from every start point, not only target_url", `"approved_paths":["/api/v1","/openapi.json","=/"]`, `"start_points":["https://owned.test:8443/api/v1","https://owned.test:8443/openapi.json","https://owned.test:8443/"]`} {
+		if !strings.Contains(first, w) {
+			t.Fatalf("first exploration input missing %q", w)
+		}
+	}
+	o.ApprovedPaths = []string{"/ok", "relative"}
+	if _, err := NewWorker(&explorationProvider{}, "owned", t.TempDir(), nil, 0, 10).ExecuteExploration(t.Context(), o, nil); !errors.Is(err, ErrExplorationProfile) {
+		t.Fatal("invalid approved path accepted", err)
+	}
+	o.ApprovedPaths = nil
+	plain := &explorationProvider{}
+	pw := NewWorker(plain, "owned", t.TempDir(), nil, 0, 10)
+	pw.SetNonStreaming(func() bool { return true })
+	if _, err := pw.ExecuteExploration(t.Context(), o, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, msg := range plain.requests[0].Messages {
+		for _, block := range msg.Content {
+			if strings.Contains(block.Text, "approved_paths") || strings.Contains(block.Text, "start point") {
+				t.Fatal("no approved paths must keep the original single-target input")
+			}
+		}
+	}
+}

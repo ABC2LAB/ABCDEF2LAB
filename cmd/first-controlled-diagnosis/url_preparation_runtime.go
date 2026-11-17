@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"io"
 	"log"
@@ -325,7 +327,7 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	if execution.Job.Input.DisplayName != "" {
 		description = execution.Job.Input.DisplayName
 	}
-	goal := urlDiagnosisGoal(execution.Job.Input.TargetURL, execution.Job.Input.WorkflowMode, execution.Job.Scope.Methods, urlGoalAccountLabels(l.policy.Auth))
+	goal, goalCommon, goalProduct := urlDiagnosisGoalParts(execution.Job.Input.TargetURL, execution.Job.Input.WorkflowMode, execution.Job.Scope.Methods, execution.Job.Scope.PathPrefixes, urlGoalAccountLabels(l.policy.Auth))
 	if check() != nil {
 		_ = pool.Close()
 		return knownFailure("installation_changed", true)
@@ -377,6 +379,13 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	}
 	supervisor, err := server.NewFirstDiagnosisSupervisor(prepareCtx, manager)
 	if err != nil {
+		finishPrepare()
+		manager.Close()
+		return knownFailure("preparation_host_failed", true)
+	}
+	// 목표 문장의 공통 부분·제품 전용 부분 SHA를 실행 기록에 남긴다(평가 러너가 원본 본문의 공통 부분과 대조).
+	commonSum, productSum := sha256.Sum256([]byte(goalCommon)), sha256.Sum256([]byte(goalProduct))
+	if supervisor.SetGoalDigests(hex.EncodeToString(commonSum[:]), hex.EncodeToString(productSum[:])) != nil {
 		finishPrepare()
 		manager.Close()
 		return knownFailure("preparation_host_failed", true)
@@ -1034,7 +1043,15 @@ func settleProductWorkflow(ctx context.Context, flow *diagnosisflow.Controller, 
 // 달성으로 마감한다(2026-11-14 소유 Juice Shop 회차: 목표 하나가 탐색 뒤 met, 진단 Worker 둘이 명령 1·3번 만에 멈춤,
 // 후보 제출 0). 인가(IDOR·접근통제)를 먼저 적는 것은 개발 계획의 초기 집중 순서다. 계정 라벨은 이름만이고 세션 값은
 // Worker 실행에서만 준다(CLAUDE.md 규칙 2).
-func urlDiagnosisGoal(target, workflowMode string, methods, accountLabels []string) string {
+// urlDiagnosisGoal은 작업 목표 전체 문장이다. 공통 부분·제품 전용 부분은 urlDiagnosisGoalParts가 나눠 준다.
+func urlDiagnosisGoal(target, workflowMode string, methods, paths, accountLabels []string) string {
+	full, _, _ := urlDiagnosisGoalParts(target, workflowMode, methods, paths, accountLabels)
+	return full
+}
+
+// urlDiagnosisGoalParts는 목표 전체 문장과, 원본(B) 본문에도 같게 들어가는 공통 부분, 제품(O)에만 있는 부분(E② 경계·
+// 워크플로·끝 문장을 순서대로 이은 글)을 돌려준다. 실행 기록에는 두 부분의 SHA를 따로 남긴다(평가 결정안 §6).
+func urlDiagnosisGoalParts(target, workflowMode string, methods, paths, accountLabels []string) (full, common, product string) {
 	var writes []string
 	for _, m := range methods {
 		if m != "GET" && m != "HEAD" {
@@ -1050,22 +1067,62 @@ func urlDiagnosisGoal(target, workflowMode string, methods, accountLabels []stri
 			scope += " Write methods (" + strings.Join(writes, ", ") + ") are approved only per request: E2 holds each such request until the operator confirms it. Never invent that confirmation and never resend a request whose result is unknown."
 		}
 	}
-	objective := " Objective: find vulnerabilities and back each one with actual request evidence. Test authorization first: IDOR (one account reading or using another account's objects by changing an object ID) and broken access control (reaching admin or other-role data and functions without that role). Then test other web vulnerability types the approved methods can reach, such as injection, sensitive data exposure and security misconfiguration. Endpoint discovery and mapping are a means, not the objective: the task is done only when the discovered attack surface has been tested for these vulnerability types, not when it has been mapped."
-	if len(accountLabels) > 0 {
-		objective += " The host logs in owned disposable test accounts (labels: " + strings.Join(accountLabels, ", ") + ") before diagnosis and gives Workers their sessions, so plan authorization intents that compare what each account can access."
-	}
-	report := " Report each potential vulnerability as an unconfirmed review candidate with its evidence; confirmation is decided separately from trusted evidence."
+	common = urlDiagnosisCommonGoal(urlGoalOrigin(target), paths, accountLabels)
 	if workflowMode == "" {
+		tail := " Do not request other origins."
 		if len(writes) == 0 {
-			return scope + objective + report + " Do not request state changes or other origins."
+			tail = " Do not request state changes or other origins."
 		}
-		return scope + objective + report + " Do not request other origins."
+		return scope + common + tail, common, scope + tail
 	}
 	flow := " Workbench workflow mode: " + workflowMode + ". First prepare an initial discovery intent. The host will perform bounded discovery in the protected Worker. After discovery, plan deep diagnostic intents from the endpoints the server lists, following the workflow instructions given with them."
 	if len(writes) == 0 {
 		flow += " State-changing requests require separately granted scope; never invent that permission."
 	}
-	return scope + flow + objective + report + " Do not request other origins."
+	tail := " Do not request other origins."
+	return scope + flow + common + tail, common, scope + flow + tail
+}
+
+// urlGoalOrigin은 점검 주소의 origin(scheme://host[:port])이다. 승인 경로를 같은 origin의 절대 URL로 렌더할 때 쓴다.
+func urlGoalOrigin(target string) string {
+	u, err := url.Parse(target)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
+}
+
+// urlDiagnosisCommonGoal은 목표 문장 중 원본(B) 작업 본문에도 바이트까지 같게 들어가는 부분이다: 승인 경로 목록,
+// 목적(인가 먼저·시험했다고 볼 범위), 보고 문장. E② 경계·워크플로 문장은 제품(O)에만 있는 선언 차이라 여기 넣지
+// 않는다(평가 결정안 exploration-split-decision §6, 2026-11-16 사용자 결정). 대상 특정 경로나 평가 대상 지식은
+// 넣지 않는다(CLAUDE.md 규칙 7). 바꾸면 testdata/goal-common-example.txt와 평가 러너의 B 본문을 같이 바꾼다.
+func urlDiagnosisCommonGoal(origin string, paths, accountLabels []string) string {
+	text := ""
+	if len(paths) > 0 && origin != "" {
+		// 점검 주소 하나만 주면 모델이 그 경로를 대상 전체로 여긴다(VAmPI 2차 회차: 진단 요청 67건이 모두 점검 주소
+		// 경로 아래로만 갔다). 승인 경로 전체를 시작점으로 알린다. 보낼 수 있는 범위는 E②가 정하므로 통제는 그대로다.
+		// 맨 경로 대신 같은 origin의 절대 URL로 점검 주소 뒤에 렌더한다. 점이 든 경로(/openapi.json 등)가 맨 글자로 있으면
+		// 원본 parseTarget·러너 작업 본문 검사가 도메인으로 읽고, 목표 분해기가 범위 등록 때 호스트로 오독할 수 있다.
+		// URL 끝에 쉼표 같은 문장 부호가 붙어 한 URL로 잡히지 않게 공백으로 구분한다.
+		urls := make([]string, 0, len(paths))
+		for _, expression := range paths {
+			if strings.HasPrefix(expression, "=") {
+				urls = append(urls, origin+strings.TrimPrefix(expression, "=")+" (exact)")
+				continue
+			}
+			urls = append(urls, origin+expression)
+		}
+		text += " Approved paths on this origin, space-separated: " + strings.Join(urls, " ") + " . Each listed URL covers that path and everything under it, except a URL marked (exact), which covers only that path without a query string. The given target URL is one starting point among these, not the whole target: explore and test every approved path."
+	}
+	objective := " Objective: find vulnerabilities and back each one with actual request evidence. Test authorization first: IDOR (one account reading or using another account's objects by changing an object ID) and broken access control (reaching admin or other-role data and functions without that role). Then test other web vulnerability types the approved methods can reach, such as injection, sensitive data exposure and security misconfiguration. Endpoint discovery and mapping are a means, not the objective: the task is done only when the discovered attack surface has been tested for these vulnerability types, not when it has been mapped."
+	// 시험했다고 볼 범위(판정 아님, IDOR 확정은 E③ 몫). 인증 없이 누구나 읽는 응답을 IDOR·접근통제 근거로 삼아
+	// 목표를 일찍 끝내지 않게 한다(VAmPI 2차 회차: 인증 없이 읽히는 경로 관찰만으로 IDOR·접근통제 목표가 증명됨).
+	objective += " Count authorization as tested only when the requests can show it: IDOR is tested when the same object on an endpoint that requires authentication is requested with each test account's session and the responses are compared; broken access control is tested when a function meant for another role is requested with a session that lacks that role and with no session. Reading data that any unauthenticated client can read does not by itself test IDOR or access control."
+	if len(accountLabels) > 0 {
+		objective += " The host logs in owned disposable test accounts (labels: " + strings.Join(accountLabels, ", ") + ") before diagnosis and gives Workers their sessions, so plan authorization intents that compare what each account can access."
+	}
+	report := " Report each potential vulnerability as an unconfirmed review candidate with its evidence; confirmation is decided separately from trusted evidence."
+	return text + objective + report
 }
 
 // urlGoalAccountLabels는 실행에 결속된 시험 계정 라벨이다(이름만, 정렬). 결속 계정이 없으면 nil이다.

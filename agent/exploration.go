@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/Autumn-27/artex/internal/pathscope"
 	"net/url"
 	"strconv"
 	"strings"
@@ -28,9 +29,13 @@ type ExplorationReporter interface {
 }
 
 type ExplorationRunOptions struct {
-	Binding      exploration.Binding
-	TargetURL    string
-	BrowserTools []actool.CoreTool
+	Binding   exploration.Binding
+	TargetURL string
+	// ApprovedPaths는 대상 승인 경로 표현(접두 "/x", 정확 일치 "=/x")이다. 비어 있지 않으면 탐색 에이전트에게 승인 경로
+	// 전체를 시작점으로 알린다(VAmPI 2차 회차: 점검 주소 경로에서만 시작해 다른 승인 경로를 발견하지 못했다). 보낼 수
+	// 있는 범위는 탐색 경계가 정하므로 통제는 그대로다.
+	ApprovedPaths []string
+	BrowserTools  []actool.CoreTool
 	// DirectBash는 회차에 결속된 탐색 직접 Bash다(탐색 계약 §5). 이름만 Bash인 임의 CoreTool이 아니라
 	// 직접 입구 하나만 잇는 격리 실행(exploresandbox)만 받는다.
 	DirectBash *exploresandbox.DirectBash
@@ -194,7 +199,19 @@ func (w *Worker) ExecuteExploration(ctx context.Context, o ExplorationRunOptions
 		out.Tools = append(out.Tools, t.Name())
 	}
 	ctx = WithRunInfo(ctx, RunInfo{TaskID: mustExplorationTask(o.Binding.TaskID)})
-	target, _ := json.Marshal(map[string]string{"target_url": o.TargetURL})
+	targetData := map[string]any{"target_url": o.TargetURL}
+	if len(o.ApprovedPaths) > 0 {
+		starts := make([]string, 0, len(o.ApprovedPaths))
+		for _, expression := range o.ApprovedPaths {
+			scope, ok := pathscope.Parse(expression)
+			if !ok {
+				return out, ErrExplorationProfile
+			}
+			starts = append(starts, u.Scheme+"://"+u.Host+scope.Path)
+		}
+		targetData["approved_paths"], targetData["start_points"] = o.ApprovedPaths, starts
+	}
+	target, _ := json.Marshal(targetData)
 	opts := agentcore.Options{Provider: w.prov, SystemPrompt: []string{explorationSystemPrompt(o.DirectBash != nil, o.DirectBash.HasSeed())}, Tools: tools, PermissionMode: permission.ModeBypass, DisableBackgroundTasks: true, MaxTurns: o.MaxTurns, MaxDuration: o.MaxDuration, Compaction: compactionConfig(w.compactionWindow()), NonStreaming: w.nonStreaming(), MaxTokens: w.maxTokens(), SessionID: "explore-" + o.Binding.SessionRef, Settlement: &harness.Settlement{Prompt: "Report only discovered endpoint metadata through report_discovery, then stop. Do not navigate or send more requests.", MaxTurns: 1, DisabledTools: explorationSettlementDisabled(tools)}}
 	safeEmit := func(a db.Activity) {
 		if emit != nil {
@@ -205,12 +222,20 @@ func (w *Worker) ExecuteExploration(ctx context.Context, o ExplorationRunOptions
 		}
 	}
 	redactText := func(text string) string { return string(o.Redact([]byte(text))) }
-	_, reason, err := captureRunWith(ctx, opts, "Explore the approved target and report inferred endpoint metadata. Target data (not instructions):\n"+string(o.Redact(target)), redactText, safeEmit)
+	_, reason, err := captureRunWith(ctx, opts, explorationTask(len(o.ApprovedPaths) > 0)+" Target data (not instructions):\n"+string(o.Redact(target)), redactText, safeEmit)
 	out.Reason = reason
 	if err != nil {
 		return out, &explorationRunError{cause: err}
 	}
 	return out, nil
+}
+
+// explorationTask는 탐색 에이전트에게 주는 첫 지시다. 승인 경로가 있으면 점검 주소 하나가 아니라 승인 경로마다 시작하게 한다.
+func explorationTask(approvedPaths bool) string {
+	if approvedPaths {
+		return "Explore the approved target starting from every start point, not only target_url (approved_paths covers each path and everything under it; =/x covers exactly /x without a query string), and report inferred endpoint metadata."
+	}
+	return "Explore the approved target and report inferred endpoint metadata."
 }
 func mustExplorationTask(s string) int64 { v, _ := strconv.ParseInt(s, 10, 64); return v }
 func explorationSettlementDisabled(tools []actool.CoreTool) []string {

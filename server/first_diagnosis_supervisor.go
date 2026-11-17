@@ -88,6 +88,9 @@ func firstDiagnosisRegistrationContext(ctx context.Context, taskID string) conte
 // FirstDiagnosisSupervisor는 한 서버의 실제 task·writer·실행 종료를 감독한다.
 // 운영자 승인이나 대상 권한은 별도 호스트 공급자가 검사하며 이 타입이 생성하지 않는다.
 type FirstDiagnosisSupervisor struct {
+	// goal은 작업 목표 문장의 공통 부분·제품 전용 부분 SHA다(SetGoalDigests). 실행 기록에 남겨 평가 러너가 원본(B)
+	// 본문의 공통 부분과 대조한다(평가 결정안 exploration-split-decision §6). 없으면 기록에 싣지 않는다.
+	goal             *diagnosisGoalDigests
 	ctx              context.Context
 	m                *Manager
 	mu               sync.Mutex
@@ -126,6 +129,21 @@ const FirstDiagnosisTimeBudgetDrain = settleDrainGrace
 // SetTimeBudget은 회차 실행 시간 상한의 마감을 정한다(실행 결과 상태 값 계약 §3.4). closeAt부터 새 계획·새 intent를
 // 시작하지 않고(budget_limited), 진행 중 작업은 drain 동안 마무리한 뒤 끝나지 않았으면 멈춘다. 진행 중 작업이 끝나면
 // 실행을 budget_limited로 마감한다. Run 전에 한 번만 부른다.
+// SetGoalDigests는 이 실행의 목표 문장 공통 부분·제품 전용 부분 SHA-256(소문자 16진 64자)을 정한다. 실행 시작 전에
+// 한 번만 정할 수 있고, 형식이 틀리거나 다시 정하면 거부한다.
+func (s *FirstDiagnosisSupervisor) SetGoalDigests(common, product string) error {
+	if s == nil || !sha256HexPattern.MatchString(common) || !sha256HexPattern.MatchString(product) {
+		return ErrFirstDiagnosisSupervisor
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.goal != nil || s.runStarted {
+		return ErrFirstDiagnosisSupervisor
+	}
+	s.goal = &diagnosisGoalDigests{Version: diagnosisGoalDigestVersion, CommonSHA256: common, ProductSHA256: product}
+	return nil
+}
+
 func (s *FirstDiagnosisSupervisor) SetTimeBudget(closeAt time.Time, drain time.Duration) error {
 	if s == nil || closeAt.IsZero() || drain < 0 || drain > FirstDiagnosisTimeBudgetDrain {
 		return ErrFirstDiagnosisSupervisor
