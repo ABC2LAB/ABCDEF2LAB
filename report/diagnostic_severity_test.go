@@ -41,6 +41,17 @@ func TestEstimatedSeverityInternalSharedAndVerdictSeparation(t *testing.T) {
 			t.Fatal("불명·미실행·정상 대조 등급 유지", err)
 		}
 	}
+	for _, status := range []string{"result_unknown", "policy_not_executed", "partial_policy_denial"} {
+		c := in
+		c.Shared = false
+		c.Entries = append([]DiagnosticEntry(nil), in.Entries...)
+		c.Entries[0].Status = status
+		p, err := PrepareDiagnostic(c)
+		if err != nil || p.Entries[0].Severity != "미평가" {
+			t.Fatal("불충분한 실행 상태의 평가 표시", err)
+		}
+	}
+
 	c := in
 	c.Shared = false
 	c.Entries = append([]DiagnosticEntry(nil), in.Entries...)

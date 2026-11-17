@@ -196,7 +196,7 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 			*p = DiagnosticText(*p)
 		}
 		// 등급은 판정을 바꾸지 않는다. 공유 사본에는 후보의 새 평가 정보를 내보내지 않는다.
-		validEstimate := e.Kind == "candidate" && e.Outcome == "review" && !e.SourceLoadFailed && !e.Truncated && e.SeveritySource == "worker_estimate" && e.SeverityRationale != "" && knownSeverity(e.Severity)
+		validEstimate := e.Kind == "candidate" && e.Outcome == "review" && e.Status == "completed" && !e.SourceLoadFailed && !e.Truncated && e.SeveritySource == "worker_estimate" && e.SeverityRationale != "" && knownSeverity(e.Severity)
 		if !validEstimate || in.Shared {
 			e.SeveritySource, e.SeverityRationale = "", ""
 		}
@@ -549,7 +549,7 @@ func (e DiagnosticEntry) SeverityText() string {
 	if e.Outcome == "confirmed" {
 		return label
 	}
-	if e.Kind == "candidate" && e.Outcome == "review" && e.SeveritySource == "worker_estimate" && e.SeverityRationale != "" && !e.Truncated {
+	if e.Kind == "candidate" && e.Outcome == "review" && e.Status == "completed" && e.SeveritySource == "worker_estimate" && e.SeverityRationale != "" && !e.Truncated {
 		return "예상 " + label
 	}
 	return "위험도 미평가"
