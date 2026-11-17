@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from runner_split import SplitInputError, read_workflow_defaults  # noqa: E402
 from runner_split_inputs import (  # noqa: E402
-    CA_VALID_DAYS, COMPOSE_FILE_ENV, FILES, PRIVATE_DIRECTORY, SplitInputsError, prepare_split_inputs, remove_split_inputs, run_openssl,
+    CA_VALID_DAYS, FILES, PRIVATE_DIRECTORY, SplitInputsError, _write_new, prepare_split_inputs, remove_split_inputs, run_openssl,
 )
 
 MANIFEST = {"version": 3, "profile_id": 1, "approval_id": "synthetic-approval"}
@@ -79,10 +79,15 @@ class TestPrepare(unittest.TestCase):
                 info = os.lstat(path)
                 self.assertTrue(stat.S_ISREG(info.st_mode))
                 self.assertEqual((stat.S_IMODE(info.st_mode), info.st_uid), (0o600, os.geteuid()))
-        self.assertEqual(inputs.compose_env, {env: str(directory / FILES[name]) for env, name in COMPOSE_FILE_ENV.items()})
-        self.assertEqual(set(inputs.compose_env), {"PRODUCT_INSTALL_FILE", "PRODUCT_POSTGRES_PASSWORD_FILE",
-                                                   "EXPLORE_BOUNDARY_CONFIG_FILE", "EXPLORE_CA_CERT_FILE",
-                                                   "EXPLORE_CA_KEY_FILE", "EXPLORE_PATH_KEY_FILE"})
+        # compose 변수마다 맞는 파일이다(코드의 대응표로 기대값을 만들지 않는다).
+        self.assertEqual(inputs.compose_env, {
+            "PRODUCT_INSTALL_FILE": str(directory / "install.json"),
+            "PRODUCT_POSTGRES_PASSWORD_FILE": str(directory / "postgres-password"),
+            "EXPLORE_BOUNDARY_CONFIG_FILE": str(directory / "boundary.json"),
+            "EXPLORE_CA_CERT_FILE": str(directory / "explore-ca.pem"),
+            "EXPLORE_CA_KEY_FILE": str(directory / "explore-ca.key"),
+            "EXPLORE_PATH_KEY_FILE": str(directory / "path.key")})
+        self.assertEqual(Path(inputs.compose_env["EXPLORE_CA_CERT_FILE"]).read_bytes()[:27], b"-----BEGIN CERTIFICATE-----")
         # README 절차와 같은 CA 인자(P-256·CA:TRUE·keyCertSign), 유효 기간만 회차용.
         args = openssl.calls[0]
         self.assertEqual(args[:7], ["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes"])
@@ -142,6 +147,19 @@ class TestPrepare(unittest.TestCase):
             self.prepare()
         self.assertEqual(str(caught.exception), "split_input_directory_failed")
         self.assertEqual((self.run_dir / PRIVATE_DIRECTORY / "install.json").read_text(), "old")  # 손대지 않는다
+
+
+class TestWriteNew(unittest.TestCase):
+    def test_existing_file_or_link_is_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            existing, link = Path(tmp, "a"), Path(tmp, "b")
+            existing.write_bytes(b"old")
+            link.symlink_to(existing)
+            for path in (existing, link):
+                with self.subTest(path=path.name), self.assertRaises(SplitInputsError) as caught:
+                    _write_new(path, b"new")
+                self.assertEqual(str(caught.exception), "split_input_write_failed")
+            self.assertEqual(existing.read_bytes(), b"old")
 
 
 class TestRemove(unittest.TestCase):
