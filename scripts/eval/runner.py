@@ -47,7 +47,8 @@ from run_record import read_runner_key, sign_run_record  # noqa: E402
 from runner_checks import (  # noqa: E402
     ExpectedTopology, Listener, allowed_host_listens, check_host_listeners, check_namespace_sharing,
     check_other_publishes, check_topology, compare_snapshots, expected_topology, listeners_outside_loopback,
-    network_snapshot, parse_container, parse_network, policy_sha256, read_host_listeners,
+    network_snapshot, network_subnets, parse_container, parse_network, planned_subnets, policy_sha256, read_host_listeners,
+    subnet_overlaps,
 )
 from runner_config import (  # noqa: E402
     API_FRONT_SERVICE, E2_PRODUCT, E2_SERVICE, E2_STUB, ENGINE_DATA_PATH, ENGINE_DB_DATA_PATH, ENGINE_DB_SERVICE, ENGINE_SERVICE, LLM_GW_SERVICE,
@@ -156,6 +157,8 @@ class Facts:
 class RunPorts(Protocol):
     def preexisting(self) -> bool: ...
     def image_ids(self) -> dict[str, str]: ...
+    def planned_subnets(self) -> list[str]: ...
+    def host_subnets(self) -> list[str]: ...
     def up(self) -> None: ...
     def down(self) -> None: ...
     def facts(self) -> Facts: ...
@@ -280,6 +283,7 @@ class EventsHandle(Protocol):
 class _State:
     e2_service: dict = field(default_factory=dict)
     engine_end: dict = field(default_factory=dict)
+    first_limit: dict | None = None
     up_attempted: bool = False
     serving: dict = field(default_factory=dict)
     llm_load_attempted: bool = False
@@ -502,6 +506,26 @@ class _EngineEndWatch:
                 "first_terminal": self.first_terminal, "final": final, "final_error": error}
 
 
+# 어느 상한이 먼저 걸렸는지(탐색 분리 배치 결정안 §3 B(a) 표). O의 `product_limit:<사유>`는 제품 구동(순서 4-7)에서 더한다.
+FIRST_LIMIT_ENGINE = "engine_completed"
+_FIRST_LIMIT_BY_STOP = {"request_budget": "runner_request_budget", "time_budget": "runner_time_budget"}
+
+
+def first_limit(stop_reason: str, stop_elapsed: float, time_budget_seconds: float, first_terminal: dict | None) -> dict:
+    """러너 예산 종료와 엔진 끝 신호 가운데 먼저 온 것. 시각은 모두 작업 생성 요청 직전부터 잰 초다.
+
+    러너 상한 시각: 시간 예산은 그 값 자체(정확한 문턱), 요청 예산은 러너가 알아챈 시각(계측기 전달 수를 폴링해서 보므로
+    실제로 닿은 때보다 최대 폴링 간격만큼 늦다). 엔진 끝 시각은 상태 읽기가 끝 상태를 돌려준 시각이다(역시 폴링이라 실제
+    끝난 때보다 늦을 수 있다). 엔진 끝 시각이 러너 상한 시각 이하이면 engine_completed다. 창이 끝난 뒤에 거둔 읽기의 끝
+    상태(러너 상한보다 늦음)는 엔진이 먼저 끝났다고 보지 않는다. 두 시각을 같이 남겨 판정을 다시 계산할 수 있게 한다."""
+    runner = _FIRST_LIMIT_BY_STOP[stop_reason]
+    limit_at = time_budget_seconds if stop_reason == "time_budget" else stop_elapsed
+    engine_at = None if first_terminal is None else first_terminal["elapsed_seconds"]
+    value = FIRST_LIMIT_ENGINE if engine_at is not None and engine_at <= limit_at else runner
+    return {"value": value, "runner_limit": runner, "runner_limit_elapsed_seconds": round(limit_at, 3),
+            "engine_terminal_elapsed_seconds": engine_at}
+
+
 def _wait_budget(spec: RunSpec, meter: MeterFiles, clock: Clock, state: _State, started: float,
                  watch: _EngineEndWatch | None = None) -> tuple[str, int]:
     while True:
@@ -553,6 +577,23 @@ def _check_serving(spec: RunSpec, ports: RunPorts, evidence, state: _State, phas
         raise RunFailure(reason)
 
 
+SUBNET_CHECK_FORMAT = "abc2lab-eval-runner-subnet-check-v1"
+SUBNET_CHECK_NAME = "subnet-check.json"
+
+
+def _check_subnets(ports: RunPorts, evidence, state: _State) -> None:
+    """대역 겹침 검사(탐색 분리 배치 결정안 §2). up 바로 전에, 이 회차가 만들 고정 대역이 호스트의 기존 Docker 망과 하나라도
+    겹치면 시작하지 않는다. Docker도 겹치는 망 생성을 거부하지만 그때는 up 도중이라 일부가 이미 떠 있다. 여기서는 아무것도
+    띄우기 전에 고정 사유로 끝낸다. 근거에는 회차 대역과 겹친 쌍만 남긴다(다른 스택의 나머지 망은 남기지 않는다)."""
+    planned = _step(state, "subnet_check_failed", ports.planned_subnets)
+    existing = _step(state, "subnet_check_failed", ports.host_subnets)
+    overlaps = _step(state, "subnet_check_failed", lambda: subnet_overlaps(planned, existing))
+    _step(state, "evidence_write_failed", lambda: evidence.write_json(SUBNET_CHECK_NAME, {
+        "format": SUBNET_CHECK_FORMAT, "planned": planned, "overlaps": overlaps}))
+    if overlaps:
+        raise RunFailure("subnet_overlap")
+
+
 def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: GatewayFiles, evidence, clock: Clock,
                state: _State) -> None:
     if _step(state, "project_check_failed", ports.preexisting):
@@ -571,6 +612,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         state.llm_load_attempted = True
         # 띄우기 전에 본다. 여기서 모델도 적재해 첫 회차만 적재 시간을 시간 예산에서 쓰지 않게 한다.
         _check_serving(spec, ports, evidence, state, "pre")
+    _check_subnets(ports, evidence, state)
     state.up_attempted = True
     _step(state, "compose_up_failed", ports.up)
 
@@ -645,7 +687,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         "requested_at": requested_at, "created_at": created_at}))
     watch = _EngineEndWatch(ports, task_id, clock, started, spec.task_status_wait_seconds)
     stop_reason, forwarded_at_stop = _wait_budget(spec, meter, clock, state, started, watch)
-    stopped_at = _stamp(clock)
+    stopped_at, stop_elapsed = _stamp(clock), clock.monotonic() - started
     # E²가 허용한 진행 요청이 봉인된 계측기에서 끊기지 않도록 E²를 먼저 닫는다(연결 제안 §4.3). 시한이 있고 실패해도 넘어간다.
     e2_close = None if spec.e2_mode != E2_PRODUCT else _step(state, "e2_close_failed", ports.e2_close)
     _step(state, "seal_failed", lambda: ports.seal(pre["services"][METER_SERVICE]["id"]))
@@ -663,6 +705,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     # 받는 창이 늘지 않는다(#634 리뷰). 엔진이 아직 떠 있을 때(down 전) 읽어 서명 근거에 남긴다.
     state.engine_end = watch.record()
     _step(state, "evidence_write_failed", lambda: evidence.write_json(ENGINE_END_NAME, state.engine_end))
+    state.first_limit = first_limit(stop_reason, stop_elapsed, spec.time_budget_seconds, state.engine_end["first_terminal"])
 
     post = _check_phase(spec, ports, evidence, state, "post")
     post_check_at = _stamp(clock)
@@ -825,6 +868,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         observer, ready_calls, meter_summary, drained, len(rows), pre_checked_at, post_check_at, conditions, e2,
         reconciliation, records, verdict_row, e2_product, e2_prompt))
     state.summary = {"meter": meter_summary, "llm": llm_summary, "policy_sha256": policy_sha256(pre),
+                     "first_limit": state.first_limit,
                      "run_conditions": conditions, "engine_rules": state.engine_rules, "intercept": state.intercept,
                      "task_request_sha256": spec.task_request_sha256, "observer_format": spec.observer_format,
                      "llm_serving": state.serving or None,
@@ -1190,6 +1234,13 @@ class DockerPorts:
 
     def image_ids(self) -> dict[str, str]:
         return {role: self.docker.image_id(image.ref) for role, image in self.plan.images.items()}
+
+    def planned_subnets(self) -> list[str]:
+        return planned_subnets(self.docker.compose_config(self.base_args))
+
+    def host_subnets(self) -> list[str]:
+        return sorted({subnet for network in self.docker.inspect_networks(self.docker.all_network_ids())
+                       for subnet in network_subnets(network)})
 
     def up(self) -> None:
         self.docker.compose_up(self.base_args, self.config.run["compose_wait_seconds"])

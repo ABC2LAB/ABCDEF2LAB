@@ -217,6 +217,24 @@ class TestFactGathering(unittest.TestCase):
                                             "label=com.docker.compose.project=eval-ours-1"])
         self.assertEqual(fake.calls[2][0], ["ps", "--no-trunc", "--quiet"])
 
+    def test_subnet_check_calls(self):
+        # 대역 겹침 검사: 호스트의 모든 망(필터 없음)과, up과 같은 인자로 렌더한 compose 설정을 JSON으로 읽는다.
+        rendered = {"networks": {"e2_net": {"ipam": {"config": [{"subnet": "10.250.0.0/24"}]}}},
+                    "services": {"gw": {"environment": {"OPENROUTER_API_KEY": "canary-secret"}}}}
+        fake = FakeExecutor(CommandResult(0, f"{ID_B}\n{ID_A}\n".encode()), CommandResult(0, json.dumps(rendered).encode()),
+                            CommandResult(1, b"canary-secret in stderr-ish output"))
+        docker = Docker(fake, {}, 1)
+        base = ["compose", "-p", "eval-ours-1", "--env-file", "/x/secrets.env", "-f", "a.yaml"]
+        self.assertEqual(docker.all_network_ids(), [ID_A, ID_B])
+        self.assertEqual(docker.compose_config(base), rendered)
+        self.assertEqual(fake.calls[0][0], ["network", "ls", "--no-trunc", "--quiet"])
+        self.assertEqual(fake.calls[1][0], [*base, "config", "--format", "json"])
+        # 렌더 실패는 고정 code만 남는다(출력·비밀을 오류에 싣지 않는다).
+        with self.assertRaises(DockerError) as caught:
+            docker.compose_config(base)
+        self.assertEqual(str(caught.exception), "docker_compose_config_failed")
+        self.assertNotIn("canary", repr(caught.exception))
+
     def test_project_name_checked_before_docker_call(self):
         for project in ("Eval", "eval ours", "x,label=y", "", "-p"):
             fake = FakeExecutor()

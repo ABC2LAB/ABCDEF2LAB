@@ -30,9 +30,9 @@ var callRecordGenerationID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
 // callRecordTally는 게이트웨이 finish()와 같은 규칙으로 센 값이다.
 type callRecordTally struct {
-	forwarded, upstreamErrors, missingIDs uint64
-	ends                                  map[string]uint64
-	ids                                   []string
+	forwarded, upstreamErrors, missingIDs, rateLimited uint64
+	ends                                               map[string]uint64
+	ids                                                []string
 }
 
 // readCallRecords는 호출 기록 줄을 엄격하게 읽는다. 칸 집합·중복 키·순번(1부터 연속)·결정·끝 모양·상태·시각·id 모양이
@@ -52,6 +52,9 @@ func readCallRecords(r io.Reader) (callRecordTally, bool) {
 		row, ok := parseCallRecord(scanner.Bytes())
 		if !ok || row.Seq != seq {
 			return t, false
+		}
+		if row.Status == http.StatusTooManyRequests {
+			t.rateLimited++
 		}
 		switch row.Decision {
 		case "forwarded":
@@ -142,7 +145,8 @@ func exactKeys(line []byte, fields []string, optional string) bool {
 
 // runGenerationVerify는 호출 기록을 읽고, 게이트웨이와 같은 조회로 generation을 확인해 표식을 쓴다. 제품 기록에는
 // 게이트웨이 같은 봉인이 없으므로 sealed_at·drained_at은 검증을 시작한 시각이다. 거부·봉인 뒤 거부·봉인 취소는
-// 제품 경로에 없어 0이다. 제품이 기록을 남기지 못한 수(CallRecordFailures)는 이 표식 밖에서 러너가 따로 본다.
+// 제품 경로에 없어 0이다. 샘플링 칸·provider 칸 거부는 게이트웨이에만 있는 판정이라 null(해당 없음)이다: 제품 transport는
+// 엔진이 보낸 temperature를 거부하지 않고 덮어쓴다(#630). 제품이 기록을 남기지 못한 수(CallRecordFailures)는 이 표식 밖에서 러너가 따로 본다.
 func runGenerationVerify(dir *os.File, verifier generationVerifier, provider string, sampling any, rows io.Reader, now func() time.Time) string {
 	started := now()
 	tally, ok := readCallRecords(rows)
@@ -157,7 +161,7 @@ func runGenerationVerify(dir *os.File, verifier generationVerifier, provider str
 		Role: roleGenerationVerify, Backend: backendAPI, Provider: provider, Sampling: sampling,
 		SealedAt: stamp(started), DrainedAt: stamp(started), VerifiedAt: stamp(now()),
 		Forwarded: tally.forwarded, UpstreamErrors: tally.upstreamErrors, UpstreamEnds: tally.ends,
-		MissingIDs: tally.missingIDs, Generations: results, LogComplete: true,
+		MissingIDs: tally.missingIDs, RateLimited: tally.rateLimited, Generations: results, LogComplete: true,
 	}); err != nil {
 		return storageUnavailable
 	}
