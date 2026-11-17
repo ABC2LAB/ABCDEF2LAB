@@ -105,6 +105,36 @@ func TestDiagnosticCandidateSeverityConservativeNormalization(t *testing.T) {
 			}
 		})
 	}
+	for _, flag := range []string{"observations_truncated", "response_truncated", "withheld"} {
+		t.Run(flag, func(t *testing.T) {
+			c := good
+			var evidence map[string]any
+			json.Unmarshal([]byte(c.Evidence), &evidence)
+			call := evidence["trusted"].(map[string]any)["call"].(map[string]any)
+			switch flag {
+			case "observations_truncated":
+				call[flag] = true
+			case "withheld":
+				call["counts"].(map[string]any)[flag] = float64(1)
+			default:
+				observation := call["observations"].([]any)[0].(map[string]any)
+				copy := map[string]any{}
+				for k, v := range observation {
+					copy[k] = v
+				}
+				copy[flag] = true
+				copy["sequence"] = float64(2)
+				call["observations"] = append(call["observations"].([]any), copy)
+			}
+			raw, _ := json.Marshal(evidence)
+			c.Evidence = string(raw)
+			c.EvidenceDigest = DiagnosticEvidenceDigest(c.Evidence)
+			if c.NormalizedSeverity().SuggestedSeverity != "" {
+				t.Fatal("일부 응답의 잘림·보류를 완전한 관찰로 평가함")
+			}
+		})
+	}
+
 	c := good
 	c.SeverityRationale += " Authorization: Bearer synthetic-severity-secret"
 	n := c.NormalizedSeverity()

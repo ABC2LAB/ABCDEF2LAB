@@ -62,12 +62,14 @@ func severityHTTPObservation(raw []byte) bool {
 			ProxyDrained   bool   `json:"proxy_drained"`
 			Truncated      bool   `json:"output_truncated"`
 			Call           struct {
-				Final         bool `json:"final"`
-				AuditComplete bool `json:"audit_complete"`
-				Counts        struct {
+				Final                 bool `json:"final"`
+				AuditComplete         bool `json:"audit_complete"`
+				ObservationsTruncated bool `json:"observations_truncated"`
+				Counts                struct {
 					Responses        uint64 `json:"responses"`
 					ForwardAttempted uint64 `json:"forward_attempted"`
 					Unknown          uint64 `json:"unknown"`
+					Withheld         uint64 `json:"withheld"`
 				} `json:"counts"`
 				Observations []struct {
 					Sequence         uint64    `json:"sequence"`
@@ -89,11 +91,14 @@ func severityHTTPObservation(raw []byte) bool {
 		return false
 	}
 	t := e.Trusted
-	if t.Classification != "completed" || !t.Final || !t.BashExited || !t.ProcessDrained || !t.ProxyDrained || t.Truncated || !t.Call.Final || !t.Call.AuditComplete || t.Call.Counts.Responses == 0 || t.Call.Counts.ForwardAttempted == 0 || t.Call.Counts.Unknown != 0 {
+	if t.Classification != "completed" || !t.Final || !t.BashExited || !t.ProcessDrained || !t.ProxyDrained || t.Truncated || !t.Call.Final || !t.Call.AuditComplete || t.Call.Counts.Responses == 0 || t.Call.Counts.ForwardAttempted == 0 || t.Call.Counts.Unknown != 0 || t.Call.Counts.Withheld != 0 || t.Call.ObservationsTruncated {
 		return false
 	}
 	found := false
 	for _, o := range t.Call.Observations {
+		if o.Truncated {
+			return false
+		}
 		if o.Sequence > 0 && o.AttemptRef != "" && !o.ObservedAt.IsZero() && o.Decision == "allowed" && o.Method != "" && o.Endpoint != "" && o.Status >= 100 && o.Status <= 599 && o.Complete && !o.Truncated && o.ForwardAttempted && o.AuditComplete {
 			found = true
 		}

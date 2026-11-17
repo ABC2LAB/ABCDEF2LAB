@@ -39,7 +39,10 @@ func TestCandidateSeverityStoredAPIHTMLDOCXOwnedPostgres(t *testing.T) {
 		{"높음", "completed", "high", false, false}, {"심각", "completed", "critical", false, false}, {"정보성", "completed", "info", false, false},
 		{"미실행", "policy_not_executed", "high", false, false}, {"불명", "result_unknown", "critical", false, false},
 		{"생략", "completed", "", false, false}, {"잘못된 등급", "completed", "urgent", false, false},
-		{"잘림", "completed", "high", true, false}, {"훼손", "completed", "high", false, true},
+		{"잘림", "completed", "high", true, false},
+		{"관찰 목록 잘림", "completed", "high", false, false},
+		{"응답 보류", "completed", "high", false, false},
+		{"일부 응답 잘림", "completed", "high", false, false}, {"훼손", "completed", "high", false, true},
 	} {
 		intent, err := task.Store.AddIntent(map[string]any{"summary": "합성 심각도 관찰"}, 5, nil, "test")
 		if err != nil {
@@ -47,6 +50,20 @@ func TestCandidateSeverityStoredAPIHTMLDOCXOwnedPostgres(t *testing.T) {
 		}
 		run, call := "severity-run", fmt.Sprintf("severity-%d", intent)
 		result := e2runner.Result{ToolOutput: "합성 응답 본문", Trusted: e2runner.TrustedResult{Execution: e2proxy.ExecutionView{Scope: transmit.Scope{TaskRef: fmt.Sprint(taskID), RunRef: run}, IntentID: intent}, Classification: tc.status, Final: true, ProcessBashExited: true, ProcessDrained: true, ProxyDrained: true, OutputTruncated: tc.truncated, Call: e2proxy.CallResult{IntentID: intent, CallRef: call, Final: true, AuditComplete: true, Counts: e2proxy.Counts{Responses: 1, ForwardAttempted: 1}, Observations: []e2proxy.HTTPObservation{{Sequence: 1, AttemptRef: "owned-attempt", RuleRef: "owned-rule", Method: "GET", Endpoint: "/documents", Decision: "allowed", StatusCode: 200, ResponseComplete: true, ForwardAttempted: true, AuditComplete: true, ObservedAt: time.Now().UTC()}}}}}
+		if tc.name == "관찰 목록 잘림" {
+			result.Trusted.Call.ObservationsTruncated = true
+		}
+		if tc.name == "응답 보류" {
+			result.Trusted.Call.Counts.Withheld = 1
+		}
+		if tc.name == "일부 응답 잘림" {
+			copy := result.Trusted.Call.Observations[0]
+			copy.Sequence = 2
+			copy.ResponseTruncated = true
+			copy.ResponseComplete = false
+			result.Trusted.Call.Observations = append(result.Trusted.Call.Observations, copy)
+		}
+
 		raw, _ := json.Marshal(result)
 		candidate := db.DiagnosticCandidate{TaskID: taskID, IntentID: intent, RunRef: run, CallRef: call, Name: "합성 " + tc.name, VulnClass: "IDOR", Summary: "검토 대상 관찰", Classification: tc.status, Verification: "manual_review_required", EvidenceVersion: 1, Evidence: string(raw), EvidenceDigest: db.DiagnosticEvidenceDigest(string(raw)), ObservedAt: time.Now().UTC(), OutputTruncated: tc.truncated, SuggestedSeverity: tc.severity, SeveritySource: db.WorkerEstimate, SeverityRationale: "비공개 문서가 다른 접근 문맥의 응답에 포함되어 권한 영향을 검토해야 합니다."}
 		id, err := task.Store.RecordDiagnosticCandidate(ctx, candidate)
