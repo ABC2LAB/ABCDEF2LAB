@@ -1310,6 +1310,24 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(screen.queryByRole("button", { name: /종료/ })).toBeNull();
   });
 
+  it("점검 정보는 대상 · 방식 · 모델 · 진행 확인만 줄로, 진단 ID · task · 설정 지문 · 실행 권위는 접힌 '기술 정보'에", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue({ ...completed, result_ready: false });
+    mount("live");
+    const insp = await screen.findByRole("complementary", { name: "진행 요약" });
+    const facts = within(insp).getByRole("heading", { name: "점검 정보" }).parentElement as HTMLElement;
+    const rows = facts.querySelector("dl") as HTMLElement;
+    expect(rows).toHaveTextContent(
+      /^대상target\.example방식설치 범위모델합성 모델 · 로컬진행 확인준비시작마감저장 미확인$/,
+    );
+    // 확인된 사실만 칠한다(미확인은 글로)
+    expect(within(rows).getByText("저장 미확인").className).not.toMatch(/\bon\b|_on_/);
+    const tech = within(facts).getByText("기술 정보").closest("details") as HTMLElement;
+    expect(tech).not.toHaveAttribute("open");
+    expect(tech).toHaveTextContent("#42");
+    expect(rows).not.toHaveTextContent(/#42|실행 권위|설정 지문/);
+  });
+
   it("마감된 진단은 요청 승인을 다시 부르지 않고 보고서의 실행 종료 기록으로 안내한다", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(completed);

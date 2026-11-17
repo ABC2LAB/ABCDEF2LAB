@@ -97,26 +97,82 @@ export function reasonText(code: string): string {
   return `${urlReasonLabels[code] ?? code} (${code})`;
 }
 
-/** 진단 식별 · 서버가 확인한 사실 (준비 시작 · 권위 · 엔진 시작 · 마감 · 결과 저장). */
+/** 점검 방식 글 (탐색 흐름이 없는 점검은 설치 범위로 바로 진단). */
+const MODE_TEXT: Readonly<Record<NonNullable<URLDiagnosisJob["input"]["workflow_mode"]> | "none", string>> = {
+  ai_auto_v1: "AI 자동",
+  user_approval_v1: "사용자 승인",
+  none: "설치 범위",
+};
+
+/**
+ * 점검 정보 (진행 요약 맨 아래, 사용자 11/17 '깔끔하게'): 사람이 보는 값만 줄로 — 대상 · 방식 · 모델 · 제외 경로 ·
+ * 진행 확인(준비 · 시작 · 마감 · 저장). 진단 ID · 수정 · task · 설정 지문 · 실행 권위 같은 기록 값은 접힌 '기술 정보'로.
+ * 진행 확인은 서버가 확인한 사실만 '확인'으로 칠하고, 아니면 '미확인'이라고 글로 적는다(미확인 ≠ 안 함).
+ */
 export function UrlFacts({ job }: { job: URLDiagnosisJob }) {
+  const cap = useUrl((st) => st.cap);
+  const profile = cap.kind === "v2" ? cap.catalog.profiles.find((p) => p.id === job.input.profile_id) : undefined;
+  const steps: ReadonlyArray<readonly [string, boolean]> = [
+    ["준비", job.preparation_started],
+    ["시작", job.started],
+    ["마감", job.drain_complete],
+    ["저장", job.result_ready],
+  ];
   return (
-    <Kv
-      rows={[
-        ["진단", <span key="job" className={s.mono}>{`${job.id} · 수정 ${job.revision}`}</span>],
-        ["실제 task", job.task_id ? <span key="task" className={s.mono}>{`#${job.task_id}`}</span> : "아직 없음"],
-        [
-          "설정 지문",
-          <span key="digest" className={s.mono} title={job.source_digest}>
-            {`${job.source_digest.slice(0, 16)}…`}
-          </span>,
-        ],
-        ["모델 · 작업 준비 시작", factText(job.preparation_started)],
-        ["실행 권위", AUTHORITY_TEXT[job.authority_state]],
-        ["엔진 시작", factText(job.started)],
-        ["마감 확인", factText(job.drain_complete)],
-        ["결과 저장", factText(job.result_ready)],
-      ]}
-    />
+    <>
+      <dl className={s.frows}>
+        <div>
+          <dt>대상</dt>
+          <dd>{urlHost(job.input.target_url)}</dd>
+        </div>
+        <div>
+          <dt>방식</dt>
+          <dd>{MODE_TEXT[job.input.workflow_mode ?? "none"]}</dd>
+        </div>
+        {profile ? (
+          <div>
+            <dt>모델</dt>
+            <dd>{`${profile.model_label} · ${profile.model?.external_transfer ? "외부" : "로컬"}`}</dd>
+          </div>
+        ) : null}
+        {job.input.excluded_paths ? (
+          <div>
+            <dt>제외 경로</dt>
+            <dd>{job.input.excluded_paths}</dd>
+          </div>
+        ) : null}
+        <div>
+          <dt>진행 확인</dt>
+          <dd>
+            <span className={s.facts}>
+              {steps.map(([k, v]) => (
+                <span key={k} className={cx(s.fact, v && s.on)}>
+                  {v ? <Icon name="check" /> : null}
+                  {v ? k : `${k} 미확인`}
+                </span>
+              ))}
+            </span>
+          </dd>
+        </div>
+      </dl>
+      <details className={s.techd}>
+        <summary>기술 정보</summary>
+        <Kv
+          rows={[
+            ["진단", `${job.id} · 수정 ${job.revision}`],
+            ["실제 task", job.task_id ? `#${job.task_id}` : "아직 없음"],
+            [
+              "설정 지문",
+              <span key="digest" title={job.source_digest}>
+                {`${job.source_digest.slice(0, 16)}…`}
+              </span>,
+            ],
+            ["실행 권위", AUTHORITY_TEXT[job.authority_state]],
+            ["준비 · 시작 · 마감 · 저장", steps.map(([, v]) => factText(v)).join(" · ")],
+          ]}
+        />
+      </details>
+    </>
   );
 }
 
