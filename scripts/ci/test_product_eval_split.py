@@ -14,11 +14,14 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts" / "eval"))
+import runner_split  # noqa: E402  러너가 설치 입력·경계 설정에 쓰는 주소(4-7a). overlay와 같아야 한다.
 PRODUCT_FILES = ("deploy/product/compose.yaml", "deploy/product/compose.acceptance.yaml",
                  "deploy/product/compose.exploration-acceptance.yaml")
 OVERLAY = "deploy/eval/compose.split.yaml"
@@ -187,6 +190,31 @@ class EvalSplitOverlayTests(unittest.TestCase):
                          ("none", True, ["ALL"], ["CHOWN", "FOWNER"], ["no-new-privileges:true"]))
         self.assertEqual(init["image"], self.product["services"]["explore-init"]["image"])
         self.assertEqual([v["source"] for v in init["volumes"]], [BOUNDARY_EVIDENCE_VOLUME])
+
+    def test_runner_addresses_match_the_overlay(self):
+        # 러너가 설치 입력·경계 설정에 쓰는 주소(runner_split)가 overlay 렌더 결과와 같다. 한쪽만 바뀌면 깨진다.
+        self.assertEqual(str(runner_split.EVAL_BAND), str(EVAL_BAND))
+        for name, (product, evaluation) in NETWORK_MAP.items():
+            with self.subTest(network=name):
+                self.assertEqual(runner_split.PREFIX_MAP[product.rsplit(".", 1)[0] + "."], evaluation.rsplit(".", 1)[0] + ".")
+        self.assertEqual(len(runner_split.PREFIX_MAP), len(NETWORK_MAP))
+        services = self.split["services"]
+        self.assertEqual(services["postgres"]["networks"]["control"]["ipv4_address"], runner_split.DATABASE_IP)
+        self.assertEqual(services["fixture-dns"]["networks"]["control"]["ipv4_address"], runner_split.FIXTURE_DNS_IP)
+        self.assertEqual(self.split["networks"]["target"]["ipam"]["config"][0]["subnet"], runner_split.TARGET_CIDR)
+        meter = services["eval-meter"]["networks"]
+        self.assertEqual((meter["target"]["ipv4_address"], meter["eval_explore_ingress"]["ipv4_address"]),
+                         (runner_split.METER_MAIN_IP, runner_split.METER_EXPLORE_IP))
+        # 경계 설정의 리슨 주소가 overlay의 경계 주소와 같고, 평가 upstream이 계측기 탐색 입구다.
+        config = runner_split.boundary_config(runner_split.read_boundary_template(), 8081, 1 << 20)
+        boundary = services["explore-boundary"]["networks"]
+        self.assertEqual(config["browser_listen"].split(":")[0], boundary["explore_browser_ingress"]["ipv4_address"])
+        self.assertEqual(config["direct_listen"].split(":")[0], boundary["explore_direct"]["ipv4_address"])
+        self.assertEqual(config["eval_upstream"], f"{meter['eval_explore_ingress']['ipv4_address']}:8081")
+        self.assertIn(f"-explore-listen={runner_split.METER_EXPLORE_IP}:8081", services["eval-meter"]["command"])
+        # 원자료 디렉터리는 overlay init이 만드는 경로다(볼륨 /evidence 아래 run).
+        self.assertEqual(services["explore-evidence-init"]["entrypoint"][-1].replace("/e/", "/evidence/"),
+                         runner_split.BOUNDARY_EVIDENCE_DIR)
 
     def test_meter_ingresses_and_target_name(self):
         meter = self.split["services"]["eval-meter"]
