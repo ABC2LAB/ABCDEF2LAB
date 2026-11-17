@@ -98,6 +98,11 @@ class TestSplitPorts(unittest.TestCase):
                                              ("10.252.5.20", 9222)))
 
     def test_mismatched_or_missing_pairs_are_refused(self):
+        def without_network(service, network):
+            value = json.loads(json.dumps(RENDERED))
+            del value["services"][service]["networks"][network]
+            return value
+
         def render(service, old, new):
             value = json.loads(json.dumps(RENDERED))
             value["services"][service]["command"] = [new if item == old else item for item in value["services"][service]["command"]]
@@ -131,6 +136,9 @@ class TestSplitPorts(unittest.TestCase):
                                    BOUNDARY_CONFIG, EXPLORATION, "split_browser_host_mismatch"),
             "browser_alias_other_net": (render("explore-browser", "http://explore-boundary:3128", "http://explore-direct:3128"),
                                         BOUNDARY_CONFIG, EXPLORATION, "split_browser_host_mismatch"),
+            # 부르는 쪽이 그 망에 없으면 별칭이 맞아도 그 입구에 닿지 않는다.
+            "direct_caller_not_on_network": (without_network("preparation", "explore_direct"), BOUNDARY_CONFIG, EXPLORATION,
+                                             "split_direct_host_mismatch"),
             "listen_port": (render("eval-meter", "-listen=10.252.3.20:8080", "-listen=10.252.3.20:0"), BOUNDARY_CONFIG,
                             EXPLORATION, "split_meter_listen_invalid"),
         }
