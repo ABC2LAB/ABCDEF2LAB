@@ -1675,45 +1675,6 @@ a.ph:hover {
   font-weight: 600;
   color: var(--ink-2);
 }
-/* 점검 정보 진행 확인 칩 (준비 · 시작 · 마감 · 저장): 확인된 것만 초록, 아니면 '미확인' 글 */
-.facts {
-  display: inline-flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 4px;
-}
-.fact {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  font-size: 12px;
-  padding: 1px 7px;
-  border: 1px solid var(--rule);
-  border-radius: 999px;
-  color: var(--ink-3);
-}
-.fact.on {
-  color: var(--ok);
-  background: var(--ok-bg);
-  border-color: transparent;
-}
-.fact .ic {
-  width: 12px;
-  height: 12px;
-}
-/* 점검 정보 아래 접힌 기록 값 */
-.techd {
-  margin-top: 6px;
-  font-size: 12.5px;
-}
-.techd summary {
-  cursor: pointer;
-  color: var(--ink-3);
-}
-.techd .kv {
-  margin-top: 8px;
-  font-size: 12px;
-}
 /* 카드 안의 상세 보고 · 증거는 테두리를 겹치지 않고 본문 상자만 */
 .fdet .dcard {
   border: 0;
