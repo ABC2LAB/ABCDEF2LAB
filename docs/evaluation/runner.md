@@ -131,6 +131,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   pre-probe.cid    post-probe.cid     docker --cidfile이 쓴 probe 컨테이너 ID(구간 감시 허용 목록)
   meter-summary.json  llm-summary.json
   task.json                      작업 생성 요청 본문 SHA-256·엔진 작업 ID·요청/생성 시각(본문 자체는 없음)
+  engine-end.json                엔진 끝 신호: 창 동안 첫 끝 상태·시각, down 전 마지막 작업 상태 칸(값 원본 그대로)
   intercept-summary.json         엔진 승인 기록의 건수: 상태별, 차단 출처별(파일 규칙·내장 규칙·모델·그 밖), 도구별(도구 입력 원문 없음)
   engine-rules.json              `engine_rules`가 있을 때만: 파일 SHA-256, 주입·내장 규칙 수, 내장 통제를 앞지를 수 있는 파일 allow 수, 내장·전체 규칙 해시, 적용 전후 도구 목록(규칙 본문 없음)
   engine-settings.json           작업 생성 전 엔진 실행 설정 스냅샷(프록시는 설정 여부만, API 키 값 없음). 표시 언어를 뺀 값의 SHA-256은 서명 근거 `run_conditions`에
@@ -190,6 +191,18 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   시험 계정 세션을 주는 조건에서만 넣는다. 러너 설정에 연결하는 것은 배치 구현 순서 4의 제품 구동과 같이 한다.
 - 작업 내용에 평가 정답(챌린지 이름·목록)을 넣지 않는다(절대규칙 7). 러너는 이것을 검사하지 않으므로 작성·검토자가 지킨다.
 - 예산 시계는 생성 요청 직전부터 잰다. 생성 실패는 재시도하지 않고 회차를 무효로 한다.
+- **엔진 끝 신호(`engine-end.json`, 탐색 분리 배치 결정안 §3.1):** 회차 창 동안 예산 확인 간격마다 엔진 작업 목록 API
+  (`GET /api/tasks`, 원본·개선 후 같은 응답 구조)에서 이 회차 작업 항목을 읽어, 상태가 처음 끝 상태(`done`·`failed`·`timeout`,
+  원본 `db.IsTerminal`과 같은 집합)가 된 시각(읽기가 끝난 시각)을 남긴다. drain·LLM 게이트웨이 봉인 뒤, `down` 전(엔진 DB가 아직
+  있을 때)에 한 번 더 읽는다. 게이트웨이 봉인 뒤라 이 읽기가 느려도 모델 요청을 받는 창은 늘지 않는다. 옮기는 칸은 `status`·`completed_at`·`goals_total`·`goals_met`(Planner 판정)·`in_flight`·`llm_failover_state`뿐이고
+  (이름·설명·목표·다른 작업 항목은 옮기지 않음), 값은 원본 그대로 두고 해석하지 않는다. 단건 API(`GET /api/tasks/{id}`)는 집계 세
+  칸을 채우지 않아 늘 0이라 쓰지 않는다. 목록 API는 집계 조회 오류를 버리고 0으로 두므로(원본 동작) 세 칸의 0은 집계 실패와 구별되지
+  않는다(`status`·`completed_at`은 무관). 토큰 하나를 다시 쓰고 401이면 한 번만 다시 로그인한다.
+  창 동안 읽기는 예산 감시를 막지 않는다. 읽기는 별도 스레드에서 돌고, 감시 루프는 끝난 읽기를 거두고 진행 중인 읽기가 없을 때만
+  새 읽기를 띄운다. 그래서 상태 API가 느리거나 답하지 않아도 예산 종료 시각은 관찰이 없을 때와 같다. 창이 끝났을 때 진행 중인
+  읽기는 읽기 시한(`task_create_timeout_seconds`)만큼 기다리고, 그래도 안 끝나면 `engine_task_status_pending`으로 세고 결과를 버린다.
+  읽기 실패는 회차를 무효로 하지 않고 `window_read_failures`·`final_error`(고정 코드)로 센다. 이 파일은 서명되는 근거 목록에
+  들어간다. 엔진이 끝 상태가 돼도 러너는 회차를 일찍 끝내지 않는다(기록만, 종료 규칙은 바꾸지 않음).
 
 `findings.json`은 baseline·개선 후 모두 **같은 추출 경로**(`baseline_pages_collector` → `baseline_extract`, 수정 없음)를 거친
 투영만 담는다. API 응답 원본·제목·설명·자산 이름은 저장하지 않는다(절대규칙 2). 추출기는 원본 FindingDTO 형식(upstream

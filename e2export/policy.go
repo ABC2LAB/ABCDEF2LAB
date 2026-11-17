@@ -128,6 +128,10 @@ func canonicalPolicy(cfg e2proxy.Config, maxRequests uint64, b PolicyBehavior) (
 	if cfg.PasswordResponse != "" {
 		content["password_response"] = cfg.PasswordResponse
 	}
+	// 운영자 제외 경로(#627)는 정한 정책에만 넣는다. 없으면 지금 지문 그대로다(공식 평가 정책은 제외 경로가 없다).
+	if len(cfg.ExcludedPaths) > 0 {
+		content["excluded_paths"] = map[string]any{"match": "decoded_segment_prefix_wildcard_param_v1", "paths": append([]string{}, cfg.ExcludedPaths...)}
+	}
 	// map의 키는 encoding/json의 사전순, 정수는 10진수, UTF-8 문자열은 Go JSON escape로 고정한다.
 	// HTML escape를 끄며 개행 없이 고정한다. 배열은 입력 순서를 그대로 보존한다.
 	var out bytes.Buffer

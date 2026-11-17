@@ -49,16 +49,12 @@ func CanonicalInput(input Input) (Input, error) {
 	}
 	if input.ExcludedPaths != "" {
 		paths := strings.Split(input.ExcludedPaths, "\n")
-		if len(paths) > 32 {
+		if len(paths) > pathscope.MaxExcluded {
 			return Input{}, ErrProtocol
 		}
+		// E② 정책 검사와 같은 문법 검사다(E②도 제외 경로를 집행, #627).
 		for _, p := range paths {
-			for _, part := range strings.Split(p, "/") {
-				if strings.Contains(part, "*") && part != "*" {
-					return Input{}, ErrProtocol
-				}
-			}
-			if !strings.HasPrefix(p, "/") || strings.ContainsAny(p, "%?#!\\ \r\t") || strings.Contains(p, "//") || strings.Contains(p, "..") || len(p) > 256 {
+			if !pathscope.ValidExcluded(p) {
 				return Input{}, ErrProtocol
 			}
 		}
