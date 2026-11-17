@@ -114,6 +114,38 @@ func boundedStatus(status int) int {
 	return 0
 }
 
+// 끝점 하나가 받은 뒤 늘 수 있는 바닥 크기(관찰 세부를 지운 꼴)의 여유다. 상태 코드·방문·선택·중복 수·종류·출처
+// 갱신과 발견 확신 표시가 붙는 몫(실측 최대 약 70바이트)보다 넉넉하게 잡는다.
+const endpointGrowthReserve = 96
+
+// 끝점 목록 밖 공개 투영 칸(명령 영수증 32개·건수·현재 경로·실패 사유 등)이 늘 수 있는 몫이다.
+const snapshotGrowthReserve = 8 << 10
+
+func stripObservationDetail(e *Endpoint) {
+	e.Request, e.Response, e.QueryKeys, e.BodyKeys, e.ContentType = "", "", nil, nil, ""
+	e.CallRef, e.ObservationError, e.Transport, e.ExplorationSessionRef, e.ExplorationSeq = "", "", "", "", 0
+}
+
+// endpointFloorBytes는 끝점 하나를 compactProjection이 끝까지 덜어 낸 꼴로 직렬화한 크기다. 저장 기록 그대로와
+// 공개 투영(Project의 경로 가림) 중 큰 쪽이다.
+func endpointFloorBytes(e Endpoint) int {
+	stripObservationDetail(&e)
+	raw, _ := json.Marshal(e)
+	e.Path, e.From = safePath(e.Path), safePath(e.From)
+	projected, _ := json.Marshal(e)
+	return max(len(raw), len(projected))
+}
+
+// snapshotBaseFloorBytes는 끝점 목록을 빈 배열로 둔 압축 바닥 크기다(활동·계획·사건 없음). 저장 그대로와 공개 투영
+// (현재 경로 가림) 중 큰 쪽이다.
+func snapshotBaseFloorBytes(s Snapshot) int {
+	s.Activity, s.Plan, s.Events, s.Endpoints = nil, nil, nil, []Endpoint{}
+	raw, _ := json.Marshal(s)
+	s.CurrentPath = safePath(s.CurrentPath)
+	projected, _ := json.Marshal(s)
+	return max(len(raw), len(projected))
+}
+
 // Only optional observation detail is trimmed. Scope, selected IDs and command
 // receipts stay intact; clipping is explicit and never grants authority.
 func compactProjection(s Snapshot) Snapshot {
@@ -143,6 +175,17 @@ func compactProjection(s Snapshot) Snapshot {
 					e := &s.Endpoints[i]
 					if len(e.QueryKeys) > 0 || len(e.BodyKeys) > 0 || e.ContentType != "" {
 						e.QueryKeys, e.BodyKeys, e.ContentType = nil, nil, ""
+						changed = true
+					}
+				}
+			}
+			// 그래도 넘으면 관찰 세부(호출 참조·관찰 오류·전송 방식·탐색 세션 참조)를 지운다. 범위·선택·크롤 문서 기준
+			// (From)에는 쓰지 않는다. 끝점을 받을 때 이 바닥 크기로 자리를 재므로(endpointFitsLocked) 여기까지 오면 맞는다.
+			if !changed {
+				for i := range s.Endpoints {
+					e := &s.Endpoints[i]
+					if e.CallRef != "" || e.ObservationError != "" || e.Transport != "" || e.ExplorationSessionRef != "" || e.ExplorationSeq != 0 {
+						stripObservationDetail(e)
 						changed = true
 					}
 				}
