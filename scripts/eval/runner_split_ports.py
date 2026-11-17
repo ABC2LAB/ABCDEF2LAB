@@ -11,6 +11,7 @@ runner_split_run·runner_window·runner_split_probe에 있고, 여기는 연결�
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import os
 import platform
@@ -150,9 +151,12 @@ def check_split_layout(rendered: dict, project: str, networks: list, containers:
     ids = {c.service: c.id for c in live if c.project == project}
     declared = {c.id for c in live if c.project == project and c.service in shared
                 and c.network_mode == "container:" + ids.get(shared[c.service], "-")}
-    # 선언된 공유(api·workbench → preparation)는 망 구성원이 아니라 check_topology의 망 대조와 맞는다. 공유 검사에서만 뺀다.
+    # 선언된 공유(api·workbench → preparation)는 망 구성원이 아니라 check_topology의 망 대조와 맞는다. 예외는 그 컨테이너의
+    # 망 namespace 축 하나뿐이다. 같은 컨테이너의 PID namespace 공유는 그대로 검사한다(#668 리뷰: 컨테이너째 빼면 선언된 netns
+    # 공유 + 선언 안 된 pidns 공유가 통과했다).
+    checked = [dataclasses.replace(c, network_mode="") if c.id in declared else c for c in running]
     violations.update(check_topology(topology, project, networks, live))
-    violations.update(check_namespace_sharing(live, [c for c in running if c.id not in declared]))
+    violations.update(check_namespace_sharing(live, checked))
     violations.update(check_other_publishes(project, running))
     for container in live:
         if container.project != project:
