@@ -212,6 +212,27 @@ it("상세 보고는 Markdown 으로 그리되 원문 HTML · 링크 이동 · �
 });
 
 it.each([
+  ["HTML 엔티티", "&#112;&#97;&#115;&#115;&#119;&#111;&#114;&#100;=synthetic-entity-secret", "synthetic-entity-secret"],
+  ["서식으로 쪼갬", "**pass**word=synthetic-split-secret", "synthetic-split-secret"],
+  ["HTML 주석으로 쪼갬", "pass<!-- x -->word=synthetic-comment-secret", "synthetic-comment-secret"],
+  ["역슬래시", "password\\=synthetic-escape-secret", "synthetic-escape-secret"],
+  ["표 칸", "| 이름 | 값 |\n| --- | --- |\n| a | api_key=synthetic-table-secret |", "synthetic-table-secret"],
+])("상세 보고 Markdown 은 파서가 푼 글에도 가림을 건다 — %s (#677 리뷰)", async (_, report, secret) => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+  // 대조: 원문 가림만으로는 못 잡는 모양이다
+  render(<DiagnosticEntrySections task="42" entry={{ ...fixture(), report }} onReload={vi.fn()} />);
+  const card = screen.getByRole("region", { name: "상세 보고" });
+  expect(card).not.toHaveTextContent(secret);
+  expect(document.body.textContent).not.toContain(secret);
+  // 복사도 화면에 그려진 가린 글이라 원문(엔티티)이 클립보드로 나가지 않는다
+  fireEvent.click(within(card).getByRole("button", { name: "복사" }));
+  await within(card).findByText("상세 보고를 복사했습니다.");
+  expect(writeText.mock.calls[0][0]).not.toContain(secret);
+  expect(writeText.mock.calls[0][0]).not.toContain("&#");
+});
+
+it.each([
   "review",
   "unknown",
   "not_executed",

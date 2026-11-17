@@ -125,10 +125,14 @@ export function DiagnosticEntrySections({
     [show, setShow] = useState(false),
     [message, setMessage] = useState(""),
     [reportMsg, setReportMsg] = useState("");
-  // 상세 보고 복사: 화면에 보이는 가린 글(maskSecrets) 그대로만 복사한다 — 가리기 전 원문은 클립보드로도 내보내지 않는다
+  const reportBox = useRef<HTMLDivElement>(null);
+  // 상세 보고 복사: 원문 Markdown 이 아니라 화면에 그려진(파싱 뒤 가린) 글을 복사한다 — 원문을 복사하면 붙여 넣은 곳의
+  // Markdown 이 엔티티(&#112;…)를 다시 풀어 비밀이 되살아날 수 있다(#677 리뷰). 한 번 더 가린다
   async function copyReport() {
+    const box = reportBox.current;
+    const shown = box ? box.innerText || box.textContent || "" : "";
     try {
-      await navigator.clipboard.writeText(maskSecrets(entry.report));
+      await navigator.clipboard.writeText(maskSecrets(shown));
       setReportMsg("상세 보고를 복사했습니다.");
     } catch (error) {
       console.warn("상세 보고 복사 실패", error);
@@ -218,7 +222,7 @@ export function DiagnosticEntrySections({
                 복사
               </button>
             </div>
-            <div className={s.dbox}>
+            <div className={s.dbox} ref={reportBox}>
               <Markdown text={maskSecrets(entry.report)} />
             </div>
             {reportMsg ? <p role="status">{reportMsg}</p> : null}
