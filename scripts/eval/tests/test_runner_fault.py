@@ -102,6 +102,23 @@ class TestFaultStallRecord(unittest.TestCase):
         with self.assertRaises(FaultRecordError):
             fault_stall_record(good, [], START, stamp(10.0), "later")
 
+    def test_longest_silence_is_not_just_the_first_fault(self):
+        # 첫 장애는 바로 다시 시도, 나중 장애 뒤가 가장 길다. 최장 값은 나중 것이다.
+        rows = [llm(1, 1.0, 1.5, status=429), llm(2, 2.0, 3.0),
+                llm(3, 4.0, 5.0, decision="upstream_error", end="upstream_cut_before_done"), llm(4, 12.0, 12.5)]
+        record = fault_stall_record(rows, [], START, stamp(20.0), None)
+        self.assertEqual([e["silence_seconds"] for e in record["events"]], [0.5, 7.0])
+        self.assertEqual((record["max_silence_after_fault_seconds"], record["max_silence_after_fault_censored"]), (7.0, False))
+
+    def test_attempts_after_the_window_do_not_end_the_silence(self):
+        # 봉인 뒤 거부된 시도(창 끝 뒤 시작)는 무활동을 끝내지 않는다. 장애 뒤 창 끝까지 이어진 것으로 남긴다.
+        rows = [llm(1, 1.0, 2.0, decision="upstream_error", end="upstream_cut_before_done"),
+                llm(2, 10.5, 10.6, decision="rejected_after_seal", status=503)]
+        target = [meter(1, 11.0, 11.0)]
+        record = fault_stall_record(rows, target, START, stamp(10.0), None)
+        self.assertEqual((record["events"][0]["silence_seconds"], record["events"][0]["censored"]), (8.0, True))
+        self.assertEqual(record["activity_starts"], 1)
+
     def test_empty_round(self):
         record = fault_stall_record([], [], START, stamp(12.5), None)
         self.assertEqual((record["max_idle_gap_seconds"], record["activity_starts"], record["events"]), (12.5, 0, []))

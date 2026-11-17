@@ -2895,6 +2895,30 @@ class TestFaultStallRecord(unittest.TestCase):
         self.assertEqual(event["silence_seconds"], round(window - 2.0, 3))
         self.assertEqual(record["max_idle_gap_seconds"], round(window - 2.0, 3))
 
+    def test_engine_end_signal_within_the_silence_is_recorded(self):
+        # 장애 뒤 무활동 중에 엔진 끝 신호(done)가 오면 그 사실을 남긴다(§7 조건 3: 끝 신호가 있으면 멈춤이 아니다).
+        def setup(ports, meter, clock):
+            meter.per_poll = 0
+            ports.task_views = [task_view("running"), task_view("done", goals_met=1, completed_at="2026-11-02T00:00:04Z")]
+
+            def started():
+                base = datetime(2026, 11, 2, tzinfo=timezone.utc) + timedelta(seconds=clock.t)
+                at = lambda seconds: (base + timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%S.%f000Z")
+                gateway.llm_rows = [{"seq": 1, "decision": "forwarded", "method": "POST", "status": 429, "started_at": at(0.5),
+                                     "completed_at": at(1.0), "request_bytes": 10, "response_bytes": 5, "generation_id": ""}]
+            ports.on_start = started
+
+        gateway = None
+
+        def keep_gateway(g):
+            nonlocal gateway
+            gateway = g
+        result, _, _, evidence = run(setup, mutate_gateway=keep_gateway)
+        terminal = evidence.files["engine-end.json"]["first_terminal"]
+        self.assertEqual(terminal["status"], "done")
+        event = evidence.files["fault-stall.json"]["events"][0]
+        self.assertEqual((event["kind"], event["censored"], event["engine_terminal_within"]), ("rate_limited", True, True))
+
     def test_row_read_failure_is_recorded_not_invalidating(self):
         result, _, _, evidence = run(mutate_gateway=lambda g: setattr(g, "llm_rows", runner.EvidenceError("llm_row_invalid")))
         self.assertEqual(result["status"], COMPLETE)
