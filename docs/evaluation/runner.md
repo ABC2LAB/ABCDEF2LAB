@@ -130,7 +130,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   pre-probe.json   post-probe.json    경로별 기대·실제·판정, probe 컨테이너 ID
   pre-probe.cid    post-probe.cid     docker --cidfile이 쓴 probe 컨테이너 ID(구간 감시 허용 목록)
   meter-summary.json  llm-summary.json
-  task.json                      작업 생성 요청 본문 SHA-256·엔진 작업 ID·요청/생성 시각(본문 자체는 없음)
+  task.json                      작업 생성 요청 본문 SHA-256·엔진 작업 ID·요청/생성 시각(본문 자체는 없음), v2: 분리 배치 B 회차의 작업 origin·목표 공통 부분 SHA(그 밖은 null)
   subnet-check.json              up 전 대역 겹침 검사: 회차가 만들 고정 대역, 호스트 기존 Docker 망과 겹친 쌍(다른 망 목록은 없음)
   engine-end.json                엔진 끝 신호: 창 동안 첫 끝 상태·시각, down 전 마지막 작업 상태 칸(값 원본 그대로)
   fault-stall.json               제공자 장애 멈춤 판정 재료(결정안 §7): 장애별 무활동 길이·창 끝까지 이어졌는지·끝 신호, 최장 무활동(판정 안 함)
@@ -323,6 +323,8 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 `llm-summary.json`에는 거부 가운데 샘플링 칸·provider 칸 때문인 수(`rejected_sampling`·`rejected_provider`, `rejected_requests`에 들어 있음)와 위쪽이 429로 답한 호출 수(`rate_limited`, 게이트웨이 자신의 거부는 빼고 전달·끊김 행 모두, 탐색 분리 배치 결정안 §3.2)가 남는다. 429는 기록만 한다.
 
 `llm-summary.json`의 `upstream_error_ends`는 `upstream_errors`를 멈춘 모양으로 나눈 값이고 합이 같다. 네 값은 `client_closed_after_done`·`client_closed_before_done`·`upstream_cut_after_done`·`upstream_cut_before_done`이다. `client_closed`는 게이트웨이가 호출자 쪽 취소나 쓰기 실패를 관찰했다는 뜻이고, `after_done`은 위쪽 응답에서 SSE 종료 줄을 읽었다는 뜻이다. 종료 줄은 호출자에게 쓰기 전에 표시한다. 그래서 엔진이 그 줄을 받았는지, 어느 쪽이 먼저 닫았는지, 끊긴 책임은 말하지 않는다. 회차 유효성에는 쓰지 않고 기록만 한다. 본문은 메모리에서 종료 줄을 찾는 데만 쓰고 저장하지 않는다.
+
+**탐색 분리 배치 B 회차(결정안 §6):** 러너 설정에 `split` 블록이 있으면 B(원본 직접 배치)의 작업 본문 origin을 O와 같은 대상 이름(`http://<split.target_name>:<계측기 포트>`)으로 쓰고, 엔진 망에서 그 이름을 계측기 별칭으로 단다(`deploy/eval/compose.target-alias.yaml`). 선언·지문의 `target_origin`은 `eval-meter` 그대로다. 작업 본문의 목표(`goal`)는 설정 값 대신 제품 공통 목표 문장(`runner_goal.common_goal`, 등록 경로 목록 `/`, 계정 라벨 없음)으로 렌더하고, 그 SHA를 `task.json`(`goal_common_sha256`)에 남긴다. O 실행 기록의 `goal.common_sha256`과 대조할 값이다(보존 sidecar v3에서 공통 지문으로 묶는다). 설명(`description`)은 설정 그대로이며 첫 URL이 대상 이름 origin이어야 한다. 점검은 엔진 netns에서 대상 이름이 계측기로 풀리는지 양성 대조(`meter_alias_tcp`)를 하나 더 본다. 이 경우 개선 후 쪽은 엔진 직접 배치로 돌지 않는다(`SPLIT_LAYOUT_PLAN`).
 
 **제품(O) 호출 기록 사후 검증(탐색 분리 배치 결정안 D(b)):** O는 게이트웨이를 거치지 않고 제품 자체 OpenRouter 경로로 모델을 부른다. 제품은 호출마다 보호 저장소에 기록을 남긴다(`llmpolicy.OpenRouterCallRecord`, 승인 장부 옆 `.openrouter-<승인 해시>.calls`). 칸·결정·끝 모양 어휘가 게이트웨이 `llm-requests` 행과 같아서 위 네 끝 모양을 같은 뜻으로 센다. 제품은 스트리밍을 받지 않아 `*_after_done`은 나오지 않는다. 러너는 회차 뒤 이 기록을 `eval-meter -role generation-verify`의 표준 입력으로 넣는다. 이 역할은 게이트웨이와 같은 조회 코드(`generationVerifier`)와 같은 셈 규칙으로 같은 모양의 `llm-verified.json`(`role: generation-verify`)을 쓴다. 기록 줄은 엄격하게 읽고, 칸·중복 키·순번·결정·끝 모양·상태·시각·id 모양이 어긋나면 표식을 쓰지 않는다. 키는 게이트웨이와 같은 `EVAL_LLM_API_KEY`로만 받는다. 판정은 `runner_llm.judge_product_llm`이 `judge_llm`과 같은 규칙으로 한다. 이때 샘플링은 선언이 아니라 같은 회차 묶음의 B 게이트웨이 적용값과 대조하고, O 쪽 값은 제품이 실제로 보낸 바이트에서 읽은 값이다(manifest v3, #630). 제품 기록에는 봉인이 없어 `sealed_at`·`drained_at`은 검증 시작 시각이다. 거부·봉인 뒤 거부·봉인 취소는 0이다. 샘플링 칸·provider 칸 거부는 게이트웨이에만 있는 판정이라 `null`이다(0으로 적힌 제품 표식은 모양 오류). 429는 같은 규칙(위쪽 상태 429인 행)으로 `rate_limited`에 센다. 제품이 기록을 남기지 못한 수(`CallRecordFailures`)는 표식 밖이라 러너가 따로 본다. 러너가 이 경로를 실제 회차에 연결하는 것은 배치 구현 순서 4다.
 

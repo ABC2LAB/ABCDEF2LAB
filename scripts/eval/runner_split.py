@@ -111,6 +111,8 @@ EXPLORATION_BLOCK = {"control_socket": "/run/explore-control/control.sock", "dir
 # "리셋 대상 넓은 승인"(평가 O 회차 설정): 제품 대상 등록이 받는 최대 범위다(diagnosisprep 등록 검사: GET·HEAD, 되돌릴 수
 # 있는 쓰기 승인 때만 POST·PUT·PATCH). DELETE·OPTIONS는 제품이 받지 않아 O 통제 비용으로 사유별 거부 수에 남는다.
 WIDE_METHODS = ("GET", "HEAD", "POST", "PUT", "PATCH")
+# 대상 등록 경로(대상 전체). B 작업 본문의 목표 문장도 같은 경로 목록으로 렌더한다(결정안 §6).
+REGISTRATION_PATHS = ("/",)
 READ_METHODS = ("GET", "HEAD")
 # 대상 등록의 읽기 전용 근거 글(제품은 20자 이상을 요구한다). 평가 대상은 회차마다 새로 띄우는 리셋 대상이다.
 REGISTRATION_BASIS = "평가 회차 전용 연습 대상: 회차마다 새 컨테이너로 띄우고 회차 뒤 지운다(리셋 대상)."
@@ -167,7 +169,7 @@ def target_registration(*, target_name: str, meter_port: int, requests: int, val
             or not 0 < meter_port < 65536 or type(requests) is not int or requests < 1 or type(valid_hours) is not int
             or valid_hours < 1 or type(wide_writes) is not bool):
         raise SplitInputError("split_registration_invalid")
-    body = {"url": f"http://{target_name}:{meter_port}/", "path_prefixes": ["/"],
+    body = {"url": f"http://{target_name}:{meter_port}/", "path_prefixes": list(REGISTRATION_PATHS),
             "methods": list(WIDE_METHODS if wide_writes else READ_METHODS), "readonly_basis": REGISTRATION_BASIS,
             "requests": requests, "valid_hours": valid_hours}
     if wide_writes:

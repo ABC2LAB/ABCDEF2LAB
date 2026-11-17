@@ -146,6 +146,9 @@ def probe_expectations(plan: RunPlan, snapshot: dict) -> tuple[PathExpectation, 
     front_id = "meter_tcp" if plan.e2_mode == E2_NONE else "e2_front_tcp"
     rows = [
         PathExpectation(front_id, TCP, _hostport(METER_SERVICE, plan.meter_port), POSITIVE, _CONNECTED),
+        # 탐색 분리 배치 B 회차: 엔진이 작업 본문에서 쓰는 대상 이름이 엔진 망에서 계측기로 풀리는지(별칭 overlay) 본다.
+        *([PathExpectation("meter_alias_tcp", TCP, _hostport(urlsplit(plan.task_origin).hostname, plan.meter_port),
+                           POSITIVE, _CONNECTED)] if plan.task_origin is not None else []),
         PathExpectation("llm_gateway_tcp", TCP, _hostport(LLM_GW_SERVICE, gateway_port), POSITIVE, _CONNECTED),
         PathExpectation(f"llm_upstream:{upstream}", TCP, upstream, NEGATIVE, upstream_accepted),
     ]
