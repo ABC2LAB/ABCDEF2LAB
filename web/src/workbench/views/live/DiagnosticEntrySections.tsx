@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 
 import Image from "next/image";
 
@@ -191,26 +191,19 @@ export function DiagnosticEntrySections({
     : [];
   return (
     <>
+      {/* 정리(사용자 11/17 '오른쪽 패널 지저분'): 판정 · 유형 · 위험도는 위 머리 딱지가 말하므로 겹쳐 적지 않고, 긴 본문은
+          접어 두며, 검증 방식 · 실행 · 증거 버전 · 단계별 호출/근거 ID · digest 같은 기록 값은 맨 아래 '기술 정보'로 모은다.
+          내용은 지우지 않는다 */}
       <Isec>
         <h3>① 판정과 영향</h3>
-        <p>
-          {outcomeLabel(entry.outcome)} · {entry.verification}
-        </p>
-        <p>
-          유형 {maskSecrets(entry.vuln_class ?? "미분류")} · 위험도{" "}
-          {entry.outcome === "confirmed" ? maskSecrets(entry.severity ?? "미평가") : "확정 집계 제외"}
-        </p>
         <p>{maskSecrets(entry.summary)}</p>
         {entry.report ? (
-          <details open>
+          <details>
             <summary>저장된 상세 보고</summary>
             <pre className={s.code}>{maskSecrets(entry.report)}</pre>
           </details>
         ) : null}
         {entry.truncated ? <p role="status">실제 도구 출력이 잘렸습니다. 완전한 재현 증거가 아닙니다.</p> : null}
-        <p>
-          실행 {entry.run} · 증거 버전 {entry.evidence_version}
-        </p>
         <p className={s.help}>
           HTTP 성공·AI 주장·정상 종료는 취약점 확정이 아닙니다. 판정은 현재 저장된 E③ 근거만 따릅니다.
         </p>
@@ -230,11 +223,8 @@ export function DiagnosticEntrySections({
               <p>
                 {step.method} {maskSecrets(step.path) || "비민감 경로 미기록"}
               </p>
-              <p>사전 조건: {maskSecrets(step.prerequisites)}</p>
+              {step.prerequisites ? <p>사전 조건: {maskSecrets(step.prerequisites)}</p> : null}
               <p>{maskSecrets(step.observation)}</p>
-              <p className={s.help}>
-                {step.observed_at} · {step.run_ref} · 호출 {step.call_ref || "미기록"} · 근거 {step.evidence_ref}
-              </p>
               {step.truncated ? <p>이 단계의 관측이 잘렸습니다.</p> : null}
               <StoredScreenshot
                 key={`${task}:${entry.entry_id}:${step.id}:${step.capture.digest ?? step.capture.status}`}
@@ -250,28 +240,28 @@ export function DiagnosticEntrySections({
         <details>
           <summary>저장된 요청·응답 및 실행 기록</summary>
           <pre className={s.code}>{maskSecrets(entry.evidence) || "저장된 증거 본문 없음"}</pre>
-          <p className={s.help}>
-            증거 digest {entry.evidence_digest} · {entry.observed_at}
-          </p>
         </details>
       </Isec>
       <Isec>
         <h3>③ 보안 조치</h3>
         <p className={s["lv-pre"]}>{maskSecrets(entry.remediation) || "저장된 수정 권고 없음"}</p>
-        {groups.map(([title, items]) => (
-          <div key={title}>
-            <h4>{title}</h4>
-            <ul>
-              {Array.from(new Set(items)).map((v) => (
-                <li key={v}>{maskSecrets(v)}</li>
-              ))}
-            </ul>
-          </div>
-        ))}
         {bundle ? (
-          <p className={s.help}>
-            관측 기술은 저장소·배포 컴포넌트에서 다시 확인하세요. 미확인 프레임워크·파일 경로는 생성하지 않습니다.
-          </p>
+          <details>
+            <summary>{`자세한 조치 (${groups.filter(([, items]) => items.length).length}묶음)`}</summary>
+            {groups.map(([title, items]) => (
+              <div key={title}>
+                <h4>{title}</h4>
+                <ul>
+                  {Array.from(new Set(items)).map((v) => (
+                    <li key={v}>{maskSecrets(v)}</li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+            <p className={s.help}>
+              관측 기술은 저장소·배포 컴포넌트에서 다시 확인하세요. 미확인 프레임워크·파일 경로는 생성하지 않습니다.
+            </p>
+          </details>
         ) : (
           <p className={s.help}>유효한 저장 조치가 없습니다. 현재 근거를 확인해 명시적으로 생성하세요.</p>
         )}
@@ -281,32 +271,60 @@ export function DiagnosticEntrySections({
         {record?.stale ? (
           <p role="alert">근거·조치·기술 또는 생성기 버전 변경: 오래된 프롬프트 사용을 차단했습니다.</p>
         ) : null}
-        {bundle ? (
-          <>
-            <p className={s.help}>
-              조치 {bundle.remediation_version} · 증거 {bundle.evidence_version} · 입력 {bundle.input_digest}
-            </p>
-            {bundle.missing_context_fields?.length ? (
-              <p>보완할 맥락: {bundle.missing_context_fields.join(", ")}</p>
-            ) : null}
-            <button className={s.btn} type="button" onClick={() => setShow((v) => !v)} aria-expanded={show}>
-              {show ? "전체 프롬프트 접기" : "전체 프롬프트 보기"}
-            </button>
-            <button className={s.btn} type="button" disabled={busy} onClick={() => void copy()}>
-              AI 수정 프롬프트 복사
-            </button>
-            {show ? <pre className={s.code}>{maskSecrets(bundle.ai_prompt)}</pre> : null}
-          </>
-        ) : null}
-        <button className={s.btn} type="button" disabled={busy || !entry.available} onClick={() => void generate()}>
-          {busy ? "저장 근거 확인 중…" : "보안 조치·AI 프롬프트 생성·저장"}
-        </button>
+        {bundle?.missing_context_fields?.length ? <p>보완할 맥락: {bundle.missing_context_fields.join(", ")}</p> : null}
+        <div className={s.acts}>
+          {bundle ? (
+            <>
+              <button className={s.btn} type="button" onClick={() => setShow((v) => !v)} aria-expanded={show}>
+                {show ? "전체 프롬프트 접기" : "전체 프롬프트 보기"}
+              </button>
+              <button className={s.btn} type="button" disabled={busy} onClick={() => void copy()}>
+                AI 수정 프롬프트 복사
+              </button>
+            </>
+          ) : null}
+          <button className={s.btn} type="button" disabled={busy || !entry.available} onClick={() => void generate()}>
+            {busy ? "저장 근거 확인 중…" : "보안 조치·AI 프롬프트 생성·저장"}
+          </button>
+        </div>
+        {bundle && show ? <pre className={s.code}>{maskSecrets(bundle.ai_prompt)}</pre> : null}
         {!entry.available ? <p className={s.help}>{maskSecrets(entry.unavailable_reason)}</p> : null}
-        <p className={s.help}>
-          프롬프트는 고객사의 실제 저장소와 원인 코드를 확인한 뒤 최소 수정·정상/보안 회귀 시험을 수행하도록 지시합니다.
-          이 보고서가 고객 코드 수정·운영 재현·배포 권한을 부여하지 않습니다.
-        </p>
         {message ? <p role="status">{message}</p> : null}
+        <p className={s.help}>
+          고객 저장소·원인 코드를 확인한 뒤 최소 수정과 회귀 시험을 하도록 지시하는 프롬프트입니다. 코드 수정·운영
+          재현·배포 권한을 주지 않습니다.
+        </p>
+      </Isec>
+      <Isec>
+        <details>
+          <summary>기술 정보</summary>
+          <dl className={s.kv}>
+            <dt>판정 · 검증</dt>
+            <dd>{`${outcomeLabel(entry.outcome)} · ${entry.verification}`}</dd>
+            <dt>실행</dt>
+            <dd className={s["kv-ref"]}>{entry.run || "미기록"}</dd>
+            <dt>증거</dt>
+            <dd
+              className={s["kv-ref"]}
+            >{`버전 ${entry.evidence_version} · ${entry.evidence_digest} · ${entry.observed_at}`}</dd>
+            {(entry.steps ?? []).map((step) => (
+              <Fragment key={step.id}>
+                <dt>{`Step ${step.number}`}</dt>
+                <dd className={s["kv-ref"]}>
+                  {`${step.observed_at} · ${step.run_ref} · 호출 ${step.call_ref || "미기록"} · 근거 ${step.evidence_ref}`}
+                </dd>
+              </Fragment>
+            ))}
+            {bundle ? (
+              <>
+                <dt>조치 · 프롬프트</dt>
+                <dd className={s["kv-ref"]}>
+                  {`조치 ${bundle.remediation_version} · 증거 ${bundle.evidence_version} · 입력 ${bundle.input_digest}`}
+                </dd>
+              </>
+            ) : null}
+          </dl>
+        </details>
       </Isec>
     </>
   );

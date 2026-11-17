@@ -8,7 +8,7 @@
 import { Fragment, type ReactElement, type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 import { cx } from "../../lib/cx";
-import { clockOf, planState } from "../../live/map";
+import { clockOf } from "../../live/map";
 import { maskSecrets } from "../../live/mask";
 import { retryWorkflowAction, runUrlAction, runWorkflowAction, useUrl, useUrlGates } from "../../live/urlDiagnosis";
 import { flowStageText, type WorkflowEndpoint, type WorkflowSnapshot } from "../../live/workflow";
@@ -1448,6 +1448,11 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
 /** '선택한 범위로 점검 시작' 버튼 (화면 머리, 시안 sStart). */
 function ScopeStart({ flow, ids, id }: { flow: WorkflowSnapshot; ids: string[]; id?: string }) {
   const recovered = useUrl((st) => st.handle?.kind === "recovered");
+  // 진단 상태를 확인했고 실행 중일 때만 선택을 보낸다(runWorkflowAction 과 같은 조건). 바탕 상태 조회가 실패하면
+  // 진단이 결과 불명이 되어 보내지 않으므로, 버튼을 켜 둔 채 눌러도 아무 일 없게 두지 않고 끄고 까닭을 보인다
+  const jobReady = useUrl(
+    (st) => !!st.job && st.verified && !st.uncertain && ["preparing", "running"].includes(st.job.state),
+  );
   const busy = useUrl((st) => st.flowBusy),
     verified = useUrl((st) => st.flowVerified),
     uncertain = useUrl((st) => st.flowUncertain),
@@ -1465,7 +1470,8 @@ function ScopeStart({ flow, ids, id }: { flow: WorkflowSnapshot; ids: string[]; 
       id={id}
       className={cx(s.btn, s.pri)}
       type="button"
-      disabled={recovered || !ids.length || busy || uncertain || !verified || flow.paused}
+      disabled={recovered || !jobReady || !ids.length || busy || uncertain || !verified || flow.paused}
+      title={jobReady ? undefined : "점검 상태를 확인하지 못해 보내지 않습니다. 상태를 다시 조회하세요."}
       onClick={() =>
         void runWorkflowAction("selection", ids).then((ok) => {
           if (ok) goTo("live");
@@ -1535,87 +1541,96 @@ export function WorkflowScopeLive() {
   );
 }
 
-/** 계획 상태 → 시안 줄 모양 (done · run · 그 밖). */
-function planClass(state: string): string | undefined {
-  const p = planState(state).row;
-  if (p === "done") return s.done;
-  if (p === "run") return s.run;
-  return undefined;
+/**
+ * 활동 기록 한 줄 내용 (사용자 11/17 'API 옆 설명 지워줘'): 서버 요약이 'METHOD /경로 …' 로 시작하면 메서드 · 경로만,
+ * 아니면 서버 글 그대로(실제 엔진은 원문을 숨긴 고정 요약이라 대개 그대로 보인다).
+ */
+export function activityText(summary: string): string {
+  const m = /^(GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS) (\/[^\s]*)/.exec(summary);
+  return m ? `${m[1]} ${m[2]}` : summary;
 }
 
-/** 점검 진행의 점검 계획 · 지난 활동 (위아래로, 각자 전체 너비). */
-export function WorkflowActivity() {
+/**
+ * 워커 이름 → 화면 이름 · 머리글자 · 색 (ARTEX 세션 목록의 Planner · 메인 에이전트 · work#N 과 같은 단위).
+ * 서버는 planner · goals · work#N 만 그대로 주고 나머지는 engine 으로 묶는다(diagnosisflow postgres.go publicWorker).
+ */
+export function workerOf(worker: string): { key: string; name: string; mark: string; tone: "lg" | "in" | "out" } {
+  const work = /^work#(\d{1,9})$/.exec(worker);
+  if (work) return { key: worker, name: worker, mark: `W${work[1]}`, tone: "in" };
+  if (worker === "planner") return { key: "planner", name: "Planner", mark: "P", tone: "lg" };
+  if (worker === "goals") return { key: "goals", name: "Goals", mark: "G", tone: "lg" };
+  if (worker === "mainagent") return { key: "mainagent", name: "Main", mark: "M", tone: "lg" };
+  return { key: "engine", name: "엔진", mark: "E", tone: "out" };
+}
+/** 워커 칩 순서: Planner · Goals · Main → work#1, work#2 … (번호순) → 엔진. */
+const workerRank = (key: string) => {
+  const head = ["planner", "goals", "mainagent"].indexOf(key);
+  if (head >= 0) return head;
+  const work = /^work#(\d+)$/.exec(key);
+  return work ? 10 + Number(work[1]) : Number.MAX_SAFE_INTEGER;
+};
+
+/**
+ * 점검 진행 가운데의 활동 기록 (사용자 11/17 'ARTEX 느낌'): ARTEX 세션 탭처럼 워커 칩(전체 · Planner · work#N · 엔진)으로
+ * 고르고, 콘솔 상자에 줄마다 시각 · 워커 · 내용. 서버가 주는 최근 기록(최대 20건)을 전부, 최신 순.
+ * 서버는 최신 순(id 내림차순), 가짜 백엔드는 오래된 순으로 주므로 받은 순서를 믿지 않고 id 로 다시 줄 세운다.
+ * 내용은 서버가 원문을 내보내지 않아(도구 입출력에 비밀 값이 섞일 수 있음) 고정 요약이다 — 화면이 원문을 지어내지 않는다.
+ */
+export function ActivityLog() {
   const flow = useUrl((st) => st.flow);
-  const [more, setMore] = useState(false);
+  const [who, setWho] = useState("all");
   if (!flow) return null;
-  const plan = flow.plan ?? [];
-  const done = plan.filter((p) => planState(p.state).row === "done").length;
-  const activity = [...(flow.activity ?? [])].reverse();
-  const shown = more ? activity : activity.slice(0, 5);
+  const activity = [...(flow.activity ?? [])].sort((x, y) => y.id - x.id);
+  const counts = new Map<string, number>();
+  for (const a of activity) {
+    const k = workerOf(a.worker).key;
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+  }
+  const workers = [...counts.keys()].sort((x, y) => workerRank(x) - workerRank(y) || x.localeCompare(y));
+  // 고른 워커가 최근 기록 창에서 빠지면 전체로
+  const pick = who !== "all" && counts.has(who) ? who : "all";
+  const shown = pick === "all" ? activity : activity.filter((a) => workerOf(a.worker).key === pick);
   return (
-    <>
-      <section className={s.sec} aria-labelledby="lPlanH">
-        <div className={s.sh}>
-          <h2 id="lPlanH">점검 계획</h2>
-          <span className={s.n} id="lPlanN">
-            {plan.length ? `${done}/${plan.length} 완료` : ""}
-          </span>
-        </div>
-        {plan.length ? (
-          <ol className={s.plan} id="lPlan">
-            {plan.map((p) => (
-              <li key={p.id} className={planClass(p.state)}>
-                <span className={s.st}>{planState(p.state).row === "done" ? <Icon name="check" /> : null}</span>
-                <span>
-                  {p.title}
-                  {planState(p.state).row === "run" || planState(p.state).row === "other"
-                    ? ` · ${planState(p.state).label}`
-                    : ""}
-                </span>
-              </li>
-            ))}
-          </ol>
-        ) : (
-          <p className={s.empty}>심화 점검이 시작되면 계획이 나옵니다.</p>
-        )}
-      </section>
-      <section className={s.sec} aria-labelledby="lFeedH">
-        {/* 건수는 점검 계획의 '1/3 완료'처럼 머리 오른쪽에 */}
-        <div className={s.sh}>
-          <h2 id="lFeedH">지난 활동</h2>
-          <span className={s.n} id="lFeedN">{`${activity.length}건`}</span>
-        </div>
-        {activity.length ? (
-          <>
-            <ul className={cx(s.feed, more && activity.length > 5 && s.scroll)} id="lFeed">
-              {shown.map((a) => (
-                <li key={a.id}>
-                  <span className={s.t}>{hms(a.at)}</span>
-                  <span className={cx(s.fd, a.kind === "approval" ? s.blk : s.ok)} />
-                  {/* 엔진 내부 이름(planner · explorer 등)은 사람이 읽을 정보가 아니라 두지 않는다 */}
-                  <span>{a.summary}</span>
-                </li>
-              ))}
+    <section className={s.sec} aria-labelledby="lFeedH">
+      <div className={s.sh}>
+        <h2 id="lFeedH">활동 기록</h2>
+        <span className={s.n} id="lFeedN">
+          {activity.length ? `${activity.length}건 · 최신 순` : ""}
+        </span>
+      </div>
+      {activity.length ? (
+        <>
+          {/* biome-ignore lint/a11y/useSemanticElements: 칩 묶음 (fieldset 으로 바꾸면 한 줄 모양이 깨짐) */}
+          <div className={s.filters} role="group" aria-label="워커로 거르기">
+            {["all", ...workers].map((k) => {
+              const w = k === "all" ? null : workerOf(k === "engine" ? "" : k);
+              return (
+                <button key={k} className={s.fchip} type="button" aria-pressed={pick === k} onClick={() => setWho(k)}>
+                  {w ? w.name : "전체"}
+                  <span className={s.c}>{k === "all" ? activity.length : counts.get(k)}</span>
+                </button>
+              );
+            })}
+          </div>
+          <div className={s.alog}>
+            <ul className={cx(s.feed, s.afeed)} id="lFeed">
+              {shown.map((a) => {
+                // 점 · 머리글자 · 종류 딱지는 두지 않는다(사용자 11/17): 시각 · 워커 · 내용만
+                return (
+                  <li key={a.id}>
+                    <span className={s.t}>{hms(a.at)}</span>
+                    <span className={s.wk}>{workerOf(a.worker).name}</span>
+                    <span>{activityText(a.summary)}</span>
+                  </li>
+                );
+              })}
             </ul>
-            {activity.length > 5 ? (
-              <button
-                className={cx(s.btn, s.sm, s["feed-more"])}
-                type="button"
-                aria-controls="lFeed"
-                aria-expanded={more}
-                onClick={() => setMore(!more)}
-              >
-                {more ? "최근 5건만 보기" : `이전 활동 ${activity.length - 5}건 더 보기`}
-              </button>
-            ) : null}
-          </>
-        ) : (
-          <ul className={s.feed} id="lFeed">
-            <li className={s.empty}>아직 끝난 일이 없습니다.</li>
-          </ul>
-        )}
-      </section>
-    </>
+          </div>
+        </>
+      ) : (
+        <p className={s.empty}>아직 활동 기록이 없습니다.</p>
+      )}
+    </section>
   );
 }
 

@@ -31,7 +31,7 @@ vi.mock("../live/api", async (importOriginal) => ({
   fetchRemediation: vi.fn(),
   fetchDiagnosisRun: vi.fn(),
   fetchCoverage: vi.fn(),
-  fetchTaskTokens: vi.fn(),
+  fetchTaskFindings: vi.fn(),
   fetchTasks: vi.fn(),
 }));
 
@@ -65,12 +65,15 @@ import {
   urlGates,
   useUrl,
 } from "../live/urlDiagnosis";
-import { urlAccountAuthRows, urlOutcomeText, urlTargetHint, urlTone, urlViewFor } from "../live/urlMap";
+import { urlAccountAuthRows, urlOutcomeText, urlStateText, urlTargetHint, urlTone, urlViewFor } from "../live/urlMap";
+import { flowStageText } from "../live/workflow";
 import { type Shell, ShellContext, type View } from "../shell";
 import { createInitialState, useWb } from "../store";
 import { DashboardByMode, LiveByMode, NewScanByMode, ReportByMode, ScopeByMode } from "../views/live/byMode";
+import { FINDINGS_POLL_MS } from "../views/live/UrlLiveLive";
 import { EXCLUDE_EXAMPLE } from "../views/live/UrlNewScanLive";
 import { WorkflowCrawlLive } from "../views/live/workflowViews";
+import s from "../workbench.module.css";
 
 const u = vi.mocked(url);
 const a = vi.mocked(api);
@@ -313,7 +316,7 @@ beforeEach(() => {
   a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [] });
   a.fetchDiagnosisRun.mockResolvedValue(RUN_RECORD);
   a.fetchCoverage.mockRejectedValue(new ApiError(503, "coverage disabled"));
-  a.fetchTaskTokens.mockResolvedValue({ input: 0, cacheRead: 0, output: 0 });
+  a.fetchTaskFindings.mockResolvedValue([]);
   a.fetchTasks.mockResolvedValue({ active: "", tasks: [] });
   vi.mocked(teamApi.readAuthStatus).mockResolvedValue({ initialized: true });
   vi.mocked(teamApi.restoreSession).mockResolvedValue(true);
@@ -324,6 +327,13 @@ afterEach(() => {
 });
 
 describe("URL 진단 계산", () => {
+  it("끝까지 마친 점검(completed)은 '실행 마감' 대신 '점검 완료', 나머지는 팀 lib 글 그대로", () => {
+    expect(urlStateText("completed")).toBe("점검 완료");
+    expect(flowStageText.completed).toBe("점검 완료");
+    expect(urlStateText("cancelled")).toBe("중지됨");
+    expect(urlStateText("running")).toBe("엔진 실행 중");
+    expect(urlStateText("completed", false)).toBe("현재 상태 미확인");
+  });
   it("주소 안내: HTTPS 만 · 계정 정보 · query/fragment · 인코딩", () => {
     expect(urlTargetHint("")).toBe("");
     expect(urlTargetHint("ftp://target.example/")).toBe("http 또는 https 주소만 받습니다.");
@@ -912,10 +922,18 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(urlGates(useUrl.getState()).canStart).toBe(false);
   });
 
-  it("점검 진행 오른쪽은 진행 요약: 작업 합계 토큰 · 커버리지는 서버 값, 시작 · 경과 · 남은 시간 · 점검 중 발견 · 판정 칸은 없다", async () => {
+  it("점검 진행: 모델 사용량(입 · 출)은 가운데 상태 카드, 오른쪽 진행 요약의 커버리지는 서버 값, 시작 · 경과 · 남은 시간 · 오른쪽 발견 · 판정 칸은 없다", async () => {
     saveHandle();
-    u.readURLStatus.mockResolvedValue(running);
-    a.fetchTaskTokens.mockResolvedValue({ input: 51_234_567, cacheRead: 43_100_000, output: 868_400 });
+    const usage = {
+      requests: 3,
+      input_tokens: 51_234_567,
+      output_tokens: 868_400,
+      reserved_input_tokens: 0,
+      reserved_output_tokens: 0,
+      cost_usd_micros: 0,
+      usage_known: true,
+    };
+    u.readURLStatus.mockResolvedValue({ ...running, model_usage: usage });
     a.fetchCoverage.mockResolvedValue({
       enabled: true,
       scopeRows: 1,
@@ -928,16 +946,21 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(await screen.findByText("진행 중", { selector: "h1 + span" })).toBeInTheDocument();
     const insp = screen.getByRole("complementary", { name: "진행 요약" });
     expect(within(insp).getByRole("heading", { level: 2, name: "진행 요약" })).toBeInTheDocument();
-    // 모델 사용량: 원본 ARTEX 작업 합계 한 줄 (입 · 캐 · 출 칩), 정확한 수는 줄 title 하나에
-    await waitFor(() =>
-      expect(within(insp).getByText(/^작업 합계/).parentElement).toHaveTextContent(
-        /^작업 합계 · 입 51M 캐 43M 출 868k$/,
-      ),
+    // 모델 사용량: 이 진단의 예산 기록(model_usage) 입 · 출 칩 한 줄 (캐시는 없음), 가운데 상태 카드 안 (오른쪽에는 없다).
+    // 제품 서버가 열지 않는 원본 토큰 집계(/api/exploration/tokens)는 부르지 않는다
+    expect(screen.getByText(/^작업 합계/).parentElement).toHaveTextContent(/^작업 합계 · 입 51M 출 868k$/);
+    expect(vi.mocked(teamApi.apiFetch).mock.calls.some(([path]) => String(path).includes("/exploration/tokens"))).toBe(
+      false,
     );
-    expect(a.fetchTaskTokens).toHaveBeenCalledWith("42");
-    // 줄 하나에 세 수의 정확한 값을 한꺼번에 (칩마다 따로 두지 않음)
-    const line = within(insp).getByText(/^작업 합계/).parentElement as HTMLElement;
-    expect(line).toHaveAttribute("title", "입력 51,234,567 토큰\n캐시 읽기 43,100,000 토큰\n출력 868,400 토큰");
+    const line = screen.getByText(/^작업 합계/).parentElement as HTMLElement;
+    expect(insp).not.toContainElement(line);
+    expect(within(insp).queryByText("모델 사용량")).toBeNull();
+    // 지금 하는 일과 같은 상태 카드 한 장에
+    const card = screen.getByRole("region", { name: "지금 상태" });
+    expect(card).toContainElement(line);
+    expect(card).toContainElement(document.getElementById("lTask"));
+    // 줄 하나에 두 수의 정확한 값을 한꺼번에 (칩마다 따로 두지 않음)
+    expect(line).toHaveAttribute("title", "입력 51,234,567 토큰\n출력 868,400 토큰");
     expect(line.querySelectorAll("[title]")).toHaveLength(0);
     // 커버리지는 서버가 켰을 때만
     await waitFor(() => expect(within(insp).getByText("4")).toBeInTheDocument());
@@ -961,6 +984,129 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(within(insp).queryByText("커버리지")).toBeNull();
     expect(within(insp).queryByText(/자산/)).toBeNull();
     expect(within(insp).getByText("점검 정보")).toBeInTheDocument();
+  });
+
+  it("점검 진행 모델 사용량: 사용량을 못 받은 호출이 있으면 최대치라고 같이 적고, 기록이 없으면 줄을 두지 않는다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue({
+      ...running,
+      model_usage: {
+        requests: 2,
+        input_tokens: 1200,
+        output_tokens: 300,
+        reserved_input_tokens: 0,
+        reserved_output_tokens: 0,
+        cost_usd_micros: 0,
+        usage_known: true,
+        unknown_usage_calls: 1,
+      },
+    });
+    mount("live");
+    const line = (await screen.findByText(/^작업 합계/)).parentElement as HTMLElement;
+    // 예약량으로 센 호출이 있으면 칩 옆에도 '(최대)' (#661 리뷰)
+    expect(line).toHaveTextContent(/^작업 합계 · 입 1.2k 출 300 \(최대\)$/);
+    expect(line).toHaveAttribute(
+      "title",
+      "입력 1,200 토큰\n출력 300 토큰\n사용량을 못 받은 호출 1건은 예약량으로 계산(최대치)",
+    );
+    cleanup();
+    resetUrl();
+    u.readURLStatus.mockResolvedValue(running);
+    mount("live");
+    expect(await screen.findByText("진행 중", { selector: "h1 + span" })).toBeInTheDocument();
+    expect(screen.queryByText(/^작업 합계/)).toBeNull();
+  });
+
+  it("점검 진행 발견 후보: 진행 중엔 다시 읽고, 화면을 연 뒤 새로 들어온 발견에만 '새로'", async () => {
+    vi.useFakeTimers();
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    const one: api.LiveFinding = {
+      id: "1",
+      finding_id: "1",
+      vulnclass: "idor",
+      name: "처음 발견",
+      severity: "high",
+      status: "pending",
+      summary: "",
+      evidence: "",
+      traffic_count: 1,
+      assets: [],
+      task_id: "42",
+      source_task_id: "",
+      inherited: false,
+      ts: "2026-11-11T01:00:00Z",
+    };
+    a.fetchTaskFindings.mockResolvedValue([one]);
+    mount("live");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(a.fetchTaskFindings).toHaveBeenCalledWith("42");
+    const finds = screen.getByRole("region", { name: "발견 후보" });
+    expect(within(finds).getByText("1건 · 최신 순")).toBeInTheDocument();
+    expect(within(finds).queryByText("새로")).toBeNull();
+    a.fetchTaskFindings.mockResolvedValue([{ ...one, id: "2", name: "새 발견", ts: "2026-11-11T01:00:30Z" }, one]);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(FINDINGS_POLL_MS);
+    });
+    expect(within(finds).getByText("2건 · 최신 순")).toBeInTheDocument();
+    expect(within(finds).getByText("새로").closest("li")).toHaveTextContent("새 발견");
+    expect(within(finds).getAllByText("새로")).toHaveLength(1);
+  });
+
+  it("점검 진행 발견 후보: 한 번 읽은 뒤 다시 읽다 실패(503)해도 숨기지 않고, 마지막 목록이라고 알리며 다시 읽을 수 있다", async () => {
+    vi.useFakeTimers();
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    a.fetchTaskFindings.mockResolvedValue([]);
+    mount("live");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    const finds = screen.getByRole("region", { name: "발견 후보" });
+    expect(within(finds).getByText("0건 · 최신 순")).toBeInTheDocument();
+    a.fetchTaskFindings.mockRejectedValue(new ApiError(503, "unavailable"));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(FINDINGS_POLL_MS);
+    });
+    expect(within(finds).getByRole("alert")).toHaveTextContent(
+      "발견 후보를 다시 읽지 못해 갱신이 멈췄습니다 (HTTP 503). 아래는 마지막으로 읽은 목록이라 최신이 아닐 수 있습니다.",
+    );
+    expect(within(finds).getByText("0건 · 마지막으로 읽은 목록")).toBeInTheDocument();
+    const calls = a.fetchTaskFindings.mock.calls.length;
+    a.fetchTaskFindings.mockResolvedValue([]);
+    await act(async () => {
+      fireEvent.click(within(finds).getByRole("button", { name: "다시 읽기" }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(a.fetchTaskFindings.mock.calls.length).toBe(calls + 1);
+    expect(within(finds).queryByRole("alert")).toBeNull();
+    expect(within(finds).getByText("0건 · 최신 순")).toBeInTheDocument();
+  });
+
+  it("탐색 흐름 없는 점검은 점검 중에만 서버 진단 활동을 두고(활동 기록 대신), 끝나면 두지 않는다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    const { unmount } = mount("live");
+    expect(await screen.findByRole("region", { name: "서버 진단 활동" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "활동 기록" })).toBeNull();
+    unmount();
+    resetUrl();
+    u.readURLStatus.mockResolvedValue(completed);
+    mount("live");
+    expect(await screen.findByText(/점검을 마쳤습니다/)).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "서버 진단 활동" })).toBeNull();
+  });
+
+  it("점검 진행 발견 후보가 없으면 '없음'을 안전으로 읽히지 않게 말한다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    mount("live");
+    const finds = await screen.findByRole("region", { name: "발견 후보" });
+    expect(
+      await within(finds).findByText("아직 나온 발견이 없습니다. 발견이 없다고 안전하다는 뜻은 아닙니다."),
+    ).toBeInTheDocument();
   });
 
   it("영수증만 있으면(id 없음) 생성 영수증을 조회한다", async () => {
@@ -1171,9 +1317,70 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     u.readURLStatus.mockResolvedValue(completed);
     const { goTo } = mount("live");
     expect(await screen.findByText(/점검을 마쳤습니다/)).toBeInTheDocument();
+    // 완료 카드를 따로 두지 않고 상태 카드 한 장에: 완료 딱지 · 점검을 마쳤습니다 · 결과 저장 확인 · 보고서 보기
+    const card = screen.getByRole("region", { name: "지금 상태" });
+    expect(document.getElementById("lTask")).toHaveTextContent(/^점검을 마쳤습니다$/);
+    expect(card).toHaveTextContent(/완료점검을 마쳤습니다보고서 보기.*결과 저장 확인/);
+    expect(screen.getAllByText(/점검을 마쳤습니다/)).toHaveLength(1);
+    expect(screen.queryByText("실행을 마감했습니다")).toBeNull();
     expect(screen.getByText(/마감된 점검의 전송 기록은 보고서의 증거 · 감사에 있습니다/)).toBeInTheDocument();
     expect(a.fetchRequestApprovals).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: /보고서 보기/ }));
+    expect(goTo).toHaveBeenCalledWith("report");
+  });
+
+  it.each([
+    [
+      "partial",
+      { done: 1, policy_limited: 0, incomplete: 2, unknown: 0, stopped: 0 },
+      "일부만 점검하고 마감했습니다",
+      "일부 완료 · 남은 작업 2",
+    ],
+    [
+      "no_intents",
+      { done: 0, policy_limited: 0, incomplete: 0, unknown: 0, stopped: 0 },
+      "검사하지 않고 마감했습니다",
+      "시도한 계획 없음(검사 안 함)",
+    ],
+  ] as const)("completed + %s 는 '점검을 마쳤습니다'·완료 톤 대신 실행 결과를 같이 보인다", async (outcome, counts, task, line) => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue({ ...completed, outcome, intent_outcomes: counts });
+    mount("live");
+    expect(await screen.findByText(task)).toBeInTheDocument();
+    const card = screen.getByRole("region", { name: "지금 상태" });
+    expect(card).toHaveTextContent(line);
+    expect(card).toHaveTextContent("마감");
+    expect(card).not.toHaveTextContent("완료점검");
+    expect(card).not.toHaveClass(s.ok);
+    expect(screen.queryByText(/점검을 마쳤습니다/)).toBeNull();
+  });
+
+  it("끝난 점검의 발견은 저장된 결과를 보고서 '발견 목록'과 같은 줄로 보이고(점검 중 발견 목록은 안 부름), 줄을 누르면 보고서로", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    a.fetchRemediation.mockResolvedValue({
+      task_id: 42,
+      entries: [
+        { ...candidate(1), vuln_class: "idor", context: { endpoint: "/api/items/{id}", observations: [] } },
+        candidate(2),
+      ],
+    });
+    const { goTo } = mount("live");
+    const sec = await screen.findByRole("region", { name: "발견 목록" });
+    await waitFor(() => expect(within(sec).getByText("2건 · 저장된 결과")).toBeInTheDocument());
+    // 보고서와 같은 줄: 위험도(없으면 '등급 없음') · 제목 · 엔드포인트 · 유형 · 판정
+    const rows = within(sec).getAllByRole("button");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toHaveTextContent(/^위험도 미평가후보 1\/api\/items\/\{id\}idor검토 필요$/);
+    expect(a.fetchRemediation).toHaveBeenCalledWith("42", "internal");
+    // 끝난 점검은 제품 서버가 점검 중 발견 목록을 닫으므로 부르지 않는다
+    expect(a.fetchTaskFindings).not.toHaveBeenCalled();
+    expect(screen.queryByRole("region", { name: "발견 후보" })).toBeNull();
+    // 상태 카드 숫자 칸: 발견 2 · 확정 0
+    expect(within(document.getElementById("lMeta") as HTMLElement).getByText("발견").parentElement).toHaveTextContent(
+      /^발견2확정 0$/,
+    );
+    fireEvent.click(rows[1]);
     expect(goTo).toHaveBeenCalledWith("report");
   });
 
@@ -1225,6 +1432,8 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     });
     mount("report");
     expect(await screen.findByRole("heading", { level: 1, name: "target.example 보고서" })).toBeInTheDocument();
+    // 우선 조치 칸은 두지 않는다 (사용자 11/17)
+    expect(screen.queryByRole("heading", { name: "우선 조치" })).toBeNull();
     // 위치: 끝난 점검 / 주소 (시안: 보고서 이름은 제목에만, "작업대" 뿌리는 뺐다)
     const crumb = screen.getByRole("navigation", { name: "위치" });
     expect(within(crumb).getByRole("link", { name: "끝난 점검" })).toHaveAttribute("href", "#finished");
@@ -1244,11 +1453,13 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     // 자산 커버리지(방문 · 검사한 자산 비율)라고 이름 붙인다 — 판정 커버리지로 읽히지 않게 (리뷰 #479)
     await waitFor(() => expect(cell("자산 커버리지")).toHaveTextContent("40%"));
     expect(cell("자산 커버리지")).toHaveTextContent("미검사 60%");
-    // 머리 줄 (시안: 시작 · 소요 · 모델 · 커버리지). 서버가 주지 않는 시작 · 소요는 '연결 전'(값을 만들지 않음)
+    // 머리 줄: 시작 · 소요 · 모델 · 모델 사용량. 서버가 주지 않는 시작 · 소요는 '연결 전'(값을 만들지 않음).
+    // 자산 커버리지는 요약 칸에만 두고 머리에서 뺐다(사용자 11/17). 모델 사용량 기록이 없으면 '—'
     const header = screen
       .getByRole("heading", { level: 1, name: "target.example 보고서" })
       .closest("header") as HTMLElement;
-    await waitFor(() => expect(header).toHaveTextContent("자산 커버리지 40%"));
+    expect(header).not.toHaveTextContent("자산 커버리지");
+    expect(within(header).getByText(/^모델 사용량/)).toHaveTextContent(/^모델 사용량 —$/);
     expect(header).toHaveTextContent("모델 합성 모델 · 로컬");
     expect(within(header).getByText(/^시작/)).toHaveTextContent("연결 전");
     expect(within(header).getByText(/^소요/)).toHaveTextContent("연결 전");
@@ -1264,11 +1475,10 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     const insp = screen.getByRole("complementary", { name: "발견 상세" });
     expect(within(insp).getByText(/^idor ·/)).toBeInTheDocument();
     expect(within(insp).getByText("GET")).toBeInTheDocument();
-    // 시안 상세의 계정별 응답 비교 표는 머리글만, 다음 단계는 '연결 전', 분류는 서버 유형
-    expect(within(insp).getByRole("columnheader", { name: "요청 주체" })).toBeInTheDocument();
-    expect(within(insp).getByText("계정별 응답 비교").parentElement).toHaveTextContent("연결 전");
-    expect(within(insp).getByText("다음 단계").parentElement).toHaveTextContent("연결 전");
-    expect(within(insp).getByText("분류").parentElement).toHaveTextContent("idor");
+    // 상세는 정리했다(사용자 11/17): '연결 전' 자리(계정별 응답 비교 · 다음 단계)와 머리와 겹치는 분류는 두지 않는다
+    expect(within(insp).queryByText("계정별 응답 비교")).toBeNull();
+    expect(within(insp).queryByText("다음 단계")).toBeNull();
+    expect(within(insp).queryByText("분류")).toBeNull();
     // 탭은 화살표로 옮긴다 (시안 selTab): 발견 목록 → 자산 지식 그래프, 고른 탭만 Tab 순서에
     const listTab = screen.getByRole("tab", { name: /발견 목록/ });
     expect(listTab).toHaveAttribute("tabindex", "0");
@@ -1292,8 +1502,37 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(within(record).getByText("run-1")).toBeInTheDocument();
     expect(within(record).getByText("완결")).toBeInTheDocument();
     expect(within(within(record).getByText("차단").parentElement as HTMLElement).getByText("2")).toBeInTheDocument();
-    // 모델 사용량은 서버 기록이 없으면 그렇다고 말한다
-    expect(screen.getByText("모델 사용량 기록이 아직 없습니다.")).toBeInTheDocument();
+    // 모델 사용량은 머리 줄로 옮겨 증거 · 감사 탭에 따로 두지 않는다
+    expect(screen.queryByRole("heading", { name: "모델 사용량" })).toBeNull();
+  });
+
+  it("보고서 머리 줄의 모델 사용량은 점검 진행과 같은 입 · 출 칩, 마우스를 올리면 정확한 값과 최대치", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue({
+      ...completed,
+      model_usage: {
+        requests: 2,
+        input_tokens: 1200,
+        output_tokens: 300,
+        reserved_input_tokens: 0,
+        reserved_output_tokens: 0,
+        cost_usd_micros: 0,
+        usage_known: true,
+        unknown_usage_calls: 1,
+      },
+    });
+    a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [candidate(1)] });
+    mount("report");
+    const header = (await screen.findByRole("heading", { level: 1, name: "target.example 보고서" })).closest(
+      "header",
+    ) as HTMLElement;
+    const use = await within(header).findByText(/^모델 사용량/);
+    expect(use).toHaveTextContent(/^모델 사용량 입 1.2k 출 300 \(최대\)$/);
+    expect(use).toHaveAttribute(
+      "title",
+      "입력 1,200 토큰\n출력 300 토큰\n사용량을 못 받은 호출 1건은 예약량으로 계산(최대치)",
+    );
+    expect(header).not.toHaveTextContent("자산 커버리지");
   });
 
   it("다른 진단 만들기: 조회 연결만 끊고 폼을 비운다", async () => {
@@ -1436,9 +1675,8 @@ describe("대시보드 · 인증 (URL 진단)", () => {
     const detail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
     expect(within(detail).getByText("발견 2")).toBeInTheDocument();
     expect(within(detail).getByRole("link", { name: /보고서 열기/ })).toHaveAttribute("href", "#report");
-    // 시안 발견 상세의 계정별 응답 비교 · 다음 단계는 서버가 따로 주지 않아 자리만
-    expect(within(detail).getByText("계정별 응답 비교").parentElement).toHaveTextContent("연결 전");
-    expect(within(detail).getByText("다음 단계").parentElement).toHaveTextContent("연결 전");
+    // 발견 상세에 '연결 전' 자리(계정별 응답 비교 · 다음 단계)는 두지 않는다 (사용자 11/17)
+    expect(within(detail).queryByText("계정별 응답 비교")).toBeNull();
     // 최근 끝난 점검 줄 (시안 doneRowHtml): 확정 발견의 위험도 딱지 + 발견 수
     const done = within(screen.getByRole("region", { name: "보존된 끝난 점검" })).getByRole("button", {
       name: /job-1/,
