@@ -43,6 +43,9 @@ COMPOSE_E2_STUB = REPO_ROOT / "deploy" / "eval" / "compose.e2-stub.yaml"
 COMPOSE_E2_PRODUCT = REPO_ROOT / "deploy" / "eval" / "compose.e2-product.yaml"
 # 브라우저 수용시험 회차에만 얹는다(purpose=browser_acceptance). 계측기가 가린 경로를 기록한다.
 COMPOSE_ACCEPTANCE = REPO_ROOT / "deploy" / "eval" / "compose.acceptance.yaml"
+# 탐색 분리 배치(개선 후 O)의 평가 overlay. 제품 compose·제품 수용 overlay 위에 얹는다(탐색 분리 배치 결정안 §2 A(c)).
+# 렌더 조건은 scripts/ci/test_product_eval_split.py가 고정하고, 회차 구성에 쓰는 것은 순서 4-7(제품 구동)이다.
+COMPOSE_SPLIT = REPO_ROOT / "deploy" / "eval" / "compose.split.yaml"
 E2_SECCOMP_PROFILE = REPO_ROOT / "deploy" / "eval" / "seccomp-e2.json"
 METER_DIR_NAME = "meter"
 # 게이트웨이 기록은 계측기와 따로 둔다(API 키를 가진 컨테이너가 계측 기록에 손대지 못하게).

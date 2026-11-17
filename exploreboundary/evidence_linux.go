@@ -10,9 +10,10 @@ import (
 	"github.com/Autumn-27/artex/pathmask"
 )
 
-// OpenEvidence는 러너가 준비한 근거 디렉터리에 행 파일을 새로 만든다. 계측기(cmd/eval-meter)와 같은 규칙이다:
-// 디렉터리 소유를 넘기지 않고, 러너가 자기 uid·0700으로 만든 디렉터리를 같은 uid로 뜬 경계가 쓴다. 그래서 디렉터리는
-// 정확히 0700이고 소유자가 경계 euid여야 한다. 이전 회차의 파일이 남아 있으면 이어 쓰지 않고 시작을 거부한다.
+// OpenEvidence는 평가 배치가 준비한 근거 디렉터리에 행 파일을 새로 만든다. 디렉터리 소유를 넘기지 않는다. 평가 overlay의
+// init이 경계 uid 소유 0700으로 만든 빈 디렉터리를 제품 uid 그대로 뜬 경계가 쓰고, 러너는 경계를 정지한 뒤 읽기 전용으로
+// 꺼낸다(계약 §4.1, 2026-11-17 개정). 그래서 디렉터리는 정확히 0700이고 소유자가 경계 euid여야 한다. 이전 회차의 파일이
+// 남아 있으면 이어 쓰지 않고 시작을 거부한다.
 // key는 경로 가림 키다(표식의 path_key_ref, 계측기 경로 행과 같은 계산).
 func OpenEvidence(path string, maxBytes int64, key []byte) (*Evidence, error) {
 	if path == "" || maxBytes <= 0 || len(key) != pathmask.KeyBytes {
