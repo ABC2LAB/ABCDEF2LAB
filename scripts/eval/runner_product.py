@@ -267,11 +267,10 @@ class ProductDriver:
         self._call("POST", f"{DRAFTS_PATH}/{draft['id']}/start", body, key=secrets.token_hex(16))
 
     def stop(self, draft_id: str) -> dict:
-        """실행 중인 회차를 멈춘다(화면의 중지와 같은 명령). 이미 끝 상태면 보내지 않는다(제품이 충돌로 거부한다).
-        B의 게이트웨이 봉인(drain 뒤 새 모델 요청 막기)과 같은 자리에서 O의 새 모델 호출·전송을 멈추려는 것이다."""
+        """회차를 멈춘다(화면의 중지와 같은 명령). 상태와 상관없이 현재 revision으로 보낸다: 제품 Stop은 활성 상태가 아니면
+        작업을 그대로 돌려주고(충돌 아님), `unknown`이면 살아 있는 실행 문맥을 취소한다(diagnosisprep service_linux Stop,
+        #665 리뷰). B의 게이트웨이 봉인(drain 뒤 새 모델 요청 막기)과 같은 자리에서 O의 새 모델 호출·전송을 멈추려는 것이다."""
         draft = self.status(draft_id)
-        if draft["state"] in DRAFT_TERMINAL:
-            return draft
         return self._draft(self._call("POST", f"{DRAFTS_PATH}/{draft_id}/stop",
                                       {"version": API_VERSION, "expected_revision": draft["revision"]}))
 
