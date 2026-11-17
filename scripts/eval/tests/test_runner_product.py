@@ -134,6 +134,15 @@ class TestHappyPath(unittest.TestCase):
         self.assertEqual(fake.calls[8]["body"], {"version": "diagnosis-api.v2", "expected_revision": 1})
         self.assertEqual(fake.calls[4]["body"], REGISTRATION)
 
+    def test_record_keeps_only_scope_fields_of_the_approved_target(self):
+        # 제품이 승인 응답에 증명 값이나 다른 칸을 실어도 기록에는 범위 칸만 옮긴다.
+        fake = FakeProduct()
+        fake.overrides["/api/product/targets/{id}/approve"] = lambda s, v: (200, {"target": dict(
+            v["target"], challenge_name="_abc2lab-challenge.app.eval.test", challenge_value="abc2lab-proof-1", reason_note="x")})
+        start = run(fake)
+        self.assertEqual(set(start.target), {"id", "origin", "state", "revision", "path_prefixes", "methods", "requests",
+                                             "addresses", "port", "tls_spki_sha256", "approved_at", "expires_at"})
+
     def test_headers_ports_and_secret_placement(self):
         fake = FakeProduct()
         start = run(fake)
@@ -205,6 +214,8 @@ class TestFaults(unittest.TestCase):
             "dns_forbidden": ("product_http_403:/control", {"/control": (403, b"forbidden")}),
             "approve_reason": ("product_rejected:/api/product/targets/{id}/approve:ownership_not_verified",
                                {approve: (200, {"reason": "ownership_not_verified"})}),
+            "approve_other_target": ("product_target_mismatch", {approve: lambda s, v: (
+                200, {"target": dict(v["target"], id="target-" + "c" * 32)})}),
             "approve_pending": ("product_target_invalid", {approve: lambda s, v: (200, {"target": dict(v["target"], state="pending")})}),
             "approve_pin_on_http": ("product_approval_invalid", {approve: lambda s, v: (
                 200, {"target": dict(v["target"], tls_spki_sha256="b" * 64)})}),
