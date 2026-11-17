@@ -31,7 +31,7 @@ import {
   fetchTaskTokens,
   type LiveTokenTotal,
 } from "../../live/api";
-import { approvalCounts, errorText, fmtCount, fmtTokensShort, isUnsupported, planState, sevKey } from "../../live/map";
+import { approvalCounts, fmtCount, fmtTokensShort, planState, sevKey } from "../../live/map";
 import { maskSecrets } from "../../live/mask";
 import { ErrorNote, LoadingRow, NotYet } from "../../live/parts";
 import { useUrl, useUrlGates } from "../../live/urlDiagnosis";
@@ -42,8 +42,10 @@ import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
 import { InspHead, InspOpenButton, Isec, Kv, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
-import { ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "./approvals";
+import { ApprovalFacts, ApprovalRequestCode, RecoveredApprovalNotice, useRequestApprovals } from "./approvals";
 import { DiagnosticEntrySections } from "./DiagnosticEntrySections";
+import { ReportReadError } from "./runRows";
+import { TaskActivity } from "./TaskActivity";
 import { reasonText, UrlFacts, UrlHead, UrlNotices, UrlPill, UrlRefreshButton, useUrlHost } from "./urlParts";
 import { PauseButton, useStopConfirm, WorkflowActivity, WorkflowNotice, WorkflowReport } from "./workflowViews";
 
@@ -318,6 +320,7 @@ export function UrlLiveLive() {
             </div>
           ) : null}
           {done}
+          {a.pending.length ? <RecoveredApprovalNotice /> : null}
           {a.pending.map((r) => (
             <div className={s.decide} key={r.id} id="lDecide">
               <div className={s.dm}>
@@ -354,6 +357,7 @@ export function UrlLiveLive() {
           ))}
           {a.message ? <p role="status">{a.message}</p> : null}
           {a.unresolved ? <p role="alert">결정 결과 불명 · 조회로 확인하기 전에는 다시 결정하지 않습니다.</p> : null}
+          {job.task_id && verified ? <TaskActivity key={job.task_id} taskId={job.task_id} enabled={visible} /> : null}
           {job.input.workflow_mode ? <WorkflowActivity /> : null}
         </div>
         {/* 오른쪽 진행 요약: 서버가 점검 중에 주는 값만. 점검 중 발견 · 판정은 서버가 결과를 저장하기 전에 주지 않아
@@ -653,17 +657,13 @@ export function Download({ taskId }: { taskId: string }) {
       <div className={s.sh}>
         <h2 id="rvDlH">내려받기</h2>
       </div>
-      {st.err && isUnsupported(st.err) ? (
-        <p className={s.empty}>이 점검은 보고서 파일을 제공하지 않습니다.</p>
-      ) : (
-        <div className={s.acts}>
-          {btn("shared", "html", "공유용 사본", true)}
-          {btn("internal", "html", "내부 상세 사본")}
-          {btn("shared", "docx", "Word 공유용")}
-          {btn("internal", "docx", "Word 내부 상세")}
-        </div>
-      )}
-      {st.err && !isUnsupported(st.err) ? <p role="alert">{errorText(st.err)}</p> : null}
+      <div className={s.acts}>
+        {btn("shared", "html", "공유용 사본", true)}
+        {btn("internal", "html", "내부 상세 사본")}
+        {btn("shared", "docx", "Word 공유용")}
+        {btn("internal", "docx", "Word 내부 상세")}
+      </div>
+      {st.err ? <ReportReadError error={st.err} /> : null}
       {st.done ? (
         <p className={s.help} role="status">
           {`${st.done.format === "docx" ? "Word" : "HTML"} ${AUD_TEXT[st.done.aud]} 파일을 저장했습니다.`}
@@ -835,9 +835,9 @@ export function UrlReportLive() {
     );
   }
 
-  const entries = rem.data?.entries ?? [];
+  const entries = rem.error ? [] : (rem.data?.entries ?? []);
   const sorted = [...entries].sort((x, y) => ORDER.indexOf(diagnosticOutcome(x)) - ORDER.indexOf(diagnosticOutcome(y)));
-  const counts = rem.data ? summarizeDiagnosticEntries(entries) : null;
+  const counts = rem.data && !rem.error ? summarizeDiagnosticEntries(entries) : null;
   const findings = sorted.filter((e) => diagnosticOutcome(e) !== "negative");
   // 우선 조치: 시안처럼 위험도 → 판정 순
   const prio = sorted
@@ -868,7 +868,7 @@ export function UrlReportLive() {
   };
 
   let listBody: ReactNode;
-  if (!rem.data && rem.error) listBody = <ErrorNote error={rem.error} onRetry={rem.reload} />;
+  if (rem.error) listBody = <ReportReadError error={rem.error} onRetry={rem.reload} />;
   else if (!rem.data) listBody = <LoadingRow />;
   else if (!sorted.length)
     listBody = <p className={s.empty}>저장된 결과가 없습니다. 결과가 없다고 안전하다는 뜻은 아닙니다.</p>;

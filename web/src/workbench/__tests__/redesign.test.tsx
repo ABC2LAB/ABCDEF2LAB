@@ -14,11 +14,12 @@ import { catalog, handle, running, scope } from "@/lib/diagnosis/diagnosis-url-f
 import * as api from "../live/api";
 import { LiveRailTasks } from "../live/rail";
 import { resetUrl, useUrl } from "../live/urlDiagnosis";
+import { useUrlRuns } from "../live/urlRunList";
 import { FLOW_VERSION, type WorkflowSnapshot } from "../live/workflow";
 import { type Shell, ShellContext, type View } from "../shell";
 import { UrlDashboardLive } from "../views/live/UrlDashboardLive";
 import { prettyEvidence, UrlLiveLive } from "../views/live/UrlLiveLive";
-import { eventText, group, Pth, WorkflowCrawlLive, WorkflowScopeLive } from "../views/live/workflowViews";
+import { eventText, group, PauseButton, Pth, WorkflowCrawlLive, WorkflowScopeLive } from "../views/live/workflowViews";
 
 const noop = () => undefined;
 const shell = (route: View, over: Partial<Shell> = {}): Shell => ({
@@ -1067,6 +1068,29 @@ describe("대시보드", () => {
         },
       ],
     });
+    useUrlRuns.setState({
+      owner: catalog.ownerContext,
+      page: {
+        snapshot: "c".repeat(64),
+        limit: 25,
+        more: false,
+        runs: [
+          {
+            id: job.id,
+            revision: job.revision,
+            state: job.state,
+            phase: job.phase,
+            task_id: job.task_id,
+            started: true,
+            drain_complete: false,
+            result_ready: false,
+            report_available: false,
+            approval_status: "not_revalidated",
+            action_required: true,
+          },
+        ],
+      },
+    });
     render(
       <ShellContext.Provider value={shell("dashboard")}>
         <UrlDashboardLive />
@@ -1077,10 +1101,9 @@ describe("대시보드", () => {
       .parentElement as HTMLElement;
     await waitFor(() => expect(decide).toHaveTextContent(/^결정 대기1승인 1$/));
     expect(screen.queryByRole("region", { name: "결정 대기" })).toBeNull();
-    const act = within(screen.getByRole("region", { name: "진행 중인 점검" })).getByRole("button", {
-      name: /target\.example/,
-    });
-    expect(within(act).getByText("승인 대기")).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("region", { name: "진행 중인 점검" })).getByRole("button", { name: /job-1/ }),
+    ).toHaveTextContent("확인 필요");
     // 고르기 전 상세는 승인 대기 요청 (보내기 전에 사람이 정해야 함)
     const detail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
     expect(within(detail).getByText("PUT /api/users/2")).toBeInTheDocument();
@@ -1097,12 +1120,58 @@ describe("대시보드", () => {
     expect(within(detail).getByText("attempt-1")).toBeInTheDocument();
     expect(within(detail).getByRole("button", { name: "이 요청 승인" })).toBeInTheDocument();
     expect(within(detail).getByRole("button", { name: "거부" })).toBeInTheDocument();
-    // 점검 줄을 고르면 점검 상세의 결정 대기 · '승인 요청 보기' 로 다시 승인 요청을 연다 (시안 act-api)
-    fireEvent.click(act);
-    expect(within(detail).getByText(/^보낼 요청 1건 · 가장 빠른 만료/)).toBeInTheDocument();
-    fireEvent.click(within(detail).getByRole("button", { name: "승인 요청 보기" }));
-    expect(within(detail).getByText("PUT /api/users/2")).toBeInTheDocument();
+    act(() =>
+      useUrl.setState({
+        handle: {
+          kind: "recovered",
+          ownerContext: catalog.ownerContext,
+          input: job.input,
+          id: job.id,
+          revision: job.revision,
+          sourceDigest: job.source_digest,
+          bindingLocked: true,
+        },
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "승인 요청 보기" }));
+    const recoveredDetail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
+    expect(within(recoveredDetail).getByText(/요청 승인은 처음 시작한 화면에서만/)).toBeInTheDocument();
+    expect(within(recoveredDetail).getByRole("button", { name: "이 요청 승인" })).toBeDisabled();
+    act(() => useUrl.setState({ handle }));
+    const createdDetail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
+    expect(within(createdDetail).queryByText(/요청 승인은 처음 시작한 화면에서만/)).toBeNull();
+    expect(within(createdDetail).getByRole("button", { name: "이 요청 승인" })).toBeEnabled();
   });
+});
+
+it("목록에서 복구한 회차의 일시정지·범위 선택 실행 버튼은 조회 전용으로 잠근다", () => {
+  const recovered = {
+    kind: "recovered" as const,
+    ownerContext: catalog.ownerContext,
+    input: job.input,
+    id: job.id,
+    revision: job.revision,
+    sourceDigest: job.source_digest,
+    bindingLocked: true as const,
+  };
+  useUrl.setState({
+    handle: recovered,
+    job,
+    verified: true,
+    flow: { ...flow, stage: "diagnosing" },
+    flowVerified: true,
+  });
+  const first = render(<PauseButton />);
+  expect(screen.getByRole("button", { name: "일시정지" })).toBeDisabled();
+  first.unmount();
+  useUrl.setState({ flow: { ...flow, stage: "awaiting_selection" } });
+  render(
+    <ShellContext.Provider value={shell("scope")}>
+      <WorkflowScopeLive />
+    </ShellContext.Provider>,
+  );
+  for (const button of screen.getAllByRole("button", { name: /선택한 범위로 점검 시작/ }))
+    expect(button).toBeDisabled();
 });
 
 describe("점검 진행", () => {
@@ -1117,7 +1186,30 @@ describe("점검 진행", () => {
         drain_complete: false,
         closure_failed: false,
       },
-      approvals: [],
+      approvals: [1, 2].map((id) => ({
+        id: `ap-${id}`,
+        task_id: 42,
+        run_ref: `run-${job.id}`,
+        intent_id: id,
+        call_ref: `call-${id}`,
+        attempt_id: `attempt-${id}`,
+        policy_revision: "rev-1",
+        account_ref: "a",
+        session_ref: "s",
+        request_sha256: "d".repeat(64),
+        method: "PUT",
+        target_origin: "https://target.example",
+        path: `/api/users/${id}`,
+        input_preview: {},
+        body_bytes: 19,
+        created_at: "2026-11-11T01:02:03Z",
+        expires_at: "2099-01-01T00:00:00Z",
+        state: "pending" as const,
+        consumed: false,
+        execution_state: "not_sent" as const,
+        live: true,
+        can_decide: true,
+      })),
     });
     const f: WorkflowSnapshot = {
       ...flow,
@@ -1154,5 +1246,24 @@ describe("점검 진행", () => {
     expect(within(insp).getByRole("heading", { level: 3, name: "전송 통제" })).toBeInTheDocument();
     // 탐색 현황: 방문 · 발견한 API · 심화 선택 (서버 수 그대로)
     expect(within(insp).getByText("탐색 현황").parentElement).toHaveTextContent("방문 1발견한 API 3심화 선택 1");
+    await screen.findAllByRole("button", { name: "승인하고 보내기" });
+    expect(screen.queryByText(/요청 승인은 처음 시작한 화면에서만/)).toBeNull();
+    act(() =>
+      useUrl.setState({
+        handle: {
+          kind: "recovered",
+          ownerContext: catalog.ownerContext,
+          input: job.input,
+          id: job.id,
+          revision: job.revision,
+          sourceDigest: job.source_digest,
+          bindingLocked: true,
+        },
+      }),
+    );
+    expect(screen.getAllByText(/요청 승인은 처음 시작한 화면에서만/)).toHaveLength(1);
+    const approvals = screen.getAllByRole("button", { name: "승인하고 보내기" });
+    expect(approvals).toHaveLength(2);
+    for (const button of approvals) expect(button).toBeDisabled();
   });
 });

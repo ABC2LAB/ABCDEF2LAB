@@ -452,6 +452,13 @@ export function JobSummary({
           <p>{nowText ?? stageText}</p>
         </Isec>
       ) : null}
+      {handle.kind === "recovered" ? (
+        <Isec>
+          <p className={s.help}>
+            서버에서 다시 찾은 점검입니다. 상태·활동·보고서를 읽을 수 있습니다. 새 진단은 ‘새 점검’에서 별도로 만드세요.
+          </p>
+        </Isec>
+      ) : null}
       <Isec t="점검 정보">
         <Kv rows={rows} />
       </Isec>
@@ -480,7 +487,7 @@ export function JobSummary({
           {ended ? again : open}
           {ended ? open : null}
         </div>
-        {ended ? <p className={s.help}>다시 점검하면 이 점검은 이 브라우저 목록에서 빠집니다.</p> : null}
+        {ended ? <p className={s.help}>다시 점검은 별도 새 진단입니다. 이전 회차는 서버 목록에 보존됩니다.</p> : null}
         <UrlNotices />
         {uncertain || error ? (
           <div className={s.acts}>
