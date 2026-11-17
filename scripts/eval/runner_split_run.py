@@ -43,6 +43,7 @@ from runner import (  # noqa: E402
 )
 from runner_checks import compare_snapshots  # noqa: E402
 from runner_evidence import MeterFiles  # noqa: E402
+from runner_llm import judge_product_llm  # noqa: E402
 from runner_probe import PASS  # noqa: E402
 from runner_product_llm import ProductLLMError, call_records_reasons, product_model_usage  # noqa: E402
 from runner_split_probe import SplitProbeOutcome  # noqa: E402
@@ -70,6 +71,10 @@ class SplitRunSpec:
     healthchecks: dict  # runner_window.healthcheck_actions(렌더)
     product_close_seconds: float  # 제품 멈춤 뒤 끝 상태·drain 완료까지 기다리는 시한
     post_settle_seconds: int  # 강제 취소가 있으면 post 관측 전 정착 대기(B와 같은 run_drain 공통 조건)
+    # 모델 호출 사후 검증 판정(B와 같은 judge_llm 규칙). 샘플링은 B 게이트웨이가 넣는 값(선언 §6), 제공자는 선언 핀.
+    llm_sampling: dict | None = None
+    llm_provider_slug: str = ""
+    llm_provider_name: str = ""
 
 
 class SplitRunPorts(Protocol):
@@ -97,6 +102,8 @@ class SplitRunPorts(Protocol):
     def run_record(self, task_id: str) -> dict: ...
     def copy_boundary_evidence(self) -> None: ...
     def copy_product_records(self) -> tuple: ...
+    def generation_verify(self, calls: bytes, sampling: dict | None) -> None: ...
+    def llm_verified(self) -> dict | None: ...
     def down(self) -> None: ...
     def remove_inputs(self) -> None: ...
 
@@ -247,6 +254,17 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
         "usage": usage, "call_records": {"reasons": record_reasons}}))
     if record_reasons:
         raise RunFailure(record_reasons[0])
+    # 제품 호출 기록을 B 게이트웨이와 같은 조회 코드로 사후 검증하고(eval-meter -role generation-verify) B와 같은 규칙으로
+    # 판정한다(결정안 D(b), 4-11). 샘플링은 제품이 실제로 보낸 값을 표식에 싣고 B 게이트웨이 적용값(선언)과 대조한다.
+    _step(state, "llm_verify_failed", lambda: ports.generation_verify(calls, usage["sampling"]))
+    verified = _step(state, "llm_read_failed", ports.llm_verified)
+    if verified is None:
+        raise RunFailure("llm_unverified")
+    llm_reasons, llm_summary = _step(state, "llm_marker_invalid", lambda: judge_product_llm(
+        verified, spec.llm_sampling, spec.llm_provider_slug, spec.llm_provider_name))
+    _step(state, "evidence_write_failed", lambda: evidence.write_json("llm-summary.json", dict(llm_summary, reasons=llm_reasons)))
+    if llm_reasons:
+        raise RunFailure(llm_reasons[0])
     state.summary.update(stop_reason=stop_reason, forwarded_at_stop=forwarded_at_stop, first_limit=limit,
                          drained=drained, post_settle_seconds=spec.post_settle_seconds, post_settle_applied_seconds=settled,
                          pre_solved=pre_board.get("solved"), post_solved=post_board.get("solved"),
@@ -258,7 +276,7 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
 def execute_split_run(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles, evidence, clock: Clock) -> dict:
     """O 회차 1회. 실패해도 감시를 멈추고, 띄웠으면 내리고, 보호 입력은 늘 지운다. 결과 기록을 정확히 하나 쓴다.
 
-    서명·보존 sidecar v3·경계 원자료 검증·generation-verify 연결은 다음 단계(4-7c-4·4-9)다. 여기 결과는 서명 전 요약이다.
+    서명·보존 sidecar v3·경계 원자료 검증은 다음 단계(4-9)다. 여기 결과는 서명 전 요약이다.
     """
     state = _SplitState()
     started_at = _stamp(clock)

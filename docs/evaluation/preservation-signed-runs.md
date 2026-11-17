@@ -36,6 +36,24 @@
 
 발행 자료에는 회차·짝 순번·세션 참조, 엔진 커밋/이미지, 모델·제공자·샘플링 핀 지문, 대상 이미지/초기 상태 지문, 머신 지문, 러너의 폴링/마감/작업/worker/컨텍스트 조건 지문, 요청/시간 예산, 통신/쓰기 모드, MCP 버전/도구 지문/브라우저 이미지, 탐색/E② 정책 지문, 모델 예산 선언 지문, 종료 사유를 남긴다. 원본의 두 정책 지문은 `null`이다. 원본·개선 후의 엔진 커밋/이미지는 달라도 되지만 각 조건 안에서는 고정해야 한다. R-R은 계약대로 R-F 원본과 짝을 지으므로 원본의 쓰기 모드와 개선 후 읽기 모드는 다를 수 있다.
 
+### v3(탐색 분리 배치)
+
+탐색 분리 배치 회차는 `abc2lab.preservation-round/v3`로 발행한다([결정안 §3.3](exploration-split-decision.md)). 칸 이름은 `preservation_record.py`(`COMMON_FIELDS_V3`·`SIDE_FIELDS_V3`·`RUN_FIELDS_V3`·`PRODUCT_FIELDS_V3`)가 정본이고, 해당 없는 칸은 더미가 아니라 `null`이다.
+
+- `common`(B·O 전체가 같아야 짝, 다르면 `preservation_conditions_mismatch`): `request_budget`·`time_budget_seconds`·`model_pin_sha256`·`target_image_id`·`initial_state_sha256`·`machine_sha256`·`runner_settings_sha256`(공통 러너 설정만)·`goal_common_sha256`·`comm_mode`·`mcp_version`·`mcp_raw_tools_sha256`(MCP 원 목록, 도구 면 측정).
+- `side_conditions`(쪽 안에서만 같아야 함, 다르면 `preservation_layout_or_policy_mixed`):
+  - 배치는 `layout`(B `artex-direct/v1`, O `exploration-split/v1`)이다.
+  - 그 밖의 칸: `driver_sha256`·`driver_settings_sha256`·`write_mode`·`declared_model_budget_sha256`·`cli_surface_sha256`·`mcp_exposed_tools_sha256`.
+  - `browser_image_id`·`exploration_policy_sha256`·`diagnosis_policy_sha256`는 B에서 `null`이고 O에서 필수다.
+- `run`(대조하지 않는 근거): `stop_reason`·`first_limit`(러너 `first_limit` 결과 그대로)·`end_signal`(`status`·`elapsed_seconds`·`closing_reason`, `closing_reason`은 O만; 끝 신호가 없으면 `null`이고 `first_limit.engine_terminal_elapsed_seconds`와 같은 읽기여야 함)·`rate_limited`(429 건수, 모르면 `null`).
+- `product`(O만, B는 `null`):
+  - `source_sha`·`image_ids`(product·explore_browser·fixture)
+  - `file_sha256`: installation·policy·api_launch·target_policy·runtime_conditions·control_limits의 원본 SHA. 회차마다 다를 수 있어 대조하지 않는다.
+  - `split_conditions`(#651), `sampling_overwrites`(실행·준비 칸별)
+  - `call_records`: 장부 예약 수 = 호출 기록 줄 수여야 한다.
+- 경계 원자료 요약(`exploration_boundary`)은 O 필수, B `null`이다.
+- 한 묶음 안에서 v2와 v3를 섞지 않는다(`preservation_series_mismatch`). v3 발행은 러너 연결(B·O) 뒤부터다.
+
 초기 상태 지문(`initial_state_sha256`)은 회차 신원을 뺀 대상 시작 상태다. 점수판 관측이면 pre 해결 맵, opaque 관측이면 pre 관측 원문의 SHA-256과 크기로 만든다(`abc2lab.preservation-initial-state/v1`). 관측 정규화 봉투(`normalized.json`)의 hash는 run_id·대상/엔진 컨테이너 ID를 담아 회차마다 달라지므로 쓰지 않는다. 그 hash를 쓰던 때는 같은 상태에서 시작한 짝도 `preservation_conditions_mismatch`로 멈췄다(2026-11-16 VAmPI e2-legacy 파일럿). 그 전에 서명된 sidecar는 이 칸이 회차마다 달라 짝으로 묶을 수 없으므로 다시 돌린다.
 
 원자료는 고정 파일 네 개(`engine-requests.jsonl`, `engine-paths.jsonl`, `engine-sealed.json`, `engine-drained.json`)의 정확한 바이트 SHA-256과 크기로 결속한다. 발행·읽기 모두 봉인/drain·순번·전달 수·경로/입구 대조를 확인한다. 러너는 post 단계에 공개 발행 조건만 보관하고, 기존 격리·모델·마감 검증과 `down` 성공 뒤에 원자료를 다시 읽어 최종 바이트의 hash를 계산한 다음 sidecar를 서명하며, 결과의 서명된 근거 목록에도 넣는다. 봉인·drain 뒤부터 `down`까지 생긴 `rejected_after_seal` 행도 최종 hash에 포함된다. 이 거부는 전달 수·도달 패턴을 늘리지 않으며, 기존 meter 요약은 측정 마감 시점의 관측값이다. 개인 근거 디렉터리(러너 소유·0700), 경로 가림 키와 별도 러너 키(근거 밖 보호 파일)를 유지한다.
