@@ -283,6 +283,7 @@ class EventsHandle(Protocol):
 class _State:
     e2_service: dict = field(default_factory=dict)
     engine_end: dict = field(default_factory=dict)
+    first_limit: dict | None = None
     up_attempted: bool = False
     serving: dict = field(default_factory=dict)
     llm_load_attempted: bool = False
@@ -505,6 +506,26 @@ class _EngineEndWatch:
                 "first_terminal": self.first_terminal, "final": final, "final_error": error}
 
 
+# 어느 상한이 먼저 걸렸는지(탐색 분리 배치 결정안 §3 B(a) 표). O의 `product_limit:<사유>`는 제품 구동(순서 4-7)에서 더한다.
+FIRST_LIMIT_ENGINE = "engine_completed"
+_FIRST_LIMIT_BY_STOP = {"request_budget": "runner_request_budget", "time_budget": "runner_time_budget"}
+
+
+def first_limit(stop_reason: str, stop_elapsed: float, time_budget_seconds: float, first_terminal: dict | None) -> dict:
+    """러너 예산 종료와 엔진 끝 신호 가운데 먼저 온 것. 시각은 모두 작업 생성 요청 직전부터 잰 초다.
+
+    러너 상한 시각: 시간 예산은 그 값 자체(정확한 문턱), 요청 예산은 러너가 알아챈 시각(계측기 전달 수를 폴링해서 보므로
+    실제로 닿은 때보다 최대 폴링 간격만큼 늦다). 엔진 끝 시각은 상태 읽기가 끝 상태를 돌려준 시각이다(역시 폴링이라 실제
+    끝난 때보다 늦을 수 있다). 엔진 끝 시각이 러너 상한 시각 이하이면 engine_completed다. 창이 끝난 뒤에 거둔 읽기의 끝
+    상태(러너 상한보다 늦음)는 엔진이 먼저 끝났다고 보지 않는다. 두 시각을 같이 남겨 판정을 다시 계산할 수 있게 한다."""
+    runner = _FIRST_LIMIT_BY_STOP[stop_reason]
+    limit_at = time_budget_seconds if stop_reason == "time_budget" else stop_elapsed
+    engine_at = None if first_terminal is None else first_terminal["elapsed_seconds"]
+    value = FIRST_LIMIT_ENGINE if engine_at is not None and engine_at <= limit_at else runner
+    return {"value": value, "runner_limit": runner, "runner_limit_elapsed_seconds": round(limit_at, 3),
+            "engine_terminal_elapsed_seconds": engine_at}
+
+
 def _wait_budget(spec: RunSpec, meter: MeterFiles, clock: Clock, state: _State, started: float,
                  watch: _EngineEndWatch | None = None) -> tuple[str, int]:
     while True:
@@ -666,7 +687,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         "requested_at": requested_at, "created_at": created_at}))
     watch = _EngineEndWatch(ports, task_id, clock, started, spec.task_status_wait_seconds)
     stop_reason, forwarded_at_stop = _wait_budget(spec, meter, clock, state, started, watch)
-    stopped_at = _stamp(clock)
+    stopped_at, stop_elapsed = _stamp(clock), clock.monotonic() - started
     # E²가 허용한 진행 요청이 봉인된 계측기에서 끊기지 않도록 E²를 먼저 닫는다(연결 제안 §4.3). 시한이 있고 실패해도 넘어간다.
     e2_close = None if spec.e2_mode != E2_PRODUCT else _step(state, "e2_close_failed", ports.e2_close)
     _step(state, "seal_failed", lambda: ports.seal(pre["services"][METER_SERVICE]["id"]))
@@ -684,6 +705,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     # 받는 창이 늘지 않는다(#634 리뷰). 엔진이 아직 떠 있을 때(down 전) 읽어 서명 근거에 남긴다.
     state.engine_end = watch.record()
     _step(state, "evidence_write_failed", lambda: evidence.write_json(ENGINE_END_NAME, state.engine_end))
+    state.first_limit = first_limit(stop_reason, stop_elapsed, spec.time_budget_seconds, state.engine_end["first_terminal"])
 
     post = _check_phase(spec, ports, evidence, state, "post")
     post_check_at = _stamp(clock)
@@ -846,6 +868,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         observer, ready_calls, meter_summary, drained, len(rows), pre_checked_at, post_check_at, conditions, e2,
         reconciliation, records, verdict_row, e2_product, e2_prompt))
     state.summary = {"meter": meter_summary, "llm": llm_summary, "policy_sha256": policy_sha256(pre),
+                     "first_limit": state.first_limit,
                      "run_conditions": conditions, "engine_rules": state.engine_rules, "intercept": state.intercept,
                      "task_request_sha256": spec.task_request_sha256, "observer_format": spec.observer_format,
                      "llm_serving": state.serving or None,
