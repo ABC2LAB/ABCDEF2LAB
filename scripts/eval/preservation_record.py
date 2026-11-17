@@ -37,6 +37,28 @@ TOP_FIELDS_V1 = frozenset({"format", "purpose", "series_ref", "run_id", "side", 
 TOP_FIELDS = TOP_FIELDS_V1 | {"exploration_boundary"}
 
 
+# v3(탐색 분리 배치 결정안 §3.3): 조건을 공통 대조(B·O가 같아야 짝)·쪽별(쪽 안에서만 고정)·회차별(근거만)로 나누고, O만
+# 제품 블록을 둔다. 해당 없는 칸은 더미가 아니라 null이다. v1·v2 기록은 지금처럼 읽는다.
+FORMAT_V3 = "abc2lab.preservation-round/v3"
+COMMON_FIELDS_V3 = frozenset({"request_budget", "time_budget_seconds", "model_pin_sha256", "target_image_id", "initial_state_sha256",
+                              "machine_sha256", "runner_settings_sha256", "goal_common_sha256", "comm_mode", "mcp_version",
+                              "mcp_raw_tools_sha256"})
+SIDE_FIELDS_V3 = frozenset({"layout", "driver_sha256", "driver_settings_sha256", "write_mode", "declared_model_budget_sha256",
+                            "browser_image_id", "exploration_policy_sha256", "diagnosis_policy_sha256", "cli_surface_sha256",
+                            "mcp_exposed_tools_sha256"})
+RUN_FIELDS_V3 = frozenset({"stop_reason", "first_limit", "end_signal", "rate_limited"})
+FIRST_LIMIT_FIELDS = frozenset({"value", "runner_limit", "runner_limit_elapsed_seconds", "engine_terminal_elapsed_seconds"})
+RUNNER_LIMITS = frozenset({"runner_request_budget", "runner_time_budget"})
+PRODUCT_FIELDS_V3 = frozenset({"source_sha", "image_ids", "file_sha256", "split_conditions", "sampling_overwrites", "call_records"})
+PRODUCT_IMAGES = frozenset({"product", "explore_browser", "fixture"})
+PRODUCT_FILES = frozenset({"installation", "policy", "api_launch", "target_policy", "runtime_conditions", "control_limits"})
+SPLIT_CONDITION_FIELDS = frozenset({"workflow_defaults_sha256", "workflow_defaults", "workflow", "registration"})
+TOP_FIELDS_V3 = frozenset({"format", "purpose", "series_ref", "run_id", "side", "repeat_index", "engine_source_sha", "engine_image_id",
+                           "execution_source", "common", "side_conditions", "run", "product", "files", "forwarded_by_ingress",
+                           "exploration_boundary", "signature"})
+STOP_REASONS = ("request_budget", "time_budget", "engine_completed", "cap_exhausted", "boundary_unavailable")
+
+
 class PreservationRecordError(ValueError):
     """값·경로·키를 오류에 넣지 않는다."""
 
@@ -200,6 +222,189 @@ def _validate_payload(p: object):
                 _fail("preservation_boundary_invalid")
 
 
+def _hex(value) -> bool:
+    return isinstance(value, str) and _HEX.fullmatch(value) is not None
+
+
+def _image(value) -> bool:
+    return isinstance(value, str) and _IMAGE.fullmatch(value) is not None
+
+
+def _count(value) -> bool:
+    return type(value) is int and value >= 0
+
+
+def _seconds(value) -> bool:
+    return type(value) in (int, float) and math.isfinite(value) and value >= 0
+
+
+def _validate_v3(p: dict) -> None:
+    """v3 모양 검사. 쪽(B=artex-direct, O=exploration-split)에 따라 null이어야 하는 칸과 있어야 하는 칸이 정해진다."""
+    if set(p) != TOP_FIELDS_V3 - {"signature"} or p["purpose"] != "browser_acceptance":
+        _fail("preservation_record_invalid")
+    if (p["side"] not in ("baseline", "ours") or type(p["repeat_index"]) is not int or p["repeat_index"] < 0
+            or p["execution_source"] not in ("synthetic_fixture", "model_run")
+            or not isinstance(p["engine_source_sha"], str) or not re.fullmatch(r"[a-f0-9]{40}", p["engine_source_sha"])
+            or not _image(p["engine_image_id"])):
+        _fail("preservation_record_invalid")
+    for field in ("series_ref", "run_id"):
+        if not isinstance(p[field], str) or not _REF.fullmatch(p[field]):
+            _fail("preservation_record_invalid")
+    baseline = p["side"] == "baseline"
+    c = p["common"]
+    if (not isinstance(c, dict) or set(c) != COMMON_FIELDS_V3
+            or type(c["request_budget"]) is not int or c["request_budget"] < 1
+            or not _seconds(c["time_budget_seconds"]) or c["time_budget_seconds"] <= 0
+            or c["comm_mode"] not in ("full_local", "external_allowed")
+            or not isinstance(c["mcp_version"], str) or not _VERSION.fullmatch(c["mcp_version"])
+            or not _image(c["target_image_id"])
+            or not all(_hex(c[f]) for f in ("model_pin_sha256", "initial_state_sha256", "machine_sha256", "runner_settings_sha256",
+                                              "goal_common_sha256", "mcp_raw_tools_sha256"))):
+        _fail("preservation_conditions_invalid")
+    d = p["side_conditions"]
+    split_only = ("browser_image_id", "exploration_policy_sha256", "diagnosis_policy_sha256")
+    if (not isinstance(d, dict) or set(d) != SIDE_FIELDS_V3
+            or d["layout"] != ("artex-direct/v1" if baseline else "exploration-split/v1")
+            or d["write_mode"] not in ("read_only", "approved_writes")
+            or not all(_hex(d[f]) for f in ("driver_sha256", "driver_settings_sha256", "declared_model_budget_sha256",
+                                              "cli_surface_sha256", "mcp_exposed_tools_sha256"))
+            or baseline and any(d[f] is not None for f in split_only)
+            or not baseline and (not _image(d["browser_image_id"]) or not _hex(d["exploration_policy_sha256"])
+                                 or not _hex(d["diagnosis_policy_sha256"]))):
+        _fail("preservation_conditions_invalid")
+    r = p["run"]
+    if not isinstance(r, dict) or set(r) != RUN_FIELDS_V3 or r["stop_reason"] not in STOP_REASONS:
+        _fail("preservation_run_invalid")
+    f = r["first_limit"]
+    if (not isinstance(f, dict) or set(f) != FIRST_LIMIT_FIELDS or f["runner_limit"] not in RUNNER_LIMITS
+            or not isinstance(f["value"], str) or not (f["value"] in RUNNER_LIMITS or f["value"] == "engine_completed"
+                                                       or not baseline and f["value"] == "product_limit:budget_limited")
+            or not _seconds(f["runner_limit_elapsed_seconds"])
+            or f["engine_terminal_elapsed_seconds"] is not None and not _seconds(f["engine_terminal_elapsed_seconds"])
+            or (f["value"] in RUNNER_LIMITS) != (f["value"] == f["runner_limit"])):
+        _fail("preservation_run_invalid")
+    e = r["end_signal"]
+    if e is not None and (not isinstance(e, dict) or set(e) != {"status", "elapsed_seconds", "closing_reason"}
+                          or not isinstance(e["status"], str) or not e["status"] or not _seconds(e["elapsed_seconds"])
+                          or e["closing_reason"] is not None and (baseline or not isinstance(e["closing_reason"], str))):
+        _fail("preservation_run_invalid")
+    if (e is None) != (f["engine_terminal_elapsed_seconds"] is None) or e is not None and e["elapsed_seconds"] != f["engine_terminal_elapsed_seconds"]:
+        _fail("preservation_run_invalid")  # 끝 신호와 first_limit의 엔진 끝 시각은 같은 읽기다
+    if r["rate_limited"] is not None and not _count(r["rate_limited"]):
+        _fail("preservation_run_invalid")
+    _validate_product(p["product"], baseline)
+    if not isinstance(p["files"], dict) or set(p["files"]) != set(RAW_FILES):
+        _fail("preservation_files_invalid")
+    for row in p["files"].values():
+        if not isinstance(row, dict) or set(row) != {"sha256", "bytes"} or not _hex(row["sha256"]) or not _count(row["bytes"]):
+            _fail("preservation_files_invalid")
+    counts = p["forwarded_by_ingress"]
+    if not isinstance(counts, dict) or set(counts) != {"main", "explore"} or not all(_count(n) for n in counts.values()):
+        _fail("preservation_ingress_invalid")
+    block = p["exploration_boundary"]
+    if baseline != (block is None):
+        _fail("preservation_boundary_invalid")
+    if block is not None:
+        try:
+            boundary_export.validate_block(block)
+        except boundary_export.BoundaryExportError:
+            _fail("preservation_boundary_invalid")
+
+
+def _validate_product(block, baseline: bool) -> None:
+    if baseline:
+        if block is not None:
+            _fail("preservation_product_invalid")
+        return
+    if not isinstance(block, dict) or set(block) != PRODUCT_FIELDS_V3:
+        _fail("preservation_product_invalid")
+    images, files, conditions = block["image_ids"], block["file_sha256"], block["split_conditions"]
+    overwrites, records = block["sampling_overwrites"], block["call_records"]
+    if (not isinstance(block["source_sha"], str) or not re.fullmatch(r"[a-f0-9]{40}", block["source_sha"])
+            or not isinstance(images, dict) or set(images) != PRODUCT_IMAGES or not all(_image(v) for v in images.values())
+            or not isinstance(files, dict) or set(files) != PRODUCT_FILES or not all(_hex(v) for v in files.values())
+            or not isinstance(conditions, dict) or set(conditions) != SPLIT_CONDITION_FIELDS
+            or not _hex(conditions["workflow_defaults_sha256"])
+            or not isinstance(overwrites, dict) or set(overwrites) != {"execution", "preparation"}
+            or overwrites["execution"] is not None and not _count(overwrites["execution"])
+            or not isinstance(overwrites["preparation"], list)
+            or any(v is not None and not _count(v) for v in overwrites["preparation"])
+            or not isinstance(records, dict) or set(records) != {"reservations", "lines"}
+            or not all(_count(v) for v in records.values()) or records["reservations"] != records["lines"]):
+        _fail("preservation_product_invalid")
+
+
+def build_payload_v3(*, meter: MeterFiles, series_ref: str, execution_source: str, run_id: str, side: str, repeat_index: int,
+                     engine_source_sha: str, engine_image_id: str, common: dict, side_conditions: dict, run: dict,
+                     product: dict | None, boundary: dict | None) -> dict:
+    """v3 서명 전 자료. 계측기 writer 정리 뒤 최종 바이트를 읽는다. O(exploration-split/v1)는 경계 원자료가 필수다
+    (boundary = {"directory", "task_id", "path_key_ref"}, 경계 정지 뒤). B는 경계·제품 블록이 없다."""
+    rows = meter.engine_rows()
+    layout = side_conditions.get("layout") if isinstance(side_conditions, dict) else None
+    validate_ingress_layout(rows, layout, require_ingress=True)
+    meter.path_rows(rows)
+    drained = meter.marker(DRAINED_MARKER)
+    if drained is None or not drain_complete(drained) or not final_log_consistent(rows, meter.marker(SEALED_MARKER), drained):
+        _fail("preservation_meter_incomplete")
+    split = layout == "exploration-split/v1"
+    if split != (boundary is not None):
+        _fail("preservation_boundary_missing" if split else "preservation_boundary_unexpected")
+    if boundary is not None and (not isinstance(boundary, dict) or set(boundary) != {"directory", "task_id", "path_key_ref"}
+                                 or not isinstance(boundary["task_id"], str) or not isinstance(boundary["path_key_ref"], str)):
+        _fail("preservation_boundary_missing")
+    block = None if boundary is None else _boundary(Path(boundary["directory"]), rows, meter, boundary["path_key_ref"], boundary["task_id"])
+    payload = {"format": FORMAT_V3, "purpose": "browser_acceptance", "series_ref": series_ref, "run_id": run_id, "side": side,
+               "repeat_index": repeat_index, "engine_source_sha": engine_source_sha, "engine_image_id": engine_image_id,
+               "execution_source": execution_source, "common": dict(common), "side_conditions": dict(side_conditions),
+               "run": dict(run), "product": None if product is None else dict(product), "files": _raw_files(meter),
+               "forwarded_by_ingress": ingress_counts(rows), "exploration_boundary": block}
+    _validate_v3(payload)
+    return payload
+
+
+def validate_series_v3(baseline: list[dict], improved: list[dict], *, request_budget: int, read_only: bool) -> dict:
+    """v3 짝 묶기. 공통 대조 칸만 B·O 전체에서 같아야 하고(다르면 preservation_conditions_mismatch), 쪽별 칸은 쪽 안에서만
+    같아야 한다(다르면 preservation_layout_or_policy_mixed). 회차별 칸은 대조하지 않는다."""
+    if not baseline or len(baseline) != len(improved):
+        _fail("preservation_pairs_invalid")
+    all_records = baseline + improved
+    for record in all_records:
+        if not isinstance(record, dict) or record.get("format") != FORMAT_V3:
+            _fail("preservation_series_mismatch")
+        _validate_v3(record)
+    if any(len({r[f] for r in all_records}) != 1 for f in ("series_ref", "execution_source")):
+        _fail("preservation_series_mismatch")
+    for field in COMMON_FIELDS_V3:
+        if len({digest(r["common"][field]) for r in all_records}) != 1:
+            _fail("preservation_conditions_mismatch")
+    for records, side in ((baseline, "baseline"), (improved, "ours")):
+        if any(r["side"] != side for r in records):
+            _fail("preservation_side_mismatch")
+        for field in ("engine_source_sha", "engine_image_id"):
+            if len({r[field] for r in records}) != 1:
+                _fail("preservation_engine_mixed")
+        for field in SIDE_FIELDS_V3:
+            if len({digest(r["side_conditions"][field]) for r in records}) != 1:
+                _fail("preservation_layout_or_policy_mixed")
+        if len({r["run_id"] for r in records}) != len(records):
+            _fail("preservation_run_reused")
+    if {r["run_id"] for r in baseline} & {r["run_id"] for r in improved}:
+        _fail("preservation_run_reused")
+    if any(b["repeat_index"] != o["repeat_index"] for b, o in zip(baseline, improved)) or len({r["repeat_index"] for r in baseline}) != len(baseline):
+        _fail("preservation_pair_order_mismatch")
+    if any(r["common"]["request_budget"] != request_budget for r in all_records):
+        _fail("preservation_budget_mismatch")
+    if (any(r["side_conditions"]["write_mode"] != "approved_writes" for r in baseline)
+            or any(r["side_conditions"]["write_mode"] != ("read_only" if read_only else "approved_writes") for r in improved)):
+        _fail("preservation_write_mode_mismatch")
+    return {"format": FORMAT_V3, "verified_signed_rounds": len(all_records), "series_ref": baseline[0]["series_ref"],
+            "execution_source": baseline[0]["execution_source"], "layout": improved[0]["side_conditions"]["layout"],
+            "mcp_version": improved[0]["common"]["mcp_version"], "exploration_boundary": _boundary_series(improved),
+            "first_limits": [{"repeat_index": r["repeat_index"], "side": r["side"], "value": r["run"]["first_limit"]["value"]}
+                             for r in all_records],
+            "round_digests": [digest(r) for r in all_records]}
+
+
 def _unique(pairs):
     out = {}
     for key, value in pairs:
@@ -220,16 +425,22 @@ def load_record(directory: Path, meter: MeterFiles, key: bytes, boundary_dir: Pa
     except PreservationRecordError:
         raise
     except (ValueError, UnicodeError): _fail("preservation_record_invalid")
-    if not isinstance(signed, dict) or set(signed) != TOP_FIELDS: _fail("preservation_record_invalid")
+    top = {FORMAT: TOP_FIELDS, FORMAT_V3: TOP_FIELDS_V3}.get(signed.get("format")) if isinstance(signed, dict) else None
+    if top is None or set(signed) != top: _fail("preservation_record_invalid")
     payload = {k: v for k, v in signed.items() if k != "signature"}
     expected = sign_run_record(payload, key)["signature"]
     # compare_digest(str,str)는 비 ASCII에서 TypeError를 낸다. 서명은 애초에 64 hex만 허용한다.
     if not isinstance(signed["signature"], str) or not _HEX.fullmatch(signed["signature"]) or not hmac.compare_digest(signed["signature"], expected):
         _fail("preservation_signature_invalid")
-    _validate_payload(payload)
+    if payload["format"] == FORMAT_V3:
+        _validate_v3(payload)
+        layout = payload["side_conditions"]["layout"]
+    else:
+        _validate_payload(payload)
+        layout = payload["conditions"]["layout"]
     if _raw_files(meter) != payload["files"]: _fail("preservation_raw_digest_mismatch")
     rows = meter.engine_rows()
-    validate_ingress_layout(rows, payload["conditions"]["layout"], require_ingress=True); meter.path_rows(rows)
+    validate_ingress_layout(rows, layout, require_ingress=True); meter.path_rows(rows)
     drained = meter.marker(DRAINED_MARKER)
     if drained is None or not drain_complete(drained) or not final_log_consistent(rows, meter.marker(SEALED_MARKER), drained):
         _fail("preservation_meter_incomplete")
@@ -245,7 +456,11 @@ def load_record(directory: Path, meter: MeterFiles, key: bytes, boundary_dir: Pa
 
 
 def validate_series(baseline: list[dict], improved: list[dict], *, request_budget: int, read_only: bool) -> dict:
-    """서로 다른 배치·모델·모드·정책을 같은 짝/평균으로 섞지 않는다. SHA와 공개 메타데이터만 반환한다."""
+    """서로 다른 배치·모델·모드·정책을 같은 짝/평균으로 섞지 않는다. SHA와 공개 메타데이터만 반환한다.
+
+    v3 기록이 하나라도 있으면 v3 규칙(validate_series_v3)으로 본다. v2와 섞이면 거부한다."""
+    if any(isinstance(r, dict) and r.get("format") == FORMAT_V3 for r in list(baseline) + list(improved)):
+        return validate_series_v3(baseline, improved, request_budget=request_budget, read_only=read_only)
     if not baseline or len(baseline) != len(improved): _fail("preservation_pairs_invalid")
     all_records = baseline + improved
     for record in all_records:
