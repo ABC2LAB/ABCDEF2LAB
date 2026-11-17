@@ -33,6 +33,16 @@ DRAINED_MARKER = "engine-drained.json"
 TERMINATED_MARKER = "engine-terminated.json"
 OBSERVER_LOG = "observer-requests.jsonl"
 LLM_VERIFIED_MARKER = "llm-verified.json"
+LLM_LOG = "llm-requests.jsonl"
+# 게이트웨이 행(cmd/eval-meter gateway.go llmRow). unfinished_end는 upstream_error 행에만 있다.
+_LLM_ROW = frozenset({"seq", "decision", "method", "status", "started_at", "completed_at", "request_bytes", "response_bytes",
+                      "generation_id"})
+# 행 결정. 거부는 "rejected_"+사유(gateway.go prepare의 사유, 봉인 뒤 거부는 rejected_after_seal). Go 원문과 같은지
+# test_runner_evidence가 고정한다(게이트웨이에 사유가 늘면 여기도 늘어야 한다).
+LLM_DECISIONS = frozenset({"forwarded", "upstream_error", "cancelled_by_seal", "rejected_after_seal", "rejected_method",
+                           "rejected_path", "rejected_content_type", "rejected_body", "rejected_too_large"})
+LLM_UPSTREAM_ENDS = frozenset({"client_closed_after_done", "client_closed_before_done", "upstream_cut_after_done",
+                               "upstream_cut_before_done"})
 MAX_METER_FILE_BYTES = 64 * 1024 * 1024
 _NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,62}\.json\Z")
 _ENGINE_ROW = frozenset({"seq", "kind", "method", "status", "started_at", "completed_at", "response_bytes", "outcome",
@@ -398,6 +408,21 @@ class GatewayFiles:
 
     def __init__(self, path: Path):
         self.path = path
+
+    def rows(self) -> list[dict]:
+        """게이트웨이 요청 행(호출마다 한 줄). 칸·결정·끝 모양·시각 모양이 어긋나면 고정 code로 거부한다."""
+        try:
+            rows = _rows(_read_owned(self.path, LLM_LOG), _LLM_ROW, frozenset({"unfinished_end"}))
+        except EvidenceError:
+            raise EvidenceError("llm_row_invalid") from None
+        for row in rows:
+            upstream_error = row["decision"] == "upstream_error"
+            if (row["decision"] not in LLM_DECISIONS or type(row["status"]) is not int
+                    or not all(isinstance(row[name], str) and _STAMP.fullmatch(row[name]) for name in ("started_at", "completed_at"))
+                    or ("unfinished_end" in row) != upstream_error
+                    or (upstream_error and row["unfinished_end"] not in LLM_UPSTREAM_ENDS)):
+                raise EvidenceError("llm_row_invalid")
+        return rows
 
     def verified(self) -> dict | None:
         """seal·drain 뒤 게이트웨이가 쓰는 검증 마커. 아직 없으면 None."""
