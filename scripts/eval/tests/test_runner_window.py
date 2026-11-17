@@ -222,6 +222,8 @@ class TestRunnerHelperAndStop(unittest.TestCase):
             "restart_after_stop": self.stop_sequence() + [event("container", "start", self.BOUNDARY)],
             "second_stop": self.stop_sequence() + [event("container", "kill", self.BOUNDARY, signal="15")],
             "disconnect_before_sigterm": [event("network", "disconnect", "n" * 64, container=self.BOUNDARY)],
+            "disconnect_foreign_network_after_sigterm": [event("container", "kill", self.BOUNDARY, signal="15"),
+                                                         event("network", "disconnect", "o" * 64, container=self.BOUNDARY)],
             "disconnect_after_sigkill": [event("container", "kill", self.BOUNDARY, signal="9"),
                                          event("network", "disconnect", "n" * 64, container=self.BOUNDARY)],
             "disconnect_twice": self.stop_sequence() + [event("network", "disconnect", "n" * 64, container=self.BOUNDARY)],
