@@ -15,6 +15,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 type Session = { token: string };
 
 let session: Session | null = null;
+let loginGeneration = 0;
+const sessionListeners = new Set<(signedIn: boolean) => void>();
+/** 로그인 주체 교체와 로그아웃을 조회 상태에 즉시 알린다. 토큰은 전달하지 않는다. */
+export function subscribeSessionChanged(listener: (signedIn: boolean) => void): () => void {
+  sessionListeners.add(listener);
+  return () => {
+    sessionListeners.delete(listener);
+  };
+}
 
 const TOKEN_KEY = "abc2lab.devToken";
 
@@ -67,12 +76,15 @@ export function subscribeAuthRequired(listener: () => void): () => void {
 function startSession(value: string): Session {
   session = { token: value };
   storeToken(value);
+  for (const listener of sessionListeners) listener(true);
   return session;
 }
 
 function dropSession(): void {
+  loginGeneration++;
   session = null;
   storeToken(null);
+  for (const listener of sessionListeners) listener(false);
 }
 
 function requireSignIn(): void {
@@ -98,6 +110,7 @@ export async function restoreSession(): Promise<boolean> {
 
 /** 연결 실패는 status 0 인 ApiError 로 알린다. 실패한 시도는 세션을 남기지 않는다. */
 export async function signIn(username: string, password: string): Promise<void> {
+  const generation = ++loginGeneration;
   let res: Response;
   try {
     res = await fetch("/api/auth/login", {
@@ -112,6 +125,7 @@ export async function signIn(username: string, password: string): Promise<void> 
   if (!res.ok) throw await responseError(res);
   const data = (await res.json()) as { token?: string };
   if (!data.token) throw new ApiError(502, "로그인 응답을 확인하지 못했어요.");
+  if (generation !== loginGeneration) throw new ApiError(409, "authentication_changed");
   startSession(data.token);
 }
 
@@ -128,9 +142,12 @@ export async function readAuthStatus(): Promise<{ initialized: boolean }> {
 
 /** 엔진 API 호출. path 는 `/api/...` 전체 경로. 401 이면 토큰을 버리고 한 번만 재로그인·재시도. */
 export async function apiFetch<T>(path: string, init: RequestInit = {}, retryAuth = true): Promise<T> {
+  const sent = await ensureSession();
   const res = await authenticatedResponse(path, init, retryAuth);
   if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
+  const result = (await res.json()) as T;
+  if (sent !== session) throw new ApiError(401, "authentication_changed");
+  return result;
 }
 
 async function authenticatedResponse(path: string, init: RequestInit, retryAuth: boolean): Promise<Response> {
@@ -153,8 +170,46 @@ async function authenticatedResponse(path: string, init: RequestInit, retryAuth:
     if (sent === session) requireSignIn();
     throw error;
   }
+  if (sent !== session) throw new ApiError(401, "authentication_changed");
   if (!res.ok) throw await responseError(res);
   return res;
+}
+
+/** 목록처럼 상한이 있는 JSON 응답은 파싱 전에 수신 바이트를 제한한다. */
+export async function apiFetchLimitedJSON(path: string, maxBytes: number, init: RequestInit = {}): Promise<unknown> {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new ApiError(422, "invalid_response_limit");
+  const sent = await ensureSession();
+  const response = await authenticatedResponse(path, init, false);
+  const reader = response.body?.getReader();
+  if (!reader) throw new ApiError(422, "invalid_contract");
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxBytes) {
+        await reader.cancel();
+        throw new ApiError(422, "response_limit");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  if (sent !== session) throw new ApiError(401, "authentication_changed");
+  const bytes = new Uint8Array(size);
+  let at = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  try {
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch {
+    throw new ApiError(422, "invalid_contract");
+  }
 }
 
 /** Authenticated download; never put a bearer token in an href or query string. */
@@ -166,12 +221,15 @@ export async function apiFetchBlob(
     | "image/png"
     | "application/vnd.openxmlformats-officedocument.wordprocessingml.document" = "text/html",
 ): Promise<Blob> {
+  const sent = await ensureSession();
   const res = await authenticatedResponse(path, { ...init, cache: "no-store", redirect: "error" }, true);
   if (res.headers.get("Content-Type")?.split(";", 1)[0].trim().toLowerCase() !== expectedType) {
     throw new ApiError(422, "보고서 응답 형식을 확인할 수 없습니다.");
   }
   // Download only. Do not navigate to or render the authenticated HTML in this origin.
-  return new Blob([await res.arrayBuffer()], {
+  const data = await res.arrayBuffer();
+  if (sent !== session) throw new ApiError(401, "authentication_changed");
+  return new Blob([data], {
     type: expectedType === "image/png" ? "image/png" : "application/octet-stream",
   });
 }

@@ -642,12 +642,12 @@ export async function readURLReceipt(key: string, owner: string): Promise<URLDia
     owner,
   );
 }
-export async function readURLStatus(id: string, owner: string): Promise<URLDiagnosisJob> {
+export async function readURLStatus(id: string, owner: string, signal?: AbortSignal): Promise<URLDiagnosisJob> {
   if (!ref(id)) return invalid();
   const result = parseURLJob(
     await apiFetch<unknown>(
       `${base}/drafts/${encodeURIComponent(id)}/status`,
-      { cache: "no-store", redirect: "error" },
+      { cache: "no-store", redirect: "error", ...(signal ? { signal } : {}) },
       false,
     ),
     owner,
@@ -787,6 +787,7 @@ export async function commandURLDiagnosis(
 
 /** 조회용 식별자와 동일 요청 payload만 보관한다. 상태·승인·비밀정보를 신뢰하거나 저장하지 않는다. */
 export type URLDiagnosisHandle = {
+  kind?: "created";
   ownerContext: string;
   creationKey: string;
   input: URLDiagnosisInput;
@@ -798,9 +799,46 @@ export type URLDiagnosisHandle = {
   /** 재결속 금지 latch일 뿐 서버 상태·실행 허가가 아니다. */
   bindingLocked?: true;
 };
-const HANDLE_KEY = "abc2lab.urlDiagnosisHandle.v2";
-export function storeURLHandle(handle: URLDiagnosisHandle | null): void {
+/** 서버에서 재발견한 조회 결속. 생성/시작 키를 발급하거나 승계하지 않는다. */
+export type URLRecoveredHandle = {
+  kind: "recovered";
+  ownerContext: string;
+  input: URLDiagnosisInput;
+  id: string;
+  revision: number;
+  sourceDigest: string;
+  bindingLocked: true;
+  creationKey?: never;
+  startKey?: never;
+  startRevision?: never;
+};
+export type URLJobHandle = URLDiagnosisHandle | URLRecoveredHandle;
+const SELECTION_KEY = "abc2lab.urlDiagnosisSelection.v1";
+export function readURLSelection(owner: string): { ownerContext: string; id: string } | null {
   try {
+    const v: unknown = JSON.parse(sessionStorage.getItem(SELECTION_KEY) ?? "null");
+    if (v === null) return null;
+    if (!object(v) || !digest(owner) || v.ownerContext !== owner || !ref(v.id)) return invalid();
+    exact(v, ["ownerContext", "id"]);
+    return { ownerContext: owner, id: v.id };
+  } catch {
+    try {
+      sessionStorage.removeItem(SELECTION_KEY);
+    } catch {
+      /* 저장 불가 시 힌트 없이 조회한다. */
+    }
+    return null;
+  }
+}
+const HANDLE_KEY = "abc2lab.urlDiagnosisHandle.v2";
+export function storeURLHandle(handle: URLJobHandle | null): void {
+  try {
+    if (handle?.kind === "recovered") {
+      // 조회 선택은 이 브라우저가 만든 회차의 생성/시작 키를 대체하지 않는다.
+      sessionStorage.setItem(SELECTION_KEY, JSON.stringify({ ownerContext: handle.ownerContext, id: handle.id }));
+      return;
+    }
+    sessionStorage.removeItem(SELECTION_KEY);
     // 회차별 외부 시험 계정 동의는 시작을 보내기 전까지 메모리에서만 유지한다. 새로고침으로 동의를 재사용해 시작하지 않는다.
     // 시작을 보낸 뒤(startKey)에는 같은 진단을 다시 시작할 수 없으므로(canStart 가 startSent 로 막힘) 동의가 다시 쓰일
     // 길이 없다. 그때는 저장해 새로고침해도 진행 중 점검을 이어 보고 중지할 수 있게 한다.
@@ -818,6 +856,7 @@ export function readURLHandle(owner: string): URLDiagnosisHandle | null {
     if (!object(v) || !digest(owner) || v.ownerContext !== owner || !ref(v.creationKey)) return invalid();
     exact(v, [
       "ownerContext",
+      "kind",
       "creationKey",
       "input",
       "id",
@@ -827,6 +866,7 @@ export function readURLHandle(owner: string): URLDiagnosisHandle | null {
       "startRevision",
       "bindingLocked",
     ]);
+    if (v.kind !== undefined && v.kind !== "created") return invalid();
     if (v.bindingLocked !== undefined && v.bindingLocked !== true) return invalid();
     const input = parseInput(v.input);
     // 시작을 보내지 않은 동의 핸들은 저장하지 않으므로, 저장소에 있으면 버린다(시작 키 형식은 아래에서 따로 본다)
@@ -853,11 +893,16 @@ export function readURLHandle(owner: string): URLDiagnosisHandle | null {
       ...(v.bindingLocked ? { bindingLocked: true as const } : {}),
     };
   } catch {
-    storeURLHandle(null);
+    try {
+      // 잘못된 생성 핸들만 버린다. 별도로 검증하는 조회 선택은 보존한다.
+      sessionStorage.removeItem(HANDLE_KEY);
+    } catch {
+      /* 저장소에 접근할 수 없으면 핸들 없이 조회한다. */
+    }
     return null;
   }
 }
-export function matchURLHandle(job: URLDiagnosisJob, handle: URLDiagnosisHandle): URLDiagnosisJob {
+export function matchURLHandle(job: URLDiagnosisJob, handle: URLJobHandle): URLDiagnosisJob {
   if (!sameURLInput(job.input, handle.input)) return invalid();
   if (handle.id)
     matchURLJob(
@@ -868,7 +913,7 @@ export function matchURLHandle(job: URLDiagnosisJob, handle: URLDiagnosisHandle)
         source_digest: handle.sourceDigest ?? "",
         input: handle.input,
       },
-      { allowPreStartRebind: !handle.startKey && !handle.bindingLocked },
+      { allowPreStartRebind: handle.kind !== "recovered" && !handle.startKey && !handle.bindingLocked },
     );
   return job;
 }

@@ -153,13 +153,15 @@ export interface LiveAuth {
 }
 
 async function login(username: string, password: string): Promise<string | null> {
-  runId++; // 진행 중인 확인 결과는 버린다
+  const id = ++runId; // 진행 중인 확인 결과는 버린다
   try {
     await signIn(username, password);
+    if (id !== runId) return null;
     rememberAccountName(username);
     useAuthStore.setState({ state: "ready", detail: null });
     return null;
   } catch (err) {
+    if (id !== runId) return null;
     if (isOffline(err)) useAuthStore.setState({ state: "offline", detail: errorText(err) });
     return loginError(err);
   }
