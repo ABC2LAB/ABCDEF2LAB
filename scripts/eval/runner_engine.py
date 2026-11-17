@@ -208,25 +208,38 @@ def login(port: int, secret: AdminSecret, timeout: float) -> str:
     return token
 
 
-# 엔진 끝 신호(탐색 분리 배치 결정안 §3.1). 원본 작업 조회 API(GET /api/tasks/{id})의 상태 칸만 옮긴다. 원본과 개선 후
-# 엔진의 응답 구조(server/dto.go taskDTO)·끝 상태 집합(db.IsTerminal)이 같다.
-TASK_STATUS_PATH = "/api/tasks/"
+# 엔진 끝 신호(탐색 분리 배치 결정안 §3.1). 원본 작업 목록 API(GET /api/tasks)에서 이 회차 작업 항목의 상태 칸만 옮긴다.
+# 단건 API(GET /api/tasks/{id}, getTask)는 taskDTO만 돌려주는데 taskDTO는 goals_total·goals_met·in_flight를 채우지 않아
+# 셋이 늘 0이다. 목록 API(listTasks)만 TaskListMetricsAll 집계로 세 칸을 채운다. listTasks·taskDTO·TaskDTO는 upstream
+# fdfb7a17·baseline e53a79f·개선 후가 같다(test_runner_engine STATUS_SHAPES). 끝 상태 집합(db.IsTerminal)도 같다.
+# 한계: listTasks는 집계 조회 오류를 버리고(`metrics, _ :=`) 0으로 둔다. 그래서 세 칸의 0은 "집계 실패"와 구별되지 않는다.
+# status·completed_at은 taskDTO가 채우므로 이 한계와 무관하다.
+TASK_STATUS_PATH = "/api/tasks"
 TERMINAL_TASK_STATUSES = frozenset({"done", "failed", "timeout"})
 END_SIGNAL_FIELDS = ("status", "completed_at", "goals_total", "goals_met", "in_flight", "llm_failover_state")
-MAX_TASK_STATUS_BYTES = 256 * 1024
+# 목록은 작업마다 설명·목표 원문을 싣는다. 평가 회차는 엔진 DB가 새로라 작업이 하나다. 작업 생성 응답 상한과 같게 둔다.
+MAX_TASK_STATUS_BYTES = 1024 * 1024
 _END_SIGNAL_WORD = re.compile(r"[a-z_]{0,32}", re.ASCII)
 _END_SIGNAL_STAMP = re.compile(r"[0-9T:.+\-Z]{0,40}", re.ASCII)
 
 
-def task_end_signal(data: bytes) -> dict:
-    """작업 조회 응답에서 끝 신호 칸만 골라 검사한다. 이름·설명·목표 같은 다른 칸은 옮기지 않는다. 값은 원본 그대로다."""
+def task_end_signal(data: bytes, task_id: str) -> dict:
+    """작업 목록 응답에서 이 작업 항목 하나를 찾아 끝 신호 칸만 골라 검사한다. 이름·설명·목표 같은 다른 칸과 다른 작업
+    항목은 옮기지 않는다. 값은 원본 그대로다."""
     try:
         if len(data) > MAX_TASK_STATUS_BYTES:
             raise ValueError
-        view = json.loads(data.decode("utf-8"))
+        listing = json.loads(data.decode("utf-8"))
     except (UnicodeError, ValueError):
         raise EngineAPIError("engine_task_status_invalid") from None
-    if not isinstance(view, dict) or any(name not in view for name in END_SIGNAL_FIELDS):
+    tasks = listing.get("tasks") if isinstance(listing, dict) else None
+    if not isinstance(tasks, list):
+        raise EngineAPIError("engine_task_status_invalid")
+    matches = [item for item in tasks if isinstance(item, dict) and item.get("id") == task_id]
+    if not matches:
+        raise EngineAPIError("engine_task_status_missing")
+    view = matches[0]
+    if len(matches) != 1 or any(name not in view for name in END_SIGNAL_FIELDS):
         raise EngineAPIError("engine_task_status_invalid")
     out = {name: view[name] for name in END_SIGNAL_FIELDS}
     if (not isinstance(out["status"], str) or not out["status"] or not _END_SIGNAL_WORD.fullmatch(out["status"])
@@ -238,7 +251,8 @@ def task_end_signal(data: bytes) -> dict:
 
 
 class TaskStatusReader:
-    """회차 창 동안 엔진 작업 상태를 읽는다. 토큰 하나를 다시 쓰고, 401이면 한 번만 다시 로그인한다."""
+    """회차 창 동안 엔진 작업 상태를 읽는다. 토큰 하나를 다시 쓰고, 401이면 한 번만 다시 로그인한다. 한 번 읽기는 로그인과
+    GET이 각각 timeout 안이다. 러너는 이 읽기를 예산 감시와 다른 스레드에서 부른다(runner._EngineEndWatch)."""
 
     def __init__(self, port: int, secret: AdminSecret, timeout: float):
         self._port, self._secret, self._timeout = port, secret, timeout
@@ -253,7 +267,7 @@ class TaskStatusReader:
             if self._token is None:
                 self._token = login(self._port, self._secret, self._timeout)
             try:
-                status, data = _get(self._port, TASK_STATUS_PATH + task_id, {"Authorization": f"Bearer {self._token}"},
+                status, data = _get(self._port, TASK_STATUS_PATH, {"Authorization": f"Bearer {self._token}"},
                                     self._timeout, MAX_TASK_STATUS_BYTES)
             except (OSError, http.client.HTTPException, ValueError, OverflowError):
                 raise EngineAPIError("engine_task_status_unreachable") from None
@@ -262,7 +276,7 @@ class TaskStatusReader:
             self._token = None
         if status != 200:
             raise EngineAPIError(f"engine_task_status_http_{status}")
-        return task_end_signal(data)
+        return task_end_signal(data, task_id)
 
 
 @dataclass(frozen=True)

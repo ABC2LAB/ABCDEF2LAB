@@ -11,6 +11,7 @@ import re
 import sqlite3
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from types import SimpleNamespace
@@ -393,6 +394,10 @@ class FakePorts:
         if isinstance(view, Exception):
             raise view
         return dict(view, task=task_id)
+
+    def background(self, work):
+        # 기본은 바로 실행해 순서를 결정적으로 둔다. 비동기 동작 시험은 실제 스레드로 바꾼다.
+        work()
 
     def start_host_watch(self):
         self._call("watch:start")
@@ -2866,6 +2871,70 @@ class TestEngineEndSignal(unittest.TestCase):
         self.assertEqual(end["window_last_error"], "engine_task_status_http_503")
         self.assertEqual((end["final"], end["final_error"]), (None, "engine_task_status_http_503"))
         self.assertIsNone(end["first_terminal"])
+
+    def test_slow_status_api_does_not_delay_the_budget_stop(self):
+        # 반례(#634 리뷰): 상태 읽기 한 번이 30초 걸려도 시간 예산 종료 시각은 관찰이 없을 때와 같아야 한다. 읽기가
+        # 예산 감시와 같은 흐름에서 돌면(동기 호출) 봉인이 오지 않으므로, 실제 3초 뒤 합성 시계를 30초 밀고 돌아온다.
+        def no_requests(ports, meter, clock):
+            meter.per_poll = 0  # 요청 예산에 닿지 않아 시간 예산으로 끝난다
+
+        def elapsed(evidence):
+            summary = evidence.files["meter-summary.json"]
+            return (summary["stop_reason"], (datetime.fromisoformat(summary["stopped_at"])
+                                             - datetime.fromisoformat(summary["task_requested_at"])).total_seconds())
+
+        _, _, _, plain = run(no_requests)
+        released = threading.Event()
+
+        def slow(ports, meter, clock):
+            no_requests(ports, meter, clock)
+
+            def read(task_id):
+                if not released.wait(3):
+                    clock.sleep(30)
+                return task_view("running")
+            ports.task_status = read
+            ports.background = lambda work: threading.Thread(target=work, daemon=True).start()
+            seal = ports.seal
+
+            def seal_then_release(container_id):
+                released.set()
+                return seal(container_id)
+            ports.seal = seal_then_release
+
+        result, _, _, evidence = run(slow)
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertEqual(elapsed(evidence), elapsed(plain))
+        self.assertEqual(elapsed(evidence)[0], "time_budget")
+        end = evidence.files["engine-end.json"]
+        # 창 동안 띄운 읽기는 봉인 뒤 끝나 거둬지고, 마지막 읽기도 한다.
+        self.assertEqual((end["window_reads"], end["window_read_failures"], end["final"]["status"]), (1, 0, "running"))
+
+    def test_unanswered_window_read_is_counted_and_the_final_read_still_happens(self):
+        # 창 동안 띄운 읽기가 읽기 시한 안에 끝나지 않으면 실패(pending)로 세고, 늦게 온 결과는 버린다.
+        gate, calls = threading.Event(), []
+
+        def setup(ports, meter, clock):
+            def read(task_id):
+                calls.append(task_id)
+                if len(calls) == 1:
+                    gate.wait(5)
+                    return task_view("done", completed_at="2026-11-16T00:00:03Z")
+                return task_view("running")
+            ports.task_status = read
+            ports.background = lambda work: threading.Thread(target=work, daemon=True).start()
+
+        spec = dataclasses.replace(make_spec(), task_status_wait_seconds=0.2)
+        try:
+            result, _, _, evidence = run(setup, spec=spec)
+        finally:
+            gate.set()
+        end = evidence.files["engine-end.json"]
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertEqual((end["window_reads"], end["window_read_failures"], end["window_last_error"]),
+                         (0, 1, "engine_task_status_pending"))
+        self.assertIsNone(end["first_terminal"])  # 시한 밖에서 온 끝 상태는 남기지 않는다
+        self.assertEqual((end["final"]["status"], end["final_error"]), ("running", None))
 
     def test_unexpected_port_error_gets_a_fixed_code(self):
         def setup(ports, meter, clock):

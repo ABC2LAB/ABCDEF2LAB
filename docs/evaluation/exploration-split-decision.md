@@ -66,7 +66,7 @@
 
 러너는 엔진이 스스로 끝냈는지 멈췄는지 추정하지 않는다. 회차 창 동안 폴링해 첫 종료 상태와 시각을 남기고, `down` 전에 마지막 상태를 한 번 더 읽어 서명 근거에 넣는다(엔진 DB는 `down`과 함께 사라진다).
 
-- B: 원본 작업 조회 API(`GET /api/tasks/{id}`)의 `status`(`created|running|paused|done|failed`)·`completed_at`과 Planner 판정에 해당하는 `goals_total`·`goals_met`, 그리고 `in_flight`·`llm_failover_state`. 값은 원본 그대로 옮기고 해석하지 않는다.
+- B: 원본 작업 목록 API(`GET /api/tasks`)에서 이 작업 항목의 `status`(`created|running|paused|done|failed`)·`completed_at`과 Planner 판정에 해당하는 `goals_total`·`goals_met`, 그리고 `in_flight`·`llm_failover_state`. 값은 원본 그대로 옮기고 해석하지 않는다.
 - O: 제품 실행 상태(`completed`·`failed`·`cancelled`·`unknown`, 결과·마감 사유 칸). 목표 수·달성 수와 같은 뜻의 칸이 제품 실행 기록에 없으면 PR 4에서 기록에 더한다(전송·판정 동작은 그대로).
 - 근거: 2026-11-16 파일럿에서 B가 회차 중간부터 모델 호출 0이었는데, 러너 기록으로는 원본이 끝낸 것인지 멈춘 것인지 가를 수 없었다(§8).
 

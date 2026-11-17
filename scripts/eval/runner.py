@@ -23,9 +23,11 @@ import math
 import http.client
 import os
 import platform
+import queue
 import re
 import shutil
 import sys
+import threading
 import time
 from contextlib import closing
 from dataclasses import dataclass, field
@@ -168,6 +170,7 @@ class RunPorts(Protocol):
     def host_spec(self) -> dict: ...
     def start_task(self) -> str: ...
     def task_status(self, task_id: str) -> dict: ...
+    def background(self, work: Callable[[], None]) -> None: ...
     def start_host_watch(self) -> "WatchHandle": ...
     def start_events(self, since: str) -> "EventsHandle": ...
     def seal(self, meter_container_id: str) -> None: ...
@@ -217,6 +220,8 @@ class RunSpec:
     # 게이트웨이가 넣어야 할 샘플링(api, 선언에서 만든 값). local은 None.
     llm_sampling: dict | None
     llm_verify_timeout_seconds: int
+    # 엔진 끝 신호 읽기 한 번의 시한(엔진 API 시한과 같다). 창이 끝난 뒤 진행 중인 읽기를 이만큼만 기다린다.
+    task_status_wait_seconds: int
     task_request_sha256: str
     host_watch_max_gap_seconds: float
     events_lookback_seconds: float
@@ -428,13 +433,20 @@ ENGINE_END_NAME = "engine-end.json"
 class _EngineEndWatch:
     """엔진 끝 신호(탐색 분리 배치 결정안 §3.1). 회차 창 동안 엔진 작업 상태를 읽어 첫 끝 상태와 시각을 남기고, drain 뒤
     `down` 전에 한 번 더 읽는다(엔진 DB는 `down`과 함께 사라진다). 러너는 엔진이 끝냈는지·멈췄는지 추정하지 않고 읽은 값만
-    남긴다. 읽기 실패는 회차를 무효로 하지 않고 센다. 값은 원본 칸 그대로이고 해석하지 않는다."""
+    남긴다. 읽기 실패는 회차를 무효로 하지 않고 센다. 값은 원본 칸 그대로이고 해석하지 않는다.
 
-    def __init__(self, ports: "RunPorts", task_id: str, clock: Clock, started: float):
+    창 동안 읽기는 예산 감시를 막지 않는다: 읽기는 ports.background로 따로 돌고, poll()은 끝난 읽기를 거두고 진행 중인 읽기가
+    없을 때만 새 읽기를 띄운 뒤 바로 돌아온다. 그래서 상태 API가 느리거나 답하지 않아도 요청·시간 예산 종료 시각은 관찰이
+    없을 때와 같다(관찰이 B·O 비교 조건을 바꾸지 않게)."""
+
+    def __init__(self, ports: "RunPorts", task_id: str, clock: Clock, started: float, wait_seconds: float):
         self.ports, self.task_id, self.clock, self.started = ports, task_id, clock, started
+        self.wait_seconds = wait_seconds
         self.reads = self.failures = 0
         self.first_terminal: dict | None = None
         self.last_error: str | None = None
+        self._results: queue.Queue = queue.Queue()
+        self._inflight = False
 
     def _read(self) -> tuple[dict | None, str | None]:
         try:
@@ -448,17 +460,45 @@ class _EngineEndWatch:
             return None, "engine_task_status_invalid"
         return {name: view[name] for name in END_SIGNAL_FIELDS}, None
 
-    def poll(self) -> None:
+    def _background_read(self, results: queue.Queue) -> None:
         view, error = self._read()
+        # 끝 상태 시각은 읽기가 끝난 때다(거둔 때가 아니다). 결과는 띄울 때의 큐에 넣는다: record()가 포기한 읽기의 늦은
+        # 결과는 버린 큐로 가서 새 읽기와 섞이지 않는다.
+        results.put((view, error, _stamp(self.clock), round(self.clock.monotonic() - self.started, 3)))
+
+    def _collect(self, wait: float | None) -> bool:
+        """끝난 읽기 하나를 거둔다. wait가 None이면 기다리지 않는다. 거뒀으면 True."""
+        try:
+            view, error, at, elapsed = self._results.get_nowait() if wait is None else self._results.get(timeout=wait)
+        except queue.Empty:
+            return False
+        self._inflight = False
         if view is None:
             self.failures, self.last_error = self.failures + 1, error
-            return
+            return True
         self.reads += 1
         if self.first_terminal is None and view["status"] in TERMINAL_TASK_STATUSES:
-            self.first_terminal = {"status": view["status"], "at": _stamp(self.clock),
-                                   "elapsed_seconds": round(self.clock.monotonic() - self.started, 3)}
+            self.first_terminal = {"status": view["status"], "at": at, "elapsed_seconds": elapsed}
+        return True
+
+    def poll(self) -> None:
+        self._collect(None)
+        if not self._inflight:
+            self._inflight = True
+            try:
+                results = self._results
+                self.ports.background(lambda: self._background_read(results))
+            except Exception:
+                self._inflight = False
+                self.failures, self.last_error = self.failures + 1, "engine_task_status_failed"
 
     def record(self) -> dict:
+        # 창이 끝난 뒤(봉인·drain 뒤)라 여기서 기다려도 예산 종료에는 영향이 없다. 진행 중인 창 읽기는 읽기 시한만큼만
+        # 기다리고, 그래도 안 끝나면 실패로 센다(늦게 온 결과는 버린다).
+        if self._inflight and not self._collect(self.wait_seconds):
+            self._inflight = False
+            self._results = queue.Queue()
+            self.failures, self.last_error = self.failures + 1, "engine_task_status_pending"
         view, error = self._read()
         final = None if view is None else dict(view, read_at=_stamp(self.clock))
         return {"format": ENGINE_END_FORMAT, "task_id": self.task_id, "window_reads": self.reads,
@@ -607,7 +647,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     _step(state, "evidence_write_failed", lambda: evidence.write_json("task.json", {
         "format": TASK_EVIDENCE_FORMAT, "request_sha256": spec.task_request_sha256, "task_id": task_id,
         "requested_at": requested_at, "created_at": created_at}))
-    watch = _EngineEndWatch(ports, task_id, clock, started)
+    watch = _EngineEndWatch(ports, task_id, clock, started, spec.task_status_wait_seconds)
     stop_reason, forwarded_at_stop = _wait_budget(spec, meter, clock, state, started, watch)
     stopped_at = _stamp(clock)
     # E²가 허용한 진행 요청이 봉인된 계측기에서 끊기지 않도록 E²를 먼저 닫는다(연결 제안 §4.3). 시한이 있고 실패해도 넘어간다.
@@ -1237,6 +1277,10 @@ class DockerPorts:
             raise EngineAPIError("engine_task_status_unavailable")
         return self._task_status(task_id)
 
+    def background(self, work: Callable[[], None]) -> None:
+        # 데몬 스레드라 응답 없는 엔진 API가 러너 종료를 막지 않는다. 한 번 읽기는 엔진 API 시한 안에 끝난다.
+        threading.Thread(target=work, name="engine-end-read", daemon=True).start()
+
     def start_host_watch(self) -> BackgroundWatch:
         watch = HostWatch(self.host_listeners, allowed_host_listens(self.config, self.plan), time.monotonic)
         return BackgroundWatch(watch, self.config.run["host_watch_interval_seconds"]).start()
@@ -1361,6 +1405,7 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         llm_keep_alive_seconds=(0 if plan.llm["backend"] != "local" else
                                 _llm_keep_alive_seconds(config, declared["time_budget_seconds"])),
         llm_verify_timeout_seconds=config.run["llm_verify_timeout_seconds"],
+        task_status_wait_seconds=config.run["task_create_timeout_seconds"],
         task_request_sha256=task_request_sha256,
         host_watch_max_gap_seconds=config.run["host_watch_max_gap_seconds"],
         events_lookback_seconds=config.health_timeout_seconds,
