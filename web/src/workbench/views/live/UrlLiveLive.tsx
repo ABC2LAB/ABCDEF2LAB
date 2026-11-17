@@ -1024,25 +1024,6 @@ export function FindingDetail({
           <EntryEp e={e} />
         </div>
       ) : null}
-      {/* 시안 계정별 응답 비교 표: 서버가 계정별 비교를 따로 주지 않아 머리글만 두고 값은 채우지 않는다 */}
-      <Isec t="계정별 응답 비교">
-        <table className={s.cmp}>
-          <thead>
-            <tr>
-              <th scope="col">요청 주체</th>
-              <th scope="col">응답</th>
-              <th scope="col">판정</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td colSpan={3}>
-                <NotYet why="서버가 계정별 응답 비교 표를 따로 주지 않습니다" />
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </Isec>
       {!e.available ? (
         <div className={cx(s.note, s.warn)} role="note">
           <Icon name="alert" />
@@ -1055,19 +1036,7 @@ export function FindingDetail({
         entry={e}
         onReload={onReload}
       />
-      {/* 시안 나머지 칸: 다음 단계는 서버가 따로 주지 않고, 분류는 서버 유형(vuln_class)만 */}
-      <Isec t="다음 단계">
-        <NotYet block why="서버가 다음 단계 제안을 따로 주지 않습니다" />
-      </Isec>
-      <Isec t="분류">
-        {e.vuln_class ? (
-          <div className={s.chips}>
-            <span className={s.chip}>{maskSecrets(e.vuln_class)}</span>
-          </div>
-        ) : (
-          <p className={s.empty}>서버가 유형을 주지 않았습니다.</p>
-        )}
-      </Isec>
+      {/* 계정별 응답 비교 · 다음 단계('연결 전' 자리)와 분류(머리 유형과 겹침)는 뺐다 — 사용자 11/17 '오른쪽 패널 지저분' */}
     </>
   );
 }

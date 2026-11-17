@@ -1444,11 +1444,10 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     const insp = screen.getByRole("complementary", { name: "발견 상세" });
     expect(within(insp).getByText(/^idor ·/)).toBeInTheDocument();
     expect(within(insp).getByText("GET")).toBeInTheDocument();
-    // 시안 상세의 계정별 응답 비교 표는 머리글만, 다음 단계는 '연결 전', 분류는 서버 유형
-    expect(within(insp).getByRole("columnheader", { name: "요청 주체" })).toBeInTheDocument();
-    expect(within(insp).getByText("계정별 응답 비교").parentElement).toHaveTextContent("연결 전");
-    expect(within(insp).getByText("다음 단계").parentElement).toHaveTextContent("연결 전");
-    expect(within(insp).getByText("분류").parentElement).toHaveTextContent("idor");
+    // 상세는 정리했다(사용자 11/17): '연결 전' 자리(계정별 응답 비교 · 다음 단계)와 머리와 겹치는 분류는 두지 않는다
+    expect(within(insp).queryByText("계정별 응답 비교")).toBeNull();
+    expect(within(insp).queryByText("다음 단계")).toBeNull();
+    expect(within(insp).queryByText("분류")).toBeNull();
     // 탭은 화살표로 옮긴다 (시안 selTab): 발견 목록 → 자산 지식 그래프, 고른 탭만 Tab 순서에
     const listTab = screen.getByRole("tab", { name: /발견 목록/ });
     expect(listTab).toHaveAttribute("tabindex", "0");
@@ -1614,9 +1613,8 @@ describe("대시보드 · 인증 (URL 진단)", () => {
     const detail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
     expect(within(detail).getByText("발견 2")).toBeInTheDocument();
     expect(within(detail).getByRole("link", { name: /보고서 열기/ })).toHaveAttribute("href", "#report");
-    // 시안 발견 상세의 계정별 응답 비교 · 다음 단계는 서버가 따로 주지 않아 자리만
-    expect(within(detail).getByText("계정별 응답 비교").parentElement).toHaveTextContent("연결 전");
-    expect(within(detail).getByText("다음 단계").parentElement).toHaveTextContent("연결 전");
+    // 발견 상세에 '연결 전' 자리(계정별 응답 비교 · 다음 단계)는 두지 않는다 (사용자 11/17)
+    expect(within(detail).queryByText("계정별 응답 비교")).toBeNull();
     // 최근 끝난 점검 줄 (시안 doneRowHtml): 확정 발견의 위험도 딱지 + 발견 수
     const done = within(screen.getByRole("region", { name: "보존된 끝난 점검" })).getByRole("button", {
       name: /job-1/,
