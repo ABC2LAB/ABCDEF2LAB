@@ -97,7 +97,15 @@ func (h *URLHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		urlFail(w, 401, "authentication_required")
 		return
 	}
-	if r.URL.RawPath != "" || r.URL.RawQuery != "" || r.URL.ForceQuery || r.URL.Opaque != "" || strings.ContainsAny(r.URL.Path, "%\\") {
+	if r.URL.RawPath != "" || r.URL.Opaque != "" || strings.ContainsAny(r.URL.Path, "%\\") {
+		urlFail(w, 400, "invalid_request")
+		return
+	}
+	if r.URL.Path == URLBasePath+"/runs" {
+		h.serveRuns(w, r, owner)
+		return
+	}
+	if r.URL.RawQuery != "" || r.URL.ForceQuery {
 		urlFail(w, 400, "invalid_request")
 		return
 	}
@@ -239,7 +247,7 @@ func urlErrorStatus(code string) (int, bool) {
 		return 403, true
 	case "not_found":
 		return 404, true
-	case "revision_conflict", "idempotency_conflict", "approval_changed", "approval_required", "busy", "budget_exhausted":
+	case "revision_conflict", "idempotency_conflict", "approval_changed", "approval_required", "busy", "budget_exhausted", "snapshot_changed":
 		return 409, true
 	case "capacity", "unavailable", "unknown", "service_closed":
 		return 503, true
