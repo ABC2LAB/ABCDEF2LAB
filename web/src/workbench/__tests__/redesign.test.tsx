@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../live/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../live/api")>()),
   fetchRequestApprovals: vi.fn(),
+  fetchTaskFindings: vi.fn(),
 }));
 
 import { catalog, handle, running, scope } from "@/lib/diagnosis/diagnosis-url-fixtures";
@@ -18,8 +19,17 @@ import { useUrlRuns } from "../live/urlRunList";
 import { FLOW_VERSION, type WorkflowSnapshot } from "../live/workflow";
 import { type Shell, ShellContext, type View } from "../shell";
 import { UrlDashboardLive } from "../views/live/UrlDashboardLive";
-import { prettyEvidence, UrlLiveLive } from "../views/live/UrlLiveLive";
-import { eventText, group, PauseButton, Pth, WorkflowCrawlLive, WorkflowScopeLive } from "../views/live/workflowViews";
+import { gaugeSegments, prettyEvidence, UrlLiveLive } from "../views/live/UrlLiveLive";
+import {
+  activityText,
+  eventText,
+  group,
+  PauseButton,
+  Pth,
+  WorkflowCrawlLive,
+  WorkflowScopeLive,
+  workerOf,
+} from "../views/live/workflowViews";
 
 const noop = () => undefined;
 const shell = (route: View, over: Partial<Shell> = {}): Shell => ({
@@ -180,6 +190,15 @@ describe("범위 확인", () => {
     expect(screen.queryByRole("button", { name: "오른쪽 패널 펼치기" })).toBeNull();
     expect(screen.getByRole("button", { name: "오른쪽 패널 접기" })).toBeInTheDocument();
     expect(openInsp).not.toHaveBeenCalled();
+  });
+
+  it("바탕 상태 조회가 실패해 진단이 결과 불명이면 시작 버튼을 끄고 까닭을 보인다 (눌러도 아무 일 없게 두지 않음)", () => {
+    mountScope();
+    const start = () => screen.getByRole("button", { name: /선택한 범위로 점검 시작/ });
+    expect(start()).toBeEnabled();
+    act(() => useUrl.setState({ job: null, verified: false, uncertain: true, error: "상태를 확인하지 못했어요." }));
+    expect(start()).toBeDisabled();
+    expect(start()).toHaveAttribute("title", "점검 상태를 확인하지 못해 보내지 않습니다. 상태를 다시 조회하세요.");
   });
 
   it("알약을 누르면 오른쪽 상세에서 점검 포함을 고른다: 읽기 경로는 기본 포함, 데이터 변경은 직접, 제외 경로는 못 고름", () => {
@@ -1175,7 +1194,90 @@ it("목록에서 복구한 회차의 일시정지·범위 선택 실행 버튼�
 });
 
 describe("점검 진행", () => {
-  it("가운데는 지금 하는 일 · 심화 점검 마감 수 · 계획 · 활동, 전송 통제와 탐색 현황은 오른쪽 진행 요약에", async () => {
+  it("활동 기록 내용은 'METHOD /경로' 로 시작하면 그 둘만, 아니면 서버 글 그대로", () => {
+    expect(activityText("GET /api/products/1 를 다른 시험 계정 기준으로 대조했습니다.")).toBe("GET /api/products/1");
+    expect(activityText("PUT /api/users/2 · 보내기 전 승인을 기다립니다.")).toBe("PUT /api/users/2");
+    expect(activityText("GET /api/a → 200 · 새 경로 2개")).toBe("GET /api/a");
+    expect(activityText("Bash 도구 활동 기록 (원문 비공개)")).toBe("Bash 도구 활동 기록 (원문 비공개)");
+    expect(activityText("고른 경로 3개를 심화 점검합니다.")).toBe("고른 경로 3개를 심화 점검합니다.");
+  });
+
+  it("워커 이름표: planner · goals · work#N 은 그대로, 그 밖(서버가 engine 으로 묶은 것)은 엔진", () => {
+    expect(workerOf("planner")).toMatchObject({ name: "Planner", mark: "P" });
+    expect(workerOf("goals")).toMatchObject({ name: "Goals", mark: "G" });
+    expect(workerOf("work#12")).toMatchObject({ key: "work#12", name: "work#12", mark: "W12" });
+    expect(workerOf("engine")).toMatchObject({ key: "engine", name: "엔진", mark: "E" });
+    expect(workerOf("work#x")).toMatchObject({ key: "engine" });
+  });
+
+  it("단계 게이지는 단계마다 실제 값으로만 채운다 (전체 % 없음)", () => {
+    // 게이지가 있어야 하는 경우만 (없으면 실패)
+    const seg = (f: WorkflowSnapshot, ready = false) => {
+      const g = gaugeSegments(f, ready);
+      if (!g) throw new Error("게이지 없음");
+      return g.map((x) => `${x.label}|${x.tone}|${x.pct}|${x.sub}`);
+    };
+    // 자산 탐색 중: 방문 1 / 페이지 상한 4 = 25%, 뒤 단계는 아직
+    expect(seg({ ...flow, stage: "crawling", initial_completed: false })).toEqual([
+      "자산 탐색|run|25|방문 1/4",
+      "범위 확인|wait|0|",
+      "심화 점검|wait|0|",
+      "정리 · 저장|wait|0|",
+    ]);
+    // 범위 확인 대기: 사람을 기다리는 단계는 빗금(hold)
+    expect(seg({ ...flow, stage: "awaiting_selection" }).slice(0, 2)).toEqual([
+      "자산 탐색|done|100|탐색 완료",
+      "범위 확인|hold|0|선택 대기",
+    ]);
+    // 심화 점검: 계획 완료 / 계획
+    const plan = [
+      { id: 1, state: "done", title: "a" },
+      { id: 2, state: "running", title: "b" },
+    ];
+    expect(seg({ ...flow, stage: "diagnosing", plan, deep_runs: 1 })[2]).toBe("심화 점검|run|50|계획 1/2");
+    // 계획이 없으면 마감 / 시작
+    expect(seg({ ...flow, stage: "diagnosing", deep_runs: 4, deep_closed: 1 })[2]).toBe("심화 점검|run|25|1/4 마감");
+    // 끝났지만 결과 저장 미확인이면 마지막 칸은 빗금, 저장되면 전부 끝
+    expect(seg({ ...flow, stage: "completed" })[3]).toBe("정리 · 저장|hold|0|결과 저장 확인 중");
+    expect(seg({ ...flow, stage: "completed" }, true).every((x) => x.includes("|done|100|"))).toBe(true);
+    // 심화 점검 중 멈추면 그 자리에서 멈춘 모양, AI 자동 모드는 범위 칸 이름이 다르다
+    expect(seg({ ...flow, mode: "ai_auto_v1", stage: "stopped", deep_runs: 2, deep_closed: 1 }).slice(1, 4)).toEqual([
+      "범위 선택 (AI)|done|100|AI 선택",
+      "심화 점검|stop|50|중지됨",
+      "정리 · 저장|wait|0|",
+    ]);
+    // 서버가 계획을 상한(20개)만큼 꽉 채워 주면 앞부분만 받은 것일 수 있어 계획 수 대신 심화 점검 마감 수로
+    const twenty = Array.from({ length: 20 }, (_, i) => ({ id: i + 1, state: "done", title: `계획 ${i + 1}` }));
+    expect(seg({ ...flow, stage: "diagnosing", plan: twenty, deep_runs: 4, deep_closed: 1 })[2]).toBe(
+      "심화 점검|run|25|1/4 마감",
+    );
+    // 상태를 모르면 게이지를 두지 않는다
+    expect(gaugeSegments({ ...flow, stage: "unknown" }, false)).toBeNull();
+  });
+
+  it("계획 목록이 상한(20개)만큼 꽉 차 오면 상태 카드 계획 칸은 'N+ · 목록 일부만 받음' (전체 완료율로 쓰지 않음)", () => {
+    const twenty = Array.from({ length: 20 }, (_, i) => ({ id: i + 1, state: "done", title: `계획 ${i + 1}` }));
+    useUrl.setState({
+      handle,
+      job,
+      verified: true,
+      flow: { ...flow, stage: "diagnosing", plan: twenty, deep_runs: 3, deep_closed: 1 },
+      flowVerified: true,
+    });
+    render(
+      <ShellContext.Provider value={shell("live")}>
+        <UrlLiveLive />
+      </ShellContext.Provider>,
+    );
+    const stats = document.getElementById("lMeta") as HTMLElement;
+    expect(within(stats).getByText("계획").parentElement).toHaveTextContent(/^계획20\+목록 일부만 받음$/);
+    expect(document.getElementById("lGauge")).toHaveAttribute(
+      "aria-label",
+      "점검 단계 진행: 단계 3/4 심화 점검 · 1/3 마감",
+    );
+  });
+
+  it("가운데는 상태 카드 · 확인 필요 · 발견 후보 · 활동 기록, 전송 통제와 탐색 현황은 오른쪽 진행 요약에", async () => {
     vi.mocked(api.fetchRequestApprovals).mockResolvedValue({
       run: {
         run_ref: `run-${job.id}`,
@@ -1211,17 +1313,81 @@ describe("점검 진행", () => {
         can_decide: true,
       })),
     });
+    // 점검 중 발견 후보 (원본 ARTEX 발견 목록): 서버 순서와 상관없이 최신 순, 증거의 비밀 값은 가린다
+    vi.mocked(api.fetchTaskFindings).mockResolvedValue([
+      {
+        id: "11",
+        finding_id: "1",
+        vulnclass: "info_disclosure",
+        name: "응답에 내부 정보 노출",
+        severity: "low",
+        status: "false_positive",
+        summary: "응답 머리에 서버 버전이 보입니다.",
+        evidence: "",
+        traffic_count: 1,
+        assets: [{ id: "a1", type: "endpoint", label: "GET /api/products/1" }],
+        task_id: "42",
+        source_task_id: "",
+        inherited: false,
+        ts: "2026-11-11T01:00:05Z",
+      },
+      {
+        id: "12",
+        finding_id: "2",
+        vulnclass: "idor",
+        name: "다른 계정으로 /api/users/2 조회 응답",
+        severity: "high",
+        status: "confirmed",
+        summary: "시험 계정 B 로 계정 A 자원을 요청했을 때 200 응답",
+        evidence: JSON.stringify({ status: 200, body: JSON.stringify({ owner: "a", token: "secret-token-value" }) }),
+        traffic_count: 1,
+        assets: [{ id: "a2", type: "endpoint", label: "GET /api/users/2" }],
+        task_id: "42",
+        source_task_id: "",
+        inherited: false,
+        ts: "2026-11-11T01:00:09Z",
+      },
+    ]);
     const f: WorkflowSnapshot = {
       ...flow,
       stage: "diagnosing",
       deep_runs: 3,
       deep_closed: 1,
-      endpoints: flow.endpoints.map((e) => (e.id === "read" ? { ...e, selected: true } : e)),
+      // 고른 경로: 읽기(응답 200) · 쓰기(틀 경로, 승인 대기 요청 /api/users/2 와 맞음)
+      endpoints: flow.endpoints.map((e) => {
+        if (e.id === "read") return { ...e, selected: true, status: 200 };
+        if (e.id === "write") return { ...e, path: "/api/users/{id}", selected: true };
+        return e;
+      }),
       plan: [
-        { id: 1, state: "completed", title: "공개 경로 탐색" },
+        { id: 1, state: "done", title: "공개 경로 탐색" },
         { id: 2, state: "running", title: "고른 경로 심화 점검" },
       ],
-      activity: [{ id: 1, at: "2026-11-11T01:00:00Z", worker: "planner", kind: "text", summary: "탐색을 마쳤습니다." }],
+      // 서버처럼 최신 순(id 내림차순)으로 와도, 가짜 백엔드처럼 오래된 순으로 와도 화면은 id 로 최신 순
+      activity: [
+        { id: 1, at: "2026-11-11T01:00:00Z", worker: "planner", kind: "plan", summary: "Planner 계획 활동 기록" },
+        {
+          id: 3,
+          at: "2026-11-11T01:00:09Z",
+          worker: "work#1",
+          kind: "approval",
+          summary: "PUT /api/users/2 승인 대기",
+        },
+        {
+          id: 2,
+          at: "2026-11-11T01:00:05Z",
+          worker: "work#1",
+          kind: "tool",
+          summary: "Bash 도구 활동 기록 (원문 비공개)",
+        },
+        {
+          id: 4,
+          at: "2026-11-11T01:00:12Z",
+          worker: "planner",
+          kind: "new_kind",
+          summary: "엔진 활동 기록 (원문 비공개)",
+        },
+      ],
     };
     useUrl.setState({ handle, job, verified: true, flow: f, flowVerified: true });
     render(
@@ -1229,23 +1395,88 @@ describe("점검 진행", () => {
         <UrlLiveLive />
       </ShellContext.Provider>,
     );
-    expect(document.getElementById("lMeta")).toHaveTextContent(/^심화 점검 1\/3 마감$/);
-    // 점검 계획 · 지난 활동은 좌우 두 칸이 아니라 가운데 열에 위아래로 (각자 전체 너비)
-    const planSec = screen.getByRole("region", { name: "점검 계획" });
-    const feedSec = screen.getByRole("region", { name: "지난 활동" });
-    expect(planSec.parentElement).toBe(feedSec.parentElement);
-    expect(planSec.parentElement).toContainElement(document.getElementById("lMeta"));
-    // 지난 활동 건수는 제목 밖 오른쪽, 활동 줄에 엔진 내부 이름(planner 등)은 없다
-    expect(within(feedSec).getByRole("heading", { level: 2 })).toHaveTextContent(/^지난 활동$/);
-    expect(document.getElementById("lFeedN")).toHaveTextContent("1건");
-    expect(within(feedSec).getByText("탐색을 마쳤습니다.")).toBeInTheDocument();
-    expect(within(feedSec).queryByText("planner")).toBeNull();
+    // 맨 위 단계 게이지: 자산 탐색 · 범위 확인 끝, 심화 점검 계획 1/2
+    expect(document.getElementById("lGauge")).toHaveAttribute(
+      "aria-label",
+      "점검 단계 진행: 단계 3/4 심화 점검 · 계획 1/2",
+    );
+    // 상태 카드 한 장: 지금(진행 중 계획 제목) · 계획 완료 수 · 심화 점검 마감 수
+    const card = screen.getByRole("region", { name: "지금 상태" });
+    expect(within(card).getByText("지금")).toBeInTheDocument();
+    expect(document.getElementById("lTask")).toHaveTextContent(/^고른 경로 심화 점검$/);
+    // 숫자 칸: 계획 · 심화 점검 · 발견 후보 · 확인 필요(승인 대기가 있으면 주황)
+    const stats = document.getElementById("lMeta") as HTMLElement;
+    expect(card).toContainElement(stats);
+    const stat = (k: string) => within(stats).getByText(k).parentElement as HTMLElement;
+    expect(stat("계획")).toHaveTextContent(/^계획1\/2완료$/);
+    expect(stat("심화 점검")).toHaveTextContent(/^심화 점검1\/3마감$/);
+    await waitFor(() => expect(stat("발견 후보")).toHaveTextContent(/^발견 후보2심각 · 높음 1$/));
+    await waitFor(() => expect(stat("확인 필요")).toHaveTextContent(/^확인 필요2승인 대기$/));
+    expect(stat("확인 필요").className).toMatch(/warn/);
+    // 계획 단계 목록 · '계획 보기/접기'는 없다(완료 수만 숫자 칸에), 서버 진단 활동 칸도 없다 (사용자 11/17)
+    expect(document.getElementById("lPlan")).toBeNull();
+    expect(within(card).queryByRole("button", { name: /계획 (보기|접기)/ })).toBeNull();
+    expect(screen.queryByRole("region", { name: "서버 진단 활동" })).toBeNull();
+    // 확인 필요는 머리('확인 필요 N건') 아래 묶음, 카드마다 붙던 딱지는 없다. 카드 둘째 줄은 그 요청의 계획 제목
+    const decide = await screen.findByRole("region", { name: "확인 필요" });
+    expect(within(decide).getByText("2건")).toBeInTheDocument();
+    expect(within(decide).getByText("/api/users/2")).toBeInTheDocument();
+    expect(within(decide).getAllByText("고른 경로 심화 점검").length).toBeGreaterThan(0);
+    // '확인 필요' 글은 숫자 칸 이름과 상자 제목 두 군데 (카드마다 붙던 딱지는 없다)
+    expect(screen.getAllByText("확인 필요")).toHaveLength(2);
+    // 발견 후보 목록: 최신 순, 줄마다 심각도 · 이름 / 위치 · 유형 · 시각 · 처리 상태(판정 아님), 첫 목록엔 '새로' 없음
+    const finds = screen.getByRole("region", { name: "발견 후보" });
+    expect(within(finds).getByText("2건 · 최신 순")).toBeInTheDocument();
+    expect(within(finds).getByText(/검증 전 후보입니다/)).toBeInTheDocument();
+    const rows = within(finds).getAllByRole("button", { expanded: false });
+    expect(rows.map((b) => b.textContent?.replace(/\d{2}:\d{2}:\d{2}/, "HH:MM:SS"))).toEqual([
+      "높음다른 계정으로 /api/users/2 조회 응답GET /api/users/2 · idor · HH:MM:SS",
+      "낮음응답에 내부 정보 노출GET /api/products/1 · info_disclosure · HH:MM:SS",
+    ]);
+    expect(within(finds).queryByText("새로")).toBeNull();
+    // 엔진 처리 상태(confirmed · false_positive 등)는 검증 전 후보 줄에 판정처럼 붙이지 않는다 (절대규칙 5, #661 리뷰)
+    expect(finds).not.toHaveTextContent(/검토 확인|오탐 처리|미검토/);
+    expect(within(finds).getByText(/심각도는 엔진이 붙인 값/)).toBeInTheDocument();
+    // 누르면 요약 · 증거 (증거의 토큰 값은 가린다)
+    fireEvent.click(rows[0]);
+    expect(rows[0]).toHaveAttribute("aria-expanded", "true");
+    expect(within(finds).getByText(/시험 계정 B 로 계정 A 자원을 요청/)).toBeInTheDocument();
+    expect(finds).not.toHaveTextContent("secret-token-value");
+    // 활동 기록 (ARTEX 세션 느낌): 전부 최신 순(id), 줄마다 시각 · 워커 · 내용 (점 · 머리글자 · 종류 딱지 없음).
+    // 워커 칩(전체 · Planner · work#N)으로 거른다
+    const feedSec = screen.getByRole("region", { name: "활동 기록" });
+    // 타임라인 모양은 이 목록에만 (공용 .feed 를 바꾸면 서버 진단 활동 목록까지 깨진다)
+    expect(document.getElementById("lFeed")?.classList).toHaveLength(2);
+    expect(screen.queryByRole("region", { name: "점검 계획" })).toBeNull();
+    expect(document.getElementById("lFeedN")).toHaveTextContent(/^4건 · 최신 순$/);
+    const lines = () =>
+      within(feedSec)
+        .getAllByRole("listitem")
+        .map((li) => li.textContent?.replace(/^\d{2}:\d{2}:\d{2}/, ""));
+    expect(lines()).toEqual([
+      "Planner엔진 활동 기록 (원문 비공개)",
+      "work#1PUT /api/users/2",
+      "work#1Bash 도구 활동 기록 (원문 비공개)",
+      "PlannerPlanner 계획 활동 기록",
+    ]);
+    const chips = within(feedSec).getByRole("group", { name: "워커로 거르기" });
+    expect(
+      within(chips)
+        .getAllByRole("button")
+        .map((b) => b.textContent),
+    ).toEqual(["전체4", "Planner2", "work#12"]);
+    fireEvent.click(within(chips).getByRole("button", { name: /work#1/ }));
+    expect(within(chips).getByRole("button", { name: /work#1/ })).toHaveAttribute("aria-pressed", "true");
+    expect(lines()).toEqual(["work#1PUT /api/users/2", "work#1Bash 도구 활동 기록 (원문 비공개)"]);
+    fireEvent.click(within(chips).getByRole("button", { name: /^전체/ }));
+    expect(lines()).toHaveLength(4);
+    expect(within(feedSec).queryByRole("button", { name: /더 보기/ })).toBeNull();
     // 전송 통제는 가운데 섹션이 아니라 오른쪽 진행 요약의 한 칸
     expect(screen.queryByRole("heading", { level: 2, name: "전송 통제" })).toBeNull();
     const insp = screen.getByRole("complementary", { name: "진행 요약" });
     expect(within(insp).getByRole("heading", { level: 3, name: "전송 통제" })).toBeInTheDocument();
     // 탐색 현황: 방문 · 발견한 API · 심화 선택 (서버 수 그대로)
-    expect(within(insp).getByText("탐색 현황").parentElement).toHaveTextContent("방문 1발견한 API 3심화 선택 1");
+    expect(within(insp).getByText("탐색 현황").parentElement).toHaveTextContent("방문 1발견한 API 3심화 선택 2");
     await screen.findAllByRole("button", { name: "승인하고 보내기" });
     expect(screen.queryByText(/요청 승인은 처음 시작한 화면에서만/)).toBeNull();
     act(() =>

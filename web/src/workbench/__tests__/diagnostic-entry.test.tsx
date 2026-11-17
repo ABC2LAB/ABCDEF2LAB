@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import { ApiError, apiFetchBlob } from "@/lib/diagnosis/api";
@@ -99,6 +99,15 @@ it("shows four sections in order and only reads on explicit copy", async () => {
   const e = fixture();
   render(<DiagnosticEntrySections task="42" entry={e} onReload={vi.fn()} />);
   expect(screen.getAllByRole("heading", { level: 3 }).map((x) => x.textContent?.[0])).toEqual(["①", "②", "③", "④"]);
+  // 정리(사용자 11/17): 검증 방식 · 실행 · 단계별 근거 ID 같은 기록 값은 맨 아래 '기술 정보'에만, 접어 둔다
+  const tech = screen.getByText("기술 정보").closest("details") as HTMLElement;
+  expect(tech).not.toHaveAttribute("open");
+  expect(screen.getAllByText(/e3_structured/)).toHaveLength(1);
+  expect(within(tech).getByText(/e3_structured/)).not.toBeVisible();
+  expect(within(tech).getByText(/owner-proof/)).toBeInTheDocument();
+  // 자세한 조치 묶음도 지우지 않고 접어 둔다
+  expect(screen.getByText(/^자세한 조치 \(\d+묶음\)$/)).toBeInTheDocument();
+  expect(screen.getByText("서버 인가 검사")).not.toBeVisible();
   expect(screen.getByText(/스크린샷 미확보 — 실제 요청·응답 및 실행 기록으로 증거 제공/)).toBeVisible();
   expect(readCopyPrompt).not.toHaveBeenCalled();
   expect(generateRemediation).not.toHaveBeenCalled();
@@ -193,7 +202,11 @@ it.each([
   render(<DiagnosticEntrySections task="42" entry={entry} onReload={vi.fn()} />);
   expect(screen.getByRole("heading", { name: "① 판정과 영향" })).toBeVisible();
   expect(screen.queryByText(/① 확인된 취약점/)).not.toBeInTheDocument();
-  expect(screen.getByText(/저장된 owner-read → cross-read 단계/)).toBeVisible();
+  // 저장된 상세 보고는 지우지 않고 접어 둔다 (사용자 11/17 '오른쪽 패널 지저분'): 펼치면 가린 원문이 보인다
+  const report = screen.getByText(/저장된 owner-read → cross-read 단계/);
+  expect(report).not.toBeVisible();
+  fireEvent.click(screen.getByText("저장된 상세 보고"));
+  expect(report).toBeVisible();
   expect(document.body.textContent).not.toContain("synthetic-private-token");
   expect(screen.getByText(/실제 도구 출력이 잘렸습니다/)).toBeVisible();
 });

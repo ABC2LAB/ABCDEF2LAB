@@ -82,6 +82,8 @@ class FakePorts:
         self.forced = 0
         self.boundary_stopped = False
         self.snapshot_times: dict[str, float] = {}
+        self.layout = {"pre": [], "post": []}
+        self.snapshot_change: dict[str, dict] = {}
 
     def _call(self, name):
         self.calls.append(name)
@@ -113,7 +115,13 @@ class FakePorts:
     def snapshot(self, phase):
         self._call(f"snapshot:{phase}")
         self.snapshot_times[phase] = self.clock.t
-        return snapshot()
+        snap = snapshot()
+        snap["services"].update(self.snapshot_change.get(phase, {}))
+        return snap
+
+    def check(self, phase):
+        self._call(f"check:{phase}")
+        return {"phase": phase, "violations": list(self.layout[phase]), "containers": 15, "running": 20}
 
     def probes(self, phase, snap):
         self._call(f"probes:{phase}")
@@ -215,9 +223,9 @@ def run(mutate=None, **spec_changes):
     return result, ports, evidence
 
 
-ORDER_HEAD = ["preexisting", "image_ids", "host_spec", "planned_subnets", "up", "snapshot:pre", "probes:pre", "dns_token",
+ORDER_HEAD = ["preexisting", "image_ids", "host_spec", "planned_subnets", "up", "snapshot:pre", "check:pre", "probes:pre", "dns_token",
               "events:start", "watch:start", "scoreboard:pre", "prepare_round", "start_round"]
-ORDER_TAIL = ["seal", "meter:drained", "stop_round", "wait_closed", "snapshot:post", "probes:post", "scoreboard:post",
+ORDER_TAIL = ["seal", "meter:drained", "stop_round", "wait_closed", "snapshot:post", "check:post", "probes:post", "scoreboard:post",
               "stop_boundary", "watch:stop",
               "events:stop", "status", "run_record", "copy_boundary_evidence", "copy_product_records", "down", "remove_inputs"]
 
@@ -232,7 +240,8 @@ class TestOrder(unittest.TestCase):
         self.assertEqual((result["stop_reason"], result["first_limit"]["value"], result["goal_common_sha256"]),
                          ("time_budget", "runner_time_budget", "c" * 64))
         self.assertEqual(result["sampling_overwrites"], {"execution": 0, "preparation": []})
-        self.assertEqual(set(evidence.files), {"subnet-check.json", "pre-probe.json", "post-probe.json", "task.json",
+        self.assertEqual(set(evidence.files), {"subnet-check.json", "pre-checks.json", "post-checks.json", "pre-probe.json",
+                                               "post-probe.json", "task.json",
                                                "window-watch.json", "product-end.json", "product-model.json", RESULT_NAME})
         self.assertEqual(evidence.files[RESULT_NAME], result)
         self.assertEqual(set(evidence.files["pre-probe.json"]["origins"]), {"preparation"})
@@ -324,6 +333,20 @@ class TestInvalid(unittest.TestCase):
         _, ports, _ = self.assert_invalid("post_probe_invalid", lambda p: p.probe_status.update(post=INVALID))
         self.assertIn("watch:stop", ports.calls)  # 감시는 정리한다
 
+    def test_container_replaced_between_pre_and_post(self):
+        # #668 리뷰: 같은 이미지·주소의 새 컨테이너로 바뀌면 배치 검사는 통과하지만 B와 같은 스냅숏 대조가 잡는다.
+        _, ports, _ = self.assert_invalid("boundary_changed", lambda p: p.snapshot_change.update(post={"target": {"id": "9" * 64}}))
+        self.assertNotIn("check:post", ports.calls)  # 대조가 배치 검사보다 먼저다
+
+    def test_layout_violations(self):
+        # #668 리뷰: 구간 이전부터 있던 배치 어긋남(직접 publish·netns 공유)은 이벤트로 안 잡히므로 pre/post 검사가 무효로 만든다.
+        _, _, evidence = self.assert_invalid("pre_layout_violation",
+                                             lambda p: p.layout.update(pre=["service.target: PUBLISH_MISMATCH"]))
+        self.assertEqual(evidence.files["pre-checks.json"]["violations"], ["service.target: PUBLISH_MISMATCH"])
+        _, ports, _ = self.assert_invalid("post_layout_violation",
+                                          lambda p: p.layout.update(post=["host.container.ffffffffffff: SHARES_NETWORK_NAMESPACE"]))
+        self.assertIn("watch:stop", ports.calls)
+
     def test_window_violation(self):
         event = {"Type": "container", "Action": "exec_create: /bin/sh -c id", "Actor": {"ID": IDS["preparation"],
                  "Attributes": {"execID": "x"}}, "timeNano": int((START + timedelta(seconds=5)).timestamp() * 1e9)}
@@ -359,7 +382,8 @@ class TestInvalid(unittest.TestCase):
         self.assert_invalid("product_ledger_invalid", lambda p: setattr(p, "ledger", b"bad\n"))
 
     def test_port_failures_have_step_codes(self):
-        for name, code in (("up", "compose_up_failed"), ("dns_token", "dns_token_failed"), ("prepare_round", "product_prepare_failed"),
+        for name, code in (("up", "compose_up_failed"), ("dns_token", "dns_token_failed"), ("check:pre", "pre_checks_failed"),
+                           ("check:post", "post_checks_failed"), ("prepare_round", "product_prepare_failed"),
                            ("start_round", "product_start_failed"), ("seal", "seal_failed"), ("stop_boundary", "boundary_stop_failed"),
                            ("stop_round", "product_stop_failed"), ("wait_closed", "product_close_failed"),
                            ("run_record", "product_run_record_failed"), ("copy_boundary_evidence", "boundary_evidence_copy_failed"),

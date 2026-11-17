@@ -3,11 +3,12 @@
 import { ApiError } from "@/lib/diagnosis/api";
 import type { URLRunSummary } from "@/lib/diagnosis/diagnosis-runs";
 import { activeURLRun, runApprovalLabels } from "@/lib/diagnosis/diagnosis-runs";
-import { urlPhaseLabels, urlReasonLabels, urlStateLabels } from "@/lib/diagnosis/diagnosis-url";
+import { urlPhaseLabels, urlReasonLabels } from "@/lib/diagnosis/diagnosis-url";
 
 import { cx } from "../../lib/cx";
 import { maskSecrets } from "../../live/mask";
 import { selectUrlRun, useUrl } from "../../live/urlDiagnosis";
+import { urlStateText } from "../../live/urlMap";
 import { loadUrlRuns, useUrlRuns } from "../../live/urlRunList";
 import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
@@ -54,7 +55,7 @@ export function RunRow({ row, onPick }: { row: URLRunSummary; onPick?: () => voi
         <span className={cx(s.pill, (row.state === "unknown" || approvalIssue) && s.wait)}>
           {row.state === "unknown"
             ? "상태 확인 필요 · 결과 불명"
-            : `${urlStateLabels[row.state]}${approvalIssue ? ` · ${runApprovalLabels[row.approval_status]}` : ""}`}
+            : `${urlStateText(row.state)}${approvalIssue ? ` · ${runApprovalLabels[row.approval_status]}` : ""}`}
         </span>
       </span>
     </button>
