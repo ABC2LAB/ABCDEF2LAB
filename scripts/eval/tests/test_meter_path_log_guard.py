@@ -18,13 +18,15 @@ class MeterPathLogGuardTests(unittest.TestCase):
         ]
         self.assertGreater(len(files), 20)
         self.assertTrue(any(path.name == "meter.Dockerfile" for path in files))
-        # 수용시험 전용 overlay 한 파일만 예외다. 러너는 purpose=browser_acceptance일 때만 그 파일을 얹는다
-        # (test_runner_config.TestAcceptanceWiring).
-        acceptance = REPO_ROOT / "deploy" / "eval" / "compose.acceptance.yaml"
-        self.assertIn(acceptance, files)
-        self.assertIn("-path-log", acceptance.read_text(encoding="utf-8"))
+        # 수용시험 전용 overlay 두 파일만 예외다. 러너는 purpose=browser_acceptance일 때만 compose.acceptance.yaml을 얹고
+        # (test_runner_config.TestAcceptanceWiring), 탐색 분리 배치 overlay는 split 설정이 있을 때만 쓰는데 split은 보존 회차
+        # 전용(PRESERVATION_ONLY, test_runner_split_config)이고 보존 옵션은 공식 회차에서 거부된다(OFFICIAL_FORBIDDEN).
+        allowed = {REPO_ROOT / "deploy" / "eval" / name for name in ("compose.acceptance.yaml", "compose.split.yaml")}
+        for path in allowed:
+            self.assertIn(path, files)
+            self.assertIn("-path-log", path.read_text(encoding="utf-8"))
         for path in files:
-            if path != acceptance:
+            if path not in allowed:
                 self.assertNotIn("path-log", path.read_text(encoding="utf-8"), str(path))
 
 
