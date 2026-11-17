@@ -298,13 +298,16 @@ class TestCollectorScript(unittest.TestCase):
             exe.write_bytes(b"\x7fELF")
             exe.chmod(0o755)
             (root / "bin" / "plain").write_text("not executable")
-            config = {"path": f"{root / 'bin'}:{root / 'missing'}",
+            (root / "lib" / "exe").write_bytes(b"\x7fELF2")  # 뒤 PATH 디렉터리의 같은 이름도 적는다(샌드박스 넘어가기용)
+            (root / "lib" / "exe").chmod(0o755)
+            config = {"path": f"{root / 'bin'}:{root / 'missing'}:{root / 'lib'}",
                       "sandbox": {"fixed": [str(root / "bin"), str(root / "nope")], "dir_globs": [str(root / "li*")], "file_globs": []}}
             out = subprocess.run([sys.executable, "-I", "-c", tool_surface.COLLECTOR, json.dumps(config)], capture_output=True, check=True)
             collected = json.loads(out.stdout)
         self.assertEqual(collected["mounts"], sorted([os.path.realpath(root / "bin"), os.path.realpath(root / "lib")]))
-        rows = {e["name"]: e for e in collected["entries"]}
-        self.assertEqual(set(rows), {"cli", "exe"})
+        self.assertEqual(sorted((e["name"], Path(e["dir"]).name) for e in collected["entries"]),
+                         [("cli", "bin"), ("exe", "bin"), ("exe", "lib")])
+        rows = {e["name"]: e for e in collected["entries"] if Path(e["dir"]).name == "bin"}
         self.assertEqual((rows["cli"]["target"], rows["cli"]["shebang"]), (os.path.realpath(real), ["/usr/bin/env", "node"]))
         self.assertIsNone(rows["exe"]["shebang"])
         self.assertEqual(classify(collected, config["path"])["hidden"], {"cli": "target_outside_sandbox"})
