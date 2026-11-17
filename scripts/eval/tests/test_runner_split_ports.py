@@ -311,6 +311,14 @@ class TestLayout(unittest.TestCase):
         self.assertEqual(judge(networks, containers, running + [stranger(pid_mode="container:" + target_id)], images),
                          [f"host.container.{'f' * 12}: SHARES_PID_NAMESPACE"])
 
+    def test_declared_netns_does_not_hide_pid_sharing(self):
+        # #668 리뷰 반례: 선언된 api→preparation 망 공유는 그대로 두고 api에 대상 PID namespace 공유만 더한다.
+        networks, containers, running, images = self.world()
+        api = next(c for c in containers if c["service"] == "api")
+        api["pid_mode"] = "container:" + next(c["id"] for c in containers if c["service"] == "target")
+        self.assertEqual(judge(networks, containers, [c for c in containers if c["running"]], images),
+                         [f"host.container.{api['id'][:12]}: SHARES_PID_NAMESPACE"])
+
     def test_declared_sharing_only_to_its_own_service(self):
         networks, containers, running, images = self.world()
         api = next(c for c in containers if c["service"] == "api")
@@ -439,6 +447,17 @@ class TestCheckPort(PortsCase):
 
         self.assertEqual(self.ports_for(publish).check("post")["violations"], ["service.target: PUBLISH_MISMATCH"])
         self.assertEqual(self.ports_for(share).check("post")["violations"], [f"host.container.{'f' * 12}: SHARES_NETWORK_NAMESPACE"])
+
+        seen = {}
+
+        def api_pid(containers, running):
+            api = next(c for c in containers if c["service"] == "api")
+            api["pid_mode"] = "container:" + next(c["id"] for c in containers if c["service"] == "target")
+            seen["api"] = api["id"]
+            return running
+
+        violations = self.ports_for(api_pid).check("post")["violations"]
+        self.assertEqual(violations, [f"host.container.{seen['api'][:12]}: SHARES_PID_NAMESPACE"])
 
 
 class TestDocker(PortsCase):

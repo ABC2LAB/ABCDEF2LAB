@@ -41,6 +41,7 @@ from runner import (  # noqa: E402
     INVALID, RESULT_NAME, RunFailure, _check_subnets, _event_time, _ns, _stamp, _step, _stop_events, _stop_watch,
     _wait_budget, _wait_drained, first_limit,
 )
+from runner_checks import compare_snapshots  # noqa: E402
 from runner_evidence import MeterFiles  # noqa: E402
 from runner_probe import PASS  # noqa: E402
 from runner_product_llm import ProductLLMError, call_records_reasons, product_model_usage  # noqa: E402
@@ -211,6 +212,10 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     closed = _step(state, "product_close_failed", lambda: ports.wait_closed(draft_id, spec.product_close_seconds))
 
     post = _step(state, "post_facts_failed", lambda: ports.snapshot("post"))
+    # pre~post 사이 데몬·망·구성원·주소·바인딩·컨테이너 교체·재시작(B와 같은 compare_snapshots, #668 리뷰). 배치 검사는
+    # 기대 배치와의 일치만 보므로 같은 이미지·주소의 새 컨테이너로 바뀐 것은 이 대조가 잡는다.
+    if compare_snapshots(pre, post):
+        raise RunFailure("boundary_changed")
     # 사후 점검은 경계의 두 입구·netns가 살아 있어야 한다(#653 기대값). 그래서 경계 정지는 post 관측·점검 뒤, 구간이 끝나기
     # 전이다. 경계는 SIGTERM 정지 한 번으로 봉인 표식까지 쓰고 끝난다(계약 §4.1 결정 B). 구간 감시가 그 정지만 허용한다.
     _split_check(ports, evidence, state, "post")
