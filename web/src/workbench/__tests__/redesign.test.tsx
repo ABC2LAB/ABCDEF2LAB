@@ -1246,11 +1246,38 @@ describe("점검 진행", () => {
       "심화 점검|stop|50|중지됨",
       "정리 · 저장|wait|0|",
     ]);
+    // 서버가 계획을 상한(20개)만큼 꽉 채워 주면 앞부분만 받은 것일 수 있어 계획 수 대신 심화 점검 마감 수로
+    const twenty = Array.from({ length: 20 }, (_, i) => ({ id: i + 1, state: "done", title: `계획 ${i + 1}` }));
+    expect(seg({ ...flow, stage: "diagnosing", plan: twenty, deep_runs: 4, deep_closed: 1 })[2]).toBe(
+      "심화 점검|run|25|1/4 마감",
+    );
     // 상태를 모르면 게이지를 두지 않는다
     expect(gaugeSegments({ ...flow, stage: "unknown" }, false)).toBeNull();
   });
 
-  it("가운데는 상태 카드(계획은 접어 둠) · 확인 필요 · 발견 후보 · 활동 기록, 전송 통제와 탐색 현황은 오른쪽 진행 요약에", async () => {
+  it("계획 목록이 상한(20개)만큼 꽉 차 오면 상태 카드 계획 칸은 'N+ · 목록 일부만 받음' (전체 완료율로 쓰지 않음)", () => {
+    const twenty = Array.from({ length: 20 }, (_, i) => ({ id: i + 1, state: "done", title: `계획 ${i + 1}` }));
+    useUrl.setState({
+      handle,
+      job,
+      verified: true,
+      flow: { ...flow, stage: "diagnosing", plan: twenty, deep_runs: 3, deep_closed: 1 },
+      flowVerified: true,
+    });
+    render(
+      <ShellContext.Provider value={shell("live")}>
+        <UrlLiveLive />
+      </ShellContext.Provider>,
+    );
+    const stats = document.getElementById("lMeta") as HTMLElement;
+    expect(within(stats).getByText("계획").parentElement).toHaveTextContent(/^계획20\+목록 일부만 받음$/);
+    expect(document.getElementById("lGauge")).toHaveAttribute(
+      "aria-label",
+      "점검 단계 진행: 단계 3/4 심화 점검 · 1/3 마감",
+    );
+  });
+
+  it("가운데는 상태 카드 · 확인 필요 · 발견 후보 · 활동 기록, 전송 통제와 탐색 현황은 오른쪽 진행 요약에", async () => {
     vi.mocked(api.fetchRequestApprovals).mockResolvedValue({
       run: {
         run_ref: `run-${job.id}`,
@@ -1294,7 +1321,7 @@ describe("점검 진행", () => {
         vulnclass: "info_disclosure",
         name: "응답에 내부 정보 노출",
         severity: "low",
-        status: "pending",
+        status: "false_positive",
         summary: "응답 머리에 서버 버전이 보입니다.",
         evidence: "",
         traffic_count: 1,
@@ -1310,7 +1337,7 @@ describe("점검 진행", () => {
         vulnclass: "idor",
         name: "다른 계정으로 /api/users/2 조회 응답",
         severity: "high",
-        status: "pending",
+        status: "confirmed",
         summary: "시험 계정 B 로 계정 A 자원을 요청했을 때 200 응답",
         evidence: JSON.stringify({ status: 200, body: JSON.stringify({ owner: "a", token: "secret-token-value" }) }),
         traffic_count: 1,
@@ -1403,10 +1430,13 @@ describe("점검 진행", () => {
     expect(within(finds).getByText(/검증 전 후보입니다/)).toBeInTheDocument();
     const rows = within(finds).getAllByRole("button", { expanded: false });
     expect(rows.map((b) => b.textContent?.replace(/\d{2}:\d{2}:\d{2}/, "HH:MM:SS"))).toEqual([
-      "높음다른 계정으로 /api/users/2 조회 응답GET /api/users/2 · idor · HH:MM:SS미검토",
-      "낮음응답에 내부 정보 노출GET /api/products/1 · info_disclosure · HH:MM:SS미검토",
+      "높음다른 계정으로 /api/users/2 조회 응답GET /api/users/2 · idor · HH:MM:SS",
+      "낮음응답에 내부 정보 노출GET /api/products/1 · info_disclosure · HH:MM:SS",
     ]);
     expect(within(finds).queryByText("새로")).toBeNull();
+    // 엔진 처리 상태(confirmed · false_positive 등)는 검증 전 후보 줄에 판정처럼 붙이지 않는다 (절대규칙 5, #661 리뷰)
+    expect(finds).not.toHaveTextContent(/검토 확인|오탐 처리|미검토/);
+    expect(within(finds).getByText(/심각도는 엔진이 붙인 값/)).toBeInTheDocument();
     // 누르면 요약 · 증거 (증거의 토큰 값은 가린다)
     fireEvent.click(rows[0]);
     expect(rows[0]).toHaveAttribute("aria-expanded", "true");

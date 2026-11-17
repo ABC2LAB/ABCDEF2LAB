@@ -7,6 +7,11 @@ import {
   type WorkflowMode,
 } from "@/lib/diagnosis/diagnosis-url";
 export const FLOW_VERSION = "abc2lab.workbench-flow/v1";
+/**
+ * 서버가 주는 계획(plan) 목록 상한 (diagnosisflow postgres.go Display: intent 를 ORDER BY id LIMIT 20).
+ * 이만큼 꽉 차서 오면 전체 계획이 아니라 앞부분만 받은 것일 수 있다.
+ */
+export const MAX_FLOW_PLAN = 20;
 export type WorkflowEndpoint = {
   id: string;
   method: string;
@@ -164,7 +169,7 @@ export function parseWorkflow(value: unknown, job: URLDiagnosisJob): WorkflowSna
   if (s.plan !== undefined) {
     if (
       !Array.isArray(s.plan) ||
-      s.plan.length > 20 ||
+      s.plan.length > MAX_FLOW_PLAN ||
       s.plan.some((p) => !obj(p) || !num(p.id) || !text(p.title) || !text(p.state, 64))
     )
       return invalid();

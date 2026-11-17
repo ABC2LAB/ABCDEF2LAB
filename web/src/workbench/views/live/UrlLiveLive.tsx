@@ -11,6 +11,7 @@
 
 import { type KeyboardEvent, type ReactElement, type ReactNode, useEffect, useRef, useState } from "react";
 
+import { ApiError } from "@/lib/diagnosis/api";
 import { type URLDiagnosisUsage, urlPhaseLabels } from "@/lib/diagnosis/diagnosis-url";
 import {
   type DiagnosticOutcome,
@@ -33,21 +34,13 @@ import {
   type LiveFinding,
   type Remediation,
 } from "../../live/api";
-import {
-  approvalCounts,
-  clockOf,
-  findingStatusLabel,
-  fmtCount,
-  fmtTokensShort,
-  planState,
-  sevKey,
-} from "../../live/map";
+import { approvalCounts, clockOf, fmtCount, fmtTokensShort, planState, sevKey } from "../../live/map";
 import { maskSecrets } from "../../live/mask";
 import { ErrorNote, LoadingRow, NotYet } from "../../live/parts";
 import { useUrl, useUrlGates } from "../../live/urlDiagnosis";
 import { factText, URL_ENDED_STATES, type UrlState, urlStateText, usdText } from "../../live/urlMap";
 import { type Poll, usePoll } from "../../live/usePoll";
-import { flowStageText, type WorkflowSnapshot } from "../../live/workflow";
+import { flowStageText, MAX_FLOW_PLAN, type WorkflowSnapshot } from "../../live/workflow";
 import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
 import { InspHead, InspOpenButton, Isec, Kv, PaneToggle } from "../../ui/parts";
@@ -55,6 +48,7 @@ import s from "../../workbench.module.css";
 import { ApprovalFacts, ApprovalRequestCode, RecoveredApprovalNotice, useRequestApprovals } from "./approvals";
 import { DiagnosticEntrySections } from "./DiagnosticEntrySections";
 import { ReportReadError } from "./runRows";
+import { TaskActivity } from "./TaskActivity";
 import { reasonText, UrlFacts, UrlHead, UrlNotices, UrlPill, UrlRefreshButton, useUrlHost } from "./urlParts";
 import { ActivityLog, crawlPct, PauseButton, useStopConfirm, WorkflowNotice, WorkflowReport } from "./workflowViews";
 
@@ -128,9 +122,31 @@ function useFreshIds(task: string | undefined, list: readonly LiveFinding[] | nu
 }
 
 /**
+ * 발견 후보 조회 실패 알림. 공용 ErrorNote 는 403 · 404 · 503 을 '제공되지 않음'으로 접고 다시 시도 버튼을 빼는데,
+ * 점검 중 후보 목록은 일시 장애일 수 있어 HTTP 상태와 [다시 읽기]를 늘 둔다. stale 이면 아래가 마지막으로 읽은 목록이라고.
+ */
+function FindReadError({ error, onRetry, stale = false }: { error: unknown; onRetry: () => void; stale?: boolean }) {
+  const status = error instanceof ApiError && error.status ? ` (HTTP ${error.status})` : "";
+  return (
+    <div className={cx(s.note, s.warn)} role="alert">
+      <Icon name="alert" />
+      <span className={s["lv-grow"]}>
+        {stale
+          ? `발견 후보를 다시 읽지 못해 갱신이 멈췄습니다${status}. 아래는 마지막으로 읽은 목록이라 최신이 아닐 수 있습니다.`
+          : `발견 후보를 읽지 못했습니다${status}.`}
+      </span>
+      <button className={cx(s.btn, s.sm)} type="button" onClick={onRetry}>
+        다시 읽기
+      </button>
+    </div>
+  );
+}
+
+/**
  * 점검 진행 가운데의 발견 후보 목록 (사용자 11/17 '취약점 나온 것들 다 나열, 실시간'). 원본 ARTEX 가 점검 중에 쌓는
- * 발견(GET /api/exploration/findings?task=)을 최신 순으로 전부. 점검 중 발견은 검증 전 후보라 판정으로 보이지 않게
- * 처리 상태(findingStatusLabel)만 붙인다(절대규칙 5). 요약 · 증거는 서버 원문이라 가려서 보인다.
+ * 발견(GET /api/exploration/findings?task=)을 최신 순으로 전부. 점검 중 발견은 검증 전 후보라, 엔진 처리 상태
+ * ('검토 확인' · '오탐 처리' 등)는 판정처럼 읽혀 줄에 붙이지 않는다(절대규칙 5, #661 리뷰). 심각도도 엔진이 붙인 값이라고
+ * 안내에 적는다. 요약 · 증거는 서버 원문이라 가려서 보인다.
  */
 function LiveFindings({
   poll,
@@ -148,7 +164,10 @@ function LiveFindings({
   const bySev = SEV_KEYS.map((k) => [k, list.filter((f) => sevKey(f.severity) === k).length] as const);
   const noSev = list.filter((f) => !sevKey(f.severity)).length;
   let body: ReactNode;
-  if (!poll.data && poll.error) body = <ErrorNote error={poll.error} onRetry={poll.reload} />;
+  // 한 번 읽은 뒤의 실패도 숨기지 않는다: usePoll 은 직전 목록을 남기고 403 · 404 · 503 이면 다시 부르지 않으므로,
+  // 목록 위에 갱신 실패와 [다시 시도]를 보이고 아래 목록은 마지막으로 읽은 것이라고 적는다
+  const stale = !!poll.data && !!poll.error;
+  if (!poll.data && poll.error) body = <FindReadError error={poll.error} onRetry={poll.reload} />;
   else if (!poll.data) body = <LoadingRow />;
   else if (!list.length)
     body = (
@@ -183,7 +202,6 @@ function LiveFindings({
                       .join(" · ")}
                   </span>
                 </span>
-                <span className={s["lfind-st"]}>{findingStatusLabel(f.status)}</span>
               </button>
               {on ? (
                 <div className={s["lfind-d"]} id={`lFind-${f.id}`}>
@@ -200,7 +218,9 @@ function LiveFindings({
     <section className={s.sec} aria-labelledby="lFindsH">
       <div className={s.sh}>
         <h2 id="lFindsH">발견 후보</h2>
-        <span className={s.n}>{poll.data ? `${list.length}건 · 최신 순` : ""}</span>
+        <span className={s.n}>
+          {poll.data ? `${list.length}건 · ${stale ? "마지막으로 읽은 목록" : "최신 순"}` : ""}
+        </span>
       </div>
       {list.length ? (
         <div className={s.vbar}>
@@ -217,7 +237,11 @@ function LiveFindings({
           ) : null}
         </div>
       ) : null}
-      <p className={s.help}>점검 중에 나온 검증 전 후보입니다. 확정 여부는 점검이 끝난 뒤 보고서의 판정에서 봅니다.</p>
+      <p className={s.help}>
+        점검 중에 나온 검증 전 후보입니다. 심각도는 엔진이 붙인 값이고, 확정 여부는 점검이 끝난 뒤 보고서의 판정에서
+        봅니다.
+      </p>
+      {stale ? <FindReadError error={poll.error} onRetry={poll.reload} stale /> : null}
       {body}
     </section>
   );
@@ -246,6 +270,7 @@ function TaskTokens({ u }: { u: URLDiagnosisUsage }) {
     <p className={s.toks} title={exact}>
       {/* 칸 사이 공백: 화면은 flex 간격으로 띄우고, 글로 읽을 때(화면 읽기 · 복사) 붙지 않게 */}
       <span>작업 합계 ·</span> {chip("입", u.input_tokens)} {chip("출", u.output_tokens)}
+      {bound ? <span> (최대)</span> : null}
     </p>
   );
 }
@@ -279,10 +304,12 @@ export function gaugeSegments(flow: WorkflowSnapshot, resultReady: boolean): Gau
   }
   if (cur === undefined) return null;
   const auto = flow.mode === "ai_auto_v1";
+  // 계획 목록이 상한(MAX_FLOW_PLAN)만큼 꽉 차 오면 앞부분만 받은 것일 수 있어 전체 완료율로 쓰지 않고 심화 점검 마감 수로
+  const planWhole = plan.length > 0 && plan.length < MAX_FLOW_PLAN;
   let deepPct = 0;
-  if (plan.length) deepPct = (planDone / plan.length) * 100;
+  if (planWhole) deepPct = (planDone / plan.length) * 100;
   else if (flow.deep_runs) deepPct = (flow.deep_closed / flow.deep_runs) * 100;
-  const deepSub = plan.length ? `계획 ${planDone}/${plan.length}` : `${flow.deep_closed}/${flow.deep_runs} 마감`;
+  const deepSub = planWhole ? `계획 ${planDone}/${plan.length}` : `${flow.deep_closed}/${flow.deep_runs} 마감`;
   const rows: [string, number, GaugeTone, string][] = [
     ["자산 탐색", crawlPct(flow), "run", `방문 ${flow.counts.visited}/${flow.limits.max_pages}`],
     [auto ? "범위 선택 (AI)" : "범위 확인", 0, "hold", "선택 대기"],
@@ -505,7 +532,9 @@ export function UrlLiveLive() {
   const gauge = flow && job.state !== "unknown" ? gaugeSegments(flow, !!job.result_ready) : null;
   const stats: { k: string; v: string; sub: string; warn?: boolean }[] = [];
   if (flow && job.state !== "unknown") {
-    if (plan.length) stats.push({ k: "계획", v: `${planDone}/${plan.length}`, sub: "완료" });
+    // 계획이 상한만큼 꽉 차 오면 전체 수를 모른다 → 'N+' 와 '일부만 받음'
+    if (plan.length >= MAX_FLOW_PLAN) stats.push({ k: "계획", v: `${plan.length}+`, sub: "목록 일부만 받음" });
+    else if (plan.length) stats.push({ k: "계획", v: `${planDone}/${plan.length}`, sub: "완료" });
     stats.push({ k: "심화 점검", v: `${flow.deep_closed}/${flow.deep_runs}`, sub: "마감" });
   }
   if (ended && saved.data && !saved.error) {
@@ -632,11 +661,15 @@ export function UrlLiveLive() {
           {ended && !savedTask ? <p className={s.empty}>결과 저장이 확인되면 발견 목록이 여기에 나옵니다.</p> : null}
           {a.message ? <p role="status">{a.message}</p> : null}
           {a.unresolved ? <p role="alert">결정 결과 불명 · 조회로 확인하기 전에는 다시 결정하지 않습니다.</p> : null}
-          {/* 서버 진단 활동(#642 TaskActivity)은 두지 않는다(사용자 11/17): 아래 활동 기록과 같은 ARTEX 워커 기록이 겹친다 */}
+          {/* 활동: 탐색 흐름이 있는 점검은 활동 기록(워커 콘솔). 흐름이 없는 점검은 그 기록이 없으므로 점검 중에만
+              서버 진단 활동(#642 TaskActivity, product-run-list.md 인계 5)을 둔다 — 끝나면 제품 서버가 활동 조회를 닫는다(403) */}
           {job.input.workflow_mode ? <ActivityLog /> : null}
+          {!job.input.workflow_mode && !ended && job.task_id && verified ? (
+            <TaskActivity key={job.task_id} taskId={job.task_id} enabled={visible} />
+          ) : null}
         </div>
-        {/* 오른쪽 진행 요약: 서버가 점검 중에 주는 값만. 점검 중 발견 · 판정은 서버가 결과를 저장하기 전에 주지 않아
-            두지 않고(발견 없음으로 보이지 않게), 끝나면 가운데 [보고서 보기]로 간다 */}
+        {/* 오른쪽 진행 요약: 서버가 점검 중에 주는 값만(전송 통제 · 탐색 현황 · 커버리지 · 점검 정보).
+            발견은 가운데에 둔다(점검 중엔 발견 후보, 끝나면 저장된 결과) */}
         <aside className={s.vi} id="lInsp" aria-label="진행 요약">
           <InspHead
             eyebrow={

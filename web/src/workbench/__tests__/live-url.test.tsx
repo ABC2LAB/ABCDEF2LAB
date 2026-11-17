@@ -1000,7 +1000,8 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     });
     mount("live");
     const line = (await screen.findByText(/^작업 합계/)).parentElement as HTMLElement;
-    expect(line).toHaveTextContent(/^작업 합계 · 입 1.2k 출 300$/);
+    // 예약량으로 센 호출이 있으면 칩 옆에도 '(최대)' (#661 리뷰)
+    expect(line).toHaveTextContent(/^작업 합계 · 입 1.2k 출 300 \(최대\)$/);
     expect(line).toHaveAttribute(
       "title",
       "입력 1,200 토큰\n출력 300 토큰\n사용량을 못 받은 호출 1건은 예약량으로 계산(최대치)",
@@ -1049,6 +1050,50 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(within(finds).getByText("2건 · 최신 순")).toBeInTheDocument();
     expect(within(finds).getByText("새로").closest("li")).toHaveTextContent("새 발견");
     expect(within(finds).getAllByText("새로")).toHaveLength(1);
+  });
+
+  it("점검 진행 발견 후보: 한 번 읽은 뒤 다시 읽다 실패(503)해도 숨기지 않고, 마지막 목록이라고 알리며 다시 읽을 수 있다", async () => {
+    vi.useFakeTimers();
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    a.fetchTaskFindings.mockResolvedValue([]);
+    mount("live");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    const finds = screen.getByRole("region", { name: "발견 후보" });
+    expect(within(finds).getByText("0건 · 최신 순")).toBeInTheDocument();
+    a.fetchTaskFindings.mockRejectedValue(new ApiError(503, "unavailable"));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(FINDINGS_POLL_MS);
+    });
+    expect(within(finds).getByRole("alert")).toHaveTextContent(
+      "발견 후보를 다시 읽지 못해 갱신이 멈췄습니다 (HTTP 503). 아래는 마지막으로 읽은 목록이라 최신이 아닐 수 있습니다.",
+    );
+    expect(within(finds).getByText("0건 · 마지막으로 읽은 목록")).toBeInTheDocument();
+    const calls = a.fetchTaskFindings.mock.calls.length;
+    a.fetchTaskFindings.mockResolvedValue([]);
+    await act(async () => {
+      fireEvent.click(within(finds).getByRole("button", { name: "다시 읽기" }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(a.fetchTaskFindings.mock.calls.length).toBe(calls + 1);
+    expect(within(finds).queryByRole("alert")).toBeNull();
+    expect(within(finds).getByText("0건 · 최신 순")).toBeInTheDocument();
+  });
+
+  it("탐색 흐름 없는 점검은 점검 중에만 서버 진단 활동을 두고(활동 기록 대신), 끝나면 두지 않는다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    const { unmount } = mount("live");
+    expect(await screen.findByRole("region", { name: "서버 진단 활동" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "활동 기록" })).toBeNull();
+    unmount();
+    resetUrl();
+    u.readURLStatus.mockResolvedValue(completed);
+    mount("live");
+    expect(await screen.findByText(/점검을 마쳤습니다/)).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "서버 진단 활동" })).toBeNull();
   });
 
   it("점검 진행 발견 후보가 없으면 '없음'을 안전으로 읽히지 않게 말한다", async () => {
