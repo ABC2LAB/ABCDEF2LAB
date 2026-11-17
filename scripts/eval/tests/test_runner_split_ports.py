@@ -477,6 +477,49 @@ class TestDocker(PortsCase):
         self.assertEqual(str(caught.exception), "split_ready_timeout")
         self.assertGreaterEqual(clock["t"], self.config.run["compose_wait_seconds"])
 
+    def test_generation_verify_uses_the_meter_image_key_and_lookup_env(self):
+        from runner_docker import CommandResult, Docker
+        sent = []
+        docker = Docker(lambda args, env, stdin, timeout: (sent.append((list(args), dict(env), stdin, timeout)), CommandResult(0, b""))[1],
+                        {}, 1)
+        llm_env = {"EVAL_LLM_UPSTREAM": "https://llm.example", "EVAL_LLM_PROVIDER": "p/fp8", "EVAL_LLM_GENERATION_PATH": "/g",
+                   "EVAL_LLM_VERIFY_ATTEMPTS": "3", "EVAL_LLM_VERIFY_INTERVAL": "2s", "EVAL_CA_BUNDLE": "/etc/ssl/ca.pem"}
+        ports = DockerSplitPorts(config=self.config, split=self.split, plan=self.plan, directory=self.directory, docker=docker,
+                                 driver=self.driver, inputs=self.inputs, rendered={"services": {}}, manifest=MANIFEST,
+                                 model_key=ModelKey("sk-or-v1-secret"), exploration={}, llm_env=llm_env)
+        cid = self.directory.run / "generation-verify.cid"
+        with mock.patch("runner_docker._read_cidfile", return_value="c" * 64):
+            ports.generation_verify(b'{"seq":1}\n', {"seed": 42})
+        (args, env, stdin, timeout), = sent
+        self.assertEqual(args[args.index("--") + 1], self.plan.images["meter"].id)
+        self.assertEqual(args[args.index("--cidfile") + 1], str(cid))
+        self.assertIn("-provider=p/fp8", args)
+        self.assertIn('-sampling={"seed":42}', args)
+        self.assertIn(f"type=bind,source={self.directory.llm},target=/evidence", args)
+        self.assertNotIn("sk-or-v1-secret", " ".join(args))  # 키는 환경으로만
+        self.assertEqual((env["EVAL_LLM_API_KEY"], stdin, timeout),
+                         ("sk-or-v1-secret", b'{"seq":1}\n', self.config.run["llm_verify_timeout_seconds"]))
+
+    def test_llm_verified_reads_the_generation_verify_marker_from_the_llm_dir(self):
+        # #674 리뷰 P1: 실제 reader(GatewayFiles)로 generation-verify 표식을 읽는다. 게이트웨이 표식은 O 자리에서 받지 않는다.
+        import json as _json
+        from runner_evidence import EvidenceError
+        self.directory.llm.mkdir(mode=0o700, exist_ok=True)
+        marker = self.directory.llm / "llm-verified.json"
+        self.assertIsNone(self.ports.llm_verified())  # 아직 없음
+        for role, ok in (("generation-verify", True), ("llm-gateway", False)):
+            with self.subTest(role=role):
+                if marker.exists():
+                    marker.unlink()
+                fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                os.write(fd, _json.dumps({"role": role, "backend": "api"}).encode())
+                os.close(fd)
+                if ok:
+                    self.assertEqual(self.ports.llm_verified()["role"], "generation-verify")
+                else:
+                    with self.assertRaises(EvidenceError):
+                        self.ports.llm_verified()
+
     def test_compose_seal_and_stop(self):
         self.ports.up()
         self.ports.down()
