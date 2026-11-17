@@ -35,11 +35,10 @@ type Limits struct {
 // 같은 256으로 둔다(VAmPI 실제 회차 24b).
 const MaxWorkflowPages = 256
 
-// MaxWorkflowEndpoints는 공개 끝점 목록(모델 지시·화면 선택 목록)의 코드 상한이다. 송신량이 아니라 발견만 자르는
-// 상한이라 넉넉해야 하지만, 목록이 공개 투영(MaxProjectionBytes 48KiB)과 저장 기록(128KiB)에 들어가야 한다.
-// 실측(24b) 끝점 하나 평균 366·최대 495바이트로 64개가 투영에 들어간다. 인벤토리 상한(256)까지 늘리려면 개수 대신
-// 투영 바이트로 자르는 방식이 먼저다(개발 계획).
-const MaxWorkflowEndpoints = 64
+// MaxWorkflowEndpoints는 공개 끝점 목록(모델 지시·화면 선택 목록)의 개수 코드 상한이다. 송신량이 아니라 발견만
+// 자르는 상한이라 탐색 인벤토리 상한과 같은 256으로 두고, 실제로는 목록이 공개 투영(MaxProjectionBytes 48KiB)에
+// 들어가는 만큼만 받는다(endpointFitsLocked, 개발 계획 "끝점 바이트 절단"). 넘쳐 빠진 수는 counts.omitted에 남는다.
+const MaxWorkflowEndpoints = 256
 
 func (l Limits) Valid() bool {
 	return l.Format == Version && l.MaxPages >= 1 && l.MaxPages <= MaxWorkflowPages && l.MaxEndpoints >= 1 && l.MaxEndpoints <= MaxWorkflowEndpoints && l.MaxResponseBytes >= 4096 && l.MaxResponseBytes <= 2<<20
