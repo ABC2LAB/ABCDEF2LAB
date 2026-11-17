@@ -86,9 +86,16 @@ class TestRunnerHelperAndStop(unittest.TestCase):
             "none_but_bridge_type": [event("network", "connect", "o" * 64, container=self.HELPER, name="none", type="bridge")],
             "none_twice": [event("network", "connect", "z" * 64, container=self.HELPER, **none)] * 2,
         }
+        cases.update({  # 정상 none 이벤트 없이 하나만 온 경우(이름·종류 각각만 어긋남)
+            "only_name_other": [event("network", "connect", "o" * 64, container=self.HELPER, name="outside", type="null")],
+            "only_name_other_no_type": [event("network", "connect", "o" * 64, container=self.HELPER, name="outside")],
+            "only_type_other": [event("network", "connect", "o" * 64, container=self.HELPER, name="none", type="bridge")],
+        })
+        quiet = [e for e in ok if e["Type"] != "network"]
         for name, extra in cases.items():
             with self.subTest(case=name):
-                summary = self.judge(self.stop_sequence() + ok[:3] + extra + ok[3:])
+                lifecycle = quiet if name.startswith("only_") else ok
+                summary = self.judge(self.stop_sequence() + lifecycle[:3] + extra + lifecycle[3:])
                 self.assertTrue(summary["boundary_events"])
                 self.assertEqual(summary["boundary_events"][-1]["service"], "runner_helper")
                 self.assertIn("window_boundary_changed", events_reasons(summary))
