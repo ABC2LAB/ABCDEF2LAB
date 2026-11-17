@@ -157,6 +157,7 @@ class FakeProcess:
     def __init__(self, responses: list, close: bool = True):
         import threading
         read, write = os.pipe()
+        self._write = write  # close=False면 시험이 이 끝으로 직접 더 쓸 수 있다
         data = b"".join(item if isinstance(item, bytes) else json.dumps(item).encode() + b"\n" for item in responses)
 
         def produce():
@@ -259,6 +260,31 @@ class TestMcpSession(unittest.TestCase):
         with self.assertRaises(ToolSurfaceError) as caught:
             mcp_tools("sha256:" + "4" * 64, [], lambda command, **o: process, timeout=2)
         self.assertEqual(str(caught.exception), "mcp_session_closed")
+
+    def test_stdout_is_drained_while_writing(self):
+        # 서버가 stdout을 다 쓴 뒤에야 stdin을 읽으면, 쓰는 동안 stdout을 비우지 않는 클라이언트와 서로 막힌다.
+        import threading
+        page2 = {"jsonrpc": "2.0", "id": 3, "result": {"tools": [tool("b")]}}
+        filler = {"jsonrpc": "2.0", "method": "notifications/message", "params": {"data": "x" * 200000}}
+        responses = [INIT, {"jsonrpc": "2.0", "id": 2, "result": {"tools": [tool("a")], "nextCursor": "c" * 131072}}, filler, page2]
+        process = FakeProcess([], close=False)
+        out_write = process._write
+        data = b"".join(json.dumps(item).encode() + b"\n" for item in responses)
+
+        def server():
+            for i in range(0, len(data), 4096):
+                os.write(out_write, data[i:i + 4096])  # 클라이언트가 비워야 다음이 들어간다
+            received = b""
+            while True:  # 그다음에야 stdin을 읽는다
+                chunk = os.read(process._stdin_read, 65536)
+                if not chunk:
+                    break
+                received += chunk
+            os.close(out_write)
+        thread = threading.Thread(target=server, daemon=True)
+        thread.start()
+        result = mcp_tools("sha256:" + "4" * 64, [], lambda command, **o: process, timeout=10)
+        self.assertEqual([t["name"] for t in result["tools"]], ["a", "b"])
 
     def test_blocked_stdin_write_respects_the_deadline(self):
         # #673 리뷰: 긴 nextCursor를 돌려주고 stdin을 읽지 않는 서버면 다음 요청 쓰기가 pipe 버퍼에서 막힌다. 남은 시한 안에서
