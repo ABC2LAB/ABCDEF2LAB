@@ -111,6 +111,11 @@ class FakeClock:
         self.t += seconds
 
 
+# 가짜 계측기 행의 시각. 합성 시계는 0초(2026-11-02T00:00:00Z)에 작업 생성을 요청하므로 그 1초 전은 회차 창 밖이라
+# 무활동 계산의 활동에 들어가지 않는다.
+FAKE_ROW_AT = "2026-11-01T23:59:59Z"
+
+
 class FakeMeter:
     """계측기 bind 디렉터리 흉내. seal 뒤에야 drained 마커가 생긴다."""
 
@@ -170,10 +175,13 @@ class FakeMeter:
         def attempt(i):
             return ({"attempt_id_state": "valid", "attempt_id": ids[i - 1]} if i <= len(ids)
                     else {"attempt_id_state": "absent", "attempt_id": ""})
-        return [{"seq": i, "method": "GET", "kind": "request", "outcome": "completed", "response": "complete", **attempt(i)}
+        return [{"seq": i, "method": "GET", "kind": "request", "outcome": "completed", "response": "complete",
+                 "started_at": FAKE_ROW_AT, "completed_at": FAKE_ROW_AT, **attempt(i)}
                 for i in range(1, n + 1)] + \
-               [{"seq": n + 1, "kind": "rejected", "outcome": "rejected_after_seal", "response": "none", **attempt(n + 1)},
-                {"seq": n + 2, "kind": "rejected", "outcome": "rejected_after_seal", "response": "none", **attempt(n + 2)}]
+               [{"seq": n + 1, "kind": "rejected", "outcome": "rejected_after_seal", "response": "none",
+                 "started_at": FAKE_ROW_AT, "completed_at": FAKE_ROW_AT, **attempt(n + 1)},
+                {"seq": n + 2, "kind": "rejected", "outcome": "rejected_after_seal", "response": "none",
+                 "started_at": FAKE_ROW_AT, "completed_at": FAKE_ROW_AT, **attempt(n + 2)}]
 
     def observer_rows(self):
         count = self.ports.ready_calls + 2 + self.observer_extra
@@ -195,9 +203,15 @@ class FakeGateway:
     def __init__(self, ports):
         self.ports = ports
         self.marker = llm_marker()
+        self.llm_rows = []  # llm-requests.jsonl 행(제공자 장애 멈춤 기록 입력)
 
     def verified(self):
         return self.marker if "seal_gateway" in self.ports.calls else None
+
+    def rows(self):
+        if isinstance(self.llm_rows, Exception):
+            raise self.llm_rows
+        return list(self.llm_rows)
 
 
 class FakeEvidence:
@@ -1079,7 +1093,7 @@ class TestCompleteRun(unittest.TestCase):
                                                "post-probe.json", "meter-summary.json", "llm-summary.json",
                                                "findings.json", "task.json", "window-watch.json", "engine-end.json",
                                                "isolation-evidence.json", "solve-events.json", "run-record.json", "intercept-summary.json",
-                                               "engine-settings.json", "subnet-check.json", RESULT_NAME})
+                                               "engine-settings.json", "subnet-check.json", "fault-stall.json", RESULT_NAME})
         self.assertEqual(evidence.files["subnet-check.json"], {"format": "abc2lab-eval-runner-subnet-check-v1",
                                                                "planned": ["10.250.0.0/24"], "overlaps": []})
         # 서명 대상 근거 목록에는 결과 파일 자신이 없다(서명 뒤에 쓴다).
@@ -2946,6 +2960,90 @@ class TestFirstLimit(unittest.TestCase):
         self.assertEqual(end["first_terminal"]["status"], "done")
         self.assertGreater(limit["engine_terminal_elapsed_seconds"], limit["runner_limit_elapsed_seconds"])
         self.assertEqual(limit["value"], "runner_request_budget")
+class TestFaultStallRecord(unittest.TestCase):
+    """제공자 장애 멈춤 판정 재료(결정안 §7, 4-5). T·비율이 정해지기 전이라 기록만 하고 회차 유효성에 쓰지 않는다."""
+
+    def test_default_round_records_no_faults(self):
+        result, _, _, evidence = run()
+        record = evidence.files["fault-stall.json"]
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertEqual(record, result["fault_stall"])
+        self.assertNotIn("error", record)
+        self.assertEqual((record["judged"], record["faults"], record["events"], record["activity_starts"]),
+                         (False, {"upstream_cut": 0, "rate_limited": 0}, [], 0))
+
+    def test_stall_shape_is_recorded_and_round_still_completes(self):
+        # 위쪽 끊김 뒤 봉인까지 모델·대상 활동 0, 끝 신호 없음(2026-11-16 1차 B 모양). 판정은 하지 않는다.
+        times = {}
+
+        def setup(ports, meter, clock):
+            meter.per_poll = 0  # 시간 예산까지 간다
+
+            def started():
+                base = datetime(2026, 11, 2, tzinfo=timezone.utc) + timedelta(seconds=clock.t)
+                at = lambda seconds: (base + timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%S.%f000Z")
+                times["request"] = clock.t
+                gateway.llm_rows = [
+                    {"seq": 1, "decision": "forwarded", "method": "POST", "status": 200, "started_at": at(0.5),
+                     "completed_at": at(1.0), "request_bytes": 10, "response_bytes": 5, "generation_id": "g"},
+                    {"seq": 2, "decision": "upstream_error", "method": "POST", "status": 200, "started_at": at(1.5),
+                     "completed_at": at(2.0), "request_bytes": 10, "response_bytes": 3, "generation_id": "",
+                     "unfinished_end": "upstream_cut_before_done"}]
+            ports.on_start = started
+
+        gateway = None
+
+        def keep_gateway(g):
+            nonlocal gateway
+            gateway = g
+        result, _, _, evidence = run(setup, mutate_gateway=keep_gateway)
+        record = evidence.files["fault-stall.json"]
+        self.assertEqual(result["status"], COMPLETE)  # 기록만, 무효로 하지 않음
+        self.assertEqual(record["faults"], {"upstream_cut": 1, "rate_limited": 0})
+        event = record["events"][0]
+        self.assertEqual((event["kind"], event["at_seconds"], event["censored"], event["engine_terminal_within"]),
+                         ("upstream_cut", 2.0, True, False))
+        # 창 끝 = 러너가 계측기를 봉인한 시각(timeline engine_end). 무활동은 장애 끝부터 거기까지.
+        summary = evidence.files["meter-summary.json"]
+        sealed_at = evidence.files["run-record.json"]["timeline"]["engine_end"]["at"]
+        window = (datetime.fromisoformat(sealed_at) - datetime.fromisoformat(summary["task_requested_at"])).total_seconds()
+        self.assertGreater(window, 2.0)
+        self.assertEqual(record["window_seconds"], round(window, 3))
+        self.assertEqual(event["silence_seconds"], round(window - 2.0, 3))
+        self.assertEqual(record["max_idle_gap_seconds"], round(window - 2.0, 3))
+
+    def test_engine_end_signal_within_the_silence_is_recorded(self):
+        # 장애 뒤 무활동 중에 엔진 끝 신호(done)가 오면 그 사실을 남긴다(§7 조건 3: 끝 신호가 있으면 멈춤이 아니다).
+        def setup(ports, meter, clock):
+            meter.per_poll = 0
+            ports.task_views = [task_view("running"), task_view("done", goals_met=1, completed_at="2026-11-02T00:00:04Z")]
+
+            def started():
+                base = datetime(2026, 11, 2, tzinfo=timezone.utc) + timedelta(seconds=clock.t)
+                at = lambda seconds: (base + timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%S.%f000Z")
+                gateway.llm_rows = [{"seq": 1, "decision": "forwarded", "method": "POST", "status": 429, "started_at": at(0.5),
+                                     "completed_at": at(1.0), "request_bytes": 10, "response_bytes": 5, "generation_id": ""}]
+            ports.on_start = started
+
+        gateway = None
+
+        def keep_gateway(g):
+            nonlocal gateway
+            gateway = g
+        result, _, _, evidence = run(setup, mutate_gateway=keep_gateway)
+        terminal = evidence.files["engine-end.json"]["first_terminal"]
+        self.assertEqual(terminal["status"], "done")
+        event = evidence.files["fault-stall.json"]["events"][0]
+        self.assertEqual((event["kind"], event["censored"], event["engine_terminal_within"]), ("rate_limited", True, True))
+
+    def test_row_read_failure_is_recorded_not_invalidating(self):
+        result, _, _, evidence = run(mutate_gateway=lambda g: setattr(g, "llm_rows", runner.EvidenceError("llm_row_invalid")))
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertEqual(evidence.files["fault-stall.json"],
+                         {"format": "abc2lab-eval-runner-fault-stall-v1", "judged": False, "error": "llm_row_invalid"})
+        result, _, _, evidence = run(mutate_gateway=lambda g: setattr(g, "llm_rows", RuntimeError("/secret/path")))
+        self.assertEqual(evidence.files["fault-stall.json"]["error"], "fault_stall_failed")
+        self.assertNotIn("secret", json.dumps(evidence.files["fault-stall.json"]))
 
 
 class TestEngineEndSignal(unittest.TestCase):

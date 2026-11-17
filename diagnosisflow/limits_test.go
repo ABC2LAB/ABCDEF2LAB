@@ -2,7 +2,8 @@ package diagnosisflow
 
 import "testing"
 
-// 워크플로 상한의 경계: 페이지는 탐색 인벤토리와 같은 256, 공개 끝점 목록은 투영 크기에 맞춘 64(VAmPI 실제 회차 24b).
+// 워크플로 상한의 경계: 페이지와 공개 끝점 목록 개수는 탐색 인벤토리와 같은 256이다. 끝점 목록은 실제로는 공개 투영
+// 바이트에서 먼저 잘린다(TestEndpointListCutByProjectionBytes).
 func TestWorkflowLimitsBounds(t *testing.T) {
 	base := Limits{Format: Version, MaxPages: 8, MaxEndpoints: 32, MaxResponseBytes: 4096}
 	for _, tc := range []struct {
@@ -25,7 +26,7 @@ func TestWorkflowLimitsBounds(t *testing.T) {
 			t.Errorf("%s: pages=%d endpoints=%d valid=%v", tc.name, tc.pages, tc.ends, l.Valid())
 		}
 	}
-	if MaxWorkflowPages != 256 || MaxWorkflowEndpoints != 64 {
+	if MaxWorkflowPages != 256 || MaxWorkflowEndpoints != 256 {
 		t.Fatalf("caps changed without updating the web parser and the decision: pages=%d endpoints=%d", MaxWorkflowPages, MaxWorkflowEndpoints)
 	}
 }

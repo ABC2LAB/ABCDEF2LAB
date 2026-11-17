@@ -89,21 +89,22 @@ it.each([
 ])("rejects malformed or foreign workflow %j", (change) => {
   expect(() => parseWorkflow({ workflow: { ...snapshot, ...change } }, job)).toThrow();
 });
-// 끝점 목록 상한은 서버 공개 목록 상한(64)과 같다. events·commands의 32 상한은 그대로다(VAmPI 실제 회차 24b, #603).
+// 끝점 목록 상한은 서버 공개 목록 개수 상한(256)과 같다. events·commands의 32 상한은 그대로다(VAmPI 실제 회차 24b, #603,
+// 끝점 바이트 절단).
 const withEndpoints = (n: number): WorkflowSnapshot => ({
   ...snapshot,
-  limits: { ...snapshot.limits, max_endpoints: 64 },
+  limits: { ...snapshot.limits, max_endpoints: 256 },
   endpoints: Array.from({ length: n }, (_, i) => ({
     ...snapshot.endpoints[0],
     id: `endpoint-${i}`,
     path: `/read/${i}`,
   })),
 });
-it.each([32, 33, 64])("accepts a workflow snapshot with %i endpoints", (n) => {
+it.each([32, 33, 64, 65, 256])("accepts a workflow snapshot with %i endpoints", (n) => {
   expect(parseWorkflow({ workflow: withEndpoints(n) }, job).endpoints).toHaveLength(n);
 });
 it("rejects a workflow snapshot over the endpoint cap", () => {
-  expect(() => parseWorkflow({ workflow: withEndpoints(65) }, job)).toThrow();
+  expect(() => parseWorkflow({ workflow: withEndpoints(257) }, job)).toThrow();
 });
 it("sends exact discovery IDs once and binds the command receipt", async () => {
   vi.mocked(apiFetch).mockImplementation(async (_path, init) => {

@@ -35,8 +35,11 @@ type Controller struct {
 	// 메서드·경로를 다시 보내지 않는다(다른 명령·다른 intent여도). 상태를 확인하는 장치가 없어 회차 끝까지 유지한다
 	// (CLAUDE.md "결과 불명 쓰기는 자동으로 다시 보내지 않는다", 계약 run-outcome-states 열린 항목 3, #525 리뷰).
 	uncertainWrites map[string]bool
-	origin          string
-	nativePath      string
+	// floorCache는 끝점 ID별 압축 바닥 크기(받을 때 잰 값)다. 끝점 바이트 절단 검사가 받을 때마다 목록 전체를 다시
+	// 직렬화하지 않게 한다. 받은 뒤 늘어나는 몫은 endpointGrowthReserve가 덮는다. 저장 기록에는 남기지 않는다.
+	floorCache map[string]int
+	origin     string
+	nativePath string
 	// 문서별 <base href> 해석 결과. 초기 탐색 안에서만 쓰므로 저장하지 않는다.
 	documentBases map[string]documentBase
 }
@@ -56,7 +59,7 @@ func New(ctx context.Context, b Binding, store Store) (*Controller, error) {
 			return nil, ErrDenied
 		}
 	}
-	c := &Controller{binding: b, store: store, changed: make(chan struct{}), attempts: map[string]bool{}, uncertainWrites: map[string]bool{}, origin: u.Scheme + "://" + u.Host}
+	c := &Controller{binding: b, store: store, changed: make(chan struct{}), attempts: map[string]bool{}, uncertainWrites: map[string]bool{}, floorCache: map[string]int{}, origin: u.Scheme + "://" + u.Host}
 	c.record = Record{Owner: b.Owner, Commands: map[string]commandReceipt{}, Snapshot: Snapshot{Format: Version, JobID: b.JobID, TaskID: b.TaskID, RunRef: b.RunRef, SourceDigest: b.SourceDigest, Mode: b.Mode, ReversibleWrites: b.ReversibleWrites, Commands: []Command{}, Stage: "crawling", Limits: b.Limits, Endpoints: []Endpoint{}, Events: []Event{}}}
 	path, ok := canonicalPath(u)
 	if !ok {
@@ -357,12 +360,14 @@ func (c *Controller) addLocked(method, path, kind, source, from string) *Endpoin
 		if kind == "form" {
 			old.Kind = kind
 			if old.DiscoveryConfidence != "observed" {
-				old.Source, old.From = source, from
+				old.Source = source
+				c.setFromLocked(old, from)
 			}
 			old.InScope, old.Change = c.endpointScope(method, path, kind, old.Source)
 		} else if inferredSource(old.Source) && !inferredSource(source) {
 			// 추정으로 먼저 봤어도 같은 호출을 문자 그대로 확인하면 후보를 올린다.
-			old.Source, old.From = source, from
+			old.Source = source
+			c.setFromLocked(old, from)
 			old.InScope, old.Change = c.endpointScope(method, path, kind, source)
 		} else if old.Source == "bundle_string" && kind == "script" {
 			// 글자로만 봤던 스크립트를 근거 있는 형태로 다시 보면 방문 순서를 올린다.
@@ -372,11 +377,24 @@ func (c *Controller) addLocked(method, path, kind, source, from string) *Endpoin
 	}
 	in, change := c.endpointScope(method, path, kind, source)
 	e := Endpoint{ID: endpointID(c.origin, method, path), Method: method, Path: path, Kind: kind, Source: source, From: from, InScope: in, Change: change}
-	if len(c.record.Snapshot.Endpoints) >= c.binding.Limits.MaxEndpoints {
+	// 개수 상한(설치 max_endpoints ≤ 256)과 공개 투영 바이트 중 먼저 닿는 쪽에서 자른다. 범위 안 발견은 범위 밖·미방문·
+	// 미선택 끝점 자리를 대신 쓸 수 있다(바꿔도 바이트 안에 들 때만).
+	full := len(c.record.Snapshot.Endpoints) >= c.binding.Limits.MaxEndpoints
+	floor, fits := 0, false
+	if !full {
+		floor, fits = c.endpointFitsLocked(-1, e)
+	}
+	if !fits {
 		c.record.Snapshot.Counts.Omitted++
 		if in {
+			// 지금처럼 첫 자리 하나만 본다(받을 때마다 바이트를 재는 횟수를 일정하게).
 			for i, old := range c.record.Snapshot.Endpoints {
 				if !old.InScope && !old.Selected && !old.Visited {
+					if floor, fits = c.endpointFitsLocked(i, e); !fits {
+						return nil
+					}
+					delete(c.floorCache, old.ID)
+					c.floorCache[e.ID] = floor
 					c.record.Snapshot.Endpoints[i] = e
 					return &c.record.Snapshot.Endpoints[i]
 				}
@@ -384,8 +402,65 @@ func (c *Controller) addLocked(method, path, kind, source, from string) *Endpoin
 		}
 		return nil
 	}
+	c.floorCache[e.ID] = floor
 	c.record.Snapshot.Endpoints = append(c.record.Snapshot.Endpoints, e)
 	return &c.record.Snapshot.Endpoints[len(c.record.Snapshot.Endpoints)-1]
+}
+
+// setFromLocked는 끝점의 발견 위치(From)를 바꾼다. From은 압축에서 지우지 않는 칸(크롤 문서 기준)이라 바꾼 끝점의
+// 바닥 크기를 다시 잰다. 문자열 길이가 아니라 직렬화·경로 가림 기준이다(`&`는 JSON에서 `\u0026` 6바이트가 되고, 가림은
+// 같은 길이 경로를 `[REDACTED]`로 늘릴 수 있음, #639 리뷰). 바닥 크기가 기억한 값보다 커지면 공개 투영 바이트 안일 때만
+// 바꾸고, 넘으면 이전 값을 둔다. 바꾸면 기억한 바닥 크기도 새 값으로 둔다.
+func (c *Controller) setFromLocked(e *Endpoint, from string) {
+	if from == e.From {
+		return
+	}
+	updated := *e
+	updated.From = from
+	floor := endpointFloorBytes(updated)
+	for i := range c.record.Snapshot.Endpoints {
+		if &c.record.Snapshot.Endpoints[i] != e {
+			continue
+		}
+		if cached, ok := c.floorCache[e.ID]; !ok || floor > cached {
+			if _, fits := c.endpointFitsLocked(i, updated); !fits {
+				return
+			}
+		}
+		c.floorCache[e.ID] = floor
+		break
+	}
+	e.From = from
+}
+
+// endpointFitsLocked는 끝점 목록에 e를 더하거나(i < 0) i번째를 e로 바꿨을 때, 공개 투영을 끝까지 덜어 낸 바닥
+// 크기에 끝점마다 늘 수 있는 몫과 목록 밖 칸이 늘 수 있는 몫을 더해도 MaxProjectionBytes 안인지와 e의 바닥 크기다.
+// 이 안이면 뒤에 관찰이 붙어도 compactProjection이 투영을 상한 안으로 줄일 수 있다(목록이 화면·IPC·저장 기록에 늘
+// 들어감). 다른 끝점은 받을 때 잰 바닥 크기(floorCache)를 더한다(JSON 배열은 원소 직렬화 + 쉼표).
+func (c *Controller) endpointFitsLocked(i int, e Endpoint) (int, bool) {
+	if c.floorCache == nil {
+		c.floorCache = map[string]int{}
+	}
+	floor := endpointFloorBytes(e)
+	eps := c.record.Snapshot.Endpoints
+	n := len(eps)
+	total := snapshotBaseFloorBytes(c.record.Snapshot) + floor
+	for j := range eps {
+		if j == i {
+			continue
+		}
+		cached, ok := c.floorCache[eps[j].ID]
+		if !ok {
+			cached = endpointFloorBytes(eps[j])
+			c.floorCache[eps[j].ID] = cached
+		}
+		total += cached
+	}
+	if i < 0 {
+		n++
+	}
+	total += max(n-1, 0) + endpointGrowthReserve*n + snapshotGrowthReserve
+	return floor, total <= MaxProjectionBytes
 }
 
 // 번들에서 경로를 문자 그대로 확인하지 못한 후보다. 탐색 에이전트가 번들·문서에서 찾아 보고한 것

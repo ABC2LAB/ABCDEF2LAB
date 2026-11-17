@@ -23,8 +23,9 @@ export type URLDiagnosisInput = {
 export const MAX_TARGET_REQUESTS = 1000;
 // 워크플로 크롤 페이지·공개 끝점 목록의 코드 상한이다(서버 diagnosisflow.MaxWorkflowPages·MaxWorkflowEndpoints와 같음,
 // VAmPI 실제 회차 24b 뒤 32에서 올림). 한도 스냅숏(parseWorkflowLimits)과 실제 스냅숏(parseWorkflow)이 같이 쓴다.
+// 끝점 목록 개수는 탐색 인벤토리와 같은 256이고, 서버는 실제로 공개 투영 바이트(48KiB)에서 먼저 자른다(끝점 바이트 절단).
 export const MAX_WORKFLOW_PAGES = 256;
-export const MAX_WORKFLOW_ENDPOINTS = 64;
+export const MAX_WORKFLOW_ENDPOINTS = 256;
 export type URLDiagnosisModel = {
   mode: "openrouter";
   // 지금 보내는 모델은 3.6이다. 3.5는 2026-11-14 전에 만든 작업·설치 기록을 읽을 때만 나온다.
