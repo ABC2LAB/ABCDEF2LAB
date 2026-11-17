@@ -1,0 +1,139 @@
+"""탐색 분리 배치 O 회차 진입점(결정안 4-7c). runner.main이 `split` 설정 + `--side ours`일 때 부른다.
+
+O는 엔진 직접 배치가 아니라 제품 compose + 평가 overlay로 돈다. 관리자 비밀번호는 회차마다 새로 만들어
+보호 입력(runner_split_inputs)에만 두므로 묻지 않는다. 모델 키는 B 게이트웨이와 같은 비밀 env 파일의 같은 이름을 같은
+compose 규칙으로 읽어(Docker.env_file_value) 설치 뒤 제품 API로만 넘긴다.
+
+여기 결과는 서명 전 요약이다. 경계 원자료 검증·generation-verify·서명·보존 sidecar v3는 다음 단계(4-7c-4·4-9)다.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from urllib.parse import urlsplit
+
+from preflight import PreflightError, check_preflight
+from runner import Clock, _remove_unstarted_run, acceptance_path_key
+from runner_config import (
+    METER_SERVICE, POLICY_SWITCH_SIDE, Image, RunnerConfig, RunnerConfigError, create_run_directory, new_run_id,
+)
+from runner_docker import Docker, DockerError, client_environment, run_docker
+from runner_evidence import EvidenceDir, MeterFiles
+from runner_product import ModelKey, ProductDriver, loopback_send
+from runner_split import EXPLORATION_BLOCK, read_workflow_defaults
+from runner_split_config import (
+    SplitConfigError, SplitPlan, plan_split_run, read_manifest, split_compose_args, split_compose_environment,
+)
+from runner_split_inputs import SplitInputsError, prepare_split_inputs, remove_split_inputs, run_openssl
+from runner_split_ports import DockerSplitPorts
+from runner_split_run import COMPLETE, SplitRunSpec, execute_split_run
+from runner_window import healthcheck_actions
+
+MODEL_KEY_NAME = "EVAL_LLM_API_KEY"
+
+
+@dataclass(frozen=True)
+class SplitDeclared:
+    """O 회차가 사전검사 선언에서 쓰는 값. 예산·대상·봉인 뒤 조건은 B와 같은 선언 규칙으로 읽는다."""
+    target_image: Image
+    meter_port: int
+    request_budget: int
+    time_budget_seconds: int
+
+
+def split_declared(config: RunnerConfig, preflight: object, manifest: dict) -> SplitDeclared:
+    """사전검사 선언의 O 쪽을 확인한다. 모델·제공자는 승인 manifest와 같아야 한다(모델 고정은 선언이 정본이고, 제품은
+    manifest로만 모델을 부르므로 둘이 다르면 선언과 다른 모델로 돈다). 봉인 뒤 유예·정착 대기는 B와 같은 비교 조건이다."""
+    try:
+        check_preflight(preflight)
+    except PreflightError as exc:
+        raise RunnerConfigError(["preflight: " + error for error in exc.errors]) from None
+    declared = preflight[POLICY_SWITCH_SIDE]
+    origin = urlsplit(declared["target_origin"])
+    if origin.hostname != METER_SERVICE or origin.port is None:
+        raise RunnerConfigError([f"preflight.{POLICY_SWITCH_SIDE}.target_origin: NOT_EVAL_METER"])
+    errors = []
+    drain = {"grace_seconds": config.run["drain_grace_seconds"], "settle_seconds": config.run["post_settle_seconds"]}
+    if declared["run_drain"] != drain:
+        errors.append(f"preflight.{POLICY_SWITCH_SIDE}.run_drain: CONFIG_MISMATCH")
+    llm = declared["llm"]
+    if llm.get("backend") != "api" or llm.get("model") != manifest.get("model") or llm.get("provider") != manifest.get("provider_slug"):
+        errors.append(f"preflight.{POLICY_SWITCH_SIDE}.llm: MANIFEST_MISMATCH")
+    if errors:
+        raise RunnerConfigError(errors)
+    return SplitDeclared(target_image=Image(declared["target_image"], config.target_image_id), meter_port=origin.port,
+                         request_budget=declared["request_budget"], time_budget_seconds=declared["time_budget_seconds"])
+
+
+def split_run_spec(config: RunnerConfig, plan: SplitPlan, declared: SplitDeclared, rendered: dict) -> SplitRunSpec:
+    """회차 시한·간격은 B(build_spec)와 같은 설정 칸에서 읽는다. 제품 멈춤 뒤 끝 상태 대기는 제품 상태 대기(split.task_wait_seconds)."""
+    return SplitRunSpec(
+        run_id=plan.run_id, project=plan.project, image_ids={role: image.id for role, image in plan.images.items()},
+        request_budget=declared.request_budget, time_budget_seconds=declared.time_budget_seconds,
+        poll_seconds=config.run["budget_poll_seconds"], drain_timeout_seconds=config.run["drain_timeout_seconds"],
+        events_lookback_seconds=config.health_timeout_seconds,
+        host_watch_max_gap_seconds=config.run["host_watch_max_gap_seconds"],
+        task_status_wait_seconds=config.run["task_create_timeout_seconds"], healthchecks=healthcheck_actions(rendered),
+        product_close_seconds=config.split.task_wait_seconds, post_settle_seconds=config.run["post_settle_seconds"])
+
+
+def run_split_ours(config: RunnerConfig, preflight: object, *, docker_runner=run_docker, environ=None,
+                   send=loopback_send, now=None) -> int:
+    """O 회차 1회(자동 재시도 없음). 설정·입력 단계 실패는 2, 회차 무효는 1, 완료는 0."""
+    environ = os.environ if environ is None else environ
+    split = config.split
+    directory = None
+    inputs = None
+    try:
+        manifest = read_manifest(split.manifest_path)
+        declared = split_declared(config, preflight, manifest)
+        plan = plan_split_run(config, split, run_id=new_run_id(POLICY_SWITCH_SIDE, now), target_image=declared.target_image,
+                              meter_port=declared.meter_port)
+        defaults, _ = read_workflow_defaults()
+        # 경계는 계측기·B 회차와 같은 경로 가림 키를 받는다(계약 §4.1). runner.main이 check_key_files로 이미 확인했다.
+        path_key = acceptance_path_key(config)
+        directory = create_run_directory(config.runs_root, plan.run_id)
+        inputs = prepare_split_inputs(directory.run, manifest=manifest, meter_port=plan.meter_port, explore_port=split.explore_port,
+                                      evidence_max_bytes=split.evidence_max_bytes, workflow_defaults=defaults,
+                                      wide_writes=split.wide_writes, valid_for_hours=split.install_valid_hours,
+                                      max_runs=split.max_runs, path_key=path_key, openssl=run_openssl)
+        env = split_compose_environment(plan, evidence_dir=directory.meter, protected_env=inputs.compose_env)
+        docker = Docker(docker_runner, client_environment(environ, env), config.docker_timeout_seconds)
+        rendered = docker.compose_config(split_compose_args(plan))
+        # B 게이트웨이와 같은 env 파일·같은 compose 규칙으로 읽는다. 값은 메모리에만 두고 제품 모델 키 API로만 보낸다.
+        model_key = ModelKey(docker.env_file_value(config.secrets_env_file, MODEL_KEY_NAME, directory.run))
+    except (RunnerConfigError, SplitConfigError) as exc:
+        print("\n".join(exc.errors), file=sys.stderr)
+        _abandon(directory, inputs)
+        return 2
+    except (SplitInputsError, DockerError) as exc:
+        print(str(exc), file=sys.stderr)
+        _abandon(directory, inputs)
+        return 2
+    driver = ProductDriver(api_port=split.product_port, dns_port=split.dns_control_port,
+                           send=lambda method, port, path, body, headers: send(
+                               method, port, path, body, headers, timeout=config.run["task_create_timeout_seconds"]),
+                           sleep=time.sleep, monotonic=time.monotonic)
+    ports = DockerSplitPorts(config=config, split=split, plan=plan, directory=directory, docker=docker, driver=driver,
+                             inputs=inputs, rendered=rendered, manifest=manifest, model_key=model_key,
+                             exploration=dict(EXPLORATION_BLOCK))
+    clock = Clock(lambda: datetime.now(timezone.utc), time.monotonic, time.sleep)
+    result = execute_split_run(split_run_spec(config, plan, declared, rendered), ports, MeterFiles(directory.meter),
+                               EvidenceDir(directory.run), clock)
+    print(f"{result['run_id']} {result['status']} {' '.join(result.get('reasons', []))}".rstrip())
+    return 0 if result["status"] == COMPLETE else 1
+
+
+def _abandon(directory, inputs) -> None:
+    """띄우기 전 실패는 시도가 아니다(B와 같이 exit 2, 회차 디렉터리 삭제). 보호 입력(관리자·DB 비밀번호·CA 키)을 먼저
+    지워 디렉터리 삭제가 실패해도 비밀이 남지 않게 한다."""
+    if inputs is not None:
+        try:
+            remove_split_inputs(inputs.directory, missing_ok=True)
+        except (OSError, SplitInputsError):
+            print("split_inputs: REMOVE_FAILED — 회차 디렉터리의 private/를 직접 지워야 한다", file=sys.stderr)
+    _remove_unstarted_run(directory)
