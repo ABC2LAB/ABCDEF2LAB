@@ -5,6 +5,10 @@
   응답한 제공자와 다른 제공자로 간 시도가 없어야(fallback 0) 통과한다. 같은 제공자 재시도는 fallback이
   아니다. 시도 목록이 비어 fallback 여부를 확인할 수 없으면 통과로 보지 않는다(fail-closed).
 - api 샘플링: 게이트웨이가 실제로 넣은 값(마커 `sampling`)이 선언과 같아야 한다(선언이 아니라 적용값을 대조).
+- 샘플링 칸 거부 0건(게이트웨이 표식): 게이트웨이는 엔진이 보낸 샘플링 칸을 거부하고, 개선 후(O) 제품 transport는
+  같은 칸(temperature)을 덮어쓴다. 두 쪽이 같은 조건이라는 말은 엔진이 그 칸을 보내지 않을 때만 맞으므로, 게이트웨이가
+  샘플링 칸 때문에 거부한 요청이 하나라도 있으면 그 회차는 고정 조건이 아니다(탐색 분리 배치 결정안 4-4). 제품 기록 표식
+  (generation-verify)에는 이 거부가 없어 null이다. provider 칸 거부·429 수는 기록만 한다(429는 결정안 §3.2).
 - local: 제공자 개념이 없어 요청 수만 기록한다. 조회 결과가 있으면 구성이 섞인 것이다. 샘플링은 아직 넣지 않는다.
 엔드포인트 ID는 의미를 실측으로 확인하기 전까지 판정에 쓰지 않고 기록만 한다.
 """
@@ -13,12 +17,16 @@ from __future__ import annotations
 
 _MARKER_FIELDS = frozenset({"role", "backend", "provider", "sampling", "sealed_at", "drained_at", "verified_at",
                             "forwarded_requests", "upstream_errors", "upstream_error_ends", "rejected_requests", "rejected_after_seal",
-                            "cancelled_by_seal", "responses_without_generation_id", "generations", "log_complete"})
+                            "cancelled_by_seal", "responses_without_generation_id", "generations", "log_complete",
+                            "rejected_sampling", "rejected_provider", "rate_limited"})
+# 표식 역할. 게이트웨이(B)는 샘플링·provider 칸 거부 수를 꼭 적고, 제품 기록 사후 검증(O)은 null로 둔다.
+GATEWAY_ROLE = "llm-gateway"
+_BODY_KEY_REJECTIONS = ("rejected_sampling", "rejected_provider")
 # upstream_error 행에서 게이트웨이가 관찰한 것. 호출자 쪽 취소·쓰기 실패와 위쪽 응답의 종료 줄 읽기만 말한다.
 # 엔진이 그 줄을 받았는지, 어느 쪽이 먼저 닫았는지, 끊긴 책임은 말하지 않는다.
 UPSTREAM_ENDS = frozenset({"client_closed_after_done", "client_closed_before_done", "upstream_cut_after_done", "upstream_cut_before_done"})
 _COUNTS = ("forwarded_requests", "upstream_errors", "rejected_requests", "rejected_after_seal", "cancelled_by_seal",
-           "responses_without_generation_id")
+           "responses_without_generation_id", "rate_limited")
 SAMPLING_KEYS = frozenset({"temperature", "top_p", "top_k", "min_p", "presence_penalty", "repetition_penalty", "seed"})
 LOCAL_SAMPLING_KEYS = frozenset({"temperature", "top_p", "presence_penalty", "frequency_penalty", "seed"})
 
@@ -36,6 +44,13 @@ def _check_shape(marker: object) -> None:
         raise LLMMarkerError("llm_marker_invalid")
     if (type(marker["log_complete"]) is not bool or not isinstance(marker["generations"], list)
             or any(type(marker[name]) is not int or marker[name] < 0 for name in _COUNTS)):
+        raise LLMMarkerError("llm_marker_invalid")
+    gateway = marker["role"] == GATEWAY_ROLE
+    for name in _BODY_KEY_REJECTIONS:
+        value = marker[name]
+        if (value is None) == gateway or (value is not None and (type(value) is not int or value < 0)):
+            raise LLMMarkerError("llm_marker_invalid")
+    if gateway and marker["rejected_sampling"] + marker["rejected_provider"] > marker["rejected_requests"]:
         raise LLMMarkerError("llm_marker_invalid")
     ends = marker["upstream_error_ends"]
     if (not isinstance(ends, dict) or set(ends) != UPSTREAM_ENDS or any(type(value) is not int or value < 0 for value in ends.values())
@@ -72,6 +87,8 @@ def judge_llm(marker: object, backend: str, provider_slug: str, provider_name: s
         reasons.add("llm_backend_mismatch")
     if not marker["log_complete"]:
         reasons.add("llm_log_incomplete")
+    if marker["rejected_sampling"]:
+        reasons.add("llm_sampling_rejected")
     generations = marker["generations"]
     unverified = mismatched = fallback = fallback_unknown = 0
     providers, endpoints = set(), set()
@@ -103,6 +120,7 @@ def judge_llm(marker: object, backend: str, provider_slug: str, provider_name: s
         "backend": marker["backend"], "pinned_provider": marker["provider"], "expected_provider_name": provider_name,
         "sampling_applied": applied,
         **{name: marker[name] for name in _COUNTS}, "upstream_error_ends": dict(sorted(marker["upstream_error_ends"].items())),
+        **{name: marker[name] for name in _BODY_KEY_REJECTIONS},
         "generations": len(generations), "unverified": unverified,
         "provider_mismatch": mismatched, "fallback_attempted": fallback, "fallback_unverifiable": fallback_unknown,
         "providers": sorted(providers), "endpoint_ids": sorted(endpoints),

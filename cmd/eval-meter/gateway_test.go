@@ -88,6 +88,12 @@ func (p *fakeProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			<-r.Context().Done()
 			panic(http.ErrAbortHandler)
 		}
+		if bytes.Contains(body, []byte(`"rate-limited"`)) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, `{"error":{"code":429,"message":"rate limited"}}`)
+			return
+		}
 		if bytes.Contains(body, []byte(`"broken"`)) {
 			panic(http.ErrAbortHandler) // drop the connection without an answer
 		}
@@ -297,6 +303,17 @@ func (h *gatewayHarness) sealAndWait(t *testing.T) verifiedMarker {
 	return marker
 }
 
+// sealAndWaitRaw는 표식 원문을 돌려준다(칸이 0인지 null인지까지 보려고).
+func (h *gatewayHarness) sealAndWaitRaw(t *testing.T) string {
+	t.Helper()
+	h.sealAndWait(t)
+	data, err := os.ReadFile(filepath.Join(h.dirPath, llmVerifiedName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
 const engineBody = `{"model":"example/model","messages":[{"role":"user","content":"hi"}]}`
 
 func TestGatewayPinsProviderAndUsesOwnKey(t *testing.T) {
@@ -389,17 +406,22 @@ func TestGatewayRejectsWithoutForwarding(t *testing.T) {
 		{"array", http.MethodPost, chatPath, "application/json", `[{}]`, nil, 400, "rejected_body"},
 		{"trailing", http.MethodPost, chatPath, "application/json", `{} {}`, nil, 400, "rejected_body"},
 		{"duplicate", http.MethodPost, chatPath, "application/json", `{"model":"a","model":"b"}`, nil, 400, "rejected_body"},
-		{"provider", http.MethodPost, chatPath, "application/json", `{"provider":{"order":["other"]}}`, nil, 400, "rejected_body"},
-		{"escaped provider", http.MethodPost, chatPath, "application/json", `{"provider":{}}`, nil, 400, "rejected_body"},
+		{"provider", http.MethodPost, chatPath, "application/json", `{"provider":{"order":["other"]}}`, nil, 400, "rejected_provider"},
+		{"escaped provider", http.MethodPost, chatPath, "application/json", `{"\u0070rovider":{}}`, nil, 400, "rejected_provider"},
 		// An engine-chosen sampling value would mix with the pinned one: refused, never overwritten.
-		{"temperature", http.MethodPost, chatPath, "application/json", `{"temperature":0}`, nil, 400, "rejected_body"},
-		{"top_p", http.MethodPost, chatPath, "application/json", `{"top_p":1}`, nil, 400, "rejected_body"},
-		{"top_k", http.MethodPost, chatPath, "application/json", `{"top_k":1}`, nil, 400, "rejected_body"},
-		{"min_p", http.MethodPost, chatPath, "application/json", `{"min_p":0}`, nil, 400, "rejected_body"},
-		{"presence_penalty", http.MethodPost, chatPath, "application/json", `{"presence_penalty":0}`, nil, 400, "rejected_body"},
-		{"repetition_penalty", http.MethodPost, chatPath, "application/json", `{"repetition_penalty":1}`, nil, 400, "rejected_body"},
-		{"seed", http.MethodPost, chatPath, "application/json", `{"seed":1}`, nil, 400, "rejected_body"},
-		{"frequency_penalty", http.MethodPost, chatPath, "application/json", `{"frequency_penalty":0}`, nil, 400, "rejected_body"},
+		// 샘플링 칸·provider 칸은 다른 본문 오류와 따로 센다(엔진이 그 칸을 안 보낸다는 전제가 깨졌는지 회차마다 보이게).
+		{"temperature", http.MethodPost, chatPath, "application/json", `{"temperature":0}`, nil, 400, "rejected_sampling"},
+		{"top_p", http.MethodPost, chatPath, "application/json", `{"top_p":1}`, nil, 400, "rejected_sampling"},
+		{"top_k", http.MethodPost, chatPath, "application/json", `{"top_k":1}`, nil, 400, "rejected_sampling"},
+		{"min_p", http.MethodPost, chatPath, "application/json", `{"min_p":0}`, nil, 400, "rejected_sampling"},
+		{"presence_penalty", http.MethodPost, chatPath, "application/json", `{"presence_penalty":0}`, nil, 400, "rejected_sampling"},
+		{"repetition_penalty", http.MethodPost, chatPath, "application/json", `{"repetition_penalty":1}`, nil, 400, "rejected_sampling"},
+		{"seed", http.MethodPost, chatPath, "application/json", `{"seed":1}`, nil, 400, "rejected_sampling"},
+		{"frequency_penalty", http.MethodPost, chatPath, "application/json", `{"frequency_penalty":0}`, nil, 400, "rejected_sampling"},
+		{"escaped sampling", http.MethodPost, chatPath, "application/json", `{"model":"m","\u0074emperature":1}`, nil, 400, "rejected_sampling"},
+		// 먼저 만난 문제가 사유다: 앞 칸이 중복이면 본문 오류, 앞 칸이 샘플링이면 샘플링.
+		{"duplicate before sampling", http.MethodPost, chatPath, "application/json", `{"model":"a","model":"b","seed":1}`, nil, 400, "rejected_body"},
+		{"sampling before malformed", http.MethodPost, chatPath, "application/json", `{"seed":1,"x":`, nil, 400, "rejected_sampling"},
 		{"too large", http.MethodPost, chatPath, "application/json", `{"x":"` + strings.Repeat("a", maxLLMRequestBytes) + `"}`, nil, 413, "rejected_too_large"},
 	}
 	for _, tc := range cases {
@@ -430,6 +452,35 @@ func TestGatewayRejectsWithoutForwarding(t *testing.T) {
 				t.Fatalf("rows %+v", rows)
 			}
 		})
+	}
+}
+
+// 표식은 거부 가운데 샘플링 칸·provider 칸 거부를 따로 세고(전체 거부 수에 들어 있음), 위쪽 429 응답 수를 센다.
+// 게이트웨이 자신의 거부(400 등)는 429로 세지 않는다.
+func TestGatewayMarkerCountsSamplingProviderRejectionsAndRateLimits(t *testing.T) {
+	h := newHarness(t, backendAPI)
+	for _, body := range []string{`{"temperature":0.2,"model":"m"}`, `{"seed":7}`, `{"provider":{"only":["x"]}}`, `{"a":`} {
+		if resp, _ := h.post(t, chatPath, "application/json", body, nil); resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("%s: status %d", body, resp.StatusCode)
+		}
+	}
+	for _, body := range []string{`{"model":"rate-limited"}`, `{"model":"rate-limited","stream":true}`, engineBody} {
+		h.post(t, chatPath, "application/json", body, nil)
+	}
+	m := h.sealAndWait(t)
+	if m.Rejected != 4 || m.RejectedSampling == nil || *m.RejectedSampling != 2 || m.RejectedProvider == nil || *m.RejectedProvider != 1 ||
+		m.RateLimited != 2 || m.Forwarded != 3 {
+		t.Fatalf("marker rejected %d sampling %v provider %v rate_limited %d forwarded %d", m.Rejected, m.RejectedSampling,
+			m.RejectedProvider, m.RateLimited, m.Forwarded)
+	}
+	// 거부가 없는 회차도 칸은 0으로 있다(null이 아니다). null은 게이트웨이를 거치지 않는 제품 기록 표식에만 쓴다.
+	h = newHarness(t, backendAPI)
+	h.post(t, chatPath, "application/json", engineBody, nil)
+	raw := h.sealAndWaitRaw(t)
+	for _, field := range []string{`"rejected_sampling":0`, `"rejected_provider":0`, `"rate_limited":0`} {
+		if !strings.Contains(raw, field) {
+			t.Fatalf("marker %s lacks %s", raw, field)
+		}
 	}
 }
 
