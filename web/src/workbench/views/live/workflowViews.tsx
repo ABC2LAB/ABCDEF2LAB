@@ -1569,22 +1569,12 @@ export function PlanSteps({ plan, id }: { plan: NonNullable<WorkflowSnapshot["pl
 }
 
 /**
- * 활동 종류 → 딱지 글 · 색. 실제 서버는 원문을 내보내지 않고 종류를 tool · model · plan · intent · event 로 묶어 준다
- * (diagnosisflow postgres.go publicActivity). 가짜 백엔드 · 옛 기록의 원래 종류(tool_use · text · result · approval)도 받는다.
+ * 활동 기록 한 줄 내용 (사용자 11/17 'API 옆 설명 지워줘'): 서버 요약이 'METHOD /경로 …' 로 시작하면 메서드 · 경로만,
+ * 아니면 서버 글 그대로(실제 엔진은 원문을 숨긴 고정 요약이라 대개 그대로 보인다).
  */
-const ACT_KIND: Readonly<Record<string, readonly [string, "in" | "lg" | "ap" | "out"]>> = {
-  tool: ["도구", "in"],
-  tool_use: ["도구", "in"],
-  model: ["모델", "lg"],
-  text: ["모델", "lg"],
-  plan: ["계획", "out"],
-  intent: ["작업", "out"],
-  approval: ["승인", "ap"],
-  result: ["결과", "out"],
-  event: ["엔진", "out"],
-};
-function actKind(kind: string): readonly [string, "in" | "lg" | "ap" | "out"] {
-  return Object.hasOwn(ACT_KIND, kind) ? ACT_KIND[kind] : ["기록", "out"];
+export function activityText(summary: string): string {
+  const m = /^(GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS) (\/[^\s]*)/.exec(summary);
+  return m ? `${m[1]} ${m[2]}` : summary;
 }
 
 /**
@@ -1609,7 +1599,7 @@ const workerRank = (key: string) => {
 
 /**
  * 점검 진행 가운데의 활동 기록 (사용자 11/17 'ARTEX 느낌'): ARTEX 세션 탭처럼 워커 칩(전체 · Planner · work#N · 엔진)으로
- * 고르고, 콘솔 상자에 줄마다 시각 · 워커 이름표 · 종류 딱지 · 내용. 서버가 주는 최근 기록(최대 20건)을 전부, 최신 순.
+ * 고르고, 콘솔 상자에 줄마다 시각 · 워커 · 내용. 서버가 주는 최근 기록(최대 20건)을 전부, 최신 순.
  * 서버는 최신 순(id 내림차순), 가짜 백엔드는 오래된 순으로 주므로 받은 순서를 믿지 않고 id 로 다시 줄 세운다.
  * 내용은 서버가 원문을 내보내지 않아(도구 입출력에 비밀 값이 섞일 수 있음) 고정 요약이다 — 화면이 원문을 지어내지 않는다.
  */
@@ -1643,11 +1633,6 @@ export function ActivityLog() {
               const w = k === "all" ? null : workerOf(k === "engine" ? "" : k);
               return (
                 <button key={k} className={s.fchip} type="button" aria-pressed={pick === k} onClick={() => setWho(k)}>
-                  {w ? (
-                    <span className={cx(s.wkm, s[w.tone])} aria-hidden="true">
-                      {w.mark}
-                    </span>
-                  ) : null}
                   {w ? w.name : "전체"}
                   <span className={s.c}>{k === "all" ? activity.length : counts.get(k)}</span>
                 </button>
@@ -1655,23 +1640,14 @@ export function ActivityLog() {
             })}
           </div>
           <div className={s.alog}>
-            <ul className={cx(s.feed, s.tl)} id="lFeed">
+            <ul className={cx(s.feed, s.afeed)} id="lFeed">
               {shown.map((a) => {
-                const [label, tone] = actKind(a.kind);
-                const w = workerOf(a.worker);
+                // 점 · 머리글자 · 종류 딱지는 두지 않는다(사용자 11/17): 시각 · 워커 · 내용만
                 return (
                   <li key={a.id}>
                     <span className={s.t}>{hms(a.at)}</span>
-                    {/* 타임라인 점 (세로선 위, 종류 색) */}
-                    <span className={cx(s.tn, s[tone])} aria-hidden="true" />
-                    <span className={s.wk}>
-                      <span className={cx(s.wkm, s[w.tone])} aria-hidden="true">
-                        {w.mark}
-                      </span>
-                      {w.name}
-                    </span>
-                    <span className={cx(s.tag, s[tone])}>{label}</span>
-                    <span>{a.summary}</span>
+                    <span className={s.wk}>{workerOf(a.worker).name}</span>
+                    <span>{activityText(a.summary)}</span>
                   </li>
                 );
               })}

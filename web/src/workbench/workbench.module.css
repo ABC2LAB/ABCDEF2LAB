@@ -4075,12 +4075,10 @@ button.smm:hover {
 .feed li:first-child {
   border-top: 0;
 }
-/* 점검 진행 활동 기록 타임라인(.feed.tl): 시각 · 점 · 종류 딱지 · 내용, 줄 구분선 대신 점을 잇는 세로선.
+/* 점검 진행 활동 기록(.feed.afeed): 시각 · 워커 · 내용.
    서버 진단 활동(TaskActivity) 등 다른 .feed 목록은 위 기본 모양 그대로 */
-.feed.tl li {
-  position: relative;
-  grid-template-columns: 62px 10px 84px auto minmax(0, 1fr);
-  border-top: 0;
+.feed.afeed li {
+  grid-template-columns: 62px 84px minmax(0, 1fr);
 }
 /* 활동 기록 콘솔 상자 (ARTEX 세션 기록 느낌): 바탕을 깔고 고정폭 글꼴로 시각 · 워커를 맞춘다 */
 .alog {
@@ -4092,7 +4090,7 @@ button.smm:hover {
   background: var(--well);
   overscroll-behavior: contain;
 }
-/* 워커 이름표: 머리글자 동그라미 + 이름 (Planner · work#N · 엔진) */
+/* 워커 이름 (Planner · work#N · 엔진) */
 .wk {
   display: inline-flex;
   align-items: center;
@@ -4102,66 +4100,6 @@ button.smm:hover {
   font-size: 12px;
   color: var(--ink-2);
   white-space: nowrap;
-}
-.wkm {
-  display: inline-grid;
-  place-items: center;
-  min-width: 20px;
-  height: 18px;
-  padding: 0 4px;
-  border-radius: 9px;
-  background: var(--und-bg);
-  color: var(--und);
-  font-family: var(--mono);
-  font-size: 10.5px;
-  font-weight: 700;
-}
-.wkm.lg {
-  background: var(--accent-bg);
-  color: var(--accent-ink);
-}
-.wkm.in {
-  background: var(--ok-bg);
-  color: var(--ok);
-}
-/* 세로선: 점 칸(62px + 간격 10px 뒤 10px 칸) 가운데. 첫 줄은 점 아래부터, 끝 줄은 점까지 */
-.feed.tl li::before {
-  content: "";
-  position: absolute;
-  left: 76.25px;
-  top: 0;
-  bottom: 0;
-  width: 1.5px;
-  background: var(--rule);
-}
-.feed.tl li:first-child::before {
-  top: 14px;
-}
-.feed.tl li:last-child::before {
-  bottom: calc(100% - 14px);
-}
-.feed.tl li:only-child::before {
-  display: none;
-}
-.tn {
-  position: relative;
-  z-index: 1;
-  align-self: start;
-  width: 9px;
-  height: 9px;
-  margin-top: 5px;
-  border-radius: 50%;
-  background: var(--und);
-  box-shadow: 0 0 0 3px var(--bg);
-}
-.tn.in {
-  background: var(--ok);
-}
-.tn.lg {
-  background: var(--accent);
-}
-.tn.ap {
-  background: var(--warn);
 }
 .feed .t {
   font-family: var(--mono);
