@@ -131,6 +131,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   pre-probe.cid    post-probe.cid     docker --cidfile이 쓴 probe 컨테이너 ID(구간 감시 허용 목록)
   meter-summary.json  llm-summary.json
   task.json                      작업 생성 요청 본문 SHA-256·엔진 작업 ID·요청/생성 시각(본문 자체는 없음)
+  subnet-check.json              up 전 대역 겹침 검사: 회차가 만들 고정 대역, 호스트 기존 Docker 망과 겹친 쌍(다른 망 목록은 없음)
   intercept-summary.json         엔진 승인 기록의 건수: 상태별, 차단 출처별(파일 규칙·내장 규칙·모델·그 밖), 도구별(도구 입력 원문 없음)
   engine-rules.json              `engine_rules`가 있을 때만: 파일 SHA-256, 주입·내장 규칙 수, 내장 통제를 앞지를 수 있는 파일 allow 수, 내장·전체 규칙 해시, 적용 전후 도구 목록(규칙 본문 없음)
   engine-settings.json           작업 생성 전 엔진 실행 설정 스냅샷(프록시는 설정 여부만, API 키 값 없음). 표시 언어를 뺀 값의 SHA-256은 서명 근거 `run_conditions`에
@@ -217,6 +218,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `engine_rules_failed` | 원본 ② 규칙 등록 실패(엔진이 거부, 정규식 오류 포함), 내장 규칙과 이름 충돌, 규칙을 타는 도구를 줄이는 파일, 또는 다시 읽은 규칙·도구 목록이 파일과 다름. 작업을 시작하지 않는다 |
 | `engine_settings_apply_failed` | 작업 전에 압축 기준 창·worker 수를 엔진에 넣지 못함(프로파일 저장·활성화·설정 쓰기 중 하나가 실패) |
 | `engine_settings_failed`, `engine_settings_mismatch` | 실행 설정 조회 실패·형식 오류, 또는 workers·`context_window_k`가 선언과 다름·`reasoning_effort`·`thinking_type`이 비어 있지 않음·엔진 LLM 모델이 선언과 다름·프록시가 설정됨(송신 경로가 계측기·게이트웨이 밖으로 바뀜) |
+| `subnet_overlap`, `subnet_check_failed` | up 바로 전, 회차가 만들 고정 대역(`docker compose config`의 망 `ipam.config[].subnet`, 외부 망 제외)이 호스트의 기존 Docker 망 대역과 겹침(같은 주소 계열만 비교), 또는 렌더·망 조회 실패. 아무것도 띄우지 않았으므로 down도 안 한다. 고정 대역이 없는 망은 Docker가 빈 대역을 골라 검사할 것이 없다. 렌더 결과에는 보간된 비밀이 있어 subnet 말고는 꺼내지 않는다(탐색 분리 배치 결정안 §2) |
 | `compose_up_failed` | 기동 실패(down은 실행) |
 | `{pre,post}_facts_failed`, `{pre,post}_host_listeners_failed` | docker·/proc 사실 수집 실패 |
 | `{pre,post}_topology_violation` | 망·구성원·publish·이미지가 기대 구성과 다름 |

@@ -14,7 +14,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from runner_checks import (
     Binding, CheckInputError, Listener, allowed_host_listens, check_host_listeners, check_namespace_sharing,
     check_other_publishes, check_topology, compare_snapshots, expected_topology, network_snapshot, parse_container,
-    parse_network, parse_proc_net_tcp, policy_sha256, read_host_listeners,
+    network_subnets, parse_network, parse_proc_net_tcp, planned_subnets, policy_sha256, read_host_listeners,
+    subnet_overlaps,
 )
 from runner_config import COMPOSE_COMMON, COMPOSE_EVAL, COMPOSE_LOCAL_LLM, parse_runner_config, plan_run
 from runner_docker import DaemonIdentity
@@ -589,6 +590,54 @@ class TestSnapshots(unittest.TestCase):
                            "started_at": "2026-11-02T00:00:00Z", "restart_count": 0, "ports": None, "networks": {},
                            "network_mode": "bridge", "pid_mode": ""})
         self.assertEqual(compare_snapshots(self.snapshot(), self.snapshot(networks, containers)), [])
+
+
+class TestSubnetOverlap(unittest.TestCase):
+    """탐색 분리 배치 결정안 §2 대역 겹침 검사."""
+
+    def test_planned_subnets_come_only_from_networks_up_creates(self):
+        rendered = {"name": "eval-ours-1",
+                    "services": {"gw": {"environment": {"OPENROUTER_API_KEY": "canary-secret"}}},
+                    "networks": {"e2_net": {"ipam": {"config": [{"subnet": "10.250.0.0/24", "gateway": "10.250.0.1"}]}},
+                                 "dual": {"ipam": {"driver": "default", "config": [{"subnet": "fd12::/64"},
+                                                                                     {"subnet": "10.251.0.0/24"}]}},
+                                 "auto": {"internal": True}, "bare": None, "no_config": {"ipam": {"driver": "default"}},
+                                 "outside": {"external": True, "ipam": {"config": [{"subnet": "172.17.0.0/16"}]}}}}
+        self.assertEqual(planned_subnets(rendered), ["10.250.0.0/24", "10.251.0.0/24", "fd12::/64"])
+        self.assertEqual(planned_subnets({"services": {}}), [])
+        for bad in ([], {"networks": []}, {"networks": {"n": "x"}}, {"networks": {"n": {"ipam": []}}},
+                    {"networks": {"n": {"ipam": {"config": {}}}}}, {"networks": {"n": {"ipam": {"config": ["x"]}}}},
+                    {"networks": {"n": {"ipam": {"config": [{"subnet": "10.0.0.1/24"}]}}}},
+                    {"networks": {"n": {"ipam": {"config": [{"subnet": 10}]}}}},
+                    {"networks": {"n": {"ipam": {"config": [{"subnet": "not-a-net"}]}}}}):
+            with self.subTest(bad=bad), self.assertRaises(CheckInputError) as caught:
+                planned_subnets(bad)
+            self.assertEqual(str(caught.exception), "compose_config_invalid")
+
+    def test_network_subnets_reads_docker_ipam(self):
+        self.assertEqual(network_subnets({"IPAM": {"Config": [{"Subnet": "172.18.0.0/16", "Gateway": "172.18.0.1"},
+                                                               {"Subnet": "fd00::/64"}, {"Gateway": "x"}]}}),
+                         ["172.18.0.0/16", "fd00::/64"])
+        self.assertEqual(network_subnets({"IPAM": {"Config": None}}), [])  # host·none 망은 대역이 없다
+        self.assertEqual(network_subnets({"IPAM": None}), [])
+        for bad in ([], {"IPAM": []}, {"IPAM": {"Config": {}}}, {"IPAM": {"Config": ["x"]}},
+                    {"IPAM": {"Config": [{"Subnet": "999.0.0.0/8"}]}}):
+            with self.subTest(bad=bad), self.assertRaises(CheckInputError):
+                network_subnets(bad)
+
+    def test_overlaps_are_pairs_of_the_same_family(self):
+        existing = ["172.31.0.0/16", "172.17.0.0/16", "fd12::/48", "10.250.0.128/25"]
+        self.assertEqual(subnet_overlaps(["172.31.247.0/24", "10.250.0.0/24", "fd12:0:0:1::/64", "10.99.0.0/24"], existing),
+                         [{"planned": "10.250.0.0/24", "existing": "10.250.0.128/25"},
+                          {"planned": "172.31.247.0/24", "existing": "172.31.0.0/16"},
+                          {"planned": "fd12:0:0:1::/64", "existing": "fd12::/48"}])
+        # 경계: 붙어 있기만 한 대역은 겹치지 않는다. 같은 대역은 겹친다.
+        self.assertEqual(subnet_overlaps(["10.250.1.0/24"], ["10.250.0.0/24", "10.250.2.0/24"]), [])
+        self.assertEqual(subnet_overlaps(["10.250.1.0/24"], ["10.250.1.0/24"]),
+                         [{"planned": "10.250.1.0/24", "existing": "10.250.1.0/24"}])
+        # 주소 계열이 다르면 겹치지 않는다(IPv4-mapped 꼴이라도).
+        self.assertEqual(subnet_overlaps(["10.0.0.0/8"], ["::ffff:10.0.0.0/104"]), [])
+        self.assertEqual(subnet_overlaps([], existing), [])
 
 
 if __name__ == "__main__":

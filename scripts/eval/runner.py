@@ -45,7 +45,8 @@ from run_record import read_runner_key, sign_run_record  # noqa: E402
 from runner_checks import (  # noqa: E402
     ExpectedTopology, Listener, allowed_host_listens, check_host_listeners, check_namespace_sharing,
     check_other_publishes, check_topology, compare_snapshots, expected_topology, listeners_outside_loopback,
-    network_snapshot, parse_container, parse_network, policy_sha256, read_host_listeners,
+    network_snapshot, network_subnets, parse_container, parse_network, planned_subnets, policy_sha256, read_host_listeners,
+    subnet_overlaps,
 )
 from runner_config import (  # noqa: E402
     API_FRONT_SERVICE, E2_PRODUCT, E2_SERVICE, E2_STUB, ENGINE_DATA_PATH, ENGINE_DB_DATA_PATH, ENGINE_DB_SERVICE, ENGINE_SERVICE, LLM_GW_SERVICE,
@@ -154,6 +155,8 @@ class Facts:
 class RunPorts(Protocol):
     def preexisting(self) -> bool: ...
     def image_ids(self) -> dict[str, str]: ...
+    def planned_subnets(self) -> list[str]: ...
+    def host_subnets(self) -> list[str]: ...
     def up(self) -> None: ...
     def down(self) -> None: ...
     def facts(self) -> Facts: ...
@@ -467,6 +470,23 @@ def _check_serving(spec: RunSpec, ports: RunPorts, evidence, state: _State, phas
         raise RunFailure(reason)
 
 
+SUBNET_CHECK_FORMAT = "abc2lab-eval-runner-subnet-check-v1"
+SUBNET_CHECK_NAME = "subnet-check.json"
+
+
+def _check_subnets(ports: RunPorts, evidence, state: _State) -> None:
+    """대역 겹침 검사(탐색 분리 배치 결정안 §2). up 바로 전에, 이 회차가 만들 고정 대역이 호스트의 기존 Docker 망과 하나라도
+    겹치면 시작하지 않는다. Docker도 겹치는 망 생성을 거부하지만 그때는 up 도중이라 일부가 이미 떠 있다. 여기서는 아무것도
+    띄우기 전에 고정 사유로 끝낸다. 근거에는 회차 대역과 겹친 쌍만 남긴다(다른 스택의 나머지 망은 남기지 않는다)."""
+    planned = _step(state, "subnet_check_failed", ports.planned_subnets)
+    existing = _step(state, "subnet_check_failed", ports.host_subnets)
+    overlaps = _step(state, "subnet_check_failed", lambda: subnet_overlaps(planned, existing))
+    _step(state, "evidence_write_failed", lambda: evidence.write_json(SUBNET_CHECK_NAME, {
+        "format": SUBNET_CHECK_FORMAT, "planned": planned, "overlaps": overlaps}))
+    if overlaps:
+        raise RunFailure("subnet_overlap")
+
+
 def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: GatewayFiles, evidence, clock: Clock,
                state: _State) -> None:
     if _step(state, "project_check_failed", ports.preexisting):
@@ -485,6 +505,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         state.llm_load_attempted = True
         # 띄우기 전에 본다. 여기서 모델도 적재해 첫 회차만 적재 시간을 시간 예산에서 쓰지 않게 한다.
         _check_serving(spec, ports, evidence, state, "pre")
+    _check_subnets(ports, evidence, state)
     state.up_attempted = True
     _step(state, "compose_up_failed", ports.up)
 
@@ -1098,6 +1119,13 @@ class DockerPorts:
 
     def image_ids(self) -> dict[str, str]:
         return {role: self.docker.image_id(image.ref) for role, image in self.plan.images.items()}
+
+    def planned_subnets(self) -> list[str]:
+        return planned_subnets(self.docker.compose_config(self.base_args))
+
+    def host_subnets(self) -> list[str]:
+        return sorted({subnet for network in self.docker.inspect_networks(self.docker.all_network_ids())
+                       for subnet in network_subnets(network)})
 
     def up(self) -> None:
         self.docker.compose_up(self.base_args, self.config.run["compose_wait_seconds"])
