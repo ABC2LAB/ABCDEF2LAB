@@ -738,6 +738,12 @@ func runURLProcessAcceptanceMode(t *testing.T, browser, external bool) {
 	}() {
 		t.Fatal("실제 모델 요청·사용량 집계 불일치")
 	}
+	// 실행 기록에는 목표 문장 공통·제품 부분 SHA가 남는다(실행 단계 감독자, VAmPI 3차 회차에서 빠졌던 것).
+	var goalRecord diagnosisRunRecord
+	client.call("GET", "/api/tasks/"+final.TaskID+"/diagnosis-run", "", nil, &goalRecord)
+	if goalRecord.Goal == nil || goalRecord.Goal.Version != diagnosisGoalDigestVersion || !e2HTTPHash(goalRecord.Goal.CommonSHA256) || !e2HTTPHash(goalRecord.Goal.ProductSHA256) || goalRecord.Goal.CommonSHA256 == goalRecord.Goal.ProductSHA256 {
+		t.Fatalf("실행 기록 목표 SHA 누락: %+v", goalRecord.Goal)
+	}
 	if external {
 		var record diagnosisRunRecord
 		client.call("GET", "/api/tasks/"+final.TaskID+"/diagnosis-run", "", nil, &record)
