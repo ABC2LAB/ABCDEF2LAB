@@ -6,6 +6,7 @@
 
 - 최초 기준 dev: `9b3713e9dfe3777455e4873a30ce8f35c1bdb3ee` (#619·#635 포함).
 - UI·시험 커밋: `267485dfe152459ac76d19a4b96a76628e0a7af0`.
+- 오류 표시 보완 커밋: `450c04c5cfead4f8e816b303078567c5d33df905`. 활동 오류를 미지원으로 바꾸던 공통 표시와 보고서 재조회 실패를 이전 성공 자료로 가리던 경로를 수정했다.
 - 이후 dev `9a8e78d04dfb08da5be725a4a1dc09bd4157c2b8`를 일반 merge한 커밋: `b456790e3ceab7eb8b00b28a673844ef88266cef`. 웹 tree는 UI 커밋과 같다.
 - 서버 API·설치 정책·E② 전송·평가 러너는 이번 PR에서 변경하지 않았다. #634·#636 변경은 dev의 원본 그대로다.
 
@@ -25,11 +26,13 @@ Job/주체 선택 세대가 바뀌면 화면의 활동·보고서·워크플로�
 |---|---|---|
 | `tsc --noEmit` | PASS | 전체 웹 타입 검사 |
 | 변경 TS/TSX 22개 `biome check` | PASS | 오류·경고 0, 포맷·import 포함 |
-| `vitest run` | PASS | **966 PASS / 0 FAIL / 0 SKIP** |
-| 목록 계약·실제 HTTP 가로채기 새 시험 | PASS | 51개 파서/HTTP + 28개 UI/재연결, 총 79개 |
+| `vitest run` | PASS | **971 PASS / 0 FAIL / 0 SKIP** |
+| 목록 계약·실제 HTTP 가로채기 새 시험 | PASS | 51개 파서/HTTP + 31개 UI/재연결, 총 82개 |
 | `npm run build` | PASS | mock 환경변수 없는 Next.js 운영 빌드 |
 | 최신 dev 병합 뒤 PostgreSQL 제품 입구 시험 | PASS | `TestRunListPublicEntryReconnectStopAndRestartOwnedPostgres` 1개 |
 | 독립 변이 | PASS | 별도 임시 복사본에서 차단 조건 3/3 검출 |
+
+활동 403·404·503 및 보고서 재조회 실패 반례 4개를 먼저 실행해 모두 실패함을 확인했다. 수정 후 전체 시험이 통과하며, 대시보드 재조회 실패도 별도 시험으로 검증했다. 보고서·대시보드·목록 상세는 재조회 오류 때 이전 판정 집계를 숨긴다.
 
 새 HTTP 시험은 실제 생산 파서·인증·스토어·화면을 사용한다. 보존 Job 3개, 기존 생성 핸들 동시 복구, 정확한 task 연결, 목록/Job의 owner 불일치, status/task/known fact 모순, 페이지 중복·정렬·반복 cursor, 한정된 409 재조회, 오류 상태, 보고서 GET 실패, 명시적 stop 직전 최신 revision과 이미 마감된 경우 POST 0건을 확인했다. 주체 변경 중 목록, Job 변경 중 status·활동·보고서, 로그아웃 중 로그인/스트림 JSON의 늦은 응답도 검증했다.
 
@@ -38,6 +41,8 @@ Job/주체 선택 세대가 바뀌면 화면의 활동·보고서·워크플로�
 ## 실제 브라우저·PostgreSQL 수용
 
 실제 Chromium `157.0.8103.15`를 별도 브라우저 컨테이너에서 CLI 라이브러리로 실행했다. 브라우저 MCP는 활성화하지 않았다. PostgreSQL 16 일회용 DB, 실제 설치 로그인·제품 management API·보호 Unix IPC·영속 preparation service·task 활동·보고서 handler를 사용했다. **실행 backend만 합성**이다. 서버 fixture는 저장소 밖의 Go test overlay이며 운영 서버에 새 API를 추가하지 않았다.
+
+오류 표시 후속 보완은 HTTP·화면 회귀시험으로 검증했으며, 브라우저 양성 수용을 후속 오류 상황의 실제 브라우저 검증으로 확대하지 않는다.
 
 브라우저 API fixture는 최초 dev `9b3713e9` 서버와 UI 커밋의 웹 코드를 사용했다. 최신 dev 병합 후에는 같은 실제 공개 제품 입구의 PostgreSQL 시험을 별도로 다시 통과했다.
 
