@@ -221,7 +221,8 @@ class TestGatewayBodyKeyRejections(unittest.TestCase):
 
     def test_gateway_marker_must_count_body_key_rejections(self):
         for change in ({"rejected_sampling": None}, {"rejected_provider": None}, {"rejected_sampling": -1},
-                       {"rejected_sampling": True}, {"rejected_provider": 1.0}, {"rate_limited": None},
+                       # 불리언·소수는 합 검사를 통과하는 값으로 둔다(타입 검사만 걸리게).
+                       {"rejected_requests": 1, "rejected_sampling": True}, {"rejected_requests": 1, "rejected_provider": 1.0}, {"rate_limited": None},
                        {"rate_limited": -1}, {"rejected_requests": 1, "rejected_sampling": 1, "rejected_provider": 1}):
             with self.subTest(change=change), self.assertRaises(LLMMarkerError):
                 judge(marker(**change))
