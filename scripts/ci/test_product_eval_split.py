@@ -23,6 +23,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts" / "eval"))
 import runner_split  # noqa: E402  러너가 설치 입력·경계 설정에 쓰는 주소(4-7a). overlay와 같아야 한다.
+import tool_surface  # noqa: E402  도구 면 측정(결정안 §4)이 MCP를 띄우는 기능 칸. 제품 explore-mcp 명령과 같아야 한다.
 import runner_split_probe  # noqa: E402  여러 출발점 점검(4-8)이 이 렌더에서 입구를 읽는다.
 import runner_window  # noqa: E402  구간 감시가 이 렌더에서 서비스별 healthcheck 명령을 읽는다.
 PRODUCT_FILES = ("deploy/product/compose.yaml", "deploy/product/compose.acceptance.yaml",
@@ -247,6 +248,12 @@ class EvalSplitOverlayTests(unittest.TestCase):
         self.assertEqual([(p.get("host_ip"), p.get("published")) for p in self.split["services"]["eval-obs"]["ports"]],
                          [("127.0.0.1", "49190")])
 
+
+    def test_tool_surface_measures_mcp_with_the_product_capability_flags(self):
+        # 도구 목록 측정은 제품 explore-mcp 명령에서 전송·연결 칸만 뺀 인자로 MCP를 띄운다(망 없는 1회용 stdio).
+        for render in (self.product, self.split):
+            self.assertEqual(tuple(tool_surface.mcp_capability_args(render["services"]["explore-mcp"]["command"])),
+                             tool_surface.OURS_MCP_ARGS)
 
     def test_split_probe_reads_ports_from_this_render(self):
         # 여러 출발점 점검(결정안 §2.1)은 이 렌더의 명령과 짝인 보호 입력에서 입구를 읽는다. 경계 설정은 러너가 만드는 것
