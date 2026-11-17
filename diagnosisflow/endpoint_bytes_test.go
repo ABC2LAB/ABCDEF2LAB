@@ -256,3 +256,49 @@ func TestEndpointFloorCountsMaskedProjection(t *testing.T) {
 		t.Fatalf("floor %d, projected %d", endpointFloorBytes(e), len(projected))
 	}
 }
+
+// From이 문자열로는 같거나 짧아도 직렬화 크기가 커지는 경우(#639 동찬 반례: `&`는 JSON에서 6바이트)도 바이트로 잰다.
+// 폼 끝점 92개를 a×122 From으로 받은 뒤 &×121 From으로 다시 발견해도 공개 투영은 상한 안이고, 기억한 바닥 크기는 실제와 같다.
+func TestEndpointFromEscapeGrowthIsMeasured(t *testing.T) {
+	c, _ := flowFixture(t, Auto)
+	c.binding.Limits.MaxEndpoints = MaxWorkflowEndpoints
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	plain, escaped := "/read/"+strings.Repeat("a", 122), "/read/"+strings.Repeat("&", 121)
+	if len(escaped) >= len(plain) {
+		t.Fatal("fixture: escaped From must be shorter as a string")
+	}
+	var paths []string
+	for i := 0; i < 92; i++ {
+		path := fmt.Sprintf("/read/f%d", i)
+		if c.addLocked("GET", path, "form", "html_form", plain) != nil {
+			paths = append(paths, path)
+		}
+	}
+	for _, path := range paths {
+		c.addLocked("GET", path, "form", "html_form", escaped)
+	}
+	raw, _ := json.Marshal(compactProjection(Project(clone(c.record).Snapshot)))
+	if len(raw) > MaxProjectionBytes {
+		t.Fatalf("public projection %d bytes > %d after From re-discovery", len(raw), MaxProjectionBytes)
+	}
+	for _, e := range c.record.Snapshot.Endpoints {
+		if cached, ok := c.floorCache[e.ID]; !ok || cached != endpointFloorBytes(e) {
+			t.Fatalf("stale floor cache for %s: cached %d, actual %d", e.Path, cached, endpointFloorBytes(e))
+		}
+	}
+}
+
+// 같은 길이 From이 가림으로 늘어나는 경우도 바닥 크기를 다시 잰다(`/read/token=ab` → `/read/[REDACTED]`).
+func TestEndpointFromMaskingGrowthUpdatesFloor(t *testing.T) {
+	c, _ := flowFixture(t, Auto)
+	c.binding.Limits.MaxEndpoints = MaxWorkflowEndpoints
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e := c.addLocked("GET", "/read/m", "form", "html_form", "/read/xxxxxxxx")
+	before := c.floorCache[e.ID]
+	c.addLocked("GET", "/read/m", "form", "html_form", "/read/token=ab")
+	if e.From != "/read/token=ab" || c.floorCache[e.ID] != endpointFloorBytes(*e) || c.floorCache[e.ID] <= before {
+		t.Fatalf("masked From growth not measured: before %d cached %d actual %d", before, c.floorCache[e.ID], endpointFloorBytes(*e))
+	}
+}

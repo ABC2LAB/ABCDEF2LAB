@@ -407,21 +407,28 @@ func (c *Controller) addLocked(method, path, kind, source, from string) *Endpoin
 	return &c.record.Snapshot.Endpoints[len(c.record.Snapshot.Endpoints)-1]
 }
 
-// setFromLocked는 끝점의 발견 위치(From)를 바꾼다. From은 압축에서 지우지 않는 칸(크롤 문서 기준)이라, 더 길어져 공개
-// 투영 바이트를 넘게 되면 이전 값을 둔다(끝점 받을 때 잡은 여유 밖의 증가).
+// setFromLocked는 끝점의 발견 위치(From)를 바꾼다. From은 압축에서 지우지 않는 칸(크롤 문서 기준)이라 바꾼 끝점의
+// 바닥 크기를 다시 잰다. 문자열 길이가 아니라 직렬화·경로 가림 기준이다(`&`는 JSON에서 `\u0026` 6바이트가 되고, 가림은
+// 같은 길이 경로를 `[REDACTED]`로 늘릴 수 있음, #639 리뷰). 바닥 크기가 기억한 값보다 커지면 공개 투영 바이트 안일 때만
+// 바꾸고, 넘으면 이전 값을 둔다. 바꾸면 기억한 바닥 크기도 새 값으로 둔다.
 func (c *Controller) setFromLocked(e *Endpoint, from string) {
-	if len(from) > len(e.From) {
-		updated := *e
-		updated.From = from
-		for i := range c.record.Snapshot.Endpoints {
-			if &c.record.Snapshot.Endpoints[i] == e {
-				floor, fits := c.endpointFitsLocked(i, updated)
-				if !fits {
-					return
-				}
-				c.floorCache[e.ID] = floor
+	if from == e.From {
+		return
+	}
+	updated := *e
+	updated.From = from
+	floor := endpointFloorBytes(updated)
+	for i := range c.record.Snapshot.Endpoints {
+		if &c.record.Snapshot.Endpoints[i] != e {
+			continue
+		}
+		if cached, ok := c.floorCache[e.ID]; !ok || floor > cached {
+			if _, fits := c.endpointFitsLocked(i, updated); !fits {
+				return
 			}
 		}
+		c.floorCache[e.ID] = floor
+		break
 	}
 	e.From = from
 }
