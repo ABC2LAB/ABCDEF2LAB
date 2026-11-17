@@ -4576,20 +4576,17 @@ button.smm:hover {
     width: 34px;
     height: 30px;
   }
-  /* .vb-fold: 그 화면만 접은 모양 (자산 탐색은 기록을 고르기 전에 접어 둔다). 공통 접힘(insp-min)과 같은 모양이다 */
-  .app.insp-min .vb,
-  .vb.vb-fold {
+  /* 공통 접힘(insp-min): 상세 패널 칸을 64px 줄로 */
+  .app.insp-min .vb {
     grid-template-columns: minmax(0, 1fr) 64px;
   }
   /* 줄(64px)은 패널 바탕 · 경계선만 남기고 안의 내용은 가린다 */
-  .app.insp-min .vi,
-  .vb.vb-fold > .vi {
+  .app.insp-min .vi {
     overflow: hidden;
     padding-left: 0;
     padding-right: 0;
   }
-  .app.insp-min .vi > *,
-  .vb.vb-fold > .vi > * {
+  .app.insp-min .vi > * {
     visibility: hidden;
   }
   /* 패널에 있던 시작 버튼 등은 접으면 본문 아래 줄로 */
@@ -4642,8 +4639,7 @@ button.smm:hover {
   }
 }
 @media (min-width: 1200px) {
-  .app.insp-min .vb:has(> .vi) > .vm,
-  .vb.vb-fold > .vm {
+  .app.insp-min .vb:has(> .vi) > .vm {
     --fold-r: 320px;
   }
   .app .view[data-view="new"] .vh {

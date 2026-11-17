@@ -852,27 +852,6 @@ function FoundPaths({
   );
 }
 
-/**
- * 고르기 전 접어 둔 오른쪽 패널의 펼치기 버튼 (자산 탐색은 기록, 범위 확인은 경로를 고르기 전). PaneToggle 과 같은 자리 · 모양이다.
- * 그 화면만 접은 것이라 작업대 공통 접힘(inspMin)은 건드리지 않는다 → 다른 화면 패널은 그대로.
- */
-function UnfoldPane({ onOpen }: { onOpen: () => void }) {
-  const text = "오른쪽 패널 펼치기";
-  return (
-    <button
-      className={cx(s["icon-btn"], s["pane-toggle"])}
-      type="button"
-      data-insp-fold=""
-      aria-expanded={false}
-      aria-label={text}
-      title={text}
-      onClick={onOpen}
-    >
-      <Icon name="unfoldRight" />
-    </button>
-  );
-}
-
 // 결과·판정 읽기 화면 진입(접근통제 지도·커버리지·발견 상세·전송 통제 흐름). 전부 아직 예시·운영자 전용.
 const RESULT_VIEWS: ReadonlyArray<readonly [View, string]> = [
   ["accessmap", "접근통제 지도"],
@@ -990,10 +969,9 @@ export function WorkflowCrawlLive() {
     verified = useUrl((st) => st.flowVerified),
     host = useUrlHost(),
     { goTo, openInsp } = useShell();
-  // 오른쪽 패널에 보이는 탐색 기록 줄 (한 번에 하나). 고르기 전에는 패널을 접어 둔다
+  // 오른쪽 패널에 보이는 탐색 기록 줄 (한 번에 하나). 패널은 고르기 전에도 늘 펼쳐 두고 고르라는 안내를 보인다
+  // (사용자 11/17 '계속 열려있게'). 접기 · 펼치기는 작업대 공통 PaneToggle 로만
   const [logKey, setLogKey] = useState<string | null>(null);
-  // 기록을 고르지 않고 패널을 직접 펼쳤는가 (펼치면 고르라는 안내가 보인다)
-  const [peek, setPeek] = useState(false);
   const stop = useStopConfirm("점검 취소");
   const found = useLatestFound(flow);
   const endpoints = flow?.endpoints ?? [];
@@ -1004,8 +982,6 @@ export function WorkflowCrawlLive() {
   const logEndpoint = logEvent
     ? endpoints.find((e) => e.method === logEvent.method && e.path === logEvent.path)
     : undefined;
-  // 고른 기록이 없고 직접 펼치지도 않았으면 이 화면 패널을 접는다 (고른 기록이 새 기록에 밀려 사라져도 접힘)
-  const fold = !logEvent && !peek;
   const pickLog = (key: string) => {
     setLogKey(key);
     openInsp();
@@ -1065,7 +1041,7 @@ export function WorkflowCrawlLive() {
           </>
         }
       />
-      <div className={cx(s.vb, fold && s["vb-fold"])}>
+      <div className={s.vb}>
         <div className={s.vm}>
           {stop.box}
           <UrlNotices />
@@ -1212,16 +1188,7 @@ export function WorkflowCrawlLive() {
             </>
           )}
         </aside>
-        {fold ? (
-          <UnfoldPane
-            onOpen={() => {
-              setPeek(true);
-              openInsp();
-            }}
-          />
-        ) : (
-          <PaneToggle />
-        )}
+        <PaneToggle />
       </div>
     </>
   );
@@ -1243,8 +1210,6 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
   });
   // 오른쪽 상세에 보이는 경로
   const [detail, setDetail] = useState<string | null>(null);
-  // 경로를 고르지 않고 오른쪽 패널을 직접 펼쳤는가 (펼치면 고르라는 안내가 보인다)
-  const [peek, setPeek] = useState(false);
   // 찾은 경로 카드의 거르기
   const [treeFilter, setTreeFilter] = useState("all");
   // 여러 개 고르기 모드(버튼 "제외 경로"): 알약을 눌러 여럿 고른 뒤 한 번에 넣거나 뺀다. anchor 는 Shift 범위의 시작 알약
@@ -1281,8 +1246,6 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
   const toggle = (id: string) => include([id], !selected.has(id));
   const locked = !waiting || busy || uncertain || !verified;
   const current = flow.endpoints.find((e) => e.id === detail) ?? null;
-  // 고른 경로가 없고 직접 펼치지도 않았으면 이 화면 패널을 접는다
-  const fold = !current && !peek;
   const showDetail = (e: WorkflowEndpoint) => {
     setDetail(e.id);
     openInsp();
@@ -1367,7 +1330,8 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
   return (
     <>
       {head(<ScopeStart flow={flow} ids={[...selected]} id="sStart" />)}
-      <div className={cx(s.vb, fold && s["vb-fold"])}>
+      {/* 오른쪽 패널은 경로를 고르기 전에도 늘 펼쳐 두고 고르라는 안내를 보인다(사용자 11/17 '계속 열어둬') */}
+      <div className={s.vb}>
         <div className={s.vm}>
           <UrlNotices />
           <WorkflowNotice />
@@ -1458,16 +1422,7 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
             </>
           )}
         </aside>
-        {fold ? (
-          <UnfoldPane
-            onOpen={() => {
-              setPeek(true);
-              openInsp();
-            }}
-          />
-        ) : (
-          <PaneToggle />
-        )}
+        <PaneToggle />
       </div>
     </>
   );

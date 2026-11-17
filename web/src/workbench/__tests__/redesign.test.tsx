@@ -170,15 +170,15 @@ describe("범위 확인", () => {
     expect(screen.queryByText("AI 추정 묶음")).toBeNull();
   });
 
-  it("오른쪽 패널은 경로를 고르기 전엔 접어 두고, 펼치기를 누르면 고르라는 안내로 펼친다", () => {
+  it("오른쪽 패널은 경로를 고르기 전에도 펼쳐 두고 고르라는 안내를 보인다", () => {
     const openInsp = vi.fn();
     const { insp } = mountScope({ openInsp });
     expect(within(insp).getByText("경로를 고르세요")).toBeInTheDocument();
-    expect(insp.parentElement?.className).toMatch(/vb-fold/);
-    fireEvent.click(screen.getByRole("button", { name: "오른쪽 패널 펼치기" }));
-    expect(openInsp).toHaveBeenCalledTimes(1);
     expect(insp.parentElement?.className).not.toMatch(/vb-fold/);
+    // 이 화면만의 펼치기 버튼은 없고 작업대 공통 접기 버튼만
+    expect(screen.queryByRole("button", { name: "오른쪽 패널 펼치기" })).toBeNull();
     expect(screen.getByRole("button", { name: "오른쪽 패널 접기" })).toBeInTheDocument();
+    expect(openInsp).not.toHaveBeenCalled();
   });
 
   it("알약을 누르면 오른쪽 상세에서 점검 포함을 고른다: 읽기 경로는 기본 포함, 데이터 변경은 직접, 제외 경로는 못 고름", () => {
@@ -574,7 +574,7 @@ describe("자산 탐색", () => {
     events: [{ at: "2026-11-11T01:00:01Z", kind: "sent", method: "GET", path: "/api/products/1", status: 200 }],
   };
 
-  it("오른쪽 패널은 기록을 고르기 전엔 접어 두고, 발견한 API 목록은 자산 탐색에 없다", () => {
+  it("오른쪽 패널은 기록을 고르기 전에도 펼쳐 두고(고르라는 안내), 발견한 API 목록은 자산 탐색에 없다", () => {
     const openInsp = vi.fn();
     useUrl.setState({ handle, job, verified: true, flow: withRow, flowVerified: true });
     render(
@@ -587,14 +587,11 @@ describe("자산 탐색", () => {
     expect(screen.queryByRole("radiogroup", { name: "보이는 경로" })).toBeNull();
     const aside = screen.getByRole("complementary", { name: "기록 상세" });
     expect(within(aside).getByText("기록을 고르세요")).toBeInTheDocument();
-    // 이 화면만 접은 모양: 펼치기 버튼이 보이고(공통 접힘은 펼친 상태), 누르면 고르라는 안내가 보이는 패널로 펼친다
-    const unfold = screen.getByRole("button", { name: "오른쪽 패널 펼치기" });
-    expect(unfold).toHaveAttribute("aria-expanded", "false");
-    expect(aside.parentElement?.className).toMatch(/vb-fold/);
-    fireEvent.click(unfold);
-    expect(openInsp).toHaveBeenCalledTimes(1);
+    // 고르기 전에도 접지 않는다: 이 화면만의 접힘 · 펼치기 버튼은 없고 작업대 공통 접기 버튼만
     expect(aside.parentElement?.className).not.toMatch(/vb-fold/);
+    expect(screen.queryByRole("button", { name: "오른쪽 패널 펼치기" })).toBeNull();
     expect(screen.getByRole("button", { name: "오른쪽 패널 접기" })).toBeInTheDocument();
+    expect(openInsp).not.toHaveBeenCalled();
   });
 
   it("기록 줄을 누르면 패널이 펼쳐지고 그 기록이 오른쪽 패널에 나온다 (줄 아래로 펼치지 않는다)", () => {
