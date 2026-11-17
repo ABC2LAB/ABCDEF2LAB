@@ -338,7 +338,9 @@ func TestModelEndpointListByteCap(t *testing.T) {
 				continue
 			}
 			if c.addLocked("GET", path, "request", source, "/read") == nil {
-				t.Fatal("fixture endpoint", i)
+				// 공개 목록이 투영 바이트에 닿았다(끝점 바이트 절단). 여기까지 받은 수를 돌려준다.
+				c.record.Snapshot.Stage = "diagnosing"
+				return i
 			}
 			e := c.endpointLocked("GET", path)
 			e.Selected, e.QueryKeys = true, names
@@ -371,13 +373,18 @@ func TestModelEndpointListByteCap(t *testing.T) {
 		t.Fatalf("small list must be unchanged: %v", rows)
 	}
 
-	// 공개 목록 상한(64)에서는 이름 목록만 뒤쪽부터 덜고 행은 빠지지 않는다(경로 128자 상한).
+	// 공개 목록이 투영 바이트에 닿을 때까지(이전 개수 상한 64보다 많이) 고르면, 모델 목록은 뒤쪽 이름 목록부터 덜고
+	// 그래도 넘치는 행만 빼며 뺀 수를 지시에 적는다(MaxSelectedDataBytes는 측정으로 다시 정할 항목).
 	full, _ := flowFixture(t, Auto)
 	full.binding.Limits.MaxEndpoints = MaxWorkflowEndpoints
 	added := selected(full, MaxWorkflowEndpoints, false)
 	rows := rowsOf(full)
-	if added < MaxWorkflowEndpoints-1 || len(rows) != added || rows[0]["query_keys"] == nil || rows[len(rows)-1]["query_keys"] != nil || strings.Contains(full.Instructions(), "left out") {
-		t.Fatalf("64 endpoints: rows=%d first keys=%v last keys=%v", len(rows), rows[0]["query_keys"] != nil, rows[len(rows)-1]["query_keys"] != nil)
+	t.Logf("public list at byte cap: %d endpoints (100-byte paths), model rows %d", added, len(rows))
+	if added <= 64 || len(rows) == 0 || len(rows) > added || rows[len(rows)-1]["query_keys"] != nil {
+		t.Fatalf("byte-capped list: added=%d rows=%d last keys=%v", added, len(rows), rows[len(rows)-1]["query_keys"] != nil)
+	}
+	if left := added - len(rows); left > 0 != strings.Contains(full.Instructions(), strconv.Itoa(left)+" more selected endpoints were left out") {
+		t.Fatalf("model omission not reported: added=%d rows=%d", added, len(rows))
 	}
 	observedFirst(rows)
 

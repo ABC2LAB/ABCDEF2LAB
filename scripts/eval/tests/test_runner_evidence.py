@@ -15,7 +15,8 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from runner_evidence import (
-    ATTEMPT_STATES, DRAINED_MARKER, ENGINE_KINDS, ENGINE_LOG, ENGINE_RESPONSE, ENGINE_SENT, LLM_VERIFIED_MARKER,
+    ATTEMPT_STATES, DRAINED_MARKER, ENGINE_KINDS, ENGINE_LOG, ENGINE_RESPONSE, ENGINE_SENT, LLM_DECISIONS, LLM_LOG,
+    LLM_UPSTREAM_ENDS, LLM_VERIFIED_MARKER,
     OBSERVER_LOG, PATH_AUTH_FIELDS, PATH_LOG, PATH_PROFILE, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles,
     diagnostic_rows, ingress_counts, validate_ingress_layout, drain_complete, final_log_consistent, forwarded_by_method, forwarded_count, sequence_complete,
 )
@@ -341,6 +342,57 @@ class TestMeterFiles(unittest.TestCase):
         (self.dir / LLM_VERIFIED_MARKER).symlink_to(outside)
         with self.assertRaises(EvidenceError):
             gateway.verified()
+
+    def test_gateway_rows_reading(self):
+        # 게이트웨이 요청 행(llm-requests.jsonl). 칸·결정·끝 모양·시각 모양이 어긋나면 고정 code로 거부한다.
+        gateway = GatewayFiles(self.dir)
+        self.assertEqual(gateway.rows(), [])
+        ok = {"seq": 1, "decision": "forwarded", "method": "POST", "status": 429, "started_at": "2026-11-17T00:00:01.123456789Z",
+              "completed_at": "2026-11-17T00:00:02Z", "request_bytes": 10, "response_bytes": 5, "generation_id": ""}
+        cut = dict(ok, seq=2, decision="upstream_error", status=200, unfinished_end="upstream_cut_before_done")
+        rejected = dict(ok, seq=3, decision="rejected_body", status=400)
+        sampling = dict(ok, seq=4, decision="rejected_sampling", status=400)  # #638 게이트웨이 사유
+        self.write(LLM_LOG, "".join(json.dumps(row) + "\n" for row in (ok, cut, rejected, sampling)) + '{"seq": 5, "deci')
+        self.assertEqual(gateway.rows(), [ok, cut, rejected, sampling])  # 쓰는 중인 마지막 줄은 다음 읽기로 미룬다
+        bad = {
+            "unknown_decision": dict(ok, decision="rejected_sampling_x"),
+            "end_on_forwarded": dict(ok, unfinished_end="upstream_cut_before_done"),
+            "error_without_end": {key: value for key, value in cut.items() if key != "unfinished_end"},
+            "unknown_end": dict(cut, unfinished_end="upstream_gone"),
+            "local_time": dict(ok, started_at="2026-11-17T00:00:01"),
+            "bool_status": dict(ok, status=True),
+            "extra_field": dict(ok, path="/x"),
+            "missing_field": {key: value for key, value in ok.items() if key != "generation_id"},
+        }
+        for name, row in bad.items():
+            with self.subTest(case=name):
+                self.write(LLM_LOG, json.dumps(row) + "\n")
+                with self.assertRaises(EvidenceError) as caught:
+                    gateway.rows()
+                self.assertEqual(str(caught.exception), "llm_row_invalid")
+        self.write(LLM_LOG, json.dumps(ok) + "\n" + json.dumps(ok) + "\n")
+        with self.assertRaises(EvidenceError) as caught:
+            gateway.rows()  # 같은 순번 두 번
+        self.assertEqual(str(caught.exception), "llm_row_invalid")
+
+    def test_gateway_row_vocabulary_matches_go(self):
+        # 결정·끝 모양 어휘가 eval-meter gateway.go와 같아야 한다(한쪽만 늘면 읽기가 실제 행을 거부하거나 놓친다).
+        source = Path(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "cmd", "eval-meter", "gateway.go").read_text(encoding="utf-8")
+        prepare = source[source.index("func (g *llmGateway) prepare("):]
+        prepare = prepare[:prepare.index("\n}\n")]
+        # 사유는 문자열이거나 상수 이름이다(상수는 gateway.go 안의 정의로 풀어 값을 쓴다). 둘 다 아니면 시험이 깨지게 한다.
+        returned = re.findall(r'return nil, http\.Status\w+, ("\w+"|\w+)\n', prepare)
+        constants = dict(re.findall(r'\n\t(reject[A-Z]\w*) += "(\w+)"', source))
+        self.assertTrue(returned)
+        self.assertTrue(all(item.startswith('"') or item in constants for item in returned), returned)
+        reasons = {item.strip('"') if item.startswith('"') else constants[item] for item in returned}
+        outcome = source[source.index("func outcome("):]
+        outcome = outcome[:outcome.index("\n}\n")]
+        go = {"rejected_" + reason for reason in reasons} | set(re.findall(r'return "(\w+)"', outcome))
+        go |= set(re.findall(r'Decision: "(rejected_after_seal)"', source))
+        self.assertEqual(LLM_DECISIONS, go)
+        ends = set(re.findall(r'\n\tend[A-Z]\w* += "(\w+)"', source))
+        self.assertEqual(LLM_UPSTREAM_ENDS, ends)
 
     def test_meter_dir_must_be_private(self):
         os.chmod(self.dir, 0o755)

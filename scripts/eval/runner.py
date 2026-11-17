@@ -63,6 +63,7 @@ from runner_engine import (  # noqa: E402
     ADMIN_USERNAME, BASELINE_ADMIN_USERNAME, AdminSecret, EngineAPIError, EngineLLMProfile, apply_engine_rules, apply_engine_settings, collect_findings, e2_prompt_projection, engine_settings, intercept_summary, load_engine_rules,
     load_vocabulary, read_admin_password_file, start_task, task_request, END_SIGNAL_FIELDS, TERMINAL_TASK_STATUSES, TaskStatusReader,
 )
+from runner_fault import FAULT_STALL_FORMAT, FAULT_STALL_NAME, FaultRecordError, fault_stall_record  # noqa: E402
 from runner_evidence import (  # noqa: E402
     DRAINED_MARKER, SEALED_MARKER, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles,
     drain_complete, e2_stub_counts, final_log_consistent, forwarded_by_method, forwarded_count, read_private_json, diagnostic_rows, ingress_counts, validate_ingress_layout,
@@ -284,6 +285,7 @@ class _State:
     e2_service: dict = field(default_factory=dict)
     engine_end: dict = field(default_factory=dict)
     first_limit: dict | None = None
+    fault_stall: dict | None = None
     up_attempted: bool = False
     serving: dict = field(default_factory=dict)
     llm_load_attempted: bool = False
@@ -553,6 +555,19 @@ def _wait_drained(spec: RunSpec, meter: MeterFiles, clock: Clock, state: _State)
     return drained
 
 
+def _fault_stall(gateway: GatewayFiles, meter_rows: list[dict], window_start: str, window_end: str, engine_end: dict) -> dict:
+    """제공자 장애 멈춤 판정 재료(결정안 §7, 4-5). T·비율 상한이 아직 없어 회차 유효성에 쓰지 않고 기록만 한다. 그래서
+    게이트웨이 행이나 시각을 읽지 못해도 회차를 무효로 하지 않고 고정 코드만 남긴다(게이트웨이 기록 완결성은 검증 표식의
+    log_complete가 따로 본다)."""
+    terminal = (engine_end.get("first_terminal") or {}).get("at")
+    try:
+        return fault_stall_record(gateway.rows(), meter_rows, window_start, window_end, terminal)
+    except (EvidenceError, FaultRecordError) as exc:
+        return {"format": FAULT_STALL_FORMAT, "judged": False, "error": str(exc)}
+    except Exception:
+        return {"format": FAULT_STALL_FORMAT, "judged": False, "error": "fault_stall_failed"}
+
+
 def _wait_llm_verified(spec: RunSpec, gateway: GatewayFiles, clock: Clock, state: _State) -> dict:
     """게이트웨이는 drain 뒤 generation마다 조회해서 마커를 쓴다. 시한 안에 없으면 그 회차의 LLM 조건은 미검증이다."""
     deadline = clock.monotonic() + spec.llm_verify_timeout_seconds
@@ -817,6 +832,8 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     if llm_reasons:
         # 사유가 여럿이면 정렬 첫째를 회차 사유로, 전부는 llm-summary.json에 남는다.
         raise RunFailure(llm_reasons[0])
+    state.fault_stall = _fault_stall(gateway, rows, requested_at, engine_end_at, state.engine_end)
+    _step(state, "evidence_write_failed", lambda: evidence.write_json(FAULT_STALL_NAME, state.fault_stall))
     if spec.llm_serving is not None:
         _check_serving(spec, ports, evidence, state, SERVING_POST)
     findings = _step(state, "findings_failed", ports.findings)
@@ -869,6 +886,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         reconciliation, records, verdict_row, e2_product, e2_prompt))
     state.summary = {"meter": meter_summary, "llm": llm_summary, "policy_sha256": policy_sha256(pre),
                      "first_limit": state.first_limit,
+                     "fault_stall": state.fault_stall,
                      "run_conditions": conditions, "engine_rules": state.engine_rules, "intercept": state.intercept,
                      "task_request_sha256": spec.task_request_sha256, "observer_format": spec.observer_format,
                      "llm_serving": state.serving or None,
