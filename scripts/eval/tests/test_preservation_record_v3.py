@@ -239,15 +239,28 @@ class TestShape(V3Fixture):
         # 기록 검사의 재계산이 러너가 회차 때 쓰는 runner.first_limit과 같은 결과다(격자 대조).
         import runner
         for stop in ("request_budget", "time_budget"):
-            for stop_elapsed in (10.0, 40.0):
-                for engine in (None, 5.0, 40.0, 40.001, 70.0):
+            # 반올림 경계(#676 리뷰): 정지 원래 시각이 저장 정밀도의 직전·직후여도 회차 분류와 기록 재계산이 같아야 한다.
+            for stop_elapsed in (10.0, 40.0, 39.9994, 39.9995, 39.9996, 40.0004, 40.0005, 59.9996):
+                for engine in (None, 5.0, 39.999, 40.0, 40.001, 70.0, 60.0):
                     for closing in (None, "budget_limited", "complete"):
                         terminal = None if engine is None else {"status": "x", "elapsed_seconds": engine, "closing_reason": closing}
                         got = runner.first_limit(stop, stop_elapsed, 60.0, terminal)
                         with self.subTest(stop=stop, stop_elapsed=stop_elapsed, engine=engine, closing=closing):
-                            self.assertEqual(expected_first_limit(stop, got["runner_limit_elapsed_seconds"], 60.0, engine,
+                            # 기록에 남는 값(러너 출력)만으로 다시 계산한다
+                            self.assertEqual(expected_first_limit(stop, got["runner_limit_elapsed_seconds"], 60.0,
+                                                                  got["engine_terminal_elapsed_seconds"],
                                                                   None if engine is None else closing, got["runner_limit"]),
                                              got["value"])
+
+    def test_review_boundary_case_is_accepted(self):
+        # #676 리뷰 예: 엔진 끝 읽기 39.99955초 → 기록 40.0, 요청 예산 정지 39.9996초. 회차 분류와 기록 재계산이 같다.
+        import runner
+        got = runner.first_limit("request_budget", 39.9996, 60.0, {"status": "done", "elapsed_seconds": round(39.99955, 3)})
+        self.assertEqual((got["value"], got["runner_limit_elapsed_seconds"], got["engine_terminal_elapsed_seconds"]),
+                         ("engine_completed", 40.0, 40.0))
+        record = copy.deepcopy(self.b)
+        record["run"] = run("baseline", first_limit=got, end_signal={"status": "done", "elapsed_seconds": 40.0, "closing_reason": None})
+        _validate_v3(record)
 
     def test_product_block(self):
         self.reject(self.o, "preservation_product_invalid", lambda r: r["product"]["call_records"].__setitem__("lines", 4))
