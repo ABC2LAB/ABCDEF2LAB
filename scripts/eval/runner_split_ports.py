@@ -31,7 +31,7 @@ from runner_split import target_registration
 from runner_split_config import SplitConfig, SplitPlan, split_compose_args
 from runner_split_inputs import SplitInputs, remove_split_inputs
 from runner_split_probe import SplitProbeOutcome, run_split_probes, split_ports
-from runner_window import BackgroundWatch, HostWatch
+from runner_window import BackgroundWatch, HostWatch, healthcheck_actions
 from snapshot_collector import SnapshotEndpoint, collect_snapshot
 from snapshot_writer import SnapshotContext
 
@@ -42,6 +42,58 @@ PRODUCT_UID = 1000
 BOUNDARY_FILES = ("boundary-records.jsonl", "boundary-sealed.json")
 MAX_TOKEN_BYTES = 4096
 BOUNDARY_DIRECTORY = "boundary"
+
+
+UNUSED_PROFILE = "eval-split-unused"
+
+
+class SplitReadyError(RuntimeError):
+    """분리 배치가 준비되지 않음. 고정 code만 담는다."""
+
+
+def ready_expectations(rendered: dict) -> dict[str, str]:
+    """렌더 결과에서 서비스마다 준비 조건: 다른 서비스가 완료를 기다리는 일회성은 `completed`(종료 0), healthcheck가
+    있으면 `healthy`, 그 밖은 `running`. 이 배치에 띄우지 않는 서비스(eval-split-unused 프로필)는 뺀다."""
+    services = {name: service for name, service in rendered["services"].items()
+                if UNUSED_PROFILE not in (service.get("profiles") or [])}
+    one_shot = {dependency for service in services.values() for dependency, condition in (service.get("depends_on") or {}).items()
+                if (condition or {}).get("condition") == "service_completed_successfully"}
+    healthy = set(healthcheck_actions({"services": services}))
+    return {name: "completed" if name in one_shot else "healthy" if name in healthy else "running" for name in services}
+
+
+def ready_state(expected: dict[str, str], states: list[dict]) -> bool:
+    """모두 준비됐으면 True, 아직이면 False. 되돌릴 수 없는 실패(일회성이 0 아닌 종료, 상주 서비스가 끝남, unhealthy,
+    모르는 서비스, 서비스가 빠짐)는 고정 code로 멈춘다."""
+    seen = {}
+    for state in states:
+        service = state.get("service")
+        if service not in expected or service in seen:
+            raise SplitReadyError("split_unexpected_container")
+        seen[service] = state
+    ready = True
+    for service, want in expected.items():
+        state = seen.get(service)
+        if state is None:
+            ready = False
+            continue
+        status, health = state.get("status"), state.get("health")
+        if want == "completed":
+            if status == "exited":
+                if state.get("exit_code") != 0:
+                    raise SplitReadyError(f"split_init_failed:{service}")
+            else:
+                ready = False
+            continue
+        if status in ("exited", "dead"):
+            raise SplitReadyError(f"split_service_exited:{service}")
+        if want == "healthy":
+            if health == "unhealthy":
+                raise SplitReadyError(f"split_service_unhealthy:{service}")
+            ready = ready and status == "running" and health == "healthy"
+        else:
+            ready = ready and status == "running"
+    return ready
 
 
 def product_record_names(approval_id: str) -> tuple[str, str]:
@@ -79,7 +131,17 @@ class DockerSplitPorts:
                        for subnet in network_subnets(network)})
 
     def up(self) -> None:
-        self.docker.compose_up(self.base_args, self.config.run["compose_wait_seconds"])
+        """띄우고(대기 없이) 렌더 결과의 준비 조건을 폴링한다(compose `--wait`는 제품 경계의 healthcheck NONE에서 실패)."""
+        self.docker.compose_up_detached(self.base_args)
+        expected = ready_expectations(self.rendered)
+        deadline = time.monotonic() + self.config.run["compose_wait_seconds"]
+        while True:
+            states = self.docker.container_states(self.docker.project_container_ids(self.plan.project))
+            if ready_state(expected, states):
+                return
+            if time.monotonic() >= deadline:
+                raise SplitReadyError("split_ready_timeout")
+            time.sleep(self.config.run["budget_poll_seconds"])
 
     def down(self) -> None:
         self.docker.compose_down(self.base_args, self.config.run["down_timeout_seconds"])

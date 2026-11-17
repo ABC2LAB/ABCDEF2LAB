@@ -18,7 +18,9 @@ from runner_product import ModelKey  # noqa: E402
 from runner_split import read_workflow_defaults  # noqa: E402
 from runner_split_config import parse_split, plan_split_run  # noqa: E402
 from runner_split_inputs import prepare_split_inputs  # noqa: E402
-from runner_split_ports import DockerSplitPorts, product_record_names  # noqa: E402
+from runner_split_ports import (  # noqa: E402
+    DockerSplitPorts, SplitReadyError, product_record_names, ready_expectations, ready_state,
+)
 from test_runner_split_config import acceptance_config, split_block  # noqa: E402
 from test_runner_split_inputs import FakeOpenssl, counter_bytes  # noqa: E402
 
@@ -42,8 +44,11 @@ class FakeDocker:
     def stop_container(self, container_id, seconds):
         self.calls.append(("stop", container_id, seconds))
 
-    def compose_up(self, args, wait):
-        self.calls.append(("up", tuple(args), wait))
+    def compose_up_detached(self, args):
+        self.calls.append(("up", tuple(args)))
+
+    def container_states(self, ids):
+        return [{"service": "a", "status": "running", "exit_code": 0, "health": None}]
 
     def compose_down(self, args, timeout):
         self.calls.append(("down", tuple(args), timeout))
@@ -96,7 +101,7 @@ class PortsCase(unittest.TestCase):
                                       e2_engine=root / "d", e2_state=root / "e")
         self.docker, self.driver = FakeDocker(), FakeDriver()
         self.ports = DockerSplitPorts(config=self.config, split=self.split, plan=self.plan, directory=self.directory,
-                                      docker=self.docker, driver=self.driver, inputs=self.inputs, rendered={},
+                                      docker=self.docker, driver=self.driver, inputs=self.inputs, rendered={"services": {"a": {}}},
                                       manifest=MANIFEST, model_key=ModelKey("sk-or-v1-test"),
                                       exploration={"mcp_url": "http://explore-mcp:8931/mcp", "direct_proxy": "http://explore-direct:3129"})
 
@@ -161,7 +166,70 @@ class TestDrive(PortsCase):
         self.assertEqual(self.driver.calls[-1][1], ("draft-1", 30.0, self.split.poll_interval_seconds))
 
 
+class TestReady(unittest.TestCase):
+    """compose `--wait`는 제품 경계의 healthcheck `[NONE]`에서 실패해(실제 compose 2.40.3, 2026-11-17 스모크) 러너가 직접 기다린다."""
+
+    RENDERED = {"services": {
+        "install": {"restart": "no"}, "explore-init": {"restart": "no"},
+        "preparation": {"depends_on": {"install": {"condition": "service_completed_successfully"}},
+                        "healthcheck": {"test": ["CMD", "test", "-S", "/p/ipc/preparation.sock"]}},
+        "explore-boundary": {"depends_on": {"explore-init": {"condition": "service_completed_successfully"}},
+                             "healthcheck": {"test": ["NONE"]}},
+        "explore-mcp": {"restart": "no"},
+        "juice-shop": {"profiles": ["eval-split-unused"]}}}
+
+    def test_expectations_from_render(self):
+        self.assertEqual(ready_expectations(self.RENDERED), {"install": "completed", "explore-init": "completed",
+                                                             "preparation": "healthy", "explore-boundary": "running",
+                                                             "explore-mcp": "running"})
+
+    def states(self, **overrides):
+        base = {"install": ("exited", 0, None), "explore-init": ("exited", 0, None), "preparation": ("running", 0, "healthy"),
+                "explore-boundary": ("running", 0, None), "explore-mcp": ("running", 0, None)}
+        base.update(overrides)
+        return [{"service": k, "status": v[0], "exit_code": v[1], "health": v[2]} for k, v in base.items() if v is not None]
+
+    def test_ready_and_not_yet(self):
+        expected = ready_expectations(self.RENDERED)
+        self.assertTrue(ready_state(expected, self.states()))
+        for change in ({"install": ("running", 0, None)}, {"preparation": ("running", 0, "starting")},
+                       {"explore-mcp": ("created", 0, None)}, {"explore-boundary": None}):
+            with self.subTest(change=change):
+                self.assertFalse(ready_state(expected, self.states(**change)))
+
+    def test_irrecoverable_states_stop_with_codes(self):
+        expected = ready_expectations(self.RENDERED)
+        cases = {"split_init_failed:install": {"install": ("exited", 1, None)},
+                 "split_service_exited:explore-mcp": {"explore-mcp": ("exited", 0, None)},
+                 "split_service_unhealthy:preparation": {"preparation": ("running", 0, "unhealthy")}}
+        for code, change in cases.items():
+            with self.subTest(code=code), self.assertRaises(SplitReadyError) as caught:
+                ready_state(expected, self.states(**change))
+            self.assertEqual(str(caught.exception), code)
+        for extra in ([{"service": "intruder", "status": "running", "exit_code": 0, "health": None}],
+                      self.states()[:1]):
+            with self.assertRaises(SplitReadyError) as caught:
+                ready_state(expected, self.states() + extra)
+            self.assertEqual(str(caught.exception), "split_unexpected_container")
+
+
 class TestDocker(PortsCase):
+    def test_up_waits_until_ready_then_times_out(self):
+        clock = {"t": 0.0}
+        sequence = [[{"service": "a", "status": "created", "exit_code": 0, "health": None}],
+                    [{"service": "a", "status": "running", "exit_code": 0, "health": None}]]
+        self.docker.container_states = lambda ids: sequence.pop(0) if len(sequence) > 1 else sequence[0]
+        with mock.patch("runner_split_ports.time.monotonic", lambda: clock["t"]), \
+                mock.patch("runner_split_ports.time.sleep", lambda s: clock.__setitem__("t", clock["t"] + s)):
+            self.ports.up()
+            self.assertEqual(clock["t"], self.config.run["budget_poll_seconds"])  # 한 번 기다린 뒤 준비됨
+            self.docker.container_states = lambda ids: [{"service": "a", "status": "created", "exit_code": 0, "health": None}]
+            clock["t"] = 0.0
+            with self.assertRaises(SplitReadyError) as caught:
+                self.ports.up()
+        self.assertEqual(str(caught.exception), "split_ready_timeout")
+        self.assertGreaterEqual(clock["t"], self.config.run["compose_wait_seconds"])
+
     def test_compose_seal_and_stop(self):
         self.ports.up()
         self.ports.down()
@@ -169,7 +237,7 @@ class TestDocker(PortsCase):
         self.ports.stop_boundary("b" * 64)
         up, down, seal, stop = self.docker.calls
         self.assertEqual(up[1][:5], ("compose", "-p", "eval-r1", "--env-file", "/dev/null"))
-        self.assertEqual((up[2], down[2]), (self.config.run["compose_wait_seconds"], self.config.run["down_timeout_seconds"]))
+        self.assertEqual(down[2], self.config.run["down_timeout_seconds"])
         self.assertEqual(seal, ("signal", "m" * 64, "USR1"))
         self.assertEqual(stop, ("stop", "b" * 64, self.config.run["down_timeout_seconds"]))
         self.assertFalse(self.ports.preexisting())
