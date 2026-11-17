@@ -133,6 +133,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   task.json                      작업 생성 요청 본문 SHA-256·엔진 작업 ID·요청/생성 시각(본문 자체는 없음)
   subnet-check.json              up 전 대역 겹침 검사: 회차가 만들 고정 대역, 호스트 기존 Docker 망과 겹친 쌍(다른 망 목록은 없음)
   engine-end.json                엔진 끝 신호: 창 동안 첫 끝 상태·시각, down 전 마지막 작업 상태 칸(값 원본 그대로)
+  fault-stall.json               제공자 장애 멈춤 판정 재료(결정안 §7): 장애별 무활동 길이·창 끝까지 이어졌는지·끝 신호, 최장 무활동(판정 안 함)
   intercept-summary.json         엔진 승인 기록의 건수: 상태별, 차단 출처별(파일 규칙·내장 규칙·모델·그 밖), 도구별(도구 입력 원문 없음)
   engine-rules.json              `engine_rules`가 있을 때만: 파일 SHA-256, 주입·내장 규칙 수, 내장 통제를 앞지를 수 있는 파일 allow 수, 내장·전체 규칙 해시, 적용 전후 도구 목록(규칙 본문 없음)
   engine-settings.json           작업 생성 전 엔진 실행 설정 스냅샷(프록시는 설정 여부만, API 키 값 없음). 표시 언어를 뺀 값의 SHA-256은 서명 근거 `run_conditions`에
@@ -210,6 +211,14 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   돌려준 시각이다. 같거나 엔진이 이르면 `engine_completed`다. 판정을 다시 계산할 수 있게 두 시각(`runner_limit_elapsed_seconds`·
   `engine_terminal_elapsed_seconds`, 작업 생성 요청 직전부터 잰 초)과 러너 쪽 상한(`runner_limit`)을 같이 남긴다. 창이 끝난 뒤 거둔
   읽기의 끝 상태는 러너 상한보다 늦어 엔진이 먼저가 아니다. 제품(O)의 `product_limit:<사유>`는 제품 구동(순서 4-7)에서 더한다.
+- **제공자 장애 멈춤 기록(`fault-stall.json`, 결정안 §7):** LLM 판정이 통과한 뒤 게이트웨이 요청 행(`llm/llm-requests.jsonl`)과
+  계측기 행으로 §7 무효 조건의 재료를 만든다. 제공자 장애는 위쪽 스트림 끊김(`upstream_error` + `upstream_cut_*`)과 위쪽 429 응답이다
+  (호출자 쪽 끊김·게이트웨이 자신의 거부는 아님). 장애마다 그 뒤 첫 활동(모델 호출 시도·두 입구의 대상 요청 시도의 시작)까지의 무활동
+  길이, 창 끝까지 활동이 없었는지(`censored`), 그 사이 엔진 끝 신호가 있었는지, 장애 시점에 진행 중이던 요청 수를 남긴다. T 후보 근거로
+  창 전체의 최장 무활동(진행 중인 요청이 하나도 없는 구간)도 남긴다. 창은 작업 생성 요청 직전부터 러너가 계측기를 봉인한 시각까지다.
+  T와 무효 비율 상한은 파일럿 기록으로 정해 측정 전에 고정하므로 지금은 판정하지 않는다(`judged: false`, 회차 유효성에 안 씀).
+  행이나 시각을 읽지 못해도 회차를 무효로 하지 않고 고정 코드(`error`)만 남긴다. 게이트웨이 행 읽기는 결정·끝 모양 어휘를
+  `cmd/eval-meter/gateway.go`와 같게 고정한다(시험이 원문과 대조). 제품(O) 쪽은 제품 호출 기록으로 같은 재료를 만든다(순서 4-11).
 
 `findings.json`은 baseline·개선 후 모두 **같은 추출 경로**(`baseline_pages_collector` → `baseline_extract`, 수정 없음)를 거친
 투영만 담는다. API 응답 원본·제목·설명·자산 이름은 저장하지 않는다(절대규칙 2). 추출기는 원본 FindingDTO 형식(upstream
