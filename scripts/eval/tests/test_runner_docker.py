@@ -363,6 +363,20 @@ def tar_bytes(members):
     return buffer.getvalue()
 
 
+class TestStopContainer(unittest.TestCase):
+    def test_sigterm_stop_with_grace(self):
+        fake = FakeExecutor(runner_docker.CommandResult(0, b""))
+        Docker(fake, {}, 1).stop_container("b" * 64, 30)
+        self.assertEqual(fake.calls[0][0], ["stop", "--time", "30", "b" * 64])
+        for container, seconds in (("short", 30), ("b" * 64, 0), ("b" * 64, 601), ("b" * 64, True), ("b" * 64, "30")):
+            with self.subTest(container=container[:5], seconds=seconds), self.assertRaises(DockerError) as caught:
+                Docker(FakeExecutor(), {}, 1).stop_container(container, seconds)
+            self.assertEqual(str(caught.exception), "docker_stop_invalid")
+        with self.assertRaises(DockerError) as caught:
+            Docker(FakeExecutor(runner_docker.CommandResult(1, b"")), {}, 1).stop_container("b" * 64, 30)
+        self.assertEqual(str(caught.exception), "docker_stop_failed")
+
+
 class TestHelperCopy(unittest.TestCase):
     """경계 원자료 꺼내기 도우미(계약 §4.1 결정 B): 망 없이·읽기 전용으로 볼륨을 붙여 정해진 파일만 복사한다."""
 
@@ -427,6 +441,16 @@ class TestHelperCopy(unittest.TestCase):
         files, _ = self.copy(self.bounded(tar_bytes([("boundary-records.jsonl", b"x" * 1024), ok[1]])))
         self.assertEqual(len(files["boundary-records.jsonl"]), 1024)
 
+    def test_ledger_names_and_volume_root(self):
+        # 제품 승인 장부·호출 기록은 점으로 시작하는 긴 이름이고, 시험 DNS 제어 토큰은 볼륨 루트에 있다.
+        ledger, calls = ".openrouter-" + "a" * 64 + ".ledger", ".openrouter-" + "a" * 64 + ".calls"
+        fake = self.bounded(tar_bytes([(ledger, b"r1 1 1 1\n"), (calls, b"{}\n")]))
+        files, _ = self.copy(fake, names=(ledger, calls), directory="config", role="product-records", uid=1000, gid=1000)
+        self.assertEqual(set(files), {ledger, calls})
+        fake = self.bounded(tar_bytes([("control-token", b"t")]))
+        self.copy(fake, names=("control-token",), directory=".", role="dns-token", uid=1000, gid=1000)
+        self.assertEqual(fake.calls[0][0][fake.calls[0][0].index("-C") + 1], "/e/.")
+
     def test_failures_and_bad_inputs_use_fixed_codes(self):
         with self.assertRaises(DockerError) as caught:
             self.copy(self.bounded(b"", returncode=2))
@@ -436,6 +460,8 @@ class TestHelperCopy(unittest.TestCase):
         self.assertEqual(str(caught.exception), "docker_probe_cid_invalid")
         for change in ({"image": "abc2lab-product:local"}, {"volume": "../x"}, {"volume": "Vol"}, {"directory": "../run"},
                        {"directory": "a/b"}, {"names": ()}, {"names": ("a", "a")}, {"names": ("../x",)}, {"names": ("a/b",)},
+                       {"names": (".",)}, {"names": ("..",)}, {"names": ("...",)}, {"names": ("x" * 129,)}, {"directory": ".."},
+                       {"directory": "./run"}, {"directory": ""},
                        {"role": "Boundary"}, {"uid": -1}, {"gid": "1001"}, {"max_bytes": 0}):
             fake = self.bounded(b"")
             with self.subTest(change=change), self.assertRaises(DockerError):
