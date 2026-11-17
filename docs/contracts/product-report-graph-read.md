@@ -18,6 +18,8 @@ Authorization: Bearer <현재 관리자 JWT>
 제품 관리 서버의 동일 origin을 사용한다. `POST /api/auth/login`으로 받은 현재 JWT의 Bearer 헤더만 인증에 쓴다.
 쿠키·query token, 임의 task ID, 별도 run/reset/case/필터/query, HEAD·POST는 받지 않는다. ID는 정규 양의 int64 문자열이다.
 
+보고서 전용 인증 분기는 위 두 GET에만 적용한다. 평가 러너의 `POST /api/tasks` 생성과 `GET /api/tasks` 목록/종료 신호 조회는 기존 `requireAuth` 경로를 유지한다. [인증 회귀 시험](../../server/report_graph_runner_auth_test.go)은 실제 middleware에서 두 러너 경로의 무토큰·유효 Bearer·잘못된 서명을 대조하고, 그래프 GET은 보고서 인증 분기를 사용하는지 별도로 확인한다. [러너 계약 지문 시험](../../scripts/eval/tests/test_runner_engine.py)은 갱신한 전체 본문 지문과 함께 새 보고서 분기를 제외한 본문이 기존 기준과 같은지도 검사한다.
+
 선택한 Job의 최신 응답에서 검증된 `task_id`가 있을 때만 호출한다. task 생성 전에는 두 탭을 조회 대기로 표시한다.
 화면의 이전 task, 배열 순서, 현재 작업 기본값으로 보충하지 않는다. 관리 서버는 매 조회마다 비공개 준비 서비스의
 영속 `AuthorizeTask` 영수증으로 주체와 task의 소유권을 확인한다. 다른 Job의 task를 붙이는 것은 조회 권한이 아니다.
