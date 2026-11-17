@@ -52,6 +52,9 @@ class FakeOpenssl:
         return self.code
 
 
+PATH_KEY = bytes(range(32))  # 계측기와 같은 키 자리(32바이트)
+
+
 class TestPrepare(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -63,7 +66,7 @@ class TestPrepare(unittest.TestCase):
 
     def prepare(self, openssl=None, **changes):
         options = dict(manifest=MANIFEST, meter_port=8080, explore_port=8081, evidence_max_bytes=4 << 20,
-                       workflow_defaults=self.defaults, wide_writes=True, valid_for_hours=4, max_runs=2,
+                       workflow_defaults=self.defaults, wide_writes=True, valid_for_hours=4, max_runs=2, path_key=PATH_KEY,
                        openssl=openssl or FakeOpenssl(), random_bytes=counter_bytes())
         options.update(changes)
         return prepare_split_inputs(self.run_dir, **options)
@@ -108,7 +111,8 @@ class TestPrepare(unittest.TestCase):
         password = inputs.files["postgres_password"].read_bytes()
         self.assertTrue(password and b"\n" not in password)
         self.assertNotEqual(password.decode(), inputs.admin.reveal())  # 비밀번호 둘은 서로 다른 무작위 값
-        self.assertEqual(len(inputs.files["path_key"].read_bytes()), 32)
+        # 경계 키는 받은 키(계측기 -path-key-file과 같은 바이트)의 사본이다. 회차마다 새로 만들지 않는다(계약 §4.1).
+        self.assertEqual(inputs.files["path_key"].read_bytes(), PATH_KEY)
         self.assertGreaterEqual(len(inputs.admin.reveal()), 32)
 
     def test_failures_leave_nothing_behind(self):
@@ -118,6 +122,9 @@ class TestPrepare(unittest.TestCase):
             "openssl_key_link": (FakeOpenssl(link_key=True), {}, SplitInputsError, "split_ca_failed"),
             "bad_manifest": (FakeOpenssl(), {"manifest": dict(MANIFEST, version=2)}, SplitInputError, "split_install_input_invalid"),
             "bad_port": (FakeOpenssl(), {"explore_port": 0}, SplitInputError, "split_boundary_input_invalid"),
+            "short_path_key": (FakeOpenssl(), {"path_key": PATH_KEY[:31]}, SplitInputsError, "split_path_key_invalid"),
+            "long_path_key": (FakeOpenssl(), {"path_key": PATH_KEY + b"x"}, SplitInputsError, "split_path_key_invalid"),
+            "text_path_key": (FakeOpenssl(), {"path_key": "k" * 32}, SplitInputsError, "split_path_key_invalid"),
         }
         for name, (openssl, changes, error, code) in cases.items():
             with self.subTest(case=name):
