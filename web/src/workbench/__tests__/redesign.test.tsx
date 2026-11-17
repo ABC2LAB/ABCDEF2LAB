@@ -17,7 +17,7 @@ import { resetUrl, useUrl } from "../live/urlDiagnosis";
 import { FLOW_VERSION, type WorkflowSnapshot } from "../live/workflow";
 import { type Shell, ShellContext, type View } from "../shell";
 import { UrlDashboardLive } from "../views/live/UrlDashboardLive";
-import { prettyEvidence } from "../views/live/UrlLiveLive";
+import { prettyEvidence, UrlLiveLive } from "../views/live/UrlLiveLive";
 import {
   crawlElapsed,
   durText,
@@ -1107,5 +1107,57 @@ describe("대시보드", () => {
     expect(within(detail).getByText(/^보낼 요청 1건 · 가장 빠른 만료/)).toBeInTheDocument();
     fireEvent.click(within(detail).getByRole("button", { name: "승인 요청 보기" }));
     expect(within(detail).getByText("PUT /api/users/2")).toBeInTheDocument();
+  });
+});
+
+describe("점검 진행", () => {
+  it("가운데는 지금 하는 일 · 심화 점검 마감 수 · 계획 · 활동, 전송 통제와 탐색 현황은 오른쪽 진행 요약에", async () => {
+    vi.mocked(api.fetchRequestApprovals).mockResolvedValue({
+      run: {
+        run_ref: `run-${job.id}`,
+        phase: "running",
+        outcome: "",
+        stop_requested: false,
+        context_cancelled: false,
+        drain_complete: false,
+        closure_failed: false,
+      },
+      approvals: [],
+    });
+    const f: WorkflowSnapshot = {
+      ...flow,
+      stage: "diagnosing",
+      deep_runs: 3,
+      deep_closed: 1,
+      endpoints: flow.endpoints.map((e) => (e.id === "read" ? { ...e, selected: true } : e)),
+      plan: [
+        { id: 1, state: "completed", title: "공개 경로 탐색" },
+        { id: 2, state: "running", title: "고른 경로 심화 점검" },
+      ],
+      activity: [{ id: 1, at: "2026-11-11T01:00:00Z", worker: "planner", kind: "text", summary: "탐색을 마쳤습니다." }],
+    };
+    useUrl.setState({ handle, job, verified: true, flow: f, flowVerified: true });
+    render(
+      <ShellContext.Provider value={shell("live")}>
+        <UrlLiveLive />
+      </ShellContext.Provider>,
+    );
+    expect(document.getElementById("lMeta")).toHaveTextContent(/^심화 점검 1\/3 마감$/);
+    // 점검 계획 · 지난 활동은 좌우 두 칸이 아니라 가운데 열에 위아래로 (각자 전체 너비)
+    const planSec = screen.getByRole("region", { name: "점검 계획" });
+    const feedSec = screen.getByRole("region", { name: "지난 활동" });
+    expect(planSec.parentElement).toBe(feedSec.parentElement);
+    expect(planSec.parentElement).toContainElement(document.getElementById("lMeta"));
+    // 지난 활동 건수는 제목 밖 오른쪽, 활동 줄에 엔진 내부 이름(planner 등)은 없다
+    expect(within(feedSec).getByRole("heading", { level: 2 })).toHaveTextContent(/^지난 활동$/);
+    expect(document.getElementById("lFeedN")).toHaveTextContent("1건");
+    expect(within(feedSec).getByText("탐색을 마쳤습니다.")).toBeInTheDocument();
+    expect(within(feedSec).queryByText("planner")).toBeNull();
+    // 전송 통제는 가운데 섹션이 아니라 오른쪽 진행 요약의 한 칸
+    expect(screen.queryByRole("heading", { level: 2, name: "전송 통제" })).toBeNull();
+    const insp = screen.getByRole("complementary", { name: "진행 요약" });
+    expect(within(insp).getByRole("heading", { level: 3, name: "전송 통제" })).toBeInTheDocument();
+    // 탐색 현황: 방문 · 발견한 API · 심화 선택 (서버 수 그대로)
+    expect(within(insp).getByText("탐색 현황").parentElement).toHaveTextContent("방문 1발견한 API 3심화 선택 1");
   });
 });

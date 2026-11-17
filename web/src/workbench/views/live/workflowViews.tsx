@@ -1572,7 +1572,7 @@ function planClass(state: string): string | undefined {
   return undefined;
 }
 
-/** 점검 진행의 점검 계획 · 지난 활동 (두 칸). */
+/** 점검 진행의 점검 계획 · 지난 활동 (위아래로, 각자 전체 너비). */
 export function WorkflowActivity() {
   const flow = useUrl((st) => st.flow);
   const [more, setMore] = useState(false);
@@ -1582,7 +1582,7 @@ export function WorkflowActivity() {
   const activity = [...(flow.activity ?? [])].reverse();
   const shown = more ? activity : activity.slice(0, 5);
   return (
-    <div className={s["two-col"]}>
+    <>
       <section className={s.sec} aria-labelledby="lPlanH">
         <div className={s.sh}>
           <h2 id="lPlanH">점검 계획</h2>
@@ -1609,10 +1609,10 @@ export function WorkflowActivity() {
         )}
       </section>
       <section className={s.sec} aria-labelledby="lFeedH">
+        {/* 건수는 점검 계획의 '1/3 완료'처럼 머리 오른쪽에 */}
         <div className={s.sh}>
-          <h2 id="lFeedH">
-            지난 활동 <span className={s.n} id="lFeedN">{`${activity.length}건`}</span>
-          </h2>
+          <h2 id="lFeedH">지난 활동</h2>
+          <span className={s.n} id="lFeedN">{`${activity.length}건`}</span>
         </div>
         {activity.length ? (
           <>
@@ -1621,10 +1621,8 @@ export function WorkflowActivity() {
                 <li key={a.id}>
                   <span className={s.t}>{hms(a.at)}</span>
                   <span className={cx(s.fd, a.kind === "approval" ? s.blk : s.ok)} />
-                  <span>
-                    {a.summary}
-                    <span className={s.res}>{a.worker}</span>
-                  </span>
+                  {/* 엔진 내부 이름(planner · explorer 등)은 사람이 읽을 정보가 아니라 두지 않는다 */}
+                  <span>{a.summary}</span>
                 </li>
               ))}
             </ul>
@@ -1646,7 +1644,7 @@ export function WorkflowActivity() {
           </ul>
         )}
       </section>
-    </div>
+    </>
   );
 }
 

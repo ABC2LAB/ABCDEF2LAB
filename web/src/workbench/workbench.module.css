@@ -3683,54 +3683,6 @@ button.smm:hover {
 }
 
 /* 진행 */
-.band {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 6px 22px;
-  align-items: center;
-}
-.band .pct {
-  font-family: var(--mono);
-  font-size: 40px;
-  font-weight: 600;
-  line-height: 1;
-  letter-spacing: -0.02em;
-}
-/* 진행률을 모를 때 (서버 값 없음): 시안 자리에 흐린 '—%' 와 '연결 전' 딱지 */
-.band .pct.unk {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
-  color: var(--ink-3);
-}
-/* 큰 숫자 칸의 좁은 글자 간격이 딱지 글에 물려 '아직구현안됨'처럼 붙지 않게 */
-.band .pct.unk .tag {
-  letter-spacing: normal;
-}
-/* 진행률을 모르는 막대: 빈 트랙(0%) 대신 빗금 */
-.prog.unk {
-  background: repeating-linear-gradient(135deg, var(--rule-2) 0 3px, transparent 3px 6px);
-}
-.band .pct small {
-  font-size: 18px;
-  color: var(--ink-3);
-}
-.band .bt {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
-}
-.band .task {
-  font-size: 14px;
-  font-weight: 500;
-}
-@container (max-width: 520px) {
-  .band {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
 .confirm {
   border: 1px solid var(--hi);
   border-radius: 6px;
@@ -3813,15 +3765,44 @@ button.smm:hover {
 .meters .cell .v {
   font-size: 20px;
 }
-.two-col {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
-  gap: 28px;
+/* 점검 진행 오른쪽(진행 요약)의 전송 통제 4칸: 패널이 좁아 2칸씩 두 줄 */
+.vi .meters {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
-@container (max-width: 760px) {
-  .two-col {
-    grid-template-columns: minmax(0, 1fr);
-  }
+.vi .meters .cell:nth-child(3) {
+  border-left: 0;
+}
+.vi .meters .cell:nth-child(n + 3) {
+  border-top: 1px solid var(--rule);
+}
+/* 점검 진행 오른쪽 모델 사용량: 작업 합계 · 입 51M 캐 43M 출 868k (수는 둥근 칩) */
+.toks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--ink-3);
+}
+.toks b {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  margin-left: 2px;
+  border-radius: 11px;
+  background: var(--rule);
+  font-family: var(--mono);
+  font-weight: 500;
+  color: var(--ink);
+}
+/* 점검 진행의 지금 하는 일 줄 + 심화 점검 마감 수 */
+.lnow {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
 }
 .plan {
   list-style: none;
@@ -4023,12 +4004,6 @@ button.smm:hover {
 .feed li .fd {
   align-self: start;
   margin-top: 7px;
-}
-.feed .res {
-  display: block;
-  font-size: 12.5px;
-  color: var(--ink-2);
-  margin-top: 1px;
 }
 .feed li.fresh {
   animation: fresh 1.4s ease-out;

@@ -1,9 +1,11 @@
 "use client";
 
 // 점검 진행 · 보고서 (시안 짜임).
-// 점검 진행: 지금 하는 일 · 확인 필요(요청 승인) · 전송 통제 · 점검 계획 · 지난 활동 + 오른쪽 진행 상황.
+// 점검 진행: 지금 하는 일 · 확인 필요(요청 승인) · 점검 계획 · 지난 활동
+//   + 오른쪽 진행 요약(전송 통제 · 모델 사용량 · 탐색 현황 · 커버리지 · 점검 정보).
+//   서버가 점검 중에 주지 않는 값(진행률 · 시작 · 경과 · 남은 시간 · 발견 · 판정)은 자리도 두지 않는다.
 // 보고서: 판정 집계 · 우선 조치 · 발견 목록 / 증거 · 감사 + 오른쪽 발견 상세.
-// 진행률 · 남은 시간 · 심각도 · 공격 경로 · 지식 그래프 · 계정 비교 · 재현 명령은 서버가 주지 않아 두지 않는다.
+// 심각도 · 공격 경로 · 지식 그래프 · 계정 비교 · 재현 명령은 서버가 주지 않아 두지 않는다.
 // 판정은 팀 lib(summarizeDiagnosticEntries · diagnosticOutcome)의 분류만 쓰고 화면이 만들지 않는다.
 
 import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react";
@@ -26,8 +28,10 @@ import {
   fetchCoverage,
   fetchDiagnosisRun,
   fetchRemediation,
+  fetchTaskTokens,
+  type LiveTokenTotal,
 } from "../../live/api";
-import { approvalCounts, errorText, fmtCount, isUnsupported, planState, sevKey } from "../../live/map";
+import { approvalCounts, errorText, fmtCount, fmtTokensShort, isUnsupported, planState, sevKey } from "../../live/map";
 import { maskSecrets } from "../../live/mask";
 import { ErrorNote, LoadingRow, NotYet } from "../../live/parts";
 import { useUrl, useUrlGates } from "../../live/urlDiagnosis";
@@ -41,15 +45,7 @@ import s from "../../workbench.module.css";
 import { ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "./approvals";
 import { DiagnosticEntrySections } from "./DiagnosticEntrySections";
 import { reasonText, UrlFacts, UrlHead, UrlNotices, UrlPill, UrlRefreshButton, useUrlHost } from "./urlParts";
-import {
-  NONE,
-  PauseButton,
-  Soon,
-  useStopConfirm,
-  WorkflowActivity,
-  WorkflowNotice,
-  WorkflowReport,
-} from "./workflowViews";
+import { PauseButton, useStopConfirm, WorkflowActivity, WorkflowNotice, WorkflowReport } from "./workflowViews";
 
 /** 보고서 위치의 상위 화면 (작업대 / 끝난 점검 / 주소 / 보고서) */
 const FINISHED = { href: "#finished", label: "끝난 점검" };
@@ -99,6 +95,33 @@ function Usage() {
   return <Kv rows={rows} />;
 }
 
+/** 작업 합계 토큰 다시 읽는 간격. 진행 중에만 (끝난 점검은 한 번 읽고 멈춘다). */
+const TOKENS_POLL_MS = 5000;
+
+/**
+ * 점검 진행 오른쪽 모델 사용량: 원본 ARTEX 작업 합계 한 줄 (입 · 캐 · 출 칩).
+ * 줄 어디에 올려도 세 수의 정확한 값을 한꺼번에 보인다(칩마다 따로 두지 않음).
+ */
+function TaskTokens({ t }: { t: LiveTokenTotal }) {
+  const chip = (k: string, n: number) => (
+    <span>
+      {`${k} `}
+      <b>{fmtTokensShort(n)}</b>
+    </span>
+  );
+  const exact = [
+    `입력 ${fmtCount(t.input)} 토큰`,
+    `캐시 읽기 ${fmtCount(t.cacheRead)} 토큰`,
+    `출력 ${fmtCount(t.output)} 토큰`,
+  ].join("\n");
+  return (
+    <p className={s.toks} title={exact}>
+      {/* 칸 사이 공백: 화면은 flex 간격으로 띄우고, 글로 읽을 때(화면 읽기 · 복사) 붙지 않게 */}
+      <span>작업 합계 ·</span> {chip("입", t.input)} {chip("캐", t.cacheRead)} {chip("출", t.output)}
+    </p>
+  );
+}
+
 /**
  * 점검 진행 화면의 상태 알약 (시안 lState: 진행 중 · 일시정지됨). 실행 중이 아니거나 확인하지 못한 상태는
  * 공통 알약(서버 상태 글) 그대로.
@@ -121,10 +144,15 @@ export function UrlLiveLive() {
   const host = useUrlHost();
   const stop = useStopConfirm("종료");
   const a = useRequestApprovals(job?.task_id ?? "", visible && g.runReadable);
-  // 자산 커버리지 (시안 v22 진행 상세): 실제 task 가 생긴 뒤 서버 값. 꺼졌거나 못 읽으면 "연결 전"
+  // 자산 커버리지 (시안 v22 진행 상세): 실제 task 가 생긴 뒤 서버 값. 꺼졌거나 못 읽으면 칸을 두지 않는다
   const cov = usePoll(() => fetchCoverage(job?.task_id as string), [job?.task_id], {
     enabled: visible && !!job?.task_id,
     intervalMs: 15000,
+  });
+  // 모델 사용량: 원본 ARTEX 작업 합계(입력 · 캐시 읽기 · 출력). 전송 통제 예산 기록(model_usage)에는 캐시가 없다
+  const toks = usePoll(() => fetchTaskTokens(job?.task_id as string), [job?.task_id], {
+    enabled: visible && !!job?.task_id,
+    intervalMs: job && URL_ENDED_STATES.includes(job.state) ? 0 : TOKENS_POLL_MS,
   });
 
   if (!handle || !job) {
@@ -237,13 +265,15 @@ export function UrlLiveLive() {
     );
   }
 
-  const c = run?.execution?.counts;
   let sendWaitText = "엔진이 시작되면 나옵니다.";
   if (job.drain_complete) sendWaitText = "마감된 점검의 전송 기록은 보고서의 증거 · 감사에 있습니다.";
   else if (job.state === "unknown" || !verified)
     sendWaitText = "결과 불명인 점검은 전송 상태를 이어 조회하지 않습니다. 상태를 다시 조회하세요.";
-  const visited = flow?.counts.visited ?? 0;
   const selected = flow?.endpoints.filter((e) => e.selected).length ?? 0;
+  let tokensBody: ReactNode = <LoadingRow />;
+  if (!job.task_id) tokensBody = <p className={s.empty}>엔진이 시작되면 나옵니다.</p>;
+  else if (toks.data) tokensBody = <TaskTokens t={toks.data} />;
+  else if (toks.error) tokensBody = <ErrorNote error={toks.error} onRetry={toks.reload} />;
 
   return (
     <>
@@ -257,7 +287,8 @@ export function UrlLiveLive() {
           <>
             <PauseButton />
             {stop.button}
-            <InspOpenButton>발견</InspOpenButton>
+            {/* 좁은 화면에서만 보이는 오른쪽 서랍 열기 (넓은 화면은 PaneToggle) */}
+            <InspOpenButton>진행 요약</InspOpenButton>
           </>
         }
       />
@@ -271,64 +302,19 @@ export function UrlLiveLive() {
             <p className={s.help}>{reasonText("diagnostic_logging_incomplete")}</p>
           ) : null}
           {job.state !== "unknown" ? (
-            // 시안 진행 띠. 진행률 % · 막대 · 시작 · 경과 · 남은 시간은 서버가 주지 않아 자리만 두고 값은 비운다(0 % 로 지어내지 않음)
-            <div className={s.band}>
-              {/* biome-ignore lint/a11y/useSemanticElements: 시안 마크업 그대로 */}
-              <div className={cx(s.pct, s.unk)} id="lPct" role="group" aria-label="점검 진행률">
-                <span aria-hidden="true">
-                  {NONE}
-                  <small>%</small>
-                </span>
-                <Soon why="서버가 점검 진행률을 주지 않습니다" />
+            // 지금 하는 일 + 심화 점검 마감 수. 진행률 · 시작 · 경과 · 남은 시간은 서버가 주지 않아 두지 않는다
+            <div className={s.lnow}>
+              <div className={s["now-l"]} aria-live="polite">
+                {nowK}
+                <span id="lTask">{taskText}</span>
               </div>
-              <div className={s.bt}>
-                {/* 값이 없으니 0% 처럼 읽히지 않게 빗금(모름) 막대 (리뷰 #523) */}
-                <div className={cx(s.prog, s.unk)} aria-hidden="true" />
-                <div className={s["now-l"]} aria-live="polite">
-                  {nowK}
-                  <span id="lTask">{taskText}</span>
-                </div>
+              {flow ? (
                 <div className={s.pmeta} id="lMeta">
-                  <span title="서버가 점검 시작 시각을 주지 않습니다">
-                    시작 <b>{NONE}</b>
-                  </span>
-                  <span title="서버가 점검 시작 시각을 주지 않습니다">
-                    경과 <b>{NONE}</b>
-                  </span>
-                  {ended ? null : (
-                    <span title="서버가 남은 시간을 주지 않습니다">
-                      남은 시간 <b>{NONE}</b>
-                    </span>
-                  )}
-                  {/* 토큰은 서버 사용량 / 범위 상한 (시안의 '예상' 대신 실제 상한) */}
                   <span>
-                    {"토큰 "}
-                    {job.model_usage?.usage_known && job.scope ? (
-                      <>
-                        <b>{fmtCount(job.model_usage.input_tokens + job.model_usage.output_tokens)}</b>
-                        {` / 상한 ${fmtCount(job.scope.budget.input_tokens + job.scope.budget.output_tokens)}`}
-                      </>
-                    ) : (
-                      <b>{NONE}</b>
-                    )}
+                    심화 점검 <b>{`${flow.deep_closed}/${flow.deep_runs}`}</b> 마감
                   </span>
-                  <span>
-                    엔드포인트 <b>{flow ? flow.endpoints.length : NONE}</b>
-                    {flow ? ` (심화 선택 ${selected})` : ""}
-                  </span>
-                  {flow ? (
-                    <span>
-                      심화 점검 <b>{`${flow.deep_closed}/${flow.deep_runs}`}</b> 마감
-                    </span>
-                  ) : null}
-                  {job.model_usage ? (
-                    <span>
-                      모델 요청 <b>{fmtCount(job.model_usage.requests)}</b>
-                      {job.scope ? ` / ${fmtCount(job.scope.budget.model_requests)}` : ""}
-                    </span>
-                  ) : null}
                 </div>
-              </div>
+              ) : null}
             </div>
           ) : null}
           {done}
@@ -368,20 +354,21 @@ export function UrlLiveLive() {
           ))}
           {a.message ? <p role="status">{a.message}</p> : null}
           {a.unresolved ? <p role="alert">결정 결과 불명 · 조회로 확인하기 전에는 다시 결정하지 않습니다.</p> : null}
-          <section className={s.sec} aria-labelledby="lSendH">
-            <div className={s.sh}>
-              <h2 id="lSendH">전송 통제</h2>
-              {/* 시안 머리 옆 줄: 범위 밖 전송 · 승인 없는 상태 변경 수는 서버 집계에 따로 없어 값을 비운다 */}
-              <span className={s.aside}>
-                {`범위 밖으로 보낸 요청 ${NONE} · 승인 없이 보낸 상태 변경 ${NONE} `}
-                <Soon why="서버 전송 집계에 이 두 수가 따로 없습니다" />
-              </span>
-            </div>
-            {c ? (
-              <p
-                className={s.help}
-              >{`요청 접수 ${fmtCount(c.attempts)} · 대상 전송 ${fmtCount(c.forward_attempted)}`}</p>
-            ) : null}
+          {job.input.workflow_mode ? <WorkflowActivity /> : null}
+        </div>
+        {/* 오른쪽 진행 요약: 서버가 점검 중에 주는 값만. 점검 중 발견 · 판정은 서버가 결과를 저장하기 전에 주지 않아
+            두지 않고(발견 없음으로 보이지 않게), 끝나면 가운데 [보고서 보기]로 간다 */}
+        <aside className={s.vi} id="lInsp" aria-label="진행 요약">
+          <InspHead
+            eyebrow={
+              <>
+                {`${urlStateText(job.state, verified)} · `}
+                <span className={s.host}>{host}</span>
+              </>
+            }
+            title="진행 요약"
+          />
+          <Isec t="전송 통제">
             {g.runReadable && a.poll.error && !a.poll.data ? (
               <ErrorNote error={a.poll.error} onRetry={a.poll.reload} />
             ) : null}
@@ -412,101 +399,16 @@ export function UrlLiveLive() {
               </div>
             ) : null}
             {g.runReadable ? null : <p className={s.empty}>{sendWaitText}</p>}
-          </section>
-          {job.input.workflow_mode ? <WorkflowActivity /> : null}
-        </div>
-        {/* 시안 발견 패널(lInsp). 점검 중 발견 수 · 심각도 · 판정 · 목록은 서버가 결과를 저장하기 전에 주지 않아
-            칸 모양만 두고 값은 비운다(발견 없음으로 보이지 않게). 결과가 저장되면 보고서로 보낸다 */}
-        <aside className={s.vi} id="lInsp" aria-label="발견">
-          <InspHead
-            eyebrow={
-              <>
-                {`${urlStateText(job.state, verified)} · `}
-                <span className={s.host}>{host}</span>
-              </>
-            }
-            title={`발견 ${NONE}건`}
-          />
-          <div
-            className={s.vbar}
-            style={{ marginTop: 12 }}
-            title="점검 중 발견은 서버가 결과를 저장하기 전에 주지 않습니다"
-          >
-            {["심각", "높음", "중간", "낮음"].map((k) => (
-              <span key={k}>
-                {`${k} `}
-                <b>{NONE}</b>
-              </span>
-            ))}
-          </div>
-          <Isec t="판정">
-            <div className={s.vbar} title="점검 중 판정은 서버가 결과를 저장하기 전에 주지 않습니다">
-              {["확정", "의심", "판단 불가"].map((k) => (
-                <span key={k}>
-                  {`${k} `}
-                  <b>{NONE}</b>
-                </span>
-              ))}
-            </div>
           </Isec>
-          <Isec t="발견 · 최근 순">
-            {g.reportReadable ? (
-              <>
-                <p className={s.help}>발견과 판정은 보고서에 있습니다.</p>
-                <div>
-                  <button className={cx(s.btn, s.sm)} type="button" onClick={() => goTo("report")}>
-                    보고서에서 발견 보기
-                  </button>
-                </div>
-              </>
-            ) : (
-              <p className={s.empty}>
-                {"점검 중 발견은 결과가 저장된 뒤 보고서에 나옵니다. "}
-                <Soon why="점검 중 발견은 서버가 결과를 저장하기 전에 주지 않습니다" />
-              </p>
-            )}
-          </Isec>
-          <Isec t="커버리지">
-            {cov.data?.enabled && cov.data.denominator > 0 ? (
-              <>
-                <div className={s.prog} aria-hidden="true">
-                  <i style={{ width: `${Math.round((cov.data.pct ?? 0) * 100)}%` }} />
-                </div>
-                <div className={s.vbar}>
-                  <span>
-                    검사함 <b>{cov.data.tested}</b>
-                    {` / ${cov.data.denominator} 자산`}
-                  </span>
-                  <span>
-                    <b>{`${Math.round((cov.data.pct ?? 0) * 100)}%`}</b>
-                  </span>
-                </div>
-              </>
-            ) : (
-              <>
-                <div className={s.prog} aria-hidden="true">
-                  <i />
-                </div>
-                <div className={s.vbar}>
-                  <span>
-                    검사함 <b>{NONE}</b>
-                    {` / ${NONE} 자산 `}
-                  </span>
-                  <Soon why="서버가 이 점검의 자산 커버리지를 주지 않습니다" />
-                </div>
-              </>
-            )}
-          </Isec>
-          {a.pending.length ? (
-            <Isec t="결정 대기">
-              <p>{`전송 전 확인이 필요한 요청 ${a.pending.length}건을 승인하거나 거부해 주세요.`}</p>
-            </Isec>
-          ) : null}
+          <Isec t="모델 사용량">{tokensBody}</Isec>
           {flow ? (
             <Isec t="탐색 현황">
               <div className={s.vbar}>
                 <span>
-                  방문 <b>{visited}</b> / {flow.counts.found} 경로
+                  방문 <b>{flow.counts.visited}</b>
+                </span>
+                <span>
+                  발견한 API <b>{flow.counts.found}</b>
                 </span>
                 <span>
                   심화 선택 <b>{selected}</b>
@@ -514,9 +416,22 @@ export function UrlLiveLive() {
               </div>
             </Isec>
           ) : null}
-          <Isec t="모델 사용량">
-            <Usage />
-          </Isec>
+          {cov.data?.enabled && cov.data.denominator > 0 ? (
+            <Isec t="커버리지">
+              <div className={s.prog} aria-hidden="true">
+                <i style={{ width: `${Math.round((cov.data.pct ?? 0) * 100)}%` }} />
+              </div>
+              <div className={s.vbar}>
+                <span>
+                  검사함 <b>{cov.data.tested}</b>
+                  {` / ${cov.data.denominator} 자산`}
+                </span>
+                <span>
+                  <b>{`${Math.round((cov.data.pct ?? 0) * 100)}%`}</b>
+                </span>
+              </div>
+            </Isec>
+          ) : null}
           <Isec t="점검 정보">
             <UrlFacts job={job} />
           </Isec>

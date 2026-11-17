@@ -15,6 +15,7 @@ import {
   fmtCount,
   fmtDur,
   fmtTokens,
+  fmtTokensShort,
   groupOf,
   hostOf,
   isActive,
@@ -106,6 +107,16 @@ describe("시각 · 수", () => {
     expect(fmtTokens(830_000)).toEqual({ n: "830", unit: "K" });
     expect(fmtTokens(12_300)).toEqual({ n: "12.3", unit: "K" });
     expect(fmtTokens(512)).toEqual({ n: "512", unit: "" });
+  });
+
+  it("fmtTokensShort: 칩 한 덩어리, 두 자리 이상은 소수점 없이 · k 는 소문자", () => {
+    expect(fmtTokensShort(51_234_567)).toBe("51M");
+    expect(fmtTokensShort(4_200_000)).toBe("4.2M");
+    expect(fmtTokensShort(868_400)).toBe("868k");
+    expect(fmtTokensShort(12_300)).toBe("12k");
+    expect(fmtTokensShort(4_250)).toBe("4.3k");
+    expect(fmtTokensShort(512)).toBe("512");
+    expect(fmtTokensShort(-3)).toBe("0");
   });
 });
 
