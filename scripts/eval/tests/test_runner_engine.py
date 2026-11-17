@@ -808,3 +808,47 @@ class TestTaskStatusReader(unittest.TestCase):
                 reader.read(bad)
             self.assertEqual(str(caught.exception), "engine_task_id_invalid")
         self.assertEqual(engine.requests, [])
+
+
+class TestCommandRecords(unittest.TestCase):
+    """원본 도구 실행 기록 읽기(분리 배치 결정안 §10). 쪽 넘김 끝까지 읽고, 못 읽으면 부분 기록으로 세지 않는다."""
+
+    SETTINGS = {"page_size": 2, "timeout_seconds": 5, "max_page_bytes": 1 << 16, "max_total_bytes": 1 << 18, "max_pages": 5}
+
+    def row(self, n, tool="Bash", task=7):
+        return {"id": n, "exploration_id": task, "worker": "w", "tool": tool, "command": '{"command":"ls"}', "output": "x",
+                "is_error": False, "created_at": "2026-11-17T00:00:00Z"}
+
+    def read(self, pages, settings=None):
+        seen = []
+
+        def get(port, path, headers, timeout, limit):
+            seen.append((path, headers, limit))
+            item = pages.pop(0)
+            return item if isinstance(item, tuple) else (200, json.dumps(item).encode())
+        with mock.patch.object(runner_engine, "login", return_value="tok"), mock.patch.object(runner_engine, "_get", get):
+            return runner_engine.command_records(8080, AdminSecret("x"), "7", settings or self.SETTINGS), seen
+
+    def test_pages_until_total(self):
+        rows, seen = self.read([{"commands": [self.row(3), self.row(2, "Read")], "total": 3}, {"commands": [self.row(1)], "total": 3}])
+        self.assertEqual([r["tool"] for r in rows], ["Bash", "Read", "Bash"])
+        self.assertEqual(set(rows[0]), {"tool", "command", "output", "failed"})
+        self.assertEqual([p for p, _, _ in seen], ["/api/commands?task=7&page=0&size=2", "/api/commands?task=7&page=1&size=2"])
+        self.assertEqual(seen[0][1], {"Authorization": "Bearer tok"})
+
+    def test_failures_are_codes(self):
+        cases = {
+            "engine_commands_http_500": [(500, b"")],
+            "engine_commands_invalid": [{"commands": [dict(self.row(1), exploration_id=8)], "total": 1}],
+            "engine_commands_incomplete": [{"commands": [self.row(1)], "total": 3}, {"commands": [], "total": 3}],
+            "engine_commands_too_many_pages": [{"commands": [self.row(i), self.row(i)], "total": 99} for i in range(5)],
+        }
+        for code, pages in cases.items():
+            with self.subTest(code=code), self.assertRaises(EngineAPIError) as caught:
+                self.read(pages)
+            self.assertEqual(str(caught.exception), code)
+        with self.assertRaises(EngineAPIError) as caught:
+            self.read([{"commands": [self.row(1)], "total": 1}], dict(self.SETTINGS, max_total_bytes=10))
+        self.assertEqual(str(caught.exception), "engine_commands_too_large")
+        with self.assertRaises(EngineAPIError):
+            runner_engine.command_records(8080, AdminSecret("x"), "7; drop", self.SETTINGS)

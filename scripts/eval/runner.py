@@ -60,11 +60,16 @@ from isolation_proof import PURPOSE_BROWSER_ACCEPTANCE, PURPOSE_OFFICIAL, blocke
 from runner_docker import Docker, DockerError, client_environment, run_docker  # noqa: E402
 from tool_tree import collect_tree, tree_sha256  # noqa: E402
 from runner_engine import (  # noqa: E402
-    ADMIN_USERNAME, BASELINE_ADMIN_USERNAME, AdminSecret, EngineAPIError, EngineLLMProfile, apply_engine_rules, apply_engine_settings, collect_findings, e2_prompt_projection, engine_settings, intercept_summary, load_engine_rules,
+    ADMIN_USERNAME, BASELINE_ADMIN_USERNAME, AdminSecret, EngineAPIError, EngineLLMProfile, apply_engine_rules, apply_engine_settings, collect_findings,
+    command_records, e2_prompt_projection, engine_settings, intercept_summary, load_engine_rules,
     load_vocabulary, read_admin_password_file, start_task, task_request, END_SIGNAL_FIELDS, TERMINAL_TASK_STATUSES, TaskStatusReader,
     TaskRequest,
 )
 from runner_goal import common_goal, common_goal_sha256  # noqa: E402
+from cli_usage import count_usage  # noqa: E402
+
+CLI_USAGE_NAME = "cli-usage.json"
+BASH_TOOL = "Bash"  # 원본 Worker 셸 도구 이름(activity.tool)
 from runner_split import REGISTRATION_PATHS  # noqa: E402
 from runner_fault import FAULT_STALL_FORMAT, FAULT_STALL_NAME, FaultRecordError, fault_stall_record  # noqa: E402
 from runner_evidence import (  # noqa: E402
@@ -188,6 +193,7 @@ class RunPorts(Protocol):
     def state_trees(self, phase: str, snapshot: dict, key: bytes) -> dict: ...
     def state_memory(self, phase: str, snapshot: dict, key: bytes) -> list: ...
     def findings(self) -> dict: ...
+    def command_records(self, task_id: str) -> list: ...
     def intercept_summary(self) -> dict: ...
     def e2_service_ready(self) -> dict: ...
     def e2_bind(self, reset_generation: str) -> None: ...
@@ -278,6 +284,8 @@ class RunSpec:
     # 그 밖의 회차는 None이다.
     task_origin: str | None = None
     goal_common_sha256: str | None = None
+    # 분리 배치 B 회차가 호출 수를 셀 B에만 있는 CLI 이름(결정안 §10). 비어 있으면 세지 않는다.
+    cli_usage_names: tuple[str, ...] = ()
 
 
 class WatchHandle(Protocol):
@@ -864,6 +872,12 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         _check_serving(spec, ports, evidence, state, SERVING_POST)
     findings = _step(state, "findings_failed", ports.findings)
     _step(state, "evidence_write_failed", lambda: evidence.write_json("findings.json", findings))
+    if spec.cli_usage_names:
+        # 원본 도구 실행 기록에서 B에만 있는 CLI 이름별 Bash 호출 수만 남긴다(원문은 메모리에서만 본다, 결정안 §10).
+        commands = _step(state, "cli_usage_failed", lambda: ports.command_records(task_id))
+        usage = _step(state, "cli_usage_failed", lambda: count_usage(
+            [record for record in commands if record["tool"] == BASH_TOOL], spec.cli_usage_names, with_failures=False))
+        _step(state, "evidence_write_failed", lambda: evidence.write_json(CLI_USAGE_NAME, usage))
     intercepted = _step(state, "intercept_summary_failed", ports.intercept_summary)
     _step(state, "evidence_write_failed", lambda: evidence.write_json("intercept-summary.json", intercepted))
     state.intercept = intercepted
@@ -1264,9 +1278,11 @@ class DockerPorts:
                  rules: Callable[[], dict] | None = None, intercepted: Callable[[], dict] | None = None,
                  apply_settings: Callable[[], None] | None = None,
                  verdicts: Callable[[str, RecordContext], CollectedExport] | None = None, e2_link: E2Link | None = None,
-                 e2_prompt: Callable[[str, str], bytes] | None = None, task_status: Callable[[str], dict] | None = None):
+                 e2_prompt: Callable[[str, str], bytes] | None = None, task_status: Callable[[str], dict] | None = None,
+                 commands: Callable[[str], list] | None = None):
         self.config, self.plan, self.directory, self.docker = config, plan, directory, docker
         self._task_status = task_status
+        self._commands = commands
         self._findings, self._start, self._settings, self._rules = findings, start, settings, rules
         self._intercepted, self._apply_settings, self._verdicts, self._e2, self._e2_prompt = intercepted, apply_settings, verdicts, e2_link, e2_prompt
         self.base_args = compose_base_args(plan)
@@ -1417,6 +1433,11 @@ class DockerPorts:
     def findings(self) -> dict:
         return self._findings()
 
+    def command_records(self, task_id: str) -> list:
+        if self._commands is None:
+            raise RunFailure("cli_usage_unavailable")
+        return self._commands(task_id)
+
     def verdict_export(self, task_id: str, context: RecordContext) -> CollectedExport:
         return self._verdicts(task_id, context)
 
@@ -1524,7 +1545,8 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         state_signal_tables=None if config.state is None else frozenset(config.state["signal_tables"]),
         state_runtime_roots=() if config.state is None else config.state["runtime_roots"],
         state_memory_enabled=config.state is not None and config.state["memory"] is not None,
-        engine_rules_sha256=engine_rules_sha256, task_origin=plan.task_origin, goal_common_sha256=goal_common_sha256)
+        engine_rules_sha256=engine_rules_sha256, task_origin=plan.task_origin, goal_common_sha256=goal_common_sha256,
+        cli_usage_names=config.split.cli_usage_names if config.split is not None and plan.side == "baseline" else ())
 
 
 def plan_task(task: dict, plan: RunPlan, declared_origin: str) -> tuple[TaskRequest, str | None]:
@@ -1632,9 +1654,12 @@ def main(argv: list[str] | None = None) -> int:
     def e2_prompt(task_id: str, run_ref: str) -> bytes:
         return e2_prompt_projection(config.ports["engine_api_host"], secret, task_id, run_ref, config.e2_product["exchange_timeout_seconds"])
 
+    def commands(task_id: str) -> list:
+        return command_records(config.ports["engine_api_host"], secret, task_id, config.findings)
+
     status_reader = TaskStatusReader(config.ports["engine_api_host"], secret, config.run["task_create_timeout_seconds"])
     ports = DockerPorts(config, plan, directory, docker, findings, start, settings, apply_rules, intercepted,
-                        apply_settings, verdicts, e2_link, e2_prompt, task_status=status_reader.read)
+                        apply_settings, verdicts, e2_link, e2_prompt, task_status=status_reader.read, commands=commands)
     clock = Clock(lambda: datetime.now(timezone.utc), time.monotonic, time.sleep)
     result = execute_run(build_spec(config, plan, preflight, task.sha256, args.condition, args.repeat,
                                     None if rules is None else rules.sha256,

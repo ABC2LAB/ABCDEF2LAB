@@ -653,6 +653,52 @@ def _unique_object(pairs):
     return result
 
 
+# 원본 엔진 도구 실행 기록(server/commands.go pgListCommands, db/commands.go CommandRecord: tool_use와 tool_result를
+# tool_use_id로 이은 행). ?task=는 작업(exploration) 번호, page는 0부터, 최신 행부터 온다.
+COMMANDS_PATH = "/api/commands"
+_COMMAND_FIELDS = frozenset({"id", "exploration_id", "worker", "tool", "command", "output", "is_error", "created_at"})
+
+
+def command_records(port: int, secret: AdminSecret, task_id: str, settings: dict) -> list[dict]:
+    """작업 하나의 도구 실행 기록 전체(쪽 넘김). 원문(command·output)은 호출자 메모리로만 넘기고 여기서 쓰지 않는다.
+    상한은 findings 수집과 같은 설정(page_size·timeout_seconds·max_page_bytes·max_total_bytes·max_pages)이다.
+    끝까지 못 읽으면(쪽 상한·바이트 상한·전체 수 불일치) 부분 기록으로 세지 않고 오류다."""
+    if not isinstance(task_id, str) or not task_id.isdigit():
+        raise EngineAPIError("engine_commands_task_invalid")
+    token = login(port, secret, settings["timeout_seconds"])
+    headers = {"Authorization": f"Bearer {token}"}
+    out, read = [], 0
+    for page in range(settings["max_pages"]):
+        path = f"{COMMANDS_PATH}?task={task_id}&page={page}&size={settings['page_size']}"
+        try:
+            status, data = _get(port, path, headers, settings["timeout_seconds"], settings["max_page_bytes"])
+        except (OSError, http.client.HTTPException, ValueError, OverflowError):
+            raise EngineAPIError("engine_commands_unreachable") from None
+        if status != 200:
+            raise EngineAPIError(f"engine_commands_http_{status}")
+        read += len(data)
+        if len(data) > settings["max_page_bytes"] or read > settings["max_total_bytes"]:
+            raise EngineAPIError("engine_commands_too_large")
+        try:
+            body = json.loads(data.decode("utf-8"))
+            rows, total = body["commands"], body["total"]
+        except (UnicodeError, ValueError, KeyError, TypeError):
+            raise EngineAPIError("engine_commands_invalid") from None
+        if not isinstance(rows, list) or type(total) is not int or total < 0 or any(
+                not isinstance(r, dict) or not _COMMAND_FIELDS <= set(r) or not isinstance(r["tool"], str)
+                or not isinstance(r["command"], str) or not isinstance(r["output"], str) or type(r["is_error"]) is not bool
+                or str(r["exploration_id"]) != task_id for r in rows):
+            raise EngineAPIError("engine_commands_invalid")
+        out += [{"tool": r["tool"], "command": r["command"], "output": r["output"], "failed": r["is_error"]} for r in rows]
+        if not rows or len(out) >= total:
+            break
+    else:
+        raise EngineAPIError("engine_commands_too_many_pages")
+    if len(out) != total:
+        raise EngineAPIError("engine_commands_incomplete")
+    return out
+
+
 def load_vocabulary(path: str | Path) -> tuple[dict, str]:
     """평가자가 검토한 분류 매핑. baseline·개선 후가 같은 매핑을 써야 하므로 원본 SHA-256을 함께 돌려준다."""
     try:

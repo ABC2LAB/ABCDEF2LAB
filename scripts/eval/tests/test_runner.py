@@ -491,6 +491,15 @@ class FakePorts:
         self._call("findings")
         return {"items": 0}
 
+    command_rows = [{"tool": "Bash", "command": '{"command":"npx playwright test && curl x"}', "output": "", "failed": False},
+                    {"tool": "Bash", "command": '{"command":"pip3 install y"}', "output": "", "failed": True},
+                    {"tool": "WebFetch", "command": '{"url":"http://x"}', "output": "", "failed": False}]
+
+    def command_records(self, task_id):
+        self._call("command_records")
+        self.command_task = task_id
+        return list(self.command_rows)
+
     def e2_service_ready(self):
         self._call("e2_service_ready")
         if self.e2_ready_error is not None:
@@ -1089,6 +1098,29 @@ class TestCompleteRun(unittest.TestCase):
         self.assertEqual(result["status"], COMPLETE)
         task = evidence.files["task.json"]
         self.assertEqual((task["task_origin"], task["goal_common_sha256"]), ("http://app.eval.test:8080", "c" * 64))
+
+    def test_cli_usage_counts_only_names(self):
+        # 분리 배치 B 회차: 원본 도구 실행 기록에서 B에만 있는 CLI 이름별 Bash 호출 수만 남긴다(결정안 §10).
+        spec = dataclasses.replace(make_spec(), cli_usage_names=("npx", "pip3", "vim"))
+        result, ports, meter, evidence = run(spec=spec)
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertEqual(ports.calls[ports.calls.index("findings") + 1], "command_records")
+        self.assertEqual(ports.command_task, "17")  # 이 회차가 만든 작업 번호
+        usage = evidence.files["cli-usage.json"]
+        self.assertEqual((usage["bash_calls"], usage["calls"], usage["names"]), (2, {"npx": 1, "pip3": 1}, ["npx", "pip3", "vim"]))
+        self.assertNotIn("not_found", usage)
+        self.assertNotIn("playwright test", json.dumps(evidence.files))  # 명령 원문은 남지 않는다
+        self.assertNotIn("command_records", run()[1].calls)  # 이름이 없으면(분리 배치 아님·O) 읽지 않는다
+
+    def test_cli_usage_failure_is_a_step_code(self):
+        spec = dataclasses.replace(make_spec(), cli_usage_names=("npx",))
+
+        def broken(ports, meter, clock):
+            def fail(task_id):
+                raise EngineAPIError("engine_commands_incomplete")
+            ports.command_records = fail
+        result, _, _, _ = run(broken, spec=spec)
+        self.assertEqual(result["reasons"][0], "cli_usage_failed")
 
     def test_order_and_signed_result(self):
         result, ports, meter, evidence = run()
