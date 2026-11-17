@@ -1281,6 +1281,35 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(goTo).toHaveBeenCalledWith("report");
   });
 
+  it("끝난 점검의 발견은 저장된 결과를 보고서 '발견 목록'과 같은 줄로 보이고(점검 중 발견 목록은 안 부름), 줄을 누르면 보고서로", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    a.fetchRemediation.mockResolvedValue({
+      task_id: 42,
+      entries: [
+        { ...candidate(1), vuln_class: "idor", context: { endpoint: "/api/items/{id}", observations: [] } },
+        candidate(2),
+      ],
+    });
+    const { goTo } = mount("live");
+    const sec = await screen.findByRole("region", { name: "발견 목록" });
+    await waitFor(() => expect(within(sec).getByText("2건 · 저장된 결과")).toBeInTheDocument());
+    // 보고서와 같은 줄: 위험도(없으면 '등급 없음') · 제목 · 엔드포인트 · 유형 · 판정
+    const rows = within(sec).getAllByRole("button");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toHaveTextContent(/^등급 없음후보 1\/api\/items\/\{id\}idor검토 필요$/);
+    expect(a.fetchRemediation).toHaveBeenCalledWith("42", "internal");
+    // 끝난 점검은 제품 서버가 점검 중 발견 목록을 닫으므로 부르지 않는다
+    expect(a.fetchTaskFindings).not.toHaveBeenCalled();
+    expect(screen.queryByRole("region", { name: "발견 후보" })).toBeNull();
+    // 상태 카드 숫자 칸: 발견 2 · 확정 0
+    expect(within(document.getElementById("lMeta") as HTMLElement).getByText("발견").parentElement).toHaveTextContent(
+      /^발견2확정 0$/,
+    );
+    fireEvent.click(rows[1]);
+    expect(goTo).toHaveBeenCalledWith("report");
+  });
+
   it("중지 요청은 같은 진단에 한 번 (expected revision 은 팀 lib 이 넣는다)", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(running);

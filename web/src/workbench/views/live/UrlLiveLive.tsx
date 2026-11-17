@@ -31,6 +31,7 @@ import {
   fetchRemediation,
   fetchTaskFindings,
   type LiveFinding,
+  type Remediation,
 } from "../../live/api";
 import {
   approvalCounts,
@@ -324,6 +325,31 @@ function StageGauge({ segs }: { segs: GaugeSeg[] }) {
 }
 
 /**
+ * 끝난 점검의 발견 (사용자 11/17 '보고서 형식으로'): 실제 제품 서버는 점검이 끝나면 점검 중 발견 목록
+ * (/api/exploration/findings)을 닫고 저장 보고서만 열어 둔다(cmd/first-controlled-diagnosis url_preparation_runtime.go).
+ * 그래서 저장된 판정 결과를 보고서 '발견 목록'과 같은 줄(FindingRows)로 보인다. 줄을 누르면 보고서로 간다.
+ */
+function SavedFindings({ poll, onReport }: { poll: Poll<Remediation>; onReport: () => void }) {
+  const sorted = poll.data ? sortEntries(poll.data.entries) : [];
+  let body: ReactNode;
+  if (poll.error) body = <ReportReadError error={poll.error} onRetry={poll.reload} />;
+  else if (!poll.data) body = <LoadingRow />;
+  else if (!sorted.length)
+    body = <p className={s.empty}>저장된 결과가 없습니다. 결과가 없다고 안전하다는 뜻은 아닙니다.</p>;
+  else body = <FindingRows entries={sorted} id="lSaved" onPick={onReport} />;
+  return (
+    <section className={s.sec} aria-labelledby="lSavedH">
+      <div className={s.sh}>
+        <h2 id="lSavedH">발견 목록</h2>
+        <span className={s.n}>{poll.data && !poll.error ? `${sorted.length}건 · 저장된 결과` : ""}</span>
+      </div>
+      {/* [보고서 보기]는 위 상태 카드에 있다 — 여기 또 두지 않고, 줄을 누르면 보고서로 간다 */}
+      {body}
+    </section>
+  );
+}
+
+/**
  * 점검 진행 화면의 상태 알약 (시안 lState: 진행 중 · 일시정지됨). 실행 중이 아니거나 확인하지 못한 상태는
  * 공통 알약(서버 상태 글) 그대로.
  */
@@ -352,11 +378,18 @@ export function UrlLiveLive() {
   });
   // 모델 사용량: 원본 ARTEX 작업 합계(입력 · 캐시 읽기 · 출력). 전송 통제 예산 기록(model_usage)에는 캐시가 없다
   // 점검 중 발견 후보 (원본 ARTEX 발견 목록, 진행 중엔 다시 읽는다)
+  // 점검 중에만 읽는다(끝나면 제품 서버가 이 목록을 닫는다). 상태를 확인하지 못했으면(결과 불명 등) 이어 읽지 않는다
+  const findsLive = !!job?.task_id && verified && !!job && !URL_ENDED_STATES.includes(job.state);
   const finds = usePoll(() => fetchTaskFindings(job?.task_id as string), [job?.task_id], {
-    enabled: visible && !!job?.task_id,
+    enabled: visible && findsLive,
     intervalMs: job && URL_ENDED_STATES.includes(job.state) ? 0 : FINDINGS_POLL_MS,
   });
   const fresh = useFreshIds(job?.task_id, finds.data);
+  // 끝난 점검의 발견: 결과 저장이 확인된 task 의 저장 판정 결과 (보고서와 같은 자료)
+  const savedTask = g.reportReadable && job?.task_id ? job.task_id : null;
+  const saved = usePoll(() => fetchRemediation(savedTask as string, "internal"), [savedTask], {
+    enabled: visible && !!savedTask,
+  });
 
   if (!handle || !job) {
     return (
@@ -475,7 +508,11 @@ export function UrlLiveLive() {
     if (plan.length) stats.push({ k: "계획", v: `${planDone}/${plan.length}`, sub: "완료" });
     stats.push({ k: "심화 점검", v: `${flow.deep_closed}/${flow.deep_runs}`, sub: "마감" });
   }
-  if (found) stats.push({ k: "발견 후보", v: String(found.length), sub: `심각 · 높음 ${highUp}` });
+  if (ended && saved.data && !saved.error) {
+    const savedFindings = saved.data.entries.filter((e) => diagnosticOutcome(e) !== "negative");
+    const confirmed = savedFindings.filter((e) => diagnosticOutcome(e) === "confirmed").length;
+    stats.push({ k: "발견", v: String(savedFindings.length), sub: `확정 ${confirmed}` });
+  } else if (!ended && found) stats.push({ k: "발견 후보", v: String(found.length), sub: `심각 · 높음 ${highUp}` });
   if (g.runReadable)
     stats.push({ k: "확인 필요", v: String(a.pending.length), sub: "승인 대기", warn: a.pending.length > 0 });
   // 모델 사용량은 상태 카드 안 한 줄 (입 · 출). 서버 기록이 아직 없으면 자리를 두지 않는다
@@ -589,7 +626,10 @@ export function UrlLiveLive() {
               ))}
             </section>
           ) : null}
-          {job.task_id ? <LiveFindings poll={finds} fresh={fresh} ended={ended} /> : null}
+          {/* 발견: 점검 중엔 발견 후보(실시간), 끝나면 저장된 결과를 보고서 형식으로 */}
+          {!ended && job.task_id ? <LiveFindings poll={finds} fresh={fresh} ended={ended} /> : null}
+          {ended && savedTask ? <SavedFindings poll={saved} onReport={() => goTo("report")} /> : null}
+          {ended && !savedTask ? <p className={s.empty}>결과 저장이 확인되면 발견 목록이 여기에 나옵니다.</p> : null}
           {a.message ? <p role="status">{a.message}</p> : null}
           {a.unresolved ? <p role="alert">결정 결과 불명 · 조회로 확인하기 전에는 다시 결정하지 않습니다.</p> : null}
           {/* 서버 진단 활동(#642 TaskActivity)은 두지 않는다(사용자 11/17): 아래 활동 기록과 같은 ARTEX 워커 기록이 겹친다 */}
@@ -1003,6 +1043,65 @@ export function FindingDetail({
   );
 }
 
+/** 판정 순서대로 (보고서 목록 · 점검 진행의 끝난 점검 발견이 같이 쓴다). */
+export const sortEntries = (entries: readonly RemediationEntry[]) =>
+  [...entries].sort((x, y) => ORDER.indexOf(diagnosticOutcome(x)) - ORDER.indexOf(diagnosticOutcome(y)));
+
+/**
+ * 저장된 결과 줄 목록 (보고서 '발견 목록' 모양): 위험도 딱지 · 제목 / 엔드포인트 · 유형(없으면 서버 요약) · 판정.
+ * 보고서와 점검 진행(끝난 점검)이 같은 모양을 쓰게 한 부품이다.
+ */
+export function FindingRows({
+  entries,
+  id,
+  chosen = null,
+  onPick,
+}: {
+  entries: readonly RemediationEntry[];
+  id?: string;
+  chosen?: string | null;
+  onPick: (e: RemediationEntry) => void;
+}) {
+  return (
+    <div className={s.list} id={id}>
+      {entries.map((e) => {
+        const o = diagnosticOutcome(e);
+        const on = chosen === e.entry_id;
+        // 시안 줄 아래 글: 엔드포인트 · 유형. 둘 다 없으면 서버 요약
+        const fe = entryEp(e) ?? e.vuln_class;
+        let feBody: ReactNode = null;
+        if (fe)
+          feBody = (
+            <span className={s.fe}>
+              <EntryEp e={e} />
+              {e.vuln_class ? <span>{maskSecrets(e.vuln_class)}</span> : null}
+            </span>
+          );
+        else if (e.summary) feBody = <span className={s.fe}>{maskSecrets(e.summary)}</span>;
+        return (
+          <button
+            key={e.entry_id}
+            className={cx(s.frow, on && s.sel)}
+            type="button"
+            data-rsel={e.entry_id}
+            aria-current={on ? "true" : undefined}
+            onClick={() => onPick(e)}
+          >
+            <Sev e={e} />
+            <span className={s.fm}>
+              <span className={s.ft}>{maskSecrets(e.title) || e.entry_id}</span>
+              {feBody}
+            </span>
+            <span className={s.fs}>
+              <Outcome o={o} short />
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 /** 보고서 탭 (시안 rTabs). 자산 지식 그래프 · 접근통제 지도는 이 점검의 서버 자료가 없어 탭만 두고 '연결 전'. */
 const R_TABS = [
   ["list", "발견 목록"],
@@ -1070,7 +1169,7 @@ export function UrlReportLive() {
   }
 
   const entries = rem.error ? [] : (rem.data?.entries ?? []);
-  const sorted = [...entries].sort((x, y) => ORDER.indexOf(diagnosticOutcome(x)) - ORDER.indexOf(diagnosticOutcome(y)));
+  const sorted = sortEntries(entries);
   const counts = rem.data && !rem.error ? summarizeDiagnosticEntries(entries) : null;
   const findings = sorted.filter((e) => diagnosticOutcome(e) !== "negative");
   // 우선 조치: 시안처럼 위험도 → 판정 순
@@ -1108,45 +1207,15 @@ export function UrlReportLive() {
     listBody = <p className={s.empty}>저장된 결과가 없습니다. 결과가 없다고 안전하다는 뜻은 아닙니다.</p>;
   else
     listBody = (
-      <div className={s.list} id="rList">
-        {sorted.map((e) => {
-          const o = diagnosticOutcome(e);
-          const on = chosen?.entry_id === e.entry_id;
-          // 시안 줄 아래 글: 엔드포인트 · 유형. 둘 다 없으면 서버 요약
-          const fe = entryEp(e) ?? e.vuln_class;
-          let feBody: ReactNode = null;
-          if (fe)
-            feBody = (
-              <span className={s.fe}>
-                <EntryEp e={e} />
-                {e.vuln_class ? <span>{maskSecrets(e.vuln_class)}</span> : null}
-              </span>
-            );
-          else if (e.summary) feBody = <span className={s.fe}>{maskSecrets(e.summary)}</span>;
-          return (
-            <button
-              key={e.entry_id}
-              className={cx(s.frow, on && s.sel)}
-              type="button"
-              data-rsel={e.entry_id}
-              aria-current={on ? "true" : undefined}
-              onClick={() => {
-                setSel(e.entry_id);
-                openInsp();
-              }}
-            >
-              <Sev e={e} />
-              <span className={s.fm}>
-                <span className={s.ft}>{maskSecrets(e.title) || e.entry_id}</span>
-                {feBody}
-              </span>
-              <span className={s.fs}>
-                <Outcome o={o} short />
-              </span>
-            </button>
-          );
-        })}
-      </div>
+      <FindingRows
+        entries={sorted}
+        id="rList"
+        chosen={chosen?.entry_id ?? null}
+        onPick={(e) => {
+          setSel(e.entry_id);
+          openInsp();
+        }}
+      />
     );
 
   // 머리 줄 (시안: 시작 · 소요 · 모델 · 커버리지). 서버가 주지 않는 시작 · 소요는 '연결 전'
