@@ -59,6 +59,8 @@ class TestGoBinding(unittest.TestCase):
 
 
 def entry(name, directory, target=None, sha=H, shebang=None, interpreter=None):
+    if interpreter is None and shebang and shebang[0] == "/usr/bin/env":
+        interpreter = "/usr/bin/env"  # 수집기는 해석기 경로의 실제 위치를 적는다
     return {"name": name, "dir": directory, "target": target or f"{directory}/{name}", "sha256": sha, "shebang": shebang,
             "interpreter_target": interpreter}
 
@@ -105,6 +107,31 @@ class TestClassify(unittest.TestCase):
         full = classify({"mounts": None, "entries": entries}, SANDBOX_PATH)
         self.assertEqual(set(full["commands"]), {"py", "needs", "hiddenexe", "ok"})  # 샌드박스 밖에서는 경로 조건이 없다
 
+    def test_found_file_with_a_broken_interpreter_does_not_fall_through(self):
+        # #673 리뷰: 셸은 PATH에서 처음 찾은 파일을 고른다. 보이는 파일의 해석기가 없으면 126으로 실패하고 뒤 파일로 가지 않는다.
+        entries = [entry("tool", "/usr/local/bin", shebang=["/opt/py/bin/python"], interpreter="/opt/py/bin/python"),
+                   entry("tool", "/usr/bin", sha="2" * 64),
+                   entry("gone", "/usr/local/bin", shebang=["/nope/sh"], interpreter=None),
+                   entry("gone", "/usr/bin", sha="3" * 64)]
+        for mounts in (MOUNTS, None):
+            with self.subTest(mounts=mounts):
+                out = classify({"mounts": mounts, "entries": entries}, SANDBOX_PATH)
+                self.assertNotIn("gone", out["commands"])
+                if mounts is not None:
+                    self.assertEqual(out["hidden"], {"tool": "interpreter_unavailable", "gone": "interpreter_missing"})
+                    self.assertNotIn("tool", out["commands"])
+                else:
+                    self.assertEqual(out["commands"]["tool"]["dir"], "/usr/local/bin")  # 샌드박스 밖에서는 해석기가 보인다
+
+    def test_env_itself_must_be_present_and_visible(self):
+        entries = [entry("a", "/usr/bin", shebang=["/usr/bin/env", "node"], interpreter="/opt/coreutils/env"),
+                   dict(entry("b", "/usr/bin", shebang=["/usr/bin/env", "node"]), interpreter_target=None),  # env 없음
+                   entry("c", "/usr/bin", shebang=["/usr/bin/env", "node"]),
+                   entry("node", "/usr/local/bin")]
+        out = classify({"mounts": MOUNTS, "entries": entries}, SANDBOX_PATH)
+        self.assertEqual(out["hidden"], {"a": "interpreter_unavailable", "b": "interpreter_missing"})
+        self.assertIn("c", out["commands"])
+
     def test_mount_prefix_is_a_path_boundary(self):
         out = classify({"mounts": ["/usr/bin"], "entries": [entry("x", "/usr/bin", target="/usr/binx/x")]}, "/usr/bin")
         self.assertEqual(out["hidden"], {"x": "target_outside_sandbox"})
@@ -124,32 +151,44 @@ class TestClassify(unittest.TestCase):
 
 
 class FakeProcess:
-    """stdout은 미리 채운 실제 pipe다(세션이 selectors·os.read로 읽는다). stdin은 보낸 줄을 모은다."""
+    """stdout·stdin 모두 실제 pipe다(세션이 selectors·비차단 os.write로 쓴다). stdout은 미리 채우고, stdin에 온 줄은
+    sent로 다시 읽는다. read_stdin=False면 아무도 stdin을 읽지 않는 서버를 흉내 낸다(pipe 버퍼가 차면 쓰기가 막힌다)."""
 
     def __init__(self, responses: list, close: bool = True):
+        import threading
         read, write = os.pipe()
-        for item in responses:
-            os.write(write, item if isinstance(item, bytes) else json.dumps(item).encode() + b"\n")
-        if close:
-            os.close(write)
-        else:
-            self._write = write
+        data = b"".join(item if isinstance(item, bytes) else json.dumps(item).encode() + b"\n" for item in responses)
+
+        def produce():
+            # pipe 버퍼(64KiB)보다 큰 응답도 쓸 수 있게 따로 쓴다(세션이 읽는 만큼 들어간다).
+            try:
+                os.write(write, data) if len(data) <= 65536 else [os.write(write, data[i:i + 4096]) for i in range(0, len(data), 4096)]
+            except OSError:
+                pass
+            if close:
+                os.close(write)
+        self._writer = threading.Thread(target=produce, daemon=True)
+        self._writer.start()
         self.stdout = os.fdopen(read, "rb", buffering=0)
-        self.sent: list[dict] = []
-        outer = self
-
-        class Stdin:
-            def write(self, data):
-                outer.sent.append(json.loads(data))
-
-            def flush(self):
-                pass
-
-            def close(self):
-                pass
-
-        self.stdin = Stdin()
+        in_read, in_write = os.pipe()
+        self._stdin_read = in_read
+        self.stdin = os.fdopen(in_write, "wb", buffering=0)
         self.waited = False
+
+    @property
+    def sent(self) -> list[dict]:
+        os.set_blocking(self._stdin_read, False)
+        data = b""
+        while True:
+            try:
+                chunk = os.read(self._stdin_read, 65536)
+            except BlockingIOError:
+                break
+            if not chunk:
+                break
+            data += chunk
+        self._sent = getattr(self, "_sent", []) + [json.loads(line) for line in data.splitlines() if line]
+        return self._sent
 
     def wait(self, timeout=None):
         self.waited = True
@@ -213,6 +252,24 @@ class TestMcpSession(unittest.TestCase):
         self.assertEqual(str(caught.exception), "mcp_too_many_pages")
         with self.assertRaises(ToolSurfaceError):
             mcp_tools("not-an-id", [], lambda *a, **k: None)
+
+    def test_server_that_closed_stdin_is_a_closed_session(self):
+        process = FakeProcess([INIT], close=False)
+        os.close(process._stdin_read)  # 서버가 stdin을 닫음 → 쓰기가 EPIPE
+        with self.assertRaises(ToolSurfaceError) as caught:
+            mcp_tools("sha256:" + "4" * 64, [], lambda command, **o: process, timeout=2)
+        self.assertEqual(str(caught.exception), "mcp_session_closed")
+
+    def test_blocked_stdin_write_respects_the_deadline(self):
+        # #673 리뷰: 긴 nextCursor를 돌려주고 stdin을 읽지 않는 서버면 다음 요청 쓰기가 pipe 버퍼에서 막힌다. 남은 시한 안에서
+        # mcp_timeout으로 끝나야 한다(막힌 쓰기로 멈추지 않는다).
+        import time as _time
+        responses = [INIT, {"jsonrpc": "2.0", "id": 2, "result": {"tools": [tool("a")], "nextCursor": "c" * 131072}}]
+        started = _time.monotonic()
+        with self.assertRaises(ToolSurfaceError) as caught:
+            self.run_session(responses, close=False, timeout=0.5)
+        self.assertEqual(str(caught.exception), "mcp_timeout")
+        self.assertLess(_time.monotonic() - started, 5)
 
 
 class TestDigestsAndReport(unittest.TestCase):

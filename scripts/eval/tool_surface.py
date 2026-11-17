@@ -164,15 +164,15 @@ def classify(collected: dict, path: str) -> dict:
         bang = entry.get("shebang")
         if not bang:
             return None
-        if posixpath.basename(bang[0]) == "env":
-            command = next((token for token in bang[1:] if not token.startswith("-")), None)
-            if command is None or depth > 4 or lookup(command, depth + 1) is None:
-                return "interpreter_unavailable"
-            return None
+        # 해석기 자체(env 포함)가 있어야 하고 샌드박스에서 보여야 한다. env면 그 뒤 명령도 같은 PATH에서 풀려야 한다.
         if entry.get("interpreter_target") is None:
             return "interpreter_missing"
         if mounts is not None and not _visible(entry["interpreter_target"], mounts):
             return "interpreter_unavailable"
+        if posixpath.basename(bang[0]) == "env":
+            command = next((token for token in bang[1:] if not token.startswith("-")), None)
+            if command is None or depth > 4 or lookup(command, depth + 1) is None:
+                return "interpreter_unavailable"
         return None
 
     def lookup(name: str, depth: int = 0) -> dict | None:
@@ -186,6 +186,10 @@ def classify(collected: dict, path: str) -> dict:
                 resolved[name] = entry
                 return entry
             first_reason = first_reason or reason
+            if reason != "target_outside_sandbox":
+                # 셸은 PATH에서 처음 찾은 실행 파일을 고른다. 파일이 있으면(보이면) 해석기가 없어도 다음 디렉터리로 넘어가지
+                # 않고 그 파일을 실행하다 실패한다(126/127). 다음 디렉터리로 넘어가는 것은 파일이 없을 때뿐이다(#673 리뷰).
+                break
         if first_reason is not None:
             reasons[name] = first_reason
         return None
@@ -253,19 +257,55 @@ def mcp_version(image_id: str, run: DockerRun) -> str:
 
 
 class _Session:
-    """MCP stdio 세션 하나. 줄 단위 JSON-RPC를 시한·바이트 상한 안에서 주고받는다."""
+    """MCP stdio 세션 하나. 줄 단위 JSON-RPC를 시한·바이트 상한 안에서 주고받는다.
+
+    쓰기도 비차단이다. 서버가 stdin을 읽지 않으면 큰 요청(긴 nextCursor 등)의 쓰기가 막혀 시한을 넘길 수 있어서
+    (#673 리뷰), 쓰는 동안에도 남은 시한만 기다리고 그 사이 온 stdout은 버퍼로 받아 둔다(서로 막힘 방지)."""
 
     def __init__(self, process, timeout: float):
-        self.process, self.deadline, self.buffer, self.read = process, time.monotonic() + timeout, b"", 0
+        self.process, self.deadline, self.buffer, self.read, self.eof = process, time.monotonic() + timeout, b"", 0, False
+        self.stdout_fd, self.stdin_fd = process.stdout.fileno(), process.stdin.fileno()
+        os.set_blocking(self.stdin_fd, False)
         self.selector = selectors.DefaultSelector()
-        self.selector.register(process.stdout, selectors.EVENT_READ)
+        self.selector.register(self.stdout_fd, selectors.EVENT_READ)
+
+    def _wait(self) -> list:
+        remaining = self.deadline - time.monotonic()
+        events = self.selector.select(remaining) if remaining > 0 else []
+        if not events:
+            raise ToolSurfaceError("mcp_timeout")
+        return events
+
+    def _read_chunk(self) -> None:
+        chunk = os.read(self.stdout_fd, 65536)
+        if not chunk:
+            # 서버가 stdout을 닫았다. 이미 받은 응답은 버퍼에 남아 있으니 받기에서 판단한다(더 기다리지 않는다).
+            self.eof = True
+            self.selector.unregister(self.stdout_fd)
+            return
+        self.read += len(chunk)
+        if self.read > MAX_MCP_BYTES:
+            raise ToolSurfaceError("mcp_output_too_large")
+        self.buffer += chunk
 
     def send(self, message: dict) -> None:
+        pending = memoryview(json.dumps(message, separators=(",", ":")).encode("utf-8") + b"\n")
+        # stdout이 이미 닫혔어도 쓰기는 해 본다(이미 버퍼에 온 응답으로 끝날 수 있다). stdin이 닫혔으면 쓰기가 실패한다.
+        self.selector.register(self.stdin_fd, selectors.EVENT_WRITE)
         try:
-            self.process.stdin.write(json.dumps(message, separators=(",", ":")).encode("utf-8") + b"\n")
-            self.process.stdin.flush()
-        except OSError:
-            raise ToolSurfaceError("mcp_session_closed") from None
+            while pending:
+                for key, _ in self._wait():
+                    if key.fd == self.stdout_fd:
+                        self._read_chunk()
+                        continue
+                    try:
+                        pending = pending[os.write(self.stdin_fd, pending):]
+                    except BlockingIOError:
+                        continue
+                    except OSError:
+                        raise ToolSurfaceError("mcp_session_closed") from None
+        finally:
+            self.selector.unregister(self.stdin_fd)
 
     def receive(self, request_id: int) -> dict:
         while True:
@@ -281,16 +321,10 @@ class _Session:
                     if "error" in message or not isinstance(message.get("result"), dict):
                         raise ToolSurfaceError("mcp_request_failed")
                     return message["result"]
-            remaining = self.deadline - time.monotonic()
-            if remaining <= 0 or not self.selector.select(remaining):
-                raise ToolSurfaceError("mcp_timeout")
-            chunk = os.read(self.process.stdout.fileno(), 65536)
-            if not chunk:
+            if self.eof:
                 raise ToolSurfaceError("mcp_session_closed")
-            self.read += len(chunk)
-            if self.read > MAX_MCP_BYTES:
-                raise ToolSurfaceError("mcp_output_too_large")
-            self.buffer += chunk
+            self._wait()
+            self._read_chunk()
 
     def close(self) -> None:
         self.selector.close()
