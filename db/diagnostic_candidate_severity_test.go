@@ -143,6 +143,53 @@ func TestDiagnosticCandidateSeverityConservativeNormalization(t *testing.T) {
 	}
 }
 
+func TestRelatedCallGateDropsEstimate(t *testing.T) {
+	for _, condition := range []string{"completed", "observations_truncated", "response_truncated", "unknown", "unclosed"} {
+		t.Run(condition, func(t *testing.T) {
+			c := observedSeverityCandidate(t, 1, 2)
+			related := observedSeverityCandidate(t, 1, 2)
+			var other, evidence map[string]any
+			if json.Unmarshal([]byte(related.Evidence), &other) != nil || json.Unmarshal([]byte(c.Evidence), &evidence) != nil {
+				t.Fatal("합성 관찰 준비 실패")
+			}
+			trusted := other["trusted"].(map[string]any)
+			call := trusted["call"].(map[string]any)
+			call["call_ref"] = "severity-related"
+			switch condition {
+			case "observations_truncated":
+				call[condition] = true
+			case "response_truncated":
+				call["observations"].([]any)[0].(map[string]any)[condition] = true
+			case "unknown":
+				call["counts"].(map[string]any)[condition] = float64(1)
+			case "unclosed":
+				trusted["proxy_drained"] = false
+			}
+			evidence["related_calls"] = []any{other}
+			raw, err := json.Marshal(evidence)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.Evidence = string(raw)
+			c.EvidenceDigest = DiagnosticEvidenceDigest(c.Evidence)
+			if err := c.Validate(); err != nil {
+				t.Fatal("관련 호출을 넣은 후보의 기본 결속이 잘못됨", err)
+			}
+			n := c.NormalizedSeverity()
+			if condition == "completed" {
+				if n.SuggestedSeverity != "high" || n.SeveritySource != WorkerEstimate || n.SeverityRationale != c.SeverityRationale {
+					t.Fatal("양성 대조: 정상 관련 호출의 평가를 버림")
+				}
+			} else if n.SuggestedSeverity != "" || n.SeveritySource != "" || n.SeverityRationale != "" {
+				t.Fatal("관련 호출의 불완전한 근거로 평가를 남김")
+			}
+			if n.Evidence != c.Evidence || n.EvidenceDigest != c.EvidenceDigest || n.Verification != "manual_review_required" {
+				t.Fatal("평가 정규화가 후보·증거를 바꿈")
+			}
+		})
+	}
+}
+
 func TestDiagnosticCandidateSeverityPostgresIdempotencyLegacyAndStale(t *testing.T) {
 	d, err := Open(testDSN(t))
 	if err != nil {

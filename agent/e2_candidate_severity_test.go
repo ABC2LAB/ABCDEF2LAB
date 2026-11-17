@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,5 +45,25 @@ func TestCandidateSeverityOptionalAndNeverConfirms(t *testing.T) {
 	r, _ := tool.Call(t.Context(), json.RawMessage(`{"call_ref":"severity-call","vulnclass":"IDOR","name":"합성 후보","summary":"관찰","severity_source":"confirmed"}`), nil)
 	if !r.IsError || len(store.candidates) != 0 {
 		t.Fatal("모델 평가 출처 위조 허용")
+	}
+}
+
+func TestSeverityRationaleRedactsRunSecret(t *testing.T) {
+	execution, _, binding := e2WorkerFixture(t)
+	state := &e2HTTPToolState{}
+	result := e2runner.Result{ToolOutput: "합성 응답", Trusted: e2runner.TrustedResult{Execution: execution.SnapshotForIntent(binding.IntentID), Final: true, ProcessBashExited: true, ProcessDrained: true, ProxyDrained: true, Classification: "completed", Call: e2proxy.CallResult{IntentID: binding.IntentID, CallRef: "severity-call", Final: true, AuditComplete: true, Counts: e2proxy.Counts{Responses: 1, ForwardAttempted: 1}, Observations: []e2proxy.HTTPObservation{{Sequence: 1, AttemptRef: "severity-attempt", Method: "GET", Endpoint: "/documents", Decision: "allowed", StatusCode: 200, ResponseComplete: true, ForwardAttempted: true, AuditComplete: true, ObservedAt: time.Now().UTC()}}}}}
+	state.observeDiagnostic(execution, binding.IntentID, "synthetic fixture", result)
+	store := &candidateMemoryStore{}
+	tool := newE2DiagnosticCandidateTool(store, binding, state)
+	r, err := tool.Call(t.Context(), json.RawMessage(`{"call_ref":"severity-call","vulnclass":"IDOR","name":"합성 후보","summary":"관찰","suggested_severity":"high","severity_rationale":"응답에 keep-secret 값이 함께 보여 접근통제 영향을 검토해야 합니다."}`), nil)
+	if err != nil || r.IsError || len(store.candidates) != 1 {
+		t.Fatal("후보 저장 실패", err)
+	}
+	c := store.candidates[0]
+	if c.SuggestedSeverity != "high" || c.SeveritySource != db.WorkerEstimate || c.Verification != "manual_review_required" || !strings.Contains(c.SeverityRationale, "접근통제 영향") {
+		t.Fatal("가림 뒤 유효한 평가·수동 검토 상태가 사라짐")
+	}
+	if strings.Contains(c.SeverityRationale, "keep-secret") {
+		t.Fatal("실행 보호 값이 심각도 근거에 남음")
 	}
 }
