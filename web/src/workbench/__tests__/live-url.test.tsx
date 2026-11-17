@@ -1045,6 +1045,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(a.fetchTaskFindings).toHaveBeenCalledWith("42");
     const finds = screen.getByRole("region", { name: "발견 후보" });
     expect(within(finds).getByText("1건 · 최신 순")).toBeInTheDocument();
+    expect(within(finds).queryByText(/^정보성$/)).toBeNull();
     expect(within(finds).queryByText("새로")).toBeNull();
     a.fetchTaskFindings.mockResolvedValue([{ ...one, id: "2", name: "새 발견", ts: "2026-11-11T01:00:30Z" }, one]);
     await act(async () => {

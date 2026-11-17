@@ -7,8 +7,10 @@ import (
 	"io"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/Autumn-27/artex/db"
@@ -78,20 +80,31 @@ type diagnosticCandidateStore interface {
 func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTPExecution, state *e2HTTPToolState, onSaved ...func()) actool.CoreTool {
 	// 같은 워커 안의 중복 제출은 순차 처리하고 DB는 intent 잠금으로 중복을 제어한다.
 	var mu sync.Mutex
+	schema := map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
+		"suggested_severity": map[string]any{"type": "string", "enum": []string{"critical", "high", "medium", "low", "info"}},
+		"severity_rationale": map[string]any{"type": "string", "maxLength": db.MaxSeverityRationaleBytes, "description": "A short single-line Korean explanation grounded in actual observed impact and known prerequisites. Keep it within 1,024 UTF-8 bytes (about 300 Korean characters); long explanations are truncated at a UTF-8 boundary with an explicit omission marker. No credentials or invented CVSS."},
+		"related_call_refs":  map[string]any{"type": "array", "maxItems": 8, "items": map[string]any{"type": "string", "maxLength": 256}},
+		"call_ref":           map[string]any{"type": "string", "maxLength": 256},
+		"vulnclass":          map[string]any{"type": "string", "maxLength": 128},
+		"name":               map[string]any{"type": "string", "maxLength": 512},
+		"summary":            map[string]any{"type": "string", "maxLength": 8192},
+		"remediation":        map[string]any{"type": "string", "maxLength": 8192},
+	}, "required": []string{"call_ref", "vulnclass", "name", "summary"}}
+	// 제공자에게는 정상 문자열 스키마를 알리되, 새 선택 평가 두 칸만 잘못되어도 후보가 사라지지 않게 한다.
+	// RawInput은 아래의 핵심/기존 필드 스키마·엄격 디코더·후보 결속 검사를 대신하지 않는다.
+	coreProperties := map[string]any{}
+	for key, value := range schema["properties"].(map[string]any) {
+		if key != "suggested_severity" && key != "severity_rationale" {
+			coreProperties[key] = value
+		}
+	}
+	coreSchema := map[string]any{"type": "object", "properties": coreProperties, "required": []any{"call_ref", "vulnclass", "name", "summary"}}
 	return actool.Build(actool.Spec{
 		Name:        "submit_diagnostic_candidate",
 		Description: "Preserve a potential vulnerability for manual review using an actual Bash call_ref from this intent. This tool cannot confirm a vulnerability, change approval, send requests, or invent evidence. Display text must be Korean. Optionally suggest severity only from observed impact, resource sensitivity and known prerequisites in a completed HTTP observation; never infer a rating from the vulnerability class alone. Omit the estimate when evidence is insufficient. Estimates never confirm a finding.",
-		Schema: map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
-			"suggested_severity": map[string]any{"type": "string", "enum": []string{"critical", "high", "medium", "low", "info"}},
-			"severity_rationale": map[string]any{"type": "string", "maxLength": db.MaxSeverityRationaleBytes, "description": "A short single-line Korean explanation grounded in actual observed impact and known prerequisites. Keep it within 1,024 UTF-8 bytes (about 300 Korean characters); an oversized rationale drops only the estimate. No credentials or invented CVSS."},
-			"related_call_refs":  map[string]any{"type": "array", "maxItems": 8, "items": map[string]any{"type": "string", "maxLength": 256}},
-			"call_ref":           map[string]any{"type": "string", "maxLength": 256},
-			"vulnclass":          map[string]any{"type": "string", "maxLength": 128},
-			"name":               map[string]any{"type": "string", "maxLength": 512},
-			"summary":            map[string]any{"type": "string", "maxLength": 8192},
-			"remediation":        map[string]any{"type": "string", "maxLength": 8192},
-		}, "required": []string{"call_ref", "vulnclass", "name", "summary"}},
-		Concurrent: func(json.RawMessage) bool { return false },
+		Schema:      schema,
+		RawInput:    true,
+		Concurrent:  func(json.RawMessage) bool { return false },
 		Run: func(ctx context.Context, input json.RawMessage, _ *actool.ToolContext) (actool.Result, error) {
 			event := func(name, status, reason, ref string) {
 				diagnosticAgentEvent(ctx, diagnosticlog.Event{Event: name, Stage: "candidate_storage", Status: status, ReasonCode: reason, TaskID: binding.TaskID, RunRef: binding.RunRef, IntentID: binding.IntentID, CallRef: ref, Tool: "submit_diagnostic_candidate"})
@@ -107,6 +120,10 @@ func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTP
 			if execution == nil {
 				event("candidate_validated", "failed", "candidate_unavailable", "")
 				return actool.Errorf("diagnostic_candidate_unavailable"), nil
+			}
+			if actool.ValidateInput(coreSchema, input) != nil {
+				event("candidate_validated", "failed", "candidate_input_invalid", "")
+				return actool.Errorf("diagnostic_candidate_input_invalid"), nil
 			}
 			var in struct {
 				SuggestedSeverity json.RawMessage `json:"suggested_severity"`
@@ -179,7 +196,7 @@ func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTP
 			}
 			var severity, rationale string
 			if json.Unmarshal(in.SuggestedSeverity, &severity) == nil && json.Unmarshal(in.SeverityRationale, &rationale) == nil {
-				candidate.SuggestedSeverity, candidate.SeverityRationale, candidate.SeveritySource = severity, redact(rationale), db.WorkerEstimate
+				candidate.SuggestedSeverity, candidate.SeverityRationale, candidate.SeveritySource = severity, boundedSeverityRationale(redact(rationale)), db.WorkerEstimate
 			}
 			candidate = candidate.NormalizedSeverity()
 			if candidate.Validate() != nil {
@@ -201,6 +218,30 @@ func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTP
 			return actool.Text("Unconfirmed candidate recorded: " + strconv.FormatInt(id, 10) + ". Manual review required; this is not an E3 verdict or confirmed finding."), nil
 		},
 	})
+}
+
+// 호출 전에 실행 보호 값·DLP를 먼저 가린다. 설명의 잘림은 HTTP 관찰의 잘림이 아니다.
+func boundedSeverityRationale(rationale string) string {
+	rationale = strings.TrimSpace(rationale)
+	if len(rationale) <= db.MaxSeverityRationaleBytes {
+		return rationale
+	}
+	for _, r := range rationale {
+		if unicode.IsControl(r) {
+			return ""
+		}
+	}
+	const suffix = " … [근거 일부 생략]"
+	prefix := diagnosticUTF8Prefix(rationale, db.MaxSeverityRationaleBytes-len(suffix))
+	hangul := false
+	for _, r := range prefix {
+		hangul = hangul || unicode.In(r, unicode.Hangul)
+	}
+	// 안내 문장의 한글이 원래 근거의 형식 검사를 대신하지 않게 한다.
+	if !hangul || !utf8.ValidString(prefix) || utf8.RuneCountInString(prefix) < 8 {
+		return ""
+	}
+	return prefix + suffix
 }
 
 func diagnosticUTF8Prefix(s string, n int) string {

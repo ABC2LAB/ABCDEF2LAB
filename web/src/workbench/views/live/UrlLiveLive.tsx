@@ -142,7 +142,9 @@ function LiveFindings({
   const list = [...(poll.data ?? [])].sort(
     (x, y) => (y.ts || "").localeCompare(x.ts || "") || Number(y.id) - Number(x.id),
   );
-  const bySev = SEV_KEYS.map((k) => [k, list.filter((f) => sevKey(f.severity) === k).length] as const);
+  const bySev = SEV_KEYS.map((k) => [k, list.filter((f) => sevKey(f.severity) === k).length] as const).filter(
+    ([k, n]) => k !== "info" || n > 0,
+  );
   const noSev = list.filter((f) => !sevKey(f.severity)).length;
   let body: ReactNode;
   // 한 번 읽은 뒤의 실패도 숨기지 않는다: usePoll 은 직전 목록을 남기고 403 · 404 · 503 이면 다시 부르지 않으므로,
