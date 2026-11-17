@@ -17,22 +17,25 @@ import (
 // DiagnosticCandidate는 확정 finding이 아닌, 실제 실행 관찰에 연결된 검토 대상이다.
 // 기존 fact 저장소를 사용하며 triage/오라클 판정 상태를 재정의하지 않는다.
 type DiagnosticCandidate struct {
-	ID              int64     `json:"id"`
-	TaskID          int64     `json:"task_id"`
-	IntentID        int64     `json:"intent_id"`
-	RunRef          string    `json:"run_ref"`
-	CallRef         string    `json:"call_ref"`
-	VulnClass       string    `json:"vulnclass"`
-	Name            string    `json:"name"`
-	Summary         string    `json:"summary"`
-	Remediation     string    `json:"remediation"`
-	Classification  string    `json:"classification"`
-	Verification    string    `json:"verification"`
-	EvidenceVersion int64     `json:"evidence_version"`
-	EvidenceDigest  string    `json:"evidence_digest"`
-	ObservedAt      time.Time `json:"observed_at"`
-	Evidence        string    `json:"evidence"`
-	OutputTruncated bool      `json:"output_truncated"`
+	SuggestedSeverity string    `json:"suggested_severity,omitempty"`
+	SeverityRationale string    `json:"severity_rationale,omitempty"`
+	SeveritySource    string    `json:"severity_source,omitempty"`
+	ID                int64     `json:"id"`
+	TaskID            int64     `json:"task_id"`
+	IntentID          int64     `json:"intent_id"`
+	RunRef            string    `json:"run_ref"`
+	CallRef           string    `json:"call_ref"`
+	VulnClass         string    `json:"vulnclass"`
+	Name              string    `json:"name"`
+	Summary           string    `json:"summary"`
+	Remediation       string    `json:"remediation"`
+	Classification    string    `json:"classification"`
+	Verification      string    `json:"verification"`
+	EvidenceVersion   int64     `json:"evidence_version"`
+	EvidenceDigest    string    `json:"evidence_digest"`
+	ObservedAt        time.Time `json:"observed_at"`
+	Evidence          string    `json:"evidence"`
+	OutputTruncated   bool      `json:"output_truncated"`
 }
 
 var ErrDiagnosticCandidate = errors.New("diagnostic_candidate_invalid")
@@ -131,6 +134,7 @@ func (c DiagnosticCandidate) Validate() error {
 // RecordDiagnosticCandidate는 신뢰된 E② 어댑터 전용이며 모델의 확정/증거 본문을 받지 않는다.
 // task/intent 귀속 확인과 fact/edge 삽입을 같은 트랜잭션으로 처리한다.
 func (s *ExplorationStore) RecordDiagnosticCandidate(ctx context.Context, c DiagnosticCandidate) (int64, error) {
+	c = c.NormalizedSeverity()
 	if ctx == nil || c.ID != 0 || c.Validate() != nil {
 		return 0, ErrDiagnosticCandidate
 	}
@@ -220,6 +224,7 @@ func ListDiagnosticCandidatesQuery(ctx context.Context, q DiagnosticCandidateQue
 		if c.ID != 0 || c.TaskID != taskID || (runRef != "" && c.RunRef != runRef) || c.Validate() != nil {
 			return nil, ErrDiagnosticCandidate
 		}
+		c = c.NormalizedSeverity()
 		c.ID = id
 		out = append(out, c)
 	}

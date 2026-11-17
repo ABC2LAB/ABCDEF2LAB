@@ -174,3 +174,8 @@ intent 행의 `complete`는 송신 전 감사의 초기 값이며 응답 성공�
 ## 8. 새 세션의 진행·보존 진단 재발견
 
 `GET /api/diagnoses/v2/runs`는 기존 URL v2 Bearer 인증으로 보호 준비 Job 저널에서 자기 회차만 조회한다. 멱등 키 없이 현재 task를 다시 찾을 수 있다. 개수·바이트·snapshot cursor·상태/승인 표시와 이경준·윤재상 UI 인계는 [제품 진단 목록 계약](product-run-list.md)을 따른다. 기존 일반 `/api/tasks`나 브라우저 저장소를 원천으로 대체하지 않는다. 목록은 실행·재개 권위가 아니다.
+
+
+## 진단 후보 예상 심각도
+
+내부 remediation 응답의 선택 필드 `severity_source=worker_estimate`, `severity_rationale`는 저장 후보의 예상 등급 근거다. 등급은 기존 `severity`를 사용하며 판정과 분리한다. 후보 예상 등급을 확정 집계에 넣지 않는다. 공유 응답에서는 새 평가 필드를 내보내지 않는다. 상세 수용·호환·지문 규칙은 [진단 후보 예상 심각도 계약](diagnostic-candidate-severity.md)을 따른다.

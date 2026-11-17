@@ -13,6 +13,7 @@ import { activeURLRun, endedURLRun } from "@/lib/diagnosis/diagnosis-runs";
 import { diagnosticOutcome } from "@/lib/diagnosis/diagnostic-results";
 import type { RemediationEntry } from "@/lib/diagnosis/remediation";
 import type { RequestApproval } from "@/lib/diagnosis/request-approvals";
+import { entrySeverity } from "@/lib/diagnosis/severity";
 
 import { SEVL, type SevKey } from "../../data/findings";
 import { cx } from "../../lib/cx";
@@ -37,7 +38,7 @@ import {
 } from "./approvals";
 import { JobSummary, jobResult, pendingRows, useCoveragePct } from "./jobSummary";
 import { ReportReadError, RunListControls, RunListStatus, RunRow, SelectedRunStatus } from "./runRows";
-import { EntryEp, FindingDetail, ORDER, Outcome } from "./UrlLiveLive";
+import { EntryEp, FindingDetail, ORDER, Outcome, Sev } from "./UrlLiveLive";
 import { UrlHead } from "./urlParts";
 import { type Chip, Chips } from "./urlRecords";
 
@@ -55,16 +56,17 @@ const REFRESH_MIN_MS = 600;
 
 /** 위험도 칸. 서버가 심각도를 안 줬거나 모르는 값이면 none(등급 없음). */
 type SevF = SevKey | "none";
-const SEV_RANK: readonly SevF[] = ["crit", "hi", "mid", "lo", "none"];
+const SEV_RANK: readonly SevF[] = ["crit", "hi", "mid", "lo", "info", "none"];
 const FIND_CHIPS: ReadonlyArray<Chip<SevF>> = [
   ["all", "전체", true, "저장된 발견 모두 (정상 대조 결과 제외)"],
   ["crit", SEVL.crit, false, "심각도 심각"],
   ["hi", SEVL.hi, false, "심각도 높음"],
   ["mid", SEVL.mid, false, "심각도 중간"],
   ["lo", SEVL.lo, false, "심각도 낮음"],
-  ["none", "등급 없음", false, "서버가 심각도를 주지 않은 발견"],
+  ["info", SEVL.info, false, "정보성 심각도"],
+  ["none", "위험도 미평가", false, "서버가 심각도를 주지 않은 발견"],
 ];
-const sevOf = (e: RemediationEntry): SevF => sevKey(e.severity ?? "") ?? "none";
+const sevOf = (e: RemediationEntry): SevF => sevKey(entrySeverity(e) ?? "") ?? "none";
 /** 위험도 막대 색 (시안 v77 요약 칸). 등급 없음은 옅은 선색. */
 const SEV_BAR: Readonly<Record<SevF, string>> = {
   crit: "var(--crit)",
@@ -72,6 +74,7 @@ const SEV_BAR: Readonly<Record<SevF, string>> = {
   mid: "var(--mid)",
   lo: "var(--lo)",
   none: "var(--rule-2)",
+  info: "var(--muted)",
 };
 
 /**
@@ -96,10 +99,17 @@ function DashStrip({
   /** 이 점검의 모델 토큰 (서버 기록이 없으면 null) */
   tokens: { input: number; output: number } | null;
 }) {
-  const bySev = (k: SevF) => found.filter((e) => sevOf(e) === k).length;
+  const bySev = (k: SevF) => found.filter((e) => diagnosticOutcome(e) === "confirmed" && sevOf(e) === k).length;
   const byOutcome = (o: string) => found.filter((e) => diagnosticOutcome(e) === o).length;
   const sevSub = SEV_RANK.filter((k) => k !== "none" || bySev(k) > 0)
-    .map((k) => `${k === "none" ? "등급 없음" : SEVL[k]} ${bySev(k)}`)
+    .map((k) => `확정 ${k === "none" ? "위험도 미평가" : SEVL[k]} ${bySev(k)}`)
+    .join(" · ");
+  const estimates = SEV_RANK.filter((k) => k !== "none")
+    .map((k) => {
+      const count = found.filter((e) => diagnosticOutcome(e) === "review" && sevOf(e) === k).length;
+      return count ? `예상 ${SEVL[k]} ${count}` : "";
+    })
+    .filter(Boolean)
     .join(" · ");
   const decide = approvals === null ? null : approvals + (selecting ? 1 : 0);
   // 시안 결정 대기 보조 글: 남은 것만 ('승인 1 · 경로 선택 1'), 없으면 '모두 결정함'
@@ -125,7 +135,7 @@ function DashStrip({
           </div>
         ) : null}
         <div className={s.sub} id="dSevSub">
-          {ready ? sevSub : "결과가 저장되면 셉니다"}
+          {ready ? [sevSub, estimates].filter(Boolean).join(" · ") : "결과가 저장되면 셉니다"}
         </div>
       </div>
       <div className={cx(s.cell, !!decide && s.warn)} id="dDecide">
@@ -266,7 +276,6 @@ export function UrlDashboardLive() {
     findBody = (
       <div className={s.list} id="dTodo">
         {(findAll ? shown : shown.slice(0, FIND_MAX)).map((e) => {
-          const k = sevOf(e);
           const on = sel.kind === "finding" && sel.id === e.entry_id;
           return (
             <button
@@ -277,11 +286,7 @@ export function UrlDashboardLive() {
               aria-current={on ? "true" : undefined}
               onClick={() => pick({ kind: "finding", id: e.entry_id })}
             >
-              {k === "none" ? (
-                <span className={s.sev}>등급 없음</span>
-              ) : (
-                <span className={cx(s.sev, s[k])}>{SEVL[k]}</span>
-              )}
+              <Sev e={e} />
               <span className={s.fm}>
                 <span className={s.ft}>{maskSecrets(e.title) || e.entry_id}</span>
                 <span className={s.fe}>
