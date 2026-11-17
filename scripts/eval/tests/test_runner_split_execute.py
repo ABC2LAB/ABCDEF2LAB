@@ -27,10 +27,28 @@ SAMPLING = {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0, "presenc
             "seed": 42}
 
 
+LLM_SLUG, LLM_NAME = "example-provider", "Example"
+
+
+def product_marker(**overrides):
+    """제품 호출 기록 사후 검증 표식(eval-meter -role generation-verify). 게이트웨이 표식과 같은 모양, 거부 두 칸은 null."""
+    generation = {"id": "gen-1", "status": "verified", "provider_name": LLM_NAME,
+                  "attempts": [{"provider_name": LLM_NAME, "endpoint_id": "ep-1", "status": 200}]}
+    base = {"role": "generation-verify", "backend": "api", "provider": LLM_SLUG, "sampling": dict(SAMPLING), "sealed_at": "a",
+            "drained_at": "a", "verified_at": "b", "forwarded_requests": 2, "upstream_errors": 0,
+            "upstream_error_ends": {"client_closed_after_done": 0, "client_closed_before_done": 0, "upstream_cut_after_done": 0,
+                                    "upstream_cut_before_done": 0},
+            "rejected_requests": 0, "rejected_after_seal": 0, "cancelled_by_seal": 0, "responses_without_generation_id": 0,
+            "generations": [generation], "log_complete": True, "rejected_sampling": None, "rejected_provider": None,
+            "rate_limited": 0}
+    return base | overrides
+
+
 def spec(**changes):
     values = dict(run_id="ours-1", project="eval-ours-1", image_ids=dict(IMAGES), request_budget=10, time_budget_seconds=60.0,
                   poll_seconds=1.0, drain_timeout_seconds=5.0, events_lookback_seconds=10.0, host_watch_max_gap_seconds=15.0,
-                  task_status_wait_seconds=2.0, healthchecks=dict(HEALTH), product_close_seconds=30.0, post_settle_seconds=2)
+                  task_status_wait_seconds=2.0, healthchecks=dict(HEALTH), product_close_seconds=30.0, post_settle_seconds=2,
+                  llm_sampling=dict(SAMPLING), llm_provider_slug=LLM_SLUG, llm_provider_name=LLM_NAME)
     values.update(changes)
     return SplitRunSpec(**values)
 
@@ -84,6 +102,8 @@ class FakePorts:
         self.snapshot_times: dict[str, float] = {}
         self.layout = {"pre": [], "post": []}
         self.snapshot_change: dict[str, dict] = {}
+        self.marker: dict | None = product_marker()
+        self.verify_args: list = []
 
     def _call(self, name):
         self.calls.append(name)
@@ -118,6 +138,14 @@ class FakePorts:
         snap = snapshot()
         snap["services"].update(self.snapshot_change.get(phase, {}))
         return snap
+
+    def generation_verify(self, calls, sampling):
+        self._call("generation_verify")
+        self.verify_args.append((calls, sampling))
+
+    def llm_verified(self):
+        self._call("llm_verified")
+        return self.marker
 
     def check(self, phase):
         self._call(f"check:{phase}")
@@ -227,7 +255,8 @@ ORDER_HEAD = ["preexisting", "image_ids", "host_spec", "planned_subnets", "up", 
               "events:start", "watch:start", "scoreboard:pre", "prepare_round", "start_round"]
 ORDER_TAIL = ["seal", "meter:drained", "stop_round", "wait_closed", "snapshot:post", "check:post", "probes:post", "scoreboard:post",
               "stop_boundary", "watch:stop",
-              "events:stop", "status", "run_record", "copy_boundary_evidence", "copy_product_records", "down", "remove_inputs"]
+              "events:stop", "status", "run_record", "copy_boundary_evidence", "copy_product_records",
+              "generation_verify", "llm_verified", "down", "remove_inputs"]
 
 
 class TestOrder(unittest.TestCase):
@@ -241,7 +270,7 @@ class TestOrder(unittest.TestCase):
                          ("time_budget", "runner_time_budget", "c" * 64))
         self.assertEqual(result["sampling_overwrites"], {"execution": 0, "preparation": []})
         self.assertEqual(set(evidence.files), {"subnet-check.json", "pre-checks.json", "post-checks.json", "pre-probe.json",
-                                               "post-probe.json", "task.json",
+                                               "post-probe.json", "task.json", "llm-summary.json",
                                                "window-watch.json", "product-end.json", "product-model.json", RESULT_NAME})
         self.assertEqual(evidence.files[RESULT_NAME], result)
         self.assertEqual(set(evidence.files["pre-probe.json"]["origins"]), {"preparation"})
@@ -333,6 +362,23 @@ class TestInvalid(unittest.TestCase):
         _, ports, _ = self.assert_invalid("post_probe_invalid", lambda p: p.probe_status.update(post=INVALID))
         self.assertIn("watch:stop", ports.calls)  # 감시는 정리한다
 
+    def test_product_calls_are_verified_like_the_gateway(self):
+        # 제품이 실제로 보낸 샘플링(실행 기록)과 복사한 호출 기록을 넘기고, 표식은 B와 같은 규칙으로 판정한다(4-11).
+        result, ports, evidence = run()
+        self.assertEqual(ports.verify_args, [(CALLS, dict(SAMPLING))])
+        self.assertEqual((evidence.files["llm-summary.json"]["reasons"], result["status"]), ([], "complete"))
+        self.assert_invalid("llm_unverified", lambda p: setattr(p, "marker", None))
+        _, _, evidence = self.assert_invalid("llm_sampling_mismatch",
+                                             lambda p: setattr(p, "marker", product_marker(sampling=dict(SAMPLING, seed=7))))
+        self.assertEqual(evidence.files["llm-summary.json"]["reasons"], ["llm_sampling_mismatch"])
+        self.assert_invalid("llm_provider_mismatch", lambda p: setattr(p, "marker", product_marker(generations=[
+            {"id": "g", "status": "verified", "provider_name": "Other", "attempts": [{"provider_name": "Other", "endpoint_id": "e",
+                                                                                    "status": 200}]}])))
+        # 게이트웨이 표식을 O 자리에 넣지 못한다
+        # (모양이 온전한 게이트웨이 표식이어도 역할이 다르면 거부한다: 거부 두 칸이 0인 B 표식)
+        self.assert_invalid("llm_marker_invalid", lambda p: setattr(p, "marker", product_marker(
+            role="llm-gateway", rejected_sampling=0, rejected_provider=0)))
+
     def test_container_replaced_between_pre_and_post(self):
         # #668 리뷰: 같은 이미지·주소의 새 컨테이너로 바뀌면 배치 검사는 통과하지만 B와 같은 스냅숏 대조가 잡는다.
         _, ports, _ = self.assert_invalid("boundary_changed", lambda p: p.snapshot_change.update(post={"target": {"id": "9" * 64}}))
@@ -387,7 +433,8 @@ class TestInvalid(unittest.TestCase):
                            ("start_round", "product_start_failed"), ("seal", "seal_failed"), ("stop_boundary", "boundary_stop_failed"),
                            ("stop_round", "product_stop_failed"), ("wait_closed", "product_close_failed"),
                            ("run_record", "product_run_record_failed"), ("copy_boundary_evidence", "boundary_evidence_copy_failed"),
-                           ("copy_product_records", "product_records_copy_failed")):
+                           ("copy_product_records", "product_records_copy_failed"), ("generation_verify", "llm_verify_failed"),
+                           ("llm_verified", "llm_read_failed")):
             with self.subTest(port=name):
                 result, ports, _ = self.assert_invalid(code, lambda p, n=name: p.fail.update({n: RuntimeError("secret value")}))
                 self.assertNotIn("secret", str(result))
