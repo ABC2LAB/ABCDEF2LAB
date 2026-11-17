@@ -50,7 +50,7 @@ import { DiagnosticEntrySections } from "./DiagnosticEntrySections";
 import { ReportReadError } from "./runRows";
 import { TaskActivity } from "./TaskActivity";
 import { reasonText, UrlFacts, UrlHead, UrlNotices, UrlPill, UrlRefreshButton, useUrlHost } from "./urlParts";
-import { ActivityLog, crawlPct, PauseButton, useStopConfirm, WorkflowNotice, WorkflowReport } from "./workflowViews";
+import { crawlPct, PauseButton, useStopConfirm, WorkflowNotice, WorkflowReport } from "./workflowViews";
 
 /** 보고서 위치의 상위 화면 (작업대 / 끝난 점검 / 주소 / 보고서) */
 const FINISHED = { href: "#finished", label: "끝난 점검" };
@@ -665,9 +665,10 @@ export function UrlLiveLive() {
           {ended && !savedTask ? <p className={s.empty}>결과 저장이 확인되면 발견 목록이 여기에 나옵니다.</p> : null}
           {a.message ? <p role="status">{a.message}</p> : null}
           {a.unresolved ? <p role="alert">결정 결과 불명 · 조회로 확인하기 전에는 다시 결정하지 않습니다.</p> : null}
-          {/* 활동: 탐색 흐름이 있는 점검은 활동 기록(워커 콘솔). 흐름이 없는 점검은 그 기록이 없으므로 점검 중에만
-              서버 진단 활동(#642 TaskActivity, product-run-list.md 인계 5)을 둔다 — 끝나면 제품 서버가 활동 조회를 닫는다(403) */}
-          {job.input.workflow_mode ? <ActivityLog /> : null}
+          {/* 활동 기록(탐색 흐름 활동 · 워커 콘솔)은 두지 않는다(사용자 11/17): 서버가 도구 입출력 · 모델 글이 비밀을 품을 수
+              있어 원문 대신 고정 문장만 준다(diagnosisflow postgres.go publicActivity) — 보여 줄 내용이 없다.
+              흐름이 없는 점검만 점검 중에 서버 진단 활동(#642 TaskActivity, product-run-list.md 인계 5, #661 이경준 리뷰)을
+              둔다 — 끝나면 제품 서버가 활동 조회를 닫는다(403) */}
           {!job.input.workflow_mode && !ended && job.task_id && verified ? (
             <TaskActivity key={job.task_id} taskId={job.task_id} enabled={visible} />
           ) : null}
