@@ -1398,6 +1398,8 @@ describe("점검 진행", () => {
     expect(finds).not.toHaveTextContent("secret-token-value");
     // 활동 기록: 전부 최신 순(id), 줄마다 시각 · 종류 딱지 · 내용. 모르는 종류는 '기록', 엔진 내부 이름은 없다
     const feedSec = screen.getByRole("region", { name: "활동 기록" });
+    // 타임라인 모양은 이 목록에만 (공용 .feed 를 바꾸면 서버 진단 활동 목록까지 깨진다)
+    expect(document.getElementById("lFeed")?.classList).toHaveLength(2);
     expect(screen.queryByRole("region", { name: "점검 계획" })).toBeNull();
     expect(document.getElementById("lFeedN")).toHaveTextContent(/^4건 · 최신 순$/);
     expect(

@@ -1604,7 +1604,7 @@ export function ActivityLog() {
         </span>
       </div>
       {activity.length ? (
-        <ul className={s.feed} id="lFeed">
+        <ul className={cx(s.feed, s.tl)} id="lFeed">
           {activity.map((a) => {
             const [label, tone] = actKind(a.kind);
             return (

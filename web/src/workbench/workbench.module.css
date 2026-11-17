@@ -4064,16 +4064,26 @@ button.smm:hover {
   flex-direction: column;
 }
 .feed li {
-  position: relative;
   display: grid;
-  grid-template-columns: 62px 10px auto minmax(0, 1fr);
+  grid-template-columns: 62px 10px minmax(0, 1fr);
   gap: 10px;
   align-items: baseline;
   padding: 7px 0;
+  border-top: 1px solid var(--rule);
   font-size: 13px;
 }
-/* 활동 타임라인 세로선: 점 칸(62px + 간격 10px 뒤 10px 칸) 가운데. 첫 줄은 점 아래부터, 끝 줄은 점까지 */
-.feed li::before {
+.feed li:first-child {
+  border-top: 0;
+}
+/* 점검 진행 활동 기록 타임라인(.feed.tl): 시각 · 점 · 종류 딱지 · 내용, 줄 구분선 대신 점을 잇는 세로선.
+   서버 진단 활동(TaskActivity) 등 다른 .feed 목록은 위 기본 모양 그대로 */
+.feed.tl li {
+  position: relative;
+  grid-template-columns: 62px 10px auto minmax(0, 1fr);
+  border-top: 0;
+}
+/* 세로선: 점 칸(62px + 간격 10px 뒤 10px 칸) 가운데. 첫 줄은 점 아래부터, 끝 줄은 점까지 */
+.feed.tl li::before {
   content: "";
   position: absolute;
   left: 76.25px;
@@ -4082,13 +4092,13 @@ button.smm:hover {
   width: 1.5px;
   background: var(--rule);
 }
-.feed li:first-child::before {
+.feed.tl li:first-child::before {
   top: 14px;
 }
-.feed li:last-child::before {
+.feed.tl li:last-child::before {
   bottom: calc(100% - 14px);
 }
-.feed li:only-child::before {
+.feed.tl li:only-child::before {
   display: none;
 }
 .tn {
