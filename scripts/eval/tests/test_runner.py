@@ -2853,6 +2853,12 @@ class TestFirstLimit(unittest.TestCase):
         self.assertEqual(result["status"], COMPLETE)
         self.assertEqual(result["first_limit"]["value"], "runner_request_budget")
         self.assertIsNone(result["first_limit"]["engine_terminal_elapsed_seconds"])
+        # 러너 상한 시각은 작업 생성 요청 직전부터 잰다(시계가 0에서 시작하지 않아도). 계측기 요약의 두 시각과 같다.
+        result, _, _, evidence = run(lambda p, m, c: c.sleep(1000))
+        summary = evidence.files["meter-summary.json"]
+        self.assertEqual(result["first_limit"]["runner_limit_elapsed_seconds"],
+                         (datetime.fromisoformat(summary["stopped_at"]) - datetime.fromisoformat(summary["task_requested_at"])).total_seconds())
+        self.assertLess(result["first_limit"]["runner_limit_elapsed_seconds"], 1000)
         # 요청이 없으면 시간 예산.
         result, _, _, _ = run(lambda p, m, c: setattr(m, "per_poll", 0))
         self.assertEqual((result["first_limit"]["value"], result["first_limit"]["runner_limit_elapsed_seconds"]),
