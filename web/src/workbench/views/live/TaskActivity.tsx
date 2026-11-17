@@ -4,15 +4,16 @@ import type { ReactNode } from "react";
 
 import { cx } from "../../lib/cx";
 import { maskSecrets } from "../../live/mask";
-import { ErrorNote, LoadingRow } from "../../live/parts";
+import { LoadingRow } from "../../live/parts";
 import { useActivityTail } from "../../live/useActivityTail";
 import s from "../../workbench.module.css";
+import { RunReadError } from "./runRows";
 
 /** 새 task 결속마다 커서를 새로 만든다. 서버가 공개한 고정 요약과 sequence만 표시한다. */
 export function TaskActivity({ taskId, enabled }: { taskId: string | null; enabled: boolean }) {
   const activity = useActivityTail(taskId, { enabled, intervalMs: 4000 });
   let body: ReactNode = <LoadingRow />;
-  if (activity.error) body = <ErrorNote error={activity.error} onRetry={activity.reload} />;
+  if (activity.error) body = <RunReadError resource="활동" error={activity.error} onRetry={activity.reload} />;
   else if (activity.data)
     body = (
       <>

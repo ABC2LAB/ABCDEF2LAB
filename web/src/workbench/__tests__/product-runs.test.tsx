@@ -551,3 +551,18 @@ describe("다른 Job·인증 문맥으로 바뀐 뒤의 늦은 HTTP 응답", () 
     expect(posts()).toEqual([]);
   });
 });
+
+it.each([403, 404, 503])("활동 조회 HTTP %s를 미지원이나 빈 활동으로 바꾸지 않는다", async (status) => {
+  route = (u) =>
+    u.pathname === "/api/exploration/activity" ? json({ error: "activity_unavailable" }, status) : undefined;
+  render(<Harness />);
+  await pick("첫 번째 점검");
+  fireEvent.click(screen.getByRole("button", { name: "테스트 이동 live" }));
+  await waitFor(() =>
+    expect(screen.getByRole("region", { name: "서버 진단 활동" })).toHaveTextContent(`활동 조회 실패 (HTTP ${status})`),
+  );
+  expect(screen.getByRole("region", { name: "서버 진단 활동" })).not.toHaveTextContent(
+    /제공되지 않음|반환된 활동 기록이 없습니다/,
+  );
+  expect(posts()).toEqual([]);
+});

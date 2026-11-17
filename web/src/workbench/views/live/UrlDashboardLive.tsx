@@ -186,7 +186,7 @@ export function UrlDashboardLive() {
   const rem = usePoll(() => fetchRemediation(reportTask as string, "internal"), [reportTask], {
     enabled: visible && !!reportTask,
   });
-  const remFor = reportTask && rem.data && String(rem.data.task_id) === reportTask ? rem.data : null;
+  const remFor = !rem.error && reportTask && rem.data && String(rem.data.task_id) === reportTask ? rem.data : null;
   const found = remFor ? dashFindings(remFor.entries) : [];
   const result = remFor && job ? jobResult(job, remFor.entries) : null;
   const [ff, setFf] = useState<SevF | "all">("all");

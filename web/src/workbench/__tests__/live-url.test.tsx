@@ -1876,3 +1876,38 @@ it("로컬 모델 회차도 대상에 시험 계정이 있으면 '시험 계정 
   // 로컬은 외부 전송 동의 체크 칸을 만들지 않는다(동의 없이 결속)
   expect(screen.queryByRole("checkbox", { name: /이 점검 회차에서 시험 계정 세션/ })).toBeNull();
 });
+
+it("보고서 재조회가 실패하면 이전 성공 자료로 이번 오류를 숨기지 않는다", async () => {
+  useUrl.setState({ cap: { kind: "v2", catalog }, handle, job: completed, selectedID: completed.id, verified: true });
+  a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [candidate(1)] });
+  const frame = (route: View) => (
+    <ShellContext.Provider value={shellValue({ route })}>
+      <ReportByMode />
+    </ShellContext.Provider>
+  );
+  const view = render(frame("report"));
+  await waitFor(() => expect(screen.getByRole("region", { name: "판정 집계" })).toBeInTheDocument());
+  view.rerender(frame("live"));
+  a.fetchRemediation.mockRejectedValue(new ApiError(503, "unavailable"));
+  view.rerender(frame("report"));
+  expect(await screen.findByRole("alert")).toHaveTextContent("보고서 조회 실패 (HTTP 503)");
+  expect(screen.queryByRole("region", { name: "판정 집계" })).toBeNull();
+  expect(screen.queryByRole("button", { name: /후보 1/ })).toBeNull();
+});
+
+it("대시보드 보고서 재조회 오류도 이전 성공의 발견 목록으로 가리지 않는다", async () => {
+  useUrl.setState({ cap: { kind: "v2", catalog }, handle, job: completed, selectedID: completed.id, verified: true });
+  a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [candidate(1)] });
+  const frame = (route: View) => (
+    <ShellContext.Provider value={shellValue({ route })}>
+      <DashboardByMode />
+    </ShellContext.Provider>
+  );
+  const view = render(frame("dashboard"));
+  await screen.findByRole("button", { name: /후보 1/ });
+  view.rerender(frame("live"));
+  a.fetchRemediation.mockRejectedValue(new ApiError(503, "unavailable"));
+  view.rerender(frame("dashboard"));
+  expect(await screen.findByRole("alert")).toHaveTextContent("보고서 조회 실패 (HTTP 503)");
+  expect(screen.queryByRole("button", { name: /후보 1/ })).toBeNull();
+});

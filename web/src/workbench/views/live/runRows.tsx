@@ -142,21 +142,27 @@ export function SelectedRunStatus() {
   );
 }
 
-export function ReportReadError({ error, onRetry }: { error: unknown; onRetry?: () => void }) {
+type ReadErrorProps = { error: unknown; onRetry?: () => void };
+
+export function ReportReadError(props: ReadErrorProps) {
+  return <RunReadError resource="보고서" {...props} />;
+}
+
+export function RunReadError({ resource, error, onRetry }: ReadErrorProps & { resource: "보고서" | "활동" }) {
   const status = error instanceof ApiError ? error.status : 0;
   const details: Record<number, string> = {
     401: "다시 로그인해 주세요.",
     403: "조회 권한을 확인해 주세요.",
-    404: "이번 조회에서 보고서를 찾지 못했습니다.",
-    503: "보고서 서비스가 응답하지 않습니다.",
+    404: `이번 조회에서 ${resource} 자료를 찾지 못했습니다.`,
+    503: `${resource} 서비스가 응답하지 않습니다.`,
   };
-  const detail = details[status] ?? "보고서 응답을 확인하지 못했습니다.";
+  const detail = details[status] ?? `${resource} 응답을 확인하지 못했습니다.`;
   return (
     <div role="alert" className={s.err}>
-      <p>{`보고서 조회 실패${status ? ` (HTTP ${status})` : ""} · ${detail}`}</p>
+      <p>{`${resource} 조회 실패${status ? ` (HTTP ${status})` : ""} · ${detail}`}</p>
       {onRetry ? (
         <button type="button" className={cx(s.btn, s.sm)} onClick={onRetry}>
-          보고서 다시 조회
+          {resource} 다시 조회
         </button>
       ) : null}
     </div>

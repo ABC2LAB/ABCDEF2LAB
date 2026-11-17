@@ -140,7 +140,9 @@ function RecordList({ finished }: { finished: boolean }) {
     { enabled: visible && !!task },
   );
   const report =
-    task && rem.data?.identity === identity && String(rem.data.report.task_id) === task ? rem.data.report : null;
+    !rem.error && task && rem.data?.identity === identity && String(rem.data.report.task_id) === task
+      ? rem.data.report
+      : null;
   const result = report && job ? jobResult(job, report.entries) : null;
   const coverage = useCoveragePct(task, visible);
   const approvalsOn =

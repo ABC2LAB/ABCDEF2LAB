@@ -919,9 +919,9 @@ export function UrlReportLive() {
     );
   }
 
-  const entries = rem.data?.entries ?? [];
+  const entries = rem.error ? [] : (rem.data?.entries ?? []);
   const sorted = [...entries].sort((x, y) => ORDER.indexOf(diagnosticOutcome(x)) - ORDER.indexOf(diagnosticOutcome(y)));
-  const counts = rem.data ? summarizeDiagnosticEntries(entries) : null;
+  const counts = rem.data && !rem.error ? summarizeDiagnosticEntries(entries) : null;
   const findings = sorted.filter((e) => diagnosticOutcome(e) !== "negative");
   // 우선 조치: 시안처럼 위험도 → 판정 순
   const prio = sorted
@@ -952,7 +952,7 @@ export function UrlReportLive() {
   };
 
   let listBody: ReactNode;
-  if (!rem.data && rem.error) listBody = <ReportReadError error={rem.error} onRetry={rem.reload} />;
+  if (rem.error) listBody = <ReportReadError error={rem.error} onRetry={rem.reload} />;
   else if (!rem.data) listBody = <LoadingRow />;
   else if (!sorted.length)
     listBody = <p className={s.empty}>저장된 결과가 없습니다. 결과가 없다고 안전하다는 뜻은 아닙니다.</p>;
