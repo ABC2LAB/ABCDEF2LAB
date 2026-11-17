@@ -84,6 +84,7 @@ export function useRequestApprovals(taskId: string, active: boolean): Approvals 
       const st = useUrl.getState();
       return (
         st.verified &&
+        st.handle?.kind !== "recovered" &&
         !st.uncertain &&
         st.job?.task_id === taskId &&
         ["preparing", "running"].includes(st.job.state) &&

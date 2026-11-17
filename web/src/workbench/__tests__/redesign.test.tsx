@@ -14,6 +14,7 @@ import { catalog, handle, running, scope } from "@/lib/diagnosis/diagnosis-url-f
 import * as api from "../live/api";
 import { LiveRailTasks } from "../live/rail";
 import { resetUrl, useUrl } from "../live/urlDiagnosis";
+import { useUrlRuns } from "../live/urlRunList";
 import { FLOW_VERSION, type WorkflowSnapshot } from "../live/workflow";
 import { type Shell, ShellContext, type View } from "../shell";
 import { UrlDashboardLive } from "../views/live/UrlDashboardLive";
@@ -23,6 +24,7 @@ import {
   durText,
   eventText,
   group,
+  PauseButton,
   Pth,
   WorkflowCrawlLive,
   WorkflowScopeLive,
@@ -1072,6 +1074,29 @@ describe("대시보드", () => {
         },
       ],
     });
+    useUrlRuns.setState({
+      owner: catalog.ownerContext,
+      page: {
+        snapshot: "c".repeat(64),
+        limit: 25,
+        more: false,
+        runs: [
+          {
+            id: job.id,
+            revision: job.revision,
+            state: job.state,
+            phase: job.phase,
+            task_id: job.task_id,
+            started: true,
+            drain_complete: false,
+            result_ready: false,
+            report_available: false,
+            approval_status: "not_revalidated",
+            action_required: true,
+          },
+        ],
+      },
+    });
     render(
       <ShellContext.Provider value={shell("dashboard")}>
         <UrlDashboardLive />
@@ -1082,10 +1107,9 @@ describe("대시보드", () => {
       .parentElement as HTMLElement;
     await waitFor(() => expect(decide).toHaveTextContent(/^결정 대기1승인 1$/));
     expect(screen.queryByRole("region", { name: "결정 대기" })).toBeNull();
-    const act = within(screen.getByRole("region", { name: "진행 중인 점검" })).getByRole("button", {
-      name: /target\.example/,
-    });
-    expect(within(act).getByText("승인 대기")).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("region", { name: "진행 중인 점검" })).getByRole("button", { name: /job-1/ }),
+    ).toHaveTextContent("확인 필요");
     // 고르기 전 상세는 승인 대기 요청 (보내기 전에 사람이 정해야 함)
     const detail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
     expect(within(detail).getByText("PUT /api/users/2")).toBeInTheDocument();
@@ -1102,10 +1126,35 @@ describe("대시보드", () => {
     expect(within(detail).getByText("attempt-1")).toBeInTheDocument();
     expect(within(detail).getByRole("button", { name: "이 요청 승인" })).toBeInTheDocument();
     expect(within(detail).getByRole("button", { name: "거부" })).toBeInTheDocument();
-    // 점검 줄을 고르면 점검 상세의 결정 대기 · '승인 요청 보기' 로 다시 승인 요청을 연다 (시안 act-api)
-    fireEvent.click(act);
-    expect(within(detail).getByText(/^보낼 요청 1건 · 가장 빠른 만료/)).toBeInTheDocument();
-    fireEvent.click(within(detail).getByRole("button", { name: "승인 요청 보기" }));
-    expect(within(detail).getByText("PUT /api/users/2")).toBeInTheDocument();
   });
+});
+
+it("목록에서 복구한 회차의 일시정지·범위 선택 실행 버튼은 조회 전용으로 잠근다", () => {
+  const recovered = {
+    kind: "recovered" as const,
+    ownerContext: catalog.ownerContext,
+    input: job.input,
+    id: job.id,
+    revision: job.revision,
+    sourceDigest: job.source_digest,
+    bindingLocked: true as const,
+  };
+  useUrl.setState({
+    handle: recovered,
+    job,
+    verified: true,
+    flow: { ...flow, stage: "diagnosing" },
+    flowVerified: true,
+  });
+  const first = render(<PauseButton />);
+  expect(screen.getByRole("button", { name: "일시정지" })).toBeDisabled();
+  first.unmount();
+  useUrl.setState({ flow: { ...flow, stage: "awaiting_selection" } });
+  render(
+    <ShellContext.Provider value={shell("scope")}>
+      <WorkflowScopeLive />
+    </ShellContext.Provider>,
+  );
+  for (const button of screen.getAllByRole("button", { name: /선택한 범위로 점검 시작/ }))
+    expect(button).toBeDisabled();
 });

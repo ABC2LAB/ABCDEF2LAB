@@ -2,7 +2,7 @@
 import type { ReactNode } from "react";
 
 import { LoadingRow } from "../../live/parts";
-import { recheckUrl, useUrlCapability } from "../../live/urlDiagnosis";
+import { recheckUrl, useUrlCapability, useUrlSelectionKey } from "../../live/urlDiagnosis";
 import s from "../../workbench.module.css";
 import { UrlDashboardLive } from "./UrlDashboardLive";
 import { UrlLiveLive, UrlReportLive } from "./UrlLiveLive";
@@ -36,38 +36,59 @@ function Supported({ title, children }: { title: string; children: ReactNode }) 
     </>
   );
 }
-export const NewScanByMode = () => (
-  <Supported title="새 점검">
-    <UrlNewScanLive />
-  </Supported>
-);
-export const DashboardByMode = () => (
-  <Supported title="대시보드">
-    <UrlDashboardLive />
-  </Supported>
-);
-export const RunningByMode = () => (
-  <Supported title="진행 중인 점검">
-    <UrlRunningLive />
-  </Supported>
-);
-export const FinishedByMode = () => (
-  <Supported title="끝난 점검">
-    <UrlFinishedLive />
-  </Supported>
-);
-export const ScopeByMode = () => (
-  <Supported title="범위 확인">
-    <WorkflowScopeLive />
-  </Supported>
-);
-export const LiveByMode = () => (
-  <Supported title="점검 진행">
-    <UrlLiveLive />
-  </Supported>
-);
-export const ReportByMode = () => (
-  <Supported title="보고서">
-    <UrlReportLive />
-  </Supported>
-);
+export const NewScanByMode = () => {
+  const selection = useUrlSelectionKey();
+  return (
+    <Supported title="새 점검">
+      <UrlNewScanLive key={selection} />
+    </Supported>
+  );
+};
+export const DashboardByMode = () => {
+  const selection = useUrlSelectionKey();
+  return (
+    <Supported title="대시보드">
+      <UrlDashboardLive key={selection} />
+    </Supported>
+  );
+};
+export const RunningByMode = () => {
+  const selection = useUrlSelectionKey();
+  return (
+    <Supported title="진행 중인 점검">
+      <UrlRunningLive key={selection} />
+    </Supported>
+  );
+};
+export const FinishedByMode = () => {
+  const selection = useUrlSelectionKey();
+  return (
+    <Supported title="끝난 점검">
+      <UrlFinishedLive key={selection} />
+    </Supported>
+  );
+};
+export const ScopeByMode = () => {
+  const selection = useUrlSelectionKey();
+  return (
+    <Supported title="범위 확인">
+      <WorkflowScopeLive key={selection} />
+    </Supported>
+  );
+};
+export const LiveByMode = () => {
+  const selection = useUrlSelectionKey();
+  return (
+    <Supported title="점검 진행">
+      <UrlLiveLive key={selection} />
+    </Supported>
+  );
+};
+export const ReportByMode = () => {
+  const selection = useUrlSelectionKey();
+  return (
+    <Supported title="보고서">
+      <UrlReportLive key={selection} />
+    </Supported>
+  );
+};

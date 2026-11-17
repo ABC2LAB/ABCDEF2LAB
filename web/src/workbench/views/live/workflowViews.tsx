@@ -251,12 +251,18 @@ function EventResult({ event }: { event: FlowEvent }) {
 
 /** 탐색 명령 결과 · 상한 안내 (서버 사실만). */
 export function WorkflowNotice() {
+  const recovered = useUrl((st) => st.handle?.kind === "recovered");
   const flow = useUrl((st) => st.flow);
   const error = useUrl((st) => st.flowError),
     uncertain = useUrl((st) => st.flowUncertain),
     verified = useUrl((st) => st.flowVerified);
   return (
     <>
+      {recovered ? (
+        <p className={s.help} role="status">
+          목록에서 다시 연 점검은 조회 전용입니다. 명시적 종료만 지원합니다.
+        </p>
+      ) : null}
       {flow?.failure ? (
         <div className={cx(s.note, s.warn)} role="alert">
           <Icon name="alert" />
@@ -277,7 +283,7 @@ export function WorkflowNotice() {
         </p>
       ) : null}
       {uncertain ? <p role="status">명령 결과 불명 · 조회로 확인하기 전에는 변경 명령을 보내지 않습니다.</p> : null}
-      {uncertain && verified ? (
+      {uncertain && verified && !recovered ? (
         <div>
           <button type="button" className={cx(s.btn, s.sm)} onClick={() => void retryWorkflowAction()}>
             같은 명령 확인 · 재시도
@@ -290,6 +296,7 @@ export function WorkflowNotice() {
 
 /** 일시정지 · 다시 시작 버튼 (탐색 · 심화 진단 중에만). */
 export function PauseButton() {
+  const recovered = useUrl((st) => st.handle?.kind === "recovered");
   const flow = useUrl((st) => st.flow),
     busy = useUrl((st) => st.flowBusy),
     verified = useUrl((st) => st.flowVerified),
@@ -305,7 +312,13 @@ export function PauseButton() {
       className={s.btn}
       type="button"
       disabled={
-        !verified || uncertain || busy || !jobVerified || jobUncertain || (!flow.paused && flow.commands.length >= 31)
+        recovered ||
+        !verified ||
+        uncertain ||
+        busy ||
+        !jobVerified ||
+        jobUncertain ||
+        (!flow.paused && flow.commands.length >= 31)
       }
       aria-pressed={flow.paused}
       onClick={() => void runWorkflowAction(flow.paused ? "resume" : "pause")}
@@ -1255,6 +1268,7 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
   const [anchor, setAnchor] = useState<string | null>(null);
   // 사용자가 점검에서 뺀 경로 — 알약을 흐리게 하고 경로에 취소선을 긋는다. 다시 넣으면 지운다
   const [dropped, setDropped] = useState<ReadonlySet<string>>(() => new Set());
+  const recovered = useUrl((st) => st.handle?.kind === "recovered");
   const busy = useUrl((st) => st.flowBusy),
     verified = useUrl((st) => st.flowVerified),
     uncertain = useUrl((st) => st.flowUncertain),
@@ -1281,7 +1295,7 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
     });
   };
   const toggle = (id: string) => include([id], !selected.has(id));
-  const locked = !waiting || busy || uncertain || !verified;
+  const locked = recovered || !waiting || busy || uncertain || !verified;
   const current = flow.endpoints.find((e) => e.id === detail) ?? null;
   // 고른 경로가 없고 직접 펼치지도 않았으면 이 화면 패널을 접는다
   const fold = !current && !peek;
@@ -1477,6 +1491,7 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
 
 /** '선택한 범위로 점검 시작' 버튼 (화면 머리, 시안 sStart). */
 function ScopeStart({ flow, ids, id }: { flow: WorkflowSnapshot; ids: string[]; id?: string }) {
+  const recovered = useUrl((st) => st.handle?.kind === "recovered");
   const busy = useUrl((st) => st.flowBusy),
     verified = useUrl((st) => st.flowVerified),
     uncertain = useUrl((st) => st.flowUncertain),
@@ -1494,7 +1509,7 @@ function ScopeStart({ flow, ids, id }: { flow: WorkflowSnapshot; ids: string[]; 
       id={id}
       className={cx(s.btn, s.pri)}
       type="button"
-      disabled={!ids.length || busy || uncertain || !verified || flow.paused}
+      disabled={recovered || !ids.length || busy || uncertain || !verified || flow.paused}
       onClick={() =>
         void runWorkflowAction("selection", ids).then((ok) => {
           if (ok) goTo("live");

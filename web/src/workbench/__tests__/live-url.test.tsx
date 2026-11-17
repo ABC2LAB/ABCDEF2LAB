@@ -15,6 +15,10 @@ vi.mock("@/lib/diagnosis/diagnosis-url", async (original) => ({
   readURLReceipt: vi.fn(),
   readURLStatus: vi.fn(),
 }));
+vi.mock("@/lib/diagnosis/diagnosis-runs", async (original) => ({
+  ...(await original<typeof import("@/lib/diagnosis/diagnosis-runs")>()),
+  readURLRunPage: vi.fn(),
+}));
 vi.mock("@/lib/diagnosis/api", async (original) => ({
   ...(await original<typeof import("@/lib/diagnosis/api")>()),
   apiFetch: vi.fn(),
@@ -32,6 +36,7 @@ vi.mock("../live/api", async (importOriginal) => ({
 
 import * as teamApi from "@/lib/diagnosis/api";
 import { ApiError } from "@/lib/diagnosis/api";
+import { readURLRunPage } from "@/lib/diagnosis/diagnosis-runs";
 import * as url from "@/lib/diagnosis/diagnosis-url";
 import {
   catalog,
@@ -273,6 +278,33 @@ beforeEach(() => {
   u.createURLDraft.mockResolvedValue(draft);
   u.commandURLDiagnosis.mockResolvedValue(ready);
   u.readURLStatus.mockResolvedValue(ready);
+  vi.mocked(readURLRunPage).mockImplementation(async () => {
+    const result = u.readURLStatus.mock.results.at(-1);
+    const job = result ? await result.value : ready;
+    return {
+      snapshot: "c".repeat(64),
+      limit: 25,
+      more: false,
+      runs: url.readURLHandle(owner)
+        ? [
+            {
+              id: job.id,
+              revision: job.revision,
+              display_name: job.input.display_name,
+              state: job.state,
+              phase: job.phase,
+              started: job.started,
+              drain_complete: job.drain_complete,
+              result_ready: job.result_ready,
+              task_id: job.task_id,
+              report_available: job.result_ready && !!job.task_id,
+              approval_status: "not_revalidated",
+              action_required: true,
+            },
+          ]
+        : [],
+    };
+  });
   u.readURLReceipt.mockResolvedValue(draft);
   a.fetchRequestApprovals.mockResolvedValue(APPROVALS);
   a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [] });
@@ -336,7 +368,7 @@ describe("서버 방식 확인 (catalog)", () => {
     mount("new");
     const target = await screen.findByLabelText(/점검할 사이트 주소/);
     // 1쪽: 최근 점검한 주소는 줄 없이 빈 안내. 로그인은 지금 실제 동작(로그인 없이)이 기본이고 시안처럼 바꿀 수 있다
-    expect(screen.getByText("불러올 수 있는 최근 주소가 없습니다")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "진행·시작 전 점검 목록" })).toHaveAttribute("href", "#running");
     expect(screen.queryAllByRole("button", { name: /\.(com|io)$/ })).toHaveLength(0);
     const login = screen.getByRole("radiogroup", { name: "로그인 여부" });
     for (const r of within(login).getAllByRole("radio")) expect(r).toBeEnabled();
@@ -615,7 +647,7 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue({ ...draft, revision: 2, reason_code: "approval_required" });
     mount("new");
-    expect(await screen.findByText(/범위 확인한 입력은 잠겨 있습니다/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText(/범위 확인한 입력은 잠겨 있습니다/)).toBeInTheDocument());
     expect(screen.getByRole("button", { name: "새로 입력" })).toBeEnabled();
     expect(screen.getByLabelText(/점검할 사이트 주소/)).toBeDisabled();
   });
@@ -853,7 +885,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     mount("live");
     // 점검 진행의 상태 알약은 시안 글 (실행 중 = 진행 중)
     expect(await screen.findByText("진행 중", { selector: "h1 + span" })).toBeInTheDocument();
-    expect(u.readURLStatus).toHaveBeenCalledWith(handle.id, owner);
+    expect(u.readURLStatus).toHaveBeenCalledWith(handle.id, owner, expect.any(AbortSignal));
     expect(u.createURLDraft).not.toHaveBeenCalled();
     expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
     // 서버에 진행률 · 범위 밖 전송 집계가 없어 시안 칸은 값을 비우고 '연결 전'. 0 % 로 지어내지 않는다
@@ -869,7 +901,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     u.readURLStatus.mockResolvedValue(consentedRun);
     mount("live");
     expect(await screen.findByRole("button", { name: /종료/ })).toBeEnabled();
-    expect(u.readURLStatus).toHaveBeenCalledWith(handle.id, owner);
+    expect(u.readURLStatus).toHaveBeenCalledWith(handle.id, owner, expect.any(AbortSignal));
     expect(u.createURLDraft).not.toHaveBeenCalled();
     expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
     expect(urlGates(useUrl.getState()).canStart).toBe(false);
@@ -961,7 +993,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     const stop = screen.getByRole("button", { name: /종료/ });
     // 다음 주기 조회를 붙잡아 둔다
     let release: (job: typeof running) => void = () => undefined;
-    u.readURLStatus.mockImplementation(
+    u.readURLStatus.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
           release = resolve;
@@ -982,6 +1014,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     });
     expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
     await act(async () => {
+      u.readURLStatus.mockResolvedValue(running);
       release(running);
       await sent;
     });
@@ -1141,7 +1174,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
       fireEvent.click(within(dialog).getByRole("button", { name: "종료" }));
     });
     expect(u.commandURLDiagnosis).toHaveBeenCalledTimes(1);
-    expect(u.commandURLDiagnosis).toHaveBeenCalledWith(running, "stop", owner, undefined);
+    expect(u.commandURLDiagnosis).toHaveBeenCalledWith(running, "stop", owner);
     expect(await screen.findByText("중지·마감 중")).toBeInTheDocument();
   });
 
@@ -1291,18 +1324,20 @@ describe("대시보드 · 인증 (URL 진단)", () => {
     u.readURLStatus.mockResolvedValue(running);
     const { goTo } = mount("dashboard");
     const active = await screen.findByRole("region", { name: "진행 중인 점검" });
-    const row = await within(active).findByRole("button", { name: /target\.example/ });
+    const row = await within(active).findByRole("button", { name: /job-1/ });
     expect(within(row).getByText("엔진 실행 중")).toBeInTheDocument();
     expect(screen.getByText("끝난 점검이 없습니다.")).toBeInTheDocument();
     // 칸 제목 옆에 전체 건수, 오른쪽에 그 목록 화면으로 가는 '전체 보기' (시안 v55)
     expect(within(active).getByText("1건")).toBeInTheDocument();
     expect(within(active).getByRole("link", { name: "전체 보기" })).toHaveAttribute("href", "#running");
-    const done = screen.getByRole("region", { name: "최근 끝난 점검" });
+    const done = screen.getByRole("region", { name: "보존된 끝난 점검" });
     expect(within(done).getByText("0건")).toBeInTheDocument();
     expect(within(done).getByRole("link", { name: "전체 보기" })).toHaveAttribute("href", "#finished");
     // 줄 오른쪽은 시안 딱지 '점검 중'
-    expect(within(row).getByText("점검 중")).toBeInTheDocument();
-    fireEvent.click(row);
+    expect(within(row).getByText("엔진 실행 중")).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(row);
+    });
     expect(screen.getByText("합성 모델")).toBeInTheDocument();
     // 상세 (시안 act-shop): 진행 중 · 주소, 점검 진행, 진행 화면 열기
     const detail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
@@ -1329,12 +1364,14 @@ describe("대시보드 · 인증 (URL 진단)", () => {
     expect(cell("결과 확인")).toHaveTextContent(/^결과 확인—/);
     expect(cell("토큰 사용량 · 최근 30일")).toHaveTextContent(/^토큰 사용량 · 최근 30일— 연결 전.*점검당 평균 —$/);
     // 진행 중 줄 (시안 activeRowHtml): 진행 막대 · % 자리는 두되 서버에 진행률이 없어 빈 막대 · '—%'(0% 로 만들지 않음)
-    const act = within(screen.getByRole("region", { name: "진행 중인 점검" })).getByRole("button", {
-      name: /target\.example/,
+    const activeRow = within(screen.getByRole("region", { name: "진행 중인 점검" })).getByRole("button", {
+      name: /job-1/,
     });
-    expect(within(act).getByText("—%")).toBeInTheDocument();
-    expect(act).not.toHaveTextContent(/\d+%/);
-    fireEvent.click(act);
+    expect(activeRow).not.toHaveTextContent(/%/);
+    expect(activeRow).not.toHaveTextContent(/\d+%/);
+    await act(async () => {
+      fireEvent.click(activeRow);
+    });
     // 상세 (시안 act-shop): 지금 하는 일은 서버 단계, 시작 · 남은 시간 · 발견은 '연결 전', 결정 대기는 서버 값
     const detail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
     expect(within(detail).getByText("지금 하는 일")).toBeInTheDocument();
@@ -1385,12 +1422,10 @@ describe("대시보드 · 인증 (URL 진단)", () => {
     expect(within(detail).getByText("계정별 응답 비교").parentElement).toHaveTextContent("연결 전");
     expect(within(detail).getByText("다음 단계").parentElement).toHaveTextContent("연결 전");
     // 최근 끝난 점검 줄 (시안 doneRowHtml): 확정 발견의 위험도 딱지 + 발견 수
-    const done = within(screen.getByRole("region", { name: "최근 끝난 점검" })).getByRole("button", {
-      name: /target\.example/,
+    const done = within(screen.getByRole("region", { name: "보존된 끝난 점검" })).getByRole("button", {
+      name: /job-1/,
     });
-    expect(within(done).getByText("심각 1")).toBeInTheDocument();
-    expect(within(done).getByText("높음 1")).toBeInTheDocument();
-    expect(within(done).getByText("발견 4")).toBeInTheDocument();
+    expect(done).not.toHaveTextContent(/심각|높음|발견 4/);
     // 칩: 전체 4 · 심각 1 · 높음 1 · 중간 1 · 등급 없음 1 (0건인 낮음은 숨김)
     const chips = within(sec).getByRole("group", { name: "위험도로 거르기" });
     expect(within(chips).queryByRole("button", { name: /낮음/ })).toBeNull();
@@ -1703,7 +1738,8 @@ describe("외부 모델 시험 계정 동의", () => {
         return {
           target: {
             id: "target-1",
-            origin: new URL(new URL(p, "http://fixture.test").searchParams.get("url")!).origin,
+            origin: new URL(new URL(p, "http://fixture.test").searchParams.get("url") ?? "https://target.example/")
+              .origin,
             state: "approved",
           },
         } as never;
@@ -1767,11 +1803,10 @@ describe("외부 모델 시험 계정 동의", () => {
     expect(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]).toBeEnabled();
   });
   it("새 초안은 이전 회차 동의를 초기화한다", async () => {
-    const target = await externalTarget();
+    await externalTarget();
     fireEvent.click(await screen.findByRole("checkbox", { name: /이 점검 회차에서 시험 계정 세션/ }));
     act(() => disconnectUrl());
-    fireEvent.click(screen.getAllByRole("button", { name: /이전/ })[0]);
-    fireEvent.change(target, { target: { value: "https://target.example/app" } });
+    fireEvent.change(screen.getByLabelText(/점검할 사이트 주소/), { target: { value: "https://target.example/app" } });
     fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
     expect(await screen.findByRole("checkbox", { name: /이 점검 회차에서 시험 계정 세션/ })).not.toBeChecked();
   });
@@ -1784,16 +1819,16 @@ describe("외부 모델 시험 계정 동의", () => {
 
 it("외부 모델에서 실제 시험 계정이 있어도 미선택이면 동의 필드를 생략한다", async () => {
   u.readURLCatalog.mockResolvedValue({ ...catalog, profiles: [{ ...catalog.profiles[0], model: externalModel }] });
-  vi.mocked(teamApi.apiFetch).mockImplementation(async (path) =>
-    String(path).includes("targets/resolve")
-      ? ({ target: { id: "target-1", origin: "https://target.example", state: "approved" } } as never)
-      : String(path).endsWith("/accounts")
-        ? ({
-            accounts: [{ label: "tester", classification: "test" }],
-            external_consent_statement: SERVER_EXTERNAL_ACCOUNT_STATEMENT,
-          } as never)
-        : ({ credential: { configured: true, model: externalModel.model } } as never),
-  );
+  vi.mocked(teamApi.apiFetch).mockImplementation(async (path) => {
+    if (String(path).includes("targets/resolve"))
+      return { target: { id: "target-1", origin: "https://target.example", state: "approved" } } as never;
+    if (String(path).endsWith("/accounts"))
+      return {
+        accounts: [{ label: "tester", classification: "test" }],
+        external_consent_statement: SERVER_EXTERNAL_ACCOUNT_STATEMENT,
+      } as never;
+    return { credential: { configured: true, model: externalModel.model } } as never;
+  });
   mount("new");
   fireEvent.change(await screen.findByLabelText(/점검할 사이트 주소/), {
     target: { value: "https://target.example/app" },

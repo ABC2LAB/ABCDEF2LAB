@@ -27,7 +27,7 @@ import {
   fetchDiagnosisRun,
   fetchRemediation,
 } from "../../live/api";
-import { approvalCounts, errorText, fmtCount, isUnsupported, planState, sevKey } from "../../live/map";
+import { approvalCounts, fmtCount, planState, sevKey } from "../../live/map";
 import { maskSecrets } from "../../live/mask";
 import { ErrorNote, LoadingRow, NotYet } from "../../live/parts";
 import { useUrl, useUrlGates } from "../../live/urlDiagnosis";
@@ -40,6 +40,8 @@ import { InspHead, InspOpenButton, Isec, Kv, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "./approvals";
 import { DiagnosticEntrySections } from "./DiagnosticEntrySections";
+import { ReportReadError } from "./runRows";
+import { TaskActivity } from "./TaskActivity";
 import { reasonText, UrlFacts, UrlHead, UrlNotices, UrlPill, UrlRefreshButton, useUrlHost } from "./urlParts";
 import {
   NONE,
@@ -413,6 +415,7 @@ export function UrlLiveLive() {
             ) : null}
             {g.runReadable ? null : <p className={s.empty}>{sendWaitText}</p>}
           </section>
+          {job.task_id && verified ? <TaskActivity key={job.task_id} taskId={job.task_id} enabled={visible} /> : null}
           {job.input.workflow_mode ? <WorkflowActivity /> : null}
         </div>
         {/* 시안 발견 패널(lInsp). 점검 중 발견 수 · 심각도 · 판정 · 목록은 서버가 결과를 저장하기 전에 주지 않아
@@ -738,17 +741,13 @@ export function Download({ taskId }: { taskId: string }) {
       <div className={s.sh}>
         <h2 id="rvDlH">내려받기</h2>
       </div>
-      {st.err && isUnsupported(st.err) ? (
-        <p className={s.empty}>이 점검은 보고서 파일을 제공하지 않습니다.</p>
-      ) : (
-        <div className={s.acts}>
-          {btn("shared", "html", "공유용 사본", true)}
-          {btn("internal", "html", "내부 상세 사본")}
-          {btn("shared", "docx", "Word 공유용")}
-          {btn("internal", "docx", "Word 내부 상세")}
-        </div>
-      )}
-      {st.err && !isUnsupported(st.err) ? <p role="alert">{errorText(st.err)}</p> : null}
+      <div className={s.acts}>
+        {btn("shared", "html", "공유용 사본", true)}
+        {btn("internal", "html", "내부 상세 사본")}
+        {btn("shared", "docx", "Word 공유용")}
+        {btn("internal", "docx", "Word 내부 상세")}
+      </div>
+      {st.err ? <ReportReadError error={st.err} /> : null}
       {st.done ? (
         <p className={s.help} role="status">
           {`${st.done.format === "docx" ? "Word" : "HTML"} ${AUD_TEXT[st.done.aud]} 파일을 저장했습니다.`}
@@ -953,7 +952,7 @@ export function UrlReportLive() {
   };
 
   let listBody: ReactNode;
-  if (!rem.data && rem.error) listBody = <ErrorNote error={rem.error} onRetry={rem.reload} />;
+  if (!rem.data && rem.error) listBody = <ReportReadError error={rem.error} onRetry={rem.reload} />;
   else if (!rem.data) listBody = <LoadingRow />;
   else if (!sorted.length)
     listBody = <p className={s.empty}>저장된 결과가 없습니다. 결과가 없다고 안전하다는 뜻은 아닙니다.</p>;

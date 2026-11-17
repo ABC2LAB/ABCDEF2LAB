@@ -1,7 +1,7 @@
 "use client";
 
 // 대시보드 (시안 짜임: 요약 4칸 · 발견 · 검토 대상 · 진행 중인 점검 · 최근 끝난 점검 + 오른쪽 상세).
-// 서버에 진단 목록 · 집계 API 가 없어 이 브라우저가 이어 보는 진단 하나만 실제 값으로 보인다.
+// 서버 보존 목록을 표시하고, 판정 집계는 선택한 진단의 저장된 보고서를 조회해 표시한다.
 // 발견 목록은 그 진단의 저장된 결과(보고서와 같은 원장)에서 정상 대조를 뺀 것만 보인다. 확정만 취약점이므로 제목은
 // 중립 이름("발견 · 검토 대상")으로 두고 건수 옆에 확정 수를 따로 보인다(검토 필요 · 미실행 · 결과 불명은 취약점이
 // 아님, 절대 규칙 5). 결과가 저장되기 전에는 비워 두고 "없음"이라고 말하지 않는다(절대 규칙 5).
@@ -9,6 +9,7 @@
 
 import { type ReactNode, useRef, useState } from "react";
 
+import { activeURLRun, endedURLRun } from "@/lib/diagnosis/diagnosis-runs";
 import { diagnosticOutcome } from "@/lib/diagnosis/diagnostic-results";
 import type { RemediationEntry } from "@/lib/diagnosis/remediation";
 import type { RequestApproval } from "@/lib/diagnosis/request-approvals";
@@ -18,16 +19,18 @@ import { cx } from "../../lib/cx";
 import { fetchRemediation } from "../../live/api";
 import { fmtTokens, sevKey } from "../../live/map";
 import { maskSecrets } from "../../live/mask";
-import { ErrorNote, LoadingRow, NotYet } from "../../live/parts";
+import { LoadingRow, NotYet } from "../../live/parts";
 import { refreshWorkflow, runUrlAction, useUrl, useUrlGates } from "../../live/urlDiagnosis";
 import { URL_ENDED_STATES, urlHost, urlStateText } from "../../live/urlMap";
+import { loadUrlRuns, useUrlRuns } from "../../live/urlRunList";
 import { usePoll } from "../../live/usePoll";
 import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
 import { InspHead, InspOpenButton, Isec, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { ApprovalActions, ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "./approvals";
-import { JobRow, JobSummary, jobResult, pendingRows, useCoveragePct } from "./jobSummary";
+import { JobSummary, jobResult, pendingRows, useCoveragePct } from "./jobSummary";
+import { ReportReadError, RunListControls, RunListStatus, RunRow, SelectedRunStatus } from "./runRows";
 import { EntryEp, FindingDetail, ORDER, Outcome } from "./UrlLiveLive";
 import { UrlHead } from "./urlParts";
 import { type Chip, Chips } from "./urlRecords";
@@ -166,6 +169,9 @@ export function dashFindings(entries: readonly RemediationEntry[]): RemediationE
 export function UrlDashboardLive() {
   const { route, openInsp } = useShell();
   const handle = useUrl((st) => st.handle);
+  const page = useUrlRuns((st) => st.page);
+  const rows = page?.runs ?? [];
+  const listReady = useUrlRuns((st) => !!st.page && !st.error);
   const job = useUrl((st) => st.job);
   const verified = useUrl((st) => st.verified);
   const flow = useUrl((st) => st.flow);
@@ -193,6 +199,7 @@ export function UrlDashboardLive() {
   const first = a.pending[0];
   let sel: Sel = { kind: "job" };
   if (picked) sel = picked;
+  else if (handle?.kind === "recovered") sel = { kind: "job" };
   else if (found[0]) sel = { kind: "finding", id: found[0].entry_id };
   else if (first) sel = { kind: "approval", id: first.id };
 
@@ -208,7 +215,12 @@ export function UrlDashboardLive() {
   const refresh = () => {
     if (spin) return;
     setSpin(true);
-    const work: Promise<unknown>[] = [refreshWorkflow(), new Promise((r) => setTimeout(r, REFRESH_MIN_MS))];
+    const owner = useUrl.getState().cap;
+    const work: Promise<unknown>[] = [
+      owner.kind === "v2" ? loadUrlRuns(owner.catalog.ownerContext) : Promise.resolve(),
+      refreshWorkflow(),
+      new Promise((r) => setTimeout(r, REFRESH_MIN_MS)),
+    ];
     if (g.canRefresh) work.push(runUrlAction("refresh"));
     a.poll.reload();
     rem.reload();
@@ -240,7 +252,7 @@ export function UrlDashboardLive() {
         {`점검이 끝나고 결과가 저장되면 여기에 나옵니다 · 지금 ${job ? urlStateText(job.state, verified) : "상태 확인 중"}`}
       </p>
     );
-  else if (!remFor && rem.error) findBody = <ErrorNote error={rem.error} onRetry={rem.reload} />;
+  else if (!remFor && rem.error) findBody = <ReportReadError error={rem.error} onRetry={rem.reload} />;
   else if (!remFor) findBody = <LoadingRow />;
   else if (!found.length)
     findBody = <p className={s.empty}>저장된 발견이 없습니다. 결과가 없다고 안전하다는 뜻은 아닙니다.</p>;
@@ -281,19 +293,9 @@ export function UrlDashboardLive() {
       </div>
     );
 
-  // 칸마다 줄 목록. 진단 목록 API 가 없어 지금은 이어 보는 진단 하나뿐이다(생기면 여기를 채운다)
-  const jobRow = handle ? (
-    <JobRow
-      key="job"
-      sel={sel.kind === "job"}
-      onPick={() => pick({ kind: "job" })}
-      pending={a.pending.length}
-      result={result}
-      coverage={coverage}
-    />
-  ) : null;
-  const actRows = jobRow && !ended ? [jobRow] : [];
-  const doneRows = jobRow && ended ? [jobRow] : [];
+  const actRows = rows.filter(activeURLRun);
+  const doneRows = rows.filter(endedURLRun);
+  const otherCount = rows.length - actRows.length - doneRows.length;
 
   // 오른쪽 상세
   const chosen: RequestApproval | undefined =
@@ -382,6 +384,9 @@ export function UrlDashboardLive() {
       />
       <div className={s.vb}>
         <div className={s.vm} ref={vmRef}>
+          <RunListStatus />
+          <SelectedRunStatus />
+          <RunListControls />
           <DashStrip
             found={found}
             ready={!!remFor}
@@ -430,7 +435,9 @@ export function UrlDashboardLive() {
             <div className={s.sh}>
               <div className={s["sh-t"]}>
                 <h2 id="dActH">진행 중인 점검</h2>
-                <span className={s.n} id="dActN">{`${actRows.length}건`}</span>
+                <span className={s.n} id="dActN">
+                  {listReady ? `${actRows.length}건` : "—"}
+                </span>
               </div>
               <a className={s.aside} href="#running">
                 전체 보기
@@ -438,17 +445,27 @@ export function UrlDashboardLive() {
             </div>
             {actRows.length ? (
               <div className={s.list} id="dActive">
-                {actRows.slice(0, DASH_MAX)}
+                {actRows.slice(0, DASH_MAX).map((row) => (
+                  <RunRow key={row.id} row={row} />
+                ))}
               </div>
             ) : (
-              <p className={s.empty}>진행 중인 점검이 없습니다.</p>
+              <RunListStatus empty="진행 중인 점검이 없습니다." />
             )}
           </section>
+          {otherCount > 0 ? (
+            <p className={s.help}>
+              시작 전·상태 확인이 필요한 점검 {otherCount}건은 <a href="#running">진행·시작 전 점검 목록</a>에서
+              확인하세요.
+            </p>
+          ) : null}
           <section className={s.sec} aria-labelledby="dDoneH">
             <div className={s.sh}>
               <div className={s["sh-t"]}>
-                <h2 id="dDoneH">최근 끝난 점검</h2>
-                <span className={s.n} id="dDoneN">{`${doneRows.length}건`}</span>
+                <h2 id="dDoneH">보존된 끝난 점검</h2>
+                <span className={s.n} id="dDoneN">
+                  {listReady ? `${doneRows.length}건` : "—"}
+                </span>
               </div>
               <a className={s.aside} href="#finished">
                 전체 보기
@@ -456,10 +473,12 @@ export function UrlDashboardLive() {
             </div>
             {doneRows.length ? (
               <div className={s.list} id="dDone">
-                {doneRows.slice(0, DASH_MAX)}
+                {doneRows.slice(0, DASH_MAX).map((row) => (
+                  <RunRow key={row.id} row={row} />
+                ))}
               </div>
             ) : (
-              <p className={s.empty}>끝난 점검이 없습니다.</p>
+              <RunListStatus empty="끝난 점검이 없습니다." />
             )}
           </section>
         </div>
