@@ -117,6 +117,22 @@ it("등록의 읽기 범위와 TLS 사전 접촉을 안내한다", async () => {
   });
   expect(screen.queryByText(/승인된 대상:/)).toBeNull();
 });
+it("정확 일치(=/…)와 접두의 query 차이를 안내하고 =/ 표현을 그대로 제출한다", async () => {
+  vi.mocked(apiFetch).mockResolvedValueOnce({}).mockResolvedValueOnce({ target: pending });
+  render(<TargetApprovalPanel requestLimit={4} url={url} disabled={false} />);
+  await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1));
+  fireEvent.click(screen.getByRole("button", { name: "대상 등록하기" }));
+  const note = document.getElementById("targetPathMatchNote") as HTMLElement;
+  expect(note).toHaveTextContent("접두 승인 · 그 아래 모든 경로와 query 를 허용합니다");
+  expect(note).toHaveTextContent("정확 일치 · 그 경로 하나만, query 가 붙은 요청(/?x=1, /? 포함)은 허용하지 않습니다");
+  fireEvent.change(screen.getByLabelText("허용할 읽기 경로 · 한 줄에 하나"), { target: { value: "=/\n/users/v1" } });
+  fireEvent.change(screen.getByLabelText("진단 권한 · 비변경 근거"), {
+    target: { value: "승인된 테스트 소유 환경의 읽기 전용 GET 경로입니다." },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "대상 등록 · 소유 확인 준비" }));
+  await screen.findByRole("button", { name: "TXT 레코드 확인" });
+  expect(JSON.parse(String(vi.mocked(apiFetch).mock.calls[1][1]?.body)).path_prefixes).toEqual(["=/", "/users/v1"]);
+});
 it.each([
   "network-secret-detail",
   "__proto__",
