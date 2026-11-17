@@ -43,13 +43,20 @@ func (s OpenRouterSampling) valid() bool {
 }
 
 // parseOpenRouterSampling은 manifest의 sampling 객체를 읽는다. 일곱 칸이 정확히 한 번씩 있어야 하고(중복·대소문자 별칭·
-// 모르는 칸 거부), 정수 칸에 소수를 받지 않으며, 범위 밖이면 거부한다.
+// 모르는 칸 거부), 값은 JSON 숫자여야 하며, 정수 칸에 소수를 받지 않고, 범위 밖이면 거부한다.
 func parseOpenRouterSampling(raw json.RawMessage) (OpenRouterSampling, bool) {
 	d := json.NewDecoder(bytes.NewReader(raw))
+	// encoding/json은 null을 수치 칸의 0으로 받는다. temperature·top_k·min_p·presence_penalty·seed는 0이 범위 안이라
+	// 범위 검사로 걸리지 않으므로, 구조체로 읽기 전에 원문 값이 숫자인지 따로 본다(UseNumber면 숫자만 json.Number로 온다).
+	d.UseNumber()
 	known := map[string]bool{"temperature": true, "top_p": true, "top_k": true, "min_p": true, "presence_penalty": true, "repetition_penalty": true, "seed": true}
 	if !manifestObjectRange(d, openRouterSamplingKeys, openRouterSamplingKeys, func(k string) bool {
-		var v json.RawMessage
-		return known[k] && d.Decode(&v) == nil
+		var v any
+		if !known[k] || d.Decode(&v) != nil {
+			return false
+		}
+		_, number := v.(json.Number)
+		return number
 	}) {
 		return OpenRouterSampling{}, false
 	}

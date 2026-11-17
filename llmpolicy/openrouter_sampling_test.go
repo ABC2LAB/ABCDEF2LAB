@@ -68,8 +68,24 @@ func TestOpenRouterManifestV3Sampling(t *testing.T) {
 		"seed_unsafe":      strings.Replace(defaultSamplingJSON, `"seed":42`, `"seed":9007199254740993`, 1),
 		"not_object":       `[1.0,0.95]`,
 		"null":             `null`,
+		"bool_value":       strings.Replace(defaultSamplingJSON, `"min_p":0`, `"min_p":false`, 1),
+		"object_value":     strings.Replace(defaultSamplingJSON, `"seed":42`, `"seed":{}`, 1),
 	} {
 		bad[name] = samplingManifest(t, 3, sampling)
+	}
+	// 일곱 칸 각각 null은 거부한다. encoding/json은 null을 0으로 받는데, 0이 범위 안인 칸(temperature·top_k·min_p·
+	// presence_penalty·seed)은 범위 검사만으로는 걸리지 않는다.
+	for _, field := range []string{"temperature", "top_p", "top_k", "min_p", "presence_penalty", "repetition_penalty", "seed"} {
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(defaultSamplingJSON), &obj); err != nil || obj[field] == nil {
+			t.Fatal("default sampling misses", field, err)
+		}
+		obj[field] = json.RawMessage(`null`)
+		sampling, err := json.Marshal(obj)
+		if err != nil {
+			t.Fatal(err)
+		}
+		bad["null_"+field] = samplingManifest(t, 3, string(sampling))
 	}
 	for name, raw := range bad {
 		if _, err := ParseOpenRouterManifest(raw); err == nil {
