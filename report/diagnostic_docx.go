@@ -163,7 +163,7 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 		}
 		w.paragraph(style, e.ID+" · "+e.Title)
 		w.paragraph("Heading2", "① 판정과 영향")
-		w.table([][]string{{"항목", "값"}, {"고유 ID / 유형", e.ID + " / " + e.VulnClass}, {"판정 / 검증", e.Outcome + " / " + e.Verification}, {"위험도 / 상태", e.Severity + " / " + e.Status}, {"실행 / intent", e.Run + " / " + strconv.FormatInt(e.IntentID, 10)}, {"증거 버전 / digest", strconv.FormatInt(e.EvidenceVersion, 10) + " / " + e.Digest}})
+		w.table([][]string{{"항목", "값"}, {"고유 ID / 유형", e.ID + " / " + e.VulnClass}, {"판정 / 검증", e.Outcome + " / " + e.Verification}, {"위험도 / 상태", e.SeverityText() + " / " + e.Status}, {"실행 / intent", e.Run + " / " + strconv.FormatInt(e.IntentID, 10)}, {"증거 버전 / digest", strconv.FormatInt(e.EvidenceVersion, 10) + " / " + e.Digest}})
 		if e.Stale {
 			w.paragraph("Normal", "증거 버전 불일치: 오래된 자료를 확정으로 집계하지 않습니다.")
 		}
@@ -171,6 +171,9 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 			w.paragraph("Normal", "주의: 실제 도구 출력이 잘렸습니다. 완전한 재현 증거가 아닙니다.")
 		}
 		w.paragraph("Normal", e.Summary)
+		if e.SeverityRationale != "" {
+			w.paragraph("Normal", "예상 심각도 근거 · 모델 제안: "+e.SeverityRationale)
+		}
 		w.paragraph("Normal", e.Report)
 		w.paragraph("Heading2", "② 재현 절차 및 스크린샷")
 		if e.SourceLoadFailed {

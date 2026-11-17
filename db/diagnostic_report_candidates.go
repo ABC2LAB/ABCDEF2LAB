@@ -37,6 +37,7 @@ func ListDiagnosticReportCandidates(ctx context.Context, q DiagnosticCandidateQu
 		if invalid {
 			c = DiagnosticCandidate{TaskID: task}
 		}
+		c = c.NormalizedSeverity()
 		c.ID = id
 		if !invalid {
 			total += len(raw)

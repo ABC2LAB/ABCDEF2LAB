@@ -60,6 +60,7 @@ type DiagnosticEntry struct {
 	ID, Kind, Run                                             string
 	IntentID                                                  int64
 	Title, VulnClass, Severity, Status, Verification, Outcome string
+	SeveritySource, SeverityRationale                         string
 	Summary, Remediation, Evidence                            string
 	EvidenceVersion                                           int64
 	Digest                                                    string
@@ -184,7 +185,7 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 		default:
 			return DiagnosticReport{}, ErrExportBlocked
 		}
-		for _, p := range []*string{&e.ID, &e.Kind, &e.Run, &e.Title, &e.VulnClass, &e.Severity, &e.Status, &e.Verification, &e.Summary, &e.Remediation, &e.Evidence, &e.Digest, &e.Report} {
+		for _, p := range []*string{&e.ID, &e.Kind, &e.Run, &e.Title, &e.VulnClass, &e.Severity, &e.SeverityRationale, &e.Status, &e.Verification, &e.Summary, &e.Remediation, &e.Evidence, &e.Digest, &e.Report} {
 			if !utf8.ValidString(*p) || strings.ContainsRune(*p, 0) {
 				return DiagnosticReport{}, ErrExportBlocked
 			}
@@ -194,6 +195,18 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 			}
 			*p = DiagnosticText(*p)
 		}
+		// 등급은 판정을 바꾸지 않는다. 공유 사본에는 후보의 새 평가 정보를 내보내지 않는다.
+		validEstimate := e.Kind == "candidate" && e.Outcome == "review" && e.Status == "completed" && !e.SourceLoadFailed && !e.Truncated && e.SeveritySource == "worker_estimate" && e.SeverityRationale != "" && knownSeverity(e.Severity)
+		if !validEstimate || in.Shared {
+			e.SeveritySource, e.SeverityRationale = "", ""
+		}
+		if e.Outcome != "confirmed" && (!validEstimate || in.Shared) {
+			e.Severity = "미평가"
+		}
+		if e.SourceLoadFailed {
+			e.Severity = "미평가"
+		}
+
 		if e.Outcome == "confirmed" {
 			sev := e.Severity
 			if sev != "critical" && sev != "high" && sev != "medium" && sev != "low" && sev != "info" {
@@ -458,7 +471,7 @@ dt{font-weight:700}dd{margin-left:0;margin-bottom:8px;overflow-wrap:anywhere}
 <h2>4장. 취약점별 상세 결과</h2><p>확정 항목과 검토 필요·미실행·불명·비취약 항목은 결과 구분을 기준으로 분리해서 검토하세요.</p>
 {{range .Entries}}<article id="{{.ID}}"><h3>{{.ID}} · {{.Title}}</h3>
 <dl><dt>유형</dt><dd>{{.VulnClass}}</dd><dt>결과 구분</dt><dd>{{.Outcome}}</dd>
-<dt>검증 방법</dt><dd>{{.Verification}}</dd><dt>심각도</dt><dd>{{.Severity}}</dd><dt>처리/실행 상태</dt><dd>{{.Status}}</dd>
+<dt>검증 방법</dt><dd>{{.Verification}}</dd><dt>심각도</dt><dd>{{.SeverityText}}</dd>{{if .SeverityRationale}}<dt>예상 심각도 근거 · 모델 제안</dt><dd>{{.SeverityRationale}}</dd>{{end}}<dt>처리/실행 상태</dt><dd>{{.Status}}</dd>
 <dt>회차 / intent</dt><dd>{{if .Run}}{{.Run}}{{else}}회차 미기록{{end}} / {{if .IntentID}}{{.IntentID}}{{else}}intent 미기록{{end}}</dd><dt>관찰 시각</dt><dd>{{if .ObservedAt.IsZero}}미기록{{else}}{{.ObservedAt}}{{end}}</dd>
 <dt>증거 버전 / digest</dt><dd>{{.EvidenceVersion}} / {{.Digest}}</dd></dl>
 {{if .Stale}}<p>주의: 증거와 상세 보고서 버전이 달라 확정 집계에서 제외했습니다. 갱신이 필요합니다.</p>{{end}}
@@ -516,4 +529,28 @@ func captureStatusLabel(status string) string {
 	default:
 		return status
 	}
+}
+
+func knownSeverity(s string) bool {
+	switch s {
+	case "critical", "high", "medium", "low", "info":
+		return true
+	}
+	return false
+}
+
+// SeverityText는 예상 평가와 확정 심각도를 같은 등급 딱지로 오해하지 않게 한다.
+func (e DiagnosticEntry) SeverityText() string {
+	labels := map[string]string{"critical": "심각", "high": "높음", "medium": "중간", "low": "낮음", "info": "정보성"}
+	label, ok := labels[e.Severity]
+	if !ok || e.SourceLoadFailed || e.Outcome == "unknown" || e.Outcome == "not_executed" || e.Outcome == "negative" {
+		return "위험도 미평가"
+	}
+	if e.Outcome == "confirmed" {
+		return label
+	}
+	if e.Kind == "candidate" && e.Outcome == "review" && e.Status == "completed" && e.SeveritySource == "worker_estimate" && e.SeverityRationale != "" && !e.Truncated {
+		return "예상 " + label
+	}
+	return "위험도 미평가"
 }

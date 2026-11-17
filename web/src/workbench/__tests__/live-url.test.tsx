@@ -251,6 +251,8 @@ function negative(n: number): api.Remediation["entries"][number] {
 /** 후보 한 건 (팀 diagnosticOutcome 이 review 로 분류하는 모양). */
 function candidate(n: number): api.Remediation["entries"][number] {
   return {
+    severity_source: "worker_estimate",
+    severity_rationale: "실제 응답에서 관찰한 문서 노출의 접근통제 영향을 검토해야 합니다.",
     entry_id: `candidate-${n}`,
     title: `후보 ${n}`,
     outcome: "review",
@@ -1040,6 +1042,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(a.fetchTaskFindings).toHaveBeenCalledWith("42");
     const finds = screen.getByRole("region", { name: "발견 후보" });
     expect(within(finds).getByText("1건 · 최신 순")).toBeInTheDocument();
+    expect(within(finds).queryByText(/^정보성$/)).toBeNull();
     expect(within(finds).queryByText("새로")).toBeNull();
     a.fetchTaskFindings.mockResolvedValue([{ ...one, id: "2", name: "새 발견", ts: "2026-11-11T01:00:30Z" }, one]);
     await act(async () => {
@@ -1379,7 +1382,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     const rows = [...(document.getElementById("lSaved") as HTMLElement).children] as HTMLElement[];
     expect(rows).toHaveLength(2);
     expect(rows[0].tagName).toBe("DIV");
-    expect(rows[0]).toHaveTextContent(/^등급 없음후보 1\/api\/items\/\{id\}idor검토 필요$/);
+    expect(rows[0]).toHaveTextContent(/^위험도 미평가후보 1\/api\/items\/\{id\}idor검토 필요$/);
     expect(a.fetchRemediation).toHaveBeenCalledWith("42", "internal");
     // 끝난 점검은 제품 서버가 점검 중 발견 목록을 닫으므로 부르지 않는다
     expect(a.fetchTaskFindings).not.toHaveBeenCalled();
@@ -1474,9 +1477,9 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(header).not.toHaveTextContent(/task #|모델 요청/);
     // 시안 머리 버튼은 '발견 상세'(좁은 화면) 하나
     expect(within(header).queryByRole("button", { name: /새로고침/ })).toBeNull();
-    // 발견 목록에 후보가 있다. 위험도 딱지가 맨 앞(심각도 없으면 '등급 없음'), 아래 줄은 엔드포인트 · 유형
+    // 발견 목록에 후보가 있다. 위험도 딱지가 맨 앞(심각도 없으면 '위험도 미평가'), 아래 줄은 엔드포인트 · 유형
     const row = within(screen.getByRole("tabpanel", { name: "발견 목록" })).getByRole("button", { name: /후보 1/ });
-    expect(row.firstElementChild).toHaveTextContent("등급 없음");
+    expect(row.firstElementChild).toHaveTextContent("위험도 미평가");
     expect(row).toHaveTextContent("GET /api/items/{id}idor");
     expect(within(row).getByText("{id}").tagName).toBe("I");
     // 상세 머리: 유형 · 주소, 엔드포인트 (시안 findingHtml)
@@ -1486,7 +1489,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     // 상태 칸 (ARTEX 발견 상세의 상태 카드): ID · 위험도 · 판정 · 유형 · 관련 자산 · 발견 시각. 여기서 바꾸는 손잡이는 없다
     const state = within(insp).getByRole("heading", { name: "상태" }).parentElement as HTMLElement;
     expect(state).toHaveTextContent(
-      /^상태IDcandidate-1위험도등급 없음판정검토 필요유형idor관련 자산GET \/api\/items\/\{id\}발견 시각\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/,
+      /^상태IDcandidate-1위험도위험도 미평가판정검토 필요유형idor관련 자산GET \/api\/items\/\{id\}발견 시각\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/,
     );
     expect(within(state).queryByRole("combobox")).toBeNull();
     // 상세는 정리했다(사용자 11/17): '연결 전' 자리(계정별 응답 비교 · 다음 단계)와 머리와 겹치는 분류는 두지 않는다
@@ -1563,6 +1566,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
         { ...candidate(1), severity: "low", observed_at: "2026-11-09T12:01:00Z" },
         { ...candidate(2), severity: "high", observed_at: "2026-11-09T12:03:00Z" },
         { ...candidate(3), observed_at: "2026-11-09T12:02:00Z" },
+        // 시각을 못 읽으면 결과 불명이라 예상 등급을 세지 않는다(#666 entrySeverity)
         { ...candidate(4), severity: "high", observed_at: "not-a-time" },
       ],
     });
@@ -1578,11 +1582,11 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
       within(sevs)
         .getAllByRole("radio")
         .map((r) => r.parentElement?.textContent),
-    ).toEqual(["전체 4개", "높음 2개", "낮음 1개"]);
+    ).toEqual(["전체 4개", "높음 1개", "낮음 1개"]);
     expect(within(list).getByText("4 / 4건")).toBeInTheDocument();
-    fireEvent.click(within(sevs).getByRole("radio", { name: "높음 2개" }));
-    expect(names()).toEqual(["후보 2", "후보 4"]);
-    expect(within(list).getByText("2 / 4건")).toBeInTheDocument();
+    fireEvent.click(within(sevs).getByRole("radio", { name: "높음 1개" }));
+    expect(names()).toEqual(["후보 2"]);
+    expect(within(list).getByText("1 / 4건")).toBeInTheDocument();
     // 오른쪽 상세도 보이는 줄로 옮긴다
     expect(
       within(screen.getByRole("complementary", { name: "발견 상세" })).getByRole("heading", { level: 2 }),
@@ -1595,7 +1599,8 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     fireEvent.change(order, { target: { value: "old" } });
     expect(names()).toEqual(["후보 1", "후보 3", "후보 2", "후보 4"]);
     fireEvent.change(order, { target: { value: "sev" } });
-    expect(names()).toEqual(["후보 2", "후보 4", "후보 1", "후보 3"]);
+    // 위험도 순: 높음 → 낮음 → 미평가(판정 순 유지: 검토 필요 후보 3 → 결과 불명 후보 4)
+    expect(names()).toEqual(["후보 2", "후보 1", "후보 3", "후보 4"]);
   });
 
   it("보고서 머리 줄의 모델 사용량은 점검 진행과 같은 입 · 출 칩, 마우스를 올리면 정확한 값과 최대치", async () => {
@@ -1746,15 +1751,17 @@ describe("대시보드 · 인증 (URL 진단)", () => {
     await waitFor(() => expect(titles()).toEqual(["발견 2", "발견 4", "후보 1", "후보 5"]));
     // 건수 옆에 확정 수를 따로 (확정만 취약점 · 절대 규칙 5)
     expect(within(sec).getByText("4건 · 확정 2")).toBeInTheDocument();
-    // 심각도를 안 준 발견은 '등급 없음', 날짜는 없다 (시안 v90)
+    // 심각도를 안 준 발견은 '위험도 미평가', 날짜는 없다 (시안 v90)
     const noSev = sec.querySelector("[data-dsel='fd-candidate-5']") as HTMLElement;
-    expect(within(noSev).getByText("등급 없음")).toBeInTheDocument();
+    expect(within(noSev).getByText("위험도 미평가")).toBeInTheDocument();
     for (const r of sec.querySelectorAll("[data-dsel^='fd-']")) expect(r.textContent).not.toMatch(/\d{1,2}:\d{2}/);
     // 요약 4칸: 정상 대조를 뺀 4건 · 위험도별 수 · 결과 확인(결과 불명 + 미실행) 0
     const strip = screen.getByRole("region", { name: "요약" });
     const cell = (k: string) => within(strip).getByText(k).parentElement as HTMLElement;
     expect(within(cell("발견 · 검토 대상")).getByText("4")).toBeInTheDocument();
-    expect(cell("발견 · 검토 대상")).toHaveTextContent("심각 1 · 높음 1 · 중간 1 · 낮음 0 · 등급 없음 1");
+    expect(cell("발견 · 검토 대상")).toHaveTextContent(
+      "확정 심각 1 · 확정 높음 1 · 확정 중간 0 · 확정 낮음 0 · 확정 정보성 0 · 예상 중간 1",
+    );
     expect(cell("결과 확인")).toHaveTextContent("결과 불명 0 · 미실행 0");
     // 끝난 점검이라 결정할 것이 없다 (시안 v77 '모두 결정함')
     expect(cell("결정 대기")).toHaveTextContent(/^결정 대기0모두 결정함$/);
@@ -1769,7 +1776,7 @@ describe("대시보드 · 인증 (URL 진단)", () => {
       name: /job-1/,
     });
     expect(done).not.toHaveTextContent(/심각|높음|발견 4/);
-    // 칩: 전체 4 · 심각 1 · 높음 1 · 중간 1 · 등급 없음 1 (0건인 낮음은 숨김)
+    // 칩: 전체 4 · 심각 1 · 높음 1 · 중간 1 · 위험도 미평가 1 (0건인 낮음은 숨김)
     const chips = within(sec).getByRole("group", { name: "위험도로 거르기" });
     expect(within(chips).queryByRole("button", { name: /낮음/ })).toBeNull();
     fireEvent.click(within(chips).getByRole("button", { name: /높음/ }));

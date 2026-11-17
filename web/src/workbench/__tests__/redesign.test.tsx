@@ -1326,7 +1326,7 @@ describe("점검 진행", () => {
         finding_id: "1",
         vulnclass: "info_disclosure",
         name: "응답에 내부 정보 노출",
-        severity: "low",
+        severity: "info",
         status: "false_positive",
         summary: "응답 머리에 서버 버전이 보입니다.",
         evidence: "",
@@ -1432,12 +1432,13 @@ describe("점검 진행", () => {
     expect(screen.getAllByText("확인 필요")).toHaveLength(2);
     // 발견 후보 목록: 최신 순, 줄마다 심각도 · 이름 / 위치 · 유형 · 시각 · 처리 상태(판정 아님), 첫 목록엔 '새로' 없음
     const finds = screen.getByRole("region", { name: "발견 후보" });
+    expect(finds.querySelector("[class*=vbar]")).toHaveTextContent("정보성 1");
     expect(within(finds).getByText("2건 · 최신 순")).toBeInTheDocument();
     expect(within(finds).getByText(/검증 전 후보입니다/)).toBeInTheDocument();
     const rows = within(finds).getAllByRole("button", { expanded: false });
     expect(rows.map((b) => b.textContent?.replace(/\d{2}:\d{2}:\d{2}/, "HH:MM:SS"))).toEqual([
       "높음다른 계정으로 /api/users/2 조회 응답GET /api/users/2 · idor · HH:MM:SS",
-      "낮음응답에 내부 정보 노출GET /api/products/1 · info_disclosure · HH:MM:SS",
+      "정보성응답에 내부 정보 노출GET /api/products/1 · info_disclosure · HH:MM:SS",
     ]);
     expect(within(finds).queryByText("새로")).toBeNull();
     // 엔진 처리 상태(confirmed · false_positive 등)는 검증 전 후보 줄에 판정처럼 붙이지 않는다 (절대규칙 5, #661 리뷰)

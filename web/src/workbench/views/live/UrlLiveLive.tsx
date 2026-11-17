@@ -21,6 +21,7 @@ import {
 } from "@/lib/diagnosis/diagnostic-results";
 import type { RemediationEntry } from "@/lib/diagnosis/remediation";
 import { type RequestApprovalRunState, RUN_COUNT_ROWS } from "@/lib/diagnosis/request-approvals";
+import { entrySeverity, entrySeverityLabel } from "@/lib/diagnosis/severity";
 
 import { SEVL, type SevKey } from "../../data/findings";
 import { cx } from "../../lib/cx";
@@ -141,7 +142,9 @@ function LiveFindings({
   const list = [...(poll.data ?? [])].sort(
     (x, y) => (y.ts || "").localeCompare(x.ts || "") || Number(y.id) - Number(x.id),
   );
-  const bySev = SEV_KEYS.map((k) => [k, list.filter((f) => sevKey(f.severity) === k).length] as const);
+  const bySev = SEV_KEYS.map((k) => [k, list.filter((f) => sevKey(f.severity) === k).length] as const).filter(
+    ([k, n]) => k !== "info" || n > 0,
+  );
   const noSev = list.filter((f) => !sevKey(f.severity)).length;
   let body: ReactNode;
   // 한 번 읽은 뒤의 실패도 숨기지 않는다: usePoll 은 직전 목록을 남기고 403 · 404 · 503 이면 다시 부르지 않으므로,
@@ -775,12 +778,19 @@ const RUN_OUTCOME: Readonly<Record<RequestApprovalRunState["outcome"], string>> 
 };
 /** 목록 순서: 확정 → 검토 필요 → 미실행 → 결과 불명 → 정상 대조. */
 export const ORDER: readonly DiagnosticOutcome[] = ["confirmed", "review", "not_executed", "unknown", "negative"];
-/** 위험도 순서 (심각 → 높음 → 중간 → 낮음). */
-const SEV_KEYS: readonly SevKey[] = ["crit", "hi", "mid", "lo"];
+/** 심각도 순서. 정보성도 집계하며 미평가와 구분한다. */
+const SEV_KEYS: readonly SevKey[] = ["crit", "hi", "mid", "lo", "info"];
 /** 위험도 딱지. 서버가 심각도를 주지 않았으면 "등급 없음". */
 export function Sev({ e }: { e: RemediationEntry }) {
-  const k = sevKey(e.severity ?? "");
-  return k ? <span className={cx(s.sev, s[k])}>{SEVL[k]}</span> : <span className={s.sev}>등급 없음</span>;
+  const k = sevKey(entrySeverity(e) ?? "");
+  return (
+    <span
+      className={cx(s.sev, k && s[k])}
+      title={e.severity_source === "worker_estimate" ? maskSecrets(e.severity_rationale ?? "") : undefined}
+    >
+      {entrySeverityLabel(e)}
+    </span>
+  );
 }
 
 /** 서버가 값을 모른다고 적은 맥락 칸 ("unknown" · "미확인…")은 없는 것으로 본다. */
@@ -1038,6 +1048,12 @@ export function FindingDetail({
           ARTEX 와 달리 위험도 · 처리 상태를 여기서 바꾸지 않는다 — 판정은 저장된 E③ 근거만 따른다(절대규칙 3 · 5) */}
       <div className={s.fdet}>
         <StatusCard e={e} />
+        {entrySeverity(e) && e.severity_source === "worker_estimate" ? (
+          <Isec t="예상 심각도 근거 · 모델 제안">
+            <p>{maskSecrets(e.severity_rationale ?? "")}</p>
+            <p className={s.help}>이 등급은 검토 우선순위 제안이며 취약점 확정이나 CVSS 점수가 아닙니다.</p>
+          </Isec>
+        ) : null}
         {!e.available ? (
           <div className={cx(s.note, s.warn)} role="note">
             <Icon name="alert" />
@@ -1148,6 +1164,12 @@ function FindingPage({
       </div>
       <div className={s["fpage-b"]}>
         <div className={s.fdet}>
+          {entrySeverity(e) && e.severity_source === "worker_estimate" ? (
+            <Isec t="예상 심각도 근거 · 모델 제안">
+              <p>{maskSecrets(e.severity_rationale ?? "")}</p>
+              <p className={s.help}>이 등급은 검토 우선순위 제안이며 취약점 확정이나 CVSS 점수가 아닙니다.</p>
+            </Isec>
+          ) : null}
           {!e.available ? (
             <div className={cx(s.note, s.warn)} role="note">
               <Icon name="alert" />
@@ -1176,7 +1198,8 @@ function FindingPage({
 export type SevFilter = "all" | SevKey;
 /** 보고서 발견 목록 정렬: 판정 순(기본) · 위험도 순 · 발견 시각 최신 순 · 오래된 순. */
 export type EntryOrder = "verdict" | "sev" | "new" | "old";
-const sevOf = (e: RemediationEntry): SevKey | "none" => sevKey(e.severity ?? "") ?? "none";
+// 위험도는 #666 entrySeverity 기준(확정 등급 · 근거 있는 후보 예상 등급만, 나머지는 미평가)
+const sevOf = (e: RemediationEntry): SevKey | "none" => sevKey(entrySeverity(e) ?? "") ?? "none";
 /**
  * 보고서 발견 목록 거르기 · 정렬 (사용자 11/17 '발견 시각 · 위험도별로'). list 는 판정 순으로 정렬된 것을 받고,
  * 위험도 순 · 시각 순은 안정 정렬이라 같은 값끼리는 판정 순이 남는다. 발견 시각을 못 읽는 줄은 시각 순에서 맨 뒤.
@@ -1212,6 +1235,7 @@ const SEV_FILTERS: ReadonlyArray<readonly [SevFilter, string]> = [
   ["hi", "높음"],
   ["mid", "중간"],
   ["lo", "낮음"],
+  ["info", "정보성"],
 ];
 
 /** 판정 순서대로 (보고서 목록 · 점검 진행의 끝난 점검 발견이 같이 쓴다). */
@@ -1360,8 +1384,24 @@ export function UrlReportLive() {
   const sorted = sortEntries(entries);
   const counts = rem.data && !rem.error ? summarizeDiagnosticEntries(entries) : null;
   const findings = sorted.filter((e) => diagnosticOutcome(e) !== "negative");
-  const bySev = SEV_KEYS.map((k) => [k, findings.filter((e) => sevKey(e.severity ?? "") === k).length] as const);
-  const noSev = findings.filter((e) => !sevKey(e.severity ?? "")).length;
+  const bySev = SEV_KEYS.map(
+    (k) =>
+      [
+        k,
+        findings.filter((e) => diagnosticOutcome(e) === "confirmed" && sevKey(entrySeverity(e) ?? "") === k).length,
+      ] as const,
+  );
+  const estimateSummary = SEV_KEYS.map(
+    (k) =>
+      [
+        k,
+        findings.filter((e) => diagnosticOutcome(e) === "review" && sevKey(entrySeverity(e) ?? "") === k).length,
+      ] as const,
+  )
+    .filter(([, n]) => n > 0)
+    .map(([k, n]) => `예상 ${SEVL[k]} ${n}`)
+    .join(" · ");
+  const noSev = findings.filter((e) => !sevKey(entrySeverity(e) ?? "")).length;
   // 고른 위험도에 해당하는 줄이 (다시 읽은 뒤) 없어졌으면 전체로 본다 — 빈 목록이 '발견 없음'으로 읽히지 않게
   const sevCount = (k: SevFilter) => (k === "all" ? sorted.length : sorted.filter((e) => sevOf(e) === k).length);
   const sevNow: SevFilter = sevCount(sevF) ? sevF : "all";
@@ -1499,9 +1539,11 @@ export function UrlReportLive() {
                   <div className={s.k}>발견</div>
                   <div className={s.v}>{findings.length}</div>
                   <div className={s.sub}>
-                    {[...bySev.map(([k, n]) => `${SEVL[k]} ${n}`), ...(noSev ? [`등급 없음 ${noSev}`] : [])].join(
-                      " · ",
-                    )}
+                    {[
+                      ...bySev.map(([k, n]) => `확정 ${SEVL[k]} ${n}`),
+                      ...(estimateSummary ? [estimateSummary] : []),
+                      ...(noSev ? [`위험도 미평가 ${noSev}`] : []),
+                    ].join(" · ")}
                   </div>
                 </div>
                 <div className={s.cell}>

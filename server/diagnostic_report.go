@@ -33,6 +33,7 @@ func diagnosticReadFailureCode(err error) int {
 }
 func unavailableDiagnosticEntry(entry *report.DiagnosticEntry) {
 	entry.SourceLoadFailed = true
+	entry.Severity, entry.SeveritySource, entry.SeverityRationale = "미평가", "", ""
 	entry.Steps = nil
 	entry.CurrentSource = nil
 	entry.RemediationBundle, entry.RemediationSource = nil, nil
@@ -147,13 +148,13 @@ func readDiagnosticReportWithCaptures(ctx context.Context, tx *sql.Tx, taskID in
 		return out, err
 	}
 	for _, row := range candidates {
-		c := row.Candidate
+		c := row.Candidate.NormalizedSeverity()
 		if row.Unavailable {
 			log.Printf("diagnostic source unavailable: task=%d entry=candidate-%d reason=source_invalid", taskID, c.ID)
 			out.Entries = append(out.Entries, report.DiagnosticEntry{ID: fmt.Sprintf("candidate-%d", c.ID), Kind: "candidate", Title: "저장 후보 근거 확인 실패", Outcome: "unknown", Verification: "manual_review_required", Severity: "미평가", SourceLoadFailed: true})
 			continue
 		}
-		storedBytes += int64(len(c.Evidence) + len(c.Name) + len(c.VulnClass) + len(c.Summary) + len(c.Remediation) + len(c.RunRef) + len(c.CallRef))
+		storedBytes += int64(len(c.Evidence) + len(c.Name) + len(c.VulnClass) + len(c.Summary) + len(c.Remediation) + len(c.RunRef) + len(c.CallRef) + len(c.SeverityRationale) + len(c.SuggestedSeverity) + len(c.SeveritySource))
 		if storedBytes > report.MaxDiagnosticReportBytes {
 			return out, report.ErrExportBlocked
 		}
@@ -167,7 +168,11 @@ func readDiagnosticReportWithCaptures(ctx context.Context, tx *sql.Tx, taskID in
 		case "result_unknown", "tool_failure", "transient_failure", "terminated":
 			outcome = "unknown"
 		}
-		out.Entries = append(out.Entries, report.DiagnosticEntry{ID: fmt.Sprintf("candidate-%d", c.ID), Kind: "candidate", Run: c.RunRef, IntentID: c.IntentID, Title: c.Name, VulnClass: c.VulnClass, Severity: "미평가", Status: c.Classification, Verification: c.Verification, Outcome: outcome, Summary: c.Summary, Remediation: c.Remediation, Evidence: c.Evidence, EvidenceVersion: c.EvidenceVersion, Digest: c.EvidenceDigest, ObservedAt: c.ObservedAt, Truncated: c.OutputTruncated})
+		severity := "미평가"
+		if c.SuggestedSeverity != "" {
+			severity = c.SuggestedSeverity
+		}
+		out.Entries = append(out.Entries, report.DiagnosticEntry{ID: fmt.Sprintf("candidate-%d", c.ID), Kind: "candidate", Run: c.RunRef, IntentID: c.IntentID, Title: c.Name, VulnClass: c.VulnClass, Severity: severity, SeveritySource: c.SeveritySource, SeverityRationale: c.SeverityRationale, Status: c.Classification, Verification: c.Verification, Outcome: outcome, Summary: c.Summary, Remediation: c.Remediation, Evidence: c.Evidence, EvidenceVersion: c.EvidenceVersion, Digest: c.EvidenceDigest, ObservedAt: c.ObservedAt, Truncated: c.OutputTruncated})
 	}
 	if len(out.Entries) > report.MaxFindings {
 		return out, report.ErrExportBlocked
@@ -208,6 +213,9 @@ func readDiagnosticReportWithCaptures(ctx context.Context, tx *sql.Tx, taskID in
 				e.Outcome = "confirmed"
 				e.Verification = "stored_verification"
 			}
+		}
+		if e.Outcome != "confirmed" {
+			e.Severity = "미평가"
 		}
 		if e.Run == "" {
 			e.Run = "저장 회차 귀속 미확인"
