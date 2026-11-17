@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func observedSeverityCandidate(t *testing.T, task, intent int64) DiagnosticCandidate {
@@ -43,7 +44,7 @@ func TestDiagnosticCandidateSeverityConservativeNormalization(t *testing.T) {
 		"short":            func(c *DiagnosticCandidate) { c.SeverityRationale = "높음" },
 		"not Korean":       func(c *DiagnosticCandidate) { c.SeverityRationale = "No verified impact is available" },
 		"multiline":        func(c *DiagnosticCandidate) { c.SeverityRationale += "\n추측" },
-		"large":            func(c *DiagnosticCandidate) { c.SeverityRationale = strings.Repeat("문", 400) },
+		"oversized input":  func(c *DiagnosticCandidate) { c.SeverityRationale = strings.Repeat("문", 1400) },
 		"source claim":     func(c *DiagnosticCandidate) { c.SeveritySource = "confirmed" },
 		"digest":           func(c *DiagnosticCandidate) { c.Evidence += " " },
 		"scope":            func(c *DiagnosticCandidate) { c.TaskID++ },
@@ -249,5 +250,73 @@ func TestDiagnosticCandidateSeverityPostgresIdempotencyLegacyAndStale(t *testing
 	rows, err = store.ListDiagnosticCandidates(task.ID, "", 10)
 	if err != nil || len(rows) != 1 || rows[0].SuggestedSeverity != "" {
 		t.Fatal("구버전 호환 실패", err)
+	}
+}
+
+// 저장 상한(1,024바이트)을 넘는 한국어 근거는 평가를 버리지 않고 글자 경계에서 잘라 잘림 표시를 남긴다.
+func TestSeverityRationaleCutAtCharacterBoundary(t *testing.T) {
+	sentence := "인증되지 않은 요청에서 다른 사용자의 비공개 문서 본문이 응답에 그대로 노출되어 접근통제 영향을 검토해야 합니다. "
+	korean := func(runes int) string {
+		var b strings.Builder
+		for utf8.RuneCountInString(b.String()) < runes {
+			b.WriteString(sentence)
+		}
+		return string([]rune(b.String())[:runes])
+	}
+	for _, tc := range []struct {
+		name string
+		in   string
+		cut  bool
+	}{
+		{"korean sentence 450 chars", korean(450), true},
+		{"korean under limit", korean(300), false},
+		{"exactly at limit", strings.Repeat("문", 340) + "abcd", false},
+		{"one byte over", strings.Repeat("문", 340) + "abcde", true},
+		{"four-byte runes at cut", strings.Repeat("문", 330) + strings.Repeat("😀", 20), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if (len(tc.in) > MaxSeverityRationaleBytes) != tc.cut {
+				t.Fatalf("시험 준비: 입력 %d바이트", len(tc.in))
+			}
+			c := observedSeverityCandidate(t, 1, 2)
+			c.SeverityRationale = tc.in
+			n := c.NormalizedSeverity()
+			got := n.SeverityRationale
+			if n.SuggestedSeverity != "high" || n.SeveritySource != WorkerEstimate {
+				t.Fatal("긴 한국어 근거 때문에 평가가 빠짐")
+			}
+			if len(got) > MaxSeverityRationaleBytes || !utf8.ValidString(got) {
+				t.Fatalf("근거 %d바이트, 올바른 UTF-8=%v", len(got), utf8.ValidString(got))
+			}
+			if strings.HasSuffix(got, SeverityRationaleCutMarker) != tc.cut {
+				t.Fatalf("잘림 표시 %v, 기대 %v", strings.HasSuffix(got, SeverityRationaleCutMarker), tc.cut)
+			}
+			if kept := strings.TrimSuffix(got, SeverityRationaleCutMarker); !strings.HasPrefix(tc.in, kept) || tc.cut && len(kept) < MaxSeverityRationaleBytes-len(SeverityRationaleCutMarker)-utf8.UTFMax {
+				t.Fatal("자른 근거가 원문 앞부분이 아니거나 필요 이상으로 짧음")
+			}
+			if again := n.NormalizedSeverity(); again.SeverityRationale != got || again.SuggestedSeverity != "high" {
+				t.Fatal("저장된 근거를 다시 읽을 때 바뀜")
+			}
+		})
+	}
+}
+
+// 일반 가림(JWT 등)도 자르기 전에 한다. 먼저 자르면 경계에 걸친 토큰이 두 조각만 남아 JWT 패턴에 맞지 않고 남는다.
+func TestSeverityRationaleCutAfterGenericRedaction(t *testing.T) {
+	const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0LWFjY291bnQifQ.c2lnbmF0dXJlLXZhbHVlLWZvci10ZXN0"
+	cut := MaxSeverityRationaleBytes - len(SeverityRationaleCutMarker)
+	prefix := strings.Repeat("문", (cut-20)/3) + " "
+	in := prefix + jwt + " " + strings.Repeat("응답 본문에 다른 사용자 정보가 보였습니다 ", 20)
+	if start := strings.Index(in, jwt); start >= cut || start+len(jwt) <= cut {
+		t.Fatal("시험 준비: 토큰이 자르는 자리에 걸치지 않음")
+	}
+	c := observedSeverityCandidate(t, 1, 2)
+	c.SeverityRationale = in
+	n := c.NormalizedSeverity()
+	if n.SuggestedSeverity != "high" || !strings.HasSuffix(n.SeverityRationale, SeverityRationaleCutMarker) {
+		t.Fatal("긴 근거의 평가·잘림 표시가 기대와 다름")
+	}
+	if strings.Contains(n.SeverityRationale, "eyJ") {
+		t.Fatal("자르는 자리에 걸친 토큰 조각이 근거에 남음")
 	}
 }

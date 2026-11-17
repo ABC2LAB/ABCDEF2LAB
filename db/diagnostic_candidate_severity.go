@@ -13,6 +13,13 @@ import (
 const WorkerEstimate = "worker_estimate"
 const MaxSeverityRationaleBytes = 1024
 
+// MaxSeverityRationaleInputBytes는 가림 전에 받는 근거 길이다. 도구 스키마의 maxLength는 글자 수(1,024자)이고
+// harness는 그 값을 검사하지 않으므로, 한 글자 최대 4바이트로 잡은 입력 상한을 넘을 때만 평가를 생략한다.
+const MaxSeverityRationaleInputBytes = 4 * MaxSeverityRationaleBytes
+
+// SeverityRationaleCutMarker는 저장 상한에 맞춰 근거를 자른 표시다. 화면·보고서에 그대로 보인다.
+const SeverityRationaleCutMarker = "…(이하 생략)"
+
 // NormalizedSeverity는 평가만 정규화한다. 후보의 관찰·판정·증거 지문은 바꾸지 않는다.
 // 실제 HTTP 응답과 마감 근거는 평가 가능 조건이며 모델이 설명한 영향의 확정 증거는 아니다.
 func (c DiagnosticCandidate) NormalizedSeverity() DiagnosticCandidate {
@@ -21,10 +28,11 @@ func (c DiagnosticCandidate) NormalizedSeverity() DiagnosticCandidate {
 	if source != WorkerEstimate || !validEstimatedSeverity(severity) || c.Validate() != nil || c.OutputTruncated || c.Classification != "completed" {
 		return c
 	}
-	if len(rationale) > MaxSeverityRationaleBytes || !utf8.ValidString(rationale) {
+	if len(rationale) > MaxSeverityRationaleInputBytes || !utf8.ValidString(rationale) {
 		return c
 	}
-	rationale = strings.TrimSpace(dlp.DiagnosticText(rationale))
+	// 가린 뒤에 자른다. 먼저 자르면 경계에 걸친 비밀 조각이 가림 패턴에 맞지 않고 남을 수 있다.
+	rationale = cutSeverityRationale(strings.TrimSpace(dlp.DiagnosticText(rationale)))
 	hangul := false
 	for _, r := range rationale {
 		if unicode.IsControl(r) {
@@ -39,6 +47,19 @@ func (c DiagnosticCandidate) NormalizedSeverity() DiagnosticCandidate {
 	}
 	c.SuggestedSeverity, c.SeverityRationale, c.SeveritySource = severity, rationale, WorkerEstimate
 	return c
+}
+
+// cutSeverityRationale은 저장 상한을 넘는 근거를 글자 경계에서 잘라 잘림 표시를 붙인다. 한국어 근거는 한 글자가
+// 3바이트라 약 340자에서 상한에 닿는다. 상한 안이면 그대로 둔다(이미 자른 근거를 다시 읽어도 바뀌지 않는다).
+func cutSeverityRationale(s string) string {
+	if len(s) <= MaxSeverityRationaleBytes {
+		return s
+	}
+	end := MaxSeverityRationaleBytes - len(SeverityRationaleCutMarker)
+	for end > 0 && !utf8.RuneStart(s[end]) {
+		end--
+	}
+	return strings.TrimRightFunc(s[:end], unicode.IsSpace) + SeverityRationaleCutMarker
 }
 
 func validEstimatedSeverity(s string) bool {
