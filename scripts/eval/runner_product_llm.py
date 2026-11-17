@@ -85,7 +85,7 @@ def _usage(value: object) -> dict:
         raise ProductLLMError("product_model_usage_invalid")
     sampling = value.get("sampling")
     if sampling is not None and (not isinstance(sampling, dict) or set(sampling) != SAMPLING_KEYS
-                                 or any(type(v) not in (int, float) or type(v) is bool for v in sampling.values())):
+                                 or any(type(v) not in (int, float) for v in sampling.values())):  # bool은 type이 bool이라 걸린다
         raise ProductLLMError("product_model_usage_invalid")
     return {"requests": value["requests"], "sampling_overwrites": overwrites, "sampling": sampling}
 
