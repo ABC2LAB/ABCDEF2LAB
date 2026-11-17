@@ -264,7 +264,7 @@ export function WorkflowNotice() {
         </div>
       ) : null}
       {flow?.counts.omitted ? (
-        <p role="status" className={s.help}>{`발견 상한으로 ${flow.counts.omitted}건을 생략했습니다.`}</p>
+        <p role="status" className={s.help}>{`발견 목록 크기 상한(개수·화면 전달 크기)으로 ${flow.counts.omitted}건을 생략했습니다.`}</p>
       ) : null}
       {flow?.detail_truncated ? (
         <p role="status" className={s.help}>
