@@ -9,14 +9,13 @@ O는 게이트웨이를 거치지 않고 제품 자체 OpenRouter 경로로 모�
    샘플링 값은 generation-verify 표식(`-sampling`)에 넣어 B 게이트웨이 적용값과 대조한다(runner_llm.judge_product_llm).
    덮어쓰기 횟수는 판정하지 않고 기록한다(4-4 사용자 결정: O는 기록, B는 게이트웨이 샘플링 거부 0건이 유효 조건).
 3. generation 조회: 계측기 이미지의 generation-verify 역할(B 게이트웨이와 같은 조회 코드·셈)을 Docker로 돌린다
-   (runner_docker.Docker.generation_verify). 키는 명령줄·파일에 싣지 않고 그 docker 호출의 환경으로만 넘긴다.
+   (runner_docker.Docker.generation_verify). 키는 명령줄·파일에 싣지 않고 그 docker 호출의 환경으로만 넘긴다. 키 값은
+   B 게이트웨이와 같은 규칙으로 얻는다(runner_docker.Docker.env_file_value: 같은 compose로 비밀 env 파일을 해석).
 """
 
 from __future__ import annotations
 
-import os
 import re
-import stat
 
 from runner_llm import SAMPLING_KEYS
 
@@ -26,9 +25,6 @@ MAX_PRODUCT_FILE_BYTES = 16 << 20
 _UINT = r"(?:0|[1-9][0-9]{0,18})"
 _RESERVE = re.compile(rf"r1 {_UINT} {_UINT} {_UINT}\Z")
 _SETTLE = re.compile(rf"s1 {_UINT} {_UINT} {_UINT} {_UINT} {_UINT} {_UINT}\Z")
-KEY_ENV = "EVAL_LLM_API_KEY"
-MAX_SECRET_FILE_BYTES = 64 * 1024
-_ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]*\Z")
 
 
 class ProductLLMError(ValueError):
@@ -116,32 +112,3 @@ def product_model_usage(record: object) -> dict:
                          "preparation": [u["requests"] for u in preparation]},
             "overwrote": any(isinstance(c, int) and c > 0 for c in counts),
             "unknown": any(c is None for c in counts)}
-
-
-def read_env_secret(path: str, name: str) -> str:
-    """비밀 env 파일(`이름=값` 줄)에서 값 하나를 읽는다. 러너 uid 소유·정확히 0600·링크 아닌 일반 파일만 받는다.
-
-    값·경로는 오류에 넣지 않는다. 다른 이름의 값은 읽어 돌려주지 않는다(generation-verify에 키 하나만 넘기려는 것).
-    """
-    if not _ENV_NAME.fullmatch(name):
-        raise ProductLLMError("secret_name_invalid")
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
-    except (OSError, TypeError, ValueError):
-        raise ProductLLMError("secret_file_unreadable") from None
-    info = os.fstat(fd)
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600:
-        os.close(fd)
-        raise ProductLLMError("secret_file_untrusted")
-    with os.fdopen(fd, "rb") as stream:
-        data = stream.read(MAX_SECRET_FILE_BYTES + 1)
-    if len(data) > MAX_SECRET_FILE_BYTES:
-        raise ProductLLMError("secret_file_invalid")
-    try:
-        lines = data.decode("utf-8").splitlines()
-    except UnicodeError:
-        raise ProductLLMError("secret_file_invalid") from None
-    found = [line.split("=", 1)[1] for line in lines if line.startswith(name + "=")]
-    if len(found) != 1 or not found[0] or any(ord(c) < 33 or ord(c) == 127 for c in found[0]):
-        raise ProductLLMError("secret_value_invalid")
-    return found[0]

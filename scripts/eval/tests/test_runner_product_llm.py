@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -11,10 +12,9 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from runner_docker import GENVERIFY_KEY_ENV, CommandResult, Docker, DockerError  # noqa: E402
+from runner_docker import GENVERIFY_KEY_ENV, CommandResult, Docker, DockerError, client_environment, run_docker  # noqa: E402
 from runner_product_llm import (  # noqa: E402
     CALL_LINE_MAX, ProductLLMError, call_record_lines, call_records_reasons, ledger_reservations, product_model_usage,
-    read_env_secret,
 )
 
 SAMPLING = {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0, "presence_penalty": 1.5, "repetition_penalty": 1.0,
@@ -122,45 +122,81 @@ class TestProductModelUsage(unittest.TestCase):
             self.assertEqual(str(caught.exception), code)
 
 
-class TestReadEnvSecret(unittest.TestCase):
+def compose_available() -> bool:
+    try:
+        return subprocess.run(["docker", "compose", "version"], capture_output=True, timeout=30).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+class TestEnvFileValue(unittest.TestCase):
+    """비밀 env 파일 값은 B 회차의 compose와 같은 규칙으로 얻는다(#654 리뷰: 따옴표 해석이 달라 다른 키가 되던 반례)."""
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
-        self.path = Path(self._tmp.name) / "eval.secrets.env"
+        self.dir = Path(self._tmp.name)
+        self.env_file = self.dir / "eval.secrets.env"
 
     def tearDown(self):
         self._tmp.cleanup()
 
-    def write(self, text, mode=0o600):
-        self.path.write_text(text, encoding="utf-8")
-        os.chmod(self.path, mode)
+    def write(self, text):
+        self.env_file.write_text(text, encoding="utf-8")
+        os.chmod(self.env_file, 0o600)
 
-    def test_reads_only_the_named_value(self):
-        self.write(f"EVAL_ENGINE_ADMIN_PASSWORD=admin-pw\nEVAL_LLM_API_KEY={KEY}\nEVAL_ENGINE_DB_PASSWORD=db\n")
-        self.assertEqual(read_env_secret(str(self.path), "EVAL_LLM_API_KEY"), KEY)
+    def fake(self, stdout, returncode=0):
+        calls = []
 
-    def test_untrusted_files_and_bad_values_are_refused_without_the_value(self):
+        def run(args, env, stdin, timeout):
+            spec = json.loads(Path(args[args.index("-f") + 1]).read_text(encoding="utf-8"))
+            calls.append((list(args), dict(env), spec))
+            return CommandResult(returncode, stdout)
+        run.calls = calls
+        return run
+
+    def test_asks_compose_with_the_same_env_file_and_no_value_in_the_probe_file(self):
+        fake = self.fake(json.dumps({"services": {"probe": {"environment": {"EVAL_LLM_API_KEY": KEY}}}}).encode())
+        value = Docker(fake, {"DOCKER_HOST": "unix:///run/docker.sock"}, 30).env_file_value(self.env_file, "EVAL_LLM_API_KEY", self.dir)
+        self.assertEqual(value, KEY)
+        args, env, spec = fake.calls[0]
+        self.assertEqual(args[:1] + args[args.index("--env-file"):], ["compose", "--env-file", str(self.env_file), "-p", "env-value",
+                                                                     "config", "--format", "json"])
+        self.assertEqual(spec, {"services": {"probe": {"image": "scratch", "environment": {"EVAL_LLM_API_KEY": "${EVAL_LLM_API_KEY:?}"}}}})
+        self.assertEqual(env, {"DOCKER_HOST": "unix:///run/docker.sock"})
+        self.assertEqual(os.listdir(self.dir), [])  # 임시 compose 파일은 지운다
+
+    def test_failures_are_fixed_codes_and_clean_up(self):
         cases = {
-            "mode": (f"EVAL_LLM_API_KEY={KEY}\n", 0o644, "secret_file_untrusted"),
-            "missing": ("EVAL_ENGINE_DB_PASSWORD=db\n", 0o600, "secret_value_invalid"),
-            "empty": ("EVAL_LLM_API_KEY=\n", 0o600, "secret_value_invalid"),
-            "twice": (f"EVAL_LLM_API_KEY={KEY}\nEVAL_LLM_API_KEY={KEY}\n", 0o600, "secret_value_invalid"),
-            "space": (f"EVAL_LLM_API_KEY={KEY} x\n", 0o600, "secret_value_invalid"),
-            "prefix_only": (f"EVAL_LLM_API_KEY_OLD={KEY}\n", 0o600, "secret_value_invalid"),
+            "compose_fails": (self.fake(b"", returncode=1), "docker_env_value_failed"),
+            "no_value": (self.fake(json.dumps({"services": {"probe": {}}}).encode()), "docker_env_value_failed"),
+            "empty_value": (self.fake(json.dumps({"services": {"probe": {"environment": {"EVAL_LLM_API_KEY": ""}}}}).encode()),
+                            "docker_env_value_failed"),
+            "not_json": (self.fake(b"oops"), "docker_env_value_failed_output_invalid"),
         }
-        for name, (text, mode, code) in cases.items():
-            with self.subTest(case=name), self.assertRaises(ProductLLMError) as caught:
-                self.write(text, mode)
-                read_env_secret(str(self.path), "EVAL_LLM_API_KEY")
+        for name, (fake, code) in cases.items():
+            with self.subTest(case=name), self.assertRaises(DockerError) as caught:
+                Docker(fake, {}, 30).env_file_value(self.env_file, "EVAL_LLM_API_KEY", self.dir)
             self.assertEqual(str(caught.exception), code)
-            self.assertNotIn(KEY, str(caught.exception))
-        link = Path(self._tmp.name) / "link.env"
-        self.write(f"EVAL_LLM_API_KEY={KEY}\n")
-        link.symlink_to(self.path)
-        with self.assertRaises(ProductLLMError) as caught:
-            read_env_secret(str(link), "EVAL_LLM_API_KEY")
-        self.assertEqual(str(caught.exception), "secret_file_unreadable")
-        with self.assertRaises(ProductLLMError):
-            read_env_secret(str(self.path), "bad name")
+            self.assertEqual(os.listdir(self.dir), [])
+        for name, scratch in (("bad name", self.dir), ("EVAL_LLM_API_KEY", Path("relative"))):
+            with self.subTest(name=name), self.assertRaises(DockerError) as caught:
+                Docker(self.fake(b"{}"), {}, 30).env_file_value(self.env_file, name, scratch)
+            self.assertEqual(str(caught.exception), "docker_env_value_invalid")
+
+    @unittest.skipUnless(compose_available(), "docker compose 없음")
+    def test_real_compose_unquotes_like_the_gateway_sees(self):
+        # 실제 compose 해석: 따옴표 없는 값·작은따옴표·큰따옴표 모두 같은 19자 키가 된다(리뷰 반례는 작은따옴표).
+        docker = Docker(run_docker, client_environment(os.environ, {}), 60)
+        for text in ("EVAL_LLM_API_KEY=synthetic-key-value\n", "EVAL_LLM_API_KEY='synthetic-key-value'\n",
+                     'EVAL_LLM_API_KEY="synthetic-key-value"\n',
+                     "EVAL_ENGINE_ADMIN_PASSWORD=x\nEVAL_LLM_API_KEY='synthetic-key-value'\nEVAL_ENGINE_DB_PASSWORD=y\n"):
+            with self.subTest(text=text):
+                self.write(text)
+                self.assertEqual(docker.env_file_value(self.env_file, "EVAL_LLM_API_KEY", self.dir), "synthetic-key-value")
+        self.write("EVAL_ENGINE_DB_PASSWORD=y\n")
+        with self.assertRaises(DockerError) as caught:
+            docker.env_file_value(self.env_file, "EVAL_LLM_API_KEY", self.dir)
+        self.assertEqual(str(caught.exception), "docker_env_value_failed")
 
 
 class TestGenerationVerifyCall(unittest.TestCase):
