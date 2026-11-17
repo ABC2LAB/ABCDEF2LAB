@@ -255,7 +255,7 @@ class TestShape(V3Fixture):
     def test_review_boundary_case_is_accepted(self):
         # #676 리뷰 예: 엔진 끝 읽기 39.99955초 → 기록 40.0, 요청 예산 정지 39.9996초. 회차 분류와 기록 재계산이 같다.
         import runner
-        got = runner.first_limit("request_budget", 39.9996, 60.0, {"status": "done", "elapsed_seconds": round(39.99955, 3)})
+        got = runner.first_limit("request_budget", 39.9996, 60.0, {"status": "done", "elapsed_seconds": 39.99955})  # 반올림 전 값도 같다
         self.assertEqual((got["value"], got["runner_limit_elapsed_seconds"], got["engine_terminal_elapsed_seconds"]),
                          ("engine_completed", 40.0, 40.0))
         record = copy.deepcopy(self.b)
