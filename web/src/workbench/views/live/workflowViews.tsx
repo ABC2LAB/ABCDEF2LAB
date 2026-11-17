@@ -1588,13 +1588,45 @@ function actKind(kind: string): readonly [string, "in" | "lg" | "ap" | "out"] {
 }
 
 /**
- * 점검 진행 가운데의 활동 기록 (사용자 11/17 '활동 기록 중심'). 서버가 주는 최근 기록(최대 20건)을 전부, 최신 순으로.
+ * 워커 이름 → 화면 이름 · 머리글자 · 색 (ARTEX 세션 목록의 Planner · 메인 에이전트 · work#N 과 같은 단위).
+ * 서버는 planner · goals · work#N 만 그대로 주고 나머지는 engine 으로 묶는다(diagnosisflow postgres.go publicWorker).
+ */
+export function workerOf(worker: string): { key: string; name: string; mark: string; tone: "lg" | "in" | "out" } {
+  const work = /^work#(\d{1,9})$/.exec(worker);
+  if (work) return { key: worker, name: worker, mark: `W${work[1]}`, tone: "in" };
+  if (worker === "planner") return { key: "planner", name: "Planner", mark: "P", tone: "lg" };
+  if (worker === "goals") return { key: "goals", name: "Goals", mark: "G", tone: "lg" };
+  if (worker === "mainagent") return { key: "mainagent", name: "Main", mark: "M", tone: "lg" };
+  return { key: "engine", name: "엔진", mark: "E", tone: "out" };
+}
+/** 워커 칩 순서: Planner · Goals · Main → work#1, work#2 … (번호순) → 엔진. */
+const workerRank = (key: string) => {
+  const head = ["planner", "goals", "mainagent"].indexOf(key);
+  if (head >= 0) return head;
+  const work = /^work#(\d+)$/.exec(key);
+  return work ? 10 + Number(work[1]) : Number.MAX_SAFE_INTEGER;
+};
+
+/**
+ * 점검 진행 가운데의 활동 기록 (사용자 11/17 'ARTEX 느낌'): ARTEX 세션 탭처럼 워커 칩(전체 · Planner · work#N · 엔진)으로
+ * 고르고, 콘솔 상자에 줄마다 시각 · 워커 이름표 · 종류 딱지 · 내용. 서버가 주는 최근 기록(최대 20건)을 전부, 최신 순.
  * 서버는 최신 순(id 내림차순), 가짜 백엔드는 오래된 순으로 주므로 받은 순서를 믿지 않고 id 로 다시 줄 세운다.
+ * 내용은 서버가 원문을 내보내지 않아(도구 입출력에 비밀 값이 섞일 수 있음) 고정 요약이다 — 화면이 원문을 지어내지 않는다.
  */
 export function ActivityLog() {
   const flow = useUrl((st) => st.flow);
+  const [who, setWho] = useState("all");
   if (!flow) return null;
   const activity = [...(flow.activity ?? [])].sort((x, y) => y.id - x.id);
+  const counts = new Map<string, number>();
+  for (const a of activity) {
+    const k = workerOf(a.worker).key;
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+  }
+  const workers = [...counts.keys()].sort((x, y) => workerRank(x) - workerRank(y) || x.localeCompare(y));
+  // 고른 워커가 최근 기록 창에서 빠지면 전체로
+  const pick = who !== "all" && counts.has(who) ? who : "all";
+  const shown = pick === "all" ? activity : activity.filter((a) => workerOf(a.worker).key === pick);
   return (
     <section className={s.sec} aria-labelledby="lFeedH">
       <div className={s.sh}>
@@ -1604,21 +1636,48 @@ export function ActivityLog() {
         </span>
       </div>
       {activity.length ? (
-        <ul className={cx(s.feed, s.tl)} id="lFeed">
-          {activity.map((a) => {
-            const [label, tone] = actKind(a.kind);
-            return (
-              <li key={a.id}>
-                <span className={s.t}>{hms(a.at)}</span>
-                {/* 타임라인 점 (세로선 위, 종류 색) */}
-                <span className={cx(s.tn, s[tone])} aria-hidden="true" />
-                <span className={cx(s.tag, s[tone])}>{label}</span>
-                {/* 엔진 내부 이름(planner · work#1 등)은 사람이 읽을 정보가 아니라 두지 않는다 */}
-                <span>{a.summary}</span>
-              </li>
-            );
-          })}
-        </ul>
+        <>
+          {/* biome-ignore lint/a11y/useSemanticElements: 칩 묶음 (fieldset 으로 바꾸면 한 줄 모양이 깨짐) */}
+          <div className={s.filters} role="group" aria-label="워커로 거르기">
+            {["all", ...workers].map((k) => {
+              const w = k === "all" ? null : workerOf(k === "engine" ? "" : k);
+              return (
+                <button key={k} className={s.fchip} type="button" aria-pressed={pick === k} onClick={() => setWho(k)}>
+                  {w ? (
+                    <span className={cx(s.wkm, s[w.tone])} aria-hidden="true">
+                      {w.mark}
+                    </span>
+                  ) : null}
+                  {w ? w.name : "전체"}
+                  <span className={s.c}>{k === "all" ? activity.length : counts.get(k)}</span>
+                </button>
+              );
+            })}
+          </div>
+          <div className={s.alog}>
+            <ul className={cx(s.feed, s.tl)} id="lFeed">
+              {shown.map((a) => {
+                const [label, tone] = actKind(a.kind);
+                const w = workerOf(a.worker);
+                return (
+                  <li key={a.id}>
+                    <span className={s.t}>{hms(a.at)}</span>
+                    {/* 타임라인 점 (세로선 위, 종류 색) */}
+                    <span className={cx(s.tn, s[tone])} aria-hidden="true" />
+                    <span className={s.wk}>
+                      <span className={cx(s.wkm, s[w.tone])} aria-hidden="true">
+                        {w.mark}
+                      </span>
+                      {w.name}
+                    </span>
+                    <span className={cx(s.tag, s[tone])}>{label}</span>
+                    <span>{a.summary}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        </>
       ) : (
         <p className={s.empty}>아직 활동 기록이 없습니다.</p>
       )}

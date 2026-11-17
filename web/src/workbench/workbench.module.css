@@ -4079,8 +4079,50 @@ button.smm:hover {
    서버 진단 활동(TaskActivity) 등 다른 .feed 목록은 위 기본 모양 그대로 */
 .feed.tl li {
   position: relative;
-  grid-template-columns: 62px 10px auto minmax(0, 1fr);
+  grid-template-columns: 62px 10px 84px auto minmax(0, 1fr);
   border-top: 0;
+}
+/* 활동 기록 콘솔 상자 (ARTEX 세션 기록 느낌): 바탕을 깔고 고정폭 글꼴로 시각 · 워커를 맞춘다 */
+.alog {
+  max-height: 440px;
+  overflow: auto;
+  padding: 4px 14px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--well);
+  overscroll-behavior: contain;
+}
+/* 워커 이름표: 머리글자 동그라미 + 이름 (Planner · work#N · 엔진) */
+.wk {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.wkm {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: var(--und-bg);
+  color: var(--und);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+.wkm.lg {
+  background: var(--accent-bg);
+  color: var(--accent-ink);
+}
+.wkm.in {
+  background: var(--ok-bg);
+  color: var(--ok);
 }
 /* 세로선: 점 칸(62px + 간격 10px 뒤 10px 칸) 가운데. 첫 줄은 점 아래부터, 끝 줄은 점까지 */
 .feed.tl li::before {

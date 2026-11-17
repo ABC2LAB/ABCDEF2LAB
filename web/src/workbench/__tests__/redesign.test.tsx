@@ -20,7 +20,15 @@ import { FLOW_VERSION, type WorkflowSnapshot } from "../live/workflow";
 import { type Shell, ShellContext, type View } from "../shell";
 import { UrlDashboardLive } from "../views/live/UrlDashboardLive";
 import { gaugeSegments, prettyEvidence, UrlLiveLive } from "../views/live/UrlLiveLive";
-import { eventText, group, PauseButton, Pth, WorkflowCrawlLive, WorkflowScopeLive } from "../views/live/workflowViews";
+import {
+  eventText,
+  group,
+  PauseButton,
+  Pth,
+  WorkflowCrawlLive,
+  WorkflowScopeLive,
+  workerOf,
+} from "../views/live/workflowViews";
 
 const noop = () => undefined;
 const shell = (route: View, over: Partial<Shell> = {}): Shell => ({
@@ -1185,6 +1193,14 @@ it("목록에서 복구한 회차의 일시정지·범위 선택 실행 버튼�
 });
 
 describe("점검 진행", () => {
+  it("워커 이름표: planner · goals · work#N 은 그대로, 그 밖(서버가 engine 으로 묶은 것)은 엔진", () => {
+    expect(workerOf("planner")).toMatchObject({ name: "Planner", mark: "P" });
+    expect(workerOf("goals")).toMatchObject({ name: "Goals", mark: "G" });
+    expect(workerOf("work#12")).toMatchObject({ key: "work#12", name: "work#12", mark: "W12" });
+    expect(workerOf("engine")).toMatchObject({ key: "engine", name: "엔진", mark: "E" });
+    expect(workerOf("work#x")).toMatchObject({ key: "engine" });
+  });
+
   it("단계 게이지는 단계마다 실제 값으로만 채운다 (전체 % 없음)", () => {
     // 게이지가 있어야 하는 경우만 (없으면 실패)
     const seg = (f: WorkflowSnapshot, ready = false) => {
@@ -1396,23 +1412,37 @@ describe("점검 진행", () => {
     expect(rows[0]).toHaveAttribute("aria-expanded", "true");
     expect(within(finds).getByText(/시험 계정 B 로 계정 A 자원을 요청/)).toBeInTheDocument();
     expect(finds).not.toHaveTextContent("secret-token-value");
-    // 활동 기록: 전부 최신 순(id), 줄마다 시각 · 종류 딱지 · 내용. 모르는 종류는 '기록', 엔진 내부 이름은 없다
+    // 활동 기록 (ARTEX 세션 느낌): 전부 최신 순(id), 줄마다 시각 · 워커 이름표(머리글자 + 이름) · 종류 딱지 · 내용.
+    // 모르는 종류는 '기록'. 워커 칩(전체 · Planner · work#N)으로 거른다
     const feedSec = screen.getByRole("region", { name: "활동 기록" });
     // 타임라인 모양은 이 목록에만 (공용 .feed 를 바꾸면 서버 진단 활동 목록까지 깨진다)
     expect(document.getElementById("lFeed")?.classList).toHaveLength(2);
     expect(screen.queryByRole("region", { name: "점검 계획" })).toBeNull();
     expect(document.getElementById("lFeedN")).toHaveTextContent(/^4건 · 최신 순$/);
-    expect(
+    const lines = () =>
       within(feedSec)
         .getAllByRole("listitem")
-        .map((li) => li.textContent?.replace(/^\d{2}:\d{2}:\d{2}/, "")),
-    ).toEqual([
-      "기록엔진 활동 기록 (원문 비공개)",
-      "승인PUT /api/users/2 승인 대기",
-      "도구Bash 도구 활동 기록 (원문 비공개)",
-      "계획Planner 계획 활동 기록",
+        .map((li) => li.textContent?.replace(/^\d{2}:\d{2}:\d{2}/, ""));
+    expect(lines()).toEqual([
+      "PPlanner기록엔진 활동 기록 (원문 비공개)",
+      "W1work#1승인PUT /api/users/2 승인 대기",
+      "W1work#1도구Bash 도구 활동 기록 (원문 비공개)",
+      "PPlanner계획Planner 계획 활동 기록",
     ]);
-    expect(within(feedSec).queryByText(/planner|work#1/)).toBeNull();
+    const chips = within(feedSec).getByRole("group", { name: "워커로 거르기" });
+    expect(
+      within(chips)
+        .getAllByRole("button")
+        .map((b) => b.textContent),
+    ).toEqual(["전체4", "PPlanner2", "W1work#12"]);
+    fireEvent.click(within(chips).getByRole("button", { name: /work#1/ }));
+    expect(within(chips).getByRole("button", { name: /work#1/ })).toHaveAttribute("aria-pressed", "true");
+    expect(lines()).toEqual([
+      "W1work#1승인PUT /api/users/2 승인 대기",
+      "W1work#1도구Bash 도구 활동 기록 (원문 비공개)",
+    ]);
+    fireEvent.click(within(chips).getByRole("button", { name: /^전체/ }));
+    expect(lines()).toHaveLength(4);
     expect(within(feedSec).queryByRole("button", { name: /더 보기/ })).toBeNull();
     // 전송 통제는 가운데 섹션이 아니라 오른쪽 진행 요약의 한 칸
     expect(screen.queryByRole("heading", { level: 2, name: "전송 통제" })).toBeNull();
