@@ -46,6 +46,8 @@ const usage = "Usage: eval-meter -role engine|observer -listen ADDR -upstream ht
 	"                  [engine: -drain-grace DURATION -explore-listen ADDR -path-log -path-key-file PRIVATE_FILE]\n" +
 	"       eval-meter -role llm-gateway -backend api|local -listen ADDR -upstream ORIGIN -allow-path /PATH -log-dir PRIVATE_DIR\n" +
 	"                  [api: -provider SLUG -generation-path /PATH -verify-attempts N -verify-interval DURATION, key in " + llmKeyEnv + "]\n" +
+	"       eval-meter -role generation-verify -upstream https://ORIGIN -provider SLUG -generation-path /PATH -verify-attempts N\n" +
+	"                  -verify-interval DURATION -log-dir PRIVATE_DIR [-sampling JSON] < PRODUCT_CALL_RECORDS  (key in " + llmKeyEnv + ")\n" +
 	"       eval-meter -role api-front -listen ADDR -upstream http://ENGINE:PORT\n" +
 	"       eval-meter -role e2-stub -listen ADDR -upstream http://METER:PORT -log-dir PRIVATE_DIR\n" +
 	"       eval-meter -role probe < PLAN_JSON\n" +
@@ -105,7 +107,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("eval-meter", flag.ContinueOnError)
 	// The default diagnostics echo argument values, which may include paths.
 	flags.SetOutput(io.Discard)
-	role := flags.String("role", "", "engine, observer, probe, llm-gateway, api-front, e2-stub or statfs")
+	role := flags.String("role", "", "engine, observer, probe, llm-gateway, generation-verify, api-front, e2-stub or statfs")
 	listen := flags.String("listen", "", "listen address")
 	upstream := flags.String("upstream", "", "target origin http://HOST:PORT")
 	logDir := flags.String("log-dir", "", "existing private 0700 directory for evidence")
@@ -126,11 +128,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	key := os.Getenv(llmKeyEnv)
 	gatewayFlags := *backend != "" || *provider != "" || *sampling != "" || *generationPath != "" ||
 		*verifyAttempts != 0 || *verifyInterval != 0
-	if *role != roleGateway && key != "" {
+	verifies := *role == roleGateway || *role == roleGenerationVerify
+	if !verifies && key != "" {
 		// A key in a meter, observer or probe container means the compose wiring is wrong.
 		return fail(stderr, keyNotAllowed)
 	}
-	if *role != roleGateway && gatewayFlags {
+	if !verifies && gatewayFlags || *role == roleGenerationVerify && *backend != "" {
 		return fail(stderr, invalidInput)
 	}
 	if (*role != roleEngine && *drainGrace != 0) || *drainGrace < 0 || *drainGrace > maxDrainGrace {
@@ -166,6 +169,25 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return fail(stderr, invalidInput)
 		}
 		return serve(*listen, newAPIFront(engine), nil, nil, func() error { return nil }, stderr)
+	case roleGenerationVerify:
+		v, ok := generationVerifyFromFlags(*upstream, *provider, *generationPath, *verifyAttempts, *verifyInterval, key)
+		params, pinned := parseSampling(*sampling)
+		if !ok || (*sampling != "" && !pinned) || *listen != "" || *allowPath != "" || *logDir == "" {
+			return fail(stderr, invalidInput)
+		}
+		var applied any
+		if *sampling != "" {
+			applied = params
+		}
+		dir, code := openPrivateDir(*logDir)
+		if code != "" {
+			return fail(stderr, code)
+		}
+		defer closeOrReport(dir, stderr)
+		if code := runGenerationVerify(dir, v, *provider, applied, stdin, time.Now); code != "" {
+			return fail(stderr, code)
+		}
+		return 0
 	case roleEngine, roleObserver, roleE2Stub:
 	case roleGateway:
 		cfg, ok := gatewayFromFlags(*backend, *upstream, *allowPath, *provider, *sampling, *generationPath,
@@ -406,6 +428,17 @@ func gatewayFromFlags(backend, upstream, allowPath, provider, sampling, generati
 			interval == 0 && key == ""
 	}
 	return cfg, false
+}
+
+// generationVerifyFromFlags는 generation-verify 역할의 조회 설정이다. 게이트웨이 api 백엔드와 같은 범위 검사를 쓴다.
+// 제품 manifest v1·v2 기록은 샘플링이 없으므로 -sampling을 비우면 표식의 sampling은 null이다(러너가 불일치로 판정).
+func generationVerifyFromFlags(upstream, provider, generationPath string, attempts int, interval time.Duration, key string) (generationVerifier, bool) {
+	u := parseGatewayUpstream(upstream, "https")
+	ok := u != nil && providerSlugRe.MatchString(provider) && validAllowPath(generationPath) &&
+		attempts >= 1 && attempts <= maxVerifyAttempts && interval > 0 && interval <= maxVerifyInterval && validKey(key)
+	client := &http.Client{Transport: defaultUpstreamTransport(), Timeout: generationLookupTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	return generationVerifier{upstream: u, path: generationPath, key: key, attempts: attempts, interval: interval, client: client, sleep: time.Sleep}, ok
 }
 
 // parseGatewayUpstream accepts a bare origin; the gateway forwards the

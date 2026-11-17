@@ -1,0 +1,38 @@
+{
+  "version": "diagnosis-api.v2",
+  "owner_context": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "draft": {
+    "id": "job-1",
+    "revision": 2,
+    "source_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "input": { "target_url": "https://owned.example/", "profile_id": "profile-1" },
+    "state": "ready",
+    "phase": "scope_check",
+    "preparation_started": false,
+    "authority_state": "not_issued",
+    "started": false,
+    "drain_complete": false,
+    "result_ready": false,
+    "scope": {
+      "target_ref": "target-1",
+      "scope_ref": "scope-1",
+      "origin": "https://owned.example",
+      "path_prefixes": ["=/", "/users/v1", "=/a/"],
+      "methods": ["GET", "HEAD"],
+      "query_policy": "any",
+      "body_policy": "bounded",
+      "max_body_bytes": 0,
+      "approval_mode": "preauthorized_scope",
+      "attestation_ref": "attestation-1",
+      "expires_at": "2030-01-01T00:00:00Z",
+      "budget": {
+        "requests": 100,
+        "model_requests": 2,
+        "input_tokens": 1000,
+        "output_tokens": 1000,
+        "cost_usd_micros": 0,
+        "duration_seconds": 60
+      }
+    }
+  }
+}
