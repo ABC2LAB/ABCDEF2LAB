@@ -1594,6 +1594,44 @@ a.ph:hover {
 .fdet > .note {
   margin: 0;
 }
+/* 오른쪽 발견 상세 머리의 '상세 보기': 딱지 줄 오른쪽 끝 (패널 열고 닫기 버튼 밑) */
+.vi-open {
+  margin-left: auto;
+}
+/* 발견 상세 페이지: 제목 머리 + 왼쪽 카드 / 오른쪽 따라오는 상태 카드, 좁으면 상태 카드를 위로 */
+.fpage {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.fpage-h h2 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 2px 0 8px;
+  outline: none;
+}
+.fpage-b {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 16px;
+  align-items: start;
+}
+.fpage-b > .fdet {
+  margin-top: 0;
+}
+.fpage-b > aside {
+  position: sticky;
+  top: 0;
+}
+@container (max-width: 760px) {
+  .fpage-b {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .fpage-b > aside {
+    position: static;
+    order: -1;
+  }
+}
 /* 상태 카드 줄 (ARTEX FieldRow): 이름은 왼쪽 흐리게, 값은 오른쪽, 줄 사이 구분선 */
 .frows {
   margin: 0;
@@ -4920,4 +4958,11 @@ button.smm:hover {
 .seg input:disabled + span,
 .goal input:disabled + span {
   cursor: not-allowed;
+}
+
+/* 발견 상세 페이지를 연 보고서: 오른쪽 패널 칸 없이 가운데만 (패널 접기 · 넓은 화면 규칙보다 뒤 · 더 구체적으로) */
+.vb.solo,
+.app .vb.solo,
+.app.insp-min .vb.solo {
+  grid-template-columns: minmax(0, 1fr);
 }

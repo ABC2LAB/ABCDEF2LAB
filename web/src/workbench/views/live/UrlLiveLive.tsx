@@ -992,11 +992,14 @@ export function FindingDetail({
   host,
   taskId,
   onReload,
+  onOpen,
 }: {
   e: RemediationEntry | undefined;
   host: string | null;
   taskId: string;
   onReload: () => void;
+  /** 있으면 머리 딱지 줄 오른쪽 끝(패널 열고 닫기 버튼 밑)에 '상세 보기' — 이 발견의 상세 페이지를 연다 (보고서) */
+  onOpen?: (e: RemediationEntry) => void;
 }) {
   if (!e) {
     return (
@@ -1022,6 +1025,12 @@ export function FindingDetail({
           <>
             <Sev e={e} />
             <Outcome o={o} />
+            {onOpen ? (
+              <button className={cx(s.btn, s.sm, s["vi-open"])} type="button" onClick={() => onOpen(e)}>
+                상세 보기
+                <Icon name="arrow" />
+              </button>
+            ) : null}
           </>
         }
       />
@@ -1029,40 +1038,7 @@ export function FindingDetail({
           줄마다 구분선 · 값은 오른쪽), 그 아래 판정과 영향 · 재현 절차 · 보안 조치 · AI 프롬프트 · 기술 정보 카드.
           ARTEX 와 달리 위험도 · 처리 상태를 여기서 바꾸지 않는다 — 판정은 저장된 E③ 근거만 따른다(절대규칙 3 · 5) */}
       <div className={s.fdet}>
-        <Isec t="상태">
-          <dl className={s.frows}>
-            <div>
-              <dt>ID</dt>
-              <dd>
-                <span className={s.chip}>{e.entry_id}</span>
-              </dd>
-            </div>
-            <div>
-              <dt>위험도</dt>
-              <dd>
-                <Sev e={e} />
-              </dd>
-            </div>
-            <div>
-              <dt>판정</dt>
-              <dd>
-                <Outcome o={o} />
-              </dd>
-            </div>
-            <div>
-              <dt>유형</dt>
-              <dd>{e.vuln_class ? <span className={s.chip}>{maskSecrets(e.vuln_class)}</span> : "—"}</dd>
-            </div>
-            <div>
-              <dt>관련 자산</dt>
-              <dd>{entryEp(e) ? <EntryEp e={e} /> : "—"}</dd>
-            </div>
-            <div>
-              <dt>발견 시각</dt>
-              <dd>{dateTimeOf(e.observed_at) || "—"}</dd>
-            </div>
-          </dl>
-        </Isec>
+        <StatusCard e={e} />
         {!e.available ? (
           <div className={cx(s.note, s.warn)} role="note">
             <Icon name="alert" />
@@ -1078,6 +1054,119 @@ export function FindingDetail({
       </div>
       {/* 계정별 응답 비교 · 다음 단계('연결 전' 자리)와 분류(머리 유형과 겹침)는 뺐다 — 사용자 11/17 '오른쪽 패널 지저분' */}
     </>
+  );
+}
+
+/**
+ * 발견 상태 카드 (ARTEX 발견 상세의 상태 카드): ID · 위험도 · 판정 · 유형 · 관련 자산 · 발견 시각. 오른쪽 패널과 상세 페이지가
+ * 같이 쓴다. ARTEX 와 달리 위험도 · 처리 상태를 여기서 바꾸지 않는다 — 판정은 저장된 E③ 근거만 따른다(절대규칙 3 · 5).
+ */
+function StatusCard({ e }: { e: RemediationEntry }) {
+  const o = diagnosticOutcome(e);
+  return (
+    <Isec t="상태">
+      <dl className={s.frows}>
+        <div>
+          <dt>ID</dt>
+          <dd>
+            <span className={s.chip}>{e.entry_id}</span>
+          </dd>
+        </div>
+        <div>
+          <dt>위험도</dt>
+          <dd>
+            <Sev e={e} />
+          </dd>
+        </div>
+        <div>
+          <dt>판정</dt>
+          <dd>
+            <Outcome o={o} />
+          </dd>
+        </div>
+        <div>
+          <dt>유형</dt>
+          <dd>{e.vuln_class ? <span className={s.chip}>{maskSecrets(e.vuln_class)}</span> : "—"}</dd>
+        </div>
+        <div>
+          <dt>관련 자산</dt>
+          <dd>{entryEp(e) ? <EntryEp e={e} /> : "—"}</dd>
+        </div>
+        <div>
+          <dt>발견 시각</dt>
+          <dd>{dateTimeOf(e.observed_at) || "—"}</dd>
+        </div>
+      </dl>
+    </Isec>
+  );
+}
+
+/**
+ * 발견 하나의 상세 페이지 (ARTEX 발견 '상세 보기' → 상세 페이지, 사용자 11/17). 오른쪽 패널 머리의 [상세 보기]로 열고
+ * 보고서 가운데를 이 페이지로 바꾼다:
+ * 왼쪽은 판정과 영향 · 재현 절차(증거) · 보안 조치 · AI 프롬프트 · 기술 정보 카드, 오른쪽은 따라오는 상태 카드.
+ */
+function FindingPage({
+  e,
+  host,
+  taskId,
+  onReload,
+  onBack,
+}: {
+  e: RemediationEntry;
+  host: string | null;
+  taskId: string;
+  onReload: () => void;
+  onBack: () => void;
+}) {
+  const o = diagnosticOutcome(e);
+  const head = useRef<HTMLHeadingElement>(null);
+  // 목록 중간에서 열어도 페이지 맨 위(제목)부터 보이고, 키보드 · 화면 읽기 초점도 제목으로 옮긴다.
+  // 부르는 쪽이 발견마다 key 로 새로 그리므로 처음 그릴 때 한 번이면 된다
+  useEffect(() => {
+    head.current?.scrollIntoView?.({ block: "start" });
+    head.current?.focus({ preventScroll: true });
+  }, []);
+  return (
+    <section className={s.fpage} aria-label="발견 상세 페이지">
+      <div>
+        <button className={cx(s.btn, s.sm)} type="button" onClick={onBack}>
+          발견 목록으로
+        </button>
+      </div>
+      <div className={s["fpage-h"]}>
+        <div className={s.eyebrow}>
+          {`${e.vuln_class ? maskSecrets(e.vuln_class) : diagnosticOutcomeLabels[o]} · `}
+          <span className={s.host}>{host}</span>
+        </div>
+        <h2 ref={head} tabIndex={-1}>
+          {maskSecrets(e.title) || e.entry_id}
+        </h2>
+        <div className={s["vi-chips"]}>
+          <Sev e={e} />
+          <Outcome o={o} />
+        </div>
+      </div>
+      <div className={s["fpage-b"]}>
+        <div className={s.fdet}>
+          {!e.available ? (
+            <div className={cx(s.note, s.warn)} role="note">
+              <Icon name="alert" />
+              <span>{maskSecrets(e.unavailable_reason)}</span>
+            </div>
+          ) : null}
+          <DiagnosticEntrySections
+            key={`${taskId}:${e.entry_id}:${e.source_digest}:${e.record?.id ?? 0}:${e.record?.bundle?.input_digest ?? ""}`}
+            task={taskId}
+            entry={e}
+            onReload={onReload}
+          />
+        </div>
+        <aside className={s.fdet} aria-label="발견 상태">
+          <StatusCard e={e} />
+        </aside>
+      </div>
+    </section>
   );
 }
 
@@ -1151,7 +1240,7 @@ type RTab = (typeof R_TABS)[number][0];
 
 /** live 보고서 (URL 진단): 결과 저장이 확인된 실제 task 만. */
 export function UrlReportLive() {
-  const { route, goTo, openInsp } = useShell();
+  const { route, goTo, openInsp, closeInsp, narrow } = useShell();
   const visible = route === "report";
   const handle = useUrl((st) => st.handle);
   const job = useUrl((st) => st.job);
@@ -1171,6 +1260,8 @@ export function UrlReportLive() {
   const [tab, setTab] = useState<RTab>("list");
   const tabRefs = useRef<Partial<Record<RTab, HTMLButtonElement | null>>>({});
   const [sel, setSel] = useState<string | null>(null);
+  // 오른쪽 패널 머리 '상세 보기'로 연 발견 (그 발견이 목록에서 사라지면 — 다른 점검 등 — 목록으로 돌아간다)
+  const [detail, setDetail] = useState<string | null>(null);
   const title = host ? `${host} 보고서` : "보고서";
 
   if (!handle || !job || !taskId) {
@@ -1213,6 +1304,7 @@ export function UrlReportLive() {
   const bySev = SEV_KEYS.map((k) => [k, findings.filter((e) => sevKey(e.severity ?? "") === k).length] as const);
   const noSev = findings.filter((e) => !sevKey(e.severity ?? "")).length;
   const chosen = sorted.find((e) => e.entry_id === sel) ?? findings[0] ?? sorted[0];
+  const detailEntry = detail ? (sorted.find((e) => e.entry_id === detail) ?? null) : null;
   const profile = cap.kind === "v2" ? cap.catalog.profiles.find((p) => p.id === job.input.profile_id) : undefined;
   let covSub = "읽는 중";
   if (covPct !== null) covSub = `미검사 ${100 - covPct}%`;
@@ -1279,126 +1371,154 @@ export function UrlReportLive() {
         parent={FINISHED}
         host={host}
         pill={<UrlPill job={job} verified={verified} />}
-        acts={<InspOpenButton>발견 상세</InspOpenButton>}
+        acts={detailEntry ? undefined : <InspOpenButton>발견 상세</InspOpenButton>}
         meta={meta}
       />
-      <div className={s.vb}>
-        <div className={s.vm}>
-          {counts ? (
-            // 요약 칸 (시안 짜임: 발견 · 판정 확정 · 검토 필요/판단 불가 · 자산 커버리지)
-            <section className={s.strip} aria-label="판정 집계">
-              <div className={s.cell}>
-                <div className={s.k}>발견</div>
-                <div className={s.v}>{findings.length}</div>
-                <div className={s.sub}>
-                  {[...bySev.map(([k, n]) => `${SEVL[k]} ${n}`), ...(noSev ? [`등급 없음 ${noSev}`] : [])].join(" · ")}
+      {/* 상세 페이지를 열면 가운데를 그 페이지로 바꾸고 오른쪽 패널은 두지 않는다(페이지 안에 상태 카드가 있다) */}
+      {detailEntry ? (
+        <div className={cx(s.vb, s.solo)}>
+          <div className={s.vm}>
+            <FindingPage
+              key={detailEntry.entry_id}
+              e={detailEntry}
+              host={host}
+              taskId={taskId}
+              onReload={rem.reload}
+              onBack={() => setDetail(null)}
+            />
+          </div>
+        </div>
+      ) : (
+        <div className={s.vb}>
+          <div className={s.vm}>
+            {counts ? (
+              // 요약 칸 (시안 짜임: 발견 · 판정 확정 · 검토 필요/판단 불가 · 자산 커버리지)
+              <section className={s.strip} aria-label="판정 집계">
+                <div className={s.cell}>
+                  <div className={s.k}>발견</div>
+                  <div className={s.v}>{findings.length}</div>
+                  <div className={s.sub}>
+                    {[...bySev.map(([k, n]) => `${SEVL[k]} ${n}`), ...(noSev ? [`등급 없음 ${noSev}`] : [])].join(
+                      " · ",
+                    )}
+                  </div>
+                </div>
+                <div className={s.cell}>
+                  <div className={s.k}>판정 확정</div>
+                  <div className={s.v}>{counts.confirmed}</div>
+                  <div className={s.sub}>증거 충분</div>
+                </div>
+                <div className={s.cell}>
+                  <div className={s.k}>{`${diagnosticOutcomeLabels.review} / 판단 불가`}</div>
+                  <div className={s.v}>
+                    {counts.review}
+                    <small>{`/ ${counts.not_executed + counts.unknown}`}</small>
+                  </div>
+                  <div className={s.sub}>추가 확인 권장</div>
+                </div>
+                <div className={s.cell}>
+                  <div className={s.k}>자산 커버리지</div>
+                  <div className={s.v}>
+                    {covPct !== null ? (
+                      <>
+                        {covPct}
+                        <small>%</small>
+                      </>
+                    ) : (
+                      "—"
+                    )}
+                  </div>
+                  <div className={s.sub}>{covSub}</div>
+                </div>
+              </section>
+            ) : null}
+            <section className={s.sec}>
+              <div className={s["seg-tabs"]} role="tablist" aria-label="보고서 내용" id="rTabs">
+                {R_TABS.map(([k, label], i) => (
+                  <button
+                    key={k}
+                    ref={(el) => {
+                      tabRefs.current[k] = el;
+                    }}
+                    type="button"
+                    role="tab"
+                    id={`rtab-${k}`}
+                    aria-controls={`rp-${k}`}
+                    aria-selected={tab === k}
+                    tabIndex={tab === k ? 0 : -1}
+                    onClick={() => pickTab(k)}
+                    onKeyDown={onTabKey(i)}
+                  >
+                    {label}
+                    {k === "list" ? <span className={s.c}>{sorted.length}</span> : null}
+                  </button>
+                ))}
+              </div>
+              <div role="tabpanel" id="rp-list" aria-label="발견 목록" hidden={tab !== "list"}>
+                {listBody}
+              </div>
+              <div role="tabpanel" id="rp-graph" aria-label="자산 지식 그래프" hidden={tab !== "graph"}>
+                <NotYet block why="보고서에 붙일 자산 지식 그래프 서버 연결이 없습니다" />
+              </div>
+              <div
+                role="tabpanel"
+                id="rp-map"
+                aria-label="접근통제 지도"
+                hidden={tab !== "map"}
+                style={{ display: tab === "map" ? "flex" : undefined, flexDirection: "column", gap: 12 }}
+              >
+                {/* 실제 지도는 KG API 연결 뒤. 지금은 따로 있는 접근통제 지도 화면(예시)으로 간다 */}
+                <NotYet block why="이 점검의 접근통제 지도 서버 연결이 없습니다" />
+                <div>
+                  <button className={s.btn} type="button" onClick={() => goTo("accessmap")}>
+                    접근통제 지도 화면 열기
+                    <Icon name="arrow" />
+                  </button>
                 </div>
               </div>
-              <div className={s.cell}>
-                <div className={s.k}>판정 확정</div>
-                <div className={s.v}>{counts.confirmed}</div>
-                <div className={s.sub}>증거 충분</div>
-              </div>
-              <div className={s.cell}>
-                <div className={s.k}>{`${diagnosticOutcomeLabels.review} / 판단 불가`}</div>
-                <div className={s.v}>
-                  {counts.review}
-                  <small>{`/ ${counts.not_executed + counts.unknown}`}</small>
-                </div>
-                <div className={s.sub}>추가 확인 권장</div>
-              </div>
-              <div className={s.cell}>
-                <div className={s.k}>자산 커버리지</div>
-                <div className={s.v}>
-                  {covPct !== null ? (
-                    <>
-                      {covPct}
-                      <small>%</small>
-                    </>
-                  ) : (
-                    "—"
-                  )}
-                </div>
-                <div className={s.sub}>{covSub}</div>
+              <div
+                role="tabpanel"
+                id="rp-ev"
+                aria-label="증거 · 감사"
+                hidden={tab !== "ev"}
+                style={{ display: tab === "ev" ? "flex" : undefined, flexDirection: "column", gap: 26 }}
+              >
+                {findings.length ? (
+                  // 시안 증거 목록 (evi): 발견마다 서버가 저장한 증거 버전 · 재현 단계 수
+                  <ul className={s.evi} aria-label="발견별 증거">
+                    {findings.map((e) => (
+                      <li key={e.entry_id}>
+                        <code>{e.entry_id}</code>
+                        <span>{maskSecrets(e.title) || e.entry_id}</span>
+                        <span>
+                          {`${e.evidence_version >= 0 ? `증거 버전 ${e.evidence_version}` : "증거 버전 미확인"} · 재현 단계 ${e.steps?.length ?? 0}건`}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+                <RunRecord run={run} />
+                <WorkflowReport />
+                <Download taskId={taskId} />
               </div>
             </section>
-          ) : null}
-          <section className={s.sec}>
-            <div className={s["seg-tabs"]} role="tablist" aria-label="보고서 내용" id="rTabs">
-              {R_TABS.map(([k, label], i) => (
-                <button
-                  key={k}
-                  ref={(el) => {
-                    tabRefs.current[k] = el;
-                  }}
-                  type="button"
-                  role="tab"
-                  id={`rtab-${k}`}
-                  aria-controls={`rp-${k}`}
-                  aria-selected={tab === k}
-                  tabIndex={tab === k ? 0 : -1}
-                  onClick={() => pickTab(k)}
-                  onKeyDown={onTabKey(i)}
-                >
-                  {label}
-                  {k === "list" ? <span className={s.c}>{sorted.length}</span> : null}
-                </button>
-              ))}
-            </div>
-            <div role="tabpanel" id="rp-list" aria-label="발견 목록" hidden={tab !== "list"}>
-              {listBody}
-            </div>
-            <div role="tabpanel" id="rp-graph" aria-label="자산 지식 그래프" hidden={tab !== "graph"}>
-              <NotYet block why="보고서에 붙일 자산 지식 그래프 서버 연결이 없습니다" />
-            </div>
-            <div
-              role="tabpanel"
-              id="rp-map"
-              aria-label="접근통제 지도"
-              hidden={tab !== "map"}
-              style={{ display: tab === "map" ? "flex" : undefined, flexDirection: "column", gap: 12 }}
-            >
-              {/* 실제 지도는 KG API 연결 뒤. 지금은 따로 있는 접근통제 지도 화면(예시)으로 간다 */}
-              <NotYet block why="이 점검의 접근통제 지도 서버 연결이 없습니다" />
-              <div>
-                <button className={s.btn} type="button" onClick={() => goTo("accessmap")}>
-                  접근통제 지도 화면 열기
-                  <Icon name="arrow" />
-                </button>
-              </div>
-            </div>
-            <div
-              role="tabpanel"
-              id="rp-ev"
-              aria-label="증거 · 감사"
-              hidden={tab !== "ev"}
-              style={{ display: tab === "ev" ? "flex" : undefined, flexDirection: "column", gap: 26 }}
-            >
-              {findings.length ? (
-                // 시안 증거 목록 (evi): 발견마다 서버가 저장한 증거 버전 · 재현 단계 수
-                <ul className={s.evi} aria-label="발견별 증거">
-                  {findings.map((e) => (
-                    <li key={e.entry_id}>
-                      <code>{e.entry_id}</code>
-                      <span>{maskSecrets(e.title) || e.entry_id}</span>
-                      <span>
-                        {`${e.evidence_version >= 0 ? `증거 버전 ${e.evidence_version}` : "증거 버전 미확인"} · 재현 단계 ${e.steps?.length ?? 0}건`}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-              <RunRecord run={run} />
-              <WorkflowReport />
-              <Download taskId={taskId} />
-            </div>
-          </section>
+          </div>
+          <aside className={s.vi} id="rInsp" aria-label="발견 상세">
+            <FindingDetail
+              e={chosen}
+              host={host}
+              taskId={taskId}
+              onReload={rem.reload}
+              onOpen={(e) => {
+                setDetail(e.entry_id);
+                // 좁은 화면은 상세가 서랍이라 닫아야 가운데 페이지가 보인다(넓은 화면은 페이지가 패널 자리를 쓴다)
+                if (narrow) closeInsp();
+              }}
+            />
+          </aside>
+          <PaneToggle />
         </div>
-        <aside className={s.vi} id="rInsp" aria-label="발견 상세">
-          <FindingDetail e={chosen} host={host} taskId={taskId} onReload={rem.reload} />
-        </aside>
-        <PaneToggle />
-      </div>
+      )}
     </>
   );
 }

@@ -1510,6 +1510,40 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(screen.queryByRole("heading", { name: "모델 사용량" })).toBeNull();
   });
 
+  it("오른쪽 발견 상세 머리의 '상세 보기'는 고른 발견의 상세 페이지(왼쪽 카드 · 오른쪽 상태 카드)로 가운데를 바꾸고, '발견 목록으로' 돌아온다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    a.fetchRemediation.mockResolvedValue({
+      task_id: 42,
+      entries: [candidate(1), { ...candidate(2), vuln_class: "idor", report: "## 재현\n\n- 계정 B 조회" }],
+    });
+    mount("report");
+    const list = await screen.findByRole("tabpanel", { name: "발견 목록" });
+    // 줄에는 상세 보기를 두지 않는다 — 오른쪽 패널 머리 하나
+    expect(within(list).queryByRole("button", { name: /상세 보기/ })).toBeNull();
+    fireEvent.click(within(list).getByRole("button", { name: /후보 2/ }));
+    const insp = screen.getByRole("complementary", { name: "발견 상세" });
+    fireEvent.click(within(insp).getByRole("button", { name: "상세 보기" }));
+    const page = screen.getByRole("region", { name: "발견 상세 페이지" });
+    expect(within(page).getByRole("heading", { level: 2, name: "후보 2" })).toHaveFocus();
+    expect(within(page).getByText(/^idor ·/)).toBeInTheDocument();
+    // 오른쪽 상태 카드 · 왼쪽 카드(판정과 영향 + 상세 보고 Markdown · 재현 절차 · 보안 조치 · AI 프롬프트)
+    const side = within(page).getByRole("complementary", { name: "발견 상태" });
+    expect(side).toHaveTextContent(/IDcandidate-2/);
+    expect(within(page).getByRole("heading", { name: "① 판정과 영향" })).toBeInTheDocument();
+    expect(
+      within(within(page).getByRole("region", { name: "상세 보고" })).getByRole("heading", { name: "재현" }),
+    ).toBeInTheDocument();
+    // 페이지를 연 동안 목록 · 오른쪽 발견 상세 패널은 두지 않는다
+    expect(screen.queryByRole("tabpanel", { name: "발견 목록" })).toBeNull();
+    expect(screen.queryByRole("complementary", { name: "발견 상세" })).toBeNull();
+    fireEvent.click(within(page).getByRole("button", { name: "발견 목록으로" }));
+    expect(screen.queryByRole("region", { name: "발견 상세 페이지" })).toBeNull();
+    const back = screen.getByRole("tabpanel", { name: "발견 목록" });
+    // 돌아오면 연 발견이 골라져 있다
+    expect(within(back).getByRole("button", { name: /후보 2/ })).toHaveAttribute("aria-current", "true");
+  });
+
   it("보고서 머리 줄의 모델 사용량은 점검 진행과 같은 입 · 출 칩, 마우스를 올리면 정확한 값과 최대치", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue({
