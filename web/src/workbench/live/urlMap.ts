@@ -50,9 +50,15 @@ export function urlTone(state: UrlState): UrlTone {
   return TONE[state];
 }
 
-/** 상태 → 글 (팀 lib 표시 글). 확인하지 못한 상태(verified=false)는 "현재 상태 미확인". */
+/**
+ * 작업대 화면에서 팀 lib 글 대신 쓰는 상태 글. 끝까지 마친 점검(completed)은 '실행 마감' 대신 '점검 완료'(사용자 11/17).
+ * 계획 일부가 끝나지 않은 마감(outcome partial)인지는 실행 결과 줄이 따로 말한다 — 이 글은 상태만 바꾼다.
+ */
+const STATE_TEXT: Partial<Record<UrlState, string>> = { completed: "점검 완료" };
+
+/** 상태 → 글 (팀 lib 표시 글, completed 는 '점검 완료'). 확인하지 못한 상태(verified=false)는 "현재 상태 미확인". */
 export function urlStateText(state: UrlState, verified = true): string {
-  return verified ? urlStateLabels[state] : "현재 상태 미확인";
+  return verified ? (STATE_TEXT[state] ?? urlStateLabels[state]) : "현재 상태 미확인";
 }
 
 /**

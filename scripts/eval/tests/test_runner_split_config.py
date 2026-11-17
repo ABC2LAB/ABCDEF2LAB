@@ -35,7 +35,8 @@ def split_block(**changes):
              "manifest_path": "/srv/eval-secrets/openrouter-manifest.json", "target_name": "app.eval.test",
              "product_port": 28787, "dns_control_port": 29083, "explore_port": 8082, "evidence_max_bytes": 4 << 20,
              "install_valid_hours": 4, "max_runs": 2, "registration_valid_hours": 2, "wide_writes": True,
-             "profile_id": "product-model-openrouter", "task_wait_seconds": 120, "poll_interval_seconds": 2}
+             "profile_id": "product-model-openrouter", "task_wait_seconds": 120, "poll_interval_seconds": 2,
+             "boundary_stop_seconds": 30}
     block.update(changes)
     return block
 
@@ -52,6 +53,12 @@ class TestParseSplit(unittest.TestCase):
                           "fixture": "abc2lab-product-fixture:eval-split-0123456789ab"})
         self.assertEqual(split.images["product"].id, "sha256:" + "7" * 64)
         self.assertIs(split.wide_writes, True)
+
+    def test_boundary_stop_bounds_match_docker(self):
+        # docker stop_container가 받는 경계값(1·600)은 설정도 받는다(#668 리뷰: 설정이 받은 값을 정지가 거부하지 않게).
+        for seconds in (1, 600):
+            with self.subTest(seconds=seconds):
+                self.assertEqual(parse_split(split_block(boundary_stop_seconds=seconds), self.config).boundary_stop_seconds, seconds)
 
     def test_only_for_preservation_runs(self):
         official = parse_runner_config(runner_config())
@@ -78,6 +85,9 @@ class TestParseSplit(unittest.TestCase):
             "writes": ({"wide_writes": 1}, "config.split.wide_writes: INVALID"),
             "profile": ({"profile_id": "Product Model"}, "config.split.profile_id: INVALID"),
             "wait": ({"poll_interval_seconds": 120}, "config.split.wait: INVALID"),
+            "stop_zero": ({"boundary_stop_seconds": 0}, "config.split.boundary_stop_seconds: INVALID"),
+            "stop_over_docker": ({"boundary_stop_seconds": 601}, "config.split.boundary_stop_seconds: INVALID"),
+            "stop_bool": ({"boundary_stop_seconds": True}, "config.split.boundary_stop_seconds: INVALID"),
             "interval_not_below": ({"task_wait_seconds": 5, "poll_interval_seconds": 5}, "config.split.wait: INTERVAL_NOT_BELOW_WAIT"),
         }
         for name, (change, error) in cases.items():
@@ -146,7 +156,7 @@ class TestPlan(unittest.TestCase):
             "PRODUCT_DNS_CONTROL_PORT": "29083", "EVAL_TARGET_NAME": "app.eval.test", "EVAL_TARGET_IMAGE": TARGET.ref,
             "EVAL_METER_IMAGE": "example/m:fixed", "EVAL_METER_PORT": "8080", "EVAL_METER_EXPLORE_PORT": "8082",
             "EVAL_TARGET_PORT": "3000", "EVAL_METER_DRAIN_GRACE": "30s", "EVAL_OBS_PORT": "8081", "EVAL_OBS_HOST_PORT": "18081",
-            "EVAL_OBS_PATH": "/api/records"})
+            "EVAL_OBS_PATH": "/api/records", "EVAL_PATH_KEY_FILE": "/srv/eval/path.key"})
         self.assertEqual((self.plan.project, self.plan.target_origin, self.plan.profiles),
                          ("eval-run1", "http://app.eval.test:8080", ("exploration",)))
         self.assertEqual(self.plan.compose_files[-1], COMPOSE_SPLIT)

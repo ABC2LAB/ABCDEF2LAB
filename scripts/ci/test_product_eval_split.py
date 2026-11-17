@@ -51,7 +51,16 @@ SYNTHETIC = {"EVAL_TARGET_NAME": TARGET_NAME, "EVAL_TARGET_IMAGE": "example/targ
              "EVAL_METER_IMAGE": "example/meter@sha256:" + "2" * 64, "EVAL_RUNNER_UID": "4242", "EVAL_RUNNER_GID": "4242",
              "EVAL_METER_PORT": "8080", "EVAL_METER_EXPLORE_PORT": "8081", "EVAL_TARGET_PORT": "5000",
              "EVAL_METER_DRAIN_GRACE": "10s", "EVAL_EVIDENCE_DIR": EVIDENCE_DIR, "EVAL_OBS_PORT": "8090",
-             "EVAL_OBS_PATH": "/score", "EVAL_OBS_HOST_PORT": "49190"}
+             "EVAL_OBS_PATH": "/score", "EVAL_OBS_HOST_PORT": "49190", "EVAL_PATH_KEY_FILE": "/srv/eval/path.key"}
+
+
+def key_mount_safe(mount: dict, source: str) -> bool:
+    """경로 가림 키 마운트의 보안 조건: 그 파일을 읽기 전용 bind로, 호스트에 경로를 만들지 않고(없는 키 파일을 데몬이
+    디렉터리로 만들지 않게) 다른 bind 옵션 없이 붙인다. Compose 판마다 다른 렌더 표현(빈 bind, 명시한 false)은 같게 본다."""
+    bind = mount.get("bind", {})
+    return (mount.get("type") == "bind" and mount.get("source") == source and mount.get("target") == "/run/eval-path-key"
+            and mount.get("read_only") is True and isinstance(bind, dict) and set(bind) <= {"create_host_path"}
+            and bind.get("create_host_path", False) is False)
 
 
 def render(files, extra=None):
@@ -254,6 +263,33 @@ class EvalSplitOverlayTests(unittest.TestCase):
         for render in (self.product, self.split):
             self.assertEqual(tuple(tool_surface.mcp_capability_args(render["services"]["explore-mcp"]["command"])),
                              tool_surface.OURS_MCP_ARGS)
+
+    def test_meter_masks_paths_with_the_b_key(self):
+        # 계약 §4.1: 평가 회차 경계의 path_mask_key_file은 계측기 -path-key-file과 같은 키다. O 계측기는 B 계측기와 같은
+        # 설정 키 파일을 같은 방식(compose.acceptance.yaml)으로 받는다. 경계는 러너가 같은 바이트로 만든 보호 입력 사본을 받는다
+        # (runner_split_inputs, 시험 test_runner_split_inputs). 둘 중 하나라도 빠지면 P03 (메서드, 가린 경로) 대조가 안 된다.
+        meter = self.split["services"]["eval-meter"]
+        acceptance = (ROOT / "deploy/eval/compose.acceptance.yaml").read_text(encoding="utf-8")
+        for flag in ("-path-log", "-path-key-file=/run/eval-path-key"):
+            self.assertIn(f"      - {flag}\n", acceptance)
+            self.assertEqual(meter["command"].count(flag), 1)
+        mounts = [v for v in meter["volumes"] if v.get("target") == "/run/eval-path-key"]
+        self.assertEqual(len(mounts), 1)
+        self.assertTrue(key_mount_safe(mounts[0], "/srv/eval/path.key"), mounts[0])
+        boundary_secrets = {s["source"] if isinstance(s, dict) else s for s in self.split["services"]["explore-init"].get("secrets") or []}
+        self.assertIn("explore_path_key", boundary_secrets)
+
+    def test_key_mount_check_accepts_both_compose_renders(self):
+        # Compose 2.40은 기본값인 create_host_path: false를 빼고(`bind: {}`), 5.7.0은 남긴다(#672 리뷰). 둘 다 받고,
+        # 호스트 경로를 만드는 설정·쓰기 가능·다른 원본은 거부한다.
+        base = {"type": "bind", "source": "/k", "target": "/run/eval-path-key", "read_only": True}
+        for bind in ({}, {"create_host_path": False}, None):
+            mount = dict(base) if bind is None else dict(base, bind=bind)
+            self.assertTrue(key_mount_safe(mount, "/k"), mount)
+        for change in ({"bind": {"create_host_path": True}}, {"bind": {"create_host_path": False, "propagation": "rshared"}},
+                       {"read_only": False}, {"source": "/other"}, {"type": "volume"}, {"bind": "x"}):
+            with self.subTest(change=change):
+                self.assertFalse(key_mount_safe(dict(base, **change), "/k"))
 
     def test_split_probe_reads_ports_from_this_render(self):
         # 여러 출발점 점검(결정안 §2.1)은 이 렌더의 명령과 짝인 보호 입력에서 입구를 읽는다. 경계 설정은 러너가 만드는 것

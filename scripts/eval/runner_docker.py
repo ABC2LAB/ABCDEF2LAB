@@ -62,6 +62,8 @@ _READ_CHUNK = 64 * 1024
 # docker events --since/--until에 넘기는 UTC 시각(초 소수 9자리까지). 러너가 만든 값만 받는다.
 _EVENT_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z\Z")
 # 컨테이너 inspect는 이 필드만 꺼낸다. .Config.Env 등 비밀이 들 수 있는 필드는 러너 메모리에도 올리지 않는다.
+STATE_TEMPLATE = ('{"service":{{json (index .Config.Labels "com.docker.compose.service")}},"status":{{json .State.Status}},'
+                  '"exit_code":{{json .State.ExitCode}},"health":{{if .State.Health}}{{json .State.Health.Status}}{{else}}null{{end}}}')
 CONTAINER_TEMPLATE = (
     '{"id":{{json .Id}},'
     '"project":{{json (index .Config.Labels "com.docker.compose.project")}},'
@@ -383,6 +385,18 @@ class Docker:
         if not ids:
             return []
         return self.json_lines(["container", "inspect", "--format", CONTAINER_TEMPLATE, "--", *ids],
+                               code="docker_container_inspect_failed")
+
+    def compose_up_detached(self, base_args: Sequence[str]) -> None:
+        """pull·빌드 없이 띄우기만 한다(--wait 없음). compose 2.40의 `--wait`는 healthcheck가 `[NONE]`인 서비스(제품 탐색
+        경계)를 "healthcheck 없음" 오류로 끝내므로, 탐색 분리 배치는 이것으로 띄우고 준비 상태는 호출자가 본다."""
+        self.run([*base_args, "up", "--detach", "--pull", "never", "--no-build"], code="docker_compose_up_failed")
+
+    def container_states(self, ids: Sequence[str]) -> list:
+        """컨테이너마다 compose 서비스 이름·상태·종료 코드·health(없으면 null). 준비 대기용이다."""
+        if not ids:
+            return []
+        return self.json_lines(["container", "inspect", "--format", STATE_TEMPLATE, "--", *ids],
                                code="docker_container_inspect_failed")
 
     def compose_up(self, base_args: Sequence[str], wait_seconds: int) -> None:
