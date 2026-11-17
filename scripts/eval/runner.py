@@ -62,7 +62,10 @@ from tool_tree import collect_tree, tree_sha256  # noqa: E402
 from runner_engine import (  # noqa: E402
     ADMIN_USERNAME, BASELINE_ADMIN_USERNAME, AdminSecret, EngineAPIError, EngineLLMProfile, apply_engine_rules, apply_engine_settings, collect_findings, e2_prompt_projection, engine_settings, intercept_summary, load_engine_rules,
     load_vocabulary, read_admin_password_file, start_task, task_request, END_SIGNAL_FIELDS, TERMINAL_TASK_STATUSES, TaskStatusReader,
+    TaskRequest,
 )
+from runner_goal import common_goal, common_goal_sha256  # noqa: E402
+from runner_split import REGISTRATION_PATHS  # noqa: E402
 from runner_fault import FAULT_STALL_FORMAT, FAULT_STALL_NAME, FaultRecordError, fault_stall_record  # noqa: E402
 from runner_evidence import (  # noqa: E402
     DRAINED_MARKER, SEALED_MARKER, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles,
@@ -99,7 +102,8 @@ from snapshot_collector import SnapshotEndpoint, collect_snapshot  # noqa: E402
 from snapshot_writer import OPAQUE_OBSERVATION_FORMAT, SnapshotContext  # noqa: E402
 
 RESULT_FORMAT = "abc2lab-eval-runner-result-v1"
-TASK_EVIDENCE_FORMAT = "abc2lab-eval-runner-task-v1"
+# v2: 탐색 분리 배치 B 회차의 작업 origin·목표 공통 부분 SHA 칸(그 밖의 회차는 null).
+TASK_EVIDENCE_FORMAT = "abc2lab-eval-runner-task-v2"
 # 회차 메모리(엔진 DB·엔진 데이터 tmpfs) 사용량을 재기 전에 끝난 회차의 값. 잰 척하지 않고 미측정을 그대로 남긴다.
 # 이 값인 회차는 상한 도달 여부를 알 수 없으므로 공식 비교에 쓰지 않는다(평가 프로토콜 §2).
 TMPFS_NOT_MEASURED = "not_measured"
@@ -270,6 +274,10 @@ class RunSpec:
     path_key_ref: str | None = None
     preservation: dict | None = None
     engine_source_sha: str = ""
+    # 탐색 분리 배치 B 회차: 작업 본문 origin(대상 이름 별칭)과 목표 공통 부분 SHA(O 실행 기록 goal.common_sha256과 대조할 값).
+    # 그 밖의 회차는 None이다.
+    task_origin: str | None = None
+    goal_common_sha256: str | None = None
 
 
 class WatchHandle(Protocol):
@@ -699,7 +707,8 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     created_at = _stamp(clock)
     _step(state, "evidence_write_failed", lambda: evidence.write_json("task.json", {
         "format": TASK_EVIDENCE_FORMAT, "request_sha256": spec.task_request_sha256, "task_id": task_id,
-        "requested_at": requested_at, "created_at": created_at}))
+        "requested_at": requested_at, "created_at": created_at, "task_origin": spec.task_origin,
+        "goal_common_sha256": spec.goal_common_sha256}))
     watch = _EngineEndWatch(ports, task_id, clock, started, spec.task_status_wait_seconds)
     stop_reason, forwarded_at_stop = _wait_budget(spec, meter, clock, state, started, watch)
     stopped_at, stop_elapsed = _stamp(clock), clock.monotonic() - started
@@ -1451,11 +1460,13 @@ def verdict_limits(block: dict) -> CollectLimits:
 
 def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_request_sha256: str, condition: str,
                repeat_index: int, engine_rules_sha256: str | None = None, e2_declared_status: str = "",
-               path_key_ref: str | None = None) -> RunSpec:
+               path_key_ref: str | None = None, goal_common_sha256: str | None = None) -> RunSpec:
     declared = preflight[plan.side]
     # 키 참조는 수용시험 회차에만 있다(check_key_files가 만든다).
     if (path_key_ref is not None) != (config.purpose == PURPOSE_BROWSER_ACCEPTANCE):
         raise RunnerConfigError(["config.path_key_file: KEY_REF_MISMATCH"])
+    if (plan.task_origin is None) != (goal_common_sha256 is None):
+        raise RunnerConfigError(["config.split: GOAL_MISMATCH"])
     return RunSpec(
         run_id=plan.run_id, side=plan.side, project=plan.project, llm_backend=plan.llm["backend"],
         expected=expected_topology(config, plan), allowed_listens=allowed_host_listens(config, plan),
@@ -1496,7 +1507,20 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         state_signal_tables=None if config.state is None else frozenset(config.state["signal_tables"]),
         state_runtime_roots=() if config.state is None else config.state["runtime_roots"],
         state_memory_enabled=config.state is not None and config.state["memory"] is not None,
-        engine_rules_sha256=engine_rules_sha256)
+        engine_rules_sha256=engine_rules_sha256, task_origin=plan.task_origin, goal_common_sha256=goal_common_sha256)
+
+
+def plan_task(task: dict, plan: RunPlan, declared_origin: str) -> tuple[TaskRequest, str | None]:
+    """작업 생성 본문과 목표 공통 부분 SHA. 탐색 분리 배치 B 회차(plan.task_origin)만 목표를 제품 공통 목표 문장으로 렌더한다.
+
+    분리 배치에서는 O의 목표를 제품 코드가 만든다. B 목표를 같은 공통 부분 바이트(같은 대상 이름 origin·같은 등록 경로 목록,
+    계정 라벨 없음)로 맞춰야 보존율이 목표 문장 차이를 재지 않는다(결정안 §6, 2026-11-16 사용자 결정). 설정의 task.goal은
+    그 회차에 쓰지 않는다. 설명(task.description)은 설정 그대로이고 첫 URL 규칙(task_request)을 그대로 거친다.
+    """
+    if plan.task_origin is None:
+        return task_request(task, declared_origin), None
+    goal = common_goal(plan.task_origin, list(REGISTRATION_PATHS), [])
+    return task_request(dict(task, goal=goal), plan.task_origin), common_goal_sha256(goal)
 
 
 def _remove_unstarted_run(directory: RunDirectory | None) -> None:
@@ -1534,7 +1558,7 @@ def main(argv: list[str] | None = None) -> int:
         path_key = acceptance_path_key(config)
         preflight = load_preflight(args.preflight)
         plan = plan_run(config, preflight, args.side, new_run_id(args.side))
-        task = task_request(config.task, preflight[plan.side]["target_origin"])
+        task, goal_common_sha256 = plan_task(config.task, plan, preflight[plan.side]["target_origin"])
         vocabulary, vocabulary_sha256 = load_vocabulary(config.findings["vocabulary_path"])
         rules = None if config.engine_rules is None else load_engine_rules(config.engine_rules)
         # 설정이 통과한 뒤에만 묻는다. 비밀번호는 이 프로세스 메모리에만 있고 어디에도 쓰지 않는다.
@@ -1597,7 +1621,8 @@ def main(argv: list[str] | None = None) -> int:
     clock = Clock(lambda: datetime.now(timezone.utc), time.monotonic, time.sleep)
     result = execute_run(build_spec(config, plan, preflight, task.sha256, args.condition, args.repeat,
                                     None if rules is None else rules.sha256,
-                                    "" if e2_link is None else e2_link.declared_status, path_key_ref),
+                                    "" if e2_link is None else e2_link.declared_status, path_key_ref,
+                                    goal_common_sha256),
                          ports, MeterFiles(directory.meter, directory.e2),
                          GatewayFiles(directory.llm), EvidenceDir(directory.run), clock)
     print(f"{result['run_id']} {result['status']} {' '.join(result.get('reasons', []))}".rstrip())

@@ -1083,6 +1083,13 @@ class TestStateDiff(unittest.TestCase):
 
 
 class TestCompleteRun(unittest.TestCase):
+    def test_split_baseline_task_evidence_carries_origin_and_goal_digest(self):
+        spec = dataclasses.replace(make_spec(), task_origin="http://app.eval.test:8080", goal_common_sha256="c" * 64)
+        result, _, _, evidence = run(spec=spec)
+        self.assertEqual(result["status"], COMPLETE)
+        task = evidence.files["task.json"]
+        self.assertEqual((task["task_origin"], task["goal_common_sha256"]), ("http://app.eval.test:8080", "c" * 64))
+
     def test_order_and_signed_result(self):
         result, ports, meter, evidence = run()
         self.assertEqual(ports.calls, FULL_ORDER)
@@ -1106,8 +1113,8 @@ class TestCompleteRun(unittest.TestCase):
                          ("example-provider", "Example", 2, ["Example"]))
         self.assertEqual(evidence.files["llm-summary.json"]["reasons"], [])
         task = evidence.files["task.json"]
-        self.assertEqual((task["format"], task["request_sha256"], task["task_id"]),
-                         ("abc2lab-eval-runner-task-v1", "t" * 64, "17"))
+        self.assertEqual((task["format"], task["request_sha256"], task["task_id"], task["task_origin"], task["goal_common_sha256"]),
+                         ("abc2lab-eval-runner-task-v2", "t" * 64, "17", None, None))
         self.assertEqual(result["task_request_sha256"], "t" * 64)
         self.assertEqual(result["observer_format"], "challenge_scoreboard")
         # 엔진 LLM 정책 모드는 선언값만 남는다(엔진이 드러내지 않음 → 관측 null).

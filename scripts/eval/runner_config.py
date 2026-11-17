@@ -47,6 +47,8 @@ COMPOSE_ACCEPTANCE = REPO_ROOT / "deploy" / "eval" / "compose.acceptance.yaml"
 # 탐색 분리 배치(개선 후 O)의 평가 overlay. 제품 compose·제품 수용 overlay 위에 얹는다(탐색 분리 배치 결정안 §2 A(c)).
 # 렌더 조건은 scripts/ci/test_product_eval_split.py가 고정하고, 회차 구성에 쓰는 것은 순서 4-7(제품 구동)이다.
 COMPOSE_SPLIT = REPO_ROOT / "deploy" / "eval" / "compose.split.yaml"
+# 탐색 분리 배치 B 회차: 엔진 망에서 대상 이름을 계측기에 단다(O와 같은 origin 문자열, 결정안 §6).
+COMPOSE_TARGET_ALIAS = REPO_ROOT / "deploy" / "eval" / "compose.target-alias.yaml"
 E2_SECCOMP_PROFILE = REPO_ROOT / "deploy" / "eval" / "seccomp-e2.json"
 METER_DIR_NAME = "meter"
 # 게이트웨이 기록은 계측기와 따로 둔다(API 키를 가진 컨테이너가 계측 기록에 손대지 못하게).
@@ -301,6 +303,9 @@ class RunPlan:
     e2_mode: str
     # 제품 E²가 계측기에 붙는 고정 주소. up 뒤 실제 주소와 대조한다.
     e2_meter_ip: str | None = None
+    # 탐색 분리 배치 B 회차의 작업 본문 origin(대상 이름 별칭, http://<대상 이름>:<계측기 포트>). 그 밖의 회차는 None이고
+    # 선언의 target_origin(계측기 서비스 이름)을 쓴다.
+    task_origin: str | None = None
 
 
 @dataclass(frozen=True)
@@ -839,6 +844,12 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
     # 보존 시험은 원본·개선 후 양쪽 회차의 경로를 같은 키로 가려야 비교할 수 있다.
     if config.purpose == PURPOSE_BROWSER_ACCEPTANCE:
         files.append(COMPOSE_ACCEPTANCE)
+    split = config.split
+    if split is not None and side != BASELINE_SIDE:
+        # 분리 배치의 O는 제품 배치 계획(runner_split_config.plan_split_run)으로만 돈다. 엔진 직접 배치로 돌리지 않는다.
+        raise RunnerConfigError([f"preflight.{side}: SPLIT_LAYOUT_PLAN"])
+    if split is not None:
+        files.append(COMPOSE_TARGET_ALIAS)
     env = {
         "EVAL_ENGINE_IMAGE": engine_image.ref,
         "EVAL_ENGINE_DB_IMAGE": config.images["engine_db"].ref,
@@ -872,6 +883,8 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
     }
     if config.purpose == PURPOSE_BROWSER_ACCEPTANCE:
         env["EVAL_PATH_KEY_FILE"] = str(config.path_key_file)
+    if split is not None:
+        env["EVAL_TARGET_NAME"] = split.target_name
     if llm["backend"] == "api":
         env["EVAL_LLM_PROVIDER"] = llm["provider"]
         env["EVAL_LLM_GENERATION_PATH"] = config.llm_gateway["generation_path"]
@@ -895,7 +908,8 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
                    llm=llm, target_image=target_image, engine_image=engine_image, images=images,
                    meter_port=origin.port, compose_files=tuple(files),
                    secrets_env_file=config.secrets_env_file, compose_env=env, e2_mode=e2_mode,
-                   e2_meter_ip=config.e2_product["meter_ip"] if e2_mode == E2_PRODUCT else None)
+                   e2_meter_ip=config.e2_product["meter_ip"] if e2_mode == E2_PRODUCT else None,
+                   task_origin=None if split is None else f"http://{split.target_name}:{origin.port}")
 
 
 def gateway_sampling(declared: dict, side: str) -> str:
