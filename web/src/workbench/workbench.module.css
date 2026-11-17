@@ -3895,7 +3895,7 @@ button.smm:hover {
   font-size: 12.5px;
   color: var(--ink-2);
 }
-/* 작업 합계 토큰과 '계획 보기'를 한 줄에 (좁으면 줄바꿈) */
+/* 작업 합계 토큰 줄 */
 .lcard-m {
   display: flex;
   flex-wrap: wrap;
@@ -3989,74 +3989,6 @@ button.smm:hover {
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-all;
-}
-/* '계획 보기 ▸' → 펼치면 '계획 접기 ▾' */
-.lcard-tg {
-  margin-left: auto;
-}
-.lcard-tg .ic {
-  transition: transform 0.15s ease;
-}
-.lcard-tg[aria-expanded="true"] .ic {
-  transform: rotate(90deg);
-}
-.plan {
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-}
-.plan li {
-  position: relative;
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
-  gap: 10px;
-  padding: 7px 0;
-  font-size: 13px;
-  color: var(--ink-3);
-}
-/* 점검 계획은 단계 모양: 동그라미(.st, 위 3px · 14px) 아래에서 다음 줄 동그라미 위까지 잇는 세로선. 끝낸 단계 뒤는 초록 */
-.plan li:not(:last-child)::before {
-  content: "";
-  position: absolute;
-  left: 6.25px;
-  top: 26px;
-  bottom: -8px;
-  width: 1.5px;
-  background: var(--rule-2);
-}
-.plan li.done:not(:last-child)::before {
-  background: var(--ok);
-}
-.plan li .st {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  border: 1.5px solid var(--rule-2);
-  margin-top: 3px;
-  display: grid;
-  place-items: center;
-}
-.plan li.done {
-  color: var(--ink-2);
-}
-.plan li.done .st {
-  background: var(--ok);
-  border-color: var(--ok);
-  color: var(--bg);
-}
-.plan li.done .st .ic {
-  width: 10px;
-  height: 10px;
-  stroke-width: 3;
-}
-.plan li.run {
-  color: var(--ink);
-  font-weight: 600;
-}
-.plan li.run .st {
-  border-color: var(--accent);
-  box-shadow: inset 0 0 0 3px var(--accent);
-  animation: pulse 1.6s ease-in-out infinite;
 }
 .feed {
   list-style: none;

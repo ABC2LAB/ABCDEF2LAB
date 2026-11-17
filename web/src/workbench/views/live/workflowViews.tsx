@@ -8,7 +8,7 @@
 import { Fragment, type ReactElement, type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 import { cx } from "../../lib/cx";
-import { clockOf, planState } from "../../live/map";
+import { clockOf } from "../../live/map";
 import { maskSecrets } from "../../live/mask";
 import { retryWorkflowAction, runUrlAction, runWorkflowAction, useUrl, useUrlGates } from "../../live/urlDiagnosis";
 import { flowStageText, type WorkflowEndpoint, type WorkflowSnapshot } from "../../live/workflow";
@@ -1538,33 +1538,6 @@ export function WorkflowScopeLive() {
         )}
       </div>
     </>
-  );
-}
-
-/** 계획 상태 → 시안 줄 모양 (done · run · 그 밖). */
-function planClass(state: string): string | undefined {
-  const p = planState(state).row;
-  if (p === "done") return s.done;
-  if (p === "run") return s.run;
-  return undefined;
-}
-
-/** 점검 계획 단계 목록 (점검 진행 상태 카드의 '계획 보기'로 펼친다). 동그라미를 세로선으로 잇는다. */
-export function PlanSteps({ plan, id }: { plan: NonNullable<WorkflowSnapshot["plan"]>; id?: string }) {
-  return (
-    <ol className={s.plan} id={id}>
-      {plan.map((p) => (
-        <li key={p.id} className={planClass(p.state)}>
-          <span className={s.st}>{planState(p.state).row === "done" ? <Icon name="check" /> : null}</span>
-          <span>
-            {p.title}
-            {planState(p.state).row === "run" || planState(p.state).row === "other"
-              ? ` · ${planState(p.state).label}`
-              : ""}
-          </span>
-        </li>
-      ))}
-    </ol>
   );
 }
 

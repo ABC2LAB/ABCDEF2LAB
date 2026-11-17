@@ -54,17 +54,8 @@ import s from "../../workbench.module.css";
 import { ApprovalFacts, ApprovalRequestCode, RecoveredApprovalNotice, useRequestApprovals } from "./approvals";
 import { DiagnosticEntrySections } from "./DiagnosticEntrySections";
 import { ReportReadError } from "./runRows";
-import { TaskActivity } from "./TaskActivity";
 import { reasonText, UrlFacts, UrlHead, UrlNotices, UrlPill, UrlRefreshButton, useUrlHost } from "./urlParts";
-import {
-  ActivityLog,
-  crawlPct,
-  PauseButton,
-  PlanSteps,
-  useStopConfirm,
-  WorkflowNotice,
-  WorkflowReport,
-} from "./workflowViews";
+import { ActivityLog, crawlPct, PauseButton, useStopConfirm, WorkflowNotice, WorkflowReport } from "./workflowViews";
 
 /** 보고서 위치의 상위 화면 (작업대 / 끝난 점검 / 주소 / 보고서) */
 const FINISHED = { href: "#finished", label: "끝난 점검" };
@@ -366,8 +357,6 @@ export function UrlLiveLive() {
     intervalMs: job && URL_ENDED_STATES.includes(job.state) ? 0 : FINDINGS_POLL_MS,
   });
   const fresh = useFreshIds(job?.task_id, finds.data);
-  // 상태 카드의 '계획 보기' (점검 계획 단계 목록을 카드 안에 펼침). 기본은 접음: 가운데는 활동 기록 중심
-  const [planOpen, setPlanOpen] = useState(false);
 
   if (!handle || !job) {
     return (
@@ -518,9 +507,9 @@ export function UrlLiveLive() {
           {job.diagnostic_log_incomplete ? (
             <p className={s.help}>{reasonText("diagnostic_logging_incomplete")}</p>
           ) : null}
-          {/* 상단 카드: 지금 하는 일을 크게(끝나면 결과와 [보고서 보기]), 숫자 칸(계획 · 심화 점검 · 점검 대상 API · 확인 필요),
-              작업 합계 토큰과 '계획 보기'(점검 계획 단계를 카드 안에 펼침). 결과 불명이면 첫 줄 대신 아래 안내가 말하고,
-              진행률 · 시작 · 경과 · 남은 시간은 서버가 주지 않아 두지 않는다 */}
+          {/* 상단 카드: 지금 하는 일을 크게(끝나면 결과와 [보고서 보기]), 숫자 칸(계획 · 심화 점검 · 발견 후보 · 확인 필요),
+              작업 합계 토큰. 계획 단계 목록은 두지 않는다(사용자 11/17 '계획 접기 빼기' — 완료 수만 숫자 칸에).
+              결과 불명이면 첫 줄 대신 아래 안내가 말하고, 진행률 · 시작 · 경과 · 남은 시간은 서버가 주지 않아 두지 않는다 */}
           {/* 맨 위 단계 게이지 (탐색 흐름이 있는 점검만, 상태를 모르면 두지 않는다) */}
           {gauge ? <StageGauge segs={gauge} /> : null}
           {job.state !== "unknown" || tokensBody || stats.length ? (
@@ -551,24 +540,7 @@ export function UrlLiveLive() {
                   ))}
                 </div>
               ) : null}
-              {tokensBody || plan.length ? (
-                <div className={s["lcard-m"]}>
-                  {tokensBody}
-                  {plan.length ? (
-                    <button
-                      className={cx(s.btn, s.sm, s["lcard-tg"])}
-                      type="button"
-                      aria-expanded={planOpen}
-                      aria-controls="lPlan"
-                      onClick={() => setPlanOpen(!planOpen)}
-                    >
-                      {planOpen ? "계획 접기" : "계획 보기"}
-                      <Icon name="chev" />
-                    </button>
-                  ) : null}
-                </div>
-              ) : null}
-              {planOpen && plan.length ? <PlanSteps plan={plan} id="lPlan" /> : null}
+              {tokensBody ? <div className={s["lcard-m"]}>{tokensBody}</div> : null}
             </section>
           ) : null}
           {stateNote}
@@ -620,7 +592,7 @@ export function UrlLiveLive() {
           {job.task_id ? <LiveFindings poll={finds} fresh={fresh} ended={ended} /> : null}
           {a.message ? <p role="status">{a.message}</p> : null}
           {a.unresolved ? <p role="alert">결정 결과 불명 · 조회로 확인하기 전에는 다시 결정하지 않습니다.</p> : null}
-          {job.task_id && verified ? <TaskActivity key={job.task_id} taskId={job.task_id} enabled={visible} /> : null}
+          {/* 서버 진단 활동(#642 TaskActivity)은 두지 않는다(사용자 11/17): 아래 활동 기록과 같은 ARTEX 워커 기록이 겹친다 */}
           {job.input.workflow_mode ? <ActivityLog /> : null}
         </div>
         {/* 오른쪽 진행 요약: 서버가 점검 중에 주는 값만. 점검 중 발견 · 판정은 서버가 결과를 저장하기 전에 주지 않아

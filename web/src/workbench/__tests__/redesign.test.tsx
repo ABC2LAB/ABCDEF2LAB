@@ -1386,19 +1386,10 @@ describe("점검 진행", () => {
     await waitFor(() => expect(stat("발견 후보")).toHaveTextContent(/^발견 후보2심각 · 높음 1$/));
     await waitFor(() => expect(stat("확인 필요")).toHaveTextContent(/^확인 필요2승인 대기$/));
     expect(stat("확인 필요").className).toMatch(/warn/);
-    // 점검 계획 단계 목록은 접혀 있다가 '계획 보기'로 카드 안에 펼친다 (가운데는 활동 기록 중심)
+    // 계획 단계 목록 · '계획 보기/접기'는 없다(완료 수만 숫자 칸에), 서버 진단 활동 칸도 없다 (사용자 11/17)
     expect(document.getElementById("lPlan")).toBeNull();
-    const tg = within(card).getByRole("button", { name: "계획 보기" });
-    expect(tg).toHaveAttribute("aria-expanded", "false");
-    fireEvent.click(tg);
-    expect(within(card).getByRole("button", { name: "계획 접기" })).toHaveAttribute("aria-expanded", "true");
-    const steps = document.getElementById("lPlan") as HTMLElement;
-    expect(card).toContainElement(steps);
-    expect(
-      within(steps)
-        .getAllByRole("listitem")
-        .map((li) => li.textContent),
-    ).toEqual(["공개 경로 탐색", "고른 경로 심화 점검 · 진행 중"]);
+    expect(within(card).queryByRole("button", { name: /계획 (보기|접기)/ })).toBeNull();
+    expect(screen.queryByRole("region", { name: "서버 진단 활동" })).toBeNull();
     // 확인 필요는 머리('확인 필요 N건') 아래 묶음, 카드마다 붙던 딱지는 없다. 카드 둘째 줄은 그 요청의 계획 제목
     const decide = await screen.findByRole("region", { name: "확인 필요" });
     expect(within(decide).getByText("2건")).toBeInTheDocument();

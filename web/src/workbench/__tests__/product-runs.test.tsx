@@ -15,6 +15,7 @@ import { resetUrl, runUrlAction, UrlFeeds, urlGates, useUrl } from "../live/urlD
 import { loadUrlRuns, useUrlRuns } from "../live/urlRunList";
 import { type Shell, ShellContext, type View } from "../shell";
 import { DashboardByMode, FinishedByMode, LiveByMode, ReportByMode, RunningByMode } from "../views/live/byMode";
+import { TaskActivity } from "../views/live/TaskActivity";
 import { Download } from "../views/live/UrlLiveLive";
 import s from "../workbench.module.css";
 
@@ -141,6 +142,20 @@ const fakeFetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
   if (url.pathname === "/api/tasks") throw new Error("일반 tasks API로 제품 목록을 대체함");
   return json({ error: "fixture_not_provided" }, 404);
 };
+/**
+ * 점검 진행 화면은 #661 부터 서버 진단 활동(TaskActivity)을 두지 않는다(같은 워커 기록을 활동 기록이 보임). 그 부품의
+ * 결속 · 늦은 응답 · 오류 표시 시험은 예전 화면과 같은 조건(검증된 job 의 task)으로 이 자리에 따로 그려 그대로 확인한다.
+ */
+function TaskActivityProbe() {
+  const job = useUrl((st) => st.job);
+  const verified = useUrl((st) => st.verified);
+  return (
+    <div data-testid="task-activity-probe">
+      {job?.task_id && verified ? <TaskActivity key={job.task_id} taskId={job.task_id} enabled /> : null}
+    </div>
+  );
+}
+
 function Harness({ initial = "dashboard" }: { initial?: View }) {
   const [view, setView] = useState<View>(initial);
   useLiveAuthBoot();
@@ -165,7 +180,12 @@ function Harness({ initial = "dashboard" }: { initial?: View }) {
     dashboard: <DashboardByMode />,
     running: <RunningByMode />,
     finished: <FinishedByMode />,
-    live: <LiveByMode />,
+    live: (
+      <>
+        <LiveByMode />
+        <TaskActivityProbe />
+      </>
+    ),
     report: <ReportByMode />,
   };
   return (
@@ -242,7 +262,10 @@ describe("서버 목록에서 새 세션으로 기존 Job 다시 연결", () => 
     // #641의 진행 요약 짜임에서도 #642의 복구 task 활동과 조회 전용 결속을 함께 보존한다.
     const summary = screen.getByRole("complementary", { name: "진행 요약" });
     expect(within(summary).getByRole("heading", { level: 3, name: "전송 통제" })).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "서버 진단 활동" })).toBeInTheDocument();
+    // 서버 진단 활동은 점검 진행 화면이 아니라 시험용 자리(TaskActivityProbe)에만 있다 (#661)
+    expect(
+      screen.getByRole("region", { name: "서버 진단 활동" }).closest('[data-testid="task-activity-probe"]'),
+    ).not.toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "테스트 이동 finished" }));
     await pick("보존된 점검");
     fireEvent.click(screen.getByRole("button", { name: "테스트 이동 report" }));
