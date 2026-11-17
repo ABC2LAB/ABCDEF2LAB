@@ -83,6 +83,7 @@ class FakePorts:
         self.boundary_stopped = False
         self.snapshot_times: dict[str, float] = {}
         self.layout = {"pre": [], "post": []}
+        self.snapshot_change: dict[str, dict] = {}
 
     def _call(self, name):
         self.calls.append(name)
@@ -114,7 +115,9 @@ class FakePorts:
     def snapshot(self, phase):
         self._call(f"snapshot:{phase}")
         self.snapshot_times[phase] = self.clock.t
-        return snapshot()
+        snap = snapshot()
+        snap["services"].update(self.snapshot_change.get(phase, {}))
+        return snap
 
     def check(self, phase):
         self._call(f"check:{phase}")
@@ -329,6 +332,11 @@ class TestInvalid(unittest.TestCase):
         self.assert_invalid("pre_probe_violation", lambda p: p.probe_status.update(pre=VIOLATION))
         _, ports, _ = self.assert_invalid("post_probe_invalid", lambda p: p.probe_status.update(post=INVALID))
         self.assertIn("watch:stop", ports.calls)  # 감시는 정리한다
+
+    def test_container_replaced_between_pre_and_post(self):
+        # #668 리뷰: 같은 이미지·주소의 새 컨테이너로 바뀌면 배치 검사는 통과하지만 B와 같은 스냅숏 대조가 잡는다.
+        _, ports, _ = self.assert_invalid("boundary_changed", lambda p: p.snapshot_change.update(post={"target": {"id": "9" * 64}}))
+        self.assertNotIn("check:post", ports.calls)  # 대조가 배치 검사보다 먼저다
 
     def test_layout_violations(self):
         # #668 리뷰: 구간 이전부터 있던 배치 어긋남(직접 publish·netns 공유)은 이벤트로 안 잡히므로 pre/post 검사가 무효로 만든다.
