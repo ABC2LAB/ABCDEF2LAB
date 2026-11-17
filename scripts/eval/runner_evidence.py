@@ -426,8 +426,9 @@ class GatewayFiles:
                 raise EvidenceError("llm_row_invalid")
         return rows
 
-    def verified(self) -> dict | None:
-        """seal·drain 뒤 게이트웨이가 쓰는 검증 마커. 아직 없으면 None."""
+    def verified(self, role: str = "llm-gateway") -> dict | None:
+        """seal·drain 뒤 게이트웨이가 쓰는 검증 마커. 아직 없으면 None. role은 표식을 쓴 역할이다(B 게이트웨이
+        `llm-gateway`, O 제품 호출 기록 사후 검증 `generation-verify`). 다른 역할의 표식은 받지 않는다."""
         data = _read_owned(self.path, LLM_VERIFIED_MARKER)
         if data is None:
             return None
@@ -435,6 +436,6 @@ class GatewayFiles:
             marker = json.loads(data.decode("utf-8"))
         except (UnicodeError, ValueError, RecursionError):
             raise EvidenceError("llm_marker_invalid") from None
-        if not isinstance(marker, dict) or marker.get("role") != "llm-gateway":
+        if not isinstance(marker, dict) or marker.get("role") != role:
             raise EvidenceError("llm_marker_invalid")
         return marker
