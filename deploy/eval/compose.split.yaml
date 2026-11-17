@@ -1,0 +1,151 @@
+# 탐색 분리 배치(개선 후 O) 평가 overlay. 탐색 분리 배치 결정안 §2 A(c): 제품 compose는 그대로 두고, 이 파일이 망 IPAM·
+# 서비스 고정 주소를 평가 대역으로 옮기고 계측기(본 입구·탐색 입구)·대상·관측 front를 더한다.
+# 쌓는 순서: deploy/product/compose.yaml → compose.acceptance.yaml → compose.exploration-acceptance.yaml → 이 파일,
+# `--profile exploration`. 제품 서비스의 보안 칸(user·cap·read_only·security_opt·seccomp·tmpfs·망 소속·internal)은 바꾸지 않는다
+# (scripts/ci/test_product_eval_split.py가 제품 렌더와 대조).
+#
+# 평가 대역은 10.252.0.0/20이다. 제품 망 /24마다 같은 호스트 번호를 쓰고(제품 172.31.25X.N → 10.252.Y.N), 평가 전용 망을 더한다.
+# 같은 머신의 다른 스택과 겹치면 러너가 up 전에 멈춘다(대역 겹침 검사, #637).
+#   frontend 10.252.0 · control 10.252.2 · target 10.252.3 · explore_control 10.252.4 · explore_cdp 10.252.5
+#   explore_direct 10.252.7 · explore_browser_ingress 10.252.8 · fixture-control 10.252.9
+#   eval_target_back 10.252.10(계측기·관측 front 뒤쪽, 대상) · eval_explore_ingress 10.252.11(경계 → 계측기 탐색 입구)
+#   eval_obs 10.252.12(관측 front publish 전용)
+#
+# 대상은 http로 등록한다(C22). 대상 이름(EVAL_TARGET_NAME)은 target 망에서 계측기 본 입구를 가리킨다(fixture DNS와 망 별칭 둘 다).
+# 계측기 탐색 입구는 eval_explore_ingress 주소에만 묶어 target 망의 엔진이 닿지 못하게 한다.
+
+services:
+  postgres:
+    networks:
+      control: {ipv4_address: 10.252.2.10}
+  preparation:
+    networks:
+      control: {ipv4_address: 10.252.2.12}
+      target: {ipv4_address: 10.252.3.12}
+      frontend: {ipv4_address: 10.252.0.12}
+  workbench:
+    # 제품 명령과 같고 리슨 주소만 평가 대역이다(렌더 시험이 대조).
+    command: [product-front, -listen, '10.252.0.12:8787', -api-origin, 'http://127.0.0.1:28081']
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, 'http://10.252.0.12:8787/api/product/health']
+  explore-boundary:
+    networks:
+      explore_browser_ingress: {ipv4_address: 10.252.8.10}
+      explore_direct: {ipv4_address: 10.252.7.10, aliases: [explore-direct]}
+      eval_explore_ingress: {ipv4_address: 10.252.11.10}
+  explore-browser:
+    command: [--proxy-server, 'http://explore-boundary:3128', --cdp-listen, '10.252.5.20:9222']
+    networks:
+      explore_cdp: {ipv4_address: 10.252.5.20}
+  explore-mcp:
+    command: [--headless, --isolated, --no-webmcp, --browser, chromium, --proxy-server, 'http://explore-boundary:3128',
+              --cdp-endpoint, 'http://10.252.5.20:9222', --output-dir, /tmp/mcp-output, --port, '8931',
+              --host, 10.252.4.20, --allowed-hosts, 'explore-mcp:8931']
+    networks:
+      explore_control: {ipv4_address: 10.252.4.20}
+      explore_cdp: {ipv4_address: 10.252.5.30}
+
+  # 수용시험 fixture: DNS 증명용 이름 풀이를 평가 대상 이름 → 계측기 본 입구로 바꾼다.
+  fixture-init:
+    command: [-mode, init, -hosts, '${EVAL_TARGET_NAME:?}=10.252.3.20']
+  fixture-dns:
+    command: [-mode, dns, -hosts, '${EVAL_TARGET_NAME:?}=10.252.3.20']
+    networks:
+      control: {ipv4_address: 10.252.2.40}
+  # 수용시험의 Juice Shop·TLS 앞단·합성 모델은 이 배치에 띄우지 않는다(대상은 아래 target, 모델은 제품 자체 OpenRouter 경로).
+  juice-shop:
+    profiles: [eval-split-unused]
+  target-front:
+    profiles: [eval-split-unused]
+  target-front-b:
+    profiles: [eval-split-unused]
+  synthetic-model:
+    profiles: [eval-split-unused]
+
+  target:
+    image: ${EVAL_TARGET_IMAGE:?대상 이미지(digest 고정)를 설정하세요}
+    networks:
+      eval_target_back: {ipv4_address: 10.252.10.21}
+    security_opt: [no-new-privileges:true]
+  eval-meter:
+    image: ${EVAL_METER_IMAGE:?계측기 이미지를 설정하세요}
+    # 증거 디렉터리(0700) 소유자와 같은 uid여야 계측기가 쓸 수 있다.
+    user: '${EVAL_RUNNER_UID:?}:${EVAL_RUNNER_GID:?}'
+    command:
+      - -role=engine
+      - -listen=10.252.3.20:${EVAL_METER_PORT:?}
+      - -explore-listen=10.252.11.20:${EVAL_METER_EXPLORE_PORT:?}
+      - -upstream=http://target:${EVAL_TARGET_PORT:?}
+      - -log-dir=/evidence
+      - -drain-grace=${EVAL_METER_DRAIN_GRACE:?}
+    volumes:
+      - ${EVAL_EVIDENCE_DIR:?}:/evidence
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    depends_on: [target]
+    networks:
+      target:
+        ipv4_address: 10.252.3.20
+        aliases: ['${EVAL_TARGET_NAME:?}']
+      eval_explore_ingress: {ipv4_address: 10.252.11.20}
+      eval_target_back: {ipv4_address: 10.252.10.20}
+  eval-obs:
+    image: ${EVAL_METER_IMAGE:?}
+    user: '${EVAL_RUNNER_UID:?}:${EVAL_RUNNER_GID:?}'
+    command:
+      - -role=observer
+      - -listen=:${EVAL_OBS_PORT:?}
+      - -upstream=http://target:${EVAL_TARGET_PORT:?}
+      - -log-dir=/evidence
+      - -allow-path=${EVAL_OBS_PATH:?}
+    volumes:
+      - ${EVAL_EVIDENCE_DIR:?}:/evidence
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    ports:
+      # 호스트 수집기 전용. 루프백에만 publish(수집기의 loopback 가드와 짝).
+      - '127.0.0.1:${EVAL_OBS_HOST_PORT:?}:${EVAL_OBS_PORT:?}'
+    depends_on: [target]
+    networks:
+      eval_target_back: {ipv4_address: 10.252.10.30}
+      eval_obs: {ipv4_address: 10.252.12.30}
+
+networks:
+  frontend:
+    ipam:
+      config: !override [{subnet: 10.252.0.0/24}]
+  control:
+    ipam:
+      config: !override [{subnet: 10.252.2.0/24}]
+  target:
+    ipam:
+      config: !override [{subnet: 10.252.3.0/24}]
+  explore_control:
+    ipam:
+      config: !override [{subnet: 10.252.4.0/24}]
+  explore_cdp:
+    ipam:
+      config: !override [{subnet: 10.252.5.0/24}]
+  explore_direct:
+    ipam:
+      config: !override [{subnet: 10.252.7.0/24}]
+  explore_browser_ingress:
+    ipam:
+      config: !override [{subnet: 10.252.8.0/24}]
+  fixture-control:
+    ipam:
+      config: [{subnet: 10.252.9.0/24}]
+  eval_target_back:
+    internal: true
+    ipam:
+      config: [{subnet: 10.252.10.0/24}]
+  eval_explore_ingress:
+    internal: true
+    ipam:
+      config: [{subnet: 10.252.11.0/24}]
+  # 관측 포트 publish 전용(internal 망은 publish할 수 없다). 관측 front만 연결.
+  eval_obs:
+    ipam:
+      config: [{subnet: 10.252.12.0/24}]
