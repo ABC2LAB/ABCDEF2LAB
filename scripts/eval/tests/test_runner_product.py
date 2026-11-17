@@ -294,6 +294,53 @@ class TestFaults(unittest.TestCase):
         self.check("product_username_invalid", secret=AdminSecret(PASSWORD, username="ARTEX"))
 
 
+class TestStartStopClose(unittest.TestCase):
+    def test_external_transfer_confirmation_follows_the_scope(self):
+        fake = FakeProduct()
+        d = driver(fake)
+        d.start({"id": "draft-1", "revision": 1, "scope": {"model": {"external_transfer": True}}})
+        d.start({"id": "draft-1", "revision": 1, "scope": {"model": {"external_transfer": False}}})
+        d.start({"id": "draft-1", "revision": 1, "scope": {}})
+        bodies = [c["body"] for c in fake.calls]
+        self.assertEqual(bodies[0], {"version": "diagnosis-api.v2", "expected_revision": 1, "external_transfer_confirmed": True})
+        self.assertEqual(bodies[1:], [{"version": "diagnosis-api.v2", "expected_revision": 1}] * 2)
+
+    def test_stop_uses_the_current_revision_for_every_state(self):
+        status = DRAFTS_PATH + "/{id}/status"
+        fake = FakeProduct()
+        fake.overrides[status] = (200, {"draft": dict(FakeProduct().draft("running", "42"), revision=5)})
+        fake.overrides[DRAFTS_PATH + "/{id}/stop"] = (200, {"draft": dict(FakeProduct().draft("stopping", "42"), revision=6)})
+        stopped = driver(fake).stop("draft-1")
+        self.assertEqual(stopped["state"], "stopping")
+        self.assertEqual(fake.calls[-1]["body"], {"version": "diagnosis-api.v2", "expected_revision": 5})
+        # 리뷰 반례: unknown은 살아 있는 실행 문맥이 있을 수 있어 제품이 Stop에서 취소한다. 끝 상태여도 멈춤을 보낸다.
+        # 제품은 활성 상태가 아닌 회차에는 작업을 그대로 돌려준다(충돌 아님).
+        for state in ("unknown", "completed", "cancelled", "failed"):
+            with self.subTest(state=state):
+                current = dict(FakeProduct().draft(state, "42"), revision=7, drain_complete=False)
+                fake = FakeProduct()
+                fake.overrides[status] = (200, {"draft": current})
+                fake.overrides[DRAFTS_PATH + "/{id}/stop"] = (200, {"draft": current})
+                self.assertEqual(driver(fake).stop("draft-1")["state"], state)
+                self.assertEqual([c["name"] for c in fake.calls], [status, DRAFTS_PATH + "/{id}/stop"])
+                self.assertEqual(fake.calls[-1]["body"], {"version": "diagnosis-api.v2", "expected_revision": 7})
+
+    def test_wait_closed_needs_terminal_and_drain(self):
+        status = DRAFTS_PATH + "/{id}/status"
+        seq = [FakeProduct().draft("stopping", "42"), dict(FakeProduct().draft("cancelled", "42"), drain_complete=False),
+               dict(FakeProduct().draft("cancelled", "42"), drain_complete=True)]
+        fake = FakeProduct()
+        fake.overrides[status] = lambda s, v: (200, {"draft": seq.pop(0)})
+        closed = driver(fake).wait_closed("draft-1", 10, 1)
+        self.assertEqual((closed["state"], closed["drain_complete"]), ("cancelled", True))
+        slow = FakeProduct()
+        slow.overrides[status] = (200, {"draft": FakeProduct().draft("stopping", "42")})
+        clock = [0.0]
+        with self.assertRaises(ProductAPIError) as caught:
+            driver(slow, clock).wait_closed("draft-1", 5, 1)
+        self.assertEqual(str(caught.exception), "product_close_timeout")
+
+
 class TestInputs(unittest.TestCase):
     def test_model_key_is_redacted_and_checked(self):
         key = ModelKey(KEY)
