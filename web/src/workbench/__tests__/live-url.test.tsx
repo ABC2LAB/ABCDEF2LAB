@@ -73,6 +73,7 @@ import { DashboardByMode, LiveByMode, NewScanByMode, ReportByMode, ScopeByMode }
 import { FINDINGS_POLL_MS } from "../views/live/UrlLiveLive";
 import { EXCLUDE_EXAMPLE } from "../views/live/UrlNewScanLive";
 import { WorkflowCrawlLive } from "../views/live/workflowViews";
+import s from "../workbench.module.css";
 
 const u = vi.mocked(url);
 const a = vi.mocked(api);
@@ -1324,6 +1325,32 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(a.fetchRequestApprovals).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: /보고서 보기/ }));
     expect(goTo).toHaveBeenCalledWith("report");
+  });
+
+  it.each([
+    [
+      "partial",
+      { done: 1, policy_limited: 0, incomplete: 2, unknown: 0, stopped: 0 },
+      "일부만 점검하고 마감했습니다",
+      "일부 완료 · 남은 작업 2",
+    ],
+    [
+      "no_intents",
+      { done: 0, policy_limited: 0, incomplete: 0, unknown: 0, stopped: 0 },
+      "검사하지 않고 마감했습니다",
+      "시도한 계획 없음(검사 안 함)",
+    ],
+  ] as const)("completed + %s 는 '점검을 마쳤습니다'·완료 톤 대신 실행 결과를 같이 보인다", async (outcome, counts, task, line) => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue({ ...completed, outcome, intent_outcomes: counts });
+    mount("live");
+    expect(await screen.findByText(task)).toBeInTheDocument();
+    const card = screen.getByRole("region", { name: "지금 상태" });
+    expect(card).toHaveTextContent(line);
+    expect(card).toHaveTextContent("마감");
+    expect(card).not.toHaveTextContent("완료점검");
+    expect(card).not.toHaveClass(s.ok);
+    expect(screen.queryByText(/점검을 마쳤습니다/)).toBeNull();
   });
 
   it("끝난 점검의 발견은 저장된 결과를 보고서 '발견 목록'과 같은 줄로 보이고(점검 중 발견 목록은 안 부름), 줄을 누르면 보고서로", async () => {

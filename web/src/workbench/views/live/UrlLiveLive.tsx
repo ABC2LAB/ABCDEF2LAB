@@ -38,7 +38,7 @@ import { approvalCounts, clockOf, fmtCount, fmtTokensShort, planState, sevKey } 
 import { maskSecrets } from "../../live/mask";
 import { ErrorNote, LoadingRow, NotYet } from "../../live/parts";
 import { useUrl, useUrlGates } from "../../live/urlDiagnosis";
-import { factText, URL_ENDED_STATES, type UrlState, urlStateText, usdText } from "../../live/urlMap";
+import { factText, URL_ENDED_STATES, type UrlState, urlOutcomeText, urlStateText, usdText } from "../../live/urlMap";
 import { type Poll, usePoll } from "../../live/usePoll";
 import { flowStageText, MAX_FLOW_PLAN, type WorkflowSnapshot } from "../../live/workflow";
 import { useShell } from "../../shell";
@@ -462,14 +462,26 @@ export function UrlLiveLive() {
   let nowK: ReactNode;
   let taskText: ReactNode = nowText;
   let doneSub: string | null = null;
+  // completed 는 마감 · 저장 확인이지 전부 검사했다는 뜻이 아니다(run-outcome-states.md §4). 일부 완료 · 검사 안 함은
+  // '마쳤습니다' · 완료 톤으로 보이지 않게 하고, 실행 결과 한 줄(urlOutcomeText)을 카드에 같이 둔다
+  const outcomeText = urlOutcomeText(job);
+  const shortfall = job.state === "completed" && (job.outcome === "partial" || job.outcome === "no_intents");
+  let completedText = "점검을 마쳤습니다";
+  if (shortfall)
+    completedText = job.outcome === "no_intents" ? "검사하지 않고 마감했습니다" : "일부만 점검하고 마감했습니다";
   if (job.state === "completed") {
-    nowK = (
+    nowK = shortfall ? (
+      <span className={cx(s["now-k"], s.idle)}>
+        <i />
+        마감
+      </span>
+    ) : (
       <span className={cx(s["now-k"], s.ok)}>
         <Icon name="check" />
         완료
       </span>
     );
-    taskText = "점검을 마쳤습니다";
+    taskText = completedText;
   } else if (ended) {
     nowK = (
       <span className={cx(s["now-k"], s.idle)}>
@@ -487,9 +499,10 @@ export function UrlLiveLive() {
     );
   }
   if (g.reportReadable) {
-    taskText = job.state === "completed" ? "점검을 마쳤습니다" : "점검을 종료했습니다";
+    taskText = job.state === "completed" ? completedText : "점검을 종료했습니다";
     doneSub = `${urlStateText(job.state)} · 결과 저장 확인`;
   }
+  if (outcomeText) doneSub = doneSub ? `${doneSub} · ${outcomeText}` : outcomeText;
 
   // 카드 밑 상태 안내: 끝났는데 결과 저장을 확인하지 못함 · 결과 불명 · 시작 전
   let stateNote: ReactNode = null;
@@ -579,7 +592,7 @@ export function UrlLiveLive() {
           {/* 맨 위 단계 게이지 (탐색 흐름이 있는 점검만, 상태를 모르면 두지 않는다) */}
           {gauge ? <StageGauge segs={gauge} /> : null}
           {job.state !== "unknown" || tokensBody || stats.length ? (
-            <section className={cx(s.lcard, g.reportReadable && s.ok)} aria-label="지금 상태">
+            <section className={cx(s.lcard, g.reportReadable && !shortfall && s.ok)} aria-label="지금 상태">
               {job.state !== "unknown" ? (
                 <div className={s["lcard-h"]}>
                   <div className={s["lcard-now"]} aria-live="polite">
