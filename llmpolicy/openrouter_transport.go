@@ -222,6 +222,9 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 	provider := map[string]any{"only": []string{m.ProviderSlug}, "allow_fallbacks": false, "require_parameters": true, "data_collection": "deny", "zdr": true,
 		"max_price": map[string]float64{"prompt": float64(m.InputPrice) / 1000000, "completion": float64(m.OutputPrice) / 1000000}}
 	body["provider"], _ = json.Marshal(provider)
+	// 덮어쓰기 전에 엔진이 샘플링 칸을 보냈는지 본다(허용 목록상 temperature 하나). 셈은 실제로 보낼 때만 더한다.
+	_, engineSampling := body["temperature"]
+	overwrote := m.Sampling != nil && engineSampling
 	if m.Sampling != nil {
 		// 샘플링 칸 값의 출처는 manifest 하나다(평가 게이트웨이 주입과 같은 의미). 호출자가 보낸 temperature는 여기서
 		// 덮어쓰고, 다른 샘플링 칸은 위 허용 목록이 이미 거부했다. 모델 입력(메시지)은 이 칸을 바꿀 수 없다.
@@ -259,6 +262,9 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 	if sent != nil {
 		p.mu.Lock()
 		p.usage.Sampling = sent
+		if overwrote {
+			*p.usage.SamplingOverwrites++
+		}
 		p.mu.Unlock()
 	}
 	diagnostic.Event = "model_request_finished"

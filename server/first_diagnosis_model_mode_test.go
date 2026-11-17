@@ -129,3 +129,70 @@ func TestFirstDiagnosisWebSearchOnlyWithExternalModel(t *testing.T) {
 		t.Fatal("invalid search setting accepted")
 	}
 }
+
+// 저장 회차 사용량은 실행 단계만이다: 준비 단계 스냅숏을 계수마다 뺀다. 엔진 샘플링 칸을 덮어쓴 수도 같다(#646 리뷰).
+// 준비 단계(Planner만)에서 덮어쓰기 2번, 실행 단계에서 3번 더 → 실행 기록 3. 기준값이 null이면 그대로다.
+func TestExecutionModelUsageSubtractsPreparationOverwrites(t *testing.T) {
+	count := func(v int64) *int64 { return &v }
+	preparation := llmpolicy.OpenRouterUsage{Requests: 2, Errors: 1, InputTokens: 100, CostMicros: 7, SamplingOverwrites: count(2)}
+	afterRun := llmpolicy.OpenRouterUsage{Requests: 6, Errors: 1, InputTokens: 400, CostMicros: 20, SamplingOverwrites: count(5)}
+	got := executionModelUsage(afterRun, preparation)
+	if got.Requests != 4 || got.Errors != 0 || got.InputTokens != 300 || got.CostMicros != 13 || got.SamplingOverwrites == nil || *got.SamplingOverwrites != 3 {
+		t.Fatalf("execution usage %+v overwrites %v", got, got.SamplingOverwrites)
+	}
+	if *afterRun.SamplingOverwrites != 5 || *preparation.SamplingOverwrites != 2 {
+		t.Fatal("subtraction changed the input snapshots")
+	}
+	if *got.SamplingOverwrites > got.Requests {
+		t.Fatal("overwrites exceed execution requests")
+	}
+	// v1·v2 승인(덮어쓰기 없음)은 두 값 모두 null이고 결과도 null이다. 준비 스냅숏이 없을 때(기준값 0값)는 현재 값 그대로다.
+	if got := executionModelUsage(llmpolicy.OpenRouterUsage{Requests: 3}, llmpolicy.OpenRouterUsage{Requests: 1}); got.SamplingOverwrites != nil || got.Requests != 2 {
+		t.Fatalf("v1/v2 usage %+v", got)
+	}
+	if got := executionModelUsage(afterRun, llmpolicy.OpenRouterUsage{}); got.SamplingOverwrites == nil || *got.SamplingOverwrites != 5 {
+		t.Fatalf("missing baseline changed overwrites %v", got.SamplingOverwrites)
+	}
+	// 준비 단계 덮어쓰기 2 뒤 실행 단계에서 0·1·3번 → 실행 기록 0·1·3(준비 값만으로 0이 아니게 되지 않는다).
+	for _, run := range []int64{0, 1, 3} {
+		got := executionModelUsage(llmpolicy.OpenRouterUsage{Requests: 2 + run, SamplingOverwrites: count(2 + run)}, preparation)
+		if got.SamplingOverwrites == nil || *got.SamplingOverwrites != run {
+			t.Fatalf("execution overwrites %v, want %d", got.SamplingOverwrites, run)
+		}
+	}
+}
+
+// 실제 메서드도 같은 차분을 쓴다: v3 정책과 같은 정책의 준비 스냅숏(실행 서버를 만들 때 잡는 기준값)을 주면 실행 기록의
+// 덮어쓴 수는 0이고 null이 아니다. 돌려받은 값을 바꿔도 다음 호출·정책 계수는 그대로다. v1 정책은 null이다.
+func TestFirstDiagnosisModelUsageOverwritesAreExecutionOnly(t *testing.T) {
+	v3 := map[string]any{"version": 3, "profile_id": 71, "format": "openai", "base_url": llmpolicy.OpenRouterBaseURL, "model": llmpolicy.OpenRouterModel,
+		"provider_slug": "parasail/fp8", "expected_provider_name": "Parasail", "approval_id": "synthetic-owned-approval",
+		"expires_at": time.Now().Add(time.Hour).UTC(), "strict_privacy_ack": true, "account_spend_cap_ack": true, "max_requests": 2,
+		"max_input_tokens": 524288, "max_output_tokens": 8192, "max_cost_usd_micros": 1000000, "max_input_tokens_per_call": 262144,
+		"max_output_tokens_per_call": 4096, "timeout_seconds": 30, "max_concurrent": 1, "max_input_price_usd_micros_per_million": 150000,
+		"max_output_price_usd_micros_per_million": 1000000, "max_consecutive_transient_errors": 4,
+		"sampling": map[string]any{"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0, "presence_penalty": 1.5, "repetition_penalty": 1.0, "seed": 42}}
+	raw, _ := json.Marshal(v3)
+	policy, err := llmpolicy.ParseOpenRouterManifest(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{firstDiagnosis: true, openRouterPolicy: policy, openRouterBaseline: policy.Snapshot()}
+	got := s.FirstDiagnosisModelUsage()
+	if got == nil || got.SamplingOverwrites == nil || *got.SamplingOverwrites != 0 {
+		t.Fatalf("v3 execution overwrites %+v", got)
+	}
+	*got.SamplingOverwrites = 7
+	if again := s.FirstDiagnosisModelUsage(); *again.SamplingOverwrites != 0 || *policy.Snapshot().SamplingOverwrites != 0 {
+		t.Fatal("returned usage shares the counter")
+	}
+	path, _ := externalManifestFixture(t)
+	_, v1, err := (FirstDiagnosisModelOptions{Mode: "openrouter", OpenRouterManifestPath: path}).load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s = &Server{firstDiagnosis: true, openRouterPolicy: v1, openRouterBaseline: v1.Snapshot()}
+	if got := s.FirstDiagnosisModelUsage(); got == nil || got.SamplingOverwrites != nil {
+		t.Fatalf("v1 execution overwrites %+v", got)
+	}
+}
