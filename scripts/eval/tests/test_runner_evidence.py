@@ -351,8 +351,9 @@ class TestMeterFiles(unittest.TestCase):
               "completed_at": "2026-11-17T00:00:02Z", "request_bytes": 10, "response_bytes": 5, "generation_id": ""}
         cut = dict(ok, seq=2, decision="upstream_error", status=200, unfinished_end="upstream_cut_before_done")
         rejected = dict(ok, seq=3, decision="rejected_body", status=400)
-        self.write(LLM_LOG, "".join(json.dumps(row) + "\n" for row in (ok, cut, rejected)) + '{"seq": 4, "deci')
-        self.assertEqual(gateway.rows(), [ok, cut, rejected])  # 쓰는 중인 마지막 줄은 다음 읽기로 미룬다
+        sampling = dict(ok, seq=4, decision="rejected_sampling", status=400)  # #638 게이트웨이 사유
+        self.write(LLM_LOG, "".join(json.dumps(row) + "\n" for row in (ok, cut, rejected, sampling)) + '{"seq": 5, "deci')
+        self.assertEqual(gateway.rows(), [ok, cut, rejected, sampling])  # 쓰는 중인 마지막 줄은 다음 읽기로 미룬다
         bad = {
             "unknown_decision": dict(ok, decision="rejected_sampling_x"),
             "end_on_forwarded": dict(ok, unfinished_end="upstream_cut_before_done"),
@@ -379,7 +380,12 @@ class TestMeterFiles(unittest.TestCase):
         source = Path(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "cmd", "eval-meter", "gateway.go").read_text(encoding="utf-8")
         prepare = source[source.index("func (g *llmGateway) prepare("):]
         prepare = prepare[:prepare.index("\n}\n")]
-        reasons = set(re.findall(r'return nil, http\.Status\w+, "(\w+)"', prepare))
+        # 사유는 문자열이거나 상수 이름이다(상수는 gateway.go 안의 정의로 풀어 값을 쓴다). 둘 다 아니면 시험이 깨지게 한다.
+        returned = re.findall(r'return nil, http\.Status\w+, ("\w+"|\w+)\n', prepare)
+        constants = dict(re.findall(r'\n\t(reject[A-Z]\w*) += "(\w+)"', source))
+        self.assertTrue(returned)
+        self.assertTrue(all(item.startswith('"') or item in constants for item in returned), returned)
+        reasons = {item.strip('"') if item.startswith('"') else constants[item] for item in returned}
         outcome = source[source.index("func outcome("):]
         outcome = outcome[:outcome.index("\n}\n")]
         go = {"rejected_" + reason for reason in reasons} | set(re.findall(r'return "(\w+)"', outcome))

@@ -40,7 +40,9 @@ _LLM_ROW = frozenset({"seq", "decision", "method", "status", "started_at", "comp
 # 행 결정. 거부는 "rejected_"+사유(gateway.go prepare의 사유, 봉인 뒤 거부는 rejected_after_seal). Go 원문과 같은지
 # test_runner_evidence가 고정한다(게이트웨이에 사유가 늘면 여기도 늘어야 한다).
 LLM_DECISIONS = frozenset({"forwarded", "upstream_error", "cancelled_by_seal", "rejected_after_seal", "rejected_method",
-                           "rejected_path", "rejected_content_type", "rejected_body", "rejected_too_large"})
+                           "rejected_path", "rejected_content_type", "rejected_body", "rejected_too_large",
+                           # 엔진 본문의 샘플링 칸·provider 칸 거부(#638, gateway.go rejectSampling·rejectProvider).
+                           "rejected_sampling", "rejected_provider"})
 LLM_UPSTREAM_ENDS = frozenset({"client_closed_after_done", "client_closed_before_done", "upstream_cut_after_done",
                                "upstream_cut_before_done"})
 MAX_METER_FILE_BYTES = 64 * 1024 * 1024
