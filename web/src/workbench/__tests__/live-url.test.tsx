@@ -1403,6 +1403,8 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     });
     mount("report");
     expect(await screen.findByRole("heading", { level: 1, name: "target.example 보고서" })).toBeInTheDocument();
+    // 우선 조치 칸은 두지 않는다 (사용자 11/17)
+    expect(screen.queryByRole("heading", { name: "우선 조치" })).toBeNull();
     // 위치: 끝난 점검 / 주소 (시안: 보고서 이름은 제목에만, "작업대" 뿌리는 뺐다)
     const crumb = screen.getByRole("navigation", { name: "위치" });
     expect(within(crumb).getByRole("link", { name: "끝난 점검" })).toHaveAttribute("href", "#finished");

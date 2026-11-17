@@ -4151,52 +4151,6 @@ button.smm:hover {
   font-family: var(--mono);
   color: var(--ink);
 }
-.prio {
-  list-style: none;
-  counter-reset: p;
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--rule);
-  border-radius: 6px;
-}
-.prio > li {
-  counter-increment: p;
-  display: grid;
-  grid-template-columns: 26px minmax(0, 1fr) auto;
-  gap: 4px 12px;
-  padding: 11px 14px;
-  border-top: 1px solid var(--rule);
-  align-items: baseline;
-}
-.prio > li:first-child {
-  border-top: 0;
-}
-.prio > li::before {
-  content: counter(p);
-  grid-column: 1;
-  grid-row: 1;
-  font-family: var(--mono);
-  font-weight: 600;
-  color: var(--ink-3);
-}
-.prio > li .pt {
-  grid-column: 2;
-  grid-row: 1;
-  font-weight: 600;
-  font-size: 13.5px;
-}
-.prio > li .pf {
-  grid-column: 2 / -1;
-  grid-row: 2;
-  font-size: 13px;
-  color: var(--ink-2);
-}
-.prio > li .pc {
-  grid-column: 3;
-  grid-row: 1;
-  display: flex;
-  gap: 6px;
-}
 .frow {
   display: grid;
   grid-template-columns: 70px minmax(0, 1fr) auto;

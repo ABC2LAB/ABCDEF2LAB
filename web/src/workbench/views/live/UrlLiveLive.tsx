@@ -5,7 +5,7 @@
 //   발견 후보 목록(실시간, 검증 전 후보) · 활동 기록
 //   + 오른쪽 진행 요약(전송 통제 · 탐색 현황 · 커버리지 · 점검 정보).
 //   서버가 점검 중에 주지 않는 값(진행률 · 시작 · 경과 · 남은 시간 · 판정)은 자리도 두지 않는다.
-// 보고서: 판정 집계 · 우선 조치 · 발견 목록 / 증거 · 감사 + 오른쪽 발견 상세.
+// 보고서: 판정 집계 · 발견 목록 / 증거 · 감사 + 오른쪽 발견 상세. (우선 조치 칸은 11/17 사용자 요청으로 뺌)
 // 심각도 · 공격 경로 · 지식 그래프 · 계정 비교 · 재현 명령은 서버가 주지 않아 두지 않는다.
 // 판정은 팀 lib(summarizeDiagnosticEntries · diagnosticOutcome)의 분류만 쓰고 화면이 만들지 않는다.
 
@@ -768,14 +768,10 @@ const RUN_OUTCOME: Readonly<Record<RequestApprovalRunState["outcome"], string>> 
   cancelled: "취소로 종료",
   failed: "실패로 종료",
 };
-/** 우선 조치 · 목록 순서: 확정 → 검토 필요 → 미실행 → 결과 불명 → 정상 대조. */
+/** 목록 순서: 확정 → 검토 필요 → 미실행 → 결과 불명 → 정상 대조. */
 export const ORDER: readonly DiagnosticOutcome[] = ["confirmed", "review", "not_executed", "unknown", "negative"];
-/** 위험도 순서 (시안 v20 "위험도와 판정 순"). 서버가 심각도를 안 줬으면 맨 뒤. */
+/** 위험도 순서 (심각 → 높음 → 중간 → 낮음). */
 const SEV_KEYS: readonly SevKey[] = ["crit", "hi", "mid", "lo"];
-const sevRank = (e: RemediationEntry) => {
-  const k = sevKey(e.severity ?? "");
-  return k ? SEV_KEYS.indexOf(k) : SEV_KEYS.length;
-};
 /** 위험도 딱지. 서버가 심각도를 주지 않았으면 "등급 없음". */
 export function Sev({ e }: { e: RemediationEntry }) {
   const k = sevKey(e.severity ?? "");
@@ -1205,12 +1201,6 @@ export function UrlReportLive() {
   const sorted = sortEntries(entries);
   const counts = rem.data && !rem.error ? summarizeDiagnosticEntries(entries) : null;
   const findings = sorted.filter((e) => diagnosticOutcome(e) !== "negative");
-  // 우선 조치: 시안처럼 위험도 → 판정 순
-  const prio = sorted
-    .filter((e) => ["confirmed", "review"].includes(diagnosticOutcome(e)) && (e.remediation || e.record?.bundle))
-    .sort(
-      (x, y) => sevRank(x) - sevRank(y) || ORDER.indexOf(diagnosticOutcome(x)) - ORDER.indexOf(diagnosticOutcome(y)),
-    );
   const bySev = SEV_KEYS.map((k) => [k, findings.filter((e) => sevKey(e.severity ?? "") === k).length] as const);
   const noSev = findings.filter((e) => !sevKey(e.severity ?? "")).length;
   const chosen = sorted.find((e) => e.entry_id === sel) ?? findings[0] ?? sorted[0];
@@ -1319,30 +1309,6 @@ export function UrlReportLive() {
                 </div>
                 <div className={s.sub}>{covSub}</div>
               </div>
-            </section>
-          ) : null}
-          {prio.length ? (
-            <section className={s.sec} aria-labelledby="rPrioH">
-              <div className={s.sh}>
-                <h2 id="rPrioH">우선 조치</h2>
-                <span className={s.aside}>위험도와 판정 순</span>
-              </div>
-              <ol className={s.prio} id="rvPrio">
-                {prio.map((e) => {
-                  const b = e.record && !e.record.stale ? e.record.bundle : undefined;
-                  const fix = b?.immediate_mitigation[0] ?? b?.root_fix[0] ?? e.remediation;
-                  return (
-                    <li key={e.entry_id}>
-                      <span className={s.pt}>{maskSecrets(e.title) || e.entry_id}</span>
-                      <span className={s.pc}>
-                        <Sev e={e} />
-                        <Outcome o={diagnosticOutcome(e)} short />
-                      </span>
-                      <span className={s.pf}>{maskSecrets(fix)}</span>
-                    </li>
-                  );
-                })}
-              </ol>
             </section>
           ) : null}
           <section className={s.sec}>
