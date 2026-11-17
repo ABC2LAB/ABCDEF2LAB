@@ -11,6 +11,7 @@ import re
 import sqlite3
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from types import SimpleNamespace
@@ -222,6 +223,12 @@ class FakeEvidence:
         return "h-" + name, len(json.dumps(self.files[name]))
 
 
+def task_view(status, goals_met=0, goals_total=1, in_flight=0, completed_at="", failover="ok"):
+    """원본 작업 조회 응답에서 러너가 옮기는 끝 신호 칸."""
+    return {"status": status, "completed_at": completed_at, "goals_total": goals_total, "goals_met": goals_met,
+            "in_flight": in_flight, "llm_failover_state": failover}
+
+
 class FakePorts:
     def __init__(self, spec):
         self.serving = {}
@@ -235,6 +242,9 @@ class FakePorts:
         # 대역 겹침 검사 입력: 이 회차가 만들 고정 대역, 호스트에 이미 있는 Docker 망 대역.
         self.planned, self.host_nets = ["10.250.0.0/24"], ["172.17.0.0/16", "fd00::/64"]
         self.spec = spec
+        # 엔진 끝 신호: 차례로 돌려줄 작업 상태 칸(하나 남으면 계속 그것, 예외는 raise). 읽은 시점은 calls 길이로 남긴다
+        # (calls 순서를 대조하는 시험을 흔들지 않게 따로 둔다).
+        self.task_views, self.status_positions = [task_view("running")], []
         self.calls = []
         self.fail = {}
         self.started = self.sealed = False
@@ -387,6 +397,17 @@ class FakePorts:
             self.on_start()
         self.started = True
         return "17"
+
+    def task_status(self, task_id):
+        self.status_positions.append(len(self.calls))
+        view = self.task_views[0] if len(self.task_views) == 1 else self.task_views.pop(0)
+        if isinstance(view, Exception):
+            raise view
+        return dict(view, task=task_id)
+
+    def background(self, work):
+        # 기본은 바로 실행해 순서를 결정적으로 둔다. 비동기 동작 시험은 실제 스레드로 바꾼다.
+        work()
 
     def start_host_watch(self):
         self._call("watch:start")
@@ -1056,7 +1077,7 @@ class TestCompleteRun(unittest.TestCase):
         self.assertEqual(evidence.files[RESULT_NAME], result)
         self.assertEqual(set(evidence.files), {"pre-checks.json", "pre-probe.json", "post-checks.json",
                                                "post-probe.json", "meter-summary.json", "llm-summary.json",
-                                               "findings.json", "task.json", "window-watch.json",
+                                               "findings.json", "task.json", "window-watch.json", "engine-end.json",
                                                "isolation-evidence.json", "solve-events.json", "run-record.json", "intercept-summary.json",
                                                "engine-settings.json", "subnet-check.json", RESULT_NAME})
         self.assertEqual(evidence.files["subnet-check.json"], {"format": "abc2lab-eval-runner-subnet-check-v1",
@@ -2848,3 +2869,197 @@ class AcceptancePathKeyTests(unittest.TestCase):
             with self.assertRaises(RunnerConfigError) as caught:
                 acceptance_path_key(self.config("browser_acceptance", key))
             self.assertEqual(caught.exception.errors, ["config.path_key_file: UNREADABLE"])
+
+
+class TestEngineEndSignal(unittest.TestCase):
+    """엔진 끝 신호(결정안 §3.1): 창 동안 작업 상태를 읽어 첫 끝 상태를 남기고, down 전에 마지막 상태를 읽어 서명 근거로 둔다."""
+
+    def test_first_terminal_and_final_read_before_down(self):
+        def setup(ports, meter, clock):
+            # 첫 끝 상태 뒤에 다른 끝 상태가 와도 처음 것을 남긴다.
+            ports.task_views = [task_view("running"), task_view("done", goals_met=1, completed_at="2026-11-16T00:00:03Z"),
+                                task_view("failed", goals_met=1, completed_at="2026-11-16T00:00:03Z")]
+        result, ports, _, evidence = run(setup)
+        self.assertEqual(result["status"], COMPLETE)
+        end = evidence.files["engine-end.json"]
+        self.assertEqual(end["format"], "abc2lab-eval-runner-engine-end-v1")
+        self.assertEqual(end["task_id"], "17")
+        self.assertEqual(end["first_terminal"]["status"], "done")
+        self.assertEqual((end["final"]["status"], end["final"]["goals_met"], end["final"]["goals_total"]), ("failed", 1, 1))
+        self.assertIn("read_at", end["final"])
+        self.assertNotIn("task", end["final"])  # 끝 신호 칸만 옮긴다
+        self.assertEqual((end["window_read_failures"], end["final_error"]), (0, None))
+        # 마지막 읽기는 계측기 봉인·drain·게이트웨이 봉인 뒤, down 전이다.
+        last = ports.status_positions[-1]
+        self.assertIn("seal", ports.calls[:last])
+        self.assertIn("seal_gateway", ports.calls[:last])
+        self.assertNotIn("down", ports.calls[:last])
+        self.assertIn("engine-end.json", result["evidence"])
+
+    def test_running_engine_has_no_terminal_and_values_are_not_interpreted(self):
+        result, _, _, evidence = run()
+        end = evidence.files["engine-end.json"]
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertIsNone(end["first_terminal"])
+        self.assertEqual(end["final"]["status"], "running")
+        self.assertGreater(end["window_reads"], 0)
+
+    def test_read_failures_are_counted_not_turned_into_invalid_rounds(self):
+        def setup(ports, meter, clock):
+            ports.task_views = [EngineAPIError("engine_task_status_http_503")]
+        result, _, _, evidence = run(setup)
+        end = evidence.files["engine-end.json"]
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertGreater(end["window_read_failures"], 0)
+        self.assertEqual(end["window_last_error"], "engine_task_status_http_503")
+        self.assertEqual((end["final"], end["final_error"]), (None, "engine_task_status_http_503"))
+        self.assertIsNone(end["first_terminal"])
+
+    def test_slow_status_api_does_not_delay_the_budget_stop(self):
+        # 반례(#634 리뷰): 상태 읽기 한 번이 30초 걸려도 시간 예산 종료 시각은 관찰이 없을 때와 같아야 한다. 읽기가
+        # 예산 감시와 같은 흐름에서 돌면(동기 호출) 봉인이 오지 않으므로, 실제 3초 뒤 합성 시계를 30초 밀고 돌아온다.
+        def no_requests(ports, meter, clock):
+            meter.per_poll = 0  # 요청 예산에 닿지 않아 시간 예산으로 끝난다
+
+        def elapsed(evidence):
+            summary = evidence.files["meter-summary.json"]
+            return (summary["stop_reason"], (datetime.fromisoformat(summary["stopped_at"])
+                                             - datetime.fromisoformat(summary["task_requested_at"])).total_seconds())
+
+        _, _, _, plain = run(no_requests)
+        released = threading.Event()
+
+        def slow(ports, meter, clock):
+            no_requests(ports, meter, clock)
+
+            def read(task_id):
+                if not released.wait(3):
+                    clock.sleep(30)
+                return task_view("running")
+            ports.task_status = read
+            ports.background = lambda work: threading.Thread(target=work, daemon=True).start()
+            seal = ports.seal
+
+            def seal_then_release(container_id):
+                released.set()
+                return seal(container_id)
+            ports.seal = seal_then_release
+
+        result, _, _, evidence = run(slow)
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertEqual(elapsed(evidence), elapsed(plain))
+        self.assertEqual(elapsed(evidence)[0], "time_budget")
+        end = evidence.files["engine-end.json"]
+        # 창 동안 띄운 읽기는 봉인 뒤 끝나 거둬지고, 마지막 읽기도 한다.
+        self.assertEqual((end["window_reads"], end["window_read_failures"], end["final"]["status"]), (1, 0, "running"))
+
+    def test_slow_final_read_does_not_delay_the_gateway_seal(self):
+        # 반례(#634 2차 리뷰): 창이 끝난 뒤의 상태 읽기(진행 중 읽기 기다림·마지막 읽기)가 30초 걸려도 LLM 게이트웨이 봉인
+        # 시각(모델 요청을 받는 창의 끝)은 관찰이 없을 때와 같아야 한다.
+        def gateway_seal_at(extra=None):
+            seen = []
+
+            def setup(ports, meter, clock):
+                if extra:
+                    extra(ports, meter, clock)
+                seal_gateway = ports.seal_gateway
+
+                def timed(container_id):
+                    seen.append(clock.t)
+                    return seal_gateway(container_id)
+                ports.seal_gateway = timed
+            result, _, _, evidence = run(setup)
+            return result, seen, evidence
+
+        _, plain, _ = gateway_seal_at()
+
+        def slow_after_window(ports, meter, clock):
+            read = ports.task_status
+
+            def slow(task_id):
+                if "seal" in ports.calls:
+                    clock.sleep(30)
+                return read(task_id)
+            ports.task_status = slow
+
+        result, slow, evidence = gateway_seal_at(slow_after_window)
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertEqual(len(plain), 1)
+        self.assertEqual(slow, plain)
+        self.assertEqual(evidence.files["engine-end.json"]["final"]["status"], "running")
+
+    def test_unanswered_window_read_is_counted_and_the_final_read_still_happens(self):
+        # 창 동안 띄운 읽기가 읽기 시한 안에 끝나지 않으면 실패(pending)로 세고, 늦게 온 결과는 버린다.
+        gate, calls, sealed_before_final = threading.Event(), [], []
+
+        def setup(ports, meter, clock):
+            def read(task_id):
+                calls.append(task_id)
+                if len(calls) == 1:
+                    gate.wait(5)
+                    return task_view("done", completed_at="2026-11-16T00:00:03Z")
+                sealed_before_final.append("seal_gateway" in ports.calls)
+                return task_view("running")
+            ports.task_status = read
+            ports.background = lambda work: threading.Thread(target=work, daemon=True).start()
+
+        spec = dataclasses.replace(make_spec(), task_status_wait_seconds=0.2)
+        try:
+            result, _, _, evidence = run(setup, spec=spec)
+        finally:
+            gate.set()
+        end = evidence.files["engine-end.json"]
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertEqual((end["window_reads"], end["window_read_failures"], end["window_last_error"]),
+                         (0, 1, "engine_task_status_pending"))
+        self.assertIsNone(end["first_terminal"])  # 시한 밖에서 온 끝 상태는 남기지 않는다
+        self.assertEqual((end["final"]["status"], end["final_error"]), ("running", None))
+        # 진행 중 읽기를 기다리기 전에 게이트웨이를 이미 봉인했다(무응답 상태 API가 모델 요청 창을 늘리지 않는다).
+        self.assertEqual(sealed_before_final, [True])
+
+    def test_window_read_finishing_after_the_window_is_waited_for(self):
+        # 창 끝에 진행 중이던 읽기가 읽기 시한 안에 끝나면 기다렸다가 거둔다(그 읽기의 끝 상태도 남는다).
+        gate = threading.Event()
+
+        def setup(ports, meter, clock):
+            def read(task_id):
+                gate.wait(5)
+                return task_view("done", completed_at="2026-11-16T00:00:03Z")
+            ports.task_status = read
+            ports.background = lambda work: threading.Thread(target=work, daemon=True).start()
+            seal = ports.seal
+
+            def seal_then_release_later(container_id):
+                threading.Timer(0.3, gate.set).start()
+                return seal(container_id)
+            ports.seal = seal_then_release_later
+
+        spec = dataclasses.replace(make_spec(), task_status_wait_seconds=3)
+        try:
+            result, _, _, evidence = run(setup, spec=spec)
+        finally:
+            gate.set()
+        end = evidence.files["engine-end.json"]
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertEqual((end["window_reads"], end["window_read_failures"], end["first_terminal"]["status"]), (1, 0, "done"))
+
+    def test_background_start_failure_is_counted(self):
+        def setup(ports, meter, clock):
+            def refuse(work):
+                raise RuntimeError("can't start new thread /secret")
+            ports.background = refuse
+        result, _, _, evidence = run(setup)
+        end = evidence.files["engine-end.json"]
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertGreater(end["window_read_failures"], 0)
+        self.assertEqual((end["window_reads"], end["window_last_error"]), (0, "engine_task_status_failed"))
+        self.assertEqual(end["final"]["status"], "running")  # 마지막 읽기는 직접 한다
+        self.assertNotIn("secret", json.dumps(end))
+
+    def test_unexpected_port_error_gets_a_fixed_code(self):
+        def setup(ports, meter, clock):
+            ports.task_views = [RuntimeError("socket path /secret leaked")]
+        _, _, _, evidence = run(setup)
+        end = evidence.files["engine-end.json"]
+        self.assertEqual((end["window_last_error"], end["final_error"]), ("engine_task_status_failed", "engine_task_status_failed"))
+        self.assertNotIn("secret", json.dumps(end))
