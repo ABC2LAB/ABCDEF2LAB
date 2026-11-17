@@ -96,7 +96,8 @@ class PortsCase(unittest.TestCase):
         defaults, _ = read_workflow_defaults()
         self.inputs = prepare_split_inputs(root / "run", manifest=MANIFEST, meter_port=8080, explore_port=8082,
                                            evidence_max_bytes=4 << 20, workflow_defaults=defaults, wide_writes=True,
-                                           valid_for_hours=4, max_runs=2, openssl=FakeOpenssl(), random_bytes=counter_bytes())
+                                           valid_for_hours=4, max_runs=2, path_key=bytes(32), openssl=FakeOpenssl(),
+                                           random_bytes=counter_bytes())
         self.directory = RunDirectory(run=root / "run", meter=root / "run" / "meter", llm=root / "run" / "llm", e2=root / "e2",
                                       state=root / "s", e2_config=root / "a", e2_control=root / "b", e2_copy=root / "c",
                                       e2_engine=root / "d", e2_state=root / "e")
