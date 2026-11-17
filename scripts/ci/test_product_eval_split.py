@@ -179,6 +179,12 @@ class EvalSplitOverlayTests(unittest.TestCase):
         self.assertEqual(members, {"target", "eval-meter", "eval-obs"})
         ingress = {name for name, service in self.split["services"].items() if "eval_explore_ingress" in (service.get("networks") or {})}
         self.assertEqual(ingress, {"eval-meter", "explore-boundary"})
+        # 평가 서비스의 망 소속은 고정이다. 관측 front가 target 망에 붙으면 엔진이 관측 front에 닿는다.
+        self.assertEqual(set(self.split["services"]["eval-obs"]["networks"]), {"eval_target_back", "eval_obs"})
+        on_target = {name for name, service in self.split["services"].items() if "target" in (service.get("networks") or {})}
+        product_on_target = {name for name, service in self.product["services"].items()
+                             if "target" in (service.get("networks") or {})} - UNUSED
+        self.assertEqual(on_target, product_on_target | {"eval-meter"})
         # 관측 front는 호스트 루프백에만 publish한다.
         self.assertEqual([(p.get("host_ip"), p.get("published")) for p in self.split["services"]["eval-obs"]["ports"]],
                          [("127.0.0.1", "49190")])
