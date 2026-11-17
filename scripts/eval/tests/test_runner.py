@@ -1766,6 +1766,8 @@ class TestFailures(unittest.TestCase):
              "llm_generation_unverified"),
             (lambda g: setattr(g, "marker", llm_marker(provider="other-provider")), "llm_pin_mismatch"),
             (lambda g: setattr(g, "marker", llm_marker(log_complete=False)), "llm_log_incomplete"),
+            # 엔진이 샘플링 칸을 보내 게이트웨이가 거부했다: B·O 같은 조건 전제가 깨진 회차(4-4).
+            (lambda g: setattr(g, "marker", llm_marker(rejected_requests=1, rejected_sampling=1)), "llm_sampling_rejected"),
             (lambda g: setattr(g, "marker", {"role": "llm-gateway"}), "llm_marker_invalid"),
             (lambda g: setattr(g, "verified", lambda: None), "llm_unverified"),
             (lambda g: setattr(g, "verified", lambda: (_ for _ in ()).throw(OSError("x"))), "llm_read_failed"),

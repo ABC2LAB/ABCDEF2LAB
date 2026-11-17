@@ -33,6 +33,10 @@ const (
 	endClientClosedBeforeDone = "client_closed_before_done"
 	endUpstreamCutAfterDone   = "upstream_cut_after_done"
 	endUpstreamCutBeforeDone  = "upstream_cut_before_done"
+
+	// 엔진 본문의 샘플링 칸·provider 칸 거부 사유. 행 결정은 "rejected_"+사유다.
+	rejectSampling = "sampling"
+	rejectProvider = "provider"
 	// The compose evaluation layer passes the key only to the gateway container.
 	llmKeyEnv = "EVAL_LLM_API_KEY"
 
@@ -53,7 +57,12 @@ const (
 )
 
 var (
-	errBadBody     = errors.New("eval-meter: request body rejected")
+	errBadBody = errors.New("eval-meter: request body rejected")
+	// 엔진이 샘플링 칸·provider 칸을 보낸 요청은 다른 본문 오류와 따로 센다. 개선 후(O) 제품 transport는 같은 칸을
+	// 거부하지 않고 manifest 값으로 덮어쓰므로, B·O가 같은 조건이라는 말은 "엔진이 그 칸을 보내지 않는다"는 전제에서만
+	// 성립한다. 그 전제가 깨졌는지 회차마다 드러나게 하려는 것이다(탐색 분리 배치 결정안 4-4, 2026-11-16 사용자 결정).
+	errSamplingKey = errors.New("eval-meter: engine sent a sampling key")
+	errProviderKey = errors.New("eval-meter: engine sent a provider key")
 	generationIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 	sseDoneRe      = regexp.MustCompile(`\ndata: ?\[DONE\]\r?\n`)
 	providerSlugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}(/[a-z0-9][a-z0-9._-]{0,63})?$`)
@@ -102,17 +111,23 @@ type generationResult struct {
 // verifiedMarker reports what was served and by whom; whether that matches the
 // pinned provider is the runner's call, not the gateway's.
 type verifiedMarker struct {
-	Role              string             `json:"role"`
-	Backend           string             `json:"backend"`
-	Provider          string             `json:"provider"`
-	Sampling          any                `json:"sampling"` // applied values; each backend has its own set
-	SealedAt          string             `json:"sealed_at"`
-	DrainedAt         string             `json:"drained_at"`
-	VerifiedAt        string             `json:"verified_at"`
-	Forwarded         uint64             `json:"forwarded_requests"`
-	UpstreamErrors    uint64             `json:"upstream_errors"`
-	UpstreamEnds      map[string]uint64  `json:"upstream_error_ends"` // 합이 UpstreamErrors와 같다
-	Rejected          uint64             `json:"rejected_requests"`
+	Role           string            `json:"role"`
+	Backend        string            `json:"backend"`
+	Provider       string            `json:"provider"`
+	Sampling       any               `json:"sampling"` // applied values; each backend has its own set
+	SealedAt       string            `json:"sealed_at"`
+	DrainedAt      string            `json:"drained_at"`
+	VerifiedAt     string            `json:"verified_at"`
+	Forwarded      uint64            `json:"forwarded_requests"`
+	UpstreamErrors uint64            `json:"upstream_errors"`
+	UpstreamEnds   map[string]uint64 `json:"upstream_error_ends"` // 합이 UpstreamErrors와 같다
+	Rejected       uint64            `json:"rejected_requests"`
+	// 거부 가운데 엔진 본문의 샘플링 칸·provider 칸 때문인 수(Rejected에 들어 있음). 게이트웨이를 거치지 않는
+	// generation-verify(제품 기록)에는 이 거부가 없으므로 0이 아니라 null이다(해당 없음).
+	RejectedSampling *uint64 `json:"rejected_sampling"`
+	RejectedProvider *uint64 `json:"rejected_provider"`
+	// 위쪽이 429로 답한 호출 수(전달·끊김 행 모두, 게이트웨이 자신의 거부는 빼고). 결정안 §3.2.
+	RateLimited       uint64             `json:"rate_limited"`
 	RejectedAfterSeal uint64             `json:"rejected_after_seal"`
 	CancelledBySeal   uint64             `json:"cancelled_by_seal"`
 	MissingIDs        uint64             `json:"responses_without_generation_id"`
@@ -143,6 +158,9 @@ type llmGateway struct {
 	upstreamErrors    uint64
 	upstreamEnds      map[string]uint64
 	rejected          uint64
+	rejectedSampling  uint64
+	rejectedProvider  uint64
+	rateLimited       uint64
 	rejectedAfterSeal uint64
 	cancelledBySeal   uint64
 	missingIDs        uint64
@@ -235,14 +253,14 @@ func (g *llmGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	row := llmRow{Seq: seq, Method: r.Method, StartedAt: stamp(started)}
 	rec := &statusRecorder{ResponseWriter: w}
 	scan := &idScanner{}
-	rejected := false
+	rejected := ""
 	// The proxy aborts a broken stream with panic(http.ErrAbortHandler); the
 	// bookkeeping must still run or the drain would wait forever.
 	defer func() { g.finish(seq, ctx.Err() != nil, &row, rec, scan, rejected) }()
 
 	body, status, reason := g.prepare(r)
 	if reason != "" {
-		rejected = true
+		rejected = reason
 		w.WriteHeader(status)
 		row.Decision, row.Status = "rejected_"+reason, status
 		return
@@ -285,16 +303,26 @@ func outcome(complete, sealed, cancelled bool) string {
 	}
 }
 
-func (g *llmGateway) finish(seq uint64, cancelled bool, row *llmRow, rec *statusRecorder, scan *idScanner, rejected bool) {
+// finish는 요청 하나를 센다. rejected는 게이트웨이가 거부한 사유(prepare의 reason)이고, 전달한 요청이면 빈 글이다.
+func (g *llmGateway) finish(seq uint64, cancelled bool, row *llmRow, rec *statusRecorder, scan *idScanner, rejected string) {
 	completed := g.now()
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	delete(g.cancels, seq)
 	g.inflight--
-	if rejected {
+	if rejected != "" {
 		g.rejected++
+		switch rejected {
+		case rejectSampling:
+			g.rejectedSampling++
+		case rejectProvider:
+			g.rejectedProvider++
+		}
 	} else {
 		row.Status, row.ResponseBytes = rec.status, rec.bytes
+		if row.Status == http.StatusTooManyRequests {
+			g.rateLimited++
+		}
 		row.Decision = outcome(scan.complete, g.sealed, cancelled)
 		switch row.Decision {
 		case "forwarded":
@@ -345,7 +373,12 @@ func (g *llmGateway) prepare(r *http.Request) ([]byte, int, string) {
 		return nil, http.StatusRequestEntityTooLarge, "too_large"
 	}
 	open, err := checkObject(body)
-	if err != nil {
+	switch {
+	case errors.Is(err, errSamplingKey):
+		return nil, http.StatusBadRequest, rejectSampling
+	case errors.Is(err, errProviderKey):
+		return nil, http.StatusBadRequest, rejectProvider
+	case err != nil:
 		return nil, http.StatusBadRequest, "body"
 	}
 	if g.cfg.backend == backendLocal {
@@ -357,6 +390,7 @@ func (g *llmGateway) prepare(r *http.Request) ([]byte, int, string) {
 // checkObject accepts one JSON object with unique top-level keys and no
 // "provider" or sampling key (an engine-chosen route or sampling value would mix
 // conditions with the pin), and returns the offset of its opening brace.
+// 거부 사유는 먼저 만난 문제다. 샘플링 칸·provider 칸이면 errSamplingKey·errProviderKey, 그 밖은 errBadBody.
 func checkObject(body []byte) (int, error) {
 	open := bytes.IndexFunc(body, func(r rune) bool { return r != ' ' && r != '\t' && r != '\n' && r != '\r' })
 	dec := json.NewDecoder(bytes.NewReader(body))
@@ -367,8 +401,13 @@ func checkObject(body []byte) (int, error) {
 	for dec.More() {
 		tok, err := dec.Token()
 		key, ok := tok.(string)
-		if err != nil || !ok || seen[key] || key == "provider" || samplingKeys[key] {
+		switch {
+		case err != nil || !ok || seen[key]:
 			return 0, errBadBody
+		case key == "provider":
+			return 0, errProviderKey
+		case samplingKeys[key]:
+			return 0, errSamplingKey
 		}
 		seen[key] = true
 		var value json.RawMessage
@@ -551,10 +590,12 @@ func (g *llmGateway) verify(ids []string) error {
 	if err := g.log.file.Sync(); err != nil {
 		g.logFailed = true
 	}
+	rejectedSampling, rejectedProvider := g.rejectedSampling, g.rejectedProvider
 	return writeMarker(g.dir, llmVerifiedName, verifiedMarker{
 		Role: roleGateway, Backend: g.cfg.backend, Provider: g.cfg.provider, Sampling: g.cfg.sampling,
 		SealedAt: stamp(g.sealedAt), DrainedAt: stamp(g.drainedAt), VerifiedAt: stamp(g.now()),
 		Forwarded: g.forwarded, UpstreamErrors: g.upstreamErrors, UpstreamEnds: maps.Clone(g.upstreamEnds), Rejected: g.rejected,
+		RejectedSampling: &rejectedSampling, RejectedProvider: &rejectedProvider, RateLimited: g.rateLimited,
 		RejectedAfterSeal: g.rejectedAfterSeal, CancelledBySeal: g.cancelledBySeal, MissingIDs: g.missingIDs,
 		Generations: results, LogComplete: !g.logFailed,
 	})

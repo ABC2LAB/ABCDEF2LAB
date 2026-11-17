@@ -80,6 +80,20 @@ func TestGenerationVerifySharesGatewayLookup(t *testing.T) {
 		m.Rejected != 0 || m.RejectedAfterSeal != 0 || m.CancelledBySeal != 0 || len(m.Generations) != 2 || !sameSampling(t, m.Sampling, sampling) {
 		t.Fatalf("marker %+v", m)
 	}
+	// 429는 제품 기록에서도 같은 규칙(위쪽 상태 429인 행)으로 센다. 샘플링·provider 칸 거부는 게이트웨이에만 있는 판정이라
+	// 제품 기록 표식에서는 0이 아니라 null이다.
+	if m.RateLimited != 1 || m.RejectedSampling != nil || m.RejectedProvider != nil {
+		t.Fatalf("rate_limited %d sampling %v provider %v", m.RateLimited, m.RejectedSampling, m.RejectedProvider)
+	}
+	raw, err := os.ReadFile(filepath.Join(path, llmVerifiedName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{`"rejected_sampling":null`, `"rejected_provider":null`, `"rate_limited":1`} {
+		if !strings.Contains(string(raw), field) {
+			t.Fatalf("marker %s lacks %s", raw, field)
+		}
+	}
 	if m.Generations[0].ID != "gen-a" || m.Generations[0].Status != "verified" || m.Generations[0].ProviderName != "Example" ||
 		m.Generations[1].ID != "gen-b" || len(sleeps) != 1 {
 		t.Fatalf("generations %+v sleeps %v", m.Generations, sleeps)
