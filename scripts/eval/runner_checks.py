@@ -269,6 +269,71 @@ def parse_network(raw: object) -> NetworkFact:
                        raw["Internal"], members, tuple(sorted(gateways)), names)
 
 
+def _subnet(value: object, code: str) -> str:
+    try:
+        return str(ipaddress.ip_network(_str(value, code), strict=True))
+    except ValueError:
+        raise CheckInputError(code) from None
+
+
+def planned_subnets(rendered: object) -> list[str]:
+    """`docker compose config --format json` 결과에서 이 회차 up이 만들 망의 고정 subnet만 고른다(탐색 분리 배치 결정안
+    §2 대역 겹침 검사). 외부 망(external)은 up이 만들지 않으므로 뺀다. 고정 subnet이 없는 망은 Docker가 빈 대역을 고른다.
+    렌더 결과에는 보간된 비밀이 들어 있으므로 subnet 말고는 꺼내지 않는다."""
+    if not isinstance(rendered, dict):
+        raise CheckInputError("compose_config_invalid")
+    networks = {} if rendered.get("networks") is None else rendered.get("networks")
+    if not isinstance(networks, dict):
+        raise CheckInputError("compose_config_invalid")
+    out = set()
+    for network in networks.values():
+        network = {} if network is None else network
+        if not isinstance(network, dict):
+            raise CheckInputError("compose_config_invalid")
+        if network.get("external"):
+            continue
+        ipam = {} if network.get("ipam") is None else network.get("ipam")
+        config = [] if not isinstance(ipam, dict) or ipam.get("config") is None else ipam.get("config")
+        if not isinstance(ipam, dict) or not isinstance(config, list):
+            raise CheckInputError("compose_config_invalid")
+        for entry in config:
+            if not isinstance(entry, dict):
+                raise CheckInputError("compose_config_invalid")
+            if entry.get("subnet"):
+                out.add(_subnet(entry["subnet"], "compose_config_invalid"))
+    return sorted(out)
+
+
+def network_subnets(raw: object) -> list[str]:
+    """`docker network inspect` 결과 하나의 IPAM subnet. Docker는 빈 값을 null로도 준다."""
+    ipam = raw.get("IPAM") if isinstance(raw, dict) else None
+    ipam = {} if ipam is None else ipam
+    config = [] if not isinstance(ipam, dict) or ipam.get("Config") is None else ipam.get("Config")
+    if not isinstance(raw, dict) or not isinstance(ipam, dict) or not isinstance(config, list):
+        raise CheckInputError("network_fact_invalid")
+    out = []
+    for entry in config:
+        if not isinstance(entry, dict):
+            raise CheckInputError("network_fact_invalid")
+        if entry.get("Subnet"):
+            out.append(_subnet(entry["Subnet"], "network_fact_invalid"))
+    return out
+
+
+def subnet_overlaps(planned: Iterable[str], existing: Iterable[str]) -> list[dict]:
+    """회차가 만들 고정 대역과 호스트에 이미 있는 Docker 망 대역 가운데 겹치는 쌍. 하나라도 있으면 up하지 않는다
+    (2026-11-16: 같은 머신의 다른 스택이 제품 기본 대역을 쓰고 있었다). 주소 계열이 다르면 겹치지 않는다."""
+    existing = sorted(set(existing))
+    pairs = []
+    for mine in sorted(set(planned)):
+        a = ipaddress.ip_network(mine)
+        for other in existing:
+            b = ipaddress.ip_network(other)
+            if a.version == b.version and a.overlaps(b):
+                pairs.append({"planned": mine, "existing": other})
+    return pairs
+
+
 def _is_loopback(address: str) -> bool:
     try:
         parsed = ipaddress.ip_address(address)

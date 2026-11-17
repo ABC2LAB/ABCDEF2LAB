@@ -2312,25 +2312,6 @@ select.inp {
   font-weight: 500;
   color: var(--ink-2);
 }
-.cnts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px 32px;
-}
-.cn .v {
-  font-family: var(--mono);
-  font-size: 22px;
-  font-weight: 600;
-  line-height: 1.2;
-  font-variant-numeric: tabular-nums;
-}
-.cn .k {
-  font-size: 12.5px;
-  color: var(--ink-3);
-}
-.cn.warn .v {
-  color: var(--warn);
-}
 .log {
   border: 1px solid var(--rule);
   border-radius: 6px;
@@ -3683,54 +3664,6 @@ button.smm:hover {
 }
 
 /* 진행 */
-.band {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 6px 22px;
-  align-items: center;
-}
-.band .pct {
-  font-family: var(--mono);
-  font-size: 40px;
-  font-weight: 600;
-  line-height: 1;
-  letter-spacing: -0.02em;
-}
-/* 진행률을 모를 때 (서버 값 없음): 시안 자리에 흐린 '—%' 와 '연결 전' 딱지 */
-.band .pct.unk {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
-  color: var(--ink-3);
-}
-/* 큰 숫자 칸의 좁은 글자 간격이 딱지 글에 물려 '아직구현안됨'처럼 붙지 않게 */
-.band .pct.unk .tag {
-  letter-spacing: normal;
-}
-/* 진행률을 모르는 막대: 빈 트랙(0%) 대신 빗금 */
-.prog.unk {
-  background: repeating-linear-gradient(135deg, var(--rule-2) 0 3px, transparent 3px 6px);
-}
-.band .pct small {
-  font-size: 18px;
-  color: var(--ink-3);
-}
-.band .bt {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
-}
-.band .task {
-  font-size: 14px;
-  font-weight: 500;
-}
-@container (max-width: 520px) {
-  .band {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
 .confirm {
   border: 1px solid var(--hi);
   border-radius: 6px;
@@ -3813,15 +3746,54 @@ button.smm:hover {
 .meters .cell .v {
   font-size: 20px;
 }
-.two-col {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
-  gap: 28px;
+/* 3칸 상자 (자산 탐색 숫자): 좁아져도 한 줄에 3칸. 위 2칸 접기의 셋째 칸 줄바꿈 테두리를 되돌린다 */
+.meters.m3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
-@container (max-width: 760px) {
-  .two-col {
-    grid-template-columns: minmax(0, 1fr);
+@container (max-width: 560px) {
+  .meters.m3 .cell:nth-child(3) {
+    border-left: 1px solid var(--rule);
+    border-top: 0;
   }
+}
+/* 점검 진행 오른쪽(진행 요약)의 전송 통제 4칸: 패널이 좁아 2칸씩 두 줄 */
+.vi .meters {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.vi .meters .cell:nth-child(3) {
+  border-left: 0;
+}
+.vi .meters .cell:nth-child(n + 3) {
+  border-top: 1px solid var(--rule);
+}
+/* 점검 진행 오른쪽 모델 사용량: 작업 합계 · 입 51M 캐 43M 출 868k (수는 둥근 칩) */
+.toks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--ink-3);
+}
+.toks b {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  margin-left: 2px;
+  border-radius: 11px;
+  background: var(--rule);
+  font-family: var(--mono);
+  font-weight: 500;
+  color: var(--ink);
+}
+/* 점검 진행의 지금 하는 일 줄 + 심화 점검 마감 수 */
+.lnow {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
 }
 .plan {
   list-style: none;
@@ -4023,12 +3995,6 @@ button.smm:hover {
 .feed li .fd {
   align-self: start;
   margin-top: 7px;
-}
-.feed .res {
-  display: block;
-  font-size: 12.5px;
-  color: var(--ink-2);
-  margin-top: 1px;
 }
 .feed li.fresh {
   animation: fresh 1.4s ease-out;
@@ -4610,20 +4576,17 @@ button.smm:hover {
     width: 34px;
     height: 30px;
   }
-  /* .vb-fold: 그 화면만 접은 모양 (자산 탐색은 기록을 고르기 전에 접어 둔다). 공통 접힘(insp-min)과 같은 모양이다 */
-  .app.insp-min .vb,
-  .vb.vb-fold {
+  /* 공통 접힘(insp-min): 상세 패널 칸을 64px 줄로 */
+  .app.insp-min .vb {
     grid-template-columns: minmax(0, 1fr) 64px;
   }
   /* 줄(64px)은 패널 바탕 · 경계선만 남기고 안의 내용은 가린다 */
-  .app.insp-min .vi,
-  .vb.vb-fold > .vi {
+  .app.insp-min .vi {
     overflow: hidden;
     padding-left: 0;
     padding-right: 0;
   }
-  .app.insp-min .vi > *,
-  .vb.vb-fold > .vi > * {
+  .app.insp-min .vi > * {
     visibility: hidden;
   }
   /* 패널에 있던 시작 버튼 등은 접으면 본문 아래 줄로 */
@@ -4676,8 +4639,7 @@ button.smm:hover {
   }
 }
 @media (min-width: 1200px) {
-  .app.insp-min .vb:has(> .vi) > .vm,
-  .vb.vb-fold > .vm {
+  .app.insp-min .vb:has(> .vi) > .vm {
     --fold-r: 320px;
   }
   .app .view[data-view="new"] .vh {
