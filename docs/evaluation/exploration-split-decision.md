@@ -80,6 +80,7 @@
 ## 4. 결정 C(a) — 도구 면: 버전 핀 패치와 측정
 
 - B 빌드 = 원본 커밋 + 버전 핀 패치 하나(`@playwright/mcp@0.0.84`, `@playwright/cli@0.1.23`, `playwright@1.65.0`). 패치 SHA를 선언 차이로 서명한다.
+  - 패치: `deploy/eval/baseline-tool-pins.patch`. 원본 Dockerfile의 `npm install -g …@latest` 한 줄만 제품(O) 엔진 이미지(`deploy/product/Dockerfile`)의 같은 줄과 같은 판으로 바꾼다. B 작업 트리를 만든 뒤 `git -C <B 작업 트리> apply <개선 후 트리>/deploy/eval/baseline-tool-pins.patch`로 적용하고 빌드한다. 시험(`scripts/eval/tests/test_baseline_tool_pins.py`)이 dev 루트 Dockerfile = 원본(SHA 고정), 패치가 한 줄만 바꿈, 판이 제품과 같음을 본다. 제품이 판을 올리면 시험이 깨지므로 패치도 같이 올린다.
 - 프로토콜 §2 도구 동등성을 "모델이 쓸 수 있는 도구 면"으로 다시 정의한다. 도구 면에는 MCP 도구 목록·버전과, Bash에서 쓸 수 있는 CLI 목록·버전을 넣는다(B는 샌드박스 없음, O는 E² 샌드박스 안).
 - MCP 버전·도구 목록은 선언이 아니라 러너가 회차 전에 측정해 지문으로 남긴다. 지금 보존 옵션의 선언 칸(`mcp_tools_sha256`·`browser_image_id`·탐색 정책 지문)은 e2-legacy 회차에서 의미 없는 값을 억지로 채워야 했다(§8).
 
