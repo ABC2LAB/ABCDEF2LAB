@@ -45,7 +45,7 @@ import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
 import { InspHead, InspOpenButton, Isec, Kv, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
-import { ApprovalFacts, ApprovalRequestCode, RecoveredApprovalNotice, useRequestApprovals } from "./approvals";
+import { ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "./approvals";
 import { DiagnosticEntrySections } from "./DiagnosticEntrySections";
 import { ReportReadError } from "./runRows";
 import { TaskActivity } from "./TaskActivity";
@@ -623,8 +623,6 @@ export function UrlLiveLive() {
                 <h2 id="lDecideH">확인 필요</h2>
                 <span className={s.n}>{`${a.pending.length}건`}</span>
               </div>
-              {/* 다시 연(복구) 점검은 조회 전용: 승인은 처음 시작한 화면에서만 (#642) */}
-              <RecoveredApprovalNotice />
               {a.pending.map((r) => (
                 <div className={s.decide} key={r.id}>
                   <div className={s.dm}>

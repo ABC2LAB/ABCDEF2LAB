@@ -1182,11 +1182,11 @@ describe("대시보드", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "승인 요청 보기" }));
     const recoveredDetail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
-    expect(within(recoveredDetail).getByText(/요청 승인은 처음 시작한 화면에서만/)).toBeInTheDocument();
+    // 다시 연(복구) 점검 안내 문장은 두지 않는다(사용자 11/17). 승인 버튼은 그대로 잠근다
+    expect(within(recoveredDetail).queryByText(/다시 연 점검/)).toBeNull();
     expect(within(recoveredDetail).getByRole("button", { name: "이 요청 승인" })).toBeDisabled();
     act(() => useUrl.setState({ handle }));
     const createdDetail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
-    expect(within(createdDetail).queryByText(/요청 승인은 처음 시작한 화면에서만/)).toBeNull();
     expect(within(createdDetail).getByRole("button", { name: "이 요청 승인" })).toBeEnabled();
   });
 });
@@ -1219,10 +1219,9 @@ it("목록에서 복구한 회차의 일시정지·범위 선택 실행 버튼�
   );
   for (const button of screen.getAllByRole("button", { name: /선택한 범위로 점검 시작/ })) {
     expect(button).toBeDisabled();
-    // 범위 확인은 '목록에서 다시 연 점검은 조회 전용' 줄을 두지 않고(사용자 11/17) 버튼 안내로 말한다
-    expect(button).toHaveAttribute("title", "목록에서 다시 연 점검은 조회 전용이라 여기서 시작할 수 없습니다.");
   }
-  expect(screen.queryByText(/목록에서 다시 연 점검은 조회 전용입니다/)).toBeNull();
+  // '목록에서 다시 연 점검은 조회 전용' 문장은 어느 화면에도 두지 않는다 (사용자 11/17)
+  expect(document.body).not.toHaveTextContent(/다시 연 점검/);
 });
 
 describe("점검 진행", () => {
@@ -1510,7 +1509,6 @@ describe("점검 진행", () => {
     // 탐색 현황: 방문 · 발견한 API · 심화 선택 (서버 수 그대로)
     expect(within(insp).getByText("탐색 현황").parentElement).toHaveTextContent("방문 1발견한 API 3심화 선택 2");
     await screen.findAllByRole("button", { name: "승인하고 보내기" });
-    expect(screen.queryByText(/요청 승인은 처음 시작한 화면에서만/)).toBeNull();
     act(() =>
       useUrl.setState({
         handle: {
@@ -1524,7 +1522,8 @@ describe("점검 진행", () => {
         },
       }),
     );
-    expect(screen.getAllByText(/요청 승인은 처음 시작한 화면에서만/)).toHaveLength(1);
+    // 다시 연(복구) 점검 안내 문장은 두지 않고(사용자 11/17) 승인 버튼만 잠근다
+    expect(screen.queryByText(/다시 연 점검/)).toBeNull();
     const approvals = screen.getAllByRole("button", { name: "승인하고 보내기" });
     expect(approvals).toHaveLength(2);
     for (const button of approvals) expect(button).toBeDisabled();

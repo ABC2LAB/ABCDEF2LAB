@@ -231,11 +231,8 @@ function EventResult({ event }: { event: FlowEvent }) {
   return <span className={s.mono}>{NONE}</span>;
 }
 
-/**
- * 탐색 명령 결과 · 상한 안내 (서버 사실만). showRecovered=false 면 '목록에서 다시 연 점검은 조회 전용' 줄을 두지 않는다
- * (범위 확인, 사용자 11/17) — 그 화면은 시작 버튼의 안내(title)로 대신 말한다.
- */
-export function WorkflowNotice({ showRecovered = true }: { showRecovered?: boolean } = {}) {
+/** 탐색 명령 결과 · 상한 안내 (서버 사실만). '목록에서 다시 연 점검은 조회 전용' 줄은 두지 않는다(사용자 11/17). */
+export function WorkflowNotice() {
   const recovered = useUrl((st) => st.handle?.kind === "recovered");
   const flow = useUrl((st) => st.flow);
   const error = useUrl((st) => st.flowError),
@@ -243,11 +240,6 @@ export function WorkflowNotice({ showRecovered = true }: { showRecovered?: boole
     verified = useUrl((st) => st.flowVerified);
   return (
     <>
-      {recovered && showRecovered ? (
-        <p className={s.help} role="status">
-          목록에서 다시 연 점검은 조회 전용입니다. 명시적 종료만 지원합니다.
-        </p>
-      ) : null}
       {flow?.failure ? (
         <div className={cx(s.note, s.warn)} role="alert">
           <Icon name="alert" />
@@ -1288,7 +1280,7 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
       <div className={s.vb}>
         <div className={s.vm}>
           <UrlNotices />
-          <WorkflowNotice showRecovered={false} />
+          <WorkflowNotice />
           <FoundPaths
             endpoints={flow.endpoints}
             excludedInput={excludedInput}
@@ -1403,17 +1395,13 @@ function ScopeStart({ flow, ids, id }: { flow: WorkflowSnapshot; ids: string[]; 
       </button>
     );
   }
-  // 다시 연 점검은 조회 전용이라 시작하지 못한다 — 범위 확인은 그 안내 줄을 두지 않으므로 버튼 안내로 말한다
-  let startTitle: string | undefined;
-  if (recovered) startTitle = "목록에서 다시 연 점검은 조회 전용이라 여기서 시작할 수 없습니다.";
-  else if (!jobReady) startTitle = "점검 상태를 확인하지 못해 보내지 않습니다. 상태를 다시 조회하세요.";
   return (
     <button
       id={id}
       className={cx(s.btn, s.pri)}
       type="button"
       disabled={recovered || !jobReady || !ids.length || busy || uncertain || !verified || flow.paused}
-      title={startTitle}
+      title={jobReady ? undefined : "점검 상태를 확인하지 못해 보내지 않습니다. 상태를 다시 조회하세요."}
       onClick={() =>
         void runWorkflowAction("selection", ids).then((ok) => {
           if (ok) goTo("live");
@@ -1467,7 +1455,7 @@ export function WorkflowScopeLive() {
       {head(null)}
       <div className={s.vm}>
         <UrlNotices />
-        <WorkflowNotice showRecovered={false} />
+        <WorkflowNotice />
         <p className={s.empty}>
           {job ? "탐색이 끝나면 발견한 API가 여기에 나옵니다." : "이 브라우저에서 이어 보는 점검이 없습니다."}
         </p>
