@@ -90,6 +90,12 @@ class TestDeclared(Fixture):
         with self.assertRaises(RunnerConfigError) as caught:
             split_declared(self.config, preflight, MANIFEST)
         self.assertEqual(caught.exception.errors, ["preflight.ours.run_drain: CONFIG_MISMATCH"])
+        preflight = preflight_for(self.config)
+        for side in ("baseline", "ours"):  # 두 쪽이 같으면 사전검사는 받는다. O는 계측기 origin만 받는다.
+            preflight[side]["target_origin"] = "http://other-service:8080"
+        with self.assertRaises(RunnerConfigError) as caught:
+            split_declared(self.config, preflight, MANIFEST)
+        self.assertEqual(caught.exception.errors, ["preflight.ours.target_origin: NOT_EVAL_METER"])
         with self.assertRaises(RunnerConfigError) as caught:
             split_declared(self.config, {"not": "a declaration"}, MANIFEST)
         self.assertTrue(all(error.startswith("preflight: ") for error in caught.exception.errors))
@@ -156,6 +162,18 @@ class TestBeforeUp(Fixture):
             code, err = self.run_ours()
         self.assertEqual((code, err.strip()), (2, "docker_compose_config_failed"))
         self.assertEqual(list(self.runs.iterdir()), [])  # 시도가 아니다(B와 같이 디렉터리를 지운다)
+
+    def test_inputs_are_removed_even_if_the_run_directory_stays(self):
+        # 디렉터리 삭제가 실패해도 보호 입력(관리자·DB 비밀번호·CA 키)은 먼저 지워져 있어야 한다.
+        def compose_config(self, args):
+            raise DockerError("docker_compose_config_failed")
+        with mock.patch.object(runner_split_main.Docker, "compose_config", compose_config), \
+                mock.patch.object(runner.shutil, "rmtree", side_effect=OSError("busy")):
+            code, err = self.run_ours()
+        self.assertEqual(code, 2)
+        self.assertIn("run_directory: REMOVE_FAILED", err)
+        run_dir = next(self.runs.iterdir())
+        self.assertFalse((run_dir / "private").exists())
 
     def test_config_errors_print_codes_only(self):
         os.chmod(self.manifest_path, 0o644)
