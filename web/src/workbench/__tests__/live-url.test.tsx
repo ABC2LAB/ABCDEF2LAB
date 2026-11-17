@@ -1368,7 +1368,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(screen.queryByText(/점검을 마쳤습니다/)).toBeNull();
   });
 
-  it("끝난 점검의 발견은 저장된 결과를 보고서 '발견 목록'과 같은 줄로 보이고(점검 중 발견 목록은 안 부름), 줄을 누르면 보고서로", async () => {
+  it("끝난 점검의 발견은 저장된 결과를 보고서 '발견 목록'과 같은 줄로 보이고(점검 중 발견 목록은 안 부름), 줄은 눌러도 아무 데도 안 간다", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(completed);
     a.fetchRemediation.mockResolvedValue({
@@ -1381,9 +1381,11 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     const { goTo } = mount("live");
     const sec = await screen.findByRole("region", { name: "발견 목록" });
     await waitFor(() => expect(within(sec).getByText("2건 · 저장된 결과")).toBeInTheDocument());
-    // 보고서와 같은 줄: 위험도(없으면 '등급 없음') · 제목 · 엔드포인트 · 유형 · 판정
-    const rows = within(sec).getAllByRole("button");
+    // 보고서와 같은 줄: 위험도(없으면 '등급 없음') · 제목 · 엔드포인트 · 유형 · 판정. 버튼이 아닌 읽기 줄 (사용자 11/17)
+    expect(within(sec).queryAllByRole("button")).toHaveLength(0);
+    const rows = [...(document.getElementById("lSaved") as HTMLElement).children] as HTMLElement[];
     expect(rows).toHaveLength(2);
+    expect(rows[0].tagName).toBe("DIV");
     expect(rows[0]).toHaveTextContent(/^등급 없음후보 1\/api\/items\/\{id\}idor검토 필요$/);
     expect(a.fetchRemediation).toHaveBeenCalledWith("42", "internal");
     // 끝난 점검은 제품 서버가 점검 중 발견 목록을 닫으므로 부르지 않는다
@@ -1394,7 +1396,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
       /^발견2확정 0$/,
     );
     fireEvent.click(rows[1]);
-    expect(goTo).toHaveBeenCalledWith("report");
+    expect(goTo).not.toHaveBeenCalledWith("report");
   });
 
   it("중지 요청은 같은 진단에 한 번 (expected revision 은 팀 lib 이 넣는다)", async () => {

@@ -4415,6 +4415,13 @@ button.smm:hover {
 .frow.sel {
   background: var(--accent-bg);
 }
+/* 누르지 않는 읽기 줄 (점검 진행의 끝난 점검 발견): 손가락 · 올렸을 때 색 없음 */
+.frow.still {
+  cursor: default;
+}
+.frow.still:hover {
+  background: var(--bg);
+}
 .frow .fm {
   min-width: 0;
   display: flex;

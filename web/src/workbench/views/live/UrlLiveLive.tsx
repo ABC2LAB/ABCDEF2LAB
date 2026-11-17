@@ -346,23 +346,24 @@ function StageGauge({ segs }: { segs: GaugeSeg[] }) {
 /**
  * 끝난 점검의 발견 (사용자 11/17 '보고서 형식으로'): 실제 제품 서버는 점검이 끝나면 점검 중 발견 목록
  * (/api/exploration/findings)을 닫고 저장 보고서만 열어 둔다(cmd/first-controlled-diagnosis url_preparation_runtime.go).
- * 그래서 저장된 판정 결과를 보고서 '발견 목록'과 같은 줄(FindingRows)로 보인다. 줄을 누르면 보고서로 간다.
+ * 그래서 저장된 판정 결과를 보고서 '발견 목록'과 같은 줄(FindingRows)로 보인다. 줄은 누르지 않는 읽기 줄이다(사용자 11/17 —
+ * 보고서로는 위 상태 카드의 [보고서 보기]로 간다).
  */
-function SavedFindings({ poll, onReport }: { poll: Poll<Remediation>; onReport: () => void }) {
+function SavedFindings({ poll }: { poll: Poll<Remediation> }) {
   const sorted = poll.data ? sortEntries(poll.data.entries) : [];
   let body: ReactNode;
   if (poll.error) body = <ReportReadError error={poll.error} onRetry={poll.reload} />;
   else if (!poll.data) body = <LoadingRow />;
   else if (!sorted.length)
     body = <p className={s.empty}>저장된 결과가 없습니다. 결과가 없다고 안전하다는 뜻은 아닙니다.</p>;
-  else body = <FindingRows entries={sorted} id="lSaved" onPick={onReport} />;
+  else body = <FindingRows entries={sorted} id="lSaved" />;
   return (
     <section className={s.sec} aria-labelledby="lSavedH">
       <div className={s.sh}>
         <h2 id="lSavedH">발견 목록</h2>
         <span className={s.n}>{poll.data && !poll.error ? `${sorted.length}건 · 저장된 결과` : ""}</span>
       </div>
-      {/* [보고서 보기]는 위 상태 카드에 있다 — 여기 또 두지 않고, 줄을 누르면 보고서로 간다 */}
+      {/* [보고서 보기]는 위 상태 카드에 있다 — 여기 또 두지 않는다 */}
       {body}
     </section>
   );
@@ -660,7 +661,7 @@ export function UrlLiveLive() {
           ) : null}
           {/* 발견: 점검 중엔 발견 후보(실시간), 끝나면 저장된 결과를 보고서 형식으로 */}
           {!ended && job.task_id ? <LiveFindings poll={finds} fresh={fresh} ended={ended} /> : null}
-          {ended && savedTask ? <SavedFindings poll={saved} onReport={() => goTo("report")} /> : null}
+          {ended && savedTask ? <SavedFindings poll={saved} /> : null}
           {ended && !savedTask ? <p className={s.empty}>결과 저장이 확인되면 발견 목록이 여기에 나옵니다.</p> : null}
           {a.message ? <p role="status">{a.message}</p> : null}
           {a.unresolved ? <p role="alert">결정 결과 불명 · 조회로 확인하기 전에는 다시 결정하지 않습니다.</p> : null}
@@ -1184,7 +1185,8 @@ export function FindingRows({
   entries: readonly RemediationEntry[];
   id?: string;
   chosen?: string | null;
-  onPick: (e: RemediationEntry) => void;
+  /** 없으면 누르지 않는 읽기 줄(점검 진행의 끝난 점검 발견) */
+  onPick?: (e: RemediationEntry) => void;
 }) {
   return (
     <div className={s.list} id={id}>
@@ -1202,6 +1204,24 @@ export function FindingRows({
             </span>
           );
         else if (e.summary) feBody = <span className={s.fe}>{maskSecrets(e.summary)}</span>;
+        const cells = (
+          <>
+            <Sev e={e} />
+            <span className={s.fm}>
+              <span className={s.ft}>{maskSecrets(e.title) || e.entry_id}</span>
+              {feBody}
+            </span>
+            <span className={s.fs}>
+              <Outcome o={o} short />
+            </span>
+          </>
+        );
+        if (!onPick)
+          return (
+            <div key={e.entry_id} className={cx(s.frow, s.still)}>
+              {cells}
+            </div>
+          );
         return (
           <button
             key={e.entry_id}
@@ -1211,14 +1231,7 @@ export function FindingRows({
             aria-current={on ? "true" : undefined}
             onClick={() => onPick(e)}
           >
-            <Sev e={e} />
-            <span className={s.fm}>
-              <span className={s.ft}>{maskSecrets(e.title) || e.entry_id}</span>
-              {feBody}
-            </span>
-            <span className={s.fs}>
-              <Outcome o={o} short />
-            </span>
+            {cells}
           </button>
         );
       })}
