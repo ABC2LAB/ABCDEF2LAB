@@ -28,6 +28,7 @@ import {
   sameURLInput,
   storeURLHandle,
   type URLDiagnosisCatalog,
+  type URLDiagnosisHandle,
   type URLDiagnosisInput,
   type URLDiagnosisJob,
   type URLJobHandle,
@@ -66,6 +67,8 @@ export interface UrlStore {
   cap: UrlCapability;
   /** 조회 핸들 (팀 storeURLHandle 과 같은 값). 있으면 새 입력을 잠근다. */
   handle: URLJobHandle | null;
+  /** 이 브라우저가 만든 회차. 다른 회차를 조회해도 유지하며 주체 교체·연결 해제 때 버린다. */
+  createdHandle: URLDiagnosisHandle | null;
   /** 목록 선택은 상태 검증 전에도 식별자만 보관한다. 실행 권위가 아니다. */
   selectedID: string | null;
   writeBusy: boolean;
@@ -96,6 +99,7 @@ const cleared = (): JobFields => ({
   flowBusy: false,
   flowError: "",
   handle: null,
+  createdHandle: null,
   selectedID: null,
   writeBusy: false,
   job: null,
@@ -125,7 +129,7 @@ let flowPending: { key: string; revision: number; operation: "selection" | "paus
   null;
 
 /** 진행 중인 응답을 모두 버리고 진단 상태를 비운다 (cap 은 그대로). */
-function dropJob(): void {
+function dropJob(preserveCreated = false): void {
   generation += 1;
   selectionRequest?.abort();
   selectionRequest = null;
@@ -134,7 +138,14 @@ function dropJob(): void {
   lock = false;
   flowLock = false;
   flowPending = null;
-  useUrl.setState((st) => ({ ...cleared(), selectionEpoch: st.selectionEpoch + 1 }));
+  useUrl.setState((st) => {
+    let createdHandle: URLDiagnosisHandle | null = null;
+    if (preserveCreated) {
+      createdHandle = st.createdHandle;
+      if (st.handle && st.handle.kind !== "recovered") createdHandle = st.handle;
+    }
+    return { ...cleared(), createdHandle, selectionEpoch: st.selectionEpoch + 1 };
+  });
 }
 
 /** 테스트용: 스토어를 처음 상태로. */
@@ -147,6 +158,15 @@ export function resetUrl(cap: UrlCapability = { kind: "unknown" }): void {
 
 function ownerOf(cap: UrlCapability): string | null {
   return cap.kind === "v2" ? cap.catalog.ownerContext : null;
+}
+
+/** 선택한 회차의 403이 다른 회차의 생성 키까지 지우지 않게 한다. */
+function forgetSelectedCreation(): void {
+  const st = useUrl.getState();
+  const created = st.createdHandle;
+  const keep = created && created.ownerContext === ownerOf(st.cap) && created.id !== st.selectedID ? created : null;
+  storeURLHandle(keep);
+  useUrl.setState({ createdHandle: keep });
 }
 
 /** 서버가 준 진단을 핸들에 맞춰 보고 받아들인다. 맞지 않으면 던진다(호출부가 결과 불명으로 처리). */
@@ -162,6 +182,7 @@ function accept(next: URLDiagnosisJob, saved: URLJobHandle): void {
   storeURLHandle(updated);
   useUrl.setState({
     handle: updated,
+    ...(updated.kind !== "recovered" ? { createdHandle: updated } : {}),
     selectedID: next.id,
     confirmed: false,
     job: next,
@@ -177,11 +198,13 @@ async function bootJob(owner: string): Promise<void> {
   flowPending = null;
   const current = ++generation;
   const selected = readURLSelection(owner);
-  const saved = selected ? null : readURLHandle(owner);
+  const created = readURLHandle(owner);
+  const saved = selected && selected.id !== created?.id ? null : created;
   lock = false;
   useUrl.setState({
     ...cleared(),
     handle: saved,
+    createdHandle: created,
     selectedID: selected ? selected.id : (saved?.id ?? null),
     busy: !!saved || !!selected,
     uncertain: !!saved || !!selected,
@@ -201,7 +224,7 @@ async function bootJob(owner: string): Promise<void> {
     if (current !== generation) return;
     const patch: Partial<UrlStore> = { error: urlDiagnosisError(cause) };
     if (cause instanceof ApiError && cause.status === 403) {
-      storeURLHandle(null);
+      forgetSelectedCreation();
       patch.handle = null;
     }
     useUrl.setState(patch);
@@ -230,8 +253,10 @@ export async function selectUrlRun(row: URLRunSummary): Promise<boolean> {
   const st = useUrl.getState();
   const owner = ownerOf(st.cap);
   if (!owner || st.writeBusy) return false;
-  const saved = st.handle?.id === row.id && st.handle.kind !== "recovered" ? st.handle : null;
-  dropJob();
+  const saved = [st.handle, st.createdHandle, readURLHandle(owner)].find(
+    (h): h is URLDiagnosisHandle => !!h && h.kind !== "recovered" && h.ownerContext === owner && h.id === row.id,
+  );
+  dropJob(true);
   const current = generation;
   const request = new AbortController();
   selectionRequest = request;
@@ -453,7 +478,7 @@ async function runUrlActionNow(
         if (cap.kind !== "v2" || !cap.catalog.profiles.some((p) => p.id === checked.profile_id)) return false;
         saved = { kind: "created", ownerContext: owner, creationKey: crypto.randomUUID(), input: checked };
         storeURLHandle(saved);
-        useUrl.setState({ handle: saved });
+        useUrl.setState({ handle: saved, createdHandle: saved });
         next = await createURLDraft(checked, saved.creationKey, owner);
         if (current !== generation) return false;
         accept(next, saved);
@@ -471,7 +496,7 @@ async function runUrlActionNow(
         if (saved.kind === "recovered") return false;
         saved = { ...saved, startKey: crypto.randomUUID(), startRevision: job.revision };
         storeURLHandle(saved);
-        useUrl.setState({ handle: saved });
+        useUrl.setState({ handle: saved, createdHandle: saved });
       }
       if (kind === "stop") {
         const fresh = await readURLStatus(job.id, owner);
@@ -503,7 +528,7 @@ async function runUrlActionNow(
     const patch: Partial<UrlStore> = { error: urlDiagnosisError(cause), uncertain: true, verified: false };
     if (kind === "refresh" || (cause instanceof ApiError && [401, 403].includes(cause.status))) patch.job = null;
     if (cause instanceof ApiError && cause.status === 403) {
-      storeURLHandle(null);
+      forgetSelectedCreation();
       patch.handle = null;
     }
     useUrl.setState(patch);

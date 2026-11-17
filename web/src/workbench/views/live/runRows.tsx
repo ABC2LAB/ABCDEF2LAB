@@ -2,7 +2,7 @@
 
 import { ApiError } from "@/lib/diagnosis/api";
 import type { URLRunSummary } from "@/lib/diagnosis/diagnosis-runs";
-import { runApprovalLabels } from "@/lib/diagnosis/diagnosis-runs";
+import { activeURLRun, runApprovalLabels } from "@/lib/diagnosis/diagnosis-runs";
 import { urlPhaseLabels, urlReasonLabels, urlStateLabels } from "@/lib/diagnosis/diagnosis-url";
 
 import { cx } from "../../lib/cx";
@@ -17,6 +17,8 @@ export function RunRow({ row, onPick }: { row: URLRunSummary; onPick?: () => voi
   const selected = useUrl((st) => st.selectedID === row.id);
   const writeBusy = useUrl((st) => st.writeBusy);
   const { openInsp } = useShell();
+  const named = !!row.display_name?.trim();
+  const approvalIssue = activeURLRun(row) && row.approval_status !== "not_revalidated";
   return (
     <button
       type="button"
@@ -37,7 +39,7 @@ export function RunRow({ row, onPick }: { row: URLRunSummary; onPick?: () => voi
       <span className={s["r-main"]}>
         <span className={s["r-host"]}>{maskSecrets(row.display_name?.trim() || row.id)}</span>
         <span className={s["r-s"]}>
-          <span>{row.id}</span>
+          {named ? <span>{row.id}</span> : null}
           <span>{urlPhaseLabels[row.phase]}</span>
           <span>{runApprovalLabels[row.approval_status]}</span>
           {row.action_required ? <span>확인 필요</span> : null}
@@ -49,8 +51,10 @@ export function RunRow({ row, onPick }: { row: URLRunSummary; onPick?: () => voi
         </span>
       </span>
       <span className={s["r-side"]}>
-        <span className={cx(s.pill, row.state === "unknown" && s.wait)}>
-          {row.state === "unknown" ? "상태 확인 필요 · 결과 불명" : urlStateLabels[row.state]}
+        <span className={cx(s.pill, (row.state === "unknown" || approvalIssue) && s.wait)}>
+          {row.state === "unknown"
+            ? "상태 확인 필요 · 결과 불명"
+            : `${urlStateLabels[row.state]}${approvalIssue ? ` · ${runApprovalLabels[row.approval_status]}` : ""}`}
         </span>
       </span>
     </button>

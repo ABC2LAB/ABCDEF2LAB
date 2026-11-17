@@ -153,6 +153,7 @@ const PREVIEW_LIMIT_KEY = "표시 제한";
  * `표시 제한` 안내만 보낸다. 원문 본문은 공개하지 않으며, 화면은 키를 바꾸거나 고르지 않고 그대로 보인다.
  */
 export function ApprovalRequestCode({ row }: { row: RequestApproval }) {
+  const recovered = useUrl((st) => st.handle?.kind === "recovered");
   const entries = Object.entries(row.input_preview);
   const shown = entries.filter(([k]) => k !== PREVIEW_LIMIT_KEY);
   const limit = row.input_preview[PREVIEW_LIMIT_KEY];
@@ -164,6 +165,12 @@ export function ApprovalRequestCode({ row }: { row: RequestApproval }) {
   return (
     <>
       <pre className={s.code}>{text}</pre>
+      {recovered ? (
+        <p className={s.help}>
+          다시 연 점검은 조회 전용입니다. 요청 승인은 처음 시작한 화면에서만 가능합니다. 이 화면에서는 같은 운영자
+          계정으로 종료만 할 수 있습니다.
+        </p>
+      ) : null}
       {limit ? (
         <p className={s.help} role="note">
           {`${PREVIEW_LIMIT_KEY}: ${limit}`}

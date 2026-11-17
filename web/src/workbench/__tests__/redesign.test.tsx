@@ -1120,6 +1120,27 @@ describe("대시보드", () => {
     expect(within(detail).getByText("attempt-1")).toBeInTheDocument();
     expect(within(detail).getByRole("button", { name: "이 요청 승인" })).toBeInTheDocument();
     expect(within(detail).getByRole("button", { name: "거부" })).toBeInTheDocument();
+    act(() =>
+      useUrl.setState({
+        handle: {
+          kind: "recovered",
+          ownerContext: catalog.ownerContext,
+          input: job.input,
+          id: job.id,
+          revision: job.revision,
+          sourceDigest: job.source_digest,
+          bindingLocked: true,
+        },
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "승인 요청 보기" }));
+    const recoveredDetail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
+    expect(within(recoveredDetail).getByText(/요청 승인은 처음 시작한 화면에서만/)).toBeInTheDocument();
+    expect(within(recoveredDetail).getByRole("button", { name: "이 요청 승인" })).toBeDisabled();
+    act(() => useUrl.setState({ handle }));
+    const createdDetail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
+    expect(within(createdDetail).queryByText(/요청 승인은 처음 시작한 화면에서만/)).toBeNull();
+    expect(within(createdDetail).getByRole("button", { name: "이 요청 승인" })).toBeEnabled();
   });
 });
 

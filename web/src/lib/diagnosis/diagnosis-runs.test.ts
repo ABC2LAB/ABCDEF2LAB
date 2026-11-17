@@ -142,16 +142,17 @@ describe("보호된 제품 진단 목록", () => {
       bindingLocked: true,
     };
     storeURLHandle(handle);
+    const created = readURLHandle(owner);
     expect(readURLHandle(owner)?.creationKey).toBe(handle.creationKey);
     storeURLHandle(recovered);
-    expect(readURLHandle(owner)).toBeNull();
+    expect(readURLHandle(owner)).toEqual(created);
     expect(readURLSelection(owner)).toEqual({ ownerContext: owner, id: running.id });
-    const saved = Array.from({ length: sessionStorage.length }, (_, i) =>
-      sessionStorage.getItem(sessionStorage.key(i) as string),
-    ).join();
+    const saved = sessionStorage.getItem("abc2lab.urlDiagnosisSelection.v1") as string;
     expect(saved).not.toMatch(/creationKey|startKey|target_url|sourceDigest|external_test_accounts|bindingLocked/);
     expect(() => matchURLHandle({ ...running, revision: 6, source_digest: "b".repeat(64) }, recovered)).toThrow();
     expect(readURLSelection("b".repeat(64))).toBeNull();
+    expect(readURLHandle("b".repeat(64))).toBeNull();
+    expect(readURLHandle(owner)).toBeNull();
   });
 });
 

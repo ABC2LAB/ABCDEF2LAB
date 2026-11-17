@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { signIn, signOut } from "@/lib/diagnosis/api";
 import { activeURLRun, type URLRunSummary } from "@/lib/diagnosis/diagnosis-runs";
-import { storeURLHandle, type URLDiagnosisJob } from "@/lib/diagnosis/diagnosis-url";
+import { readURLHandle, storeURLHandle, type URLDiagnosisJob } from "@/lib/diagnosis/diagnosis-url";
 import { catalog, owner, ready, running } from "@/lib/diagnosis/diagnosis-url-fixtures";
 
 import { LiveGate, setLiveAuthState, useLiveAuthBoot } from "../live/auth";
@@ -16,6 +16,7 @@ import { loadUrlRuns, useUrlRuns } from "../live/urlRunList";
 import { type Shell, ShellContext, type View } from "../shell";
 import { DashboardByMode, FinishedByMode, LiveByMode, ReportByMode, RunningByMode } from "../views/live/byMode";
 import { Download } from "../views/live/UrlLiveLive";
+import s from "../workbench.module.css";
 
 const B_OWNER = "b".repeat(64);
 const a: URLDiagnosisJob = { ...running, id: "job-a", input: { ...running.input, display_name: "첫 번째 점검" } };
@@ -37,6 +38,16 @@ const c: URLDiagnosisJob = {
   state: "failed",
   reason_code: "execution_failed",
   input: { ...running.input, display_name: "실패한 점검" },
+};
+const createdA = {
+  ownerContext: owner,
+  creationKey: "real-created-key",
+  startKey: "real-start-key",
+  startRevision: a.revision,
+  input: a.input,
+  id: a.id,
+  revision: a.revision,
+  sourceDigest: a.source_digest,
 };
 const toRow = (job: URLDiagnosisJob): URLRunSummary => ({
   id: job.id,
@@ -313,6 +324,59 @@ describe("서버 목록에서 새 세션으로 기존 Job 다시 연결", () => 
     expect(useUrl.getState().handle?.creationKey).toBe("real-created-key");
     expect(posts()).toEqual([]);
   });
+
+  it("다른 회차를 보고 돌아와도 만든 회차의 생성·시작 핸들이 남는다", async () => {
+    storeURLHandle({
+      ownerContext: owner,
+      creationKey: "real-created-key",
+      startKey: "real-start-key",
+      startRevision: a.revision,
+      input: a.input,
+      id: a.id,
+      revision: a.revision,
+      sourceDigest: a.source_digest,
+    });
+    render(<Harness />);
+    await waitFor(() => expect(useUrl.getState().job?.id).toBe(a.id));
+    fireEvent.click(screen.getByRole("button", { name: "테스트 이동 finished" }));
+    await pick("보존된 점검");
+    expect(useUrl.getState().handle?.kind).toBe("recovered");
+    expect(readURLHandle(owner)?.id).toBe(a.id);
+    fireEvent.click(screen.getByRole("button", { name: "테스트 이동 running" }));
+    await pick("첫 번째 점검");
+    expect(useUrl.getState().handle?.kind).not.toBe("recovered");
+    expect(useUrl.getState().handle?.creationKey).toBe("real-created-key");
+    expect(useUrl.getState().handle?.startKey).toBe("real-start-key");
+    expect(posts()).toEqual([]);
+  });
+
+  it("다른 회차를 선택한 채 새로고침해도 만든 회차의 키와 조회 선택을 분리해 보존한다", async () => {
+    storeURLHandle({
+      ownerContext: owner,
+      creationKey: "real-created-key",
+      startKey: "real-start-key",
+      startRevision: a.revision,
+      input: a.input,
+      id: a.id,
+      revision: a.revision,
+      sourceDigest: a.source_digest,
+    });
+    const first = render(<Harness />);
+    await waitFor(() => expect(useUrl.getState().job?.id).toBe(a.id));
+    fireEvent.click(screen.getByRole("button", { name: "테스트 이동 finished" }));
+    await pick("보존된 점검");
+    first.unmount();
+    resetUrl();
+    render(<Harness />);
+    await waitFor(() => expect(useUrl.getState().job?.id).toBe(b.id));
+    expect(useUrl.getState().handle?.kind).toBe("recovered");
+    expect(readURLHandle(owner)?.startKey).toBe("real-start-key");
+    fireEvent.click(screen.getByRole("button", { name: "테스트 이동 running" }));
+    await pick("첫 번째 점검");
+    expect(useUrl.getState().handle?.kind).not.toBe("recovered");
+    expect(useUrl.getState().handle?.startKey).toBe("real-start-key");
+    expect(posts()).toEqual([]);
+  });
   it.each([
     "revoked",
     "expired",
@@ -330,8 +394,68 @@ describe("서버 목록에서 새 세션으로 기존 Job 다시 연결", () => 
       unavailable: "승인 상태 확인 불가",
     };
     expect(row).toHaveTextContent(labels[approval]);
+    const pill = row.querySelector(`.${s.pill}`);
+    expect(pill).toHaveTextContent(`엔진 실행 중 · ${labels[approval]}`);
+    expect(pill).toHaveClass(s.wait);
     expect(posts()).toEqual([]);
   });
+  it("저장소에 없는 생성 핸들도 같은 브라우저 메모리에서 보존한다", async () => {
+    storeURLHandle(createdA);
+    render(<Harness />);
+    await waitFor(() => expect(useUrl.getState().job?.id).toBe(a.id));
+    sessionStorage.removeItem("abc2lab.urlDiagnosisHandle.v2");
+    fireEvent.click(screen.getByRole("button", { name: "테스트 이동 finished" }));
+    await pick("보존된 점검");
+    expect(readURLHandle(owner)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "테스트 이동 running" }));
+    await pick("첫 번째 점검");
+    expect(useUrl.getState().handle?.startKey).toBe(createdA.startKey);
+    expect(useUrl.getState().handle?.kind).not.toBe("recovered");
+    expect(posts()).toEqual([]);
+  });
+
+  it("복구한 다른 Job의 403이 만든 회차의 키를 지우지 않는다", async () => {
+    storeURLHandle(createdA);
+    const first = render(<Harness />);
+    await waitFor(() => expect(useUrl.getState().job?.id).toBe(a.id));
+    fireEvent.click(screen.getByRole("button", { name: "테스트 이동 finished" }));
+    await pick("보존된 점검");
+    first.unmount();
+    resetUrl();
+    route = (url) => (url.pathname.endsWith(`/drafts/${b.id}/status`) ? json({ error: "forbidden" }, 403) : undefined);
+    render(<Harness />);
+    await waitFor(() => expect(useUrl.getState().error).not.toBe(""));
+    expect(readURLHandle(owner)?.startKey).toBe(createdA.startKey);
+    fireEvent.click(screen.getByRole("button", { name: "테스트 이동 running" }));
+    await pick("첫 번째 점검");
+    expect(useUrl.getState().handle?.startKey).toBe(createdA.startKey);
+    expect(posts()).toEqual([]);
+  });
+
+  it("저장한 생성 키가 있어도 바뀐 실행 결속에는 붙이지 않는다", async () => {
+    storeURLHandle(createdA);
+    render(<Harness />);
+    await waitFor(() => expect(useUrl.getState().job?.id).toBe(a.id));
+    fireEvent.click(screen.getByRole("button", { name: "테스트 이동 finished" }));
+    await pick("보존된 점검");
+    jobs[a.id] = { ...a, source_digest: "e".repeat(64) };
+    fireEvent.click(screen.getByRole("button", { name: "테스트 이동 running" }));
+    fireEvent.click(await screen.findByRole("button", { name: /첫 번째 점검/ }));
+    await waitFor(() => expect(useUrl.getState().error).not.toBe(""));
+    expect(useUrl.getState().verified).toBe(false);
+    expect(useUrl.getState().handle).toBeNull();
+    expect(posts()).toEqual([]);
+  });
+
+  it("이름 없는 회차의 Job ID는 행에 한 번만 표시한다", async () => {
+    route = (url) =>
+      url.pathname.endsWith("/runs") ? json(page([{ ...toRow(a), display_name: undefined }])) : undefined;
+    render(<Harness />);
+    const row = await screen.findByRole("button", { name: new RegExp(a.id) });
+    expect(within(row).getAllByText(a.id)).toHaveLength(1);
+    expect(posts()).toEqual([]);
+  });
+
   it("unknown과 시작 전 회차를 활성·끝난 상태에 섞지 않는다", async () => {
     const rows = [
       { ...toRow(a), state: "unknown" as const },
@@ -438,13 +562,16 @@ describe("페이지·오류·명시적 중지", () => {
     expect(posts()).toEqual([]);
   });
   it("401 뒤 주체 데이터와 cursor를 버리고 다른 운영자 로그인에서 재사용하지 않는다", async () => {
+    storeURLHandle(createdA);
     render(<Harness />);
+    await waitFor(() => expect(useUrl.getState().job?.id).toBe(a.id));
     await pick("보존된 점검");
     route = (url) => (url.pathname.endsWith("/runs") ? json({ error: "authentication_required" }, 401) : undefined);
     await act(async () => {
       await loadUrlRuns(owner);
     });
     expect(useUrl.getState().job).toBeNull();
+    expect(useUrl.getState().createdHandle).toBeNull();
     expect(useUrlRuns.getState().page).toBeNull();
     expect(await screen.findByRole("button", { name: "로그인" })).toBeInTheDocument();
     route = () => undefined;

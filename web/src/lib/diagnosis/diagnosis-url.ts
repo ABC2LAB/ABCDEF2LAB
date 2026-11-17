@@ -833,7 +833,7 @@ const HANDLE_KEY = "abc2lab.urlDiagnosisHandle.v2";
 export function storeURLHandle(handle: URLJobHandle | null): void {
   try {
     if (handle?.kind === "recovered") {
-      sessionStorage.removeItem(HANDLE_KEY);
+      // 조회 선택은 이 브라우저가 만든 회차의 생성/시작 키를 대체하지 않는다.
       sessionStorage.setItem(SELECTION_KEY, JSON.stringify({ ownerContext: handle.ownerContext, id: handle.id }));
       return;
     }
@@ -892,7 +892,12 @@ export function readURLHandle(owner: string): URLDiagnosisHandle | null {
       ...(v.bindingLocked ? { bindingLocked: true as const } : {}),
     };
   } catch {
-    storeURLHandle(null);
+    try {
+      // 잘못된 생성 핸들만 버린다. 별도로 검증하는 조회 선택은 보존한다.
+      sessionStorage.removeItem(HANDLE_KEY);
+    } catch {
+      /* 저장소에 접근할 수 없으면 핸들 없이 조회한다. */
+    }
     return null;
   }
 }
