@@ -275,6 +275,8 @@ func (s *Service) Call(ctx context.Context, r Request) (Response, error) {
 		return Response{}, ErrUnavailable
 	}
 	switch r.Command {
+	case ListRuns:
+		return s.listRunsLocked(ctx, r), nil
 	case Catalog:
 		profiles, err := s.backend.Profiles(ctx, r.Principal)
 		if err != nil {

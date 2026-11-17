@@ -251,6 +251,14 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 	begin.Event, begin.Status, begin.ReasonCode = "model_request_started", "started", ""
 	_ = diagnosticlog.Emit(diagnosticContext, begin)
 	start := time.Now()
+	// 호출 기록(openrouter_calls.go). 전송은 그대로이고, 끝난 뒤 이미 읽은 값만 남긴다.
+	record := OpenRouterCallRecord{Method: http.MethodPost, RequestBytes: int64(len(wire))}
+	complete, callerStopped := false, false
+	defer func() {
+		record.StartedAt, record.CompletedAt = openRouterStamp(start), openRouterStamp(time.Now())
+		record.Decision, record.UnfinishedEnd = openRouterCallOutcome(complete, callerStopped)
+		p.recordCall(record)
+	}()
 	valid := false
 	transient := false
 	failureReason := "transport_failure"
@@ -288,6 +296,7 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 	copy.Header.Set("Authorization", r.Header.Get("Authorization"))
 	resp, err := t.base.RoundTrip(copy)
 	if err != nil || resp == nil {
+		callerStopped = r.Context().Err() != nil
 		diagnostic.ReasonCode = openRouterDiagnosticTransportReason(err, r.Context())
 		transient = openRouterTransientError(err)
 		return nil, ErrOpenRouterPolicy
@@ -295,12 +304,20 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 	if resp.StatusCode >= 100 && resp.StatusCode <= 599 {
 		diagnostic.HTTPStatus = resp.StatusCode
 	}
+	record.Status = resp.StatusCode
 	if resp.Body == nil {
 		diagnostic.ReasonCode = "response_invalid"
 		return nil, ErrOpenRouterPolicy
 	}
 	data, readErr := io.ReadAll(io.LimitReader(resp.Body, openRouterResponseLimit+1))
 	_ = resp.Body.Close()
+	record.ResponseBytes = int64(len(data))
+	// 상한을 넘은 본문은 이쪽이 읽기를 멈춘 것이라 호출자 쪽 끝이다.
+	complete = readErr == nil && len(data) <= openRouterResponseLimit
+	callerStopped = !complete && (r.Context().Err() != nil || len(data) > openRouterResponseLimit)
+	if complete {
+		record.GenerationID = openRouterGenerationID(data)
+	}
 	// 상태를 먼저 본다. 크기 초과와 영구 상태(4xx·1xx·3xx)는 본문이 끊겨도 설정 오류로 막는다. 정상 200의 본문이
 	// 끊긴 경우와 429·5xx만 일시 오류다(P3 결정안 C06). 요청 내용 거부(400·413·422)는 그 호출만 실패로 두고 연속 상한에
 	// 넣는다(C06 보완).
