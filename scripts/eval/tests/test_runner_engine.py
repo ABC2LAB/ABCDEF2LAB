@@ -27,7 +27,7 @@ from e2_prompt_collect import E2PromptNotReady, E2PromptUnverified  # noqa: E402
 from runner_engine import (
     _TARGET_DOMAIN, _TARGET_IP, _TARGET_URL, ADMIN_USERNAME, BASELINE_ADMIN_USERNAME, AdminSecret, EngineAPIError, TaskRequest, collect_findings,
     EngineLLMProfile, apply_engine_settings, engine_settings, findings_record, load_vocabulary, login, start_task,
-    task_request,
+    task_request, LOGIN_PATH, MAX_TASK_STATUS_BYTES, TASK_STATUS_PATH, TaskStatusReader,
 )
 from test_runner_config import runner_config
 from test_baseline_extract import finding, vocabulary
@@ -74,6 +74,12 @@ TASK_SHAPES = {
     ("db/config.go", "type LLMProfile struct"):
         "d94ed53b2203f42b0825da23763b92863794507bef5d3d97a0c47f1d8742a8b8",
 }
+# 엔진 끝 신호 읽기 계약(runner_engine.task_end_signal): 목록 API와 그 항목을 만드는 taskDTO. upstream fdfb7a17·baseline
+# e53a79f·개선 후가 같다(2026-11-17 직접 확인한 값). 다르면 끝 신호 칸의 출처를 다시 본다.
+STATUS_SHAPES = {
+    ("server/server.go", "func (s *Server) listTasks("): "efd586bbb14a622d5026d23be663a3f5f81fc2c3ce8ff9677997b3c5d9994e17",
+    ("server/dto.go", "func taskDTO("): "60562ab04a6b0b35af473ae8045cbfcce1579c434c95575b5aca66cc9280264e",
+}
 TARGET = "http://eval-meter:8080"
 
 
@@ -118,6 +124,25 @@ class TestDTOFormatGuard(unittest.TestCase):
             with self.subTest(block=start):
                 self.assertEqual(hashlib.sha256(go_block(text, start).encode()).hexdigest(), expected)
 
+    def test_end_signal_counts_come_from_the_list_api(self):
+        # 단건 API(getTask)는 taskDTO만 돌려주는데 taskDTO는 세 집계 칸을 채우지 않는다(늘 0). 목록 API(listTasks)만
+        # 집계로 채운다. 그래서 러너는 목록을 읽는다(#634 리뷰). 두 블록은 원본·baseline·개선 후가 같다.
+        for (path, start), expected in STATUS_SHAPES.items():
+            text = (REPO_ROOT / path).read_text(encoding="utf-8")
+            with self.subTest(block=start):
+                self.assertEqual(hashlib.sha256(go_block(text, start).encode()).hexdigest(), expected)
+        server = (REPO_ROOT / "server/server.go").read_text(encoding="utf-8")
+        listing = go_block(server, "func (s *Server) listTasks(")
+        single = go_block(server, "func (s *Server) getTask(")
+        dto = go_block((REPO_ROOT / "server/dto.go").read_text(encoding="utf-8"), "func taskDTO(")
+        for field in ("GoalsTotal", "GoalsMet", "InFlight"):
+            with self.subTest(field=field):
+                self.assertRegex(listing, rf"\n\t\tdto\.{field} = metric\.")
+                self.assertNotIn(field, single)
+                self.assertNotIn(field, dto)
+        self.assertIn('mux.HandleFunc("GET /api/tasks", s.listTasks)', server)
+        self.assertEqual(TASK_STATUS_PATH, "/api/tasks")
+
     def test_target_patterns_are_the_engine_patterns(self):
         # 러너가 보는 대상 = 엔진 parseTarget이 보는 대상이어야 한다.
         text = (REPO_ROOT / "server/server.go").read_text(encoding="utf-8")
@@ -146,6 +171,17 @@ ENGINE_LLM = {"configured": True, "provider": "openai", "model": "example-org/ex
                 "rate_per_minute": 0, "context_window_k": 0, "thinking_type": "", "reasoning_effort": ""}
 
 
+def task_item(task_id, status="running", completed_at="", goals_total=0, goals_met=0, in_flight=0, failover="ok", **extra):
+    """listTasks 항목 하나(server/dto.go TaskDTO + 목록 집계). 러너가 옮기지 않는 칸도 같이 둔다."""
+    return dict({"id": task_id, "exploration_id": 3, "name": "회차", "description": "설명", "goal": "목표", "status": status,
+                 "completed_at": completed_at, "goals_total": goals_total, "goals_met": goals_met, "in_flight": in_flight,
+                 "llm_failover_state": failover, "tokens": {"input": 9}}, **extra)
+
+
+def task_listing(*items, active="17") -> bytes:
+    return json.dumps({"tasks": list(items), "active": active}).encode()
+
+
 class FakeEngine:
     """로그인 1개와 findings 페이지 조회만 하는 합성 엔진 API."""
 
@@ -158,6 +194,10 @@ class FakeEngine:
         self.apply = apply or {}
         self.login_status, self.login_body = login_status, login_body
         self.task_status, self.task_body = task_status, task_body
+        # GET /api/tasks(작업 목록) 응답: (status, 본문 bytes)를 차례로. 하나 남으면 계속 그것. 실제 listTasks처럼 작업마다
+        # 집계 칸(goals_total·goals_met·in_flight)이 채워져 있고, 다른 작업 항목도 섞여 있다.
+        self.task_views = [(200, task_listing(task_item("17", goals_total=1, goals_met=0, in_flight=2),
+                                              task_item("16", status="done", goals_total=4, goals_met=4)))]
         self.requests = []
         engine = self
 
@@ -206,6 +246,17 @@ class FakeEngine:
 
             def do_GET(self):
                 engine.requests.append(("GET", self.path, dict(self.headers), b""))
+                if self.path == "/api/tasks":
+                    view = engine.task_views[0] if len(engine.task_views) == 1 else engine.task_views.pop(0)
+                    status, payload = view
+                    if self.headers.get("Authorization") != f"Bearer {TOKEN}":
+                        status = 401
+                    self.send_response(status)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
                 if self.path in ("/api/settings", "/api/llm"):
                     authorized = self.headers.get("Authorization") == f"Bearer {TOKEN}"
                     status, payload = engine.settings.get(self.path, (200, json.dumps(
@@ -672,3 +723,88 @@ class TestEngineSettings(unittest.TestCase):
             self.assertIn(key, llm)
         for block in (settings, llm):
             self.assertNotRegex(block, r'"(api_key|brave_search_api_key|tavily_search_api_key|password|token)":')
+
+
+class TestTaskStatusReader(unittest.TestCase):
+    """엔진 끝 신호 읽기(결정안 §3.1): 끝 신호 칸만 옮기고, 토큰을 다시 쓰며, 401이면 한 번만 다시 로그인한다."""
+
+    def engine(self, **kwargs):
+        engine = FakeEngine(**kwargs)
+        self.addCleanup(engine.close)
+        return engine
+
+    def logins(self, engine):
+        return sum(1 for method, path, *_ in engine.requests if method == "POST" and path == LOGIN_PATH)
+
+    def test_reads_only_end_signal_fields_and_reuses_the_token(self):
+        engine = self.engine()
+        reader = TaskStatusReader(engine.port, AdminSecret(PASSWORD), 5)
+        first, second = reader.read("17"), reader.read("17")
+        # 이 작업 항목(id "17")의 끝 신호 칸만 옮긴다. 다른 작업("16", done)의 값은 섞이지 않는다.
+        self.assertEqual(first, {"status": "running", "completed_at": "", "goals_total": 1, "goals_met": 0, "in_flight": 2,
+                                 "llm_failover_state": "ok"})
+        self.assertEqual(first, second)
+        self.assertEqual(self.logins(engine), 1)
+        # 집계 칸은 목록 API만 채운다(단건 API는 늘 0). 그래서 목록을 읽는다.
+        self.assertEqual([path for method, path, *_ in engine.requests if method == "GET"], ["/api/tasks"] * 2)
+
+    def test_stale_token_logs_in_once_more_and_persistent_401_stops(self):
+        engine = self.engine()
+        reader = TaskStatusReader(engine.port, AdminSecret(PASSWORD), 5)
+        reader._token = "stale-token"
+        self.assertEqual(reader.read("17")["status"], "running")
+        self.assertEqual(self.logins(engine), 1)
+        engine.task_views = [(401, b"{}")]
+        with self.assertRaises(EngineAPIError) as caught:
+            reader.read("17")
+        self.assertEqual(str(caught.exception), "engine_task_status_http_401")
+        self.assertEqual(self.logins(engine), 2)  # 한 번만 다시 로그인한다(무한 반복 없음)
+
+    def test_errors_and_malformed_views_use_fixed_codes(self):
+        good = {"status": "done", "completed_at": "2026-11-16T00:00:03Z", "goals_total": 1, "goals_met": 1, "in_flight": 0,
+                "llm_failover_state": ""}
+        cases = {"engine_task_status_http_500": (500, b"{}"), "engine_task_status_invalid": (200, b"not json")}
+        for name, change in {"missing": {"in_flight": None}, "string_count": {"goals_met": "1"}, "negative": {"in_flight": -1},
+                             "bool_count": {"goals_total": True}, "status_shape": {"status": "Done Now"}, "empty_status": {"status": ""},
+                             "long_stamp": {"completed_at": "2" * 41}, "stamp_chars": {"completed_at": "<script>"}}.items():
+            view = dict(good, id="17", **change)
+            if change.get("in_flight", 0) is None:
+                view.pop("in_flight")
+            cases[f"engine_task_status_invalid:{name}"] = (200, task_listing(view))
+        # 목록 모양: 작업 배열이 아니거나, 같은 id가 둘이면 거부한다. 이 작업이 없으면(다른 작업만, 숫자 id) 따로 센다.
+        cases["engine_task_status_invalid:not_listing"] = (200, json.dumps(dict(good, id="17")).encode())
+        cases["engine_task_status_invalid:tasks_not_list"] = (200, json.dumps({"tasks": {"17": good}}).encode())
+        cases["engine_task_status_invalid:top_level_list"] = (200, json.dumps([dict(good, id="17")]).encode())
+        cases["engine_task_status_invalid:duplicate_id"] = (200, task_listing(dict(good, id="17"), dict(good, id="17")))
+        cases["engine_task_status_missing:other_task_only"] = (200, task_listing(dict(good, id="16")))
+        cases["engine_task_status_missing:numeric_id"] = (200, task_listing(dict(good, id=17)))
+        cases["engine_task_status_missing:empty"] = (200, task_listing())
+        cases["engine_task_status_invalid:too_large"] = (200, task_listing(dict(good, id="17", pad="a" * (MAX_TASK_STATUS_BYTES + 1))))
+        # 완결된 JSON인데 상한보다 정확히 1바이트 큰 응답(잘림으로 깨지지 않는 경우)도 거부한다.
+        base = task_listing(dict(good, id="17", pad=""))
+        exact = task_listing(dict(good, id="17", pad="a" * (MAX_TASK_STATUS_BYTES + 1 - len(base))))
+        assert len(exact) == MAX_TASK_STATUS_BYTES + 1
+        cases["engine_task_status_invalid:one_byte_over"] = (200, exact)
+        for code, response in cases.items():
+            with self.subTest(code=code):
+                engine = self.engine()
+                engine.task_views = [response]
+                with self.assertRaises(EngineAPIError) as caught:
+                    TaskStatusReader(engine.port, AdminSecret(PASSWORD), 5).read("17")
+                self.assertEqual(str(caught.exception), code.split(":")[0])
+        # 상한과 같은 크기는 받는다(경계 하나 아래).
+        at_limit = task_listing(dict(good, id="17", pad="a" * (MAX_TASK_STATUS_BYTES - len(base))))
+        assert len(at_limit) == MAX_TASK_STATUS_BYTES
+        for listing in (task_listing(dict(good, id="16", status="failed"), dict(good, id="17")), at_limit):
+            engine = self.engine()
+            engine.task_views = [(200, listing)]
+            self.assertEqual(TaskStatusReader(engine.port, AdminSecret(PASSWORD), 5).read("17"), good)
+
+    def test_task_id_shape_is_checked_before_any_request(self):
+        engine = self.engine()
+        reader = TaskStatusReader(engine.port, AdminSecret(PASSWORD), 5)
+        for bad in ("0", "../17", "17/x", "", "1" * 20, 17):
+            with self.subTest(task_id=bad), self.assertRaises(EngineAPIError) as caught:
+                reader.read(bad)
+            self.assertEqual(str(caught.exception), "engine_task_id_invalid")
+        self.assertEqual(engine.requests, [])
