@@ -2829,6 +2829,75 @@ class AcceptancePathKeyTests(unittest.TestCase):
             self.assertEqual(caught.exception.errors, ["config.path_key_file: UNREADABLE"])
 
 
+class TestFirstLimit(unittest.TestCase):
+    """어느 상한이 먼저 걸렸는지(탐색 분리 배치 결정안 §3 B(a) 표). 엔진 끝 신호 대 러너 요청·시간 예산."""
+
+    def test_pure_rule_and_boundaries(self):
+        terminal = lambda at: {"status": "done", "at": "t", "elapsed_seconds": at}
+        rule = runner.first_limit
+        self.assertEqual(rule("request_budget", 55.0, 600, None)["value"], "runner_request_budget")
+        self.assertEqual(rule("time_budget", 602.0, 600, None)["value"], "runner_time_budget")
+        # 같은 시각이면 엔진이 먼저다(엔진 끝 시각 ≤ 러너 상한 시각).
+        self.assertEqual(rule("request_budget", 55.0, 600, terminal(55.0))["value"], "engine_completed")
+        self.assertEqual(rule("request_budget", 55.0, 600, terminal(55.001))["value"], "runner_request_budget")
+        # 시간 예산은 알아챈 시각(602)이 아니라 문턱(600)과 비교한다.
+        self.assertEqual(rule("time_budget", 602.0, 600, terminal(600.5))["value"], "runner_time_budget")
+        self.assertEqual(rule("time_budget", 602.0, 600, terminal(600.0))["value"], "engine_completed")
+        self.assertEqual(rule("request_budget", 55.25, 600, terminal(12.5)),
+                         {"value": "engine_completed", "runner_limit": "runner_request_budget",
+                          "runner_limit_elapsed_seconds": 55.25, "engine_terminal_elapsed_seconds": 12.5})
+
+    def test_rounds_record_which_limit_came_first(self):
+        # 기본 회차: 엔진은 계속 running, 계측기 전달 수가 요청 예산에 닿는다.
+        result, _, _, evidence = run()
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertEqual(result["first_limit"]["value"], "runner_request_budget")
+        self.assertIsNone(result["first_limit"]["engine_terminal_elapsed_seconds"])
+        # 요청이 없으면 시간 예산.
+        result, _, _, _ = run(lambda p, m, c: setattr(m, "per_poll", 0))
+        self.assertEqual((result["first_limit"]["value"], result["first_limit"]["runner_limit_elapsed_seconds"]),
+                         ("runner_time_budget", result["meter"]["time_budget_seconds"]))
+        # 엔진이 창 안에서 끝 상태가 되면(예산보다 먼저) engine_completed. 회차는 일찍 끝나지 않는다(기록만).
+        def done_early(ports, meter, clock):
+            meter.per_poll = 0
+            ports.task_views = [task_view("running"), task_view("done", goals_met=1, completed_at="2026-11-16T00:00:03Z")]
+        result, ports, _, evidence = run(done_early)
+        limit = result["first_limit"]
+        self.assertEqual(limit["value"], "engine_completed")
+        self.assertEqual(limit["engine_terminal_elapsed_seconds"], evidence.files["engine-end.json"]["first_terminal"]["elapsed_seconds"])
+        self.assertLess(limit["engine_terminal_elapsed_seconds"], limit["runner_limit_elapsed_seconds"])
+        self.assertEqual(result["meter"]["stop_reason"], "time_budget")  # 일찍 끝내지 않았다
+
+    def test_terminal_seen_only_after_the_window_is_not_first(self):
+        # 창 끝에 진행 중이던 읽기가 봉인 뒤에 끝 상태를 돌려주면, 그 시각은 러너 상한보다 늦어 엔진이 먼저가 아니다.
+        gate = threading.Event()
+
+        def setup(ports, meter, clock):
+            def read(task_id):
+                if not gate.is_set():
+                    gate.wait(5)
+                    clock.sleep(1)  # 끝 상태를 돌려준 시각이 러너 상한 뒤가 되게
+                return task_view("done", completed_at="2026-11-16T00:00:03Z")
+            ports.task_status = read
+            ports.background = lambda work: threading.Thread(target=work, daemon=True).start()
+            seal = ports.seal
+
+            def seal_then_release(container_id):
+                gate.set()
+                return seal(container_id)
+            ports.seal = seal_then_release
+
+        spec = dataclasses.replace(make_spec(), task_status_wait_seconds=3)
+        try:
+            result, _, _, evidence = run(setup, spec=spec)
+        finally:
+            gate.set()
+        end, limit = evidence.files["engine-end.json"], result["first_limit"]
+        self.assertEqual(end["first_terminal"]["status"], "done")
+        self.assertGreater(limit["engine_terminal_elapsed_seconds"], limit["runner_limit_elapsed_seconds"])
+        self.assertEqual(limit["value"], "runner_request_budget")
+
+
 class TestEngineEndSignal(unittest.TestCase):
     """엔진 끝 신호(결정안 §3.1): 창 동안 작업 상태를 읽어 첫 끝 상태를 남기고, down 전에 마지막 상태를 읽어 서명 근거로 둔다."""
 

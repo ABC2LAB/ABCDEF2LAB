@@ -203,6 +203,12 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   읽기는 읽기 시한(`task_create_timeout_seconds`)만큼 기다리고, 그래도 안 끝나면 `engine_task_status_pending`으로 세고 결과를 버린다.
   읽기 실패는 회차를 무효로 하지 않고 `window_read_failures`·`final_error`(고정 코드)로 센다. 이 파일은 서명되는 근거 목록에
   들어간다. 엔진이 끝 상태가 돼도 러너는 회차를 일찍 끝내지 않는다(기록만, 종료 규칙은 바꾸지 않음).
+- **먼저 걸린 상한(`first_limit`, 결정안 §3 B(a) 표):** 결과 기록에 `first_limit`을 남긴다. `value`는 `engine_completed`(엔진 끝
+  신호의 첫 끝 상태가 러너 상한보다 먼저) 또는 `runner_request_budget`·`runner_time_budget`(계측기 종료 사유)이다. 러너 상한 시각은
+  시간 예산이면 그 문턱 값, 요청 예산이면 러너가 알아챈 시각(폴링이라 최대 한 간격 늦음)이고, 엔진 끝 시각은 상태 읽기가 끝 상태를
+  돌려준 시각이다. 같거나 엔진이 이르면 `engine_completed`다. 판정을 다시 계산할 수 있게 두 시각(`runner_limit_elapsed_seconds`·
+  `engine_terminal_elapsed_seconds`, 작업 생성 요청 직전부터 잰 초)과 러너 쪽 상한(`runner_limit`)을 같이 남긴다. 창이 끝난 뒤 거둔
+  읽기의 끝 상태는 러너 상한보다 늦어 엔진이 먼저가 아니다. 제품(O)의 `product_limit:<사유>`는 제품 구동(순서 4-7)에서 더한다.
 
 `findings.json`은 baseline·개선 후 모두 **같은 추출 경로**(`baseline_pages_collector` → `baseline_extract`, 수정 없음)를 거친
 투영만 담는다. API 응답 원본·제목·설명·자산 이름은 저장하지 않는다(절대규칙 2). 추출기는 원본 FindingDTO 형식(upstream
