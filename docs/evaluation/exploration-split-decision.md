@@ -77,6 +77,38 @@
 
 회차마다 B·O의 모델 호출 429 건수를 결과에 남긴다(B는 게이트웨이 행, O는 제품 호출별 기록 §5). 파일럿에서 429 비율이 계속 높으면 측정 전에 제공자 처리량 확인을 [개발 계획](../development-plan.md)의 공식 측정 전 필수 항목으로 올린다. 2026-11-16 파일럿: 1차 B 22행 중 13·O 63행 중 7, 재실행 B·O 모두 0.
 
+### 3.3 보존 sidecar v3 칸(제안, 리뷰 뒤 구현)
+
+위 "보존 sidecar는 v3로 올린다"의 칸을 정한다. 지금 v2 조건 칸은 B·O가 같은 엔진 직접 배치를 쓰던 때의 묶음이라, 분리 배치에서는 그대로 공통 대조할 수 없는 칸이 섞여 있다(예: `runner_settings_sha256`에 B 작업 요청 SHA가 들어간다). v3는 칸을 세 갈래로 나눈다. 해당 없는 칸은 더미가 아니라 `null`이다.
+
+**공통 대조(B·O가 같아야 짝이 됨, 다르면 `preservation_conditions_mismatch`)**
+
+| 칸 | B 출처 | O 출처 |
+|---|---|---|
+| `request_budget`·`time_budget_seconds` | 러너 선언 | 같은 값 |
+| `model_pin_sha256` | 게이트웨이 적용 샘플링·모델·제공자 | manifest 모델·제공자 + 제품 실행 기록이 보낸 샘플링(#654) |
+| `target_image_id`·`initial_state_sha256`·`machine_sha256` | 지금과 같음 | 같음 |
+| `runner_settings_sha256` | 공통 러너 설정만: 폴링·drain 시한·봉인 뒤 유예·정착 대기·호스트 감시 간격·이벤트 lookback | 같음 |
+| `goal_common_sha256`(새) | `task.json`의 `goal_common_sha256`(#659) | 실행 기록 `goal.common_sha256`(#625·#657) |
+| `comm_mode`·`mcp_version` | 지금과 같음(B 판 고정 패치 #655) | 같음 |
+
+**쪽별(기록하고 쪽 안에서만 고정, 짝끼리는 달라도 됨)**
+
+| 칸 | B | O |
+|---|---|---|
+| `layout` | `artex-direct/v1` | `exploration-split/v1` |
+| `driver_sha256`(새) | 원본 직접 구동 코드(러너 엔진 API 구동 모듈) 바이트 SHA | 제품 API 구동 코드(`runner_product.py`) 바이트 SHA |
+| `driver_settings_sha256`(새, 지금 `runner_settings_sha256`에서 뺀 것) | 작업 요청 SHA·LLM 스트리밍·tmpfs 하한·worker·컨텍스트·LLM 검증 시한 | 작업 번호 대기·폴링 간격·등록 유효 시간 |
+| `write_mode` | 지금과 같음 | 회차 설정(넓은 승인이면 `approved_writes`) |
+| `declared_model_budget_sha256` | 선언 | 제품 설치 예산(`installation.json` 안 예산) SHA |
+| `browser_image_id` | `null`(엔진 안 브라우저) | 탐색 브라우저 이미지 ID |
+| `exploration_policy_sha256`·`diagnosis_policy_sha256` | `null` | 경계 설정 SHA·E② 정책(`policy.json`) SHA |
+| 도구 면 지문 | 분기점 3 결정 뒤 확정(MCP 원 목록·판, Bash CLI 목록·판) | 같음 |
+
+**회차별(대조하지 않고 근거로 남김)**: `first_limit`(§3), 엔진 끝 신호(§3.1, B는 작업 목록 상태, O는 제품 초안 끝 상태), `stop_reason`, 429 건수(§3.2). O만: 제품 블록 `product` = 제품 소스 SHA·이미지 ID 셋(제품·탐색 브라우저·fixture)·`installation.json`·`policy.json`·`api-launch.json`·`target-policy.json` SHA·회차 `runtime-conditions.json` SHA·제어 정책 상한 스냅숏 SHA, 설치·등록 조건(`split_conditions`, #651: 워크플로 기본값 파일 SHA·값, 등록 경로·메서드·쓰기·요청 수·유효 시간, 제외 경로 빈 목록), 모델 사용량(`sampling_overwrites` 실행·준비 칸별, #646), 호출 기록 완전성(장부 예약 수 vs 호출 기록 줄 수, #654). B는 `product`가 `null`이다.
+
+읽기: v1·v2 기록은 지금처럼 읽는다(분리 배치 칸이 없는 것으로 본다). v3 짝 묶기는 위 공통 대조 칸만 대조한다(v2의 공통 칸 목록을 v3에 그대로 쓰지 않는다).
+
 ## 4. 결정 C(a) — 도구 면: 버전 핀 패치와 측정
 
 - B 빌드 = 원본 커밋 + 버전 핀 패치 하나(`@playwright/mcp@0.0.84`, `@playwright/cli@0.1.23`, `playwright@1.65.0`). 패치 SHA를 선언 차이로 서명한다.
