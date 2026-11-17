@@ -146,10 +146,14 @@ type Config struct {
 	SessionRef       string
 	ExpiresAt        time.Time
 	Rules            []Rule
-	Budget           transmit.CumulativeBudget `json:"-"`
-	Recorder         Recorder                  `json:"-"`
-	RootCAs          *x509.CertPool            `json:"-"`
-	Limits           Limits
+	// ExcludedPaths는 운영자가 선언한 제외 경로 패턴이다(진단 워크플로 입력). 모델 요청의 풀린 경로가 하나라도 걸리면
+	// 승인 규칙과 맞아도 진단 흐름 경계 전에 policy_denied로 거부한다(#627). 진단 흐름과 같은 해석·일치 함수(pathscope.Excluded)를 쓰고,
+	// 위험 동작 단어 검사는 진단 흐름에만 있다. 인증 준비(목적 규칙)에는 적용하지 않는다(진단 흐름 경계도 적용 안 함).
+	ExcludedPaths []string
+	Budget        transmit.CumulativeBudget `json:"-"`
+	Recorder      Recorder                  `json:"-"`
+	RootCAs       *x509.CertPool            `json:"-"`
+	Limits        Limits
 }
 type Restriction struct {
 	PolicyRevision string    `json:"policy_revision"`

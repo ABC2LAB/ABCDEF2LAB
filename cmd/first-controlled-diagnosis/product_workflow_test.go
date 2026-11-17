@@ -77,6 +77,32 @@ func TestWorkflowProfileBindsCompleteInputAndKeepsApprovedWritesInAutomaticMode(
 	if one.policy.ApprovalMode != e2proxy.ApprovalWorkbenchV1 || one.policy.Workflow == nil || one.policy.Workflow.InputSHA256 != workflowInputDigest(input) {
 		t.Fatal("manual policy lost input binding")
 	}
+	// 운영자 제외 경로는 E② 정책 워크플로 칸에도 실린다(#627). 결속 이름은 제외 경로가 있을 때만 바뀌고(이전 결속의
+	// 정책과 섞이지 않음), 제외 경로 없는 결속 이름은 이 변경 전 공식 그대로다.
+	if !reflect.DeepEqual(one.policy.Workflow.ExcludedPaths, []string{"/read/excluded"}) {
+		t.Fatal("E2 policy lost the operator exclusions", one.policy.Workflow.ExcludedPaths)
+	}
+	r.mu.Lock()
+	rec := r.records[target.ID]
+	r.mu.Unlock()
+	plainInput := input
+	plainInput.ExcludedPaths = ""
+	legacyName := "bound-" + urlSHA([]byte(productTargetDigest(rec) + "\n" + m.ID + "\n" + m.Launch.SHA256 + "\n" + workflowInputDigest(plainInput)))[:32]
+	if bindingBase(rec, m, plainInput) != legacyName {
+		t.Fatal("binding name changed for runs without exclusions")
+	}
+	legacyExcluded := "bound-" + urlSHA([]byte(productTargetDigest(rec) + "\n" + m.ID + "\n" + m.Launch.SHA256 + "\n" + workflowInputDigest(input)))[:32]
+	if bindingBase(rec, m, input) == legacyExcluded {
+		t.Fatal("excluded-path binding reuses the pre-E2-exclusion directory name")
+	}
+	plain, err := runtime.load("ARTEX", plainInput, false, "")
+	if err != nil {
+		t.Fatal("no-exclusion run", err)
+	}
+	defer plain.clearMaterials()
+	if plain.policy.Workflow == nil || plain.policy.Workflow.ExcludedPaths != nil {
+		t.Fatal("no-exclusion run gained an exclusion field")
+	}
 	input.DisplayName = "Second owned run"
 	two, err := runtime.load("ARTEX", input, false, "")
 	if err != nil {

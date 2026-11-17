@@ -230,6 +230,11 @@ func bindingBase(rec productTargetRecord, m urlPreparationProfile, input diagnos
 	if input.WorkflowMode != "" {
 		source += "\n" + workflowInputDigest(input)
 	}
+	// 제외 경로가 있는 워크플로 결속은 E② 정책에 제외 경로 칸이 생겨(#627) 이전 결속 디렉터리의 정책과 다르다. 이름을
+	// 바꿔 새로 만든다(이전 이름을 다시 쓰면 정책 대조가 실패해 실행이 시작되지 않음). 제외 경로 없는 결속 이름은 그대로다.
+	if len(inputExcludedPaths(input)) > 0 {
+		source += "\nexcluded-e2-v1"
+	}
 	return "bound-" + urlSHA([]byte(source))[:32]
 }
 
@@ -390,7 +395,8 @@ func (p *productRuntime) loadBinding(principal string, input diagnosisprep.Input
 	policy.PolicyRef = derived.ScopeRef
 	if input.WorkflowMode != "" {
 		derived.WorkflowMode = input.WorkflowMode
-		policy.Workflow = &server.E2HTTPWorkflowPolicy{Format: diagnosisflow.Version, Mode: input.WorkflowMode, InputSHA256: workflowInputDigest(input)}
+		// 운영자 제외 경로는 진단 흐름 경계와 E²가 같은 목록을 따로 집행한다(#627).
+		policy.Workflow = &server.E2HTTPWorkflowPolicy{Format: diagnosisflow.Version, Mode: input.WorkflowMode, InputSHA256: workflowInputDigest(input), ExcludedPaths: inputExcludedPaths(input)}
 		if input.WorkflowMode == diagnosisflow.Manual {
 			policy.ApprovalMode = e2proxy.ApprovalWorkbenchV1
 		}
@@ -709,6 +715,14 @@ func (p *productRuntime) revoke(principal, id string) (diagnosisprep.ProductTarg
 		cancel()
 	}
 	return t, nil
+}
+
+// inputExcludedPaths는 워크플로 입력의 운영자 제외 경로 목록이다. 진단 흐름 결속과 E² 정책이 같은 목록을 쓴다.
+func inputExcludedPaths(input diagnosisprep.Input) []string {
+	if input.ExcludedPaths == "" {
+		return nil
+	}
+	return strings.Split(input.ExcludedPaths, "\n")
 }
 
 func workflowInputDigest(input diagnosisprep.Input) string {

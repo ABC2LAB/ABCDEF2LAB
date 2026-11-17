@@ -963,20 +963,8 @@ func Project(s Snapshot) Snapshot {
 }
 
 func excludedWithin(path, pattern string) bool {
-	parts := strings.Split(strings.Trim(pattern, "/"), "/")
-	actual := strings.Split(strings.Trim(path, "/"), "/")
-	if pattern == "/" {
-		return true
-	}
-	if len(actual) < len(parts) {
-		return false
-	}
-	for i, p := range parts {
-		if p != "*" && p != actual[i] {
-			return false
-		}
-	}
-	return true
+	// 제외 판정은 E②와 같은 함수다(#627: E②도 제외 경로를 집행). 판정이 갈리면 차등 시험이 잡는다.
+	return pathscope.Excluded(path, pattern)
 }
 
 func (c *Controller) SnapshotWithDisplay(ctx context.Context) (Snapshot, error) {
