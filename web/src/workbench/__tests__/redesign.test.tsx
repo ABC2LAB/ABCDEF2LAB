@@ -1217,8 +1217,12 @@ it("목록에서 복구한 회차의 일시정지·범위 선택 실행 버튼�
       <WorkflowScopeLive />
     </ShellContext.Provider>,
   );
-  for (const button of screen.getAllByRole("button", { name: /선택한 범위로 점검 시작/ }))
+  for (const button of screen.getAllByRole("button", { name: /선택한 범위로 점검 시작/ })) {
     expect(button).toBeDisabled();
+    // 범위 확인은 '목록에서 다시 연 점검은 조회 전용' 줄을 두지 않고(사용자 11/17) 버튼 안내로 말한다
+    expect(button).toHaveAttribute("title", "목록에서 다시 연 점검은 조회 전용이라 여기서 시작할 수 없습니다.");
+  }
+  expect(screen.queryByText(/목록에서 다시 연 점검은 조회 전용입니다/)).toBeNull();
 });
 
 describe("점검 진행", () => {
