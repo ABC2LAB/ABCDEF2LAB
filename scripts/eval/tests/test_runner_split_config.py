@@ -146,7 +146,7 @@ class TestPlan(unittest.TestCase):
             "PRODUCT_DNS_CONTROL_PORT": "29083", "EVAL_TARGET_NAME": "app.eval.test", "EVAL_TARGET_IMAGE": TARGET.ref,
             "EVAL_METER_IMAGE": "example/m:fixed", "EVAL_METER_PORT": "8080", "EVAL_METER_EXPLORE_PORT": "8082",
             "EVAL_TARGET_PORT": "3000", "EVAL_METER_DRAIN_GRACE": "30s", "EVAL_OBS_PORT": "8081", "EVAL_OBS_HOST_PORT": "18081",
-            "EVAL_OBS_PATH": "/api/records"})
+            "EVAL_OBS_PATH": "/api/records", "EVAL_PATH_KEY_FILE": "/srv/eval/path.key"})
         self.assertEqual((self.plan.project, self.plan.target_origin, self.plan.profiles),
                          ("eval-run1", "http://app.eval.test:8080", ("exploration",)))
         self.assertEqual(self.plan.compose_files[-1], COMPOSE_SPLIT)

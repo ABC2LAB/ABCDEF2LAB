@@ -50,7 +50,7 @@ SYNTHETIC = {"EVAL_TARGET_NAME": TARGET_NAME, "EVAL_TARGET_IMAGE": "example/targ
              "EVAL_METER_IMAGE": "example/meter@sha256:" + "2" * 64, "EVAL_RUNNER_UID": "4242", "EVAL_RUNNER_GID": "4242",
              "EVAL_METER_PORT": "8080", "EVAL_METER_EXPLORE_PORT": "8081", "EVAL_TARGET_PORT": "5000",
              "EVAL_METER_DRAIN_GRACE": "10s", "EVAL_EVIDENCE_DIR": EVIDENCE_DIR, "EVAL_OBS_PORT": "8090",
-             "EVAL_OBS_PATH": "/score", "EVAL_OBS_HOST_PORT": "49190"}
+             "EVAL_OBS_PATH": "/score", "EVAL_OBS_HOST_PORT": "49190", "EVAL_PATH_KEY_FILE": "/srv/eval/path.key"}
 
 
 def render(files, extra=None):
@@ -247,6 +247,21 @@ class EvalSplitOverlayTests(unittest.TestCase):
         self.assertEqual([(p.get("host_ip"), p.get("published")) for p in self.split["services"]["eval-obs"]["ports"]],
                          [("127.0.0.1", "49190")])
 
+
+    def test_meter_masks_paths_with_the_b_key(self):
+        # 계약 §4.1: 평가 회차 경계의 path_mask_key_file은 계측기 -path-key-file과 같은 키다. O 계측기는 B 계측기와 같은
+        # 설정 키 파일을 같은 방식(compose.acceptance.yaml)으로 받는다. 경계는 러너가 같은 바이트로 만든 보호 입력 사본을 받는다
+        # (runner_split_inputs, 시험 test_runner_split_inputs). 둘 중 하나라도 빠지면 P03 (메서드, 가린 경로) 대조가 안 된다.
+        meter = self.split["services"]["eval-meter"]
+        acceptance = (ROOT / "deploy/eval/compose.acceptance.yaml").read_text(encoding="utf-8")
+        for flag in ("-path-log", "-path-key-file=/run/eval-path-key"):
+            self.assertIn(f"      - {flag}\n", acceptance)
+            self.assertEqual(meter["command"].count(flag), 1)
+        mounts = [v for v in meter["volumes"] if v.get("target") == "/run/eval-path-key"]
+        self.assertEqual(mounts, [{"type": "bind", "source": "/srv/eval/path.key", "target": "/run/eval-path-key",
+                                   "read_only": True, "bind": {}}])  # create_host_path: false는 기본값이라 렌더에서 빠진다
+        boundary_secrets = {s["source"] if isinstance(s, dict) else s for s in self.split["services"]["explore-init"].get("secrets") or []}
+        self.assertIn("explore_path_key", boundary_secrets)
 
     def test_split_probe_reads_ports_from_this_render(self):
         # 여러 출발점 점검(결정안 §2.1)은 이 렌더의 명령과 짝인 보호 입력에서 입구를 읽는다. 경계 설정은 러너가 만드는 것
