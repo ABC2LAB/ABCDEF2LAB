@@ -238,4 +238,3 @@ class TestJudgeProduct(unittest.TestCase):
         for baseline in (None, {"temperature": 1.0}, dict(SAMPLING, seed="42"), dict(SAMPLING, frequency_penalty=0)):
             with self.subTest(baseline=baseline), self.assertRaises(LLMMarkerError):
                 judge_product_llm(self.product(), baseline, SLUG, NAME)
-

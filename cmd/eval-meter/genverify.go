@@ -100,7 +100,8 @@ func parseCallRecord(line []byte) (llmRow, bool) {
 	return row, ok
 }
 
-// exactKeys는 JSON 객체 하나의 최상위 키가 중복 없이 fields 안에 있고, optional 말고는 모두 있는지 본다.
+// exactKeys는 줄이 JSON 객체 하나뿐이고(뒤에 다른 값·구분자 없음), 최상위 키가 중복 없이 fields 안에 있고, optional
+// 말고는 모두 있는지 본다.
 func exactKeys(line []byte, fields []string, optional string) bool {
 	d := json.NewDecoder(bytes.NewReader(line))
 	if tok, err := d.Token(); err != nil || tok != json.Delim('{') {
@@ -124,6 +125,11 @@ func exactKeys(line []byte, fields []string, optional string) bool {
 		}
 	}
 	if tok, err := d.Token(); err != nil || tok != json.Delim('}') {
+		return false
+	}
+	// 객체 하나 뒤에는 공백과 끝만 온다. Decoder.More는 배열·객체 안에서 다음 요소를 묻는 함수라 최상위 객체 뒤에 붙은
+	// ']'·'}'를 보면 false를 돌려준다. 그래서 끝(io.EOF)을 직접 확인한다.
+	if _, err := d.Token(); err != io.EOF {
 		return false
 	}
 	for _, f := range fields {

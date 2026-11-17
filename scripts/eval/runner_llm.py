@@ -130,4 +130,3 @@ def judge_product_llm(marker: object, baseline_applied: dict | None, provider_sl
             type(value) not in (int, float) for value in baseline_applied.values()):
         raise LLMMarkerError("llm_marker_invalid")
     return judge_llm(marker, "api", provider_slug, provider_name, baseline_applied)
-

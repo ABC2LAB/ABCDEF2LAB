@@ -116,6 +116,11 @@ func TestGenerationVerifyRejectsMalformedRecords(t *testing.T) {
 		"forwarded_status_zero": strings.Replace(first, `"status":200`, `"status":0`, 1),
 		"completed_before":      strings.Replace(first, `"completed_at":"2026-11-16T00:00:01.5Z"`, `"completed_at":"2026-11-15T00:00:00Z"`, 1),
 		"no_final_newline":      strings.TrimSuffix(first, "\n"),
+		// 객체 뒤에 붙은 닫는 구분자·두 번째 값. Decoder.More만으로는 최상위의 ']'·'}'를 못 잡는다.
+		"trailing_bracket":     strings.TrimSuffix(first, "\n") + "]\n",
+		"trailing_brace":       strings.TrimSuffix(first, "\n") + "}\n",
+		"second_object":        strings.TrimSuffix(first, "\n") + "{}\n",
+		"error_trailing_brace": first + strings.TrimSuffix(second, "\n") + "}\n",
 		// 칸은 모두 맞고 JSON 공백으로 줄만 길다. 줄 상한만 거부한다.
 		"line_too_long": strings.Replace(first, `"seq":1,`, `"seq":1,`+strings.Repeat(" ", 600), 1),
 	} {
