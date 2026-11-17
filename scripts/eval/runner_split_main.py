@@ -4,11 +4,12 @@ O는 엔진 직접 배치가 아니라 제품 compose + 평가 overlay로 돈다
 보호 입력(runner_split_inputs)에만 두므로 묻지 않는다. 모델 키는 B 게이트웨이와 같은 비밀 env 파일의 같은 이름을 같은
 compose 규칙으로 읽어(Docker.env_file_value) 설치 뒤 제품 API로만 넘긴다.
 
-여기 결과는 서명 전 요약이다. 경계 원자료 검증·generation-verify·서명·보존 sidecar v3는 다음 단계(4-7c-4·4-9)다.
+여기 결과는 서명 전 요약이다. 경계 원자료 검증·서명·보존 sidecar v3는 다음 단계(4-9)다.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -19,7 +20,7 @@ from urllib.parse import urlsplit
 from preflight import PreflightError, check_preflight
 from runner import Clock, _remove_unstarted_run, acceptance_path_key
 from runner_config import (
-    METER_SERVICE, POLICY_SWITCH_SIDE, Image, RunnerConfig, RunnerConfigError, create_run_directory, new_run_id,
+    METER_SERVICE, POLICY_SWITCH_SIDE, Image, RunnerConfig, RunnerConfigError, create_run_directory, gateway_sampling, new_run_id,
 )
 from runner_docker import Docker, DockerError, client_environment, run_docker
 from runner_evidence import EvidenceDir, MeterFiles
@@ -43,6 +44,9 @@ class SplitDeclared:
     meter_port: int
     request_budget: int
     time_budget_seconds: int
+    llm_provider: str = ""
+    # B 게이트웨이가 넣는 샘플링(선언 §6). O 표식의 실제로 보낸 값과 대조한다.
+    llm_sampling: dict | None = None
 
 
 def split_declared(config: RunnerConfig, preflight: object, manifest: dict) -> SplitDeclared:
@@ -66,7 +70,19 @@ def split_declared(config: RunnerConfig, preflight: object, manifest: dict) -> S
     if errors:
         raise RunnerConfigError(errors)
     return SplitDeclared(target_image=Image(declared["target_image"], config.target_image_id), meter_port=origin.port,
-                         request_budget=declared["request_budget"], time_budget_seconds=declared["time_budget_seconds"])
+                         request_budget=declared["request_budget"], time_budget_seconds=declared["time_budget_seconds"],
+                         llm_provider=llm["provider"], llm_sampling=json.loads(gateway_sampling(declared, POLICY_SWITCH_SIDE)))
+
+
+def llm_lookup_env(config: RunnerConfig, preflight: dict) -> dict[str, str]:
+    """O 호출 기록 사후 검증(generation-verify)의 조회 설정. B 게이트웨이 compose 값(runner_config.plan_run)과 같은 식이고,
+    같은지는 시험이 plan_run 결과와 대조한다. 선언 두 쪽의 LLM은 사전검사가 같게 묶는다."""
+    llm = preflight[POLICY_SWITCH_SIDE]["llm"]
+    upstream = urlsplit(llm["base_url"])
+    gateway = config.llm_gateway
+    return {"EVAL_LLM_UPSTREAM": f"{upstream.scheme}://{upstream.netloc}", "EVAL_LLM_PROVIDER": llm["provider"],
+            "EVAL_LLM_GENERATION_PATH": gateway["generation_path"], "EVAL_LLM_VERIFY_ATTEMPTS": str(gateway["verify_attempts"]),
+            "EVAL_LLM_VERIFY_INTERVAL": f"{gateway['verify_interval_seconds']}s", "EVAL_CA_BUNDLE": gateway["ca_bundle"]}
 
 
 def split_run_spec(config: RunnerConfig, plan: SplitPlan, declared: SplitDeclared, rendered: dict) -> SplitRunSpec:
@@ -78,7 +94,9 @@ def split_run_spec(config: RunnerConfig, plan: SplitPlan, declared: SplitDeclare
         events_lookback_seconds=config.health_timeout_seconds,
         host_watch_max_gap_seconds=config.run["host_watch_max_gap_seconds"],
         task_status_wait_seconds=config.run["task_create_timeout_seconds"], healthchecks=healthcheck_actions(rendered),
-        product_close_seconds=config.split.task_wait_seconds, post_settle_seconds=config.run["post_settle_seconds"])
+        product_close_seconds=config.split.task_wait_seconds, post_settle_seconds=config.run["post_settle_seconds"],
+        llm_sampling=declared.llm_sampling, llm_provider_slug=declared.llm_provider,
+        llm_provider_name=config.llm_gateway["expected_provider_name"])
 
 
 def run_split_ours(config: RunnerConfig, preflight: object, *, docker_runner=run_docker, environ=None,
@@ -120,7 +138,7 @@ def run_split_ours(config: RunnerConfig, preflight: object, *, docker_runner=run
                            sleep=time.sleep, monotonic=time.monotonic)
     ports = DockerSplitPorts(config=config, split=split, plan=plan, directory=directory, docker=docker, driver=driver,
                              inputs=inputs, rendered=rendered, manifest=manifest, model_key=model_key,
-                             exploration=dict(EXPLORATION_BLOCK))
+                             exploration=dict(EXPLORATION_BLOCK), llm_env=llm_lookup_env(config, preflight))
     clock = Clock(lambda: datetime.now(timezone.utc), time.monotonic, time.sleep)
     result = execute_split_run(split_run_spec(config, plan, declared, rendered), ports, MeterFiles(directory.meter),
                                EvidenceDir(directory.run), clock)

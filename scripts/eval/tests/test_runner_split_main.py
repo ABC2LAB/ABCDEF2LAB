@@ -17,11 +17,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import runner  # noqa: E402
 import runner_split_main  # noqa: E402
-from runner_config import Image, RunnerConfigError, parse_runner_config  # noqa: E402
+from runner_config import Image, RunnerConfigError, gateway_sampling, parse_runner_config, plan_run  # noqa: E402
 from runner_docker import DockerError  # noqa: E402
 from runner_evidence import MeterFiles  # noqa: E402
 from runner_split_config import plan_split_run  # noqa: E402
-from runner_split_main import SplitDeclared, run_split_ours, split_declared, split_run_spec  # noqa: E402
+from runner_split_main import SplitDeclared, llm_lookup_env, run_split_ours, split_declared, split_run_spec  # noqa: E402
 from runner_split_ports import DockerSplitPorts  # noqa: E402
 from runner_window import healthcheck_actions  # noqa: E402
 from test_preflight import configuration  # noqa: E402
@@ -75,7 +75,19 @@ class TestDeclared(Fixture):
         ours = configuration()["ours"]
         self.assertEqual(declared, SplitDeclared(target_image=Image(ours["target_image"], self.config.target_image_id),
                                                  meter_port=8080, request_budget=ours["request_budget"],
-                                                 time_budget_seconds=ours["time_budget_seconds"]))
+                                                 time_budget_seconds=ours["time_budget_seconds"], llm_provider="example-provider",
+                                                 llm_sampling=json.loads(gateway_sampling(ours, "ours"))))
+
+    def test_lookup_env_and_sampling_match_the_b_gateway(self):
+        # O 사후 검증의 조회 설정·샘플링 기대값은 같은 선언으로 만든 B 게이트웨이 compose 값과 같아야 한다.
+        preflight = preflight_for(self.config)
+        b_plan = plan_run(self.config, preflight, "baseline", "b1")
+        env = llm_lookup_env(self.config, preflight)
+        self.assertEqual(set(env), {"EVAL_LLM_UPSTREAM", "EVAL_LLM_PROVIDER", "EVAL_LLM_GENERATION_PATH", "EVAL_LLM_VERIFY_ATTEMPTS",
+                                    "EVAL_LLM_VERIFY_INTERVAL", "EVAL_CA_BUNDLE"})
+        self.assertEqual(env, {name: b_plan.compose_env[name] for name in env})
+        declared = split_declared(self.config, preflight, MANIFEST)
+        self.assertEqual(declared.llm_sampling, json.loads(b_plan.compose_env["EVAL_LLM_SAMPLING"]))
 
     def test_model_and_provider_must_be_the_manifest(self):
         for change in ({"model": "other/model"}, {"provider_slug": "other-provider"}):
@@ -120,6 +132,8 @@ class TestSpec(Fixture):
         self.assertEqual(spec.healthchecks, healthcheck_actions(rendered))
         self.assertEqual(set(spec.healthchecks), {"api"})
         self.assertEqual(spec.image_ids, {role: image.id for role, image in plan.images.items()})
+        self.assertEqual((spec.llm_sampling, spec.llm_provider_slug, spec.llm_provider_name),
+                         (declared.llm_sampling, "example-provider", self.config.llm_gateway["expected_provider_name"]))
 
 
 class TestMainDispatch(Fixture):
@@ -197,6 +211,7 @@ class TestBeforeUp(Fixture):
             code, _ = self.run_ours(execute_split_run=execute)
         self.assertEqual(code, 0)
         self.assertIsInstance(seen["ports"], DockerSplitPorts)
+        self.assertEqual(seen["ports"].llm_env, llm_lookup_env(self.config, preflight_for(self.config)))
         self.assertEqual(seen["ports"].model_key.reveal(), "sk-or-v1-test")
         self.assertEqual(seen["path_key"], self.path_key.read_bytes())  # 경계 키 = B 계측기 키
         self.assertIsInstance(seen["meter"], MeterFiles)

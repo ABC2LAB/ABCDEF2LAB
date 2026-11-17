@@ -477,6 +477,29 @@ class TestDocker(PortsCase):
         self.assertEqual(str(caught.exception), "split_ready_timeout")
         self.assertGreaterEqual(clock["t"], self.config.run["compose_wait_seconds"])
 
+    def test_generation_verify_uses_the_meter_image_key_and_lookup_env(self):
+        from runner_docker import CommandResult, Docker
+        sent = []
+        docker = Docker(lambda args, env, stdin, timeout: (sent.append((list(args), dict(env), stdin, timeout)), CommandResult(0, b""))[1],
+                        {}, 1)
+        llm_env = {"EVAL_LLM_UPSTREAM": "https://llm.example", "EVAL_LLM_PROVIDER": "p/fp8", "EVAL_LLM_GENERATION_PATH": "/g",
+                   "EVAL_LLM_VERIFY_ATTEMPTS": "3", "EVAL_LLM_VERIFY_INTERVAL": "2s", "EVAL_CA_BUNDLE": "/etc/ssl/ca.pem"}
+        ports = DockerSplitPorts(config=self.config, split=self.split, plan=self.plan, directory=self.directory, docker=docker,
+                                 driver=self.driver, inputs=self.inputs, rendered={"services": {}}, manifest=MANIFEST,
+                                 model_key=ModelKey("sk-or-v1-secret"), exploration={}, llm_env=llm_env)
+        cid = self.directory.run / "generation-verify.cid"
+        with mock.patch("runner_docker._read_cidfile", return_value="c" * 64):
+            ports.generation_verify(b'{"seq":1}\n', {"seed": 42})
+        (args, env, stdin, timeout), = sent
+        self.assertEqual(args[args.index("--") + 1], self.plan.images["meter"].id)
+        self.assertEqual(args[args.index("--cidfile") + 1], str(cid))
+        self.assertIn("-provider=p/fp8", args)
+        self.assertIn('-sampling={"seed":42}', args)
+        self.assertIn(f"type=bind,source={self.directory.llm},target=/evidence", args)
+        self.assertNotIn("sk-or-v1-secret", " ".join(args))  # 키는 환경으로만
+        self.assertEqual((env["EVAL_LLM_API_KEY"], stdin, timeout),
+                         ("sk-or-v1-secret", b'{"seq":1}\n', self.config.run["llm_verify_timeout_seconds"]))
+
     def test_compose_seal_and_stop(self):
         self.ports.up()
         self.ports.down()

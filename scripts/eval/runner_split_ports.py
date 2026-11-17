@@ -25,7 +25,7 @@ from runner_checks import (Binding, ExpectedTopology, Listener, NetworkExpectati
                            check_other_publishes, check_topology, network_snapshot, network_subnets, parse_container,
                            parse_network, planned_subnets, read_host_listeners)
 from runner_config import OBSERVER_OPAQUE, RunDirectory, RunnerConfig
-from runner_evidence import EvidenceError, read_private_json
+from runner_evidence import EvidenceError, GatewayFiles, read_private_json
 from runner_docker import Docker
 from runner_engine import AdminSecret
 from runner_product import ModelKey, ProductDriver
@@ -178,10 +178,12 @@ def product_record_names(approval_id: str) -> tuple[str, str]:
 class DockerSplitPorts:
     def __init__(self, *, config: RunnerConfig, split: SplitConfig, plan: SplitPlan, directory: RunDirectory, docker: Docker,
                  driver: ProductDriver, inputs: SplitInputs, rendered: dict, manifest: dict, model_key: ModelKey,
-                 exploration: dict):
+                 exploration: dict, llm_env: dict | None = None):
         self.config, self.split, self.plan, self.directory = config, split, plan, directory
         self.docker, self.driver, self.inputs, self.rendered = docker, driver, inputs, rendered
         self.manifest, self.model_key, self.exploration = manifest, model_key, exploration
+        # generation-verify 조회 설정(B 게이트웨이와 같은 compose 값, runner_split_main.llm_lookup_env)
+        self.llm_env = dict(llm_env or {})
         self.base_args = split_compose_args(plan)
         self.registration: dict | None = None
         self.timeout = config.run["snapshot_timeout_seconds"]
@@ -302,6 +304,17 @@ class DockerSplitPorts:
         limit = max(1, int(self.manifest.get("max_requests", 1))) * 512 * 2
         files = self._copy("product-state", "config", (ledger, calls), "product-records", PRODUCT_UID, limit)
         return files[ledger], files[calls]
+
+    def generation_verify(self, calls: bytes, sampling: dict | None) -> None:
+        """계측기 이미지의 generation-verify 역할(회차 망 밖)로 제품 호출 기록을 사후 검증한다. 표식은 회차 llm 디렉터리에
+        쓴다. 키는 제품에 넘긴 것과 같은 값이고 docker 호출 환경으로만 간다."""
+        self.docker.generation_verify(self.plan.images["meter"].id, calls, key=self.model_key.reveal(), llm_env=self.llm_env,
+                                      sampling=sampling, out_dir=self.directory.llm, uid=os.geteuid(), gid=os.getegid(),
+                                      cidfile=self.directory.run / "generation-verify.cid",
+                                      timeout=self.config.run["llm_verify_timeout_seconds"])
+
+    def llm_verified(self) -> dict | None:
+        return GatewayFiles(self.directory.llm).verified()
 
     # ── 제품 구동 ────────────────────────────────────────────────────────────────────────────────────────────
     def prepare_round(self, dns_token: str) -> dict:
