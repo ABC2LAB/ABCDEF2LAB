@@ -242,14 +242,13 @@ function TaskTokens({ u }: { u: URLDiagnosisUsage }) {
   );
 }
 
-/** 마우스를 올리면 보일 정확한 값 (입력 · 출력 토큰, 예약량으로 센 호출이 있으면 최대치라고). */
+/**
+ * 마우스를 올리면 보일 정확한 값: 입력 · 출력 두 줄만(사용자 11/17 — 요청 수 · 비용은 넣지 않음). 사용량을 못 받아
+ * 예약량으로 센 호출이 있으면 두 수가 실제의 최대치라 줄마다 '(최대치)'를 붙인다.
+ */
 function tokenExact(u: URLDiagnosisUsage): string {
-  const bound = u.unknown_usage_calls ?? 0;
-  return [
-    `입력 ${fmtCount(u.input_tokens)} 토큰`,
-    `출력 ${fmtCount(u.output_tokens)} 토큰`,
-    ...(bound ? [`사용량을 못 받은 호출 ${fmtCount(bound)}건은 예약량으로 계산(최대치)`] : []),
-  ].join("\n");
+  const bound = (u.unknown_usage_calls ?? 0) > 0 ? " (최대치)" : "";
+  return [`입력 ${fmtCount(u.input_tokens)} 토큰${bound}`, `출력 ${fmtCount(u.output_tokens)} 토큰${bound}`].join("\n");
 }
 
 /** 입 · 출 칩 (점검 진행 상태 카드 · 보고서 머리 줄이 같이 쓴다). 예약량으로 센 호출이 있으면 '(최대)'. */

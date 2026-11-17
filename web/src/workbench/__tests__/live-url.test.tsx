@@ -1003,10 +1003,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     const line = (await screen.findByText(/^작업 합계/)).parentElement as HTMLElement;
     // 예약량으로 센 호출이 있으면 칩 옆에도 '(최대)' (#661 리뷰)
     expect(line).toHaveTextContent(/^작업 합계 · 입 1.2k 출 300 \(최대\)$/);
-    expect(line).toHaveAttribute(
-      "title",
-      "입력 1,200 토큰\n출력 300 토큰\n사용량을 못 받은 호출 1건은 예약량으로 계산(최대치)",
-    );
+    expect(line).toHaveAttribute("title", "입력 1,200 토큰 (최대치)\n출력 300 토큰 (최대치)");
     cleanup();
     resetUrl();
     u.readURLStatus.mockResolvedValue(running);
@@ -1584,10 +1581,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     ) as HTMLElement;
     const use = await within(header).findByText(/^모델 사용량/);
     expect(use).toHaveTextContent(/^모델 사용량 입 1.2k 출 300 \(최대\)$/);
-    expect(use).toHaveAttribute(
-      "title",
-      "입력 1,200 토큰\n출력 300 토큰\n사용량을 못 받은 호출 1건은 예약량으로 계산(최대치)",
-    );
+    expect(use).toHaveAttribute("title", "입력 1,200 토큰 (최대치)\n출력 300 토큰 (최대치)");
     expect(header).not.toHaveTextContent("자산 커버리지");
   });
 
