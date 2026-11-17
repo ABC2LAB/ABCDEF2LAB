@@ -183,6 +183,15 @@ class TestEnvFileValue(unittest.TestCase):
                 Docker(self.fake(b"{}"), {}, 30).env_file_value(self.env_file, name, scratch)
             self.assertEqual(str(caught.exception), "docker_env_value_invalid")
 
+    def test_existing_probe_file_is_not_overwritten(self):
+        existing = self.dir / "env-value.compose.json"
+        existing.write_text("keep", encoding="utf-8")
+        fake = self.fake(b"{}")
+        with self.assertRaises(DockerError) as caught:
+            Docker(fake, {}, 30).env_file_value(self.env_file, "EVAL_LLM_API_KEY", self.dir)
+        self.assertEqual((str(caught.exception), existing.read_text(encoding="utf-8"), fake.calls),
+                         ("docker_env_value_invalid", "keep", []))
+
     @unittest.skipUnless(compose_available(), "docker compose 없음")
     def test_real_compose_unquotes_like_the_gateway_sees(self):
         # 실제 compose 해석: 따옴표 없는 값·작은따옴표·큰따옴표 모두 같은 19자 키가 된다(리뷰 반례는 작은따옴표).
