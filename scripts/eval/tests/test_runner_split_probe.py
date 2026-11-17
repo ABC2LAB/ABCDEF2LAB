@@ -181,7 +181,8 @@ class TestRun(unittest.TestCase):
             "violation_and_invalid": ({BROWSER: {"meter_main": ("success", "connected")},
                                        MCP: {"browser_cdp": ("fail", "timeout")}}, "", "invalid",
                                       ("explore-browser:negative_path_reachable", "explore-mcp:positive_control_failed")),
-            "docker_error": (None, MCP, "invalid", ("explore-mcp:probe_run_failed",)),
+            "docker_error_first": (None, PREPARATION, "invalid", ("preparation:probe_run_failed",)),
+            "docker_error_last": (None, MCP, "invalid", ("explore-mcp:probe_run_failed",)),
         }
         for name, (fail, error_on, status, reasons) in cases.items():
             with self.subTest(case=name):
