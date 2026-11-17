@@ -1448,6 +1448,11 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
 /** '선택한 범위로 점검 시작' 버튼 (화면 머리, 시안 sStart). */
 function ScopeStart({ flow, ids, id }: { flow: WorkflowSnapshot; ids: string[]; id?: string }) {
   const recovered = useUrl((st) => st.handle?.kind === "recovered");
+  // 진단 상태를 확인했고 실행 중일 때만 선택을 보낸다(runWorkflowAction 과 같은 조건). 바탕 상태 조회가 실패하면
+  // 진단이 결과 불명이 되어 보내지 않으므로, 버튼을 켜 둔 채 눌러도 아무 일 없게 두지 않고 끄고 까닭을 보인다
+  const jobReady = useUrl(
+    (st) => !!st.job && st.verified && !st.uncertain && ["preparing", "running"].includes(st.job.state),
+  );
   const busy = useUrl((st) => st.flowBusy),
     verified = useUrl((st) => st.flowVerified),
     uncertain = useUrl((st) => st.flowUncertain),
@@ -1465,7 +1470,8 @@ function ScopeStart({ flow, ids, id }: { flow: WorkflowSnapshot; ids: string[]; 
       id={id}
       className={cx(s.btn, s.pri)}
       type="button"
-      disabled={recovered || !ids.length || busy || uncertain || !verified || flow.paused}
+      disabled={recovered || !jobReady || !ids.length || busy || uncertain || !verified || flow.paused}
+      title={jobReady ? undefined : "점검 상태를 확인하지 못해 보내지 않습니다. 상태를 다시 조회하세요."}
       onClick={() =>
         void runWorkflowAction("selection", ids).then((ok) => {
           if (ok) goTo("live");

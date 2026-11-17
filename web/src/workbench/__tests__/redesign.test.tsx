@@ -183,6 +183,15 @@ describe("범위 확인", () => {
     expect(openInsp).not.toHaveBeenCalled();
   });
 
+  it("바탕 상태 조회가 실패해 진단이 결과 불명이면 시작 버튼을 끄고 까닭을 보인다 (눌러도 아무 일 없게 두지 않음)", () => {
+    mountScope();
+    const start = () => screen.getByRole("button", { name: /선택한 범위로 점검 시작/ });
+    expect(start()).toBeEnabled();
+    act(() => useUrl.setState({ job: null, verified: false, uncertain: true, error: "상태를 확인하지 못했어요." }));
+    expect(start()).toBeDisabled();
+    expect(start()).toHaveAttribute("title", "점검 상태를 확인하지 못해 보내지 않습니다. 상태를 다시 조회하세요.");
+  });
+
   it("알약을 누르면 오른쪽 상세에서 점검 포함을 고른다: 읽기 경로는 기본 포함, 데이터 변경은 직접, 제외 경로는 못 고름", () => {
     const openInsp = vi.fn();
     const { found, insp } = mountScope({ openInsp });
