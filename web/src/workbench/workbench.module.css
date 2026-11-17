@@ -1598,6 +1598,47 @@ a.ph:hover {
 .fdet > .note {
   margin: 0;
 }
+/* 보고서 탭 점검 보고서 (ARTEX '침투 테스트 보고서 (Markdown)' 모양): 아이콘 · 제목, [복사], 테두리 상자 안 스크롤 */
+.pocw {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.poc-t {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13.5px;
+  font-weight: 600;
+  margin: 0;
+}
+.poc-a {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
+  color: var(--ink-3);
+}
+.pocbox {
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 14px 18px;
+  max-height: 70vh;
+  overflow: auto;
+  background: var(--bg);
+}
+.pocbox .md {
+  font-size: 13.5px;
+  line-height: 1.7;
+}
+.pocbox .md h1 {
+  font-size: 15px;
+  margin-bottom: 6px;
+}
+.pocbox .md pre {
+  max-height: 240px;
+  overflow: auto;
+}
 /* 보고서 발견 목록 거르기 · 정렬 줄 */
 .rfil {
   margin-bottom: 10px;

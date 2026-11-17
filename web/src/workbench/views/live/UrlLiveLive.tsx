@@ -44,6 +44,7 @@ import { type Poll, usePoll } from "../../live/usePoll";
 import { flowStageText, MAX_FLOW_PLAN, type WorkflowSnapshot } from "../../live/workflow";
 import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
+import { Markdown } from "../../ui/Markdown";
 import { InspHead, InspOpenButton, Isec, Kv, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "./approvals";
@@ -1238,6 +1239,124 @@ const SEV_FILTERS: ReadonlyArray<readonly [SevFilter, string]> = [
   ["info", "정보성"],
 ];
 
+/**
+ * 보고서 글에 넣을 서버 글: 원문에 먼저 가린다. 엔티티 · 역슬래시 · HTML 주석을 일부러 막지 않는다 — Markdown 이 그것들을 풀어
+ * 이어 붙인 글에 Markdown 부품이 다시 가림을 걸어야(remarkMaskSecrets) 숨긴 비밀까지 잡는다(#677 리뷰). 막아 두면 키는 그대로
+ * 숨고 값만 평문으로 남는다.
+ */
+const mdText = (v: string) => maskSecrets(v);
+/** 목록 줄 안에 넣는 글: 줄바꿈을 띄어쓰기로(목록이 깨지지 않게). */
+const mdInline = (v: string) => mdText(v).replace(/\s*\n+\s*/g, " ");
+/** 코드 상자: 본문 안의 ` 줄보다 긴 울타리로 감싼다(본문이 상자를 닫지 못하게). */
+function mdFence(body: string): string {
+  const longest = Math.max(2, ...[...body.matchAll(/`+/g)].map((m) => m[0].length));
+  const f = "`".repeat(longest + 1);
+  return `${f}text\n${body}\n${f}`;
+}
+
+/** 보고서 탭 문서 머리에 넣는 점검 정보 (서버가 준 값만). */
+export type PocInfo = {
+  targetUrl: string | null;
+  mode: string | null;
+  model: string | null;
+  excluded: string | null;
+  /** 탐색 흐름 수(있을 때만): 방문한 페이지 · 발견한 API */
+  crawl: { visited: number; found: number } | null;
+};
+
+/**
+ * 보고서 탭의 점검 보고서 (사용자 11/17 — ARTEX '침투 테스트 보고서 (Markdown)' 짜임: 제목(대상) → 설명 → 정보 줄 → 요약 →
+ * 취약점(1. [등급] 제목 → 설명 → PoC / 증거)). 제품 서버는 ARTEX 원래 작업 보고서(GET /api/report)를 열지 않으므로
+ * (first_diagnosis_startup.go 허용 목록), 이미 읽은 저장 결과(/api/report/diagnostic)로 화면에서 만든다.
+ * ARTEX 와 달리 '확인된 취약점'이라 묶지 않고 확정 · 검토 필요를 나눠 센다(절대규칙 5). 정상 대조는 빼고 판정 순.
+ * 재현 단계가 없으면 만들지 않고 없다고 적는다. 생성 시각은 서버가 주지 않아 두지 않는다.
+ */
+export function buildPocMarkdown(entries: readonly RemediationEntry[], info: PocInfo): string {
+  const list = entries.filter((e) => diagnosticOutcome(e) !== "negative");
+  const count = (o: DiagnosticOutcome) => list.filter((e) => diagnosticOutcome(e) === o).length;
+  const out: string[] = [`# 취약점 점검 보고서: ${mdInline(info.targetUrl ?? "대상 미확인")}`, ""];
+  out.push(
+    "승인한 대상 안에서 전송 통제(E②)를 거쳐 보낸 요청과 저장된 결과로 만든 문서입니다. '검토 필요'는 확정이 아니며, 판정은 저장된 E③ 근거만 따릅니다.",
+    "",
+  );
+  if (info.mode) out.push(`- **점검 방식**: ${mdInline(info.mode)}`);
+  if (info.model) out.push(`- **모델**: ${mdInline(info.model)}`);
+  if (info.excluded) out.push(`- **제외 경로**: ${mdInline(info.excluded)}`);
+  out.push("", "**요약**", "");
+  out.push(
+    `- 발견: ${list.length}건 (확정 ${count("confirmed")} · 검토 필요 ${count("review")} · 미실행 ${count("not_executed")} · 결과 불명 ${count("unknown")})`,
+  );
+  if (info.crawl) out.push(`- 탐색: 방문 ${info.crawl.visited} · 발견한 API ${info.crawl.found}`);
+  out.push("", "**취약점**", "");
+  if (!list.length) out.push("저장된 발견이 없습니다. 결과가 없다고 안전하다는 뜻은 아닙니다.");
+  list.forEach((e, i) => {
+    const ep = entryEp(e);
+    const at = dateTimeOf(e.observed_at);
+    const tag = `[${entrySeverityLabel(e)} · ${diagnosticOutcomeLabels[diagnosticOutcome(e)]}]`;
+    out.push(`${i + 1}\\. ${tag} ${mdInline(e.title || e.entry_id)}`, "");
+    const facts = [
+      e.vuln_class ? `유형 ${mdInline(e.vuln_class)}` : "",
+      ep ? `엔드포인트 ${ep.m ? `${ep.m} ` : ""}${mdInline(ep.p)}` : "",
+      at ? `발견 ${at}` : "",
+      `ID ${mdInline(e.entry_id)}`,
+    ].filter(Boolean);
+    out.push(facts.join(" · "), "");
+    if (e.summary) out.push(mdText(e.summary), "");
+    out.push("**PoC / 증거:**", "");
+    if (e.source_load_failed)
+      out.push("근거 불러오기 실패. 현재 결속을 확인할 수 없어 재현 단계를 제공하지 않습니다.", "");
+    else if (e.steps?.length) {
+      for (const st of e.steps) {
+        out.push(`- **${mdInline(st.title)}** — ${mdInline(`${st.method} ${st.path || "비민감 경로 미기록"}`)}`);
+        if (st.prerequisites) out.push(`  - 사전 조건: ${mdInline(st.prerequisites)}`);
+        if (st.observation) out.push(`  - 관찰: ${mdInline(st.observation)}`);
+        if (st.truncated) out.push("  - 이 단계의 관측이 잘렸습니다.");
+      }
+      if (e.steps_truncated) out.push("", "실행 관측이 잘렸습니다. 전체 재현 절차로 해석하지 마세요.");
+      out.push("");
+    } else out.push("구조화된 실제 재현 단계 미확보. 실행하지 않은 절차를 만들지 않습니다.", "");
+    out.push(e.evidence ? mdFence(prettyEvidence(e.evidence)) : "저장된 증거 본문 없음", "");
+    if (e.truncated) out.push("실제 도구 출력이 잘렸습니다. 완전한 재현 증거가 아닙니다.", "");
+  });
+  return out.join("\n");
+}
+
+/** 보고서 탭: 점검 보고서 (ARTEX 모양 — 문서 아이콘 · 제목, [복사], 테두리 상자 안 스크롤). 복사는 그려진 가린 글. */
+function PocReport({ entries, info }: { entries: readonly RemediationEntry[]; info: PocInfo }) {
+  const box = useRef<HTMLDivElement>(null);
+  const [msg, setMsg] = useState("");
+  // 원문 Markdown 이 아니라 그려진 글을 복사한다: 붙여 넣은 곳의 Markdown 이 서식으로 쪼갠 값을 다시 이어 붙이지 않게
+  async function copy() {
+    const el = box.current;
+    const shown = el ? el.innerText || el.textContent || "" : "";
+    try {
+      await navigator.clipboard.writeText(maskSecrets(shown));
+      setMsg("보고서 글을 복사했습니다.");
+    } catch (error) {
+      console.warn("보고서 글 복사 실패", error);
+      setMsg("복사 권한을 확인하지 못했습니다.");
+    }
+  }
+  return (
+    <section className={s.pocw} aria-label="취약점 점검 보고서">
+      <h3 className={s["poc-t"]}>
+        <Icon name="doc" />
+        취약점 점검 보고서 (Markdown)
+      </h3>
+      <div className={s["poc-a"]}>
+        <button className={cx(s.btn, s.sm)} type="button" onClick={() => void copy()}>
+          <Icon name="copy" />
+          복사
+        </button>
+        {msg ? <span role="status">{msg}</span> : null}
+      </div>
+      <div ref={box} className={s.pocbox}>
+        <Markdown text={buildPocMarkdown(entries, info)} />
+      </div>
+    </section>
+  );
+}
+
 /** 판정 순서대로 (보고서 목록 · 점검 진행의 끝난 점검 발견이 같이 쓴다). */
 export const sortEntries = (entries: readonly RemediationEntry[]) =>
   [...entries].sort((x, y) => ORDER.indexOf(diagnosticOutcome(x)) - ORDER.indexOf(diagnosticOutcome(y)));
@@ -1315,6 +1434,7 @@ const R_TABS = [
   ["graph", "자산 지식 그래프"],
   ["map", "접근통제 지도"],
   ["ev", "증거 · 감사"],
+  ["doc", "보고서"],
 ] as const;
 type RTab = (typeof R_TABS)[number][0];
 
@@ -1326,6 +1446,7 @@ export function UrlReportLive() {
   const job = useUrl((st) => st.job);
   const verified = useUrl((st) => st.verified);
   const cap = useUrl((st) => st.cap);
+  const flow = useUrl((st) => st.flow);
   const g = useUrlGates();
   const host = useUrlHost();
   const taskId = g.reportReadable && job?.task_id ? job.task_id : null;
@@ -1431,6 +1552,29 @@ export function UrlReportLive() {
     ev.preventDefault();
     pickTab(R_TABS[(i + d + R_TABS.length) % R_TABS.length][0], true);
   };
+
+  // 보고서 탭(사용자 11/17): 발견마다 PoC 를 Markdown 문서 한 장으로
+  let docBody: ReactNode;
+  if (rem.error) docBody = <ReportReadError error={rem.error} onRetry={rem.reload} />;
+  else if (!rem.data) docBody = <LoadingRow />;
+  else {
+    const mode = job.input.workflow_mode;
+    let modeText = "설치 범위";
+    if (mode === "ai_auto_v1") modeText = "AI 자동";
+    else if (mode === "user_approval_v1") modeText = "사용자 승인";
+    docBody = (
+      <PocReport
+        entries={sorted}
+        info={{
+          targetUrl: job.input.target_url,
+          mode: modeText,
+          model: profile ? `${profile.model_label} · ${profile.model?.external_transfer ? "외부" : "로컬"}` : null,
+          excluded: job.input.excluded_paths?.split("\n").filter(Boolean).join(", ") || null,
+          crawl: flow ? { visited: flow.counts.visited, found: flow.counts.found } : null,
+        }}
+      />
+    );
+  }
 
   let listBody: ReactNode;
   if (rem.error) listBody = <ReportReadError error={rem.error} onRetry={rem.reload} />;
@@ -1646,6 +1790,9 @@ export function UrlReportLive() {
                 <RunRecord run={run} />
                 <WorkflowReport />
                 <Download taskId={taskId} />
+              </div>
+              <div role="tabpanel" id="rp-doc" aria-label="보고서" hidden={tab !== "doc"}>
+                {docBody}
               </div>
             </section>
           </div>

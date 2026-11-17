@@ -70,7 +70,7 @@ import { flowStageText } from "../live/workflow";
 import { type Shell, ShellContext, type View } from "../shell";
 import { createInitialState, useWb } from "../store";
 import { DashboardByMode, LiveByMode, NewScanByMode, ReportByMode, ScopeByMode } from "../views/live/byMode";
-import { FINDINGS_POLL_MS } from "../views/live/UrlLiveLive";
+import { buildPocMarkdown, FINDINGS_POLL_MS } from "../views/live/UrlLiveLive";
 import { EXCLUDE_EXAMPLE } from "../views/live/UrlNewScanLive";
 import { WorkflowCrawlLive } from "../views/live/workflowViews";
 import s from "../workbench.module.css";
@@ -1607,6 +1607,96 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     fireEvent.change(order, { target: { value: "sev" } });
     // 위험도 순: 높음 → 낮음 → 미평가(판정 순 유지: 검토 필요 후보 3 → 결과 불명 후보 4)
     expect(names()).toEqual(["후보 2", "후보 1", "후보 3", "후보 4"]);
+  });
+
+  it("보고서 탭(증거 · 감사 옆): 발견마다 위험도 · 판정 · 요약 · 재현 절차(PoC) · 요청·응답을 Markdown 문서 한 장으로, 정상 대조는 뺀다", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    const step = {
+      task_id: 42,
+      entry_id: "candidate-2",
+      id: `step-${"b".repeat(24)}`,
+      number: 1,
+      title: "계정 B로 계정 A 주문 조회",
+      source_step_id: "cross-read",
+      run_ref: "run-1",
+      call_ref: "",
+      evidence_ref: "cross-proof",
+      evidence_version: 1,
+      evidence_digest: "e".repeat(64),
+      binding_digest: "b".repeat(64),
+      observed_at: "2026-11-09T12:10:00Z",
+      method: "GET",
+      path: "/api/orders/2",
+      prerequisites: "시험 계정 A · B",
+      observation: "200 응답에 계정 A 주문",
+      truncated: false,
+      capture: { status: "not_captured" as const },
+    };
+    a.fetchRemediation.mockResolvedValue({
+      task_id: 42,
+      entries: [
+        candidate(1),
+        {
+          ...candidate(2),
+          vuln_class: "idor",
+          summary: "&#112;&#97;&#115;&#115;&#119;&#111;&#114;&#100;=synthetic-poc-entity",
+          evidence: JSON.stringify({ status: 200, headers: { Authorization: "Bearer synthetic-poc-token" } }),
+          steps: [step],
+        },
+        {
+          ...candidate(3),
+          entry_id: "verdict-3",
+          outcome: "negative",
+          status: "allowed",
+          verification: "stored_verification",
+          title: "정상 대조 줄",
+        },
+      ],
+    });
+    mount("report");
+    fireEvent.click(await screen.findByRole("tab", { name: "보고서" }));
+    // ARTEX '침투 테스트 보고서 (Markdown)' 모양: 아이콘 · 제목, [복사], 상자 안 문서(제목 → 설명 → 정보 → 요약 → 취약점)
+    const doc = screen.getByRole("region", { name: "취약점 점검 보고서" });
+    expect(within(doc).getByRole("heading", { level: 3 })).toHaveTextContent("취약점 점검 보고서 (Markdown)");
+    expect(within(doc).getByRole("heading", { level: 1 })).toHaveTextContent(
+      "취약점 점검 보고서: https://target.example/",
+    );
+    expect(doc).toHaveTextContent("'검토 필요'는 확정이 아니며");
+    expect(doc).toHaveTextContent("점검 방식: 설치 범위");
+    expect(doc).toHaveTextContent("모델: 합성 모델 · 로컬");
+    // 요약은 확정 · 검토 필요를 나눠 센다(정상 대조는 빼고). '확인된 취약점'으로 묶지 않는다
+    expect(doc).toHaveTextContent("발견: 2건 (확정 0 · 검토 필요 2 · 미실행 0 · 결과 불명 0)");
+    expect(doc).not.toHaveTextContent("확인된 취약점");
+    // 취약점: '1. [등급 · 판정] 제목' 줄 (목록이 아니라 문단), 정상 대조는 없다
+    const items = [...doc.querySelectorAll("p")].map((x) => x.textContent ?? "").filter((x) => /^\d+\. \[/.test(x));
+    expect(items).toEqual(["1. [위험도 미평가 · 검토 필요] 후보 1", "2. [위험도 미평가 · 검토 필요] 후보 2"]);
+    expect(doc).not.toHaveTextContent("정상 대조 줄");
+    expect(doc).toHaveTextContent("PoC / 증거:");
+    expect(doc).toHaveTextContent("구조화된 실제 재현 단계 미확보");
+    expect(doc).toHaveTextContent("계정 B로 계정 A 주문 조회 — GET /api/orders/2");
+    expect(doc).toHaveTextContent("사전 조건: 시험 계정 A · B");
+    // 요청·응답은 코드 상자, 비밀은 가린다(엔티티로 숨긴 값도 풀리지 않는다)
+    expect(doc.querySelector("pre code")).not.toBeNull();
+    expect(doc).not.toHaveTextContent(/synthetic-poc-token|synthetic-poc-entity/);
+    fireEvent.click(within(doc).getByRole("button", { name: "복사" }));
+    await within(doc).findByText("보고서 글을 복사했습니다.");
+    expect(writeText.mock.calls[0][0]).not.toMatch(/synthetic-poc-token|synthetic-poc-entity|&#/);
+  });
+
+  it("PoC 문서: 코드 상자 울타리는 본문의 ` 줄보다 길게, 목록 줄 글의 줄바꿈은 띄어쓰기로", () => {
+    const md = buildPocMarkdown([{ ...candidate(1), title: "줄\n바꿈", evidence: "a ```` b" }], {
+      targetUrl: "https://target.example/",
+      mode: null,
+      model: null,
+      excluded: null,
+      crawl: { visited: 3, found: 2 },
+    });
+    expect(md).toContain("1\\. [위험도 미평가 · 검토 필요] 줄 바꿈");
+    expect(md).toContain("- 탐색: 방문 3 · 발견한 API 2");
+    expect(md).toContain("`````text\na ```` b\n`````");
   });
 
   it("보고서 머리 줄의 모델 사용량은 점검 진행과 같은 입 · 출 칩, 마우스를 올리면 정확한 값과 최대치", async () => {
