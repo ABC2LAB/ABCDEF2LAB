@@ -1574,6 +1574,10 @@ def main(argv: list[str] | None = None) -> int:
         path_key_ref = check_key_files(config)
         path_key = acceptance_path_key(config)
         preflight = load_preflight(args.preflight)
+        if config.split is not None and args.side == POLICY_SWITCH_SIDE:
+            # 분리 배치 O는 제품 배치로만 돈다(runner_split_main). 늦게 불러오는 것은 그 모듈이 이 모듈을 쓰기 때문이다.
+            from runner_split_main import run_split_ours
+            return run_split_ours(config, preflight)
         plan = plan_run(config, preflight, args.side, new_run_id(args.side))
         task, goal_common_sha256 = plan_task(config.task, plan, preflight[plan.side]["target_origin"])
         vocabulary, vocabulary_sha256 = load_vocabulary(config.findings["vocabulary_path"])
