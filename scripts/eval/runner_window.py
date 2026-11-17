@@ -236,9 +236,11 @@ def judge_events(events: list, window_start_ns: int, run_networks: dict[str, str
                                      "service": "runner_helper"})
                 continue
             if (label == "disconnect" and container in run_containers and run_containers[container] in stoppable
-                    and (container, "die") in stopped and actor_id in run_networks
+                    and (container, "kill") in stopped and actor_id in run_networks
                     and (container, "net:" + actor_id) not in stopped):
-                stopped.add((container, "net:" + actor_id))  # 정지한 서비스가 회차 망에서 떨어지는 것(망마다 한 번)
+                # 정지한 서비스가 회차 망에서 떨어지는 것(망마다 한 번). 실제 Docker 29.1.3의 `docker stop` 순서는
+                # kill(15) → 망 분리 → stop → die라서, 분리는 SIGTERM 뒤에 허용한다(die 뒤가 아니다).
+                stopped.add((container, "net:" + actor_id))
                 continue
             if actor_id in run_networks or container in run_containers:
                 who = run_containers.get(container, "foreign") if container else None
