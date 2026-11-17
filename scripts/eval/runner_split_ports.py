@@ -261,4 +261,4 @@ class DockerSplitPorts:
         self.docker.signal(meter_container_id, "USR1")
 
     def stop_boundary(self, boundary_container_id: str) -> None:
-        self.docker.stop_container(boundary_container_id, self.config.run["down_timeout_seconds"])
+        self.docker.stop_container(boundary_container_id, self.split.boundary_stop_seconds)

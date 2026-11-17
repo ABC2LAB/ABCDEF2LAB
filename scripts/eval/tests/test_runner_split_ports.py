@@ -239,9 +239,23 @@ class TestDocker(PortsCase):
         self.assertEqual(up[1][:5], ("compose", "-p", "eval-r1", "--env-file", "/dev/null"))
         self.assertEqual(down[2], self.config.run["down_timeout_seconds"])
         self.assertEqual(seal, ("signal", "m" * 64, "USR1"))
-        self.assertEqual(stop, ("stop", "b" * 64, self.config.run["down_timeout_seconds"]))
+        self.assertEqual(stop, ("stop", "b" * 64, self.split.boundary_stop_seconds))
         self.assertFalse(self.ports.preexisting())
         self.assertEqual(set(self.ports.image_ids()), set(self.plan.images))
+
+    def test_boundary_stop_bounds_reach_the_real_docker_helper(self):
+        # 리뷰 반례: 설정이 받은 값이 실제 Docker 부품에서 거부되지 않는다(경계값 1·600을 실제 stop_container로 보낸다).
+        from runner_docker import CommandResult, Docker
+        for seconds in (1, 600):
+            with self.subTest(seconds=seconds):
+                sent = []
+                docker = Docker(lambda args, env, stdin, timeout: (sent.append(list(args)), CommandResult(0, b""))[1], {}, 1)
+                ports = DockerSplitPorts(config=self.config, split=parse_split(split_block(boundary_stop_seconds=seconds), self.config),
+                                         plan=self.plan, directory=self.directory, docker=docker, driver=self.driver,
+                                         inputs=self.inputs, rendered={}, manifest=MANIFEST, model_key=ModelKey("sk-or-v1-test"),
+                                         exploration={})
+                ports.stop_boundary("b" * 64)
+                self.assertEqual(sent, [["stop", "--time", str(seconds), "b" * 64]])
 
     def test_probes_use_a_fresh_cid_dir_per_phase_and_the_model_host(self):
         seen = []

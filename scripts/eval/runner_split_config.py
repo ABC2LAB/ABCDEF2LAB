@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from runner_config import COMPOSE_SPLIT, REPO_ROOT, Image, RunnerConfig
+from runner_docker import MAX_STOP_TIMEOUT_SECONDS
 
 PRODUCT_COMPOSE = (REPO_ROOT / "deploy" / "product" / "compose.yaml", REPO_ROOT / "deploy" / "product" / "compose.acceptance.yaml",
                    REPO_ROOT / "deploy" / "product" / "compose.exploration-acceptance.yaml")
@@ -28,7 +29,7 @@ IMAGE_REPOSITORIES = {"product": "abc2lab-product", "explore_browser": "abc2lab-
 SPLIT_FIELDS = frozenset({"product_tag", "product_source_sha", "image_ids", "manifest_path", "target_name", "product_port",
                           "dns_control_port", "explore_port", "evidence_max_bytes", "install_valid_hours", "max_runs",
                           "registration_valid_hours", "wide_writes", "profile_id", "task_wait_seconds",
-                          "poll_interval_seconds"})
+                          "poll_interval_seconds", "boundary_stop_seconds"})
 MAX_MANIFEST_BYTES = 64 * 1024
 MAX_EVIDENCE_BYTES = 1 << 30
 MAX_HOURS = 24 * 30
@@ -66,6 +67,8 @@ class SplitConfig:
     profile_id: str
     task_wait_seconds: int
     poll_interval_seconds: int
+    # 경계만 SIGTERM으로 멈출 때의 유예(docker stop --time). runner_docker.stop_container가 받는 범위(1~600)와 같다.
+    boundary_stop_seconds: int
 
 
 def _int(value: object, low: int, high: int) -> bool:
@@ -113,6 +116,8 @@ def parse_split(raw: object, config: RunnerConfig) -> SplitConfig:
         errors.append("config.split.wait: INVALID")
     elif raw["poll_interval_seconds"] >= raw["task_wait_seconds"]:
         errors.append("config.split.wait: INTERVAL_NOT_BELOW_WAIT")
+    if not _int(raw["boundary_stop_seconds"], 1, MAX_STOP_TIMEOUT_SECONDS):
+        errors.append("config.split.boundary_stop_seconds: INVALID")
     if errors:
         raise SplitConfigError(errors)
     images = {name: Image(f"{repository}:{raw['product_tag']}", ids[name]) for name, repository in IMAGE_REPOSITORIES.items()}
@@ -123,7 +128,7 @@ def parse_split(raw: object, config: RunnerConfig) -> SplitConfig:
                        install_valid_hours=raw["install_valid_hours"], max_runs=raw["max_runs"],
                        registration_valid_hours=raw["registration_valid_hours"], wide_writes=raw["wide_writes"],
                        profile_id=raw["profile_id"], task_wait_seconds=raw["task_wait_seconds"],
-                       poll_interval_seconds=raw["poll_interval_seconds"])
+                       poll_interval_seconds=raw["poll_interval_seconds"], boundary_stop_seconds=raw["boundary_stop_seconds"])
 
 
 def read_manifest(path: Path) -> dict:
