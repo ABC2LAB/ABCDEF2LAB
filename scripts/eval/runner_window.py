@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Iterable
 
 from runner_checks import Listener, check_host_listeners
+from runner_docker import RUNNER_HELPER_LABEL
 
 # moby daemon/events: 지난 이벤트를 보관하는 버퍼 크기(eventsLimit, 11/03 실측 256). 스트림을 열 때 재생되는
 # 구간 시작 전 이벤트가 이 수에 닿으면 앞쪽이 버려졌을 수 있다.
@@ -40,6 +41,13 @@ _FOREIGN_START = frozenset({"create", "start", "restart"})
 # 러너 probe(`docker run --rm -i`)의 정상 생명주기. 같은 ID의 exec·kill·restart나 두 번째 시작은 러너가 하지 않는
 # 일이므로 경계 변경이다(#126 리뷰).
 _PROBE_LIFECYCLE = frozenset({"create", "attach", "start", "die", "destroy"})
+# 러너 도우미 컨테이너(경계 원자료 꺼내기 등) 라벨은 runner_docker가 붙인다. 라벨만으로는 예외가 되지 않는다: 러너가 띄운
+# ID(--cidfile)이면서 라벨 값이 그 ID에 정한 역할과 같아야 한다(다른 컨테이너가 같은 라벨을 달아도 예외가 아님).
+# 생명주기는 probe와 같다.
+# 러너가 구간 안에서 정지하는 회차 서비스(경계 원자료 꺼내기 전 경계 정지, 계약 §4.1)의 정상 정지. docker stop은
+# kill(SIGTERM) → die → stop을 내고, 멈춘 컨테이너는 망에서 떨어진다. SIGKILL(시한 초과)·다시 시작은 위반이다.
+STOP_SIGNAL = "15"
+_STOP_LIFECYCLE = frozenset({"kill", "die", "stop"})
 
 
 class WindowError(ValueError):
@@ -131,12 +139,16 @@ def _text(value: object, code: str) -> str:
 
 def judge_events(events: list, window_start_ns: int, run_networks: dict[str, str], run_containers: dict[str, str],
                  sealable: frozenset[str], healthchecked: frozenset[str], runner_containers: frozenset[str],
-                 stream_complete: bool) -> dict:
+                 stream_complete: bool, *, runner_helpers: dict[str, str] | None = None,
+                 stoppable: frozenset[str] = frozenset()) -> dict:
     """구간 이벤트를 판정한다. run_networks·run_containers는 ID → 서비스(망 이름)다.
 
     window_start_ns보다 앞선 이벤트(lookback)는 healthcheck exec ID만 알아 두고 판정하지 않는다.
     sealable: seal 신호(USR1)를 받는 서비스. healthchecked: 선언된 healthcheck exec를 허용하는 서비스.
     runner_containers: 러너가 구간 중 직접 띄운 컨테이너 ID(post probe). 그 밖의 회차 밖 컨테이너 생성·시작은 위반.
+    runner_helpers: 러너가 구간 중 띄운 도우미 ID → 역할. 그 ID이면서 RUNNER_HELPER_LABEL 값이 역할과 같을 때만 정상 생명주기를
+    허용한다(라벨만 맞고 ID가 다르면 회차 밖 컨테이너로 본다).
+    stoppable: 러너가 구간 중 정지하는 회차 서비스. SIGTERM 정지 한 번(kill·die·stop 각 한 번)과 그 컨테이너의 망 분리만 허용한다.
     결과에는 종류별 건수와 위반 요약(서비스 이름·동작)만 남기고 이벤트 원문은 남기지 않는다.
     """
     if not isinstance(events, list) or type(window_start_ns) is not int:
@@ -145,6 +157,8 @@ def judge_events(events: list, window_start_ns: int, run_networks: dict[str, str
     boundary: list[dict] = []
     allowed_exec_ids: set[str] = set()
     probe_seen: set[tuple[str, str]] = set()
+    helpers = {} if runner_helpers is None else runner_helpers
+    stopped: set[tuple[str, str]] = set()
     lookback = runner_events = 0
     for event in events:  # 데몬이 시각 순서로 보낸다(재생분 다음 실시간)
         if not isinstance(event, dict):
@@ -173,6 +187,11 @@ def judge_events(events: list, window_start_ns: int, run_networks: dict[str, str
         kinds[f"{kind}.{label}"] = kinds.get(f"{kind}.{label}", 0) + 1
         if kind == "network":
             container = attributes.get("container")
+            if (label == "disconnect" and container in run_containers and run_containers[container] in stoppable
+                    and (container, "die") in stopped and actor_id in run_networks
+                    and (container, "net:" + actor_id) not in stopped):
+                stopped.add((container, "net:" + actor_id))  # 정지한 서비스가 회차 망에서 떨어지는 것(망마다 한 번)
+                continue
             if actor_id in run_networks or container in run_containers:
                 who = run_containers.get(container, "foreign") if container else None
                 boundary.append({"type": kind, "action": label, "network": run_networks.get(actor_id, "foreign"),
@@ -181,7 +200,14 @@ def judge_events(events: list, window_start_ns: int, run_networks: dict[str, str
         if kind != "container":
             continue
         if actor_id not in run_containers:
-            if actor_id in runner_containers:
+            if actor_id in helpers:
+                if (attributes.get(RUNNER_HELPER_LABEL) == helpers[actor_id] and action in _PROBE_LIFECYCLE
+                        and (actor_id, action) not in probe_seen):
+                    probe_seen.add((actor_id, action))
+                    runner_events += 1
+                else:
+                    boundary.append({"type": kind, "action": label, "service": "runner_helper"})
+            elif actor_id in runner_containers:
                 if action in _PROBE_LIFECYCLE and (actor_id, action) not in probe_seen:
                     probe_seen.add((actor_id, action))
                     runner_events += 1
@@ -192,6 +218,11 @@ def judge_events(events: list, window_start_ns: int, run_networks: dict[str, str
             continue
         service = run_containers[actor_id]
         if label == "kill" and service in sealable and attributes.get("signal") == SEAL_SIGNAL:
+            continue
+        if (service in stoppable and label in _STOP_LIFECYCLE and (actor_id, label) not in stopped
+                and (label != "kill" or attributes.get("signal") == STOP_SIGNAL)
+                and (label == "kill" or (actor_id, "kill") in stopped)):
+            stopped.add((actor_id, label))  # SIGTERM 다음에만 die·stop
             continue
         if service in healthchecked:
             if action in (_EXEC_CREATE + ENGINE_DB_HEALTHCHECK, _EXEC_START + ENGINE_DB_HEALTHCHECK):

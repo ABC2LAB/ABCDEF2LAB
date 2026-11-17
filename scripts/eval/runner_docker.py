@@ -33,6 +33,13 @@ _IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _OBJECT_ID_LENGTH = 64
 _OBJECT_ID = re.compile(r"[0-9a-f]{%d}\Z" % _OBJECT_ID_LENGTH)
 _PROJECT = re.compile(r"[a-z0-9][a-z0-9_-]{0,62}\Z")
+# 러너 도우미 컨테이너 라벨(값 = 역할). 구간 감시는 러너가 띄운 ID이면서 이 라벨 값이 맞을 때만 예외로 둔다(runner_window).
+RUNNER_HELPER_LABEL = "abc2lab.eval.runner-helper"
+# Compose가 만든 볼륨 이름(<project>_<이름>)과 도우미가 읽을 파일 이름.
+_VOLUME = re.compile(r"[a-z0-9][a-z0-9_.-]{0,127}\Z")
+_HELPER_ROLE = re.compile(r"[a-z][a-z0-9-]{0,31}\Z")
+_FILE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
+_DIR_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}\Z")
 # tmpfs 사용량은 계측기 이미지의 statfs 역할이 잰다. 측정 컨테이너가 대상 컨테이너의 PID namespace에 붙어 대상의
 # mountinfo에서 그 마운트 지점의 tmpfs를 찾고, /proc/1/root로 연 객체가 그 마운트인지(마운트 ID) 확인한 뒤 잰다.
 # 대상 안의 실행파일·PATH(엔진 도구가 바꿀 수 있음)를 쓰지 않는다(#140 리뷰).
@@ -432,6 +439,49 @@ class Docker:
         if len(data) != members[0].size:
             raise DockerError("docker_copy_output_invalid")
         return data
+
+    def copy_volume_files(self, image: str, volume: str, directory: str, names: Sequence[str], role: str, uid: int, gid: int,
+                          cidfile: Path, max_bytes: int, timeout: float) -> tuple[dict[str, bytes], str]:
+        """러너 도우미 컨테이너로 볼륨 안 디렉터리의 파일 몇 개를 복사한다(경계 원자료 꺼내기, 계약 §4.1 결정 B).
+
+        도우미는 망 없이(--network none), 읽기 전용 루트, cap 전부 제거, no-new-privileges로 돌고 볼륨도 읽기 전용으로 붙인다.
+        이미지는 내용 ID로만 받고 pull하지 않는다. 출력(원자료)은 로그 드라이버로 내보내지 않는다. 라벨(RUNNER_HELPER_LABEL=역할)과
+        cidfile ID로 구간 감시가 이 도우미만 예외로 둔다. 받은 tar는 요청한 이름의 정규 파일이 정확히 한 번씩, 각자 상한 안이어야
+        한다. 파일이 없거나 읽지 못하면(종료 코드가 0이 아님) 실패다. 호출자는 원자료를 쓰는 컨테이너를 멈춘 뒤에 부른다.
+        """
+        if not isinstance(image, str) or not _IMAGE_ID.fullmatch(image):
+            raise DockerError("docker_helper_image_not_id")
+        if (not isinstance(volume, str) or not _VOLUME.fullmatch(volume) or not isinstance(directory, str)
+                or not _DIR_NAME.fullmatch(directory) or not isinstance(role, str) or not _HELPER_ROLE.fullmatch(role)
+                or not names or len(set(names)) != len(names)
+                or not all(isinstance(name, str) and _FILE_NAME.fullmatch(name) for name in names)):
+            raise DockerError("docker_helper_invalid")
+        if type(uid) is not int or type(gid) is not int or uid < 0 or gid < 0 or type(max_bytes) is not int or max_bytes < 1:
+            raise DockerError("docker_helper_invalid")
+        args = ["run", "--rm", "--pull", "never", "--log-driver", "none", "--cidfile", str(cidfile),
+                "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+                "--user", f"{uid}:{gid}", "--label", f"{RUNNER_HELPER_LABEL}={role}",
+                "--mount", f"type=volume,source={volume},target=/e,readonly",
+                "--entrypoint", "tar", "--", image, "-C", f"/e/{directory}", "-cf", "-", "--", *names]
+        result = self._bounded(args, self._env, timeout, len(names) * (max_bytes + _TAR_OVERHEAD_BYTES))
+        if result.returncode != 0:
+            raise DockerError("docker_helper_copy_failed")
+        files: dict[str, bytes] = {}
+        try:
+            with tarfile.open(fileobj=io.BytesIO(result.stdout), mode="r:") as archive:
+                for member in archive.getmembers():
+                    if (not member.isreg() or member.name not in names or member.name in files
+                            or member.size > max_bytes):
+                        raise DockerError("docker_helper_output_invalid")
+                    data = archive.extractfile(member).read()
+                    if len(data) != member.size:
+                        raise DockerError("docker_helper_output_invalid")
+                    files[member.name] = data
+        except (tarfile.TarError, OSError, EOFError):
+            raise DockerError("docker_helper_output_invalid") from None
+        if set(files) != set(names):
+            raise DockerError("docker_helper_output_invalid")
+        return files, _read_cidfile(cidfile)
 
     def signal(self, container_id: str, signal_name: str) -> None:
         if not _OBJECT_ID.fullmatch(container_id or "") or signal_name not in ("USR1",):
