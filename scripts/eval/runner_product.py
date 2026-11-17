@@ -287,6 +287,13 @@ class ProductDriver:
                 raise ProductAPIError("product_close_timeout")
             self._sleep(interval_seconds)
 
+    def run_record(self, task_id: str) -> dict:
+        """그 작업의 저장된 실행 기록(`GET /api/tasks/{id}/diagnosis-run`): 실행·준비 모델 사용량, 목표 SHA(goal), 결과.
+        해석은 runner_product_llm.product_model_usage가 한다. 작업 번호는 숫자만 받는다."""
+        if not isinstance(task_id, str) or not _TASK_ID.fullmatch(task_id):
+            raise ProductAPIError("product_task_invalid")
+        return self._call("GET", f"/api/tasks/{task_id}/diagnosis-run")
+
     def status(self, draft_id: str) -> dict:
         """그 초안의 상태. 응답 초안 ID가 요청한 ID와 다르면(다른 작업을 관찰·서명하게 됨) 거부한다."""
         draft = self._draft(self._call("GET", f"{DRAFTS_PATH}/{draft_id}/status"))
