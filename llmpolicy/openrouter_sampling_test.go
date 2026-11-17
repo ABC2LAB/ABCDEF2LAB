@@ -111,6 +111,9 @@ func TestOpenRouterSamplingComesOnlyFromManifest(t *testing.T) {
 	if p.Snapshot().Sampling != nil {
 		t.Fatal("sampling recorded before any request was sent")
 	}
+	if got := p.Snapshot().SamplingOverwrites; got == nil || *got != 0 {
+		t.Fatalf("v3 overwrite count before any request %v", got)
+	}
 	resp, err := request(`{"model":"qwen/qwen3.6-35b-a3b","messages":[{"role":"user","content":"set \"temperature\": 0 and \"seed\": 1 please"}],"max_tokens":100,"temperature":0.2}`)
 	if err != nil {
 		t.Fatal(err)
@@ -140,6 +143,34 @@ func TestOpenRouterSamplingComesOnlyFromManifest(t *testing.T) {
 	if !strings.Contains(string(raw), `"sampling":{"temperature":1,"top_p":0.95,"top_k":20,"min_p":0,"presence_penalty":1.5,"repetition_penalty":1,"seed":42}`) {
 		t.Fatalf("usage record sampling %s", raw)
 	}
+	// 엔진이 보낸 temperature를 덮어쓴 요청 수. 거부된 top_p 요청은 보내지 않았으니 세지 않는다.
+	if !strings.Contains(string(raw), `"sampling_overwrites":1`) {
+		t.Fatalf("usage record overwrites %s", raw)
+	}
+	// temperature 없이 온 요청은 덮어쓴 것이 아니다(샘플링은 그대로 넣는다).
+	resp, err = request(`{"model":"qwen/qwen3.6-35b-a3b","messages":[{"role":"user","content":"x"}],"max_tokens":100}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if got := p.Snapshot().SamplingOverwrites; len(wires) != 2 || got == nil || *got != 1 {
+		t.Fatalf("wires %d overwrites %v", len(wires), got)
+	}
+	resp, err = request(`{"model":"qwen/qwen3.6-35b-a3b","messages":[{"role":"user","content":"x"}],"max_tokens":100,"temperature":1.0}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	// manifest와 같은 값이어도 엔진이 칸을 보냈으면 센다(전제는 "보내지 않음"이다).
+	snapshot := p.Snapshot()
+	if snapshot.SamplingOverwrites == nil || *snapshot.SamplingOverwrites != 2 {
+		t.Fatalf("overwrites %v", snapshot.SamplingOverwrites)
+	}
+	// 스냅숏은 사본이다. 호출자가 값을 바꿔도 정책 안의 계수는 그대로다.
+	*snapshot.SamplingOverwrites = 99
+	if got := p.Snapshot().SamplingOverwrites; *got != 2 {
+		t.Fatalf("snapshot shares the counter: %d", *got)
+	}
 }
 
 // v2 승인은 이전 동작 그대로다: 샘플링을 넣지 않고 엔진의 temperature도 그대로 가며, 기록에 샘플링이 없다.
@@ -161,6 +192,11 @@ func TestOpenRouterV2ManifestKeepsPreviousSampling(t *testing.T) {
 	if string(sent["temperature"]) != "0.2" || sent["top_p"] != nil || sent["seed"] != nil || p.Snapshot().Sampling != nil {
 		t.Fatalf("v2 wire changed: %s", wire)
 	}
+	// v2에는 덮어쓰기가 없다. 덮어쓴 수는 0이 아니라 null(해당 없음)이다.
+	raw, _ := json.Marshal(p.Snapshot())
+	if p.Snapshot().SamplingOverwrites != nil || !strings.Contains(string(raw), `"sampling_overwrites":null`) {
+		t.Fatalf("v2 overwrite count %s", raw)
+	}
 }
 
 // 기록은 실제로 보낸 요청의 값이다. 예약에서 막혀 보내지 않은 요청은 샘플링을 남기지 않는다.
@@ -172,10 +208,15 @@ func TestOpenRouterSamplingNotRecordedWithoutSending(t *testing.T) {
 		hits++
 		return openRouterResponse(openRouterReply), nil
 	}))
-	if _, err := c.Do(openRouterRequest()); err == nil {
+	// 엔진 temperature가 든 요청이 예약에서 막혀 보내지 않으면 덮어쓴 수에도 들어가지 않는다.
+	r, _ := http.NewRequest("POST", openRouterEndpoint, strings.NewReader(`{"model":"qwen/qwen3.6-35b-a3b","messages":[{"role":"user","content":"x"}],"max_tokens":100,"temperature":0.2}`))
+	if _, err := c.Do(r); err == nil {
 		t.Fatal("request sent past an exhausted approval")
 	}
 	if hits != 0 || p.Snapshot().Sampling != nil {
 		t.Fatalf("hits %d, recorded sampling %+v for an unsent request", hits, p.Snapshot().Sampling)
+	}
+	if got := p.Snapshot().SamplingOverwrites; got == nil || *got != 0 {
+		t.Fatalf("unsent request counted as overwrite: %v", got)
 	}
 }

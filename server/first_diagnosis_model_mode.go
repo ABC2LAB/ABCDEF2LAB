@@ -121,9 +121,15 @@ func (s *Server) FirstDiagnosisModelUsage() *llmpolicy.OpenRouterUsage {
 	if s == nil || s.openRouterPolicy == nil {
 		return nil
 	}
-	usage := s.openRouterPolicy.Snapshot()
-	// 저장 회차 사용량은 실행 단계만 포함하며 준비 단계는 별도 불변 기록으로 남긴다.
-	baseline := s.openRouterBaseline
+	usage := executionModelUsage(s.openRouterPolicy.Snapshot(), s.openRouterBaseline)
+	return &usage
+}
+
+// executionModelUsage는 저장 회차 사용량을 실행 단계만으로 만든다. 같은 OpenRouter 정책으로 먼저 도는 준비 단계의 값(실행
+// 서버를 만들 때 잡은 스냅숏)을 계수마다 뺀다. 준비 단계는 별도 불변 기록으로 남는다. 엔진 샘플링 칸을 덮어쓴 수도 같은
+// 기준으로 뺀다(#646 리뷰: 빼지 않으면 준비 단계 덮어쓰기가 실행 기록에 섞여 requests보다 클 수 있다). 기준값이 null이면
+// (v1·v2 승인이거나 준비 단계 스냅숏이 없음) 그대로 둔다.
+func executionModelUsage(usage, baseline llmpolicy.OpenRouterUsage) llmpolicy.OpenRouterUsage {
 	usage.Requests -= baseline.Requests
 	usage.Errors -= baseline.Errors
 	usage.ReservedInputTokens -= baseline.ReservedInputTokens
@@ -133,7 +139,12 @@ func (s *Server) FirstDiagnosisModelUsage() *llmpolicy.OpenRouterUsage {
 	usage.OutputTokens -= baseline.OutputTokens
 	usage.CostMicros -= baseline.CostMicros
 	usage.LatencyMillis -= baseline.LatencyMillis
-	return &usage
+	if usage.SamplingOverwrites != nil && baseline.SamplingOverwrites != nil {
+		// Snapshot이 돌려준 포인터는 사본이지만, 정책 쪽 계수를 건드리지 않도록 새 값으로 바꾼다.
+		count := *usage.SamplingOverwrites - *baseline.SamplingOverwrites
+		usage.SamplingOverwrites = &count
+	}
+	return usage
 }
 func (s *FirstDiagnosisSupervisor) ModelUsage() *llmpolicy.OpenRouterUsage {
 	if s == nil {
