@@ -38,8 +38,13 @@ RUNNER_HELPER_LABEL = "abc2lab.eval.runner-helper"
 # Compose가 만든 볼륨 이름(<project>_<이름>)과 도우미가 읽을 파일 이름.
 _VOLUME = re.compile(r"[a-z0-9][a-z0-9_.-]{0,127}\Z")
 _HELPER_ROLE = re.compile(r"[a-z][a-z0-9-]{0,31}\Z")
-_FILE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
-_DIR_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}\Z")
+# 도우미가 꺼내는 파일 이름. 점으로 시작하는 이름(제품 승인 장부 `.openrouter-<64 hex>.ledger`)도 받되, 점만으로 된 이름
+# (`.`·`..`)은 받지 않는다. 경로 구분자는 받지 않는다.
+_FILE_NAME = re.compile(r"(?!\.+\Z)[A-Za-z0-9._-]{1,128}\Z")
+# 볼륨 안 디렉터리 하나(하위 경로 없음). `.`은 볼륨 루트다(시험 DNS 제어 토큰은 target-tls 볼륨 루트에 있다).
+_DIR_NAME = re.compile(r"(?:\.|[a-z0-9][a-z0-9_-]{0,31})\Z")
+# 컨테이너 정지 유예(초). 그 뒤에는 Docker가 SIGKILL을 보낸다.
+MAX_STOP_TIMEOUT_SECONDS = 600
 # tmpfs 사용량은 계측기 이미지의 statfs 역할이 잰다. 측정 컨테이너가 대상 컨테이너의 PID namespace에 붙어 대상의
 # mountinfo에서 그 마운트 지점의 tmpfs를 찾고, /proc/1/root로 연 객체가 그 마운트인지(마운트 ID) 확인한 뒤 잰다.
 # 대상 안의 실행파일·PATH(엔진 도구가 바꿀 수 있음)를 쓰지 않는다(#140 리뷰).
@@ -489,6 +494,16 @@ class Docker:
         if set(files) != set(names):
             raise DockerError("docker_helper_output_invalid")
         return files, _read_cidfile(cidfile)
+
+    def stop_container(self, container_id: str, timeout_seconds: int) -> None:
+        """컨테이너 하나를 SIGTERM으로 멈춘다(`docker stop`). 유예 안에 끝나지 않으면 Docker가 SIGKILL을 보낸다.
+
+        탐색 분리 배치 O 회차에서 경계만 먼저 멈춰 봉인 표식까지 쓰게 할 때 쓴다(계약 §4.1 결정 B). 구간 감시는 SIGTERM의
+        kill·die·stop 한 번씩만 허용하므로(runner_window stoppable), SIGKILL로 끝나면 경계 변경으로 남는다."""
+        if (not _OBJECT_ID.fullmatch(container_id or "") or type(timeout_seconds) is not int
+                or not 1 <= timeout_seconds <= MAX_STOP_TIMEOUT_SECONDS):
+            raise DockerError("docker_stop_invalid")
+        self.run(["stop", "--time", str(timeout_seconds), container_id], code="docker_stop_failed")
 
     def signal(self, container_id: str, signal_name: str) -> None:
         if not _OBJECT_ID.fullmatch(container_id or "") or signal_name not in ("USR1",):
