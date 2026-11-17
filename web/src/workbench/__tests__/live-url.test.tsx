@@ -1472,6 +1472,12 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(header).not.toHaveTextContent("자산 커버리지");
     expect(within(header).getByText(/^모델 사용량/)).toHaveTextContent(/^모델 사용량 —$/);
     expect(header).toHaveTextContent("모델 합성 모델 · 로컬");
+    // 단계 줄: 보고서가 지금 단계이고, 앞 단계(자산 탐색 · 범위 확인 · 점검 진행)로 눌러서 돌아간다 (사용자 11/17)
+    const steps = within(header).getByRole("navigation", { name: "점검 단계" });
+    expect(within(steps).getByRole("link", { name: /보고서/ })).toHaveAttribute("aria-current", "step");
+    expect(within(steps).getByRole("link", { name: /자산 탐색/ })).toHaveAttribute("href", "#crawl");
+    expect(within(steps).getByRole("link", { name: /범위 확인/ })).toHaveAttribute("href", "#scope");
+    expect(within(steps).getByRole("link", { name: /점검 진행/ })).toHaveAttribute("href", "#live");
     expect(within(header).getByText(/^시작/)).toHaveTextContent("연결 전");
     expect(within(header).getByText(/^소요/)).toHaveTextContent("연결 전");
     expect(header).not.toHaveTextContent(/task #|모델 요청/);

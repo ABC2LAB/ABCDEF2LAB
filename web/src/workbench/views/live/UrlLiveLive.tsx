@@ -1514,6 +1514,9 @@ export function UrlReportLive() {
         pill={<UrlPill job={job} verified={verified} />}
         acts={detailEntry ? undefined : <InspOpenButton>발견 상세</InspOpenButton>}
         meta={meta}
+        // 다른 세 화면처럼 머리에 단계 줄(자산 탐색 · 범위 확인 · 점검 진행 · 보고서, 눌러서 이동)을 둔다(사용자 11/17 —
+        // 보고서에서 앞 단계로 돌아갈 길이 주소 입력뿐이었다)
+        phase="report"
       />
       {/* 상세 페이지를 열면 가운데를 그 페이지로 바꾸고 오른쪽 패널은 두지 않는다(페이지 안에 상태 카드가 있다) */}
       {detailEntry ? (
