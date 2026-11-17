@@ -140,9 +140,10 @@ class TestRunnerHelperAndStop(unittest.TestCase):
 
     def stop_sequence(self, cid=None):
         cid = cid or self.BOUNDARY
-        return [event("container", "kill", cid, signal="15"), event("container", "die", cid, exitCode="0"),
+        # 실제 Docker 29.1.3의 `docker stop`(SIGTERM 처리 프로세스) 순서: kill(15) → 망 분리 → stop → die(2026-11-17 관측).
+        return [event("container", "kill", cid, signal="15"),
                 event("network", "disconnect", "n" * 64, container=cid), event("network", "disconnect", "t" * 64, container=cid),
-                event("container", "stop", cid)]
+                event("container", "stop", cid), event("container", "die", cid, exitCode="0")]
 
     def test_boundary_stop_and_labeled_helper_pass(self):
         events = self.stop_sequence() + [self.helper(a) for a in ("create", "attach", "start", "die", "destroy")]
@@ -205,14 +206,24 @@ class TestRunnerHelperAndStop(unittest.TestCase):
         twice = self.judge([self.helper("start"), self.helper("start")])
         self.assertEqual(twice["boundary_events"], [{"type": "container", "action": "start", "service": "runner_helper"}])
 
+    def test_observed_and_earlier_assumed_stop_orders_both_pass(self):
+        # 망 분리는 SIGTERM 뒤면 die 앞이든 뒤든 받는다(관측 순서와 예전 가정 순서).
+        cid = self.BOUNDARY
+        earlier = [event("container", "kill", cid, signal="15"), event("container", "die", cid, exitCode="0"),
+                   event("network", "disconnect", "n" * 64, container=cid), event("container", "stop", cid)]
+        for events in (self.stop_sequence(), earlier):
+            with self.subTest(order=[e["Action"] for e in events]):
+                self.assertEqual(self.judge(events)["boundary_events"], [])
+
     def test_stop_exception_is_only_the_declared_graceful_stop(self):
         cases = {
             "sigkill": [event("container", "kill", self.BOUNDARY, signal="9")],
             "die_without_sigterm": [event("container", "die", self.BOUNDARY)],
             "restart_after_stop": self.stop_sequence() + [event("container", "start", self.BOUNDARY)],
             "second_stop": self.stop_sequence() + [event("container", "kill", self.BOUNDARY, signal="15")],
-            "disconnect_before_die": [event("container", "kill", self.BOUNDARY, signal="15"),
-                                      event("network", "disconnect", "n" * 64, container=self.BOUNDARY)],
+            "disconnect_before_sigterm": [event("network", "disconnect", "n" * 64, container=self.BOUNDARY)],
+            "disconnect_after_sigkill": [event("container", "kill", self.BOUNDARY, signal="9"),
+                                         event("network", "disconnect", "n" * 64, container=self.BOUNDARY)],
             "disconnect_twice": self.stop_sequence() + [event("network", "disconnect", "n" * 64, container=self.BOUNDARY)],
             "other_service_stopped": self.stop_sequence(IDS["engine"]),
             "seal_signal_on_boundary": [event("container", "kill", self.BOUNDARY, signal="10")],
