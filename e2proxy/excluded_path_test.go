@@ -28,7 +28,7 @@ func (b *countingBoundary) After(context.Context, RequestView, Receipt) error {
 }
 
 // 운영자 제외 경로는 E②가 승인 규칙보다 먼저 거부한다(#627). 풀린 경로로 맞춰 인코딩·비ASCII·와일드카드·";"
-// 매개변수 우회가 막히고, 거부는 진단 흐름 경계 거부와 같은 모양(policy_denied, 맞은 규칙 참조)의 결과 기록 하나·거부
+// 매개변수·대소문자 변형 우회가 막히고, 거부는 진단 흐름 경계 거부와 같은 모양(policy_denied, 맞은 규칙 참조)의 결과 기록 하나·거부
 // 계수 하나로 남으며 진단 흐름 경계(Before)는 불리지 않는다(요청당 한 번, 사유 하나). 대상은 제외 경로를 한 번도 받지
 // 않고, 제외 밖 경로는 지금처럼 보낸다.
 func TestExcludedPathsDeniedOnceBeforeBoundary(t *testing.T) {
@@ -49,8 +49,8 @@ func TestExcludedPathsDeniedOnceBeforeBoundary(t *testing.T) {
 	boundary := &countingBoundary{}
 	cfg.RequestBoundary = boundary
 	e, c := coreOpen(t, cfg)
-	excluded := []string{"/read/über", "/read/%C3%BCber", "/read/%C3%BCber/x", "/read/admin", "/read/%61dmin", "/read/admin/", "/read/admin/x", "/read/admin;x", "/read/admin%3Bx/y", "/read/a/secret", "/read/b/secret/z", "/read/admin?q=1"}
-	allowed := []string{"/read/item", "/read/administrator", "/read/%C3%BCberx", "/read/secret", "/read/a/b/secret", "/read/ADMIN"}
+	excluded := []string{"/read/über", "/read/%C3%BCber", "/read/%C3%BCber/x", "/read/admin", "/read/%61dmin", "/read/admin/", "/read/admin/x", "/read/admin;x", "/read/admin%3Bx/y", "/read/a/secret", "/read/b/secret/z", "/read/admin?q=1", "/read/ADMIN", "/read/Admin/7", "/read/%C3%9CBER", "/read/A/SECRET"}
+	allowed := []string{"/read/item", "/read/administrator", "/read/ADMINISTRATOR", "/read/%C3%BCberx", "/read/secret", "/read/a/b/secret"}
 	for _, p := range excluded {
 		resp, r, err := c.Do(t.Context(), coreRequest(t, "GET", target.URL+p))
 		if err == nil || resp != nil || !r.NotSent || r.ForwardAttempted || r.Decision != "denied" || r.Reason != PolicyDenied || r.RuleRef != "rule" {

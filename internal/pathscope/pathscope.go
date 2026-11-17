@@ -79,7 +79,9 @@ func ValidExcluded(p string) bool {
 //     (/admin;x도 /admin 제외에 걸림). 판정을 좁히기만 한다.
 //   - 풀린 경로로 맞추므로 /x/%C3%BCber는 제외 /x/über에, /x/%61dmin은 제외 /x/admin에 걸린다. 다시 인코딩한 표기로
 //     맞추면 비ASCII 제외가 빠진다(#627 재현).
-//   - 대소문자는 구분한다(대소문자를 무시하는 서버에서 /ADMIN은 /admin 제외에 걸리지 않는 한계).
+//   - 대소문자는 무시한다(유니코드 단순 fold, strings.EqualFold — #620 비밀번호 구간 대조와 같은 방식). 제외는 거부
+//     목록이라 구분하면 뚫리는 쪽이고, 대소문자를 무시하는 서버가 흔하다(Express 기본 라우팅 등). 승인 접두(Allows)는
+//     지금처럼 구분한다.
 func Excluded(decoded, pattern string) bool {
 	return excludedSegments(strings.Split(strings.Trim(decoded, "/"), "/"), pattern)
 }
@@ -110,7 +112,7 @@ func excludedSegments(actual []string, pattern string) bool {
 			return false
 		}
 		name, _, _ := strings.Cut(actual[i], ";")
-		if part != "*" && part != actual[i] && part != name {
+		if part != "*" && !strings.EqualFold(part, actual[i]) && !strings.EqualFold(part, name) {
 			return false
 		}
 		if !more {

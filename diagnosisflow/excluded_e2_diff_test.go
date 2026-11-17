@@ -31,9 +31,13 @@ var excludedVectors = []excludedVector{
 	{"GET", "/read/admin;x", true}, {"GET", "/read/admin%3Bx", true}, {"GET", "/read/admin%3bx/7", true},
 	{"GET", "/read/a/secret", true}, {"GET", "/read/%2A/secret", true}, {"GET", "/read/b/secret/z", true},
 	{"GET", "/read/caf%C3%A9", true}, {"GET", "/read/caf%C3%A9/x", true}, {"GET", "/read/tmp", true}, {"GET", "/read/tmp?x=1", true}, {"HEAD", "/read/tmp", true}, {"POST", "/read/admin", true},
-	// 제외 밖: 이름 앞부분만 같음·더 깊은 와일드카드·대소문자(한계)·";" 앞이 다른 이름
+	// 대소문자 변형(제외는 대소문자 무시, 유니코드 단순 fold): ASCII·인코딩한 비ASCII 대문자·와일드카드·";"·쓰기
+	{"GET", "/read/ADMIN", true}, {"GET", "/read/Admin/7", true}, {"GET", "/read/%41DMIN", true}, {"GET", "/read/ADMIN;x", true},
+	{"GET", "/read/%C3%9Cber", true}, {"GET", "/read/%C3%9CBER/x", true}, {"GET", "/read/CAF%C3%89", true}, {"GET", "/read/A/SECRET", true},
+	{"GET", "/read/TMP?x=1", true}, {"POST", "/read/Admin", true},
+	// 제외 밖: 이름 앞부분만 같음·더 깊은 와일드카드·";" 앞이 다른 이름
 	{"GET", "/read/item", false}, {"GET", "/read/administrator", false}, {"GET", "/read/%C3%BCberx", false}, {"GET", "/read/secret", false},
-	{"GET", "/read/a/b/secret", false}, {"GET", "/read/ADMIN", false}, {"GET", "/read/tmpx", false}, {"GET", "/read/caf%C3%A9x", false}, {"GET", "/read/x;admin", false},
+	{"GET", "/read/a/b/secret", false}, {"GET", "/read/ADMINISTRATOR", false}, {"GET", "/read/tmpx", false}, {"GET", "/read/caf%C3%A9x", false}, {"GET", "/read/x;admin", false},
 	{"POST", "/read/item", false},
 	// 제외와 상관없이 둘 다 막는 입력(두 번 인코딩·인코딩 slash·점 조각)과, E②는 받지만 진단 흐름이 길이로 막는 입력
 	{"GET", "/read/%2561dmin", false}, {"GET", "/read/admin%2Fx", false}, {"GET", "/read/%2e%2e/admin", false},
@@ -55,7 +59,7 @@ func diffExecution(t *testing.T, origin string, excluded []string) *e2proxy.Call
 		Rules:         []e2proxy.Rule{{Ref: "rule", Origin: origin, ConnectIP: netip.MustParseAddr("127.0.0.1"), PathPrefix: "/read", PathScopeRef: "read-prefix", Methods: []string{"GET", "HEAD", "POST"}}},
 		ExcludedPaths: excluded,
 		Budget:        transmit.CumulativeBudget{Ledger: ledger, Key: grant.Key, Binding: grant.Binding}, Recorder: discardRecorder{},
-		Limits:        e2proxy.Limits{MaxAttempts: 1000, MaxCalls: 10, MaxConcurrent: 4, MaxBodyBytes: 1 << 16, RequestTimeout: time.Second, CallTimeout: time.Minute, MaxDenials: 1000, MaxTransient: 1000, MaxUnknown: 1000}})
+		Limits: e2proxy.Limits{MaxAttempts: 1000, MaxCalls: 10, MaxConcurrent: 4, MaxBodyBytes: 1 << 16, RequestTimeout: time.Second, CallTimeout: time.Minute, MaxDenials: 1000, MaxTransient: 1000, MaxUnknown: 1000}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +177,7 @@ func TestExcludedPathsE2DenialsWithinWorkflowDenials(t *testing.T) {
 // 크롤 단계의 링크 판정(#632)도 같은 제외 판정을 쓴다. 크롤이 받는 표기(인코딩 없는 경로)에서 E² 제외 판정과 같다.
 func TestCrawlLinkExclusionMatchesE2(t *testing.T) {
 	flow := diffFlow(t, "https://owned.test", diffExcluded)
-	for _, raw := range []string{"/read/über", "/read/über/x", "/read/admin", "/read/admin;x", "/read/a/secret", "/read/café", "/read/tmp", "/read/item", "/read/administrator", "/read/a/b/secret", "/read/ADMIN"} {
+	for _, raw := range []string{"/read/über", "/read/über/x", "/read/ÜBER", "/read/admin", "/read/admin;x", "/read/ADMIN", "/read/a/secret", "/read/café", "/read/CAFÉ", "/read/tmp", "/read/item", "/read/administrator", "/read/a/b/secret"} {
 		u := &url.URL{Path: raw}
 		canonical, ok := canonicalPath(u)
 		if !ok {

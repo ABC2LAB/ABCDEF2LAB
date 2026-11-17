@@ -6,7 +6,7 @@ import (
 )
 
 // 제외 경로 일치는 진단 흐름과 E②가 같이 쓰는 함수다(#627). 풀린 경로 기준, 조각 경계, "*" 한 조각, ";" 매개변수를
-// 뗀 이름, 대소문자 구분을 고정한다.
+// 뗀 이름, 대소문자 무시(유니코드 단순 fold)를 고정한다.
 func TestExcludedMatchesDecodedSegments(t *testing.T) {
 	for _, tc := range []struct {
 		pattern, path string
@@ -35,11 +35,23 @@ func TestExcludedMatchesDecodedSegments(t *testing.T) {
 		{"/read/*/secret", "/read/a/b/secret", false},
 		{"/read/*", "/read/anything", true},
 		{"/read/*", "/read", false},
-		{"/read/admin", "/read/ADMIN", false}, // 대소문자 구분(문서화한 한계)
+		{"/read/admin", "/read/ADMIN", true},
+		{"/read/admin", "/read/Admin/7", true},
+		{"/read/ADMIN", "/read/admin", true},
+		{"/read/admin", "/read/ADMIN;x", true},
+		{"/read/admin", "/read/ADMINISTRATOR", false},
+		{"/read/über", "/read/ÜBER", true},
+		{"/read/café", "/read/CAFÉ/x", true},
+		{"/read/*/secret", "/read/A/SECRET", true},
+		{"/read/kit", "/read/\u212Ait", true}, // 켈빈 기호 K는 k와 단순 fold가 같다(#620과 같은 대조)
 	} {
 		if got := Excluded(tc.path, tc.pattern); got != tc.want {
 			t.Errorf("Excluded(%q, %q)=%v want %v", tc.path, tc.pattern, got, tc.want)
 		}
+	}
+	// 승인 접두는 지금처럼 대소문자를 구분한다(제외만 넓게 맞춤).
+	if Allows("/READ/x", false, "/read") || !Allows("/read/x", false, "/read") {
+		t.Fatal("approval prefix case handling changed")
 	}
 	if !ExcludedAny("/read/x/secret", []string{"/other", "/read/*/secret"}) || ExcludedAny("/read/x", []string{"/other", "/read/*/secret"}) || ExcludedAny("/read/x", nil) {
 		t.Fatal("ExcludedAny가 패턴 하나라도 맞는지로 판정하지 않음")
