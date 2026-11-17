@@ -18,8 +18,9 @@ from runner_product import ModelKey  # noqa: E402
 from runner_split import read_workflow_defaults  # noqa: E402
 from runner_split_config import parse_split, plan_split_run  # noqa: E402
 from runner_split_inputs import prepare_split_inputs  # noqa: E402
+from runner_checks import parse_container, parse_network  # noqa: E402
 from runner_split_ports import (  # noqa: E402
-    DockerSplitPorts, SplitReadyError, product_record_names, ready_expectations, ready_state,
+    DockerSplitPorts, SplitReadyError, check_split_layout, product_record_names, ready_expectations, ready_state,
 )
 from test_runner_split_config import acceptance_config, split_block  # noqa: E402
 from test_runner_split_inputs import FakeOpenssl, counter_bytes  # noqa: E402
@@ -211,6 +212,220 @@ class TestReady(unittest.TestCase):
             with self.assertRaises(SplitReadyError) as caught:
                 ready_state(expected, self.states() + extra)
             self.assertEqual(str(caught.exception), "split_unexpected_container")
+
+
+PROJECT = "eval-r1"
+# 분리 배치 렌더를 줄인 모양: 일회성(install), healthcheck(preparation), 선언된 netns 공유(api → preparation),
+# loopback publish(api), 고정 주소(eval-meter), 쓰지 않는 서비스(juice-shop, eval-split-unused 프로필).
+LAYOUT = {
+    "networks": {"control": {"internal": True}, "frontend": {}, "target": {"internal": True}, "fixture-control": {"internal": True},
+                 "unused_net": {}},
+    "services": {
+        "install": {"image": "product", "restart": "no", "networks": {"fixture-control": None}},
+        "preparation": {"image": "product", "depends_on": {"install": {"condition": "service_completed_successfully"}},
+                        "healthcheck": {"test": ["CMD", "true"]}, "networks": {"control": None, "frontend": None}},
+        "api": {"image": "product", "network_mode": "service:preparation",
+                "ports": [{"target": 8787, "published": "28787", "host_ip": "127.0.0.1", "protocol": "tcp"}]},
+        "eval-meter": {"image": "meter", "networks": {"target": {"ipv4_address": "10.252.3.20"}, "control": None}},
+        "target": {"image": "target", "networks": {"target": None}},
+        "juice-shop": {"image": "juice", "profiles": ["eval-split-unused"], "networks": {"unused_net": None}},
+    },
+}
+IMAGES = {"product": "sha256:" + "1" * 64, "meter": "sha256:" + "2" * 64, "target": "sha256:" + "3" * 64}
+
+
+def layout_world(rendered=LAYOUT, project=PROJECT):
+    """렌더 결과와 정확히 맞는 합성 docker inspect 출력(망·회차 컨테이너·호스트 실행 중 컨테이너)과 기대 이미지."""
+    live = ready_expectations(rendered)
+    ids = {name: f"{n + 1:064x}" for n, name in enumerate(sorted(live))}
+    images = {name: IMAGES.get(rendered["services"][name]["image"], "sha256:" + "9" * 64) for name in live}
+    one_shot = {name for name, want in live.items() if want == "completed"}
+    networks, net_ids = [], {}
+    for n, key in enumerate(sorted(rendered["networks"])):
+        users = [name for name in live if key in (rendered["services"][name].get("networks") or {})]
+        if not users:
+            continue
+        net_ids[key] = f"{1000 + n:064x}"
+        members = {}
+        for i, name in enumerate(sorted(set(users) - one_shot)):
+            attached = rendered["services"][name]["networks"][key]
+            address = (attached or {}).get("ipv4_address") or f"10.252.{n}.{i + 2}"
+            members[ids[name]] = {"Name": f"{project}-{name}-1", "IPv4Address": f"{address}/24", "IPv6Address": ""}
+        networks.append({"Id": net_ids[key], "Name": f"{project}_{key}", "Internal": bool(rendered["networks"][key].get("internal")),
+                         "Labels": {"com.docker.compose.project": project, "com.docker.compose.network": key},
+                         "IPAM": {"Config": [{"Subnet": f"10.252.{n}.0/24", "Gateway": f"10.252.{n}.1"}]}, "Containers": members})
+    containers = []
+    for name in sorted(live):
+        service = rendered["services"][name]
+        mode = service.get("network_mode", "")
+        attached = {} if mode or name in one_shot else {
+            f"{project}_{key}": {"NetworkID": net_ids[key], "IPAddress": "x"} for key in service.get("networks") or {}}
+        ports = {f"{p['target']}/tcp": [{"HostIp": p.get("host_ip", ""), "HostPort": str(p["published"])}]
+                 for p in service.get("ports") or []}
+        containers.append({"id": ids[name], "project": project, "service": name, "image": images[name],
+                           "running": name not in one_shot, "started_at": "2026-11-17T01:00:00.123456789Z", "restart_count": 0,
+                           "ports": ports, "networks": attached,
+                           "network_mode": "container:" + ids[mode[len("service:"):]] if mode.startswith("service:") else f"{project}_x",
+                           "pid_mode": ""})
+    return networks, containers, images
+
+
+def judge(networks, containers, running, images, rendered=LAYOUT):
+    nets = [parse_network(n) for n in networks]
+    mine = [parse_container(c) for c in containers]
+    return check_split_layout(rendered, PROJECT, nets, mine, [parse_container(c) for c in running], images)
+
+
+def stranger(**fields):
+    raw = {"id": "f" * 64, "project": "", "service": "", "image": "sha256:" + "8" * 64, "running": True,
+           "started_at": "2026-11-17T01:00:00Z", "restart_count": 0, "ports": {}, "networks": {}, "network_mode": "bridge", "pid_mode": ""}
+    raw.update(fields)
+    return raw
+
+
+class TestLayout(unittest.TestCase):
+    """#668 리뷰: pre/post에서 배치·이미지·실행 중 컨테이너 전체를 대조한다(구간 이전 상태는 이벤트 감시로 안 잡힌다)."""
+
+    def world(self):
+        networks, containers, images = layout_world()
+        running = [c for c in containers if c["running"]]
+        return networks, containers, running, images
+
+    def test_matching_world_passes(self):
+        self.assertEqual(judge(*self.world()), [])
+
+    def test_review_counterexamples(self):
+        # 1) 대상에 loopback 직접 publish(계측기 우회 경로)
+        networks, containers, running, images = self.world()
+        target = next(c for c in containers if c["service"] == "target")
+        target["ports"] = {"5000/tcp": [{"HostIp": "127.0.0.1", "HostPort": "39001"}]}
+        self.assertIn("service.target: PUBLISH_MISMATCH", judge(networks, containers, running, images))
+        # 2) 구간 전부터 떠 있는 회차 밖 컨테이너가 대상 netns를 같이 씀
+        networks, containers, running, images = self.world()
+        target_id = next(c["id"] for c in containers if c["service"] == "target")
+        sharer = stranger(network_mode="container:" + target_id)
+        self.assertEqual(judge(networks, containers, running + [sharer], images),
+                         [f"host.container.{'f' * 12}: SHARES_NETWORK_NAMESPACE"])
+        # PID namespace 공유도 같다
+        self.assertEqual(judge(networks, containers, running + [stranger(pid_mode="container:" + target_id)], images),
+                         [f"host.container.{'f' * 12}: SHARES_PID_NAMESPACE"])
+
+    def test_declared_sharing_only_to_its_own_service(self):
+        networks, containers, running, images = self.world()
+        api = next(c for c in containers if c["service"] == "api")
+        api["network_mode"] = "container:" + next(c["id"] for c in containers if c["service"] == "target")
+        result = judge(networks, containers, [c for c in containers if c["running"]], images)
+        self.assertIn("service.api: SHARED_NAMESPACE_MISMATCH", result)
+        self.assertIn(f"host.container.{api['id'][:12]}: SHARES_NETWORK_NAMESPACE", result)
+
+    def test_images_one_shots_and_foreign_publishes(self):
+        networks, containers, running, images = self.world()
+        self.assertEqual(judge(networks, containers, running, dict(images, target="sha256:" + "7" * 64)),
+                         ["service.target: IMAGE_MISMATCH"])
+        self.assertEqual(judge(networks, containers, running, {k: v for k, v in images.items() if k != "api"}),
+                         ["service.api: IMAGE_MISMATCH"])
+        install = next(c for c in containers if c["service"] == "install")
+        install["running"] = True
+        self.assertIn("service.install: ONE_SHOT_RUNNING", judge(networks, containers, running, images))
+        install["running"] = False
+        exposed = stranger(ports={"80/tcp": [{"HostIp": "0.0.0.0", "HostPort": "80"}]})
+        self.assertEqual(judge(networks, containers, running + [exposed], images), [f"host.container.{'f' * 12}: NON_LOOPBACK_PUBLISH"])
+        loopback = stranger(ports={"80/tcp": [{"HostIp": "127.0.0.1", "HostPort": "80"}]})
+        self.assertEqual(judge(networks, containers, running + [loopback], images), [])  # 다른 스택의 loopback publish는 받는다
+
+    def test_topology_mismatches_from_check_topology(self):
+        networks, containers, running, images = self.world()
+        target_net = next(n for n in networks if n["Labels"]["com.docker.compose.network"] == "target")
+        target_net["Internal"] = False
+        self.assertIn("network.target: INTERNAL_MISMATCH", judge(networks, containers, running, images))
+        networks, containers, running, images = self.world()
+        meter_id = next(c["id"] for c in containers if c["service"] == "eval-meter")
+        target_net = next(n for n in networks if n["Labels"]["com.docker.compose.network"] == "target")
+        target_net["Containers"][meter_id]["IPv4Address"] = "10.252.3.21/24"
+        self.assertIn("network.target: ADDRESS_MISMATCH", judge(networks, containers, running, images))
+
+
+class TestLayoutRender(unittest.TestCase):
+    """실제 분리 배치 렌더(제품 compose + overlay)로 같은 대조를 돌린다."""
+
+    def test_real_render(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ci"))
+        try:
+            import test_product_eval_split as split_render
+        finally:
+            sys.path.pop(0)
+        try:
+            rendered = split_render.render((*split_render.PRODUCT_FILES, split_render.OVERLAY), split_render.SYNTHETIC)
+        except (OSError, RuntimeError, AssertionError) as exc:  # compose 없는 환경
+            self.skipTest(f"docker compose 렌더 불가: {type(exc).__name__}")
+        networks, containers, images = layout_world(rendered)
+        running = [c for c in containers if c["running"]]
+        self.assertEqual(check_split_layout(rendered, PROJECT, [parse_network(n) for n in networks],
+                                            [parse_container(c) for c in containers], [parse_container(c) for c in running],
+                                            images), [])
+        target = next(c for c in containers if c["service"] == "target")
+        target["ports"] = {"5000/tcp": [{"HostIp": "127.0.0.1", "HostPort": "39001"}]}
+        sharer = stranger(network_mode="container:" + target["id"])
+        result = check_split_layout(rendered, PROJECT, [parse_network(n) for n in networks],
+                                    [parse_container(c) for c in containers],
+                                    [parse_container(c) for c in running + [sharer]], images)
+        self.assertEqual(result, sorted(["service.target: PUBLISH_MISMATCH", f"host.container.{'f' * 12}: SHARES_NETWORK_NAMESPACE"]))
+
+
+class LayoutDocker:
+    """DockerSplitPorts.check가 부르는 Docker 조회만 합성 상태로 답한다."""
+
+    def __init__(self, networks, containers, running, images):
+        self.networks, self.containers, self.running, self.images = networks, containers, running, images
+
+    def project_network_ids(self, project):
+        return [n["Id"] for n in self.networks if n["Labels"]["com.docker.compose.project"] == project]
+
+    def inspect_networks(self, ids):
+        return [n for n in self.networks if n["Id"] in ids]
+
+    def project_container_ids(self, project):
+        return [c["id"] for c in self.containers if c["project"] == project]
+
+    def running_container_ids(self):
+        return [c["id"] for c in self.running]
+
+    def inspect_containers(self, ids):
+        everything = {c["id"]: c for c in self.containers + self.running}
+        return [everything[i] for i in ids]
+
+    def image_id(self, reference):
+        return self.images[reference]
+
+
+class TestCheckPort(PortsCase):
+    """실제 포트(DockerSplitPorts.check) → check_split_layout 연결. 리뷰 반례를 같은 경로로 넣는다."""
+
+    def ports_for(self, mutate=None):
+        networks, containers, images = layout_world(project=self.plan.project)
+        running = [c for c in containers if c["running"]]
+        if mutate:
+            running = mutate(containers, running)
+        by_image = {LAYOUT["services"][name]["image"]: image for name, image in images.items()}
+        docker = LayoutDocker(networks, containers, running, by_image)
+        return DockerSplitPorts(config=self.config, split=self.split, plan=self.plan, directory=self.directory, docker=docker,
+                                driver=self.driver, inputs=self.inputs, rendered=LAYOUT, manifest=MANIFEST,
+                                model_key=ModelKey("sk-or-v1-test"), exploration={})
+
+    def test_clean_and_counterexamples(self):
+        result = self.ports_for().check("pre")
+        self.assertEqual((result["phase"], result["violations"], result["containers"]), ("pre", [], 5))
+
+        def publish(containers, running):
+            next(c for c in containers if c["service"] == "target")["ports"] = {
+                "5000/tcp": [{"HostIp": "127.0.0.1", "HostPort": "39001"}]}
+            return running
+
+        def share(containers, running):
+            return running + [stranger(network_mode="container:" + next(c["id"] for c in containers if c["service"] == "target"))]
+
+        self.assertEqual(self.ports_for(publish).check("post")["violations"], ["service.target: PUBLISH_MISMATCH"])
+        self.assertEqual(self.ports_for(share).check("post")["violations"], [f"host.container.{'f' * 12}: SHARES_NETWORK_NAMESPACE"])
 
 
 class TestDocker(PortsCase):

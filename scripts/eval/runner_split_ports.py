@@ -20,8 +20,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from runner import _read_text, read_host_spec, snapshot_state_sha256
-from runner_checks import (Listener, network_snapshot, network_subnets, parse_container, parse_network, planned_subnets,
-                           read_host_listeners)
+from runner_checks import (Binding, ExpectedTopology, Listener, NetworkExpectation, check_namespace_sharing,
+                           check_other_publishes, check_topology, network_snapshot, network_subnets, parse_container,
+                           parse_network, planned_subnets, read_host_listeners)
 from runner_config import OBSERVER_OPAQUE, RunDirectory, RunnerConfig
 from runner_evidence import EvidenceError, read_private_json
 from runner_docker import Docker
@@ -96,6 +97,74 @@ def ready_state(expected: dict[str, str], states: list[dict]) -> bool:
     return ready
 
 
+def split_expected_topology(rendered: dict) -> tuple[ExpectedTopology, frozenset[str], dict[str, str]]:
+    """렌더 결과에서 분리 배치의 기대 배치. (망·publish·고정 주소, 완료돼야 하는 일회성 서비스, 선언된 netns 공유)."""
+    expected = ready_expectations(rendered)
+    services = {name: rendered["services"][name] for name in expected}
+    one_shot = frozenset(name for name, want in expected.items() if want == "completed")
+    shared = {}
+    for name, service in services.items():
+        mode = service.get("network_mode") or ""
+        if mode.startswith("service:"):
+            shared[name] = mode[len("service:"):]
+    networks = {}
+    pinned: dict[str, dict[str, str]] = {}
+    for key, network in (rendered.get("networks") or {}).items():
+        users = {name for name, service in services.items() if key in (service.get("networks") or {})}
+        if not users:
+            continue  # 이 배치의 서비스가 쓰지 않는 망은 compose가 만들지 않는다
+        # 끝난 일회성 컨테이너는 망 구성원 목록(docker network inspect)에 없다. 그런 망은 구성원 없음이 기대값이다.
+        members = set()
+        for name in users - one_shot:
+            members.add(name)
+            attached = services[name]["networks"][key]
+            address = attached.get("ipv4_address") if isinstance(attached, dict) else None
+            if address:
+                pinned.setdefault(key, {})[name] = address
+        networks[key] = NetworkExpectation(bool((network or {}).get("internal")), frozenset(members))
+    publishes = {}
+    for name, service in services.items():
+        if name in one_shot:
+            continue
+        bindings = set()
+        for port in service.get("ports") or []:
+            bindings.add(Binding(f"{port['target']}/{port.get('protocol', 'tcp')}", port.get("host_ip", ""), int(port["published"])))
+        publishes[name] = frozenset(bindings)
+    return ExpectedTopology(networks=networks, publishes=publishes, pinned=pinned), one_shot, shared
+
+
+def check_split_layout(rendered: dict, project: str, networks: list, containers: list, running: list,
+                       expected_images: dict[str, str]) -> list[str]:
+    """분리 배치 pre/post 배치 검사. B의 check_topology·check_namespace_sharing·check_other_publishes를 그대로 쓰고, 분리
+    배치 예외는 둘뿐이다: 완료된 일회성 서비스(종료 0)는 실행 서비스 대조에서 빼고, 렌더에 선언된 `service:X` netns 공유는
+    그 서비스의 실제 컨테이너 ID를 가리킬 때만 받는다. 이미지는 서비스마다 렌더 이미지의 내용 ID와 같아야 한다."""
+    topology, one_shot, shared = split_expected_topology(rendered)
+    violations = set()
+    live = []
+    for container in containers:
+        if container.project == project and container.service in one_shot:
+            if container.running:
+                violations.add(f"service.{container.service}: ONE_SHOT_RUNNING")
+            continue
+        live.append(container)
+    ids = {c.service: c.id for c in live if c.project == project}
+    declared = {c.id for c in live if c.project == project and c.service in shared
+                and c.network_mode == "container:" + ids.get(shared[c.service], "-")}
+    # 선언된 공유(api·workbench → preparation)는 망 구성원이 아니라 check_topology의 망 대조와 맞는다. 공유 검사에서만 뺀다.
+    violations.update(check_topology(topology, project, networks, live))
+    violations.update(check_namespace_sharing(live, [c for c in running if c.id not in declared]))
+    violations.update(check_other_publishes(project, running))
+    for container in live:
+        if container.project != project:
+            continue
+        if container.service in shared and container.id not in declared:
+            violations.add(f"service.{container.service}: SHARED_NAMESPACE_MISMATCH")
+        want = expected_images.get(container.service)
+        if want is None or container.image != want:
+            violations.add(f"service.{container.service}: IMAGE_MISMATCH")
+    return sorted(violations)
+
+
 def product_record_names(approval_id: str) -> tuple[str, str]:
     """제품 승인 장부·호출 기록 파일 이름(llmpolicy openrouter_file_linux.go와 같은 규칙)."""
     approval = hashlib.sha256(approval_id.encode("utf-8")).hexdigest()
@@ -155,6 +224,16 @@ class DockerSplitPorts:
         networks = [parse_network(n) for n in self.docker.inspect_networks(self.docker.project_network_ids(self.plan.project))]
         containers = [parse_container(c) for c in self.docker.inspect_containers(self.docker.project_container_ids(self.plan.project))]
         return network_snapshot(daemon, self.plan.project, networks, containers)
+
+    def check(self, phase: str) -> dict:
+        """pre/post 배치 검사(#668 리뷰). 회차 망·컨테이너와 호스트의 실행 중 컨테이너 전체를 읽어 대조한다."""
+        networks = [parse_network(n) for n in self.docker.inspect_networks(self.docker.project_network_ids(self.plan.project))]
+        containers = [parse_container(c) for c in self.docker.inspect_containers(self.docker.project_container_ids(self.plan.project))]
+        running = [parse_container(c) for c in self.docker.inspect_containers(self.docker.running_container_ids())]
+        images = {name: self.docker.image_id(service["image"]) for name, service in self.rendered["services"].items()
+                  if name in ready_expectations(self.rendered)}
+        violations = check_split_layout(self.rendered, self.plan.project, networks, containers, running, images)
+        return {"phase": phase, "violations": violations, "containers": len(containers), "running": len(running)}
 
     def probes(self, phase: str, snapshot: dict) -> SplitProbeOutcome:
         # 단계마다 새 cidfile 디렉터리다(docker는 이미 있는 cidfile이면 실행을 거부한다).

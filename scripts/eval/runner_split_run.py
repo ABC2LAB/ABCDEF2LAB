@@ -79,6 +79,7 @@ class SplitRunPorts(Protocol):
     def host_subnets(self) -> list: ...
     def up(self) -> None: ...
     def snapshot(self, phase: str) -> dict: ...
+    def check(self, phase: str) -> dict: ...
     def probes(self, phase: str, snapshot: dict) -> SplitProbeOutcome: ...
     def dns_token(self) -> str: ...
     def start_events(self, since: str): ...
@@ -118,6 +119,15 @@ class _StatusReader:
 
     def status(self, draft_id: str) -> dict:
         return self.ports.product_status(draft_id)
+
+
+def _split_check(ports: SplitRunPorts, evidence, state: _SplitState, phase: str) -> None:
+    """배치 검사(망·publish·고정 주소·이미지·netns 공유·회차 밖 publish). 구간 이전 상태는 이벤트 감시로 안 잡히므로
+    pre/post에서 본다(#668 리뷰). 위반이면 무효."""
+    result = _step(state, f"{phase}_checks_failed", lambda: ports.check(phase))
+    _step(state, "evidence_write_failed", lambda: evidence.write_json(f"{phase}-checks.json", result))
+    if result["violations"]:
+        raise RunFailure(f"{phase}_layout_violation")
 
 
 def _split_probe(ports: SplitRunPorts, evidence, state: _SplitState, phase: str, snapshot: dict) -> None:
@@ -165,6 +175,7 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     _step(state, "compose_up_failed", ports.up)
 
     pre = _step(state, "pre_facts_failed", lambda: ports.snapshot("pre"))
+    _split_check(ports, evidence, state, "pre")
     _split_probe(ports, evidence, state, "pre", pre)
     token = _step(state, "dns_token_failed", ports.dns_token)
 
@@ -202,6 +213,7 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     post = _step(state, "post_facts_failed", lambda: ports.snapshot("post"))
     # 사후 점검은 경계의 두 입구·netns가 살아 있어야 한다(#653 기대값). 그래서 경계 정지는 post 관측·점검 뒤, 구간이 끝나기
     # 전이다. 경계는 SIGTERM 정지 한 번으로 봉인 표식까지 쓰고 끝난다(계약 §4.1 결정 B). 구간 감시가 그 정지만 허용한다.
+    _split_check(ports, evidence, state, "post")
     _split_probe(ports, evidence, state, "post", post)
     post_board = _step(state, "post_scoreboard_failed", lambda: ports.scoreboard("post", post))
     _step(state, "boundary_stop_failed", lambda: ports.stop_boundary(pre["services"][BOUNDARY]["id"]))
