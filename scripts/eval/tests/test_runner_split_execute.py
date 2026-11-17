@@ -220,6 +220,19 @@ class TestOrder(unittest.TestCase):
         task = evidence.files["task.json"]
         self.assertEqual((task["format"], task["draft_id"], task["task_id"]), ("abc2lab-eval-runner-split-task-v1", "draft-1", "42"))
 
+    def test_budget_clock_starts_after_preparation(self):
+        # 로그인~초안(준비)은 예산 시계 밖이다. B의 작업 생성 직전과 같은 뜻으로 시작 요청 직전부터 잰다.
+        def mutate(ports):
+            original = ports.prepare_round
+
+            def slow(token):
+                ports.clock.t += 30.0
+                return original(token)
+            ports.prepare_round = slow
+        result, _, evidence = run(mutate)
+        self.assertEqual(evidence.files["task.json"]["requested_at"], (START + timedelta(seconds=30)).isoformat())
+        self.assertEqual(result["finished_at"], (START + timedelta(seconds=90)).isoformat())
+
     def test_product_budget_closing_is_first_limit(self):
         def mutate(ports):
             ports.statuses = [{"id": "draft-1", "state": "running"},
@@ -280,6 +293,18 @@ class TestInvalid(unittest.TestCase):
                    "timeNano": at + 2}]
         result, _, _ = run(lambda p: setattr(p, "events_raw", events))
         self.assertEqual(result["status"], "complete", result)
+
+    def test_probe_containers_are_allowed_only_by_their_ids(self):
+        at = int((START + timedelta(seconds=5)).timestamp() * 1e9)
+        lifecycle = [{"Type": "container", "Action": action, "Actor": {"ID": cid * 64, "Attributes": {}}, "timeNano": at + i}
+                     for i, (cid, action) in enumerate((("2", "create"), ("2", "start"), ("2", "die"), ("2", "destroy")))]
+        result, _, _ = run(lambda p: setattr(p, "events_raw", lifecycle))
+        self.assertEqual(result["status"], "complete", result)
+        foreign = [dict(lifecycle[0], Actor={"ID": "9" * 64, "Attributes": {}})]
+        self.assert_invalid("window_boundary_changed", lambda p: setattr(p, "events_raw", foreign))
+
+    def test_requests_before_the_task_are_invalid(self):
+        self.assert_invalid("pre_requests_nonzero", lambda p: setattr(p, "forwarded", 3))
 
     def test_goal_missing_and_record_problems(self):
         self.assert_invalid("goal_digest_missing", lambda p: p.record.pop("goal"))
