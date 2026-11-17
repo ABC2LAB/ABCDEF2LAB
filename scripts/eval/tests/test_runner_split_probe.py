@@ -26,6 +26,17 @@ RENDERED = {"services": {
                                 "http://10.252.5.20:9222", "--port", "8931", "--host", "10.252.4.20"]},
     "explore-browser": {"command": ["--proxy-server", "http://explore-boundary:3128", "--cdp-listen", "10.252.5.20:9222"]},
 }}
+# 망 소속은 실제 렌더와 같은 모양(scripts/ci/test_product_eval_split.py 렌더에서 확인).
+NETWORKS = {
+    "preparation": {"control": {}, "explore_control": {}, "explore_direct": {}, "frontend": {}, "target": {}},
+    "explore-boundary": {"eval_explore_ingress": {}, "explore_browser_ingress": {}, "frontend": {}, "target": {},
+                         "explore_direct": {"aliases": ["explore-direct"]}},
+    "explore-mcp": {"explore_cdp": {}, "explore_control": {}},
+    "explore-browser": {"explore_browser_ingress": {}, "explore_cdp": {}},
+    "postgres": {"control": {}},
+}
+for _name, _networks in NETWORKS.items():
+    RENDERED["services"].setdefault(_name, {})["networks"] = _networks
 BOUNDARY_CONFIG = {"browser_listen": "10.252.8.10:3128", "direct_listen": "10.252.7.10:3129"}
 EXPLORATION = {"mcp_url": "http://explore-mcp:8931/mcp", "direct_proxy": "http://explore-direct:3129"}
 
@@ -106,6 +117,20 @@ class TestSplitPorts(unittest.TestCase):
             "no_flag": (render("explore-browser", "--cdp-listen", "--cdp-x"), BOUNDARY_CONFIG, EXPLORATION,
                         "split_flag_invalid:explore-browser:cdp-listen"),
             "no_command": ({"services": {}}, BOUNDARY_CONFIG, EXPLORATION, "split_command_missing:eval-meter"),
+            # 리뷰 반례: 포트를 같게 맞춰도 다른 서비스(postgres)를 MCP 자리에 둘 수 없다.
+            "mcp_other_service_same_port": (render("explore-mcp", "8931", "5432"), BOUNDARY_CONFIG,
+                                            dict(EXPLORATION, mcp_url="http://postgres:5432/mcp"), "split_mcp_host_mismatch"),
+            "mcp_host_only": (RENDERED, BOUNDARY_CONFIG, dict(EXPLORATION, mcp_url="http://postgres:8931/mcp"),
+                              "split_mcp_host_mismatch"),
+            # 경계 서비스 이름은 preparation과 망을 여럿 같이 써서 직접 입구 망 주소로 풀린다는 보장이 없다(별칭만).
+            "direct_service_name": (RENDERED, BOUNDARY_CONFIG, dict(EXPLORATION, direct_proxy="http://explore-boundary:3129"),
+                                    "split_direct_host_mismatch"),
+            "direct_other_host": (RENDERED, BOUNDARY_CONFIG, dict(EXPLORATION, direct_proxy="http://explore-mcp:3129"),
+                                  "split_direct_host_mismatch"),
+            "browser_other_host": (render("explore-browser", "http://explore-boundary:3128", "http://explore-mcp:3128"),
+                                   BOUNDARY_CONFIG, EXPLORATION, "split_browser_host_mismatch"),
+            "browser_alias_other_net": (render("explore-browser", "http://explore-boundary:3128", "http://explore-direct:3128"),
+                                        BOUNDARY_CONFIG, EXPLORATION, "split_browser_host_mismatch"),
             "listen_port": (render("eval-meter", "-listen=10.252.3.20:8080", "-listen=10.252.3.20:0"), BOUNDARY_CONFIG,
                             EXPLORATION, "split_meter_listen_invalid"),
         }

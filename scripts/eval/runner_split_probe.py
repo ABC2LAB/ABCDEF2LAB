@@ -31,6 +31,8 @@ METER, TARGET = "eval-meter", "target"
 # 계측기 두 입구가 붙는 망(overlay deploy/eval/compose.split.yaml). 망 이름은 compose 망 키다.
 METER_MAIN_NETWORK, METER_EXPLORE_NETWORK = "target", "eval_explore_ingress"
 BROWSER_INGRESS_NETWORK, CDP_NETWORK = "explore_browser_ingress", "explore_cdp"
+# 제품 엔진이 MCP·경계 직접 입구를 부르는 망(deploy/product/compose.yaml).
+MCP_CONTROL_NETWORK, DIRECT_NETWORK = "explore_control", "explore_direct"
 _ANY = frozenset()  # RECORD 행은 허용 결과를 따지지 않는다
 
 
@@ -83,8 +85,35 @@ def _url(value: object, code: str) -> tuple[str, int]:
     return parts.hostname, port
 
 
+def _networks(rendered: dict, service: str) -> dict:
+    networks = rendered.get("services", {}).get(service, {}).get("networks")
+    if not isinstance(networks, dict):
+        raise ProbeSetupError(f"split_networks_missing:{service}")
+    return networks
+
+
+def _bind_host(rendered: dict, caller: str, service: str, network: str, host: str, code: str) -> None:
+    """caller가 host로 부르면 network 위의 service에 닿는지 렌더로 확인한다(같은 포트의 다른 서비스가 대신하지 못하게).
+
+    받는 이름: 그 망에서 service에 단 별칭, 그리고 caller와 service가 함께 붙은 망이 그 망 하나뿐일 때의 서비스 이름.
+    함께 붙은 망이 여럿이면 서비스 이름이 다른 망 주소로 풀릴 수 있어 받지 않는다(제품 compose: preparation과 경계는
+    frontend·target도 같이 쓴다).
+    """
+    caller_networks, service_networks = _networks(rendered, caller), _networks(rendered, service)
+    if network not in caller_networks or network not in service_networks:
+        raise ProbeSetupError(code)
+    entry = service_networks[network] if isinstance(service_networks[network], dict) else {}
+    aliases = entry.get("aliases") or []
+    names = set(aliases) if isinstance(aliases, list) else set()
+    if set(caller_networks) & set(service_networks) == {network}:
+        names.add(service)
+    if host not in names:
+        raise ProbeSetupError(code)
+
+
 def split_ports(rendered: dict, boundary: dict, exploration: dict) -> SplitPorts:
-    """overlay 렌더 결과·경계 설정·설치 탐색 블록에서 입구를 읽고 짝끼리 대조한다."""
+    """overlay 렌더 결과·경계 설정·설치 탐색 블록에서 입구를 읽고 짝끼리 대조한다. 이름으로 부르는 입구는 호스트도
+    그 서비스에 묶는다(포트만 같으면 다른 서비스가 양성 대조를 대신할 수 있다)."""
     meter = _command(rendered, METER)
     meter_main = _host_port(_flag(meter, "-listen", METER), "split_meter_listen_invalid")
     meter_explore = _host_port(_flag(meter, "-explore-listen", METER), "split_meter_listen_invalid")
@@ -92,10 +121,13 @@ def split_ports(rendered: dict, boundary: dict, exploration: dict) -> SplitPorts
     mcp = _url(exploration.get("mcp_url"), "split_exploration_invalid")
     if int(_flag(_command(rendered, MCP), "--port", MCP)) != mcp[1]:
         raise ProbeSetupError("split_mcp_port_mismatch")
+    _bind_host(rendered, PREPARATION, MCP, MCP_CONTROL_NETWORK, mcp[0], "split_mcp_host_mismatch")
     direct = _url(exploration.get("direct_proxy"), "split_exploration_invalid")
     if _host_port(str(boundary.get("direct_listen")), "split_boundary_invalid")[1] != direct[1]:
         raise ProbeSetupError("split_direct_port_mismatch")
+    _bind_host(rendered, PREPARATION, BOUNDARY, DIRECT_NETWORK, direct[0], "split_direct_host_mismatch")
     browser_ingress = _url(_flag(_command(rendered, BROWSER), "--proxy-server", BROWSER), "split_browser_proxy_invalid")
+    _bind_host(rendered, BROWSER, BOUNDARY, BROWSER_INGRESS_NETWORK, browser_ingress[0], "split_browser_host_mismatch")
     browser_listen = _host_port(str(boundary.get("browser_listen")), "split_boundary_invalid")
     if browser_listen[1] != browser_ingress[1]:
         raise ProbeSetupError("split_browser_port_mismatch")
