@@ -21,10 +21,9 @@ import {
   urlDiagnosisInput,
   type WorkflowMode,
 } from "@/lib/diagnosis/diagnosis-url";
-
 import {
-  EXTERNAL_ACCOUNT_STATEMENT,
   EXTERNAL_ACCOUNT_PASSWORD_NOTICE,
+  EXTERNAL_ACCOUNT_STATEMENT,
   readExternalTestAccountPresence,
 } from "@/lib/diagnosis/external-account-consent";
 
@@ -632,14 +631,16 @@ export function UrlNewScanLive() {
                       if (handle && !job?.preparation_started) void runUrlAction("validate");
                     }}
                   />
-                  {/* 최근 점검한 주소: 서버에 점검 목록이 없어 줄을 만들지 않는다 */}
                   <div className={s.field}>
-                    <div className={s["fsec-ht"]}>
-                      <span className={s.lbl}>최근 점검한 주소</span>
-                      <Unwired why="서버에 점검 목록이 없습니다" />
-                    </div>
-                    <div className={s.chiprow}>
-                      <span className={s.help}>불러올 수 있는 최근 주소가 없습니다</span>
+                    <span className={s.lbl}>기존 점검 다시 열기</span>
+                    <p className={s.help}>새 브라우저에서도 로그인 후 서버에 보존된 점검을 찾을 수 있습니다.</p>
+                    <div className={s.acts}>
+                      <a className={s.btn} href="#running">
+                        진행·시작 전 점검 목록
+                      </a>
+                      <a className={s.btn} href="#finished">
+                        끝난 점검 목록
+                      </a>
                     </div>
                   </div>
                 </div>

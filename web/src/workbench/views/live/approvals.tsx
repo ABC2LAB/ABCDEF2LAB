@@ -84,6 +84,7 @@ export function useRequestApprovals(taskId: string, active: boolean): Approvals 
       const st = useUrl.getState();
       return (
         st.verified &&
+        st.handle?.kind !== "recovered" &&
         !st.uncertain &&
         st.job?.task_id === taskId &&
         ["preparing", "running"].includes(st.job.state) &&
@@ -145,6 +146,17 @@ export function useRequestApprovals(taskId: string, active: boolean): Approvals 
 
 /** 서버가 붙이는 미리보기 안내 키. 값은 서버 문장 그대로 보여 준다. */
 const PREVIEW_LIMIT_KEY = "표시 제한";
+
+/** 승인 목록 또는 단일 상세 위에 한 번만 두는 복구 제어 안내. */
+export function RecoveredApprovalNotice() {
+  const recovered = useUrl((st) => st.handle?.kind === "recovered");
+  return recovered ? (
+    <p className={s.help}>
+      다시 연 점검은 조회 전용입니다. 요청 승인은 처음 시작한 화면에서만 가능합니다. 이 화면에서는 같은 운영자 계정으로
+      종료만 할 수 있습니다.
+    </p>
+  ) : null;
+}
 
 /**
  * 보낼 요청: 메서드 · 경로 · 대상(scheme 포함)과 서버가 준 미리보기 전부.
