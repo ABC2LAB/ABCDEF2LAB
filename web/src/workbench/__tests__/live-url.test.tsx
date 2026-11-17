@@ -65,7 +65,8 @@ import {
   urlGates,
   useUrl,
 } from "../live/urlDiagnosis";
-import { urlAccountAuthRows, urlOutcomeText, urlTargetHint, urlTone, urlViewFor } from "../live/urlMap";
+import { urlAccountAuthRows, urlOutcomeText, urlStateText, urlTargetHint, urlTone, urlViewFor } from "../live/urlMap";
+import { flowStageText } from "../live/workflow";
 import { type Shell, ShellContext, type View } from "../shell";
 import { createInitialState, useWb } from "../store";
 import { DashboardByMode, LiveByMode, NewScanByMode, ReportByMode, ScopeByMode } from "../views/live/byMode";
@@ -323,6 +324,13 @@ afterEach(() => {
 });
 
 describe("URL 진단 계산", () => {
+  it("끝까지 마친 점검(completed)은 '실행 마감' 대신 '점검 완료', 나머지는 팀 lib 글 그대로", () => {
+    expect(urlStateText("completed")).toBe("점검 완료");
+    expect(flowStageText.completed).toBe("점검 완료");
+    expect(urlStateText("cancelled")).toBe("중지됨");
+    expect(urlStateText("running")).toBe("엔진 실행 중");
+    expect(urlStateText("completed", false)).toBe("현재 상태 미확인");
+  });
   it("주소 안내: HTTPS 만 · 계정 정보 · query/fragment · 인코딩", () => {
     expect(urlTargetHint("")).toBe("");
     expect(urlTargetHint("ftp://target.example/")).toBe("http 또는 https 주소만 받습니다.");

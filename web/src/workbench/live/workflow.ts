@@ -221,7 +221,7 @@ export const flowStageText: Record<WorkflowSnapshot["stage"], string> = {
   crawling: "자산 탐색 중",
   awaiting_selection: "탐색 완료 · 범위 확인 대기",
   diagnosing: "심화 진단 중",
-  completed: "실행 마감",
+  completed: "점검 완료",
   stopped: "중지됨",
   failed: "실행 실패",
   unknown: "결과 불명",

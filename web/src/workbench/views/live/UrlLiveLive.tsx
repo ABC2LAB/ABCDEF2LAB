@@ -397,7 +397,7 @@ export function UrlLiveLive() {
   const runningPlan = flow?.plan?.find((p) => planState(p.state).row === "run");
   const nowText =
     runningPlan?.title ?? flow?.current_path ?? (flow ? flowStageText[flow.stage] : urlPhaseLabels[job.phase]);
-  // 상태 카드 첫 줄 (시안 lNowK · lTask): 실행 마감이면 완료, 그 밖에 끝났으면 종료됨, 멈췄으면 멈춤.
+  // 상태 카드 첫 줄 (시안 lNowK · lTask): 실행 마감(completed)이면 완료 · '점검을 마쳤습니다', 그 밖에 끝났으면 종료됨, 멈췄으면 멈춤.
   // 결과 저장이 확인되면 따로 두던 완료 카드('점검을 마쳤습니다 [보고서 보기]')를 이 카드에 합친다(같은 말이 두 번 나와서)
   let nowK: ReactNode;
   let taskText: ReactNode = nowText;
@@ -409,7 +409,7 @@ export function UrlLiveLive() {
         완료
       </span>
     );
-    taskText = "실행을 마감했습니다";
+    taskText = "점검을 마쳤습니다";
   } else if (ended) {
     nowK = (
       <span className={cx(s["now-k"], s.idle)}>
