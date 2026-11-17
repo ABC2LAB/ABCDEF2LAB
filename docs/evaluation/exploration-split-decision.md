@@ -91,6 +91,7 @@
 | `runner_settings_sha256` | 공통 러너 설정만: 폴링·drain 시한·봉인 뒤 유예·정착 대기·호스트 감시 간격·이벤트 lookback | 같음 |
 | `goal_common_sha256`(새) | `task.json`의 `goal_common_sha256`(#659) | 실행 기록 `goal.common_sha256`(#625·#657) |
 | `comm_mode`·`mcp_version` | 지금과 같음(B 판 고정 패치 #655) | 같음 |
+| MCP 원 도구 목록 지문(새) | 엔진 이미지 1회용 stdio `tools/list` | 탐색 브라우저 이미지 1회용 stdio `tools/list` |
 
 **쪽별(기록하고 쪽 안에서만 고정, 짝끼리는 달라도 됨)**
 
@@ -104,7 +105,7 @@
 | `browser_image_id` | `null`(엔진 안 브라우저) | 탐색 브라우저 이미지 ID |
 | `exploration_policy_sha256` | `null` | 러너가 만든 경계 설정(`boundary.json`) SHA. 회차 값(시각·키)이 없고 경로·상한·주소·평가 칸만 있어 같은 설정이면 같다 |
 | `diagnosis_policy_sha256` | `null` | 그 회차에 제품이 쓴 E② 정책의 **내용 지문**(`e2export.PolicyFingerprint`, 기존 발행의 `policy_fingerprint_sha256`과 같은 정의: 규칙·제외 경로·상한·헤더 모드·승인 방식·실행 상한만, 시각·CA/감사 키 핀·회차 바인딩 제외). 제품 설치기는 설치마다 now/until과 새 CA·키 핀을 정책에 넣으므로 `policy.json` 원본 SHA는 같은 설정의 반복에서도 달라진다. 원본 SHA는 아래 `product` 회차별 근거에만 둔다. 러너가 읽는 길(제품 실행 쪽 값 또는 보호 상태의 정책 사본을 `cmd/e2-eval-policy`로 계산)은 구현 PR에서 정하고 둘이 같은지 시험한다 |
-| 도구 면 지문 | 분기점 3 결정 뒤 확정(MCP 원 목록·판, Bash CLI 목록·판) | 같음 |
+| 도구 면 지문 | Bash CLI 목록·판(엔진 이미지 PATH) | Bash CLI 목록·판(제품 이미지 중 E² 샌드박스 경로), MCP 허용 목록 적용 뒤 목록 지문(통제 비용) |
 
 **회차별(대조하지 않고 근거로 남김)**: `first_limit`(§3), 엔진 끝 신호(§3.1, B는 작업 목록 상태, O는 제품 초안 끝 상태), `stop_reason`, 429 건수(§3.2). O만: 제품 블록 `product` = 제품 소스 SHA·이미지 ID 셋(제품·탐색 브라우저·fixture)·`installation.json`·`policy.json`·`api-launch.json`·`target-policy.json` 원본 SHA(회차마다 다를 수 있는 근거 값, 대조 안 함)·회차 `runtime-conditions.json` SHA·제어 정책 상한 스냅숏 SHA, 설치·등록 조건(`split_conditions`, #651: 워크플로 기본값 파일 SHA·값, 등록 경로·메서드·쓰기·요청 수·유효 시간, 제외 경로 빈 목록), 모델 사용량(`sampling_overwrites` 실행·준비 칸별, #646), 호출 기록 완전성(장부 예약 수 vs 호출 기록 줄 수, #654). B는 `product`가 `null`이다.
 
@@ -116,6 +117,11 @@
   - 패치: `deploy/eval/baseline-tool-pins.patch`. 원본 Dockerfile의 `npm install -g …@latest` 한 줄만 제품(O) 엔진 이미지(`deploy/product/Dockerfile`)의 같은 줄과 같은 판으로 바꾼다. B 작업 트리를 만든 뒤 `git -C <B 작업 트리> apply <개선 후 트리>/deploy/eval/baseline-tool-pins.patch`로 적용하고 빌드한다. 시험(`scripts/eval/tests/test_baseline_tool_pins.py`)이 dev 루트 Dockerfile = 원본(SHA 고정), 패치가 한 줄만 바꿈, 판이 제품과 같음을 본다. 제품이 판을 올리면 시험이 깨지므로 패치도 같이 올린다.
 - 프로토콜 §2 도구 동등성을 "모델이 쓸 수 있는 도구 면"으로 다시 정의한다. 도구 면에는 MCP 도구 목록·버전과, Bash에서 쓸 수 있는 CLI 목록·버전을 넣는다(B는 샌드박스 없음, O는 E² 샌드박스 안).
 - MCP 버전·도구 목록은 선언이 아니라 러너가 회차 전에 측정해 지문으로 남긴다. 지금 보존 옵션의 선언 칸(`mcp_tools_sha256`·`browser_image_id`·탐색 정책 지문)은 e2-legacy 회차에서 의미 없는 값을 억지로 채워야 했다(§8).
+- **측정 방식(2026-11-17 사용자 결정, 분기점 3의 (c))**: 정적 측정으로 시작하고, 실제 회차에서 한 번 대조해 정적 측정이 실제와 맞는지 확인한다.
+  - 배경: O의 Bash는 E² 샌드박스 안에서 제품 이미지의 일부 경로만 읽기 전용으로 본다(`e2sandbox/helper_linux.go` `sandboxRuntimePaths`, `/usr/local/lib/node_modules` 없음). 그래서 이미지 도구 트리와 모델이 실제로 쓸 수 있는 도구 면이 다르다.
+  - CLI: B는 엔진 이미지의 PATH 전체, O는 제품 이미지 중 샌드박스 경로만 잰다. 샌드박스 경로 목록은 Go 목록과 러너 사본을 시험으로 묶는다.
+  - MCP: 판은 이미지의 npm 전역 판, 도구 목록은 같은 이미지를 망 없이 1회용으로 띄운 stdio `tools/list`로 잰다. **원 목록**과 **제품 허용 목록(`agentMCPTools`) 적용 뒤 목록**을 둘 다 남긴다. 공통 지문은 원 목록이고, 허용 목록 적용 뒤 목록은 O 쪽별 지문(통제 비용)이다(§3.3 도구 면 칸).
+  - **B에 있고 O 샌드박스에 없는 CLI**가 나오면, 파일럿 B 기록에서 모델이 그 도구를 실제로 썼는지 확인한다. 썼으면 차이로 넘기지 않고 E² 샌드박스 읽기 전용 경로 추가를 이동찬 항목으로 올린다(통제 규칙 때문에 탐색·진단 성능을 깎지 않는다). 안 썼으면 차이로 기록한다.
 
 ## 5. 결정 D(b) — O의 모델 경로
 
