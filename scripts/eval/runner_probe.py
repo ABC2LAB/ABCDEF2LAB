@@ -34,6 +34,8 @@ MAX_PROBE_CHECKS = 64
 MAX_PROBE_OUTPUT_BYTES = 64 * 1024
 TCP, DNS = "tcp", "dns"
 POSITIVE, NEGATIVE = "positive", "negative"
+# 기록만 하는 경로(탐색 분리 배치 §2.1: 제품 설계상 닿는 외부 경로 등). 결과를 남기되 판정에는 쓰지 않는다.
+RECORD = "record"
 PASS, VIOLATION, INVALID = "pass", "violation", "invalid"
 _CONNECTED = frozenset({"connected"})
 # 다른 망의 컨테이너 IP: Docker 격리 규칙이 버리면 timeout, ICMP 도달 불가면 unreachable. refused는 무언가에 닿았다는 뜻이라 아님.
@@ -212,7 +214,7 @@ def _parse_output(output: bytes, expectations: tuple[PathExpectation, ...]) -> d
 
 def _row(expectation: PathExpectation, observed: str | None, code: str | None, verdict: str) -> dict:
     return {"id": expectation.id, "kind": expectation.kind, "target": expectation.target, "role": expectation.role,
-            "expected": "success" if expectation.role == POSITIVE else "fail",
+            "expected": {POSITIVE: "success", NEGATIVE: "fail", RECORD: "any"}[expectation.role],
             "accepted": sorted(expectation.accepted), "observed": observed, "code": code, "verdict": verdict}
 
 
@@ -228,13 +230,15 @@ def evaluate_probe(expectations: tuple[PathExpectation, ...], output: bytes) -> 
     rows, reasons = [], set()
     for expectation in expectations:
         observed, code = results[expectation.id]
-        if expectation.role == POSITIVE:
+        if expectation.role == RECORD:
+            verdict = "recorded"
+        elif expectation.role == POSITIVE:
             verdict = "match" if observed == "success" and code in expectation.accepted else "positive_failed"
         elif observed == "success":
             verdict = "negative_succeeded"
         else:
             verdict = "match" if code in expectation.accepted else "failure_kind_mismatch"
-        reasons.add({"match": "", "positive_failed": "positive_control_failed",
+        reasons.add({"match": "", "recorded": "", "positive_failed": "positive_control_failed",
                      "negative_succeeded": "negative_path_reachable",
                      "failure_kind_mismatch": "failure_kind_mismatch"}[verdict])
         rows.append(_row(expectation, observed, code, verdict))
