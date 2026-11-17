@@ -333,6 +333,18 @@ class TestLayout(unittest.TestCase):
         loopback = stranger(ports={"80/tcp": [{"HostIp": "127.0.0.1", "HostPort": "80"}]})
         self.assertEqual(judge(networks, containers, running + [loopback], images), [])  # 다른 스택의 loopback publish는 받는다
 
+    def test_publish_address_comes_from_the_render(self):
+        # 렌더의 host_ip를 그대로 기대값으로 쓴다(127.0.0.1로 가정하지 않는다).
+        import copy
+        rendered = copy.deepcopy(LAYOUT)
+        rendered["services"]["api"]["ports"][0]["host_ip"] = "127.0.0.2"
+        networks, containers, images = layout_world(rendered)
+        running = [c for c in containers if c["running"]]
+        self.assertEqual(judge(networks, containers, running, images, rendered), [])
+        api = next(c for c in containers if c["service"] == "api")
+        api["ports"]["8787/tcp"][0]["HostIp"] = "0.0.0.0"
+        self.assertEqual(judge(networks, containers, running, images, rendered), ["service.api: PUBLISH_MISMATCH"])
+
     def test_topology_mismatches_from_check_topology(self):
         networks, containers, running, images = self.world()
         target_net = next(n for n in networks if n["Labels"]["com.docker.compose.network"] == "target")
