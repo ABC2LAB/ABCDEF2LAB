@@ -805,6 +805,7 @@ function FoundPaths({
   pick,
   tools,
   bar,
+  excludedInput = [],
 }: {
   endpoints: WorkflowEndpoint[];
   crawling: boolean;
@@ -813,6 +814,8 @@ function FoundPaths({
   pick: ScopePick;
   tools?: ReactNode;
   bar?: ReactNode;
+  /** 새 점검에서 운영자가 넣은 제외 경로 패턴(job.input.excluded_paths 한 줄에 하나) */
+  excludedInput?: readonly string[];
 }) {
   const [query, setQuery] = useState("");
   const q = query.trim().toLowerCase();
@@ -851,6 +854,24 @@ function FoundPaths({
           />
         </div>
         {bar}
+        {/* '제외' 거르기에는 새 점검에서 넣은 제외 경로 패턴을 먼저 보인다(사용자 11/17 '제외 경로가 안 나옴'). 서버는 이 경로를
+            탐색부터 방문하지 않아(diagnosisflow allowedPath · 탐색 경계) 아래 목록에는 다른 페이지 링크로 발견된 것만 나온다 */}
+        {filter === "ex" && excludedInput.length ? (
+          <section className={s.exin} aria-label="새 점검에서 뺀 경로">
+            <div className={s["exin-h"]}>새 점검에서 뺀 경로</div>
+            <div className={s.chips}>
+              {excludedInput.map((p) => (
+                <span key={p} className={s.chip}>
+                  {p}
+                </span>
+              ))}
+            </div>
+            <p className={s.help}>
+              이 경로는 탐색 · 진단에서 아예 보내지 않아 아래 목록에 없을 수 있습니다. 다른 페이지 링크로 발견된 것만
+              아래 '제외'에 나옵니다.
+            </p>
+          </section>
+        ) : null}
         <div id="sTree">
           {shown.length ? (
             <EndpointCards
@@ -1124,6 +1145,11 @@ export function WorkflowCrawlLive() {
  * 오른쪽 패널은 경로를 고르기 전에는 접어 둔다.
  */
 function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: ReactNode) => ReactNode }) {
+  const excludedRaw = useUrl((st) => st.job?.input.excluded_paths ?? "");
+  const excludedInput = excludedRaw
+    .split("\n")
+    .map((p) => p.trim())
+    .filter(Boolean);
   const eligible = (e: WorkflowEndpoint) => e.in_scope && (e.change === "attested_read" || flow.reversible_writes);
   const waiting = flow.stage === "awaiting_selection";
   // 사전 확인한 읽기 경로는 기본 포함, 데이터를 바꿀 수 있는 경로는 직접 고른다
@@ -1262,6 +1288,7 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
           <WorkflowNotice />
           <FoundPaths
             endpoints={flow.endpoints}
+            excludedInput={excludedInput}
             crawling={flow.stage === "crawling"}
             filter={treeFilter}
             onFilter={(id) => {

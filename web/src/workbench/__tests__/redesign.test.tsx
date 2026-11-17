@@ -553,6 +553,31 @@ describe("범위 확인 · 발견한 API (자산 탐색 오른쪽 패널에서 �
     expect(screen.queryByText("주소 구조")).toBeNull();
   });
 
+  it("'제외' 거르기에는 새 점검에서 넣은 제외 경로 패턴을 먼저 보이고(탐색하지 않아 목록에 없을 수 있다고), 전체에서는 두지 않는다", () => {
+    useUrl.setState({
+      handle,
+      job: { ...job, input: { ...job.input, excluded_paths: "/api/admin/*\n /logout \n\n" } },
+      verified: true,
+      flow,
+      flowVerified: true,
+    });
+    render(
+      <ShellContext.Provider value={shell("scope")}>
+        <WorkflowScopeLive />
+      </ShellContext.Provider>,
+    );
+    const found = screen.getByRole("region", { name: /^발견한 API/ });
+    expect(within(found).queryByRole("region", { name: "새 점검에서 뺀 경로" })).toBeNull();
+    fireEvent.click(within(found).getByRole("radio", { name: "제외" }));
+    const box = within(found).getByRole("region", { name: "새 점검에서 뺀 경로" });
+    expect(
+      within(box)
+        .getAllByText(/^\/(api\/admin\/\*|logout)$/)
+        .map((x) => x.textContent),
+    ).toEqual(["/api/admin/*", "/logout"]);
+    expect(box).toHaveTextContent("탐색 · 진단에서 아예 보내지 않아 아래 목록에 없을 수 있습니다");
+  });
+
   it("발견한 API: 아직 안 나온 묶음 · 거르기별 빈 글 · 로그인 범례 자리 · 경로 상세의 요청 횟수 · 기능 자리 (시안 v24 · v32)", () => {
     useUrl.setState({
       handle,
