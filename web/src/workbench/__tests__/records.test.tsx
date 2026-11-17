@@ -101,7 +101,7 @@ describe("진행 중 · 끝난 점검 묶음 계산", () => {
     expect(recRunKind("ready", true, null, 0)).toBeNull();
   });
 
-  it("끝난 점검: 실행 마감된 점검만 팀 lib 판정 집계로 나눈다 — 발견 없음은 정상 대조 결과가 있을 때만", () => {
+  it("끝난 점검: 끝까지 마친(실행 마감, completed) 점검만 팀 lib 판정 집계로 나눈다 — 발견 없음은 정상 대조 결과가 있을 때만", () => {
     expect(recDoneKinds("completed", null, "complete")).toEqual([]);
     expect(recDoneKinds("completed", { ...zero, negative: 3 }, "complete")).toEqual(["clean"]);
     // 계획한 작업 일부가 끝나지 않은 실행(partial)은 정상 대조 결과만 있어도 발견 없음이 아니다 (절대규칙 5, #440)
