@@ -12,13 +12,17 @@
 import ipaddress
 import json
 import os
+import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts" / "eval"))
+import runner_split_probe  # noqa: E402  여러 출발점 점검(4-8)이 이 렌더에서 입구를 읽는다.
 PRODUCT_FILES = ("deploy/product/compose.yaml", "deploy/product/compose.acceptance.yaml",
                  "deploy/product/compose.exploration-acceptance.yaml")
 OVERLAY = "deploy/eval/compose.split.yaml"
@@ -215,6 +219,25 @@ class EvalSplitOverlayTests(unittest.TestCase):
         # 관측 front는 호스트 루프백에만 publish한다.
         self.assertEqual([(p.get("host_ip"), p.get("published")) for p in self.split["services"]["eval-obs"]["ports"]],
                          [("127.0.0.1", "49190")])
+
+
+    def test_split_probe_reads_ports_from_this_render(self):
+        # 여러 출발점 점검(결정안 §2.1)은 이 렌더의 명령과 짝인 보호 입력에서 입구를 읽는다. 경계 설정은 제품 예시의 포트에
+        # overlay의 경계 주소를, 설치 탐색 블록은 제품 README의 값을 쓴다(러너가 만드는 것과 같은 짝).
+        example = json.loads((ROOT / "deploy/product/explore-boundary.example.json").read_text(encoding="utf-8"))
+        nets = self.split["services"]["explore-boundary"]["networks"]
+        boundary = {"browser_listen": nets["explore_browser_ingress"]["ipv4_address"] + ":" + example["browser_listen"].rsplit(":", 1)[1],
+                    "direct_listen": nets["explore_direct"]["ipv4_address"] + ":" + example["direct_listen"].rsplit(":", 1)[1]}
+        readme = (ROOT / "deploy/product/README.md").read_text(encoding="utf-8")
+        block = readme[readme.index('"target_policy": { "exploration": {'):]
+        exploration = dict(re.findall(r'"(\w+)": "([^"]+)"', block[:block.index("```")]))
+        ports = runner_split_probe.split_ports(self.split, boundary, exploration)
+        meter = self.split["services"]["eval-meter"]["networks"]
+        self.assertEqual((ports.meter_main, ports.meter_explore, ports.target_upstream),
+                         ((meter["target"]["ipv4_address"], 8080), (meter["eval_explore_ingress"]["ipv4_address"], 8081), 5000))
+        self.assertEqual((ports.mcp, ports.direct, ports.browser_ingress), (("explore-mcp", 8931), ("explore-direct", 3129),
+                                                                           ("explore-boundary", 3128)))
+        self.assertEqual(ports.cdp, (self.split["services"]["explore-browser"]["networks"]["explore_cdp"]["ipv4_address"], 9222))
 
 
 if __name__ == "__main__":
