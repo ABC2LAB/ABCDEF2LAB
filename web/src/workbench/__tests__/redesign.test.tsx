@@ -1,7 +1,7 @@
 // 시안 짜임으로 바꾼 실제 연결 화면: 증거 펼치기 · 레일 현재 표시 · 범위 기본 선택 · 대시보드 승인 카드.
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../live/api", async (importOriginal) => ({
@@ -17,16 +17,8 @@ import { resetUrl, useUrl } from "../live/urlDiagnosis";
 import { FLOW_VERSION, type WorkflowSnapshot } from "../live/workflow";
 import { type Shell, ShellContext, type View } from "../shell";
 import { UrlDashboardLive } from "../views/live/UrlDashboardLive";
-import { prettyEvidence } from "../views/live/UrlLiveLive";
-import {
-  crawlElapsed,
-  durText,
-  eventText,
-  group,
-  Pth,
-  WorkflowCrawlLive,
-  WorkflowScopeLive,
-} from "../views/live/workflowViews";
+import { prettyEvidence, UrlLiveLive } from "../views/live/UrlLiveLive";
+import { eventText, group, Pth, WorkflowCrawlLive, WorkflowScopeLive } from "../views/live/workflowViews";
 
 const noop = () => undefined;
 const shell = (route: View, over: Partial<Shell> = {}): Shell => ({
@@ -178,15 +170,15 @@ describe("범위 확인", () => {
     expect(screen.queryByText("AI 추정 묶음")).toBeNull();
   });
 
-  it("오른쪽 패널은 경로를 고르기 전엔 접어 두고, 펼치기를 누르면 고르라는 안내로 펼친다", () => {
+  it("오른쪽 패널은 경로를 고르기 전에도 펼쳐 두고 고르라는 안내를 보인다", () => {
     const openInsp = vi.fn();
     const { insp } = mountScope({ openInsp });
     expect(within(insp).getByText("경로를 고르세요")).toBeInTheDocument();
-    expect(insp.parentElement?.className).toMatch(/vb-fold/);
-    fireEvent.click(screen.getByRole("button", { name: "오른쪽 패널 펼치기" }));
-    expect(openInsp).toHaveBeenCalledTimes(1);
     expect(insp.parentElement?.className).not.toMatch(/vb-fold/);
+    // 이 화면만의 펼치기 버튼은 없고 작업대 공통 접기 버튼만
+    expect(screen.queryByRole("button", { name: "오른쪽 패널 펼치기" })).toBeNull();
     expect(screen.getByRole("button", { name: "오른쪽 패널 접기" })).toBeInTheDocument();
+    expect(openInsp).not.toHaveBeenCalled();
   });
 
   it("알약을 누르면 오른쪽 상세에서 점검 포함을 고른다: 읽기 경로는 기본 포함, 데이터 변경은 직접, 제외 경로는 못 고름", () => {
@@ -582,7 +574,7 @@ describe("자산 탐색", () => {
     events: [{ at: "2026-11-11T01:00:01Z", kind: "sent", method: "GET", path: "/api/products/1", status: 200 }],
   };
 
-  it("오른쪽 패널은 기록을 고르기 전엔 접어 두고, 발견한 API 목록은 자산 탐색에 없다", () => {
+  it("오른쪽 패널은 기록을 고르기 전에도 펼쳐 두고(고르라는 안내), 발견한 API 목록은 자산 탐색에 없다", () => {
     const openInsp = vi.fn();
     useUrl.setState({ handle, job, verified: true, flow: withRow, flowVerified: true });
     render(
@@ -595,14 +587,11 @@ describe("자산 탐색", () => {
     expect(screen.queryByRole("radiogroup", { name: "보이는 경로" })).toBeNull();
     const aside = screen.getByRole("complementary", { name: "기록 상세" });
     expect(within(aside).getByText("기록을 고르세요")).toBeInTheDocument();
-    // 이 화면만 접은 모양: 펼치기 버튼이 보이고(공통 접힘은 펼친 상태), 누르면 고르라는 안내가 보이는 패널로 펼친다
-    const unfold = screen.getByRole("button", { name: "오른쪽 패널 펼치기" });
-    expect(unfold).toHaveAttribute("aria-expanded", "false");
-    expect(aside.parentElement?.className).toMatch(/vb-fold/);
-    fireEvent.click(unfold);
-    expect(openInsp).toHaveBeenCalledTimes(1);
+    // 고르기 전에도 접지 않는다: 이 화면만의 접힘 · 펼치기 버튼은 없고 작업대 공통 접기 버튼만
     expect(aside.parentElement?.className).not.toMatch(/vb-fold/);
+    expect(screen.queryByRole("button", { name: "오른쪽 패널 펼치기" })).toBeNull();
     expect(screen.getByRole("button", { name: "오른쪽 패널 접기" })).toBeInTheDocument();
+    expect(openInsp).not.toHaveBeenCalled();
   });
 
   it("기록 줄을 누르면 패널이 펼쳐지고 그 기록이 오른쪽 패널에 나온다 (줄 아래로 펼치지 않는다)", () => {
@@ -622,7 +611,34 @@ describe("자산 탐색", () => {
     expect(within(log).queryByRole("region")).toBeNull();
   });
 
-  it("AI 자동 모드에서 첫 탐색 뒤 심화 진단 중이면 '지금 보는 곳'에 심화 진단 중이라고 같이 적는다", () => {
+  it("'지금 보는 곳' 이름표와 방문 · 방문 대기 · 페이지 상한 · 경과 줄은 없고, 탐색 중엔 새로 찾은 경로를 '찾음'으로", () => {
+    const crawl: WorkflowSnapshot = { ...flow, stage: "crawling", initial_completed: false, current_path: "/a" };
+    useUrl.setState({ handle, job, verified: true, flow: crawl, flowVerified: true });
+    render(
+      <ShellContext.Provider value={shell("crawl")}>
+        <WorkflowCrawlLive />
+      </ShellContext.Provider>,
+    );
+    expect(screen.queryByText("지금 보는 곳")).toBeNull();
+    for (const k of [/^방문 \d/, /^방문 대기/, /^페이지 상한/, /^경과/]) expect(screen.queryByText(k)).toBeNull();
+    expect(screen.getByText("탐색 중", { selector: "h1 + span" })).toBeInTheDocument();
+    // 처음 열면 비교할 앞 조회가 없어 가장 나중에 붙은 경로. 방문 중인 경로(current_path)가 아니다
+    const now = () => document.getElementById("cNow");
+    expect(now()).toHaveTextContent(/^DELETE \/api\/products\/1 찾음$/);
+    expect(screen.queryByText(/탐색을 마쳤습니다/)).toBeNull();
+    // 다음 조회에 새 경로가 생기면 그 경로로 바뀐다
+    const users = ep("users", "GET", "/api/users/2", "attested_read");
+    act(() => useUrl.setState({ flow: { ...crawl, endpoints: [...crawl.endpoints, users] } }));
+    expect(now()).toHaveTextContent(/^GET \/api\/users\/2 찾음$/);
+    // 새 경로가 없는 조회에서는 그대로 두고, 한 조회에 여럿 찾으면 마지막 것 + '외 N개'
+    act(() => useUrl.setState({ flow: { ...crawl, endpoints: [...crawl.endpoints, users] } }));
+    expect(now()).toHaveTextContent(/^GET \/api\/users\/2 찾음$/);
+    const more = [ep("o1", "GET", "/api/orders", "attested_read"), ep("o2", "POST", "/api/orders", "possible")];
+    act(() => useUrl.setState({ flow: { ...crawl, endpoints: [...crawl.endpoints, users, ...more] } }));
+    expect(now()).toHaveTextContent(/^POST \/api\/orders 찾음 \(외 1개\)$/);
+  });
+
+  it("탐색이 끝나면 '탐색을 마쳤습니다', AI 자동 모드에서 심화 진단 중이면 그것도 같이 적는다", () => {
     const auto = { ...job, input: { ...job.input, workflow_mode: "ai_auto_v1" as const } };
     const view = (f: WorkflowSnapshot) => {
       useUrl.setState({ handle, job: auto, verified: true, flow: f, flowVerified: true });
@@ -634,15 +650,15 @@ describe("자산 탐색", () => {
     };
     const { unmount } = view({ ...flow, mode: "ai_auto_v1", stage: "diagnosing", initial_completed: true });
     expect(document.getElementById("cNow")).toHaveTextContent(
-      "탐색을 마쳤습니다 · 지금은 심화 진단 중 (아래 기록에 심화 진단 요청이 이어서 쌓입니다)",
+      /^탐색을 마쳤습니다 · 지금은 심화 진단 중 \(아래 기록에 심화 진단 요청이 이어서 쌓입니다\)$/,
     );
     unmount();
-    // 사용자 승인 모드의 범위 확인 대기는 지금처럼 '탐색을 마쳤습니다'
+    // 사용자 승인 모드의 범위 확인 대기는 '탐색을 마쳤습니다'만
     view({ ...flow, stage: "awaiting_selection", initial_completed: true });
     expect(document.getElementById("cNow")).toHaveTextContent(/^탐색을 마쳤습니다$/);
   });
 
-  it("탐색 막대는 페이지 상한 대비 방문 수, 숫자 칸 보조 글은 서버 값, 경과는 기록이 없으면 — (시안 v24)", () => {
+  it("탐색 막대는 페이지 상한 대비 방문 수, 숫자 칸 보조 글은 서버 값 (시안 v24)", () => {
     useUrl.setState({
       handle,
       job,
@@ -658,10 +674,9 @@ describe("자산 탐색", () => {
     // 방문 1 / 페이지 상한 4 → 25%
     const bar = screen.getByRole("progressbar", { name: /탐색 진행/ });
     expect(bar).toHaveAttribute("aria-valuenow", "25");
-    expect(screen.getByText(/^발견한 API · 조회 1 · 데이터 변경 1$/)).toBeInTheDocument();
+    expect(screen.getByText(/^조회 1 · 데이터 변경 1 · 제외 1$/)).toBeInTheDocument();
     // 탐색 단계에서는 GET 만 보낸다 (서버 Controller.Before)
-    expect(screen.getByText(/^보낸 요청 · 조회만$/)).toBeInTheDocument();
-    expect(screen.getByText(/^경과/)).toHaveTextContent(/^경과 —$/);
+    expect(document.getElementById("cSent")?.nextElementSibling).toHaveTextContent(/^조회만$/);
     // 첫 탐색 단계가 끝나도(서버가 탐색 완료라고 하지 않으면) 막대는 실제 방문 비율 그대로 (리뷰 #479).
     // '첫 탐색 단계 끝남' 글은 위 '탐색을 마쳤습니다'와 겹쳐 적지 않는다
     useUrl.setState({ flow });
@@ -675,7 +690,7 @@ describe("자산 탐색", () => {
   });
 
   it("서버가 탐색 완료(COMPLETED)라고 하면 막대를 끝까지 채우고, 겹치는 '탐색 상태' 글은 적지 않는다", () => {
-    // 방문 9 / 페이지 상한 12 = 75% 지만 알려진 링크를 다 돌아 서버가 완료라고 했다
+    // 방문 9 / 페이지 상한 12 = 75% 지만 방문할 링크를 다 돌아 서버가 완료라고 했다
     useUrl.setState({
       handle,
       job,
@@ -702,8 +717,6 @@ describe("자산 탐색", () => {
     expect(document.getElementById("cNow")).toHaveTextContent(/^탐색을 마쳤습니다$/);
     expect(screen.queryByText(/^탐색 상태/)).toBeNull();
     expect(screen.queryByText("첫 탐색 단계 끝남")).toBeNull();
-    // 방문 · 대기 · 상한 숫자는 그대로 남긴다
-    expect(document.getElementById("cVis")).toHaveTextContent("9");
   });
 
   it.each([
@@ -909,39 +922,12 @@ describe("탐색 기록 원문 결속 (리뷰 #473)", () => {
 });
 
 describe("시안 짜임 (자산 탐색 · 범위 확인 기록 · 묶음)", () => {
-  it("탐색 기록 종류는 글로 바꾸고 모르는 종류는 코드 그대로, 경과는 탐색 시작 ~ 끝 기록으로만 잰다", () => {
+  it("탐색 기록 종류는 글로 바꾸고 모르는 종류는 코드 그대로", () => {
     expect(eventText("crawl_started")).toBe("탐색 시작");
     expect(eventText("page_failed")).toBe("관찰 실패");
     expect(eventText("awaiting_selection")).toBe("탐색 완료 · 범위 확인 대기");
     expect(eventText("constructor")).toBe("constructor");
     expect(eventText("new_server_kind")).toBe("new_server_kind");
-    const at = (s: number) => `2026-11-11T01:00:${String(s).padStart(2, "0")}Z`;
-    const base = { ...flow, stage: "awaiting_selection" as const };
-    expect(
-      crawlElapsed({
-        ...base,
-        events: [
-          { at: at(1), kind: "crawl_started" },
-          { at: at(42), kind: "crawl_finished" },
-        ],
-      }),
-    ).toBe(41);
-    // 끝 기록이 없는데 탐색이 끝났으면 모른다 (지어내지 않음)
-    expect(crawlElapsed({ ...base, events: [{ at: at(1), kind: "crawl_started" }] })).toBeNull();
-    // 탐색 중이면 마지막 갱신 시각까지
-    expect(
-      crawlElapsed({
-        ...base,
-        stage: "crawling",
-        updated_at: at(11),
-        events: [{ at: at(1), kind: "crawl_started" }],
-      }),
-    ).toBe(10);
-    // 시작 기록이 잘려 나갔으면 모른다
-    expect(crawlElapsed({ ...base, events: [] })).toBeNull();
-    expect(durText(10)).toBe("10초");
-    expect(durText(185)).toBe("3분 5초");
-    expect(durText(3720)).toBe("1시간 2분");
   });
 
   it("묶음 규칙: 관리자 · 결제를 먼저 보고, {변수}는 따로 표시한다", () => {
@@ -979,8 +965,17 @@ describe("시안 짜임 (자산 탐색 · 범위 확인 기록 · 묶음)", () =
     expect(a).toHaveTextContent(/\/a—방문 시작$/);
     expect(b).toHaveTextContent(/\/b실패관찰 실패$/);
     expect(c).toHaveTextContent(/\/c403관찰함$/);
-    expect(screen.getByText(/^승인 후 전송 · 보내기 전에 승인$/)).toBeInTheDocument();
-    expect(screen.getByText(/^요청 안 함 · 규칙으로 막음$/)).toBeInTheDocument();
+    // 숫자 칸 상자 (이름 · 수 · 설명): 발견한 API 설명은 종류별 합이 발견 수와 맞는다(읽기 1 + 쓰기 1 + 범위 밖 1 = 3)
+    expect(document.getElementById("cFound")?.parentElement).toHaveTextContent(
+      /^발견한 API3조회 1 · 데이터 변경 1 · 제외 1$/,
+    );
+    // '승인 후 전송'은 데이터 변경과 같은 수라 칸이 없고, 막은 요청은 전송 통제가 막은 요청 수
+    expect(document.getElementById("cAp")).toBeNull();
+    expect(screen.queryByText(/^승인 후 전송/)).toBeNull();
+    expect(document.getElementById("cSkip")?.parentElement).toHaveTextContent(/^막은 요청0범위 밖 · 안전 규칙$/);
+    // 위 줄에 '알려진 링크'(방문 + 방문 대기)는 없다
+    expect(screen.queryByText(/알려진 링크/)).toBeNull();
+    expect(document.getElementById("cKnown")).toBeNull();
     // 탐색 완료 · 확인 대기 (시안 cState)
     expect(screen.getByText("탐색 완료 · 확인 대기")).toBeInTheDocument();
   });
@@ -1107,5 +1102,57 @@ describe("대시보드", () => {
     expect(within(detail).getByText(/^보낼 요청 1건 · 가장 빠른 만료/)).toBeInTheDocument();
     fireEvent.click(within(detail).getByRole("button", { name: "승인 요청 보기" }));
     expect(within(detail).getByText("PUT /api/users/2")).toBeInTheDocument();
+  });
+});
+
+describe("점검 진행", () => {
+  it("가운데는 지금 하는 일 · 심화 점검 마감 수 · 계획 · 활동, 전송 통제와 탐색 현황은 오른쪽 진행 요약에", async () => {
+    vi.mocked(api.fetchRequestApprovals).mockResolvedValue({
+      run: {
+        run_ref: `run-${job.id}`,
+        phase: "running",
+        outcome: "",
+        stop_requested: false,
+        context_cancelled: false,
+        drain_complete: false,
+        closure_failed: false,
+      },
+      approvals: [],
+    });
+    const f: WorkflowSnapshot = {
+      ...flow,
+      stage: "diagnosing",
+      deep_runs: 3,
+      deep_closed: 1,
+      endpoints: flow.endpoints.map((e) => (e.id === "read" ? { ...e, selected: true } : e)),
+      plan: [
+        { id: 1, state: "completed", title: "공개 경로 탐색" },
+        { id: 2, state: "running", title: "고른 경로 심화 점검" },
+      ],
+      activity: [{ id: 1, at: "2026-11-11T01:00:00Z", worker: "planner", kind: "text", summary: "탐색을 마쳤습니다." }],
+    };
+    useUrl.setState({ handle, job, verified: true, flow: f, flowVerified: true });
+    render(
+      <ShellContext.Provider value={shell("live")}>
+        <UrlLiveLive />
+      </ShellContext.Provider>,
+    );
+    expect(document.getElementById("lMeta")).toHaveTextContent(/^심화 점검 1\/3 마감$/);
+    // 점검 계획 · 지난 활동은 좌우 두 칸이 아니라 가운데 열에 위아래로 (각자 전체 너비)
+    const planSec = screen.getByRole("region", { name: "점검 계획" });
+    const feedSec = screen.getByRole("region", { name: "지난 활동" });
+    expect(planSec.parentElement).toBe(feedSec.parentElement);
+    expect(planSec.parentElement).toContainElement(document.getElementById("lMeta"));
+    // 지난 활동 건수는 제목 밖 오른쪽, 활동 줄에 엔진 내부 이름(planner 등)은 없다
+    expect(within(feedSec).getByRole("heading", { level: 2 })).toHaveTextContent(/^지난 활동$/);
+    expect(document.getElementById("lFeedN")).toHaveTextContent("1건");
+    expect(within(feedSec).getByText("탐색을 마쳤습니다.")).toBeInTheDocument();
+    expect(within(feedSec).queryByText("planner")).toBeNull();
+    // 전송 통제는 가운데 섹션이 아니라 오른쪽 진행 요약의 한 칸
+    expect(screen.queryByRole("heading", { level: 2, name: "전송 통제" })).toBeNull();
+    const insp = screen.getByRole("complementary", { name: "진행 요약" });
+    expect(within(insp).getByRole("heading", { level: 3, name: "전송 통제" })).toBeInTheDocument();
+    // 탐색 현황: 방문 · 발견한 API · 심화 선택 (서버 수 그대로)
+    expect(within(insp).getByText("탐색 현황").parentElement).toHaveTextContent("방문 1발견한 API 3심화 선택 1");
   });
 });

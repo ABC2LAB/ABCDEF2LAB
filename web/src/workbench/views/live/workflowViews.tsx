@@ -5,7 +5,7 @@
 // 서버가 주지 않는 시안 칸(로그인 필요 여부 · 경로 기능 설명 · 요청 횟수 · 시작 전 점검 · 새 경로 처리 규칙 · 기록 한 줄 설명)은
 // 자리를 두지 않고 뺀다. 탐색 막대는 서버 진행률이 아니라 페이지 상한 대비 방문 수다.
 
-import { Fragment, type ReactNode, useEffect, useId, useRef, useState } from "react";
+import { Fragment, type ReactElement, type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 import { cx } from "../../lib/cx";
 import { clockOf, planState } from "../../live/map";
@@ -111,24 +111,6 @@ function crawlPill(flow: WorkflowSnapshot, verified: boolean): string {
   if (flow.stage === "crawling") return "탐색 중";
   if (flow.stage === "awaiting_selection") return "탐색 완료 · 확인 대기";
   return flowStageText[flow.stage];
-}
-/**
- * 탐색에 걸린 시간(초). 서버 기록의 탐색 시작(crawl_started) ~ 탐색 끝(crawl_finished), 탐색 중이면 마지막 갱신 시각까지.
- * 기록은 최근 32건만 남아 시작 줄이 빠졌거나, 끝 줄 없이 탐색이 끝났으면 모르는 것으로 둔다(null).
- */
-export function crawlElapsed(flow: WorkflowSnapshot): number | null {
-  const start = flow.events.find((e) => e.kind === "crawl_started");
-  const end =
-    flow.events.find((e) => e.kind === "crawl_finished")?.at ?? (flow.stage === "crawling" ? flow.updated_at : null);
-  if (!start || !end) return null;
-  const ms = Date.parse(end) - Date.parse(start.at);
-  return Number.isFinite(ms) && ms >= 0 ? Math.round(ms / 1000) : null;
-}
-/** 초 → "10초" · "3분 5초" · "1시간 2분". */
-export function durText(sec: number): string {
-  if (sec < 60) return `${sec}초`;
-  if (sec < 3600) return `${Math.floor(sec / 60)}분 ${sec % 60}초`;
-  return `${Math.floor(sec / 3600)}시간 ${Math.floor((sec % 3600) / 60)}분`;
 }
 /**
  * 탐색 막대 % — 실제 방문 수 ÷ 페이지 상한(서버 진행률 아님). 첫 탐색 단계가 끝났다는 initial_completed 는 완전 탐색을
@@ -870,27 +852,6 @@ function FoundPaths({
   );
 }
 
-/**
- * 고르기 전 접어 둔 오른쪽 패널의 펼치기 버튼 (자산 탐색은 기록, 범위 확인은 경로를 고르기 전). PaneToggle 과 같은 자리 · 모양이다.
- * 그 화면만 접은 것이라 작업대 공통 접힘(inspMin)은 건드리지 않는다 → 다른 화면 패널은 그대로.
- */
-function UnfoldPane({ onOpen }: { onOpen: () => void }) {
-  const text = "오른쪽 패널 펼치기";
-  return (
-    <button
-      className={cx(s["icon-btn"], s["pane-toggle"])}
-      type="button"
-      data-insp-fold=""
-      aria-expanded={false}
-      aria-label={text}
-      title={text}
-      onClick={onOpen}
-    >
-      <Icon name="unfoldRight" />
-    </button>
-  );
-}
-
 // 결과·판정 읽기 화면 진입(접근통제 지도·커버리지·발견 상세·전송 통제 흐름). 전부 아직 예시·운영자 전용.
 const RESULT_VIEWS: ReadonlyArray<readonly [View, string]> = [
   ["accessmap", "접근통제 지도"],
@@ -976,6 +937,31 @@ function ResultViewsMenu({ goTo }: { goTo: (name: View) => void }) {
   );
 }
 
+/**
+ * 탐색 중 마지막으로 새로 찾은 경로 (자산 탐색 위 한 줄, 사용자 11/17 "찾을 때마다 어디 찾았다고").
+ * 앞 조회에 없던 경로 id 를 새로 찾은 것으로 본다. 서버는 찾은 순서대로 뒤에 붙이지만 상한에 걸리면 범위 밖 자리를
+ * 바꿔 끼우므로(diagnosisflow controller.go) 순서가 아니라 id 로 비교한다. 화면을 처음 열었을 때는 비교할 앞 조회가
+ * 없어 맨 뒤(가장 나중에 붙은) 경로를 보인다. more = 같은 조회에서 함께 찾은 나머지 수.
+ */
+function useLatestFound(flow: WorkflowSnapshot | null): { e: WorkflowEndpoint; more: number } | null {
+  const seen = useRef<{ job: string; ids: Set<string> } | null>(null);
+  const [found, setFound] = useState<{ e: WorkflowEndpoint; more: number } | null>(null);
+  useEffect(() => {
+    if (!flow) return;
+    const list = flow.endpoints;
+    const prev = seen.current?.job === flow.job_id ? seen.current.ids : null;
+    seen.current = { job: flow.job_id, ids: new Set(list.map((e) => e.id)) };
+    if (!prev) {
+      const last = list.at(-1);
+      setFound(last ? { e: last, more: 0 } : null);
+      return;
+    }
+    const fresh = list.filter((e) => !prev.has(e.id));
+    if (fresh.length) setFound({ e: fresh[fresh.length - 1], more: fresh.length - 1 });
+  }, [flow]);
+  return found;
+}
+
 /** 자산 탐색 (시안 data-view="crawl"). */
 export function WorkflowCrawlLive() {
   const job = useUrl((st) => st.job),
@@ -983,11 +969,11 @@ export function WorkflowCrawlLive() {
     verified = useUrl((st) => st.flowVerified),
     host = useUrlHost(),
     { goTo, openInsp } = useShell();
-  // 오른쪽 패널에 보이는 탐색 기록 줄 (한 번에 하나). 고르기 전에는 패널을 접어 둔다
+  // 오른쪽 패널에 보이는 탐색 기록 줄 (한 번에 하나). 패널은 고르기 전에도 늘 펼쳐 두고 고르라는 안내를 보인다
+  // (사용자 11/17 '계속 열려있게'). 접기 · 펼치기는 작업대 공통 PaneToggle 로만
   const [logKey, setLogKey] = useState<string | null>(null);
-  // 기록을 고르지 않고 패널을 직접 펼쳤는가 (펼치면 고르라는 안내가 보인다)
-  const [peek, setPeek] = useState(false);
   const stop = useStopConfirm("점검 취소");
+  const found = useLatestFound(flow);
   const endpoints = flow?.endpoints ?? [];
   const events = flow?.events ?? [];
   const count = (k: Kind) => endpoints.filter((e) => kindOf(e) === k).length;
@@ -996,8 +982,6 @@ export function WorkflowCrawlLive() {
   const logEndpoint = logEvent
     ? endpoints.find((e) => e.method === logEvent.method && e.path === logEvent.path)
     : undefined;
-  // 고른 기록이 없고 직접 펼치지도 않았으면 이 화면 패널을 접는다 (고른 기록이 새 기록에 밀려 사라져도 접힘)
-  const fold = !logEvent && !peek;
   const pickLog = (key: string) => {
     setLogKey(key);
     openInsp();
@@ -1005,29 +989,28 @@ export function WorkflowCrawlLive() {
   const next = flow?.mode === "user_approval_v1" ? "scope" : "live";
   const ready = verified && !!flow?.initial_completed;
   const crawling = flow?.stage === "crawling";
-  const elapsed = flow ? crawlElapsed(flow) : null;
   const explore = flow ? exploreState(flow) : null;
   // 탐색 단계에서는 GET 만 보낸다(서버 Controller.Before). 심화 점검이 시작되면 보낸 요청에 그 요청도 들어간다
   const readOnly = !!flow && flow.deep_runs === 0 && (crawling || flow.stage === "awaiting_selection");
-  let now: ReactNode = null;
-  if (flow) {
-    // 서버 current_path 는 탐색 · 탐색 실행기의 GET 방문 경로다 (diagnosisflow crawl · exploration)
-    if (crawling && flow.current_path)
-      now = (
-        <>
-          <span className={cx(s.m, s.GET)}>GET</span>{" "}
-          <span className={s.p}>
-            <Pth p={flow.current_path} />
-          </span>
-        </>
-      );
-    else if (crawling) now = flowStageText.crawling;
-    // AI 자동 모드는 첫 탐색이 끝나면 바로 심화 진단으로 넘어가고(서버 diagnosisflow crawl.go), 그 요청도 아래 기록에
-    // 이어서 쌓인다. '탐색을 마쳤습니다'만 두면 탐색이 계속되는 것처럼 보여 지금 하는 일을 같이 적는다
-    else if (flow.initial_completed && flow.stage === "diagnosing")
-      now = "탐색을 마쳤습니다 · 지금은 심화 진단 중 (아래 기록에 심화 진단 요청이 이어서 쌓입니다)";
-    else now = flow.initial_completed ? "탐색을 마쳤습니다" : flowStageText[flow.stage];
-  }
+  // 탐색 줄: 탐색 중이면 새로 찾은 경로('… 찾음', 같은 조회에서 여럿이면 '외 N개'), 끝났으면 '탐색을 마쳤습니다'.
+  // AI 자동 모드는 끝나자마자 심화 진단으로 넘어가고(서버 diagnosisflow crawl.go) 그 요청도 아래 기록에 이어서 쌓여,
+  // '탐색을 마쳤습니다'만 두면 탐색이 계속되는 것처럼 보여 지금 하는 일을 같이 적는다
+  let nowLine: ReactElement | string | null = null;
+  if (crawling && found)
+    nowLine = (
+      <>
+        <span className={cx(s.m, s[found.e.method])}>{found.e.method}</span>{" "}
+        <span className={s.p}>
+          <Pth p={found.e.path} />
+        </span>
+        {` 찾음${found.more ? ` (외 ${found.more}개)` : ""}`}
+      </>
+    );
+  else if (flow?.initial_completed && !crawling)
+    nowLine =
+      flow.stage === "diagnosing"
+        ? "탐색을 마쳤습니다 · 지금은 심화 진단 중 (아래 기록에 심화 진단 요청이 이어서 쌓입니다)"
+        : "탐색을 마쳤습니다";
   return (
     <>
       <UrlHead
@@ -1058,7 +1041,7 @@ export function WorkflowCrawlLive() {
           </>
         }
       />
-      <div className={cx(s.vb, fold && s["vb-fold"])}>
+      <div className={s.vb}>
         <div className={s.vm}>
           {stop.box}
           <UrlNotices />
@@ -1074,11 +1057,14 @@ export function WorkflowCrawlLive() {
           ) : null}
           {job && flow ? (
             <>
+              {/* '지금 보는 곳' 이름표와 방문 · 방문 대기 · 페이지 상한 · 경과 줄은 지웠다(사용자 11/17).
+                  이름표 없이 탐색 중엔 방문하는 경로, 끝나면 '탐색을 마쳤습니다' 한 줄만 */}
               <div className={s["crwl-top"]}>
-                <div className={s.now}>
-                  <span className={s.k}>지금 보는 곳</span>
-                  <span id="cNow">{now}</span>
-                </div>
+                {nowLine ? (
+                  <div className={s.now} id="cNow">
+                    {nowLine}
+                  </div>
+                ) : null}
                 {/* 탐색 진행: 서버에 진행률이 없어 페이지 상한 대비 방문 수로 그린다 (리뷰 #479). 서버가 탐색 완료라고
                     하면 끝까지 채운다 */}
                 <div
@@ -1095,57 +1081,45 @@ export function WorkflowCrawlLive() {
                 >
                   <i style={{ width: `${crawlPct(flow)}%` }} />
                 </div>
-                <div className={s.pmeta}>
-                  <span>
-                    방문 <b id="cVis">{flow.counts.visited}</b> / 알려진 링크{" "}
-                    <b id="cKnown">{flow.counts.visited + flow.counts.queued}</b>
-                  </span>
-                  <span>
-                    방문 대기 <b id="cQueue">{flow.counts.queued}</b>
-                  </span>
-                  <span>
-                    페이지 상한 <b>{flow.limits.max_pages}</b>
-                  </span>
-                  <span>
-                    경과 <b id="cEl">{elapsed !== null ? durText(elapsed) : NONE}</b>
-                  </span>
-                  {/* 탐색 중 · 탐색 완료는 위 '지금 보는 곳'과 상태 알약이 이미 말하므로 적지 않는다. 부분 완료 · 중지 ·
-                      탐색 안 함은 '탐색을 마쳤습니다'만으로는 다 돌지 못한 걸 알 수 없어 사유와 함께 남긴다(절대규칙 5) */}
-                  {explore && explore.status !== "RUNNING" && explore.status !== "COMPLETED" ? (
+                {/* 탐색 중 · 탐색 완료는 상태 알약이 말하므로 적지 않는다. 부분 완료 · 중지 · 탐색 안 함은 알약
+                    ('탐색 완료 · 확인 대기')만으로 다 돌지 못한 걸 알 수 없어 사유와 함께 남긴다(절대규칙 5) */}
+                {explore && explore.status !== "RUNNING" && explore.status !== "COMPLETED" ? (
+                  <div className={s.pmeta}>
                     <span>
                       탐색 상태{" "}
                       <b>{`${explore.text}${explore.reason && EXPLORE_REASON_TEXT[explore.reason] ? ` · ${EXPLORE_REASON_TEXT[explore.reason]}` : ""}`}</b>
                     </span>
-                  ) : null}
-                </div>
+                  </div>
+                ) : null}
               </div>
-              <div className={s.cnts}>
+              {/* 숫자 칸 상자 (보고서 판정 집계 · 점검 진행 전송 통제와 같은 모양): 이름 · 수 · 설명.
+                  발견한 API 설명은 경로 종류(조회 · 데이터 변경 · 제외)로 나눠 합이 발견 수와 맞게 적는다.
+                  '승인 후 전송'은 데이터 변경과 같은 경로를 다시 센 수라 두지 않는다(탐색 중엔 승인 대기 요청도 없음) */}
+              <div className={cx(s.meters, s.m3)}>
                 {(
                   [
                     [
                       "cFound",
                       "발견한 API",
                       flow.counts.found,
-                      null,
-                      `조회 ${endpoints.filter((e) => e.change === "attested_read").length} · 데이터 변경 ${endpoints.filter((e) => e.change === "possible").length}`,
+                      `조회 ${count("get")} · 데이터 변경 ${count("ap")} · 제외 ${count("ex")}`,
                     ],
                     [
                       "cSent",
                       "보낸 요청",
                       flow.counts.sent,
-                      null,
                       `${readOnly ? "조회만" : "심화 점검 포함"}${flow.counts.unknown ? ` · 결과 불명 ${flow.counts.unknown}` : ""}`,
                     ],
-                    ["cAp", "승인 후 전송", count("ap"), "w", "보내기 전에 승인"],
-                    ["cSkip", "요청 안 함", flow.counts.blocked, null, "규칙으로 막음"],
+                    // 서버 counts.blocked 는 경로 수가 아니라 전송 통제가 거부 · 미지원으로 막은 요청 수
+                    ["cSkip", "막은 요청", flow.counts.blocked, "범위 밖 · 안전 규칙"],
                   ] as const
-                ).map(([id, label, value, tone, sub]) => (
-                  // 시안 #cApTile: 승인 대기 수가 있으면 칸째 주황
-                  <div className={cx(s.cn, tone === "w" && value > 0 && s.warn)} key={id}>
+                ).map(([id, label, value, sub]) => (
+                  <div className={s.cell} key={id}>
+                    <div className={s.k}>{label}</div>
                     <div className={s.v} id={id}>
                       {value}
                     </div>
-                    <div className={s.k}>{`${label} · ${sub}`}</div>
+                    <div className={s.sub}>{sub}</div>
                   </div>
                 ))}
               </div>
@@ -1214,16 +1188,7 @@ export function WorkflowCrawlLive() {
             </>
           )}
         </aside>
-        {fold ? (
-          <UnfoldPane
-            onOpen={() => {
-              setPeek(true);
-              openInsp();
-            }}
-          />
-        ) : (
-          <PaneToggle />
-        )}
+        <PaneToggle />
       </div>
     </>
   );
@@ -1245,8 +1210,6 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
   });
   // 오른쪽 상세에 보이는 경로
   const [detail, setDetail] = useState<string | null>(null);
-  // 경로를 고르지 않고 오른쪽 패널을 직접 펼쳤는가 (펼치면 고르라는 안내가 보인다)
-  const [peek, setPeek] = useState(false);
   // 찾은 경로 카드의 거르기
   const [treeFilter, setTreeFilter] = useState("all");
   // 여러 개 고르기 모드(버튼 "제외 경로"): 알약을 눌러 여럿 고른 뒤 한 번에 넣거나 뺀다. anchor 는 Shift 범위의 시작 알약
@@ -1283,8 +1246,6 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
   const toggle = (id: string) => include([id], !selected.has(id));
   const locked = !waiting || busy || uncertain || !verified;
   const current = flow.endpoints.find((e) => e.id === detail) ?? null;
-  // 고른 경로가 없고 직접 펼치지도 않았으면 이 화면 패널을 접는다
-  const fold = !current && !peek;
   const showDetail = (e: WorkflowEndpoint) => {
     setDetail(e.id);
     openInsp();
@@ -1369,7 +1330,8 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
   return (
     <>
       {head(<ScopeStart flow={flow} ids={[...selected]} id="sStart" />)}
-      <div className={cx(s.vb, fold && s["vb-fold"])}>
+      {/* 오른쪽 패널은 경로를 고르기 전에도 늘 펼쳐 두고 고르라는 안내를 보인다(사용자 11/17 '계속 열어둬') */}
+      <div className={s.vb}>
         <div className={s.vm}>
           <UrlNotices />
           <WorkflowNotice />
@@ -1460,16 +1422,7 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
             </>
           )}
         </aside>
-        {fold ? (
-          <UnfoldPane
-            onOpen={() => {
-              setPeek(true);
-              openInsp();
-            }}
-          />
-        ) : (
-          <PaneToggle />
-        )}
+        <PaneToggle />
       </div>
     </>
   );
@@ -1572,7 +1525,7 @@ function planClass(state: string): string | undefined {
   return undefined;
 }
 
-/** 점검 진행의 점검 계획 · 지난 활동 (두 칸). */
+/** 점검 진행의 점검 계획 · 지난 활동 (위아래로, 각자 전체 너비). */
 export function WorkflowActivity() {
   const flow = useUrl((st) => st.flow);
   const [more, setMore] = useState(false);
@@ -1582,7 +1535,7 @@ export function WorkflowActivity() {
   const activity = [...(flow.activity ?? [])].reverse();
   const shown = more ? activity : activity.slice(0, 5);
   return (
-    <div className={s["two-col"]}>
+    <>
       <section className={s.sec} aria-labelledby="lPlanH">
         <div className={s.sh}>
           <h2 id="lPlanH">점검 계획</h2>
@@ -1609,10 +1562,10 @@ export function WorkflowActivity() {
         )}
       </section>
       <section className={s.sec} aria-labelledby="lFeedH">
+        {/* 건수는 점검 계획의 '1/3 완료'처럼 머리 오른쪽에 */}
         <div className={s.sh}>
-          <h2 id="lFeedH">
-            지난 활동 <span className={s.n} id="lFeedN">{`${activity.length}건`}</span>
-          </h2>
+          <h2 id="lFeedH">지난 활동</h2>
+          <span className={s.n} id="lFeedN">{`${activity.length}건`}</span>
         </div>
         {activity.length ? (
           <>
@@ -1621,10 +1574,8 @@ export function WorkflowActivity() {
                 <li key={a.id}>
                   <span className={s.t}>{hms(a.at)}</span>
                   <span className={cx(s.fd, a.kind === "approval" ? s.blk : s.ok)} />
-                  <span>
-                    {a.summary}
-                    <span className={s.res}>{a.worker}</span>
-                  </span>
+                  {/* 엔진 내부 이름(planner · explorer 등)은 사람이 읽을 정보가 아니라 두지 않는다 */}
+                  <span>{a.summary}</span>
                 </li>
               ))}
             </ul>
@@ -1646,7 +1597,7 @@ export function WorkflowActivity() {
           </ul>
         )}
       </section>
-    </div>
+    </>
   );
 }
 
