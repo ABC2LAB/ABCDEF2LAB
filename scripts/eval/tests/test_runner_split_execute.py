@@ -375,7 +375,9 @@ class TestInvalid(unittest.TestCase):
             {"id": "g", "status": "verified", "provider_name": "Other", "attempts": [{"provider_name": "Other", "endpoint_id": "e",
                                                                                     "status": 200}]}])))
         # 게이트웨이 표식을 O 자리에 넣지 못한다
-        self.assert_invalid("llm_marker_invalid", lambda p: setattr(p, "marker", product_marker(role="llm-gateway")))
+        # (모양이 온전한 게이트웨이 표식이어도 역할이 다르면 거부한다: 거부 두 칸이 0인 B 표식)
+        self.assert_invalid("llm_marker_invalid", lambda p: setattr(p, "marker", product_marker(
+            role="llm-gateway", rejected_sampling=0, rejected_provider=0)))
 
     def test_container_replaced_between_pre_and_post(self):
         # #668 리뷰: 같은 이미지·주소의 새 컨테이너로 바뀌면 배치 검사는 통과하지만 B와 같은 스냅숏 대조가 잡는다.
