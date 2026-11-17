@@ -32,7 +32,8 @@ def marker(**overrides):
             "sealed_at": "a", "drained_at": "b",
             "verified_at": "c", "forwarded_requests": 3, "upstream_errors": 0, "upstream_error_ends": dict(NO_ENDS), "rejected_requests": 0,
             "rejected_after_seal": 1, "cancelled_by_seal": 0, "responses_without_generation_id": 0,
-            "generations": [generation("gen-1"), generation("gen-2")], "log_complete": True}
+            "generations": [generation("gen-1"), generation("gen-2")], "log_complete": True,
+            "rejected_sampling": 0, "rejected_provider": 0, "rate_limited": 0}
     return base | overrides
 
 
@@ -205,11 +206,51 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class TestGatewayBodyKeyRejections(unittest.TestCase):
+    """게이트웨이 샘플링 칸 거부 0건은 회차 유효 조건이다(4-4). provider 칸 거부·429는 기록만 한다."""
+
+    def test_sampling_rejection_makes_the_round_unpinned(self):
+        reasons, summary = judge(marker(rejected_requests=1, rejected_sampling=1))
+        self.assertEqual(reasons, ["llm_sampling_rejected"])
+        self.assertEqual(summary["rejected_sampling"], 1)
+
+    def test_provider_rejection_and_rate_limits_are_recorded_only(self):
+        reasons, summary = judge(marker(rejected_requests=2, rejected_provider=2, rate_limited=5))
+        self.assertEqual(reasons, [])
+        self.assertEqual((summary["rejected_provider"], summary["rate_limited"], summary["rejected_sampling"]), (2, 5, 0))
+
+    def test_gateway_marker_must_count_body_key_rejections(self):
+        for change in ({"rejected_sampling": None}, {"rejected_provider": None}, {"rejected_sampling": -1},
+                       # 불리언·소수는 합 검사를 통과하는 값으로 둔다(타입 검사만 걸리게).
+                       {"rejected_requests": 1, "rejected_sampling": True}, {"rejected_requests": 1, "rejected_provider": 1.0}, {"rate_limited": None},
+                       {"rate_limited": -1}, {"rejected_requests": 1, "rejected_sampling": 1, "rejected_provider": 1}):
+            with self.subTest(change=change), self.assertRaises(LLMMarkerError):
+                judge(marker(**change))
+        broken = marker()
+        broken.pop("rate_limited")
+        with self.assertRaises(LLMMarkerError):
+            judge(broken)
+        # 합이 전체 거부 수와 같은 것은 받는다(경계).
+        self.assertEqual(judge(marker(rejected_requests=2, rejected_sampling=1, rejected_provider=1))[0],
+                         ["llm_sampling_rejected"])
+
+
 class TestJudgeProduct(unittest.TestCase):
     """O(제품 OpenRouter 경로) 호출 기록 사후 검증 표식은 B 게이트웨이 표식과 같은 규칙으로 판정하고, 샘플링은 B 적용값과 대조한다."""
 
     def product(self, **overrides):
-        return marker(**({"role": PRODUCT_VERIFY_ROLE, "rejected_after_seal": 0} | overrides))
+        # 제품 기록 표식은 샘플링·provider 칸 거부가 null이다(게이트웨이에만 있는 판정, eval-meter genverify.go).
+        return marker(**({"role": PRODUCT_VERIFY_ROLE, "rejected_after_seal": 0, "rejected_sampling": None,
+                          "rejected_provider": None} | overrides))
+
+    def test_product_marker_has_no_body_key_rejections(self):
+        # 제품 기록 표식에 0을 적으면(게이트웨이 표식을 흉내 내거나 칸을 잘못 채움) 모양 오류다. 전제 확인은 제품 쪽 기록 몫이다.
+        for name in ("rejected_sampling", "rejected_provider"):
+            with self.subTest(field=name), self.assertRaises(LLMMarkerError):
+                judge_product_llm(self.product(**{name: 0}), dict(SAMPLING), SLUG, NAME)
+        reasons, summary = judge_product_llm(self.product(rate_limited=3), dict(SAMPLING), SLUG, NAME)
+        self.assertEqual(reasons, [])
+        self.assertEqual((summary["rate_limited"], summary["rejected_sampling"], summary["rejected_provider"]), (3, None, None))
 
     def test_same_sampling_as_baseline_gateway_passes(self):
         reasons, summary = judge_product_llm(self.product(), dict(SAMPLING), SLUG, NAME)

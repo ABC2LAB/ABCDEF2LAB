@@ -239,6 +239,8 @@ class FakePorts:
         self.e2_prompt_results, self.e2_prompt_asked = [e2_projection()], []
         self.fake_clock, self.verdict_call_seconds = None, 0
         self.rules_sha256 = None
+        # 대역 겹침 검사 입력: 이 회차가 만들 고정 대역, 호스트에 이미 있는 Docker 망 대역.
+        self.planned, self.host_nets = ["10.250.0.0/24"], ["172.17.0.0/16", "fd00::/64"]
         self.spec = spec
         # 엔진 끝 신호: 차례로 돌려줄 작업 상태 칸(하나 남으면 계속 그것, 예외는 raise). 읽은 시점은 calls 길이로 남긴다
         # (calls 순서를 대조하는 시험을 흔들지 않게 따로 둔다).
@@ -313,6 +315,14 @@ class FakePorts:
     def preexisting(self):
         self._call("preexisting")
         return False
+
+    def planned_subnets(self):
+        self._call("subnets:planned")
+        return list(self.planned)
+
+    def host_subnets(self):
+        self._call("subnets:host")
+        return list(self.host_nets)
 
     def image_ids(self):
         self._call("image_ids")
@@ -551,7 +561,7 @@ def run(mutate=None, mutate_gateway=None, spec=None):
     return result, ports, meter, evidence
 
 
-FULL_ORDER = ["preexisting", "image_ids", "tool_tree", "host_spec", "up", "facts:pre", "listeners:pre", "probe:pre", "tmpfs:pre",
+FULL_ORDER = ["preexisting", "image_ids", "tool_tree", "host_spec", "subnets:planned", "subnets:host", "up", "facts:pre", "listeners:pre", "probe:pre", "tmpfs:pre",
               "wait_ready", "events:start", "watch:start", "scoreboard:pre", "apply_engine_settings", "engine_settings", "start_task", "seal",
               "seal_gateway", "facts:post", "listeners:post", "probe:post", "scoreboard:post", "watch:stop",
               "events:stop", "tmpfs:post", "findings", "intercept_summary", "down", "sign", "sign"]
@@ -1069,7 +1079,9 @@ class TestCompleteRun(unittest.TestCase):
                                                "post-probe.json", "meter-summary.json", "llm-summary.json",
                                                "findings.json", "task.json", "window-watch.json", "engine-end.json",
                                                "isolation-evidence.json", "solve-events.json", "run-record.json", "intercept-summary.json",
-                                               "engine-settings.json", RESULT_NAME})
+                                               "engine-settings.json", "subnet-check.json", RESULT_NAME})
+        self.assertEqual(evidence.files["subnet-check.json"], {"format": "abc2lab-eval-runner-subnet-check-v1",
+                                                               "planned": ["10.250.0.0/24"], "overlaps": []})
         # 서명 대상 근거 목록에는 결과 파일 자신이 없다(서명 뒤에 쓴다).
         self.assertEqual(set(result["evidence"]), set(evidence.files) - {RESULT_NAME})
         self.assertEqual(ports.sealed_id, "4" * 64)
@@ -1754,6 +1766,8 @@ class TestFailures(unittest.TestCase):
              "llm_generation_unverified"),
             (lambda g: setattr(g, "marker", llm_marker(provider="other-provider")), "llm_pin_mismatch"),
             (lambda g: setattr(g, "marker", llm_marker(log_complete=False)), "llm_log_incomplete"),
+            # 엔진이 샘플링 칸을 보내 게이트웨이가 거부했다: B·O 같은 조건 전제가 깨진 회차(4-4).
+            (lambda g: setattr(g, "marker", llm_marker(rejected_requests=1, rejected_sampling=1)), "llm_sampling_rejected"),
             (lambda g: setattr(g, "marker", {"role": "llm-gateway"}), "llm_marker_invalid"),
             (lambda g: setattr(g, "verified", lambda: None), "llm_unverified"),
             (lambda g: setattr(g, "verified", lambda: (_ for _ in ()).throw(OSError("x"))), "llm_read_failed"),
@@ -1779,6 +1793,36 @@ class TestFailures(unittest.TestCase):
             p.image_ids = lambda: dict(p.spec.image_ids, target="sha256:" + "f" * 64)
         result, ports, _, evidence = run(other_image)
         self.assert_invalid(result, ports, evidence, "image_id_mismatch", down=False)
+
+    def test_subnet_overlap_stops_before_compose_up(self):
+        # 탐색 분리 배치 결정안 §2: 회차가 만들 고정 대역이 호스트의 기존 Docker 망과 겹치면 아무것도 띄우지 않는다.
+        # 2026-11-16에 같은 머신의 다른 스택이 제품 기본 대역을 쓰고 있었다.
+        def taken(p, m, c):
+            p.planned = ["172.31.247.0/24", "10.250.0.0/24"]
+            p.host_nets = ["172.17.0.0/16", "172.31.0.0/16", "192.168.9.0/24", "fd00::/64"]
+        result, ports, _, evidence = run(taken)
+        self.assert_invalid(result, ports, evidence, "subnet_overlap", down=False)
+        self.assertNotIn("up", ports.calls)
+        check = evidence.files["subnet-check.json"]
+        self.assertEqual(check["planned"], ["172.31.247.0/24", "10.250.0.0/24"])
+        # 겹친 쌍만 남긴다. 겹치지 않는 다른 망(172.17·192.168.9·IPv6)은 근거에 남기지 않는다.
+        self.assertEqual(check["overlaps"], [{"planned": "172.31.247.0/24", "existing": "172.31.0.0/16"}])
+        self.assertNotIn("192.168.9.0/24", json.dumps(check))
+
+    def test_subnet_check_failure_or_no_fixed_subnet(self):
+        def broken(p, m, c):
+            def fail():
+                p._call("subnets:planned")
+                raise ValueError("/secret/path compose output")
+            p.planned_subnets = fail
+        result, ports, _, evidence = run(broken)
+        self.assert_invalid(result, ports, evidence, "subnet_check_failed", down=False)
+        self.assertNotIn("up", ports.calls)
+        self.assertNotIn("subnet-check.json", evidence.files)
+        # 고정 대역이 없는 회차(Docker가 빈 대역을 고름)는 겹칠 것이 없어 그대로 띄운다.
+        result, ports, _, evidence = run(lambda p, m, c: setattr(p, "planned", []))
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertEqual(evidence.files["subnet-check.json"]["overlaps"], [])
 
     def test_tool_tree_failure_stops_before_compose_up(self):
         def broken(p, m, c):
@@ -2827,6 +2871,81 @@ class AcceptancePathKeyTests(unittest.TestCase):
             with self.assertRaises(RunnerConfigError) as caught:
                 acceptance_path_key(self.config("browser_acceptance", key))
             self.assertEqual(caught.exception.errors, ["config.path_key_file: UNREADABLE"])
+
+
+class TestFirstLimit(unittest.TestCase):
+    """어느 상한이 먼저 걸렸는지(탐색 분리 배치 결정안 §3 B(a) 표). 엔진 끝 신호 대 러너 요청·시간 예산."""
+
+    def test_pure_rule_and_boundaries(self):
+        terminal = lambda at: {"status": "done", "at": "t", "elapsed_seconds": at}
+        rule = runner.first_limit
+        self.assertEqual(rule("request_budget", 55.0, 600, None)["value"], "runner_request_budget")
+        self.assertEqual(rule("time_budget", 602.0, 600, None)["value"], "runner_time_budget")
+        # 같은 시각이면 엔진이 먼저다(엔진 끝 시각 ≤ 러너 상한 시각).
+        self.assertEqual(rule("request_budget", 55.0, 600, terminal(55.0))["value"], "engine_completed")
+        self.assertEqual(rule("request_budget", 55.0, 600, terminal(55.001))["value"], "runner_request_budget")
+        # 시간 예산은 알아챈 시각(602)이 아니라 문턱(600)과 비교한다.
+        self.assertEqual(rule("time_budget", 602.0, 600, terminal(600.5))["value"], "runner_time_budget")
+        self.assertEqual(rule("time_budget", 602.0, 600, terminal(600.0))["value"], "engine_completed")
+        self.assertEqual(rule("request_budget", 55.25, 600, terminal(12.5)),
+                         {"value": "engine_completed", "runner_limit": "runner_request_budget",
+                          "runner_limit_elapsed_seconds": 55.25, "engine_terminal_elapsed_seconds": 12.5})
+
+    def test_rounds_record_which_limit_came_first(self):
+        # 기본 회차: 엔진은 계속 running, 계측기 전달 수가 요청 예산에 닿는다.
+        result, _, _, evidence = run()
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertEqual(result["first_limit"]["value"], "runner_request_budget")
+        self.assertIsNone(result["first_limit"]["engine_terminal_elapsed_seconds"])
+        # 러너 상한 시각은 작업 생성 요청 직전부터 잰다(시계가 0에서 시작하지 않아도). 계측기 요약의 두 시각과 같다.
+        result, _, _, evidence = run(lambda p, m, c: c.sleep(1000))
+        summary = evidence.files["meter-summary.json"]
+        self.assertEqual(result["first_limit"]["runner_limit_elapsed_seconds"],
+                         (datetime.fromisoformat(summary["stopped_at"]) - datetime.fromisoformat(summary["task_requested_at"])).total_seconds())
+        self.assertLess(result["first_limit"]["runner_limit_elapsed_seconds"], 1000)
+        # 요청이 없으면 시간 예산.
+        result, _, _, _ = run(lambda p, m, c: setattr(m, "per_poll", 0))
+        self.assertEqual((result["first_limit"]["value"], result["first_limit"]["runner_limit_elapsed_seconds"]),
+                         ("runner_time_budget", result["meter"]["time_budget_seconds"]))
+        # 엔진이 창 안에서 끝 상태가 되면(예산보다 먼저) engine_completed. 회차는 일찍 끝나지 않는다(기록만).
+        def done_early(ports, meter, clock):
+            meter.per_poll = 0
+            ports.task_views = [task_view("running"), task_view("done", goals_met=1, completed_at="2026-11-16T00:00:03Z")]
+        result, ports, _, evidence = run(done_early)
+        limit = result["first_limit"]
+        self.assertEqual(limit["value"], "engine_completed")
+        self.assertEqual(limit["engine_terminal_elapsed_seconds"], evidence.files["engine-end.json"]["first_terminal"]["elapsed_seconds"])
+        self.assertLess(limit["engine_terminal_elapsed_seconds"], limit["runner_limit_elapsed_seconds"])
+        self.assertEqual(result["meter"]["stop_reason"], "time_budget")  # 일찍 끝내지 않았다
+
+    def test_terminal_seen_only_after_the_window_is_not_first(self):
+        # 창 끝에 진행 중이던 읽기가 봉인 뒤에 끝 상태를 돌려주면, 그 시각은 러너 상한보다 늦어 엔진이 먼저가 아니다.
+        gate = threading.Event()
+
+        def setup(ports, meter, clock):
+            def read(task_id):
+                if not gate.is_set():
+                    gate.wait(5)
+                    clock.sleep(1)  # 끝 상태를 돌려준 시각이 러너 상한 뒤가 되게
+                return task_view("done", completed_at="2026-11-16T00:00:03Z")
+            ports.task_status = read
+            ports.background = lambda work: threading.Thread(target=work, daemon=True).start()
+            seal = ports.seal
+
+            def seal_then_release(container_id):
+                gate.set()
+                return seal(container_id)
+            ports.seal = seal_then_release
+
+        spec = dataclasses.replace(make_spec(), task_status_wait_seconds=3)
+        try:
+            result, _, _, evidence = run(setup, spec=spec)
+        finally:
+            gate.set()
+        end, limit = evidence.files["engine-end.json"], result["first_limit"]
+        self.assertEqual(end["first_terminal"]["status"], "done")
+        self.assertGreater(limit["engine_terminal_elapsed_seconds"], limit["runner_limit_elapsed_seconds"])
+        self.assertEqual(limit["value"], "runner_request_budget")
 
 
 class TestEngineEndSignal(unittest.TestCase):

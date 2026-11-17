@@ -8,6 +8,7 @@
 - UI·시험 커밋: `267485dfe152459ac76d19a4b96a76628e0a7af0`.
 - 오류 표시 보완 커밋: `450c04c5cfead4f8e816b303078567c5d33df905`. 활동 오류를 미지원으로 바꾸던 공통 표시와 보고서 재조회 실패를 이전 성공 자료로 가리던 경로를 수정했다.
 - 이후 dev `9a8e78d04dfb08da5be725a4a1dc09bd4157c2b8`를 일반 merge한 커밋: `b456790e3ceab7eb8b00b28a673844ef88266cef`. 웹 tree는 UI 커밋과 같다.
+- #641 통합 기준 dev: `a1dd13662b09ca3053a498abad563f647c96af64`. `UrlLiveLive.tsx`·`redesign.test.tsx`의 충돌을 해결해 진행 요약 배치와 조회 전용 복구·실제 task 활동·오류 표시를 함께 보존했다.
 - 서버 API·설치 정책·E② 전송·평가 러너는 이번 PR에서 변경하지 않았다. #634·#636 변경은 dev의 원본 그대로다.
 
 `diagnosis-runs.ts`가 `/api/diagnoses/v2/runs`의 owner·버전·크기·개수·식별자·순서·상태별 사실·cursor를 검증한다. `urlRunList.ts`는 한 번에 한 페이지를 읽는다. **더 불러오기**는 서버 cursor를 그대로 사용한다. `snapshot_changed`만 누적 페이지를 폐기하고 첫 페이지를 한 번 재조회한다. 같은 cursor 반복·중복 Job·snapshot 불일치는 계약 오류다.
@@ -26,10 +27,10 @@ Job/주체 선택 세대가 바뀌면 화면의 활동·보고서·워크플로�
 |---|---|---|
 | `tsc --noEmit` | PASS | 전체 웹 타입 검사 |
 | 변경 TS/TSX 22개 `biome check` | PASS | 오류·경고 0, 포맷·import 포함 |
-| `vitest run` | PASS | **971 PASS / 0 FAIL / 0 SKIP** |
+| `vitest run` | PASS | **975 PASS / 0 FAIL / 0 SKIP** |
 | 목록 계약·실제 HTTP 가로채기 새 시험 | PASS | 51개 파서/HTTP + 31개 UI/재연결, 총 82개 |
-| `npm run build` | PASS | mock 환경변수 없는 Next.js 운영 빌드 |
-| 최신 dev 병합 뒤 PostgreSQL 제품 입구 시험 | PASS | `TestRunListPublicEntryReconnectStopAndRestartOwnedPostgres` 1개 |
+| `npm run build:static` | PASS | mock 환경변수 없는 Next.js 운영 정적 빌드 |
+| `9a8e78d0` 병합 뒤 PostgreSQL 제품 입구 시험 | PASS | `TestRunListPublicEntryReconnectStopAndRestartOwnedPostgres` 1개 |
 | 독립 변이 | PASS | 별도 임시 복사본에서 차단 조건 3/3 검출 |
 
 활동 403·404·503 및 보고서 재조회 실패 반례 4개를 먼저 실행해 모두 실패함을 확인했다. 수정 후 전체 시험이 통과하며, 대시보드 재조회 실패도 별도 시험으로 검증했다. 보고서·대시보드·목록 상세는 재조회 오류 때 이전 판정 집계를 숨긴다.
@@ -66,6 +67,8 @@ Job/주체 선택 세대가 바뀌면 화면의 활동·보고서·워크플로�
 
 ## 리뷰·통합 주의
 
-구현 중 열린 #641은 진행·탐색 화면 표현 정리이며 목록 기능을 구현하지 않는다. `UrlLiveLive.tsx`, `workflowViews.tsx`, `live-url.test.tsx`, `redesign.test.tsx`가 겹친다. 본 PR의 활동 재연결·보고서 오류 표시·복구 쓰기 차단과 #641의 표현 변경을 함께 보존하는 팀 통합 리뷰가 필요하다. 해당 브랜치는 수정하지 않았다. #639의 workflow 개수 상한 변경도 별도 PR에 남겨 두었다.
+#641이 dev에 병합된 뒤 이 PR에도 최신 dev `a1dd1366`을 일반 merge했다. 진행 화면은 #641의 가운데 계획·지난 활동과 오른쪽 진행 요약을 유지하고, #642의 검증된 task 활동·조회 전용 복구·보고서 재조회 오류 표시를 함께 보존한다. 두 PR의 회귀 시험을 모두 남겼으며, 복구한 회차에서 새 진행 요약과 실제 task 활동이 함께 표시되는지도 HTTP/DOM 시험에 고정했다.
+
+통합 뒤 전체 Vitest 975개·변경 TS/TSX 22개 Biome·타입 검사·mock 없는 정적 빌드를 검증했다. #641에서 제거한 시간 표시 helper의 오래된 import도 제거했다. 이번 추가 검증은 자동 회귀와 빌드 범위이며 실제 브라우저·유료 모델·운영 대상 수용을 다시 수행한 것으로 계산하지 않는다. #639의 workflow 개수 상한 변경은 별도 PR에 남겨 두었다.
 
 UI 소유자와 결속·보안 담당 팀원의 리뷰를 요청한다. 작성자 자체 점검은 팀원 승인으로 세지 않으며 자동 병합하지 않는다.

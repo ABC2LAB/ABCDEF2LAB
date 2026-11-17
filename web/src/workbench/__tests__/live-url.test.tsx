@@ -31,6 +31,7 @@ vi.mock("../live/api", async (importOriginal) => ({
   fetchRemediation: vi.fn(),
   fetchDiagnosisRun: vi.fn(),
   fetchCoverage: vi.fn(),
+  fetchTaskTokens: vi.fn(),
   fetchTasks: vi.fn(),
 }));
 
@@ -310,6 +311,7 @@ beforeEach(() => {
   a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [] });
   a.fetchDiagnosisRun.mockResolvedValue(RUN_RECORD);
   a.fetchCoverage.mockRejectedValue(new ApiError(503, "coverage disabled"));
+  a.fetchTaskTokens.mockResolvedValue({ input: 0, cacheRead: 0, output: 0 });
   a.fetchTasks.mockResolvedValue({ active: "", tasks: [] });
   vi.mocked(teamApi.readAuthStatus).mockResolvedValue({ initialized: true });
   vi.mocked(teamApi.restoreSession).mockResolvedValue(true);
@@ -888,10 +890,11 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(u.readURLStatus).toHaveBeenCalledWith(handle.id, owner, expect.any(AbortSignal));
     expect(u.createURLDraft).not.toHaveBeenCalled();
     expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
-    // 서버에 진행률 · 범위 밖 전송 집계가 없어 시안 칸은 값을 비우고 '연결 전'. 0 % 로 지어내지 않는다
-    expect(screen.getByRole("group", { name: "점검 진행률" })).toHaveTextContent(/^—%연결 전/);
+    // 서버에 진행률 · 범위 밖 전송 집계가 없어 그 칸은 두지 않는다('—' · '연결 전' 자리도 없음). 0 % 로 지어내지 않는다
+    expect(screen.queryByRole("group", { name: "점검 진행률" })).toBeNull();
     expect(screen.queryByText(/^0%$/)).toBeNull();
-    expect(screen.getByText(/^범위 밖으로 보낸 요청 — · 승인 없이 보낸 상태 변경 —/)).toHaveTextContent("연결 전");
+    expect(screen.queryByText(/범위 밖으로 보낸 요청|승인 없이 보낸 상태 변경/)).toBeNull();
+    expect(screen.queryByText(/^연결 전/)).toBeNull();
   });
 
   it("시작을 보낸 외부 시험 계정 동의 회차도 새로고침 뒤 이어 보고(중지 가능), 다시 시작하지 않는다", async () => {
@@ -907,20 +910,10 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(urlGates(useUrl.getState()).canStart).toBe(false);
   });
 
-  it("점검 진행: 토큰 · 자산 커버리지는 서버 값, 시작 · 경과 · 남은 시간 · 점검 중 발견 · 판정은 칸만 두고 비운다", async () => {
+  it("점검 진행 오른쪽은 진행 요약: 작업 합계 토큰 · 커버리지는 서버 값, 시작 · 경과 · 남은 시간 · 점검 중 발견 · 판정 칸은 없다", async () => {
     saveHandle();
-    u.readURLStatus.mockResolvedValue({
-      ...running,
-      model_usage: {
-        requests: 1,
-        input_tokens: 300,
-        output_tokens: 200,
-        reserved_input_tokens: 0,
-        reserved_output_tokens: 0,
-        cost_usd_micros: 0,
-        usage_known: true,
-      },
-    });
+    u.readURLStatus.mockResolvedValue(running);
+    a.fetchTaskTokens.mockResolvedValue({ input: 51_234_567, cacheRead: 43_100_000, output: 868_400 });
     a.fetchCoverage.mockResolvedValue({
       enabled: true,
       scopeRows: 1,
@@ -931,20 +924,41 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     });
     mount("live");
     expect(await screen.findByText("진행 중", { selector: "h1 + span" })).toBeInTheDocument();
-    // 토큰: 서버 사용량 / 범위 상한 (입력 + 출력)
-    expect(screen.getByText(/^토큰/)).toHaveTextContent("토큰 500 / 상한 2,000");
-    expect(screen.getByText(/^시작/)).toHaveTextContent(/^시작 —$/);
-    expect(screen.getByText(/^경과/)).toHaveTextContent(/^경과 —$/);
-    expect(screen.getByText(/^남은 시간/)).toHaveTextContent(/^남은 시간 —$/);
-    const insp = screen.getByRole("complementary", { name: "발견" });
+    const insp = screen.getByRole("complementary", { name: "진행 요약" });
+    expect(within(insp).getByRole("heading", { level: 2, name: "진행 요약" })).toBeInTheDocument();
+    // 모델 사용량: 원본 ARTEX 작업 합계 한 줄 (입 · 캐 · 출 칩), 정확한 수는 줄 title 하나에
+    await waitFor(() =>
+      expect(within(insp).getByText(/^작업 합계/).parentElement).toHaveTextContent(
+        /^작업 합계 · 입 51M 캐 43M 출 868k$/,
+      ),
+    );
+    expect(a.fetchTaskTokens).toHaveBeenCalledWith("42");
+    // 줄 하나에 세 수의 정확한 값을 한꺼번에 (칩마다 따로 두지 않음)
+    const line = within(insp).getByText(/^작업 합계/).parentElement as HTMLElement;
+    expect(line).toHaveAttribute("title", "입력 51,234,567 토큰\n캐시 읽기 43,100,000 토큰\n출력 868,400 토큰");
+    expect(line.querySelectorAll("[title]")).toHaveLength(0);
+    // 커버리지는 서버가 켰을 때만
     await waitFor(() => expect(within(insp).getByText("4")).toBeInTheDocument());
     expect(within(insp).getByText(/\/ 10 자산/)).toBeInTheDocument();
     expect(within(insp).getByText("40%")).toBeInTheDocument();
-    // 점검 중 발견 · 판정은 서버가 결과 저장 전에 주지 않아 수를 비우고, '발견 없음'으로 보이지 않는다
-    expect(within(insp).getByRole("heading", { name: "발견 —건" })).toBeInTheDocument();
-    expect(within(insp).getByText("발견 · 최근 순").parentElement).toHaveTextContent("연결 전");
-    expect(within(insp).getByText("판정").parentElement).toHaveTextContent("확정 —의심 —판단 불가 —");
-    expect(within(insp).queryByText(/발견이 없습니다/)).toBeNull();
+    // 서버가 주지 않는 시작 · 경과 · 남은 시간, 점검 중 발견 · 판정 · 결정 대기는 칸 자체가 없다
+    expect(screen.queryByText(/^(시작|경과|남은 시간|토큰) /)).toBeNull();
+    expect(within(insp).queryByRole("heading", { name: /^발견/ })).toBeNull();
+    for (const k of ["판정", "발견 · 최근 순", "결정 대기"]) expect(within(insp).queryByText(k)).toBeNull();
+    // 머리의 '발견' 버튼 대신 좁은 화면 서랍 버튼은 '진행 요약'
+    expect(screen.queryByRole("button", { name: "발견" })).toBeNull();
+    expect(screen.getByRole("button", { name: "진행 요약" })).toBeInTheDocument();
+  });
+
+  it("점검 진행: 커버리지가 꺼졌으면 오른쪽에 커버리지 칸을 두지 않는다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    mount("live");
+    const insp = await screen.findByRole("complementary", { name: "진행 요약" });
+    await waitFor(() => expect(a.fetchCoverage).toHaveBeenCalled());
+    expect(within(insp).queryByText("커버리지")).toBeNull();
+    expect(within(insp).queryByText(/자산/)).toBeNull();
+    expect(within(insp).getByText("점검 정보")).toBeInTheDocument();
   });
 
   it("영수증만 있으면(id 없음) 생성 영수증을 조회한다", async () => {

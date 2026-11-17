@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { type ReactNode, useState } from "react";
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { signIn, signOut } from "@/lib/diagnosis/api";
@@ -228,6 +228,10 @@ describe("서버 목록에서 새 세션으로 기존 Job 다시 연결", () => 
     expect(await runUrlAction("validate")).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "테스트 이동 live" }));
     expect(await screen.findByText("서버 활동 task 42")).toBeInTheDocument();
+    // #641의 진행 요약 짜임에서도 #642의 복구 task 활동과 조회 전용 결속을 함께 보존한다.
+    const summary = screen.getByRole("complementary", { name: "진행 요약" });
+    expect(within(summary).getByRole("heading", { level: 3, name: "전송 통제" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "서버 진단 활동" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "테스트 이동 finished" }));
     await pick("보존된 점검");
     fireEvent.click(screen.getByRole("button", { name: "테스트 이동 report" }));

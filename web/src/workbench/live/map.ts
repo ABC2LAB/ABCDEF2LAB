@@ -146,6 +146,15 @@ export function fmtTokens(n: number): { n: string; unit: "" | "K" | "M" } {
   return { n: String(Math.round(v)), unit: "" };
 }
 
+/** 토큰 수 → 짧은 한 덩어리 ("51M" · "4.2M" · "868k" · "12.3k" · "512"). 작업 합계 칩용(원본 ARTEX 토큰 줄 모양). */
+export function fmtTokensShort(n: number): string {
+  const v = Math.max(0, n);
+  // 두 자리 이상이면 소수점을 버려 칩 폭을 줄인다 (51.2M → 51M)
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(v >= 10_000_000 ? 0 : 1)}M`;
+  if (v >= 1_000) return `${(v / 1_000).toFixed(v >= 10_000 ? 0 : 1)}k`;
+  return String(Math.round(v));
+}
+
 // ---------- 발견 ----------
 
 /** 엔진 심각도 순서 (높은 것부터). */

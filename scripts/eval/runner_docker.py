@@ -342,6 +342,15 @@ class Docker:
         return self._ids(["ps", "--all", "--no-trunc", "--quiet", "--filter",
                           f"label=com.docker.compose.project={project}"], code="docker_container_list_failed")
 
+    def all_network_ids(self) -> list[str]:
+        """호스트의 모든 Docker 망(대역 겹침 검사용)."""
+        return self._ids(["network", "ls", "--no-trunc", "--quiet"], code="docker_network_list_failed")
+
+    def compose_config(self, base_args: Sequence[str]) -> object:
+        """up과 같은 인자로 렌더한 compose 설정. 보간된 비밀이 들어 있으므로 호출자는 필요한 칸만 꺼내고 저장하지 않는다.
+        실패는 고정 code만 남는다(출력은 오류에 싣지 않는다)."""
+        return self.json([*base_args, "config", "--format", "json"], code="docker_compose_config_failed")
+
     def running_container_ids(self) -> list[str]:
         return self._ids(["ps", "--no-trunc", "--quiet"], code="docker_container_list_failed")
 
