@@ -105,8 +105,13 @@ type OpenRouterUsage struct {
 	TransientLimited     bool   `json:"transient_limited,omitempty"`
 	// Sampling은 실제로 보낸 요청 본문에 들어간 샘플링 값이다(manifest v3, 보낸 바이트에서 다시 읽음). 평가 러너가 원본
 	// 게이트웨이의 적용값과 대조한다. v1·v2 승인과 아직 보내지 않은 정책은 비어 있다.
-	Sampling      *OpenRouterSampling `json:"sampling,omitempty"`
-	FailureReason string              `json:"failure_reason,omitempty"`
+	Sampling *OpenRouterSampling `json:"sampling,omitempty"`
+	// SamplingOverwrites는 manifest 샘플링이 엔진(호출자)이 보낸 샘플링 칸(temperature)을 덮어쓴 요청 수다. 실제로 보낸
+	// 요청만 센다. 평가 게이트웨이(B)는 같은 칸을 거부하고 제품(O)은 덮어쓰므로, 두 쪽이 같은 조건이라는 말은 엔진이 그
+	// 칸을 보내지 않을 때만 맞다. 그 전제가 깨졌는지 회차마다 드러나게 한다(탐색 분리 배치 결정안 4-4, 2026-11-16 사용자
+	// 결정). manifest v3에서만 0부터 세고, 덮어쓰기가 없는 v1·v2 승인에서는 null(해당 없음)이다.
+	SamplingOverwrites *int64 `json:"sampling_overwrites"`
+	FailureReason      string `json:"failure_reason,omitempty"`
 }
 
 func (p *OpenRouterPolicy) Target() ProfileTarget {
@@ -129,6 +134,11 @@ func (p *OpenRouterPolicy) Snapshot() OpenRouterUsage {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	u := p.usage
+	if u.SamplingOverwrites != nil {
+		// 정책 안의 계수와 포인터를 공유하지 않게 값 사본을 돌려준다.
+		count := *u.SamplingOverwrites
+		u.SamplingOverwrites = &count
+	}
 	u.Blocked = p.blocked
 	u.TransientLimited = p.blocked && p.transientLimited
 	return u
@@ -198,7 +208,11 @@ func parseOpenRouterManifestAt(data []byte, now time.Time) (*OpenRouterPolicy, e
 		m.MaxRequests > math.MaxInt32 || m.MaxInputTokens > 1<<53 || m.MaxOutputTokens > 1<<53 || m.MaxCostMicros > 1<<53 {
 		return nil, ErrOpenRouterPolicy
 	}
-	return &OpenRouterPolicy{manifest: m, usage: OpenRouterUsage{Provider: m.ProviderSlug, Model: OpenRouterModel, ApprovalRef: fmt.Sprintf("%x", sha256.Sum256([]byte(m.ApprovalID)))}}, nil
+	usage := OpenRouterUsage{Provider: m.ProviderSlug, Model: OpenRouterModel, ApprovalRef: fmt.Sprintf("%x", sha256.Sum256([]byte(m.ApprovalID)))}
+	if m.Sampling != nil {
+		usage.SamplingOverwrites = new(int64)
+	}
+	return &OpenRouterPolicy{manifest: m, usage: usage}, nil
 }
 
 // reserve는 호출 하나를 입력 상한 전체로 예약한다(요청 본문 없이 예산만 보는 시험용).
