@@ -657,11 +657,12 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     settled = spec.post_settle_seconds if drained["forced_cancelled_requests"] else 0
     if settled:
         clock.sleep(settled)
-    # 엔진 끝 신호의 마지막 상태. 엔진이 아직 떠 있을 때(down 전) 읽어 서명 근거에 남긴다.
-    state.engine_end = watch.record()
-    _step(state, "evidence_write_failed", lambda: evidence.write_json(ENGINE_END_NAME, state.engine_end))
     # 엔진의 작업은 끝났다. 게이트웨이도 새 LLM 요청을 막고, drain 뒤 응답 제공자 조회를 시작한다.
     _step(state, "llm_seal_failed", lambda: ports.seal_gateway(pre["services"][LLM_GW_SERVICE]["id"]))
+    # 엔진 끝 신호의 마지막 상태. 게이트웨이 봉인 뒤에 읽는다: 진행 중 읽기 기다림·마지막 읽기가 느려도 모델 요청을
+    # 받는 창이 늘지 않는다(#634 리뷰). 엔진이 아직 떠 있을 때(down 전) 읽어 서명 근거에 남긴다.
+    state.engine_end = watch.record()
+    _step(state, "evidence_write_failed", lambda: evidence.write_json(ENGINE_END_NAME, state.engine_end))
 
     post = _check_phase(spec, ports, evidence, state, "post")
     post_check_at = _stamp(clock)

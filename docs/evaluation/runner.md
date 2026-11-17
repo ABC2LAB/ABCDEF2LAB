@@ -193,8 +193,8 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 - 예산 시계는 생성 요청 직전부터 잰다. 생성 실패는 재시도하지 않고 회차를 무효로 한다.
 - **엔진 끝 신호(`engine-end.json`, 탐색 분리 배치 결정안 §3.1):** 회차 창 동안 예산 확인 간격마다 엔진 작업 목록 API
   (`GET /api/tasks`, 원본·개선 후 같은 응답 구조)에서 이 회차 작업 항목을 읽어, 상태가 처음 끝 상태(`done`·`failed`·`timeout`,
-  원본 `db.IsTerminal`과 같은 집합)가 된 시각(읽기가 끝난 시각)을 남긴다. drain 뒤 `down` 전(엔진 DB가 아직 있을 때)에 한 번 더
-  읽는다. 옮기는 칸은 `status`·`completed_at`·`goals_total`·`goals_met`(Planner 판정)·`in_flight`·`llm_failover_state`뿐이고
+  원본 `db.IsTerminal`과 같은 집합)가 된 시각(읽기가 끝난 시각)을 남긴다. drain·LLM 게이트웨이 봉인 뒤, `down` 전(엔진 DB가 아직
+  있을 때)에 한 번 더 읽는다. 게이트웨이 봉인 뒤라 이 읽기가 느려도 모델 요청을 받는 창은 늘지 않는다. 옮기는 칸은 `status`·`completed_at`·`goals_total`·`goals_met`(Planner 판정)·`in_flight`·`llm_failover_state`뿐이고
   (이름·설명·목표·다른 작업 항목은 옮기지 않음), 값은 원본 그대로 두고 해석하지 않는다. 단건 API(`GET /api/tasks/{id}`)는 집계 세
   칸을 채우지 않아 늘 0이라 쓰지 않는다. 목록 API는 집계 조회 오류를 버리고 0으로 두므로(원본 동작) 세 칸의 0은 집계 실패와 구별되지
   않는다(`status`·`completed_at`은 무관). 토큰 하나를 다시 쓰고 401이면 한 번만 다시 로그인한다.

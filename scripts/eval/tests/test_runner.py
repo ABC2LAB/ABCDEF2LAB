@@ -2847,9 +2847,10 @@ class TestEngineEndSignal(unittest.TestCase):
         self.assertIn("read_at", end["final"])
         self.assertNotIn("task", end["final"])  # 끝 신호 칸만 옮긴다
         self.assertEqual((end["window_read_failures"], end["final_error"]), (0, None))
-        # 마지막 읽기는 봉인·drain 뒤, down 전이다.
+        # 마지막 읽기는 계측기 봉인·drain·게이트웨이 봉인 뒤, down 전이다.
         last = ports.status_positions[-1]
         self.assertIn("seal", ports.calls[:last])
+        self.assertIn("seal_gateway", ports.calls[:last])
         self.assertNotIn("down", ports.calls[:last])
         self.assertIn("engine-end.json", result["evidence"])
 
@@ -2910,9 +2911,44 @@ class TestEngineEndSignal(unittest.TestCase):
         # 창 동안 띄운 읽기는 봉인 뒤 끝나 거둬지고, 마지막 읽기도 한다.
         self.assertEqual((end["window_reads"], end["window_read_failures"], end["final"]["status"]), (1, 0, "running"))
 
+    def test_slow_final_read_does_not_delay_the_gateway_seal(self):
+        # 반례(#634 2차 리뷰): 창이 끝난 뒤의 상태 읽기(진행 중 읽기 기다림·마지막 읽기)가 30초 걸려도 LLM 게이트웨이 봉인
+        # 시각(모델 요청을 받는 창의 끝)은 관찰이 없을 때와 같아야 한다.
+        def gateway_seal_at(extra=None):
+            seen = []
+
+            def setup(ports, meter, clock):
+                if extra:
+                    extra(ports, meter, clock)
+                seal_gateway = ports.seal_gateway
+
+                def timed(container_id):
+                    seen.append(clock.t)
+                    return seal_gateway(container_id)
+                ports.seal_gateway = timed
+            result, _, _, evidence = run(setup)
+            return result, seen, evidence
+
+        _, plain, _ = gateway_seal_at()
+
+        def slow_after_window(ports, meter, clock):
+            read = ports.task_status
+
+            def slow(task_id):
+                if "seal" in ports.calls:
+                    clock.sleep(30)
+                return read(task_id)
+            ports.task_status = slow
+
+        result, slow, evidence = gateway_seal_at(slow_after_window)
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertEqual(len(plain), 1)
+        self.assertEqual(slow, plain)
+        self.assertEqual(evidence.files["engine-end.json"]["final"]["status"], "running")
+
     def test_unanswered_window_read_is_counted_and_the_final_read_still_happens(self):
         # 창 동안 띄운 읽기가 읽기 시한 안에 끝나지 않으면 실패(pending)로 세고, 늦게 온 결과는 버린다.
-        gate, calls = threading.Event(), []
+        gate, calls, sealed_before_final = threading.Event(), [], []
 
         def setup(ports, meter, clock):
             def read(task_id):
@@ -2920,6 +2956,7 @@ class TestEngineEndSignal(unittest.TestCase):
                 if len(calls) == 1:
                     gate.wait(5)
                     return task_view("done", completed_at="2026-11-16T00:00:03Z")
+                sealed_before_final.append("seal_gateway" in ports.calls)
                 return task_view("running")
             ports.task_status = read
             ports.background = lambda work: threading.Thread(target=work, daemon=True).start()
@@ -2935,6 +2972,8 @@ class TestEngineEndSignal(unittest.TestCase):
                          (0, 1, "engine_task_status_pending"))
         self.assertIsNone(end["first_terminal"])  # 시한 밖에서 온 끝 상태는 남기지 않는다
         self.assertEqual((end["final"]["status"], end["final_error"]), ("running", None))
+        # 진행 중 읽기를 기다리기 전에 게이트웨이를 이미 봉인했다(무응답 상태 API가 모델 요청 창을 늘리지 않는다).
+        self.assertEqual(sealed_before_final, [True])
 
     def test_window_read_finishing_after_the_window_is_waited_for(self):
         # 창 끝에 진행 중이던 읽기가 읽기 시한 안에 끝나면 기다렸다가 거둔다(그 읽기의 끝 상태도 남는다).
