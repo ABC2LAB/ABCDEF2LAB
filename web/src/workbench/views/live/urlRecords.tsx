@@ -98,7 +98,7 @@ const RUN_STATES: ReadonlyArray<Chip<string>> = [
 ];
 const DONE_STATES: ReadonlyArray<Chip<string>> = [
   ["all", "전체", true, "보존된 마감·중지·실패 회차"],
-  ["completed", "점검 완료", true, "끝까지 마친 회차 (서버가 실행 마감을 기록)"],
+  ["completed", "점검 완료", true, "서버가 실행 마감을 기록한 회차 (일부 완료 · 검사 안 함 포함)"],
   ["cancelled", "중지됨", true, "중지한 회차, 부분 보고서가 있을 수 있음"],
   ["failed", "진단 실패", true, "실패한 회차, 부분 보고서가 있을 수 있음"],
 ];
