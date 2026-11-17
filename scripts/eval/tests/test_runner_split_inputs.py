@@ -134,7 +134,11 @@ class TestPrepare(unittest.TestCase):
         self.assertIn("prime256v1", shown)
         self.assertIn("CA:TRUE", shown)
         self.assertIn("Certificate Sign", shown)
-        self.assertIn("CN = JinDo explore boundary CA", shown)
+        # 이름은 출력 형식을 RFC2253으로 지정해 본다(-text의 공백 형식은 OpenSSL 판마다 다르다, #656 리뷰: 3.5.5는 `CN=`).
+        for field in ("-subject", "-issuer"):
+            named = subprocess.run(["openssl", "x509", "-noout", field, "-nameopt", "RFC2253", "-in", str(inputs.files["ca_cert"])],
+                                   capture_output=True, text=True, check=True).stdout.strip()
+            self.assertEqual(named, field[1:] + "=CN=JinDo explore boundary CA")
         key = subprocess.run(["openssl", "pkey", "-noout", "-text", "-in", str(inputs.files["ca_key"])],
                              capture_output=True, text=True, check=True).stdout
         self.assertIn("prime256v1", key)
