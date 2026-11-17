@@ -67,6 +67,7 @@ class SplitRunSpec:
     host_watch_max_gap_seconds: float
     task_status_wait_seconds: float
     healthchecks: dict  # runner_window.healthcheck_actions(렌더)
+    product_close_seconds: float  # 제품 멈춤 뒤 끝 상태·drain 완료까지 기다리는 시한
 
 
 class SplitRunPorts(Protocol):
@@ -85,6 +86,8 @@ class SplitRunPorts(Protocol):
     def prepare_round(self, dns_token: str) -> dict: ...
     def start_round(self, prepared: dict) -> dict: ...
     def product_status(self, draft_id: str) -> dict: ...
+    def stop_round(self, draft_id: str) -> dict: ...
+    def wait_closed(self, draft_id: str, deadline_seconds: float) -> dict: ...
     def background(self, work) -> None: ...
     def seal(self, meter_container_id: str) -> None: ...
     def stop_boundary(self, boundary_container_id: str) -> None: ...
@@ -187,6 +190,11 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     # 경계는 계측기 봉인 뒤 SIGTERM 정지 한 번으로 봉인 표식까지 쓰고 끝난다(계약 §4.1 결정 B). 구간 감시가 그 정지만 허용한다.
     _step(state, "boundary_stop_failed", lambda: ports.stop_boundary(pre["services"][BOUNDARY]["id"]))
     drained = _wait_drained(spec, meter, clock, state)
+    # B는 drain 뒤 게이트웨이를 봉인해 새 모델 요청을 막는다(#634). O는 같은 자리에서 제품 회차를 멈춘다. 러너 예산으로 먼저
+    # 끝난 회차는 제품이 아직 실행 중이라 실행 기록(마감 때 저장)이 없고 모델 호출이 계속된다. 끝 상태·drain 완료를 본 뒤에야
+    # 실행 기록·장부·호출 기록을 읽는다(#665 리뷰).
+    _step(state, "product_stop_failed", lambda: ports.stop_round(draft_id))
+    closed = _step(state, "product_close_failed", lambda: ports.wait_closed(draft_id, spec.product_close_seconds))
 
     post = _step(state, "post_facts_failed", lambda: ports.snapshot("post"))
     _split_probe(ports, evidence, state, "post", post)
@@ -219,7 +227,8 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     state.summary.update(stop_reason=stop_reason, forwarded_at_stop=forwarded_at_stop, first_limit=limit,
                          drained=drained, pre_solved=pre_board.get("solved"), post_solved=post_board.get("solved"),
                          goal_common_sha256=goal["common_sha256"], window_reasons=window["reasons"],
-                         sampling_overwrites=usage["sampling_overwrites"], task_id=task_id, draft_id=draft_id)
+                         sampling_overwrites=usage["sampling_overwrites"], task_id=task_id, draft_id=draft_id,
+                         product_closed={name: closed.get(name) for name in PRODUCT_END_FIELDS})
 
 
 def execute_split_run(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles, evidence, clock: Clock) -> dict:

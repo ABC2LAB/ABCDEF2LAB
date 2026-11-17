@@ -256,8 +256,36 @@ class ProductDriver:
         return draft
 
     def start(self, draft: dict) -> None:
-        self._call("POST", f"{DRAFTS_PATH}/{draft['id']}/start", {"version": API_VERSION, "expected_revision": draft["revision"]},
-                   key=secrets.token_hex(16))
+        """시작. 범위의 모델이 외부 전송(OpenRouter)이면 외부 전송 확인을 같이 보낸다(화면 commandURLDiagnosis와 같다).
+        제품은 그 확인 없이는 외부 모델 회차 시작을 `approval_required`로 거부한다(diagnosisprep service_linux Start).
+        평가 회차는 외부 API 사용을 프로토콜 §6이 허용하고, 실제 대상이 아닌 공개 연습 대상이다."""
+        scope = draft.get("scope") if isinstance(draft.get("scope"), dict) else {}
+        model = scope.get("model") if isinstance(scope.get("model"), dict) else {}
+        body = {"version": API_VERSION, "expected_revision": draft["revision"]}
+        if model.get("external_transfer") is True:
+            body["external_transfer_confirmed"] = True
+        self._call("POST", f"{DRAFTS_PATH}/{draft['id']}/start", body, key=secrets.token_hex(16))
+
+    def stop(self, draft_id: str) -> dict:
+        """실행 중인 회차를 멈춘다(화면의 중지와 같은 명령). 이미 끝 상태면 보내지 않는다(제품이 충돌로 거부한다).
+        B의 게이트웨이 봉인(drain 뒤 새 모델 요청 막기)과 같은 자리에서 O의 새 모델 호출·전송을 멈추려는 것이다."""
+        draft = self.status(draft_id)
+        if draft["state"] in DRAFT_TERMINAL:
+            return draft
+        return self._draft(self._call("POST", f"{DRAFTS_PATH}/{draft_id}/stop",
+                                      {"version": API_VERSION, "expected_revision": draft["revision"]}))
+
+    def wait_closed(self, draft_id: str, deadline_seconds: float, interval_seconds: float) -> dict:
+        """끝 상태이고 drain이 끝날 때까지 본다. 그 뒤에야 실행 기록·장부·호출 기록이 더 바뀌지 않는다(진행 중 호출이 기록을
+        남기는 중에 읽지 않게). 시한 안에 닫히지 않으면 고정 code로 멈춘다."""
+        end = self._monotonic() + deadline_seconds
+        while True:
+            draft = self.status(draft_id)
+            if draft["state"] in DRAFT_TERMINAL and draft.get("drain_complete") is True:
+                return draft
+            if self._monotonic() >= end:
+                raise ProductAPIError("product_close_timeout")
+            self._sleep(interval_seconds)
 
     def status(self, draft_id: str) -> dict:
         """그 초안의 상태. 응답 초안 ID가 요청한 ID와 다르면(다른 작업을 관찰·서명하게 됨) 거부한다."""

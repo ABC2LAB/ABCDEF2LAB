@@ -30,7 +30,7 @@ SAMPLING = {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0, "presenc
 def spec(**changes):
     values = dict(run_id="ours-1", project="eval-ours-1", image_ids=dict(IMAGES), request_budget=10, time_budget_seconds=60.0,
                   poll_seconds=1.0, drain_timeout_seconds=5.0, events_lookback_seconds=10.0, host_watch_max_gap_seconds=15.0,
-                  task_status_wait_seconds=2.0, healthchecks=dict(HEALTH))
+                  task_status_wait_seconds=2.0, healthchecks=dict(HEALTH), product_close_seconds=30.0)
     values.update(changes)
     return SplitRunSpec(**values)
 
@@ -160,6 +160,17 @@ class FakePorts:
     def background(self, work):
         work()
 
+    def stop_round(self, draft_id):
+        self._call("stop_round")
+        assert draft_id == "draft-1"
+        self.stopped = True
+        return {"id": draft_id, "state": "stopping"}
+
+    def wait_closed(self, draft_id, deadline):
+        self._call("wait_closed")
+        assert deadline == 30.0 and getattr(self, "stopped", False)  # 멈춘 뒤에만 마감을 기다린다
+        return {"id": draft_id, "state": "cancelled", "drain_complete": True, "result_ready": True, "closing_reason": None}
+
     def seal(self, meter_id):
         self._call("seal")
         assert meter_id == IDS["eval-meter"]
@@ -199,7 +210,7 @@ def run(mutate=None, **spec_changes):
 
 ORDER_HEAD = ["preexisting", "image_ids", "host_spec", "planned_subnets", "up", "snapshot:pre", "probes:pre", "dns_token",
               "events:start", "watch:start", "scoreboard:pre", "prepare_round", "start_round"]
-ORDER_TAIL = ["seal", "stop_boundary", "meter:drained", "snapshot:post", "probes:post", "scoreboard:post", "watch:stop",
+ORDER_TAIL = ["seal", "stop_boundary", "meter:drained", "stop_round", "wait_closed", "snapshot:post", "probes:post", "scoreboard:post", "watch:stop",
               "events:stop", "status", "run_record", "copy_boundary_evidence", "copy_product_records", "down", "remove_inputs"]
 
 
@@ -232,6 +243,18 @@ class TestOrder(unittest.TestCase):
         result, _, evidence = run(mutate)
         self.assertEqual(evidence.files["task.json"]["requested_at"], (START + timedelta(seconds=30)).isoformat())
         self.assertEqual(result["finished_at"], (START + timedelta(seconds=90)).isoformat())
+
+    def test_runner_budget_end_stops_the_running_product_before_reading_records(self):
+        # 리뷰 반례: 러너 예산으로 끝났는데 제품은 아직 running이다. 멈추고 닫힐 때까지 본 뒤에 실행 기록·장부를 읽는다.
+        result, ports, _ = run()
+        self.assertEqual(result["status"], "complete", result)
+        order = [c for c in ports.calls if c != "status"]
+        self.assertLess(order.index("stop_round"), order.index("wait_closed"))
+        self.assertLess(order.index("wait_closed"), order.index("run_record"))
+        self.assertLess(order.index("wait_closed"), order.index("copy_product_records"))
+        self.assertEqual((result["product_closed"]["state"], result["product_closed"]["drain_complete"]), ("cancelled", True))
+        # 창 동안의 첫 끝 상태는 없고(제품이 러너 예산까지 실행 중), first_limit은 러너 상한이다.
+        self.assertEqual(result["first_limit"]["value"], "runner_time_budget")
 
     def test_product_budget_closing_is_first_limit(self):
         def mutate(ports):
@@ -315,6 +338,7 @@ class TestInvalid(unittest.TestCase):
     def test_port_failures_have_step_codes(self):
         for name, code in (("up", "compose_up_failed"), ("dns_token", "dns_token_failed"), ("prepare_round", "product_prepare_failed"),
                            ("start_round", "product_start_failed"), ("seal", "seal_failed"), ("stop_boundary", "boundary_stop_failed"),
+                           ("stop_round", "product_stop_failed"), ("wait_closed", "product_close_failed"),
                            ("run_record", "product_run_record_failed"), ("copy_boundary_evidence", "boundary_evidence_copy_failed"),
                            ("copy_product_records", "product_records_copy_failed")):
             with self.subTest(port=name):
