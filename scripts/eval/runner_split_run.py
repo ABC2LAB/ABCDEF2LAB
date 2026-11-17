@@ -68,6 +68,7 @@ class SplitRunSpec:
     task_status_wait_seconds: float
     healthchecks: dict  # runner_window.healthcheck_actions(렌더)
     product_close_seconds: float  # 제품 멈춤 뒤 끝 상태·drain 완료까지 기다리는 시한
+    post_settle_seconds: int  # 강제 취소가 있으면 post 관측 전 정착 대기(B와 같은 run_drain 공통 조건)
 
 
 class SplitRunPorts(Protocol):
@@ -187,9 +188,11 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     stop_reason, forwarded_at_stop = _wait_budget(spec, meter, clock, state, started, watch)
     stop_elapsed = clock.monotonic() - started
     _step(state, "seal_failed", lambda: ports.seal(pre["services"][METER]["id"]))
-    # 경계는 계측기 봉인 뒤 SIGTERM 정지 한 번으로 봉인 표식까지 쓰고 끝난다(계약 §4.1 결정 B). 구간 감시가 그 정지만 허용한다.
-    _step(state, "boundary_stop_failed", lambda: ports.stop_boundary(pre["services"][BOUNDARY]["id"]))
     drained = _wait_drained(spec, meter, clock, state)
+    # 강제 취소된 요청이 있으면 B와 같은 공통 조건(run_drain.settle_seconds)만큼 기다린 뒤 관측한다(runner.py와 같은 규칙).
+    settled = spec.post_settle_seconds if drained["forced_cancelled_requests"] else 0
+    if settled:
+        clock.sleep(settled)
     # B는 drain 뒤 게이트웨이를 봉인해 새 모델 요청을 막는다(#634). O는 같은 자리에서 제품 회차를 멈춘다. 러너 예산으로 먼저
     # 끝난 회차는 제품이 아직 실행 중이라 실행 기록(마감 때 저장)이 없고 모델 호출이 계속된다. 끝 상태·drain 완료를 본 뒤에야
     # 실행 기록·장부·호출 기록을 읽는다(#665 리뷰).
@@ -197,8 +200,11 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     closed = _step(state, "product_close_failed", lambda: ports.wait_closed(draft_id, spec.product_close_seconds))
 
     post = _step(state, "post_facts_failed", lambda: ports.snapshot("post"))
+    # 사후 점검은 경계의 두 입구·netns가 살아 있어야 한다(#653 기대값). 그래서 경계 정지는 post 관측·점검 뒤, 구간이 끝나기
+    # 전이다. 경계는 SIGTERM 정지 한 번으로 봉인 표식까지 쓰고 끝난다(계약 §4.1 결정 B). 구간 감시가 그 정지만 허용한다.
     _split_probe(ports, evidence, state, "post", post)
     post_board = _step(state, "post_scoreboard_failed", lambda: ports.scoreboard("post", post))
+    _step(state, "boundary_stop_failed", lambda: ports.stop_boundary(pre["services"][BOUNDARY]["id"]))
     window_end = clock.now()
     stopped = _step(state, "window_watch_failed", lambda: _stop_watch(state))
     streamed = _step(state, "window_events_failed", lambda: _stop_events(state, _ns(window_end)))
@@ -225,7 +231,8 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     if record_reasons:
         raise RunFailure(record_reasons[0])
     state.summary.update(stop_reason=stop_reason, forwarded_at_stop=forwarded_at_stop, first_limit=limit,
-                         drained=drained, pre_solved=pre_board.get("solved"), post_solved=post_board.get("solved"),
+                         drained=drained, post_settle_seconds=spec.post_settle_seconds, post_settle_applied_seconds=settled,
+                         pre_solved=pre_board.get("solved"), post_solved=post_board.get("solved"),
                          goal_common_sha256=goal["common_sha256"], window_reasons=window["reasons"],
                          sampling_overwrites=usage["sampling_overwrites"], task_id=task_id, draft_id=draft_id,
                          product_closed={name: closed.get(name) for name in PRODUCT_END_FIELDS})
@@ -239,11 +246,16 @@ def execute_split_run(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFile
     state = _SplitState()
     started_at = _stamp(clock)
     reasons: list[str] = []
+    interrupted = False
     try:
         _run_split_steps(spec, ports, meter, evidence, clock, state)
     except RunFailure as exc:
         reasons.append(exc.code)
         state.step = exc.code
+    except KeyboardInterrupt:
+        # 운영자 중단도 결과 기록 한 건(무효)을 남기고, 정리 뒤 중단 신호를 다시 올린다(execute_run과 같다).
+        reasons.append("interrupted")
+        interrupted = True
     except Exception:
         reasons.append("unexpected_error")
     finally:
@@ -271,4 +283,6 @@ def execute_split_run(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFile
     else:
         result = dict(base, status=COMPLETE, images=dict(spec.image_ids), **state.summary)
     evidence.write_json(RESULT_NAME, result)
+    if interrupted:
+        raise KeyboardInterrupt
     return result

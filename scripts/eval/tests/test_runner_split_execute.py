@@ -30,7 +30,7 @@ SAMPLING = {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0, "presenc
 def spec(**changes):
     values = dict(run_id="ours-1", project="eval-ours-1", image_ids=dict(IMAGES), request_budget=10, time_budget_seconds=60.0,
                   poll_seconds=1.0, drain_timeout_seconds=5.0, events_lookback_seconds=10.0, host_watch_max_gap_seconds=15.0,
-                  task_status_wait_seconds=2.0, healthchecks=dict(HEALTH), product_close_seconds=30.0)
+                  task_status_wait_seconds=2.0, healthchecks=dict(HEALTH), product_close_seconds=30.0, post_settle_seconds=2)
     values.update(changes)
     return SplitRunSpec(**values)
 
@@ -64,7 +64,7 @@ class FakeMeter:
 
     def marker(self, name):
         self.ports.calls.append("meter:drained")
-        return {"inflight_at_drain": 0, "log_complete": True, "forced_cancelled_requests": 0}
+        return {"inflight_at_drain": 0, "log_complete": True, "forced_cancelled_requests": self.ports.forced}
 
 
 class FakePorts:
@@ -79,6 +79,9 @@ class FakePorts:
         self.record = {"version": 1, "task_id": 42, "goal": dict(GOAL),
                        "model": {"requests": 2, "sampling_overwrites": 0, "sampling": dict(SAMPLING)}}
         self.ledger, self.calls_file = LEDGER, CALLS
+        self.forced = 0
+        self.boundary_stopped = False
+        self.snapshot_times: dict[str, float] = {}
 
     def _call(self, name):
         self.calls.append(name)
@@ -109,11 +112,14 @@ class FakePorts:
 
     def snapshot(self, phase):
         self._call(f"snapshot:{phase}")
+        self.snapshot_times[phase] = self.clock.t
         return snapshot()
 
     def probes(self, phase, snap):
         self._call(f"probes:{phase}")
-        return probe(self.probe_status[phase], "1" if phase == "pre" else "2")
+        # 실제 경계가 멈추면 두 입구·netns가 없어 양성 대조가 실패한다(#665 리뷰). 그 효과를 흉내 낸다.
+        status = INVALID if self.boundary_stopped else self.probe_status[phase]
+        return probe(status, "1" if phase == "pre" else "2")
 
     def dns_token(self):
         self._call("dns_token")
@@ -179,6 +185,7 @@ class FakePorts:
     def stop_boundary(self, boundary_id):
         self._call("stop_boundary")
         assert boundary_id == IDS["explore-boundary"]
+        self.boundary_stopped = True
 
     def run_record(self, task_id):
         self._call("run_record")
@@ -210,7 +217,8 @@ def run(mutate=None, **spec_changes):
 
 ORDER_HEAD = ["preexisting", "image_ids", "host_spec", "planned_subnets", "up", "snapshot:pre", "probes:pre", "dns_token",
               "events:start", "watch:start", "scoreboard:pre", "prepare_round", "start_round"]
-ORDER_TAIL = ["seal", "stop_boundary", "meter:drained", "stop_round", "wait_closed", "snapshot:post", "probes:post", "scoreboard:post", "watch:stop",
+ORDER_TAIL = ["seal", "meter:drained", "stop_round", "wait_closed", "snapshot:post", "probes:post", "scoreboard:post",
+              "stop_boundary", "watch:stop",
               "events:stop", "status", "run_record", "copy_boundary_evidence", "copy_product_records", "down", "remove_inputs"]
 
 
@@ -255,6 +263,21 @@ class TestOrder(unittest.TestCase):
         self.assertEqual((result["product_closed"]["state"], result["product_closed"]["drain_complete"]), ("cancelled", True))
         # 창 동안의 첫 끝 상태는 없고(제품이 러너 예산까지 실행 중), first_limit은 러너 상한이다.
         self.assertEqual(result["first_limit"]["value"], "runner_time_budget")
+
+    def test_post_probes_run_while_the_boundary_is_alive(self):
+        # 리뷰 반례: 경계를 먼저 멈추면 사후 점검이 무효가 된다. 정상 회차는 점검 뒤에 멈춘다.
+        result, ports, _ = run()
+        self.assertEqual(result["status"], "complete", result)
+        order = [c for c in ports.calls if c != "status"]
+        self.assertLess(order.index("probes:post"), order.index("stop_boundary"))
+        self.assertLess(order.index("stop_boundary"), order.index("watch:stop"))  # 정지는 구간 안(감시가 허용 대상으로 본다)
+
+    def test_forced_cancellation_waits_the_common_settle(self):
+        result, ports, _ = run(lambda p: setattr(p, "forced", 1))
+        self.assertEqual((result["post_settle_seconds"], result["post_settle_applied_seconds"]), (2, 2))
+        plain, plain_ports, _ = run()
+        self.assertEqual(plain["post_settle_applied_seconds"], 0)
+        self.assertEqual(ports.snapshot_times["post"] - plain_ports.snapshot_times["post"], 2)
 
     def test_product_budget_closing_is_first_limit(self):
         def mutate(ports):
@@ -344,6 +367,18 @@ class TestInvalid(unittest.TestCase):
             with self.subTest(port=name):
                 result, ports, _ = self.assert_invalid(code, lambda p, n=name: p.fail.update({n: RuntimeError("secret value")}))
                 self.assertNotIn("secret", str(result))
+
+    def test_operator_interrupt_still_writes_one_result_and_reraises(self):
+        for port in ("start_round", "wait_closed"):
+            with self.subTest(port=port):
+                clock = FakeClockState()
+                ports = FakePorts(clock)
+                ports.fail[port] = KeyboardInterrupt()
+                evidence = FakeEvidence()
+                with self.assertRaises(KeyboardInterrupt):
+                    execute_split_run(spec(), ports, FakeMeter(ports), evidence, clock.clock())
+                self.assertEqual((evidence.files[RESULT_NAME]["status"], evidence.files[RESULT_NAME]["reasons"]), (INVALID, ["interrupted"]))
+                self.assertEqual(ports.calls[-2:], ["down", "remove_inputs"])
 
     def test_cleanup_failures_are_reported(self):
         result, _, _ = run(lambda p: p.fail.update(down=RuntimeError("x")))
