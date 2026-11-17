@@ -542,14 +542,16 @@ def first_limit(stop_reason: str, stop_elapsed: float, time_budget_seconds: floa
     끝난 때보다 늦을 수 있다). 엔진 끝 시각이 러너 상한 시각 이하이면 engine_completed다. 창이 끝난 뒤에 거둔 읽기의 끝
     상태(러너 상한보다 늦음)는 엔진이 먼저 끝났다고 보지 않는다. 두 시각을 같이 남겨 판정을 다시 계산할 수 있게 한다."""
     runner = _FIRST_LIMIT_BY_STOP[stop_reason]
-    limit_at = time_budget_seconds if stop_reason == "time_budget" else stop_elapsed
-    engine_at = None if first_terminal is None else first_terminal["elapsed_seconds"]
+    # 두 시각을 기록과 같은 정밀도(ms, 엔진 끝 시각은 읽을 때 이미 이 정밀도)로 맞춘 뒤 비교한다. 원래 값으로 비교하면
+    # 기록된 두 시각만으로 분류를 다시 계산할 수 없다(#676 리뷰: 엔진 40.0·정지 39.9996이 기록에서는 둘 다 40.0).
+    limit_at = round(time_budget_seconds if stop_reason == "time_budget" else stop_elapsed, 3)
+    engine_at = None if first_terminal is None else round(first_terminal["elapsed_seconds"], 3)
     value = FIRST_LIMIT_ENGINE if engine_at is not None and engine_at <= limit_at else runner
     # O: 제품이 먼저 닫혔고 그 마감이 제품 예산 상한이면 제품 상한이 먼저 걸린 것이다(E② 대상 요청 상한 등, 통제 비용).
     closing = None if first_terminal is None else first_terminal.get("closing_reason")
     if value == FIRST_LIMIT_ENGINE and closing == PRODUCT_BUDGET_CLOSING:
         value = FIRST_LIMIT_PRODUCT + closing
-    return {"value": value, "runner_limit": runner, "runner_limit_elapsed_seconds": round(limit_at, 3),
+    return {"value": value, "runner_limit": runner, "runner_limit_elapsed_seconds": limit_at,
             "engine_terminal_elapsed_seconds": engine_at}
 
 
