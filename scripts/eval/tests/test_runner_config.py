@@ -16,7 +16,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from runner_config import (
-    COMPOSE_ACCEPTANCE, COMPOSE_COMMON, COMPOSE_E2_PRODUCT, COMPOSE_SPLIT, COMPOSE_E2_STUB, COMPOSE_EVAL, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, E2_SERVICE, ENGINE_SERVICE, ENGINE_DATA_PATH,
+    COMPOSE_ACCEPTANCE, COMPOSE_COMMON, COMPOSE_E2_PRODUCT, COMPOSE_SPLIT, COMPOSE_TARGET_ALIAS, COMPOSE_E2_STUB, COMPOSE_EVAL, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, E2_SERVICE, ENGINE_SERVICE, ENGINE_DATA_PATH,
     ENGINE_DB_DATA_PATH, METER_UPSTREAM_ALIAS,
     MAX_DRAIN_GRACE_SECONDS, MAX_GATEWAY_TEMPERATURE, METER_SERVICE, REPO_ROOT, SECRET_ENV_NAMES, RunnerConfigError,
     check_key_files, compose_base_args, secret_env_names, size_bytes, compose_environment, create_run_directory, load_runner_config,
@@ -929,7 +929,7 @@ class TestComposeContract(unittest.TestCase):
 
     def test_every_compose_file_is_covered(self):
         files = {COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL, COMPOSE_E2_STUB, COMPOSE_E2_PRODUCT,
-                 COMPOSE_ACCEPTANCE, COMPOSE_SPLIT}
+                 COMPOSE_ACCEPTANCE, COMPOSE_SPLIT, COMPOSE_TARGET_ALIAS}
         on_disk = set((REPO_ROOT / "deploy" / "engine-isolated").glob("compose*.yaml"))
         on_disk |= set((REPO_ROOT / "deploy" / "eval").glob("compose*.yaml"))
         self.assertEqual(on_disk, files)
