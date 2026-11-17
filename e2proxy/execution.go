@@ -144,6 +144,7 @@ func NewExecution(parent context.Context, cfg Config) (*Execution, error) {
 	cfg.HeaderMode = mode
 	cfg.Evaluation = evaluation
 	cfg.Rules = nil
+	cfg.ExcludedPaths = append([]string(nil), cfg.ExcludedPaths...)
 	if cfg.RootCAs != nil {
 		cfg.RootCAs = cfg.RootCAs.Clone()
 	}
@@ -1185,6 +1186,16 @@ func (c *Call) do(ctx context.Context, req *http.Request, purpose string, extrac
 	if purpose != "" {
 		boundary = nil
 	}
+	// 운영자 제외 경로(#627)는 진단 흐름 경계보다 먼저 E²가 본다. 진단 흐름 경계 거부와 같은 모양(policy_denied, 맞은
+	// 규칙 참조)의 결과 기록 하나·호출당 거부 계수 하나로 끝나고 경계는 부르지 않는다(요청당 한 번, 사유 하나). 그래서
+	// 평가 내보내기·시도 대조·작업대의 사유 어휘가 바뀌지 않는다. 경로는 승인 규칙 검사와 같은 한 번 푼 경로(requestPath)라
+	// 인코딩 표기로 우회하지 못한다. 인증 준비(목적 규칙)는 진단 흐름 경계처럼 대상 등록 때 승인한 로그인 경로 하나라 보지 않는다.
+	if purpose == "" && len(e.cfg.ExcludedPaths) > 0 {
+		if p, ok := requestPath(req.URL); !ok || pathscope.ExcludedAny(p, e.cfg.ExcludedPaths) {
+			r.Decision, r.Reason = "denied", PolicyDenied
+			return finish(nil, ErrDenied)
+		}
+	}
 	if boundary != nil && boundary.Before(ctx, view) != nil {
 		r.Decision, r.Reason = "denied", PolicyDenied
 		return finish(nil, ErrDenied)
@@ -1806,6 +1817,14 @@ func compilePolicyTemplate(cfg Config) ([]compiledRule, HeaderMode, *EvaluationC
 	rules, err := compileRules(cfg.Rules)
 	if err != nil {
 		return nil, "", nil, err
+	}
+	if len(cfg.ExcludedPaths) > pathscope.MaxExcluded {
+		return nil, "", nil, ErrConfig
+	}
+	for _, p := range cfg.ExcludedPaths {
+		if !pathscope.ValidExcluded(p) {
+			return nil, "", nil, ErrConfig
+		}
 	}
 	if !validResponseLimits(l, credentialValues(rules)) {
 		return nil, "", nil, ErrConfig

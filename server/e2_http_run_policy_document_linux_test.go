@@ -67,3 +67,54 @@ func TestE2HTTPRunPolicyDocumentAcceptsWorkflowRuns(t *testing.T) {
 		t.Fatal("open workflow block accepted")
 	}
 }
+
+// 워크플로 칸의 운영자 제외 경로(#627)는 선택 칸이다. 쓰면 비지 않은 유효 패턴 목록이어야 하고(null·빈 배열·잘못된
+// 패턴·33개 이상 거부), 지문에 들어간다. 제외 경로 없는 정책의 지문은 그대로다.
+func TestE2HTTPRunPolicyDocumentExcludedPaths(t *testing.T) {
+	_, _, base := e2HostPolicyFixture(t)
+	encode := func(excluded []string) []byte {
+		p := base
+		p.Workflow = &E2HTTPWorkflowPolicy{Format: diagnosisflow.Version, Mode: "ai_auto_v1", InputSHA256: strings.Repeat("a", 64), ExcludedPaths: excluded}
+		raw, err := json.Marshal(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	plain := encode(nil)
+	if strings.Contains(string(plain), "excluded_paths") {
+		t.Fatal("제외 경로 없는 정책에 칸이 생김(바이트·지문이 바뀜)")
+	}
+	_, plainFP, err := ValidateE2HTTPRunPolicyDocument(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withPolicy, withFP, err := ValidateE2HTTPRunPolicyDocument(encode([]string{"/read/über", "/read/*/secret"}))
+	if err != nil {
+		t.Fatal("valid exclusions rejected:", err)
+	}
+	if withFP == plainFP || len(withPolicy.excludedPaths()) != 2 {
+		t.Fatal("제외 경로가 지문·정책에 실리지 않음")
+	}
+	if _, otherFP, err := ValidateE2HTTPRunPolicyDocument(encode([]string{"/read/über"})); err != nil || otherFP == withFP {
+		t.Fatal("다른 제외 목록이 같은 지문", err)
+	}
+	many := make([]string, 33)
+	for i := range many {
+		many[i] = "/read/x"
+	}
+	for name, excluded := range map[string][]string{"pattern": {"/read/a*"}, "encoded": {"/read/%C3%BC"}, "dots": {"/read/../x"}, "many": many} {
+		if _, _, err := ValidateE2HTTPRunPolicyDocument(encode(excluded)); err == nil {
+			t.Fatalf("%s: invalid exclusions accepted", name)
+		}
+	}
+	var doc map[string]any
+	_ = json.Unmarshal(encode([]string{"/read/x"}), &doc)
+	for _, empty := range []any{nil, []string{}} {
+		doc["workflow"].(map[string]any)["excluded_paths"] = empty
+		raw, _ := json.Marshal(doc)
+		if _, _, err := ValidateE2HTTPRunPolicyDocument(raw); err == nil {
+			t.Fatalf("%v exclusions accepted as no exclusions", empty)
+		}
+	}
+}
