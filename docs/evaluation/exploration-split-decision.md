@@ -122,6 +122,8 @@
   - CLI: B는 엔진 이미지의 PATH 전체, O는 제품 이미지 중 샌드박스 경로만 잰다. 샌드박스 경로 목록은 Go 목록과 러너 사본을 시험으로 묶는다.
   - MCP: 판은 이미지의 npm 전역 판, 도구 목록은 같은 이미지를 망 없이 1회용으로 띄운 stdio `tools/list`로 잰다. **원 목록**과 **제품 허용 목록(`agentMCPTools`) 적용 뒤 목록**을 둘 다 남긴다. 공통 지문은 원 목록이고, 허용 목록 적용 뒤 목록은 O 쪽별 지문(통제 비용)이다(§3.3 도구 면 칸).
   - **B에 있고 O 샌드박스에 없는 CLI**가 나오면, 파일럿 B 기록에서 모델이 그 도구를 실제로 썼는지 확인한다. 썼으면 차이로 넘기지 않고 E² 샌드박스 읽기 전용 경로 추가를 이동찬 항목으로 올린다(통제 규칙 때문에 탐색·진단 성능을 깎지 않는다). 안 썼으면 차이로 기록한다.
+  - 구현: `scripts/eval/tool_surface.py`(보고서 `abc2lab.tool-surface/v1`, 망 없는 1회용 컨테이너, 원 출력 없이 이름·내용 SHA·사유만). CLI는 이름마다 셸 찾기 순서로 처음 실행되는 파일의 내용 SHA를 남기고, O는 대상 파일과 스크립트 해석기(`env X`는 X)가 샌드박스에 붙는 경로에 있어야 쓸 수 있다고 본다(안 보이는 이름은 사유와 함께 `hidden`). 샌드박스 PATH·붙는 경로·MCP 허용 목록은 Go 원문과, MCP 기능 칸은 제품 explore-mcp 렌더와 시험으로 묶는다. B 노출 목록은 원본 시드(`db/db.go` 브라우저 MCP `enabled=false`, 러너가 켜지 않음)라 빈 목록이다(`original_seed_disabled`). 원본은 `playwright-cli` 스킬도 기본으로 숨긴다(기본 노출은 api-recon뿐).
+  - 첫 측정(2026-11-17, B = 파일럿 원본 엔진 이미지 `pilot1116-baseline`, O = 제품 `realrun26b`·탐색 브라우저 `realrun26b`): MCP 판 0.0.84·원 목록 25개가 두 쪽 같고(같은 지문), O 노출 21개, B 노출 0개. CLI는 B 557개, O 샌드박스 504개. O 샌드박스에서 안 보이는 것은 6개(`npm`·`npx`·`playwright`·`playwright-cli`·`playwright-mcp`·`py3versions`, 모두 대상이 붙지 않는 경로)다. B에만 있는 이름 54개의 나머지는 이미지 구성 차이(원본 루트 Dockerfile과 제품 Dockerfile의 기반 이미지: Python 3.12 도구·pip·vim·gnupg·corepack 등)이고, 내용이 다른 이름은 `node`·`nodejs`·`python3`·`pydoc3`이다.
 
 ## 5. 결정 D(b) — O의 모델 경로
 
