@@ -8,6 +8,7 @@ LLM 모델·주소·대상 이미지·계측기 origin은 사전검사 선언(pr
 
 from __future__ import annotations
 
+import dataclasses
 import ipaddress
 import json
 import os
@@ -46,6 +47,8 @@ COMPOSE_ACCEPTANCE = REPO_ROOT / "deploy" / "eval" / "compose.acceptance.yaml"
 # 탐색 분리 배치(개선 후 O)의 평가 overlay. 제품 compose·제품 수용 overlay 위에 얹는다(탐색 분리 배치 결정안 §2 A(c)).
 # 렌더 조건은 scripts/ci/test_product_eval_split.py가 고정하고, 회차 구성에 쓰는 것은 순서 4-7(제품 구동)이다.
 COMPOSE_SPLIT = REPO_ROOT / "deploy" / "eval" / "compose.split.yaml"
+# 탐색 분리 배치 B 회차: 엔진 망에서 대상 이름을 계측기에 단다(O와 같은 origin 문자열, 결정안 §6).
+COMPOSE_TARGET_ALIAS = REPO_ROOT / "deploy" / "eval" / "compose.target-alias.yaml"
 E2_SECCOMP_PROFILE = REPO_ROOT / "deploy" / "eval" / "seccomp-e2.json"
 METER_DIR_NAME = "meter"
 # 게이트웨이 기록은 계측기와 따로 둔다(API 키를 가진 컨테이너가 계측 기록에 손대지 못하게).
@@ -155,7 +158,7 @@ _TOP_FIELDS = ("version", "runs_root", "secrets_env_file", "images", "target_ima
                "observer_readonly_ref", "e2", "state", "engine_rules", "verdict_export")
 # 목적 칸이 생기기 전 설정(같은 CONFIG_VERSION)도 그대로 읽게 선택 칸으로 둔다. 빠지면 공식 회차다.
 # path_key_file은 수용시험 회차에만 있어야 한다(계측기 경로 가림 키, 회차 디렉터리 밖).
-_OPTIONAL_TOP_FIELDS = ("purpose", "path_key_file", "preservation")
+_OPTIONAL_TOP_FIELDS = ("purpose", "path_key_file", "preservation", "split")
 # findings 수집(기존 원본 수집기) 한도. vocabulary_path는 평가자가 검토한 분류 매핑 JSON(레포 밖).
 _FINDINGS_FIELDS = ("vocabulary_path", "page_size", "timeout_seconds", "max_page_bytes", "max_total_bytes", "max_pages")
 # 페이지 크기·바이트 상한은 수집기·추출기 한도를 그대로 쓴다(따로 두면 어긋난다).
@@ -267,6 +270,8 @@ class RunnerConfig:
     path_key_file: Path | None
     # 수용시험 전용 서명 원자료 조건. 실행 허용이나 새 망 배치를 만들지 않는다.
     preservation: dict | None = None
+    # 탐색 분리 배치 O 회차 설정(runner_split_config.SplitConfig). 보존 측정 회차에만 있다.
+    split: object | None = None
 
     @property
     def tmpfs_min_free_bytes(self) -> int:
@@ -298,6 +303,9 @@ class RunPlan:
     e2_mode: str
     # 제품 E²가 계측기에 붙는 고정 주소. up 뒤 실제 주소와 대조한다.
     e2_meter_ip: str | None = None
+    # 탐색 분리 배치 B 회차의 작업 본문 origin(대상 이름 별칭, http://<대상 이름>:<계측기 포트>). 그 밖의 회차는 None이고
+    # 선언의 target_origin(계측기 서비스 이름)을 쓴다.
+    task_origin: str | None = None
 
 
 @dataclass(frozen=True)
@@ -527,7 +535,7 @@ def parse_runner_config(raw: object) -> RunnerConfig:
         errors.append("config.run.drain_grace_seconds: NOT_BELOW_DRAIN_TIMEOUT")
     if errors:
         raise RunnerConfigError(errors)
-    return RunnerConfig(
+    config = RunnerConfig(
         runs_root=Path(top["runs_root"]), secrets_env_file=Path(top["secrets_env_file"]), images=images,
         target_image_id=top["target_image_id"], ports=dict(ports), observer_path=top["observer_path"],
         observer_format=top["observer_format"],
@@ -546,6 +554,14 @@ def parse_runner_config(raw: object) -> RunnerConfig:
         purpose=top.get("purpose", PURPOSE_OFFICIAL),
         path_key_file=Path(top["path_key_file"]) if "path_key_file" in top else None,
         preservation=preservation)
+    if "split" not in top:
+        return config
+    # split 검사는 완성된 설정(보존 옵션·ports·runs_root)을 본다. 모듈끼리 서로 불러오지 않게 여기서 늦게 부른다.
+    from runner_split_config import SplitConfigError, parse_split
+    try:
+        return dataclasses.replace(config, split=parse_split(top["split"], config))
+    except SplitConfigError as exc:
+        raise RunnerConfigError(exc.errors) from None
 
 
 def _e2_product(block: dict, errors: list[str]) -> dict | None:
@@ -828,6 +844,12 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
     # 보존 시험은 원본·개선 후 양쪽 회차의 경로를 같은 키로 가려야 비교할 수 있다.
     if config.purpose == PURPOSE_BROWSER_ACCEPTANCE:
         files.append(COMPOSE_ACCEPTANCE)
+    split = config.split
+    if split is not None and side != BASELINE_SIDE:
+        # 분리 배치의 O는 제품 배치 계획(runner_split_config.plan_split_run)으로만 돈다. 엔진 직접 배치로 돌리지 않는다.
+        raise RunnerConfigError([f"preflight.{side}: SPLIT_LAYOUT_PLAN"])
+    if split is not None:
+        files.append(COMPOSE_TARGET_ALIAS)
     env = {
         "EVAL_ENGINE_IMAGE": engine_image.ref,
         "EVAL_ENGINE_DB_IMAGE": config.images["engine_db"].ref,
@@ -861,6 +883,8 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
     }
     if config.purpose == PURPOSE_BROWSER_ACCEPTANCE:
         env["EVAL_PATH_KEY_FILE"] = str(config.path_key_file)
+    if split is not None:
+        env["EVAL_TARGET_NAME"] = split.target_name
     if llm["backend"] == "api":
         env["EVAL_LLM_PROVIDER"] = llm["provider"]
         env["EVAL_LLM_GENERATION_PATH"] = config.llm_gateway["generation_path"]
@@ -884,7 +908,8 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
                    llm=llm, target_image=target_image, engine_image=engine_image, images=images,
                    meter_port=origin.port, compose_files=tuple(files),
                    secrets_env_file=config.secrets_env_file, compose_env=env, e2_mode=e2_mode,
-                   e2_meter_ip=config.e2_product["meter_ip"] if e2_mode == E2_PRODUCT else None)
+                   e2_meter_ip=config.e2_product["meter_ip"] if e2_mode == E2_PRODUCT else None,
+                   task_origin=None if split is None else f"http://{split.target_name}:{origin.port}")
 
 
 def gateway_sampling(declared: dict, side: str) -> str:

@@ -385,7 +385,8 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	}
 	// 목표 문장의 공통 부분·제품 전용 부분 SHA를 실행 기록에 남긴다(평가 러너가 원본 본문의 공통 부분과 대조).
 	commonSum, productSum := sha256.Sum256([]byte(goalCommon)), sha256.Sum256([]byte(goalProduct))
-	if supervisor.SetGoalDigests(hex.EncodeToString(commonSum[:]), hex.EncodeToString(productSum[:])) != nil {
+	goalCommonSHA, goalProductSHA := hex.EncodeToString(commonSum[:]), hex.EncodeToString(productSum[:])
+	if supervisor.SetGoalDigests(goalCommonSHA, goalProductSHA) != nil {
 		finishPrepare()
 		manager.Close()
 		return knownFailure("preparation_host_failed", true)
@@ -524,7 +525,10 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	}
 	// 회차 실행 시간 상한에 닿기 전에 budget_limited 마감을 시작해, 끝난 작업의 결과를 버리지 않고 실행 시간 안에서
 	// 마감한다(실행 결과 상태 값 계약 §3.4). 실행 끝 시각은 위 hard 문맥의 기한이다.
-	if end, ok := hard.Deadline(); !ok || d.supervisor == nil || d.supervisor.SetTimeBudget(urlTimeBudgetClose(end, time.Duration(l.profile.Budget.DurationSeconds)*time.Second, time.Duration(launch.ShutdownTimeoutSeconds)*time.Second)) != nil {
+	// 실행 기록(실행 단계 감독자가 씀)에도 준비 때와 같은 목표 SHA를 남긴다. 준비 단계 감독자에만 넣으면 실행 기록의
+	// goal 칸이 비어 평가 러너가 원본 본문의 공통 부분과 대조하지 못한다(VAmPI 3차 회차에서 발견).
+	if end, ok := hard.Deadline(); !ok || d.supervisor == nil || d.supervisor.SetTimeBudget(urlTimeBudgetClose(end, time.Duration(l.profile.Budget.DurationSeconds)*time.Second, time.Duration(launch.ShutdownTimeoutSeconds)*time.Second)) != nil ||
+		d.supervisor.SetGoalDigests(goalCommonSHA, goalProductSHA) != nil {
 		cleanup, done := launchCleanupContext(context.WithoutCancel(parent), launch)
 		closeErr := d.Close(cleanup)
 		done()

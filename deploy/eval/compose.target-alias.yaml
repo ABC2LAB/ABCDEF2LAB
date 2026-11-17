@@ -1,0 +1,8 @@
+# 탐색 분리 배치 B 회차(원본 직접 배치) 대상 이름 별칭. O는 제품이 점 든 대상 이름(DNS 소유 증명)으로 등록하고 그 이름이
+# 계측기 본 입구로 풀린다(compose.split.yaml). B 작업 본문도 같은 origin 문자열을 써야 목표 문장 공통 부분이 같은 바이트다
+# (탐색 분리 배치 결정안 §6). 그래서 B 엔진 망에서 같은 이름을 계측기에 단다. 선언·지문의 target_origin(eval-meter)은 그대로다.
+services:
+  eval-meter:
+    networks:
+      engine_net:
+        aliases: ['${EVAL_TARGET_NAME:?대상 이름을 설정하세요}']
