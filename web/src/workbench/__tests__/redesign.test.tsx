@@ -604,6 +604,9 @@ describe("자산 탐색", () => {
     );
     // 머리의 패널 버튼(좁은 화면 서랍)은 '기록 상세'
     expect(screen.getByRole("button", { name: "기록 상세" })).toBeInTheDocument();
+    // 머리의 예시 화면 진입 버튼(탐색 결과 · 진단 결과)은 뺐다 (사용자 11/17)
+    expect(screen.queryByRole("button", { name: "탐색 결과" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /진단 결과/ })).toBeNull();
     expect(screen.queryByRole("radiogroup", { name: "보이는 경로" })).toBeNull();
     const aside = screen.getByRole("complementary", { name: "기록 상세" });
     expect(within(aside).getByText("기록을 고르세요")).toBeInTheDocument();

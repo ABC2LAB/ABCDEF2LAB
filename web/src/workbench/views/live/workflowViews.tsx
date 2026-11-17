@@ -12,7 +12,7 @@ import { clockOf } from "../../live/map";
 import { maskSecrets } from "../../live/mask";
 import { retryWorkflowAction, runUrlAction, runWorkflowAction, useUrl, useUrlGates } from "../../live/urlDiagnosis";
 import { flowStageText, type WorkflowEndpoint, type WorkflowSnapshot } from "../../live/workflow";
-import { useShell, type View } from "../../shell";
+import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
 import { CloseInspButton, CodeCard, InspOpenButton, Kv, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
@@ -868,91 +868,6 @@ function FoundPaths({
   );
 }
 
-// 결과·판정 읽기 화면 진입(접근통제 지도·커버리지·발견 상세·전송 통제 흐름). 전부 아직 예시·운영자 전용.
-const RESULT_VIEWS: ReadonlyArray<readonly [View, string]> = [
-  ["accessmap", "접근통제 지도"],
-  ["coverage", "커버리지"],
-  ["finding", "발견 상세"],
-  ["e2flow", "전송 통제 흐름"],
-];
-
-/**
- * 자산 탐색 헤더의 '진단 결과' 묶음 — 결과·판정 읽기 화면 4개 진입을 버튼 하나로 모은다(헤더 과밀 해소).
- * 최종 자리는 작업대 시안에서 정렬(이동찬 리뷰) — 임시 묶음이라 포털·화살표 이동은 두지 않고 최소 구현한다
- * (바깥 클릭·Esc 로 닫힘). 색은 계정 메뉴와 같은 실재 토큰(--bg·--rule·--shadow)만 써서 라이트·다크 자동.
- */
-function ResultViewsMenu({ goTo }: { goTo: (name: View) => void }) {
-  const [open, setOpen] = useState(false);
-  const wrap = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: globalThis.MouseEvent) => {
-      if (!wrap.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: globalThis.KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-  return (
-    <div ref={wrap} style={{ position: "relative", display: "inline-flex" }}>
-      <button
-        className={s.btn}
-        type="button"
-        aria-haspopup="true"
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-      >
-        진단 결과
-        <Icon name="chev" />
-      </button>
-      {open ? (
-        <div
-          style={{
-            position: "absolute",
-            top: "calc(100% + 6px)",
-            right: 0,
-            zIndex: 40,
-            minWidth: 184,
-            display: "flex",
-            flexDirection: "column",
-            gap: 2,
-            padding: 6,
-            borderRadius: 12,
-            border: "1px solid var(--rule)",
-            background: "var(--bg)",
-            color: "var(--ink)",
-            boxShadow: "var(--shadow)",
-          }}
-        >
-          {RESULT_VIEWS.map(([view, label]) => (
-            <button
-              key={view}
-              className={s.btn}
-              type="button"
-              style={{ justifyContent: "flex-start", width: "100%", border: "none", background: "transparent" }}
-              onClick={() => {
-                setOpen(false);
-                goTo(view);
-              }}
-            >
-              {label}
-            </button>
-          ))}
-          <p className={s.help} style={{ margin: "4px 8px 2px" }}>
-            지금은 예시 · 운영자 전용 (API 연결 후 점등)
-          </p>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 /**
  * 탐색 중 마지막으로 새로 찾은 경로 (자산 탐색 위 한 줄, 사용자 11/17 "찾을 때마다 어디 찾았다고").
  * 앞 조회에 없던 경로 id 를 새로 찾은 것으로 본다. 서버는 찾은 순서대로 뒤에 붙이지만 상한에 걸리면 범위 밖 자리를
@@ -1042,14 +957,7 @@ export function WorkflowCrawlLive() {
             <PauseButton />
             {stop.button}
             <InspOpenButton>기록 상세</InspOpenButton>
-            {/* 탐색 결과(발견·경계 기록, 운영자 전용). 지금은 예시, live 점등은 탐색 실행기 착륙 후 */}
-            <button className={s.btn} type="button" onClick={() => goTo("explore")}>
-              탐색 결과
-            </button>
-            {/* 결과·판정 읽기 화면 4개(접근통제 지도·커버리지·발견 상세·전송 통제 흐름)는 전부 아직 예시·운영자
-                전용 — '진단 결과' 묶음 버튼 하나로 모은다(헤더 과밀 해소). 최종 자리는 작업대 시안에서 정렬(이동찬
-                리뷰). live 점등은 각 화면의 getter API 연결 후. */}
-            <ResultViewsMenu goTo={goTo} />
+            {/* [탐색 결과] · [진단 결과▾](예시 화면 진입)는 뺐다(사용자 11/17). 화면 자체는 남아 주소(#explore 등)로 열린다 */}
             <button className={cx(s.btn, s.pri)} type="button" disabled={!ready} onClick={() => goTo(next)}>
               {next === "scope" ? "범위 확인" : "점검 진행"}
               <Icon name="arrow" />
