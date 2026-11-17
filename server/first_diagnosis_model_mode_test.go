@@ -129,3 +129,28 @@ func TestFirstDiagnosisWebSearchOnlyWithExternalModel(t *testing.T) {
 		t.Fatal("invalid search setting accepted")
 	}
 }
+
+// 저장 회차 사용량은 실행 단계만이다: 준비 단계 스냅숏을 계수마다 뺀다. 엔진 샘플링 칸을 덮어쓴 수도 같다(#646 리뷰).
+// 준비 단계(Planner만)에서 덮어쓰기 2번, 실행 단계에서 3번 더 → 실행 기록 3. 기준값이 null이면 그대로다.
+func TestExecutionModelUsageSubtractsPreparationOverwrites(t *testing.T) {
+	count := func(v int64) *int64 { return &v }
+	preparation := llmpolicy.OpenRouterUsage{Requests: 2, Errors: 1, InputTokens: 100, CostMicros: 7, SamplingOverwrites: count(2)}
+	afterRun := llmpolicy.OpenRouterUsage{Requests: 6, Errors: 1, InputTokens: 400, CostMicros: 20, SamplingOverwrites: count(5)}
+	got := executionModelUsage(afterRun, preparation)
+	if got.Requests != 4 || got.Errors != 0 || got.InputTokens != 300 || got.CostMicros != 13 || got.SamplingOverwrites == nil || *got.SamplingOverwrites != 3 {
+		t.Fatalf("execution usage %+v overwrites %v", got, got.SamplingOverwrites)
+	}
+	if *afterRun.SamplingOverwrites != 5 || *preparation.SamplingOverwrites != 2 {
+		t.Fatal("subtraction changed the input snapshots")
+	}
+	if *got.SamplingOverwrites > got.Requests {
+		t.Fatal("overwrites exceed execution requests")
+	}
+	// v1·v2 승인(덮어쓰기 없음)은 두 값 모두 null이고 결과도 null이다. 준비 스냅숏이 없을 때(기준값 0값)는 현재 값 그대로다.
+	if got := executionModelUsage(llmpolicy.OpenRouterUsage{Requests: 3}, llmpolicy.OpenRouterUsage{Requests: 1}); got.SamplingOverwrites != nil || got.Requests != 2 {
+		t.Fatalf("v1/v2 usage %+v", got)
+	}
+	if got := executionModelUsage(afterRun, llmpolicy.OpenRouterUsage{}); got.SamplingOverwrites == nil || *got.SamplingOverwrites != 5 {
+		t.Fatalf("missing baseline changed overwrites %v", got.SamplingOverwrites)
+	}
+}
