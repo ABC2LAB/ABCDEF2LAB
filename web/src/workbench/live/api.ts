@@ -371,26 +371,6 @@ export function fetchCoverageGraph(taskId: string): Promise<CoverageGraph | null
   return call(() => engine.getCoverageGraph(taskId));
 }
 
-// ---------- 토큰 ----------
-
-/** 작업 합계 토큰 (원본 ARTEX 집계: 이 task 의 모든 에이전트 합). 전송 통제 예산 기록(model_usage)과는 다른 출처. */
-export interface LiveTokenTotal {
-  input: number;
-  cacheRead: number;
-  output: number;
-}
-
-/** GET /api/exploration/tokens?task={id} 의 total (server TokenTotalDTO). 숫자가 아닌 칸은 0. */
-export function fetchTaskTokens(taskId: string): Promise<LiveTokenTotal> {
-  return call(async () => {
-    const r = await apiFetch<{ total?: Record<string, unknown> | null } | null>(
-      `/api/exploration/tokens?task=${enc(taskId)}`,
-    );
-    const t = r?.total ?? {};
-    return { input: num(t.input_tokens), cacheRead: num(t.cache_read_tokens), output: num(t.output_tokens) };
-  });
-}
-
 // ---------- 활동 · 의도 ----------
 
 /**
