@@ -239,6 +239,8 @@ class FakePorts:
         self.e2_prompt_results, self.e2_prompt_asked = [e2_projection()], []
         self.fake_clock, self.verdict_call_seconds = None, 0
         self.rules_sha256 = None
+        # 대역 겹침 검사 입력: 이 회차가 만들 고정 대역, 호스트에 이미 있는 Docker 망 대역.
+        self.planned, self.host_nets = ["10.250.0.0/24"], ["172.17.0.0/16", "fd00::/64"]
         self.spec = spec
         # 엔진 끝 신호: 차례로 돌려줄 작업 상태 칸(하나 남으면 계속 그것, 예외는 raise). 읽은 시점은 calls 길이로 남긴다
         # (calls 순서를 대조하는 시험을 흔들지 않게 따로 둔다).
@@ -313,6 +315,14 @@ class FakePorts:
     def preexisting(self):
         self._call("preexisting")
         return False
+
+    def planned_subnets(self):
+        self._call("subnets:planned")
+        return list(self.planned)
+
+    def host_subnets(self):
+        self._call("subnets:host")
+        return list(self.host_nets)
 
     def image_ids(self):
         self._call("image_ids")
@@ -551,7 +561,7 @@ def run(mutate=None, mutate_gateway=None, spec=None):
     return result, ports, meter, evidence
 
 
-FULL_ORDER = ["preexisting", "image_ids", "tool_tree", "host_spec", "up", "facts:pre", "listeners:pre", "probe:pre", "tmpfs:pre",
+FULL_ORDER = ["preexisting", "image_ids", "tool_tree", "host_spec", "subnets:planned", "subnets:host", "up", "facts:pre", "listeners:pre", "probe:pre", "tmpfs:pre",
               "wait_ready", "events:start", "watch:start", "scoreboard:pre", "apply_engine_settings", "engine_settings", "start_task", "seal",
               "seal_gateway", "facts:post", "listeners:post", "probe:post", "scoreboard:post", "watch:stop",
               "events:stop", "tmpfs:post", "findings", "intercept_summary", "down", "sign", "sign"]
@@ -1069,7 +1079,9 @@ class TestCompleteRun(unittest.TestCase):
                                                "post-probe.json", "meter-summary.json", "llm-summary.json",
                                                "findings.json", "task.json", "window-watch.json", "engine-end.json",
                                                "isolation-evidence.json", "solve-events.json", "run-record.json", "intercept-summary.json",
-                                               "engine-settings.json", RESULT_NAME})
+                                               "engine-settings.json", "subnet-check.json", RESULT_NAME})
+        self.assertEqual(evidence.files["subnet-check.json"], {"format": "abc2lab-eval-runner-subnet-check-v1",
+                                                               "planned": ["10.250.0.0/24"], "overlaps": []})
         # 서명 대상 근거 목록에는 결과 파일 자신이 없다(서명 뒤에 쓴다).
         self.assertEqual(set(result["evidence"]), set(evidence.files) - {RESULT_NAME})
         self.assertEqual(ports.sealed_id, "4" * 64)
@@ -1779,6 +1791,36 @@ class TestFailures(unittest.TestCase):
             p.image_ids = lambda: dict(p.spec.image_ids, target="sha256:" + "f" * 64)
         result, ports, _, evidence = run(other_image)
         self.assert_invalid(result, ports, evidence, "image_id_mismatch", down=False)
+
+    def test_subnet_overlap_stops_before_compose_up(self):
+        # 탐색 분리 배치 결정안 §2: 회차가 만들 고정 대역이 호스트의 기존 Docker 망과 겹치면 아무것도 띄우지 않는다.
+        # 2026-11-16에 같은 머신의 다른 스택이 제품 기본 대역을 쓰고 있었다.
+        def taken(p, m, c):
+            p.planned = ["172.31.247.0/24", "10.250.0.0/24"]
+            p.host_nets = ["172.17.0.0/16", "172.31.0.0/16", "192.168.9.0/24", "fd00::/64"]
+        result, ports, _, evidence = run(taken)
+        self.assert_invalid(result, ports, evidence, "subnet_overlap", down=False)
+        self.assertNotIn("up", ports.calls)
+        check = evidence.files["subnet-check.json"]
+        self.assertEqual(check["planned"], ["172.31.247.0/24", "10.250.0.0/24"])
+        # 겹친 쌍만 남긴다. 겹치지 않는 다른 망(172.17·192.168.9·IPv6)은 근거에 남기지 않는다.
+        self.assertEqual(check["overlaps"], [{"planned": "172.31.247.0/24", "existing": "172.31.0.0/16"}])
+        self.assertNotIn("192.168.9.0/24", json.dumps(check))
+
+    def test_subnet_check_failure_or_no_fixed_subnet(self):
+        def broken(p, m, c):
+            def fail():
+                p._call("subnets:planned")
+                raise ValueError("/secret/path compose output")
+            p.planned_subnets = fail
+        result, ports, _, evidence = run(broken)
+        self.assert_invalid(result, ports, evidence, "subnet_check_failed", down=False)
+        self.assertNotIn("up", ports.calls)
+        self.assertNotIn("subnet-check.json", evidence.files)
+        # 고정 대역이 없는 회차(Docker가 빈 대역을 고름)는 겹칠 것이 없어 그대로 띄운다.
+        result, ports, _, evidence = run(lambda p, m, c: setattr(p, "planned", []))
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertEqual(evidence.files["subnet-check.json"]["overlaps"], [])
 
     def test_tool_tree_failure_stops_before_compose_up(self):
         def broken(p, m, c):
