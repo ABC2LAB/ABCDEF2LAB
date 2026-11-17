@@ -137,14 +137,44 @@ def _text(value: object, code: str) -> str:
     return value
 
 
+def healthcheck_actions(rendered: dict) -> dict[str, str]:
+    """compose 렌더 결과(`docker compose config --format json`)에서 서비스마다 Docker가 healthcheck exec 이벤트에 적는 명령.
+
+    CMD 배열은 인자를 공백으로 이은 것, CMD-SHELL은 `/bin/sh -c <명령>`이다(ENGINE_DB_HEALTHCHECK와 같은 규칙). NONE이거나
+    disable이면 healthcheck가 없다. 모양이 다르면 거부한다(허용 목록이 실제와 어긋나면 정상 healthcheck가 위반으로 보인다)."""
+    services = rendered.get("services") if isinstance(rendered, dict) else None
+    if not isinstance(services, dict):
+        raise WindowError("healthcheck_render_invalid")
+    actions = {}
+    for name, service in services.items():
+        check = service.get("healthcheck") if isinstance(service, dict) else None
+        if check is None or check.get("disable") is True:
+            continue
+        test = check.get("test")
+        if (not isinstance(test, list) or not test or not all(isinstance(part, str) for part in test)):
+            raise WindowError("healthcheck_render_invalid")
+        if test == ["NONE"]:
+            continue
+        if test[0] == "CMD" and len(test) > 1:
+            actions[name] = " ".join(test[1:])
+        elif test[0] == "CMD-SHELL" and len(test) == 2:
+            actions[name] = "/bin/sh -c " + test[1]
+        else:
+            raise WindowError("healthcheck_render_invalid")
+    return actions
+
+
 def judge_events(events: list, window_start_ns: int, run_networks: dict[str, str], run_containers: dict[str, str],
                  sealable: frozenset[str], healthchecked: frozenset[str], runner_containers: frozenset[str],
                  stream_complete: bool, *, runner_helpers: dict[str, str] | None = None,
-                 stoppable: frozenset[str] = frozenset()) -> dict:
+                 stoppable: frozenset[str] = frozenset(), healthchecks: dict[str, str] | None = None) -> dict:
     """구간 이벤트를 판정한다. run_networks·run_containers는 ID → 서비스(망 이름)다.
 
     window_start_ns보다 앞선 이벤트(lookback)는 healthcheck exec ID만 알아 두고 판정하지 않는다.
     sealable: seal 신호(USR1)를 받는 서비스. healthchecked: 선언된 healthcheck exec를 허용하는 서비스.
+    healthchecks: 서비스 → 허용하는 healthcheck exec 명령(렌더 결과에서 healthcheck_actions로 만든다). 주면 healthchecked
+    대신 이 표를 쓴다(탐색 분리 배치 O: 제품 서비스마다 healthcheck 명령이 다르다). 주지 않으면 healthchecked의 서비스에
+    엔진 DB 명령(ENGINE_DB_HEALTHCHECK)만 허용한다(B 배치 그대로).
     runner_containers: 러너가 구간 중 직접 띄운 컨테이너 ID(post probe). 그 밖의 회차 밖 컨테이너 생성·시작은 위반.
     runner_helpers: 러너가 구간 중 띄운 도우미 ID → 역할. 그 ID이면서 RUNNER_HELPER_LABEL 값이 역할과 같을 때만 정상 생명주기를
     허용한다(라벨만 맞고 ID가 다르면 회차 밖 컨테이너로 본다). 도우미의 망 이벤트는 'none' 망 연결·분리 한 번씩만 허용하고,
@@ -153,6 +183,9 @@ def judge_events(events: list, window_start_ns: int, run_networks: dict[str, str
     결과에는 종류별 건수와 위반 요약(서비스 이름·동작)만 남기고 이벤트 원문은 남기지 않는다.
     """
     if not isinstance(events, list) or type(window_start_ns) is not int:
+        raise WindowError("docker_events_invalid")
+    checks = {service: ENGINE_DB_HEALTHCHECK for service in healthchecked} if healthchecks is None else dict(healthchecks)
+    if not all(isinstance(command, str) and command for command in checks.values()):
         raise WindowError("docker_events_invalid")
     kinds: dict[str, int] = {}
     boundary: list[dict] = []
@@ -180,8 +213,9 @@ def judge_events(events: list, window_start_ns: int, run_networks: dict[str, str
         label = action.split(":", 1)[0]
         if stamp < window_start_ns:
             lookback += 1
-            if (kind == "container" and run_containers.get(actor_id) in healthchecked
-                    and action in (_EXEC_CREATE + ENGINE_DB_HEALTHCHECK, _EXEC_START + ENGINE_DB_HEALTHCHECK)
+            command = checks.get(run_containers.get(actor_id, ""))
+            if (kind == "container" and command is not None
+                    and action in (_EXEC_CREATE + command, _EXEC_START + command)
                     and isinstance(attributes.get("execID"), str) and attributes["execID"]):
                 allowed_exec_ids.add(attributes["execID"])
             continue
@@ -236,8 +270,8 @@ def judge_events(events: list, window_start_ns: int, run_networks: dict[str, str
                 and (label == "kill" or (actor_id, "kill") in stopped)):
             stopped.add((actor_id, label))  # SIGTERM 다음에만 die·stop
             continue
-        if service in healthchecked:
-            if action in (_EXEC_CREATE + ENGINE_DB_HEALTHCHECK, _EXEC_START + ENGINE_DB_HEALTHCHECK):
+        if service in checks:
+            if action in (_EXEC_CREATE + checks[service], _EXEC_START + checks[service]):
                 exec_id = attributes.get("execID")
                 if isinstance(exec_id, str) and exec_id:
                     allowed_exec_ids.add(exec_id)
