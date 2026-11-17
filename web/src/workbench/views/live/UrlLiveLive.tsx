@@ -38,7 +38,7 @@ import { approvalCounts, clockOf, fmtCount, fmtTokensShort, planState, sevKey } 
 import { maskSecrets } from "../../live/mask";
 import { ErrorNote, LoadingRow, NotYet } from "../../live/parts";
 import { useUrl, useUrlGates } from "../../live/urlDiagnosis";
-import { factText, URL_ENDED_STATES, type UrlState, urlStateText, usdText } from "../../live/urlMap";
+import { factText, URL_ENDED_STATES, type UrlState, urlStateText } from "../../live/urlMap";
 import { type Poll, usePoll } from "../../live/usePoll";
 import { flowStageText, MAX_FLOW_PLAN, type WorkflowSnapshot } from "../../live/workflow";
 import { useShell } from "../../shell";
@@ -78,26 +78,6 @@ export function Outcome({ o, short = false }: { o: DiagnosticOutcome; short?: bo
       {short ? SHORT[o] : diagnosticOutcomeLabels[o]}
     </span>
   );
-}
-
-/** 모델 사용량 (서버 기록). 상한은 승인 범위 예산. */
-function Usage() {
-  const job = useUrl((st) => st.job);
-  const u = job?.model_usage;
-  const b = job?.scope?.budget;
-  if (!u) return <p className={s.empty}>모델 사용량 기록이 아직 없습니다.</p>;
-  const of = (n: number, cap?: number) => (cap === undefined ? fmtCount(n) : `${fmtCount(n)} / ${fmtCount(cap)}`);
-  // 실패·중지로 사용량을 못 받은 호출은 예약한 양으로 셌으므로, 그런 호출이 있으면 토큰·비용은 실제 사용의
-  // 최대치다. 예산 상한(n / 상한)과 헷갈리지 않게 "최대치로 계산"이라고 쓴다. 실행이 중지됐는지는 상태가 따로 보인다.
-  const bound = (u.unknown_usage_calls ?? 0) > 0 ? " (최대치로 계산)" : "";
-  const rows: [string, string][] = [
-    ["모델 요청", of(u.requests, b?.model_requests)],
-    ["입력 토큰", of(u.input_tokens, b?.input_tokens) + bound],
-    ["출력 토큰", of(u.output_tokens, b?.output_tokens) + bound],
-    ["비용", u.usage_known ? usdText(u.cost_usd_micros) + bound : "불명"],
-  ];
-  if (bound) rows.push(["예약량으로 계산한 호출", `${fmtCount(u.unknown_usage_calls ?? 0)}건`]);
-  return <Kv rows={rows} />;
 }
 
 /** 점검 중 발견 후보 다시 읽는 간격. 진행 중에만 (끝난 점검은 한 번 읽고 멈춘다). */
@@ -254,24 +234,37 @@ function LiveFindings({
  * 그런 호출이 있으면 최대치라고 같이 적는다.
  */
 function TaskTokens({ u }: { u: URLDiagnosisUsage }) {
+  return (
+    <p className={s.toks} title={tokenExact(u)}>
+      {/* 칸 사이 공백: 화면은 flex 간격으로 띄우고, 글로 읽을 때(화면 읽기 · 복사) 붙지 않게 */}
+      <span>작업 합계 ·</span> <TokenChips u={u} />
+    </p>
+  );
+}
+
+/** 마우스를 올리면 보일 정확한 값 (입력 · 출력 토큰, 예약량으로 센 호출이 있으면 최대치라고). */
+function tokenExact(u: URLDiagnosisUsage): string {
+  const bound = u.unknown_usage_calls ?? 0;
+  return [
+    `입력 ${fmtCount(u.input_tokens)} 토큰`,
+    `출력 ${fmtCount(u.output_tokens)} 토큰`,
+    ...(bound ? [`사용량을 못 받은 호출 ${fmtCount(bound)}건은 예약량으로 계산(최대치)`] : []),
+  ].join("\n");
+}
+
+/** 입 · 출 칩 (점검 진행 상태 카드 · 보고서 머리 줄이 같이 쓴다). 예약량으로 센 호출이 있으면 '(최대)'. */
+function TokenChips({ u }: { u: URLDiagnosisUsage }) {
   const chip = (k: string, n: number) => (
     <span>
       {`${k} `}
       <b>{fmtTokensShort(n)}</b>
     </span>
   );
-  const bound = u.unknown_usage_calls ?? 0;
-  const exact = [
-    `입력 ${fmtCount(u.input_tokens)} 토큰`,
-    `출력 ${fmtCount(u.output_tokens)} 토큰`,
-    ...(bound ? [`사용량을 못 받은 호출 ${fmtCount(bound)}건은 예약량으로 계산(최대치)`] : []),
-  ].join("\n");
   return (
-    <p className={s.toks} title={exact}>
-      {/* 칸 사이 공백: 화면은 flex 간격으로 띄우고, 글로 읽을 때(화면 읽기 · 복사) 붙지 않게 */}
-      <span>작업 합계 ·</span> {chip("입", u.input_tokens)} {chip("출", u.output_tokens)}
-      {bound ? <span> (최대)</span> : null}
-    </p>
+    <>
+      {chip("입", u.input_tokens)} {chip("출", u.output_tokens)}
+      {u.unknown_usage_calls ? <span> (최대)</span> : null}
+    </>
   );
 }
 
@@ -1124,7 +1117,7 @@ export function UrlReportLive() {
     enabled: visible && !!taskId,
   });
   const run = usePoll(() => fetchDiagnosisRun(taskId as string), [taskId], { enabled: visible && !!taskId });
-  // 자산 커버리지 (시안 머리 줄 · 요약 칸): 서버 task 의 방문 · 검사한 자산 비율(판정 커버리지 아님 · 리뷰 #479).
+  // 자산 커버리지 (요약 칸): 서버 task 의 방문 · 검사한 자산 비율(판정 커버리지 아님 · 리뷰 #479).
   // 꺼졌거나 못 읽으면 값을 만들지 않고 "—"
   const cov = usePoll(() => fetchCoverage(taskId as string), [taskId], { enabled: visible && !!taskId });
   const covPct = cov.data?.enabled && cov.data.pct !== null ? Math.round(cov.data.pct * 100) : null;
@@ -1210,7 +1203,10 @@ export function UrlReportLive() {
       />
     );
 
-  // 머리 줄 (시안: 시작 · 소요 · 모델 · 커버리지). 서버가 주지 않는 시작 · 소요는 '연결 전'
+  // 머리 줄: 시작 · 소요 · 모델 · 모델 사용량(입 · 출). 서버가 주지 않는 시작 · 소요는 '연결 전'.
+  // 자산 커버리지는 아래 요약 칸에 있어 머리에서 빼고 그 자리에 모델 사용량을 둔다(사용자 11/17).
+  // 모델 사용량은 이 진단의 전송 통제 예산 기록(job.model_usage), 기록이 없으면 "—"
+  const usage = job?.model_usage;
   const meta = [
     <span key="start">
       시작 <NotYet why="서버가 점검 시작 시각을 주지 않습니다" />
@@ -1223,8 +1219,8 @@ export function UrlReportLive() {
         모델 <b>{`${profile.model_label} · ${profile.model?.external_transfer ? "외부" : "로컬"}`}</b>
       </span>
     ) : null,
-    <span key="cov">
-      자산 커버리지 <b>{covPct !== null ? `${covPct}%` : "—"}</b>
+    <span key="use" title={usage ? tokenExact(usage) : undefined}>
+      모델 사용량 {usage ? <TokenChips u={usage} /> : <b>—</b>}
     </span>,
   ].filter(Boolean);
 
@@ -1347,12 +1343,6 @@ export function UrlReportLive() {
               ) : null}
               <RunRecord run={run} />
               <WorkflowReport />
-              <section className={s.sec} aria-labelledby="rUseH">
-                <div className={s.sh}>
-                  <h2 id="rUseH">모델 사용량</h2>
-                </div>
-                <Usage />
-              </section>
               <Download taskId={taskId} />
             </div>
           </section>

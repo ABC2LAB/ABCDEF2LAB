@@ -1424,11 +1424,13 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     // 자산 커버리지(방문 · 검사한 자산 비율)라고 이름 붙인다 — 판정 커버리지로 읽히지 않게 (리뷰 #479)
     await waitFor(() => expect(cell("자산 커버리지")).toHaveTextContent("40%"));
     expect(cell("자산 커버리지")).toHaveTextContent("미검사 60%");
-    // 머리 줄 (시안: 시작 · 소요 · 모델 · 커버리지). 서버가 주지 않는 시작 · 소요는 '연결 전'(값을 만들지 않음)
+    // 머리 줄: 시작 · 소요 · 모델 · 모델 사용량. 서버가 주지 않는 시작 · 소요는 '연결 전'(값을 만들지 않음).
+    // 자산 커버리지는 요약 칸에만 두고 머리에서 뺐다(사용자 11/17). 모델 사용량 기록이 없으면 '—'
     const header = screen
       .getByRole("heading", { level: 1, name: "target.example 보고서" })
       .closest("header") as HTMLElement;
-    await waitFor(() => expect(header).toHaveTextContent("자산 커버리지 40%"));
+    expect(header).not.toHaveTextContent("자산 커버리지");
+    expect(within(header).getByText(/^모델 사용량/)).toHaveTextContent(/^모델 사용량 —$/);
     expect(header).toHaveTextContent("모델 합성 모델 · 로컬");
     expect(within(header).getByText(/^시작/)).toHaveTextContent("연결 전");
     expect(within(header).getByText(/^소요/)).toHaveTextContent("연결 전");
@@ -1471,8 +1473,37 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(within(record).getByText("run-1")).toBeInTheDocument();
     expect(within(record).getByText("완결")).toBeInTheDocument();
     expect(within(within(record).getByText("차단").parentElement as HTMLElement).getByText("2")).toBeInTheDocument();
-    // 모델 사용량은 서버 기록이 없으면 그렇다고 말한다
-    expect(screen.getByText("모델 사용량 기록이 아직 없습니다.")).toBeInTheDocument();
+    // 모델 사용량은 머리 줄로 옮겨 증거 · 감사 탭에 따로 두지 않는다
+    expect(screen.queryByRole("heading", { name: "모델 사용량" })).toBeNull();
+  });
+
+  it("보고서 머리 줄의 모델 사용량은 점검 진행과 같은 입 · 출 칩, 마우스를 올리면 정확한 값과 최대치", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue({
+      ...completed,
+      model_usage: {
+        requests: 2,
+        input_tokens: 1200,
+        output_tokens: 300,
+        reserved_input_tokens: 0,
+        reserved_output_tokens: 0,
+        cost_usd_micros: 0,
+        usage_known: true,
+        unknown_usage_calls: 1,
+      },
+    });
+    a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [candidate(1)] });
+    mount("report");
+    const header = (await screen.findByRole("heading", { level: 1, name: "target.example 보고서" })).closest(
+      "header",
+    ) as HTMLElement;
+    const use = await within(header).findByText(/^모델 사용량/);
+    expect(use).toHaveTextContent(/^모델 사용량 입 1.2k 출 300 \(최대\)$/);
+    expect(use).toHaveAttribute(
+      "title",
+      "입력 1,200 토큰\n출력 300 토큰\n사용량을 못 받은 호출 1건은 예약량으로 계산(최대치)",
+    );
+    expect(header).not.toHaveTextContent("자산 커버리지");
   });
 
   it("다른 진단 만들기: 조회 연결만 끊고 폼을 비운다", async () => {
