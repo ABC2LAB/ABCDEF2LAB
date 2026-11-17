@@ -34,7 +34,7 @@ import {
   type LiveFinding,
   type Remediation,
 } from "../../live/api";
-import { approvalCounts, clockOf, fmtCount, fmtTokensShort, planState, sevKey } from "../../live/map";
+import { approvalCounts, clockOf, dateTimeOf, fmtCount, fmtTokensShort, planState, sevKey } from "../../live/map";
 import { maskSecrets } from "../../live/mask";
 import { ErrorNote, LoadingRow, NotYet } from "../../live/parts";
 import { useUrl, useUrlGates } from "../../live/urlDiagnosis";
@@ -1025,23 +1025,57 @@ export function FindingDetail({
           </>
         }
       />
-      {entryEp(e) ? (
-        <div className={s["vi-ep"]}>
-          <EntryEp e={e} />
-        </div>
-      ) : null}
-      {!e.available ? (
-        <div className={cx(s.note, s.warn)} role="note">
-          <Icon name="alert" />
-          <span>{maskSecrets(e.unavailable_reason)}</span>
-        </div>
-      ) : null}
-      <DiagnosticEntrySections
-        key={`${taskId}:${e.entry_id}:${e.source_digest}:${e.record?.id ?? 0}:${e.record?.bundle?.input_digest ?? ""}`}
-        task={taskId}
-        entry={e}
-        onReload={onReload}
-      />
+      {/* ARTEX 발견 상세처럼(사용자 11/17) 칸마다 흰 카드로: 맨 위 상태 카드(ID · 위험도 · 판정 · 유형 · 관련 자산 · 발견 시각,
+          줄마다 구분선 · 값은 오른쪽), 그 아래 판정과 영향 · 재현 절차 · 보안 조치 · AI 프롬프트 · 기술 정보 카드.
+          ARTEX 와 달리 위험도 · 처리 상태를 여기서 바꾸지 않는다 — 판정은 저장된 E③ 근거만 따른다(절대규칙 3 · 5) */}
+      <div className={s.fdet}>
+        <Isec t="상태">
+          <dl className={s.frows}>
+            <div>
+              <dt>ID</dt>
+              <dd>
+                <span className={s.chip}>{e.entry_id}</span>
+              </dd>
+            </div>
+            <div>
+              <dt>위험도</dt>
+              <dd>
+                <Sev e={e} />
+              </dd>
+            </div>
+            <div>
+              <dt>판정</dt>
+              <dd>
+                <Outcome o={o} />
+              </dd>
+            </div>
+            <div>
+              <dt>유형</dt>
+              <dd>{e.vuln_class ? <span className={s.chip}>{maskSecrets(e.vuln_class)}</span> : "—"}</dd>
+            </div>
+            <div>
+              <dt>관련 자산</dt>
+              <dd>{entryEp(e) ? <EntryEp e={e} /> : "—"}</dd>
+            </div>
+            <div>
+              <dt>발견 시각</dt>
+              <dd>{dateTimeOf(e.observed_at) || "—"}</dd>
+            </div>
+          </dl>
+        </Isec>
+        {!e.available ? (
+          <div className={cx(s.note, s.warn)} role="note">
+            <Icon name="alert" />
+            <span>{maskSecrets(e.unavailable_reason)}</span>
+          </div>
+        ) : null}
+        <DiagnosticEntrySections
+          key={`${taskId}:${e.entry_id}:${e.source_digest}:${e.record?.id ?? 0}:${e.record?.bundle?.input_digest ?? ""}`}
+          task={taskId}
+          entry={e}
+          onReload={onReload}
+        />
+      </div>
       {/* 계정별 응답 비교 · 다음 단계('연결 전' 자리)와 분류(머리 유형과 겹침)는 뺐다 — 사용자 11/17 '오른쪽 패널 지저분' */}
     </>
   );

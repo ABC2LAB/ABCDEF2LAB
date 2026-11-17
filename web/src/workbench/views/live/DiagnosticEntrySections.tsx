@@ -13,8 +13,10 @@ import {
   readCopyPrompt,
 } from "@/lib/diagnosis/remediation";
 
+import { cx } from "../../lib/cx";
 import { outcomeLabel } from "../../live/liveReport";
 import { maskSecrets } from "../../live/mask";
+import { Markdown } from "../../ui/Markdown";
 import { Isec } from "../../ui/parts";
 import s from "../../workbench.module.css";
 
@@ -121,7 +123,18 @@ export function DiagnosticEntrySections({
 }) {
   const [busy, setBusy] = useState(false),
     [show, setShow] = useState(false),
-    [message, setMessage] = useState("");
+    [message, setMessage] = useState(""),
+    [reportMsg, setReportMsg] = useState("");
+  // 상세 보고 복사: 화면에 보이는 가린 글(maskSecrets) 그대로만 복사한다 — 가리기 전 원문은 클립보드로도 내보내지 않는다
+  async function copyReport() {
+    try {
+      await navigator.clipboard.writeText(maskSecrets(entry.report));
+      setReportMsg("상세 보고를 복사했습니다.");
+    } catch (error) {
+      console.warn("상세 보고 복사 실패", error);
+      setReportMsg("복사 권한을 확인하지 못했습니다.");
+    }
+  }
   const control = useRef<AbortController | null>(null);
   useEffect(() => () => control.current?.abort(), []);
   const record = entry.record;
@@ -191,17 +204,25 @@ export function DiagnosticEntrySections({
     : [];
   return (
     <>
-      {/* 정리(사용자 11/17 '오른쪽 패널 지저분'): 판정 · 유형 · 위험도는 위 머리 딱지가 말하므로 겹쳐 적지 않고, 긴 본문은
-          접어 두며, 검증 방식 · 실행 · 증거 버전 · 단계별 호출/근거 ID · digest 같은 기록 값은 맨 아래 '기술 정보'로 모은다.
-          내용은 지우지 않는다 */}
+      {/* ARTEX 발견 상세처럼(사용자 11/17): 판정 · 유형 · 위험도 · 시각은 위 상태 칸이 말하고, 상세 보고(Markdown) · 증거는
+          칸 안 카드로 펼쳐 두되 높이를 묶은 상자에서 스크롤한다. 자세한 조치 묶음은 접어 두고, 검증 방식 · 실행 · 증거 버전 ·
+          단계별 호출/근거 ID · digest 같은 기록 값은 맨 아래 '기술 정보'로 모은다. 내용은 지우지 않는다 */}
       <Isec>
         <h3>① 판정과 영향</h3>
         <p>{maskSecrets(entry.summary)}</p>
         {entry.report ? (
-          <details>
-            <summary>저장된 상세 보고</summary>
-            <pre className={s.code}>{maskSecrets(entry.report)}</pre>
-          </details>
+          <section className={s.dcard} aria-label="상세 보고">
+            <div className={s["dcard-h"]}>
+              <h4>상세 보고</h4>
+              <button className={cx(s.btn, s.sm)} type="button" onClick={() => void copyReport()}>
+                복사
+              </button>
+            </div>
+            <div className={s.dbox}>
+              <Markdown text={maskSecrets(entry.report)} />
+            </div>
+            {reportMsg ? <p role="status">{reportMsg}</p> : null}
+          </section>
         ) : null}
         {entry.truncated ? <p role="status">실제 도구 출력이 잘렸습니다. 완전한 재현 증거가 아닙니다.</p> : null}
         <p className={s.help}>
@@ -237,10 +258,12 @@ export function DiagnosticEntrySections({
         ) : (
           <p className={s.help}>구조화된 실제 재현 단계 미확보. 실행하지 않은 절차를 생성하지 않습니다.</p>
         )}
-        <details>
-          <summary>저장된 요청·응답 및 실행 기록</summary>
-          <pre className={s.code}>{maskSecrets(entry.evidence) || "저장된 증거 본문 없음"}</pre>
-        </details>
+        <section className={s.dcard} aria-label="증거">
+          <div className={s["dcard-h"]}>
+            <h4>증거 · 요청·응답 및 실행 기록</h4>
+          </div>
+          <pre className={cx(s.code, s.dbox)}>{maskSecrets(entry.evidence) || "저장된 증거 본문 없음"}</pre>
+        </section>
       </Isec>
       <Isec>
         <h3>③ 보안 조치</h3>

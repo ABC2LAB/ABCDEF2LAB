@@ -1571,6 +1571,173 @@ a.ph:hover {
   font-size: 12px;
   color: var(--ink-2);
 }
+/* 발견 상세를 ARTEX 발견 상세처럼 칸마다 흰 카드로 (사용자 11/17). 다른 패널의 .isec 은 그대로 둔다 */
+.fdet {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 14px;
+}
+.fdet > .isec {
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-top: 0;
+}
+.fdet > .isec h3 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: 0;
+}
+.fdet > .note {
+  margin: 0;
+}
+/* 상태 카드 줄 (ARTEX FieldRow): 이름은 왼쪽 흐리게, 값은 오른쪽, 줄 사이 구분선 */
+.frows {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+.frows > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-top: 1px solid var(--rule);
+  font-size: 13px;
+}
+.frows > div:first-child {
+  border-top: 0;
+  padding-top: 2px;
+}
+.frows dt {
+  color: var(--ink-3);
+  flex-shrink: 0;
+}
+.frows dd {
+  margin: 0;
+  min-width: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+/* 카드 안의 상세 보고 · 증거는 테두리를 겹치지 않고 본문 상자만 */
+.fdet .dcard {
+  border: 0;
+  padding: 0;
+}
+.fdet .dbox:not(.code) {
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+/* 발견 상세 칸 안 카드 (ARTEX 발견 상세의 Card): 제목 줄 + 높이를 묶은 본문 상자. 긴 보고 · 증거도 패널을 밀어내지 않게 */
+.dcard {
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.dcard-h {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.dcard-h h4 {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-2);
+  margin: 0;
+}
+.dbox {
+  max-height: 280px;
+  overflow: auto;
+}
+.code.dbox {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* 저장 보고 Markdown (읽기 전용). 패널 글 크기에 맞춰 제목을 크게 키우지 않는다 */
+.md {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.md h1,
+.md h2,
+.md h3,
+.md h4,
+.md h5,
+.md h6 {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ink);
+  margin: 10px 0 4px;
+}
+.md > :first-child {
+  margin-top: 0;
+}
+.md p {
+  margin: 4px 0;
+  font-size: 13px;
+}
+.md ul,
+.md ol {
+  padding-left: 18px;
+  margin: 4px 0;
+}
+.md code {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--code-bg);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+.md pre {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--code-bg);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 8px 10px;
+  overflow-x: auto;
+  margin: 6px 0;
+}
+.md pre code {
+  background: none;
+  padding: 0;
+}
+.md table {
+  border-collapse: collapse;
+  font-size: 12.5px;
+  margin: 6px 0;
+}
+.md th,
+.md td {
+  border: 1px solid var(--rule);
+  padding: 4px 6px;
+  text-align: left;
+}
+.md blockquote {
+  border-left: 2px solid var(--rule-2);
+  padding-left: 8px;
+  color: var(--ink-2);
+  margin: 6px 0;
+}
+.md-link {
+  text-decoration: underline dotted;
+  color: var(--ink-2);
+}
+.md-img {
+  color: var(--ink-3);
+}
 .code {
   position: relative;
   font-family: var(--mono);

@@ -1473,6 +1473,12 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     const insp = screen.getByRole("complementary", { name: "발견 상세" });
     expect(within(insp).getByText(/^idor ·/)).toBeInTheDocument();
     expect(within(insp).getByText("GET")).toBeInTheDocument();
+    // 상태 칸 (ARTEX 발견 상세의 상태 카드): ID · 위험도 · 판정 · 유형 · 관련 자산 · 발견 시각. 여기서 바꾸는 손잡이는 없다
+    const state = within(insp).getByRole("heading", { name: "상태" }).parentElement as HTMLElement;
+    expect(state).toHaveTextContent(
+      /^상태IDcandidate-1위험도등급 없음판정검토 필요유형idor관련 자산GET \/api\/items\/\{id\}발견 시각\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/,
+    );
+    expect(within(state).queryByRole("combobox")).toBeNull();
     // 상세는 정리했다(사용자 11/17): '연결 전' 자리(계정별 응답 비교 · 다음 단계)와 머리와 겹치는 분류는 두지 않는다
     expect(within(insp).queryByText("계정별 응답 비교")).toBeNull();
     expect(within(insp).queryByText("다음 단계")).toBeNull();
