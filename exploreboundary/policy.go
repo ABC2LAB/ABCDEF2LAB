@@ -163,24 +163,12 @@ func within(p, prefix string) bool {
 	return pathscope.Allows(p, false, prefix)
 }
 
-// excludedWithin은 제외 경로 패턴 매칭이다. 제품의 대상 등록·진단 흐름과 같은 규칙이다(diagnosisflow excludedWithin):
-// 조각 하나 전체인 "*"는 그 자리의 아무 조각 하나와 맞고, 패턴은 그 아래 경로까지 덮는다. 등록 검사는 "*"를 받으므로
-// 여기서 글자 그대로 비교하면 제외가 조용히 빠진다(#482 리뷰 R1).
+// excludedWithin은 제외 경로 패턴 매칭이다. 진단 흐름·E②와 같은 함수(pathscope.Excluded)라 판정이 갈리지 않는다:
+// 조각 하나 전체인 "*"는 그 자리의 아무 조각 하나와 맞고(#482 리뷰 R1), 패턴은 그 아래 경로까지 덮으며, 경로 매개변수(";"
+// 뒤)를 뗀 이름도 맞추고 대소문자는 무시한다(#636). 이 경계는 %가 든 경로를 이미 범위 밖으로 막으므로 인코딩 표기 우회는
+// 없다(canonicalPath).
 func excludedWithin(p, pattern string) bool {
-	if pattern == "/" {
-		return true
-	}
-	parts := strings.Split(strings.Trim(pattern, "/"), "/")
-	actual := strings.Split(strings.Trim(p, "/"), "/")
-	if len(actual) < len(parts) {
-		return false
-	}
-	for i, part := range parts {
-		if part != "*" && part != actual[i] {
-			return false
-		}
-	}
-	return true
+	return pathscope.Excluded(p, pattern)
 }
 
 func risky(p string, words []string) bool {
