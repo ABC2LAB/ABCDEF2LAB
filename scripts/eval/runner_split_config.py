@@ -190,6 +190,8 @@ def plan_split_run(config: RunnerConfig, split: SplitConfig, *, run_id: str, tar
         "EVAL_OBS_PORT": str(config.ports["obs"]),
         "EVAL_OBS_HOST_PORT": str(config.ports["obs_host"]),
         "EVAL_OBS_PATH": config.observer_path,
+        # B 회차 계측기와 같은 경로 가림 키(보존 회차는 수용시험 목적이라 늘 있다).
+        "EVAL_PATH_KEY_FILE": str(config.path_key_file),
     }
     images = {**split.images, "meter": config.images["meter"], "target": target_image}
     return SplitPlan(run_id=run_id, project=f"eval-{run_id}", compose_files=COMPOSE_FILES, profiles=PROFILES,

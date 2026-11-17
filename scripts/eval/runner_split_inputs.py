@@ -93,9 +93,15 @@ def _private_regular(path: Path) -> bool:
 
 
 def prepare_split_inputs(run_directory: Path, *, manifest: dict, meter_port: int, explore_port: int, evidence_max_bytes: int,
-                         workflow_defaults: dict, wide_writes: bool, valid_for_hours: int, max_runs: int,
+                         workflow_defaults: dict, wide_writes: bool, valid_for_hours: int, max_runs: int, path_key: bytes,
                          openssl: Openssl, random_bytes: Callable[[int], bytes] = os.urandom) -> SplitInputs:
-    """회차 디렉터리 안에 보호 입력을 만든다. 실패하면 만든 것을 지우고 고정 code로 멈춘다."""
+    """회차 디렉터리 안에 보호 입력을 만든다. 실패하면 만든 것을 지우고 고정 code로 멈춘다.
+
+    path_key는 계측기 -path-key-file과 같은 키(러너 설정 path_key_file을 path_mask.read_path_key로 읽은 값)다. 경계는 이
+    사본으로 경로를 가린다(계약 §4.1). 회차마다 새로 만들면 경계·계측기 행을 (메서드, 가린 경로)로 맞출 수 없다.
+    """
+    if type(path_key) is not bytes or len(path_key) != PATH_KEY_BYTES:
+        raise SplitInputsError("split_path_key_invalid")
     directory = Path(run_directory) / PRIVATE_DIRECTORY
     try:
         os.mkdir(directory, 0o700)
@@ -112,7 +118,7 @@ def prepare_split_inputs(run_directory: Path, *, manifest: dict, meter_port: int
         _write_new(files["install"], json.dumps(install, ensure_ascii=False, sort_keys=True).encode("utf-8"))
         _write_new(files["postgres_password"], _secret_text(random_bytes, PASSWORD_BYTES).encode("ascii"))
         _write_new(files["boundary"], json.dumps(boundary, sort_keys=True).encode("utf-8"))
-        _write_new(files["path_key"], random_bytes(PATH_KEY_BYTES))
+        _write_new(files["path_key"], path_key)
         code = openssl(["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes",
                         "-days", str(CA_VALID_DAYS), "-subj", CA_SUBJECT,
                         "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign",
