@@ -188,3 +188,71 @@ func TestEndpointFloorSumMatchesFullProjection(t *testing.T) {
 	}
 	c.mu.Unlock()
 }
+
+// 바이트에 닿은 뒤 자리 바꾸기도 바이트 안일 때만 한다. 짧은 범위 밖 끝점 자리에 훨씬 큰 범위 안 끝점은 들어가지
+// 않고(범위 밖 끝점이 남음), 끝점을 받으면 바닥 크기를 기억한다.
+func TestEndpointByteCapReplacementMustFit(t *testing.T) {
+	c, _ := flowFixture(t, Auto)
+	c.binding.Limits.MaxEndpoints = MaxWorkflowEndpoints
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.addLocked("GET", "/outside/x", "link", "html_link", "/read") == nil {
+		t.Fatal("out-of-scope fixture")
+	}
+	for i := 0; ; i++ {
+		e := Endpoint{ID: endpointID(c.origin, "GET", fmt.Sprintf("/read/s%d", i)), Method: "GET", Path: fmt.Sprintf("/read/s%d", i)}
+		if _, fits := c.endpointFitsLocked(-1, e); !fits {
+			break
+		}
+		added := c.addLocked("GET", e.Path, "link", "html_link", "/read")
+		if added == nil {
+			t.Fatal("fitting endpoint rejected")
+		}
+		if _, ok := c.floorCache[added.ID]; !ok {
+			t.Fatal("admitted endpoint floor not remembered")
+		}
+	}
+	huge := "/read/" + strings.Repeat("&", 120)
+	if c.addLocked("GET", huge, "link", "html_link", "/read") != nil || c.endpointLocked("GET", "/outside/x") == nil {
+		t.Fatal("replacement admitted although the larger endpoint does not fit")
+	}
+}
+
+// From이 길어져 바이트를 넘게 되면 이전 From을 둔다(받을 때 잡은 여유 밖의 증가). 넘지 않으면 바꾼다.
+func TestEndpointFromGrowthStaysWithinBytes(t *testing.T) {
+	c, _ := flowFixture(t, Auto)
+	c.binding.Limits.MaxEndpoints = MaxWorkflowEndpoints
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	first := c.addLocked("GET", "/read/first", "link", "html_link", "/read")
+	c.setFromLocked(first, "/read/page")
+	if first.From != "/read/page" {
+		t.Fatal("small From change refused")
+	}
+	for i := 0; ; i++ {
+		if c.addLocked("GET", fmt.Sprintf("/read/f%d", i), "link", "html_link", "/read") == nil {
+			break
+		}
+	}
+	e := c.endpointLocked("GET", "/read/first")
+	c.setFromLocked(e, "/read/"+strings.Repeat("&", 120))
+	if e.From != "/read/page" {
+		t.Fatal("From grew past the projection bytes")
+	}
+}
+
+// 바닥 크기는 저장 그대로와 공개 투영(경로 가림) 중 큰 쪽이다. 가림이 경로를 늘리는 경우(짧은 비밀 모양이
+// [REDACTED]로 바뀜)도 공개 투영 크기로 잰다.
+func TestEndpointFloorCountsMaskedProjection(t *testing.T) {
+	e := Endpoint{ID: endpointID("https://owned.test", "GET", "/read/token=a"), Method: "GET", Path: "/read/token=a", From: "/read/token=a", Kind: "link", Source: "html_link"}
+	raw, _ := json.Marshal(e)
+	p := e
+	p.Path, p.From = safePath(p.Path), safePath(p.From)
+	projected, _ := json.Marshal(p)
+	if len(projected) <= len(raw) {
+		t.Fatalf("fixture: masking did not lengthen the path (%d <= %d)", len(projected), len(raw))
+	}
+	if endpointFloorBytes(e) != len(projected) {
+		t.Fatalf("floor %d, projected %d", endpointFloorBytes(e), len(projected))
+	}
+}
