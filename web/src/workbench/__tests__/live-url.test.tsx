@@ -1554,6 +1554,50 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(within(back).getByRole("button", { name: /후보 2/ })).toHaveAttribute("aria-current", "true");
   });
 
+  it("보고서 발견 목록은 위험도로 거르고(있는 등급만 · 수) 판정 · 위험도 · 발견 시각 순으로 정렬한다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    a.fetchRemediation.mockResolvedValue({
+      task_id: 42,
+      entries: [
+        { ...candidate(1), severity: "low", observed_at: "2026-11-09T12:01:00Z" },
+        { ...candidate(2), severity: "high", observed_at: "2026-11-09T12:03:00Z" },
+        { ...candidate(3), observed_at: "2026-11-09T12:02:00Z" },
+        { ...candidate(4), severity: "high", observed_at: "not-a-time" },
+      ],
+    });
+    mount("report");
+    const list = await screen.findByRole("tabpanel", { name: "발견 목록" });
+    const names = () =>
+      [...(document.getElementById("rList") as HTMLElement).querySelectorAll("button")].map(
+        (b) => /후보 \d/.exec(b.textContent ?? "")?.[0],
+      );
+    const sevs = within(list).getByRole("radiogroup", { name: "위험도로 거르기" });
+    // 줄이 있는 등급만 수와 함께 (심각 · 중간은 없음, '등급 없음'은 거르기로 두지 않고 전체에서 본다)
+    expect(
+      within(sevs)
+        .getAllByRole("radio")
+        .map((r) => r.parentElement?.textContent),
+    ).toEqual(["전체 4개", "높음 2개", "낮음 1개"]);
+    expect(within(list).getByText("4 / 4건")).toBeInTheDocument();
+    fireEvent.click(within(sevs).getByRole("radio", { name: "높음 2개" }));
+    expect(names()).toEqual(["후보 2", "후보 4"]);
+    expect(within(list).getByText("2 / 4건")).toBeInTheDocument();
+    // 오른쪽 상세도 보이는 줄로 옮긴다
+    expect(
+      within(screen.getByRole("complementary", { name: "발견 상세" })).getByRole("heading", { level: 2 }),
+    ).toHaveTextContent("후보 2");
+    fireEvent.click(within(sevs).getByRole("radio", { name: "전체 4개" }));
+    const order = within(list).getByRole("combobox", { name: "정렬" });
+    fireEvent.change(order, { target: { value: "new" } });
+    // 시각을 못 읽는 줄은 시각 순에서 맨 뒤
+    expect(names()).toEqual(["후보 2", "후보 3", "후보 1", "후보 4"]);
+    fireEvent.change(order, { target: { value: "old" } });
+    expect(names()).toEqual(["후보 1", "후보 3", "후보 2", "후보 4"]);
+    fireEvent.change(order, { target: { value: "sev" } });
+    expect(names()).toEqual(["후보 2", "후보 4", "후보 1", "후보 3"]);
+  });
+
   it("보고서 머리 줄의 모델 사용량은 점검 진행과 같은 입 · 출 칩, 마우스를 올리면 정확한 값과 최대치", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue({

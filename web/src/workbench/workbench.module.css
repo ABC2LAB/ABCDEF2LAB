@@ -1594,6 +1594,26 @@ a.ph:hover {
 .fdet > .note {
   margin: 0;
 }
+/* 보고서 발견 목록 거르기 · 정렬 줄 */
+.rfil {
+  margin-bottom: 10px;
+}
+.rord {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--ink-3);
+}
+.rord .inp {
+  height: 30px;
+  width: auto;
+  padding: 0 8px;
+  font-size: 12.5px;
+}
+.rfil > .n {
+  margin-left: auto;
+}
 /* 오른쪽 발견 상세 머리의 '상세 보기': 딱지 줄 오른쪽 끝 (패널 열고 닫기 버튼 밑) */
 .vi-open {
   margin-left: auto;

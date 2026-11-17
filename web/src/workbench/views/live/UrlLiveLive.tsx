@@ -1169,6 +1169,51 @@ function FindingPage({
   );
 }
 
+/**
+ * 보고서 발견 목록 위험도 거르기 값: 전체 · 심각 · 높음 · 중간 · 낮음. '등급 없음'(서버가 심각도를 안 줌)은 거르기로 두지 않는다
+ * (사용자 11/17) — 그런 줄은 '전체'에서 본다.
+ */
+export type SevFilter = "all" | SevKey;
+/** 보고서 발견 목록 정렬: 판정 순(기본) · 위험도 순 · 발견 시각 최신 순 · 오래된 순. */
+export type EntryOrder = "verdict" | "sev" | "new" | "old";
+const sevOf = (e: RemediationEntry): SevKey | "none" => sevKey(e.severity ?? "") ?? "none";
+/**
+ * 보고서 발견 목록 거르기 · 정렬 (사용자 11/17 '발견 시각 · 위험도별로'). list 는 판정 순으로 정렬된 것을 받고,
+ * 위험도 순 · 시각 순은 안정 정렬이라 같은 값끼리는 판정 순이 남는다. 발견 시각을 못 읽는 줄은 시각 순에서 맨 뒤.
+ */
+export function arrangeEntries(
+  list: readonly RemediationEntry[],
+  sev: SevFilter,
+  order: EntryOrder,
+): RemediationEntry[] {
+  const out = list.filter((e) => sev === "all" || sevOf(e) === sev);
+  const at = (e: RemediationEntry) => {
+    const v = Date.parse(e.observed_at);
+    return Number.isNaN(v) ? null : v;
+  };
+  const byTime = (dir: 1 | -1) => (x: RemediationEntry, y: RemediationEntry) => {
+    const a = at(x);
+    const b = at(y);
+    if (a === null || b === null) return Number(a === null) - Number(b === null);
+    return dir * (a - b);
+  };
+  const rank = (e: RemediationEntry) => {
+    const k = sevOf(e);
+    return k === "none" ? SEV_KEYS.length : SEV_KEYS.indexOf(k);
+  };
+  if (order === "new") return out.sort(byTime(-1));
+  if (order === "old") return out.sort(byTime(1));
+  if (order === "sev") return out.sort((x, y) => rank(x) - rank(y));
+  return out;
+}
+const SEV_FILTERS: ReadonlyArray<readonly [SevFilter, string]> = [
+  ["all", "전체"],
+  ["crit", "심각"],
+  ["hi", "높음"],
+  ["mid", "중간"],
+  ["lo", "낮음"],
+];
+
 /** 판정 순서대로 (보고서 목록 · 점검 진행의 끝난 점검 발견이 같이 쓴다). */
 export const sortEntries = (entries: readonly RemediationEntry[]) =>
   [...entries].sort((x, y) => ORDER.indexOf(diagnosticOutcome(x)) - ORDER.indexOf(diagnosticOutcome(y)));
@@ -1273,6 +1318,9 @@ export function UrlReportLive() {
   const [sel, setSel] = useState<string | null>(null);
   // 오른쪽 패널 머리 '상세 보기'로 연 발견 (그 발견이 목록에서 사라지면 — 다른 점검 등 — 목록으로 돌아간다)
   const [detail, setDetail] = useState<string | null>(null);
+  // 발견 목록 거르기 · 정렬 (사용자 11/17)
+  const [sevF, setSevF] = useState<SevFilter>("all");
+  const [order, setOrder] = useState<EntryOrder>("verdict");
   const title = host ? `${host} 보고서` : "보고서";
 
   if (!handle || !job || !taskId) {
@@ -1314,7 +1362,16 @@ export function UrlReportLive() {
   const findings = sorted.filter((e) => diagnosticOutcome(e) !== "negative");
   const bySev = SEV_KEYS.map((k) => [k, findings.filter((e) => sevKey(e.severity ?? "") === k).length] as const);
   const noSev = findings.filter((e) => !sevKey(e.severity ?? "")).length;
-  const chosen = sorted.find((e) => e.entry_id === sel) ?? findings[0] ?? sorted[0];
+  // 고른 위험도에 해당하는 줄이 (다시 읽은 뒤) 없어졌으면 전체로 본다 — 빈 목록이 '발견 없음'으로 읽히지 않게
+  const sevCount = (k: SevFilter) => (k === "all" ? sorted.length : sorted.filter((e) => sevOf(e) === k).length);
+  const sevNow: SevFilter = sevCount(sevF) ? sevF : "all";
+  const shown = arrangeEntries(sorted, sevNow, order);
+  const chosen =
+    (sel ? sorted.find((e) => e.entry_id === sel) : undefined) ??
+    shown.find((e) => diagnosticOutcome(e) !== "negative") ??
+    shown[0] ??
+    findings[0] ??
+    sorted[0];
   const detailEntry = detail ? (sorted.find((e) => e.entry_id === detail) ?? null) : null;
   const profile = cap.kind === "v2" ? cap.catalog.profiles.find((p) => p.id === job.input.profile_id) : undefined;
   let covSub = "읽는 중";
@@ -1342,15 +1399,48 @@ export function UrlReportLive() {
     listBody = <p className={s.empty}>저장된 결과가 없습니다. 결과가 없다고 안전하다는 뜻은 아닙니다.</p>;
   else
     listBody = (
-      <FindingRows
-        entries={sorted}
-        id="rList"
-        chosen={chosen?.entry_id ?? null}
-        onPick={(e) => {
-          setSel(e.entry_id);
-          openInsp();
-        }}
-      />
+      <>
+        {/* 거르기 · 정렬: 위험도(줄이 있는 등급만, 수와 함께) · 발견 시각 순 */}
+        <div className={cx(s.fctl, s.rfil)}>
+          <div className={s.seg} role="radiogroup" aria-label="위험도로 거르기">
+            {SEV_FILTERS.filter(([k]) => k === "all" || sevCount(k) > 0).map(([k, label]) => (
+              <label key={k}>
+                <input
+                  type="radio"
+                  name="rSev"
+                  checked={sevNow === k}
+                  onChange={() => {
+                    setSevF(k);
+                    // 오른쪽 상세에 떠 있던 발견이 거르기로 빠지면 보이는 첫 줄로 옮긴다
+                    const next = arrangeEntries(sorted, k, order);
+                    if (sel && !next.some((e) => e.entry_id === sel)) setSel(next[0]?.entry_id ?? null);
+                  }}
+                />
+                <span>{`${label} ${sevCount(k)}개`}</span>
+              </label>
+            ))}
+          </div>
+          <label className={s.rord}>
+            <span>정렬</span>
+            <select className={s.inp} value={order} onChange={(ev) => setOrder(ev.target.value as EntryOrder)}>
+              <option value="verdict">판정 순</option>
+              <option value="sev">위험도 순</option>
+              <option value="new">발견 시각 최신 순</option>
+              <option value="old">발견 시각 오래된 순</option>
+            </select>
+          </label>
+          <span className={s.n}>{`${shown.length} / ${sorted.length}건`}</span>
+        </div>
+        <FindingRows
+          entries={shown}
+          id="rList"
+          chosen={chosen?.entry_id ?? null}
+          onPick={(e) => {
+            setSel(e.entry_id);
+            openInsp();
+          }}
+        />
+      </>
     );
 
   // 머리 줄: 시작 · 소요 · 모델 · 모델 사용량(입 · 출). 서버가 주지 않는 시작 · 소요는 '연결 전'.
