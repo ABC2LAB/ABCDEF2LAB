@@ -1093,6 +1093,10 @@ a.ph:hover {
   background: var(--lo-bg);
   color: var(--lo);
 }
+.sev.info {
+  background: var(--accent-bg);
+  color: var(--accent-ink);
+}
 .vd {
   display: inline-flex;
   align-items: center;

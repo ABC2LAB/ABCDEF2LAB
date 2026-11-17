@@ -26,6 +26,8 @@ type diagnosticRemediationDTO struct {
 }
 type diagnosticRemediationEntryDTO struct {
 	VulnClass         string                    `json:"vuln_class"`
+	SeveritySource    string                    `json:"severity_source,omitempty"`
+	SeverityRationale string                    `json:"severity_rationale,omitempty"`
 	Severity          string                    `json:"severity"`
 	Steps             []reproduction.Step       `json:"steps,omitempty"`
 	SourceLoadFailed  bool                      `json:"source_load_failed,omitempty"`
@@ -143,6 +145,7 @@ func (s *Server) listDiagnosticRemediation(w http.ResponseWriter, r *http.Reques
 			dto.Title = dlp.DiagnosticText(e.Title)
 			dto.VulnClass = dlp.DiagnosticText(e.VulnClass)
 			dto.Severity = dlp.DiagnosticText(e.Severity)
+			dto.SeveritySource, dto.SeverityRationale = e.SeveritySource, dlp.DiagnosticText(e.SeverityRationale)
 			dto.Status = dlp.DiagnosticText(e.Status)
 			dto.Summary = dlp.DiagnosticText(e.Summary)
 			dto.Evidence = dlp.DiagnosticText(e.Evidence)
