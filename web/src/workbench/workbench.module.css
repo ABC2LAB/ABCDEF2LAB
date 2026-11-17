@@ -1669,11 +1669,28 @@ a.ph:hover {
   flex-direction: column;
   gap: 14px;
 }
+/* 상세 페이지 머리 (ARTEX): ← · 제목 · 딱지 한 줄, 좁으면 줄바꿈 */
+.fpage-h {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
 .fpage-h h2 {
-  font-size: 18px;
+  font-size: 17px;
   font-weight: 600;
-  margin: 2px 0 8px;
+  margin: 0;
   outline: none;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* 뒤로: 오른쪽 화살표를 돌려 쓴다 */
+.fpage-back .ic {
+  transform: rotate(180deg);
+}
+/* 페이지 카드 안 상세 보고서 머리(제목 · 복사)와 본문 사이 */
+.fpage-b .dcard-h {
+  margin-bottom: 6px;
 }
 .fpage-b {
   display: grid;

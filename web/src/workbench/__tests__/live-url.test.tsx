@@ -1545,11 +1545,16 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     fireEvent.click(within(insp).getByRole("button", { name: "상세 보기" }));
     const page = screen.getByRole("region", { name: "발견 상세 페이지" });
     expect(within(page).getByRole("heading", { level: 2, name: "후보 2" })).toHaveFocus();
-    expect(within(page).getByText(/^idor ·/)).toBeInTheDocument();
-    // 오른쪽 상태 카드 · 왼쪽 카드(판정과 영향 + 상세 보고 Markdown · 재현 절차 · 보안 조치 · AI 프롬프트)
+    // ARTEX 발견 상세 짜임: 오른쪽 상태 카드(점검 대상 포함), 왼쪽 요약 → 증거 / PoC → 상세 보고서 → 보안 조치 → AI 프롬프트
     const side = within(page).getByRole("complementary", { name: "발견 상태" });
     expect(side).toHaveTextContent(/IDcandidate-2/);
-    expect(within(page).getByRole("heading", { name: "① 판정과 영향" })).toBeInTheDocument();
+    expect(side).toHaveTextContent(/유형idor/);
+    expect(side).toHaveTextContent(/점검 대상target\.example/);
+    expect(
+      within(page)
+        .getAllByRole("heading", { level: 3 })
+        .map((h) => h.textContent),
+    ).toEqual(["요약", "증거 / PoC", "상세 보고서", "보안 조치", "AI 수정 작업용 프롬프트", "상태"]);
     expect(
       within(within(page).getByRole("region", { name: "상세 보고" })).getByRole("heading", { name: "재현" }),
     ).toBeInTheDocument();

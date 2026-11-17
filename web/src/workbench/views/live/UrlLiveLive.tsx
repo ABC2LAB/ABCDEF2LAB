@@ -1077,7 +1077,7 @@ export function FindingDetail({
  * 발견 상태 카드 (ARTEX 발견 상세의 상태 카드): ID · 위험도 · 판정 · 유형 · 관련 자산 · 발견 시각. 오른쪽 패널과 상세 페이지가
  * 같이 쓴다. ARTEX 와 달리 위험도 · 처리 상태를 여기서 바꾸지 않는다 — 판정은 저장된 E③ 근거만 따른다(절대규칙 3 · 5).
  */
-function StatusCard({ e }: { e: RemediationEntry }) {
+function StatusCard({ e, host }: { e: RemediationEntry; host?: string | null }) {
   const o = diagnosticOutcome(e);
   return (
     <Isec t="상태">
@@ -1108,6 +1108,12 @@ function StatusCard({ e }: { e: RemediationEntry }) {
           <dt>관련 자산</dt>
           <dd>{entryEp(e) ? <EntryEp e={e} /> : "—"}</dd>
         </div>
+        {host ? (
+          <div>
+            <dt>점검 대상</dt>
+            <dd>{host}</dd>
+          </div>
+        ) : null}
         <div>
           <dt>발견 시각</dt>
           <dd>{dateTimeOf(e.observed_at) || "—"}</dd>
@@ -1145,32 +1151,25 @@ function FindingPage({
   }, []);
   return (
     <section className={s.fpage} aria-label="발견 상세 페이지">
-      <div>
-        <button className={cx(s.btn, s.sm)} type="button" onClick={onBack}>
-          발견 목록으로
-        </button>
-      </div>
+      {/* ARTEX 발견 상세 머리: ← · 제목 · 위험도 · 판정 딱지를 한 줄로 (유형 · 대상 · ID 는 오른쪽 상태 카드) */}
       <div className={s["fpage-h"]}>
-        <div className={s.eyebrow}>
-          {`${e.vuln_class ? maskSecrets(e.vuln_class) : diagnosticOutcomeLabels[o]} · `}
-          <span className={s.host}>{host}</span>
-        </div>
+        <button
+          className={cx(s["icon-btn"], s["fpage-back"])}
+          type="button"
+          onClick={onBack}
+          aria-label="발견 목록으로"
+          title="발견 목록으로"
+        >
+          <Icon name="arrow" />
+        </button>
         <h2 ref={head} tabIndex={-1}>
           {maskSecrets(e.title) || e.entry_id}
         </h2>
-        <div className={s["vi-chips"]}>
-          <Sev e={e} />
-          <Outcome o={o} />
-        </div>
+        <Sev e={e} />
+        <Outcome o={o} />
       </div>
       <div className={s["fpage-b"]}>
         <div className={s.fdet}>
-          {entrySeverity(e) && e.severity_source === "worker_estimate" ? (
-            <Isec t="예상 심각도 근거 · 모델 제안">
-              <p>{maskSecrets(e.severity_rationale ?? "")}</p>
-              <p className={s.help}>이 등급은 검토 우선순위 제안이며 취약점 확정이나 CVSS 점수가 아닙니다.</p>
-            </Isec>
-          ) : null}
           {!e.available ? (
             <div className={cx(s.note, s.warn)} role="note">
               <Icon name="alert" />
@@ -1182,10 +1181,17 @@ function FindingPage({
             task={taskId}
             entry={e}
             onReload={onReload}
+            layout="page"
           />
         </div>
         <aside className={s.fdet} aria-label="발견 상태">
-          <StatusCard e={e} />
+          <StatusCard e={e} host={host} />
+          {entrySeverity(e) && e.severity_source === "worker_estimate" ? (
+            <Isec t="예상 심각도 근거 · 모델 제안">
+              <p>{maskSecrets(e.severity_rationale ?? "")}</p>
+              <p className={s.help}>이 등급은 검토 우선순위 제안이며 취약점 확정이나 CVSS 점수가 아닙니다.</p>
+            </Isec>
+          ) : null}
         </aside>
       </div>
     </section>
