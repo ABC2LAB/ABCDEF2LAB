@@ -31,7 +31,7 @@ vi.mock("../live/api", async (importOriginal) => ({
   fetchRemediation: vi.fn(),
   fetchDiagnosisRun: vi.fn(),
   fetchCoverage: vi.fn(),
-  fetchTaskTokens: vi.fn(),
+  fetchTaskFindings: vi.fn(),
   fetchTasks: vi.fn(),
 }));
 
@@ -69,6 +69,7 @@ import { urlAccountAuthRows, urlOutcomeText, urlTargetHint, urlTone, urlViewFor 
 import { type Shell, ShellContext, type View } from "../shell";
 import { createInitialState, useWb } from "../store";
 import { DashboardByMode, LiveByMode, NewScanByMode, ReportByMode, ScopeByMode } from "../views/live/byMode";
+import { FINDINGS_POLL_MS } from "../views/live/UrlLiveLive";
 import { EXCLUDE_EXAMPLE } from "../views/live/UrlNewScanLive";
 import { WorkflowCrawlLive } from "../views/live/workflowViews";
 
@@ -311,7 +312,7 @@ beforeEach(() => {
   a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [] });
   a.fetchDiagnosisRun.mockResolvedValue(RUN_RECORD);
   a.fetchCoverage.mockRejectedValue(new ApiError(503, "coverage disabled"));
-  a.fetchTaskTokens.mockResolvedValue({ input: 0, cacheRead: 0, output: 0 });
+  a.fetchTaskFindings.mockResolvedValue([]);
   a.fetchTasks.mockResolvedValue({ active: "", tasks: [] });
   vi.mocked(teamApi.readAuthStatus).mockResolvedValue({ initialized: true });
   vi.mocked(teamApi.restoreSession).mockResolvedValue(true);
@@ -910,10 +911,18 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(urlGates(useUrl.getState()).canStart).toBe(false);
   });
 
-  it("점검 진행 오른쪽은 진행 요약: 작업 합계 토큰 · 커버리지는 서버 값, 시작 · 경과 · 남은 시간 · 점검 중 발견 · 판정 칸은 없다", async () => {
+  it("점검 진행: 모델 사용량(입 · 출)은 가운데 상태 카드, 오른쪽 진행 요약의 커버리지는 서버 값, 시작 · 경과 · 남은 시간 · 오른쪽 발견 · 판정 칸은 없다", async () => {
     saveHandle();
-    u.readURLStatus.mockResolvedValue(running);
-    a.fetchTaskTokens.mockResolvedValue({ input: 51_234_567, cacheRead: 43_100_000, output: 868_400 });
+    const usage = {
+      requests: 3,
+      input_tokens: 51_234_567,
+      output_tokens: 868_400,
+      reserved_input_tokens: 0,
+      reserved_output_tokens: 0,
+      cost_usd_micros: 0,
+      usage_known: true,
+    };
+    u.readURLStatus.mockResolvedValue({ ...running, model_usage: usage });
     a.fetchCoverage.mockResolvedValue({
       enabled: true,
       scopeRows: 1,
@@ -926,16 +935,21 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(await screen.findByText("진행 중", { selector: "h1 + span" })).toBeInTheDocument();
     const insp = screen.getByRole("complementary", { name: "진행 요약" });
     expect(within(insp).getByRole("heading", { level: 2, name: "진행 요약" })).toBeInTheDocument();
-    // 모델 사용량: 원본 ARTEX 작업 합계 한 줄 (입 · 캐 · 출 칩), 정확한 수는 줄 title 하나에
-    await waitFor(() =>
-      expect(within(insp).getByText(/^작업 합계/).parentElement).toHaveTextContent(
-        /^작업 합계 · 입 51M 캐 43M 출 868k$/,
-      ),
+    // 모델 사용량: 이 진단의 예산 기록(model_usage) 입 · 출 칩 한 줄 (캐시는 없음), 가운데 상태 카드 안 (오른쪽에는 없다).
+    // 제품 서버가 열지 않는 원본 토큰 집계(/api/exploration/tokens)는 부르지 않는다
+    expect(screen.getByText(/^작업 합계/).parentElement).toHaveTextContent(/^작업 합계 · 입 51M 출 868k$/);
+    expect(vi.mocked(teamApi.apiFetch).mock.calls.some(([path]) => String(path).includes("/exploration/tokens"))).toBe(
+      false,
     );
-    expect(a.fetchTaskTokens).toHaveBeenCalledWith("42");
-    // 줄 하나에 세 수의 정확한 값을 한꺼번에 (칩마다 따로 두지 않음)
-    const line = within(insp).getByText(/^작업 합계/).parentElement as HTMLElement;
-    expect(line).toHaveAttribute("title", "입력 51,234,567 토큰\n캐시 읽기 43,100,000 토큰\n출력 868,400 토큰");
+    const line = screen.getByText(/^작업 합계/).parentElement as HTMLElement;
+    expect(insp).not.toContainElement(line);
+    expect(within(insp).queryByText("모델 사용량")).toBeNull();
+    // 지금 하는 일과 같은 상태 카드 한 장에
+    const card = screen.getByRole("region", { name: "지금 상태" });
+    expect(card).toContainElement(line);
+    expect(card).toContainElement(document.getElementById("lTask"));
+    // 줄 하나에 두 수의 정확한 값을 한꺼번에 (칩마다 따로 두지 않음)
+    expect(line).toHaveAttribute("title", "입력 51,234,567 토큰\n출력 868,400 토큰");
     expect(line.querySelectorAll("[title]")).toHaveLength(0);
     // 커버리지는 서버가 켰을 때만
     await waitFor(() => expect(within(insp).getByText("4")).toBeInTheDocument());
@@ -959,6 +973,84 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(within(insp).queryByText("커버리지")).toBeNull();
     expect(within(insp).queryByText(/자산/)).toBeNull();
     expect(within(insp).getByText("점검 정보")).toBeInTheDocument();
+  });
+
+  it("점검 진행 모델 사용량: 사용량을 못 받은 호출이 있으면 최대치라고 같이 적고, 기록이 없으면 줄을 두지 않는다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue({
+      ...running,
+      model_usage: {
+        requests: 2,
+        input_tokens: 1200,
+        output_tokens: 300,
+        reserved_input_tokens: 0,
+        reserved_output_tokens: 0,
+        cost_usd_micros: 0,
+        usage_known: true,
+        unknown_usage_calls: 1,
+      },
+    });
+    mount("live");
+    const line = (await screen.findByText(/^작업 합계/)).parentElement as HTMLElement;
+    expect(line).toHaveTextContent(/^작업 합계 · 입 1.2k 출 300$/);
+    expect(line).toHaveAttribute(
+      "title",
+      "입력 1,200 토큰\n출력 300 토큰\n사용량을 못 받은 호출 1건은 예약량으로 계산(최대치)",
+    );
+    cleanup();
+    resetUrl();
+    u.readURLStatus.mockResolvedValue(running);
+    mount("live");
+    expect(await screen.findByText("진행 중", { selector: "h1 + span" })).toBeInTheDocument();
+    expect(screen.queryByText(/^작업 합계/)).toBeNull();
+  });
+
+  it("점검 진행 발견 후보: 진행 중엔 다시 읽고, 화면을 연 뒤 새로 들어온 발견에만 '새로'", async () => {
+    vi.useFakeTimers();
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    const one: api.LiveFinding = {
+      id: "1",
+      finding_id: "1",
+      vulnclass: "idor",
+      name: "처음 발견",
+      severity: "high",
+      status: "pending",
+      summary: "",
+      evidence: "",
+      traffic_count: 1,
+      assets: [],
+      task_id: "42",
+      source_task_id: "",
+      inherited: false,
+      ts: "2026-11-11T01:00:00Z",
+    };
+    a.fetchTaskFindings.mockResolvedValue([one]);
+    mount("live");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(a.fetchTaskFindings).toHaveBeenCalledWith("42");
+    const finds = screen.getByRole("region", { name: "발견 후보" });
+    expect(within(finds).getByText("1건 · 최신 순")).toBeInTheDocument();
+    expect(within(finds).queryByText("새로")).toBeNull();
+    a.fetchTaskFindings.mockResolvedValue([{ ...one, id: "2", name: "새 발견", ts: "2026-11-11T01:00:30Z" }, one]);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(FINDINGS_POLL_MS);
+    });
+    expect(within(finds).getByText("2건 · 최신 순")).toBeInTheDocument();
+    expect(within(finds).getByText("새로").closest("li")).toHaveTextContent("새 발견");
+    expect(within(finds).getAllByText("새로")).toHaveLength(1);
+  });
+
+  it("점검 진행 발견 후보가 없으면 '없음'을 안전으로 읽히지 않게 말한다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    mount("live");
+    const finds = await screen.findByRole("region", { name: "발견 후보" });
+    expect(
+      await within(finds).findByText("아직 나온 발견이 없습니다. 발견이 없다고 안전하다는 뜻은 아닙니다."),
+    ).toBeInTheDocument();
   });
 
   it("영수증만 있으면(id 없음) 생성 영수증을 조회한다", async () => {
@@ -1169,6 +1261,12 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     u.readURLStatus.mockResolvedValue(completed);
     const { goTo } = mount("live");
     expect(await screen.findByText(/점검을 마쳤습니다/)).toBeInTheDocument();
+    // 완료 카드를 따로 두지 않고 상태 카드 한 장에: 완료 딱지 · 점검을 마쳤습니다 · 결과 저장 확인 · 보고서 보기
+    const card = screen.getByRole("region", { name: "지금 상태" });
+    expect(document.getElementById("lTask")).toHaveTextContent(/^점검을 마쳤습니다$/);
+    expect(card).toHaveTextContent(/완료점검을 마쳤습니다보고서 보기.*결과 저장 확인/);
+    expect(screen.getAllByText(/점검을 마쳤습니다/)).toHaveLength(1);
+    expect(screen.queryByText("실행을 마감했습니다")).toBeNull();
     expect(screen.getByText(/마감된 점검의 전송 기록은 보고서의 증거 · 감사에 있습니다/)).toBeInTheDocument();
     expect(a.fetchRequestApprovals).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: /보고서 보기/ }));

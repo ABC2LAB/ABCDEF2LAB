@@ -1543,79 +1543,80 @@ function planClass(state: string): string | undefined {
   return undefined;
 }
 
-/** 점검 진행의 점검 계획 · 지난 활동 (위아래로, 각자 전체 너비). */
-export function WorkflowActivity() {
-  const flow = useUrl((st) => st.flow);
-  const [more, setMore] = useState(false);
-  if (!flow) return null;
-  const plan = flow.plan ?? [];
-  const done = plan.filter((p) => planState(p.state).row === "done").length;
-  const activity = [...(flow.activity ?? [])].reverse();
-  const shown = more ? activity : activity.slice(0, 5);
+/** 점검 계획 단계 목록 (점검 진행 상태 카드의 '계획 보기'로 펼친다). 동그라미를 세로선으로 잇는다. */
+export function PlanSteps({ plan, id }: { plan: NonNullable<WorkflowSnapshot["plan"]>; id?: string }) {
   return (
-    <>
-      <section className={s.sec} aria-labelledby="lPlanH">
-        <div className={s.sh}>
-          <h2 id="lPlanH">점검 계획</h2>
-          <span className={s.n} id="lPlanN">
-            {plan.length ? `${done}/${plan.length} 완료` : ""}
+    <ol className={s.plan} id={id}>
+      {plan.map((p) => (
+        <li key={p.id} className={planClass(p.state)}>
+          <span className={s.st}>{planState(p.state).row === "done" ? <Icon name="check" /> : null}</span>
+          <span>
+            {p.title}
+            {planState(p.state).row === "run" || planState(p.state).row === "other"
+              ? ` · ${planState(p.state).label}`
+              : ""}
           </span>
-        </div>
-        {plan.length ? (
-          <ol className={s.plan} id="lPlan">
-            {plan.map((p) => (
-              <li key={p.id} className={planClass(p.state)}>
-                <span className={s.st}>{planState(p.state).row === "done" ? <Icon name="check" /> : null}</span>
-                <span>
-                  {p.title}
-                  {planState(p.state).row === "run" || planState(p.state).row === "other"
-                    ? ` · ${planState(p.state).label}`
-                    : ""}
-                </span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+/**
+ * 활동 종류 → 딱지 글 · 색. 실제 서버는 원문을 내보내지 않고 종류를 tool · model · plan · intent · event 로 묶어 준다
+ * (diagnosisflow postgres.go publicActivity). 가짜 백엔드 · 옛 기록의 원래 종류(tool_use · text · result · approval)도 받는다.
+ */
+const ACT_KIND: Readonly<Record<string, readonly [string, "in" | "lg" | "ap" | "out"]>> = {
+  tool: ["도구", "in"],
+  tool_use: ["도구", "in"],
+  model: ["모델", "lg"],
+  text: ["모델", "lg"],
+  plan: ["계획", "out"],
+  intent: ["작업", "out"],
+  approval: ["승인", "ap"],
+  result: ["결과", "out"],
+  event: ["엔진", "out"],
+};
+function actKind(kind: string): readonly [string, "in" | "lg" | "ap" | "out"] {
+  return Object.hasOwn(ACT_KIND, kind) ? ACT_KIND[kind] : ["기록", "out"];
+}
+
+/**
+ * 점검 진행 가운데의 활동 기록 (사용자 11/17 '활동 기록 중심'). 서버가 주는 최근 기록(최대 20건)을 전부, 최신 순으로.
+ * 서버는 최신 순(id 내림차순), 가짜 백엔드는 오래된 순으로 주므로 받은 순서를 믿지 않고 id 로 다시 줄 세운다.
+ */
+export function ActivityLog() {
+  const flow = useUrl((st) => st.flow);
+  if (!flow) return null;
+  const activity = [...(flow.activity ?? [])].sort((x, y) => y.id - x.id);
+  return (
+    <section className={s.sec} aria-labelledby="lFeedH">
+      <div className={s.sh}>
+        <h2 id="lFeedH">활동 기록</h2>
+        <span className={s.n} id="lFeedN">
+          {activity.length ? `${activity.length}건 · 최신 순` : ""}
+        </span>
+      </div>
+      {activity.length ? (
+        <ul className={s.feed} id="lFeed">
+          {activity.map((a) => {
+            const [label, tone] = actKind(a.kind);
+            return (
+              <li key={a.id}>
+                <span className={s.t}>{hms(a.at)}</span>
+                {/* 타임라인 점 (세로선 위, 종류 색) */}
+                <span className={cx(s.tn, s[tone])} aria-hidden="true" />
+                <span className={cx(s.tag, s[tone])}>{label}</span>
+                {/* 엔진 내부 이름(planner · work#1 등)은 사람이 읽을 정보가 아니라 두지 않는다 */}
+                <span>{a.summary}</span>
               </li>
-            ))}
-          </ol>
-        ) : (
-          <p className={s.empty}>심화 점검이 시작되면 계획이 나옵니다.</p>
-        )}
-      </section>
-      <section className={s.sec} aria-labelledby="lFeedH">
-        {/* 건수는 점검 계획의 '1/3 완료'처럼 머리 오른쪽에 */}
-        <div className={s.sh}>
-          <h2 id="lFeedH">지난 활동</h2>
-          <span className={s.n} id="lFeedN">{`${activity.length}건`}</span>
-        </div>
-        {activity.length ? (
-          <>
-            <ul className={cx(s.feed, more && activity.length > 5 && s.scroll)} id="lFeed">
-              {shown.map((a) => (
-                <li key={a.id}>
-                  <span className={s.t}>{hms(a.at)}</span>
-                  <span className={cx(s.fd, a.kind === "approval" ? s.blk : s.ok)} />
-                  {/* 엔진 내부 이름(planner · explorer 등)은 사람이 읽을 정보가 아니라 두지 않는다 */}
-                  <span>{a.summary}</span>
-                </li>
-              ))}
-            </ul>
-            {activity.length > 5 ? (
-              <button
-                className={cx(s.btn, s.sm, s["feed-more"])}
-                type="button"
-                aria-controls="lFeed"
-                aria-expanded={more}
-                onClick={() => setMore(!more)}
-              >
-                {more ? "최근 5건만 보기" : `이전 활동 ${activity.length - 5}건 더 보기`}
-              </button>
-            ) : null}
-          </>
-        ) : (
-          <ul className={s.feed} id="lFeed">
-            <li className={s.empty}>아직 끝난 일이 없습니다.</li>
-          </ul>
-        )}
-      </section>
-    </>
+            );
+          })}
+        </ul>
+      ) : (
+        <p className={s.empty}>아직 활동 기록이 없습니다.</p>
+      )}
+    </section>
   );
 }
 

@@ -3726,6 +3726,25 @@ button.smm:hover {
   white-space: pre-wrap;
   word-break: break-all;
 }
+/* 점검 진행 확인 필요: 노란 상자 하나(머리 '확인 필요 N건') 안에 요청 줄을 구분선으로 잇는다 */
+.ldecide {
+  display: flex;
+  flex-direction: column;
+  padding: 12px 16px 6px;
+  border: 1px solid var(--warn-line);
+  border-radius: 8px;
+  background: var(--warn-bg);
+}
+.ldecide > .sh {
+  padding-bottom: 8px;
+}
+.ldecide .decide {
+  padding: 12px 0;
+  border: 0;
+  border-top: 1px solid var(--warn-line);
+  border-radius: 0;
+  background: none;
+}
 .meters {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -3788,12 +3807,198 @@ button.smm:hover {
   font-weight: 500;
   color: var(--ink);
 }
-/* 점검 진행의 지금 하는 일 줄 + 심화 점검 마감 수 */
-.lnow {
+/* 점검 진행 맨 위 단계 게이지: 단계 네 칸, 칸마다 막대 + 이름 · 값. 끝남 초록 · 지금 파랑 · 기다림 빗금 · 멈춤 회색 */
+.lgauge {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+@container (max-width: 560px) {
+  .lgauge {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    row-gap: 12px;
+  }
+}
+.lgs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.lgs .prog {
+  height: 8px;
+  border-radius: 4px;
+}
+.lgs.done .prog > i {
+  background: var(--ok);
+}
+.lgs.stop .prog > i {
+  background: var(--und);
+}
+/* 사람(범위 선택) · 결과 저장을 기다리는 지금 단계: 채우지 않고 빗금 */
+.lgs.hold .prog {
+  background: repeating-linear-gradient(135deg, var(--rule-2) 0 3px, transparent 3px 6px);
+}
+.lgl {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 2px 8px;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.lgl > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.lgl .ic {
+  width: 12px;
+  height: 12px;
+  color: var(--ok);
+}
+.lgl b {
+  font-family: var(--mono);
+  font-weight: 500;
+}
+.lgs.run .lgl,
+.lgs.hold .lgl {
+  color: var(--ink);
+  font-weight: 600;
+}
+.lgs.stop .lgl {
+  color: var(--und);
+}
+/* 점검 진행 가운데 맨 위 상태 카드: 지금 하는 일(끝나면 결과 · 보고서 보기) · 심화 점검 마감 수 · 작업 합계 토큰 */
+.lcard {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--bg);
+}
+/* 결과 저장이 확인된 끝난 점검: 옛 완료 카드처럼 초록 */
+.lcard.ok {
+  border-color: var(--ok);
+  background: var(--ok-bg);
+}
+.lcard-h {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+.lcard-sub {
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+/* 작업 합계 토큰과 '계획 보기'를 한 줄에 (좁으면 줄바꿈) */
+.lcard-m {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 24px;
+}
+/* 지금 하는 일을 크게: 딱지 + 18px 글 */
+.lcard-now {
+  flex: 1 1 260px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  min-width: 0;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+/* 점검 진행 발견 후보 목록: 심각도 · 이름(새로) / 위치 · 유형 · 시각 · 처리 상태. 누르면 요약 · 증거, 새 줄은 한 번 반짝 */
+.lfinds {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.lfind {
+  border-top: 1px solid var(--rule);
+}
+.lfind:first-child {
+  border-top: 0;
+}
+.lfind.fresh {
+  animation: fresh 1.4s ease-out;
+}
+.lfind-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  width: 100%;
+  padding: 12px 14px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.lfind-row:hover,
+.lfind-row[aria-expanded="true"] {
+  background: var(--well);
+}
+.lfind-m {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.lfind-t {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.lfind-s {
+  font-size: 12.5px;
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
+.lfind-st {
+  font-size: 12px;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.lfind-d {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  min-width: 0;
+  padding: 0 14px 14px;
+  font-size: 13px;
+  color: var(--ink-2);
+  background: var(--well);
+}
+.lfind-d .code {
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+/* '계획 보기 ▸' → 펼치면 '계획 접기 ▾' */
+.lcard-tg {
+  margin-left: auto;
+}
+.lcard-tg .ic {
+  transition: transform 0.15s ease;
+}
+.lcard-tg[aria-expanded="true"] .ic {
+  transform: rotate(90deg);
 }
 .plan {
   list-style: none;
@@ -3801,16 +4006,26 @@ button.smm:hover {
   flex-direction: column;
 }
 .plan li {
+  position: relative;
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr);
   gap: 10px;
   padding: 7px 0;
   font-size: 13px;
   color: var(--ink-3);
-  border-top: 1px solid var(--rule);
 }
-.plan li:first-child {
-  border-top: 0;
+/* 점검 계획은 단계 모양: 동그라미(.st, 위 3px · 14px) 아래에서 다음 줄 동그라미 위까지 잇는 세로선. 끝낸 단계 뒤는 초록 */
+.plan li:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  left: 6.25px;
+  top: 26px;
+  bottom: -8px;
+  width: 1.5px;
+  background: var(--rule-2);
+}
+.plan li.done:not(:last-child)::before {
+  background: var(--ok);
 }
 .plan li .st {
   width: 14px;
@@ -3849,39 +4064,57 @@ button.smm:hover {
   flex-direction: column;
 }
 .feed li {
+  position: relative;
   display: grid;
-  grid-template-columns: 62px 10px minmax(0, 1fr);
+  grid-template-columns: 62px 10px auto minmax(0, 1fr);
   gap: 10px;
   align-items: baseline;
   padding: 7px 0;
-  border-top: 1px solid var(--rule);
   font-size: 13px;
 }
-.feed li:first-child {
-  border-top: 0;
+/* 활동 타임라인 세로선: 점 칸(62px + 간격 10px 뒤 10px 칸) 가운데. 첫 줄은 점 아래부터, 끝 줄은 점까지 */
+.feed li::before {
+  content: "";
+  position: absolute;
+  left: 76.25px;
+  top: 0;
+  bottom: 0;
+  width: 1.5px;
+  background: var(--rule);
+}
+.feed li:first-child::before {
+  top: 14px;
+}
+.feed li:last-child::before {
+  bottom: calc(100% - 14px);
+}
+.feed li:only-child::before {
+  display: none;
+}
+.tn {
+  position: relative;
+  z-index: 1;
+  align-self: start;
+  width: 9px;
+  height: 9px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--und);
+  box-shadow: 0 0 0 3px var(--bg);
+}
+.tn.in {
+  background: var(--ok);
+}
+.tn.lg {
+  background: var(--accent);
+}
+.tn.ap {
+  background: var(--warn);
 }
 .feed .t {
   font-family: var(--mono);
   font-size: 12px;
   color: var(--ink-3);
-}
-.feed .fd {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  align-self: center;
-}
-.fd.ok {
-  background: var(--ok);
-}
-.fd.col {
-  background: var(--lo);
-}
-.fd.blk {
-  background: var(--warn);
-}
-.fd.hit {
-  background: var(--hi);
 }
 .feed .p {
   font-size: 12px;
@@ -3945,15 +4178,6 @@ button.smm:hover {
 }
 
 /* 진행: 지금 하는 일 · 지난 활동 · 완료 */
-.now-l {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 10px;
-  font-size: 14px;
-  font-weight: 500;
-  min-width: 0;
-}
 .now-k {
   display: inline-flex;
   align-items: center;
@@ -3989,59 +4213,13 @@ button.smm:hover {
   width: 13px;
   height: 13px;
 }
-.now-l code {
-  font-size: 12px;
-}
-.feed li .fd {
-  align-self: start;
-  margin-top: 7px;
-}
 .feed li.fresh {
   animation: fresh 1.4s ease-out;
-}
-.feed.scroll {
-  max-height: 400px;
-  overflow-y: auto;
-  border: 1px solid var(--rule);
-  border-radius: 6px;
-  padding: 0 12px;
-  overscroll-behavior: contain;
-}
-.feed-more {
-  align-self: flex-start;
 }
 .feed li.empty {
   display: block;
   color: var(--ink-3);
   font-size: 13px;
-}
-.ldone {
-  border: 1px solid var(--ok);
-  background: var(--ok-bg);
-  border-radius: 6px;
-  padding: 12px 14px;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px 16px;
-}
-.ldone .dm {
-  flex: 1 1 260px;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  font-size: 13px;
-  color: var(--ink);
-}
-.ldone .dm b {
-  font-size: 14px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.ldone .dm b .ic {
-  color: var(--ok);
 }
 
 /* 보고서 */

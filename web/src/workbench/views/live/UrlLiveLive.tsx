@@ -1,16 +1,17 @@
 "use client";
 
 // 점검 진행 · 보고서 (시안 짜임).
-// 점검 진행: 지금 하는 일 · 확인 필요(요청 승인) · 점검 계획 · 지난 활동
-//   + 오른쪽 진행 요약(전송 통제 · 모델 사용량 · 탐색 현황 · 커버리지 · 점검 정보).
-//   서버가 점검 중에 주지 않는 값(진행률 · 시작 · 경과 · 남은 시간 · 발견 · 판정)은 자리도 두지 않는다.
+// 점검 진행: 상태 카드(지금 · 계획 · 심화 점검 · 발견 후보 · 확인 필요 · 작업 합계 토큰) · 확인 필요(요청 승인) ·
+//   발견 후보 목록(실시간, 검증 전 후보) · 활동 기록
+//   + 오른쪽 진행 요약(전송 통제 · 탐색 현황 · 커버리지 · 점검 정보).
+//   서버가 점검 중에 주지 않는 값(진행률 · 시작 · 경과 · 남은 시간 · 판정)은 자리도 두지 않는다.
 // 보고서: 판정 집계 · 우선 조치 · 발견 목록 / 증거 · 감사 + 오른쪽 발견 상세.
 // 심각도 · 공격 경로 · 지식 그래프 · 계정 비교 · 재현 명령은 서버가 주지 않아 두지 않는다.
 // 판정은 팀 lib(summarizeDiagnosticEntries · diagnosticOutcome)의 분류만 쓰고 화면이 만들지 않는다.
 
-import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { type KeyboardEvent, type ReactElement, type ReactNode, useEffect, useRef, useState } from "react";
 
-import { urlPhaseLabels } from "@/lib/diagnosis/diagnosis-url";
+import { type URLDiagnosisUsage, urlPhaseLabels } from "@/lib/diagnosis/diagnosis-url";
 import {
   type DiagnosticOutcome,
   diagnosticOutcome,
@@ -28,16 +29,24 @@ import {
   fetchCoverage,
   fetchDiagnosisRun,
   fetchRemediation,
-  fetchTaskTokens,
-  type LiveTokenTotal,
+  fetchTaskFindings,
+  type LiveFinding,
 } from "../../live/api";
-import { approvalCounts, fmtCount, fmtTokensShort, planState, sevKey } from "../../live/map";
+import {
+  approvalCounts,
+  clockOf,
+  findingStatusLabel,
+  fmtCount,
+  fmtTokensShort,
+  planState,
+  sevKey,
+} from "../../live/map";
 import { maskSecrets } from "../../live/mask";
 import { ErrorNote, LoadingRow, NotYet } from "../../live/parts";
 import { useUrl, useUrlGates } from "../../live/urlDiagnosis";
 import { factText, URL_ENDED_STATES, type UrlState, urlStateText, usdText } from "../../live/urlMap";
 import { type Poll, usePoll } from "../../live/usePoll";
-import { flowStageText } from "../../live/workflow";
+import { flowStageText, type WorkflowSnapshot } from "../../live/workflow";
 import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
 import { InspHead, InspOpenButton, Isec, Kv, PaneToggle } from "../../ui/parts";
@@ -47,7 +56,15 @@ import { DiagnosticEntrySections } from "./DiagnosticEntrySections";
 import { ReportReadError } from "./runRows";
 import { TaskActivity } from "./TaskActivity";
 import { reasonText, UrlFacts, UrlHead, UrlNotices, UrlPill, UrlRefreshButton, useUrlHost } from "./urlParts";
-import { PauseButton, useStopConfirm, WorkflowActivity, WorkflowNotice, WorkflowReport } from "./workflowViews";
+import {
+  ActivityLog,
+  crawlPct,
+  PauseButton,
+  PlanSteps,
+  useStopConfirm,
+  WorkflowNotice,
+  WorkflowReport,
+} from "./workflowViews";
 
 /** 보고서 위치의 상위 화면 (작업대 / 끝난 점검 / 주소 / 보고서) */
 const FINISHED = { href: "#finished", label: "끝난 점검" };
@@ -97,30 +114,221 @@ function Usage() {
   return <Kv rows={rows} />;
 }
 
-/** 작업 합계 토큰 다시 읽는 간격. 진행 중에만 (끝난 점검은 한 번 읽고 멈춘다). */
-const TOKENS_POLL_MS = 5000;
+/** 점검 중 발견 후보 다시 읽는 간격. 진행 중에만 (끝난 점검은 한 번 읽고 멈춘다). */
+export const FINDINGS_POLL_MS = 5000;
+
+/** 심각도 딱지 (엔진 값). 모르는 값 · 없음은 '등급 없음'. */
+function SevOf({ severity }: { severity: string }) {
+  const k = sevKey(severity);
+  return k ? <span className={cx(s.sev, s[k])}>{SEVL[k]}</span> : <span className={s.sev}>등급 없음</span>;
+}
 
 /**
- * 점검 진행 오른쪽 모델 사용량: 원본 ARTEX 작업 합계 한 줄 (입 · 캐 · 출 칩).
- * 줄 어디에 올려도 세 수의 정확한 값을 한꺼번에 보인다(칩마다 따로 두지 않음).
+ * 화면을 연 뒤 새로 들어온 발견 id (처음 읽은 목록은 '새로'가 아니다). 점검이 바뀌면 다시 센다.
+ * 새 줄은 들어올 때 한 번 반짝이고 '새로' 딱지가 붙는다.
  */
-function TaskTokens({ t }: { t: LiveTokenTotal }) {
+function useFreshIds(task: string | undefined, list: readonly LiveFinding[] | null | undefined): ReadonlySet<string> {
+  const first = useRef<{ task: string; ids: Set<string> } | null>(null);
+  if (task && list && first.current?.task !== task) first.current = { task, ids: new Set(list.map((f) => f.id)) };
+  const cur = first.current;
+  const base = cur && cur.task === task ? cur.ids : null;
+  return new Set(base && list ? list.filter((f) => !base.has(f.id)).map((f) => f.id) : []);
+}
+
+/**
+ * 점검 진행 가운데의 발견 후보 목록 (사용자 11/17 '취약점 나온 것들 다 나열, 실시간'). 원본 ARTEX 가 점검 중에 쌓는
+ * 발견(GET /api/exploration/findings?task=)을 최신 순으로 전부. 점검 중 발견은 검증 전 후보라 판정으로 보이지 않게
+ * 처리 상태(findingStatusLabel)만 붙인다(절대규칙 5). 요약 · 증거는 서버 원문이라 가려서 보인다.
+ */
+function LiveFindings({
+  poll,
+  fresh,
+  ended,
+}: {
+  poll: Poll<LiveFinding[]>;
+  fresh: ReadonlySet<string>;
+  ended: boolean;
+}) {
+  const [open, setOpen] = useState<string | null>(null);
+  const list = [...(poll.data ?? [])].sort(
+    (x, y) => (y.ts || "").localeCompare(x.ts || "") || Number(y.id) - Number(x.id),
+  );
+  const bySev = SEV_KEYS.map((k) => [k, list.filter((f) => sevKey(f.severity) === k).length] as const);
+  const noSev = list.filter((f) => !sevKey(f.severity)).length;
+  let body: ReactNode;
+  if (!poll.data && poll.error) body = <ErrorNote error={poll.error} onRetry={poll.reload} />;
+  else if (!poll.data) body = <LoadingRow />;
+  else if (!list.length)
+    body = (
+      <p className={s.empty}>
+        {`${ended ? "이 점검에서 나온 발견이 없습니다." : "아직 나온 발견이 없습니다."} 발견이 없다고 안전하다는 뜻은 아닙니다.`}
+      </p>
+    );
+  else
+    body = (
+      <ul className={s.lfinds} id="lFinds">
+        {list.map((f) => {
+          const on = open === f.id;
+          const where = f.assets.map((x) => x.label).filter(Boolean)[0];
+          return (
+            <li key={f.id} className={cx(s.lfind, fresh.has(f.id) && s.fresh)}>
+              <button
+                className={s["lfind-row"]}
+                type="button"
+                aria-expanded={on}
+                aria-controls={`lFind-${f.id}`}
+                onClick={() => setOpen(on ? null : f.id)}
+              >
+                <SevOf severity={f.severity} />
+                <span className={s["lfind-m"]}>
+                  <span className={s["lfind-t"]}>
+                    {maskSecrets(f.name || f.vulnclass) || "이름 없는 발견"}
+                    {fresh.has(f.id) ? <span className={cx(s.tag, s.new)}>새로</span> : null}
+                  </span>
+                  <span className={s["lfind-s"]}>
+                    {[where ? maskSecrets(where) : "", f.vulnclass ? maskSecrets(f.vulnclass) : "", clockOf(f.ts)]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </span>
+                </span>
+                <span className={s["lfind-st"]}>{findingStatusLabel(f.status)}</span>
+              </button>
+              {on ? (
+                <div className={s["lfind-d"]} id={`lFind-${f.id}`}>
+                  <p>{f.summary ? maskSecrets(f.summary) : "서버가 요약을 주지 않았습니다."}</p>
+                  {f.evidence ? <pre className={s.code}>{prettyEvidence(f.evidence)}</pre> : null}
+                </div>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+    );
+  return (
+    <section className={s.sec} aria-labelledby="lFindsH">
+      <div className={s.sh}>
+        <h2 id="lFindsH">발견 후보</h2>
+        <span className={s.n}>{poll.data ? `${list.length}건 · 최신 순` : ""}</span>
+      </div>
+      {list.length ? (
+        <div className={s.vbar}>
+          {bySev.map(([k, n]) => (
+            <span key={k}>
+              {`${SEVL[k]} `}
+              <b>{n}</b>
+            </span>
+          ))}
+          {noSev ? (
+            <span>
+              등급 없음 <b>{noSev}</b>
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+      <p className={s.help}>점검 중에 나온 검증 전 후보입니다. 확정 여부는 점검이 끝난 뒤 보고서의 판정에서 봅니다.</p>
+      {body}
+    </section>
+  );
+}
+
+/**
+ * 점검 진행 상태 카드의 모델 사용량 한 줄 (입 · 출 칩, 사용자 11/17 '입출만'). 출처는 이 진단의 전송 통제 예산 기록
+ * (job.model_usage): 제품(첫 진단) 서버가 원본 토큰 집계(/api/exploration/tokens)를 열지 않아 그쪽은 읽지 않는다.
+ * 줄 어디에 올려도 두 수의 정확한 값을 한꺼번에 보인다. 실패 · 중지로 사용량을 못 받은 호출은 예약량으로 셌으므로
+ * 그런 호출이 있으면 최대치라고 같이 적는다.
+ */
+function TaskTokens({ u }: { u: URLDiagnosisUsage }) {
   const chip = (k: string, n: number) => (
     <span>
       {`${k} `}
       <b>{fmtTokensShort(n)}</b>
     </span>
   );
+  const bound = u.unknown_usage_calls ?? 0;
   const exact = [
-    `입력 ${fmtCount(t.input)} 토큰`,
-    `캐시 읽기 ${fmtCount(t.cacheRead)} 토큰`,
-    `출력 ${fmtCount(t.output)} 토큰`,
+    `입력 ${fmtCount(u.input_tokens)} 토큰`,
+    `출력 ${fmtCount(u.output_tokens)} 토큰`,
+    ...(bound ? [`사용량을 못 받은 호출 ${fmtCount(bound)}건은 예약량으로 계산(최대치)`] : []),
   ].join("\n");
   return (
     <p className={s.toks} title={exact}>
       {/* 칸 사이 공백: 화면은 flex 간격으로 띄우고, 글로 읽을 때(화면 읽기 · 복사) 붙지 않게 */}
-      <span>작업 합계 ·</span> {chip("입", t.input)} {chip("캐", t.cacheRead)} {chip("출", t.output)}
+      <span>작업 합계 ·</span> {chip("입", u.input_tokens)} {chip("출", u.output_tokens)}
     </p>
+  );
+}
+
+/** 단계 게이지 한 칸: 끝남 · 지금 · 기다림(사람 · 저장) · 아직 · 멈춤. */
+type GaugeTone = "done" | "run" | "hold" | "wait" | "stop";
+type GaugeSeg = { label: string; tone: GaugeTone; pct: number; sub: string };
+
+/**
+ * 점검 진행 맨 위 단계 게이지 (사용자 11/17 '상단에 게이지바'). 서버가 전체 진행률을 주지 않아 하나짜리 % 막대는 만들지
+ * 않고, 단계(자산 탐색 → 범위 확인 → 심화 점검 → 정리 · 저장)마다 실제 값으로만 채운다: 끝난 단계는 꽉, 지금 단계는
+ * 자산 탐색 = 방문 / 페이지 상한(서버가 탐색 완료라 하면 꽉), 심화 점검 = 계획 완료 / 계획(계획이 없으면 마감 / 시작),
+ * 사람 · 저장을 기다리는 단계는 빗금. 중지 · 실패면 그 자리에서 멈춘 모양. 상태를 모르면(unknown) null.
+ */
+export function gaugeSegments(flow: WorkflowSnapshot, resultReady: boolean): GaugeSeg[] | null {
+  const plan = flow.plan ?? [];
+  const planDone = plan.filter((p) => planState(p.state).row === "done").length;
+  const order: Partial<Record<WorkflowSnapshot["stage"], number>> = {
+    crawling: 0,
+    awaiting_selection: 1,
+    diagnosing: 2,
+    completed: 3,
+  };
+  let cur = order[flow.stage];
+  const stopped = flow.stage === "stopped" || flow.stage === "failed";
+  // 멈춘 자리: 심화 점검을 시작했으면 심화 점검, 첫 탐색을 마쳤으면 범위 확인, 아니면 자산 탐색
+  if (stopped) {
+    cur = 0;
+    if (flow.deep_runs > 0) cur = 2;
+    else if (flow.initial_completed) cur = 1;
+  }
+  if (cur === undefined) return null;
+  const auto = flow.mode === "ai_auto_v1";
+  let deepPct = 0;
+  if (plan.length) deepPct = (planDone / plan.length) * 100;
+  else if (flow.deep_runs) deepPct = (flow.deep_closed / flow.deep_runs) * 100;
+  const deepSub = plan.length ? `계획 ${planDone}/${plan.length}` : `${flow.deep_closed}/${flow.deep_runs} 마감`;
+  const rows: [string, number, GaugeTone, string][] = [
+    ["자산 탐색", crawlPct(flow), "run", `방문 ${flow.counts.visited}/${flow.limits.max_pages}`],
+    [auto ? "범위 선택 (AI)" : "범위 확인", 0, "hold", "선택 대기"],
+    ["심화 점검", Math.round(deepPct), "run", deepSub],
+    ["정리 · 저장", 0, "hold", "결과 저장 확인 중"],
+  ];
+  const doneSub = ["탐색 완료", auto ? "AI 선택" : "범위 고름", "마감", "결과 저장"];
+  return rows.map(([label, pct, tone, sub], i): GaugeSeg => {
+    if (i < cur || (i === 3 && cur === 3 && resultReady)) return { label, tone: "done", pct: 100, sub: doneSub[i] };
+    if (i > cur) return { label, tone: "wait", pct: 0, sub: "" };
+    if (stopped) return { label, tone: "stop", pct, sub: flow.stage === "failed" ? "실패" : "중지됨" };
+    return { label, tone, pct, sub };
+  });
+}
+
+function StageGauge({ segs }: { segs: GaugeSeg[] }) {
+  const at = segs.findIndex((x) => x.tone !== "done");
+  const now = at < 0 ? segs[segs.length - 1] : segs[at];
+  const summary =
+    at < 0 ? "모든 단계 끝남" : `단계 ${at + 1}/${segs.length} ${now.label}${now.sub ? ` · ${now.sub}` : ""}`;
+  return (
+    // biome-ignore lint/a11y/useSemanticElements: 칸 여럿을 한 묶음으로 읽히게 (fieldset 은 입력 묶음이라 맞지 않음)
+    <div className={s.lgauge} id="lGauge" role="group" aria-label={`점검 단계 진행: ${summary}`}>
+      {segs.map((x) => (
+        <div className={cx(s.lgs, s[x.tone])} key={x.label}>
+          <div className={s.prog} aria-hidden="true">
+            <i style={{ width: `${Math.min(100, Math.max(0, x.pct))}%` }} />
+          </div>
+          <div className={s.lgl}>
+            <span>
+              {x.tone === "done" ? <Icon name="check" /> : null}
+              {x.label}
+            </span>
+            {x.sub ? <b>{x.sub}</b> : null}
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -152,10 +360,14 @@ export function UrlLiveLive() {
     intervalMs: 15000,
   });
   // 모델 사용량: 원본 ARTEX 작업 합계(입력 · 캐시 읽기 · 출력). 전송 통제 예산 기록(model_usage)에는 캐시가 없다
-  const toks = usePoll(() => fetchTaskTokens(job?.task_id as string), [job?.task_id], {
+  // 점검 중 발견 후보 (원본 ARTEX 발견 목록, 진행 중엔 다시 읽는다)
+  const finds = usePoll(() => fetchTaskFindings(job?.task_id as string), [job?.task_id], {
     enabled: visible && !!job?.task_id,
-    intervalMs: job && URL_ENDED_STATES.includes(job.state) ? 0 : TOKENS_POLL_MS,
+    intervalMs: job && URL_ENDED_STATES.includes(job.state) ? 0 : FINDINGS_POLL_MS,
   });
+  const fresh = useFreshIds(job?.task_id, finds.data);
+  // 상태 카드의 '계획 보기' (점검 계획 단계 목록을 카드 안에 펼침). 기본은 접음: 가운데는 활동 기록 중심
+  const [planOpen, setPlanOpen] = useState(false);
 
   if (!handle || !job) {
     return (
@@ -196,9 +408,11 @@ export function UrlLiveLive() {
   const runningPlan = flow?.plan?.find((p) => planState(p.state).row === "run");
   const nowText =
     runningPlan?.title ?? flow?.current_path ?? (flow ? flowStageText[flow.stage] : urlPhaseLabels[job.phase]);
-  // 지금 하는 일 줄 (시안 lNowK · lTask): 실행 마감이면 완료, 그 밖에 끝났으면 종료됨, 멈췄으면 멈춤
+  // 상태 카드 첫 줄 (시안 lNowK · lTask): 실행 마감이면 완료, 그 밖에 끝났으면 종료됨, 멈췄으면 멈춤.
+  // 결과 저장이 확인되면 따로 두던 완료 카드('점검을 마쳤습니다 [보고서 보기]')를 이 카드에 합친다(같은 말이 두 번 나와서)
   let nowK: ReactNode;
   let taskText: ReactNode = nowText;
+  let doneSub: string | null = null;
   if (job.state === "completed") {
     nowK = (
       <span className={cx(s["now-k"], s.ok)}>
@@ -219,44 +433,33 @@ export function UrlLiveLive() {
     nowK = (
       <span className={cx(s["now-k"], flow?.paused && s.idle)}>
         <i />
-        {flow?.paused ? "멈춤" : "지금 하는 일"}
+        {flow?.paused ? "멈춤" : "지금"}
       </span>
     );
   }
-
-  let done: ReactNode = null;
   if (g.reportReadable) {
-    done = (
-      <div className={s.ldone}>
-        <div className={s.dm}>
-          <b>
-            <Icon name="check" />
-            <span>{job.state === "completed" ? "점검을 마쳤습니다" : "점검을 종료했습니다"}</span>
-          </b>
-          <span>{`${urlStateText(job.state)} · 결과 저장 확인`}</span>
-        </div>
-        <button className={cx(s.btn, s.pri)} type="button" onClick={() => goTo("report")}>
-          보고서 보기
-          <Icon name="arrow" />
-        </button>
-      </div>
-    );
-  } else if (ended) {
-    done = (
+    taskText = job.state === "completed" ? "점검을 마쳤습니다" : "점검을 종료했습니다";
+    doneSub = `${urlStateText(job.state)} · 결과 저장 확인`;
+  }
+
+  // 카드 밑 상태 안내: 끝났는데 결과 저장을 확인하지 못함 · 결과 불명 · 시작 전
+  let stateNote: ReactNode = null;
+  if (ended && !g.reportReadable) {
+    stateNote = (
       <div className={cx(s.note, s.warn)}>
         <Icon name="alert" />
         <span>{`점검이 끝났습니다 (${urlStateText(job.state, verified)}) · 결과 저장 ${factText(job.result_ready)}`}</span>
       </div>
     );
   } else if (job.state === "unknown") {
-    done = (
+    stateNote = (
       <div className={cx(s.note, s.warn)} role="note" id="luUnknown">
         <Icon name="alert" />
         <span>{`결과 불명 · 끝난 것으로 보지 않고 자동으로 다시 시작하지 않습니다. 엔진 시작 ${factText(job.started)} · 마감 ${factText(job.drain_complete)}`}</span>
       </div>
     );
   } else if (job.state === "ready" || job.state === "awaiting_approval") {
-    done = (
+    stateNote = (
       <div className={s.note} role="note">
         <Icon name="info" />
         <span className={s["lv-grow"]}>아직 시작하지 않은 점검입니다.</span>
@@ -272,10 +475,22 @@ export function UrlLiveLive() {
   else if (job.state === "unknown" || !verified)
     sendWaitText = "결과 불명인 점검은 전송 상태를 이어 조회하지 않습니다. 상태를 다시 조회하세요.";
   const selected = flow?.endpoints.filter((e) => e.selected).length ?? 0;
-  let tokensBody: ReactNode = <LoadingRow />;
-  if (!job.task_id) tokensBody = <p className={s.empty}>엔진이 시작되면 나옵니다.</p>;
-  else if (toks.data) tokensBody = <TaskTokens t={toks.data} />;
-  else if (toks.error) tokensBody = <ErrorNote error={toks.error} onRetry={toks.reload} />;
+  const plan = flow?.plan ?? [];
+  const planDone = plan.filter((p) => planState(p.state).row === "done").length;
+  // 상단 카드 숫자 칸: 서버 값이 있는 것만 (계획은 계획이 있을 때만, 발견 후보는 읽었을 때만)
+  const found = finds.data ?? null;
+  const highUp = found ? found.filter((f) => ["crit", "hi"].includes(sevKey(f.severity) ?? "")).length : 0;
+  const gauge = flow && job.state !== "unknown" ? gaugeSegments(flow, !!job.result_ready) : null;
+  const stats: { k: string; v: string; sub: string; warn?: boolean }[] = [];
+  if (flow && job.state !== "unknown") {
+    if (plan.length) stats.push({ k: "계획", v: `${planDone}/${plan.length}`, sub: "완료" });
+    stats.push({ k: "심화 점검", v: `${flow.deep_closed}/${flow.deep_runs}`, sub: "마감" });
+  }
+  if (found) stats.push({ k: "발견 후보", v: String(found.length), sub: `심각 · 높음 ${highUp}` });
+  if (g.runReadable)
+    stats.push({ k: "확인 필요", v: String(a.pending.length), sub: "승인 대기", warn: a.pending.length > 0 });
+  // 모델 사용량은 상태 카드 안 한 줄 (입 · 출). 서버 기록이 아직 없으면 자리를 두지 않는다
+  const tokensBody: ReactElement | null = job.model_usage ? <TaskTokens u={job.model_usage} /> : null;
 
   return (
     <>
@@ -303,62 +518,110 @@ export function UrlLiveLive() {
           {job.diagnostic_log_incomplete ? (
             <p className={s.help}>{reasonText("diagnostic_logging_incomplete")}</p>
           ) : null}
-          {job.state !== "unknown" ? (
-            // 지금 하는 일 + 심화 점검 마감 수. 진행률 · 시작 · 경과 · 남은 시간은 서버가 주지 않아 두지 않는다
-            <div className={s.lnow}>
-              <div className={s["now-l"]} aria-live="polite">
-                {nowK}
-                <span id="lTask">{taskText}</span>
-              </div>
-              {flow ? (
-                <div className={s.pmeta} id="lMeta">
-                  <span>
-                    심화 점검 <b>{`${flow.deep_closed}/${flow.deep_runs}`}</b> 마감
-                  </span>
+          {/* 상단 카드: 지금 하는 일을 크게(끝나면 결과와 [보고서 보기]), 숫자 칸(계획 · 심화 점검 · 점검 대상 API · 확인 필요),
+              작업 합계 토큰과 '계획 보기'(점검 계획 단계를 카드 안에 펼침). 결과 불명이면 첫 줄 대신 아래 안내가 말하고,
+              진행률 · 시작 · 경과 · 남은 시간은 서버가 주지 않아 두지 않는다 */}
+          {/* 맨 위 단계 게이지 (탐색 흐름이 있는 점검만, 상태를 모르면 두지 않는다) */}
+          {gauge ? <StageGauge segs={gauge} /> : null}
+          {job.state !== "unknown" || tokensBody || stats.length ? (
+            <section className={cx(s.lcard, g.reportReadable && s.ok)} aria-label="지금 상태">
+              {job.state !== "unknown" ? (
+                <div className={s["lcard-h"]}>
+                  <div className={s["lcard-now"]} aria-live="polite">
+                    {nowK}
+                    <span id="lTask">{taskText}</span>
+                  </div>
+                  {g.reportReadable ? (
+                    <button className={cx(s.btn, s.pri)} type="button" onClick={() => goTo("report")}>
+                      보고서 보기
+                      <Icon name="arrow" />
+                    </button>
+                  ) : null}
                 </div>
               ) : null}
-            </div>
+              {doneSub ? <div className={s["lcard-sub"]}>{doneSub}</div> : null}
+              {stats.length ? (
+                <div className={cx(s.meters, stats.length === 3 && s.m3)} id="lMeta">
+                  {stats.map((x) => (
+                    <div className={cx(s.cell, x.warn && s.warn)} key={x.k}>
+                      <div className={s.k}>{x.k}</div>
+                      <div className={s.v}>{x.v}</div>
+                      <div className={s.sub}>{x.sub}</div>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              {tokensBody || plan.length ? (
+                <div className={s["lcard-m"]}>
+                  {tokensBody}
+                  {plan.length ? (
+                    <button
+                      className={cx(s.btn, s.sm, s["lcard-tg"])}
+                      type="button"
+                      aria-expanded={planOpen}
+                      aria-controls="lPlan"
+                      onClick={() => setPlanOpen(!planOpen)}
+                    >
+                      {planOpen ? "계획 접기" : "계획 보기"}
+                      <Icon name="chev" />
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+              {planOpen && plan.length ? <PlanSteps plan={plan} id="lPlan" /> : null}
+            </section>
           ) : null}
-          {done}
-          {a.pending.length ? <RecoveredApprovalNotice /> : null}
-          {a.pending.map((r) => (
-            <div className={s.decide} key={r.id} id="lDecide">
-              <div className={s.dm}>
-                <b>
-                  <span className={cx(s.pill, s.wait)}>확인 필요</span>
-                  <span className={cx(s.m, s[r.method])}>{r.method}</span>
-                  <span className={s.p}>{r.path}</span>
-                </b>
-                <span>{flow?.plan?.find((p) => p.id === r.intent_id)?.title ?? "계획 제목 없음"}</span>
+          {stateNote}
+          {/* 확인 필요: 보내기 전에 사람이 정할 요청을 노란 상자 하나에. 줄마다 메서드 · 경로 · 계획 제목 옆에 승인 · 거부,
+              그 아래 보낼 요청 미리보기와 승인 정보(무엇을 승인하는지 보고 정하게 접지 않는다) */}
+          {a.pending.length ? (
+            <section className={s.ldecide} aria-labelledby="lDecideH">
+              <div className={s.sh}>
+                <h2 id="lDecideH">확인 필요</h2>
+                <span className={s.n}>{`${a.pending.length}건`}</span>
               </div>
-              <div className={s["lv-aprev"]}>
-                <ApprovalRequestCode row={r} />
-                <ApprovalFacts row={r} />
-              </div>
-              <div className={s.acts}>
-                <button
-                  className={cx(s.btn, s.pri, s.sm)}
-                  type="button"
-                  disabled={!a.canDecide(r)}
-                  onClick={() => void a.decide(r, "allow")}
-                >
-                  {a.busy === r.id ? "보내는 중…" : "승인하고 보내기"}
-                </button>
-                <button
-                  className={cx(s.btn, s.sm)}
-                  type="button"
-                  disabled={!a.canDecide(r)}
-                  onClick={() => void a.decide(r, "deny")}
-                >
-                  거부
-                </button>
-              </div>
-            </div>
-          ))}
+              {/* 다시 연(복구) 점검은 조회 전용: 승인은 처음 시작한 화면에서만 (#642) */}
+              <RecoveredApprovalNotice />
+              {a.pending.map((r) => (
+                <div className={s.decide} key={r.id}>
+                  <div className={s.dm}>
+                    <b>
+                      <span className={cx(s.m, s[r.method])}>{r.method}</span>
+                      <span className={s.p}>{r.path}</span>
+                    </b>
+                    <span>{flow?.plan?.find((p) => p.id === r.intent_id)?.title ?? "계획 제목 없음"}</span>
+                  </div>
+                  <div className={s.acts}>
+                    <button
+                      className={cx(s.btn, s.pri, s.sm)}
+                      type="button"
+                      disabled={!a.canDecide(r)}
+                      onClick={() => void a.decide(r, "allow")}
+                    >
+                      {a.busy === r.id ? "보내는 중…" : "승인하고 보내기"}
+                    </button>
+                    <button
+                      className={cx(s.btn, s.sm)}
+                      type="button"
+                      disabled={!a.canDecide(r)}
+                      onClick={() => void a.decide(r, "deny")}
+                    >
+                      거부
+                    </button>
+                  </div>
+                  <div className={s["lv-aprev"]}>
+                    <ApprovalRequestCode row={r} />
+                    <ApprovalFacts row={r} />
+                  </div>
+                </div>
+              ))}
+            </section>
+          ) : null}
+          {job.task_id ? <LiveFindings poll={finds} fresh={fresh} ended={ended} /> : null}
           {a.message ? <p role="status">{a.message}</p> : null}
           {a.unresolved ? <p role="alert">결정 결과 불명 · 조회로 확인하기 전에는 다시 결정하지 않습니다.</p> : null}
           {job.task_id && verified ? <TaskActivity key={job.task_id} taskId={job.task_id} enabled={visible} /> : null}
-          {job.input.workflow_mode ? <WorkflowActivity /> : null}
+          {job.input.workflow_mode ? <ActivityLog /> : null}
         </div>
         {/* 오른쪽 진행 요약: 서버가 점검 중에 주는 값만. 점검 중 발견 · 판정은 서버가 결과를 저장하기 전에 주지 않아
             두지 않고(발견 없음으로 보이지 않게), 끝나면 가운데 [보고서 보기]로 간다 */}
@@ -404,7 +667,6 @@ export function UrlLiveLive() {
             ) : null}
             {g.runReadable ? null : <p className={s.empty}>{sendWaitText}</p>}
           </Isec>
-          <Isec t="모델 사용량">{tokensBody}</Isec>
           {flow ? (
             <Isec t="탐색 현황">
               <div className={s.vbar}>
