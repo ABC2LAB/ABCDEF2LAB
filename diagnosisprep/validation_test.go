@@ -238,3 +238,27 @@ func TestModelInfoAcceptsCurrentAndRecordedModels(t *testing.T) {
 		}
 	}
 }
+
+// 운영자 제외 경로 입력 검사는 E② 정책 검사와 같은 문법 함수(pathscope.ValidExcluded)·같은 개수 상한을 쓴다(#627).
+// 입력이 받은 패턴을 E²가 거부해 실행이 시작되지 않는 일이 없게 한다.
+func TestCanonicalInputExcludedPathsMatchE2Rules(t *testing.T) {
+	base := Input{TargetURL: "https://example.test/read", ProfileID: "local", WorkflowMode: "ai_auto_v1"}
+	ok := base
+	ok.ExcludedPaths = "/read/über\n/read/*/secret\n/read/a;b"
+	if _, err := CanonicalInput(ok); err != nil {
+		t.Fatal("valid exclusions rejected:", err)
+	}
+	many := strings.TrimSuffix(strings.Repeat("/read/x\n", 33), "\n")
+	for _, bad := range []string{"read", "/read/a*", "/read/%C3%BC", "/read/../x", "//read", "/read x", many} {
+		in := base
+		in.ExcludedPaths = bad
+		if _, err := CanonicalInput(in); err == nil {
+			t.Errorf("invalid exclusions accepted: %.20q", bad)
+		}
+	}
+	thirtyTwo := base
+	thirtyTwo.ExcludedPaths = strings.TrimSuffix(strings.Repeat("/read/x\n", 32), "\n")
+	if _, err := CanonicalInput(thirtyTwo); err != nil {
+		t.Fatal("32 exclusions rejected:", err)
+	}
+}

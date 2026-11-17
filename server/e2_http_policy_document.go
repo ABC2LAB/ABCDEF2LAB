@@ -110,9 +110,17 @@ func validateE2HTTPPolicyDocumentMode(raw []byte, prepared, run bool) (E2HTTPFil
 			return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
 		}
 	}
-	if policy.Workflow != nil && (!run || !e2HTTPExactJSON(document["workflow"], []string{"format", "mode", "input_sha256"}, nil) ||
+	if policy.Workflow != nil && (!run || !e2HTTPExactJSON(document["workflow"], []string{"format", "mode", "input_sha256"}, []string{"excluded_paths"}) ||
 		policy.Workflow.Format != diagnosisflow.Version || policy.Workflow.Mode == "" || !e2HTTPHash(policy.Workflow.InputSHA256)) {
 		return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
+	}
+	// 제외 경로 칸은 쓰면 비지 않아야 한다. null·빈 배열이 "제외 없음"으로 조용히 바뀌지 않게 한다(E② 정책 검사가 패턴 문법을 본다).
+	if policy.Workflow != nil {
+		var workflow map[string]json.RawMessage
+		_ = json.Unmarshal(document["workflow"], &workflow)
+		if _, present := workflow["excluded_paths"]; present && len(policy.Workflow.ExcludedPaths) == 0 {
+			return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
+		}
 	}
 	if policy.Evaluation != nil {
 		if !e2HTTPExactJSON(document["evaluation"], []string{"run_ref", "llm_backend", "target_kind"}, nil) {
@@ -170,7 +178,7 @@ func validateE2HTTPPolicyDocumentMode(raw []byte, prepared, run bool) (E2HTTPFil
 		return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
 	}
 	cfg := e2proxy.Config{ApprovalMode: policy.ApprovalMode, Scope: transmit.Scope{RunRef: policy.RunRef}, HeaderMode: policy.HeaderMode, PasswordResponse: e2HTTPPasswordResponse(policy.Auth),
-		Evaluation: policy.Evaluation, Rules: rules, Limits: e2proxy.Limits{MaxAttempts: policy.Limits.MaxAttempts, MaxCalls: policy.Limits.MaxCalls,
+		Evaluation: policy.Evaluation, Rules: rules, ExcludedPaths: policy.excludedPaths(), Limits: e2proxy.Limits{MaxAttempts: policy.Limits.MaxAttempts, MaxCalls: policy.Limits.MaxCalls,
 			MaxConcurrent: policy.Limits.MaxConcurrent, MaxBodyBytes: policy.Limits.MaxBodyBytes, MaxResponseBodyBytes: policy.Limits.MaxResponseBodyBytes,
 			MaxResponseScanBytes: policy.Limits.MaxResponseScanBytes, RequestTimeout: requestTimeout, CallTimeout: callTimeout,
 			MaxDenials: policy.Limits.MaxDenials, MaxTransient: policy.Limits.MaxTransient, MaxUnknown: policy.Limits.MaxUnknown}}
