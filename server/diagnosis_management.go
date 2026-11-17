@@ -34,7 +34,7 @@ func NewDiagnosisManagementHandler(ctx context.Context, pool *sql.DB, keyDir, da
 	mux.HandleFunc("POST /api/auth/login", s.authLogin)
 	mux.Handle(diagnosisapi.BasePath+"/", management)
 	if len(runtimeAPIOrigin) == 1 && runtimeAPIOrigin[0] != "" {
-		bridge, bridgeErr := newDiagnosisManagementBridge(ctx, runtimeAPIOrigin[0], authenticate, management.BoundTask)
+		bridge, bridgeErr := newDiagnosisManagementBridge(ctx, runtimeAPIOrigin[0], authenticate, management.BoundTask, pool)
 		if bridgeErr != nil {
 			return nil, bridgeErr
 		}
@@ -60,6 +60,8 @@ func NewDiagnosisManagementHandler(ctx context.Context, pool *sql.DB, keyDir, da
 }
 
 // 두 공개 버전은 같은 설치 인증 경계를 사용하며 실행 런타임을 초기화하지 않는다.
+var errManagementAuthenticationUnavailable = errors.New("management_authentication_unavailable")
+
 func newDiagnosisManagementAuthentication(ctx context.Context, pool *sql.DB, keyDir, dataDir string) (*Server, diagnosisapi.Authenticate, error) {
 	key, err := readControlledReadAssemblyJWTKey(keyDir, dataDir)
 	if err != nil {
@@ -75,9 +77,15 @@ func newDiagnosisManagementAuthentication(ctx context.Context, pool *sql.DB, key
 		if len(r.Header.Values("Authorization")) != 1 || !strings.HasPrefix(auth, "Bearer ") || len(auth) <= 7 {
 			return "", errors.New("인증이 필요합니다")
 		}
-		hash, err := s.reloadPassHash()
+		var hash string
+		var err error
+		if _, ok := reportGraphRequestTask(r); ok {
+			hash, err = s.reloadReportPassHash(r.Context())
+		} else {
+			hash, err = s.reloadPassHash()
+		}
 		if err != nil {
-			return "", err
+			return "", errManagementAuthenticationUnavailable
 		}
 		claims := &jwt.RegisteredClaims{}
 		token, err := jwt.ParseWithClaims(strings.TrimPrefix(auth, "Bearer "), claims, func(*jwt.Token) (any, error) { return s.signingKey(hash), nil }, jwt.WithValidMethods([]string{"HS256"}), jwt.WithExpirationRequired())
