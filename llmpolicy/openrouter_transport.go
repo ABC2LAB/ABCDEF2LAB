@@ -222,9 +222,25 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 	provider := map[string]any{"only": []string{m.ProviderSlug}, "allow_fallbacks": false, "require_parameters": true, "data_collection": "deny", "zdr": true,
 		"max_price": map[string]float64{"prompt": float64(m.InputPrice) / 1000000, "completion": float64(m.OutputPrice) / 1000000}}
 	body["provider"], _ = json.Marshal(provider)
+	if m.Sampling != nil {
+		// 샘플링 칸 값의 출처는 manifest 하나다(평가 게이트웨이 주입과 같은 의미). 호출자가 보낸 temperature는 여기서
+		// 덮어쓰고, 다른 샘플링 칸은 위 허용 목록이 이미 거부했다. 모델 입력(메시지)은 이 칸을 바꿀 수 없다.
+		for k, v := range m.Sampling.wire() {
+			body[k] = v
+		}
+	}
 	wire, err := json.Marshal(body)
 	if err != nil || len(wire) > openRouterRequestLimit {
 		return reject()
+	}
+	var sent *OpenRouterSampling
+	if m.Sampling != nil {
+		// 기록은 manifest 사본이 아니라 실제로 보낼 바이트에서 다시 읽은 값이다.
+		var onWire OpenRouterSampling
+		if json.Unmarshal(wire, &onWire) != nil {
+			return reject()
+		}
+		sent = &onWire
 	}
 	// 호출 칸은 요청 하나에만 쓴다. 같은 칸으로 온 두 번째 요청은 예약 전에 거부한다(C28 결정 2).
 	slot := openRouterCallFrom(r.Context())
@@ -240,6 +256,11 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 		return reject()
 	}
 	slot.reserved(input, output, reserved)
+	if sent != nil {
+		p.mu.Lock()
+		p.usage.Sampling = sent
+		p.mu.Unlock()
+	}
 	diagnostic.Event = "model_request_finished"
 	diagnostic.Status = "failed"
 	diagnostic.ReasonCode = "transport_failure"

@@ -543,7 +543,7 @@ func (g *llmGateway) verify(ids []string) error {
 	results := make([]generationResult, 0, len(ids))
 	if g.cfg.backend == backendAPI {
 		for _, id := range ids {
-			results = append(results, g.lookup(id))
+			results = append(results, g.verifier().lookup(id))
 		}
 	}
 	g.mu.Lock()
@@ -560,17 +560,35 @@ func (g *llmGateway) verify(ids []string) error {
 	})
 }
 
-func (g *llmGateway) lookup(id string) generationResult {
-	endpoint := *g.cfg.upstream
-	endpoint.Path = g.cfg.generationPath
+// generationVerifier looks a generation id up in the provider's generation stats.
+// 평가 게이트웨이(B)의 봉인 뒤 검증과 제품 호출 기록 사후 검증(O, -role generation-verify)이 이 코드 하나를 쓴다.
+// 그래서 두 쪽의 제공자·fallback 판정 근거가 같은 조회·같은 재시도 규칙에서 나온다(탐색 분리 배치 결정안 D(b)).
+type generationVerifier struct {
+	upstream *url.URL
+	path     string
+	key      string
+	attempts int
+	interval time.Duration
+	client   *http.Client
+	sleep    func(time.Duration)
+}
+
+func (g *llmGateway) verifier() generationVerifier {
+	return generationVerifier{upstream: g.cfg.upstream, path: g.cfg.generationPath, key: g.cfg.key,
+		attempts: g.cfg.verifyAttempts, interval: g.cfg.verifyInterval, client: g.client, sleep: g.sleep}
+}
+
+func (v generationVerifier) lookup(id string) generationResult {
+	endpoint := *v.upstream
+	endpoint.Path = v.path
 	endpoint.RawQuery = url.Values{"id": {id}}.Encode()
-	for attempt := 1; attempt <= g.cfg.verifyAttempts; attempt++ {
-		result, retry := g.lookupOnce(endpoint.String(), id)
+	for attempt := 1; attempt <= v.attempts; attempt++ {
+		result, retry := v.lookupOnce(endpoint.String(), id)
 		if !retry {
 			return result
 		}
-		if attempt < g.cfg.verifyAttempts {
-			g.sleep(g.cfg.verifyInterval)
+		if attempt < v.attempts {
+			v.sleep(v.interval)
 		}
 	}
 	return generationResult{ID: id, Status: "unverified", Attempts: []providerAttempt{}}
@@ -578,15 +596,15 @@ func (g *llmGateway) lookup(id string) generationResult {
 
 // lookupOnce returns retry=true for answers that may change with time (stats
 // not ready yet, rate limits, upstream errors) and false for a final answer.
-func (g *llmGateway) lookupOnce(endpoint, id string) (generationResult, bool) {
+func (v generationVerifier) lookupOnce(endpoint, id string) (generationResult, bool) {
 	unverified := generationResult{ID: id, Status: "unverified", Attempts: []providerAttempt{}}
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
 		return unverified, false
 	}
-	req.Header.Set("Authorization", "Bearer "+g.cfg.key)
+	req.Header.Set("Authorization", "Bearer "+v.key)
 	req.Header.Set("Accept", "application/json")
-	resp, err := g.client.Do(req)
+	resp, err := v.client.Do(req)
 	if err != nil {
 		return unverified, true
 	}

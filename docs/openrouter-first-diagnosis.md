@@ -30,7 +30,7 @@
 
 | 필드 | 설치자 입력 |
 |---|---|
-| `version` | `1` 또는 `2`(`2`는 `max_consecutive_transient_errors`가 있어야 한다) |
+| `version` | `1`·`2`·`3`(`2`·`3`은 `max_consecutive_transient_errors`, `3`은 `sampling`도 있어야 한다). 새 설치는 `3`을 쓴다 |
 | `profile_id`, `format`, `base_url`, `model` | 실제 DB profile과 정확히 같은 tuple |
 | `provider_slug` | 승인한 정확 endpoint tag 하나 |
 | `expected_provider_name` | 응답에서 검증할 실제 provider 표시 이름 |
@@ -44,7 +44,8 @@
 | `max_output_tokens_per_call` | profile/요청 출력 상한 이상인 승인된 제한 |
 | `timeout_seconds`, `max_concurrent` | 요청별 1~300초 제한과 동시 요청 상한 |
 | `max_input_price_usd_micros_per_million`, `max_output_price_usd_micros_per_million` | 승인된 100만 토큰당 최대 단가, provider.max_price에 결속 |
-| `max_consecutive_transient_errors` | v2만. 연속 일시 오류(429·5xx·연결 실패·응답 본문 읽기 끊김)가 이 수(1~16)에 닿으면 정책을 잠근다. v1은 1로 본다(첫 일시 오류에 잠금). 첫 진단의 모델 호출 하나는 실패하면 두 번 더 보내고(2초·6초 뒤, 매번 새 예약), 요청 한도(429, 청구 없음)면 네 번까지 다시 보낸다(2·6·15·30초). 그 실패도 연속 수에 들어가므로, 3 이하이면(429가 이어지면 5 이하이면) 호출 하나가 승인을 잠글 수 있다 |
+| `max_consecutive_transient_errors` | v2·v3. 연속 일시 오류(429·5xx·연결 실패·응답 본문 읽기 끊김)가 이 수(1~16)에 닿으면 정책을 잠근다. v1은 1로 본다(첫 일시 오류에 잠금). 첫 진단의 모델 호출 하나는 실패하면 두 번 더 보내고(2초·6초 뒤, 매번 새 예약), 요청 한도(429, 청구 없음)면 네 번까지 다시 보낸다(2·6·15·30초). 그 실패도 연속 수에 들어가므로, 3 이하이면(429가 이어지면 5 이하이면) 호출 하나가 승인을 잠글 수 있다 |
+| `sampling` | v3만. 매 요청에 넣는 샘플링 일곱 칸 `temperature`(0~2)·`top_p`(0 초과~1)·`top_k`(정수 0~1000)·`min_p`(0~1)·`presence_penalty`(-2~2)·`repetition_penalty`(0 초과~2)·`seed`(정수, ±2^53). 칸이 정확히 일곱이어야 하고(중복·모르는 칸·정수 칸의 소수 거부) 범위 밖이면 거부한다. 제품 기본값은 평가 프로토콜 §6 고정값과 같은 `{"temperature":1.0,"top_p":0.95,"top_k":20,"min_p":0,"presence_penalty":1.5,"repetition_penalty":1.0,"seed":42}`(모델 카드 thinking 모드·일반 작업 권장값 + seed 42)이다. v1·v2는 샘플링을 넣지 않는다(제공자 기본값, 이전 동작) |
 
 manifest와 부모는 기존 보호 파일 계약(실행 UID 소유, 파일0600/부모0700, symlink·hardlink·교체 거부)을 따른다. API 키는 manifest에 넣지 않는다. 기존 보호된 DB profile credential 공급 경로를 사용하며 채팅·명령 인자·환경 변수·PR·로그에 붙여 넣지 않는다. 설치자가 실제 키를 기존 보호 관리 화면/절차로 저장한 뒤 비밀 원문 없이 profile ID와 설정 여부만 인계한다. 이 변경은 새 키 발급·OAuth·계정 권한 확대를 하지 않는다.
 
@@ -52,7 +53,7 @@ manifest와 부모는 기존 보호 파일 계약(실행 UID 소유, 파일0600/
 
 2026-11-14 공식 [endpoint 목록](https://openrouter.ai/api/v1/models/qwen/qwen3.6-35b-a3b/endpoints)에서 tools/tool_choice를 광고한 tag는 `primeintellect/fp8`, `darkbloom/fp4`, `akashml/fp8`, `parasail/fp8`, `deepinfra/fp8`, `dekallm`, `venice/fp8`, `atlas-cloud/fp8`였다(`atlas-cloud/fp8`는 조회 시점 상태 값 -5). 2026-11-08 Qwen3.5 목록(`darkbloom/fp4`, `parasail/fp8`, `venice`, `alibaba`, `atlas-cloud/fp8`)은 이력이다. 이 목록은 설치 승인이나 현재 수용 시험을 대신하지 않는다. required/named-function choice 지원도 제공사별로 다르므로 실행 전 최신 metadata와 선택한 도구 모드를 다시 대조한다.
 
-신뢰된 모델 클라이언트가 다음을 고정 삽입한다: `provider.only=[승인 tag]`, `allow_fallbacks=false`, `require_parameters=true`, `data_collection=deny`, `zdr=true`, 승인 단가의 `max_price`. 실패 시 조건을 느슨하게 재요청하지 않는다. 응답의 모델과 제공사 표시 이름도 대조한다.
+신뢰된 모델 클라이언트가 다음을 고정 삽입한다: `provider.only=[승인 tag]`, `allow_fallbacks=false`, `require_parameters=true`, `data_collection=deny`, `zdr=true`, 승인 단가의 `max_price`. v3 manifest면 `sampling` 일곱 칸도 넣는다. 이 값은 평가 게이트웨이의 주입과 같은 뜻으로 호출자(엔진)가 보낸 `temperature`를 덮어쓰고, 나머지 샘플링 칸은 요청 허용 목록 밖이라 호출자가 보낼 수 없다. 그래서 전송되는 샘플링 값의 출처는 manifest 하나이고 모델 입력으로 바꿀 수 없다. 실제로 보낸 바이트에서 다시 읽은 값을 사용량 기록(`sampling`)에 남겨, 평가 러너가 원본 게이트웨이의 적용값과 대조한다(탐색 분리 배치 결정안 D(b)). `require_parameters=true`라 일곱 칸을 다 지원하지 않는 endpoint는 OpenRouter가 거부한다. 실패 시 조건을 느슨하게 재요청하지 않는다. 응답의 모델과 제공사 표시 이름도 대조한다.
 
 `zdr=true`를 늘 넣으므로 승인 tag는 그 모델의 ZDR endpoint여야 한다. 아니면 OpenRouter가 맞는 endpoint를 찾지 못해 첫 호출이 HTTP 404로 끝나고 실행은 결과 불명(`model_usage_unknown`)이 된다(2026-11-13 실제 점검 회차, Qwen3.5·`atlas-cloud/fp8`). 그날 Qwen3.5의 ZDR tag 중 tools를 광고한 것은 `parasail/fp8`·`venice`였고, 제품 점검 회차는 `parasail/fp8`로 끝까지 돌았다(이력). 2026-11-14 [ZDR endpoint 목록](https://openrouter.ai/api/v1/endpoints/zdr)에서 `qwen/qwen3.6-35b-a3b`의 ZDR tag는 `primeintellect/fp8`·`dekallm`·`deepinfra/fp8`·`coreweave/fp8`·`venice/fp8`·`siliconflow/fp8`·`akashml/fp8`·`parasail/fp8`였다. 그중 tools를 광고하고 평가 샘플링 일곱 값(`temperature`·`top_p`·`top_k`·`min_p`·`presence_penalty`·`repetition_penalty`·`seed`)까지 모두 지원 표시한 것은 `deepinfra/fp8`(표시 이름 `DeepInfra`)·`primeintellect/fp8`(`PrimeIntellect`) 둘이고, `parasail/fp8`은 `min_p` 표시가 없었다. 제품 OpenRouter 경로(ZDR + tools)도 평가 프로토콜 §6의 고정 제공자와 같은 `primeintellect/fp8`(표시 이름 `PrimeIntellect`)을 승인 tag로 쓴다. 같은 날 출력 속도가 `deepinfra/fp8`의 약 3.4배였고, `deepinfra/fp8` 제품 점검 회차는 첫 목표 분해 호출(91.7초)로 Plan당 120초 상한에 닿아 `planning_failed`로 끝났다. 목록은 바뀌므로 설치 전에 두 목록을 다시 대조한다. 평가 게이트웨이는 `zdr`을 넣지 않으므로 이 제약은 제품 경로에만 해당한다.
 

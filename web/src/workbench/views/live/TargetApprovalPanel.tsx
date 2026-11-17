@@ -315,8 +315,14 @@ export function TargetApprovalPanel({
                   value={paths}
                   onChange={(e) => setPaths(e.target.value)}
                   disabled={off}
-                  placeholder="비우면 입력한 주소의 경로"
+                  placeholder="비우면 입력한 주소의 경로 · 예) /api/  =/"
                 />
+                {/* 정확 일치(=/…)와 접두는 query 동작이 다르다(docs/contracts/exact-path-approval.md). 서버가 같은 규칙으로 집행한다. */}
+                <p className={s.help} id="targetPathMatchNote">
+                  <code>/api/</code> 처럼 쓰면 접두 승인 · 그 아래 모든 경로와 query 를 허용합니다. <code>=/</code> 처럼
+                  앞에 <code>=</code> 를 붙이면 정확 일치 · 그 경로 하나만, query 가 붙은 요청(
+                  <code>/?x=1</code>, <code>/?</code> 포함)은 허용하지 않습니다.
+                </p>
               </div>
               <div className={s.field}>
                 <label className={s.lbl} htmlFor="targetReadonlyBasis">
@@ -337,9 +343,10 @@ export function TargetApprovalPanel({
             <p className={cx(s.help, s.tipline)} id="targetHarmlessNote">
               <b>상태를 바꿀 수 있는 경로는 넣지 마세요</b>{" "}
               <HelpTip label="읽기 승인 설명 보기">
-                읽기 승인은 경로 단위이며 그 경로의 모든 query 를 포함합니다. 서버는 query 의 무해성을 검증하지 않으니,
-                query 로 상태가 바뀔 수 있는 경로는 넣지 마세요. 승인할 때 후보 IP별 연결(https 대상은 TLS 확인)을 최대
-                32회 합니다.
+                접두 승인(<code>/api/</code>)은 그 경로 아래 전체와 모든 query 를 포함합니다. 서버는 query 의 무해성을
+                검증하지 않으니, query 로 상태가 바뀔 수 있는 경로는 넣지 마세요. 정확 일치(<code>=/</code>)는 query
+                없는 그 경로 하나만 허용하므로, 진입점 하나만 열고 하위 경로는 막아야 할 때 씁니다. 승인할 때 후보 IP별
+                연결(https 대상은 TLS 확인)을 최대 32회 합니다.
                 <br />
                 <br />
                 비변경 근거는 운영자 확인입니다 · 서버는 GET/HEAD 의 무해성을 검증하지 않습니다 · 등록 후 DNS TXT 소유를

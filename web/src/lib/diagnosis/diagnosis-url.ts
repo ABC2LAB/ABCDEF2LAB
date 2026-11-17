@@ -295,6 +295,15 @@ function model(v: unknown): URLDiagnosisModel {
     output_tokens_per_call: v.output_tokens_per_call,
   };
 }
+// 승인 경로 표현(docs/contracts/exact-path-approval.md): "/a"는 접두, "=/a"는 query 없는 그 경로 하나(정확 일치).
+// "="는 맨 앞 한 번만 뗀다("==/"는 거절). 실제 허용 판정은 서버(E②)가 하고, 화면은 표현만 검사한다.
+export function approvedPathOf(expression: string): string | null {
+  const p = expression.startsWith("=") ? expression.slice(1) : expression;
+  return p.startsWith("/") && !/[?#\\]/.test(p) ? p : null;
+}
+export function isExactPath(expression: string): boolean {
+  return expression.startsWith("=") && approvedPathOf(expression) !== null;
+}
 function scope(v: unknown, workflowMode?: WorkflowMode): URLDiagnosisScope {
   if (
     !object(v) ||
@@ -304,7 +313,7 @@ function scope(v: unknown, workflowMode?: WorkflowMode): URLDiagnosisScope {
     !Array.isArray(v.path_prefixes) ||
     !v.path_prefixes.length ||
     v.path_prefixes.length > 64 ||
-    !v.path_prefixes.every((p) => text(p, 2048) && p.startsWith("/") && !/[?#\\]/.test(p)) ||
+    !v.path_prefixes.every((p) => text(p, 2048) && approvedPathOf(p) !== null) ||
     !Array.isArray(v.methods) ||
     !v.methods.length ||
     v.methods.length > 8 ||
@@ -343,7 +352,8 @@ function scope(v: unknown, workflowMode?: WorkflowMode): URLDiagnosisScope {
   ]);
   const origin = targetURL(v.origin);
   if (new URL(origin).pathname !== "/") return invalid();
-  for (const path of v.path_prefixes as string[]) {
+  for (const expression of v.path_prefixes as string[]) {
+    const path = approvedPathOf(expression) as string;
     if (targetURL(new URL(origin).origin + path) !== new URL(origin).origin + path) return invalid();
   }
   return {
