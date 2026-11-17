@@ -71,6 +71,12 @@ class DockerError(RuntimeError):
     """docker 호출 실패. 메시지는 고정 코드이며 docker 출력 원문을 담지 않는다."""
 
 
+# generation-verify가 B 게이트웨이와 같이 쓰는 compose 값(runner_config.plan_run이 api 백엔드에 채운다)과 키 환경 변수 이름.
+_GENVERIFY_ENV = ("EVAL_LLM_UPSTREAM", "EVAL_LLM_PROVIDER", "EVAL_LLM_GENERATION_PATH", "EVAL_LLM_VERIFY_ATTEMPTS",
+                  "EVAL_LLM_VERIFY_INTERVAL")
+GENVERIFY_KEY_ENV = "EVAL_LLM_API_KEY"
+
+
 @dataclass(frozen=True)
 class CommandResult:
     returncode: int
@@ -459,6 +465,44 @@ class Docker:
                            "--user", f"{uid}:{gid}", "--", image, "-role=probe"],
                           stdin=plan, code="docker_probe_failed")
         return output, _read_cidfile(cidfile)
+
+    def generation_verify(self, image: str, calls: bytes, *, key: str, llm_env: Mapping[str, str], sampling: dict | None,
+                          out_dir: Path, uid: int, gid: int, cidfile: Path, timeout: float) -> str:
+        """제품(O) 호출 기록을 계측기 이미지의 generation-verify 역할로 사후 검증한다(탐색 분리 배치 결정안 D(b), 4-11).
+
+        조회 설정(위쪽 origin·제공자·조회 경로·재시도 횟수·간격·TLS 신뢰 묶음)은 B 게이트웨이와 같은 compose 값(llm_env)을
+        그대로 쓴다. 키는 명령줄·파일에 싣지 않는다: `-e 이름`만 넘기고 값은 이 docker 호출의 환경에만 둔다. 호출 기록은
+        표준 입력으로, 표식(llm-verified.json)은 out_dir(러너 uid 0700)에 쓴다. 회차 망 밖(기본 망)에서 돌고, 구간이
+        끝난 뒤에만 부른다. 종료 코드가 0이 아니면 표식이 없다는 뜻이고 호출자가 무효로 다룬다.
+        """
+        if not isinstance(image, str) or not _IMAGE_ID.fullmatch(image):
+            raise DockerError("docker_genverify_image_not_id")
+        if type(uid) is not int or type(gid) is not int or uid < 0 or gid < 0:
+            raise DockerError("docker_genverify_user_invalid")
+        if not isinstance(key, str) or not key or any(ord(char) < 33 or ord(char) == 127 for char in key):
+            raise DockerError("docker_genverify_key_invalid")
+        values = [llm_env.get(name) for name in _GENVERIFY_ENV]
+        paths = (str(out_dir), str(llm_env.get("EVAL_CA_BUNDLE", "")))
+        if (not all(isinstance(value, str) and value for value in values)
+                or not all(path.startswith("/") and "," not in path for path in paths) or not isinstance(calls, bytes)
+                or (sampling is not None and not isinstance(sampling, dict))):
+            raise DockerError("docker_genverify_config_invalid")
+        upstream, provider, generation_path, attempts, interval = values
+        args = ["run", "--rm", "-i", "--pull", "never", "--log-driver", "none", "--cidfile", str(cidfile),
+                "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--user", f"{uid}:{gid}",
+                "-e", GENVERIFY_KEY_ENV,
+                "--mount", f"type=bind,source={paths[1]},target=/etc/ssl/certs/ca-certificates.crt,readonly",
+                "--mount", f"type=bind,source={paths[0]},target=/evidence",
+                "--", image, "-role=generation-verify", f"-upstream={upstream}", f"-provider={provider}",
+                f"-generation-path={generation_path}", f"-verify-attempts={attempts}", f"-verify-interval={interval}"]
+        if sampling is not None:
+            # 제품이 실제로 보낸 값(실행 기록). 표식 `sampling`이 되어 B 게이트웨이 적용값과 대조된다.
+            args.append("-sampling=" + json.dumps(sampling, separators=(",", ":"), sort_keys=True))
+        args.append("-log-dir=/evidence")
+        result = self._executor(args, {**self._env, GENVERIFY_KEY_ENV: key}, calls, timeout)
+        if result.returncode != 0:
+            raise DockerError("docker_genverify_failed")
+        return _read_cidfile(cidfile)
 
     def state_read(self, image: str, target_container_id: str, plan: bytes, uid: int, gid: int) -> bytes:
         """대상 컨테이너의 네트워크 namespace에서 계측기 이미지(내용 ID)의 state-read 역할을 1회 실행한다.
