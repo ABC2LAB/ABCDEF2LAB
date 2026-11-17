@@ -453,9 +453,18 @@ class _EngineEndWatch:
     없을 때만 새 읽기를 띄운 뒤 바로 돌아온다. 그래서 상태 API가 느리거나 답하지 않아도 요청·시간 예산 종료 시각은 관찰이
     없을 때와 같다(관찰이 B·O 비교 조건을 바꾸지 않게)."""
 
-    def __init__(self, ports: "RunPorts", task_id: str, clock: Clock, started: float, wait_seconds: float):
+    def __init__(self, ports: "RunPorts", task_id: str, clock: Clock, started: float, wait_seconds: float, *,
+                 read: Callable[[], object] | None = None, fields: tuple[str, ...] = END_SIGNAL_FIELDS,
+                 status_field: str = "status", terminal: frozenset[str] = TERMINAL_TASK_STATUSES,
+                 terminal_extra: tuple[str, ...] = (), fmt: str = ENGINE_END_FORMAT,
+                 errors: tuple[type[Exception], ...] = (EngineAPIError,)):
+        """read를 주면 그 함수로 상태를 읽는다(O: 제품 초안 상태, 결정안 §3.1). 주지 않으면 엔진 작업 목록(B)이다.
+        fields는 서명 근거에 남길 칸, status_field·terminal은 끝 상태 판단, terminal_extra는 첫 끝 상태에 같이 남길 칸이다."""
         self.ports, self.task_id, self.clock, self.started = ports, task_id, clock, started
         self.wait_seconds = wait_seconds
+        self._reader = read if read is not None else (lambda: ports.task_status(task_id))
+        self.fields, self.status_field, self.terminal = fields, status_field, terminal
+        self.terminal_extra, self.fmt, self.errors = terminal_extra, fmt, errors
         self.reads = self.failures = 0
         self.first_terminal: dict | None = None
         self.last_error: str | None = None
@@ -464,15 +473,15 @@ class _EngineEndWatch:
 
     def _read(self) -> tuple[dict | None, str | None]:
         try:
-            view = self.ports.task_status(self.task_id)
-        except EngineAPIError as exc:
+            view = self._reader()
+        except self.errors as exc:
             return None, str(exc)
         except Exception:
             return None, "engine_task_status_failed"
         # 서명 근거의 모양을 고정한다: 끝 신호 칸만 남기고, 빠진 칸이 있으면 읽지 못한 것으로 센다.
-        if not isinstance(view, dict) or any(name not in view for name in END_SIGNAL_FIELDS):
+        if not isinstance(view, dict) or any(name not in view for name in self.fields):
             return None, "engine_task_status_invalid"
-        return {name: view[name] for name in END_SIGNAL_FIELDS}, None
+        return {name: view[name] for name in self.fields}, None
 
     def _background_read(self) -> None:
         view, error = self._read()
@@ -490,8 +499,9 @@ class _EngineEndWatch:
             self.failures, self.last_error = self.failures + 1, error
             return True
         self.reads += 1
-        if self.first_terminal is None and view["status"] in TERMINAL_TASK_STATUSES:
-            self.first_terminal = {"status": view["status"], "at": at, "elapsed_seconds": elapsed}
+        if self.first_terminal is None and view[self.status_field] in self.terminal:
+            self.first_terminal = {"status": view[self.status_field], "at": at, "elapsed_seconds": elapsed,
+                                   **{name: view[name] for name in self.terminal_extra}}
         return True
 
     def poll(self) -> None:
@@ -511,13 +521,16 @@ class _EngineEndWatch:
             self.failures, self.last_error = self.failures + 1, "engine_task_status_pending"
         view, error = self._read()
         final = None if view is None else dict(view, read_at=_stamp(self.clock))
-        return {"format": ENGINE_END_FORMAT, "task_id": self.task_id, "window_reads": self.reads,
+        return {"format": self.fmt, "task_id": self.task_id, "window_reads": self.reads,
                 "window_read_failures": self.failures, "window_last_error": self.last_error,
                 "first_terminal": self.first_terminal, "final": final, "final_error": error}
 
 
-# 어느 상한이 먼저 걸렸는지(탐색 분리 배치 결정안 §3 B(a) 표). O의 `product_limit:<사유>`는 제품 구동(순서 4-7)에서 더한다.
+# 어느 상한이 먼저 걸렸는지(탐색 분리 배치 결정안 §3 B(a) 표). O 제품 실행이 예산 마감(budget_limited)으로 닫혔으면
+# `product_limit:<제품 마감 사유>`다.
 FIRST_LIMIT_ENGINE = "engine_completed"
+FIRST_LIMIT_PRODUCT = "product_limit:"
+PRODUCT_BUDGET_CLOSING = "budget_limited"
 _FIRST_LIMIT_BY_STOP = {"request_budget": "runner_request_budget", "time_budget": "runner_time_budget"}
 
 
@@ -532,6 +545,10 @@ def first_limit(stop_reason: str, stop_elapsed: float, time_budget_seconds: floa
     limit_at = time_budget_seconds if stop_reason == "time_budget" else stop_elapsed
     engine_at = None if first_terminal is None else first_terminal["elapsed_seconds"]
     value = FIRST_LIMIT_ENGINE if engine_at is not None and engine_at <= limit_at else runner
+    # O: 제품이 먼저 닫혔고 그 마감이 제품 예산 상한이면 제품 상한이 먼저 걸린 것이다(E② 대상 요청 상한 등, 통제 비용).
+    closing = None if first_terminal is None else first_terminal.get("closing_reason")
+    if value == FIRST_LIMIT_ENGINE and closing == PRODUCT_BUDGET_CLOSING:
+        value = FIRST_LIMIT_PRODUCT + closing
     return {"value": value, "runner_limit": runner, "runner_limit_elapsed_seconds": round(limit_at, 3),
             "engine_terminal_elapsed_seconds": engine_at}
 
