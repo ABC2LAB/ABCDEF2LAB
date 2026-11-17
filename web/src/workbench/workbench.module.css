@@ -2312,25 +2312,6 @@ select.inp {
   font-weight: 500;
   color: var(--ink-2);
 }
-.cnts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px 32px;
-}
-.cn .v {
-  font-family: var(--mono);
-  font-size: 22px;
-  font-weight: 600;
-  line-height: 1.2;
-  font-variant-numeric: tabular-nums;
-}
-.cn .k {
-  font-size: 12.5px;
-  color: var(--ink-3);
-}
-.cn.warn .v {
-  color: var(--warn);
-}
 .log {
   border: 1px solid var(--rule);
   border-radius: 6px;
@@ -3764,6 +3745,16 @@ button.smm:hover {
 }
 .meters .cell .v {
   font-size: 20px;
+}
+/* 3칸 상자 (자산 탐색 숫자): 좁아져도 한 줄에 3칸. 위 2칸 접기의 셋째 칸 줄바꿈 테두리를 되돌린다 */
+.meters.m3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+@container (max-width: 560px) {
+  .meters.m3 .cell:nth-child(3) {
+    border-left: 1px solid var(--rule);
+    border-top: 0;
+  }
 }
 /* 점검 진행 오른쪽(진행 요약)의 전송 통제 4칸: 패널이 좁아 2칸씩 두 줄 */
 .vi .meters {
