@@ -24,7 +24,7 @@ from runner_config import (
 )
 from runner_docker import Docker, DockerError, client_environment, run_docker
 from runner_evidence import EvidenceDir, MeterFiles
-from runner_product import ModelKey, ProductDriver, loopback_send
+from runner_product import ModelKey, ProductAPIError, ProductDriver, loopback_send
 from runner_split import EXPLORATION_BLOCK, read_workflow_defaults
 from runner_split_config import (
     SplitConfigError, SplitPlan, plan_split_run, read_manifest, split_compose_args, split_compose_environment,
@@ -65,7 +65,9 @@ def split_declared(config: RunnerConfig, preflight: object, manifest: dict) -> S
     if declared["run_drain"] != drain:
         errors.append(f"preflight.{POLICY_SWITCH_SIDE}.run_drain: CONFIG_MISMATCH")
     llm = declared["llm"]
-    if llm.get("backend") != "api" or llm.get("model") != manifest.get("model") or llm.get("provider") != manifest.get("provider_slug"):
+    # base_url도 승인 값과 같아야 한다. 다르면 같은 모델 키를 다른 origin으로 사후 조회(llm_lookup_env)하게 된다(#674 리뷰).
+    if (llm.get("backend") != "api" or llm.get("model") != manifest.get("model") or llm.get("provider") != manifest.get("provider_slug")
+            or llm.get("base_url") != manifest.get("base_url")):
         errors.append(f"preflight.{POLICY_SWITCH_SIDE}.llm: MANIFEST_MISMATCH")
     if errors:
         raise RunnerConfigError(errors)
@@ -124,24 +126,30 @@ def run_split_ours(config: RunnerConfig, preflight: object, *, docker_runner=run
         rendered = docker.compose_config(split_compose_args(plan))
         # B 게이트웨이와 같은 env 파일·같은 compose 규칙으로 읽는다. 값은 메모리에만 두고 제품 모델 키 API로만 보낸다.
         model_key = ModelKey(docker.env_file_value(config.secrets_env_file, MODEL_KEY_NAME, directory.run))
-    except (RunnerConfigError, SplitConfigError) as exc:
-        print("\n".join(exc.errors), file=sys.stderr)
+        driver = ProductDriver(api_port=split.product_port, dns_port=split.dns_control_port,
+                               send=lambda method, port, path, body, headers: send(
+                                   method, port, path, body, headers, timeout=config.run["task_create_timeout_seconds"]),
+                               sleep=time.sleep, monotonic=time.monotonic)
+        ports = DockerSplitPorts(config=config, split=split, plan=plan, directory=directory, docker=docker, driver=driver,
+                                 inputs=inputs, rendered=rendered, manifest=manifest, model_key=model_key,
+                                 exploration=dict(EXPLORATION_BLOCK), llm_env=llm_lookup_env(config, preflight))
+        spec = split_run_spec(config, plan, declared, rendered)
+    except BaseException as exc:
+        # 회차 흐름(execute_split_run) 전의 어떤 실패·중단에서도 보호 입력을 먼저 지운다(#674 리뷰: 모델 키 모양 오류·
+        # 운영자 중단이 정리를 건너뛰었다). 고정 code 오류는 code만 내고 종료 코드 2, 중단은 정리 뒤 다시 올린다.
         _abandon(directory, inputs)
-        return 2
-    except (SplitInputsError, DockerError) as exc:
-        print(str(exc), file=sys.stderr)
-        _abandon(directory, inputs)
-        return 2
-    driver = ProductDriver(api_port=split.product_port, dns_port=split.dns_control_port,
-                           send=lambda method, port, path, body, headers: send(
-                               method, port, path, body, headers, timeout=config.run["task_create_timeout_seconds"]),
-                           sleep=time.sleep, monotonic=time.monotonic)
-    ports = DockerSplitPorts(config=config, split=split, plan=plan, directory=directory, docker=docker, driver=driver,
-                             inputs=inputs, rendered=rendered, manifest=manifest, model_key=model_key,
-                             exploration=dict(EXPLORATION_BLOCK), llm_env=llm_lookup_env(config, preflight))
+        if isinstance(exc, (RunnerConfigError, SplitConfigError)):
+            print("\n".join(exc.errors), file=sys.stderr)
+            return 2
+        if isinstance(exc, (SplitInputsError, DockerError, ProductAPIError)):
+            print(str(exc), file=sys.stderr)
+            return 2
+        if isinstance(exc, Exception):
+            print("split_prepare_failed", file=sys.stderr)  # 예외 글은 싣지 않는다(값이 섞일 수 있음)
+            return 2
+        raise
     clock = Clock(lambda: datetime.now(timezone.utc), time.monotonic, time.sleep)
-    result = execute_split_run(split_run_spec(config, plan, declared, rendered), ports, MeterFiles(directory.meter),
-                               EvidenceDir(directory.run), clock)
+    result = execute_split_run(spec, ports, MeterFiles(directory.meter), EvidenceDir(directory.run), clock)
     print(f"{result['run_id']} {result['status']} {' '.join(result.get('reasons', []))}".rstrip())
     return 0 if result["status"] == COMPLETE else 1
 

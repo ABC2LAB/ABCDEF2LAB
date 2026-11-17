@@ -30,8 +30,9 @@ from test_runner_config import runner_config  # noqa: E402
 from test_runner_split_config import split_block  # noqa: E402
 from test_runner_split_inputs import FakeOpenssl  # noqa: E402
 
+# 사전검사 픽스처(test_preflight.api_llm)와 같은 모델·제공자·base_url(실제 manifest는 openrouter.ai 고정이고, 선언도 그 값이어야 한다).
 MANIFEST = {"version": 3, "model": "example-org/example-model", "provider_slug": "example-provider", "approval_id": "approval-test-1",
-            "base_url": "https://openrouter.ai/api/v1", "max_requests": 400}
+            "base_url": "https://llm-api.example/api/v1", "max_requests": 400}
 
 
 def preflight_for(config, **ours):
@@ -90,7 +91,8 @@ class TestDeclared(Fixture):
         self.assertEqual(declared.llm_sampling, json.loads(b_plan.compose_env["EVAL_LLM_SAMPLING"]))
 
     def test_model_and_provider_must_be_the_manifest(self):
-        for change in ({"model": "other/model"}, {"provider_slug": "other-provider"}):
+        for change in ({"model": "other/model"}, {"provider_slug": "other-provider"},
+                       {"base_url": "https://other-api.example/api/v1"}):  # #674 리뷰: 다른 origin으로 키를 보내지 않게
             with self.subTest(change=change), self.assertRaises(RunnerConfigError) as caught:
                 split_declared(self.config, preflight_for(self.config), dict(MANIFEST, **change))
             self.assertEqual(caught.exception.errors, ["preflight.ours.llm: MANIFEST_MISMATCH"])
@@ -188,6 +190,28 @@ class TestBeforeUp(Fixture):
         self.assertIn("run_directory: REMOVE_FAILED", err)
         run_dir = next(self.runs.iterdir())
         self.assertFalse((run_dir / "private").exists())
+
+    def test_bad_model_key_and_interrupt_still_remove_inputs(self):
+        # #674 리뷰: 보호 입력을 만든 뒤 모델 키 모양 오류(ProductAPIError)·운영자 중단이 나도 보호 입력과 회차 디렉터리를 지운다.
+        rendered = {"services": {}}
+        with mock.patch.object(runner_split_main.Docker, "compose_config", lambda self, args: rendered), \
+                mock.patch.object(runner_split_main.Docker, "env_file_value", lambda self, path, name, scratch: "has space"):
+            code, err = self.run_ours()
+        self.assertEqual((code, err.strip()), (2, "product_model_key_invalid"))
+        self.assertEqual(list(self.runs.iterdir()), [])
+
+        def interrupt(self, args):
+            raise KeyboardInterrupt
+        with mock.patch.object(runner_split_main.Docker, "compose_config", interrupt), self.assertRaises(KeyboardInterrupt):
+            self.run_ours()
+        self.assertEqual(list(self.runs.iterdir()), [])
+
+        def surprise(self, args):
+            raise RuntimeError("value-that-must-not-print")
+        with mock.patch.object(runner_split_main.Docker, "compose_config", surprise):
+            code, err = self.run_ours()
+        self.assertEqual((code, err.strip()), (2, "split_prepare_failed"))
+        self.assertEqual(list(self.runs.iterdir()), [])
 
     def test_config_errors_print_codes_only(self):
         os.chmod(self.manifest_path, 0o644)
