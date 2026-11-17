@@ -25,6 +25,7 @@ func TestExcludedMatchesDecodedSegments(t *testing.T) {
 		{"/read/admin", "/read/x;admin", false},
 		{"/read/a;b", "/read/a;b", true},
 		{"/read/a;b", "/read/a", false},
+		{"/read/a;b", "/read/A;B", true}, // ";"가 든 패턴은 조각 전체를 대소문자 무시로 맞춘다
 		{"/read/über", "/read/über", true},
 		{"/read/über", "/read/über/x", true},
 		{"/read/über", "/read/%C3%BCber", false}, // 다시 인코딩한 표기가 아니라 풀린 경로를 받는다
