@@ -68,6 +68,34 @@ class TestRunnerHelperAndStop(unittest.TestCase):
         self.assertEqual((summary["boundary_events"], summary["runner_container_events"]), ([], 5))
         self.assertEqual(events_reasons(summary), [])
 
+    def test_helper_network_events_only_the_none_network(self):
+        none = {"name": "none", "type": "null"}
+        ok = [self.helper("create"), event("network", "connect", "z" * 64, container=self.HELPER, **none),
+              self.helper("start"), self.helper("die"), event("network", "disconnect", "z" * 64, container=self.HELPER, **none),
+              self.helper("destroy")]
+        for events in (ok, [e for e in ok if e["Type"] != "network"]):  # 이벤트가 있든 없든 통과
+            with self.subTest(network_events=len(events)):
+                summary = self.judge(self.stop_sequence() + events)
+                self.assertEqual((summary["boundary_events"], events_reasons(summary)), ([], []))
+        # 리뷰 반례: 정상 정지·도우미 생명주기 사이에 회차 밖 망 연결을 끼우면 위반이다(최종 상태가 망 없음이어도).
+        foreign = {"name": "outside", "type": "bridge"}
+        cases = {
+            "connect_foreign": [event("network", "connect", "o" * 64, container=self.HELPER, **foreign)],
+            "disconnect_foreign": [event("network", "disconnect", "o" * 64, container=self.HELPER, **foreign)],
+            "connect_run_network": [event("network", "connect", "n" * 64, container=self.HELPER, name="target", type="bridge")],
+            "none_but_bridge_type": [event("network", "connect", "o" * 64, container=self.HELPER, name="none", type="bridge")],
+            "none_twice": [event("network", "connect", "z" * 64, container=self.HELPER, **none)] * 2,
+        }
+        for name, extra in cases.items():
+            with self.subTest(case=name):
+                summary = self.judge(self.stop_sequence() + ok[:3] + extra + ok[3:])
+                self.assertTrue(summary["boundary_events"])
+                self.assertEqual(summary["boundary_events"][-1]["service"], "runner_helper")
+                self.assertIn("window_boundary_changed", events_reasons(summary))
+        # 도우미 예외는 선언한 도우미 ID에만 있다: 목록이 비면 같은 이벤트도 도우미 예외가 아니다.
+        self.assertEqual(self.judge([event("network", "connect", "z" * 64, container=self.HELPER, **none)], helpers={})
+                         ["runner_container_events"], 0)
+
     def test_label_alone_is_not_an_exception(self):
         # 같은 라벨을 단 다른 컨테이너(러너가 띄운 ID가 아님)는 회차 밖 컨테이너다.
         spoof = event("container", "start", OTHER, **{RUNNER_HELPER_LABEL: "boundary-evidence"})

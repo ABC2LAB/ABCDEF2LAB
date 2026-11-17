@@ -147,7 +147,8 @@ def judge_events(events: list, window_start_ns: int, run_networks: dict[str, str
     sealable: seal 신호(USR1)를 받는 서비스. healthchecked: 선언된 healthcheck exec를 허용하는 서비스.
     runner_containers: 러너가 구간 중 직접 띄운 컨테이너 ID(post probe). 그 밖의 회차 밖 컨테이너 생성·시작은 위반.
     runner_helpers: 러너가 구간 중 띄운 도우미 ID → 역할. 그 ID이면서 RUNNER_HELPER_LABEL 값이 역할과 같을 때만 정상 생명주기를
-    허용한다(라벨만 맞고 ID가 다르면 회차 밖 컨테이너로 본다).
+    허용한다(라벨만 맞고 ID가 다르면 회차 밖 컨테이너로 본다). 도우미의 망 이벤트는 'none' 망 연결·분리 한 번씩만 허용하고,
+    다른 망(회차 밖 망 포함)에 붙거나 떨어지면 위반이다.
     stoppable: 러너가 구간 중 정지하는 회차 서비스. SIGTERM 정지 한 번(kill·die·stop 각 한 번)과 그 컨테이너의 망 분리만 허용한다.
     결과에는 종류별 건수와 위반 요약(서비스 이름·동작)만 남기고 이벤트 원문은 남기지 않는다.
     """
@@ -187,6 +188,17 @@ def judge_events(events: list, window_start_ns: int, run_networks: dict[str, str
         kinds[f"{kind}.{label}"] = kinds.get(f"{kind}.{label}", 0) + 1
         if kind == "network":
             container = attributes.get("container")
+            if container in helpers:
+                # 도우미는 망 없이(--network none) 돈다. Docker가 그 null 망 연결·분리를 이벤트로 낼 수 있어 'none' 망만 한 번씩
+                # 허용한다('none'은 미리 정의된 이름이라 같은 이름 망을 새로 만들 수 없다). 그 밖의 망은 회차 밖이어도 위반이다.
+                if (label in ("connect", "disconnect") and attributes.get("name") == "none"
+                        and attributes.get("type", "null") == "null" and (container, "net:" + label) not in probe_seen):
+                    probe_seen.add((container, "net:" + label))
+                    runner_events += 1
+                else:
+                    boundary.append({"type": kind, "action": label, "network": run_networks.get(actor_id, "foreign"),
+                                     "service": "runner_helper"})
+                continue
             if (label == "disconnect" and container in run_containers and run_containers[container] in stoppable
                     and (container, "die") in stopped and actor_id in run_networks
                     and (container, "net:" + actor_id) not in stopped):
