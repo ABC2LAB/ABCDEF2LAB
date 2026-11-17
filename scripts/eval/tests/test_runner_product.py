@@ -34,7 +34,8 @@ API_PORT, DNS_PORT = 18787, 19083
 class FakeProduct:
     """제품 API·시험 DNS 제어의 최소 가짜. overrides[경로 이름] = (status, body 또는 함수)로 응답을 바꾼다."""
 
-    def __init__(self, polls_before_task: int = 1):
+    def __init__(self, polls_before_task: int = 1, registration: dict | None = None):
+        self.registration = REGISTRATION if registration is None else registration
         self.calls: list[dict] = []
         self.overrides: dict[str, object] = {}
         self.polls_before_task = polls_before_task
@@ -43,8 +44,10 @@ class FakeProduct:
         self.raise_on: str = ""
 
     def target(self, state: str) -> dict:
+        # 실제 제품처럼 경로·메서드를 정렬해 저장한 값을 돌려준다(product_targets.go register의 sort.Strings).
         target = {"id": TARGET_ID, "origin": "http://app.eval.test:8080", "state": state, "revision": 1 if state == "pending" else 2,
-                  "path_prefixes": ["/"], "methods": list(REGISTRATION["methods"]), "requests": 400, "port": 8080}
+                  "path_prefixes": sorted(self.registration["path_prefixes"]), "methods": sorted(self.registration["methods"]),
+                  "requests": self.registration["requests"], "port": 8080}
         if state == "pending":
             target.update(challenge_name="_abc2lab-challenge.app.eval.test", challenge_value="abc2lab-proof-1")
         else:
@@ -72,7 +75,7 @@ class FakeProduct:
         if name == "/api/diagnoses/v2/catalog":
             return 200, {"version": "diagnosis-api.v2", "owner_context": "x", "profiles": [
                 {"id": "product-model-local_only", "workflow": {}, "workflow_request_limit": 1},
-                {"id": PROFILE, "workflow": dict(WORKFLOW), "workflow_request_limit": 400}]}
+                {"id": PROFILE, "workflow": dict(WORKFLOW), "workflow_request_limit": self.registration["requests"]}]}
         if name == "/api/product/targets":
             return 200, {"target": self.target("pending")}
         if name == "/api/product/targets/{id}/approve":
@@ -143,6 +146,18 @@ class TestHappyPath(unittest.TestCase):
         self.assertEqual(set(start.target), {"id", "origin", "state", "revision", "path_prefixes", "methods", "requests",
                                              "addresses", "port", "tls_spki_sha256", "approved_at", "expires_at"})
 
+    def test_product_sorted_scope_is_accepted_for_wide_and_read(self):
+        # 리뷰 반례: 제품은 [GET,HEAD,PATCH,POST,PUT]로 돌려준다. 넓은 등록(쓰기)과 읽기 등록 모두 정렬된 응답을 받는다.
+        read = dict(REGISTRATION, methods=["HEAD", "GET"], path_prefixes=["/rest", "/api"])
+        del read["reversible_writes"]
+        for registration in (REGISTRATION, read):
+            with self.subTest(methods=registration["methods"]):
+                fake = FakeProduct(registration=registration)
+                self.assertNotEqual(fake.target("pending")["methods"], registration["methods"])  # 정말 순서가 다르다
+                start = run(fake, registration=registration)
+                self.assertEqual(start.target["methods"], sorted(registration["methods"]))
+                self.assertEqual(fake.calls[4]["body"], registration)  # 보낸 본문은 회차 설정 순서 그대로
+
     def test_headers_ports_and_secret_placement(self):
         fake = FakeProduct()
         start = run(fake)
@@ -207,6 +222,14 @@ class TestFaults(unittest.TestCase):
                 200, {"target": dict(v["target"], id="target-x")})}),
             "register_methods": ("product_target_scope_mismatch", {"/api/product/targets": lambda s, v: (
                 200, {"target": dict(v["target"], methods=["GET", "HEAD"])})}),
+            "register_duplicate_method": ("product_target_scope_mismatch", {"/api/product/targets": lambda s, v: (
+                200, {"target": dict(v["target"], methods=["GET", "GET", "HEAD", "PATCH", "POST", "PUT"])})}),
+            "register_missing_method": ("product_target_scope_mismatch", {"/api/product/targets": lambda s, v: (
+                200, {"target": dict(v["target"], methods=["GET", "HEAD", "PATCH", "POST"])})}),
+            "register_extra_path": ("product_target_scope_mismatch", {"/api/product/targets": lambda s, v: (
+                200, {"target": dict(v["target"], path_prefixes=["/", "/admin"])})}),
+            "register_methods_not_list": ("product_target_scope_mismatch", {"/api/product/targets": lambda s, v: (
+                200, {"target": dict(v["target"], methods="GET")})}),
             "register_requests": ("product_target_scope_mismatch", {"/api/product/targets": lambda s, v: (
                 200, {"target": dict(v["target"], requests=64)})}),
             "challenge_name": ("product_challenge_invalid", {"/api/product/targets": lambda s, v: (
@@ -230,6 +253,12 @@ class TestFaults(unittest.TestCase):
                                {DRAFTS_PATH + "/{id}/start": (409, {"error": "draft_revision_conflict"})}),
             "failed_before_task": ("product_draft_failed_before_task:target_dns_mismatch", {status: lambda s, v: (
                 200, {"draft": dict(FakeProduct().draft("failed"), reason_code="target_dns_mismatch")})}),
+            "status_other_draft_running": ("product_draft_mismatch", {status: lambda s, v: (
+                200, {"draft": dict(FakeProduct().draft("running", "99"), id="other-draft")})}),
+            "status_other_draft_failed": ("product_draft_mismatch", {status: lambda s, v: (
+                200, {"draft": dict(FakeProduct().draft("failed"), id="other-draft", reason_code="target_dns_mismatch")})}),
+            "cancelled_before_task": ("product_draft_cancelled_before_task:operator_stop", {status: lambda s, v: (
+                200, {"draft": dict(FakeProduct().draft("cancelled"), reason_code="operator_stop")})}),
             "bad_task_id": ("product_draft_invalid", {status: lambda s, v: (200, {"draft": FakeProduct().draft("running", "4x2")})}),
             "too_large": ("product_response_too_large:/api/diagnoses/v2/catalog",
                           {"/api/diagnoses/v2/catalog": (200, b"{" + b" " * MAX_RESPONSE_BYTES + b"}")}),
@@ -248,6 +277,18 @@ class TestFaults(unittest.TestCase):
     def test_server_reason_equal_to_a_secret_is_dropped(self):
         # 제품이 사유 칸에 비밀 값을 되돌려도(고정 code 모양이어도) 오류에 옮기지 않는다.
         self.check("product_http_403:/control", overrides={"/control": (403, {"error": DNS_TOKEN})})
+        # 리뷰 반례: 초안 끝 사유(reason_code)도 같은 투영을 거친다. 실패·취소·불명 모두.
+        status = DRAFTS_PATH + "/{id}/status"
+        token = "productlogintoken"
+        for state in ("failed", "cancelled", "unknown"):
+            for secret in (DNS_TOKEN, token):
+                with self.subTest(state=state, secret=secret):
+                    fake = FakeProduct()
+                    fake.overrides["/api/auth/login"] = (200, {"token": token})
+                    fake.overrides[status] = (200, {"draft": dict(FakeProduct().draft(state), reason_code=secret)})
+                    with self.assertRaises(ProductAPIError) as caught:
+                        run(fake)
+                    self.assertEqual(str(caught.exception), f"product_draft_{state}_before_task")
 
     def test_baseline_admin_is_refused(self):
         self.check("product_username_invalid", secret=AdminSecret(PASSWORD, username="ARTEX"))

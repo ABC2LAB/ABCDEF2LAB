@@ -67,6 +67,13 @@ class ModelKey:
         return self._value
 
 
+def _ordered(values: object) -> list[str] | None:
+    """문자열 목록을 정렬한 사본. 목록이 아니거나 문자열이 아닌 항목이 있으면 None(어떤 목록과도 같지 않다)."""
+    if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+        return None
+    return sorted(values)
+
+
 def _path_name(path: str) -> str:
     """오류 code에 쓰는 경로 이름. query와 대상·초안 ID는 빼고 {id}로 둔다."""
     name = path.split("?", 1)[0]
@@ -142,12 +149,16 @@ class ProductDriver:
         return value
 
     def _reason(self, data: bytes) -> str:
-        """제품이 돌려준 고정 사유 code(소문자·밑줄)만 붙인다. 비밀 값과 같으면 버린다."""
+        """응답 본문의 reason·error 칸을 사유 투영(_safe_reason)으로 붙인다."""
         try:
             value = json.loads(data.decode("utf-8"))
         except (UnicodeError, ValueError):
             return ""
-        reason = value.get("reason") or value.get("error") if isinstance(value, dict) else None
+        return self._safe_reason(value.get("reason") or value.get("error") if isinstance(value, dict) else None)
+
+    def _safe_reason(self, reason: object) -> str:
+        """제품이 돌려준 고정 사유 code(소문자·밑줄)만 ':code'로 붙인다. 알려진 비밀 값(관리자 비밀번호·모델 키·로그인 토큰·
+        DNS 제어 토큰)과 같으면 버린다. 오류에 사유를 붙이는 모든 경로가 이 함수를 쓴다."""
         if isinstance(reason, str) and _REASON.fullmatch(reason) and reason not in self._secrets:
             return ":" + reason
         return ""
@@ -226,8 +237,10 @@ class ProductDriver:
         if (not isinstance(target, dict) or not isinstance(target.get("id"), str) or not _TARGET_ID.fullmatch(target["id"])
                 or target.get("origin") != origin or target.get("state") != state):
             raise ProductAPIError("product_target_invalid")
-        # 제품이 등록 범위를 바꿔 기록하면(경로·메서드·요청 수) 회차 조건과 달라진다.
-        if (target.get("path_prefixes") != registration["path_prefixes"] or target.get("methods") != registration["methods"]
+        # 제품이 등록 범위를 바꿔 기록하면(경로·메서드·요청 수) 회차 조건과 달라진다. 제품은 경로·메서드를 정렬해 저장하므로
+        # (product_targets.go register의 sort.Strings) 양쪽을 같은 순서로 맞춰 비교한다. 중복·누락·추가는 그대로 어긋난다.
+        if (_ordered(target.get("path_prefixes")) != _ordered(registration["path_prefixes"])
+                or _ordered(target.get("methods")) != _ordered(registration["methods"])
                 or target.get("requests") != registration["requests"]):
             raise ProductAPIError("product_target_scope_mismatch")
         return target
@@ -247,7 +260,11 @@ class ProductDriver:
                    key=secrets.token_hex(16))
 
     def status(self, draft_id: str) -> dict:
-        return self._draft(self._call("GET", f"{DRAFTS_PATH}/{draft_id}/status"))
+        """그 초안의 상태. 응답 초안 ID가 요청한 ID와 다르면(다른 작업을 관찰·서명하게 됨) 거부한다."""
+        draft = self._draft(self._call("GET", f"{DRAFTS_PATH}/{draft_id}/status"))
+        if draft["id"] != draft_id:
+            raise ProductAPIError("product_draft_mismatch")
+        return draft
 
     def wait_task(self, draft_id: str, deadline_seconds: float, interval_seconds: float) -> dict:
         """작업 번호가 붙을 때까지 상태를 본다. 그 전에 끝 상태로 끝나면 제품 사유 code와 함께 멈춘다."""
@@ -257,9 +274,7 @@ class ProductDriver:
             if draft.get("task_id"):
                 return draft
             if draft["state"] in DRAFT_TERMINAL:
-                reason = draft.get("reason_code")
-                suffix = ":" + reason if isinstance(reason, str) and _REASON.fullmatch(reason) else ""
-                raise ProductAPIError(f"product_draft_{draft['state']}_before_task{suffix}")
+                raise ProductAPIError(f"product_draft_{draft['state']}_before_task{self._safe_reason(draft.get('reason_code'))}")
             if self._monotonic() >= end:
                 raise ProductAPIError("product_task_wait_timeout")
             self._sleep(interval_seconds)
