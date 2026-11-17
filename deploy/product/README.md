@@ -72,7 +72,7 @@ OpenRouter는 운영자가 `openrouter_manifest`에 [기존 보호 승인 JSON �
 
 ## 탐색·선택 워크플로 설치
 
-새 설치에서만 `target_policy.max_requests`와 선택적인 `target_policy.workflow`를 함께 지정한다. 아래 설정은 회차 HTTP 상한 64, 초기 탐색 최대 8페이지, 발견 최대 32개다.
+새 설치에서만 `target_policy.max_requests`와 선택적인 `target_policy.workflow`를 함께 지정한다. `workflow` 블록의 제품 기본값은 [`workflow-defaults.json`](workflow-defaults.json) 하나가 정본이고, 아래 예시는 그 파일과 같다(`scripts/ci/test_product_workflow_defaults.py`가 대조). 발견 수·페이지 수는 코드 상한(256)이다. 발견 목록 크기는 공개 투영 바이트 절단이 맡고, 페이지 수는 제품이 회차 요청 상한의 절반으로 다시 줄인다(아래 예시의 요청 상한 64면 32페이지). 쓰기(되돌릴 수 있는 상태 변경)는 기본으로 끈다.
 
 탐색 경계·브라우저 샌드박스를 띄운 설치는 `target_policy.exploration` 블록을 넣는다([탐색 경계·브라우저 샌드박스](#탐색-경계브라우저-샌드박스설치-조직이-켬)). 없으면 탐색은 `NOT_RUN`이고 E② 정적 크롤만 쓴다.
 
@@ -81,10 +81,10 @@ OpenRouter는 운영자가 `openrouter_manifest`에 [기존 보호 승인 JSON �
   "max_requests": 64,
   "workflow": {
     "format": "abc2lab.workbench-flow/v1",
-    "max_pages": 8,
-    "max_endpoints": 32,
+    "max_pages": 256,
+    "max_endpoints": 256,
     "max_response_bytes": 2097152,
-    "allow_reversible_writes": true
+    "allow_reversible_writes": false
   }
 }
 ```
