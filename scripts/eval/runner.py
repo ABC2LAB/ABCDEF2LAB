@@ -460,11 +460,10 @@ class _EngineEndWatch:
             return None, "engine_task_status_invalid"
         return {name: view[name] for name in END_SIGNAL_FIELDS}, None
 
-    def _background_read(self, results: queue.Queue) -> None:
+    def _background_read(self) -> None:
         view, error = self._read()
-        # 끝 상태 시각은 읽기가 끝난 때다(거둔 때가 아니다). 결과는 띄울 때의 큐에 넣는다: record()가 포기한 읽기의 늦은
-        # 결과는 버린 큐로 가서 새 읽기와 섞이지 않는다.
-        results.put((view, error, _stamp(self.clock), round(self.clock.monotonic() - self.started, 3)))
+        # 끝 상태 시각은 읽기가 끝난 때다(거둔 때가 아니다).
+        self._results.put((view, error, _stamp(self.clock), round(self.clock.monotonic() - self.started, 3)))
 
     def _collect(self, wait: float | None) -> bool:
         """끝난 읽기 하나를 거둔다. wait가 None이면 기다리지 않는다. 거뒀으면 True."""
@@ -486,18 +485,15 @@ class _EngineEndWatch:
         if not self._inflight:
             self._inflight = True
             try:
-                results = self._results
-                self.ports.background(lambda: self._background_read(results))
+                self.ports.background(self._background_read)
             except Exception:
                 self._inflight = False
                 self.failures, self.last_error = self.failures + 1, "engine_task_status_failed"
 
     def record(self) -> dict:
         # 창이 끝난 뒤(봉인·drain 뒤)라 여기서 기다려도 예산 종료에는 영향이 없다. 진행 중인 창 읽기는 읽기 시한만큼만
-        # 기다리고, 그래도 안 끝나면 실패로 센다(늦게 온 결과는 버린다).
+        # 기다리고, 그래도 안 끝나면 실패로 센다. 늦게 온 결과는 이 뒤로 거두는 곳이 없어 남지 않는다.
         if self._inflight and not self._collect(self.wait_seconds):
-            self._inflight = False
-            self._results = queue.Queue()
             self.failures, self.last_error = self.failures + 1, "engine_task_status_pending"
         view, error = self._read()
         final = None if view is None else dict(view, read_at=_stamp(self.clock))

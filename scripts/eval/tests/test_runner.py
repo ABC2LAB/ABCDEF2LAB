@@ -2936,6 +2936,45 @@ class TestEngineEndSignal(unittest.TestCase):
         self.assertIsNone(end["first_terminal"])  # 시한 밖에서 온 끝 상태는 남기지 않는다
         self.assertEqual((end["final"]["status"], end["final_error"]), ("running", None))
 
+    def test_window_read_finishing_after_the_window_is_waited_for(self):
+        # 창 끝에 진행 중이던 읽기가 읽기 시한 안에 끝나면 기다렸다가 거둔다(그 읽기의 끝 상태도 남는다).
+        gate = threading.Event()
+
+        def setup(ports, meter, clock):
+            def read(task_id):
+                gate.wait(5)
+                return task_view("done", completed_at="2026-11-16T00:00:03Z")
+            ports.task_status = read
+            ports.background = lambda work: threading.Thread(target=work, daemon=True).start()
+            seal = ports.seal
+
+            def seal_then_release_later(container_id):
+                threading.Timer(0.3, gate.set).start()
+                return seal(container_id)
+            ports.seal = seal_then_release_later
+
+        spec = dataclasses.replace(make_spec(), task_status_wait_seconds=3)
+        try:
+            result, _, _, evidence = run(setup, spec=spec)
+        finally:
+            gate.set()
+        end = evidence.files["engine-end.json"]
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertEqual((end["window_reads"], end["window_read_failures"], end["first_terminal"]["status"]), (1, 0, "done"))
+
+    def test_background_start_failure_is_counted(self):
+        def setup(ports, meter, clock):
+            def refuse(work):
+                raise RuntimeError("can't start new thread /secret")
+            ports.background = refuse
+        result, _, _, evidence = run(setup)
+        end = evidence.files["engine-end.json"]
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertGreater(end["window_read_failures"], 0)
+        self.assertEqual((end["window_reads"], end["window_last_error"]), (0, "engine_task_status_failed"))
+        self.assertEqual(end["final"]["status"], "running")  # 마지막 읽기는 직접 한다
+        self.assertNotIn("secret", json.dumps(end))
+
     def test_unexpected_port_error_gets_a_fixed_code(self):
         def setup(ports, meter, clock):
             ports.task_views = [RuntimeError("socket path /secret leaked")]
