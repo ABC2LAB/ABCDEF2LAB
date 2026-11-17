@@ -53,6 +53,15 @@ SYNTHETIC = {"EVAL_TARGET_NAME": TARGET_NAME, "EVAL_TARGET_IMAGE": "example/targ
              "EVAL_OBS_PATH": "/score", "EVAL_OBS_HOST_PORT": "49190", "EVAL_PATH_KEY_FILE": "/srv/eval/path.key"}
 
 
+def key_mount_safe(mount: dict, source: str) -> bool:
+    """경로 가림 키 마운트의 보안 조건: 그 파일을 읽기 전용 bind로, 호스트에 경로를 만들지 않고(없는 키 파일을 데몬이
+    디렉터리로 만들지 않게) 다른 bind 옵션 없이 붙인다. Compose 판마다 다른 렌더 표현(빈 bind, 명시한 false)은 같게 본다."""
+    bind = mount.get("bind", {})
+    return (mount.get("type") == "bind" and mount.get("source") == source and mount.get("target") == "/run/eval-path-key"
+            and mount.get("read_only") is True and isinstance(bind, dict) and set(bind) <= {"create_host_path"}
+            and bind.get("create_host_path", False) is False)
+
+
 def render(files, extra=None):
     docker = shutil.which(os.environ.get("E2_DOCKER_CLI", "docker"))
     if not docker:
@@ -258,8 +267,20 @@ class EvalSplitOverlayTests(unittest.TestCase):
             self.assertIn(f"      - {flag}\n", acceptance)
             self.assertEqual(meter["command"].count(flag), 1)
         mounts = [v for v in meter["volumes"] if v.get("target") == "/run/eval-path-key"]
-        self.assertEqual(mounts, [{"type": "bind", "source": "/srv/eval/path.key", "target": "/run/eval-path-key",
-                                   "read_only": True, "bind": {}}])  # create_host_path: false는 기본값이라 렌더에서 빠진다
+        self.assertEqual(len(mounts), 1)
+        self.assertTrue(key_mount_safe(mounts[0], "/srv/eval/path.key"), mounts[0])
+
+    def test_key_mount_check_accepts_both_compose_renders(self):
+        # Compose 2.40은 기본값인 create_host_path: false를 빼고(`bind: {}`), 5.7.0은 남긴다(#672 리뷰). 둘 다 받고,
+        # 호스트 경로를 만드는 설정·쓰기 가능·다른 원본은 거부한다.
+        base = {"type": "bind", "source": "/k", "target": "/run/eval-path-key", "read_only": True}
+        for bind in ({}, {"create_host_path": False}, None):
+            mount = dict(base) if bind is None else dict(base, bind=bind)
+            self.assertTrue(key_mount_safe(mount, "/k"), mount)
+        for change in ({"bind": {"create_host_path": True}}, {"bind": {"create_host_path": False, "propagation": "rshared"}},
+                       {"read_only": False}, {"source": "/other"}, {"type": "volume"}, {"bind": "x"}):
+            with self.subTest(change=change):
+                self.assertFalse(key_mount_safe(dict(base, **change), "/k"))
         boundary_secrets = {s["source"] if isinstance(s, dict) else s for s in self.split["services"]["explore-init"].get("secrets") or []}
         self.assertIn("explore_path_key", boundary_secrets)
 
