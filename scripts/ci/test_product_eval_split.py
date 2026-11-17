@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts" / "eval"))
 import runner_split  # noqa: E402  러너가 설치 입력·경계 설정에 쓰는 주소(4-7a). overlay와 같아야 한다.
 import runner_split_probe  # noqa: E402  여러 출발점 점검(4-8)이 이 렌더에서 입구를 읽는다.
+import runner_window  # noqa: E402  구간 감시가 이 렌더에서 서비스별 healthcheck 명령을 읽는다.
 PRODUCT_FILES = ("deploy/product/compose.yaml", "deploy/product/compose.acceptance.yaml",
                  "deploy/product/compose.exploration-acceptance.yaml")
 OVERLAY = "deploy/eval/compose.split.yaml"
@@ -261,6 +262,16 @@ class EvalSplitOverlayTests(unittest.TestCase):
         self.assertEqual((ports.mcp, ports.direct, ports.browser_ingress), (("explore-mcp", 8931), ("explore-direct", 3129),
                                                                            ("explore-boundary", 3128)))
         self.assertEqual(ports.cdp, (self.split["services"]["explore-browser"]["networks"]["explore_cdp"]["ipv4_address"], 9222))
+
+
+    def test_window_healthcheck_table_from_this_render(self):
+        # O 회차 구간 감시는 서비스마다 이 healthcheck exec 명령만 허용한다(경계는 NONE이라 없음).
+        actions = runner_window.healthcheck_actions(self.split)
+        self.assertEqual(actions, {
+            "api": "curl --fail --silent http://127.0.0.1:28081/api/product/health",
+            "postgres": "pg_isready -U postgres -d abc2lab",
+            "preparation": "test -S /p/ipc/preparation.sock",
+            "workbench": "curl --fail --silent http://10.252.0.12:8787/api/product/health"})
 
 
 if __name__ == "__main__":

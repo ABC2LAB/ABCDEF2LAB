@@ -15,7 +15,7 @@ from runner_checks import Listener
 from runner_config import REPO_ROOT
 from runner_window import (
     DOCKER_EVENTS_BUFFER, ENGINE_DB_HEALTHCHECK, RUNNER_HELPER_LABEL, BackgroundWatch, HostWatch, WatchSample, WindowError,
-    events_reasons, judge_events, watch_reasons, watch_summary,
+    events_reasons, healthcheck_actions, judge_events, watch_reasons, watch_summary,
 )
 
 NET = {"n" * 64: "engine_net", "t" * 64: "target_net"}
@@ -38,6 +38,88 @@ def event(kind, action, actor, at=START + 1, **attributes):
 
 def judge(events, complete=True, runner=frozenset()):
     return judge_events(events, START, NET, RUN, SEALABLE, HEALTH, runner, complete)
+
+
+class TestHealthcheckActions(unittest.TestCase):
+    def test_cmd_and_cmd_shell_forms(self):
+        rendered = {"services": {
+            "a": {"healthcheck": {"test": ["CMD", "curl", "--fail", "http://x/health"]}},
+            "b": {"healthcheck": {"test": ["CMD-SHELL", 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"']}},
+            "c": {"healthcheck": {"test": ["NONE"]}},
+            "d": {"healthcheck": {"test": ["CMD", "true"], "disable": True}},
+            "e": {"image": "x"},
+            # 인자 없는 CMD: Docker는 `실행 파일 + " " + 인자 이음`이라 끝 공백이 남는다(#663 리뷰, moby daemon/health.go).
+            "f": {"healthcheck": {"test": ["CMD", "true"]}}}}
+        self.assertEqual(healthcheck_actions(rendered), {"a": "curl --fail http://x/health", "b": ENGINE_DB_HEALTHCHECK, "f": "true "})
+
+    def test_unknown_shapes_are_refused(self):
+        for test in (["CMD"], ["CMD-SHELL", "a", "b"], ["BOGUS", "x"], [], "curl x", ["CMD", 1]):
+            with self.subTest(test=test), self.assertRaises(WindowError):
+                healthcheck_actions({"services": {"a": {"healthcheck": {"test": test}}}})
+        for rendered in (None, {}, {"services": []}):
+            with self.subTest(rendered=rendered), self.assertRaises(WindowError):
+                healthcheck_actions(rendered)
+
+
+class TestPerServiceHealthchecks(unittest.TestCase):
+    """탐색 분리 배치 O: 제품 서비스마다 healthcheck 명령이 다르다. 표의 명령만 그 서비스에 허용한다."""
+
+    PREP, PG = "p" * 64, "q" * 64
+    RUN2 = dict(RUN, **{"p" * 64: "preparation", "q" * 64: "postgres"})
+    CHECKS = {"preparation": "test -S /p/ipc/preparation.sock", "postgres": "pg_isready -U postgres -d abc2lab"}
+
+    def judge(self, events, checks=None):
+        return judge_events(events, START, NET, self.RUN2, SEALABLE, frozenset(), frozenset(), True,
+                            healthchecks=self.CHECKS if checks is None else checks)
+
+    def lifecycle(self, cid, command, exec_id):
+        return [event("container", "exec_create: " + command, cid, execID=exec_id),
+                event("container", "exec_start: " + command, cid, execID=exec_id),
+                event("container", "exec_die", cid, execID=exec_id, exitCode="0"),
+                event("container", "health_status: healthy", cid)]
+
+    def test_declared_commands_pass(self):
+        events = self.lifecycle(self.PREP, self.CHECKS["preparation"], "x1") + self.lifecycle(self.PG, self.CHECKS["postgres"], "x2")
+        self.assertEqual(self.judge(events)["boundary_events"], [])
+
+    def test_other_commands_or_services_are_violations(self):
+        cases = {
+            "swapped_command": self.lifecycle(self.PREP, self.CHECKS["postgres"], "x1")[:1],
+            "shell_on_preparation": [event("container", "exec_create: /bin/sh -c id", self.PREP, execID="x9")],
+            "engine_db_default_not_allowed": [event("container", "exec_create: " + ENGINE_DB_HEALTHCHECK, IDS["engine-db"], execID="x3")],
+            "unhealthy": [event("container", "health_status: unhealthy", self.PG)],
+            "die_of_unknown_exec": [event("container", "exec_die", self.PREP, execID="zz", exitCode="0")],
+        }
+        for name, events in cases.items():
+            with self.subTest(case=name):
+                self.assertTrue(self.judge(events)["boundary_events"])
+
+    def test_lookback_exec_ids_follow_the_table(self):
+        before = START - 5
+        created = [event("container", "exec_create: " + self.CHECKS["postgres"], self.PG, at=before, execID="L1"),
+                   event("container", "exec_start: " + self.CHECKS["postgres"], self.PG, at=before, execID="L1")]
+        die = [event("container", "exec_die", self.PG, execID="L1", exitCode="0")]
+        self.assertEqual(self.judge(created + die)["boundary_events"], [])
+        wrong = [event("container", "exec_create: id", self.PG, at=before, execID="L2")]
+        self.assertTrue(self.judge(wrong + [event("container", "exec_die", self.PG, execID="L2", exitCode="0")])["boundary_events"])
+
+    def test_single_executable_cmd_keeps_the_trailing_space(self):
+        # 리뷰 반례: 인자 없는 CMD의 create/start/die와 lookback exec ID가 끝 공백 문자열로 통과해야 한다.
+        command = healthcheck_actions({"services": {"preparation": {"healthcheck": {"test": ["CMD", "true"]}}}})["preparation"]
+        self.assertEqual(command, "true ")
+        checks = {"preparation": command}
+        before = START - 5
+        events = [event("container", "exec_create: " + command, self.PREP, at=before, execID="t0"),
+                  event("container", "exec_die", self.PREP, execID="t0", exitCode="0")] + self.lifecycle(self.PREP, command, "t1")
+        self.assertEqual(self.judge(events, checks=checks)["boundary_events"], [])
+        # 끝 공백 없는 문자열은 Docker가 내지 않는 동작이다.
+        self.assertTrue(self.judge([event("container", "exec_create: true", self.PREP, execID="t2")], checks=checks)["boundary_events"])
+
+    def test_default_keeps_the_engine_db_rule(self):
+        events = self.lifecycle(IDS["engine-db"], ENGINE_DB_HEALTHCHECK, "d1")
+        self.assertEqual(judge_events(events, START, NET, RUN, SEALABLE, HEALTH, frozenset(), True)["boundary_events"], [])
+        with self.assertRaises(WindowError):
+            self.judge([], checks={"preparation": ""})
 
 
 class TestRunnerHelperAndStop(unittest.TestCase):
