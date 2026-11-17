@@ -10,7 +10,7 @@
 {"version":"diagnosis-api.v2","owner_context":"주체 문맥의 SHA-256","page":{"runs":[{"id":"prep-…","revision":7,"display_name":"새 점검","state":"running","phase":"execution","task_id":"42","started":true,"drain_complete":false,"result_ready":false,"report_available":false,"approval_status":"not_revalidated","action_required":true}],"snapshot":"목록 snapshot의 SHA-256","limit":25,"more":false}}
 ```
 
-정렬은 `preparing`·`running`·`stopping` 회차를 먼저, 같은 그룹은 Job ID 문자열 내림차순이다. **시각순이 아니다.** 현재 준비 Job 저널은 생성·시작·종료 시각을 저장하지 않으므로 이 API는 그 값을 만들지 않는다. 모든 보존 회차를 페이지로 찾을 수 있고 활성 회차가 우선이다. 시간순 목록은 실제 시각 저장 계약이 추가될 때 확장한다.
+정렬은 `preparing`·`running`·`stopping` 회차를 먼저, 같은 그룹은 Job ID 문자열 내림차순이다. **시각순이 아니다.** 생성 시각 `created_at`은 제공하지 않는다. 시작·마감 확인 시각은 기록된 회차에만 아래 선택 필드로 제공하며, 과거 기록의 누락을 추정하지 않는다. 모든 보존 회차를 페이지로 찾을 수 있고 활성 회차가 우선이다.
 
 페이지는 최대 24KiB JSON이며 필요한 경우 개수 한도보다 먼저 자른다. 공개 HTTP envelope는 이 상한+1KiB 이하다. 보호 IPC는 기존 64KiB frame 상한도 유지한다. 전체 원천 Job 수는 기존 설치 저장소 상한을 따른다.
 
@@ -20,6 +20,7 @@
 
 - `id`, `revision`, `display_name`, `state`, `phase`, 선택 `reason_code`, `task_id`는 실제 보호 Job에서 온다.
 - `started`, `drain_complete`, `result_ready`는 서로 다른 저장 사실이다. unknown을 완료/미실행/취약점 없음으로 바꾸지 않는다.
+- 선택 `started_at`, `finished_at`은 동일 Job에 저장된 최초 시작·drain 확인 시각이다. RFC3339 UTC(`Z`, 소수 초 허용)이며 미확인은 필드 생략이다. null·빈 문자열을 반환하지 않는다. 결과 불명에서도 확인된 시각은 유지한다. 자세한 전환·구 기록·소요 계산·배포 순서는 [시각 계약](diagnosis-run-timing.md)을 따른다.
 - `report_available`은 저장된 `result_ready`와 task 참조가 있다는 뜻이다. 보고서 HTTP·저장소가 지금도 정상이라는 보증이 아니며 실제 GET의 오류를 그대로 표시한다. 실패·취소의 부분 보고서도 가능하다.
 - `approval_status`: `not_revalidated`(목록은 실행 권위를 재검증하지 않음), `expired`, `revoked`, `changed`, `unavailable`. 이 필드는 실행 허가가 아니다. 기존 승인 기록과 달라졌거나 확인할 수 없으면 정상 running으로 표시하지 않는다.
 - `action_required`: 활성 회차의 현재 상태 재확인, 승인 대기, 실패, 결과 불명 또는 승인 상태 문제가 있는 경우다. 활성 회차라도 목록만 보고 자동 재개하지 않는다.

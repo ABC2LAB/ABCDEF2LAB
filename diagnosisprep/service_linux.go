@@ -56,12 +56,14 @@ type executionHandle struct {
 	done   chan struct{}
 }
 type Service struct {
-	mu         sync.Mutex
-	ctx        context.Context
-	cancel     context.CancelFunc
-	backend    Backend
-	journal    *journal
-	jobs       map[string]receipt
+	mu      sync.Mutex
+	ctx     context.Context
+	cancel  context.CancelFunc
+	backend Backend
+	journal *journal
+	jobs    map[string]receipt
+	// 확인 시각 전용의 신뢰된 프로세스 시계다. RPC·환경 변수로 지정하지 않는다.
+	now        func() time.Time
 	executions map[string]executionHandle
 	closed     bool
 	failed     bool
@@ -123,7 +125,7 @@ func newServiceForBootWithCompactionHook(ctx context.Context, root string, backe
 		return nil, err
 	}
 	lifetime, cancel := context.WithCancel(ctx)
-	s := &Service{ctx: lifetime, cancel: cancel, backend: backend, journal: j, jobs: map[string]receipt{}, executions: map[string]executionHandle{}}
+	s := &Service{ctx: lifetime, cancel: cancel, backend: backend, journal: j, jobs: map[string]receipt{}, executions: map[string]executionHandle{}, now: time.Now}
 	fail := func() (*Service, error) { cancel(); _ = j.close(); return nil, errStorage }
 	jobs, err := replayPreparationReceipts(ctx, records, j.snapshotCount)
 	if err != nil {
@@ -522,6 +524,9 @@ func phaseRank(p Phase) int {
 	return -1
 }
 func monotonic(old, next Job) bool {
+	if !monotonicRunTiming(old, next) {
+		return false
+	}
 	if phaseRank(next.Phase) < phaseRank(old.Phase) {
 		return false
 	}
@@ -566,6 +571,18 @@ func (s *Service) publish(id string, u Update) error {
 	next.Job.Started = u.Started
 	next.Job.DrainComplete = u.DrainComplete
 	next.Job.ResultReady = u.ResultReady
+	if !old.Job.Started && u.Started || !old.Job.DrainComplete && u.DrainComplete {
+		now := s.now().UTC()
+		if validRunTime(&now) {
+			if !old.Job.Started && u.Started {
+				next.Job.StartedAt = copyRunTime(&now)
+			}
+			// 벽시계가 역행하면 종료 시각을 만들지 않고 확인된 마감 사실만 보존한다.
+			if !old.Job.DrainComplete && u.DrainComplete && (next.Job.StartedAt == nil || !now.Before(*next.Job.StartedAt)) {
+				next.Job.FinishedAt = copyRunTime(&now)
+			}
+		}
+	}
 	next.Job.ModelUsage = u.ModelUsage
 	next.Job.Outcome, next.Job.ClosingReason, next.Job.IntentOutcomes = "", "", nil
 	next.Job.DiagnosticLogIncomplete = u.DiagnosticLogIncomplete
