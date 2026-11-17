@@ -29,6 +29,7 @@
 - 대상은 http로 등록한다(C22). B도 `http://eval-meter:<포트>`로 대상에 닿고, 계측기가 TLS를 끝내지 않게 하려는 것이다. 제품 경계의 TLS·SPKI 고정은 그대로다.
 - 경계는 평가 upstream 모드에서 승인 대상 전달을 계측기 탐색 입구로만 보낸다. 경계는 제품 배치상 `target` 망에도 있어 본 입구에 망 수준으로 닿을 수 있다. 이 경로의 오용은 경계 원자료↔탐색 입구 대조(P03)로 잡는다.
 - 렌더 시험(`docker compose config` 결과): ① 모든 주소가 평가 대역 안 ② 제품 서비스의 보안 칸(user·cap·read_only·security_opt·seccomp·tmpfs·망 소속·internal)이 제품 렌더와 같음 ③ overlay가 엔진(preparation·api·workbench)·브라우저·MCP에 볼륨을 더하지 않음 ④ 근거 디렉터리는 경계 컨테이너에만.
+- 구현: overlay는 `deploy/eval/compose.split.yaml`(제품 compose·`compose.acceptance.yaml`·`compose.exploration-acceptance.yaml` 위, 평가 대역 10.252.0.0/20), 렌더 시험은 `scripts/ci/test_product_eval_split.py`(①~④와 계측기 입구 묶기·대상 이름 풀이·평가 서비스 망 소속). 경계 근거 디렉터리 마운트와 경계 uid는 §4.1 계약(러너 uid)과 ②(제품 보안 칸 그대로)가 부딪쳐 따로 정한다.
 - 대역 겹침 검사: up 전에 호스트의 기존 Docker 망 subnet과 overlay 대역이 하나라도 겹치면 시작하지 않는다. 같은 머신에 다른 스택이 제품 기본 대역(172.31.247~255.0/24)을 쓰고 있을 수 있다(2026-11-16 실제로 그랬다).
 
 ### 2.1 망 점검(여러 출발점)
