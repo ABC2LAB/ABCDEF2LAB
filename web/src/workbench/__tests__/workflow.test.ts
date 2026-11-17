@@ -94,7 +94,11 @@ it.each([
 const withEndpoints = (n: number): WorkflowSnapshot => ({
   ...snapshot,
   limits: { ...snapshot.limits, max_endpoints: 256 },
-  endpoints: Array.from({ length: n }, (_, i) => ({ ...snapshot.endpoints[0], id: `endpoint-${i}`, path: `/read/${i}` })),
+  endpoints: Array.from({ length: n }, (_, i) => ({
+    ...snapshot.endpoints[0],
+    id: `endpoint-${i}`,
+    path: `/read/${i}`,
+  })),
 });
 it.each([32, 33, 64, 65, 256])("accepts a workflow snapshot with %i endpoints", (n) => {
   expect(parseWorkflow({ workflow: withEndpoints(n) }, job).endpoints).toHaveLength(n);
@@ -223,5 +227,26 @@ it.each([
 ] as const)("terminal URL state %s blocks workflow POST", async (state) => {
   useUrl.setState({ job: { ...job, state } });
   expect(await runWorkflowAction("pause")).toBe(false);
+  expect(apiFetch).not.toHaveBeenCalled();
+});
+
+it("recovered binding cannot create a pause, resume, or selection command", async () => {
+  useUrl.setState({
+    handle: {
+      kind: "recovered",
+      ownerContext: catalog.ownerContext,
+      input: job.input,
+      id: job.id,
+      revision: job.revision,
+      sourceDigest: job.source_digest,
+      bindingLocked: true,
+    },
+    job,
+    verified: true,
+    flow: snapshot,
+    flowVerified: true,
+  });
+  for (const operation of ["pause", "resume", "selection"] as const)
+    expect(await runWorkflowAction(operation, ["endpoint-owned"])).toBe(false);
   expect(apiFetch).not.toHaveBeenCalled();
 });
