@@ -10,6 +10,22 @@ import (
 	"testing"
 )
 
+// openRouterMaxTimeoutSeconds는 manifest timeout_seconds 상한이다(openrouter.go 검사).
+const openRouterMaxTimeoutSeconds = 300
+
+// openRouterByteCapFixture는 바이트 상한 시험용 정책이다. 이 파일의 시험은 수백 KiB~4 MiB 본문을 transport에 넣고
+// 거부 종류(errors.Is ErrOpenRouterPolicy)를 본다. 공용 fixture의 시간 상한(2초)은 http.Client.Timeout이 되는데,
+// -race와 다른 패키지 시험이 겹친 부하에서는 4 MiB 본문 세 개를 처리하는 데만 2초를 넘을 수 있다(2026-11-17 실측:
+// -race 단독 3.0~3.7초/시험, -count=200 부하 실행에서 TestOpenRouterSerializedRequestByteBoundary 14번 실패, DATA RACE 0).
+// 시한이 지나면 net/http가 transport 오류를 글로만 남긴 시간 초과 오류로 바꿔 errors.Is가 깨진다(거부 자체는 정상, 전송 0).
+// 이 시험들의 대상은 바이트 경계이지 시간이 아니므로 시간 상한을 manifest 최댓값으로 둔다.
+func openRouterByteCapFixture(t *testing.T) *OpenRouterPolicy {
+	t.Helper()
+	p := openRouterFixture(t)
+	p.manifest.TimeoutSeconds = openRouterMaxTimeoutSeconds
+	return p
+}
+
 func openRouterTextRequest(t *testing.T, text string) *http.Request {
 	t.Helper()
 	raw, err := json.Marshal(map[string]any{"model": OpenRouterModel, "messages": []map[string]string{{"role": "user", "content": text}}, "max_tokens": 100, "stream": false})
@@ -25,7 +41,7 @@ func openRouterTextRequest(t *testing.T, text string) *http.Request {
 func TestOpenRouterLongContextDoesNotUseTokensAsBytes(t *testing.T) {
 	for _, kind := range []string{"ascii-307289-bytes", "utf8"} {
 		t.Run(kind, func(t *testing.T) {
-			p := openRouterFixture(t)
+			p := openRouterByteCapFixture(t)
 			if p.ValidateCallLimits(100, 262) != nil {
 				t.Fatal("documented context profile rejected")
 			}
@@ -62,7 +78,7 @@ func TestOpenRouterLongContextDoesNotUseTokensAsBytes(t *testing.T) {
 }
 
 func TestOpenRouterSerializedRequestByteBoundary(t *testing.T) {
-	p := openRouterFixture(t)
+	p := openRouterByteCapFixture(t)
 	var sizes []int
 	client := openRouterClient(p, openRouterRT(func(r *http.Request) (*http.Response, error) {
 		raw, err := io.ReadAll(r.Body)
@@ -107,7 +123,7 @@ func (b *openRouterCountingBody) Read(p []byte) (int, error) {
 }
 func (b *openRouterCountingBody) Close() error { b.closed = true; return nil }
 func TestOpenRouterRawRequestReadIsBounded(t *testing.T) {
-	p := openRouterFixture(t)
+	p := openRouterByteCapFixture(t)
 	hits := 0
 	client := openRouterClient(p, openRouterRT(func(*http.Request) (*http.Response, error) { hits++; return openRouterResponse(openRouterReply), nil }))
 	req := openRouterTextRequest(t, strings.Repeat(" ", openRouterRequestLimit+64))
@@ -124,7 +140,7 @@ func TestOpenRouterRawRequestReadIsBounded(t *testing.T) {
 	}
 }
 func TestOpenRouterSerializationExpansionIsBounded(t *testing.T) {
-	p := openRouterFixture(t)
+	p := openRouterByteCapFixture(t)
 	hits := 0
 	client := openRouterClient(p, openRouterRT(func(*http.Request) (*http.Response, error) { hits++; return openRouterResponse(openRouterReply), nil }))
 	raw := `{"model":"` + OpenRouterModel + `","messages":[{"role":"user","content":"` + strings.Repeat("&", openRouterRequestLimit/4) + `"}],"max_tokens":100}`
@@ -141,7 +157,7 @@ func TestOpenRouterSerializationExpansionIsBounded(t *testing.T) {
 	}
 }
 func TestOpenRouterRequestByteCapDoesNotRelaxReportedTokens(t *testing.T) {
-	p := openRouterFixture(t)
+	p := openRouterByteCapFixture(t)
 	hits := 0
 	reply := strings.Replace(openRouterReply, `"prompt_tokens":10`, `"prompt_tokens":262145`, 1)
 	client := openRouterClient(p, openRouterRT(func(*http.Request) (*http.Response, error) { hits++; return openRouterResponse(reply), nil }))
@@ -153,7 +169,7 @@ func TestOpenRouterRequestByteCapDoesNotRelaxReportedTokens(t *testing.T) {
 
 func TestOpenRouterRawByteCapChecksCompleteJSONWithPadding(t *testing.T) {
 	for _, extra := range []int{0, 1} {
-		p := openRouterFixture(t)
+		p := openRouterByteCapFixture(t)
 		hits := 0
 		client := openRouterClient(p, openRouterRT(func(*http.Request) (*http.Response, error) { hits++; return openRouterResponse(openRouterReply), nil }))
 		req := openRouterRequest()
