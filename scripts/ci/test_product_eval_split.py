@@ -31,7 +31,10 @@ NETWORK_MAP = {"frontend": ("172.31.250.0/24", "10.252.0.0/24"), "control": ("17
 # 평가 배치에서 띄우지 않는 수용시험 서비스(대상은 평가 target, 모델은 제품 자체 OpenRouter 경로).
 UNUSED = {"juice-shop", "target-front", "target-front-b", "synthetic-model"}
 # overlay가 더하는 서비스. 제품 서비스가 아니라 ②의 대상이 아니다.
-EVAL_SERVICES = {"target", "eval-meter", "eval-obs"}
+EVAL_SERVICES = {"target", "eval-meter", "eval-obs", "explore-evidence-init"}
+# 경계 원자료 볼륨(계약 §4.1, 2026-11-17 결정 B). 경계와 그 디렉터리를 만드는 init에만 붙는다. 러너 도우미는 compose 밖에서
+# 봉인·정지 뒤에 읽기 전용으로 붙인다.
+BOUNDARY_EVIDENCE_VOLUME = "explore-evidence"
 SECURITY_FIELDS = ("user", "cap_add", "cap_drop", "read_only", "security_opt", "tmpfs", "network_mode", "privileged",
                    "pid", "ipc", "group_add", "devices", "sysctls", "ulimits")
 NO_EXTRA_VOLUMES = ("preparation", "api", "workbench", "explore-browser", "explore-mcp")
@@ -160,6 +163,30 @@ class EvalSplitOverlayTests(unittest.TestCase):
         holders = {name for name, service in self.split["services"].items()
                    for volume in service.get("volumes") or [] if volume.get("source") == EVIDENCE_DIR}
         self.assertEqual(holders, {"eval-meter", "eval-obs"})
+
+    def test_boundary_evidence_volume_only_on_boundary(self):
+        # ④ 경계 원자료 볼륨은 경계와 그 init에만 붙는다. 엔진·브라우저·MCP·계측기에는 없다.
+        holders = {name for name, service in self.split["services"].items()
+                   for volume in service.get("volumes") or [] if volume.get("source") == BOUNDARY_EVIDENCE_VOLUME}
+        self.assertEqual(holders, {"explore-boundary", "explore-evidence-init"})
+        mounts = {name: [(v["target"], v.get("read_only")) for v in service.get("volumes") or []
+                         if v.get("source") == BOUNDARY_EVIDENCE_VOLUME] for name, service in self.split["services"].items()}
+        self.assertEqual(mounts["explore-boundary"], [("/evidence", None)])
+        # 경계는 init이 디렉터리를 만든 뒤에 뜬다.
+        self.assertEqual(self.split["services"]["explore-boundary"]["depends_on"]["explore-evidence-init"]["condition"],
+                         "service_completed_successfully")
+
+    def test_evidence_init_is_minimal_and_matches_boundary_uid(self):
+        init = self.split["services"]["explore-evidence-init"]
+        product_boundary_user = self.product["services"]["explore-boundary"]["user"]
+        uid, gid = product_boundary_user.split(":")
+        # 경계 uid 소유 0700 디렉터리 하나만 만든다(경계 uid는 제품 렌더에서 읽은 값과 같아야 한다).
+        self.assertEqual(init["entrypoint"], ["install", "-d", "-o", uid, "-g", uid, "-m", "0700", "/e/run"])
+        self.assertEqual(self.split["services"]["explore-boundary"]["user"], product_boundary_user)
+        self.assertEqual((init["network_mode"], init["read_only"], init["cap_drop"], sorted(init["cap_add"]), init["security_opt"]),
+                         ("none", True, ["ALL"], ["CHOWN", "FOWNER"], ["no-new-privileges:true"]))
+        self.assertEqual(init["image"], self.product["services"]["explore-init"]["image"])
+        self.assertEqual([v["source"] for v in init["volumes"]], [BOUNDARY_EVIDENCE_VOLUME])
 
     def test_meter_ingresses_and_target_name(self):
         meter = self.split["services"]["eval-meter"]
