@@ -126,6 +126,14 @@ class TestBuildAndLoad(V3Fixture):
         with self.assertRaisesRegex(PreservationRecordError, "preservation_raw_digest_mismatch"):
             self.load(directory, meter)
 
+    def test_signed_but_malformed_v3_is_rejected_on_load(self):
+        # 서명 키를 가진 쪽이 잘못된 모양을 서명해도 읽기에서 모양 검사를 다시 한다(B에 제품 블록).
+        directory, meter, payload = self.fixture_v3("baseline")
+        bad = dict(payload, product=product())
+        self.write(directory, NAME, sign_run_record(bad, RUNNER_KEY))
+        with self.assertRaisesRegex(PreservationRecordError, "preservation_product_invalid"):
+            self.load(directory, meter)
+
     def test_boundary_required_only_for_ours(self):
         with self.assertRaisesRegex(PreservationRecordError, "preservation_boundary_missing"):
             self.fixture_v3("ours", boundary=None)
@@ -162,6 +170,8 @@ class TestShape(V3Fixture):
     def test_common_fields_strict(self):
         self.reject(self.b, "preservation_conditions_invalid", lambda r: r["common"].pop("goal_common_sha256"))
         self.reject(self.b, "preservation_conditions_invalid", lambda r: r["common"].__setitem__("mcp_raw_tools_sha256", None))
+        self.reject(self.b, "preservation_conditions_invalid", lambda r: r["common"].__setitem__("goal_common_sha256", None))
+        self.reject(self.o, "preservation_conditions_invalid", lambda r: r["common"].__setitem__("goal_common_sha256", "x" * 64))
         self.reject(self.b, "preservation_conditions_invalid", lambda r: r["common"].__setitem__("request_budget", True))
         self.reject(self.b, "preservation_record_invalid", lambda r: r.__setitem__("conditions", {}))  # v2 칸이 섞이면 거부
 
