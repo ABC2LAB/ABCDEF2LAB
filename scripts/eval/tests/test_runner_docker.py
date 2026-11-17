@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
 import sys
+import tarfile
 import tempfile
 import threading
 import unittest
@@ -341,6 +343,104 @@ class TestProbeCall(unittest.TestCase):
 def statfs_report(*rows):
     return json.dumps({"results": [dict(zip(("path", "mount_id", "size_bytes", "used_bytes", "available_bytes"), row))
                                    for row in rows]}).encode()
+
+
+def tar_bytes(members):
+    """(이름, 내용 또는 종류) 목록으로 tar를 만든다. 종류: ("symlink", 대상) 또는 ("dir", None)."""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        for name, value in members:
+            info = tarfile.TarInfo(name)
+            if isinstance(value, tuple):
+                kind, target = value
+                info.type = tarfile.SYMTYPE if kind == "symlink" else tarfile.DIRTYPE
+                if target:
+                    info.linkname = target
+                archive.addfile(info)
+            else:
+                info.size = len(value)
+                archive.addfile(info, io.BytesIO(value))
+    return buffer.getvalue()
+
+
+class TestHelperCopy(unittest.TestCase):
+    """경계 원자료 꺼내기 도우미(계약 §4.1 결정 B): 망 없이·읽기 전용으로 볼륨을 붙여 정해진 파일만 복사한다."""
+
+    NAMES = ("boundary-records.jsonl", "boundary-sealed.json")
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.cidfile = Path(self._tmp.name) / "boundary-copy.cid"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def bounded(self, stdout, returncode=0, cid=b"b" * 64):
+        calls = []
+
+        def run(args, env, timeout, max_stdout):
+            calls.append((list(args), timeout, max_stdout))
+            Path(args[args.index("--cidfile") + 1]).write_bytes(cid)
+            return runner_docker.BoundedResult(returncode, stdout, b"")
+        run.calls = calls
+        return run
+
+    def copy(self, bounded, **changes):
+        options = dict(image=IMAGE_ID, volume="abc2lab-eval-ours-1_explore-evidence", directory="run", names=self.NAMES,
+                       role="boundary-evidence", uid=1001, gid=1001, cidfile=self.cidfile, max_bytes=1024, timeout=30)
+        options.update(changes)
+        return Docker(FakeExecutor(), {}, 1, bounded=bounded).copy_volume_files(**options)
+
+    def test_copies_named_files_without_network_or_write(self):
+        fake = self.bounded(tar_bytes([("boundary-records.jsonl", b'{"seq":1}\n'), ("boundary-sealed.json", b"{}")]))
+        files, container_id = self.copy(fake)
+        self.assertEqual(files, {"boundary-records.jsonl": b'{"seq":1}\n', "boundary-sealed.json": b"{}"})
+        self.assertEqual(container_id, "b" * 64)
+        args, timeout, max_stdout = fake.calls[0]
+        self.assertEqual(args, ["run", "--rm", "--pull", "never", "--log-driver", "none", "--cidfile", str(self.cidfile),
+                                "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+                                "--user", "1001:1001", "--label", "abc2lab.eval.runner-helper=boundary-evidence",
+                                "--mount", "type=volume,source=abc2lab-eval-ours-1_explore-evidence,target=/e,readonly",
+                                "--entrypoint", "tar", "--", IMAGE_ID, "-C", "/e/run", "-cf", "-", "--", *self.NAMES])
+        self.assertEqual(timeout, 30)
+        self.assertGreaterEqual(max_stdout, 2 * 1024)
+
+    def test_output_must_be_exactly_the_named_regular_files(self):
+        ok = [("boundary-records.jsonl", b"x"), ("boundary-sealed.json", b"{}")]
+        cases = {
+            "missing": ok[:1],
+            "extra": ok + [("other.json", b"{}")],
+            "duplicate": ok + [("boundary-sealed.json", b"{}")],
+            "symlink": [("boundary-records.jsonl", ("symlink", "/etc/passwd")), ok[1]],
+            "directory": [("boundary-records.jsonl", ("dir", None)), ok[1]],
+            "too_large": [("boundary-records.jsonl", b"x" * 1025), ok[1]],
+            "path_name": [("run/boundary-records.jsonl", b"x"), ok[1]],
+        }
+        for name, members in cases.items():
+            with self.subTest(case=name), self.assertRaises(DockerError) as caught:
+                self.copy(self.bounded(tar_bytes(members)))
+            self.assertEqual(str(caught.exception), "docker_helper_output_invalid")
+        with self.assertRaises(DockerError) as caught:
+            self.copy(self.bounded(b"not a tar"))
+        self.assertEqual(str(caught.exception), "docker_helper_output_invalid")
+        # 상한과 같은 크기는 받는다(경계 하나 아래).
+        files, _ = self.copy(self.bounded(tar_bytes([("boundary-records.jsonl", b"x" * 1024), ok[1]])))
+        self.assertEqual(len(files["boundary-records.jsonl"]), 1024)
+
+    def test_failures_and_bad_inputs_use_fixed_codes(self):
+        with self.assertRaises(DockerError) as caught:
+            self.copy(self.bounded(b"", returncode=2))
+        self.assertEqual(str(caught.exception), "docker_helper_copy_failed")
+        with self.assertRaises(DockerError) as caught:
+            self.copy(self.bounded(tar_bytes([(n, b"x") for n in self.NAMES]), cid=b"short"))
+        self.assertEqual(str(caught.exception), "docker_probe_cid_invalid")
+        for change in ({"image": "abc2lab-product:local"}, {"volume": "../x"}, {"volume": "Vol"}, {"directory": "../run"},
+                       {"directory": "a/b"}, {"names": ()}, {"names": ("a", "a")}, {"names": ("../x",)}, {"names": ("a/b",)},
+                       {"role": "Boundary"}, {"uid": -1}, {"gid": "1001"}, {"max_bytes": 0}):
+            fake = self.bounded(b"")
+            with self.subTest(change=change), self.assertRaises(DockerError):
+                self.copy(fake, **change)
+            self.assertEqual(fake.calls, [])
 
 
 class TestStatfs(unittest.TestCase):
