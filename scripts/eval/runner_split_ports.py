@@ -26,6 +26,7 @@ from runner_checks import (Binding, ExpectedTopology, Listener, NetworkExpectati
                            parse_network, planned_subnets, read_host_listeners)
 from runner_config import OBSERVER_OPAQUE, RunDirectory, RunnerConfig
 from runner_evidence import EvidenceError, GatewayFiles, read_private_json
+from runner_llm import PRODUCT_VERIFY_ROLE
 from runner_docker import Docker
 from runner_engine import AdminSecret
 from runner_product import ModelKey, ProductDriver
@@ -314,7 +315,8 @@ class DockerSplitPorts:
                                       timeout=self.config.run["llm_verify_timeout_seconds"])
 
     def llm_verified(self) -> dict | None:
-        return GatewayFiles(self.directory.llm).verified()
+        # generation-verify 역할이 쓴 표식만 받는다(게이트웨이 표식과 모양이 같아 역할로 가른다, cmd/eval-meter/genverify.go).
+        return GatewayFiles(self.directory.llm).verified(role=PRODUCT_VERIFY_ROLE)
 
     # ── 제품 구동 ────────────────────────────────────────────────────────────────────────────────────────────
     def prepare_round(self, dns_token: str) -> dict:

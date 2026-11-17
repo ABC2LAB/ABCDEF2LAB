@@ -500,6 +500,26 @@ class TestDocker(PortsCase):
         self.assertEqual((env["EVAL_LLM_API_KEY"], stdin, timeout),
                          ("sk-or-v1-secret", b'{"seq":1}\n', self.config.run["llm_verify_timeout_seconds"]))
 
+    def test_llm_verified_reads_the_generation_verify_marker_from_the_llm_dir(self):
+        # #674 리뷰 P1: 실제 reader(GatewayFiles)로 generation-verify 표식을 읽는다. 게이트웨이 표식은 O 자리에서 받지 않는다.
+        import json as _json
+        from runner_evidence import EvidenceError
+        self.directory.llm.mkdir(mode=0o700, exist_ok=True)
+        marker = self.directory.llm / "llm-verified.json"
+        self.assertIsNone(self.ports.llm_verified())  # 아직 없음
+        for role, ok in (("generation-verify", True), ("llm-gateway", False)):
+            with self.subTest(role=role):
+                if marker.exists():
+                    marker.unlink()
+                fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                os.write(fd, _json.dumps({"role": role, "backend": "api"}).encode())
+                os.close(fd)
+                if ok:
+                    self.assertEqual(self.ports.llm_verified()["role"], "generation-verify")
+                else:
+                    with self.assertRaises(EvidenceError):
+                        self.ports.llm_verified()
+
     def test_compose_seal_and_stop(self):
         self.ports.up()
         self.ports.down()
