@@ -42,7 +42,7 @@ import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
 import { InspHead, InspOpenButton, Isec, Kv, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
-import { ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "./approvals";
+import { ApprovalFacts, ApprovalRequestCode, RecoveredApprovalNotice, useRequestApprovals } from "./approvals";
 import { DiagnosticEntrySections } from "./DiagnosticEntrySections";
 import { ReportReadError } from "./runRows";
 import { TaskActivity } from "./TaskActivity";
@@ -320,6 +320,7 @@ export function UrlLiveLive() {
             </div>
           ) : null}
           {done}
+          {a.pending.length ? <RecoveredApprovalNotice /> : null}
           {a.pending.map((r) => (
             <div className={s.decide} key={r.id} id="lDecide">
               <div className={s.dm}>

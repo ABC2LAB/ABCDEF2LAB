@@ -1186,7 +1186,30 @@ describe("점검 진행", () => {
         drain_complete: false,
         closure_failed: false,
       },
-      approvals: [],
+      approvals: [1, 2].map((id) => ({
+        id: `ap-${id}`,
+        task_id: 42,
+        run_ref: `run-${job.id}`,
+        intent_id: id,
+        call_ref: `call-${id}`,
+        attempt_id: `attempt-${id}`,
+        policy_revision: "rev-1",
+        account_ref: "a",
+        session_ref: "s",
+        request_sha256: "d".repeat(64),
+        method: "PUT",
+        target_origin: "https://target.example",
+        path: `/api/users/${id}`,
+        input_preview: {},
+        body_bytes: 19,
+        created_at: "2026-11-11T01:02:03Z",
+        expires_at: "2099-01-01T00:00:00Z",
+        state: "pending" as const,
+        consumed: false,
+        execution_state: "not_sent" as const,
+        live: true,
+        can_decide: true,
+      })),
     });
     const f: WorkflowSnapshot = {
       ...flow,
@@ -1223,5 +1246,24 @@ describe("점검 진행", () => {
     expect(within(insp).getByRole("heading", { level: 3, name: "전송 통제" })).toBeInTheDocument();
     // 탐색 현황: 방문 · 발견한 API · 심화 선택 (서버 수 그대로)
     expect(within(insp).getByText("탐색 현황").parentElement).toHaveTextContent("방문 1발견한 API 3심화 선택 1");
+    await screen.findAllByRole("button", { name: "승인하고 보내기" });
+    expect(screen.queryByText(/요청 승인은 처음 시작한 화면에서만/)).toBeNull();
+    act(() =>
+      useUrl.setState({
+        handle: {
+          kind: "recovered",
+          ownerContext: catalog.ownerContext,
+          input: job.input,
+          id: job.id,
+          revision: job.revision,
+          sourceDigest: job.source_digest,
+          bindingLocked: true,
+        },
+      }),
+    );
+    expect(screen.getAllByText(/요청 승인은 처음 시작한 화면에서만/)).toHaveLength(1);
+    const approvals = screen.getAllByRole("button", { name: "승인하고 보내기" });
+    expect(approvals).toHaveLength(2);
+    for (const button of approvals) expect(button).toBeDisabled();
   });
 });
