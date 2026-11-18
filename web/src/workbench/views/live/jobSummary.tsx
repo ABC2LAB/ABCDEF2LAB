@@ -452,13 +452,7 @@ export function JobSummary({
           <p>{nowText ?? stageText}</p>
         </Isec>
       ) : null}
-      {handle.kind === "recovered" ? (
-        <Isec>
-          <p className={s.help}>
-            서버에서 다시 찾은 점검입니다. 상태·활동·보고서를 읽을 수 있습니다. 새 진단은 ‘새 점검’에서 별도로 만드세요.
-          </p>
-        </Isec>
-      ) : null}
+      {/* 서버에서 다시 찾은 점검 안내 글은 뺐다(사용자 11/18) */}
       <Isec t="점검 정보">
         <Kv rows={rows} />
       </Isec>
