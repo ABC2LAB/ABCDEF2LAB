@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -72,6 +73,22 @@ func TestDiagnosticCandidatePostgres(t *testing.T) {
 	if err != nil || len(list) != 205 {
 		t.Fatalf("pagination missing %d %v", len(list), err)
 	}
+	hidden := list[len(list)-LiveDiagnosticCandidateLimit-1]
+	if _, err := d.Exec(`UPDATE exploration_nodes SET payload=payload #- '{diagnostic_candidate_v1,evidence_digest}' WHERE id=$1`, hidden.ID); err != nil {
+		t.Fatal(err)
+	}
+	live, truncated, err := ListLiveDiagnosticCandidates(t.Context(), d, task.ExplorationID, task.ID, c.RunRef)
+	if err != nil || !truncated || len(live) != LiveDiagnosticCandidateLimit {
+		t.Fatalf("hidden candidate affected live page: returned=%d truncated=%v err=%v", len(live), truncated, err)
+	}
+	for i, row := range live {
+		if want := list[len(list)-i-1].ID; row.ID != want {
+			t.Fatalf("live row %d id=%d, want %d", i, row.ID, want)
+		}
+	}
+	if _, err := d.Exec(`UPDATE exploration_nodes SET payload=jsonb_set(payload,'{diagnostic_candidate_v1,evidence_digest}',to_jsonb($2::text)) WHERE id=$1`, hidden.ID, hidden.EvidenceDigest); err != nil {
+		t.Fatal(err)
+	}
 	other, err := s.ListDiagnosticCandidates(task.ID+999, "", MaxDiagnosticCandidates+1)
 	if err != nil || len(other) != 0 {
 		t.Fatalf("cross task leak %v", err)
@@ -131,6 +148,72 @@ func TestDiagnosticCandidatePostgres(t *testing.T) {
 	raw, _ := json.Marshal(list[0])
 	if len(raw) == 0 {
 		t.Fatal("missing detail")
+	}
+}
+
+func TestLiveDiagnosticCandidatesPostgresByteBudget(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	ctx := t.Context()
+	task, err := d.CreateTask("synthetic live candidate byte budget", "", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec("DELETE FROM tasks WHERE id=$1", task.ID)
+	defer d.Exec("DELETE FROM explorations WHERE id=$1", task.ExplorationID)
+	store := d.Exploration(task.ExplorationID)
+	intent, err := store.AddIntent(map[string]any{"summary": "synthetic"}, 5, nil, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const count = 34
+	var ids [count]int64
+	var sizes [count]int
+	escapedOutput := strings.Repeat(`\"`, 130000)
+	for i := range ids {
+		c := syntheticDiagnosticCandidate(task.ID, intent, fmt.Sprintf("live-%d", i))
+		c.Evidence = strings.Replace(c.Evidence, "synthetic observed response", escapedOutput, 1)
+		c.EvidenceDigest = DiagnosticEvidenceDigest(c.Evidence)
+		id, err := store.RecordDiagnosticCandidate(ctx, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[i] = id
+		if err := d.QueryRowContext(ctx, `SELECT octet_length(payload::text) FROM exploration_nodes WHERE id=$1`, id).Scan(&sizes[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var want, total int
+	for i := count - 1; i >= 0; i-- {
+		if total+sizes[i] > diagnosticCandidateReadBytes {
+			break
+		}
+		total += sizes[i]
+		want++
+	}
+	if want == 0 || want == count {
+		t.Fatalf("fixture must cross the byte budget after at least one row: returned=%d, stored=%d", want, count)
+	}
+	read := func() ([]DiagnosticCandidate, bool, error) {
+		return ListLiveDiagnosticCandidates(ctx, d, task.ExplorationID, task.ID, "synthetic-run")
+	}
+	rows, truncated, err := read()
+	if err != nil || !truncated || len(rows) != want {
+		t.Fatalf("byte budget: returned=%d (want %d), truncated=%v, err=%v", len(rows), want, truncated, err)
+	}
+	for i, row := range rows {
+		if wantID := ids[count-i-1]; row.ID != wantID {
+			t.Fatalf("live row %d id=%d, want %d", i, row.ID, wantID)
+		}
+	}
+	if _, err := d.ExecContext(ctx, `UPDATE exploration_nodes SET payload=payload #- '{diagnostic_candidate_v1,evidence_digest}' WHERE id=$1`, ids[count-1]); err != nil {
+		t.Fatal(err)
+	}
+	if rows, _, err := read(); len(rows) != 0 || !errors.Is(err, ErrDiagnosticCandidate) {
+		t.Fatalf("visible digest corruption: returned=%d err=%v", len(rows), err)
 	}
 }
 
