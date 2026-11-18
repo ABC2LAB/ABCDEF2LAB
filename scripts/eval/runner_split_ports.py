@@ -293,17 +293,19 @@ class DockerSplitPorts:
                                                  self.directory.run / f"{role}.cid", max_bytes, self.timeout, subpath=subpath)
         return files
 
-    def product_files(self, draft_id: str) -> dict:
-        """제품 블록 원본 SHA(결정안 §3.3). 내용은 메모리에서 지문만 뜨고 남기지 않는다(설치 입력에 비밀 핀이 있다).
-        회차 실행 조건은 runs/<초안 ID>/state/에 있다: 초안(diagnosisprep Job) ID가 실행 디렉터리 이름이고, E② 상태
-        디렉터리가 그 아래 state다(url_preparation_linux.go). 제품을 멈춘 뒤에 부른다."""
+    def product_files(self) -> dict:
+        """제품 블록 설치 파일 넷의 원본 SHA(결정안 §3.3). 내용은 메모리에서 지문만 뜨고 남기지 않는다(설치 입력에 비밀
+        핀이 있다). 제품을 멈춘 뒤에 부른다."""
         config = self._copy("product-state", "config", tuple(name for _, name in PRODUCT_CONFIG_FILES), "product-files",
                             PRODUCT_UID, MAX_PRODUCT_FILE_BYTES)
-        runtime = self._copy("product-state", "runs", (RUNTIME_CONDITIONS_FILE,), "product-run-conditions", PRODUCT_UID,
-                             MAX_PRODUCT_FILE_BYTES, subpath=(draft_id, "state"))
-        digests = {key: hashlib.sha256(config[name]).hexdigest() for key, name in PRODUCT_CONFIG_FILES}
-        digests["runtime_conditions"] = hashlib.sha256(runtime[RUNTIME_CONDITIONS_FILE]).hexdigest()
-        return digests
+        return {key: hashlib.sha256(config[name]).hexdigest() for key, name in PRODUCT_CONFIG_FILES}
+
+    def runtime_conditions(self, draft_id: str) -> bytes:
+        """회차 실행 조건 원본 바이트(runs/<초안 ID>/state/). 초안(diagnosisprep Job) ID가 실행 디렉터리 이름이고, E② 상태
+        디렉터리가 그 아래 state다(url_preparation_linux.go). 진단 실행이 붙은 회차에만 있다(e2_http_factory.go).
+        결속·형식 검사는 회차 흐름이 한다(runner_split_run.checked_runtime_conditions)."""
+        return self._copy("product-state", "runs", (RUNTIME_CONDITIONS_FILE,), "product-run-conditions", PRODUCT_UID,
+                          MAX_PRODUCT_FILE_BYTES, subpath=(draft_id, "state"))[RUNTIME_CONDITIONS_FILE]
 
     def control_policy(self, task_id: str) -> dict:
         return self.driver.control_policy(task_id)

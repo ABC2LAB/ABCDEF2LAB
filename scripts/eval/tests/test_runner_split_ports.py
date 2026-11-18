@@ -151,22 +151,26 @@ class TestRecords(PortsCase):
 
 
 class TestV3Inputs(PortsCase):
-    def test_product_files_hash_config_and_run_conditions_by_draft(self):
+    def test_product_files_hash_config_only(self):
         # 결정안 §3.3 제품 블록 근거. 내용은 지문만 돌려주고 회차 디렉터리에 남기지 않는다(설치 입력에 비밀 핀).
         config = {"installation.json": b"i", "policy.json": b"p", "api-launch.json": b"a", "target-policy.json": b"t"}
         self.docker.copies["product-files"] = config
-        self.docker.copies["product-run-conditions"] = {"runtime-conditions.json": b"r"}
         before = sorted(os.listdir(self.directory.run))
-        got = self.ports.product_files("prep-0a1b")
         sha = lambda data: hashlib.sha256(data).hexdigest()
-        self.assertEqual(got, {"installation": sha(b"i"), "policy": sha(b"p"), "api_launch": sha(b"a"), "target_policy": sha(b"t"),
-                               "runtime_conditions": sha(b"r")})
-        first, second = self.docker.calls
-        self.assertEqual(first[1:7], (self.split.images["product"].id, "eval-r1_product-state", "config",
-                                      ("installation.json", "policy.json", "api-launch.json", "target-policy.json"), "product-files", 1000))
-        self.assertEqual(second[1:7] + second[10:], (self.split.images["product"].id, "eval-r1_product-state", "runs",
-                                                     ("runtime-conditions.json",), "product-run-conditions", 1000, ("prep-0a1b", "state")))
+        self.assertEqual(self.ports.product_files(), {"installation": sha(b"i"), "policy": sha(b"p"), "api_launch": sha(b"a"),
+                                                      "target_policy": sha(b"t")})
+        (call,) = self.docker.calls
+        self.assertEqual(call[1:7], (self.split.images["product"].id, "eval-r1_product-state", "config",
+                                     ("installation.json", "policy.json", "api-launch.json", "target-policy.json"), "product-files", 1000))
+        self.assertEqual(len(call), 10)  # 하위 경로 없음
         self.assertEqual(sorted(os.listdir(self.directory.run)), before)
+
+    def test_runtime_conditions_are_read_below_the_draft_run_directory(self):
+        self.docker.copies["product-run-conditions"] = {"runtime-conditions.json": b"{}\n"}
+        self.assertEqual(self.ports.runtime_conditions("prep-0a1b"), b"{}\n")
+        (call,) = self.docker.calls
+        self.assertEqual(call[1:7] + call[10:], (self.split.images["product"].id, "eval-r1_product-state", "runs",
+                                                 ("runtime-conditions.json",), "product-run-conditions", 1000, ("prep-0a1b", "state")))
 
     def test_control_policy_and_tool_surface_go_to_the_product_and_images(self):
         self.ports.control_policy("42")

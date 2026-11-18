@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import sys
 import unittest
@@ -21,8 +23,15 @@ IMAGES = {"product": "sha256:" + "1" * 64, "meter": "sha256:" + "2" * 64, "explo
 FINGERPRINT = "f" * 64
 LIMITS = {"max_requests": 10, "max_attempts": 30, "max_concurrent": 2, "max_body_bytes": 1024, "max_response_body_bytes": 1024,
           "request_timeout_ms": 1000}
-PRODUCT_FILES = {"installation": "a" * 64, "policy": "b" * 64, "api_launch": "c" * 64, "target_policy": "d" * 64,
-                 "runtime_conditions": "e" * 64}
+PRODUCT_FILES = {"installation": "a" * 64, "policy": "b" * 64, "api_launch": "c" * 64, "target_policy": "d" * 64}
+SCOPE = {"RunRef": "run-draft-1", "TaskRef": "42", "CaseRef": "first-diagnosis", "ResetRef": "r", "PolicyRef": "policy-draft-1"}
+
+
+def conditions(**changes) -> bytes:
+    value = {"version": "e2-runtime-conditions/v1", "scope": dict(SCOPE), "policy_revision": "v1", "worker_count": 3,
+             "process_limits": {}, "queue_consumes_command_timeout": True}
+    value.update(changes)
+    return (json.dumps(value) + "\n").encode()
 
 
 def surface(product=IMAGES["product"], browser=IMAGES["explore_browser"]):
@@ -107,7 +116,8 @@ class FakePorts:
         self.events_raw: list = []
         self.statuses = [{"id": "draft-1", "state": "running", "phase": "execution"}]
         self.record = {"version": 1, "task_id": 42, "goal": dict(GOAL),
-                       "model": {"requests": 2, "sampling_overwrites": 0, "sampling": dict(SAMPLING)}}
+                       "model": {"requests": 2, "sampling_overwrites": 0, "sampling": dict(SAMPLING)},
+                       "run": {"phase": "closed", "execution": {"scope": dict(SCOPE), "policy_revision": "v1"}}}
         self.ledger, self.calls_file = LEDGER, CALLS
         self.forced = 0
         self.boundary_stopped = False
@@ -117,7 +127,9 @@ class FakePorts:
         self.marker: dict | None = product_marker()
         self.verify_args: list = []
         self.surface = surface()
-        self.view = {"format": "abc2lab.control-policy-view/v1", "policy_fingerprint_sha256": FINGERPRINT, "limits": dict(LIMITS)}
+        self.view = {"format": "abc2lab.control-policy-view/v1", "policy_ref": "policy-draft-1", "policy_revision": "v1",
+                     "policy_fingerprint_sha256": FINGERPRINT, "limits": dict(LIMITS), "rules": []}
+        self.conditions = conditions()
         self.files_args: list = []
 
     def _call(self, name):
@@ -254,10 +266,16 @@ class FakePorts:
         assert task_id == "42"
         return self.view
 
-    def product_files(self, draft_id):
+    def product_files(self):
         self._call("product_files")
-        self.files_args.append(draft_id)
         return dict(PRODUCT_FILES)
+
+    def runtime_conditions(self, draft_id):
+        self._call("runtime_conditions")
+        self.files_args.append(draft_id)
+        if isinstance(self.conditions, Exception):
+            raise self.conditions
+        return self.conditions
 
     def copy_product_records(self):
         self._call("copy_product_records")
@@ -284,7 +302,8 @@ ORDER_HEAD = ["preexisting", "image_ids", "tool_surface", "host_spec", "planned_
               "events:start", "watch:start", "scoreboard:pre", "prepare_round", "start_round"]
 ORDER_TAIL = ["seal", "meter:drained", "stop_round", "wait_closed", "snapshot:post", "check:post", "probes:post", "scoreboard:post",
               "stop_boundary", "watch:stop",
-              "events:stop", "status", "run_record", "control_policy", "product_files", "copy_boundary_evidence",
+              "events:stop", "status", "run_record", "control_policy", "product_files", "runtime_conditions",
+              "copy_boundary_evidence",
               "copy_product_records",
               "generation_verify", "llm_verified", "down", "remove_inputs"]
 
@@ -307,10 +326,13 @@ class TestOrder(unittest.TestCase):
         # 결정안 §3.3 제품 블록 근거: 파일 원본 SHA 다섯 + 상한 스냅숏 지문, E② 정책 내용 지문, 도구 면 지문.
         from preservation_record import digest
         files = evidence.files["product-files.json"]
-        self.assertEqual(files["file_sha256"], dict(PRODUCT_FILES, control_limits=digest(LIMITS)))
-        self.assertEqual((files["diagnosis_policy_sha256"], files["limits"]), (FINGERPRINT, LIMITS))
+        self.assertEqual(files["file_sha256"], dict(PRODUCT_FILES, control_limits=digest(LIMITS),
+                                                    runtime_conditions=hashlib.sha256(conditions()).hexdigest()))
+        self.assertEqual((files["diagnosis_policy_sha256"], files["limits"], files["diagnosis_entered"]), (FINGERPRINT, LIMITS, True))
+        self.assertEqual((files["policy_ref"], files["policy_revision"]), ("policy-draft-1", "v1"))
         self.assertEqual((result["product_file_sha256"], result["diagnosis_policy_sha256"]), (files["file_sha256"], FINGERPRINT))
         self.assertEqual(ports.files_args, ["draft-1"])  # 실행 디렉터리 이름 = 초안 ID
+        self.assertTrue(result["diagnosis_entered"])
         self.assertEqual(result["tool_surface"], {"cli_sha256": "5" * 64, "mcp_raw_sha256": "6" * 64, "mcp_exposed_sha256": "7" * 64,
                                                   "mcp_version": "0.0.84"})
         self.assertEqual(evidence.files["tool-surface.json"], ports.surface)
@@ -328,6 +350,25 @@ class TestOrder(unittest.TestCase):
                 self.assertEqual((result["status"], result["reasons"]), ("invalid", ["diagnosis_policy_fingerprint_missing"]))
                 self.assertNotIn("product_files", ports.calls)
                 self.assertIn("down", ports.calls)
+        # 상한 스냅숏은 여섯 칸 모두 양의 정수만(#693 리뷰 ①). 추가 칸·불리언·음수·숫자 문자열·빈 상한은 무효다.
+        for case, limits in {"empty": {}, "bool": dict(LIMITS, max_concurrent=True), "negative": dict(LIMITS, max_attempts=-1),
+                             "zero": dict(LIMITS, max_requests=0), "string": dict(LIMITS, max_body_bytes="1024"),
+                             "extra": dict(LIMITS, more={"x": 1}), "missing": {k: v for k, v in LIMITS.items() if k != "max_requests"},
+                             "too_big": dict(LIMITS, request_timeout_ms=1 << 63), "float": dict(LIMITS, max_requests=1.0),
+                             "not_object": [1]}.items():
+            def bad_limits(ports, limits=limits):
+                ports.view["limits"] = limits
+            result, ports, evidence = run(bad_limits)
+            with self.subTest(limits=case):
+                self.assertEqual((result["status"], result["reasons"]), ("invalid", ["control_policy_limits_invalid"]))
+                self.assertNotIn("product-files.json", evidence.files)
+        # 보기의 다른 칸은 근거·지문에 들어가지 않는다(허용된 상한 여섯 칸만).
+        def extra_view(ports):
+            ports.view["rules"] = [{"ref": "x"}]
+            ports.view["note"] = "not evidence"
+        result, _, evidence = run(extra_view)
+        self.assertEqual(result["status"], "complete", result)
+        self.assertNotIn("note", json.dumps(evidence.files["product-files.json"]))
         # 도구 면을 다른 이미지로 쟀으면 회차 이미지와 맞지 않는다 → 띄우기 전에 무효.
         for wrong in ({"product": "sha256:" + "9" * 64}, {"browser": "sha256:" + "9" * 64}):
             def swap(ports, wrong=wrong):
@@ -336,6 +377,57 @@ class TestOrder(unittest.TestCase):
             with self.subTest(wrong=wrong):
                 self.assertEqual((result["status"], result["reasons"]), ("invalid", ["tool_surface_image_mismatch"]))
                 self.assertNotIn("up", ports.calls)
+
+    def test_policy_and_run_conditions_are_bound_to_this_round(self):
+        # #693 리뷰 ②: 다른 초안의 정책·다른 작업의 실행 조건·JSON 아닌 실행 조건을 받으면 무효다.
+        cases = {
+            "other_policy_ref": (lambda p: p.view.update(policy_ref="policy-draft-2"), "control_policy_unbound"),
+            "empty_revision": (lambda p: p.view.update(policy_revision=""), "control_policy_unbound"),
+            "conditions_other_task": (lambda p: setattr(p, "conditions", conditions(scope=dict(SCOPE, TaskRef="43"))),
+                                      "runtime_conditions_unbound"),
+            "conditions_other_run": (lambda p: setattr(p, "conditions", conditions(scope=dict(SCOPE, RunRef="run-draft-2"))),
+                                     "runtime_conditions_unbound"),
+            "conditions_other_policy": (lambda p: setattr(p, "conditions", conditions(scope=dict(SCOPE, PolicyRef="policy-x"))),
+                                        "runtime_conditions_unbound"),
+            "conditions_other_revision": (lambda p: setattr(p, "conditions", conditions(policy_revision="v2")),
+                                          "runtime_conditions_unbound"),
+            "conditions_not_json": (lambda p: setattr(p, "conditions", b"not json"), "runtime_conditions_invalid"),
+            "conditions_not_utf8": (lambda p: setattr(p, "conditions", b"\xff"), "runtime_conditions_invalid"),
+            "conditions_other_version": (lambda p: setattr(p, "conditions", conditions(version="v0")), "runtime_conditions_invalid"),
+            "conditions_list": (lambda p: setattr(p, "conditions", b"[]"), "runtime_conditions_invalid"),
+            "execution_other_task": (lambda p: p.record["run"]["execution"].update(scope=dict(SCOPE, TaskRef="43")),
+                                     "run_record_unbound"),
+            "execution_other_revision": (lambda p: p.record["run"]["execution"].update(policy_revision="v2"), "run_record_unbound"),
+            "execution_not_object": (lambda p: p.record["run"].update(execution="x"), "run_record_unbound"),
+            "run_missing": (lambda p: p.record.pop("run"), "run_record_invalid"),
+        }
+        for name, (mutate, reason) in cases.items():
+            result, ports, evidence = run(mutate)
+            with self.subTest(case=name):
+                self.assertEqual((result["status"], result["reasons"]), ("invalid", [reason]))
+                self.assertNotIn("product-files.json", evidence.files)
+                self.assertIn("down", ports.calls)
+
+    def test_round_without_diagnosis_has_no_run_conditions(self):
+        # #693 리뷰 ③: 탐색 중 예산이 끝나 진단 실행이 붙지 않은 회차는 실행 조건 파일이 없다. 진단 미진입(run.execution 없음)이
+        # 확인될 때만 null로 남기고 first_limit은 그대로다. 진단에 들어간 회차에서 파일이 없으면 계속 실패다.
+        baseline, _, _ = run()
+
+        def not_entered(ports):
+            ports.record["run"].pop("execution")
+            ports.conditions = OSError("no such file")
+        result, ports, evidence = run(not_entered)
+        self.assertEqual(result["status"], "complete", result)
+        self.assertNotIn("runtime_conditions", ports.calls)
+        files = evidence.files["product-files.json"]
+        self.assertEqual((files["diagnosis_entered"], files["file_sha256"]["runtime_conditions"]), (False, None))
+        self.assertEqual((result["diagnosis_entered"], result["first_limit"]), (False, baseline["first_limit"]))
+        self.assertEqual(files["diagnosis_policy_sha256"], FINGERPRINT)  # 설치된 정책은 진단 전에도 있다
+
+        def entered_but_missing(ports):
+            ports.conditions = OSError("no such file")
+        result, _, _ = run(entered_but_missing)
+        self.assertEqual((result["status"], result["reasons"]), ("invalid", ["runtime_conditions_failed"]))
 
     def test_budget_clock_starts_after_preparation(self):
         # 로그인~초안(준비)은 예산 시계 밖이다. B의 작업 생성 직전과 같은 뜻으로 시작 요청 직전부터 잰다.

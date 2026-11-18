@@ -33,6 +33,8 @@ def product_end_watch(ports, driver: ProductDriver, draft_id: str, task_id: str,
 
 
 # ── O 회차 흐름(4-7c-3) ─────────────────────────────────────────────────────────────────────────────────────────
+import hashlib  # noqa: E402
+import json  # noqa: E402
 from dataclasses import dataclass, field  # noqa: E402
 from datetime import timedelta  # noqa: E402
 from typing import Protocol  # noqa: E402
@@ -56,6 +58,72 @@ PRODUCT_END_NAME = "product-end.json"
 TOOL_SURFACE_NAME = "tool-surface.json"
 PRODUCT_FILES_NAME = "product-files.json"
 PRODUCT_FILES_FORMAT = "abc2lab-eval-runner-product-files-v1"
+# 제어 정책 보기 상한 칸(url_live_views.go controlPolicyLimits). 제품 검증(e2proxy execution.go)은 모두 양수만 받는다.
+CONTROL_LIMIT_FIELDS = ("max_requests", "max_attempts", "max_concurrent", "max_body_bytes", "max_response_body_bytes",
+                        "request_timeout_ms")
+MAX_INT64 = (1 << 63) - 1
+RUNTIME_CONDITIONS_VERSION = "e2-runtime-conditions/v1"
+MAX_RUNTIME_CONDITIONS_BYTES = 1 << 20
+
+
+def _hex64(value) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+
+
+def _run_refs(draft_id: str) -> dict:
+    """그 초안의 실행에 제품이 발급하는 참조(url_preparation_linux.go: run-·policy-<Job ID>)."""
+    return {"RunRef": f"run-{draft_id}", "PolicyRef": f"policy-{draft_id}"}
+
+
+def checked_control_policy(view: dict, draft_id: str) -> dict:
+    """제어 정책 보기 가운데 근거로 쓰는 칸만 계약대로 확인해 돌려준다(#693 리뷰). 그 초안의 정책이어야 하고, 내용 지문은
+    64 hex, 상한은 여섯 칸 모두 양의 정수(불리언·문자열·추가 칸 없음)다."""
+    if view.get("policy_ref") != _run_refs(draft_id)["PolicyRef"] or not isinstance(view.get("policy_revision"), str) \
+            or not view["policy_revision"]:
+        raise RunFailure("control_policy_unbound")
+    if not _hex64(view.get("policy_fingerprint_sha256")):
+        raise RunFailure("diagnosis_policy_fingerprint_missing")  # 자격 pin 규칙이면 제품이 비운다
+    limits = view.get("limits")
+    if (not isinstance(limits, dict) or set(limits) != set(CONTROL_LIMIT_FIELDS)
+            or any(type(limits[name]) is not int or not 1 <= limits[name] <= MAX_INT64 for name in CONTROL_LIMIT_FIELDS)):
+        raise RunFailure("control_policy_limits_invalid")
+    return {"policy_ref": view["policy_ref"], "policy_revision": view["policy_revision"],
+            "policy_fingerprint_sha256": view["policy_fingerprint_sha256"], "limits": {name: limits[name] for name in CONTROL_LIMIT_FIELDS}}
+
+
+def _scope_bound(scope, draft_id: str, task_id: str) -> bool:
+    return isinstance(scope, dict) and all(scope.get(key) == value for key, value in
+                                           dict(_run_refs(draft_id), TaskRef=task_id).items())
+
+
+def diagnosis_entered(record: dict, draft_id: str, task_id: str, policy_revision: str) -> bool:
+    """진단 실행이 붙었는지(실행 기록 run.execution, request_approvals.go runState). 붙었으면 그 실행이 이 초안·작업·정책
+    개정에 결속돼야 한다. 탐색 중에 예산이 끝나면 진단 실행이 없고 회차 실행 조건 파일도 만들어지지 않는다."""
+    run = record.get("run")
+    if not isinstance(run, dict):
+        raise RunFailure("run_record_invalid")
+    execution = run.get("execution")
+    if execution is None:
+        return False
+    if (not isinstance(execution, dict) or not _scope_bound(execution.get("scope"), draft_id, task_id)
+            or execution.get("policy_revision") != policy_revision):
+        raise RunFailure("run_record_unbound")
+    return True
+
+
+def checked_runtime_conditions(raw: bytes, draft_id: str, task_id: str, policy_revision: str) -> str:
+    """회차 실행 조건(e2_http_factory.go)이 이 초안·작업·정책 개정의 것인지 확인하고 원본 바이트 SHA를 돌려준다."""
+    try:
+        if not isinstance(raw, bytes) or len(raw) > MAX_RUNTIME_CONDITIONS_BYTES:
+            raise ValueError
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, ValueError):
+        raise RunFailure("runtime_conditions_invalid") from None
+    if not isinstance(value, dict) or value.get("version") != RUNTIME_CONDITIONS_VERSION:
+        raise RunFailure("runtime_conditions_invalid")
+    if not _scope_bound(value.get("scope"), draft_id, task_id) or value.get("policy_revision") != policy_revision:
+        raise RunFailure("runtime_conditions_unbound")
+    return hashlib.sha256(raw).hexdigest()
 COMPLETE = "complete"
 METER, BOUNDARY, TARGET = "eval-meter", "explore-boundary", "target"
 
@@ -105,7 +173,8 @@ class SplitRunPorts(Protocol):
     def stop_boundary(self, boundary_container_id: str) -> None: ...
     def run_record(self, task_id: str) -> dict: ...
     def control_policy(self, task_id: str) -> dict: ...
-    def product_files(self, draft_id: str) -> dict: ...
+    def product_files(self) -> dict: ...
+    def runtime_conditions(self, draft_id: str) -> bytes: ...
     def tool_surface(self) -> dict: ...
     def copy_boundary_evidence(self) -> None: ...
     def copy_product_records(self) -> tuple: ...
@@ -263,14 +332,20 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
         raise RunFailure(str(exc)) from None
 
     # 제품 블록 근거(결정안 §3.3): 그 회차에 제품이 쓴 E② 정책의 내용 지문·상한 스냅숏과 설치·실행 파일 원본 SHA.
-    # 제품을 멈춘 뒤라 파일이 더 바뀌지 않는다. 내용 지문이 비면(자격 pin 규칙 등) 짝 대조 칸을 만들 수 없어 무효다.
-    view = _step(state, "control_policy_failed", lambda: ports.control_policy(task_id))
-    fingerprint = view.get("policy_fingerprint_sha256")
-    if not isinstance(fingerprint, str) or len(fingerprint) != 64 or any(c not in "0123456789abcdef" for c in fingerprint):
-        raise RunFailure("diagnosis_policy_fingerprint_missing")
-    files = dict(_step(state, "product_files_failed", lambda: ports.product_files(draft_id)), control_limits=digest(view["limits"]))
+    # 제품을 멈춘 뒤라 파일이 더 바뀌지 않는다. 정책·실행 조건은 이 초안·작업에 결속돼야 한다(#693 리뷰). 내용 지문이 비면
+    # (자격 pin 규칙 등) 짝 대조 칸을 만들 수 없어 무효다.
+    policy = checked_control_policy(_step(state, "control_policy_failed", lambda: ports.control_policy(task_id)), draft_id)
+    fingerprint = policy["policy_fingerprint_sha256"]
+    entered = diagnosis_entered(record, draft_id, task_id, policy["policy_revision"])
+    files = dict(_step(state, "product_files_failed", ports.product_files), control_limits=digest(policy["limits"]))
+    # 진단에 들어가지 않은 회차(탐색 중 예산 소진 등)는 실행 조건 파일이 없다. 그때만 null로 남기고 first_limit은 그대로다.
+    # 진단에 들어간 회차에서 빠지거나 다른 회차의 것이면 실패다.
+    files["runtime_conditions"] = checked_runtime_conditions(
+        _step(state, "runtime_conditions_failed", lambda: ports.runtime_conditions(draft_id)), draft_id, task_id,
+        policy["policy_revision"]) if entered else None
     _step(state, "evidence_write_failed", lambda: evidence.write_json(PRODUCT_FILES_NAME, {
-        "format": PRODUCT_FILES_FORMAT, "file_sha256": files, "diagnosis_policy_sha256": fingerprint, "limits": view["limits"]}))
+        "format": PRODUCT_FILES_FORMAT, "file_sha256": files, "diagnosis_entered": entered, "diagnosis_policy_sha256": fingerprint,
+        "policy_ref": policy["policy_ref"], "policy_revision": policy["policy_revision"], "limits": policy["limits"]}))
     _step(state, "boundary_evidence_copy_failed", ports.copy_boundary_evidence)
     ledger, calls = _step(state, "product_records_copy_failed", ports.copy_product_records)
     record_reasons = call_records_reasons(ledger, calls)
@@ -294,7 +369,7 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
                          pre_solved=pre_board.get("solved"), post_solved=post_board.get("solved"),
                          goal_common_sha256=goal["common_sha256"], window_reasons=window["reasons"],
                          sampling_overwrites=usage["sampling_overwrites"], task_id=task_id, draft_id=draft_id,
-                         product_file_sha256=files, diagnosis_policy_sha256=fingerprint,
+                         product_file_sha256=files, diagnosis_policy_sha256=fingerprint, diagnosis_entered=entered,
                          product_closed={name: closed.get(name) for name in PRODUCT_END_FIELDS})
 
 
