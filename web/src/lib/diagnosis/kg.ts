@@ -326,12 +326,69 @@ export function mapApiAccessMap(res: ApiAccessMap): AccessMap {
 export async function getAccessMap(taskId: string, signal?: AbortSignal): Promise<AccessMap> {
   if (!/^[1-9][0-9]*$/.test(taskId) || !Number.isSafeInteger(Number(taskId)))
     throw new ApiError(422, "invalid_access_map_task");
-  const res = await apiFetch<ApiAccessMap>(`/api/tasks/${encodeURIComponent(taskId)}/access-map`, {
+  const res = await apiFetch<unknown>(`/api/tasks/${encodeURIComponent(taskId)}/access-map`, {
     cache: "no-store",
     redirect: "error",
     signal,
   });
-  if (!res || typeof res !== "object" || String(res.task_id) !== taskId)
+  return mapApiAccessMap(checkAccessMapResponse(res, taskId));
+}
+
+// ── 응답 모양 검증(access-map-read.md 응답 절 · product-report-graph-read.md). 칸이 빠졌거나 축이 수평이 아니면 응답 전체를
+//    거부한다 — 정상 `cells: []`(빈 지도)과 칸 누락을 구분하고, 수직 축 셀을 수평 판정으로 그리지 않는다(#691 리뷰).
+const POLICY_VERSION = /^kg-fixture\/v1:[^:\s]+:[0-9a-f]{64}$/;
+const SIGNAL_FIELDS = [
+  "policy_check",
+  "identity_check",
+  "data_check",
+  "same_resource",
+  "owner_normal_data",
+  "cross_normal_data",
+  "nontrivial_data_match",
+  "reflection_excluded",
+  "template_excluded",
+] as const;
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+const isText = (v: unknown): v is string => typeof v === "string" && v.length > 0;
+const isNames = (v: unknown): v is string[] => Array.isArray(v) && v.every(isText);
+const isOptText = (v: unknown) => v === null || isText(v);
+function badMap(): never {
+  throw new ApiError(422, "invalid_access_map_contract");
+}
+function checkCell(c: unknown): ApiAccessCell {
+  if (
+    !isObj(c) ||
+    !isText(c.principal) ||
+    !isText(c.owner_ref) ||
+    !isText(c.resource_ref) ||
+    !isText(c.resource_label) ||
+    !isText(c.state) ||
+    !isOptText(c.oracle_value) ||
+    !(c.applicable === null || typeof c.applicable === "boolean") ||
+    !(c.record_id === null || (Number.isSafeInteger(c.record_id) && Number(c.record_id) > 0)) ||
+    !isOptText(c.case_ref) ||
+    !isOptText(c.observed_at) ||
+    !Array.isArray(c.reason_codes) ||
+    !c.reason_codes.every(isText) ||
+    !isNames(c.canary_fields) ||
+    !isOptText(c.projection_error) ||
+    SIGNAL_FIELDS.some((k) => k in c && c[k] !== "yes" && c[k] !== "no" && c[k] !== "unknown")
+  )
+    return badMap();
+  return c as ApiAccessCell;
+}
+/** 지도 응답 검증. 요청한 task 와 다른 task 의 지도면 다른 점검의 결과라 거부한다. */
+export function checkAccessMapResponse(res: unknown, taskId: string): ApiAccessMap {
+  if (!isObj(res) || !Number.isSafeInteger(res.task_id) || String(res.task_id) !== taskId)
     throw new ApiError(422, "access_map_task_mismatch");
-  return mapApiAccessMap(res);
+  if (
+    !isText(res.run_ref) ||
+    !isText(res.reset_generation) ||
+    res.axis !== "horizontal" ||
+    !isText(res.policy_version) ||
+    !POLICY_VERSION.test(res.policy_version) ||
+    !Array.isArray(res.cells)
+  )
+    return badMap();
+  return { ...(res as ApiAccessMap), cells: res.cells.map(checkCell) };
 }

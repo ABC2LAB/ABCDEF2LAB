@@ -365,7 +365,39 @@ describe("mapApiAccessMap (실 라우트 응답 매핑)", () => {
 
 describe("getAccessMap (현재 task · 예시 없음)", () => {
   beforeEach(() => vi.resetAllMocks());
-  const body = { task_id: 41, policy_version: "kg-fixture/v1", cells: [] };
+  // product-report-graph-read.md 지도 DTO 모양(비민감 합성)
+  const cell = {
+    principal: "reader",
+    owner_ref: "owner",
+    resource_ref: "document:one",
+    resource_label: "document:one",
+    state: "unknown",
+    oracle_value: null,
+    applicable: true,
+    record_id: null,
+    case_ref: null,
+    observed_at: null,
+    policy_check: "unknown",
+    identity_check: "unknown",
+    data_check: "unknown",
+    same_resource: "unknown",
+    owner_normal_data: "unknown",
+    cross_normal_data: "unknown",
+    nontrivial_data_match: "unknown",
+    reflection_excluded: "unknown",
+    template_excluded: "unknown",
+    reason_codes: [],
+    canary_fields: [],
+    projection_error: "observation_unavailable",
+  };
+  const body = {
+    task_id: 41,
+    run_ref: "execution-41",
+    reset_generation: "reset-1",
+    axis: "horizontal",
+    policy_version: `kg-fixture/v1:map-snapshot:${"a".repeat(64)}`,
+    cells: [] as unknown[],
+  };
   it("현재 task 의 지도를 캐시 없이 · 리다이렉트 없이 읽는다", async () => {
     vi.mocked(apiFetch).mockResolvedValue(body);
     const signal = new AbortController().signal;
@@ -375,6 +407,27 @@ describe("getAccessMap (현재 task · 예시 없음)", () => {
   it.each(["", "0", "041", "task-41", "1e3"])("정규 양의 정수가 아닌 task(%s)는 부르지 않는다", async (task) => {
     await expect(getAccessMap(task)).rejects.toThrow(ApiError);
     expect(apiFetch).not.toHaveBeenCalled();
+  });
+  it("셀이 있는 정상 응답은 격자로, 정상 빈 응답은 빈 격자로 그린다", async () => {
+    vi.mocked(apiFetch).mockResolvedValueOnce({ ...body, cells: [cell] });
+    expect((await getAccessMap("41")).cells).toHaveLength(1);
+    vi.mocked(apiFetch).mockResolvedValueOnce(body);
+    expect((await getAccessMap("41")).cells).toEqual([]);
+  });
+  it.each([
+    ["범위 · 축 · 셀이 빠진 응답", { task_id: 41 }],
+    ["cells 없음", (({ cells: _, ...rest }) => rest)(body)],
+    ["run_ref 없음", (({ run_ref: _, ...rest }) => rest)(body)],
+    ["빈 reset_generation", { ...body, reset_generation: "" }],
+    ["수직 축", { ...body, axis: "vertical", cells: [cell] }],
+    ["정책 판 모양 밖", { ...body, policy_version: "kg-fixture/v1" }],
+    ["셀의 신원 없음", { ...body, cells: [{ ...cell, principal: "" }] }],
+    ["셀의 모르는 신호 값", { ...body, cells: [{ ...cell, data_check: "maybe" }] }],
+    ["셀의 표식 필드가 문자열 아님", { ...body, cells: [{ ...cell, canary_fields: [{ value: "x" }] }] }],
+    ["task_id 가 문자열", { ...body, task_id: "41" }],
+  ])("%s 이면 빈 지도로 그리지 않고 거부한다", async (_, res) => {
+    vi.mocked(apiFetch).mockResolvedValue(res);
+    await expect(getAccessMap("41")).rejects.toMatchObject({ status: 422 });
   });
   it("응답 task_id 가 요청과 다르면 다른 점검의 지도라 거부한다", async () => {
     vi.mocked(apiFetch).mockResolvedValue({ ...body, task_id: 42 });
