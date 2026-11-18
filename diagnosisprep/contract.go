@@ -156,8 +156,11 @@ type Job struct {
 	AuthorityState     AuthorityState `json:"authority_state"`
 	Started            bool           `json:"started"`
 	DrainComplete      bool           `json:"drain_complete"`
-	ResultReady        bool           `json:"result_ready"`
-	ModelUsage         *ModelUsage    `json:"model_usage,omitempty"`
+	// 시각은 준비 서비스가 해당 사실의 최초 전환을 확인해 저장한다. 구 기록·미확인은 생략한다.
+	StartedAt   *time.Time  `json:"started_at,omitempty"`
+	FinishedAt  *time.Time  `json:"finished_at,omitempty"`
+	ResultReady bool        `json:"result_ready"`
+	ModelUsage  *ModelUsage `json:"model_usage,omitempty"`
 	// 실행 결과(docs/contracts/run-outcome-states.md §3.2). outcome·closing_reason은 completed에만,
 	// intent_outcomes는 completed·cancelled에만 있다. 이 칸이 생기기 전에 저장된 completed에는 없을 수 있다.
 	Outcome        string                    `json:"outcome,omitempty"`
