@@ -305,9 +305,10 @@ export function TargetApprovalPanel({
           <div className={s["fsec-b"]} id="targetRegister">
             <div className={s.two}>
               <div className={s.field}>
-                <div className={s["fsec-ht"]}>
+                {/* tipline: (?) 메모가 이 줄 바로 아래에 뜨는 기준(없으면 화면 칸 맨 아래로 가서 안 보였다) */}
+                <div className={cx(s["fsec-ht"], s.tipline)}>
                   <label className={s.lbl} htmlFor="targetReadonlyPaths">
-                    허용할 읽기 경로 · 한 줄에 하나
+                    점검할 경로
                   </label>
                   {/* 정확 일치(=/…)와 접두는 query 동작이 다르다(docs/contracts/exact-path-approval.md). 서버가 같은 규칙으로
                       집행한다. 칸 밑에 늘 펼쳐 두던 설명은 (?) 메모로 옮겼다(사용자 11/18 '간략하게') */}
@@ -326,7 +327,7 @@ export function TargetApprovalPanel({
                   value={paths}
                   onChange={(e) => setPaths(e.target.value)}
                   disabled={off}
-                  placeholder="비우면 입력한 주소의 경로 · 예) /api/  =/"
+                  placeholder="한 줄에 하나씩 · 비우면 입력한 주소의 경로 · 예) /api/"
                 />
               </div>
               <div className={s.field}>

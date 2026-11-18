@@ -240,7 +240,8 @@ function LiveFindings({
  */
 function TaskTokens({ u }: { u: URLDiagnosisUsage }) {
   return (
-    <p className={s.toks} title={tokenExact(u)}>
+    // tipline: 최대치 (?) 메모가 이 줄 바로 아래에 뜨는 기준
+    <p className={cx(s.toks, s.tipline)} title={tokenExact(u)}>
       {/* 칸 사이 공백: 화면은 flex 간격으로 띄우고, 글로 읽을 때(화면 읽기 · 복사) 붙지 않게 */}
       <span>작업 합계 ·</span> <TokenChips u={u} bound={false} />
       {/* 칩 옆 '(최대)' 글 대신(사용자 11/18) 키보드 · 터치로도 여는 (?) 설명으로 최대치임을 알린다(#709 리뷰) */}

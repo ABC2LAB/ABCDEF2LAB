@@ -1045,6 +1045,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(line).toHaveTextContent(/^작업 합계 · 입 1.2k 출 300\?/);
     // 마우스를 올리지 않아도: 키보드 · 터치로 여는 (?) 설명이 최대치임을 말한다(#709 리뷰)
     const tip = within(line).getByRole("button", { name: "최대치 설명" });
+    expect(line.className).toMatch(/tipline/); // 메모가 이 줄 바로 아래에 뜨는 기준
     fireEvent.click(tip);
     expect(within(line).getByRole("note")).toHaveTextContent(
       "사용량을 받지 못한 호출 1건은 예약량으로 셌습니다. 두 수는 실제 사용량의 최대치입니다.",
