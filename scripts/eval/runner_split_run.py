@@ -329,12 +329,18 @@ def discovery_sources(snapshot: dict) -> dict:
         source = endpoint.get("source") if isinstance(endpoint, dict) else None
         name = source if isinstance(source, str) and _SOURCE_NAME.fullmatch(source) else "invalid"
         by_source[name] = by_source.get(name, 0) + 1
-    counts = snapshot.get("counts") if isinstance(snapshot.get("counts"), dict) else {}
-    omitted = counts.get("omitted")
+    # 제품은 counts.omitted를 omitempty로 낸다(diagnosisflow.Counts): 칸이 없으면 빠진 끝점이 없다는 뜻이라 0이다(#725 리뷰).
+    # counts 자체가 객체가 아니거나 칸이 정수가 아니거나 음수면 모른다(null).
+    counts = snapshot.get("counts")
+    if isinstance(counts, dict):
+        omitted = counts.get("omitted", 0)
+        omitted = omitted if type(omitted) is int and omitted >= 0 else None
+    else:
+        omitted = None
     return {"format": DISCOVERY_SOURCES_FORMAT, "endpoints": len(snapshot["endpoints"]), "by_source": dict(sorted(by_source.items())),
             "browser": sum(n for name, n in by_source.items() if name.startswith("browser_")),
             "api_recon": sum(n for name, n in by_source.items() if name.startswith("api_recon_")),
-            "omitted": omitted if type(omitted) is int and omitted >= 0 else None,
+            "omitted": omitted,
             "detail_truncated": snapshot.get("detail_truncated") is True}
 
 

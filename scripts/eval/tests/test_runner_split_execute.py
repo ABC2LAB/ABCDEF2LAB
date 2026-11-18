@@ -152,9 +152,10 @@ class FakePorts:
         self.probe_status = {"pre": PASS, "post": PASS}
         self.events_raw: list = []
         self.statuses = [{"id": "draft-1", "state": "running", "phase": "execution"}]
+        # 제품 snapshot 모양 그대로: 빠진 끝점이 없으면 counts.omitted 칸이 없다(omitempty)
         self.workflow = {"job_id": "draft-1", "endpoints": [{"source": "browser_navigation"}, {"source": "api_recon_runtime"},
                                                             {"source": "html_link"}, {"source": "html_link"}],
-                         "counts": {"omitted": 0}}
+                         "counts": {"pages": 2}}
         self.record = {"version": 1, "task_id": 42, "goal": dict(GOAL),
                        "model": {"requests": 2, "sampling_overwrites": 0, "sampling": dict(SAMPLING)},
                        "run": {"phase": "closed", "run_ref": "run-draft-1",
@@ -958,7 +959,13 @@ class TestDiscoverySources(unittest.TestCase):
                                              "invalid": 3},
                                "browser": 2, "api_recon": 1, "omitted": 3, "detail_truncated": True})
         self.assertNotIn("secret-looking", json.dumps(got))  # 경로는 남기지 않는다
-        self.assertIsNone(discovery_sources({"endpoints": [], "counts": {"omitted": -1}})["omitted"])
+        # counts.omitted는 omitempty라 칸이 없으면 0, 정수가 아니거나 음수거나 counts가 객체가 아니면 모름(null)
+        for counts, want in (({}, 0), ({"pages": 3}, 0), ({"omitted": 0}, 0), ({"omitted": 5}, 5), ({"omitted": -1}, None),
+                             ({"omitted": "3"}, None), ({"omitted": True}, None), ({"omitted": None}, None)):
+            with self.subTest(counts=counts):
+                self.assertEqual(discovery_sources({"endpoints": [], "counts": counts})["omitted"], want)
+        self.assertIsNone(discovery_sources({"endpoints": []})["omitted"])
+        self.assertIsNone(discovery_sources({"endpoints": [], "counts": []})["omitted"])
 
     def test_read_failure_is_recorded_not_fatal(self):
         result, ports, evidence = run(lambda p: setattr(p, "workflow", ProductAPIError("product_workflow_invalid")))
