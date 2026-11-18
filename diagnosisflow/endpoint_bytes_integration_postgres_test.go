@@ -23,8 +23,9 @@ import (
 // 받기(공개 목록 바이트 절단) → 공개 투영 → 자동 선택 → 모델 목록(SelectedData·Instructions) → PostgreSQL 저장 기록을
 // 거치고, 다른 연결로 다시 읽어 확인한다.
 //
-//	(1) counts.omitted·counts.model_omitted가 저장 기록에 남고 실제로 빠진 수와 같다.
-//	(2) 모델 목록이 #610 우선순위를 따른다: 관찰 출처를 앞에, 추정 출처를 뒤에 두고, 빠지는 것은 뒤쪽(추정)부터.
+//	(1) counts.omitted가 저장 기록에 남고 공개 목록에서 실제로 빠진 수와 같다. 모델 목록 상한이 공개 투영 상한과 같아
+//	    (§5 결정) 공개 목록에 남은 고른 끝점은 전부 모델에 가고 counts.model_omitted는 0이다.
+//	(2) 모델 목록이 #610 순서를 따른다: 관찰 출처를 앞에, 추정 출처를 뒤에 둔다(방어용 잘림은 뒤쪽부터, controller_test).
 //	(3) 모델 입력(SelectedData)은 MaxSelectedDataBytes, 공개 투영은 MaxProjectionBytes, 저장 기록은 128KiB 안이다.
 //
 // counts.omitted·model_omitted는 진단 흐름 저장 기록(diagnosis_workflows)에 있다. 실행 결과 기록(first_diagnosis_run_v1)
@@ -183,15 +184,13 @@ func checkByteCut(t *testing.T, dsn string, c *Controller, binding Binding, disc
 		t.Fatal("model endpoint list is not JSON", err)
 	}
 	selected := len(observedSel) + len(inferredSel)
-	if s.Counts.ModelOmitted == 0 || int(s.Counts.ModelOmitted) != selected-len(rows) {
+	// 모델 목록 상한이 공개 투영 상한과 같아(§5 결정) 공개 목록에 남은 고른 끝점은 전부 모델에 간다.
+	if s.Counts.ModelOmitted != 0 || len(rows) != selected || strings.Contains(c.Instructions(), "left out") {
 		t.Fatalf("counts.model_omitted=%d, selected=%d, model rows=%d", s.Counts.ModelOmitted, selected, len(rows))
 	}
-	if !strings.Contains(c.Instructions(), strconv.FormatUint(s.Counts.ModelOmitted, 10)+" more selected endpoints were left out") {
-		t.Fatal("model instructions do not report the omitted endpoints")
-	}
 	// (2) 모델 목록은 (관찰 출처 ++ 추정 출처)의 앞부분이다. 저장 순서와 관계없이 관찰 출처가 앞선다.
-	if len(observedSel) == 0 || len(inferredSel) == 0 || len(rows) <= len(observedSel) {
-		t.Fatalf("fixture must keep every observed row and drop only inferred ones: observed=%d inferred=%d rows=%d", len(observedSel), len(inferredSel), len(rows))
+	if len(observedSel) == 0 || len(inferredSel) == 0 {
+		t.Fatalf("fixture must select both sources: observed=%d inferred=%d rows=%d", len(observedSel), len(inferredSel), len(rows))
 	}
 	want := append(append([]string{}, observedSel...), inferredSel...)
 	for i, r := range rows {
