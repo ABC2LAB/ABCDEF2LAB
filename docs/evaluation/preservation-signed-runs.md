@@ -113,7 +113,7 @@ go test -race ./cmd/eval-meter ./pathmask
 
 새 인자 중 하나를 쓰면 모두 필수다. 검증기는 서명, 정확한 JSON 구조, 원자료 바이트, 마감 상태, 경로 키, 짝 순서/회차 중복, 세션, 각 조건의 엔진 핀, 모델·머신·초기 상태·예산·통신 모드·MCP 조건, 조건 안의 배치·정책 고정을 확인한다. 다른 조건이 섞이면 종료 코드 2이며 요약은 출력하지 않는다. 서명은 소문자 64 hex만 받고 비 ASCII·다른 타입도 traceback 없이 고정 validation 오류로 거부한다. 원본/개선 후 사이에서 달라야 하는 배치·정책과 R-R의 쓰기 모드는 각 조건 안에서 따로 고정한다.
 
-서명 검증을 켠 출력만 `abc2lab.preservation-summary/v8`이고 기존 지표에 `signed_evidence`, `assessment`가 추가된다(v8은 `signed_evidence.exploration_boundary`에 검증된 경계 원자료의 회차별 카운터·대조를 담을 수 있다. v7은 늘 `NOT_RUN`이었다). 기존 원자료 전용 CLI는 `v6` 그대로다. v6는 새 서명/조건 검증 완료로 읽지 않는다. 실제 회차는 러너의 탐색 분리 배치 전까지 경계가 `NOT_RUN`이라 완료 판정도 `NOT_RUN`이다.
+서명 검증을 켠 출력만 `abc2lab.preservation-summary/v10`(v8에 v9의 `coverage`·`difference_claims`를 더한 것)이고 기존 지표에 `signed_evidence`, `assessment`가 추가된다(v8은 `signed_evidence.exploration_boundary`에 검증된 경계 원자료의 회차별 카운터·대조를 담을 수 있다. v7은 늘 `NOT_RUN`이었다). 기존 원자료 전용 CLI는 `v9`(v6에 `coverage`·`difference_claims`를 더한 것)다. v6·v9는 새 서명/조건 검증 완료로 읽지 않는다. 실제 회차는 러너의 탐색 분리 배치 전까지 경계가 `NOT_RUN`이라 완료 판정도 `NOT_RUN`이다.
 
 ## 기존 기준과 남은 검증
 
