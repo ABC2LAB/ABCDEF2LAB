@@ -10,10 +10,8 @@
 Finding 상세에서 저장된 오라클 원값, 증거 충분성, 진단 요청의 송신 사실을 서로 구별하여 읽는다.
 일반 finding의 severity/status/vulnclass, LLM 설명, HTTP 200으로 E③ 판정을 만들지 않는다.
 
-최초 코드 조사 기준은 당시 `origin/dev` **`bfbabf7b06c8cec47319f34b3d388040dcee611c`**다.
-요청의 확인 기준 `83c3cb66f36a`는 이 커밋의 조상이다. 그 뒤 변경은 #595의 C14 문서와
-#597의 fixture 대상 이름 정비이며, 이 초안의 저장·화면 조사 대상 코드 변경은 없다.
-아래 PR 상태는 최초 작성 때의 스냅샷이며, #596 행과 §9는 후속 리뷰의 최종 병합 문서로 갱신했다.
+최신 대조 기준은 `origin/dev` **`e2ef311b06b547bf6ea33aa930fb0193bb269391`**다.
+제품 보고서 그래프 중계, 회차 시작·마감 확인 시각, 후보 심각도가 반영된 코드를 기준으로 한다.
 
 | 구분 | 실제 확인한 범위 | 이 문서에서의 취급 |
 | --- | --- | --- |
@@ -37,17 +35,23 @@ Finding 상세에서 저장된 오라클 원값, 증거 충분성, 진단 요청
 - `loadDiagnosticReportWithCaptures`는 읽기 전용 Repeatable Read 트랜잭션을 사용한다.
   finding 링크와 manifest/payload digest, finding/report 증거 버전을 보고,
   finding 없는 issuance도 별도 항목으로 보존한다. 전체 체크·6신호 상세를 제공하는 API는 아니다.
+  `readDiagnosticReportWithCaptures`는 독립 판정의 보고서 표시 시각을 issuance의 `issued_at`으로 채운다.
+  판정 상세의 관측 시각은 검증된 canonical의 `observed_at`에서 읽는다.
   이 보고서의 allowed → `outcome=negative`는 보고서 내부 분류다. 새 API의 “취약점 없음”으로 복사하지 않는다.
 - `diagnostic_report_overview.go`는 task·종료 기록·모델 사용 요약을 읽는다.
   #595가 지적한 인증 뒤 영역 미검사/`account_auth` 보고서 연결의 공백도 남아 있으므로,
   이 요약으로 A/B 신원 검증 성공을 대신하지 않는다.
-- `readAccessMapRecords`의 bounded 읽기, canonical/manifest/issuance 대조 규칙과
+- `readAccessMapRecords`의 건수·크기 제한, canonical/manifest/issuance 대조 규칙과
   `accessMapRecord.valid`의 enum/정책 결과 매핑은 내부 재사용 후보다.
   지도 전용 resource/주체 축 및 단일 binding 전제를 그대로 단건 API에 적용하지 않는다.
+- #683의 `diagnosisManagementBridge.authorizedReportBinding`과 `serveCoverageGraph`는
+  영속 Job의 소유권, task/exploration, 중계 전후 조회 문맥 검사를 재사용할 수 있는 경계다.
+  판정 상세는 선택한 task 한 건에 한정한다. 지도의 현재 정책/등록 binding은 과거 issuance의
+  정책·KG snapshot·reset 세대를 대신할 수 없다. 당시 원천을 읽을 수 없으면 §6·§8의 미확인/오류 규칙을 따른다.
 - `e3record.DecodeBoundManifest/CheckManifest`는 내부에서 `evidencebind.Check`와
-  오라클 재계산을 수행한다. 조회의 새 판정 계산 금지에 맞게 그대로 호출할지 결정하지 않는다.
-  **본 제안은 GET에서 `oracle.Evaluate`·VerifyRead·Prepare를 호출하지 않고** 저장된
-  Result와 canonical의 일관성만 확인하는 읽기 검증 분리를 요구한다(OD06).
+  오라클 재계산을 수행한다. 새 reader에서 순수 해시·정본 디코딩·결속 대조만 분리해 사용한다.
+  **GET에서 `oracle.Evaluate`·VerifyRead·Prepare를 호출하지 않는다.**
+  최민준이 저장 Result의 진위를 확인하는 데 필요한 검증 항목과 당시 등록의 가용성을 검토한다(OD06).
 - [평가 판정 페이지 제안](verdict-record-page-api-proposal.md)은 별도 목적이다.
   정본 바이트/결속 검사 원칙만 공유 가능하며 export 생성·동결·cursor·러너 capability를
   Workbench 단건 조회의 선행 조건으로 붙이지 않는다.
@@ -58,9 +62,9 @@ Finding 상세에서 저장된 오라클 원값, 증거 충분성, 진단 요청
 | 확인한 PR | 상태·변경 파일 | 이 초안과의 관계 |
 | --- | --- | --- |
 | [#596](https://github.com/ABC2LAB/ABCDEF2LAB/pull/596), head `2ed0d262a63ae547ad35c9a014dd1b76faf00ff2` | merged (`b5ce51ec`, 2026-11-16). 결정 문서 한 개이며 구현은 측정 뒤 | §9의 후속 반영 기준. 선행 코드는 구현하지 않음 |
-| [#595](https://github.com/ABC2LAB/ABCDEF2LAB/pull/595) | merged. `docs/account-login-decision.md`, `docs/control-restore-backlog.md` | C14 상태·인증 회차 기록의 현재 사실 |
-| [#598](https://github.com/ABC2LAB/ABCDEF2LAB/pull/598) | open. `e2runner/`·`e2proxy/execution.go`·server factory/engine·제품 준비 로더·시험·작업공간/상한 문서 | 1-D Bash 병렬 실행 담당 영역. 수정하지 않음 |
-| [#594](https://github.com/ABC2LAB/ABCDEF2LAB/pull/594) | open. 평가 원본② 규칙 JSON·설명·시험 | 평가 영역. 수정하지 않음 |
+| [#683](https://github.com/ABC2LAB/ABCDEF2LAB/pull/683) | merged. 제품 관리 중계와 저장 보고서의 작업별 그래프·지도 GET | 인증 및 중계 결속 검증 재사용 후보 |
+| [#680](https://github.com/ABC2LAB/ABCDEF2LAB/pull/680) | merged. 실행 시작·마감 확인 시각 | Job의 수명 표시 정보. 관측·발급 시각과 별개 |
+| [#666](https://github.com/ABC2LAB/ABCDEF2LAB/pull/666) | merged. 진단 후보의 심각도 추정 저장 | 후보 표시 정보. E③ 심각도·판정과 별개 |
 
 열린 PR 목록과 각 변경 파일을 확인했다. 이 문서의 변경 파일은 이 파일 한 개다.
 #571 자격정보 가림·#580 준비 저널·1-C 탐색·Workbench UI·평가 export를 새로 구현하지 않는다.
@@ -70,7 +74,7 @@ Finding 상세에서 저장된 오라클 원값, 증거 충분성, 진단 요청
 | 식별자 | 현재 정본·뜻 | 혼동 금지 |
 | --- | --- | --- |
 | task ID | `tasks.id`. issuance의 task/exploration FK와 대응 | URL의 숫자는 조회 권한이 아님 |
-| workflow Job ID | `diagnosisprep.Job.ID`. 신뢰 서비스의 Principal·TaskID 결속, 제품 `runs/<job>` 선택에 사용 | task ID·E② run·평가 run과 별개 |
+| 제품 Job ID | `diagnosisprep.Job.ID`. 신뢰 서비스의 Principal·TaskID 결속. `GET /api/diagnoses/v2/runs`의 목록 행 및 `GET /api/diagnoses/v2/drafts/{id}/status`의 회차 ID | task ID·E② run·평가 run과 별개. `started_at`·`finished_at`은 확인된 실행 수명 시각 |
 | E② execution/run 참조 | `transmit.Scope.RunRef`, issuance의 `execution_ref`. case/reset/policy scope와 함께 확인 | Job 문자열이나 평가 `run_id`로 대신하지 않음 |
 | 일반 finding ID | `findings.id`. triage와 report의 대상 | graph node ID·verdict ID와 다름 |
 | E③ verdict ID | `e3_oracle_verdicts.id`. canonical 바이트 자체에는 PK가 없음 | 화면 `id`의 권장 정본 |
@@ -100,6 +104,9 @@ JS Number를 거치며 큰 ID를 반올림하지 않는다. 중복 query·다중
 다만 verdict ID만 받으면 “일반 finding에는 연결 판정이 없음”, “후보가 송신 전에 차단됨”을
 조회할 대상이 없으므로 같은 경로에서 finding/candidate를 명시 선택하는 안을 함께 제안한다.
 제시됐던 `/verdict-records/{verdict_id}`와의 최종 선택은 **OD01·OD02 필수 리뷰**다.
+보고서 행에서 finding 없는 판정으로 이동하려면 검증된 `verdict_id`를 별도 형식 필드에
+싣는 안을 우선 검토한다. 대안인 issuance selector는 task에 결속된 명시 필드로 따로
+설계한다. 기존 `verdict-<issuance_id>` 행 식별자는 보존한다.
 
 기존 Go·TS·TSX 전체의 `finding-verdict-detail|verdict-records` 검색에서 등록 handler/client는
 발견되지 않았다. 평가 제안의 `GET /api/tasks/{task_id}/verdict-records` 목록과도 경로가 다르다.
@@ -130,7 +137,7 @@ JS Number를 거치며 큰 ID를 반올림하지 않는다. 중복 query·다중
 | 화면 필드 | 원천 | 현재 저장 여부 | 변환 규칙 | 미확정 사항 |
 | --- | --- | --- | --- | --- |
 | id | `e3_oracle_verdicts.id` | D, payload 밖 PK | `ids.verdict_id`를 손실 없는 문자열로. finding/candidate ID를 대신 넣지 않음 | 판정 없을 때 FindingRecord를 만들지 않는 UI union(OD01) |
-| severity | `binding_canonical`의 `e3record.Source.Severity`; link 있으면 `findings.severity`도 존재 | D+B. Source는 Prepare에서 critical/high/medium/low 검증 | 초기 판정의 심각도는 검증된 Source에서 읽고 현재 triage severity는 별도 필드. oracle 값에서 추론 금지 | 후보에는 severity 필드 없음. null/미평가 표현(현재 UI 타입은 4값 필수) |
+| severity | `binding_canonical`의 `e3record.Source.Severity`; link 있으면 `findings.severity`도 존재 | D+B. Source는 Prepare에서 critical/high/medium/low 검증 | 초기 판정과 현재 triage severity를 별도 표시. 후보의 `suggested_severity`는 별도 worker 추정 등급 | 후보의 등급 없음/추정 등급 표현. 저장된 추정 자유문장 근거는 이 응답 대상에서 제외 |
 | vulnClass | canonical `vuln_class`; 현재 Prepare는 `IDOR` 고정 | D | 저장된 유형 보존. 일반 finding의 mutable 유형과 혼합 금지 | 다른 오라클 유형·수직은 후속 |
 | oracleValue | canonical `oracle_value`와 DB `oracle_value`의 일치 | D | 4값 그대로 | 원값과 표시 판정 분리 |
 | vulnVerdict | canonical `vuln_verdict` | D | allowed만 null, 그 외는 원값과 동일 | 판정 부재의 null과 allowed의 null을 envelope로 구분 |
@@ -699,7 +706,7 @@ v1/v2를 읽을 수 있다는 사실은 v3 제품 확정 근거가 있다는 뜻
 | ID·결정 | 현재 코드 사실 | 제안 | 근거·관련 파일 | 검토 담당 | 구현 전 필수 |
 | --- | --- | --- | --- | --- | --- |
 | OD01 중심 ID·경로 | getter의 ID가 모호하고 PK는 서로 다름 | verdict 우선 + 동일 경로의 명시 finding/candidate selector. 더 좁은 verdict-only안과 선택 | §2, finding.ts, e3_finding_schema.sql, 평가 페이지 제안 | 최민준·이경준·이동찬 | 예 |
-| OD02 link 없는 판정 접근 | 현재 non-confirmed는 finding 없음, report ID는 issuance ID | verdict로 직접 접근. finding-only 경로로 누락시키지 않음 | §1·§2, diagnostic_report.go, db/e3_findings.go | 최민준·이경준 | 예 |
+| OD02 link 없는 판정 접근 | 현재 non-confirmed는 finding 없음, report ID는 issuance ID | 보고서 행에 검증된 별도 `verdict_id`가 우선안. 명시 issuance selector의 필요성 검토 | §1·§2, diagnostic_report.go, db/e3_findings.go | 최민준·이경준·이동찬 | 예 |
 | OD03 transmission 신뢰 원천 | registered GET와 제품 저널은 별개. 현재 시도 계정/판정 link 없음 | cross/call 범위, 시도 집합·독립 checkpoint·마감 reader·혼합 대표값 확정 | §5, transmit/config.go, e2proxy/types.go·audit.go, url_live_views.go | 이동찬·최민준, 표시 이경준 | 예 |
 | OD04 일반 finding과 E③ 표시 | 일반 triage confirmed와 E③ 원값은 다름 | envelope로 구분, no_link일 때 가짜 FindingRecord 생성 금지. severity null/비교 없음/원값 배지 검토 | §3·§4, UrlFindingLive.tsx, finding.test.ts | 이경준·최민준 | 예 |
 | OD05 후보↔판정 연결 | 현재 DiagnosticCandidate는 manual_review_required | link가 생겨도 후보 상태 보존. 연결 탐색·공급은 #596 담당 | §9, db/diagnostic_candidates.go, #596 §9 | 최민준·이경준, 실행 결속 이동찬 | 예(제품 연결 전) |
