@@ -2181,6 +2181,16 @@ it.each([
   expect(screen.queryByText("암호화하지 않는 주소 (http)") !== null).toBe(warned);
 });
 
+// 전송 통제 정책은 결과가 아니라 범위라 안전 장치 제목 옆에서 연다(작업대 실데이터 계약 §7-(1)).
+it("안전 장치 제목 옆 '정책 전체 보기'는 전송 통제 정책 화면으로 간다", async () => {
+  u.readURLStatus.mockResolvedValue(ready);
+  saveHandle(handle);
+  const { goTo } = mount("new");
+  await screen.findByRole("heading", { name: "안전 장치" });
+  fireEvent.click(screen.getByRole("button", { name: "정책 전체 보기" }));
+  expect(goTo).toHaveBeenCalledWith("controlpolicy");
+});
+
 it("선택적 승인 범위는 읽기 사전 승인과 쓰기 건별 확인을 구분해 표시한다", async () => {
   const input = { ...ready.input, workflow_mode: "user_approval_v1" as const };
   u.readURLStatus.mockResolvedValue({ ...ready, input, scope: { ...scope, approval_mode: "workbench_selective_v1" } });
