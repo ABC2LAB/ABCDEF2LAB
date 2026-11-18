@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from runner_llm import PRODUCT_VERIFY_ROLE, LLMMarkerError, judge_llm, judge_product_llm
+from runner_llm import PRODUCT_VERIFY_ROLE, LLMMarkerError, interrupted_generation_ids, judge_llm, judge_product_llm
 
 SLUG, NAME = "example-provider", "Example"
 # 사전검사 픽스처(test_preflight.configuration)의 temperature·sampling·seed로 만든 기대 적용값.
@@ -244,9 +244,6 @@ class TestMarkerShape(unittest.TestCase):
         self.assertEqual((int(match.group(1)), MAX_VERIFY_ATTEMPTS), (MAX_LOOKUP_TRIES, MAX_LOOKUP_TRIES))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class TestGatewayBodyKeyRejections(unittest.TestCase):
     """게이트웨이 샘플링 칸 거부 0건은 회차 유효 조건이다(4-4). provider 칸 거부·429는 기록만 한다."""
@@ -321,3 +318,50 @@ class TestJudgeProduct(unittest.TestCase):
         for baseline in (None, {"temperature": 1.0}, dict(SAMPLING, seed="42"), dict(SAMPLING, frequency_penalty=0)):
             with self.subTest(baseline=baseline), self.assertRaises(LLMMarkerError):
                 judge_product_llm(self.product(), baseline, SLUG, NAME)
+
+
+def call(gid, decision, started, completed, end=None):
+    row = {"seq": 1, "decision": decision, "method": "POST", "status": 200, "started_at": started, "completed_at": completed,
+           "generation_id": gid}
+    if end is not None:
+        row["unfinished_end"] = end
+    return row
+
+
+STOP = "2026-11-19T00:00:10Z"
+
+
+class TestInterruptedCalls(unittest.TestCase):
+    """끊긴 호출(평가 프로토콜 §6, 2026-11-19): 기록으로 증명된 것만. 세 조건이 모두 기록에 있어야 한다."""
+
+    def test_b_counts_only_gateway_seal_cancellations_spanning_the_seal(self):
+        rows = [call("cut", "cancelled_by_seal", "2026-11-19T00:00:05Z", "2026-11-19T00:00:11Z"),
+                call("late", "cancelled_by_seal", "2026-11-19T00:00:10.5Z", "2026-11-19T00:00:11Z"),  # 정지 신호 뒤 시작
+                call("done", "forwarded", "2026-11-19T00:00:05Z", "2026-11-19T00:00:11Z"),  # 응답 완료 기록
+                call("client", "upstream_error", "2026-11-19T00:00:05Z", "2026-11-19T00:00:11Z", "client_closed_before_done"),
+                call("", "cancelled_by_seal", "2026-11-19T00:00:05Z", "2026-11-19T00:00:11Z"),  # ID 없음
+                call("bad", "cancelled_by_seal", "yesterday", "2026-11-19T00:00:11Z")]  # 시각을 못 읽음
+        self.assertEqual(interrupted_generation_ids(rows, STOP, product=False), frozenset({"cut"}))
+        self.assertEqual(interrupted_generation_ids(rows, "not-a-time", product=False), frozenset())
+
+    def test_o_counts_only_caller_side_cuts_ending_after_the_stop(self):
+        rows = [call("cut", "upstream_error", "2026-11-19T00:00:05Z", "2026-11-19T00:00:10Z", "client_closed_before_done"),
+                call("midrun", "upstream_error", "2026-11-19T00:00:01Z", "2026-11-19T00:00:02Z", "client_closed_before_done"),
+                call("upcut", "upstream_error", "2026-11-19T00:00:05Z", "2026-11-19T00:00:11Z", "upstream_cut_before_done"),
+                call("after", "upstream_error", "2026-11-19T00:00:05Z", "2026-11-19T00:00:11Z", "client_closed_after_done"),
+                call("seal", "cancelled_by_seal", "2026-11-19T00:00:05Z", "2026-11-19T00:00:11Z")]
+        self.assertEqual(interrupted_generation_ids(rows, STOP, product=True), frozenset({"cut"}))
+
+    def test_interrupted_unverified_is_counted_apart_and_does_not_invalidate(self):
+        m = marker(generations=[generation("gen-1"), generation("cut", status="unverified", last="http_404", tries=40)])
+        reasons, summary = judge_llm(m, "api", SLUG, NAME, SAMPLING, frozenset({"cut"}))
+        self.assertEqual(reasons, [])
+        self.assertEqual((summary["unverified"], summary["unverified_interrupted"], summary["interrupted_calls"]), (1, 1, 1))
+        # 정상 완료 호출의 미확인은 지금처럼 무효다(끊긴 호출 집합에 없으면)
+        reasons, summary = judge_llm(m, "api", SLUG, NAME, SAMPLING, frozenset({"other"}))
+        self.assertEqual(reasons, ["llm_generation_unverified"])
+        self.assertEqual(summary["unverified_interrupted"], 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

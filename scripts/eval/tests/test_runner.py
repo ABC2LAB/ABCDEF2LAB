@@ -3057,9 +3057,6 @@ class TestHostSpec(unittest.TestCase):
                 self.assertEqual(caught.exception.code, "host_spec_failed")
         self.assertFalse(runner._host_spec_ok(dict(self.spec(self.FILES), logical_cpus=None)))
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class AcceptancePathKeyTests(unittest.TestCase):
     """수용시험 회차만 계측기와 같은 경로 가림 키를 eval-e2에 넘긴다(E② 시도 경로 투영)."""
@@ -3434,3 +3431,33 @@ class TestEngineEndSignal(unittest.TestCase):
         end = evidence.files["engine-end.json"]
         self.assertEqual((end["window_last_error"], end["final_error"]), ("engine_task_status_failed", "engine_task_status_failed"))
         self.assertNotIn("secret", json.dumps(end))
+
+
+class TestInterruptedCallsB(unittest.TestCase):
+    """B: 게이트웨이가 봉인 때 끊은 호출(cancelled_by_seal)의 미확인은 따로 세고 회차를 무효로 하지 않는다."""
+
+    def gateway(self, decision, end=None):
+        def mutate(g):
+            g.marker = llm_marker(sealed_at="2026-11-19T00:00:10Z", generations=[
+                llm_generation("gen-1"), llm_generation("cut", status="unverified", last="http_404", tries=40)])
+            row = {"seq": 1, "decision": decision, "method": "POST", "status": 200, "started_at": "2026-11-19T00:00:05Z",
+                   "completed_at": "2026-11-19T00:00:11Z", "generation_id": "cut", "request_bytes": 1, "response_bytes": 0}
+            if end:
+                row["unfinished_end"] = end
+            g.llm_rows = [row]
+        return mutate
+
+    def test_seal_cancellation_is_not_invalidating(self):
+        result, _, _, evidence = run(mutate_gateway=self.gateway("cancelled_by_seal"))
+        self.assertEqual(result["status"], COMPLETE, result)
+        self.assertEqual((evidence.files["llm-summary.json"]["unverified_interrupted"],
+                          evidence.files["llm-summary.json"]["unverified"]), (1, 1))
+
+    def test_other_unverified_calls_still_invalidate(self):
+        # B에서 호출자 쪽 끊김은 봉인 탓이라고 기록상 말할 수 없다(엔진은 봉인 때 멈추지 않음)
+        result, _, _, _ = run(mutate_gateway=self.gateway("upstream_error", "client_closed_before_done"))
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["llm_generation_unverified"]))
+
+
+if __name__ == "__main__":
+    unittest.main()

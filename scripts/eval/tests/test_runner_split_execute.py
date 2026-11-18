@@ -392,7 +392,7 @@ class TestOrder(unittest.TestCase):
                                                "pre-probe.json",
                                                "post-probe.json", "task.json", "llm-summary.json",
                                                "window-watch.json", "product-end.json", "product-model.json", "tool-surface.json",
-                                               "product-files.json", "discovery-sources.json", "fault-stall.json", RESULT_NAME})
+                                               "product-files.json", "discovery-sources.json", "fault-stall.json", "product-calls.jsonl", RESULT_NAME})
         self.assertEqual(evidence.files["discovery-sources.json"], {
             "format": "abc2lab-eval-runner-discovery-sources-v1", "endpoints": 4,
             "by_source": {"api_recon_runtime": 1, "browser_navigation": 1, "html_link": 2}, "browser": 1, "api_recon": 1,
@@ -1088,6 +1088,34 @@ class TestProductFaultStall(unittest.TestCase):
                                           "error": "fault_stall_rows_invalid"})
         record = product_fault_stall(b"", [], "2026-11-18T10:00:10Z", "2026-11-18T10:00:00Z", {})
         self.assertEqual(record["error"], "fault_stall_time_invalid")  # 창이 거꾸로면 B와 같은 코드
+
+
+
+class TestInterruptedCallsO(unittest.TestCase):
+    """O: 제품 정지 요청 뒤 호출자 쪽 끊김으로 끝난 호출의 미확인은 따로 세고, 제품 호출 기록을 회차 근거에 남긴다."""
+
+    def ports(self, end_completed_at):
+        def mutate(p):
+            rows = [{"seq": 1, "decision": "forwarded", "method": "POST", "status": 200, "started_at": "2000-01-01T00:00:00Z",
+                     "completed_at": "2000-01-01T00:00:01Z", "request_bytes": 1, "response_bytes": 1, "generation_id": "gen-1"},
+                    {"seq": 2, "decision": "upstream_error", "method": "POST", "status": 200, "started_at": "2000-01-01T00:00:02Z",
+                     "completed_at": end_completed_at, "request_bytes": 1, "response_bytes": 0, "generation_id": "cut",
+                     "unfinished_end": "client_closed_before_done"}]
+            p.calls_file = b"".join(json.dumps(row).encode() + b"\n" for row in rows)
+            unverified = {"id": "cut", "status": "unverified", "provider_name": "", "attempts": [],
+                          "lookup": {"tries": 40, "last": "http_404"}}
+            p.marker = product_marker(generations=[product_marker()["generations"][0], unverified])
+        return mutate
+
+    def test_cut_by_the_stop_is_counted_apart(self):
+        result, ports, evidence = run(self.ports("2999-01-01T00:00:00Z"))  # 정지 신호 뒤에 끝남
+        self.assertEqual(result["status"], "complete", result)
+        self.assertEqual(evidence.files["llm-summary.json"]["unverified_interrupted"], 1)
+        self.assertEqual(evidence.files["product-calls.jsonl"], ports.calls_file.decode())  # 받은 바이트 그대로
+
+    def test_failure_before_the_stop_still_invalidates(self):
+        result, _, _ = run(self.ports("2000-01-01T00:00:03Z"))  # 회차 중간 실패(정지와 무관)
+        self.assertEqual((result["status"], result["reasons"]), ("invalid", ["llm_generation_unverified"]))
 
 
 if __name__ == "__main__":
