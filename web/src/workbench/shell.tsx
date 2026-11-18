@@ -15,7 +15,7 @@ import type { DSel } from "./store";
  * finding = 발견 상세(구조화 판정 레코드 — 증거·신호·다계정 비교, 증거 부족이면 보수적으로 판단 불가).
  * e2flow = 전송 통제 흐름(E② — Bash 명령→요청→허용/차단, 3분류 fail-closed, 운영자 전용).
  * classify = 계정 분류(시험 계정 표시 등록·승인, 운영자 전용, 목업).
- * controlpolicy = 전송 통제 정책(E² 승인 origin·경로·메서드·상한·승인 방식·감사 결속, 운영자 전용, 현재 task 의 결속 정책 읽기).
+ * controlpolicy = 전송 통제 정책(E² 승인 origin·경로·메서드·상한·승인 방식·감사 결속, 운영자 전용, 목업).
  */
 export type View =
   | "dashboard"
