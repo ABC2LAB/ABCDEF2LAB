@@ -159,6 +159,11 @@ def _arithmetic_end(command: str, i: int, opened: int) -> int | None:
     return j if depth == 0 else None
 
 
+def _continued(line: str) -> bool:
+    """줄 끝이 막히지 않은 백슬래시(홀수 개)면 다음 줄로 잇는다."""
+    return (len(line) - len(line.rstrip("\\"))) % 2 == 1
+
+
 def _preprocess(command: str) -> tuple[str, list[str], bool]:
     """(주석·heredoc 본문을 뺀 명령 글, 확장되는 heredoc 본문들). 따옴표 상태를 줄 너머까지 들고 한 번에 훑는다(#682 리뷰:
     주석·heredoc·치환을 서로 다른 규칙으로 보면 주석 속 치환을 세거나 `)#` 뒤 주석의 `<<`로 다음 명령을 지운다).
@@ -172,6 +177,9 @@ def _preprocess(command: str) -> tuple[str, list[str], bool]:
     while i < len(command):
         char = command[i]
         if quote is not None:
+            if char == "\\" and quote == '"' and command.startswith("\n", i + 1):
+                i += 2  # 큰따옴표 안 줄 이음도 셸이 지운다(작은따옴표 안은 글자 그대로)
+                continue
             out.append(char)
             if char == quote:
                 quote = None
@@ -182,10 +190,14 @@ def _preprocess(command: str) -> tuple[str, list[str], bool]:
         elif char in "'\"":
             quote = char  # 다음 글자부터 따옴표 안이고, 거기서 경계가 꺼진다
             out.append(char)
+        elif char == "\\" and command.startswith("\n", i + 1):
+            # 줄 이음(백슬래시+줄바꿈)은 셸이 읽을 때 지운다(#682 리뷰: `n\⏎px`는 `npx` 한 낱말이다). 앞뒤 글자가 이어지고
+            # 경계 상태도 바꾸지 않는다. 명령 이름 가운데·들여쓰기 앞·치환 안 모두 같다.
+            i += 2
+            continue
         elif char == "\\" and i + 1 < len(command):
             out += [char, command[i + 1]]
-            # 줄 이음(백슬래시+줄바꿈)은 지워지는 자리라 경계 상태를 바꾸지 않는다
-            boundary = boundary if command[i + 1] == "\n" else False
+            boundary = False
             i += 1
         elif char == "#" and boundary:
             while i + 1 < len(command) and command[i + 1] != "\n":
@@ -201,7 +213,13 @@ def _preprocess(command: str) -> tuple[str, list[str], bool]:
             if end is None:
                 unsure = True
                 end = len(command)
-            out.append(command[i:end])
+            if char == "$":
+                # 산술 확장은 값 하나로 바뀌는 낱말 조각이다. 안쪽 공백으로 낱말을 쪼개면 `x=$(( 1 + 2 )) npx`에서 `1`을 명령으로
+                # 세고 뒤 명령을 놓친다(#682 리뷰 중 발견). 자리에는 값 하나를 두고, 안쪽 명령 치환은 실행되므로 따로 훑는다.
+                bodies.append(command[start:end - 2] if command.startswith("))", end - 2) else command[start:end])
+                out.append("0")
+            else:
+                out.append(command[i:end])
             boundary, i = False, end
             continue
         elif command.startswith("<<", i):
@@ -226,6 +244,13 @@ def _preprocess(command: str) -> tuple[str, list[str], bool]:
                     stop = command.find("\n", i)
                     line = command[i:] if stop < 0 else command[i:stop]
                     i = len(command) + 1 if stop < 0 else stop + 1
+                    # 확장되는 본문은 줄 끝 백슬래시가 다음 줄을 잇고, 구분어 비교도 이은 줄로 한다(bash). `<<-` 탭 지우기와
+                    # 겹치면 정적으로 풀지 않는다.
+                    while expands and _continued(line) and i <= len(command):
+                        unsure = unsure or strip_tabs
+                        stop = command.find("\n", i)
+                        line = line[:-1] + (command[i:] if stop < 0 else command[i:stop])
+                        i = len(command) + 1 if stop < 0 else stop + 1
                     if strip_tabs:
                         line = line.lstrip("\t")  # `<<-`는 줄 앞 탭만 지운다(공백은 아니다)
                     if line == delimiter:  # bash는 줄 전체가 구분어와 같을 때만 닫는다(#682 리뷰)

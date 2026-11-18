@@ -243,6 +243,35 @@ class TestCounting(unittest.TestCase):
                 self.assertTrue(unsure)
                 self.assertNotIn("npx", definite)
 
+    def test_review_round_eight_line_continuation_and_arithmetic_words(self):
+        # #682 리뷰 8차: 셸은 따옴표 밖·큰따옴표 안의 백슬래시+줄바꿈을 지우고 앞뒤를 잇는다(명령 이름 가운데·들여쓰기 앞·
+        # 치환 안 모두). 작은따옴표 안과 따옴표 있는 heredoc 본문은 글자 그대로다. bash 실측 89건과 일치.
+        cases = {
+            "n\\\npx --version": (["npx"], [], False),
+            "np\\\nx --version": (["npx"], [], False),
+            "n\\\n\\\npx --version": (["npx"], [], False),
+            "echo a; \\\n  npx --version": (["echo", "npx"], [], False),
+            "echo $(n\\\npx --version)": (["npx", "echo"], [], False),
+            'echo "$(n\\\npx --version)"': (["npx", "echo"], [], False),
+            "`n\\\npx --version`": (["npx"], [], False),
+            "false && n\\\npx a": (["false"], ["npx"], False),
+            "echo 'n\\\npx'": (["echo"], [], False),
+            "echo a\\\n#b; npx --version": (["echo", "npx"], [], False),  # 이은 뒤 `#`는 낱말 가운데라 주석이 아니다
+            "# c \\\nnpx --version": (["npx"], [], False),  # 주석은 줄 끝에서 끝난다
+            "cat <<E\n$(n\\\npx --version)\nE": (["npx", "cat"], [], False),
+            "cat <<'E'\n$(n\\\npx --version)\nE": (["cat"], [], False),
+            # 확장되는 heredoc은 이은 줄로 구분어를 비교한다: 첫 `E`는 `lineE`가 되어 닫지 못하고 다음 줄도 본문이다
+            "cat <<E\nline\\\nE\nnpx --version\nE": (["cat"], [], False),
+            "cat <<-E\n\tx\\\n\tE\nnpx --version\nE": (["cat"], [], True),  # `<<-` 탭 지우기와 겹치면 미확인
+            # 산술 확장은 낱말 하나다. 안쪽 공백으로 쪼개 `1`을 명령으로 세거나 뒤 명령을 놓치지 않는다(이번에 발견)
+            "x=$(( 1 + 2 )) npx --version": (["npx"], [], False),
+            "x=$(( 1 + 2 )); npx --version": (["npx"], [], False),
+            "echo $(( 1 + $(npx --version | wc -c) ))": (["npx", "wc", "echo"], [], False),
+        }
+        for command, expected in cases.items():
+            with self.subTest(command=command):
+                self.assertEqual(analyze_command_detail(command), (*expected[:2], expected[2]))
+
 
 if __name__ == "__main__":
     unittest.main()
