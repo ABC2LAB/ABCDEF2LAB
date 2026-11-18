@@ -212,6 +212,14 @@ describe("서버 보존 목록의 상태 필터와 선택한 보고서", () => {
       expect(screen.getByRole("complementary", { name: "선택한 점검" })).toHaveTextContent("실행 결과점검 완료"),
     );
     expect(screen.queryByRole("button", { name: /^발견 없음/ })).toBeNull();
+    // 패널 머리 글엔 '끝난 점검'을 적지 않고 대상 주소만, 서버 작업 번호는 '작업 #n' — 목록 줄에도 같은 번호(사용자 11/18)
+    const panel = screen.getByRole("complementary", { name: "선택한 점검" });
+    expect(panel).not.toHaveTextContent("끝난 점검");
+    expect(panel).not.toHaveTextContent("실제 task");
+    expect(panel).toHaveTextContent(`작업#${completed.task_id}`);
+    // 목록 줄은 이름(prep-…) 왼쪽에 번호만 — 아래 작은 글에 '작업 #n'을 따로 적지 않는다(사용자 11/18)
+    const row = screen.getByRole("button", { name: new RegExp(`^작업\\s*${completed.task_id}\\s*${completed.id}`) });
+    expect(row).not.toHaveTextContent("작업 #");
   });
   it("결과 저장 미확인 회차는 보고서 조회를 하지 않는다", () => {
     selectSaved({ ...completed, result_ready: false });

@@ -1340,6 +1340,13 @@ a.ph:hover {
   font-weight: 500;
   color: var(--ink-2);
 }
+/* 점검 목록 줄 이름 왼쪽 작업 번호 */
+.r-no {
+  margin-right: 8px;
+  font-weight: 700;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
 .r-s {
   font-size: 13px;
   color: var(--ink-2);

@@ -38,7 +38,17 @@ export function RunRow({ row, onPick }: { row: URLRunSummary; onPick?: () => voi
     >
       <span className={s.mk} aria-hidden="true" />
       <span className={s["r-main"]}>
-        <span className={s["r-host"]}>{maskSecrets(row.display_name?.trim() || row.id)}</span>
+        <span className={s["r-host"]}>
+          {/* 작업 번호(서버 task)를 이름 왼쪽에 숫자만: 끝난 점검이 많아져도 줄마다 구분되게, 오른쪽 패널 '작업 #n'과 같은
+              번호 (사용자 11/18) */}
+          {row.task_id ? (
+            <span className={s["r-no"]}>
+              <span className={s["sr-only"]}>작업 </span>
+              {row.task_id}
+            </span>
+          ) : null}
+          {maskSecrets(row.display_name?.trim() || row.id)}
+        </span>
         <span className={s["r-s"]}>
           {named ? <span>{row.id}</span> : null}
           <span>{urlPhaseLabels[row.phase]}</span>

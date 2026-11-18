@@ -314,12 +314,13 @@ function summaryHead(
     };
   }
   const pill = <UrlPill job={job} verified={verified} />;
-  if (!result) return { eyebrow: "끝난 점검", title: urlStateText(job.state, verified), chips: pill };
+  // 끝난 점검은 머리 글(eyebrow)에 '끝난 점검'을 적지 않고 대상 주소만 둔다(사용자 11/18)
+  if (!result) return { eyebrow: "", title: urlStateText(job.state, verified), chips: pill };
   const c = result.counts;
   const und = c.not_executed + c.unknown;
   if (c.confirmed + c.review > 0)
     return {
-      eyebrow: "끝난 점검",
+      eyebrow: "",
       title: `발견 ${result.found.length}건`,
       chips: (
         <>
@@ -334,7 +335,7 @@ function summaryHead(
     };
   if (und > 0) return { eyebrow: "결과 확인", title: `판단 불가 ${und}건`, chips: pill };
   return {
-    eyebrow: "끝난 점검",
+    eyebrow: "",
     title: result.kinds.includes("clean") ? "발견 없음" : urlStateText(job.state, verified),
     chips: pill,
   };
@@ -413,7 +414,8 @@ export function JobSummary({
     ["분석 모델", profile ? profile.model_label : handle.input.profile_id],
     ["진단 모드", MODE_TEXT[handle.input.workflow_mode ?? "none"]],
     ...(ended ? [] : [["단계", stageText] as const]),
-    ["실제 task", job?.task_id ? `#${job.task_id}` : "아직 없음"],
+    // 서버가 이 점검을 실제로 돌릴 때 붙인 작업 번호(task). 끝난 점검이 많아져도 목록 줄과 같은 번호로 가린다(사용자 11/18)
+    ["작업", job?.task_id ? `#${job.task_id}` : "아직 없음"],
     ...(flow ? [["보낸 요청", `${flow.counts.sent}건`] as const] : []),
     ...(outcomeText ? [["실행 결과", outcomeText] as const] : []),
   ];
@@ -445,7 +447,7 @@ export function JobSummary({
       <InspHead
         eyebrow={
           <>
-            {`${head.eyebrow} · `}
+            {head.eyebrow ? `${head.eyebrow} · ` : null}
             <span className={s.host}>{host}</span>
           </>
         }
