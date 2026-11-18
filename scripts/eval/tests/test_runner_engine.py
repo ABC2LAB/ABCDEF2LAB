@@ -811,44 +811,73 @@ class TestTaskStatusReader(unittest.TestCase):
 
 
 class TestCommandRecords(unittest.TestCase):
-    """원본 도구 실행 기록 읽기(분리 배치 결정안 §10). 쪽 넘김 끝까지 읽고, 못 읽으면 부분 기록으로 세지 않는다."""
+    """원본 도구 실행 기록 읽기(분리 배치 결정안 §10). 탐색 번호로 읽고, 쪽 넘김이 고정된 목록일 때만 받는다."""
 
     SETTINGS = {"page_size": 2, "timeout_seconds": 5, "max_page_bytes": 1 << 16, "max_total_bytes": 1 << 18, "max_pages": 5}
+    TASK = {"id": 17, "exploration_id": 5, "status": "done"}
 
-    def row(self, n, tool="Bash", task=7):
-        return {"id": n, "exploration_id": task, "worker": "w", "tool": tool, "command": '{"command":"ls"}', "output": "x",
+    def row(self, n, tool="Bash", exploration=5):
+        return {"id": n, "exploration_id": exploration, "worker": "w", "tool": tool, "command": '{"command":"ls"}', "output": "x",
                 "is_error": False, "created_at": "2026-11-17T00:00:00Z"}
 
-    def read(self, pages, settings=None):
+    def page(self, ids, total, **kw):
+        return {"commands": [self.row(i, **kw) for i in ids], "total": total}
+
+    def read(self, pages, task=None, settings=None):
         seen = []
 
         def get(port, path, headers, timeout, limit):
-            seen.append((path, headers, limit))
+            seen.append(path)
+            if path.startswith("/api/tasks/"):
+                return 200, json.dumps(task or self.TASK).encode()
             item = pages.pop(0)
             return item if isinstance(item, tuple) else (200, json.dumps(item).encode())
         with mock.patch.object(runner_engine, "login", return_value="tok"), mock.patch.object(runner_engine, "_get", get):
-            return runner_engine.command_records(8080, AdminSecret("x"), "7", settings or self.SETTINGS), seen
+            return runner_engine.command_records(8080, AdminSecret("x"), "17", settings or self.SETTINGS), seen
 
-    def test_pages_until_total(self):
-        rows, seen = self.read([{"commands": [self.row(3), self.row(2, "Read")], "total": 3}, {"commands": [self.row(1)], "total": 3}])
-        self.assertEqual([r["tool"] for r in rows], ["Bash", "Read", "Bash"])
-        self.assertEqual(set(rows[0]), {"tool", "command", "output", "failed"})
-        self.assertEqual([p for p, _, _ in seen], ["/api/commands?task=7&page=0&size=2", "/api/commands?task=7&page=1&size=2"])
-        self.assertEqual(seen[0][1], {"Authorization": "Bearer tok"})
+    def test_reads_by_exploration_id_and_rechecks_the_first_page(self):
+        # #682 리뷰: ?task=는 작업 번호(17)가 아니라 그 작업의 탐색 번호(5)다.
+        got, seen = self.read([self.page([3, 2], 3), self.page([1], 3), self.page([3, 2], 3)])
+        self.assertEqual(got["exploration_id"], 5)
+        self.assertEqual([r["tool"] for r in got["records"]], ["Bash", "Bash", "Bash"])
+        self.assertEqual(seen, ["/api/tasks/17", "/api/commands?task=5&page=0&size=2", "/api/commands?task=5&page=1&size=2",
+                                "/api/commands?task=5&page=0&size=2"])
+
+    def test_rows_of_the_task_number_are_rejected(self):
+        with self.assertRaises(EngineAPIError) as caught:
+            self.read([self.page([1], 1, exploration=17)])
+        self.assertEqual(str(caught.exception), "engine_commands_invalid")
+
+    def test_shifting_list_is_reread_then_rejected(self):
+        # #682 리뷰 반례: 둘째 쪽 전에 새 행(id 4)이 들어와 OFFSET이 밀리면 중복(id 2)이 섞이고 최신 행이 빠진다.
+        shifted = [self.page([3, 2], 3), self.page([2, 1], 4)]
+        stable = [self.page([4, 3], 4), self.page([2, 1], 4), self.page([4, 3], 4)]
+        got, _ = self.read(shifted + stable)
+        self.assertEqual(len(got["records"]), 4)  # 다시 읽어 고정된 목록을 받는다
+        with self.assertRaises(EngineAPIError) as caught:
+            self.read(shifted * 3)
+        self.assertEqual(str(caught.exception), "engine_commands_unstable")
+        # 다 읽은 뒤 첫 쪽이 바뀌었으면(새 행) 다시 읽는다
+        grew = [self.page([3, 2], 3), self.page([1], 3), self.page([4, 3], 4)]
+        with self.assertRaises(EngineAPIError) as caught:
+            self.read(grew * 3)
+        self.assertEqual(str(caught.exception), "engine_commands_unstable")
 
     def test_failures_are_codes(self):
         cases = {
             "engine_commands_http_500": [(500, b"")],
-            "engine_commands_invalid": [{"commands": [dict(self.row(1), exploration_id=8)], "total": 1}],
-            "engine_commands_incomplete": [{"commands": [self.row(1)], "total": 3}, {"commands": [], "total": 3}],
-            "engine_commands_too_many_pages": [{"commands": [self.row(i), self.row(i)], "total": 99} for i in range(5)],
+            "engine_commands_too_many_pages": [self.page([10 - 2 * i, 9 - 2 * i], 99) for i in range(5)],
         }
         for code, pages in cases.items():
             with self.subTest(code=code), self.assertRaises(EngineAPIError) as caught:
                 self.read(pages)
             self.assertEqual(str(caught.exception), code)
         with self.assertRaises(EngineAPIError) as caught:
-            self.read([{"commands": [self.row(1)], "total": 1}], dict(self.SETTINGS, max_total_bytes=10))
+            self.read([self.page([1], 1)], settings=dict(self.SETTINGS, max_total_bytes=10))
         self.assertEqual(str(caught.exception), "engine_commands_too_large")
+        for task in ({"id": 18, "exploration_id": 5}, {"id": 17, "exploration_id": "5"}, {"id": 17}):
+            with self.subTest(task=task), self.assertRaises(EngineAPIError) as caught:
+                self.read([], task=task)
+            self.assertEqual(str(caught.exception), "engine_task_invalid")
         with self.assertRaises(EngineAPIError):
             runner_engine.command_records(8080, AdminSecret("x"), "7; drop", self.SETTINGS)

@@ -193,7 +193,7 @@ class RunPorts(Protocol):
     def state_trees(self, phase: str, snapshot: dict, key: bytes) -> dict: ...
     def state_memory(self, phase: str, snapshot: dict, key: bytes) -> list: ...
     def findings(self) -> dict: ...
-    def command_records(self, task_id: str) -> list: ...
+    def command_records(self, task_id: str) -> dict: ...
     def intercept_summary(self) -> dict: ...
     def e2_service_ready(self) -> dict: ...
     def e2_bind(self, reset_generation: str) -> None: ...
@@ -877,8 +877,9 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     if spec.cli_usage_names:
         # 원본 도구 실행 기록에서 B에만 있는 CLI 이름별 Bash 호출 수만 남긴다(원문은 메모리에서만 본다, 결정안 §10).
         commands = _step(state, "cli_usage_failed", lambda: ports.command_records(task_id))
-        usage = _step(state, "cli_usage_failed", lambda: count_usage(
-            [record for record in commands if record["tool"] == BASH_TOOL], spec.cli_usage_names, with_failures=False))
+        usage = _step(state, "cli_usage_failed", lambda: dict(count_usage(
+            [record for record in commands["records"] if record["tool"] == BASH_TOOL], spec.cli_usage_names, with_failures=False),
+            exploration_id=commands["exploration_id"]))
         _step(state, "evidence_write_failed", lambda: evidence.write_json(CLI_USAGE_NAME, usage))
     intercepted = _step(state, "intercept_summary_failed", ports.intercept_summary)
     _step(state, "evidence_write_failed", lambda: evidence.write_json("intercept-summary.json", intercepted))
@@ -1281,7 +1282,7 @@ class DockerPorts:
                  apply_settings: Callable[[], None] | None = None,
                  verdicts: Callable[[str, RecordContext], CollectedExport] | None = None, e2_link: E2Link | None = None,
                  e2_prompt: Callable[[str, str], bytes] | None = None, task_status: Callable[[str], dict] | None = None,
-                 commands: Callable[[str], list] | None = None):
+                 commands: Callable[[str], dict] | None = None):
         self.config, self.plan, self.directory, self.docker = config, plan, directory, docker
         self._task_status = task_status
         self._commands = commands
@@ -1435,7 +1436,7 @@ class DockerPorts:
     def findings(self) -> dict:
         return self._findings()
 
-    def command_records(self, task_id: str) -> list:
+    def command_records(self, task_id: str) -> dict:
         if self._commands is None:
             raise RunFailure("cli_usage_unavailable")
         return self._commands(task_id)
@@ -1660,7 +1661,7 @@ def main(argv: list[str] | None = None) -> int:
     def e2_prompt(task_id: str, run_ref: str) -> bytes:
         return e2_prompt_projection(config.ports["engine_api_host"], secret, task_id, run_ref, config.e2_product["exchange_timeout_seconds"])
 
-    def commands(task_id: str) -> list:
+    def commands(task_id: str) -> dict:
         return command_records(config.ports["engine_api_host"], secret, task_id, config.findings)
 
     status_reader = TaskStatusReader(config.ports["engine_api_host"], secret, config.run["task_create_timeout_seconds"])

@@ -498,7 +498,7 @@ class FakePorts:
     def command_records(self, task_id):
         self._call("command_records")
         self.command_task = task_id
-        return list(self.command_rows)
+        return {"exploration_id": 5, "records": list(self.command_rows)}
 
     def e2_service_ready(self):
         self._call("e2_service_ready")
@@ -1107,7 +1107,8 @@ class TestCompleteRun(unittest.TestCase):
         self.assertEqual(ports.calls[ports.calls.index("findings") + 1], "command_records")
         self.assertEqual(ports.command_task, "17")  # 이 회차가 만든 작업 번호
         usage = evidence.files["cli-usage.json"]
-        self.assertEqual((usage["bash_calls"], usage["calls"], usage["names"]), (2, {"npx": 1, "pip3": 1}, ["npx", "pip3", "vim"]))
+        self.assertEqual((usage["bash_calls"], usage["calls"], usage["names"], usage["exploration_id"], usage["uncertain_calls"]),
+                         (2, {"npx": 1, "pip3": 1}, ["npx", "pip3", "vim"], 5, 0))
         self.assertNotIn("not_found", usage)
         self.assertNotIn("playwright test", json.dumps(evidence.files))  # 명령 원문은 남지 않는다
         self.assertNotIn("command_records", run()[1].calls)  # 이름이 없으면(분리 배치 아님·O) 읽지 않는다
