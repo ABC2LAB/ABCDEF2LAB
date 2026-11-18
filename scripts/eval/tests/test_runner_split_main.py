@@ -240,6 +240,10 @@ class TestBeforeUp(Fixture):
         self.assertEqual(seen["ports"].llm_env, llm_lookup_env(self.config, preflight_for(self.config)))
         self.assertEqual(seen["ports"].model_key.reveal(), "sk-or-v1-test")
         self.assertEqual(seen["path_key"], self.path_key.read_bytes())  # 경계 키 = B 계측기 키
+        # 계측기 기록 대조·서명 조건에 쓰는 키 지문(값이 아님)은 B와 같은 확인(check_key_files)에서 온다(결정 (a))
+        from runner_config import check_key_files
+        self.assertEqual(seen["spec"].path_key_ref, check_key_files(self.config))
+        self.assertRegex(seen["spec"].path_key_ref, r"^[0-9a-f]{16}$")
         self.assertIsInstance(seen["meter"], MeterFiles)
         self.assertEqual(seen["spec"].healthchecks, healthcheck_actions(rendered))
         run_dir = next(self.runs.iterdir())
