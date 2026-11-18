@@ -53,7 +53,9 @@ const (
 	maxDoneLineBytes   = len("\ndata: [DONE]\r\n")
 	maxGenerationBytes = 64 << 10
 	// Generation stats can lag the response; each lookup still has to end.
-	generationLookupTimeout = 30 * time.Second
+	// generation 조회 한 번의 시간 상한. 막힌 조회 하나가 라운드를 오래 잡지 않게 짧게 두고, 실패한 것은 다음 라운드에서 다시
+	// 묻는다(2026-11-18 보정 쌍 B1: 30초 상한에서 network_error·408 몇 건이 전체 시한을 다 써 12건을 묻지 못했다).
+	generationLookupTimeout = 10 * time.Second
 	upstreamTLSTimeout      = 10 * time.Second
 )
 
