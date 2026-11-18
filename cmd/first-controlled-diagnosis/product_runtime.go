@@ -655,6 +655,16 @@ func (e productPreparationEndpoint) Call(ctx context.Context, r diagnosisprep.Re
 			if err == nil {
 				control.Declaration = &d
 			}
+		case "reset_confirmation", "reset_confirm":
+			var st diagnosisprep.ProductResetState
+			if r.Product.Operation == "reset_confirm" {
+				st, err = p.targets.confirmReset(r.Principal, r.Product.TargetID, r.Product.Reset.StatementConfirmed)
+			} else {
+				st, err = p.targets.resetConfirmation(r.Principal, r.Product.TargetID)
+			}
+			if err == nil {
+				control.Reset = &st
+			}
 		case "target_login":
 			control.Login, err = p.targets.targetLogin(r.Principal, r.Product.TargetID)
 		case "target_login_set":

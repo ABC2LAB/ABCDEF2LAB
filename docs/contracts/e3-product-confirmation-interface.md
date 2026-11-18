@@ -47,7 +47,11 @@
   - 다른 운영자의 대상은 계정 API와 같이 `404 target_not_found`다(존재를 드러내지 않는다). 지금 권한 모델에서는 대상 승인자 = 등록 운영자 한 사람이라 별도 403은 없다.
   - 철회(DELETE)는 최소 기능에 없다(405). 바꾸려면 PUT으로 교체하고, 대상을 다시 승인하면 무효가 된다.
   - 크기 상한: 종류 16개, 소유자 전용 필드 16개, 본문 틀 2KiB, 선언 인코딩 24KiB(준비 프로세스 IPC 한 프레임 64KiB 안).
-- `DeclarationReader.ReadFrozen`은 저장된 동결본을 그대로 돌려준다. 읽을 수 없으면 `ErrPolicyUnavailable`이다(시작 거절, 진위 실패 아님). 읽었는데 digest·대상 판이 다르면 진위 실패(`policy_digest_mismatch`)다.
+- **실행 시작 때 동결(구현).** 회차를 발급할 때(`runs/<job>` 생성) 지금 대상 판에 유효한 선언이 있으면 회차 디렉터리에 두 파일을 0600으로 쓴다. 선언이 없으면 쓰지 않고, 그 회차의 확정 단계는 꺼진다.
+  - `e3-declaration.json`: 선언 정본 바이트 그대로. 이 파일의 SHA-256 = 정책 출처 digest(`policy_version`).
+  - `e3-policy.json`: 정책 출처(`kind=product_declaration`, `ref=declaration-<job>`, digest, 대상 승인 판)와 유효창(대상 승인 기간과 실행 기간이 겹치는 구간). 확정 단계가 `RunBinding.Policy`와 `PolicyValidFrom·Until`을 여기서 만든다.
+  - 준비 저널은 압축될 수 있어 옛 선언 줄을 나중에 다시 찾을 수 없으므로 회차마다 사본을 둔다. 저장된 판정을 다시 읽을 때도 이 사본을 읽고 현재 대상 등록의 선언으로 대신하지 않는다(OD06).
+- `DeclarationReader.ReadFrozen`은 저장된 동결본을 그대로 돌려준다(제품: `declaration-<job>` 참조의 회차 사본). 읽을 수 없으면 `ErrPolicyUnavailable`이다(시작 거절, 진위 실패 아님). 읽었는데 digest·대상 판이 다르면 진위 실패(`policy_digest_mismatch`)다.
 
 ## 4. E② 프로그램 요청
 
@@ -136,7 +140,14 @@
 - `residue`가 `absent`가 아님(`present`면 `previous_markers_present`, 그 밖에는 `reset_state_unavailable`)
 - 지난 쓰기 뒤 리셋 확인 기록이 없음
 
-서버는 회차 시작 때(모델 단계 전) 이것으로 회차를 거절하고, `Run`은 확정 단계 시작 때 다시 본다.
+서버는 회차 시작 때(모델 단계 전) 이것으로 회차를 거절하고, `Run`은 확정 단계 시작 때 다시 본다. 리셋 확인이 없으면 잔존 점검 결과와 관계없이 `reset_confirmation_missing`이다.
+
+**기록과 API(구현).** 선언 저널에 두 종류의 줄을 더 남긴다.
+- `confirmation_writes`: 확정 단계가 대상에 만든 객체(종류·ID digest, 원문 없음)와 회차. 행위자는 프로그램(`e3-confirmation`)이다. 새 쓰기는 앞선 리셋 확인을 덮는다.
+- `reset_confirmed`: 대상 승인자가 리셋 진술에 동의함(진술 문장의 SHA-256·누가·언제). 남은 쓰기가 없으면 남기지 않는다.
+- `GET /api/product/targets/{id}/reset-confirmation` → `{"reset": {"reset_required", "last_writes_job"?, "last_writes_at"?, "last_writes_objects"?, "confirmed_by"?, "confirmed_at"?, "statement"}}`. 화면은 `statement`를 그대로 보이고 동의를 받는다.
+- `POST …/reset-confirmation` `{"statement_confirmed": true}` → 같은 모양. 진술 동의가 없으면 400 `statement_required`다. 리셋은 더 안전한 쪽이라 대상 승인 상태와 관계없이 받는다.
+- 게이트는 지난 쓰기가 있으면 리셋 확인과 별개로 지난 객체를 읽어 표식 잔존을 본다(결정 §6.1 (b), E² 쪽 점검). 그 점검이 연결되기 전이나 실패하면 잔존은 `unknown`이라 시작하지 않는다.
 
 ## 9. 후보 연결
 

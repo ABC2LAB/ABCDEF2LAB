@@ -62,6 +62,23 @@ func productTargetsHTTP(w http.ResponseWriter, r *http.Request, owner string, en
 			if !productAccountRequest(w, r, parts, request) {
 				return
 			}
+		} else if len(parts) == 2 && parts[1] == "reset-confirmation" {
+			// GET: 확정 단계 쓰기와 리셋 확인 상태(진술 문장 포함). POST {"statement_confirmed": true}: 리셋 진술을 남김.
+			switch r.Method {
+			case "GET":
+				request.Operation = "reset_confirmation"
+			case "POST":
+				var body diagnosisprep.ResetRequest
+				if !productAccountBody(w, r, &body) || !body.StatementConfirmed {
+					writeJSON(w, 400, map[string]string{"error": "statement_required"})
+					return
+				}
+				request.Operation = "reset_confirm"
+				request.Reset = &body
+			default:
+				writeJSON(w, 405, map[string]string{"error": "method_not_allowed"})
+				return
+			}
 		} else if len(parts) == 2 && parts[1] == "declaration" {
 			if !productDeclarationRequest(w, r, request) {
 				return

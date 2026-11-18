@@ -42,6 +42,8 @@ type ProductRequest struct {
 	Credential *AccountCredential `json:"credential,omitempty"`
 	// Declaration은 정책 선언 저장(declaration_put)의 입력이다. 대상 판 기대값은 ExpectedRevision이다.
 	Declaration *DeclarationInput `json:"declaration,omitempty"`
+	// Reset은 리셋 확인(reset_confirm)의 입력이다.
+	Reset *ResetRequest `json:"reset,omitempty"`
 }
 
 // TargetLogin은 대상 앱의 로그인 방식이다. 앱의 경로·필드 이름은 코드가 아니라 이 설정으로만 받는다(하드코딩 금지).
@@ -200,6 +202,8 @@ type ProductResponse struct {
 	Reason                   string `json:"reason,omitempty"`
 	// Declaration은 declaration·declaration_put의 결과다.
 	Declaration *ProductDeclaration `json:"declaration,omitempty"`
+	// Reset은 reset_confirmation·reset_confirm의 결과다.
+	Reset *ProductResetState `json:"reset,omitempty"`
 	// Field는 Reason이 invalid_declaration일 때 실패한 칸 이름이다(값 없음).
 	Field string `json:"field,omitempty"`
 }
@@ -222,6 +226,21 @@ func validProductRequest(r *ProductRequest) bool {
 		return false
 	}
 	if r.Operation != "resolve" && r.TargetURL != "" {
+		return false
+	}
+	if strings.HasPrefix(r.Operation, "reset_confirm") {
+		if !reference.MatchString(r.TargetID) || r.ProfileID != "" || r.Registration != nil || r.TargetURL != "" || r.JobID != "" || r.CommandKey != "" || r.ExpectedRevision != 0 || len(r.SelectedIDs) > 0 || r.Account != nil || r.Login != nil || r.Credential != nil || r.Declaration != nil {
+			return false
+		}
+		switch r.Operation {
+		case "reset_confirmation":
+			return r.Reset == nil
+		case "reset_confirm":
+			return r.Reset != nil && r.Reset.StatementConfirmed
+		}
+		return false
+	}
+	if r.Reset != nil {
 		return false
 	}
 	if strings.HasPrefix(r.Operation, "declaration") {

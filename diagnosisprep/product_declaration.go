@@ -56,3 +56,32 @@ func validProductDeclaration(p ProductDeclaration) bool {
 	}
 	return false
 }
+
+// ResetRequest는 리셋 확인(reset_confirm)의 입력이다. 운영자가 진술(ProductResetState.Statement)에 동의했다는 뜻이다.
+type ResetRequest struct {
+	StatementConfirmed bool `json:"statement_confirmed"`
+}
+
+// ProductResetState는 대상의 확정 단계 쓰기와 리셋 확인 상태다(E③ 결정 §6.1). ResetRequired면 운영자가 리셋 진술을
+// 남기기 전까지 다음 회차를 시작하지 않는다. 객체 ID·표식은 담지 않고 개수만 보인다.
+type ProductResetState struct {
+	ResetRequired     bool      `json:"reset_required"`
+	LastWritesJob     string    `json:"last_writes_job,omitempty"`
+	LastWritesAt      time.Time `json:"last_writes_at,omitempty"`
+	LastWritesObjects int       `json:"last_writes_objects,omitempty"`
+	ConfirmedBy       string    `json:"confirmed_by,omitempty"`
+	ConfirmedAt       time.Time `json:"confirmed_at,omitempty"`
+	Statement         string    `json:"statement"`
+}
+
+func validProductResetState(s ProductResetState) bool {
+	if !validText(s.Statement, 1024) || s.LastWritesObjects < 0 || s.LastWritesObjects > e3contract.MaxDeclarationTypes {
+		return false
+	}
+	if s.LastWritesJob == "" {
+		return !s.ResetRequired && s.LastWritesAt.IsZero() && s.LastWritesObjects == 0 && s.ConfirmedBy == "" && s.ConfirmedAt.IsZero()
+	}
+	confirmed := s.ConfirmedBy != ""
+	return reference.MatchString(s.LastWritesJob) && !s.LastWritesAt.IsZero() && s.LastWritesObjects > 0 &&
+		s.ResetRequired != confirmed && confirmed != s.ConfirmedAt.IsZero() && (!confirmed || reference.MatchString(s.ConfirmedBy))
+}

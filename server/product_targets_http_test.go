@@ -246,3 +246,31 @@ func TestProductDeclarationHTTP(t *testing.T) {
 		t.Fatalf("철회는 최소 기능에 없음: %d", w.Code)
 	}
 }
+
+func TestProductResetConfirmationHTTP(t *testing.T) {
+	id := "target-" + strings.Repeat("a", 32)
+	path := "/api/product/targets/" + id + "/reset-confirmation"
+	p := &productDeclarationRecorder{response: diagnosisprep.ProductResponse{Reset: &diagnosisprep.ProductResetState{Statement: "statement"}}}
+	invoke := func(method, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		productTargetsHTTP(w, r, "ARTEX", p)
+		return w
+	}
+	if w := invoke("GET", ""); w.Code != 200 || p.requests[0].Product.Operation != "reset_confirmation" || !strings.Contains(w.Body.String(), `"reset"`) {
+		t.Fatalf("조회: %d %s", w.Code, w.Body.String())
+	}
+	if w := invoke("POST", `{"statement_confirmed":true}`); w.Code != 200 || p.requests[1].Product.Operation != "reset_confirm" || !p.requests[1].Product.Reset.StatementConfirmed {
+		t.Fatalf("확인: %d %s", w.Code, w.Body.String())
+	}
+	for _, body := range []string{`{}`, `{"statement_confirmed":false}`, `{"statement_confirmed":true,"job":"x"}`, ``} {
+		before := len(p.requests)
+		if w := invoke("POST", body); w.Code != 400 || len(p.requests) != before || !strings.Contains(w.Body.String(), "statement_required") {
+			t.Fatalf("%q: %d %s", body, w.Code, w.Body.String())
+		}
+	}
+	if w := invoke("DELETE", ""); w.Code != 405 {
+		t.Fatalf("DELETE: %d", w.Code)
+	}
+}

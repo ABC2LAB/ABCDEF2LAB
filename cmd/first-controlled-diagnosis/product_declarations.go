@@ -19,14 +19,19 @@ import (
 
 const declarationDeclare = "declare"
 
+// productDeclarationEvent는 선언 저널 한 줄이다. declare 줄은 선언·digest를, confirmation_writes 줄은 회차·객체를,
+// reset_confirmed 줄은 진술 해시를 담는다. 보호 저널은 null을 받지 않으므로 해당 없는 칸은 생략한다.
 type productDeclarationEvent struct {
-	TargetID       string                 `json:"target_id"`
-	Action         string                 `json:"action"`
-	Actor          string                 `json:"actor"`
-	At             time.Time              `json:"at"`
-	TargetRevision uint64                 `json:"target_revision"`
-	DigestSHA256   string                 `json:"digest_sha256"`
-	Declaration    e3contract.Declaration `json:"declaration"`
+	TargetID        string                      `json:"target_id"`
+	Action          string                      `json:"action"`
+	Actor           string                      `json:"actor"`
+	At              time.Time                   `json:"at"`
+	TargetRevision  uint64                      `json:"target_revision"`
+	DigestSHA256    string                      `json:"digest_sha256,omitempty"`
+	Declaration     *e3contract.Declaration     `json:"declaration,omitempty"`
+	JobRef          string                      `json:"job_ref,omitempty"`
+	Objects         []productConfirmationObject `json:"objects,omitempty"`
+	StatementSHA256 string                      `json:"statement_sha256,omitempty"`
 }
 
 type productDeclarationState struct {
@@ -46,8 +51,14 @@ func targetApprovalRevision(revision uint64) string { return strconv.FormatUint(
 // 저널에 손댄 줄을 받지 않는다. 자격 모양 검사는 저장 때만 한다: 검사 규칙(dlp)이 넓어져 옛 줄이 걸리면 설치 전체가
 // 열리지 않기 때문이다.
 func (r *productTargetRegistry) replayDeclaration(e productDeclarationEvent) error {
+	if e.Action == declarationConfirmationWrites || e.Action == declarationResetConfirmed {
+		return r.replayReset(e)
+	}
 	rec, ok := r.records[e.TargetID]
-	d := e.Declaration
+	if e.Declaration == nil || e.JobRef != "" || len(e.Objects) != 0 || e.StatementSHA256 != "" {
+		return errPreparation
+	}
+	d := *e.Declaration
 	if !ok || e.Action != declarationDeclare || e.Actor != rec.Principal || e.At.IsZero() || e.TargetRevision < 1 ||
 		e.TargetRevision > rec.Target.Revision || d.Validate() != nil || d.TargetRef != e.TargetID ||
 		d.TargetApprovalRevision != targetApprovalRevision(e.TargetRevision) || d.DeclaredBy != e.Actor ||
@@ -127,7 +138,7 @@ func (r *productTargetRegistry) putDeclaration(principal, id string, expected ui
 		return diagnosisprep.ProductDeclaration{}, errPreparation
 	}
 	e := productDeclarationEvent{TargetID: id, Action: declarationDeclare, Actor: principal, At: now,
-		TargetRevision: rec.Target.Revision, DigestSHA256: digest, Declaration: d}
+		TargetRevision: rec.Target.Revision, DigestSHA256: digest, Declaration: &d}
 	raw, err := json.Marshal(e)
 	if err != nil || r.check() != nil {
 		return diagnosisprep.ProductDeclaration{}, errPreparation
