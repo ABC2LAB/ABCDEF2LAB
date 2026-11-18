@@ -25,8 +25,8 @@ from runner_split_config import plan_split_run  # noqa: E402
 from runner_split_main import SplitDeclared, llm_lookup_env, run_split_ours, split_declared, split_run_spec  # noqa: E402
 from runner_split_ports import DockerSplitPorts  # noqa: E402
 from runner_window import healthcheck_actions  # noqa: E402
-from test_preflight import configuration  # noqa: E402
-from test_preservation_record import options  # noqa: E402
+from test_preflight import LOCAL_SAMPLING, configuration  # noqa: E402
+from test_preservation_record import model_options, options  # noqa: E402
 from test_runner_config import runner_config  # noqa: E402
 from test_runner_split_config import split_block  # noqa: E402
 from test_runner_split_inputs import FakeOpenssl  # noqa: E402
@@ -65,12 +65,103 @@ class Fixture(unittest.TestCase):
         self.path_key = write_private(root / "secrets" / "path.key", bytes(range(32)))
         payload = runner_config()
         payload.update(runs_root=str(root / "runs"), purpose="browser_acceptance", path_key_file=str(self.path_key),
-                       preservation=options(), split=split_block(manifest_path=str(self.manifest_path)))
+                       preservation=model_options(), split=split_block(manifest_path=str(self.manifest_path)))
         self.config = parse_runner_config(payload)
         self.runs = root / "runs"
 
     def tearDown(self):
         self._tmp.cleanup()
+
+
+SYNTHETIC_LLM = {"backend": "local", "base_url": "http://eval-scripted-model:8080/v1", "model": "scripted-product:v1",
+                 "hostname": "eval-scripted-model", "host_ip": "10.252.2.30", "model_digest": "a" * 64, "context_length": 32768,
+                 "server_version": "0.0.1", "placement": "any"}
+
+
+def synthetic_preflight(config, **llm_changes):
+    declared = preflight_for(config)
+    for side in ("baseline", "ours"):  # 사전검사는 두 쪽 LLM이 같아야 한다
+        declared[side]["llm"] = dict(SYNTHETIC_LLM, **llm_changes)
+        declared[side]["sampling"] = dict(LOCAL_SAMPLING)  # 로컬 백엔드 샘플링 묶음
+    return declared
+
+
+class SyntheticFixture(unittest.TestCase):
+    """합성 모델 모드 설정(2026-11-18 사용자 결정 (a))."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        root = Path(self._tmp.name)
+        (root / "runs").mkdir(mode=0o700)
+        self.path_key = write_private(root / "path.key", bytes(range(32)))
+        self.plan_path = root / "plan.json"
+        self.plan_path.write_text(json.dumps({
+            "format": "abc2lab.scripted-product-plan/v1", "model": "scripted-product:v1", "timeout_ms": 60000,
+            "exploration": [{"navigate": "{origin}/"}], "intents": ["Check {origin}/a"], "commands": ["curl -s {origin}/a"]}))
+        payload = runner_config()
+        payload.update(runs_root=str(root / "runs"), purpose="browser_acceptance", path_key_file=str(self.path_key),
+                       preservation=options(), split=split_block(manifest_path=None, synthetic_model={
+                           "plan_path": str(self.plan_path), "max_tokens": 2048}))
+        self.config = parse_runner_config(payload)
+        self.root = root
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+
+class TestSyntheticDeclared(SyntheticFixture):
+    def test_declaration_must_point_at_the_scripted_model(self):
+        declared = split_declared(self.config, synthetic_preflight(self.config), None)
+        ours = synthetic_preflight(self.config)["ours"]
+        self.assertEqual((declared.llm_model, declared.context_window_k, declared.llm_provider),
+                         ("scripted-product:v1", ours["context_window_k"], ""))
+        for change in ({"host_ip": "10.252.2.31"}, {"hostname": "other-model", "base_url": "http://other-model:8080/v1"},
+                       {"base_url": "http://eval-scripted-model:8081/v1"}):
+            with self.subTest(change=change), self.assertRaises(RunnerConfigError) as caught:
+                split_declared(self.config, synthetic_preflight(self.config, **change), None)
+            self.assertIn("preflight.ours.llm: SYNTHETIC_MODEL_MISMATCH", caught.exception.errors)
+        # 실제 모델(api) 선언으로는 합성 모드를 돌리지 않는다
+        with self.assertRaises(RunnerConfigError) as caught:
+            split_declared(self.config, preflight_for(self.config), None)
+        self.assertIn("preflight.ours.llm: SYNTHETIC_MODEL_MISMATCH", caught.exception.errors)
+
+    def test_plan_copy_is_checked_and_bound_to_the_declared_model(self):
+        run = self.root / "run"
+        run.mkdir(mode=0o700)
+        target, sha = runner_split_main._copy_scripted_plan(self.plan_path, run, "http://app.eval.test:8080", "scripted-product:v1")
+        self.assertEqual((target.read_bytes(), sha), (self.plan_path.read_bytes(), hashlib.sha256(self.plan_path.read_bytes()).hexdigest()))
+        self.assertEqual(os.stat(target).st_mode & 0o777, 0o600)
+        other = self.root / "run2"
+        other.mkdir(mode=0o700)
+        with self.assertRaises(runner_split_main.SplitConfigError) as caught:
+            runner_split_main._copy_scripted_plan(self.plan_path, other, "http://app.eval.test:8080", "other:v1")
+        self.assertEqual(caught.exception.errors, ["split.synthetic_model.plan_path: MODEL_NOT_DECLARED"])
+        self.plan_path.write_text("{}")
+        third = self.root / "run3"
+        third.mkdir(mode=0o700)
+        with self.assertRaises(runner_split_main.SplitConfigError) as caught:
+            runner_split_main._copy_scripted_plan(self.plan_path, third, "http://app.eval.test:8080", "scripted-product:v1")
+        self.assertEqual(caught.exception.errors, ["split.synthetic_model.plan_path: plan_invalid"])
+
+    def test_synthetic_budget_digest_and_no_model_key(self):
+        budget = runner_split_main._model_budget(None, self.config)
+        self.assertEqual(budget, runner_split_main.digest({"synthetic_model": {"max_tokens": 2048}}))
+        # 합성 모드는 비밀 env 파일의 모델 키를 읽지 않는다: 키 읽기를 막아 두고 띄우기 전까지 간다
+        docker_calls = []
+
+        def docker_runner(args, **kwargs):
+            docker_calls.append(args)
+            raise DockerError("stop_here")
+        with mock.patch.object(runner_split_main.Docker, "env_file_value", side_effect=AssertionError("key read")), \
+                mock.patch.object(runner_split_main, "prepare_split_inputs", wraps=runner_split_main.prepare_split_inputs) as prepared, \
+                redirect_stderr(io.StringIO()):
+            code = run_split_ours(self.config, synthetic_preflight(self.config), docker_runner=docker_runner)
+        self.assertEqual(code, 2)
+        local = prepared.call_args.kwargs["local_model"]
+        self.assertEqual((prepared.call_args.kwargs["manifest"], local["addresses"], local["base_url"], local["context_window_k"]),
+                         (None, ["10.252.2.30"], "http://eval-scripted-model:8080/v1",
+                          synthetic_preflight(self.config)["ours"]["context_window_k"]))
+        self.assertEqual(list(self.config.runs_root.iterdir()), [])  # 띄우기 전 실패는 회차 디렉터리를 남기지 않는다
 
 
 class TestDeclared(Fixture):
@@ -81,7 +172,7 @@ class TestDeclared(Fixture):
                                                  meter_port=8080, request_budget=ours["request_budget"],
                                                  time_budget_seconds=ours["time_budget_seconds"], llm_provider="example-provider",
                                                  llm_sampling=json.loads(gateway_sampling(ours, "ours")),
-                                                 meter_source_sha=ours["source_sha"]))
+                                                 meter_source_sha=ours["source_sha"], llm_model=ours["llm"]["model"]))
 
     def test_lookup_env_and_sampling_match_the_b_gateway(self):
         # O 사후 검증의 조회 설정·샘플링 기대값은 같은 선언으로 만든 B 게이트웨이 compose 값과 같아야 한다.

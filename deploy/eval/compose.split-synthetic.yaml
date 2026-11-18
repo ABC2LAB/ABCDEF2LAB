@@ -1,0 +1,24 @@
+# 탐색 분리 배치 O 합성 모델 overlay(평가 전용, 2026-11-18 사용자 결정 (a)). compose.split.yaml 뒤에만 쌓는다.
+# 제품 기본 설정·설치 화면에는 이 모드가 없다. 러너 설정 split.synthetic_model이 있을 때만 러너가 이 파일을 붙이고, 제품은
+# 원래 있는 로컬 모델 설치(local_model)로 이 서비스를 부른다. 주소 핀은 이 서비스의 주소·포트 하나다(runner_split.SCRIPTED_MODEL_*,
+# 렌더 시험이 대조). 이 회차 기록은 execution_source=synthetic_fixture로 서명되고 채점기·비교 표·보존율 계산이 거부한다.
+#
+# 서비스는 제품 이미지(python3 있음)에 평가 저장소의 스크립트와 회차 계획 사본을 읽기 전용으로 붙여 띄운다. 망은 제품 제어망
+# (내부망, 엔진·DB만 있음) 하나이고 publish가 없다. 외부로 나가는 요청이 없고, 요청 본문을 저장하지 않는다.
+services:
+  eval-scripted-model:
+    image: abc2lab-product:${PRODUCT_TAG:?}
+    user: '${EVAL_RUNNER_UID:?}:${EVAL_RUNNER_GID:?}'
+    entrypoint: [python3, -I, -B, /eval/scripted_product_llm.py]
+    command: [--host, 10.252.2.30, --port, '8080', --plan, /eval/plan.json, --origin, 'http://${EVAL_TARGET_NAME:?}:${EVAL_METER_PORT:?}']
+    volumes:
+      - {type: bind, source: '${EVAL_SCRIPTED_MODEL_SCRIPT:?}', target: /eval/scripted_product_llm.py, read_only: true}
+      - {type: bind, source: '${EVAL_SCRIPTED_MODEL_PLAN:?}', target: /eval/plan.json, read_only: true}
+    networks:
+      control: {ipv4_address: 10.252.2.30}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 256m
+    restart: 'no'

@@ -837,6 +837,31 @@ class TestPreservationV3(unittest.TestCase):
             self.assertNotIn(str(exc), {"preservation_conditions_invalid", "preservation_side_invalid", "preservation_run_invalid",
                                         "preservation_product_invalid", "preservation_record_invalid"}, str(exc))
 
+    def test_synthetic_run_skips_llm_verification_and_marks_it(self):
+        # 합성 모델 모드(2026-11-18 사용자 결정 (a)): OpenRouter 장부·호출 기록 대조와 사후 검증을 부르지 않고 '해당 없음(합성)'
+        # 으로 남긴다. 실행 출처는 synthetic_fixture다. 실제 모델 회차는 그대로 검증한다(대조: 같은 흐름에서 호출이 있다).
+        import preservation_v3_fields as v3f
+        from preservation_record import LLM_NOT_APPLICABLE, LLM_VERIFIED
+        result, ports, evidence, seen = self.run_v3(synthetic=True, scripted_plan_sha256="3" * 64)
+        self.assertEqual(result["status"], "complete", result)
+        for name in ("copy_product_records", "generation_verify", "llm_verified"):
+            self.assertNotIn(name, ports.calls)
+        self.assertEqual((result["execution_source"], result["llm_verification"], result["scripted_plan_sha256"]),
+                         ("synthetic_fixture", LLM_NOT_APPLICABLE, "3" * 64))
+        self.assertEqual(evidence.files["llm-summary.json"]["verification"], LLM_NOT_APPLICABLE)
+        self.assertIsNone(evidence.files["product-model.json"]["call_records"])
+        product = seen["product"]
+        self.assertEqual((product["call_records"], product["llm_verification"]), (None, LLM_NOT_APPLICABLE))
+        self.assertIsNone(seen["run"]["rate_limited"])
+        self.assertEqual(seen["common"]["model_pin_sha256"], v3f.model_pin_sha256(
+            backend="local", model="example-org/example-model", provider_slug=LLM_SLUG, provider_name=LLM_NAME,
+            sampling=SAMPLING, serving=None))
+        real, real_ports, _, real_seen = self.run_v3()
+        self.assertEqual((real["execution_source"], real["llm_verification"], real["scripted_plan_sha256"]),
+                         ("model_run", LLM_VERIFIED, None))
+        self.assertIn("generation_verify", real_ports.calls)
+        self.assertEqual(real_seen["product"]["llm_verification"], LLM_VERIFIED)
+
     def test_runner_settings_digest_matches_the_b_definition(self):
         # 공통 러너 설정 칸은 B와 같은 이름·같은 값이면 같은 지문이다(짝 대조, 결정안 §3.3).
         import preservation_v3_fields as v3f

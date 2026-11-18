@@ -56,7 +56,7 @@ def product(**changes):
             "split_conditions": {"workflow_defaults_sha256": "f" * 64, "workflow_defaults": {"max_pages": 256}, "workflow": {},
                                  "registration": {"methods": ["GET"]}},
             "sampling_overwrites": {"execution": 0, "preparation": [0, None]},
-            "call_records": {"reservations": 5, "lines": 5}, **changes}
+            "call_records": {"reservations": 5, "lines": 5}, "llm_verification": "verified", **changes}
 
 
 class V3Fixture(unittest.TestCase):
@@ -288,6 +288,28 @@ class TestShape(V3Fixture):
         directory, meter, payload = self.fixture_v3("ours", 0, product=product(file_sha256=dict(
             product()["file_sha256"], runtime_conditions=None)))
         self.assertIsNone(self.load(directory, meter)["product"]["file_sha256"]["runtime_conditions"])
+
+    def test_llm_verification_not_applicable_only_for_synthetic_records(self):
+        # 2026-11-18 사용자 결정: OpenRouter 사후 검증·장부 대조 '해당 없음(합성)'은 합성 회차에서만이다. 실제 모델 기록(model_run)에서
+        # 그 칸이 '해당 없음'이면 무효다.
+        def not_applicable(r):
+            r["product"].update(llm_verification="not_applicable_synthetic", call_records=None)
+        synthetic = copy.deepcopy(self.o)
+        not_applicable(synthetic)
+        _validate_v3(synthetic)  # 합성 기록은 받는다
+        self.reject(self.o, "preservation_llm_verification_invalid",
+                    lambda r: (not_applicable(r), r.__setitem__("execution_source", "model_run")))
+        self.reject(self.o, "preservation_llm_verification_invalid",
+                    lambda r: r["product"].__setitem__("llm_verification", "not_applicable_synthetic"))  # 장부 수가 남아 있으면 거부
+        for value in ("skipped", None, ""):
+            self.reject(self.o, "preservation_llm_verification_invalid",
+                        lambda r, v=value: r["product"].__setitem__("llm_verification", v))
+        # verified인데 장부 대조 칸이 없으면 모양 오류다(실제 모델 회차가 대조를 건너뛸 수 없다)
+        self.reject(self.o, "preservation_product_invalid", lambda r: (r.__setitem__("execution_source", "model_run"),
+                                                                    r["product"].__setitem__("call_records", None)))
+        model_run = copy.deepcopy(self.o)
+        model_run["execution_source"] = "model_run"
+        _validate_v3(model_run)
 
 
 class TestSeries(V3Fixture):

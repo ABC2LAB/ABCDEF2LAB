@@ -15,6 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from runner_split_config import COMPOSE_SYNTHETIC  # noqa: E402
 from runner_config import (
     COMPOSE_ACCEPTANCE, COMPOSE_COMMON, COMPOSE_E2_PRODUCT, COMPOSE_SPLIT, COMPOSE_TARGET_ALIAS, COMPOSE_E2_STUB, COMPOSE_EVAL, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, E2_SERVICE, ENGINE_SERVICE, ENGINE_DATA_PATH,
     ENGINE_DB_DATA_PATH, METER_UPSTREAM_ALIAS,
@@ -929,7 +930,7 @@ class TestComposeContract(unittest.TestCase):
 
     def test_every_compose_file_is_covered(self):
         files = {COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL, COMPOSE_E2_STUB, COMPOSE_E2_PRODUCT,
-                 COMPOSE_ACCEPTANCE, COMPOSE_SPLIT, COMPOSE_TARGET_ALIAS}
+                 COMPOSE_ACCEPTANCE, COMPOSE_SPLIT, COMPOSE_TARGET_ALIAS, COMPOSE_SYNTHETIC}
         on_disk = set((REPO_ROOT / "deploy" / "engine-isolated").glob("compose*.yaml"))
         on_disk |= set((REPO_ROOT / "deploy" / "eval").glob("compose*.yaml"))
         self.assertEqual(on_disk, files)

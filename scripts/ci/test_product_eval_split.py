@@ -106,6 +106,61 @@ def to_eval(text):
     return text
 
 
+SYNTHETIC_OVERLAY = "deploy/eval/compose.split-synthetic.yaml"
+
+
+class EvalSplitSyntheticOverlayTests(unittest.TestCase):
+    """합성 모델 overlay(2026-11-18 사용자 결정 (a)): 평가 전용이고, 주소 핀은 스크립트 모델 주소·포트 하나다."""
+
+    @classmethod
+    def setUpClass(cls):
+        extra = dict(SYNTHETIC, PRODUCT_TAG="synthtest", EVAL_SCRIPTED_MODEL_SCRIPT="/srv/repo/scripts/eval/scripted_product_llm.py",
+                     EVAL_SCRIPTED_MODEL_PLAN="/srv/eval-run/scripted-plan.json")
+        cls.base = render(PRODUCT_FILES + (OVERLAY,), SYNTHETIC)
+        cls.rendered = render(PRODUCT_FILES + (OVERLAY, SYNTHETIC_OVERLAY), extra)
+
+    def test_scripted_model_matches_the_runner_pin(self):
+        service = self.rendered["services"][runner_split.SCRIPTED_MODEL_HOST]
+        self.assertEqual(service["networks"], {"control": {"ipv4_address": runner_split.SCRIPTED_MODEL_IP}})
+        command = service["command"]
+        self.assertEqual(command[command.index("--host") + 1], runner_split.SCRIPTED_MODEL_IP)
+        self.assertEqual(command[command.index("--port") + 1], str(runner_split.SCRIPTED_MODEL_PORT))
+        self.assertEqual(command[command.index("--origin") + 1], f"http://{TARGET_NAME}:8080")
+        self.assertEqual(runner_split.SCRIPTED_MODEL_BASE_URL,
+                         f"http://{runner_split.SCRIPTED_MODEL_HOST}:{runner_split.SCRIPTED_MODEL_PORT}/v1")
+        self.assertIn(ipaddress.ip_address(runner_split.SCRIPTED_MODEL_IP), ipaddress.ip_network(NETWORK_MAP["control"][1]))
+
+    def test_scripted_model_is_contained(self):
+        service = self.rendered["services"][runner_split.SCRIPTED_MODEL_HOST]
+        self.assertNotIn("ports", service)  # 호스트 publish 없음
+        self.assertTrue(service["read_only"])
+        self.assertEqual(service["cap_drop"], ["ALL"])
+        self.assertIn("no-new-privileges:true", service["security_opt"])
+        self.assertEqual(service["user"], "4242:4242")
+        self.assertTrue(all(m["type"] == "bind" and m.get("read_only") is True for m in service["volumes"]))
+        self.assertEqual({m["target"] for m in service["volumes"]}, {"/eval/scripted_product_llm.py", "/eval/plan.json"})
+        self.assertTrue(self.rendered["networks"]["control"].get("internal"))  # 내부망 하나에만 붙는다
+
+    def test_overlay_adds_only_the_scripted_model(self):
+        # 제품·평가 서비스는 그대로이고 서비스 하나만 더한다(제품 설정·보안 칸을 바꾸지 않는다).
+        self.assertEqual(set(self.rendered["services"]) - set(self.base["services"]), {runner_split.SCRIPTED_MODEL_HOST})
+        for name, service in self.base["services"].items():
+            with self.subTest(service=name):
+                self.assertEqual({k: v for k, v in self.rendered["services"][name].items() if k != "image"},
+                                 {k: v for k, v in service.items() if k != "image"})
+
+    def test_synthetic_mode_is_not_offered_by_the_product(self):
+        # 제품 기본 설정·설치 예시·화면에는 이 모드가 없다(평가 overlay에만 있다).
+        product = [ROOT / name for name in PRODUCT_FILES] + [ROOT / "deploy/product/README.md"]
+        product += sorted((ROOT / "deploy/product").glob("*.json")) + sorted((ROOT / "web/src").rglob("*.ts*"))
+        for path in product:
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(path=str(path.relative_to(ROOT))):
+                self.assertNotIn(runner_split.SCRIPTED_MODEL_HOST, text)
+                self.assertNotIn("scripted_product_llm", text)
+                self.assertNotIn("compose.split-synthetic", text)
+
+
 class EvalSplitOverlayTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

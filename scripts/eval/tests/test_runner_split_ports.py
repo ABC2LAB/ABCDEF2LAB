@@ -217,6 +217,25 @@ class TestDrive(PortsCase):
         self.assertEqual(self.driver.calls[2][1][1], self.inputs.install_public["target_policy"]["workflow"])
         self.assertEqual((prepared["draft"]["id"], prepared["registration"]), ("draft-1", registration))
 
+    def test_synthetic_mode_has_no_model_key_and_uses_the_declared_model(self):
+        # 합성 모델 모드(2026-11-18 사용자 결정 (a)): manifest·키 없이 선언된 스크립트 모델 이름을 쓰고, 키를 넣지 않는다.
+        ports = DockerSplitPorts(config=self.config, split=self.split, plan=self.plan, directory=self.directory, docker=self.docker,
+                                 driver=self.driver, inputs=self.inputs, rendered={"services": {"a": {}}}, manifest=None,
+                                 model_key=None, exploration={"mcp_url": "http://explore-mcp:8931/mcp",
+                                                              "direct_proxy": "http://explore-direct:3129"},
+                                 model_tag="scripted-product:v1")
+        self.assertEqual(ports.model_tag, "scripted-product:v1")
+        ports.prepare_round("tok")
+        self.assertEqual([c[0] for c in self.driver.calls],
+                         ["login", "catalog_profile", "register", "publish_challenge", "approve", "create_draft"])
+        # 실제 모델·합성 모델 칸이 섞이면 만들지 않는다
+        for manifest, key, tag in ((MANIFEST, None, None), (None, ModelKey("sk-or-v1-test"), "m"), (None, None, None),
+                                   (MANIFEST, ModelKey("sk-or-v1-test"), "m")):
+            with self.subTest(manifest=manifest is not None, key=key is not None, tag=tag), self.assertRaises(ValueError):
+                DockerSplitPorts(config=self.config, split=self.split, plan=self.plan, directory=self.directory, docker=self.docker,
+                                 driver=self.driver, inputs=self.inputs, rendered={"services": {}}, manifest=manifest,
+                                 model_key=key, exploration={}, model_tag=tag)
+
     def test_start_waits_for_the_task_with_configured_wait(self):
         running = self.ports.start_round({"draft": {"id": "draft-1", "revision": 1}})
         self.assertEqual(running, {"draft_id": "draft-1", "task_id": "42", "state": "running"})
