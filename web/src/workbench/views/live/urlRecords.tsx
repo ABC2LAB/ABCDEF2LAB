@@ -10,7 +10,7 @@
 
 import { useState } from "react";
 
-import { endedURLRun, type URLRunSummary } from "@/lib/diagnosis/diagnosis-runs";
+import { activeURLRun, endedURLRun, type URLRunSummary } from "@/lib/diagnosis/diagnosis-runs";
 
 import { cx } from "../../lib/cx";
 import { fetchRemediation } from "../../live/api";
@@ -174,6 +174,9 @@ function RecordList({ finished }: { finished: boolean }) {
                 <RunRow key={row.id} row={row} />
               ))}
             </div>
+            {shown.some(activeURLRun) ? (
+              <p className={s.help}>목록의 승인 표시는 실행 허가를 대신하지 않습니다.</p>
+            ) : null}
             {selectedHere && rem.error ? <ReportReadError error={rem.error} onRetry={rem.reload} /> : null}
           </section>
         </div>

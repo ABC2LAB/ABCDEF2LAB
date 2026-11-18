@@ -1629,20 +1629,20 @@ export function UrlReportLive() {
             // biome-ignore lint/a11y/useSemanticElements: 켜고 끄는 거르기 칸 묶음 (fieldset 은 폼 입력 묶음이라 맞지 않음)
             <div className={s.seg} role="group" aria-label="위험도로 거르기">
               {sevChips.map(([k, label]) => (
-                <label key={k}>
-                  <input
-                    type="checkbox"
-                    checked={sevNow === k}
-                    onChange={() => {
-                      const to: SevFilter = sevNow === k ? "all" : k;
-                      setSevF(to);
-                      // 오른쪽 상세에 떠 있던 발견이 거르기로 빠지면 보이는 첫 줄로 옮긴다
-                      const next = arrangeEntries(sorted, to, order);
-                      if (sel && !next.some((e) => e.entry_id === sel)) setSel(next[0]?.entry_id ?? null);
-                    }}
-                  />
-                  <span>{`${label} ${sevCount(k)}개`}</span>
-                </label>
+                <button
+                  key={k}
+                  type="button"
+                  aria-pressed={sevNow === k}
+                  onClick={() => {
+                    const to: SevFilter = sevNow === k ? "all" : k;
+                    setSevF(to);
+                    // 오른쪽 상세에 떠 있던 발견이 거르기로 빠지면 보이는 첫 줄로 옮긴다
+                    const next = arrangeEntries(sorted, to, order);
+                    if (sel && !next.some((e) => e.entry_id === sel)) setSel(next[0]?.entry_id ?? null);
+                  }}
+                >
+                  {`${label} ${sevCount(k)}개`}
+                </button>
               ))}
             </div>
           ) : null}

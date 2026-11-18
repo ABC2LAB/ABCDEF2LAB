@@ -477,6 +477,9 @@ describe("서버 방식 확인 (catalog)", () => {
     const target = await screen.findByLabelText(/점검할 사이트 주소/);
     // 점검 이름은 선택 칸(사용자 11/18)
     expect(screen.getByLabelText("점검 이름 (선택)")).toHaveValue("");
+    expect(screen.getByLabelText("점검 이름 (선택)")).toHaveAccessibleDescription(
+      "목록과 상세에 표시되고, 모델에 작업 설명으로 전달됩니다.",
+    );
     // 점검 설정은 2쪽에 있다
     expect(screen.queryByRole("heading", { name: "점검 설정" })).toBeNull();
     fireEvent.change(target, { target: { value: "https://target.example/" } });
@@ -1682,11 +1685,12 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     // '전체 n개' 칸은 오른쪽 'n / n건'과 겹쳐 두지 않는다(사용자 11/18)
     expect(
       within(sevs)
-        .getAllByRole("checkbox")
-        .map((r) => r.parentElement?.textContent),
+        .getAllByRole("button")
+        .map((r) => r.textContent),
     ).toEqual(["높음 1개", "낮음 1개"]);
     expect(within(list).getByText("4 / 4건")).toBeInTheDocument();
-    fireEvent.click(within(sevs).getByRole("checkbox", { name: "높음 1개" }));
+    fireEvent.click(within(sevs).getByRole("button", { name: "높음 1개", pressed: false }));
+    expect(within(sevs).getByRole("button", { name: "높음 1개", pressed: true })).toBeInTheDocument();
     expect(names()).toEqual(["후보 2"]);
     expect(within(list).getByText("1 / 4건")).toBeInTheDocument();
     // 오른쪽 상세도 보이는 줄로 옮긴다
@@ -1694,7 +1698,8 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
       within(screen.getByRole("complementary", { name: "발견 상세" })).getByRole("heading", { level: 2 }),
     ).toHaveTextContent("후보 2");
     // 고른 등급을 다시 누르면 전체
-    fireEvent.click(within(sevs).getByRole("checkbox", { name: "높음 1개" }));
+    fireEvent.click(within(sevs).getByRole("button", { name: "높음 1개", pressed: true }));
+    expect(within(sevs).getByRole("button", { name: "높음 1개", pressed: false })).toBeInTheDocument();
     expect(within(list).getByText("4 / 4건")).toBeInTheDocument();
     const order = within(list).getByRole("combobox", { name: "정렬" });
     fireEvent.change(order, { target: { value: "new" } });
@@ -1723,7 +1728,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     const list = await screen.findByRole("tabpanel", { name: "발견 목록" });
     const insp = () => screen.getByRole("complementary", { name: "발견 상세" });
     fireEvent.click(within(list).getByRole("button", { name: /후보 2/ }));
-    fireEvent.click(within(list).getByRole("checkbox", { name: "높음 1개" }));
+    fireEvent.click(within(list).getByRole("button", { name: "높음 1개", pressed: false }));
     expect(within(insp()).getByRole("heading", { level: 2 })).toHaveTextContent("후보 2");
     // 오른쪽 패널의 '생성·저장'이 저장 결과를 다시 읽는다: 이번엔 후보 2 가 낮음, 후보 3 이 높음
     a.fetchRemediation.mockResolvedValue({
@@ -1737,7 +1742,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     fireEvent.click(within(insp()).getByRole("button", { name: "보안 조치·AI 프롬프트 생성·저장" }));
     await waitFor(() => expect(within(list).queryByRole("button", { name: /후보 2/ })).toBeNull());
     // '높음' 거르기는 그대로, 목록은 후보 3 하나 — 오른쪽 상세 · 줄 표시도 후보 3
-    expect(within(list).getByRole("checkbox", { name: "높음 1개" })).toBeChecked();
+    expect(within(list).getByRole("button", { name: "높음 1개", pressed: true })).toBeInTheDocument();
     expect(within(list).getByRole("button", { name: /후보 3/ })).toHaveAttribute("aria-current", "true");
     expect(within(insp()).getByRole("heading", { level: 2 })).toHaveTextContent("후보 3");
     fireEvent.click(within(insp()).getByRole("button", { name: "상세 보기" }));

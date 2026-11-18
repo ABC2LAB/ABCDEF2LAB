@@ -2230,7 +2230,8 @@ select.inp {
   margin: 0;
   cursor: pointer;
 }
-.seg span {
+.seg span,
+.seg button {
   display: block;
   padding: 6px 12px;
   border-radius: 5px;
@@ -2238,13 +2239,21 @@ select.inp {
   font-weight: 500;
   color: var(--ink-2);
 }
-.seg input:checked + span {
+.seg button {
+  border: 0;
+  background: transparent;
+  font-family: inherit;
+  cursor: pointer;
+}
+.seg input:checked + span,
+.seg button[aria-pressed="true"] {
   background: var(--bg);
   color: var(--ink);
   box-shadow: 0 0 0 1px var(--rule-2);
   font-weight: 600;
 }
-.seg input:focus-visible + span {
+.seg input:focus-visible + span,
+.seg button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }

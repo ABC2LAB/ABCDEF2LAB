@@ -131,7 +131,7 @@ it("정확 일치(=/…)와 접두의 query 차이를 안내하고 =/ 표현을 
   expect(note.closest("[role='note']")?.parentElement?.parentElement?.className).toMatch(/tipline/);
   expect(note).toHaveTextContent("접두 승인 · 그 아래 모든 경로와 query 를 허용합니다");
   expect(note).toHaveTextContent("정확 일치 · 그 경로 하나만, query 가 붙은 요청(/?x=1, /? 포함)은 허용하지 않습니다");
-  fireEvent.change(screen.getByLabelText("점검할 경로"), { target: { value: "=/\n/users/v1" } });
+  fireEvent.change(screen.getByLabelText("점검할 경로 (조회만)"), { target: { value: "=/\n/users/v1" } });
   fireEvent.change(screen.getByLabelText("점검 근거"), {
     target: { value: "승인된 테스트 소유 환경의 읽기 전용 GET 경로입니다." },
   });
@@ -247,7 +247,7 @@ it("시안 v91 모양: 소유 확인 필요 딱지 · 등록 칸은 접혀 있�
   // 접혀 있을 때는 입력칸이 없다 (시안처럼 한 줄 + 버튼)
   expect(screen.queryByLabelText("점검 근거")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "대상 등록하기" }));
-  await waitFor(() => expect(screen.getByLabelText("점검할 경로")).toHaveFocus());
+  await waitFor(() => expect(screen.getByLabelText("점검할 경로 (조회만)")).toHaveFocus());
   fireEvent.click(screen.getByRole("button", { name: "접기" }));
   expect(screen.queryByLabelText("점검 근거")).toBeNull();
   expect(apiFetch).toHaveBeenCalledTimes(1);

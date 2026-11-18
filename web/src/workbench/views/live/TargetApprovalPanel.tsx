@@ -308,7 +308,7 @@ export function TargetApprovalPanel({
                 {/* tipline: (?) 메모가 이 줄 바로 아래에 뜨는 기준(없으면 화면 칸 맨 아래로 가서 안 보였다) */}
                 <div className={cx(s["fsec-ht"], s.tipline)}>
                   <label className={s.lbl} htmlFor="targetReadonlyPaths">
-                    점검할 경로
+                    점검할 경로 (조회만)
                   </label>
                   {/* 정확 일치(=/…)와 접두는 query 동작이 다르다(docs/contracts/exact-path-approval.md). 서버가 같은 규칙으로
                       집행한다. 칸 밑에 늘 펼쳐 두던 설명은 (?) 메모로 옮겼다(사용자 11/18 '간략하게') */}

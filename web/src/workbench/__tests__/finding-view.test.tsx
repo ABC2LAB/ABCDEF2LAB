@@ -211,7 +211,8 @@ describe("UrlFindingLive (단독 발견 상세 · 저장 결과)", () => {
     fireEvent.click(within(page).getByRole("button", { name: "PoC 복사" }));
     expect(await within(page).findByText("PoC 를 복사했습니다.")).toBeInTheDocument();
     const text = writeText.mock.calls[0][0] as string;
-    expect(text).toMatch(/^PoC — 후보 1\n\[위험도 미평가 · 검토 필요\] ID candidate-1/);
+    expect(text).toMatch(/^저장된 근거 — 후보 1\n\[위험도 미평가 · 검토 필요\] ID candidate-1/);
+    expect(text).toContain("이 기록은 취약점 확정이 아닙니다.");
     expect(text).toContain(
       "Step 1. 계정 B로 계정 A 주문 조회\nGET /api/orders/2\n사전 조건: 시험 계정 A · B\n관찰: 200 응답에 계정 A 주문",
     );

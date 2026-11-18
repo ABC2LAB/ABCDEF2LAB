@@ -13,7 +13,7 @@ vi.mock("../live/api", async (importOriginal) => ({
 }));
 
 import { ApiError } from "@/lib/diagnosis/api";
-import type { URLRunSummary } from "@/lib/diagnosis/diagnosis-runs";
+import { activeURLRun, type URLRunSummary } from "@/lib/diagnosis/diagnosis-runs";
 import type { URLDiagnosisJob } from "@/lib/diagnosis/diagnosis-url";
 import { catalog, handle, running } from "@/lib/diagnosis/diagnosis-url-fixtures";
 
@@ -135,7 +135,7 @@ const projection = (job: URLDiagnosisJob): URLRunSummary => ({
   result_ready: job.result_ready,
   report_available: job.result_ready && !!job.task_id,
   approval_status: "not_revalidated",
-  action_required: false,
+  action_required: activeURLRun(job) || ["awaiting_approval", "failed", "unknown"].includes(job.state),
 });
 function savedRows(jobs: URLDiagnosisJob[]) {
   useUrlRuns.setState({
@@ -184,10 +184,12 @@ describe("서버 보존 목록의 상태 필터와 선택한 보고서", () => {
     records();
     const region = screen.getByRole("region", { name: "진행 중인 점검 목록" });
     expect(region.querySelectorAll("[data-url-run-id]")).toHaveLength(3);
+    expect(region).toHaveTextContent("목록의 승인 표시는 실행 허가를 대신하지 않습니다.");
     expect(chip(region, "엔진 실행")).toHaveTextContent("1");
     fireEvent.click(chip(region, "상태 확인 필요"));
     expect(region.querySelectorAll("[data-url-run-id]")).toHaveLength(1);
     expect(within(region).getByRole("button", { name: /job-3/ })).toHaveTextContent("결과 불명");
+    expect(region).not.toHaveTextContent("목록의 승인 표시는 실행 허가를 대신하지 않습니다.");
     expect(region).not.toHaveTextContent(/target\.example|%|취약점 없음/);
     expect(api.fetchRemediation).not.toHaveBeenCalled();
   });
@@ -260,17 +262,45 @@ describe("서버 보존 목록의 상태 필터와 선택한 보고서", () => {
     records(true);
     expect(screen.getByRole("complementary", { name: "선택한 점검" })).toHaveTextContent("실행 결과검사 안 함");
   });
-  it("시험 계정 인증은 라벨 순으로 '계정 A · 계정 B'로 보이고 서버 라벨은 마우스를 올리면 보인다", async () => {
+  it("실행 결과가 없는 이전 형식 회차에는 실행 결과 줄을 만들지 않는다", () => {
+    selectSaved({ ...completed, outcome: undefined, intent_outcomes: undefined });
+    records(true);
+    const panel = screen.getByRole("complementary", { name: "선택한 점검" });
+    expect(within(panel).queryByText("실행 결과")).toBeNull();
+  });
+  it.each([
+    [0, undefined, "검사 안 함 · 정책상 검증 안 됨 2"],
+    [0, "budget_limited", "검사 안 함 · 정책상 검증 안 됨 2 · 예산 상한에서 마감"],
+    [1, "budget_limited", "점검 완료 · 정책상 검증 안 됨 2 · 예산 상한에서 마감"],
+  ] as const)("완료 회차의 검증 %d건과 마감 사유 %s를 함께 표시한다", (done, closing_reason, result) => {
+    selectSaved({
+      ...completed,
+      outcome: "complete",
+      closing_reason,
+      intent_outcomes: { done, incomplete: 0, stopped: 0, unknown: 0, policy_limited: 2 },
+    });
+    records(true);
+    const panel = screen.getByRole("complementary", { name: "선택한 점검" });
+    expect(within(panel).getByText("실행 결과").nextElementSibling).toHaveTextContent(result);
+  });
+  it("시험 계정은 라벨 순서로 보이고 도움말 버튼으로 서버 라벨을 확인할 수 있다", async () => {
     vi.mocked(api.fetchRemediation).mockResolvedValue({ task_id: 42, entries: [] });
     selectSaved({ ...completed, account_auth: { shopper: "login_failed", "acct-a": "authenticated" } });
     records(true);
     const panel = screen.getByRole("complementary", { name: "선택한 점검" });
     const sec = within(panel).getByRole("heading", { name: "시험 계정 인증" }).parentElement as HTMLElement;
-    expect(sec).toHaveTextContent(/^시험 계정 인증계정 A인증됨계정 B비인증 진행 · 로그인 실패$/);
-    expect(within(sec).getByText("계정 A")).toHaveAttribute("title", "acct-a");
-    expect(within(sec).getByText("계정 B")).toHaveAttribute("title", "shopper");
-    // 안내 글은 뺐다(사용자 11/18)
-    expect(sec).not.toHaveTextContent("인증하지 못한 계정은");
+    expect(within(sec).getByText("인증됨")).toBeVisible();
+    expect(within(sec).getByText("비인증 진행 · 로그인 실패")).toBeVisible();
+    const accountA = within(sec).getByRole("button", { name: "계정 A 서버 라벨 보기" });
+    expect(accountA).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(accountA);
+    expect(accountA).toHaveAttribute("aria-expanded", "true");
+    expect(within(sec).getByRole("note")).toHaveTextContent("서버 라벨: acct-a");
+    fireEvent.keyDown(accountA, { key: "Escape" });
+    expect(accountA).toHaveFocus();
+    expect(within(sec).queryByRole("note")).toBeNull();
+    fireEvent.click(within(sec).getByRole("button", { name: "계정 B 서버 라벨 보기" }));
+    expect(within(sec).getByRole("note")).toHaveTextContent("서버 라벨: shopper");
   });
   it("결과 저장 미확인 회차는 보고서 조회를 하지 않는다", () => {
     selectSaved({ ...completed, result_ready: false });

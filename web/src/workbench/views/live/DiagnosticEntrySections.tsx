@@ -120,11 +120,13 @@ function StoredScreenshot({ task, entry, step }: { task: string; entry: string; 
  * (maskSecrets), 스크린샷 버튼 · 안내 글은 넣지 않는다. 실행하지 않은 단계는 만들지 않는다(절대규칙 5).
  */
 export function pocCopyText(entry: RemediationEntry): string {
+  const outcome = diagnosticOutcome(entry);
   const out = [
-    `PoC — ${maskSecrets(entry.title) || entry.entry_id}`,
-    `[${entrySeverityLabel(entry)} · ${diagnosticOutcomeLabels[diagnosticOutcome(entry)]}] ID ${entry.entry_id}`,
+    `${outcome === "confirmed" ? "PoC" : "저장된 근거"} — ${maskSecrets(entry.title) || entry.entry_id}`,
+    `[${entrySeverityLabel(entry)} · ${diagnosticOutcomeLabels[outcome]}] ID ${entry.entry_id}`,
     "",
   ];
+  if (outcome !== "confirmed") out.push("이 기록은 취약점 확정이 아닙니다.", "");
   if (entry.source_load_failed)
     out.push("근거 불러오기 실패. 현재 결속을 확인할 수 없어 재현 단계를 제공하지 않습니다.", "");
   else if (entry.steps?.length) {

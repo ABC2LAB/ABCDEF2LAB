@@ -22,6 +22,7 @@ import { SEVL } from "../../data/findings";
 import { cx } from "../../lib/cx";
 import { fetchCoverage } from "../../live/api";
 import { clockOf, planState, sevKey } from "../../live/map";
+import { maskSecrets } from "../../live/mask";
 import { NotYet } from "../../live/parts";
 import { disconnectUrl, useUrl } from "../../live/urlDiagnosis";
 import {
@@ -32,6 +33,7 @@ import {
   type UrlState,
   urlAccountAuthRows,
   urlHost,
+  urlOutcomeText,
   urlStateText,
 } from "../../live/urlMap";
 import { usePoll } from "../../live/usePoll";
@@ -39,7 +41,7 @@ import { flowStageText, type WorkflowSnapshot } from "../../live/workflow";
 import { useShell } from "../../shell";
 import { useWb } from "../../store";
 import { Icon } from "../../ui/icons";
-import { InspHead, Isec, Kv } from "../../ui/parts";
+import { HelpTip, InspHead, Isec, Kv } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import type { Approvals } from "./approvals";
 import { UrlNotices, UrlPill, UrlRefreshButton } from "./urlParts";
@@ -259,20 +261,12 @@ export function JobRow({
   );
 }
 
-/** 갈 화면 → 버튼 글 (시안: 진행 화면 열기 · 이어서 보기 · 보고서 열기). */
 /** 시험 계정 표시 이름: 라벨 순으로 계정 A · B · C …(26개를 넘으면 번호). */
 function accountName(i: number): string {
   return i < 26 ? `계정 ${String.fromCharCode(65 + i)}` : `계정 ${i + 1}`;
 }
 
-/** 오른쪽 패널에서도 마감 결과와 실제 점검 수행 여부를 구분한다. */
-function resultText(job: URLDiagnosisJob): string | undefined {
-  if (job.state === "cancelled") return "중지됨";
-  if (job.state !== "completed") return undefined;
-  if (job.outcome === "no_intents") return "검사 안 함";
-  if (job.outcome === "partial") return "일부 완료";
-  return "점검 완료";
-}
+/** 갈 화면 → 버튼 글 (시안: 진행 화면 열기 · 이어서 보기 · 보고서 열기). */
 const OPEN_TEXT = {
   live: "진행 화면 열기",
   crawl: "이어서 보기",
@@ -387,7 +381,7 @@ export function JobSummary({
   if (flow) stageText = flowStageText[flow.stage];
   else if (job) stageText = urlStateText(job.state, verified);
   const profile = cap.kind === "v2" ? cap.catalog.profiles.find((p) => p.id === handle.input.profile_id) : undefined;
-  const outcomeText = job ? resultText(job) : undefined;
+  const outcomeText = job ? urlOutcomeText(job, "compact") : "";
   const pending = approvals?.length ?? 0;
   // 지금 하는 일 (시안 진행 중 상세): 진행 중인 계획 → 지금 보는 경로 → 단계 순으로 서버 값만
   const nowText = flow?.plan?.find((p) => planState(p.state).row === "run")?.title ?? flow?.current_path ?? null;
@@ -473,14 +467,13 @@ export function JobSummary({
       </Isec>
       {job?.account_auth ? (
         <Isec t="시험 계정 인증">
-          {/* 계정별 결과 값('비인증 진행 · 로그인 실패' 등)이 말한다 — 아래 안내 글은 뺐다(사용자 11/18).
-              계정 이름은 라벨 순으로 '계정 A · 계정 B'(사용자 11/18), 서버 라벨은 마우스를 올리면 보인다 */}
           <Kv
             rows={urlAccountAuthRows(job.account_auth).map(
               ([label, result], i) =>
                 [
-                  <span key={label} title={label}>
+                  <span key={label} className={s.tipline}>
                     {accountName(i)}
+                    <HelpTip label={`${accountName(i)} 서버 라벨 보기`}>서버 라벨: {maskSecrets(label)}</HelpTip>
                   </span>,
                   result,
                 ] as const,
