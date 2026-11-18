@@ -52,6 +52,48 @@ CREATE TABLE IF NOT EXISTS e3_verdict_issuances (
  FOREIGN KEY(manifest_id,task_id) REFERENCES e3_evidence_manifests(id,task_id) ON DELETE RESTRICT ON UPDATE RESTRICT,
  UNIQUE(id,task_id)
 );
+-- 판정 출처 종류(E③ 제품 확정 경로, docs/e3-confirm-path-decision.md §8·§9, 2026-11-18 사용자 결정 ①(가)).
+-- 칸을 더하기만 한다. 기존 행은 출처 종류 eval(평가 등록 GET 경로)로 채워지고, 평가 경로의 저장 조건(통제 모드·intent·
+-- initial·KG 필수)은 아래 검사로 그대로 남는다. intent·통제 모드 판·KG 칸은 제품(product) 행에서만 비우고, 그 대신 실행
+-- 시작 때 동결한 정책 선언 출처가 필수다. 한 행이 두 출처의 칸을 섞어 갖지 못한다. 판정 정본 형식은 출처마다 다르다
+-- (평가 record_version 1 = e3record, 제품 record_version 2 = e3-product-verdict/v1).
+ALTER TABLE e3_verdict_issuances ADD COLUMN IF NOT EXISTS source_kind TEXT NOT NULL DEFAULT 'eval';
+ALTER TABLE e3_verdict_issuances ADD COLUMN IF NOT EXISTS policy_source_ref TEXT NULL;
+ALTER TABLE e3_verdict_issuances ADD COLUMN IF NOT EXISTS policy_source_digest BYTEA NULL;
+ALTER TABLE e3_verdict_issuances ADD COLUMN IF NOT EXISTS policy_target_approval_revision TEXT NULL;
+ALTER TABLE e3_verdict_issuances ADD COLUMN IF NOT EXISTS product_reason_codes JSONB NULL;
+ALTER TABLE e3_verdict_issuances ADD COLUMN IF NOT EXISTS candidate_refs JSONB NULL;
+ALTER TABLE e3_verdict_issuances ALTER COLUMN intent_id DROP NOT NULL;
+ALTER TABLE e3_verdict_issuances ALTER COLUMN mode_version DROP NOT NULL;
+ALTER TABLE e3_verdict_issuances ALTER COLUMN kg_snapshot_ref DROP NOT NULL;
+ALTER TABLE e3_verdict_issuances ALTER COLUMN kg_policy_version DROP NOT NULL;
+ALTER TABLE e3_verdict_issuances ALTER COLUMN kg_snapshot_digest DROP NOT NULL;
+-- 시작마다 표 전체를 다시 검사하지 않도록 없을 때만 더한다. CHECK는 NULL이면 통과하므로 제품 칸은 IS NOT NULL을 따로 건다.
+DO $e3src$
+BEGIN
+ IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='e3_issuance_source_fields' AND conrelid='e3_verdict_issuances'::regclass) THEN
+  ALTER TABLE e3_verdict_issuances ADD CONSTRAINT e3_issuance_source_fields CHECK (
+   (source_kind='eval' AND intent_id IS NOT NULL AND mode_version IS NOT NULL AND kg_snapshot_ref IS NOT NULL
+    AND kg_policy_version IS NOT NULL AND kg_snapshot_digest IS NOT NULL
+    AND policy_source_ref IS NULL AND policy_source_digest IS NULL AND policy_target_approval_revision IS NULL
+    AND product_reason_codes IS NULL AND candidate_refs IS NULL)
+   OR
+   (source_kind='product' AND intent_id IS NULL AND mode_version IS NULL AND kg_snapshot_ref IS NULL
+    AND kg_policy_version IS NULL AND kg_snapshot_digest IS NULL AND eval_run_id IS NULL
+    AND policy_source_ref IS NOT NULL AND policy_source_digest IS NOT NULL AND octet_length(policy_source_digest)=32
+    AND policy_target_approval_revision IS NOT NULL
+    AND product_reason_codes IS NOT NULL AND jsonb_typeof(product_reason_codes)='array'
+    AND candidate_refs IS NOT NULL AND jsonb_typeof(candidate_refs)='array'));
+ END IF;
+ IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname='e3_oracle_verdicts_record_version_check' AND conrelid='e3_oracle_verdicts'::regclass) THEN
+  ALTER TABLE e3_oracle_verdicts DROP CONSTRAINT e3_oracle_verdicts_record_version_check;
+ END IF;
+ IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='e3_verdict_record_version' AND conrelid='e3_oracle_verdicts'::regclass) THEN
+  ALTER TABLE e3_oracle_verdicts ADD CONSTRAINT e3_verdict_record_version CHECK (record_version IN (1,2));
+ END IF;
+END
+$e3src$;
+
 CREATE TABLE IF NOT EXISTS e3_verdict_links (
  id BIGSERIAL PRIMARY KEY,
  issuance_id BIGINT NOT NULL UNIQUE,
