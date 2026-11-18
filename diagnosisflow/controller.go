@@ -642,7 +642,32 @@ func (c *Controller) BeforeWork(ctx context.Context) error {
 func (c *Controller) Instructions() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	rows, omitted := c.modelEndpointsLocked()
+	rows, omitted := c.modelEndpointsLocked(nil)
+	return c.instructionsLocked(rows, omitted)
+}
+
+// ModelInput은 모델에 줄 지시 문장과 고른 끝점 데이터를 같은 행 목록으로 만든다. redact는 그 실행의 출력 가림이고, 데이터
+// 상한(MaxSelectedDataBytes)은 가린 뒤 바이트로 잰다: 가림은 값을 [REDACTED]로 바꿔 길이를 늘릴 수 있다. 지시 문장의
+// "빠진 수"도 이 행 목록에서 나온다. redact가 nil이면 가림 없이 대상 데이터를 주지 않도록 데이터를 비운다.
+func (c *Controller) ModelInput(redact func([]byte) []byte) (instructions, data string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if redact == nil {
+		rows, omitted := c.modelEndpointsLocked(nil)
+		return c.instructionsLocked(rows, omitted), ""
+	}
+	rows, omitted := c.modelEndpointsLocked(redact)
+	raw, _ := json.Marshal(rows)
+	// 상한은 실제로 돌려줄 바이트에 건다. 가림은 호출마다 다를 수 있어(원격 가림 실패 등) 행을 고를 때 잰 값이 반환값과 같다고
+	// 보지 않는다. 가린 결과가 비었거나 상한을 넘으면 데이터를 주지 않는다(#685 이동찬 리뷰).
+	out := redact(raw)
+	if len(out) == 0 || len(out) > MaxSelectedDataBytes {
+		return c.instructionsLocked(rows, omitted), ""
+	}
+	return c.instructionsLocked(rows, omitted), string(out)
+}
+
+func (c *Controller) instructionsLocked(rows []map[string]any, omitted int) string {
 	var selected []string
 	for _, row := range rows {
 		selected = append(selected, row["endpoint_ref"].(string))
@@ -1028,29 +1053,33 @@ func (c *Controller) Fail(ctx context.Context, reason string) error {
 	c.record.Snapshot.Paused = false
 	return c.saveLocked(ctx, false, "failed", "", "", 0)
 }
+
+// SelectedData는 가림 없는 고른 끝점 데이터다(시험·투영 대조용). 모델에는 ModelInput으로 가린 데이터만 준다.
 func (c *Controller) SelectedData() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	rows, _ := c.modelEndpointsLocked()
+	rows, _ := c.modelEndpointsLocked(nil)
 	raw, _ := json.Marshal(rows)
 	return string(raw)
 }
 
-// MaxSelectedDataBytes는 모델 지시(Planner 목표·Worker 입력)에 넣는 고른 끝점 데이터의 바이트 상한이다. 자동 모드가
-// 추정 출처 읽기까지 고르면서 목록이 길어져도 모델 입력이 그만큼 커지지 않게 묶는다. 공개 끝점 목록 상한
-// (MaxWorkflowEndpoints 64)에서 행 하나는 보통 100바이트 안팎이라 대개 전부 들어가고, 보고된 이름 목록이 클 때만 덜어 낸다.
-const MaxSelectedDataBytes = 16 << 10
+// MaxSelectedDataBytes는 모델 지시(Planner 목표·Worker 입력)에 넣는 고른 끝점 데이터의 바이트 상한이다. 공개 끝점 목록이
+// 이미 공개 투영 바이트(MaxProjectionBytes)로 잘려 들어오고, 모델 행은 공개 행보다 칸이 적으므로 같은 값이면 고른 끝점이
+// 전부 들어간다(공식 측정 프로토콜 고정 초안 §5, 2026-11-17 결정). 승인 범위 안 끝점을 모델이 모른 채 도는 일을 없애려는
+// 것이다. 공개 상한을 거치지 않은 목록이 생기면 뒤쪽(추정) 행부터 덜고 빠진 수를 남기는 장치는 그대로 둔다.
+const MaxSelectedDataBytes = MaxProjectionBytes
 
 // recordModelOmittedLocked는 선택이 정해질 때 모델 목록에서 빠지는 고른 끝점 수를 스냅숏에 남긴다.
 func (c *Controller) recordModelOmittedLocked() {
-	_, omitted := c.modelEndpointsLocked()
+	_, omitted := c.modelEndpointsLocked(nil)
 	c.record.Snapshot.Counts.ModelOmitted = uint64(omitted)
 }
 
 // modelEndpointsLocked는 모델에게 줄 고른 끝점 행과 길이 때문에 뺀 수다. 관찰한 끝점을 앞에, 추정 출처 끝점을 뒤에
 // 둔다. 상한을 넘으면 뒤쪽 행의 이름 목록(보조 정보)부터 덜고, 그래도 넘으면 뒤쪽 행을 뺀다. 빠진 끝점도 허용 판정은
 // 그대로다(모델이 모를 뿐이다).
-func (c *Controller) modelEndpointsLocked() ([]map[string]any, int) {
+// redact가 있으면 가린 뒤 바이트로 상한을 잰다(모델에 실제로 나가는 크기).
+func (c *Controller) modelEndpointsLocked(redact func([]byte) []byte) ([]map[string]any, int) {
 	var observed, inferred []map[string]any
 	for _, e := range c.record.Snapshot.Endpoints {
 		if !e.Selected {
@@ -1074,7 +1103,13 @@ func (c *Controller) modelEndpointsLocked() ([]map[string]any, int) {
 		}
 	}
 	rows := append(observed, inferred...)
-	fits := func() bool { raw, _ := json.Marshal(rows); return len(raw) <= MaxSelectedDataBytes }
+	fits := func() bool {
+		raw, _ := json.Marshal(rows)
+		if redact != nil {
+			raw = redact(raw)
+		}
+		return len(raw) <= MaxSelectedDataBytes
+	}
 	for i := len(rows) - 1; i >= 0 && !fits(); i-- {
 		delete(rows[i], "query_keys")
 		delete(rows[i], "body_keys")
