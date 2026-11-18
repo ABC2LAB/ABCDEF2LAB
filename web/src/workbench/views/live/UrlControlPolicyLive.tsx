@@ -89,7 +89,7 @@ const fmtTime = (iso: string): string => {
 function RuleBlock({ rule }: { rule: PolicyRule }) {
   const write = ruleAllowsWrite(rule);
   // https 가 아닌 대상은 전송(자격·세션 포함)이 평문이라 경고한다(TLS 핀 결속과 별개).
-  const noTls = !rule.origin.startsWith("https://");
+  const noTls = !/^https:\/\//i.test(rule.origin);
   return (
     <div style={ruleBox} data-rule={rule.ref}>
       <div style={ruleHead}>

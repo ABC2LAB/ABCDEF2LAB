@@ -139,8 +139,29 @@ const isInstant = (v: unknown): v is string =>
   isStr(v) &&
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.test(v) &&
   Number.isFinite(Date.parse(v));
-/** origin 은 scheme://host[:port] 만(경로·query·조각·공백 없음). */
-const ORIGIN = /^https?:\/\/[^/?#\s]+$/;
+/**
+ * origin — e2proxy canonicalAuthority 가 받는 모양만: http·https, 사용자 정보(`user@`) 없음, 경로는 비거나 `/` 하나,
+ * query·조각 없음, 호스트는 (소문자로 바꿨을 때) 영숫자·`.`·`-` 또는 대괄호 IPv6, 포트는 1~65535.
+ */
+export function validOrigin(v: string): boolean {
+  const m = /^(https?):\/\/([^/?#@\s\\]+)\/?$/i.exec(v);
+  if (!m) return false;
+  const auth = m[2];
+  const v6 = /^\[([0-9A-Fa-f:.]+)\](?::(\d+))?$/.exec(auth);
+  const plain = v6 ? null : /^([^:]+)(?::(\d+))?$/.exec(auth);
+  const host = v6 ? v6[1] : plain?.[1];
+  const port = v6 ? v6[2] : plain?.[2];
+  if (!host || (!v6 && !/^[a-z0-9.-]+$/.test(host.toLowerCase()))) return false;
+  if (port === undefined) return true;
+  const n = Number(port);
+  return /^[0-9]{1,5}$/.test(port) && n >= 1 && n <= 65535;
+}
+
+/** 정책·규칙 참조 — e2proxy validRef(영숫자로 시작, 영숫자·`_.:/-`, 128자 이하, `://` 없음). 빈 값은 서버가 만들 수 없다. */
+const SAFE_REF = /^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$/;
+const validRef = (v: unknown): v is string => isStr(v) && SAFE_REF.test(v) && !v.includes("://");
+/** e2proxy maxExecutionRules — 규칙은 1개 이상 이만큼 이하 */
+const MAX_RULES = 128;
 /**
  * E② 가 받는 메서드만(e2proxy/execution.go supportedMethod). 서버는 이 밖의 메서드를 가진 정책을 실행에 올리지 않으므로,
  * 응답에 있으면 화면이 서버와 다른 정책을 보고 있는 것이다.
@@ -243,17 +264,16 @@ function parseRule(raw: unknown): PolicyRule | null {
   const methods = strList(raw.methods);
   const pathMatch = parsePathMatch(raw.path_match);
   if (
-    !isStr(raw.ref) ||
-    !raw.ref ||
+    !validRef(raw.ref) ||
     // 모르는 purpose 를 일반 규칙으로 그리면 용도 제한이 사라진 것처럼 보인다
     (raw.purpose !== "" && raw.purpose !== AUTH_PREP_PURPOSE) ||
     !isStr(raw.origin) ||
-    !ORIGIN.test(raw.origin) ||
+    !validOrigin(raw.origin) ||
     !isStr(raw.connect_ip) ||
     !isStr(raw.path_prefix) ||
     !validRulePath(raw.path_prefix) ||
     !validConnectIp(raw.connect_ip) ||
-    !isStr(raw.path_scope_ref) ||
+    !validRef(raw.path_scope_ref) ||
     !methods ||
     methods.length === 0 ||
     !methods.every((m) => E2_METHODS.has(m)) ||
@@ -261,7 +281,7 @@ function parseRule(raw: unknown): PolicyRule | null {
     !pathMatch ||
     typeof raw.tls_pinned !== "boolean" ||
     // TLS 핀은 https 대상에만 결속된다
-    (raw.tls_pinned && !raw.origin.startsWith("https://"))
+    (raw.tls_pinned && !/^https:/i.test(raw.origin))
   )
     return null;
   // 인증 준비 규칙: 정확 경로 칸 없이 로그인 경로 하나에 POST 만(서버는 그 밖의 모양을 실행에 올리지 않는다)
@@ -326,6 +346,8 @@ export function parseControlPolicyView(raw: unknown): ControlPolicy | null {
     !isInstant(raw.valid_from) ||
     !isInstant(raw.valid_until) ||
     !Array.isArray(raw.rules) ||
+    raw.rules.length === 0 ||
+    raw.rules.length > MAX_RULES ||
     !limits ||
     !accounts ||
     typeof raw.audit_bound !== "boolean"
@@ -334,7 +356,8 @@ export function parseControlPolicyView(raw: unknown): ControlPolicy | null {
   const rules: PolicyRule[] = [];
   for (const r of raw.rules) {
     const rule = parseRule(r);
-    if (!rule) return null;
+    // 규칙 참조는 정책 안에서 하나씩만(서버 compileRules 의 seen) — 겹치면 어느 규칙이 쓰였는지 화면이 가릴 수 없다
+    if (!rule || rules.some((x) => x.ref === rule.ref)) return null;
     rules.push(rule);
   }
   return {

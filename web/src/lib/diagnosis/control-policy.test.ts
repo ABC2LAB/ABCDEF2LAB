@@ -17,6 +17,7 @@ import {
   rulesMissingMethods,
   summarize,
   validConnectIp,
+  validOrigin,
 } from "./control-policy";
 
 afterEach(() => vi.mocked(apiFetch).mockReset());
@@ -209,6 +210,16 @@ describe("parseControlPolicyView (fail-closed)", () => {
     ["경로에 // ", { path_prefix: "/api//x" }],
     ["경로에 %", { path_prefix: "/api/%2e" }],
     ["http 대상에 TLS 핀", { origin: "http://shop.example", tls_pinned: true }],
+    // 2차 리뷰 반례: 서버 canonicalAuthority·validRef 가 거부하는 값
+    ["origin 에 사용자 정보", { origin: "https://user:pw@shop.example" }],
+    ["origin 에 사용자 이름만", { origin: "https://user@shop.example" }],
+    ["빈 path_scope_ref", { path_scope_ref: "" }],
+    ["path_scope_ref 에 ://", { path_scope_ref: "scope://x" }],
+    ["ref 가 영숫자로 시작 안 함", { ref: "-a" }],
+    ["origin 호스트에 밑줄", { origin: "https://shop_example.test" }],
+    ["origin 포트 0", { origin: "https://shop.example:0" }],
+    ["origin 포트 범위 밖", { origin: "https://shop.example:65536" }],
+    ["origin 에 query", { origin: "https://shop.example/?a" }],
   ])("규칙 하나가 깨지면(%s) 일부만 그리지 않고 정책 전체를 null", (_name, over) => {
     expect(parseControlPolicyView(wire({ rules: [...rule0({}), ...rule0({ ref: "b", ...over })] }))).toBeNull();
   });
@@ -232,6 +243,27 @@ describe("parseControlPolicyView (fail-closed)", () => {
   it("지문 생략(자격 pin 규칙)은 받고 빈 지문으로 둔다", () => {
     const { policy_fingerprint_sha256: _omit, ...rest } = wire();
     expect(parseControlPolicyView(rest)?.fingerprint).toBe("");
+  });
+  it("빈 규칙 목록은 '확인 불가'(서버는 규칙 없는 정책을 실행에 올리지 않는다)", () => {
+    expect(parseControlPolicyView(wire({ rules: [] }))).toBeNull();
+  });
+  it("규칙 참조가 겹치면 '확인 불가'", () => {
+    expect(parseControlPolicyView(wire({ rules: [...rule0({ ref: "dup" }), ...rule0({ ref: "dup" })] }))).toBeNull();
+  });
+  it("규칙이 129개면 '확인 불가'(서버 상한 128)", () => {
+    const many = Array.from({ length: 129 }, (_, i) => rule0({ ref: `r${i}` })[0]);
+    expect(parseControlPolicyView(wire({ rules: many }))).toBeNull();
+    expect(parseControlPolicyView(wire({ rules: many.slice(0, 128) }))?.rules).toHaveLength(128);
+  });
+  it.each([
+    ["끝 슬래시", "https://shop.example/"],
+    ["포트", "http://localhost:3000"],
+    ["대괄호 IPv6", "http://[::1]:8080"],
+    ["대문자 호스트", "https://Shop.Example"],
+  ])("서버가 받는 origin(%s)은 통과", (_name, origin) => {
+    expect(validOrigin(origin)).toBe(true);
+    // http 대상은 TLS 핀이 결속될 수 없으므로 핀 없이 본다
+    expect(parseControlPolicyView(wire({ rules: rule0({ origin, tls_pinned: false }) }))?.rules[0].origin).toBe(origin);
   });
   it("null·배열은 null", () => {
     expect(parseControlPolicyView(null)).toBeNull();
