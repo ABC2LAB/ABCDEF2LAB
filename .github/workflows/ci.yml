@@ -119,6 +119,9 @@ jobs:
       - name: unittest
         working-directory: scripts/eval
         run: python3 -I -B -m unittest discover -s tests
+      - name: 평가 정답 시험(실제 정답이 꼭 필요한 시험만, evaluation-gt/)
+        # 평가 스크립트 시험은 합성 정답 목록으로 돈다. 실제 목록·상관 규칙·표 대조와 정답 디렉터리 밖 정답 낱말 0건은 여기서 본다.
+        run: python3 -I -B -m unittest discover -s evaluation-gt/tests
       - name: Browser 이벤트 계약 회귀 시험
         run: |
           python3 -m venv "$RUNNER_TEMP/browser-contract-tests"

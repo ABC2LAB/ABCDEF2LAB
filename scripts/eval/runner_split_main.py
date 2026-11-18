@@ -9,6 +9,7 @@ compose 규칙으로 읽어(Docker.env_file_value) 설치 뒤 제품 API로만 �
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -28,6 +29,7 @@ from runner_evidence import EvidenceDir, MeterFiles
 from runner_product import ModelKey, ProductAPIError, ProductDriver, loopback_send
 from runner_split import EXPLORATION_BLOCK, read_workflow_defaults
 from path_mask import key_ref
+import preservation_v3_fields as v3f
 from runner_split_config import (
     SplitConfigError, SplitPlan, plan_split_run, read_manifest, split_compose_args, split_compose_environment,
 )
@@ -91,8 +93,19 @@ def llm_lookup_env(config: RunnerConfig, preflight: dict) -> dict[str, str]:
             "EVAL_LLM_VERIFY_INTERVAL": f"{gateway['verify_interval_seconds']}s", "EVAL_CA_BUNDLE": gateway["ca_bundle"]}
 
 
+def _model_budget(manifest: dict | None, config: RunnerConfig) -> str:
+    """보존 회차만 쓰는 O 모델 예산 선언 지문. 승인 manifest에 예산 칸이 모자라면 설정 오류다."""
+    if manifest is None or config.preservation is None:
+        return ""
+    value = v3f.model_budget_sha256(manifest)
+    if value is None:
+        raise SplitConfigError(["split.manifest: BUDGET_INVALID"])
+    return value
+
+
 def split_run_spec(config: RunnerConfig, plan: SplitPlan, declared: SplitDeclared, rendered: dict,
-                   path_key_ref: str | None = None) -> SplitRunSpec:
+                   path_key_ref: str | None = None, *, manifest: dict | None = None, repeat_index: int = 0,
+                   exploration_policy_sha256: str = "") -> SplitRunSpec:
     """회차 시한·간격은 B(build_spec)와 같은 설정 칸에서 읽는다. 제품 멈춤 뒤 끝 상태 대기는 제품 상태 대기(split.task_wait_seconds)."""
     return SplitRunSpec(
         run_id=plan.run_id, project=plan.project, image_ids={role: image.id for role, image in plan.images.items()},
@@ -104,10 +117,18 @@ def split_run_spec(config: RunnerConfig, plan: SplitPlan, declared: SplitDeclare
         product_close_seconds=config.split.task_wait_seconds, post_settle_seconds=config.run["post_settle_seconds"],
         llm_sampling=declared.llm_sampling, llm_provider_slug=declared.llm_provider,
         llm_provider_name=config.llm_gateway["expected_provider_name"], meter_source_sha=declared.meter_source_sha,
-        path_key_ref=path_key_ref)
+        path_key_ref=path_key_ref, preservation=config.preservation, purpose=config.purpose, repeat_index=repeat_index,
+        drain_grace_seconds=config.run["drain_grace_seconds"],
+        host_watch_interval_seconds=config.run["host_watch_interval_seconds"],
+        model_tag="" if manifest is None else manifest["model"], product_source_sha=config.split.product_source_sha,
+        driver_settings={"task_wait_seconds": config.split.task_wait_seconds,
+                         "poll_interval_seconds": config.split.poll_interval_seconds,
+                         "registration_valid_hours": config.split.registration_valid_hours},
+        model_budget_sha256=_model_budget(manifest, config),
+        exploration_policy_sha256=exploration_policy_sha256)
 
 
-def run_split_ours(config: RunnerConfig, preflight: object, *, docker_runner=run_docker, environ=None,
+def run_split_ours(config: RunnerConfig, preflight: object, *, repeat_index: int = 0, docker_runner=run_docker, environ=None,
                    send=loopback_send, now=None) -> int:
     """O 회차 1회(자동 재시도 없음). 설정·입력 단계 실패는 2, 회차 무효는 1, 완료는 0."""
     environ = os.environ if environ is None else environ
@@ -119,7 +140,7 @@ def run_split_ours(config: RunnerConfig, preflight: object, *, docker_runner=run
         declared = split_declared(config, preflight, manifest)
         plan = plan_split_run(config, split, run_id=new_run_id(POLICY_SWITCH_SIDE, now), target_image=declared.target_image,
                               meter_port=declared.meter_port)
-        defaults, _ = read_workflow_defaults()
+        defaults, defaults_sha = read_workflow_defaults()
         # 경계는 계측기·B 회차와 같은 경로 가림 키를 받는다(계약 §4.1). runner.main이 check_key_files로 이미 확인했다.
         path_key = acceptance_path_key(config)
         # 키 지문은 경계 보호 입력에 넣는 바로 그 바이트에서 뜬다(#699 리뷰: 따로 읽으면 사이에 키 파일이 바뀌어도 통과).
@@ -141,8 +162,12 @@ def run_split_ours(config: RunnerConfig, preflight: object, *, docker_runner=run
                                sleep=time.sleep, monotonic=time.monotonic)
         ports = DockerSplitPorts(config=config, split=split, plan=plan, directory=directory, docker=docker, driver=driver,
                                  inputs=inputs, rendered=rendered, manifest=manifest, model_key=model_key,
-                                 exploration=dict(EXPLORATION_BLOCK), llm_env=llm_lookup_env(config, preflight))
-        spec = split_run_spec(config, plan, declared, rendered, path_key_ref)
+                                 exploration=dict(EXPLORATION_BLOCK), llm_env=llm_lookup_env(config, preflight),
+                                 workflow_defaults=(defaults, defaults_sha))
+        # 경계 설정(boundary.json)은 회차 값 없이 정렬된 JSON이라 같은 설정이면 같은 지문이다(결정안 §3.3)
+        boundary_sha = hashlib.sha256(inputs.files["boundary"].read_bytes()).hexdigest()
+        spec = split_run_spec(config, plan, declared, rendered, path_key_ref, manifest=manifest, repeat_index=repeat_index,
+                              exploration_policy_sha256=boundary_sha)
     except BaseException as exc:
         # 회차 흐름(execute_split_run) 전의 어떤 실패·중단에서도 보호 입력을 먼저 지운다(#674 리뷰: 모델 키 모양 오류·
         # 운영자 중단이 정리를 건너뛰었다). 고정 code 오류는 code만 내고 종료 코드 2, 중단은 정리 뒤 다시 올린다.

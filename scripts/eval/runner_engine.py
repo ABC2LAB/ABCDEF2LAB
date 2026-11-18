@@ -653,6 +653,98 @@ def _unique_object(pairs):
     return result
 
 
+# 원본 엔진 도구 실행 기록(server/commands.go pgListCommands, db/commands.go CommandRecord: tool_use와 tool_result를
+# tool_use_id로 이은 행). ?task=는 작업(exploration) 번호, page는 0부터, 최신 행부터 온다.
+COMMANDS_PATH = "/api/commands"
+_COMMAND_FIELDS = frozenset({"id", "exploration_id", "worker", "tool", "command", "output", "is_error", "created_at"})
+
+
+COMMAND_READ_ATTEMPTS = 3
+
+
+def _command_page(port: int, headers: dict, exploration_id: int, page: int, settings: dict) -> tuple[list[dict], int, int]:
+    path = f"{COMMANDS_PATH}?task={exploration_id}&page={page}&size={settings['page_size']}"
+    try:
+        status, data = _get(port, path, headers, settings["timeout_seconds"], settings["max_page_bytes"])
+    except (OSError, http.client.HTTPException, ValueError, OverflowError):
+        raise EngineAPIError("engine_commands_unreachable") from None
+    if status != 200:
+        raise EngineAPIError(f"engine_commands_http_{status}")
+    if len(data) > settings["max_page_bytes"]:
+        raise EngineAPIError("engine_commands_too_large")
+    try:
+        body = json.loads(data.decode("utf-8"))
+        rows, total = body["commands"], body["total"]
+    except (UnicodeError, ValueError, KeyError, TypeError):
+        raise EngineAPIError("engine_commands_invalid") from None
+    if not isinstance(rows, list) or type(total) is not int or total < 0 or any(
+            not isinstance(r, dict) or not _COMMAND_FIELDS <= set(r) or type(r["id"]) is not int
+            or not isinstance(r["tool"], str) or not isinstance(r["command"], str) or not isinstance(r["output"], str)
+            or type(r["is_error"]) is not bool or r["exploration_id"] != exploration_id for r in rows):
+        raise EngineAPIError("engine_commands_invalid")
+    return rows, total, len(data)
+
+
+def task_exploration_id(port: int, headers: dict, task_id: str, timeout: float) -> int:
+    """작업의 탐색 번호. 원본 `/api/commands?task=`는 작업 번호가 아니라 탐색 번호를 받는다(작업 생성 때 따로 만듦,
+    db/tasks.go). 작업 단건 조회(taskDTO)의 exploration_id를 쓴다."""
+    try:
+        status, data = _get(port, f"{TASK_STATUS_PATH}/{task_id}", headers, timeout, MAX_TASK_STATUS_BYTES)
+    except (OSError, http.client.HTTPException, ValueError, OverflowError):
+        raise EngineAPIError("engine_task_unreachable") from None
+    if status != 200 or len(data) > MAX_TASK_STATUS_BYTES:
+        raise EngineAPIError(f"engine_task_http_{status}")
+    try:
+        body = json.loads(data.decode("utf-8"))
+        exploration_id = body["exploration_id"]
+        same_task = str(body["id"]) == task_id
+    except (UnicodeError, ValueError, KeyError, TypeError):
+        raise EngineAPIError("engine_task_invalid") from None
+    if type(exploration_id) is not int or exploration_id < 1 or not same_task:
+        raise EngineAPIError("engine_task_invalid")
+    return exploration_id
+
+
+def command_records(port: int, secret: AdminSecret, task_id: str, settings: dict) -> dict:
+    """작업 하나의 도구 실행 기록 전체. 원문(command·output)은 호출자 메모리로만 넘기고 여기서 쓰지 않는다.
+    상한은 findings 수집과 같은 설정(page_size·timeout_seconds·max_page_bytes·max_total_bytes·max_pages)이다.
+
+    원본 목록은 id 내림차순 OFFSET이라 읽는 사이 행이 늘면 쪽이 밀린다(#682 리뷰). 그래서 한 번의 읽기는 모든 쪽의
+    total이 같고, id가 겹치지 않고 엄격히 내림차순이며, 개수가 total과 같고, 끝난 뒤 첫 쪽을 다시 읽어도 total·맨 위 id가
+    같을 때만 받는다. 아니면 처음부터 다시 읽고(COMMAND_READ_ATTEMPTS번), 끝내 고정되지 않으면 오류다."""
+    if not isinstance(task_id, str) or not task_id.isdigit():
+        raise EngineAPIError("engine_commands_task_invalid")
+    token = login(port, secret, settings["timeout_seconds"])
+    headers = {"Authorization": f"Bearer {token}"}
+    exploration_id = task_exploration_id(port, headers, task_id, settings["timeout_seconds"])
+    read = 0
+    for _ in range(COMMAND_READ_ATTEMPTS):
+        out, ids, totals = [], [], set()
+        for page in range(settings["max_pages"]):
+            rows, total, size = _command_page(port, headers, exploration_id, page, settings)
+            read += size
+            if read > settings["max_total_bytes"]:
+                raise EngineAPIError("engine_commands_too_large")
+            totals.add(total)
+            ids += [r["id"] for r in rows]
+            out += [{"tool": r["tool"], "command": r["command"], "output": r["output"], "failed": r["is_error"]} for r in rows]
+            if not rows or len(out) >= total:
+                break
+        else:
+            raise EngineAPIError("engine_commands_too_many_pages")
+        stable = (len(totals) == 1 and len(out) == next(iter(totals)) and len(set(ids)) == len(ids)
+                  and all(a > b for a, b in zip(ids, ids[1:])))
+        if stable:
+            again, total_again, size = _command_page(port, headers, exploration_id, 0, settings)
+            read += size
+            if read > settings["max_total_bytes"]:
+                raise EngineAPIError("engine_commands_too_large")  # 재확인 응답도 같은 누적 상한 안이어야 한다(#682 리뷰)
+            stable = total_again == len(out) and [r["id"] for r in again][:1] == ids[:1]
+        if stable:
+            return {"exploration_id": exploration_id, "records": out}
+    raise EngineAPIError("engine_commands_unstable")
+
+
 def load_vocabulary(path: str | Path) -> tuple[dict, str]:
     """평가자가 검토한 분류 매핑. baseline·개선 후가 같은 매핑을 써야 하므로 원본 SHA-256을 함께 돌려준다."""
     try:

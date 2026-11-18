@@ -26,7 +26,7 @@ func diagnosticE3Context(ctx context.Context, q DiagnosticRemediationQueryer, in
 	err = q.QueryRowContext(ctx, `SELECT i.binding_canonical,i.execution_ref,i.case_ref,i.intent_id,i.exploration_id,i.mode_version,i.resource_ref,i.kg_policy_version,i.reset_generation,i.kg_snapshot_ref,i.kg_snapshot_digest,i.harness_generation_ref,i.target_instance_ref,m.execution_ref,m.evidence_revision
  FROM e3_verdict_issuances i JOIN tasks t ON t.id=i.task_id AND t.exploration_id=i.exploration_id AND t.deleted_at IS NULL JOIN e3_evidence_manifests m ON m.id=i.manifest_id AND m.task_id=i.task_id
  LEFT JOIN e3_verdict_links l ON l.issuance_id=i.id AND l.task_id=i.task_id
- WHERE i.task_id=$1 AND (($2='finding' AND l.finding_id=$3) OR ($2='verdict' AND i.id=$3 AND l.id IS NULL)) AND octet_length(i.binding_canonical)<=$4`, task, kind, id, e3record.MaxCanonicalBytes).Scan(&binding, &run, &caseRef, &intent, &exploration, &mode, &resource, &policy, &reset, &snapshot, &kgDigest, &generation, &instance, &manifestRun, &revision)
+ WHERE i.task_id=$1 AND i.source_kind='eval' AND (($2='finding' AND l.finding_id=$3) OR ($2='verdict' AND i.id=$3 AND l.id IS NULL)) AND octet_length(i.binding_canonical)<=$4`, task, kind, id, e3record.MaxCanonicalBytes).Scan(&binding, &run, &caseRef, &intent, &exploration, &mode, &resource, &policy, &reset, &snapshot, &kgDigest, &generation, &instance, &manifestRun, &revision)
 	if err != nil {
 		return err
 	}
