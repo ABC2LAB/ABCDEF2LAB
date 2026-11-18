@@ -36,7 +36,11 @@ baseline에는 E²가 없으므로 E² traffic ID를 해결 주체 확인의 필
 - `artifacts.isolation_evidence`: 격리 집행·관측 로그의 descriptor 또는 null. 기존 descriptor와 같은 문맥·phase=engine·안전한 경로·size·SHA-256 검증을 적용한다. 증명 객체가 있으면 이 자료도 필수다.
 - `artifacts.records`: v1.1에서는 판정 레코드 envelope descriptor 또는 **null**이다. null은 **판정 미수집**(그 회차의 엔진·baseline 출력 어댑터가 판정 레코드를 내지 못함)이며, 채점기는 그 회차의 모든 GT 판정을 판단불가(사유: 판정 미수집)로 두고 해결 귀속(`isolated_window`)만 검증·보고한다. null을 "판정 없음 → 미탐"으로 읽지 않고(커버리지 기록이 있어도), 레코드 0건인 envelope와 구분한다. v1(정수 `1`) 기록은 기존대로 `records` 필수다.
 
-- `isolation_evidence`의 선택 행 `e3_confirmation`(2026-11-18 확정): 제품 확정 단계(E③) 결과의 `status`·`reason`. 값은 E③ 계약의 닫힌 값 그대로다(`disabled`·`start_refused`·`completed`·`interrupted`·`confirmation_integrity_failed`, `reason`도 상태별 닫힌 값이고 `completed`·`interrupted`면 비어 있다). 원문 값·후보 내용은 싣지 않는다. 서명 대상이다. 행이 없으면 E③가 없는 회차다. 채점 처리는 평가 프로토콜 §4 8번이다. 판정 내보내기 수집·무결성 행(`verdict_collection`)과 별개이고 그 뜻을 바꾸지 않는다(내보내기 `integrity_failed`는 채점 중단).
+- `isolation_evidence`의 선택 행 `e3_confirmation`(2026-11-18 확정): 제품 확정 단계(E③) 결과의 `status`·`reason`. 값은 E③ 계약의 닫힌 값 그대로다(`disabled`·`start_refused`·`completed`·`interrupted`·`confirmation_integrity_failed`, `reason`도 상태별 닫힌 값이고 `completed`·`interrupted`면 비어 있다). 원문 값·후보 내용은 싣지 않는다. 서명 대상이다. 채점 처리는 평가 프로토콜 §4 8번이다.
+  - 이 행을 받아야 하는 회차인지는 `run_conditions`의 선택 칸 `e3_status_expected`(불리언, 서명 대상)가 정한다. 행이 없다는 것만으로는 E③ 미적용으로 읽지 않는다(#700 리뷰).
+    - 참인데 행이 없으면 수집 실패(`e3_status_not_collected`)다. 그 회차 GT는 전부 판단불가다.
+    - 거짓이거나 칸이 없는 기록(칸이 생기기 전 기록, 원본 엔진)에 행이 있으면 입력 오류다.
+    - 러너는 E③ 단계가 들어간 제품 회차에 참을 서명한다. 회차마다 고르는 값이 아니고 쪽(O 제품)과 제품 빌드로 정해진다. E③를 꺼도 제품은 `disabled` 상태를 내므로 참이다. 판정 내보내기 수집·무결성 행(`verdict_collection`)과 별개이고 그 뜻을 바꾸지 않는다(내보내기 `integrity_failed`는 채점 중단).
 
 `isolation_proof`와 `artifacts.isolation_evidence`는 둘 다 null이거나 둘 다 유효한 객체여야 한다. 한쪽만 제출한 부분 증명은 입력 오류다.
 

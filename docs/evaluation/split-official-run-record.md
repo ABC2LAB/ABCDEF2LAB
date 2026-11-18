@@ -48,7 +48,7 @@ B와 같은 단계 이름을 쓰고, O에서 그 순간에 해당하는 곳을 �
 | `engine_meter_summary`·`drain` | 계측기 요약·drain | 같음. 입구별 전달 수(본 입구·탐색 입구)를 함께 싣는다 |
 | `run_conditions` | §6 | §6 |
 | `verdict_collection` | 판정 내보내기 수집·무결성 | 지금은 `not_collected`(§1). 뜻은 바꾸지 않는다(§7) |
-| `e3_confirmation`(새 선택 행, §7) | 없음(원본 엔진) | E③ 확정 단계 결과의 `status`·`reason` |
+| `e3_confirmation`(새 선택 행, §7) | 없음(원본 엔진) | E③ 확정 단계 결과의 `status`·`reason`. 받아야 하는지는 서명된 `run_conditions.e3_status_expected`가 정한다 |
 | `attempt_reconciliation` | E② 자리 회차의 시도 대조 | null(§1 범위 밖) |
 
 ## 5. 격리 증명 칸
@@ -81,6 +81,10 @@ E③ 인터페이스(#698)의 확정 단계 결과 `e3-confirmation-run/v1`에�
 - `verdict_collection`의 뜻은 바꾸지 않는다. 이 행은 판정 **내보내기** 수집·무결성이다. `integrity_failed`(내보내기 변조·불일치)면 지금처럼 채점 전체를 멈춘다(`isolation_proof.verdict_collection`, run-record v1.1 §3.1). E③ 결과를 온전히 받으면 `collected`이고, 판정 행이 0개면 `records`는 빈 묶음이다.
 - E③ 확정 결과는 **따로 서명 행** `e3_confirmation`(선택 행, `status`·`reason`)에 싣는다. 값은 E③ 계약의 닫힌 값 그대로다(`disabled`·`start_refused`·`completed`·`interrupted`·`confirmation_integrity_failed`). `reason`도 상태별 닫힌 값이다(계약 §7 표, `e3contract/result.go`의 DisabledReason·StartRefusal·IntegrityReason). `completed`·`interrupted`면 `reason`이 비어 있다. 채점기 검증(R4)은 이 목록과 대조한다. 원문 값·후보 내용은 싣지 않는다. 제품이 회차 안에서 스스로 잡은 결과라 회차는 유효하다. 내보내기 무결성과 섞지 않는다.
 - 채점기 처리(2026-11-18 사용자 확정): `completed`는 그대로 채점한다. `confirmation_integrity_failed`·`disabled`·`start_refused`는 그 회차 GT 판정을 판단불가로 둔다. "발견 없음"으로 세지 않는다. `interrupted`는 받은 판정만 쓰고 나머지는 판단불가다. 어느 경우든 결과 보고의 회차 주석에 `status`·`reason`을 보인다. 해결 귀속(첫 지표)은 이 행과 무관하게 따로 검증한다.
+- 행 부재 해석(#700 리뷰): 행이 없다는 것만으로 미적용을 정하지 않는다. `run_conditions`의 서명 칸 `e3_status_expected`(불리언)를 둔다.
+  - 참인데 행이 없으면 수집 실패(`e3_status_not_collected`)이고, 그 회차 GT는 전부 판단불가다. 서명된 빈 판정 묶음과 해결 귀속이 있어도 미탐이 되지 않는다.
+  - 거짓이거나 칸이 없으면 행이 없어야 한다(있으면 입력 오류).
+  - O 러너는 E③ 단계가 들어간 제품 회차에 늘 참을 서명한다. 제품은 E③를 꺼도 `disabled` 상태를 낸다. B 러너와 칸이 생기기 전 기록은 거짓·없음이다.
 - 정본도 이 PR에서 같이 고쳤다: 평가 프로토콜 §4 8번·§5 회차 주석, run-record v1.1 §3 `e3_confirmation` 행. 채점기·격리 검증 구현(행 검증·닫힌 값 대조·판단불가 처리·회차 주석)은 R4다. 실제 수집 경로(제품 API·파일)는 판정 저장 PR 뒤에 정한다.
 
 ## 8. 검증 방법(공식 측정 전)
@@ -99,7 +103,7 @@ E③ 인터페이스(#698)의 확정 단계 결과 `e3-confirmation-run/v1`에�
 | R1 | O 회차 문맥·타임라인·pre/post 점수판 파일·관측기 GET. B 조립 함수(`_build_record`)를 배치와 무관한 입력으로 나눠 B·O가 함께 쓴다. O `verdict_collection`은 `not_collected`, `e3_confirmation` 행은 수집 경로가 생길 때까지 없음(§7) |
 | R2 | O 격리 근거 행(§4)과 격리 증명(§5). 채점기 `isolation_proof`가 분리 배치 근거를 받는다 |
 | R3 | 해결 이벤트, 러너 키 서명, O 결과 서명. 보존 sidecar v3 O 조립(경계 원자료 검증 포함)도 같은 서명 경로에서 마친다 |
-| R4 | 채점기 분리 배치 표 규칙(§6), `e3_confirmation` 검증·보고 주석과 정본 개정(§7), §8 1번 fixture 시험 |
+| R4 | 채점기 분리 배치 표 규칙(§6), `e3_confirmation`·`e3_status_expected` 검증·보고 주석과 정본 개정(§7), §8 1번 fixture 시험. 수용시험(행 부재 구분): ① 칸 없는 옛 기록 + 행 없음 → 7번대로 읽음 ② 기대 참 + 행 없음 + 서명된 빈 판정 묶음 + 해결 귀속 → `e3_status_not_collected`, GT 전부 판단불가(미탐 0) ③ 기대 참 + `completed` → 그대로 채점 ④ 기대 거짓 + 행 있음 → 입력 오류 |
 
 ## 10. 열린 항목
 
