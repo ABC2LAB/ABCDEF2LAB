@@ -658,7 +658,13 @@ func (c *Controller) ModelInput(redact func([]byte) []byte) (instructions, data 
 	}
 	rows, omitted := c.modelEndpointsLocked(redact)
 	raw, _ := json.Marshal(rows)
-	return c.instructionsLocked(rows, omitted), string(redact(raw))
+	// 상한은 실제로 돌려줄 바이트에 건다. 가림은 호출마다 다를 수 있어(원격 가림 실패 등) 행을 고를 때 잰 값이 반환값과 같다고
+	// 보지 않는다. 가린 결과가 비었거나 상한을 넘으면 데이터를 주지 않는다(#685 이동찬 리뷰).
+	out := redact(raw)
+	if len(out) == 0 || len(out) > MaxSelectedDataBytes {
+		return c.instructionsLocked(rows, omitted), ""
+	}
+	return c.instructionsLocked(rows, omitted), string(out)
 }
 
 func (c *Controller) instructionsLocked(rows []map[string]any, omitted int) string {

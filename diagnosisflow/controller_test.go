@@ -423,6 +423,25 @@ func TestModelEndpointListByteCap(t *testing.T) {
 	if _, same := full.ModelInput(func(b []byte) []byte { return b }); same != full.SelectedData() {
 		t.Fatal("identity redaction changed the model data")
 	}
+	// 반환하는 바이트 자체에 상한을 건다: 가림이 처음엔 빈 값을 주다가(원격 실패) 다음 호출에 큰 값을 주면 데이터를 주지
+	// 않는다. 가림이 늘 비거나 늘 상한을 넘어도 주지 않는다.
+	calls := 0
+	flaky := func(b []byte) []byte {
+		calls++
+		if calls == 1 {
+			return nil
+		}
+		return bytes.Repeat([]byte("x"), MaxSelectedDataBytes+1)
+	}
+	if _, got := full.ModelInput(flaky); got != "" {
+		t.Fatalf("checked and returned redactions differ: returned %d bytes", len(got))
+	}
+	if _, got := full.ModelInput(func([]byte) []byte { return nil }); got != "" {
+		t.Fatal("empty redaction passed as data")
+	}
+	if _, got := full.ModelInput(func([]byte) []byte { return bytes.Repeat([]byte("x"), MaxSelectedDataBytes+1) }); got != "" {
+		t.Fatal("oversized redaction passed as data")
+	}
 	// 가림 함수가 없으면 대상 데이터를 주지 않는다.
 	if text, none := full.ModelInput(nil); none != "" || !strings.Contains(text, "Selected endpoint references") {
 		t.Fatal("model data without redaction")
