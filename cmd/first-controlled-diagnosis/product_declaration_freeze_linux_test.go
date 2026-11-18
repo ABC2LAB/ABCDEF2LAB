@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/netip"
@@ -84,6 +85,8 @@ func TestIssueFreezesActiveDeclaration(t *testing.T) {
 	if policy.ValidFrom.Before(target.ApprovedAt) || policy.ValidUntil.After(target.ExpiresAt) || !policy.ValidFrom.Before(policy.ValidUntil) {
 		t.Fatalf("유효창이 승인 기간 밖: %+v", policy)
 	}
+	// 선언을 동결해도 확정 단계는 아직 서버에 연결되지 않아 몫은 0이다(#716). 동결과 몫 쓰기가 같은 발급에서 둘 다 일어난다.
+	issuedShareIsZero(t, runs, job)
 	for _, name := range []string{productFrozenDeclarationFile, productFrozenPolicyFile} {
 		info, err := os.Stat(filepath.Join(runs, job, name))
 		if err != nil || info.Mode().Perm() != 0600 {
@@ -115,6 +118,22 @@ func TestIssueWithoutDeclarationFreezesNothing(t *testing.T) {
 	}
 	if _, ok, err := readFrozenPolicy(runs, job); ok || err != nil {
 		t.Fatalf("없는 동결: %v %v", ok, err)
+	}
+	issuedShareIsZero(t, runs, job)
+}
+
+func issuedShareIsZero(t *testing.T, runs, job string) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(runs, job, "policy.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var issued server.E2HTTPFilePolicy
+	if json.Unmarshal(raw, &issued) != nil {
+		t.Fatal("발급 정책 JSON")
+	}
+	if l := issued.Limits; l.E3ConfirmationRequests == nil || *l.E3ConfirmationRequests != 0 || l.E3ConfirmationTimeoutMS == nil || *l.E3ConfirmationTimeoutMS != 0 {
+		t.Fatal("발급 정책의 확정 몫이 0으로 적히지 않음")
 	}
 }
 
