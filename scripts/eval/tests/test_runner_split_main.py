@@ -33,6 +33,7 @@ from test_runner_split_inputs import FakeOpenssl  # noqa: E402
 
 # 사전검사 픽스처(test_preflight.api_llm)와 같은 모델·제공자·base_url(실제 manifest는 openrouter.ai 고정이고, 선언도 그 값이어야 한다).
 MANIFEST = {"version": 3, "model": "example-org/example-model", "provider_slug": "example-provider", "approval_id": "approval-test-1",
+            "expected_provider_name": "Example",
             "base_url": "https://llm-api.example/api/v1", "max_requests": 400, "max_input_tokens": 2000000,
             "max_output_tokens": 200000, "max_cost_usd_micros": 1000000, "max_input_tokens_per_call": 120000,
             "max_output_tokens_per_call": 8192}
@@ -96,7 +97,8 @@ class TestDeclared(Fixture):
 
     def test_model_and_provider_must_be_the_manifest(self):
         for change in ({"model": "other/model"}, {"provider_slug": "other-provider"},
-                       {"base_url": "https://other-api.example/api/v1"}):  # #674 리뷰: 다른 origin으로 키를 보내지 않게
+                       {"base_url": "https://other-api.example/api/v1"},  # #674 리뷰: 다른 origin으로 키를 보내지 않게
+                       {"expected_provider_name": "Exam ple"}, {"expected_provider_name": "example"}):  # 러너 판정 이름과 다르면 거부
             with self.subTest(change=change), self.assertRaises(RunnerConfigError) as caught:
                 split_declared(self.config, preflight_for(self.config), dict(MANIFEST, **change))
             self.assertEqual(caught.exception.errors, ["preflight.ours.llm: MANIFEST_MISMATCH"])
