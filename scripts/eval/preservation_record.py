@@ -51,7 +51,13 @@ FIRST_LIMIT_FIELDS = frozenset({"value", "runner_limit", "runner_limit_elapsed_s
 RUNNER_LIMITS = frozenset({"runner_request_budget", "runner_time_budget"})
 # runner.first_limit과 같은 규칙(시험이 격자로 대조한다). 러너 종료 사유 → 러너 상한 이름.
 _LIMIT_BY_STOP = {"request_budget": "runner_request_budget", "time_budget": "runner_time_budget"}
-PRODUCT_FIELDS_V3 = frozenset({"source_sha", "image_ids", "file_sha256", "split_conditions", "sampling_overwrites", "call_records"})
+PRODUCT_FIELDS_V3 = frozenset({"source_sha", "image_ids", "file_sha256", "split_conditions", "sampling_overwrites", "call_records",
+                               "llm_verification"})
+# O 모델 호출 검증 상태(2026-11-18 사용자 결정). verified = OpenRouter 장부·호출 기록 대조와 사후 검증을 지났다.
+# not_applicable_synthetic = 합성 모델 회차라 대조할 장부가 없다. 이 값은 합성(synthetic_fixture) 기록에서만 받고, 실제 모델
+# 기록(model_run)에서 나오면 기록 전체를 무효로 본다.
+LLM_VERIFIED = "verified"
+LLM_NOT_APPLICABLE = "not_applicable_synthetic"
 PRODUCT_IMAGES = frozenset({"product", "explore_browser", "fixture"})
 PRODUCT_FILES = frozenset({"installation", "policy", "api_launch", "target_policy", "runtime_conditions", "control_limits"})
 SPLIT_CONDITION_FIELDS = frozenset({"workflow_defaults_sha256", "workflow_defaults", "workflow", "registration"})
@@ -317,7 +323,7 @@ def _validate_v3(p: dict) -> None:
         _fail("preservation_run_invalid")  # 서명돼 있어도 관측 시각·마감 사유와 모순된 분류는 받지 않는다(#676 리뷰)
     if r["rate_limited"] is not None and not _count(r["rate_limited"]):
         _fail("preservation_run_invalid")
-    _validate_product(p["product"], baseline)
+    _validate_product(p["product"], baseline, p["execution_source"])
     if not isinstance(p["files"], dict) or set(p["files"]) != set(RAW_FILES):
         _fail("preservation_files_invalid")
     for row in p["files"].values():
@@ -336,13 +342,20 @@ def _validate_v3(p: dict) -> None:
             _fail("preservation_boundary_invalid")
 
 
-def _validate_product(block, baseline: bool) -> None:
+def _validate_product(block, baseline: bool, execution_source: str) -> None:
     if baseline:
         if block is not None:
             _fail("preservation_product_invalid")
         return
     if not isinstance(block, dict) or set(block) != PRODUCT_FIELDS_V3:
         _fail("preservation_product_invalid")
+    if block["llm_verification"] == LLM_NOT_APPLICABLE:
+        # '해당 없음(합성)'은 합성 회차에서만이다. 실제 모델 회차에서 장부 대조가 빠지면 무효다.
+        if execution_source != "synthetic_fixture" or block["call_records"] is not None:
+            _fail("preservation_llm_verification_invalid")
+        block = dict(block, call_records={"reservations": 0, "lines": 0})  # 아래 모양 검사는 그 밖의 칸만 본다
+    elif block["llm_verification"] != LLM_VERIFIED:
+        _fail("preservation_llm_verification_invalid")
     images, files, conditions = block["image_ids"], block["file_sha256"], block["split_conditions"]
     overwrites, records = block["sampling_overwrites"], block["call_records"]
     if (not isinstance(block["source_sha"], str) or not re.fullmatch(r"[a-f0-9]{40}", block["source_sha"])

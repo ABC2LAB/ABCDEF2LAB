@@ -40,7 +40,18 @@
 - `Freeze(decl, ref)`가 실행 시작 때 정책 출처를 만든다. `VerifyFrozen(source, decl)`은 읽은 동결본의 digest와 대상 판을 대조한다.
 - **자격은 선언에 넣지 않는다.** 확정 단계 요청의 자격은 등록된 시험 계정 세션(C14 인증 준비)에서만 E²가 붙인다. 저장 API는 본문 틀(`body_template`)이나 다른 칸 값에 인증 헤더·쿠키·토큰·비밀번호 모양이 있으면 `400 {"error": "invalid_declaration", "field": "<칸 이름>"}`으로 거부하고, 거부한 값은 오류 응답·로그에 원문으로 남기지 않는다(정책 선언 저장 PR).
 - **저장 API의 대상 판 결속(2026-11-18 사용자 결정).** 화면은 자기가 본 대상 판을 기대값으로 보낸다. 대상이 승인 상태가 아니면 `409 target_not_approved`, 지금 판과 다르면 `409 declaration_target_revision_mismatch`이고, 같을 때만 그 판에 결속해 저장한다. `declared_by`·`declared_at`은 서버가 인증 주체와 저장 시각으로 채우고, 요청에 들어오면 거부한다. 종류·필드 순서는 서버가 정렬한 뒤 검사한다.
-- `DeclarationReader.ReadFrozen`은 저장된 동결본을 그대로 돌려준다. 읽을 수 없으면 `ErrPolicyUnavailable`이다(시작 거절, 진위 실패 아님). 읽었는데 digest·대상 판이 다르면 진위 실패(`policy_digest_mismatch`)다.
+- **저장 API(구현).** 대상 등록 보호 저널(`declarations/`)에 선언을 통째로 둔다. 저널 줄이 감사 기록(누가·언제·어느 대상 판·digest·선언)이다.
+  - `GET /api/product/targets/{id}/declaration` → `200 {"state": "none"|"active"|"invalid", "invalid_reason"?, "target_revision"?, "declared_by"?, "declared_at"?, "declaration": {…}|null}`. `invalid_reason`은 `target_reapproved`(대상 판이 바뀜 — 재승인·철회)·`target_expired`(승인 만료)다. 선언이 없으면 `{"state": "none", "declaration": null}`이다(라우트가 없으면 404라서 구분된다).
+  - `PUT /api/product/targets/{id}/declaration` 본문 `{"target_revision": N, "declaration": {"identity": {…}, "types": [{…}]}}` → 저장한 선언의 같은 모양. 서버가 채우는 칸(`version`·`target_ref`·`target_approval_revision`·`declared_by`·`declared_at`)이 오면 `400 {"error": "invalid_declaration", "field": "<그 칸>"}`이다.
+  - 형식 오류·자격 모양·승인 범위 밖(경로 접두·정규 경로·승인 메서드)은 `400 {"error": "invalid_declaration", "field": "…"}`다. 칸 이름의 종류 순번(`types[i]`)은 서버가 이름순으로 정렬한 뒤의 순번이다.
+  - 다른 운영자의 대상은 계정 API와 같이 `404 target_not_found`다(존재를 드러내지 않는다). 지금 권한 모델에서는 대상 승인자 = 등록 운영자 한 사람이라 별도 403은 없다.
+  - 철회(DELETE)는 최소 기능에 없다(405). 바꾸려면 PUT으로 교체하고, 대상을 다시 승인하면 무효가 된다.
+  - 크기 상한: 종류 16개, 소유자 전용 필드 16개, 본문 틀 2KiB, 선언 인코딩 24KiB(준비 프로세스 IPC 한 프레임 64KiB 안).
+- **실행 시작 때 동결(구현).** 회차를 발급할 때(`runs/<job>` 생성) 지금 대상 판에 유효한 선언이 있으면 회차 디렉터리에 두 파일을 0600으로 쓴다. 선언이 없으면 쓰지 않고, 그 회차의 확정 단계는 꺼진다.
+  - `e3-declaration.json`: 선언 정본 바이트 그대로. 이 파일의 SHA-256 = 정책 출처 digest(`policy_version`).
+  - `e3-policy.json`: 정책 출처(`kind=product_declaration`, `ref=declaration-<job>`, digest, 대상 승인 판)와 유효창(대상 승인 기간과 실행 기간이 겹치는 구간). 확정 단계가 `RunBinding.Policy`와 `PolicyValidFrom·Until`을 여기서 만든다.
+  - 준비 저널은 압축될 수 있어 옛 선언 줄을 나중에 다시 찾을 수 없으므로 회차마다 사본을 둔다. 저장된 판정을 다시 읽을 때도 이 사본을 읽고 현재 대상 등록의 선언으로 대신하지 않는다(OD06).
+- `DeclarationReader.ReadFrozen`은 저장된 동결본을 그대로 돌려준다(제품: `declaration-<job>` 참조의 회차 사본). 읽을 수 없으면 `ErrPolicyUnavailable`이다(시작 거절, 진위 실패 아님). 읽었는데 digest·대상 판이 다르면 진위 실패(`policy_digest_mismatch`)다.
 
 ## 4. E② 프로그램 요청
 
@@ -138,7 +149,17 @@
 - `residue`가 `absent`가 아님(`present`면 `previous_markers_present`, 그 밖에는 `reset_state_unavailable`)
 - 지난 쓰기 뒤 리셋 확인 기록이 없음
 
-서버는 회차 시작 때(모델 단계 전) 이것으로 회차를 거절하고, `Run`은 확정 단계 시작 때 다시 본다.
+서버는 회차 시작 때(모델 단계 전) 이것으로 회차를 거절하고, `Run`은 확정 단계 시작 때 다시 본다. 리셋 확인이 없으면 잔존 점검 결과와 관계없이 `reset_confirmation_missing`이다.
+
+**기록과 API(구현).** 선언 저널에 두 종류의 줄을 더 남긴다.
+- `confirmation_writes`: 확정 단계가 대상에 만든 객체(종류·ID digest, 원문 없음)와 회차. 행위자는 프로그램(`e3-confirmation`)이다. 한 회차는 쓰기 기록 줄을 하나만 남긴다(같은 회차의 두 번째 줄은 받지 않는다). 새 쓰기는 앞선 리셋 확인을 덮는다. 줄마다 고유 참조(`writes_ref` = 회차·시각·객체 집합의 SHA-256)가 있다.
+- `reset_confirmed`: 대상 승인자가 리셋 진술에 동의함(진술 문장의 SHA-256·누가·언제·동의한 쓰기 기록의 회차와 고유 참조). 동의는 운영자가 본 쓰기 기록 줄에만 묶인다.
+- `GET /api/product/targets/{id}/reset-confirmation` → `{"reset": {"reset_required", "last_writes_job"?, "last_writes_at"?, "last_writes_objects"?, "last_writes_ref"?, "confirmed_by"?, "confirmed_at"?, "statement"}}`. 화면은 `statement`를 그대로 보이고 동의를 받는다.
+- `POST …/reset-confirmation` `{"statement_confirmed": true, "writes_ref": "<GET에서 본 last_writes_ref>"}` → 같은 모양.
+  - 진술 동의가 없으면 400 `statement_required`, `writes_ref`가 없거나 모양(소문자 16진 64자)이 틀리면 400 `invalid_reset_request`다.
+  - 조회와 동의 사이에 새 쓰기 기록이 들어와 지금 기록이 본 것과 다르면(또는 기록이 없으면) 409 `reset_record_changed`이고 반영하지 않는다. 같은 기록을 이미 확인했으면 줄을 더 남기지 않는다.
+  - 리셋은 더 안전한 쪽이라 대상 승인 상태와 관계없이 받는다.
+- 게이트는 지난 쓰기가 있으면 리셋 확인과 별개로 지난 객체를 읽어 표식 잔존을 본다(결정 §6.1 (b), E² 쪽 점검). 그 점검이 연결되기 전이나 실패하면 잔존은 `unknown`이라 시작하지 않는다.
 
 ## 9. 후보 연결
 

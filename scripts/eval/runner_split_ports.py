@@ -35,7 +35,7 @@ from runner_docker import Docker, client_environment
 from runner_engine import AdminSecret
 from runner_product import ModelKey, ProductDriver
 from run_record import read_runner_key, sign_run_record
-from runner_split import read_workflow_defaults, split_conditions, target_registration
+from runner_split import PRODUCT_MODEL_API, read_workflow_defaults, split_conditions, target_registration
 from runner_split_config import SplitConfig, SplitPlan, split_compose_args
 from runner_split_inputs import SplitInputs, remove_split_inputs
 from runner_split_probe import SplitProbeOutcome, run_split_probes, split_ports
@@ -189,11 +189,16 @@ def product_record_names(approval_id: str) -> tuple[str, str]:
 
 class DockerSplitPorts:
     def __init__(self, *, config: RunnerConfig, split: SplitConfig, plan: SplitPlan, directory: RunDirectory, docker: Docker,
-                 driver: ProductDriver, inputs: SplitInputs, rendered: dict, manifest: dict, model_key: ModelKey,
-                 exploration: dict, llm_env: dict | None = None, workflow_defaults: tuple[dict, str] | None = None):
+                 driver: ProductDriver, inputs: SplitInputs, rendered: dict, manifest: dict | None, model_key: ModelKey | None,
+                 exploration: dict, llm_env: dict | None = None, model_tag: str | None = None,
+                 workflow_defaults: tuple[dict, str] | None = None):
         self.config, self.split, self.plan, self.directory = config, split, plan, directory
         self.docker, self.driver, self.inputs, self.rendered = docker, driver, inputs, rendered
         self.manifest, self.model_key, self.exploration = manifest, model_key, exploration
+        # 실제 모델은 승인 manifest의 모델, 합성 모델 모드는 선언된 스크립트 모델이다(manifest·키가 없다).
+        if (manifest is None) != (model_key is None) or (manifest is None) == (model_tag is None):
+            raise ValueError("split ports: model mode mismatch")
+        self.model_tag = manifest["model"] if manifest is not None else model_tag
         # generation-verify 조회 설정(B 게이트웨이와 같은 compose 값, runner_split_main.llm_lookup_env)
         self.llm_env = dict(llm_env or {})
         self.base_args = split_compose_args(plan)
@@ -266,7 +271,8 @@ class DockerSplitPorts:
         # 단계마다 새 cidfile 디렉터리다(docker는 이미 있는 cidfile이면 실행을 거부한다).
         cid_dir = self.directory.run / f"{phase}-probe-cid"
         os.mkdir(cid_dir, 0o700)
-        upstream = urlsplit(self.manifest["base_url"])
+        # 외부 견본 목적지: 제품이 부르는 모델 API 주소. 합성 모드에도 같은 견본(제품 고정 OpenRouter 주소)으로 본다.
+        upstream = urlsplit(self.manifest["base_url"] if self.manifest is not None else PRODUCT_MODEL_API)
         external = f"{upstream.hostname}:{upstream.port or 443}"
         return run_split_probes(self.docker, self.config.images["meter"].id, snapshot,
                                 split_ports(self.rendered, self.inputs.boundary, self.exploration), external,
@@ -274,7 +280,7 @@ class DockerSplitPorts:
 
     def scoreboard(self, phase: str, snapshot: dict) -> dict:
         target = snapshot["services"]["target"]["id"]
-        context = SnapshotContext(run_id=self.plan.run_id, model_tag=self.manifest["model"], reset_generation=target,
+        context = SnapshotContext(run_id=self.plan.run_id, model_tag=self.model_tag, reset_generation=target,
                                   instance_id=target, execution_id=snapshot["services"]["preparation"]["id"])
         endpoint = SnapshotEndpoint(f"http://127.0.0.1:{self.config.ports['obs_host']}", self.config.observer_path,
                                     self.config.run["snapshot_timeout_seconds"], self.config.run["snapshot_max_bytes"])
@@ -381,7 +387,8 @@ class DockerSplitPorts:
     def prepare_round(self, dns_token: str) -> dict:
         d, split = self.driver, self.split
         d.login(self.inputs.admin)
-        d.set_model_key(split.profile_id, self.manifest["model"], self.model_key)
+        if self.model_key is not None:  # 합성 모델 모드는 로컬 모델 설치라 키가 없다
+            d.set_model_key(split.profile_id, self.manifest["model"], self.model_key)
         workflow = self.inputs.install_public["target_policy"]["workflow"]
         profile = d.catalog_profile(split.profile_id, workflow)
         # 등록 요청 수는 화면처럼 카탈로그의 회차 요청 상한이다(카탈로그를 읽은 뒤에야 안다).

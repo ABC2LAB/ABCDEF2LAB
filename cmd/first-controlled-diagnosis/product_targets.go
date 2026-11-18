@@ -75,6 +75,13 @@ type productTargetRegistry struct {
 	accountJournal productContactJournal
 	accountDir     string
 	accounts       map[string]map[string]*productAccountState
+	// declarationJournal은 대상 정책 선언 저널이다(product_declarations.go). declarations는 대상별 마지막 선언이다.
+	declarationJournal productContactJournal
+	declarations       map[string]*productDeclarationState
+	// resets는 대상별 마지막 확정 단계 쓰기와 리셋 확인이다(선언 저널의 confirmation_writes·reset_confirmed 줄).
+	resets map[string]*productResetState
+	// resetJobs는 대상마다 쓰기 기록을 남긴 회차다(한 회차는 쓰기 기록 줄 하나만).
+	resetJobs map[string]map[string]bool
 	// logins는 대상별 로그인 방식이다(계정 저널의 login_config 줄).
 	logins    map[string]diagnosisprep.TargetLogin
 	records   map[string]productTargetRecord
@@ -177,8 +184,26 @@ func newProductTargetRegistry(dir string, p productTargetPolicy, check func() er
 		_ = errors.Join(journal.Close(), contacts.Close())
 		return nil, err
 	}
+	declarationDir := filepath.Join(dir, "declarations")
+	if err := os.Mkdir(declarationDir, 0700); err != nil && !os.IsExist(err) {
+		_ = errors.Join(journal.Close(), contacts.Close(), accountJournal.Close())
+		return nil, err
+	}
+	// 첫 선언 전에 선언 디렉터리의 부모 엔트리도 동기 저장한다. 저널 Append는 파일과 declarations/만 동기화하므로, 기존
+	// 설치에서 디렉터리를 새로 만든 직후 전원이 끊기면 성공으로 응답한 선언과 감사 기록이 함께 사라질 수 있다.
+	if err := productSyncDirectory(dir); err != nil {
+		_ = errors.Join(journal.Close(), contacts.Close(), accountJournal.Close())
+		return nil, err
+	}
+	declarationJournal, declarationEvents, err := diagnosisprep.OpenProtectedJournal(declarationDir)
+	if err != nil {
+		_ = errors.Join(journal.Close(), contacts.Close(), accountJournal.Close())
+		return nil, err
+	}
 	r := &productTargetRegistry{policy: p, policyCheck: check, journal: journal, contacts: contacts, accountJournal: accountJournal, accountDir: accountDir, accounts: map[string]map[string]*productAccountState{}, logins: map[string]diagnosisprep.TargetLogin{},
-		records: map[string]productTargetRecord{}, approvals: map[string]productTargetRecord{}, resolver: resolver, roots: roots, now: func() time.Time { return time.Now().UTC() }}
+		declarationJournal: declarationJournal, declarations: map[string]*productDeclarationState{}, resets: map[string]*productResetState{},
+		resetJobs: map[string]map[string]bool{},
+		records:   map[string]productTargetRecord{}, approvals: map[string]productTargetRecord{}, resolver: resolver, roots: roots, now: func() time.Time { return time.Now().UTC() }}
 	r.lookupTXT = resolver.LookupTXT
 	r.lookupIP = func(ctx context.Context, host string) ([]netip.Addr, error) {
 		return resolver.LookupNetIP(ctx, "ip", host)
@@ -200,8 +225,28 @@ func newProductTargetRegistry(dir string, p productTargetPolicy, check func() er
 			return nil, errPreparation
 		}
 	}
+	// 선언 저널도 대상 저널 뒤에 읽는다(선언 줄은 있는 대상·판만 가리킬 수 있다).
+	for _, event := range declarationEvents {
+		var e productDeclarationEvent
+		if decodeLaunchJSON(event, &e) != nil || r.replayDeclaration(e) != nil {
+			_ = r.Close()
+			return nil, errPreparation
+		}
+	}
 	return r, nil
 }
+
+// productSyncDirectory는 디렉터리 엔트리를 동기 저장한다. 시험이 실패를 주입할 수 있게 변수로 둔다.
+var productSyncDirectory = func(path string) error {
+	d, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	syncErr := d.Sync()
+	closeErr := d.Close()
+	return errors.Join(syncErr, closeErr)
+}
+
 func (r *productTargetRegistry) replay(next productTargetRecord) error {
 	t := next.Target
 	old, exists := r.records[t.ID]
@@ -247,7 +292,7 @@ func (r *productTargetRegistry) append(next productTargetRecord) error {
 	return r.replay(next)
 }
 func (r *productTargetRegistry) Close() error {
-	return errors.Join(r.journal.Close(), r.contacts.Close(), r.accountJournal.Close())
+	return errors.Join(r.journal.Close(), r.contacts.Close(), r.accountJournal.Close(), r.declarationJournal.Close())
 }
 func (r *productTargetRegistry) register(principal string, s diagnosisprep.TargetRegistration) (diagnosisprep.ProductTarget, error) {
 	if principal != "ARTEX" {
