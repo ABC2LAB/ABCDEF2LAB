@@ -175,6 +175,9 @@ class FakePorts:
                      "policy_fingerprint_sha256": FINGERPRINT, "limits": dict(LIMITS, **E3_SHARE_OFF), "rules": []}
         self.conditions = conditions()
         self.files_args: list = []
+        # 제품 회차 디렉터리의 E③ 확정 단계 결과(e3contract.RunResult). 기본은 공식 기대값(선언 없음으로 비활성)이다.
+        self.e3_file = json.dumps({"version": "e3-confirmation-run/v1", "status": "disabled", "reason": "declaration_missing",
+                                   "verdicts": [], "skipped": [], "candidates": [], "requests": 0, "writes": []}).encode()
 
     def _call(self, name):
         self.calls.append(name)
@@ -340,6 +343,12 @@ class FakePorts:
         self._call("sign")
         return dict(payload, signature="s")
 
+    def e3_confirmation(self, draft_id):
+        self._call("e3_confirmation")
+        if isinstance(self.e3_file, Exception):
+            raise self.e3_file
+        return self.e3_file
+
     def runtime_conditions(self, draft_id):
         self._call("runtime_conditions")
         self.files_args.append(draft_id)
@@ -372,7 +381,7 @@ ORDER_HEAD = ["preexisting", "image_ids", "meter_describe", "tool_surface", "hos
               "events:start", "watch:start", "scoreboard:pre", "prepare_round", "start_round"]
 ORDER_TAIL = ["seal", "meter:drained", "stop_round", "wait_closed", "workflow_snapshot", "snapshot:post", "check:post", "probes:post", "scoreboard:post",
               "stop_boundary", "watch:stop",
-              "events:stop", "status", "run_record", "control_policy", "product_files", "runtime_conditions",
+              "events:stop", "status", "run_record", "control_policy", "product_files", "runtime_conditions", "e3_confirmation",
               "copy_boundary_evidence",
               "copy_product_records",
               "generation_verify", "llm_verified", "down", "remove_inputs"]
@@ -1088,6 +1097,49 @@ class TestProductFaultStall(unittest.TestCase):
                                           "error": "fault_stall_rows_invalid"})
         record = product_fault_stall(b"", [], "2026-11-18T10:00:10Z", "2026-11-18T10:00:00Z", {})
         self.assertEqual(record["error"], "fault_stall_time_invalid")  # 창이 거꾸로면 B와 같은 코드
+
+
+
+class TestE3ConfirmationRow(unittest.TestCase):
+    """O 회차의 E③ 확정 단계 결과(runs/<초안>/e3-confirmation.json) 상태·사유 행(2026-11-19 사용자 결정)."""
+
+    def result(self, **fields):
+        base = {"version": "e3-confirmation-run/v1", "status": "disabled", "reason": "declaration_missing", "verdicts": [],
+                "skipped": [], "candidates": [], "requests": 0, "writes": []}
+        return json.dumps(dict(base, **fields)).encode()
+
+    def test_rows_and_shape(self):
+        from runner_split_run import e3_confirmation_row
+        import hashlib
+        raw = self.result()
+        self.assertEqual(e3_confirmation_row(raw), {"status": "disabled", "reason": "declaration_missing",
+                                                    "sha256": hashlib.sha256(raw).hexdigest()})
+        self.assertEqual(e3_confirmation_row(self.result(status="completed", reason=None))["reason"], None)
+        for raw in (b"not json", b"[]", self.result(version="v0"), self.result(status="maybe"),
+                    self.result(status="completed", reason="x"), self.result(reason="Bad Reason"), self.result(reason=None)):
+            with self.subTest(raw=raw[:40]):
+                self.assertEqual(e3_confirmation_row(raw), {"error": "e3_confirmation_invalid"})
+
+    def test_official_round_needs_disabled_declaration_missing(self):
+        def file(value):
+            return lambda p: setattr(p, "e3_file", value)
+        result, _, evidence = run(purpose="official")
+        self.assertEqual(result["status"], "complete", result)
+        e3 = evidence.files["product-files.json"]["e3_confirmation"]
+        self.assertEqual((e3["status"], e3["reason"], result["e3_confirmation"]["status"]), ("disabled", "declaration_missing", "disabled"))
+        for mutate, reason in ((file(self.result(reason="not_wired")), "e3_official_not_disabled"),
+                               (file(self.result(status="completed", reason=None)), "e3_official_not_disabled"),
+                               (file(RuntimeError("docker_helper_copy_failed")), "e3_status_not_collected"),
+                               (file(b"{}"), "e3_status_not_collected")):
+            with self.subTest(reason=reason):
+                result, _, _ = run(mutate, purpose="official")
+                self.assertEqual((result["status"], result["reasons"]), ("invalid", [reason]))
+
+    def test_other_purposes_record_without_invalidating(self):
+        # 수용시험 목적은 기록만 한다(감독자 연결 전 빌드는 파일이 없어 수집 못 함으로 남는다)
+        result, _, evidence = run(lambda p: setattr(p, "e3_file", RuntimeError("missing")))
+        self.assertEqual(result["status"], "complete", result)
+        self.assertEqual(evidence.files["product-files.json"]["e3_confirmation"], {"error": "e3_confirmation_not_collected"})
 
 
 if __name__ == "__main__":
