@@ -308,6 +308,7 @@ class TestCounting(unittest.TestCase):
             "x=a\\ 10<<D npx\nx\nD": (["npx"], []),
             "x=a\\;10<<D npx\nx\nD": (["npx"], []),
             "true a\\\\ 10<<D\nx\nD\nnpx b": (["true", "npx"], []),  # 막힌 백슬래시 뒤 공백은 경계다(서술자 10)
+            "x=a\\\\ 10<<D npx\nx\nD": (["npx"], []),  # 할당이 막힌 백슬래시로 끝나고 공백 뒤 서술자 10, 명령은 npx
         }
         for command, (sure, maybe) in cases.items():
             with self.subTest(command=command):
