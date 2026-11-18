@@ -263,7 +263,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		handler, finish = o, o.close
 	case roleGateway:
-		g, code := newLLMGateway(dir, gatewayCfg, defaultUpstreamTransport(), time.Now, time.Sleep)
+		g, code := newRunningGateway(dir, gatewayCfg)
 		if code != "" {
 			return fail(stderr, code)
 		}

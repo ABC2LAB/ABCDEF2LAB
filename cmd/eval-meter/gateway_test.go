@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -182,6 +183,31 @@ type gatewayHarness struct {
 	front    *httptest.Server
 	dirPath  string
 	sleeps   []time.Duration
+	// 모델 호출 프록시가 쓰는 transport와 조회 전용 transport가 실제로 보낸 경로, 조회 transport를 만든 횟수
+	proxyPaths   *pathRecorder
+	lookupPaths  *pathRecorder
+	lookupBuilds atomic.Int32
+}
+
+// pathRecorder는 transport를 감싸 보낸 요청 경로를 남긴다(연결 풀이 나뉘었는지 보려고).
+type pathRecorder struct {
+	base  http.RoundTripper
+	mu    sync.Mutex
+	paths []string
+}
+
+func (r *pathRecorder) RoundTrip(req *http.Request) (*http.Response, error) {
+	r.mu.Lock()
+	r.paths = append(r.paths, req.URL.Path)
+	base := r.base
+	r.mu.Unlock()
+	return base.RoundTrip(req)
+}
+
+func (r *pathRecorder) snapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.paths...)
 }
 
 func newHarness(t *testing.T, backend string) *gatewayHarness {
@@ -214,7 +240,17 @@ func newHarness(t *testing.T, backend string) *gatewayHarness {
 	cfg.upstream = u
 	path, dir := privateTestDir(t)
 	h.dirPath = path
-	g, code := newLLMGateway(dir, cfg, upstream.Client().Transport, time.Now,
+	base := upstream.Client().Transport.(*http.Transport)
+	h.proxyPaths = &pathRecorder{base: base.Clone()}
+	h.lookupPaths = &pathRecorder{}
+	lookup := func() http.RoundTripper {
+		h.lookupBuilds.Add(1)
+		h.lookupPaths.mu.Lock()
+		h.lookupPaths.base = base.Clone() // 부를 때마다 새 연결 풀
+		h.lookupPaths.mu.Unlock()
+		return h.lookupPaths
+	}
+	g, code := newLLMGateway(dir, cfg, h.proxyPaths, lookup, time.Now,
 		func(d time.Duration) { h.sleeps = append(h.sleeps, d) })
 	if code != "" {
 		t.Fatal(code)
@@ -1181,6 +1217,60 @@ func TestGenerationLookupStopsAtTheDeadline(t *testing.T) {
 	for i := range got {
 		if got[i].Status != "unverified" || got[i].Lookup != want[i] {
 			t.Fatalf("%d: %+v", i, got[i])
+		}
+	}
+}
+
+// 봉인 직후(마지막 호출 직후) 조회: 조회는 봉인 뒤 새로 만든 조회 전용 연결로만 가고, 모델 호출 프록시의 연결 풀로는 가지 않는다.
+// 마지막 호출의 통계가 아직 없으면(404) 다음 라운드에서 확인된다(2026-11-18 파일럿 B 1차 조건).
+func TestGatewayLookupRightAfterTheLastCallUsesItsOwnConnections(t *testing.T) {
+	h := newHarness(t, backendAPI)
+	h.provider.lookups["gen-1"] = []int{http.StatusNotFound, http.StatusOK}
+	if resp, _ := h.post(t, chatPath, "application/json", engineBody, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("chat %d", resp.StatusCode)
+	}
+	h.waitRows(t, 1)
+	if built := h.lookupBuilds.Load(); built != 0 {
+		t.Fatalf("lookup transport built before seal: %d", built)
+	}
+	marker := h.sealAndWait(t)
+	if built := h.lookupBuilds.Load(); built != 1 {
+		t.Fatalf("lookup transport builds %d", built)
+	}
+	for _, path := range h.proxyPaths.snapshot() {
+		if path != chatPath {
+			t.Fatalf("proxy transport carried %s", path)
+		}
+	}
+	lookups := h.lookupPaths.snapshot()
+	if len(lookups) != 2 || lookups[0] != genPath || lookups[1] != genPath {
+		t.Fatalf("lookup transport paths %v", lookups)
+	}
+	if len(marker.Generations) != 1 || marker.Generations[0].Status != "verified" ||
+		marker.Generations[0].Lookup != (lookupTrace{Tries: 2, Last: "verified"}) {
+		t.Fatalf("generations %+v", marker.Generations)
+	}
+	if len(h.sleeps) != 1 {
+		t.Fatalf("sleeps %v", h.sleeps)
+	}
+}
+
+// 실제 배선(main의 newRunningGateway)도 프록시와 조회의 transport를 나누고, 조회 transport는 부를 때마다 새로 만든다.
+func TestGatewayTransportsDoNotShareThePool(t *testing.T) {
+	_, dir := privateTestDir(t)
+	g, code := newRunningGateway(dir, gatewayConfig{backend: backendAPI, allowPath: chatPath})
+	if code != "" {
+		t.Fatal(code)
+	}
+	t.Cleanup(func() { _ = g.close() })
+	proxy, lookup := g.proxy.Transport, g.lookupTransport
+	first, second := lookup(), lookup()
+	if first == proxy || second == proxy || first == second {
+		t.Fatal("lookup transport shares a connection pool")
+	}
+	for _, rt := range []http.RoundTripper{proxy, first, second} {
+		if tr, ok := rt.(*http.Transport); !ok || tr.Proxy != nil {
+			t.Fatalf("transport %T must not use an environment proxy", rt)
 		}
 	}
 }
