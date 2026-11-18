@@ -5,11 +5,11 @@
 // 데이터는 저장 결과(내부 remediation, GET /api/report/diagnostic/remediation)뿐이다 — 예시 레코드로 채우지 않는다.
 // E③ 원문 판정 · 다계정 비교는 읽기 API 가 없어 이 화면에 두지 않는다(백엔드 후속, lib/diagnosis/finding 의 표시 규칙만 남김).
 
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 
 import { cx } from "../../lib/cx";
 import { fetchRemediation } from "../../live/api";
-import { usePickedFinding } from "../../live/findingPick";
+import { clearFindingPick, usePickedFinding } from "../../live/findingPick";
 import { useUrl, useUrlGates } from "../../live/urlDiagnosis";
 import { usePoll } from "../../live/usePoll";
 import { useShell } from "../../shell";
@@ -31,9 +31,20 @@ export function UrlFindingLive() {
   const rem = usePoll(() => fetchRemediation(taskId as string, "internal"), [taskId], {
     enabled: visible && !!taskId && !!entryId,
   });
-  const entry = entryId && rem.data && !rem.error ? rem.data.entries.find((e) => e.entry_id === entryId) : undefined;
+  // 다시 들어온 때(숨김 → 보임). 그 뒤에 받은 응답만 지금 결과로 그린다 — 직전 진입의 응답을 새 결과처럼 보이지 않게
+  // (#695 리뷰). 렌더 중 상태 갱신은 이전 값과 다를 때만 한 번 일어난다(React 의 '이전 렌더 값에서 파생' 방식)
+  const [entered, setEntered] = useState({ visible, at: visible ? Date.now() : 0 });
+  if (entered.visible !== visible) setEntered({ visible, at: visible ? Date.now() : entered.at });
+  const fresh = rem.fetchedAt !== null && rem.fetchedAt >= entered.at;
+  const data = fresh ? rem.data : null;
+  const entry = entryId && data && !rem.error ? data.entries.find((e) => e.entry_id === entryId) : undefined;
+  // 목록으로 갈 때 공용 선택을 지운다 — 남아 있으면 보고서가 같은 상세를 다시 연다(#695 리뷰)
+  const backToList = () => {
+    clearFindingPick();
+    goTo("report");
+  };
   const toReport = (
-    <button className={cx(s.btn, s.sm)} type="button" onClick={() => goTo("report")}>
+    <button className={cx(s.btn, s.sm)} type="button" onClick={backToList}>
       보고서 발견 목록으로
     </button>
   );
@@ -49,7 +60,7 @@ export function UrlFindingLive() {
       </div>
     );
   else if (rem.error) body = <ReportReadError error={rem.error} onRetry={rem.reload} />;
-  else if (!rem.data) body = <p className={s.empty}>불러오는 중…</p>;
+  else if (!data) body = <p className={s.empty}>불러오는 중…</p>;
   else if (!entry)
     body = (
       <div className={s.note} role="note">
@@ -65,7 +76,7 @@ export function UrlFindingLive() {
         host={host}
         taskId={taskId}
         onReload={rem.reload}
-        onBack={() => goTo("report")}
+        onBack={backToList}
       />
     );
 
