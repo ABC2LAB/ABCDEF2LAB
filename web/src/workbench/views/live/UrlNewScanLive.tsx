@@ -981,7 +981,13 @@ export function UrlNewScanLive() {
           </div>
           <div className={s.isec}>
             {/* 안전 장치 (시안 v41): 짧은 말로, 서버 값 · 절대규칙 6 고지는 그대로 */}
-            <h3>안전 장치</h3>
+            {/* 전송 통제 정책은 결과가 아니라 범위라 여기서 연다(작업대 실데이터 계약 §7-(1)) */}
+            <div className={s.sh}>
+              <h3>안전 장치</h3>
+              <button className={cx(s.btn, s.sm)} type="button" onClick={() => goTo("controlpolicy")}>
+                정책 전체 보기
+              </button>
+            </div>
             {scope ? (
               <ul className={s.policy} id="luPolicy">
                 <Rule
