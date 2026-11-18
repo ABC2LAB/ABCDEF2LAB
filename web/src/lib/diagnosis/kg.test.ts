@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { ApiError, apiFetch } from "./api";
+
+vi.mock("./api", async (original) => ({ ...(await original<typeof import("./api")>()), apiFetch: vi.fn() }));
 
 import {
   type AccessDecision,
@@ -25,6 +29,18 @@ function gridMap(principals: string[], resources: string[], cells: KgCell[]): Ac
     cells,
   };
 }
+
+const fullGrid = () =>
+  gridMap(
+    ["A", "B"],
+    ["r1", "r2"],
+    [
+      { principalRef: "A", resourceId: "r1", decision: "allow-ok" },
+      { principalRef: "A", resourceId: "r2", decision: "unknown" },
+      { principalRef: "B", resourceId: "r1", decision: "vuln" },
+      { principalRef: "B", resourceId: "r2", decision: "suspected" },
+    ],
+  );
 
 describe("buildCellResolver", () => {
   it("일반 셀은 decision·note 를 그대로 돌려준다", () => {
@@ -171,8 +187,8 @@ describe("countDecisions", () => {
     expect(total).toBe(3 * 2);
   });
 
-  it("목업 지도도 합계가 격자 크기와 맞는다(중복·누락 없음)", async () => {
-    const map = await getAccessMap(null);
+  it("모든 칸이 찬 격자도 합계가 격자 크기와 맞는다(중복·누락 없음)", () => {
+    const map = fullGrid();
     const total = Object.values(countDecisions(map)).reduce((a, b) => a + b, 0);
     expect(total).toBe(map.principals.length * map.resources.length);
   });
@@ -246,8 +262,8 @@ describe("mapProjectionIssues / hasProjectionIssues", () => {
     expect(mapProjectionIssues(gridMap(["A"], ["r1", "r1", "r1"], [])).dupResources).toBe(2);
   });
 
-  it("정상 목업은 무결성 문제 없음", async () => {
-    const iss = mapProjectionIssues(await getAccessMap(null));
+  it("정상 격자는 무결성 문제 없음", () => {
+    const iss = mapProjectionIssues(fullGrid());
     expect(iss).toEqual({ outOfGrid: 0, dupPrincipals: 0, dupResources: 0 });
     expect(hasProjectionIssues(iss)).toBe(false);
   });
@@ -344,5 +360,28 @@ describe("mapApiAccessMap (실 라우트 응답 매핑)", () => {
     expect(cell?.note).toContain("policy_deny_resolved");
     expect(cell?.note).toContain("표식 필드: fullName");
     expect(cell?.note ?? "").not.toMatch(/https?:|kgfx-canary|Bearer/i);
+  });
+});
+
+describe("getAccessMap (현재 task · 예시 없음)", () => {
+  beforeEach(() => vi.resetAllMocks());
+  const body = { task_id: 41, policy_version: "kg-fixture/v1", cells: [] };
+  it("현재 task 의 지도를 캐시 없이 · 리다이렉트 없이 읽는다", async () => {
+    vi.mocked(apiFetch).mockResolvedValue(body);
+    const signal = new AbortController().signal;
+    await expect(getAccessMap("41", signal)).resolves.toMatchObject({ mock: false, cells: [] });
+    expect(apiFetch).toHaveBeenCalledWith("/api/tasks/41/access-map", { cache: "no-store", redirect: "error", signal });
+  });
+  it.each(["", "0", "041", "task-41", "1e3"])("정규 양의 정수가 아닌 task(%s)는 부르지 않는다", async (task) => {
+    await expect(getAccessMap(task)).rejects.toThrow(ApiError);
+    expect(apiFetch).not.toHaveBeenCalled();
+  });
+  it("응답 task_id 가 요청과 다르면 다른 점검의 지도라 거부한다", async () => {
+    vi.mocked(apiFetch).mockResolvedValue({ ...body, task_id: 42 });
+    await expect(getAccessMap("41")).rejects.toMatchObject({ status: 422 });
+  });
+  it.each([401, 403, 404, 409, 502, 503])("HTTP %s 는 빈 격자로 바꾸지 않고 그대로 던진다", async (status) => {
+    vi.mocked(apiFetch).mockRejectedValue(new ApiError(status, "x"));
+    await expect(getAccessMap("41")).rejects.toMatchObject({ status });
   });
 });

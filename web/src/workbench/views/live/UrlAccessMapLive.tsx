@@ -1,15 +1,16 @@
 "use client";
 
-// 접근통제 지도 화면 (운영자 전용, 지금은 예시). v0.1 = 수평(cross-account) IDOR 조회 전용(kg-policy §0·§4.2(4)).
+// 접근통제 지도 화면 (운영자 전용). v0.1 = 수평(cross-account) IDOR 조회 전용(kg-policy §0·§4.2(4)).
 // 데이터는 lib/diagnosis/kg seam(getAccessMap)에서만 온다. 셀 색은 화면이 추정하지 않고 리졸버(buildCellResolver)가
 // 정규화한 decision 으로만 칠한다(fail-closed, kg-policy §4.2(2)). 격자에는 판정 상태만 — 계정 원문·표식 값은 없다(절대규칙 2).
 // ※ §4 운영자 전용: 내보내기·공유·모델 입력에 넣지 않는다 → export 버튼을 두지 않는다.
-// ※ live 점등은 실 KG API 연동 시 getAccessMap(taskId) 만 교체하면 된다(표현/데이터 분리 — 이 화면은 안 바뀐다).
-//   지금은 getAccessMap(null)=예시(MOCK_MAP), mock 배너를 띄운다.
+// ※ 현재 Job 의 task 지도만 읽는다(GET /api/tasks/{id}/access-map). Job 전환 · 재로그인 · 조회 실패 때 이전 격자를 버리고
+//   예시 · 빈 격자로 채우지 않는다(product-report-graph-read.md).
 
 import type { CSSProperties } from "react";
 import { useEffect, useState } from "react";
 
+import { ApiError } from "@/lib/diagnosis/api";
 import {
   type AccessDecision,
   type AccessMap,
@@ -191,30 +192,54 @@ function Legend() {
   );
 }
 
-/** 접근통제 지도 (운영자 전용, 예시). */
-export function UrlAccessMapLive() {
-  // 현재 이어 보는 진단의 실제 task id. 있으면 그 지도(실 KG projection, GET /api/tasks/{id}/access-map),
-  // 없으면(진단 전) 예시(MOCK_MAP) — mock 배너로 명시.
-  const taskId = useUrl((st) => st.job?.task_id ?? null);
-  const [map, setMap] = useState<AccessMap | null>(null);
-  const [failed, setFailed] = useState(false);
+/**
+ * 읽기 실패 문구 — 상태 코드마다 뜻이 다르다(product-report-graph-read.md 오류 표). 어느 쪽이든 이전 격자 · 예시 · 빈 격자로
+ * 대신하지 않는다.
+ */
+function failureText(error: unknown): string {
+  const status = error instanceof ApiError ? error.status : -1;
+  if (status === 409)
+    return "이 점검은 접근통제 지도를 만들 수 없습니다 — KG 미등록 · 실행 전 · 세대 무효이거나 조회 중 점검 문맥이 바뀌었습니다. 빈 지도로 대신하지 않습니다.";
+  if (status === 403) return "이 점검의 지도를 볼 권한을 확인하지 못했습니다. 이전 결과는 표시하지 않습니다.";
+  if (status === 401) return "로그인이 끝났습니다. 다시 로그인한 뒤 선택한 점검부터 다시 조회합니다.";
+  if (status === 404) return "이 점검의 task 를 찾지 못했습니다(삭제됐거나 없음). 점검 선택을 갱신하세요.";
+  if (status === 400) return "지도 요청 형식이 맞지 않습니다.";
+  if (status === 422) return "다른 점검의 지도이거나 응답 모양을 확인할 수 없어 표시하지 않습니다.";
+  if (status === 502) return "중계 응답을 확인하지 못했습니다. 정상 데이터로 보지 않습니다.";
+  if (status === 0) return "엔진에 연결하지 못했습니다. 이전 결과는 표시하지 않습니다.";
+  return `접근통제 지도를 불러오지 못했습니다${status > 0 ? ` (HTTP ${status})` : ""}. 이전 결과는 표시하지 않습니다.`;
+}
 
+type Read = { task: string; map: AccessMap | null; error: unknown };
+
+/** 접근통제 지도 (운영자 전용 · 현재 Job 의 task). */
+export function UrlAccessMapLive() {
+  // 현재 이어 보는 진단의 실제 task id(Job 최신 응답). 없으면 부르지 않고 예시도 그리지 않는다.
+  const taskId = useUrl((st) => st.job?.task_id ?? null);
+  const [read, setRead] = useState<Read | null>(null);
+  const [attempt, setAttempt] = useState(0);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: attempt 는 '다시 읽기'가 같은 task 를 다시 부르는 트리거
   useEffect(() => {
-    let live = true;
-    setMap(null);
-    setFailed(false);
-    getAccessMap(taskId)
+    if (!taskId) return;
+    let current = true;
+    const controller = new AbortController();
+    getAccessMap(taskId, controller.signal)
       .then((m) => {
-        if (live) setMap(m);
+        if (current) setRead({ task: taskId, map: m, error: null });
       })
-      .catch(() => {
-        if (live) setFailed(true);
+      .catch((error: unknown) => {
+        if (current) setRead({ task: taskId, map: null, error });
       });
     return () => {
-      live = false;
+      current = false;
+      controller.abort();
     };
-  }, [taskId]);
+  }, [taskId, attempt]);
 
+  // 다른 task 의 결과(이전 Job · 전환 중)는 쓰지 않는다
+  const now = read && read.task === taskId ? read : null;
+  const map = now?.map ?? null;
   const resolve = map ? buildCellResolver(map.cells) : null;
   const hCounts = map ? countDecisions(map, "H") : null;
   const vCounts = map ? countDecisions(map, "V") : null;
@@ -232,14 +257,17 @@ export function UrlAccessMapLive() {
             <Icon name="info" />
             <span>접근통제 지도는 운영자 전용입니다. 내보내기·공유·모델 입력에 넣지 않습니다.</span>
           </div>
-          {map?.mock ? (
-            <div className={cx(s.note, s.warn)} role="note">
+          {!taskId ? <p className={s.empty}>실제 진단 작업을 선택하세요.</p> : null}
+          {taskId && !now ? <p className={s.empty}>불러오는 중…</p> : null}
+          {now?.error ? (
+            <div className={cx(s.note, s.warn)} role="alert">
               <Icon name="alert" />
-              <span>예시 데이터입니다. 실제 접근통제 지도는 KG API 연결 후 나옵니다.</span>
+              <span className={s["lv-grow"]}>{failureText(now.error)}</span>
+              <button className={cx(s.btn, s.sm)} type="button" onClick={() => setAttempt((n) => n + 1)}>
+                다시 읽기
+              </button>
             </div>
           ) : null}
-          {failed ? <p className={s.empty}>접근통제 지도를 불러오지 못했습니다.</p> : null}
-          {!map && !failed ? <p className={s.empty}>불러오는 중…</p> : null}
 
           {/* projection 무결성 경고 — 데이터 불일치를 숨기지 않는다(§4.2(2)·N4, fail-closed) */}
           {map && issues && hasProjectionIssues(issues) ? (
