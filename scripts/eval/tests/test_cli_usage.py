@@ -60,6 +60,28 @@ class TestCommandWords(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(command_words(command), words)
 
+    def test_review_round_two_contexts(self):
+        # #682 리뷰 2차: 제어 낱말, 데이터 속 '<<EOF', 따옴표 없는 heredoc 본문의 치환, 셸 +옵션.
+        cases = {
+            "if npx --version; then :; fi": ["npx", ":"],
+            "echo '<<EOF'\nnpx --version": ["echo", "npx"],
+            "cat <<EOF\n$(npx --version)\nEOF": ["npx", "cat"],
+            "sh +e -c 'npx --version'": ["sh", "npx"],
+            "while true; do npx a; done": ["true", "npx"],
+            "! npx a": ["npx"],
+            "{ npx a; }": ["npx"],
+            "case $x in a) npx b;; esac": ["npx"],
+        }
+        for command, words in cases.items():
+            with self.subTest(command=command):
+                self.assertEqual(command_words(command), words)
+        # 확장되지 않는 heredoc(따옴표·백슬래시 구분어)과 본문의 평문, for 목록은 명령이 아니다
+        for command, words in {"cat <<'EOF'\n$(npx --version)\nEOF": ["cat"], "cat <<-\\EOF\n$(npx q)\nEOF": ["cat"],
+                               "cat <<EOF\nnpx plain text\nEOF": ["cat"], "for x in npx pip; do echo $x; done": ["echo"],
+                               "cat <<<\"npx here-string\"": ["cat"]}.items():
+            with self.subTest(command=command):
+                self.assertEqual(command_words(command), words)
+
     def test_unresolvable_calls_are_uncertain_not_zero(self):
         for command in ('eval "$CMD"', "$TOOL --x", "source ./run.sh", ". ./run.sh", "echo \"$(npx", "echo `npx", "sh -c 'a \"b'"):
             with self.subTest(command=command):

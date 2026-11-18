@@ -29,7 +29,11 @@ _WRAPPER_VALUE_OPTIONS = {"sudo": frozenset({"-u", "-g", "-C", "-p", "-h", "-U"}
 _SHELLS = frozenset({"bash", "sh", "dash", "zsh"})
 # 무엇을 실행할지 글이나 파일에서 정하는 명령(정적으로 풀지 않는다).
 _INDIRECT = frozenset({"eval", "source", "."})
-_HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+_HEREDOC_DELIMITER = re.compile(r"-?\s*(['\"]?)\\?([A-Za-z_][A-Za-z0-9_]*)\1")
+# 셸 예약어. 단순 명령의 첫 낱말이어도 명령 이름이 아니다. 앞의 것은 건너뛰고 다음 낱말을 보고, 뒤의 것은 그 조각 전체가
+# 명령이 아니다(반복 변수·패턴 목록).
+_RESERVED_PREFIX = frozenset({"if", "then", "else", "elif", "while", "until", "do", "!", "{", "}", "fi", "done", "esac"})
+_RESERVED_SEGMENT = frozenset({"for", "case", "select", "function", "in"})
 _OPERATOR_CHARS = frozenset(";&|\n(){}`")
 # 명령을 찾지 못하거나 실행하지 못한 셸 종료 코드(bash: 127 없음, 126 실행 불가).
 NOT_FOUND_EXIT_CODES = frozenset({126, 127})
@@ -84,17 +88,56 @@ def _segments(command: str) -> list[str]:
     return out
 
 
-def _drop_heredoc_bodies(command: str) -> str:
-    """heredoc 본문 줄(구분어 줄까지)을 뺀다. 본문은 명령이 아니라 입력 글이다."""
-    lines, out, waiting = command.split("\n"), [], []
-    for line in lines:
+def _heredoc_markers(line: str) -> list[tuple[str, bool]]:
+    """한 줄에서 따옴표 밖의 heredoc 시작(`<<`, here-string `<<<`는 아님)마다 (구분어, 본문이 확장되는지).
+    구분어에 따옴표·백슬래시가 있으면 본문은 확장되지 않는다(명령 치환도 일어나지 않는다)."""
+    markers, quote, i = [], None, 0
+    while i < len(line):
+        char = line[i]
+        if quote is not None:
+            if char == quote:
+                quote = None
+            elif char == "\\" and quote == '"':
+                i += 1
+        elif char in "'\"":
+            quote = char
+        elif char == "\\":
+            i += 1
+        elif line.startswith("<<", i) and not line.startswith("<<<", i):
+            match = _HEREDOC_DELIMITER.match(line, i + 2)
+            if match:
+                quoted = bool(match.group(1)) or "\\" in match.group(0)
+                markers.append((match.group(2), not quoted))
+                i = match.end()
+                continue
+        i += 1
+    return markers
+
+
+def _split_heredocs(command: str) -> tuple[str, list[str]]:
+    """(heredoc 본문을 뺀 명령 글, 확장되는 본문들). 본문은 입력 글이라 명령이 아니지만, 따옴표 없는 구분어의 본문 안
+    명령 치환은 실행된다(#682 리뷰). 데이터 속 `<<`(따옴표 안)는 heredoc이 아니다."""
+    out, bodies, waiting = [], [], []
+    for line in command.split("\n"):
         if waiting:
-            if line.strip() == waiting[0]:
+            delimiter, expands, buffer = waiting[0]
+            if line.strip() == delimiter:
                 waiting.pop(0)
+                if expands:
+                    bodies.append("\n".join(buffer))
+            else:
+                buffer.append(line)
             continue
         out.append(line)
-        waiting = [match.group(2) for match in _HEREDOC.finditer(line)]
-    return "\n".join(out)
+        waiting = [(delimiter, expands, []) for delimiter, expands in _heredoc_markers(line)]
+    for delimiter, expands, buffer in waiting:  # 구분어 줄이 없으면 끝까지가 본문이다
+        if expands:
+            bodies.append("\n".join(buffer))
+    return "\n".join(out), bodies
+
+
+def _drop_heredoc_bodies(command: str) -> str:
+    return _split_heredocs(command)[0]
 
 
 def _substitutions(command: str) -> tuple[list[str], bool]:
@@ -149,13 +192,13 @@ def _substitutions(command: str) -> tuple[list[str], bool]:
 def _shell_command_string(tokens: list[str], start: int) -> str | None:
     """`셸 [옵션…] -c 명령` 또는 묶인 옵션(`-ec`·`-lc`)의 명령 글."""
     i = start
-    while i < len(tokens) and tokens[i].startswith("-") and tokens[i] != "--":
+    while i < len(tokens) and tokens[i][:1] in ("-", "+") and tokens[i] != "--":
         flag = tokens[i]
         if flag in ("-o", "+o"):
             i += 2
             continue
-        if not flag.startswith("--") and "c" in flag[1:]:
-            rest = [t for t in tokens[i + 1:] if not t.startswith("-")]
+        if flag.startswith("-") and not flag.startswith("--") and "c" in flag[1:]:
+            rest = [t for t in tokens[i + 1:] if t[:1] not in ("-", "+")]
             return rest[0] if rest else None
         i += 1
     return None
@@ -168,9 +211,13 @@ def analyze_command(command: str, depth: int = 0) -> tuple[list[str], bool]:
     words, uncertain = [], False
     if depth > 3:
         return words, True
-    body = _drop_heredoc_bodies(command)
+    body, expanding = _split_heredocs(command)
     substitutions, broken = _substitutions(body)
     uncertain |= broken
+    for text in expanding:  # 따옴표 없는 heredoc 본문의 명령 치환도 실행된다
+        found, unsure = _substitutions(text)
+        substitutions += found
+        uncertain |= unsure
     for inner in substitutions:
         found, unsure = analyze_command(inner, depth + 1)
         words += found
@@ -180,10 +227,12 @@ def analyze_command(command: str, depth: int = 0) -> tuple[list[str], bool]:
             tokens = shlex.split(segment, posix=True)
         except ValueError:
             tokens, uncertain = segment.split(), True
+        if tokens and tokens[0] in _RESERVED_SEGMENT:
+            continue  # for·case 등: 이 조각의 낱말은 명령이 아니다(본문은 do·then 뒤 조각에서 센다)
         i = 0
         while i < len(tokens):
             token = tokens[i]
-            if _ASSIGNMENT.match(token):
+            if _ASSIGNMENT.match(token) or token in _RESERVED_PREFIX:
                 i += 1
                 continue
             base = token.rsplit("/", 1)[-1]
