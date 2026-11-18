@@ -50,6 +50,7 @@ import { InspHead, InspOpenButton, Isec, Kv, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "./approvals";
 import { DiagnosticEntrySections } from "./DiagnosticEntrySections";
+import { ReportAssetGraph } from "./ReportAssetGraph";
 import { ReportReadError } from "./runRows";
 import { TaskActivity } from "./TaskActivity";
 import { reasonText, UrlFacts, UrlHead, UrlNotices, UrlPill, UrlRefreshButton, useUrlHost } from "./urlParts";
@@ -1759,7 +1760,7 @@ export function UrlReportLive() {
                 {listBody}
               </div>
               <div role="tabpanel" id="rp-graph" aria-label="자산 지식 그래프" hidden={tab !== "graph"}>
-                <NotYet block why="보고서에 붙일 자산 지식 그래프 서버 연결이 없습니다" />
+                <ReportAssetGraph taskId={taskId} active={visible && tab === "graph"} />
               </div>
               <div
                 role="tabpanel"
