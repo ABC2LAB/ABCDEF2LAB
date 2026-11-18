@@ -76,11 +76,37 @@ class TestCheck(unittest.TestCase):
 
     def test_build_must_be_the_declared_commit(self):
         self.assertEqual(check(described(source_revision=""), SHA), ["meter_build_unknown"])
-        self.assertEqual(check(described(source_revision="short"), SHA), ["meter_build_unknown"])
+        self.assertEqual(check(described(source_revision="short"), SHA), ["meter_build_invalid"])
         self.assertEqual(check(described(), "f" * 40), ["meter_build_mismatch"])
         self.assertEqual(check(described(source_revision="", vcs_revision=SHA, vcs_modified=False), SHA), [])  # 본 클론 빌드
         self.assertEqual(check(described(vcs_revision=SHA, vcs_modified=True), SHA), ["meter_build_mismatch"])  # 더러운 트리
         self.assertEqual(check(described(vcs_revision="f" * 40, vcs_modified=False), SHA), ["meter_build_mismatch"])
+
+    def test_build_fields_follow_the_contract_and_summary_keeps_only_checked_values(self):
+        # #684 리뷰: 맞는 소스 SHA에 VCS 개정 배열·수정 플래그 객체를 붙여도 통과했고, 요약에 그 값이 그대로 남았다.
+        bad = {
+            "vcs_revision_list": dict(vcs_revision=[SHA]), "vcs_modified_object": dict(vcs_revision=SHA, vcs_modified={"x": False}),
+            "both": dict(vcs_revision=[SHA], vcs_modified={"x": 1}), "modified_without_revision": dict(vcs_modified=False),
+            "revision_without_modified": dict(vcs_revision=SHA, vcs_modified=None), "modified_string": dict(vcs_revision=SHA, vcs_modified="false"),
+            "modified_int": dict(vcs_revision=SHA, vcs_modified=0), "source_upper": dict(source_revision=SHA.upper()),
+            "source_number": dict(source_revision=1), "vcs_short": dict(vcs_revision="abc", vcs_modified=False),
+            "go_version_object": dict(go_version={"v": 1}), "go_version_odd": dict(go_version="1.26"),
+        }
+        for case, build in bad.items():
+            raw = described(**build)
+            reasons = check(raw, SHA)
+            with self.subTest(case=case):
+                self.assertEqual(reasons, ["meter_build_invalid"])
+                kept = summary(raw, reasons, SHA)
+                self.assertEqual((kept["source_revision"], kept["vcs_revision"], kept["vcs_modified"]), (None, None, None))
+        for case, raw in {"extra": dict(described(), build=dict(described()["build"], more=1)),
+                          "missing": dict(described(), build={k: v for k, v in described()["build"].items() if k != "go_version"}),
+                          "not_object": dict(described(), build=[SHA])}.items():
+            with self.subTest(case=case):
+                self.assertEqual(check(raw, SHA), ["meter_build_invalid"])
+        ok = described(source_revision="", vcs_revision=SHA, vcs_modified=False)
+        self.assertEqual(summary(ok, [], SHA), {"format": "abc2lab.meter-preflight/v1", "expected_source_sha": SHA,
+                                                "source_revision": "", "vcs_revision": SHA, "vcs_modified": False, "reasons": []})
 
     def test_parse_and_args(self):
         self.assertEqual(parse(json.dumps(described()).encode()), described())

@@ -247,7 +247,7 @@ def _meter_described(sha):
     """현재 러너 기대 칸과 같은 계측기 describe 출력(회차 전 점검 통과)."""
     from meter_describe import EXPECTED, FORMAT
     return {"format": FORMAT, "markers": {k: {"required": list(v["required"]), "optional": list(v["optional"])} for k, v in EXPECTED.items()},
-            "build": {"source_revision": sha, "vcs_revision": "", "vcs_modified": None, "go_version": "go"}}
+            "build": {"source_revision": sha, "vcs_revision": "", "vcs_modified": None, "go_version": "go1.26.3"}}
 
 
 class FakePorts:

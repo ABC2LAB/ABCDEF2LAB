@@ -125,7 +125,7 @@ class FakePorts:
             return self.describe_override
         return {"format": FORMAT, "markers": {k: {"required": list(v["required"]), "optional": list(v["optional"])}
                                               for k, v in EXPECTED.items()},
-                "build": {"source_revision": "a" * 40, "vcs_revision": "", "vcs_modified": None, "go_version": "go"}}
+                "build": {"source_revision": "a" * 40, "vcs_revision": "", "vcs_modified": None, "go_version": "go1.26.3"}}
 
     def host_spec(self):
         self._call("host_spec")
