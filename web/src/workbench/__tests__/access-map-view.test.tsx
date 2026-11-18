@@ -272,6 +272,25 @@ describe("UrlAccessMapLive (현재 task · 예시 없음)", () => {
     expect(f).toHaveBeenCalledTimes(2);
   });
 
+  it.each([
+    ["Job 이 비었다가(상태 조회 실패)", { job: null }],
+    ["서버 확인이 풀렸다가", { verified: false }],
+  ])("%s 같은 task · revision 으로 돌아오면 새 응답 전엔 이전 격자를 보이지 않는다", async (_n, gone) => {
+    f.mockResolvedValueOnce(apiMap());
+    show();
+    await screen.findByRole("table", { name: /격자/ });
+    act(() => useUrl.setState(gone));
+    expect(screen.queryByRole("table", { name: /격자/ })).toBeNull();
+    const next = deferred();
+    f.mockReturnValueOnce(next.promise as never);
+    act(() => useUrl.setState({ job: running, verified: true })); // 같은 선택 · task · revision
+    expect(screen.getByText("불러오는 중…")).toBeInTheDocument();
+    expect(screen.queryByRole("table", { name: /격자/ })).toBeNull();
+    await act(async () => next.resolve(apiMap()));
+    expect(await screen.findByRole("table", { name: /격자/ })).toBeInTheDocument();
+    expect(f).toHaveBeenCalledTimes(2);
+  });
+
   it("다시 읽기를 누르면 새 응답 전엔 지난 오류를 보이지 않는다", async () => {
     f.mockRejectedValueOnce(new ApiError(503, "x"));
     show();

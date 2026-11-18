@@ -228,9 +228,12 @@ export function UrlAccessMapLive() {
   const selection = useUrlSelectionKey();
   const [read, setRead] = useState<Read | null>(null);
   const [attempt, setAttempt] = useState(0);
-  // 진입 세대: 화면에 다시 들어올 때마다 올린다. 렌더 중에 맞춰서 같은 렌더에서 지난 진입의 결과를 버린다
-  const [entry, setEntry] = useState({ visible, gen: 0 });
-  if (entry.visible !== visible) setEntry({ visible, gen: visible ? entry.gen + 1 : entry.gen });
+  // 진입 세대: 읽을 수 있는 상태(화면이 보이고 확인된 Job 의 task 가 있음)로 들어올 때마다 올린다 — 화면에 다시 들어올 때,
+  // 상태 조회 실패 · 권한 철회로 Job 이 비었다가 같은 task · revision 으로 돌아올 때(#691 리뷰) 모두 새 조회로 구분한다.
+  // 렌더 중에 맞춰서 같은 렌더에서 지난 진입의 결과를 버린다
+  const live = visible && !!taskId;
+  const [entry, setEntry] = useState({ live, gen: 0 });
+  if (entry.live !== live) setEntry({ live, gen: live ? entry.gen + 1 : entry.gen });
   const request = taskId ? `${selection}|${taskId}|${revision}|${entry.gen}|${attempt}` : "";
 
   useEffect(() => {
