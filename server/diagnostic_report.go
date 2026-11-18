@@ -180,7 +180,7 @@ func readDiagnosticReportWithCaptures(ctx context.Context, tx *sql.Tx, taskID in
 	rows, err := tx.QueryContext(ctx, `SELECT f.id,COALESCE(f.name,''),COALESCE(f.vulnclass,''),COALESCE(f.severity,''),COALESCE(f.status,'pending'),COALESCE(f.summary,''),COALESCE(f.evidence,''),COALESCE(f.report,''),f.evidence_version,f.report_evidence_version,f.created_at,
  COALESCE(l.evidence_version,0),COALESCE(v.oracle_value,''),COALESCE(i.execution_ref,''),COALESCE(i.intent_id,0),COALESCE(m.canonical,''::bytea),COALESCE(m.digest,''::bytea),COALESCE(v.payload_canonical,''::bytea),COALESCE(v.payload_digest,''::bytea)
  FROM findings f LEFT JOIN e3_verdict_links l ON l.finding_id=f.id AND l.task_id=f.task_id
- LEFT JOIN e3_verdict_issuances i ON i.id=l.issuance_id AND i.task_id=f.task_id
+ LEFT JOIN e3_verdict_issuances i ON i.id=l.issuance_id AND i.task_id=f.task_id AND i.source_kind='eval'
  LEFT JOIN e3_oracle_verdicts v ON v.id=i.verdict_id
  LEFT JOIN e3_evidence_manifests m ON m.id=i.manifest_id AND m.task_id=f.task_id
  WHERE f.task_id=$1 ORDER BY f.id LIMIT $2`, taskID, report.MaxFindings+1)
@@ -237,7 +237,7 @@ func readDiagnosticReportWithCaptures(ctx context.Context, tx *sql.Tx, taskID in
  FROM e3_verdict_issuances i JOIN e3_oracle_verdicts v ON v.id=i.verdict_id
  JOIN e3_evidence_manifests m ON m.id=i.manifest_id AND m.task_id=i.task_id
  LEFT JOIN e3_verdict_links l ON l.issuance_id=i.id AND l.task_id=i.task_id
- WHERE i.task_id=$1 AND l.id IS NULL ORDER BY i.id LIMIT $2`, taskID, report.MaxFindings+1)
+ WHERE i.task_id=$1 AND i.source_kind='eval' AND l.id IS NULL ORDER BY i.id LIMIT $2`, taskID, report.MaxFindings+1)
 	if err != nil {
 		return out, err
 	}

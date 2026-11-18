@@ -284,7 +284,7 @@ func readAccessMapRecords(ctx context.Context, tx *sql.Tx, b accessMapBinding) (
  m.evidence_revision,m.canonical,m.digest
  FROM e3_verdict_issuances i LEFT JOIN e3_oracle_verdicts v ON v.id=i.verdict_id
  LEFT JOIN e3_evidence_manifests m ON m.id=i.manifest_id AND m.task_id=i.task_id
- WHERE i.task_id=$1 AND i.execution_ref=$2 LIMIT $3`, b.TaskID, b.Scope.RunRef, maxAccessMapRecords+1)
+ WHERE i.task_id=$1 AND i.execution_ref=$2 AND i.source_kind='eval' LIMIT $3`, b.TaskID, b.Scope.RunRef, maxAccessMapRecords+1)
 	if err != nil {
 		return nil, errAccessMapUnavailable
 	}
