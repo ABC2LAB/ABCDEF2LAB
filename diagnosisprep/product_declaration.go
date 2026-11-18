@@ -57,9 +57,11 @@ func validProductDeclaration(p ProductDeclaration) bool {
 	return false
 }
 
-// ResetRequest는 리셋 확인(reset_confirm)의 입력이다. 운영자가 진술(ProductResetState.Statement)에 동의했다는 뜻이다.
+// ResetRequest는 리셋 확인(reset_confirm)의 입력이다. 운영자가 진술(ProductResetState.Statement)에 동의했다는 뜻이고,
+// WritesJob은 운영자가 화면에서 본 쓰기 기록(ProductResetState.LastWritesJob)이다. 저장 시점의 기록과 다르면 반영하지 않는다.
 type ResetRequest struct {
-	StatementConfirmed bool `json:"statement_confirmed"`
+	StatementConfirmed bool   `json:"statement_confirmed"`
+	WritesJob          string `json:"writes_job"`
 }
 
 // ProductResetState는 대상의 확정 단계 쓰기와 리셋 확인 상태다(E③ 결정 §6.1). ResetRequired면 운영자가 리셋 진술을
@@ -85,3 +87,6 @@ func validProductResetState(s ProductResetState) bool {
 	return reference.MatchString(s.LastWritesJob) && !s.LastWritesAt.IsZero() && s.LastWritesObjects > 0 &&
 		s.ResetRequired != confirmed && confirmed != s.ConfirmedAt.IsZero() && (!confirmed || reference.MatchString(s.ConfirmedBy))
 }
+
+// ValidResetWritesJob은 리셋 확인이 가리키는 쓰기 기록(회차 참조)의 모양이다.
+func ValidResetWritesJob(s string) bool { return reference.MatchString(s) }

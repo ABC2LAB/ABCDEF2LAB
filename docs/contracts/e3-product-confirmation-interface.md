@@ -144,9 +144,12 @@
 
 **기록과 API(구현).** 선언 저널에 두 종류의 줄을 더 남긴다.
 - `confirmation_writes`: 확정 단계가 대상에 만든 객체(종류·ID digest, 원문 없음)와 회차. 행위자는 프로그램(`e3-confirmation`)이다. 새 쓰기는 앞선 리셋 확인을 덮는다.
-- `reset_confirmed`: 대상 승인자가 리셋 진술에 동의함(진술 문장의 SHA-256·누가·언제). 남은 쓰기가 없으면 남기지 않는다.
+- `reset_confirmed`: 대상 승인자가 리셋 진술에 동의함(진술 문장의 SHA-256·누가·언제·동의한 쓰기 기록의 회차). 동의는 운영자가 본 쓰기 기록에만 묶인다.
 - `GET /api/product/targets/{id}/reset-confirmation` → `{"reset": {"reset_required", "last_writes_job"?, "last_writes_at"?, "last_writes_objects"?, "confirmed_by"?, "confirmed_at"?, "statement"}}`. 화면은 `statement`를 그대로 보이고 동의를 받는다.
-- `POST …/reset-confirmation` `{"statement_confirmed": true}` → 같은 모양. 진술 동의가 없으면 400 `statement_required`다. 리셋은 더 안전한 쪽이라 대상 승인 상태와 관계없이 받는다.
+- `POST …/reset-confirmation` `{"statement_confirmed": true, "writes_job": "<GET에서 본 last_writes_job>"}` → 같은 모양.
+  - 진술 동의가 없으면 400 `statement_required`, `writes_job`이 없거나 모양이 틀리면 400 `invalid_reset_request`다.
+  - 조회와 동의 사이에 새 쓰기 기록이 들어와 지금 기록이 본 것과 다르면(또는 기록이 없으면) 409 `reset_record_changed`이고 반영하지 않는다. 같은 기록을 이미 확인했으면 줄을 더 남기지 않는다.
+  - 리셋은 더 안전한 쪽이라 대상 승인 상태와 관계없이 받는다.
 - 게이트는 지난 쓰기가 있으면 리셋 확인과 별개로 지난 객체를 읽어 표식 잔존을 본다(결정 §6.1 (b), E² 쪽 점검). 그 점검이 연결되기 전이나 실패하면 잔존은 `unknown`이라 시작하지 않는다.
 
 ## 9. 후보 연결

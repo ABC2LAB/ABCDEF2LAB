@@ -103,7 +103,7 @@ func TestProductDeclarationResponseValidation(t *testing.T) {
 
 func TestProductResetRequestAndResponseValidation(t *testing.T) {
 	id := "target-abc"
-	for _, r := range []ProductRequest{{Operation: "reset_confirmation", TargetID: id}, {Operation: "reset_confirm", TargetID: id, Reset: &ResetRequest{StatementConfirmed: true}}} {
+	for _, r := range []ProductRequest{{Operation: "reset_confirmation", TargetID: id}, {Operation: "reset_confirm", TargetID: id, Reset: &ResetRequest{StatementConfirmed: true, WritesJob: "job-1"}}} {
 		r := r
 		if !validProductRequest(&r) {
 			t.Errorf("valid %s rejected", r.Operation)
@@ -111,9 +111,11 @@ func TestProductResetRequestAndResponseValidation(t *testing.T) {
 	}
 	for name, r := range map[string]ProductRequest{
 		"get with body":        {Operation: "reset_confirmation", TargetID: id, Reset: &ResetRequest{StatementConfirmed: true}},
-		"confirm unconfirmed":  {Operation: "reset_confirm", TargetID: id, Reset: &ResetRequest{}},
+		"confirm unconfirmed":  {Operation: "reset_confirm", TargetID: id, Reset: &ResetRequest{WritesJob: "job-1"}},
+		"confirm without job":  {Operation: "reset_confirm", TargetID: id, Reset: &ResetRequest{StatementConfirmed: true}},
+		"confirm bad job":      {Operation: "reset_confirm", TargetID: id, Reset: &ResetRequest{StatementConfirmed: true, WritesJob: "../job"}},
 		"confirm without":      {Operation: "reset_confirm", TargetID: id},
-		"confirm revision":     {Operation: "reset_confirm", TargetID: id, ExpectedRevision: 2, Reset: &ResetRequest{StatementConfirmed: true}},
+		"confirm revision":     {Operation: "reset_confirm", TargetID: id, ExpectedRevision: 2, Reset: &ResetRequest{StatementConfirmed: true, WritesJob: "job-1"}},
 		"reset on declaration": {Operation: "declaration", TargetID: id, Reset: &ResetRequest{StatementConfirmed: true}},
 		"unknown":              {Operation: "reset_confirm_all", TargetID: id},
 	} {

@@ -269,18 +269,18 @@ func TestProductResetConfirmationLifecycle(t *testing.T) {
 	if got := start(gate); got != e3contract.RefuseResetConfirmationMissing {
 		t.Fatalf("확인 없이: %s", got)
 	}
-	if _, err := r.confirmReset("ARTEX", target.ID, false); err == nil || err.Error() != "statement_required" {
+	if _, err := r.confirmReset("ARTEX", target.ID, false, "job-1"); err == nil || err.Error() != "statement_required" {
 		t.Fatalf("진술 없이: %v", err)
 	}
-	if _, err := r.confirmReset("other", target.ID, true); err == nil || err.Error() != "target_not_found" {
+	if _, err := r.confirmReset("other", target.ID, true, "job-1"); err == nil || err.Error() != "target_not_found" {
 		t.Fatalf("다른 주체: %v", err)
 	}
-	v, err := r.confirmReset("ARTEX", target.ID, true)
+	v, err := r.confirmReset("ARTEX", target.ID, true, "job-1")
 	if err != nil || v.ResetRequired || v.ConfirmedBy != "ARTEX" || v.ConfirmedAt.IsZero() {
 		t.Fatalf("확인: %+v %v", v, err)
 	}
 	// 같은 쓰기를 두 번 확인해도 줄을 더 남기지 않는다.
-	if again, err := r.confirmReset("ARTEX", target.ID, true); err != nil || !again.ConfirmedAt.Equal(v.ConfirmedAt) {
+	if again, err := r.confirmReset("ARTEX", target.ID, true, "job-1"); err != nil || !again.ConfirmedAt.Equal(v.ConfirmedAt) {
 		t.Fatalf("두 번째 확인: %+v %v", again, err)
 	}
 	if got := start(gate); got != e3contract.RefuseResetStateUnavailable {
@@ -340,7 +340,7 @@ func TestProductResetRejectsBadLines(t *testing.T) {
 	}
 	pending, _ := applyReset(rec, nil, writes)
 	confirm := productDeclarationEvent{TargetID: target.ID, Action: declarationResetConfirmed, Actor: "ARTEX", At: at,
-		TargetRevision: target.Revision, StatementSHA256: productResetStatementSHA256()}
+		TargetRevision: target.Revision, JobRef: "job-1", StatementSHA256: productResetStatementSHA256()}
 	if _, err := applyReset(rec, pending, confirm); err != nil {
 		t.Fatalf("정상 확인 줄: %v", err)
 	}
@@ -362,6 +362,8 @@ func TestProductResetRejectsBadLines(t *testing.T) {
 		"future_revision":      {nil, func() productDeclarationEvent { e := writes; e.TargetRevision = target.Revision + 1; return e }},
 		"unknown_action":       {pending, func() productDeclarationEvent { e := confirm; e.Action = "reset_skipped"; return e }},
 		"confirm_with_objects": {pending, func() productDeclarationEvent { e := confirm; e.Objects = confirmationObjects(); return e }},
+		"confirm_other_job":    {pending, func() productDeclarationEvent { e := confirm; e.JobRef = "job-2"; return e }},
+		"confirm_no_job":       {pending, func() productDeclarationEvent { e := confirm; e.JobRef = ""; return e }},
 	} {
 		if _, err := applyReset(rec, c.st, c.e()); err == nil {
 			t.Fatalf("%s 받음", name)
@@ -428,5 +430,50 @@ func TestProductDeclarationDirectorySyncsParent(t *testing.T) {
 	if r, err := newProductTargetRegistry(failing, policy, func() error { return nil }); err == nil {
 		_ = r.Close()
 		t.Fatal("부모 동기화 실패에도 레지스트리를 엶")
+	}
+}
+
+// 운영자가 회차 A의 기록을 보고 동의하는 사이에 회차 B의 쓰기가 들어오면 그 동의는 B에 반영되지 않는다.
+func TestProductResetConfirmationBoundToSeenRecord(t *testing.T) {
+	r, root, target, _ := declarationTestTarget(t)
+	if err := r.recordConfirmationWrites(target.ID, "job-a", confirmationObjects()); err != nil {
+		t.Fatal(err)
+	}
+	seen, _ := r.resetConfirmation("ARTEX", target.ID)
+	if seen.LastWritesJob != "job-a" {
+		t.Fatalf("본 기록: %+v", seen)
+	}
+	if err := r.recordConfirmationWrites(target.ID, "job-b", confirmationObjects()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.confirmReset("ARTEX", target.ID, true, seen.LastWritesJob); err == nil || err.Error() != "reset_record_changed" {
+		t.Fatalf("바뀐 기록에 동의를 반영함: %v", err)
+	}
+	if v, _ := r.resetConfirmation("ARTEX", target.ID); !v.ResetRequired || v.LastWritesJob != "job-b" || v.ConfirmedBy != "" {
+		t.Fatalf("B가 확인됨: %+v", v)
+	}
+	if got := e3contract.CheckRunStart(t.Context(), productResetGate{registry: r}, e3contract.RunBinding{}, target.ID); got != e3contract.RefuseResetConfirmationMissing {
+		t.Fatalf("B 확인 없이 시작: %s", got)
+	}
+	// 기록이 없을 때의 동의도 반영하지 않는다.
+	r2, _, target2, _ := declarationTestTarget(t)
+	if _, err := r2.confirmReset("ARTEX", target2.ID, true, "job-a"); err == nil || err.Error() != "reset_record_changed" {
+		t.Fatalf("기록 없이 동의: %v", err)
+	}
+	// B를 본 동의는 반영되고, 저널에는 B가 남는다.
+	v, err := r.confirmReset("ARTEX", target.ID, true, "job-b")
+	if err != nil || v.ResetRequired || v.ConfirmedBy != "ARTEX" {
+		t.Fatalf("B 확인: %+v %v", v, err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := newProductTargetRegistry(root, r.policy, func() error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if v, _ := reopened.resetConfirmation("ARTEX", target.ID); v.ResetRequired || v.LastWritesJob != "job-b" {
+		t.Fatalf("재생: %+v", v)
 	}
 }

@@ -236,7 +236,7 @@ func validProductRequest(r *ProductRequest) bool {
 		case "reset_confirmation":
 			return r.Reset == nil
 		case "reset_confirm":
-			return r.Reset != nil && r.Reset.StatementConfirmed
+			return r.Reset != nil && r.Reset.StatementConfirmed && reference.MatchString(r.Reset.WritesJob)
 		}
 		return false
 	}
