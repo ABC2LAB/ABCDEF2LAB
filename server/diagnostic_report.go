@@ -137,7 +137,7 @@ func readDiagnosticReportWithCaptures(ctx context.Context, tx *sql.Tx, taskID in
 	var storedBytes int64
 	if err := tx.QueryRowContext(ctx, `SELECT
  COALESCE((SELECT sum(octet_length(COALESCE(name,''))+octet_length(COALESCE(vulnclass,''))+octet_length(COALESCE(severity,''))+octet_length(COALESCE(status,''))+octet_length(COALESCE(summary,''))+octet_length(COALESCE(evidence,''))+octet_length(COALESCE(report,''))) FROM findings WHERE task_id=$1),0)
- + COALESCE((SELECT sum(octet_length(m.canonical)+octet_length(v.payload_canonical)+octet_length(i.execution_ref)) FROM e3_verdict_issuances i JOIN e3_oracle_verdicts v ON v.id=i.verdict_id JOIN e3_evidence_manifests m ON m.id=i.manifest_id AND m.task_id=i.task_id WHERE i.task_id=$1),0)`, taskID).Scan(&storedBytes); err != nil {
+ + COALESCE((SELECT sum(octet_length(m.canonical)+octet_length(v.payload_canonical)+octet_length(i.execution_ref)) FROM e3_verdict_issuances i JOIN e3_oracle_verdicts v ON v.id=i.verdict_id JOIN e3_evidence_manifests m ON m.id=i.manifest_id AND m.task_id=i.task_id WHERE i.task_id=$1 AND i.source_kind='eval'),0)`, taskID).Scan(&storedBytes); err != nil {
 		return out, err
 	}
 	if storedBytes > report.MaxDiagnosticReportBytes {
