@@ -4115,67 +4115,82 @@ button.smm:hover {
   font-weight: 500;
   color: var(--ink);
 }
-/* 점검 진행 맨 위 단계 게이지: 단계 네 칸, 칸마다 막대 + 이름 · 값. 끝남 초록 · 지금 파랑 · 기다림 빗금 · 멈춤 회색 */
+/* 점검 진행 맨 위 단계 게이지 (사용자 11/18 '지금 단계 크게 + 작은 점'): 위 줄 단계 점 · 단계 n/4, 가운데 지금 단계 글,
+   아래 지금 단계 막대. 끝남 초록 · 지금 강조 · 기다림 점선(막대는 빗금) · 멈춤 회색 · 아직 빈 점 */
 .lgauge {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 6px;
-}
-@container (max-width: 560px) {
-  .lgauge {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    row-gap: 12px;
-  }
-}
-.lgs {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   min-width: 0;
 }
-.lgs .prog {
-  height: 8px;
-  border-radius: 4px;
+.lgtop {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
-.lgs.done .prog > i {
+.lgdots {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.lgdot {
+  box-sizing: border-box;
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid var(--rule-2);
+  border-radius: 50%;
+}
+.lgdot.done {
+  border-color: var(--ok);
   background: var(--ok);
 }
-.lgs.stop .prog > i {
+.lgdot.run,
+.lgdot.hold,
+.lgdot.stop {
+  width: 13px;
+  height: 13px;
+}
+.lgdot.run {
+  border-color: var(--accent);
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+.lgdot.hold {
+  border: 2px dashed var(--accent);
+}
+.lgdot.stop {
+  border-color: var(--und);
   background: var(--und);
 }
-/* 사람(범위 선택) · 결과 저장을 기다리는 지금 단계: 채우지 않고 빗금 */
-.lgs.hold .prog {
-  background: repeating-linear-gradient(135deg, var(--rule-2) 0 3px, transparent 3px 6px);
-}
-.lgl {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 2px 8px;
+.lgstep {
+  font-family: var(--mono);
   font-size: 12px;
   color: var(--ink-3);
 }
-.lgl > span {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-.lgl .ic {
-  width: 12px;
-  height: 12px;
-  color: var(--ok);
-}
-.lgl b {
-  font-family: var(--mono);
-  font-weight: 500;
-}
-.lgs.run .lgl,
-.lgs.hold .lgl {
-  color: var(--ink);
+.lghead {
+  font-size: 15px;
   font-weight: 600;
+  color: var(--ink);
+  overflow-wrap: anywhere;
 }
-.lgs.stop .lgl {
+.lghead.stop {
   color: var(--und);
+}
+.prog.lgbar {
+  height: 8px;
+  border-radius: 4px;
+}
+.prog.lgbar.done > i {
+  background: var(--ok);
+}
+.prog.lgbar.stop > i {
+  background: var(--und);
+}
+.prog.lgbar.hold {
+  background: repeating-linear-gradient(135deg, var(--rule-2) 0 3px, transparent 3px 6px);
 }
 /* 점검 진행 가운데 맨 위 상태 카드: 지금 하는 일(끝나면 결과 · 보고서 보기) · 심화 점검 마감 수 · 작업 합계 토큰 */
 .lcard {

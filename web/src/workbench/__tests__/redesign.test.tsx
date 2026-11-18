@@ -1413,10 +1413,20 @@ describe("점검 진행", () => {
       </ShellContext.Provider>,
     );
     // 맨 위 단계 게이지: 자산 탐색 · 범위 확인 끝, 심화 점검 계획 1/2
-    expect(document.getElementById("lGauge")).toHaveAttribute(
-      "aria-label",
-      "점검 단계 진행: 단계 3/4 심화 점검 · 계획 1/2",
-    );
+    const gauge = document.getElementById("lGauge") as HTMLElement;
+    expect(gauge).toHaveAttribute("aria-label", "점검 단계 진행: 단계 3/4 심화 점검 · 계획 1/2");
+    // 모양(사용자 11/18 '지금 단계 크게 + 작은 점'): 단계 점 넷(끝남 둘 · 지금 · 아직) · '단계 3/4' · 지금 단계 글 · 막대 하나
+    const dots = [...gauge.querySelectorAll("li")];
+    expect(dots.map((d) => d.getAttribute("title"))).toEqual([
+      "자산 탐색 · 탐색 완료",
+      "범위 확인 · 범위 고름",
+      "심화 점검 · 계획 1/2",
+      "정리 · 저장",
+    ]);
+    expect(dots.map((d) => /done/.test(d.className))).toEqual([true, true, false, false]);
+    expect(dots[2].className).toMatch(/run/);
+    expect(gauge).toHaveTextContent(/^단계 3\/4심화 점검 중 · 계획 1\/2$/);
+    expect((gauge.querySelector("i") as HTMLElement).style.width).toBe("50%");
     // 상태 카드 한 장: 지금(진행 중 계획 제목) · 계획 완료 수 · 심화 점검 마감 수
     const card = screen.getByRole("region", { name: "지금 상태" });
     expect(within(card).getByText("지금")).toBeInTheDocument();

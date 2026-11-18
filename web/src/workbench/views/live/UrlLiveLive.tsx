@@ -325,28 +325,44 @@ export function gaugeSegments(flow: WorkflowSnapshot, resultReady: boolean): Gau
   });
 }
 
+/** 지금 단계 글: 진행 중이면 '… 중', 기다림 · 멈춤은 그 값과 같이. */
+function gaugeHeadline(x: GaugeSeg): string {
+  if (x.tone === "run") return `${x.label} 중${x.sub ? ` · ${x.sub}` : ""}`;
+  return x.sub ? `${x.label} · ${x.sub}` : x.label;
+}
+
+/**
+ * 단계 게이지 (사용자 11/18 '지금 단계 크게 + 작은 점'): 위 줄은 단계마다 작은 점(끝남 초록 · 지금 강조 · 기다림 점선 ·
+ * 멈춤 회색 · 아직 빈 점)과 '단계 n/4', 가운데는 지금 단계 글을 크게, 아래는 지금 단계 막대 하나(값은 gaugeSegments 그대로).
+ */
 function StageGauge({ segs }: { segs: GaugeSeg[] }) {
   const at = segs.findIndex((x) => x.tone !== "done");
-  const now = at < 0 ? segs[segs.length - 1] : segs[at];
-  const summary =
-    at < 0 ? "모든 단계 끝남" : `단계 ${at + 1}/${segs.length} ${now.label}${now.sub ? ` · ${now.sub}` : ""}`;
+  const allDone = at < 0;
+  const now = allDone ? segs[segs.length - 1] : segs[at];
+  const summary = allDone
+    ? "모든 단계 끝남"
+    : `단계 ${at + 1}/${segs.length} ${now.label}${now.sub ? ` · ${now.sub}` : ""}`;
+  const tone: GaugeTone = allDone ? "done" : now.tone;
+  let pct = Math.min(100, Math.max(0, now.pct));
+  if (allDone) pct = 100;
+  else if (tone === "hold") pct = 0; // 사람 · 저장을 기다리는 단계는 채우지 않고 빗금
   return (
-    // biome-ignore lint/a11y/useSemanticElements: 칸 여럿을 한 묶음으로 읽히게 (fieldset 은 입력 묶음이라 맞지 않음)
+    // biome-ignore lint/a11y/useSemanticElements: 점 · 글 · 막대를 한 묶음으로 읽히게 (fieldset 은 입력 묶음이라 맞지 않음)
     <div className={s.lgauge} id="lGauge" role="group" aria-label={`점검 단계 진행: ${summary}`}>
-      {segs.map((x) => (
-        <div className={cx(s.lgs, s[x.tone])} key={x.label}>
-          <div className={s.prog} aria-hidden="true">
-            <i style={{ width: `${Math.min(100, Math.max(0, x.pct))}%` }} />
-          </div>
-          <div className={s.lgl}>
-            <span>
-              {x.tone === "done" ? <Icon name="check" /> : null}
-              {x.label}
-            </span>
-            {x.sub ? <b>{x.sub}</b> : null}
-          </div>
-        </div>
-      ))}
+      <div className={s.lgtop} aria-hidden="true">
+        <ol className={s.lgdots}>
+          {segs.map((x) => (
+            <li key={x.label} className={cx(s.lgdot, s[x.tone])} title={`${x.label}${x.sub ? ` · ${x.sub}` : ""}`} />
+          ))}
+        </ol>
+        <span className={s.lgstep}>{`단계 ${allDone ? segs.length : at + 1}/${segs.length}`}</span>
+      </div>
+      <div className={cx(s.lghead, tone === "stop" && s.stop)} aria-hidden="true">
+        {allDone ? `모든 단계를 마쳤습니다${now.sub ? ` · ${now.sub}` : ""}` : gaugeHeadline(now)}
+      </div>
+      <div className={cx(s.prog, s.lgbar, s[tone])} aria-hidden="true">
+        <i style={{ width: `${pct}%` }} />
+      </div>
     </div>
   );
 }
