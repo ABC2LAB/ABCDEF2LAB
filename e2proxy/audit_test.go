@@ -787,3 +787,79 @@ func TestVerifyJournalEventsAllOrNothing(t *testing.T) {
 		t.Fatal("wrong key returned events")
 	}
 }
+
+func TestJournalCheckpointRejectsOtherExecution(t *testing.T) {
+	write := func(t *testing.T, run, reset string) ([]byte, JournalCheckpoint) {
+		t.Helper()
+		w := newJournalTestWriter()
+		j, err := newJournal(w, journalTestKey, time.Now().UTC())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer j.Close()
+		event := journalTestEvent()
+		event.Scope.RunRef, event.Scope.ResetRef = run, reset
+		if err := j.Record(t.Context(), event); err != nil {
+			t.Fatal(err)
+		}
+		data, checkpoint := w.bytes(), j.Checkpoint()
+		summary, err := VerifyJournal(t.Context(), bytes.NewReader(data), journalTestKey, checkpoint)
+		if err != nil || summary.Events != 1 || summary.Checkpoint != checkpoint {
+			t.Fatal("정상 저널 및 현재 체크포인트 검증 실패", err)
+		}
+		return data, checkpoint
+	}
+	current, head := write(t, "current-run", "current-reset")
+	other, otherHead := write(t, "other-run", "other-reset")
+	foreignRun, foreignReset := head, head
+	foreignRun.Scope.RunRef = otherHead.Scope.RunRef
+	foreignReset.Scope.ResetRef = otherHead.Scope.ResetRef
+	for _, tc := range []struct {
+		name string
+		data []byte
+		head JournalCheckpoint
+	}{
+		{"authentic-foreign-journal", other, head},
+		{"authentic-foreign-checkpoint", current, otherHead},
+		{"matching-mac-wrong-run", current, foreignRun},
+		{"matching-mac-wrong-reset", current, foreignReset},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			summary, err := VerifyJournal(t.Context(), bytes.NewReader(tc.data), journalTestKey, tc.head)
+			if !errors.Is(err, ErrJournalIntegrity) || summary != (JournalSummary{}) {
+				t.Fatal("다른 실행의 체크포인트에서 검증된 요약을 반환했습니다", err)
+			}
+		})
+	}
+}
+
+func TestVerifyJournalEventsRejectsAuthenticatedInvalidLegacyTail(t *testing.T) {
+	first := v1Event()
+	second := v1Event()
+	second.Sequence = 2
+	positive := v1Journal(t, first, second)
+	events, summary, err := VerifyJournalEvents(t.Context(), bytes.NewReader(positive), journalTestKey)
+	if err != nil || len(events) != 2 || summary.Checkpoint.Version != VersionV1 {
+		t.Fatal("정상 v1 저널의 사건을 읽지 못했습니다", err)
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Event)
+	}{
+		{"missing-required-binding", func(event *Event) { event.PolicyRevision = "" }},
+		{"mixed-event-version", func(event *Event) { event.Version = Version }},
+		{"changed-run", func(event *Event) { event.Scope.RunRef = "foreign-run" }},
+		{"changed-reset", func(event *Event) { event.Scope.ResetRef = "foreign-reset" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			invalid := second
+			tc.mutate(&invalid)
+			// 저장 형식에 맞게 서명된 뒤쪽 행이어도 버전·scope·필수 결속의 검증을 통과해야 한다.
+			data := v1Journal(t, first, invalid)
+			events, summary, err := VerifyJournalEvents(t.Context(), bytes.NewReader(data), journalTestKey)
+			if !errors.Is(err, ErrJournalIntegrity) || events != nil || summary != (JournalSummary{}) {
+				t.Fatal("잘못된 행이 있는 저널에서 앞쪽 사건이나 요약을 반환했습니다", err)
+			}
+		})
+	}
+}
