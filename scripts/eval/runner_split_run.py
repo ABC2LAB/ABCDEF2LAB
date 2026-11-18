@@ -38,7 +38,7 @@ from datetime import timedelta  # noqa: E402
 from typing import Protocol  # noqa: E402
 
 from runner import (  # noqa: E402
-    INVALID, RESULT_NAME, RunFailure, _check_subnets, _event_time, _ns, _stamp, _step, _stop_events, _stop_watch,
+    INVALID, RESULT_NAME, RunFailure, _check_subnets, _event_time, _meter_preflight, _ns, _stamp, _step, _stop_events, _stop_watch,
     _wait_budget, _wait_drained, first_limit,
 )
 from runner_checks import compare_snapshots  # noqa: E402
@@ -75,11 +75,14 @@ class SplitRunSpec:
     llm_sampling: dict | None = None
     llm_provider_slug: str = ""
     llm_provider_name: str = ""
+    # 계측기 이미지의 기대 빌드 커밋(사전검사 선언의 개선 후 source_sha). B와 같은 회차 전 점검이 대조한다.
+    meter_source_sha: str = ""
 
 
 class SplitRunPorts(Protocol):
     def preexisting(self) -> bool: ...
     def image_ids(self) -> dict: ...
+    def meter_describe(self) -> object: ...
     def host_spec(self) -> dict: ...
     def planned_subnets(self) -> list: ...
     def host_subnets(self) -> list: ...
@@ -177,6 +180,7 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
         raise RunFailure("project_exists")
     if _step(state, "image_id_failed", ports.image_ids) != spec.image_ids:
         raise RunFailure("image_id_mismatch")
+    _meter_preflight(spec, ports, evidence, state)  # 띄우기 전(모델 호출 전) 계측기 표식 칸·빌드 점검
     state.summary["host"] = _step(state, "host_spec_failed", ports.host_spec)
     _check_subnets(ports, evidence, state)
     state.up_attempted = True
