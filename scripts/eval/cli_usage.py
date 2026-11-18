@@ -123,6 +123,19 @@ def _operator_at(command: str, i: int, text: str) -> int | None:
     return i
 
 
+def _fd_before(command: str, i: int) -> bool:
+    """원문 i(연산자 시작) 바로 앞이 낱말 경계에서 시작한 숫자(파일 서술자)인가. 사이 줄 이음은 셸처럼 건너뛴다."""
+    j = i
+    while command.endswith("\\\n", 0, j):
+        j -= 2
+    start = j
+    while start > 0 and command[start - 1].isdigit():
+        start -= 1
+    while command.endswith("\\\n", 0, start):
+        start -= 2
+    return start < j and (start == 0 or command[start - 1].isspace() or command[start - 1] in _METACHARACTERS)
+
+
 def _heredoc_word(command: str, i: int) -> tuple[int, str, bool] | None:
     """`<<`·`<<-` 뒤 구분어 낱말 하나(bash처럼 따옴표 없는 공백·메타 문자까지, 따옴표를 벗긴 글). (끝 위치, 구분어,
     본문이 확장되는지). 따옴표·백슬래시가 하나라도 있으면 본문은 확장되지 않는다. 낱말이 없거나 따옴표가 안 닫히면 None
@@ -261,10 +274,9 @@ def _preprocess(command: str) -> tuple[str, list[str], bool]:
             pending.append((delimiter, expands, strip_tabs))
             # 줄 이음을 지운 연산자와 구분어를 따로 남긴다. 붙이면 구분어 `-`·`<`가 연산자와 합쳐져 `<<-`·`<<<`가 되고 뒤 명령
             # 이름을 리다이렉션 대상으로 먹는다(#682 리뷰). 따로 둔 연산자는 다음 낱말(구분어)을 대상으로 먹는다.
-            # 앞 낱말에 붙은 연산자(`x=1#<<E`)도 떼어 둔다. 단 파일 서술자 번호(`2<<E`)는 연산자의 일부라 붙여 둔다.
-            written = "".join(out)
-            tail = re.split(r"[\s;&|()<>]", written)[-1] if written else ""
-            gap = " " if tail and not tail.isdigit() else ""
+            # 앞 낱말에 붙은 연산자(`x=1#<<E`)도 떼어 둔다. 단 원문에서 연산자 바로 앞에 붙은 파일 서술자 번호(`2<<E`)는
+            # 연산자의 일부라 붙여 둔다. 남긴 글이 아니라 원문으로 본다: 앞 heredoc의 숫자 구분어(`<< '2'<<F`)는 서술자가 아니다.
+            gap = "" if _fd_before(command, i) else " "
             out.append(gap + ("<<-" if strip_tabs else "<<") + " " + shlex.quote(delimiter))
             boundary, i = False, end
             continue

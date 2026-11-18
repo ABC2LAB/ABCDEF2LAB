@@ -292,6 +292,11 @@ class TestCounting(unittest.TestCase):
             "<< \\< npx d\nx\n<": (["npx"], []),
             "2<<E npx e\nx\nE": (["npx"], []),         # 파일 서술자 번호는 연산자의 일부다(명령 이름이 아니다)
             "true 2<<E\nx\nE\nnpx f": (["true", "npx"], []),
+            # #682 리뷰 11차: 앞 heredoc의 숫자 구분어는 다음 연산자의 파일 서술자가 아니다(원문에서 붙어 있는지로 본다)
+            "<< '2'<<F npx\na\n2\nb\nF": (["npx"], []),
+            '<< "2"<<F npx a\nx\n2\ny\nF': (["npx"], []),
+            "<<\\2<<F npx b\nx\n2\ny\nF": (["npx"], []),
+            "true 2\\\n<<E\nx\nE\nnpx d": (["true", "npx"], []),  # 서술자와 연산자 사이 줄 이음
         }
         for command, (sure, maybe) in cases.items():
             with self.subTest(command=command):
