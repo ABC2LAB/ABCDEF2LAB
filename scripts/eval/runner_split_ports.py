@@ -34,7 +34,8 @@ METER_DESCRIBE_SECONDS = 30.0
 from runner_docker import Docker, client_environment
 from runner_engine import AdminSecret
 from runner_product import ModelKey, ProductDriver
-from runner_split import target_registration
+from run_record import read_runner_key, sign_run_record
+from runner_split import read_workflow_defaults, split_conditions, target_registration
 from runner_split_config import SplitConfig, SplitPlan, split_compose_args
 from runner_split_inputs import SplitInputs, remove_split_inputs
 from runner_split_probe import SplitProbeOutcome, run_split_probes, split_ports
@@ -189,7 +190,7 @@ def product_record_names(approval_id: str) -> tuple[str, str]:
 class DockerSplitPorts:
     def __init__(self, *, config: RunnerConfig, split: SplitConfig, plan: SplitPlan, directory: RunDirectory, docker: Docker,
                  driver: ProductDriver, inputs: SplitInputs, rendered: dict, manifest: dict, model_key: ModelKey,
-                 exploration: dict, llm_env: dict | None = None):
+                 exploration: dict, llm_env: dict | None = None, workflow_defaults: tuple[dict, str] | None = None):
         self.config, self.split, self.plan, self.directory = config, split, plan, directory
         self.docker, self.driver, self.inputs, self.rendered = docker, driver, inputs, rendered
         self.manifest, self.model_key, self.exploration = manifest, model_key, exploration
@@ -197,6 +198,9 @@ class DockerSplitPorts:
         self.llm_env = dict(llm_env or {})
         self.base_args = split_compose_args(plan)
         self.registration: dict | None = None
+        # 설치 입력을 만들 때 실제로 읽은 워크플로 기본값과 그 바이트 SHA(#710 리뷰: 회차 끝에 다시 읽으면 그 사이 바뀐 원본의
+        # SHA가 서명된다). 서명 출처를 보장하는 결속이라 꼭 넘겨야 한다. 없으면 split_conditions가 다시 읽지 않고 오류를 낸다.
+        self.workflow_defaults = workflow_defaults
         self.timeout = config.run["snapshot_timeout_seconds"]
 
     # ── 회차 시작 전·띄우기 ──────────────────────────────────────────────────────────────────────────────────
@@ -318,6 +322,21 @@ class DockerSplitPorts:
 
     def control_policy(self, task_id: str) -> dict:
         return self.driver.control_policy(task_id)
+
+    def split_conditions(self) -> dict:
+        """이 회차의 설치·등록 조건(runner_split.split_conditions). 워크플로 기본값과 SHA는 설치 입력을 만들 때 읽은 값이다."""
+        if self.workflow_defaults is None:
+            raise ValueError("split ports: workflow defaults not bound")  # 회차 끝에 다시 읽어 다른 원본을 서명하지 않는다
+        defaults, sha = self.workflow_defaults
+        return split_conditions(workflow_defaults=defaults, workflow_sha256=sha, install=self.inputs.install_public,
+                                registration=self.registration)
+
+    def boundary_directory(self) -> Path:
+        return self.directory.run / BOUNDARY_DIRECTORY
+
+    def sign(self, payload: dict) -> dict:
+        # 키는 서명 직전에만 읽는다(B DockerPorts.sign과 같다). 경로는 러너 설정(회차 디렉터리 밖)이다.
+        return sign_run_record(payload, read_runner_key(str(self.config.runner_key_path)))
 
     def tool_surface(self) -> dict:
         """O 도구 면(결정안 §4): 제품 이미지 중 E② 샌드박스가 보는 CLI, 탐색 브라우저 이미지의 MCP 원 목록·허용 목록 적용 뒤

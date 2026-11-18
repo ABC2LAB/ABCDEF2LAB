@@ -36,7 +36,7 @@ def split_block(**changes):
              "product_port": 28787, "dns_control_port": 29083, "explore_port": 8082, "evidence_max_bytes": 4 << 20,
              "install_valid_hours": 4, "max_runs": 2, "registration_valid_hours": 2, "wide_writes": True,
              "profile_id": "product-model-openrouter", "task_wait_seconds": 120, "poll_interval_seconds": 2,
-             "boundary_stop_seconds": 30}
+             "boundary_stop_seconds": 30, "cli_usage_names": ["npx", "playwright-cli"]}
     block.update(changes)
     return block
 
@@ -86,6 +86,9 @@ class TestParseSplit(unittest.TestCase):
             "profile": ({"profile_id": "Product Model"}, "config.split.profile_id: INVALID"),
             "wait": ({"poll_interval_seconds": 120}, "config.split.wait: INVALID"),
             "stop_zero": ({"boundary_stop_seconds": 0}, "config.split.boundary_stop_seconds: INVALID"),
+            "cli_names_dup": ({"cli_usage_names": ["npx", "npx"]}, "config.split.cli_usage_names: INVALID"),
+            "cli_names_shape": ({"cli_usage_names": "npx"}, "config.split.cli_usage_names: INVALID"),
+            "cli_names_bad": ({"cli_usage_names": ["-rf"]}, "config.split.cli_usage_names: INVALID"),
             "stop_over_docker": ({"boundary_stop_seconds": 601}, "config.split.boundary_stop_seconds: INVALID"),
             "stop_bool": ({"boundary_stop_seconds": True}, "config.split.boundary_stop_seconds: INVALID"),
             "interval_not_below": ({"task_wait_seconds": 5, "poll_interval_seconds": 5}, "config.split.wait: INTERVAL_NOT_BELOW_WAIT"),

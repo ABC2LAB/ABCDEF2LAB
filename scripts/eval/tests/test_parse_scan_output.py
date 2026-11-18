@@ -15,6 +15,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import synthetic_gt  # noqa: E402,F401  합성 정답 목록을 먼저 끼운다(정답표 노출 방지)
 
 from aggregate import RepeatResult, ScanVerdict, count_basis  # noqa: E402
 from collect import ScanOutputError, VerdictRecord, parse_scan_output  # noqa: E402
@@ -23,11 +24,11 @@ from scan_fixtures import record as _record  # noqa: E402
 
 # 평가 쪽이 쥐는 상관(테스트용): resource_ref → GT 챌린지 키. 없으면 out-of-list.
 _CORRELATION = {
-    "basket/1": "basketAccessChallenge",
-    "basket/2": "basketManipulateChallenge",
-    "feedback/1": "forgedFeedbackChallenge",
-    "review/1": "forgedReviewChallenge",
-    "export/1": "dataExportChallenge",
+    "basket/1": "synthBacH1Challenge",
+    "basket/2": "synthBacH2Challenge",
+    "feedback/1": "synthBacH3Challenge",
+    "review/1": "synthBacH4Challenge",
+    "export/1": "synthAuthzH1Challenge",
 }
 
 
@@ -58,17 +59,17 @@ class TestNormal(_FixtureDir):
         ])
         verdicts, out_of_list, *_ = parse_scan_output(path, _correlate)
         self.assertEqual(verdicts, {
-            "basketAccessChallenge": ScanVerdict.CONFIRMED,
-            "basketManipulateChallenge": ScanVerdict.SUSPECTED,
-            "forgedFeedbackChallenge": ScanVerdict.UNDECIDABLE,
-            "forgedReviewChallenge": ScanVerdict.ALLOWED,
+            "synthBacH1Challenge": ScanVerdict.CONFIRMED,
+            "synthBacH2Challenge": ScanVerdict.SUSPECTED,
+            "synthBacH3Challenge": ScanVerdict.UNDECIDABLE,
+            "synthBacH4Challenge": ScanVerdict.ALLOWED,
         })
         self.assertEqual(out_of_list, ())
 
     def test_records_envelope_accepted(self) -> None:
         path = self.write({"records": [_record("confirmed", "basket/1")]})
         verdicts, *_ = parse_scan_output(path, _correlate)
-        self.assertEqual(verdicts, {"basketAccessChallenge": ScanVerdict.CONFIRMED})
+        self.assertEqual(verdicts, {"synthBacH1Challenge": ScanVerdict.CONFIRMED})
 
     def test_out_of_list_deduped(self) -> None:
         """correlate가 None이면 GT 밖 — 같은 자원은 한 번만 센다."""
@@ -79,7 +80,7 @@ class TestNormal(_FixtureDir):
         ])
         verdicts, out_of_list, *_ = parse_scan_output(path, _correlate)
         self.assertEqual(out_of_list, ("admin/secret-page",))
-        self.assertEqual(verdicts, {"basketAccessChallenge": ScanVerdict.CONFIRMED})
+        self.assertEqual(verdicts, {"synthBacH1Challenge": ScanVerdict.CONFIRMED})
 
     def test_strongest_verdict_wins_per_challenge(self) -> None:
         """여러 레코드면 강한 판정 우선 — 약한 판정이 덮어써 사라지지 않는다."""
@@ -90,8 +91,8 @@ class TestNormal(_FixtureDir):
             _record("undecidable", "basket/2"),
         ])
         verdicts, *_ = parse_scan_output(path, _correlate)
-        self.assertEqual(verdicts["basketAccessChallenge"], ScanVerdict.CONFIRMED)
-        self.assertEqual(verdicts["basketManipulateChallenge"], ScanVerdict.UNDECIDABLE)
+        self.assertEqual(verdicts["synthBacH1Challenge"], ScanVerdict.CONFIRMED)
+        self.assertEqual(verdicts["synthBacH2Challenge"], ScanVerdict.UNDECIDABLE)
 
 
 class TestConflicts(_FixtureDir):
@@ -105,10 +106,10 @@ class TestConflicts(_FixtureDir):
             _record("confirmed", "export/1"),
         ])
         result = parse_scan_output(path, _correlate)
-        self.assertEqual(result.conflicts, ("basketAccessChallenge", "basketManipulateChallenge"))
+        self.assertEqual(result.conflicts, ("synthBacH1Challenge", "synthBacH2Challenge"))
         # 모순을 센다고 판정이 바뀌지 않는다 — 판정은 tie-break 순위 그대로.
-        self.assertEqual(result.verdicts["basketAccessChallenge"], ScanVerdict.CONFIRMED)
-        self.assertEqual(result.verdicts["basketManipulateChallenge"], ScanVerdict.SUSPECTED)
+        self.assertEqual(result.verdicts["synthBacH1Challenge"], ScanVerdict.CONFIRMED)
+        self.assertEqual(result.verdicts["synthBacH2Challenge"], ScanVerdict.SUSPECTED)
 
     def test_undecidable_mix_and_candidates_only_not_conflict(self) -> None:
         """판정_불가는 어느 쪽 주장도 아니고, 후보끼리 섞인 것도 모순이 아니다."""
@@ -145,7 +146,7 @@ class TestNoSilentReclassification(_FixtureDir):
             elapsed_seconds=1.0,
             total_requests=1,
             verdicts=verdicts,
-            solved={"basketAccessChallenge": True, "basketManipulateChallenge": True},
+            solved={"synthBacH1Challenge": True, "synthBacH2Challenge": True},
             out_of_list_keys=out_of_list,
         )
         counts = count_basis(repeat, core_gt())
@@ -200,7 +201,7 @@ class TestMalformed(_FixtureDir):
         self.assert_error([rec], "resource_ref 부재/빈값")
 
     def test_unknown_field(self) -> None:
-        self.assert_error([_record("confirmed", "basket/1", challenge_key="basketAccessChallenge")], "계약에 없는 필드: 'challenge_key'")
+        self.assert_error([_record("confirmed", "basket/1", challenge_key="synthBacH1Challenge")], "계약에 없는 필드: 'challenge_key'")
 
     def test_errors_aggregated_not_first_only(self) -> None:
         """여러 레코드 오류를 전부 모은다 — 좋은 레코드만 조용히 반환하지 않는다."""
@@ -220,7 +221,7 @@ class TestMalformed(_FixtureDir):
 class TestEvidenceRefs(_FixtureDir):
     def test_refs_normalized_to_str_and_deduped(self) -> None:
         path = self.write([_record("confirmed", "basket/1", traffic_evidence_refs=[7, "7", "t2"])])
-        rec, = parse_scan_output(path, _correlate).confirmed_records["basketAccessChallenge"]
+        rec, = parse_scan_output(path, _correlate).confirmed_records["synthBacH1Challenge"]
         self.assertEqual(rec.traffic_evidence_refs, ("7", "t2"))
 
     def test_absent_or_null_refs_are_empty(self) -> None:
@@ -228,7 +229,7 @@ class TestEvidenceRefs(_FixtureDir):
             _record("confirmed", "basket/1"),
             _record("confirmed", "basket/1", traffic_evidence_refs=None),
         ])
-        records = parse_scan_output(path, _correlate).confirmed_records["basketAccessChallenge"]
+        records = parse_scan_output(path, _correlate).confirmed_records["synthBacH1Challenge"]
         self.assertEqual([r.traffic_evidence_refs for r in records], [(), ()])
 
     def test_confirmed_records_collects_only_mapped_confirmed(self) -> None:
@@ -241,8 +242,8 @@ class TestEvidenceRefs(_FixtureDir):
             _record("confirmed", "admin/secret-page"),
         ])
         confirmed = parse_scan_output(path, _correlate).confirmed_records
-        self.assertEqual(list(confirmed), ["basketAccessChallenge"])
-        self.assertEqual([r.traffic_evidence_refs for r in confirmed["basketAccessChallenge"]], [("a",), ("b",)])
+        self.assertEqual(list(confirmed), ["synthBacH1Challenge"])
+        self.assertEqual([r.traffic_evidence_refs for r in confirmed["synthBacH1Challenge"]], [("a",), ("b",)])
 
 
 class TestRedaction(_FixtureDir):
@@ -268,7 +269,7 @@ class TestRedaction(_FixtureDir):
             _record("confirmed", "basket/1", authorization="[REDACTED]", cookie=None),
         ])
         verdicts, *_ = parse_scan_output(path, _correlate)
-        self.assertEqual(verdicts, {"basketAccessChallenge": ScanVerdict.CONFIRMED})
+        self.assertEqual(verdicts, {"synthBacH1Challenge": ScanVerdict.CONFIRMED})
 
 
 if __name__ == "__main__":

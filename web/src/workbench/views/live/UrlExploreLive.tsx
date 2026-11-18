@@ -1,82 +1,142 @@
 "use client";
 
-// 탐색 결과 화면 (운영자 전용, 지금은 예시). 발견(§7)과 경계 기록 요약(§4)을 따로 보인다.
-// 데이터는 workbench/live/exploration seam 에서만 온다 — 값(헤더·쿠키·본문·query 값)은 애초에 없다(절대규칙 2).
-// ※ §4: 경계 기록은 운영자 전용이다. 이 화면은 내보내기·공유·모델 입력에 넣지 않는다 → export 버튼을 두지 않는다.
-// ※ live 점등은 탐색 실행기(발견 결과 전달·경계 기록) 착륙 후. 지금은 getExploration(null)=예시.
-//   실 연결 때 현재 job id 만 넘기면 된다(표현/데이터 분리 — 이 화면은 안 바뀐다).
+// 탐색 결과 화면 (운영자 전용). 공유 워크플로 스냅샷(UrlFeeds 가 이미 읽고 Job 과 대조한 것)의 끝점에서 발견 경로 ·
+// 상태 · 출처를 보인다 — 추가 조회 없음. 값(헤더 · 쿠키 · 본문 · query 값)은 애초에 없다(절대규칙 2).
+// ※ §4: 운영자 전용이다. 이 화면은 내보내기 · 공유 · 모델 입력에 넣지 않는다 → export 버튼을 두지 않는다.
+// ※ 탐색 경계 기록(§4 — 전달 · 차단 사유)은 서버 경로가 없어 이 화면에 두지 않는다(빈 칸으로도 만들지 않음).
 
-import { useEffect, useState } from "react";
+import type { CSSProperties } from "react";
+import { useMemo } from "react";
+
+import { observationErrorLabel, WORKFLOW_COUNT_LABEL, workflowSourceLabel } from "@/lib/diagnosis/coverage";
 
 import { cx } from "../../lib/cx";
 import {
   changeLabel,
-  DEST_CLASS_LABEL,
-  type DestClass,
-  type ExplorationResult,
-  getExploration,
-  INGRESS_LABEL,
-  type Ingress,
-  PROVENANCE_LABEL,
-  reasonLabel,
-  sourceLabel,
-  summarizeBoundary,
-  summarizeDiscoveries,
+  discoveriesFromWorkflow,
+  EVIDENCE_LABEL,
+  EXPLORATION_STATUS_LABEL,
+  explorationStateOf,
+  summarizeWorkflowDiscoveries,
+  type WorkflowDiscovery,
 } from "../../live/exploration";
+import { useUrl } from "../../live/urlDiagnosis";
 import { Icon } from "../../ui/icons";
 import s from "../../workbench.module.css";
 import { UrlHead } from "./urlParts";
 
-const ingressLabel = (v: string) => INGRESS_LABEL[v as Ingress] ?? v;
-const destClassLabel = (v: string) => DEST_CLASS_LABEL[v as DestClass] ?? v;
+// ── 인라인 스타일(뼈대) — 전송 통제 정책 · 커버리지 화면과 같은 칩 · 테두리 상자. 색은 실재 workbench 토큰만.
+const chipRow: CSSProperties = { display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 };
+const chipBase: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 5,
+  padding: "3px 9px",
+  borderRadius: 999,
+  border: "1px solid",
+  fontSize: 12,
+};
+const neutralChip: CSSProperties = {
+  ...chipBase,
+  background: "var(--well)",
+  color: "var(--ink-2)",
+  borderColor: "var(--rule)",
+};
+const outChip: CSSProperties = {
+  ...chipBase,
+  background: "var(--mid-bg)",
+  color: "var(--mid)",
+  borderColor: "var(--mid)",
+};
+const plainList: CSSProperties = { listStyle: "none", margin: 0, padding: 0 };
+const itemBox: CSSProperties = {
+  marginTop: 10,
+  border: "1px solid var(--rule)",
+  borderRadius: 8,
+  padding: "10px 12px",
+};
+const itemHead: CSSProperties = { display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: 8 };
 
-/** 수 칸 하나 (이름 + 값). */
+/** 수 칩 하나 (이름 + 값). */
 function Stat({ label, value }: { label: string; value: number }) {
   return (
-    <div className={s.now}>
-      <span className={s.k}>{label}</span>
-      <b className={s.mono}>{value}</b>
-    </div>
+    <li style={neutralChip}>
+      {label} <b>{value}</b>
+    </li>
   );
 }
 
-/** 이름별 수 줄 (사유·입구·목적지·출처). 비면 아무것도 안 그린다. */
-function CountRows({ rows }: { rows: { key: string; label: string; count: number }[] }) {
-  if (!rows.length) return <p className={s.help}>없음</p>;
+/**
+ * 상태 글: 방문(응답 코드) · 미방문 과 관찰 오류를 따로 붙인다 — 방문 전에 요청이 실패한 행(visited=false + request_failed)을
+ * 시도하지 않은 행과 구분한다(#691 리뷰). 응답 코드가 없으면 만들지 않는다.
+ */
+function stateText(d: WorkflowDiscovery): string {
+  let base = "미방문";
+  if (d.visited) base = d.status !== null ? `방문 ${d.status}` : "방문 · 응답 코드 없음";
+  return d.observationError ? `${base} · ${observationErrorLabel(d.observationError)}` : base;
+}
+
+/** 경로 한 줄(테두리 상자). */
+function Row({ d }: { d: WorkflowDiscovery }) {
   return (
-    <ul className={s.policy}>
-      {rows.map((r) => (
-        <li key={r.key}>
-          <span>{r.label}</span>
-          <b className={s.mono}>{r.count}</b>
-        </li>
-      ))}
-    </ul>
+    <li style={itemBox}>
+      <div style={itemHead}>
+        <span className={s.mono} style={{ fontWeight: 600, color: "var(--ink)" }}>
+          {d.method} {d.path ?? "형식 밖 경로"}
+        </span>
+        <span style={d.inScope ? neutralChip : outChip}>{d.inScope ? "범위 안" : "범위 밖"}</span>
+        {d.evidence ? <span style={neutralChip}>{EVIDENCE_LABEL[d.evidence]}</span> : null}
+      </div>
+      <p className={s.help}>
+        {stateText(d)} · {workflowSourceLabel(d.source)}
+        {d.from && !d.preRegistered ? ` · 발견 위치 ${d.from}` : ""} · {changeLabel(d.change)}
+        {d.duplicates ? ` · 중복 ${d.duplicates}` : ""}
+      </p>
+      {d.queryKeys.length || d.bodyKeys.length || d.contentType ? (
+        <p className={s.help}>
+          {[
+            d.queryKeys.length ? `query: ${d.queryKeys.join(", ")}` : "",
+            d.bodyKeys.length ? `body: ${d.bodyKeys.join(", ")}` : "",
+            d.contentType ?? "",
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        </p>
+      ) : null}
+    </li>
   );
 }
 
-/** 탐색 결과 (운영자 전용, 예시). */
+/** 탐색 결과 (운영자 전용 · 현재 Job 의 공유 워크플로 스냅샷). */
 export function UrlExploreLive() {
-  const [data, setData] = useState<ExplorationResult | null>(null);
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    let live = true;
-    // TODO(이경준): 탐색 실행기 착륙 후 현재 job id 를 넘겨 실 결과로 점등한다(지금은 예시).
-    getExploration(null)
-      .then((r) => {
-        if (live) setData(r);
-      })
-      .catch(() => {
-        if (live) setFailed(true);
-      });
-    return () => {
-      live = false;
-    };
-  }, []);
-
-  const boundary = data ? summarizeBoundary(data.records) : null;
-  const disc = data ? summarizeDiscoveries(data.discoveries) : null;
+  const job = useUrl((st) => st.job);
+  const flow = useUrl((st) => st.flow);
+  const flowVerified = useUrl((st) => st.flowVerified);
+  const flowUncertain = useUrl((st) => st.flowUncertain);
+  const flowError = useUrl((st) => st.flowError);
+  const available = !!job?.task_id && !!job.input.workflow_mode;
+  // 커버리지와 같은 조건: 확인되지 않았거나 다른 Job · 회차의 스냅샷이면 그리지 않는다(이전 회차 · 예시 없음)
+  const { list, failed } = useMemo<{ list: WorkflowDiscovery[] | null; failed: boolean }>(() => {
+    if (!available || !job) return { list: null, failed: false };
+    if (flowError || flowUncertain || (flow && !flowVerified)) return { list: null, failed: true };
+    if (!flow || !flowVerified) return { list: null, failed: false };
+    if (
+      flow.job_id !== job.id ||
+      flow.task_id !== job.task_id ||
+      flow.source_digest !== job.source_digest ||
+      flow.run_ref !== `run-${job.id}`
+    )
+      return { list: null, failed: true };
+    return { list: discoveriesFromWorkflow(flow), failed: false };
+  }, [available, job, flow, flowVerified, flowUncertain, flowError]);
+  const sum = list ? summarizeWorkflowDiscoveries(list) : null;
+  const state = list && flow ? explorationStateOf(flow) : null;
+  const found = list ? list.filter((d) => !d.preRegistered) : [];
+  const registered = list ? list.filter((d) => d.preRegistered) : [];
+  const notRun = state?.status === "NOT_RUN";
+  const counts = list && flow ? flow.counts : null;
+  const omitted = counts?.omitted ?? 0;
+  const invalidPaths = counts?.invalid_paths ?? 0;
 
   return (
     <>
@@ -86,107 +146,90 @@ export function UrlExploreLive() {
           {/* §4 운영자 전용 고지 — 내보내기·공유·모델 입력 금지 */}
           <div className={s.note} role="note">
             <Icon name="info" />
-            <span>경계 기록·발견은 운영자 전용입니다. 내보내기·공유·모델 입력에 넣지 않습니다.</span>
+            <span>발견 목록은 운영자 전용입니다. 내보내기·공유·모델 입력에 넣지 않습니다.</span>
           </div>
-          {data?.mock ? (
-            <div className={cx(s.note, s.warn)} role="note">
-              <Icon name="alert" />
-              <span>예시 데이터입니다. 실제 탐색 결과는 탐색 실행기 연결 후 나옵니다.</span>
-            </div>
+          {!available ? <p className={s.empty}>실제 워크플로 진단을 선택하세요.</p> : null}
+          {failed ? (
+            <p className={s.empty} role="alert">
+              탐색 결과를 확인하지 못했습니다. 이전 회차 결과는 표시하지 않습니다.
+            </p>
           ) : null}
-          {failed ? <p className={s.empty}>탐색 결과를 불러오지 못했습니다.</p> : null}
-          {!data && !failed ? <p className={s.empty}>불러오는 중…</p> : null}
+          {available && !list && !failed ? <p className={s.empty}>불러오는 중…</p> : null}
 
-          {data && disc ? (
+          {list && sum && counts ? (
             <section className={s.isec} aria-label="발견">
               <h2>발견</h2>
-              <p className={s.help}>탐색이 찾은 엔드포인트입니다. 진단 결과나 확정 취약점이 아닙니다.</p>
-              <div className={s["crwl-top"]}>
-                <Stat label="전체" value={disc.total} />
-                <Stat label="실제 전송" value={disc.observed} />
-                <Stat label="추정" value={disc.inferred} />
-                <Stat label="범위 안" value={disc.inScope} />
-                {data.discoveriesDropped ? (
-                  <Stat label="범위 밖·형식 오류로 제외" value={data.discoveriesDropped} />
+              <p className={s.help}>탐색이 찾은 경로입니다. 진단 결과나 확정 취약점이 아닙니다.</p>
+              {state?.status ? (
+                <div style={chipRow}>
+                  <span style={notRun ? outChip : neutralChip}>
+                    {`탐색 상태: ${EXPLORATION_STATUS_LABEL[state.status]}${state.reason ? ` (${state.reason})` : ""}`}
+                  </span>
+                </div>
+              ) : null}
+              {notRun ? (
+                <div className={cx(s.note, s.warn)} role="note">
+                  <Icon name="alert" />
+                  <span>이번 점검은 탐색을 실행하지 않았습니다. 아래 사전 등록 경로는 탐색이 찾은 것이 아닙니다.</span>
+                </div>
+              ) : null}
+              <ul style={{ ...plainList, ...chipRow }} aria-label="발견 수">
+                <Stat label="탐색 발견" value={sum.found} />
+                <Stat label={WORKFLOW_COUNT_LABEL.visited} value={sum.visited} />
+                <Stat label="범위 안" value={sum.inScope} />
+                <Stat label="범위 밖" value={sum.outOfScope} />
+                {sum.observed ? <Stat label={EVIDENCE_LABEL.observed} value={sum.observed} /> : null}
+                {sum.observedDetailOmitted ? (
+                  <Stat label={EVIDENCE_LABEL.observed_detail_omitted} value={sum.observedDetailOmitted} />
                 ) : null}
-              </div>
-              <CountRows rows={disc.bySource.map((r) => ({ key: r.source, label: r.label, count: r.count }))} />
-              <ul className={s.policy} aria-label="발견 목록">
-                {data.discoveries.map((d) => (
-                  <li key={d.id}>
-                    <span className={cx(s.tag, d.provenance === "observed" ? s.in : s.ap)}>
-                      {PROVENANCE_LABEL[d.provenance]}
-                    </span>
-                    <span className={s.mono}>
-                      {d.method} {d.path}
-                    </span>
-                    <small>
-                      {sourceLabel(d.source)} · {changeLabel(d.change)} · {d.inScope ? "범위 안" : "범위 밖"}
-                      {d.queryKeys.length ? ` · query: ${d.queryKeys.join(", ")}` : ""}
-                      {d.bodyKeys.length ? ` · body: ${d.bodyKeys.join(", ")}` : ""}
-                      {d.contentType ? ` · ${d.contentType}` : ""}
-                    </small>
-                  </li>
-                ))}
+                {sum.inferred ? <Stat label={EVIDENCE_LABEL.inferred} value={sum.inferred} /> : null}
+                {sum.preRegistered ? <Stat label="사전 등록 경로" value={sum.preRegistered} /> : null}
+                {omitted ? <Stat label="목록에서 생략" value={omitted} /> : null}
+                {invalidPaths ? <Stat label={WORKFLOW_COUNT_LABEL.invalid_paths} value={invalidPaths} /> : null}
               </ul>
-            </section>
-          ) : null}
+              {flow?.detail_truncated || sum.listed < counts.found ? (
+                <p className={s.help}>
+                  {`아래 목록은 서버가 화면에 준 ${sum.listed}개입니다. 서버 누계 ${counts.found}개 전체가 아닐 수 있습니다.`}
+                </p>
+              ) : null}
 
-          {data && boundary ? (
-            <section className={s.isec} aria-label="경계 기록">
-              <h2>경계 기록</h2>
-              <p className={s.help}>탐색 경계가 실제로 보냈는지의 정본입니다. 진단(E②) 차단과 따로 셉니다.</p>
-              <div className={s["crwl-top"]}>
-                <Stat label="전달" value={boundary.forwarded} />
-                <Stat label="차단" value={boundary.denied} />
-                <Stat label="인증 헤더 붙음" value={boundary.withAuthHeader} />
-              </div>
-
-              <h3>차단 사유</h3>
-              <CountRows rows={boundary.byReason.map((r) => ({ key: r.reason, label: r.label, count: r.count }))} />
-
-              <h3>입구</h3>
-              <CountRows rows={boundary.byIngress.map((r) => ({ key: r.ingress, label: r.label, count: r.count }))} />
-
-              <h3>목적지</h3>
-              <CountRows
-                rows={boundary.byDestClass.map((r) => ({ key: r.destClass, label: r.label, count: r.count }))}
-              />
-
-              <h3>외부 호스트</h3>
-              {boundary.externalHosts.length ? (
-                <ul className={s.policy}>
-                  {boundary.externalHosts.map((h) => (
-                    <li key={h.host}>
-                      <span className={s.mono}>{h.host}</span>
-                      <b className={s.mono}>{h.count}</b>
-                    </li>
+              <h3>출처</h3>
+              {sum.bySource.length ? (
+                <ul style={{ ...plainList, ...chipRow }} aria-label="출처별 발견">
+                  {sum.bySource.map((r) => (
+                    <Stat key={r.source} label={workflowSourceLabel(r.source)} value={r.count} />
                   ))}
                 </ul>
               ) : (
                 <p className={s.help}>없음</p>
               )}
 
-              <h3>요청 기록</h3>
-              <ul className={s.policy} aria-label="경계 기록 목록">
-                {data.records.map((r) => (
-                  <li key={r.seq}>
-                    <span className={cx(s.tag, r.decision === "forwarded" ? s.in : s.ex)}>
-                      {r.decision === "forwarded" ? "전달" : "차단"}
-                    </span>
-                    <span className={s.mono}>
-                      {r.method} {r.pathPattern ?? r.externalHost ?? "—"}
-                    </span>
-                    <small>
-                      {ingressLabel(r.ingress)} · {destClassLabel(r.destClass)}
-                      {r.reason ? ` · ${reasonLabel(r.reason)}` : ""}
-                      {r.status !== null ? ` · ${r.status}` : ""}
-                      {r.bytes !== null ? ` · ${r.bytes} bytes` : ""}
-                      {r.hasAuthHeader ? " · 인증 헤더" : ""}
-                    </small>
-                  </li>
-                ))}
-              </ul>
+              {registered.length ? (
+                <>
+                  <h3>사전 등록 경로</h3>
+                  <p className={s.help}>점검을 시작할 때 승인한 경로입니다. 탐색이 찾은 것이 아닙니다.</p>
+                  <ul style={plainList} aria-label="사전 등록 경로">
+                    {registered.map((d) => (
+                      <Row key={d.id} d={d} />
+                    ))}
+                  </ul>
+                </>
+              ) : null}
+
+              <h3>발견 목록</h3>
+              {found.length ? (
+                <ul style={plainList} aria-label="발견 목록">
+                  {found.map((d) => (
+                    <Row key={d.id} d={d} />
+                  ))}
+                </ul>
+              ) : (
+                <p className={s.empty}>
+                  {notRun
+                    ? "탐색을 실행하지 않아 발견한 경로가 없습니다."
+                    : "스냅샷에 탐색이 찾은 경로가 없습니다. 탐색이 아직 찾지 못했을 수 있습니다."}
+                </p>
+              )}
             </section>
           ) : null}
         </div>

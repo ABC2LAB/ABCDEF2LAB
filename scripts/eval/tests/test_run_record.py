@@ -11,6 +11,7 @@ from unittest.mock import patch
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import synthetic_gt  # noqa: E402,F401  합성 정답 목록을 먼저 끼운다(정답표 노출 방지)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from aggregate import Bucket, ScanVerdict, classify, count_basis
@@ -20,7 +21,7 @@ from run_record import RunRecordError, load_run_inputs, read_runner_key
 from score import score_run
 from test_score import _RunDir, _record
 
-KEY = "basketAccessChallenge"
+KEY = "synthBacH1Challenge"
 SOLID = [_record("confirmed", "rest:basket:1", traffic_evidence_refs=["cross"])]
 
 
@@ -306,7 +307,7 @@ class TestRunInputGuards(_RunDir):
 
     def test_event_cannot_claim_unsolved_or_already_solved_item(self):
         run = self.make_run("r0", [], solved={KEY: True})
-        self.alter(run, "solve_events", lambda data: data["events"][0].update(challenge="forgedFeedbackChallenge"))
+        self.alter(run, "solve_events", lambda data: data["events"][0].update(challenge="synthBacH3Challenge"))
         self.stops(run, "pre/post 상태")
 
     def test_duplicate_or_conflicting_events_rejected(self):
