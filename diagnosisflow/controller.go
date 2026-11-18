@@ -1036,10 +1036,11 @@ func (c *Controller) SelectedData() string {
 	return string(raw)
 }
 
-// MaxSelectedDataBytes는 모델 지시(Planner 목표·Worker 입력)에 넣는 고른 끝점 데이터의 바이트 상한이다. 자동 모드가
-// 추정 출처 읽기까지 고르면서 목록이 길어져도 모델 입력이 그만큼 커지지 않게 묶는다. 공개 끝점 목록 상한
-// (MaxWorkflowEndpoints 64)에서 행 하나는 보통 100바이트 안팎이라 대개 전부 들어가고, 보고된 이름 목록이 클 때만 덜어 낸다.
-const MaxSelectedDataBytes = 16 << 10
+// MaxSelectedDataBytes는 모델 지시(Planner 목표·Worker 입력)에 넣는 고른 끝점 데이터의 바이트 상한이다. 공개 끝점 목록이
+// 이미 공개 투영 바이트(MaxProjectionBytes)로 잘려 들어오고, 모델 행은 공개 행보다 칸이 적으므로 같은 값이면 고른 끝점이
+// 전부 들어간다(공식 측정 프로토콜 고정 초안 §5, 2026-11-17 결정). 승인 범위 안 끝점을 모델이 모른 채 도는 일을 없애려는
+// 것이다. 공개 상한을 거치지 않은 목록이 생기면 뒤쪽(추정) 행부터 덜고 빠진 수를 남기는 장치는 그대로 둔다.
+const MaxSelectedDataBytes = MaxProjectionBytes
 
 // recordModelOmittedLocked는 선택이 정해질 때 모델 목록에서 빠지는 고른 끝점 수를 스냅숏에 남긴다.
 func (c *Controller) recordModelOmittedLocked() {

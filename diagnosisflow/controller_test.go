@@ -333,6 +333,7 @@ func TestModelEndpointListByteCap(t *testing.T) {
 			}
 			path := "/read/" + strings.Repeat("p", 90) + "/" + strconv.Itoa(i)
 			if direct {
+				path = "/read/" + strings.Repeat("p", 300) + "/" + strconv.Itoa(i)
 				// 공개 목록 상한보다 많은 고른 끝점(앞으로 개수 상한을 올릴 때)을 흉내 낸다.
 				c.record.Snapshot.Endpoints = append(c.record.Snapshot.Endpoints, Endpoint{ID: endpointID(c.origin, "GET", path), Method: "GET", Path: path, Kind: "request", Source: source, InScope: true, Change: "attested_read", Selected: true, QueryKeys: names})
 				continue
@@ -373,22 +374,19 @@ func TestModelEndpointListByteCap(t *testing.T) {
 		t.Fatalf("small list must be unchanged: %v", rows)
 	}
 
-	// 공개 목록이 투영 바이트에 닿을 때까지(이전 개수 상한 64보다 많이) 고르면, 모델 목록은 뒤쪽 이름 목록부터 덜고
-	// 그래도 넘치는 행만 빼며 뺀 수를 지시에 적는다(MaxSelectedDataBytes는 측정으로 다시 정할 항목).
+	// 공개 목록이 투영 바이트에 닿을 때까지(이전 개수 상한 64보다 많이) 고르면, 모델 목록 상한이 공개 투영과 같아
+	// 행은 전부 남는다(§5 결정). 공개 상한 밖에서 붙인 큰 이름 목록만 뒤쪽부터 덜어 낸다.
 	full, _ := flowFixture(t, Auto)
 	full.binding.Limits.MaxEndpoints = MaxWorkflowEndpoints
 	added := selected(full, MaxWorkflowEndpoints, false)
 	rows := rowsOf(full)
 	t.Logf("public list at byte cap: %d endpoints (100-byte paths), model rows %d", added, len(rows))
-	if added <= 64 || len(rows) == 0 || len(rows) > added || rows[len(rows)-1]["query_keys"] != nil {
-		t.Fatalf("byte-capped list: added=%d rows=%d last keys=%v", added, len(rows), rows[len(rows)-1]["query_keys"] != nil)
-	}
-	if left := added - len(rows); left > 0 != strings.Contains(full.Instructions(), strconv.Itoa(left)+" more selected endpoints were left out") {
-		t.Fatalf("model omission not reported: added=%d rows=%d", added, len(rows))
+	if added <= 64 || len(rows) != added || rows[len(rows)-1]["query_keys"] != nil || strings.Contains(full.Instructions(), "left out") {
+		t.Fatalf("byte-capped public list must reach the model whole: added=%d rows=%d last keys=%v", added, len(rows), rows[len(rows)-1]["query_keys"] != nil)
 	}
 	observedFirst(rows)
 
-	// 그보다 많으면 뒤쪽(추정) 행을 빼고 지시에 뺀 수를 적는다.
+	// 공개 상한을 거치지 않은 목록(방어): 모델 상한보다 크면 뒤쪽(추정) 행을 빼고 지시에 뺀 수를 적는다.
 	many, _ := flowFixture(t, Auto)
 	selected(many, 256, true)
 	rows = rowsOf(many)
@@ -415,7 +413,8 @@ func TestModelOmittedRecordedWhenSelectionSettles(t *testing.T) {
 		defer c.mu.Unlock()
 		var ids []string
 		for i := 0; i < 256; i++ {
-			path := "/read/" + strings.Repeat("p", 100) + "/" + strconv.Itoa(i)
+			// 공개 상한을 우회해 직접 넣어 모델 상한(공개 투영과 같음)을 넘긴다. 방어 장치의 기록을 본다.
+			path := "/read/" + strings.Repeat("p", 300) + "/" + strconv.Itoa(i)
 			id := endpointID(c.origin, "GET", path)
 			c.record.Snapshot.Endpoints = append(c.record.Snapshot.Endpoints, Endpoint{ID: id, Method: "GET", Path: path, Kind: "request", Source: "html_link", InScope: true, Change: "attested_read", Visited: true})
 			ids = append(ids, id)
