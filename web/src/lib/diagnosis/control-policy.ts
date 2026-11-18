@@ -54,6 +54,11 @@ export type PolicyLimits = {
   maxBodyBytes: number;
   maxResponseBodyBytes: number;
   requestTimeoutMs: number;
+  /**
+   * E③ 확정 단계 몫(모델 단계와 따로 떼어 둔 요청 수·시간). 제품 실행 정책은 늘 둘 다 싣고(꺼짐이면 0),
+   * 칸이 없는 이전 회차는 undefined — 0(꺼짐)과 '정하지 않음'을 섞지 않는다.
+   */
+  e3Confirmation?: { requests: number; timeoutMs: number };
 };
 
 /** 전송 통제 정책(표시용 투영). auditBound 는 감사 키 결속 '여부'만(키 값 아님). */
@@ -375,12 +380,26 @@ function parseRule(raw: unknown): PolicyRule | null {
   };
 }
 
+const E3_SHARE_KEYS = ["e3_confirmation_requests", "e3_confirmation_timeout_ms"] as const;
+
 function parseLimits(raw: unknown): PolicyLimits | null {
-  if (!isObj(raw) || !exactKeys(raw, LIMIT_KEYS)) return null;
+  if (!isObj(raw) || !exactKeys(raw, LIMIT_KEYS, E3_SHARE_KEYS)) return null;
   if (!LIMIT_KEYS.every((k) => isNat(raw[k]))) return null;
   // 요청 상한 0 은 서버 정책 문서 검증이 거부한다(MaxRequests == 0) — '요청 0건 허용' 정책으로 그리지 않는다
   if (raw.max_requests === 0) return null;
+  // 확정 몫은 둘 다 있거나 둘 다 없다. 둘 다 0(꺼짐)이거나 둘 다 양수이고, 요청 몫은 실행 요청 상한의 1/4 이하(서버 검사와 같음).
+  const shareKeys = E3_SHARE_KEYS.filter((k) => Object.hasOwn(raw, k));
+  let e3Confirmation: PolicyLimits["e3Confirmation"];
+  if (shareKeys.length === 1) return null;
+  if (shareKeys.length === 2) {
+    const requests = raw.e3_confirmation_requests;
+    const timeoutMs = raw.e3_confirmation_timeout_ms;
+    if (!isNat(requests) || !isNat(timeoutMs) || (requests === 0) !== (timeoutMs === 0)) return null;
+    if ((requests as number) * 4 > (raw.max_requests as number)) return null;
+    e3Confirmation = { requests: requests as number, timeoutMs: timeoutMs as number };
+  }
   return {
+    ...(e3Confirmation ? { e3Confirmation } : {}),
     maxRequests: raw.max_requests as number,
     maxAttempts: raw.max_attempts as number,
     maxConcurrent: raw.max_concurrent as number,

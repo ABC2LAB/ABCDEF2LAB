@@ -93,6 +93,7 @@ func TestC35IssuedPolicyUsesJobConnectionAndPreservesDraft(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(runs, "other-job")); !os.IsNotExist(err) {
 		t.Fatal("다른 job 거부 전에 권위 파일 생성")
 	}
+	checkE3ShareIssued(t, raw, l.policy)
 }
 
 func TestC35ExplorationConnectionCannotCrossJobs(t *testing.T) {

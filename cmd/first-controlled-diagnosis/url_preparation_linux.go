@@ -80,6 +80,12 @@ func (b *urlPreparationRuntime) issue(l *urlLoadedProfile, jobID string, actual 
 	if policy.ValidUntil, ok = urlAuthorityUntil(now, l.profile.Budget.DurationSeconds, int64(c.ShutdownTimeoutSeconds), l.profile.ValidUntil); !ok {
 		return c, errPreparation
 	}
+	// E③ 확정 단계 몫(사용자 결정 2026-11-18 ②). 이 판은 정책 선언을 실행에 연결하지 않아 시험할 종류가 0이고 몫도 0이다
+	// (확정 단계 꺼짐 → 모델 단계 예산은 제품 상한 그대로). 0도 늘 적어 러너가 "칸 없음"과 구분한다.
+	share := server.ComputeE3ConfirmationShare(0, policy.MaxRequests, time.Duration(l.profile.Budget.DurationSeconds)*time.Second,
+		server.E3ConfirmationRequestTimeoutDefault)
+	shareRequests, shareTimeoutMS := share.Requests, share.Timeout.Milliseconds()
+	policy.Limits.E3ConfirmationRequests, policy.Limits.E3ConfirmationTimeoutMS = &shareRequests, &shareTimeoutMS
 	raw, err := json.Marshal(policy)
 	if err != nil {
 		return c, errPreparation

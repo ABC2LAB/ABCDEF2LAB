@@ -30,6 +30,15 @@ type PolicyBehavior struct {
 	ProxyRequestTimeout time.Duration
 	ProxyMaxHeaderBytes int
 	ProxyMaxConnections int
+	// E3Confirmation은 E③ 확정 단계 몫(제품 실행 정책). nil이면 정책에 몫 칸이 없는 것이고 지문에 넣지 않는다.
+	// 0 몫(확정 단계 꺼짐)도 칸이 있으면 지문에 넣어 "칸 없음"과 구분한다(2026-11-18 사용자 결정).
+	E3Confirmation *E3ConfirmationShare
+}
+
+// E3ConfirmationShare는 실행 하나에서 확정 단계에 떼어 둔 대상 요청 수와 시간이다. 둘 다 0이거나 둘 다 양수다.
+type E3ConfirmationShare struct {
+	Requests uint64
+	Timeout  time.Duration
 }
 
 func (PolicyBehavior) String() string   { return "e2export.PolicyBehavior[protected]" }
@@ -114,6 +123,13 @@ func canonicalPolicy(cfg e2proxy.Config, maxRequests uint64, b PolicyBehavior) (
 	// 응답 상한은 정한 정책에만 넣는다. 없으면 지금 지문 그대로다(C16 결정안 3).
 	if l.MaxResponseBodyBytes > 0 {
 		limits["max_response_body_bytes"] = l.MaxResponseBodyBytes
+	}
+	if share := b.E3Confirmation; share != nil {
+		if (share.Requests == 0) != (share.Timeout == 0) || share.Timeout < 0 || share.Requests > maxRequests {
+			return nil, ErrConfig
+		}
+		limits["e3_confirmation_requests"] = share.Requests
+		limits["e3_confirmation_timeout_ns"] = int64(share.Timeout)
 	}
 	if l.MaxResponseScanBytes > 0 {
 		limits["max_response_scan_bytes"] = l.MaxResponseScanBytes

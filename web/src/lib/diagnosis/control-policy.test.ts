@@ -157,6 +157,13 @@ describe("parseControlPolicyView (fail-closed)", () => {
     expect(p?.rules[0].methods).toEqual(["GET", "HEAD", "POST"]);
     expect(p?.mock).toBeUndefined();
   });
+  it("확정 몫: 칸 없음은 undefined, 0(꺼짐)·1/4 이하 양수는 그대로 — 칸 없음과 0을 섞지 않는다", () => {
+    expect(parseControlPolicyView(wire())?.limits.e3Confirmation).toBeUndefined();
+    const off = parseControlPolicyView(wire({ limits: { ...(wire().limits as object), e3_confirmation_requests: 0, e3_confirmation_timeout_ms: 0 } }));
+    expect(off?.limits.e3Confirmation).toEqual({ requests: 0, timeoutMs: 0 });
+    const on = parseControlPolicyView(wire({ limits: { ...(wire().limits as object), e3_confirmation_requests: 16, e3_confirmation_timeout_ms: 160000 } }));
+    expect(on?.limits.e3Confirmation).toEqual({ requests: 16, timeoutMs: 160000 });
+  });
   it("path_match exact 는 =/… 로 보이고, 생략은 접두", () => {
     const p = parseControlPolicyView(wire({ rules: rule0({ path_match: "exact", path_prefix: "/rest/basket/1" }) }));
     expect(p?.rules[0].pathMatch).toBe("exact");
@@ -183,6 +190,13 @@ describe("parseControlPolicyView (fail-closed)", () => {
     ["요청 상한 0", { limits: { ...(wire().limits as object), max_requests: 0 } }],
     ["모르는 최상위 칸", { approved_by: "someone" }],
     ["상한에 모르는 칸", { limits: { ...(wire().limits as object), max_bytes_total: 1 } }],
+    ["확정 몫 요청만", { limits: { ...(wire().limits as object), e3_confirmation_requests: 0 } }],
+    ["확정 몫 시간만", { limits: { ...(wire().limits as object), e3_confirmation_timeout_ms: 0 } }],
+    ["확정 몫 요청 0·시간 양수", { limits: { ...(wire().limits as object), e3_confirmation_requests: 0, e3_confirmation_timeout_ms: 1000 } }],
+    ["확정 몫 요청 양수·시간 0", { limits: { ...(wire().limits as object), e3_confirmation_requests: 5, e3_confirmation_timeout_ms: 0 } }],
+    ["확정 몫 음수", { limits: { ...(wire().limits as object), e3_confirmation_requests: -1, e3_confirmation_timeout_ms: 0 } }],
+    ["확정 몫 null", { limits: { ...(wire().limits as object), e3_confirmation_requests: null, e3_confirmation_timeout_ms: null } }],
+    ["확정 몫이 요청 상한 1/4 초과", { limits: { ...(wire().limits as object), e3_confirmation_requests: 17, e3_confirmation_timeout_ms: 1000 } }],
     ["지문이 SHA-256 16진 아님", { policy_fingerprint_sha256: "AB".repeat(32) }],
     ["지문이 빈 문자열", { policy_fingerprint_sha256: "" }],
     ["유효 시작이 시각 아님", { valid_from: "soon" }],

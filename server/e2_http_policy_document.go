@@ -127,10 +127,20 @@ func validateE2HTTPPolicyDocumentMode(raw []byte, prepared, run bool) (E2HTTPFil
 			return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
 		}
 	}
-	// 응답 전달·검사 상한(C16 결정안 3)은 선택 칸이다. 없으면 요청 본문 상한을 같이 쓴다.
+	// 응답 전달·검사 상한(C16 결정안 3)은 선택 칸이다. 없으면 요청 본문 상한을 같이 쓴다. E③ 확정 단계 몫은 실행 정책에서만
+	// 받는다(둘 다 있거나 둘 다 없음, 몫은 실행 요청 상한의 1/4 이하).
+	limitOptional := []string{"max_response_body_bytes", "max_response_scan_bytes"}
+	if run {
+		limitOptional = append(limitOptional, "e3_confirmation_requests", "e3_confirmation_timeout_ms")
+	}
+	share, shareOK := policy.Limits.e3ConfirmationBehavior()
+	if !shareOK || share != nil && (!run || share.Requests > policy.MaxRequests/E3ConfirmationShareDivisor ||
+		share.Timeout > policy.ValidUntil.Sub(policy.ValidFrom)/E3ConfirmationShareDivisor) {
+		return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
+	}
 	for name, fields := range map[string]struct{ required, optional []string }{
 		"limits": {[]string{"max_attempts", "max_calls", "max_concurrent", "max_body_bytes", "request_timeout_ms", "call_timeout_ms", "max_denials", "max_transient", "max_unknown"},
-			[]string{"max_response_body_bytes", "max_response_scan_bytes"}},
+			limitOptional},
 		"proxy":   {[]string{"header_timeout_ms", "request_timeout_ms", "max_header_bytes", "max_connections"}, nil},
 		"runtime": {[]string{"max_worker_turns", "max_tool_calls", "worker_timeout_ms", "max_planner_rounds", "max_intent_runs", "drain_timeout_ms", "output_limit"}, nil},
 	} {
@@ -182,7 +192,7 @@ func validateE2HTTPPolicyDocumentMode(raw []byte, prepared, run bool) (E2HTTPFil
 		MaxWorkerTurns: policy.Runtime.MaxWorkerTurns, MaxToolCalls: policy.Runtime.MaxToolCalls, WorkerTimeout: workerTimeout,
 		MaxPlannerRounds: policy.Runtime.MaxPlannerRounds, MaxIntentRuns: policy.Runtime.MaxIntentRuns, DrainTimeout: drainTimeout,
 		OutputLimit: policy.Runtime.OutputLimit, ProxyHeaderTimeout: headerTimeout, ProxyRequestTimeout: proxyTimeout,
-		ProxyMaxHeaderBytes: policy.Proxy.MaxHeaderBytes, ProxyMaxConnections: policy.Proxy.MaxConnections,
+		ProxyMaxHeaderBytes: policy.Proxy.MaxHeaderBytes, ProxyMaxConnections: policy.Proxy.MaxConnections, E3Confirmation: share,
 	})
 	if err != nil {
 		return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
