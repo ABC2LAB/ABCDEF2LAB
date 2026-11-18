@@ -58,6 +58,8 @@ _ROW_FIELDS = {
                        "machine_id_sha256", "llm_stream"},
     "e2_placement": {"mode", "decision_rows", "allowed", "unsupported", "unavailable"},
     "verdict_collection": {"status", "reason"},
+    # 제품 확정 단계(E③) 결과(run-record v1.1 §3·§3.1, 2026-11-18). 0 또는 1행. 받아야 하는지는 run_conditions.e3_status_expected.
+    "e3_confirmation": {"status", "reason"},
     "e2_product": {"close_state", "close_reason", "collection_outcome", "collection_reason", "rows", "attempts", "decisions",
                    "attempts_without_result", "allowed_not_sent", "checkpoint_sequence", "config_sha256", "policy_fingerprint_sha256",
                    "manifest_sha256", "image_id", "declared_differences_sha256", "declared_differences_status"},
@@ -67,7 +69,13 @@ _ROW_FIELDS = {
 }
 # 목적 칸이 생기기 전에 서명된 근거(같은 v1 형식)도 다시 검증할 수 있게 빠지면 공식 회차로 읽는다.
 _PATH_KEY_REF = re.compile(r"[0-9a-f]{16}\Z")
-_OPTIONAL_ROW_FIELDS = {"run_conditions": frozenset({"purpose", "path_key_ref", "split", "execution_source"})}
+_OPTIONAL_ROW_FIELDS = {"run_conditions": frozenset({"purpose", "path_key_ref", "split", "execution_source", "e3_status_expected",
+                                                      "goal_common_sha256"})}
+# E③ 확정 결과 상태(E③ 계약의 닫힌 값). completed·interrupted만 사유가 없다. 사유 값 목록은 계약(e3contract)이 정하므로
+# 여기서는 낱말 모양만 본다. 공식 회차가 받는 사유 하나는 run_record.OFFICIAL_E3_DISABLED_REASON이다.
+E3_STATUSES = ("disabled", "start_refused", "completed", "interrupted", "confirmation_integrity_failed")
+_E3_NO_REASON = ("completed", "interrupted")
+_E3_REASON = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 # 개선 후 회차의 E② 자리(러너 e2.ours_mode). 회차 조건(run_conditions)과 달리 baseline·개선 후가 일부러 다르므로
 # 회차 사이 동일성 대조가 아니라 조건별로 섞이지 않는지만 채점기가 본다.
 E2_MODES = ("none", "stub", "product")
@@ -166,7 +174,8 @@ def _rows(evidence: object, receipt: dict) -> dict[str, list[dict]]:
         if kind == "run_conditions":
             # 수용시험 경로 가림 키 참조(#378)·분리 배치 표시(2026-11-18 (a))·실행 출처도 그 전 근거에는 없다(엔진 직접 배치·
             # 실제 모델 회차로 읽는다).
-            row = {"purpose": PURPOSE_OFFICIAL, "path_key_ref": None, "split": False, "execution_source": EXECUTION_MODEL_RUN, **row}
+            row = {"purpose": PURPOSE_OFFICIAL, "path_key_ref": None, "split": False, "execution_source": EXECUTION_MODEL_RUN,
+                   "e3_status_expected": False, "goal_common_sha256": None, **row}
         if row["seq"] != index or type(row["seq"]) is not int:
             raise IsolationError("isolation_evidence: 행 순번 공백·중복")
         _time(row["at"], f"isolation_evidence.{kind}.at")
@@ -278,6 +287,9 @@ def _check_conditions(rows: dict[str, list[dict]]) -> dict:
     # 배치)에는 없어야 한다. 분리 배치 공식 회차는 공식 비교의 발견 집계(공식 측정 프로토콜 §7)에 경로가 필요하다.
     if type(row["split"]) is not bool:
         raise IsolationError("isolation_evidence.run_conditions.split: bool")
+    if row["goal_common_sha256"] is not None:
+        _hex(row["goal_common_sha256"], "isolation_evidence.run_conditions.goal_common_sha256")
+    _check_e3(rows, row["e3_status_expected"])
     needs_key = row["purpose"] == PURPOSE_BROWSER_ACCEPTANCE or row["split"]
     if needs_key != _matches(_PATH_KEY_REF, row["path_key_ref"]) or (not needs_key and row["path_key_ref"] is not None):
         raise IsolationError("isolation_evidence.run_conditions.path_key_ref: 수용시험·분리 배치 회차만 16 hex")
@@ -380,6 +392,37 @@ def e2_prompt(receipt: dict, evidence: object) -> tuple[str, ...] | None:
             or row["exploration_id"] < 1 or not _count(row["expected_count"]) or row["expected_count"] < 1 or not isinstance(row["task_id"], str) or not isinstance(row["run_ref"], str)):
         raise IsolationError("isolation_evidence.e2_prompt: 값 형식 오류")
     return tuple(row[name] for name in PROMPT_FIELDS)
+
+
+def _check_e3(rows: dict[str, list[dict]], expected: object) -> None:
+    """E③ 상태 행 모양과 기대 칸 대조(run-record v1.1 §3.1). 기대가 참인데 행이 없으면 입력 오류가 아니라 수집 실패라 여기서
+    막지 않는다(채점 규칙이 다룬다). 기대가 거짓인데 행이 있으면 입력 오류다."""
+    if type(expected) is not bool:
+        raise IsolationError("isolation_evidence.run_conditions.e3_status_expected: bool")
+    found = rows["e3_confirmation"]
+    if len(found) > 1:
+        raise IsolationError("isolation_evidence.e3_confirmation: 행은 0 또는 1")
+    if found and not expected:
+        raise IsolationError("isolation_evidence.e3_confirmation: 기대하지 않은 회차의 행")
+    for row in found:
+        status, reason = row["status"], row["reason"]
+        if status not in E3_STATUSES:
+            raise IsolationError("isolation_evidence.e3_confirmation.status: 닫힌 다섯 값")
+        if (reason is not None) if status in _E3_NO_REASON else not _matches(_E3_REASON, reason):
+            raise IsolationError("isolation_evidence.e3_confirmation.reason: completed·interrupted만 null, 그 밖은 사유 값")
+
+
+def e3_confirmation(receipt: dict, evidence: object) -> tuple[bool, tuple[str, str | None] | None]:
+    """check_isolation을 통과한 근거의 (기대, (상태, 사유) 또는 행 없음 None)."""
+    rows = _rows(evidence, receipt)
+    found = rows["e3_confirmation"]
+    expected = _one(rows, "run_conditions")["e3_status_expected"]
+    return expected, ((found[0]["status"], found[0]["reason"]) if found else None)
+
+
+def run_goal_common(receipt: dict, evidence: object) -> str | None:
+    """check_isolation을 통과한 근거의 B·O 공통 목표 SHA(분리 배치 회차만 있다). 채점기가 짝 비교에서 같은지 본다."""
+    return _one(_rows(evidence, receipt), "run_conditions")["goal_common_sha256"]
 
 
 def verdict_collection(receipt: dict, evidence: object, records: object) -> None:
