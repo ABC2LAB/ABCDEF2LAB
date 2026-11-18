@@ -218,7 +218,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   창 전체의 최장 무활동(진행 중인 요청이 하나도 없는 구간)도 남긴다. 창은 작업 생성 요청 직전부터 러너가 계측기를 봉인한 시각까지다.
   T와 무효 비율 상한은 파일럿 기록으로 정해 측정 전에 고정하므로 지금은 판정하지 않는다(`judged: false`, 회차 유효성에 안 씀).
   행이나 시각을 읽지 못해도 회차를 무효로 하지 않고 고정 코드(`error`)만 남긴다. 게이트웨이 행 읽기는 결정·끝 모양 어휘를
-  `cmd/eval-meter/gateway.go`와 같게 고정한다(시험이 원문과 대조). 제품(O) 쪽은 제품 호출 기록으로 같은 재료를 만든다(순서 4-11).
+  `cmd/eval-meter/gateway.go`와 같게 고정한다(시험이 원문과 대조). 제품(O) 분리 배치 회차도 같은 함수로 `fault-stall.json`을 남긴다(`runner_split_run.product_fault_stall`): 게이트웨이 행 자리에 제품 호출 기록 줄(같은 칸·어휘)을 넣고, 창은 시작 요청 직전부터 계측기 봉인 직후까지다. 호출 기록 완전성(장부 예약 수 = 기록 줄 수)을 확인한 뒤에 만들고, 결과 요약 `fault_stall`에도 싣는다.
 
 `findings.json`은 baseline·개선 후 모두 **같은 추출 경로**(`baseline_pages_collector` → `baseline_extract`, 수정 없음)를 거친
 투영만 담는다. API 응답 원본·제목·설명·자산 이름은 저장하지 않는다(절대규칙 2). 추출기는 원본 FindingDTO 형식(upstream
