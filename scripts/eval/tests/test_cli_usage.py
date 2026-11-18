@@ -302,6 +302,7 @@ class TestCounting(unittest.TestCase):
             "1\\\n0<<D npx\nx\nD": (["npx"], []),
             "true 1\\\n0<<D\nx\nD\nnpx b": (["true", "npx"], []),
             "1\\\n\\\n2<<D npx d\nx\nD": (["npx"], []),
+            "a1\\\n0<<D npx\nx\nD": (["a10"], []),  # 낱말 가운데 숫자는 서술자가 아니다(명령 이름은 이은 a10)
         }
         for command, (sure, maybe) in cases.items():
             with self.subTest(command=command):
