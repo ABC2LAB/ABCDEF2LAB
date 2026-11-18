@@ -187,6 +187,61 @@ it("fetches images only on explicit view and rejects a mismatched image hash", a
   expect(screen.queryByRole("img")).not.toBeInTheDocument();
 });
 
+it("상세 보고는 Markdown 으로 그리되 원문 HTML · 링크 이동 · 이미지 불러오기는 하지 않고, 복사는 가린 글 그대로", async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+  const entry = {
+    ...fixture(),
+    report:
+      "## 재현 요약\n\n- 계정 B로 [주문](https://outside.example/x) 조회\n\n![캡처](https://outside.example/a.png)\n\n<script>alert(1)</script><b>굵게</b>\n\nAuthorization: Bearer synthetic-private-token",
+  };
+  render(<DiagnosticEntrySections task="42" entry={entry} onReload={vi.fn()} />);
+  const card = screen.getByRole("region", { name: "상세 보고" });
+  expect(within(card).getByRole("heading", { name: "재현 요약" })).toBeInTheDocument();
+  expect(within(card).getByRole("listitem")).toHaveTextContent("계정 B로 주문 조회");
+  // 보고 글 속 주소로 나가지 않는다: 링크는 글로만, 이미지는 대체 글로만
+  expect(card.querySelector("a, img, script")).toBeNull();
+  expect(within(card).getByText("[이미지: 캡처]")).toBeInTheDocument();
+  expect(card).not.toHaveTextContent("outside.example");
+  expect(card.querySelector("b")).toBeNull();
+  expect(document.body.textContent).not.toContain("synthetic-private-token");
+  fireEvent.click(within(card).getByRole("button", { name: "복사" }));
+  await within(card).findByText("상세 보고를 복사했습니다.");
+  expect(writeText).toHaveBeenCalledTimes(1);
+  expect(writeText.mock.calls[0][0]).not.toContain("synthetic-private-token");
+});
+
+it.each([
+  ["HTML 엔티티", "&#112;&#97;&#115;&#115;&#119;&#111;&#114;&#100;=synthetic-entity-secret", "synthetic-entity-secret"],
+  ["서식으로 쪼갬", "**pass**word=synthetic-split-secret", "synthetic-split-secret"],
+  ["HTML 주석으로 쪼갬", "pass<!-- x -->word=synthetic-comment-secret", "synthetic-comment-secret"],
+  ["역슬래시", "password\\=synthetic-escape-secret", "synthetic-escape-secret"],
+  ["표 칸", "| 이름 | 값 |\n| --- | --- |\n| a | api_key=synthetic-table-secret |", "synthetic-table-secret"],
+  [
+    "직접 이미지 대체 글",
+    "![&#112;&#97;&#115;&#115;&#119;&#111;&#114;&#100;&#61;synthetic-image-secret](/synthetic.png)",
+    "synthetic-image-secret",
+  ],
+  [
+    "참조형 이미지 대체 글",
+    "![&#112;&#97;&#115;&#115;&#119;&#111;&#114;&#100;&#61;synthetic-reference-mask][proof]\n\n[proof]: /synthetic.png",
+    "synthetic-reference-mask",
+  ],
+])("상세 보고 Markdown 은 파서가 푼 글에도 가림을 건다 — %s (#677 리뷰)", async (_, report, secret) => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+  // 대조: 원문 가림만으로는 못 잡는 모양이다
+  render(<DiagnosticEntrySections task="42" entry={{ ...fixture(), report }} onReload={vi.fn()} />);
+  const card = screen.getByRole("region", { name: "상세 보고" });
+  expect(card).not.toHaveTextContent(secret);
+  expect(document.body.textContent).not.toContain(secret);
+  // 복사도 화면에 그려진 가린 글이라 원문(엔티티)이 클립보드로 나가지 않는다
+  fireEvent.click(within(card).getByRole("button", { name: "복사" }));
+  await within(card).findByText("상세 보고를 복사했습니다.");
+  expect(writeText.mock.calls[0][0]).not.toContain(secret);
+  expect(writeText.mock.calls[0][0]).not.toContain("&#");
+});
+
 it.each([
   "review",
   "unknown",
@@ -202,11 +257,10 @@ it.each([
   render(<DiagnosticEntrySections task="42" entry={entry} onReload={vi.fn()} />);
   expect(screen.getByRole("heading", { name: "① 판정과 영향" })).toBeVisible();
   expect(screen.queryByText(/① 확인된 취약점/)).not.toBeInTheDocument();
-  // 저장된 상세 보고는 지우지 않고 접어 둔다 (사용자 11/17 '오른쪽 패널 지저분'): 펼치면 가린 원문이 보인다
-  const report = screen.getByText(/저장된 owner-read → cross-read 단계/);
-  expect(report).not.toBeVisible();
-  fireEvent.click(screen.getByText("저장된 상세 보고"));
-  expect(report).toBeVisible();
+  // 상세 보고는 ARTEX 발견 상세처럼 카드에 펼쳐 둔다(높이를 묶은 상자) — 가린 글이 보인다
+  expect(
+    within(screen.getByRole("region", { name: "상세 보고" })).getByText(/저장된 owner-read → cross-read 단계/),
+  ).toBeVisible();
   expect(document.body.textContent).not.toContain("synthetic-private-token");
   expect(screen.getByText(/실제 도구 출력이 잘렸습니다/)).toBeVisible();
 });
