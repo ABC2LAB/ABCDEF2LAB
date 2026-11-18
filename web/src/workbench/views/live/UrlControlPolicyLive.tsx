@@ -1,20 +1,20 @@
 "use client";
 
-// 전송 통제 정책 화면 (E② — 승인된 origin·연결 IP·경로·메서드·예산·승인 방식·감사 결속, 지금은 예시).
-// 데이터는 lib/diagnosis/control-policy seam(getControlPolicy)에서만 온다. 정규화·판정(만료·쓰기 범위·fail-closed)은
-//   전부 seam(lib), 화면은 그리기만(control-policy.test.ts 가 로직을 이미 검증). 표현/데이터 분리.
-// 안전(절대규칙 2): 자격 헤더는 '이름'만, 감사 키·TLS 핀 개인키·예산/승인 토큰 원문은 애초에 투영에 없다(결속/참조만).
+// 전송 통제 정책 화면 (E② — 승인된 origin·연결 IP·경로·메서드·상한·승인 방식·감사 결속). 읽기 전용(계약 §6).
+// 데이터는 현재 Job 의 task 에 결속된 정책(GET /api/tasks/{id}/control-policy, lib getControlPolicy)에서만 온다.
+//   닫힌 파서·판정(만료·쓰기 범위·fail-closed)은 전부 lib, 화면은 그리기만. 표현/데이터 분리.
+// 안전(절대규칙 2): 응답에 자격·세션 값 · 감사 키가 없다(계정은 라벨만, 감사는 결속 여부만).
 //   승인된 origin·경로·메서드는 비밀이 아니라 운영자가 봐야 할 통제 상태라 그대로 보인다.
-// ※ live 점등은 E② target_policy 표시용 투영 API 연결 시 getControlPolicy(taskRef) 만 교체(이 화면은 안 바뀐다).
 
 import type { CSSProperties } from "react";
 import { useEffect, useState } from "react";
 
+import { ApiError } from "@/lib/diagnosis/api";
 import {
   APPROVAL_LABEL,
   type ControlPolicy,
   getControlPolicy,
-  normalizePolicy,
+  HEADER_MODE_LABEL,
   type PolicyRule,
   policyExpired,
   ruleAllowsWrite,
@@ -23,6 +23,7 @@ import {
 } from "@/lib/diagnosis/control-policy";
 
 import { cx } from "../../lib/cx";
+import { useUrl } from "../../live/urlDiagnosis";
 import { Icon } from "../../ui/icons";
 import s from "../../workbench.module.css";
 import { UrlHead } from "./urlParts";
@@ -59,6 +60,9 @@ const ruleBox: CSSProperties = {
 };
 const ruleHead: CSSProperties = { display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: 8 };
 
+/** 지문은 앞 12자만 보인다(전체 값은 비밀이 아니지만 칩 폭을 넘는다). */
+const FINGERPRINT_SHOWN = 12;
+
 const fmtTime = (iso: string): string => {
   const ms = Date.parse(iso);
   if (Number.isNaN(ms)) return "—";
@@ -69,7 +73,20 @@ const fmtTime = (iso: string): string => {
   }
 };
 
-/** 한 전송 규칙 — 승인된 origin·IP·경로·메서드·자격 헤더(이름만). methods 가 비면 '전부'가 아니라 '차단'으로 명시. */
+/** 읽기 실패 문구 — 상태 코드마다 뜻이 다르다(계약 §3). 어느 쪽이든 이전 정책은 보이지 않는다. */
+function failureText(error: unknown): string {
+  const status = error instanceof ApiError ? error.status : -1;
+  if (status === 404) return "이 점검의 실행이 아직 전송 통제 정책에 결속되지 않았습니다. 점검이 시작되면 나옵니다.";
+  if (status === 409) return "실행 정책이 승인 기록과 달라 표시하지 않습니다.";
+  if (status === 422)
+    return "정책 응답을 확인할 수 없습니다. 통제 범위를 신뢰할 수 없어 표시하지 않습니다(fail-closed).";
+  if (status === 401 || status === 403)
+    return "이 점검의 정책을 볼 권한을 확인하지 못했습니다. 이전 정책은 표시하지 않습니다.";
+  if (status === 0) return "엔진에 연결하지 못했습니다. 이전 정책은 표시하지 않습니다.";
+  return `전송 통제 정책을 불러오지 못했습니다${status > 0 ? ` (HTTP ${status})` : ""}. 이전 정책은 표시하지 않습니다.`;
+}
+
+/** 한 전송 규칙 — 승인된 origin·IP·경로·메서드. methods 가 비면 '전부'가 아니라 '차단'으로 명시. */
 function RuleBlock({ rule }: { rule: PolicyRule }) {
   const write = ruleAllowsWrite(rule);
   // https 가 아닌 대상은 전송(자격·세션 포함)이 평문이라 경고한다(TLS 핀 결속과 별개).
@@ -84,6 +101,7 @@ function RuleBlock({ rule }: { rule: PolicyRule }) {
           {rule.connectIp || "연결 IP 미지정"}
         </span>
         {write ? <span style={writeChip}>쓰기 포함</span> : <span style={neutralChip}>읽기 전용</span>}
+        {rule.purpose === "auth_prep" ? <span style={neutralChip}>인증 준비 전용 — 모델 요청은 쓰지 못함</span> : null}
         {noTls ? (
           <span style={{ ...chipBase, background: "var(--crit-bg)", color: "var(--crit)", borderColor: "var(--crit)" }}>
             TLS 없음 (평문 전송)
@@ -91,7 +109,9 @@ function RuleBlock({ rule }: { rule: PolicyRule }) {
         ) : null}
       </div>
       <div style={chipRow}>
-        <span style={monoChip}>경로 {rule.pathPrefix || "/"}</span>
+        <span style={monoChip}>
+          {rule.pathMatch === "exact" ? "정확 경로" : "경로"} {rule.pathPrefix}
+        </span>
         {rule.pathScopeRef ? <span style={monoChip}>범위 {rule.pathScopeRef}</span> : null}
         {rule.tlsPinned ? <span style={neutralChip}>TLS 핀 결속</span> : null}
       </div>
@@ -108,40 +128,39 @@ function RuleBlock({ rule }: { rule: PolicyRule }) {
           </span>
         )}
       </div>
-      {rule.credentialHeaderNames.length ? (
-        <p className={s.help}>자격 헤더(이름만): {rule.credentialHeaderNames.join(" · ")} — 값은 표시하지 않습니다.</p>
-      ) : null}
     </div>
   );
 }
 
-/** 전송 통제 정책 (예시). */
-export function UrlControlPolicyLive() {
-  const [policy, setPolicy] = useState<ControlPolicy | null>(null);
-  const [state, setState] = useState<"loading" | "ready" | "invalid" | "failed">("loading");
+type Read = { task: string; policy: ControlPolicy | null; error: unknown };
 
+/** 전송 통제 정책 (현재 Job 의 task 에 결속된 실제 정책). */
+export function UrlControlPolicyLive() {
+  const task = useUrl((st) => st.job?.task_id ?? null);
+  const [read, setRead] = useState<Read | null>(null);
+  const [attempt, setAttempt] = useState(0);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: attempt 는 '다시 읽기'가 같은 task 를 다시 부르는 트리거
   useEffect(() => {
-    let live = true;
-    // TODO(이경준): E² target_policy 표시용 투영 API 연동 시 현재 대상/회차 ref 를 넘겨 실 정책으로 점등(지금은 예시).
-    getControlPolicy(null)
-      .then((raw) => {
-        if (!live) return;
-        const norm = normalizePolicy(raw); // 투영은 untrusted — fail-closed 로 다시 검증(절대규칙 4)
-        if (norm) {
-          setPolicy(norm);
-          setState("ready");
-        } else {
-          setState("invalid");
-        }
+    if (!task) return;
+    let current = true;
+    const controller = new AbortController();
+    getControlPolicy(task, controller.signal)
+      .then((policy) => {
+        if (current) setRead({ task, policy, error: null });
       })
-      .catch(() => {
-        if (live) setState("failed");
+      .catch((error: unknown) => {
+        if (current) setRead({ task, policy: null, error });
       });
     return () => {
-      live = false;
+      current = false;
+      controller.abort();
     };
-  }, []);
+  }, [task, attempt]);
 
+  // 다른 task 의 결과(이전 Job · 전환 중)는 쓰지 않는다
+  const now = read && read.task === task ? read : null;
+  const policy = now?.policy ?? null;
   const sum = policy ? summarize(policy) : null;
   const expired = policy ? policyExpired(policy) : false;
   const missingMethods = policy ? rulesMissingMethods(policy) : [];
@@ -154,24 +173,21 @@ export function UrlControlPolicyLive() {
           <div className={s.note} role="note">
             <Icon name="info" />
             <span>
-              승인된 전송 범위(어디로·무엇을·얼마나)와 감사 결속만 보입니다. 자격 헤더는 이름만, 감사 키·토큰 원문은
-              표시하지 않습니다.
+              이 점검의 실행에 결속된 전송 범위(어디로·무엇을·얼마나)와 감사 결속만 보입니다. 시험 계정은 라벨만,
+              자격·세션 값과 감사 키는 표시하지 않습니다.
             </span>
           </div>
-          {policy?.mock ? (
-            <div className={cx(s.note, s.warn)} role="note">
+          {!task ? <p className={s.empty}>실제 진단 작업을 선택하세요.</p> : null}
+          {task && !now ? <p className={s.empty}>불러오는 중…</p> : null}
+          {now?.error ? (
+            <div className={cx(s.note, s.warn)} role="alert">
               <Icon name="alert" />
-              <span>예시 데이터입니다. 실제 전송 통제 정책은 E² target_policy 투영 API 연결 후 나옵니다.</span>
+              <span className={s["lv-grow"]}>{failureText(now.error)}</span>
+              <button className={cx(s.btn, s.sm)} type="button" onClick={() => setAttempt((n) => n + 1)}>
+                다시 읽기
+              </button>
             </div>
           ) : null}
-          {state === "failed" ? <p className={s.empty}>전송 통제 정책을 불러오지 못했습니다.</p> : null}
-          {state === "invalid" ? (
-            <div className={cx(s.note, s.warn)} role="note">
-              <Icon name="alert" />
-              <span>정책 투영을 확인할 수 없습니다. 통제 범위를 신뢰할 수 없어 표시하지 않습니다(fail-closed).</span>
-            </div>
-          ) : null}
-          {state === "loading" ? <p className={s.empty}>불러오는 중…</p> : null}
 
           {policy && sum ? (
             <section className={s.isec} aria-label="정책 요약">
@@ -209,10 +225,21 @@ export function UrlControlPolicyLive() {
               <div style={chipRow}>
                 <span style={monoChip}>정책 {policy.policyRef}</span>
                 <span style={monoChip}>개정 {policy.policyRevision || "미기재"}</span>
+                {policy.fingerprint ? (
+                  <span style={monoChip} title={policy.fingerprint}>
+                    지문 {policy.fingerprint.slice(0, FINGERPRINT_SHOWN)}…
+                  </span>
+                ) : null}
                 <span style={neutralChip}>승인 방식: {APPROVAL_LABEL[policy.approvalMode]}</span>
+                <span style={neutralChip}>자격 헤더: {HEADER_MODE_LABEL[policy.headerMode]}</span>
               </div>
               <p className={s.help}>
                 유효기간 {fmtTime(policy.validFrom)} ~ {fmtTime(policy.validUntil)}
+              </p>
+              <p className={s.help}>
+                {policy.accounts.length
+                  ? `결속된 시험 계정: ${policy.accounts.join(" · ")} (라벨만)`
+                  : "결속된 시험 계정 없음"}
               </p>
               {expired ? (
                 <div className={cx(s.note, s.warn)} role="note">
@@ -258,12 +285,20 @@ export function UrlControlPolicyLive() {
                   최대 요청 <b>{policy.limits.maxRequests}</b>
                 </span>
                 <span style={neutralChip}>
+                  최대 시도 <b>{policy.limits.maxAttempts}</b>
+                </span>
+                <span style={neutralChip}>
                   최대 동시 <b>{policy.limits.maxConcurrent}</b>
                 </span>
                 <span style={neutralChip}>
-                  출력 상한 <b>{policy.limits.outputLimit}</b> B
+                  요청 본문 상한 <b>{policy.limits.maxBodyBytes}</b> B
                 </span>
-                <span style={monoChip}>예산 {policy.limits.budgetRef || "미지정"}</span>
+                <span style={neutralChip}>
+                  응답 본문 상한 <b>{policy.limits.maxResponseBodyBytes}</b> B
+                </span>
+                <span style={neutralChip}>
+                  요청 제한 시간 <b>{policy.limits.requestTimeoutMs}</b> ms
+                </span>
               </div>
             </section>
           ) : null}

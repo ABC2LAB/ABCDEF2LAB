@@ -1,12 +1,15 @@
-// 전송 통제 정책(E②) 표시용 seam — 지금은 예시(mock). 데이터는 getControlPolicy 하나로만 들어오고,
-// 실 투영 API(운영 target_policy = abc2lab.e2-http-host-policy/v1 의 표시용 투영) 연결 시 이 getter 만 교체한다.
-// 표현/데이터 분리: 정규화·판정(만료·쓰기 범위·fail-closed)은 전부 여기(lib), 화면은 그리기만.
+// 전송 통제 정책(E②) 읽기 — GET /api/tasks/{id}/control-policy (docs/contracts/workbench-live-data.md §3).
+// 서버가 그 task 실행에 결속한 정책(대상 승인 판 + 설치 상한, 지문 결속)의 표시용 투영을 읽기만 한다. 화면에서 고치지 않는다(§6).
+// 표현/데이터 분리: 닫힌 파서·판정(만료·쓰기 범위·fail-closed)은 전부 여기(lib), 화면은 그리기만.
 //
-// 안전(절대규칙 2): 자격 헤더는 '이름'만 담는다(값 금지). 감사 키·TLS 핀 개인키·예산/승인 토큰 등 제어 비밀
-//   원문은 애초에 투영에 없다(결속 여부/참조만). 승인된 origin·경로·메서드는 비밀이 아니라 운영자가 봐야 할
-//   '무엇이 승인됐는지'이므로 그대로 보인다. 이 seam 은 비밀 저장소가 아니라 통제 상태 투영이다.
+// 안전(절대규칙 2): 응답에는 자격·세션 값, 감사 키 · CA · helper 경로가 없다(계정은 라벨만, 감사는 결속 여부만).
+//   승인된 origin·경로·메서드는 비밀이 아니라 운영자가 봐야 할 '무엇이 승인됐는지'이므로 그대로 보인다.
 
-/** 요청 승인 방식 — 엔진 e2proxy.ApprovalMode 값과 동일(서버가 그대로 투영). */
+import { ApiError, apiFetch } from "./api";
+
+export const CONTROL_POLICY_FORMAT = "abc2lab.control-policy-view/v1";
+
+/** 요청 승인 방식 — 엔진 e2proxy.ApprovalMode 값 그대로(서버가 그대로 투영). */
 export type ApprovalMode = "confirm_every_request" | "preauthorized_scope" | "workbench_selective_v1";
 
 export const APPROVAL_LABEL: Record<ApprovalMode, string> = {
@@ -15,37 +18,60 @@ export const APPROVAL_LABEL: Record<ApprovalMode, string> = {
   workbench_selective_v1: "작업대 승인(v1)",
 };
 
-/** 어디로·무엇을 — 한 전송 규칙(승인된 origin·연결 IP·경로·메서드). credentialHeaderNames 는 '이름'만. */
+/** 자격 헤더 처리 — 엔진 e2proxy.HeaderMode 값 그대로. */
+export type HeaderMode =
+  | "preserve"
+  | "test_account_passthrough"
+  | "evaluation_caller_passthrough"
+  | "protected_session_proposal";
+
+export const HEADER_MODE_LABEL: Record<HeaderMode, string> = {
+  preserve: "모델 자격 헤더 거부",
+  test_account_passthrough: "시험 계정 세션 전달",
+  evaluation_caller_passthrough: "평가 호출자 자격 전달",
+  protected_session_proposal: "보호 세션 제안",
+};
+
+/** 어디로·무엇을 — 한 전송 규칙(승인된 origin·연결 IP·경로·메서드). */
 export type PolicyRule = {
   ref: string;
+  /** "auth_prep" 이면 인증 준비(로그인) 전용 규칙 — 모델 요청은 쓰지 못한다 */
+  purpose: "" | "auth_prep";
   origin: string;
   connectIp: string;
+  /** exact = query 없는 단일 경로만, prefix = 경로 조각 접두(서버가 칸을 생략) */
+  pathMatch: "prefix" | "exact";
   pathPrefix: string;
-  pathScopeRef: string | null;
+  pathScopeRef: string;
   methods: string[];
-  credentialHeaderNames: string[]; // 자격 헤더 '이름'만 — 값은 투영에 들어오지 않는다
   tlsPinned: boolean;
 };
 
-/** 얼마나 — 예산·동시성 상한. budgetRef 는 참조(실 예산치는 별도). */
+/** 얼마나 — 요청 수 · 시도 수 · 동시성 · 본문 · 시간 상한. */
 export type PolicyLimits = {
   maxRequests: number;
+  maxAttempts: number;
   maxConcurrent: number;
-  outputLimit: number;
-  budgetRef: string;
+  maxBodyBytes: number;
+  maxResponseBodyBytes: number;
+  requestTimeoutMs: number;
 };
 
 /** 전송 통제 정책(표시용 투영). auditBound 는 감사 키 결속 '여부'만(키 값 아님). */
 export type ControlPolicy = {
   policyRef: string;
   policyRevision: string;
+  /** 정책 파일 지문(SHA-256 16진). 서버가 생략하면 null */
+  fingerprint: string | null;
   approvalMode: ApprovalMode;
-  validFrom: string; // ISO8601
-  validUntil: string; // ISO8601
+  headerMode: HeaderMode;
+  validFrom: string; // RFC3339
+  validUntil: string; // RFC3339
   rules: PolicyRule[];
   limits: PolicyLimits;
+  /** 이 실행에 결속된 시험 계정 라벨만(자격 · 세션 값 없음) */
+  accounts: string[];
   auditBound: boolean;
-  mock?: boolean;
 };
 
 /** 읽기 전용으로 보는 메서드(쓰기 범위 집계에서 제외). */
@@ -88,97 +114,147 @@ export function summarize(p: ControlPolicy, now?: number): PolicySummary {
   };
 }
 
-const asStrings = (v: unknown): string[] =>
-  Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
-
-/** 한 규칙을 표시 안전하게 정규화(fail-closed): 입력은 untrusted 투영이라 unknown. 모양이 깨지면 버린다. */
-function normalizeRule(r: unknown): PolicyRule | null {
-  if (typeof r !== "object" || r === null) return null;
-  const o = r as Record<string, unknown>;
-  if (typeof o.ref !== "string" || typeof o.origin !== "string") return null;
-  return {
-    ref: o.ref,
-    origin: o.origin,
-    connectIp: typeof o.connectIp === "string" ? o.connectIp : "",
-    pathPrefix: typeof o.pathPrefix === "string" ? o.pathPrefix : "",
-    pathScopeRef: typeof o.pathScopeRef === "string" ? o.pathScopeRef : null,
-    methods: asStrings(o.methods).map((m) => m.toUpperCase()),
-    credentialHeaderNames: asStrings(o.credentialHeaderNames),
-    tlsPinned: o.tlsPinned === true,
-  };
-}
-
-/**
- * 표시용 투영을 fail-closed 로 정규화. 형식이 깨지면 null(화면은 '정책을 확인할 수 없음'으로 떨어진다).
- * 알 수 없는 승인 방식은 가장 보수적인 '요청마다 확인'으로 내린다 — 느슨한 쪽으로 추정하지 않는다.
- */
-export function normalizePolicy(raw: unknown): ControlPolicy | null {
-  if (typeof raw !== "object" || raw === null) return null;
-  const o = raw as Record<string, unknown>;
-  if (typeof o.policyRef !== "string") return null;
-  const rules = Array.isArray(o.rules) ? o.rules.map(normalizeRule).filter((r): r is PolicyRule => r !== null) : [];
-  const mode: ApprovalMode =
-    o.approvalMode === "preauthorized_scope" || o.approvalMode === "workbench_selective_v1"
-      ? o.approvalMode
-      : "confirm_every_request";
-  const l = (typeof o.limits === "object" && o.limits !== null ? o.limits : {}) as Record<string, unknown>;
-  const n = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0);
-  return {
-    policyRef: o.policyRef,
-    policyRevision: typeof o.policyRevision === "string" ? o.policyRevision : "",
-    approvalMode: mode,
-    validFrom: typeof o.validFrom === "string" ? o.validFrom : "",
-    validUntil: typeof o.validUntil === "string" ? o.validUntil : "",
-    rules,
-    limits: {
-      maxRequests: n(l.maxRequests),
-      maxConcurrent: n(l.maxConcurrent),
-      outputLimit: n(l.outputLimit),
-      budgetRef: typeof l.budgetRef === "string" ? l.budgetRef : "",
-    },
-    auditBound: o.auditBound === true,
-    mock: o.mock === true,
-  };
-}
-
-// 예시 정책 — 승인된 origin·경로·메서드만, 비밀 값 없음(자격 헤더는 이름만). 평가/개발 대상(localhost).
-const MOCK_POLICY: ControlPolicy = {
-  policyRef: "pol-demo-0001",
-  policyRevision: "rev-7",
-  approvalMode: "workbench_selective_v1",
-  validFrom: "2026-11-01T00:00:00Z",
-  validUntil: "2026-12-31T00:00:00Z",
-  rules: [
-    {
-      ref: "rule-app",
-      origin: "http://localhost:3000",
-      connectIp: "127.0.0.1",
-      pathPrefix: "/",
-      pathScopeRef: "scope-app-v1",
-      methods: ["GET", "HEAD"],
-      credentialHeaderNames: ["Authorization", "Cookie"],
-      tlsPinned: false,
-    },
-    {
-      ref: "rule-api",
-      origin: "http://localhost:3000",
-      connectIp: "127.0.0.1",
-      pathPrefix: "/api/",
-      pathScopeRef: "scope-api-v1",
-      methods: ["GET", "POST"],
-      credentialHeaderNames: ["Authorization"],
-      tlsPinned: false,
-    },
-  ],
-  limits: { maxRequests: 500, maxConcurrent: 2, outputLimit: 65536, budgetRef: "budget-demo-01" },
-  auditBound: true,
-  mock: true,
+// ── 닫힌 파서: 응답은 untrusted(절대규칙 4). 모르는 키 · 빠진 칸 · 모르는 enum 은 규칙 하나만 버리지 않고 응답 전체를
+//    거부한다 — 일부만 보이면 승인 범위가 실제보다 좁거나 넓게 읽힌다.
+const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+const natural = (v: unknown): v is number => Number.isSafeInteger(v) && Number(v) >= 0;
+const text = (v: unknown): v is string => typeof v === "string";
+const filled = (v: unknown): v is string => typeof v === "string" && v.length > 0;
+/** Go time.Time 의 JSON(RFC3339, 소수 초 · 시간대 포함 가능). */
+const instant = (v: unknown): v is string =>
+  typeof v === "string" &&
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.test(v) &&
+  Number.isFinite(Date.parse(v));
+const strings = (v: unknown): v is string[] => Array.isArray(v) && v.every(filled);
+const invalid = (): never => {
+  throw new ApiError(422, "invalid_control_policy_contract");
 };
+function exact(v: Record<string, unknown>, required: readonly string[], optional: readonly string[] = []) {
+  const keys = Object.keys(v);
+  if (keys.some((k) => !required.includes(k) && !optional.includes(k)) || required.some((k) => !(k in v))) invalid();
+}
+const has = <T extends string>(labels: Record<T, string>, v: unknown): v is T =>
+  typeof v === "string" && Object.hasOwn(labels, v);
+
+function parseRule(v: unknown): PolicyRule {
+  if (!object(v)) return invalid();
+  exact(
+    v,
+    ["ref", "purpose", "origin", "connect_ip", "path_prefix", "path_scope_ref", "methods", "tls_pinned"],
+    ["path_match"],
+  );
+  if (
+    !filled(v.ref) ||
+    (v.purpose !== "" && v.purpose !== "auth_prep") ||
+    !text(v.origin) ||
+    !/^https?:\/\/[^/?#\s]+$/.test(v.origin) ||
+    !text(v.connect_ip) ||
+    !text(v.path_prefix) ||
+    !v.path_prefix.startsWith("/") ||
+    !text(v.path_scope_ref) ||
+    !strings(v.methods) ||
+    !v.methods.every((m) => /^[A-Z]+$/.test(m)) ||
+    typeof v.tls_pinned !== "boolean" ||
+    ("path_match" in v && v.path_match !== "exact")
+  )
+    return invalid();
+  return {
+    ref: v.ref,
+    purpose: v.purpose,
+    origin: v.origin,
+    connectIp: v.connect_ip,
+    pathMatch: v.path_match === "exact" ? "exact" : "prefix",
+    pathPrefix: v.path_prefix,
+    pathScopeRef: v.path_scope_ref,
+    methods: [...v.methods],
+    tlsPinned: v.tls_pinned,
+  };
+}
+
+function parseLimits(v: unknown): PolicyLimits {
+  if (!object(v)) return invalid();
+  const keys = [
+    "max_requests",
+    "max_attempts",
+    "max_concurrent",
+    "max_body_bytes",
+    "max_response_body_bytes",
+    "request_timeout_ms",
+  ] as const;
+  exact(v, keys);
+  if (!keys.every((k) => natural(v[k]))) return invalid();
+  const n = (k: (typeof keys)[number]) => v[k] as number;
+  return {
+    maxRequests: n("max_requests"),
+    maxAttempts: n("max_attempts"),
+    maxConcurrent: n("max_concurrent"),
+    maxBodyBytes: n("max_body_bytes"),
+    maxResponseBodyBytes: n("max_response_body_bytes"),
+    requestTimeoutMs: n("request_timeout_ms"),
+  };
+}
+
+/** 서버 응답(§3) → 표시용 정책. 모양이 계약과 다르면 ApiError(422)로 거부한다(화면은 표시하지 않음). */
+export function parseControlPolicy(v: unknown): ControlPolicy {
+  if (!object(v)) return invalid();
+  exact(
+    v,
+    [
+      "format",
+      "policy_ref",
+      "policy_revision",
+      "approval_mode",
+      "header_mode",
+      "valid_from",
+      "valid_until",
+      "rules",
+      "limits",
+      "accounts",
+      "audit_bound",
+    ],
+    ["policy_fingerprint_sha256"],
+  );
+  if (
+    v.format !== CONTROL_POLICY_FORMAT ||
+    !filled(v.policy_ref) ||
+    !text(v.policy_revision) ||
+    ("policy_fingerprint_sha256" in v &&
+      !(text(v.policy_fingerprint_sha256) && /^[0-9a-f]{64}$/.test(v.policy_fingerprint_sha256))) ||
+    !has(APPROVAL_LABEL, v.approval_mode) ||
+    !has(HEADER_MODE_LABEL, v.header_mode) ||
+    !instant(v.valid_from) ||
+    !instant(v.valid_until) ||
+    !Array.isArray(v.rules) ||
+    !strings(v.accounts) ||
+    typeof v.audit_bound !== "boolean"
+  )
+    return invalid();
+  return {
+    policyRef: v.policy_ref,
+    policyRevision: v.policy_revision,
+    fingerprint: text(v.policy_fingerprint_sha256) ? v.policy_fingerprint_sha256 : null,
+    approvalMode: v.approval_mode,
+    headerMode: v.header_mode,
+    validFrom: v.valid_from,
+    validUntil: v.valid_until,
+    rules: v.rules.map(parseRule),
+    limits: parseLimits(v.limits),
+    accounts: [...v.accounts],
+    auditBound: v.audit_bound,
+  };
+}
 
 /**
- * 전송 통제 정책(표시용). 지금은 예시(mock). 실 투영 API 연결 시 이 함수만 교체한다(normalizePolicy 로 감싸서).
- * _taskRef 는 지금 안 쓰지만, 실 연결 때 대상/회차 정책을 고르는 키가 된다.
+ * 그 task 실행에 결속된 전송 통제 정책. task 는 현재 Job 응답의 task_id(정규 양의 정수 문자열)만 받는다.
+ * 404 = 실행이 아직 결속 전, 409 = 정책 파일이 결속 지문과 다름(§3). 오류는 ApiError 그대로 던진다(빈 정책으로 바꾸지 않음).
  */
-export async function getControlPolicy(_taskRef?: string | null): Promise<ControlPolicy> {
-  return MOCK_POLICY;
+export async function getControlPolicy(task: string, signal?: AbortSignal): Promise<ControlPolicy> {
+  if (!/^[1-9][0-9]*$/.test(task) || !Number.isSafeInteger(Number(task))) return invalid();
+  return parseControlPolicy(
+    await apiFetch<unknown>(
+      `/api/tasks/${encodeURIComponent(task)}/control-policy`,
+      { cache: "no-store", redirect: "error", signal },
+      false,
+    ),
+  );
 }
