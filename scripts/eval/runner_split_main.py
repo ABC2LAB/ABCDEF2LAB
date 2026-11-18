@@ -45,6 +45,7 @@ class SplitDeclared:
     request_budget: int
     time_budget_seconds: int
     llm_provider: str = ""
+    meter_source_sha: str = ""  # 사전검사 선언의 개선 후 source_sha(계측기 기대 빌드)
     # B 게이트웨이가 넣는 샘플링(선언 §6). O 표식의 실제로 보낸 값과 대조한다.
     llm_sampling: dict | None = None
 
@@ -73,7 +74,8 @@ def split_declared(config: RunnerConfig, preflight: object, manifest: dict) -> S
         raise RunnerConfigError(errors)
     return SplitDeclared(target_image=Image(declared["target_image"], config.target_image_id), meter_port=origin.port,
                          request_budget=declared["request_budget"], time_budget_seconds=declared["time_budget_seconds"],
-                         llm_provider=llm["provider"], llm_sampling=json.loads(gateway_sampling(declared, POLICY_SWITCH_SIDE)))
+                         llm_provider=llm["provider"], llm_sampling=json.loads(gateway_sampling(declared, POLICY_SWITCH_SIDE)),
+                         meter_source_sha=declared["source_sha"])
 
 
 def llm_lookup_env(config: RunnerConfig, preflight: dict) -> dict[str, str]:
@@ -98,7 +100,7 @@ def split_run_spec(config: RunnerConfig, plan: SplitPlan, declared: SplitDeclare
         task_status_wait_seconds=config.run["task_create_timeout_seconds"], healthchecks=healthcheck_actions(rendered),
         product_close_seconds=config.split.task_wait_seconds, post_settle_seconds=config.run["post_settle_seconds"],
         llm_sampling=declared.llm_sampling, llm_provider_slug=declared.llm_provider,
-        llm_provider_name=config.llm_gateway["expected_provider_name"])
+        llm_provider_name=config.llm_gateway["expected_provider_name"], meter_source_sha=declared.meter_source_sha)
 
 
 def run_split_ours(config: RunnerConfig, preflight: object, *, docker_runner=run_docker, environ=None,
