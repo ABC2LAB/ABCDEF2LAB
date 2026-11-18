@@ -110,6 +110,7 @@ class FakeMeter:
     """분리 배치 계측기 bind 흉내. 경로 기록은 늘 켜져 있다(compose.split.yaml)."""
 
     def __init__(self, ports):
+        self.request_cap = 10
         self.ports = ports
         self.path_log = True
         self.path_key_ref = PATH_KEY_REF
@@ -124,8 +125,9 @@ class FakeMeter:
         if name == "engine-sealed.json":
             return self.sealed
         self.ports.calls.append("meter:drained")
+        # 계측기 하드 상한: 기본 시험 계획의 공통 요청 예산(10)이 계측기에 걸린 모양이다.
         return {"inflight_at_drain": 0, "log_complete": self.log_complete, "forced_cancelled_requests": self.ports.forced,
-                "forwarded_requests": self._total()}
+                "forwarded_requests": self._total(), "request_cap": self.request_cap, "rejected_over_cap": 0}
 
     def _total(self):
         return max(self.ports.forwarded, self.ports.forced)  # 강제 취소된 요청도 전달 행이다
@@ -1088,6 +1090,42 @@ class TestProductFaultStall(unittest.TestCase):
                                           "error": "fault_stall_rows_invalid"})
         record = product_fault_stall(b"", [], "2026-11-18T10:00:10Z", "2026-11-18T10:00:00Z", {})
         self.assertEqual(record["error"], "fault_stall_time_invalid")  # 창이 거꾸로면 B와 같은 코드
+
+
+
+class TestRequestCap(unittest.TestCase):
+    """O도 B와 같은 검사(runner.check_request_cap): 계측기 상한이 이 회차 예산이고 전달이 넘지 않았어야 한다."""
+
+    def test_cap_must_be_the_budget_and_hold(self):
+        result, _, _ = run()
+        self.assertEqual(result["status"], "complete", result)
+        self.assertEqual((result["drained"]["request_cap"], result["drained"]["rejected_over_cap"]), (10, 0))
+        for cap in (0, 9, 11):
+            with self.subTest(cap=cap):
+                result, _, _ = run_with_meter(lambda m, c=cap: setattr(m, "request_cap", c))
+                self.assertEqual((result["status"], result["reasons"]), ("invalid", ["meter_request_cap_mismatch"]))
+        def overshoot(ports):  # 시작 뒤 계측기가 예산보다 많이 전달한 모양(상한이 깨진 계측기)
+            original = ports.start_round
+
+            def start(prepared):
+                out = original(prepared)
+                ports.forwarded = 12
+                return out
+            ports.start_round = start
+        result, _, _ = run_with_meter(lambda m: setattr(m, "request_cap", 10), overshoot)
+        self.assertEqual((result["status"], result["reasons"]), ("invalid", ["meter_request_cap_exceeded"]))
+
+
+def run_with_meter(mutate_meter, mutate_ports=None):
+    clock = FakeClockState()
+    ports = FakePorts(clock)
+    if mutate_ports:
+        mutate_ports(ports)
+    meter = FakeMeter(ports)
+    mutate_meter(meter)
+    evidence = FakeEvidence()
+    result = execute_split_run(spec(), ports, meter, evidence, clock.clock())
+    return result, ports, evidence
 
 
 if __name__ == "__main__":

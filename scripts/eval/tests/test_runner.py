@@ -133,6 +133,10 @@ class FakeMeter:
         self.path_log = False
         self.path_rows_error = None
         self.path_rows_seen = None
+        # 계측기 요청 하드 상한(-request-cap): 실제 계측기처럼 전달은 예산에서 멈추고 넘친 몫은 상한 거부로 센다.
+        # uncapped는 상한이 안 걸린 계측기, cap_marker는 표식에 적힌 상한 값을 바꿔 보는 시험용이다.
+        self.uncapped = False
+        self.cap_marker = None
         self.path_key_ref = PATH_KEY_REF
         # 가짜 E²(compose.e2-stub.yaml) 결정 행. 회차가 E²를 기대할 때만 읽는다. 기본은 허용 2·미지원 1이고,
         # 허용 둘의 ID는 계측기 행(engine_rows의 앞 두 요청)에 붙는다.
@@ -142,8 +146,12 @@ class FakeMeter:
         self.e2_error = None
         self.e2_reads = 0
 
-    def _forwarded(self):
+    def _raw(self):
         return self.pre_forwarded if not self.ports.started else min(self.polls * self.per_poll, 10**6)
+
+    def _forwarded(self):
+        raw = self._raw()
+        return raw if not self.ports.started or self.uncapped else min(raw, self.ports.spec.request_budget)
 
     def forwarded(self):
         if self.ports.started:
@@ -194,7 +202,10 @@ class FakeMeter:
             return None
         if name == "engine-drained.json":
             forwarded = self._forwarded() if self.drained_forwarded is None else self.drained_forwarded
-            return dict(self.drained, forwarded_requests=forwarded)
+            cap = 0 if self.uncapped else self.ports.spec.request_budget
+            return dict(self.drained, forwarded_requests=forwarded,
+                        request_cap=cap if self.cap_marker is None else self.cap_marker,
+                        rejected_over_cap=max(0, self._raw() - self._forwarded()))
         return {"role": "engine", "sealed_at": "t"}
 
 
@@ -1448,16 +1459,27 @@ class TestCompleteRun(unittest.TestCase):
         self.assertLess(elapsed, summary["time_budget_seconds"] + 100)
         self.assertEqual(result["status"], COMPLETE)
 
-    def test_request_budget_overshoot_recorded_not_hidden(self):
+    def test_request_cap_holds_and_over_cap_rejections_are_recorded(self):
+        # 계측기 하드 상한: 몰아 보내도(폴링 사이 35건) 전달은 예산 100에서 멈추고 넘친 5건은 상한 거부로 남는다.
         result, _, _, evidence = run(lambda p, m, c: setattr(m, "per_poll", 35))
         summary = evidence.files["meter-summary.json"]
         self.assertEqual((summary["stop_reason"], summary["forwarded_requests"], summary["request_budget"],
-                          summary["over_budget"]), ("request_budget", 105, 100, 5))
+                          summary["over_budget"], summary["rejected_over_cap"]), ("request_budget", 100, 100, 0, 5))
         self.assertEqual(summary["rejected_after_seal"], 2)
         self.assertEqual(result["meter"], summary)
         # 표로 나가는 메서드별 건수는 계측기 행에서 세고 전달 수와 맞아야 한다(프로토콜 §8.1)
         self.assertEqual(sum(summary["forwarded_by_method"].values()), summary["forwarded_requests"])
-        self.assertEqual(summary["forwarded_by_method"]["GET"], 105)
+        self.assertEqual(summary["forwarded_by_method"]["GET"], 100)
+
+    def test_meter_without_the_cap_invalidates_the_round(self):
+        # 상한이 계측기에 닿지 않았거나(표식 0·다른 값) 전달이 예산을 넘었으면 같은 기준에서 끊었다고 말할 수 없다.
+        for mutate, reason in ((lambda p, m, c: setattr(m, "cap_marker", 0), "meter_request_cap_mismatch"),
+                               (lambda p, m, c: setattr(m, "cap_marker", 99), "meter_request_cap_mismatch"),
+                               (lambda p, m, c: (setattr(m, "per_poll", 35), setattr(m, "uncapped", True),
+                                                 setattr(m, "cap_marker", 100)), "meter_request_cap_exceeded")):
+            with self.subTest(reason=reason):
+                result, _, _, _ = run(mutate)
+                self.assertEqual((result["status"], result["reasons"]), (INVALID, [reason]))
 
     def test_time_budget_stop(self):
         result, _, meter, evidence = run(lambda p, m, c: setattr(m, "per_poll", 0))
