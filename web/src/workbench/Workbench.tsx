@@ -25,6 +25,7 @@ import {
   RunningByMode,
   ScopeByMode,
 } from "./views/live/byMode";
+import { PolicyDeclarationLive } from "./views/live/PolicyDeclarationLive";
 import { UrlAccessMapLive } from "./views/live/UrlAccessMapLive";
 import { UrlAssetsLive } from "./views/live/UrlAssetsLive";
 import { UrlControlPolicyLive } from "./views/live/UrlControlPolicyLive";
@@ -381,6 +382,7 @@ export function Workbench() {
             {section("e2flow", pick("전송 통제 흐름", <UrlE2FlowLive />))}
             {section("controlpolicy", pick("전송 통제 정책", <UrlControlPolicyLive />))}
             {section("classify", pick("계정 분류", <AccountClassifyLive />))}
+            {section("declaration", pick("정책 선언", <PolicyDeclarationLive />))}
             {section("scope", pick("범위 확인", <ScopeByMode />))}
             {section("live", pick("점검 진행", <LiveByMode />))}
             {section("report", pick("보고서", <ReportByMode />))}

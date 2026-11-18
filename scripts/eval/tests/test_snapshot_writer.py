@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import synthetic_gt  # noqa: E402,F401  합성 정답 목록을 먼저 끼운다(정답표 노출 방지)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from dataclasses import replace
@@ -248,7 +249,7 @@ class TestSnapshotWriter(unittest.TestCase):
 
 class TestSnapshotWriterReader(_RunDir):
     def test_written_pre_post_are_accepted_by_signed_record_validator(self):
-        run = self.make_run("r0", [], solved={"basketAccessChallenge": True})
+        run = self.make_run("r0", [], solved={"synthBacH1Challenge": True})
         receipt = self.fixture.receipt(run)
         context = SnapshotContext(**{field: receipt[field] for field in SnapshotContext.__dataclass_fields__})
         root = Path(self._path(run["run_record_path"])).parent
@@ -260,9 +261,9 @@ class TestSnapshotWriterReader(_RunDir):
             run[manifest_field] = str(root / result.normalized["path"])
         self.fixture._write_receipt(run, receipt)
         inputs = load_run_inputs(self.load([run])[0], self.runner_key, self.correlate)
-        self.assertFalse(inputs.pre["basketAccessChallenge"])
-        self.assertTrue(inputs.post["basketAccessChallenge"])
-        self.assertIn("basketAccessChallenge", inputs.engine_solved)
+        self.assertFalse(inputs.pre["synthBacH1Challenge"])
+        self.assertTrue(inputs.post["synthBacH1Challenge"])
+        self.assertIn("synthBacH1Challenge", inputs.engine_solved)
         code, out, _ = self.run_main([run])
         self.assertEqual(code, 0)
         self.assertIn("코어 GT", out)

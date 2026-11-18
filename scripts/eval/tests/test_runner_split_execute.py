@@ -5,8 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from pathlib import Path
 import sys
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -19,7 +21,8 @@ from runner_window import WatchSample  # noqa: E402
 from test_runner import FakeEvidence  # noqa: E402
 
 IDS = {"eval-meter": "m" * 64, "explore-boundary": "b" * 64, "preparation": "p" * 64, "target": "t" * 64}
-IMAGES = {"product": "sha256:" + "1" * 64, "meter": "sha256:" + "2" * 64, "explore_browser": "sha256:" + "3" * 64}
+IMAGES = {"product": "sha256:" + "1" * 64, "meter": "sha256:" + "2" * 64, "explore_browser": "sha256:" + "3" * 64,
+          "fixture": "sha256:" + "4" * 64, "target": "sha256:" + "5" * 64}
 FINGERPRINT = "f" * 64
 LIMITS = {"max_requests": 10, "max_attempts": 30, "max_concurrent": 2, "max_body_bytes": 1024, "max_response_body_bytes": 1024,
           "request_timeout_ms": 1000}
@@ -56,7 +59,8 @@ LLM_SLUG, LLM_NAME = "example-provider", "Example"
 def product_marker(**overrides):
     """제품 호출 기록 사후 검증 표식(eval-meter -role generation-verify). 게이트웨이 표식과 같은 모양, 거부 두 칸은 null."""
     generation = {"id": "gen-1", "status": "verified", "provider_name": LLM_NAME,
-                  "attempts": [{"provider_name": LLM_NAME, "endpoint_id": "ep-1", "status": 200}]}
+                  "attempts": [{"provider_name": LLM_NAME, "endpoint_id": "ep-1", "status": 200}],
+                  "lookup": {"tries": 1, "last": "verified"}}
     base = {"role": "generation-verify", "backend": "api", "provider": LLM_SLUG, "sampling": dict(SAMPLING), "sealed_at": "a",
             "drained_at": "a", "verified_at": "b", "forwarded_requests": 2, "upstream_errors": 0,
             "upstream_error_ends": {"client_closed_after_done": 0, "client_closed_before_done": 0, "upstream_cut_after_done": 0,
@@ -312,6 +316,17 @@ class FakePorts:
         self._call("product_files")
         return dict(PRODUCT_FILES)
 
+    def split_conditions(self):
+        self._call("split_conditions")
+        return {"workflow_defaults_sha256": "a" * 64, "workflow_defaults": {}, "workflow": {}, "registration": {}}
+
+    def boundary_directory(self):
+        return Path("/runs/ours-1/boundary")
+
+    def sign(self, payload):
+        self._call("sign")
+        return dict(payload, signature="s")
+
     def runtime_conditions(self, draft_id):
         self._call("runtime_conditions")
         self.files_args.append(draft_id)
@@ -420,6 +435,31 @@ class TestOrder(unittest.TestCase):
             with self.subTest(wrong=wrong):
                 self.assertEqual((result["status"], result["reasons"]), ("invalid", ["tool_surface_image_mismatch"]))
                 self.assertNotIn("up", ports.calls)
+
+    def test_official_e3_share_must_be_present_and_zero(self):
+        # 공식 측정 E③ 비활성(평가 프로토콜 §5.1, 2026-11-18 합의): 그 회차 E② 정책의 확정 몫 칸이 있고 0이어야 한다.
+        from runner_split_run import RunFailure, check_official_e3_share, checked_control_policy
+
+        def view(**share):
+            return {"format": "abc2lab.control-policy-view/v1", "policy_ref": "policy-draft-1", "policy_revision": "v1",
+                    "policy_fingerprint_sha256": FINGERPRINT, "limits": dict(LIMITS, **share), "rules": []}
+        checked = checked_control_policy(view(e3_confirmation_requests=0, e3_confirmation_timeout_ms=0), "draft-1")
+        check_official_e3_share(checked["limits"])
+        self.assertEqual(checked["limits"]["e3_confirmation_timeout_ms"], 0)  # 근거·지문에 몫 칸도 남는다
+        for share, reason in (({}, "e3_share_unconfirmed"), ({"e3_confirmation_requests": 1, "e3_confirmation_timeout_ms": 0},
+                                                           "e3_share_not_zero"),
+                              ({"e3_confirmation_requests": 0, "e3_confirmation_timeout_ms": 5000}, "e3_share_not_zero")):
+            limits = checked_control_policy(view(**share), "draft-1")["limits"]
+            with self.subTest(share=share), self.assertRaises(RunFailure) as caught:
+                check_official_e3_share(limits)
+            self.assertEqual(caught.exception.code, reason)
+        for share in ({"e3_confirmation_requests": 0}, {"e3_confirmation_requests": -1, "e3_confirmation_timeout_ms": 0},
+                      {"e3_confirmation_requests": True, "e3_confirmation_timeout_ms": 0}):
+            with self.subTest(share=share), self.assertRaises(RunFailure) as caught:
+                checked_control_policy(view(**share), "draft-1")  # 몫 칸은 둘 다, 0 이상 정수로만
+            self.assertEqual(caught.exception.code, "control_policy_limits_invalid")
+        # 몫 칸이 없는 정책 보기(확정 몫 구현 전 빌드)도 보존 회차에서는 그대로 받는다
+        self.assertEqual(run()[0]["status"], "complete")
 
     def test_policy_and_run_conditions_are_bound_to_this_round(self):
         # #693 리뷰 ②: 다른 초안의 정책·다른 작업의 실행 조건·JSON 아닌 실행 조건을 받으면 무효다.
@@ -643,7 +683,8 @@ class TestInvalid(unittest.TestCase):
         self.assertEqual(evidence.files["llm-summary.json"]["reasons"], ["llm_sampling_mismatch"])
         self.assert_invalid("llm_provider_mismatch", lambda p: setattr(p, "marker", product_marker(generations=[
             {"id": "g", "status": "verified", "provider_name": "Other", "attempts": [{"provider_name": "Other", "endpoint_id": "e",
-                                                                                    "status": 200}]}])))
+                                                                                    "status": 200}],
+             "lookup": {"tries": 1, "last": "verified"}}])))
         # 게이트웨이 표식을 O 자리에 넣지 못한다
         # (모양이 온전한 게이트웨이 표식이어도 역할이 다르면 거부한다: 거부 두 칸이 0인 B 표식)
         self.assert_invalid("llm_marker_invalid", lambda p: setattr(p, "marker", product_marker(
@@ -795,6 +836,121 @@ class TestMeterLogParity(unittest.TestCase):
         # 정상이면 둘 다 완료
         self.assertEqual(b.run(lambda p, m, c: setattr(m, "path_log", True), spec=b_spec)[0]["status"], "complete")
         self.assertEqual(run()[0]["status"], "complete")
+
+
+
+class TestPreservationV3(unittest.TestCase):
+    """O 보존 sidecar v3 발행(결정안 §3.3): 칸을 모아 내린 뒤 빌드·서명한다. 공통 칸은 B와 같은 정의다."""
+
+    def v3_spec(self, **changes):
+        from test_preservation_record import options
+        values = dict(preservation=options(), purpose="official", model_tag="example-org/example-model",
+                      product_source_sha="b" * 40, drain_grace_seconds=5, host_watch_interval_seconds=2,
+                      driver_settings={"task_wait_seconds": 120, "poll_interval_seconds": 2, "registration_valid_hours": 4},
+                      model_budget_sha256="9" * 64, exploration_policy_sha256="8" * 64, repeat_index=1)
+        values.update(changes)
+        return values
+
+    def run_v3(self, mutate=None, **changes):
+        import runner_split_run as module
+        seen = {}
+
+        def capture(**kwargs):
+            seen.update(kwargs)
+            return {"format": "test-unsigned-v3"}
+        with mock.patch.object(module, "preservation_payload_v3", side_effect=capture):
+            result, ports, evidence = run(mutate, **self.v3_spec(**changes))
+        return result, ports, evidence, seen
+
+    def test_signed_sidecar_write_failure_is_a_fixed_reason(self):
+        # #710 리뷰: 서명 파일 저장이 실패해도(이미 있음·쓰기 실패) 예외가 빠져나가지 않고 고정 사유와 결과 기록을 남긴다.
+        from preservation_record import NAME
+        from runner_evidence import EvidenceError
+        from test_runner import FakeEvidence
+        original = FakeEvidence.write_json
+
+        def failing(self, name, payload):
+            if name == NAME:
+                raise EvidenceError("evidence_exists")
+            return original(self, name, payload)
+        with mock.patch.object(FakeEvidence, "write_json", failing):
+            result, ports, evidence, _ = self.run_v3()
+        self.assertEqual((result["status"], result["reasons"]), ("invalid", ["preservation_write_failed"]))
+        self.assertEqual(evidence.files[RESULT_NAME]["reasons"], ["preservation_write_failed"])  # 결과 기록은 남는다
+        self.assertNotIn(NAME, evidence.files)
+        self.assertIn("sign", ports.calls)
+
+    def test_parts_pass_the_v3_shape_and_are_signed_after_down(self):
+        import preservation_v3_fields as v3f
+        from preservation_record import FORMAT_V3, NAME, _validate_v3
+        result, ports, evidence, seen = self.run_v3()
+        self.assertEqual(result["status"], "complete", result)
+        self.assertLess(ports.calls.index("down"), ports.calls.index("sign"))
+        self.assertEqual(evidence.files[NAME], {"format": "test-unsigned-v3", "signature": "s"})
+        self.assertEqual(seen["boundary"], {"directory": Path("/runs/ours-1/boundary"), "task_id": "42", "path_key_ref": PATH_KEY_REF})
+        self.assertEqual((seen["side"], seen["repeat_index"], seen["purpose"], seen["engine_image_id"]),
+                         ("ours", 1, "official", IMAGES["product"]))
+        common, side, run_block, product = seen["common"], seen["side_conditions"], seen["run"], seen["product"]
+        self.assertEqual(set(common), set(__import__("preservation_record").COMMON_FIELDS_V3))
+        self.assertEqual(common["model_pin_sha256"], v3f.model_pin_sha256(
+            backend="api", model="example-org/example-model", provider_slug=LLM_SLUG, provider_name=LLM_NAME,
+            sampling=SAMPLING, serving=None))  # B와 같은 정의(게이트웨이 대신 제품이 실제로 보낸 샘플링)
+        self.assertEqual((side["layout"], side["browser_image_id"], side["diagnosis_policy_sha256"], side["exploration_policy_sha256"]),
+                         ("exploration-split/v1", IMAGES["explore_browser"], FINGERPRINT, "8" * 64))
+        self.assertEqual(run_block["end_signal"]["closing_reason"] if run_block["end_signal"] else None, None)
+        self.assertEqual(product["call_records"], {"reservations": 2, "lines": 2})
+        self.assertEqual(set(product["image_ids"]), {"product", "explore_browser", "fixture"})
+        payload = {"format": FORMAT_V3, **{k: seen[k] for k in ("purpose", "series_ref", "run_id", "side", "repeat_index",
+                   "engine_source_sha", "engine_image_id", "execution_source", "common", "side_conditions", "run", "product")},
+                   "files": {name: {"sha256": "0" * 64, "bytes": 0} for name in ("engine-requests.jsonl", "engine-paths.jsonl",
+                                                                              "engine-sealed.json", "engine-drained.json")},
+                   "forwarded_by_ingress": {"main": 0, "explore": 0},
+                   "exploration_boundary": {"status": "complete"}}
+        payload["common"] = dict(common, initial_state_sha256="5" * 64)
+        try:
+            _validate_v3(payload)
+        except Exception as exc:  # 경계 블록 모양은 빌더가 채운다. 칸 모양 오류만 실패로 본다
+            self.assertNotIn(str(exc), {"preservation_conditions_invalid", "preservation_side_invalid", "preservation_run_invalid",
+                                        "preservation_product_invalid", "preservation_record_invalid"}, str(exc))
+
+    def test_runner_settings_digest_matches_the_b_definition(self):
+        # 공통 러너 설정 칸은 B와 같은 이름·같은 값이면 같은 지문이다(짝 대조, 결정안 §3.3).
+        import preservation_v3_fields as v3f
+        _, _, _, seen = self.run_v3()
+        values = {name: getattr(spec(**self.v3_spec()), name) for name in v3f.COMMON_RUNNER_SETTINGS}
+        self.assertEqual(seen["common"]["runner_settings_sha256"], v3f.settings_sha256(values, v3f.COMMON_RUNNER_SETTINGS))
+
+    def test_product_end_signal_keeps_the_closing_reason(self):
+        # O 끝 신호는 제품 초안 끝 상태다(B는 closing_reason null). 예산 마감 사유가 회차별 칸에 남는다.
+        def closing(ports):
+            ports.statuses = [{"id": "draft-1", "state": "running"},
+                              {"id": "draft-1", "state": "completed", "closing_reason": "budget_limited", "outcome": "partial"}]
+        _, _, _, seen = self.run_v3(closing)
+        self.assertEqual(seen["run"]["end_signal"]["closing_reason"], "budget_limited")
+
+    def test_round_without_diagnosis_publishes_null_run_conditions(self):
+        def not_entered(ports):
+            ports.record["run"].pop("execution")
+        result, _, _, seen = self.run_v3(not_entered)
+        self.assertEqual(result["status"], "complete", result)
+        self.assertIsNone(seen["product"]["file_sha256"]["runtime_conditions"])
+
+    def test_build_and_sign_failures_invalidate(self):
+        import runner_split_run as module
+        with mock.patch.object(module, "preservation_payload_v3", side_effect=ValueError("x")):
+            result, _, _ = run(None, **self.v3_spec())
+        self.assertEqual(result["reasons"], ["preservation_record_failed"])
+
+        def broken_sign(ports):
+            ports.fail["sign"] = OSError("key")
+        result, _, evidence, _ = self.run_v3(broken_sign)
+        self.assertEqual(result["reasons"], ["preservation_sign_failed"])
+        from preservation_record import NAME
+        self.assertNotIn(NAME, evidence.files)
+        # 보존 옵션이 없으면 발행하지 않는다
+        plain, ports, evidence = run()
+        self.assertNotIn("sign", ports.calls)
+        self.assertNotIn(NAME, evidence.files)
 
 
 if __name__ == "__main__":

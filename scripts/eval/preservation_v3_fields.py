@@ -19,6 +19,11 @@ COMMON_RUNNER_SETTINGS = ("poll_seconds", "drain_timeout_seconds", "drain_grace_
 # B 쪽 구동 설정(쪽 안에서만 고정): 작업 요청 SHA·LLM 스트리밍·tmpfs 하한·worker·컨텍스트·LLM 검증 시한.
 B_DRIVER_SETTINGS = ("task_request_sha256", "llm_stream", "tmpfs_min_free_bytes", "worker_count", "context_window_k",
                      "llm_verify_timeout_seconds")
+# O 쪽 구동 설정(쪽 안에서만 고정, 결정안 §3.3): 작업 번호 대기·상태 폴링 간격·등록 유효 시간.
+O_DRIVER_SETTINGS = ("task_wait_seconds", "poll_interval_seconds", "registration_valid_hours")
+# O 모델 예산 선언(결정안 §3.3): 제품 설치 예산 값만. 설치마다 바뀌는 유효 시각·승인 ID는 넣지 않는다.
+MODEL_BUDGET_FIELDS = ("max_requests", "max_input_tokens", "max_output_tokens", "max_cost_usd_micros",
+                       "max_input_tokens_per_call", "max_output_tokens_per_call")
 # 쪽별 구동 코드: B는 원본 엔진 API를 직접 부르는 모듈, O는 제품 API 구동 모듈.
 B_DRIVER_FILES = ("runner_engine.py",)
 O_DRIVER_FILES = ("runner_product.py",)
@@ -31,6 +36,19 @@ def driver_sha256(names: Sequence[str], root: Path = EVAL_DIR) -> str:
 
 def settings_sha256(values: Mapping, names: Sequence[str]) -> str:
     return digest({name: values[name] for name in names})
+
+
+def model_pin_sha256(*, backend: str, model: str, provider_slug: str, provider_name: str, sampling, serving) -> str:
+    """공통 대조 칸 model_pin_sha256. B(게이트웨이 적용 샘플링)·O(제품이 실제로 보낸 샘플링)가 같은 정의로 뜬다."""
+    return digest({"backend": backend, "model": model, "provider_slug": provider_slug, "provider_name": provider_name,
+                   "sampling": sampling, "serving": serving})
+
+
+def model_budget_sha256(manifest: Mapping) -> str | None:
+    """O 모델 예산 선언 지문(제품 설치 예산 값만). 칸이 빠졌거나 양의 정수가 아니면 None(호출자가 설정 오류로 막는다)."""
+    if any(type(manifest.get(name)) is not int or manifest[name] <= 0 for name in MODEL_BUDGET_FIELDS):
+        return None
+    return digest({name: manifest[name] for name in MODEL_BUDGET_FIELDS})
 
 
 def end_signal(first_terminal: dict | None, *, product: bool) -> dict | None:

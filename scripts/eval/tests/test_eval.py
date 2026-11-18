@@ -15,6 +15,7 @@ import unittest
 
 # 같은 패키지(scripts/eval)의 모듈을 import 경로에 올린다.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import synthetic_gt  # noqa: E402,F401  합성 정답 목록을 먼저 끼운다(정답표 노출 방지)
 
 from aggregate import (  # noqa: E402
     Bucket,
@@ -55,14 +56,14 @@ class TestGroundTruth(unittest.TestCase):
         self.assertEqual(sum(1 for c in bac_category() if c.in_core_gt), 7)
 
     def test_register_and_export_are_core_not_bac(self):
-        for key in ("registerAdminChallenge", "dataExportChallenge"):
+        for key in ("synthAuthzV1Challenge", "synthAuthzH1Challenge"):
             ch = by_key(key)
             self.assertIsNotNone(ch)
             self.assertTrue(ch.in_core_gt)
             self.assertFalse(ch.in_bac_category)
 
     def test_business_flow_excluded_from_both(self):
-        for key in ("negativeOrderChallenge", "freeDeluxeChallenge", "deprecatedInterfaceChallenge"):
+        for key in ("synthFlowBf1Challenge", "synthFlowBf2Challenge", "synthFlowBf3Challenge"):
             ch = by_key(key)
             self.assertIsNotNone(ch)
             self.assertFalse(ch.in_core_gt)

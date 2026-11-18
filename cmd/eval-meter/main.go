@@ -263,7 +263,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		handler, finish = o, o.close
 	case roleGateway:
-		g, code := newLLMGateway(dir, gatewayCfg, defaultUpstreamTransport(), time.Now, time.Sleep)
+		g, code := newRunningGateway(dir, gatewayCfg)
 		if code != "" {
 			return fail(stderr, code)
 		}
@@ -446,7 +446,7 @@ func generationVerifyFromFlags(upstream, provider, generationPath string, attemp
 		attempts >= 1 && attempts <= maxVerifyAttempts && interval > 0 && interval <= maxVerifyInterval && validKey(key)
 	client := &http.Client{Transport: defaultUpstreamTransport(), Timeout: generationLookupTimeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	return generationVerifier{upstream: u, path: generationPath, key: key, attempts: attempts, interval: interval, client: client, sleep: time.Sleep}, ok
+	return generationVerifier{upstream: u, path: generationPath, key: key, attempts: attempts, interval: interval, client: client, sleep: time.Sleep, now: time.Now}, ok
 }
 
 // parseGatewayUpstream accepts a bare origin; the gateway forwards the

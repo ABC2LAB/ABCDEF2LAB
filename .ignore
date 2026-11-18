@@ -1,0 +1,3 @@
+# ripgrep 기반 검색(Claude Code 세션의 Grep·Glob, 탐색 에이전트)에서 빼는 경로. git 추적은 그대로다.
+# 평가 정답(GT)은 채점·집계에만 쓰고 탐색·판정·시나리오 입력에 넣지 않는다(CLAUDE.md 절대 규칙 7). 일반 grep·git grep은 막지 못한다.
+/evaluation-gt/

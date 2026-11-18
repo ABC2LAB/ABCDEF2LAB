@@ -1,6 +1,7 @@
 package diagnosisflow
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -333,6 +334,7 @@ func TestModelEndpointListByteCap(t *testing.T) {
 			}
 			path := "/read/" + strings.Repeat("p", 90) + "/" + strconv.Itoa(i)
 			if direct {
+				path = "/read/" + strings.Repeat("p", 300) + "/" + strconv.Itoa(i)
 				// 공개 목록 상한보다 많은 고른 끝점(앞으로 개수 상한을 올릴 때)을 흉내 낸다.
 				c.record.Snapshot.Endpoints = append(c.record.Snapshot.Endpoints, Endpoint{ID: endpointID(c.origin, "GET", path), Method: "GET", Path: path, Kind: "request", Source: source, InScope: true, Change: "attested_read", Selected: true, QueryKeys: names})
 				continue
@@ -373,22 +375,19 @@ func TestModelEndpointListByteCap(t *testing.T) {
 		t.Fatalf("small list must be unchanged: %v", rows)
 	}
 
-	// 공개 목록이 투영 바이트에 닿을 때까지(이전 개수 상한 64보다 많이) 고르면, 모델 목록은 뒤쪽 이름 목록부터 덜고
-	// 그래도 넘치는 행만 빼며 뺀 수를 지시에 적는다(MaxSelectedDataBytes는 측정으로 다시 정할 항목).
+	// 공개 목록이 투영 바이트에 닿을 때까지(이전 개수 상한 64보다 많이) 고르면, 모델 목록 상한이 공개 투영과 같아
+	// 행은 전부 남는다(§5 결정). 공개 상한 밖에서 붙인 큰 이름 목록만 뒤쪽부터 덜어 낸다.
 	full, _ := flowFixture(t, Auto)
 	full.binding.Limits.MaxEndpoints = MaxWorkflowEndpoints
 	added := selected(full, MaxWorkflowEndpoints, false)
 	rows := rowsOf(full)
 	t.Logf("public list at byte cap: %d endpoints (100-byte paths), model rows %d", added, len(rows))
-	if added <= 64 || len(rows) == 0 || len(rows) > added || rows[len(rows)-1]["query_keys"] != nil {
-		t.Fatalf("byte-capped list: added=%d rows=%d last keys=%v", added, len(rows), rows[len(rows)-1]["query_keys"] != nil)
-	}
-	if left := added - len(rows); left > 0 != strings.Contains(full.Instructions(), strconv.Itoa(left)+" more selected endpoints were left out") {
-		t.Fatalf("model omission not reported: added=%d rows=%d", added, len(rows))
+	if added <= 64 || len(rows) != added || rows[len(rows)-1]["query_keys"] != nil || strings.Contains(full.Instructions(), "left out") {
+		t.Fatalf("byte-capped public list must reach the model whole: added=%d rows=%d last keys=%v", added, len(rows), rows[len(rows)-1]["query_keys"] != nil)
 	}
 	observedFirst(rows)
 
-	// 그보다 많으면 뒤쪽(추정) 행을 빼고 지시에 뺀 수를 적는다.
+	// 공개 상한을 거치지 않은 목록(방어): 모델 상한보다 크면 뒤쪽(추정) 행을 빼고 지시에 뺀 수를 적는다.
 	many, _ := flowFixture(t, Auto)
 	selected(many, 256, true)
 	rows = rowsOf(many)
@@ -405,6 +404,48 @@ func TestModelEndpointListByteCap(t *testing.T) {
 		t.Fatalf("snapshot model_omitted=%d want %d", recorded, omitted)
 	}
 	observedFirst(rows)
+
+	// 모델에 나가는 데이터는 가린 뒤 바이트로 상한을 잰다(#685 이동찬 리뷰). 가림이 값을 늘리면(여기서는 경로 조각을
+	// 더 긴 글로 바꿈) 행을 더 빼고, 지시 문장의 빠진 수와 끝점 참조도 같은 행 목록에서 나온다.
+	expand := func(b []byte) []byte { return bytes.ReplaceAll(b, []byte("p"), []byte("[REDACTED]")) }
+	instructions, data := full.ModelInput(expand)
+	var redactedRows []map[string]any
+	if len(data) > MaxSelectedDataBytes || json.Unmarshal([]byte(data), &redactedRows) != nil || len(redactedRows) == 0 {
+		t.Fatalf("redacted model data bytes=%d rows=%d", len(data), len(redactedRows))
+	}
+	if left := added - len(redactedRows); left <= 0 || !strings.Contains(instructions, strconv.Itoa(left)+" more selected endpoints were left out") {
+		t.Fatalf("redaction growth must trim rows and report them: added=%d rows=%d", added, len(redactedRows))
+	}
+	if strings.Count(instructions, "\"endpoint-") != len(redactedRows) {
+		t.Fatalf("instruction references must match the data rows: %d refs", strings.Count(instructions, "\"endpoint-"))
+	}
+	// 가림이 길이를 바꾸지 않으면 가림 없는 목록과 같다.
+	if _, same := full.ModelInput(func(b []byte) []byte { return b }); same != full.SelectedData() {
+		t.Fatal("identity redaction changed the model data")
+	}
+	// 반환하는 바이트 자체에 상한을 건다: 가림이 처음엔 빈 값을 주다가(원격 실패) 다음 호출에 큰 값을 주면 데이터를 주지
+	// 않는다. 가림이 늘 비거나 늘 상한을 넘어도 주지 않는다.
+	calls := 0
+	flaky := func(b []byte) []byte {
+		calls++
+		if calls == 1 {
+			return nil
+		}
+		return bytes.Repeat([]byte("x"), MaxSelectedDataBytes+1)
+	}
+	if _, got := full.ModelInput(flaky); got != "" {
+		t.Fatalf("checked and returned redactions differ: returned %d bytes", len(got))
+	}
+	if _, got := full.ModelInput(func([]byte) []byte { return nil }); got != "" {
+		t.Fatal("empty redaction passed as data")
+	}
+	if _, got := full.ModelInput(func([]byte) []byte { return bytes.Repeat([]byte("x"), MaxSelectedDataBytes+1) }); got != "" {
+		t.Fatal("oversized redaction passed as data")
+	}
+	// 가림 함수가 없으면 대상 데이터를 주지 않는다.
+	if text, none := full.ModelInput(nil); none != "" || !strings.Contains(text, "Selected endpoint references") {
+		t.Fatal("model data without redaction")
+	}
 }
 
 // 선택이 정해지는 실제 경로(자동 모드 크롤 종료, 수동 선택 명령)에서 모델 목록에서 빠진 고른 끝점 수가 회차 결과
@@ -415,7 +456,8 @@ func TestModelOmittedRecordedWhenSelectionSettles(t *testing.T) {
 		defer c.mu.Unlock()
 		var ids []string
 		for i := 0; i < 256; i++ {
-			path := "/read/" + strings.Repeat("p", 100) + "/" + strconv.Itoa(i)
+			// 공개 상한을 우회해 직접 넣어 모델 상한(공개 투영과 같음)을 넘긴다. 방어 장치의 기록을 본다.
+			path := "/read/" + strings.Repeat("p", 300) + "/" + strconv.Itoa(i)
 			id := endpointID(c.origin, "GET", path)
 			c.record.Snapshot.Endpoints = append(c.record.Snapshot.Endpoints, Endpoint{ID: id, Method: "GET", Path: path, Kind: "request", Source: "html_link", InScope: true, Change: "attested_read", Visited: true})
 			ids = append(ids, id)
