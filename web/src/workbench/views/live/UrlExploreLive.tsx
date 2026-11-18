@@ -5,11 +5,11 @@
 // ※ §4: 운영자 전용이다. 이 화면은 내보내기 · 공유 · 모델 입력에 넣지 않는다 → export 버튼을 두지 않는다.
 // ※ 탐색 경계 기록(§4 — 전달 · 차단 사유)은 서버 경로가 없어 이 화면에 두지 않는다(빈 칸으로도 만들지 않음).
 
+import type { CSSProperties } from "react";
 import { useMemo } from "react";
 
 import { observationErrorLabel, WORKFLOW_COUNT_LABEL, workflowSourceLabel } from "@/lib/diagnosis/coverage";
 
-import { cx } from "../../lib/cx";
 import {
   changeLabel,
   discoveriesFromWorkflow,
@@ -22,13 +22,44 @@ import { Icon } from "../../ui/icons";
 import s from "../../workbench.module.css";
 import { UrlHead } from "./urlParts";
 
-/** 수 칸 하나 (이름 + 값). */
+// ── 인라인 스타일(뼈대) — 전송 통제 정책 · 커버리지 화면과 같은 칩 · 테두리 상자. 색은 실재 workbench 토큰만.
+const chipRow: CSSProperties = { display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 };
+const chipBase: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 5,
+  padding: "3px 9px",
+  borderRadius: 999,
+  border: "1px solid",
+  fontSize: 12,
+};
+const neutralChip: CSSProperties = {
+  ...chipBase,
+  background: "var(--well)",
+  color: "var(--ink-2)",
+  borderColor: "var(--rule)",
+};
+const outChip: CSSProperties = {
+  ...chipBase,
+  background: "var(--mid-bg)",
+  color: "var(--mid)",
+  borderColor: "var(--mid)",
+};
+const plainList: CSSProperties = { listStyle: "none", margin: 0, padding: 0 };
+const itemBox: CSSProperties = {
+  marginTop: 10,
+  border: "1px solid var(--rule)",
+  borderRadius: 8,
+  padding: "10px 12px",
+};
+const itemHead: CSSProperties = { display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: 8 };
+
+/** 수 칩 하나 (이름 + 값). */
 function Stat({ label, value }: { label: string; value: number }) {
   return (
-    <div className={s.now}>
-      <span className={s.k}>{label}</span>
-      <b className={s.mono}>{value}</b>
-    </div>
+    <li style={neutralChip}>
+      {label} <b>{value}</b>
+    </li>
   );
 }
 
@@ -88,7 +119,7 @@ export function UrlExploreLive() {
             <section className={s.isec} aria-label="발견">
               <h2>발견</h2>
               <p className={s.help}>탐색이 찾은 경로입니다. 진단 결과나 확정 취약점이 아닙니다.</p>
-              <div className={s["crwl-top"]}>
+              <ul style={{ ...plainList, ...chipRow }} aria-label="발견 수">
                 <Stat label={WORKFLOW_COUNT_LABEL.found} value={counts.found} />
                 <Stat label={WORKFLOW_COUNT_LABEL.visited} value={counts.visited} />
                 <Stat label="범위 안" value={sum.inScope} />
@@ -97,7 +128,7 @@ export function UrlExploreLive() {
                 {sum.inferred ? <Stat label={EVIDENCE_LABEL.inferred} value={sum.inferred} /> : null}
                 {omitted ? <Stat label="목록에서 생략" value={omitted} /> : null}
                 {invalidPaths ? <Stat label={WORKFLOW_COUNT_LABEL.invalid_paths} value={invalidPaths} /> : null}
-              </div>
+              </ul>
               {flow?.detail_truncated || sum.listed < counts.found ? (
                 <p className={s.help}>
                   {`아래 목록은 서버가 화면에 준 ${sum.listed}개입니다. 발견 ${counts.found}개 전체가 아닐 수 있습니다.`}
@@ -106,12 +137,9 @@ export function UrlExploreLive() {
 
               <h3>출처</h3>
               {sum.bySource.length ? (
-                <ul className={s.policy} aria-label="출처별 발견">
+                <ul style={{ ...plainList, ...chipRow }} aria-label="출처별 발견">
                   {sum.bySource.map((r) => (
-                    <li key={r.source}>
-                      <span>{workflowSourceLabel(r.source)}</span>
-                      <b className={s.mono}>{r.count}</b>
-                    </li>
+                    <Stat key={r.source} label={workflowSourceLabel(r.source)} value={r.count} />
                   ))}
                 </ul>
               ) : (
@@ -120,22 +148,32 @@ export function UrlExploreLive() {
 
               <h3>발견 목록</h3>
               {list.length ? (
-                <ul className={s.policy} aria-label="발견 목록">
+                <ul style={plainList} aria-label="발견 목록">
                   {list.map((d) => (
-                    <li key={d.id}>
-                      <span className={cx(s.tag, d.inScope ? s.in : s.ex)}>{d.inScope ? "범위 안" : "범위 밖"}</span>
-                      <span className={s.mono}>
-                        {d.method} {d.path ?? "형식 밖 경로"}
-                      </span>
-                      <small>
+                    <li key={d.id} style={itemBox}>
+                      <div style={itemHead}>
+                        <span className={s.mono} style={{ fontWeight: 600, color: "var(--ink)" }}>
+                          {d.method} {d.path ?? "형식 밖 경로"}
+                        </span>
+                        <span style={d.inScope ? neutralChip : outChip}>{d.inScope ? "범위 안" : "범위 밖"}</span>
+                        {d.evidence ? <span style={neutralChip}>{EVIDENCE_LABEL[d.evidence]}</span> : null}
+                      </div>
+                      <p className={s.help}>
                         {stateText(d)} · {workflowSourceLabel(d.source)}
-                        {d.evidence ? ` (${EVIDENCE_LABEL[d.evidence]})` : ""}
                         {d.from ? ` · 발견 위치 ${d.from}` : ""} · {changeLabel(d.change)}
                         {d.duplicates ? ` · 중복 ${d.duplicates}` : ""}
-                        {d.queryKeys.length ? ` · query: ${d.queryKeys.join(", ")}` : ""}
-                        {d.bodyKeys.length ? ` · body: ${d.bodyKeys.join(", ")}` : ""}
-                        {d.contentType ? ` · ${d.contentType}` : ""}
-                      </small>
+                      </p>
+                      {d.queryKeys.length || d.bodyKeys.length || d.contentType ? (
+                        <p className={s.help}>
+                          {[
+                            d.queryKeys.length ? `query: ${d.queryKeys.join(", ")}` : "",
+                            d.bodyKeys.length ? `body: ${d.bodyKeys.join(", ")}` : "",
+                            d.contentType ?? "",
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </p>
+                      ) : null}
                     </li>
                   ))}
                 </ul>

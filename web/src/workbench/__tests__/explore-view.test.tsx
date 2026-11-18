@@ -87,14 +87,14 @@ describe("UrlExploreLive (공유 워크플로 스냅샷)", () => {
     expect(apiFetch).not.toHaveBeenCalled();
     const items = within(screen.getByRole("list", { name: "발견 목록" })).getAllByRole("listitem");
     expect(items.map((li) => li.textContent)).toEqual([
-      "범위 안GET /rest/products방문 200 · 브라우저 요청 (실제 관찰) · 발견 위치 / · 비변경 근거 · query: q",
-      "범위 안POST /api/orders미방문 · API 정적 발견 (추정) · 발견 위치 /main.js · 변경 가능",
-      "범위 밖GET /incomplete방문 · 응답 코드 없음 · 응답 본문 불완전 · HTML 링크 · 발견 위치 / · 비변경 근거",
+      "GET /rest/products범위 안실제 관찰방문 200 · 브라우저 요청 · 발견 위치 / · 비변경 근거query: q",
+      "POST /api/orders범위 안추정미방문 · API 정적 발견 · 발견 위치 /main.js · 변경 가능",
+      "GET /incomplete범위 밖방문 · 응답 코드 없음 · 응답 본문 불완전 · HTML 링크 · 발견 위치 / · 비변경 근거",
     ]);
     // 서버 누계 + 목록이 전체가 아닐 수 있음을 알린다
     const sec = screen.getByRole("region", { name: "발견" });
-    expect(sec).toHaveTextContent("발견4");
-    expect(sec).toHaveTextContent("목록에서 생략1");
+    expect(sec).toHaveTextContent("발견 4");
+    expect(sec).toHaveTextContent("목록에서 생략 1");
     expect(sec).toHaveTextContent("아래 목록은 서버가 화면에 준 3개입니다. 발견 4개 전체가 아닐 수 있습니다.");
     expect(within(screen.getByRole("list", { name: "출처별 발견" })).getAllByRole("listitem")).toHaveLength(3);
   });
