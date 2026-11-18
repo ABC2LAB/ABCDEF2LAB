@@ -182,8 +182,11 @@ func TestE3V2JournalRejectedAndCreateApprovalRequired(t *testing.T) {
 	event.IntentID = 0
 	for _, kind := range []ProgramCallKind{ProgramE3Identity, ProgramE3Create, ProgramE3Read} {
 		event.Program = kind
-		if validJournalEvent(event, Version) || validJournalEvent(event, VersionV1) {
-			t.Errorf("%s accepted in old journal", kind)
+		for _, version := range []string{VersionV1, Version} {
+			event.Version = version
+			if validJournalEvent(event, version) {
+				t.Errorf("%s accepted in %s journal", kind, version)
+			}
 		}
 	}
 	gate := &e3ApprovalGate{}

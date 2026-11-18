@@ -181,9 +181,8 @@ const (
 	ProgramE3Read         ProgramCallKind = ProgramCallKind(PurposeE3Read)
 )
 
-func (k ProgramCallKind) Valid() bool {
-	return k == ProgramAuthPrep || k == ProgramRefreshSession || k.isE3()
-}
+// Valid는 현재 영수증·저널에서 인정하는 프로그램 호출만 판별한다.
+func (k ProgramCallKind) Valid() bool { return k == ProgramAuthPrep || k == ProgramRefreshSession }
 
 func (k ProgramCallKind) isE3() bool {
 	return k == ProgramE3Identity || k == ProgramE3Create || k == ProgramE3Read

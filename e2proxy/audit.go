@@ -479,10 +479,6 @@ func validJournalEvent(event Event, version string) bool {
 	if version == VersionV1 && (event.Reason == Withheld || event.ResponseTruncated || event.Program != "") {
 		return false
 	}
-	// v1/v2는 E③ 계정·선언·관찰 근거를 봉인하지 못한다.
-	if event.Program.isE3() {
-		return false
-	}
 	// 보류 결과는 허용해서 보냈고 대상이 답한 뒤 표현만 주지 않은 것이다. 끝까지 전달한 응답이 아니다. call_closed 행은
 	// call의 마지막 사유를 요약으로 실으므로 withheld일 수 있다. 자른 응답 표시는 보류 결과 행에만 붙는다.
 	if event.Stage == "intent" && event.Reason == Withheld || event.ResponseTruncated && (event.Stage != "result" || event.Reason != Withheld) ||

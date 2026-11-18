@@ -364,12 +364,15 @@ func (e *Execution) BeginCallForIntent(parent context.Context, id int64, command
 // BeginProgramCall은 실제 intent를 만들거나 빌리지 않는다. 실행 전체의 기존
 // 호출·시도·요청 예산과 감사는 공유하고 프로그램 누계만 따로 기록한다.
 func (e *Execution) BeginProgramCall(parent context.Context, program ProgramCallKind, commandRef string) (*Call, error) {
-	if e == nil || parent == nil || !program.Valid() || !validRef(commandRef) {
+	if e == nil || parent == nil || !validRef(commandRef) {
 		return nil, ErrConfig
 	}
 	// v2 기록에는 E③의 실제 계정·동결 선언·구조화 관찰을 봉인할 수 없다. 호출 계수나 감사 행도 만들지 않는다.
 	if program.isE3() {
 		return nil, ErrE3JournalUnavailable
+	}
+	if !program.Valid() {
+		return nil, ErrConfig
 	}
 	return e.beginCall(parent, 0, program, commandRef)
 }
