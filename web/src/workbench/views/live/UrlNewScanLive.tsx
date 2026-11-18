@@ -663,18 +663,7 @@ export function UrlNewScanLive() {
                       if (handle && !job?.preparation_started) void runUrlAction("validate");
                     }}
                   />
-                  <div className={s.field}>
-                    <span className={s.lbl}>기존 점검 다시 열기</span>
-                    <p className={s.help}>새 브라우저에서도 로그인 후 서버에 보존된 점검을 찾을 수 있습니다.</p>
-                    <div className={s.acts}>
-                      <a className={s.btn} href="#running">
-                        진행·시작 전 점검 목록
-                      </a>
-                      <a className={s.btn} href="#finished">
-                        끝난 점검 목록
-                      </a>
-                    </div>
-                  </div>
+                  {/* '기존 점검 다시 열기'(진행 · 끝난 점검 목록 링크)는 두지 않는다(사용자 11/18) — 대시보드의 진행 중 · 보존된 끝난 점검 목록('전체 보기')으로 간다 */}
                 </div>
               </div>
 

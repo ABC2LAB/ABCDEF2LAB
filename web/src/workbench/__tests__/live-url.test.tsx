@@ -391,7 +391,9 @@ describe("서버 방식 확인 (catalog)", () => {
     mount("new");
     const target = await screen.findByLabelText(/점검할 사이트 주소/);
     // 1쪽: 최근 점검한 주소는 줄 없이 빈 안내. 로그인은 지금 실제 동작(로그인 없이)이 기본이고 시안처럼 바꿀 수 있다
-    expect(screen.getByRole("link", { name: "진행·시작 전 점검 목록" })).toHaveAttribute("href", "#running");
+    // '기존 점검 다시 열기' 칸은 두지 않는다(사용자 11/18)
+    expect(screen.queryByText("기존 점검 다시 열기")).toBeNull();
+    expect(screen.queryByRole("link", { name: "진행·시작 전 점검 목록" })).toBeNull();
     expect(screen.queryAllByRole("button", { name: /\.(com|io)$/ })).toHaveLength(0);
     const login = screen.getByRole("radiogroup", { name: "로그인 여부" });
     for (const r of within(login).getAllByRole("radio")) expect(r).toBeEnabled();
