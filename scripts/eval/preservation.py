@@ -425,6 +425,10 @@ def main(argv: list[str] | None = None) -> int:
             if args.read_only != (args.profile == "R-R"):
                 raise PreservationError("preservation_profile_domain_mismatch")
             verified = validate_series(b, o, request_budget=args.budget, read_only=args.read_only)
+            # R-P·R-F·R-R는 수용시험 기준이다. 서명된 목적이 수용시험이 아닌 묶음(공식 회차 sidecar)은 이 기준으로 판정하지
+            # 않는다(#699 리뷰). 목적은 서명 검증을 지난 값이고 검증 결과(signed_evidence.purpose)에도 남는다.
+            if verified["purpose"] != "browser_acceptance":
+                raise PreservationError("preservation_profile_purpose_mismatch")
             # 합성 fixture 기록은 서명·형식 검증까지만 하고 보존율 요약은 내지 않는다(2026-11-18 사용자 결정). 판정만 NOT_RUN으로
             # 두면 비율 숫자가 실측처럼 퍼질 수 있어 요약 전체를 거부한다.
             if verified["execution_source"] != "model_run":

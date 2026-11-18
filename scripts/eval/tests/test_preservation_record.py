@@ -54,7 +54,8 @@ class SignedFixture(unittest.TestCase):
         path.write_bytes(value if isinstance(value, bytes) else json.dumps(value, sort_keys=True).encode() + b"\n")
         path.chmod(0o600)
 
-    def fixture(self, side="baseline", repeat=0, *, meta=None, source="synthetic_fixture", boundary=None):
+    def fixture(self, side="baseline", repeat=0, *, meta=None, source="synthetic_fixture", boundary=None,
+                purpose="browser_acceptance"):
         self.serial += 1
         directory = self.root / str(self.serial)
         directory.mkdir(mode=0o700)
@@ -86,7 +87,7 @@ class SignedFixture(unittest.TestCase):
             run_id=f"{side}-{self.serial}", side=side, repeat_index=repeat,
             engine_source_sha=("a" if side == "baseline" else "b") * 40,
             engine_image_id="sha256:" + ("a" if side == "baseline" else "b") * 64,
-            conditions=conditions(side, **(meta or {})), stop_reason="request_budget", boundary=boundary)
+            conditions=conditions(side, **(meta or {})), stop_reason="request_budget", boundary=boundary, purpose=purpose)
         self.write(directory, NAME, sign_run_record(payload, RUNNER_KEY))
         return directory, meter, payload
 
@@ -310,6 +311,24 @@ class SignedFixture(unittest.TestCase):
         with self.assertRaisesRegex(PreservationRecordError, "preservation_series_mismatch"):
             validate_series(b, changed, request_budget=3, read_only=False)
 
+    def test_round_purpose_is_signed_and_never_mixed(self):
+        # #699 리뷰: 분리 배치 공식 회차의 보존 기록은 official로 서명되고, 수용시험 묶음과 섞이지 않는다.
+        b, o = self.series()
+        # 빌더가 받은 목적이 서명된 기록에 그대로 실린다(공식 분리 배치 회차)
+        directory, meter, payload = self.fixture("baseline", 0, purpose="official")
+        self.assertEqual((payload["purpose"], self.load(directory, meter)["purpose"]), ("official", "official"))
+        official = [dict(r, purpose="official") for r in b], [dict(r, purpose="official") for r in o]
+        validate_series(*official, request_budget=3, read_only=False)
+        mixed = copy.deepcopy(o)
+        mixed[0]["purpose"] = "official"
+        with self.assertRaisesRegex(PreservationRecordError, "preservation_series_mismatch"):
+            validate_series(b, mixed, request_budget=3, read_only=False)
+        for bad in ("acceptance", None, "OFFICIAL"):
+            broken = copy.deepcopy(o)
+            broken[0]["purpose"] = bad
+            with self.subTest(purpose=bad), self.assertRaisesRegex(PreservationRecordError, "preservation_record_invalid"):
+                validate_series(b, broken, request_budget=3, read_only=False)
+
     def test_options_schema_is_closed_and_contains_no_free_secret_fields(self):
         for value in (options() | {"api_key": "not-a-secret"}, options() | {"mcp_version": "latest"},
                       options() | {"execution_source": "fallback"}, options() | {"comm_mode": "anything"}):
@@ -330,6 +349,26 @@ class SignedFixture(unittest.TestCase):
         result = subprocess.run(signed, capture_output=True)
         self.assertEqual((result.returncode, result.stdout), (2, b""))
         self.assertEqual(result.stderr, b"preservation: preservation_synthetic_fixture\n")
+
+    def test_cli_acceptance_profiles_refuse_signed_official_rounds(self):
+        # #699 리뷰: 목적이 전부 official인 서명 기록을 수용시험 기준(R-P·R-F·R-R)으로 판정하면 안 된다. 출력은 비어 있다.
+        b, _, _ = self.fixture("baseline", purpose="official")
+        o, _, _ = self.fixture("ours", purpose="official")
+        self.write(self.root, "path.key", PATH_KEY)
+        self.write(self.root, "runner.key", RUNNER_KEY)
+        self.write(self.root, "exclusions.json", {"format": EXCLUSIONS_FORMAT, "methods": [], "path_prefixes": []})
+        base = [sys.executable, "-I", str(Path(__file__).resolve().parents[1] / "preservation.py"),
+                "--baseline", str(b), "--improved", str(o), "--exclusions", str(self.root / "exclusions.json"),
+                "--path-key-file", str(self.root / "path.key"), "--baseline-record-dir", str(b), "--improved-record-dir", str(o),
+                "--improved-boundary-dir", str(o / "boundary"), "--runner-key-file", str(self.root / "runner.key")]
+        result = subprocess.run(base + ["--budget", "3", "--profile", "R-F"], capture_output=True)
+        self.assertEqual((result.returncode, result.stdout), (2, b""))
+        self.assertEqual(result.stderr, b"preservation: preservation_profile_purpose_mismatch\n")
+        # 같은 원자료를 수용시험 목적으로 서명하면 통과한다(입력 대조: 목적 말고 다른 이유로 막히지 않았음).
+        b2, _, _ = self.fixture("baseline", source="model_run")
+        o2, _, _ = self.fixture("ours", source="model_run")
+        accepted = [a.replace(str(b), str(b2)).replace(str(o), str(o2)) for a in base]
+        self.assertEqual(subprocess.run(accepted + ["--budget", "3", "--profile", "R-F"], capture_output=True).returncode, 0)
 
     def test_cli_signed_rounds_and_historical_summary_are_distinct(self):
         b, bm, _ = self.fixture("baseline", source="model_run")
@@ -352,6 +391,7 @@ class SignedFixture(unittest.TestCase):
         self.assertEqual((data["assessment"]["status"], data["assessment"]["reason"]), ("UNDECIDABLE", "valid_pairs_lt_3"))  # 실측 출처라 수용선까지 가고, 짝이 1개라 판단불가
         self.assertEqual(data["signed_evidence"]["exploration_boundary"]["status"], "PASS")
         self.assertEqual(data["signed_evidence"]["verified_signed_rounds"], 2)
+        self.assertEqual(data["signed_evidence"]["purpose"], "browser_acceptance")  # 검증 결과에 출처 목적을 남긴다
         # 타입이 잘못되거나 비 ASCII인 서명도 traceback 없이 같은 validation 코드로 닫힌다.
         record = json.loads((o / NAME).read_text())
         for signature in ("한" * 64, "é" * 64, "0" * 63, 123):

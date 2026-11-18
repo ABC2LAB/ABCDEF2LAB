@@ -325,6 +325,7 @@ def build_report(
     warnings: list[str] = []
     reference = None
     seen_executions: set[str] = set()
+    path_keys: set = set()
     seen_proofs: set[str] = set()
     versions: set[str] = set()
     drain_policies: set[tuple[int, int]] = set()
@@ -345,6 +346,11 @@ def build_report(
         # 조용히 빼면 분모가 바뀌므로 표 전체를 거부한다.
         if inputs.purpose not in (None, PURPOSE_OFFICIAL):
             raise ComparabilityError(f"공식 비교 회차가 아님(purpose={inputs.purpose}) — 수용시험 회차는 표에 합산하지 않음")
+        # 분리 배치 공식 회차는 B·O 모두 같은 경로 가림 키로 기록해야 경로 틀을 합칠 수 있다(공식 측정 프로토콜 §7). 한 표의
+        # 회차는 분리 배치 표시와 키 지문이 모두 같아야 한다(키 값은 어디에도 없고 지문만 비교한다).
+        path_keys.add(inputs.path_key)
+        if len(path_keys) > 1 and any(key is not None and key[0] for key in path_keys):
+            raise ComparabilityError("분리 배치 표시·경로 가림 키 지문 불일치 — 한 표의 회차는 같은 배치·같은 키로만")
         basis = {c.key for c in core_gt() + bac_category()}
         conditions = (inputs.fixture_fingerprint, inputs.environment_fingerprint,
                       tuple((key, inputs.pre[key]) for key in sorted(basis)))

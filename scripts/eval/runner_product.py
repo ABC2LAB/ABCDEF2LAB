@@ -27,6 +27,7 @@ MODEL_CREDENTIALS_PATH = "/api/product/model-credentials"
 CATALOG_PATH = "/api/diagnoses/v2/catalog"
 TARGETS_PATH = "/api/product/targets"
 DRAFTS_PATH = "/api/diagnoses/v2/drafts"
+CONTROL_POLICY_FORMAT = "abc2lab.control-policy-view/v1"
 DNS_CONTROL_PATH = "/control"
 API_VERSION = "diagnosis-api.v2"
 WORKFLOW_MODE = "ai_auto_v1"
@@ -292,6 +293,16 @@ class ProductDriver:
         if not isinstance(task_id, str) or not _TASK_ID.fullmatch(task_id):
             raise ProductAPIError("product_task_invalid")
         return self._call("GET", f"/api/tasks/{task_id}/diagnosis-run")
+
+    def control_policy(self, task_id: str) -> dict:
+        """그 작업이 실제로 쓴 E② 정책의 작업대 보기(`GET /api/tasks/{id}/control-policy`, 계약 workbench-live-data §3).
+        `policy_fingerprint_sha256`은 실행 factory와 같은 검증기(ValidateE2HTTPRunPolicyDocument)가 낸 내용 지문이다."""
+        if not isinstance(task_id, str) or not _TASK_ID.fullmatch(task_id):
+            raise ProductAPIError("product_task_invalid")
+        view = self._call("GET", f"/api/tasks/{task_id}/control-policy")
+        if not isinstance(view, dict) or view.get("format") != CONTROL_POLICY_FORMAT or not isinstance(view.get("limits"), dict):
+            raise ProductAPIError("product_control_policy_invalid")
+        return view
 
     def status(self, draft_id: str) -> dict:
         """그 초안의 상태. 응답 초안 ID가 요청한 ID와 다르면(다른 작업을 관찰·서명하게 됨) 거부한다."""

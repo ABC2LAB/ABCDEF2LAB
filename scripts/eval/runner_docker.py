@@ -43,6 +43,9 @@ _HELPER_ROLE = re.compile(r"[a-z][a-z0-9-]{0,31}\Z")
 _FILE_NAME = re.compile(r"(?!\.+\Z)[A-Za-z0-9._-]{1,128}\Z")
 # 볼륨 안 디렉터리 하나(하위 경로 없음). `.`은 볼륨 루트다(시험 DNS 제어 토큰은 target-tls 볼륨 루트에 있다).
 _DIR_NAME = re.compile(r"(?:\.|[a-z0-9][a-z0-9_-]{0,31})\Z")
+# 그 디렉터리 아래 하위 경로 조각(제품 실행 디렉터리 `runs/<초안 ID>/state`, 초안 ID는 제품 managementReference 규칙).
+_SUBPATH_PART = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+MAX_SUBPATH_PARTS = 2
 # 컨테이너 정지 유예(초). 그 뒤에는 Docker가 SIGKILL을 보낸다.
 MAX_STOP_TIMEOUT_SECONDS = 600
 # tmpfs 사용량은 계측기 이미지의 statfs 역할이 잰다. 측정 컨테이너가 대상 컨테이너의 PID namespace에 붙어 대상의
@@ -242,6 +245,17 @@ def _read_cidfile(path: Path) -> str:
     if not _OBJECT_ID.fullmatch(value):
         raise DockerError("docker_probe_cid_invalid")
     return value
+
+
+class HelperCleanupError(DockerError):
+    """러너 도우미 정리(지우고 다시 보기)가 실패했다. 회차 흐름의 단계 사유로 감싸져도 이 사유는 따로 남긴다."""
+
+    def __init__(self):
+        super().__init__("docker_helper_cleanup_failed")
+
+
+class HelperCleanupInterrupt(KeyboardInterrupt):
+    """운영자 중단 중 러너 도우미 정리까지 실패했다. 중단은 그대로 올리되 결과에 docker_helper_cleanup_failed를 남긴다."""
 
 
 class EventStream:
@@ -467,20 +481,23 @@ class Docker:
         return data
 
     def copy_volume_files(self, image: str, volume: str, directory: str, names: Sequence[str], role: str, uid: int, gid: int,
-                          cidfile: Path, max_bytes: int, timeout: float) -> tuple[dict[str, bytes], str]:
+                          cidfile: Path, max_bytes: int, timeout: float, subpath: Sequence[str] = ()) -> tuple[dict[str, bytes], str]:
         """러너 도우미 컨테이너로 볼륨 안 디렉터리의 파일 몇 개를 복사한다(경계 원자료 꺼내기, 계약 §4.1 결정 B).
 
         도우미는 망 없이(--network none), 읽기 전용 루트, cap 전부 제거, no-new-privileges로 돌고 볼륨도 읽기 전용으로 붙인다.
         이미지는 내용 ID로만 받고 pull하지 않는다. 출력(원자료)은 로그 드라이버로 내보내지 않는다. 라벨(RUNNER_HELPER_LABEL=역할)과
         cidfile ID로 구간 감시가 이 도우미만 예외로 둔다. 받은 tar는 요청한 이름의 정규 파일이 정확히 한 번씩, 각자 상한 안이어야
         한다. 파일이 없거나 읽지 못하면(종료 코드가 0이 아님) 실패다. 호출자는 원자료를 쓰는 컨테이너를 멈춘 뒤에 부른다.
+        subpath는 그 디렉터리 아래 조각들이다(제품 회차 실행 조건: `runs` + (초안 ID, `state`)). `.`·`..`·구분자는 받지 않는다.
         """
         if not isinstance(image, str) or not _IMAGE_ID.fullmatch(image):
             raise DockerError("docker_helper_image_not_id")
         if (not isinstance(volume, str) or not _VOLUME.fullmatch(volume) or not isinstance(directory, str)
                 or not _DIR_NAME.fullmatch(directory) or not isinstance(role, str) or not _HELPER_ROLE.fullmatch(role)
                 or not names or len(set(names)) != len(names)
-                or not all(isinstance(name, str) and _FILE_NAME.fullmatch(name) for name in names)):
+                or not all(isinstance(name, str) and _FILE_NAME.fullmatch(name) for name in names)
+                or isinstance(subpath, str) or len(subpath) > MAX_SUBPATH_PARTS
+                or not all(isinstance(part, str) and _SUBPATH_PART.fullmatch(part) for part in subpath)):
             raise DockerError("docker_helper_invalid")
         if type(uid) is not int or type(gid) is not int or uid < 0 or gid < 0 or type(max_bytes) is not int or max_bytes < 1:
             raise DockerError("docker_helper_invalid")
@@ -488,10 +505,24 @@ class Docker:
                 "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
                 "--user", f"{uid}:{gid}", "--label", f"{RUNNER_HELPER_LABEL}={role}",
                 "--mount", f"type=volume,source={volume},target=/e,readonly",
-                "--entrypoint", "tar", "--", image, "-C", f"/e/{directory}", "-cf", "-", "--", *names]
-        result = self._bounded(args, self._env, timeout, len(names) * (max_bytes + _TAR_OVERHEAD_BYTES))
-        if result.returncode != 0:
-            raise DockerError("docker_helper_copy_failed")
+                "--entrypoint", "tar", "--", image, "-C", "/".join(("/e", directory, *subpath)), "-cf", "-", "--", *names]
+        try:
+            result = self._bounded(args, self._env, timeout, len(names) * (max_bytes + _TAR_OVERHEAD_BYTES))
+            if result.returncode != 0:
+                raise DockerError("docker_helper_copy_failed")
+        except DockerError:
+            # 시간 초과·출력 상한이면 Docker CLI만 끝나고 도우미는 남아 보호 볼륨을 잡고 있을 수 있다(#693 리뷰). cidfile은
+            # CLI가 쓰기 전에 끊길 수 있어, 이 호출의 라벨(역할)·볼륨으로 찾아 지우고 없어졌는지 확인한다.
+            self._remove_helpers(role, volume)
+            raise
+        except KeyboardInterrupt:
+            # 운영자 중단도 중단을 다시 올리기 전에 같은 정리를 한다. 정리가 실패하면 그 사실을 중단 신호에 실어 결과에
+            # 따로 남긴다(HelperCleanupInterrupt).
+            try:
+                self._remove_helpers(role, volume)
+            except DockerError:
+                raise HelperCleanupInterrupt() from None
+            raise
         files: dict[str, bytes] = {}
         try:
             with tarfile.open(fileobj=io.BytesIO(result.stdout), mode="r:") as archive:
@@ -508,6 +539,28 @@ class Docker:
         if set(files) != set(names):
             raise DockerError("docker_helper_output_invalid")
         return files, _read_cidfile(cidfile)
+
+    def _remove_helpers(self, role: str, volume: str) -> None:
+        """그 역할·볼륨의 러너 도우미 컨테이너를 지우고, 하나도 안 남았는지 다시 본다. 남으면 docker_helper_cleanup_failed다
+        (원래 실패보다 우선한다: 도우미가 보호 볼륨을 잡고 있으면 회차 정리를 믿을 수 없다)."""
+        listing = ["ps", "-a", "-q", "--no-trunc", "--filter", f"label={RUNNER_HELPER_LABEL}={role}", "--filter", f"volume={volume}"]
+        try:
+            ids = [i.decode("ascii", "replace") for i in self.run(listing, code="docker_helper_cleanup_failed").split()]
+        except DockerError:
+            raise HelperCleanupError() from None
+        if any(not _OBJECT_ID.fullmatch(i) for i in ids):
+            raise HelperCleanupError()
+        if ids:
+            try:
+                self.run(["rm", "-f", "--", *ids], code="docker_helper_cleanup_failed")
+            except DockerError:
+                pass  # --rm으로 그 사이 스스로 지워졌을 수 있다. 남았는지는 아래에서 다시 본다.
+        try:
+            left = self.run(listing, code="docker_helper_cleanup_failed").strip()
+        except DockerError:
+            raise HelperCleanupError() from None
+        if left:
+            raise HelperCleanupError()
 
     def stop_container(self, container_id: str, timeout_seconds: int) -> None:
         """컨테이너 하나를 SIGTERM으로 멈춘다(`docker stop`). 유예 안에 끝나지 않으면 Docker가 SIGKILL을 보낸다.
