@@ -10,6 +10,7 @@ import {
   CONTROL_POLICY_VIEW_FORMAT,
   type ControlPolicy,
   getControlPolicy,
+  instantCeilMs,
   parseControlPolicyView,
   policyExpired,
   ruleAllowsWrite,
@@ -73,6 +74,17 @@ describe("policyExpired (fail-closed)", () => {
     expect(policyExpired(base, at("2026-11-15T00:00:00Z"))).toBe(false);
     expect(policyExpired(base, at("2026-12-02T00:00:00Z"))).toBe(true); // 만료
     expect(policyExpired(base, at("2026-10-31T00:00:00Z"))).toBe(true); // 미발효
+  });
+  it("소수 밀리초 경계도 밀리초로 자르지 않는다(발효 전 0.5ms 는 미발효, 만료 0.5ms 전은 유효)", () => {
+    const p = { ...base, validFrom: "2026-11-01T00:00:00.0005Z", validUntil: "2026-12-01T00:00:00.0005Z" };
+    expect(policyExpired(p, at("2026-11-01T00:00:00Z"))).toBe(true);
+    expect(policyExpired(p, at("2026-11-01T00:00:00.001Z"))).toBe(false);
+    expect(policyExpired(p, at("2026-12-01T00:00:00Z"))).toBe(false);
+    expect(policyExpired(p, at("2026-12-01T00:00:00.001Z"))).toBe(true);
+    // 화면 타이머는 경계 뒤 첫 밀리초에 깨워야 상태가 바뀐다
+    expect(instantCeilMs("2026-11-01T00:00:00.0005Z")).toBe(at("2026-11-01T00:00:00.001Z"));
+    expect(instantCeilMs("2026-11-01T00:00:00Z")).toBe(at("2026-11-01T00:00:00Z"));
+    expect(instantCeilMs("2026-02-30T00:00:00Z")).toBeNaN();
   });
   it("날짜 파싱 불가는 안전쪽(만료)으로 본다", () => {
     expect(policyExpired({ ...base, validUntil: "nope" }, at("2026-11-15T00:00:00Z"))).toBe(true);
@@ -175,6 +187,21 @@ describe("parseControlPolicyView (fail-closed)", () => {
     ["지문이 빈 문자열", { policy_fingerprint_sha256: "" }],
     ["유효 시작이 시각 아님", { valid_from: "soon" }],
     ["유효 끝이 시간대 없는 시각", { valid_until: "2026-11-13T04:00:00" }],
+    // 4차 리뷰 반례: Go time.Time JSON(parseRFC3339)이 거부하는 달력·시각 — Date.parse 는 다음 달로 넘겨 통과시킨다
+    ["없는 날짜(2월 30일)", { valid_until: "2026-02-30T04:00:00Z", valid_from: "2026-02-01T00:00:00Z" }],
+    ["평년 2월 29일", { valid_until: "2026-02-29T04:00:00Z", valid_from: "2026-02-01T00:00:00Z" }],
+    ["4월 31일", { valid_until: "2026-04-31T00:00:00Z", valid_from: "2026-04-01T00:00:00Z" }],
+    ["13월", { valid_until: "2026-13-01T00:00:00Z" }],
+    ["24시", { valid_until: "2026-11-13T24:00:00Z" }],
+    ["60초(윤초)", { valid_until: "2026-11-13T03:59:60Z" }],
+    ["시간대 시 24", { valid_until: "2026-11-13T04:00:00+24:00" }],
+    ["시간대 분 60", { valid_until: "2026-11-13T04:00:00+09:60" }],
+    ["소수 초 10자리", { valid_until: "2026-11-13T04:00:00.0000000001Z" }],
+    [
+      "끝이 시작보다 1ns 앞",
+      { valid_from: "2026-11-13T04:00:00.000000002Z", valid_until: "2026-11-13T04:00:00.000000001Z" },
+    ],
+    ["시간대가 달라도 같은 순간", { valid_from: "2026-11-13T04:00:00Z", valid_until: "2026-11-13T13:00:00+09:00" }],
   ])("%s → null (보수적으로 추정해 그리지 않는다)", (_name, over) => {
     expect(parseControlPolicyView(wire(over))).toBeNull();
   });
@@ -252,6 +279,28 @@ describe("parseControlPolicyView (fail-closed)", () => {
   it("지문 생략(자격 pin 규칙)은 받고 빈 지문으로 둔다", () => {
     const { policy_fingerprint_sha256: _omit, ...rest } = wire();
     expect(parseControlPolicyView(rest)?.fingerprint).toBe("");
+  });
+  it("유효 창은 나노초까지 비교한다(1ns 차이도 양의 간격, 밀리초로 자르지 않음)", () => {
+    const p = parseControlPolicyView(
+      wire({ valid_from: "2026-11-13T04:00:00.000000001Z", valid_until: "2026-11-13T04:00:00.000000002Z" }),
+    );
+    expect(p?.validFrom).toBe("2026-11-13T04:00:00.000000001Z");
+  });
+  it("윤년 2월 29일·시간대 오프셋·0년대 연도는 받는다", () => {
+    expect(
+      parseControlPolicyView(wire({ valid_from: "2028-02-29T00:00:00Z", valid_until: "2028-03-01T00:00:00Z" })),
+    ).not.toBeNull();
+    // 13:00+09:00 = 04:00Z → 03:00Z 보다 뒤
+    expect(
+      parseControlPolicyView(wire({ valid_from: "2026-11-13T03:00:00Z", valid_until: "2026-11-13T13:00:00+09:00" })),
+    ).not.toBeNull();
+    // Date.UTC 는 0~99년을 1900년대로 바꾼다 — 0050년이 1950년보다 앞이어야 한다
+    expect(
+      parseControlPolicyView(wire({ valid_from: "0050-01-01T00:00:00Z", valid_until: "1950-01-01T00:00:00Z" })),
+    ).not.toBeNull();
+    expect(
+      parseControlPolicyView(wire({ valid_from: "1950-01-01T00:00:00Z", valid_until: "0050-01-01T00:00:00Z" })),
+    ).toBeNull();
   });
   it("빈 규칙 목록은 '확인 불가'(서버는 규칙 없는 정책을 실행에 올리지 않는다)", () => {
     expect(parseControlPolicyView(wire({ rules: [] }))).toBeNull();

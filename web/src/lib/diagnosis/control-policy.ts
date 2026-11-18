@@ -90,10 +90,17 @@ export const AUTH_PREP_PURPOSE = "auth_prep";
  * 정책이 지금 유효기간 밖이면 true(만료·미발효·파싱 불가). fail-closed: 불명/파싱 실패를 '유효'로 보지 않는다.
  */
 export function policyExpired(p: ControlPolicy, now: number = Date.now()): boolean {
-  const from = Date.parse(p.validFrom);
-  const until = Date.parse(p.validUntil);
-  if (Number.isNaN(from) || Number.isNaN(until)) return true;
-  return now < from || now >= until;
+  const from = parseInstant(p.validFrom);
+  const until = parseInstant(p.validUntil);
+  if (!from || !until) return true;
+  const at = msInstant(now);
+  return compareInstant(at, from) < 0 || compareInstant(at, until) >= 0;
+}
+
+/** 경계 시각 이후 첫 밀리초(올림) — 화면 타이머가 소수 밀리초 경계보다 먼저 깨어 상태를 못 바꾸는 일을 막는다. 못 읽으면 NaN. */
+export function instantCeilMs(v: string): number {
+  const t = parseInstant(v);
+  return t ? t.sec * 1000 + Math.ceil(t.nsec / 1e6) : Number.NaN;
 }
 
 /** 메서드가 비어 '전부 허용'으로 오인될 규칙 — 빈 methods 를 '모두'로 해석하지 않기 위한 fail-closed 경고용. */
@@ -134,11 +141,66 @@ const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !
 const isStr = (v: unknown): v is string => typeof v === "string";
 const isNat = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 const strList = (v: unknown): string[] | null => (Array.isArray(v) && v.every(isStr) ? v : null);
-/** 서버 time.Time JSON(RFC3339, 소수 초·시간대 포함 가능). 모양 밖이면 만료 판정 전에 투영 자체를 거부한다. */
-const isInstant = (v: unknown): v is string =>
-  isStr(v) &&
-  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.test(v) &&
-  Number.isFinite(Date.parse(v));
+/** UTC 기준 초와 그 안의 나노초. 서버 time.Time 과 같은 정밀도로 비교하려고 밀리초로 줄이지 않는다. */
+type Instant = { sec: number; nsec: number };
+
+const isLeapYear = (y: number): boolean => y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0);
+const MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+const SECONDS_PER_DAY = 86400;
+
+/** 서기 y-m-d 의 1970-01-01 기준 일수(그레고리력 역산). Date.UTC 는 0~99년을 1900년대로 바꿔서 쓰지 않는다. */
+function daysFromCivil(year: number, month: number, day: number): number {
+  const y = month <= 2 ? year - 1 : year;
+  const era = Math.floor(y / 400);
+  const yoe = y - era * 400;
+  const doy = Math.floor((153 * (month + (month > 2 ? -3 : 9)) + 2) / 5) + day - 1;
+  const doe = yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + doy;
+  return era * 146097 + doe - 719468;
+}
+
+/**
+ * 서버 time.Time JSON(RFC3339, 소수 초·시간대 포함 가능)을 Go parseRFC3339 와 같은 범위로 읽는다:
+ * 연 0~9999, 월 1~12, 일은 그 달의 날수까지(2월 30일 같은 날짜를 Date.parse 처럼 다음 달로 넘기지 않음),
+ * 시 0~23·분 0~59·초 0~59, 시간대 시 0~23·분 0~59, 소수 초는 9자리(나노초)까지 그대로 보존. 모양 밖이면 null.
+ */
+function parseInstant(v: unknown): Instant | null {
+  if (!isStr(v)) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(?:Z|([+-])(\d{2}):(\d{2}))$/.exec(v);
+  if (!m) return null;
+  const [year, month, day, hour, min, sec] = m.slice(1, 7).map(Number);
+  const offH = m[9] === undefined ? 0 : Number(m[9]);
+  const offM = m[10] === undefined ? 0 : Number(m[10]);
+  const monthDays = month === 2 && isLeapYear(year) ? 29 : MONTH_DAYS[month - 1];
+  if (
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > monthDays ||
+    hour > 23 ||
+    min > 59 ||
+    sec > 59 ||
+    offH > 23 ||
+    offM > 59
+  )
+    return null;
+  const offset = (m[8] === "-" ? -1 : 1) * (offH * 3600 + offM * 60);
+  return {
+    sec: daysFromCivil(year, month, day) * SECONDS_PER_DAY + hour * 3600 + min * 60 + sec - offset,
+    nsec: Number((m[7] ?? "").padEnd(9, "0")),
+  };
+}
+
+function compareInstant(a: Instant, b: Instant): number {
+  return a.sec !== b.sec ? a.sec - b.sec : a.nsec - b.nsec;
+}
+
+/** 브라우저 시각(ms) → Instant. */
+function msInstant(ms: number): Instant {
+  const sec = Math.floor(ms / 1000);
+  return { sec, nsec: (ms - sec * 1000) * 1e6 };
+}
+
+const isInstant = (v: unknown): v is string => parseInstant(v) !== null;
 /**
  * origin — e2proxy canonicalAuthority 가 받는 모양만: http·https, 사용자 정보(`user@`) 없음, 경로는 비거나 `/` 하나,
  * query·조각 없음, 호스트는 (소문자로 바꿨을 때) 영숫자·`.`·`-` 또는 대괄호 IPv6, 포트는 1~65535.
@@ -352,8 +414,8 @@ export function parseControlPolicyView(raw: unknown): ControlPolicy | null {
     !headerMode ||
     !isInstant(raw.valid_from) ||
     !isInstant(raw.valid_until) ||
-    // 유효 창은 양의 간격(서버: ValidUntil.After(ValidFrom))
-    !(Date.parse(raw.valid_until) > Date.parse(raw.valid_from)) ||
+    // 유효 창은 양의 간격(서버: ValidUntil.After(ValidFrom)) — 나노초까지 비교
+    !(compareInstant(parseInstant(raw.valid_until) as Instant, parseInstant(raw.valid_from) as Instant) > 0) ||
     !Array.isArray(raw.rules) ||
     raw.rules.length === 0 ||
     raw.rules.length > MAX_RULES ||

@@ -16,6 +16,7 @@ import {
   AUTH_PREP_PURPOSE,
   getControlPolicy,
   HEADER_MODE_LABEL,
+  instantCeilMs,
   type PolicyLoad,
   type PolicyRule,
   policyExpired,
@@ -71,7 +72,7 @@ const MAX_TIMER_MS = 2 ** 31 - 1;
 
 /** 지금 시각 기준 다음 유효기간 경계(발효·만료)까지 ms. 경계가 지났거나 시각을 못 읽으면 null. */
 function nextBoundaryMs(validFrom: string, validUntil: string, now: number): number | null {
-  const next = [Date.parse(validFrom), Date.parse(validUntil)].filter((t) => Number.isFinite(t) && t > now);
+  const next = [instantCeilMs(validFrom), instantCeilMs(validUntil)].filter((t) => Number.isFinite(t) && t > now);
   return next.length ? Math.min(...next) - now : null;
 }
 
