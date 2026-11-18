@@ -41,6 +41,7 @@ from runner import (  # noqa: E402
     INVALID, RESULT_NAME, RunFailure, _check_subnets, _event_time, _ns, _stamp, _step, _stop_events, _stop_watch,
     _wait_budget, _wait_drained, first_limit,
 )
+from preservation_record import digest  # noqa: E402
 from runner_checks import compare_snapshots  # noqa: E402
 from runner_evidence import MeterFiles  # noqa: E402
 from runner_llm import judge_product_llm  # noqa: E402
@@ -52,6 +53,9 @@ from runner_window import events_reasons, judge_events, watch_reasons, watch_sum
 SPLIT_RESULT_FORMAT = "abc2lab-eval-runner-split-result-v1"
 SPLIT_TASK_FORMAT = "abc2lab-eval-runner-split-task-v1"
 PRODUCT_END_NAME = "product-end.json"
+TOOL_SURFACE_NAME = "tool-surface.json"
+PRODUCT_FILES_NAME = "product-files.json"
+PRODUCT_FILES_FORMAT = "abc2lab-eval-runner-product-files-v1"
 COMPLETE = "complete"
 METER, BOUNDARY, TARGET = "eval-meter", "explore-boundary", "target"
 
@@ -100,6 +104,9 @@ class SplitRunPorts(Protocol):
     def seal(self, meter_container_id: str) -> None: ...
     def stop_boundary(self, boundary_container_id: str) -> None: ...
     def run_record(self, task_id: str) -> dict: ...
+    def control_policy(self, task_id: str) -> dict: ...
+    def product_files(self, draft_id: str) -> dict: ...
+    def tool_surface(self) -> dict: ...
     def copy_boundary_evidence(self) -> None: ...
     def copy_product_records(self) -> tuple: ...
     def generation_verify(self, calls: bytes, sampling: dict | None) -> None: ...
@@ -177,6 +184,14 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
         raise RunFailure("project_exists")
     if _step(state, "image_id_failed", ports.image_ids) != spec.image_ids:
         raise RunFailure("image_id_mismatch")
+    # 도구 면(결정안 §4): 회차 망을 띄우기 전에 1회용 컨테이너로 잰다(B는 tool_tree 다음 같은 자리).
+    surface = _step(state, "tool_surface_failed", ports.tool_surface)
+    if surface.get("image_id") != spec.image_ids["product"] or surface.get("browser_image_id") != spec.image_ids["explore_browser"]:
+        raise RunFailure("tool_surface_image_mismatch")
+    _step(state, "evidence_write_failed", lambda: evidence.write_json(TOOL_SURFACE_NAME, surface))
+    state.summary["tool_surface"] = {"cli_sha256": surface["cli"]["sha256"], "mcp_raw_sha256": surface["mcp"]["raw"]["sha256"],
+                                     "mcp_exposed_sha256": surface["mcp"]["exposed"]["sha256"],
+                                     "mcp_version": surface["mcp"]["package_version"]}
     state.summary["host"] = _step(state, "host_spec_failed", ports.host_spec)
     _check_subnets(ports, evidence, state)
     state.up_attempted = True
@@ -247,6 +262,15 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     except ProductLLMError as exc:
         raise RunFailure(str(exc)) from None
 
+    # 제품 블록 근거(결정안 §3.3): 그 회차에 제품이 쓴 E② 정책의 내용 지문·상한 스냅숏과 설치·실행 파일 원본 SHA.
+    # 제품을 멈춘 뒤라 파일이 더 바뀌지 않는다. 내용 지문이 비면(자격 pin 규칙 등) 짝 대조 칸을 만들 수 없어 무효다.
+    view = _step(state, "control_policy_failed", lambda: ports.control_policy(task_id))
+    fingerprint = view.get("policy_fingerprint_sha256")
+    if not isinstance(fingerprint, str) or len(fingerprint) != 64 or any(c not in "0123456789abcdef" for c in fingerprint):
+        raise RunFailure("diagnosis_policy_fingerprint_missing")
+    files = dict(_step(state, "product_files_failed", lambda: ports.product_files(draft_id)), control_limits=digest(view["limits"]))
+    _step(state, "evidence_write_failed", lambda: evidence.write_json(PRODUCT_FILES_NAME, {
+        "format": PRODUCT_FILES_FORMAT, "file_sha256": files, "diagnosis_policy_sha256": fingerprint, "limits": view["limits"]}))
     _step(state, "boundary_evidence_copy_failed", ports.copy_boundary_evidence)
     ledger, calls = _step(state, "product_records_copy_failed", ports.copy_product_records)
     record_reasons = call_records_reasons(ledger, calls)
@@ -270,6 +294,7 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
                          pre_solved=pre_board.get("solved"), post_solved=post_board.get("solved"),
                          goal_common_sha256=goal["common_sha256"], window_reasons=window["reasons"],
                          sampling_overwrites=usage["sampling_overwrites"], task_id=task_id, draft_id=draft_id,
+                         product_file_sha256=files, diagnosis_policy_sha256=fingerprint,
                          product_closed={name: closed.get(name) for name in PRODUCT_END_FIELDS})
 
 

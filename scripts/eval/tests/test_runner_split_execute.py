@@ -17,7 +17,19 @@ from runner_window import WatchSample  # noqa: E402
 from test_runner import FakeEvidence  # noqa: E402
 
 IDS = {"eval-meter": "m" * 64, "explore-boundary": "b" * 64, "preparation": "p" * 64, "target": "t" * 64}
-IMAGES = {"product": "sha256:" + "1" * 64, "meter": "sha256:" + "2" * 64}
+IMAGES = {"product": "sha256:" + "1" * 64, "meter": "sha256:" + "2" * 64, "explore_browser": "sha256:" + "3" * 64}
+FINGERPRINT = "f" * 64
+LIMITS = {"max_requests": 10, "max_attempts": 30, "max_concurrent": 2, "max_body_bytes": 1024, "max_response_body_bytes": 1024,
+          "request_timeout_ms": 1000}
+PRODUCT_FILES = {"installation": "a" * 64, "policy": "b" * 64, "api_launch": "c" * 64, "target_policy": "d" * 64,
+                 "runtime_conditions": "e" * 64}
+
+
+def surface(product=IMAGES["product"], browser=IMAGES["explore_browser"]):
+    return {"format": "abc2lab.tool-surface-side/v1", "side": "ours", "image_id": product, "browser_image_id": browser,
+            "cli": {"sha256": "5" * 64, "count": 1, "commands": {}},
+            "mcp": {"package_version": "0.0.84", "raw": {"names": ["a"], "sha256": "6" * 64},
+                    "exposed": {"names": ["a"], "sha256": "7" * 64}}}
 HEALTH = {"preparation": "test -S /p/ipc/preparation.sock"}
 START = datetime(2026, 11, 17, 7, 0, tzinfo=timezone.utc)
 LEDGER = b"r1 10 20 30\nr1 10 20 30\n"
@@ -104,6 +116,9 @@ class FakePorts:
         self.snapshot_change: dict[str, dict] = {}
         self.marker: dict | None = product_marker()
         self.verify_args: list = []
+        self.surface = surface()
+        self.view = {"format": "abc2lab.control-policy-view/v1", "policy_fingerprint_sha256": FINGERPRINT, "limits": dict(LIMITS)}
+        self.files_args: list = []
 
     def _call(self, name):
         self.calls.append(name)
@@ -230,6 +245,20 @@ class FakePorts:
     def copy_boundary_evidence(self):
         self._call("copy_boundary_evidence")
 
+    def tool_surface(self):
+        self._call("tool_surface")
+        return self.surface
+
+    def control_policy(self, task_id):
+        self._call("control_policy")
+        assert task_id == "42"
+        return self.view
+
+    def product_files(self, draft_id):
+        self._call("product_files")
+        self.files_args.append(draft_id)
+        return dict(PRODUCT_FILES)
+
     def copy_product_records(self):
         self._call("copy_product_records")
         return self.ledger, self.calls_file
@@ -251,11 +280,12 @@ def run(mutate=None, **spec_changes):
     return result, ports, evidence
 
 
-ORDER_HEAD = ["preexisting", "image_ids", "host_spec", "planned_subnets", "up", "snapshot:pre", "check:pre", "probes:pre", "dns_token",
+ORDER_HEAD = ["preexisting", "image_ids", "tool_surface", "host_spec", "planned_subnets", "up", "snapshot:pre", "check:pre", "probes:pre", "dns_token",
               "events:start", "watch:start", "scoreboard:pre", "prepare_round", "start_round"]
 ORDER_TAIL = ["seal", "meter:drained", "stop_round", "wait_closed", "snapshot:post", "check:post", "probes:post", "scoreboard:post",
               "stop_boundary", "watch:stop",
-              "events:stop", "status", "run_record", "copy_boundary_evidence", "copy_product_records",
+              "events:stop", "status", "run_record", "control_policy", "product_files", "copy_boundary_evidence",
+              "copy_product_records",
               "generation_verify", "llm_verified", "down", "remove_inputs"]
 
 
@@ -271,11 +301,41 @@ class TestOrder(unittest.TestCase):
         self.assertEqual(result["sampling_overwrites"], {"execution": 0, "preparation": []})
         self.assertEqual(set(evidence.files), {"subnet-check.json", "pre-checks.json", "post-checks.json", "pre-probe.json",
                                                "post-probe.json", "task.json", "llm-summary.json",
-                                               "window-watch.json", "product-end.json", "product-model.json", RESULT_NAME})
+                                               "window-watch.json", "product-end.json", "product-model.json", "tool-surface.json",
+                                               "product-files.json", RESULT_NAME})
         self.assertEqual(evidence.files[RESULT_NAME], result)
+        # 결정안 §3.3 제품 블록 근거: 파일 원본 SHA 다섯 + 상한 스냅숏 지문, E② 정책 내용 지문, 도구 면 지문.
+        from preservation_record import digest
+        files = evidence.files["product-files.json"]
+        self.assertEqual(files["file_sha256"], dict(PRODUCT_FILES, control_limits=digest(LIMITS)))
+        self.assertEqual((files["diagnosis_policy_sha256"], files["limits"]), (FINGERPRINT, LIMITS))
+        self.assertEqual((result["product_file_sha256"], result["diagnosis_policy_sha256"]), (files["file_sha256"], FINGERPRINT))
+        self.assertEqual(ports.files_args, ["draft-1"])  # 실행 디렉터리 이름 = 초안 ID
+        self.assertEqual(result["tool_surface"], {"cli_sha256": "5" * 64, "mcp_raw_sha256": "6" * 64, "mcp_exposed_sha256": "7" * 64,
+                                                  "mcp_version": "0.0.84"})
+        self.assertEqual(evidence.files["tool-surface.json"], ports.surface)
         self.assertEqual(set(evidence.files["pre-probe.json"]["origins"]), {"preparation"})
         task = evidence.files["task.json"]
         self.assertEqual((task["format"], task["draft_id"], task["task_id"]), ("abc2lab-eval-runner-split-task-v1", "draft-1", "42"))
+
+    def test_policy_fingerprint_and_surface_images_are_required(self):
+        # 내용 지문이 없으면(자격 pin 규칙이면 제품이 비운다) v3 짝 대조 칸을 못 만든다 → 무효.
+        for value in ("", None, "F" * 64, "f" * 63, "g" * 64):
+            def drop(ports, value=value):
+                ports.view["policy_fingerprint_sha256"] = value
+            result, ports, _ = run(drop)
+            with self.subTest(value=value):
+                self.assertEqual((result["status"], result["reasons"]), ("invalid", ["diagnosis_policy_fingerprint_missing"]))
+                self.assertNotIn("product_files", ports.calls)
+                self.assertIn("down", ports.calls)
+        # 도구 면을 다른 이미지로 쟀으면 회차 이미지와 맞지 않는다 → 띄우기 전에 무효.
+        for wrong in ({"product": "sha256:" + "9" * 64}, {"browser": "sha256:" + "9" * 64}):
+            def swap(ports, wrong=wrong):
+                ports.surface = surface(**wrong)
+            result, ports, _ = run(swap)
+            with self.subTest(wrong=wrong):
+                self.assertEqual((result["status"], result["reasons"]), ("invalid", ["tool_surface_image_mismatch"]))
+                self.assertNotIn("up", ports.calls)
 
     def test_budget_clock_starts_after_preparation(self):
         # 로그인~초안(준비)은 예산 시계 밖이다. B의 작업 생성 직전과 같은 뜻으로 시작 요청 직전부터 잰다.
