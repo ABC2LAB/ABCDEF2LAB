@@ -298,6 +298,10 @@ export function secretFieldsInTemplate(kind: BodyKind, raw: string): string[] {
   return out;
 }
 
+/** 문구에 넣는 칸 이름 — 이름 자체가 자격 형식이면(키에 헤더·토큰을 통째로 붙여 넣은 경우) 가린다. */
+const safeName = (name: string): string =>
+  hasCredentialText(name) || looksLikeSecretValue(name) ? "(이름 가림)" : name;
+
 // ── 검사 ─────────────────────────────────────────────────────────────────────────────────────────────
 /** 칸 하나의 문제. field 는 `identity.path`·`types.0.create.path` 같은 위치, message 는 화면 문구. */
 export type DraftIssue = { field: string; message: string };
@@ -308,12 +312,14 @@ function validateType(t: TypeDraft, at: string, issues: DraftIssue[]): void {
   if (t.sharing !== "shared" && t.sharing !== "owner_only") bad("sharing", "공유 방식을 고르세요.");
   if (t.sharing === "shared") return; // 공유 종류는 시험하지 않아 요청 칸을 보내지 않는다(normalizeDraft 가 비움)
 
+  // 문구에 입력 원문을 넣지 않는다(자격 값을 잘못 붙여 넣었을 때 경고에 다시 보이지 않게) — 몇 번째인지만 알린다
   const fields = new Set<string>();
-  for (const f of t.ownerOnlyFields) {
-    if (!isFieldPath(f)) bad("ownerOnlyFields", `소유자 전용 필드 이름이 형식 밖입니다: ${f || "(빈 값)"}`);
-    else if (fields.has(f)) bad("ownerOnlyFields", `소유자 전용 필드가 겹칩니다: ${f}`);
+  t.ownerOnlyFields.forEach((f, j) => {
+    if (!isFieldPath(f))
+      bad("ownerOnlyFields", `소유자 전용 필드 ${j + 1}번째 이름이 형식 밖입니다(영문 · 숫자 · _ . - , 128자 이하).`);
+    else if (fields.has(f)) bad("ownerOnlyFields", `소유자 전용 필드 ${j + 1}번째가 앞의 필드와 겹칩니다.`);
     fields.add(f);
-  }
+  });
   if (t.ownerOnlyFields.length === 0) bad("ownerOnlyFields", "소유자 전용 필드를 하나 이상 적으세요.");
   if (!confirmable(t)) bad("create.markerField", "표식 칸은 소유자 전용 필드 중 하나여야 합니다.");
 
@@ -339,7 +345,7 @@ function validateType(t: TypeDraft, at: string, issues: DraftIssue[]): void {
   if (secrets.length)
     bad(
       "create.bodyTemplate",
-      `본문 틀에 자격으로 보이는 칸이 있어 저장하지 않습니다(${secrets.join(", ")}). 세션은 시험 계정 로그인이 따로 붙입니다.`,
+      `본문 틀에 자격으로 보이는 칸이 있어 저장하지 않습니다(${secrets.map(safeName).join(", ")}). 세션은 시험 계정 로그인이 따로 붙입니다.`,
     );
 
   const r = t.read;
@@ -363,11 +369,13 @@ export function validateDraft(d: DeclarationDraft): DraftIssue[] {
   if (!isFieldPath(d.identity.subjectIdPath))
     issues.push({ field: "identity.subjectIdPath", message: "응답 속 사용자 식별자 위치(JSON 경로)를 적으세요." });
   if (d.types.length === 0) issues.push({ field: "types", message: "자원 종류를 하나 이상 선언하세요." });
-  const names = new Set<string>();
+  // 겹친 이름은 원문 대신 앞 종류의 번호로 알린다(이름 칸에 자격 값을 넣었을 때 경고에 다시 보이지 않게)
+  const names = new Map<string, number>();
   d.types.forEach((t, i) => {
-    if (t.type && names.has(t.type))
-      issues.push({ field: `types.${i}.type`, message: `자원 종류가 겹칩니다: ${t.type}` });
-    names.add(t.type);
+    const first = names.get(t.type);
+    if (t.type && first !== undefined)
+      issues.push({ field: `types.${i}.type`, message: `자원 종류 이름이 ${first + 1}번 종류와 겹칩니다.` });
+    else names.set(t.type, i);
     validateType(t, `types.${i}`, issues);
   });
   for (const field of credentialFields(d))

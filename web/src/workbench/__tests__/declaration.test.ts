@@ -256,6 +256,45 @@ describe("자격 차단(절대규칙 2)", () => {
     ).toBe(false);
   });
 
+  // 6차 리뷰: 검사 문구는 입력 원문을 되풀이하지 않는다(자격 값을 잘못 넣은 칸이 경고에 다시 보이지 않게)
+  it("검사 문구에 입력 원문을 넣지 않는다(겹친 이름 · 형식 밖 필드 · 자격 모양 키 이름)", () => {
+    const leak = "Bearer synthetic-bearer-value";
+    const jwt = "eyJsynthetic.eyJpayload.sig";
+    const cases: ((d: DeclarationDraft) => void)[] = [
+      (d) => {
+        d.types[0].type = leak;
+        d.types[2].type = leak;
+      },
+      (d) => (d.types[0].ownerOnlyFields = ["body", leak]),
+      (d) => (d.types[0].ownerOnlyFields = ["body", jwt, jwt]),
+      (d) => (d.types[0].create.bodyTemplate = `{"title":"t","Authorization: ${leak}":"x"}`),
+      (d) => {
+        d.types[0].create.bodyKind = "form";
+        d.types[0].create.bodyTemplate = `title=t&${encodeURIComponent(`token: ${leak}`)}=x`;
+      },
+    ];
+    for (const f of cases) {
+      const issues = validateDraft(edit(f));
+      expect(issues.length).toBeGreaterThan(0);
+      for (const i of issues) {
+        expect(i.message).not.toContain("synthetic");
+        expect(i.message).not.toContain("eyJ");
+      }
+    }
+    // 겹침은 몇 번째인지로 알린다
+    expect(
+      validateDraft(
+        edit((d) => {
+          d.types[0].type = leak;
+          d.types[2].type = leak;
+        }),
+      ).find((i) => i.field === "types.2.type")?.message,
+    ).toBe("자원 종류 이름이 1번 종류와 겹칩니다.");
+    expect(validateDraft(edit((d) => (d.types[0].ownerOnlyFields = ["body", "body"]))).map((i) => i.message)).toContain(
+      "소유자 전용 필드 2번째가 앞의 필드와 겹칩니다.",
+    );
+  });
+
   it("author · passenger · passage · title 같은 정상 이름은 막지 않는다", () => {
     for (const k of ["author", "passenger", "passage", "title", "subtitle", "description"])
       expect(looksLikeSecretName(k)).toBe(false);

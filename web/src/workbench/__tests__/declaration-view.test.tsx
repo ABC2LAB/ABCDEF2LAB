@@ -317,6 +317,26 @@ describe("PolicyDeclarationLive (입력 · 저장)", () => {
     expect(alerts).not.toContain("synthetic-pw");
   });
 
+  it("두 종류 이름에 같은 자격 값을 넣어도 경고에 값이 다시 보이지 않는다", async () => {
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [NONE] });
+    mount();
+    await pick("t1");
+    await screen.findByText(/아직 선언이 없습니다/);
+    fillValid();
+    fireEvent.click(screen.getByRole("button", { name: "자원 종류 추가" }));
+    type("자원 종류 1 이름", "Bearer synthetic-bearer-value");
+    type("자원 종류 2 이름", "Bearer synthetic-bearer-value");
+    expect(screen.getByText("자원 종류 이름이 1번 종류와 겹칩니다.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "선언 저장" })).toBeDisabled();
+    // 입력란 밖(경고 · 배지 · 안내)에는 값이 없다
+    const outside = [...document.body.querySelectorAll("*")]
+      .filter((el) => el.children.length === 0 && !(el instanceof HTMLInputElement))
+      .map((el) => el.textContent ?? "")
+      .join(" ");
+    expect(outside).not.toContain("synthetic-bearer-value");
+    expect(api.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
+  });
+
   it("승인 범위 밖은 참고 경고만 하고 저장은 막지 않는다", async () => {
     serve({ [GET_T]: [TARGETS], [GET_D("t2")]: [NONE], [PUT_D("t2")]: [reject(403)] });
     mount();
