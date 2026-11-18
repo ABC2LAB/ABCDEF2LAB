@@ -502,6 +502,20 @@ class TestHelperCopy(unittest.TestCase):
             if count == 3:
                 self.assertEqual(executor.calls[1][0], ["rm", "-f", "--", left])
                 self.assertEqual(executor.calls[2][0], listing)
+        # 운영자 중단(KeyboardInterrupt)도 다시 올리기 전에 같은 정리를 하고, 정리가 실패하면 HelperCleanupInterrupt다.
+        from runner_docker import HelperCleanupInterrupt
+
+        def interrupted(args, env, timeout, max_stdout):
+            Path(args[args.index("--cidfile") + 1]).write_bytes(left.encode())
+            raise KeyboardInterrupt
+        for results, expected in (([found, ok, empty], KeyboardInterrupt), ([found, ok, found], HelperCleanupInterrupt),
+                                  ([failed], HelperCleanupInterrupt)):
+            executor = FakeExecutor(*results)
+            with self.subTest(results=len(results), expected=expected.__name__):
+                with self.assertRaises(KeyboardInterrupt) as caught:
+                    self.copy(interrupted, executor)
+                self.assertIs(type(caught.exception), expected)
+                self.assertEqual(executor.calls[0][0], listing)
         # 출력 모양이 틀린 경우(도우미는 이미 끝남, --rm)에는 정리 호출을 하지 않는다.
         executor = FakeExecutor()
         with self.assertRaises(DockerError):

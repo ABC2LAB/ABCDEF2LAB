@@ -247,6 +247,10 @@ def _read_cidfile(path: Path) -> str:
     return value
 
 
+class HelperCleanupInterrupt(KeyboardInterrupt):
+    """운영자 중단 중 러너 도우미 정리까지 실패했다. 중단은 그대로 올리되 결과에 docker_helper_cleanup_failed를 남긴다."""
+
+
 class EventStream:
     """`docker events --since`를 구간 동안 읽는다. 끊김·해석 불가·상한 초과는 불완전(complete=False)이다."""
 
@@ -503,6 +507,14 @@ class Docker:
             # 시간 초과·출력 상한이면 Docker CLI만 끝나고 도우미는 남아 보호 볼륨을 잡고 있을 수 있다(#693 리뷰). cidfile은
             # CLI가 쓰기 전에 끊길 수 있어, 이 호출의 라벨(역할)·볼륨으로 찾아 지우고 없어졌는지 확인한다.
             self._remove_helpers(role, volume)
+            raise
+        except KeyboardInterrupt:
+            # 운영자 중단도 중단을 다시 올리기 전에 같은 정리를 한다. 정리가 실패하면 그 사실을 중단 신호에 실어 결과에
+            # 따로 남긴다(HelperCleanupInterrupt).
+            try:
+                self._remove_helpers(role, volume)
+            except DockerError:
+                raise HelperCleanupInterrupt() from None
             raise
         files: dict[str, bytes] = {}
         try:
