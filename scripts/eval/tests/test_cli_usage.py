@@ -263,6 +263,8 @@ class TestCounting(unittest.TestCase):
             # 확장되는 heredoc은 이은 줄로 구분어를 비교한다: 첫 `E`는 `lineE`가 되어 닫지 못하고 다음 줄도 본문이다
             "cat <<E\nline\\\nE\nnpx --version\nE": (["cat"], [], False),
             "cat <<-E\n\tx\\\n\tE\nnpx --version\nE": (["cat"], [], True),  # `<<-` 탭 지우기와 겹치면 미확인
+            "cat <<E\na\\\\\nE\nnpx --version": (["cat", "npx"], [], False),  # 짝수 백슬래시는 막힌 글자라 잇지 않는다
+            '"n\\\npx" --version': (["npx"], [], False),  # 큰따옴표 안 줄 이음도 지운다(따옴표를 벗기면 npx)
             # 산술 확장은 낱말 하나다. 안쪽 공백으로 쪼개 `1`을 명령으로 세거나 뒤 명령을 놓치지 않는다(이번에 발견)
             "x=$(( 1 + 2 )) npx --version": (["npx"], [], False),
             "x=$(( 1 + 2 )); npx --version": (["npx"], [], False),
