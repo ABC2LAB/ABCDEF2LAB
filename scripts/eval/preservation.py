@@ -425,6 +425,10 @@ def main(argv: list[str] | None = None) -> int:
             if args.read_only != (args.profile == "R-R"):
                 raise PreservationError("preservation_profile_domain_mismatch")
             verified = validate_series(b, o, request_budget=args.budget, read_only=args.read_only)
+            # R-P·R-F·R-R는 수용시험 기준이다. 서명된 목적이 수용시험이 아닌 묶음(공식 회차 sidecar)은 이 기준으로 판정하지
+            # 않는다(#699 리뷰). 목적은 서명 검증을 지난 값이고 검증 결과(signed_evidence.purpose)에도 남는다.
+            if verified["purpose"] != "browser_acceptance":
+                raise PreservationError("preservation_profile_purpose_mismatch")
             # v10(= v8 + v9의 coverage·difference_claims): signed_evidence.exploration_boundary가 검증된 경계 원자료
             # (회차별 카운터·계측기 대조)를 담을 수 있다.
             summary.update(format=SIGNED_SUMMARY_FORMAT, signed_evidence=verified,
