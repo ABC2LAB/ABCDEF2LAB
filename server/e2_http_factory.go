@@ -129,6 +129,20 @@ func (l E2HTTPFileLimits) e3ConfirmationBehavior() (*e2export.E3ConfirmationShar
 	return &e2export.E3ConfirmationShare{Requests: *l.E3ConfirmationRequests, Timeout: time.Duration(*l.E3ConfirmationTimeoutMS) * time.Millisecond}, true
 }
 
+// e3ConfirmationShare는 정책의 확정 단계 몫을 읽고 실행 상한 안인지 본다: 요청 몫은 요청 상한의 1/4, 시간 몫은 유효
+// 창의 1/4 이하다. 정책 문서 검사(조회)와 실행 factory(런타임 로딩)가 같은 이 검사를 쓴다(#716 이동찬 리뷰).
+func (p E2HTTPFilePolicy) e3ConfirmationShare() (*e2export.E3ConfirmationShare, bool) {
+	share, ok := p.Limits.e3ConfirmationBehavior()
+	if !ok {
+		return nil, false
+	}
+	if share != nil && (share.Requests > p.MaxRequests/E3ConfirmationShareDivisor ||
+		share.Timeout > p.ValidUntil.Sub(p.ValidFrom)/E3ConfirmationShareDivisor) {
+		return nil, false
+	}
+	return share, true
+}
+
 type E2HTTPFileProxy struct {
 	HeaderTimeoutMS  int64 `json:"header_timeout_ms"`
 	RequestTimeoutMS int64 `json:"request_timeout_ms"`
@@ -392,7 +406,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		clear(auditKey)
 		return empty, ErrE2HTTPHost
 	}
-	share, shareOK := policy.Limits.e3ConfirmationBehavior()
+	share, shareOK := policy.e3ConfirmationShare()
 	if !shareOK {
 		clear(auditKey)
 		return empty, ErrE2HTTPHost

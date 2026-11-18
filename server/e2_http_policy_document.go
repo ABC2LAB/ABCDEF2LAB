@@ -133,9 +133,8 @@ func validateE2HTTPPolicyDocumentMode(raw []byte, prepared, run bool) (E2HTTPFil
 	if run {
 		limitOptional = append(limitOptional, "e3_confirmation_requests", "e3_confirmation_timeout_ms")
 	}
-	share, shareOK := policy.Limits.e3ConfirmationBehavior()
-	if !shareOK || share != nil && (!run || share.Requests > policy.MaxRequests/E3ConfirmationShareDivisor ||
-		share.Timeout > policy.ValidUntil.Sub(policy.ValidFrom)/E3ConfirmationShareDivisor) {
+	share, shareOK := policy.e3ConfirmationShare()
+	if !shareOK || share != nil && !run {
 		return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
 	}
 	for name, fields := range map[string]struct{ required, optional []string }{

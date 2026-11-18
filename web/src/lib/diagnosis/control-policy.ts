@@ -381,6 +381,12 @@ function parseRule(raw: unknown): PolicyRule | null {
 }
 
 const E3_SHARE_KEYS = ["e3_confirmation_requests", "e3_confirmation_timeout_ms"] as const;
+/** 확정 시간 몫 상한(ms) — 서버 e3ConfirmationBehavior 의 MaxFirstDiagnosisTaskSeconds×1000 과 같다. */
+const MAX_E3_SHARE_TIMEOUT_MS = 3_600_000;
+// BigInt 리터럴은 ES2020 미만 대상에서 못 쓴다.
+const NS_PER_MS = BigInt(1_000_000);
+const NS_PER_SEC = BigInt(1_000_000_000);
+const E3_SHARE_DIVISOR = BigInt(4);
 
 function parseLimits(raw: unknown): PolicyLimits | null {
   if (!isObj(raw) || !exactKeys(raw, LIMIT_KEYS, E3_SHARE_KEYS)) return null;
@@ -394,7 +400,13 @@ function parseLimits(raw: unknown): PolicyLimits | null {
   if (shareKeys.length === 2) {
     const requests = raw.e3_confirmation_requests;
     const timeoutMs = raw.e3_confirmation_timeout_ms;
-    if (!isNat(requests) || !isNat(timeoutMs) || (requests === 0) !== (timeoutMs === 0)) return null;
+    if (
+      !isNat(requests) ||
+      !isNat(timeoutMs) ||
+      (requests === 0) !== (timeoutMs === 0) ||
+      timeoutMs > MAX_E3_SHARE_TIMEOUT_MS
+    )
+      return null;
     if ((requests as number) * 4 > (raw.max_requests as number)) return null;
     e3Confirmation = { requests: requests as number, timeoutMs: timeoutMs as number };
   }
@@ -443,6 +455,14 @@ export function parseControlPolicyView(raw: unknown): ControlPolicy | null {
     typeof raw.audit_bound !== "boolean"
   )
     return null;
+  // 확정 시간 몫은 유효 창의 1/4 이하(서버: Timeout > (ValidUntil-ValidFrom)/4 거부, Duration ns 정수 나눗셈 = 4t > 창).
+  // 나노초 정수로 비교한다 — ms 로 줄이면 경계에서 서버와 판정이 갈린다.
+  if (limits.e3Confirmation) {
+    const from = parseInstant(raw.valid_from) as Instant;
+    const until = parseInstant(raw.valid_until) as Instant;
+    const windowNs = (BigInt(until.sec) - BigInt(from.sec)) * NS_PER_SEC + BigInt(until.nsec - from.nsec);
+    if (E3_SHARE_DIVISOR * BigInt(limits.e3Confirmation.timeoutMs) * NS_PER_MS > windowNs) return null;
+  }
   const rules: PolicyRule[] = [];
   for (const r of raw.rules) {
     const rule = parseRule(r);
