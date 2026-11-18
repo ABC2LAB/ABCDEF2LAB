@@ -1125,3 +1125,62 @@ func TestParseSamplingRanges(t *testing.T) {
 		}
 	}
 }
+
+// 조회는 라운드로 돈다: 라운드마다 답이 안 정해진 것만 한 번씩 묻고 라운드 사이에만 쉰다. 건마다 시도 수와 마지막 응답
+// 종류가 남는다(2026-11-18 파일럿: 건마다 순서대로 기다려 러너 시한을 넘고, 미확인 원인을 가를 기록이 없었다).
+func TestGenerationLookupRoundsAndTraces(t *testing.T) {
+	h := newHarness(t, backendAPI)
+	h.provider.lookups["a"] = []int{http.StatusOK}
+	h.provider.lookups["b"] = []int{http.StatusNotFound, http.StatusNotFound, http.StatusOK}
+	h.provider.lookups["c"] = []int{http.StatusUnauthorized}
+	h.provider.lookups["d"] = []int{http.StatusInternalServerError, http.StatusInternalServerError, http.StatusInternalServerError}
+	h.provider.lookups["e"] = []int{lookupEmptyProvider, lookupEmptyProvider, lookupEmptyProvider}
+	var sleeps []time.Duration
+	v := h.g.verifier()
+	v.sleep = func(d time.Duration) { sleeps = append(sleeps, d) }
+	got := v.lookupAll([]string{"a", "b", "c", "d", "e"})
+	want := map[string]lookupTrace{"a": {1, "verified"}, "b": {3, "verified"}, "c": {1, "http_401"}, "d": {3, "http_500"}, "e": {3, "no_provider"}}
+	for i, id := range []string{"a", "b", "c", "d", "e"} {
+		if got[i].ID != id || got[i].Lookup != want[id] || (got[i].Status == "verified") != (want[id].Last == "verified") {
+			t.Fatalf("%s: %+v", id, got[i])
+		}
+	}
+	// 쉬는 것은 라운드 사이 두 번뿐이다(건마다 쉬면 b·d·e 때문에 여섯 번)
+	if len(sleeps) != 2 || sleeps[0] != time.Millisecond || sleeps[1] != time.Millisecond {
+		t.Fatalf("sleeps %v", sleeps)
+	}
+	h.provider.mu.Lock()
+	var order []string
+	for _, call := range h.provider.calls {
+		if call.path == genPath {
+			order = append(order, call.query)
+		}
+	}
+	h.provider.mu.Unlock()
+	if strings.Join(order, ",") != "id=a,id=b,id=c,id=d,id=e,id=b,id=d,id=e,id=b,id=d,id=e" {
+		t.Fatalf("lookup order %v", order)
+	}
+}
+
+// 전체 시한(시도 수 × 간격 + 조회 한 번 상한)이 지나면 더 묻지 않고 표식을 쓴다. 한 번도 못 물은 것은 시도 0·deadline이다.
+func TestGenerationLookupStopsAtTheDeadline(t *testing.T) {
+	h := newHarness(t, backendAPI)
+	v := h.g.verifier()
+	clock := time.Unix(0, 0)
+	v.now = func() time.Time {
+		at := clock
+		clock = clock.Add(20 * time.Second) // 부를 때마다 20초씩 지난다
+		return at
+	}
+	v.sleep = func(time.Duration) { t.Fatal("must not sleep after the deadline") }
+	if v.lookupDeadline() != 3*time.Millisecond+generationLookupTimeout {
+		t.Fatalf("deadline %v", v.lookupDeadline())
+	}
+	got := v.lookupAll([]string{"a", "b", "c"})
+	want := []lookupTrace{{1, "http_404"}, {0, "deadline"}, {0, "deadline"}}
+	for i := range got {
+		if got[i].Status != "unverified" || got[i].Lookup != want[i] {
+			t.Fatalf("%d: %+v", i, got[i])
+		}
+	}
+}

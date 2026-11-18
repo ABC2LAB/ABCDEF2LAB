@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import synthetic_gt  # noqa: E402,F401  합성 정답 목록을 먼저 끼운다(정답표 노출 방지)
 from path_mask import key_ref, mask_path
 from preservation import EXCLUSIONS_FORMAT, Round, summarize, Exclusions
 from preservation_record import (NAME, OPTIONS_FORMAT, PreservationRecordError, assessment, build_payload,

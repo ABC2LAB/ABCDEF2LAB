@@ -18,6 +18,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import synthetic_gt  # noqa: E402,F401  합성 정답 목록을 먼저 끼운다(정답표 노출 방지)
 
 from aggregate import count_basis  # noqa: E402
 from collect import ScanOutputError, ScanParseResult  # noqa: E402
@@ -42,7 +43,7 @@ from run_fixture import RunFixture  # noqa: E402
 _SCORED_KEYS = sorted({c.key for c in core_gt() + bac_category()})
 
 # 합성 GT 상관: type 접두부 → 챌린지. 나머지 코어 챌린지는 type 없음(빈 배열).
-_TYPES = {"basketAccessChallenge": ["rest:basket"], "forgedFeedbackChallenge": ["rest:feedback"]}
+_TYPES = {"synthBacH1Challenge": ["rest:basket"], "synthBacH3Challenge": ["rest:feedback"]}
 
 
 def _record(oracle_value: str, resource_ref: str, **overrides: object) -> dict:
@@ -120,7 +121,7 @@ class TestTitleMapping(_RunDir):
 
     def test_title_field_in_record_rejected(self) -> None:
         # 레코드가 제목을 실어 오면 계약 밖 필드로 막힌다 — 제목으로 상관할 길이 없다.
-        run = self.make_run("r0", [_record("confirmed", "rest:basket:1", name="View Basket")])
+        run = self.make_run("r0", [_record("confirmed", "rest:basket:1", name="Synthetic Bac H 1")])
         with self.assertRaises(ScanOutputError):
             score_repeat(self.load([run])[0], self.correlate, runner_key=self.runner_key)
         code, out, _ = self.run_main([run])
@@ -170,7 +171,7 @@ class TestEvidenceAndCoverage(_RunDir):
 
     def test_t4_cli_path_confirmed_solved_is_undecided(self) -> None:
         # traffic 인덱스 없음(지금 CLI 경로) → 증거 (b)(c) 확인 불가 → 확정 아님.
-        run = self.make_run("r0", self._SOLID, solved={"basketAccessChallenge": True})
+        run = self.make_run("r0", self._SOLID, solved={"synthBacH1Challenge": True})
         c = self._core(run)
         self.assertEqual((c.confirmed, c.false_positive), (0, 0))
         code, out, _ = self.run_main([run])
@@ -179,7 +180,7 @@ class TestEvidenceAndCoverage(_RunDir):
 
     def test_confirmed_only_with_traffic_index_fixture(self) -> None:
         # 확정 칸은 traffic 인덱스가 붙어야(지금은 fixture에서만) 나온다.
-        run = self.make_run("r0", self._SOLID, solved={"basketAccessChallenge": True})
+        run = self.make_run("r0", self._SOLID, solved={"synthBacH1Challenge": True})
         self.assertEqual(self._core(run, traffic=self._TRAFFIC).confirmed, 1)
 
     def test_t4_records_without_solid_ref_stay_undecided_even_with_index(self) -> None:
@@ -187,7 +188,7 @@ class TestEvidenceAndCoverage(_RunDir):
             _record("confirmed", "rest:basket:1"),
             _record("confirmed", "rest:basket:2", traffic_evidence_refs=["t-gone", "t-login"]),
         ]
-        run = self.make_run("r0", noisy, solved={"basketAccessChallenge": True})
+        run = self.make_run("r0", noisy, solved={"synthBacH1Challenge": True})
         c = self._core(run, traffic={"t-login": "rest:user:login"})
         self.assertEqual((c.confirmed, c.undecided), (0, 9))
 
@@ -197,17 +198,17 @@ class TestEvidenceAndCoverage(_RunDir):
 
     def test_solve_without_finding_is_missed(self) -> None:
         # basket은 합성 상관에 type이 있다(상관 가능) → 해결됐는데 판정 없음 = 귀속 가능한 미탐.
-        c = self._core(self.make_run("r0", [], solved={"basketAccessChallenge": True}))
+        c = self._core(self.make_run("r0", [], solved={"synthBacH1Challenge": True}))
         self.assertEqual((c.missed, c.undecided), (1, 8))
 
     def test_solve_on_uncorrelatable_challenge_is_undecided(self) -> None:
         # forgedReview는 type이 없다 → 레코드가 붙을 길이 없어 '판정 없음'을 모른다 → 판단불가.
-        c = self._core(self.make_run("r0", [], solved={"forgedReviewChallenge": True}))
+        c = self._core(self.make_run("r0", [], solved={"synthBacH4Challenge": True}))
         self.assertEqual((c.missed, c.undecided), (0, 9))
 
     def test_cli_passes_correlatable_from_table(self) -> None:
         # CLI가 GT 상관 표의 type 있는 챌린지를 게이트로 넘기는지 — 안 넘기면 이 미탐이 판단불가로 사라진다.
-        code, out, _ = self.run_main([self.make_run("r0", [], solved={"basketAccessChallenge": True})])
+        code, out, _ = self.run_main([self.make_run("r0", [], solved={"synthBacH1Challenge": True})])
         self.assertEqual(code, 0)
         self.assertIn("| 우리@test | — | — | — | 0 (n=1) | 0 (n=1) | 1 (n=1) | 8 (n=1) | 0 (n=1) |", out)
 
@@ -215,20 +216,20 @@ class TestEvidenceAndCoverage(_RunDir):
         # 지금 레포 상태 재현: types 전부 비어 있음 → basket을 찾은 레코드가 out-of-list로 빠지고
         # 챌린지는 해결됨. 예전엔 '판정 없음 + 해결'로 미탐 1이 샜다 — 이제 판단불가.
         empty = self._write_correlation(types={}, name="gt_correlation_empty.json")
-        run = self.make_run("r0", self._SOLID, solved={"basketAccessChallenge": True})
+        run = self.make_run("r0", self._SOLID, solved={"synthBacH1Challenge": True})
         code, out, _ = self.run_main([run], correlation_path=empty)
         self.assertEqual(code, 0)
         self.assertIn("| 우리@test | — | — | — | 0 (n=1) | 0 (n=1) | 0 (n=1) | 9 (n=1) | 1 (n=1) |", out)
 
     def test_coverage_fixture_turns_unsolved_no_finding_into_missed(self) -> None:
         # basket·forgedFeedback은 합성 상관에 type이 있다(상관 가능).
-        covered = frozenset({"basketAccessChallenge", "forgedFeedbackChallenge"})
+        covered = frozenset({"synthBacH1Challenge", "synthBacH3Challenge"})
         c = self._core(self.make_run("r0", []), covered=covered)
         self.assertEqual((c.missed, c.undecided), (2, 7))
 
     def test_coverage_on_uncorrelatable_challenges_stays_undecided(self) -> None:
         # admin·feedback(별점)은 type이 없다 → 커버리지가 있어도 '판정 없음'을 모른다 → 판단불가.
-        covered = frozenset({"adminSectionChallenge", "feedbackChallenge"})
+        covered = frozenset({"synthBacV1Challenge", "synthBacV2Challenge"})
         c = self._core(self.make_run("r0", []), covered=covered)
         self.assertEqual((c.missed, c.undecided), (0, 9))
 
@@ -248,7 +249,7 @@ class TestWarnings(_RunDir):
         self.assertEqual(len(warnings), 1)
         self.assertIn("ALLOWED 이상치", warnings[0])
         self.assertIn("우리@test#0", warnings[0])
-        self.assertIn("'basketAccessChallenge'", warnings[0])
+        self.assertIn("'synthBacH1Challenge'", warnings[0])
         self.assertEqual((counts.undecided, counts.missed), (9, 0))  # 판단불가 그대로, 미탐으로 안 감
 
     def test_conflict_warns_without_changing_counts(self) -> None:
@@ -260,14 +261,14 @@ class TestWarnings(_RunDir):
         self.assertEqual(plain_warnings, ())
         self.assertEqual(len(mixed_warnings), 1)
         self.assertIn("모순", mixed_warnings[0])
-        self.assertIn("'basketAccessChallenge'", mixed_warnings[0])
+        self.assertIn("'synthBacH1Challenge'", mixed_warnings[0])
 
     def test_dangling_ref_names_record_and_missing_refs_only(self) -> None:
         records = [_record("confirmed", "rest:basket:1", traffic_evidence_refs=["t-ok", "t-gone"])]
         _, warnings = self._counts(records, traffic={"t-ok": "rest:basket:1"})
         self.assertEqual(len(warnings), 1)
         self.assertIn("끊긴 ref", warnings[0])
-        self.assertIn("'basketAccessChallenge'", warnings[0])
+        self.assertIn("'synthBacH1Challenge'", warnings[0])
         self.assertIn("rest:basket:1", warnings[0])
         self.assertIn("'t-gone'", warnings[0])
         self.assertNotIn("t-ok", warnings[0])
@@ -298,8 +299,8 @@ class TestSameScript(_RunDir):
         self.assertIs(base.engine, Engine.BASELINE)
         parsed = ScanParseResult(verdicts={}, out_of_list=("rest:x:1",), conflicts=())
         solved = {k: False for k in _SCORED_KEYS}
-        args = (parsed, solved, {"basketAccessChallenge": True}, frozenset({"feedbackChallenge"}),
-                frozenset({"basketAccessChallenge"}))
+        args = (parsed, solved, {"synthBacH1Challenge": True}, frozenset({"synthBacV2Challenge"}),
+                frozenset({"synthBacH1Challenge"}))
         self.assertEqual(assemble_repeat(ours, *args), assemble_repeat(base, *args))
 
     def test_baseline_is_error_not_zero(self) -> None:
@@ -451,8 +452,8 @@ class TestSnapshotGuard(_RunDir):
     """T8 — 스냅샷에 GT key가 빠지면 미해결로 넘기지 않고 멈춘다(§2)."""
 
     def test_missing_gt_key_stops_scoring(self) -> None:
-        run = self.make_run("r0", [], drop_keys=("basketAccessChallenge",))
-        with self.assertRaisesRegex(SnapshotError, "basketAccessChallenge"):
+        run = self.make_run("r0", [], drop_keys=("synthBacH1Challenge",))
+        with self.assertRaisesRegex(SnapshotError, "synthBacH1Challenge"):
             score_repeat(self.load([run])[0], self.correlate, runner_key=self.runner_key)
         self.assertEqual(self.run_main([run])[:2], (2, ""))
 

@@ -347,7 +347,10 @@ def _validate_product(block, baseline: bool) -> None:
     overwrites, records = block["sampling_overwrites"], block["call_records"]
     if (not isinstance(block["source_sha"], str) or not re.fullmatch(r"[a-f0-9]{40}", block["source_sha"])
             or not isinstance(images, dict) or set(images) != PRODUCT_IMAGES or not all(_image(v) for v in images.values())
-            or not isinstance(files, dict) or set(files) != PRODUCT_FILES or not all(_hex(v) for v in files.values())
+            or not isinstance(files, dict) or set(files) != PRODUCT_FILES
+            # 진단 실행이 붙지 않은 회차(탐색 중 예산 소진)는 실행 조건 파일이 없어 그 SHA만 null이다(#693)
+            or not all(_hex(v) for name, v in files.items() if name != "runtime_conditions")
+            or files["runtime_conditions"] is not None and not _hex(files["runtime_conditions"])
             or not isinstance(conditions, dict) or set(conditions) != SPLIT_CONDITION_FIELDS
             or not _hex(conditions["workflow_defaults_sha256"])
             or not isinstance(overwrites, dict) or set(overwrites) != {"execution", "preparation"}

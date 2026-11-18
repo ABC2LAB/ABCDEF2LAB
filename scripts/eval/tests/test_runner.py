@@ -20,6 +20,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import synthetic_gt  # noqa: E402,F401  합성 정답 목록을 먼저 끼운다(정답표 노출 방지)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import runner
@@ -509,6 +510,15 @@ class FakePorts:
     def findings(self):
         self._call("findings")
         return {"items": 0}
+
+    command_rows = [{"tool": "Bash", "command": '{"command":"npx playwright test && curl x"}', "output": "", "failed": False},
+                    {"tool": "Bash", "command": '{"command":"pip3 install y"}', "output": "", "failed": True},
+                    {"tool": "WebFetch", "command": '{"url":"http://x"}', "output": "", "failed": False}]
+
+    def command_records(self, task_id):
+        self._call("command_records")
+        self.command_task = task_id
+        return {"exploration_id": 5, "records": list(self.command_rows)}
 
     def e2_service_ready(self):
         self._call("e2_service_ready")
@@ -1109,6 +1119,31 @@ class TestCompleteRun(unittest.TestCase):
         task = evidence.files["task.json"]
         self.assertEqual((task["task_origin"], task["goal_common_sha256"]), ("http://app.eval.test:8080", "c" * 64))
 
+    def test_cli_usage_counts_only_names(self):
+        # 분리 배치 B 회차: 원본 도구 실행 기록에서 B에만 있는 CLI 이름별 등장 수(상한)만 남긴다(결정안 §10, 2026-11-18).
+        spec = dataclasses.replace(make_spec(), cli_usage_names=("npx", "pip3", "vim"))
+        result, ports, meter, evidence = run(spec=spec)
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertEqual(ports.calls[ports.calls.index("findings") + 1], "command_records")
+        self.assertEqual(ports.command_task, "17")  # 이 회차가 만든 작업 번호
+        usage = evidence.files["cli-usage.json"]
+        self.assertEqual((usage["bash_calls"], usage["occurrences"], usage["names_seen"], usage["names"], usage["exploration_id"]),
+                         (2, {"npx": 1, "pip3": 1}, ["npx", "pip3"], ["npx", "pip3", "vim"], 5))
+        self.assertEqual(usage["format"], "abc2lab.cli-usage/v3")
+        self.assertNotIn("not_found", usage)
+        self.assertNotIn("playwright test", json.dumps(evidence.files))  # 명령 원문은 남지 않는다
+        self.assertNotIn("command_records", run()[1].calls)  # 이름이 없으면(분리 배치 아님·O) 읽지 않는다
+
+    def test_cli_usage_failure_is_a_step_code(self):
+        spec = dataclasses.replace(make_spec(), cli_usage_names=("npx",))
+
+        def broken(ports, meter, clock):
+            def fail(task_id):
+                raise EngineAPIError("engine_commands_incomplete")
+            ports.command_records = fail
+        result, _, _, _ = run(broken, spec=spec)
+        self.assertEqual(result["reasons"][0], "cli_usage_failed")
+
     def split_b_spec(self):
         from test_preservation_record import options
         from test_runner_checks import PROJECT
@@ -1172,6 +1207,20 @@ class TestCompleteRun(unittest.TestCase):
         self.assertRegex(spec.goal_common_sha256, r"^[0-9a-f]{64}$")
         plain, _, _, _ = run()
         self.assertNotIn("goal_common_sha256", plain["run_conditions"])
+
+    def test_split_round_records_cli_usage_and_v3_together(self):
+        # dev 합침(#696): 분리 배치 B 회차는 B 전용 CLI 호출 수(findings 뒤, 내리기 전)와 v3 발행(도구 면은 띄우기 전, 발행은
+        # 내린 뒤)을 한 회차에서 함께 한다. 단계 순서가 겹치지 않는다.
+        spec = dataclasses.replace(self.split_b_spec(), cli_usage_names=("npx",))
+        with patch.object(runner, "preservation_payload_v3", return_value={"format": "test-unsigned-v3"}):
+            result, ports, _, evidence = run(lambda p, m, c: setattr(m, "path_log", True), spec=spec)
+        self.assertEqual(result["status"], COMPLETE, result)
+        calls = ports.calls
+        self.assertLess(calls.index("tool_surface"), calls.index("up"))
+        self.assertLess(calls.index("findings"), calls.index("command_records"))
+        self.assertLess(calls.index("command_records"), calls.index("down"))
+        self.assertIn("cli-usage.json", evidence.files)
+        self.assertIn("tool-surface.json", evidence.files)
 
     def test_split_v3_fields_follow_the_runner_settings(self):
         # 공통 러너 설정 칸은 B·O가 같아야 하는 값만, 쪽별 구동 설정은 B 구동 칸만 묶는다.

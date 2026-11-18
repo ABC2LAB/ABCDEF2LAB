@@ -102,7 +102,14 @@ func TestGenerationVerifySharesGatewayLookup(t *testing.T) {
 	h.provider.mu.Lock()
 	h.provider.lookups["gen-a"] = []int{http.StatusOK}
 	h.provider.mu.Unlock()
-	if got := h.g.verifier().lookup("gen-a"); !reflect.DeepEqual(got, m.Generations[0]) {
+	// 조회 흔적은 시도 수만 다르다(표식 쪽은 404 뒤 두 번째 시도에 확인됐다).
+	if m.Generations[0].Lookup != (lookupTrace{Tries: 2, Last: "verified"}) || m.Generations[1].Lookup != (lookupTrace{Tries: 1, Last: "verified"}) {
+		t.Fatalf("lookup traces %+v", m.Generations)
+	}
+	got := h.g.verifier().lookupAll([]string{"gen-a"})[0]
+	marked := m.Generations[0]
+	marked.Lookup = lookupTrace{Tries: 1, Last: "verified"}
+	if !reflect.DeepEqual(got, marked) {
 		t.Fatalf("gateway lookup %+v, verify marker %+v", got, m.Generations[0])
 	}
 }
