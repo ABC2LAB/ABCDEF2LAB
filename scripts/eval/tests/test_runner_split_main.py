@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import io
 import json
 import os
@@ -32,7 +33,10 @@ from test_runner_split_inputs import FakeOpenssl  # noqa: E402
 
 # 사전검사 픽스처(test_preflight.api_llm)와 같은 모델·제공자·base_url(실제 manifest는 openrouter.ai 고정이고, 선언도 그 값이어야 한다).
 MANIFEST = {"version": 3, "model": "example-org/example-model", "provider_slug": "example-provider", "approval_id": "approval-test-1",
-            "base_url": "https://llm-api.example/api/v1", "max_requests": 400}
+            "expected_provider_name": "Example",
+            "base_url": "https://llm-api.example/api/v1", "max_requests": 400, "max_input_tokens": 2000000,
+            "max_output_tokens": 200000, "max_cost_usd_micros": 1000000, "max_input_tokens_per_call": 120000,
+            "max_output_tokens_per_call": 8192}
 
 
 def preflight_for(config, **ours):
@@ -93,7 +97,8 @@ class TestDeclared(Fixture):
 
     def test_model_and_provider_must_be_the_manifest(self):
         for change in ({"model": "other/model"}, {"provider_slug": "other-provider"},
-                       {"base_url": "https://other-api.example/api/v1"}):  # #674 리뷰: 다른 origin으로 키를 보내지 않게
+                       {"base_url": "https://other-api.example/api/v1"},  # #674 리뷰: 다른 origin으로 키를 보내지 않게
+                       {"expected_provider_name": "Exam ple"}, {"expected_provider_name": "example"}):  # 러너 판정 이름과 다르면 거부
             with self.subTest(change=change), self.assertRaises(RunnerConfigError) as caught:
                 split_declared(self.config, preflight_for(self.config), dict(MANIFEST, **change))
             self.assertEqual(caught.exception.errors, ["preflight.ours.llm: MANIFEST_MISMATCH"])
@@ -141,14 +146,14 @@ class TestSpec(Fixture):
 
 
 class TestMainDispatch(Fixture):
-    def call_main(self, side):
+    def call_main(self, side, repeat="0"):
         with mock.patch.object(runner, "load_runner_config", return_value=self.config), \
                 mock.patch.object(runner, "load_preflight", return_value=preflight_for(self.config)), \
                 mock.patch.object(runner, "check_key_files", return_value="a" * 16), \
                 mock.patch.object(runner_split_main, "run_split_ours", return_value=7) as split_run, \
                 mock.patch.object(runner.getpass, "getpass", side_effect=AssertionError("O는 비밀번호를 묻지 않는다")), \
                 redirect_stderr(io.StringIO()):
-            code = runner.main(["--config", "c.json", "--preflight", "p.json", "--side", side, "--condition", "x", "--repeat", "0"])
+            code = runner.main(["--config", "c.json", "--preflight", "p.json", "--side", side, "--condition", "x", "--repeat", repeat])
         return code, split_run
 
     def test_ours_with_split_goes_to_the_product_layout(self):
@@ -156,6 +161,9 @@ class TestMainDispatch(Fixture):
         self.assertEqual(code, 7)
         split_run.assert_called_once()
         self.assertIs(split_run.call_args.args[0], self.config)
+        # 반복 순번은 B와 같이 --repeat에서 받는다(보존 sidecar v3의 repeat_index)
+        _, split_run = self.call_main("ours", repeat="2")
+        self.assertEqual(split_run.call_args.kwargs["repeat_index"], 2)
 
     def test_baseline_stays_on_the_direct_layout(self):
         with mock.patch.object(runner, "plan_run", side_effect=RunnerConfigError(["stop-here"])):
@@ -228,6 +236,7 @@ class TestBeforeUp(Fixture):
             seen.update(spec=spec, ports=ports, meter=meter, evidence=evidence)
             private = Path(ports.inputs.directory)
             seen["path_key"] = (private / "path.key").read_bytes()
+            seen["boundary_sha"] = hashlib.sha256((private / "boundary.json").read_bytes()).hexdigest()
             return {"run_id": spec.run_id, "status": "complete"}
 
         rendered = {"services": {"api": {"healthcheck": {"test": ["CMD-SHELL", "true"]}}}}
@@ -240,6 +249,10 @@ class TestBeforeUp(Fixture):
         self.assertEqual(seen["ports"].llm_env, llm_lookup_env(self.config, preflight_for(self.config)))
         self.assertEqual(seen["ports"].model_key.reveal(), "sk-or-v1-test")
         self.assertEqual(seen["path_key"], self.path_key.read_bytes())  # 경계 키 = B 계측기 키
+        # 보존 v3 쪽별 칸: 경계 설정 지문은 보호 입력 boundary.json 바이트, 예산 지문은 manifest 예산 값만
+        import preservation_v3_fields as v3f
+        self.assertEqual(seen["spec"].exploration_policy_sha256, seen["boundary_sha"])
+        self.assertEqual(seen["spec"].model_budget_sha256, v3f.model_budget_sha256(MANIFEST))
         # 계측기 기록 대조·서명 조건에 쓰는 키 지문(값이 아님)은 경계에 준 바로 그 바이트에서 뜬다(#699 리뷰)
         from path_mask import key_ref
         self.assertEqual(seen["spec"].path_key_ref, key_ref(seen["path_key"]))
@@ -267,6 +280,18 @@ class TestBeforeUp(Fixture):
         self.assertEqual(code, 0)
         self.assertEqual((seen["key"], seen["ref"]), (swapped, key_ref(swapped)))
         self.assertNotEqual(seen["ref"], key_ref(self.path_key.read_bytes()))
+
+    def test_manifest_without_budget_values_is_a_config_error(self):
+        import preservation_v3_fields as v3f
+        broken = {k: v for k, v in MANIFEST.items() if k != "max_cost_usd_micros"}
+        self.assertIsNone(v3f.model_budget_sha256(broken))
+        self.assertIsNone(v3f.model_budget_sha256(dict(MANIFEST, max_requests=True)))
+        self.assertIsNone(v3f.model_budget_sha256(dict(MANIFEST, max_requests=0)))
+        with mock.patch.object(runner_split_main, "read_manifest", return_value=broken), \
+                mock.patch.object(runner_split_main.Docker, "compose_config", lambda self, args: {"services": {}}), \
+                mock.patch.object(runner_split_main.Docker, "env_file_value", lambda docker, path, name, scratch: "sk-or-v1-test"):
+            code, err = self.run_ours(execute_split_run=lambda *a: self.fail("회차를 시작하면 안 된다"))
+        self.assertEqual((code, err.strip()), (2, "split.manifest: BUDGET_INVALID"))
 
     def test_invalid_run_exits_one(self):
         with mock.patch.object(runner_split_main.Docker, "compose_config", lambda self, args: {"services": {}}), \

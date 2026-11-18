@@ -1,0 +1,127 @@
+{
+ "format": "abc2lab.eval-gt/v1",
+ "target": "synthetic fixture (no real challenges)",
+ "source": "합성 시험용 정답 목록(실제 정답과 같은 묶음·축 구성, 이름은 합성)",
+ "challenges": [
+  {
+   "key": "synthBacV1Challenge",
+   "name": "Synthetic Bac V 1",
+   "axis": "V",
+   "group": "bac_category",
+   "in_core_gt": true,
+   "in_bac_category": true
+  },
+  {
+   "key": "synthBacH1Challenge",
+   "name": "Synthetic Bac H 1",
+   "axis": "H",
+   "group": "bac_category",
+   "in_core_gt": true,
+   "in_bac_category": true
+  },
+  {
+   "key": "synthBacV2Challenge",
+   "name": "Synthetic Bac V 2",
+   "axis": "V",
+   "group": "bac_category",
+   "in_core_gt": true,
+   "in_bac_category": true
+  },
+  {
+   "key": "synthBacH2Challenge",
+   "name": "Synthetic Bac H 2",
+   "axis": "H",
+   "group": "bac_category",
+   "in_core_gt": true,
+   "in_bac_category": true
+  },
+  {
+   "key": "synthBacV3Challenge",
+   "name": "Synthetic Bac V 3",
+   "axis": "V",
+   "group": "bac_category",
+   "in_core_gt": true,
+   "in_bac_category": true
+  },
+  {
+   "key": "synthBacOut1Challenge",
+   "name": "Synthetic Bac Out 1",
+   "axis": "-",
+   "group": "bac_category",
+   "in_core_gt": false,
+   "in_bac_category": true
+  },
+  {
+   "key": "synthBacH3Challenge",
+   "name": "Synthetic Bac H 3",
+   "axis": "H",
+   "group": "bac_category",
+   "in_core_gt": true,
+   "in_bac_category": true
+  },
+  {
+   "key": "synthBacH4Challenge",
+   "name": "Synthetic Bac H 4",
+   "axis": "H",
+   "group": "bac_category",
+   "in_core_gt": true,
+   "in_bac_category": true
+  },
+  {
+   "key": "synthBacOut2Challenge",
+   "name": "Synthetic Bac Out 2",
+   "axis": "-",
+   "group": "bac_category",
+   "in_core_gt": false,
+   "in_bac_category": true
+  },
+  {
+   "key": "synthBacOut3Challenge",
+   "name": "Synthetic Bac Out 3",
+   "axis": "-",
+   "group": "bac_category",
+   "in_core_gt": false,
+   "in_bac_category": true
+  },
+  {
+   "key": "synthAuthzV1Challenge",
+   "name": "Synthetic Authz V 1",
+   "axis": "V",
+   "group": "other_category_authz",
+   "in_core_gt": true,
+   "in_bac_category": false
+  },
+  {
+   "key": "synthAuthzH1Challenge",
+   "name": "Synthetic Authz H 1",
+   "axis": "H",
+   "group": "other_category_authz",
+   "in_core_gt": true,
+   "in_bac_category": false
+  },
+  {
+   "key": "synthFlowBf1Challenge",
+   "name": "Synthetic Flow Bf 1",
+   "axis": "BF",
+   "group": "business_flow",
+   "in_core_gt": false,
+   "in_bac_category": false
+  },
+  {
+   "key": "synthFlowBf2Challenge",
+   "name": "Synthetic Flow Bf 2",
+   "axis": "BF",
+   "group": "business_flow",
+   "in_core_gt": false,
+   "in_bac_category": false
+  },
+  {
+   "key": "synthFlowBf3Challenge",
+   "name": "Synthetic Flow Bf 3",
+   "axis": "BF",
+   "group": "business_flow",
+   "in_core_gt": false,
+   "in_bac_category": false
+  }
+ ]
+}

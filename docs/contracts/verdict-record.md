@@ -64,6 +64,24 @@ E③ 오라클(`oracle.Evaluate`)이 내는 **구조화 판정 1건**을 저장�
 | `model_tag` | string | 판정 run 의 LLM 태그(평가 통제변수, baseline·개선 동일 문자열) |
 | `created_at` | ts | 생성시각 |
 
+### (f) 출처 종류 (2026-11-18 사용자 결정 ①(가))
+평가 등록 GET 경로와 제품 확정 경로(#698 계약 `docs/contracts/e3-product-confirmation-interface.md`)의 판정은 같은 표(`e3_verdict_issuances`·`e3_oracle_verdicts`·`e3_evidence_manifests`)에 둔다. 칸을 더하기만 했고, 한 행은 한 출처의 칸만 갖는다(표 검사 `e3_issuance_source_fields`).
+
+| 칸 | 평가(`eval`) | 제품(`product`) |
+|---|---|---|
+| `source_kind` | 기존 행 전부 기본값 `eval` | `product` |
+| `intent_id`·`mode_version` | 필수(통제 모드·intent 저장 조건 그대로) | 없음(NULL) |
+| `kg_snapshot_ref`·`kg_policy_version`·`kg_snapshot_digest` | 필수 | 없음(NULL). 정책 정본은 KG가 아니라 선언 동결본 |
+| `eval_run_id` | 평가 회차일 때 | 없음(NULL) |
+| `policy_source_ref`·`policy_source_digest`·`policy_target_approval_revision` | 없음(NULL) | 필수. 실행 시작 때 동결한 정책 선언(`runs/<job>/e3-declaration.json`)의 참조·SHA-256·대상 승인 판 |
+| `product_reason_codes`·`candidate_refs` | 없음(NULL) | 필수(JSON 배열, 빈 배열 가능). 증거 부족 사유와 검증된 후보 연결 |
+| 판정 정본 `record_version` | 1 (`e3record`) | 2 (`e3-product-verdict/v1`) |
+
+- 제품 판정은 finding을 만들지 않는다. 후보는 `manual_review_required` 그대로이고 `candidate_refs`로만 잇는다(결정 §9).
+- 확정(CONFIRMED) 제품 판정은 세 검사(policy·identity·data)가 모두 yes, 근거 호출 1개 이상, 제품 사유 없음일 때만 저장한다.
+- 같은 회차의 종류별 제품 판정은 근거 묶음(봉인한 E² 저널 참조·digest) 하나를 함께 가리킨다. 같은 작업·실행 참조에 평가 근거 묶음이 이미 있으면 거부한다.
+- 기존 읽기(보고서, 접근통제 지도, 수정 근거, 감독자 저장 확인)는 `source_kind='eval'`만 읽는다. 제품 판정은 출처를 싣는 별도 읽기(`db.ProductVerdicts`, 판정 상세 API)로만 나온다. 보고서·지도에서 제품 판정을 출처 표시와 함께 보이는 일은 결정 §9 화면 작업이다.
+
 ## 3. 마스킹 (절대규칙 2·8 — 하드 규칙)
 - 저장 금지: 응답 본문 원문, canary **값**, 인증 헤더·쿠키·토큰·비밀번호·계정 원문, HMAC 키.
 - 저장 허용: 필드 **이름**, 비교 신호 **불리언/enum**, 증거 **ref/id**, 주체 **라벨**.

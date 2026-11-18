@@ -10,7 +10,7 @@
 
 ## 0. 범위
 - **v0.1 = 수평(horizontal) IDOR 조회 전용.** "B가 A의 등록 자원을 조회했을 때, 애플리케이션 정책상 금지인가"를 구조화 증거로 판정한다.
-- **수직 인가는 범위 밖(후속 수직 오라클).** 평가 코어 GT 9개 중 수직 4개 — `adminSectionChallenge`·`feedbackChallenge`·`changeProductChallenge`·`registerAdminChallenge` — 는 이 오라클 대상이 아니다. v0.1 대상은 수평 5개(`basketAccessChallenge`·`basketManipulateChallenge`·`forgedFeedbackChallenge`·`forgedReviewChallenge`·`dataExportChallenge`).
+- **수직 인가는 범위 밖(후속 수직 오라클).** 평가 코어 GT 9개 중 수직 4개는 이 오라클 대상이 아니다. v0.1 대상은 수평 5개(목록은 평가 정답 파일 `evaluation-gt/juice-shop-v15/challenges.md`, 평가 전용).
 - **평가 GT 채점(스코어보드)은 이 오라클과 무관.** baseline·개선 후 점수는 평가 프로토콜대로 Juice Shop 챌린지 실제 해결 상태로 매긴다. 이 오라클은 **우리 엔진의 확정 판정 정밀도**를 위한 것이지 채점기가 아니다.
 
 ## 1. 판정 모델
