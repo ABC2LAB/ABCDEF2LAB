@@ -157,6 +157,39 @@ describe("parseControlPolicyView (fail-closed)", () => {
     expect(p?.rules[0].methods).toEqual(["GET", "HEAD", "POST"]);
     expect(p?.mock).toBeUndefined();
   });
+  it("확정 몫: 칸 없음은 undefined, 0(꺼짐)·1/4 이하 양수는 그대로 — 칸 없음과 0을 섞지 않는다", () => {
+    const plain = parseControlPolicyView(wire());
+    expect(plain).not.toBeNull();
+    expect(plain).not.toHaveProperty("limits.e3Confirmation");
+    const off = parseControlPolicyView(
+      wire({ limits: { ...(wire().limits as object), e3_confirmation_requests: 0, e3_confirmation_timeout_ms: 0 } }),
+    );
+    expect(off).toMatchObject({ limits: { e3Confirmation: { requests: 0, timeoutMs: 0 } } });
+    const on = parseControlPolicyView(
+      wire({
+        limits: { ...(wire().limits as object), e3_confirmation_requests: 16, e3_confirmation_timeout_ms: 160000 },
+      }),
+    );
+    expect(on).toMatchObject({ limits: { e3Confirmation: { requests: 16, timeoutMs: 160000 } } });
+  });
+  it("확정 시간 몫 경계: 정확히 1/4 와 정확히 3,600,000ms 는 받는다", () => {
+    const quarter = parseControlPolicyView(
+      wire({
+        valid_from: "2026-11-13T00:00:00Z",
+        valid_until: "2026-11-13T01:00:00Z",
+        limits: { ...(wire().limits as object), e3_confirmation_requests: 1, e3_confirmation_timeout_ms: 900_000 },
+      }),
+    );
+    expect(quarter).toMatchObject({ limits: { e3Confirmation: { requests: 1, timeoutMs: 900_000 } } });
+    const max = parseControlPolicyView(
+      wire({
+        valid_from: "2026-11-13T00:00:00Z",
+        valid_until: "2026-11-13T04:00:00Z",
+        limits: { ...(wire().limits as object), e3_confirmation_requests: 1, e3_confirmation_timeout_ms: 3_600_000 },
+      }),
+    );
+    expect(max).toMatchObject({ limits: { e3Confirmation: { requests: 1, timeoutMs: 3_600_000 } } });
+  });
   it("path_match exact 는 =/… 로 보이고, 생략은 접두", () => {
     const p = parseControlPolicyView(wire({ rules: rule0({ path_match: "exact", path_prefix: "/rest/basket/1" }) }));
     expect(p?.rules[0].pathMatch).toBe("exact");
@@ -183,6 +216,44 @@ describe("parseControlPolicyView (fail-closed)", () => {
     ["요청 상한 0", { limits: { ...(wire().limits as object), max_requests: 0 } }],
     ["모르는 최상위 칸", { approved_by: "someone" }],
     ["상한에 모르는 칸", { limits: { ...(wire().limits as object), max_bytes_total: 1 } }],
+    ["확정 몫 요청만", { limits: { ...(wire().limits as object), e3_confirmation_requests: 0 } }],
+    ["확정 몫 시간만", { limits: { ...(wire().limits as object), e3_confirmation_timeout_ms: 0 } }],
+    [
+      "확정 몫 요청 0·시간 양수",
+      { limits: { ...(wire().limits as object), e3_confirmation_requests: 0, e3_confirmation_timeout_ms: 1000 } },
+    ],
+    [
+      "확정 몫 요청 양수·시간 0",
+      { limits: { ...(wire().limits as object), e3_confirmation_requests: 5, e3_confirmation_timeout_ms: 0 } },
+    ],
+    [
+      "확정 몫 음수",
+      { limits: { ...(wire().limits as object), e3_confirmation_requests: -1, e3_confirmation_timeout_ms: 0 } },
+    ],
+    [
+      "확정 몫 null",
+      { limits: { ...(wire().limits as object), e3_confirmation_requests: null, e3_confirmation_timeout_ms: null } },
+    ],
+    [
+      "확정 몫이 요청 상한 1/4 초과",
+      { limits: { ...(wire().limits as object), e3_confirmation_requests: 17, e3_confirmation_timeout_ms: 1000 } },
+    ],
+    [
+      "확정 시간 몫이 3,600,000ms 초과(창 5시간이라 1/4 검사는 통과)",
+      {
+        valid_from: "2026-11-13T00:00:00Z",
+        valid_until: "2026-11-13T05:00:00Z",
+        limits: { ...(wire().limits as object), e3_confirmation_requests: 1, e3_confirmation_timeout_ms: 3_600_001 },
+      },
+    ],
+    [
+      "확정 시간 몫이 유효 창 1/4 초과(창 1시간, 1/4+1ms)",
+      {
+        valid_from: "2026-11-13T00:00:00Z",
+        valid_until: "2026-11-13T01:00:00Z",
+        limits: { ...(wire().limits as object), e3_confirmation_requests: 1, e3_confirmation_timeout_ms: 900_001 },
+      },
+    ],
     ["지문이 SHA-256 16진 아님", { policy_fingerprint_sha256: "AB".repeat(32) }],
     ["지문이 빈 문자열", { policy_fingerprint_sha256: "" }],
     ["유효 시작이 시각 아님", { valid_from: "soon" }],

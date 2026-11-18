@@ -54,6 +54,11 @@ export type PolicyLimits = {
   maxBodyBytes: number;
   maxResponseBodyBytes: number;
   requestTimeoutMs: number;
+  /**
+   * E③ 확정 단계 몫(모델 단계와 따로 떼어 둔 요청 수·시간). 제품 실행 정책은 늘 둘 다 싣고(꺼짐이면 0),
+   * 칸이 없는 이전 회차는 undefined — 0(꺼짐)과 '정하지 않음'을 섞지 않는다.
+   */
+  e3Confirmation?: { requests: number; timeoutMs: number };
 };
 
 /** 전송 통제 정책(표시용 투영). auditBound 는 감사 키 결속 '여부'만(키 값 아님). */
@@ -375,12 +380,38 @@ function parseRule(raw: unknown): PolicyRule | null {
   };
 }
 
+const E3_SHARE_KEYS = ["e3_confirmation_requests", "e3_confirmation_timeout_ms"] as const;
+/** 확정 시간 몫 상한(ms) — 서버 e3ConfirmationBehavior 의 MaxFirstDiagnosisTaskSeconds×1000 과 같다. */
+const MAX_E3_SHARE_TIMEOUT_MS = 3_600_000;
+// BigInt 리터럴은 ES2020 미만 대상에서 못 쓴다.
+const NS_PER_MS = BigInt(1_000_000);
+const NS_PER_SEC = BigInt(1_000_000_000);
+const E3_SHARE_DIVISOR = BigInt(4);
+
 function parseLimits(raw: unknown): PolicyLimits | null {
-  if (!isObj(raw) || !exactKeys(raw, LIMIT_KEYS)) return null;
+  if (!isObj(raw) || !exactKeys(raw, LIMIT_KEYS, E3_SHARE_KEYS)) return null;
   if (!LIMIT_KEYS.every((k) => isNat(raw[k]))) return null;
   // 요청 상한 0 은 서버 정책 문서 검증이 거부한다(MaxRequests == 0) — '요청 0건 허용' 정책으로 그리지 않는다
   if (raw.max_requests === 0) return null;
+  // 확정 몫은 둘 다 있거나 둘 다 없다. 둘 다 0(꺼짐)이거나 둘 다 양수이고, 요청 몫은 실행 요청 상한의 1/4 이하(서버 검사와 같음).
+  const shareKeys = E3_SHARE_KEYS.filter((k) => Object.hasOwn(raw, k));
+  let e3Confirmation: PolicyLimits["e3Confirmation"];
+  if (shareKeys.length === 1) return null;
+  if (shareKeys.length === 2) {
+    const requests = raw.e3_confirmation_requests;
+    const timeoutMs = raw.e3_confirmation_timeout_ms;
+    if (
+      !isNat(requests) ||
+      !isNat(timeoutMs) ||
+      (requests === 0) !== (timeoutMs === 0) ||
+      timeoutMs > MAX_E3_SHARE_TIMEOUT_MS
+    )
+      return null;
+    if ((requests as number) * 4 > (raw.max_requests as number)) return null;
+    e3Confirmation = { requests: requests as number, timeoutMs: timeoutMs as number };
+  }
   return {
+    ...(e3Confirmation ? { e3Confirmation } : {}),
     maxRequests: raw.max_requests as number,
     maxAttempts: raw.max_attempts as number,
     maxConcurrent: raw.max_concurrent as number,
@@ -424,6 +455,14 @@ export function parseControlPolicyView(raw: unknown): ControlPolicy | null {
     typeof raw.audit_bound !== "boolean"
   )
     return null;
+  // 확정 시간 몫은 유효 창의 1/4 이하(서버: Timeout > (ValidUntil-ValidFrom)/4 거부, Duration ns 정수 나눗셈 = 4t > 창).
+  // 나노초 정수로 비교한다 — ms 로 줄이면 경계에서 서버와 판정이 갈린다.
+  if (limits.e3Confirmation) {
+    const from = parseInstant(raw.valid_from) as Instant;
+    const until = parseInstant(raw.valid_until) as Instant;
+    const windowNs = (BigInt(until.sec) - BigInt(from.sec)) * NS_PER_SEC + BigInt(until.nsec - from.nsec);
+    if (E3_SHARE_DIVISOR * BigInt(limits.e3Confirmation.timeoutMs) * NS_PER_MS > windowNs) return null;
+  }
   const rules: PolicyRule[] = [];
   for (const r of raw.rules) {
     const rule = parseRule(r);

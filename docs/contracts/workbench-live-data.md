@@ -74,6 +74,7 @@
 - `tls_pinned`: https 대상은 true(SPKI 고정), http 대상은 false.
 - `accounts`: 이 실행에 결속된 시험 계정 라벨만. 자격·세션 값은 없다.
 - `audit_bound`: 감사 키가 결속됐는지 여부만. 키 경로·해시는 없다.
+- `limits.e3_confirmation_requests`·`limits.e3_confirmation_timeout_ms`(선택, 둘이 같이): E③ 확정 단계 몫. 모델 단계와 따로 떼어 둔 대상 요청 수와 시간이다. 제품 실행 정책은 늘 둘 다 싣고, 확정 단계가 꺼진 회차(선언·시험 계정 없음)는 둘 다 0이다. 칸이 없으면 몫을 정하지 않은 이전 회차이고, 0과 섞지 않는다. 0이 아니면 둘 다 양수이고, 요청 몫은 `max_requests`의 1/4 이하다.
 - 넣지 않는 것: 자격 파일 pin·CA·helper·상태 디렉터리 경로, 감사 키 pin, 평가 문맥.
 
 규칙의 선택 칸 `path_match: "exact"`는 query 없는 단일 `path_prefix` 경로만 승인한다. 생략은 기존 경로 조각 접두다. `null`·빈 값·미지원 모드는 거부한다. 대상 등록/준비 scope의 `=/` 표현과 정책·내용 지문·감사 `rule_ref` 결속은 [정확 경로 승인 계약](exact-path-approval.md)을 따른다. 화면 파서는 이 칸과 정확/접두 구분을 먼저 지원한 뒤 exact 등록을 연다. 기존 prefix 응답에는 이 칸이 추가되지 않는다.

@@ -24,6 +24,7 @@ IDS = {"eval-meter": "m" * 64, "explore-boundary": "b" * 64, "preparation": "p" 
 IMAGES = {"product": "sha256:" + "1" * 64, "meter": "sha256:" + "2" * 64, "explore_browser": "sha256:" + "3" * 64,
           "fixture": "sha256:" + "4" * 64, "target": "sha256:" + "5" * 64}
 FINGERPRINT = "f" * 64
+E3_SHARE_OFF = {"e3_confirmation_requests": 0, "e3_confirmation_timeout_ms": 0}
 LIMITS = {"max_requests": 10, "max_attempts": 30, "max_concurrent": 2, "max_body_bytes": 1024, "max_response_body_bytes": 1024,
           "request_timeout_ms": 1000}
 PRODUCT_FILES = {"installation": "a" * 64, "policy": "b" * 64, "api_launch": "c" * 64, "target_policy": "d" * 64}
@@ -164,8 +165,9 @@ class FakePorts:
         self.marker: dict | None = product_marker()
         self.verify_args: list = []
         self.surface = surface()
+        # #716 뒤 제품 보기 모양: 확정 몫 칸은 꺼짐이어도 0으로 늘 있다
         self.view = {"format": "abc2lab.control-policy-view/v1", "policy_ref": "policy-draft-1", "policy_revision": "v1",
-                     "policy_fingerprint_sha256": FINGERPRINT, "limits": dict(LIMITS), "rules": []}
+                     "policy_fingerprint_sha256": FINGERPRINT, "limits": dict(LIMITS, **E3_SHARE_OFF), "rules": []}
         self.conditions = conditions()
         self.files_args: list = []
 
@@ -388,9 +390,9 @@ class TestOrder(unittest.TestCase):
         # 결정안 §3.3 제품 블록 근거: 파일 원본 SHA 다섯 + 상한 스냅숏 지문, E② 정책 내용 지문, 도구 면 지문.
         from preservation_record import digest
         files = evidence.files["product-files.json"]
-        self.assertEqual(files["file_sha256"], dict(PRODUCT_FILES, control_limits=digest(LIMITS),
+        self.assertEqual(files["file_sha256"], dict(PRODUCT_FILES, control_limits=digest(dict(LIMITS, **E3_SHARE_OFF)),
                                                     runtime_conditions=hashlib.sha256(conditions()).hexdigest()))
-        self.assertEqual((files["diagnosis_policy_sha256"], files["limits"], files["diagnosis_entered"]), (FINGERPRINT, LIMITS, True))
+        self.assertEqual((files["diagnosis_policy_sha256"], files["limits"], files["diagnosis_entered"]), (FINGERPRINT, dict(LIMITS, **E3_SHARE_OFF), True))
         self.assertEqual((files["policy_ref"], files["policy_revision"]), ("policy-draft-1", "v1"))
         self.assertEqual((result["product_file_sha256"], result["diagnosis_policy_sha256"]), (files["file_sha256"], FINGERPRINT))
         self.assertEqual(ports.files_args, ["draft-1"])  # 실행 디렉터리 이름 = 초안 ID
@@ -439,6 +441,20 @@ class TestOrder(unittest.TestCase):
             with self.subTest(wrong=wrong):
                 self.assertEqual((result["status"], result["reasons"]), ("invalid", ["tool_surface_image_mismatch"]))
                 self.assertNotIn("up", ports.calls)
+
+    def test_official_round_checks_the_e3_share_of_the_policy_it_used(self):
+        # 회차 흐름 연결: 공식 목적이면 제품이 그 회차에 쓴 정책의 확정 몫을 본다. 다른 목적은 몫 칸을 요구하지 않는다.
+        def limits(share):
+            return lambda p: p.view.update(limits=dict(LIMITS, **share))
+        for purpose, share, status, reasons in (
+                ("official", E3_SHARE_OFF, "complete", None),
+                ("official", {}, "invalid", ["e3_share_unconfirmed"]),  # #716 전 제품 보기 모양
+                ("official", dict(E3_SHARE_OFF, e3_confirmation_requests=2), "invalid", ["e3_share_not_zero"]),
+                ("browser_acceptance", {}, "complete", None),
+                ("browser_acceptance", dict(E3_SHARE_OFF, e3_confirmation_timeout_ms=1000), "complete", None)):
+            with self.subTest(purpose=purpose, share=share):
+                result, _, _ = run(limits(share), purpose=purpose)
+                self.assertEqual((result["status"], result.get("reasons")), (status, reasons), result)
 
     def test_official_e3_share_must_be_present_and_zero(self):
         # 공식 측정 E③ 비활성(평가 프로토콜 §5.1, 2026-11-18 합의): 그 회차 E② 정책의 확정 몫 칸이 있고 0이어야 한다.

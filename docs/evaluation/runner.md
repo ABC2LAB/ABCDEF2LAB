@@ -237,7 +237,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 
 ## 사유 코드
 
-- 공식 측정 E③ 비활성(평가 프로토콜 §5.1, 2026-11-18 합의): `e3_share_unconfirmed`(그 회차 E② 정책 보기에 확정 몫 칸이 없음), `e3_share_not_zero`(확정 몫이 0이 아님). O 공식 회차 흐름에서 쓴다(검사 함수 `runner_split_run.check_official_e3_share`, 흐름 연결은 O 공식 run-record R1). E③ 상태가 `disabled`/`declaration_missing`이 아니거나 상태를 못 받은 회차는 채점기가 공식 표를 거부한다(`run_record.OFFICIAL_E3_DISABLED_REASON`). 분리 배치 B는 공통 목표 SHA를 실행 조건(`goal_common_sha256`)에 서명한다.
+- 공식 측정 E③ 비활성(평가 프로토콜 §5.1, 2026-11-18 합의): `e3_share_unconfirmed`(그 회차 E② 정책 보기에 확정 몫 칸이 없음), `e3_share_not_zero`(확정 몫이 0이 아님). O 회차 흐름은 회차 목적이 `official`일 때 제품을 멈춘 뒤 그 회차가 쓴 정책 보기(`checked_control_policy`)의 상한으로 이 검사를 부른다(`runner_split_run.check_official_e3_share`). 다른 목적(수용시험)은 몫 칸을 요구하지 않는다. 확정 몫 칸이 없는 제품 빌드(#716 전)로는 공식 O 회차가 늘 `e3_share_unconfirmed`다. E③ 상태가 `disabled`/`declaration_missing`이 아니거나 상태를 못 받은 회차는 채점기가 공식 표를 거부한다(`run_record.OFFICIAL_E3_DISABLED_REASON`). 분리 배치 B는 공통 목표 SHA를 실행 조건(`goal_common_sha256`)에 서명한다.
 
 | 코드 | 뜻 |
 |---|---|
