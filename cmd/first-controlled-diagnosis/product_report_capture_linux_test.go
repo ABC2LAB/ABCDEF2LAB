@@ -207,4 +207,30 @@ func TestProductReportCaptureReadsOwnedPostgres(t *testing.T) {
 	if response.Code != 200 || !bytes.Equal(response.Body.Bytes(), capture.PNG) {
 		t.Fatal("실제 설치 역할의 이미지 GET 실패", response.Code)
 	}
+	// 실제 설치자가 부여한 product_api 역할로 그래프의 범위 SQL까지 도달한다.
+	var scopeRead, scopeWrite bool
+	if apiPool.QueryRow(`SELECT has_table_privilege(current_user,'task_scope','SELECT'),has_table_privilege(current_user,'task_scope','INSERT,UPDATE,DELETE,TRUNCATE')`).Scan(&scopeRead, &scopeWrite) != nil || !scopeRead || scopeWrite {
+		t.Fatal("보고서 scope의 읽기 전용 설치 권한 불일치")
+	}
+	if _, err := installer.Exec(`INSERT INTO assets(type,domain,task_ids) VALUES('subdomain','report.owned.test',$1::bigint[])`, fmt.Sprintf("{%d}", row.ID)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := installer.Exec(`INSERT INTO task_scope(task_id,kind,domain,source) VALUES($1,'subdomain','report.owned.test','manual')`, row.ID); err != nil {
+		t.Fatal(err)
+	}
+	graphRequest := httptest.NewRequest("GET", fmt.Sprintf("/api/tasks/%d/coverage-graph", row.ID), nil)
+	graphRequest.Header.Set("Authorization", "Bearer "+session.Token)
+	graphResponse := httptest.NewRecorder()
+	handler.ServeHTTP(graphResponse, graphRequest)
+	var graph db.CoverageGraphData
+	if graphResponse.Code != 200 || json.Unmarshal(graphResponse.Body.Bytes(), &graph) != nil || len(graph.Nodes) != 1 || !graph.Nodes[0].InScope {
+		t.Fatal("실제 product_api 역할의 저장 그래프 GET 실패", graphResponse.Code)
+	}
+	mapRequest := httptest.NewRequest("GET", fmt.Sprintf("/api/tasks/%d/access-map", row.ID), nil)
+	mapRequest.Header.Set("Authorization", "Bearer "+session.Token)
+	mapResponse := httptest.NewRecorder()
+	handler.ServeHTTP(mapResponse, mapRequest)
+	if mapResponse.Code != 409 {
+		t.Fatal("KG 미등록 URL Job의 지도를 합성함", mapResponse.Code)
+	}
 }

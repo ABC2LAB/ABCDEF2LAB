@@ -45,7 +45,9 @@ def web_changed(base, head):
         print("Web change history unavailable; running validation.", file=sys.stderr)
         return True
     return any(
-        path.startswith(b"web/") or path in ROOT_INPUTS
+        path.startswith(b"web/") or path in ROOT_INPUTS or
+        # 서버와 웹이 함께 읽는 응답 예시만 바뀌어도 웹 계약 시험을 실행한다.
+        path.startswith(b"docs/contracts/") and path.endswith(b".json")
         for path in result.stdout.split(b"\0") if path
     )
 

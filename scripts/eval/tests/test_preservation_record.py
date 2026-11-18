@@ -326,13 +326,13 @@ class SignedFixture(unittest.TestCase):
                 "--path-key-file", str(self.root / "path.key")]
         raw = subprocess.run(args, capture_output=True)
         self.assertEqual(raw.returncode, 0)
-        self.assertEqual(json.loads(raw.stdout)["format"], "abc2lab.preservation-summary/v6")
+        self.assertEqual(json.loads(raw.stdout)["format"], "abc2lab.preservation-summary/v9")
         signed = args + ["--baseline-record-dir", str(b), "--improved-record-dir", str(o), "--improved-boundary-dir", str(o / "boundary"),
                          "--runner-key-file", str(self.root / "runner.key"), "--profile", "R-F"]
         result = subprocess.run(signed, capture_output=True)
         self.assertEqual(result.returncode, 0)
         data = json.loads(result.stdout)
-        self.assertEqual(data["format"], "abc2lab.preservation-summary/v8")
+        self.assertEqual(data["format"], "abc2lab.preservation-summary/v10")
         self.assertEqual(data["assessment"]["status"], "NOT_RUN")
         self.assertEqual(data["signed_evidence"]["exploration_boundary"]["status"], "PASS")
         self.assertEqual(data["signed_evidence"]["verified_signed_rounds"], 2)

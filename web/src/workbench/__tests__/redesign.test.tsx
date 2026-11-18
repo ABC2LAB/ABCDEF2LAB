@@ -20,16 +20,7 @@ import { FLOW_VERSION, type WorkflowSnapshot } from "../live/workflow";
 import { type Shell, ShellContext, type View } from "../shell";
 import { UrlDashboardLive } from "../views/live/UrlDashboardLive";
 import { gaugeSegments, prettyEvidence, UrlLiveLive } from "../views/live/UrlLiveLive";
-import {
-  activityText,
-  eventText,
-  group,
-  PauseButton,
-  Pth,
-  WorkflowCrawlLive,
-  WorkflowScopeLive,
-  workerOf,
-} from "../views/live/workflowViews";
+import { eventText, group, PauseButton, Pth, WorkflowCrawlLive, WorkflowScopeLive } from "../views/live/workflowViews";
 
 const noop = () => undefined;
 const shell = (route: View, over: Partial<Shell> = {}): Shell => ({
@@ -553,6 +544,31 @@ describe("범위 확인 · 발견한 API (자산 탐색 오른쪽 패널에서 �
     expect(screen.queryByText("주소 구조")).toBeNull();
   });
 
+  it("'제외' 거르기에는 새 점검에서 넣은 제외 경로 패턴을 먼저 보이고(탐색하지 않아 목록에 없을 수 있다고), 전체에서는 두지 않는다", () => {
+    useUrl.setState({
+      handle,
+      job: { ...job, input: { ...job.input, excluded_paths: "/api/admin/*\n /logout \n\n" } },
+      verified: true,
+      flow,
+      flowVerified: true,
+    });
+    render(
+      <ShellContext.Provider value={shell("scope")}>
+        <WorkflowScopeLive />
+      </ShellContext.Provider>,
+    );
+    const found = screen.getByRole("region", { name: /^발견한 API/ });
+    expect(within(found).queryByRole("region", { name: "새 점검에서 뺀 경로" })).toBeNull();
+    fireEvent.click(within(found).getByRole("radio", { name: "제외" }));
+    const box = within(found).getByRole("region", { name: "새 점검에서 뺀 경로" });
+    expect(
+      within(box)
+        .getAllByText(/^\/(api\/admin\/\*|logout)$/)
+        .map((x) => x.textContent),
+    ).toEqual(["/api/admin/*", "/logout"]);
+    expect(box).toHaveTextContent("탐색 · 진단에서 아예 보내지 않아 아래 목록에 없을 수 있습니다");
+  });
+
   it("발견한 API: 아직 안 나온 묶음 · 거르기별 빈 글 · 로그인 범례 자리 · 경로 상세의 요청 횟수 · 기능 자리 (시안 v24 · v32)", () => {
     useUrl.setState({
       handle,
@@ -604,6 +620,9 @@ describe("자산 탐색", () => {
     );
     // 머리의 패널 버튼(좁은 화면 서랍)은 '기록 상세'
     expect(screen.getByRole("button", { name: "기록 상세" })).toBeInTheDocument();
+    // 머리의 예시 화면 진입 버튼(탐색 결과 · 진단 결과)은 뺐다 (사용자 11/17)
+    expect(screen.queryByRole("button", { name: "탐색 결과" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /진단 결과/ })).toBeNull();
     expect(screen.queryByRole("radiogroup", { name: "보이는 경로" })).toBeNull();
     const aside = screen.getByRole("complementary", { name: "기록 상세" });
     expect(within(aside).getByText("기록을 고르세요")).toBeInTheDocument();
@@ -1154,11 +1173,11 @@ describe("대시보드", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "승인 요청 보기" }));
     const recoveredDetail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
-    expect(within(recoveredDetail).getByText(/요청 승인은 처음 시작한 화면에서만/)).toBeInTheDocument();
+    // 다시 연(복구) 점검 안내 문장은 두지 않는다(사용자 11/17). 승인 버튼은 그대로 잠근다
+    expect(within(recoveredDetail).queryByText(/다시 연 점검/)).toBeNull();
     expect(within(recoveredDetail).getByRole("button", { name: "이 요청 승인" })).toBeDisabled();
     act(() => useUrl.setState({ handle }));
     const createdDetail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
-    expect(within(createdDetail).queryByText(/요청 승인은 처음 시작한 화면에서만/)).toBeNull();
     expect(within(createdDetail).getByRole("button", { name: "이 요청 승인" })).toBeEnabled();
   });
 });
@@ -1189,27 +1208,14 @@ it("목록에서 복구한 회차의 일시정지·범위 선택 실행 버튼�
       <WorkflowScopeLive />
     </ShellContext.Provider>,
   );
-  for (const button of screen.getAllByRole("button", { name: /선택한 범위로 점검 시작/ }))
+  for (const button of screen.getAllByRole("button", { name: /선택한 범위로 점검 시작/ })) {
     expect(button).toBeDisabled();
+  }
+  // '목록에서 다시 연 점검은 조회 전용' 문장은 어느 화면에도 두지 않는다 (사용자 11/17)
+  expect(document.body).not.toHaveTextContent(/다시 연 점검/);
 });
 
 describe("점검 진행", () => {
-  it("활동 기록 내용은 'METHOD /경로' 로 시작하면 그 둘만, 아니면 서버 글 그대로", () => {
-    expect(activityText("GET /api/products/1 를 다른 시험 계정 기준으로 대조했습니다.")).toBe("GET /api/products/1");
-    expect(activityText("PUT /api/users/2 · 보내기 전 승인을 기다립니다.")).toBe("PUT /api/users/2");
-    expect(activityText("GET /api/a → 200 · 새 경로 2개")).toBe("GET /api/a");
-    expect(activityText("Bash 도구 활동 기록 (원문 비공개)")).toBe("Bash 도구 활동 기록 (원문 비공개)");
-    expect(activityText("고른 경로 3개를 심화 점검합니다.")).toBe("고른 경로 3개를 심화 점검합니다.");
-  });
-
-  it("워커 이름표: planner · goals · work#N 은 그대로, 그 밖(서버가 engine 으로 묶은 것)은 엔진", () => {
-    expect(workerOf("planner")).toMatchObject({ name: "Planner", mark: "P" });
-    expect(workerOf("goals")).toMatchObject({ name: "Goals", mark: "G" });
-    expect(workerOf("work#12")).toMatchObject({ key: "work#12", name: "work#12", mark: "W12" });
-    expect(workerOf("engine")).toMatchObject({ key: "engine", name: "엔진", mark: "E" });
-    expect(workerOf("work#x")).toMatchObject({ key: "engine" });
-  });
-
   it("단계 게이지는 단계마다 실제 값으로만 채운다 (전체 % 없음)", () => {
     // 게이지가 있어야 하는 경우만 (없으면 실패)
     const seg = (f: WorkflowSnapshot, ready = false) => {
@@ -1277,7 +1283,7 @@ describe("점검 진행", () => {
     );
   });
 
-  it("가운데는 상태 카드 · 확인 필요 · 발견 후보 · 활동 기록, 전송 통제와 탐색 현황은 오른쪽 진행 요약에", async () => {
+  it("가운데는 상태 카드 · 확인 필요 · 발견 후보(활동 기록 없음), 전송 통제와 탐색 현황은 오른쪽 진행 요약에", async () => {
     vi.mocked(api.fetchRequestApprovals).mockResolvedValue({
       run: {
         run_ref: `run-${job.id}`,
@@ -1443,35 +1449,10 @@ describe("점검 진행", () => {
     expect(rows[0]).toHaveAttribute("aria-expanded", "true");
     expect(within(finds).getByText(/시험 계정 B 로 계정 A 자원을 요청/)).toBeInTheDocument();
     expect(finds).not.toHaveTextContent("secret-token-value");
-    // 활동 기록 (ARTEX 세션 느낌): 전부 최신 순(id), 줄마다 시각 · 워커 · 내용 (점 · 머리글자 · 종류 딱지 없음).
-    // 워커 칩(전체 · Planner · work#N)으로 거른다
-    const feedSec = screen.getByRole("region", { name: "활동 기록" });
-    // 타임라인 모양은 이 목록에만 (공용 .feed 를 바꾸면 서버 진단 활동 목록까지 깨진다)
-    expect(document.getElementById("lFeed")?.classList).toHaveLength(2);
+    // 활동 기록은 두지 않는다(사용자 11/17): 서버가 원문 대신 고정 문장만 줘 보여 줄 내용이 없다
+    expect(screen.queryByRole("region", { name: "활동 기록" })).toBeNull();
+    expect(document.getElementById("lFeed")).toBeNull();
     expect(screen.queryByRole("region", { name: "점검 계획" })).toBeNull();
-    expect(document.getElementById("lFeedN")).toHaveTextContent(/^4건 · 최신 순$/);
-    const lines = () =>
-      within(feedSec)
-        .getAllByRole("listitem")
-        .map((li) => li.textContent?.replace(/^\d{2}:\d{2}:\d{2}/, ""));
-    expect(lines()).toEqual([
-      "Planner엔진 활동 기록 (원문 비공개)",
-      "work#1PUT /api/users/2",
-      "work#1Bash 도구 활동 기록 (원문 비공개)",
-      "PlannerPlanner 계획 활동 기록",
-    ]);
-    const chips = within(feedSec).getByRole("group", { name: "워커로 거르기" });
-    expect(
-      within(chips)
-        .getAllByRole("button")
-        .map((b) => b.textContent),
-    ).toEqual(["전체4", "Planner2", "work#12"]);
-    fireEvent.click(within(chips).getByRole("button", { name: /work#1/ }));
-    expect(within(chips).getByRole("button", { name: /work#1/ })).toHaveAttribute("aria-pressed", "true");
-    expect(lines()).toEqual(["work#1PUT /api/users/2", "work#1Bash 도구 활동 기록 (원문 비공개)"]);
-    fireEvent.click(within(chips).getByRole("button", { name: /^전체/ }));
-    expect(lines()).toHaveLength(4);
-    expect(within(feedSec).queryByRole("button", { name: /더 보기/ })).toBeNull();
     // 전송 통제는 가운데 섹션이 아니라 오른쪽 진행 요약의 한 칸
     expect(screen.queryByRole("heading", { level: 2, name: "전송 통제" })).toBeNull();
     const insp = screen.getByRole("complementary", { name: "진행 요약" });
@@ -1479,7 +1460,6 @@ describe("점검 진행", () => {
     // 탐색 현황: 방문 · 발견한 API · 심화 선택 (서버 수 그대로)
     expect(within(insp).getByText("탐색 현황").parentElement).toHaveTextContent("방문 1발견한 API 3심화 선택 2");
     await screen.findAllByRole("button", { name: "승인하고 보내기" });
-    expect(screen.queryByText(/요청 승인은 처음 시작한 화면에서만/)).toBeNull();
     act(() =>
       useUrl.setState({
         handle: {
@@ -1493,7 +1473,8 @@ describe("점검 진행", () => {
         },
       }),
     );
-    expect(screen.getAllByText(/요청 승인은 처음 시작한 화면에서만/)).toHaveLength(1);
+    // 다시 연(복구) 점검 안내 문장은 두지 않고(사용자 11/17) 승인 버튼만 잠근다
+    expect(screen.queryByText(/다시 연 점검/)).toBeNull();
     const approvals = screen.getAllByRole("button", { name: "승인하고 보내기" });
     expect(approvals).toHaveLength(2);
     for (const button of approvals) expect(button).toBeDisabled();

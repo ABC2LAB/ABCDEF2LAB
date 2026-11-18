@@ -1575,6 +1575,303 @@ a.ph:hover {
   font-size: 12px;
   color: var(--ink-2);
 }
+/* 발견 상세를 ARTEX 발견 상세처럼 칸마다 흰 카드로 (사용자 11/17). 다른 패널의 .isec 은 그대로 둔다 */
+.fdet {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 14px;
+}
+.fdet > .isec {
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-top: 0;
+}
+.fdet > .isec h3 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: 0;
+}
+.fdet > .note {
+  margin: 0;
+}
+/* 보고서 탭 점검 보고서 (ARTEX '침투 테스트 보고서 (Markdown)' 모양): 아이콘 · 제목, [복사], 테두리 상자 안 스크롤 */
+.pocw {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.poc-t {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13.5px;
+  font-weight: 600;
+  margin: 0;
+}
+.poc-a {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
+  color: var(--ink-3);
+}
+.pocbox {
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 14px 18px;
+  max-height: 70vh;
+  overflow: auto;
+  background: var(--bg);
+}
+.pocbox .md {
+  font-size: 13.5px;
+  line-height: 1.7;
+}
+.pocbox .md h1 {
+  font-size: 15px;
+  margin-bottom: 6px;
+}
+.pocbox .md pre {
+  max-height: 240px;
+  overflow: auto;
+}
+/* 보고서 발견 목록 거르기 · 정렬 줄 */
+.rfil {
+  margin-bottom: 10px;
+}
+.rord {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--ink-3);
+}
+.rord .inp {
+  height: 30px;
+  width: auto;
+  padding: 0 8px;
+  font-size: 12.5px;
+}
+.rfil > .n {
+  margin-left: auto;
+}
+/* 오른쪽 발견 상세 머리의 '상세 보기': 딱지 줄 오른쪽 끝 (패널 열고 닫기 버튼 밑) */
+.vi-open {
+  margin-left: auto;
+}
+/* 발견 상세 페이지: 제목 머리 + 왼쪽 카드 / 오른쪽 따라오는 상태 카드, 좁으면 상태 카드를 위로 */
+.fpage {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+/* 상세 페이지 머리 (ARTEX): ← · 제목 · 딱지 한 줄, 좁으면 줄바꿈 */
+.fpage-h {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.fpage-h h2 {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 0;
+  outline: none;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* 뒤로: 오른쪽 화살표를 돌려 쓴다 */
+.fpage-back .ic {
+  transform: rotate(180deg);
+}
+/* 페이지 카드 안 상세 보고서 머리(제목 · 복사)와 본문 사이 */
+.fpage-b .dcard-h {
+  margin-bottom: 6px;
+}
+.fpage-b {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 16px;
+  align-items: start;
+}
+.fpage-b > .fdet {
+  margin-top: 0;
+}
+.fpage-b > aside {
+  position: sticky;
+  top: 0;
+}
+@container (max-width: 760px) {
+  .fpage-b {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .fpage-b > aside {
+    position: static;
+    order: -1;
+  }
+}
+/* 상태 카드 줄 (ARTEX FieldRow): 이름은 왼쪽 흐리게, 값은 오른쪽, 줄 사이 구분선 */
+.frows {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+.frows > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-top: 1px solid var(--rule);
+  font-size: 13px;
+}
+.frows > div:first-child {
+  border-top: 0;
+  padding-top: 2px;
+}
+.frows dt {
+  color: var(--ink-3);
+  flex-shrink: 0;
+}
+.frows dd {
+  margin: 0;
+  min-width: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+/* 범위 확인 '제외' 거르기의 새 점검 제외 경로 패턴 */
+.exin {
+  border: 1px dashed var(--rule-2);
+  border-radius: 6px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.exin-h {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+/* 카드 안의 상세 보고 · 증거는 테두리를 겹치지 않고 본문 상자만 */
+.fdet .dcard {
+  border: 0;
+  padding: 0;
+}
+.fdet .dbox:not(.code) {
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+/* 발견 상세 칸 안 카드 (ARTEX 발견 상세의 Card): 제목 줄 + 높이를 묶은 본문 상자. 긴 보고 · 증거도 패널을 밀어내지 않게 */
+.dcard {
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.dcard-h {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.dcard-h h4 {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-2);
+  margin: 0;
+}
+.dbox {
+  max-height: 280px;
+  overflow: auto;
+}
+.code.dbox {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* 저장 보고 Markdown (읽기 전용). 패널 글 크기에 맞춰 제목을 크게 키우지 않는다 */
+.md {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.md h1,
+.md h2,
+.md h3,
+.md h4,
+.md h5,
+.md h6 {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ink);
+  margin: 10px 0 4px;
+}
+.md > :first-child {
+  margin-top: 0;
+}
+.md p {
+  margin: 4px 0;
+  font-size: 13px;
+}
+.md ul,
+.md ol {
+  padding-left: 18px;
+  margin: 4px 0;
+}
+.md code {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--code-bg);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+.md pre {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--code-bg);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 8px 10px;
+  overflow-x: auto;
+  margin: 6px 0;
+}
+.md pre code {
+  background: none;
+  padding: 0;
+}
+.md table {
+  border-collapse: collapse;
+  font-size: 12.5px;
+  margin: 6px 0;
+}
+.md th,
+.md td {
+  border: 1px solid var(--rule);
+  padding: 4px 6px;
+  text-align: left;
+}
+.md blockquote {
+  border-left: 2px solid var(--rule-2);
+  padding-left: 8px;
+  color: var(--ink-2);
+  margin: 6px 0;
+}
+.md-link {
+  text-decoration: underline dotted;
+  color: var(--ink-2);
+}
+.md-img {
+  color: var(--ink-3);
+}
 .code {
   position: relative;
   font-family: var(--mono);
@@ -3990,32 +4287,6 @@ button.smm:hover {
 .feed li:first-child {
   border-top: 0;
 }
-/* 점검 진행 활동 기록(.feed.afeed): 시각 · 워커 · 내용.
-   서버 진단 활동(TaskActivity) 등 다른 .feed 목록은 위 기본 모양 그대로 */
-.feed.afeed li {
-  grid-template-columns: 62px 84px minmax(0, 1fr);
-}
-/* 활동 기록 콘솔 상자 (ARTEX 세션 기록 느낌): 바탕을 깔고 고정폭 글꼴로 시각 · 워커를 맞춘다 */
-.alog {
-  max-height: 440px;
-  overflow: auto;
-  padding: 4px 14px;
-  border: 1px solid var(--rule);
-  border-radius: 8px;
-  background: var(--well);
-  overscroll-behavior: contain;
-}
-/* 워커 이름 (Planner · work#N · 엔진) */
-.wk {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  min-width: 0;
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--ink-2);
-  white-space: nowrap;
-}
 .feed .t {
   font-family: var(--mono);
   font-size: 12px;
@@ -4160,6 +4431,13 @@ button.smm:hover {
 }
 .frow.sel {
   background: var(--accent-bg);
+}
+/* 누르지 않는 읽기 줄 (점검 진행의 끝난 점검 발견): 손가락 · 올렸을 때 색 없음 */
+.frow.still {
+  cursor: default;
+}
+.frow.still:hover {
+  background: var(--bg);
 }
 .frow .fm {
   min-width: 0;
@@ -4757,4 +5035,11 @@ button.smm:hover {
 .seg input:disabled + span,
 .goal input:disabled + span {
   cursor: not-allowed;
+}
+
+/* 발견 상세 페이지를 연 보고서: 오른쪽 패널 칸 없이 가운데만 (패널 접기 · 넓은 화면 규칙보다 뒤 · 더 구체적으로) */
+.vb.solo,
+.app .vb.solo,
+.app.insp-min .vb.solo {
+  grid-template-columns: minmax(0, 1fr);
 }

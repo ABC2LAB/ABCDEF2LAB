@@ -29,6 +29,7 @@ func NewFirstDiagnosisReportHandler(ctx context.Context, pool *sql.DB, keyDir, d
 		return nil, ErrControlledReadHostConfiguration
 	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/tasks/{id}/coverage-graph", func(w http.ResponseWriter, r *http.Request) { s.serveCoverageGraph(w, r, taskID) })
 	mux.HandleFunc("GET /api/tasks/{id}/diagnosis-run", func(w http.ResponseWriter, r *http.Request) { s.serveDiagnosisRun(w, r, taskID) })
 	mux.HandleFunc("GET /api/tasks/{id}/access-map", func(w http.ResponseWriter, r *http.Request) { s.serveAccessMap(w, r, taskID) })
 	mux.HandleFunc("GET /api/health", s.health)

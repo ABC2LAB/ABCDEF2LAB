@@ -12,7 +12,7 @@ import { clockOf } from "../../live/map";
 import { maskSecrets } from "../../live/mask";
 import { retryWorkflowAction, runUrlAction, runWorkflowAction, useUrl, useUrlGates } from "../../live/urlDiagnosis";
 import { flowStageText, type WorkflowEndpoint, type WorkflowSnapshot } from "../../live/workflow";
-import { useShell, type View } from "../../shell";
+import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
 import { CloseInspButton, CodeCard, InspOpenButton, Kv, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
@@ -231,7 +231,7 @@ function EventResult({ event }: { event: FlowEvent }) {
   return <span className={s.mono}>{NONE}</span>;
 }
 
-/** 탐색 명령 결과 · 상한 안내 (서버 사실만). */
+/** 탐색 명령 결과 · 상한 안내 (서버 사실만). '목록에서 다시 연 점검은 조회 전용' 줄은 두지 않는다(사용자 11/17). */
 export function WorkflowNotice() {
   const recovered = useUrl((st) => st.handle?.kind === "recovered");
   const flow = useUrl((st) => st.flow);
@@ -240,11 +240,6 @@ export function WorkflowNotice() {
     verified = useUrl((st) => st.flowVerified);
   return (
     <>
-      {recovered ? (
-        <p className={s.help} role="status">
-          목록에서 다시 연 점검은 조회 전용입니다. 명시적 종료만 지원합니다.
-        </p>
-      ) : null}
       {flow?.failure ? (
         <div className={cx(s.note, s.warn)} role="alert">
           <Icon name="alert" />
@@ -805,6 +800,7 @@ function FoundPaths({
   pick,
   tools,
   bar,
+  excludedInput = [],
 }: {
   endpoints: WorkflowEndpoint[];
   crawling: boolean;
@@ -813,6 +809,8 @@ function FoundPaths({
   pick: ScopePick;
   tools?: ReactNode;
   bar?: ReactNode;
+  /** 새 점검에서 운영자가 넣은 제외 경로 패턴(job.input.excluded_paths 한 줄에 하나) */
+  excludedInput?: readonly string[];
 }) {
   const [query, setQuery] = useState("");
   const q = query.trim().toLowerCase();
@@ -851,6 +849,24 @@ function FoundPaths({
           />
         </div>
         {bar}
+        {/* '제외' 거르기에는 새 점검에서 넣은 제외 경로 패턴을 먼저 보인다(사용자 11/17 '제외 경로가 안 나옴'). 서버는 이 경로를
+            탐색부터 방문하지 않아(diagnosisflow allowedPath · 탐색 경계) 아래 목록에는 다른 페이지 링크로 발견된 것만 나온다 */}
+        {filter === "ex" && excludedInput.length ? (
+          <section className={s.exin} aria-label="새 점검에서 뺀 경로">
+            <div className={s["exin-h"]}>새 점검에서 뺀 경로</div>
+            <div className={s.chips}>
+              {excludedInput.map((p) => (
+                <span key={p} className={s.chip}>
+                  {p}
+                </span>
+              ))}
+            </div>
+            <p className={s.help}>
+              이 경로는 탐색 · 진단에서 아예 보내지 않아 아래 목록에 없을 수 있습니다. 다른 페이지 링크로 발견된 것만
+              아래 '제외'에 나옵니다.
+            </p>
+          </section>
+        ) : null}
         <div id="sTree">
           {shown.length ? (
             <EndpointCards
@@ -865,91 +881,6 @@ function FoundPaths({
         </div>
       </div>
     </section>
-  );
-}
-
-// 결과·판정 읽기 화면 진입(접근통제 지도·커버리지·발견 상세·전송 통제 흐름). 전부 아직 예시·운영자 전용.
-const RESULT_VIEWS: ReadonlyArray<readonly [View, string]> = [
-  ["accessmap", "접근통제 지도"],
-  ["coverage", "커버리지"],
-  ["finding", "발견 상세"],
-  ["e2flow", "전송 통제 흐름"],
-];
-
-/**
- * 자산 탐색 헤더의 '진단 결과' 묶음 — 결과·판정 읽기 화면 4개 진입을 버튼 하나로 모은다(헤더 과밀 해소).
- * 최종 자리는 작업대 시안에서 정렬(이동찬 리뷰) — 임시 묶음이라 포털·화살표 이동은 두지 않고 최소 구현한다
- * (바깥 클릭·Esc 로 닫힘). 색은 계정 메뉴와 같은 실재 토큰(--bg·--rule·--shadow)만 써서 라이트·다크 자동.
- */
-function ResultViewsMenu({ goTo }: { goTo: (name: View) => void }) {
-  const [open, setOpen] = useState(false);
-  const wrap = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: globalThis.MouseEvent) => {
-      if (!wrap.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: globalThis.KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-  return (
-    <div ref={wrap} style={{ position: "relative", display: "inline-flex" }}>
-      <button
-        className={s.btn}
-        type="button"
-        aria-haspopup="true"
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-      >
-        진단 결과
-        <Icon name="chev" />
-      </button>
-      {open ? (
-        <div
-          style={{
-            position: "absolute",
-            top: "calc(100% + 6px)",
-            right: 0,
-            zIndex: 40,
-            minWidth: 184,
-            display: "flex",
-            flexDirection: "column",
-            gap: 2,
-            padding: 6,
-            borderRadius: 12,
-            border: "1px solid var(--rule)",
-            background: "var(--bg)",
-            color: "var(--ink)",
-            boxShadow: "var(--shadow)",
-          }}
-        >
-          {RESULT_VIEWS.map(([view, label]) => (
-            <button
-              key={view}
-              className={s.btn}
-              type="button"
-              style={{ justifyContent: "flex-start", width: "100%", border: "none", background: "transparent" }}
-              onClick={() => {
-                setOpen(false);
-                goTo(view);
-              }}
-            >
-              {label}
-            </button>
-          ))}
-          <p className={s.help} style={{ margin: "4px 8px 2px" }}>
-            지금은 예시 · 운영자 전용 (API 연결 후 점등)
-          </p>
-        </div>
-      ) : null}
-    </div>
   );
 }
 
@@ -1042,14 +973,7 @@ export function WorkflowCrawlLive() {
             <PauseButton />
             {stop.button}
             <InspOpenButton>기록 상세</InspOpenButton>
-            {/* 탐색 결과(발견·경계 기록, 운영자 전용). 지금은 예시, live 점등은 탐색 실행기 착륙 후 */}
-            <button className={s.btn} type="button" onClick={() => goTo("explore")}>
-              탐색 결과
-            </button>
-            {/* 결과·판정 읽기 화면 4개(접근통제 지도·커버리지·발견 상세·전송 통제 흐름)는 전부 아직 예시·운영자
-                전용 — '진단 결과' 묶음 버튼 하나로 모은다(헤더 과밀 해소). 최종 자리는 작업대 시안에서 정렬(이동찬
-                리뷰). live 점등은 각 화면의 getter API 연결 후. */}
-            <ResultViewsMenu goTo={goTo} />
+            {/* [탐색 결과] · [진단 결과▾](예시 화면 진입)는 뺐다(사용자 11/17). 화면 자체는 남아 주소(#explore 등)로 열린다 */}
             <button className={cx(s.btn, s.pri)} type="button" disabled={!ready} onClick={() => goTo(next)}>
               {next === "scope" ? "범위 확인" : "점검 진행"}
               <Icon name="arrow" />
@@ -1216,6 +1140,11 @@ export function WorkflowCrawlLive() {
  * 오른쪽 패널은 경로를 고르기 전에는 접어 둔다.
  */
 function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: ReactNode) => ReactNode }) {
+  const excludedRaw = useUrl((st) => st.job?.input.excluded_paths ?? "");
+  const excludedInput = excludedRaw
+    .split("\n")
+    .map((p) => p.trim())
+    .filter(Boolean);
   const eligible = (e: WorkflowEndpoint) => e.in_scope && (e.change === "attested_read" || flow.reversible_writes);
   const waiting = flow.stage === "awaiting_selection";
   // 사전 확인한 읽기 경로는 기본 포함, 데이터를 바꿀 수 있는 경로는 직접 고른다
@@ -1354,6 +1283,7 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
           <WorkflowNotice />
           <FoundPaths
             endpoints={flow.endpoints}
+            excludedInput={excludedInput}
             crawling={flow.stage === "crawling"}
             filter={treeFilter}
             onFilter={(id) => {
@@ -1538,99 +1468,6 @@ export function WorkflowScopeLive() {
         )}
       </div>
     </>
-  );
-}
-
-/**
- * 활동 기록 한 줄 내용 (사용자 11/17 'API 옆 설명 지워줘'): 서버 요약이 'METHOD /경로 …' 로 시작하면 메서드 · 경로만,
- * 아니면 서버 글 그대로(실제 엔진은 원문을 숨긴 고정 요약이라 대개 그대로 보인다).
- */
-export function activityText(summary: string): string {
-  const m = /^(GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS) (\/[^\s]*)/.exec(summary);
-  return m ? `${m[1]} ${m[2]}` : summary;
-}
-
-/**
- * 워커 이름 → 화면 이름 · 머리글자 · 색 (ARTEX 세션 목록의 Planner · 메인 에이전트 · work#N 과 같은 단위).
- * 서버는 planner · goals · work#N 만 그대로 주고 나머지는 engine 으로 묶는다(diagnosisflow postgres.go publicWorker).
- */
-export function workerOf(worker: string): { key: string; name: string; mark: string; tone: "lg" | "in" | "out" } {
-  const work = /^work#(\d{1,9})$/.exec(worker);
-  if (work) return { key: worker, name: worker, mark: `W${work[1]}`, tone: "in" };
-  if (worker === "planner") return { key: "planner", name: "Planner", mark: "P", tone: "lg" };
-  if (worker === "goals") return { key: "goals", name: "Goals", mark: "G", tone: "lg" };
-  if (worker === "mainagent") return { key: "mainagent", name: "Main", mark: "M", tone: "lg" };
-  return { key: "engine", name: "엔진", mark: "E", tone: "out" };
-}
-/** 워커 칩 순서: Planner · Goals · Main → work#1, work#2 … (번호순) → 엔진. */
-const workerRank = (key: string) => {
-  const head = ["planner", "goals", "mainagent"].indexOf(key);
-  if (head >= 0) return head;
-  const work = /^work#(\d+)$/.exec(key);
-  return work ? 10 + Number(work[1]) : Number.MAX_SAFE_INTEGER;
-};
-
-/**
- * 점검 진행 가운데의 활동 기록 (사용자 11/17 'ARTEX 느낌'): ARTEX 세션 탭처럼 워커 칩(전체 · Planner · work#N · 엔진)으로
- * 고르고, 콘솔 상자에 줄마다 시각 · 워커 · 내용. 서버가 주는 최근 기록(최대 20건)을 전부, 최신 순.
- * 서버는 최신 순(id 내림차순), 가짜 백엔드는 오래된 순으로 주므로 받은 순서를 믿지 않고 id 로 다시 줄 세운다.
- * 내용은 서버가 원문을 내보내지 않아(도구 입출력에 비밀 값이 섞일 수 있음) 고정 요약이다 — 화면이 원문을 지어내지 않는다.
- */
-export function ActivityLog() {
-  const flow = useUrl((st) => st.flow);
-  const [who, setWho] = useState("all");
-  if (!flow) return null;
-  const activity = [...(flow.activity ?? [])].sort((x, y) => y.id - x.id);
-  const counts = new Map<string, number>();
-  for (const a of activity) {
-    const k = workerOf(a.worker).key;
-    counts.set(k, (counts.get(k) ?? 0) + 1);
-  }
-  const workers = [...counts.keys()].sort((x, y) => workerRank(x) - workerRank(y) || x.localeCompare(y));
-  // 고른 워커가 최근 기록 창에서 빠지면 전체로
-  const pick = who !== "all" && counts.has(who) ? who : "all";
-  const shown = pick === "all" ? activity : activity.filter((a) => workerOf(a.worker).key === pick);
-  return (
-    <section className={s.sec} aria-labelledby="lFeedH">
-      <div className={s.sh}>
-        <h2 id="lFeedH">활동 기록</h2>
-        <span className={s.n} id="lFeedN">
-          {activity.length ? `${activity.length}건 · 최신 순` : ""}
-        </span>
-      </div>
-      {activity.length ? (
-        <>
-          {/* biome-ignore lint/a11y/useSemanticElements: 칩 묶음 (fieldset 으로 바꾸면 한 줄 모양이 깨짐) */}
-          <div className={s.filters} role="group" aria-label="워커로 거르기">
-            {["all", ...workers].map((k) => {
-              const w = k === "all" ? null : workerOf(k === "engine" ? "" : k);
-              return (
-                <button key={k} className={s.fchip} type="button" aria-pressed={pick === k} onClick={() => setWho(k)}>
-                  {w ? w.name : "전체"}
-                  <span className={s.c}>{k === "all" ? activity.length : counts.get(k)}</span>
-                </button>
-              );
-            })}
-          </div>
-          <div className={s.alog}>
-            <ul className={cx(s.feed, s.afeed)} id="lFeed">
-              {shown.map((a) => {
-                // 점 · 머리글자 · 종류 딱지는 두지 않는다(사용자 11/17): 시각 · 워커 · 내용만
-                return (
-                  <li key={a.id}>
-                    <span className={s.t}>{hms(a.at)}</span>
-                    <span className={s.wk}>{workerOf(a.worker).name}</span>
-                    <span>{activityText(a.summary)}</span>
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        </>
-      ) : (
-        <p className={s.empty}>아직 활동 기록이 없습니다.</p>
-      )}
-    </section>
   );
 }
 

@@ -58,6 +58,39 @@ class WebChangedTests(unittest.TestCase):
                 self.commit()
                 self.assertFalse(self.changed())
 
+    def test_contract_json_examples_build(self):
+        for path in ("docs/contracts/exact-path-approval.status.example.json",
+                     "docs/contracts/diagnosis-run-timing.responses.example.json",
+                     "docs/contracts/nested/new-response.json"):
+            with self.subTest(path=path):
+                before = self.git("rev-parse", "HEAD")
+                self.write(path, '{"response":"changed"}\n')
+                self.assertTrue(self.changed(base=before, head=self.commit()))
+
+    def test_contract_json_delete_or_rename_out_builds(self):
+        path = "docs/contracts/response.json"
+        self.write(path, "{}\n")
+        before = self.commit()
+        self.git("mv", path, "docs/old-response.json")
+        self.assertTrue(self.changed(base=before, head=self.commit()))
+        self.write(path, "{}\n")
+        before = self.commit()
+        (self.root / path).unlink()
+        self.assertTrue(self.changed(base=before, head=self.commit()))
+
+    def test_rename_into_contract_json_builds(self):
+        (self.root / "docs/contracts").mkdir(parents=True)
+        self.git("mv", "docs/example.md", "docs/contracts/moved.json")
+        self.assertTrue(self.changed(head=self.commit()))
+
+    def test_contract_markdown_and_unrelated_json_skip(self):
+        for path in ("docs/contracts/api.md", "docs/evaluation/response.json",
+                     "docs/contracts-archive/response.json"):
+            with self.subTest(path=path):
+                before = self.git("rev-parse", "HEAD")
+                self.write(path)
+                self.assertFalse(self.changed(base=before, head=self.commit()))
+
     def test_web_source_assets_config_and_lockfile_build(self):
         for path in ("web/src/page.tsx", "web/public/icon.svg", "web/messages/ko.json",
                      "web/next.config.mjs", "web/package-lock.json"):
