@@ -20,13 +20,14 @@ from urllib.parse import urlsplit
 from preflight import PreflightError, check_preflight
 from runner import Clock, _remove_unstarted_run, acceptance_path_key
 from runner_config import (
-    METER_SERVICE, POLICY_SWITCH_SIDE, Image, RunnerConfig, RunnerConfigError, check_key_files, create_run_directory, gateway_sampling,
+    METER_SERVICE, POLICY_SWITCH_SIDE, Image, RunnerConfig, RunnerConfigError, create_run_directory, gateway_sampling,
     new_run_id,
 )
 from runner_docker import Docker, DockerError, client_environment, run_docker
 from runner_evidence import EvidenceDir, MeterFiles
 from runner_product import ModelKey, ProductAPIError, ProductDriver, loopback_send
 from runner_split import EXPLORATION_BLOCK, read_workflow_defaults
+from path_mask import key_ref
 from runner_split_config import (
     SplitConfigError, SplitPlan, plan_split_run, read_manifest, split_compose_args, split_compose_environment,
 )
@@ -121,7 +122,9 @@ def run_split_ours(config: RunnerConfig, preflight: object, *, docker_runner=run
         defaults, _ = read_workflow_defaults()
         # 경계는 계측기·B 회차와 같은 경로 가림 키를 받는다(계약 §4.1). runner.main이 check_key_files로 이미 확인했다.
         path_key = acceptance_path_key(config)
-        path_key_ref = check_key_files(config)  # 키 지문(16 hex)만. 계측기 기록 대조·서명 조건에 쓴다
+        # 키 지문은 경계 보호 입력에 넣는 바로 그 바이트에서 뜬다(#699 리뷰: 따로 읽으면 사이에 키 파일이 바뀌어도 통과).
+        # 계측기는 같은 파일을 직접 읽으므로, 그 행의 지문이 이 값과 다르면 check_meter_logs가 meter_path_key_mismatch로 막는다.
+        path_key_ref = None if path_key is None else key_ref(path_key)
         directory = create_run_directory(config.runs_root, plan.run_id)
         inputs = prepare_split_inputs(directory.run, manifest=manifest, meter_port=plan.meter_port, explore_port=split.explore_port,
                                       evidence_max_bytes=split.evidence_max_bytes, workflow_defaults=defaults,
