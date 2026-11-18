@@ -120,6 +120,33 @@ class TestCommandWords(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(command_words(command), words)
 
+    def test_review_round_five_heredoc_words_and_substitution_comments(self):
+        # #682 리뷰 5차: 구분어는 완전한 셸 낱말, 닫는 줄은 `<<`면 그대로·`<<-`면 앞 탭만 지우고 비교, 치환 안 주석의 괄호는
+        # 세지 않는다. 모두 가짜 npx로 실제 bash와 대조한 값이다.
+        cases = {
+            "cat <<END-TEXT\nbody\nEND-TEXT\nnpx a": ["cat", "npx"],
+            "cat <<END\n  END\n$(npx b)\nEND": ["npx", "cat"],          # 공백 들여쓴 줄은 `<<`를 닫지 않는다
+            "cat <<-END\n\t\tEND\nnpx c": ["cat", "npx"],             # `<<-`는 앞 탭을 지우고 닫는다
+            "cat <<-END\n  END\n$(npx d)\nEND": ["npx", "cat"],         # 공백은 지우지 않는다
+            'echo "$(echo x # )\n)"\nnpx e': ["echo", "npx"],
+            'echo "$(# note )\nnpx --version\n)"': ["npx", "echo"],     # 리뷰 반례: 주석 다음 줄의 호출은 치환 안이다
+            'cat <<"E F"\n$(npx g)\nE F\nls': ["cat", "ls"],             # 따옴표 낱말: 확장 안 함
+            "cat <<E\\F\n$(npx h)\nEF\nnpx i": ["cat", "npx"],         # 백슬래시: 구분어 EF, 확장 안 함
+            "cat <<'A'B\n$(npx l)\nAB\nnpx m": ["cat", "npx"],          # 따옴표 일부: 구분어 AB
+            "cat <<EOF \nx\nEOF \nEOF\nnpx j": ["cat", "npx"],          # 뒤 공백이 있는 줄은 닫지 않는다
+            "echo $((1<<2))\nnpx f": ["echo", "npx"],                     # 산술의 <<는 heredoc이 아니다
+            "(( x = 1<<2 ))\nnpx k": ["npx"],
+            "if (( 1 )); then npx r; fi": ["npx"],
+        }
+        for command, words in cases.items():
+            with self.subTest(command=command):
+                self.assertEqual(command_words(command), words)
+        # 정적으로 풀지 못하는 문맥은 0건이 아니라 미확인이다
+        for command in ("cat <<\nnpx a", "cat <<'EOF\nnpx b", "x=$(case a in a) npx c;; esac)", "y=$(cat <<E\n)\nE\n)",
+                        "echo $((1 + 2\nnpx q"):
+            with self.subTest(command=command):
+                self.assertTrue(analyze_command(command)[1])
+
     def test_unresolvable_calls_are_uncertain_not_zero(self):
         for command in ('eval "$CMD"', "$TOOL --x", "source ./run.sh", ". ./run.sh", "echo \"$(npx", "echo `npx", "sh -c 'a \"b'"):
             with self.subTest(command=command):

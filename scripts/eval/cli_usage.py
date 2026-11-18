@@ -29,7 +29,6 @@ _WRAPPER_VALUE_OPTIONS = {"sudo": frozenset({"-u", "-g", "-C", "-p", "-h", "-U"}
 _SHELLS = frozenset({"bash", "sh", "dash", "zsh"})
 # 무엇을 실행할지 글이나 파일에서 정하는 명령(정적으로 풀지 않는다).
 _INDIRECT = frozenset({"eval", "source", "."})
-_HEREDOC_DELIMITER = re.compile(r"-?\s*(['\"]?)\\?([A-Za-z_][A-Za-z0-9_]*)\1")
 # 셸 예약어. 단순 명령의 첫 낱말이어도 명령 이름이 아니다. 앞의 것은 건너뛰고 다음 낱말을 보고, 뒤의 것은 그 조각 전체가
 # 명령이 아니다(반복 변수·패턴 목록).
 _RESERVED_PREFIX = frozenset({"if", "then", "else", "elif", "while", "until", "do", "!", "{", "}", "fi", "done", "esac"})
@@ -49,6 +48,11 @@ def validate_names(names: object) -> tuple[str, ...]:
             or any(not isinstance(name, str) or not _NAME.fullmatch(name) for name in names) or len(set(names)) != len(names)):
         raise CliUsageError("cli_usage_names_invalid")
     return tuple(sorted(names))
+
+
+def _command_position(current: str) -> bool:
+    words = current.split()
+    return not words or all(word in _RESERVED_PREFIX for word in words)
 
 
 def _segments(command: str) -> list[str]:
@@ -71,6 +75,14 @@ def _segments(command: str) -> list[str]:
             i += 1
         elif char == "&" and ((current and current[-1] in "<>") or command.startswith("&>", i)):
             current.append(char)  # 리다이렉션(2>&1, >&2, &>파일)의 &는 구분자가 아니다
+        elif command.startswith("$((", i) or (command.startswith("((", i) and _command_position("".join(current))):
+            # 산술식은 명령이 아니다: `$((…))`는 낱말의 일부, 명령 자리(조각 처음·if 등 예약어 뒤)의 `((…))`는 산술 명령 전체
+            arithmetic = command.startswith("$((", i)
+            end = _arithmetic_end(command, i + (3 if arithmetic else 2), 2) or len(command)
+            if arithmetic:
+                current.append(command[i:end])
+            i = end
+            continue
         elif command.startswith("$(", i):
             out.append("".join(current))
             current = []
@@ -89,7 +101,59 @@ def _segments(command: str) -> list[str]:
 _METACHARACTERS = frozenset("|&;()<>")
 
 
-def _preprocess(command: str) -> tuple[str, list[str]]:
+def _heredoc_word(command: str, i: int) -> tuple[int, str, bool] | None:
+    """`<<`·`<<-` 뒤 구분어 낱말 하나(bash처럼 따옴표 없는 공백·메타 문자까지, 따옴표를 벗긴 글). (끝 위치, 구분어,
+    본문이 확장되는지). 따옴표·백슬래시가 하나라도 있으면 본문은 확장되지 않는다. 낱말이 없거나 따옴표가 안 닫히면 None
+    (정적으로 풀지 못함, #682 리뷰: `<<END-TEXT`를 `END`로 자르면 뒤 명령을 본문으로 뺀다)."""
+    while i < len(command) and command[i] in " \t":
+        i += 1
+    word, quoted = [], False
+    while i < len(command) and not (command[i].isspace() or command[i] in _METACHARACTERS):
+        char = command[i]
+        if char == "'":
+            end = command.find("'", i + 1)
+            if end < 0:
+                return None
+            word.append(command[i + 1:end])
+            quoted, i = True, end + 1
+            continue
+        if char == '"':
+            j, part = i + 1, []
+            while j < len(command) and command[j] != '"':
+                if command[j] == "\\" and j + 1 < len(command) and command[j + 1] in '"\\$`\n':
+                    j += 1
+                part.append(command[j])
+                j += 1
+            if j >= len(command):
+                return None
+            word.append("".join(part))
+            quoted, i = True, j + 1
+            continue
+        if char == "\\":
+            if i + 1 >= len(command):
+                return None
+            word.append(command[i + 1])
+            quoted, i = True, i + 2
+            continue
+        word.append(char)
+        i += 1
+    delimiter = "".join(word)
+    return (i, delimiter, not quoted) if delimiter else None
+
+
+def _arithmetic_end(command: str, i: int, opened: int) -> int | None:
+    """`$((`·`((` 산술의 끝(닫는 `))` 다음 위치). 안의 `<<`는 시프트 연산이지 heredoc이 아니다."""
+    depth, j = opened, i
+    while j < len(command) and depth:
+        if command[j] == "(":
+            depth += 1
+        elif command[j] == ")":
+            depth -= 1
+        j += 1
+    return j if depth == 0 else None
+
+
+def _preprocess(command: str) -> tuple[str, list[str], bool]:
     """(주석·heredoc 본문을 뺀 명령 글, 확장되는 heredoc 본문들). 따옴표 상태를 줄 너머까지 들고 한 번에 훑는다(#682 리뷰:
     주석·heredoc·치환을 서로 다른 규칙으로 보면 주석 속 치환을 세거나 `)#` 뒤 주석의 `<<`로 다음 명령을 지운다).
 
@@ -98,7 +162,7 @@ def _preprocess(command: str) -> tuple[str, list[str]]:
       입력 글이라 명령이 아니지만, 따옴표 없는 구분어의 본문 안 명령 치환은 실행된다(본문의 `#`·따옴표는 글자).
     """
     # boundary: 지금 자리가 낱말 첫 글자인지. 앞 글자만 보면 `a\ #x`(막은 공백 뒤 `#`, 낱말 가운데)를 주석으로 잘못 본다.
-    out, bodies, pending, quote, boundary, i = [], [], [], None, True, 0
+    out, bodies, pending, quote, boundary, unsure, i = [], [], [], None, True, False, 0
     while i < len(command):
         char = command[i]
         if quote is not None:
@@ -125,22 +189,40 @@ def _preprocess(command: str) -> tuple[str, list[str]]:
             boundary = True
             i += 3
             continue
-        elif command.startswith("<<", i) and (match := _HEREDOC_DELIMITER.match(command, i + 2)):
-            pending.append((match.group(2), not (match.group(1) or "\\" in match.group(0))))
-            out.append(command[i:match.end()])
-            boundary = False
-            i = match.end()
+        elif command.startswith("$((", i) or (boundary and command.startswith("((", i)):
+            start = i + (3 if char == "$" else 2)
+            end = _arithmetic_end(command, start, 2)
+            if end is None:
+                unsure = True
+                end = len(command)
+            out.append(command[i:end])
+            boundary, i = False, end
+            continue
+        elif command.startswith("<<", i):
+            strip_tabs = command.startswith("<<-", i)
+            word = _heredoc_word(command, i + (3 if strip_tabs else 2))
+            if word is None:
+                unsure = True  # 구분어 없음·닫히지 않은 따옴표: 무엇이 본문인지 정적으로 모른다
+                out.append(command[i:i + 2])
+                boundary, i = True, i + 2
+                continue
+            end, delimiter, expands = word
+            pending.append((delimiter, expands, strip_tabs))
+            out.append(command[i:end])
+            boundary, i = False, end
             continue
         elif char == "\n" and pending:
             out.append(char)
             i += 1
-            for delimiter, expands in pending:
+            for delimiter, expands, strip_tabs in pending:
                 lines = []
                 while i <= len(command):
                     stop = command.find("\n", i)
                     line = command[i:] if stop < 0 else command[i:stop]
                     i = len(command) + 1 if stop < 0 else stop + 1
-                    if line.strip() == delimiter:
+                    if strip_tabs:
+                        line = line.lstrip("\t")  # `<<-`는 줄 앞 탭만 지운다(공백은 아니다)
+                    if line == delimiter:  # bash는 줄 전체가 구분어와 같을 때만 닫는다(#682 리뷰)
                         break
                     lines.append(line)
                 if expands:  # 구분어 줄이 없으면 끝까지가 본문이다
@@ -151,7 +233,7 @@ def _preprocess(command: str) -> tuple[str, list[str]]:
             out.append(char)
             boundary = char.isspace() or char in _METACHARACTERS
         i += 1
-    return "".join(out), bodies
+    return "".join(out), bodies, unsure
 
 
 def _substitutions(command: str, quotes: bool = True) -> tuple[list[str], bool]:
@@ -173,7 +255,8 @@ def _substitutions(command: str, quotes: bool = True) -> tuple[list[str], bool]:
         elif char == '"':
             quote = None if quote == '"' else '"'
         elif command.startswith("$(", i) and not command.startswith("$((", i):
-            depth, j, q = 1, i + 2, None
+            # 안쪽은 따로 된 셸 글이다. 주석 속 괄호는 세지 않는다(#682 리뷰: 큰따옴표 속 치환의 주석 `)`로 일찍 닫았다).
+            depth, j, q, at_word = 1, i + 2, None, True
             while j < len(command) and depth:
                 c = command[j]
                 if q:
@@ -181,18 +264,31 @@ def _substitutions(command: str, quotes: bool = True) -> tuple[list[str], bool]:
                         q = None
                     elif c == "\\" and q == '"':
                         j += 1
+                    at_word = False
                 elif c in "'\"":
-                    q = c
+                    q, at_word = c, False
                 elif c == "\\":
                     j += 1
+                    at_word = False
+                elif c == "#" and at_word:
+                    while j + 1 < len(command) and command[j + 1] != "\n":
+                        j += 1
                 elif c == "(":
                     depth += 1
+                    at_word = True
                 elif c == ")":
                     depth -= 1
+                    at_word = True
+                else:
+                    at_word = c.isspace() or c in _METACHARACTERS
                 j += 1
             if depth:
                 return inner, True
-            inner.append(command[i + 2:j - 1])
+            text = command[i + 2:j - 1]
+            # 안쪽의 case 패턴 `a)`·heredoc 본문의 괄호는 이 괄호 세기로 끝을 정확히 못 찾는다 → 정적으로 다 풀지 못함
+            if re.search(r"(?:^|[\s;&|(])case\s", text) or re.search(r"(?<!<)<<(?!<)", text):
+                broken = True
+            inner.append(text)
             i = j
             continue
         elif char == "`":
@@ -228,7 +324,8 @@ def analyze_command(command: str, depth: int = 0) -> tuple[list[str], bool]:
     words, uncertain = [], False
     if depth > 3:
         return words, True
-    body, expanding = _preprocess(command)  # 주석·heredoc 본문을 뺀 글(나누기·치환은 이 글에서만)
+    body, expanding, unsure = _preprocess(command)  # 주석·heredoc 본문을 뺀 글(나누기·치환은 이 글에서만)
+    uncertain |= unsure
     substitutions, broken = _substitutions(body)
     uncertain |= broken
     for text in expanding:  # 따옴표 없는 heredoc 본문의 명령 치환도 실행된다(본문의 따옴표는 글자)
