@@ -198,7 +198,7 @@ func TestFrozenDeclarationDrivesConfirmationRun(t *testing.T) {
 		// 확정 몫(종류 수·확정 요청 시간 상한)은 실행 시작 때 서버가 정한다. 이 시험은 선언 종류가 모두 든다고 둔다.
 		AdmittedTypes: e3contract.MaxDeclarationTypes, RequestTimeout: 10 * time.Second}
 	deps := e3contract.Deps{Transport: fake, Journal: fake, Declarations: productDeclarationReader{runsDir: runs},
-		Reset: productResetGate{registry: r}, Logger: slog.New(slog.DiscardHandler)}
+		Reset: productResetGate{registry: r}, Writes: productWriteRecorder{registry: r, targetID: target.ID, jobID: "job-e3"}, Logger: slog.New(slog.DiscardHandler)}
 	res := e3contract.Run(t.Context(), deps, in)
 	if res.Status != e3contract.StatusCompleted || len(res.Verdicts) != 1 || res.Verdicts[0].Value != "confirmed" {
 		t.Fatalf("동결 사본으로 확정 단계: %+v", res)
@@ -207,7 +207,7 @@ func TestFrozenDeclarationDrivesConfirmationRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	res = e3contract.Run(t.Context(), e3contract.Deps{Transport: e3fake.New(), Journal: fake, Declarations: productDeclarationReader{runsDir: runs},
-		Reset: productResetGate{registry: r}}, in)
+		Reset: productResetGate{registry: r}, Writes: &e3fake.Writes{}}, in)
 	if res.Status != e3contract.StatusIntegrityFailed || res.Reason != string(e3contract.IntegrityPolicyDigestMismatch) {
 		t.Fatalf("손댄 사본: %+v", res)
 	}

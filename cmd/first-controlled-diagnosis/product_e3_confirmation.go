@@ -23,6 +23,8 @@ const (
 	productE3ConfirmationFile = "e3-confirmation.json"
 	// 대상 세대·인스턴스 참조는 서버가 실행마다 발급한다(결정 §5 0단계). 제품 회차에는 아직 따로 발급한 값이 없어서 회차
 	// 번호에서 만든다. 실행 정책의 다른 참조(run-·policy-)와 같은 방식이다.
+	// TODO(최민준): 임시 값이다. E② Transport·Journal v3가 관찰·저널 결속에 쓰는 값이라, 이동찬님이 발급하는 값을 그대로
+	// 받도록 합의한 뒤 바꾼다(#738 질문). 합의 전에는 Transport가 없어 이 값이 대상 요청에 쓰이지 않는다.
 	productE3GenerationRefPrefix = "generation-"
 	productE3InstanceRefPrefix   = "instance-"
 )
@@ -41,8 +43,45 @@ type productE3Confirmation struct {
 // newProductE3Confirmation은 제품 의존(동결 선언 읽기·리셋 게이트)으로 확정 단계를 만든다. Transport·Journal은 비워 둔다:
 // 실제 E② 연동이 들어오기 전에는 확정 단계가 not_wired로 꺼진다(요청 0건). 가짜를 넣는 일은 시험만 한다.
 func newProductE3Confirmation(runsDir, jobID string, target productTargetRecord, registry *productTargetRegistry, accounts func() map[string]string) *productE3Confirmation {
-	return &productE3Confirmation{runsDir: runsDir, jobID: jobID, target: target, registry: registry, accounts: accounts,
+	c := &productE3Confirmation{runsDir: runsDir, jobID: jobID, target: target, registry: registry, accounts: accounts,
 		deps: e3contract.Deps{Declarations: productDeclarationReader{runsDir: runsDir}, Reset: productResetGate{registry: registry}}}
+	if registry != nil {
+		c.deps.Writes = productWriteRecorder{registry: registry, targetID: target.Target.ID, jobID: jobID}
+	}
+	return c
+}
+
+// productWriteRecorder는 확정 단계의 쓰기 기록(e3contract.WriteRecorder)을 대상 선언 저널에 남긴다(기록하고 나서 보내기,
+// 사용자 결정 2026-11-19). 생성 요청 전에 종류를 ID 모름으로 남기고, 결과를 받으면 갱신한다. 갱신을 못 해도 먼저 남긴
+// 기록이 리셋 확인 전까지 다음 회차를 막는다.
+type productWriteRecorder struct {
+	registry *productTargetRegistry
+	targetID string
+	jobID    string
+}
+
+func (w productWriteRecorder) Reserve(_ context.Context, b e3contract.RunBinding, resourceType string) error {
+	if w.registry == nil || b.JobRef != w.jobID {
+		return errPreparation
+	}
+	return w.registry.recordConfirmationWrites(w.targetID, w.jobID, []productConfirmationObject{{Type: resourceType, IDUnknown: true}})
+}
+
+func (w productWriteRecorder) Settle(_ context.Context, b e3contract.RunBinding, write e3contract.ConfirmationWrite) error {
+	if w.registry == nil || b.JobRef != w.jobID {
+		return errPreparation
+	}
+	var o productConfirmationObject
+	switch {
+	case write.Outcome == e3contract.WriteCreated && urlDigestValid(write.ObjectIDDigest):
+		o = productConfirmationObject{Type: write.ResourceType, IDDigest: write.ObjectIDDigest}
+	case write.Outcome == e3contract.WriteNotSent:
+		o = productConfirmationObject{Type: write.ResourceType, IDUnknown: true, NotSent: true}
+	default:
+		// 결과 불명이나 모양이 틀린 digest는 미리 남긴 ID 모름 그대로 둔다.
+		return nil
+	}
+	return w.registry.settleConfirmationWrite(w.targetID, w.jobID, o)
 }
 
 // run은 감독자 훅이다. 오류는 감독자가 단계·상태만 남기고 모델 단계 결과로 마감을 이어 간다. begin은 확정 단계가 실제로
@@ -60,29 +99,17 @@ func (c *productE3Confirmation) run(ctx context.Context, taskID string, begin fu
 	deps.Started = begin
 	res := e3contract.Run(confirmCtx, deps, in)
 	// TODO(최민준): 제품 판정 저장(db.RecordProductVerdict)과 실행 역할 권한은 4b-3b에서 붙인다.
-	var errs []error
-	if len(res.Writes) > 0 {
-		// 진위 실패·중지로 판정을 버려도 대상에는 이미 쓰기가 있었다(계약 §7.2). 리셋 확인 전까지 다음 회차를 막는다.
-		// TODO(최민준): 쓰기 기록을 남기지 못하면 지금은 로그·훅 오류로만 남는다. 다음 회차를 막을 근거가 사라지므로,
-		// E② Transport 연결(쓰기가 실제로 생기는 때) 전에 이 경우의 처리(대상 잠금 등)를 정한다.
-		if c.registry == nil {
-			errs = append(errs, errors.New("e3_writes_unrecorded"))
-		} else if err := c.registry.recordConfirmationWrites(c.target.Target.ID, c.jobID, productConfirmationObjects(res.Writes)); err != nil {
-			errs = append(errs, errors.New("e3_writes_unrecorded"))
-		}
-	}
+	// 쓰기 기록은 생성 요청마다 보내기 전에 이미 남겼다(productWriteRecorder). 여기서는 결과 파일만 쓴다.
 	raw, err := json.Marshal(res)
 	if err == nil {
 		err = writeRunPrivateFile(c.runsDir, c.jobID, productE3ConfirmationFile, raw)
 	}
-	if err != nil {
-		errs = append(errs, errors.New("e3_result_unrecorded"))
-	}
-	for _, e := range errs {
-		log.Printf("[e3-confirmation] 회차 %s 기록 실패: %s", c.jobID, e)
-	}
 	log.Printf("[e3-confirmation] 회차 %s 확정 단계 %s %s 요청 %d 쓰기 %d", c.jobID, res.Status, res.Reason, res.Requests, len(res.Writes))
-	return errors.Join(errs...)
+	if err != nil {
+		log.Printf("[e3-confirmation] 회차 %s 기록 실패: e3_result_unrecorded", c.jobID)
+		return errors.New("e3_result_unrecorded")
+	}
+	return nil
 }
 
 // input은 확정 단계 입력을 회차 기록에서 만든다. 모두 서버가 발급·동결한 값이고 모델이 쓴 값은 없다. 읽지 못한 칸은 비워 두고
@@ -156,22 +183,6 @@ func productE3Accounts(read func() map[string]string) (owner, cross e3contract.A
 		accounts[i] = e3contract.Account{Label: labels[i], Authenticated: true}
 	}
 	return accounts[0], accounts[1]
-}
-
-// productConfirmationObjects는 확정 단계 쓰기를 대상 쓰기 기록으로 옮긴다. 객체 ID를 꺼낸 생성(created)만 ID digest를
-// 남기고, 그 밖(시간 초과·결과 불명·비정상 응답·ID 없음, 모양이 틀린 digest)은 객체가 생겼다고 보고 ID 모름으로 남긴다.
-func productConfirmationObjects(writes []e3contract.ConfirmationWrite) []productConfirmationObject {
-	out := make([]productConfirmationObject, 0, len(writes))
-	for _, w := range writes {
-		o := productConfirmationObject{Type: w.ResourceType}
-		if w.Outcome == e3contract.WriteCreated && urlDigestValid(w.ObjectIDDigest) {
-			o.IDDigest = w.ObjectIDDigest
-		} else {
-			o.IDUnknown = true
-		}
-		out = append(out, o)
-	}
-	return out
 }
 
 // e3RunStartRefusal은 회차 시작 때(모델 단계 전)의 리셋 게이트다(결정 §6.1 (a), 계약 §8). 지금 대상 판에 유효한 선언이 있는

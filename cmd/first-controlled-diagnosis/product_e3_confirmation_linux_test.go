@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -411,22 +412,43 @@ func TestProductE3ConfirmationInputFailsClosed(t *testing.T) {
 	}
 }
 
-func TestProductConfirmationObjectsKeepUnknownIDs(t *testing.T) {
+// 쓰기 기록 갱신: created(모양이 맞는 digest)만 ID를 채우고, not_sent는 거두고, 결과 불명·모양이 틀린 digest는 미리 남긴
+// ID 모름 그대로 둔다. 다른 회차의 결속으로는 남기지 않는다.
+func TestProductWriteRecorderSettle(t *testing.T) {
 	digest := strings.Repeat("a", 64)
-	got := productConfirmationObjects([]e3contract.ConfirmationWrite{
-		{ResourceType: "note", Outcome: e3contract.WriteCreated, ObjectIDDigest: digest},
-		{ResourceType: "card", Outcome: e3contract.WriteUnknown},
-		{ResourceType: "bad", Outcome: e3contract.WriteCreated, ObjectIDDigest: "not-a-digest"},
-		{ResourceType: "odd", Outcome: "other", ObjectIDDigest: digest},
-	})
-	want := []productConfirmationObject{{Type: "note", IDDigest: digest}, {Type: "card", IDUnknown: true}, {Type: "bad", IDUnknown: true}, {Type: "odd", IDUnknown: true}}
-	if len(got) != len(want) {
-		t.Fatalf("%+v", got)
+	for name, c := range map[string]struct {
+		write e3contract.ConfirmationWrite
+		want  productConfirmationObject
+	}{
+		"created":    {e3contract.ConfirmationWrite{ResourceType: "note", Outcome: e3contract.WriteCreated, ObjectIDDigest: digest}, productConfirmationObject{Type: "note", IDDigest: digest}},
+		"not_sent":   {e3contract.ConfirmationWrite{ResourceType: "note", Outcome: e3contract.WriteNotSent}, productConfirmationObject{Type: "note", IDUnknown: true, NotSent: true}},
+		"unknown":    {e3contract.ConfirmationWrite{ResourceType: "note", Outcome: e3contract.WriteUnknown}, productConfirmationObject{Type: "note", IDUnknown: true}},
+		"bad_digest": {e3contract.ConfirmationWrite{ResourceType: "note", Outcome: e3contract.WriteCreated, ObjectIDDigest: "not-a-digest"}, productConfirmationObject{Type: "note", IDUnknown: true}},
+		"other":      {e3contract.ConfirmationWrite{ResourceType: "note", Outcome: "other", ObjectIDDigest: digest}, productConfirmationObject{Type: "note", IDUnknown: true}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, _, target, _ := declarationTestTarget(t)
+			w := productWriteRecorder{registry: r, targetID: target.ID, jobID: liveJob}
+			binding := e3contract.RunBinding{JobRef: liveJob}
+			if err := w.Reserve(t.Context(), binding, "note"); err != nil {
+				t.Fatal(err)
+			}
+			if err := w.Settle(t.Context(), binding, c.write); err != nil {
+				t.Fatal(err)
+			}
+			if got := r.resets[target.ID].writesObjects; len(got) != 1 || got[0] != c.want {
+				t.Fatalf("쓰기 기록: %+v", got)
+			}
+		})
 	}
-	for i := range want {
-		if got[i] != want[i] || !got[i].valid() {
-			t.Fatalf("%d: %+v", i, got[i])
-		}
+	r, _, target, _ := declarationTestTarget(t)
+	w := productWriteRecorder{registry: r, targetID: target.ID, jobID: liveJob}
+	other := e3contract.RunBinding{JobRef: "job-other"}
+	if w.Reserve(t.Context(), other, "note") == nil || w.Settle(t.Context(), other, e3contract.ConfirmationWrite{ResourceType: "note", Outcome: e3contract.WriteNotSent}) == nil {
+		t.Fatal("다른 회차 결속으로 쓰기 기록을 남김")
+	}
+	if r.resets[target.ID] != nil {
+		t.Fatalf("다른 회차 결속이 상태를 바꿈: %+v", r.resets[target.ID])
 	}
 }
 
@@ -595,31 +617,112 @@ func TestProductE3AccountsPicksAuthenticatedByName(t *testing.T) {
 }
 
 // 쓰기 기록을 남기지 못하면 훅이 오류를 돌려준다(감독자가 단계·상태를 남긴다). 결과 파일은 그래도 쓴다.
-func TestProductE3ConfirmationReportsUnrecordedWrites(t *testing.T) {
-	for name, change := range map[string]func(t *testing.T, f e3HookFixture, c *productE3Confirmation){
-		// 같은 회차의 쓰기 기록은 한 번만 받는다. ID 모름 쓰기를 미리 남기고 리셋을 확인해 두면 확정 단계는 시작하지만
-		// 이번 쓰기 기록은 거절된다.
-		"journal-refuses": func(t *testing.T, f e3HookFixture, _ *productE3Confirmation) {
-			if err := f.r.recordConfirmationWrites(f.target.ID, liveJob, []productConfirmationObject{{Type: "note", IDUnknown: true}}); err != nil {
-				t.Fatal(err)
-			}
-			state, _ := f.r.resetConfirmation("ARTEX", f.target.ID)
-			if _, err := f.r.confirmReset("ARTEX", f.target.ID, true, state.LastWritesRef); err != nil {
-				t.Fatal(err)
-			}
-		},
-		"no-registry": func(_ *testing.T, _ e3HookFixture, c *productE3Confirmation) { c.registry = nil },
-	} {
-		t.Run(name, func(t *testing.T) {
-			f := newE3HookFixture(t, true, nil)
-			c := f.confirmation(e3HookFake(), e3HookAccounts(), nil)
-			change(t, f, c)
-			if err := c.run(t.Context(), "9", nil); err == nil || !strings.Contains(err.Error(), "e3_writes_unrecorded") {
-				t.Fatalf("쓰기 기록 실패를 감춤: %v", err)
-			}
-			if res, raw := readE3Result(t, f.runs); res.Status != e3contract.StatusCompleted || len(res.Writes) != 1 {
-				t.Fatalf("결과 파일: %s", raw)
-			}
-		})
+// failingWrites는 쓰기 기록의 Reserve·Settle 중 하나를 실패시키고 나머지는 실제 기록에 넘긴다.
+type failingWrites struct {
+	e3contract.WriteRecorder
+	reserve, settle bool
+}
+
+func (f failingWrites) Reserve(ctx context.Context, b e3contract.RunBinding, typ string) error {
+	if f.reserve {
+		return errors.New("synthetic reserve failure")
 	}
+	return f.WriteRecorder.Reserve(ctx, b, typ)
+}
+
+func (f failingWrites) Settle(ctx context.Context, b e3contract.RunBinding, w e3contract.ConfirmationWrite) error {
+	if f.settle {
+		return errors.New("synthetic settle failure")
+	}
+	return f.WriteRecorder.Settle(ctx, b, w)
+}
+
+// 기록하고 나서 보내기(사용자 결정 2026-11-19): 생성 요청이 나갈 때 대상 선언 저널에는 이미 그 종류의 ID 모름 쓰기가 있다.
+func TestProductE3ConfirmationRecordsBeforeCreate(t *testing.T) {
+	f := newE3HookFixture(t, true, nil)
+	fake := e3HookFake()
+	var atCreate []productConfirmationObject
+	fake.Tamper = func(c e3fake.Call, _ *e3contract.Observation) {
+		if c.Key.Purpose == e3contract.PurposeCreate {
+			if st := f.r.resets[f.target.ID]; st != nil {
+				atCreate = append([]productConfirmationObject(nil), st.writesObjects...)
+			}
+		}
+	}
+	if err := f.confirmation(fake, e3HookAccounts(), nil).run(t.Context(), "9", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(atCreate) != 1 || atCreate[0] != (productConfirmationObject{Type: "note", IDUnknown: true}) {
+		t.Fatalf("생성 요청 때의 쓰기 기록: %+v", atCreate)
+	}
+	if obj := f.r.resets[f.target.ID].writesObjects; len(obj) != 1 || obj[0].IDUnknown || !urlDigestValid(obj[0].IDDigest) {
+		t.Fatalf("생성 뒤 갱신: %+v", obj)
+	}
+}
+
+// 쓰기 기록을 남기지 못하면 생성 요청을 보내지 않고 UNDECIDABLE이다. 보낸 뒤 갱신을 못 하면 먼저 남긴 기록(ID 모름)이 다음
+// 회차를 리셋 확인 전까지 막는다.
+func TestProductE3ConfirmationWriteRecordFailures(t *testing.T) {
+	t.Run("reserve", func(t *testing.T) {
+		f := newE3HookFixture(t, true, nil)
+		fake := e3HookFake()
+		c := f.confirmation(fake, e3HookAccounts(), nil)
+		c.deps.Writes = failingWrites{WriteRecorder: c.deps.Writes, reserve: true}
+		if err := c.run(t.Context(), "9", nil); err != nil {
+			t.Fatal(err)
+		}
+		res, raw := readE3Result(t, f.runs)
+		if res.Status != e3contract.StatusCompleted || len(res.Verdicts) != 1 || res.Verdicts[0].Value != "undecidable" ||
+			len(res.Verdicts[0].ProductReasons) != 1 || res.Verdicts[0].ProductReasons[0] != e3contract.ReasonWriteRecordUnavailable || len(res.Writes) != 0 {
+			t.Fatalf("기록 없이 생성: %s", raw)
+		}
+		for _, call := range fake.Calls() {
+			if call.Key.Purpose == e3contract.PurposeCreate {
+				t.Fatal("쓰기 기록 없이 생성 요청을 보냄")
+			}
+		}
+		if refusal := f.r.e3RunStartRefusal(t.Context(), f.rec, "job-next"); refusal != "" {
+			t.Fatalf("보내지 않았는데 다음 회차를 막음: %q", refusal)
+		}
+	})
+	t.Run("settle", func(t *testing.T) {
+		f := newE3HookFixture(t, true, nil)
+		c := f.confirmation(e3HookFake(), e3HookAccounts(), nil)
+		c.deps.Writes = failingWrites{WriteRecorder: c.deps.Writes, settle: true}
+		if err := c.run(t.Context(), "9", nil); err != nil {
+			t.Fatal(err)
+		}
+		if res, raw := readE3Result(t, f.runs); res.Status != e3contract.StatusCompleted || len(res.Writes) != 1 || res.Writes[0].Outcome != e3contract.WriteCreated {
+			t.Fatalf("결과: %s", raw)
+		}
+		// 갱신을 못 했으니 기록은 ID 모름이다. 리셋 확인 전까지 다음 회차를 막고, 확인 뒤에는 연다(ID 모름만, 계약 §12).
+		st := f.r.resets[f.target.ID]
+		if st == nil || len(st.writesObjects) != 1 || st.writesObjects[0] != (productConfirmationObject{Type: "note", IDUnknown: true}) {
+			t.Fatalf("먼저 남긴 기록: %+v", st)
+		}
+		if refusal := f.r.e3RunStartRefusal(t.Context(), f.rec, "job-next"); refusal != e3contract.RefuseResetConfirmationMissing {
+			t.Fatalf("갱신 실패 뒤 다음 회차: %q", refusal)
+		}
+		if _, err := f.r.confirmReset("ARTEX", f.target.ID, true, st.writesRef); err != nil {
+			t.Fatal(err)
+		}
+		if refusal := f.r.e3RunStartRefusal(t.Context(), f.rec, "job-next"); refusal != "" {
+			t.Fatalf("리셋 확인 뒤: %q", refusal)
+		}
+	})
+	t.Run("not_sent_withdraws", func(t *testing.T) {
+		// 보내지 않은 것이 확실한 생성(E² 거부)은 미리 남긴 기록을 거둬 다음 회차를 막지 않는다.
+		f := newE3HookFixture(t, true, nil)
+		fake := e3HookFake()
+		fake.Behaviors[e3fake.Key{Purpose: e3contract.PurposeCreate, Role: e3contract.RoleOwner, Type: "note"}] = e3fake.Behavior{NotSent: e3contract.NotSentPolicyDenied}
+		if err := f.confirmation(fake, e3HookAccounts(), nil).run(t.Context(), "9", nil); err != nil {
+			t.Fatal(err)
+		}
+		if v, _ := f.r.resetConfirmation("ARTEX", f.target.ID); v.ResetRequired || v.LastWritesObjects != 0 {
+			t.Fatalf("거둔 기록이 남음: %+v", v)
+		}
+		if refusal := f.r.e3RunStartRefusal(t.Context(), f.rec, "job-next"); refusal != "" {
+			t.Fatalf("보내지 않았는데 다음 회차를 막음: %q", refusal)
+		}
+	})
 }

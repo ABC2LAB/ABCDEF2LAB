@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -154,6 +155,9 @@ func decodeFrozen(raw []byte, dst any) error {
 const (
 	declarationConfirmationWrites = "confirmation_writes"
 	declarationResetConfirmed     = "reset_confirmed"
+	// declarationConfirmationWriteSettled는 미리 남긴 쓰기(ID 모름) 하나를 생성 결과로 갱신한 줄이다(기록하고 나서 보내기,
+	// 사용자 결정 2026-11-19). created면 객체 ID digest를 채우고, 보내지 않은 것이 확실하면 그 쓰기를 거둔다(not_sent).
+	declarationConfirmationWriteSettled = "confirmation_write_settled"
 	// productResetStatement는 리셋 확인 때 운영자가 동의하는 진술이다. 저널에는 이 문장의 SHA-256만 남긴다.
 	productResetStatement = "지난 확정 단계가 이 대상에 만든 시험 객체가 남지 않도록 대상을 리셋했다(처음 상태로 되돌렸다)."
 	// maxConfirmationObjects는 한 회차가 만든 객체 기록 상한이다(종류마다 하나).
@@ -172,6 +176,8 @@ type productConfirmationObject struct {
 	Type      string `json:"type"`
 	IDDigest  string `json:"id_digest,omitempty"`
 	IDUnknown bool   `json:"id_unknown,omitempty"`
+	// NotSent는 미리 남긴 쓰기를 거둔 것이다(생성 요청을 보내지 않은 것이 확실). 남은 쓰기로 세지 않는다.
+	NotSent bool `json:"not_sent,omitempty"`
 }
 
 func (o productConfirmationObject) valid() bool {
@@ -181,7 +187,18 @@ func (o productConfirmationObject) valid() bool {
 	if o.IDUnknown {
 		return o.IDDigest == ""
 	}
-	return urlDigestValid(o.IDDigest)
+	return !o.NotSent && urlDigestValid(o.IDDigest)
+}
+
+// liveConfirmationObjects는 거두지 않은(대상에 남았을 수 있는) 쓰기다.
+func liveConfirmationObjects(objects []productConfirmationObject) []productConfirmationObject {
+	var live []productConfirmationObject
+	for _, o := range objects {
+		if !o.NotSent {
+			live = append(live, o)
+		}
+	}
+	return live
 }
 
 // productResetState는 대상의 마지막 확정 단계 쓰기와 그 뒤 리셋 확인이다.
@@ -225,17 +242,42 @@ func applyReset(rec productTargetRecord, st *productResetState, jobs map[string]
 			return nil, errPreparation
 		}
 		for _, o := range e.Objects {
-			if !o.valid() {
+			if !o.valid() || o.NotSent {
 				return nil, errPreparation
 			}
 		}
-		// 한 회차는 쓰기 기록을 한 번만 남긴다(같은 회차의 두 번째 줄은 받지 않는다, #708 이동찬 리뷰).
-		if jobs[e.JobRef] || e.WritesRef != "" {
+		// 지금 쓰기 기록의 회차는 생성 요청마다 줄을 더 남긴다(기록하고 나서 보내기). 지나간 회차는 더 받지 않는다(#708
+		// 이동찬 리뷰: 이미 끝난 회차의 기록이 나중에 바뀌지 않게).
+		if jobs[e.JobRef] && e.JobRef != next.writesJob || e.WritesRef != "" {
 			return nil, errPreparation
 		}
-		// 새 쓰기는 앞선 리셋 확인을 덮는다(이번 객체는 아직 리셋되지 않았다).
-		next = productResetState{writesJob: e.JobRef, writesAt: e.At, writesObjects: append([]productConfirmationObject(nil), e.Objects...),
-			writesRef: confirmationWritesRef(e.JobRef, e.At, e.Objects)}
+		objects := append([]productConfirmationObject(nil), e.Objects...)
+		if e.JobRef == next.writesJob {
+			objects = append(append([]productConfirmationObject(nil), next.writesObjects...), e.Objects...)
+		}
+		if len(objects) > maxConfirmationObjects {
+			return nil, errPreparation
+		}
+		// 새 쓰기는 앞선 리셋 확인을 덮는다(이번 객체는 아직 리셋되지 않았다). 기록이 바뀌면 참조도 바뀌어, 바뀌기 전 기록을 본
+		// 동의는 반영되지 않는다.
+		next = productResetState{writesJob: e.JobRef, writesAt: e.At, writesObjects: objects, writesRef: confirmationWritesRef(e.JobRef, e.At, objects)}
+	case declarationConfirmationWriteSettled:
+		// 지금 회차의 미리 남긴 쓰기(ID 모름) 하나를 결과로 갱신한다: created면 ID digest, not_sent면 거둠.
+		if e.Actor != productConfirmationActor || e.JobRef == "" || e.JobRef != next.writesJob || len(e.Objects) != 1 ||
+			e.StatementSHA256 != "" || e.WritesRef != "" {
+			return nil, errPreparation
+		}
+		o := e.Objects[0]
+		if !o.valid() || o.IDUnknown && !o.NotSent {
+			return nil, errPreparation
+		}
+		objects := append([]productConfirmationObject(nil), next.writesObjects...)
+		i := slices.IndexFunc(objects, func(p productConfirmationObject) bool { return p.Type == o.Type && p.IDUnknown && !p.NotSent })
+		if i < 0 {
+			return nil, errPreparation
+		}
+		objects[i] = o
+		next = productResetState{writesJob: e.JobRef, writesAt: e.At, writesObjects: objects, writesRef: confirmationWritesRef(e.JobRef, e.At, objects)}
 	case declarationResetConfirmed:
 		// 확인은 운영자가 본 쓰기 기록 줄(고유 참조)에만 묶인다. 그 뒤 새 쓰기가 들어왔으면 그 확인 줄은 받지 않는다.
 		if e.Actor != rec.Principal || e.StatementSHA256 != productResetStatementSHA256() || e.JobRef == "" || e.JobRef != next.writesJob ||
@@ -276,8 +318,9 @@ func (r *productTargetRegistry) setReset(e productDeclarationEvent, next *produc
 	r.resetJobs[e.TargetID][e.JobRef] = true
 }
 
-// recordConfirmationWrites는 확정 단계가 대상에 만든 객체를 남긴다. 이 기록이 있으면 운영자의 리셋 확인 전까지 다음
-// 회차를 시작하지 않는다. 확정 단계(판정 쪽 후속 PR)가 생성 결과를 받은 뒤 부른다.
+// recordConfirmationWrites는 확정 단계가 대상에 만들(었을 수 있는) 객체를 남긴다. 이 기록이 있으면 운영자의 리셋 확인
+// 전까지 다음 회차를 시작하지 않는다. 확정 단계는 생성 요청을 보내기 전에 그 종류를 ID 모름으로 먼저 남긴다
+// (productWriteRecorder.Reserve).
 func (r *productTargetRegistry) recordConfirmationWrites(targetID, jobID string, objects []productConfirmationObject) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -287,6 +330,19 @@ func (r *productTargetRegistry) recordConfirmationWrites(targetID, jobID string,
 	}
 	e := productDeclarationEvent{TargetID: targetID, Action: declarationConfirmationWrites, Actor: productConfirmationActor,
 		At: r.now().UTC().Truncate(time.Microsecond), TargetRevision: rec.Target.Revision, JobRef: jobID, Objects: objects}
+	return r.appendReset(rec, e)
+}
+
+// settleConfirmationWrite는 지금 회차의 미리 남긴 쓰기 하나를 생성 결과로 갱신한다(productWriteRecorder.Settle).
+func (r *productTargetRegistry) settleConfirmationWrite(targetID, jobID string, object productConfirmationObject) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec, ok := r.records[targetID]
+	if !ok {
+		return errPreparation
+	}
+	e := productDeclarationEvent{TargetID: targetID, Action: declarationConfirmationWriteSettled, Actor: productConfirmationActor,
+		At: r.now().UTC().Truncate(time.Microsecond), TargetRevision: rec.Target.Revision, JobRef: jobID, Objects: []productConfirmationObject{object}}
 	return r.appendReset(rec, e)
 }
 
@@ -309,10 +365,15 @@ func (r *productTargetRegistry) appendReset(rec productTargetRecord, e productDe
 
 func resetView(st *productResetState) diagnosisprep.ProductResetState {
 	v := diagnosisprep.ProductResetState{Statement: productResetStatement}
-	if st == nil || st.writesJob == "" {
+	live := 0
+	if st != nil {
+		live = len(liveConfirmationObjects(st.writesObjects))
+	}
+	// 미리 남긴 쓰기를 모두 거뒀으면(보내지 않음) 남은 쓰기가 없다.
+	if st == nil || st.writesJob == "" || live == 0 {
 		return v
 	}
-	v.LastWritesJob, v.LastWritesAt, v.LastWritesObjects, v.LastWritesRef = st.writesJob, st.writesAt, len(st.writesObjects), st.writesRef
+	v.LastWritesJob, v.LastWritesAt, v.LastWritesObjects, v.LastWritesRef = st.writesJob, st.writesAt, live, st.writesRef
 	v.ResetRequired = st.confirmedAt.IsZero()
 	v.ConfirmedBy, v.ConfirmedAt = st.confirmedBy, st.confirmedAt
 	return v
@@ -341,7 +402,7 @@ func (r *productTargetRegistry) confirmReset(principal, id string, statementConf
 		return diagnosisprep.ProductResetState{}, errors.New("statement_required")
 	}
 	st := r.resets[id]
-	if st == nil || st.writesJob == "" || st.writesRef != writesRef {
+	if st == nil || st.writesJob == "" || st.writesRef != writesRef || len(liveConfirmationObjects(st.writesObjects)) == 0 {
 		return diagnosisprep.ProductResetState{}, errors.New("reset_record_changed")
 	}
 	if !st.confirmedAt.IsZero() {
@@ -378,7 +439,8 @@ func (g productResetGate) Check(ctx context.Context, binding e3contract.RunBindi
 	if !known {
 		return e3contract.ResetState{}, errPreparation
 	}
-	if st.writesJob == "" {
+	live := liveConfirmationObjects(st.writesObjects)
+	if st.writesJob == "" || len(live) == 0 {
 		return e3contract.ResetState{Residue: e3contract.ResidueAbsent}, nil
 	}
 	// 지난 쓰기가 있으면 리셋 확인과 별개로 지난 객체를 읽어 표식 잔존을 본다(결정 §6.1 (b)). 점검이 없거나 실패하면 모른다.
@@ -386,7 +448,7 @@ func (g productResetGate) Check(ctx context.Context, binding e3contract.RunBindi
 	// 잔존은 ID를 아는 객체만 읽어 본다. ID 모르는 객체(생성 시간 초과·결과 불명)는 읽을 수 없어 리셋 확인에만 기댄다.
 	// 표식은 회차마다 새 난수라 지난 객체가 남아도 다음 회차 판정을 확정으로 만들지 못한다.
 	var readable []productConfirmationObject
-	for _, o := range st.writesObjects {
+	for _, o := range live {
 		if !o.IDUnknown {
 			readable = append(readable, o)
 		}

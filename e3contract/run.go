@@ -42,6 +42,8 @@ type Deps struct {
 	Journal      Journal
 	Declarations DeclarationReader
 	Reset        ResetGate
+	// Writes는 생성 요청의 쓰기 기록이다(기록하고 나서 보내기). 없으면 연결 미구현(not_wired)이다.
+	Writes WriteRecorder
 	// Random은 표식 난수다. 없으면 crypto/rand다.
 	Random io.Reader
 	// Now는 관찰이 하나도 없을 때 판정 시각이다. 없으면 time.Now다.
@@ -233,7 +235,7 @@ func (r *run) run(ctx context.Context) RunResult {
 
 func (r *run) disabledReason() DisabledReason {
 	d := r.deps
-	if d.Transport == nil || d.Journal == nil || d.Declarations == nil || d.Reset == nil {
+	if d.Transport == nil || d.Journal == nil || d.Declarations == nil || d.Reset == nil || d.Writes == nil {
 		return DisabledNotWired
 	}
 	if r.in.Binding.Policy == (PolicySource{}) {
@@ -395,13 +397,17 @@ func (r *run) confirmType(ctx context.Context, t TypeDeclaration, subjects oracl
 	if r.budget {
 		return r.verdict(t, subjects, facts, evidence, ReasonConfirmationBudgetExhaust)
 	}
+	// 기록하고 나서 보낸다: 생성 요청 전에 쓰기를 "ID 모름"으로 먼저 남긴다. 남기지 못하면 보내지 않는다.
+	if err := r.deps.Writes.Reserve(ctx, r.in.Binding, t.Type); err != nil {
+		return r.verdict(t, subjects, facts, evidence, ReasonWriteRecordUnavailable)
+	}
 	before := r.requests
 	created, ok := r.call(ctx, Observation{Purpose: PurposeCreate, Role: RoleOwner, AccountLabel: r.in.Owner.Label,
 		ResourceType: t.Type}, func() (Observation, error) {
 		return r.deps.Transport.Create(ctx, CreateRequest{Binding: r.in.Binding, ResourceType: t.Type, Spec: t.Create,
 			AccountLabel: r.in.Owner.Label, Marker: r.marker, Timeout: r.in.RequestTimeout})
 	})
-	r.recordWrite(t.Type, created, ok, r.requests > before)
+	r.settleWrite(ctx, r.recordWrite(t.Type, created, ok, r.requests > before))
 	if r.integrity != "" || r.stopped && !ok {
 		return Verdict{}
 	}
@@ -501,9 +507,11 @@ func (r *run) read(ctx context.Context, t TypeDeclaration, role Role, label stri
 
 // recordWrite는 생성 요청 하나가 대상에 남겼을 수 있는 쓰기를 남긴다. 부르지 않았거나 보내지 않은 것이 확실하면 남기지
 // 않는다. 객체 ID를 꺼낸 정상 응답만 created이고, 나머지(시간 초과·결과 불명·관찰 불일치·비정상 응답)는 unknown이다.
-func (r *run) recordWrite(resourceType string, obs Observation, ok, invoked bool) {
+// recordWrite는 생성 요청이 대상에 남겼을 수 있는 쓰기를 결과에 더한다. 보내지 않은 것이 확실하면 더하지 않고
+// not_sent를 돌려준다(쓰기 기록 갱신에 쓴다).
+func (r *run) recordWrite(resourceType string, obs Observation, ok, invoked bool) ConfirmationWrite {
 	if !invoked || ok && !obs.Sent {
-		return
+		return ConfirmationWrite{ResourceType: resourceType, Outcome: WriteNotSent}
 	}
 	w := ConfirmationWrite{ResourceType: resourceType, Outcome: WriteUnknown}
 	if ok {
@@ -513,6 +521,19 @@ func (r *run) recordWrite(resourceType string, obs Observation, ok, invoked bool
 		}
 	}
 	r.writes = append(r.writes, w)
+	return w
+}
+
+// settleWrite는 미리 남긴 쓰기 기록을 생성 결과로 갱신한다. unknown은 이미 기록과 같아 부르지 않는다. 회차가 멈춰도
+// 갱신은 끝까지 한다(멈춘 문맥으로 갱신을 놓치면 보내지 않은 생성도 리셋 확인이 필요해진다). 실패해도 미리 남긴 기록
+// (ID 모름)이 다음 회차를 막으므로 판정은 이어 간다.
+func (r *run) settleWrite(ctx context.Context, w ConfirmationWrite) {
+	if w.Outcome == WriteUnknown {
+		return
+	}
+	if err := r.deps.Writes.Settle(context.WithoutCancel(ctx), r.in.Binding, w); err != nil && r.deps.Logger != nil {
+		r.deps.Logger.Warn("E③ 쓰기 기록 갱신 실패", "resource_type", w.ResourceType, "outcome", string(w.Outcome))
+	}
 }
 
 // notUsable은 보내지 않았거나 결과가 불명인 관찰의 사유다. 쓸 수 있으면 빈 값이다.

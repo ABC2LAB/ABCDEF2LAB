@@ -80,6 +80,8 @@ const (
 	// ReasonRequestTimeout은 확정 요청이 전용 시간 상한을 넘겨 결과 불명인 경우다(사용자 결정 2026-11-18). 결과 불명의
 	// 한 갈래이지만, 상한 값(VAmPI 파일럿에서 확정)을 정할 근거가 되도록 따로 센다.
 	ReasonRequestTimeout ProductReason = "product_request_timeout"
+	// ReasonWriteRecordUnavailable은 생성 요청 전에 쓰기 기록을 남기지 못해 보내지 않은 경우다(기록하고 나서 보내기).
+	ReasonWriteRecordUnavailable ProductReason = "product_write_record_unavailable"
 )
 
 // WriteOutcome은 확정 단계 생성 요청이 대상에 남긴 결과다.
@@ -91,6 +93,9 @@ const (
 	// WriteUnknown은 생성 요청을 보냈거나 보냈을 수 있는데 객체가 생겼는지·ID가 무엇인지 모르는 경우다(시간 초과·결과
 	// 불명·비정상 응답·ID 없음). 객체가 생겼다고 보고 리셋 확인 대상에 넣는다.
 	WriteUnknown WriteOutcome = "unknown"
+	// WriteNotSent는 쓰기 기록 갱신(WriteRecorder.Settle)에만 쓴다: 생성 요청을 보내지 않은 것이 확실하다(E²의 sent=false
+	// 또는 요청 전 중단). 미리 남긴 기록을 거둔다. RunResult.Writes에는 넣지 않는다.
+	WriteNotSent WriteOutcome = "not_sent"
 )
 
 // ConfirmationWrite는 확정 단계 생성 요청 하나가 대상에 남겼을 수 있는 쓰기다. 서버는 이것으로 대상의 쓰기 기록
