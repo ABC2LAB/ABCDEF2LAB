@@ -429,6 +429,10 @@ def main(argv: list[str] | None = None) -> int:
             # 않는다(#699 리뷰). 목적은 서명 검증을 지난 값이고 검증 결과(signed_evidence.purpose)에도 남는다.
             if verified["purpose"] != "browser_acceptance":
                 raise PreservationError("preservation_profile_purpose_mismatch")
+            # 합성 fixture 기록은 서명·형식 검증까지만 하고 보존율 요약은 내지 않는다(2026-11-18 사용자 결정). 판정만 NOT_RUN으로
+            # 두면 비율 숫자가 실측처럼 퍼질 수 있어 요약 전체를 거부한다.
+            if verified["execution_source"] != "model_run":
+                raise PreservationError("preservation_synthetic_fixture")
             # v10(= v8 + v9의 coverage·difference_claims): signed_evidence.exploration_boundary가 검증된 경계 원자료
             # (회차별 카운터·계측기 대조)를 담을 수 있다.
             summary.update(format=SIGNED_SUMMARY_FORMAT, signed_evidence=verified,
