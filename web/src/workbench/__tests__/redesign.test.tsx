@@ -726,9 +726,12 @@ describe("자산 탐색", () => {
       </ShellContext.Provider>,
     );
     const ended = screen.getByRole("progressbar", { name: /탐색 진행/ });
-    expect(ended).toHaveAttribute("aria-valuenow", "100");
+    // 막대는 끝까지 채우되 값은 실제 방문 비율(#709 리뷰), 서버 상태가 없으면 '완료 확인 안 됨'을 화면 글로도
+    expect(ended).toHaveAttribute("aria-valuenow", "25");
+    expect((ended.querySelector("i") as HTMLElement).style.width).toBe("100%");
     expect(ended).toHaveAttribute("aria-valuetext", "탐색 끝 · 완료 확인 안 됨 · 방문 1 / 페이지 상한 4");
     expect(ended.className).toMatch(/prog-part/);
+    expect(screen.getByText(/^탐색 상태/).textContent).toBe("탐색 상태 완료 확인 안 됨");
     expect(screen.queryByText("첫 탐색 단계 끝남")).toBeNull();
   });
 
@@ -803,7 +806,8 @@ describe("자산 탐색", () => {
     // 방문 2 / 상한 8(25%)로 멈춘 것처럼 보이지 않게 끝까지 채우되 주황(사용자 11/18). 다 돈 게 아니라는 건 색과
     // aria 글 · 탐색 상태 글이 말한다(리뷰 #479)
     const bar = screen.getByRole("progressbar", { name: /탐색 진행/ });
-    expect(bar).toHaveAttribute("aria-valuenow", "100");
+    expect(bar).toHaveAttribute("aria-valuenow", "25"); // 값은 실제 방문 비율(#709 리뷰)
+    expect((bar.querySelector("i") as HTMLElement).style.width).toBe("100%");
     expect(bar).toHaveAttribute("aria-valuetext", "탐색 끝 · 부분 완료 · 방문 2 / 페이지 상한 8");
     expect(bar.className).toMatch(/prog-part/);
     expect(bar.className).not.toMatch(/prog-ok/);
