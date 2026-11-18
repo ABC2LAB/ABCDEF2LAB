@@ -304,3 +304,112 @@ func TestCheckRunStartRejectsNilGate(t *testing.T) {
 		t.Fatalf("%q", got)
 	}
 }
+
+func TestDeclarationFieldErrorNamesFieldOnly(t *testing.T) {
+	cases := map[string]struct {
+		edit  func(*e3contract.Declaration)
+		field string
+	}{
+		"create_path":   {func(d *e3contract.Declaration) { d.Types[2].Create.Path = "/api/x?secret-value" }, "types[2].create.path"},
+		"read_template": {func(d *e3contract.Declaration) { d.Types[0].Read.PathTemplate = "/api/notes" }, "types[0].read.path_template"},
+		"normal_ctrl":   {func(d *e3contract.Declaration) { d.Types[0].Read.StatusPath, d.Types[0].Read.NormalValue = "s", "a\nb" }, "types[0].read.normal_value"},
+		"normal_long": {func(d *e3contract.Declaration) {
+			d.Types[0].Read.StatusPath, d.Types[0].Read.NormalValue = "s", strings.Repeat("v", 129)
+		}, "types[0].read.normal_value"},
+		"owner_field": {func(d *e3contract.Declaration) { d.Types[0].OwnerOnlyFields = []string{"body", "bad field"} }, "types[0].owner_only_fields[1]"},
+		"too_many": {func(d *e3contract.Declaration) {
+			d.Types = append(d.Types, manyTypes(e3contract.MaxDeclarationTypes)...)
+		}, "types"},
+		"template_long": {func(d *e3contract.Declaration) {
+			d.Types[0].Create.BodyTemplate = `{"t":"` + strings.Repeat("x", e3contract.MaxBodyTemplateBytes) + `"}`
+		}, "types[0].create.body_template"},
+		"identity": {func(d *e3contract.Declaration) { d.Identity.SubjectIDPath = "" }, "identity.subject_id_path"},
+		"size": {func(d *e3contract.Declaration) {
+			d.Types = manyTypes(e3contract.MaxDeclarationTypes)
+			for i := range d.Types {
+				d.Types[i].Create.BodyTemplate = `{"t":"` + strings.Repeat("<", e3contract.MaxBodyTemplateBytes-16) + `"}`
+			}
+		}, "size"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			d := declaration()
+			c.edit(&d)
+			var fe *e3contract.DeclarationFieldError
+			err := d.Validate()
+			if !errors.As(err, &fe) || fe.Field != c.field || !errors.Is(err, e3contract.ErrDeclaration) {
+				t.Fatalf("칸 %v, 기대 %s", err, c.field)
+			}
+			if strings.Contains(err.Error(), "secret-value") || strings.Contains(err.Error(), "<<<") {
+				t.Fatal("오류에 입력 값이 들어감")
+			}
+		})
+	}
+}
+
+func manyTypes(n int) []e3contract.TypeDeclaration {
+	out := make([]e3contract.TypeDeclaration, n)
+	for i := range out {
+		t := declaration().Types[0]
+		t.Type = fmt.Sprintf("t%02d", i)
+		out[i] = t
+	}
+	return out
+}
+
+func TestNormalizeSortsWithoutMutating(t *testing.T) {
+	d := declaration()
+	d.Types[0], d.Types[2] = d.Types[2], d.Types[0]
+	d.Types[0].OwnerOnlyFields = []string{"zeta", "body"}
+	if err := d.Validate(); err == nil {
+		t.Fatal("정렬 전 선언을 받음")
+	}
+	n := e3contract.Normalize(d)
+	if err := n.Validate(); err != nil {
+		t.Fatalf("정렬 뒤: %v", err)
+	}
+	if d.Types[0].Type != "secret" || d.Types[0].OwnerOnlyFields[0] != "zeta" {
+		t.Fatal("원본이 바뀜")
+	}
+	if n.Types[0].Type != "note" || n.Types[2].Type != "secret" || n.Types[2].OwnerOnlyFields[0] != "body" {
+		t.Fatalf("정렬 결과: %+v", n.Types)
+	}
+	dup := declaration()
+	dup.Types[2].Type = "note"
+	if err := e3contract.Normalize(dup).Validate(); err == nil {
+		t.Fatal("정렬이 중복을 숨김")
+	}
+}
+
+func TestCredentialField(t *testing.T) {
+	if f := e3contract.CredentialField(declaration()); f != "" {
+		t.Fatalf("기본 선언에서 자격 모양: %s", f)
+	}
+	const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.c2lnbmF0dXJlLXZhbHVl"
+	cases := map[string]struct {
+		edit  func(*e3contract.Declaration)
+		field string
+	}{
+		"json_password": {func(d *e3contract.Declaration) { d.Types[0].Create.BodyTemplate = `{"password":"hunter2-value"}` }, "types[0].create.body_template"},
+		"json_token":    {func(d *e3contract.Declaration) { d.Types[2].Create.BodyTemplate = `{"title":"t","api_key":"k-value"}` }, "types[2].create.body_template"},
+		"form_session":  {func(d *e3contract.Declaration) { d.Types[0].Create.BodyTemplate = "title=t&session_id=abc-value" }, "types[0].create.body_template"},
+		"bearer":        {func(d *e3contract.Declaration) { d.Types[0].Create.BodyTemplate = `{"note":"Bearer abc.def-value"}` }, "types[0].create.body_template"},
+		"jwt_in_value":  {func(d *e3contract.Declaration) { d.Types[0].Read.StatusPath, d.Types[0].Read.NormalValue = "s", jwt }, "types[0].read.normal_value"},
+		"cookie_header": {func(d *e3contract.Declaration) { d.Types[0].Create.BodyTemplate = `{"h":"Cookie: sid=abc-value"}` }, "types[0].create.body_template"},
+		"authorization": {func(d *e3contract.Declaration) {
+			d.Types[0].Read.StatusPath, d.Types[0].Read.NormalValue = "s", "Authorization: Basic abc"
+		}, "types[0].read.normal_value"},
+		"normal_contains": {func(d *e3contract.Declaration) {
+			d.Types[2].Read.StatusPath, d.Types[2].Read.NormalValue = "s", "token=abc-value"
+		}, "types[2].read.normal_value"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			d := declaration()
+			c.edit(&d)
+			if f := e3contract.CredentialField(d); f != c.field {
+				t.Fatalf("칸 %q, 기대 %q", f, c.field)
+			}
+		})
+	}
+}
