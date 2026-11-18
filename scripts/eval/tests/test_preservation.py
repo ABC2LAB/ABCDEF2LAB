@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from path_mask import key_ref, mask_path  # noqa: E402
 from preservation import (  # noqa: E402
     EXCLUSIONS_FORMAT, PATH_PROFILE, SUMMARY_FORMAT, AuthHeaders, Exclusions, PreservationError, Round, is_static,
-    load_exclusions, load_round, main, summarize,
+    load_exclusions, load_round, main, summarize, _spread_claim,
 )
 
 KEY = bytes(range(32))
@@ -396,6 +396,13 @@ class SummarizeTests(unittest.TestCase):
         below = summarize(baseline, [rnd(), rnd(), rnd(c)], NONE, False)["difference_claims"]["preservation"]
         self.assertEqual(below["claim"], "below_baseline_spread")
         self.assertAlmostEqual(below["value"], 1 / 6)
+
+    def test_spread_bounds_count_as_inside(self):
+        # 원본끼리 값의 최솟값·최댓값과 같은 값도 범위 안이다(차이를 주장하지 않음).
+        for value in (0.5, 1.0):
+            self.assertEqual(_spread_claim(value, [0.5, 0.75, 1.0])["claim"], "within_baseline_spread")
+        self.assertEqual(_spread_claim(0.49, [0.5, 1.0])["claim"], "below_baseline_spread")
+        self.assertEqual(_spread_claim(1.01, [0.5, 1.0])["claim"], "above_baseline_spread")
 
     def test_coverage_claim_compares_round_shares(self):
         a, b, c, d = ("GET", "/a"), ("GET", "/b"), ("GET", "/c"), ("GET", "/d")
