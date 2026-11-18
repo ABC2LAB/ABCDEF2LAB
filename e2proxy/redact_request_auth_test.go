@@ -127,3 +127,24 @@ func TestTestAccountRedactionKeepsJSONValid(t *testing.T) {
 		}
 	}
 }
+
+func TestRequestCredentialRedactionOnlyMasksPrivateFields(t *testing.T) {
+	// 공유 기록에 요청 헤더가 여러 개 있어도 비밀 값만 가리고 구조와 공개 응답 필드를 보존한다.
+	input := []byte(`{"request":{"Authorization":"Bearer synthetic-private-auth","Cookie":"lang=\"en\"; sid=synthetic-private-session","Accept":"application/json"},"response":{"token":"public-catalog-label"},"intent_id":42}`)
+	want := []byte(`{"request":{"Authorization":"[REDACTED]","Cookie":"[REDACTED]","Accept":"application/json"},"response":{"token":"public-catalog-label"},"intent_id":42}`)
+	for _, tc := range []struct {
+		mode HeaderMode
+		want []byte
+	}{
+		{HeaderTestAccountPassthrough, want},
+		{HeaderPreserve, input},
+	} {
+		t.Run(string(tc.mode), func(t *testing.T) {
+			execution := &Execution{cfg: Config{HeaderMode: tc.mode}}
+			result := execution.RedactOutput(input)
+			if !json.Valid(result) || !bytes.Equal(result, tc.want) {
+				t.Fatal("헤더 모드에 따른 비밀값·공개 필드의 가림 범위가 달라졌습니다")
+			}
+		})
+	}
+}
