@@ -36,7 +36,7 @@ from manifest import Engine, ManifestError, RunManifest, load_manifests  # noqa:
 from scoreboard import SnapshotError  # noqa: E402
 
 from e2_prompt_identity import PROMPT_FIELDS, PromptIdentityError, condition_prompt_identity  # noqa: E402
-from isolation_proof import E2_DECLARED_PROPOSED, E2_PRODUCT_FAILURE, PURPOSE_OFFICIAL  # noqa: E402
+from isolation_proof import E2_DECLARED_PROPOSED, E2_PRODUCT_FAILURE, EXECUTION_SYNTHETIC, PURPOSE_OFFICIAL  # noqa: E402
 from run_record import V1, V11, RunInputs, RunRecordError, load_run_inputs, read_runner_key  # noqa: E402
 
 Correlate = Callable[[VerdictRecord], str | None]
@@ -165,6 +165,10 @@ def score_run(
     """서명된 러너 기록으로 회차 입력을 검증한 뒤 채점한다. 임의 traffic/coverage 주입은 없다."""
     inputs = load_run_inputs(manifest, runner_key, correlate)
     run = f"{manifest.condition}#{manifest.repeat_index}"
+    # 합성 입력(스크립트 모델 등)으로 돈 회차는 배선 확인용이라 채점하지 않는다(2026-11-18 사용자 결정). 비교 표도 이 함수를
+    # 거치므로 같이 막힌다. 판단불가로 바꿔 넣지 않고 거부한다(분모가 조용히 바뀌지 않게).
+    if inputs.execution_source == EXECUTION_SYNTHETIC:
+        raise ComparabilityError(f"합성 실행 회차는 채점하지 않음({run}, execution_source={EXECUTION_SYNTHETIC})")
     if inputs.judgments_collected:
         parsed = _VERDICT_ADAPTERS[manifest.engine](manifest, correlate, inputs.records)
     else:
@@ -321,6 +325,7 @@ def build_report(
     warnings: list[str] = []
     reference = None
     seen_executions: set[str] = set()
+    path_keys: set = set()
     seen_proofs: set[str] = set()
     versions: set[str] = set()
     drain_policies: set[tuple[int, int]] = set()
@@ -341,6 +346,11 @@ def build_report(
         # 조용히 빼면 분모가 바뀌므로 표 전체를 거부한다.
         if inputs.purpose not in (None, PURPOSE_OFFICIAL):
             raise ComparabilityError(f"공식 비교 회차가 아님(purpose={inputs.purpose}) — 수용시험 회차는 표에 합산하지 않음")
+        # 분리 배치 공식 회차는 B·O 모두 같은 경로 가림 키로 기록해야 경로 틀을 합칠 수 있다(공식 측정 프로토콜 §7). 한 표의
+        # 회차는 분리 배치 표시와 키 지문이 모두 같아야 한다(키 값은 어디에도 없고 지문만 비교한다).
+        path_keys.add(inputs.path_key)
+        if len(path_keys) > 1 and any(key is not None and key[0] for key in path_keys):
+            raise ComparabilityError("분리 배치 표시·경로 가림 키 지문 불일치 — 한 표의 회차는 같은 배치·같은 키로만")
         basis = {c.key for c in core_gt() + bac_category()}
         conditions = (inputs.fixture_fingerprint, inputs.environment_fingerprint,
                       tuple((key, inputs.pre[key]) for key in sorted(basis)))

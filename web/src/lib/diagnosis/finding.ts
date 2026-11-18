@@ -1,8 +1,9 @@
 /**
  * 발견 상세 = 구조화 판정 레코드(verdict-record.md, 최민준) → 화면 읽기 필드.
  *
- * ※ 프로토타입: E③ 오라클·판정 레코드 저장은 미구현. 아래 목업은 verdict-record §2(a~e) shape 를
- *   그대로 따른 **예시 데이터**다. 실 레코드 API 가 생기면 getFinding 만 교체하면 화면은 그대로 산다.
+ * ※ E③ 원문 판정 · 다계정 비교 레코드는 백엔드 후속이다(읽기 API 없음). 이 파일은 그 레코드가 오면 쓸 표시 규칙
+ *   (보수 하향 · 부족 증거 · 송신 전 차단)만 둔다. 예시 레코드는 시험 전용(finding-fixtures.ts)이고 화면 fallback 이 아니다.
+ *   지금 단독 발견 상세(#finding)는 저장 결과(remediation)로 보고서 '상세 보기'와 같은 페이지를 그린다.
  *   경계: 시각화 읽는 필드 = 이경준(verdict-record Open #4). 레코드 의미·마스킹 = 최민준.
  *
  * 마스킹(verdict-record §3 · 절대규칙 2·8 — 하드 규칙):
@@ -187,122 +188,4 @@ export function displayVerdict(r: FindingRecord): OracleValue {
  */
 export function displayComparisonRow(verdict: OracleValue, row: ComparisonRow["row"]): ComparisonRow["row"] {
   return verdict !== "confirmed" && row === "vuln" ? "und" : row;
-}
-
-// ── verdict-record §2 shape 예시. 수평 IDOR CONFIRMED 1건.
-//    canary 는 **필드명만**(값 금지), 요청은 논리 resource_ref(raw URL 아님).
-const now = Date.UTC(2026, 10, 6, 4, 30, 0);
-const MOCK_FINDING: FindingRecord = {
-  id: "ov-0001",
-  title: "다른 사용자의 자원이 교차 계정으로 조회됨",
-  severity: "high",
-  axis: "horizontal",
-  vulnClass: "수평 IDOR",
-  resourceRef: "basket:a-owned-0001",
-  oracleValue: "confirmed",
-  vulnVerdict: "confirmed",
-  accessPolicyResult: "위반_후보",
-  checks: { policy: "yes", identity: "yes", data: "yes" },
-  reasonCodes: ["policy_deny_resolved", "identity_distinct_verified", "nontrivial_marker_crossed"],
-  signals: {
-    sameResource: "yes",
-    ownerNormalData: "yes",
-    crossNormalData: "yes",
-    nontrivialDataMatch: "yes",
-    reflectionExcluded: "yes",
-    templateExcluded: "yes",
-  },
-  canaryFields: ["body"], // 필드명만 — 값은 저장·표시 안 함
-  comparison: [
-    {
-      label: "계정 A",
-      roleNote: "자원 소유자",
-      resourceRef: "basket:a-owned-0001",
-      observation: "본인 자원 정상 응답",
-      row: "ok",
-    },
-    {
-      label: "계정 B",
-      roleNote: "무관한 사용자",
-      resourceRef: "basket:a-owned-0001",
-      observation: "A의 비자명 표식이 응답 필드에 그대로 나옴(반사·템플릿 배제됨)",
-      row: "vuln",
-    },
-    {
-      label: "비로그인",
-      roleNote: "대조군",
-      resourceRef: "basket:a-owned-0001",
-      observation: "인증 요구로 응답 미수신",
-      row: "und",
-    },
-  ],
-  subjects: { ownerRef: "계정 A", evaluatedRef: "계정 B", ownerStatus: "verified", evaluatedStatus: "verified" },
-  control: {
-    policyVersion: "kg-fixture/v1:kgfx-juiceshop-s1:<digest>",
-    resetGeneration: "reset-gen-1",
-    observedAt: now,
-    modelTag: "openai/qwen3.6-35b-a3b",
-    hintMatchesCanonical: true,
-    expectedAccess: "deny",
-  },
-  trafficEvidenceRefs: ["tr-8f3a", "tr-8f41"],
-  mock: true,
-};
-
-/**
- * 발견 상세 조회.
- * TODO(이경준): 판정 레코드 읽기 API(verdict-record Open #4·#1, 이동찬 서버 조립) 연동 시
- *   이 함수만 실제 fetch 로 교체한다. findingId 는 레코드/ARTEX finding 스코프용.
- */
-export async function getFinding(_findingId: string | null): Promise<FindingRecord> {
-  return MOCK_FINDING;
-}
-
-// ── E²가 송신 전에 차단한 상태변경 후보 → 미실행 → 증거 없음 → UNDECIDABLE.
-//    수평 읽기 1단계 밖(상태변경)이라 승인·격리 시험환경 필요(destructive-last, 절대규칙 6).
-const MOCK_FINDING_HELD: FindingRecord = {
-  id: "ov-0002",
-  title: "상태 변경 요청이 막히는지 미확인",
-  severity: "medium",
-  axis: "horizontal",
-  vulnClass: "비즈니스 로직 · 상태 변경",
-  resourceRef: "checkout:a-session-0001",
-  oracleValue: "undecidable",
-  vulnVerdict: "undecidable",
-  accessPolicyResult: "판정_불가",
-  // 실행 안 됨 → 세 체크·6 신호 모두 unknown(모름을 아님/없음으로 접지 않음).
-  checks: { policy: "unknown", identity: "unknown", data: "unknown" },
-  reasonCodes: ["e2_blocked_pre_send", "state_change_not_executed"],
-  signals: {
-    sameResource: "unknown",
-    ownerNormalData: "unknown",
-    crossNormalData: "unknown",
-    nontrivialDataMatch: "unknown",
-    reflectionExcluded: "unknown",
-    templateExcluded: "unknown",
-  },
-  canaryFields: [],
-  comparison: [], // 전송이 없어 응답 비교 자체가 없음
-  subjects: { ownerRef: "계정 A", evaluatedRef: "계정 B", ownerStatus: "verified", evaluatedStatus: "verified" },
-  control: {
-    policyVersion: "kg-fixture/v1:kgfx-juiceshop-s1:<digest>",
-    resetGeneration: "reset-gen-1",
-    observedAt: Date.UTC(2026, 10, 6, 5, 0, 0),
-    modelTag: "openai/qwen3.6-35b-a3b",
-    hintMatchesCanonical: true,
-    expectedAccess: "deny",
-  },
-  trafficEvidenceRefs: [],
-  intent: "결제 단계에서 금액을 낮춰 보내 주문이 그대로 생성되는지",
-  stateChanging: true,
-  transmission: "held_pre_send",
-  mock: true,
-};
-
-/**
- * 상태변경 후보(E² 송신 전 차단 → 판단 불가) 상세 조회.
- * TODO(이경준): 실 레코드 연동 시 getFinding 과 같은 API 로 통합(판정값·transmission 으로 분기).
- */
-export async function getFindingHeld(_findingId: string | null): Promise<FindingRecord> {
-  return MOCK_FINDING_HELD;
 }

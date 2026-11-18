@@ -428,6 +428,19 @@ class TestRejectedV11(_V11):
         self.assertIsNone(self.inputs(self.v11("i2")).e2_identity)
         self.assertIsNone(self.inputs(self.v11("i3", e2=E2_STUB_PLACEMENT)).e2_identity)
 
+    def test_split_rounds_in_one_table_share_one_path_key(self):
+        # 2026-11-18 결정 (a): 분리 배치 공식 회차는 B·O 모두 같은 경로 가림 키(지문)로만 한 표에 합친다(공식 측정 6회 같은 키).
+        def keyed(ref):
+            return lambda rows: row_of(rows, "run_conditions").update(split=True, path_key_ref=ref)
+        same = [self.v11("k1", tamper_rows=keyed("0123456789abcdef")),
+                self.v11("k2", condition="baseline", engine="baseline", tamper_rows=keyed("0123456789abcdef"))]
+        build_report(self.load(same), self.correlate, self.correlatable, runner_key=self.runner_key)
+        for name, second in (("other_key", keyed("fedcba9876543210")), ("not_split", None)):
+            rounds = [self.v11(f"{name}1", tamper_rows=keyed("0123456789abcdef")),
+                      self.v11(f"{name}2", condition="baseline", engine="baseline", tamper_rows=second)]
+            with self.subTest(case=name), self.assertRaisesRegex(ComparabilityError, "경로 가림 키 지문 불일치"):
+                build_report(self.load(rounds), self.correlate, self.correlatable, runner_key=self.runner_key)
+
     def test_output_language_may_differ_between_conditions_only(self):
         english = lambda rows: row_of(rows, "run_conditions").update(output_language="en")
         self.assertEqual(self.inputs(self.v11("l0")).output_language, "ko")
@@ -572,6 +585,18 @@ class TestRejectedV11(_V11):
         official = self.inputs(self.v11("offref", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
             path_key_ref=None)))
         self.assertEqual(official.purpose, "official")
+        # 2026-11-18 결정 (a): 분리 배치 공식 회차는 키 지문을 가진다. 분리 배치 표시 없이 키 지문이 있으면 거부, 표시가 있는데
+        # 지문이 없거나 표시가 bool이 아니면 거부.
+        split = self.inputs(self.v11("split", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
+            split=True, path_key_ref="0123456789abcdef")))
+        self.assertEqual((split.purpose, split.path_key), ("official", (True, "0123456789abcdef")))
+        self.assertEqual(official.path_key, (False, None))
+        for index, change in enumerate(({"split": False, "path_key_ref": "0123456789abcdef"},
+                                        {"split": True, "path_key_ref": None},
+                                        {"split": 1, "path_key_ref": "0123456789abcdef"},
+                                        {"split": "true", "path_key_ref": "0123456789abcdef"})):
+            self.reject("run_conditions", f"s{index}",
+                        tamper_rows=lambda rows, c=change: row_of(rows, "run_conditions").update(c))
         # 목적 칸이 생기기 전에 서명된 근거는 공식 회차로 읽는다.
         before = self.inputs(self.v11("old", tamper_rows=lambda rows: row_of(rows, "run_conditions").pop("purpose")))
         self.assertEqual(before.purpose, "official")
@@ -735,6 +760,38 @@ class TestComparison(_V11):
         with self.assertRaisesRegex(ComparabilityError, "공식 비교 회차가 아님"):
             build_report(self.load([self.v11("a0"), acceptance]), self.correlate, self.correlatable,
                          runner_key=self.runner_key)
+
+    def test_synthetic_runs_are_refused_by_the_scorer_and_the_table(self):
+        # 실행 출처 칸(2026-11-18): 합성 회차도 격리 검증은 통과하지만 채점기(회차 하나)와 비교 표가 둘 다 거부한다.
+        synthetic = self.v11("x1", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
+            execution_source="synthetic_fixture"))
+        self.assertEqual(self.inputs(synthetic).execution_source, "synthetic_fixture")
+        with self.assertRaisesRegex(ComparabilityError, "합성 실행 회차는 채점하지 않음"):
+            score_run(self.load([synthetic])[0], self.correlate, runner_key=self.runner_key, correlatable=self.correlatable)
+        later = self.v11("x2", repeat_index=1, tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
+            execution_source="synthetic_fixture"))
+        with self.assertRaisesRegex(ComparabilityError, "합성 실행 회차는 채점하지 않음"):
+            build_report(self.load([self.v11("x0"), later]), self.correlate, self.correlatable, runner_key=self.runner_key)
+        # 실제 모델 회차로 명시한 근거와 칸이 생기기 전 근거는 그대로 합산한다.
+        declared = self.v11("m1", repeat_index=1, tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
+            execution_source="model_run"))
+        self.assertEqual(self.inputs(declared).execution_source, "model_run")
+        self.assertEqual(self.inputs(self.v11("m2")).execution_source, "model_run")
+        build_report(self.load([self.v11("m0"), declared]), self.correlate, self.correlatable, runner_key=self.runner_key)
+        # 세 선택 칸(분리 배치 표시·경로 키 지문·실행 출처)은 함께 검증·전달되고, 합성이면 키가 같아도 표가 거부한다(#707 리뷰)
+        both = self.v11("sx", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
+            split=True, path_key_ref="0123456789abcdef", execution_source="synthetic_fixture"))
+        loaded = self.inputs(both)
+        self.assertEqual((loaded.path_key, loaded.execution_source), ((True, "0123456789abcdef"), "synthetic_fixture"))
+        real_split = self.v11("sy", repeat_index=1, tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
+            split=True, path_key_ref="0123456789abcdef", execution_source="model_run"))
+        with self.assertRaisesRegex(ComparabilityError, "합성 실행 회차는 채점하지 않음"):
+            build_report(self.load([both, real_split]), self.correlate, self.correlatable, runner_key=self.runner_key)
+        old = self.inputs(self.v11("so"))  # 세 칸 모두 없는 옛 근거: 엔진 직접 배치·키 없음·실제 모델 회차
+        self.assertEqual((old.path_key, old.execution_source), ((False, None), "model_run"))
+        for index, value in enumerate(("synthetic", "", None, 1)):
+            self.reject("run_conditions", f"e{index}", tamper_rows=lambda rows, v=value: row_of(rows, "run_conditions").update(
+                execution_source=v))
 
     def test_runs_with_different_drain_policies_are_not_compared(self):
         # 같은 환경 지문이라도 서명 근거의 유예·정착 대기가 다르면 비교하지 않는다(#153 리뷰).

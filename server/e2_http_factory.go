@@ -250,7 +250,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		return empty, ErrE2HTTPHost
 	}
 	var policy E2HTTPFilePolicy
-	if strictJSON(raw, &policy) != nil || !validE2HTTPPathMatchFields(raw) || !validE2HTTPPasswordResponseField(raw) || policy.Format != E2HTTPFilePolicyFormat || len(policy.Rules) == 0 || len(policy.Rules) > 256 || policy.MaxRequests == 0 || !policy.ValidUntil.After(policy.ValidFrom) || !policy.ValidUntil.After(time.Now()) || policy.ValidFrom.After(time.Now()) || privateinput.CheckDirectory(policy.StateDir, true) != nil {
+	if strictJSON(raw, &policy) != nil || !validE2HTTPRuleSelectorFields(raw) || !validE2HTTPPasswordResponseField(raw) || policy.Format != E2HTTPFilePolicyFormat || len(policy.Rules) == 0 || len(policy.Rules) > 256 || policy.MaxRequests == 0 || !policy.ValidUntil.After(policy.ValidFrom) || !policy.ValidUntil.After(time.Now()) || policy.ValidFrom.After(time.Now()) || privateinput.CheckDirectory(policy.StateDir, true) != nil {
 		return empty, ErrE2HTTPHost
 	}
 	if !validE2HTTPFileAuth(policy.Auth, policy.HeaderMode, policy.Rules) {

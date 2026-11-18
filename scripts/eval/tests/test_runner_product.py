@@ -341,6 +341,24 @@ class TestStartStopClose(unittest.TestCase):
         self.assertEqual(str(caught.exception), "product_close_timeout")
 
 
+    def test_control_policy_view_is_read_and_checked(self):
+        view = {"format": "abc2lab.control-policy-view/v1", "policy_fingerprint_sha256": "f" * 64, "limits": {"max_requests": 1}}
+        fake = FakeProduct()
+        fake.overrides["/api/tasks/42/control-policy"] = (200, view)
+        self.assertEqual(driver(fake).control_policy("42"), view)
+        self.assertEqual((fake.calls[-1]["method"], fake.calls[-1]["path"]), ("GET", "/api/tasks/42/control-policy"))
+        for bad in (dict(view, format="other"), {k: v for k, v in view.items() if k != "limits"}, dict(view, limits=[])):
+            fake.overrides["/api/tasks/42/control-policy"] = (200, bad)
+            with self.subTest(bad=bad), self.assertRaises(ProductAPIError) as caught:
+                driver(fake).control_policy("42")
+            self.assertEqual(str(caught.exception), "product_control_policy_invalid")
+        calls = len(fake.calls)
+        for task in ("4/2", "", "x", 42):
+            with self.subTest(task=task), self.assertRaises(ProductAPIError):
+                driver(fake).control_policy(task)
+        self.assertEqual(len(fake.calls), calls)
+
+
 class TestInputs(unittest.TestCase):
     def test_model_key_is_redacted_and_checked(self):
         key = ModelKey(KEY)
