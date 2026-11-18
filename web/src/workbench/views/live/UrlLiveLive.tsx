@@ -46,7 +46,7 @@ import { flowStageText, MAX_FLOW_PLAN, type WorkflowSnapshot } from "../../live/
 import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
 import { Markdown } from "../../ui/Markdown";
-import { InspHead, InspOpenButton, Isec, Kv, PaneToggle } from "../../ui/parts";
+import { HelpTip, InspHead, InspOpenButton, Isec, Kv, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "./approvals";
 import { DiagnosticEntrySections } from "./DiagnosticEntrySections";
@@ -243,6 +243,12 @@ function TaskTokens({ u }: { u: URLDiagnosisUsage }) {
     <p className={s.toks} title={tokenExact(u)}>
       {/* 칸 사이 공백: 화면은 flex 간격으로 띄우고, 글로 읽을 때(화면 읽기 · 복사) 붙지 않게 */}
       <span>작업 합계 ·</span> <TokenChips u={u} bound={false} />
+      {/* 칩 옆 '(최대)' 글 대신(사용자 11/18) 키보드 · 터치로도 여는 (?) 설명으로 최대치임을 알린다(#709 리뷰) */}
+      {u.unknown_usage_calls ? (
+        <HelpTip label="최대치 설명">
+          {`사용량을 받지 못한 호출 ${u.unknown_usage_calls}건은 예약량으로 셌습니다. 두 수는 실제 사용량의 최대치입니다.`}
+        </HelpTip>
+      ) : null}
     </p>
   );
 }
@@ -1321,7 +1327,8 @@ export function buildPocMarkdown(entries: readonly RemediationEntry[], info: Poc
     const tag = `[${entrySeverityLabel(e)} · ${diagnosticOutcomeLabels[diagnosticOutcome(e)]}]`;
     // 취약점마다 구분선 + 제목(h2, 진한 띠) — 어디까지가 몇 번 취약점인지 보이게(사용자 11/18)
     if (i > 0) out.push("---", "");
-    out.push(`## ${i + 1}. ${tag} ${mdInline(e.title || e.entry_id)}`, "");
+    // 제목 글의 '#'는 이스케이프한다 — 끝의 '###'가 Markdown 제목 닫기로 읽혀 사라지지 않게(#709 리뷰)
+    out.push(`## ${i + 1}. ${tag} ${mdInline(e.title || e.entry_id).replace(/#/g, "\\#")}`, "");
     const facts = [
       e.vuln_class ? `유형 ${mdInline(e.vuln_class)}` : "",
       ep ? `엔드포인트 ${ep.m ? `${ep.m} ` : ""}${mdInline(ep.p)}` : "",
@@ -1545,6 +1552,8 @@ export function UrlReportLive() {
       .filter(([, n]) => n > 0)
       .map(([k, n]) => `${SEVL[k]} ${n}`)
       .join(", ");
+  const confirmedSev = sevLine("confirmed");
+  const estimatedSev = sevLine("review");
   const noSev = findings.filter((e) => !sevKey(entrySeverity(e) ?? "")).length;
   // 고른 위험도에 해당하는 줄이 (다시 읽은 뒤) 없어졌으면 전체로 본다 — 빈 목록이 '발견 없음'으로 읽히지 않게
   const sevCount = (k: SevFilter) => (k === "all" ? sorted.length : sorted.filter((e) => sevOf(e) === k).length);
@@ -1718,8 +1727,8 @@ export function UrlReportLive() {
                   <div className={s.v}>{findings.length}</div>
                   <div className={s.sub}>
                     {[
-                      sevLine("confirmed") && `확정 ${sevLine("confirmed")}`,
-                      sevLine("review") && `예상 ${sevLine("review")}`,
+                      confirmedSev && `확정 ${confirmedSev}`,
+                      estimatedSev && `예상 ${estimatedSev}`,
                       noSev ? `위험도 미평가 ${noSev}` : "",
                     ]
                       .filter(Boolean)

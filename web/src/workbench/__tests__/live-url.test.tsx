@@ -76,6 +76,7 @@ import { urlAccountAuthRows, urlOutcomeText, urlStateText, urlTargetHint, urlTon
 import { flowStageText } from "../live/workflow";
 import { type Shell, ShellContext, type View } from "../shell";
 import { createInitialState, useWb } from "../store";
+import { Markdown } from "../ui/Markdown";
 import { DashboardByMode, LiveByMode, NewScanByMode, ReportByMode, ScopeByMode } from "../views/live/byMode";
 import { UrlFindingLive } from "../views/live/UrlFindingLive";
 import { buildPocMarkdown, FINDINGS_POLL_MS } from "../views/live/UrlLiveLive";
@@ -1032,7 +1033,13 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     mount("live");
     const line = (await screen.findByText(/^작업 합계/)).parentElement as HTMLElement;
     // 예약량으로 센 호출이 있어도 점검 진행 칩 옆엔 '(최대)'를 두지 않고(사용자 11/18), 마우스를 올린 정확한 값에 최대치를 남긴다
-    expect(line).toHaveTextContent(/^작업 합계 · 입 1.2k 출 300$/);
+    expect(line).toHaveTextContent(/^작업 합계 · 입 1.2k 출 300\?/);
+    // 마우스를 올리지 않아도: 키보드 · 터치로 여는 (?) 설명이 최대치임을 말한다(#709 리뷰)
+    const tip = within(line).getByRole("button", { name: "최대치 설명" });
+    fireEvent.click(tip);
+    expect(within(line).getByRole("note")).toHaveTextContent(
+      "사용량을 받지 못한 호출 1건은 예약량으로 셌습니다. 두 수는 실제 사용량의 최대치입니다.",
+    );
     expect(line).toHaveAttribute("title", "입력 1,200 토큰 (최대치)\n출력 300 토큰 (최대치)");
     cleanup();
     resetUrl();
@@ -1840,6 +1847,19 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
       crawl: { visited: 3, found: 2 },
     });
     expect(md).toContain("## 1. [위험도 미평가 · 검토 필요] 줄 바꿈");
+    // 제목 끝의 '#'는 Markdown 제목 닫기로 읽히지 않게 이스케이프한다(#709 리뷰)
+    const hashes = buildPocMarkdown([{ ...candidate(2), title: "후보 2 ###" }], {
+      targetUrl: null,
+      mode: null,
+      model: null,
+      excluded: null,
+      crawl: null,
+    });
+    expect(hashes).toContain("## 1. [위험도 미평가 · 검토 필요] 후보 2 \\#\\#\\#");
+    render(<Markdown text={hashes} />);
+    expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent(
+      /^1\. \[위험도 미평가 · 검토 필요\] 후보 2 ###$/,
+    );
     expect(md).not.toContain("---"); // 구분선은 취약점 사이에만
     expect(md).toContain("- 탐색: 방문 3 · 발견한 API 2");
     expect(md).toContain("`````text\na ```` b\n`````");
