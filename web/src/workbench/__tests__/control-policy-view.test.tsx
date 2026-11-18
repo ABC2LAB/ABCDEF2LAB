@@ -256,6 +256,59 @@ describe("UrlControlPolicyLive (#689 리뷰 — 결속·진입·시각·계정 �
     }
   });
 
+  it("A→B→A 로 빠르게 돌아오면 처음 A 정책이 아니라 이번 A 조회가 끝날 때까지 불러오는 중이다", async () => {
+    g.mockClear();
+    withTask("1");
+    g.mockResolvedValueOnce(ready({ policyRef: "pol-a-first" }));
+    g.mockImplementationOnce(() => new Promise<never>(() => undefined)); // B 응답은 아직
+    let finishA: (l: PolicyLoad) => void = () => undefined;
+    g.mockImplementationOnce(
+      () =>
+        new Promise<PolicyLoad>((res) => {
+          finishA = res;
+        }),
+    );
+    render(<UrlControlPolicyLive />);
+    expect(await screen.findByText(/pol-a-first/)).toBeInTheDocument();
+    act(() => withTask("2"));
+    act(() => withTask("1"));
+    expect(screen.queryByText(/pol-a-first/)).toBeNull();
+    expect(screen.getByText(/불러오는 중/)).toBeInTheDocument();
+    expect(g).toHaveBeenCalledTimes(3);
+    expect(g).toHaveBeenLastCalledWith("1", expect.any(AbortSignal));
+    await act(async () => finishA(ready({ policyRef: "pol-a-second" })));
+    expect(screen.getByText(/pol-a-second/)).toBeInTheDocument();
+    expect(screen.queryByText(/pol-a-first/)).toBeNull();
+  });
+
+  it("미리 마운트된 화면도 정책을 받은 실제 시각으로 유효기간을 재고, 그 시각 기준으로 다음 경계를 잡는다", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      vi.setSystemTime(new Date("2030-01-01T10:00:00Z"));
+      withTask("42");
+      let finish: (l: PolicyLoad) => void = () => undefined;
+      g.mockImplementationOnce(
+        () =>
+          new Promise<PolicyLoad>((res) => {
+            finish = res;
+          }),
+      );
+      render(<UrlControlPolicyLive />);
+      vi.setSystemTime(new Date("2030-01-01T11:30:00Z"));
+      await act(async () => finish(ready({ validFrom: "2030-01-01T11:00:00Z", validUntil: "2030-01-01T12:00:00Z" })));
+      expect(screen.getByText("유효기간 내")).toBeInTheDocument();
+      expect(screen.queryByText(/지금은 정책 유효기간 밖입니다/)).toBeNull();
+      // 11:30 기준 다음 경계는 12:00(30분 뒤) — 10:00 기준 11:00 경계로 잡히면 여기서 바뀌지 않는다
+      await act(async () => {
+        vi.advanceTimersByTime(30 * 60_000 + 1_000);
+      });
+      expect(screen.queryByText("유효기간 내")).toBeNull();
+      expect(screen.getByText(/지금은 정책 유효기간 밖입니다/)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("자격 헤더는 정책 설정으로 표시하고, 모든 시험 계정 로그인이 실패한 회차는 실제 결과를 함께 보인다", async () => {
     job({ state: "completed", account_auth: { "tester-a": "login_failed" } });
     g.mockResolvedValueOnce(ready());

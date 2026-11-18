@@ -144,43 +144,46 @@ export function UrlControlPolicyLive() {
   const accountAuth = useUrl((st) => st.job?.account_auth);
   // 숨겨 마운트된 화면이라 들어올 때마다 같은 task 의 정책을 다시 확인한다
   const visible = useShell().route === "controlpolicy";
-  // 어느 task 의 결과인지 같이 들고, task 가 바뀌면 이전 정책을 보이지 않는다.
-  const [result, setResult] = useState<{ task: string | null; load: PolicyLoad | "failed" } | null>(null);
+  // 어느 task·결속의 결과인지 같이 들고, 지금 조회와 다른 결과는 보이지 않는다.
+  const [result, setResult] = useState<{ task: string | null; binding: string; load: PolicyLoad | "failed" } | null>(
+    null,
+  );
   const [attempt, setAttempt] = useState(0);
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
-    if (visible) setAttempt((n) => n + 1);
+    if (!visible) return;
+    // 숨겨 마운트된 동안 멈춰 있던 시각을 진입 시각으로 다시 잰다(#689 리뷰)
+    setNow(Date.now());
+    setAttempt((n) => n + 1);
   }, [visible]);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: attempt·binding 은 같은 task 를 다시 부르는 트리거(다시 읽기·화면 진입·결속 변화)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: attempt 는 같은 task 를 다시 부르는 트리거(다시 읽기·화면 진입)
   useEffect(() => {
     let live = true;
     const controller = new AbortController();
+    // 새 조회가 시작되면 이전 결과를 지운다 — A→B→A 로 돌아와도 처음 A 결과가 아니라 이번 조회 결과만 보인다(#689 리뷰)
+    setResult(null);
+    const apply = (load: PolicyLoad | "failed") => {
+      if (!live) return;
+      // 결과를 적용하는 순간의 실제 시각으로 유효기간을 다시 잰다(마운트 시각이 아니라)
+      setNow(Date.now());
+      setResult({ task, binding, load });
+    };
     getControlPolicy(task, controller.signal)
-      .then((load) => {
-        if (live) setResult({ task, load });
-      })
-      .catch(() => {
-        if (live) setResult({ task, load: "failed" });
-      });
+      .then(apply)
+      .catch(() => apply("failed"));
     return () => {
       live = false;
       controller.abort();
     };
   }, [task, attempt, binding]);
 
-  const load = result && result.task === task ? result.load : null;
+  // effect 가 지우기 전 한 번의 렌더에서도 다른 task·결속의 결과는 보이지 않는다
+  const load = result && result.task === task && result.binding === binding ? result.load : null;
   // 실패·결속 전·불일치·형식 깨짐은 다시 읽기로 같은 task 를 다시 부른다(이전 결과는 그동안 보이지 않는다)
   const retry = (
-    <button
-      className={cx(s.btn, s.sm)}
-      type="button"
-      onClick={() => {
-        setResult(null);
-        setAttempt((n) => n + 1);
-      }}
-    >
+    <button className={cx(s.btn, s.sm)} type="button" onClick={() => setAttempt((n) => n + 1)}>
       다시 읽기
     </button>
   );
