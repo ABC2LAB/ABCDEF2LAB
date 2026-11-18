@@ -1119,15 +1119,16 @@ class TestCompleteRun(unittest.TestCase):
         self.assertEqual((task["task_origin"], task["goal_common_sha256"]), ("http://app.eval.test:8080", "c" * 64))
 
     def test_cli_usage_counts_only_names(self):
-        # 분리 배치 B 회차: 원본 도구 실행 기록에서 B에만 있는 CLI 이름별 Bash 호출 수만 남긴다(결정안 §10).
+        # 분리 배치 B 회차: 원본 도구 실행 기록에서 B에만 있는 CLI 이름별 등장 수(상한)만 남긴다(결정안 §10, 2026-11-18).
         spec = dataclasses.replace(make_spec(), cli_usage_names=("npx", "pip3", "vim"))
         result, ports, meter, evidence = run(spec=spec)
         self.assertEqual(result["status"], COMPLETE)
         self.assertEqual(ports.calls[ports.calls.index("findings") + 1], "command_records")
         self.assertEqual(ports.command_task, "17")  # 이 회차가 만든 작업 번호
         usage = evidence.files["cli-usage.json"]
-        self.assertEqual((usage["bash_calls"], usage["calls"], usage["names"], usage["exploration_id"], usage["uncertain_calls"]),
-                         (2, {"npx": 1, "pip3": 1}, ["npx", "pip3", "vim"], 5, 0))
+        self.assertEqual((usage["bash_calls"], usage["occurrences"], usage["names_seen"], usage["names"], usage["exploration_id"]),
+                         (2, {"npx": 1, "pip3": 1}, ["npx", "pip3"], ["npx", "pip3", "vim"], 5))
+        self.assertEqual(usage["format"], "abc2lab.cli-usage/v2")
         self.assertNotIn("not_found", usage)
         self.assertNotIn("playwright test", json.dumps(evidence.files))  # 명령 원문은 남지 않는다
         self.assertNotIn("command_records", run()[1].calls)  # 이름이 없으면(분리 배치 아님·O) 읽지 않는다
