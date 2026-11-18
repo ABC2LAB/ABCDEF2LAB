@@ -1,0 +1,51 @@
+{
+  "format": "abc2lab.control-policy-view/v1",
+  "policy_ref": "policy-live",
+  "policy_revision": "revision-live",
+  "policy_fingerprint_sha256": "40144df9e2f2bea5f46b2809093c6b70bfc73dd6cfc1f42dc85fdd63435dec4d",
+  "approval_mode": "preauthorized_scope",
+  "header_mode": "test_account_passthrough",
+  "valid_from": "<회차 시각>",
+  "valid_until": "<회차 시각>",
+  "rules": [
+    {
+      "ref": "target-path-a",
+      "purpose": "",
+      "origin": "https://shop.example",
+      "connect_ip": "10.0.0.5",
+      "path_prefix": "/api",
+      "path_scope_ref": "readonly-path-a",
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "tls_pinned": true
+    },
+    {
+      "ref": "auth-login",
+      "purpose": "auth_prep",
+      "origin": "https://shop.example",
+      "connect_ip": "10.0.0.5",
+      "path_prefix": "/login",
+      "path_scope_ref": "auth-login-path",
+      "methods": [
+        "POST"
+      ],
+      "tls_pinned": false
+    }
+  ],
+  "limits": {
+    "max_requests": 64,
+    "max_attempts": 200,
+    "max_concurrent": 1,
+    "max_body_bytes": 65536,
+    "max_response_body_bytes": 65536,
+    "request_timeout_ms": 5000,
+    "e3_confirmation_requests": 0,
+    "e3_confirmation_timeout_ms": 0
+  },
+  "accounts": [
+    "tester-a"
+  ],
+  "audit_bound": true
+}

@@ -4,6 +4,8 @@ package main
 
 import (
 	"encoding/json"
+	"os"
+	"reflect"
 	"testing"
 
 	"github.com/Autumn-27/artex/server"
@@ -97,5 +99,35 @@ func TestControlPolicyViewE3ConfirmationShare(t *testing.T) {
 	limits, _ = out["limits"].(map[string]any)
 	if w.Code != 200 || limits == nil || limits["e3_confirmation_requests"] != float64(0) || limits["e3_confirmation_timeout_ms"] != float64(0) {
 		t.Fatal("꺼진 회차의 확정 몫 0이 화면 투영에서 빠짐", w.Code, w.Body.String())
+	}
+}
+
+// e3OffViewFixture는 E③ 확정 단계가 꺼진 제품 회차의 control-policy 보기 응답이다(회차 시각만 자리표시). 평가 러너 시험
+// (scripts/eval/tests/test_runner_split_execute.py)이 같은 파일을 러너 checked_control_policy·check_official_e3_share에
+// 넣는다. 제품 보기와 러너 검사를 묶는 고리다(#716 이동찬 리뷰).
+const e3OffViewFixture = "testdata/control-policy-view-e3-off.json"
+
+func TestControlPolicyViewE3OffMatchesRunnerFixture(t *testing.T) {
+	runsDir, _ := liveRunFixtureWith(t, nil, func(p *server.E2HTTPFilePolicy) {
+		*p = withE3ConfirmationShare(*p, int64(urlMaxRunSeconds), 0) // 실행 발급(issue)과 같은 함수
+	})
+	w, got := liveGet(t, runsDir, "/api/tasks/9/control-policy")
+	if w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	raw, err := os.ReadFile(e3OffViewFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want map[string]any
+	if err := json.Unmarshal(raw, &want); err != nil {
+		t.Fatal(err)
+	}
+	for _, view := range []map[string]any{got, want} {
+		view["valid_from"], view["valid_until"] = "<회차 시각>", "<회차 시각>"
+	}
+	if !reflect.DeepEqual(got, want) {
+		body, _ := json.MarshalIndent(got, "", "  ")
+		t.Fatalf("제품 control-policy 보기가 러너 고정 파일과 다름:\n%s", body)
 	}
 }
