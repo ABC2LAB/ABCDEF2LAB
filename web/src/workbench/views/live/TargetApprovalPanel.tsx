@@ -331,8 +331,10 @@ export function TargetApprovalPanel({
                 />
               </div>
               <div className={s.field}>
+                {/* 서버 readonly_basis: 점검 권한과 경로를 열어도 데이터가 안 바뀌는 근거(운영자 진술, 20자 이상).
+                    '진단 권한 · 비변경 근거'가 무슨 말인지 알기 어려워 이름 · 예시를 쉬운 말로(사용자 11/18) */}
                 <label className={s.lbl} htmlFor="targetReadonlyBasis">
-                  진단 권한 · 비변경 근거
+                  점검 근거
                 </label>
                 <textarea
                   id="targetReadonlyBasis"
@@ -341,7 +343,7 @@ export function TargetApprovalPanel({
                   onChange={(e) => setBasis(e.target.value)}
                   disabled={off}
                   maxLength={1024}
-                  placeholder="승인된 업무 · 환경과 이 GET/HEAD 경로가 상태를 바꾸지 않는 근거 (20자 이상)"
+                  placeholder="20자 이상 · 예) 우리 회사 시험 서버이고, 위 경로는 조회만 해서 데이터가 바뀌지 않습니다"
                 />
               </div>
             </div>
@@ -355,8 +357,8 @@ export function TargetApprovalPanel({
                 연결(https 대상은 TLS 확인)을 최대 32회 합니다.
                 <br />
                 <br />
-                비변경 근거는 운영자 확인입니다 · 서버는 GET/HEAD 의 무해성을 검증하지 않습니다 · 등록 후 DNS TXT 소유를
-                확인합니다
+                점검 근거는 운영자가 직접 쓰는 확인입니다 · 서버는 GET/HEAD 의 무해성을 검증하지 않습니다 · 등록 후 DNS
+                TXT 소유를 확인합니다
                 {requestLimit ? ` · 회차당 요청 상한 ${requestLimit}` : ""} · 상태 변경 범위는 별도 동의한 설치에서만
                 등록할 수 있습니다
               </HelpTip>
