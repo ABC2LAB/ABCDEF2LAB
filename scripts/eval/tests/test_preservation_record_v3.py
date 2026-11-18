@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import synthetic_gt  # noqa: E402,F401  합성 정답 목록을 먼저 끼운다(정답표 노출 방지)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from path_mask import key_ref  # noqa: E402
 from preservation_record import (FORMAT_V3, NAME, PreservationRecordError, _validate_v3, build_payload_v3,  # noqa: E402
@@ -109,8 +110,8 @@ class TestBuildAndLoad(V3Fixture):
         self.assertIsNone(b[0]["exploration_boundary"])
         self.assertEqual(o[0]["exploration_boundary"]["status"], "verified")
         verified = validate_series(b, o, request_budget=3, read_only=False)
-        self.assertEqual((verified["format"], verified["verified_signed_rounds"], verified["layout"]),
-                         (FORMAT_V3, 4, "exploration-split/v1"))
+        self.assertEqual((verified["format"], verified["verified_signed_rounds"], verified["layout"], verified["purpose"]),
+                         (FORMAT_V3, 4, "exploration-split/v1", b[0]["purpose"]))
         self.assertEqual(verified["exploration_boundary"]["status"], "PASS")
         self.assertEqual({row["value"] for row in verified["first_limits"]}, {"runner_request_budget"})
 

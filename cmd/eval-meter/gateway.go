@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -106,6 +107,15 @@ type generationResult struct {
 	Status       string            `json:"status"`
 	ProviderName string            `json:"provider_name"`
 	Attempts     []providerAttempt `json:"attempts"`
+	Lookup       lookupTrace       `json:"lookup"`
+}
+
+// lookupTrace는 그 generation 조회의 시도 수와 마지막 응답 종류다(값·본문 없음). 미확인이 통계 지연인지(http_404 등)
+// 즉시 거부인지(http_401·http_403)를 회차 뒤에 가르려고 남긴다(2026-11-18 VAmPI 유료 파일럿에서 원인을 가를 수 없었다).
+// 시한 안에 한 번도 묻지 못한 것은 시도 0, last=deadline이다. 물어봤는데 시한에 걸린 것은 시도 수가 설정보다 적다.
+type lookupTrace struct {
+	Tries int    `json:"tries"`
+	Last  string `json:"last"`
 }
 
 // verifiedMarker reports what was served and by whom; whether that matches the
@@ -581,9 +591,7 @@ func (g *llmGateway) maybeDrainedLocked(at time.Time) {
 func (g *llmGateway) verify(ids []string) error {
 	results := make([]generationResult, 0, len(ids))
 	if g.cfg.backend == backendAPI {
-		for _, id := range ids {
-			results = append(results, g.verifier().lookup(id))
-		}
+		results = g.verifier().lookupAll(ids)
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -612,49 +620,92 @@ type generationVerifier struct {
 	interval time.Duration
 	client   *http.Client
 	sleep    func(time.Duration)
+	now      func() time.Time
 }
 
 func (g *llmGateway) verifier() generationVerifier {
 	return generationVerifier{upstream: g.cfg.upstream, path: g.cfg.generationPath, key: g.cfg.key,
-		attempts: g.cfg.verifyAttempts, interval: g.cfg.verifyInterval, client: g.client, sleep: g.sleep}
+		attempts: g.cfg.verifyAttempts, interval: g.cfg.verifyInterval, client: g.client, sleep: g.sleep, now: g.now}
 }
 
-func (v generationVerifier) lookup(id string) generationResult {
-	endpoint := *v.upstream
-	endpoint.Path = v.path
-	endpoint.RawQuery = url.Values{"id": {id}}.Encode()
-	for attempt := 1; attempt <= v.attempts; attempt++ {
-		result, retry := v.lookupOnce(endpoint.String(), id)
-		if !retry {
-			return result
+// lookupDeadline은 조회 전체의 시한이다: 쉬는 시간 상한(시도 수 × 간격)에 조회 한 번의 시간 상한을 더한다. 시한이 지나면
+// 더 묻지 않고 남은 것을 미확인(last=deadline)으로 표식에 적는다. 그래서 조회가 끝나는 시각은 시한 + 조회 한 번의 시간 상한을
+// 넘지 않고, 러너는 그보다 긴 대기 시한(runner_config가 검사)으로 표식을 늘 받는다(2026-11-18 파일럿: 표식 없이 시한 초과).
+func (v generationVerifier) lookupDeadline() time.Duration {
+	return time.Duration(v.attempts)*v.interval + generationLookupTimeout
+}
+
+// lookupAll은 generation들을 라운드로 조회한다. 라운드마다 아직 답이 정해지지 않은 것만 한 번씩 묻고, 라운드 사이에만
+// 쉰다. 건마다 순서대로 재시도하면 통계가 늦을 때 걸리는 시간이 건수에 비례해 러너 대기 시한을 넘는다(2026-11-18 파일럿).
+// 이렇게 하면 쉬는 시간의 합이 (시도 수 - 1) × 간격을 넘지 않는다. 결과는 입력 순서다.
+func (v generationVerifier) lookupAll(ids []string) []generationResult {
+	results := make([]generationResult, len(ids))
+	traces := make([]lookupTrace, len(ids))
+	pending := make([]int, len(ids))
+	for i := range ids {
+		pending[i] = i
+	}
+	deadline := v.now().Add(v.lookupDeadline())
+	expired := false
+	for round := 1; round <= v.attempts && len(pending) > 0 && !expired; round++ {
+		var next []int
+		for n, i := range pending {
+			if !v.now().Before(deadline) {
+				expired = true
+				next = append(next, pending[n:]...)
+				break
+			}
+			endpoint := *v.upstream
+			endpoint.Path = v.path
+			endpoint.RawQuery = url.Values{"id": {ids[i]}}.Encode()
+			result, retry, last := v.lookupOnce(endpoint.String(), ids[i])
+			traces[i].Tries++
+			traces[i].Last = last
+			if retry {
+				next = append(next, i)
+				continue
+			}
+			results[i] = result
 		}
-		if attempt < v.attempts {
+		pending = next
+		if len(pending) > 0 && round < v.attempts && !expired {
 			v.sleep(v.interval)
 		}
 	}
-	return generationResult{ID: id, Status: "unverified", Attempts: []providerAttempt{}}
+	for _, i := range pending {
+		results[i] = generationResult{ID: ids[i], Status: "unverified", Attempts: []providerAttempt{}}
+		if traces[i].Tries == 0 {
+			traces[i].Last = "deadline" // 시한 안에 한 번도 묻지 못했다(물어본 것은 마지막 응답 종류가 남는다)
+		}
+	}
+	for i := range results {
+		results[i].Lookup = traces[i]
+	}
+	return results
 }
 
 // lookupOnce returns retry=true for answers that may change with time (stats
 // not ready yet, rate limits, upstream errors) and false for a final answer.
-func (v generationVerifier) lookupOnce(endpoint, id string) (generationResult, bool) {
+// last는 응답 종류(verified, http_<코드>, network_error, request_error, body_invalid, no_provider)다.
+func (v generationVerifier) lookupOnce(endpoint, id string) (generationResult, bool, string) {
 	unverified := generationResult{ID: id, Status: "unverified", Attempts: []providerAttempt{}}
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
-		return unverified, false
+		return unverified, false, "request_error"
 	}
 	req.Header.Set("Authorization", "Bearer "+v.key)
 	req.Header.Set("Accept", "application/json")
 	resp, err := v.client.Do(req)
 	if err != nil {
-		return unverified, true
+		return unverified, true, "network_error"
 	}
 	defer resp.Body.Close()
+	code := "http_" + strconv.Itoa(resp.StatusCode)
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return unverified, false
+		return unverified, false, code
 	}
 	if resp.StatusCode != http.StatusOK {
-		return unverified, true
+		return unverified, true, code
 	}
 	var stats struct {
 		Data *struct {
@@ -667,16 +718,18 @@ func (v generationVerifier) lookupOnce(endpoint, id string) (generationResult, b
 		} `json:"data"`
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxGenerationBytes+1))
-	if err != nil || len(raw) > maxGenerationBytes || json.Unmarshal(raw, &stats) != nil ||
-		stats.Data == nil || stats.Data.ProviderName == nil || *stats.Data.ProviderName == "" {
-		return unverified, true
+	if err != nil || len(raw) > maxGenerationBytes || json.Unmarshal(raw, &stats) != nil || stats.Data == nil {
+		return unverified, true, "body_invalid"
+	}
+	if stats.Data.ProviderName == nil || *stats.Data.ProviderName == "" {
+		return unverified, true, "no_provider"
 	}
 	result := generationResult{ID: id, Status: "verified", ProviderName: *stats.Data.ProviderName,
 		Attempts: make([]providerAttempt, 0, len(stats.Data.ProviderResponses))}
 	for _, attempt := range stats.Data.ProviderResponses {
 		result.Attempts = append(result.Attempts, providerAttempt(attempt))
 	}
-	return result, false
+	return result, false, "verified"
 }
 
 func (g *llmGateway) writeRowLocked(row llmRow) {

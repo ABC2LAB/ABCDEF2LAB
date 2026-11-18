@@ -94,6 +94,18 @@ class TestTask(unittest.TestCase):
             build_spec(config, plain, preflight, "t" * 64, "원본@35b", 0, path_key_ref="a" * 16, goal_common_sha256="g" * 64)
 
 
+class TestCliUsageNames(unittest.TestCase):
+    def test_only_split_baseline_counts(self):
+        # B에만 있는 CLI 이름별 호출 수는 분리 배치 B 회차만 센다(결정안 §10). 분리 배치가 아니면 세지 않는다.
+        config, preflight = split_config(), configuration()
+        plan = plan_run(config, preflight, "baseline", "b1")
+        spec = build_spec(config, plan, preflight, "t" * 64, "원본@35b", 0, path_key_ref="a" * 16, goal_common_sha256="g" * 64)
+        self.assertEqual(spec.cli_usage_names, ("npx", "playwright-cli"))
+        plain_config = split_config(with_split=False)
+        plain = plan_run(plain_config, preflight, "baseline", "b1")
+        self.assertEqual(build_spec(plain_config, plain, preflight, "t" * 64, "원본@35b", 0, path_key_ref="a" * 16).cli_usage_names, ())
+
+
 class TestProbe(unittest.TestCase):
     def test_alias_positive_control_only_for_split_baseline(self):
         plan = plan_run(split_config(), configuration(), "baseline", "b1")

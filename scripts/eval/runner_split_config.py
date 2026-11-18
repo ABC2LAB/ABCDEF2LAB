@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from runner_config import COMPOSE_SPLIT, REPO_ROOT, Image, RunnerConfig
+from cli_usage import CliUsageError, validate_names
 from runner_docker import MAX_STOP_TIMEOUT_SECONDS
 
 PRODUCT_COMPOSE = (REPO_ROOT / "deploy" / "product" / "compose.yaml", REPO_ROOT / "deploy" / "product" / "compose.acceptance.yaml",
@@ -34,7 +35,7 @@ IMAGE_REPOSITORIES = {"product": "abc2lab-product", "explore_browser": "abc2lab-
 SPLIT_FIELDS = frozenset({"product_tag", "product_source_sha", "image_ids", "manifest_path", "target_name", "product_port",
                           "dns_control_port", "explore_port", "evidence_max_bytes", "install_valid_hours", "max_runs",
                           "registration_valid_hours", "wide_writes", "profile_id", "task_wait_seconds",
-                          "poll_interval_seconds", "boundary_stop_seconds"})
+                          "poll_interval_seconds", "boundary_stop_seconds", "cli_usage_names"})
 # 선택 칸. 합성 모델 모드(2026-11-18 사용자 결정 (a))는 보존 회차(수용시험 목적)에서만, 실행 출처 synthetic_fixture로만 받는다.
 SPLIT_OPTIONAL_FIELDS = frozenset({"synthetic_model"})
 MAX_MANIFEST_BYTES = 64 * 1024
@@ -79,6 +80,8 @@ class SplitConfig:
     # 합성 모델 모드: 스크립트 모델 계획 파일(리뷰받은 고정 목록)과 제품 local_model 출력 상한. 없으면 실제 모델(OpenRouter)이다.
     synthetic_plan_path: Path | None = None
     synthetic_max_tokens: int | None = None
+    # B에만 있는 CLI 이름(도구 면 측정 cli_differences.baseline_only). B 회차가 이 이름별 Bash 호출 수를 남긴다(결정안 §10).
+    cli_usage_names: tuple[str, ...] = ()
 
     @property
     def synthetic(self) -> bool:
@@ -149,6 +152,11 @@ def parse_split(raw: object, config: RunnerConfig) -> SplitConfig:
         errors.append("config.split.wait: INTERVAL_NOT_BELOW_WAIT")
     if not _int(raw["boundary_stop_seconds"], 1, MAX_STOP_TIMEOUT_SECONDS):
         errors.append("config.split.boundary_stop_seconds: INVALID")
+    try:
+        cli_names = validate_names(raw["cli_usage_names"])
+    except CliUsageError:
+        errors.append("config.split.cli_usage_names: INVALID")
+        cli_names = ()
     if errors:
         raise SplitConfigError(errors)
     images = {name: Image(f"{repository}:{raw['product_tag']}", ids[name]) for name, repository in IMAGE_REPOSITORIES.items()}
@@ -162,7 +170,8 @@ def parse_split(raw: object, config: RunnerConfig) -> SplitConfig:
                        profile_id=raw["profile_id"], task_wait_seconds=raw["task_wait_seconds"],
                        poll_interval_seconds=raw["poll_interval_seconds"], boundary_stop_seconds=raw["boundary_stop_seconds"],
                        synthetic_plan_path=None if synthetic is None else Path(synthetic["plan_path"]),
-                       synthetic_max_tokens=None if synthetic is None else synthetic["max_tokens"])
+                       synthetic_max_tokens=None if synthetic is None else synthetic["max_tokens"],
+                       cli_usage_names=cli_names)
 
 
 def read_manifest(path: Path) -> dict:

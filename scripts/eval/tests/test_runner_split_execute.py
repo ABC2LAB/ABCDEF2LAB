@@ -59,7 +59,8 @@ LLM_SLUG, LLM_NAME = "example-provider", "Example"
 def product_marker(**overrides):
     """제품 호출 기록 사후 검증 표식(eval-meter -role generation-verify). 게이트웨이 표식과 같은 모양, 거부 두 칸은 null."""
     generation = {"id": "gen-1", "status": "verified", "provider_name": LLM_NAME,
-                  "attempts": [{"provider_name": LLM_NAME, "endpoint_id": "ep-1", "status": 200}]}
+                  "attempts": [{"provider_name": LLM_NAME, "endpoint_id": "ep-1", "status": 200}],
+                  "lookup": {"tries": 1, "last": "verified"}}
     base = {"role": "generation-verify", "backend": "api", "provider": LLM_SLUG, "sampling": dict(SAMPLING), "sealed_at": "a",
             "drained_at": "a", "verified_at": "b", "forwarded_requests": 2, "upstream_errors": 0,
             "upstream_error_ends": {"client_closed_after_done": 0, "client_closed_before_done": 0, "upstream_cut_after_done": 0,
@@ -486,6 +487,37 @@ class TestOrder(unittest.TestCase):
                 self.assertNotIn("product-files.json", evidence.files)
                 self.assertIn("down", ports.calls)
 
+    def test_run_conditions_with_duplicate_keys_are_refused_before_scope_check(self):
+        # #693 리뷰: 같은 키를 두 번 넣으면 json 기본 동작은 마지막 값만 남긴다. 앞 값이 다른 범위여도 맞는 마지막 값으로
+        # 대조를 지나고 모순된 원본의 SHA가 남았다. 중첩 객체까지 중복을 거부하고 SHA를 남기지 않는다.
+        good = json.dumps(dict(SCOPE))
+        other_reset = json.dumps(dict(SCOPE, ResetRef="other-reset"))
+        head = '{"version": "e2-runtime-conditions/v1", '
+        tail = (', "policy_revision": "v1", "worker_count": 3, "process_limits": ' + json.dumps(PROCESS_LIMITS)
+                + ', "queue_consumes_command_timeout": true}\n')
+        nested = good[:-1] + ', "ResetRef": "r"}'  # ResetRef 두 번(같은 값이어도 원본이 모순인지 판단하지 않는다)
+        cases = {
+            "scope_twice": head + f'"scope": {other_reset}, "scope": {good}' + tail,
+            "reset_twice": head + '"scope": ' + json.dumps(dict(SCOPE, ResetRef="other-reset"))[:-1] + ', "ResetRef": "r"}' + tail,
+            "case_twice": head + '"scope": ' + json.dumps(dict(SCOPE, CaseRef="other-case"))[:-1] + ', "CaseRef": "first-diagnosis"}' + tail,
+            "same_value_twice": head + '"scope": ' + nested + tail,
+            "limits_twice": head + f'"scope": {good}' + tail.replace('"call_tasks"', '"call_tasks": 1, "call_tasks"', 1),
+            "top_twice": head + f'"scope": {good}, "policy_revision": "v2"' + tail,
+        }
+        for name, text in cases.items():
+            def swap(ports, text=text):
+                ports.conditions = text.encode()
+            result, ports, evidence = run(swap)
+            with self.subTest(case=name):
+                self.assertEqual((result["status"], result["reasons"]), ("invalid", ["runtime_conditions_invalid"]))
+                self.assertNotIn("product-files.json", evidence.files)
+                self.assertIn("down", ports.calls)
+        # 중복 없는 같은 내용은 그대로 받는다(시험 입력 자체가 맞는지 대조).
+        def plain(ports):
+            ports.conditions = (head + f'"scope": {good}' + tail).encode()
+        result, _, _ = run(plain)
+        self.assertEqual(result["status"], "complete", result)
+
     def test_run_conditions_need_every_producer_field(self):
         # #693 리뷰 2차: 맞는 버전·개정·참조만 두고 나머지 칸을 뺀 실행 조건을 받으면 안 된다.
         full = json.loads(conditions())
@@ -626,7 +658,8 @@ class TestInvalid(unittest.TestCase):
         self.assertEqual(evidence.files["llm-summary.json"]["reasons"], ["llm_sampling_mismatch"])
         self.assert_invalid("llm_provider_mismatch", lambda p: setattr(p, "marker", product_marker(generations=[
             {"id": "g", "status": "verified", "provider_name": "Other", "attempts": [{"provider_name": "Other", "endpoint_id": "e",
-                                                                                    "status": 200}]}])))
+                                                                                    "status": 200}],
+             "lookup": {"tries": 1, "last": "verified"}}])))
         # 게이트웨이 표식을 O 자리에 넣지 못한다
         # (모양이 온전한 게이트웨이 표식이어도 역할이 다르면 거부한다: 거부 두 칸이 0인 B 표식)
         self.assert_invalid("llm_marker_invalid", lambda p: setattr(p, "marker", product_marker(
@@ -803,6 +836,24 @@ class TestPreservationV3(unittest.TestCase):
         with mock.patch.object(module, "preservation_payload_v3", side_effect=capture):
             result, ports, evidence = run(mutate, **self.v3_spec(**changes))
         return result, ports, evidence, seen
+
+    def test_signed_sidecar_write_failure_is_a_fixed_reason(self):
+        # #710 리뷰: 서명 파일 저장이 실패해도(이미 있음·쓰기 실패) 예외가 빠져나가지 않고 고정 사유와 결과 기록을 남긴다.
+        from preservation_record import NAME
+        from runner_evidence import EvidenceError
+        from test_runner import FakeEvidence
+        original = FakeEvidence.write_json
+
+        def failing(self, name, payload):
+            if name == NAME:
+                raise EvidenceError("evidence_exists")
+            return original(self, name, payload)
+        with mock.patch.object(FakeEvidence, "write_json", failing):
+            result, ports, evidence, _ = self.run_v3()
+        self.assertEqual((result["status"], result["reasons"]), ("invalid", ["preservation_write_failed"]))
+        self.assertEqual(evidence.files[RESULT_NAME]["reasons"], ["preservation_write_failed"])  # 결과 기록은 남는다
+        self.assertNotIn(NAME, evidence.files)
+        self.assertIn("sign", ports.calls)
 
     def test_parts_pass_the_v3_shape_and_are_signed_after_down(self):
         import preservation_v3_fields as v3f

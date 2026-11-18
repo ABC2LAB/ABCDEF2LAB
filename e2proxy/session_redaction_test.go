@@ -162,3 +162,24 @@ func TestSessionJWTValueByteLimitsAreAtomic(t *testing.T) {
 		}
 	}
 }
+
+func TestRedactOutputPreservesPublicJSONAlongsideEscapedSession(t *testing.T) {
+	execution := &Execution{cfg: Config{HeaderMode: HeaderTestAccountPassthrough}}
+	secret := []byte("synthetic-session/🔒\"value")
+	if err := execution.AddRedactValues(secret); err != nil {
+		t.Fatal(err)
+	}
+	input := []byte(`{ "intent_id":9223372036854775807, "values":[true,null,{"detail":"before synthetic-session\u002f\ud83d\udd12\"value after","public":"catalog\u002fname"}] }`)
+	original := bytes.Clone(input)
+	want := []byte(`{ "intent_id":9223372036854775807, "values":[true,null,{"detail":"before [REDACTED] after","public":"catalog\u002fname"}] }`)
+	output := execution.RedactOutput(input)
+	if !json.Valid(output) || !bytes.Equal(output, want) {
+		t.Fatal("알려진 세션을 가리는 동안 JSON의 공개 값 또는 구조가 바뀌었습니다")
+	}
+	if !bytes.Equal(input, original) {
+		t.Fatal("가림이 호출자의 원본 입력을 수정했습니다")
+	}
+	if !bytes.Equal(execution.RedactOutput(output), want) {
+		t.Fatal("이미 가린 출력을 다시 가리면 값이 바뀝니다")
+	}
+}
