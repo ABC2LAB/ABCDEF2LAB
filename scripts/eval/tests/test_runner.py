@@ -1167,6 +1167,11 @@ class TestCompleteRun(unittest.TestCase):
             result, _, _, _ = run(lambda p, m, c: setattr(m, "path_log", True), spec=spec)
         self.assertEqual(result["status"], COMPLETE, result)
         self.assertEqual(seen["purpose"], "official")
+        # B·O 공통 목표 SHA를 서명 실행 조건에 싣는다(평가 프로토콜 §5.1 짝 비교, 2026-11-18). 분리 배치가 아닌 회차에는 없다.
+        self.assertEqual(result["run_conditions"]["goal_common_sha256"], spec.goal_common_sha256)
+        self.assertRegex(spec.goal_common_sha256, r"^[0-9a-f]{64}$")
+        plain, _, _, _ = run()
+        self.assertNotIn("goal_common_sha256", plain["run_conditions"])
 
     def test_split_v3_fields_follow_the_runner_settings(self):
         # 공통 러너 설정 칸은 B·O가 같아야 하는 값만, 쪽별 구동 설정은 B 구동 칸만 묶는다.

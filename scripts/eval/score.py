@@ -37,7 +37,9 @@ from scoreboard import SnapshotError  # noqa: E402
 
 from e2_prompt_identity import PROMPT_FIELDS, PromptIdentityError, condition_prompt_identity  # noqa: E402
 from isolation_proof import E2_DECLARED_PROPOSED, E2_PRODUCT_FAILURE, EXECUTION_SYNTHETIC, PURPOSE_OFFICIAL  # noqa: E402
-from run_record import V1, V11, RunInputs, RunRecordError, load_run_inputs, read_runner_key  # noqa: E402
+from run_record import (  # noqa: E402
+    OFFICIAL_E3_DISABLED_REASON, V1, V11, RunInputs, RunRecordError, load_run_inputs, read_runner_key,
+)
 
 Correlate = Callable[[VerdictRecord], str | None]
 
@@ -153,6 +155,26 @@ def repeat_warnings(
                     f"traffic ref {list(missing)}가 traffic 기록에 없음 — 증거로 세지 않음(§4-2)"
                 )
     return tuple(warnings)
+
+
+def _check_official_e3(inputs: RunInputs, manifest: RunManifest, run: str) -> None:
+    """공식 측정 E③ 비활성(평가 프로토콜 §5.1, 2026-11-18 합의). 공식 표에 들어오는 회차만 부른다.
+
+    - 분리 배치 개선 후(O) 회차는 E③ 상태 기대를 서명해야 한다(E③가 들어간 제품 빌드로만 공식 회차를 돈다).
+    - 기대 회차는 `disabled` + 선언 없음 사유 하나만 받는다. 행이 없으면 수집 실패, 다른 상태·사유면 비활성 조건 위반이라
+      그 회차는 무효다. 표에서 조용히 빼면 분모가 바뀌므로 표 전체를 거부한다(다시 돌린다).
+    """
+    if inputs.e3 is None:
+        return
+    expected, row = inputs.e3
+    if manifest.engine is Engine.OURS and inputs.path_key is not None and inputs.path_key[0] and not expected:
+        raise ComparabilityError(f"분리 배치 개선 후 공식 회차에 E③ 상태 기대가 없음({run}) — E③ 비활성 조건을 확인할 수 없음")
+    if not expected:
+        return
+    if row is None:
+        raise ComparabilityError(f"E③ 상태 수집 실패({run}, e3_status_not_collected) — 공식 회차 무효")
+    if row != ("disabled", OFFICIAL_E3_DISABLED_REASON):
+        raise ComparabilityError(f"E③ 비활성 조건 위반({run}: {row[0]}/{row[1]}) — 공식 회차 무효(e3_not_disabled)")
 
 
 def score_run(
@@ -326,6 +348,7 @@ def build_report(
     reference = None
     seen_executions: set[str] = set()
     path_keys: set = set()
+    goals: set = set()
     seen_proofs: set[str] = set()
     versions: set[str] = set()
     drain_policies: set[tuple[int, int]] = set()
@@ -351,6 +374,11 @@ def build_report(
         path_keys.add(inputs.path_key)
         if len(path_keys) > 1 and any(key is not None and key[0] for key in path_keys):
             raise ComparabilityError("분리 배치 표시·경로 가림 키 지문 불일치 — 한 표의 회차는 같은 배치·같은 키로만")
+        _check_official_e3(inputs, m, f"{m.condition}#{m.repeat_index}")
+        # B·O 공통 목표 SHA(결정안 §6): 분리 배치 회차가 싣는다. 한 표 안에서 값이 다르거나 일부 회차에만 있으면 짝이 아니다.
+        goals.add(inputs.goal_common_sha256)
+        if len(goals) > 1:
+            raise ComparabilityError("B·O 공통 목표 SHA 불일치 또는 일부 회차만 있음 — 같은 목표의 짝만 비교(프로토콜 §5.1)")
         basis = {c.key for c in core_gt() + bac_category()}
         conditions = (inputs.fixture_fingerprint, inputs.environment_fingerprint,
                       tuple((key, inputs.pre[key]) for key in sorted(basis)))

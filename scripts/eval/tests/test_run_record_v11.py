@@ -36,6 +36,27 @@ def row_of(rows, kind, **match):
     return next(r for r in rows if r["kind"] == kind and all(r.get(k) == v for k, v in match.items()))
 
 
+def e3_disabled(status="disabled", reason="declaration_missing", expected=True, rows_count=1):
+    """공식 측정 E③ 비활성 회차의 근거(평가 프로토콜 §5.1): 기대 칸 + 상태 행."""
+    def tamper(rows):
+        row_of(rows, "run_conditions")["e3_status_expected"] = expected
+        for _ in range(rows_count):
+            rows.append({"kind": "e3_confirmation", "seq": len(rows) + 1, "at": rows[-1]["at"], "status": status, "reason": reason})
+    return tamper
+
+
+def split_ours(ref="0123456789abcdef", goal="7" * 64, **e3):
+    """분리 배치 O 공식 회차: 경로 키 지문·공통 목표 SHA·E③ 비활성 근거."""
+    def tamper(rows):
+        row_of(rows, "run_conditions").update(split=True, path_key_ref=ref, goal_common_sha256=goal)
+        e3_disabled(**e3)(rows)
+    return tamper
+
+
+def split_base(ref="0123456789abcdef", goal="7" * 64):
+    return lambda rows: row_of(rows, "run_conditions").update(split=True, path_key_ref=ref, goal_common_sha256=goal)
+
+
 class _V11(_RunDir):
     def v11(self, name="a", **kwargs):
         return make_v11(Path(self._tmp.name), self.runner_key, name, **kwargs)
@@ -432,13 +453,61 @@ class TestRejectedV11(_V11):
         # 2026-11-18 결정 (a): 분리 배치 공식 회차는 B·O 모두 같은 경로 가림 키(지문)로만 한 표에 합친다(공식 측정 6회 같은 키).
         def keyed(ref):
             return lambda rows: row_of(rows, "run_conditions").update(split=True, path_key_ref=ref)
-        same = [self.v11("k1", tamper_rows=keyed("0123456789abcdef")),
-                self.v11("k2", condition="baseline", engine="baseline", tamper_rows=keyed("0123456789abcdef"))]
+        same = [self.v11("k1", tamper_rows=split_ours()),
+                self.v11("k2", condition="baseline", engine="baseline", tamper_rows=split_base())]
         build_report(self.load(same), self.correlate, self.correlatable, runner_key=self.runner_key)
         for name, second in (("other_key", keyed("fedcba9876543210")), ("not_split", None)):
-            rounds = [self.v11(f"{name}1", tamper_rows=keyed("0123456789abcdef")),
+            rounds = [self.v11(f"{name}1", tamper_rows=split_ours(goal=None)),
                       self.v11(f"{name}2", condition="baseline", engine="baseline", tamper_rows=second)]
             with self.subTest(case=name), self.assertRaisesRegex(ComparabilityError, "경로 가림 키 지문 불일치"):
+                build_report(self.load(rounds), self.correlate, self.correlatable, runner_key=self.runner_key)
+
+    def test_official_e3_is_disabled_without_declaration(self):
+        # 공식 측정 E③ 비활성(평가 프로토콜 §5.1, 2026-11-18 합의): 분리 배치 O는 disabled + declaration_missing만 받는다.
+        base = self.v11("eb", condition="baseline", engine="baseline", tamper_rows=split_base())
+        ok = self.v11("eo", tamper_rows=split_ours())
+        self.assertEqual(self.inputs(ok).e3, (True, ("disabled", "declaration_missing")))
+        build_report(self.load([ok, base]), self.correlate, self.correlatable, runner_key=self.runner_key)
+        cases = {
+            "not_wired": (dict(reason="not_wired"), "E③ 비활성 조건 위반"),
+            "accounts": (dict(reason="test_accounts_unavailable"), "E③ 비활성 조건 위반"),
+            "completed": (dict(status="completed", reason=None), "E③ 비활성 조건 위반"),
+            "interrupted": (dict(status="interrupted", reason=None), "E③ 비활성 조건 위반"),
+            "refused": (dict(status="start_refused", reason="x"), "E③ 비활성 조건 위반"),
+            "integrity": (dict(status="confirmation_integrity_failed", reason="observation_invalid"), "E③ 비활성 조건 위반"),
+            "missing_row": (dict(rows_count=0), "E③ 상태 수집 실패"),
+            "not_expected": (dict(expected=False, rows_count=0), "E③ 상태 기대가 없음"),
+        }
+        for index, (name, (e3, pattern)) in enumerate(cases.items()):
+            run = self.v11(f"e{index}", repeat_index=1, tamper_rows=split_ours(**e3))
+            with self.subTest(case=name), self.assertRaisesRegex(ComparabilityError, pattern):
+                build_report(self.load([self.v11(f"f{index}", condition="baseline", engine="baseline", tamper_rows=split_base()),
+                                        run]), self.correlate, self.correlatable, runner_key=self.runner_key)
+
+    def test_e3_rows_are_validated_by_the_isolation_check(self):
+        cases = {
+            "two_rows": e3_disabled(rows_count=2), "unexpected_row": e3_disabled(expected=False),
+            "bad_status": e3_disabled(status="off"), "completed_with_reason": e3_disabled(status="completed", reason="x"),
+            "disabled_without_reason": e3_disabled(reason=None), "reason_shape": e3_disabled(reason="Not Wired"),
+            "expected_not_bool": e3_disabled(expected="yes", rows_count=0),
+            "goal_not_hex": lambda rows: row_of(rows, "run_conditions").update(goal_common_sha256="x"),
+        }
+        for index, (name, tamper) in enumerate(cases.items()):
+            with self.subTest(case=name):
+                self.reject("e3_confirmation|e3_status_expected|goal_common_sha256", f"v{index}", tamper_rows=tamper)
+        # 기대가 참인데 행이 없는 것은 입력 오류가 아니라 수집 실패다(격리 검증은 통과하고 채점 규칙이 다룬다)
+        self.assertEqual(self.inputs(self.v11("vm", tamper_rows=e3_disabled(rows_count=0))).e3, (True, None))
+        # 칸이 생기기 전 근거는 기대 거짓·목표 SHA 없음으로 읽는다
+        old = self.inputs(self.v11("vo"))
+        self.assertEqual((old.e3, old.goal_common_sha256), ((False, None), None))
+
+    def test_b_and_o_must_share_the_common_goal(self):
+        # 짝 비교의 목표 동일성(평가 프로토콜 §5.1): 분리 배치 B·O 공통 목표 SHA가 같아야 한다.
+        for index, (base_goal, ours_goal) in enumerate((("8" * 64, "7" * 64), (None, "7" * 64), ("7" * 64, None))):
+            rounds = [self.v11(f"g{index}", tamper_rows=split_ours(goal=ours_goal)),
+                      self.v11(f"h{index}", condition="baseline", engine="baseline", tamper_rows=split_base(goal=base_goal))]
+            with self.subTest(base=base_goal and base_goal[:1], ours=ours_goal and ours_goal[:1]), \
+                    self.assertRaisesRegex(ComparabilityError, "공통 목표 SHA"):
                 build_report(self.load(rounds), self.correlate, self.correlatable, runner_key=self.runner_key)
 
     def test_output_language_may_differ_between_conditions_only(self):

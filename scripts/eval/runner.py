@@ -920,6 +920,10 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
                   "sampling": llm_summary["sampling_applied"],
                   "host": {key: value for key, value in state.host.items() if key != "machine_id_sha256"},
                   "machine_id_sha256": state.host["machine_id_sha256"]}
+    if spec.goal_common_sha256 is not None:
+        # 분리 배치 B는 제품과 같은 공통 목표 문장으로 작업을 만든다(결정안 §6). 그 SHA를 서명 조건에 실어 채점기가 B·O 짝의
+        # 목표 동일성을 본다(평가 프로토콜 §5.1, 2026-11-18 합의).
+        conditions["goal_common_sha256"] = spec.goal_common_sha256
     if spec.preservation is not None:
         options = spec.preservation
         baseline = spec.side == "baseline"
