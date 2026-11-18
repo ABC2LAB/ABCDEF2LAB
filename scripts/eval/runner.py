@@ -26,6 +26,7 @@ import platform
 import queue
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -42,6 +43,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from preflight import PreflightError, load_preflight  # noqa: E402
 from preservation_record import build_payload as preservation_payload, digest as preservation_digest, NAME as PRESERVATION_NAME
+from preservation_record import build_payload_v3 as preservation_payload_v3  # noqa: E402
+import preservation_v3_fields as v3f  # noqa: E402
 from preservation_record import initial_state_digest  # noqa: E402
 from run_record import read_runner_key, sign_run_record  # noqa: E402
 from runner_checks import (  # noqa: E402
@@ -59,6 +62,9 @@ from runner_config import (  # noqa: E402
 from isolation_proof import PURPOSE_BROWSER_ACCEPTANCE, PURPOSE_OFFICIAL, blocked_attempts, valid_output_language  # noqa: E402
 from runner_docker import Docker, DockerError, client_environment, run_docker  # noqa: E402
 from tool_tree import collect_tree, tree_sha256  # noqa: E402
+from tool_surface import (  # noqa: E402
+    BASELINE_MCP_ARGS, BASELINE_MCP_EXPOSED_BASIS, collect_cli, image_path, mcp_side, mcp_tools, mcp_version,
+)
 from runner_engine import (  # noqa: E402
     ADMIN_USERNAME, BASELINE_ADMIN_USERNAME, AdminSecret, EngineAPIError, EngineLLMProfile, apply_engine_rules, apply_engine_settings, collect_findings, e2_prompt_projection, engine_settings, intercept_summary, load_engine_rules,
     load_vocabulary, read_admin_password_file, start_task, task_request, END_SIGNAL_FIELDS, TERMINAL_TASK_STATUSES, TaskStatusReader,
@@ -175,6 +181,7 @@ class RunPorts(Protocol):
     def engine_settings(self) -> dict: ...
     def apply_engine_rules(self) -> dict: ...
     def tool_tree(self) -> str: ...
+    def tool_surface(self) -> dict: ...
     def host_spec(self) -> dict: ...
     def start_task(self) -> str: ...
     def task_status(self, task_id: str) -> dict: ...
@@ -314,6 +321,8 @@ class _State:
     tmpfs_pre: dict | None = None
     host: dict | None = None
     tool_tree_sha256: str | None = None
+    tool_surface: dict | None = None
+    preservation_v3: bool = False
     engine_settings_sha256: str | None = None
     output_language: str | None = None
     # 상태 차이: 회차 키(메모리에만)와 pre 사본 지문. 사본 파일은 지문을 뜬 즉시 지운다.
@@ -646,6 +655,10 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         raise RunFailure("image_id_mismatch")
     # Dockerfile이 도구 버전을 고정하지 않아 이미지 ID로는 도구가 같은지 알 수 없다. 채점기가 대조한다(프로토콜 §2).
     state.tool_tree_sha256 = _step(state, "tool_tree_failed", ports.tool_tree)
+    if _split_preservation(spec):
+        # 분리 배치 B 회차는 보존 sidecar v3를 내고, 도구 면(CLI·MCP 원 목록·노출 목록)을 회차 전에 잰다(결정안 §3.3·§4).
+        state.tool_surface = _step(state, "tool_surface_failed", ports.tool_surface)
+        _step(state, "evidence_write_failed", lambda: evidence.write_json(TOOL_SURFACE_NAME, state.tool_surface))
     # baseline·개선 후가 같은 머신에서 돌았는지 채점기가 대조한다(평가 프로토콜 §5.1).
     state.host = _step(state, "host_spec_failed", ports.host_spec)
     if not _host_spec_ok(state.host):
@@ -908,6 +921,9 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         state.preservation = dict(options=options, run_id=spec.run_id, side=spec.side, repeat_index=spec.repeat_index,
             engine_source_sha=spec.engine_source_sha, engine_image_id=spec.image_ids["engine"],
             conditions=pc, stop_reason=stop_reason)
+        if _split_preservation(spec):
+            state.preservation, state.preservation_v3 = _preservation_v3(spec, state, pc, stop_reason,
+                                                                         llm_summary.get("rate_limited")), True
     state.record = _step(state, "record_build_failed", lambda: _build_record(
         spec, evidence, state, pre, post, pre_board, post_board, pre_solved, post_solved, steps, window,
         observer, ready_calls, meter_summary, drained, len(rows), pre_checked_at, post_check_at, conditions, e2,
@@ -1018,6 +1034,36 @@ def _collect_e2_prompt(spec: RunSpec, ports: RunPorts, evidence, state: _State, 
     _step(state, "evidence_write_failed", lambda: evidence.write_bytes("e2-prompt-projection.json", raw))
     return {"status": "verified", "reason": None, "task_id": task_id, "exploration_id": result.exploration_id, "run_ref": run_ref,
             "expected_count": result.expected_count, "projection_sha256": result.projection_sha256, **dict(zip(PROMPT_FIELDS, result.identity))}
+
+
+TOOL_SURFACE_NAME = "tool-surface.json"
+TOOL_SURFACE_SIDE_FORMAT = "abc2lab.tool-surface-side/v1"
+
+
+def _split_preservation(spec: RunSpec) -> bool:
+    """분리 배치 B 회차(보존 옵션 + 대상 이름 origin)만 v3를 낸다. 그 밖의 보존 회차는 지금처럼 v2다."""
+    return spec.preservation is not None and spec.task_origin is not None and spec.side == "baseline"
+
+
+def _preservation_v3(spec: RunSpec, state: "_State", v2_conditions: dict, stop_reason: str, rate_limited) -> dict:
+    """v2 조건에서 공통 대조 칸을 옮기고, 도구 면 측정·구동 코드·회차별 칸을 더한다(결정안 §3.3)."""
+    options, surface = spec.preservation, v3f.surface_fields(state.tool_surface)
+    common = {name: v2_conditions[name] for name in ("request_budget", "time_budget_seconds", "model_pin_sha256",
+                                                      "target_image_id", "initial_state_sha256", "machine_sha256")}
+    common.update(runner_settings_sha256=v3f.settings_sha256(vars(spec), v3f.COMMON_RUNNER_SETTINGS),
+                  goal_common_sha256=spec.goal_common_sha256, comm_mode=options["comm_mode"],
+                  mcp_version=surface["mcp_version"], mcp_raw_tools_sha256=surface["mcp_raw_tools_sha256"])
+    side = {"layout": "artex-direct/v1", "driver_sha256": v3f.driver_sha256(v3f.B_DRIVER_FILES),
+            "driver_settings_sha256": v3f.settings_sha256(vars(spec), v3f.B_DRIVER_SETTINGS),
+            "write_mode": options["write_mode"], "declared_model_budget_sha256": options["declared_model_budget_sha256"],
+            "browser_image_id": None, "exploration_policy_sha256": None, "diagnosis_policy_sha256": None,
+            "cli_surface_sha256": surface["cli_surface_sha256"], "mcp_exposed_tools_sha256": surface["mcp_exposed_tools_sha256"]}
+    run = {"stop_reason": stop_reason, "first_limit": state.first_limit,
+           "end_signal": v3f.end_signal(state.engine_end.get("first_terminal"), product=False), "rate_limited": rate_limited}
+    return dict(series_ref=options["series_ref"], execution_source=options["execution_source"], run_id=spec.run_id,
+                side=spec.side, repeat_index=spec.repeat_index, engine_source_sha=spec.engine_source_sha,
+                engine_image_id=spec.image_ids["engine"], common=common, side_conditions=side, run=run, product=None,
+                boundary=None)
 
 
 def _record_context(spec: RunSpec, pre: dict) -> RecordContext:
@@ -1157,8 +1203,8 @@ def execute_run(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gate
     if not reasons and state.preservation is not None:
         try:
             # down 성공 뒤에는 계측기 writer가 없다. 최종 바이트를 읽고 마감·입구·hash를 함께 검증한다.
-            state.preservation = _step(state, "preservation_record_failed",
-                                       lambda: preservation_payload(meter=meter, **state.preservation))
+            build = preservation_payload_v3 if state.preservation_v3 else preservation_payload
+            state.preservation = _step(state, "preservation_record_failed", lambda: build(meter=meter, **state.preservation))
         except RunFailure as exc:
             reasons.append(exc.code)
     base = {"format": RESULT_FORMAT, "run_id": spec.run_id, "side": spec.side, "project": spec.project,
@@ -1359,6 +1405,15 @@ class DockerPorts:
 
     def tool_tree(self) -> str:
         return tree_sha256(collect_tree(self.plan.engine_image.id, self.docker.run_bounded))
+
+    def tool_surface(self) -> dict:
+        """원본 엔진 이미지의 도구 면(B: PATH 전체 CLI, MCP 원 목록, 노출 목록은 원본 시드가 꺼져 빈 목록)."""
+        image = self.plan.engine_image.id
+        run = self.docker.run_bounded
+        listed = mcp_tools(image, BASELINE_MCP_ARGS, subprocess.Popen, client_environment(os.environ, {}))
+        return {"format": TOOL_SURFACE_SIDE_FORMAT, "side": "baseline", "image_id": image,
+                "cli": collect_cli(image, image_path(image, run), None, run),
+                "mcp": mcp_side(image, BASELINE_MCP_ARGS, mcp_version(image, run), listed, None, BASELINE_MCP_EXPOSED_BASIS)}
 
     def host_spec(self) -> dict:
         return read_host_spec(_read_text, self.docker.daemon().version, os.cpu_count(), platform.release())
