@@ -1,6 +1,7 @@
 package diagnosisflow
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -403,6 +404,29 @@ func TestModelEndpointListByteCap(t *testing.T) {
 		t.Fatalf("snapshot model_omitted=%d want %d", recorded, omitted)
 	}
 	observedFirst(rows)
+
+	// 모델에 나가는 데이터는 가린 뒤 바이트로 상한을 잰다(#685 이동찬 리뷰). 가림이 값을 늘리면(여기서는 경로 조각을
+	// 더 긴 글로 바꿈) 행을 더 빼고, 지시 문장의 빠진 수와 끝점 참조도 같은 행 목록에서 나온다.
+	expand := func(b []byte) []byte { return bytes.ReplaceAll(b, []byte("p"), []byte("[REDACTED]")) }
+	instructions, data := full.ModelInput(expand)
+	var redactedRows []map[string]any
+	if len(data) > MaxSelectedDataBytes || json.Unmarshal([]byte(data), &redactedRows) != nil || len(redactedRows) == 0 {
+		t.Fatalf("redacted model data bytes=%d rows=%d", len(data), len(redactedRows))
+	}
+	if left := added - len(redactedRows); left <= 0 || !strings.Contains(instructions, strconv.Itoa(left)+" more selected endpoints were left out") {
+		t.Fatalf("redaction growth must trim rows and report them: added=%d rows=%d", added, len(redactedRows))
+	}
+	if strings.Count(instructions, "\"endpoint-") != len(redactedRows) {
+		t.Fatalf("instruction references must match the data rows: %d refs", strings.Count(instructions, "\"endpoint-"))
+	}
+	// 가림이 길이를 바꾸지 않으면 가림 없는 목록과 같다.
+	if _, same := full.ModelInput(func(b []byte) []byte { return b }); same != full.SelectedData() {
+		t.Fatal("identity redaction changed the model data")
+	}
+	// 가림 함수가 없으면 대상 데이터를 주지 않는다.
+	if text, none := full.ModelInput(nil); none != "" || !strings.Contains(text, "Selected endpoint references") {
+		t.Fatal("model data without redaction")
+	}
 }
 
 // 선택이 정해지는 실제 경로(자동 모드 크롤 종료, 수동 선택 명령)에서 모델 목록에서 빠진 고른 끝점 수가 회차 결과

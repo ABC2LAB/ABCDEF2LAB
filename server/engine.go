@@ -980,8 +980,9 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		goal := t.Goal
 		targetData := ""
 		if e.e2HTTP != nil && e.e2HTTP.options.Workflow != nil {
-			goal += e.e2HTTP.options.Workflow.Instructions()
-			targetData = e.e2HTTP.redactPlannerTargetData(t.ID, e.e2HTTP.options.Workflow.SelectedData())
+			var instructions string
+			instructions, targetData = e.e2HTTP.plannerWorkflowInput(t.ID, e.e2HTTP.options.Workflow)
+			goal += instructions
 		}
 		met, reason, err := planner.Plan(ectx, taskIDInt, e.m.assets, t.Store, goal, triggers, emit, targetData)
 		e.EndLLMCall(t.ID)
