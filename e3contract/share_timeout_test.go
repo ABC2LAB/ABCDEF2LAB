@@ -1,6 +1,7 @@
 package e3contract_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -212,5 +213,27 @@ func TestObservationTimedOutShape(t *testing.T) {
 	}
 	if res := notSent.run(t); res.Status != e3contract.StatusIntegrityFailed {
 		t.Fatalf("보내지 않았는데 시간 초과: %+v", res)
+	}
+}
+
+// 회차가 중지돼 부르지도 않은 생성은 쓰기 기록에 없다(보내지 않은 것이 확실하다).
+func TestRunInterruptedBeforeCreateLeavesNoWrite(t *testing.T) {
+	f := newFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f.fake.TamperBoth = func(c e3fake.Call, _ *e3contract.Observation) {
+		if c.Key == key(e3contract.PurposeRead, e3contract.RoleCross, "note") {
+			cancel()
+		}
+	}
+	res := e3contract.Run(ctx, f.deps(), f.in)
+	if res.Status != e3contract.StatusInterrupted {
+		t.Fatalf("%+v", res)
+	}
+	if n := countCalls(f.fake.Calls(), func(k e3fake.Key) bool { return k.Type == "secret" }); n != 0 {
+		t.Fatalf("중지 뒤 secret 요청 %d건", n)
+	}
+	if len(res.Writes) != 1 || res.Writes[0].ResourceType != "note" {
+		t.Fatalf("부르지 않은 생성이 쓰기 기록에 들어감: %+v", res.Writes)
 	}
 }
