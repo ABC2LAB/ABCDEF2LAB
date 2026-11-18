@@ -736,6 +736,27 @@ class TestComparison(_V11):
             build_report(self.load([self.v11("a0"), acceptance]), self.correlate, self.correlatable,
                          runner_key=self.runner_key)
 
+    def test_synthetic_runs_are_refused_by_the_scorer_and_the_table(self):
+        # 실행 출처 칸(2026-11-18): 합성 회차도 격리 검증은 통과하지만 채점기(회차 하나)와 비교 표가 둘 다 거부한다.
+        synthetic = self.v11("x1", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
+            execution_source="synthetic_fixture"))
+        self.assertEqual(self.inputs(synthetic).execution_source, "synthetic_fixture")
+        with self.assertRaisesRegex(ComparabilityError, "합성 실행 회차는 채점하지 않음"):
+            score_run(self.load([synthetic])[0], self.correlate, runner_key=self.runner_key, correlatable=self.correlatable)
+        later = self.v11("x2", repeat_index=1, tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
+            execution_source="synthetic_fixture"))
+        with self.assertRaisesRegex(ComparabilityError, "합성 실행 회차는 채점하지 않음"):
+            build_report(self.load([self.v11("x0"), later]), self.correlate, self.correlatable, runner_key=self.runner_key)
+        # 실제 모델 회차로 명시한 근거와 칸이 생기기 전 근거는 그대로 합산한다.
+        declared = self.v11("m1", repeat_index=1, tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
+            execution_source="model_run"))
+        self.assertEqual(self.inputs(declared).execution_source, "model_run")
+        self.assertEqual(self.inputs(self.v11("m2")).execution_source, "model_run")
+        build_report(self.load([self.v11("m0"), declared]), self.correlate, self.correlatable, runner_key=self.runner_key)
+        for index, value in enumerate(("synthetic", "", None, 1)):
+            self.reject("run_conditions", f"e{index}", tamper_rows=lambda rows, v=value: row_of(rows, "run_conditions").update(
+                execution_source=v))
+
     def test_runs_with_different_drain_policies_are_not_compared(self):
         # 같은 환경 지문이라도 서명 근거의 유예·정착 대기가 다르면 비교하지 않는다(#153 리뷰).
         same = [self.v11("s1"), self.v11("s2", repeat_index=1)]

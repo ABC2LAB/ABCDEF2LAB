@@ -21,6 +21,11 @@ EVIDENCE_FORMAT = "abc2lab-isolation-evidence-v1"
 PURPOSE_OFFICIAL = "official"
 PURPOSE_BROWSER_ACCEPTANCE = "browser_acceptance"
 PURPOSES = (PURPOSE_OFFICIAL, PURPOSE_BROWSER_ACCEPTANCE)
+# 실행 출처(2026-11-18 사용자 결정). synthetic_fixture는 스크립트 모델 등 합성 입력으로 돈 회차다. 서명·격리 검증은 같게 하고,
+# 채점기·비교 표는 거부한다. 칸이 생기기 전 근거는 실제 모델 회차(model_run)로 읽는다(목적 칸과 같은 규칙).
+EXECUTION_MODEL_RUN = "model_run"
+EXECUTION_SYNTHETIC = "synthetic_fixture"
+EXECUTION_SOURCES = (EXECUTION_MODEL_RUN, EXECUTION_SYNTHETIC)
 NETWORK_MODES = ("loopback_only", "dedicated_network")
 ALLOWED_ACTORS = frozenset({"engine", "observer"})
 # 양성 대조는 연결 성공, 부정 경로는 실패가 기대값이다.
@@ -62,7 +67,7 @@ _ROW_FIELDS = {
 }
 # 목적 칸이 생기기 전에 서명된 근거(같은 v1 형식)도 다시 검증할 수 있게 빠지면 공식 회차로 읽는다.
 _PATH_KEY_REF = re.compile(r"[0-9a-f]{16}\Z")
-_OPTIONAL_ROW_FIELDS = {"run_conditions": frozenset({"purpose", "path_key_ref"})}
+_OPTIONAL_ROW_FIELDS = {"run_conditions": frozenset({"purpose", "path_key_ref", "execution_source"})}
 # 개선 후 회차의 E② 자리(러너 e2.ours_mode). 회차 조건(run_conditions)과 달리 baseline·개선 후가 일부러 다르므로
 # 회차 사이 동일성 대조가 아니라 조건별로 섞이지 않는지만 채점기가 본다.
 E2_MODES = ("none", "stub", "product")
@@ -160,7 +165,7 @@ def _rows(evidence: object, receipt: dict) -> dict[str, list[dict]]:
         _fields(row, _ROW_FIELDS[kind] | optional | {"kind", "seq", "at"}, f"isolation_evidence.{kind}")
         if kind == "run_conditions":
             # 수용시험 경로 가림 키 참조(#378)도 그 전 근거에는 없다. 공식 회차에는 원래 없다.
-            row = {"purpose": PURPOSE_OFFICIAL, "path_key_ref": None, **row}
+            row = {"purpose": PURPOSE_OFFICIAL, "path_key_ref": None, "execution_source": EXECUTION_MODEL_RUN, **row}
         if row["seq"] != index or type(row["seq"]) is not int:
             raise IsolationError("isolation_evidence: 행 순번 공백·중복")
         _time(row["at"], f"isolation_evidence.{kind}.at")
@@ -266,6 +271,8 @@ def _check_conditions(rows: dict[str, list[dict]]) -> dict:
     row = _one(rows, "run_conditions")
     if row["purpose"] not in PURPOSES:
         raise IsolationError("isolation_evidence.run_conditions.purpose: official|browser_acceptance")
+    if row["execution_source"] not in EXECUTION_SOURCES:
+        raise IsolationError("isolation_evidence.run_conditions.execution_source: model_run|synthetic_fixture")
     # 수용시험 회차는 경로 가림 키 참조가 있어야 하고, 공식 회차에는 없어야 한다.
     if (row["purpose"] == PURPOSE_BROWSER_ACCEPTANCE) != _matches(_PATH_KEY_REF, row["path_key_ref"]) or (
             row["purpose"] == PURPOSE_OFFICIAL and row["path_key_ref"] is not None):
@@ -481,6 +488,11 @@ def run_conditions(receipt: dict, evidence: object) -> tuple[str, str, str, str,
 def run_purpose(receipt: dict, evidence: object) -> str:
     """check_isolation을 통과한 근거의 회차 목적. 채점기는 official 회차만 합산한다."""
     return _one(_rows(evidence, receipt), "run_conditions")["purpose"]
+
+
+def run_execution_source(receipt: dict, evidence: object) -> str:
+    """check_isolation을 통과한 근거의 실행 출처. 채점기는 합성(synthetic_fixture) 회차를 거부한다."""
+    return _one(_rows(evidence, receipt), "run_conditions")["execution_source"]
 
 
 def output_language(receipt: dict, evidence: object) -> str:
