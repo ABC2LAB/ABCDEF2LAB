@@ -6,6 +6,9 @@
 키는 근거 디렉터리 밖 파일로만 받고, 행의 키 참조와 맞는지 먼저 확인한다(다른 키면 규칙이 조용히 0건이 된다).
 
 원본끼리 보존율(`baseline_reference`)은 원본이 회차마다 흔들리는 정도를 보여 주는 참고값이고 판정에 쓰지 않는다.
+경로 틀 커버리지(`coverage`, 공식 측정 프로토콜 고정 초안 §7)는 같은 묶음의 원본·개선 후 회차가 실제로 닿은 경로 틀의
+합집합을 분모로 각 쪽이 덮은 비율이고, 분모 크기를 같이 싣는다. 차이 보고 규칙(`difference_claims`, §12)은 개선 후 값이
+원본끼리 값의 범위(최솟값~최댓값) 안이면 개선·손실로 주장하지 않는다고 표시한다. 통과선·판정 값은 바꾸지 않는다.
 못 닿은 패턴의 이유(policy_blocked·budget_limited·not_attempted)는 같은 키로 가린 차단 기록(탐색 경계·E②)이
 있어야 나눌 수 있어서 이 단계에는 없다.
 """
@@ -17,6 +20,7 @@ import json
 import re
 import statistics
 import sys
+from fractions import Fraction
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -32,7 +36,11 @@ from runner_evidence import (
     drain_complete, final_log_consistent,
 )
 
-SUMMARY_FORMAT = "abc2lab.preservation-summary/v6"
+# v9: v6에 coverage(§7)·difference_claims(§12)를 더했다. v7·v8은 서명 출력이 쓴 번호라 건너뛴다.
+SUMMARY_FORMAT = "abc2lab.preservation-summary/v9"
+SIGNED_SUMMARY_FORMAT = "abc2lab.preservation-summary/v10"
+# 차이 보고 규칙의 퍼짐 정의. 회차 수가 적어(N=3이면 원본 순서쌍 6개) 분포를 가정하지 않고 관측 범위를 쓴다.
+DIFFERENCE_RULE = "baseline_min_max/v1"
 EXCLUSIONS_FORMAT = "abc2lab.preservation-exclusions/v1"
 READ_METHODS = frozenset({"GET", "HEAD"})
 _METHOD = re.compile(r"[A-Z]{1,16}\Z")
@@ -217,6 +225,81 @@ def _baseline_reference(baseline: list[Round], keep) -> dict:
             "pair_sd": statistics.stdev(ratios) if len(ratios) >= 2 else None, "pairs_without_denominator": empty}
 
 
+def _template(key: tuple[str, str]) -> tuple[str, str]:
+    """경로 틀 커버리지(§7)는 HEAD를 GET으로 센다. 보존율·제외 규칙은 메서드를 그대로 둔다."""
+    return ("GET", key[1]) if key[0] == "HEAD" else key
+
+
+def _coverage_sets(baseline: list[Round], improved: list[Round], keep) -> tuple[list[frozenset], list[frozenset]]:
+    def templates(r: Round) -> frozenset:
+        return frozenset(_template(key) for key in r.patterns if keep(key))
+
+    return [templates(r) for r in baseline], [templates(r) for r in improved]
+
+
+def _coverage(base: list[frozenset], imp: list[frozenset]) -> dict:
+    """같은 묶음 원본·개선 후 회차가 실제로 닿은 경로 틀의 합집합을 분모로, 각 쪽이 덮은 비율(§7)."""
+    base_union, imp_union = frozenset().union(*base), frozenset().union(*imp)
+    union = base_union | imp_union
+
+    def share(keys: frozenset) -> float | None:
+        return len(keys) / len(union) if union else None
+
+    return {
+        "denominator": len(union),
+        "baseline": {"union": share(base_union), "rounds": [share(keys) for keys in base]},
+        "improved": {"union": share(imp_union), "rounds": [share(keys) for keys in imp]},
+        "baseline_only": len(base_union - imp_union),
+        "improved_only": len(imp_union - base_union),
+    }
+
+
+def _spread_claim(value: Fraction | None, reference: list[Fraction]) -> dict:
+    """개선 후 값이 원본끼리 값의 범위 안이면 차이를 주장하지 않는다(§12). 판정·통과선과 별개인 보고 표시다.
+
+    비교는 건수로 만든 정확한 분수로 한다. 부동소수 평균의 오차(예: 0.1 세 개의 평균 0.10000000000000002)로
+    같은 값이 범위 밖으로 갈리지 않게 한다. 출력 값만 실수로 바꾼다."""
+    if value is None:
+        return {"claim": "not_available", "reason": "value_missing"}
+    if len(reference) < 2:
+        return {"claim": "not_available", "reason": "baseline_spread_lt_2"}
+    low, high = min(reference), max(reference)
+    if value < low:
+        claim = "below_baseline_spread"
+    elif value > high:
+        claim = "above_baseline_spread"
+    else:
+        claim = "within_baseline_spread"
+    return {"claim": claim, "value": float(value), "baseline_low": float(low), "baseline_high": float(high)}
+
+
+def _mean(values: list[Fraction]) -> Fraction | None:
+    return sum(values, Fraction(0)) / len(values) if values else None
+
+
+def _difference_claims(baseline: list[Round], improved: list[Round], keep,
+                       base: list[frozenset], imp: list[frozenset]) -> dict:
+    # 보존율: 개선 후 짝 값(_compare와 같은 분모)의 평균을 원본끼리 순서쌍 값(_baseline_reference와 같음)의 범위와 비교한다.
+    def ratio(denominator: set, reached) -> Fraction | None:
+        return Fraction(len(denominator & set(reached)), len(denominator)) if denominator else None
+
+    pairs = [ratio({key for key in b.patterns if keep(key)}, o.patterns) for b, o in zip(baseline, improved)]
+    reference = []
+    if len(baseline) >= 2:
+        for i, first in enumerate(baseline):
+            for j, second in enumerate(baseline):
+                if i != j:
+                    reference.append(ratio({key for key in first.patterns if keep(key)}, second.patterns))
+    # 커버리지: 개선 후 회차별 비율의 평균을 원본 회차별 비율의 범위와 비교한다.
+    union = frozenset().union(*base, *imp)
+    shares = [[Fraction(len(keys), len(union)) for keys in side] if union else [] for side in (base, imp)]
+    return {
+        "rule": DIFFERENCE_RULE,
+        "preservation": _spread_claim(_mean([v for v in pairs if v is not None]), [v for v in reference if v is not None]),
+        "coverage": _spread_claim(_mean(shares[1]), shares[0]),
+    }
+
+
 def _auth_headers(round_: Round) -> dict | None:
     return None if round_.auth_headers is None else asdict(round_.auth_headers)
 
@@ -242,14 +325,19 @@ def summarize(baseline: list[Round], improved: list[Round], exclusions: Exclusio
 
     # 분모에서 실제로 뺀 수만 센다. 읽기 보존율이면 처음부터 분모 밖인 쓰기 패턴은 세지 않는다.
     base_domain = {key for r in baseline for key in r.patterns if in_domain(key)}
+    compared = _compare(baseline, improved, keep)
+    reference = _baseline_reference(baseline, keep)
+    base_templates, improved_templates = _coverage_sets(baseline, improved, keep)
     return {
         "format": SUMMARY_FORMAT,
         "path_profile_ref": PATH_PROFILE,
         "read_only": read_only,
         "pairs": len(baseline),
         "excluded_by_rules": sum(1 for key in base_domain if exclusions.excludes(key)),
-        **_compare(baseline, improved, keep),
-        "baseline_reference": _baseline_reference(baseline, keep),
+        **compared,
+        "baseline_reference": reference,
+        "coverage": _coverage(base_templates, improved_templates),
+        "difference_claims": _difference_claims(baseline, improved, keep, base_templates, improved_templates),
         "by_class": {
             "api": _compare(baseline, improved, lambda key: keep(key) and not is_static(key[1])),
             "static": _compare(baseline, improved, lambda key: keep(key) and is_static(key[1])),
@@ -337,8 +425,9 @@ def main(argv: list[str] | None = None) -> int:
             if args.read_only != (args.profile == "R-R"):
                 raise PreservationError("preservation_profile_domain_mismatch")
             verified = validate_series(b, o, request_budget=args.budget, read_only=args.read_only)
-            # v8: signed_evidence.exploration_boundary가 검증된 경계 원자료(회차별 카운터·계측기 대조)를 담을 수 있다.
-            summary.update(format="abc2lab.preservation-summary/v8", signed_evidence=verified,
+            # v10(= v8 + v9의 coverage·difference_claims): signed_evidence.exploration_boundary가 검증된 경계 원자료
+            # (회차별 카운터·계측기 대조)를 담을 수 있다.
+            summary.update(format=SIGNED_SUMMARY_FORMAT, signed_evidence=verified,
                            assessment=assessment(summary, args.profile, verified))
     except (PreservationError, PreservationRecordError, RunRecordError, EvidenceError, OSError) as exc:
         reason = "preservation_files_unavailable" if isinstance(exc, OSError) else str(exc)

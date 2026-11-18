@@ -220,6 +220,70 @@ func reportJournalDigest(t *testing.T, root string) [32]byte {
 	return out
 }
 
+func TestReportGraphReadJWTClaimsOwnedPostgres(t *testing.T) {
+	f := newControlledLocalDatabaseFixture(t)
+	installer := &db.DB{DB: f.Installer}
+	hash, err := bcrypt.GenerateFromPassword([]byte("synthetic-report-claims-password"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := installer.SetSetting(authPassKey, string(hash)); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{
+		m:      &Manager{pg: &db.DB{DB: f.Runtime}},
+		jwtKey: []byte("synthetic-report-claims-signing-key"),
+	}
+	expires := jwt.NewNumericDate(time.Now().Add(time.Hour))
+	cases := []struct {
+		name       string
+		claims     jwt.RegisteredClaims
+		wantStatus int
+		wantCalls  int
+	}{
+		{"valid", jwt.RegisteredClaims{Subject: "ARTEX", ExpiresAt: expires}, http.StatusNoContent, 1},
+		{"wrong-subject", jwt.RegisteredClaims{Subject: "synthetic-other-subject", ExpiresAt: expires}, http.StatusUnauthorized, 0},
+		{"missing-expiration", jwt.RegisteredClaims{Subject: "ARTEX"}, http.StatusUnauthorized, 0},
+	}
+	// Enter the report branch directly so management authentication cannot mask a regression.
+	for _, leaf := range []string{"coverage-graph", "access-map"} {
+		for _, tc := range cases {
+			t.Run(leaf+"/"+tc.name, func(t *testing.T) {
+				token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, tc.claims).SignedString(s.signingKey(string(hash)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				req := httptest.NewRequest(http.MethodGet, "/api/tasks/42/"+leaf, nil)
+				req.Header.Set("Authorization", "Bearer "+token)
+				calls := 0
+				handler := s.requireAuth(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					calls++
+					w.WriteHeader(http.StatusNoContent)
+				}))
+				out := httptest.NewRecorder()
+				handler.ServeHTTP(out, req)
+				if out.Code != tc.wantStatus || calls != tc.wantCalls {
+					t.Fatalf("status=%d, handler calls=%d; want status=%d, handler calls=%d", out.Code, calls, tc.wantStatus, tc.wantCalls)
+				}
+				if out.Header().Get("Cache-Control") != "no-store" {
+					t.Fatal("보고서 인증 응답에 no-store 헤더가 없음")
+				}
+				if tc.wantStatus == http.StatusUnauthorized {
+					var body struct {
+						Error string `json:"error"`
+					}
+					if err := json.Unmarshal(out.Body.Bytes(), &body); err != nil {
+						t.Fatal(err)
+					}
+					if body.Error != authErrTokenInvalid {
+						t.Fatalf("error=%q, want %q", body.Error, authErrTokenInvalid)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestProductReportGraphsOwnedPostgres(t *testing.T) {
 	f := newControlledLocalDatabaseFixture(t)
 	pg := &db.DB{DB: f.Installer}
