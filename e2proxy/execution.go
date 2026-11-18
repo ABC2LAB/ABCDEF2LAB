@@ -194,10 +194,25 @@ func compileRules(rules []Rule) ([]compiledRule, error) {
 		if len(m) == 0 {
 			return nil, ErrConfig
 		}
-		// 인증 준비 규칙은 로그인 경로 하나에 POST만, 보호 자격·헤더 제약 없이 둔다.
-		if r.Purpose != "" && (r.Purpose != PurposeAuthPrep || len(m) != 1 || !m["POST"] || r.PathPrefix == "/" || strings.HasSuffix(r.PathPrefix, "/") ||
-			len(r.CredentialHeaders) != 0 || len(r.Headers) != 0) {
-			return nil, ErrConfig
+		if r.Purpose != "" {
+			// 프로그램 규칙에는 임의 헤더나 자격 원문을 저장하지 않는다.
+			if len(r.CredentialHeaders) != 0 || len(r.Headers) != 0 || len(m) != 1 {
+				return nil, ErrConfig
+			}
+			switch r.Purpose {
+			case PurposeAuthPrep:
+				if !m["POST"] || r.PathPrefix == "/" || strings.HasSuffix(r.PathPrefix, "/") {
+					return nil, ErrConfig
+				}
+			case PurposeE3Identity, PurposeE3Create, PurposeE3Read:
+				if !validE3RulePath(r.PathPrefix, r.Purpose == PurposeE3Read) ||
+					(r.Purpose == PurposeE3Identity || r.Purpose == PurposeE3Read) && !m["GET"] ||
+					r.Purpose == PurposeE3Create && !m["POST"] && !m["PUT"] {
+					return nil, ErrConfig
+				}
+			default:
+				return nil, ErrConfig
+			}
 		}
 		r.Methods = append([]string(nil), r.Methods...)
 		r, err = validateRuleHeaders(r)
@@ -219,6 +234,27 @@ func supportedMethod(m string) bool {
 }
 func validPath(p string) bool {
 	return strings.HasPrefix(p, "/") && !strings.ContainsAny(p, "\\%\r\n") && !strings.Contains(p, "//") && path.Clean(p) == strings.TrimSuffix(p, "/") || p == "/"
+}
+
+// E③ 선언 경로와 같은 모양만 받는다. 조회 틀의 ID는 독립된 조각 하나다.
+func validE3RulePath(p string, read bool) bool {
+	if !validPath(p) || len(p) > 512 || !utf8.ValidString(p) || strings.ContainsAny(p, "?# \t\r\n\\%") {
+		return false
+	}
+	for _, r := range p {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	ids := 0
+	for _, segment := range strings.Split(strings.TrimPrefix(p, "/"), "/") {
+		if segment == "{id}" {
+			ids++
+		} else if strings.ContainsAny(segment, "{}") {
+			return false
+		}
+	}
+	return read && ids == 1 || !read && ids == 0
 }
 func canonicalAuthority(u *url.URL) (string, error) {
 	if u == nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.Opaque != "" || u.Fragment != "" {
@@ -330,6 +366,10 @@ func (e *Execution) BeginCallForIntent(parent context.Context, id int64, command
 func (e *Execution) BeginProgramCall(parent context.Context, program ProgramCallKind, commandRef string) (*Call, error) {
 	if e == nil || parent == nil || !program.Valid() || !validRef(commandRef) {
 		return nil, ErrConfig
+	}
+	// v2 기록에는 E③의 실제 계정·동결 선언·구조화 관찰을 봉인할 수 없다. 호출 계수나 감사 행도 만들지 않는다.
+	if program.isE3() {
+		return nil, ErrE3JournalUnavailable
 	}
 	return e.beginCall(parent, 0, program, commandRef)
 }
@@ -999,19 +1039,46 @@ func (e *Execution) matchLocked(req *http.Request) (compiledRule, bool) {
 	return compiledRule{}, false
 }
 
-// matchPurposeLocked는 목적 규칙만 본다. 경로는 정확히 같아야 한다(접두·형제 경로 불가).
+// matchPurposeLocked는 목적 규칙만 본다. 조회 틀의 ID 조각을 제외한 경로는 정확히 같아야 한다.
 func (e *Execution) matchPurposeLocked(req *http.Request, purpose string) (compiledRule, bool) {
+	if req == nil || req.URL == nil {
+		return compiledRule{}, false
+	}
 	a, err := canonicalAuthority(req.URL)
 	p, ok := requestPath(req.URL)
-	if err != nil || !ok || purpose == "" {
+	if err != nil || !ok || purpose == "" || req.URL.RawQuery != "" || req.URL.ForceQuery {
 		return compiledRule{}, false
 	}
 	for _, r := range e.rules {
-		if r.Purpose == purpose && req.URL.Scheme == r.origin.Scheme && a == r.authority && r.methods[req.Method] && p == r.PathPrefix && req.URL.RawQuery == "" {
+		if r.Purpose != purpose {
+			continue
+		}
+		pathOK := p == r.PathPrefix
+		if purpose == PurposeE3Read {
+			pathOK = matchE3ReadPath(r.PathPrefix, p)
+		}
+		if req.URL.Scheme == r.origin.Scheme && a == r.authority && r.methods[req.Method] && pathOK {
 			return r, true
 		}
 	}
 	return compiledRule{}, false
+}
+
+func matchE3ReadPath(template, actual string) bool {
+	want, got := strings.Split(template, "/"), strings.Split(actual, "/")
+	if len(want) != len(got) {
+		return false
+	}
+	for i := range want {
+		if want[i] == "{id}" {
+			if got[i] == "" || got[i] == "." || got[i] == ".." || strings.ContainsAny(got[i], "{};?") {
+				return false
+			}
+		} else if want[i] != got[i] {
+			return false
+		}
+	}
+	return true
 }
 
 type observed struct{ forward, connected, written atomic.Bool }
@@ -1083,7 +1150,14 @@ func (c *Call) AuthPrep(ctx context.Context, req *http.Request, extract AuthExtr
 }
 
 func (c *Call) do(ctx context.Context, req *http.Request, purpose string, extract AuthExtractor) (*http.Response, http.Header, Receipt, error) {
-	if ctx == nil || c == nil || (purpose == PurposeAuthPrep) != c.program.Valid() {
+	if ctx == nil || c == nil {
+		return nil, nil, Receipt{}, ErrConfig
+	}
+	if c.program.isE3() {
+		return nil, nil, Receipt{}, ErrE3JournalUnavailable
+	}
+	if c.program == "" && purpose != "" ||
+		(c.program == ProgramAuthPrep || c.program == ProgramRefreshSession) && purpose != PurposeAuthPrep {
 		return nil, nil, Receipt{}, ErrConfig
 	}
 	method := ""
@@ -1202,10 +1276,7 @@ func (c *Call) do(ctx context.Context, req *http.Request, purpose string, extrac
 		r.Decision, r.Reason = "denied", PolicyDenied
 		return finish(nil, ErrDenied)
 	}
-	needsApproval := e.cfg.RequestApproval != nil && purpose == ""
-	if needsApproval && e.cfg.ApprovalMode == ApprovalWorkbenchV1 && (method == "GET" || method == "HEAD") && len(body) == 0 && e.cfg.RequestBoundary.PreapprovedRead(view) {
-		needsApproval = false
-	}
+	needsApproval := e.needsRequestApproval(purpose, method, body, view)
 	if needsApproval {
 		approvalCtx, cancelApproval := context.WithCancel(c.ctx)
 		stopApproval := context.AfterFunc(ctx, cancelApproval)
@@ -1507,6 +1578,20 @@ func (c *Call) do(ctx context.Context, req *http.Request, purpose string, extrac
 		r.Reason, r.ResponseComplete = Withheld, false
 	} // 원래 표현은 일부 보류했다. 기존 v2 보류 영수증 모양을 유지하며 결과 불명으로 세지 않는다.
 	return finish(resp, nil)
+}
+
+// 생성 요청은 읽기 사전 승인으로 생략할 수 없다. 현재 E③ 호출은 v3 경계에서 먼저 거절된다.
+func (e *Execution) needsRequestApproval(purpose, method string, body []byte, view RequestView) bool {
+	if e.cfg.RequestApproval == nil {
+		return false
+	}
+	if purpose == PurposeE3Create {
+		return true
+	}
+	if purpose != "" {
+		return false
+	}
+	return !(e.cfg.ApprovalMode == ApprovalWorkbenchV1 && (method == "GET" || method == "HEAD") && len(body) == 0 && e.cfg.RequestBoundary.PreapprovedRead(view))
 }
 func stripHeaders(h http.Header) {
 	for key := range h {

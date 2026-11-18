@@ -54,6 +54,8 @@ var (
 	ErrWithheld = errors.New("e2proxy: response withheld")
 	// ErrAuthSession은 인증 준비 응답을 받았지만 설정한 세션 위치에서 세션을 찾지 못했다는 뜻이다(로그인 실패 포함).
 	ErrAuthSession = errors.New("e2proxy: auth session not found")
+	// ErrE3JournalUnavailable은 E③ 송신에 필요한 v3 감사·계정 결속이 아직 연결되지 않았다는 뜻이다.
+	ErrE3JournalUnavailable = errors.New("e2proxy: e3 journal v3 unavailable")
 )
 
 // Recorder must acknowledge durable storage, serialize concurrent writes, and
@@ -95,13 +97,19 @@ type Rule struct {
 	// CredentialHeaders explicitly declares protected values, including custom
 	// credential names. It is accepted only by the opt-in proposal mode.
 	CredentialHeaders http.Header `json:"-"`
-	// Purpose가 비면 모델 요청(Do)의 규칙이다. PurposeAuthPrep이면 프로그램이 부르는 인증 준비(Call.AuthPrep) 전용이고
-	// 모델 요청의 규칙 찾기는 이 규칙을 건너뛴다(C14 구현 설계 1). 메서드는 POST 하나, 경로는 접두가 아니라 정확히 그 경로다.
+	// Purpose가 비면 모델 요청(Do)의 규칙이다. 값이 있으면 프로그램 전용이며 모델 규칙 찾기에서 제외한다.
+	// E③ 규칙은 송신 권한이 아니다. 선언 동결본·계정 결속·v3 감사가 연결되기 전에는 프로그램 호출을 거부한다.
 	Purpose string `json:"-"`
 }
 
 // PurposeAuthPrep은 인증 준비(로그인) 전용 규칙 표시다.
 const PurposeAuthPrep = "auth_prep"
+
+const (
+	PurposeE3Identity = "e3_identity"
+	PurposeE3Create   = "e3_create"
+	PurposeE3Read     = "e3_read"
+)
 
 type Limits struct {
 	// MaxAttempts는 실행 전체에서 예산을 예약하고 송신 단계로 넘어간 시도 수의 상한이다.
@@ -162,15 +170,24 @@ type Restriction struct {
 	Methods        []string  `json:"methods"`
 }
 
-// ProgramCallKind는 호스트가 연 인증 호출의 귀속이다. Worker intent와 배타적이다.
+// ProgramCallKind는 호스트가 연 프로그램 호출의 귀속이다. Worker intent와 배타적이다.
 type ProgramCallKind string
 
 const (
 	ProgramAuthPrep       ProgramCallKind = "auth_prep"
 	ProgramRefreshSession ProgramCallKind = "refresh_session"
+	ProgramE3Identity     ProgramCallKind = ProgramCallKind(PurposeE3Identity)
+	ProgramE3Create       ProgramCallKind = ProgramCallKind(PurposeE3Create)
+	ProgramE3Read         ProgramCallKind = ProgramCallKind(PurposeE3Read)
 )
 
-func (k ProgramCallKind) Valid() bool { return k == ProgramAuthPrep || k == ProgramRefreshSession }
+func (k ProgramCallKind) Valid() bool {
+	return k == ProgramAuthPrep || k == ProgramRefreshSession || k.isE3()
+}
+
+func (k ProgramCallKind) isE3() bool {
+	return k == ProgramE3Identity || k == ProgramE3Create || k == ProgramE3Read
+}
 
 // ValidCallAttribution은 실재 Worker intent 또는 명시적인 프로그램 호출 중 하나만 허용한다.
 func ValidCallAttribution(intentID int64, program ProgramCallKind) bool {
