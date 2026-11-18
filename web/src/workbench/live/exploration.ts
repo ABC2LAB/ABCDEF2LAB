@@ -402,12 +402,16 @@ export function mapApiExploration(res: ApiExploration): ExplorationResult {
 // ---------- 공유 워크플로 스냅샷 → 발견 (경로 · 상태 · 출처) ----------
 
 /**
- * 발견 근거. observed = 탐색 실행기가 실제로 보낸 요청에서 관찰(경계 seq 동반), inferred = 번들 · 코드 추정,
- * null = 근거 칸 없음(HTTP 크롤러 발견 — 실제로 가 봤는지는 방문 · 응답 코드로 본다). seq 없는 observed 는 추정으로
- * 내린다(§7, 절대규칙 5).
+ * 발견 근거. observed = 탐색 실행기가 실제로 보낸 요청에서 관찰(경계 seq 동반), observed_detail_omitted = 관찰로
+ * 기록됐지만 공개 투영의 바이트 압축으로 seq 같은 세부가 빠져 확인할 수 없음(추정으로 내리지 않는다 — #691 리뷰),
+ * inferred = 번들 · 코드 추정, null = 근거 칸 없음(HTTP 크롤러 발견 — 실제로 가 봤는지는 방문 · 응답 코드로 본다).
  */
-export type WorkflowEvidence = "observed" | "inferred" | null;
-export const EVIDENCE_LABEL: Record<"observed" | "inferred", string> = { observed: "실제 관찰", inferred: "추정" };
+export type WorkflowEvidence = "observed" | "observed_detail_omitted" | "inferred" | null;
+export const EVIDENCE_LABEL: Record<Exclude<WorkflowEvidence, null>, string> = {
+  observed: "실제 관찰",
+  observed_detail_omitted: "관찰 · 세부 생략",
+  inferred: "추정",
+};
 
 /** 스냅샷 끝점 하나를 탐색 결과 화면용으로 다시 검증한 것. 값(헤더 · 쿠키 · 본문 · query 값)은 없다. */
 export type WorkflowDiscovery = {
@@ -417,6 +421,8 @@ export type WorkflowDiscovery = {
   path: string | null;
   /** 출처 원문(라벨은 화면이 붙인다) */
   source: string;
+  /** 점검 시작 때 승인한 경로(출처 start) — 탐색이 찾은 것이 아니다 */
+  preRegistered: boolean;
   /** 이 경로를 찾은 페이지(경로와 같은 규칙, 없거나 모양 밖이면 null) */
   from: string | null;
   inScope: boolean;
@@ -449,7 +455,7 @@ export function discoveriesFromWorkflow(flow: Pick<WorkflowSnapshot, "endpoints"
     const raw = e as unknown as Record<string, unknown>;
     const seq = intOrNull(raw.exploration_seq);
     let evidence: WorkflowEvidence = null;
-    if (raw.discovery_confidence === "observed") evidence = seq ? "observed" : "inferred";
+    if (raw.discovery_confidence === "observed") evidence = seq !== null ? "observed" : "observed_detail_omitted";
     else if (raw.discovery_confidence === "inferred") evidence = "inferred";
     const type = str(raw.content_type, 128);
     return {
@@ -457,6 +463,7 @@ export function discoveriesFromWorkflow(flow: Pick<WorkflowSnapshot, "endpoints"
       method: e.method,
       path: safePath(e.path),
       source: e.source,
+      preRegistered: e.source === "start",
       from: safePath(e.from),
       inScope: e.in_scope,
       change: e.change,
@@ -472,28 +479,76 @@ export function discoveriesFromWorkflow(flow: Pick<WorkflowSnapshot, "endpoints"
   });
 }
 
+/** 탐색 발견 수(사전 등록 경로는 빼고 센다 — 탐색을 안 돌린 회차의 시작 경로를 '발견'으로 세지 않게, #691 리뷰). */
 export type WorkflowDiscoverySummary = {
+  /** 스냅샷 목록 전체(사전 등록 포함) */
   listed: number;
+  /** 사전 등록 경로 수 */
+  preRegistered: number;
+  /** 아래부터는 탐색 발견만 */
+  found: number;
   inScope: number;
   outOfScope: number;
   visited: number;
   observed: number;
+  observedDetailOmitted: number;
   inferred: number;
   /** 출처별 수, 많은 것부터 */
   bySource: { source: string; count: number }[];
 };
 
-export function summarizeWorkflowDiscoveries(list: readonly WorkflowDiscovery[]): WorkflowDiscoverySummary {
+export function summarizeWorkflowDiscoveries(all: readonly WorkflowDiscovery[]): WorkflowDiscoverySummary {
+  const list = all.filter((d) => !d.preRegistered);
   const by = new Map<string, number>();
   for (const d of list) by.set(d.source, (by.get(d.source) ?? 0) + 1);
   const inScope = list.filter((d) => d.inScope).length;
   return {
-    listed: list.length,
+    listed: all.length,
+    preRegistered: all.length - list.length,
+    found: list.length,
     inScope,
     outOfScope: list.length - inScope,
     visited: list.filter((d) => d.visited).length,
     observed: list.filter((d) => d.evidence === "observed").length,
+    observedDetailOmitted: list.filter((d) => d.evidence === "observed_detail_omitted").length,
     inferred: list.filter((d) => d.evidence === "inferred").length,
     bySource: [...by].map(([source, count]) => ({ source, count })).sort((a, b) => b.count - a.count),
   };
+}
+
+// ---------- 탐색 실행 상태 (스냅샷 exploration_status) ----------
+
+export type ExplorationStatus = "RUNNING" | "NOT_RUN" | "COMPLETED" | "PARTIAL" | "STOPPED";
+export const EXPLORATION_STATUS_LABEL: Record<ExplorationStatus, string> = {
+  RUNNING: "탐색 중",
+  NOT_RUN: "탐색 안 함",
+  COMPLETED: "탐색 마침",
+  PARTIAL: "일부만 탐색",
+  STOPPED: "탐색 중지",
+};
+const EXPLORATION_REASON_LABEL: Record<string, string> = {
+  boundary_unavailable: "탐색 경계를 쓸 수 없음",
+  model_unavailable: "모델을 쓸 수 없음",
+  runtime_unavailable: "실행 환경을 쓸 수 없음",
+  browser_unavailable: "브라우저를 쓸 수 없음",
+};
+
+/**
+ * 스냅샷의 탐색 실행 상태(서버 diagnosisflow exploration_status · exploration_reason). 스냅샷 파서가 보지 않는 선택 칸이라
+ * 여기서 다시 검증하고, 모르는 값은 상태를 만들지 않는다(null). 칸이 없으면(옛 회차) 상태를 말하지 않는다.
+ */
+export function explorationStateOf(flow: Pick<WorkflowSnapshot, never>): {
+  status: ExplorationStatus | null;
+  reason: string | null;
+} {
+  const raw = flow as Record<string, unknown>;
+  const status =
+    typeof raw.exploration_status === "string" && Object.hasOwn(EXPLORATION_STATUS_LABEL, raw.exploration_status)
+      ? (raw.exploration_status as ExplorationStatus)
+      : null;
+  const reason =
+    typeof raw.exploration_reason === "string" && Object.hasOwn(EXPLORATION_REASON_LABEL, raw.exploration_reason)
+      ? EXPLORATION_REASON_LABEL[raw.exploration_reason]
+      : null;
+  return { status, reason: status ? reason : null };
 }

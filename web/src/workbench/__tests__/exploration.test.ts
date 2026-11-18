@@ -4,6 +4,7 @@ import {
   type BoundaryRecord,
   type Discovery,
   discoveriesFromWorkflow,
+  explorationStateOf,
   mapApiExploration,
   reasonLabel,
   sourceLabel,
@@ -196,6 +197,7 @@ describe("discoveriesFromWorkflow (공유 스냅샷 → 발견)", () => {
         method: "GET",
         path: "/api/items",
         source: "html_link",
+        preRegistered: false,
         from: "/",
         inScope: true,
         change: "attested_read",
@@ -210,7 +212,7 @@ describe("discoveriesFromWorkflow (공유 스냅샷 → 발견)", () => {
       },
     ]);
   });
-  it("observed 는 탐색 seq 가 있어야 실제 관찰, 없으면 추정으로 내린다(절대규칙 5)", () => {
+  it("observed 는 탐색 seq 가 있으면 실제 관찰, 없으면 '관찰 · 세부 생략'(바이트 압축) — 추정으로 내리지 않는다", () => {
     const [seen, noSeq, guess, odd] = discoveriesFromWorkflow({
       endpoints: [
         endpoint({ id: "a", discovery_confidence: "observed", exploration_seq: 7 }),
@@ -221,7 +223,7 @@ describe("discoveriesFromWorkflow (공유 스냅샷 → 발견)", () => {
     });
     expect([seen.evidence, noSeq.evidence, guess.evidence, odd.evidence]).toEqual([
       "observed",
-      "inferred",
+      "observed_detail_omitted",
       "inferred",
       null,
     ]);
@@ -251,25 +253,53 @@ describe("discoveriesFromWorkflow (공유 스냅샷 → 발견)", () => {
   it("응답 코드 범위 밖은 없는 것으로 본다", () => {
     expect(discoveriesFromWorkflow({ endpoints: [endpoint({ status: 0 })] })[0].status).toBeNull();
   });
-  it("summarizeWorkflowDiscoveries: 범위 · 방문 · 근거 · 출처별(많은 것부터)로 센다", () => {
+  it("summarizeWorkflowDiscoveries: 사전 등록(start)은 빼고 범위 · 방문 · 근거 · 출처별(많은 것부터)로 센다", () => {
     const list = discoveriesFromWorkflow({
       endpoints: [
+        endpoint({ id: "s", source: "start", path: "/", from: "/" }),
         endpoint({ id: "a", source: "browser_xhr", discovery_confidence: "observed", exploration_seq: 1 }),
         endpoint({ id: "b", in_scope: false, visited: false, status: undefined }),
         endpoint({ id: "c", discovery_confidence: "inferred" }),
+        endpoint({ id: "d", source: "browser_xhr", discovery_confidence: "observed" }),
       ],
     });
+    expect(list[0].preRegistered).toBe(true);
     expect(summarizeWorkflowDiscoveries(list)).toEqual({
-      listed: 3,
-      inScope: 2,
+      listed: 5,
+      preRegistered: 1,
+      found: 4,
+      inScope: 3,
       outOfScope: 1,
-      visited: 2,
+      visited: 3,
       observed: 1,
+      observedDetailOmitted: 1,
       inferred: 1,
       bySource: [
+        { source: "browser_xhr", count: 2 },
         { source: "html_link", count: 2 },
-        { source: "browser_xhr", count: 1 },
       ],
+    });
+  });
+});
+
+describe("explorationStateOf (스냅샷 탐색 실행 상태)", () => {
+  it("아는 상태 · 이유만 옮기고, 칸이 없거나 모르는 값이면 상태를 만들지 않는다", () => {
+    expect(
+      explorationStateOf({ exploration_status: "NOT_RUN", exploration_reason: "browser_unavailable" } as never),
+    ).toEqual({
+      status: "NOT_RUN",
+      reason: "브라우저를 쓸 수 없음",
+    });
+    expect(explorationStateOf({ exploration_status: "COMPLETED" } as never)).toEqual({
+      status: "COMPLETED",
+      reason: null,
+    });
+    expect(explorationStateOf({} as never)).toEqual({ status: null, reason: null });
+    expect(
+      explorationStateOf({ exploration_status: "DONE", exploration_reason: "browser_unavailable" } as never),
+    ).toEqual({
+      status: null,
+      reason: null,
     });
   });
 });

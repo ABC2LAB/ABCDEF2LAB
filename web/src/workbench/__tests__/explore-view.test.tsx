@@ -93,10 +93,80 @@ describe("UrlExploreLive (공유 워크플로 스냅샷)", () => {
     ]);
     // 서버 누계 + 목록이 전체가 아닐 수 있음을 알린다
     const sec = screen.getByRole("region", { name: "발견" });
-    expect(sec).toHaveTextContent("발견 4");
+    expect(sec).toHaveTextContent("탐색 발견 3");
     expect(sec).toHaveTextContent("목록에서 생략 1");
-    expect(sec).toHaveTextContent("아래 목록은 서버가 화면에 준 3개입니다. 발견 4개 전체가 아닐 수 있습니다.");
+    expect(sec).toHaveTextContent("아래 목록은 서버가 화면에 준 3개입니다. 서버 누계 4개 전체가 아닐 수 있습니다.");
     expect(within(screen.getByRole("list", { name: "출처별 발견" })).getAllByRole("listitem")).toHaveLength(3);
+  });
+
+  it("방문 전에 요청이 실패한 행은 '미방문'만이 아니라 오류도 보인다 (#691 리뷰)", () => {
+    publish(
+      snapshot({
+        endpoints: [
+          point({
+            id: "f",
+            method: "GET",
+            path: "/fail",
+            source: "html_link",
+            visited: false,
+            observation_error: "request_failed",
+          }),
+          point({ id: "u", method: "GET", path: "/later", source: "html_link", visited: false }),
+        ],
+      }),
+    );
+    render(<UrlExploreLive />);
+    const items = within(screen.getByRole("list", { name: "발견 목록" })).getAllByRole("listitem");
+    expect(items[0]).toHaveTextContent("미방문 · 요청 실패");
+    expect(items[1]).toHaveTextContent("미방문 · HTML 링크");
+    expect(items[1]).not.toHaveTextContent("실패");
+  });
+
+  it("관찰로 기록됐지만 seq 가 빠진 행은 추정이 아니라 '관찰 · 세부 생략' (#691 리뷰)", () => {
+    publish(
+      snapshot({
+        endpoints: [
+          point({
+            id: "o",
+            method: "GET",
+            path: "/seen",
+            source: "browser_xhr",
+            status: 200,
+            discovery_confidence: "observed",
+          }),
+        ],
+      }),
+    );
+    render(<UrlExploreLive />);
+    const sec = screen.getByRole("region", { name: "발견" });
+    expect(within(screen.getByRole("list", { name: "발견 목록" })).getByRole("listitem")).toHaveTextContent(
+      "관찰 · 세부 생략",
+    );
+    expect(sec).toHaveTextContent("관찰 · 세부 생략 1");
+    expect(sec).not.toHaveTextContent("추정");
+  });
+
+  it("탐색을 실행하지 않은 회차는 상태를 보이고, 시작 경로를 발견으로 세지 않는다 (#691 리뷰)", () => {
+    publish(
+      snapshot({
+        exploration_status: "NOT_RUN",
+        exploration_reason: "browser_unavailable",
+        exploration_partial: true,
+        counts: { found: 1, visited: 1, queued: 0, sent: 1, attempted: 1, unknown: 0, blocked: 0 },
+        endpoints: [point({ id: "s", method: "GET", path: "/", source: "start", status: 200, kind: "page" })],
+      }),
+    );
+    render(<UrlExploreLive />);
+    const sec = screen.getByRole("region", { name: "발견" });
+    expect(sec).toHaveTextContent("탐색 상태: 탐색 안 함 (브라우저를 쓸 수 없음)");
+    expect(sec).toHaveTextContent("이번 점검은 탐색을 실행하지 않았습니다");
+    expect(sec).toHaveTextContent("탐색 발견 0");
+    expect(sec).toHaveTextContent("사전 등록 경로 1");
+    expect(within(screen.getByRole("list", { name: "사전 등록 경로" })).getByRole("listitem")).toHaveTextContent(
+      "GET /",
+    );
+    expect(screen.queryByRole("list", { name: "발견 목록" })).toBeNull();
+    expect(sec).toHaveTextContent("탐색을 실행하지 않아 발견한 경로가 없습니다.");
   });
 
   it("query 가 섞인 경로는 그대로 보이지 않는다", () => {
