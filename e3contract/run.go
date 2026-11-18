@@ -1,0 +1,564 @@
+package e3contract
+
+import (
+	"context"
+	"crypto/rand"
+	"errors"
+	"io"
+	"log/slog"
+	"strings"
+	"time"
+
+	"github.com/Autumn-27/artex/oracle"
+)
+
+// Account는 C14 인증 준비가 끝난 시험 계정이다. 서버가 실행 결속에서 채운다.
+type Account struct {
+	Label         string
+	Authenticated bool
+}
+
+// Input은 확정 단계 한 회의 입력이다. 모두 서버가 실행 결속에서 채우고 모델이 쓴 값은 없다.
+type Input struct {
+	Binding   RunBinding
+	TargetRef string
+	// WriteConsent는 대상이 쓰기를 승인했고 리셋할 수 있다고 등록됐는지다(#596 §3 조건 1).
+	WriteConsent bool
+	Owner, Cross Account
+	// PolicyValidFrom·PolicyValidUntil은 대상 승인 기간과 실행 기간이 겹치는 구간이다(#596 §4.2).
+	PolicyValidFrom, PolicyValidUntil time.Time
+	Candidates                        []Candidate
+}
+
+// Deps는 확정 단계가 부르는 갈래들이다. 하나라도 없으면 확정 단계를 돌지 않는다.
+type Deps struct {
+	Transport    Transport
+	Journal      Journal
+	Declarations DeclarationReader
+	Reset        ResetGate
+	// Random은 표식 난수다. 없으면 crypto/rand다.
+	Random io.Reader
+	// Now는 관찰이 하나도 없을 때 판정 시각이다. 없으면 time.Now다.
+	Now func() time.Time
+	// Logger는 상태·건수만 남긴다. 없으면 남기지 않는다.
+	Logger *slog.Logger
+}
+
+// Run은 모델 단계가 끝난 뒤 확정 단계 한 회를 돈다(#596 §5). 순서: 조건 → 정책 동결본 대조 → 리셋 확인 → 표식 생성·등록 →
+// 신원 확인 → 종류마다 생성·A 조회·B 교차 → 판정 → 후보 연결. 결속·진위가 깨지면 그때까지의 판정을 버리고
+// StatusIntegrityFailed로 끝낸다.
+func Run(ctx context.Context, deps Deps, in Input) RunResult {
+	r := &run{deps: deps, in: in, seen: map[string]bool{}}
+	res := r.run(ctx)
+	if deps.Logger != nil {
+		deps.Logger.Info("E③ 확정 단계 끝", "status", string(res.Status), "reason", res.Reason,
+			"verdicts", len(res.Verdicts), "requests", res.Requests)
+	}
+	return res
+}
+
+type run struct {
+	deps      Deps
+	in        Input
+	marker    Marker
+	decl      Declaration
+	requests  int
+	seen      map[string]bool
+	integrity IntegrityReason
+	budget    bool // 확정 단계 전용 몫이 다 됐다. 더 보내지 않는다.
+	stopped   bool // 회차 중지로 끊겼다.
+	lastAt    time.Time
+	// bindingValid는 실행 결속이 검증을 통과했는지다. 통과한 결속만 결과에 싣는다.
+	bindingValid bool
+}
+
+func (r *run) result(status ConfirmationStatus, reason string) RunResult {
+	res := RunResult{Version: RunResultVersion, Status: status, Reason: reason, Verdicts: []Verdict{}, Skipped: []SkippedType{},
+		Candidates: r.suspectedCandidates(""), Requests: r.requests}
+	if r.bindingValid {
+		b := r.in.Binding
+		res.Binding = &b
+	}
+	return res
+}
+
+func (r *run) integrityResult() RunResult {
+	res := r.result(StatusIntegrityFailed, string(r.integrity))
+	res.Candidates = r.suspectedCandidates(string(StatusIntegrityFailed))
+	return res
+}
+
+func (r *run) suspectedCandidates(reason string) []CandidateConfirmation {
+	out := make([]CandidateConfirmation, 0, len(r.in.Candidates))
+	for _, c := range r.validCandidates() {
+		out = append(out, CandidateConfirmation{CandidateRef: c.Ref, Level: oracle.Suspected, Reason: reason})
+	}
+	return out
+}
+
+// validCandidates는 참조가 계약 모양인 후보만이다. 모양이 틀린 후보 참조는 결과에 옮기지 않는다.
+func (r *run) validCandidates() []Candidate {
+	var out []Candidate
+	for _, c := range r.in.Candidates {
+		if refPattern.MatchString(c.Ref) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func (r *run) run(ctx context.Context) RunResult {
+	if reason := r.disabledReason(); reason != "" {
+		return r.result(StatusDisabled, string(reason))
+	}
+	decl, err := r.deps.Declarations.ReadFrozen(ctx, r.in.Binding.Policy)
+	if err != nil {
+		return r.result(StatusStartRefused, string(RefusePolicySourceUnavailable))
+	}
+	if VerifyFrozen(r.in.Binding.Policy, decl) != nil {
+		r.integrity = IntegrityPolicyDigestMismatch
+		return r.integrityResult()
+	}
+	if decl.TargetRef != r.in.TargetRef {
+		r.integrity = IntegrityPolicyTargetMismatch
+		return r.integrityResult()
+	}
+	r.decl = decl
+	var types []TypeDeclaration
+	var skipped []SkippedType
+	for _, t := range decl.Types {
+		if t.Confirmable() {
+			types = append(types, t)
+		} else {
+			skipped = append(skipped, SkippedType{ResourceType: t.Type, Reason: "not_owner_only"})
+		}
+	}
+	if len(types) == 0 {
+		return r.result(StatusDisabled, string(DisabledNoConfirmableType))
+	}
+	if refusal := CheckRunStart(ctx, r.deps.Reset, r.in.Binding, r.in.TargetRef); refusal != "" {
+		return r.result(StatusStartRefused, string(refusal))
+	}
+	random := r.deps.Random
+	if random == nil {
+		random = rand.Reader
+	}
+	marker, err := NewMarker(random)
+	if err != nil {
+		return r.result(StatusStartRefused, string(RefuseMarkerGenerationFailed))
+	}
+	if err := r.deps.Transport.RegisterMarker(ctx, r.in.Binding, marker); err != nil {
+		if errors.Is(err, ErrAuthorityRevoked) {
+			r.integrity = IntegrityAuthorityRevoked
+			return r.integrityResult()
+		}
+		return r.result(StatusStartRefused, string(RefuseMarkerRegistrationFailed))
+	}
+	r.marker = marker
+
+	subjects, identityReason, evidence := r.identity(ctx)
+	if r.integrity != "" {
+		return r.integrityResult()
+	}
+	var verdicts []Verdict
+	for _, t := range types {
+		if r.stopped {
+			break
+		}
+		var v Verdict
+		if identityReason != "" {
+			v = r.verdict(t, subjects, unknownFacts(), evidence, identityReason)
+		} else {
+			v = r.confirmType(ctx, t, subjects, evidence)
+		}
+		if r.integrity != "" {
+			return r.integrityResult()
+		}
+		if r.stopped && v.ResourceType == "" {
+			break
+		}
+		verdicts = append(verdicts, v)
+	}
+	status := StatusCompleted
+	if r.stopped {
+		status = StatusInterrupted
+	}
+	res := r.result(status, "")
+	res.Verdicts = verdicts
+	if res.Verdicts == nil {
+		res.Verdicts = []Verdict{}
+	}
+	if skipped != nil {
+		res.Skipped = skipped
+	}
+	res.Candidates = r.linkCandidates(types, verdicts)
+	// 판정의 후보 참조는 검증된 연결에서만 채운다. 한 종류에 후보 여럿이 이어질 수 있다.
+	for i := range res.Verdicts {
+		for _, c := range res.Candidates {
+			if c.ResourceType == res.Verdicts[i].ResourceType && c.Reason == "" {
+				res.Verdicts[i].CandidateRefs = append(res.Verdicts[i].CandidateRefs, c.CandidateRef)
+			}
+		}
+	}
+	return res
+}
+
+func (r *run) disabledReason() DisabledReason {
+	d := r.deps
+	if d.Transport == nil || d.Journal == nil || d.Declarations == nil || d.Reset == nil {
+		return DisabledNotWired
+	}
+	if r.in.Binding.Policy == (PolicySource{}) {
+		return DisabledNoDeclaration
+	}
+	if r.in.Binding.Validate() != nil || !refPattern.MatchString(r.in.TargetRef) {
+		return DisabledBindingInvalid
+	}
+	r.bindingValid = true
+	if r.in.Binding.Policy.ValidateProduct() != nil {
+		return DisabledPolicyKind
+	}
+	if !r.in.WriteConsent {
+		return DisabledWriteNotConsented
+	}
+	o, c := r.in.Owner, r.in.Cross
+	if !o.Authenticated || !c.Authenticated || !refPattern.MatchString(o.Label) || !refPattern.MatchString(c.Label) ||
+		o.Label == c.Label {
+		return DisabledAccountsUnverified
+	}
+	if r.in.PolicyValidFrom.IsZero() || !r.in.PolicyValidFrom.Before(r.in.PolicyValidUntil) {
+		return DisabledPolicyWindow
+	}
+	return ""
+}
+
+// call은 요청 하나를 부르고 관찰을 검증한다. ok=false면 그 요청의 결과를 쓸 수 없다(결과 불명이거나 진위 실패).
+// 진위 실패는 r.integrity에 남는다.
+func (r *run) call(ctx context.Context, want Observation, send func() (Observation, error)) (Observation, bool) {
+	if err := ctx.Err(); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			r.budget = true // 확정 단계 시간 몫이 끝났다.
+		} else {
+			r.stopped = true
+		}
+		return Observation{}, false
+	}
+	r.requests++
+	obs, err := send()
+	if errors.Is(err, ErrAuthorityRevoked) {
+		r.integrity = IntegrityAuthorityRevoked
+		return Observation{}, false
+	}
+	if err != nil {
+		return Observation{}, false // 결과 불명. 다시 보내지 않는다.
+	}
+	if obs.Validate() != nil {
+		r.integrity = IntegrityObservationInvalid
+		return Observation{}, false
+	}
+	if obs.Binding != r.in.Binding {
+		r.integrity = IntegrityBindingMismatch
+		return Observation{}, false
+	}
+	if obs.Purpose != want.Purpose || obs.Role != want.Role || obs.AccountLabel != want.AccountLabel ||
+		obs.ResourceType != want.ResourceType || obs.Create != want.Create {
+		r.integrity = IntegrityObservationMismatch
+		return Observation{}, false
+	}
+	key := obs.Ref.CallRef + "\x00" + obs.Ref.AttemptID
+	if r.seen[key] {
+		r.integrity = IntegrityObservationReused
+		return Observation{}, false
+	}
+	r.seen[key] = true
+	sealed, err := r.deps.Journal.Sealed(ctx, r.in.Binding, obs.Ref)
+	if err != nil {
+		r.integrity = IntegrityJournalEventMissing
+		return Observation{}, false
+	}
+	if !sealed.Same(obs) {
+		r.integrity = IntegrityJournalEventMismatch
+		return Observation{}, false
+	}
+	if obs.At.After(r.lastAt) {
+		r.lastAt = obs.At
+	}
+	if obs.NotSent == NotSentBudgetExhausted {
+		r.budget = true
+	}
+	return obs, true
+}
+
+// identity는 A·B 신원을 확인한다(#596 §5.1). 실패하면 그 대상의 모든 종류가 UNDECIDABLE이고 생성·조회를 하지 않는다.
+func (r *run) identity(ctx context.Context) (oracle.SubjectContext, ProductReason, []CallRef) {
+	subjects := oracle.SubjectContext{OwnerStatus: oracle.SubjectUnknown, EvaluatedStatus: oracle.SubjectUnknown}
+	var evidence []CallRef
+	digests := map[Role]string{}
+	reason := ProductReason("")
+	for _, acct := range []struct {
+		role  Role
+		label string
+	}{{RoleOwner, r.in.Owner.Label}, {RoleCross, r.in.Cross.Label}} {
+		if r.budget {
+			return subjects, ReasonConfirmationBudgetExhaust, evidence
+		}
+		want := Observation{Purpose: PurposeIdentity, Role: acct.role, AccountLabel: acct.label}
+		obs, ok := r.call(ctx, want, func() (Observation, error) {
+			return r.deps.Transport.Identity(ctx, IdentityRequest{Binding: r.in.Binding, Spec: r.decl.Identity,
+				Role: acct.role, AccountLabel: acct.label})
+		})
+		if r.integrity != "" || r.stopped {
+			return subjects, ReasonIdentityUnverified, evidence
+		}
+		if r.budget {
+			return subjects, ReasonConfirmationBudgetExhaust, evidence
+		}
+		if ok {
+			evidence = append(evidence, obs.Ref)
+		}
+		if !ok || !obs.Sent || !obs.ResponseComplete || obs.Normal != oracle.StateYes || obs.SubjectDigest == "" {
+			reason = ReasonIdentityUnverified
+			continue
+		}
+		digests[acct.role] = obs.SubjectDigest
+	}
+	if reason != "" {
+		return subjects, reason, evidence
+	}
+	subjects = oracle.SubjectContext{OwnerStatus: oracle.SubjectVerified, EvaluatedStatus: oracle.SubjectVerified,
+		OwnerRef: digests[RoleOwner], EvaluatedRef: digests[RoleCross]}
+	if digests[RoleOwner] == digests[RoleCross] {
+		return subjects, ReasonSubjectsIdentical, evidence
+	}
+	return subjects, "", evidence
+}
+
+// confirmType은 종류 하나를 생성 → A 조회 → B 교차로 시험한다. 앞 단계가 판정에 쓸 수 없는 결과면 뒤 요청을 보내지 않는다.
+func (r *run) confirmType(ctx context.Context, t TypeDeclaration, subjects oracle.SubjectContext, identityEvidence []CallRef) Verdict {
+	evidence := append([]CallRef(nil), identityEvidence...)
+	facts := unknownFacts()
+	if r.budget {
+		return r.verdict(t, subjects, facts, evidence, ReasonConfirmationBudgetExhaust)
+	}
+	created, ok := r.call(ctx, Observation{Purpose: PurposeCreate, Role: RoleOwner, AccountLabel: r.in.Owner.Label,
+		ResourceType: t.Type}, func() (Observation, error) {
+		return r.deps.Transport.Create(ctx, CreateRequest{Binding: r.in.Binding, ResourceType: t.Type, Spec: t.Create,
+			AccountLabel: r.in.Owner.Label, Marker: r.marker})
+	})
+	if r.integrity != "" || r.stopped && !ok {
+		return Verdict{}
+	}
+	if !ok {
+		return r.verdict(t, subjects, facts, evidence, r.unusableReason(Observation{}, false, true))
+	}
+	evidence = append(evidence, created.Ref)
+	if reason := r.notUsable(created, true); reason != "" {
+		return r.verdict(t, subjects, facts, evidence, reason)
+	}
+	if created.Normal != oracle.StateYes || created.ObjectIDDigest == "" {
+		return r.verdict(t, subjects, facts, evidence, ReasonCreateFailed)
+	}
+
+	owner, reason := r.read(ctx, t, RoleOwner, r.in.Owner.Label, created.Ref)
+	if r.integrity != "" || r.stopped && reason == "" && owner == (Observation{}) {
+		return Verdict{}
+	}
+	if owner != (Observation{}) {
+		evidence = append(evidence, owner.Ref)
+	}
+	if reason != "" {
+		return r.verdict(t, subjects, facts, evidence, reason)
+	}
+	facts.OwnerNormalData = owner.Normal
+	if owner.Marker.Presence == MarkerAbsent {
+		// A에서 지원 방식으로 표식이 안 보이면 B의 미관찰을 차단 근거로 쓸 수 없다. B 요청을 보내지 않는다.
+		return r.verdict(t, subjects, facts, evidence, ReasonOwnerMarkerUnobserved)
+	}
+	if owner.Normal != oracle.StateYes {
+		return r.verdict(t, subjects, facts, evidence, ReasonDataCheckFailed)
+	}
+
+	cross, reason := r.read(ctx, t, RoleCross, r.in.Cross.Label, created.Ref)
+	if r.integrity != "" || r.stopped && reason == "" && cross == (Observation{}) {
+		return Verdict{}
+	}
+	if cross != (Observation{}) {
+		evidence = append(evidence, cross.Ref)
+	}
+	if reason != "" {
+		return r.verdict(t, subjects, facts, evidence, reason)
+	}
+	// 조회 둘은 같은 생성 관찰을 읽었다(call이 Create 참조를 대조했다).
+	facts.SameResource = oracle.StateYes
+	facts.CrossNormalData = cross.Normal
+	if cross.Marker.Presence == MarkerPresent {
+		facts.NontrivialDataMatch = oracle.StateYes
+	} else {
+		facts.NontrivialDataMatch = oracle.StateNo
+	}
+	// B 요청은 프로그램이 만들고, E²가 보낸 요청에 표식이 없음을 확인했을 때만 반사를 배제한다.
+	if cross.RequestMarkerFree {
+		facts.ReflectionExcluded = oracle.StateYes
+	} else {
+		facts.ReflectionExcluded = oracle.StateNo
+	}
+	// 표식은 이 회차에 새로 만든 무작위 값이고 A의 객체 한 칸에만 넣었다. 공통 화면 틀이 담을 수 없다.
+	facts.TemplateExcluded = oracle.StateYes
+	return r.verdict(t, subjects, facts, evidence, "")
+}
+
+// read는 조회 하나를 부르고, 판정에 쓸 수 없으면 사유를 돌려준다. 관찰을 못 받았으면 빈 관찰이다.
+func (r *run) read(ctx context.Context, t TypeDeclaration, role Role, label string, create CallRef) (Observation, ProductReason) {
+	if r.budget {
+		return Observation{}, ReasonConfirmationBudgetExhaust
+	}
+	obs, ok := r.call(ctx, Observation{Purpose: PurposeRead, Role: role, AccountLabel: label, ResourceType: t.Type,
+		Create: create}, func() (Observation, error) {
+		return r.deps.Transport.Read(ctx, ReadRequest{Binding: r.in.Binding, ResourceType: t.Type, Spec: t.Read,
+			MarkerField: t.Create.MarkerField, Role: role, AccountLabel: label, Create: create, Marker: r.marker})
+	})
+	if r.integrity != "" || (r.stopped && !ok) {
+		return Observation{}, ""
+	}
+	if !ok {
+		return Observation{}, r.unusableReason(Observation{}, false, false)
+	}
+	if reason := r.notUsable(obs, false); reason != "" {
+		return obs, reason
+	}
+	if obs.Marker.Field != t.Create.MarkerField {
+		r.integrity = IntegrityObservationMismatch
+		return Observation{}, ""
+	}
+	switch obs.Marker.Status {
+	case MarkerPartial:
+		return obs, ReasonPartialResponse
+	case MarkerUnsupported:
+		return obs, ReasonEncodingUnsupported
+	case MarkerFailed:
+		return obs, ReasonDataCheckFailed
+	}
+	return obs, ""
+}
+
+// notUsable은 보내지 않았거나 결과가 불명인 관찰의 사유다. 쓸 수 있으면 빈 값이다.
+func (r *run) notUsable(obs Observation, create bool) ProductReason {
+	if obs.Sent && obs.ResponseComplete {
+		return ""
+	}
+	return r.unusableReason(obs, true, create)
+}
+
+func (r *run) unusableReason(obs Observation, received, create bool) ProductReason {
+	if r.budget {
+		return ReasonConfirmationBudgetExhaust
+	}
+	if !received || obs.Sent {
+		return ReasonRequestResultUnknown
+	}
+	switch obs.NotSent {
+	case NotSentApprovalDenied:
+		if create {
+			return ReasonCreateApprovalDenied
+		}
+	case NotSentApprovalTimeout:
+		if create {
+			return ReasonCreateApprovalTimeout
+		}
+	case NotSentBudgetExhausted:
+		return ReasonConfirmationBudgetExhaust
+	}
+	return ReasonRequestDenied
+}
+
+func unknownFacts() oracle.ComparisonFacts {
+	u := oracle.StateUnknown
+	return oracle.ComparisonFacts{SameResource: u, OwnerNormalData: u, CrossNormalData: u, NontrivialDataMatch: u,
+		ReflectionExcluded: u, TemplateExcluded: u}
+}
+
+// verdict는 모은 사실로 oracle.Evaluate를 불러 판정 행을 만든다. 판정 값은 오라클 결과 그대로다.
+func (r *run) verdict(t TypeDeclaration, subjects oracle.SubjectContext, facts oracle.ComparisonFacts, evidence []CallRef,
+	reason ProductReason) Verdict {
+	observedAt := r.lastAt
+	if observedAt.IsZero() {
+		now := r.deps.Now
+		if now == nil {
+			now = time.Now
+		}
+		observedAt = now()
+	}
+	// owner_only 선언: B는 기대 접근이 거부이고, 공유·위임은 없다고 선언됐다. 동결본을 대조한 뒤에만 여기 온다.
+	c := oracle.CaseInput{
+		Policy: oracle.PolicyAssertion{ExpectedAccess: oracle.AccessDeny, Sharing: oracle.ResolvedNone,
+			Delegation: oracle.ResolvedNone, HasRegisteredSource: true, ValidFrom: r.in.PolicyValidFrom,
+			ValidUntil: r.in.PolicyValidUntil, HintMatchesCanonical: true},
+		Subjects: subjects,
+		Facts:    facts,
+	}
+	out := oracle.Evaluate(c, observedAt)
+	v := Verdict{ResourceType: t.Type, Value: out.Value, PolicyCheck: out.PolicyCheck, IdentityCheck: out.IdentityCheck,
+		DataCheck: out.DataCheck, OracleReasons: out.ReasonCodes, ProductReasons: []ProductReason{},
+		CandidateRefs: []string{}, Evidence: evidence, ObservedAt: observedAt.UTC(), Case: c}
+	if v.Evidence == nil {
+		v.Evidence = []CallRef{}
+	}
+	if reason != "" {
+		v.ProductReasons = []ProductReason{reason}
+	}
+	return v
+}
+
+// linkCandidates는 후보를 선언된 조회 경로 틀과 맞춘다(#596 §9). 정확히 하나와 맞을 때만 잇는다.
+func (r *run) linkCandidates(types []TypeDeclaration, verdicts []Verdict) []CandidateConfirmation {
+	byType := map[string]Verdict{}
+	for _, v := range verdicts {
+		byType[v.ResourceType] = v
+	}
+	out := make([]CandidateConfirmation, 0, len(r.in.Candidates))
+	for _, c := range r.validCandidates() {
+		var matched []string
+		if c.Method == "GET" {
+			for _, t := range types {
+				if pathPatternMatches(c.PathPattern, t.Read.PathTemplate) {
+					matched = append(matched, t.Type)
+				}
+			}
+		}
+		cc := CandidateConfirmation{CandidateRef: c.Ref, Level: oracle.Suspected}
+		switch len(matched) {
+		case 0:
+			cc.Reason = "link_none"
+		case 1:
+			v, judged := byType[matched[0]]
+			if !judged {
+				cc.Reason = "link_none"
+				break
+			}
+			cc.ResourceType = matched[0]
+			if v.Value == oracle.Confirmed {
+				cc.Level = oracle.Confirmed
+			}
+		default:
+			cc.Reason = "link_ambiguous"
+		}
+		out = append(out, cc)
+	}
+	return out
+}
+
+// pathPatternMatches는 후보 경로 패턴과 조회 틀이 조각마다 같은지다. 가린 조각({id} 등 {…})은 가린 조각끼리만 맞는다.
+func pathPatternMatches(pattern, template string) bool {
+	a, b := strings.Split(pattern, "/"), strings.Split(template, "/")
+	if len(a) != len(b) || !strings.HasPrefix(pattern, "/") {
+		return false
+	}
+	for i := range a {
+		am := strings.HasPrefix(a[i], "{") && strings.HasSuffix(a[i], "}")
+		bm := strings.HasPrefix(b[i], "{") && strings.HasSuffix(b[i], "}")
+		if am != bm || (!am && a[i] != b[i]) {
+			return false
+		}
+	}
+	return true
+}
