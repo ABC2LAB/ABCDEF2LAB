@@ -469,10 +469,12 @@ func TestRunResetGate(t *testing.T) {
 		reset  e3fake.Reset
 		refuse e3contract.StartRefusal
 	}{
-		"reset_missing":   {e3fake.Reset{State: e3contract.ResetState{PreviousWrites: true, Residue: e3contract.ResidueAbsent}}, e3contract.RefuseResetConfirmationMissing},
-		"residue_present": {e3fake.Reset{State: e3contract.ResetState{PreviousWrites: true, ResetConfirmed: true, Residue: e3contract.ResiduePresent}}, e3contract.RefusePreviousMarkersPresent},
-		"residue_unknown": {e3fake.Reset{State: e3contract.ResetState{PreviousWrites: true, ResetConfirmed: true, Residue: e3contract.ResidueUnknown}}, e3contract.RefuseResetStateUnavailable},
-		"residue_empty":   {e3fake.Reset{State: e3contract.ResetState{}}, e3contract.RefuseResetStateUnavailable},
+		"reset_missing": {e3fake.Reset{State: e3contract.ResetState{PreviousWrites: true, Residue: e3contract.ResidueAbsent}}, e3contract.RefuseResetConfirmationMissing},
+		// 리셋 확인이 없으면 잔존을 아직 모르더라도 확인 없음이 사유다.
+		"reset_missing_unknown": {e3fake.Reset{State: e3contract.ResetState{PreviousWrites: true, Residue: e3contract.ResidueUnknown}}, e3contract.RefuseResetConfirmationMissing},
+		"residue_present":       {e3fake.Reset{State: e3contract.ResetState{PreviousWrites: true, ResetConfirmed: true, Residue: e3contract.ResiduePresent}}, e3contract.RefusePreviousMarkersPresent},
+		"residue_unknown":       {e3fake.Reset{State: e3contract.ResetState{PreviousWrites: true, ResetConfirmed: true, Residue: e3contract.ResidueUnknown}}, e3contract.RefuseResetStateUnavailable},
+		"residue_empty":         {e3fake.Reset{State: e3contract.ResetState{}}, e3contract.RefuseResetStateUnavailable},
 		// 오류와 함께 돌아온 상태가 멀쩡해 보여도 오류가 이긴다.
 		"gate_error": {e3fake.Reset{State: e3contract.ResetState{Residue: e3contract.ResidueAbsent}, Err: errors.New("저널 읽기 실패")}, e3contract.RefuseResetStateUnavailable},
 	}
