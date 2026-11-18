@@ -59,7 +59,8 @@ LLM_SLUG, LLM_NAME = "example-provider", "Example"
 def product_marker(**overrides):
     """제품 호출 기록 사후 검증 표식(eval-meter -role generation-verify). 게이트웨이 표식과 같은 모양, 거부 두 칸은 null."""
     generation = {"id": "gen-1", "status": "verified", "provider_name": LLM_NAME,
-                  "attempts": [{"provider_name": LLM_NAME, "endpoint_id": "ep-1", "status": 200}]}
+                  "attempts": [{"provider_name": LLM_NAME, "endpoint_id": "ep-1", "status": 200}],
+                  "lookup": {"tries": 1, "last": "verified"}}
     base = {"role": "generation-verify", "backend": "api", "provider": LLM_SLUG, "sampling": dict(SAMPLING), "sealed_at": "a",
             "drained_at": "a", "verified_at": "b", "forwarded_requests": 2, "upstream_errors": 0,
             "upstream_error_ends": {"client_closed_after_done": 0, "client_closed_before_done": 0, "upstream_cut_after_done": 0,
@@ -657,7 +658,8 @@ class TestInvalid(unittest.TestCase):
         self.assertEqual(evidence.files["llm-summary.json"]["reasons"], ["llm_sampling_mismatch"])
         self.assert_invalid("llm_provider_mismatch", lambda p: setattr(p, "marker", product_marker(generations=[
             {"id": "g", "status": "verified", "provider_name": "Other", "attempts": [{"provider_name": "Other", "endpoint_id": "e",
-                                                                                    "status": 200}]}])))
+                                                                                    "status": 200}],
+             "lookup": {"tries": 1, "last": "verified"}}])))
         # 게이트웨이 표식을 O 자리에 넣지 못한다
         # (모양이 온전한 게이트웨이 표식이어도 역할이 다르면 거부한다: 거부 두 칸이 0인 B 표식)
         self.assert_invalid("llm_marker_invalid", lambda p: setattr(p, "marker", product_marker(
