@@ -72,6 +72,9 @@ type controlPolicyLimits struct {
 	MaxBodyBytes         int64  `json:"max_body_bytes"`
 	MaxResponseBodyBytes int64  `json:"max_response_body_bytes"`
 	RequestTimeoutMS     int64  `json:"request_timeout_ms"`
+	// E③ 확정 단계 몫. 실행 정책에 칸이 있으면(0 포함) 그대로 싣고, 없는 이전 회차는 칸을 빼서 0과 구분한다.
+	E3ConfirmationRequests  *uint64 `json:"e3_confirmation_requests,omitempty"`
+	E3ConfirmationTimeoutMS *int64  `json:"e3_confirmation_timeout_ms,omitempty"`
 }
 
 type controlPolicyView struct {
@@ -157,7 +160,8 @@ func controlPolicyOf(b *runBinding) controlPolicyView {
 	view := controlPolicyView{Format: controlPolicyViewFormat, PolicyRef: p.PolicyRef, PolicyRevision: p.PolicyRevision, ApprovalMode: string(p.ApprovalMode), HeaderMode: string(p.HeaderMode),
 		ValidFrom: p.ValidFrom, ValidUntil: p.ValidUntil, Rules: []controlPolicyRule{}, Accounts: []string{},
 		Limits: controlPolicyLimits{MaxRequests: p.MaxRequests, MaxAttempts: p.Limits.MaxAttempts, MaxConcurrent: p.Limits.MaxConcurrent, MaxBodyBytes: p.Limits.MaxBodyBytes,
-			MaxResponseBodyBytes: p.Limits.MaxResponseBodyBytes, RequestTimeoutMS: p.Limits.RequestTimeoutMS},
+			MaxResponseBodyBytes: p.Limits.MaxResponseBodyBytes, RequestTimeoutMS: p.Limits.RequestTimeoutMS,
+			E3ConfirmationRequests: p.Limits.E3ConfirmationRequests, E3ConfirmationTimeoutMS: p.Limits.E3ConfirmationTimeoutMS},
 		AuditBound: p.AuditKey.File != "" && urlDigestValid(p.AuditKey.SHA256)}
 	if view.Limits.MaxResponseBodyBytes == 0 {
 		// 전달 상한을 따로 정하지 않은 정책은 요청 본문 상한을 같이 쓴다(C16 결정안 3).

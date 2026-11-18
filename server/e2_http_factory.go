@@ -110,7 +110,39 @@ type E2HTTPFileLimits struct {
 	MaxDenials           uint64 `json:"max_denials"`
 	MaxTransient         uint64 `json:"max_transient"`
 	MaxUnknown           uint64 `json:"max_unknown"`
+	// E③ 확정 단계 몫(사용자 결정 2026-11-18 ②): 실행 하나에서 모델 단계와 따로 떼어 둔 대상 요청 수와 시간.
+	// 제품 실행 정책은 늘 둘 다 적는다(확정 단계가 꺼진 회차는 0). 칸이 없는 정책(설치 템플릿·이전 회차·평가 정책)은
+	// 몫을 정하지 않은 것이고 지문에서도 0과 구분된다. 실행 정책(run)에서만 받는다.
+	E3ConfirmationRequests  *uint64 `json:"e3_confirmation_requests,omitempty"`
+	E3ConfirmationTimeoutMS *int64  `json:"e3_confirmation_timeout_ms,omitempty"`
 }
+
+// e3ConfirmationBehavior는 정책의 확정 단계 몫을 지문 입력으로 바꾼다. 칸이 없으면 nil, 하나만 있으면 거부한다.
+func (l E2HTTPFileLimits) e3ConfirmationBehavior() (*e2export.E3ConfirmationShare, bool) {
+	if l.E3ConfirmationRequests == nil && l.E3ConfirmationTimeoutMS == nil {
+		return nil, true
+	}
+	if l.E3ConfirmationRequests == nil || l.E3ConfirmationTimeoutMS == nil || *l.E3ConfirmationTimeoutMS < 0 ||
+		*l.E3ConfirmationTimeoutMS > MaxFirstDiagnosisTaskSeconds*1000 || (*l.E3ConfirmationRequests == 0) != (*l.E3ConfirmationTimeoutMS == 0) {
+		return nil, false
+	}
+	return &e2export.E3ConfirmationShare{Requests: *l.E3ConfirmationRequests, Timeout: time.Duration(*l.E3ConfirmationTimeoutMS) * time.Millisecond}, true
+}
+
+// e3ConfirmationShare는 정책의 확정 단계 몫을 읽고 실행 상한 안인지 본다: 요청 몫은 요청 상한의 1/4, 시간 몫은 유효
+// 창의 1/4 이하다. 정책 문서 검사(조회)와 실행 factory(런타임 로딩)가 같은 이 검사를 쓴다(#716 이동찬 리뷰).
+func (p E2HTTPFilePolicy) e3ConfirmationShare() (*e2export.E3ConfirmationShare, bool) {
+	share, ok := p.Limits.e3ConfirmationBehavior()
+	if !ok {
+		return nil, false
+	}
+	if share != nil && (share.Requests > p.MaxRequests/E3ConfirmationShareDivisor ||
+		share.Timeout > p.ValidUntil.Sub(p.ValidFrom)/E3ConfirmationShareDivisor) {
+		return nil, false
+	}
+	return share, true
+}
+
 type E2HTTPFileProxy struct {
 	HeaderTimeoutMS  int64 `json:"header_timeout_ms"`
 	RequestTimeoutMS int64 `json:"request_timeout_ms"`
@@ -374,7 +406,12 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		clear(auditKey)
 		return empty, ErrE2HTTPHost
 	}
-	fingerprint, fingerprintErr := e2export.PolicyFingerprint(e2proxy.Config{ApprovalMode: policy.ApprovalMode, Scope: transmit.Scope{RunRef: policy.RunRef}, Rules: rules, ExcludedPaths: policy.excludedPaths(), Limits: limits, HeaderMode: policy.HeaderMode, PasswordResponse: e2HTTPPasswordResponse(policy.Auth), Evaluation: policy.Evaluation}, policy.MaxRequests, e2export.PolicyBehavior{MaxWorkerTurns: policy.Runtime.MaxWorkerTurns, MaxToolCalls: policy.Runtime.MaxToolCalls, WorkerTimeout: workerTimeout, MaxPlannerRounds: policy.Runtime.MaxPlannerRounds, MaxIntentRuns: policy.Runtime.MaxIntentRuns, DrainTimeout: drainTimeout, OutputLimit: policy.Runtime.OutputLimit, ProxyHeaderTimeout: headerTimeout, ProxyRequestTimeout: proxyTimeout, ProxyMaxHeaderBytes: policy.Proxy.MaxHeaderBytes, ProxyMaxConnections: policy.Proxy.MaxConnections})
+	share, shareOK := policy.e3ConfirmationShare()
+	if !shareOK {
+		clear(auditKey)
+		return empty, ErrE2HTTPHost
+	}
+	fingerprint, fingerprintErr := e2export.PolicyFingerprint(e2proxy.Config{ApprovalMode: policy.ApprovalMode, Scope: transmit.Scope{RunRef: policy.RunRef}, Rules: rules, ExcludedPaths: policy.excludedPaths(), Limits: limits, HeaderMode: policy.HeaderMode, PasswordResponse: e2HTTPPasswordResponse(policy.Auth), Evaluation: policy.Evaluation}, policy.MaxRequests, e2export.PolicyBehavior{MaxWorkerTurns: policy.Runtime.MaxWorkerTurns, MaxToolCalls: policy.Runtime.MaxToolCalls, WorkerTimeout: workerTimeout, MaxPlannerRounds: policy.Runtime.MaxPlannerRounds, MaxIntentRuns: policy.Runtime.MaxIntentRuns, DrainTimeout: drainTimeout, OutputLimit: policy.Runtime.OutputLimit, ProxyHeaderTimeout: headerTimeout, ProxyRequestTimeout: proxyTimeout, ProxyMaxHeaderBytes: policy.Proxy.MaxHeaderBytes, ProxyMaxConnections: policy.Proxy.MaxConnections, E3Confirmation: share})
 	if fingerprintErr != nil {
 		clear(auditKey)
 		return empty, ErrE2HTTPHost
