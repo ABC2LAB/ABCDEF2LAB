@@ -148,13 +148,16 @@ type verifiedMarker struct {
 type scannerKey struct{}
 
 type llmGateway struct {
-	cfg       gatewayConfig
-	proxy     *httputil.ReverseProxy
-	client    *http.Client
-	dir       *os.File
-	now       func() time.Time
-	sleep     func(time.Duration)
-	verifyErr chan error
+	cfg   gatewayConfig
+	proxy *httputil.ReverseProxy
+	// lookupTransport는 generation 조회 전용 연결을 조회 때마다 새로 만든다. 모델 호출 프록시의 연결 풀을 같이 쓰지 않는다:
+	// 2026-11-18 VAmPI 유료 파일럿 B 1차에서 봉인 직후 조회가 몇 분 지난 호출까지 전부 바로 미확인으로 끝났고(O 쪽 새
+	// 프로세스 조회는 확인됨), 남은 후보 원인이 이 공유였다. O의 generation-verify(새 프로세스)와 같은 조건으로 맞춘다.
+	lookupTransport func() http.RoundTripper
+	dir             *os.File
+	now             func() time.Time
+	sleep           func(time.Duration)
+	verifyErr       chan error
 
 	mu                sync.Mutex
 	log               *rowLog
@@ -179,22 +182,32 @@ type llmGateway struct {
 	logFailed         bool
 }
 
+// gatewayTransports는 모델 호출 프록시 transport와 generation 조회 전용 transport 생성기를 돌려준다. 조회는 부를 때마다
+// 새 transport라 프록시의 연결 풀과 섞이지 않는다.
+func gatewayTransports() (http.RoundTripper, func() http.RoundTripper) {
+	return defaultUpstreamTransport(), func() http.RoundTripper { return defaultUpstreamTransport() }
+}
+
+// newRunningGateway는 실제 실행용 게이트웨이다(main이 부른다): 프록시와 조회 연결을 나누고 실제 시계를 쓴다.
+func newRunningGateway(dir *os.File, cfg gatewayConfig) (*llmGateway, string) {
+	proxy, lookup := gatewayTransports()
+	return newLLMGateway(dir, cfg, proxy, lookup, time.Now, time.Sleep)
+}
+
 func defaultUpstreamTransport() http.RoundTripper {
 	// No environment proxy: the gateway must reach the configured upstream itself.
 	return &http.Transport{Proxy: nil, ForceAttemptHTTP2: true, TLSHandshakeTimeout: upstreamTLSTimeout}
 }
 
-func newLLMGateway(dir *os.File, cfg gatewayConfig, transport http.RoundTripper, now func() time.Time,
-	sleep func(time.Duration)) (*llmGateway, string) {
+func newLLMGateway(dir *os.File, cfg gatewayConfig, transport http.RoundTripper, lookupTransport func() http.RoundTripper,
+	now func() time.Time, sleep func(time.Duration)) (*llmGateway, string) {
 	file, code := createPrivateFile(dir, llmLogName)
 	if code != "" {
 		return nil, code
 	}
-	g := &llmGateway{cfg: cfg, dir: dir, now: now, sleep: sleep, log: &rowLog{file: file},
+	g := &llmGateway{cfg: cfg, dir: dir, now: now, sleep: sleep, log: &rowLog{file: file}, lookupTransport: lookupTransport,
 		cancels: map[uint64]context.CancelFunc{}, seenIDs: map[string]bool{}, verifyErr: make(chan error, 1),
 		upstreamEnds: map[string]uint64{endClientClosedAfterDone: 0, endClientClosedBeforeDone: 0, endUpstreamCutAfterDone: 0, endUpstreamCutBeforeDone: 0}}
-	g.client = &http.Client{Transport: transport, Timeout: generationLookupTimeout,
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	g.proxy = &httputil.ReverseProxy{
 		Transport:     transport,
 		FlushInterval: -1, // stream every chunk as it arrives
@@ -591,7 +604,9 @@ func (g *llmGateway) maybeDrainedLocked(at time.Time) {
 func (g *llmGateway) verify(ids []string) error {
 	results := make([]generationResult, 0, len(ids))
 	if g.cfg.backend == backendAPI {
-		results = g.verifier().lookupAll(ids)
+		verifier := g.verifier()
+		results = verifier.lookupAll(ids)
+		verifier.client.CloseIdleConnections()
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -623,9 +638,12 @@ type generationVerifier struct {
 	now      func() time.Time
 }
 
+// verifier는 부를 때마다 조회 전용 새 연결(lookupTransport)로 클라이언트를 만든다. 봉인 뒤 한 번 부른다.
 func (g *llmGateway) verifier() generationVerifier {
+	client := &http.Client{Transport: g.lookupTransport(), Timeout: generationLookupTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	return generationVerifier{upstream: g.cfg.upstream, path: g.cfg.generationPath, key: g.cfg.key,
-		attempts: g.cfg.verifyAttempts, interval: g.cfg.verifyInterval, client: g.client, sleep: g.sleep, now: g.now}
+		attempts: g.cfg.verifyAttempts, interval: g.cfg.verifyInterval, client: client, sleep: g.sleep, now: g.now}
 }
 
 // lookupDeadline은 조회 전체의 시한이다: 쉬는 시간 상한(시도 수 × 간격)에 조회 한 번의 시간 상한을 더한다. 시한이 지나면

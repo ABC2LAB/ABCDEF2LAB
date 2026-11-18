@@ -390,13 +390,17 @@ class TestOrder(unittest.TestCase):
                                                "pre-probe.json",
                                                "post-probe.json", "task.json", "llm-summary.json",
                                                "window-watch.json", "product-end.json", "product-model.json", "tool-surface.json",
-                                               "product-files.json", "discovery-sources.json", RESULT_NAME})
+                                               "product-files.json", "discovery-sources.json", "fault-stall.json", RESULT_NAME})
         self.assertEqual(evidence.files["discovery-sources.json"], {
             "format": "abc2lab-eval-runner-discovery-sources-v1", "endpoints": 4,
             "by_source": {"api_recon_runtime": 1, "browser_navigation": 1, "html_link": 2}, "browser": 1, "api_recon": 1,
             "omitted": 0, "detail_truncated": False})
         self.assertEqual(result["discovery_sources"], evidence.files["discovery-sources.json"])
         self.assertEqual(evidence.files[RESULT_NAME], result)
+        # 멈춤 집계는 B처럼 기록만 한다: 이 가짜 기록(시각 칸 없음)은 고정 코드로 남고 회차는 그대로 완료다
+        self.assertEqual(evidence.files["fault-stall.json"], {"format": "abc2lab-eval-runner-fault-stall-v1", "judged": False,
+                                                              "error": "fault_stall_rows_invalid"})
+        self.assertEqual(result["fault_stall"], evidence.files["fault-stall.json"])
         # 결정안 §3.3 제품 블록 근거: 파일 원본 SHA 다섯 + 상한 스냅숏 지문, E② 정책 내용 지문, 도구 면 지문.
         from preservation_record import digest
         files = evidence.files["product-files.json"]
@@ -451,6 +455,31 @@ class TestOrder(unittest.TestCase):
             with self.subTest(wrong=wrong):
                 self.assertEqual((result["status"], result["reasons"]), ("invalid", ["tool_surface_image_mismatch"]))
                 self.assertNotIn("up", ports.calls)
+
+    def test_official_e3_share_must_be_present_and_zero(self):
+        # 공식 측정 E③ 비활성(평가 프로토콜 §5.1, 2026-11-18 합의): 그 회차 E② 정책의 확정 몫 칸이 있고 0이어야 한다.
+        from runner_split_run import RunFailure, check_official_e3_share, checked_control_policy
+
+        def view(**share):
+            return {"format": "abc2lab.control-policy-view/v1", "policy_ref": "policy-draft-1", "policy_revision": "v1",
+                    "policy_fingerprint_sha256": FINGERPRINT, "limits": dict(LIMITS, **share), "rules": []}
+        checked = checked_control_policy(view(e3_confirmation_requests=0, e3_confirmation_timeout_ms=0), "draft-1")
+        check_official_e3_share(checked["limits"])
+        self.assertEqual(checked["limits"]["e3_confirmation_timeout_ms"], 0)  # 근거·지문에 몫 칸도 남는다
+        for share, reason in (({}, "e3_share_unconfirmed"), ({"e3_confirmation_requests": 1, "e3_confirmation_timeout_ms": 0},
+                                                           "e3_share_not_zero"),
+                              ({"e3_confirmation_requests": 0, "e3_confirmation_timeout_ms": 5000}, "e3_share_not_zero")):
+            limits = checked_control_policy(view(**share), "draft-1")["limits"]
+            with self.subTest(share=share), self.assertRaises(RunFailure) as caught:
+                check_official_e3_share(limits)
+            self.assertEqual(caught.exception.code, reason)
+        for share in ({"e3_confirmation_requests": 0}, {"e3_confirmation_requests": -1, "e3_confirmation_timeout_ms": 0},
+                      {"e3_confirmation_requests": True, "e3_confirmation_timeout_ms": 0}):
+            with self.subTest(share=share), self.assertRaises(RunFailure) as caught:
+                checked_control_policy(view(**share), "draft-1")  # 몫 칸은 둘 다, 0 이상 정수로만
+            self.assertEqual(caught.exception.code, "control_policy_limits_invalid")
+        # 몫 칸이 없는 정책 보기(확정 몫 구현 전 빌드)도 보존 회차에서는 그대로 받는다
+        self.assertEqual(run()[0]["status"], "complete")
 
     def test_policy_and_run_conditions_are_bound_to_this_round(self):
         # #693 리뷰 ②: 다른 초안의 정책·다른 작업의 실행 조건·JSON 아닌 실행 조건을 받으면 무효다.
@@ -972,6 +1001,41 @@ class TestDiscoverySources(unittest.TestCase):
         self.assertEqual(result["status"], "complete", result)
         self.assertEqual(evidence.files["discovery-sources.json"],
                          {"format": "abc2lab-eval-runner-discovery-sources-v1", "error": "product_workflow_invalid"})
+
+
+
+class TestProductFaultStall(unittest.TestCase):
+    """O 멈춤 집계(결정안 §7): 제품 호출 기록 줄을 B 게이트웨이 행 자리에 넣고 B와 같은 함수·창으로 센다."""
+
+    def calls(self, *rows) -> bytes:
+        return b"".join(json.dumps(row).encode() + b"\n" for row in rows)
+
+    def test_faults_and_gaps_come_from_product_calls_and_meter_rows(self):
+        from runner_split_run import product_fault_stall
+        t = lambda second: f"2026-11-18T10:00:{second:02d}Z"  # noqa: E731
+        calls = self.calls(
+            {"seq": 1, "decision": "forwarded", "status": 200, "started_at": t(1), "completed_at": t(2)},
+            {"seq": 2, "decision": "forwarded", "status": 429, "started_at": t(3), "completed_at": t(4)},
+            {"seq": 3, "decision": "upstream_error", "status": 200, "unfinished_end": "upstream_cut_before_done",
+             "started_at": t(5), "completed_at": t(6)})
+        meter_rows = [{"started_at": t(20), "completed_at": t(21)}]
+        record = product_fault_stall(calls, meter_rows, t(0), t(40), {"first_terminal": None})
+        self.assertEqual((record["faults"], record["activity_starts"], record["judged"]),
+                         ({"upstream_cut": 1, "rate_limited": 1}, 4, False))
+        # 429(4초) 뒤 첫 활동은 5초 호출, 끊김(6초) 뒤 첫 활동은 20초 대상 요청: 무활동 14초
+        self.assertEqual([(e["kind"], e["silence_seconds"], e["censored"]) for e in record["events"]],
+                         [("rate_limited", 1.0, False), ("upstream_cut", 14.0, False)])
+        self.assertEqual(record["max_idle_gap_seconds"], 19.0)  # 21초~40초(봉인)
+
+    def test_unreadable_records_leave_a_fixed_code(self):
+        from runner_split_run import product_fault_stall
+        for calls in (b"\xff\n", b"not json\n", b"[1]\n", b'{"seq":1}\n'):
+            with self.subTest(calls=calls):
+                record = product_fault_stall(calls, [], "2026-11-18T10:00:00Z", "2026-11-18T10:00:10Z", {})
+                self.assertEqual(record, {"format": "abc2lab-eval-runner-fault-stall-v1", "judged": False,
+                                          "error": "fault_stall_rows_invalid"})
+        record = product_fault_stall(b"", [], "2026-11-18T10:00:10Z", "2026-11-18T10:00:00Z", {})
+        self.assertEqual(record["error"], "fault_stall_time_invalid")  # 창이 거꾸로면 B와 같은 코드
 
 
 if __name__ == "__main__":
