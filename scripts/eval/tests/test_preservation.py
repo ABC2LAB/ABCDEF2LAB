@@ -385,6 +385,14 @@ class SummarizeTests(unittest.TestCase):
                                            "improved": {"union": 1.0, "rounds": [1.0]}, "baseline_only": 0, "improved_only": 0})
         self.assertEqual(got["union_ratio"], 0.0)
 
+    def test_preservation_claim_keeps_methods_like_the_ratio(self):
+        # 보존율 차이 표시는 보존율과 같은 패턴(메서드 그대로)을 쓴다. HEAD 합치기는 커버리지에만 쓴다.
+        get, head = ("GET", "/a"), ("HEAD", "/a")
+        got = summarize([rnd(get), rnd(get)], [rnd(head), rnd(head)], NONE, False)
+        self.assertEqual(got["pair_mean"], 0.0)
+        self.assertEqual(got["difference_claims"]["preservation"],
+                         {"claim": "below_baseline_spread", "value": 0.0, "baseline_low": 1.0, "baseline_high": 1.0})
+
     def test_equal_ratios_are_inside_the_spread_exactly(self):
         # N=3에서 같은 비율 세 개의 실수 평균은 0.10000000000000002처럼 경계를 넘는다. 정확한 분수로 비교한다.
         shared = ("GET", "/s")
