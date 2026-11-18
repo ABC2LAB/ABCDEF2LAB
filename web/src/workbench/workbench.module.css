@@ -1639,6 +1639,22 @@ a.ph:hover {
   max-height: 240px;
   overflow: auto;
 }
+/* 취약점 제목(## n. [등급 · 판정] 제목): 진한 글 + 왼쪽 띠로 취약점마다 시작점을 보인다 */
+.pocbox .md h2 {
+  font-size: 14.5px;
+  font-weight: 700;
+  margin: 16px 0 6px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  background: var(--accent-bg);
+}
+/* 취약점 사이 구분선 */
+.pocbox .md hr {
+  border: 0;
+  border-top: 1px solid var(--rule);
+  margin: 20px 0 0;
+}
 /* 보고서 발견 목록 거르기 · 정렬 줄 */
 .rfil {
   margin-bottom: 10px;

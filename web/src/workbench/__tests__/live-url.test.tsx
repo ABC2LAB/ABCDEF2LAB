@@ -1781,9 +1781,12 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     // 요약은 확정 · 검토 필요를 나눠 센다(정상 대조는 빼고). '확인된 취약점'으로 묶지 않는다
     expect(doc).toHaveTextContent("발견: 2건 (확정 0 · 검토 필요 2 · 미실행 0 · 결과 불명 0)");
     expect(doc).not.toHaveTextContent("확인된 취약점");
-    // 취약점: '1. [등급 · 판정] 제목' 줄 (목록이 아니라 문단), 정상 대조는 없다
-    const items = [...doc.querySelectorAll("p")].map((x) => x.textContent ?? "").filter((x) => /^\d+\. \[/.test(x));
+    // 취약점: '1. [등급 · 판정] 제목' 은 제목(h2)이고 취약점 사이에 구분선 — 어디까지가 몇 번인지 보인다. 정상 대조는 없다
+    const items = within(doc)
+      .getAllByRole("heading", { level: 2 })
+      .map((x) => x.textContent);
     expect(items).toEqual(["1. [위험도 미평가 · 검토 필요] 후보 1", "2. [위험도 미평가 · 검토 필요] 후보 2"]);
+    expect(doc.querySelectorAll("hr")).toHaveLength(1);
     expect(doc).not.toHaveTextContent("정상 대조 줄");
     expect(doc).toHaveTextContent("PoC / 증거:");
     expect(doc).toHaveTextContent("구조화된 실제 재현 단계 미확보");
@@ -1805,7 +1808,8 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
       excluded: null,
       crawl: { visited: 3, found: 2 },
     });
-    expect(md).toContain("1\\. [위험도 미평가 · 검토 필요] 줄 바꿈");
+    expect(md).toContain("## 1. [위험도 미평가 · 검토 필요] 줄 바꿈");
+    expect(md).not.toContain("---"); // 구분선은 취약점 사이에만
     expect(md).toContain("- 탐색: 방문 3 · 발견한 API 2");
     expect(md).toContain("`````text\na ```` b\n`````");
   });

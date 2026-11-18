@@ -1273,7 +1273,7 @@ export type PocInfo = {
 
 /**
  * 보고서 탭의 점검 보고서 (사용자 11/17 — ARTEX '침투 테스트 보고서 (Markdown)' 짜임: 제목(대상) → 설명 → 정보 줄 → 요약 →
- * 취약점(1. [등급] 제목 → 설명 → PoC / 증거)). 제품 서버는 ARTEX 원래 작업 보고서(GET /api/report)를 열지 않으므로
+ * 취약점(1. [등급] 제목 → 설명 → PoC / 증거, 취약점 사이 구분선)). 제품 서버는 ARTEX 원래 작업 보고서(GET /api/report)를 열지 않으므로
  * (first_diagnosis_startup.go 허용 목록), 이미 읽은 저장 결과(/api/report/diagnostic)로 화면에서 만든다.
  * ARTEX 와 달리 '확인된 취약점'이라 묶지 않고 확정 · 검토 필요를 나눠 센다(절대규칙 5). 정상 대조는 빼고 판정 순.
  * 재현 단계가 없으면 만들지 않고 없다고 적는다. 생성 시각은 서버가 주지 않아 두지 않는다.
@@ -1300,7 +1300,9 @@ export function buildPocMarkdown(entries: readonly RemediationEntry[], info: Poc
     const ep = entryEp(e);
     const at = dateTimeOf(e.observed_at);
     const tag = `[${entrySeverityLabel(e)} · ${diagnosticOutcomeLabels[diagnosticOutcome(e)]}]`;
-    out.push(`${i + 1}\\. ${tag} ${mdInline(e.title || e.entry_id)}`, "");
+    // 취약점마다 구분선 + 제목(h2, 진한 띠) — 어디까지가 몇 번 취약점인지 보이게(사용자 11/18)
+    if (i > 0) out.push("---", "");
+    out.push(`## ${i + 1}. ${tag} ${mdInline(e.title || e.entry_id)}`, "");
     const facts = [
       e.vuln_class ? `유형 ${mdInline(e.vuln_class)}` : "",
       ep ? `엔드포인트 ${ep.m ? `${ep.m} ` : ""}${mdInline(ep.p)}` : "",
