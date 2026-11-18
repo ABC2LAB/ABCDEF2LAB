@@ -1,0 +1,301 @@
+import "@testing-library/jest-dom/vitest";
+import { useContext } from "react";
+
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@/lib/diagnosis/api", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/lib/diagnosis/api")>();
+  return { ...real, apiFetch: vi.fn() };
+});
+
+import { ApiError, apiFetch } from "@/lib/diagnosis/api";
+
+import { ShellContext, type View } from "../shell";
+import { PolicyDeclarationLive } from "../views/live/PolicyDeclarationLive";
+
+const api = vi.mocked(apiFetch);
+afterEach(() => {
+  cleanup();
+  api.mockReset();
+});
+
+// 합성 대상·선언(실제 앱 경로 아님)
+const TARGETS = {
+  targets: [
+    {
+      id: "t1",
+      origin: "https://a.example",
+      state: "approved",
+      revision: 3,
+      path_prefixes: ["/api"],
+      methods: ["GET", "POST"],
+    },
+    {
+      id: "t2",
+      origin: "https://b.example",
+      state: "approved",
+      revision: 5,
+      path_prefixes: ["/api"],
+      methods: ["GET"],
+    },
+    { id: "t3", origin: "https://c.example", state: "pending", revision: 1 },
+  ],
+};
+const stored = (type = "note", by = "operator-1") => ({
+  version: "e3-product-declaration/v1",
+  target_ref: "t1",
+  target_approval_revision: "3",
+  declared_by: by,
+  declared_at: "2026-11-18T00:00:00.000000Z",
+  identity: { path: "/api/me", subject_id_path: "id" },
+  types: [
+    {
+      type,
+      sharing: "owner_only",
+      owner_only_fields: ["body"],
+      create: {
+        path: "/api/notes",
+        method: "POST",
+        body_kind: "json",
+        body_template: '{"title":"t"}',
+        marker_field: "body",
+        id_path: "id",
+      },
+      read: { path_template: "/api/notes/{id}", data_path: "." },
+    },
+  ],
+});
+
+type Reply = unknown | (() => Promise<unknown>);
+/** 경로·메서드별 응답. 함수면 그대로 호출(보류·실패용). */
+function serve(map: Record<string, Reply[]>) {
+  api.mockImplementation(((path: string, init?: RequestInit) => {
+    const key = `${init?.method ?? "GET"} ${path}`;
+    const queue = map[key];
+    if (!queue?.length) return Promise.reject(new Error(`unexpected ${key}`));
+    const next = queue.length > 1 ? queue.shift() : queue[0];
+    return typeof next === "function" ? (next as () => Promise<unknown>)() : Promise.resolve(next);
+  }) as never);
+}
+const GET_T = "GET /api/product/targets";
+const GET_D = (id: string) => `GET /api/product/targets/${id}/declaration`;
+const PUT_D = (id: string) => `PUT /api/product/targets/${id}/declaration`;
+const reject = (status: number) => () => Promise.reject(new ApiError(status, "x"));
+const pending = () => new Promise<never>(() => undefined);
+
+function mount(route: View = "declaration") {
+  function At({ r }: { r: View }) {
+    const shell = useContext(ShellContext);
+    return (
+      <ShellContext.Provider value={{ ...shell, route: r }}>
+        <PolicyDeclarationLive />
+      </ShellContext.Provider>
+    );
+  }
+  const view = render(<At r={route} />);
+  return { at: (r: View) => view.rerender(<At r={r} />) };
+}
+async function pick(id: string) {
+  fireEvent.change(await screen.findByLabelText("선언할 대상"), { target: { value: id } });
+}
+const type = (label: string, value: string) => fireEvent.change(screen.getByLabelText(label), { target: { value } });
+
+/** 빈 선언에서 정상 소유자 전용 종류 하나를 채운다. */
+function fillValid() {
+  type("신원 확인 경로", "/api/me");
+  type("사용자 식별자 위치", "id");
+  type("자원 종류 1 이름", "note");
+  type("자원 종류 1 소유자 전용 필드", "body");
+  type("자원 종류 1 생성 경로", "/api/notes");
+  type("자원 종류 1 본문 틀", '{"title":"t"}');
+  type("자원 종류 1 표식 칸", "body");
+  type("자원 종류 1 객체 ID 위치", "id");
+  type("자원 종류 1 조회 경로 틀", "/api/notes/{id}");
+}
+
+describe("PolicyDeclarationLive (대상 · 조회 상태)", () => {
+  it("승인된 대상만 고를 수 있고, 현재 선언을 서버 값 그대로 보이고 입력에 채운다", async () => {
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [{ state: "current", declaration: stored() }] });
+    mount();
+    const select = await screen.findByLabelText("선언할 대상");
+    expect(select.querySelectorAll("option")).toHaveLength(3); // 선택… + 승인 2개
+    await pick("t1");
+    expect(await screen.findByText(/선언자/)).toHaveTextContent("operator-1");
+    expect(screen.getByText(/시험 대상 1개/)).toBeInTheDocument();
+    expect(screen.getByLabelText("자원 종류 1 이름")).toHaveValue("note");
+    expect(screen.getByText("확정 단계 시험 대상")).toBeInTheDocument();
+  });
+
+  it("선언 없음은 빈 입력, 저장 라우트가 없으면 '저장 기능 없음'으로 선언 없음과 다르게 보인다", async () => {
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [{ state: "none" }], [GET_D("t2")]: [reject(404)] });
+    mount();
+    await pick("t1");
+    expect(await screen.findByText(/아직 선언이 없습니다/)).toBeInTheDocument();
+    expect(screen.getByLabelText("자원 종류 1 이름")).toHaveValue("");
+    await pick("t2");
+    expect(await screen.findByText(/서버에 선언 저장 기능이 아직 없습니다/)).toBeInTheDocument();
+    expect(screen.queryByText(/아직 선언이 없습니다/)).toBeNull();
+  });
+
+  it("조회 실패는 '선언 없음'이 아니고 다시 읽기로 같은 대상을 다시 부른다", async () => {
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [reject(503), { state: "current", declaration: stored() }] });
+    mount();
+    await pick("t1");
+    expect(await screen.findByText(/선언이 없다는 뜻이 아닙니다/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("신원 확인 경로")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "다시 읽기" }));
+    expect(await screen.findByText(/선언자/)).toBeInTheDocument();
+  });
+
+  it("모양이 깨진 저장본은 보이지 않고(fail-closed), 무효는 사유를 보인다", async () => {
+    serve({
+      [GET_T]: [TARGETS],
+      [GET_D("t1")]: [{ state: "current", declaration: { ...stored(), extra: 1 } }],
+      [GET_D("t2")]: [{ state: "invalidated", reason: "target_reapproved", declaration: stored("memo") }],
+    });
+    mount();
+    await pick("t1");
+    expect(await screen.findByText(/모양을 확인할 수 없어 표시하지 않습니다/)).toBeInTheDocument();
+    expect(screen.queryByText(/선언자/)).toBeNull();
+    await pick("t2");
+    expect(await screen.findByText(/대상을 다시 승인해서 이전 선언이 무효가/)).toBeInTheDocument();
+    // 무효 선언은 입력에 채우지 않는다(다시 선언)
+    expect(screen.getByLabelText("자원 종류 1 이름")).toHaveValue("");
+  });
+
+  it("대상을 바꾸면 이전 대상의 선언은 새 응답 전까지 보이지 않는다", async () => {
+    serve({
+      [GET_T]: [TARGETS],
+      [GET_D("t1")]: [{ state: "current", declaration: stored() }],
+      [GET_D("t2")]: [pending],
+    });
+    mount();
+    await pick("t1");
+    await screen.findByText(/선언자/);
+    await pick("t2");
+    expect(screen.queryByText(/선언자/)).toBeNull();
+    expect(screen.getByText("불러오는 중…")).toBeInTheDocument();
+    expect(screen.queryByLabelText("신원 확인 경로")).toBeNull();
+  });
+});
+
+describe("PolicyDeclarationLive (입력 · 저장)", () => {
+  it("빈 선언을 채워 저장하면 PUT 하나를 보내고, 서버 값을 다시 읽어 보인다", async () => {
+    serve({
+      [GET_T]: [TARGETS],
+      [GET_D("t1")]: [{ state: "none" }, { state: "current", declaration: stored() }],
+      [PUT_D("t1")]: [undefined],
+    });
+    mount();
+    await pick("t1");
+    await screen.findByText(/아직 선언이 없습니다/);
+    fillValid();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "선언 저장" })));
+    const put = api.mock.calls.find(([, init]) => init?.method === "PUT");
+    expect(put?.[0]).toBe("/api/product/targets/t1/declaration");
+    const body = JSON.parse(String(put?.[1]?.body));
+    expect(body).toMatchObject({ expected_target_revision: 3, version: "e3-product-declaration/v1" });
+    expect(body).not.toHaveProperty("declared_by");
+    expect(body.types[0]).toMatchObject({ type: "note", owner_only_fields: ["body"] });
+    expect(await screen.findByText(/선언자/)).toHaveTextContent("operator-1");
+    expect(screen.getByRole("status")).toHaveTextContent("저장했습니다");
+  });
+
+  it("칸 오류는 고친 뒤 보이고, 오류가 있으면 저장하지 않는다", async () => {
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [{ state: "none" }] });
+    mount();
+    await pick("t1");
+    await screen.findByText(/아직 선언이 없습니다/);
+    expect(screen.queryAllByRole("alert")).toHaveLength(0); // 손대기 전엔 오류 없음
+    type("자원 종류 1 조회 경로 틀", "/api/notes");
+    expect(screen.getByText(/\{id\} 조각이 정확히 하나인/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "선언 저장" })).toBeDisabled();
+    expect(api.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
+  });
+
+  it("본문 틀에 자격 칸이 있으면 저장을 막고 이름만 알린다(값 원문은 화면 문구에 없다)", async () => {
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [{ state: "none" }] });
+    mount();
+    await pick("t1");
+    await screen.findByText(/아직 선언이 없습니다/);
+    fillValid();
+    type("자원 종류 1 본문 틀", '{"title":"t","password":"synthetic-pw"}');
+    expect(screen.getByText(/자격으로 보이는 칸이 있어 저장하지 않습니다\(password\)/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "선언 저장" })).toBeDisabled();
+    const alerts = screen
+      .getAllByRole("alert")
+      .map((a) => a.textContent ?? "")
+      .join(" ");
+    expect(alerts).not.toContain("synthetic-pw");
+  });
+
+  it("승인 범위 밖은 참고 경고만 하고 저장은 막지 않는다", async () => {
+    serve({ [GET_T]: [TARGETS], [GET_D("t2")]: [{ state: "none" }], [PUT_D("t2")]: [reject(403)] });
+    mount();
+    await pick("t2");
+    await screen.findByText(/아직 선언이 없습니다/);
+    fillValid();
+    expect(screen.getByText(/대상 승인에 POST 가 없습니다/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "선언 저장" })).toBeEnabled();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "선언 저장" })));
+    expect(await screen.findByText(/이 대상의 승인자만 선언할 수 있습니다/)).toBeInTheDocument();
+  });
+
+  it.each<[number, RegExp]>([
+    [404, /서버에 선언 저장 기능이 아직 없습니다\(정책 선언 저장 · 동결 PR 대기\)\. 입력은/],
+    [409, /그사이 대상 승인이 바뀌었습니다/],
+    [422, /서버가 선언 형식을 받지 않았습니다/],
+    [500, /선언을 저장하지 못했습니다/],
+  ])("저장 %i → 문구, 입력은 남는다", async (status, text) => {
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [{ state: "none" }], [PUT_D("t1")]: [reject(status)] });
+    mount();
+    await pick("t1");
+    await screen.findByText(/아직 선언이 없습니다/);
+    fillValid();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "선언 저장" })));
+    expect(await screen.findByText(text)).toBeInTheDocument();
+    expect(screen.getByLabelText("자원 종류 1 이름")).toHaveValue("note");
+  });
+
+  it("다른 화면에 갔다 와도 저장 안 한 입력을 서버 값으로 덮지 않는다", async () => {
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [{ state: "current", declaration: stored() }] });
+    const v = mount();
+    await pick("t1");
+    await screen.findByText(/선언자/);
+    type("자원 종류 1 이름", "memo");
+    act(() => v.at("dashboard"));
+    act(() => v.at("declaration"));
+    expect(await screen.findByText(/선언자/)).toBeInTheDocument();
+    expect(screen.getByLabelText("자원 종류 1 이름")).toHaveValue("memo");
+  });
+
+  it("공유로 바꾸면 요청 칸을 숨기고 '건너뜀'으로 보인다, 종류 추가 · 빼기", async () => {
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [{ state: "none" }] });
+    mount();
+    await pick("t1");
+    await screen.findByText(/아직 선언이 없습니다/);
+    type("자원 종류 1 공유 방식", "shared");
+    expect(screen.getByText("공유 — 시험하지 않음(건너뜀)")).toBeInTheDocument();
+    expect(screen.queryByLabelText("자원 종류 1 생성 경로")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "자원 종류 추가" }));
+    expect(screen.getByLabelText("자원 종류 2 이름")).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: "종류 빼기" })[0]);
+    expect(screen.queryByLabelText("자원 종류 2 이름")).toBeNull();
+  });
+
+  it("내보내기 · 공유 · 모델로 보내기 버튼은 없다", async () => {
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [{ state: "current", declaration: stored() }] });
+    mount();
+    await pick("t1");
+    await screen.findByText(/선언자/);
+    for (const el of screen.queryAllByRole("button"))
+      expect(el.textContent ?? "").not.toMatch(/내보내기|공유하기|export|모델/i);
+  });
+
+  it("화면이 숨겨져 있으면 대상도 선언도 읽지 않는다", () => {
+    serve({ [GET_T]: [TARGETS] });
+    mount("dashboard");
+    expect(api).not.toHaveBeenCalled();
+  });
+});
