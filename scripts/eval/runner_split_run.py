@@ -66,6 +66,9 @@ PRODUCT_FILES_FORMAT = "abc2lab-eval-runner-product-files-v1"
 # 제어 정책 보기 상한 칸(url_live_views.go controlPolicyLimits). 제품 검증(e2proxy execution.go)은 모두 양수만 받는다.
 CONTROL_LIMIT_FIELDS = ("max_requests", "max_attempts", "max_concurrent", "max_body_bytes", "max_response_body_bytes",
                         "request_timeout_ms")
+# 확정 단계(E③) 몫 칸(회차 시작 때 E②가 떼어 두는 요청·시간). 이름은 E③ 판정 쪽 PR(#698 4b)의 제안이고, 확정되면 맞춘다.
+# 제품 회차 정책이면 0이어도 늘 싣는다(제안). 칸이 없는 빌드는 "몫 0 확인 안 됨"이다(0과 같다고 보지 않는다).
+E3_SHARE_FIELDS = ("e3_confirmation_requests", "e3_confirmation_timeout_ms")
 MAX_INT64 = (1 << 63) - 1
 RUNTIME_CONDITIONS_VERSION = "e2-runtime-conditions/v1"
 MAX_RUNTIME_CONDITIONS_BYTES = 1 << 20
@@ -105,11 +108,23 @@ def checked_control_policy(view: dict, draft_id: str) -> dict:
     if not _hex64(view.get("policy_fingerprint_sha256")):
         raise RunFailure("diagnosis_policy_fingerprint_missing")  # 자격 pin 규칙이면 제품이 비운다
     limits = view.get("limits")
-    if (not isinstance(limits, dict) or set(limits) != set(CONTROL_LIMIT_FIELDS)
-            or any(type(limits[name]) is not int or not 1 <= limits[name] <= MAX_INT64 for name in CONTROL_LIMIT_FIELDS)):
+    share = [name for name in E3_SHARE_FIELDS if isinstance(limits, dict) and name in limits]
+    if (not isinstance(limits, dict) or set(limits) - set(share) != set(CONTROL_LIMIT_FIELDS) or share not in ([], list(E3_SHARE_FIELDS))
+            or any(type(limits[name]) is not int or not 1 <= limits[name] <= MAX_INT64 for name in CONTROL_LIMIT_FIELDS)
+            or any(type(limits[name]) is not int or not 0 <= limits[name] <= MAX_INT64 for name in share)):
         raise RunFailure("control_policy_limits_invalid")
+    kept = CONTROL_LIMIT_FIELDS + tuple(share)
     return {"policy_ref": view["policy_ref"], "policy_revision": view["policy_revision"],
-            "policy_fingerprint_sha256": view["policy_fingerprint_sha256"], "limits": {name: limits[name] for name in CONTROL_LIMIT_FIELDS}}
+            "policy_fingerprint_sha256": view["policy_fingerprint_sha256"], "limits": {name: limits[name] for name in kept}}
+
+
+def check_official_e3_share(limits: dict) -> None:
+    """공식 측정 E③ 비활성(평가 프로토콜 §5.1): 그 회차 E② 정책의 확정 몫이 0이어야 한다. 칸이 없으면 확인하지 못한 것이다.
+    O 공식 회차 흐름(O 공식 run-record R1, 회차 목적 칸은 #710)이 checked_control_policy 결과의 limits로 부른다."""
+    if any(name not in limits for name in E3_SHARE_FIELDS):
+        raise RunFailure("e3_share_unconfirmed")
+    if any(limits[name] != 0 for name in E3_SHARE_FIELDS):
+        raise RunFailure("e3_share_not_zero")
 
 
 def _scope_bound(scope, draft_id: str, task_id: str) -> bool:
