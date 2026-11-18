@@ -137,6 +137,7 @@ class FakeMeter:
         # uncapped는 상한이 안 걸린 계측기, cap_marker는 표식에 적힌 상한 값을 바꿔 보는 시험용이다.
         self.uncapped = False
         self.cap_marker = None
+        self.over_cap_rows = None  # 상한 거부 행 수를 표식과 다르게 두는 시험용
         self.path_key_ref = PATH_KEY_REF
         # 가짜 E²(compose.e2-stub.yaml) 결정 행. 회차가 E²를 기대할 때만 읽는다. 기본은 허용 2·미지원 1이고,
         # 허용 둘의 ID는 계측기 행(engine_rows의 앞 두 요청)에 붙는다.
@@ -184,13 +185,18 @@ class FakeMeter:
         def attempt(i):
             return ({"attempt_id_state": "valid", "attempt_id": ids[i - 1]} if i <= len(ids)
                     else {"attempt_id_state": "absent", "attempt_id": ""})
+        # 상한으로 거부한 행은 실제 계측기처럼 봉인 전 행으로 남는다(drained 표식의 rejected_over_cap과 같은 수)
+        over = 0 if not self.ports.started or self.uncapped else max(0, self._raw() - n)
+        over = over if self.over_cap_rows is None else self.over_cap_rows
         return [{"seq": i, "method": "GET", "kind": "request", "outcome": "completed", "response": "complete",
                  "started_at": FAKE_ROW_AT, "completed_at": FAKE_ROW_AT, **attempt(i)}
                 for i in range(1, n + 1)] + \
-               [{"seq": n + 1, "kind": "rejected", "outcome": "rejected_after_seal", "response": "none",
-                 "started_at": FAKE_ROW_AT, "completed_at": FAKE_ROW_AT, **attempt(n + 1)},
-                {"seq": n + 2, "kind": "rejected", "outcome": "rejected_after_seal", "response": "none",
-                 "started_at": FAKE_ROW_AT, "completed_at": FAKE_ROW_AT, **attempt(n + 2)}]
+               [{"seq": n + i, "kind": "rejected", "outcome": "rejected_over_cap", "response": "none",
+                 "started_at": FAKE_ROW_AT, "completed_at": FAKE_ROW_AT, **attempt(n + i)} for i in range(1, over + 1)] + \
+               [{"seq": n + over + 1, "kind": "rejected", "outcome": "rejected_after_seal", "response": "none",
+                 "started_at": FAKE_ROW_AT, "completed_at": FAKE_ROW_AT, **attempt(n + over + 1)},
+                {"seq": n + over + 2, "kind": "rejected", "outcome": "rejected_after_seal", "response": "none",
+                 "started_at": FAKE_ROW_AT, "completed_at": FAKE_ROW_AT, **attempt(n + over + 2)}]
 
     def observer_rows(self):
         count = self.ports.ready_calls + 2 + self.observer_extra
@@ -1470,6 +1476,11 @@ class TestCompleteRun(unittest.TestCase):
         # 표로 나가는 메서드별 건수는 계측기 행에서 세고 전달 수와 맞아야 한다(프로토콜 §8.1)
         self.assertEqual(sum(summary["forwarded_by_method"].values()), summary["forwarded_requests"])
         self.assertEqual(summary["forwarded_by_method"]["GET"], 100)
+
+    def test_over_cap_rows_must_match_the_marker(self):
+        # 표식의 상한 거부 수와 실제 거부 행 수가 다르면 마감 대조가 실패한다(#734 리뷰: 끝부분 거부 행이 빠진 기록)
+        result, _, _, _ = run(lambda p, m, c: (setattr(m, "per_poll", 35), setattr(m, "over_cap_rows", 4)))
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["meter_log_inconsistent"]))
 
     def test_meter_without_the_cap_invalidates_the_round(self):
         # 상한이 계측기에 닿지 않았거나(표식 0·다른 값) 전달이 예산을 넘었으면 같은 기준에서 끊었다고 말할 수 없다.

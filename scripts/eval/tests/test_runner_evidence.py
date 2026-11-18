@@ -420,6 +420,21 @@ class FinalMeterChecksTests(unittest.TestCase):
                 self.assertFalse(drain_complete(dict(self.DRAINED, **{field: value})))
         self.assertFalse(drain_complete({k: v for k, v in self.DRAINED.items() if k != "inflight_at_drain"}))
 
+    def test_over_cap_rows_match_the_markers(self):
+        # 상한 거부 행 수 = seal·drained 표식의 rejected_over_cap(#734 리뷰). 칸이 없는 이전 표식이면 상한 거부 행도 없어야 한다.
+        over = dict(engine_row(4, "rejected"), outcome="rejected_over_cap")
+        rows = self.rows() + [over]
+        drained = dict(self.DRAINED, rejected_over_cap=1)
+        self.assertTrue(final_log_consistent(rows, {"role": "engine", "rejected_over_cap": 1}, drained))
+        self.assertTrue(final_log_consistent(rows, {"role": "engine"}, drained))  # seal 표식에 칸이 없으면 drained만 본다
+        for marked, sealed_value in ((0, 0), (2, 2), (-1, -1), (True, True), (None, None), (1, 0)):
+            with self.subTest(marked=marked, sealed=sealed_value):
+                self.assertFalse(final_log_consistent(rows, {"role": "engine", "rejected_over_cap": sealed_value},
+                                                      dict(self.DRAINED, rejected_over_cap=marked)))
+        self.assertFalse(final_log_consistent(self.rows(), {"role": "engine"}, drained))  # 끝부분 거부 행이 빠짐
+        self.assertFalse(final_log_consistent(rows, {"role": "engine"}, self.DRAINED))  # 이전 표식인데 상한 거부 행이 있음
+        self.assertTrue(final_log_consistent(self.rows(), {"role": "engine"}, self.DRAINED))
+
     def test_final_log_consistent(self):
         sealed = {"role": "engine"}
         self.assertTrue(final_log_consistent(self.rows(), sealed, self.DRAINED))
