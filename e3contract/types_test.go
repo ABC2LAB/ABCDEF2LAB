@@ -415,8 +415,13 @@ func TestCredentialField(t *testing.T) {
 		"form_escaped": {func(d *e3contract.Declaration) {
 			d.Types[0].Create.Kind, d.Types[0].Create.BodyTemplate = e3contract.BodyForm, "title=t&pass%77ord=x1-value"
 		}, "types[0].create.body_template"},
-		"path_escaped":     {func(d *e3contract.Declaration) { d.Types[0].Create.Path = "/api/token%3Dabc-value" }, "types[0].create.path"},
-		"identity_escaped": {func(d *e3contract.Declaration) { d.Identity.Path = "/api/me/session_id%3Dabc-value" }, "identity.path"},
+		"path_escaped": {func(d *e3contract.Declaration) { d.Types[0].Create.Path = "/api/token%3Dabc-value" }, "types[0].create.path"},
+		// 이스케이프한 자격 키에 문자열이 아닌 값(배열·객체·불리언·null)도 걸린다.
+		"escaped_key_array":  {func(d *e3contract.Declaration) { d.Types[0].Create.BodyTemplate = `{"pass\u0077ord":["x1"]}` }, "types[0].create.body_template"},
+		"escaped_key_object": {func(d *e3contract.Declaration) { d.Types[0].Create.BodyTemplate = `{"pass\u0077ord":{"v":"x"}}` }, "types[0].create.body_template"},
+		"escaped_key_bool":   {func(d *e3contract.Declaration) { d.Types[0].Create.BodyTemplate = `{"pass\u0077ord":true}` }, "types[0].create.body_template"},
+		"escaped_key_null":   {func(d *e3contract.Declaration) { d.Types[0].Create.BodyTemplate = `{"pass\u0077ord":null}` }, "types[0].create.body_template"},
+		"identity_escaped":   {func(d *e3contract.Declaration) { d.Identity.Path = "/api/me/session_id%3Dabc-value" }, "identity.path"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {

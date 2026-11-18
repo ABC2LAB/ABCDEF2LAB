@@ -348,6 +348,10 @@ func jsonCredentialForms(v any) []string {
 	switch x := v.(type) {
 	case map[string]any:
 		for k, child := range x {
+			// 값 종류와 관계없이 키=<값 JSON>을 본다: 자격 이름 키에는 배열·객체·불리언·null 값도 자격 모양이다(#705 이경준 리뷰).
+			if raw, err := json.Marshal(child); err == nil {
+				out = append(out, k+"="+string(raw))
+			}
 			switch c := child.(type) {
 			case string:
 				out = append(out, k+"="+strconv.Quote(c), k+": "+c, c)
