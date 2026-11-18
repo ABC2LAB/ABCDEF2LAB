@@ -78,6 +78,10 @@ type productTargetRegistry struct {
 	// declarationJournal은 대상 정책 선언 저널이다(product_declarations.go). declarations는 대상별 마지막 선언이다.
 	declarationJournal productContactJournal
 	declarations       map[string]*productDeclarationState
+	// resets는 대상별 마지막 확정 단계 쓰기와 리셋 확인이다(선언 저널의 confirmation_writes·reset_confirmed 줄).
+	resets map[string]*productResetState
+	// resetJobs는 대상마다 쓰기 기록을 남긴 회차다(한 회차는 쓰기 기록 줄 하나만).
+	resetJobs map[string]map[string]bool
 	// logins는 대상별 로그인 방식이다(계정 저널의 login_config 줄).
 	logins    map[string]diagnosisprep.TargetLogin
 	records   map[string]productTargetRecord
@@ -197,8 +201,9 @@ func newProductTargetRegistry(dir string, p productTargetPolicy, check func() er
 		return nil, err
 	}
 	r := &productTargetRegistry{policy: p, policyCheck: check, journal: journal, contacts: contacts, accountJournal: accountJournal, accountDir: accountDir, accounts: map[string]map[string]*productAccountState{}, logins: map[string]diagnosisprep.TargetLogin{},
-		declarationJournal: declarationJournal, declarations: map[string]*productDeclarationState{},
-		records: map[string]productTargetRecord{}, approvals: map[string]productTargetRecord{}, resolver: resolver, roots: roots, now: func() time.Time { return time.Now().UTC() }}
+		declarationJournal: declarationJournal, declarations: map[string]*productDeclarationState{}, resets: map[string]*productResetState{},
+		resetJobs: map[string]map[string]bool{},
+		records:   map[string]productTargetRecord{}, approvals: map[string]productTargetRecord{}, resolver: resolver, roots: roots, now: func() time.Time { return time.Now().UTC() }}
 	r.lookupTXT = resolver.LookupTXT
 	r.lookupIP = func(ctx context.Context, host string) ([]netip.Addr, error) {
 		return resolver.LookupNetIP(ctx, "ip", host)

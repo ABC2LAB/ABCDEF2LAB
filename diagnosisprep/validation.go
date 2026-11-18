@@ -394,6 +394,10 @@ func ValidateResponse(r Request, response Response) error {
 		if response.Product.Declaration != nil && (!declarationOp || response.Product.Reason != "" || !validProductDeclaration(*response.Product.Declaration)) {
 			return ErrProtocol
 		}
+		resetOp := r.Product.Operation == "reset_confirmation" || r.Product.Operation == "reset_confirm"
+		if response.Product.Reset != nil && (!resetOp || response.Product.Reason != "" || !validProductResetState(*response.Product.Reset)) {
+			return ErrProtocol
+		}
 		if response.Product.Field != "" && (r.Product.Operation != "declaration_put" || response.Product.Reason != "invalid_declaration" || !ValidDeclarationField(response.Product.Field)) {
 			return ErrProtocol
 		}

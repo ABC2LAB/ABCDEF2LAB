@@ -65,6 +65,20 @@ func TestProductDeclarationControlOverUnixTransport(t *testing.T) {
 	if got.Reason != "declaration_target_revision_mismatch" {
 		t.Fatalf("판 불일치: %+v", got)
 	}
+	// 리셋 확인 상태도 IPC를 지난다(쓰기 없음 → 쓰기 뒤 필요 → 확인).
+	if got := call(&diagnosisprep.ProductRequest{Operation: "reset_confirmation", TargetID: target.ID}); got.Reset == nil || got.Reset.ResetRequired {
+		t.Fatalf("리셋 상태: %+v", got)
+	}
+	if err := r.recordConfirmationWrites(target.ID, "job-1", confirmationObjects()); err != nil {
+		t.Fatal(err)
+	}
+	if got := call(&diagnosisprep.ProductRequest{Operation: "reset_confirmation", TargetID: target.ID}); got.Reset == nil || !got.Reset.ResetRequired || got.Reset.LastWritesObjects != 1 {
+		t.Fatalf("쓰기 뒤: %+v", got)
+	}
+	seen := call(&diagnosisprep.ProductRequest{Operation: "reset_confirmation", TargetID: target.ID}).Reset.LastWritesRef
+	if got := call(&diagnosisprep.ProductRequest{Operation: "reset_confirm", TargetID: target.ID, Reset: &diagnosisprep.ResetRequest{StatementConfirmed: true, WritesRef: seen}}); got.Reset == nil || got.Reset.ResetRequired || got.Reset.ConfirmedBy != "ARTEX" {
+		t.Fatalf("확인: %+v", got)
+	}
 	// 인코딩 상한 가까운 선언도 요청·응답 프레임에 들어간다.
 	big := declarationTestInput()
 	base := big.Types[1]
