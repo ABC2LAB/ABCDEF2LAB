@@ -78,18 +78,19 @@ var (
 type verdictDetailSelectorKind string
 
 const (
-	verdictDetailByVerdict verdictDetailSelectorKind = "verdict"
-	verdictDetailByFinding verdictDetailSelectorKind = "finding"
+	verdictDetailByVerdict   verdictDetailSelectorKind = "verdict"
+	verdictDetailByFinding   verdictDetailSelectorKind = "finding"
+	verdictDetailByCandidate verdictDetailSelectorKind = "candidate"
 )
 
-// verdictDetailSelector는 서로 배타인 selector 하나다(OD01). candidate_id는 2조각(OD09)이라 아직 받지 않는다.
+// verdictDetailSelector는 서로 배타인 selector 하나다(OD01). candidate_id는 2조각(OD05·OD09)이다.
 type verdictDetailSelector struct {
 	kind verdictDetailSelectorKind
 	id   int64
 }
 
 // parseVerdictDetailSelector는 query에서 selector 정확히 하나를 읽는다. 중복 키·selector 여럿·모르는 키·
-// 정규 십진(1..MaxInt64)이 아닌 값은 거부한다. candidate_id는 2조각에서 열기 전까지 400이다.
+// 정규 십진(1..MaxInt64)이 아닌 값은 거부한다.
 // 경로 설치 쪽(findingVerdictDetailRequest)은 url.ParseQuery 오류(예: ';')도 400으로 거부한다.
 func parseVerdictDetailSelector(q url.Values) (verdictDetailSelector, bool) {
 	if len(q) != 1 {
@@ -102,8 +103,9 @@ func parseVerdictDetailSelector(q url.Values) (verdictDetailSelector, bool) {
 			kind = verdictDetailByVerdict
 		case "finding_id":
 			kind = verdictDetailByFinding
+		case "candidate_id":
+			kind = verdictDetailByCandidate
 		default:
-			// candidate_id(2조각)와 모르는 키는 여기서 거부한다.
 			return verdictDetailSelector{}, false
 		}
 		if len(values) != 1 {
@@ -283,7 +285,14 @@ type verdictDetailEnvelope struct {
 	View             verdictDetailView          `json:"view"`
 	Transmission     verdictDetailTransmission  `json:"transmission"`
 	Finding          *verdictDetailFinding      `json:"finding"`
-	Candidate        *struct{}                  `json:"candidate"`
+	Candidate        *verdictDetailCandidate    `json:"candidate"`
+}
+
+// verdictDetailCandidate는 candidate selector가 고른 후보의 최소 식별·검토 상태다(초안 §8.2 예시 ④). 후보 원문·근거는 싣지
+// 않는다. 연결된 판정이 있어도 후보 상태는 manual_review_required 그대로다(OD05).
+type verdictDetailCandidate struct {
+	ID           string `json:"id"`
+	Verification string `json:"verification"`
 }
 
 // 제품 정본의 읽기 형식(db/e3_product_verdicts.go의 저장 형식과 같은 칸).
@@ -361,6 +370,8 @@ type verdictDetailRow struct {
 type verdictDetailLoaded struct {
 	exploration int64
 	row         verdictDetailRow
+	// candidate는 candidate selector가 먼저 읽은 후보다(그 밖의 selector는 nil).
+	candidate *db.DiagnosticCandidate
 }
 
 const verdictDetailColumns = `f.id,f.task_id,f.status,f.evidence_version,
@@ -423,6 +434,7 @@ func loadVerdictDetail(ctx context.Context, q reportReadQuery, taskID int64, sel
 		return out, http.StatusServiceUnavailable, verdictDetailUnavailable
 	}
 	var query string
+	arg := any(sel.id)
 	switch sel.kind {
 	case verdictDetailByVerdict:
 		// 다른 task의 판정과 없는 판정은 같은 404다. link·finding은 task로 거르지 않고 읽어 불일치를 422로 드러낸다.
@@ -439,10 +451,32 @@ func loadVerdictDetail(ctx context.Context, q reportReadQuery, taskID int64, sel
  LEFT JOIN e3_oracle_verdicts v ON v.id=i.verdict_id
  LEFT JOIN e3_evidence_manifests m ON m.id=i.manifest_id
  WHERE f.id=$1 AND f.task_id=$2 LIMIT $3`
+	case verdictDetailByCandidate:
+		// 후보를 먼저 읽는다. 다른 작업의 후보와 없는 후보는 같은 404, 저장 형식이 어긋난 후보는 422다.
+		c, found, err := db.ReadDiagnosticCandidate(ctx, q, out.exploration, taskID, sel.id)
+		if errors.Is(err, db.ErrDiagnosticCandidate) {
+			return out, http.StatusUnprocessableEntity, verdictDetailIntegrityFailed
+		}
+		if err != nil {
+			return out, http.StatusServiceUnavailable, verdictDetailUnavailable
+		}
+		if !found {
+			return out, http.StatusNotFound, verdictDetailNotFound
+		}
+		out.candidate = &c
+		// 후보를 참조하는 제품 판정만 고른다(OD05). 참조는 확정 단계가 저장 때 검증한 candidate_refs이고 값은 후보 번호의
+		// 정규 십진 문자열이다. 유사도로 찾지 않는다. link·finding은 제품 판정에 없어야 하므로 같이 읽어 드러낸다.
+		query = `SELECT ` + verdictDetailColumns + `
+ FROM e3_verdict_issuances i LEFT JOIN e3_oracle_verdicts v ON v.id=i.verdict_id
+ LEFT JOIN e3_evidence_manifests m ON m.id=i.manifest_id
+ LEFT JOIN e3_verdict_links l ON l.issuance_id=i.id
+ LEFT JOIN findings f ON f.id=l.finding_id
+ WHERE i.candidate_refs @> jsonb_build_array($1::text) AND i.task_id=$2 AND i.source_kind='product' LIMIT $3`
+		arg = strconv.FormatInt(sel.id, 10)
 	default:
 		return out, http.StatusBadRequest, verdictDetailInvalidRequest
 	}
-	rows, err := q.QueryContext(ctx, query, sel.id, taskID, verdictDetailRowLimit)
+	rows, err := q.QueryContext(ctx, query, arg, taskID, verdictDetailRowLimit)
 	if err != nil {
 		return out, http.StatusServiceUnavailable, verdictDetailUnavailable
 	}
@@ -461,6 +495,10 @@ func loadVerdictDetail(ctx context.Context, q reportReadQuery, taskID int64, sel
 		return out, http.StatusServiceUnavailable, verdictDetailUnavailable
 	}
 	if count == 0 {
+		if out.candidate != nil {
+			// 후보는 있고 그 후보를 참조하는 판정이 없다(no_link).
+			return out, http.StatusOK, ""
+		}
 		return out, http.StatusNotFound, verdictDetailNotFound
 	}
 	return out, http.StatusOK, ""
@@ -496,6 +534,10 @@ func assembleVerdictDetail(ctx context.Context, taskID int64, sel verdictDetailS
 	env.Transmission = verdictDetailTransmission{State: "unknown", Source: "unbound", Coverage: "unavailable", AuditStatus: "unavailable",
 		ReasonCodes: []string{}, Steps: []verdictDetailStep{}}
 
+	if c := loaded.candidate; c != nil {
+		env.IDs.CandidateID = verdictDetailString(c.ID)
+		env.Candidate = &verdictDetailCandidate{ID: *env.IDs.CandidateID, Verification: c.Verification}
+	}
 	linked := r.linkID.Valid
 	if linked {
 		// §6: 기존 link의 task·purpose·finding 결속이 어긋나면 잘못 결속된 응답을 내지 않는다.
@@ -514,8 +556,8 @@ func assembleVerdictDetail(ctx context.Context, taskID int64, sel verdictDetailS
 		}
 	}
 	if !r.issuanceID.Valid {
-		// finding selector에서만 생긴다(issuance 없는 link는 위에서 422). 일반 finding만 있고 E③ link가 없다.
-		// 판정 미실행 증명이 아니므로 unknown이다(§6).
+		// finding selector(일반 finding만 있고 E③ link가 없음)와 candidate selector(후보를 참조하는 판정이 없음)에서만 생긴다
+		// (issuance 없는 link는 위에서 422). 판정 미실행 증명이 아니므로 unknown이다(§6).
 		env.Availability, env.EvaluationStatus = "no_link", "unknown"
 		return verdictDetailFinish(env)
 	}
@@ -563,6 +605,11 @@ func assembleVerdictDetail(ctx context.Context, taskID int64, sel verdictDetailS
 		verified, ok = verifyEvalVerdictDetail(taskID, loaded.exploration, r)
 	} else {
 		verified, ok = verifyProductVerdictDetail(taskID, loaded.exploration, r)
+	}
+	// candidate selector로 고른 제품 판정은 그 후보와 같은 실행이어야 한다. 저장 때 검증한 연결이 다른 실행을 가리키면
+	// 저장 불변식 위반이다(OD05, §9.1 "동일 실행").
+	if ok && loaded.candidate != nil && (verified.policyReq == nil || verified.policyReq.RunRef != loaded.candidate.RunRef) {
+		return verdictDetailFail("candidate-run", http.StatusUnprocessableEntity, verdictDetailIntegrityFailed)
 	}
 	policyMissing := false
 	if ok && verified.policyReq != nil {

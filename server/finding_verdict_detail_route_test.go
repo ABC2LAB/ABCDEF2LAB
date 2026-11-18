@@ -29,7 +29,8 @@ func TestFindingVerdictDetailRequestShape(t *testing.T) {
 		{"GET", "/api/tasks/1/finding-verdict-detail?", "", false},
 		{"GET", "/api/tasks/1/finding-verdict-detail?verdict_id=2&finding_id=3", "", false},
 		{"GET", "/api/tasks/1/finding-verdict-detail?verdict_id=2&verdict_id=2", "", false},
-		{"GET", "/api/tasks/1/finding-verdict-detail?candidate_id=2", "", false},
+		{"GET", "/api/tasks/1/finding-verdict-detail?candidate_id=2", "", true},
+		{"GET", "/api/tasks/1/finding-verdict-detail?candidate_id=2&verdict_id=2", "", false},
 		{"GET", "/api/tasks/1/finding-verdict-detail?verdict_id=02", "", false},
 		{"GET", "/api/tasks/1/finding-verdict-detail?verdict_id=2;x=1", "", false},
 		// query 해석 오류가 난 조각을 버리면 남은 selector가 유효해 보인다. 오류 자체로 거부한다.
