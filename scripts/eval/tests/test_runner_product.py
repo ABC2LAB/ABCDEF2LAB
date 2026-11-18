@@ -359,6 +359,26 @@ class TestStartStopClose(unittest.TestCase):
         self.assertEqual(len(fake.calls), calls)
 
 
+    def test_workflow_snapshot_is_bound_to_the_draft(self):
+        snapshot = {"job_id": "draft-1", "endpoints": [{"source": "browser_navigation"}], "counts": {"omitted": 0}}
+        fake = FakeProduct()
+        fake.overrides["/api/product/workflows/draft-1"] = (200, {"workflow": snapshot})
+        self.assertEqual(driver(fake).workflow("draft-1"), snapshot)
+        self.assertEqual((fake.calls[-1]["method"], fake.calls[-1]["path"]), ("GET", "/api/product/workflows/draft-1"))
+        for bad, code in (({}, "product_workflow_invalid"), ({"workflow": []}, "product_workflow_invalid"),
+                          ({"workflow": dict(snapshot, endpoints={})}, "product_workflow_invalid"),
+                          ({"workflow": dict(snapshot, job_id="draft-2")}, "product_draft_mismatch")):
+            fake.overrides["/api/product/workflows/draft-1"] = (200, bad)
+            with self.subTest(bad=bad), self.assertRaises(ProductAPIError) as caught:
+                driver(fake).workflow("draft-1")
+            self.assertEqual(str(caught.exception), code)
+        calls = len(fake.calls)
+        for draft in ("a/b", "", "x" * 200, 7):
+            with self.subTest(draft=draft), self.assertRaises(ProductAPIError):
+                driver(fake).workflow(draft)
+        self.assertEqual(len(fake.calls), calls)
+
+
 class TestInputs(unittest.TestCase):
     def test_model_key_is_redacted_and_checked(self):
         key = ModelKey(KEY)
