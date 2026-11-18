@@ -383,9 +383,12 @@ class TestDigestsAndReport(unittest.TestCase):
         self.assertEqual((side["cli"]["path"], side["mcp"]["image_id"], side["mcp"]["args"]),
                          (SANDBOX_PATH, ids["w"], list(tool_surface.OURS_MCP_ARGS)))
         self.assertEqual(side["mcp"]["exposed"]["names"], ["browser_click"])
+        # 이미지 ID가 아니면 측정 컨테이너를 하나도 띄우지 않는다(태그는 회차 사이에 다른 이미지를 가리킬 수 있다).
+        def refuse(*args, **kwargs):
+            raise AssertionError("측정을 시작하면 안 된다")
         for bad in (("abc2lab-product:x", ids["w"]), (ids["o"], "sha256:short")):
             with self.subTest(bad=bad), self.assertRaises(ToolSurfaceError):
-                tool_surface.ours_side(*bad, run, popen, {})
+                tool_surface.ours_side(*bad, refuse, refuse, {})
 
 
 class TestCollectorScript(unittest.TestCase):

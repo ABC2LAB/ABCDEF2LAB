@@ -464,7 +464,8 @@ class TestHelperCopy(unittest.TestCase):
                        {"directory": "./run"}, {"directory": ""},
                        {"role": "Boundary"}, {"uid": -1}, {"gid": "1001"}, {"max_bytes": 0}, {"subpath": ("..",)},
                        {"subpath": (".",)}, {"subpath": ("a/b",)}, {"subpath": ("",)}, {"subpath": ("-x",)}, {"subpath": ("x" * 129,)},
-                       {"subpath": (3,)}, {"subpath": ("a", "b", "c")}, {"subpath": "prep-1"}):
+                       {"subpath": (3,)}, {"subpath": ("a", "b", "c")}, {"subpath": "prep-1"},
+                       {"subpath": "ab"}):
             fake = self.bounded(b"")
             with self.subTest(change=change), self.assertRaises(DockerError):
                 self.copy(fake, **change)
