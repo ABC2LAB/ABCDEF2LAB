@@ -247,6 +247,13 @@ def _read_cidfile(path: Path) -> str:
     return value
 
 
+class HelperCleanupError(DockerError):
+    """러너 도우미 정리(지우고 다시 보기)가 실패했다. 회차 흐름의 단계 사유로 감싸져도 이 사유는 따로 남긴다."""
+
+    def __init__(self):
+        super().__init__("docker_helper_cleanup_failed")
+
+
 class HelperCleanupInterrupt(KeyboardInterrupt):
     """운영자 중단 중 러너 도우미 정리까지 실패했다. 중단은 그대로 올리되 결과에 docker_helper_cleanup_failed를 남긴다."""
 
@@ -537,16 +544,23 @@ class Docker:
         """그 역할·볼륨의 러너 도우미 컨테이너를 지우고, 하나도 안 남았는지 다시 본다. 남으면 docker_helper_cleanup_failed다
         (원래 실패보다 우선한다: 도우미가 보호 볼륨을 잡고 있으면 회차 정리를 믿을 수 없다)."""
         listing = ["ps", "-a", "-q", "--no-trunc", "--filter", f"label={RUNNER_HELPER_LABEL}={role}", "--filter", f"volume={volume}"]
-        ids = [i.decode("ascii", "replace") for i in self.run(listing, code="docker_helper_cleanup_failed").split()]
+        try:
+            ids = [i.decode("ascii", "replace") for i in self.run(listing, code="docker_helper_cleanup_failed").split()]
+        except DockerError:
+            raise HelperCleanupError() from None
         if any(not _OBJECT_ID.fullmatch(i) for i in ids):
-            raise DockerError("docker_helper_cleanup_failed")
+            raise HelperCleanupError()
         if ids:
             try:
                 self.run(["rm", "-f", "--", *ids], code="docker_helper_cleanup_failed")
             except DockerError:
                 pass  # --rm으로 그 사이 스스로 지워졌을 수 있다. 남았는지는 아래에서 다시 본다.
-        if self.run(listing, code="docker_helper_cleanup_failed").strip():
-            raise DockerError("docker_helper_cleanup_failed")
+        try:
+            left = self.run(listing, code="docker_helper_cleanup_failed").strip()
+        except DockerError:
+            raise HelperCleanupError() from None
+        if left:
+            raise HelperCleanupError()
 
     def stop_container(self, container_id: str, timeout_seconds: int) -> None:
         """컨테이너 하나를 SIGTERM으로 멈춘다(`docker stop`). 유예 안에 끝나지 않으면 Docker가 SIGKILL을 보낸다.

@@ -490,6 +490,7 @@ class TestHelperCopy(unittest.TestCase):
             "still_there": ([found, ok, found], "docker_helper_cleanup_failed", 3),
             "nothing_left": ([empty, empty], "docker_timeout", 2),
             "listing_fails": ([failed], "docker_helper_cleanup_failed", 1),
+            "recheck_fails": ([found, ok, failed], "docker_helper_cleanup_failed", 3),
             "odd_listing": ([CommandResult(0, b"not-an-id\n")], "docker_helper_cleanup_failed", 1),
         }
         for name, (results, code, count) in cases.items():
@@ -497,6 +498,8 @@ class TestHelperCopy(unittest.TestCase):
             with self.subTest(case=name), self.assertRaises(DockerError) as caught:
                 self.copy(timing_out, executor)
             self.assertEqual(str(caught.exception), code)
+            from runner_docker import HelperCleanupError
+            self.assertEqual(isinstance(caught.exception, HelperCleanupError), code == "docker_helper_cleanup_failed")
             self.assertEqual(len(executor.calls), count)
             self.assertEqual(executor.calls[0][0], listing)
             if count == 3:

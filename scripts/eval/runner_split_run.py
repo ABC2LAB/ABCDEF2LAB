@@ -66,8 +66,8 @@ CONTROL_LIMIT_FIELDS = ("max_requests", "max_attempts", "max_concurrent", "max_b
 MAX_INT64 = (1 << 63) - 1
 RUNTIME_CONDITIONS_VERSION = "e2-runtime-conditions/v1"
 MAX_RUNTIME_CONDITIONS_BYTES = 1 << 20
-# 제품 참조 규칙(e2proxy execution.go safeRef, 정책 문서 검사와 같음): 128자 안, `://` 없음.
-_PRODUCT_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}")
+# 제품 참조 규칙: 적용 정책을 검사하는 server/e2_http_runtime.go e2HTTPHostRef와 같은 문자 집합(슬래시 없음, #693 리뷰).
+_PRODUCT_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 # 실행 조건 파일 칸(e2_http_factory.go가 쓰는 구조체 그대로)과 범위·프로세스 상한 칸(transmit.Scope, e2runner.ProcessLimits).
 RUNTIME_CONDITIONS_FIELDS = frozenset({"version", "scope", "policy_revision", "worker_count", "process_limits",
                                        "queue_consumes_command_timeout"})
@@ -78,7 +78,7 @@ RUN_RECORD_VERSION = 1  # first_diagnosis_run.go diagnosisRunRecord
 
 
 def _ref(value) -> bool:
-    return isinstance(value, str) and bool(_PRODUCT_REF.fullmatch(value)) and "://" not in value
+    return isinstance(value, str) and bool(_PRODUCT_REF.fullmatch(value))
 
 
 def _count(value) -> bool:
@@ -416,6 +416,7 @@ def execute_split_run(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFile
         _run_split_steps(spec, ports, meter, evidence, clock, state)
     except RunFailure as exc:
         reasons.append(exc.code)
+        reasons.extend(exc.also)
         state.step = exc.code
     except KeyboardInterrupt as exc:
         # 운영자 중단도 결과 기록 한 건(무효)을 남기고, 정리 뒤 중단 신호를 다시 올린다(execute_run과 같다). 중단 중 복사

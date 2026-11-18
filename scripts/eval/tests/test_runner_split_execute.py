@@ -422,6 +422,9 @@ class TestOrder(unittest.TestCase):
             "version_bool": (lambda p: p.record.update(version=True), "run_record_invalid"),
             "revision_newline": (lambda p: p.view.update(policy_revision="v1\nx"), "control_policy_unbound"),
             "revision_url": (lambda p: p.view.update(policy_revision="http://x"), "control_policy_unbound"),
+            "revision_slash": (lambda p: p.view.update(policy_revision="v1/synthetic"), "control_policy_unbound"),
+            "scope_slash": (lambda p: setattr(p, "conditions", conditions(scope=dict(SCOPE, ResetRef="a/b"))),
+                            "runtime_conditions_unbound"),
             "revision_long": (lambda p: p.view.update(policy_revision="v" * 129), "control_policy_unbound"),
             "scope_extra": (lambda p: setattr(p, "conditions", conditions(scope=dict(SCOPE, More="x"))), "runtime_conditions_unbound"),
             "scope_bad_ref": (lambda p: setattr(p, "conditions", conditions(scope=dict(SCOPE, CaseRef="a b"))),
@@ -660,6 +663,21 @@ class TestInvalid(unittest.TestCase):
         with self.assertRaises(KeyboardInterrupt):
             execute_split_run(spec(), ports, FakeMeter(ports), evidence, clock.clock())
         self.assertEqual(evidence.files[RESULT_NAME]["reasons"], ["interrupted", "docker_helper_cleanup_failed"])
+
+    def test_helper_cleanup_failure_is_kept_beside_the_step_code(self):
+        # #693 리뷰: 복사 시간 초과 뒤 정리도 실패하면 단계 사유(product_files_failed)만 남고 정리 실패가 사라졌다.
+        from runner_docker import HelperCleanupError
+        for port, step in (("product_files", "product_files_failed"), ("runtime_conditions", "runtime_conditions_failed")):
+            def broken(ports, port=port):
+                ports.fail[port] = HelperCleanupError()
+            result, ports, _ = run(broken)
+            with self.subTest(port=port):
+                self.assertEqual((result["status"], result["reasons"]), ("invalid", [step, "docker_helper_cleanup_failed"]))
+                self.assertIn("down", ports.calls)
+        # 다른 Docker 오류는 단계 사유 하나뿐이다
+        from runner_docker import DockerError
+        result, _, _ = run(lambda ports: ports.fail.update(product_files=DockerError("docker_helper_copy_failed")))
+        self.assertEqual(result["reasons"], ["product_files_failed"])
 
     def test_cleanup_failures_are_reported(self):
         result, _, _ = run(lambda p: p.fail.update(down=RuntimeError("x")))
