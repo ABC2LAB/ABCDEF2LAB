@@ -2,11 +2,14 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"github.com/Autumn-27/artex/diagnosisprep"
+	"github.com/Autumn-27/artex/e3contract"
 	"io"
 	"mime"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // The public API passes authenticated operator intent to private preparation.
@@ -57,6 +60,33 @@ func productTargetsHTTP(w http.ResponseWriter, r *http.Request, owner string, en
 		request.TargetID = parts[0]
 		if len(parts) >= 2 && parts[1] == "accounts" {
 			if !productAccountRequest(w, r, parts, request) {
+				return
+			}
+		} else if len(parts) == 2 && parts[1] == "reset-confirmation" {
+			// GET: 확정 단계 쓰기와 리셋 확인 상태(진술 문장 포함). POST {"statement_confirmed": true, "writes_ref": "<본 기록 참조>"}:
+			// 리셋 진술을 남김. 그 사이 기록이 바뀌었으면 409 reset_record_changed.
+			switch r.Method {
+			case "GET":
+				request.Operation = "reset_confirmation"
+			case "POST":
+				var body diagnosisprep.ResetRequest
+				if !productAccountBody(w, r, &body) || !body.StatementConfirmed {
+					writeJSON(w, 400, map[string]string{"error": "statement_required"})
+					return
+				}
+				// 동의는 화면이 본 쓰기 기록(last_writes_job)에 묶인다. 없으면 무엇에 동의했는지 모른다.
+				if !diagnosisprep.ValidResetWritesRef(body.WritesRef) {
+					writeJSON(w, 400, map[string]string{"error": "invalid_reset_request"})
+					return
+				}
+				request.Operation = "reset_confirm"
+				request.Reset = &body
+			default:
+				writeJSON(w, 405, map[string]string{"error": "method_not_allowed"})
+				return
+			}
+		} else if len(parts) == 2 && parts[1] == "declaration" {
+			if !productDeclarationRequest(w, r, request) {
 				return
 			}
 		} else if len(parts) == 2 && parts[1] == "login" {
@@ -172,6 +202,78 @@ func productAccountBody(w http.ResponseWriter, r *http.Request, out any) bool {
 	return e == nil && media == "application/json" && re == nil && strictJSON(raw, out) == nil
 }
 
+// maxDeclarationBodyBytes는 정책 선언 저장 요청 본문 상한이다. 선언 인코딩 상한(e3contract.MaxDeclarationEncodedBytes)에
+// 대상 판·감싸는 칸의 여유를 더한 값이고, 준비 프로세스 IPC 한 프레임(64KiB) 안이다.
+const maxDeclarationBodyBytes = e3contract.MaxDeclarationEncodedBytes + 1<<10
+
+// declarationServerFields는 서버가 채우는 선언 칸이다. 화면이 보내면 그 칸 이름으로 거부한다.
+var declarationServerFields = map[string]bool{"version": true, "target_ref": true, "target_approval_revision": true,
+	"declared_by": true, "declared_at": true}
+
+// productDeclarationRequest는 대상 정책 선언 경로를 제품 제어 요청으로 바꾼다(E③ 확정 경로 계약 §3).
+//
+//	GET /api/product/targets/{id}/declaration  조회(state none·active·invalid)
+//	PUT /api/product/targets/{id}/declaration  {"target_revision": N, "declaration": {"identity": …, "types": […]}} 통째 저장
+//
+// 거부한 칸의 값은 응답·로그에 넣지 않는다.
+func productDeclarationRequest(w http.ResponseWriter, r *http.Request, request *diagnosisprep.ProductRequest) bool {
+	switch r.Method {
+	case "GET":
+		request.Operation = "declaration"
+		return true
+	case "PUT":
+	default:
+		writeJSON(w, 405, map[string]string{"error": "method_not_allowed"})
+		return false
+	}
+	invalid := func(field string) bool {
+		writeJSON(w, 400, map[string]string{"error": "invalid_declaration", "field": field})
+		return false
+	}
+	media, _, e := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	raw, re := io.ReadAll(http.MaxBytesReader(w, r.Body, maxDeclarationBodyBytes))
+	defer clear(raw)
+	if e != nil || media != "application/json" || re != nil {
+		return invalid("body")
+	}
+	var top struct {
+		TargetRevision uint64                     `json:"target_revision"`
+		Declaration    map[string]json.RawMessage `json:"declaration"`
+	}
+	if strictJSON(raw, &top) != nil || top.Declaration == nil {
+		return invalid("body")
+	}
+	if top.TargetRevision == 0 {
+		return invalid("target_revision")
+	}
+	for key := range top.Declaration {
+		if declarationServerFields[key] {
+			return invalid(key)
+		}
+		if key != "identity" && key != "types" {
+			return invalid("declaration")
+		}
+	}
+	inner, err := json.Marshal(top.Declaration)
+	var in diagnosisprep.DeclarationInput
+	if err != nil || strictJSON(inner, &in) != nil {
+		return invalid("declaration")
+	}
+	if len(in.Types) == 0 || len(in.Types) > e3contract.MaxDeclarationTypes {
+		return invalid("types")
+	}
+	// 공유 종류는 소유자 전용 필드를 보내지 않을 수 있다. 준비 프로세스 IPC는 null을 받지 않으므로 빈 목록으로 둔다.
+	for i := range in.Types {
+		if in.Types[i].OwnerOnlyFields == nil {
+			in.Types[i].OwnerOnlyFields = []string{}
+		}
+	}
+	request.Operation = "declaration_put"
+	request.ExpectedRevision = top.TargetRevision
+	request.Declaration = &in
+	return true
+}
+
 func callProductControl(w http.ResponseWriter, r *http.Request, owner string, endpoint diagnosisprep.Endpoint, control *diagnosisprep.ProductRequest) {
 	request := diagnosisprep.Request{Version: diagnosisprep.Version, RequestID: "product-control", Principal: owner, Command: diagnosisprep.ProductControl, Product: control}
 	if diagnosisprep.ValidateRequest(request) != nil {
@@ -193,11 +295,42 @@ func callProductControl(w http.ResponseWriter, r *http.Request, owner string, en
 			status = 403
 		case "target_not_found", "account_not_found":
 			status = 404
+		case "invalid_declaration":
+			// 선언 형식 오류는 칸 이름만 돌려준다(값 없음). 대상 판 결속 실패는 409다.
+			writeJSON(w, 400, map[string]string{"error": "invalid_declaration", "field": response.Product.Field})
+			return
 		}
 	}
 	if response.Product.Reason != "" {
 		writeJSON(w, status, map[string]string{"error": response.Product.Reason})
 		return
 	}
+	if control.Operation == "declaration" || control.Operation == "declaration_put" {
+		writeJSON(w, status, publicDeclaration(response.Product.Declaration))
+		return
+	}
 	writeJSON(w, status, response.Product)
+}
+
+// productDeclarationView는 정책 선언 조회·저장의 공개 응답이다. 선언이 없으면 declaration은 null이고 시각·판 칸은 없다.
+type productDeclarationView struct {
+	State          string                  `json:"state"`
+	InvalidReason  string                  `json:"invalid_reason,omitempty"`
+	TargetRevision uint64                  `json:"target_revision,omitempty"`
+	DeclaredBy     string                  `json:"declared_by,omitempty"`
+	DeclaredAt     *time.Time              `json:"declared_at,omitempty"`
+	Declaration    *e3contract.Declaration `json:"declaration"`
+}
+
+func publicDeclaration(d *diagnosisprep.ProductDeclaration) productDeclarationView {
+	if d == nil {
+		return productDeclarationView{State: diagnosisprep.DeclarationNone}
+	}
+	v := productDeclarationView{State: d.State, InvalidReason: d.InvalidReason, TargetRevision: d.TargetRevision,
+		DeclaredBy: d.DeclaredBy, Declaration: d.Declaration}
+	if !d.DeclaredAt.IsZero() {
+		at := d.DeclaredAt
+		v.DeclaredAt = &at
+	}
+	return v
 }
