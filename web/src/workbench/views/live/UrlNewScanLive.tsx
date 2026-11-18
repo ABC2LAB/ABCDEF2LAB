@@ -50,17 +50,19 @@ const APPROVAL_MODE_RULE: Readonly<
   confirm_every_request: "모든 요청을 한 건씩 승인한 것만 보냄",
   workbench_selective_v1: "쓰기 메서드 요청은 한 건씩 승인한 것만 보냄",
 };
-// 작업 이름(display_name)은 받지 않는다 (시안 v39): 서버에서 선택 값이고 주소와 겹친다. 비우면 서버가 기본 설명을 붙인다.
+// 점검 이름(display_name)은 선택 칸으로 받는다(사용자 11/18 — 서버 목록은 원문 URL 을 주지 않아 이름이 없으면 줄이
+// 'prep-…' 진단 ID 로만 보였다). 비우면 보내지 않는다.
 function draftInput(
   target: string,
   profile: string,
+  name: string,
   mode?: WorkflowMode,
   excludes = "",
   externalTestAccounts = false,
 ): URLDiagnosisInput | null {
   if (!profile) return null;
   try {
-    return urlDiagnosisInput(target, profile, "", mode, excludes, externalTestAccounts);
+    return urlDiagnosisInput(target, profile, name, mode, excludes, externalTestAccounts);
   } catch {
     return null;
   }
@@ -162,6 +164,7 @@ export function UrlNewScanLive() {
   const externals = profiles.filter((p) => p.model?.external_transfer);
 
   const [target, setTarget] = useState("");
+  const [name, setName] = useState("");
   const [kind, setKind] = useState<"local" | "external">(locals.length || !externals.length ? "local" : "external");
   const [profileId, setProfileId] = useState("");
   const [workflowMode, setWorkflowMode] = useState<WorkflowMode>("user_approval_v1");
@@ -198,6 +201,7 @@ export function UrlNewScanLive() {
     if (resetSeq === seenReset.current) return;
     seenReset.current = resetSeq;
     setTarget("");
+    setName("");
     setExcluded("");
     setTouched(false);
   }, [resetSeq]);
@@ -216,6 +220,7 @@ export function UrlNewScanLive() {
   const pv = shown ? shown.profile_id : pickedId;
   const profile = profiles.find((p) => p.id === pv) ?? null;
   const tv = shown ? shown.target_url : target;
+  const nv = shown ? (shown.display_name ?? "") : name;
   const mv = shown?.workflow_mode ?? workflowMode;
   const ev = shown ? (shown.excluded_paths ?? "") : excluded;
   const external = profile?.model?.external_transfer === true;
@@ -271,6 +276,7 @@ export function UrlNewScanLive() {
     : draftInput(
         target,
         pv,
+        name,
         profile?.workflow ? workflowMode : undefined,
         profile?.workflow ? excluded : "",
         consentChecked,
@@ -620,6 +626,32 @@ export function UrlNewScanLive() {
                     <div className={s.hostline} id="luHost" aria-live="polite">
                       {hostLine}
                     </div>
+                  </div>
+                  {/* 점검 이름(선택): 점검 목록 · 오른쪽 패널에 이 이름으로 보인다(사용자 11/18). 서버는 160바이트 · 제어 문자 없는
+                      글만 받는다 — 한글 기준 50자로 막고 제어 문자는 지운다 */}
+                  <div className={s.field}>
+                    <label className={s.lbl} htmlFor="luName">
+                      점검 이름 (선택)
+                    </label>
+                    <input
+                      className={cx(s.inp, s["w-url"])}
+                      id="luName"
+                      type="text"
+                      value={nv}
+                      disabled={g.inputLocked}
+                      autoComplete="off"
+                      maxLength={50}
+                      placeholder="예: 쇼핑몰 주문 API 점검"
+                      onChange={(e) =>
+                        setName(
+                          Array.from(e.target.value)
+                            .filter(
+                              (ch) => ch.charCodeAt(0) >= 32 && (ch.charCodeAt(0) < 127 || ch.charCodeAt(0) > 159),
+                            )
+                            .join(""),
+                        )
+                      }
+                    />
                   </div>
                   <TargetApprovalPanel
                     requestLimit={profile?.workflow_request_limit}

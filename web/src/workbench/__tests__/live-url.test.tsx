@@ -472,7 +472,8 @@ describe("서버 방식 확인 (catalog)", () => {
     u.readURLCatalog.mockResolvedValue({ ...catalog, profiles: [{ ...catalog.profiles[0], workflow: limits }] });
     mount("new");
     const target = await screen.findByLabelText(/점검할 사이트 주소/);
-    expect(screen.queryByLabelText(/작업 이름/)).toBeNull();
+    // 점검 이름은 선택 칸(사용자 11/18)
+    expect(screen.getByLabelText("점검 이름 (선택)")).toHaveValue("");
     // 점검 설정은 2쪽에 있다
     expect(screen.queryByRole("heading", { name: "점검 설정" })).toBeNull();
     fireEvent.change(target, { target: { value: "https://target.example/" } });
@@ -480,7 +481,7 @@ describe("서버 방식 확인 (catalog)", () => {
     expect(screen.getByRole("heading", { name: "점검 설정" })).toBeInTheDocument();
     // 제외 경로 칸의 흐린 예시는 안전 장치 (?) 메모와 같은 주소 (시안 v50)
     expect(screen.getByLabelText(/제외 경로/)).toHaveAttribute("placeholder", "/logout\n/delete");
-    // 작업 이름 없이 주소만으로 범위 확인을 보낼 수 있고, 입력에 display_name 이 없다
+    // 점검 이름 없이 주소만으로 범위 확인을 보낼 수 있고, 입력에 display_name 이 없다
     const send = screen.getAllByRole("button", { name: "승인 범위 확인" })[0];
     expect(send).toBeEnabled();
     await act(async () => {
@@ -490,6 +491,25 @@ describe("서버 방식 확인 (catalog)", () => {
       target_url: "https://target.example/",
       profile_id: "profile-1",
       workflow_mode: "user_approval_v1",
+    });
+  });
+
+  it("점검 이름을 쓰면 앞뒤 공백을 뺀 이름이 display_name 으로 가고, 제어 문자는 칸에 남지 않는다", async () => {
+    u.readURLCatalog.mockResolvedValue(catalog);
+    mount("new");
+    fireEvent.change(await screen.findByLabelText(/점검할 사이트 주소/), {
+      target: { value: "https://target.example/" },
+    });
+    const name = screen.getByLabelText("점검 이름 (선택)");
+    fireEvent.change(name, { target: { value: "  쇼핑몰\t주문 점검  " } });
+    expect(name).toHaveValue("  쇼핑몰주문 점검  ");
+    fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]);
+    });
+    expect(u.createURLDraft.mock.calls[0][0]).toMatchObject({
+      target_url: "https://target.example/",
+      display_name: "쇼핑몰주문 점검",
     });
   });
 
