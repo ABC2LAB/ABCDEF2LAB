@@ -14,7 +14,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cli_usage import (  # noqa: E402
-    FORMAT, MAX_OBSERVED_LINE_CHARS, MAX_OBSERVED_LINES, CliUsageError, count_usage, normalize, not_found, observed_lines,
+    FORMAT, MAX_OBSERVED_LINE_CHARS, MAX_OBSERVED_LINES, MAX_REDACT_LINE_BYTES, CliUsageError, clip_redacted, count_usage,
+    normalize, not_found, observed_lines,
     occurrences, tool_input_command, validate_names,
 )
 
@@ -118,11 +119,44 @@ class TestObservedLines(unittest.TestCase):
         self.assertEqual(observed_lines([{"command": {"command": "curl x"}}], ["npx"]), ([], 0))
 
     def test_bounds(self):
+        # 고른 줄은 근거 상한으로 자르지 않고(가림 전), 가림 입력 상한(바이트)만 맞춘다. 근거 상한 자르기는 가린 뒤다(#736 리뷰).
         long = "npx " + "a" * (MAX_OBSERVED_LINE_CHARS + 50)
         lines, observed = observed_lines([{"command": {"command": long}}] * (MAX_OBSERVED_LINES + 3), ["npx"])
         self.assertEqual((len(lines), observed), (MAX_OBSERVED_LINES, MAX_OBSERVED_LINES + 3))
-        self.assertTrue(lines[0]["line"].endswith(" [...]"))
-        self.assertEqual(len(lines[0]["line"]), MAX_OBSERVED_LINE_CHARS + len(" [...]"))
+        self.assertEqual(lines[0]["line"], long)
+        clipped = clip_redacted(long)
+        self.assertTrue(clipped.endswith(" [...]"))
+        self.assertEqual(len(clipped), MAX_OBSERVED_LINE_CHARS + len(" [...]"))
+        huge = "npx " + "é" * MAX_REDACT_LINE_BYTES  # 2바이트 글자: 바이트 상한에서 글자 중간을 자르지 않는다
+        picked = observed_lines([{"command": {"command": huge}}], ["npx"])[0][0]["line"]
+        self.assertLessEqual(len(picked.encode("utf-8")), MAX_REDACT_LINE_BYTES)
+        self.assertTrue(huge.startswith(picked))
+
+    def test_a_secret_on_the_evidence_boundary_is_redacted_before_clipping(self):
+        # 근거 상한(1000자) 경계에 걸친 자격 값: 자르기 전에 가리면 조각이 남지 않는다(#736 리뷰 재현).
+        prefix = "npx run " + "x" * (MAX_OBSERVED_LINE_CHARS - 20)
+        line = prefix + ' token="abcdefghijklmnopqrstuvwxyz0123456789"'
+        picked = observed_lines([{"command": {"command": line}}], ["npx"])[0][0]["line"]
+        self.assertIn("abcdefghijklmnop", picked)  # 가림 전 원문은 그대로 넘긴다(가림은 계측기)
+
+        def credential_text(text):  # 계측기 dlp.CredentialText의 따옴표 값 규칙 흉내(이 시험의 값 하나만)
+            return text.replace('token="abcdefghijklmnopqrstuvwxyz0123456789"', "[REDACTED]")
+        out = clip_redacted(credential_text(picked))
+        self.assertNotIn("abcd", out)
+        # 반대 순서(자른 뒤 가림)였다면 조각이 남았다
+        old = credential_text(clip_redacted(picked))
+        self.assertIn('token="abcd', old)
+
+
+
+class TestRedactLimitMatchesTheMeter(unittest.TestCase):
+    def test_line_byte_limit_is_the_go_value(self):
+        import re
+        from pathlib import Path
+        text = (Path(__file__).resolve().parents[3] / "cmd/eval-meter/redact.go").read_text(encoding="utf-8")
+        match = re.search(r"maxRedactLineBytes\s*=\s*(\d+) << 10", text)
+        self.assertIsNotNone(match)
+        self.assertEqual(int(match.group(1)) * 1024, MAX_REDACT_LINE_BYTES)
 
 
 if __name__ == "__main__":

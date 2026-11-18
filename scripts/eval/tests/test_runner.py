@@ -1147,6 +1147,20 @@ class TestCompleteRun(unittest.TestCase):
         self.assertEqual(usage["observed_lines"], 2)
         self.assertNotIn("command_records", run()[1].calls)  # 이름이 없으면(분리 배치 아님·O) 읽지 않는다
 
+    def test_lines_are_clipped_after_redaction(self):
+        # 가림(redact_text)에는 긴 원문 줄을 그대로 넘기고, 근거에는 가린 뒤 1000자로 자른 줄만 남긴다(#736 리뷰)
+        long = "npx " + "a" * 2000
+        spec = dataclasses.replace(make_spec(), cli_usage_names=("npx",))
+
+        def mutate(ports, meter, clock):
+            ports.command_rows = [{"tool": "Bash", "command": json.dumps({"command": long}), "output": "", "failed": False}]
+        result, ports, _, evidence = run(mutate, spec=spec)
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertEqual(ports.redacted_input, [long])
+        line = evidence.files["cli-observed-lines.json"]["lines"][0]["line"]
+        self.assertTrue(line.startswith("<redacted>npx ") and line.endswith(" [...]"))
+        self.assertEqual(len(line), 1000 + len(" [...]"))
+
     def test_no_observation_leaves_no_lines(self):
         # 관측이 없으면 아무것도 남기지 않는다(가림 호출도 없다)
         spec = dataclasses.replace(make_spec(), cli_usage_names=("vim",))

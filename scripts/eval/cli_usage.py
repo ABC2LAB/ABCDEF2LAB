@@ -120,14 +120,28 @@ def count_usage(records: Iterable[Mapping], names: Iterable[str], *, with_failur
 OBSERVED_LINES_FORMAT = "abc2lab.cli-observed-lines/v1"
 MAX_OBSERVED_LINES = 64
 MAX_OBSERVED_LINE_CHARS = 1000
+# 가림에 넘기는 한 줄의 바이트 상한(계측기 redact-text maxRedactLineBytes와 같은 값). 이보다 긴 줄만 여기서 자른다.
+# 가린 뒤 MAX_OBSERVED_LINE_CHARS로 다시 자르므로, 이 경계에 걸린 자격 조각은 남지 않는다(#736 리뷰).
+MAX_REDACT_LINE_BYTES = 64 * 1024
 _TRUNCATED_MARK = " [...]"
+
+
+def clip_for_redaction(line: str) -> str:
+    """가림 입력 상한에 맞게 바이트로 자른다(UTF-8 글자 중간이면 그 글자를 뺀다)."""
+    data = line.encode("utf-8")
+    return line if len(data) <= MAX_REDACT_LINE_BYTES else data[:MAX_REDACT_LINE_BYTES].decode("utf-8", "ignore")
+
+
+def clip_redacted(line: str) -> str:
+    """가린 뒤의 줄을 근거 상한(MAX_OBSERVED_LINE_CHARS)으로 자른다. 자르기는 늘 가림 뒤다."""
+    return line if len(line) <= MAX_OBSERVED_LINE_CHARS else line[:MAX_OBSERVED_LINE_CHARS] + _TRUNCATED_MARK
 
 
 def observed_lines(records: Iterable[Mapping], names: Iterable[str]) -> tuple[list[dict], int]:
     """이름이 관측된 Bash 호출마다 원문 한 줄을 고른다(가림 전, 2026-11-19 사용자 결정 4). 줄 이음만 붙인 원문을 줄로 나눠
-    정규화했을 때 관측된 이름이 나오는 첫 줄이고, 없으면 첫 줄이다. 줄은 MAX_OBSERVED_LINE_CHARS로 자르고 항목은
-    MAX_OBSERVED_LINES까지다. 반환: ([{"names": [...], "line": 원문 한 줄}], 관측된 호출 수). 관측이 없으면 빈 목록이다.
-    호출자가 제품과 같은 자격 가림(계측기 redact-text)을 거친 뒤에만 근거에 쓴다."""
+    정규화했을 때 관측된 이름이 나오는 첫 줄이고, 없으면 첫 줄이다. 항목은 MAX_OBSERVED_LINES까지다. 줄은 여기서
+    근거 상한으로 자르지 않는다(가림 입력 상한 MAX_REDACT_LINE_BYTES만 맞춘다). 반환: ([{"names": [...], "line": 원문 한 줄}],
+    관측된 호출 수). 호출자가 제품과 같은 자격 가림(계측기 redact-text)을 거친 뒤 clip_redacted로 잘라 근거에 쓴다."""
     wanted = validate_names(list(names))
     patterns = {name: _pattern(name) for name in wanted}
     out: list[dict] = []
@@ -144,7 +158,5 @@ def observed_lines(records: Iterable[Mapping], names: Iterable[str]) -> tuple[li
             continue
         lines = command.replace("\\\n", "").splitlines() or [""]
         line = next((raw for raw in lines if any(patterns[name].search(normalize(raw)) for name in seen)), lines[0])
-        if len(line) > MAX_OBSERVED_LINE_CHARS:
-            line = line[:MAX_OBSERVED_LINE_CHARS] + _TRUNCATED_MARK
-        out.append({"names": seen, "line": line})
+        out.append({"names": seen, "line": clip_for_redaction(line)})
     return out, observed

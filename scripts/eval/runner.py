@@ -78,7 +78,7 @@ from runner_engine import (  # noqa: E402
     TaskRequest,
 )
 from runner_goal import common_goal, common_goal_sha256  # noqa: E402
-from cli_usage import OBSERVED_LINES_FORMAT, count_usage, observed_lines  # noqa: E402
+from cli_usage import OBSERVED_LINES_FORMAT, clip_redacted, count_usage, observed_lines  # noqa: E402
 
 CLI_USAGE_NAME = "cli-usage.json"
 # 이름이 관측된 명령의 가린 원문 한 줄(사람 확인용, 관측이 없으면 파일을 만들지 않는다).
@@ -925,7 +925,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
             redacted = _step(state, "cli_usage_failed", lambda: ports.redact_text([item["line"] for item in picked]))
             _step(state, "evidence_write_failed", lambda: evidence.write_json(CLI_LINES_NAME, {
                 "format": OBSERVED_LINES_FORMAT, "observed_calls": observed,
-                "lines": [{"names": item["names"], "line": line} for item, line in zip(picked, redacted)]}))
+                "lines": [{"names": item["names"], "line": clip_redacted(line)} for item, line in zip(picked, redacted)]}))
             usage["observed_lines"] = len(picked)
         _step(state, "evidence_write_failed", lambda: evidence.write_json(CLI_USAGE_NAME, usage))
     intercepted = _step(state, "intercept_summary_failed", ports.intercept_summary)

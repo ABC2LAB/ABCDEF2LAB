@@ -13,10 +13,12 @@ import (
 // 표준 입력의 JSON 문자열 배열을 같은 길이의 가린 배열로 표준 출력에 쓴다. 망·파일을 쓰지 않는다.
 // 러너(Python)에 같은 규칙을 따로 두지 않으려고 계측기 이미지의 Go 함수를 그대로 쓴다(B 전용 CLI 관측 줄, 2026-11-19 결정).
 const (
-	roleRedactText     = "redact-text"
-	maxRedactInput     = 1 << 20
+	roleRedactText = "redact-text"
+	// 러너는 줄을 자르기 전에 가린다(경계에 걸친 자격 조각이 남지 않게, #736 리뷰). 그래서 한 줄 상한을 넉넉히 둔다
+	// (러너 cli_usage.MAX_REDACT_LINE_BYTES와 같은 값). 전체 입력은 64줄 × 64KiB에 JSON 이스케이프 여유를 둔다.
+	maxRedactInput     = 32 << 20
 	maxRedactLines     = 256
-	maxRedactLineBytes = 16 << 10
+	maxRedactLineBytes = 64 << 10
 )
 
 func runRedactText(stdin io.Reader, stdout, stderr io.Writer) int {
