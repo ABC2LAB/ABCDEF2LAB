@@ -230,6 +230,18 @@ describe("서버 보존 목록의 상태 필터와 선택한 보고서", () => {
     expect(panel).not.toHaveTextContent("다시 점검은 별도");
     expect(screen.queryByText(/보존된 상태입니다/)).toBeNull();
   });
+  it("시험 계정 인증은 라벨 순으로 '계정 A · 계정 B'로 보이고 서버 라벨은 마우스를 올리면 보인다", async () => {
+    vi.mocked(api.fetchRemediation).mockResolvedValue({ task_id: 42, entries: [] });
+    selectSaved({ ...completed, account_auth: { shopper: "login_failed", "acct-a": "authenticated" } });
+    records(true);
+    const panel = screen.getByRole("complementary", { name: "선택한 점검" });
+    const sec = within(panel).getByRole("heading", { name: "시험 계정 인증" }).parentElement as HTMLElement;
+    expect(sec).toHaveTextContent(/^시험 계정 인증계정 A인증됨계정 B비인증 진행 · 로그인 실패$/);
+    expect(within(sec).getByText("계정 A")).toHaveAttribute("title", "acct-a");
+    expect(within(sec).getByText("계정 B")).toHaveAttribute("title", "shopper");
+    // 안내 글은 뺐다(사용자 11/18)
+    expect(sec).not.toHaveTextContent("인증하지 못한 계정은");
+  });
   it("결과 저장 미확인 회차는 보고서 조회를 하지 않는다", () => {
     selectSaved({ ...completed, result_ready: false });
     records(true);

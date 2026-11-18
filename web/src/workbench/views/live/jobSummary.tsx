@@ -260,6 +260,11 @@ export function JobRow({
 }
 
 /** 갈 화면 → 버튼 글 (시안: 진행 화면 열기 · 이어서 보기 · 보고서 열기). */
+/** 시험 계정 표시 이름: 라벨 순으로 계정 A · B · C …(26개를 넘으면 번호). */
+function accountName(i: number): string {
+  return i < 26 ? `계정 ${String.fromCharCode(65 + i)}` : `계정 ${i + 1}`;
+}
+
 /**
  * 오른쪽 패널 실행 결과 (사용자 11/18 '점검 완료만'): 끝났으면 '점검 완료', 중지면 '중지됨'. 계획 일부만 마감한 회차도
  * '점검 완료'로 적는다(사용자 결정) — 남은 작업 · 결과 불명 같은 자세한 줄은 점검 진행 상태 카드(urlOutcomeText)에 남고,
@@ -466,8 +471,19 @@ export function JobSummary({
       </Isec>
       {job?.account_auth ? (
         <Isec t="시험 계정 인증">
-          {/* 계정별 결과 값('비인증 진행 · 로그인 실패' 등)이 말한다 — 아래 안내 글은 뺐다(사용자 11/18) */}
-          <Kv rows={urlAccountAuthRows(job.account_auth)} />
+          {/* 계정별 결과 값('비인증 진행 · 로그인 실패' 등)이 말한다 — 아래 안내 글은 뺐다(사용자 11/18).
+              계정 이름은 라벨 순으로 '계정 A · 계정 B'(사용자 11/18), 서버 라벨은 마우스를 올리면 보인다 */}
+          <Kv
+            rows={urlAccountAuthRows(job.account_auth).map(
+              ([label, result], i) =>
+                [
+                  <span key={label} title={label}>
+                    {accountName(i)}
+                  </span>,
+                  result,
+                ] as const,
+            )}
+          />
         </Isec>
       ) : null}
       <Isec>
