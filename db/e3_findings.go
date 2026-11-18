@@ -222,7 +222,7 @@ func (d *DB) ControlledFindingRecord(ctx context.Context, findingID int64) ([]by
 	var payload, digest []byte
 	err := d.QueryRowContext(ctx, `SELECT v.payload_canonical,v.payload_digest FROM e3_verdict_links l
 JOIN e3_verdict_issuances i ON i.id=l.issuance_id JOIN e3_oracle_verdicts v ON v.id=i.verdict_id
-WHERE l.finding_id=$1`, findingID).Scan(&payload, &digest)
+WHERE l.finding_id=$1 AND i.source_kind='eval'`, findingID).Scan(&payload, &digest)
 	if err != nil {
 		return nil, controlledFindingStoreError{err}
 	}

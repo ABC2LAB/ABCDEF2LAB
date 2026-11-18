@@ -135,7 +135,7 @@ func loadDiagnosticRemediationSource(ctx context.Context, q DiagnosticRemediatio
 		err = q.QueryRowContext(ctx, `SELECT to_jsonb(f)::text,f.evidence_version,f.report_evidence_version,f.vulnclass,f.evidence,COALESCE(f.report,''),COALESCE(l.evidence_version,0),COALESCE(v.oracle_value,''),COALESCE(m.canonical,''::bytea),COALESCE(m.digest,''::bytea),COALESCE(v.payload_canonical,''::bytea),COALESCE(v.payload_digest,''::bytea)
  FROM findings f JOIN tasks t ON t.id=f.task_id
  LEFT JOIN e3_verdict_links l ON l.finding_id=f.id AND l.task_id=f.task_id
- LEFT JOIN e3_verdict_issuances i ON i.id=l.issuance_id AND i.task_id=f.task_id
+ LEFT JOIN e3_verdict_issuances i ON i.id=l.issuance_id AND i.task_id=f.task_id AND i.source_kind='eval'
  LEFT JOIN e3_evidence_manifests m ON m.id=i.manifest_id AND m.task_id=f.task_id
  LEFT JOIN e3_oracle_verdicts v ON v.id=i.verdict_id
  WHERE f.task_id=$1 AND f.id=$2 AND t.deleted_at IS NULL AND octet_length(to_jsonb(f)::text)+COALESCE(octet_length(m.canonical),0)+COALESCE(octet_length(v.payload_canonical),0)<=$3`, taskID, id, diagnosticRemediationByteLimit).Scan(&raw, &evidenceVersion, &reportVersion, &vulnclass, &evidence, &report, &linkedVersion, &value, &manifest, &manifestDigest, &payload, &payloadDigest)
@@ -188,7 +188,7 @@ func loadDiagnosticRemediationSource(ctx context.Context, q DiagnosticRemediatio
  FROM e3_verdict_issuances i JOIN tasks t ON t.id=i.task_id JOIN e3_oracle_verdicts v ON v.id=i.verdict_id
  JOIN e3_evidence_manifests m ON m.id=i.manifest_id AND m.task_id=i.task_id
  LEFT JOIN e3_verdict_links l ON l.issuance_id=i.id
- WHERE i.task_id=$1 AND i.id=$2 AND t.deleted_at IS NULL AND l.id IS NULL AND octet_length(m.canonical)+octet_length(v.payload_canonical)<=$3`, taskID, id, diagnosticRemediationByteLimit).Scan(&raw, &version, &value, &manifest, &digest, &payload, &payloadDigest)
+ WHERE i.task_id=$1 AND i.id=$2 AND i.source_kind='eval' AND t.deleted_at IS NULL AND l.id IS NULL AND octet_length(m.canonical)+octet_length(v.payload_canonical)<=$3`, taskID, id, diagnosticRemediationByteLimit).Scan(&raw, &version, &value, &manifest, &digest, &payload, &payloadDigest)
 		if err != nil {
 			return in, err
 		}
@@ -267,7 +267,7 @@ func (d *DB) SaveDiagnosticRemediation(ctx context.Context, taskID int64, entryI
 		err = tx.QueryRowContext(ctx, `SELECT id FROM findings WHERE id=$1 AND task_id=$2 FOR UPDATE`, id, taskID).Scan(&locked)
 	case "verdict":
 		var locked int64
-		err = tx.QueryRowContext(ctx, `SELECT id FROM e3_verdict_issuances WHERE id=$1 AND task_id=$2 FOR UPDATE`, id, taskID).Scan(&locked)
+		err = tx.QueryRowContext(ctx, `SELECT id FROM e3_verdict_issuances WHERE id=$1 AND task_id=$2 AND source_kind='eval' FOR UPDATE`, id, taskID).Scan(&locked)
 	}
 	if err != nil {
 		return out, err
