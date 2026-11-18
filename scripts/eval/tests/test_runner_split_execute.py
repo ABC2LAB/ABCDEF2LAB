@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from runner import RESULT_NAME, Clock  # noqa: E402
 from runner_probe import INVALID, PASS, VIOLATION, ProbeOutcome  # noqa: E402
+from runner_product import ProductAPIError  # noqa: E402
 from runner_split_probe import SplitProbeOutcome  # noqa: E402
 from runner_split_run import SplitRunSpec, execute_split_run  # noqa: E402
 from runner_window import WatchSample  # noqa: E402
@@ -151,6 +152,9 @@ class FakePorts:
         self.probe_status = {"pre": PASS, "post": PASS}
         self.events_raw: list = []
         self.statuses = [{"id": "draft-1", "state": "running", "phase": "execution"}]
+        self.workflow = {"job_id": "draft-1", "endpoints": [{"source": "browser_navigation"}, {"source": "api_recon_runtime"},
+                                                            {"source": "html_link"}, {"source": "html_link"}],
+                         "counts": {"omitted": 0}}
         self.record = {"version": 1, "task_id": 42, "goal": dict(GOAL),
                        "model": {"requests": 2, "sampling_overwrites": 0, "sampling": dict(SAMPLING)},
                        "run": {"phase": "closed", "run_ref": "run-draft-1",
@@ -300,6 +304,12 @@ class FakePorts:
         self._call("run_record")
         return self.record
 
+    def workflow_snapshot(self, draft_id):
+        self._call("workflow_snapshot")
+        if isinstance(self.workflow, Exception):
+            raise self.workflow
+        return self.workflow
+
     def copy_boundary_evidence(self):
         self._call("copy_boundary_evidence")
 
@@ -357,7 +367,7 @@ def run(mutate=None, **spec_changes):
 
 ORDER_HEAD = ["preexisting", "image_ids", "meter_describe", "tool_surface", "host_spec", "planned_subnets", "up", "snapshot:pre", "check:pre", "probes:pre", "dns_token",
               "events:start", "watch:start", "scoreboard:pre", "prepare_round", "start_round"]
-ORDER_TAIL = ["seal", "meter:drained", "stop_round", "wait_closed", "snapshot:post", "check:post", "probes:post", "scoreboard:post",
+ORDER_TAIL = ["seal", "meter:drained", "stop_round", "wait_closed", "workflow_snapshot", "snapshot:post", "check:post", "probes:post", "scoreboard:post",
               "stop_boundary", "watch:stop",
               "events:stop", "status", "run_record", "control_policy", "product_files", "runtime_conditions",
               "copy_boundary_evidence",
@@ -379,7 +389,12 @@ class TestOrder(unittest.TestCase):
                                                "pre-probe.json",
                                                "post-probe.json", "task.json", "llm-summary.json",
                                                "window-watch.json", "product-end.json", "product-model.json", "tool-surface.json",
-                                               "product-files.json", RESULT_NAME})
+                                               "product-files.json", "discovery-sources.json", RESULT_NAME})
+        self.assertEqual(evidence.files["discovery-sources.json"], {
+            "format": "abc2lab-eval-runner-discovery-sources-v1", "endpoints": 4,
+            "by_source": {"api_recon_runtime": 1, "browser_navigation": 1, "html_link": 2}, "browser": 1, "api_recon": 1,
+            "omitted": 0, "detail_truncated": False})
+        self.assertEqual(result["discovery_sources"], evidence.files["discovery-sources.json"])
         self.assertEqual(evidence.files[RESULT_NAME], result)
         # 결정안 §3.3 제품 블록 근거: 파일 원본 SHA 다섯 + 상한 스냅숏 지문, E② 정책 내용 지문, 도구 면 지문.
         from preservation_record import digest
@@ -926,6 +941,30 @@ class TestPreservationV3(unittest.TestCase):
         plain, ports, evidence = run()
         self.assertNotIn("sign", ports.calls)
         self.assertNotIn(NAME, evidence.files)
+
+
+
+class TestDiscoverySources(unittest.TestCase):
+    """O 끝 워크플로 snapshot의 발견 출처별 건수(고정 초안 §8). 기록만 하고 회차 유효성에 쓰지 않는다."""
+
+    def test_counts_by_source_and_groups(self):
+        from runner_split_run import discovery_sources
+        snapshot = {"endpoints": [{"source": "browser_xhr"}, {"source": "browser_form"}, {"source": "api_recon_static"},
+                                  {"source": "bundle_string", "path": "/secret-looking"}, {"source": "Bad Source"}, {}, "x"],
+                    "counts": {"omitted": 3}, "detail_truncated": True}
+        got = discovery_sources(snapshot)
+        self.assertEqual(got, {"format": "abc2lab-eval-runner-discovery-sources-v1", "endpoints": 7,
+                               "by_source": {"api_recon_static": 1, "browser_form": 1, "browser_xhr": 1, "bundle_string": 1,
+                                             "invalid": 3},
+                               "browser": 2, "api_recon": 1, "omitted": 3, "detail_truncated": True})
+        self.assertNotIn("secret-looking", json.dumps(got))  # 경로는 남기지 않는다
+        self.assertIsNone(discovery_sources({"endpoints": [], "counts": {"omitted": -1}})["omitted"])
+
+    def test_read_failure_is_recorded_not_fatal(self):
+        result, ports, evidence = run(lambda p: setattr(p, "workflow", ProductAPIError("product_workflow_invalid")))
+        self.assertEqual(result["status"], "complete", result)
+        self.assertEqual(evidence.files["discovery-sources.json"],
+                         {"format": "abc2lab-eval-runner-discovery-sources-v1", "error": "product_workflow_invalid"})
 
 
 if __name__ == "__main__":

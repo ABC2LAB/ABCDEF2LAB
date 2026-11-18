@@ -413,6 +413,9 @@ class DockerSplitPorts:
     def run_record(self, task_id: str) -> dict:
         return self.driver.run_record(task_id)
 
+    def workflow_snapshot(self, draft_id: str) -> dict:
+        return self.driver.workflow(draft_id)
+
     # ── 봉인·정지 ───────────────────────────────────────────────────────────────────────────────────────────
     def seal(self, meter_container_id: str) -> None:
         self.docker.signal(meter_container_id, "USR1")
