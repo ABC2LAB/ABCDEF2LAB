@@ -57,8 +57,9 @@ func TestWorkerProviderRequestCarriesByteCutEndpointList(t *testing.T) {
 		t.Fatal("actual crawl path did not close", reason, err, crawls)
 	}
 	snap, err := flow.Snapshot()
-	if err != nil || snap.Stage != "diagnosing" || snap.Counts.Omitted == 0 || snap.Counts.ModelOmitted == 0 {
-		t.Fatalf("fixture must cut both lists: stage=%s omitted=%d model_omitted=%d err=%v", snap.Stage, snap.Counts.Omitted, snap.Counts.ModelOmitted, err)
+	// 공개 목록은 바이트로 잘리고(omitted>0), 모델 목록은 공개 목록 전부를 받는다(§5: 모델 상한 = 공개 투영 상한).
+	if err != nil || snap.Stage != "diagnosing" || snap.Counts.Omitted == 0 || snap.Counts.ModelOmitted != 0 {
+		t.Fatalf("fixture must cut only the public list: stage=%s omitted=%d model_omitted=%d err=%v", snap.Stage, snap.Counts.Omitted, snap.Counts.ModelOmitted, err)
 	}
 
 	provider := &e2PromptCaptureProvider{}
@@ -88,8 +89,14 @@ func TestWorkerProviderRequestCarriesByteCutEndpointList(t *testing.T) {
 		t.Fatal("worker endpoint list is not a JSON array")
 	}
 	system := strings.Join(provider.request.System, "\n")
-	if !strings.Contains(system, strconv.FormatUint(snap.Counts.ModelOmitted, 10)+" more selected endpoints were left out") {
-		t.Fatal("worker system prompt does not report omitted endpoints")
+	selected := 0
+	for _, e := range snap.Endpoints {
+		if e.Selected {
+			selected++
+		}
+	}
+	if len(rows) != selected || strings.Contains(system, "left out") {
+		t.Fatalf("worker must receive every selected endpoint: rows=%d selected=%d", len(rows), selected)
 	}
 	t.Logf("public=%d omitted=%d model_rows=%d model_omitted=%d model_bytes=%d", len(snap.Endpoints), snap.Counts.Omitted, len(rows), snap.Counts.ModelOmitted, len(data))
 }

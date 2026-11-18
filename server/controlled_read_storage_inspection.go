@@ -97,7 +97,7 @@ func storageInspectionObjects() []storageInspectionObject {
 		{"evidence_revision_operations", "operation_ref:text revision:int8 request_digest:bytea recorded_at:timestamptz"},
 		{"e3_evidence_manifests", "id:int8 task_id:int8 execution_ref:text evidence_revision:int8 canonical:bytea digest:bytea"},
 		{"e3_oracle_verdicts", "id:int8 record_version:int2 payload_canonical:bytea payload:jsonb payload_digest:bytea oracle_value:text"},
-		{"e3_verdict_issuances", "id:int8 verdict_id:int8 manifest_id:int8 task_id:int8 exploration_id:int8 intent_id:int8 mode_version:int8 purpose:text execution_ref:text case_ref:text resource_ref:text eval_run_id:text model_tag:text reset_generation:text kg_snapshot_ref:text kg_policy_version:text kg_snapshot_digest:bytea harness_generation_ref:text target_instance_ref:text operation_key:bytea input_digest:bytea binding_canonical:bytea"},
+		{"e3_verdict_issuances", "id:int8 verdict_id:int8 manifest_id:int8 task_id:int8 exploration_id:int8 intent_id:int8 mode_version:int8 purpose:text execution_ref:text case_ref:text resource_ref:text eval_run_id:text model_tag:text reset_generation:text kg_snapshot_ref:text kg_policy_version:text kg_snapshot_digest:bytea harness_generation_ref:text target_instance_ref:text operation_key:bytea input_digest:bytea binding_canonical:bytea source_kind:text"},
 		{"e3_verdict_links", "id:int8 issuance_id:int8 task_id:int8 finding_id:int8 purpose:text evidence_version:int8"},
 		{"tasks", "id:int8 exploration_id:int8 deleted_at:timestamptz"},
 		{"task_archives", "task_id:int8 state:text"},

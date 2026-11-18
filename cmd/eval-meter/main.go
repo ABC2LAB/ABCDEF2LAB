@@ -51,6 +51,7 @@ const usage = "Usage: eval-meter -role engine|observer -listen ADDR -upstream ht
 	"       eval-meter -role api-front -listen ADDR -upstream http://ENGINE:PORT\n" +
 	"       eval-meter -role e2-stub -listen ADDR -upstream http://METER:PORT -log-dir PRIVATE_DIR\n" +
 	"       eval-meter -role probe < PLAN_JSON\n" +
+	"       eval-meter -role describe  (marker fields and build info for the runner's pre-run check)\n" +
 	"       eval-meter -role statfs < {\"paths\":[\"/MOUNT/POINT\"]}  (inside the PID namespace of the measured container)\n"
 
 const (
@@ -79,6 +80,7 @@ const (
 	roleStatfs    = "statfs"
 	roleE2Stub    = "e2-stub"
 	roleStateRead = "state-read"
+	roleDescribe  = "describe"
 )
 
 // Bounds on the gateway's verification so a run cannot wait on it forever.
@@ -107,7 +109,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("eval-meter", flag.ContinueOnError)
 	// The default diagnostics echo argument values, which may include paths.
 	flags.SetOutput(io.Discard)
-	role := flags.String("role", "", "engine, observer, probe, llm-gateway, generation-verify, api-front, e2-stub or statfs")
+	role := flags.String("role", "", "engine, observer, probe, llm-gateway, generation-verify, api-front, e2-stub, statfs or describe")
 	listen := flags.String("listen", "", "listen address")
 	upstream := flags.String("upstream", "", "target origin http://HOST:PORT")
 	logDir := flags.String("log-dir", "", "existing private 0700 directory for evidence")
@@ -148,6 +150,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	var gatewayCfg gatewayConfig
 	switch *role {
+	case roleDescribe:
+		// 다른 칸을 받지 않는다. 망·파일·입력 없이 자기 표식 칸과 빌드 정보만 쓴다.
+		if *listen != "" || *upstream != "" || *logDir != "" || *allowPath != "" || *pathLog || *pathKeyFile != "" {
+			return fail(stderr, invalidInput)
+		}
+		return runDescribe(stdout, stderr)
 	case roleProbe:
 		if *listen != "" || *upstream != "" || *logDir != "" || *allowPath != "" {
 			return fail(stderr, invalidInput)
@@ -255,7 +263,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		handler, finish = o, o.close
 	case roleGateway:
-		g, code := newLLMGateway(dir, gatewayCfg, defaultUpstreamTransport(), time.Now, time.Sleep)
+		g, code := newRunningGateway(dir, gatewayCfg)
 		if code != "" {
 			return fail(stderr, code)
 		}
@@ -438,7 +446,7 @@ func generationVerifyFromFlags(upstream, provider, generationPath string, attemp
 		attempts >= 1 && attempts <= maxVerifyAttempts && interval > 0 && interval <= maxVerifyInterval && validKey(key)
 	client := &http.Client{Transport: defaultUpstreamTransport(), Timeout: generationLookupTimeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	return generationVerifier{upstream: u, path: generationPath, key: key, attempts: attempts, interval: interval, client: client, sleep: time.Sleep}, ok
+	return generationVerifier{upstream: u, path: generationPath, key: key, attempts: attempts, interval: interval, client: client, sleep: time.Sleep, now: time.Now}, ok
 }
 
 // parseGatewayUpstream accepts a bare origin; the gateway forwards the

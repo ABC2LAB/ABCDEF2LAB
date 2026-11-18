@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -106,6 +107,15 @@ type generationResult struct {
 	Status       string            `json:"status"`
 	ProviderName string            `json:"provider_name"`
 	Attempts     []providerAttempt `json:"attempts"`
+	Lookup       lookupTrace       `json:"lookup"`
+}
+
+// lookupTrace는 그 generation 조회의 시도 수와 마지막 응답 종류다(값·본문 없음). 미확인이 통계 지연인지(http_404 등)
+// 즉시 거부인지(http_401·http_403)를 회차 뒤에 가르려고 남긴다(2026-11-18 VAmPI 유료 파일럿에서 원인을 가를 수 없었다).
+// 시한 안에 한 번도 묻지 못한 것은 시도 0, last=deadline이다. 물어봤는데 시한에 걸린 것은 시도 수가 설정보다 적다.
+type lookupTrace struct {
+	Tries int    `json:"tries"`
+	Last  string `json:"last"`
 }
 
 // verifiedMarker reports what was served and by whom; whether that matches the
@@ -138,13 +148,16 @@ type verifiedMarker struct {
 type scannerKey struct{}
 
 type llmGateway struct {
-	cfg       gatewayConfig
-	proxy     *httputil.ReverseProxy
-	client    *http.Client
-	dir       *os.File
-	now       func() time.Time
-	sleep     func(time.Duration)
-	verifyErr chan error
+	cfg   gatewayConfig
+	proxy *httputil.ReverseProxy
+	// lookupTransport는 generation 조회 전용 연결을 조회 때마다 새로 만든다. 모델 호출 프록시의 연결 풀을 같이 쓰지 않는다:
+	// 2026-11-18 VAmPI 유료 파일럿 B 1차에서 봉인 직후 조회가 몇 분 지난 호출까지 전부 바로 미확인으로 끝났고(O 쪽 새
+	// 프로세스 조회는 확인됨), 남은 후보 원인이 이 공유였다. O의 generation-verify(새 프로세스)와 같은 조건으로 맞춘다.
+	lookupTransport func() http.RoundTripper
+	dir             *os.File
+	now             func() time.Time
+	sleep           func(time.Duration)
+	verifyErr       chan error
 
 	mu                sync.Mutex
 	log               *rowLog
@@ -169,22 +182,32 @@ type llmGateway struct {
 	logFailed         bool
 }
 
+// gatewayTransports는 모델 호출 프록시 transport와 generation 조회 전용 transport 생성기를 돌려준다. 조회는 부를 때마다
+// 새 transport라 프록시의 연결 풀과 섞이지 않는다.
+func gatewayTransports() (http.RoundTripper, func() http.RoundTripper) {
+	return defaultUpstreamTransport(), func() http.RoundTripper { return defaultUpstreamTransport() }
+}
+
+// newRunningGateway는 실제 실행용 게이트웨이다(main이 부른다): 프록시와 조회 연결을 나누고 실제 시계를 쓴다.
+func newRunningGateway(dir *os.File, cfg gatewayConfig) (*llmGateway, string) {
+	proxy, lookup := gatewayTransports()
+	return newLLMGateway(dir, cfg, proxy, lookup, time.Now, time.Sleep)
+}
+
 func defaultUpstreamTransport() http.RoundTripper {
 	// No environment proxy: the gateway must reach the configured upstream itself.
 	return &http.Transport{Proxy: nil, ForceAttemptHTTP2: true, TLSHandshakeTimeout: upstreamTLSTimeout}
 }
 
-func newLLMGateway(dir *os.File, cfg gatewayConfig, transport http.RoundTripper, now func() time.Time,
-	sleep func(time.Duration)) (*llmGateway, string) {
+func newLLMGateway(dir *os.File, cfg gatewayConfig, transport http.RoundTripper, lookupTransport func() http.RoundTripper,
+	now func() time.Time, sleep func(time.Duration)) (*llmGateway, string) {
 	file, code := createPrivateFile(dir, llmLogName)
 	if code != "" {
 		return nil, code
 	}
-	g := &llmGateway{cfg: cfg, dir: dir, now: now, sleep: sleep, log: &rowLog{file: file},
+	g := &llmGateway{cfg: cfg, dir: dir, now: now, sleep: sleep, log: &rowLog{file: file}, lookupTransport: lookupTransport,
 		cancels: map[uint64]context.CancelFunc{}, seenIDs: map[string]bool{}, verifyErr: make(chan error, 1),
 		upstreamEnds: map[string]uint64{endClientClosedAfterDone: 0, endClientClosedBeforeDone: 0, endUpstreamCutAfterDone: 0, endUpstreamCutBeforeDone: 0}}
-	g.client = &http.Client{Transport: transport, Timeout: generationLookupTimeout,
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	g.proxy = &httputil.ReverseProxy{
 		Transport:     transport,
 		FlushInterval: -1, // stream every chunk as it arrives
@@ -581,9 +604,9 @@ func (g *llmGateway) maybeDrainedLocked(at time.Time) {
 func (g *llmGateway) verify(ids []string) error {
 	results := make([]generationResult, 0, len(ids))
 	if g.cfg.backend == backendAPI {
-		for _, id := range ids {
-			results = append(results, g.verifier().lookup(id))
-		}
+		verifier := g.verifier()
+		results = verifier.lookupAll(ids)
+		verifier.client.CloseIdleConnections()
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -612,49 +635,95 @@ type generationVerifier struct {
 	interval time.Duration
 	client   *http.Client
 	sleep    func(time.Duration)
+	now      func() time.Time
 }
 
+// verifier는 부를 때마다 조회 전용 새 연결(lookupTransport)로 클라이언트를 만든다. 봉인 뒤 한 번 부른다.
 func (g *llmGateway) verifier() generationVerifier {
+	client := &http.Client{Transport: g.lookupTransport(), Timeout: generationLookupTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	return generationVerifier{upstream: g.cfg.upstream, path: g.cfg.generationPath, key: g.cfg.key,
-		attempts: g.cfg.verifyAttempts, interval: g.cfg.verifyInterval, client: g.client, sleep: g.sleep}
+		attempts: g.cfg.verifyAttempts, interval: g.cfg.verifyInterval, client: client, sleep: g.sleep, now: g.now}
 }
 
-func (v generationVerifier) lookup(id string) generationResult {
-	endpoint := *v.upstream
-	endpoint.Path = v.path
-	endpoint.RawQuery = url.Values{"id": {id}}.Encode()
-	for attempt := 1; attempt <= v.attempts; attempt++ {
-		result, retry := v.lookupOnce(endpoint.String(), id)
-		if !retry {
-			return result
+// lookupDeadline은 조회 전체의 시한이다: 쉬는 시간 상한(시도 수 × 간격)에 조회 한 번의 시간 상한을 더한다. 시한이 지나면
+// 더 묻지 않고 남은 것을 미확인(last=deadline)으로 표식에 적는다. 그래서 조회가 끝나는 시각은 시한 + 조회 한 번의 시간 상한을
+// 넘지 않고, 러너는 그보다 긴 대기 시한(runner_config가 검사)으로 표식을 늘 받는다(2026-11-18 파일럿: 표식 없이 시한 초과).
+func (v generationVerifier) lookupDeadline() time.Duration {
+	return time.Duration(v.attempts)*v.interval + generationLookupTimeout
+}
+
+// lookupAll은 generation들을 라운드로 조회한다. 라운드마다 아직 답이 정해지지 않은 것만 한 번씩 묻고, 라운드 사이에만
+// 쉰다. 건마다 순서대로 재시도하면 통계가 늦을 때 걸리는 시간이 건수에 비례해 러너 대기 시한을 넘는다(2026-11-18 파일럿).
+// 이렇게 하면 쉬는 시간의 합이 (시도 수 - 1) × 간격을 넘지 않는다. 결과는 입력 순서다.
+func (v generationVerifier) lookupAll(ids []string) []generationResult {
+	results := make([]generationResult, len(ids))
+	traces := make([]lookupTrace, len(ids))
+	pending := make([]int, len(ids))
+	for i := range ids {
+		pending[i] = i
+	}
+	deadline := v.now().Add(v.lookupDeadline())
+	expired := false
+	for round := 1; round <= v.attempts && len(pending) > 0 && !expired; round++ {
+		var next []int
+		for n, i := range pending {
+			if !v.now().Before(deadline) {
+				expired = true
+				next = append(next, pending[n:]...)
+				break
+			}
+			endpoint := *v.upstream
+			endpoint.Path = v.path
+			endpoint.RawQuery = url.Values{"id": {ids[i]}}.Encode()
+			result, retry, last := v.lookupOnce(endpoint.String(), ids[i])
+			traces[i].Tries++
+			traces[i].Last = last
+			if retry {
+				next = append(next, i)
+				continue
+			}
+			results[i] = result
 		}
-		if attempt < v.attempts {
+		pending = next
+		if len(pending) > 0 && round < v.attempts && !expired {
 			v.sleep(v.interval)
 		}
 	}
-	return generationResult{ID: id, Status: "unverified", Attempts: []providerAttempt{}}
+	for _, i := range pending {
+		results[i] = generationResult{ID: ids[i], Status: "unverified", Attempts: []providerAttempt{}}
+		if traces[i].Tries == 0 {
+			traces[i].Last = "deadline" // 시한 안에 한 번도 묻지 못했다(물어본 것은 마지막 응답 종류가 남는다)
+		}
+	}
+	for i := range results {
+		results[i].Lookup = traces[i]
+	}
+	return results
 }
 
 // lookupOnce returns retry=true for answers that may change with time (stats
 // not ready yet, rate limits, upstream errors) and false for a final answer.
-func (v generationVerifier) lookupOnce(endpoint, id string) (generationResult, bool) {
+// last는 응답 종류(verified, http_<코드>, network_error, request_error, body_invalid, no_provider)다.
+func (v generationVerifier) lookupOnce(endpoint, id string) (generationResult, bool, string) {
 	unverified := generationResult{ID: id, Status: "unverified", Attempts: []providerAttempt{}}
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
-		return unverified, false
+		return unverified, false, "request_error"
 	}
 	req.Header.Set("Authorization", "Bearer "+v.key)
 	req.Header.Set("Accept", "application/json")
 	resp, err := v.client.Do(req)
 	if err != nil {
-		return unverified, true
+		return unverified, true, "network_error"
 	}
 	defer resp.Body.Close()
+	code := "http_" + strconv.Itoa(resp.StatusCode)
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return unverified, false
+		return unverified, false, code
 	}
 	if resp.StatusCode != http.StatusOK {
-		return unverified, true
+		return unverified, true, code
 	}
 	var stats struct {
 		Data *struct {
@@ -667,16 +736,18 @@ func (v generationVerifier) lookupOnce(endpoint, id string) (generationResult, b
 		} `json:"data"`
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxGenerationBytes+1))
-	if err != nil || len(raw) > maxGenerationBytes || json.Unmarshal(raw, &stats) != nil ||
-		stats.Data == nil || stats.Data.ProviderName == nil || *stats.Data.ProviderName == "" {
-		return unverified, true
+	if err != nil || len(raw) > maxGenerationBytes || json.Unmarshal(raw, &stats) != nil || stats.Data == nil {
+		return unverified, true, "body_invalid"
+	}
+	if stats.Data.ProviderName == nil || *stats.Data.ProviderName == "" {
+		return unverified, true, "no_provider"
 	}
 	result := generationResult{ID: id, Status: "verified", ProviderName: *stats.Data.ProviderName,
 		Attempts: make([]providerAttempt, 0, len(stats.Data.ProviderResponses))}
 	for _, attempt := range stats.Data.ProviderResponses {
 		result.Attempts = append(result.Attempts, providerAttempt(attempt))
 	}
-	return result, false
+	return result, false, "verified"
 }
 
 func (g *llmGateway) writeRowLocked(row llmRow) {

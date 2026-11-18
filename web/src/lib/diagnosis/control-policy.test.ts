@@ -1,61 +1,90 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("./api", async (original) => ({
+  ...(await original<typeof import("./api")>()),
+  apiFetch: vi.fn(),
+}));
+
+import { ApiError, apiFetch } from "./api";
 import {
+  CONTROL_POLICY_VIEW_FORMAT,
   type ControlPolicy,
   getControlPolicy,
-  normalizePolicy,
+  instantCeilMs,
+  parseControlPolicyView,
   policyExpired,
   ruleAllowsWrite,
+  rulePathText,
   rulesMissingMethods,
   summarize,
+  validConnectIp,
+  validOrigin,
 } from "./control-policy";
+
+afterEach(() => vi.mocked(apiFetch).mockReset());
 
 const base: ControlPolicy = {
   policyRef: "p1",
   policyRevision: "r1",
+  fingerprint: "",
   approvalMode: "workbench_selective_v1",
+  headerMode: "preserve",
   validFrom: "2026-11-01T00:00:00Z",
   validUntil: "2026-12-01T00:00:00Z",
   rules: [
     {
       ref: "a",
+      purpose: "",
       origin: "http://localhost:3000",
       connectIp: "127.0.0.1",
+      pathMatch: "prefix",
       pathPrefix: "/",
       pathScopeRef: null,
       methods: ["GET", "HEAD"],
-      credentialHeaderNames: ["Authorization"],
       tlsPinned: false,
     },
     {
       ref: "b",
+      purpose: "",
       origin: "http://localhost:3000",
       connectIp: "127.0.0.1",
+      pathMatch: "prefix",
       pathPrefix: "/api/",
       pathScopeRef: "s",
       methods: ["GET", "POST"],
-      credentialHeaderNames: [],
       tlsPinned: false,
     },
   ],
-  limits: { maxRequests: 100, maxConcurrent: 2, outputLimit: 1024, budgetRef: "b1" },
+  limits: {
+    maxRequests: 100,
+    maxAttempts: 200,
+    maxConcurrent: 2,
+    maxBodyBytes: 1024,
+    maxResponseBodyBytes: 1024,
+    requestTimeoutMs: 5000,
+  },
+  accounts: [],
   auditBound: true,
 };
 
 const at = (iso: string) => Date.parse(iso);
-
-/** 비null 기대를 좁혀서 결과를 쓴다(입력이 unknown 이라 narrow 가 필요). */
-function mustNormalize(raw: unknown): ControlPolicy {
-  const p = normalizePolicy(raw);
-  if (p === null) throw new Error("expected non-null policy");
-  return p;
-}
 
 describe("policyExpired (fail-closed)", () => {
   it("유효기간 안은 false, 밖(만료·미발효)은 true", () => {
     expect(policyExpired(base, at("2026-11-15T00:00:00Z"))).toBe(false);
     expect(policyExpired(base, at("2026-12-02T00:00:00Z"))).toBe(true); // 만료
     expect(policyExpired(base, at("2026-10-31T00:00:00Z"))).toBe(true); // 미발효
+  });
+  it("소수 밀리초 경계도 밀리초로 자르지 않는다(발효 전 0.5ms 는 미발효, 만료 0.5ms 전은 유효)", () => {
+    const p = { ...base, validFrom: "2026-11-01T00:00:00.0005Z", validUntil: "2026-12-01T00:00:00.0005Z" };
+    expect(policyExpired(p, at("2026-11-01T00:00:00Z"))).toBe(true);
+    expect(policyExpired(p, at("2026-11-01T00:00:00.001Z"))).toBe(false);
+    expect(policyExpired(p, at("2026-12-01T00:00:00Z"))).toBe(false);
+    expect(policyExpired(p, at("2026-12-01T00:00:00.001Z"))).toBe(true);
+    // 화면 타이머는 경계 뒤 첫 밀리초에 깨워야 상태가 바뀐다
+    expect(instantCeilMs("2026-11-01T00:00:00.0005Z")).toBe(at("2026-11-01T00:00:00.001Z"));
+    expect(instantCeilMs("2026-11-01T00:00:00Z")).toBe(at("2026-11-01T00:00:00Z"));
+    expect(instantCeilMs("2026-02-30T00:00:00Z")).toBeNaN();
   });
   it("날짜 파싱 불가는 안전쪽(만료)으로 본다", () => {
     expect(policyExpired({ ...base, validUntil: "nope" }, at("2026-11-15T00:00:00Z"))).toBe(true);
@@ -77,35 +106,326 @@ describe("쓰기 범위·메서드", () => {
   });
 });
 
-describe("normalizePolicy (fail-closed)", () => {
-  it("policyRef 없으면 null", () => {
-    expect(normalizePolicy(null)).toBeNull();
-    expect(normalizePolicy({ rules: [] })).toBeNull();
-  });
-  it("깨진 규칙은 버리고, 알 수 없는 승인 방식은 가장 보수적(요청마다 확인)으로", () => {
-    const n = mustNormalize({
-      policyRef: "x",
-      approvalMode: "weird",
-      rules: [{ origin: "http://h" }, { ref: "ok", origin: "http://h", methods: ["get"] }],
+// 서버 응답 모양(docs/contracts/workbench-live-data.md §3 예시와 같은 칸)
+const wire = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+  format: CONTROL_POLICY_VIEW_FORMAT,
+  policy_ref: "scope-target-1",
+  policy_revision: "rev-1",
+  policy_fingerprint_sha256: "ab".repeat(32),
+  approval_mode: "preauthorized_scope",
+  header_mode: "test_account_passthrough",
+  valid_from: "2026-11-13T00:00:00Z",
+  valid_until: "2026-11-13T04:00:00Z",
+  rules: [
+    {
+      ref: "target-path-a",
+      purpose: "",
+      origin: "https://shop.example",
+      connect_ip: "10.0.0.5",
+      path_prefix: "/api",
+      path_scope_ref: "readonly-path-a",
+      methods: ["GET", "HEAD", "POST"],
+      tls_pinned: true,
+    },
+  ],
+  limits: {
+    max_requests: 64,
+    max_attempts: 200,
+    max_concurrent: 1,
+    max_body_bytes: 65536,
+    max_response_body_bytes: 16777216,
+    request_timeout_ms: 5000,
+  },
+  accounts: ["tester-a"],
+  audit_bound: true,
+  ...over,
+});
+const rule0 = (over: Record<string, unknown>) => [{ ...(wire().rules as Record<string, unknown>[])[0], ...over }];
+
+describe("parseControlPolicyView (fail-closed)", () => {
+  it("계약 §3 응답을 화면 모양으로 바꾼다", () => {
+    const p = parseControlPolicyView(wire());
+    expect(p).toMatchObject({
+      policyRef: "scope-target-1",
+      approvalMode: "preauthorized_scope",
+      headerMode: "test_account_passthrough",
+      accounts: ["tester-a"],
+      auditBound: true,
+      limits: { maxRequests: 64, maxAttempts: 200, maxResponseBodyBytes: 16777216, requestTimeoutMs: 5000 },
     });
-    expect(n.approvalMode).toBe("confirm_every_request");
-    expect(n.rules).toHaveLength(1); // ref 없는 규칙 탈락
-    expect(n.rules[0].methods).toEqual(["GET"]); // 대문자 정규화
+    expect(p?.rules[0]).toMatchObject({ connectIp: "10.0.0.5", pathMatch: "prefix", tlsPinned: true });
+    expect(p?.rules[0].methods).toEqual(["GET", "HEAD", "POST"]);
+    expect(p?.mock).toBeUndefined();
   });
-  it("음수·비정상 limit 은 0 으로 떨어진다", () => {
-    expect(mustNormalize({ policyRef: "x", limits: { maxRequests: -5 } }).limits.maxRequests).toBe(0);
+  it("확정 몫: 칸 없음은 undefined, 0(꺼짐)·1/4 이하 양수는 그대로 — 칸 없음과 0을 섞지 않는다", () => {
+    const plain = parseControlPolicyView(wire());
+    expect(plain).not.toBeNull();
+    expect(plain).not.toHaveProperty("limits.e3Confirmation");
+    const off = parseControlPolicyView(
+      wire({ limits: { ...(wire().limits as object), e3_confirmation_requests: 0, e3_confirmation_timeout_ms: 0 } }),
+    );
+    expect(off).toMatchObject({ limits: { e3Confirmation: { requests: 0, timeoutMs: 0 } } });
+    const on = parseControlPolicyView(
+      wire({
+        limits: { ...(wire().limits as object), e3_confirmation_requests: 16, e3_confirmation_timeout_ms: 160000 },
+      }),
+    );
+    expect(on).toMatchObject({ limits: { e3Confirmation: { requests: 16, timeoutMs: 160000 } } });
+  });
+  it("확정 시간 몫 경계: 정확히 1/4 와 정확히 3,600,000ms 는 받는다", () => {
+    const quarter = parseControlPolicyView(
+      wire({
+        valid_from: "2026-11-13T00:00:00Z",
+        valid_until: "2026-11-13T01:00:00Z",
+        limits: { ...(wire().limits as object), e3_confirmation_requests: 1, e3_confirmation_timeout_ms: 900_000 },
+      }),
+    );
+    expect(quarter).toMatchObject({ limits: { e3Confirmation: { requests: 1, timeoutMs: 900_000 } } });
+    const max = parseControlPolicyView(
+      wire({
+        valid_from: "2026-11-13T00:00:00Z",
+        valid_until: "2026-11-13T04:00:00Z",
+        limits: { ...(wire().limits as object), e3_confirmation_requests: 1, e3_confirmation_timeout_ms: 3_600_000 },
+      }),
+    );
+    expect(max).toMatchObject({ limits: { e3Confirmation: { requests: 1, timeoutMs: 3_600_000 } } });
+  });
+  it("path_match exact 는 =/… 로 보이고, 생략은 접두", () => {
+    const p = parseControlPolicyView(wire({ rules: rule0({ path_match: "exact", path_prefix: "/rest/basket/1" }) }));
+    expect(p?.rules[0].pathMatch).toBe("exact");
+    expect(p && rulePathText(p.rules[0])).toBe("=/rest/basket/1");
+    expect(rulePathText(base.rules[1])).toBe("/api/");
+  });
+  it.each([
+    ["형식이 다름", { format: "abc2lab.control-policy-view/v2" }],
+    ["모르는 승인 방식", { approval_mode: "weird" }],
+    ["모르는 헤더 방식", { header_mode: "strip" }],
+    ["policy_ref 없음", { policy_ref: "" }],
+    ["상한 음수", { limits: { ...(wire().limits as object), max_requests: -1 } }],
+    ["상한 칸 빠짐", { limits: { max_requests: 1 } }],
+    ["감사 결속 칸 없음", { audit_bound: undefined }],
+    ["계정이 문자열 배열 아님", { accounts: [{ label: "a" }] }],
+    // 3차 리뷰 반례: 서버 정책 문서 검증(e2HTTPHostRef·양의 유효 창)이 거부하는 상위 칸
+    ["빈 개정", { policy_revision: "" }],
+    ["policy_ref 형식 밖(공백)", { policy_ref: "scope target" }],
+    ["policy_ref 형식 밖(/)", { policy_ref: "scope/target" }],
+    ["policy_revision 형식 밖(영숫자로 시작 안 함)", { policy_revision: "-rev" }],
+    ["policy_revision 129자", { policy_revision: `r${"x".repeat(128)}` }],
+    ["시작이 끝보다 뒤", { valid_from: "2026-11-13T05:00:00Z", valid_until: "2026-11-13T04:00:00Z" }],
+    ["시작과 끝이 같음", { valid_from: "2026-11-13T04:00:00Z", valid_until: "2026-11-13T04:00:00Z" }],
+    ["요청 상한 0", { limits: { ...(wire().limits as object), max_requests: 0 } }],
+    ["모르는 최상위 칸", { approved_by: "someone" }],
+    ["상한에 모르는 칸", { limits: { ...(wire().limits as object), max_bytes_total: 1 } }],
+    ["확정 몫 요청만", { limits: { ...(wire().limits as object), e3_confirmation_requests: 0 } }],
+    ["확정 몫 시간만", { limits: { ...(wire().limits as object), e3_confirmation_timeout_ms: 0 } }],
+    [
+      "확정 몫 요청 0·시간 양수",
+      { limits: { ...(wire().limits as object), e3_confirmation_requests: 0, e3_confirmation_timeout_ms: 1000 } },
+    ],
+    [
+      "확정 몫 요청 양수·시간 0",
+      { limits: { ...(wire().limits as object), e3_confirmation_requests: 5, e3_confirmation_timeout_ms: 0 } },
+    ],
+    [
+      "확정 몫 음수",
+      { limits: { ...(wire().limits as object), e3_confirmation_requests: -1, e3_confirmation_timeout_ms: 0 } },
+    ],
+    [
+      "확정 몫 null",
+      { limits: { ...(wire().limits as object), e3_confirmation_requests: null, e3_confirmation_timeout_ms: null } },
+    ],
+    [
+      "확정 몫이 요청 상한 1/4 초과",
+      { limits: { ...(wire().limits as object), e3_confirmation_requests: 17, e3_confirmation_timeout_ms: 1000 } },
+    ],
+    [
+      "확정 시간 몫이 3,600,000ms 초과(창 5시간이라 1/4 검사는 통과)",
+      {
+        valid_from: "2026-11-13T00:00:00Z",
+        valid_until: "2026-11-13T05:00:00Z",
+        limits: { ...(wire().limits as object), e3_confirmation_requests: 1, e3_confirmation_timeout_ms: 3_600_001 },
+      },
+    ],
+    [
+      "확정 시간 몫이 유효 창 1/4 초과(창 1시간, 1/4+1ms)",
+      {
+        valid_from: "2026-11-13T00:00:00Z",
+        valid_until: "2026-11-13T01:00:00Z",
+        limits: { ...(wire().limits as object), e3_confirmation_requests: 1, e3_confirmation_timeout_ms: 900_001 },
+      },
+    ],
+    ["지문이 SHA-256 16진 아님", { policy_fingerprint_sha256: "AB".repeat(32) }],
+    ["지문이 빈 문자열", { policy_fingerprint_sha256: "" }],
+    ["유효 시작이 시각 아님", { valid_from: "soon" }],
+    ["유효 끝이 시간대 없는 시각", { valid_until: "2026-11-13T04:00:00" }],
+    // 4차 리뷰 반례: Go time.Time JSON(parseRFC3339)이 거부하는 달력·시각 — Date.parse 는 다음 달로 넘겨 통과시킨다
+    ["없는 날짜(2월 30일)", { valid_until: "2026-02-30T04:00:00Z", valid_from: "2026-02-01T00:00:00Z" }],
+    ["평년 2월 29일", { valid_until: "2026-02-29T04:00:00Z", valid_from: "2026-02-01T00:00:00Z" }],
+    ["4월 31일", { valid_until: "2026-04-31T00:00:00Z", valid_from: "2026-04-01T00:00:00Z" }],
+    ["13월", { valid_until: "2026-13-01T00:00:00Z" }],
+    ["24시", { valid_until: "2026-11-13T24:00:00Z" }],
+    ["60초(윤초)", { valid_until: "2026-11-13T03:59:60Z" }],
+    ["시간대 시 24", { valid_until: "2026-11-13T04:00:00+24:00" }],
+    ["시간대 분 60", { valid_until: "2026-11-13T04:00:00+09:60" }],
+    ["소수 초 10자리", { valid_until: "2026-11-13T04:00:00.0000000001Z" }],
+    [
+      "끝이 시작보다 1ns 앞",
+      { valid_from: "2026-11-13T04:00:00.000000002Z", valid_until: "2026-11-13T04:00:00.000000001Z" },
+    ],
+    ["시간대가 달라도 같은 순간", { valid_from: "2026-11-13T04:00:00Z", valid_until: "2026-11-13T13:00:00+09:00" }],
+  ])("%s → null (보수적으로 추정해 그리지 않는다)", (_name, over) => {
+    expect(parseControlPolicyView(wire(over))).toBeNull();
+  });
+  it.each([
+    ["미지원 path_match", { path_match: "regex" }],
+    ["null path_match", { path_match: null }],
+    ["ref 없음", { ref: "" }],
+    ["methods 배열 아님", { methods: "GET" }],
+    ["tls_pinned 없음", { tls_pinned: undefined }],
+    ["모르는 purpose", { purpose: "admin_only" }],
+    ["purpose null", { purpose: null }],
+    ["빈 경로(넓은 범위로 보일 수 있음)", { path_prefix: "" }],
+    ["origin 에 경로", { origin: "https://shop.example/api" }],
+    ["origin scheme 밖", { origin: "ftp://shop.example" }],
+    ["경로가 / 로 시작 안 함", { path_prefix: "api" }],
+    ["소문자 메서드", { methods: ["get"] }],
+    ["path_scope_ref 없음", { path_scope_ref: undefined }],
+    ["규칙에 모르는 칸", { header_value: "x" }],
+    // 서버(e2proxy compileRules)가 실행에 올릴 수 없는 규칙 — #689 리뷰
+    [
+      "auth_prep 에 정확 경로 칸",
+      { purpose: "auth_prep", path_match: "exact", path_prefix: "/rest/user/login", methods: ["POST"] },
+    ],
+    ["auth_prep 에 GET", { purpose: "auth_prep", path_prefix: "/rest/user/login", methods: ["GET"] }],
+    ["auth_prep 에 POST 말고 더", { purpose: "auth_prep", path_prefix: "/rest/user/login", methods: ["POST", "PUT"] }],
+    ["auth_prep 이 루트 경로", { purpose: "auth_prep", path_prefix: "/", methods: ["POST"] }],
+    ["auth_prep 이 접두 경로(/로 끝남)", { purpose: "auth_prep", path_prefix: "/rest/", methods: ["POST"] }],
+    ["IP 형식 아닌 connect_ip", { connect_ip: "shop.example" }],
+    ["빈 connect_ip", { connect_ip: "" }],
+    ["IPv4 앞자리 0", { connect_ip: "010.0.0.5" }],
+    ["IPv4 범위 밖", { connect_ip: "10.0.0.256" }],
+    ["미지정 IPv4", { connect_ip: "0.0.0.0" }],
+    ["미지정 IPv6", { connect_ip: "::" }],
+    ["멀티캐스트 IPv4", { connect_ip: "224.0.0.1" }],
+    ["멀티캐스트 IPv6", { connect_ip: "ff02::1" }],
+    ["zone 붙은 IPv6", { connect_ip: "fe80::1%eth0" }],
+    ["E② 지원 밖 대문자 메서드", { methods: ["TRACE"] }],
+    ["E② 지원 밖 대문자 메서드(CONNECT)", { methods: ["GET", "CONNECT"] }],
+    ["빈 메서드", { methods: [] }],
+    ["중복 메서드", { methods: ["GET", "GET"] }],
+    ["경로에 .. 조각", { path_prefix: "/api/../admin" }],
+    ["경로에 // ", { path_prefix: "/api//x" }],
+    ["경로에 %", { path_prefix: "/api/%2e" }],
+    ["http 대상에 TLS 핀", { origin: "http://shop.example", tls_pinned: true }],
+    // 2차 리뷰 반례: 서버 canonicalAuthority·validRef 가 거부하는 값
+    ["origin 에 사용자 정보", { origin: "https://user:pw@shop.example" }],
+    ["origin 에 사용자 이름만", { origin: "https://user@shop.example" }],
+    ["빈 path_scope_ref", { path_scope_ref: "" }],
+    ["path_scope_ref 에 ://", { path_scope_ref: "scope://x" }],
+    ["ref 가 영숫자로 시작 안 함", { ref: "-a" }],
+    ["origin 호스트에 밑줄", { origin: "https://shop_example.test" }],
+    ["origin 포트 0", { origin: "https://shop.example:0" }],
+    ["origin 포트 범위 밖", { origin: "https://shop.example:65536" }],
+    ["origin 에 query", { origin: "https://shop.example/?a" }],
+  ])("규칙 하나가 깨지면(%s) 일부만 그리지 않고 정책 전체를 null", (_name, over) => {
+    expect(parseControlPolicyView(wire({ rules: [...rule0({}), ...rule0({ ref: "b", ...over })] }))).toBeNull();
+  });
+  it.each([
+    ["IPv6", "2001:db8::5"],
+    ["IPv4 대응 IPv6", "::ffff:10.0.0.5"],
+    ["루프백 IPv4", "127.0.0.1"],
+  ])("서버가 받는 연결 IP(%s)는 그대로 통과", (_name, ip) => {
+    expect(parseControlPolicyView(wire({ rules: rule0({ connect_ip: ip }) }))?.rules[0].connectIp).toBe(ip);
+  });
+  it("인증 준비 규칙은 로그인 경로 하나에 POST 만이면 받는다", () => {
+    const p = parseControlPolicyView(
+      wire({ rules: rule0({ purpose: "auth_prep", path_prefix: "/rest/user/login", methods: ["POST"] }) }),
+    );
+    expect(p?.rules[0]).toMatchObject({ purpose: "auth_prep", pathMatch: "prefix", methods: ["POST"] });
+  });
+  it("멀티캐스트 대응 IPv6(::ffff:224.0.0.1)도 거부", () => {
+    expect(validConnectIp("::ffff:224.0.0.1")).toBe(false);
+    expect(validConnectIp("::ffff:0.0.0.0")).toBe(false);
+  });
+  it("지문 생략(자격 pin 규칙)은 받고 빈 지문으로 둔다", () => {
+    const { policy_fingerprint_sha256: _omit, ...rest } = wire();
+    expect(parseControlPolicyView(rest)?.fingerprint).toBe("");
+  });
+  it("유효 창은 나노초까지 비교한다(1ns 차이도 양의 간격, 밀리초로 자르지 않음)", () => {
+    const p = parseControlPolicyView(
+      wire({ valid_from: "2026-11-13T04:00:00.000000001Z", valid_until: "2026-11-13T04:00:00.000000002Z" }),
+    );
+    expect(p?.validFrom).toBe("2026-11-13T04:00:00.000000001Z");
+  });
+  it("윤년 2월 29일·시간대 오프셋·0년대 연도는 받는다", () => {
+    expect(
+      parseControlPolicyView(wire({ valid_from: "2028-02-29T00:00:00Z", valid_until: "2028-03-01T00:00:00Z" })),
+    ).not.toBeNull();
+    // 13:00+09:00 = 04:00Z → 03:00Z 보다 뒤
+    expect(
+      parseControlPolicyView(wire({ valid_from: "2026-11-13T03:00:00Z", valid_until: "2026-11-13T13:00:00+09:00" })),
+    ).not.toBeNull();
+    // Date.UTC 는 0~99년을 1900년대로 바꾼다 — 0050년이 1950년보다 앞이어야 한다
+    expect(
+      parseControlPolicyView(wire({ valid_from: "0050-01-01T00:00:00Z", valid_until: "1950-01-01T00:00:00Z" })),
+    ).not.toBeNull();
+    expect(
+      parseControlPolicyView(wire({ valid_from: "1950-01-01T00:00:00Z", valid_until: "0050-01-01T00:00:00Z" })),
+    ).toBeNull();
+  });
+  it("빈 규칙 목록은 '확인 불가'(서버는 규칙 없는 정책을 실행에 올리지 않는다)", () => {
+    expect(parseControlPolicyView(wire({ rules: [] }))).toBeNull();
+  });
+  it("규칙 참조가 겹치면 '확인 불가'", () => {
+    expect(parseControlPolicyView(wire({ rules: [...rule0({ ref: "dup" }), ...rule0({ ref: "dup" })] }))).toBeNull();
+  });
+  it("규칙이 129개면 '확인 불가'(서버 상한 128)", () => {
+    const many = Array.from({ length: 129 }, (_, i) => rule0({ ref: `r${i}` })[0]);
+    expect(parseControlPolicyView(wire({ rules: many }))).toBeNull();
+    expect(parseControlPolicyView(wire({ rules: many.slice(0, 128) }))?.rules).toHaveLength(128);
+  });
+  it.each([
+    ["끝 슬래시", "https://shop.example/"],
+    ["포트", "http://localhost:3000"],
+    ["대괄호 IPv6", "http://[::1]:8080"],
+    ["대문자 호스트", "https://Shop.Example"],
+  ])("서버가 받는 origin(%s)은 통과", (_name, origin) => {
+    expect(validOrigin(origin)).toBe(true);
+    // http 대상은 TLS 핀이 결속될 수 없으므로 핀 없이 본다
+    expect(parseControlPolicyView(wire({ rules: rule0({ origin, tls_pinned: false }) }))?.rules[0].origin).toBe(origin);
+  });
+  it("null·배열은 null", () => {
+    expect(parseControlPolicyView(null)).toBeNull();
+    expect(parseControlPolicyView([])).toBeNull();
   });
 });
 
-describe("getControlPolicy (예시)", () => {
-  it("mock 정책을 돌려주고 비밀 값은 없다(자격 헤더는 이름만)", async () => {
-    const p = await getControlPolicy();
-    expect(p.mock).toBe(true);
-    for (const r of p.rules) {
-      for (const h of r.credentialHeaderNames) {
-        // 헤더 '이름'만 — 값(토큰/쿠키 문자열)이 아니다
-        expect(h).toMatch(/^[A-Za-z-]+$/);
-      }
-    }
+describe("getControlPolicy", () => {
+  it("task 가 없으면 예시(mock)를 보내지 않고 돌려준다", async () => {
+    const r = await getControlPolicy(null);
+    expect(r.state === "ready" && r.policy.mock).toBe(true);
+    expect(apiFetch).not.toHaveBeenCalled();
+  });
+  it("task 의 control-policy 경로를 읽어 정규화한다", async () => {
+    vi.mocked(apiFetch).mockResolvedValue(wire());
+    const r = await getControlPolicy("42");
+    expect(vi.mocked(apiFetch).mock.calls[0][0]).toBe("/api/tasks/42/control-policy");
+    expect(r.state === "ready" && r.policy.policyRef).toBe("scope-target-1");
+  });
+  it("숫자가 아닌 task 는 보내지 않고 invalid", async () => {
+    expect(await getControlPolicy("../1")).toEqual({ state: "invalid" });
+    expect(apiFetch).not.toHaveBeenCalled();
+  });
+  it("404 는 결속 전(unbound), 409 는 승인과 다름(mismatch), 깨진 본문은 invalid", async () => {
+    vi.mocked(apiFetch).mockRejectedValueOnce(new ApiError(404, "run_not_bound"));
+    expect(await getControlPolicy("1")).toEqual({ state: "unbound" });
+    vi.mocked(apiFetch).mockRejectedValueOnce(new ApiError(409, "policy_mismatch"));
+    expect(await getControlPolicy("1")).toEqual({ state: "mismatch" });
+    vi.mocked(apiFetch).mockResolvedValueOnce({ format: CONTROL_POLICY_VIEW_FORMAT });
+    expect(await getControlPolicy("1")).toEqual({ state: "invalid" });
+  });
+  it("그 밖의 실패는 그대로 던진다(화면이 '불러오지 못함')", async () => {
+    vi.mocked(apiFetch).mockRejectedValueOnce(new ApiError(500, "x"));
+    await expect(getControlPolicy("1")).rejects.toThrow("x");
   });
 });

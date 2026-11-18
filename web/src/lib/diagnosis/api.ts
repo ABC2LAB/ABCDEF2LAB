@@ -56,12 +56,24 @@ async function ensureSession(): Promise<Session | null> {
 
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  /** 서버가 오류와 함께 준 칸 이름(예: 정책 선언 400 의 `types[0].create.path`). 값이 아니라 위치만 담긴다. */
+  field?: string;
+  /** 오류 본문이 `{error: {code, retryable}}` 봉투(KG 조회 v1 §5.4)일 때의 고정 code·재조회 가능 여부. */
+  code?: string;
+  retryable?: boolean;
+  constructor(status: number, message: string, field?: string) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    if (field) this.field = field;
   }
 }
+
+/** 봉투 오류 code 로 받는 모양 — 소문자 식별자만(값·문장이 섞여 오면 버린다). */
+const ERROR_CODE = /^[a-z][a-z0-9_]{0,63}$/;
+
+/** 오류 본문의 칸 이름으로 받는 모양 — 이름·첨자·점만(값이 섞여 오면 버린다). */
+const ERROR_FIELD = /^[A-Za-z0-9_.[\]]{1,128}$/;
 
 const authListeners = new Set<() => void>();
 
@@ -94,13 +106,31 @@ function requireSignIn(): void {
 
 async function responseError(res: Response): Promise<ApiError> {
   let message = `HTTP ${res.status}`;
+  let field: string | undefined;
+  let code: string | undefined;
+  let retryable: boolean | undefined;
   try {
-    const body = (await res.json()) as { error?: string };
-    if (body?.error) message = body.error;
+    const body = (await res.json()) as { error?: unknown; field?: unknown };
+    if (typeof body?.error === "string" && body.error) message = body.error;
+    // 봉투 오류: code 와 retryable 둘 다 모양이 맞을 때만 받는다
+    const e = body?.error as { code?: unknown; retryable?: unknown } | null | undefined;
+    if (e && typeof e === "object" && typeof e.code === "string" && ERROR_CODE.test(e.code)) {
+      if (typeof e.retryable === "boolean") {
+        code = e.code;
+        retryable = e.retryable;
+        message = e.code;
+      }
+    }
+    if (typeof body?.field === "string" && ERROR_FIELD.test(body.field)) field = body.field;
   } catch {
     /* 본문 없음/비 JSON */
   }
-  return new ApiError(res.status, message);
+  const err = new ApiError(res.status, message, field);
+  if (code !== undefined) {
+    err.code = code;
+    err.retryable = retryable;
+  }
+  return err;
 }
 
 /** 저장된 토큰이나 개발용 자동 로그인으로 세션을 잇는다. 토큰의 유효성은 첫 API 응답이 판단한다. */

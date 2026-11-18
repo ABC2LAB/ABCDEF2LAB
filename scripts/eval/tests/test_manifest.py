@@ -14,6 +14,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import synthetic_gt  # noqa: E402,F401  합성 정답 목록을 먼저 끼운다(정답표 노출 방지)
 
 from manifest import Engine, ManifestError, load_manifests  # noqa: E402
 
@@ -88,7 +89,7 @@ class TestReject(_ManifestDir):
         self.assertRejected("문자열", "회차 배열")
 
     def test_unknown_field(self) -> None:
-        self.assertRejected([_run(name="View Basket")], "모르는 필드")
+        self.assertRejected([_run(name="Synthetic Bac H 1")], "모르는 필드")
 
     def test_missing_required(self) -> None:
         run = _run()

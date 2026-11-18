@@ -51,7 +51,13 @@ FIRST_LIMIT_FIELDS = frozenset({"value", "runner_limit", "runner_limit_elapsed_s
 RUNNER_LIMITS = frozenset({"runner_request_budget", "runner_time_budget"})
 # runner.first_limit과 같은 규칙(시험이 격자로 대조한다). 러너 종료 사유 → 러너 상한 이름.
 _LIMIT_BY_STOP = {"request_budget": "runner_request_budget", "time_budget": "runner_time_budget"}
-PRODUCT_FIELDS_V3 = frozenset({"source_sha", "image_ids", "file_sha256", "split_conditions", "sampling_overwrites", "call_records"})
+PRODUCT_FIELDS_V3 = frozenset({"source_sha", "image_ids", "file_sha256", "split_conditions", "sampling_overwrites", "call_records",
+                               "llm_verification"})
+# O 모델 호출 검증 상태(2026-11-18 사용자 결정). verified = OpenRouter 장부·호출 기록 대조와 사후 검증을 지났다.
+# not_applicable_synthetic = 합성 모델 회차라 대조할 장부가 없다. 이 값은 합성(synthetic_fixture) 기록에서만 받고, 실제 모델
+# 기록(model_run)에서 나오면 기록 전체를 무효로 본다.
+LLM_VERIFIED = "verified"
+LLM_NOT_APPLICABLE = "not_applicable_synthetic"
 PRODUCT_IMAGES = frozenset({"product", "explore_browser", "fixture"})
 PRODUCT_FILES = frozenset({"installation", "policy", "api_launch", "target_policy", "runtime_conditions", "control_limits"})
 SPLIT_CONDITION_FIELDS = frozenset({"workflow_defaults_sha256", "workflow_defaults", "workflow", "registration"})
@@ -134,9 +140,14 @@ def _boundary(directory: Path, rows: list[dict], meter: MeterFiles, path_key_ref
         _fail(str(exc))
 
 
+# 보존 기록의 회차 목적. 수용시험 회차와 분리 배치 공식 회차(2026-11-18 결정 (a), 공식 측정 프로토콜 §7 경로 틀)가 낸다.
+# 목적은 서명되고, 한 묶음 안에서 섞이지 않는다(수용시험 표에 공식 회차가 섞이지 않게, #699 리뷰).
+PRESERVATION_PURPOSES = ("browser_acceptance", "official")
+
+
 def build_payload(*, meter: MeterFiles, options: dict, run_id: str, side: str, repeat_index: int,
                   engine_source_sha: str, engine_image_id: str, conditions: dict, stop_reason: str,
-                  boundary: dict | None = None) -> dict:
+                  boundary: dict | None = None, purpose: str = "browser_acceptance") -> dict:
     """writer 정리 뒤 호출하는 서명 전 자료다. 최종 바이트를 읽고 기존 ports.sign으로 서명한다.
 
     layout은 호출자가 확인한 배치다. 현행 Docker 러너는 e2-legacy/v1만 발행하며, 탐색 경계가
@@ -163,7 +174,7 @@ def build_payload(*, meter: MeterFiles, options: dict, run_id: str, side: str, r
                                  or not isinstance(boundary["task_id"], str) or not isinstance(boundary["path_key_ref"], str)):
         _fail("preservation_boundary_missing")
     block = None if boundary is None else _boundary(Path(boundary["directory"]), rows, meter, boundary["path_key_ref"], boundary["task_id"])
-    payload = {"format": FORMAT, "purpose": "browser_acceptance", "series_ref": options["series_ref"],
+    payload = {"format": FORMAT, "purpose": purpose, "series_ref": options["series_ref"],
                "run_id": run_id, "side": side, "repeat_index": repeat_index,
                "engine_source_sha": engine_source_sha, "engine_image_id": engine_image_id,
                "execution_source": options["execution_source"], "conditions": dict(conditions), "stop_reason": stop_reason,
@@ -175,7 +186,7 @@ def build_payload(*, meter: MeterFiles, options: dict, run_id: str, side: str, r
 
 def _validate_payload(p: object):
     top = {FORMAT: TOP_FIELDS, FORMAT_V1: TOP_FIELDS_V1}.get(p.get("format")) if isinstance(p, dict) else None
-    if top is None or set(p) != top - {"signature"} or p["purpose"] != "browser_acceptance":
+    if top is None or set(p) != top - {"signature"} or p["purpose"] not in PRESERVATION_PURPOSES:
         _fail("preservation_record_invalid")
     if (p["side"] not in ("baseline", "ours") or type(p["repeat_index"]) is not int or p["repeat_index"] < 0
             or p["execution_source"] not in ("synthetic_fixture", "model_run")
@@ -256,7 +267,7 @@ def expected_first_limit(stop_reason: str, runner_elapsed: float, time_budget_se
 
 def _validate_v3(p: dict) -> None:
     """v3 모양 검사. 쪽(B=artex-direct, O=exploration-split)에 따라 null이어야 하는 칸과 있어야 하는 칸이 정해진다."""
-    if set(p) != TOP_FIELDS_V3 - {"signature"} or p["purpose"] != "browser_acceptance":
+    if set(p) != TOP_FIELDS_V3 - {"signature"} or p["purpose"] not in PRESERVATION_PURPOSES:
         _fail("preservation_record_invalid")
     if (p["side"] not in ("baseline", "ours") or type(p["repeat_index"]) is not int or p["repeat_index"] < 0
             or p["execution_source"] not in ("synthetic_fixture", "model_run")
@@ -312,7 +323,7 @@ def _validate_v3(p: dict) -> None:
         _fail("preservation_run_invalid")  # 서명돼 있어도 관측 시각·마감 사유와 모순된 분류는 받지 않는다(#676 리뷰)
     if r["rate_limited"] is not None and not _count(r["rate_limited"]):
         _fail("preservation_run_invalid")
-    _validate_product(p["product"], baseline)
+    _validate_product(p["product"], baseline, p["execution_source"])
     if not isinstance(p["files"], dict) or set(p["files"]) != set(RAW_FILES):
         _fail("preservation_files_invalid")
     for row in p["files"].values():
@@ -331,18 +342,28 @@ def _validate_v3(p: dict) -> None:
             _fail("preservation_boundary_invalid")
 
 
-def _validate_product(block, baseline: bool) -> None:
+def _validate_product(block, baseline: bool, execution_source: str) -> None:
     if baseline:
         if block is not None:
             _fail("preservation_product_invalid")
         return
     if not isinstance(block, dict) or set(block) != PRODUCT_FIELDS_V3:
         _fail("preservation_product_invalid")
+    if block["llm_verification"] == LLM_NOT_APPLICABLE:
+        # '해당 없음(합성)'은 합성 회차에서만이다. 실제 모델 회차에서 장부 대조가 빠지면 무효다.
+        if execution_source != "synthetic_fixture" or block["call_records"] is not None:
+            _fail("preservation_llm_verification_invalid")
+        block = dict(block, call_records={"reservations": 0, "lines": 0})  # 아래 모양 검사는 그 밖의 칸만 본다
+    elif block["llm_verification"] != LLM_VERIFIED:
+        _fail("preservation_llm_verification_invalid")
     images, files, conditions = block["image_ids"], block["file_sha256"], block["split_conditions"]
     overwrites, records = block["sampling_overwrites"], block["call_records"]
     if (not isinstance(block["source_sha"], str) or not re.fullmatch(r"[a-f0-9]{40}", block["source_sha"])
             or not isinstance(images, dict) or set(images) != PRODUCT_IMAGES or not all(_image(v) for v in images.values())
-            or not isinstance(files, dict) or set(files) != PRODUCT_FILES or not all(_hex(v) for v in files.values())
+            or not isinstance(files, dict) or set(files) != PRODUCT_FILES
+            # 진단 실행이 붙지 않은 회차(탐색 중 예산 소진)는 실행 조건 파일이 없어 그 SHA만 null이다(#693)
+            or not all(_hex(v) for name, v in files.items() if name != "runtime_conditions")
+            or files["runtime_conditions"] is not None and not _hex(files["runtime_conditions"])
             or not isinstance(conditions, dict) or set(conditions) != SPLIT_CONDITION_FIELDS
             or not _hex(conditions["workflow_defaults_sha256"])
             or not isinstance(overwrites, dict) or set(overwrites) != {"execution", "preparation"}
@@ -356,7 +377,7 @@ def _validate_product(block, baseline: bool) -> None:
 
 def build_payload_v3(*, meter: MeterFiles, series_ref: str, execution_source: str, run_id: str, side: str, repeat_index: int,
                      engine_source_sha: str, engine_image_id: str, common: dict, side_conditions: dict, run: dict,
-                     product: dict | None, boundary: dict | None) -> dict:
+                     product: dict | None, boundary: dict | None, purpose: str = "browser_acceptance") -> dict:
     """v3 서명 전 자료. 계측기 writer 정리 뒤 최종 바이트를 읽는다. O(exploration-split/v1)는 경계 원자료가 필수다
     (boundary = {"directory", "task_id", "path_key_ref"}, 경계 정지 뒤). B는 경계·제품 블록이 없다."""
     rows = meter.engine_rows()
@@ -373,7 +394,7 @@ def build_payload_v3(*, meter: MeterFiles, series_ref: str, execution_source: st
                                  or not isinstance(boundary["task_id"], str) or not isinstance(boundary["path_key_ref"], str)):
         _fail("preservation_boundary_missing")
     block = None if boundary is None else _boundary(Path(boundary["directory"]), rows, meter, boundary["path_key_ref"], boundary["task_id"])
-    payload = {"format": FORMAT_V3, "purpose": "browser_acceptance", "series_ref": series_ref, "run_id": run_id, "side": side,
+    payload = {"format": FORMAT_V3, "purpose": purpose, "series_ref": series_ref, "run_id": run_id, "side": side,
                "repeat_index": repeat_index, "engine_source_sha": engine_source_sha, "engine_image_id": engine_image_id,
                "execution_source": execution_source, "common": dict(common), "side_conditions": dict(side_conditions),
                "run": dict(run), "product": None if product is None else dict(product), "files": _raw_files(meter),
@@ -392,7 +413,7 @@ def validate_series_v3(baseline: list[dict], improved: list[dict], *, request_bu
         if not isinstance(record, dict) or record.get("format") != FORMAT_V3:
             _fail("preservation_series_mismatch")
         _validate_v3(record)
-    if any(len({r[f] for r in all_records}) != 1 for f in ("series_ref", "execution_source")):
+    if any(len({r[f] for r in all_records}) != 1 for f in ("series_ref", "execution_source", "purpose")):
         _fail("preservation_series_mismatch")
     for field in COMMON_FIELDS_V3:
         if len({digest(r["common"][field]) for r in all_records}) != 1:
@@ -418,7 +439,8 @@ def validate_series_v3(baseline: list[dict], improved: list[dict], *, request_bu
             or any(r["side_conditions"]["write_mode"] != ("read_only" if read_only else "approved_writes") for r in improved)):
         _fail("preservation_write_mode_mismatch")
     return {"format": FORMAT_V3, "verified_signed_rounds": len(all_records), "series_ref": baseline[0]["series_ref"],
-            "execution_source": baseline[0]["execution_source"], "layout": improved[0]["side_conditions"]["layout"],
+            "execution_source": baseline[0]["execution_source"], "purpose": baseline[0]["purpose"],
+            "layout": improved[0]["side_conditions"]["layout"],
             "mcp_version": improved[0]["common"]["mcp_version"], "exploration_boundary": _boundary_series(improved),
             "first_limits": [{"repeat_index": r["repeat_index"], "side": r["side"], "value": r["run"]["first_limit"]["value"]}
                              for r in all_records],
@@ -485,7 +507,7 @@ def validate_series(baseline: list[dict], improved: list[dict], *, request_budge
     all_records = baseline + improved
     for record in all_records:
         _validate_payload(record)
-    common = ("format", "series_ref", "execution_source")
+    common = ("format", "series_ref", "execution_source", "purpose")
     if any(len({r[f] for r in all_records}) != 1 for f in common): _fail("preservation_series_mismatch")
     differing = {"layout", "exploration_policy_sha256", "diagnosis_policy_sha256", "write_mode"}
     for field in CONDITION_FIELDS - differing:
@@ -505,7 +527,8 @@ def validate_series(baseline: list[dict], improved: list[dict], *, request_budge
             or any(r["conditions"]["write_mode"] != ("read_only" if read_only else "approved_writes") for r in improved)):
         _fail("preservation_write_mode_mismatch")
     return {"format": FORMAT, "verified_signed_rounds": len(all_records), "series_ref": baseline[0]["series_ref"],
-            "execution_source": baseline[0]["execution_source"], "layout": improved[0]["conditions"]["layout"],
+            "execution_source": baseline[0]["execution_source"], "purpose": baseline[0]["purpose"],
+            "layout": improved[0]["conditions"]["layout"],
             "mcp_version": improved[0]["conditions"]["mcp_version"],
             "exploration_boundary": _boundary_series(improved),
             "round_digests": [digest(r) for r in all_records]}

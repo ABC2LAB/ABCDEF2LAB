@@ -201,3 +201,29 @@ func TestPolicyFingerprintIncludesAuthPrepPurpose(t *testing.T) {
 		t.Fatal("auth prep purpose did not change the policy fingerprint")
 	}
 }
+
+// E③ 확정 단계 몫은 칸이 있으면(0 포함) 지문에 들어가 "칸 없음"과 구분된다(사용자 결정 2026-11-18).
+func TestPolicyFingerprintE3ConfirmationShare(t *testing.T) {
+	c, b := policyFixture()
+	absent := policyDigest(t, c, b)
+	b.E3Confirmation = &E3ConfirmationShare{}
+	zero := policyDigest(t, c, b)
+	b.E3Confirmation = &E3ConfirmationShare{Requests: 5, Timeout: 50 * time.Second}
+	five := policyDigest(t, c, b)
+	b.E3Confirmation = &E3ConfirmationShare{Requests: 5, Timeout: 40 * time.Second}
+	shorter := policyDigest(t, c, b)
+	if absent == zero || zero == five || absent == five || five == shorter {
+		t.Fatal("확정 몫 칸 없음·0·양수·시간 차이가 지문에서 구분되지 않음")
+	}
+	for name, share := range map[string]E3ConfirmationShare{
+		"requests without time": {Requests: 5},
+		"time without requests": {Timeout: time.Second},
+		"negative time":         {Requests: 5, Timeout: -time.Second},
+		"over run requests":     {Requests: 21, Timeout: time.Second},
+	} {
+		b.E3Confirmation = &share
+		if _, err := PolicyFingerprint(c, 20, b); err == nil {
+			t.Fatal("잘못된 확정 몫 수용:", name)
+		}
+	}
+}

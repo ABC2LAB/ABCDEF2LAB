@@ -105,6 +105,7 @@ func TestProductExactPathProtectedApprovalAndRuntime(t *testing.T) {
 	if err != nil || fingerprint == "" {
 		t.Fatal("실제 실행 정책 검증 실패", err)
 	}
+	checkE3ShareDocument(t, raw)
 	for _, url := range []string{"https://a.example.test/createdb", "https://a.example.test/users/v10", "https://other.example.test/"} {
 		if _, err := runtime.load("ARTEX", diagnosisprep.Input{ProfileID: m.ID, TargetURL: url}, false, ""); err == nil {
 			t.Fatal("범위 밖 진단 시작 준비 허용")

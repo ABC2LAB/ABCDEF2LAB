@@ -91,6 +91,10 @@ func (b *urlPreparationRuntime) issue(l *urlLoadedProfile, jobID string, actual 
 			}
 		}
 	}
+	// E③ 확정 단계 몫(사용자 결정 2026-11-18 ②). 확정 단계는 아직 서버에 연결되지 않아(E② Transport·Journal 통합 전)
+	// 이 회차는 확정 요청을 보내지 않는다. 그래서 위에서 선언을 동결했더라도 몫은 0이다. 동결 선언의 확정 대상 종류 수를
+	// 몫에 반영하는 일은 확정 단계 연결과 같이 한다. 그 전에 몫을 떼면 모델 단계 예산만 이유 없이 준다.
+	policy = withE3ConfirmationShare(policy, l.profile.Budget.DurationSeconds, 0)
 	raw, err := json.Marshal(policy)
 	if err != nil {
 		return c, errPreparation

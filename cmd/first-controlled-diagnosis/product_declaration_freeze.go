@@ -165,10 +165,23 @@ func productResetStatementSHA256() string {
 	return hex.EncodeToString(sum[:])
 }
 
-// productConfirmationObject는 확정 단계가 만든 객체 하나다(종류·ID digest, 원문 없음).
+// productConfirmationObject는 확정 단계가 만든(또는 만들었을 수 있는) 객체 하나다(종류·ID digest, 원문 없음). 생성 요청이
+// 시간 초과·결과 불명이면 객체가 생겼는지·ID가 무엇인지 모르므로 IDUnknown이고 IDDigest는 비어 있다(사용자 결정
+// 2026-11-18). 그런 객체는 잔존을 읽어 볼 수 없어 운영자 리셋 확인에만 기댄다.
 type productConfirmationObject struct {
-	Type     string `json:"type"`
-	IDDigest string `json:"id_digest"`
+	Type      string `json:"type"`
+	IDDigest  string `json:"id_digest,omitempty"`
+	IDUnknown bool   `json:"id_unknown,omitempty"`
+}
+
+func (o productConfirmationObject) valid() bool {
+	if o.Type == "" || len(o.Type) > 64 {
+		return false
+	}
+	if o.IDUnknown {
+		return o.IDDigest == ""
+	}
+	return urlDigestValid(o.IDDigest)
 }
 
 // productResetState는 대상의 마지막 확정 단계 쓰기와 그 뒤 리셋 확인이다.
@@ -187,7 +200,7 @@ func confirmationWritesRef(job string, at time.Time, objects []productConfirmati
 	h := sha256.New()
 	fmt.Fprintf(h, "%s\x00%s", job, at.UTC().Format(time.RFC3339Nano))
 	for _, o := range objects {
-		fmt.Fprintf(h, "\x00%s\x01%s", o.Type, o.IDDigest)
+		fmt.Fprintf(h, "\x00%s\x01%s\x02%t", o.Type, o.IDDigest, o.IDUnknown)
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
@@ -212,7 +225,7 @@ func applyReset(rec productTargetRecord, st *productResetState, jobs map[string]
 			return nil, errPreparation
 		}
 		for _, o := range e.Objects {
-			if !urlDigestValid(o.IDDigest) || o.Type == "" || len(o.Type) > 64 {
+			if !o.valid() {
 				return nil, errPreparation
 			}
 		}
@@ -370,8 +383,20 @@ func (g productResetGate) Check(ctx context.Context, binding e3contract.RunBindi
 	}
 	// 지난 쓰기가 있으면 리셋 확인과 별개로 지난 객체를 읽어 표식 잔존을 본다(결정 §6.1 (b)). 점검이 없거나 실패하면 모른다.
 	state := e3contract.ResetState{PreviousWrites: true, ResetConfirmed: !st.confirmedAt.IsZero(), Residue: e3contract.ResidueUnknown}
+	// 잔존은 ID를 아는 객체만 읽어 본다. ID 모르는 객체(생성 시간 초과·결과 불명)는 읽을 수 없어 리셋 확인에만 기댄다.
+	// 표식은 회차마다 새 난수라 지난 객체가 남아도 다음 회차 판정을 확정으로 만들지 못한다.
+	var readable []productConfirmationObject
+	for _, o := range st.writesObjects {
+		if !o.IDUnknown {
+			readable = append(readable, o)
+		}
+	}
+	if len(readable) == 0 {
+		state.Residue = e3contract.ResidueAbsent
+		return state, nil
+	}
 	if g.residue != nil {
-		if residue, err := g.residue(ctx, binding, st.writesObjects); err == nil {
+		if residue, err := g.residue(ctx, binding, readable); err == nil {
 			state.Residue = residue
 		}
 	}

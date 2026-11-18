@@ -6,11 +6,12 @@ import hashlib
 import json
 from pathlib import Path
 
+import synthetic_gt  # noqa: F401  합성 정답 목록을 먼저 끼운다(정답표 노출 방지)
 from ground_truth import bac_category, core_gt
 from run_record import sign_run_record
 
 KEYS = sorted({c.key for c in core_gt() + bac_category()})
-RESOURCE = {"basketAccessChallenge": "rest:basket:1", "forgedFeedbackChallenge": "rest:feedback:1"}
+RESOURCE = {"synthBacH1Challenge": "rest:basket:1", "synthBacH3Challenge": "rest:feedback:1"}
 CONTEXT = ("run_id", "model_tag", "reset_generation", "instance_id", "execution_id")
 
 

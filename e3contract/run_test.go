@@ -83,6 +83,7 @@ func newFixture(t *testing.T) *fixture {
 			Owner:           e3contract.Account{Label: "tester-a", Authenticated: true},
 			Cross:           e3contract.Account{Label: "tester-b", Authenticated: true},
 			PolicyValidFrom: t0.Add(-time.Hour), PolicyValidUntil: t0.Add(24 * time.Hour),
+			AdmittedTypes: 8, RequestTimeout: 10 * time.Second,
 			Candidates: []e3contract.Candidate{{Ref: "cand-note", Method: "GET", PathPattern: "/api/notes/{id}"},
 				{Ref: "cand-post", Method: "POST", PathPattern: "/api/notes"}},
 		},

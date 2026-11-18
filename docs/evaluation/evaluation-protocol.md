@@ -159,42 +159,10 @@
   - **수평(H)**: 동일 권한에서 타 사용자 객체 접근/변조 (IDOR/BOLA, 다계정 비교로 판정)
   - **수직(V)**: 상위 권한·관리자 전용 기능 접근 (권한상승/BFLA)
 
-### 표 1 — Broken Access Control category 전체 10개 (부차 지표 기준)
-| key | name | diff | 축 | 코어 GT | 비고 |
-|---|---|---|---|---|---|
-| adminSectionChallenge | Admin Section | 2 | V | ○ | 관리영역 접근 |
-| basketAccessChallenge | View Basket | 2 | H | ○ | **IDOR: 타인 장바구니 조회** (핵심) |
-| feedbackChallenge | Five-Star Feedback | 2 | V | ○ | 5성 피드백 전체 삭제 = 관리기능(BFLA) |
-| basketManipulateChallenge | Manipulate Basket | 3 | H | ○ | IDOR: 타인 장바구니 변조 |
-| changeProductChallenge | Product Tampering | 3 | V | ○ | 상품 설명 변조 = 관리기능(BFLA) |
-| csrfChallenge | CSRF | 3 | — | ✗ | category상 BAC이나 **범위 밖(CSRF 클래스)** |
-| forgedFeedbackChallenge | Forged Feedback | 3 | H | ○ | 타인 명의 피드백 작성 |
-| forgedReviewChallenge | Forged Review | 3 | H | ○ | 타인 명의 리뷰 작성/수정 |
-| easterEggLevelOneChallenge | Easter Egg | 4 | — | ✗ | **범위 밖(숨김파일 탐색, 인가 아님)** |
-| ssrfChallenge | SSRF | 6 | — | ✗ | **범위 밖(SSRF 클래스)** |
-
-- ○ 7개 = 코어 GT, ✗ 3개 = 명시적 제외. **BAC category 전체(10) 해결 수는 §5에서 부차 지표로 병기**(cherry-pick 방지).
-
-### 표 2 — 다른 category의 인가 클래스 (코어 GT 추가)
-| key | name | category | diff | 축 | 비고 |
-|---|---|---|---|---|---|
-| registerAdminChallenge | Admin Registration | Improper Input Validation | 3 | V | 관리자 권한으로 가입 = 권한상승 |
-| dataExportChallenge | GDPR Data Theft | Sensitive Data Exposure | 4 | H | 타인 개인정보 탈취(수평) |
-
-> **코어 GT = 표1의 ○ 7개 + 표2의 2개 = 9개 (수평 5 · 수직 4).**
-
-### 별도 축 (후속) — 코어 GT 아님
-우리 scope 헌장엔 "업무흐름 우회"가 있으나, 아래는 **단일 계정 로직·크립토 결함**이라 현재 탐지 기계(다계정 IDOR 오라클·authz matrix)가 겨냥하는 대상이 아니다. **코어 GT에 넣으면 겨냥 안 한 항목이 인위적 미탐으로 찍히므로 제외하고 후속 축으로 남긴다.** 코어 미탐 계산에 포함하지 않는다.
-
-| key | name | category | 축 | 성격 |
-|---|---|---|---|---|
-| negativeOrderChallenge | Payback Time | Improper Input Validation | BF | 음수 주문 = 단일계정 업무로직 |
-| freeDeluxeChallenge | Deluxe Fraud | Improper Input Validation | BF | 결제 우회 = 단일계정 업무로직 |
-| deprecatedInterfaceChallenge | Deprecated Interface | Security Misconfiguration | BF | 폐기 B2B 인터페이스 = 설정/업무흐름 |
-
-> **제외 클래스 메모(검토함, 의도적 제외 — 인가 아님)**: `Broken Authentication` 전체(로그인·비번재설정·2FA = 신원/인증),
-> `loginAdmin/Bender/Jim`·`noSqlOrders`(Injection 경유 사칭/접근), `jwtUnsigned/Forged`(토큰 위조),
-> `nullByte`·`emailLeak`·백업·문서·로그 노출류(입력검증/민감정보 노출). 주 클래스가 인가가 아니라 GT에서 뺐다.
+- **선정 결과(표 1·표 2·별도 축·제외 메모)는 평가 정답 파일 `evaluation-gt/juice-shop-v15/challenges.md`로 옮겼다**(2026-11-18).
+  채점기가 읽는 기계 판은 같은 디렉터리의 `challenges.json`이다. 이 경로는 저장소 루트 `.ignore`로 세션·에이전트의 ripgrep 기반 검색에서
+  빠진다. 평가 정답이 필요한 채점·집계 작업이 아니면 열지 않는다.
+- 규모: 코어 GT 9개(수평 5 · 수직 4), Broken Access Control category 전체 10개(부차 지표), 별도 축(후속)은 코어 GT 아님.
 
 > ⚠️ 이 목록은 **평가 정답(GT)으로만** 쓴다 — 스캐너·탐색·판정·시나리오 입력 금지(CLAUDE.md 절대규칙 7).
 
@@ -221,6 +189,14 @@
 6. GT 챌린지에 대한 엔진 판정이 **ALLOWED뿐**이면 **판단불가 + 경고로 표면화**한다. 코어 GT는 전부 실제 취약이라
    ALLOWED는 KG·정책 오류 신호다 — 미탐·취약점없음으로 기록하지 않는다.
 7. 러너 기록 v1.1의 판정 레코드(`records`)가 null(**판정 미수집**)인 회차는 그 회차의 GT 판정을 전부 **판단불가**(사유: 판정 미수집)로 두고 확정·오탐·미탐 어디에도 세지 않는다. 커버리지 기록이 있어도 미탐으로 바꾸지 않는다. 해결 귀속(격리 증명·델타)은 따로 검증·보고한다([러너 기록 v1.1](run-record-v1.1.md) §3).
+8. 제품 확정 단계(E③) 결과가 있는 회차(격리 근거 선택 행 `e3_confirmation`, [러너 기록 v1.1](run-record-v1.1.md) §3, 2026-11-18 확정)는 그 `status`로 판정을 읽는다.
+   - `completed`: 판정 레코드를 위 규칙 그대로 채점한다.
+   - `confirmation_integrity_failed`·`disabled`·`start_refused`: 그 회차의 GT 판정을 전부 **판단불가**(사유: 그 `status`·`reason`)로 둔다. 판정 레코드가 0건이어도 "발견 없음"·미탐으로 세지 않는다. 진위 실패는 제품이 회차 안에서 스스로 잡은 결과라 회차는 유효하다(무효·재실행이 아니다).
+   - `interrupted`: 받은 판정만 위 규칙으로 쓰고, 판정이 없는 GT는 커버리지가 있어도 미탐 대신 **판단불가**로 둔다.
+   - 이 행은 판정 내보내기 수집·무결성(`verdict_collection`)과 별개다. 내보내기 `integrity_failed`는 지금처럼 채점 중단이다. 해결 귀속은 이 행과 무관하게 따로 검증·보고한다.
+   - 행이 없는 것만으로 "E③ 미적용"을 정하지 않는다. 회차마다 서명된 실행 조건 `e3_status_expected`가 이 행을 받아야 하는지 정한다.
+     - 참인 회차(E③ 단계가 들어간 제품 회차. E③를 끈 회차도 제품이 `disabled` 상태를 내므로 참이다)에서 행이 없으면 **수집 실패**(사유 `e3_status_not_collected`)다. 그 회차의 GT 판정을 전부 판단불가로 둔다. 서명된 빈 판정 묶음과 해결 귀속이 있어도 미탐으로 세지 않는다.
+     - 거짓이거나 칸이 없는 회차(원본 엔진, 칸이 생기기 전 기록)만 행이 없을 수 있고, 7번대로 읽는다. 이런 회차에 행이 있으면 입력 오류다.
 
 **해결 귀속 선행 규칙**:
 - `pre=true`는 엔진 검사 전에 이미 해결된 항목이다. 준비 작업이 만든 solve일 수 있으므로 해당 항목은 **판단불가 + 사전 해결 경고**로 남긴다. 이번 회차의 엔진 확정·미탐으로 세지 않고, GT 분모에서 몰래 빼지도 않는다.
@@ -305,6 +281,7 @@
 두 표를 함께 출력하며 각 표의 확정·오탐·미탐·판단불가 합은 해당 분모(9 또는 10)를 유지한다. 사전 해결 항목도 판단불가에 포함한다. 한 분모의 표만 공식 결과로 제시하지 않는다.
 
 - `차단 시도 수`·`out-of-list`는 둘 다 판정 칸(확정·오탐·미탐·판단불가)과 **별개 지표**다. 미측정은 `—`.
+- **회차 주석**: E③ 결과 행이 있는 회차는 표 아래 회차 주석에 그 `status`·`reason`을 그대로 싣는다(§4 8번). `confirmation_integrity_failed`는 따로 눈에 띄게 표시한다. 판단불가로 돌린 GT 수는 판단불가 칸에 들어가고, 주석은 그 이유를 보인다.
 
 - **(후순위 — 현재 측정 대상 아님)** 소형 모델 축 `원본 @7B` / `우리 @7B`: 로컬 35B급으로 충분함을 확인해 7B급까지 좁히는 최적화는 뒤로 미룸(CLAUDE.md 로컬 충분성). 측정 재개 시 같은 틀로 두 행 추가.
 - 반복 원자료는 별도 집계 스크립트가 수집(최민준, 평가 스크립트 뼈대).
@@ -331,6 +308,12 @@
   - 주 지표: 회차당 **엔진에 귀속된 해결 수**(run-record v1.1 `isolated_window`, 코어 GT 9·BAC 10 각각), 평균 ± SD.
   - 보조 지표: 계측기 전달 요청 수(`total_requests`)·종료 사유 분포·예산 초과분·구간 소요 시간, 무효율(쪽별). 요청 수는 예산에 닿으면 양쪽이 같아지므로 효율 주장의 근거로 쓰지 않는다.
   - findings 수는 원본 그대로 기록만 하고, 매핑·판정 전에는 품질 주장에 쓰지 않는다.
+- **E③(제품 확정 단계) 비활성**(확정, 2026-11-18 사용자·동찬 합의) — 공식 Juice Shop 측정의 개선 후(O) 회차는 E③를 끈다. 정책 선언과 시험 계정을 준비하지 않고, 확정 몫은 0이다.
+  - **상태·사유 기록**: O 회차 격리 근거에는 `run_conditions.e3_status_expected: true`와 `e3_confirmation` 행 `status: disabled`가 있어야 한다. 사유는 "선언·시험 계정 없음"을 뜻하는 E③ 계약의 닫힌 값 하나이고, 그 값은 E③ 계약이 고정하면 동결 목록에 적는다(`run_record.OFFICIAL_E3_DISABLED_REASON`). 그 밖의 상태(`completed`·`interrupted`·`start_refused`·`confirmation_integrity_failed`)나 다른 `disabled` 사유(`not_wired` 등)면 비활성 조건이 깨진 것이라 그 회차는 무효다(`e3_not_disabled`). 행이 없으면 수집 실패라 역시 무효다. 채점기는 이런 기록이 섞인 공식 표를 거부한다.
+  - **확정 몫 0**: 러너가 그 회차 E② 정책 보기(내용 지문·상한)에서 확정 몫이 0인지 확인하고, 아니면 무효다(`e3_share_not_zero`). 칸 이름은 확정 몫 구현에서 정해지면 동결 목록에 적는다. 확정 몫 구현 전 제품 빌드는 몫 코드가 없다(제품 커밋으로 확인한다).
+  - **짝 비교의 목표 동일성**: B·O 공통 목표 SHA(`goal_common_sha256`, [탐색 분리 배치 결정안](exploration-split-decision.md) §6)가 같아야 한다. 분리 배치 회차는 이 값을 서명 실행 조건에 싣고, 채점기는 한 표 안에서 값이 다르거나 일부 회차에만 있으면 비교를 거부한다(보존 sidecar v3 짝 묶기도 공통 칸으로 같은 값을 요구한다).
+  - O의 판정(확정·오탐·미탐)은 §4 8번대로 전부 판단불가다. 첫 비교는 주 지표(엔진 귀속 해결 수)와 보존율로 한다. B·O 모델 몫 조건은 같게 유지된다. E③를 켜는 비교는 측정 뒤 후속이다([O 공식 run-record 설계안](split-official-run-record.md) §10).
+  - **Go 조건 확인**(계획 v4.2 Go 조건 2·3): E③ 통합 뒤 VAmPI 파일럿에서 위 세 가지(`disabled`와 정해진 사유 기록, 확정 몫 0, B·O 공통 목표 SHA 동일)가 실제 기록에 나오는지 본다.
 - **판정 지표 재채점** — 판정 레코드가 붙으면 같은 서명 회차 묶음을 §4 판정표 그대로 다시 채점한다. 판정 지표를 위해 회차를 새로 돌리지 않는다.
   - 개선 후 레코드는 판정 페이지 API의 동결 export 원본을 쓴다.
   - baseline 레코드는 A5 어댑터 출력을 쓴다.
@@ -339,6 +322,7 @@
 - **경계 원자료 바이트 상한** — 개선 후 탐색 경계 원자료(`evidence_max_bytes`)의 회차 값. 상한에 닿은 회차는 보존 판정이 UNDECIDABLE이다. 값은 **[파일럿 뒤 확정]**(고정 초안 §6).
 - **발견 집계(경로 틀 커버리지)** — 회차끼리 발견을 비교할 때 끝점 개수 대신 경로 틀을 본다(확정, 고정 초안 §7). 같은 세션 B·O 모든 유효 회차에서 계측기가 대상에 전달한 요청의 경로 틀(`(메서드, 가린 경로)`, HEAD는 GET으로 셈) 합집합을 분모로, 각 쪽이 덮은 비율과 분모 크기를 함께 싣는다(보존 요약 `coverage`). 지금 러너 계약은 공식 회차(`purpose=official`)에서 이 집계에 필요한 경로 근거(계측기 경로 기록 `engine-paths.jsonl`, `preservation` 원자료)를 금지한다([러너](runner.md) 설정표·`meter_path_log_enabled`). 그래서 공식 회차에서 이 값을 모으는 지원이 들어오기 전에는 공식 회차의 이 값은 **미수집**으로 남는다. 보고 기준은 위대로 확정이다. 대상 소스의 라우트 목록(Juice Shop 등)은 쓰더라도 회차 뒤 집계의 보조 지표로만 쓰고 엔진 입력에는 넣지 않는다.
 - **차이 보고 규칙** — 원본끼리 값의 범위(최솟값~최댓값) 안에 드는 개선 후 차이는 개선·손실로 주장하지 않는다(확정, 고정 초안 §12, 보존 요약 `difference_claims`). 보고 표시일 뿐이고 통과선(R-F 0.90·R-R 0.95)과 판정 값은 바꾸지 않는다.
+- **결과 보고 범위(E③ 비활성)** — 공식 측정 결과는 E② 통제를 포함한 제품의 탐색·진단 능력(엔진 귀속 해결 수, 발견 집계)과 보존율로만 보고한다. E③ 확정 성능(확정·오탐·미탐)은 이번 측정에서 주장하지 않는다.
 - **주장 범위(첫 비교)** — 공식 프로파일의 fixture는 계정·자원이 없는 익명 준비(`anonymous`)다. 다계정이 필요한 IDOR 검증기는 이 조건에서 돌지 않으므로, 결과 문서에서 **IDOR 개선 효과는 주장하지 않는다**고 명시한다(계정 준비 채널을 붙일지는 팀이 정한다).
 
 ## 6. 모델·환경 핀

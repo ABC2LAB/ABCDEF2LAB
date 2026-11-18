@@ -54,7 +54,7 @@ func validateE2HTTPPolicyDocument(raw []byte, prepared bool) (E2HTTPFilePolicy, 
 
 func validateE2HTTPPolicyDocumentMode(raw []byte, prepared, run bool) (E2HTTPFilePolicy, string, error) {
 	var policy E2HTTPFilePolicy
-	if len(raw) == 0 || len(raw) > e2config.MaxPolicyBytes || !validE2HTTPPathMatchFields(raw) || !validE2HTTPPasswordResponseField(raw) || !utf8.Valid(raw) || strictJSON(raw, &policy) != nil {
+	if len(raw) == 0 || len(raw) > e2config.MaxPolicyBytes || !validE2HTTPRuleSelectorFields(raw) || !validE2HTTPPasswordResponseField(raw) || !utf8.Valid(raw) || strictJSON(raw, &policy) != nil {
 		return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
 	}
 	top := []string{"approval_mode", "format", "run_ref", "reset_ref", "policy_ref", "case_ref", "policy_revision", "budget_ref", "owner_ref", "account_ref", "session_ref", "valid_from", "valid_until", "max_requests", "header_mode", "evaluation", "state_dir", "helper", "helper_sha256", "ca_cert", "ca_key", "rules", "limits", "proxy", "runtime"}
@@ -127,10 +127,19 @@ func validateE2HTTPPolicyDocumentMode(raw []byte, prepared, run bool) (E2HTTPFil
 			return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
 		}
 	}
-	// 응답 전달·검사 상한(C16 결정안 3)은 선택 칸이다. 없으면 요청 본문 상한을 같이 쓴다.
+	// 응답 전달·검사 상한(C16 결정안 3)은 선택 칸이다. 없으면 요청 본문 상한을 같이 쓴다. E③ 확정 단계 몫은 실행 정책에서만
+	// 받는다(둘 다 있거나 둘 다 없음, 몫은 실행 요청 상한의 1/4 이하).
+	limitOptional := []string{"max_response_body_bytes", "max_response_scan_bytes"}
+	if run {
+		limitOptional = append(limitOptional, "e3_confirmation_requests", "e3_confirmation_timeout_ms")
+	}
+	share, shareOK := policy.e3ConfirmationShare()
+	if !shareOK || share != nil && !run {
+		return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
+	}
 	for name, fields := range map[string]struct{ required, optional []string }{
 		"limits": {[]string{"max_attempts", "max_calls", "max_concurrent", "max_body_bytes", "request_timeout_ms", "call_timeout_ms", "max_denials", "max_transient", "max_unknown"},
-			[]string{"max_response_body_bytes", "max_response_scan_bytes"}},
+			limitOptional},
 		"proxy":   {[]string{"header_timeout_ms", "request_timeout_ms", "max_header_bytes", "max_connections"}, nil},
 		"runtime": {[]string{"max_worker_turns", "max_tool_calls", "worker_timeout_ms", "max_planner_rounds", "max_intent_runs", "drain_timeout_ms", "output_limit"}, nil},
 	} {
@@ -149,10 +158,6 @@ func validateE2HTTPPolicyDocumentMode(raw []byte, prepared, run bool) (E2HTTPFil
 		}
 		var obj map[string]json.RawMessage
 		_ = json.Unmarshal(ruleJSON[i], &obj)
-		// 선택 칸이 명시됐다면 exact 하나만 받는다. null/빈 값이 접두 기본값으로 바뀌어 권한이 넓어지지 않는다.
-		if value, present := obj["path_match"]; present && !bytes.Equal(value, []byte(`"exact"`)) {
-			return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
-		}
 		if !e2HTTPExactJSON(obj["approval_display"], []string{"public_path", "query_keys", "json_fields"}, nil, "query_keys", "json_fields") {
 			return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
 		}
@@ -186,7 +191,7 @@ func validateE2HTTPPolicyDocumentMode(raw []byte, prepared, run bool) (E2HTTPFil
 		MaxWorkerTurns: policy.Runtime.MaxWorkerTurns, MaxToolCalls: policy.Runtime.MaxToolCalls, WorkerTimeout: workerTimeout,
 		MaxPlannerRounds: policy.Runtime.MaxPlannerRounds, MaxIntentRuns: policy.Runtime.MaxIntentRuns, DrainTimeout: drainTimeout,
 		OutputLimit: policy.Runtime.OutputLimit, ProxyHeaderTimeout: headerTimeout, ProxyRequestTimeout: proxyTimeout,
-		ProxyMaxHeaderBytes: policy.Proxy.MaxHeaderBytes, ProxyMaxConnections: policy.Proxy.MaxConnections,
+		ProxyMaxHeaderBytes: policy.Proxy.MaxHeaderBytes, ProxyMaxConnections: policy.Proxy.MaxConnections, E3Confirmation: share,
 	})
 	if err != nil {
 		return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
@@ -238,11 +243,16 @@ func e2HTTPExactJSON(raw []byte, required, optional []string, nullable ...string
 	return true
 }
 
-// validE2HTTPPathMatchFields는 파일 factory와 정적 문서 검증이 선택 칸 null을 접두 기본값으로 읽지 않게 한다.
-func validE2HTTPPathMatchFields(raw []byte) bool {
+// validE2HTTPRuleSelectorFields는 명시한 선택 칸이 접두 경로나 일반 Worker용 기본값으로 해석되는 것을 막는다.
+func validE2HTTPRuleSelectorFields(raw []byte) bool {
 	var document map[string]json.RawMessage
 	if json.Unmarshal(raw, &document) != nil {
 		return false
+	}
+	for name := range document {
+		if strings.EqualFold(name, "rules") && name != "rules" {
+			return false
+		}
 	}
 	var rules []map[string]json.RawMessage
 	if json.Unmarshal(document["rules"], &rules) != nil || rules == nil {
@@ -250,8 +260,16 @@ func validE2HTTPPathMatchFields(raw []byte) bool {
 	}
 	for _, rule := range rules {
 		for name, value := range rule {
-			if strings.EqualFold(name, "path_match") && (name != "path_match" || !bytes.Equal(value, []byte(`"exact"`))) {
-				return false
+			switch {
+			case strings.EqualFold(name, "path_match"):
+				if name != "path_match" || !bytes.Equal(value, []byte(`"exact"`)) {
+					return false
+				}
+			case strings.EqualFold(name, "purpose"):
+				var purpose string
+				if name != "purpose" || json.Unmarshal(value, &purpose) != nil || purpose == "" {
+					return false
+				}
 			}
 		}
 	}

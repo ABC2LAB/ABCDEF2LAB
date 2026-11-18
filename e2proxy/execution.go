@@ -78,7 +78,9 @@ type Execution struct {
 	secretsGen uint64
 	// redactOnly는 출력에서만 가리는 값이다(인증 준비가 받은 시험 계정 세션, C14 구현 설계 4). 응답 표현 보류(반사 검사)에는
 	// 쓰지 않는다.
-	redactOnly    [][]byte
+	redactOnly [][]byte
+	// marker는 확정 단계의 보호 표식이다. 일반 보호 값의 응답 보류 정책과 구분한다.
+	marker        []byte
 	secretHeaders map[string]struct{}
 	// accountPassthroughOff는 시험 계정 모드를 이 실행에서 끈 표시다(DisableTestAccountPassthrough). 한 번 켜면 되돌리지 않는다.
 	accountPassthroughOff atomic.Bool
@@ -1528,6 +1530,9 @@ func (e *Execution) RedactOutput(b []byte) []byte {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	out := bytes.Clone(b)
+	if len(e.marker) != 0 {
+		out = redactMarker(out, e.marker)
+	}
 	sets := [][][]byte{e.secrets, e.passwords, e.redactOnly}
 	if e.cfg.HeaderMode == HeaderTestAccountPassthrough {
 		// 전체 토큰을 조각보다 먼저 가린다. 계정·갱신 간에 같은 claims를 공유해도 전체 토큰 가림이 깨지지 않는다.
