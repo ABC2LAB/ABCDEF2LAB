@@ -1340,12 +1340,34 @@ a.ph:hover {
   font-weight: 500;
   color: var(--ink-2);
 }
-/* 점검 목록 줄 이름 왼쪽 작업 번호 */
+/* 점검 목록 줄 이름 줄: 작업 번호 회색 딱지 + 이름 (사용자 11/18 시안) */
+.r-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
 .r-no {
-  margin-right: 8px;
-  font-weight: 700;
-  color: var(--ink);
+  flex: none;
+  min-width: 24px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--well);
+  border: 1px solid var(--rule);
+  font-family: var(--mono);
+  font-size: 11.5px;
   font-variant-numeric: tabular-nums;
+  text-align: center;
+  color: var(--ink-3);
+}
+.r-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ink);
 }
 .r-s {
   font-size: 13px;

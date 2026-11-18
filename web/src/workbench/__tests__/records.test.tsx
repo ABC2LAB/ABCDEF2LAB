@@ -190,6 +190,8 @@ describe("서버 보존 목록의 상태 필터와 선택한 보고서", () => {
     await waitFor(() => expect(detail).toHaveTextContent("검토 필요"));
     const row = screen.getByRole("button", { name: /job-1/ });
     expect(row).not.toHaveTextContent(/발견 1|취약점/);
+    // 패널 제목에 '발견 n건'을 적지 않는다(사용자 11/18) — 위험도 딱지 · 판정 줄이 말한다
+    expect(within(detail).getByRole("heading", { level: 2 })).not.toHaveTextContent(/발견 \d+건/);
   });
   it.each(["cancelled", "completed"] as const)("%s의 판정 0건은 취약점 없음이 아니다", async (state) => {
     vi.mocked(api.fetchRemediation).mockResolvedValue({ task_id: 42, entries: [] });
@@ -220,6 +222,11 @@ describe("서버 보존 목록의 상태 필터와 선택한 보고서", () => {
     // 목록 줄은 이름(prep-…) 왼쪽에 번호만 — 아래 작은 글에 '작업 #n'을 따로 적지 않는다(사용자 11/18)
     const row = screen.getByRole("button", { name: new RegExp(`^작업\\s*${completed.task_id}\\s*${completed.id}`) });
     expect(row).not.toHaveTextContent("작업 #");
+    // 끝난 점검 줄 아래 글엔 단계(결과 저장) · 승인 상태 · 확인 필요를 적지 않는다(사용자 11/18)
+    expect(row).not.toHaveTextContent(/결과 저장|승인|확인 필요/);
+    // 목록 머리 수는 'n / n건'(조회 글 없이), 패널엔 다시 점검 안내 글이 없다
+    expect(screen.getByText("1 / 1건")).toBeInTheDocument();
+    expect(panel).not.toHaveTextContent("다시 점검은 별도");
   });
   it("결과 저장 미확인 회차는 보고서 조회를 하지 않는다", () => {
     selectSaved({ ...completed, result_ready: false });

@@ -19,7 +19,8 @@ export function RunRow({ row, onPick }: { row: URLRunSummary; onPick?: () => voi
   const writeBusy = useUrl((st) => st.writeBusy);
   const { openInsp } = useShell();
   const named = !!row.display_name?.trim();
-  const approvalIssue = activeURLRun(row) && row.approval_status !== "not_revalidated";
+  const active = activeURLRun(row);
+  const approvalIssue = active && row.approval_status !== "not_revalidated";
   return (
     <button
       type="button"
@@ -38,28 +39,32 @@ export function RunRow({ row, onPick }: { row: URLRunSummary; onPick?: () => voi
     >
       <span className={s.mk} aria-hidden="true" />
       <span className={s["r-main"]}>
-        <span className={s["r-host"]}>
-          {/* 작업 번호(서버 task)를 이름 왼쪽에 숫자만: 끝난 점검이 많아져도 줄마다 구분되게, 오른쪽 패널 '작업 #n'과 같은
-              번호 (사용자 11/18) */}
+        {/* 이름 줄: 작업 번호(서버 task) 회색 딱지 + 이름 (사용자 11/18 시안 '25  test web 8 35b'). 끝난 점검이 많아져도 줄마다
+            구분되고 오른쪽 패널 '작업 #n'과 같은 번호다 */}
+        <span className={s["r-title"]}>
           {row.task_id ? (
             <span className={s["r-no"]}>
               <span className={s["sr-only"]}>작업 </span>
               {row.task_id}
             </span>
           ) : null}
-          {maskSecrets(row.display_name?.trim() || row.id)}
+          <span className={s["r-name"]}>{maskSecrets(row.display_name?.trim() || row.id)}</span>
         </span>
-        <span className={s["r-s"]}>
-          {named ? <span>{row.id}</span> : null}
-          <span>{urlPhaseLabels[row.phase]}</span>
-          <span>{runApprovalLabels[row.approval_status]}</span>
-          {row.action_required ? <span>확인 필요</span> : null}
-          {row.reason_code ? (
-            <span>
-              {Object.hasOwn(urlReasonLabels, row.reason_code) ? urlReasonLabels[row.reason_code] : "서버 사유 있음"}
-            </span>
-          ) : null}
-        </span>
+        {/* 아래 줄: 끝난 점검은 단계(결과 저장) · 승인 상태(승인 만료 등) · 확인 필요를 뺐다(사용자 11/18) — 이름을 붙인 줄의
+            진단 ID 와 서버 사유만. 진행 중인 점검은 지금 단계 · 승인 · 확인 필요(승인 대기 등 사람이 할 일)를 그대로 둔다 */}
+        {active || named || row.reason_code ? (
+          <span className={s["r-s"]}>
+            {named ? <span>{row.id}</span> : null}
+            {active ? <span>{urlPhaseLabels[row.phase]}</span> : null}
+            {active ? <span>{runApprovalLabels[row.approval_status]}</span> : null}
+            {active && row.action_required ? <span>확인 필요</span> : null}
+            {row.reason_code ? (
+              <span>
+                {Object.hasOwn(urlReasonLabels, row.reason_code) ? urlReasonLabels[row.reason_code] : "서버 사유 있음"}
+              </span>
+            ) : null}
+          </span>
+        ) : null}
       </span>
       <span className={s["r-side"]}>
         <span className={cx(s.pill, (row.state === "unknown" || approvalIssue) && s.wait)}>

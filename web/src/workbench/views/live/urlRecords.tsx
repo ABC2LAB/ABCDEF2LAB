@@ -165,7 +165,7 @@ function RecordList({ finished }: { finished: boolean }) {
                 count={(key) => (page ? rows.filter((row) => matches(row, key)).length : null)}
                 onPick={setFilter}
               />
-              <span className={s.aside}>{page ? `${shown.length} / 조회 ${rows.length}건` : "—"}</span>
+              <span className={s.aside}>{page ? `${shown.length} / ${rows.length}건` : "—"}</span>
             </div>
             <RunListControls />
             <p className={s.help}>

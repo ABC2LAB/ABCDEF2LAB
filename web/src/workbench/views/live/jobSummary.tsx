@@ -318,10 +318,11 @@ function summaryHead(
   if (!result) return { eyebrow: "", title: urlStateText(job.state, verified), chips: pill };
   const c = result.counts;
   const und = c.not_executed + c.unknown;
+  // 발견이 있어도 제목에 '발견 n건'을 적지 않는다(사용자 11/18) — 위험도 딱지 · 판정 줄이 말한다
   if (c.confirmed + c.review > 0)
     return {
       eyebrow: "",
-      title: `발견 ${result.found.length}건`,
+      title: urlStateText(job.state, verified),
       chips: (
         <>
           {topSev(result.found).map(([k]) => (
@@ -465,11 +466,8 @@ export function JobSummary({
       </Isec>
       {job?.account_auth ? (
         <Isec t="시험 계정 인증">
+          {/* 계정별 결과 값('비인증 진행 · 로그인 실패' 등)이 말한다 — 아래 안내 글은 뺐다(사용자 11/18) */}
           <Kv rows={urlAccountAuthRows(job.account_auth)} />
-          <p className={s.help}>
-            인증하지 못한 계정은 비인증으로 진행한 것입니다. 그 계정 기준 인가 결과는 ‘접근 차단 확인’이 아니라
-            ‘비인증으로 확인 안 됨’입니다.
-          </p>
         </Isec>
       ) : null}
       <Isec>
@@ -488,7 +486,6 @@ export function JobSummary({
           {ended ? again : open}
           {ended ? open : null}
         </div>
-        {ended ? <p className={s.help}>다시 점검은 별도 새 진단입니다. 이전 회차는 서버 목록에 보존됩니다.</p> : null}
         <UrlNotices />
         {uncertain || error ? (
           <div className={s.acts}>
