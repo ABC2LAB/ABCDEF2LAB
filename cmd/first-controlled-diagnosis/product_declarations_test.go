@@ -147,6 +147,9 @@ func TestProductDeclarationRejectsWithFieldOnly(t *testing.T) {
 		"credential_template": {func(in *diagnosisprep.DeclarationInput) {
 			in.Types[1].Create.BodyTemplate = `{"title":"t","password":"hunter2-secret-value"}`
 		}, "types[0].create.body_template"},
+		"credential_escaped": {func(in *diagnosisprep.DeclarationInput) {
+			in.Types[1].Create.BodyTemplate = `{"title":"t","pass\u0077ord":"hunter2-secret-value"}`
+		}, "types[0].create.body_template"},
 		"credential_normal": {func(in *diagnosisprep.DeclarationInput) {
 			in.Types[1].Read.StatusPath, in.Types[1].Read.NormalValue = "s", "Bearer hunter2-secret-value"
 		}, "types[0].read.normal_value"},
@@ -385,5 +388,45 @@ func TestProductResetRejectsBadLines(t *testing.T) {
 	defer reopened.Close()
 	if v, _ := reopened.resetConfirmation("ARTEX", target.ID); v.ResetRequired {
 		t.Fatal("재생 뒤 상태가 바뀜")
+	}
+}
+
+// 선언 디렉터리를 만든 뒤 부모 엔트리를 동기 저장하고, 실패하면 레지스트리를 열지 않는다.
+func TestProductDeclarationDirectorySyncsParent(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("protected preparation uses an unprivileged owner")
+	}
+	original := productSyncDirectory
+	t.Cleanup(func() { productSyncDirectory = original })
+	root := t.TempDir()
+	if os.Chmod(root, 0700) != nil {
+		t.Fatal("private root")
+	}
+	policy := productTargetPolicy{Format: "abc2lab.product-target-policy/v1", AllowedPorts: []int{443}, PrivateCIDRs: []string{"10.200.1.0/24"}, MaxTargets: 32, MaxRequests: 4}
+	var synced []string
+	productSyncDirectory = func(path string) error {
+		// 동기화할 때 선언 디렉터리가 이미 있어야 그 엔트리가 함께 저장된다.
+		if _, err := os.Stat(filepath.Join(path, "declarations")); err != nil {
+			t.Errorf("선언 디렉터리 전에 부모를 동기화함: %v", err)
+		}
+		synced = append(synced, path)
+		return original(path)
+	}
+	r, err := newProductTargetRegistry(root, policy, func() error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.Close()
+	if len(synced) != 1 || synced[0] != root {
+		t.Fatalf("부모 동기화: %v", synced)
+	}
+	productSyncDirectory = func(string) error { return errors.New("동기화 실패") }
+	failing := t.TempDir()
+	if os.Chmod(failing, 0700) != nil {
+		t.Fatal("private root")
+	}
+	if r, err := newProductTargetRegistry(failing, policy, func() error { return nil }); err == nil {
+		_ = r.Close()
+		t.Fatal("부모 동기화 실패에도 레지스트리를 엶")
 	}
 }

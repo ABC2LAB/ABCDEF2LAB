@@ -402,6 +402,21 @@ func TestCredentialField(t *testing.T) {
 		"normal_contains": {func(d *e3contract.Declaration) {
 			d.Types[2].Read.StatusPath, d.Types[2].Read.NormalValue = "s", "token=abc-value"
 		}, "types[2].read.normal_value"},
+		// 이스케이프로 숨겨도 파서가 읽은 값에서 드러나면 걸린다.
+		"json_escaped_key": {func(d *e3contract.Declaration) {
+			d.Types[0].Create.BodyTemplate = `{"title":"t","pass\u0077ord":"x1-value"}`
+		}, "types[0].create.body_template"},
+		"json_escaped_bearer": {func(d *e3contract.Declaration) {
+			d.Types[0].Create.BodyTemplate = `{"note":"Bearer\u0020abc123-value"}`
+		}, "types[0].create.body_template"},
+		"json_nested": {func(d *e3contract.Declaration) {
+			d.Types[0].Create.BodyTemplate = `{"a":{"b":[{"to\u006ben":"v-value"}]}}`
+		}, "types[0].create.body_template"},
+		"form_escaped": {func(d *e3contract.Declaration) {
+			d.Types[0].Create.Kind, d.Types[0].Create.BodyTemplate = e3contract.BodyForm, "title=t&pass%77ord=x1-value"
+		}, "types[0].create.body_template"},
+		"path_escaped":     {func(d *e3contract.Declaration) { d.Types[0].Create.Path = "/api/token%3Dabc-value" }, "types[0].create.path"},
+		"identity_escaped": {func(d *e3contract.Declaration) { d.Identity.Path = "/api/me/session_id%3Dabc-value" }, "identity.path"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
