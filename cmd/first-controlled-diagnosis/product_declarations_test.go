@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -335,13 +336,13 @@ func TestProductResetRejectsBadLines(t *testing.T) {
 	at := r.now().UTC()
 	writes := productDeclarationEvent{TargetID: target.ID, Action: declarationConfirmationWrites, Actor: productConfirmationActor, At: at,
 		TargetRevision: target.Revision, JobRef: "job-1", Objects: confirmationObjects()}
-	if _, err := applyReset(rec, nil, writes); err != nil {
+	if _, err := applyReset(rec, nil, nil, writes); err != nil {
 		t.Fatalf("정상 쓰기 줄: %v", err)
 	}
-	pending, _ := applyReset(rec, nil, writes)
+	pending, _ := applyReset(rec, nil, nil, writes)
 	confirm := productDeclarationEvent{TargetID: target.ID, Action: declarationResetConfirmed, Actor: "ARTEX", At: at,
 		TargetRevision: target.Revision, JobRef: "job-1", WritesRef: pending.writesRef, StatementSHA256: productResetStatementSHA256()}
-	if _, err := applyReset(rec, pending, confirm); err != nil {
+	if _, err := applyReset(rec, pending, nil, confirm); err != nil {
 		t.Fatalf("정상 확인 줄: %v", err)
 	}
 	for name, c := range map[string]struct {
@@ -365,16 +366,23 @@ func TestProductResetRejectsBadLines(t *testing.T) {
 		"confirm_other_job":    {pending, func() productDeclarationEvent { e := confirm; e.JobRef = "job-2"; return e }},
 		"confirm_other_ref":    {pending, func() productDeclarationEvent { e := confirm; e.WritesRef = strings.Repeat("b", 64); return e }},
 		"confirm_no_ref":       {pending, func() productDeclarationEvent { e := confirm; e.WritesRef = ""; return e }},
-		"same_job_twice":       {pending, func() productDeclarationEvent { e := writes; e.At = at.Add(time.Second); return e }},
 		"writes_with_ref":      {nil, func() productDeclarationEvent { e := writes; e.WritesRef = strings.Repeat("c", 64); return e }},
 		"confirm_no_job":       {pending, func() productDeclarationEvent { e := confirm; e.JobRef = ""; return e }},
 	} {
-		if _, err := applyReset(rec, c.st, c.e()); err == nil {
+		if _, err := applyReset(rec, c.st, nil, c.e()); err == nil {
 			t.Fatalf("%s 받음", name)
 		}
 	}
-	twice, _ := applyReset(rec, pending, confirm)
-	if _, err := applyReset(rec, twice, confirm); err == nil {
+	later := writes
+	later.At = at.Add(time.Second)
+	if _, err := applyReset(rec, pending, nil, later); err != nil {
+		t.Fatalf("다른 회차 목록에서 정상 쓰기 줄: %v", err)
+	}
+	if _, err := applyReset(rec, pending, map[string]bool{"job-1": true}, later); err == nil {
+		t.Fatal("같은 회차의 두 번째 쓰기 줄을 받음")
+	}
+	twice, _ := applyReset(rec, pending, nil, confirm)
+	if _, err := applyReset(rec, twice, nil, confirm); err == nil {
 		t.Fatal("두 번째 확인 줄을 받음")
 	}
 	// 거부한 줄은 저널에 쓰지 않는다: 다시 열어도 재생이 깨지지 않고 상태가 그대로다.
@@ -521,5 +529,39 @@ func TestProductResetConsentBoundToWritesRecord(t *testing.T) {
 	c := confirmationWritesRef("job-1", at, other)
 	if a == b || a == c || len(a) != 64 {
 		t.Fatal("쓰기 기록 참조가 시각·객체를 구분하지 않음")
+	}
+}
+
+// 쓰기 줄 하나를 적용하는 비용은 앞선 회차 수와 관계없다(재생이 줄 수의 제곱이 되지 않게, #708 이동찬 리뷰).
+func TestProductResetApplyCostIndependentOfHistory(t *testing.T) {
+	r, _, target, _ := declarationTestTarget(t)
+	rec := r.records[target.ID]
+	e := productDeclarationEvent{TargetID: target.ID, Action: declarationConfirmationWrites, Actor: productConfirmationActor, At: r.now().UTC(),
+		TargetRevision: target.Revision, JobRef: "job-new", Objects: confirmationObjects()}
+	allocs := func(n int) float64 {
+		jobs := map[string]bool{}
+		for i := range n {
+			jobs[fmt.Sprintf("job-%d", i)] = true
+		}
+		return testing.AllocsPerRun(20, func() {
+			if _, err := applyReset(rec, nil, jobs, e); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	if small, large := allocs(1), allocs(4096); large > small {
+		t.Fatalf("앞선 회차 수에 따라 할당이 늚: %v → %v", small, large)
+	}
+	// 재생도 회차 목록을 줄마다 다시 만들지 않는다: 줄을 많이 받아도 목록은 하나이고 회차마다 한 번만 더해진다.
+	for i := range 64 {
+		if err := r.recordConfirmationWrites(target.ID, fmt.Sprintf("job-%d", i), confirmationObjects()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(r.resetJobs[target.ID]) != 64 {
+		t.Fatalf("회차 목록 %d", len(r.resetJobs[target.ID]))
+	}
+	if err := r.recordConfirmationWrites(target.ID, "job-3", confirmationObjects()); err == nil || len(r.resetJobs[target.ID]) != 64 {
+		t.Fatal("같은 회차 두 번째 쓰기 기록을 받음")
 	}
 }

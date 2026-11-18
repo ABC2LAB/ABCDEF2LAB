@@ -180,8 +180,6 @@ type productResetState struct {
 	writesRef   string
 	confirmedBy string
 	confirmedAt time.Time
-	// jobs는 이 대상에 쓰기 기록을 남긴 회차다. 한 회차는 쓰기 기록 줄 하나만 남긴다.
-	jobs map[string]bool
 }
 
 // confirmationWritesRef는 쓰기 기록 줄 하나의 고유 참조다. 같은 회차라도 시각·객체 집합이 다르면 다른 값이다.
@@ -197,8 +195,9 @@ func confirmationWritesRef(job string, at time.Time, objects []productConfirmati
 // productConfirmationActor는 확정 단계 쓰기 기록의 행위자다(사람이 아니라 프로그램).
 const productConfirmationActor = "e3-confirmation"
 
-// applyReset은 리셋 관련 저널 줄 하나를 상태에 적용한 새 상태다. 받지 않을 줄이면 오류이고 상태는 그대로다.
-func applyReset(rec productTargetRecord, st *productResetState, e productDeclarationEvent) (*productResetState, error) {
+// applyReset은 리셋 관련 저널 줄 하나를 상태에 적용한 새 상태다. 받지 않을 줄이면 오류이고 상태는 그대로다. jobs는 이 대상에
+// 쓰기 기록을 이미 남긴 회차이고 읽기만 한다(받은 줄의 회차는 호출자가 반영이 끝난 뒤 하나만 더한다).
+func applyReset(rec productTargetRecord, st *productResetState, jobs map[string]bool, e productDeclarationEvent) (*productResetState, error) {
 	if e.At.IsZero() || e.TargetRevision < 1 || e.TargetRevision > rec.Target.Revision || e.DigestSHA256 != "" || e.Declaration != nil {
 		return nil, errPreparation
 	}
@@ -218,16 +217,12 @@ func applyReset(rec productTargetRecord, st *productResetState, e productDeclara
 			}
 		}
 		// 한 회차는 쓰기 기록을 한 번만 남긴다(같은 회차의 두 번째 줄은 받지 않는다, #708 이동찬 리뷰).
-		if next.jobs[e.JobRef] || e.WritesRef != "" {
+		if jobs[e.JobRef] || e.WritesRef != "" {
 			return nil, errPreparation
-		}
-		jobs := map[string]bool{e.JobRef: true}
-		for j := range next.jobs {
-			jobs[j] = true
 		}
 		// 새 쓰기는 앞선 리셋 확인을 덮는다(이번 객체는 아직 리셋되지 않았다).
 		next = productResetState{writesJob: e.JobRef, writesAt: e.At, writesObjects: append([]productConfirmationObject(nil), e.Objects...),
-			writesRef: confirmationWritesRef(e.JobRef, e.At, e.Objects), jobs: jobs}
+			writesRef: confirmationWritesRef(e.JobRef, e.At, e.Objects)}
 	case declarationResetConfirmed:
 		// 확인은 운영자가 본 쓰기 기록 줄(고유 참조)에만 묶인다. 그 뒤 새 쓰기가 들어왔으면 그 확인 줄은 받지 않는다.
 		if e.Actor != rec.Principal || e.StatementSHA256 != productResetStatementSHA256() || e.JobRef == "" || e.JobRef != next.writesJob ||
@@ -247,12 +242,25 @@ func (r *productTargetRegistry) replayReset(e productDeclarationEvent) error {
 	if !ok {
 		return errPreparation
 	}
-	next, err := applyReset(rec, r.resets[e.TargetID], e)
+	next, err := applyReset(rec, r.resets[e.TargetID], r.resetJobs[e.TargetID], e)
 	if err != nil {
 		return err
 	}
-	r.resets[e.TargetID] = next
+	r.setReset(e, next)
 	return nil
+}
+
+// setReset은 받은 줄의 결과를 상태에 반영한다. 쓰기 기록이면 그 회차 하나만 대상의 회차 목록에 더한다(기존 목록은 복사하지
+// 않는다, #708 이동찬 리뷰: 재생 비용이 줄 수의 제곱이 되지 않게).
+func (r *productTargetRegistry) setReset(e productDeclarationEvent, next *productResetState) {
+	r.resets[e.TargetID] = next
+	if e.Action != declarationConfirmationWrites {
+		return
+	}
+	if r.resetJobs[e.TargetID] == nil {
+		r.resetJobs[e.TargetID] = map[string]bool{}
+	}
+	r.resetJobs[e.TargetID][e.JobRef] = true
 }
 
 // recordConfirmationWrites는 확정 단계가 대상에 만든 객체를 남긴다. 이 기록이 있으면 운영자의 리셋 확인 전까지 다음
@@ -271,7 +279,7 @@ func (r *productTargetRegistry) recordConfirmationWrites(targetID, jobID string,
 
 // appendReset은 줄을 먼저 검사하고(받지 않을 줄은 저널에 쓰지 않는다) 저널에 쓴 뒤 상태에 반영한다. r.mu를 잡은 채로 부른다.
 func (r *productTargetRegistry) appendReset(rec productTargetRecord, e productDeclarationEvent) error {
-	next, err := applyReset(rec, r.resets[e.TargetID], e)
+	next, err := applyReset(rec, r.resets[e.TargetID], r.resetJobs[e.TargetID], e)
 	if err != nil {
 		return errPreparation
 	}
@@ -282,7 +290,7 @@ func (r *productTargetRegistry) appendReset(rec productTargetRecord, e productDe
 	if err := r.declarationJournal.Append(raw); err != nil {
 		return errPreparation
 	}
-	r.resets[e.TargetID] = next
+	r.setReset(e, next)
 	return nil
 }
 
