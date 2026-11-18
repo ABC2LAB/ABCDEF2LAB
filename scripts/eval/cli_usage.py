@@ -128,7 +128,7 @@ def _heredoc_word(command: str, i: int) -> tuple[int, str, bool] | None:
     본문이 확장되는지). 따옴표·백슬래시가 하나라도 있으면 본문은 확장되지 않는다. 낱말이 없거나 따옴표가 안 닫히면 None
     (정적으로 풀지 못함, #682 리뷰: `<<END-TEXT`를 `END`로 자르면 뒤 명령을 본문으로 뺀다).
     따옴표 밖·큰따옴표 안의 줄 이음은 셸이 지우므로 구분어 글자에서 빼고 따옴표로 치지 않는다(`EO\⏎F`는 따옴표 없는 `EOF`)."""
-    i = _skip_joins(command, i)
+    # 연산자 바로 뒤 줄 이음은 _operator_at이 이미 건너뛰었다. 공백 뒤 줄 이음은 여기서 건너뛴다.
     while i < len(command) and command[i] in " \t":
         i = _skip_joins(command, i + 1)
     word, quoted = [], False
