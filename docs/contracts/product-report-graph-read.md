@@ -89,6 +89,45 @@ KG 등록이 있고 현재 실행이 결속된 회차만 성공한다. 아래는
 일반 URL Job에 KG 등록이 없으면 **409**다. 빈 격자·가상의 정상 접근을 만들거나 `getAccessMap(null)`의 MOCK fallback을
 제품 보고서에 쓰지 않는다. 현재 API는 일반적인 소유 그래프, 수직 인가, 접근 이력, 미실행/적용불가 판정, 새 E③ 증명을 제공하지 않는다.
 
+## 기존 설치의 조회 권한 점검
+
+신규 설치는 `productGrantRoles`에서 `product_api`의 `task_scope` SELECT를 부여한다. 기존 설치의 `update.sh`와 설치 재사용 분기는 이 GRANT를 다시 실행하지 않는다. 포트나 컨테이너 이름만으로 실제 연결 역할을 판단하지 않는다.
+
+제품 관리 서버는 `api.dsn`의 `product_api`로 인증과 task·원천 작업의 조회 문맥을 확인한다. 현재 제품의 실행 서버와 준비 서비스가 `openURLReport`로 여는 저장 보고서 서버는 실행 프로필에 결속된 `runtime.dsn`의 `product_runtime`을 사용한다. 별도로 조립된 저장 보고서 서버는 설치자가 넘긴 pool을 사용한다. `product_api`로 그래프 본문을 읽는 배치에서만 이 역할의 `task_scope` 누락이 그래프 GET의 503으로 드러난다. 실제 그래프 조회 역할을 먼저 확인한다.
+
+| 조회 | 필요한 읽기 |
+|---|---|
+| 인증·작업 문맥 | `settings`, `tasks`, 그래프에 한해 `task_relations`. 준비 영수증은 보호 서비스에서 확인 |
+| 자산 그래프 본문 | `assets`, `companies`, `exploration_nodes`, `exploration_anchors`, `task_scope`의 `task_id, kind, company_id, domain, net, value`, `try_inet(text)`의 유효 EXECUTE |
+| 지도 | `exploration_nodes`, `task_control_modes`, `e3_verdict_issuances`, `e3_oracle_verdicts`, `e3_evidence_manifests`. 조회는 현재 등록·세대에 결속 |
+
+설치 관리자는 보호된 접속 경로를 사용해 연결 DB·역할과 스키마 USAGE, 실제 SQL에서 사용하는 각 열의 SELECT, 함수 EXECUTE를 점검한다. 열 권한만 부여한 경우 `has_table_privilege(..., 'SELECT')`가 false여도 정상이다.
+
+```sql
+SELECT current_database(), current_user,
+       has_schema_privilege(current_user, 'public', 'USAGE') AS schema_access,
+       has_function_privilege(current_user, 'public.try_inet(text)', 'EXECUTE') AS inet_access;
+
+SELECT col, has_column_privilege(current_user, 'public.task_scope', col, 'SELECT') AS can_read
+FROM unnest(ARRAY['task_id','kind','company_id','domain','net','value']) AS cols(col);
+```
+
+활성 회차가 끝난 점검 시간에 설치 관리자가 설치 DB, 사용 중인 역할, 기존 열 ACL을 확인한다. 본문 조회가 `product_api`를 사용하고 위 6개 열이 누락된 경우에 한해 아래 명령을 검토한다. 이미 필요한 권한이 있는 설치는 그대로 유지한다.
+
+```sql
+BEGIN;
+GRANT SELECT (task_id, kind, company_id, domain, net, value)
+ON public.task_scope TO product_api;
+-- 설치 관리자가 별도 세션에 공개하기 전, 같은 트랜잭션에서 유효 권한을 확인한다.
+SET LOCAL ROLE product_api;
+SELECT task_id, kind, company_id, domain, net, value FROM public.task_scope LIMIT 0;
+COMMIT;
+```
+
+트랜잭션 내 확인에 실패하면 롤백한다. 함수 권한도 빠진 설치는 함수 소유자·스키마·정의의 설치 일치를 확인하고 해당 역할과 함수 하나의 EXECUTE를 별도로 검토한다. 다른 표나 역할로 권한을 넓혀 복구하지 않는다.
+
+커밋 후 동일 자격으로 다시 접속해 유효 열 권한과 실제 제품 GET을 확인한다. 범위가 있는 작업의 그래프는 200과 실제 노드를, KG가 등록된 작업의 지도는 200과 저장 자료를 확인한다. KG 미등록 409와 권한 부족 503은 서로 다른 결과다. 이관 후 되돌려야 하면 이 작업에서 추가한 열의 직접 GRANT만 기존 ACL과 대조해 REVOKE한다. 기존 테이블 권한, 상속 권한, DSN과 역할 암호, 보호 설치 파일·이미지 지문과 Job/보고서 데이터를 보존한다. 구 이미지로 돌아갈 때도 기존 이미지–설치 지문 호환성을 별도로 확인한다.
+
 ## 오류와 수용 경계
 
 | HTTP | UI 처리 |
