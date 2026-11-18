@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -296,12 +297,80 @@ func CredentialField(d Declaration) string {
 			fields = append(fields, field{fmt.Sprintf("%sowner_only_fields[%d]", p, j), f})
 		}
 	}
+	kinds := map[string]BodyKind{}
+	for i, t := range d.Types {
+		kinds[fmt.Sprintf("types[%d].create.body_template", i)] = t.Create.Kind
+	}
 	for _, f := range fields {
-		if f.value != "" && dlp.CredentialText(f.value) != f.value {
-			return f.name
+		if f.value == "" {
+			continue
+		}
+		for _, form := range credentialForms(f.name, f.value, kinds[f.name]) {
+			if dlp.CredentialText(form) != form {
+				return f.name
+			}
 		}
 	}
 	return ""
+}
+
+// credentialForms는 칸 값을 파서가 읽는 모양들로 풀어 돌려준다. 이스케이프로 자격 이름·값을 숨겨도 저장되는 값에서 드러나면
+// 걸리게 한다: 본문 틀은 JSON·form으로 풀어 "키=값"·"키: 값"·값을, 경로는 퍼센트 인코딩을 푼 모양을 함께 본다.
+func credentialForms(name, value string, kind BodyKind) []string {
+	forms := []string{value}
+	switch {
+	case strings.HasSuffix(name, "create.body_template") && kind == BodyJSON:
+		var parsed any
+		dec := json.NewDecoder(strings.NewReader(value))
+		dec.UseNumber()
+		if dec.Decode(&parsed) == nil {
+			forms = append(forms, jsonCredentialForms(parsed)...)
+		}
+	case strings.HasSuffix(name, "create.body_template") && kind == BodyForm:
+		if values, err := url.ParseQuery(value); err == nil {
+			for k, vs := range values {
+				forms = append(forms, k)
+				for _, v := range vs {
+					forms = append(forms, k+"="+v, v)
+				}
+			}
+		}
+	case strings.HasSuffix(name, ".path") || strings.HasSuffix(name, ".path_template"):
+		if decoded, err := url.PathUnescape(value); err == nil && decoded != value {
+			forms = append(forms, decoded)
+		}
+	}
+	return forms
+}
+
+func jsonCredentialForms(v any) []string {
+	var out []string
+	switch x := v.(type) {
+	case map[string]any:
+		for k, child := range x {
+			// 값 종류와 관계없이 키=<값 JSON>을 본다: 자격 이름 키에는 배열·객체·불리언·null 값도 자격 모양이다(#705 이경준 리뷰).
+			if raw, err := json.Marshal(child); err == nil {
+				out = append(out, k+"="+string(raw))
+			}
+			switch c := child.(type) {
+			case string:
+				out = append(out, k+"="+strconv.Quote(c), k+": "+c, c)
+			case json.Number:
+				out = append(out, k+"="+c.String())
+			default:
+				out = append(out, jsonCredentialForms(c)...)
+			}
+		}
+	case []any:
+		for _, child := range x {
+			if c, ok := child.(string); ok {
+				out = append(out, c)
+				continue
+			}
+			out = append(out, jsonCredentialForms(child)...)
+		}
+	}
+	return out
 }
 
 // plainPath는 {id} 없는 절대 경로다. query·조각·점 조각·공백·제어 문자를 받지 않는다.

@@ -32,6 +32,8 @@ type productDeclarationEvent struct {
 	JobRef          string                      `json:"job_ref,omitempty"`
 	Objects         []productConfirmationObject `json:"objects,omitempty"`
 	StatementSHA256 string                      `json:"statement_sha256,omitempty"`
+	// WritesRef는 reset_confirmed 줄이 동의한 쓰기 기록 줄의 고유 참조다.
+	WritesRef string `json:"writes_ref,omitempty"`
 }
 
 type productDeclarationState struct {
@@ -55,7 +57,7 @@ func (r *productTargetRegistry) replayDeclaration(e productDeclarationEvent) err
 		return r.replayReset(e)
 	}
 	rec, ok := r.records[e.TargetID]
-	if e.Declaration == nil || e.JobRef != "" || len(e.Objects) != 0 || e.StatementSHA256 != "" {
+	if e.Declaration == nil || e.JobRef != "" || len(e.Objects) != 0 || e.StatementSHA256 != "" || e.WritesRef != "" {
 		return errPreparation
 	}
 	d := *e.Declaration

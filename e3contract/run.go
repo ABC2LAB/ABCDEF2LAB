@@ -68,11 +68,18 @@ type run struct {
 	budget    bool // 확정 단계 전용 몫이 다 됐다. 더 보내지 않는다.
 	stopped   bool // 회차 중지로 끊겼다.
 	lastAt    time.Time
+	// bindingValid는 실행 결속이 검증을 통과했는지다. 통과한 결속만 결과에 싣는다.
+	bindingValid bool
 }
 
 func (r *run) result(status ConfirmationStatus, reason string) RunResult {
-	return RunResult{Version: RunResultVersion, Status: status, Reason: reason, Binding: r.in.Binding,
-		Verdicts: []Verdict{}, Skipped: []SkippedType{}, Candidates: r.suspectedCandidates(""), Requests: r.requests}
+	res := RunResult{Version: RunResultVersion, Status: status, Reason: reason, Verdicts: []Verdict{}, Skipped: []SkippedType{},
+		Candidates: r.suspectedCandidates(""), Requests: r.requests}
+	if r.bindingValid {
+		b := r.in.Binding
+		res.Binding = &b
+	}
+	return res
 }
 
 func (r *run) integrityResult() RunResult {
@@ -83,8 +90,19 @@ func (r *run) integrityResult() RunResult {
 
 func (r *run) suspectedCandidates(reason string) []CandidateConfirmation {
 	out := make([]CandidateConfirmation, 0, len(r.in.Candidates))
-	for _, c := range r.in.Candidates {
+	for _, c := range r.validCandidates() {
 		out = append(out, CandidateConfirmation{CandidateRef: c.Ref, Level: oracle.Suspected, Reason: reason})
+	}
+	return out
+}
+
+// validCandidates는 참조가 계약 모양인 후보만이다. 모양이 틀린 후보 참조는 결과에 옮기지 않는다.
+func (r *run) validCandidates() []Candidate {
+	var out []Candidate
+	for _, c := range r.in.Candidates {
+		if refPattern.MatchString(c.Ref) {
+			out = append(out, c)
+		}
 	}
 	return out
 }
@@ -190,9 +208,13 @@ func (r *run) disabledReason() DisabledReason {
 	if d.Transport == nil || d.Journal == nil || d.Declarations == nil || d.Reset == nil {
 		return DisabledNotWired
 	}
+	if r.in.Binding.Policy == (PolicySource{}) {
+		return DisabledNoDeclaration
+	}
 	if r.in.Binding.Validate() != nil || !refPattern.MatchString(r.in.TargetRef) {
 		return DisabledBindingInvalid
 	}
+	r.bindingValid = true
 	if r.in.Binding.Policy.ValidateProduct() != nil {
 		return DisabledPolicyKind
 	}
@@ -494,7 +516,7 @@ func (r *run) linkCandidates(types []TypeDeclaration, verdicts []Verdict) []Cand
 		byType[v.ResourceType] = v
 	}
 	out := make([]CandidateConfirmation, 0, len(r.in.Candidates))
-	for _, c := range r.in.Candidates {
+	for _, c := range r.validCandidates() {
 		var matched []string
 		if c.Method == "GET" {
 			for _, t := range types {

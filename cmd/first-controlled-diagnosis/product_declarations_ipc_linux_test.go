@@ -75,7 +75,8 @@ func TestProductDeclarationControlOverUnixTransport(t *testing.T) {
 	if got := call(&diagnosisprep.ProductRequest{Operation: "reset_confirmation", TargetID: target.ID}); got.Reset == nil || !got.Reset.ResetRequired || got.Reset.LastWritesObjects != 1 {
 		t.Fatalf("쓰기 뒤: %+v", got)
 	}
-	if got := call(&diagnosisprep.ProductRequest{Operation: "reset_confirm", TargetID: target.ID, Reset: &diagnosisprep.ResetRequest{StatementConfirmed: true}}); got.Reset == nil || got.Reset.ResetRequired || got.Reset.ConfirmedBy != "ARTEX" {
+	seen := call(&diagnosisprep.ProductRequest{Operation: "reset_confirmation", TargetID: target.ID}).Reset.LastWritesRef
+	if got := call(&diagnosisprep.ProductRequest{Operation: "reset_confirm", TargetID: target.ID, Reset: &diagnosisprep.ResetRequest{StatementConfirmed: true, WritesRef: seen}}); got.Reset == nil || got.Reset.ResetRequired || got.Reset.ConfirmedBy != "ARTEX" {
 		t.Fatalf("확인: %+v", got)
 	}
 	// 인코딩 상한 가까운 선언도 요청·응답 프레임에 들어간다.

@@ -97,11 +97,13 @@
 
 | status | 언제 | 판정 행 | 요청 |
 |---|---|---|---|
-| `disabled` | 쓰는 조건(결정 §3)이 모자람: `not_wired`·`binding_invalid`·`policy_kind_not_product`·`write_not_consented`·`test_accounts_unavailable`·`policy_window_invalid`·`no_confirmable_type` | 없음 | 0 |
+| `disabled` | 쓰는 조건(결정 §3)이 모자람: `not_wired`·`declaration_missing`·`binding_invalid`·`policy_kind_not_product`·`write_not_consented`·`test_accounts_unavailable`·`policy_window_invalid`·`no_confirmable_type` | 없음 | 0 |
 | `start_refused` | 시작 점검에서 멈춤: `policy_source_unavailable`·`reset_confirmation_missing`·`previous_markers_present`·`reset_state_unavailable`·`marker_generation_failed`·`marker_registration_failed` | 없음 | 0 |
 | `completed` | 끝까지 돎 | 종류마다 하나(UNDECIDABLE 포함) | - |
 | `interrupted` | 회차 중지로 끊김 | 끝낸 종류만 | - |
 | `confirmation_integrity_failed` | 결속·진위가 깨짐(아래) | **없음** | 그때까지 |
+
+**비활성 사유 구분(2026-11-18 사용자·이동찬 합의).** 공식 Juice Shop 측정은 E③ 비활성(선언·시험 계정 없음)으로 돈다. 그래서 "선언 없음"(`declaration_missing`)·"시험 계정 없음"(`test_accounts_unavailable`)과 "연결 미구현"(`not_wired`)을 다른 사유로 내보낸다. `not_wired`를 먼저 판정하므로 연결이 빠진 이미지는 선언이 없어도 `not_wired`로 드러나고, 최종 제품 이미지에서는 `not_wired`가 나오면 안 된다(판정 쪽 PR 시험). 결과의 `binding`은 검증을 통과한 실행 결속만 싣고, 결속이 틀려 거부했으면 생략한다. 후보 참조도 모양이 맞는 것만 옮긴다.
 
 **진위 실패(② (다)).** 사유는 `policy_digest_mismatch`·`policy_target_mismatch`·`observation_invalid`·`binding_mismatch`·`observation_mismatch`·`observation_reused`·`journal_event_missing`·`journal_event_mismatch`·`authority_revoked`다.
 - 그때까지 만든 판정(이미 CONFIRMED였던 종류 포함)을 버리고 판정 행을 만들지 않는다.
@@ -133,6 +135,13 @@
   - `template_excluded`: 이 회차에 새로 만든 무작위 표식을 A 객체 한 칸에만 넣었으므로 yes.
   - 확인하지 못한 사실은 모두 unknown이다.
 
+### 7.1 확정 단계 몫과 꺼진 회차(2026-11-18 사용자 결정)
+
+- 확정 단계 몫(요청·시간)은 실행 시작 때 정하고, 모델 단계는 그 몫을 뺀 범위에서 돈다(결정 §7 예산).
+- **확정 단계가 꺼질 회차는 몫이 0이다.** 실행 시작 때 쓰는 조건(결정 §3)이 모자라면 꺼진다: 유효한 선언 동결본이 없음, 시험 계정 A·B 인증이 없음, 쓰기 동의가 없음, 제품 경로가 아닌 정책 출처(`kg_snapshot`). 이런 회차는 요청 몫과 시간 몫을 모두 0으로 두고 모델 단계가 실행 예산 전부를 쓴다. 꺼졌는데 몫만 떼면 모델 몫이 이유 없이 줄어든다.
+- 몫은 E² 실행 정책에 명시한다(0 포함). 러너가 정책에서 이 값을 읽어 꺼진 회차의 몫이 0인지 확인할 수 있어야 한다. 정책 내용 지문에 넣는 방식은 판정 쪽 PR에서 정한다.
+- 시험: "disabled → 예약 0"을 판정 쪽 PR(정책 선언 저장 다음 PR)에서 고정한다.
+
 ## 8. 리셋 게이트
 
 `ResetGate.Check`는 `{previous_writes, reset_confirmed, residue}`를 돌려준다(결정 §6.1). `CheckRunStart`는 다음 경우 모두 거절한다:
@@ -143,10 +152,13 @@
 서버는 회차 시작 때(모델 단계 전) 이것으로 회차를 거절하고, `Run`은 확정 단계 시작 때 다시 본다. 리셋 확인이 없으면 잔존 점검 결과와 관계없이 `reset_confirmation_missing`이다.
 
 **기록과 API(구현).** 선언 저널에 두 종류의 줄을 더 남긴다.
-- `confirmation_writes`: 확정 단계가 대상에 만든 객체(종류·ID digest, 원문 없음)와 회차. 행위자는 프로그램(`e3-confirmation`)이다. 새 쓰기는 앞선 리셋 확인을 덮는다.
-- `reset_confirmed`: 대상 승인자가 리셋 진술에 동의함(진술 문장의 SHA-256·누가·언제). 남은 쓰기가 없으면 남기지 않는다.
-- `GET /api/product/targets/{id}/reset-confirmation` → `{"reset": {"reset_required", "last_writes_job"?, "last_writes_at"?, "last_writes_objects"?, "confirmed_by"?, "confirmed_at"?, "statement"}}`. 화면은 `statement`를 그대로 보이고 동의를 받는다.
-- `POST …/reset-confirmation` `{"statement_confirmed": true}` → 같은 모양. 진술 동의가 없으면 400 `statement_required`다. 리셋은 더 안전한 쪽이라 대상 승인 상태와 관계없이 받는다.
+- `confirmation_writes`: 확정 단계가 대상에 만든 객체(종류·ID digest, 원문 없음)와 회차. 행위자는 프로그램(`e3-confirmation`)이다. 한 회차는 쓰기 기록 줄을 하나만 남긴다(같은 회차의 두 번째 줄은 받지 않는다). 새 쓰기는 앞선 리셋 확인을 덮는다. 줄마다 고유 참조(`writes_ref` = 회차·시각·객체 집합의 SHA-256)가 있다.
+- `reset_confirmed`: 대상 승인자가 리셋 진술에 동의함(진술 문장의 SHA-256·누가·언제·동의한 쓰기 기록의 회차와 고유 참조). 동의는 운영자가 본 쓰기 기록 줄에만 묶인다.
+- `GET /api/product/targets/{id}/reset-confirmation` → `{"reset": {"reset_required", "last_writes_job"?, "last_writes_at"?, "last_writes_objects"?, "last_writes_ref"?, "confirmed_by"?, "confirmed_at"?, "statement"}}`. 화면은 `statement`를 그대로 보이고 동의를 받는다.
+- `POST …/reset-confirmation` `{"statement_confirmed": true, "writes_ref": "<GET에서 본 last_writes_ref>"}` → 같은 모양.
+  - 진술 동의가 없으면 400 `statement_required`, `writes_ref`가 없거나 모양(소문자 16진 64자)이 틀리면 400 `invalid_reset_request`다.
+  - 조회와 동의 사이에 새 쓰기 기록이 들어와 지금 기록이 본 것과 다르면(또는 기록이 없으면) 409 `reset_record_changed`이고 반영하지 않는다. 같은 기록을 이미 확인했으면 줄을 더 남기지 않는다.
+  - 리셋은 더 안전한 쪽이라 대상 승인 상태와 관계없이 받는다.
 - 게이트는 지난 쓰기가 있으면 리셋 확인과 별개로 지난 객체를 읽어 표식 잔존을 본다(결정 §6.1 (b), E² 쪽 점검). 그 점검이 연결되기 전이나 실패하면 잔존은 `unknown`이라 시작하지 않는다.
 
 ## 9. 후보 연결

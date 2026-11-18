@@ -103,7 +103,7 @@ func TestProductDeclarationResponseValidation(t *testing.T) {
 
 func TestProductResetRequestAndResponseValidation(t *testing.T) {
 	id := "target-abc"
-	for _, r := range []ProductRequest{{Operation: "reset_confirmation", TargetID: id}, {Operation: "reset_confirm", TargetID: id, Reset: &ResetRequest{StatementConfirmed: true}}} {
+	for _, r := range []ProductRequest{{Operation: "reset_confirmation", TargetID: id}, {Operation: "reset_confirm", TargetID: id, Reset: &ResetRequest{StatementConfirmed: true, WritesRef: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}} {
 		r := r
 		if !validProductRequest(&r) {
 			t.Errorf("valid %s rejected", r.Operation)
@@ -111,9 +111,11 @@ func TestProductResetRequestAndResponseValidation(t *testing.T) {
 	}
 	for name, r := range map[string]ProductRequest{
 		"get with body":        {Operation: "reset_confirmation", TargetID: id, Reset: &ResetRequest{StatementConfirmed: true}},
-		"confirm unconfirmed":  {Operation: "reset_confirm", TargetID: id, Reset: &ResetRequest{}},
+		"confirm unconfirmed":  {Operation: "reset_confirm", TargetID: id, Reset: &ResetRequest{WritesRef: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
+		"confirm without job":  {Operation: "reset_confirm", TargetID: id, Reset: &ResetRequest{StatementConfirmed: true}},
+		"confirm bad job":      {Operation: "reset_confirm", TargetID: id, Reset: &ResetRequest{StatementConfirmed: true, WritesRef: "job-1"}},
 		"confirm without":      {Operation: "reset_confirm", TargetID: id},
-		"confirm revision":     {Operation: "reset_confirm", TargetID: id, ExpectedRevision: 2, Reset: &ResetRequest{StatementConfirmed: true}},
+		"confirm revision":     {Operation: "reset_confirm", TargetID: id, ExpectedRevision: 2, Reset: &ResetRequest{StatementConfirmed: true, WritesRef: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
 		"reset on declaration": {Operation: "declaration", TargetID: id, Reset: &ResetRequest{StatementConfirmed: true}},
 		"unknown":              {Operation: "reset_confirm_all", TargetID: id},
 	} {
@@ -131,8 +133,8 @@ func TestProductResetRequestAndResponseValidation(t *testing.T) {
 	stmt := "statement"
 	for name, s := range map[string]ProductResetState{
 		"none":      {Statement: stmt},
-		"required":  {ResetRequired: true, LastWritesJob: "job-1", LastWritesAt: now, LastWritesObjects: 1, Statement: stmt},
-		"confirmed": {LastWritesJob: "job-1", LastWritesAt: now, LastWritesObjects: 1, ConfirmedBy: "ARTEX", ConfirmedAt: now, Statement: stmt},
+		"required":  {ResetRequired: true, LastWritesJob: "job-1", LastWritesRef: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", LastWritesAt: now, LastWritesObjects: 1, Statement: stmt},
+		"confirmed": {LastWritesJob: "job-1", LastWritesRef: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", LastWritesAt: now, LastWritesObjects: 1, ConfirmedBy: "ARTEX", ConfirmedAt: now, Statement: stmt},
 	} {
 		if err := respond(get, s); err != nil {
 			t.Fatalf("%s rejected: %v", name, err)
@@ -140,11 +142,11 @@ func TestProductResetRequestAndResponseValidation(t *testing.T) {
 	}
 	for name, s := range map[string]ProductResetState{
 		"required without writes": {ResetRequired: true, Statement: stmt},
-		"required and confirmed":  {ResetRequired: true, LastWritesJob: "job-1", LastWritesAt: now, LastWritesObjects: 1, ConfirmedBy: "ARTEX", ConfirmedAt: now, Statement: stmt},
-		"neither":                 {LastWritesJob: "job-1", LastWritesAt: now, LastWritesObjects: 1, Statement: stmt},
+		"required and confirmed":  {ResetRequired: true, LastWritesJob: "job-1", LastWritesRef: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", LastWritesAt: now, LastWritesObjects: 1, ConfirmedBy: "ARTEX", ConfirmedAt: now, Statement: stmt},
+		"neither":                 {LastWritesJob: "job-1", LastWritesRef: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", LastWritesAt: now, LastWritesObjects: 1, Statement: stmt},
 		"no statement":            {},
-		"zero objects":            {ResetRequired: true, LastWritesJob: "job-1", LastWritesAt: now, Statement: stmt},
-		"confirmer without time":  {LastWritesJob: "job-1", LastWritesAt: now, LastWritesObjects: 1, ConfirmedBy: "ARTEX", Statement: stmt},
+		"zero objects":            {ResetRequired: true, LastWritesJob: "job-1", LastWritesRef: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", LastWritesAt: now, Statement: stmt},
+		"confirmer without time":  {LastWritesJob: "job-1", LastWritesRef: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", LastWritesAt: now, LastWritesObjects: 1, ConfirmedBy: "ARTEX", Statement: stmt},
 	} {
 		if respond(get, s) == nil {
 			t.Errorf("%s accepted", name)

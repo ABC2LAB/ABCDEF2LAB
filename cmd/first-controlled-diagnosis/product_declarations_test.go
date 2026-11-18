@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -147,6 +148,9 @@ func TestProductDeclarationRejectsWithFieldOnly(t *testing.T) {
 		"credential_template": {func(in *diagnosisprep.DeclarationInput) {
 			in.Types[1].Create.BodyTemplate = `{"title":"t","password":"hunter2-secret-value"}`
 		}, "types[0].create.body_template"},
+		"credential_escaped": {func(in *diagnosisprep.DeclarationInput) {
+			in.Types[1].Create.BodyTemplate = `{"title":"t","pass\u0077ord":"hunter2-secret-value"}`
+		}, "types[0].create.body_template"},
 		"credential_normal": {func(in *diagnosisprep.DeclarationInput) {
 			in.Types[1].Read.StatusPath, in.Types[1].Read.NormalValue = "s", "Bearer hunter2-secret-value"
 		}, "types[0].read.normal_value"},
@@ -266,18 +270,18 @@ func TestProductResetConfirmationLifecycle(t *testing.T) {
 	if got := start(gate); got != e3contract.RefuseResetConfirmationMissing {
 		t.Fatalf("확인 없이: %s", got)
 	}
-	if _, err := r.confirmReset("ARTEX", target.ID, false); err == nil || err.Error() != "statement_required" {
+	if _, err := r.confirmReset("ARTEX", target.ID, false, writesRef(t, r, target.ID)); err == nil || err.Error() != "statement_required" {
 		t.Fatalf("진술 없이: %v", err)
 	}
-	if _, err := r.confirmReset("other", target.ID, true); err == nil || err.Error() != "target_not_found" {
+	if _, err := r.confirmReset("other", target.ID, true, writesRef(t, r, target.ID)); err == nil || err.Error() != "target_not_found" {
 		t.Fatalf("다른 주체: %v", err)
 	}
-	v, err := r.confirmReset("ARTEX", target.ID, true)
+	v, err := r.confirmReset("ARTEX", target.ID, true, writesRef(t, r, target.ID))
 	if err != nil || v.ResetRequired || v.ConfirmedBy != "ARTEX" || v.ConfirmedAt.IsZero() {
 		t.Fatalf("확인: %+v %v", v, err)
 	}
 	// 같은 쓰기를 두 번 확인해도 줄을 더 남기지 않는다.
-	if again, err := r.confirmReset("ARTEX", target.ID, true); err != nil || !again.ConfirmedAt.Equal(v.ConfirmedAt) {
+	if again, err := r.confirmReset("ARTEX", target.ID, true, writesRef(t, r, target.ID)); err != nil || !again.ConfirmedAt.Equal(v.ConfirmedAt) {
 		t.Fatalf("두 번째 확인: %+v %v", again, err)
 	}
 	if got := start(gate); got != e3contract.RefuseResetStateUnavailable {
@@ -331,7 +335,7 @@ func TestProductResetReplayBlocksPresentOrUnverifiedResidue(t *testing.T) {
 	if err := registry.recordConfirmationWrites(target.ID, "job-before-restart", confirmationObjects()); err != nil {
 		t.Fatal(err)
 	}
-	confirmed, err := registry.confirmReset("ARTEX", target.ID, true)
+	confirmed, err := registry.confirmReset("ARTEX", target.ID, true, writesRef(t, registry, target.ID))
 	if err != nil || confirmed.ResetRequired || confirmed.ConfirmedAt.IsZero() {
 		t.Fatalf("리셋 확인 기록 실패: %+v, %v", confirmed, err)
 	}
@@ -381,13 +385,13 @@ func TestProductResetRejectsBadLines(t *testing.T) {
 	at := r.now().UTC()
 	writes := productDeclarationEvent{TargetID: target.ID, Action: declarationConfirmationWrites, Actor: productConfirmationActor, At: at,
 		TargetRevision: target.Revision, JobRef: "job-1", Objects: confirmationObjects()}
-	if _, err := applyReset(rec, nil, writes); err != nil {
+	if _, err := applyReset(rec, nil, nil, writes); err != nil {
 		t.Fatalf("정상 쓰기 줄: %v", err)
 	}
-	pending, _ := applyReset(rec, nil, writes)
+	pending, _ := applyReset(rec, nil, nil, writes)
 	confirm := productDeclarationEvent{TargetID: target.ID, Action: declarationResetConfirmed, Actor: "ARTEX", At: at,
-		TargetRevision: target.Revision, StatementSHA256: productResetStatementSHA256()}
-	if _, err := applyReset(rec, pending, confirm); err != nil {
+		TargetRevision: target.Revision, JobRef: "job-1", WritesRef: pending.writesRef, StatementSHA256: productResetStatementSHA256()}
+	if _, err := applyReset(rec, pending, nil, confirm); err != nil {
 		t.Fatalf("정상 확인 줄: %v", err)
 	}
 	for name, c := range map[string]struct {
@@ -408,13 +412,26 @@ func TestProductResetRejectsBadLines(t *testing.T) {
 		"future_revision":      {nil, func() productDeclarationEvent { e := writes; e.TargetRevision = target.Revision + 1; return e }},
 		"unknown_action":       {pending, func() productDeclarationEvent { e := confirm; e.Action = "reset_skipped"; return e }},
 		"confirm_with_objects": {pending, func() productDeclarationEvent { e := confirm; e.Objects = confirmationObjects(); return e }},
+		"confirm_other_job":    {pending, func() productDeclarationEvent { e := confirm; e.JobRef = "job-2"; return e }},
+		"confirm_other_ref":    {pending, func() productDeclarationEvent { e := confirm; e.WritesRef = strings.Repeat("b", 64); return e }},
+		"confirm_no_ref":       {pending, func() productDeclarationEvent { e := confirm; e.WritesRef = ""; return e }},
+		"writes_with_ref":      {nil, func() productDeclarationEvent { e := writes; e.WritesRef = strings.Repeat("c", 64); return e }},
+		"confirm_no_job":       {pending, func() productDeclarationEvent { e := confirm; e.JobRef = ""; return e }},
 	} {
-		if _, err := applyReset(rec, c.st, c.e()); err == nil {
+		if _, err := applyReset(rec, c.st, nil, c.e()); err == nil {
 			t.Fatalf("%s 받음", name)
 		}
 	}
-	twice, _ := applyReset(rec, pending, confirm)
-	if _, err := applyReset(rec, twice, confirm); err == nil {
+	later := writes
+	later.At = at.Add(time.Second)
+	if _, err := applyReset(rec, pending, nil, later); err != nil {
+		t.Fatalf("다른 회차 목록에서 정상 쓰기 줄: %v", err)
+	}
+	if _, err := applyReset(rec, pending, map[string]bool{"job-1": true}, later); err == nil {
+		t.Fatal("같은 회차의 두 번째 쓰기 줄을 받음")
+	}
+	twice, _ := applyReset(rec, pending, nil, confirm)
+	if _, err := applyReset(rec, twice, nil, confirm); err == nil {
 		t.Fatal("두 번째 확인 줄을 받음")
 	}
 	// 거부한 줄은 저널에 쓰지 않는다: 다시 열어도 재생이 깨지지 않고 상태가 그대로다.
@@ -434,5 +451,166 @@ func TestProductResetRejectsBadLines(t *testing.T) {
 	defer reopened.Close()
 	if v, _ := reopened.resetConfirmation("ARTEX", target.ID); v.ResetRequired {
 		t.Fatal("재생 뒤 상태가 바뀜")
+	}
+}
+
+// 선언 디렉터리를 만든 뒤 부모 엔트리를 동기 저장하고, 실패하면 레지스트리를 열지 않는다.
+func TestProductDeclarationDirectorySyncsParent(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("protected preparation uses an unprivileged owner")
+	}
+	original := productSyncDirectory
+	t.Cleanup(func() { productSyncDirectory = original })
+	root := t.TempDir()
+	if os.Chmod(root, 0700) != nil {
+		t.Fatal("private root")
+	}
+	policy := productTargetPolicy{Format: "abc2lab.product-target-policy/v1", AllowedPorts: []int{443}, PrivateCIDRs: []string{"10.200.1.0/24"}, MaxTargets: 32, MaxRequests: 4}
+	var synced []string
+	productSyncDirectory = func(path string) error {
+		// 동기화할 때 선언 디렉터리가 이미 있어야 그 엔트리가 함께 저장된다.
+		if _, err := os.Stat(filepath.Join(path, "declarations")); err != nil {
+			t.Errorf("선언 디렉터리 전에 부모를 동기화함: %v", err)
+		}
+		synced = append(synced, path)
+		return original(path)
+	}
+	r, err := newProductTargetRegistry(root, policy, func() error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.Close()
+	if len(synced) != 1 || synced[0] != root {
+		t.Fatalf("부모 동기화: %v", synced)
+	}
+	productSyncDirectory = func(string) error { return errors.New("동기화 실패") }
+	failing := t.TempDir()
+	if os.Chmod(failing, 0700) != nil {
+		t.Fatal("private root")
+	}
+	if r, err := newProductTargetRegistry(failing, policy, func() error { return nil }); err == nil {
+		_ = r.Close()
+		t.Fatal("부모 동기화 실패에도 레지스트리를 엶")
+	}
+}
+
+// 운영자가 회차 A의 기록을 보고 동의하는 사이에 회차 B의 쓰기가 들어오면 그 동의는 B에 반영되지 않는다.
+func TestProductResetConfirmationBoundToSeenRecord(t *testing.T) {
+	r, root, target, _ := declarationTestTarget(t)
+	if err := r.recordConfirmationWrites(target.ID, "job-a", confirmationObjects()); err != nil {
+		t.Fatal(err)
+	}
+	seen, _ := r.resetConfirmation("ARTEX", target.ID)
+	if seen.LastWritesJob != "job-a" {
+		t.Fatalf("본 기록: %+v", seen)
+	}
+	if err := r.recordConfirmationWrites(target.ID, "job-b", confirmationObjects()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.confirmReset("ARTEX", target.ID, true, seen.LastWritesRef); err == nil || err.Error() != "reset_record_changed" {
+		t.Fatalf("바뀐 기록에 동의를 반영함: %v", err)
+	}
+	if v, _ := r.resetConfirmation("ARTEX", target.ID); !v.ResetRequired || v.LastWritesJob != "job-b" || v.ConfirmedBy != "" {
+		t.Fatalf("B가 확인됨: %+v", v)
+	}
+	if got := e3contract.CheckRunStart(t.Context(), productResetGate{registry: r}, e3contract.RunBinding{}, target.ID); got != e3contract.RefuseResetConfirmationMissing {
+		t.Fatalf("B 확인 없이 시작: %s", got)
+	}
+	// 기록이 없을 때의 동의도 반영하지 않는다.
+	r2, _, target2, _ := declarationTestTarget(t)
+	if _, err := r2.confirmReset("ARTEX", target2.ID, true, strings.Repeat("a", 64)); err == nil || err.Error() != "reset_record_changed" {
+		t.Fatalf("기록 없이 동의: %v", err)
+	}
+	// B를 본 동의는 반영되고, 저널에는 B가 남는다.
+	v, err := r.confirmReset("ARTEX", target.ID, true, writesRef(t, r, target.ID))
+	if err != nil || v.ResetRequired || v.ConfirmedBy != "ARTEX" {
+		t.Fatalf("B 확인: %+v %v", v, err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := newProductTargetRegistry(root, r.policy, func() error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if v, _ := reopened.resetConfirmation("ARTEX", target.ID); v.ResetRequired || v.LastWritesJob != "job-b" {
+		t.Fatalf("재생: %+v", v)
+	}
+}
+
+func writesRef(t *testing.T, r *productTargetRegistry, id string) string {
+	t.Helper()
+	v, err := r.resetConfirmation("ARTEX", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v.LastWritesRef
+}
+
+// 같은 회차 ID로 시각·객체가 다른 쓰기 기록이 둘 들어올 수 없다. 첫 기록을 본 동의는 다른 기록을 확인 완료로 바꾸지 않는다(#708 이동찬 리뷰).
+func TestProductResetConsentBoundToWritesRecord(t *testing.T) {
+	r, _, target, _ := declarationTestTarget(t)
+	if err := r.recordConfirmationWrites(target.ID, "job-1", confirmationObjects()); err != nil {
+		t.Fatal(err)
+	}
+	first := writesRef(t, r, target.ID)
+	other := []productConfirmationObject{{Type: "secret", IDDigest: strings.Repeat("e", 64)}}
+	if err := r.recordConfirmationWrites(target.ID, "job-1", other); err == nil {
+		t.Fatal("같은 회차의 두 번째 쓰기 기록을 받음")
+	}
+	if writesRef(t, r, target.ID) != first {
+		t.Fatal("거부한 기록이 상태를 바꿈")
+	}
+	// 다른 회차의 새 기록이 들어오면 첫 기록을 본 동의는 반영되지 않는다.
+	if err := r.recordConfirmationWrites(target.ID, "job-2", other); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.confirmReset("ARTEX", target.ID, true, first); err == nil || err.Error() != "reset_record_changed" {
+		t.Fatalf("다른 기록에 동의 반영: %v", err)
+	}
+	if v, _ := r.resetConfirmation("ARTEX", target.ID); !v.ResetRequired || v.LastWritesRef == first {
+		t.Fatalf("확인 필요가 지워짐: %+v", v)
+	}
+	// 같은 회차라도 시각·객체가 다르면 참조가 다르다.
+	at := time.Date(2026, 11, 18, 0, 0, 0, 0, time.UTC)
+	a, b := confirmationWritesRef("job-1", at, confirmationObjects()), confirmationWritesRef("job-1", at.Add(time.Second), confirmationObjects())
+	c := confirmationWritesRef("job-1", at, other)
+	if a == b || a == c || len(a) != 64 {
+		t.Fatal("쓰기 기록 참조가 시각·객체를 구분하지 않음")
+	}
+}
+
+// 쓰기 줄 하나를 적용하는 비용은 앞선 회차 수와 관계없다(재생이 줄 수의 제곱이 되지 않게, #708 이동찬 리뷰).
+func TestProductResetApplyCostIndependentOfHistory(t *testing.T) {
+	r, _, target, _ := declarationTestTarget(t)
+	rec := r.records[target.ID]
+	e := productDeclarationEvent{TargetID: target.ID, Action: declarationConfirmationWrites, Actor: productConfirmationActor, At: r.now().UTC(),
+		TargetRevision: target.Revision, JobRef: "job-new", Objects: confirmationObjects()}
+	allocs := func(n int) float64 {
+		jobs := map[string]bool{}
+		for i := range n {
+			jobs[fmt.Sprintf("job-%d", i)] = true
+		}
+		return testing.AllocsPerRun(20, func() {
+			if _, err := applyReset(rec, nil, jobs, e); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	if small, large := allocs(1), allocs(4096); large > small {
+		t.Fatalf("앞선 회차 수에 따라 할당이 늚: %v → %v", small, large)
+	}
+	// 재생도 회차 목록을 줄마다 다시 만들지 않는다: 줄을 많이 받아도 목록은 하나이고 회차마다 한 번만 더해진다.
+	for i := range 64 {
+		if err := r.recordConfirmationWrites(target.ID, fmt.Sprintf("job-%d", i), confirmationObjects()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(r.resetJobs[target.ID]) != 64 {
+		t.Fatalf("회차 목록 %d", len(r.resetJobs[target.ID]))
+	}
+	if err := r.recordConfirmationWrites(target.ID, "job-3", confirmationObjects()); err == nil || len(r.resetJobs[target.ID]) != 64 {
+		t.Fatal("같은 회차 두 번째 쓰기 기록을 받음")
 	}
 }

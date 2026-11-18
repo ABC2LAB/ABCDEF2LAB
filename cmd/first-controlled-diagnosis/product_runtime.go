@@ -658,7 +658,7 @@ func (e productPreparationEndpoint) Call(ctx context.Context, r diagnosisprep.Re
 		case "reset_confirmation", "reset_confirm":
 			var st diagnosisprep.ProductResetState
 			if r.Product.Operation == "reset_confirm" {
-				st, err = p.targets.confirmReset(r.Principal, r.Product.TargetID, r.Product.Reset.StatementConfirmed)
+				st, err = p.targets.confirmReset(r.Principal, r.Product.TargetID, r.Product.Reset.StatementConfirmed, r.Product.Reset.WritesRef)
 			} else {
 				st, err = p.targets.resetConfirmation(r.Principal, r.Product.TargetID)
 			}

@@ -57,9 +57,12 @@ func validProductDeclaration(p ProductDeclaration) bool {
 	return false
 }
 
-// ResetRequest는 리셋 확인(reset_confirm)의 입력이다. 운영자가 진술(ProductResetState.Statement)에 동의했다는 뜻이다.
+// ResetRequest는 리셋 확인(reset_confirm)의 입력이다. 운영자가 진술(ProductResetState.Statement)에 동의했다는 뜻이고,
+// WritesRef는 운영자가 화면에서 본 쓰기 기록 줄의 고유 참조(ProductResetState.LastWritesRef)다. 저장 시점의 기록과 다르면
+// 반영하지 않는다.
 type ResetRequest struct {
-	StatementConfirmed bool `json:"statement_confirmed"`
+	StatementConfirmed bool   `json:"statement_confirmed"`
+	WritesRef          string `json:"writes_ref"`
 }
 
 // ProductResetState는 대상의 확정 단계 쓰기와 리셋 확인 상태다(E③ 결정 §6.1). ResetRequired면 운영자가 리셋 진술을
@@ -69,9 +72,11 @@ type ProductResetState struct {
 	LastWritesJob     string    `json:"last_writes_job,omitempty"`
 	LastWritesAt      time.Time `json:"last_writes_at,omitempty"`
 	LastWritesObjects int       `json:"last_writes_objects,omitempty"`
-	ConfirmedBy       string    `json:"confirmed_by,omitempty"`
-	ConfirmedAt       time.Time `json:"confirmed_at,omitempty"`
-	Statement         string    `json:"statement"`
+	// LastWritesRef는 마지막 쓰기 기록 줄의 고유 참조다. 리셋 동의(ResetRequest.WritesRef)에 그대로 보낸다.
+	LastWritesRef string    `json:"last_writes_ref,omitempty"`
+	ConfirmedBy   string    `json:"confirmed_by,omitempty"`
+	ConfirmedAt   time.Time `json:"confirmed_at,omitempty"`
+	Statement     string    `json:"statement"`
 }
 
 func validProductResetState(s ProductResetState) bool {
@@ -79,9 +84,18 @@ func validProductResetState(s ProductResetState) bool {
 		return false
 	}
 	if s.LastWritesJob == "" {
-		return !s.ResetRequired && s.LastWritesAt.IsZero() && s.LastWritesObjects == 0 && s.ConfirmedBy == "" && s.ConfirmedAt.IsZero()
+		return !s.ResetRequired && s.LastWritesAt.IsZero() && s.LastWritesObjects == 0 && s.LastWritesRef == "" && s.ConfirmedBy == "" &&
+			s.ConfirmedAt.IsZero()
+	}
+	if !ValidResetWritesRef(s.LastWritesRef) {
+		return false
 	}
 	confirmed := s.ConfirmedBy != ""
 	return reference.MatchString(s.LastWritesJob) && !s.LastWritesAt.IsZero() && s.LastWritesObjects > 0 &&
 		s.ResetRequired != confirmed && confirmed != s.ConfirmedAt.IsZero() && (!confirmed || reference.MatchString(s.ConfirmedBy))
 }
+
+// ValidResetWritesRef는 리셋 확인이 가리키는 쓰기 기록 줄 참조(SHA-256 소문자 16진)의 모양이다.
+func ValidResetWritesRef(s string) bool { return writesRefPattern.MatchString(s) }
+
+var writesRefPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
