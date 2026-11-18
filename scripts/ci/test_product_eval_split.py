@@ -140,6 +140,9 @@ class EvalSplitSyntheticOverlayTests(unittest.TestCase):
         self.assertTrue(all(m["type"] == "bind" and m.get("read_only") is True for m in service["volumes"]))
         self.assertEqual({m["target"] for m in service["volumes"]}, {"/eval/scripted_product_llm.py", "/eval/plan.json"})
         self.assertTrue(self.rendered["networks"]["control"].get("internal"))  # 내부망 하나에만 붙는다
+        # 제품 이미지 healthcheck를 물려받지 않는다(구간 감시가 렌더에 없는 exec 이벤트를 경계 변경으로 본다)
+        self.assertEqual(service.get("healthcheck"), {"disable": True})
+        self.assertNotIn(runner_split.SCRIPTED_MODEL_HOST, runner_window.healthcheck_actions(self.rendered))
 
     def test_overlay_adds_only_the_scripted_model(self):
         # 제품·평가 서비스는 그대로이고 서비스 하나만 더한다(제품 설정·보안 칸을 바꾸지 않는다).
