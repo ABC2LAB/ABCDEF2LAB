@@ -217,6 +217,16 @@ it.each([
   ["HTML 주석으로 쪼갬", "pass<!-- x -->word=synthetic-comment-secret", "synthetic-comment-secret"],
   ["역슬래시", "password\\=synthetic-escape-secret", "synthetic-escape-secret"],
   ["표 칸", "| 이름 | 값 |\n| --- | --- |\n| a | api_key=synthetic-table-secret |", "synthetic-table-secret"],
+  [
+    "직접 이미지 대체 글",
+    "![&#112;&#97;&#115;&#115;&#119;&#111;&#114;&#100;&#61;synthetic-image-secret](/synthetic.png)",
+    "synthetic-image-secret",
+  ],
+  [
+    "참조형 이미지 대체 글",
+    "![&#112;&#97;&#115;&#115;&#119;&#111;&#114;&#100;&#61;synthetic-reference-mask][proof]\n\n[proof]: /synthetic.png",
+    "synthetic-reference-mask",
+  ],
 ])("상세 보고 Markdown 은 파서가 푼 글에도 가림을 건다 — %s (#677 리뷰)", async (_, report, secret) => {
   const writeText = vi.fn().mockResolvedValue(undefined);
   vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });

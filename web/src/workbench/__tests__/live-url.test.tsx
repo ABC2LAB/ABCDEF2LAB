@@ -1658,6 +1658,28 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     ).toHaveTextContent("후보 3");
   });
 
+  it("보고서 탭: 참조형 이미지 `![글][이름]` 의 대체 글에 엔티티로 숨긴 비밀도 가린다 (#677 리뷰)", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    const hidden = "&#112;&#97;&#115;&#115;&#119;&#111;&#114;&#100;&#61;synthetic-reference-mask";
+    a.fetchRemediation.mockResolvedValue({
+      task_id: 42,
+      entries: [{ ...candidate(1), summary: `![${hidden}][proof]\n\n[proof]: /synthetic.png` }],
+    });
+    mount("report");
+    fireEvent.click(await screen.findByRole("tab", { name: "보고서" }));
+    const doc = screen.getByRole("region", { name: "취약점 점검 보고서" });
+    expect(doc).not.toHaveTextContent("synthetic-reference-mask");
+    // 이미지는 불러오지 않는다
+    expect(doc.querySelector("img")).toBeNull();
+    expect(doc).not.toHaveTextContent("synthetic.png");
+    fireEvent.click(within(doc).getByRole("button", { name: "복사" }));
+    await within(doc).findByText("보고서 글을 복사했습니다.");
+    expect(writeText.mock.calls[0][0]).not.toMatch(/synthetic-reference-mask|&#/);
+  });
+
   it("보고서 탭(증거 · 감사 옆): 발견마다 위험도 · 판정 · 요약 · 재현 절차(PoC) · 요청·응답을 Markdown 문서 한 장으로, 정상 대조는 뺀다", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });

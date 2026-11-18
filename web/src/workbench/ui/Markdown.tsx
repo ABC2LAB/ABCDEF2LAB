@@ -20,12 +20,14 @@ type MdNode = { type: string; value?: string; alt?: string | null; children?: Md
 
 /** 글자를 줄 단위로 이어 붙여 보이는 마디: 이 안에서 서식 · 주석으로 쪼개진 글도 한 덩어리로 가린다. */
 const BLOCKS = new Set(["paragraph", "heading", "tableCell"]);
+/** 대체 글(alt)이 화면에 보이는 마디: 직접 이미지 `![글](주소)` · 참조형 이미지 `![글][이름]` (#677 리뷰). */
+const IMAGES = new Set(["image", "imageReference"]);
 
 /** 화면에 보일 글(원문 HTML 은 그리지 않으므로 뺀다). 엔티티 · 역슬래시 풀기는 파서가 이미 했다. */
 function visibleText(node: MdNode): string {
   if (node.type === "html") return "";
   if (node.type === "text" || node.type === "inlineCode") return node.value ?? "";
-  if (node.type === "image") return node.alt ?? "";
+  if (IMAGES.has(node.type)) return node.alt ?? "";
   if (node.type === "break") return "\n";
   return (node.children ?? []).map(visibleText).join("");
 }
@@ -34,7 +36,7 @@ function maskTree(node: MdNode): void {
   if (node.type === "code" || node.type === "text" || node.type === "inlineCode") {
     if (node.value) node.value = maskSecrets(node.value);
   }
-  if (node.type === "image" && node.alt) node.alt = maskSecrets(node.alt);
+  if (IMAGES.has(node.type) && node.alt) node.alt = maskSecrets(node.alt);
   if (BLOCKS.has(node.type)) {
     const shown = visibleText(node);
     const masked = maskSecrets(shown);
