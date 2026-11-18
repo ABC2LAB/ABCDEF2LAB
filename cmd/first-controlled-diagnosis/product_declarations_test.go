@@ -565,3 +565,61 @@ func TestProductResetApplyCostIndependentOfHistory(t *testing.T) {
 		t.Fatal("같은 회차 두 번째 쓰기 기록을 받음")
 	}
 }
+
+// 생성 요청이 시간 초과·결과 불명이면 쓰기 기록에 ID 모르는 객체로 남는다. 리셋 확인 전까지 다음 회차를 시작하지 않고,
+// 확인 뒤에는 잔존 점검이 ID 아는 객체만 읽는다(ID 모르는 객체는 읽을 수 없다, 사용자 결정 2026-11-18).
+func TestProductResetUnknownIDWrites(t *testing.T) {
+	r, _, target, _ := declarationTestTarget(t)
+	start := func(g productResetGate) e3contract.StartRefusal {
+		return e3contract.CheckRunStart(t.Context(), g, e3contract.RunBinding{}, target.ID)
+	}
+	for name, objects := range map[string][]productConfirmationObject{
+		"unknown with digest":  {{Type: "note", IDDigest: strings.Repeat("d", 64), IDUnknown: true}},
+		"known without digest": {{Type: "note"}},
+	} {
+		if err := r.recordConfirmationWrites(target.ID, "job-bad-"+strings.ReplaceAll(name, " ", "-"), objects); err == nil {
+			t.Fatal("받으면 안 되는 쓰기 기록:", name)
+		}
+	}
+	unknown := productConfirmationObject{Type: "note", IDUnknown: true}
+	if err := r.recordConfirmationWrites(target.ID, "job-1", []productConfirmationObject{unknown}); err != nil {
+		t.Fatal(err)
+	}
+	if got := start(productResetGate{registry: r}); got != e3contract.RefuseResetConfirmationMissing {
+		t.Fatalf("ID 모르는 쓰기 뒤 확인 없이: %s", got)
+	}
+	if _, err := r.confirmReset("ARTEX", target.ID, true, writesRef(t, r, target.ID)); err != nil {
+		t.Fatal(err)
+	}
+	// ID 모르는 객체만 있으면 읽을 것이 없다: 잔존 점검을 부르지 않고 리셋 확인으로 시작한다.
+	called := false
+	g := productResetGate{registry: r, residue: func(context.Context, e3contract.RunBinding, []productConfirmationObject) (e3contract.Residue, error) {
+		called = true
+		return e3contract.ResidueUnknown, nil
+	}}
+	if got := start(g); got != "" || called {
+		t.Fatalf("리셋 확인 뒤 시작 안 됨: %s called=%t", got, called)
+	}
+	// 섞여 있으면 ID 아는 객체만 잔존 점검에 넘긴다.
+	known := productConfirmationObject{Type: "secret", IDDigest: strings.Repeat("e", 64)}
+	if err := r.recordConfirmationWrites(target.ID, "job-2", []productConfirmationObject{unknown, known}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.confirmReset("ARTEX", target.ID, true, writesRef(t, r, target.ID)); err != nil {
+		t.Fatal(err)
+	}
+	var seen []productConfirmationObject
+	g.residue = func(_ context.Context, _ e3contract.RunBinding, objects []productConfirmationObject) (e3contract.Residue, error) {
+		seen = objects
+		return e3contract.ResidueAbsent, nil
+	}
+	if got := start(g); got != "" || len(seen) != 1 || seen[0] != known {
+		t.Fatalf("잔존 점검 대상: %s %+v", got, seen)
+	}
+	// ID를 아는지 모르는지는 쓰기 기록 참조에 들어간다(같은 종류라도 다른 기록).
+	at := time.Date(2026, 11, 18, 0, 0, 0, 0, time.UTC)
+	if confirmationWritesRef("job-1", at, []productConfirmationObject{unknown}) ==
+		confirmationWritesRef("job-1", at, []productConfirmationObject{{Type: "note", IDDigest: ""}}) {
+		t.Fatal("ID 모름 표시가 쓰기 기록 참조에 없음")
+	}
+}
