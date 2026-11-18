@@ -50,7 +50,7 @@ B와 같은 단계 이름을 쓰고, O에서 그 순간에 해당하는 곳을 �
 | `verdict_collection` | 판정 내보내기 수집·무결성 | 지금은 `not_collected`(§1). 뜻은 바꾸지 않는다(§7) |
 | `e3_confirmation`(새 선택 행, §7) | 없음(원본 엔진) | E③ 확정 단계 결과의 `status`·`reason`. 받아야 하는지는 서명된 `run_conditions.e3_status_expected`가 정한다 |
 | `e2_placement` | E② 자리(`none`·`stub`·`product`) | 새 값 `split_product`(제품 안 E②, 분리 배치 회차만). 건수 칸은 모두 null이고 `e2_product` 행은 두지 않는다(그 행은 e2-legacy 별도 E² 서비스용) |
-| `attempt_reconciliation` | E② 자리 회차의 시도 대조 | 계획 v4.2 3번 전에는 행 없음 = **대조 미수집**(#700 리뷰). 허용 조건: `e2_placement.mode = split_product`이고 `run_conditions.split = true`이며 러너 기록 `blocked_attempts`가 null일 때만. 성능표(해결 수 등)에는 그대로 들어가고, 통제 검증 표에는 "대조 미수집 — 통제 주장 보류"로 따로 적는다. 제품 실패 수에 넣지 않고, 차단 시도 수를 0으로 채우지 않는다(`—`). 3번 뒤에는 지금 규칙(정확히 한 행)대로 싣는다 |
+| `attempt_reconciliation` | E② 자리 회차의 시도 대조 | 계획 v4.2 3번 전에는 행 없음 = **대조 미수집**(#700 리뷰). 허용 조건: `e2_placement.mode = split_product`이고 `run_conditions.split = true`이며 러너 기록 `blocked_attempts`가 null일 때만. 성능표(해결 수 등)에는 그대로 들어가고, 통제 검증 표에는 "대조 미수집 — 통제 주장 보류"로 따로 적는다. 제품 실패 수에 넣지 않고, 차단 시도 수를 0으로 채우지 않는다(`—`). 수집된 행은 셀 합과 대조할 독립 결정 건수의 출처(3번의 E② 영수증·저널 v3 평가 내보내기)와 검증을 정할 때 지원하고, 그 전에는 행 없음만 허용한다(#700 리뷰). 기존 `product` 배치의 `product_failure`·`no_execution` 행 없음 예외는 그대로다 |
 
 ## 5. 격리 증명 칸
 
