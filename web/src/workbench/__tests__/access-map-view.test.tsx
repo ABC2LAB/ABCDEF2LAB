@@ -242,6 +242,49 @@ describe("UrlAccessMapLive (현재 task · 예시 없음)", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
+  it("같은 선택에서 지도 화면에 다시 들어오면 새 응답 전엔 이전 격자를 보이지 않는다", async () => {
+    f.mockResolvedValueOnce(apiMap());
+    const v = show();
+    await screen.findByRole("table", { name: /격자/ });
+    act(() => v.at("report"));
+    const next = deferred();
+    f.mockReturnValueOnce(next.promise as never);
+    act(() => v.at("accessmap"));
+    expect(screen.getByText("불러오는 중…")).toBeInTheDocument();
+    expect(screen.queryByRole("table", { name: /격자/ })).toBeNull();
+    await act(async () => next.resolve(apiMap(42, { cells: [] })));
+    expect(screen.queryByText("불러오는 중…")).toBeNull();
+    expect(screen.getByText("집계할 수평 판정이 없습니다.")).toBeInTheDocument();
+    expect(f).toHaveBeenCalledTimes(2);
+  });
+
+  it("같은 점검의 revision 이 오르면 새 응답 전엔 이전 격자를 보이지 않는다", async () => {
+    f.mockResolvedValueOnce(apiMap());
+    show();
+    await screen.findByRole("table", { name: /격자/ });
+    const next = deferred();
+    f.mockReturnValueOnce(next.promise as never);
+    act(() => useUrl.setState({ job: { ...running, revision: running.revision + 1 } }));
+    expect(screen.getByText("불러오는 중…")).toBeInTheDocument();
+    expect(screen.queryByRole("table", { name: /격자/ })).toBeNull();
+    await act(async () => next.resolve(apiMap()));
+    expect(await screen.findByRole("table", { name: /격자/ })).toBeInTheDocument();
+    expect(f).toHaveBeenCalledTimes(2);
+  });
+
+  it("다시 읽기를 누르면 새 응답 전엔 지난 오류를 보이지 않는다", async () => {
+    f.mockRejectedValueOnce(new ApiError(503, "x"));
+    show();
+    const retry = await screen.findByRole("button", { name: "다시 읽기" });
+    const next = deferred();
+    f.mockReturnValueOnce(next.promise as never);
+    fireEvent.click(retry);
+    expect(screen.getByText("불러오는 중…")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+    await act(async () => next.resolve(apiMap()));
+    expect(await screen.findByRole("table", { name: /격자/ })).toBeInTheDocument();
+  });
+
   it("화면이 숨겨져 있으면 읽지 않고, 열리면 읽는다", async () => {
     f.mockResolvedValue(apiMap());
     const v = show("report");
