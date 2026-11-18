@@ -136,7 +136,12 @@ def _fd_before(command: str, i: int) -> bool:
             start -= 2
         else:
             break
-    return digits > 0 and (start == 0 or command[start - 1].isspace() or command[start - 1] in _METACHARACTERS)
+    if digits == 0 or start == 0:
+        return digits > 0
+    before = command[start - 1]
+    # 백슬래시로 막은 공백·메타 문자(`a\ 1`)는 낱말 경계가 아니다(#682 리뷰). 앞 백슬래시가 홀수 개면 막힌 글자다.
+    slashes = len(command[:start - 1]) - len(command[:start - 1].rstrip("\\"))
+    return (before.isspace() or before in _METACHARACTERS) and slashes % 2 == 0
 
 
 def _heredoc_word(command: str, i: int) -> tuple[int, str, bool] | None:
