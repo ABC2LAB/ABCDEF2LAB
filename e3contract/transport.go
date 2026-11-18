@@ -3,6 +3,7 @@ package e3contract
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 var (
@@ -22,6 +23,8 @@ type IdentityRequest struct {
 	Spec         IdentitySpec
 	Role         Role
 	AccountLabel string
+	// Timeout은 이 요청 하나의 확정 요청 전용 시간 상한이다(E② 요청 시간 상한과 따로).
+	Timeout time.Duration
 }
 
 // CreateRequest는 A 세션으로 표식을 심은 시험 객체를 만드는 요청이다. E²가 본문 틀의 MarkerField에 표식을 넣는다.
@@ -31,6 +34,7 @@ type CreateRequest struct {
 	Spec         CreateSpec
 	AccountLabel string
 	Marker       Marker
+	Timeout      time.Duration
 }
 
 // ReadRequest는 생성한 객체를 조회하는 GET이다. E²가 Create 관찰의 객체 ID를 경로 틀에 넣고, 응답의 MarkerField를
@@ -44,6 +48,7 @@ type ReadRequest struct {
 	AccountLabel string
 	Create       CallRef
 	Marker       Marker
+	Timeout      time.Duration
 }
 
 // Transport는 E²가 여는 확정 단계 프로그램 요청이다(이동찬, E③ E² 쪽).
@@ -56,6 +61,8 @@ type ReadRequest struct {
 //   - 돌려준 Observation과 같은 값이 저널에 봉인된다(Journal.Sealed). 다르면 E³는 진위 실패로 본다.
 //   - 실행 권한이 철회됐으면 ErrAuthorityRevoked다. 그 밖의 오류는 그 요청의 결과 불명이다.
 //   - 확정 단계 전용 몫(시간·요청)이 다 되면 보내지 않고 NotSent=confirmation_budget_exhausted 관찰을 돌려준다.
+//   - 요청 하나는 요청의 Timeout(확정 요청 전용 시간 상한, 사용자 결정 2026-11-18) 안에 끝나야 한다. 넘으면 E²가 끊고,
+//     보낸 뒤면 Sent=true·ResponseComplete=false·TimedOut=true(결과 불명)를 돌려준다. 다시 보내지 않는다.
 //   - 사용자 승인 모드에서 생성 요청이 거절·만료되면 보내지 않고 NotSent=approval_denied·approval_timeout이다.
 //
 // E³와 E²는 지금 같은 서버 프로세스다(server/e2_http_factory.go의 e2proxy.NewExecution). 표식은 Go 값으로만 넘어가고

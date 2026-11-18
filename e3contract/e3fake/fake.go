@@ -32,8 +32,10 @@ type Behavior struct {
 	NotSent e3contract.NotSentReason
 	// Incomplete는 보냈지만 응답을 다 받지 못한 경우다.
 	Incomplete bool
-	Status     int
-	Normal     oracle.CheckState
+	// TimedOut은 보낸 뒤 확정 요청 시간 상한이 지나 끊긴 경우다(Incomplete와 같이 결과 불명).
+	TimedOut bool
+	Status   int
+	Normal   oracle.CheckState
 	// MarkerStatus·Presence는 조회 응답의 표식 검사 결과다. 영값이면 complete·present다.
 	MarkerStatus e3contract.MarkerStatus
 	Presence     e3contract.MarkerPresence
@@ -49,6 +51,8 @@ type Behavior struct {
 type Call struct {
 	Key     Key
 	Account string
+	// Timeout은 요청이 가져온 확정 요청 시간 상한이다.
+	Timeout time.Duration
 }
 
 // Transport는 e3contract.Transport와 e3contract.Journal의 가짜 구현이다. 받은 요청마다 관찰을 만들고, 같은 값을
@@ -114,19 +118,19 @@ func (t *Transport) RegisterMarker(_ context.Context, b e3contract.RunBinding, m
 }
 
 func (t *Transport) Identity(_ context.Context, req e3contract.IdentityRequest) (e3contract.Observation, error) {
-	return t.do(Call{Key: Key{e3contract.PurposeIdentity, req.Role, ""}, Account: req.AccountLabel}, req.Binding,
+	return t.do(Call{Key: Key{e3contract.PurposeIdentity, req.Role, ""}, Account: req.AccountLabel, Timeout: req.Timeout}, req.Binding,
 		e3contract.CallRef{}, "", nil)
 }
 
 func (t *Transport) Create(_ context.Context, req e3contract.CreateRequest) (e3contract.Observation, error) {
 	// 생성 요청 본문을 만든다. 실제 E²처럼 본문 틀의 표식 칸에 표식을 넣는다.
 	body := []byte(fmt.Sprintf(`{"template":%q,"%s":"%s"}`, req.Spec.BodyTemplate, req.Spec.MarkerField, req.Marker.Reveal()))
-	return t.do(Call{Key: Key{e3contract.PurposeCreate, e3contract.RoleOwner, req.ResourceType}, Account: req.AccountLabel},
+	return t.do(Call{Key: Key{e3contract.PurposeCreate, e3contract.RoleOwner, req.ResourceType}, Account: req.AccountLabel, Timeout: req.Timeout},
 		req.Binding, e3contract.CallRef{}, "", body)
 }
 
 func (t *Transport) Read(_ context.Context, req e3contract.ReadRequest) (e3contract.Observation, error) {
-	return t.do(Call{Key: Key{e3contract.PurposeRead, req.Role, req.ResourceType}, Account: req.AccountLabel},
+	return t.do(Call{Key: Key{e3contract.PurposeRead, req.Role, req.ResourceType}, Account: req.AccountLabel, Timeout: req.Timeout},
 		req.Binding, req.Create, req.MarkerField, req.Marker.Reveal())
 }
 
@@ -156,6 +160,8 @@ func (t *Transport) do(c Call, b e3contract.RunBinding, create e3contract.CallRe
 	switch {
 	case be.NotSent != "":
 		o.NotSent = be.NotSent
+	case be.TimedOut:
+		o.Sent, o.TimedOut = true, true
 	case be.Incomplete:
 		o.Sent = true
 	default:

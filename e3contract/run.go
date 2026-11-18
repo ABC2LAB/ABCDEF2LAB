@@ -28,6 +28,12 @@ type Input struct {
 	// PolicyValidFrom·PolicyValidUntil은 대상 승인 기간과 실행 기간이 겹치는 구간이다(#596 §4.2).
 	PolicyValidFrom, PolicyValidUntil time.Time
 	Candidates                        []Candidate
+	// AdmittedTypes는 실행 시작 때 떼어 둔 확정 몫에 든 종류 수다(사용자 결정 2026-11-18 ②: 요청·시간 모두 실행 상한의
+	// 1/4 안). 확정할 종류가 이보다 많으면 넘치는 종류는 요청을 보내지 않고 UNDECIDABLE(예산)로 남는다. 0이면 아무
+	// 종류도 들지 않은 것이다.
+	AdmittedTypes int
+	// RequestTimeout은 확정 요청 하나의 전용 시간 상한이다(E② 요청 시간 상한과 따로, 파일럿 실측 뒤 확정).
+	RequestTimeout time.Duration
 }
 
 // Deps는 확정 단계가 부르는 갈래들이다. 하나라도 없으면 확정 단계를 돌지 않는다.
@@ -70,11 +76,13 @@ type run struct {
 	lastAt    time.Time
 	// bindingValid는 실행 결속이 검증을 통과했는지다. 통과한 결속만 결과에 싣는다.
 	bindingValid bool
+	// writes는 생성 요청이 대상에 남겼을 수 있는 쓰기다. 진위 실패로 판정을 버려도 남긴다.
+	writes []ConfirmationWrite
 }
 
 func (r *run) result(status ConfirmationStatus, reason string) RunResult {
 	res := RunResult{Version: RunResultVersion, Status: status, Reason: reason, Verdicts: []Verdict{}, Skipped: []SkippedType{},
-		Candidates: r.suspectedCandidates(""), Requests: r.requests}
+		Candidates: r.suspectedCandidates(""), Requests: r.requests, Writes: append([]ConfirmationWrite{}, r.writes...)}
 	if r.bindingValid {
 		b := r.in.Binding
 		res.Binding = &b
@@ -136,6 +144,15 @@ func (r *run) run(ctx context.Context) RunResult {
 	if len(types) == 0 {
 		return r.result(StatusDisabled, string(DisabledNoConfirmableType))
 	}
+	// 몫에 들지 않은 종류는 요청을 보내지 않고 UNDECIDABLE(예산)이다. 든 종류가 없으면 표식·신원 요청도 보내지 않는다.
+	admitted, overflow := types, []TypeDeclaration(nil)
+	if len(types) > r.in.AdmittedTypes {
+		admitted, overflow = types[:r.in.AdmittedTypes], types[r.in.AdmittedTypes:]
+	}
+	if len(admitted) == 0 {
+		return r.budgetOnly(skipped, overflow)
+	}
+	types = admitted
 	if refusal := CheckRunStart(ctx, r.deps.Reset, r.in.Binding, r.in.TargetRef); refusal != "" {
 		return r.result(StatusStartRefused, string(refusal))
 	}
@@ -178,6 +195,11 @@ func (r *run) run(ctx context.Context) RunResult {
 			break
 		}
 		verdicts = append(verdicts, v)
+	}
+	if !r.stopped {
+		for _, t := range overflow {
+			verdicts = append(verdicts, r.verdict(t, unknownSubjects(), unknownFacts(), nil, ReasonConfirmationBudgetExhaust))
+		}
 	}
 	status := StatusCompleted
 	if r.stopped {
@@ -229,7 +251,26 @@ func (r *run) disabledReason() DisabledReason {
 	if r.in.PolicyValidFrom.IsZero() || !r.in.PolicyValidFrom.Before(r.in.PolicyValidUntil) {
 		return DisabledPolicyWindow
 	}
+	if r.in.AdmittedTypes < 0 || r.in.RequestTimeout <= 0 {
+		return DisabledShareUnavailable
+	}
 	return ""
+}
+
+// budgetOnly는 확정할 종류가 있지만 몫에 하나도 들지 않은 회차다. 요청을 보내지 않고 종류마다 UNDECIDABLE(예산)이다.
+func (r *run) budgetOnly(skipped []SkippedType, overflow []TypeDeclaration) RunResult {
+	res := r.result(StatusCompleted, "")
+	for _, t := range overflow {
+		res.Verdicts = append(res.Verdicts, r.verdict(t, unknownSubjects(), unknownFacts(), nil, ReasonConfirmationBudgetExhaust))
+	}
+	if skipped != nil {
+		res.Skipped = skipped
+	}
+	return res
+}
+
+func unknownSubjects() oracle.SubjectContext {
+	return oracle.SubjectContext{OwnerStatus: oracle.SubjectUnknown, EvaluatedStatus: oracle.SubjectUnknown}
 }
 
 // call은 요청 하나를 부르고 관찰을 검증한다. ok=false면 그 요청의 결과를 쓸 수 없다(결과 불명이거나 진위 실패).
@@ -305,7 +346,7 @@ func (r *run) identity(ctx context.Context) (oracle.SubjectContext, ProductReaso
 		want := Observation{Purpose: PurposeIdentity, Role: acct.role, AccountLabel: acct.label}
 		obs, ok := r.call(ctx, want, func() (Observation, error) {
 			return r.deps.Transport.Identity(ctx, IdentityRequest{Binding: r.in.Binding, Spec: r.decl.Identity,
-				Role: acct.role, AccountLabel: acct.label})
+				Role: acct.role, AccountLabel: acct.label, Timeout: r.in.RequestTimeout})
 		})
 		if r.integrity != "" || r.stopped {
 			return subjects, ReasonIdentityUnverified, evidence
@@ -340,11 +381,13 @@ func (r *run) confirmType(ctx context.Context, t TypeDeclaration, subjects oracl
 	if r.budget {
 		return r.verdict(t, subjects, facts, evidence, ReasonConfirmationBudgetExhaust)
 	}
+	before := r.requests
 	created, ok := r.call(ctx, Observation{Purpose: PurposeCreate, Role: RoleOwner, AccountLabel: r.in.Owner.Label,
 		ResourceType: t.Type}, func() (Observation, error) {
 		return r.deps.Transport.Create(ctx, CreateRequest{Binding: r.in.Binding, ResourceType: t.Type, Spec: t.Create,
-			AccountLabel: r.in.Owner.Label, Marker: r.marker})
+			AccountLabel: r.in.Owner.Label, Marker: r.marker, Timeout: r.in.RequestTimeout})
 	})
+	r.recordWrite(t.Type, created, ok, r.requests > before)
 	if r.integrity != "" || r.stopped && !ok {
 		return Verdict{}
 	}
@@ -415,7 +458,8 @@ func (r *run) read(ctx context.Context, t TypeDeclaration, role Role, label stri
 	obs, ok := r.call(ctx, Observation{Purpose: PurposeRead, Role: role, AccountLabel: label, ResourceType: t.Type,
 		Create: create}, func() (Observation, error) {
 		return r.deps.Transport.Read(ctx, ReadRequest{Binding: r.in.Binding, ResourceType: t.Type, Spec: t.Read,
-			MarkerField: t.Create.MarkerField, Role: role, AccountLabel: label, Create: create, Marker: r.marker})
+			MarkerField: t.Create.MarkerField, Role: role, AccountLabel: label, Create: create, Marker: r.marker,
+			Timeout: r.in.RequestTimeout})
 	})
 	if r.integrity != "" || (r.stopped && !ok) {
 		return Observation{}, ""
@@ -441,6 +485,22 @@ func (r *run) read(ctx context.Context, t TypeDeclaration, role Role, label stri
 	return obs, ""
 }
 
+// recordWrite는 생성 요청 하나가 대상에 남겼을 수 있는 쓰기를 남긴다. 부르지 않았거나 보내지 않은 것이 확실하면 남기지
+// 않는다. 객체 ID를 꺼낸 정상 응답만 created이고, 나머지(시간 초과·결과 불명·관찰 불일치·비정상 응답)는 unknown이다.
+func (r *run) recordWrite(resourceType string, obs Observation, ok, invoked bool) {
+	if !invoked || ok && !obs.Sent {
+		return
+	}
+	w := ConfirmationWrite{ResourceType: resourceType, Outcome: WriteUnknown}
+	if ok {
+		w.Ref = obs.Ref
+		if obs.ResponseComplete && obs.Normal == oracle.StateYes && obs.ObjectIDDigest != "" {
+			w.Outcome, w.ObjectIDDigest = WriteCreated, obs.ObjectIDDigest
+		}
+	}
+	r.writes = append(r.writes, w)
+}
+
 // notUsable은 보내지 않았거나 결과가 불명인 관찰의 사유다. 쓸 수 있으면 빈 값이다.
 func (r *run) notUsable(obs Observation, create bool) ProductReason {
 	if obs.Sent && obs.ResponseComplete {
@@ -452,6 +512,9 @@ func (r *run) notUsable(obs Observation, create bool) ProductReason {
 func (r *run) unusableReason(obs Observation, received, create bool) ProductReason {
 	if r.budget {
 		return ReasonConfirmationBudgetExhaust
+	}
+	if received && obs.Sent && obs.TimedOut {
+		return ReasonRequestTimeout
 	}
 	if !received || obs.Sent {
 		return ReasonRequestResultUnknown
