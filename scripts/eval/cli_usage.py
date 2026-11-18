@@ -107,15 +107,36 @@ def _segments(command: str) -> list[tuple[str, str | None]]:
 _METACHARACTERS = frozenset("|&;()<>")
 
 
+def _skip_joins(command: str, i: int) -> int:
+    """따옴표 밖 줄 이음(백슬래시+줄바꿈)을 건너뛴 다음 자리. 셸은 연산자·낱말을 줄 이음을 지운 글에서 읽는다(#682 리뷰)."""
+    while command.startswith("\\\n", i):
+        i += 2
+    return i
+
+
+def _operator_at(command: str, i: int, text: str) -> int | None:
+    """i에서 연산자 `text`가 (사이 줄 이음을 지우고) 시작하면 그 다음 자리, 아니면 None."""
+    for char in text:
+        if i >= len(command) or command[i] != char:
+            return None
+        i = _skip_joins(command, i + 1)
+    return i
+
+
 def _heredoc_word(command: str, i: int) -> tuple[int, str, bool] | None:
     """`<<`·`<<-` 뒤 구분어 낱말 하나(bash처럼 따옴표 없는 공백·메타 문자까지, 따옴표를 벗긴 글). (끝 위치, 구분어,
     본문이 확장되는지). 따옴표·백슬래시가 하나라도 있으면 본문은 확장되지 않는다. 낱말이 없거나 따옴표가 안 닫히면 None
-    (정적으로 풀지 못함, #682 리뷰: `<<END-TEXT`를 `END`로 자르면 뒤 명령을 본문으로 뺀다)."""
+    (정적으로 풀지 못함, #682 리뷰: `<<END-TEXT`를 `END`로 자르면 뒤 명령을 본문으로 뺀다).
+    따옴표 밖·큰따옴표 안의 줄 이음은 셸이 지우므로 구분어 글자에서 빼고 따옴표로 치지 않는다(`EO\⏎F`는 따옴표 없는 `EOF`)."""
+    i = _skip_joins(command, i)
     while i < len(command) and command[i] in " \t":
-        i += 1
+        i = _skip_joins(command, i + 1)
     word, quoted = [], False
     while i < len(command) and not (command[i].isspace() or command[i] in _METACHARACTERS):
         char = command[i]
+        if command.startswith("\\\n", i):
+            i += 2
+            continue
         if char == "'":
             end = command.find("'", i + 1)
             if end < 0:
@@ -126,7 +147,10 @@ def _heredoc_word(command: str, i: int) -> tuple[int, str, bool] | None:
         if char == '"':
             j, part = i + 1, []
             while j < len(command) and command[j] != '"':
-                if command[j] == "\\" and j + 1 < len(command) and command[j + 1] in '"\\$`\n':
+                if command.startswith("\\\n", j):
+                    j += 2
+                    continue
+                if command[j] == "\\" and j + 1 < len(command) and command[j + 1] in '"\\$`':
                     j += 1
                 part.append(command[j])
                 j += 1
@@ -202,10 +226,10 @@ def _preprocess(command: str) -> tuple[str, list[str], bool]:
         elif char == "#" and boundary:
             while i + 1 < len(command) and command[i + 1] != "\n":
                 i += 1
-        elif command.startswith("<<<", i):
+        elif _operator_at(command, i, "<<<") is not None:
             out.append("<<<")
             boundary = True
-            i += 3
+            i = _operator_at(command, i, "<<<")
             continue
         elif command.startswith("$((", i) or (boundary and command.startswith("((", i)):
             start = i + (3 if char == "$" else 2)
@@ -222,17 +246,21 @@ def _preprocess(command: str) -> tuple[str, list[str], bool]:
                 out.append(command[i:end])
             boundary, i = False, end
             continue
-        elif command.startswith("<<", i):
-            strip_tabs = command.startswith("<<-", i)
-            word = _heredoc_word(command, i + (3 if strip_tabs else 2))
+        elif _operator_at(command, i, "<<") is not None:
+            # 연산자 `<<`·`<<-` 사이에 줄 이음이 있어도 셸은 하나로 읽는다(#682 리뷰: `<\⏎<E`도 heredoc이다).
+            after = _operator_at(command, i, "<<")
+            dashed = _operator_at(command, i, "<<-")
+            strip_tabs = dashed is not None
+            word = _heredoc_word(command, dashed if strip_tabs else after)
             if word is None:
                 unsure = True  # 구분어 없음·닫히지 않은 따옴표: 무엇이 본문인지 정적으로 모른다
-                out.append(command[i:i + 2])
-                boundary, i = True, i + 2
+                out.append("<<")
+                boundary, i = True, after
                 continue
             end, delimiter, expands = word
             pending.append((delimiter, expands, strip_tabs))
-            out.append(command[i:end])
+            # 줄 이음을 지운 연산자·구분어를 한 낱말로 남긴다(뒤 조각 해석은 지금처럼 `<<E` 한 토큰을 본다)
+            out.append(("<<-" if strip_tabs else "<<") + shlex.quote(delimiter))
             boundary, i = False, end
             continue
         elif char == "\n" and pending:

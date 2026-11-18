@@ -274,6 +274,22 @@ class TestCounting(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(analyze_command_detail(command), (*expected[:2], expected[2]))
 
+    def test_review_round_nine_heredoc_operator_and_word_across_line_joins(self):
+        # #682 리뷰 9차: heredoc 연산자와 구분어도 줄 이음을 지운 글에서 읽는다. bash 실측 103건과 일치.
+        cases = {
+            "cat <\\\n<E\nnpx --version\nE": (["cat"], []),            # `<⏎<`도 heredoc: 본문의 npx는 실행되지 않는다
+            "cat <<EO\\\nF\nhello\nEOF\nnpx --version": (["cat", "npx"], []),  # 구분어 `EOF`(따옴표 없음) 뒤 npx는 실행된다
+            "cat <\\\n<\\\n-E\n\tnpx a\n\tE\nnpx b": (["cat", "npx"], []),  # `<<-`도 같다
+            "cat <\\\n<\\\n<E; npx c": (["cat", "npx"], []),            # here-string `<<<`
+            "cat << \\\nE\nnpx d\nE": (["cat"], []),                   # 연산자와 구분어 사이 줄 이음
+            'cat <<"E\\\nOF"\n$(npx e)\nEOF\nnpx f': (["cat", "npx"], []),  # 큰따옴표 안 줄 이음: 구분어 EOF, 확장 안 함
+            "<\\\n<E npx j\nbody\nE": (["npx"], []),
+            "cat <<\\E\n$(npx l)\nE\nnpx m": (["cat", "npx"], []),       # 막은 구분어(\\E)는 확장하지 않는다
+        }
+        for command, (sure, maybe) in cases.items():
+            with self.subTest(command=command):
+                self.assertEqual(analyze_command_detail(command), (sure, maybe, False))
+
 
 if __name__ == "__main__":
     unittest.main()
