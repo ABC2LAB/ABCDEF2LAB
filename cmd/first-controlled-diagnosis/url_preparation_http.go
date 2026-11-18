@@ -23,15 +23,16 @@ func newURLLiveHandler(handler http.Handler) *urlLiveHandler {
 	return &urlLiveHandler{handler: handler, idle: idle}
 }
 func (h *urlLiveHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	h.serve(w, r, h.handler)
+	if !h.serve(w, r, h.handler) {
+		http.Error(w, "진단 실행이 마감 중입니다", http.StatusServiceUnavailable)
+	}
 }
 
-func (h *urlLiveHandler) serve(w http.ResponseWriter, r *http.Request, handler http.Handler) {
+func (h *urlLiveHandler) serve(w http.ResponseWriter, r *http.Request, handler http.Handler) bool {
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
-		http.Error(w, "진단 실행이 마감 중입니다", 503)
-		return
+		return false
 	}
 	if h.active == 0 {
 		h.idle = make(chan struct{})
@@ -49,6 +50,13 @@ func (h *urlLiveHandler) serve(w http.ResponseWriter, r *http.Request, handler h
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	handler.ServeHTTP(w, r.WithContext(ctx))
+	return true
+}
+
+func (h *urlLiveHandler) isClosed() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.closed
 }
 func (h *urlLiveHandler) drain(ctx context.Context) error {
 	h.mu.Lock()

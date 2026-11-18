@@ -4,6 +4,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -20,6 +21,9 @@ import (
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/diagnosisprep"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -163,10 +167,10 @@ func TestProductLiveCandidatesOwnedPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	const private = "fixture-private-N3Z6"
-	add := func(store *db.ExplorationStore, task, intent int64, run, call string) int64 {
+	addWithOutput := func(store *db.ExplorationStore, task, intent int64, run, call, output string) int64 {
 		t.Helper()
-		evidence := fmt.Sprintf(`{"trusted":{"classification":"result_unknown","execution":{"scope":{"TaskRef":%q,"RunRef":%q},"intent_id":%d},"call":{"call_ref":%q,"intent_id":%d}},"token":%q}`,
-			strconv.FormatInt(task, 10), run, intent, call, intent, private)
+		evidence := fmt.Sprintf(`{"trusted":{"classification":"result_unknown","execution":{"scope":{"TaskRef":%q,"RunRef":%q},"intent_id":%d},"call":{"call_ref":%q,"intent_id":%d}},"token":%q,"output":%q}`,
+			strconv.FormatInt(task, 10), run, intent, call, intent, private, output)
 		id, err := store.RecordDiagnosticCandidate(t.Context(), db.DiagnosticCandidate{
 			TaskID: task, IntentID: intent, RunRef: run, CallRef: call, VulnClass: "Authorization: Bearer " + private,
 			Name: "https://owned.test/?session=" + private, Summary: "password=" + private, Remediation: "Cookie: sid=" + private,
@@ -178,6 +182,10 @@ func TestProductLiveCandidatesOwnedPostgres(t *testing.T) {
 			t.Fatal(err)
 		}
 		return id
+	}
+	add := func(store *db.ExplorationStore, task, intent int64, run, call string) int64 {
+		t.Helper()
+		return addWithOutput(store, task, intent, run, call, "")
 	}
 	add(sourceStore, source.ID, sourceIntent, run, "source-only")
 	add(store, task.ID, intent, "other-run", "other-run")
@@ -208,7 +216,7 @@ func TestProductLiveCandidatesOwnedPostgres(t *testing.T) {
 		defer hookMu.Unlock()
 		hook = fn
 	}
-	reader := runtimeServer.productCandidateHandler(taskRef, task.ExplorationID, run, job, 3, func(context.Context) int {
+	reader := runtimeServer.productCandidateHandler(taskRef, task.ExplorationID, run, job, 3, func(context.Context) int { return 0 }, func(context.Context) int {
 		return int(scopeStatus.Load())
 	})
 	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -278,6 +286,88 @@ func TestProductLiveCandidatesOwnedPostgres(t *testing.T) {
 		if *page.Total != 1 || page.Items[0].ID != strconv.FormatInt(first, 10) || page.Items[0].SuggestedSeverity != "" {
 			t.Fatal("실제 저장 ID 또는 등급 가림 불일치")
 		}
+	})
+	t.Run("runtime-bearer-authentication", func(t *testing.T) {
+		trace := &candidateReadTrace{}
+		pool := tracedCandidateRuntimePool(t, f.Runtime, trace)
+		auth, _, err := newDiagnosisManagementAuthentication(t.Context(), pool, keys, data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		live := func(context.Context) int { return 0 }
+		handler := auth.productCandidateHandler(taskRef, task.ExplorationID, run, job, 3, live, live)
+		proof := candidateProof(job, task.ExplorationID, 3)
+		read := func(t *testing.T, bearer string) *httptest.ResponseRecorder {
+			t.Helper()
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, taskPath, nil)
+			req.Header.Set(productCandidateProof, proof)
+			if bearer != "" {
+				req.Header.Set("Authorization", "Bearer "+bearer)
+			}
+			out := httptest.NewRecorder()
+			handler.ServeHTTP(out, req)
+			return out
+		}
+		assertUnauthorized := func(t *testing.T, out *httptest.ResponseRecorder) {
+			t.Helper()
+			if out.Code != http.StatusUnauthorized || out.Header().Get("Cache-Control") != "no-store" ||
+				out.Header().Get(productCandidateProof) != "" || strings.Contains(out.Body.String(), `"items"`) {
+				t.Fatalf("런타임 인증 거부 또는 후보 비공개 실패: HTTP %d", out.Code)
+			}
+		}
+		sign := func(t *testing.T, key []byte, expires time.Time) string {
+			t.Helper()
+			value, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
+				Subject: "ARTEX", ExpiresAt: jwt.NewNumericDate(expires),
+			}).SignedString(key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return value
+		}
+		out := read(t, token)
+		var page productCandidatePage
+		if out.Code != http.StatusOK || out.Header().Get(productCandidateProof) != proof ||
+			strictJSON(out.Body.Bytes(), &page) != nil || len(page.Items) != 1 || trace.transactions != 1 {
+			t.Fatalf("유효 Bearer 제어 요청 실패: HTTP %d, 후보 트랜잭션 %d", out.Code, trace.transactions)
+		}
+		now := time.Now()
+		for _, tc := range []struct{ name, token string }{
+			{"missing-bearer", ""},
+			{"wrong-signature", sign(t, []byte("unrelated-synthetic-signing-key"), now.Add(time.Hour))},
+			{"expired-bearer", sign(t, auth.signingKey(string(hash)), now.Add(-time.Hour))},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				before := trace.transactions
+				assertUnauthorized(t, read(t, tc.token))
+				if trace.transactions != before {
+					t.Fatal("인증 거부된 요청이 후보 조회 트랜잭션을 시작했습니다")
+				}
+			})
+		}
+		t.Run("password-revoked-after-candidate-read", func(t *testing.T) {
+			replacement, err := bcrypt.GenerateFromPassword([]byte("replaced-candidate-fixture"), bcrypt.MinCost)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := pg.SetSetting(authPassKey, string(hash)); err != nil {
+					t.Error(err)
+				}
+			})
+			revoked := false
+			var revokeErr error
+			trace.afterCommit = func() {
+				revoked = true
+				revokeErr = pg.SetSetting(authPassKey, string(replacement))
+			}
+			defer func() { trace.afterCommit = nil }()
+			out := read(t, token)
+			if !revoked || revokeErr != nil {
+				t.Fatalf("후보 조회 완료 직후 비밀번호 교체 실패: %v", revokeErr)
+			}
+			assertUnauthorized(t, out)
+		})
 	})
 	t.Run("authorization-and-shape-before-forwarding", func(t *testing.T) {
 		count := attempts.Load()
@@ -400,6 +490,29 @@ func TestProductLiveCandidatesOwnedPostgres(t *testing.T) {
 			t.Fatal("페이지 건수 또는 순서 불일치")
 		}
 	})
+	t.Run("byte-budget-truncates-public-page", func(t *testing.T) {
+		const count = 72
+		output := strings.Repeat("x", 255<<10)
+		ids := make([]int64, count)
+		for i := range ids {
+			id := addWithOutput(store, task.ID, intent, run, fmt.Sprintf("large-output-%d", i), output)
+			ids[i] = id
+			t.Cleanup(func() {
+				if _, err := pg.Exec(`DELETE FROM exploration_nodes WHERE id=$1`, id); err != nil {
+					t.Error("합성 대형 후보 정리 실패")
+				}
+			})
+		}
+		page := check("GET", taskPath, token, 200)
+		if !*page.Truncated || page.Total != nil || *page.Returned == 0 || *page.Returned >= count {
+			t.Fatal("바이트 상한의 짧은 페이지 계약 위반")
+		}
+		for i, item := range page.Items {
+			if item.ID != strconv.FormatInt(ids[count-1-i], 10) {
+				t.Fatal("바이트 상한이 최신 연속 후보의 순서를 바꿈")
+			}
+		}
+	})
 	t.Run("concurrent-polling-and-cancellation-without-side-effects", func(t *testing.T) {
 		before, receipt := reportDatabaseDigest(t, f.Installer), reportJournalDigest(t, journal)
 		var wg sync.WaitGroup
@@ -433,6 +546,53 @@ func TestProductLiveCandidatesOwnedPostgres(t *testing.T) {
 			}
 		}
 	})
+}
+
+// Tracing the completed read transaction gives the fixture a deterministic
+// password change after the rows are read and before the response auth check.
+type candidateReadTrace struct {
+	transactions int
+	afterCommit  func()
+}
+
+func (*candidateReadTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+	return ctx
+}
+
+func (t *candidateReadTrace) TraceQueryEnd(_ context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
+	if data.Err != nil {
+		return
+	}
+	switch data.CommandTag.String() {
+	case "BEGIN":
+		t.transactions++
+	case "COMMIT":
+		if t.afterCommit != nil {
+			t.afterCommit()
+		}
+	}
+}
+
+func tracedCandidateRuntimePool(t *testing.T, runtime *sql.DB, trace *candidateReadTrace) *sql.DB {
+	t.Helper()
+	conn, err := runtime.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	var config *pgx.ConnConfig
+	if err := conn.Raw(func(driverConn any) error {
+		config = driverConn.(*stdlib.Conn).Conn().Config()
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	config.RuntimeParams["default_transaction_read_only"] = "on"
+	config.Tracer = trace
+	pool := stdlib.OpenDB(*config)
+	pool.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = pool.Close() })
+	return pool
 }
 
 func copyCandidateResult(w http.ResponseWriter, result *httptest.ResponseRecorder) {

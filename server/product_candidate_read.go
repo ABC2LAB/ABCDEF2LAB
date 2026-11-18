@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -69,7 +70,7 @@ func (p productCandidatePage) valid(task string) bool {
 		return false
 	}
 	if *p.Truncated {
-		if p.Total != nil || len(p.Items) != db.LiveDiagnosticCandidateLimit {
+		if p.Total != nil || len(p.Items) == 0 {
 			return false
 		}
 	} else if p.Total == nil || *p.Total != len(p.Items) {
@@ -103,6 +104,14 @@ func productCandidateError(w http.ResponseWriter, status int) {
 	writeJSON(w, status, map[string]string{"error": code})
 }
 
+// stage는 호출 위치에서 정한 상수다. 오류 원문이나 요청·저장 값을 기록하지 않는다.
+func candidateReadStatus(stage string, status int) int {
+	if status >= http.StatusInternalServerError {
+		log.Printf(logT("[candidate-read] 조회 실패 단계=%s 상태=%d"), stage, status)
+	}
+	return status
+}
+
 func candidateExploration(ctx context.Context, q reportReadQuery, task int64) (int64, int) {
 	var exploration int64
 	err := q.QueryRowContext(ctx, `SELECT exploration_id FROM tasks WHERE id=$1 AND deleted_at IS NULL`, task).Scan(&exploration)
@@ -123,24 +132,24 @@ func candidateProof(job *diagnosisprep.Job, exp int64, targetRevision uint64) st
 func (b *diagnosisManagementBridge) liveCandidateBinding(r *http.Request, task int64) (string, int) {
 	owner, err := b.authenticate(r)
 	if errors.Is(err, errManagementAuthenticationUnavailable) {
-		return "", 503
+		return "", candidateReadStatus("management_auth", 503)
 	}
 	if err != nil || owner == "" {
 		return "", 401
 	}
 	if b.candidateJob == nil || b.candidateEndpoint == nil || b.readPool == nil {
-		return "", 503
+		return "", candidateReadStatus("management_config", 503)
 	}
 	job, err := b.candidateJob(r.Context(), owner, strconv.FormatInt(task, 10))
 	if err != nil {
-		return "", 503
+		return "", candidateReadStatus("job_read", 503)
 	}
 	if job == nil {
 		return "", 403
 	}
 	exp, status := candidateExploration(r.Context(), b.readPool, task)
 	if status != 0 {
-		return "", status
+		return "", candidateReadStatus("management_task", status)
 	}
 	if !ProductCandidateJobActive(job) {
 		return "", 409
@@ -150,19 +159,19 @@ func (b *diagnosisManagementBridge) liveCandidateBinding(r *http.Request, task i
 		Product: &diagnosisprep.ProductRequest{Operation: "target", TargetID: job.Scope.TargetRef}}
 	response, err := b.candidateEndpoint.Call(r.Context(), req)
 	if err != nil || diagnosisprep.ValidateResponse(req, response) != nil {
-		return "", 503
+		return "", candidateReadStatus("target_read", 503)
 	}
 	if response.Error == "not_found" || response.Error == "forbidden" {
 		return "", 403
 	}
 	if response.Error != "" || response.Product == nil {
-		return "", 503
+		return "", candidateReadStatus("target_response", 503)
 	}
 	if response.Product.Reason == "target_not_found" {
 		return "", 403
 	}
 	if response.Product.Reason != "" || response.Product.Target == nil {
-		return "", 503
+		return "", candidateReadStatus("target_binding", 503)
 	}
 	target := response.Product.Target
 	now := time.Now()
@@ -191,19 +200,19 @@ func (b *diagnosisManagementBridge) serveProductCandidates(w http.ResponseWriter
 	target.Path = r.URL.Path
 	out, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
 	if err != nil {
-		productCandidateError(w, 503)
+		productCandidateError(w, candidateReadStatus("relay_request", 503))
 		return
 	}
 	out.Header.Set("Authorization", r.Header.Get("Authorization"))
 	out.Header.Set(productCandidateProof, proof)
 	response, err := b.client.Do(out)
 	if err != nil {
-		productCandidateError(w, 503)
+		productCandidateError(w, candidateReadStatus("relay_call", 503))
 		return
 	}
 	defer response.Body.Close()
 	if response.StatusCode != 200 {
-		productCandidateError(w, response.StatusCode)
+		productCandidateError(w, candidateReadStatus("relay_status", response.StatusCode))
 		return
 	}
 	raw, err := io.ReadAll(io.LimitReader(response.Body, productCandidateBytes+1))
@@ -211,7 +220,7 @@ func (b *diagnosisManagementBridge) serveProductCandidates(w http.ResponseWriter
 	headers := response.Header.Values(productCandidateProof)
 	if err != nil || len(raw) > productCandidateBytes || len(headers) != 1 || headers[0] != proof ||
 		strictJSON(raw, &page) != nil || !page.valid(strconv.FormatInt(task, 10)) {
-		productCandidateError(w, 502)
+		productCandidateError(w, candidateReadStatus("relay_response", 502))
 		return
 	}
 	current, status := b.liveCandidateBinding(r, task)
@@ -232,15 +241,19 @@ func (b *diagnosisManagementBridge) serveProductCandidates(w http.ResponseWriter
 // ProductCandidateHandler는 이미 시작한 URL 제품 실행에 직접 결속된 내부 조회다.
 func (r *FirstDiagnosisHTTPRuntime) ProductCandidateHandler(job *diagnosisprep.Job, targetRevision uint64, authorize func(context.Context) int) http.Handler {
 	task, exp := r.host.ExpectedTask()
-	return r.server.productCandidateHandler(task, exp, r.host.runtime.options.Expected.RunRef, job, targetRevision, func(ctx context.Context) int {
+	checkRuntime := func(ctx context.Context) int {
 		if r.admissionStopped.Load() {
 			return 409
 		}
-		return authorize(ctx)
-	})
+		if r.host.CheckRoot(ctx) != nil {
+			return 503
+		}
+		return 0
+	}
+	return r.server.productCandidateHandler(task, exp, r.host.runtime.options.Expected.RunRef, job, targetRevision, checkRuntime, authorize)
 }
 
-func (s *Server) productCandidateHandler(boundTask string, exp int64, run string, job *diagnosisprep.Job, targetRevision uint64, authorize func(context.Context) int) http.Handler {
+func (s *Server) productCandidateHandler(boundTask string, exp int64, run string, job *diagnosisprep.Job, targetRevision uint64, checkRuntime, authorize func(context.Context) int) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		task, ok := ProductCandidateRequestTask(r)
@@ -260,6 +273,10 @@ func (s *Server) productCandidateHandler(boundTask string, exp int64, run string
 		if !s.authenticateReportRead(w, r) {
 			return
 		}
+		if status := checkRuntime(ctx); status != 0 {
+			productCandidateError(w, candidateReadStatus("runtime_admission", status))
+			return
+		}
 		pool := s.m.pg.DB
 		page, status := loadLiveProductCandidates(ctx, pool, task, exp, run)
 		if status != 0 {
@@ -271,7 +288,7 @@ func (s *Server) productCandidateHandler(boundTask string, exp int64, run string
 		}
 		current, status := candidateExploration(ctx, pool, task)
 		if status != 0 {
-			productCandidateError(w, status)
+			productCandidateError(w, candidateReadStatus("runtime_task_recheck", status))
 			return
 		}
 		if current != exp {
@@ -279,7 +296,11 @@ func (s *Server) productCandidateHandler(boundTask string, exp int64, run string
 			return
 		}
 		if status := authorize(ctx); status != 0 {
-			productCandidateError(w, status)
+			productCandidateError(w, candidateReadStatus("runtime_scope_recheck", status))
+			return
+		}
+		if status := checkRuntime(ctx); status != 0 {
+			productCandidateError(w, candidateReadStatus("runtime_admission_recheck", status))
 			return
 		}
 		w.Header().Set(productCandidateProof, expected)
@@ -291,23 +312,22 @@ func loadLiveProductCandidates(ctx context.Context, pool *sql.DB, task, exp int6
 	page := productCandidatePage{TaskID: strconv.FormatInt(task, 10), Items: []productCandidateItem{}}
 	tx, err := pool.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
 	if err != nil {
-		return page, 503
+		return page, candidateReadStatus("snapshot_begin", 503)
 	}
 	defer tx.Rollback()
 	current, status := candidateExploration(ctx, tx, task)
 	if status != 0 {
-		return page, status
+		return page, candidateReadStatus("snapshot_task", status)
 	}
 	if current != exp {
 		return page, 403
 	}
-	rows, err := db.ListLiveDiagnosticCandidates(ctx, tx, exp, task, run)
-	if err != nil || tx.Commit() != nil {
-		return page, 503
+	rows, truncated, err := db.ListLiveDiagnosticCandidates(ctx, tx, exp, task, run)
+	if err != nil {
+		return page, candidateReadStatus("snapshot_candidates", 503)
 	}
-	truncated := len(rows) > db.LiveDiagnosticCandidateLimit
-	if truncated {
-		rows = rows[:db.LiveDiagnosticCandidateLimit]
+	if tx.Commit() != nil {
+		return page, candidateReadStatus("snapshot_commit", 503)
 	}
 	for _, row := range rows {
 		page.Items = append(page.Items, productCandidateItem{

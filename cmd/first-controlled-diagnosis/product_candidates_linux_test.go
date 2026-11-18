@@ -79,10 +79,11 @@ func TestProductCandidatePreparationRuntimeReadOnly(t *testing.T) {
 		reports:  map[string]*savedReportService{"9": {handler: fallback}},
 	}
 	var beforeResponse func()
-	readCalls := 0
+	factoryCalls, readCalls := 0, 0
 	live.candidates = &urlLiveCandidates{
 		jobID: endpoint.job.ID, sourceDigest: endpoint.job.SourceDigest, targetRef: target.ID, targetRevision: target.Revision,
 		handler: func(job *diagnosisprep.Job, revision uint64, authorize func(context.Context) int) http.Handler {
+			factoryCalls++
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				readCalls++
 				if job.ID != "owned-job" || revision != target.Revision {
@@ -128,6 +129,30 @@ func TestProductCandidatePreparationRuntimeReadOnly(t *testing.T) {
 		defer func() { endpoint.job.State = diagnosisprep.Running }()
 		request("GET", path, 409)
 	})
+	t.Run("closing-and-drained-requests-return-conflict", func(t *testing.T) {
+		closing := newURLLiveHandler(fallback)
+		closing.candidates = live.candidates
+		runtime.live["9"] = closing
+		defer func() { beforeResponse = nil; runtime.live["9"] = live }()
+		previousEndpointCalls, previousFactories, previousReads := endpoint.calls, factoryCalls, readCalls
+
+		beforeResponse = func() {
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			if err := closing.drain(ctx); err != context.Canceled {
+				t.Fatalf("진행 중인 조회가 있는데 마감됨: %v", err)
+			}
+			request(http.MethodGet, path, http.StatusConflict)
+		}
+		request(http.MethodGet, path, http.StatusConflict)
+		if err := closing.drain(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		request(http.MethodGet, path, http.StatusConflict)
+		if endpoint.calls != previousEndpointCalls+1 || factoryCalls != previousFactories+1 || readCalls != previousReads+1 {
+			t.Fatalf("마감 중인 핸들을 조회함: 준비=%d 후보 생성=%d 후보 조회=%d", endpoint.calls, factoryCalls, readCalls)
+		}
+	})
 	t.Run("target-revoked-after-read", func(t *testing.T) {
 		beforeResponse = func() {
 			if _, err := registry.revoke("ARTEX", target.ID); err != nil {
@@ -138,7 +163,7 @@ func TestProductCandidatePreparationRuntimeReadOnly(t *testing.T) {
 		request("GET", path, 403)
 		request("GET", path, 403)
 	})
-	if dnsCalls != 0 || readCalls != 3 || endpoint.calls != 10 {
+	if dnsCalls != 0 || readCalls != 4 || endpoint.calls != 11 {
 		t.Fatalf("읽기 경계 호출 횟수 불일치: 네트워크=%d 후보=%d 준비=%d", dnsCalls, readCalls, endpoint.calls)
 	}
 }

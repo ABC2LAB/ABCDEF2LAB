@@ -202,25 +202,70 @@ func ListDiagnosticCandidatesQuery(ctx context.Context, q DiagnosticCandidateQue
 }
 
 const LiveDiagnosticCandidateLimit = 200
+const diagnosticCandidateReadBytes = 16 << 20
+const liveDiagnosticCandidateRowBytes = 2 << 20
 
-// ListLiveDiagnosticCandidates는 지정 실행의 최근 후보와 초과 여부 확인용 행 하나를 읽는다.
-func ListLiveDiagnosticCandidates(ctx context.Context, q DiagnosticCandidateQueryer, explorationID, taskID int64, runRef string) ([]DiagnosticCandidate, error) {
+// ListLiveDiagnosticCandidates는 최근 후보를 행과 바이트 상한까지 읽고, 제외된 행이 있는지 반환한다.
+func ListLiveDiagnosticCandidates(ctx context.Context, q DiagnosticCandidateQueryer, explorationID, taskID int64, runRef string) ([]DiagnosticCandidate, bool, error) {
 	if taskID <= 0 || explorationID <= 0 || runRef == "" {
-		return nil, ErrDiagnosticCandidate
+		return nil, false, ErrDiagnosticCandidate
 	}
+	// 크기를 먼저 계산하되 상한 밖의 행은 payload나 intent 연결을 읽기 결과에 넣지 않는다.
+	// 행 제한을 넘긴 payload에는 상한만큼의 예산을 계산하고, 반환 범위 안에 있으면 검증에서 거부한다.
 	rows, err := q.QueryContext(ctx, `
-SELECT n.id, CASE WHEN n.kind='fact' AND n.state='confirmed' AND octet_length(n.payload::text) <= $6
+WITH recent AS MATERIALIZED (
+  SELECT n.id
+  FROM exploration_nodes n
+  WHERE n.exploration_id=$2 AND n.origin=$3
+    AND EXISTS (SELECT 1 FROM tasks t WHERE t.id=$1 AND t.exploration_id=$2 AND t.deleted_at IS NULL)
+    AND COALESCE(NULLIF(n.payload->'diagnostic_candidate_v1'->>'run_ref',''),$4)=$4
+  ORDER BY n.id DESC LIMIT ($5::int + 1)
+), sized AS MATERIALIZED (
+  SELECT n.id, octet_length(n.payload::text) AS bytes
+  FROM (SELECT id FROM recent ORDER BY id DESC LIMIT $5) r
+  JOIN exploration_nodes n ON n.id=r.id
+), visible AS MATERIALIZED (
+  SELECT id, bytes FROM (
+    SELECT id, bytes, SUM(LEAST(bytes,$6)) OVER (ORDER BY id DESC ROWS UNBOUNDED PRECEDING) AS running_bytes
+    FROM sized
+  ) budgeted WHERE running_bytes <= $7
+)
+SELECT n.id, CASE WHEN n.kind='fact' AND n.state='confirmed' AND v.bytes <= $6
   AND EXISTS (SELECT 1 FROM exploration_nodes src
     JOIN exploration_edges e ON e.src_id=src.id AND e.exploration_id=src.exploration_id
     WHERE src.exploration_id=n.exploration_id AND src.kind='intent' AND e.rel='yields'
       AND e.dst_id=n.id AND src.id::text=n.payload->'diagnostic_candidate_v1'->>'intent_id')
-  THEN n.payload END
-FROM exploration_nodes n
-WHERE n.exploration_id=$2 AND n.origin=$3
-  AND EXISTS (SELECT 1 FROM tasks t WHERE t.id=$1 AND t.exploration_id=$2 AND t.deleted_at IS NULL)
-  AND COALESCE(NULLIF(n.payload->'diagnostic_candidate_v1'->>'run_ref',''),$4)=$4
-ORDER BY n.id DESC LIMIT $5`, taskID, explorationID, diagnosticCandidateOrigin, runRef, LiveDiagnosticCandidateLimit+1, 2<<20)
-	return readDiagnosticCandidateRows(rows, err, taskID, runRef)
+  THEN n.payload::text END, FALSE AS truncated
+FROM visible v JOIN exploration_nodes n ON n.id=v.id
+UNION ALL
+SELECT 0, NULL, TRUE
+WHERE (SELECT count(*) FROM recent) > (SELECT count(*) FROM visible)
+ORDER BY truncated, id DESC`, taskID, explorationID, diagnosticCandidateOrigin, runRef, LiveDiagnosticCandidateLimit, liveDiagnosticCandidateRowBytes, diagnosticCandidateReadBytes)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+	out := []DiagnosticCandidate{}
+	var truncated bool
+	for rows.Next() {
+		var id int64
+		var raw []byte
+		if err := rows.Scan(&id, &raw, &truncated); err != nil {
+			return nil, false, err
+		}
+		if truncated {
+			continue
+		}
+		c, err := decodeDiagnosticCandidate(id, raw, taskID, runRef)
+		if err != nil {
+			return nil, false, err
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	return out, truncated, nil
 }
 
 func readDiagnosticCandidateRows(rows *sql.Rows, err error, taskID int64, runRef string) ([]DiagnosticCandidate, error) {
@@ -237,22 +282,30 @@ func readDiagnosticCandidateRows(rows *sql.Rows, err error, taskID int64, runRef
 			return nil, err
 		}
 		totalBytes += len(raw)
-		if totalBytes > 16<<20 {
+		if totalBytes > diagnosticCandidateReadBytes {
 			return nil, ErrDiagnosticCandidate
 		}
-		var payload struct {
-			Candidate DiagnosticCandidate `json:"diagnostic_candidate_v1"`
+		c, err := decodeDiagnosticCandidate(id, raw, taskID, runRef)
+		if err != nil {
+			return nil, err
 		}
-		if json.Unmarshal(raw, &payload) != nil {
-			return nil, ErrDiagnosticCandidate
-		}
-		c := payload.Candidate
-		if c.ID != 0 || c.TaskID != taskID || (runRef != "" && c.RunRef != runRef) || c.Validate() != nil {
-			return nil, ErrDiagnosticCandidate
-		}
-		c = c.NormalizedSeverity()
-		c.ID = id
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+func decodeDiagnosticCandidate(id int64, raw []byte, taskID int64, runRef string) (DiagnosticCandidate, error) {
+	var payload struct {
+		Candidate DiagnosticCandidate `json:"diagnostic_candidate_v1"`
+	}
+	if json.Unmarshal(raw, &payload) != nil {
+		return DiagnosticCandidate{}, ErrDiagnosticCandidate
+	}
+	c := payload.Candidate
+	if c.ID != 0 || c.TaskID != taskID || (runRef != "" && c.RunRef != runRef) || c.Validate() != nil {
+		return DiagnosticCandidate{}, ErrDiagnosticCandidate
+	}
+	c = c.NormalizedSeverity()
+	c.ID = id
+	return c, nil
 }
