@@ -348,7 +348,7 @@ class TestParseRunnerConfig(unittest.TestCase):
         payload = runner_config()
         payload["llm_gateway"].update(verify_attempts=60, verify_interval_seconds=5)
         self.reject(payload, "config.run.llm_verify_timeout_seconds: BELOW_LOOKUP_DEADLINE")
-        floor = 5 * 2 + 2 * 30 + 30  # 이 픽스처(5번 × 2초)의 최소 대기
+        floor = 5 * 2 + 2 * 10 + 30  # 이 픽스처(5번 × 2초)의 최소 대기
         for wait, ok in ((floor - 1, False), (floor, True)):
             payload = runner_config()
             payload["run"]["llm_verify_timeout_seconds"] = wait

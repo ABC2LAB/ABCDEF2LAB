@@ -107,7 +107,7 @@ MAX_VERIFY_INTERVAL_SECONDS = 600
 # 표식을 늘 받는다(2026-11-18 VAmPI 유료 파일럿: 60×5초 설정에 대기 300초라 표식 없이 시한을 넘었다).
 # 계측기 요청 하드 상한의 최댓값(cmd/eval-meter maxRequestCap과 같은 값). 선언된 공통 요청 예산이 이보다 크면 계측기가 뜨지 않는다.
 MAX_REQUEST_CAP = 1_000_000
-GENERATION_LOOKUP_TIMEOUT_SECONDS = 30
+GENERATION_LOOKUP_TIMEOUT_SECONDS = 10
 VERIFY_WAIT_MARGIN_SECONDS = 30
 MAX_HOST_LISTEN_ALLOW = 32
 MAX_REASON_LENGTH = 200
