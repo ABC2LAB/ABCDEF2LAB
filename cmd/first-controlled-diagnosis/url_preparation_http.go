@@ -9,11 +9,12 @@ import (
 
 // 실행 handler 소유를 보고서 map 잠금과 분리해 느린 조회가 마감을 무기한 붙잡지 않게 한다.
 type urlLiveHandler struct {
-	mu      sync.Mutex
-	handler http.Handler
-	active  int
-	closed  bool
-	idle    chan struct{}
+	mu         sync.Mutex
+	handler    http.Handler
+	candidates *urlLiveCandidates
+	active     int
+	closed     bool
+	idle       chan struct{}
 }
 
 func newURLLiveHandler(handler http.Handler) *urlLiveHandler {
@@ -22,6 +23,10 @@ func newURLLiveHandler(handler http.Handler) *urlLiveHandler {
 	return &urlLiveHandler{handler: handler, idle: idle}
 }
 func (h *urlLiveHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.serve(w, r, h.handler)
+}
+
+func (h *urlLiveHandler) serve(w http.ResponseWriter, r *http.Request, handler http.Handler) {
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
@@ -43,7 +48,7 @@ func (h *urlLiveHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}()
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	h.handler.ServeHTTP(w, r.WithContext(ctx))
+	handler.ServeHTTP(w, r.WithContext(ctx))
 }
 func (h *urlLiveHandler) drain(ctx context.Context) error {
 	h.mu.Lock()

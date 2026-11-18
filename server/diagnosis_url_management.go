@@ -13,6 +13,10 @@ import (
 // NewURLDiagnosisManagementHandler는 URL v2와 설치된 비공개 준비 서비스만 조립한다.
 // 인증 API와 보고서 DTO bridge는 v1과 같으며 모델·Planner·Worker를 만들지 않는다.
 func NewURLDiagnosisManagementHandler(ctx context.Context, pool *sql.DB, keyDir, dataDir string, endpoint diagnosisprep.Endpoint, runtimeAPIOrigin ...string) (http.Handler, error) {
+	return newURLDiagnosisManagementHandler(ctx, pool, keyDir, dataDir, endpoint, false, runtimeAPIOrigin...)
+}
+
+func newURLDiagnosisManagementHandler(ctx context.Context, pool *sql.DB, keyDir, dataDir string, endpoint diagnosisprep.Endpoint, product bool, runtimeAPIOrigin ...string) (http.Handler, error) {
 	if ctx == nil || ctx.Err() != nil || pool == nil || len(runtimeAPIOrigin) > 1 {
 		return nil, ErrControlledReadHostConfiguration
 	}
@@ -29,6 +33,7 @@ func NewURLDiagnosisManagementHandler(ctx context.Context, pool *sql.DB, keyDir,
 	mux.HandleFunc("GET /api/auth/status", s.authStatus)
 	mux.HandleFunc("POST /api/auth/login", s.authLogin)
 	mux.Handle(diagnosisapi.URLBasePath+"/", management)
+	var runtimeBridge *diagnosisManagementBridge
 	if len(runtimeAPIOrigin) == 1 && runtimeAPIOrigin[0] != "" {
 		bridge, err := newDiagnosisManagementBridge(ctx, runtimeAPIOrigin[0], authenticate, management.BoundTask, pool)
 		if err != nil {
@@ -36,6 +41,11 @@ func NewURLDiagnosisManagementHandler(ctx context.Context, pool *sql.DB, keyDir,
 			return nil, err
 		}
 		bridge.reportAuthorize = management.CheckBoundTask
+		if product {
+			bridge.candidateJob = management.ReadBoundTask
+			bridge.candidateEndpoint = endpoint
+			runtimeBridge = bridge
+		}
 		mux.Handle("/api/tasks/", bridge)
 		mux.Handle("/api/exploration/activity", bridge)
 		mux.Handle("/api/exploration/activity/", bridge)
@@ -61,6 +71,10 @@ func NewURLDiagnosisManagementHandler(ctx context.Context, pool *sql.DB, keyDir,
 		defer cancel()
 		stop := context.AfterFunc(ctx, cancel)
 		defer stop()
+		if ProductCandidatePath(r) && runtimeBridge != nil {
+			runtimeBridge.serveProductCandidates(w, r.WithContext(requestContext))
+			return
+		}
 		mux.ServeHTTP(w, r.WithContext(requestContext))
 	}), nil
 }

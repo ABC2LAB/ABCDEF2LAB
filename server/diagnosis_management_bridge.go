@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/diagnosisapi"
+	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/report"
 )
 
@@ -27,12 +28,14 @@ var managementApprovalRef = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127
 
 // 이 bridge는 기존 공개 DTO의 이행 경계다. 알고리즘·엔진 명령·임의 경로 proxy가 아니다.
 type diagnosisManagementBridge struct {
-	origin          *url.URL
-	client          *http.Client
-	authenticate    diagnosisapi.Authenticate
-	authorized      func(context.Context, string, string) bool
-	readPool        *sql.DB
-	reportAuthorize func(context.Context, string, string) (bool, error)
+	origin            *url.URL
+	client            *http.Client
+	authenticate      diagnosisapi.Authenticate
+	authorized        func(context.Context, string, string) bool
+	readPool          *sql.DB
+	reportAuthorize   func(context.Context, string, string) (bool, error)
+	candidateJob      func(context.Context, string, string) (*diagnosisprep.Job, error)
+	candidateEndpoint diagnosisprep.Endpoint
 }
 
 func newDiagnosisManagementBridge(ctx context.Context, origin string, authenticate diagnosisapi.Authenticate, authorized func(context.Context, string, string) bool, readPool ...*sql.DB) (*diagnosisManagementBridge, error) {

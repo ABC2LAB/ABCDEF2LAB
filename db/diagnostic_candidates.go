@@ -198,6 +198,32 @@ func ListDiagnosticCandidatesQuery(ctx context.Context, q DiagnosticCandidateQue
 		return nil, ErrDiagnosticCandidate
 	}
 	rows, err := q.QueryContext(ctx, `SELECT n.id,n.payload FROM exploration_nodes n JOIN tasks t ON t.exploration_id=n.exploration_id WHERE t.id=$1 AND n.exploration_id=$2 AND n.origin=$3 AND n.kind='fact' AND ($4='' OR n.payload->'diagnostic_candidate_v1'->>'run_ref'=$4) ORDER BY n.id LIMIT $5`, taskID, explorationID, diagnosticCandidateOrigin, runRef, limit)
+	return readDiagnosticCandidateRows(rows, err, taskID, runRef)
+}
+
+const LiveDiagnosticCandidateLimit = 200
+
+// ListLiveDiagnosticCandidates는 지정 실행의 최근 후보와 초과 여부 확인용 행 하나를 읽는다.
+func ListLiveDiagnosticCandidates(ctx context.Context, q DiagnosticCandidateQueryer, explorationID, taskID int64, runRef string) ([]DiagnosticCandidate, error) {
+	if taskID <= 0 || explorationID <= 0 || runRef == "" {
+		return nil, ErrDiagnosticCandidate
+	}
+	rows, err := q.QueryContext(ctx, `
+SELECT n.id, CASE WHEN n.kind='fact' AND n.state='confirmed' AND octet_length(n.payload::text) <= $6
+  AND EXISTS (SELECT 1 FROM exploration_nodes src
+    JOIN exploration_edges e ON e.src_id=src.id AND e.exploration_id=src.exploration_id
+    WHERE src.exploration_id=n.exploration_id AND src.kind='intent' AND e.rel='yields'
+      AND e.dst_id=n.id AND src.id::text=n.payload->'diagnostic_candidate_v1'->>'intent_id')
+  THEN n.payload END
+FROM exploration_nodes n
+WHERE n.exploration_id=$2 AND n.origin=$3
+  AND EXISTS (SELECT 1 FROM tasks t WHERE t.id=$1 AND t.exploration_id=$2 AND t.deleted_at IS NULL)
+  AND COALESCE(NULLIF(n.payload->'diagnostic_candidate_v1'->>'run_ref',''),$4)=$4
+ORDER BY n.id DESC LIMIT $5`, taskID, explorationID, diagnosticCandidateOrigin, runRef, LiveDiagnosticCandidateLimit+1, 2<<20)
+	return readDiagnosticCandidateRows(rows, err, taskID, runRef)
+}
+
+func readDiagnosticCandidateRows(rows *sql.Rows, err error, taskID int64, runRef string) ([]DiagnosticCandidate, error) {
 	if err != nil {
 		return nil, err
 	}
