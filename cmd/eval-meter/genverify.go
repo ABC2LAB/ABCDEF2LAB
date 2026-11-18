@@ -153,10 +153,7 @@ func runGenerationVerify(dir *os.File, verifier generationVerifier, provider str
 	if !ok {
 		return invalidInput
 	}
-	results := make([]generationResult, 0, len(tally.ids))
-	for _, id := range tally.ids {
-		results = append(results, verifier.lookup(id))
-	}
+	results := verifier.lookupAll(tally.ids)
 	if err := writeMarker(dir, llmVerifiedName, verifiedMarker{
 		Role: roleGenerationVerify, Backend: backendAPI, Provider: provider, Sampling: sampling,
 		SealedAt: stamp(started), DrainedAt: stamp(started), VerifiedAt: stamp(now()),
