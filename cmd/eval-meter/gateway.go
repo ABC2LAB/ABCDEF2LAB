@@ -188,6 +188,12 @@ func gatewayTransports() (http.RoundTripper, func() http.RoundTripper) {
 	return defaultUpstreamTransport(), func() http.RoundTripper { return defaultUpstreamTransport() }
 }
 
+// newRunningGateway는 실제 실행용 게이트웨이다(main이 부른다): 프록시와 조회 연결을 나누고 실제 시계를 쓴다.
+func newRunningGateway(dir *os.File, cfg gatewayConfig) (*llmGateway, string) {
+	proxy, lookup := gatewayTransports()
+	return newLLMGateway(dir, cfg, proxy, lookup, time.Now, time.Sleep)
+}
+
 func defaultUpstreamTransport() http.RoundTripper {
 	// No environment proxy: the gateway must reach the configured upstream itself.
 	return &http.Transport{Proxy: nil, ForceAttemptHTTP2: true, TLSHandshakeTimeout: upstreamTLSTimeout}

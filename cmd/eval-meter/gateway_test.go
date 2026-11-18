@@ -1255,9 +1255,15 @@ func TestGatewayLookupRightAfterTheLastCallUsesItsOwnConnections(t *testing.T) {
 	}
 }
 
-// 실제 배선(main)도 프록시와 조회의 transport를 나누고, 조회 transport는 부를 때마다 새로 만든다.
+// 실제 배선(main의 newRunningGateway)도 프록시와 조회의 transport를 나누고, 조회 transport는 부를 때마다 새로 만든다.
 func TestGatewayTransportsDoNotShareThePool(t *testing.T) {
-	proxy, lookup := gatewayTransports()
+	_, dir := privateTestDir(t)
+	g, code := newRunningGateway(dir, gatewayConfig{backend: backendAPI, allowPath: chatPath})
+	if code != "" {
+		t.Fatal(code)
+	}
+	t.Cleanup(func() { _ = g.close() })
+	proxy, lookup := g.proxy.Transport, g.lookupTransport
 	first, second := lookup(), lookup()
 	if first == proxy || second == proxy || first == second {
 		t.Fatal("lookup transport shares a connection pool")
