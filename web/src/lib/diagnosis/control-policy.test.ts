@@ -16,6 +16,7 @@ import {
   rulePathText,
   rulesMissingMethods,
   summarize,
+  validConnectIp,
 } from "./control-policy";
 
 afterEach(() => vi.mocked(apiFetch).mockReset());
@@ -182,8 +183,51 @@ describe("parseControlPolicyView (fail-closed)", () => {
     ["소문자 메서드", { methods: ["get"] }],
     ["path_scope_ref 없음", { path_scope_ref: undefined }],
     ["규칙에 모르는 칸", { header_value: "x" }],
+    // 서버(e2proxy compileRules)가 실행에 올릴 수 없는 규칙 — #689 리뷰
+    [
+      "auth_prep 에 정확 경로 칸",
+      { purpose: "auth_prep", path_match: "exact", path_prefix: "/rest/user/login", methods: ["POST"] },
+    ],
+    ["auth_prep 에 GET", { purpose: "auth_prep", path_prefix: "/rest/user/login", methods: ["GET"] }],
+    ["auth_prep 에 POST 말고 더", { purpose: "auth_prep", path_prefix: "/rest/user/login", methods: ["POST", "PUT"] }],
+    ["auth_prep 이 루트 경로", { purpose: "auth_prep", path_prefix: "/", methods: ["POST"] }],
+    ["auth_prep 이 접두 경로(/로 끝남)", { purpose: "auth_prep", path_prefix: "/rest/", methods: ["POST"] }],
+    ["IP 형식 아닌 connect_ip", { connect_ip: "shop.example" }],
+    ["빈 connect_ip", { connect_ip: "" }],
+    ["IPv4 앞자리 0", { connect_ip: "010.0.0.5" }],
+    ["IPv4 범위 밖", { connect_ip: "10.0.0.256" }],
+    ["미지정 IPv4", { connect_ip: "0.0.0.0" }],
+    ["미지정 IPv6", { connect_ip: "::" }],
+    ["멀티캐스트 IPv4", { connect_ip: "224.0.0.1" }],
+    ["멀티캐스트 IPv6", { connect_ip: "ff02::1" }],
+    ["zone 붙은 IPv6", { connect_ip: "fe80::1%eth0" }],
+    ["E② 지원 밖 대문자 메서드", { methods: ["TRACE"] }],
+    ["E② 지원 밖 대문자 메서드(CONNECT)", { methods: ["GET", "CONNECT"] }],
+    ["빈 메서드", { methods: [] }],
+    ["중복 메서드", { methods: ["GET", "GET"] }],
+    ["경로에 .. 조각", { path_prefix: "/api/../admin" }],
+    ["경로에 // ", { path_prefix: "/api//x" }],
+    ["경로에 %", { path_prefix: "/api/%2e" }],
+    ["http 대상에 TLS 핀", { origin: "http://shop.example", tls_pinned: true }],
   ])("규칙 하나가 깨지면(%s) 일부만 그리지 않고 정책 전체를 null", (_name, over) => {
     expect(parseControlPolicyView(wire({ rules: [...rule0({}), ...rule0({ ref: "b", ...over })] }))).toBeNull();
+  });
+  it.each([
+    ["IPv6", "2001:db8::5"],
+    ["IPv4 대응 IPv6", "::ffff:10.0.0.5"],
+    ["루프백 IPv4", "127.0.0.1"],
+  ])("서버가 받는 연결 IP(%s)는 그대로 통과", (_name, ip) => {
+    expect(parseControlPolicyView(wire({ rules: rule0({ connect_ip: ip }) }))?.rules[0].connectIp).toBe(ip);
+  });
+  it("인증 준비 규칙은 로그인 경로 하나에 POST 만이면 받는다", () => {
+    const p = parseControlPolicyView(
+      wire({ rules: rule0({ purpose: "auth_prep", path_prefix: "/rest/user/login", methods: ["POST"] }) }),
+    );
+    expect(p?.rules[0]).toMatchObject({ purpose: "auth_prep", pathMatch: "prefix", methods: ["POST"] });
+  });
+  it("멀티캐스트 대응 IPv6(::ffff:224.0.0.1)도 거부", () => {
+    expect(validConnectIp("::ffff:224.0.0.1")).toBe(false);
+    expect(validConnectIp("::ffff:0.0.0.0")).toBe(false);
   });
   it("지문 생략(자격 pin 규칙)은 받고 빈 지문으로 둔다", () => {
     const { policy_fingerprint_sha256: _omit, ...rest } = wire();

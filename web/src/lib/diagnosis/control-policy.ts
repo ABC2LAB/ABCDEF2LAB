@@ -141,8 +141,56 @@ const isInstant = (v: unknown): v is string =>
   Number.isFinite(Date.parse(v));
 /** origin 은 scheme://host[:port] 만(경로·query·조각·공백 없음). */
 const ORIGIN = /^https?:\/\/[^/?#\s]+$/;
-/** 메서드는 대문자 토큰만 — 대소문자를 화면에서 고쳐 그리면 서버가 실제로 쥔 값과 달라 보일 수 있다. */
-const METHOD = /^[A-Z]+$/;
+/**
+ * E② 가 받는 메서드만(e2proxy/execution.go supportedMethod). 서버는 이 밖의 메서드를 가진 정책을 실행에 올리지 않으므로,
+ * 응답에 있으면 화면이 서버와 다른 정책을 보고 있는 것이다.
+ */
+const E2_METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]);
+
+// ── 서버가 실행에 올릴 수 없는 규칙(e2proxy/execution.go compileRules 가 ErrConfig 로 거부하는 조합)은 '확인 불가'로 둔다.
+//    방어적 파서가 서버보다 넓게 받으면, 실제로는 존재할 수 없는 승인 범위를 운영자에게 보인다(#689 리뷰).
+
+/** IPv4 점 네 칸(앞자리 0 없음, Go netip.ParseAddr 와 같은 모양). 맞으면 네 숫자, 아니면 null. */
+function ipv4Octets(v: string): number[] | null {
+  const parts = v.split(".");
+  if (parts.length !== 4 || !parts.every((x) => /^(0|[1-9][0-9]{0,2})$/.test(x))) return null;
+  const n = parts.map(Number);
+  return n.every((x) => x <= 255) ? n : null;
+}
+
+/**
+ * 연결 IP — 유효한 IPv4·IPv6 이고 미지정(0.0.0.0 · ::)·멀티캐스트·zone(%…)이 아님. 빈 값은 서버가 만들 수 없다.
+ * IPv6 는 URL 파서로 정규형을 얻어 판정한다(직접 손으로 문법을 다시 짜지 않는다).
+ */
+export function validConnectIp(v: string): boolean {
+  const v4 = ipv4Octets(v);
+  if (v4) return !v4.every((x) => x === 0) && !(v4[0] >= 224 && v4[0] <= 239);
+  if (!v.includes(":") || v.includes("%") || v.includes("[") || v.includes("]")) return false;
+  let host: string;
+  try {
+    host = new URL(`http://[${v}]/`).hostname.slice(1, -1).toLowerCase();
+  } catch {
+    return false;
+  }
+  if (host === "::") return false;
+  if (host.startsWith("ff")) return false;
+  // IPv4 대응 IPv6(::ffff:a.b.c.d)는 서버가 IPv4 로 풀어 쓴다 — 풀린 주소로 다시 본다
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(host);
+  if (mapped) {
+    const hi = Number.parseInt(mapped[1], 16);
+    const lo = Number.parseInt(mapped[2], 16);
+    return validConnectIp(`${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`);
+  }
+  return true;
+}
+
+/** 승인 경로 — e2proxy validPath: `/` 로 시작, `\`·`%`·줄바꿈·`//`·`.`/`..` 조각 없음(정리하면 모양이 바뀌는 경로 거부). */
+function validRulePath(p: string): boolean {
+  if (p === "/") return true;
+  if (!p.startsWith("/") || /[\\%\r\n]/.test(p) || p.includes("//")) return false;
+  const segs = p.slice(1).replace(/\/$/, "").split("/");
+  return segs.every((s) => s !== "" && s !== "." && s !== "..");
+}
 const FINGERPRINT = /^[0-9a-f]{64}$/;
 
 /** 계약에 없는 키가 하나라도 있거나 필수 키가 빠지면 false(닫힌 파서 — 모르는 칸을 조용히 무시하지 않는다). */
@@ -203,12 +251,27 @@ function parseRule(raw: unknown): PolicyRule | null {
     !ORIGIN.test(raw.origin) ||
     !isStr(raw.connect_ip) ||
     !isStr(raw.path_prefix) ||
-    !raw.path_prefix.startsWith("/") ||
+    !validRulePath(raw.path_prefix) ||
+    !validConnectIp(raw.connect_ip) ||
     !isStr(raw.path_scope_ref) ||
     !methods ||
-    !methods.every((m) => METHOD.test(m)) ||
+    methods.length === 0 ||
+    !methods.every((m) => E2_METHODS.has(m)) ||
+    new Set(methods).size !== methods.length ||
     !pathMatch ||
-    typeof raw.tls_pinned !== "boolean"
+    typeof raw.tls_pinned !== "boolean" ||
+    // TLS 핀은 https 대상에만 결속된다
+    (raw.tls_pinned && !raw.origin.startsWith("https://"))
+  )
+    return null;
+  // 인증 준비 규칙: 정확 경로 칸 없이 로그인 경로 하나에 POST 만(서버는 그 밖의 모양을 실행에 올리지 않는다)
+  if (
+    raw.purpose === AUTH_PREP_PURPOSE &&
+    (raw.path_match !== undefined ||
+      methods.length !== 1 ||
+      methods[0] !== "POST" ||
+      raw.path_prefix === "/" ||
+      raw.path_prefix.endsWith("/"))
   )
     return null;
   return {
