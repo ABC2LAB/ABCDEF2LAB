@@ -3,13 +3,15 @@ import { describe, expect, it } from "vitest";
 import {
   type BoundaryRecord,
   type Discovery,
-  getExploration,
+  discoveriesFromWorkflow,
   mapApiExploration,
   reasonLabel,
   sourceLabel,
   summarizeBoundary,
   summarizeDiscoveries,
+  summarizeWorkflowDiscoveries,
 } from "../live/exploration";
+import type { WorkflowEndpoint } from "../live/workflow";
 
 const rec = (p: Partial<BoundaryRecord>): BoundaryRecord => ({
   seq: 0,
@@ -169,11 +171,105 @@ describe("label helpers", () => {
   });
 });
 
-describe("getExploration", () => {
-  it("jobId 없으면 예시(mock)를 준다", async () => {
-    const r = await getExploration(null);
-    expect(r.mock).toBe(true);
-    expect(r.records.length).toBeGreaterThan(0);
-    expect(r.discoveries.length).toBeGreaterThan(0);
+const endpoint = (over: Partial<WorkflowEndpoint> & Record<string, unknown> = {}): WorkflowEndpoint =>
+  ({
+    id: "e1",
+    method: "GET",
+    path: "/api/items",
+    kind: "api",
+    source: "html_link",
+    from: "/",
+    in_scope: true,
+    change: "attested_read",
+    visited: true,
+    status: 200,
+    selected: false,
+    duplicates: 0,
+    ...over,
+  }) as WorkflowEndpoint;
+
+describe("discoveriesFromWorkflow (공유 스냅샷 → 발견)", () => {
+  it("경로 · 상태 · 출처를 옮기고, 근거 칸이 없으면 근거를 만들지 않는다(크롤러 발견)", () => {
+    expect(discoveriesFromWorkflow({ endpoints: [endpoint()] })).toEqual([
+      {
+        id: "e1",
+        method: "GET",
+        path: "/api/items",
+        source: "html_link",
+        from: "/",
+        inScope: true,
+        change: "attested_read",
+        visited: true,
+        status: 200,
+        duplicates: 0,
+        observationError: null,
+        evidence: null,
+        queryKeys: [],
+        bodyKeys: [],
+        contentType: null,
+      },
+    ]);
+  });
+  it("observed 는 탐색 seq 가 있어야 실제 관찰, 없으면 추정으로 내린다(절대규칙 5)", () => {
+    const [seen, noSeq, guess, odd] = discoveriesFromWorkflow({
+      endpoints: [
+        endpoint({ id: "a", discovery_confidence: "observed", exploration_seq: 7 }),
+        endpoint({ id: "b", discovery_confidence: "observed" }),
+        endpoint({ id: "c", discovery_confidence: "inferred" }),
+        endpoint({ id: "d", discovery_confidence: "certain", exploration_seq: 3 }),
+      ],
+    });
+    expect([seen.evidence, noSeq.evidence, guess.evidence, odd.evidence]).toEqual([
+      "observed",
+      "inferred",
+      "inferred",
+      null,
+    ]);
+  });
+  it("query · 조각 · 역슬래시가 섞인 경로와 발견 위치는 보이지 않는다(값 섞임 방지)", () => {
+    const [d] = discoveriesFromWorkflow({
+      endpoints: [endpoint({ path: "/api/items?token=synthetic-value", from: "/login#frag" })],
+    });
+    expect(d.path).toBeNull();
+    expect(d.from).toBeNull();
+    expect(JSON.stringify(d)).not.toContain("synthetic-value");
+  });
+  it("키 이름 · content-type 은 이름 · 형식만 받고 범위 밖은 버린다", () => {
+    const [d] = discoveriesFromWorkflow({
+      endpoints: [
+        endpoint({
+          query_keys: ["page", "x".repeat(65), 3],
+          body_keys: "id",
+          content_type: "application/json; charset=utf-8",
+        }),
+      ],
+    });
+    expect(d.queryKeys).toEqual(["page"]);
+    expect(d.bodyKeys).toEqual([]);
+    expect(d.contentType).toBeNull();
+  });
+  it("응답 코드 범위 밖은 없는 것으로 본다", () => {
+    expect(discoveriesFromWorkflow({ endpoints: [endpoint({ status: 0 })] })[0].status).toBeNull();
+  });
+  it("summarizeWorkflowDiscoveries: 범위 · 방문 · 근거 · 출처별(많은 것부터)로 센다", () => {
+    const list = discoveriesFromWorkflow({
+      endpoints: [
+        endpoint({ id: "a", source: "browser_xhr", discovery_confidence: "observed", exploration_seq: 1 }),
+        endpoint({ id: "b", in_scope: false, visited: false, status: undefined }),
+        endpoint({ id: "c", discovery_confidence: "inferred" }),
+      ],
+    });
+    expect(summarizeWorkflowDiscoveries(list)).toEqual({
+      listed: 3,
+      inScope: 2,
+      outOfScope: 1,
+      visited: 2,
+      observed: 1,
+      inferred: 1,
+      bySource: [
+        { source: "html_link", count: 2 },
+        { source: "browser_xhr", count: 1 },
+      ],
+    });
   });
 });

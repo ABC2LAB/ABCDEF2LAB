@@ -1,34 +1,26 @@
 "use client";
 
-// 탐색 결과 화면 (운영자 전용, 지금은 예시). 발견(§7)과 경계 기록 요약(§4)을 따로 보인다.
-// 데이터는 workbench/live/exploration seam 에서만 온다 — 값(헤더·쿠키·본문·query 값)은 애초에 없다(절대규칙 2).
-// ※ §4: 경계 기록은 운영자 전용이다. 이 화면은 내보내기·공유·모델 입력에 넣지 않는다 → export 버튼을 두지 않는다.
-// ※ live 점등은 탐색 실행기(발견 결과 전달·경계 기록) 착륙 후. 지금은 getExploration(null)=예시.
-//   실 연결 때 현재 job id 만 넘기면 된다(표현/데이터 분리 — 이 화면은 안 바뀐다).
+// 탐색 결과 화면 (운영자 전용). 공유 워크플로 스냅샷(UrlFeeds 가 이미 읽고 Job 과 대조한 것)의 끝점에서 발견 경로 ·
+// 상태 · 출처를 보인다 — 추가 조회 없음. 값(헤더 · 쿠키 · 본문 · query 값)은 애초에 없다(절대규칙 2).
+// ※ §4: 운영자 전용이다. 이 화면은 내보내기 · 공유 · 모델 입력에 넣지 않는다 → export 버튼을 두지 않는다.
+// ※ 탐색 경계 기록(§4 — 전달 · 차단 사유)은 서버 경로가 없어 이 화면에 두지 않는다(빈 칸으로도 만들지 않음).
 
-import { useEffect, useState } from "react";
+import { useMemo } from "react";
+
+import { observationErrorLabel, WORKFLOW_COUNT_LABEL, workflowSourceLabel } from "@/lib/diagnosis/coverage";
 
 import { cx } from "../../lib/cx";
 import {
   changeLabel,
-  DEST_CLASS_LABEL,
-  type DestClass,
-  type ExplorationResult,
-  getExploration,
-  INGRESS_LABEL,
-  type Ingress,
-  PROVENANCE_LABEL,
-  reasonLabel,
-  sourceLabel,
-  summarizeBoundary,
-  summarizeDiscoveries,
+  discoveriesFromWorkflow,
+  EVIDENCE_LABEL,
+  summarizeWorkflowDiscoveries,
+  type WorkflowDiscovery,
 } from "../../live/exploration";
+import { useUrl } from "../../live/urlDiagnosis";
 import { Icon } from "../../ui/icons";
 import s from "../../workbench.module.css";
 import { UrlHead } from "./urlParts";
-
-const ingressLabel = (v: string) => INGRESS_LABEL[v as Ingress] ?? v;
-const destClassLabel = (v: string) => DEST_CLASS_LABEL[v as DestClass] ?? v;
 
 /** 수 칸 하나 (이름 + 값). */
 function Stat({ label, value }: { label: string; value: number }) {
@@ -40,43 +32,39 @@ function Stat({ label, value }: { label: string; value: number }) {
   );
 }
 
-/** 이름별 수 줄 (사유·입구·목적지·출처). 비면 아무것도 안 그린다. */
-function CountRows({ rows }: { rows: { key: string; label: string; count: number }[] }) {
-  if (!rows.length) return <p className={s.help}>없음</p>;
-  return (
-    <ul className={s.policy}>
-      {rows.map((r) => (
-        <li key={r.key}>
-          <span>{r.label}</span>
-          <b className={s.mono}>{r.count}</b>
-        </li>
-      ))}
-    </ul>
-  );
+/** 상태 글: 방문(응답 코드) · 미방문 · 관찰 오류. 응답 코드가 없으면 만들지 않는다. */
+function stateText(d: WorkflowDiscovery): string {
+  if (!d.visited) return "미방문";
+  const code = d.status !== null ? `방문 ${d.status}` : "방문 · 응답 코드 없음";
+  return d.observationError ? `${code} · ${observationErrorLabel(d.observationError)}` : code;
 }
 
-/** 탐색 결과 (운영자 전용, 예시). */
+/** 탐색 결과 (운영자 전용 · 현재 Job 의 공유 워크플로 스냅샷). */
 export function UrlExploreLive() {
-  const [data, setData] = useState<ExplorationResult | null>(null);
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    let live = true;
-    // TODO(이경준): 탐색 실행기 착륙 후 현재 job id 를 넘겨 실 결과로 점등한다(지금은 예시).
-    getExploration(null)
-      .then((r) => {
-        if (live) setData(r);
-      })
-      .catch(() => {
-        if (live) setFailed(true);
-      });
-    return () => {
-      live = false;
-    };
-  }, []);
-
-  const boundary = data ? summarizeBoundary(data.records) : null;
-  const disc = data ? summarizeDiscoveries(data.discoveries) : null;
+  const job = useUrl((st) => st.job);
+  const flow = useUrl((st) => st.flow);
+  const flowVerified = useUrl((st) => st.flowVerified);
+  const flowUncertain = useUrl((st) => st.flowUncertain);
+  const flowError = useUrl((st) => st.flowError);
+  const available = !!job?.task_id && !!job.input.workflow_mode;
+  // 커버리지와 같은 조건: 확인되지 않았거나 다른 Job · 회차의 스냅샷이면 그리지 않는다(이전 회차 · 예시 없음)
+  const { list, failed } = useMemo<{ list: WorkflowDiscovery[] | null; failed: boolean }>(() => {
+    if (!available || !job) return { list: null, failed: false };
+    if (flowError || flowUncertain || (flow && !flowVerified)) return { list: null, failed: true };
+    if (!flow || !flowVerified) return { list: null, failed: false };
+    if (
+      flow.job_id !== job.id ||
+      flow.task_id !== job.task_id ||
+      flow.source_digest !== job.source_digest ||
+      flow.run_ref !== `run-${job.id}`
+    )
+      return { list: null, failed: true };
+    return { list: discoveriesFromWorkflow(flow), failed: false };
+  }, [available, job, flow, flowVerified, flowUncertain, flowError]);
+  const sum = list ? summarizeWorkflowDiscoveries(list) : null;
+  const counts = list && flow ? flow.counts : null;
+  const omitted = counts?.omitted ?? 0;
+  const invalidPaths = counts?.invalid_paths ?? 0;
 
   return (
     <>
@@ -86,80 +74,43 @@ export function UrlExploreLive() {
           {/* §4 운영자 전용 고지 — 내보내기·공유·모델 입력 금지 */}
           <div className={s.note} role="note">
             <Icon name="info" />
-            <span>경계 기록·발견은 운영자 전용입니다. 내보내기·공유·모델 입력에 넣지 않습니다.</span>
+            <span>발견 목록은 운영자 전용입니다. 내보내기·공유·모델 입력에 넣지 않습니다.</span>
           </div>
-          {data?.mock ? (
-            <div className={cx(s.note, s.warn)} role="note">
-              <Icon name="alert" />
-              <span>예시 데이터입니다. 실제 탐색 결과는 탐색 실행기 연결 후 나옵니다.</span>
-            </div>
+          {!available ? <p className={s.empty}>실제 워크플로 진단을 선택하세요.</p> : null}
+          {failed ? (
+            <p className={s.empty} role="alert">
+              탐색 결과를 확인하지 못했습니다. 이전 회차 결과는 표시하지 않습니다.
+            </p>
           ) : null}
-          {failed ? <p className={s.empty}>탐색 결과를 불러오지 못했습니다.</p> : null}
-          {!data && !failed ? <p className={s.empty}>불러오는 중…</p> : null}
+          {available && !list && !failed ? <p className={s.empty}>불러오는 중…</p> : null}
 
-          {data && disc ? (
+          {list && sum && counts ? (
             <section className={s.isec} aria-label="발견">
               <h2>발견</h2>
-              <p className={s.help}>탐색이 찾은 엔드포인트입니다. 진단 결과나 확정 취약점이 아닙니다.</p>
+              <p className={s.help}>탐색이 찾은 경로입니다. 진단 결과나 확정 취약점이 아닙니다.</p>
               <div className={s["crwl-top"]}>
-                <Stat label="전체" value={disc.total} />
-                <Stat label="실제 전송" value={disc.observed} />
-                <Stat label="추정" value={disc.inferred} />
-                <Stat label="범위 안" value={disc.inScope} />
-                {data.discoveriesDropped ? (
-                  <Stat label="범위 밖·형식 오류로 제외" value={data.discoveriesDropped} />
-                ) : null}
+                <Stat label={WORKFLOW_COUNT_LABEL.found} value={counts.found} />
+                <Stat label={WORKFLOW_COUNT_LABEL.visited} value={counts.visited} />
+                <Stat label="범위 안" value={sum.inScope} />
+                <Stat label="범위 밖" value={sum.outOfScope} />
+                {sum.observed ? <Stat label={EVIDENCE_LABEL.observed} value={sum.observed} /> : null}
+                {sum.inferred ? <Stat label={EVIDENCE_LABEL.inferred} value={sum.inferred} /> : null}
+                {omitted ? <Stat label="목록에서 생략" value={omitted} /> : null}
+                {invalidPaths ? <Stat label={WORKFLOW_COUNT_LABEL.invalid_paths} value={invalidPaths} /> : null}
               </div>
-              <CountRows rows={disc.bySource.map((r) => ({ key: r.source, label: r.label, count: r.count }))} />
-              <ul className={s.policy} aria-label="발견 목록">
-                {data.discoveries.map((d) => (
-                  <li key={d.id}>
-                    <span className={cx(s.tag, d.provenance === "observed" ? s.in : s.ap)}>
-                      {PROVENANCE_LABEL[d.provenance]}
-                    </span>
-                    <span className={s.mono}>
-                      {d.method} {d.path}
-                    </span>
-                    <small>
-                      {sourceLabel(d.source)} · {changeLabel(d.change)} · {d.inScope ? "범위 안" : "범위 밖"}
-                      {d.queryKeys.length ? ` · query: ${d.queryKeys.join(", ")}` : ""}
-                      {d.bodyKeys.length ? ` · body: ${d.bodyKeys.join(", ")}` : ""}
-                      {d.contentType ? ` · ${d.contentType}` : ""}
-                    </small>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          ) : null}
+              {flow?.detail_truncated || sum.listed < counts.found ? (
+                <p className={s.help}>
+                  {`아래 목록은 서버가 화면에 준 ${sum.listed}개입니다. 발견 ${counts.found}개 전체가 아닐 수 있습니다.`}
+                </p>
+              ) : null}
 
-          {data && boundary ? (
-            <section className={s.isec} aria-label="경계 기록">
-              <h2>경계 기록</h2>
-              <p className={s.help}>탐색 경계가 실제로 보냈는지의 정본입니다. 진단(E②) 차단과 따로 셉니다.</p>
-              <div className={s["crwl-top"]}>
-                <Stat label="전달" value={boundary.forwarded} />
-                <Stat label="차단" value={boundary.denied} />
-                <Stat label="인증 헤더 붙음" value={boundary.withAuthHeader} />
-              </div>
-
-              <h3>차단 사유</h3>
-              <CountRows rows={boundary.byReason.map((r) => ({ key: r.reason, label: r.label, count: r.count }))} />
-
-              <h3>입구</h3>
-              <CountRows rows={boundary.byIngress.map((r) => ({ key: r.ingress, label: r.label, count: r.count }))} />
-
-              <h3>목적지</h3>
-              <CountRows
-                rows={boundary.byDestClass.map((r) => ({ key: r.destClass, label: r.label, count: r.count }))}
-              />
-
-              <h3>외부 호스트</h3>
-              {boundary.externalHosts.length ? (
-                <ul className={s.policy}>
-                  {boundary.externalHosts.map((h) => (
-                    <li key={h.host}>
-                      <span className={s.mono}>{h.host}</span>
-                      <b className={s.mono}>{h.count}</b>
+              <h3>출처</h3>
+              {sum.bySource.length ? (
+                <ul className={s.policy} aria-label="출처별 발견">
+                  {sum.bySource.map((r) => (
+                    <li key={r.source}>
+                      <span>{workflowSourceLabel(r.source)}</span>
+                      <b className={s.mono}>{r.count}</b>
                     </li>
                   ))}
                 </ul>
@@ -167,26 +118,30 @@ export function UrlExploreLive() {
                 <p className={s.help}>없음</p>
               )}
 
-              <h3>요청 기록</h3>
-              <ul className={s.policy} aria-label="경계 기록 목록">
-                {data.records.map((r) => (
-                  <li key={r.seq}>
-                    <span className={cx(s.tag, r.decision === "forwarded" ? s.in : s.ex)}>
-                      {r.decision === "forwarded" ? "전달" : "차단"}
-                    </span>
-                    <span className={s.mono}>
-                      {r.method} {r.pathPattern ?? r.externalHost ?? "—"}
-                    </span>
-                    <small>
-                      {ingressLabel(r.ingress)} · {destClassLabel(r.destClass)}
-                      {r.reason ? ` · ${reasonLabel(r.reason)}` : ""}
-                      {r.status !== null ? ` · ${r.status}` : ""}
-                      {r.bytes !== null ? ` · ${r.bytes} bytes` : ""}
-                      {r.hasAuthHeader ? " · 인증 헤더" : ""}
-                    </small>
-                  </li>
-                ))}
-              </ul>
+              <h3>발견 목록</h3>
+              {list.length ? (
+                <ul className={s.policy} aria-label="발견 목록">
+                  {list.map((d) => (
+                    <li key={d.id}>
+                      <span className={cx(s.tag, d.inScope ? s.in : s.ex)}>{d.inScope ? "범위 안" : "범위 밖"}</span>
+                      <span className={s.mono}>
+                        {d.method} {d.path ?? "형식 밖 경로"}
+                      </span>
+                      <small>
+                        {stateText(d)} · {workflowSourceLabel(d.source)}
+                        {d.evidence ? ` (${EVIDENCE_LABEL[d.evidence]})` : ""}
+                        {d.from ? ` · 발견 위치 ${d.from}` : ""} · {changeLabel(d.change)}
+                        {d.duplicates ? ` · 중복 ${d.duplicates}` : ""}
+                        {d.queryKeys.length ? ` · query: ${d.queryKeys.join(", ")}` : ""}
+                        {d.bodyKeys.length ? ` · body: ${d.bodyKeys.join(", ")}` : ""}
+                        {d.contentType ? ` · ${d.contentType}` : ""}
+                      </small>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className={s.empty}>스냅샷에 발견한 경로가 없습니다. 탐색이 아직 찾지 못했을 수 있습니다.</p>
+              )}
             </section>
           ) : null}
         </div>
