@@ -55,9 +55,14 @@ def _command_position(current: str) -> bool:
     return not words or all(word in _RESERVED_PREFIX for word in words)
 
 
-def _segments(command: str) -> list[str]:
-    """따옴표 밖의 셸 연산자로 나눈 단순 명령들."""
-    out, current, quote, i = [], [], None, 0
+def _segments(command: str) -> list[tuple[str, str | None]]:
+    """따옴표 밖의 셸 연산자로 나눈 단순 명령들과 그 앞 구분자(`&&`·`||`·`;;`·`$(`·한 글자 연산자, 처음은 None)."""
+    out, current, quote, sep, i = [], [], None, None, 0
+
+    def cut(next_sep: str) -> None:
+        nonlocal current, sep
+        out.append(("".join(current), sep))
+        current, sep = [], next_sep
     while i < len(command):
         char = command[i]
         if quote is not None:
@@ -84,16 +89,17 @@ def _segments(command: str) -> list[str]:
             i = end
             continue
         elif command.startswith("$(", i):
-            out.append("".join(current))
-            current = []
+            cut("$(")
+            i += 1
+        elif command[i:i + 2] in ("&&", "||", ";;"):
+            cut(command[i:i + 2])
             i += 1
         elif char in _OPERATOR_CHARS:
-            out.append("".join(current))
-            current = []
+            cut(char)
         else:
             current.append(char)
         i += 1
-    out.append("".join(current))
+    out.append(("".join(current), sep))
     return out
 
 
@@ -317,13 +323,27 @@ def _shell_command_string(tokens: list[str], start: int) -> str | None:
     return None
 
 
-def analyze_command(command: str, depth: int = 0) -> tuple[list[str], bool]:
-    """(실행되는 명령 이름들, 정적으로 다 풀지 못했는지). 풀지 못한 구문: eval·source·`.`, 변수로 된 명령 이름,
-    셸 낱말 나누기 실패, 짝이 맞지 않는 치환, 깊이 상한을 넘는 중첩. 이런 호출은 이름 수에 0으로 남아도 "안 썼다"는
-    근거가 아니다(uncertain_calls로 따로 센다)."""
-    words, uncertain = [], False
+# 명령 앞 리다이렉션(`</dev/null npx`, `2>/dev/null npx`, `> out npx`). 대상이 같은 낱말에 붙었으면 그 낱말만, 연산자만
+# 있으면 다음 낱말까지가 리다이렉션이다(#682 리뷰).
+_REDIRECTION = re.compile(r"(?:[0-9]+|&)?(?:<<<|<<-?|<>|<&|>&|>>|>\||<|>)(.*)", re.S)
+
+
+class _Level:
+    """복합 명령·묶음 한 겹. cond가 참이면 그 안의 명령은 실행이 조건에 달렸다."""
+
+    def __init__(self, kind: str, cond: bool):
+        self.kind, self.cond = kind, cond
+
+
+def analyze_command_detail(command: str, depth: int = 0) -> tuple[list[str], list[str], bool]:
+    """(늘 실행되는 명령 이름들, 실행이 조건에 달린 명령 이름들, 정적으로 다 풀지 못했는지).
+
+    조건에 달린 자리: `&&`·`||` 뒤, if·while·until·for의 then/do/else/elif 본문, case 갈래, 그 안의 묶음·치환, 함수 본문
+    (정의만으로는 실행되지 않는다, #682 리뷰). 이런 이름은 실제로 실행됐는지 정적으로 모른다. 풀지 못한 구문: eval·source·
+    `.`, 변수로 된 명령 이름, 셸 낱말 나누기 실패, 짝이 맞지 않는 치환, 함수 정의, 깊이 상한을 넘는 중첩."""
+    definite, conditional, uncertain = [], [], False
     if depth > 3:
-        return words, True
+        return definite, conditional, True
     body, expanding, unsure = _preprocess(command)  # 주석·heredoc 본문을 뺀 글(나누기·치환은 이 글에서만)
     uncertain |= unsure
     substitutions, broken = _substitutions(body)
@@ -332,20 +352,71 @@ def analyze_command(command: str, depth: int = 0) -> tuple[list[str], bool]:
         found, unsure = _substitutions(text, quotes=False)
         substitutions += found
         uncertain |= unsure
+    nested_definite, nested_conditional = [], []
     for inner in substitutions:
-        found, unsure = analyze_command(inner, depth + 1)
-        words += found
+        sure, maybe, unsure = analyze_command_detail(inner, depth + 1)
+        nested_definite += sure
+        nested_conditional += maybe
         uncertain |= unsure
-    for segment in _segments(body):
+
+    stack: list[_Level] = []
+    and_or = function_seen = any_conditional = False
+    segments = _segments(body)
+    for index, (segment, sep) in enumerate(segments):
+        if sep in (None, ";", "\n", "&", ";;"):
+            and_or = False
+        elif sep in ("&&", "||"):
+            and_or = True
+        elif sep in ("(", "$("):
+            stack.append(_Level("group", and_or))
+            and_or = False
+        elif sep == ")" and stack and stack[-1].kind == "group":
+            stack.pop()  # case 갈래 패턴의 `)`는 맨 위가 case라 닫지 않는다
+        # 함수 정의 `name() { … }`·`function name`: 본문은 호출될 때만 실행된다
+        following = segments[index + 1:index + 3]
+        if (re.fullmatch(r"\s*[A-Za-z_][\w.-]*\s*", segment) and len(following) == 2 and following[0][1] == "("
+                and not following[0][0].strip() and following[1][1] == ")"):
+            function_seen = uncertain = True
+            continue
         try:
             tokens = shlex.split(segment, posix=True)
         except ValueError:
             tokens, uncertain = segment.split(), True
-        if tokens and tokens[0] in _RESERVED_SEGMENT:
-            continue  # for·case 등: 이 조각의 낱말은 명령이 아니다(본문은 do·then 뒤 조각에서 센다)
+
+        def conditional_here() -> bool:
+            return and_or or function_seen or any(level.cond for level in stack)
         i = 0
+        # 조각 앞 예약어: 복합 명령의 겹을 따라간다
+        while i < len(tokens) and tokens[i] in _RESERVED_PREFIX | _RESERVED_SEGMENT:
+            word = tokens[i]
+            if word in ("if", "while", "until"):
+                stack.append(_Level(word, conditional_here()))
+            elif word in ("for", "select"):
+                stack.append(_Level("loop", conditional_here()))
+            elif word == "case":
+                stack.append(_Level("case", True))
+            elif word in ("then", "do", "else", "elif") and stack:
+                stack[-1].cond = True
+            elif word in ("fi", "done", "esac", "}") and stack:
+                stack.pop()
+            elif word == "{":
+                stack.append(_Level("brace", and_or))
+                and_or = False
+            elif word == "function":
+                function_seen = uncertain = True
+            if word in _RESERVED_SEGMENT:
+                break  # for·case·select·function·in: 이 조각의 남은 낱말은 명령이 아니다
+            i += 1
+        if i < len(tokens) and tokens[i] in _RESERVED_SEGMENT:
+            continue
+        target = conditional if conditional_here() else definite
+        any_conditional |= conditional_here()
         while i < len(tokens):
             token = tokens[i]
+            redirect = _REDIRECTION.fullmatch(token)
+            if redirect:
+                i += 1 if redirect.group(1) else 2
+                continue
             if _ASSIGNMENT.match(token) or token in _RESERVED_PREFIX:
                 i += 1
                 continue
@@ -361,16 +432,31 @@ def analyze_command(command: str, depth: int = 0) -> tuple[list[str], bool]:
             if "$" in token or base in _INDIRECT:
                 uncertain = True  # 변수로 된 명령 이름·eval·source는 무엇이 실행되는지 정적으로 모른다
             if base:
-                words.append(base)
+                target.append(base)
                 if base in _SHELLS:
                     inner = _shell_command_string(tokens, i + 1)
                     if inner is not None:
-                        found, unsure = analyze_command(inner, depth + 1)
-                        words += found
+                        sure, maybe, unsure = analyze_command_detail(inner, depth + 1)
+                        if target is definite:
+                            definite += sure
+                        conditional += maybe if target is definite else sure + maybe
                         uncertain |= unsure
             break
-    # 치환은 바깥 단순 명령 나누기에서도 한 번 더 보일 수 있다. 세기는 이름 집합이라 처음 나온 순서로 한 번씩만 둔다.
-    return list(dict.fromkeys(words)), uncertain
+    # 치환·heredoc 본문의 이름: 바깥에 조건 자리가 하나라도 있으면 어느 자리의 치환인지 이 단계에서 가르지 않고 조건으로 둔다
+    if any_conditional or function_seen:
+        conditional = nested_definite + nested_conditional + conditional
+    else:
+        definite = nested_definite + definite  # 치환 안 이름을 먼저 둔다(이름 집합이라 순서는 표시용)
+        conditional = nested_conditional + conditional
+    definite = list(dict.fromkeys(definite))
+    conditional = [word for word in dict.fromkeys(conditional) if word not in definite]
+    return definite, conditional, uncertain
+
+
+def analyze_command(command: str, depth: int = 0) -> tuple[list[str], bool]:
+    """(실행될 수 있는 명령 이름들(늘 + 조건), 정적으로 다 풀지 못했는지). 세기는 count_usage가 둘을 가른다."""
+    definite, conditional, uncertain = analyze_command_detail(command, depth)
+    return list(dict.fromkeys(definite + conditional)), uncertain
 
 
 def command_words(command: str, depth: int = 0) -> list[str]:
@@ -406,10 +492,13 @@ def count_usage(records: Iterable[Mapping], names: Iterable[str], *, with_failur
     """records: {"command": Bash 도구 입력(JSON 문자열/객체), "output": 결과 글 또는 None, "exit_code": 정수 또는 None,
     "failed": 도구가 실패로 돌려줬는지(bool) 또는 None}. Bash 호출만 넘긴다.
 
-    calls는 그 이름이 명령으로 실행된 Bash 호출 수(한 호출에 여러 번 나와도 1). with_failures면 그 호출 가운데 이름을
-    찾지 못한 것(not_found)과 그 밖의 실패(종료 코드 ≠ 0 또는 failed)를 따로 센다."""
+    calls는 그 이름이 늘 실행되는 자리에 있던 Bash 호출 수(한 호출에 여러 번 나와도 1). 실행이 조건에 달린 자리(`&&`·
+    `||` 뒤, if·loop 본문, case 갈래, 함수 본문)에만 있던 호출은 conditional_calls로 따로 세고 uncertain_calls에도 넣는다
+    (실제로 실행됐는지 정적으로 모른다, #682 리뷰). with_failures면 calls 가운데 이름을 찾지 못한 것(not_found)과 그
+    밖의 실패(종료 코드 ≠ 0 또는 failed)를 따로 센다."""
     wanted = frozenset(validate_names(list(names)))
     calls = {name: 0 for name in sorted(wanted)}
+    maybe_calls = {name: 0 for name in sorted(wanted)}
     missing = {name: 0 for name in sorted(wanted)}
     other = {name: 0 for name in sorted(wanted)}
     total = unreadable = uncertain = 0
@@ -419,10 +508,13 @@ def count_usage(records: Iterable[Mapping], names: Iterable[str], *, with_failur
         if command is None:
             unreadable += 1
             continue
-        found, unsure = analyze_command(command)
-        if unsure:
-            uncertain += 1
+        found, maybe, unsure = analyze_command_detail(command)
         used = wanted & set(found)
+        possible = (wanted & set(maybe)) - used
+        for name in possible:
+            maybe_calls[name] += 1
+        if unsure or possible:
+            uncertain += 1
         for name in used:
             calls[name] += 1
             if not with_failures:
@@ -435,7 +527,8 @@ def count_usage(records: Iterable[Mapping], names: Iterable[str], *, with_failur
     # uncertain_calls: 정적으로 다 풀지 못한 호출 수. 0이 아니면 이름 수 0을 "안 썼다"로 읽지 않는다.
     out = {"format": FORMAT, "names": sorted(wanted), "bash_calls": total, "unreadable_calls": unreadable,
            "uncertain_calls": uncertain,
-           "calls": {k: v for k, v in calls.items() if v}}
+           "calls": {k: v for k, v in calls.items() if v},
+           "conditional_calls": {k: v for k, v in maybe_calls.items() if v}}
     if with_failures:
         out["not_found"] = {k: v for k, v in missing.items() if v}
         out["other_failures"] = {k: v for k, v in other.items() if v}

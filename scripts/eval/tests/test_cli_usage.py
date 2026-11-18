@@ -10,7 +10,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cli_usage import (  # noqa: E402
-    CliUsageError, analyze_command, command_words, count_usage, not_found, tool_input_command, validate_names,
+    CliUsageError, analyze_command, analyze_command_detail, command_words, count_usage, not_found, tool_input_command, validate_names,
 )
 
 
@@ -194,12 +194,46 @@ class TestCounting(unittest.TestCase):
             {"command": "not json"},
         ]
         got = count_usage(records, ["npx", "pip", "vim", "gpg"], with_failures=True)
+        # 둘째 호출의 npx는 `&&` 뒤라 실행이 조건에 달렸다 → 확정 수가 아니라 conditional_calls·uncertain_calls(#682 리뷰)
         self.assertEqual(got, {"format": "abc2lab.cli-usage/v1", "names": ["gpg", "npx", "pip", "vim"], "bash_calls": 5,
-                               "unreadable_calls": 1, "uncertain_calls": 0, "calls": {"npx": 2, "pip": 1, "vim": 1},
-                               "not_found": {"npx": 1}, "other_failures": {"npx": 1, "pip": 1, "vim": 1}})
+                               "unreadable_calls": 1, "uncertain_calls": 1, "calls": {"npx": 1, "pip": 1, "vim": 1},
+                               "conditional_calls": {"npx": 1},
+                               "not_found": {"npx": 1}, "other_failures": {"pip": 1, "vim": 1}})
         calls_only = count_usage(records, ["npx"], with_failures=False)
-        self.assertEqual(set(calls_only), {"format", "names", "bash_calls", "unreadable_calls", "uncertain_calls", "calls"})
+        self.assertEqual(set(calls_only), {"format", "names", "bash_calls", "unreadable_calls", "uncertain_calls", "calls",
+                                           "conditional_calls"})
         self.assertNotIn("install", json.dumps(got))  # 원문 조각이 결과에 없다
+
+    def test_review_round_six_redirections_and_conditional_branches(self):
+        # #682 리뷰 6차: 명령 앞 리다이렉션 뒤 이름은 늘 실행되고, `&&`·`||` 뒤나 본문 안 이름은 실행이 조건에 달렸다.
+        cases = {
+            "</dev/null npx --version": (["npx"], []),
+            "2>/dev/null npx c": (["npx"], []),
+            "> out npx b": (["npx"], []),
+            "false && npx --version\n:": (["false", ":"], ["npx"]),
+            "true || npx a": (["true"], ["npx"]),
+            "a && b; npx f": (["a", "npx"], ["b"]),
+            "a && (b; npx g)": (["a"], ["b", "npx"]),
+            "a && { b; npx g; }": (["a"], ["b", "npx"]),
+            "if npx --version; then :; fi": (["npx"], [":"]),
+            "while npx r; do :; done": (["npx"], [":"]),
+            "for x in 1 2; do npx j; done": ([], ["npx"]),
+            "case $x in a) npx k;; esac; ls": (["ls"], ["npx"]),
+            "a | npx u": (["a", "npx"], []),
+            "a && b | npx v": (["a"], ["b", "npx"]),
+            "false && echo $(npx q)": (["false"], ["npx", "echo"]),
+            "false && sh -c 'npx t'": (["false"], ["sh", "npx"]),
+        }
+        for command, (sure, maybe) in cases.items():
+            definite, conditional, _ = analyze_command_detail(command)
+            with self.subTest(command=command):
+                self.assertEqual((definite, conditional), (sure, maybe))
+        # 함수 정의는 본문이 호출될 때만 실행된다 → 미확인
+        for command in ("f() { npx l; }; f", "function g { npx m; }"):
+            definite, conditional, unsure = analyze_command_detail(command)
+            with self.subTest(command=command):
+                self.assertTrue(unsure)
+                self.assertNotIn("npx", definite)
 
 
 if __name__ == "__main__":
