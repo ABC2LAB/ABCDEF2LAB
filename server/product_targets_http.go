@@ -63,7 +63,7 @@ func productTargetsHTTP(w http.ResponseWriter, r *http.Request, owner string, en
 				return
 			}
 		} else if len(parts) == 2 && parts[1] == "reset-confirmation" {
-			// GET: 확정 단계 쓰기와 리셋 확인 상태(진술 문장 포함). POST {"statement_confirmed": true, "writes_job": "<본 기록>"}:
+			// GET: 확정 단계 쓰기와 리셋 확인 상태(진술 문장 포함). POST {"statement_confirmed": true, "writes_ref": "<본 기록 참조>"}:
 			// 리셋 진술을 남김. 그 사이 기록이 바뀌었으면 409 reset_record_changed.
 			switch r.Method {
 			case "GET":
@@ -75,7 +75,7 @@ func productTargetsHTTP(w http.ResponseWriter, r *http.Request, owner string, en
 					return
 				}
 				// 동의는 화면이 본 쓰기 기록(last_writes_job)에 묶인다. 없으면 무엇에 동의했는지 모른다.
-				if !diagnosisprep.ValidResetWritesJob(body.WritesJob) {
+				if !diagnosisprep.ValidResetWritesRef(body.WritesRef) {
 					writeJSON(w, 400, map[string]string{"error": "invalid_reset_request"})
 					return
 				}

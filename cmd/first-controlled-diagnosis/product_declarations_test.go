@@ -269,18 +269,18 @@ func TestProductResetConfirmationLifecycle(t *testing.T) {
 	if got := start(gate); got != e3contract.RefuseResetConfirmationMissing {
 		t.Fatalf("확인 없이: %s", got)
 	}
-	if _, err := r.confirmReset("ARTEX", target.ID, false, "job-1"); err == nil || err.Error() != "statement_required" {
+	if _, err := r.confirmReset("ARTEX", target.ID, false, writesRef(t, r, target.ID)); err == nil || err.Error() != "statement_required" {
 		t.Fatalf("진술 없이: %v", err)
 	}
-	if _, err := r.confirmReset("other", target.ID, true, "job-1"); err == nil || err.Error() != "target_not_found" {
+	if _, err := r.confirmReset("other", target.ID, true, writesRef(t, r, target.ID)); err == nil || err.Error() != "target_not_found" {
 		t.Fatalf("다른 주체: %v", err)
 	}
-	v, err := r.confirmReset("ARTEX", target.ID, true, "job-1")
+	v, err := r.confirmReset("ARTEX", target.ID, true, writesRef(t, r, target.ID))
 	if err != nil || v.ResetRequired || v.ConfirmedBy != "ARTEX" || v.ConfirmedAt.IsZero() {
 		t.Fatalf("확인: %+v %v", v, err)
 	}
 	// 같은 쓰기를 두 번 확인해도 줄을 더 남기지 않는다.
-	if again, err := r.confirmReset("ARTEX", target.ID, true, "job-1"); err != nil || !again.ConfirmedAt.Equal(v.ConfirmedAt) {
+	if again, err := r.confirmReset("ARTEX", target.ID, true, writesRef(t, r, target.ID)); err != nil || !again.ConfirmedAt.Equal(v.ConfirmedAt) {
 		t.Fatalf("두 번째 확인: %+v %v", again, err)
 	}
 	if got := start(gate); got != e3contract.RefuseResetStateUnavailable {
@@ -340,7 +340,7 @@ func TestProductResetRejectsBadLines(t *testing.T) {
 	}
 	pending, _ := applyReset(rec, nil, writes)
 	confirm := productDeclarationEvent{TargetID: target.ID, Action: declarationResetConfirmed, Actor: "ARTEX", At: at,
-		TargetRevision: target.Revision, JobRef: "job-1", StatementSHA256: productResetStatementSHA256()}
+		TargetRevision: target.Revision, JobRef: "job-1", WritesRef: pending.writesRef, StatementSHA256: productResetStatementSHA256()}
 	if _, err := applyReset(rec, pending, confirm); err != nil {
 		t.Fatalf("정상 확인 줄: %v", err)
 	}
@@ -363,6 +363,10 @@ func TestProductResetRejectsBadLines(t *testing.T) {
 		"unknown_action":       {pending, func() productDeclarationEvent { e := confirm; e.Action = "reset_skipped"; return e }},
 		"confirm_with_objects": {pending, func() productDeclarationEvent { e := confirm; e.Objects = confirmationObjects(); return e }},
 		"confirm_other_job":    {pending, func() productDeclarationEvent { e := confirm; e.JobRef = "job-2"; return e }},
+		"confirm_other_ref":    {pending, func() productDeclarationEvent { e := confirm; e.WritesRef = strings.Repeat("b", 64); return e }},
+		"confirm_no_ref":       {pending, func() productDeclarationEvent { e := confirm; e.WritesRef = ""; return e }},
+		"same_job_twice":       {pending, func() productDeclarationEvent { e := writes; e.At = at.Add(time.Second); return e }},
+		"writes_with_ref":      {nil, func() productDeclarationEvent { e := writes; e.WritesRef = strings.Repeat("c", 64); return e }},
 		"confirm_no_job":       {pending, func() productDeclarationEvent { e := confirm; e.JobRef = ""; return e }},
 	} {
 		if _, err := applyReset(rec, c.st, c.e()); err == nil {
@@ -446,7 +450,7 @@ func TestProductResetConfirmationBoundToSeenRecord(t *testing.T) {
 	if err := r.recordConfirmationWrites(target.ID, "job-b", confirmationObjects()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.confirmReset("ARTEX", target.ID, true, seen.LastWritesJob); err == nil || err.Error() != "reset_record_changed" {
+	if _, err := r.confirmReset("ARTEX", target.ID, true, seen.LastWritesRef); err == nil || err.Error() != "reset_record_changed" {
 		t.Fatalf("바뀐 기록에 동의를 반영함: %v", err)
 	}
 	if v, _ := r.resetConfirmation("ARTEX", target.ID); !v.ResetRequired || v.LastWritesJob != "job-b" || v.ConfirmedBy != "" {
@@ -457,11 +461,11 @@ func TestProductResetConfirmationBoundToSeenRecord(t *testing.T) {
 	}
 	// 기록이 없을 때의 동의도 반영하지 않는다.
 	r2, _, target2, _ := declarationTestTarget(t)
-	if _, err := r2.confirmReset("ARTEX", target2.ID, true, "job-a"); err == nil || err.Error() != "reset_record_changed" {
+	if _, err := r2.confirmReset("ARTEX", target2.ID, true, strings.Repeat("a", 64)); err == nil || err.Error() != "reset_record_changed" {
 		t.Fatalf("기록 없이 동의: %v", err)
 	}
 	// B를 본 동의는 반영되고, 저널에는 B가 남는다.
-	v, err := r.confirmReset("ARTEX", target.ID, true, "job-b")
+	v, err := r.confirmReset("ARTEX", target.ID, true, writesRef(t, r, target.ID))
 	if err != nil || v.ResetRequired || v.ConfirmedBy != "ARTEX" {
 		t.Fatalf("B 확인: %+v %v", v, err)
 	}
@@ -475,5 +479,47 @@ func TestProductResetConfirmationBoundToSeenRecord(t *testing.T) {
 	defer reopened.Close()
 	if v, _ := reopened.resetConfirmation("ARTEX", target.ID); v.ResetRequired || v.LastWritesJob != "job-b" {
 		t.Fatalf("재생: %+v", v)
+	}
+}
+
+func writesRef(t *testing.T, r *productTargetRegistry, id string) string {
+	t.Helper()
+	v, err := r.resetConfirmation("ARTEX", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v.LastWritesRef
+}
+
+// 같은 회차 ID로 시각·객체가 다른 쓰기 기록이 둘 들어올 수 없다. 첫 기록을 본 동의는 다른 기록을 확인 완료로 바꾸지 않는다(#708 이동찬 리뷰).
+func TestProductResetConsentBoundToWritesRecord(t *testing.T) {
+	r, _, target, _ := declarationTestTarget(t)
+	if err := r.recordConfirmationWrites(target.ID, "job-1", confirmationObjects()); err != nil {
+		t.Fatal(err)
+	}
+	first := writesRef(t, r, target.ID)
+	other := []productConfirmationObject{{Type: "secret", IDDigest: strings.Repeat("e", 64)}}
+	if err := r.recordConfirmationWrites(target.ID, "job-1", other); err == nil {
+		t.Fatal("같은 회차의 두 번째 쓰기 기록을 받음")
+	}
+	if writesRef(t, r, target.ID) != first {
+		t.Fatal("거부한 기록이 상태를 바꿈")
+	}
+	// 다른 회차의 새 기록이 들어오면 첫 기록을 본 동의는 반영되지 않는다.
+	if err := r.recordConfirmationWrites(target.ID, "job-2", other); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.confirmReset("ARTEX", target.ID, true, first); err == nil || err.Error() != "reset_record_changed" {
+		t.Fatalf("다른 기록에 동의 반영: %v", err)
+	}
+	if v, _ := r.resetConfirmation("ARTEX", target.ID); !v.ResetRequired || v.LastWritesRef == first {
+		t.Fatalf("확인 필요가 지워짐: %+v", v)
+	}
+	// 같은 회차라도 시각·객체가 다르면 참조가 다르다.
+	at := time.Date(2026, 11, 18, 0, 0, 0, 0, time.UTC)
+	a, b := confirmationWritesRef("job-1", at, confirmationObjects()), confirmationWritesRef("job-1", at.Add(time.Second), confirmationObjects())
+	c := confirmationWritesRef("job-1", at, other)
+	if a == b || a == c || len(a) != 64 {
+		t.Fatal("쓰기 기록 참조가 시각·객체를 구분하지 않음")
 	}
 }

@@ -261,7 +261,7 @@ func TestProductResetConfirmationHTTP(t *testing.T) {
 	if w := invoke("GET", ""); w.Code != 200 || p.requests[0].Product.Operation != "reset_confirmation" || !strings.Contains(w.Body.String(), `"reset"`) {
 		t.Fatalf("조회: %d %s", w.Code, w.Body.String())
 	}
-	if w := invoke("POST", `{"statement_confirmed":true,"writes_job":"job-1"}`); w.Code != 200 || p.requests[1].Product.Operation != "reset_confirm" || !p.requests[1].Product.Reset.StatementConfirmed || p.requests[1].Product.Reset.WritesJob != "job-1" {
+	if w := invoke("POST", `{"statement_confirmed":true,"writes_ref":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`); w.Code != 200 || p.requests[1].Product.Operation != "reset_confirm" || !p.requests[1].Product.Reset.StatementConfirmed || p.requests[1].Product.Reset.WritesRef != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
 		t.Fatalf("확인: %d %s", w.Code, w.Body.String())
 	}
 	for _, body := range []string{`{}`, `{"statement_confirmed":false}`, `{"statement_confirmed":true,"job":"x"}`, ``} {
@@ -270,14 +270,14 @@ func TestProductResetConfirmationHTTP(t *testing.T) {
 			t.Fatalf("%q: %d %s", body, w.Code, w.Body.String())
 		}
 	}
-	for _, body := range []string{`{"statement_confirmed":true}`, `{"statement_confirmed":true,"writes_job":"../x"}`} {
+	for _, body := range []string{`{"statement_confirmed":true}`, `{"statement_confirmed":true,"writes_ref":"job-1"}`} {
 		before := len(p.requests)
 		if w := invoke("POST", body); w.Code != 400 || len(p.requests) != before || !strings.Contains(w.Body.String(), "invalid_reset_request") {
 			t.Fatalf("%q: %d %s", body, w.Code, w.Body.String())
 		}
 	}
 	p.response = diagnosisprep.ProductResponse{Reason: "reset_record_changed"}
-	if w := invoke("POST", `{"statement_confirmed":true,"writes_job":"job-1"}`); w.Code != 409 || !strings.Contains(w.Body.String(), "reset_record_changed") {
+	if w := invoke("POST", `{"statement_confirmed":true,"writes_ref":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`); w.Code != 409 || !strings.Contains(w.Body.String(), "reset_record_changed") {
 		t.Fatalf("바뀐 기록: %d %s", w.Code, w.Body.String())
 	}
 	if w := invoke("DELETE", ""); w.Code != 405 {
