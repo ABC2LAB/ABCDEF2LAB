@@ -357,8 +357,16 @@ func (r *run) identity(ctx context.Context) (oracle.SubjectContext, ProductReaso
 		if ok {
 			evidence = append(evidence, obs.Ref)
 		}
+		// 신원 요청도 확정 요청이다. 시간 상한으로 끊겼으면 결과 불명의 한 갈래(product_request_timeout)로 남겨 상한 실측
+		// 집계에 들어가게 한다(#727 이동찬 리뷰). 다른 계정이 다른 이유로 실패해도 시간 초과를 우선한다.
+		if ok && obs.Sent && obs.TimedOut {
+			reason = ReasonRequestTimeout
+			continue
+		}
 		if !ok || !obs.Sent || !obs.ResponseComplete || obs.Normal != oracle.StateYes || obs.SubjectDigest == "" {
-			reason = ReasonIdentityUnverified
+			if reason == "" {
+				reason = ReasonIdentityUnverified
+			}
 			continue
 		}
 		digests[acct.role] = obs.SubjectDigest

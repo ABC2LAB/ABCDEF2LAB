@@ -237,3 +237,40 @@ func TestRunInterruptedBeforeCreateLeavesNoWrite(t *testing.T) {
 		t.Fatalf("부르지 않은 생성이 쓰기 기록에 들어감: %+v", res.Writes)
 	}
 }
+
+// 신원 요청 시간 초과도 product_request_timeout이다. 신원을 확인하지 못했으니 모든 종류가 UNDECIDABLE이고 생성·조회는
+// 보내지 않는다. 다른 계정이 다른 이유로 실패해도 시간 초과가 남는다(#727 이동찬 리뷰).
+func TestRunIdentityTimeoutIsRequestTimeout(t *testing.T) {
+	owner, cross := key(e3contract.PurposeIdentity, e3contract.RoleOwner, ""), key(e3contract.PurposeIdentity, e3contract.RoleCross, "")
+	for name, c := range map[string]map[e3fake.Key]e3fake.Behavior{
+		"owner timeout":                  {owner: {TimedOut: true}},
+		"cross timeout":                  {cross: {TimedOut: true}},
+		"owner unverified cross timeout": {owner: {SubjectID: ""}, cross: {TimedOut: true}},
+		"owner timeout cross unverified": {owner: {TimedOut: true}, cross: {SubjectID: ""}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			for k, be := range c {
+				f.fake.Behaviors[k] = be
+			}
+			res := f.run(t)
+			if res.Status != e3contract.StatusCompleted || len(res.Verdicts) != 2 {
+				t.Fatalf("%+v", res)
+			}
+			for _, v := range res.Verdicts {
+				if v.Value != oracle.Undecidable || !hasReason(v, e3contract.ReasonRequestTimeout) {
+					t.Fatalf("%s: %+v", v.ResourceType, v)
+				}
+			}
+			if n := countCalls(f.fake.Calls(), func(k e3fake.Key) bool { return k.Purpose != e3contract.PurposeIdentity }); n != 0 || len(res.Writes) != 0 {
+				t.Fatalf("신원 실패 뒤 생성·조회 %d건, 쓰기 %d", n, len(res.Writes))
+			}
+		})
+	}
+	// 시간 초과가 아닌 신원 실패는 그대로 product_identity_unverified다(양성 대조).
+	f := newFixture(t)
+	f.fake.Behaviors[cross] = e3fake.Behavior{SubjectID: ""}
+	if v := verdictOf(t, f.run(t), "note"); v.Value != oracle.Undecidable || !hasReason(v, e3contract.ReasonIdentityUnverified) {
+		t.Fatalf("note: %+v", v)
+	}
+}

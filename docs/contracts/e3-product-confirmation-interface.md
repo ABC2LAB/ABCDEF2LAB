@@ -143,7 +143,7 @@
 - 몫은 E² 실행 정책 `limits.e3_confirmation_requests`·`limits.e3_confirmation_timeout_ms`에 명시한다(0 포함, 둘이 같이). 칸이 있으면 0도 정책 내용 지문에 들어가 "칸 없음"과 구분된다. 러너는 이 두 칸으로 꺼진 회차의 몫이 0인지 확인한다.
 - 몫 계산(사용자 결정 2026-11-18 ②): 요청 몫 = 신원 2 + 종류×3, 시간 몫 = 요청 몫 × 확정 요청 전용 시간 상한. 요청·시간 모두 실행 상한의 1/4 안에 드는 만큼만 종류를 받는다(`Input.AdmittedTypes`). 넘치는 종류는 요청을 보내지 않고 UNDECIDABLE(`product_confirmation_budget_exhausted`)이다. 하나도 들지 않으면 몫은 0이고 표식·신원 요청도 보내지 않는다.
 - 확정 요청 전용 시간 상한(`Input.RequestTimeout`, 요청마다 `Timeout`)은 E² 요청 시간 상한과 따로다. 기본 10초이고, VAmPI 파일럿에서 확정 요청의 실제 시간을 잰 뒤 정한다. 상한이 없거나 몫이 음수면 `confirmation_share_unavailable`로 꺼진다.
-- 확정 요청이 이 상한으로 끊기면 결과 불명이다(`TimedOut`). 다시 보내지 않고 판정은 UNDECIDABLE(`product_request_timeout`)이다.
+- 확정 요청(신원·생성·조회)이 이 상한으로 끊기면 결과 불명이다(`TimedOut`). 다시 보내지 않고 판정은 UNDECIDABLE(`product_request_timeout`)이다. 신원 요청이 끊기면 그 대상의 모든 종류가 이 사유이고 생성·조회는 보내지 않는다(다른 계정이 다른 이유로 실패해도 시간 초과를 남긴다).
 - 시험: "disabled → 예약 0"(실행 정책 칸·지문), 상한 전달, 시간 초과, 몫 밖 종류, 몫 0.
 
 ### 7.2 쓰기 기록
