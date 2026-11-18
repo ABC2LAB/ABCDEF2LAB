@@ -91,14 +91,13 @@ def _load(path: Path = GT_FILE) -> tuple[Challenge, ...]:
 
 # 전체 등록 챌린지(평가에서 참조하는 것만). challenges.yml 전체 102개 중 발췌.
 # 정답 목록은 처음 쓰일 때 읽는다(#712 리뷰). 시험은 그 전에 합성 목록으로 바꿔 실제 정답 경로를 열지 않는다.
-_active_path: Path = GT_FILE
 _cache: tuple[Challenge, ...] | None = None
 
 
 def _challenges() -> tuple[Challenge, ...]:
     global _cache
     if _cache is None:
-        _cache = _load(_active_path)
+        _cache = _load(GT_FILE)
     return _cache
 
 
@@ -113,8 +112,8 @@ def use_ground_truth_file(path: Path) -> None:
     """시험 전용: 정답 목록을 다른 파일(합성 목록)로 바꾼다(2026-11-18, 정답표 노출 방지). 시험은 실제 정답 대신 같은 묶음·축
     구성의 합성 목록으로 돌고, 실제 정답이 꼭 필요한 시험만 evaluation-gt/ 아래에서 실제 목록으로 돈다. 함수들은 호출 때 이
     전역을 읽으므로 바꾼 뒤의 호출부터 적용된다."""
-    global _active_path, _cache
-    _active_path, _cache = Path(path), _load(Path(path))
+    global _cache
+    _cache = _load(Path(path))
 
 
 def core_gt() -> tuple[Challenge, ...]:
