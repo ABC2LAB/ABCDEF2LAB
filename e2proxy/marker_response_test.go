@@ -106,7 +106,7 @@ func TestRegisterProgramMarkerOnlyChangesMarkerOutput(t *testing.T) {
 	}
 }
 
-func TestProgramMarkerOutputRedactsEmbeddedBase64(t *testing.T) {
+func TestProgramMarkerRejectsEmbeddedBase64(t *testing.T) {
 	execution := &Execution{}
 	if err := execution.RegisterProgramMarker([]byte(fixtureMarker)); err != nil {
 		t.Fatal(err)
@@ -121,6 +121,9 @@ func TestProgramMarkerOutputRedactsEmbeddedBase64(t *testing.T) {
 				value := append(bytes.Repeat([]byte{0xff}, offset), fixtureMarker...)
 				value = append(value, 0xfe, 'z')
 				input := []byte(fmt.Sprintf("{\"blob\":%q}", codec.EncodeToString(value)))
+				if present, method, supported := inspectProgramMarker(input, []byte(fixtureMarker)); present || method != "" || supported {
+					t.Fatal("지원 밖 Base64 표현에서 표식 여부를 판정함")
+				}
 				if out := execution.RedactOutput(input); !bytes.Equal(out, []byte("[REDACTED]")) {
 					t.Fatal("공유 출력의 Base64 보호 값을 가리지 못함")
 				}
@@ -128,12 +131,15 @@ func TestProgramMarkerOutputRedactsEmbeddedBase64(t *testing.T) {
 		}
 	}
 	public := []byte(fmt.Sprintf("{\"blob\":%q}", base64.StdEncoding.EncodeToString([]byte("public data"))))
+	if present, method, supported := inspectProgramMarker(public, []byte(fixtureMarker)); present || method != "" || !supported {
+		t.Fatal("보호 표식이 없는 공개 응답의 지원 여부가 바뀜")
+	}
 	if out := execution.RedactOutput(public); !bytes.Equal(out, public) {
 		t.Fatal("표식이 없는 Base64 출력이 변경됨")
 	}
 }
 
-func TestProgramMarkerOutputRedactsUnterminatedNumericEntities(t *testing.T) {
+func TestProgramMarkerRejectsUnterminatedNumericEntities(t *testing.T) {
 	execution := &Execution{}
 	if err := execution.RegisterProgramMarker([]byte(fixtureMarker)); err != nil {
 		t.Fatal(err)
@@ -144,10 +150,21 @@ func TestProgramMarkerOutputRedactsUnterminatedNumericEntities(t *testing.T) {
 			for _, b := range []byte(fixtureMarker) {
 				fmt.Fprintf(&encoded, ref, b)
 			}
-			if out := execution.RedactOutput([]byte(encoded.String())); !bytes.Equal(out, []byte("[REDACTED]")) {
+			input := []byte(encoded.String())
+			if present, method, supported := inspectProgramMarker(input, []byte(fixtureMarker)); present || method != "" || supported {
+				t.Fatal("해석되지 않은 숫자 참조에서 표식 여부를 판정함")
+			}
+			if out := execution.RedactOutput(input); !bytes.Equal(out, []byte("[REDACTED]")) {
 				t.Fatal("해석되지 않은 숫자 참조를 공유 출력으로 전달함")
 			}
 		})
+	}
+}
+
+func TestProgramMarkerRejectsAmbiguousInputBeforeMatching(t *testing.T) {
+	input := []byte("&#65 " + fixtureMarker)
+	if present, method, supported := inspectProgramMarker(input, []byte(fixtureMarker)); present || method != "" || supported {
+		t.Fatal("응답 형식이 불확실한데 평문 일부로 표식 여부를 판정함")
 	}
 }
 

@@ -112,14 +112,6 @@ func decodeMarkerView(input []byte) ([]byte, []markerSource, bool) {
 	return out, sources, true
 }
 
-func markerSpans(input, marker []byte) ([]markerSpan, bool) {
-	decoded, sources, ok := decodeMarkerView(input)
-	if !ok {
-		return nil, false
-	}
-	return markerSpansInView(decoded, sources, marker), true
-}
-
 func markerSpansInView(decoded []byte, sources []markerSource, marker []byte) []markerSpan {
 	spans := []markerSpan{}
 	// 표식은 ASCII만 사용한다. Unicode fold는 바이트 길이를 바꿀 수 있어 원문 위치표를 깨뜨린다.
@@ -163,15 +155,14 @@ func markerSpansInView(decoded []byte, sources []markerSource, marker []byte) []
 
 // unsupportedMarkerForm은 표식의 지원 밖 표현을 아는 범위에서 감지한다.
 // 이중 인코딩과 base64가 보이면 일치 없음으로 판정하지 않는다.
-func unsupportedMarkerForm(input, marker []byte) bool {
+func unsupportedMarkerForm(input, once, marker []byte) bool {
 	for _, codec := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
 		if bytes.Contains(input, []byte(codec.EncodeToString(marker))) {
 			return true
 		}
 	}
-	once, _, ok := decodeMarkerView(input)
-	if !ok || bytes.Equal(once, input) {
-		return !ok
+	if bytes.Equal(once, input) {
+		return false
 	}
 	twice, _, ok := decodeMarkerView(once)
 	if !ok || bytes.Equal(once, twice) {
@@ -188,20 +179,18 @@ func unsupportedMarkerForm(input, marker []byte) bool {
 // inspectProgramMarker는 구조화 응답 검사에서 사용할 동일 정규화 경계다.
 // 호출자는 응답 완전성·content-type·압축 여부를 먼저 확인해야 한다.
 func inspectProgramMarker(input, marker []byte) (bool, string, bool) {
-	if len(marker) != markerBytes || unsupportedMarkerForm(input, marker) {
-		return false, "", false
-	}
-	spans, ok := markerSpans(input, marker)
+	decoded, sources, ok := supportedMarkerView(input, marker)
 	if !ok {
 		return false, "", false
 	}
+	spans := markerSpansInView(decoded, sources, marker)
 	if len(spans) == 0 {
 		return false, "", true
 	}
 	return true, spans[0].method, true
 }
 
-// containsEmbeddedBase64Marker checks the output at every possible byte alignment.
+// containsEmbeddedBase64Marker checks every possible byte alignment.
 // Full groups of three marker bytes encode independently of adjacent bytes and padding.
 // For the marker's alphanumeric alphabet, standard and URL-safe groups are identical.
 func containsEmbeddedBase64Marker(input, decoded, marker []byte) bool {
@@ -217,11 +206,22 @@ func containsEmbeddedBase64Marker(input, decoded, marker []byte) bool {
 	return false
 }
 
-func redactMarker(input, marker []byte) []byte {
+// supportedMarkerView establishes a shared rejection boundary before matching.
+func supportedMarkerView(input, marker []byte) ([]byte, []markerSource, bool) {
+	if len(marker) != markerBytes {
+		return nil, nil, false
+	}
 	decoded, sources, ok := decodeMarkerView(input)
-	// Unresolved numeric entities have browser interpretations we do not expose in shared output.
-	if !ok || len(marker) != markerBytes || bytes.Contains(decoded, []byte("&#")) ||
-		containsEmbeddedBase64Marker(input, decoded, marker) || unsupportedMarkerForm(input, marker) {
+	if !ok || bytes.Contains(decoded, []byte("&#")) ||
+		containsEmbeddedBase64Marker(input, decoded, marker) || unsupportedMarkerForm(input, decoded, marker) {
+		return nil, nil, false
+	}
+	return decoded, sources, true
+}
+
+func redactMarker(input, marker []byte) []byte {
+	decoded, sources, ok := supportedMarkerView(input, marker)
+	if !ok {
 		return []byte("[REDACTED]")
 	}
 	spans := markerSpansInView(decoded, sources, marker)
