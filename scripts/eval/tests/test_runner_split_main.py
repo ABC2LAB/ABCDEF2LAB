@@ -77,7 +77,8 @@ class TestDeclared(Fixture):
         self.assertEqual(declared, SplitDeclared(target_image=Image(ours["target_image"], self.config.target_image_id),
                                                  meter_port=8080, request_budget=ours["request_budget"],
                                                  time_budget_seconds=ours["time_budget_seconds"], llm_provider="example-provider",
-                                                 llm_sampling=json.loads(gateway_sampling(ours, "ours"))))
+                                                 llm_sampling=json.loads(gateway_sampling(ours, "ours")),
+                                                 meter_source_sha=ours["source_sha"]))
 
     def test_lookup_env_and_sampling_match_the_b_gateway(self):
         # O 사후 검증의 조회 설정·샘플링 기대값은 같은 선언으로 만든 B 게이트웨이 compose 값과 같아야 한다.
@@ -136,6 +137,7 @@ class TestSpec(Fixture):
         self.assertEqual(spec.image_ids, {role: image.id for role, image in plan.images.items()})
         self.assertEqual((spec.llm_sampling, spec.llm_provider_slug, spec.llm_provider_name),
                          (declared.llm_sampling, "example-provider", self.config.llm_gateway["expected_provider_name"]))
+        self.assertEqual(spec.meter_source_sha, configuration()["ours"]["source_sha"])  # 계측기 기대 빌드
 
 
 class TestMainDispatch(Fixture):
@@ -238,11 +240,33 @@ class TestBeforeUp(Fixture):
         self.assertEqual(seen["ports"].llm_env, llm_lookup_env(self.config, preflight_for(self.config)))
         self.assertEqual(seen["ports"].model_key.reveal(), "sk-or-v1-test")
         self.assertEqual(seen["path_key"], self.path_key.read_bytes())  # 경계 키 = B 계측기 키
+        # 계측기 기록 대조·서명 조건에 쓰는 키 지문(값이 아님)은 경계에 준 바로 그 바이트에서 뜬다(#699 리뷰)
+        from path_mask import key_ref
+        self.assertEqual(seen["spec"].path_key_ref, key_ref(seen["path_key"]))
+        self.assertRegex(seen["spec"].path_key_ref, r"^[0-9a-f]{16}$")
         self.assertIsInstance(seen["meter"], MeterFiles)
         self.assertEqual(seen["spec"].healthchecks, healthcheck_actions(rendered))
         run_dir = next(self.runs.iterdir())
         self.assertEqual(seen["meter"].path, run_dir / "meter")
         self.assertTrue(run_dir.name.startswith("ours-"))
+
+    def test_key_fingerprint_follows_the_copied_bytes_not_a_second_read(self):
+        # #699 리뷰: 경계에 준 키와 지문을 따로 읽으면, 사이에 키 파일이 바뀌어도 성공했다.
+        from path_mask import key_ref
+        seen = {}
+
+        def execute(spec, ports, meter, evidence, clock):
+            seen.update(ref=spec.path_key_ref, key=(Path(ports.inputs.directory) / "path.key").read_bytes())
+            return {"run_id": spec.run_id, "status": "complete"}
+        swapped = bytes(reversed(range(32)))
+        rendered = {"services": {"api": {"healthcheck": {"test": ["CMD-SHELL", "true"]}}}}
+        with mock.patch.object(runner_split_main, "acceptance_path_key", return_value=swapped), \
+                mock.patch.object(runner_split_main.Docker, "compose_config", lambda self, args: copy.deepcopy(rendered)), \
+                mock.patch.object(runner_split_main.Docker, "env_file_value", lambda docker, path, name, scratch: "sk-or-v1-test"):
+            code, _ = self.run_ours(execute_split_run=execute)
+        self.assertEqual(code, 0)
+        self.assertEqual((seen["key"], seen["ref"]), (swapped, key_ref(swapped)))
+        self.assertNotEqual(seen["ref"], key_ref(self.path_key.read_bytes()))
 
     def test_invalid_run_exits_one(self):
         with mock.patch.object(runner_split_main.Docker, "compose_config", lambda self, args: {"services": {}}), \

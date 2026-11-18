@@ -15,7 +15,6 @@ import (
 
 	"github.com/Autumn-27/artex/e3record"
 	"github.com/Autumn-27/artex/oracle"
-	"github.com/golang-jwt/jwt/v5"
 )
 
 type accessMapSignals struct {
@@ -95,7 +94,7 @@ type accessMapStoredRecord struct {
 type accessMapManifest e3record.Manifest
 
 func accessMapRequestTask(r *http.Request) (int64, bool) {
-	if r.Method != http.MethodGet || r.URL.RawQuery != "" || r.URL.ForceQuery {
+	if r.Method != http.MethodGet || r.URL.RawQuery != "" || r.URL.ForceQuery || r.URL.RawPath != "" {
 		return 0, false
 	}
 	tail, ok := strings.CutPrefix(r.URL.Path, "/api/tasks/")
@@ -129,20 +128,7 @@ func (s *Server) accessMap(w http.ResponseWriter, r *http.Request) {
 func (s *Server) serveAccessMap(w http.ResponseWriter, r *http.Request, boundTask int64) {
 	w.Header().Set("Cache-Control", "no-store")
 	// 보고서 전용 서버와 직접 핸들러 호출에도 동일한 Bearer 인증을 적용한다.
-	header := r.Header.Get("Authorization")
-	if !strings.HasPrefix(header, "Bearer ") || len(header) <= len("Bearer ") {
-		writeErr(w, http.StatusUnauthorized, authErrUnauthorized)
-		return
-	}
-	hash, err := s.reloadPassHash()
-	if err != nil {
-		writeErr(w, http.StatusServiceUnavailable, authErrDataSourceUnavailable)
-		return
-	}
-	claims := &jwt.RegisteredClaims{}
-	token, err := jwt.ParseWithClaims(strings.TrimPrefix(header, "Bearer "), claims, func(*jwt.Token) (any, error) { return s.signingKey(hash), nil }, jwt.WithValidMethods([]string{"HS256"}), jwt.WithExpirationRequired())
-	if err != nil || !token.Valid || claims.Subject != "ARTEX" {
-		writeErr(w, http.StatusUnauthorized, authErrTokenInvalid)
+	if !s.authenticateReportRead(w, r) {
 		return
 	}
 	task, ok := accessMapRequestTask(r)
@@ -156,7 +142,12 @@ func (s *Server) serveAccessMap(w http.ResponseWriter, r *http.Request, boundTas
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), accessMapTimeout)
 	defer cancel()
-	result, err := readAccessMap(ctx, s.m.pg.DB, task)
+	expected, ok := reportExpectedScope(r)
+	if !ok {
+		writeErr(w, 400, "지도 조회 결속이 올바르지 않습니다")
+		return
+	}
+	result, err := readAccessMapBound(ctx, s.m.pg.DB, task, expected)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		writeErr(w, http.StatusNotFound, "작업을 찾을 수 없습니다")
@@ -165,17 +156,31 @@ func (s *Server) serveAccessMap(w http.ResponseWriter, r *http.Request, boundTas
 	case err != nil:
 		writeErr(w, http.StatusServiceUnavailable, "저장된 접근통제 지도를 확인할 수 없습니다")
 	default:
+		if expected != "" {
+			w.Header().Set(reportReadScopeHeader, expected)
+		}
 		writeJSON(w, http.StatusOK, result)
 	}
 }
 
 func readAccessMap(ctx context.Context, pool *sql.DB, task int64) (accessMapResponse, error) {
+	return readAccessMapBound(ctx, pool, task, "")
+}
+
+func readAccessMapBound(ctx context.Context, pool *sql.DB, task int64, expected string) (accessMapResponse, error) {
 	var out accessMapResponse
 	tx, err := pool.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
 	if err != nil {
 		return out, errAccessMapUnavailable
 	}
 	defer tx.Rollback()
+	binding, err := readReportBinding(ctx, tx, task, false)
+	if err != nil {
+		return out, err
+	}
+	if expected != "" && reportReadDigest(binding) != expected {
+		return out, errAccessMapScope
+	}
 	var exploration int64
 	if err := tx.QueryRowContext(ctx, `SELECT exploration_id FROM tasks WHERE id=$1 AND deleted_at IS NULL`, task).Scan(&exploration); err != nil {
 		return out, err
@@ -216,6 +221,12 @@ func readAccessMap(ctx context.Context, pool *sql.DB, task int64) (accessMapResp
 	out = projectAccessMap(b, records)
 	if err := tx.Commit(); err != nil {
 		return accessMapResponse{}, errAccessMapUnavailable
+	}
+	if err := reportBindingUnchanged(ctx, pool, task, false, binding); err != nil {
+		if errors.Is(err, errReportReadScope) {
+			return accessMapResponse{}, errAccessMapScope
+		}
+		return accessMapResponse{}, err
 	}
 	return out, nil
 }

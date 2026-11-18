@@ -57,10 +57,10 @@ Hobby에는 조직 소유 Git 저장소 연결 제한도 있으므로, 현재 �
 
 1. `scripts/ci/web-changed.py`는 PR base와 체크아웃된 merge commit, 또는
    push의 before/after 전체 범위를 비교한다. 마지막 한 커밋만 보지 않는다.
-2. `web/**`, Web 검증 workflow/분류기, 루트 패키지·배포·런타임 설정이 바뀌면
+2. `web/**`, 서버·웹 공유 응답 예시(`docs/contracts/**/*.json`), Web 검증 workflow/분류기, 루트 패키지·배포·런타임 설정이 바뀌면
    Node 26에서 `npm ci`, Vitest, 기존 Node `.test.mjs` 시험,
    `NEXT_PUBLIC_MOCK=1 npm run build`를 수행한다.
-3. 백엔드·문서·평가 시험만 바뀌면 같은 job의 명시적 생략 단계로 성공 마감한다.
+3. 공유 JSON 예시를 제외한 백엔드·문서·평가 시험만 바뀌면 같은 job의 명시적 생략 단계로 성공 마감한다.
    Go·평가 시험은 계속 실행한다.
 4. SHA/이력이 없거나 diff를 계산하지 못하면 Web 검증을 수행한다.
    삭제·이동·여러 커밋·개행 파일명도 감지한다.

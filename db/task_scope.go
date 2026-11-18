@@ -1,7 +1,9 @@
 package db
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -421,11 +423,26 @@ func hostPortOf(n *CoverageGraphNode) (string, int) {
 // with current-or-source fact anchors reflected in Tested. The legacy expID
 // argument is retained for API compatibility; the task registry is authoritative.
 func (s *AssetStore) BuildCoverageGraph(taskID, _ int64) (*CoverageGraphData, error) {
+	return buildCoverageGraph(context.Background(), s.db, taskID, false)
+}
+
+// BuildCoverageGraphTx는 제품 보고서가 확인한 동일 읽기 snapshot에서 기존 그래프를 만든다.
+// 범위 밖 연결용 루트는 이름만 있는 가상 노드이며 다른 작업의 전역 자산 행을 조회하지 않는다.
+func (s *AssetStore) BuildCoverageGraphTx(ctx context.Context, tx *sql.Tx, taskID int64) (*CoverageGraphData, error) {
+	return buildCoverageGraph(ctx, tx, taskID, true)
+}
+
+type coverageGraphQuery interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func buildCoverageGraph(ctx context.Context, q coverageGraphQuery, taskID int64, public bool) (*CoverageGraphData, error) {
 	g := &CoverageGraphData{Nodes: []CoverageGraphNode{}, Edges: []CoverageGraphEdge{}}
 	if taskID <= 0 {
 		return g, nil
 	}
-	rows, err := s.db.Query(`WITH `+contextCoverageCTE+`
+	rows, err := q.QueryContext(ctx, `WITH `+contextCoverageCTE+`
 SELECT a.id, a.type, COALESCE(a.company_id,0),
        COALESCE(a.domain,''), COALESCE(a.root_domain,''), COALESCE(a.ip,''),
        COALESCE(a.url,''), COALESCE(a.port,0), COALESCE(a.service_type,''),
@@ -497,6 +514,8 @@ ORDER BY a.id`, taskID)
 		return nil, err
 	}
 
+	rows.Close()
+
 	// Connector root domains: any subdomain whose root domain is not itself an
 	// in-scope node. Pull the real asset row if one exists (so the drawer shows
 	// real detail), else synthesize a bare "r:<domain>" placeholder. Both gray.
@@ -510,8 +529,14 @@ ORDER BY a.id`, taskID)
 	}
 	for root := range missingRoots {
 		var id, companyID int64
-		err := s.db.QueryRow(`SELECT id, COALESCE(company_id,0) FROM assets
+		err := sql.ErrNoRows
+		if !public {
+			err = q.QueryRowContext(ctx, `SELECT id, COALESCE(company_id,0) FROM assets
 WHERE type='root_domain' AND domain=$1 LIMIT 1`, root).Scan(&id, &companyID)
+		}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
 		var node CoverageGraphNode
 		if err == nil && id > 0 {
 			node = CoverageGraphNode{Key: assetKey(id), Kind: "root_domain", AssetID: id,
@@ -533,8 +558,11 @@ WHERE type='root_domain' AND domain=$1 LIMIT 1`, root).Scan(&id, &companyID)
 			continue
 		}
 		var name string
-		if err := s.db.QueryRow(`SELECT name FROM companies WHERE id=$1`, id).Scan(&name); err != nil {
-			continue
+		if err := q.QueryRowContext(ctx, `SELECT name FROM companies WHERE id=$1`, id).Scan(&name); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			return nil, err
 		}
 		add(CoverageGraphNode{Key: key, Kind: "company", CompanyID: id,
 			Label: name, AssetID: 0})

@@ -17,6 +17,7 @@
 ## 2. 결과를 보기 전에 고정하는 것
 
 - 프로토콜 §5.1·§6, [공식 프로파일](profiles/official-35b.json)과 근거 파일, 이 문서, [러너 설정 예시](runner.example.json)를 시범 회차 전에 dev에 머지한다.
+  - **주의(2026-11-18)**: 이 문서의 공식 프로파일·[공식 정책 템플릿](profiles/official-e2-policy.json)(메서드 7개)과 그 고정·사용 단계(이 절, 4절 7번)는 e2-legacy 배치의 시범·이력용이다. 공식 측정은 탐색 분리 배치로 돌고 개선 후 승인 메서드는 5개다(프로토콜 §5.1). 분리 배치용으로 승인된 프로파일과 절차가 이 문서에 들어올 때까지 공식 회차는 보류한다. 분리 배치 공식 회차는 B·O 모두 계측기 경로 기록을 켜고 같은 경로 가림 키 파일을 쓴다(2026-11-18 결정 (a), [러너](runner.md) `path_key_file`). 키는 제어 비밀이라 레포·결과물에 두지 않고, 6회 전체가 같은 키를 쓰며, 측정 조건 동결 목록에는 키 지문(`path_key_ref`)을 적는다.
 - **작업 문구도 비교 조건이다.** 러너는 `runner.json`의 `task`를 엔진 작업 생성 요청으로 보내고 그 본문 해시를 서명된 결과에 남긴다.
   공식 작업은 예시 설정의 `task` 그대로이며 요청 해시는 아래와 같다(시험이 예시와 이 값을 묶는다). 6절 집계 도구는 회차들의 해시가 하나가 아니면 멈춘다.
 
@@ -24,6 +25,7 @@
   official_task_request_sha256 = 0e968b84bb712bd64ceabbc8583932c1e52dca87ee10a8d8e616d4d68abc3b8b
   ```
 
+- 2026-11-17에 확정한 회차 규칙(먼저 걸릴 상한 = 러너 요청 예산, 끝 신호는 기록만, N=3, 무효 두 규칙, 개선 후 승인 메서드 5개, 경로 틀 커버리지, 차이 보고 규칙)은 프로토콜 §5.1에 있다. 같은 절의 **[파일럿 뒤 확정]** 값(멈춤 무효 T·무효 비율 상한·경계 원자료 바이트 상한·`O-nomcp` 실행 여부·예산 조정값·개선 후 모델 예산)은 파일럿 기록을 보고 §5.1에 적은 뒤 태그 전에 고정한다. 하나라도 비어 있으면 공식 세션을 시작하지 않는다.
 - 시범 뒤에는 예산(`time_budget_seconds`·`request_budget`)만 **한 번** 바꿀 수 있다(§5.1). 바꾼 커밋에 근거를 쓰고, 그 커밋에 태그를 붙인다
   (공식 세션은 `eval-official-v1`, 그 전의 개발 측정 세션은 `eval-api-<YYYYMMDD>`). 세션의 개선 후 엔진·계측기 이미지와 **평가 도구·
   프로파일·compose·설정 예시 전부**를 그 태그 커밋의 작업 트리에서 쓴다(3절 0번). 태그 뒤에는 규칙·프로파일·작업 문구를 바꾸지 않는다.
@@ -84,7 +86,8 @@
      (cd "$W/$1" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o dist/amd64/artex ./cmd/artex)
      docker build -q -t "abc2lab-eval-engine:$1-${2:0:12}" "$W/$1"
    done
-   ctx=$(mktemp -d); (cd "$W/ours" && CGO_ENABLED=0 GOOS=linux go build -trimpath -o "$ctx/eval-meter" ./cmd/eval-meter)
+   # 빌드 커밋을 계측기에 넣는다. 러너가 회차 전에 `-role describe`로 선언의 개선 후 커밋과 대조한다(다르면 시작 안 함).
+   ctx=$(mktemp -d); (cd "$W/ours" && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-X main.sourceRevision=$OURS" -o "$ctx/eval-meter" ./cmd/eval-meter)
    docker build -q -f "$W/ours/deploy/eval/meter.Dockerfile" -t "abc2lab-eval-meter:${OURS:0:12}" "$ctx"
    docker pull -q bkimminich/juice-shop:v15.0.0@sha256:fe8cecfec60f7856a02b52072c879b1baf73f5a97faafdeb12ed9e8eaccc0c3d
    docker pull -q postgres:16-alpine
@@ -122,7 +125,7 @@
 5. **러너 서명 키:** 엔진 감사 키와 **별도로** `cd "$T" && go run ./cmd/e2-audit-keygen --key-file /srv/abc2lab-eval-keys/runner.key`(0600, runs_root 밖). 세션 사이에 유지한다.
 6. **분류 매핑:** 평가자가 검토한 매핑 JSON 하나를 양쪽이 같이 쓴다(`findings.vocabulary_path`). 원본 SHA-256이 회차 기록에 남는다.
 
-7. **제품 E②(개선 후 회차):** 정책은 [공식 정책 템플릿](profiles/official-e2-policy.json)을 그대로 쓴다. 범위는 공식 프로파일의 scope를 옮긴 것이고(프로토콜 §2), 한도는 러너 예산보다 먼저 걸리지 않게 잡았다. 파일을 고치면 아래 값과 달라져 시험과 러너가 멈춘다.
+7. **제품 E②(개선 후 회차, e2-legacy 배치의 시범·이력용 — 2절 주의):** 정책은 [공식 정책 템플릿](profiles/official-e2-policy.json)을 그대로 쓴다. 범위는 공식 프로파일의 scope를 옮긴 것이고(프로토콜 §2), 한도는 러너 예산보다 먼저 걸리지 않게 잡았다. 파일을 고치면 아래 값과 달라져 시험과 러너가 멈춘다.
 
    ```
    official_e2_policy_sha256 = 285ab34ccccdc966200f3c1afcf557c73612bf34be7dc0148efdad100a8e4fd5
@@ -172,7 +175,7 @@ cd "$T" && python3 -I -B scripts/eval/runner.py --config /srv/abc2lab-eval/runne
 **시범(채점 안 함):** baseline 1회 → 개선 후 1회(`--repeat 0`). 러너 요약의 종료 사유·전달 건수·초과분·소요 시간과 비용만 보고 예산을 정한다(§5.1).
 시범 결과로 점수를 보지 않는다.
 
-**측정 세션(공식·개발 측정 공통):** 조건당 유효 N=3(§5.1에서 N=5로 올리기로 했으면 5). 순서는 짝마다 먼저 도는 쪽을 바꾼다.
+**측정 세션(공식·개발 측정 공통):** 조건당 유효 N=3(§5.1, 2026-11-17 확정). 순서는 짝마다 먼저 도는 쪽을 바꾼다. `O-nomcp`를 돌리기로 정하면 세 칸 묶음 교대로 바꾼다(§5.1).
 
 | 순서 | 1 | 2 | 3 | 4 | 5 | 6 |
 |---|---|---|---|---|---|---|
@@ -180,7 +183,7 @@ cd "$T" && python3 -I -B scripts/eval/runner.py --config /srv/abc2lab-eval/runne
 | `--repeat` | 0 | 0 | 1 | 1 | 2 | 2 |
 
 **무효가 나오면:** 결과 디렉터리를 지우지 않는다. 같은 칸을 같은 `--repeat`로 다시 돌린 뒤 다음 칸으로 간다(교대 순서 유지).
-한 쪽 시도가 2N(=6)을 넘으면 더 돌리지 않고 원인부터 고친다. 그 조건은 미완으로 보고한다.
+한 쪽 시도가 2N(=6)에 닿았는데 유효 회차가 N개 미만이면 7번째를 시작하지 않고 원인부터 고친다. 그 조건은 미완으로 보고한다. 이와 별도로 쪽별 `provider_fault_stall` 무효 비율이 §5.1의 상한을 넘으면 측정 전체를 실패로 한다.
 
 | 무효 사유(예) | 먼저 볼 것 |
 |---|---|

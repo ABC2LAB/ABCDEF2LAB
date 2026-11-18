@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from path_mask import key_ref, mask_path  # noqa: E402
 from preservation import (  # noqa: E402
     EXCLUSIONS_FORMAT, PATH_PROFILE, SUMMARY_FORMAT, AuthHeaders, Exclusions, PreservationError, Round, is_static,
-    load_exclusions, load_round, main, summarize,
+    load_exclusions, load_round, main, summarize, _spread_claim,
 )
 
 KEY = bytes(range(32))
@@ -359,6 +359,94 @@ class SummarizeTests(unittest.TestCase):
     def test_baseline_reference_counts_empty_denominators(self):
         got = summarize([rnd(), rnd(("GET", "/a"))], [rnd(), rnd()], NONE, False)["baseline_reference"]
         self.assertEqual((got["pair_ratios"], got["pairs_without_denominator"], got["pair_sd"]), ([0.0], 1, None))
+
+    def test_coverage_uses_the_union_of_both_sides(self):
+        # §7: 분모는 같은 묶음 원본·개선 후 회차가 실제로 닿은 경로 틀의 합집합이다. 분모 크기를 같이 싣는다.
+        a, b, c = ("GET", "/a"), ("GET", "/b"), ("GET", "/c")
+        got = summarize([rnd(a, b), rnd(a)], [rnd(a, c), rnd(c)], NONE, False)["coverage"]
+        self.assertEqual(got["denominator"], 3)
+        self.assertEqual(got["baseline"], {"union": 2 / 3, "rounds": [2 / 3, 1 / 3]})
+        self.assertEqual(got["improved"], {"union": 2 / 3, "rounds": [2 / 3, 1 / 3]})
+        self.assertEqual((got["baseline_only"], got["improved_only"]), (1, 1))
+
+    def test_coverage_follows_domain_and_exclusions(self):
+        get, post, other = ("GET", "/a"), ("POST", "/b"), ("GET", "/c")
+        baseline, improved = [rnd(get, post)], [rnd(get, other)]
+        self.assertEqual(summarize(baseline, improved, NONE, False)["coverage"]["denominator"], 3)
+        self.assertEqual(summarize(baseline, improved, NONE, True)["coverage"]["denominator"], 2)
+        rule = Exclusions(frozenset({"POST"}), ())
+        got = summarize(baseline, improved, rule, False)["coverage"]
+        self.assertEqual((got["denominator"], got["baseline"]["union"], got["improved"]["union"]), (2, 1 / 2, 1.0))
+
+    def test_coverage_counts_head_as_get(self):
+        # §7: 경로 틀 커버리지는 HEAD를 GET으로 센다. 보존율은 메서드를 그대로 둔다(같은 경로라도 다른 패턴).
+        got = summarize([rnd(("GET", "/same"))], [rnd(("HEAD", "/same"))], NONE, False)
+        self.assertEqual(got["coverage"], {"denominator": 1, "baseline": {"union": 1.0, "rounds": [1.0]},
+                                           "improved": {"union": 1.0, "rounds": [1.0]}, "baseline_only": 0, "improved_only": 0})
+        self.assertEqual(got["union_ratio"], 0.0)
+
+    def test_preservation_claim_keeps_methods_like_the_ratio(self):
+        # 보존율 차이 표시는 보존율과 같은 패턴(메서드 그대로)을 쓴다. HEAD 합치기는 커버리지에만 쓴다.
+        get, head = ("GET", "/a"), ("HEAD", "/a")
+        got = summarize([rnd(get), rnd(get)], [rnd(head), rnd(head)], NONE, False)
+        self.assertEqual(got["pair_mean"], 0.0)
+        self.assertEqual(got["difference_claims"]["preservation"],
+                         {"claim": "below_baseline_spread", "value": 0.0, "baseline_low": 1.0, "baseline_high": 1.0})
+
+    def test_equal_ratios_are_inside_the_spread_exactly(self):
+        # N=3에서 같은 비율 세 개의 실수 평균은 0.10000000000000002처럼 경계를 넘는다. 정확한 분수로 비교한다.
+        shared = ("GET", "/s")
+        baseline = [rnd(shared, *(("GET", f"/{side}{i}") for i in range(9))) for side in "abc"]
+        got = summarize(baseline, [rnd(shared), rnd(shared), rnd(shared)], NONE, False)["difference_claims"]["preservation"]
+        self.assertEqual((got["claim"], got["baseline_low"], got["baseline_high"]), ("within_baseline_spread", 0.1, 0.1))
+        # 커버리지 0.2 경계: 분모 5에서 원본·개선 후 회차가 모두 한 틀씩 덮는다.
+        t = [("GET", f"/t{i}") for i in range(5)]
+        got = summarize([rnd(t[0]), rnd(t[1]), rnd(t[2])], [rnd(t[3]), rnd(t[4]), rnd(t[0])], NONE, False)
+        self.assertEqual(got["coverage"]["denominator"], 5)
+        claim = got["difference_claims"]["coverage"]
+        self.assertEqual((claim["claim"], claim["baseline_low"], claim["baseline_high"]), ("within_baseline_spread", 0.2, 0.2))
+
+    def test_coverage_without_any_template_has_no_ratio(self):
+        got = summarize([rnd()], [rnd()], NONE, False)["coverage"]
+        self.assertEqual(got, {"denominator": 0, "baseline": {"union": None, "rounds": [None]},
+                               "improved": {"union": None, "rounds": [None]}, "baseline_only": 0, "improved_only": 0})
+
+    def test_difference_inside_baseline_spread_is_not_claimed(self):
+        # §12: 원본끼리 값의 범위 안이면 개선·손실로 주장하지 않는다. 경계값도 범위 안이다.
+        a, b, c = ("GET", "/a"), ("GET", "/b"), ("GET", "/c")
+        baseline = [rnd(a, b), rnd(a), rnd(a, c)]  # 원본끼리 순서쌍 값: 0.5·0.5·1·1·0.5·0.5
+        within = summarize(baseline, [rnd(a), rnd(a), rnd(a)], NONE, False)["difference_claims"]
+        self.assertEqual(within["rule"], "baseline_min_max/v1")
+        # 개선 후 짝 값: 1/2, 1, 1/2 → 평균 2/3, 범위 [0.5, 1] 안.
+        self.assertEqual(within["preservation"], {"claim": "within_baseline_spread", "value": 2 / 3,
+                                                  "baseline_low": 0.5, "baseline_high": 1.0})
+        # 개선 후 짝 값: 0/2, 0/1, 1/2 → 평균 1/6, 범위 아래.
+        below = summarize(baseline, [rnd(), rnd(), rnd(c)], NONE, False)["difference_claims"]["preservation"]
+        self.assertEqual(below["claim"], "below_baseline_spread")
+        self.assertAlmostEqual(below["value"], 1 / 6)
+
+    def test_spread_bounds_count_as_inside(self):
+        # 원본끼리 값의 최솟값·최댓값과 같은 값도 범위 안이다(차이를 주장하지 않음).
+        for value in (0.5, 1.0):
+            self.assertEqual(_spread_claim(value, [0.5, 0.75, 1.0])["claim"], "within_baseline_spread")
+        self.assertEqual(_spread_claim(0.49, [0.5, 1.0])["claim"], "below_baseline_spread")
+        self.assertEqual(_spread_claim(1.01, [0.5, 1.0])["claim"], "above_baseline_spread")
+
+    def test_coverage_claim_compares_round_shares(self):
+        a, b, c, d = ("GET", "/a"), ("GET", "/b"), ("GET", "/c"), ("GET", "/d")
+        # 분모 {a,b,c,d}=4. 원본 회차 비율 1/4·2/4 → 범위 [0.25, 0.5]. 개선 후 3/4·4/4 → 평균 7/8, 범위 위.
+        got = summarize([rnd(a), rnd(a, b)], [rnd(a, b, c), rnd(a, b, c, d)], NONE, False)["difference_claims"]["coverage"]
+        self.assertEqual(got, {"claim": "above_baseline_spread", "value": 7 / 8, "baseline_low": 0.25, "baseline_high": 0.5})
+
+    def test_difference_claims_need_two_baseline_values(self):
+        got = summarize([rnd(("GET", "/a"))], [rnd(("GET", "/a"))], NONE, False)["difference_claims"]
+        self.assertEqual(got["preservation"], {"claim": "not_available", "reason": "baseline_spread_lt_2"})
+        self.assertEqual(got["coverage"], {"claim": "not_available", "reason": "baseline_spread_lt_2"})
+        empty = summarize([rnd(), rnd()], [rnd(), rnd()], NONE, False)["difference_claims"]
+        self.assertEqual(empty["preservation"], {"claim": "not_available", "reason": "value_missing"})
+
+    def test_summary_format_is_v9(self):
+        self.assertEqual(summarize([rnd()], [rnd()], NONE, False)["format"], "abc2lab.preservation-summary/v9")
 
     def test_pairs_must_line_up(self):
         for baseline, improved in (([], []), ([rnd()], []), ([rnd()], [rnd(), rnd()])):

@@ -26,6 +26,7 @@ import platform
 import queue
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -42,6 +43,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from preflight import PreflightError, load_preflight  # noqa: E402
 from preservation_record import build_payload as preservation_payload, digest as preservation_digest, NAME as PRESERVATION_NAME
+from preservation_record import build_payload_v3 as preservation_payload_v3  # noqa: E402
+import preservation_v3_fields as v3f  # noqa: E402
 from preservation_record import initial_state_digest  # noqa: E402
 from run_record import read_runner_key, sign_run_record  # noqa: E402
 from runner_checks import (  # noqa: E402
@@ -54,11 +57,20 @@ from runner_config import (  # noqa: E402
     API_FRONT_SERVICE, E2_PRODUCT, E2_SERVICE, E2_STUB, ENGINE_DATA_PATH, ENGINE_DB_DATA_PATH, ENGINE_DB_SERVICE, ENGINE_SERVICE, LLM_GW_SERVICE,
     METER_SERVICE, OBS_SERVICE, OBSERVER_OPAQUE, OBSERVER_SCOREBOARD, TARGET_SERVICE, POLICY_SWITCH_SIDE, RunDirectory, RunnerConfig, RunnerConfigError,
     RunPlan, check_admin_password_file, check_key_files, compose_base_args, compose_environment, create_run_directory, load_runner_config, new_run_id,
+    path_log_required,
     plan_run,
 )
 from isolation_proof import PURPOSE_BROWSER_ACCEPTANCE, PURPOSE_OFFICIAL, blocked_attempts, valid_output_language  # noqa: E402
-from runner_docker import Docker, DockerError, client_environment, run_docker  # noqa: E402
+from runner_docker import Docker, DockerError, HelperCleanupError, client_environment, run_docker  # noqa: E402
 from tool_tree import collect_tree, tree_sha256  # noqa: E402
+from tool_surface import (  # noqa: E402
+    BASELINE_MCP_ARGS, BASELINE_MCP_EXPOSED_BASIS, collect_cli, image_path, mcp_side, mcp_tools, mcp_version,
+)
+from meter_describe import MAX_DESCRIBE_BYTES, describe_args, check as meter_check, parse as meter_parse  # noqa: E402
+from meter_describe import summary as meter_summary  # noqa: E402
+
+METER_PREFLIGHT_NAME = "meter-preflight.json"
+METER_DESCRIBE_TIMEOUT_SECONDS = 30.0
 from runner_engine import (  # noqa: E402
     ADMIN_USERNAME, BASELINE_ADMIN_USERNAME, AdminSecret, EngineAPIError, EngineLLMProfile, apply_engine_rules, apply_engine_settings, collect_findings, e2_prompt_projection, engine_settings, intercept_summary, load_engine_rules,
     load_vocabulary, read_admin_password_file, start_task, task_request, END_SIGNAL_FIELDS, TERMINAL_TASK_STATUSES, TaskStatusReader,
@@ -146,9 +158,10 @@ def _image_services(e2_mode: str) -> dict[str, tuple[str, ...]]:
 class RunFailure(Exception):
     """고정 사유 코드로 회차를 무효로 만든다."""
 
-    def __init__(self, code: str):
+    def __init__(self, code: str, also: tuple[str, ...] = ()):
         super().__init__(code)
         self.code = code
+        self.also = also  # 단계 사유와 함께 따로 남길 사유(예: 도우미 정리 실패)
 
 
 @dataclass(frozen=True)
@@ -175,6 +188,8 @@ class RunPorts(Protocol):
     def engine_settings(self) -> dict: ...
     def apply_engine_rules(self) -> dict: ...
     def tool_tree(self) -> str: ...
+    def tool_surface(self) -> dict: ...
+    def meter_describe(self) -> object: ...
     def host_spec(self) -> dict: ...
     def start_task(self) -> str: ...
     def task_status(self, task_id: str) -> dict: ...
@@ -231,6 +246,8 @@ class RunSpec:
     # 엔진 끝 신호 읽기 한 번의 시한(엔진 API 시한과 같다). 창이 끝난 뒤 진행 중인 읽기를 이만큼만 기다린다.
     task_status_wait_seconds: int
     task_request_sha256: str
+    # 호스트 리슨 감시 표본 간격(실제 수집 주기)과 그 허용 최장 간격(검증 기준). 둘 다 공통 러너 설정 지문에 든다.
+    host_watch_interval_seconds: float
     host_watch_max_gap_seconds: float
     events_lookback_seconds: float
     # 선언한 엔진 LLM 정책 모드. baseline(e53a79f)에는 이 스위치가 없어 None(선언 없음)이다.
@@ -272,12 +289,16 @@ class RunSpec:
     purpose: str = PURPOSE_OFFICIAL
     # 수용시험 회차의 경로 가림 키 참조(키 값 아님). 실행 조건에 서명되고 계측기 경로 행과 대조한다.
     path_key_ref: str | None = None
+    # 탐색 분리 배치 회차(설정에 split 블록). 공식이어도 경로 기록이 있어야 하고, 서명 조건에 남아 격리 검증이 키 참조를 받는다.
+    split: bool = False
     preservation: dict | None = None
     engine_source_sha: str = ""
     # 탐색 분리 배치 B 회차: 작업 본문 origin(대상 이름 별칭)과 목표 공통 부분 SHA(O 실행 기록 goal.common_sha256과 대조할 값).
     # 그 밖의 회차는 None이다.
     task_origin: str | None = None
     goal_common_sha256: str | None = None
+    # 계측기 이미지의 기대 빌드 커밋(사전검사 선언의 개선 후 source_sha). 회차 전 점검이 대조한다.
+    meter_source_sha: str = ""
 
 
 class WatchHandle(Protocol):
@@ -314,6 +335,8 @@ class _State:
     tmpfs_pre: dict | None = None
     host: dict | None = None
     tool_tree_sha256: str | None = None
+    tool_surface: dict | None = None
+    preservation_v3: bool = False
     engine_settings_sha256: str | None = None
     output_language: str | None = None
     # 상태 차이: 회차 키(메모리에만)와 pre 사본 지문. 사본 파일은 지문을 뜬 즉시 지운다.
@@ -399,8 +422,9 @@ def _step(state: _State, code: str, action: Callable):
         return action()
     except RunFailure:
         raise
-    except Exception:
-        raise RunFailure(code) from None
+    except Exception as exc:
+        # 러너 도우미 정리 실패는 보호 볼륨이 잡혀 있을 수 있다는 뜻이라 단계 사유에 묻히지 않게 따로 싣는다(#693 리뷰)
+        raise RunFailure(code, ("docker_helper_cleanup_failed",) if isinstance(exc, HelperCleanupError) else ()) from None
 
 
 def _check_phase(spec: RunSpec, ports: RunPorts, evidence, state: _State, phase: str) -> dict:
@@ -568,6 +592,26 @@ def _wait_budget(spec: RunSpec, meter: MeterFiles, clock: Clock, state: _State, 
         clock.sleep(spec.poll_seconds)
 
 
+def check_meter_logs(meter: MeterFiles, state, rows: list[dict], drained: dict, path_key_ref: str | None) -> dict:
+    """계측기 기록 마감 대조(B·분리 배치 O 공용, 같은 사유). 경로 기록은 키 참조가 있는 회차(수용시험·분리 배치)에만 있어야
+    하고, 그 회차는 전달한 요청과 한 행씩 맞고 같은 키로 가렸어야 한다. 엔진 직접 배치 공식 회차에 있으면 무효다. 기록이나
+    Sync가 실패하면 계측기가 새 요청을 받지 않고 마감 표식을 불완전으로 남겨 여기서 같은 사유로 무효가 된다. 봉인 표식을 돌려준다."""
+    path_log = _step(state, "meter_read_failed", meter.path_log_present)
+    if path_key_ref is None and path_log:
+        raise RunFailure("meter_path_log_enabled")
+    if path_key_ref is not None and not path_log:
+        raise RunFailure("meter_path_log_missing")
+    sealed = _step(state, "meter_read_failed", lambda: meter.marker(SEALED_MARKER))
+    if not _step(state, "meter_log_inconsistent", lambda: final_log_consistent(rows, sealed, drained)):
+        raise RunFailure("meter_log_inconsistent")
+    if path_key_ref is not None:
+        paths = _step(state, "meter_path_log_invalid", lambda: meter.path_rows(rows))
+        # 계측기가 실행 전에 확인한 그 키로 가렸는지 본다. 다르면 묶음 안 회차끼리 비교할 수 없다.
+        if any(row["path_key_ref"] != path_key_ref for row in paths):
+            raise RunFailure("meter_path_key_mismatch")
+    return sealed
+
+
 def _wait_drained(spec: RunSpec, meter: MeterFiles, clock: Clock, state: _State) -> dict:
     deadline = clock.monotonic() + spec.drain_timeout_seconds
     while True:
@@ -644,8 +688,13 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     found = _step(state, "image_id_failed", ports.image_ids)
     if found != spec.image_ids:
         raise RunFailure("image_id_mismatch")
+    _meter_preflight(spec, ports, evidence, state)
     # Dockerfile이 도구 버전을 고정하지 않아 이미지 ID로는 도구가 같은지 알 수 없다. 채점기가 대조한다(프로토콜 §2).
     state.tool_tree_sha256 = _step(state, "tool_tree_failed", ports.tool_tree)
+    if _split_preservation(spec):
+        # 분리 배치 B 회차는 보존 sidecar v3를 내고, 도구 면(CLI·MCP 원 목록·노출 목록)을 회차 전에 잰다(결정안 §3.3·§4).
+        state.tool_surface = _step(state, "tool_surface_failed", ports.tool_surface)
+        _step(state, "evidence_write_failed", lambda: evidence.write_json(TOOL_SURFACE_NAME, state.tool_surface))
     # baseline·개선 후가 같은 머신에서 돌았는지 채점기가 대조한다(평가 프로토콜 §5.1).
     state.host = _step(state, "host_spec_failed", ports.host_spec)
     if not _host_spec_ok(state.host):
@@ -802,22 +851,8 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     # 현행 Docker 러너에는 탐색 입구가 없다. 설정 실수의 트래픽을 E② 대조에서 빼서 숨기지 않는다.
     layout = "artex-direct/v1" if spec.side == "baseline" else "e2-legacy/v1"
     _step(state, "meter_explore_ingress_unexpected", lambda: validate_ingress_layout(rows, layout))
-    # 경로 기록은 브라우저 수용시험 회차에만 있어야 한다. 공식 회차에 있으면 무효, 수용시험 회차에 없으면 측정할 수 없다.
-    path_log = _step(state, "meter_read_failed", meter.path_log_present)
-    if spec.purpose == PURPOSE_OFFICIAL and path_log:
-        raise RunFailure("meter_path_log_enabled")
-    if spec.purpose == PURPOSE_BROWSER_ACCEPTANCE and not path_log:
-        raise RunFailure("meter_path_log_missing")
-    sealed = _step(state, "meter_read_failed", lambda: meter.marker(SEALED_MARKER))
+    sealed = check_meter_logs(meter, state, rows, drained, spec.path_key_ref)
     forwarded = _step(state, "meter_log_inconsistent", lambda: forwarded_count(rows))
-    if not _step(state, "meter_log_inconsistent", lambda: final_log_consistent(rows, sealed, drained)):
-        raise RunFailure("meter_log_inconsistent")
-    # 수용시험 회차는 경로 기록이 전달한 요청과 한 행씩 맞아야 보존율을 셀 수 있다(요청 기록을 확인한 뒤에 본다).
-    if spec.purpose == PURPOSE_BROWSER_ACCEPTANCE:
-        paths = _step(state, "meter_path_log_invalid", lambda: meter.path_rows(rows))
-        # 계측기가 실행 전에 확인한 그 키로 가렸는지 본다. 다르면 묶음 안 회차끼리 비교할 수 없다.
-        if any(row["path_key_ref"] != spec.path_key_ref for row in paths):
-            raise RunFailure("meter_path_key_mismatch")
     meter_summary = {
         "task_requested_at": requested_at, "task_created_at": created_at, "stopped_at": stopped_at,
         "stop_reason": stop_reason, "forwarded_at_stop": forwarded_at_stop,
@@ -876,7 +911,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
                       "engine_end": engine_end_at, "drained": drained_at, "post": post_board["received_at"]})
     # 채점기가 회차 사이에 대조하는 실행 조건: 엔진 설정 해시·적용 샘플링·머신·LLM 스트리밍.
     # 스트리밍은 엔진이 SSE와 비스트리밍 경로를 고르는 값이라 시간·응답 처리 조건이 달라진다(#174 리뷰). 선언값이다.
-    conditions = {"purpose": spec.purpose, "path_key_ref": spec.path_key_ref,
+    conditions = {"purpose": spec.purpose, "path_key_ref": spec.path_key_ref, "split": spec.split,
                   "engine_settings_sha256": state.engine_settings_sha256, "engine_rules_sha256": spec.engine_rules_sha256,
                   "output_language": state.output_language,
                   "tool_tree_sha256": state.tool_tree_sha256,
@@ -907,7 +942,10 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         # 해시는 down 뒤 계산한다. seal/drain 이후에도 거부 행은 이 파일에 추가될 수 있다.
         state.preservation = dict(options=options, run_id=spec.run_id, side=spec.side, repeat_index=spec.repeat_index,
             engine_source_sha=spec.engine_source_sha, engine_image_id=spec.image_ids["engine"],
-            conditions=pc, stop_reason=stop_reason)
+            conditions=pc, stop_reason=stop_reason, purpose=spec.purpose)
+        if _split_preservation(spec):
+            state.preservation, state.preservation_v3 = _preservation_v3(spec, state, pc, stop_reason,
+                                                                         llm_summary.get("rate_limited")), True
     state.record = _step(state, "record_build_failed", lambda: _build_record(
         spec, evidence, state, pre, post, pre_board, post_board, pre_solved, post_solved, steps, window,
         observer, ready_calls, meter_summary, drained, len(rows), pre_checked_at, post_check_at, conditions, e2,
@@ -926,11 +964,12 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
 
 
 def acceptance_path_key(config) -> bytes | None:
-    """수용시험 회차만 계측기와 같은 경로 가림 키를 eval-e2에 넘긴다(E② 시도 경로 투영). 공식 회차는 None이다.
+    """계측기와 같은 경로 가림 키 바이트. 수용시험(eval-e2 시도 경로 투영)·탐색 분리 배치(O 경계 보호 입력)만 받고, 엔진
+    직접 배치 공식 회차는 None이다.
 
     check_key_files가 같은 파일을 이미 확인했다. 그 사이 바뀌어 읽을 수 없으면 설정 오류로 멈춘다.
     """
-    if config.purpose != PURPOSE_BROWSER_ACCEPTANCE:
+    if not path_log_required(config):
         return None
     try:
         return read_path_key(str(config.path_key_file))
@@ -1018,6 +1057,45 @@ def _collect_e2_prompt(spec: RunSpec, ports: RunPorts, evidence, state: _State, 
     _step(state, "evidence_write_failed", lambda: evidence.write_bytes("e2-prompt-projection.json", raw))
     return {"status": "verified", "reason": None, "task_id": task_id, "exploration_id": result.exploration_id, "run_ref": run_ref,
             "expected_count": result.expected_count, "projection_sha256": result.projection_sha256, **dict(zip(PROMPT_FIELDS, result.identity))}
+
+
+TOOL_SURFACE_NAME = "tool-surface.json"
+TOOL_SURFACE_SIDE_FORMAT = "abc2lab.tool-surface-side/v1"
+
+
+def _split_preservation(spec: RunSpec) -> bool:
+    """분리 배치 B 회차(보존 옵션 + 대상 이름 origin)만 v3를 낸다. 그 밖의 보존 회차는 지금처럼 v2다."""
+    return spec.preservation is not None and spec.task_origin is not None and spec.side == "baseline"
+
+
+def _preservation_v3(spec: RunSpec, state: "_State", v2_conditions: dict, stop_reason: str, rate_limited) -> dict:
+    """v2 조건에서 공통 대조 칸을 옮기고, 도구 면 측정·구동 코드·회차별 칸을 더한다(결정안 §3.3)."""
+    options, surface = spec.preservation, v3f.surface_fields(state.tool_surface)
+    common = {name: v2_conditions[name] for name in ("request_budget", "time_budget_seconds", "model_pin_sha256",
+                                                      "target_image_id", "initial_state_sha256", "machine_sha256")}
+    common.update(runner_settings_sha256=v3f.settings_sha256(vars(spec), v3f.COMMON_RUNNER_SETTINGS),
+                  goal_common_sha256=spec.goal_common_sha256, comm_mode=options["comm_mode"],
+                  mcp_version=surface["mcp_version"], mcp_raw_tools_sha256=surface["mcp_raw_tools_sha256"])
+    side = {"layout": "artex-direct/v1", "driver_sha256": v3f.driver_sha256(v3f.B_DRIVER_FILES),
+            "driver_settings_sha256": v3f.settings_sha256(vars(spec), v3f.B_DRIVER_SETTINGS),
+            "write_mode": options["write_mode"], "declared_model_budget_sha256": options["declared_model_budget_sha256"],
+            "browser_image_id": None, "exploration_policy_sha256": None, "diagnosis_policy_sha256": None,
+            "cli_surface_sha256": surface["cli_surface_sha256"], "mcp_exposed_tools_sha256": surface["mcp_exposed_tools_sha256"]}
+    run = {"stop_reason": stop_reason, "first_limit": state.first_limit,
+           "end_signal": v3f.end_signal(state.engine_end.get("first_terminal"), product=False), "rate_limited": rate_limited}
+    return dict(series_ref=options["series_ref"], execution_source=options["execution_source"], run_id=spec.run_id,
+                side=spec.side, repeat_index=spec.repeat_index, engine_source_sha=spec.engine_source_sha,
+                engine_image_id=spec.image_ids["engine"], common=common, side_conditions=side, run=run, product=None,
+                boundary=None, purpose=spec.purpose)
+def _meter_preflight(spec, ports, evidence, state) -> None:
+    """compose를 띄우기 전(모델을 부르기 전) 계측기·게이트웨이 이미지가 이 러너의 표식 칸·기대 빌드와 맞는지 본다.
+    다르면 회차를 시작하지 않는다(2026-11-17 사용자 결정, 파일럿 B 1회차 llm_marker_invalid 재발 방지)."""
+    describe = _step(state, "meter_describe_failed", ports.meter_describe)
+    reasons = meter_check(describe, spec.meter_source_sha)
+    _step(state, "evidence_write_failed", lambda: evidence.write_json(METER_PREFLIGHT_NAME,
+                                                                      meter_summary(describe, reasons, spec.meter_source_sha)))
+    if reasons:
+        raise RunFailure(reasons[0])
 
 
 def _record_context(spec: RunSpec, pre: dict) -> RecordContext:
@@ -1122,6 +1200,7 @@ def execute_run(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gate
         _run_steps(spec, ports, meter, gateway, evidence, clock, state)
     except RunFailure as exc:
         reasons.append(exc.code)
+        reasons.extend(exc.also)
         # 점검 결과로 직접 실패한 경우(probe 무효·pre 요청 등) 마지막으로 시작한 단계가 아니라 그 사유의 단계다.
         state.step = exc.code
     except KeyboardInterrupt:
@@ -1157,8 +1236,8 @@ def execute_run(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gate
     if not reasons and state.preservation is not None:
         try:
             # down 성공 뒤에는 계측기 writer가 없다. 최종 바이트를 읽고 마감·입구·hash를 함께 검증한다.
-            state.preservation = _step(state, "preservation_record_failed",
-                                       lambda: preservation_payload(meter=meter, **state.preservation))
+            build = preservation_payload_v3 if state.preservation_v3 else preservation_payload
+            state.preservation = _step(state, "preservation_record_failed", lambda: build(meter=meter, **state.preservation))
         except RunFailure as exc:
             reasons.append(exc.code)
     base = {"format": RESULT_FORMAT, "run_id": spec.run_id, "side": spec.side, "project": spec.project,
@@ -1360,6 +1439,20 @@ class DockerPorts:
     def tool_tree(self) -> str:
         return tree_sha256(collect_tree(self.plan.engine_image.id, self.docker.run_bounded))
 
+    def tool_surface(self) -> dict:
+        """원본 엔진 이미지의 도구 면(B: PATH 전체 CLI, MCP 원 목록, 노출 목록은 원본 시드가 꺼져 빈 목록)."""
+        image = self.plan.engine_image.id
+        run = self.docker.run_bounded
+        listed = mcp_tools(image, BASELINE_MCP_ARGS, subprocess.Popen, client_environment(os.environ, {}))
+        return {"format": TOOL_SURFACE_SIDE_FORMAT, "side": "baseline", "image_id": image,
+                "cli": collect_cli(image, image_path(image, run), None, run),
+                "mcp": mcp_side(image, BASELINE_MCP_ARGS, mcp_version(image, run), listed, None, BASELINE_MCP_EXPOSED_BASIS)}
+    def meter_describe(self) -> object:
+        """계측기 이미지 `-role describe`(망 없음). 옛 이미지는 이 역할이 없어 실패하므로 None(점검이 거부)."""
+        result = self.docker.run_bounded(describe_args(self.plan.images["meter"].id), METER_DESCRIBE_TIMEOUT_SECONDS,
+                                         MAX_DESCRIBE_BYTES)
+        return meter_parse(result.stdout) if result.returncode == 0 else None
+
     def host_spec(self) -> dict:
         return read_host_spec(_read_text, self.docker.daemon().version, os.cpu_count(), platform.release())
 
@@ -1482,7 +1575,7 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
                path_key_ref: str | None = None, goal_common_sha256: str | None = None) -> RunSpec:
     declared = preflight[plan.side]
     # 키 참조는 수용시험 회차에만 있다(check_key_files가 만든다).
-    if (path_key_ref is not None) != (config.purpose == PURPOSE_BROWSER_ACCEPTANCE):
+    if (path_key_ref is not None) != path_log_required(config):
         raise RunnerConfigError(["config.path_key_file: KEY_REF_MISMATCH"])
     if (plan.task_origin is None) != (goal_common_sha256 is None):
         raise RunnerConfigError(["config.split: GOAL_MISMATCH"])
@@ -1503,6 +1596,7 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         llm_verify_timeout_seconds=config.run["llm_verify_timeout_seconds"],
         task_status_wait_seconds=config.run["task_create_timeout_seconds"],
         task_request_sha256=task_request_sha256,
+        host_watch_interval_seconds=config.run["host_watch_interval_seconds"],
         host_watch_max_gap_seconds=config.run["host_watch_max_gap_seconds"],
         events_lookback_seconds=config.health_timeout_seconds,
         # compose는 두 엔진에 같은 값을 넘기지만 baseline은 읽지 않는다. 결과 기록에 external로 적으면 정책이 있는 것처럼
@@ -1517,7 +1611,8 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         observer_readonly_ref=config.observer_readonly_ref, observer_format=config.observer_format,
         verdict_wait_seconds=(config.verdict_export["ready_wait_seconds"]
                               if config.verdict_export is not None and plan.side == POLICY_SWITCH_SIDE else None),
-        purpose=config.purpose, path_key_ref=path_key_ref, preservation=config.preservation, engine_source_sha=plan.source_sha,
+        purpose=config.purpose, path_key_ref=path_key_ref, split=config.split is not None, preservation=config.preservation,
+        engine_source_sha=plan.source_sha,
         verdict_poll_seconds=0 if config.verdict_export is None else config.verdict_export["ready_poll_seconds"],
         e2_prompt_wait_seconds=config.e2_product["prompt_wait_seconds"] if plan.e2_mode == E2_PRODUCT else 0,
         e2_prompt_poll_seconds=config.e2_product["poll_seconds"] if plan.e2_mode == E2_PRODUCT else 0,
@@ -1526,7 +1621,8 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         state_signal_tables=None if config.state is None else frozenset(config.state["signal_tables"]),
         state_runtime_roots=() if config.state is None else config.state["runtime_roots"],
         state_memory_enabled=config.state is not None and config.state["memory"] is not None,
-        engine_rules_sha256=engine_rules_sha256, task_origin=plan.task_origin, goal_common_sha256=goal_common_sha256)
+        engine_rules_sha256=engine_rules_sha256, task_origin=plan.task_origin, goal_common_sha256=goal_common_sha256,
+        meter_source_sha=preflight["ours"]["source_sha"])
 
 
 def plan_task(task: dict, plan: RunPlan, declared_origin: str) -> tuple[TaskRequest, str | None]:

@@ -1,4 +1,5 @@
 import { ApiError, apiFetch } from "./api";
+import { preservesURLRunTiming, sameURLRunTime, validURLRunTiming } from "./diagnosis-run-timing";
 import { validTaskID } from "./first-diagnosis";
 
 const base = "/api/diagnoses/v2";
@@ -117,6 +118,9 @@ export type URLDiagnosisJob = {
   authority_state: "not_issued" | "issued" | "consumed" | "unknown";
   started: boolean;
   drain_complete: boolean;
+  /** 보호 준비 서비스가 최초 확인해 저장한 UTC 시각. 구 기록은 사실이 true여도 없을 수 있다. */
+  started_at?: string;
+  finished_at?: string;
   result_ready: boolean;
   model_usage?: URLDiagnosisUsage;
   /** 실행 결과(docs/contracts/run-outcome-states.md §3.2). completed에만 있다. 실행 마감은 취약점 없음이 아니다. */
@@ -478,6 +482,8 @@ export function parseURLJob(raw: unknown, owner: string): URLDiagnosisJob {
     "authority_state",
     "started",
     "drain_complete",
+    "started_at",
+    "finished_at",
     "result_ready",
     "model_usage",
     "outcome",
@@ -486,6 +492,7 @@ export function parseURLJob(raw: unknown, owner: string): URLDiagnosisJob {
     "diagnostic_log_incomplete",
     "account_auth",
   ]);
+  if (!validURLRunTiming(d)) return invalid();
   if (d.diagnostic_log_incomplete !== undefined && (d.diagnostic_log_incomplete !== true || d.state !== "completed"))
     return invalid();
   // §3.4·§3 "있는 state" 밖에서 오면 거부한다. 모드(워크플로·외부 API)로는 거부하지 않는다(계약 §3.2 account_auth 행).
@@ -540,6 +547,8 @@ export function parseURLJob(raw: unknown, owner: string): URLDiagnosisJob {
     authority_state: d.authority_state as URLDiagnosisJob["authority_state"],
     started: d.started as boolean,
     drain_complete: d.drain_complete as boolean,
+    ...(d.started_at === undefined ? {} : { started_at: String(d.started_at) }),
+    ...(d.finished_at === undefined ? {} : { finished_at: String(d.finished_at) }),
     result_ready: d.result_ready as boolean,
     ...(d.reason_code ? { reason_code: String(d.reason_code) } : {}),
     ...(approved ? { scope: approved } : {}),
@@ -674,6 +683,11 @@ function sameValue(a: unknown, b: unknown): boolean {
 const authorityRank = { not_issued: 0, issued: 1, consumed: 2, unknown: -1 };
 const phaseRank = Object.keys(urlPhaseLabels);
 type JobBinding = Pick<URLDiagnosisJob, "id" | "revision" | "source_digest" | "input"> & Partial<URLDiagnosisJob>;
+function sameURLJob(a: JobBinding, b: JobBinding): boolean {
+  const { started_at: aStart, finished_at: aFinish, ...aRest } = a;
+  const { started_at: bStart, finished_at: bFinish, ...bRest } = b;
+  return sameValue(aRest, bRest) && sameURLRunTime(aStart, bStart) && sameURLRunTime(aFinish, bFinish);
+}
 /** 시작 시도 전 검증만 새 설치 범위를 표시할 수 있다. 실행 중인 결속은 절대 교체하지 않는다. */
 export function matchURLJob(
   result: URLDiagnosisJob,
@@ -696,10 +710,14 @@ export function matchURLJob(
   if (result.id !== current.id || result.revision < current.revision || !sameURLInput(result.input, current.input))
     return invalid();
   if (result.revision === current.revision) {
-    if (current.state !== undefined && !sameValue(result, current)) return invalid();
+    if (current.state !== undefined && !sameURLJob(result, current)) return invalid();
     // 같은 revision에서 상태·known fact가 달라지면 뒤늦은 응답으로 제어권을 복원하지 않는다.
     for (const key of Object.keys(current) as (keyof URLDiagnosisJob)[]) {
-      if (!sameValue(result[key], current[key])) return invalid();
+      const same =
+        key === "started_at" || key === "finished_at"
+          ? sameURLRunTime(result[key], current[key])
+          : sameValue(result[key], current[key]);
+      if (!same) return invalid();
     }
   }
   if (
@@ -714,6 +732,7 @@ export function matchURLJob(
     (current.preparation_started === true && !result.preparation_started) ||
     (current.drain_complete === true && !result.drain_complete) ||
     (current.result_ready === true && !result.result_ready) ||
+    !preservesURLRunTiming(result, current) ||
     (current.phase !== undefined && phaseRank.indexOf(result.phase) < phaseRank.indexOf(current.phase)) ||
     (current.authority_state === "consumed" && result.authority_state !== "consumed") ||
     (current.authority_state === "unknown" && result.authority_state !== "unknown") ||
@@ -723,7 +742,7 @@ export function matchURLJob(
     (current.state === "stopping" && ["preparing", "running"].includes(result.state)) ||
     (current.state !== undefined &&
       ["completed", "cancelled", "failed", "unknown"].includes(current.state) &&
-      !sameValue(result, current))
+      !sameURLJob(result, current))
   )
     return invalid();
   if (current.model_usage) {

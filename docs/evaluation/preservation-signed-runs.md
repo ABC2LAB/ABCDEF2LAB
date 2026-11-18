@@ -7,7 +7,7 @@
 - 계측기는 실제 리슨에 따라 요청 원자료와 경로 행에 `ingress=main|explore`를 남긴다. `main`은 원본 직접 입구 또는 E② 진단 입구, `explore`는 탐색 경계 뒤 입구다. 호출자의 헤더로 입구를 선택하지 않는다. 봉인 뒤 거부 행도 입구를 남긴다.
 - 전체 요청 예산·도달 경로는 기존대로 두 입구를 합산한다. `meter-summary.json.forwarded_by_ingress`는 전체 전달 행의 입구별 수, 보존 요약 `ingress`는 요청 예산 안 전달 행의 입구별 수다. 봉인 뒤 거부는 전달 수에서 빠진다.
 - 실제 탐색 분리 배치에서 E② 시도별 대조는 `main`만 받는다. 현행 공식·원본 직접·`e2-legacy/v1` 배치에 `forwarded_by_ingress.explore > 0`이 있으면 배치 위반으로 회차를 무효화하고 대조에서 조용히 빼지 않는다. `explore`의 AttemptID 부재는 정상이다. 탐색 입구에서 E② ID가 보이거나 입구가 미등록·혼합되면 추정으로 고치지 않고 거부한다. 입구 칸이 없던 과거 기록은 기존 main 의미로 읽되 새 서명 계약에는 쓰지 않는다.
-- 원자료 서명·변조·조건 혼입·기존 판정 경계 시험은 합성 fixture로 실행한다. 합성 자료의 `execution_source=synthetic_fixture`는 실측으로 승격하지 않는다.
+- 원자료 서명·변조·조건 혼입·기존 판정 경계 시험은 합성 fixture로 실행한다. 합성 자료의 `execution_source=synthetic_fixture`는 실측으로 승격하지 않는다. 서명 기록이 합성이면 보존 집계는 서명·형식 검증까지만 하고 요약을 내지 않는다(`preservation_synthetic_fixture`, 종료 코드 2, 2026-11-18 사용자 결정).
 - 현행 Docker 평가 러너는 개선 후 배치를 `e2-legacy/v1`로 발행한다. 설정에 새 배치 이름을 적어 우회할 수 없다. 새 실행기는 실제 배치·망·허용 도구·마감 검증 뒤 공통 발행 함수를 사용할 수 있다.
 - 탐색 경계 원자료(계약 [§4.1](../contracts/exploration-boundary.md#41-평가수용시험-회차의-경계-원자료-abc2labexplore-boundary-exportv1))를 러너가 경계 종료 뒤 검증해 sidecar에 hash·카운터로 결속한다(아래 "경계 원자료"). 지금 러너는 개선 후를 `e2-legacy/v1`로만 띄워서 실제 회차의 `signed_evidence.exploration_boundary`는 아직 `NOT_RUN / verified_boundary_export_unavailable`이다(러너의 탐색 분리 배치는 [개발 계획](../development-plan.md)의 공식 측정 전 필수). 탐색 차단 건수를 0으로 채우거나 E② 진단 차단·`repeat_denials`와 합치지 않는다. 실제 MCP fixture 연결도 제품 경계 검증이나 원본 모델 실측을 대신하지 않는다.
 
@@ -113,7 +113,7 @@ go test -race ./cmd/eval-meter ./pathmask
 
 새 인자 중 하나를 쓰면 모두 필수다. 검증기는 서명, 정확한 JSON 구조, 원자료 바이트, 마감 상태, 경로 키, 짝 순서/회차 중복, 세션, 각 조건의 엔진 핀, 모델·머신·초기 상태·예산·통신 모드·MCP 조건, 조건 안의 배치·정책 고정을 확인한다. 다른 조건이 섞이면 종료 코드 2이며 요약은 출력하지 않는다. 서명은 소문자 64 hex만 받고 비 ASCII·다른 타입도 traceback 없이 고정 validation 오류로 거부한다. 원본/개선 후 사이에서 달라야 하는 배치·정책과 R-R의 쓰기 모드는 각 조건 안에서 따로 고정한다.
 
-서명 검증을 켠 출력만 `abc2lab.preservation-summary/v8`이고 기존 지표에 `signed_evidence`, `assessment`가 추가된다(v8은 `signed_evidence.exploration_boundary`에 검증된 경계 원자료의 회차별 카운터·대조를 담을 수 있다. v7은 늘 `NOT_RUN`이었다). 기존 원자료 전용 CLI는 `v6` 그대로다. v6는 새 서명/조건 검증 완료로 읽지 않는다. 실제 회차는 러너의 탐색 분리 배치 전까지 경계가 `NOT_RUN`이라 완료 판정도 `NOT_RUN`이다.
+서명 검증을 켠 출력만 `abc2lab.preservation-summary/v10`(v8에 v9의 `coverage`·`difference_claims`를 더한 것)이고 기존 지표에 `signed_evidence`, `assessment`가 추가된다(v8은 `signed_evidence.exploration_boundary`에 검증된 경계 원자료의 회차별 카운터·대조를 담을 수 있다. v7은 늘 `NOT_RUN`이었다). 기존 원자료 전용 CLI는 `v9`(v6에 `coverage`·`difference_claims`를 더한 것)다. v6·v9는 새 서명/조건 검증 완료로 읽지 않는다. 실제 회차는 러너의 탐색 분리 배치 전까지 경계가 `NOT_RUN`이라 완료 판정도 `NOT_RUN`이다.
 
 ## 기존 기준과 남은 검증
 

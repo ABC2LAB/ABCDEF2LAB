@@ -20,12 +20,14 @@ from urllib.parse import urlsplit
 from preflight import PreflightError, check_preflight
 from runner import Clock, _remove_unstarted_run, acceptance_path_key
 from runner_config import (
-    METER_SERVICE, POLICY_SWITCH_SIDE, Image, RunnerConfig, RunnerConfigError, create_run_directory, gateway_sampling, new_run_id,
+    METER_SERVICE, POLICY_SWITCH_SIDE, Image, RunnerConfig, RunnerConfigError, create_run_directory, gateway_sampling,
+    new_run_id,
 )
 from runner_docker import Docker, DockerError, client_environment, run_docker
 from runner_evidence import EvidenceDir, MeterFiles
 from runner_product import ModelKey, ProductAPIError, ProductDriver, loopback_send
 from runner_split import EXPLORATION_BLOCK, read_workflow_defaults
+from path_mask import key_ref
 from runner_split_config import (
     SplitConfigError, SplitPlan, plan_split_run, read_manifest, split_compose_args, split_compose_environment,
 )
@@ -45,6 +47,7 @@ class SplitDeclared:
     request_budget: int
     time_budget_seconds: int
     llm_provider: str = ""
+    meter_source_sha: str = ""  # 사전검사 선언의 개선 후 source_sha(계측기 기대 빌드)
     # B 게이트웨이가 넣는 샘플링(선언 §6). O 표식의 실제로 보낸 값과 대조한다.
     llm_sampling: dict | None = None
 
@@ -73,7 +76,8 @@ def split_declared(config: RunnerConfig, preflight: object, manifest: dict) -> S
         raise RunnerConfigError(errors)
     return SplitDeclared(target_image=Image(declared["target_image"], config.target_image_id), meter_port=origin.port,
                          request_budget=declared["request_budget"], time_budget_seconds=declared["time_budget_seconds"],
-                         llm_provider=llm["provider"], llm_sampling=json.loads(gateway_sampling(declared, POLICY_SWITCH_SIDE)))
+                         llm_provider=llm["provider"], llm_sampling=json.loads(gateway_sampling(declared, POLICY_SWITCH_SIDE)),
+                         meter_source_sha=declared["source_sha"])
 
 
 def llm_lookup_env(config: RunnerConfig, preflight: dict) -> dict[str, str]:
@@ -87,7 +91,8 @@ def llm_lookup_env(config: RunnerConfig, preflight: dict) -> dict[str, str]:
             "EVAL_LLM_VERIFY_INTERVAL": f"{gateway['verify_interval_seconds']}s", "EVAL_CA_BUNDLE": gateway["ca_bundle"]}
 
 
-def split_run_spec(config: RunnerConfig, plan: SplitPlan, declared: SplitDeclared, rendered: dict) -> SplitRunSpec:
+def split_run_spec(config: RunnerConfig, plan: SplitPlan, declared: SplitDeclared, rendered: dict,
+                   path_key_ref: str | None = None) -> SplitRunSpec:
     """회차 시한·간격은 B(build_spec)와 같은 설정 칸에서 읽는다. 제품 멈춤 뒤 끝 상태 대기는 제품 상태 대기(split.task_wait_seconds)."""
     return SplitRunSpec(
         run_id=plan.run_id, project=plan.project, image_ids={role: image.id for role, image in plan.images.items()},
@@ -98,7 +103,8 @@ def split_run_spec(config: RunnerConfig, plan: SplitPlan, declared: SplitDeclare
         task_status_wait_seconds=config.run["task_create_timeout_seconds"], healthchecks=healthcheck_actions(rendered),
         product_close_seconds=config.split.task_wait_seconds, post_settle_seconds=config.run["post_settle_seconds"],
         llm_sampling=declared.llm_sampling, llm_provider_slug=declared.llm_provider,
-        llm_provider_name=config.llm_gateway["expected_provider_name"])
+        llm_provider_name=config.llm_gateway["expected_provider_name"], meter_source_sha=declared.meter_source_sha,
+        path_key_ref=path_key_ref)
 
 
 def run_split_ours(config: RunnerConfig, preflight: object, *, docker_runner=run_docker, environ=None,
@@ -116,6 +122,9 @@ def run_split_ours(config: RunnerConfig, preflight: object, *, docker_runner=run
         defaults, _ = read_workflow_defaults()
         # 경계는 계측기·B 회차와 같은 경로 가림 키를 받는다(계약 §4.1). runner.main이 check_key_files로 이미 확인했다.
         path_key = acceptance_path_key(config)
+        # 키 지문은 경계 보호 입력에 넣는 바로 그 바이트에서 뜬다(#699 리뷰: 따로 읽으면 사이에 키 파일이 바뀌어도 통과).
+        # 계측기는 같은 파일을 직접 읽으므로, 그 행의 지문이 이 값과 다르면 check_meter_logs가 meter_path_key_mismatch로 막는다.
+        path_key_ref = None if path_key is None else key_ref(path_key)
         directory = create_run_directory(config.runs_root, plan.run_id)
         inputs = prepare_split_inputs(directory.run, manifest=manifest, meter_port=plan.meter_port, explore_port=split.explore_port,
                                       evidence_max_bytes=split.evidence_max_bytes, workflow_defaults=defaults,
@@ -133,7 +142,7 @@ def run_split_ours(config: RunnerConfig, preflight: object, *, docker_runner=run
         ports = DockerSplitPorts(config=config, split=split, plan=plan, directory=directory, docker=docker, driver=driver,
                                  inputs=inputs, rendered=rendered, manifest=manifest, model_key=model_key,
                                  exploration=dict(EXPLORATION_BLOCK), llm_env=llm_lookup_env(config, preflight))
-        spec = split_run_spec(config, plan, declared, rendered)
+        spec = split_run_spec(config, plan, declared, rendered, path_key_ref)
     except BaseException as exc:
         # 회차 흐름(execute_split_run) 전의 어떤 실패·중단에서도 보호 입력을 먼저 지운다(#674 리뷰: 모델 키 모양 오류·
         # 운영자 중단이 정리를 건너뛰었다). 고정 code 오류는 code만 내고 종료 코드 2, 중단은 정리 뒤 다시 올린다.
