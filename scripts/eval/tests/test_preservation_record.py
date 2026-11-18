@@ -334,6 +334,22 @@ class SignedFixture(unittest.TestCase):
                       options() | {"execution_source": "fallback"}, options() | {"comm_mode": "anything"}):
             with self.assertRaises(PreservationRecordError): validate_options(value)
 
+    def test_cli_refuses_a_signed_summary_of_synthetic_rounds(self):
+        # 합성 fixture 기록은 서명·형식 검증까지만 하고 보존율 요약은 내지 않는다(2026-11-18 사용자 결정). 출력은 비어 있다.
+        b, _, _ = self.fixture("baseline")
+        o, _, _ = self.fixture("ours")
+        self.write(self.root, "path.key", PATH_KEY)
+        self.write(self.root, "runner.key", RUNNER_KEY)
+        self.write(self.root, "exclusions.json", {"format": EXCLUSIONS_FORMAT, "methods": [], "path_prefixes": []})
+        signed = [sys.executable, "-I", str(Path(__file__).resolve().parents[1] / "preservation.py"),
+                  "--baseline", str(b), "--improved", str(o), "--budget", "3", "--exclusions", str(self.root / "exclusions.json"),
+                  "--path-key-file", str(self.root / "path.key"), "--baseline-record-dir", str(b), "--improved-record-dir", str(o),
+                  "--improved-boundary-dir", str(o / "boundary"), "--runner-key-file", str(self.root / "runner.key"),
+                  "--profile", "R-F"]
+        result = subprocess.run(signed, capture_output=True)
+        self.assertEqual((result.returncode, result.stdout), (2, b""))
+        self.assertEqual(result.stderr, b"preservation: preservation_synthetic_fixture\n")
+
     def test_cli_acceptance_profiles_refuse_signed_official_rounds(self):
         # #699 리뷰: 목적이 전부 official인 서명 기록을 수용시험 기준(R-P·R-F·R-R)으로 판정하면 안 된다. 출력은 비어 있다.
         b, _, _ = self.fixture("baseline", purpose="official")
@@ -349,14 +365,14 @@ class SignedFixture(unittest.TestCase):
         self.assertEqual((result.returncode, result.stdout), (2, b""))
         self.assertEqual(result.stderr, b"preservation: preservation_profile_purpose_mismatch\n")
         # 같은 원자료를 수용시험 목적으로 서명하면 통과한다(입력 대조: 목적 말고 다른 이유로 막히지 않았음).
-        b2, _, _ = self.fixture("baseline")
-        o2, _, _ = self.fixture("ours")
+        b2, _, _ = self.fixture("baseline", source="model_run")
+        o2, _, _ = self.fixture("ours", source="model_run")
         accepted = [a.replace(str(b), str(b2)).replace(str(o), str(o2)) for a in base]
         self.assertEqual(subprocess.run(accepted + ["--budget", "3", "--profile", "R-F"], capture_output=True).returncode, 0)
 
-    def test_cli_signed_synthetic_rounds_and_historical_summary_are_distinct(self):
-        b, bm, _ = self.fixture("baseline")
-        o, om, _ = self.fixture("ours")
+    def test_cli_signed_rounds_and_historical_summary_are_distinct(self):
+        b, bm, _ = self.fixture("baseline", source="model_run")
+        o, om, _ = self.fixture("ours", source="model_run")
         self.write(self.root, "path.key", PATH_KEY)
         self.write(self.root, "runner.key", RUNNER_KEY)
         self.write(self.root, "exclusions.json", {"format": EXCLUSIONS_FORMAT, "methods": [], "path_prefixes": []})
@@ -372,7 +388,7 @@ class SignedFixture(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         data = json.loads(result.stdout)
         self.assertEqual(data["format"], "abc2lab.preservation-summary/v10")
-        self.assertEqual(data["assessment"]["status"], "NOT_RUN")
+        self.assertEqual((data["assessment"]["status"], data["assessment"]["reason"]), ("UNDECIDABLE", "valid_pairs_lt_3"))  # 실측 출처라 수용선까지 가고, 짝이 1개라 판단불가
         self.assertEqual(data["signed_evidence"]["exploration_boundary"]["status"], "PASS")
         self.assertEqual(data["signed_evidence"]["verified_signed_rounds"], 2)
         self.assertEqual(data["signed_evidence"]["purpose"], "browser_acceptance")  # 검증 결과에 출처 목적을 남긴다

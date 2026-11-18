@@ -36,7 +36,7 @@ from manifest import Engine, ManifestError, RunManifest, load_manifests  # noqa:
 from scoreboard import SnapshotError  # noqa: E402
 
 from e2_prompt_identity import PROMPT_FIELDS, PromptIdentityError, condition_prompt_identity  # noqa: E402
-from isolation_proof import E2_DECLARED_PROPOSED, E2_PRODUCT_FAILURE, PURPOSE_OFFICIAL  # noqa: E402
+from isolation_proof import E2_DECLARED_PROPOSED, E2_PRODUCT_FAILURE, EXECUTION_SYNTHETIC, PURPOSE_OFFICIAL  # noqa: E402
 from run_record import V1, V11, RunInputs, RunRecordError, load_run_inputs, read_runner_key  # noqa: E402
 
 Correlate = Callable[[VerdictRecord], str | None]
@@ -165,6 +165,10 @@ def score_run(
     """서명된 러너 기록으로 회차 입력을 검증한 뒤 채점한다. 임의 traffic/coverage 주입은 없다."""
     inputs = load_run_inputs(manifest, runner_key, correlate)
     run = f"{manifest.condition}#{manifest.repeat_index}"
+    # 합성 입력(스크립트 모델 등)으로 돈 회차는 배선 확인용이라 채점하지 않는다(2026-11-18 사용자 결정). 비교 표도 이 함수를
+    # 거치므로 같이 막힌다. 판단불가로 바꿔 넣지 않고 거부한다(분모가 조용히 바뀌지 않게).
+    if inputs.execution_source == EXECUTION_SYNTHETIC:
+        raise ComparabilityError(f"합성 실행 회차는 채점하지 않음({run}, execution_source={EXECUTION_SYNTHETIC})")
     if inputs.judgments_collected:
         parsed = _VERDICT_ADAPTERS[manifest.engine](manifest, correlate, inputs.records)
     else:
