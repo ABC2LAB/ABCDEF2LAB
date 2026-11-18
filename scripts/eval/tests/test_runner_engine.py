@@ -863,6 +863,18 @@ class TestCommandRecords(unittest.TestCase):
             self.read(grew * 3)
         self.assertEqual(str(caught.exception), "engine_commands_unstable")
 
+    def test_each_consistency_check_alone(self):
+        # 다시 읽은 첫 쪽은 같아도(재확인 통과) 쪽 사이 total이 다르거나, id가 겹치거나, 내림차순이 아니면 받지 않는다.
+        cases = {
+            "totals_differ": [self.page([3, 2], 3), self.page([1], 2), self.page([3, 2], 3)],
+            "duplicate_id": [self.page([3, 2], 3), self.page([2], 3), self.page([3, 2], 3)],
+            "not_descending": [self.page([2, 3], 3), self.page([1], 3), self.page([2, 3], 3)],
+        }
+        for name, pages in cases.items():
+            with self.subTest(case=name), self.assertRaises(EngineAPIError) as caught:
+                self.read(pages * 3)
+            self.assertEqual(str(caught.exception), "engine_commands_unstable")
+
     def test_failures_are_codes(self):
         cases = {
             "engine_commands_http_500": [(500, b"")],
