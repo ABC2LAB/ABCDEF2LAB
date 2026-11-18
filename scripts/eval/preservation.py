@@ -20,6 +20,7 @@ import json
 import re
 import statistics
 import sys
+from fractions import Fraction
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -224,10 +225,20 @@ def _baseline_reference(baseline: list[Round], keep) -> dict:
             "pair_sd": statistics.stdev(ratios) if len(ratios) >= 2 else None, "pairs_without_denominator": empty}
 
 
-def _coverage(baseline: list[Round], improved: list[Round], keep) -> dict:
+def _template(key: tuple[str, str]) -> tuple[str, str]:
+    """경로 틀 커버리지(§7)는 HEAD를 GET으로 센다. 보존율·제외 규칙은 메서드를 그대로 둔다."""
+    return ("GET", key[1]) if key[0] == "HEAD" else key
+
+
+def _coverage_sets(baseline: list[Round], improved: list[Round], keep) -> tuple[list[frozenset], list[frozenset]]:
+    def templates(r: Round) -> frozenset:
+        return frozenset(_template(key) for key in r.patterns if keep(key))
+
+    return [templates(r) for r in baseline], [templates(r) for r in improved]
+
+
+def _coverage(base: list[frozenset], imp: list[frozenset]) -> dict:
     """같은 묶음 원본·개선 후 회차가 실제로 닿은 경로 틀의 합집합을 분모로, 각 쪽이 덮은 비율(§7)."""
-    base = [frozenset(key for key in r.patterns if keep(key)) for r in baseline]
-    imp = [frozenset(key for key in r.patterns if keep(key)) for r in improved]
     base_union, imp_union = frozenset().union(*base), frozenset().union(*imp)
     union = base_union | imp_union
 
@@ -243,8 +254,11 @@ def _coverage(baseline: list[Round], improved: list[Round], keep) -> dict:
     }
 
 
-def _spread_claim(value: float | None, reference: list[float]) -> dict:
-    """개선 후 값이 원본끼리 값의 범위 안이면 차이를 주장하지 않는다(§12). 판정·통과선과 별개인 보고 표시다."""
+def _spread_claim(value: Fraction | None, reference: list[Fraction]) -> dict:
+    """개선 후 값이 원본끼리 값의 범위 안이면 차이를 주장하지 않는다(§12). 판정·통과선과 별개인 보고 표시다.
+
+    비교는 건수로 만든 정확한 분수로 한다. 부동소수 평균의 오차(예: 0.1 세 개의 평균 0.10000000000000002)로
+    같은 값이 범위 밖으로 갈리지 않게 한다. 출력 값만 실수로 바꾼다."""
     if value is None:
         return {"claim": "not_available", "reason": "value_missing"}
     if len(reference) < 2:
@@ -256,18 +270,33 @@ def _spread_claim(value: float | None, reference: list[float]) -> dict:
         claim = "above_baseline_spread"
     else:
         claim = "within_baseline_spread"
-    return {"claim": claim, "value": value, "baseline_low": low, "baseline_high": high}
+    return {"claim": claim, "value": float(value), "baseline_low": float(low), "baseline_high": float(high)}
 
 
-def _difference_claims(compared: dict, reference: dict, coverage: dict) -> dict:
-    improved_rounds = [share for share in coverage["improved"]["rounds"] if share is not None]
-    baseline_rounds = [share for share in coverage["baseline"]["rounds"] if share is not None]
+def _mean(values: list[Fraction]) -> Fraction | None:
+    return sum(values, Fraction(0)) / len(values) if values else None
+
+
+def _difference_claims(baseline: list[Round], improved: list[Round], keep,
+                       base: list[frozenset], imp: list[frozenset]) -> dict:
+    # 보존율: 개선 후 짝 값(_compare와 같은 분모)의 평균을 원본끼리 순서쌍 값(_baseline_reference와 같음)의 범위와 비교한다.
+    def ratio(denominator: set, reached) -> Fraction | None:
+        return Fraction(len(denominator & set(reached)), len(denominator)) if denominator else None
+
+    pairs = [ratio({key for key in b.patterns if keep(key)}, o.patterns) for b, o in zip(baseline, improved)]
+    reference = []
+    if len(baseline) >= 2:
+        for i, first in enumerate(baseline):
+            for j, second in enumerate(baseline):
+                if i != j:
+                    reference.append(ratio({key for key in first.patterns if keep(key)}, second.patterns))
+    # 커버리지: 개선 후 회차별 비율의 평균을 원본 회차별 비율의 범위와 비교한다.
+    union = frozenset().union(*base, *imp)
+    shares = [[Fraction(len(keys), len(union)) for keys in side] if union else [] for side in (base, imp)]
     return {
         "rule": DIFFERENCE_RULE,
-        # 보존율: 개선 후 짝 평균을 원본끼리 순서쌍 값의 범위와 비교한다.
-        "preservation": _spread_claim(compared["pair_mean"], reference["pair_ratios"]),
-        # 커버리지: 개선 후 회차별 비율의 평균을 원본 회차별 비율의 범위와 비교한다.
-        "coverage": _spread_claim(statistics.fmean(improved_rounds) if improved_rounds else None, baseline_rounds),
+        "preservation": _spread_claim(_mean([v for v in pairs if v is not None]), [v for v in reference if v is not None]),
+        "coverage": _spread_claim(_mean(shares[1]), shares[0]),
     }
 
 
@@ -298,7 +327,7 @@ def summarize(baseline: list[Round], improved: list[Round], exclusions: Exclusio
     base_domain = {key for r in baseline for key in r.patterns if in_domain(key)}
     compared = _compare(baseline, improved, keep)
     reference = _baseline_reference(baseline, keep)
-    coverage = _coverage(baseline, improved, keep)
+    base_templates, improved_templates = _coverage_sets(baseline, improved, keep)
     return {
         "format": SUMMARY_FORMAT,
         "path_profile_ref": PATH_PROFILE,
@@ -307,8 +336,8 @@ def summarize(baseline: list[Round], improved: list[Round], exclusions: Exclusio
         "excluded_by_rules": sum(1 for key in base_domain if exclusions.excludes(key)),
         **compared,
         "baseline_reference": reference,
-        "coverage": coverage,
-        "difference_claims": _difference_claims(compared, reference, coverage),
+        "coverage": _coverage(base_templates, improved_templates),
+        "difference_claims": _difference_claims(baseline, improved, keep, base_templates, improved_templates),
         "by_class": {
             "api": _compare(baseline, improved, lambda key: keep(key) and not is_static(key[1])),
             "static": _compare(baseline, improved, lambda key: keep(key) and is_static(key[1])),

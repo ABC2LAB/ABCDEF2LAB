@@ -378,6 +378,26 @@ class SummarizeTests(unittest.TestCase):
         got = summarize(baseline, improved, rule, False)["coverage"]
         self.assertEqual((got["denominator"], got["baseline"]["union"], got["improved"]["union"]), (2, 1 / 2, 1.0))
 
+    def test_coverage_counts_head_as_get(self):
+        # §7: 경로 틀 커버리지는 HEAD를 GET으로 센다. 보존율은 메서드를 그대로 둔다(같은 경로라도 다른 패턴).
+        got = summarize([rnd(("GET", "/same"))], [rnd(("HEAD", "/same"))], NONE, False)
+        self.assertEqual(got["coverage"], {"denominator": 1, "baseline": {"union": 1.0, "rounds": [1.0]},
+                                           "improved": {"union": 1.0, "rounds": [1.0]}, "baseline_only": 0, "improved_only": 0})
+        self.assertEqual(got["union_ratio"], 0.0)
+
+    def test_equal_ratios_are_inside_the_spread_exactly(self):
+        # N=3에서 같은 비율 세 개의 실수 평균은 0.10000000000000002처럼 경계를 넘는다. 정확한 분수로 비교한다.
+        shared = ("GET", "/s")
+        baseline = [rnd(shared, *(("GET", f"/{side}{i}") for i in range(9))) for side in "abc"]
+        got = summarize(baseline, [rnd(shared), rnd(shared), rnd(shared)], NONE, False)["difference_claims"]["preservation"]
+        self.assertEqual((got["claim"], got["baseline_low"], got["baseline_high"]), ("within_baseline_spread", 0.1, 0.1))
+        # 커버리지 0.2 경계: 분모 5에서 원본·개선 후 회차가 모두 한 틀씩 덮는다.
+        t = [("GET", f"/t{i}") for i in range(5)]
+        got = summarize([rnd(t[0]), rnd(t[1]), rnd(t[2])], [rnd(t[3]), rnd(t[4]), rnd(t[0])], NONE, False)
+        self.assertEqual(got["coverage"]["denominator"], 5)
+        claim = got["difference_claims"]["coverage"]
+        self.assertEqual((claim["claim"], claim["baseline_low"], claim["baseline_high"]), ("within_baseline_spread", 0.2, 0.2))
+
     def test_coverage_without_any_template_has_no_ratio(self):
         got = summarize([rnd()], [rnd()], NONE, False)["coverage"]
         self.assertEqual(got, {"denominator": 0, "baseline": {"union": None, "rounds": [None]},
