@@ -60,7 +60,7 @@ from runner_config import (  # noqa: E402
     plan_run,
 )
 from isolation_proof import PURPOSE_BROWSER_ACCEPTANCE, PURPOSE_OFFICIAL, blocked_attempts, valid_output_language  # noqa: E402
-from runner_docker import Docker, DockerError, client_environment, run_docker  # noqa: E402
+from runner_docker import Docker, DockerError, HelperCleanupError, client_environment, run_docker  # noqa: E402
 from tool_tree import collect_tree, tree_sha256  # noqa: E402
 from tool_surface import (  # noqa: E402
     BASELINE_MCP_ARGS, BASELINE_MCP_EXPOSED_BASIS, collect_cli, image_path, mcp_side, mcp_tools, mcp_version,
@@ -157,9 +157,10 @@ def _image_services(e2_mode: str) -> dict[str, tuple[str, ...]]:
 class RunFailure(Exception):
     """고정 사유 코드로 회차를 무효로 만든다."""
 
-    def __init__(self, code: str):
+    def __init__(self, code: str, also: tuple[str, ...] = ()):
         super().__init__(code)
         self.code = code
+        self.also = also  # 단계 사유와 함께 따로 남길 사유(예: 도우미 정리 실패)
 
 
 @dataclass(frozen=True)
@@ -418,8 +419,9 @@ def _step(state: _State, code: str, action: Callable):
         return action()
     except RunFailure:
         raise
-    except Exception:
-        raise RunFailure(code) from None
+    except Exception as exc:
+        # 러너 도우미 정리 실패는 보호 볼륨이 잡혀 있을 수 있다는 뜻이라 단계 사유에 묻히지 않게 따로 싣는다(#693 리뷰)
+        raise RunFailure(code, ("docker_helper_cleanup_failed",) if isinstance(exc, HelperCleanupError) else ()) from None
 
 
 def _check_phase(spec: RunSpec, ports: RunPorts, evidence, state: _State, phase: str) -> dict:
@@ -1188,6 +1190,7 @@ def execute_run(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gate
         _run_steps(spec, ports, meter, gateway, evidence, clock, state)
     except RunFailure as exc:
         reasons.append(exc.code)
+        reasons.extend(exc.also)
         # 점검 결과로 직접 실패한 경우(probe 무효·pre 요청 등) 마지막으로 시작한 단계가 아니라 그 사유의 단계다.
         state.step = exc.code
     except KeyboardInterrupt:

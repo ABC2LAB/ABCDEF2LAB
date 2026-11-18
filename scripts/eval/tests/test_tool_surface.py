@@ -362,6 +362,34 @@ class TestDigestsAndReport(unittest.TestCase):
         for args in (a for a in seen if a and a[0] == "run"):
             self.assertIn("none", args)  # 측정 컨테이너는 늘 망 없음
 
+    def test_ours_side_is_the_run_evidence_for_one_side(self):
+        # O 회차 근거(결정안 §4): 같은 측정을 이미지 ID로 바로 하고, build_report의 ours 칸과 같은 값이다.
+        ids = {"o": "sha256:" + "2" * 64, "w": "sha256:" + "3" * 64}
+
+        def run(args, timeout, max_stdout):
+            if args[:2] == ["image", "inspect"]:
+                if args[3] == "{{.Id}}":
+                    return BoundedResult(0, ids[args[4]].encode(), b"")
+                return BoundedResult(0, b"amd64\n", b"")
+            if args[-1] == "--version":
+                return BoundedResult(0, b"Version 0.0.84\n", b"")
+            return BoundedResult(0, json.dumps({"mounts": ["/usr/bin"], "entries": [entry("curl", "/usr/bin")]}).encode(), b"")
+
+        listed = [INIT, {"jsonrpc": "2.0", "id": 2, "result": {"tools": [tool("browser_click"), tool("browser_drop")]}}]
+        popen = lambda command, **o: FakeProcess(list(listed))
+        side = tool_surface.ours_side(ids["o"], ids["w"], run, popen, {})
+        self.assertEqual((side["format"], side["side"], side["image_id"], side["browser_image_id"]),
+                         ("abc2lab.tool-surface-side/v1", "ours", ids["o"], ids["w"]))
+        self.assertEqual((side["cli"]["path"], side["mcp"]["image_id"], side["mcp"]["args"]),
+                         (SANDBOX_PATH, ids["w"], list(tool_surface.OURS_MCP_ARGS)))
+        self.assertEqual(side["mcp"]["exposed"]["names"], ["browser_click"])
+        # 이미지 ID가 아니면 측정 컨테이너를 하나도 띄우지 않는다(태그는 회차 사이에 다른 이미지를 가리킬 수 있다).
+        def refuse(*args, **kwargs):
+            raise AssertionError("측정을 시작하면 안 된다")
+        for bad in (("abc2lab-product:x", ids["w"]), (ids["o"], "sha256:short")):
+            with self.subTest(bad=bad), self.assertRaises(ToolSurfaceError):
+                tool_surface.ours_side(*bad, refuse, refuse, {})
+
 
 class TestCollectorScript(unittest.TestCase):
     """컨테이너 안 수집 스크립트를 이 머신의 임시 디렉터리로 돌려 본다(Docker 없이)."""
