@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import synthetic_gt  # noqa: E402,F401  합성 정답 목록을 먼저 끼운다(정답표 노출 방지)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from aggregate import ScanVerdict
@@ -22,7 +23,7 @@ from run_fixture import KEYS
 from run_fixture_v11 import E2_STUB_PLACEMENT, STUB_RECONCILIATION, make_v11, snapshot
 from test_score import _RunDir, _record
 
-KEY = "basketAccessChallenge"
+KEY = "synthBacH1Challenge"
 
 
 def drop(rows, row):
@@ -109,7 +110,7 @@ class TestRejectedV11(_V11):
 
     def test_iw06_events_must_equal_the_delta(self):
         # 사전 해결 항목(pre=true)에 대한 이벤트: digest·시각은 올바르게 복사하고 키만 델타 밖으로.
-        presolved = "feedbackChallenge"
+        presolved = "synthBacV2Challenge"
         self.reject("델타", pre={presolved: True}, solved={KEY: True, presolved: True},
                     tamper_events=lambda e: e.append(dict(e[0], id="solve-x", challenge=presolved)))
         self.reject("델타", "b", solved={KEY: True}, tamper_events=lambda e: e.clear())

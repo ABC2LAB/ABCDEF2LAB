@@ -93,6 +93,14 @@ def _load(path: Path = GT_FILE) -> tuple[Challenge, ...]:
 ALL_CHALLENGES: tuple[Challenge, ...] = _load()
 
 
+def use_ground_truth_file(path: Path) -> None:
+    """시험 전용: 정답 목록을 다른 파일(합성 목록)로 바꾼다(2026-11-18, 정답표 노출 방지). 시험은 실제 정답 대신 같은 묶음·축
+    구성의 합성 목록으로 돌고, 실제 정답이 꼭 필요한 시험만 evaluation-gt/ 아래에서 실제 목록으로 돈다. 함수들은 호출 때 이
+    전역을 읽으므로 바꾼 뒤의 호출부터 적용된다."""
+    global ALL_CHALLENGES
+    ALL_CHALLENGES = _load(Path(path))
+
+
 def core_gt() -> tuple[Challenge, ...]:
     """코어 GT = 인가 9개 (수평 5 · 수직 4). 미탐/확정의 기준 분모."""
     return tuple(c for c in ALL_CHALLENGES if c.in_core_gt)

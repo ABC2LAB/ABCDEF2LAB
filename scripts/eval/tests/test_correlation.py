@@ -20,17 +20,18 @@ from types import SimpleNamespace
 
 EVAL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, EVAL_DIR)
+import synthetic_gt  # noqa: E402,F401  합성 정답 목록을 먼저 끼운다(정답표 노출 방지)
 
-from correlation import DEFAULT_PATH, CorrelationError, load_correlation  # noqa: E402
+from correlation import CorrelationError, load_correlation  # noqa: E402
 from ground_truth import Axis, core_gt  # noqa: E402
 
 _AXIS_NAME = {Axis.HORIZONTAL: "horizontal", Axis.VERTICAL: "vertical"}
 
 # 합성 type 매핑 — 코어 키 몇 개에만 준다. 나머지는 빈 배열(unmapped).
 _SYNTHETIC = {
-    "basketAccessChallenge": {"types": ["basket"]},
-    "forgedReviewChallenge": {"types": ["review"], "vuln_class": "idor"},
-    "adminSectionChallenge": {"types": ["admin-panel"]},
+    "synthBacH1Challenge": {"types": ["basket"]},
+    "synthBacH4Challenge": {"types": ["review"], "vuln_class": "idor"},
+    "synthBacV1Challenge": {"types": ["admin-panel"]},
 }
 
 
@@ -75,26 +76,26 @@ class TestNormal(_GtFixture):
     def test_matches_dict_and_attribute_records(self) -> None:
         """계약 필드 모양이면 dict든 속성 객체든 같은 키 — 파서 타입에 묶이지 않는다."""
         table = self.load()
-        self.assertEqual(table.correlate(_rec("basket:7")), "basketAccessChallenge")
+        self.assertEqual(table.correlate(_rec("basket:7")), "synthBacH1Challenge")
         attr = SimpleNamespace(axis="horizontal", vuln_class="idor", resource_ref="basket:7")
-        self.assertEqual(table.correlate(attr), "basketAccessChallenge")
+        self.assertEqual(table.correlate(attr), "synthBacH1Challenge")
 
     def test_type_prefix_ignores_id(self) -> None:
         """같은 type이면 id가 뭐든 같은 챌린지 — id엔 안 건다."""
         table = self.load()
         keys = {table.correlate(_rec(ref)) for ref in ("basket:1", "basket:2", "basket:abc")}
-        self.assertEqual(keys, {"basketAccessChallenge"})
+        self.assertEqual(keys, {"synthBacH1Challenge"})
 
     def test_type_may_contain_colons(self) -> None:
         """type은 콜론을 품을 수 있다 — 마지막 콜론 앞이 type, 뒤가 id."""
-        table = self.load({"rules": _rules({"basketAccessChallenge": {"types": ["rest:basket"]}})})
-        self.assertEqual(table.correlate(_rec("rest:basket:42")), "basketAccessChallenge")
+        table = self.load({"rules": _rules({"synthBacH1Challenge": {"types": ["rest:basket"]}})})
+        self.assertEqual(table.correlate(_rec("rest:basket:42")), "synthBacH1Challenge")
         self.assertIsNone(table.correlate(_rec("rest:basket")))  # type 'rest', id 'basket' — 미등록
 
     def test_vuln_class_constraint(self) -> None:
         table = self.load()
-        self.assertEqual(table.correlate(_rec("review:3")), "forgedReviewChallenge")
-        self.assertEqual(table.correlate(_rec("admin-panel:main")), "adminSectionChallenge")
+        self.assertEqual(table.correlate(_rec("review:3")), "synthBacH4Challenge")
+        self.assertEqual(table.correlate(_rec("admin-panel:main")), "synthBacV1Challenge")
 
     def test_unmapped_lists_typeless_challenges(self) -> None:
         table = self.load()
@@ -126,7 +127,7 @@ class TestAmbiguity(_GtFixture):
     def test_two_rules_sharing_type_rejected_at_load(self) -> None:
         """두 챌린지가 같은 type을 쓰면 로드에서 모호로 막는다(런타임 전에)."""
         overrides = dict(_SYNTHETIC)
-        overrides["basketManipulateChallenge"] = {"types": ["basket"]}
+        overrides["synthBacH2Challenge"] = {"types": ["basket"]}
         self.load_error({"rules": _rules(overrides)}, "type 'basket'", "모호")
 
 
@@ -137,12 +138,12 @@ class TestLoadValidation(_GtFixture):
 
     def test_bac_only_challenge_rejected(self) -> None:
         """BAC category엔 있어도 코어 9종이 아니면 거부 — 기준은 코어 GT."""
-        rules = _rules() + [{"challenge": "csrfChallenge", "axis": "horizontal", "vuln_class": None, "types": []}]
-        self.load_error({"rules": rules}, "'csrfChallenge'")
+        rules = _rules() + [{"challenge": "synthBacOut1Challenge", "axis": "horizontal", "vuln_class": None, "types": []}]
+        self.load_error({"rules": rules}, "'synthBacOut1Challenge'")
 
     def test_missing_core_challenge(self) -> None:
-        rules = [r for r in _rules() if r["challenge"] != "dataExportChallenge"]
-        self.load_error({"rules": rules}, "코어 GT 챌린지 누락", "dataExportChallenge")
+        rules = [r for r in _rules() if r["challenge"] != "synthAuthzH1Challenge"]
+        self.load_error({"rules": rules}, "코어 GT 챌린지 누락", "synthAuthzH1Challenge")
 
     def test_duplicate_challenge(self) -> None:
         rules = _rules() + [_rules()[0]]
@@ -151,7 +152,7 @@ class TestLoadValidation(_GtFixture):
     def test_axis_must_match_ground_truth(self) -> None:
         rules = _rules()
         for r in rules:
-            if r["challenge"] == "basketAccessChallenge":
+            if r["challenge"] == "synthBacH1Challenge":
                 r["axis"] = "vertical"
         self.load_error({"rules": rules}, "GT 축 HORIZONTAL과 다름")
 
@@ -161,24 +162,20 @@ class TestLoadValidation(_GtFixture):
         self.load_error({"rules": rules}, "모르는 필드: 'resource_patterns'")
 
     def test_bad_type(self) -> None:
-        self.load_error({"rules": _rules({"basketAccessChallenge": {"types": [""]}})}, "잘못된 type")
+        self.load_error({"rules": _rules({"synthBacH1Challenge": {"types": [""]}})}, "잘못된 type")
 
     def test_broken_json_and_shape(self) -> None:
         self.load_error(None, "JSON 파싱 실패", raw='{"rules": [')
         self.load_error({"items": []}, "rules 배열이 없음")
 
     def test_errors_aggregated(self) -> None:
-        rules = [r for r in _rules() if r["challenge"] != "dataExportChallenge"]
+        rules = [r for r in _rules() if r["challenge"] != "synthAuthzH1Challenge"]
         rules[0]["axis"] = "sideways"
         msg = self.load_error({"rules": rules}, "axis 부정", "코어 GT 챌린지 누락")
         self.assertIn("오류 2건", msg)
 
 
 class TestRepoGtData(unittest.TestCase):
-    def test_repo_gt_file_covers_core_nine(self) -> None:
-        table = load_correlation(DEFAULT_PATH)
-        self.assertEqual(sorted(r.challenge for r in table.rules), sorted(c.key for c in core_gt()))
-
     def test_gt_not_referenced_outside_eval(self) -> None:
         """GT 상관은 평가 전용 — 엔진·다른 경로에서 참조 금지(절대규칙 7)."""
         git = shutil.which("git")

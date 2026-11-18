@@ -6,7 +6,7 @@
 
 선정 출처·기준·축 정의는 [평가 프로토콜 §3](../../docs/evaluation/evaluation-protocol.md#3-챌린지-선정-정답-역할-gt-제작-아님)이다.
 채점기가 읽는 기계 판은 같은 디렉터리의 `challenges.json`이고(`scripts/eval/ground_truth.py`가 읽는다), 아래 표와 같은 목록이다
-(시험이 대조한다).
+(시험이 대조한다). 실제 정답이 필요한 시험은 `evaluation-gt/tests/`에 있고, 평가 스크립트 시험(`scripts/eval/tests`)은 합성 정답 목록(`scripts/eval/tests/data/synthetic-gt.json`)으로 돈다.
 
 ### 표 1 — Broken Access Control category 전체 10개 (부차 지표 기준)
 | key | name | diff | 축 | 코어 GT | 비고 |

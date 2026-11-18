@@ -12,6 +12,7 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import synthetic_gt  # noqa: E402,F401  합성 정답 목록을 먼저 끼운다(정답표 노출 방지)
 
 from aggregate import ScanVerdict  # noqa: E402
 from collect import VerdictRecord  # noqa: E402
@@ -25,8 +26,8 @@ from evidence import (  # noqa: E402
     ref_targets_challenge,
 )
 
-_BASKET = "basketAccessChallenge"
-_FEEDBACK = "forgedFeedbackChallenge"
+_BASKET = "synthBacH1Challenge"
+_FEEDBACK = "synthBacH3Challenge"
 
 # 합성 상관: basket은 vuln_class 무관, feedback은 vuln_class=idor일 때만.
 _CORRELATE = CorrelationTable((

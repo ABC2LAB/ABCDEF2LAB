@@ -13,6 +13,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import synthetic_gt  # noqa: E402,F401  합성 정답 목록을 먼저 끼운다(정답표 노출 방지)
 
 from control_demo import DemoError, check_columns, main, read_column, render_table  # noqa: E402
 from run_record import sign_run_record  # noqa: E402
