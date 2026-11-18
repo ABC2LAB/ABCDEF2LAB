@@ -8,7 +8,7 @@
 - **B(원본 엔진, `artex-direct/v1`)**: 지금 공식 B 회차의 v1.1 기록을 그대로 낸다. 분리 배치 B 회차는 #699로 서명 조건에 `split: true`와 경로 가림 키 지문을 더 남긴다. 기록 모양은 그대로다.
 - **O(제품, `exploration-split/v1`)**: 지금은 서명 전 요약만 낸다(`runner_split_run.execute_split_run`). 이 문서대로 B와 같은 v1.1 기록(서명된 러너 기록 + 격리 근거 + 해결 이벤트)을 낸다.
 - **첫 지표는 엔진 귀속 해결 수다**(평가 프로토콜 §5.1). 그래서 O에서 먼저 필요한 것은 점수판 pre/post, 격리 증명, 해결 이벤트(`isolated_window`)다.
-- **판정 레코드는 양쪽 다 지금 `records: null`(판정 미수집)이다.** 판정 내보내기 API(`/api/tasks/{id}/verdict-exports`)는 [계약 제안](../contracts/verdict-record-page-api-proposal.md)에만 있고 서버 경로가 없다. B(원본 ARTEX)는 E③가 없어서 앞으로도 null이다. O는 제품에 내보내기 경로가 생기면(E③ 통합) 러너가 받는다. 그 전까지 채점기는 run-record v1.1 §3대로 그 회차 GT 판정을 판단불가(사유: 판정 미수집)로 둔다.
+- **판정 레코드는 지금·첫 비교 범위에서 양쪽 다 `records: null`(판정 미수집)이다.** 판정 내보내기 API(`/api/tasks/{id}/verdict-exports`)는 [계약 제안](../contracts/verdict-record-page-api-proposal.md)에만 있고 서버 경로가 없다. 채점기는 run-record v1.1 §3대로 그 회차 GT 판정을 판단불가(사유: 판정 미수집)로 둔다. 이것은 지금 범위의 한정이지 영구 제외가 아니다. 평가 프로토콜 §5.1대로 판정 비교가 들어오면 B는 원본 출력 어댑터(A5) 출력, O는 동결 내보내기로 `records`를 채운다.
 - 범위 밖: 통제 효과 지표(E② 시도 대조·차단 시도 수, 프로토콜 §8). O의 E② 저널을 평가 내보내기로 읽는 일은 계획 v4.2 3번이다. 그 전까지 O의 `attempt_reconciliation`은 null이고 차단 시도 수는 미수집이다.
 
 ## 2. 회차 문맥 다섯 칸
@@ -47,7 +47,8 @@ B와 같은 단계 이름을 쓰고, O에서 그 순간에 해당하는 곳을 �
 | `observer_readonly`·`observer_request` | 관측기 GET 로그 | 같음(`eval-obs`, 분리 배치 overlay에 있다) |
 | `engine_meter_summary`·`drain` | 계측기 요약·drain | 같음. 입구별 전달 수(본 입구·탐색 입구)를 함께 싣는다 |
 | `run_conditions` | §6 | §6 |
-| `verdict_collection` | 판정 수집 결과 | 지금은 `not_collected`(§1). E③ 확정 결과를 받게 되면 §7 |
+| `verdict_collection` | 판정 내보내기 수집·무결성 | 지금은 `not_collected`(§1). 뜻은 바꾸지 않는다(§7) |
+| `e3_confirmation`(새 선택 행, §7) | 없음(원본 엔진) | E③ 확정 단계 결과의 `status`·`reason` |
 | `attempt_reconciliation` | E② 자리 회차의 시도 대조 | null(§1 범위 밖) |
 
 ## 5. 격리 증명 칸
@@ -77,10 +78,10 @@ B와 같은 단계 이름을 쓰고, O에서 그 순간에 해당하는 곳을 �
 
 E③ 인터페이스(#698)의 확정 단계 결과 `e3-confirmation-run/v1`에는 `status`·`reason`·`verdicts`·`candidates`가 있다. 공식 회차에서 `status=confirmation_integrity_failed`(진위 실패, 판정 행 없음)가 나오면 결과 보고에 보여야 한다(사용자 조건).
 
-- 새 행을 만들지 않고 기존 서명 행 `verdict_collection`(`status`·`reason`)을 쓴다. 이 행은 이미 `collected`·`not_collected`·`integrity_failed`를 구분하고, `integrity_failed`면 `records`가 없어야 한다(판정 행 없음과 같은 뜻).
-- 대응: E③ 결과가 판정 행을 내면 `collected`(+ `records`), `confirmation_integrity_failed`면 `integrity_failed`이고 `reason`은 E③ 결과의 `reason` 고정 코드, 결과를 못 받으면 `not_collected`와 수집 실패 사유다. 원문 값·후보 내용은 싣지 않는다.
-- 채점기는 `integrity_failed` 회차의 GT 판정을 판단불가로 두고(판정 미수집과 같은 처리), 결과 보고의 회차 주석에 `status`·`reason`을 그대로 보인다. 지금 채점기는 이 행을 검증만 하고 보고에는 싣지 않으므로, 보고 주석은 R4에서 더한다.
-- 실제 수집 경로(제품 API·파일)는 판정 저장 PR 뒤에 정한다. 후보 수·판정 수처럼 칸을 더 실어야 하면 그때 이 행에 선택 칸으로 더한다.
+- `verdict_collection`의 뜻은 바꾸지 않는다. 이 행은 판정 **내보내기** 수집·무결성이다. `integrity_failed`(내보내기 변조·불일치)면 지금처럼 채점 전체를 멈춘다(`isolation_proof.verdict_collection`, run-record v1.1 §3.1). E③ 결과를 온전히 받으면 `collected`이고, 판정 행이 0개면 `records`는 빈 묶음이다.
+- E③ 확정 결과는 **따로 서명 행** `e3_confirmation`(선택 행, `status`·`reason`)에 싣는다. 값은 E③ 계약의 닫힌 값 그대로다(`disabled`·`start_refused`·`completed`·`interrupted`·`confirmation_integrity_failed`). 원문 값·후보 내용은 싣지 않는다. 제품이 회차 안에서 스스로 잡은 결과라 회차는 유효하다. 내보내기 무결성과 섞지 않는다.
+- 채점기 처리(제안): `completed`는 그대로 채점한다. `confirmation_integrity_failed`·`disabled`·`start_refused`는 그 회차 GT 판정을 판단불가로 둔다. "발견 없음"으로 세지 않는다. `interrupted`는 받은 판정만 쓰고 나머지는 판단불가다. 어느 경우든 결과 보고의 회차 주석에 `status`·`reason`을 보인다. 해결 귀속(첫 지표)은 이 행과 무관하게 따로 검증한다.
+- 이 처리는 판정 지표 해석 규칙이라 정본(평가 프로토콜 §4·§5, run-record v1.1 §3)도 같이 고쳐야 한다. 이 설계가 확정되면 R4에서 정본·수용 기준과 함께 바꾼다. 실제 수집 경로(제품 API·파일)는 판정 저장 PR 뒤에 정한다.
 
 ## 8. 검증 방법(공식 측정 전)
 
@@ -95,10 +96,10 @@ E③ 인터페이스(#698)의 확정 단계 결과 `e3-confirmation-run/v1`에�
 | 단계 | 내용 |
 |---|---|
 | A | #699: 분리 배치 공식 회차 경로 기록·키 지문(머지 대기) |
-| R1 | O 회차 문맥·타임라인·pre/post 점수판 파일·관측기 GET. B 조립 함수(`_build_record`)를 배치와 무관한 입력으로 나눠 B·O가 함께 쓴다. O `verdict_collection`은 `not_collected`(§7 자리) |
+| R1 | O 회차 문맥·타임라인·pre/post 점수판 파일·관측기 GET. B 조립 함수(`_build_record`)를 배치와 무관한 입력으로 나눠 B·O가 함께 쓴다. O `verdict_collection`은 `not_collected`, `e3_confirmation` 행은 수집 경로가 생길 때까지 없음(§7) |
 | R2 | O 격리 근거 행(§4)과 격리 증명(§5). 채점기 `isolation_proof`가 분리 배치 근거를 받는다 |
 | R3 | 해결 이벤트, 러너 키 서명, O 결과 서명. 보존 sidecar v3 O 조립(경계 원자료 검증 포함)도 같은 서명 경로에서 마친다 |
-| R4 | 채점기 분리 배치 표 규칙(§6), §8 1번 fixture 시험 |
+| R4 | 채점기 분리 배치 표 규칙(§6), `e3_confirmation` 검증·보고 주석과 정본 개정(§7), §8 1번 fixture 시험 |
 
 ## 10. 열린 항목
 
