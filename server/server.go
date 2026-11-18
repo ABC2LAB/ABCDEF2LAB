@@ -2052,23 +2052,23 @@ func (s *Server) taskCoverage(w http.ResponseWriter, r *http.Request) {
 // taskCoverageGraph returns the force-directed asset coverage graph for a task:
 // all in-scope assets (每种类型) + 连接用的根域名/公司节点, each carrying tested/in_scope.
 func (s *Server) taskCoverageGraph(w http.ResponseWriter, r *http.Request) {
-	t, ok := s.m.Task(r.PathValue("id"))
-	if !ok {
-		writeErr(w, 404, "task not found")
-		return
-	}
-	as := s.m.Assets()
-	if as == nil {
+	if s.m.Assets() == nil {
 		writeErr(w, 503, errAssetStoreDisabled)
 		return
 	}
-	taskID, _ := strconv.ParseInt(t.ID, 10, 64)
-	g, err := as.BuildCoverageGraph(taskID, t.ExpID)
-	if err != nil {
-		writeErr(w, 500, err.Error())
-		return
+	var bound int64
+	if s.firstDiagnosis {
+		s.firstModelMu.RLock()
+		if s.firstModel != nil {
+			bound = s.firstModel.TaskNumber
+		}
+		s.firstModelMu.RUnlock()
+		if bound <= 0 {
+			writeErr(w, 403, "선택한 작업의 자산 그래프만 사용할 수 있습니다")
+			return
+		}
 	}
-	writeJSON(w, 200, g)
+	s.serveCoverageGraph(w, r, bound)
 }
 
 // taskAssetRefs returns the intents / facts / findings in this task anchored to a

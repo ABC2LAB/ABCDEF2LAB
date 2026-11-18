@@ -39,9 +39,14 @@ type accessMapTestFixture struct {
 	spec    controlledReadSpec
 }
 
-func newAccessMapTestFixture(t *testing.T) *accessMapTestFixture {
+func newAccessMapTestFixture(t *testing.T, installed ...*db.DB) *accessMapTestFixture {
 	t.Helper()
-	pg := approvalTestDB(t)
+	var pg *db.DB
+	if len(installed) == 1 {
+		pg = installed[0]
+	} else {
+		pg = approvalTestDB(t)
+	}
 	task, err := pg.CreateTask("synthetic access map", "owned fixture only", nil, 0, 0)
 	if err != nil {
 		t.Fatal(err)
