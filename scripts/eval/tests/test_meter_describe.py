@@ -52,6 +52,28 @@ class TestCheck(unittest.TestCase):
         del missing["markers"]["llm-verified"]
         self.assertEqual(check(missing, SHA), ["meter_marker_fields_mismatch:llm-verified"])
 
+    def test_marker_field_lists_must_be_string_arrays(self):
+        # #684 리뷰: 객체를 넣으면 sorted가 키만 보고 통과했고, 숫자·글자 섞인 배열은 TypeError로 사유 없이 끝났다.
+        want = EXPECTED["llm-verified"]
+        shapes = {
+            "object_with_expected_keys": {"required": {name: 1 for name in want["required"]}, "optional": []},
+            "mixed_types": {"required": [1, "a"], "optional": []},
+            "integers": {"required": [1, 2], "optional": []},
+            "null_optional": {"required": list(want["required"]), "optional": None},
+            "string_instead_of_list": {"required": " ".join(want["required"]), "optional": []},
+            "duplicate": {"required": list(want["required"]) + [want["required"][0]], "optional": []},
+            "nested_list": {"required": [list(want["required"])], "optional": []},
+            "missing_optional": {"required": list(want["required"])},
+            "extra_key": {"required": list(want["required"]), "optional": [], "more": []},
+            "not_a_field_name": {"required": list(want["required"])[:-1] + ["Bad Name"], "optional": []},
+        }
+        for case, shape in shapes.items():
+            raw = described()
+            raw["markers"]["llm-verified"] = shape
+            with self.subTest(case=case):
+                self.assertEqual(check(raw, SHA), ["meter_marker_fields_mismatch:llm-verified"])
+                summary(raw, check(raw, SHA), SHA)  # 근거 요약도 예외 없이 만든다(meter-preflight.json)
+
     def test_build_must_be_the_declared_commit(self):
         self.assertEqual(check(described(source_revision=""), SHA), ["meter_build_unknown"])
         self.assertEqual(check(described(source_revision="short"), SHA), ["meter_build_unknown"])

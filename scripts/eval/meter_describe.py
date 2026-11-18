@@ -42,6 +42,17 @@ def parse(raw: bytes) -> object:
         return None
 
 
+_FIELD = re.compile(r"[a-z][a-z0-9_]{0,63}")
+
+
+def _field_names(value: object) -> list[str] | None:
+    """표식 칸 이름 목록(문자열 배열)이면 정렬한 목록, 아니면 None. 객체를 넣으면 sorted가 키만 보고, 숫자·글자가 섞이면
+    비교가 예외를 낸다(#684 리뷰) — 모양부터 확인한다. 중복은 기대 목록(중복 없음)과 비교에서 걸린다."""
+    if not isinstance(value, list) or any(not isinstance(name, str) or not _FIELD.fullmatch(name) for name in value):
+        return None
+    return sorted(value)
+
+
 def check(describe: object, expected_source_sha: str) -> list[str]:
     """다르면 사유(정렬), 같으면 빈 목록. 옛 이미지는 describe 역할이 없어 출력이 없으므로 meter_describe_unavailable이다."""
     if not isinstance(describe, dict) or describe.get("format") != FORMAT:
@@ -50,8 +61,8 @@ def check(describe: object, expected_source_sha: str) -> list[str]:
     markers = describe.get("markers")
     for name, want in EXPECTED.items():
         got = markers.get(name) if isinstance(markers, dict) else None
-        if (not isinstance(got, dict) or sorted(got.get("required") or []) != want["required"]
-                or sorted(got.get("optional") or []) != sorted(want["optional"])):
+        if (not isinstance(got, dict) or set(got) != {"required", "optional"}
+                or _field_names(got["required"]) != want["required"] or _field_names(got["optional"]) != sorted(want["optional"])):
             reasons.add(f"meter_marker_fields_mismatch:{name}")
     build = describe.get("build") if isinstance(describe.get("build"), dict) else {}
     revision = build.get("source_revision") or build.get("vcs_revision") or ""
