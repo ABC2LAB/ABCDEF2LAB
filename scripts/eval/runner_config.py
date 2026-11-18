@@ -105,7 +105,7 @@ MAX_VERIFY_INTERVAL_SECONDS = 600
 # 계측기 generation 조회 한 번의 시간 상한(cmd/eval-meter generationLookupTimeout과 같은 값). 조회 전체는 시도 수 × 간격 +
 # 이 값에서 멈추고 마지막 조회 하나가 이 값만큼 더 걸릴 수 있다. 러너 대기 시한은 그보다 VERIFY_WAIT_MARGIN_SECONDS 길어야
 # 표식을 늘 받는다(2026-11-18 VAmPI 유료 파일럿: 60×5초 설정에 대기 300초라 표식 없이 시한을 넘었다).
-GENERATION_LOOKUP_TIMEOUT_SECONDS = 30
+GENERATION_LOOKUP_TIMEOUT_SECONDS = 10
 VERIFY_WAIT_MARGIN_SECONDS = 30
 MAX_HOST_LISTEN_ALLOW = 32
 MAX_REASON_LENGTH = 200
