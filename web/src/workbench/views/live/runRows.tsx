@@ -20,7 +20,8 @@ export function RunRow({ row, onPick }: { row: URLRunSummary; onPick?: () => voi
   const { openInsp } = useShell();
   const named = !!row.display_name?.trim();
   const active = activeURLRun(row);
-  const approvalIssue = active && row.approval_status !== "not_revalidated";
+  const approvalIssue = row.action_required && row.approval_status !== "not_revalidated";
+  const showStatus = active || row.action_required;
   return (
     <button
       type="button"
@@ -50,14 +51,13 @@ export function RunRow({ row, onPick }: { row: URLRunSummary; onPick?: () => voi
           ) : null}
           <span className={s["r-name"]}>{maskSecrets(row.display_name?.trim() || row.id)}</span>
         </span>
-        {/* 아래 줄: 끝난 점검은 단계(결과 저장) · 승인 상태(승인 만료 등) · 확인 필요를 뺐다(사용자 11/18) — 이름을 붙인 줄의
-            진단 ID 와 서버 사유만. 진행 중인 점검은 지금 단계 · 승인 · 확인 필요(승인 대기 등 사람이 할 일)를 그대로 둔다 */}
-        {active || named || row.reason_code ? (
+        {/* 사람이 할 일이 남은 줄은 종료 여부와 관계없이 승인 상태와 확인 필요를 보인다. */}
+        {showStatus || named || row.reason_code ? (
           <span className={s["r-s"]}>
             {named ? <span>{row.id}</span> : null}
             {active ? <span>{urlPhaseLabels[row.phase]}</span> : null}
-            {active ? <span>{runApprovalLabels[row.approval_status]}</span> : null}
-            {active && row.action_required ? <span>확인 필요</span> : null}
+            {active || approvalIssue ? <span>{runApprovalLabels[row.approval_status]}</span> : null}
+            {row.action_required ? <span>확인 필요</span> : null}
             {row.reason_code ? (
               <span>
                 {Object.hasOwn(urlReasonLabels, row.reason_code) ? urlReasonLabels[row.reason_code] : "서버 사유 있음"}

@@ -22,6 +22,7 @@ import { LiveRailTasks } from "../live/rail";
 import { resetUrl, useUrl } from "../live/urlDiagnosis";
 import { useUrlRuns } from "../live/urlRunList";
 import { type Shell, ShellContext, type View } from "../shell";
+import { RunRow } from "../views/live/runRows";
 import { recDoneKinds, recRunKind, UrlFinishedLive, UrlRunningLive } from "../views/live/urlRecords";
 
 const noop = () => undefined;
@@ -134,7 +135,7 @@ const projection = (job: URLDiagnosisJob): URLRunSummary => ({
   result_ready: job.result_ready,
   report_available: job.result_ready && !!job.task_id,
   approval_status: "not_revalidated",
-  action_required: true,
+  action_required: false,
 });
 function savedRows(jobs: URLDiagnosisJob[]) {
   useUrlRuns.setState({
@@ -153,6 +154,26 @@ function records(finished = false) {
     </ShellContext.Provider>,
   );
 }
+it.each([
+  ["completed", "expired", "점검 완료", "승인 만료"],
+  ["awaiting_approval", "not_revalidated", "승인 대기", "확인 필요"],
+] as const)("%s 회차에 할 일이 있으면 목록에서 확인 신호를 보인다", (state, approval_status, pill, detail) => {
+  const row: URLRunSummary = {
+    ...projection(state === "completed" ? completed : running),
+    state,
+    approval_status,
+    action_required: true,
+  };
+  render(
+    <ShellContext.Provider value={shell("running")}>
+      <RunRow row={row} />
+    </ShellContext.Provider>,
+  );
+  const item = screen.getByRole("button", { name: /job-1/ });
+  expect(item).toHaveTextContent(pill);
+  expect(item).toHaveTextContent(detail);
+  expect(item).toHaveTextContent("확인 필요");
+});
 describe("서버 보존 목록의 상태 필터와 선택한 보고서", () => {
   it("여러 서버 회차를 상태로 거르고 목록에 없는 URL·진행률·판정을 만들지 않는다", () => {
     savedRows([
@@ -208,10 +229,9 @@ describe("서버 보존 목록의 상태 필터와 선택한 보고서", () => {
       intent_outcomes: { done: 1, incomplete: 1, stopped: 0, unknown: 0, policy_limited: 0 },
     });
     records(true);
-    // 오른쪽 패널 실행 결과는 일부만 마감한 회차도 '점검 완료'만 적는다(사용자 11/18 결정 — 남은 작업 · 결과 불명은 점검 진행
-    // 상태 카드에 남는다). 그래도 정상 대조를 '발견 없음'으로 올리지는 않는다(절대규칙 5)
+    // 일부만 마감한 회차는 패널에서도 완전한 점검으로 읽히지 않는다.
     await waitFor(() =>
-      expect(screen.getByRole("complementary", { name: "선택한 점검" })).toHaveTextContent("실행 결과점검 완료"),
+      expect(screen.getByRole("complementary", { name: "선택한 점검" })).toHaveTextContent("실행 결과일부 완료"),
     );
     expect(screen.queryByRole("button", { name: /^발견 없음/ })).toBeNull();
     // 패널 머리 글엔 '끝난 점검'을 적지 않고 대상 주소만, 서버 작업 번호는 '작업 #n' — 목록 줄에도 같은 번호(사용자 11/18)
@@ -230,6 +250,15 @@ describe("서버 보존 목록의 상태 필터와 선택한 보고서", () => {
     expect(panel).not.toHaveTextContent("다시 점검은 별도");
     expect(screen.queryByText(/보존된 상태입니다/)).toBeNull();
     expect(screen.queryByText(/활성 회차|조회 \d+건/)).toBeNull();
+  });
+  it("계획을 실행하지 않은 완료 회차는 검사 안 함으로 표시한다", async () => {
+    selectSaved({
+      ...completed,
+      outcome: "no_intents",
+      intent_outcomes: { done: 0, incomplete: 0, stopped: 0, unknown: 0, policy_limited: 0 },
+    });
+    records(true);
+    expect(screen.getByRole("complementary", { name: "선택한 점검" })).toHaveTextContent("실행 결과검사 안 함");
   });
   it("시험 계정 인증은 라벨 순으로 '계정 A · 계정 B'로 보이고 서버 라벨은 마우스를 올리면 보인다", async () => {
     vi.mocked(api.fetchRemediation).mockResolvedValue({ task_id: 42, entries: [] });

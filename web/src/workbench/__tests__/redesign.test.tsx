@@ -758,8 +758,9 @@ describe("자산 탐색", () => {
       </ShellContext.Provider>,
     );
     const bar = screen.getByRole("progressbar", { name: /탐색 진행/ });
-    expect(bar).toHaveAttribute("aria-valuenow", "100");
-    expect(bar).toHaveAttribute("aria-valuetext", "100% · 탐색 완료");
+    expect(bar).toHaveAttribute("aria-valuenow", "75");
+    expect(bar).toHaveAttribute("aria-valuetext", "탐색 완료 · 방문 9 / 페이지 상한 12");
+    expect(bar.querySelector("i")).toHaveStyle({ width: "100%" });
     expect(bar.className).toMatch(/prog-ok/); // 완료는 초록
     expect(document.getElementById("cNow")).toHaveTextContent(/^탐색을 마쳤습니다$/);
     expect(screen.queryByText(/^탐색 상태/)).toBeNull();

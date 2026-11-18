@@ -265,12 +265,14 @@ function accountName(i: number): string {
   return i < 26 ? `계정 ${String.fromCharCode(65 + i)}` : `계정 ${i + 1}`;
 }
 
-/**
- * 오른쪽 패널 실행 결과 (사용자 11/18 '점검 완료만'): 끝났으면 '점검 완료', 중지면 '중지됨'. 계획 일부만 마감한 회차도
- * '점검 완료'로 적는다(사용자 결정) — 남은 작업 · 결과 불명 같은 자세한 줄은 점검 진행 상태 카드(urlOutcomeText)에 남고,
- * 정상 대조를 '발견 없음'으로 올리지 않는 것(jobResult)은 그대로다.
- */
-const RESULT_TEXT: Partial<Record<UrlState, string>> = { completed: "점검 완료", cancelled: "중지됨" };
+/** 오른쪽 패널에서도 마감 결과와 실제 점검 수행 여부를 구분한다. */
+function resultText(job: URLDiagnosisJob): string | undefined {
+  if (job.state === "cancelled") return "중지됨";
+  if (job.state !== "completed") return undefined;
+  if (job.outcome === "no_intents") return "검사 안 함";
+  if (job.outcome === "partial") return "일부 완료";
+  return "점검 완료";
+}
 const OPEN_TEXT = {
   live: "진행 화면 열기",
   crawl: "이어서 보기",
@@ -385,7 +387,7 @@ export function JobSummary({
   if (flow) stageText = flowStageText[flow.stage];
   else if (job) stageText = urlStateText(job.state, verified);
   const profile = cap.kind === "v2" ? cap.catalog.profiles.find((p) => p.id === handle.input.profile_id) : undefined;
-  const outcomeText = job ? RESULT_TEXT[job.state] : undefined;
+  const outcomeText = job ? resultText(job) : undefined;
   const pending = approvals?.length ?? 0;
   // 지금 하는 일 (시안 진행 중 상세): 진행 중인 계획 → 지금 보는 경로 → 단계 순으로 서버 값만
   const nowText = flow?.plan?.find((p) => planState(p.state).row === "run")?.title ?? flow?.current_path ?? null;

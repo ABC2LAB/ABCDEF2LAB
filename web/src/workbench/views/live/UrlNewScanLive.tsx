@@ -993,9 +993,7 @@ export function UrlNewScanLive() {
             </dl>
           </div>
           <div className={s.isec}>
-            {/* 안전 장치 (시안 v41): 짧은 말로, 서버 값 · 절대규칙 6 고지는 그대로. 위 요약 줄(사이트 · 쓰기 요청)과 겹치는
-                줄, 늘 같은 말이라 뜻을 더하지 않는 줄(기록 남김 · 범위 확인 전 안내)은 뺐다(사용자 11/18 '쓸모 없는 건 지워') —
-                자세한 정책은 '정책 전체 보기' */}
+            {/* 범위 확인 뒤 서버가 결속한 상한과 승인 만료는 시작 결정을 위해 이 화면에 보인다. */}
             {/* 전송 통제 정책은 결과가 아니라 범위라 여기서 연다(작업대 실데이터 계약 §7-(1)) */}
             <div className={s.sh}>
               <h3>안전 장치</h3>
@@ -1017,8 +1015,17 @@ export function UrlNewScanLive() {
                   />
                 ) : null}
                 {excludedCount ? <Rule t="제외한 경로는 요청 안 함" sub={`직접 넣은 ${excludedCount}개`} /> : null}
-                {/* 요청 · 시간 · 비용 상한 줄은 뺐다(사용자 11/18) — 상한 값은 '정책 전체 보기' */}
-                {scope.model ? <Rule t="외부 모델로 대상 응답 전송" sub={scope.model.provider} /> : null}
+                <Rule
+                  t="회차 상한"
+                  sub={`대상 요청 ${scope.budget.requests}회 · 시간 ${scope.budget.duration_seconds}초 · 모델 요청 ${scope.budget.model_requests}회 · 입력 ${scope.budget.input_tokens}토큰 · 출력 ${scope.budget.output_tokens}토큰 · 본문 ${scope.max_body_bytes}바이트`}
+                />
+                <Rule t="승인 만료" sub={scope.expires_at} />
+                {scope.model ? (
+                  <Rule
+                    t="외부 모델로 대상 응답 전송"
+                    sub={`${scope.model.provider} · 비용 상한 $${(scope.budget.cost_usd_micros / 1_000_000).toLocaleString("en-US", { maximumFractionDigits: 6 })}`}
+                  />
+                ) : null}
                 {/* 외부 CDN 사전고지 (external-llm-notice-ko.md §2): 브라우저 탐색이 대상 페이지를 그리며 외부 호스트의
                     자원을 받으면 그 호스트 로그에 흔적이 남는다. 완전 로컬 모드는 막는다(절대규칙 8). 브라우저 탐색 미착륙 = 사전 고지.
                     ※ comm_mode(external_allowed/full_local) 별도 신호가 없어 외부 모델(scope.model)을 proxy 로 쓴다.

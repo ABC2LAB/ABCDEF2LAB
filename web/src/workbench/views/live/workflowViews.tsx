@@ -114,11 +114,9 @@ function crawlPill(flow: WorkflowSnapshot, verified: boolean): string {
 }
 /**
  * 탐색 막대 % — 실제 방문 수 ÷ 페이지 상한(서버 진행률 아님). 첫 탐색 단계가 끝났다는 initial_completed 는 완전 탐색을
- * 보장하지 않아(부분 완료 · 상한 소진에서도 true) 막대에 섞지 않는다 (리뷰 #479). 서버가 탐색을 끝까지 마쳤다고 할 때
- * (exploration_status COMPLETED — 부분 완료면 PARTIAL 이라 여기 들지 않음)만 찾은 링크를 다 돈 것이라 끝까지 채운다.
+ * 보장하지 않아(부분 완료 · 상한 소진에서도 true) 막대에 섞지 않는다 (리뷰 #479). 완료 상태도 실제 방문 비율을 알린다.
  */
 export function crawlPct(flow: WorkflowSnapshot): number {
-  if (exploreCompleted(flow)) return 100;
   return Math.min(100, Math.round((flow.counts.visited / Math.max(1, flow.limits.max_pages)) * 100));
 }
 /**
@@ -137,8 +135,15 @@ export function crawlBar(flow: WorkflowSnapshot): {
   /** 완료가 아닌 끝: 화면 '탐색 상태' 글 (상태가 없으면 '완료 확인 안 됨', #709 리뷰) */
   ended: string | null;
 } {
-  if (exploreCompleted(flow)) return { fill: 100, pct: 100, tone: "ok", text: "100% · 탐색 완료", ended: null };
   const pct = crawlPct(flow);
+  if (exploreCompleted(flow))
+    return {
+      fill: 100,
+      pct,
+      tone: "ok",
+      text: `탐색 완료 · 방문 ${flow.counts.visited} / 페이지 상한 ${flow.limits.max_pages}`,
+      ended: null,
+    };
   if (flow.stage !== "crawling" && flow.initial_completed) {
     const st = exploreState(flow);
     const what = st && st.status !== "RUNNING" ? st.text : "완료 확인 안 됨";

@@ -796,9 +796,9 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     u.commandURLDiagnosis.mockResolvedValue(preparing);
     const { goTo } = mount("new");
     expect(await screen.findByText("https://target.example · / · GET")).toBeInTheDocument();
-    // 요청 · 시간 상한 줄은 두지 않는다(사용자 11/18 — 상한 값은 '정책 전체 보기')
-    expect(screen.queryByText("요청 · 시간 상한")).toBeNull();
-    expect(screen.queryByText(/대상 요청 3회/)).toBeNull();
+    const summary = screen.getByRole("complementary", { name: "점검 요약" });
+    expect(summary).toHaveTextContent("대상 요청 3회 · 시간 60초 · 모델 요청 2회");
+    expect(summary).toHaveTextContent(`승인 만료${scope.expires_at}`);
     const start = screen.getByRole("button", { name: "점검 시작" });
     expect(screen.getByRole("complementary", { name: "점검 요약" }).contains(start)).toBe(true);
     expect(start).toBeDisabled();
@@ -862,10 +862,9 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     expect(
       await screen.findByText(/브라우저 탐색은 외부 자원\(CDN 등\)을 외부 호스트에서 받습니다/),
     ).toBeInTheDocument();
-    // 외부 모델 전송 줄 밑에는 제공자만 — 비용 상한은 적지 않는다(사용자 11/18)
+    // 범위 확인 뒤에는 전송 제공자와 승인된 비용 상한을 함께 보인다.
     const ext = screen.getByText("외부 모델로 대상 응답 전송").parentElement as HTMLElement;
-    expect(ext.querySelector("small")).toHaveTextContent(new RegExp(`^${externalModel.provider}$`));
-    expect(ext).not.toHaveTextContent("비용 상한");
+    expect(ext.querySelector("small")).toHaveTextContent(`${externalModel.provider} · 비용 상한 $6`);
   });
   it("로컬 모델(완전 로컬)에서는 외부 CDN 사전고지를 띄우지 않는다", async () => {
     const limits = {
