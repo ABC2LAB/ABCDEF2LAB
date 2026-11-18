@@ -6,6 +6,7 @@ import copy
 import os
 import sys
 import unittest
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -206,10 +207,12 @@ class TestMarkerShape(unittest.TestCase):
         for trace in (None, {}, {"tries": 1}, {"tries": 1, "last": "verified", "x": 0}, {"tries": 0, "last": "verified"},
                       {"tries": True, "last": "verified"}, {"tries": "1", "last": "verified"}, {"tries": 1, "last": 404},
                       {"tries": 1, "last": "http_99"}, {"tries": 1, "last": "http_600"}, {"tries": 1, "last": "http_4044"},
-                      {"tries": 1, "last": "timeout"}, {"tries": 0, "last": "http_404"}, {"tries": 2, "last": "deadline"}):
+                      {"tries": 1, "last": "timeout"}, {"tries": 0, "last": "http_404"}, {"tries": 2, "last": "deadline"},
+                      {"tries": 101, "last": "http_404"}):
             # 미확인 generation에 붙여서, 확인 상태와 마지막 응답이 안 맞는다는 이유가 아니라 흔적 자체로 거부되는지 본다
             bad.append(marker(generations=[generation("g", status="unverified") | {"lookup": trace}]))
         bad.append(marker(generations=[generation("g", last="http_404")]))  # 확인됐는데 마지막 응답이 확인이 아니다
+        bad.append(marker(generations=[generation("g", tries=101)]))  # 계측기가 발행할 수 없는 시도 수(상한 100)
         bad.append(marker(generations=[generation("g", status="unverified", last="verified")]))
         for m in bad:
             with self.subTest(m=str(m)[:60]), self.assertRaises(LLMMarkerError):
@@ -226,6 +229,19 @@ class TestMarkerShape(unittest.TestCase):
         self.assertEqual((summary["unverified"], summary["unverified_last"], summary["lookup_tries_max"]),
                          (4, {"http_401": 2, "network_error": 1, "no_provider": 1}, 60))
         self.assertEqual((judge(marker())[1]["unverified_last"], judge(marker(generations=[]))[1]["lookup_tries_max"]), ({}, 0))
+        # 시도 수는 계측기 발행 상한(100)까지 받는다
+        top = marker(generations=[generation("a", tries=100), generation("b", status="unverified", last="http_404", tries=100)])
+        self.assertEqual(judge(top)[1]["lookup_tries_max"], 100)
+
+    def test_lookup_tries_limit_matches_the_meter_and_runner_config(self):
+        import re as regex
+
+        from runner_config import MAX_VERIFY_ATTEMPTS
+        from runner_llm import MAX_LOOKUP_TRIES
+        text = (Path(__file__).resolve().parents[3] / "cmd/eval-meter/main.go").read_text(encoding="utf-8")
+        match = regex.search(r"maxVerifyAttempts = (\d+)", text)
+        self.assertIsNotNone(match)
+        self.assertEqual((int(match.group(1)), MAX_VERIFY_ATTEMPTS), (MAX_LOOKUP_TRIES, MAX_LOOKUP_TRIES))
 
 
 if __name__ == "__main__":

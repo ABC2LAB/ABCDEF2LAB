@@ -38,13 +38,17 @@ LOCAL_SAMPLING_KEYS = frozenset({"temperature", "top_p", "presence_penalty", "fr
 # 시한 안에 한 번도 묻지 못한 것은 시도 0·deadline이다(계측기 lookupDeadline).
 LOOKUP_LAST = frozenset({"verified", "network_error", "request_error", "body_invalid", "no_provider", "deadline"})
 _LOOKUP_HTTP = re.compile(r"http_[1-5][0-9]{2}")
+# 계측기가 발행할 수 있는 시도 수 상한(cmd/eval-meter maxVerifyAttempts, 러너 설정 MAX_VERIFY_ATTEMPTS와 같은 값). 이보다 큰
+# 흔적은 계측기가 만들 수 없으므로 표식 오류다(#717 리뷰).
+MAX_LOOKUP_TRIES = 100
 
 
 def _lookup_ok(trace: object, status: str) -> bool:
     if not isinstance(trace, dict) or set(trace) != {"tries", "last"}:
         return False
     tries, last = trace["tries"], trace["last"]
-    if type(tries) is not int or tries < 0 or not isinstance(last, str) or (tries == 0) != (last == "deadline"):
+    if (type(tries) is not int or not 0 <= tries <= MAX_LOOKUP_TRIES or not isinstance(last, str)
+            or (tries == 0) != (last == "deadline")):
         return False
     if last not in LOOKUP_LAST and not _LOOKUP_HTTP.fullmatch(last):
         return False
