@@ -34,7 +34,8 @@ _HEREDOC_DELIMITER = re.compile(r"-?\s*(['\"]?)\\?([A-Za-z_][A-Za-z0-9_]*)\1")
 # 명령이 아니다(반복 변수·패턴 목록).
 _RESERVED_PREFIX = frozenset({"if", "then", "else", "elif", "while", "until", "do", "!", "{", "}", "fi", "done", "esac"})
 _RESERVED_SEGMENT = frozenset({"for", "case", "select", "function", "in"})
-_OPERATOR_CHARS = frozenset(";&|\n(){}`")
+# `{`·`}`는 낱말일 때만 예약어다(_RESERVED_PREFIX). 연산자로 보면 `${x}`·`${#x}`가 쪼개져 안쪽이 명령 이름이 된다.
+_OPERATOR_CHARS = frozenset(";&|\n()`")
 # 명령을 찾지 못하거나 실행하지 못한 셸 종료 코드(bash: 127 없음, 126 실행 불가).
 NOT_FOUND_EXIT_CODES = frozenset({126, 127})
 
@@ -68,10 +69,6 @@ def _segments(command: str) -> list[str]:
         elif char == "\\" and i + 1 < len(command):
             current += [char, command[i + 1]]
             i += 1
-        elif char == "#" and (not current or current[-1].isspace()):
-            # 주석: 줄 끝까지 버린다(줄바꿈은 다음 차례에 구분자로 처리)
-            while i + 1 < len(command) and command[i + 1] != "\n":
-                i += 1
         elif char == "&" and ((current and current[-1] in "<>") or command.startswith("&>", i)):
             current.append(char)  # 리다이렉션(2>&1, >&2, &>파일)의 &는 구분자가 아니다
         elif command.startswith("$(", i):
@@ -88,61 +85,73 @@ def _segments(command: str) -> list[str]:
     return out
 
 
-def _heredoc_markers(line: str) -> list[tuple[str, bool]]:
-    """한 줄에서 따옴표 밖의 heredoc 시작(`<<`, here-string `<<<`는 아님)마다 (구분어, 본문이 확장되는지).
-    구분어에 따옴표·백슬래시가 있으면 본문은 확장되지 않는다(명령 치환도 일어나지 않는다)."""
-    markers, quote, i = [], None, 0
-    while i < len(line):
-        char = line[i]
+# 셸 메타 문자(bash). 따옴표·백슬래시로 막지 않은 이 문자나 공백 뒤가 낱말 경계이고, 경계에서 `#`로 시작하는 낱말이 주석이다.
+_METACHARACTERS = frozenset("|&;()<>")
+
+
+def _preprocess(command: str) -> tuple[str, list[str]]:
+    """(주석·heredoc 본문을 뺀 명령 글, 확장되는 heredoc 본문들). 따옴표 상태를 줄 너머까지 들고 한 번에 훑는다(#682 리뷰:
+    주석·heredoc·치환을 서로 다른 규칙으로 보면 주석 속 치환을 세거나 `)#` 뒤 주석의 `<<`로 다음 명령을 지운다).
+
+    - 주석: 따옴표 밖에서 낱말 첫 글자인 `#`(처음·공백·메타 문자 뒤)부터 줄 끝까지. `$#`·`${#x}`·`a#b`는 주석이 아니다.
+    - heredoc: 따옴표·주석 밖의 `<<`(here-string `<<<`는 아님) 뒤 구분어. 그 줄이 끝나면 구분어 줄까지가 본문이다. 본문은
+      입력 글이라 명령이 아니지만, 따옴표 없는 구분어의 본문 안 명령 치환은 실행된다(본문의 `#`·따옴표는 글자).
+    """
+    # boundary: 지금 자리가 낱말 첫 글자인지. 앞 글자만 보면 `a\ #x`(막은 공백 뒤 `#`, 낱말 가운데)를 주석으로 잘못 본다.
+    out, bodies, pending, quote, boundary, i = [], [], [], None, True, 0
+    while i < len(command):
+        char = command[i]
         if quote is not None:
+            out.append(char)
             if char == quote:
                 quote = None
-            elif char == "\\" and quote == '"':
+            elif char == "\\" and quote == '"' and i + 1 < len(command):
+                out.append(command[i + 1])
                 i += 1
+            boundary = False
         elif char in "'\"":
-            quote = char
-        elif char == "\\":
+            quote = char  # 다음 글자부터 따옴표 안이고, 거기서 경계가 꺼진다
+            out.append(char)
+        elif char == "\\" and i + 1 < len(command):
+            out += [char, command[i + 1]]
+            # 줄 이음(백슬래시+줄바꿈)은 지워지는 자리라 경계 상태를 바꾸지 않는다
+            boundary = boundary if command[i + 1] == "\n" else False
             i += 1
-        elif char == "#" and (i == 0 or line[i - 1].isspace() or line[i - 1] in ";&|("):
-            break  # 주석: 그 뒤의 `<<`는 heredoc이 아니다(#682 리뷰)
-        elif line.startswith("<<<", i):
-            i += 3  # here-string: 뒤 낱말이 입력이고 다음 줄은 본문이 아니다(가운데 `<<`부터 다시 보지 않는다)
+        elif char == "#" and boundary:
+            while i + 1 < len(command) and command[i + 1] != "\n":
+                i += 1
+        elif command.startswith("<<<", i):
+            out.append("<<<")
+            boundary = True
+            i += 3
             continue
-        elif line.startswith("<<", i):
-            match = _HEREDOC_DELIMITER.match(line, i + 2)
-            if match:
-                quoted = bool(match.group(1)) or "\\" in match.group(0)
-                markers.append((match.group(2), not quoted))
-                i = match.end()
-                continue
+        elif command.startswith("<<", i) and (match := _HEREDOC_DELIMITER.match(command, i + 2)):
+            pending.append((match.group(2), not (match.group(1) or "\\" in match.group(0))))
+            out.append(command[i:match.end()])
+            boundary = False
+            i = match.end()
+            continue
+        elif char == "\n" and pending:
+            out.append(char)
+            i += 1
+            for delimiter, expands in pending:
+                lines = []
+                while i <= len(command):
+                    stop = command.find("\n", i)
+                    line = command[i:] if stop < 0 else command[i:stop]
+                    i = len(command) + 1 if stop < 0 else stop + 1
+                    if line.strip() == delimiter:
+                        break
+                    lines.append(line)
+                if expands:  # 구분어 줄이 없으면 끝까지가 본문이다
+                    bodies.append("\n".join(lines))
+            pending, boundary = [], True
+            continue
+        else:
+            out.append(char)
+            boundary = char.isspace() or char in _METACHARACTERS
         i += 1
-    return markers
-
-
-def _split_heredocs(command: str) -> tuple[str, list[str]]:
-    """(heredoc 본문을 뺀 명령 글, 확장되는 본문들). 본문은 입력 글이라 명령이 아니지만, 따옴표 없는 구분어의 본문 안
-    명령 치환은 실행된다(#682 리뷰). 데이터 속 `<<`(따옴표 안)는 heredoc이 아니다."""
-    out, bodies, waiting = [], [], []
-    for line in command.split("\n"):
-        if waiting:
-            delimiter, expands, buffer = waiting[0]
-            if line.strip() == delimiter:
-                waiting.pop(0)
-                if expands:
-                    bodies.append("\n".join(buffer))
-            else:
-                buffer.append(line)
-            continue
-        out.append(line)
-        waiting = [(delimiter, expands, []) for delimiter, expands in _heredoc_markers(line)]
-    for delimiter, expands, buffer in waiting:  # 구분어 줄이 없으면 끝까지가 본문이다
-        if expands:
-            bodies.append("\n".join(buffer))
-    return "\n".join(out), bodies
-
-
-def _drop_heredoc_bodies(command: str) -> str:
-    return _split_heredocs(command)[0]
+    return "".join(out), bodies
 
 
 def _substitutions(command: str, quotes: bool = True) -> tuple[list[str], bool]:
@@ -219,7 +228,7 @@ def analyze_command(command: str, depth: int = 0) -> tuple[list[str], bool]:
     words, uncertain = [], False
     if depth > 3:
         return words, True
-    body, expanding = _split_heredocs(command)
+    body, expanding = _preprocess(command)  # 주석·heredoc 본문을 뺀 글(나누기·치환은 이 글에서만)
     substitutions, broken = _substitutions(body)
     uncertain |= broken
     for text in expanding:  # 따옴표 없는 heredoc 본문의 명령 치환도 실행된다(본문의 따옴표는 글자)

@@ -97,6 +97,29 @@ class TestCommandWords(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(command_words(command), words)
 
+    def test_review_round_four_comments_follow_one_rule(self):
+        # #682 리뷰 4차: 주석은 나누기·치환·heredoc 모두 같은 규칙으로 뺀다(따옴표 상태는 줄 너머까지).
+        cases = {
+            "# $(npx --version)\nprintf x": ["printf"],          # 주석 속 치환은 실행되지 않는다
+            "(:)# cat <<EOF\nnpx --version": [":", "npx"],       # 메타 문자 `)` 뒤 `#`도 주석이다
+            "echo x|#$(npx no)\nnpx w": ["echo", "npx"],          # `|` 뒤도 주석(파이프는 다음 줄로 이어진다)
+            'echo "a\n# b $(npx q)"': ["npx", "echo"],            # 여러 줄 큰따옴표 안의 `#`는 글자
+            "echo $# ${#x} a#b $(npx z)": ["npx", "echo"],         # `$#`·`${#x}`·낱말 가운데 `#`는 주석이 아니다
+            "cat <<EOF\n# $(npx in-body)\nEOF\necho after": ["npx", "cat", "echo"],  # 확장 본문의 `#`는 글자
+            "cat <<A <<B\n$(npx a)\nA\n$(pip b)\nB\nls": ["npx", "pip", "cat", "ls"],  # 한 줄의 heredoc 둘
+            "echo ${x} y": ["echo"],                               # `${…}`를 쪼개지 않는다
+            "{ npx a; }": ["npx"],
+            "echo a\\ #$(npx q)": ["npx", "echo"],             # 막은 공백 뒤 `#`는 낱말 가운데라 주석이 아니다
+            "echo \\#$(npx r)": ["npx", "echo"],               # 막은 `#`
+            "echo a \\\n#$(npx s)\nls": ["echo", "ls"],       # 줄 이음 뒤 경계의 `#`는 주석
+            "echo 'a\n$(npx q)'": ["echo"],                      # 여러 줄 작은따옴표 안은 치환이 아니다
+            "echo 'a\n<<EOF\n' ; npx w": ["echo", "npx"],        # 줄 넘는 따옴표 안의 `<<`는 heredoc이 아니다
+            "cat <<EOF\nbody\nEOF\n# $(npx q)\nls": ["cat", "ls"],  # heredoc 뒤 첫 줄의 `#`도 주석
+        }
+        for command, words in cases.items():
+            with self.subTest(command=command):
+                self.assertEqual(command_words(command), words)
+
     def test_unresolvable_calls_are_uncertain_not_zero(self):
         for command in ('eval "$CMD"', "$TOOL --x", "source ./run.sh", ". ./run.sh", "echo \"$(npx", "echo `npx", "sh -c 'a \"b'"):
             with self.subTest(command=command):
