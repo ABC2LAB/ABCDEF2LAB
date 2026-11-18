@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -60,6 +61,33 @@ class TestLoader(unittest.TestCase):
             path = Path(root) / "gt.json"
             path.write_text('{"format": "%s", "challenges": [%s]}' % (gt.GT_FORMAT, item), encoding="utf-8")
             self.assertEqual(len(gt._load(path)), 1)
+
+
+
+class TestSyntheticIsolation(unittest.TestCase):
+    def test_synthetic_tests_never_open_the_real_answer_file(self):
+        # #712 리뷰: 합성 시험은 실제 정답 경로를 열지 않는다(불러올 때 먼저 읽고 바꾸지 않는다). 깨끗한 프로세스에서 파일 읽기를
+        # 기록하고, 합성 목록으로 코어·BAC·키 찾기를 해 본 뒤 실제 정답 경로가 한 번도 읽히지 않았는지 본다.
+        code = """
+import pathlib, sys
+reads = []
+original = pathlib.Path.read_text
+def recording(self, *args, **kwargs):
+    reads.append(str(self.resolve()))
+    return original(self, *args, **kwargs)
+pathlib.Path.read_text = recording
+sys.path.insert(0, sys.argv[1])
+sys.path.insert(0, sys.argv[2])
+import synthetic_gt, ground_truth
+assert len(ground_truth.core_gt()) == 9 and len(ground_truth.bac_category()) == 10
+assert ground_truth.by_key(ground_truth.core_gt()[0].key) is not None and len(ground_truth.ALL_CHALLENGES) == 15
+print(str(ground_truth.GT_FILE.resolve()) in reads, str(synthetic_gt.SYNTHETIC_GT.resolve()) in reads)
+"""
+        here = Path(__file__).resolve()
+        result = subprocess.run([sys.executable, "-I", "-B", "-c", code, str(here.parents[1]), str(here.parent)],
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, "합성 정답 시험 초기화 실패")
+        self.assertEqual(result.stdout.split(), ["False", "True"])  # 실제 정답 경로는 안 읽고 합성 목록만 읽었다
 
 
 if __name__ == "__main__":

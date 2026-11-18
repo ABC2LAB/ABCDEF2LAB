@@ -90,30 +90,46 @@ def _load(path: Path = GT_FILE) -> tuple[Challenge, ...]:
 
 
 # 전체 등록 챌린지(평가에서 참조하는 것만). challenges.yml 전체 102개 중 발췌.
-ALL_CHALLENGES: tuple[Challenge, ...] = _load()
+# 정답 목록은 처음 쓰일 때 읽는다(#712 리뷰). 시험은 그 전에 합성 목록으로 바꿔 실제 정답 경로를 열지 않는다.
+_active_path: Path = GT_FILE
+_cache: tuple[Challenge, ...] | None = None
+
+
+def _challenges() -> tuple[Challenge, ...]:
+    global _cache
+    if _cache is None:
+        _cache = _load(_active_path)
+    return _cache
+
+
+def __getattr__(name: str):
+    # ALL_CHALLENGES는 모듈 속성으로 읽을 때마다 지금 쓰는 목록을 돌려준다(처음 읽을 때 불러온다).
+    if name == "ALL_CHALLENGES":
+        return _challenges()
+    raise AttributeError(name)
 
 
 def use_ground_truth_file(path: Path) -> None:
     """시험 전용: 정답 목록을 다른 파일(합성 목록)로 바꾼다(2026-11-18, 정답표 노출 방지). 시험은 실제 정답 대신 같은 묶음·축
     구성의 합성 목록으로 돌고, 실제 정답이 꼭 필요한 시험만 evaluation-gt/ 아래에서 실제 목록으로 돈다. 함수들은 호출 때 이
     전역을 읽으므로 바꾼 뒤의 호출부터 적용된다."""
-    global ALL_CHALLENGES
-    ALL_CHALLENGES = _load(Path(path))
+    global _active_path, _cache
+    _active_path, _cache = Path(path), _load(Path(path))
 
 
 def core_gt() -> tuple[Challenge, ...]:
     """코어 GT = 인가 9개 (수평 5 · 수직 4). 미탐/확정의 기준 분모."""
-    return tuple(c for c in ALL_CHALLENGES if c.in_core_gt)
+    return tuple(c for c in _challenges() if c.in_core_gt)
 
 
 def bac_category() -> tuple[Challenge, ...]:
     """BAC category 전체 10개. cherry-pick 방지용 부차 지표 분모."""
-    return tuple(c for c in ALL_CHALLENGES if c.in_bac_category)
+    return tuple(c for c in _challenges() if c.in_bac_category)
 
 
 def by_key(key: str) -> Challenge | None:
     """key로 챌린지 조회. 모르는 key면 None(= out-of-list 후보)."""
-    for c in ALL_CHALLENGES:
+    for c in _challenges():
         if c.key == key:
             return c
     return None
