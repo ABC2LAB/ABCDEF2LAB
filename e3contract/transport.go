@@ -118,15 +118,15 @@ func CheckRunStart(ctx context.Context, gate ResetGate, binding RunBinding, targ
 	if err != nil {
 		return RefuseResetStateUnavailable
 	}
-	switch state.Residue {
-	case ResidueAbsent:
-	case ResiduePresent:
-		return RefusePreviousMarkersPresent
-	default:
-		return RefuseResetStateUnavailable
-	}
+	// 리셋 확인이 없으면 잔존 점검 결과와 관계없이 그 사유로 멈춘다(운영자가 할 일을 정확히 보인다).
 	if state.PreviousWrites && !state.ResetConfirmed {
 		return RefuseResetConfirmationMissing
 	}
-	return ""
+	switch state.Residue {
+	case ResidueAbsent:
+		return ""
+	case ResiduePresent:
+		return RefusePreviousMarkersPresent
+	}
+	return RefuseResetStateUnavailable
 }

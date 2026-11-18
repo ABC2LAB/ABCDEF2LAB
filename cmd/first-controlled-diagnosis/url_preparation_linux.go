@@ -80,6 +80,17 @@ func (b *urlPreparationRuntime) issue(l *urlLoadedProfile, jobID string, actual 
 	if policy.ValidUntil, ok = urlAuthorityUntil(now, l.profile.Budget.DurationSeconds, int64(c.ShutdownTimeoutSeconds), l.profile.ValidUntil); !ok {
 		return c, errPreparation
 	}
+	// E③ 정책 선언 동결(결정 §4.2): 지금 대상 판에 유효한 선언이 있으면 그 정본 바이트와 정책 출처를 회차 디렉터리에
+	// 쓴다. 선언이 없으면 쓰지 않고, 그 회차의 확정 단계는 꺼진다.
+	if l.productTarget != nil && l.productRegistry != nil {
+		if declaration, active := l.productRegistry.activeDeclaration(*l.productTarget); active {
+			frozen, frozenPolicy, err := freezeDeclaration(declaration, jobID, policy.ValidFrom, policy.ValidUntil,
+				l.productTarget.Target.ApprovedAt, l.productTarget.Target.ExpiresAt)
+			if err != nil || write(productFrozenDeclarationFile, frozen) != nil || write(productFrozenPolicyFile, frozenPolicy) != nil {
+				return c, errPreparation
+			}
+		}
+	}
 	raw, err := json.Marshal(policy)
 	if err != nil {
 		return c, errPreparation
