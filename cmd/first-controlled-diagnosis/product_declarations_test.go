@@ -360,6 +360,7 @@ func TestProductResetReplayBlocksPresentOrUnverifiedResidue(t *testing.T) {
 		err       error
 		want      e3contract.StartRefusal
 	}{
+		{name: "absent", connected: true, residue: e3contract.ResidueAbsent, want: ""},
 		{name: "present", connected: true, residue: e3contract.ResiduePresent, want: e3contract.RefusePreviousMarkersPresent},
 		{name: "unknown", connected: true, residue: e3contract.ResidueUnknown, want: e3contract.RefuseResetStateUnavailable},
 		{name: "checker_missing", want: e3contract.RefuseResetStateUnavailable},
@@ -373,7 +374,7 @@ func TestProductResetReplayBlocksPresentOrUnverifiedResidue(t *testing.T) {
 				}
 			}
 			if got := e3contract.CheckRunStart(t.Context(), gate, e3contract.RunBinding{}, target.ID); got != tc.want {
-				t.Fatalf("리셋 확인 복구 후 시작 거절 = %q, 기대 %q", got, tc.want)
+				t.Fatalf("리셋 확인 복구 후 게이트 결과 = %q, 기대 %q", got, tc.want)
 			}
 		})
 	}
