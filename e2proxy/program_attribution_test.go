@@ -3,8 +3,28 @@ package e2proxy
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 )
+
+func TestWorkerCallCannotUseProgramEntry(t *testing.T) {
+	cfg := authConfig(t, "http://127.0.0.1:1")
+	e, worker := coreOpen(t, cfg)
+	before := e.SnapshotForIntent(1)
+	extractorCalled := false
+	_, receipt, err := worker.AuthPrep(t.Context(), coreRequest(t, "POST", cfg.Rules[0].Origin+"/login"),
+		func(*http.Response, []byte) (http.Header, error) {
+			extractorCalled = true
+			return nil, nil
+		})
+	if !errors.Is(err, ErrConfig) || receipt != (Receipt{}) || extractorCalled {
+		t.Fatal("Worker가 프로그램 전송 입구에서 요청을 시작했습니다")
+	}
+	after := e.SnapshotForIntent(1)
+	if after.Counts != before.Counts || after.ProgramCounts != before.ProgramCounts || after.IntentCounts != before.IntentCounts {
+		t.Fatal("실행을 거부한 요청이 호출 집계를 변경했습니다")
+	}
+}
 
 func TestProgramCallAttributionIsExplicitAndExclusive(t *testing.T) {
 	cfg := coreConfig(t, "http://127.0.0.1:1", &coreRecorder{}, 2)
