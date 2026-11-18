@@ -1535,23 +1535,16 @@ export function UrlReportLive() {
   const sorted = sortEntries(entries);
   const counts = rem.data && !rem.error ? summarizeDiagnosticEntries(entries) : null;
   const findings = sorted.filter((e) => diagnosticOutcome(e) !== "negative");
-  const bySev = SEV_KEYS.map(
-    (k) =>
-      [
-        k,
-        findings.filter((e) => diagnosticOutcome(e) === "confirmed" && sevKey(entrySeverity(e) ?? "") === k).length,
-      ] as const,
-  );
-  const estimateSummary = SEV_KEYS.map(
-    (k) =>
-      [
-        k,
-        findings.filter((e) => diagnosticOutcome(e) === "review" && sevKey(entrySeverity(e) ?? "") === k).length,
-      ] as const,
-  )
-    .filter(([, n]) => n > 0)
-    .map(([k, n]) => `예상 ${SEVL[k]} ${n}`)
-    .join(" · ");
+  // 발견 칸 보조 글 (사용자 11/18 '간단하게'): 0건 등급은 빼고 확정 · 예상(검토 필요의 예상 심각도) · 위험도 미평가로 묶는다.
+  // '확정 심각 0 · 확정 높음 0 · …'처럼 등급마다 다 적으면 어지러웠다. 확정과 예상은 섞지 않는다(절대규칙 5)
+  const sevLine = (o: DiagnosticOutcome) =>
+    SEV_KEYS.map(
+      (k) =>
+        [k, findings.filter((e) => diagnosticOutcome(e) === o && sevKey(entrySeverity(e) ?? "") === k).length] as const,
+    )
+      .filter(([, n]) => n > 0)
+      .map(([k, n]) => `${SEVL[k]} ${n}`)
+      .join(", ");
   const noSev = findings.filter((e) => !sevKey(entrySeverity(e) ?? "")).length;
   // 고른 위험도에 해당하는 줄이 (다시 읽은 뒤) 없어졌으면 전체로 본다 — 빈 목록이 '발견 없음'으로 읽히지 않게
   const sevCount = (k: SevFilter) => (k === "all" ? sorted.length : sorted.filter((e) => sevOf(e) === k).length);
@@ -1719,10 +1712,12 @@ export function UrlReportLive() {
                   <div className={s.v}>{findings.length}</div>
                   <div className={s.sub}>
                     {[
-                      ...bySev.map(([k, n]) => `확정 ${SEVL[k]} ${n}`),
-                      ...(estimateSummary ? [estimateSummary] : []),
-                      ...(noSev ? [`위험도 미평가 ${noSev}`] : []),
-                    ].join(" · ")}
+                      sevLine("confirmed") && `확정 ${sevLine("confirmed")}`,
+                      sevLine("review") && `예상 ${sevLine("review")}`,
+                      noSev ? `위험도 미평가 ${noSev}` : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
                   </div>
                 </div>
                 <div className={s.cell}>

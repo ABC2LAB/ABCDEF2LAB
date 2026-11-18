@@ -1630,6 +1630,12 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     });
     mount("report");
     const list = await screen.findByRole("tabpanel", { name: "발견 목록" });
+    // 발견 칸 보조 글은 0건 등급을 빼고 확정 · 예상 · 위험도 미평가로 묶는다(사용자 11/18 '간단하게').
+    // 확정 0 이라 '확정 …'은 없고, 결과 불명(후보 4)의 높음은 예상으로 세지 않는다
+    const strip = screen.getByRole("region", { name: "판정 집계" });
+    expect((within(strip).getByText("발견").parentElement as HTMLElement).lastElementChild).toHaveTextContent(
+      /^예상 높음 1, 낮음 1 · 위험도 미평가 2$/,
+    );
     const names = () =>
       [...(document.getElementById("rList") as HTMLElement).querySelectorAll("button")].map(
         (b) => /후보 \d/.exec(b.textContent ?? "")?.[0],
