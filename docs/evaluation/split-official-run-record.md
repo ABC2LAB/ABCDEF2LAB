@@ -79,7 +79,7 @@ B와 같은 단계 이름을 쓰고, O에서 그 순간에 해당하는 곳을 �
 E③ 인터페이스(#698)의 확정 단계 결과 `e3-confirmation-run/v1`에는 `status`·`reason`·`verdicts`·`candidates`가 있다. 공식 회차에서 `status=confirmation_integrity_failed`(진위 실패, 판정 행 없음)가 나오면 결과 보고에 보여야 한다(사용자 조건).
 
 - `verdict_collection`의 뜻은 바꾸지 않는다. 이 행은 판정 **내보내기** 수집·무결성이다. `integrity_failed`(내보내기 변조·불일치)면 지금처럼 채점 전체를 멈춘다(`isolation_proof.verdict_collection`, run-record v1.1 §3.1). E③ 결과를 온전히 받으면 `collected`이고, 판정 행이 0개면 `records`는 빈 묶음이다.
-- E③ 확정 결과는 **따로 서명 행** `e3_confirmation`(선택 행, `status`·`reason`)에 싣는다. 값은 E③ 계약의 닫힌 값 그대로다(`disabled`·`start_refused`·`completed`·`interrupted`·`confirmation_integrity_failed`). 원문 값·후보 내용은 싣지 않는다. 제품이 회차 안에서 스스로 잡은 결과라 회차는 유효하다. 내보내기 무결성과 섞지 않는다.
+- E③ 확정 결과는 **따로 서명 행** `e3_confirmation`(선택 행, `status`·`reason`)에 싣는다. 값은 E③ 계약의 닫힌 값 그대로다(`disabled`·`start_refused`·`completed`·`interrupted`·`confirmation_integrity_failed`). `reason`도 상태별 닫힌 값이다(계약 §7 표, `e3contract/result.go`의 DisabledReason·StartRefusal·IntegrityReason). `completed`·`interrupted`면 `reason`이 비어 있다. 채점기 검증(R4)은 이 목록과 대조한다. 원문 값·후보 내용은 싣지 않는다. 제품이 회차 안에서 스스로 잡은 결과라 회차는 유효하다. 내보내기 무결성과 섞지 않는다.
 - 채점기 처리(제안): `completed`는 그대로 채점한다. `confirmation_integrity_failed`·`disabled`·`start_refused`는 그 회차 GT 판정을 판단불가로 둔다. "발견 없음"으로 세지 않는다. `interrupted`는 받은 판정만 쓰고 나머지는 판단불가다. 어느 경우든 결과 보고의 회차 주석에 `status`·`reason`을 보인다. 해결 귀속(첫 지표)은 이 행과 무관하게 따로 검증한다.
 - 이 처리는 판정 지표 해석 규칙이라 정본(평가 프로토콜 §4·§5, run-record v1.1 §3)도 같이 고쳐야 한다. 이 설계가 확정되면 R4에서 정본·수용 기준과 함께 바꾼다. 실제 수집 경로(제품 API·파일)는 판정 저장 PR 뒤에 정한다.
 
