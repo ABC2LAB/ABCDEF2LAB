@@ -9,7 +9,9 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cli_usage import CliUsageError, command_words, count_usage, not_found, tool_input_command, validate_names  # noqa: E402
+from cli_usage import (  # noqa: E402
+    CliUsageError, analyze_command, command_words, count_usage, not_found, tool_input_command, validate_names,
+)
 
 
 class TestCommandWords(unittest.TestCase):
@@ -43,9 +45,38 @@ class TestCommandWords(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(command_words(command), words)
 
+    def test_review_shell_contexts_are_counted(self):
+        # #682 리뷰: 묶인 옵션(-ec)과 큰따옴표 안 명령 치환도 실제로 실행된다.
+        cases = {
+            "sh -ec 'npx --version'": ["sh", "npx"],
+            "printf '%s\\n' \"$(npx --version)\"": ["npx", "printf"],
+            "echo `npx -v`": ["npx", "echo"],
+            "bash -o pipefail -c 'pip list | head'": ["bash", "pip", "head"],
+            "bash -lc \"sh -c 'npx q'\"": ["bash", "sh", "npx"],
+            'x="$(cat a | npm v)"': ["cat", "npm"],
+            "echo '$(npx not)'": ["echo"],  # 작은따옴표 안은 치환이 아니다
+        }
+        for command, words in cases.items():
+            with self.subTest(command=command):
+                self.assertEqual(command_words(command), words)
+
+    def test_unresolvable_calls_are_uncertain_not_zero(self):
+        for command in ('eval "$CMD"', "$TOOL --x", "source ./run.sh", ". ./run.sh", "echo \"$(npx", "echo `npx", "sh -c 'a \"b'"):
+            with self.subTest(command=command):
+                self.assertTrue(analyze_command(command)[1])
+        for command in ("npx a", "sh -ec 'npx b'", 'echo "$(date)"'):
+            with self.subTest(command=command):
+                self.assertFalse(analyze_command(command)[1])
+        got = count_usage([{"command": {"command": "eval $X"}}, {"command": {"command": "sh -ec 'npx -v'"}}], ["npx"],
+                          with_failures=False)
+        self.assertEqual((got["uncertain_calls"], got["calls"]), (1, {"npx": 1}))
+
     def test_shell_dash_c_is_looked_into(self):
         self.assertEqual(command_words("bash -c 'npx a && pip list'"), ["bash", "npx", "pip"])
-        self.assertEqual(command_words("sh -c \"sh -c 'sh -c \\\"sh -c npx\\\"'\""), ["sh", "sh", "sh", "sh"])  # 깊이 3까지
+        deep = "sh -c \"sh -c 'sh -c \\\"sh -c \\\\\\\"sh -c npx\\\\\\\"\\\"'\""
+        words, uncertain = analyze_command(deep)
+        self.assertNotIn("npx", words)  # 깊이 3을 넘는 중첩은 읽지 않고
+        self.assertTrue(uncertain)      # 미확인으로 남긴다
 
 
 class TestCounting(unittest.TestCase):
@@ -77,10 +108,10 @@ class TestCounting(unittest.TestCase):
         ]
         got = count_usage(records, ["npx", "pip", "vim", "gpg"], with_failures=True)
         self.assertEqual(got, {"format": "abc2lab.cli-usage/v1", "names": ["gpg", "npx", "pip", "vim"], "bash_calls": 5,
-                               "unreadable_calls": 1, "calls": {"npx": 2, "pip": 1, "vim": 1},
+                               "unreadable_calls": 1, "uncertain_calls": 0, "calls": {"npx": 2, "pip": 1, "vim": 1},
                                "not_found": {"npx": 1}, "other_failures": {"npx": 1, "pip": 1, "vim": 1}})
         calls_only = count_usage(records, ["npx"], with_failures=False)
-        self.assertEqual(set(calls_only), {"format", "names", "bash_calls", "unreadable_calls", "calls"})
+        self.assertEqual(set(calls_only), {"format", "names", "bash_calls", "unreadable_calls", "uncertain_calls", "calls"})
         self.assertNotIn("install", json.dumps(got))  # 원문 조각이 결과에 없다
 
 

@@ -27,6 +27,8 @@ _WRAPPER_VALUE_OPTIONS = {"sudo": frozenset({"-u", "-g", "-C", "-p", "-h", "-U"}
                           "nice": frozenset({"-n"}), "xargs": frozenset({"-I", "-n", "-P", "-L", "-d", "-s", "-a", "-E"})}
 # `셸 -c '명령'`이면 그 명령 글 안을 다시 센다.
 _SHELLS = frozenset({"bash", "sh", "dash", "zsh"})
+# 무엇을 실행할지 글이나 파일에서 정하는 명령(정적으로 풀지 않는다).
+_INDIRECT = frozenset({"eval", "source", "."})
 _HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 _OPERATOR_CHARS = frozenset(";&|\n(){}`")
 # 명령을 찾지 못하거나 실행하지 못한 셸 종료 코드(bash: 127 없음, 126 실행 불가).
@@ -95,14 +97,89 @@ def _drop_heredoc_bodies(command: str) -> str:
     return "\n".join(out)
 
 
-def command_words(command: str, depth: int = 0) -> list[str]:
-    """단순 명령마다 실행되는 명령 이름(basename). `bash -c '…'`은 안쪽 명령도 센다(깊이 3까지)."""
-    words = []
-    for segment in _segments(_drop_heredoc_bodies(command)):
+def _substitutions(command: str) -> tuple[list[str], bool]:
+    """명령 치환(`$(…)`·백틱)의 안쪽 글. 작은따옴표 안은 치환이 아니고, 큰따옴표 안은 치환이다. 짝이 맞지 않으면
+    두 번째 값이 True(정적으로 풀지 못함)."""
+    inner, broken, quote, i = [], False, None, 0
+    while i < len(command):
+        char = command[i]
+        if quote == "'":
+            if char == "'":
+                quote = None
+        elif char == "\\":
+            i += 1
+        elif char == "'" and quote is None:
+            quote = "'"
+        elif char == '"':
+            quote = None if quote == '"' else '"'
+        elif command.startswith("$(", i) and not command.startswith("$((", i):
+            depth, j, q = 1, i + 2, None
+            while j < len(command) and depth:
+                c = command[j]
+                if q:
+                    if c == q:
+                        q = None
+                    elif c == "\\" and q == '"':
+                        j += 1
+                elif c in "'\"":
+                    q = c
+                elif c == "\\":
+                    j += 1
+                elif c == "(":
+                    depth += 1
+                elif c == ")":
+                    depth -= 1
+                j += 1
+            if depth:
+                return inner, True
+            inner.append(command[i + 2:j - 1])
+            i = j
+            continue
+        elif char == "`":
+            j = command.find("`", i + 1)
+            if j < 0:
+                return inner, True
+            inner.append(command[i + 1:j])
+            i = j + 1
+            continue
+        i += 1
+    return inner, broken
+
+
+def _shell_command_string(tokens: list[str], start: int) -> str | None:
+    """`셸 [옵션…] -c 명령` 또는 묶인 옵션(`-ec`·`-lc`)의 명령 글."""
+    i = start
+    while i < len(tokens) and tokens[i].startswith("-") and tokens[i] != "--":
+        flag = tokens[i]
+        if flag in ("-o", "+o"):
+            i += 2
+            continue
+        if not flag.startswith("--") and "c" in flag[1:]:
+            rest = [t for t in tokens[i + 1:] if not t.startswith("-")]
+            return rest[0] if rest else None
+        i += 1
+    return None
+
+
+def analyze_command(command: str, depth: int = 0) -> tuple[list[str], bool]:
+    """(실행되는 명령 이름들, 정적으로 다 풀지 못했는지). 풀지 못한 구문: eval·source·`.`, 변수로 된 명령 이름,
+    셸 낱말 나누기 실패, 짝이 맞지 않는 치환, 깊이 상한을 넘는 중첩. 이런 호출은 이름 수에 0으로 남아도 "안 썼다"는
+    근거가 아니다(uncertain_calls로 따로 센다)."""
+    words, uncertain = [], False
+    if depth > 3:
+        return words, True
+    body = _drop_heredoc_bodies(command)
+    substitutions, broken = _substitutions(body)
+    uncertain |= broken
+    for inner in substitutions:
+        found, unsure = analyze_command(inner, depth + 1)
+        words += found
+        uncertain |= unsure
+    for segment in _segments(body):
         try:
             tokens = shlex.split(segment, posix=True)
         except ValueError:
-            tokens = segment.split()
+            tokens, uncertain = segment.split(), True
         i = 0
         while i < len(tokens):
             token = tokens[i]
@@ -118,14 +195,24 @@ def command_words(command: str, depth: int = 0) -> list[str]:
                 if base == "timeout" and i < len(tokens) and re.fullmatch(r"[0-9.]+[smhd]?", tokens[i]):
                     i += 1
                 continue
+            if "$" in token or base in _INDIRECT:
+                uncertain = True  # 변수로 된 명령 이름·eval·source는 무엇이 실행되는지 정적으로 모른다
             if base:
                 words.append(base)
-                if base in _SHELLS and depth < 3 and "-c" in tokens[i + 1:]:
-                    inner = tokens.index("-c", i + 1) + 1
-                    if inner < len(tokens):
-                        words += command_words(tokens[inner], depth + 1)
+                if base in _SHELLS:
+                    inner = _shell_command_string(tokens, i + 1)
+                    if inner is not None:
+                        found, unsure = analyze_command(inner, depth + 1)
+                        words += found
+                        uncertain |= unsure
             break
-    return words
+    # 치환은 바깥 단순 명령 나누기에서도 한 번 더 보일 수 있다. 세기는 이름 집합이라 처음 나온 순서로 한 번씩만 둔다.
+    return list(dict.fromkeys(words)), uncertain
+
+
+def command_words(command: str, depth: int = 0) -> list[str]:
+    """단순 명령마다 실행되는 명령 이름(basename). 셸 `-c`(묶인 옵션 포함)와 명령 치환(큰따옴표 안 포함) 안도 센다."""
+    return analyze_command(command, depth)[0]
 
 
 def tool_input_command(raw: object) -> str | None:
@@ -162,14 +249,17 @@ def count_usage(records: Iterable[Mapping], names: Iterable[str], *, with_failur
     calls = {name: 0 for name in sorted(wanted)}
     missing = {name: 0 for name in sorted(wanted)}
     other = {name: 0 for name in sorted(wanted)}
-    total = unreadable = 0
+    total = unreadable = uncertain = 0
     for record in records:
         total += 1
         command = tool_input_command(record.get("command"))
         if command is None:
             unreadable += 1
             continue
-        used = wanted & set(command_words(command))
+        found, unsure = analyze_command(command)
+        if unsure:
+            uncertain += 1
+        used = wanted & set(found)
         for name in used:
             calls[name] += 1
             if not with_failures:
@@ -179,7 +269,9 @@ def count_usage(records: Iterable[Mapping], names: Iterable[str], *, with_failur
                 missing[name] += 1
             elif (type(exit_code) is int and exit_code != 0) or record.get("failed") is True:
                 other[name] += 1
+    # uncertain_calls: 정적으로 다 풀지 못한 호출 수. 0이 아니면 이름 수 0을 "안 썼다"로 읽지 않는다.
     out = {"format": FORMAT, "names": sorted(wanted), "bash_calls": total, "unreadable_calls": unreadable,
+           "uncertain_calls": uncertain,
            "calls": {k: v for k, v in calls.items() if v}}
     if with_failures:
         out["not_found"] = {k: v for k, v in missing.items() if v}
