@@ -168,6 +168,12 @@ const ERROR_LABEL: Record<string, string> = {
   http_error: "HTTP 오류 응답",
   body_incomplete: "응답 본문 불완전",
 };
+/** 워크플로 끝점의 발견 출처 → 화면 글(커버리지 · 탐색 결과가 같이 쓴다). 모르는 값은 '출처 불명'. */
+export const workflowSourceLabel = (v: string): string =>
+  Object.hasOwn(SOURCE_LABEL, v) ? SOURCE_LABEL[v] : "출처 불명";
+/** 끝점 관찰 오류 코드 → 화면 글. 모르는 코드는 상세 없이 보인다. */
+export const observationErrorLabel = (v: string): string =>
+  Object.hasOwn(ERROR_LABEL, v) ? ERROR_LABEL[v] : "관찰 오류(상세 비표시)";
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const natural = (v: unknown): v is number => Number.isSafeInteger(v) && Number(v) >= 0;
 const ref = (v: unknown): v is string => typeof v === "string" && /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(v);
@@ -212,7 +218,7 @@ export function parseCoverage(value: unknown, job: URLDiagnosisJob): CoverageDat
       raw.observation_error === undefined
         ? ""
         : typeof raw.observation_error === "string" && raw.observation_error !== ""
-          ? (ERROR_LABEL[raw.observation_error] ?? "관찰 오류(상세 비표시)")
+          ? observationErrorLabel(raw.observation_error)
           : "관찰 오류 불명";
     const coverage: CoverageStatus = error
       ? "undecidable"
@@ -233,7 +239,7 @@ export function parseCoverage(value: unknown, job: URLDiagnosisJob): CoverageDat
         !/[?#\\\x00-\x20\x7f]/.test(raw.path)
           ? raw.path
           : "",
-      source: SOURCE_LABEL[String(raw.source)] ?? "출처 불명",
+      source: workflowSourceLabel(String(raw.source)),
       visited,
       selected,
       status,

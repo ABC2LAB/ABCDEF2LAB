@@ -1,14 +1,14 @@
 /**
  * 소유·권한 KG → 접근통제 지도 데이터 (docs/contracts/kg-policy.md §2·§4).
  *
- * ※ getAccessMap 은 실 라우트 `GET /api/tasks/{id}/access-map`(docs/contracts/access-map-read.md)에 배선됨.
- *   taskId 가 없으면 예시(MOCK_MAP)를, 있으면 서버 projection 응답을 매핑한다. 색(decision)은 서버
- *   `state` 로만 정하고(confirmed→vuln), 미등록 state·projection_error 는 리졸버가 fail-closed unknown(§4.2).
+ * ※ getAccessMap 은 실 라우트 `GET /api/tasks/{id}/access-map`(docs/contracts/access-map-read.md ·
+ *   product-report-graph-read.md)만 읽는다. task 가 없으면 부르지 않고, 예시 지도로 채우지 않는다(409 도 빈 격자 아님).
+ *   색(decision)은 서버 `state` 로만 정하고(confirmed→vuln), 미등록 state·projection_error 는 리졸버가 fail-closed unknown(§4.2).
  *
  * v0.1 = 수평(cross-account) IDOR 조회 전용(kg-policy §0·§4.2(4)). 수직(역할 레벨)은 후속.
  */
 
-import { apiFetch } from "./api";
+import { ApiError, apiFetch } from "./api";
 
 /**
  * 셀 판정 — kg-policy §4.2(3) 셀 상태표와 정합.
@@ -225,83 +225,6 @@ export function hasProjectionIssues(iss: MapProjectionIssues): boolean {
   return iss.outOfGrid > 0 || iss.dupPrincipals > 0 || iss.dupResources > 0;
 }
 
-// kg-policy 계약 shape 예시. 수평(A·B 교차)이 판정 축이고, 수직(admin·guest)은 후속 미리보기.
-// Phase 2 산출 상태를 노출: 확정/의심/판정불가/정상허용/기록없음/미검사.
-// deny-ok(정상 차단)은 Phase 3 보류라 산출하지 않는다 — 교차계정 차단 칸은 '차단 미증명'으로 unknown(§4.2(3)).
-const MOCK_MAP: AccessMap = {
-  policyVersion: "proto-0",
-  mock: true,
-  principals: [
-    { ref: "계정 A", role: "일반 사용자", axis: "H" },
-    { ref: "계정 B", role: "일반 사용자", axis: "H" },
-    { ref: "관리자", role: "관리자", axis: "V" },
-    { ref: "비로그인", role: "게스트", axis: "V" },
-  ],
-  resources: [
-    { id: "r1", label: "주문 #1012", ownerRef: "계정 A" },
-    { id: "r2", label: "주문 #1077", ownerRef: "계정 B" },
-    { id: "r3", label: "장바구니", ownerRef: "계정 A" },
-    { id: "r4", label: "관리자 통계", ownerRef: "관리자" },
-  ],
-  cells: [
-    // 계정 A (수평)
-    { principalRef: "계정 A", resourceId: "r1", decision: "allow-ok", note: "본인 자원(정상 대조·신원 확인됨)" },
-    {
-      principalRef: "계정 A",
-      resourceId: "r2",
-      decision: "unknown",
-      note: "B 자원 접근 실패 관측 — 앱 인가 차단 관측 계약 전까지 '정상 차단'으로 산출하지 않음(차단 미증명 보류, Phase 3)",
-    },
-    { principalRef: "계정 A", resourceId: "r3", decision: "allow-ok", note: "본인 장바구니" },
-    {
-      principalRef: "계정 A",
-      resourceId: "r4",
-      decision: "unknown",
-      note: "관리 자원 — 차단 미증명(위반 미관찰이지 차단 확인 아님)",
-    },
-    // 계정 B (수평) — 핵심: B가 A의 주문을 읽음
-    {
-      principalRef: "계정 B",
-      resourceId: "r1",
-      decision: "vuln",
-      note: "B가 A의 주문 조회됨 — A의 canary 노출(수평 IDOR 확정)",
-    },
-    { principalRef: "계정 B", resourceId: "r2", decision: "allow-ok", note: "본인 자원" },
-    {
-      principalRef: "계정 B",
-      resourceId: "r3",
-      decision: "suspected",
-      note: "B가 A 장바구니에 유사 응답 — canary 미노출로 확정 불가(SUSPECTED, 비승격)",
-    },
-    { principalRef: "계정 B", resourceId: "r4", decision: "unknown", note: "관리 자원 — 차단 미증명" },
-    // 관리자 (수직 — 후속 미리보기)
-    { principalRef: "관리자", resourceId: "r1", decision: "allow-ok" },
-    { principalRef: "관리자", resourceId: "r2", decision: "allow-ok" },
-    { principalRef: "관리자", resourceId: "r3", decision: "allow-ok" },
-    { principalRef: "관리자", resourceId: "r4", decision: "allow-ok" },
-    // 비로그인 (수직 — 후속 미리보기)
-    {
-      principalRef: "비로그인",
-      resourceId: "r1",
-      decision: "unknown",
-      note: "로그인 리다이렉트 관측 — 차단으로 단정 못 함(차단 미증명 보류, Phase 3)",
-    },
-    {
-      principalRef: "비로그인",
-      resourceId: "r2",
-      decision: "blank",
-      note: "조회 성공·관련 근거 0건(판정했으나 불가·명시적 미시도와 구분되는 정직한 빈칸)",
-    },
-    { principalRef: "비로그인", resourceId: "r3", decision: "untested", note: "검사계획상 명시적 미시도" },
-    {
-      principalRef: "비로그인",
-      resourceId: "r4",
-      decision: "vuln",
-      note: "비로그인이 관리자 통계 접근(수직 권한상승) — 후속 축",
-    },
-  ],
-};
-
 /**
  * access-map-read.md 조회 응답(서버 projection). 전부 참조·yes/no/unknown 신호·필드명만 —
  * URL·자격·계정 원문·표식 값·본문은 계약상 포함되지 않는다(§4.2·절대규칙 2).
@@ -321,7 +244,7 @@ type ApiAccessCell = {
   reason_codes?: string[];
   canary_fields?: string[];
   projection_error?: string | null;
-  // 비교/체크 신호(현재 note 요약엔 안 쓰지만 계약 필드로 받아 둔다)
+  // 비교/체크 신호(매퍼는 안 쓴다. 서버 응답은 checkCell 이 9개가 모두 있고 yes/no/unknown 인지 먼저 본다)
   policy_check?: ApiSignal;
   identity_check?: ApiSignal;
   data_check?: ApiSignal;
@@ -396,13 +319,77 @@ export function mapApiAccessMap(res: ApiAccessMap): AccessMap {
 }
 
 /**
- * 접근통제 지도 조회. taskId 없으면 예시(데모), 있으면 실 라우트 projection.
- * 서버가 현재 scope 를 유일 확인 못 하면 409 → apiFetch 가 throw → 화면은 오류 표시(가짜 데이터 금지, fail-closed).
+ * 접근통제 지도 조회. task 는 현재 Job 응답의 task_id(정규 양의 정수 문자열)만 받는다.
+ * HTTP 오류(401 · 403 · 404 · 409 · 502 · 503 …)는 ApiError 그대로 던진다 — 화면은 이유를 보이고 빈 격자 · 예시로 바꾸지
+ * 않는다(product-report-graph-read.md 오류 표). 응답의 task_id 가 요청한 task 와 다르면 다른 점검의 지도라 거부한다.
  */
-export async function getAccessMap(taskId: string | null): Promise<AccessMap> {
-  if (!taskId) return MOCK_MAP;
-  const res = await apiFetch<ApiAccessMap>(`/api/tasks/${encodeURIComponent(taskId)}/access-map`, {
+export async function getAccessMap(taskId: string, signal?: AbortSignal): Promise<AccessMap> {
+  if (!/^[1-9][0-9]*$/.test(taskId) || !Number.isSafeInteger(Number(taskId)))
+    throw new ApiError(422, "invalid_access_map_task");
+  const res = await apiFetch<unknown>(`/api/tasks/${encodeURIComponent(taskId)}/access-map`, {
     cache: "no-store",
+    redirect: "error",
+    signal,
   });
-  return mapApiAccessMap(res);
+  return mapApiAccessMap(checkAccessMapResponse(res, taskId));
+}
+
+// ── 응답 모양 검증(access-map-read.md 응답 절 · product-report-graph-read.md). 칸이 빠졌거나 축이 수평이 아니면 응답 전체를
+//    거부한다 — 정상 `cells: []`(빈 지도)과 칸 누락을 구분하고, 수직 축 셀을 수평 판정으로 그리지 않는다(#691 리뷰).
+const POLICY_VERSION = /^kg-fixture\/v1:[^:\s]+:[0-9a-f]{64}$/;
+const SIGNAL_FIELDS = [
+  "policy_check",
+  "identity_check",
+  "data_check",
+  "same_resource",
+  "owner_normal_data",
+  "cross_normal_data",
+  "nontrivial_data_match",
+  "reflection_excluded",
+  "template_excluded",
+] as const;
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+const isText = (v: unknown): v is string => typeof v === "string" && v.length > 0;
+const isNames = (v: unknown): v is string[] => Array.isArray(v) && v.every(isText);
+const isOptText = (v: unknown) => v === null || isText(v);
+function badMap(): never {
+  throw new ApiError(422, "invalid_access_map_contract");
+}
+function checkCell(c: unknown): ApiAccessCell {
+  if (
+    !isObj(c) ||
+    !isText(c.principal) ||
+    !isText(c.owner_ref) ||
+    !isText(c.resource_ref) ||
+    !isText(c.resource_label) ||
+    !isText(c.state) ||
+    !isOptText(c.oracle_value) ||
+    !(c.applicable === null || typeof c.applicable === "boolean") ||
+    !(c.record_id === null || (Number.isSafeInteger(c.record_id) && Number(c.record_id) > 0)) ||
+    !isOptText(c.case_ref) ||
+    !isOptText(c.observed_at) ||
+    !Array.isArray(c.reason_codes) ||
+    !c.reason_codes.every(isText) ||
+    !isNames(c.canary_fields) ||
+    !isOptText(c.projection_error) ||
+    // 서버(access_map.go)는 신호 9개를 늘 낸다(omitempty 없음) — 하나라도 없으면 불완전한 셀이라 거부한다
+    SIGNAL_FIELDS.some((k) => c[k] !== "yes" && c[k] !== "no" && c[k] !== "unknown")
+  )
+    return badMap();
+  return c as ApiAccessCell;
+}
+/** 지도 응답 검증. 요청한 task 와 다른 task 의 지도면 다른 점검의 결과라 거부한다. */
+export function checkAccessMapResponse(res: unknown, taskId: string): ApiAccessMap {
+  if (!isObj(res) || !Number.isSafeInteger(res.task_id) || String(res.task_id) !== taskId)
+    throw new ApiError(422, "access_map_task_mismatch");
+  if (
+    !isText(res.run_ref) ||
+    !isText(res.reset_generation) ||
+    res.axis !== "horizontal" ||
+    !isText(res.policy_version) ||
+    !POLICY_VERSION.test(res.policy_version) ||
+    !Array.isArray(res.cells)
+  )
+    return badMap();
+  return { ...(res as ApiAccessMap), cells: res.cells.map(checkCell) };
 }
