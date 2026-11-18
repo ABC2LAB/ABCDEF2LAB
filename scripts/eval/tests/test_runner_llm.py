@@ -206,8 +206,9 @@ class TestMarkerShape(unittest.TestCase):
         for trace in (None, {}, {"tries": 1}, {"tries": 1, "last": "verified", "x": 0}, {"tries": 0, "last": "verified"},
                       {"tries": True, "last": "verified"}, {"tries": "1", "last": "verified"}, {"tries": 1, "last": 404},
                       {"tries": 1, "last": "http_99"}, {"tries": 1, "last": "http_600"}, {"tries": 1, "last": "http_4044"},
-                      {"tries": 1, "last": "timeout"}):
-            bad.append(marker(generations=[generation("g") | {"lookup": trace}]))
+                      {"tries": 1, "last": "timeout"}, {"tries": 0, "last": "http_404"}, {"tries": 2, "last": "deadline"}):
+            # 미확인 generation에 붙여서, 확인 상태와 마지막 응답이 안 맞는다는 이유가 아니라 흔적 자체로 거부되는지 본다
+            bad.append(marker(generations=[generation("g", status="unverified") | {"lookup": trace}]))
         bad.append(marker(generations=[generation("g", last="http_404")]))  # 확인됐는데 마지막 응답이 확인이 아니다
         bad.append(marker(generations=[generation("g", status="unverified", last="verified")]))
         for m in bad:
