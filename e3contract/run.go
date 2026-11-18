@@ -48,6 +48,9 @@ type Deps struct {
 	Now func() time.Time
 	// Logger는 상태·건수만 남긴다. 없으면 남기지 않는다.
 	Logger *slog.Logger
+	// Started는 확정 단계가 실제로 대상 요청을 시작하기 직전(표식을 만들기 전)에 한 번 불린다. 꺼짐·시작 거절·몫에 든
+	// 종류 없음이면 부르지 않는다. 감독자는 이때만 엔진을 정리 상태로 두어, 꺼진 회차의 흐름이 E③가 없을 때와 같게 한다.
+	Started func()
 }
 
 // Run은 모델 단계가 끝난 뒤 확정 단계 한 회를 돈다(#596 §5). 순서: 조건 → 정책 동결본 대조 → 리셋 확인 → 표식 생성·등록 →
@@ -155,6 +158,9 @@ func (r *run) run(ctx context.Context) RunResult {
 	types = admitted
 	if refusal := CheckRunStart(ctx, r.deps.Reset, r.in.Binding, r.in.TargetRef); refusal != "" {
 		return r.result(StatusStartRefused, string(refusal))
+	}
+	if r.deps.Started != nil {
+		r.deps.Started()
 	}
 	random := r.deps.Random
 	if random == nil {

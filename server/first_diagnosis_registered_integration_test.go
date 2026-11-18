@@ -193,6 +193,11 @@ func TestFirstDiagnosisRegisteredProductionThroughStoredFinding(t *testing.T) {
 	runtime.assembly.server.provCacheMu.Lock()
 	runtime.assembly.server.provByProfile[profileID] = &provEntry{prov: model, cfg: sdkConfig}
 	runtime.assembly.server.provCacheMu.Unlock()
+	// E③ 제품 확정 단계 훅은 일반 HTTP 실행에만 붙는다. 등록 GET(평가) 경로는 부르지 않는다.
+	var e3Calls atomic.Int64
+	if err := supervisor.SetE3Confirmation(func(context.Context, string, func()) error { e3Calls.Add(1); return nil }); err != nil {
+		t.Fatal("E③ 확정 단계 훅 설정 실패", err)
+	}
 	if err := supervisor.Run(ctx, task.ID, intentID, "approved"); err != nil {
 		node, _ := task.Store.GetNode(intentID)
 		state := "missing"
@@ -203,6 +208,9 @@ func TestFirstDiagnosisRegisteredProductionThroughStoredFinding(t *testing.T) {
 	}
 	if hits.Load() != 2 || ownerHits.Load() != 1 || peerHits.Load() != 1 || model.calls != 2 {
 		t.Fatal("같은 실행의 owner/cross 2 GET 또는 결정적 Worker 결속 위반")
+	}
+	if e3Calls.Load() != 0 {
+		t.Fatal("등록 GET 경로에서 E③ 제품 확정 단계 훅을 부름")
 	}
 	firstDiagnosisRegisteredStored(t, ctx, manager, runtime, source, keyBytes)
 	// 소유자 GET은 정상 대조다. 교차 주체의 판정 대상 셀로 기록하지 않는다.

@@ -1,0 +1,625 @@
+//go:build linux
+
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/Autumn-27/artex/diagnosisprep"
+	"github.com/Autumn-27/artex/e3contract"
+	"github.com/Autumn-27/artex/e3contract/e3fake"
+	"github.com/Autumn-27/artex/server"
+)
+
+// e3HookFixture는 선언(소유 전용 note·공유 post)을 둔 대상과, 그 선언을 동결하고 확정 몫(종류 1 = 요청 5·50초)을 적은
+// 회차 디렉터리(runs/<liveJob>)다.
+type e3HookFixture struct {
+	runs   string
+	r      *productTargetRegistry
+	rec    productTargetRecord
+	target diagnosisprep.ProductTarget
+	frozen productFrozenPolicy
+}
+
+func newE3HookFixture(t *testing.T, declare bool, policy func(*server.E2HTTPFilePolicy)) e3HookFixture {
+	t.Helper()
+	r, _, target, _ := declarationTestTarget(t)
+	var decl *e3contract.Declaration
+	if declare {
+		v, err := r.putDeclaration("ARTEX", target.ID, target.Revision, declarationTestInput())
+		if err != nil {
+			t.Fatal(err)
+		}
+		decl = v.Declaration
+	}
+	rec, err := r.lookup("ARTEX", target.Origin+"/app", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runs, _ := liveRunFixtureWith(t, nil, func(p *server.E2HTTPFilePolicy) {
+		share := server.ComputeE3ConfirmationShare(1, p.MaxRequests, p.ValidUntil.Sub(p.ValidFrom), server.E3ConfirmationRequestTimeoutDefault)
+		requests, timeoutMS := share.Requests, share.Timeout.Milliseconds()
+		p.Limits.E3ConfirmationRequests, p.Limits.E3ConfirmationTimeoutMS = &requests, &timeoutMS
+		if policy != nil {
+			policy(p)
+		}
+	})
+	f := e3HookFixture{runs: runs, r: r, rec: rec, target: target}
+	if decl != nil {
+		now := time.Now().UTC()
+		frozen, frozenPolicy, err := freezeDeclaration(*decl, liveJob, now.Add(-time.Minute), now.Add(time.Hour), target.ApprovedAt, target.ExpiresAt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for name, raw := range map[string][]byte{productFrozenDeclarationFile: frozen, productFrozenPolicyFile: frozenPolicy} {
+			if os.WriteFile(filepath.Join(runs, liveJob, name), raw, 0600) != nil {
+				t.Fatal("동결 사본 쓰기")
+			}
+		}
+		var ok bool
+		if f.frozen, ok, err = readFrozenPolicy(runs, liveJob); err != nil || !ok {
+			t.Fatal("동결 정책 출처", err)
+		}
+	}
+	return f
+}
+
+func e3HookAccounts() map[string]string {
+	return map[string]string{"tester-b": server.E2HTTPAuthAuthenticated, "tester-a": server.E2HTTPAuthAuthenticated, "tester-c": "login_failed"}
+}
+
+// confirmation은 가짜 E²(e3fake)를 넣은 확정 단계다. 표식 난수는 seed로 고정해 시험이 같은 표식을 다시 만들 수 있게 한다.
+func (f e3HookFixture) confirmation(fake *e3fake.Transport, accounts map[string]string, seed []byte) *productE3Confirmation {
+	c := newProductE3Confirmation(f.runs, liveJob, f.rec, f.r, func() map[string]string { return accounts })
+	if fake != nil {
+		c.deps.Transport, c.deps.Journal = fake, fake
+	}
+	if seed != nil {
+		c.deps.Random = bytes.NewReader(seed)
+	}
+	return c
+}
+
+func e3HookFake() *e3fake.Transport {
+	fake := e3fake.New()
+	// 유효창(대상 승인·실행 기간 겹침)이 지금 기준이라 관찰 시각도 지금으로 둔다.
+	fake.Clock = func() time.Time { return time.Now().UTC() }
+	fake.Behaviors[e3fake.Key{Purpose: e3contract.PurposeIdentity, Role: e3contract.RoleOwner}] = e3fake.Behavior{SubjectID: "user-a"}
+	fake.Behaviors[e3fake.Key{Purpose: e3contract.PurposeIdentity, Role: e3contract.RoleCross}] = e3fake.Behavior{SubjectID: "user-b"}
+	return fake
+}
+
+func readE3Result(t *testing.T, runs string) (e3contract.RunResult, []byte) {
+	t.Helper()
+	path := filepath.Join(runs, liveJob, productE3ConfirmationFile)
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("확정 결과 파일·권한: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res e3contract.RunResult
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatal("확정 결과 JSON", err)
+	}
+	return res, raw
+}
+
+func e3Seed() []byte {
+	seed := make([]byte, e3contract.MarkerLength)
+	for i := range seed {
+		seed[i] = byte(i * 7)
+	}
+	return seed
+}
+
+// deadlineTransport는 확정 요청이 받은 문맥의 시한을 남긴다(확정 단계 시간 몫 = Run 문맥 시한, 계약 §12).
+type deadlineTransport struct {
+	*e3fake.Transport
+	deadline time.Time
+	set      bool
+}
+
+func (d *deadlineTransport) Identity(ctx context.Context, req e3contract.IdentityRequest) (e3contract.Observation, error) {
+	if !d.set {
+		d.deadline, d.set = ctx.Deadline()
+	}
+	return d.Transport.Identity(ctx, req)
+}
+
+// 선언을 동결하고 몫이 든 회차: 확정 단계 결과가 회차 디렉터리에 0600으로 남고, 생성 쓰기가 대상 쓰기 기록에 남아 다음
+// 회차의 리셋 게이트가 막는다. 결과 파일에는 표식이 어느 모양으로도 없다.
+func TestProductE3ConfirmationCompletedRecordsResultAndWrites(t *testing.T) {
+	f := newE3HookFixture(t, true, nil)
+	fake := e3HookFake()
+	timed := &deadlineTransport{Transport: fake}
+	c := f.confirmation(fake, e3HookAccounts(), e3Seed())
+	c.deps.Transport = timed
+	started, begins := time.Now(), 0
+	if err := c.run(t.Context(), "9", func() { begins++ }); err != nil || begins != 1 {
+		t.Fatal("확정 단계 훅", err, begins)
+	}
+	res, raw := readE3Result(t, f.runs)
+	if res.Version != e3contract.RunResultVersion || res.Status != e3contract.StatusCompleted || res.Reason != "" || len(res.Verdicts) != 1 ||
+		res.Verdicts[0].ResourceType != "note" || res.Verdicts[0].Value != "confirmed" || res.Requests != 5 || len(res.Skipped) != 1 {
+		t.Fatalf("확정 단계 결과: %s", raw)
+	}
+	want := e3contract.RunBinding{JobRef: liveJob, RunRef: "run-live", TaskRef: "9", E2PolicyRef: "policy-live",
+		GenerationRef: "generation-" + liveJob, InstanceRef: "instance-" + liveJob, Policy: f.frozen.Policy}
+	if res.Binding == nil || *res.Binding != want {
+		t.Fatalf("실행 결속: %+v", res.Binding)
+	}
+	if len(res.Writes) != 1 || res.Writes[0].Outcome != e3contract.WriteCreated || !urlDigestValid(res.Writes[0].ObjectIDDigest) {
+		t.Fatalf("확정 쓰기: %+v", res.Writes)
+	}
+	// 인증된 시험 계정 둘을 이름순으로 A·B에 둔다(로그인 실패 계정은 빠진다). 요청마다 확정 요청 시간 상한을 넘긴다.
+	owner, cross := "", ""
+	for _, call := range fake.Calls() {
+		if call.Timeout != server.E3ConfirmationRequestTimeoutDefault {
+			t.Fatalf("확정 요청 시간 상한: %v", call.Timeout)
+		}
+		if call.Key.Purpose == e3contract.PurposeIdentity && call.Key.Role == e3contract.RoleOwner {
+			owner = call.Account
+		}
+		if call.Key.Purpose == e3contract.PurposeIdentity && call.Key.Role == e3contract.RoleCross {
+			cross = call.Account
+		}
+	}
+	if owner != "tester-a" || cross != "tester-b" {
+		t.Fatalf("계정 배정: A=%s B=%s", owner, cross)
+	}
+	// 시간 몫(요청 5 × 10초)이 확정 단계 문맥의 시한이다.
+	if share := 5 * server.E3ConfirmationRequestTimeoutDefault; !timed.set || timed.deadline.Before(started.Add(share)) || timed.deadline.After(time.Now().Add(share)) {
+		t.Fatalf("확정 단계 시한: set=%v deadline=%v", timed.set, timed.deadline)
+	}
+	marker, err := e3contract.NewMarker(bytes.NewReader(e3Seed()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sinks := fake.Sinks()
+	sinks["result"] = raw
+	if leaks := e3contract.LeakingSinks(marker, sinks); len(leaks) != 0 {
+		t.Fatalf("표식이 남음: %v", leaks)
+	}
+	// 양성 대조: 같은 찾기 함수가 결과에 표식이 들어가면 찾는다.
+	if leaks := e3contract.LeakingSinks(marker, map[string][]byte{"result": append(bytes.Clone(raw), marker.Reveal()...)}); len(leaks) != 1 {
+		t.Fatal("표식 찾기 대조 실패")
+	}
+	state, err := f.r.resetConfirmation("ARTEX", f.target.ID)
+	if err != nil || !state.ResetRequired || state.LastWritesJob != liveJob || state.LastWritesObjects != 1 {
+		t.Fatalf("대상 쓰기 기록: %+v %v", state, err)
+	}
+	if obj := f.r.resets[f.target.ID].writesObjects[0]; obj.Type != "note" || obj.IDUnknown || obj.IDDigest != res.Writes[0].ObjectIDDigest {
+		t.Fatalf("쓰기 객체: %+v", obj)
+	}
+	if refusal := f.r.e3RunStartRefusal(t.Context(), f.rec, "job-next"); refusal != e3contract.RefuseResetConfirmationMissing {
+		t.Fatalf("리셋 확인 전 다음 회차: %q", refusal)
+	}
+	// ID를 아는 객체는 잔존 점검(E² 쪽)이 아직 없어 리셋을 확인해도 잔존을 모른다 → 시작하지 않는다.
+	if _, err := f.r.confirmReset("ARTEX", f.target.ID, true, state.LastWritesRef); err != nil {
+		t.Fatal(err)
+	}
+	if refusal := f.r.e3RunStartRefusal(t.Context(), f.rec, "job-next"); refusal != e3contract.RefuseResetStateUnavailable {
+		t.Fatalf("ID 아는 객체의 잔존 모름: %q", refusal)
+	}
+	// 같은 회차의 결과 파일은 한 번만 쓴다(덮어쓰지 않음).
+	if err := f.confirmation(e3HookFake(), e3HookAccounts(), nil).run(t.Context(), "9", nil); err == nil {
+		t.Fatal("같은 회차 결과를 다시 씀")
+	}
+	if again, _ := readE3Result(t, f.runs); again.Status != e3contract.StatusCompleted {
+		t.Fatal("첫 결과가 바뀜")
+	}
+}
+
+// 생성 요청이 시간 상한으로 끊기면 객체가 생겼을 수 있다: ID 모름 쓰기로 남고, 리셋 확인 전까지 다음 회차를 막는다. ID
+// 모름 객체만 있으면 리셋 확인만으로 다음 회차가 열린다(계약 §12).
+func TestProductE3ConfirmationCreateTimeoutRecordsUnknownWrite(t *testing.T) {
+	f := newE3HookFixture(t, true, nil)
+	fake := e3HookFake()
+	fake.Behaviors[e3fake.Key{Purpose: e3contract.PurposeCreate, Role: e3contract.RoleOwner, Type: "note"}] = e3fake.Behavior{TimedOut: true}
+	if err := f.confirmation(fake, e3HookAccounts(), nil).run(t.Context(), "9", nil); err != nil {
+		t.Fatal(err)
+	}
+	res, raw := readE3Result(t, f.runs)
+	if res.Status != e3contract.StatusCompleted || len(res.Verdicts) != 1 || len(res.Verdicts[0].ProductReasons) != 1 ||
+		res.Verdicts[0].ProductReasons[0] != e3contract.ReasonRequestTimeout || len(res.Writes) != 1 || res.Writes[0].Outcome != e3contract.WriteUnknown {
+		t.Fatalf("생성 시간 초과 결과: %s", raw)
+	}
+	st := f.r.resets[f.target.ID]
+	if st == nil || st.writesJob != liveJob || len(st.writesObjects) != 1 || !st.writesObjects[0].IDUnknown || st.writesObjects[0].IDDigest != "" {
+		t.Fatalf("ID 모름 쓰기 기록: %+v", st)
+	}
+	if refusal := f.r.e3RunStartRefusal(t.Context(), f.rec, "job-next"); refusal != e3contract.RefuseResetConfirmationMissing {
+		t.Fatalf("리셋 확인 전: %q", refusal)
+	}
+	if _, err := f.r.confirmReset("ARTEX", f.target.ID, true, st.writesRef); err != nil {
+		t.Fatal(err)
+	}
+	if refusal := f.r.e3RunStartRefusal(t.Context(), f.rec, "job-next"); refusal != "" {
+		t.Fatalf("ID 모름 객체만 있고 리셋 확인함: %q", refusal)
+	}
+}
+
+// 진위 실패로 판정을 버려도 대상에는 이미 쓰기가 있었다. 쓰기 기록은 상태와 관계없이 남는다(계약 §7.2).
+func TestProductE3ConfirmationIntegrityFailureStillRecordsWrites(t *testing.T) {
+	f := newE3HookFixture(t, true, nil)
+	fake := e3HookFake()
+	fake.Tamper = func(c e3fake.Call, o *e3contract.Observation) {
+		if c.Key.Purpose == e3contract.PurposeRead && c.Key.Role == e3contract.RoleOwner {
+			o.StatusCode = 201
+		}
+	}
+	if err := f.confirmation(fake, e3HookAccounts(), nil).run(t.Context(), "9", nil); err != nil {
+		t.Fatal(err)
+	}
+	res, raw := readE3Result(t, f.runs)
+	if res.Status != e3contract.StatusIntegrityFailed || res.Reason != string(e3contract.IntegrityJournalEventMismatch) || len(res.Verdicts) != 0 ||
+		len(res.Writes) != 1 || res.Writes[0].Outcome != e3contract.WriteCreated {
+		t.Fatalf("진위 실패 결과: %s", raw)
+	}
+	st := f.r.resets[f.target.ID]
+	if st == nil || st.writesJob != liveJob || len(st.writesObjects) != 1 || st.writesObjects[0].IDDigest != res.Writes[0].ObjectIDDigest {
+		t.Fatalf("진위 실패 뒤 쓰기 기록: %+v", st)
+	}
+}
+
+// 중지로 끊긴 확정 단계도 그때까지의 쓰기를 남긴다.
+func TestProductE3ConfirmationInterruptedStillRecordsWrites(t *testing.T) {
+	f := newE3HookFixture(t, true, nil)
+	fake := e3HookFake()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	// 생성 관찰을 돌려준 뒤 회차를 멈춘다. 다음 요청(A 조회) 전에 끊긴다.
+	fake.Tamper = func(c e3fake.Call, _ *e3contract.Observation) {
+		if c.Key.Purpose == e3contract.PurposeCreate {
+			cancel()
+		}
+	}
+	if err := f.confirmation(fake, e3HookAccounts(), nil).run(ctx, "9", nil); err != nil {
+		t.Fatal(err)
+	}
+	res, raw := readE3Result(t, f.runs)
+	if res.Status != e3contract.StatusInterrupted || len(res.Writes) != 1 || res.Writes[0].Outcome != e3contract.WriteCreated {
+		t.Fatalf("중지 결과: %s", raw)
+	}
+	if st := f.r.resets[f.target.ID]; st == nil || st.writesJob != liveJob || len(st.writesObjects) != 1 {
+		t.Fatalf("중지 뒤 쓰기 기록: %+v", st)
+	}
+}
+
+// 제품 의존(E② Transport·Journal 없음)은 선언이 있든 없든 not_wired로 끝나고 요청·쓰기가 없다. 가짜 E²를 넣은 연결에서
+// 선언이 없으면 declaration_missing이다(계약 §7: not_wired를 먼저 판정).
+func TestProductE3ConfirmationDisabledResults(t *testing.T) {
+	for name, tc := range map[string]struct {
+		declare, fake bool
+		reason        e3contract.DisabledReason
+	}{
+		"product-deps-with-declaration":    {true, false, e3contract.DisabledNotWired},
+		"product-deps-without-declaration": {false, false, e3contract.DisabledNotWired},
+		"fake-deps-without-declaration":    {false, true, e3contract.DisabledNoDeclaration},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newE3HookFixture(t, tc.declare, nil)
+			var fake *e3fake.Transport
+			if tc.fake {
+				fake = e3HookFake()
+			}
+			begins := 0
+			if err := f.confirmation(fake, e3HookAccounts(), nil).run(t.Context(), "9", func() { begins++ }); err != nil {
+				t.Fatal(err)
+			}
+			res, raw := readE3Result(t, f.runs)
+			// 꺼진 확정 단계는 감독자에 시작 신호를 보내지 않는다(엔진 정리 상태·단계 기록 없음, Go 조건 2).
+			if begins != 0 || res.Status != e3contract.StatusDisabled || res.Reason != string(tc.reason) || res.Requests != 0 || len(res.Writes) != 0 || len(res.Verdicts) != 0 {
+				t.Fatalf("꺼진 확정 단계: %s", raw)
+			}
+			if fake != nil && len(fake.Calls()) != 0 {
+				t.Fatal("꺼진 확정 단계가 요청을 보냄")
+			}
+			if st, err := f.r.resetConfirmation("ARTEX", f.target.ID); err != nil || st.ResetRequired || st.LastWritesJob != "" {
+				t.Fatalf("꺼진 확정 단계가 쓰기를 남김: %+v %v", st, err)
+			}
+		})
+	}
+}
+
+// 회차 기록에서 읽지 못한 칸은 지어내지 않는다. 확정 단계가 그 이유로 꺼지고 요청은 0건이다.
+func TestProductE3ConfirmationInputFailsClosed(t *testing.T) {
+	share := func(requests uint64, timeoutMS int64) func(*server.E2HTTPFilePolicy) {
+		return func(p *server.E2HTTPFilePolicy) {
+			p.Limits.E3ConfirmationRequests, p.Limits.E3ConfirmationTimeoutMS = &requests, &timeoutMS
+		}
+	}
+	for name, tc := range map[string]struct {
+		policy   func(*server.E2HTTPFilePolicy)
+		change   func(t *testing.T, f *e3HookFixture, c *productE3Confirmation)
+		task     string
+		accounts map[string]string
+		status   e3contract.ConfirmationStatus
+		reason   string
+		requests int
+	}{
+		"frozen-policy-broken": {change: func(t *testing.T, f *e3HookFixture, _ *productE3Confirmation) {
+			if os.WriteFile(filepath.Join(f.runs, liveJob, productFrozenPolicyFile), []byte(`{"format":"x"}`), 0600) != nil {
+				t.Fatal("write")
+			}
+		}, reason: string(e3contract.DisabledBindingInvalid)},
+		"run-policy-missing": {change: func(t *testing.T, f *e3HookFixture, _ *productE3Confirmation) {
+			if os.Remove(filepath.Join(f.runs, liveJob, "policy.json")) != nil {
+				t.Fatal("remove")
+			}
+		}, reason: string(e3contract.DisabledBindingInvalid)},
+		"task-ref-missing": {task: "-", reason: string(e3contract.DisabledBindingInvalid)},
+		"share-fields-absent": {policy: func(p *server.E2HTTPFilePolicy) {
+			p.Limits.E3ConfirmationRequests, p.Limits.E3ConfirmationTimeoutMS = nil, nil
+		}, reason: string(e3contract.DisabledShareUnavailable)},
+		"share-not-type-shaped":  {policy: share(6, 60000), reason: string(e3contract.DisabledShareUnavailable)},
+		"share-identity-only":    {policy: share(2, 20000), reason: string(e3contract.DisabledShareUnavailable)},
+		"share-time-not-matched": {policy: share(5, 40000), reason: string(e3contract.DisabledShareUnavailable)},
+		"write-not-reversible": {change: func(_ *testing.T, _ *e3HookFixture, c *productE3Confirmation) { c.target.ReversibleWrites = false },
+			reason: string(e3contract.DisabledWriteNotConsented)},
+		"write-consent-missing": {change: func(_ *testing.T, _ *e3HookFixture, c *productE3Confirmation) { c.target.WriteConsent = "" },
+			reason: string(e3contract.DisabledWriteNotConsented)},
+		"one-account": {accounts: map[string]string{"tester-a": server.E2HTTPAuthAuthenticated, "tester-b": "result_unknown"},
+			reason: string(e3contract.DisabledAccountsUnverified)},
+		"no-account-reader": {change: func(_ *testing.T, _ *e3HookFixture, c *productE3Confirmation) { c.accounts = nil },
+			reason: string(e3contract.DisabledAccountsUnverified)},
+		// 몫이 0이면(종류가 몫에 들지 않음) 요청 없이 종류마다 UNDECIDABLE(예산)이다.
+		"share-zero": {policy: share(0, 0), status: e3contract.StatusCompleted},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newE3HookFixture(t, true, tc.policy)
+			accounts := tc.accounts
+			if accounts == nil {
+				accounts = e3HookAccounts()
+			}
+			fake := e3HookFake()
+			c := f.confirmation(fake, accounts, nil)
+			if tc.change != nil {
+				tc.change(t, &f, c)
+			}
+			task := "9"
+			if tc.task != "" {
+				task = tc.task
+			}
+			begins := 0
+			if err := c.run(t.Context(), task, func() { begins++ }); err != nil || begins != 0 {
+				t.Fatal(err, begins)
+			}
+			res, raw := readE3Result(t, f.runs)
+			status := tc.status
+			if status == "" {
+				status = e3contract.StatusDisabled
+			}
+			if res.Status != status || res.Reason != tc.reason || res.Requests != tc.requests || len(fake.Calls()) != 0 || len(res.Writes) != 0 {
+				t.Fatalf("결과: %s", raw)
+			}
+			if status == e3contract.StatusCompleted && (len(res.Verdicts) != 1 || res.Verdicts[0].Value != "undecidable" ||
+				len(res.Verdicts[0].ProductReasons) != 1 || res.Verdicts[0].ProductReasons[0] != e3contract.ReasonConfirmationBudgetExhaust) {
+				t.Fatalf("몫 0 결과: %s", raw)
+			}
+		})
+	}
+}
+
+func TestProductConfirmationObjectsKeepUnknownIDs(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	got := productConfirmationObjects([]e3contract.ConfirmationWrite{
+		{ResourceType: "note", Outcome: e3contract.WriteCreated, ObjectIDDigest: digest},
+		{ResourceType: "card", Outcome: e3contract.WriteUnknown},
+		{ResourceType: "bad", Outcome: e3contract.WriteCreated, ObjectIDDigest: "not-a-digest"},
+		{ResourceType: "odd", Outcome: "other", ObjectIDDigest: digest},
+	})
+	want := []productConfirmationObject{{Type: "note", IDDigest: digest}, {Type: "card", IDUnknown: true}, {Type: "bad", IDUnknown: true}, {Type: "odd", IDUnknown: true}}
+	if len(got) != len(want) {
+		t.Fatalf("%+v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] || !got[i].valid() {
+			t.Fatalf("%d: %+v", i, got[i])
+		}
+	}
+}
+
+// 회차 시작 리셋 게이트(결정 §6.1): 선언이 있는 대상만, 지난 쓰기 뒤 리셋 확인이 없으면 회차를 거절한다. 거절이면 대상
+// 묶음을 남기지 않는다.
+func TestProductRunStartResetGate(t *testing.T) {
+	r, _, target, _ := declarationTestTarget(t)
+	rec, err := r.lookup("ARTEX", target.Origin+"/app", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &productRuntime{targets: r}
+	attach := func(job string) string {
+		t.Helper()
+		release, reason := p.attachRun(t.Context(), rec, job, func() {})
+		p.activeMu.Lock()
+		_, attached := p.active[rec.Target.ID][job]
+		p.activeMu.Unlock()
+		if reason != "" {
+			if release != nil || attached {
+				t.Fatal("거절한 회차가 대상에 묶임")
+			}
+			return reason
+		}
+		if release == nil || !attached {
+			t.Fatal("받은 회차가 묶이지 않음")
+		}
+		release()
+		return ""
+	}
+	// 선언이 없으면 확정 단계가 꺼진 회차라 지난 쓰기가 있어도 게이트가 없다.
+	if err := r.recordConfirmationWrites(target.ID, "job-old", []productConfirmationObject{{Type: "note", IDUnknown: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if reason := attach("job-1"); reason != "" {
+		t.Fatalf("선언 없는 대상에 게이트: %q", reason)
+	}
+	if _, err := r.putDeclaration("ARTEX", target.ID, target.Revision, declarationTestInput()); err != nil {
+		t.Fatal(err)
+	}
+	if reason := attach("job-2"); reason != string(e3contract.RefuseResetConfirmationMissing) {
+		t.Fatalf("리셋 확인 전: %q", reason)
+	}
+	state, err := r.resetConfirmation("ARTEX", target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.confirmReset("ARTEX", target.ID, true, state.LastWritesRef); err != nil {
+		t.Fatal(err)
+	}
+	if reason := attach("job-3"); reason != "" {
+		t.Fatalf("ID 모름 객체만 있고 리셋 확인함: %q", reason)
+	}
+	// ID를 아는 객체는 잔존 점검이 없어 리셋을 확인해도 시작하지 않는다.
+	if err := r.recordConfirmationWrites(target.ID, "job-3", []productConfirmationObject{{Type: "note", IDDigest: strings.Repeat("b", 64)}}); err != nil {
+		t.Fatal(err)
+	}
+	state, _ = r.resetConfirmation("ARTEX", target.ID)
+	if _, err := r.confirmReset("ARTEX", target.ID, true, state.LastWritesRef); err != nil {
+		t.Fatal(err)
+	}
+	if reason := attach("job-4"); reason != string(e3contract.RefuseResetStateUnavailable) {
+		t.Fatalf("ID 아는 객체: %q", reason)
+	}
+	// 대상이 바뀌었으면(철회) 게이트 전에 거절한다.
+	if _, err := r.revoke("ARTEX", target.ID); err != nil {
+		t.Fatal(err)
+	}
+	if reason := attach("job-5"); reason != "target_approval_changed" {
+		t.Fatalf("철회된 대상: %q", reason)
+	}
+}
+
+// 쓰기 기록이 없는 대상(지금 모든 대상)은 선언이 있든 없든 지금처럼 시작한다. 게이트는 지난 확정 쓰기가 있을 때만 막는다.
+func TestProductRunStartGateOpenWithoutWrites(t *testing.T) {
+	for _, declare := range []bool{false, true} {
+		r, _, target, _ := declarationTestTarget(t)
+		if declare {
+			if _, err := r.putDeclaration("ARTEX", target.ID, target.Revision, declarationTestInput()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		rec, err := r.lookup("ARTEX", target.Origin+"/app", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if refusal := r.e3RunStartRefusal(t.Context(), rec, "job-1"); refusal != "" {
+			t.Fatalf("declare=%v 쓰기 없는 대상 게이트: %q", declare, refusal)
+		}
+		p := &productRuntime{targets: r}
+		release, reason := p.attachRun(t.Context(), rec, "job-1", func() {})
+		if reason != "" || release == nil {
+			t.Fatalf("declare=%v 쓰기 없는 대상 시작 거절: %q", declare, reason)
+		}
+		release()
+	}
+}
+
+func TestWriteRunPrivateFileStaysInRun(t *testing.T) {
+	runs, _ := liveRunFixture(t, nil)
+	// 회차 디렉터리 밖(상위·다른 회차)과 회차 안 하위 디렉터리(state/) 모두 받지 않는다.
+	for _, bad := range [][2]string{{"..", "x.json"}, {liveJob, "../x.json"}, {"missing-job", "x.json"}, {liveJob, "state/x.json"}, {liveJob + "/state", "x.json"}} {
+		if writeRunPrivateFile(runs, bad[0], bad[1], []byte("{}")) == nil {
+			t.Fatalf("회차 밖 쓰기 허용: %v", bad)
+		}
+	}
+	if err := writeRunPrivateFile(runs, liveJob, "x.json", []byte("{}")); err != nil {
+		t.Fatal(err)
+	}
+	if writeRunPrivateFile(runs, liveJob, "x.json", []byte("{}")) == nil {
+		t.Fatal("있는 파일을 덮어씀")
+	}
+}
+
+// 발급 정책의 확정 몫에서 몫에 든 종류 수를 되읽는다(withE3ConfirmationShare의 역). 모양이 틀리면 몫을 받지 못한 것이다.
+func TestProductE3AdmittedReadsShare(t *testing.T) {
+	for k := 1; k <= 4; k++ {
+		share := server.ComputeE3ConfirmationShare(k, 400, time.Hour, server.E3ConfirmationRequestTimeoutDefault)
+		requests, timeoutMS := share.Requests, share.Timeout.Milliseconds()
+		admitted, timeout := productE3Admitted(server.E2HTTPFileLimits{E3ConfirmationRequests: &requests, E3ConfirmationTimeoutMS: &timeoutMS})
+		if share.Admitted != k || admitted != k || timeout != share.Timeout {
+			t.Fatalf("종류 %d: 몫 %+v → %d %v", k, share, admitted, timeout)
+		}
+	}
+	limits := func(requests uint64, timeoutMS int64) server.E2HTTPFileLimits {
+		return server.E2HTTPFileLimits{E3ConfirmationRequests: &requests, E3ConfirmationTimeoutMS: &timeoutMS}
+	}
+	zero := uint64(0)
+	for name, tc := range map[string]struct {
+		limits server.E2HTTPFileLimits
+		want   int
+	}{
+		"absent":           {server.E2HTTPFileLimits{}, -1},
+		"requests-only":    {server.E2HTTPFileLimits{E3ConfirmationRequests: &zero}, -1},
+		"zero":             {limits(0, 0), 0},
+		"time-without-req": {limits(0, 1000), -1},
+		"identity-only":    {limits(2, 20000), -1},
+		"not-type-shaped":  {limits(6, 60000), -1},
+		"time-not-matched": {limits(5, 40000), -1},
+	} {
+		if got, timeout := productE3Admitted(tc.limits); got != tc.want || timeout != 0 {
+			t.Fatalf("%s: %d %v", name, got, timeout)
+		}
+	}
+}
+
+// 인증 준비가 성공한 시험 계정만, 이름순 앞 둘을 A·B로 둔다(지도 순서와 관계없이 같다).
+func TestProductE3AccountsPicksAuthenticatedByName(t *testing.T) {
+	read := func() map[string]string {
+		return map[string]string{"zeta": server.E2HTTPAuthAuthenticated, "mu": server.E2HTTPAuthAuthenticated, "alpha": "login_failed",
+			"gamma": server.E2HTTPAuthAuthenticated, "beta": "result_unknown"}
+	}
+	for range 50 {
+		owner, cross := productE3Accounts(read)
+		if owner != (e3contract.Account{Label: "gamma", Authenticated: true}) || cross != (e3contract.Account{Label: "mu", Authenticated: true}) {
+			t.Fatalf("A=%+v B=%+v", owner, cross)
+		}
+	}
+	if owner, cross := productE3Accounts(nil); owner != (e3contract.Account{}) || cross != (e3contract.Account{}) {
+		t.Fatal("읽을 수 없는 인증 결과에서 계정을 지어냄")
+	}
+	one := func() map[string]string { return map[string]string{"solo": server.E2HTTPAuthAuthenticated} }
+	if owner, cross := productE3Accounts(one); owner.Label != "solo" || cross != (e3contract.Account{}) {
+		t.Fatalf("계정 하나: %+v %+v", owner, cross)
+	}
+}
+
+// 쓰기 기록을 남기지 못하면 훅이 오류를 돌려준다(감독자가 단계·상태를 남긴다). 결과 파일은 그래도 쓴다.
+func TestProductE3ConfirmationReportsUnrecordedWrites(t *testing.T) {
+	for name, change := range map[string]func(t *testing.T, f e3HookFixture, c *productE3Confirmation){
+		// 같은 회차의 쓰기 기록은 한 번만 받는다. ID 모름 쓰기를 미리 남기고 리셋을 확인해 두면 확정 단계는 시작하지만
+		// 이번 쓰기 기록은 거절된다.
+		"journal-refuses": func(t *testing.T, f e3HookFixture, _ *productE3Confirmation) {
+			if err := f.r.recordConfirmationWrites(f.target.ID, liveJob, []productConfirmationObject{{Type: "note", IDUnknown: true}}); err != nil {
+				t.Fatal(err)
+			}
+			state, _ := f.r.resetConfirmation("ARTEX", f.target.ID)
+			if _, err := f.r.confirmReset("ARTEX", f.target.ID, true, state.LastWritesRef); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"no-registry": func(_ *testing.T, _ e3HookFixture, c *productE3Confirmation) { c.registry = nil },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newE3HookFixture(t, true, nil)
+			c := f.confirmation(e3HookFake(), e3HookAccounts(), nil)
+			change(t, f, c)
+			if err := c.run(t.Context(), "9", nil); err == nil || !strings.Contains(err.Error(), "e3_writes_unrecorded") {
+				t.Fatalf("쓰기 기록 실패를 감춤: %v", err)
+			}
+			if res, raw := readE3Result(t, f.runs); res.Status != e3contract.StatusCompleted || len(res.Writes) != 1 {
+				t.Fatalf("결과 파일: %s", raw)
+			}
+		})
+	}
+}

@@ -88,6 +88,8 @@ func diagnosisLogStage(stage string) string {
 		return "audit_close"
 	case "user-stop":
 		return "shutdown"
+	case "e3-confirmation":
+		return "e3_confirmation"
 	default:
 		return "execution"
 	}

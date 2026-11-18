@@ -172,6 +172,11 @@
   - 리셋은 더 안전한 쪽이라 대상 승인 상태와 관계없이 받는다.
 - 게이트는 지난 쓰기가 있으면 리셋 확인과 별개로 지난 객체를 읽어 표식 잔존을 본다(결정 §6.1 (b), E² 쪽 점검). 그 점검이 연결되기 전이나 실패하면 잔존은 `unknown`이라 시작하지 않는다.
 
+**감독자 연결(구현).**
+- 회차 시작: 실행 준비가 회차를 대상에 묶은 직후(모델 단계 전) 지금 대상 판에 유효한 선언이 있는 대상만 `CheckRunStart`로 본다. 거절이면 회차는 `failed`이고 `reason_code`가 거절 사유(`reset_confirmation_missing`·`previous_markers_present`·`reset_state_unavailable`)다. 선언이 없는 대상은 게이트가 없다. 잔존 점검이 아직 없어서 ID를 아는 지난 객체가 있는 대상은 리셋을 확인해도 `reset_state_unavailable`로 멈춘다.
+- 확정 단계: 일반 HTTP 감독자가 모델 활동이 끝난 뒤(진행 중 작업·모델 호출 0, 실행 허가 닫힘) E② 마감 전에 확정 단계를 한 번 부른다. 등록 GET(평가) 경로는 부르지 않는다. 확정 단계가 실제로 대상 요청을 시작할 때만(`Deps.Started`, 표식을 만들기 직전) 엔진을 정리 상태로 두고(새 계획·intent 없음) 진단 로그에 `e3_confirmation` 단계를 남긴다. 꺼진 회차(선언 없음·연결 없음·계정 없음·시작 거절·몫에 든 종류 없음)는 감독자 흐름(사건·단계·상태 전이 순서)이 E③가 없는 실행과 같다(통합 시험으로 고정). 확정 단계가 실패해도 모델 단계 실행 결과는 그대로다.
+- 결과: `RunResult`를 `runs/<job>/e3-confirmation.json`(0600, 한 번만)에 쓰고, `writes`는 상태와 관계없이 쓰기 기록 줄로 남긴다. 실행 결속의 `run_ref`·`e2_policy_ref`·확정 몫은 승인에 결속된 실행 정책에서 읽고, `generation_ref`·`instance_ref`는 실행마다 `generation-<job>`·`instance-<job>`이다. A·B는 지금 구현에서 인증 준비가 `authenticated`인 시험 계정의 이름순 앞 둘이다. 이 배정 규칙은 판정 의미에 닿아 아직 확정하지 않았다(열린 결정, E② Transport 연결 전에 정한다). 판정 레코드 저장은 다음 단계다.
+
 ## 9. 후보 연결
 
 후보(메서드·E² 시도 경로 패턴, `pathmask.Readable` 모양)를 시험한 종류의 조회 경로 틀과 조각마다 맞춘다. 가린 조각(`{…}`)은 가린 조각끼리만 맞는다. GET이고 정확히 한 종류와 맞을 때만 잇고, 0개면 `link_none`, 둘 이상이면 `link_ambiguous`다. 이어진 판정이 CONFIRMED일 때만 후보 `level`이 `confirmed`이고, 그 밖에는 `suspected`다. 판정에는 검증된 연결의 후보 참조만 들어간다(`candidate_refs`).

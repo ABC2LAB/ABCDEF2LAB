@@ -163,7 +163,8 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	goalConcurrent := mode == "goal-met-concurrent-denied" || mode == "goal-met-concurrent-mid-response"
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	if mode == "cancel" || mode == "user-stop" || mode == "close-fail" || mode == "plan-turns" || goalAfterWork || goalConcurrent {
+	e3Logged := mode == "e3-baseline" || mode == "e3-hook" || mode == "e3-hook-disabled"
+	if mode == "cancel" || mode == "user-stop" || mode == "close-fail" || mode == "plan-turns" || goalAfterWork || goalConcurrent || e3Logged {
 		logger, err := diagnosticlog.Create(firstDiagnosisPrivateTemp(t), "run", mustFirstDiagnosisTaskNumber(task.ID), "")
 		if err != nil {
 			t.Fatal(err)
@@ -176,6 +177,10 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 			}
 			if mode == "plan-turns" {
 				verifyPlannerTodoLog(t, logger.Path())
+				return
+			}
+			if e3Logged {
+				firstDiagnosisE3SupervisorFlows.Store(mode, supervisorFlowLog(t, logger.Path()))
 				return
 			}
 			verifySupervisorFailureLog(t, logger.Path(), mode)
@@ -575,6 +580,42 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	}
 	// 실제 taskLLMRuntime.current의 role/model guard를 유지하고 profile cache의 모델만 대체한다.
 	firstDiagnosisInjectProfileProvider(t, runtime.server, profileID, &firstDiagnosisRoleRoutedProvider{worker: worker, planner: plannerProvider})
+	// E③ 확정 단계 훅(결정 §5): 모델 활동이 모두 끝난 뒤(진행 중 작업·모델 호출 0, 실행 허가 닫힘), E② 마감 전에 한 번
+	// 불린다. 확정 단계가 실제로 시작할 때만(begin) 엔진 정리 상태가 된다. e3-hook-error는 훅이 실패해도 모델 단계 실행 결과가
+	// 그대로인지, e3-hook-disabled는 꺼진 확정 단계(선언 없음·연결 없음)가 begin을 부르지 않아 감독자 흐름이 E③ 없는 실행과
+	// 같은지 본다(Go 조건 2).
+	e3Hooked := mode == "e3-hook" || mode == "e3-hook-error" || mode == "e3-hook-disabled"
+	e3Calls, e3State := 0, ""
+	if e3Hooked {
+		if err := supervisor.SetE3Confirmation(func(hookCtx context.Context, taskID string, begin func()) error {
+			e3Calls++
+			if mode != "e3-hook-disabled" {
+				begin()
+			}
+			r := runtime.host.runtime
+			r.mu.Lock()
+			current := r.task
+			r.mu.Unlock()
+			fenced := current == nil
+			if current != nil {
+				current.mu.Lock()
+				fenced = current.closed
+				current.mu.Unlock()
+			}
+			supervisor.mu.Lock()
+			admission := supervisor.admissionGranted
+			supervisor.mu.Unlock()
+			e3State = fmt.Sprintf("task=%v inflight=%d llm=%d admission=%v fenced=%v settling=%v ctx=%v", taskID == task.ID,
+				runtime.server.engine.inflightCount(taskID), runtime.server.engine.ActiveLLMCalls(taskID), admission, fenced,
+				runtime.server.engine.isSettling(taskID), hookCtx.Err() == nil)
+			if mode == "e3-hook-error" {
+				return errors.New("owned e3 confirmation fixture failure")
+			}
+			return nil
+		}); err != nil {
+			t.Fatal("E③ 확정 단계 훅 설정 실패", err)
+		}
+	}
 	if mode == "pre-run-stop" {
 		hash, err := runtime.server.reloadPassHash()
 		if err != nil {
@@ -1239,6 +1280,23 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	if plannerProvider.calls == 0 {
 		t.Fatal("Worker 완료 뒤 원본 Planner 재계획 전에 감독자가 마감함")
 	}
+	if e3Hooked {
+		wantE3State := "task=true inflight=0 llm=0 admission=false fenced=false settling=true ctx=true"
+		if mode == "e3-hook-disabled" {
+			// 꺼진 확정 단계는 엔진을 정리 상태로 두지 않는다. 실행이 끝난 뒤에도 E③ 없는 실행처럼 정리 상태가 아니다.
+			wantE3State = "task=true inflight=0 llm=0 admission=false fenced=false settling=false ctx=true"
+			if runtime.server.engine.isSettling(task.ID) {
+				t.Fatal("꺼진 E③ 확정 단계가 엔진 정리 상태를 남김")
+			}
+		}
+		result := supervisor.RunResult()
+		if e3Calls != 1 || e3State != wantE3State || result == nil || !result.Valid() || result.Outcome != diagnosis.OutcomeComplete ||
+			result.IntentOutcomes != (diagnosis.IntentOutcomes{Done: 1}) || result.ClosingReason != "" {
+			t.Fatalf("E③ 확정 단계 훅이 모델 단계 뒤·E② 마감 전에 한 번 불리지 않았거나 실행 결과가 바뀜 calls=%d state=%q result=%+v", e3Calls, e3State, result)
+		}
+	} else if runtime.server.engine.isSettling(task.ID) {
+		t.Fatal("E③ 확정 단계 훅이 없는 실행이 엔진 정리 상태로 바뀜")
+	}
 	expectedClass := "completed"
 	if mode == "tool-failure" {
 		expectedClass = "tool_failure"
@@ -1437,6 +1495,35 @@ func (p *firstDiagnosisRoleRoutedProvider) Stream(ctx context.Context, request l
 	return func(yield func(llm.StreamEvent, error) bool) {
 		yield(llm.StreamEvent{}, errors.New("unexpected fixture streaming"))
 	}
+}
+
+// firstDiagnosisE3SupervisorFlows는 E③ 확정 단계 훅 모드별 감독자 흐름(supervisorFlowLog)이다. 같은 실행 픽스처의
+// 훅 없음(e3-baseline)·꺼진 확정 단계(e3-hook-disabled)·켜진 확정 단계(e3-hook)를 서로 대조한다.
+var firstDiagnosisE3SupervisorFlows sync.Map
+
+// supervisorFlowLog는 진단 기록에서 감독자 사건의 순서(사건·단계·상태·사유)를 시각·소요 시간 없이 뽑는다.
+func supervisorFlowLog(t *testing.T, path string) []string {
+	t.Helper()
+	file, err := os.Open(path)
+	if err != nil {
+		t.Error(err)
+		return nil
+	}
+	defer file.Close()
+	var flow []string
+	for decoder := json.NewDecoder(file); ; {
+		var event diagnosticlog.Event
+		if err := decoder.Decode(&event); err == io.EOF {
+			break
+		} else if err != nil {
+			t.Error("감독자 흐름 JSONL 손상", err)
+			return nil
+		}
+		if event.Component == "supervisor" {
+			flow = append(flow, event.Event+"/"+event.Stage+"/"+event.Status+"/"+event.ReasonCode)
+		}
+	}
+	return flow
 }
 
 // verifyPlannerTodoLog는 Planner가 부른 TodoWrite가 진단 기록에 등록 도구 선택으로 남고, 미등록 도구 실패가 없는지 본다.
