@@ -293,7 +293,7 @@ export function UrlControlPolicyLive() {
               <h2>정책 · 승인 · 감사</h2>
               <div style={chipRow}>
                 <span style={monoChip}>정책 {policy.policyRef}</span>
-                <span style={monoChip}>개정 {policy.policyRevision || "미기재"}</span>
+                <span style={monoChip}>개정 {policy.policyRevision}</span>
                 <span style={neutralChip}>승인 방식: {APPROVAL_LABEL[policy.approvalMode]}</span>
                 <span style={neutralChip}>자격 헤더(정책 설정): {HEADER_MODE_LABEL[policy.headerMode]}</span>
                 {policy.fingerprint ? (

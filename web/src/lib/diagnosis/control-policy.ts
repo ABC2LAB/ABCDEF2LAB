@@ -160,6 +160,12 @@ export function validOrigin(v: string): boolean {
 /** 정책·규칙 참조 — e2proxy validRef(영숫자로 시작, 영숫자·`_.:/-`, 128자 이하, `://` 없음). 빈 값은 서버가 만들 수 없다. */
 const SAFE_REF = /^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$/;
 const validRef = (v: unknown): v is string => isStr(v) && SAFE_REF.test(v) && !v.includes("://");
+/**
+ * 정책 식별자 — server e2HTTPHostRef(영숫자로 시작, 영숫자·`_.:-`, 128자 이하). 규칙 참조와 달리 `/` 를 받지 않는다.
+ * 서버 정책 문서 검증(validateE2HTTPPolicyDocumentMode)이 policy_ref·policy_revision 에 요구한다. 빈 값도 거부.
+ */
+const POLICY_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
+const validPolicyId = (v: unknown): v is string => isStr(v) && POLICY_ID.test(v);
 /** e2proxy maxExecutionRules — 규칙은 1개 이상 이만큼 이하 */
 const MAX_RULES = 128;
 /**
@@ -310,6 +316,8 @@ function parseRule(raw: unknown): PolicyRule | null {
 function parseLimits(raw: unknown): PolicyLimits | null {
   if (!isObj(raw) || !exactKeys(raw, LIMIT_KEYS)) return null;
   if (!LIMIT_KEYS.every((k) => isNat(raw[k]))) return null;
+  // 요청 상한 0 은 서버 정책 문서 검증이 거부한다(MaxRequests == 0) — '요청 0건 허용' 정책으로 그리지 않는다
+  if (raw.max_requests === 0) return null;
   return {
     maxRequests: raw.max_requests as number,
     maxAttempts: raw.max_attempts as number,
@@ -338,13 +346,14 @@ export function parseControlPolicyView(raw: unknown): ControlPolicy | null {
   const limits = parseLimits(raw.limits);
   const accounts = strList(raw.accounts);
   if (
-    !isStr(raw.policy_ref) ||
-    !raw.policy_ref ||
-    !isStr(raw.policy_revision) ||
+    !validPolicyId(raw.policy_ref) ||
+    !validPolicyId(raw.policy_revision) ||
     !approvalMode ||
     !headerMode ||
     !isInstant(raw.valid_from) ||
     !isInstant(raw.valid_until) ||
+    // 유효 창은 양의 간격(서버: ValidUntil.After(ValidFrom))
+    !(Date.parse(raw.valid_until) > Date.parse(raw.valid_from)) ||
     !Array.isArray(raw.rules) ||
     raw.rules.length === 0 ||
     raw.rules.length > MAX_RULES ||
