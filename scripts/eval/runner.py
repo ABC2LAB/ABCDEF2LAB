@@ -26,6 +26,7 @@ import platform
 import queue
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -42,6 +43,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from preflight import PreflightError, load_preflight  # noqa: E402
 from preservation_record import build_payload as preservation_payload, digest as preservation_digest, NAME as PRESERVATION_NAME
+from preservation_record import build_payload_v3 as preservation_payload_v3  # noqa: E402
+import preservation_v3_fields as v3f  # noqa: E402
 from preservation_record import initial_state_digest  # noqa: E402
 from run_record import read_runner_key, sign_run_record  # noqa: E402
 from runner_checks import (  # noqa: E402
@@ -59,6 +62,9 @@ from runner_config import (  # noqa: E402
 from isolation_proof import PURPOSE_BROWSER_ACCEPTANCE, PURPOSE_OFFICIAL, blocked_attempts, valid_output_language  # noqa: E402
 from runner_docker import Docker, DockerError, client_environment, run_docker  # noqa: E402
 from tool_tree import collect_tree, tree_sha256  # noqa: E402
+from tool_surface import (  # noqa: E402
+    BASELINE_MCP_ARGS, BASELINE_MCP_EXPOSED_BASIS, collect_cli, image_path, mcp_side, mcp_tools, mcp_version,
+)
 from meter_describe import MAX_DESCRIBE_BYTES, describe_args, check as meter_check, parse as meter_parse  # noqa: E402
 from meter_describe import summary as meter_summary  # noqa: E402
 
@@ -185,6 +191,7 @@ class RunPorts(Protocol):
     def engine_settings(self) -> dict: ...
     def apply_engine_rules(self) -> dict: ...
     def tool_tree(self) -> str: ...
+    def tool_surface(self) -> dict: ...
     def meter_describe(self) -> object: ...
     def host_spec(self) -> dict: ...
     def start_task(self) -> str: ...
@@ -243,6 +250,8 @@ class RunSpec:
     # 엔진 끝 신호 읽기 한 번의 시한(엔진 API 시한과 같다). 창이 끝난 뒤 진행 중인 읽기를 이만큼만 기다린다.
     task_status_wait_seconds: int
     task_request_sha256: str
+    # 호스트 리슨 감시 표본 간격(실제 수집 주기)과 그 허용 최장 간격(검증 기준). 둘 다 공통 러너 설정 지문에 든다.
+    host_watch_interval_seconds: float
     host_watch_max_gap_seconds: float
     events_lookback_seconds: float
     # 선언한 엔진 LLM 정책 모드. baseline(e53a79f)에는 이 스위치가 없어 None(선언 없음)이다.
@@ -330,6 +339,8 @@ class _State:
     tmpfs_pre: dict | None = None
     host: dict | None = None
     tool_tree_sha256: str | None = None
+    tool_surface: dict | None = None
+    preservation_v3: bool = False
     engine_settings_sha256: str | None = None
     output_language: str | None = None
     # 상태 차이: 회차 키(메모리에만)와 pre 사본 지문. 사본 파일은 지문을 뜬 즉시 지운다.
@@ -663,6 +674,10 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     _meter_preflight(spec, ports, evidence, state)
     # Dockerfile이 도구 버전을 고정하지 않아 이미지 ID로는 도구가 같은지 알 수 없다. 채점기가 대조한다(프로토콜 §2).
     state.tool_tree_sha256 = _step(state, "tool_tree_failed", ports.tool_tree)
+    if _split_preservation(spec):
+        # 분리 배치 B 회차는 보존 sidecar v3를 내고, 도구 면(CLI·MCP 원 목록·노출 목록)을 회차 전에 잰다(결정안 §3.3·§4).
+        state.tool_surface = _step(state, "tool_surface_failed", ports.tool_surface)
+        _step(state, "evidence_write_failed", lambda: evidence.write_json(TOOL_SURFACE_NAME, state.tool_surface))
     # baseline·개선 후가 같은 머신에서 돌았는지 채점기가 대조한다(평가 프로토콜 §5.1).
     state.host = _step(state, "host_spec_failed", ports.host_spec)
     if not _host_spec_ok(state.host):
@@ -932,6 +947,9 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         state.preservation = dict(options=options, run_id=spec.run_id, side=spec.side, repeat_index=spec.repeat_index,
             engine_source_sha=spec.engine_source_sha, engine_image_id=spec.image_ids["engine"],
             conditions=pc, stop_reason=stop_reason)
+        if _split_preservation(spec):
+            state.preservation, state.preservation_v3 = _preservation_v3(spec, state, pc, stop_reason,
+                                                                         llm_summary.get("rate_limited")), True
     state.record = _step(state, "record_build_failed", lambda: _build_record(
         spec, evidence, state, pre, post, pre_board, post_board, pre_solved, post_solved, steps, window,
         observer, ready_calls, meter_summary, drained, len(rows), pre_checked_at, post_check_at, conditions, e2,
@@ -1044,6 +1062,34 @@ def _collect_e2_prompt(spec: RunSpec, ports: RunPorts, evidence, state: _State, 
             "expected_count": result.expected_count, "projection_sha256": result.projection_sha256, **dict(zip(PROMPT_FIELDS, result.identity))}
 
 
+TOOL_SURFACE_NAME = "tool-surface.json"
+TOOL_SURFACE_SIDE_FORMAT = "abc2lab.tool-surface-side/v1"
+
+
+def _split_preservation(spec: RunSpec) -> bool:
+    """분리 배치 B 회차(보존 옵션 + 대상 이름 origin)만 v3를 낸다. 그 밖의 보존 회차는 지금처럼 v2다."""
+    return spec.preservation is not None and spec.task_origin is not None and spec.side == "baseline"
+
+
+def _preservation_v3(spec: RunSpec, state: "_State", v2_conditions: dict, stop_reason: str, rate_limited) -> dict:
+    """v2 조건에서 공통 대조 칸을 옮기고, 도구 면 측정·구동 코드·회차별 칸을 더한다(결정안 §3.3)."""
+    options, surface = spec.preservation, v3f.surface_fields(state.tool_surface)
+    common = {name: v2_conditions[name] for name in ("request_budget", "time_budget_seconds", "model_pin_sha256",
+                                                      "target_image_id", "initial_state_sha256", "machine_sha256")}
+    common.update(runner_settings_sha256=v3f.settings_sha256(vars(spec), v3f.COMMON_RUNNER_SETTINGS),
+                  goal_common_sha256=spec.goal_common_sha256, comm_mode=options["comm_mode"],
+                  mcp_version=surface["mcp_version"], mcp_raw_tools_sha256=surface["mcp_raw_tools_sha256"])
+    side = {"layout": "artex-direct/v1", "driver_sha256": v3f.driver_sha256(v3f.B_DRIVER_FILES),
+            "driver_settings_sha256": v3f.settings_sha256(vars(spec), v3f.B_DRIVER_SETTINGS),
+            "write_mode": options["write_mode"], "declared_model_budget_sha256": options["declared_model_budget_sha256"],
+            "browser_image_id": None, "exploration_policy_sha256": None, "diagnosis_policy_sha256": None,
+            "cli_surface_sha256": surface["cli_surface_sha256"], "mcp_exposed_tools_sha256": surface["mcp_exposed_tools_sha256"]}
+    run = {"stop_reason": stop_reason, "first_limit": state.first_limit,
+           "end_signal": v3f.end_signal(state.engine_end.get("first_terminal"), product=False), "rate_limited": rate_limited}
+    return dict(series_ref=options["series_ref"], execution_source=options["execution_source"], run_id=spec.run_id,
+                side=spec.side, repeat_index=spec.repeat_index, engine_source_sha=spec.engine_source_sha,
+                engine_image_id=spec.image_ids["engine"], common=common, side_conditions=side, run=run, product=None,
+                boundary=None)
 def _meter_preflight(spec, ports, evidence, state) -> None:
     """compose를 띄우기 전(모델을 부르기 전) 계측기·게이트웨이 이미지가 이 러너의 표식 칸·기대 빌드와 맞는지 본다.
     다르면 회차를 시작하지 않는다(2026-11-17 사용자 결정, 파일럿 B 1회차 llm_marker_invalid 재발 방지)."""
@@ -1192,8 +1238,8 @@ def execute_run(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gate
     if not reasons and state.preservation is not None:
         try:
             # down 성공 뒤에는 계측기 writer가 없다. 최종 바이트를 읽고 마감·입구·hash를 함께 검증한다.
-            state.preservation = _step(state, "preservation_record_failed",
-                                       lambda: preservation_payload(meter=meter, **state.preservation))
+            build = preservation_payload_v3 if state.preservation_v3 else preservation_payload
+            state.preservation = _step(state, "preservation_record_failed", lambda: build(meter=meter, **state.preservation))
         except RunFailure as exc:
             reasons.append(exc.code)
     base = {"format": RESULT_FORMAT, "run_id": spec.run_id, "side": spec.side, "project": spec.project,
@@ -1397,6 +1443,14 @@ class DockerPorts:
     def tool_tree(self) -> str:
         return tree_sha256(collect_tree(self.plan.engine_image.id, self.docker.run_bounded))
 
+    def tool_surface(self) -> dict:
+        """원본 엔진 이미지의 도구 면(B: PATH 전체 CLI, MCP 원 목록, 노출 목록은 원본 시드가 꺼져 빈 목록)."""
+        image = self.plan.engine_image.id
+        run = self.docker.run_bounded
+        listed = mcp_tools(image, BASELINE_MCP_ARGS, subprocess.Popen, client_environment(os.environ, {}))
+        return {"format": TOOL_SURFACE_SIDE_FORMAT, "side": "baseline", "image_id": image,
+                "cli": collect_cli(image, image_path(image, run), None, run),
+                "mcp": mcp_side(image, BASELINE_MCP_ARGS, mcp_version(image, run), listed, None, BASELINE_MCP_EXPOSED_BASIS)}
     def meter_describe(self) -> object:
         """계측기 이미지 `-role describe`(망 없음). 옛 이미지는 이 역할이 없어 실패하므로 None(점검이 거부)."""
         result = self.docker.run_bounded(describe_args(self.plan.images["meter"].id), METER_DESCRIBE_TIMEOUT_SECONDS,
@@ -1551,6 +1605,7 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         llm_verify_timeout_seconds=config.run["llm_verify_timeout_seconds"],
         task_status_wait_seconds=config.run["task_create_timeout_seconds"],
         task_request_sha256=task_request_sha256,
+        host_watch_interval_seconds=config.run["host_watch_interval_seconds"],
         host_watch_max_gap_seconds=config.run["host_watch_max_gap_seconds"],
         events_lookback_seconds=config.health_timeout_seconds,
         # compose는 두 엔진에 같은 값을 넘기지만 baseline은 읽지 않는다. 결과 기록에 external로 적으면 정책이 있는 것처럼

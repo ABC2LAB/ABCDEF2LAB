@@ -400,6 +400,14 @@ class FakePorts:
         self._call("tool_tree")
         return "7" * 64
 
+    def tool_surface(self):
+        self._call("tool_surface")
+        return {"format": "abc2lab.tool-surface-side/v1", "side": "baseline", "image_id": "sha256:" + "e" * 64,
+                "cli": {"path": "/usr/bin", "count": 2, "sha256": "c" * 64, "commands": {}},
+                "mcp": {"image_id": "sha256:" + "e" * 64, "args": ["--headless"], "package_version": "0.0.84", "server_version": "x",
+                        "raw": {"names": ["a"], "sha256": "d" * 64}, "exposed": {"names": [], "sha256": "f" * 64},
+                        "exposed_basis": "original_seed_disabled"}}
+
     def host_spec(self):
         self._call("host_spec")
         return dict(self.host)
@@ -1133,6 +1141,87 @@ class TestCompleteRun(unittest.TestCase):
             ports.command_records = fail
         result, _, _, _ = run(broken, spec=spec)
         self.assertEqual(result["reasons"][0], "cli_usage_failed")
+
+    def split_b_spec(self):
+        from test_preservation_record import options
+        from test_runner_checks import PROJECT
+        return dataclasses.replace(make_spec(side="baseline", purpose="browser_acceptance"), project=PROJECT, preservation=options(),
+                                   task_origin="http://app.eval.test:8080", goal_common_sha256="9" * 64)
+
+    def test_split_baseline_publishes_sidecar_v3(self):
+        # 분리 배치 B 회차(결정안 §3.3): 도구 면을 회차 전에 재고, v3 칸(공통·쪽별·회차별)으로 발행한다.
+        from preservation_record import FORMAT_V3, _validate_v3
+        seen = {}
+
+        def capture(**kwargs):
+            self.assertIn("down", seen["ports"].calls)
+            seen.update(kwargs)
+            return {"format": "test-unsigned-v3"}
+
+        def acceptance(ports, meter, clock):
+            seen["ports"] = ports
+            meter.path_log = True
+        with patch.object(runner, "preservation_payload_v3", side_effect=capture), \
+                patch.object(runner, "preservation_payload", side_effect=AssertionError("v2를 내면 안 된다")):
+            result, ports, _, evidence = run(acceptance, spec=self.split_b_spec())
+        self.assertEqual(result["status"], COMPLETE, result)
+        self.assertEqual(ports.calls[ports.calls.index("tool_tree") + 1], "tool_surface")
+        self.assertEqual(evidence.files["tool-surface.json"]["mcp"]["package_version"], "0.0.84")
+        common, side, run_block = seen["common"], seen["side_conditions"], seen["run"]
+        self.assertEqual((common["goal_common_sha256"], common["mcp_raw_tools_sha256"], common["mcp_version"]),
+                         ("9" * 64, "d" * 64, "0.0.84"))
+        self.assertEqual((side["layout"], side["cli_surface_sha256"], side["mcp_exposed_tools_sha256"], side["browser_image_id"]),
+                         ("artex-direct/v1", "c" * 64, "f" * 64, None))
+        # 가짜 계측기는 요청 예산에 닿는다. 회차별 칸은 러너가 정한 값 그대로다.
+        self.assertEqual((run_block["stop_reason"], run_block["first_limit"]["runner_limit"]), ("request_budget", "runner_request_budget"))
+        self.assertIsNone(seen["product"])
+        self.assertIsNone(seen["boundary"])
+        # 모은 칸이 v3 모양 검사를 지난다(파일·입구 칸은 빌더가 채움)
+        payload = {"format": FORMAT_V3, "purpose": "browser_acceptance", **{k: seen[k] for k in (
+            "series_ref", "run_id", "side", "repeat_index", "engine_source_sha", "engine_image_id", "execution_source", "common",
+            "side_conditions", "run", "product")},
+                   "files": {name: {"sha256": "0" * 64, "bytes": 0} for name in ("engine-requests.jsonl", "engine-paths.jsonl",
+                                                                              "engine-sealed.json", "engine-drained.json")},
+                   "forwarded_by_ingress": {"main": 0, "explore": 0}, "exploration_boundary": None}
+        self.assertEqual(common["initial_state_sha256"], "state-pre")  # 가짜 점수판의 상태 지문(실제는 64 hex)
+        payload["common"] = dict(common, initial_state_sha256="5" * 64)
+        _validate_v3(payload)
+
+    def test_split_round_records_cli_usage_and_v3_together(self):
+        # dev 합침(#696): 분리 배치 B 회차는 B 전용 CLI 호출 수(findings 뒤, 내리기 전)와 v3 발행(도구 면은 띄우기 전, 발행은
+        # 내린 뒤)을 한 회차에서 함께 한다. 단계 순서가 겹치지 않는다.
+        spec = dataclasses.replace(self.split_b_spec(), cli_usage_names=("npx",))
+        with patch.object(runner, "preservation_payload_v3", return_value={"format": "test-unsigned-v3"}):
+            result, ports, _, evidence = run(lambda p, m, c: setattr(m, "path_log", True), spec=spec)
+        self.assertEqual(result["status"], COMPLETE, result)
+        calls = ports.calls
+        self.assertLess(calls.index("tool_surface"), calls.index("up"))
+        self.assertLess(calls.index("findings"), calls.index("command_records"))
+        self.assertLess(calls.index("command_records"), calls.index("down"))
+        self.assertIn("cli-usage.json", evidence.files)
+        self.assertIn("tool-surface.json", evidence.files)
+
+    def test_split_v3_fields_follow_the_runner_settings(self):
+        # 공통 러너 설정 칸은 B·O가 같아야 하는 값만, 쪽별 구동 설정은 B 구동 칸만 묶는다.
+        import preservation_v3_fields as v3f
+        spec = self.split_b_spec()
+        self.assertEqual(v3f.settings_sha256(vars(spec), v3f.COMMON_RUNNER_SETTINGS),
+                         v3f.settings_sha256(vars(dataclasses.replace(spec, task_request_sha256="x" * 64, worker_count=9)),
+                                             v3f.COMMON_RUNNER_SETTINGS))
+        self.assertNotEqual(v3f.settings_sha256(vars(spec), v3f.B_DRIVER_SETTINGS),
+                            v3f.settings_sha256(vars(dataclasses.replace(spec, worker_count=9)), v3f.B_DRIVER_SETTINGS))
+        self.assertNotEqual(v3f.settings_sha256(vars(spec), v3f.COMMON_RUNNER_SETTINGS),
+                            v3f.settings_sha256(vars(dataclasses.replace(spec, poll_seconds=99)), v3f.COMMON_RUNNER_SETTINGS))
+        # #696 리뷰: 허용 최장 간격은 같고 실제 감시 주기만 1초·2초로 다르면 지문도 달라야 한다.
+        one, two = (dataclasses.replace(spec, host_watch_interval_seconds=v, host_watch_max_gap_seconds=5) for v in (1, 2))
+        self.assertNotEqual(v3f.settings_sha256(vars(one), v3f.COMMON_RUNNER_SETTINGS),
+                            v3f.settings_sha256(vars(two), v3f.COMMON_RUNNER_SETTINGS))
+        # 실제 감시 주기는 설정 값(test_runner_config 기본 설정의 2초)이 그대로 spec으로 온다(발급 경로)
+        self.assertEqual(make_spec().host_watch_interval_seconds, 2)
+        # 분리 배치가 아니거나 O면 v3가 아니다
+        self.assertFalse(runner._split_preservation(dataclasses.replace(spec, task_origin=None)))
+        self.assertFalse(runner._split_preservation(dataclasses.replace(spec, side="ours")))
+        self.assertFalse(runner._split_preservation(dataclasses.replace(spec, preservation=None)))
 
     def test_stale_meter_image_never_starts_the_round(self):
         # 2026-11-17 파일럿 B 1회차 재발 방지: 옛 계측기(describe 없음)·표식 칸 다름·다른 빌드면 띄우지도, 모델을 부르지도 않는다.
