@@ -104,6 +104,7 @@
    종료 코드 1(다름)이면 회차를 돌리지 않는다. `docker builder prune -f`로 빌드 캐시를 비우고 두 엔진을 위 명령으로 다시 빌드한 뒤, 이미지 ID를 새로 적는다. 다시 대조할 때는 `--out`에 새 이름(`tool-tree-2.json`)을 줘서 앞 결과를 남긴다. 대조를 건너뛰어도 채점기가 `tool_tree_sha256` 차이를 보고 채점을 멈춘다. 다만 그때는 돌린 회차를 못 쓴다.
 
 2. **`runner.json`:** `$T/docs/evaluation/runner.example.json`([예시](runner.example.json))을 복사해 `images`의 `<…>` 자리(태그·내용 ID)와 경로만 채운다. 그 밖의 값은 바꾸지 않는다.
+   - 모델 호출 사후 검증 설정(2026-11-18 사용자 결정): `llm_gateway.verify_attempts` 40, `verify_interval_seconds` 3, `run.llm_verify_timeout_seconds` 300. 조회는 라운드로 돌아서, 통계가 준비돼 있으면 첫 라운드에서 끝나고 창을 넓혀도 시간이 늘지 않는다. 쉬는 시간 합은 최대 117초이고 계측기 전체 조회 시한은 150초, 러너 대기 하한은 210초다. 근거: generation 통계는 호출 약 13초 뒤에 준비됐고(1회 측정이라 여유를 둠), 조회 한 번은 약 0.28초였다(GET 109건). 11/18 VAmPI 유료 쌍에서 B 39건·O 61건이 모두 첫 시도에 확인됐다(그때 설정 20번 × 3초).
    `runs_root`는 **세션마다 새 디렉터리**로 둔다(시범: `…/pilot/runs`, 공식: `…/official-<날짜>/runs`, 0700). 6절 집계는 runs_root 하나를 한 세션으로 본다.
 3. **사전검사 선언:** 손으로 쓰지 않고 공식 프로파일에서 만든다(사전검사는 양쪽이 서로 같은지만 보므로, 같은 오타는 못 잡는다).
 
@@ -190,7 +191,7 @@ cd "$T" && python3 -I -B scripts/eval/runner.py --config /srv/abc2lab-eval/runne
 | `image_id_mismatch` | `runner.json` 이미지 ID와 `docker image inspect` 값. 다시 빌드했으면 ID가 바뀐다 |
 | `*_host_condition_violation`, `window_host_*` | 3절 1·2번(다른 컨테이너·리슨). 허용 목록을 넓혀서 통과시키지 않는다 |
 | `engine_settings_mismatch` | 엔진 기본 workers·모델이 선언과 다른지, 프록시 설정 |
-| `llm_*`(제공자·fallback·sampling·미검증) | 3절 3번 재조회. 제공자 쪽 문제면 세션을 멈춘다 |
+| `llm_*`(제공자·fallback·sampling·미검증) | 3절 3번 재조회. 제공자 쪽 문제면 세션을 멈춘다. 미검증(`llm_generation_unverified`)이면 회차의 `llm-summary.json` `unverified_last`(미확인 건의 마지막 조회 응답 종류별 수)를 먼저 본다: `http_404`·`no_provider`는 통계 지연, `http_401`·`http_403`은 키·권한, `network_error`는 연결, `deadline`은 조회 시한 초과다. 검증 설정을 바꿔 통과시키지 않는다 |
 | `drain_timeout`, `seal_failed`, `tmpfs_full` | 같은 칸 재실행. 반복되면 원인 수정 |
 | `e2_<코드>`(`policy_fingerprint_sha256_mismatch`, `service_ready_timeout` 등) | 동결 지문·설정·E² 이미지. 값을 고쳐 통과시키지 않고 무엇이 달라졌는지부터 본다 |
 | `interrupted` | 같은 칸 재실행 |

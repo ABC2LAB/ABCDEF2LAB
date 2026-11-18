@@ -11,7 +11,6 @@ import (
 	"iter"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -161,8 +160,9 @@ func TestPlannerLoopCarriesByteCutEndpointListOwnedPostgres(t *testing.T) {
 		return e2runner.Result{ToolOutput: "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n" + page.String(), Trusted: e2runner.TrustedResult{Version: e2proxy.Version, Final: true, ProcessDrained: true, ProxyDrained: true, Call: e2proxy.CallResult{Final: true, AuditComplete: true, Counts: e2proxy.Counts{ForwardAttempted: 1}}}}, nil
 	})
 	snap, snapErr := flow.Snapshot()
-	if err != nil || snapErr != nil || snap.Stage != "diagnosing" || snap.Counts.Omitted == 0 || snap.Counts.ModelOmitted == 0 {
-		t.Fatalf("fixture must cut both lists: stage=%s omitted=%d model_omitted=%d err=%v/%v", snap.Stage, snap.Counts.Omitted, snap.Counts.ModelOmitted, err, snapErr)
+	// 공개 목록은 바이트로 잘리고(omitted>0), 모델 목록은 공개 목록 전부를 받는다(§5: 모델 상한 = 공개 투영 상한).
+	if err != nil || snapErr != nil || snap.Stage != "diagnosing" || snap.Counts.Omitted == 0 || snap.Counts.ModelOmitted != 0 {
+		t.Fatalf("fixture must cut only the public list: stage=%s omitted=%d model_omitted=%d err=%v/%v", snap.Stage, snap.Counts.Omitted, snap.Counts.ModelOmitted, err, snapErr)
 	}
 	runtime, _ := e2HTTPRuntimeFixture(t, func(o *E2HTTPRuntimeOptions) { o.Workflow = flow; o.Expected = firstDiagnosisExpectedE2() })
 	if err = runtime.AdmitTask(ctx, task); err != nil {
@@ -224,8 +224,14 @@ func TestPlannerLoopCarriesByteCutEndpointListOwnedPostgres(t *testing.T) {
 	for _, message := range request.Messages {
 		all += "\n" + message.Text()
 	}
-	if !strings.Contains(all, strconv.FormatUint(snap.Counts.ModelOmitted, 10)+" more selected endpoints were left out") {
-		t.Fatal("planner request does not report omitted endpoints")
+	selected := 0
+	for _, e := range snap.Endpoints {
+		if e.Selected {
+			selected++
+		}
+	}
+	if len(rows) != selected || strings.Contains(all, "left out") {
+		t.Fatalf("planner must receive every selected endpoint: rows=%d selected=%d", len(rows), selected)
 	}
 	t.Logf("public=%d omitted=%d model_rows=%d model_omitted=%d model_bytes=%d", len(snap.Endpoints), snap.Counts.Omitted, len(rows), snap.Counts.ModelOmitted, len(data))
 }
