@@ -717,27 +717,51 @@ func (r *E2HTTPRuntime) TaskID() (string, bool) {
 	return r.task.id, true
 }
 
-// Planner and Worker use the same bound runner's credential redactor, including
-// remote leases. Before acquisition (or after closure), omit optional target
-// data rather than falling back to raw paths or another task's credentials.
-func (r *E2HTTPRuntime) redactPlannerTargetData(taskID, data string) string {
-	if r == nil || data == "" {
-		return ""
+// plannerWorkflowInput은 Planner 목표에 붙일 지시 문장과 가린 고른 끝점 데이터다. 데이터 상한은 가린 뒤 바이트로 재고,
+// 지시의 "빠진 수"도 같은 행 목록에서 나온다. 가림 함수를 얻지 못하면(획득 전·닫힘) 데이터는 비운다.
+func (r *E2HTTPRuntime) plannerWorkflowInput(taskID string, workflow *diagnosisflow.Controller) (string, string) {
+	if workflow == nil {
+		return "", ""
+	}
+	runner := r.plannerRedactor(taskID)
+	if runner == nil {
+		return workflow.ModelInput(nil)
+	}
+	return workflow.ModelInput(runner)
+}
+
+// plannerRedactor는 Planner가 쓸 그 실행의 출력 가림이다. 없으면 nil이다.
+func (r *E2HTTPRuntime) plannerRedactor(taskID string) func([]byte) []byte {
+	if r == nil {
+		return nil
 	}
 	r.mu.Lock()
 	t, closed := r.task, r.closed
 	r.mu.Unlock()
 	if closed || t == nil || t.id != taskID {
-		return ""
+		return nil
 	}
 	t.mu.Lock()
 	if t.closed || t.lease == nil || !t.validLease || e2HTTPNil(t.lease.Runner) {
 		t.mu.Unlock()
-		return ""
+		return nil
 	}
 	runner := t.lease.Runner
 	t.mu.Unlock()
-	return string(runner.RedactOutput([]byte(data)))
+	return runner.RedactOutput
+}
+
+// redactPlannerTargetData는 Planner가 쓸 그 실행의 가림으로 data를 가린다. 획득 전·닫힘·다른 작업이면 비운다(원문 경로나
+// 다른 작업의 자격으로 대신하지 않는다). Planner·Worker는 같은 결속 러너의 가림을 쓴다(원격 임대 포함).
+func (r *E2HTTPRuntime) redactPlannerTargetData(taskID, data string) string {
+	if data == "" {
+		return ""
+	}
+	redact := r.plannerRedactor(taskID)
+	if redact == nil {
+		return ""
+	}
+	return string(redact([]byte(data)))
 }
 
 // Execution은 신뢰한 Go 조립/마감 경로의 실제 handle이다. HTTP 참조가 이를 만들지 않는다.
