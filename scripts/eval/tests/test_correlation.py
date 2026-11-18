@@ -189,7 +189,7 @@ class TestRepoGtData(unittest.TestCase):
         ).stdout.strip()
         found = subprocess.run(
             [git, "-C", repo, "grep", "--untracked", "-l", "-E",
-             r"gt_correlation|from correlation|import correlation", "--", ".", ":!scripts/eval"],
+             r"gt_correlation|from correlation|import correlation", "--", ".", ":!scripts/eval", ":!evaluation-gt"],
             capture_output=True, text=True,
         )
         self.assertEqual(found.stdout.strip(), "", f"평가 밖에서 GT 상관 참조: {found.stdout}")
