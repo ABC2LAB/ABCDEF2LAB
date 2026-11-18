@@ -103,6 +103,8 @@ def _heredoc_markers(line: str) -> list[tuple[str, bool]]:
             quote = char
         elif char == "\\":
             i += 1
+        elif char == "#" and (i == 0 or line[i - 1].isspace() or line[i - 1] in ";&|("):
+            break  # 주석: 그 뒤의 `<<`는 heredoc이 아니다(#682 리뷰)
         elif line.startswith("<<<", i):
             i += 3  # here-string: 뒤 낱말이 입력이고 다음 줄은 본문이 아니다(가운데 `<<`부터 다시 보지 않는다)
             continue
@@ -143,9 +145,10 @@ def _drop_heredoc_bodies(command: str) -> str:
     return _split_heredocs(command)[0]
 
 
-def _substitutions(command: str) -> tuple[list[str], bool]:
+def _substitutions(command: str, quotes: bool = True) -> tuple[list[str], bool]:
     """명령 치환(`$(…)`·백틱)의 안쪽 글. 작은따옴표 안은 치환이 아니고, 큰따옴표 안은 치환이다. 짝이 맞지 않으면
-    두 번째 값이 True(정적으로 풀지 못함)."""
+    두 번째 값이 True(정적으로 풀지 못함). quotes=False는 따옴표 없는 heredoc 본문이다: 본문의 따옴표는 그냥 글자라
+    `'$(…)'`도 실행된다(#682 리뷰). 백슬래시로 막은 달러 기호만 치환이 아니다."""
     inner, broken, quote, i = [], False, None, 0
     while i < len(command):
         char = command[i]
@@ -154,6 +157,8 @@ def _substitutions(command: str) -> tuple[list[str], bool]:
                 quote = None
         elif char == "\\":
             i += 1
+        elif not quotes and char in "'\"":
+            pass
         elif char == "'" and quote is None:
             quote = "'"
         elif char == '"':
@@ -217,8 +222,8 @@ def analyze_command(command: str, depth: int = 0) -> tuple[list[str], bool]:
     body, expanding = _split_heredocs(command)
     substitutions, broken = _substitutions(body)
     uncertain |= broken
-    for text in expanding:  # 따옴표 없는 heredoc 본문의 명령 치환도 실행된다
-        found, unsure = _substitutions(text)
+    for text in expanding:  # 따옴표 없는 heredoc 본문의 명령 치환도 실행된다(본문의 따옴표는 글자)
+        found, unsure = _substitutions(text, quotes=False)
         substitutions += found
         uncertain |= unsure
     for inner in substitutions:

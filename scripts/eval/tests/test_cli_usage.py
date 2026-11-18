@@ -83,6 +83,20 @@ class TestCommandWords(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(command_words(command), words)
 
+    def test_review_round_three_heredoc_bodies_and_comments(self):
+        # #682 리뷰 3차: 따옴표 없는 heredoc 본문의 따옴표는 글자라 '$(…)'도 실행되고, 주석 속 <<EOF는 heredoc이 아니다.
+        cases = {
+            "cat <<EOF\n'$(npx --version)'\nEOF": ["npx", "cat"],
+            "# cat <<EOF\nnpx --version": ["npx"],
+            "echo a # x <<EOF\nnpx b": ["echo", "npx"],
+            "cat <<'EOF'\n'$(npx q)'\nEOF": ["cat"],      # 따옴표 구분어: 본문은 확장되지 않는다
+            "cat <<EOF\n\\$(npx q)\nEOF": ["cat"],      # 백슬래시로 막은 치환
+            "x=1#<<EOF\nnpx c": [],                         # 낱말 중간 #는 주석이 아니다(<<EOF는 heredoc, 다음 줄은 본문)
+        }
+        for command, words in cases.items():
+            with self.subTest(command=command):
+                self.assertEqual(command_words(command), words)
+
     def test_unresolvable_calls_are_uncertain_not_zero(self):
         for command in ('eval "$CMD"', "$TOOL --x", "source ./run.sh", ". ./run.sh", "echo \"$(npx", "echo `npx", "sh -c 'a \"b'"):
             with self.subTest(command=command):
