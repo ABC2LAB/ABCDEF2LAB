@@ -399,11 +399,11 @@ class TestHelperCopy(unittest.TestCase):
         run.calls = calls
         return run
 
-    def copy(self, bounded, **changes):
+    def copy(self, bounded, executor=None, **changes):
         options = dict(image=IMAGE_ID, volume="abc2lab-eval-ours-1_explore-evidence", directory="run", names=self.NAMES,
                        role="boundary-evidence", uid=1001, gid=1001, cidfile=self.cidfile, max_bytes=1024, timeout=30)
         options.update(changes)
-        return Docker(FakeExecutor(), {}, 1, bounded=bounded).copy_volume_files(**options)
+        return Docker(executor or FakeExecutor(), {}, 1, bounded=bounded).copy_volume_files(**options)
 
     def test_copies_named_files_without_network_or_write(self):
         fake = self.bounded(tar_bytes([("boundary-records.jsonl", b'{"seq":1}\n'), ("boundary-sealed.json", b"{}")]))
@@ -452,8 +452,9 @@ class TestHelperCopy(unittest.TestCase):
         self.assertEqual(fake.calls[0][0][fake.calls[0][0].index("-C") + 1], "/e/.")
 
     def test_failures_and_bad_inputs_use_fixed_codes(self):
+        empty = CommandResult(0, b"")
         with self.assertRaises(DockerError) as caught:
-            self.copy(self.bounded(b"", returncode=2))
+            self.copy(self.bounded(b"", returncode=2), FakeExecutor(empty, empty))
         self.assertEqual(str(caught.exception), "docker_helper_copy_failed")
         with self.assertRaises(DockerError) as caught:
             self.copy(self.bounded(tar_bytes([(n, b"x") for n in self.NAMES]), cid=b"short"))
@@ -470,6 +471,42 @@ class TestHelperCopy(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(DockerError):
                 self.copy(fake, **change)
             self.assertEqual(fake.calls, [])
+
+    def test_failed_copy_removes_this_calls_helper_and_confirms(self):
+        # #693 리뷰: 시간 초과면 Docker CLI만 끝나고 도우미가 보호 볼륨을 잡고 남을 수 있다. 이 호출의 라벨·볼륨으로 찾아
+        # 지우고 다시 봐서 없어야 원래 실패를 그대로 올린다. 남으면 docker_helper_cleanup_failed다.
+        left = "d" * 64
+        listing = ["ps", "-a", "-q", "--no-trunc", "--filter", "label=abc2lab.eval.runner-helper=boundary-evidence",
+                   "--filter", "volume=abc2lab-eval-ours-1_explore-evidence"]
+
+        def timing_out(args, env, timeout, max_stdout):
+            Path(args[args.index("--cidfile") + 1]).write_bytes(left.encode())
+            raise DockerError("docker_timeout")
+        ok, empty, failed = CommandResult(0, b""), CommandResult(0, b""), CommandResult(1, b"")
+        found = CommandResult(0, (left + "\n").encode())
+        cases = {
+            "removed": ([found, ok, empty], "docker_timeout", 3),
+            "rm_fails_but_gone": ([found, failed, empty], "docker_timeout", 3),
+            "still_there": ([found, ok, found], "docker_helper_cleanup_failed", 3),
+            "nothing_left": ([empty, empty], "docker_timeout", 2),
+            "listing_fails": ([failed], "docker_helper_cleanup_failed", 1),
+            "odd_listing": ([CommandResult(0, b"not-an-id\n")], "docker_helper_cleanup_failed", 1),
+        }
+        for name, (results, code, count) in cases.items():
+            executor = FakeExecutor(*results)
+            with self.subTest(case=name), self.assertRaises(DockerError) as caught:
+                self.copy(timing_out, executor)
+            self.assertEqual(str(caught.exception), code)
+            self.assertEqual(len(executor.calls), count)
+            self.assertEqual(executor.calls[0][0], listing)
+            if count == 3:
+                self.assertEqual(executor.calls[1][0], ["rm", "-f", "--", left])
+                self.assertEqual(executor.calls[2][0], listing)
+        # 출력 모양이 틀린 경우(도우미는 이미 끝남, --rm)에는 정리 호출을 하지 않는다.
+        executor = FakeExecutor()
+        with self.assertRaises(DockerError):
+            self.copy(self.bounded(b"not a tar"), executor)
+        self.assertEqual(executor.calls, [])
 
     def test_subpath_reads_below_the_directory(self):
         # 제품 회차 실행 조건: product-state 볼륨 runs/<초안 ID>/state/runtime-conditions.json.

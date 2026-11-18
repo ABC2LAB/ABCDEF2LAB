@@ -495,9 +495,15 @@ class Docker:
                 "--user", f"{uid}:{gid}", "--label", f"{RUNNER_HELPER_LABEL}={role}",
                 "--mount", f"type=volume,source={volume},target=/e,readonly",
                 "--entrypoint", "tar", "--", image, "-C", "/".join(("/e", directory, *subpath)), "-cf", "-", "--", *names]
-        result = self._bounded(args, self._env, timeout, len(names) * (max_bytes + _TAR_OVERHEAD_BYTES))
-        if result.returncode != 0:
-            raise DockerError("docker_helper_copy_failed")
+        try:
+            result = self._bounded(args, self._env, timeout, len(names) * (max_bytes + _TAR_OVERHEAD_BYTES))
+            if result.returncode != 0:
+                raise DockerError("docker_helper_copy_failed")
+        except DockerError:
+            # 시간 초과·출력 상한이면 Docker CLI만 끝나고 도우미는 남아 보호 볼륨을 잡고 있을 수 있다(#693 리뷰). cidfile은
+            # CLI가 쓰기 전에 끊길 수 있어, 이 호출의 라벨(역할)·볼륨으로 찾아 지우고 없어졌는지 확인한다.
+            self._remove_helpers(role, volume)
+            raise
         files: dict[str, bytes] = {}
         try:
             with tarfile.open(fileobj=io.BytesIO(result.stdout), mode="r:") as archive:
@@ -514,6 +520,21 @@ class Docker:
         if set(files) != set(names):
             raise DockerError("docker_helper_output_invalid")
         return files, _read_cidfile(cidfile)
+
+    def _remove_helpers(self, role: str, volume: str) -> None:
+        """그 역할·볼륨의 러너 도우미 컨테이너를 지우고, 하나도 안 남았는지 다시 본다. 남으면 docker_helper_cleanup_failed다
+        (원래 실패보다 우선한다: 도우미가 보호 볼륨을 잡고 있으면 회차 정리를 믿을 수 없다)."""
+        listing = ["ps", "-a", "-q", "--no-trunc", "--filter", f"label={RUNNER_HELPER_LABEL}={role}", "--filter", f"volume={volume}"]
+        ids = [i.decode("ascii", "replace") for i in self.run(listing, code="docker_helper_cleanup_failed").split()]
+        if any(not _OBJECT_ID.fullmatch(i) for i in ids):
+            raise DockerError("docker_helper_cleanup_failed")
+        if ids:
+            try:
+                self.run(["rm", "-f", "--", *ids], code="docker_helper_cleanup_failed")
+            except DockerError:
+                pass  # --rm으로 그 사이 스스로 지워졌을 수 있다. 남았는지는 아래에서 다시 본다.
+        if self.run(listing, code="docker_helper_cleanup_failed").strip():
+            raise DockerError("docker_helper_cleanup_failed")
 
     def stop_container(self, container_id: str, timeout_seconds: int) -> None:
         """컨테이너 하나를 SIGTERM으로 멈춘다(`docker stop`). 유예 안에 끝나지 않으면 Docker가 SIGKILL을 보낸다.
