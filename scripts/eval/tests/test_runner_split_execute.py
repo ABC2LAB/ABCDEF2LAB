@@ -436,6 +436,31 @@ class TestOrder(unittest.TestCase):
                 self.assertEqual((result["status"], result["reasons"]), ("invalid", ["tool_surface_image_mismatch"]))
                 self.assertNotIn("up", ports.calls)
 
+    def test_official_e3_share_must_be_present_and_zero(self):
+        # 공식 측정 E③ 비활성(평가 프로토콜 §5.1, 2026-11-18 합의): 그 회차 E② 정책의 확정 몫 칸이 있고 0이어야 한다.
+        from runner_split_run import RunFailure, check_official_e3_share, checked_control_policy
+
+        def view(**share):
+            return {"format": "abc2lab.control-policy-view/v1", "policy_ref": "policy-draft-1", "policy_revision": "v1",
+                    "policy_fingerprint_sha256": FINGERPRINT, "limits": dict(LIMITS, **share), "rules": []}
+        checked = checked_control_policy(view(e3_confirmation_requests=0, e3_confirmation_timeout_ms=0), "draft-1")
+        check_official_e3_share(checked["limits"])
+        self.assertEqual(checked["limits"]["e3_confirmation_timeout_ms"], 0)  # 근거·지문에 몫 칸도 남는다
+        for share, reason in (({}, "e3_share_unconfirmed"), ({"e3_confirmation_requests": 1, "e3_confirmation_timeout_ms": 0},
+                                                           "e3_share_not_zero"),
+                              ({"e3_confirmation_requests": 0, "e3_confirmation_timeout_ms": 5000}, "e3_share_not_zero")):
+            limits = checked_control_policy(view(**share), "draft-1")["limits"]
+            with self.subTest(share=share), self.assertRaises(RunFailure) as caught:
+                check_official_e3_share(limits)
+            self.assertEqual(caught.exception.code, reason)
+        for share in ({"e3_confirmation_requests": 0}, {"e3_confirmation_requests": -1, "e3_confirmation_timeout_ms": 0},
+                      {"e3_confirmation_requests": True, "e3_confirmation_timeout_ms": 0}):
+            with self.subTest(share=share), self.assertRaises(RunFailure) as caught:
+                checked_control_policy(view(**share), "draft-1")  # 몫 칸은 둘 다, 0 이상 정수로만
+            self.assertEqual(caught.exception.code, "control_policy_limits_invalid")
+        # 몫 칸이 없는 정책 보기(확정 몫 구현 전 빌드)도 보존 회차에서는 그대로 받는다
+        self.assertEqual(run()[0]["status"], "complete")
+
     def test_policy_and_run_conditions_are_bound_to_this_round(self):
         # #693 리뷰 ②: 다른 초안의 정책·다른 작업의 실행 조건·JSON 아닌 실행 조건을 받으면 무효다.
         cases = {
