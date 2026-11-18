@@ -1722,8 +1722,22 @@ class TestFailures(unittest.TestCase):
                          ["network.target_net: MEMBERS_MISMATCH", "service.engine: ATTACHMENT_INCONSISTENT"])
 
     def test_meter_path_log_invalidates_the_run(self):
+        # 공식 + 엔진 직접 배치(분리 배치 아님) + 경로 기록 있음 → 무효(2026-11-18 결정 (a)에서도 그대로)
         result, ports, _, evidence = run(lambda p, m, c: setattr(m, "path_log", True))
         self.assert_invalid(result, ports, evidence, "meter_path_log_enabled")
+
+    def test_official_split_round_needs_the_path_log(self):
+        # 2026-11-18 결정 (a): 공식 + 분리 배치 + 경로 기록 없음 → 무효, 있으면 완료이고 서명 조건에 분리 배치 표시·키 지문이 남는다.
+        spec = dataclasses.replace(make_spec(), split=True, path_key_ref=PATH_KEY_REF)
+        self.assertEqual(spec.purpose, "official")
+        result, ports, _, evidence = run(spec=spec)
+        self.assert_invalid(result, ports, evidence, "meter_path_log_missing")
+        result, _ports, meter, evidence = run(lambda p, m, c: setattr(m, "path_log", True), spec=spec)
+        self.assertEqual(result["status"], "complete", result)
+        self.assertEqual(meter.path_rows_seen, meter.engine_rows())
+        conditions = next(row for row in evidence.files["isolation-evidence.json"]["rows"] if row["kind"] == "run_conditions")
+        self.assertEqual((conditions["purpose"], conditions["split"], conditions["path_key_ref"]), ("official", True, PATH_KEY_REF))
+        self.assertNotIn("path_key_file", json.dumps(evidence.files))  # 키 값·경로는 근거에 없다
 
     def test_browser_acceptance_run_needs_the_path_log(self):
         spec = make_spec(purpose="browser_acceptance")
@@ -2907,8 +2921,8 @@ if __name__ == "__main__":
 class AcceptancePathKeyTests(unittest.TestCase):
     """수용시험 회차만 계측기와 같은 경로 가림 키를 eval-e2에 넘긴다(E② 시도 경로 투영)."""
 
-    def config(self, purpose, path):
-        return types.SimpleNamespace(purpose=purpose, path_key_file=path)
+    def config(self, purpose, path, split=None):
+        return types.SimpleNamespace(purpose=purpose, path_key_file=path, split=split)
 
     def test_only_acceptance_rounds_read_the_key(self):
         from runner import acceptance_path_key
@@ -2918,6 +2932,8 @@ class AcceptancePathKeyTests(unittest.TestCase):
             key.chmod(0o600)
             self.assertEqual(acceptance_path_key(self.config("browser_acceptance", key)), bytes(range(32)))
             self.assertIsNone(acceptance_path_key(self.config("official", key)))
+            # 분리 배치 공식 회차는 O 경계 보호 입력에 같은 키를 준다(2026-11-18 결정 (a))
+            self.assertEqual(acceptance_path_key(self.config("official", key, split=object())), bytes(range(32)))
             key.chmod(0o644)
             with self.assertRaises(RunnerConfigError) as caught:
                 acceptance_path_key(self.config("browser_acceptance", key))

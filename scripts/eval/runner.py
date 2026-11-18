@@ -54,6 +54,7 @@ from runner_config import (  # noqa: E402
     API_FRONT_SERVICE, E2_PRODUCT, E2_SERVICE, E2_STUB, ENGINE_DATA_PATH, ENGINE_DB_DATA_PATH, ENGINE_DB_SERVICE, ENGINE_SERVICE, LLM_GW_SERVICE,
     METER_SERVICE, OBS_SERVICE, OBSERVER_OPAQUE, OBSERVER_SCOREBOARD, TARGET_SERVICE, POLICY_SWITCH_SIDE, RunDirectory, RunnerConfig, RunnerConfigError,
     RunPlan, check_admin_password_file, check_key_files, compose_base_args, compose_environment, create_run_directory, load_runner_config, new_run_id,
+    path_log_required,
     plan_run,
 )
 from isolation_proof import PURPOSE_BROWSER_ACCEPTANCE, PURPOSE_OFFICIAL, blocked_attempts, valid_output_language  # noqa: E402
@@ -278,6 +279,8 @@ class RunSpec:
     purpose: str = PURPOSE_OFFICIAL
     # 수용시험 회차의 경로 가림 키 참조(키 값 아님). 실행 조건에 서명되고 계측기 경로 행과 대조한다.
     path_key_ref: str | None = None
+    # 탐색 분리 배치 회차(설정에 split 블록). 공식이어도 경로 기록이 있어야 하고, 서명 조건에 남아 격리 검증이 키 참조를 받는다.
+    split: bool = False
     preservation: dict | None = None
     engine_source_sha: str = ""
     # 탐색 분리 배치 B 회차: 작업 본문 origin(대상 이름 별칭)과 목표 공통 부분 SHA(O 실행 기록 goal.common_sha256과 대조할 값).
@@ -576,6 +579,26 @@ def _wait_budget(spec: RunSpec, meter: MeterFiles, clock: Clock, state: _State, 
         clock.sleep(spec.poll_seconds)
 
 
+def check_meter_logs(meter: MeterFiles, state, rows: list[dict], drained: dict, path_key_ref: str | None) -> dict:
+    """계측기 기록 마감 대조(B·분리 배치 O 공용, 같은 사유). 경로 기록은 키 참조가 있는 회차(수용시험·분리 배치)에만 있어야
+    하고, 그 회차는 전달한 요청과 한 행씩 맞고 같은 키로 가렸어야 한다. 엔진 직접 배치 공식 회차에 있으면 무효다. 기록이나
+    Sync가 실패하면 계측기가 새 요청을 받지 않고 마감 표식을 불완전으로 남겨 여기서 같은 사유로 무효가 된다. 봉인 표식을 돌려준다."""
+    path_log = _step(state, "meter_read_failed", meter.path_log_present)
+    if path_key_ref is None and path_log:
+        raise RunFailure("meter_path_log_enabled")
+    if path_key_ref is not None and not path_log:
+        raise RunFailure("meter_path_log_missing")
+    sealed = _step(state, "meter_read_failed", lambda: meter.marker(SEALED_MARKER))
+    if not _step(state, "meter_log_inconsistent", lambda: final_log_consistent(rows, sealed, drained)):
+        raise RunFailure("meter_log_inconsistent")
+    if path_key_ref is not None:
+        paths = _step(state, "meter_path_log_invalid", lambda: meter.path_rows(rows))
+        # 계측기가 실행 전에 확인한 그 키로 가렸는지 본다. 다르면 묶음 안 회차끼리 비교할 수 없다.
+        if any(row["path_key_ref"] != path_key_ref for row in paths):
+            raise RunFailure("meter_path_key_mismatch")
+    return sealed
+
+
 def _wait_drained(spec: RunSpec, meter: MeterFiles, clock: Clock, state: _State) -> dict:
     deadline = clock.monotonic() + spec.drain_timeout_seconds
     while True:
@@ -811,22 +834,8 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     # 현행 Docker 러너에는 탐색 입구가 없다. 설정 실수의 트래픽을 E② 대조에서 빼서 숨기지 않는다.
     layout = "artex-direct/v1" if spec.side == "baseline" else "e2-legacy/v1"
     _step(state, "meter_explore_ingress_unexpected", lambda: validate_ingress_layout(rows, layout))
-    # 경로 기록은 브라우저 수용시험 회차에만 있어야 한다. 공식 회차에 있으면 무효, 수용시험 회차에 없으면 측정할 수 없다.
-    path_log = _step(state, "meter_read_failed", meter.path_log_present)
-    if spec.purpose == PURPOSE_OFFICIAL and path_log:
-        raise RunFailure("meter_path_log_enabled")
-    if spec.purpose == PURPOSE_BROWSER_ACCEPTANCE and not path_log:
-        raise RunFailure("meter_path_log_missing")
-    sealed = _step(state, "meter_read_failed", lambda: meter.marker(SEALED_MARKER))
+    sealed = check_meter_logs(meter, state, rows, drained, spec.path_key_ref)
     forwarded = _step(state, "meter_log_inconsistent", lambda: forwarded_count(rows))
-    if not _step(state, "meter_log_inconsistent", lambda: final_log_consistent(rows, sealed, drained)):
-        raise RunFailure("meter_log_inconsistent")
-    # 수용시험 회차는 경로 기록이 전달한 요청과 한 행씩 맞아야 보존율을 셀 수 있다(요청 기록을 확인한 뒤에 본다).
-    if spec.purpose == PURPOSE_BROWSER_ACCEPTANCE:
-        paths = _step(state, "meter_path_log_invalid", lambda: meter.path_rows(rows))
-        # 계측기가 실행 전에 확인한 그 키로 가렸는지 본다. 다르면 묶음 안 회차끼리 비교할 수 없다.
-        if any(row["path_key_ref"] != spec.path_key_ref for row in paths):
-            raise RunFailure("meter_path_key_mismatch")
     meter_summary = {
         "task_requested_at": requested_at, "task_created_at": created_at, "stopped_at": stopped_at,
         "stop_reason": stop_reason, "forwarded_at_stop": forwarded_at_stop,
@@ -885,7 +894,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
                       "engine_end": engine_end_at, "drained": drained_at, "post": post_board["received_at"]})
     # 채점기가 회차 사이에 대조하는 실행 조건: 엔진 설정 해시·적용 샘플링·머신·LLM 스트리밍.
     # 스트리밍은 엔진이 SSE와 비스트리밍 경로를 고르는 값이라 시간·응답 처리 조건이 달라진다(#174 리뷰). 선언값이다.
-    conditions = {"purpose": spec.purpose, "path_key_ref": spec.path_key_ref,
+    conditions = {"purpose": spec.purpose, "path_key_ref": spec.path_key_ref, "split": spec.split,
                   "engine_settings_sha256": state.engine_settings_sha256, "engine_rules_sha256": spec.engine_rules_sha256,
                   "output_language": state.output_language,
                   "tool_tree_sha256": state.tool_tree_sha256,
@@ -935,11 +944,12 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
 
 
 def acceptance_path_key(config) -> bytes | None:
-    """수용시험 회차만 계측기와 같은 경로 가림 키를 eval-e2에 넘긴다(E② 시도 경로 투영). 공식 회차는 None이다.
+    """계측기와 같은 경로 가림 키 바이트. 수용시험(eval-e2 시도 경로 투영)·탐색 분리 배치(O 경계 보호 입력)만 받고, 엔진
+    직접 배치 공식 회차는 None이다.
 
     check_key_files가 같은 파일을 이미 확인했다. 그 사이 바뀌어 읽을 수 없으면 설정 오류로 멈춘다.
     """
-    if config.purpose != PURPOSE_BROWSER_ACCEPTANCE:
+    if not path_log_required(config):
         return None
     try:
         return read_path_key(str(config.path_key_file))
@@ -1508,7 +1518,7 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
                path_key_ref: str | None = None, goal_common_sha256: str | None = None) -> RunSpec:
     declared = preflight[plan.side]
     # 키 참조는 수용시험 회차에만 있다(check_key_files가 만든다).
-    if (path_key_ref is not None) != (config.purpose == PURPOSE_BROWSER_ACCEPTANCE):
+    if (path_key_ref is not None) != path_log_required(config):
         raise RunnerConfigError(["config.path_key_file: KEY_REF_MISMATCH"])
     if (plan.task_origin is None) != (goal_common_sha256 is None):
         raise RunnerConfigError(["config.split: GOAL_MISMATCH"])
@@ -1543,7 +1553,8 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         observer_readonly_ref=config.observer_readonly_ref, observer_format=config.observer_format,
         verdict_wait_seconds=(config.verdict_export["ready_wait_seconds"]
                               if config.verdict_export is not None and plan.side == POLICY_SWITCH_SIDE else None),
-        purpose=config.purpose, path_key_ref=path_key_ref, preservation=config.preservation, engine_source_sha=plan.source_sha,
+        purpose=config.purpose, path_key_ref=path_key_ref, split=config.split is not None, preservation=config.preservation,
+        engine_source_sha=plan.source_sha,
         verdict_poll_seconds=0 if config.verdict_export is None else config.verdict_export["ready_poll_seconds"],
         e2_prompt_wait_seconds=config.e2_product["prompt_wait_seconds"] if plan.e2_mode == E2_PRODUCT else 0,
         e2_prompt_poll_seconds=config.e2_product["poll_seconds"] if plan.e2_mode == E2_PRODUCT else 0,

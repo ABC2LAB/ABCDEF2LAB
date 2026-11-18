@@ -39,7 +39,7 @@ from typing import Protocol  # noqa: E402
 
 from runner import (  # noqa: E402
     INVALID, RESULT_NAME, RunFailure, _check_subnets, _event_time, _meter_preflight, _ns, _stamp, _step, _stop_events, _stop_watch,
-    _wait_budget, _wait_drained, first_limit,
+    _wait_budget, _wait_drained, check_meter_logs, first_limit,
 )
 from runner_checks import compare_snapshots  # noqa: E402
 from runner_evidence import MeterFiles  # noqa: E402
@@ -77,6 +77,8 @@ class SplitRunSpec:
     llm_provider_name: str = ""
     # 계측기 이미지의 기대 빌드 커밋(사전검사 선언의 개선 후 source_sha). B와 같은 회차 전 점검이 대조한다.
     meter_source_sha: str = ""
+    # 경로 가림 키 지문(16 hex, 키 값이 아님). 분리 배치는 B·O가 같은 키로 경로를 기록하고 같은 검사(check_meter_logs)를 받는다.
+    path_key_ref: str | None = None
 
 
 class SplitRunPorts(Protocol):
@@ -216,6 +218,9 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     settled = spec.post_settle_seconds if drained["forced_cancelled_requests"] else 0
     if settled:
         clock.sleep(settled)
+    # 계측기 기록 마감 대조는 B와 같은 함수·같은 사유다(경로 기록 필수·키 지문·전달 요청과 한 행씩, 2026-11-18 결정 (a)).
+    meter_rows = _step(state, "meter_read_failed", meter.engine_rows)
+    check_meter_logs(meter, state, meter_rows, drained, spec.path_key_ref)
     # B는 drain 뒤 게이트웨이를 봉인해 새 모델 요청을 막는다(#634). O는 같은 자리에서 제품 회차를 멈춘다. 러너 예산으로 먼저
     # 끝난 회차는 제품이 아직 실행 중이라 실행 기록(마감 때 저장)이 없고 모델 호출이 계속된다. 끝 상태·drain 완료를 본 뒤에야
     # 실행 기록·장부·호출 기록을 읽는다(#665 리뷰).
