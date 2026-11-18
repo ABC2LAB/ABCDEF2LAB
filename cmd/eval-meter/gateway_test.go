@@ -1254,3 +1254,17 @@ func TestGatewayLookupRightAfterTheLastCallUsesItsOwnConnections(t *testing.T) {
 		t.Fatalf("sleeps %v", h.sleeps)
 	}
 }
+
+// 실제 배선(main)도 프록시와 조회의 transport를 나누고, 조회 transport는 부를 때마다 새로 만든다.
+func TestGatewayTransportsDoNotShareThePool(t *testing.T) {
+	proxy, lookup := gatewayTransports()
+	first, second := lookup(), lookup()
+	if first == proxy || second == proxy || first == second {
+		t.Fatal("lookup transport shares a connection pool")
+	}
+	for _, rt := range []http.RoundTripper{proxy, first, second} {
+		if tr, ok := rt.(*http.Transport); !ok || tr.Proxy != nil {
+			t.Fatalf("transport %T must not use an environment proxy", rt)
+		}
+	}
+}

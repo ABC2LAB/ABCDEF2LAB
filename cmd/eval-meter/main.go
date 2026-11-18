@@ -263,9 +263,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		handler, finish = o, o.close
 	case roleGateway:
-		// 모델 호출 프록시와 generation 조회는 연결 풀을 나눈다(조회는 조회 때마다 새 transport).
-		lookup := func() http.RoundTripper { return defaultUpstreamTransport() }
-		g, code := newLLMGateway(dir, gatewayCfg, defaultUpstreamTransport(), lookup, time.Now, time.Sleep)
+		proxy, lookup := gatewayTransports()
+		g, code := newLLMGateway(dir, gatewayCfg, proxy, lookup, time.Now, time.Sleep)
 		if code != "" {
 			return fail(stderr, code)
 		}

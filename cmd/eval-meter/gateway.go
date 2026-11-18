@@ -182,6 +182,12 @@ type llmGateway struct {
 	logFailed         bool
 }
 
+// gatewayTransports는 모델 호출 프록시 transport와 generation 조회 전용 transport 생성기를 돌려준다. 조회는 부를 때마다
+// 새 transport라 프록시의 연결 풀과 섞이지 않는다.
+func gatewayTransports() (http.RoundTripper, func() http.RoundTripper) {
+	return defaultUpstreamTransport(), func() http.RoundTripper { return defaultUpstreamTransport() }
+}
+
 func defaultUpstreamTransport() http.RoundTripper {
 	// No environment proxy: the gateway must reach the configured upstream itself.
 	return &http.Transport{Proxy: nil, ForceAttemptHTTP2: true, TLSHandshakeTimeout: upstreamTLSTimeout}
