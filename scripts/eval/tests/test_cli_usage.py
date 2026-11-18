@@ -285,6 +285,13 @@ class TestCounting(unittest.TestCase):
             'cat <<"E\\\nOF"\n$(npx e)\nEOF\nnpx f': (["cat", "npx"], []),  # 큰따옴표 안 줄 이음: 구분어 EOF, 확장 안 함
             "<\\\n<E npx j\nbody\nE": (["npx"], []),
             "cat <<\\E\n$(npx l)\nE\nnpx m": (["cat", "npx"], []),       # 막은 구분어(\\E)는 확장하지 않는다
+            # #682 리뷰 10차: 구분어 `-`·`<`를 연산자와 붙여 `<<-`·`<<<`로 읽으면 뒤 명령 이름을 리다이렉션 대상으로 먹는다
+            "<< '-' npx --version\nbody\n-": (["npx"], []),
+            "<< '<' npx --version\nbody\n<": (["npx"], []),
+            "<<- '-' npx a\n\tb\n\t-": (["npx"], []),
+            "<< \\< npx d\nx\n<": (["npx"], []),
+            "2<<E npx e\nx\nE": (["npx"], []),         # 파일 서술자 번호는 연산자의 일부다(명령 이름이 아니다)
+            "true 2<<E\nx\nE\nnpx f": (["true", "npx"], []),
         }
         for command, (sure, maybe) in cases.items():
             with self.subTest(command=command):

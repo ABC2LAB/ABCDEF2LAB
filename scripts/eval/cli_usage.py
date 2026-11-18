@@ -259,8 +259,13 @@ def _preprocess(command: str) -> tuple[str, list[str], bool]:
                 continue
             end, delimiter, expands = word
             pending.append((delimiter, expands, strip_tabs))
-            # 줄 이음을 지운 연산자·구분어를 한 낱말로 남긴다(뒤 조각 해석은 지금처럼 `<<E` 한 토큰을 본다)
-            out.append(("<<-" if strip_tabs else "<<") + shlex.quote(delimiter))
+            # 줄 이음을 지운 연산자와 구분어를 따로 남긴다. 붙이면 구분어 `-`·`<`가 연산자와 합쳐져 `<<-`·`<<<`가 되고 뒤 명령
+            # 이름을 리다이렉션 대상으로 먹는다(#682 리뷰). 따로 둔 연산자는 다음 낱말(구분어)을 대상으로 먹는다.
+            # 앞 낱말에 붙은 연산자(`x=1#<<E`)도 떼어 둔다. 단 파일 서술자 번호(`2<<E`)는 연산자의 일부라 붙여 둔다.
+            written = "".join(out)
+            tail = re.split(r"[\s;&|()<>]", written)[-1] if written else ""
+            gap = " " if tail and not tail.isdigit() else ""
+            out.append(gap + ("<<-" if strip_tabs else "<<") + " " + shlex.quote(delimiter))
             boundary, i = False, end
             continue
         elif char == "\n" and pending:
