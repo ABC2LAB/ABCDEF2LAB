@@ -48,10 +48,20 @@ class GroundTruthError(ValueError):
     """평가 정답 파일이 형식에 맞지 않는다. 내용(키·이름)은 오류에 넣지 않는다."""
 
 
+def _unique_object(pairs: list) -> dict:
+    """같은 이름의 칸이 두 번 나오면 거부한다. json 기본 동작은 앞 값을 버려 분모가 조용히 바뀐다(#712 리뷰)."""
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate field")
+        value[key] = item
+    return value
+
+
 def _load(path: Path = GT_FILE) -> tuple[Challenge, ...]:
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, ValueError):
+        data = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object)
+    except (OSError, UnicodeError, ValueError, RecursionError):
         raise GroundTruthError("ground_truth_unreadable") from None
     items = data.get("challenges") if isinstance(data, dict) and data.get("format") == GT_FORMAT else None
     if not isinstance(items, list) or not items:

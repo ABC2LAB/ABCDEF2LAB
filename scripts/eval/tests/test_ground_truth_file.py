@@ -89,6 +89,23 @@ class TestLoader(unittest.TestCase):
         with self.assertRaisesRegex(gt.GroundTruthError, "ground_truth_unreadable"):
             gt._load(Path("/nonexistent/gt.json"))
 
+    def test_duplicate_fields_are_refused(self):
+        # #712 리뷰: 같은 칸을 두 번 적으면 마지막 값만 남아 코어 분모가 조용히 바뀐다. 파싱 때 거부한다(내용은 오류에 없다).
+        item = json.dumps(self.item())
+        duplicated = item[:-1] + ', "in_core_gt": false}'
+        for text in ('{"format": "%s", "challenges": [%s]}' % (gt.GT_FORMAT, duplicated),
+                     '{"format": "%s", "format": "%s", "challenges": [%s]}' % (gt.GT_FORMAT, gt.GT_FORMAT, item)):
+            with tempfile.TemporaryDirectory() as root:
+                path = Path(root) / "gt.json"
+                path.write_text(text, encoding="utf-8")
+                with self.assertRaises(gt.GroundTruthError) as caught:
+                    gt._load(path)
+            self.assertEqual(str(caught.exception), "ground_truth_unreadable")
+        with tempfile.TemporaryDirectory() as root:  # 중복 없는 같은 내용은 받는다(입력 대조)
+            path = Path(root) / "gt.json"
+            path.write_text('{"format": "%s", "challenges": [%s]}' % (gt.GT_FORMAT, item), encoding="utf-8")
+            self.assertEqual(len(gt._load(path)), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
