@@ -11,6 +11,7 @@ import {
   confirmable,
   type DeclarationDraft,
   type DeclarationTarget,
+  draftFieldOf,
   emptyCreate,
   emptyRead,
   getDeclaration,
@@ -18,6 +19,7 @@ import {
   looksLikeSecretName,
   normalizeDraft,
   parseDeclarationResponse,
+  rejectedFieldOf,
   saveDeclaration,
   saveFailureOf,
   scopeWarnings,
@@ -60,7 +62,7 @@ const fields = (d: DeclarationDraft) => validateDraft(d).map((i) => i.field);
 const storedJson = (over: Record<string, unknown> = {}) => ({
   version: "e3-product-declaration/v1",
   target_ref: "target-1",
-  target_approval_revision: "approval-3",
+  target_approval_revision: "3",
   declared_by: "operator-1",
   declared_at: "2026-11-18T00:00:00.000000Z",
   identity: { path: "/api/me", subject_id_path: "id" },
@@ -199,6 +201,23 @@ describe("자격 차단(절대규칙 2)", () => {
   });
 });
 
+/** #705 조회 응답(productDeclarationView) — 최상위 감사·판 칸은 안쪽 레코드와 같은 값. */
+type Json = Record<string, unknown>;
+const activeRes = (decl: Json = storedJson(), over: Json = {}) => ({
+  state: "active",
+  target_revision: Number(decl.target_approval_revision),
+  declared_by: decl.declared_by,
+  declared_at: decl.declared_at,
+  declaration: decl,
+  ...over,
+});
+const invalidRes = (reason: string, decl: Json = storedJson()) => ({
+  ...activeRes(decl),
+  state: "invalid",
+  invalid_reason: reason,
+});
+const noneRes = { state: "none", declaration: null };
+
 describe("normalizeDraft · toRequestBody", () => {
   it("종류·소유자 전용 필드를 오름차순으로 맞추고, 서버가 채우는 칸은 보내지 않는다", () => {
     const d = edit((x) => {
@@ -207,10 +226,12 @@ describe("normalizeDraft · toRequestBody", () => {
     });
     expect(normalizeDraft(d).types.map((t) => t.type)).toEqual(["note", "post", "secret"]);
     const body = toRequestBody(d, 7);
-    expect(body).toMatchObject({ expected_target_revision: 7, version: "e3-product-declaration/v1" });
-    for (const k of ["declared_by", "declared_at", "target_ref", "target_approval_revision"])
-      expect(body).not.toHaveProperty(k);
-    const types = body.types as Record<string, unknown>[];
+    // #705: {"target_revision": N, "declaration": {"identity", "types"}} — 서버가 채우는 칸은 보내면 거부된다
+    expect(Object.keys(body).sort()).toEqual(["declaration", "target_revision"]);
+    expect(body.target_revision).toBe(7);
+    const decl = body.declaration as Json;
+    expect(Object.keys(decl).sort()).toEqual(["identity", "types"]);
+    const types = decl.types as Record<string, unknown>[];
     expect(types[1]).toEqual({ type: "post", sharing: "shared" });
     expect(types[2].owner_only_fields).toEqual(["body", "memo"]);
     expect(types[0].read).toEqual({ path_template: "/api/notes/{id}", data_path: "." });
@@ -218,7 +239,7 @@ describe("normalizeDraft · toRequestBody", () => {
 
   it("상태 칸을 쓰면 둘 다 보낸다", () => {
     const d = edit((x) => (x.types[0].read = { ...x.types[0].read, statusPath: "status", normalValue: "success" }));
-    expect((toRequestBody(d, 1).types as Record<string, Record<string, unknown>>[])[0].read).toMatchObject({
+    expect(((toRequestBody(d, 1).declaration as Json).types as Record<string, Json>[])[0].read).toMatchObject({
       status_path: "status",
       normal_value: "success",
     });
@@ -226,48 +247,58 @@ describe("normalizeDraft · toRequestBody", () => {
 });
 
 describe("parseDeclarationResponse (닫힌 파서)", () => {
-  it("none · current · invalidated 를 나눈다", () => {
-    expect(parseDeclarationResponse({ state: "none" })).toEqual({ state: "none" });
-    const cur = parseDeclarationResponse({ state: "current", declaration: storedJson() });
+  it("서버 none · active · invalid 를 화면 none · current · invalidated 로 나눈다", () => {
+    expect(parseDeclarationResponse(noneRes)).toEqual({ state: "none" });
+    const cur = parseDeclarationResponse(activeRes());
     expect(cur.state).toBe("current");
     if (cur.state === "current") {
       expect(cur.declaration.declaredBy).toBe("operator-1");
+      expect(cur.declaration.targetApprovalRevision).toBe("3");
       expect(cur.declaration.types.map((t) => t.type)).toEqual(["note", "post"]);
     }
-    const inv = parseDeclarationResponse({ state: "invalidated", reason: "target_reapproved", declaration: null });
-    expect(inv).toEqual({ state: "invalidated", reason: "target_reapproved", declaration: null });
+    for (const reason of ["target_reapproved", "target_expired"]) {
+      const inv = parseDeclarationResponse(invalidRes(reason));
+      expect(inv.state).toBe("invalidated");
+      if (inv.state === "invalidated") expect(inv.reason).toBe(reason);
+    }
   });
 
   it.each<[string, unknown]>([
     ["모르는 상태", { state: "draft" }],
-    ["모르는 최상위 키", { state: "none", extra: 1 }],
-    ["판이 다름", { state: "current", declaration: storedJson({ version: "e3-product-declaration/v0" }) }],
-    ["모르는 선언 키", { state: "current", declaration: { ...storedJson(), note: "x" } }],
-    ["감사 칸 없음", { state: "current", declaration: { ...storedJson(), declared_by: undefined } }],
-    ["시각 깨짐", { state: "current", declaration: storedJson({ declared_at: "어제" }) }],
-    ["정렬 어긋남", { state: "current", declaration: storedJson({ types: [...storedJson().types].reverse() }) }],
+    ["예전 가정 상태 이름(current)", { state: "current", declaration: storedJson() }],
+    ["none 인데 declaration 칸 없음", { state: "none" }],
+    ["none 인데 선언이 있음", { state: "none", declaration: storedJson() }],
+    ["모르는 최상위 키", { ...noneRes, extra: 1 }],
+    ["active 에 최상위 감사 칸 없음", { state: "active", declaration: storedJson() }],
+    ["최상위 판이 안쪽과 다름", activeRes(storedJson(), { target_revision: 4 })],
+    ["최상위 선언자가 안쪽과 다름", activeRes(storedJson(), { declared_by: "operator-2" })],
+    ["최상위 시각이 안쪽과 다름", activeRes(storedJson(), { declared_at: "2026-11-18T00:00:01Z" })],
+    ["판이 다름", activeRes(storedJson({ version: "e3-product-declaration/v0" }))],
+    ["모르는 선언 키", activeRes({ ...storedJson(), note: "x" })],
+    ["감사 칸 없음", activeRes({ ...storedJson(), declared_by: undefined })],
+    ["시각 깨짐", activeRes(storedJson({ declared_at: "어제" }))],
+    ["정렬 어긋남", activeRes(storedJson({ types: [...storedJson().types].reverse() }))],
     [
       "공유 종류에 요청 칸",
-      {
-        state: "current",
-        declaration: storedJson({
+      activeRes(
+        storedJson({
           types: [
             storedJson().types[0],
             { type: "post", sharing: "shared", create: { ...storedJson().types[0].create } },
           ],
         }),
-      },
+      ),
     ],
     [
       "규칙 위반(조회 틀에 {id} 없음)",
-      {
-        state: "current",
-        declaration: storedJson({
+      activeRes(
+        storedJson({
           types: [{ ...storedJson().types[0], read: { path_template: "/api/notes", data_path: "." } }],
         }),
-      },
+      ),
     ],
-    ["무효 사유 없음", { state: "invalidated", declaration: null }],
+    ["무효 사유 없음", { ...activeRes(), state: "invalid" }],
+    ["모르는 무효 사유", invalidRes("target_deleted")],
     ["배열", []],
   ])("%s → invalid(빈 선언으로 바꾸지 않는다)", (_, res) => {
     expect(parseDeclarationResponse(res)).toEqual({ state: "invalid" });
@@ -284,14 +315,16 @@ describe("API", () => {
     methods: ["GET", "POST"],
   };
 
-  it("조회 라우트가 없으면(404·405·501) unavailable — 선언 없음과 다르다. 그 밖의 실패는 던진다", async () => {
+  it("404 target_not_found 는 대상 없음, 코드 없는 404·405·501 은 라우트 없음 — 둘 다 선언 없음과 다르다. 그 밖은 던진다", async () => {
+    api.mockRejectedValueOnce(new ApiError(404, "target_not_found"));
+    await expect(getDeclaration("t-1")).resolves.toEqual({ state: "not_found" });
     for (const status of [404, 405, 501]) {
-      api.mockRejectedValueOnce(new ApiError(status, "x"));
+      api.mockRejectedValueOnce(new ApiError(status, `HTTP ${status}`));
       await expect(getDeclaration("t-1")).resolves.toEqual({ state: "unavailable" });
     }
-    api.mockRejectedValueOnce(new ApiError(503, "x"));
+    api.mockRejectedValueOnce(new ApiError(503, "product_control_unavailable"));
     await expect(getDeclaration("t-1")).rejects.toBeInstanceOf(ApiError);
-    api.mockResolvedValueOnce({ state: "none" });
+    api.mockResolvedValueOnce(noneRes);
     await expect(getDeclaration("t/1")).resolves.toEqual({ state: "none" });
     expect(api).toHaveBeenLastCalledWith(
       "/api/product/targets/t%2F1/declaration",
@@ -327,7 +360,7 @@ describe("API", () => {
     const [path, init] = api.mock.calls[0];
     expect(path).toBe("/api/product/targets/t-1/declaration");
     expect(init?.method).toBe("PUT");
-    expect(JSON.parse(String(init?.body))).toMatchObject({ expected_target_revision: 3 });
+    expect(JSON.parse(String(init?.body))).toMatchObject({ target_revision: 3, declaration: { identity: {} } });
     api.mockClear();
     await expect(
       saveDeclaration(
@@ -339,12 +372,29 @@ describe("API", () => {
   });
 
   it("저장 오류 종류", () => {
-    expect(saveFailureOf(new ApiError(404, "x"))).toBe("unavailable");
-    expect(saveFailureOf(new ApiError(403, "x"))).toBe("forbidden");
-    expect(saveFailureOf(new ApiError(409, "x"))).toBe("conflict");
-    expect(saveFailureOf(new ApiError(422, "x"))).toBe("rejected");
+    expect(saveFailureOf(new ApiError(404, "target_not_found"))).toBe("not_found");
+    expect(saveFailureOf(new ApiError(404, "HTTP 404"))).toBe("unavailable");
+    expect(saveFailureOf(new ApiError(403, "operator_required"))).toBe("forbidden");
+    expect(saveFailureOf(new ApiError(409, "target_not_approved"))).toBe("not_approved");
+    expect(saveFailureOf(new ApiError(409, "declaration_target_revision_mismatch"))).toBe("conflict");
+    // 모르는 409 를 '판이 바뀜'으로 추정하지 않는다
+    expect(saveFailureOf(new ApiError(409, "something_else"))).toBe("failed");
+    expect(saveFailureOf(new ApiError(400, "invalid_declaration", "types[0].create.path"))).toBe("rejected");
+    expect(saveFailureOf(new ApiError(422, "x"))).toBe("failed");
     expect(saveFailureOf(new ApiError(500, "x"))).toBe("failed");
     expect(saveFailureOf(new Error("x"))).toBe("failed");
+  });
+
+  it("서버가 짚은 칸 → 화면 칸 이름(값 없이 위치만)", () => {
+    expect(rejectedFieldOf(new ApiError(400, "invalid_declaration", "types[0].create.body_template"))).toBe(
+      "types[0].create.body_template",
+    );
+    expect(rejectedFieldOf(new ApiError(409, "target_not_approved"))).toBeNull();
+    expect(draftFieldOf("types[0].create.body_template")).toBe("types.0.create.bodyTemplate");
+    expect(draftFieldOf("identity.subject_id_path")).toBe("identity.subjectIdPath");
+    expect(draftFieldOf("types[2].owner_only_fields[1]")).toBe("types.2.ownerOnlyFields");
+    expect(draftFieldOf("target_revision")).toBe("targetRevision");
+    expect(draftFieldOf("x=secret")).toBeNull();
   });
 
   it("승인 범위 경고는 접두 밖 경로 · 승인 밖 메서드만(참고)", () => {

@@ -81,7 +81,25 @@ function serve(map: Record<string, Reply[]>) {
 const GET_T = "GET /api/product/targets";
 const GET_D = (id: string) => `GET /api/product/targets/${id}/declaration`;
 const PUT_D = (id: string) => `PUT /api/product/targets/${id}/declaration`;
-const reject = (status: number) => () => Promise.reject(new ApiError(status, "x"));
+const reject =
+  (status: number, code = "x", field?: string) =>
+  () =>
+    Promise.reject(new ApiError(status, code, field));
+type Json = Record<string, unknown>;
+/** #705 조회 응답: 최상위 감사·판 칸은 안쪽 선언 레코드와 같은 값. */
+const active = (decl: Json = stored()) => ({
+  state: "active",
+  target_revision: Number(decl.target_approval_revision),
+  declared_by: decl.declared_by,
+  declared_at: decl.declared_at,
+  declaration: decl,
+});
+const invalidRes = (reason: string, decl: Json = stored()) => ({
+  ...active(decl),
+  state: "invalid",
+  invalid_reason: reason,
+});
+const NONE = { state: "none", declaration: null };
 const pending = () => new Promise<never>(() => undefined);
 
 function mount(route: View = "declaration") {
@@ -116,7 +134,7 @@ function fillValid() {
 
 describe("PolicyDeclarationLive (대상 · 조회 상태)", () => {
   it("승인된 대상만 고를 수 있고, 현재 선언을 서버 값 그대로 보이고 입력에 채운다", async () => {
-    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [{ state: "current", declaration: stored() }] });
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [active(stored())] });
     mount();
     const select = await screen.findByLabelText("선언할 대상");
     expect(select.querySelectorAll("option")).toHaveLength(3); // 선택… + 승인 2개
@@ -128,7 +146,7 @@ describe("PolicyDeclarationLive (대상 · 조회 상태)", () => {
   });
 
   it("선언 없음은 빈 입력, 저장 라우트가 없으면 '저장 기능 없음'으로 선언 없음과 다르게 보인다", async () => {
-    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [{ state: "none" }], [GET_D("t2")]: [reject(404)] });
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [NONE], [GET_D("t2")]: [reject(404)] });
     mount();
     await pick("t1");
     expect(await screen.findByText(/아직 선언이 없습니다/)).toBeInTheDocument();
@@ -139,7 +157,7 @@ describe("PolicyDeclarationLive (대상 · 조회 상태)", () => {
   });
 
   it("조회 실패는 '선언 없음'이 아니고 다시 읽기로 같은 대상을 다시 부른다", async () => {
-    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [reject(503), { state: "current", declaration: stored() }] });
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [reject(503), active(stored())] });
     mount();
     await pick("t1");
     expect(await screen.findByText(/선언이 없다는 뜻이 아닙니다/)).toBeInTheDocument();
@@ -151,8 +169,8 @@ describe("PolicyDeclarationLive (대상 · 조회 상태)", () => {
   it("모양이 깨진 저장본은 보이지 않고(fail-closed), 무효는 사유를 보인다", async () => {
     serve({
       [GET_T]: [TARGETS],
-      [GET_D("t1")]: [{ state: "current", declaration: { ...stored(), extra: 1 } }],
-      [GET_D("t2")]: [{ state: "invalidated", reason: "target_reapproved", declaration: stored("memo") }],
+      [GET_D("t1")]: [active({ ...stored(), extra: 1 })],
+      [GET_D("t2")]: [invalidRes("target_reapproved", stored("memo"))],
     });
     mount();
     await pick("t1");
@@ -167,7 +185,7 @@ describe("PolicyDeclarationLive (대상 · 조회 상태)", () => {
   it("대상을 바꾸면 이전 대상의 선언은 새 응답 전까지 보이지 않는다", async () => {
     serve({
       [GET_T]: [TARGETS],
-      [GET_D("t1")]: [{ state: "current", declaration: stored() }],
+      [GET_D("t1")]: [active(stored())],
       [GET_D("t2")]: [pending],
     });
     mount();
@@ -184,7 +202,7 @@ describe("PolicyDeclarationLive (입력 · 저장)", () => {
   it("빈 선언을 채워 저장하면 PUT 하나를 보내고, 서버 값을 다시 읽어 보인다", async () => {
     serve({
       [GET_T]: [TARGETS],
-      [GET_D("t1")]: [{ state: "none" }, { state: "current", declaration: stored() }],
+      [GET_D("t1")]: [NONE, active(stored())],
       [PUT_D("t1")]: [undefined],
     });
     mount();
@@ -195,15 +213,17 @@ describe("PolicyDeclarationLive (입력 · 저장)", () => {
     const put = api.mock.calls.find(([, init]) => init?.method === "PUT");
     expect(put?.[0]).toBe("/api/product/targets/t1/declaration");
     const body = JSON.parse(String(put?.[1]?.body));
-    expect(body).toMatchObject({ expected_target_revision: 3, version: "e3-product-declaration/v1" });
-    expect(body).not.toHaveProperty("declared_by");
-    expect(body.types[0]).toMatchObject({ type: "note", owner_only_fields: ["body"] });
+    expect(Object.keys(body).sort()).toEqual(["declaration", "target_revision"]);
+    expect(body.target_revision).toBe(3);
+    expect(body.declaration).not.toHaveProperty("declared_by");
+    expect(body.declaration).not.toHaveProperty("version");
+    expect(body.declaration.types[0]).toMatchObject({ type: "note", owner_only_fields: ["body"] });
     expect(await screen.findByText(/선언자/)).toHaveTextContent("operator-1");
     expect(screen.getByRole("status")).toHaveTextContent("저장했습니다");
   });
 
   it("칸 오류는 고친 뒤 보이고, 오류가 있으면 저장하지 않는다", async () => {
-    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [{ state: "none" }] });
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [NONE] });
     mount();
     await pick("t1");
     await screen.findByText(/아직 선언이 없습니다/);
@@ -215,7 +235,7 @@ describe("PolicyDeclarationLive (입력 · 저장)", () => {
   });
 
   it("본문 틀에 자격 칸이 있으면 저장을 막고 이름만 알린다(값 원문은 화면 문구에 없다)", async () => {
-    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [{ state: "none" }] });
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [NONE] });
     mount();
     await pick("t1");
     await screen.findByText(/아직 선언이 없습니다/);
@@ -231,7 +251,7 @@ describe("PolicyDeclarationLive (입력 · 저장)", () => {
   });
 
   it("승인 범위 밖은 참고 경고만 하고 저장은 막지 않는다", async () => {
-    serve({ [GET_T]: [TARGETS], [GET_D("t2")]: [{ state: "none" }], [PUT_D("t2")]: [reject(403)] });
+    serve({ [GET_T]: [TARGETS], [GET_D("t2")]: [NONE], [PUT_D("t2")]: [reject(403)] });
     mount();
     await pick("t2");
     await screen.findByText(/아직 선언이 없습니다/);
@@ -242,13 +262,15 @@ describe("PolicyDeclarationLive (입력 · 저장)", () => {
     expect(await screen.findByText(/이 대상의 승인자만 선언할 수 있습니다/)).toBeInTheDocument();
   });
 
-  it.each<[number, RegExp]>([
-    [404, /서버에 선언 저장 기능이 아직 없습니다\(정책 선언 저장 · 동결 PR 대기\)\. 입력은/],
-    [409, /그사이 대상 승인이 바뀌었습니다/],
-    [422, /서버가 선언 형식을 받지 않았습니다/],
-    [500, /선언을 저장하지 못했습니다/],
-  ])("저장 %i → 문구, 입력은 남는다", async (status, text) => {
-    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [{ state: "none" }], [PUT_D("t1")]: [reject(status)] });
+  it.each<[number, string, RegExp]>([
+    [404, "HTTP 404", /서버에 선언 저장 기능이 아직 없습니다\. 입력은/],
+    [404, "target_not_found", /이 대상을 찾지 못했습니다/],
+    [409, "target_not_approved", /지금 승인 상태가 아닙니다/],
+    [409, "declaration_target_revision_mismatch", /그사이 대상을 다시 승인해 판이 바뀌었습니다/],
+    [400, "invalid_declaration", /서버가 선언 형식을 받지 않았습니다/],
+    [500, "x", /선언을 저장하지 못했습니다/],
+  ])("저장 %i %s → 문구, 입력은 남는다", async (status, code, text) => {
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [NONE], [PUT_D("t1")]: [reject(status, code)] });
     mount();
     await pick("t1");
     await screen.findByText(/아직 선언이 없습니다/);
@@ -259,7 +281,7 @@ describe("PolicyDeclarationLive (입력 · 저장)", () => {
   });
 
   it("다른 화면에 갔다 와도 저장 안 한 입력을 서버 값으로 덮지 않는다", async () => {
-    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [{ state: "current", declaration: stored() }] });
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [active(stored())] });
     const v = mount();
     await pick("t1");
     await screen.findByText(/선언자/);
@@ -271,7 +293,7 @@ describe("PolicyDeclarationLive (입력 · 저장)", () => {
   });
 
   it("공유로 바꾸면 요청 칸을 숨기고 '건너뜀'으로 보인다, 종류 추가 · 빼기", async () => {
-    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [{ state: "none" }] });
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [NONE] });
     mount();
     await pick("t1");
     await screen.findByText(/아직 선언이 없습니다/);
@@ -285,7 +307,7 @@ describe("PolicyDeclarationLive (입력 · 저장)", () => {
   });
 
   it("내보내기 · 공유 · 모델로 보내기 버튼은 없다", async () => {
-    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [{ state: "current", declaration: stored() }] });
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [active(stored())] });
     mount();
     await pick("t1");
     await screen.findByText(/선언자/);
@@ -297,5 +319,42 @@ describe("PolicyDeclarationLive (입력 · 저장)", () => {
     serve({ [GET_T]: [TARGETS] });
     mount("dashboard");
     expect(api).not.toHaveBeenCalled();
+  });
+});
+
+describe("PolicyDeclarationLive (#705 응답 모양)", () => {
+  it("서버가 짚은 칸을 이름만 보이고 그 칸 옆에도 알린다(값 원문 없음)", async () => {
+    serve({
+      [GET_T]: [TARGETS],
+      [GET_D("t1")]: [NONE],
+      [PUT_D("t1")]: [reject(400, "invalid_declaration", "types[0].create.body_template")],
+    });
+    mount();
+    await pick("t1");
+    await screen.findByText(/아직 선언이 없습니다/);
+    fillValid();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "선언 저장" })));
+    expect(await screen.findByText(/문제 칸:/)).toHaveTextContent("types[0].create.body_template");
+    expect(screen.getByText(/서버가 이 칸을 받지 않았습니다\(types\[0\]\.create\.body_template\)/)).toBeInTheDocument();
+    // 고치면 서버 지적은 지운다
+    type("자원 종류 1 본문 틀", '{"title":"u"}');
+    expect(screen.queryByText(/서버가 이 칸을 받지 않았습니다/)).toBeNull();
+  });
+
+  it("조회 404 target_not_found 는 '대상 없음'이고 입력을 열지 않는다(선언 없음·저장 기능 없음과 다름)", async () => {
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [reject(404, "target_not_found")] });
+    mount();
+    await pick("t1");
+    expect(await screen.findByText(/이 대상을 찾지 못했습니다/)).toBeInTheDocument();
+    expect(screen.queryByText(/아직 선언이 없습니다/)).toBeNull();
+    expect(screen.queryByText(/저장 기능이 아직 없습니다/)).toBeNull();
+    expect(screen.queryByLabelText("신원 확인 경로")).toBeNull();
+  });
+
+  it("승인 만료로 무효가 된 선언은 사유를 보인다", async () => {
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [invalidRes("target_expired")] });
+    mount();
+    await pick("t1");
+    expect(await screen.findByText(/대상 승인이 만료돼 이전 선언이 무효가/)).toBeInTheDocument();
   });
 });

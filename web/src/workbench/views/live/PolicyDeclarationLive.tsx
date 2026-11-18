@@ -20,6 +20,7 @@ import {
   type DeclarationLoad,
   type DeclarationTarget,
   type DraftIssue,
+  draftFieldOf,
   draftFromStored,
   emptyDraft,
   emptyType,
@@ -27,6 +28,7 @@ import {
   getDeclarationTargets,
   invalidatedReasonText,
   normalizeDraft,
+  rejectedFieldOf,
   SAVE_FAILURE_TEXT,
   type SaveFailure,
   SHARING_LABEL,
@@ -311,6 +313,8 @@ export function PolicyDeclarationLive() {
   const [touched, setTouched] = useState(false);
   const [busy, setBusy] = useState(false);
   const [saveError, setSaveError] = useState<SaveFailure | null>(null);
+  // 서버가 저장을 거부하며 짚은 칸(400 invalid_declaration 의 field). 값은 오지 않는다 — 칸 이름만
+  const [serverField, setServerField] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   // 지금 화면 대상. 저장 응답은 저장을 시작한 대상이 아직 화면 대상일 때만 반영한다(대상을 바꾼 뒤 늦게 온 응답은 버림)
   const currentTarget = useRef("");
@@ -371,14 +375,19 @@ export function PolicyDeclarationLive() {
     }
   }
 
-  const issues = touched ? validateDraft(draft) : [];
+  const serverIssue: DraftIssue[] = serverField
+    ? [{ field: draftFieldOf(serverField) ?? "", message: `서버가 이 칸을 받지 않았습니다(${serverField}).` }]
+    : [];
+  const issues = [...(touched ? validateDraft(draft) : []), ...serverIssue];
   const allIssues = validateDraft(draft);
   const warnings = target ? scopeWarnings(draft, target) : [];
-  const canEdit = !!target && now !== null && now !== "failed";
+  // 대상을 못 찾은 경우(삭제·남의 대상)는 입력을 열지 않는다 — 저장해도 같은 404 가 난다
+  const canEdit = !!target && now !== null && now !== "failed" && now.state !== "not_found";
 
   const pickTarget = (id: string) => {
     setTargetId(id);
     setSaveError(null);
+    setServerField(null);
     setSaved(false);
   };
   const update = (next: DeclarationDraft) => {
@@ -386,6 +395,7 @@ export function PolicyDeclarationLive() {
     setTouched(true);
     setSaved(false);
     setSaveError(null);
+    setServerField(null);
   };
   const save = () => {
     if (!target || busy) return;
@@ -394,6 +404,7 @@ export function PolicyDeclarationLive() {
     const forTarget = target.id;
     setBusy(true);
     setSaveError(null);
+    setServerField(null);
     saveDeclaration(target, normalizeDraft(draft))
       .then(() => {
         if (forTarget !== currentTarget.current) return;
@@ -403,7 +414,9 @@ export function PolicyDeclarationLive() {
         setAttempt((n) => n + 1);
       })
       .catch((e: unknown) => {
-        if (forTarget === currentTarget.current) setSaveError(saveFailureOf(e));
+        if (forTarget !== currentTarget.current) return;
+        setSaveError(saveFailureOf(e));
+        setServerField(rejectedFieldOf(e));
       })
       .finally(() => setBusy(false));
   };
@@ -469,9 +482,13 @@ export function PolicyDeclarationLive() {
               {now !== null && now !== "failed" && now.state === "unavailable" ? (
                 <div className={cx(s.note, s.warn)} role="status">
                   <Icon name="alert" />
-                  <span>
-                    서버에 선언 저장 기능이 아직 없습니다(정책 선언 저장 · 동결 PR 대기). 선언이 없다는 뜻이 아닙니다.
-                  </span>
+                  <span>서버에 선언 저장 기능이 아직 없습니다. 선언이 없다는 뜻이 아닙니다.</span>
+                </div>
+              ) : null}
+              {now !== null && now !== "failed" && now.state === "not_found" ? (
+                <div className={cx(s.note, s.warn)} role="alert">
+                  <Icon name="alert" />
+                  <span>이 대상을 찾지 못했습니다(삭제됐거나 다른 운영자의 대상). 선언이 없다는 뜻이 아닙니다.</span>
                 </div>
               ) : null}
               {now !== null && now !== "failed" && now.state === "invalid" ? (
@@ -566,6 +583,12 @@ export function PolicyDeclarationLive() {
               {saveError ? (
                 <p className={s.err} role="alert">
                   {SAVE_FAILURE_TEXT[saveError]}
+                  {serverField ? (
+                    <>
+                      {" "}
+                      문제 칸: <span className={s.mono}>{serverField}</span>
+                    </>
+                  ) : null}
                 </p>
               ) : null}
               {saved && !saveError ? (

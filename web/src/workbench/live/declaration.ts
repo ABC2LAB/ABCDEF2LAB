@@ -5,8 +5,8 @@
 // ※ 감사 칸(declared_by·declared_at)과 대상 결속 칸(target_ref·target_approval_revision)은 서버가 채운다 — 화면은 보내지 않는다.
 // ※ 절대규칙 2: 본문 틀(body_template)에 자격(비밀번호·토큰·쿠키·세션·API 키) 이름이나 값 모양이 있으면 저장하지 않는다.
 //   선언은 모델 입력·내보내기·공유에 넣지 않는다.
-// ※ 저장 API(최민준, 정책 선언 저장·동결 PR)는 아직 없다. 경로·응답 모양은 #698 코멘트로 질문한 제안안을 가정한다.
-//   TODO(이경준): 저장·동결 PR 이 확정되면 DECLARATION_PATH·parseDeclarationResponse·오류 code 를 맞춘다.
+// ※ 저장·조회 API = #705(최민준) `GET`·`PUT /api/product/targets/{id}/declaration`(계약 §3). 요청·응답·오류 모양은 그 PR 의
+//   server/product_targets_http.go(productDeclarationRequest·publicDeclaration)에 맞춘다.
 //   표현/데이터 분리 — 규칙·파싱은 전부 여기, 화면은 그리기만.
 
 import { ApiError, apiFetch } from "@/lib/diagnosis/api";
@@ -330,35 +330,39 @@ function byteOrder(a: string, b: string): number {
   return a < b ? -1 : 1;
 }
 
-/** 저장 요청 본문(서버 칸 이름). 감사·대상 결속 칸은 없다. expected_target_revision 은 화면이 본 대상 판(#698 질문 2). */
-export function toRequestBody(d: DeclarationDraft, expectedTargetRevision: number): Record<string, unknown> {
+/**
+ * 저장 요청 본문(#705): `{"target_revision": N, "declaration": {"identity", "types"}}`. target_revision 은 화면이 본 대상 판이다.
+ * 서버가 채우는 칸(version·target_ref·target_approval_revision·declared_by·declared_at)은 보내면 거부되므로 넣지 않는다.
+ */
+export function toRequestBody(d: DeclarationDraft, targetRevision: number): Record<string, unknown> {
   const n = normalizeDraft(d);
   return {
-    expected_target_revision: expectedTargetRevision,
-    version: DECLARATION_VERSION,
-    identity: { path: n.identity.path, subject_id_path: n.identity.subjectIdPath },
-    types: n.types.map((t) =>
-      t.sharing === "shared"
-        ? { type: t.type, sharing: "shared" }
-        : {
-            type: t.type,
-            sharing: t.sharing,
-            owner_only_fields: t.ownerOnlyFields,
-            create: {
-              path: t.create.path,
-              method: t.create.method,
-              body_kind: t.create.bodyKind,
-              body_template: t.create.bodyTemplate,
-              marker_field: t.create.markerField,
-              id_path: t.create.idPath,
+    target_revision: targetRevision,
+    declaration: {
+      identity: { path: n.identity.path, subject_id_path: n.identity.subjectIdPath },
+      types: n.types.map((t) =>
+        t.sharing === "shared"
+          ? { type: t.type, sharing: "shared" }
+          : {
+              type: t.type,
+              sharing: t.sharing,
+              owner_only_fields: t.ownerOnlyFields,
+              create: {
+                path: t.create.path,
+                method: t.create.method,
+                body_kind: t.create.bodyKind,
+                body_template: t.create.bodyTemplate,
+                marker_field: t.create.markerField,
+                id_path: t.create.idPath,
+              },
+              read: {
+                path_template: t.read.pathTemplate,
+                data_path: t.read.dataPath,
+                ...(t.read.statusPath ? { status_path: t.read.statusPath, normal_value: t.read.normalValue } : {}),
+              },
             },
-            read: {
-              path_template: t.read.pathTemplate,
-              data_path: t.read.dataPath,
-              ...(t.read.statusPath ? { status_path: t.read.statusPath, normal_value: t.read.normalValue } : {}),
-            },
-          },
-    ),
+      ),
+    },
   };
 }
 
@@ -471,40 +475,63 @@ export function parseStoredDeclaration(v: unknown): StoredDeclaration {
   return stored;
 }
 
-/** 조회 결과. 미조회·실패를 '선언 없음'으로 바꾸지 않는다. */
+/**
+ * 조회 결과. 미조회·실패를 '선언 없음'으로 바꾸지 않는다. 서버 상태 `active`·`invalid` 는 화면에서 current·invalidated 로
+ * 부른다(응답 모양이 깨진 `invalid` 와 이름이 겹치지 않게). not_found = 대상이 없거나 다른 운영자의 대상(404 target_not_found).
+ */
 export type DeclarationLoad =
   | { state: "none" }
   | { state: "current"; declaration: StoredDeclaration }
   | { state: "invalidated"; declaration: StoredDeclaration | null; reason: string }
+  | { state: "not_found" }
   | { state: "unavailable" }
   | { state: "invalid" };
 
-/** 무효 사유 문구. 모르는 사유는 '사유 불명'(닫힌 목록). */
+/** 무효 사유 문구(#705 diagnosisprep: target_reapproved·target_expired 만). 모르는 사유는 응답 전체를 거부한다. */
 export const INVALIDATED_REASON_LABEL: Record<string, string> = {
   target_reapproved: "대상을 다시 승인해서 이전 선언이 무효가 됐습니다",
+  target_expired: "대상 승인이 만료돼 이전 선언이 무효가 됐습니다",
 };
-export const invalidatedReasonText = (reason: string): string => INVALIDATED_REASON_LABEL[reason] ?? "사유 불명";
+export const invalidatedReasonText = (reason: string): string =>
+  Object.hasOwn(INVALIDATED_REASON_LABEL, reason) ? INVALIDATED_REASON_LABEL[reason] : "사유 불명";
+
+/** 최상위 감사·판 칸이 안쪽 선언 레코드와 같은지(서로 다르면 어느 쪽이 맞는지 화면이 가릴 수 없다). */
+function sameAudit(o: Record<string, unknown>, d: StoredDeclaration): boolean {
+  return (
+    Number.isSafeInteger(o.target_revision) &&
+    Number(o.target_revision) > 0 &&
+    String(o.target_revision) === d.targetApprovalRevision &&
+    o.declared_by === d.declaredBy &&
+    typeof o.declared_at === "string" &&
+    Date.parse(o.declared_at) === Date.parse(d.declaredAt)
+  );
+}
 
 /**
- * 조회 응답 → 결과. 가정한 모양(#698 질문 3·4): {"state":"none"} | {"state":"current","declaration":{…}} |
- * {"state":"invalidated","reason":"target_reapproved","declaration":{…}|null}. 밖이면 invalid.
+ * 조회 응답 → 결과(#705 productDeclarationView). 선언 없음 = `{"state":"none","declaration":null}`,
+ * 유효 = `{"state":"active","target_revision","declared_by","declared_at","declaration":{…}}`,
+ * 무효 = 같은 칸 + `invalid_reason`. 모양이 밖이면 invalid.
  */
 export function parseDeclarationResponse(res: unknown): DeclarationLoad {
   try {
     if (!isObj(res)) return { state: "invalid" };
     if (res.state === "none") {
-      exact(res, ["state"]);
+      const o = exact(res, ["state", "declaration"]);
+      if (o.declaration !== null) fail();
       return { state: "none" };
     }
-    if (res.state === "current") {
-      const o = exact(res, ["state", "declaration"]);
-      return { state: "current", declaration: parseStoredDeclaration(o.declaration) };
+    if (res.state === "active") {
+      const o = exact(res, ["state", "target_revision", "declared_by", "declared_at", "declaration"]);
+      const declaration = parseStoredDeclaration(o.declaration);
+      if (!sameAudit(o, declaration)) fail();
+      return { state: "current", declaration };
     }
-    if (res.state === "invalidated") {
-      const o = exact(res, ["state", "reason"], ["declaration"]);
-      const reason = str(o.reason);
-      const declaration =
-        o.declaration === undefined || o.declaration === null ? null : parseStoredDeclaration(o.declaration);
+    if (res.state === "invalid") {
+      const o = exact(res, ["state", "invalid_reason", "target_revision", "declared_by", "declared_at", "declaration"]);
+      const reason = str(o.invalid_reason);
+      if (!Object.hasOwn(INVALIDATED_REASON_LABEL, reason)) fail();
+      const declaration = parseStoredDeclaration(o.declaration);
+      if (!sameAudit(o, declaration)) fail();
       return { state: "invalidated", declaration, reason };
     }
     return { state: "invalid" };
@@ -579,44 +606,81 @@ export function scopeWarnings(d: DeclarationDraft, target: DeclarationTarget): D
 }
 
 // ── 저장·조회 API ────────────────────────────────────────────────────────────────────────────────────
-/** 가정 경로(#698 질문 1). 계정 분류(/accounts)와 같은 대상 하위 자리. */
+/** 계정 분류(/accounts)와 같은 대상 하위 자리(#705). */
 export const declarationPath = (targetId: string): string =>
   `/api/product/targets/${encodeURIComponent(targetId)}/declaration`;
 
-/** 라우트가 아직 없을 때의 응답(저장·동결 PR 전). 선언 없음과 다르게 보인다. */
-const UNAVAILABLE_STATUS = new Set([404, 405, 501]);
+/** 대상 없음·다른 운영자의 대상(#705 404 `target_not_found`). 라우트 없음 404 와 오류 코드로 나눈다. */
+const isTargetNotFound = (e: unknown): boolean =>
+  e instanceof ApiError && e.status === 404 && e.message === "target_not_found";
+/** 라우트가 없는 서버(선언 API 가 들어오기 전 판). 코드 없는 404·405·501. 선언 없음과 다르게 보인다. */
+const isRouteMissing = (e: unknown): boolean =>
+  e instanceof ApiError && (e.status === 405 || e.status === 501 || (e.status === 404 && !isTargetNotFound(e)));
 
-/** 한 대상의 선언 조회. 라우트가 없으면 unavailable(선언 없음으로 바꾸지 않는다). 그 밖의 실패는 던진다. */
+/** 한 대상의 선언 조회. 대상 없음·라우트 없음은 따로 보이고(선언 없음으로 바꾸지 않는다), 그 밖의 실패는 던진다. */
 export async function getDeclaration(targetId: string, signal?: AbortSignal): Promise<DeclarationLoad> {
   try {
     const res = await apiFetch<unknown>(declarationPath(targetId), { cache: "no-store", redirect: "error", signal });
     return parseDeclarationResponse(res);
   } catch (e) {
-    if (e instanceof ApiError && UNAVAILABLE_STATUS.has(e.status)) return { state: "unavailable" };
+    if (isTargetNotFound(e)) return { state: "not_found" };
+    if (isRouteMissing(e)) return { state: "unavailable" };
     throw e;
   }
 }
 
 /** 저장 실패 종류 — 화면 문구를 고르는 데만 쓴다. */
-export type SaveFailure = "unavailable" | "forbidden" | "conflict" | "rejected" | "failed";
+export type SaveFailure =
+  | "unavailable"
+  | "not_found"
+  | "forbidden"
+  | "not_approved"
+  | "conflict"
+  | "rejected"
+  | "failed";
 
-/** 저장 오류 → 종류. 403 승인자 아님, 409 대상 판이 바뀜, 400·422 서버 검사 거부. */
+/**
+ * 저장 오류 → 종류(#705). 404 target_not_found 대상 없음, 403 승인자·주소 거부, 409 target_not_approved 승인 상태 아님 ·
+ * declaration_target_revision_mismatch 대상 판이 바뀜, 400 invalid_declaration 서버 검사 거부. 모르는 409 는 판이 바뀐 것으로
+ * 추정하지 않고 일반 실패로 둔다.
+ */
 export function saveFailureOf(e: unknown): SaveFailure {
   if (!(e instanceof ApiError)) return "failed";
-  if (UNAVAILABLE_STATUS.has(e.status)) return "unavailable";
+  if (isTargetNotFound(e)) return "not_found";
+  if (isRouteMissing(e)) return "unavailable";
   if (e.status === 403) return "forbidden";
-  if (e.status === 409) return "conflict";
-  if (e.status === 400 || e.status === 422) return "rejected";
+  if (e.status === 409 && e.message === "target_not_approved") return "not_approved";
+  if (e.status === 409 && e.message === "declaration_target_revision_mismatch") return "conflict";
+  if (e.status === 400 && e.message === "invalid_declaration") return "rejected";
   return "failed";
 }
 
 export const SAVE_FAILURE_TEXT: Record<SaveFailure, string> = {
-  unavailable: "서버에 선언 저장 기능이 아직 없습니다(정책 선언 저장 · 동결 PR 대기). 입력은 화면에만 남아 있습니다.",
+  unavailable: "서버에 선언 저장 기능이 아직 없습니다. 입력은 화면에만 남아 있습니다.",
+  not_found: "이 대상을 찾지 못했습니다(삭제됐거나 다른 운영자의 대상). 대상 목록을 다시 읽으세요.",
   forbidden: "이 대상의 승인자만 선언할 수 있습니다.",
-  conflict: "그사이 대상 승인이 바뀌었습니다. 대상을 다시 읽고 선언을 확인하세요.",
+  not_approved: "이 대상은 지금 승인 상태가 아닙니다(철회·만료). 대상 승인부터 확인하세요.",
+  conflict: "그사이 대상을 다시 승인해 판이 바뀌었습니다. 대상을 다시 읽고 선언을 확인하세요.",
   rejected: "서버가 선언 형식을 받지 않았습니다. 칸을 확인하고 다시 저장하세요.",
   failed: "선언을 저장하지 못했습니다. 잠시 뒤 다시 시도하세요.",
 };
+
+/** 서버 칸 이름(`types[0].create.body_template`) → 화면 칸 이름(`types.0.create.bodyTemplate`). 모양 밖이면 null. */
+export function draftFieldOf(serverField: string): string | null {
+  if (!/^[a-z_]+(?:\[\d+\])?(?:\.[a-z_]+(?:\[\d+\])?)*$/.test(serverField)) return null;
+  return (
+    serverField
+      // 화면은 소유자 전용 필드 목록을 칸 하나로 다룬다(types.N.ownerOnlyFields) — 목록 안 첨자는 뗀다
+      .replace(/(owner_only_fields)\[\d+\]/, "$1")
+      .replace(/\[(\d+)\]/g, ".$1")
+      .replace(/_([a-z])/g, (_m, c: string) => c.toUpperCase())
+  );
+}
+
+/** 저장 거부(400 invalid_declaration)에서 서버가 짚은 칸. 그 밖의 오류·칸 없음은 null. */
+export function rejectedFieldOf(e: unknown): string | null {
+  return e instanceof ApiError && e.status === 400 && e.message === "invalid_declaration" && e.field ? e.field : null;
+}
 
 /** 선언 저장(PUT). 화면 검사를 통과한 것만 보낸다. 성공 뒤 화면은 다시 조회해 서버 값을 보인다. */
 export async function saveDeclaration(target: DeclarationTarget, d: DeclarationDraft): Promise<void> {
