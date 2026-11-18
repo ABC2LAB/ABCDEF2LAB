@@ -737,6 +737,8 @@ def command_records(port: int, secret: AdminSecret, task_id: str, settings: dict
         if stable:
             again, total_again, size = _command_page(port, headers, exploration_id, 0, settings)
             read += size
+            if read > settings["max_total_bytes"]:
+                raise EngineAPIError("engine_commands_too_large")  # 재확인 응답도 같은 누적 상한 안이어야 한다(#682 리뷰)
             stable = total_again == len(out) and [r["id"] for r in again][:1] == ids[:1]
         if stable:
             return {"exploration_id": exploration_id, "records": out}

@@ -875,6 +875,16 @@ class TestCommandRecords(unittest.TestCase):
                 self.read(pages * 3)
             self.assertEqual(str(caught.exception), "engine_commands_unstable")
 
+    def test_recheck_counts_toward_the_byte_cap(self):
+        # #682 리뷰: 첫 읽기는 상한 안이어도 첫 쪽 재확인까지 합치면 넘는 경우.
+        page = self.page([1], 1)
+        size = len(json.dumps(page).encode())
+        with self.assertRaises(EngineAPIError) as caught:
+            self.read([page, page], settings=dict(self.SETTINGS, max_total_bytes=size + 1))
+        self.assertEqual(str(caught.exception), "engine_commands_too_large")
+        got, _ = self.read([page, page], settings=dict(self.SETTINGS, max_total_bytes=2 * size))
+        self.assertEqual(len(got["records"]), 1)
+
     def test_failures_are_codes(self):
         cases = {
             "engine_commands_http_500": [(500, b"")],
