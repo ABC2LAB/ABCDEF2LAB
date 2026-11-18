@@ -716,7 +716,8 @@ describe("자산 탐색", () => {
     expect(screen.getByText(/^조회 1 · 데이터 변경 1 · 제외 1$/)).toBeInTheDocument();
     // 탐색 단계에서는 GET 만 보낸다 (서버 Controller.Before)
     expect(document.getElementById("cSent")?.nextElementSibling).toHaveTextContent(/^조회만$/);
-    // 첫 탐색 단계가 끝나도(서버가 탐색 완료라고 하지 않으면) 막대는 실제 방문 비율 그대로 (리뷰 #479).
+    // 첫 탐색 단계가 끝나면 막대는 끝까지 채우되(사용자 11/18 — 상한 대비 25% 로 멈춘 것처럼 보이지 않게), 서버가 탐색
+    // 완료라고 하지 않았으니 다 돈 것으로 적지 않는다(리뷰 #479): 글이 '완료 확인 안 됨'과 실제 방문 수를 말한다.
     // '첫 탐색 단계 끝남' 글은 위 '탐색을 마쳤습니다'와 겹쳐 적지 않는다
     useUrl.setState({ flow });
     rerender(
@@ -724,7 +725,10 @@ describe("자산 탐색", () => {
         <WorkflowCrawlLive />
       </ShellContext.Provider>,
     );
-    expect(screen.getByRole("progressbar", { name: /탐색 진행/ })).toHaveAttribute("aria-valuenow", "25");
+    const ended = screen.getByRole("progressbar", { name: /탐색 진행/ });
+    expect(ended).toHaveAttribute("aria-valuenow", "100");
+    expect(ended).toHaveAttribute("aria-valuetext", "탐색 끝 · 완료 확인 안 됨 · 방문 1 / 페이지 상한 4");
+    expect(ended.className).toMatch(/prog-part/);
     expect(screen.queryByText("첫 탐색 단계 끝남")).toBeNull();
   });
 
@@ -753,6 +757,7 @@ describe("자산 탐색", () => {
     const bar = screen.getByRole("progressbar", { name: /탐색 진행/ });
     expect(bar).toHaveAttribute("aria-valuenow", "100");
     expect(bar).toHaveAttribute("aria-valuetext", "100% · 탐색 완료");
+    expect(bar.className).toMatch(/prog-ok/); // 완료는 초록
     expect(document.getElementById("cNow")).toHaveTextContent(/^탐색을 마쳤습니다$/);
     expect(screen.queryByText(/^탐색 상태/)).toBeNull();
     expect(screen.queryByText("첫 탐색 단계 끝남")).toBeNull();
@@ -774,7 +779,7 @@ describe("자산 탐색", () => {
       { exploration_status: "PARTIAL", exploration_reason: "completed" },
       "탐색 상태 부분 완료",
     ],
-  ])("%s · 막대는 100%% 로 바꾸지 않고 탐색 상태를 따로 보인다 (리뷰 #479)", (_n, over, text) => {
+  ])("%s · 끝난 막대는 주황으로 채우고 실제 방문 수 · 탐색 상태를 글로 보인다", (_n, over, text) => {
     // 방문 2 / 페이지 상한 8 = 25% — 서버는 PARTIAL 에서도 initial_completed 를 true 로 둔다
     useUrl.setState({
       handle,
@@ -795,7 +800,13 @@ describe("자산 탐색", () => {
         <WorkflowCrawlLive />
       </ShellContext.Provider>,
     );
-    expect(screen.getByRole("progressbar", { name: /탐색 진행/ })).toHaveAttribute("aria-valuenow", "25");
+    // 방문 2 / 상한 8(25%)로 멈춘 것처럼 보이지 않게 끝까지 채우되 주황(사용자 11/18). 다 돈 게 아니라는 건 색과
+    // aria 글 · 탐색 상태 글이 말한다(리뷰 #479)
+    const bar = screen.getByRole("progressbar", { name: /탐색 진행/ });
+    expect(bar).toHaveAttribute("aria-valuenow", "100");
+    expect(bar).toHaveAttribute("aria-valuetext", "탐색 끝 · 부분 완료 · 방문 2 / 페이지 상한 8");
+    expect(bar.className).toMatch(/prog-part/);
+    expect(bar.className).not.toMatch(/prog-ok/);
     // 화면은 status 중심: 뜻을 더하는 사유만 뒤에 붙고, 겹치거나 모순되는 토큰은 빠진다(원본 영문 토큰 노출 금지)
     expect(screen.getByText(/^탐색 상태/).textContent).toBe(text);
   });
