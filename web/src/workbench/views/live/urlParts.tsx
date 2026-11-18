@@ -9,9 +9,9 @@ import { type URLDiagnosisJob, urlReasonLabels } from "@/lib/diagnosis/diagnosis
 
 import { cx } from "../../lib/cx";
 import { runUrlAction, useUrl, useUrlGates } from "../../live/urlDiagnosis";
-import { AUTHORITY_TEXT, factText, urlHost, urlStateText, urlTone } from "../../live/urlMap";
+import { urlHost, urlStateText, urlTone } from "../../live/urlMap";
 import { Icon } from "../../ui/icons";
-import { Kv, MenuButton, type PhaseKey, Phases } from "../../ui/parts";
+import { MenuButton, type PhaseKey, Phases } from "../../ui/parts";
 import s from "../../workbench.module.css";
 
 /**
@@ -97,26 +97,44 @@ export function reasonText(code: string): string {
   return `${urlReasonLabels[code] ?? code} (${code})`;
 }
 
-/** 진단 식별 · 서버가 확인한 사실 (준비 시작 · 권위 · 엔진 시작 · 마감 · 결과 저장). */
+/** 점검 방식 글 (탐색 흐름이 없는 점검은 설치 범위로 바로 진단). */
+const MODE_TEXT: Readonly<Record<NonNullable<URLDiagnosisJob["input"]["workflow_mode"]> | "none", string>> = {
+  ai_auto_v1: "AI 자동",
+  user_approval_v1: "사용자 승인",
+  none: "설치 범위",
+};
+
+/**
+ * 점검 정보 (진행 요약 맨 아래, 사용자 11/17 '깔끔하게'): 사람이 보는 값만 줄로 — 대상 · 방식 · 모델 · 제외 경로.
+ * 진행 확인(준비 · 시작 · 마감 · 저장)은 맨 위 단계 게이지와 겹쳐, 진단 ID · task · 설정 지문 · 실행 권위 같은 기록 값은
+ * 운영자가 볼 일이 없어 두지 않는다(사용자 11/17 — 진단 ID 는 왼쪽 점검 목록 줄에 있다).
+ */
 export function UrlFacts({ job }: { job: URLDiagnosisJob }) {
+  const cap = useUrl((st) => st.cap);
+  const profile = cap.kind === "v2" ? cap.catalog.profiles.find((p) => p.id === job.input.profile_id) : undefined;
   return (
-    <Kv
-      rows={[
-        ["진단", <span key="job" className={s.mono}>{`${job.id} · 수정 ${job.revision}`}</span>],
-        ["실제 task", job.task_id ? <span key="task" className={s.mono}>{`#${job.task_id}`}</span> : "아직 없음"],
-        [
-          "설정 지문",
-          <span key="digest" className={s.mono} title={job.source_digest}>
-            {`${job.source_digest.slice(0, 16)}…`}
-          </span>,
-        ],
-        ["모델 · 작업 준비 시작", factText(job.preparation_started)],
-        ["실행 권위", AUTHORITY_TEXT[job.authority_state]],
-        ["엔진 시작", factText(job.started)],
-        ["마감 확인", factText(job.drain_complete)],
-        ["결과 저장", factText(job.result_ready)],
-      ]}
-    />
+    <dl className={s.frows}>
+      <div>
+        <dt>대상</dt>
+        <dd>{urlHost(job.input.target_url)}</dd>
+      </div>
+      <div>
+        <dt>방식</dt>
+        <dd>{MODE_TEXT[job.input.workflow_mode ?? "none"]}</dd>
+      </div>
+      {profile ? (
+        <div>
+          <dt>모델</dt>
+          <dd>{`${profile.model_label} · ${profile.model?.external_transfer ? "외부" : "로컬"}`}</dd>
+        </div>
+      ) : null}
+      {job.input.excluded_paths ? (
+        <div>
+          <dt>제외 경로</dt>
+          <dd>{job.input.excluded_paths}</dd>
+        </div>
+      ) : null}
+    </dl>
   );
 }
 

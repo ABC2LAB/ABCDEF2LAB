@@ -45,6 +45,7 @@ func (s *Service) listRunsLocked(ctx context.Context, req Request) Response {
 			}
 		}
 		run := RunSummary{ID: j.ID, Revision: j.Revision, DisplayName: j.Input.DisplayName, State: j.State, Phase: j.Phase, ReasonCode: j.ReasonCode, TaskID: j.TaskID, Started: j.Started, DrainComplete: j.DrainComplete, ResultReady: j.ResultReady, ReportAvailable: j.ResultReady && j.TaskID != "", ApprovalStatus: approval, ActionRequired: runActive(j.State) || j.State == Unknown || j.State == Failed || j.State == AwaitingApproval || approval != "not_revalidated"}
+		run.StartedAt, run.FinishedAt = copyRunTime(j.StartedAt), copyRunTime(j.FinishedAt)
 		if !validJob(j) || !validRunSummary(run) {
 			return responseError(req, "unavailable")
 		}

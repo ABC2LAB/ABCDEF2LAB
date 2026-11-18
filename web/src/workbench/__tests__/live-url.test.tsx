@@ -25,6 +25,10 @@ vi.mock("@/lib/diagnosis/api", async (original) => ({
   readAuthStatus: vi.fn(),
   restoreSession: vi.fn(),
 }));
+vi.mock("@/lib/diagnosis/remediation", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/diagnosis/remediation")>()),
+  generateRemediation: vi.fn(),
+}));
 vi.mock("../live/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../live/api")>()),
   fetchRequestApprovals: vi.fn(),
@@ -50,6 +54,7 @@ import {
   running,
   scope,
 } from "@/lib/diagnosis/diagnosis-url-fixtures";
+import { generateRemediation } from "@/lib/diagnosis/remediation";
 
 import * as api from "../live/api";
 import { checkLiveAuth, getLiveAuthState, setLiveAuthState } from "../live/auth";
@@ -70,7 +75,7 @@ import { flowStageText } from "../live/workflow";
 import { type Shell, ShellContext, type View } from "../shell";
 import { createInitialState, useWb } from "../store";
 import { DashboardByMode, LiveByMode, NewScanByMode, ReportByMode, ScopeByMode } from "../views/live/byMode";
-import { FINDINGS_POLL_MS } from "../views/live/UrlLiveLive";
+import { buildPocMarkdown, FINDINGS_POLL_MS } from "../views/live/UrlLiveLive";
 import { EXCLUDE_EXAMPLE } from "../views/live/UrlNewScanLive";
 import { WorkflowCrawlLive } from "../views/live/workflowViews";
 import s from "../workbench.module.css";
@@ -1005,10 +1010,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     const line = (await screen.findByText(/^작업 합계/)).parentElement as HTMLElement;
     // 예약량으로 센 호출이 있으면 칩 옆에도 '(최대)' (#661 리뷰)
     expect(line).toHaveTextContent(/^작업 합계 · 입 1.2k 출 300 \(최대\)$/);
-    expect(line).toHaveAttribute(
-      "title",
-      "입력 1,200 토큰\n출력 300 토큰\n사용량을 못 받은 호출 1건은 예약량으로 계산(최대치)",
-    );
+    expect(line).toHaveAttribute("title", "입력 1,200 토큰 (최대치)\n출력 300 토큰 (최대치)");
     cleanup();
     resetUrl();
     u.readURLStatus.mockResolvedValue(running);
@@ -1313,6 +1315,17 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(screen.queryByRole("button", { name: /종료/ })).toBeNull();
   });
 
+  it("점검 정보는 대상 · 방식 · 모델만 줄로 — 진행 확인 · 기술 정보(진단 ID · task · 설정 지문 · 실행 권위)는 두지 않는다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    mount("live");
+    const insp = await screen.findByRole("complementary", { name: "진행 요약" });
+    const facts = within(insp).getByRole("heading", { name: "점검 정보" }).parentElement as HTMLElement;
+    expect(facts.querySelector("dl")).toHaveTextContent(/^대상target\.example방식설치 범위모델합성 모델 · 로컬$/);
+    expect(facts).not.toHaveTextContent(/진행 확인|기술 정보|#42|실행 권위|설정 지문|job-1/);
+    expect(facts.querySelector("details")).toBeNull();
+  });
+
   it("마감된 진단은 요청 승인을 다시 부르지 않고 보고서의 실행 종료 기록으로 안내한다", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(completed);
@@ -1356,7 +1369,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(screen.queryByText(/점검을 마쳤습니다/)).toBeNull();
   });
 
-  it("끝난 점검의 발견은 저장된 결과를 보고서 '발견 목록'과 같은 줄로 보이고(점검 중 발견 목록은 안 부름), 줄을 누르면 보고서로", async () => {
+  it("끝난 점검의 발견은 저장된 결과를 보고서 '발견 목록'과 같은 줄로 보이고(점검 중 발견 목록은 안 부름), 줄은 눌러도 아무 데도 안 간다", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(completed);
     a.fetchRemediation.mockResolvedValue({
@@ -1369,9 +1382,11 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     const { goTo } = mount("live");
     const sec = await screen.findByRole("region", { name: "발견 목록" });
     await waitFor(() => expect(within(sec).getByText("2건 · 저장된 결과")).toBeInTheDocument());
-    // 보고서와 같은 줄: 위험도(없으면 '등급 없음') · 제목 · 엔드포인트 · 유형 · 판정
-    const rows = within(sec).getAllByRole("button");
+    // 보고서와 같은 줄: 위험도(없으면 '등급 없음') · 제목 · 엔드포인트 · 유형 · 판정. 버튼이 아닌 읽기 줄 (사용자 11/17)
+    expect(within(sec).queryAllByRole("button")).toHaveLength(0);
+    const rows = [...(document.getElementById("lSaved") as HTMLElement).children] as HTMLElement[];
     expect(rows).toHaveLength(2);
+    expect(rows[0].tagName).toBe("DIV");
     expect(rows[0]).toHaveTextContent(/^위험도 미평가후보 1\/api\/items\/\{id\}idor검토 필요$/);
     expect(a.fetchRemediation).toHaveBeenCalledWith("42", "internal");
     // 끝난 점검은 제품 서버가 점검 중 발견 목록을 닫으므로 부르지 않는다
@@ -1382,7 +1397,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
       /^발견2확정 0$/,
     );
     fireEvent.click(rows[1]);
-    expect(goTo).toHaveBeenCalledWith("report");
+    expect(goTo).not.toHaveBeenCalledWith("report");
   });
 
   it("중지 요청은 같은 진단에 한 번 (expected revision 은 팀 lib 이 넣는다)", async () => {
@@ -1462,6 +1477,12 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(header).not.toHaveTextContent("자산 커버리지");
     expect(within(header).getByText(/^모델 사용량/)).toHaveTextContent(/^모델 사용량 —$/);
     expect(header).toHaveTextContent("모델 합성 모델 · 로컬");
+    // 단계 줄: 보고서가 지금 단계이고, 앞 단계(자산 탐색 · 범위 확인 · 점검 진행)로 눌러서 돌아간다 (사용자 11/17)
+    const steps = within(header).getByRole("navigation", { name: "점검 단계" });
+    expect(within(steps).getByRole("link", { name: /보고서/ })).toHaveAttribute("aria-current", "step");
+    expect(within(steps).getByRole("link", { name: /자산 탐색/ })).toHaveAttribute("href", "#crawl");
+    expect(within(steps).getByRole("link", { name: /범위 확인/ })).toHaveAttribute("href", "#scope");
+    expect(within(steps).getByRole("link", { name: /점검 진행/ })).toHaveAttribute("href", "#live");
     expect(within(header).getByText(/^시작/)).toHaveTextContent("연결 전");
     expect(within(header).getByText(/^소요/)).toHaveTextContent("연결 전");
     expect(header).not.toHaveTextContent(/task #|모델 요청/);
@@ -1476,6 +1497,12 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     const insp = screen.getByRole("complementary", { name: "발견 상세" });
     expect(within(insp).getByText(/^idor ·/)).toBeInTheDocument();
     expect(within(insp).getByText("GET")).toBeInTheDocument();
+    // 상태 칸 (ARTEX 발견 상세의 상태 카드): ID · 위험도 · 판정 · 유형 · 관련 자산 · 발견 시각. 여기서 바꾸는 손잡이는 없다
+    const state = within(insp).getByRole("heading", { name: "상태" }).parentElement as HTMLElement;
+    expect(state).toHaveTextContent(
+      /^상태IDcandidate-1위험도위험도 미평가판정검토 필요유형idor관련 자산GET \/api\/items\/\{id\}발견 시각\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/,
+    );
+    expect(within(state).queryByRole("combobox")).toBeNull();
     // 상세는 정리했다(사용자 11/17): '연결 전' 자리(계정별 응답 비교 · 다음 단계)와 머리와 겹치는 분류는 두지 않는다
     expect(within(insp).queryByText("계정별 응답 비교")).toBeNull();
     expect(within(insp).queryByText("다음 단계")).toBeNull();
@@ -1507,6 +1534,242 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(screen.queryByRole("heading", { name: "모델 사용량" })).toBeNull();
   });
 
+  it("오른쪽 발견 상세 머리의 '상세 보기'는 고른 발견의 상세 페이지(왼쪽 카드 · 오른쪽 상태 카드)로 가운데를 바꾸고, '발견 목록으로' 돌아온다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    a.fetchRemediation.mockResolvedValue({
+      task_id: 42,
+      entries: [candidate(1), { ...candidate(2), vuln_class: "idor", report: "## 재현\n\n- 계정 B 조회" }],
+    });
+    mount("report");
+    const list = await screen.findByRole("tabpanel", { name: "발견 목록" });
+    // 줄에는 상세 보기를 두지 않는다 — 오른쪽 패널 머리 하나
+    expect(within(list).queryByRole("button", { name: /상세 보기/ })).toBeNull();
+    fireEvent.click(within(list).getByRole("button", { name: /후보 2/ }));
+    const insp = screen.getByRole("complementary", { name: "발견 상세" });
+    fireEvent.click(within(insp).getByRole("button", { name: "상세 보기" }));
+    const page = screen.getByRole("region", { name: "발견 상세 페이지" });
+    expect(within(page).getByRole("heading", { level: 2, name: "후보 2" })).toHaveFocus();
+    // ARTEX 발견 상세 짜임: 오른쪽 상태 카드(점검 대상 포함), 왼쪽 요약 → 증거 / PoC → 상세 보고서 → 보안 조치 → AI 프롬프트
+    const side = within(page).getByRole("complementary", { name: "발견 상태" });
+    expect(side).toHaveTextContent(/IDcandidate-2/);
+    expect(side).toHaveTextContent(/유형idor/);
+    expect(side).toHaveTextContent(/점검 대상target\.example/);
+    expect(
+      within(page)
+        .getAllByRole("heading", { level: 3 })
+        .map((h) => h.textContent),
+    ).toEqual(["요약", "증거 / PoC", "상세 보고서", "보안 조치", "AI 수정 작업용 프롬프트", "상태"]);
+    expect(
+      within(within(page).getByRole("region", { name: "상세 보고" })).getByRole("heading", { name: "재현" }),
+    ).toBeInTheDocument();
+    // 페이지를 연 동안 목록 · 오른쪽 발견 상세 패널은 두지 않는다
+    expect(screen.queryByRole("tabpanel", { name: "발견 목록" })).toBeNull();
+    expect(screen.queryByRole("complementary", { name: "발견 상세" })).toBeNull();
+    fireEvent.click(within(page).getByRole("button", { name: "발견 목록으로" }));
+    expect(screen.queryByRole("region", { name: "발견 상세 페이지" })).toBeNull();
+    const back = screen.getByRole("tabpanel", { name: "발견 목록" });
+    // 돌아오면 연 발견이 골라져 있다
+    expect(within(back).getByRole("button", { name: /후보 2/ })).toHaveAttribute("aria-current", "true");
+  });
+
+  it("보고서 발견 목록은 위험도로 거르고(있는 등급만 · 수) 판정 · 위험도 · 발견 시각 순으로 정렬한다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    a.fetchRemediation.mockResolvedValue({
+      task_id: 42,
+      entries: [
+        { ...candidate(1), severity: "low", observed_at: "2026-11-09T12:01:00Z" },
+        { ...candidate(2), severity: "high", observed_at: "2026-11-09T12:03:00Z" },
+        { ...candidate(3), observed_at: "2026-11-09T12:02:00Z" },
+        // 시각을 못 읽으면 결과 불명이라 예상 등급을 세지 않는다(#666 entrySeverity)
+        { ...candidate(4), severity: "high", observed_at: "not-a-time" },
+      ],
+    });
+    mount("report");
+    const list = await screen.findByRole("tabpanel", { name: "발견 목록" });
+    const names = () =>
+      [...(document.getElementById("rList") as HTMLElement).querySelectorAll("button")].map(
+        (b) => /후보 \d/.exec(b.textContent ?? "")?.[0],
+      );
+    const sevs = within(list).getByRole("radiogroup", { name: "위험도로 거르기" });
+    // 줄이 있는 등급만 수와 함께 (심각 · 중간은 없음, '등급 없음'은 거르기로 두지 않고 전체에서 본다)
+    expect(
+      within(sevs)
+        .getAllByRole("radio")
+        .map((r) => r.parentElement?.textContent),
+    ).toEqual(["전체 4개", "높음 1개", "낮음 1개"]);
+    expect(within(list).getByText("4 / 4건")).toBeInTheDocument();
+    fireEvent.click(within(sevs).getByRole("radio", { name: "높음 1개" }));
+    expect(names()).toEqual(["후보 2"]);
+    expect(within(list).getByText("1 / 4건")).toBeInTheDocument();
+    // 오른쪽 상세도 보이는 줄로 옮긴다
+    expect(
+      within(screen.getByRole("complementary", { name: "발견 상세" })).getByRole("heading", { level: 2 }),
+    ).toHaveTextContent("후보 2");
+    fireEvent.click(within(sevs).getByRole("radio", { name: "전체 4개" }));
+    const order = within(list).getByRole("combobox", { name: "정렬" });
+    fireEvent.change(order, { target: { value: "new" } });
+    // 시각을 못 읽는 줄은 시각 순에서 맨 뒤
+    expect(names()).toEqual(["후보 2", "후보 3", "후보 1", "후보 4"]);
+    fireEvent.change(order, { target: { value: "old" } });
+    expect(names()).toEqual(["후보 1", "후보 3", "후보 2", "후보 4"]);
+    fireEvent.change(order, { target: { value: "sev" } });
+    // 위험도 순: 높음 → 낮음 → 미평가(판정 순 유지: 검토 필요 후보 3 → 결과 불명 후보 4)
+    expect(names()).toEqual(["후보 2", "후보 1", "후보 3", "후보 4"]);
+  });
+
+  it("보고서 발견 목록: 재조회로 고른 발견의 위험도가 바뀌어 거르기에서 빠지면 오른쪽 상세 · '상세 보기'도 보이는 줄로 옮긴다 (#677 리뷰)", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    a.fetchRemediation.mockResolvedValue({
+      task_id: 42,
+      entries: [
+        { ...candidate(1), severity: "low" },
+        { ...candidate(2), severity: "high" },
+        { ...candidate(3), severity: "low" },
+      ],
+    });
+    vi.mocked(generateRemediation).mockResolvedValue(undefined as never);
+    mount("report");
+    const list = await screen.findByRole("tabpanel", { name: "발견 목록" });
+    const insp = () => screen.getByRole("complementary", { name: "발견 상세" });
+    fireEvent.click(within(list).getByRole("button", { name: /후보 2/ }));
+    fireEvent.click(within(list).getByRole("radio", { name: "높음 1개" }));
+    expect(within(insp()).getByRole("heading", { level: 2 })).toHaveTextContent("후보 2");
+    // 오른쪽 패널의 '생성·저장'이 저장 결과를 다시 읽는다: 이번엔 후보 2 가 낮음, 후보 3 이 높음
+    a.fetchRemediation.mockResolvedValue({
+      task_id: 42,
+      entries: [
+        { ...candidate(1), severity: "low" },
+        { ...candidate(2), severity: "low" },
+        { ...candidate(3), severity: "high" },
+      ],
+    });
+    fireEvent.click(within(insp()).getByRole("button", { name: "보안 조치·AI 프롬프트 생성·저장" }));
+    await waitFor(() => expect(within(list).queryByRole("button", { name: /후보 2/ })).toBeNull());
+    // '높음' 거르기는 그대로, 목록은 후보 3 하나 — 오른쪽 상세 · 줄 표시도 후보 3
+    expect(within(list).getByRole("radio", { name: "높음 1개" })).toBeChecked();
+    expect(within(list).getByRole("button", { name: /후보 3/ })).toHaveAttribute("aria-current", "true");
+    expect(within(insp()).getByRole("heading", { level: 2 })).toHaveTextContent("후보 3");
+    fireEvent.click(within(insp()).getByRole("button", { name: "상세 보기" }));
+    expect(
+      within(screen.getByRole("region", { name: "발견 상세 페이지" })).getByRole("heading", { level: 2 }),
+    ).toHaveTextContent("후보 3");
+  });
+
+  it("보고서 탭: 참조형 이미지 `![글][이름]` 의 대체 글에 엔티티로 숨긴 비밀도 가린다 (#677 리뷰)", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    const hidden = "&#112;&#97;&#115;&#115;&#119;&#111;&#114;&#100;&#61;synthetic-reference-mask";
+    a.fetchRemediation.mockResolvedValue({
+      task_id: 42,
+      entries: [{ ...candidate(1), summary: `![${hidden}][proof]\n\n[proof]: /synthetic.png` }],
+    });
+    mount("report");
+    fireEvent.click(await screen.findByRole("tab", { name: "보고서" }));
+    const doc = screen.getByRole("region", { name: "취약점 점검 보고서" });
+    expect(doc).not.toHaveTextContent("synthetic-reference-mask");
+    // 이미지는 불러오지 않는다
+    expect(doc.querySelector("img")).toBeNull();
+    expect(doc).not.toHaveTextContent("synthetic.png");
+    fireEvent.click(within(doc).getByRole("button", { name: "복사" }));
+    await within(doc).findByText("보고서 글을 복사했습니다.");
+    expect(writeText.mock.calls[0][0]).not.toMatch(/synthetic-reference-mask|&#/);
+  });
+
+  it("보고서 탭(증거 · 감사 옆): 발견마다 위험도 · 판정 · 요약 · 재현 절차(PoC) · 요청·응답을 Markdown 문서 한 장으로, 정상 대조는 뺀다", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    const step = {
+      task_id: 42,
+      entry_id: "candidate-2",
+      id: `step-${"b".repeat(24)}`,
+      number: 1,
+      title: "계정 B로 계정 A 주문 조회",
+      source_step_id: "cross-read",
+      run_ref: "run-1",
+      call_ref: "",
+      evidence_ref: "cross-proof",
+      evidence_version: 1,
+      evidence_digest: "e".repeat(64),
+      binding_digest: "b".repeat(64),
+      observed_at: "2026-11-09T12:10:00Z",
+      method: "GET",
+      path: "/api/orders/2",
+      prerequisites: "시험 계정 A · B",
+      observation: "200 응답에 계정 A 주문",
+      truncated: false,
+      capture: { status: "not_captured" as const },
+    };
+    a.fetchRemediation.mockResolvedValue({
+      task_id: 42,
+      entries: [
+        candidate(1),
+        {
+          ...candidate(2),
+          vuln_class: "idor",
+          summary: "&#112;&#97;&#115;&#115;&#119;&#111;&#114;&#100;=synthetic-poc-entity",
+          evidence: JSON.stringify({ status: 200, headers: { Authorization: "Bearer synthetic-poc-token" } }),
+          steps: [step],
+        },
+        {
+          ...candidate(3),
+          entry_id: "verdict-3",
+          outcome: "negative",
+          status: "allowed",
+          verification: "stored_verification",
+          title: "정상 대조 줄",
+        },
+      ],
+    });
+    mount("report");
+    fireEvent.click(await screen.findByRole("tab", { name: "보고서" }));
+    // ARTEX '침투 테스트 보고서 (Markdown)' 모양: 아이콘 · 제목, [복사], 상자 안 문서(제목 → 설명 → 정보 → 요약 → 취약점)
+    const doc = screen.getByRole("region", { name: "취약점 점검 보고서" });
+    expect(within(doc).getByRole("heading", { level: 3 })).toHaveTextContent("취약점 점검 보고서 (Markdown)");
+    expect(within(doc).getByRole("heading", { level: 1 })).toHaveTextContent(
+      "취약점 점검 보고서: https://target.example/",
+    );
+    expect(doc).toHaveTextContent("'검토 필요'는 확정이 아니며");
+    expect(doc).toHaveTextContent("점검 방식: 설치 범위");
+    expect(doc).toHaveTextContent("모델: 합성 모델 · 로컬");
+    // 요약은 확정 · 검토 필요를 나눠 센다(정상 대조는 빼고). '확인된 취약점'으로 묶지 않는다
+    expect(doc).toHaveTextContent("발견: 2건 (확정 0 · 검토 필요 2 · 미실행 0 · 결과 불명 0)");
+    expect(doc).not.toHaveTextContent("확인된 취약점");
+    // 취약점: '1. [등급 · 판정] 제목' 줄 (목록이 아니라 문단), 정상 대조는 없다
+    const items = [...doc.querySelectorAll("p")].map((x) => x.textContent ?? "").filter((x) => /^\d+\. \[/.test(x));
+    expect(items).toEqual(["1. [위험도 미평가 · 검토 필요] 후보 1", "2. [위험도 미평가 · 검토 필요] 후보 2"]);
+    expect(doc).not.toHaveTextContent("정상 대조 줄");
+    expect(doc).toHaveTextContent("PoC / 증거:");
+    expect(doc).toHaveTextContent("구조화된 실제 재현 단계 미확보");
+    expect(doc).toHaveTextContent("계정 B로 계정 A 주문 조회 — GET /api/orders/2");
+    expect(doc).toHaveTextContent("사전 조건: 시험 계정 A · B");
+    // 요청·응답은 코드 상자, 비밀은 가린다(엔티티로 숨긴 값도 풀리지 않는다)
+    expect(doc.querySelector("pre code")).not.toBeNull();
+    expect(doc).not.toHaveTextContent(/synthetic-poc-token|synthetic-poc-entity/);
+    fireEvent.click(within(doc).getByRole("button", { name: "복사" }));
+    await within(doc).findByText("보고서 글을 복사했습니다.");
+    expect(writeText.mock.calls[0][0]).not.toMatch(/synthetic-poc-token|synthetic-poc-entity|&#/);
+  });
+
+  it("PoC 문서: 코드 상자 울타리는 본문의 ` 줄보다 길게, 목록 줄 글의 줄바꿈은 띄어쓰기로", () => {
+    const md = buildPocMarkdown([{ ...candidate(1), title: "줄\n바꿈", evidence: "a ```` b" }], {
+      targetUrl: "https://target.example/",
+      mode: null,
+      model: null,
+      excluded: null,
+      crawl: { visited: 3, found: 2 },
+    });
+    expect(md).toContain("1\\. [위험도 미평가 · 검토 필요] 줄 바꿈");
+    expect(md).toContain("- 탐색: 방문 3 · 발견한 API 2");
+    expect(md).toContain("`````text\na ```` b\n`````");
+  });
+
   it("보고서 머리 줄의 모델 사용량은 점검 진행과 같은 입 · 출 칩, 마우스를 올리면 정확한 값과 최대치", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue({
@@ -1529,10 +1792,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     ) as HTMLElement;
     const use = await within(header).findByText(/^모델 사용량/);
     expect(use).toHaveTextContent(/^모델 사용량 입 1.2k 출 300 \(최대\)$/);
-    expect(use).toHaveAttribute(
-      "title",
-      "입력 1,200 토큰\n출력 300 토큰\n사용량을 못 받은 호출 1건은 예약량으로 계산(최대치)",
-    );
+    expect(use).toHaveAttribute("title", "입력 1,200 토큰 (최대치)\n출력 300 토큰 (최대치)");
     expect(header).not.toHaveTextContent("자산 커버리지");
   });
 

@@ -282,10 +282,23 @@ func (h *URLHandler) call(ctx context.Context, req diagnosisprep.Request) (diagn
 
 // BoundTask는 영속 준비 영수증의 소유권을 조회한다. HTTP 세션의 메모리 초안은 권위가 아니다.
 func (h *URLHandler) BoundTask(ctx context.Context, owner, task string) bool {
+	allowed, err := h.CheckBoundTask(ctx, owner, task)
+	return err == nil && allowed
+}
+
+// CheckBoundTask는 읽기 중계가 소유권 거부와 준비 서비스 장애를 구분할 때 사용한다.
+// 영속 영수증의 동일 AuthorizeTask 경로를 사용하며 권위를 새로 발급하지 않는다.
+func (h *URLHandler) CheckBoundTask(ctx context.Context, owner, task string) (bool, error) {
 	n, err := strconv.ParseInt(task, 10, 64)
 	if owner == "" || err != nil || n <= 0 || strconv.FormatInt(n, 10) != task {
-		return false
+		return false, nil
 	}
 	response, err := h.call(ctx, diagnosisprep.Request{Version: diagnosisprep.Version, Command: diagnosisprep.AuthorizeTask, Principal: owner, TaskID: task})
-	return err == nil && response.Error == "" && response.Authorized != nil && *response.Authorized
+	if err != nil {
+		return false, err
+	}
+	if response.Error != "" || response.Authorized == nil {
+		return false, diagnosisprep.ErrProtocol
+	}
+	return *response.Authorized, nil
 }

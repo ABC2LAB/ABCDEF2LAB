@@ -47,8 +47,8 @@ DTO_SHAPES = {
     ("server/auth.go", "func (s *Server) authLogin("): "0aa9a58c985f5cbd24b313c081ea863f6fd9b9b77520a51d45ab60957868711b",
 }
 
-# 작업 생성 계약: 요청 구조체·핸들러·기동·대상 추출·응답 DTO·인증 미들웨어. upstream fdfb7a17·baseline e53a79f·
-# 개선 후가 같다(직접 확인한 값). 다르면 baseline·개선 후가 같은 요청으로 같은 일을 시작한다는 전제를 다시 본다.
+# 작업 생성 계약: 요청 구조체·핸들러·기동·대상 추출·응답 DTO·인증 미들웨어. upstream fdfb7a17·baseline e53a79f를
+# 기준으로 아래 예외를 직접 확인했다. 다르면 baseline·개선 후가 같은 요청으로 같은 일을 시작한다는 전제를 다시 본다.
 TASK_SHAPES = {
     ("server/server.go", "type createTaskReq struct"): "f07493c7ed7ca34b80af73f43b69b70207d61221e5fd2002f3cd514277b00f77",
     # baseline과 다른 곳은 설명이 빈 요청의 기본 이름(언어 전환)뿐이다. 러너는 빈 설명을 거부하므로 회차에서 타지 않는다.
@@ -58,7 +58,10 @@ TASK_SHAPES = {
     ("server/server.go", "func (s *Server) seed("): "7d0891d1bdcc78596ed2a3c8e40cd22b0be3866c78cc25962e948ed41430963a",
     ("server/server.go", "func parseTarget("): "4fa3c05b1d4ac4d24a387df3dda6fb87e566f45e9f16f0a2b79fa5e3b47bb3ea",
     ("server/dto.go", "type TaskDTO struct"): "119a0e91764c1e1e9c3a7701e0d0ddb8d63be7d700faf389d160eefadca56163",
-    ("server/auth.go", "func (s *Server) requireAuth("): "1a66aca5c409d1b827327f5b6524438522821a1ba759508ad9c704750e790ef0",
+    # 보고서 GET의 별도 인증 분기만 추가됐다. 러너의 POST/GET /api/tasks는 이 분기에 들어가지 않는다.
+    # 실제 helper·미들웨어의 무토큰·유효·오서명 Bearer는 TestReportGraphRunnerTaskAuthUnchanged에서 확인한다.
+    # 추가 분기 제거 시 기존 지문(1a66aca5…)과 같다는 근거는 아래 별도 시험으로 고정한다.
+    ("server/auth.go", "func (s *Server) requireAuth("): "c7cc19a4aea1aca3d84d86c8ebc85660b6b1ae43c744a09f258be4d050dfbd1f",
     # 러너가 압축 기준 창을 넣는 경로(apply_engine_settings). baseline e53a79f와 같은 값을 직접 확인했다.
     ("server/server_mgmt.go", "func (s *Server) pgSaveProfile("):
         "bd1e80549787564149575354402cbc5ef17b23308d525a8be00e8633c7526d2e",
@@ -123,6 +126,24 @@ class TestDTOFormatGuard(unittest.TestCase):
             text = (REPO_ROOT / path).read_text(encoding="utf-8")
             with self.subTest(block=start):
                 self.assertEqual(hashlib.sha256(go_block(text, start).encode()).hexdigest(), expected)
+
+    def test_report_auth_addition_preserves_original_task_auth(self):
+        # 실제 러너의 두 경로를 Go 미들웨어 회귀와 결속한다. 로그인은 기존 /api/auth/* 면제다.
+        self.assertEqual(runner_engine.TASKS_PATH, "/api/tasks")
+        self.assertEqual(TASK_STATUS_PATH, "/api/tasks")
+        block = go_block((REPO_ROOT / "server/auth.go").read_text(encoding="utf-8"),
+                         "func (s *Server) requireAuth(")
+        report_branch = (
+            "\t\tif _, ok := reportGraphRequestTask(r); ok {\n"
+            "\t\t\tif s.authenticateReportRead(w, r) {\n"
+            "\t\t\t\th.ServeHTTP(w, r)\n"
+            "\t\t\t}\n"
+            "\t\t\treturn\n"
+            "\t\t}\n"
+        )
+        self.assertEqual(block.count(report_branch), 1)
+        self.assertEqual(hashlib.sha256(block.replace(report_branch, "").encode()).hexdigest(),
+                         "1a66aca5c409d1b827327f5b6524438522821a1ba759508ad9c704750e790ef0")
 
     def test_end_signal_counts_come_from_the_list_api(self):
         # 단건 API(getTask)는 taskDTO만 돌려주는데 taskDTO는 세 집계 칸을 채우지 않는다(늘 0). 목록 API(listTasks)만

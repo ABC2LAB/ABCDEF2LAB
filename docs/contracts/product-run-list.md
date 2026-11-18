@@ -10,7 +10,7 @@
 {"version":"diagnosis-api.v2","owner_context":"주체 문맥의 SHA-256","page":{"runs":[{"id":"prep-…","revision":7,"display_name":"새 점검","state":"running","phase":"execution","task_id":"42","started":true,"drain_complete":false,"result_ready":false,"report_available":false,"approval_status":"not_revalidated","action_required":true}],"snapshot":"목록 snapshot의 SHA-256","limit":25,"more":false}}
 ```
 
-정렬은 `preparing`·`running`·`stopping` 회차를 먼저, 같은 그룹은 Job ID 문자열 내림차순이다. **시각순이 아니다.** 현재 준비 Job 저널은 생성·시작·종료 시각을 저장하지 않으므로 이 API는 그 값을 만들지 않는다. 모든 보존 회차를 페이지로 찾을 수 있고 활성 회차가 우선이다. 시간순 목록은 실제 시각 저장 계약이 추가될 때 확장한다.
+정렬은 `preparing`·`running`·`stopping` 회차를 먼저, 같은 그룹은 Job ID 문자열 내림차순이다. **시각순이 아니다.** 생성 시각 `created_at`은 제공하지 않는다. 시작·마감 확인 시각은 기록된 회차에만 아래 선택 필드로 제공하며, 과거 기록의 누락을 추정하지 않는다. 모든 보존 회차를 페이지로 찾을 수 있고 활성 회차가 우선이다.
 
 페이지는 최대 24KiB JSON이며 필요한 경우 개수 한도보다 먼저 자른다. 공개 HTTP envelope는 이 상한+1KiB 이하다. 보호 IPC는 기존 64KiB frame 상한도 유지한다. 전체 원천 Job 수는 기존 설치 저장소 상한을 따른다.
 
@@ -20,6 +20,7 @@
 
 - `id`, `revision`, `display_name`, `state`, `phase`, 선택 `reason_code`, `task_id`는 실제 보호 Job에서 온다.
 - `started`, `drain_complete`, `result_ready`는 서로 다른 저장 사실이다. unknown을 완료/미실행/취약점 없음으로 바꾸지 않는다.
+- 선택 `started_at`, `finished_at`은 동일 Job에 저장된 최초 시작·drain 확인 시각이다. RFC3339 UTC(`Z`, 소수 초 허용)이며 미확인은 필드 생략이다. null·빈 문자열을 반환하지 않는다. 결과 불명에서도 확인된 시각은 유지한다. 자세한 전환·구 기록·소요 계산·배포 순서는 [시각 계약](diagnosis-run-timing.md)을 따른다.
 - `report_available`은 저장된 `result_ready`와 task 참조가 있다는 뜻이다. 보고서 HTTP·저장소가 지금도 정상이라는 보증이 아니며 실제 GET의 오류를 그대로 표시한다. 실패·취소의 부분 보고서도 가능하다.
 - `approval_status`: `not_revalidated`(목록은 실행 권위를 재검증하지 않음), `expired`, `revoked`, `changed`, `unavailable`. 이 필드는 실행 허가가 아니다. 기존 승인 기록과 달라졌거나 확인할 수 없으면 정상 running으로 표시하지 않는다.
 - `action_required`: 활성 회차의 현재 상태 재확인, 승인 대기, 실패, 결과 불명 또는 승인 상태 문제가 있는 경우다. 활성 회차라도 목록만 보고 자동 재개하지 않는다.
@@ -33,7 +34,7 @@
 3. `state`와 `approval_status`를 함께 표시한다. 미재검증·철회·만료·변경·불명은 정상 running/성공으로 표현하지 않는다.
 4. 선택한 행의 `GET /api/diagnoses/v2/drafts/{id}/status`로 최신 revision을 다시 얻는다. 목록 revision으로 자동 중지·재개하지 않는다.
 5. 신뢰된 task_id로 기존 `/api/exploration/activity?task={task}` 및 `/api/report/diagnostic?task={task}`에 재연결한다. 공개 활동 API는 원문을 숨기고 고정 상태/실제 sequence만 준다.
-   - 점검 진행 화면(#661): 탐색 흐름이 있는 회차는 workflow 스냅숏의 활동(`flow.activity`, 워커별 기록)으로 대신 보이고, 흐름이 없는 회차는 실행 중에만 이 활동 API로 보인다. 끝난 회차는 제품 서버가 보고서 전용으로 바뀌어 활동 조회를 닫는다(403).
+   - 점검 진행 화면(#661, #677): 탐색 흐름이 있는 회차는 활동 기록을 두지 않는다(workflow 스냅숏 활동은 서버가 원문 대신 고정 문장만 줘서 보일 내용이 없음). 흐름이 없는 회차는 실행 중에만 이 활동 API로 보인다. 끝난 회차는 제품 서버가 보고서 전용으로 바뀌어 활동 조회를 닫는다(403).
 6. 중지는 기존 `POST …/drafts/{id}/stop`의 명시적 사용자 동작과 최신 revision을 사용한다. 목록 조회가 실행 시작이나 재송신을 유발하면 안 된다.
 
 이 브라우저가 이미 가진 생성 핸들은 조회 선택 힌트와 분리해 보존한다. 다른 회차를 조회했다 돌아오더라도, 같은 주체·Job ID의 핸들만 최신 status·입력·실행 결속 대조를 통과한 뒤 사용한다. 생성/시작 키가 없는 다른 브라우저는 계속 조회 전용이며, 목록이나 다른 Job의 핸들에서 키를 만들거나 승계하지 않는다. 시작 전 외부 시험 계정 동의는 기존처럼 메모리에만 유지한다. 주체 교체·명시적 연결 해제 때 메모리 보존분도 버린다.

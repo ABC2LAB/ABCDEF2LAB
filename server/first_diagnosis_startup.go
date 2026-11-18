@@ -212,6 +212,9 @@ func (s *Server) firstDiagnosisReportRoute(r *http.Request) bool {
 }
 
 func firstDiagnosisReportRequestTask(r *http.Request) (int64, bool) {
+	if id, ok := reportGraphRequestTask(r); ok {
+		return id, true
+	}
 	if id, ok := promptProjectionRequestTask(r); ok {
 		return id, true
 	}

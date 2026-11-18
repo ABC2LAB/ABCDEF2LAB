@@ -145,6 +145,8 @@ task 생성·Planner 호출·권위 발급·Gateway 시작 전 단계도 동기 
 
 재시작은 미완 부작용을 unknown으로 보존하며 자동 재계획·재실행하지 않는다.
 이미 확인한 TaskID, 권위 소비, started, drain_complete, result_ready를 지우지 않는다.
+Job과 제품 목록의 선택 `started_at`·`finished_at`도 확인된 최초 시각만 보존한다.
+시각 형식·미확인 생략·구 기록 호환·웹 파서 인계는 [점검 시각 계약](contracts/diagnosis-run-timing.md)을 따른다.
 준비 단계의 unknown은 started=false일 수 있다. 마감과 저장 사실은 독립이다.
 result_ready=true인 실제 저장 결과만 보고서로 연결하고 마감 미확인은 별도로 표시한다.
 
