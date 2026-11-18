@@ -1002,6 +1002,17 @@ class TestDiscoverySources(unittest.TestCase):
         self.assertEqual(evidence.files["discovery-sources.json"],
                          {"format": "abc2lab-eval-runner-discovery-sources-v1", "error": "product_workflow_invalid"})
 
+    def test_failure_records_only_a_fixed_code(self):
+        # 구동기 오류 글에는 경로·초안 ID·제품 사유가 붙는다(예: HTTP 503). 근거·요약에는 앞부분 고정 코드만 남는다(#725 리뷰).
+        for message, code in (("product_http_503:/api/product/workflows/draft-1", "product_http_503"),
+                              ("product_http_409:/api/product/workflows/draft-1:workflow_busy", "product_http_409"),
+                              ("product_draft_mismatch", "product_draft_mismatch"),
+                              ("draft-1 leaked", "discovery_sources_failed"), ("", "discovery_sources_failed")):
+            with self.subTest(message=message):
+                result, _, evidence = run(lambda p, m=message: setattr(p, "workflow", ProductAPIError(m)))
+                recorded = evidence.files["discovery-sources.json"]
+                self.assertEqual(recorded, {"format": "abc2lab-eval-runner-discovery-sources-v1", "error": code})
+                self.assertNotIn("draft-1", json.dumps(recorded) + json.dumps(result["discovery_sources"]))
 
 
 class TestProductFaultStall(unittest.TestCase):

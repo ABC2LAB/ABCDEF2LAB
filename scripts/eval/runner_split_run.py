@@ -334,6 +334,8 @@ def _split_window(spec: SplitRunSpec, evidence, state: _SplitState, pre: dict, s
 DISCOVERY_SOURCES_FORMAT = "abc2lab-eval-runner-discovery-sources-v1"
 DISCOVERY_SOURCES_NAME = "discovery-sources.json"
 _SOURCE_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
+# 구동기 오류 글의 앞부분(`product_http_503` 등). 뒤의 경로·초안 ID·제품 사유는 근거에 남기지 않는다(#725 리뷰).
+_PRODUCT_CODE = re.compile(r"product_[a-z0-9_]{1,62}\Z")
 
 
 def discovery_sources(snapshot: dict) -> dict:
@@ -365,7 +367,8 @@ def _discovery_sources(ports, draft_id: str) -> dict:
     try:
         return discovery_sources(ports.workflow_snapshot(draft_id))
     except ProductAPIError as exc:
-        return {"format": DISCOVERY_SOURCES_FORMAT, "error": str(exc)}
+        code = str(exc).split(":", 1)[0]
+        return {"format": DISCOVERY_SOURCES_FORMAT, "error": code if _PRODUCT_CODE.fullmatch(code) else "discovery_sources_failed"}
     except Exception:
         return {"format": DISCOVERY_SOURCES_FORMAT, "error": "discovery_sources_failed"}
 
