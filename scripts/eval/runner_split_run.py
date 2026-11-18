@@ -44,13 +44,16 @@ from runner import (  # noqa: E402
     INVALID, RESULT_NAME, RunFailure, _check_subnets, _event_time, _meter_preflight, _ns, _stamp, _step, _stop_events, _stop_watch,
     _wait_budget, _wait_drained, check_meter_logs, first_limit,
 )
-from preservation_record import digest  # noqa: E402
+from preservation_record import NAME as PRESERVATION_NAME, build_payload_v3 as preservation_payload_v3, digest  # noqa: E402
+import preservation_v3_fields as v3f  # noqa: E402
 from runner_checks import compare_snapshots  # noqa: E402
 from runner_docker import HelperCleanupInterrupt  # noqa: E402
 from runner_evidence import MeterFiles  # noqa: E402
 from runner_llm import judge_product_llm  # noqa: E402
 from runner_probe import PASS  # noqa: E402
-from runner_product_llm import ProductLLMError, call_records_reasons, product_model_usage  # noqa: E402
+from runner_product_llm import (  # noqa: E402
+    ProductLLMError, call_record_lines, call_records_reasons, ledger_reservations, product_model_usage,
+)
 from runner_split_probe import SplitProbeOutcome  # noqa: E402
 from runner_window import events_reasons, judge_events, watch_reasons, watch_summary  # noqa: E402
 
@@ -180,6 +183,17 @@ class SplitRunSpec:
     meter_source_sha: str = ""
     # 경로 가림 키 지문(16 hex, 키 값이 아님). 분리 배치는 B·O가 같은 키로 경로를 기록하고 같은 검사(check_meter_logs)를 받는다.
     path_key_ref: str | None = None
+    # 보존 sidecar v3 O 발행(결정안 §3.3). preservation이 없으면 발행하지 않는다(그때 아래 칸은 쓰지 않는다).
+    preservation: dict | None = None
+    purpose: str = "browser_acceptance"
+    repeat_index: int = 0
+    drain_grace_seconds: float = 0
+    host_watch_interval_seconds: float = 0
+    model_tag: str = ""
+    product_source_sha: str = ""
+    driver_settings: dict = field(default_factory=dict)  # O 구동 설정(preservation_v3_fields.O_DRIVER_SETTINGS)
+    model_budget_sha256: str = ""
+    exploration_policy_sha256: str = ""  # 러너가 만든 경계 설정(boundary.json) 바이트 SHA
 
 
 class SplitRunPorts(Protocol):
@@ -210,6 +224,9 @@ class SplitRunPorts(Protocol):
     def product_files(self) -> dict: ...
     def runtime_conditions(self, draft_id: str) -> bytes: ...
     def tool_surface(self) -> dict: ...
+    def split_conditions(self) -> dict: ...
+    def boundary_directory(self): ...
+    def sign(self, payload: dict) -> dict: ...
     def copy_boundary_evidence(self) -> None: ...
     def copy_product_records(self) -> tuple: ...
     def generation_verify(self, calls: bytes, sampling: dict | None) -> None: ...
@@ -227,6 +244,7 @@ class _SplitState:
     up_attempted: bool = False
     runner_containers: set = field(default_factory=set)
     summary: dict = field(default_factory=dict)
+    preservation: dict | None = None  # 내린 뒤 build_payload_v3에 넘길 칸(서명 전)
 
 
 class _StatusReader:
@@ -410,6 +428,45 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
                          sampling_overwrites=usage["sampling_overwrites"], task_id=task_id, draft_id=draft_id,
                          product_file_sha256=files, diagnosis_policy_sha256=fingerprint, diagnosis_entered=entered,
                          product_closed={name: closed.get(name) for name in PRODUCT_END_FIELDS})
+    if spec.preservation is not None:
+        # 보존 sidecar v3 O 칸(결정안 §3.3). 해시는 내린 뒤 build_payload_v3가 최종 바이트로 뜬다(경계 원자료 검증 포함).
+        conditions = _step(state, "split_conditions_failed", ports.split_conditions)
+        state.preservation = _preservation_v3(spec, state, pre_board["state_sha256"], stop_reason, limit,
+                                              engine_end["first_terminal"], llm_summary, files, fingerprint, conditions,
+                                              usage["sampling_overwrites"], ledger_reservations(ledger), call_record_lines(calls),
+                                              task_id)
+
+
+def _preservation_v3(spec: SplitRunSpec, state: _SplitState, initial_state: str, stop_reason: str, limit: dict,
+                     first_terminal: dict | None, llm_summary: dict, files: dict, fingerprint: str, conditions: dict,
+                     overwrites: dict, reservations: int, lines: int, task_id: str) -> dict:
+    """O 회차의 v3 칸(공통·쪽별·회차별·제품 블록). 공통 칸은 B(runner._preservation_v3)와 같은 정의로 뜬다."""
+    options, surface = spec.preservation, state.summary["tool_surface"]
+    common = {"request_budget": spec.request_budget, "time_budget_seconds": spec.time_budget_seconds,
+              "model_pin_sha256": v3f.model_pin_sha256(backend="api", model=spec.model_tag, provider_slug=spec.llm_provider_slug,
+                                                       provider_name=spec.llm_provider_name,
+                                                       sampling=llm_summary["sampling_applied"], serving=None),
+              "target_image_id": spec.image_ids["target"], "initial_state_sha256": initial_state,
+              "machine_sha256": digest(state.summary["host"]),
+              "runner_settings_sha256": v3f.settings_sha256(vars(spec), v3f.COMMON_RUNNER_SETTINGS),
+              "goal_common_sha256": state.summary["goal_common_sha256"], "comm_mode": options["comm_mode"],
+              "mcp_version": surface["mcp_version"], "mcp_raw_tools_sha256": surface["mcp_raw_sha256"]}
+    side = {"layout": "exploration-split/v1", "driver_sha256": v3f.driver_sha256(v3f.O_DRIVER_FILES),
+            "driver_settings_sha256": v3f.settings_sha256(spec.driver_settings, v3f.O_DRIVER_SETTINGS),
+            "write_mode": options["write_mode"], "declared_model_budget_sha256": spec.model_budget_sha256,
+            "browser_image_id": spec.image_ids["explore_browser"], "exploration_policy_sha256": spec.exploration_policy_sha256,
+            "diagnosis_policy_sha256": fingerprint, "cli_surface_sha256": surface["cli_sha256"],
+            "mcp_exposed_tools_sha256": surface["mcp_exposed_sha256"]}
+    run = {"stop_reason": stop_reason, "first_limit": limit, "end_signal": v3f.end_signal(first_terminal, product=True),
+           "rate_limited": llm_summary.get("rate_limited")}
+    product = {"source_sha": spec.product_source_sha,
+               "image_ids": {name: spec.image_ids[name] for name in ("product", "explore_browser", "fixture")},
+               "file_sha256": dict(files), "split_conditions": conditions, "sampling_overwrites": overwrites,
+               "call_records": {"reservations": reservations, "lines": lines}}
+    return dict(series_ref=options["series_ref"], execution_source=options["execution_source"], run_id=spec.run_id, side="ours",
+                repeat_index=spec.repeat_index, engine_source_sha=spec.product_source_sha,
+                engine_image_id=spec.image_ids["product"], common=common, side_conditions=side, run=run, product=product,
+                boundary={"task_id": task_id, "path_key_ref": spec.path_key_ref}, purpose=spec.purpose)
 
 
 def execute_split_run(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles, evidence, clock: Clock) -> dict:
@@ -454,6 +511,16 @@ def execute_split_run(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFile
             ports.remove_inputs()  # 비밀(설치 입력·비밀번호·CA 키)은 회차가 어떻게 끝나도 남기지 않는다
         except Exception:
             reasons.append("inputs_cleanup_failed")
+    if not reasons and state.preservation is not None:
+        # 내린 뒤에는 계측기 writer가 없다. 최종 바이트로 hash를 뜨고 경계 원자료(계약 §4.1)를 계측기 행과 대조한 뒤 서명한다.
+        try:
+            parts = dict(state.preservation)
+            parts["boundary"] = dict(parts["boundary"], directory=ports.boundary_directory())
+            payload = _step(state, "preservation_record_failed", lambda: preservation_payload_v3(meter=meter, **parts))
+            evidence.write_json(PRESERVATION_NAME, _step(state, "preservation_sign_failed", lambda: ports.sign(payload)))
+        except RunFailure as exc:
+            reasons.append(exc.code)
+            reasons.extend(exc.also)
     base = {"format": SPLIT_RESULT_FORMAT, "run_id": spec.run_id, "side": "ours", "layout": "exploration-split/v1",
             "project": spec.project, "started_at": started_at, "finished_at": _stamp(clock)}
     if reasons:

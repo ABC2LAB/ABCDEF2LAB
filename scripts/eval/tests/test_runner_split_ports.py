@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import os
 import stat
@@ -179,6 +180,27 @@ class TestV3Inputs(PortsCase):
             self.assertEqual(self.ports.tool_surface(), {"x": 1})
         args = side.call_args.args
         self.assertEqual(args[:3], (self.split.images["product"].id, self.split.images["explore_browser"].id, self.docker.run_bounded))
+
+
+class TestV3Publishing(PortsCase):
+    def test_split_conditions_use_the_installed_workflow_and_registration(self):
+        from runner_split import read_workflow_defaults, split_conditions
+        self.ports.prepare_round("tok")
+        defaults, sha = read_workflow_defaults()
+        got = self.ports.split_conditions()
+        self.assertEqual(got, split_conditions(workflow_defaults=defaults, workflow_sha256=sha,
+                                               install=self.inputs.install_public, registration=self.ports.registration))
+        self.assertEqual(got["workflow_defaults_sha256"], sha)
+
+    def test_boundary_directory_and_signature_use_the_runner_key(self):
+        from run_record import sign_run_record
+        self.assertEqual(self.ports.boundary_directory(), self.directory.run / "boundary")
+        key = Path(self._tmp.name) / "runner.key"
+        key.write_bytes(bytes(range(32)))
+        key.chmod(0o600)
+        self.ports.config = dataclasses.replace(self.config, runner_key_path=key)
+        signed = self.ports.sign({"format": "x"})
+        self.assertEqual(signed, sign_run_record({"format": "x"}, bytes(range(32))))
 
 
 class TestDrive(PortsCase):

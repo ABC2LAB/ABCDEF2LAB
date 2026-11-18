@@ -34,7 +34,8 @@ METER_DESCRIBE_SECONDS = 30.0
 from runner_docker import Docker, client_environment
 from runner_engine import AdminSecret
 from runner_product import ModelKey, ProductDriver
-from runner_split import target_registration
+from run_record import read_runner_key, sign_run_record
+from runner_split import read_workflow_defaults, split_conditions, target_registration
 from runner_split_config import SplitConfig, SplitPlan, split_compose_args
 from runner_split_inputs import SplitInputs, remove_split_inputs
 from runner_split_probe import SplitProbeOutcome, run_split_probes, split_ports
@@ -318,6 +319,19 @@ class DockerSplitPorts:
 
     def control_policy(self, task_id: str) -> dict:
         return self.driver.control_policy(task_id)
+
+    def split_conditions(self) -> dict:
+        """이 회차의 설치·등록 조건(runner_split.split_conditions). 워크플로 기본값 파일은 레포 정본을 다시 읽는다."""
+        defaults, sha = read_workflow_defaults()
+        return split_conditions(workflow_defaults=defaults, workflow_sha256=sha, install=self.inputs.install_public,
+                                registration=self.registration)
+
+    def boundary_directory(self) -> Path:
+        return self.directory.run / BOUNDARY_DIRECTORY
+
+    def sign(self, payload: dict) -> dict:
+        # 키는 서명 직전에만 읽는다(B DockerPorts.sign과 같다). 경로는 러너 설정(회차 디렉터리 밖)이다.
+        return sign_run_record(payload, read_runner_key(str(self.config.runner_key_path)))
 
     def tool_surface(self) -> dict:
         """O 도구 면(결정안 §4): 제품 이미지 중 E② 샌드박스가 보는 CLI, 탐색 브라우저 이미지의 MCP 원 목록·허용 목록 적용 뒤

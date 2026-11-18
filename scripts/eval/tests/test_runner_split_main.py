@@ -32,7 +32,9 @@ from test_runner_split_inputs import FakeOpenssl  # noqa: E402
 
 # 사전검사 픽스처(test_preflight.api_llm)와 같은 모델·제공자·base_url(실제 manifest는 openrouter.ai 고정이고, 선언도 그 값이어야 한다).
 MANIFEST = {"version": 3, "model": "example-org/example-model", "provider_slug": "example-provider", "approval_id": "approval-test-1",
-            "base_url": "https://llm-api.example/api/v1", "max_requests": 400}
+            "base_url": "https://llm-api.example/api/v1", "max_requests": 400, "max_input_tokens": 2000000,
+            "max_output_tokens": 200000, "max_cost_usd_micros": 1000000, "max_input_tokens_per_call": 120000,
+            "max_output_tokens_per_call": 8192}
 
 
 def preflight_for(config, **ours):

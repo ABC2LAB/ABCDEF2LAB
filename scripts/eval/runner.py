@@ -926,9 +926,9 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         # 현행 러너의 망 검증은 기존 배치다. 설정만으로 새 탐색 배치를 발행하지 않는다.
         pc = {"layout": "artex-direct/v1" if baseline else "e2-legacy/v1",
               "request_budget": spec.request_budget, "time_budget_seconds": spec.time_budget_seconds,
-              "model_pin_sha256": preservation_digest({"backend": spec.llm_backend, "model": spec.model_tag,
-                  "provider_slug": spec.llm_provider_slug, "provider_name": spec.llm_provider_name,
-                  "sampling": llm_summary["sampling_applied"], "serving": spec.llm_serving}),
+              "model_pin_sha256": v3f.model_pin_sha256(backend=spec.llm_backend, model=spec.model_tag,
+                  provider_slug=spec.llm_provider_slug, provider_name=spec.llm_provider_name,
+                  sampling=llm_summary["sampling_applied"], serving=spec.llm_serving),
               "target_image_id": spec.image_ids["target"], "initial_state_sha256": pre_state,
               "machine_sha256": preservation_digest(state.host),
               "runner_settings_sha256": preservation_digest({name: getattr(spec, name) for name in (
@@ -1675,7 +1675,7 @@ def main(argv: list[str] | None = None) -> int:
         if config.split is not None and args.side == POLICY_SWITCH_SIDE:
             # 분리 배치 O는 제품 배치로만 돈다(runner_split_main). 늦게 불러오는 것은 그 모듈이 이 모듈을 쓰기 때문이다.
             from runner_split_main import run_split_ours
-            return run_split_ours(config, preflight)
+            return run_split_ours(config, preflight, repeat_index=args.repeat)
         plan = plan_run(config, preflight, args.side, new_run_id(args.side))
         task, goal_common_sha256 = plan_task(config.task, plan, preflight[plan.side]["target_origin"])
         vocabulary, vocabulary_sha256 = load_vocabulary(config.findings["vocabulary_path"])
