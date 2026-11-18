@@ -3,7 +3,10 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os/exec"
+	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"testing"
 )
 
@@ -67,5 +70,36 @@ func TestBuildInfoFields(t *testing.T) {
 	none := buildFromInfo(nil, false)
 	if none.SourceRevision != sourceRevision || none.VCSRevision != "" || none.VCSModified != nil {
 		t.Fatalf("%+v", none)
+	}
+}
+
+// Go job(setup-go로 go.mod 판이 보장됨)에서 describe 출력을 러너의 Python 점검기로 대조한다(#684 리뷰: 평가 job에는 Go 판이
+// 보장되지 않아 그쪽 실제 빌드 시험은 건너뛸 수 있다). 표식 칸이 러너 기대와 어긋나면 여기서 깨진다.
+func TestDescribeMatchesTheRunnerCheck(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 없음")
+	}
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	saved := sourceRevision
+	t.Cleanup(func() { sourceRevision = saved })
+	sourceRevision = sha
+	var out, errOut bytes.Buffer
+	if code := run([]string{"-role", "describe"}, nil, &out, &errOut); code != 0 {
+		t.Fatalf("describe code %d: %s", code, errOut.String())
+	}
+	script := "import json, sys; sys.path.insert(0, 'scripts/eval'); from meter_describe import check; " +
+		"print(json.dumps(check(json.load(sys.stdin), sys.argv[1])))"
+	cmd := exec.Command(python, "-I", "-B", "-c", script, sha)
+	cmd.Dir = filepath.Join("..", "..")
+	cmd.Stdin = &out
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	got, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("python check: %v: %s", err, stderr.String())
+	}
+	if strings.TrimSpace(string(got)) != "[]" {
+		t.Fatalf("runner check reasons: %s", got)
 	}
 }

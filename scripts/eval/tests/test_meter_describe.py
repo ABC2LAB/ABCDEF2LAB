@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -70,17 +71,57 @@ class TestCheck(unittest.TestCase):
         self.assertEqual(summary(described(), [], SHA)["source_revision"], SHA)
 
 
-@unittest.skipUnless(shutil.which("go"), "go 없음")
+def _go_toolchain_reason() -> str | None:
+    """이 환경의 Go가 go.mod 요구 판 이상이면 None, 아니면 건너뛰는 이유. 평가 CI job에는 setup-go가 없고
+    GOTOOLCHAIN=local이라 판이 보장되지 않는다(#684 리뷰). 같은 대조는 Go job의 TestDescribeMatchesTheRunnerCheck가 한다."""
+    go = shutil.which("go")
+    if go is None:
+        return "go 없음"
+    wanted = re.search(r"^go (\d+(?:\.\d+)*)$", (ROOT / "go.mod").read_text(encoding="utf-8"), re.M)
+    try:
+        have = subprocess.run([go, "env", "GOVERSION"], capture_output=True, text=True, timeout=60).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return "go env 실패"
+    version = lambda text: tuple(int(part) for part in re.findall(r"\d+", text)[:3])
+    if not wanted or not have.startswith("go") or version(have) < version(wanted.group(1)):
+        return f"Go 도구체인 {have or '알 수 없음'} < go.mod {wanted.group(1) if wanted else '?'}"
+    return None
+
+
+class TestToolchainGate(unittest.TestCase):
+    def test_low_or_missing_toolchain_is_a_reason_to_skip(self):
+        from unittest import mock
+        import test_meter_describe as module
+
+        def fake(version):
+            return mock.patch.object(module.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, version + "\n", ""))
+        with mock.patch.object(module.shutil, "which", return_value="/usr/bin/go"):
+            with fake("go1.20.3"):
+                self.assertIn("go1.20.3", module._go_toolchain_reason())
+            with fake("go1.26.3"), mock.patch.object(Path, "read_text", return_value="module x\n\ngo 1.26.3\n"):
+                self.assertIsNone(module._go_toolchain_reason())
+            with fake("go1.27.0"), mock.patch.object(Path, "read_text", return_value="module x\n\ngo 1.26.3\n"):
+                self.assertIsNone(module._go_toolchain_reason())
+            with fake(""):
+                self.assertIsNotNone(module._go_toolchain_reason())
+        with mock.patch.object(module.shutil, "which", return_value=None):
+            self.assertEqual(module._go_toolchain_reason(), "go 없음")
+
+
 class TestRealMeter(unittest.TestCase):
     """실제 eval-meter를 빌드해 -role describe 출력이 이 러너의 기대 칸과 같은지 본다(코드가 어긋나면 깨진다)."""
 
     def test_built_meter_matches_the_runner(self):
+        reason = _go_toolchain_reason()
+        if reason is not None:
+            self.skipTest(reason)
         with tempfile.TemporaryDirectory() as tmp:
             binary = Path(tmp) / "eval-meter"
             # -buildvcs=false: 본 클론·CI 체크아웃에서는 Go가 그 트리의 커밋을 넣어 시험용 커밋과 어긋난다.
-            subprocess.run(["go", "build", "-trimpath", "-buildvcs=false", "-ldflags", f"-X main.sourceRevision={SHA}", "-o", str(binary),
-                            "./cmd/eval-meter"], cwd=ROOT, check=True, capture_output=True, timeout=600,
-                           env={**os.environ, "CGO_ENABLED": "0"})
+            built = subprocess.run(["go", "build", "-trimpath", "-buildvcs=false", "-ldflags", f"-X main.sourceRevision={SHA}", "-o",
+                                    str(binary), "./cmd/eval-meter"], cwd=ROOT, capture_output=True, text=True, timeout=600,
+                                   env={**os.environ, "CGO_ENABLED": "0"})
+            self.assertEqual(built.returncode, 0, f"go build 실패: {built.stderr[-2000:]}")  # 컴파일러 오류를 남긴다
             out = subprocess.run([str(binary), "-role", "describe"], capture_output=True, check=True, timeout=30).stdout
         got = parse(out)
         self.assertEqual(check(got, SHA), [])
