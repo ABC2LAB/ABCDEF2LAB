@@ -59,6 +59,11 @@ from runner_config import (  # noqa: E402
 from isolation_proof import PURPOSE_BROWSER_ACCEPTANCE, PURPOSE_OFFICIAL, blocked_attempts, valid_output_language  # noqa: E402
 from runner_docker import Docker, DockerError, client_environment, run_docker  # noqa: E402
 from tool_tree import collect_tree, tree_sha256  # noqa: E402
+from meter_describe import MAX_DESCRIBE_BYTES, describe_args, check as meter_check, parse as meter_parse  # noqa: E402
+from meter_describe import summary as meter_summary  # noqa: E402
+
+METER_PREFLIGHT_NAME = "meter-preflight.json"
+METER_DESCRIBE_TIMEOUT_SECONDS = 30.0
 from runner_engine import (  # noqa: E402
     ADMIN_USERNAME, BASELINE_ADMIN_USERNAME, AdminSecret, EngineAPIError, EngineLLMProfile, apply_engine_rules, apply_engine_settings, collect_findings, e2_prompt_projection, engine_settings, intercept_summary, load_engine_rules,
     load_vocabulary, read_admin_password_file, start_task, task_request, END_SIGNAL_FIELDS, TERMINAL_TASK_STATUSES, TaskStatusReader,
@@ -175,6 +180,7 @@ class RunPorts(Protocol):
     def engine_settings(self) -> dict: ...
     def apply_engine_rules(self) -> dict: ...
     def tool_tree(self) -> str: ...
+    def meter_describe(self) -> object: ...
     def host_spec(self) -> dict: ...
     def start_task(self) -> str: ...
     def task_status(self, task_id: str) -> dict: ...
@@ -278,6 +284,8 @@ class RunSpec:
     # 그 밖의 회차는 None이다.
     task_origin: str | None = None
     goal_common_sha256: str | None = None
+    # 계측기 이미지의 기대 빌드 커밋(사전검사 선언의 개선 후 source_sha). 회차 전 점검이 대조한다.
+    meter_source_sha: str = ""
 
 
 class WatchHandle(Protocol):
@@ -644,6 +652,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     found = _step(state, "image_id_failed", ports.image_ids)
     if found != spec.image_ids:
         raise RunFailure("image_id_mismatch")
+    _meter_preflight(spec, ports, evidence, state)
     # Dockerfile이 도구 버전을 고정하지 않아 이미지 ID로는 도구가 같은지 알 수 없다. 채점기가 대조한다(프로토콜 §2).
     state.tool_tree_sha256 = _step(state, "tool_tree_failed", ports.tool_tree)
     # baseline·개선 후가 같은 머신에서 돌았는지 채점기가 대조한다(평가 프로토콜 §5.1).
@@ -1020,6 +1029,17 @@ def _collect_e2_prompt(spec: RunSpec, ports: RunPorts, evidence, state: _State, 
             "expected_count": result.expected_count, "projection_sha256": result.projection_sha256, **dict(zip(PROMPT_FIELDS, result.identity))}
 
 
+def _meter_preflight(spec, ports, evidence, state) -> None:
+    """compose를 띄우기 전(모델을 부르기 전) 계측기·게이트웨이 이미지가 이 러너의 표식 칸·기대 빌드와 맞는지 본다.
+    다르면 회차를 시작하지 않는다(2026-11-17 사용자 결정, 파일럿 B 1회차 llm_marker_invalid 재발 방지)."""
+    describe = _step(state, "meter_describe_failed", ports.meter_describe)
+    reasons = meter_check(describe, spec.meter_source_sha)
+    _step(state, "evidence_write_failed", lambda: evidence.write_json(METER_PREFLIGHT_NAME,
+                                                                      meter_summary(describe, reasons, spec.meter_source_sha)))
+    if reasons:
+        raise RunFailure(reasons[0])
+
+
 def _record_context(spec: RunSpec, pre: dict) -> RecordContext:
     return RecordContext(run_id=spec.run_id, model_tag=spec.model_tag,
                          reset_generation=pre["services"][TARGET_SERVICE]["id"],
@@ -1360,6 +1380,12 @@ class DockerPorts:
     def tool_tree(self) -> str:
         return tree_sha256(collect_tree(self.plan.engine_image.id, self.docker.run_bounded))
 
+    def meter_describe(self) -> object:
+        """계측기 이미지 `-role describe`(망 없음). 옛 이미지는 이 역할이 없어 실패하므로 None(점검이 거부)."""
+        result = self.docker.run_bounded(describe_args(self.plan.images["meter"].id), METER_DESCRIBE_TIMEOUT_SECONDS,
+                                         MAX_DESCRIBE_BYTES)
+        return meter_parse(result.stdout) if result.returncode == 0 else None
+
     def host_spec(self) -> dict:
         return read_host_spec(_read_text, self.docker.daemon().version, os.cpu_count(), platform.release())
 
@@ -1526,7 +1552,8 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         state_signal_tables=None if config.state is None else frozenset(config.state["signal_tables"]),
         state_runtime_roots=() if config.state is None else config.state["runtime_roots"],
         state_memory_enabled=config.state is not None and config.state["memory"] is not None,
-        engine_rules_sha256=engine_rules_sha256, task_origin=plan.task_origin, goal_common_sha256=goal_common_sha256)
+        engine_rules_sha256=engine_rules_sha256, task_origin=plan.task_origin, goal_common_sha256=goal_common_sha256,
+        meter_source_sha=preflight["ours"]["source_sha"])
 
 
 def plan_task(task: dict, plan: RunPlan, declared_origin: str) -> tuple[TaskRequest, str | None]:

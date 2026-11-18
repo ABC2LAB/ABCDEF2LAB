@@ -28,6 +28,9 @@ from runner_checks import (Binding, ExpectedTopology, Listener, NetworkExpectati
 from runner_config import OBSERVER_OPAQUE, RunDirectory, RunnerConfig
 from runner_evidence import EvidenceError, GatewayFiles, read_private_json
 from runner_llm import PRODUCT_VERIFY_ROLE
+from meter_describe import MAX_DESCRIBE_BYTES, describe_args, parse as describe_parse
+
+METER_DESCRIBE_SECONDS = 30.0
 from runner_docker import Docker, client_environment
 from runner_engine import AdminSecret
 from runner_product import ModelKey, ProductDriver
@@ -202,6 +205,12 @@ class DockerSplitPorts:
 
     def image_ids(self) -> dict:
         return {role: self.docker.image_id(image.ref) for role, image in self.plan.images.items()}
+
+    def meter_describe(self) -> object:
+        """계측기 이미지 `-role describe`(망 없음). 옛 이미지는 이 역할이 없어 None(점검이 거부)."""
+        result = self.docker.run_bounded(describe_args(self.plan.images["meter"].id), METER_DESCRIBE_SECONDS,
+                                         MAX_DESCRIBE_BYTES)
+        return describe_parse(result.stdout) if result.returncode == 0 else None
 
     def host_spec(self) -> dict:
         return read_host_spec(_read_text, self.docker.daemon().version, os.cpu_count(), platform.release())

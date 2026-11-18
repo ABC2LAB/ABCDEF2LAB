@@ -77,7 +77,8 @@ class TestDeclared(Fixture):
         self.assertEqual(declared, SplitDeclared(target_image=Image(ours["target_image"], self.config.target_image_id),
                                                  meter_port=8080, request_budget=ours["request_budget"],
                                                  time_budget_seconds=ours["time_budget_seconds"], llm_provider="example-provider",
-                                                 llm_sampling=json.loads(gateway_sampling(ours, "ours"))))
+                                                 llm_sampling=json.loads(gateway_sampling(ours, "ours")),
+                                                 meter_source_sha=ours["source_sha"]))
 
     def test_lookup_env_and_sampling_match_the_b_gateway(self):
         # O 사후 검증의 조회 설정·샘플링 기대값은 같은 선언으로 만든 B 게이트웨이 compose 값과 같아야 한다.
@@ -136,6 +137,7 @@ class TestSpec(Fixture):
         self.assertEqual(spec.image_ids, {role: image.id for role, image in plan.images.items()})
         self.assertEqual((spec.llm_sampling, spec.llm_provider_slug, spec.llm_provider_name),
                          (declared.llm_sampling, "example-provider", self.config.llm_gateway["expected_provider_name"]))
+        self.assertEqual(spec.meter_source_sha, configuration()["ours"]["source_sha"])  # 계측기 기대 빌드
 
 
 class TestMainDispatch(Fixture):
