@@ -238,7 +238,7 @@ func validPath(p string) bool {
 
 // E③ 선언 경로와 같은 모양만 받는다. 조회 틀의 ID는 독립된 조각 하나다.
 func validE3RulePath(p string, read bool) bool {
-	if !validPath(p) || len(p) > 512 || !utf8.ValidString(p) || strings.ContainsAny(p, "?# \t\r\n\\%") {
+	if !validPath(p) || strings.HasSuffix(p, "/") || p == "/{id}" || len(p) > 512 || !utf8.ValidString(p) || strings.ContainsAny(p, "?# \t\r\n\\%") {
 		return false
 	}
 	for _, r := range p {
@@ -256,6 +256,31 @@ func validE3RulePath(p string, read bool) bool {
 	}
 	return read && ids == 1 || !read && ids == 0
 }
+
+// e3InWorkerScope는 같은 승인 규칙 하나가 목적 규칙의 연결·메서드·경로 전체를 덮는지 확인한다.
+// 조회 틀은 ID 앞의 고정 접두 전체가 승인되어야 한다. 정확 일치는 가변 ID를 덮지 못한다.
+func e3InWorkerScope(program compiledRule, rules []compiledRule) bool {
+	prefix := program.PathPrefix
+	read := program.Purpose == PurposeE3Read
+	if read {
+		prefix, _, _ = strings.Cut(prefix, "/{id}")
+		if prefix == "" {
+			prefix = "/"
+		}
+	}
+	for _, worker := range rules {
+		if worker.Purpose != "" || worker.origin.Scheme != program.origin.Scheme || worker.authority != program.authority ||
+			worker.ConnectIP != program.ConnectIP || worker.TLSSPKISHA256 != program.TLSSPKISHA256 || !worker.methods[program.Methods[0]] {
+			continue
+		}
+		scope := pathscope.Scope{Path: worker.PathPrefix, Mode: pathscope.Mode(worker.PathMatch)}
+		if (!read || scope.Mode == pathscope.Prefix) && scope.Allows(prefix, false) {
+			return true
+		}
+	}
+	return false
+}
+
 func canonicalAuthority(u *url.URL) (string, error) {
 	if u == nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.Opaque != "" || u.Fragment != "" {
 		return "", ErrConfig
@@ -1061,6 +1086,10 @@ func (e *Execution) matchPurposeLocked(req *http.Request, purpose string) (compi
 			pathOK = matchE3ReadPath(r.PathPrefix, p)
 		}
 		if req.URL.Scheme == r.origin.Scheme && a == r.authority && r.methods[req.Method] && pathOK {
+			// Restrict로 Worker 승인이 줄어들 수 있다. 조회 ID를 채운 실제 경로도 제외 목록에 대조한다.
+			if ProgramCallKind(purpose).isE3() && (!e3InWorkerScope(r, e.rules) || pathscope.ExcludedAny(p, e.cfg.ExcludedPaths)) {
+				continue
+			}
 			return r, true
 		}
 	}
@@ -1268,7 +1297,7 @@ func (c *Call) do(ctx context.Context, req *http.Request, purpose string, extrac
 	// 운영자 제외 경로(#627)는 진단 흐름 경계보다 먼저 E²가 본다. 진단 흐름 경계 거부와 같은 모양(policy_denied, 맞은
 	// 규칙 참조)의 결과 기록 하나·호출당 거부 계수 하나로 끝나고 경계는 부르지 않는다(요청당 한 번, 사유 하나). 그래서
 	// 평가 내보내기·시도 대조·작업대의 사유 어휘가 바뀌지 않는다. 경로는 승인 규칙 검사와 같은 한 번 푼 경로(requestPath)라
-	// 인코딩 표기로 우회하지 못한다. 인증 준비(목적 규칙)는 진단 흐름 경계처럼 대상 등록 때 승인한 로그인 경로 하나라 보지 않는다.
+	// 인코딩 표기로 우회하지 못한다. E③ 목적은 matchPurposeLocked에서 따로 대조한다. 인증 준비는 대상 등록 때 승인한 로그인 경로를 쓴다.
 	if purpose == "" && len(e.cfg.ExcludedPaths) > 0 {
 		if p, ok := requestPath(req.URL); !ok || pathscope.ExcludedAny(p, e.cfg.ExcludedPaths) {
 			r.Decision, r.Reason = "denied", PolicyDenied
@@ -1820,7 +1849,7 @@ func (c *Call) CheckCONNECTAuthority(authority string) bool {
 		return false
 	}
 	for _, r := range e.rules {
-		if r.origin.Scheme == "https" && r.authority == a {
+		if !ProgramCallKind(r.Purpose).isE3() && r.origin.Scheme == "https" && r.authority == a {
 			return true
 		}
 	}
@@ -1916,6 +1945,19 @@ func compilePolicyTemplate(cfg Config) ([]compiledRule, HeaderMode, *EvaluationC
 	}
 	for _, p := range cfg.ExcludedPaths {
 		if !pathscope.ValidExcluded(p) {
+			return nil, "", nil, ErrConfig
+		}
+	}
+	for _, rule := range rules {
+		if !ProgramCallKind(rule.Purpose).isE3() {
+			continue
+		}
+		p := rule.PathPrefix
+		if rule.Purpose == PurposeE3Read {
+			// '?'는 제외 패턴의 리터럴에 쓸 수 없다. ID 자리를 덮는 '*'나 ID 앞에서 끝나는 패턴만 일치한다.
+			p = strings.Replace(p, "{id}", "?", 1)
+		}
+		if !e3InWorkerScope(rule, rules) || pathscope.ExcludedAny(p, cfg.ExcludedPaths) {
 			return nil, "", nil, ErrConfig
 		}
 	}
