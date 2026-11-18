@@ -199,7 +199,7 @@ class DockerSplitPorts:
         self.base_args = split_compose_args(plan)
         self.registration: dict | None = None
         # 설치 입력을 만들 때 실제로 읽은 워크플로 기본값과 그 바이트 SHA(#710 리뷰: 회차 끝에 다시 읽으면 그 사이 바뀐 원본의
-        # SHA가 서명된다). 없으면(구 호출자) 회차 끝에 읽는다.
+        # SHA가 서명된다). 서명 출처를 보장하는 결속이라 꼭 넘겨야 한다. 없으면 split_conditions가 다시 읽지 않고 오류를 낸다.
         self.workflow_defaults = workflow_defaults
         self.timeout = config.run["snapshot_timeout_seconds"]
 
