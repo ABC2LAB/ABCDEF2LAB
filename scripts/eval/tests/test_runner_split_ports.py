@@ -520,6 +520,20 @@ class TestDocker(PortsCase):
                     with self.assertRaises(EvidenceError):
                         self.ports.llm_verified()
 
+    def test_meter_describe_runs_the_meter_image_without_network(self):
+        from runner_docker import BoundedResult, Docker
+        sent = []
+        for code, out, want in ((0, b'{"format": "abc2lab.eval-meter-describe/v1"}', {"format": "abc2lab.eval-meter-describe/v1"}),
+                                (2, b"", None)):  # 옛 이미지: describe 역할 없음 → None
+            docker = Docker(lambda *a, **k: None, {}, 1)
+            docker.run_bounded = lambda args, timeout, limit, code=code, out=out: (sent.append(list(args)), BoundedResult(code, out, b""))[1]
+            ports = DockerSplitPorts(config=self.config, split=self.split, plan=self.plan, directory=self.directory, docker=docker,
+                                     driver=self.driver, inputs=self.inputs, rendered={"services": {}}, manifest=MANIFEST,
+                                     model_key=ModelKey("sk-or-v1-test"), exploration={})
+            self.assertEqual(ports.meter_describe(), want)
+        self.assertIn("none", sent[0])
+        self.assertEqual(sent[0][-3:], [self.plan.images["meter"].id, "-role", "describe"])
+
     def test_compose_seal_and_stop(self):
         self.ports.up()
         self.ports.down()

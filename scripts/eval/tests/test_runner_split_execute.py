@@ -48,7 +48,7 @@ def spec(**changes):
     values = dict(run_id="ours-1", project="eval-ours-1", image_ids=dict(IMAGES), request_budget=10, time_budget_seconds=60.0,
                   poll_seconds=1.0, drain_timeout_seconds=5.0, events_lookback_seconds=10.0, host_watch_max_gap_seconds=15.0,
                   task_status_wait_seconds=2.0, healthchecks=dict(HEALTH), product_close_seconds=30.0, post_settle_seconds=2,
-                  llm_sampling=dict(SAMPLING), llm_provider_slug=LLM_SLUG, llm_provider_name=LLM_NAME)
+                  llm_sampling=dict(SAMPLING), llm_provider_slug=LLM_SLUG, llm_provider_name=LLM_NAME, meter_source_sha="a" * 40)
     values.update(changes)
     return SplitRunSpec(**values)
 
@@ -117,6 +117,15 @@ class FakePorts:
     def image_ids(self):
         self._call("image_ids")
         return dict(IMAGES)
+
+    def meter_describe(self):
+        self._call("meter_describe")
+        from meter_describe import EXPECTED, FORMAT
+        if getattr(self, "describe_override", "unset") != "unset":
+            return self.describe_override
+        return {"format": FORMAT, "markers": {k: {"required": list(v["required"]), "optional": list(v["optional"])}
+                                              for k, v in EXPECTED.items()},
+                "build": {"source_revision": "a" * 40, "vcs_revision": "", "vcs_modified": None, "go_version": "go"}}
 
     def host_spec(self):
         self._call("host_spec")
@@ -251,7 +260,7 @@ def run(mutate=None, **spec_changes):
     return result, ports, evidence
 
 
-ORDER_HEAD = ["preexisting", "image_ids", "host_spec", "planned_subnets", "up", "snapshot:pre", "check:pre", "probes:pre", "dns_token",
+ORDER_HEAD = ["preexisting", "image_ids", "meter_describe", "host_spec", "planned_subnets", "up", "snapshot:pre", "check:pre", "probes:pre", "dns_token",
               "events:start", "watch:start", "scoreboard:pre", "prepare_round", "start_round"]
 ORDER_TAIL = ["seal", "meter:drained", "stop_round", "wait_closed", "snapshot:post", "check:post", "probes:post", "scoreboard:post",
               "stop_boundary", "watch:stop",
@@ -269,7 +278,8 @@ class TestOrder(unittest.TestCase):
         self.assertEqual((result["stop_reason"], result["first_limit"]["value"], result["goal_common_sha256"]),
                          ("time_budget", "runner_time_budget", "c" * 64))
         self.assertEqual(result["sampling_overwrites"], {"execution": 0, "preparation": []})
-        self.assertEqual(set(evidence.files), {"subnet-check.json", "pre-checks.json", "post-checks.json", "pre-probe.json",
+        self.assertEqual(set(evidence.files), {"meter-preflight.json", "subnet-check.json", "pre-checks.json", "post-checks.json",
+                                               "pre-probe.json",
                                                "post-probe.json", "task.json", "llm-summary.json",
                                                "window-watch.json", "product-end.json", "product-model.json", RESULT_NAME})
         self.assertEqual(evidence.files[RESULT_NAME], result)
@@ -349,6 +359,11 @@ class TestInvalid(unittest.TestCase):
         self.assertEqual(ports.calls[-1], "remove_inputs")  # 보호 입력은 늘 지운다
         self.assertNotIn("first_limit", result)
         return result, ports, evidence
+
+    def test_stale_meter_image_is_refused_before_up(self):
+        _, ports, evidence = self.assert_invalid("meter_describe_unavailable", lambda p: setattr(p, "describe_override", None), up=False)
+        self.assertNotIn("prepare_round", ports.calls)
+        self.assertEqual(evidence.files["meter-preflight.json"]["expected_source_sha"], "a" * 40)
 
     def test_before_up(self):
         def exists(ports):

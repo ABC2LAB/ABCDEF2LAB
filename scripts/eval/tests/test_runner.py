@@ -243,6 +243,13 @@ def task_view(status, goals_met=0, goals_total=1, in_flight=0, completed_at="", 
             "in_flight": in_flight, "llm_failover_state": failover}
 
 
+def _meter_described(sha):
+    """현재 러너 기대 칸과 같은 계측기 describe 출력(회차 전 점검 통과)."""
+    from meter_describe import EXPECTED, FORMAT
+    return {"format": FORMAT, "markers": {k: {"required": list(v["required"]), "optional": list(v["optional"])} for k, v in EXPECTED.items()},
+            "build": {"source_revision": sha, "vcs_revision": "", "vcs_modified": None, "go_version": "go"}}
+
+
 class FakePorts:
     def __init__(self, spec):
         self.serving = {}
@@ -341,6 +348,10 @@ class FakePorts:
     def image_ids(self):
         self._call("image_ids")
         return dict(self.spec.image_ids)
+
+    def meter_describe(self):
+        self._call("meter_describe")
+        return self.describe if hasattr(self, "describe") else _meter_described(self.spec.meter_source_sha)
 
     def up(self):
         self._call("up")
@@ -575,7 +586,7 @@ def run(mutate=None, mutate_gateway=None, spec=None):
     return result, ports, meter, evidence
 
 
-FULL_ORDER = ["preexisting", "image_ids", "tool_tree", "host_spec", "subnets:planned", "subnets:host", "up", "facts:pre", "listeners:pre", "probe:pre", "tmpfs:pre",
+FULL_ORDER = ["preexisting", "image_ids", "meter_describe", "tool_tree", "host_spec", "subnets:planned", "subnets:host", "up", "facts:pre", "listeners:pre", "probe:pre", "tmpfs:pre",
               "wait_ready", "events:start", "watch:start", "scoreboard:pre", "apply_engine_settings", "engine_settings", "start_task", "seal",
               "seal_gateway", "facts:post", "listeners:post", "probe:post", "scoreboard:post", "watch:stop",
               "events:stop", "tmpfs:post", "findings", "intercept_summary", "down", "sign", "sign"]
@@ -1090,13 +1101,32 @@ class TestCompleteRun(unittest.TestCase):
         task = evidence.files["task.json"]
         self.assertEqual((task["task_origin"], task["goal_common_sha256"]), ("http://app.eval.test:8080", "c" * 64))
 
+    def test_stale_meter_image_never_starts_the_round(self):
+        # 2026-11-17 파일럿 B 1회차 재발 방지: 옛 계측기(describe 없음)·표식 칸 다름·다른 빌드면 띄우지도, 모델을 부르지도 않는다.
+        def stale(value):
+            def mutate(ports, meter, clock):
+                ports.describe = value
+            return mutate
+        old_fields = _meter_described(make_spec().meter_source_sha)
+        old_fields["markers"]["llm-verified"]["required"].remove("rate_limited")
+        other_build = _meter_described("f" * 40)
+        for value, reason in ((None, "meter_describe_unavailable"), (old_fields, "meter_marker_fields_mismatch:llm-verified"),
+                              (other_build, "meter_build_mismatch")):
+            with self.subTest(reason=reason):
+                result, ports, _, evidence = run(stale(value))
+                self.assertEqual((result["status"], result["reasons"][0]), ("invalid", reason))
+                self.assertNotIn("up", ports.calls)
+                self.assertNotIn("start_task", ports.calls)
+                self.assertEqual(evidence.files["meter-preflight.json"]["reasons"][0], reason)
+        self.assertEqual(make_spec().meter_source_sha, configuration()["ours"]["source_sha"])  # 기대 빌드 = 선언의 개선 후 커밋
+
     def test_order_and_signed_result(self):
         result, ports, meter, evidence = run()
         self.assertEqual(ports.calls, FULL_ORDER)
         self.assertEqual(result["status"], COMPLETE)
         self.assertEqual(result["signature"], "sig")
         self.assertEqual(evidence.files[RESULT_NAME], result)
-        self.assertEqual(set(evidence.files), {"pre-checks.json", "pre-probe.json", "post-checks.json",
+        self.assertEqual(set(evidence.files), {"meter-preflight.json", "pre-checks.json", "pre-probe.json", "post-checks.json",
                                                "post-probe.json", "meter-summary.json", "llm-summary.json",
                                                "findings.json", "task.json", "window-watch.json", "engine-end.json",
                                                "isolation-evidence.json", "solve-events.json", "run-record.json", "intercept-summary.json",
