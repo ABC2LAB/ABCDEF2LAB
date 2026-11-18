@@ -360,6 +360,59 @@ class SummarizeTests(unittest.TestCase):
         got = summarize([rnd(), rnd(("GET", "/a"))], [rnd(), rnd()], NONE, False)["baseline_reference"]
         self.assertEqual((got["pair_ratios"], got["pairs_without_denominator"], got["pair_sd"]), ([0.0], 1, None))
 
+    def test_coverage_uses_the_union_of_both_sides(self):
+        # §7: 분모는 같은 묶음 원본·개선 후 회차가 실제로 닿은 경로 틀의 합집합이다. 분모 크기를 같이 싣는다.
+        a, b, c = ("GET", "/a"), ("GET", "/b"), ("GET", "/c")
+        got = summarize([rnd(a, b), rnd(a)], [rnd(a, c), rnd(c)], NONE, False)["coverage"]
+        self.assertEqual(got["denominator"], 3)
+        self.assertEqual(got["baseline"], {"union": 2 / 3, "rounds": [2 / 3, 1 / 3]})
+        self.assertEqual(got["improved"], {"union": 2 / 3, "rounds": [2 / 3, 1 / 3]})
+        self.assertEqual((got["baseline_only"], got["improved_only"]), (1, 1))
+
+    def test_coverage_follows_domain_and_exclusions(self):
+        get, post, other = ("GET", "/a"), ("POST", "/b"), ("GET", "/c")
+        baseline, improved = [rnd(get, post)], [rnd(get, other)]
+        self.assertEqual(summarize(baseline, improved, NONE, False)["coverage"]["denominator"], 3)
+        self.assertEqual(summarize(baseline, improved, NONE, True)["coverage"]["denominator"], 2)
+        rule = Exclusions(frozenset({"POST"}), ())
+        got = summarize(baseline, improved, rule, False)["coverage"]
+        self.assertEqual((got["denominator"], got["baseline"]["union"], got["improved"]["union"]), (2, 1 / 2, 1.0))
+
+    def test_coverage_without_any_template_has_no_ratio(self):
+        got = summarize([rnd()], [rnd()], NONE, False)["coverage"]
+        self.assertEqual(got, {"denominator": 0, "baseline": {"union": None, "rounds": [None]},
+                               "improved": {"union": None, "rounds": [None]}, "baseline_only": 0, "improved_only": 0})
+
+    def test_difference_inside_baseline_spread_is_not_claimed(self):
+        # §12: 원본끼리 값의 범위 안이면 개선·손실로 주장하지 않는다. 경계값도 범위 안이다.
+        a, b, c = ("GET", "/a"), ("GET", "/b"), ("GET", "/c")
+        baseline = [rnd(a, b), rnd(a), rnd(a, c)]  # 원본끼리 순서쌍 값: 0.5·0.5·1·1·0.5·0.5
+        within = summarize(baseline, [rnd(a), rnd(a), rnd(a)], NONE, False)["difference_claims"]
+        self.assertEqual(within["rule"], "baseline_min_max/v1")
+        # 개선 후 짝 값: 1/2, 1, 1/2 → 평균 2/3, 범위 [0.5, 1] 안.
+        self.assertEqual(within["preservation"], {"claim": "within_baseline_spread", "value": 2 / 3,
+                                                  "baseline_low": 0.5, "baseline_high": 1.0})
+        # 개선 후 짝 값: 0/2, 0/1, 1/2 → 평균 1/6, 범위 아래.
+        below = summarize(baseline, [rnd(), rnd(), rnd(c)], NONE, False)["difference_claims"]["preservation"]
+        self.assertEqual(below["claim"], "below_baseline_spread")
+        self.assertAlmostEqual(below["value"], 1 / 6)
+
+    def test_coverage_claim_compares_round_shares(self):
+        a, b, c, d = ("GET", "/a"), ("GET", "/b"), ("GET", "/c"), ("GET", "/d")
+        # 분모 {a,b,c,d}=4. 원본 회차 비율 1/4·2/4 → 범위 [0.25, 0.5]. 개선 후 3/4·4/4 → 평균 7/8, 범위 위.
+        got = summarize([rnd(a), rnd(a, b)], [rnd(a, b, c), rnd(a, b, c, d)], NONE, False)["difference_claims"]["coverage"]
+        self.assertEqual(got, {"claim": "above_baseline_spread", "value": 7 / 8, "baseline_low": 0.25, "baseline_high": 0.5})
+
+    def test_difference_claims_need_two_baseline_values(self):
+        got = summarize([rnd(("GET", "/a"))], [rnd(("GET", "/a"))], NONE, False)["difference_claims"]
+        self.assertEqual(got["preservation"], {"claim": "not_available", "reason": "baseline_spread_lt_2"})
+        self.assertEqual(got["coverage"], {"claim": "not_available", "reason": "baseline_spread_lt_2"})
+        empty = summarize([rnd(), rnd()], [rnd(), rnd()], NONE, False)["difference_claims"]
+        self.assertEqual(empty["preservation"], {"claim": "not_available", "reason": "value_missing"})
+
+    def test_summary_format_is_v9(self):
+        self.assertEqual(summarize([rnd()], [rnd()], NONE, False)["format"], "abc2lab.preservation-summary/v9")
+
     def test_pairs_must_line_up(self):
         for baseline, improved in (([], []), ([rnd()], []), ([rnd()], [rnd(), rnd()])):
             with self.assertRaises(PreservationError):
