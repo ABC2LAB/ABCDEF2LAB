@@ -177,3 +177,72 @@ func TestProductTargetHTTPApprovalPeriod720ReachesPreparation(t *testing.T) {
 		})
 	}
 }
+
+type productDeclarationRecorder struct {
+	requests []diagnosisprep.Request
+	response diagnosisprep.ProductResponse
+}
+
+func (p *productDeclarationRecorder) Call(_ context.Context, r diagnosisprep.Request) (diagnosisprep.Response, error) {
+	p.requests = append(p.requests, r)
+	out := p.response
+	return diagnosisprep.Response{Version: diagnosisprep.Version, RequestID: r.RequestID, Product: &out}, nil
+}
+
+func TestProductDeclarationHTTP(t *testing.T) {
+	id := "target-" + strings.Repeat("a", 32)
+	path := "/api/product/targets/" + id + "/declaration"
+	p := &productDeclarationRecorder{response: diagnosisprep.ProductResponse{Declaration: &diagnosisprep.ProductDeclaration{State: diagnosisprep.DeclarationNone}}}
+	invoke := func(method, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		productTargetsHTTP(w, r, "ARTEX", p)
+		return w
+	}
+	w := invoke("GET", "")
+	if w.Code != 200 || strings.TrimSpace(w.Body.String()) != `{"state":"none","declaration":null}` || p.requests[0].Product.Operation != "declaration" {
+		t.Fatalf("빈 선언 조회: %d %s", w.Code, w.Body.String())
+	}
+	good := `{"target_revision":3,"declaration":{"identity":{"path":"/app/me","subject_id_path":"id"},"types":[{"type":"post","sharing":"shared"}]}}`
+	if w := invoke("PUT", good); w.Code != 200 {
+		t.Fatalf("저장: %d %s", w.Code, w.Body.String())
+	}
+	last := p.requests[len(p.requests)-1].Product
+	if last.Operation != "declaration_put" || last.ExpectedRevision != 3 || last.Declaration == nil || last.Declaration.Types[0].OwnerOnlyFields == nil {
+		t.Fatalf("저장 요청: %+v", last)
+	}
+	for name, c := range map[string]struct{ body, field string }{
+		"declared_by":   {`{"target_revision":3,"declaration":{"declared_by":"x","identity":{"path":"/app/me","subject_id_path":"id"},"types":[{"type":"post","sharing":"shared"}]}}`, "declared_by"},
+		"declared_at":   {`{"target_revision":3,"declaration":{"declared_at":"2026-11-18T00:00:00Z","types":[]}}`, "declared_at"},
+		"version":       {`{"target_revision":3,"declaration":{"version":"v9","types":[]}}`, "version"},
+		"approval_rev":  {`{"target_revision":3,"declaration":{"target_approval_revision":"9","types":[]}}`, "target_approval_revision"},
+		"no_revision":   {`{"declaration":{"identity":{"path":"/app/me","subject_id_path":"id"},"types":[{"type":"post","sharing":"shared"}]}}`, "target_revision"},
+		"unknown_top":   {`{"target_revision":3,"approved":true,"declaration":{"types":[]}}`, "body"},
+		"unknown_inner": {`{"target_revision":3,"declaration":{"owner":"x","types":[]}}`, "declaration"},
+		"no_types":      {`{"target_revision":3,"declaration":{"identity":{"path":"/app/me","subject_id_path":"id"},"types":[]}}`, "types"},
+		"bad_json":      {`{"target_revision":3,"declaration":`, "body"},
+	} {
+		before := len(p.requests)
+		w := invoke("PUT", c.body)
+		if w.Code != 400 || !strings.Contains(w.Body.String(), `"field":"`+c.field+`"`) || len(p.requests) != before {
+			t.Errorf("%s: %d %s", name, w.Code, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), `"x"`) || strings.Contains(w.Body.String(), "v9") {
+			t.Errorf("%s: 응답에 입력 값", name)
+		}
+	}
+	p.response = diagnosisprep.ProductResponse{Reason: "invalid_declaration", Field: "types[0].create.body_template"}
+	if w := invoke("PUT", good); w.Code != 400 || strings.TrimSpace(w.Body.String()) != `{"error":"invalid_declaration","field":"types[0].create.body_template"}` {
+		t.Fatalf("형식 오류 전달: %d %s", w.Code, w.Body.String())
+	}
+	for reason, code := range map[string]int{"target_not_approved": 409, "declaration_target_revision_mismatch": 409, "target_not_found": 404} {
+		p.response = diagnosisprep.ProductResponse{Reason: reason}
+		if w := invoke("PUT", good); w.Code != code || !strings.Contains(w.Body.String(), reason) {
+			t.Fatalf("%s: %d %s", reason, w.Code, w.Body.String())
+		}
+	}
+	if w := invoke("DELETE", ""); w.Code != 405 {
+		t.Fatalf("철회는 최소 기능에 없음: %d", w.Code)
+	}
+}

@@ -1,6 +1,7 @@
 package diagnosisprep
 
 import (
+	"github.com/Autumn-27/artex/e3contract"
 	"regexp"
 	"strings"
 	"time"
@@ -39,6 +40,8 @@ type ProductRequest struct {
 	// Credential은 계정 자격(account_credential_set)이다. 준비 프로세스가 보호 파일에 쓰고 저널에는 참조·해시만 남긴다.
 	// 응답·로그·모델 입력에는 나가지 않는다.
 	Credential *AccountCredential `json:"credential,omitempty"`
+	// Declaration은 정책 선언 저장(declaration_put)의 입력이다. 대상 판 기대값은 ExpectedRevision이다.
+	Declaration *DeclarationInput `json:"declaration,omitempty"`
 }
 
 // TargetLogin은 대상 앱의 로그인 방식이다. 앱의 경로·필드 이름은 코드가 아니라 이 설정으로만 받는다(하드코딩 금지).
@@ -195,6 +198,10 @@ type ProductResponse struct {
 	// 남는다(#552, #561 리뷰).
 	ExternalConsentStatement string `json:"external_consent_statement,omitempty"`
 	Reason                   string `json:"reason,omitempty"`
+	// Declaration은 declaration·declaration_put의 결과다.
+	Declaration *ProductDeclaration `json:"declaration,omitempty"`
+	// Field는 Reason이 invalid_declaration일 때 실패한 칸 이름이다(값 없음).
+	Field string `json:"field,omitempty"`
 }
 
 func validProductAccount(a ProductAccount) bool {
@@ -215,6 +222,21 @@ func validProductRequest(r *ProductRequest) bool {
 		return false
 	}
 	if r.Operation != "resolve" && r.TargetURL != "" {
+		return false
+	}
+	if strings.HasPrefix(r.Operation, "declaration") {
+		if !reference.MatchString(r.TargetID) || r.ProfileID != "" || r.Registration != nil || r.TargetURL != "" || r.JobID != "" || r.CommandKey != "" || len(r.SelectedIDs) > 0 || r.Account != nil || r.Login != nil || r.Credential != nil {
+			return false
+		}
+		switch r.Operation {
+		case "declaration":
+			return r.Declaration == nil && r.ExpectedRevision == 0
+		case "declaration_put":
+			return r.Declaration != nil && r.ExpectedRevision > 0 && len(r.Declaration.Types) <= e3contract.MaxDeclarationTypes
+		}
+		return false
+	}
+	if r.Declaration != nil {
 		return false
 	}
 	if strings.HasPrefix(r.Operation, "account") {

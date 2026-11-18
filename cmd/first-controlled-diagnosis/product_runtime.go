@@ -640,6 +640,21 @@ func (e productPreparationEndpoint) Call(ctx context.Context, r diagnosisprep.Re
 				control.AccountStatement = productAccountStatement
 				control.ExternalConsentStatement = productExternalConsentStatement
 			}
+		case "declaration":
+			var d diagnosisprep.ProductDeclaration
+			if d, err = p.targets.declaration(r.Principal, r.Product.TargetID); err == nil {
+				control.Declaration = &d
+			}
+		case "declaration_put":
+			var d diagnosisprep.ProductDeclaration
+			d, err = p.targets.putDeclaration(r.Principal, r.Product.TargetID, r.Product.ExpectedRevision, *r.Product.Declaration)
+			var fe *declarationInputError
+			if errors.As(err, &fe) {
+				control.Field = fe.field
+			}
+			if err == nil {
+				control.Declaration = &d
+			}
 		case "target_login":
 			control.Login, err = p.targets.targetLogin(r.Principal, r.Product.TargetID)
 		case "target_login_set":

@@ -40,6 +40,13 @@
 - `Freeze(decl, ref)`가 실행 시작 때 정책 출처를 만든다. `VerifyFrozen(source, decl)`은 읽은 동결본의 digest와 대상 판을 대조한다.
 - **자격은 선언에 넣지 않는다.** 확정 단계 요청의 자격은 등록된 시험 계정 세션(C14 인증 준비)에서만 E²가 붙인다. 저장 API는 본문 틀(`body_template`)이나 다른 칸 값에 인증 헤더·쿠키·토큰·비밀번호 모양이 있으면 `400 {"error": "invalid_declaration", "field": "<칸 이름>"}`으로 거부하고, 거부한 값은 오류 응답·로그에 원문으로 남기지 않는다(정책 선언 저장 PR).
 - **저장 API의 대상 판 결속(2026-11-18 사용자 결정).** 화면은 자기가 본 대상 판을 기대값으로 보낸다. 대상이 승인 상태가 아니면 `409 target_not_approved`, 지금 판과 다르면 `409 declaration_target_revision_mismatch`이고, 같을 때만 그 판에 결속해 저장한다. `declared_by`·`declared_at`은 서버가 인증 주체와 저장 시각으로 채우고, 요청에 들어오면 거부한다. 종류·필드 순서는 서버가 정렬한 뒤 검사한다.
+- **저장 API(구현).** 대상 등록 보호 저널(`declarations/`)에 선언을 통째로 둔다. 저널 줄이 감사 기록(누가·언제·어느 대상 판·digest·선언)이다.
+  - `GET /api/product/targets/{id}/declaration` → `200 {"state": "none"|"active"|"invalid", "invalid_reason"?, "target_revision"?, "declared_by"?, "declared_at"?, "declaration": {…}|null}`. `invalid_reason`은 `target_reapproved`(대상 판이 바뀜 — 재승인·철회)·`target_expired`(승인 만료)다. 선언이 없으면 `{"state": "none", "declaration": null}`이다(라우트가 없으면 404라서 구분된다).
+  - `PUT /api/product/targets/{id}/declaration` 본문 `{"target_revision": N, "declaration": {"identity": {…}, "types": [{…}]}}` → 저장한 선언의 같은 모양. 서버가 채우는 칸(`version`·`target_ref`·`target_approval_revision`·`declared_by`·`declared_at`)이 오면 `400 {"error": "invalid_declaration", "field": "<그 칸>"}`이다.
+  - 형식 오류·자격 모양·승인 범위 밖(경로 접두·정규 경로·승인 메서드)은 `400 {"error": "invalid_declaration", "field": "…"}`다. 칸 이름의 종류 순번(`types[i]`)은 서버가 이름순으로 정렬한 뒤의 순번이다.
+  - 다른 운영자의 대상은 계정 API와 같이 `404 target_not_found`다(존재를 드러내지 않는다). 지금 권한 모델에서는 대상 승인자 = 등록 운영자 한 사람이라 별도 403은 없다.
+  - 철회(DELETE)는 최소 기능에 없다(405). 바꾸려면 PUT으로 교체하고, 대상을 다시 승인하면 무효가 된다.
+  - 크기 상한: 종류 16개, 소유자 전용 필드 16개, 본문 틀 2KiB, 선언 인코딩 24KiB(준비 프로세스 IPC 한 프레임 64KiB 안).
 - `DeclarationReader.ReadFrozen`은 저장된 동결본을 그대로 돌려준다. 읽을 수 없으면 `ErrPolicyUnavailable`이다(시작 거절, 진위 실패 아님). 읽었는데 digest·대상 판이 다르면 진위 실패(`policy_digest_mismatch`)다.
 
 ## 4. E② 프로그램 요청
