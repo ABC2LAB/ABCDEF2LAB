@@ -49,6 +49,7 @@ import preservation_v3_fields as v3f  # noqa: E402
 from runner_checks import compare_snapshots  # noqa: E402
 from runner_docker import HelperCleanupInterrupt  # noqa: E402
 from runner_evidence import MeterFiles  # noqa: E402
+from runner_fault import FAULT_STALL_FORMAT, FAULT_STALL_NAME, FaultRecordError, fault_stall_record  # noqa: E402
 from runner_llm import judge_product_llm  # noqa: E402
 from runner_probe import PASS  # noqa: E402
 from runner_product_llm import (  # noqa: E402
@@ -314,6 +315,20 @@ def _split_window(spec: SplitRunSpec, evidence, state: _SplitState, pre: dict, s
     return record
 
 
+def product_fault_stall(calls: bytes, meter_rows: list[dict], window_start: str, window_end: str, engine_end: dict) -> dict:
+    """O 회차의 제공자 장애 멈춤 판정 재료. 제품 호출 기록 줄을 게이트웨이 행 자리에 넣는다(칸·어휘가 같다, #629).
+    B(runner._fault_stall)처럼 읽지 못하면 회차를 무효로 하지 않고 고정 코드만 남긴다."""
+    terminal = (engine_end.get("first_terminal") or {}).get("at")
+    try:
+        rows = [json.loads(line) for line in calls.decode("utf-8").splitlines() if line]
+        if not all(isinstance(row, dict) for row in rows):
+            raise FaultRecordError("fault_stall_rows_invalid")
+        return fault_stall_record(rows, meter_rows, window_start, window_end, terminal)
+    except (UnicodeDecodeError, ValueError, KeyError, TypeError) as exc:
+        code = str(exc) if isinstance(exc, FaultRecordError) else "fault_stall_rows_invalid"
+        return {"format": FAULT_STALL_FORMAT, "judged": False, "error": code}
+
+
 def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles, evidence, clock: Clock,
                      state: _SplitState) -> None:
     if _step(state, "project_check_failed", ports.preexisting):
@@ -359,6 +374,7 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     stop_reason, forwarded_at_stop = _wait_budget(spec, meter, clock, state, started, watch)
     stop_elapsed = clock.monotonic() - started
     _step(state, "seal_failed", lambda: ports.seal(pre["services"][METER]["id"]))
+    sealed_at = _stamp(clock)  # 멈춤 집계 창 끝(B의 engine_end_at과 같은 자리: 계측기 봉인 직후)
     drained = _wait_drained(spec, meter, clock, state)
     # 강제 취소된 요청이 있으면 B와 같은 공통 조건(run_drain.settle_seconds)만큼 기다린 뒤 관측한다(runner.py와 같은 규칙).
     settled = spec.post_settle_seconds if drained["forced_cancelled_requests"] else 0
@@ -425,6 +441,10 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
         "usage": usage, "call_records": {"reasons": record_reasons}}))
     if record_reasons:
         raise RunFailure(record_reasons[0])
+    # 제공자 장애 멈춤 판정 재료(결정안 §7). B와 같은 함수·같은 창(시작 요청 직전~계측기 봉인 직후)이고, 모델 호출 행은
+    # 제품 호출 기록(게이트웨이 행과 같은 칸·어휘)이다. B처럼 기록만 하고 회차 유효성에 쓰지 않는다.
+    state.summary["fault_stall"] = product_fault_stall(calls, meter_rows, requested_at, sealed_at, engine_end)
+    _step(state, "evidence_write_failed", lambda: evidence.write_json(FAULT_STALL_NAME, state.summary["fault_stall"]))
     # 제품 호출 기록을 B 게이트웨이와 같은 조회 코드로 사후 검증하고(eval-meter -role generation-verify) B와 같은 규칙으로
     # 판정한다(결정안 D(b), 4-11). 샘플링은 제품이 실제로 보낸 값을 표식에 싣고 B 게이트웨이 적용값(선언)과 대조한다.
     _step(state, "llm_verify_failed", lambda: ports.generation_verify(calls, usage["sampling"]))

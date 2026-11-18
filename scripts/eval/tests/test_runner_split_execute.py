@@ -379,8 +379,12 @@ class TestOrder(unittest.TestCase):
                                                "pre-probe.json",
                                                "post-probe.json", "task.json", "llm-summary.json",
                                                "window-watch.json", "product-end.json", "product-model.json", "tool-surface.json",
-                                               "product-files.json", RESULT_NAME})
+                                               "product-files.json", "fault-stall.json", RESULT_NAME})
         self.assertEqual(evidence.files[RESULT_NAME], result)
+        # 멈춤 집계는 B처럼 기록만 한다: 이 가짜 기록(시각 칸 없음)은 고정 코드로 남고 회차는 그대로 완료다
+        self.assertEqual(evidence.files["fault-stall.json"], {"format": "abc2lab-eval-runner-fault-stall-v1", "judged": False,
+                                                              "error": "fault_stall_rows_invalid"})
+        self.assertEqual(result["fault_stall"], evidence.files["fault-stall.json"])
         # 결정안 §3.3 제품 블록 근거: 파일 원본 SHA 다섯 + 상한 스냅숏 지문, E② 정책 내용 지문, 도구 면 지문.
         from preservation_record import digest
         files = evidence.files["product-files.json"]
@@ -926,6 +930,41 @@ class TestPreservationV3(unittest.TestCase):
         plain, ports, evidence = run()
         self.assertNotIn("sign", ports.calls)
         self.assertNotIn(NAME, evidence.files)
+
+
+
+class TestProductFaultStall(unittest.TestCase):
+    """O 멈춤 집계(결정안 §7): 제품 호출 기록 줄을 B 게이트웨이 행 자리에 넣고 B와 같은 함수·창으로 센다."""
+
+    def calls(self, *rows) -> bytes:
+        return b"".join(json.dumps(row).encode() + b"\n" for row in rows)
+
+    def test_faults_and_gaps_come_from_product_calls_and_meter_rows(self):
+        from runner_split_run import product_fault_stall
+        t = lambda second: f"2026-11-18T10:00:{second:02d}Z"  # noqa: E731
+        calls = self.calls(
+            {"seq": 1, "decision": "forwarded", "status": 200, "started_at": t(1), "completed_at": t(2)},
+            {"seq": 2, "decision": "forwarded", "status": 429, "started_at": t(3), "completed_at": t(4)},
+            {"seq": 3, "decision": "upstream_error", "status": 200, "unfinished_end": "upstream_cut_before_done",
+             "started_at": t(5), "completed_at": t(6)})
+        meter_rows = [{"started_at": t(20), "completed_at": t(21)}]
+        record = product_fault_stall(calls, meter_rows, t(0), t(40), {"first_terminal": None})
+        self.assertEqual((record["faults"], record["activity_starts"], record["judged"]),
+                         ({"upstream_cut": 1, "rate_limited": 1}, 4, False))
+        # 429(4초) 뒤 첫 활동은 5초 호출, 끊김(6초) 뒤 첫 활동은 20초 대상 요청: 무활동 14초
+        self.assertEqual([(e["kind"], e["silence_seconds"], e["censored"]) for e in record["events"]],
+                         [("rate_limited", 1.0, False), ("upstream_cut", 14.0, False)])
+        self.assertEqual(record["max_idle_gap_seconds"], 19.0)  # 21초~40초(봉인)
+
+    def test_unreadable_records_leave_a_fixed_code(self):
+        from runner_split_run import product_fault_stall
+        for calls in (b"\xff\n", b"not json\n", b"[1]\n", b'{"seq":1}\n'):
+            with self.subTest(calls=calls):
+                record = product_fault_stall(calls, [], "2026-11-18T10:00:00Z", "2026-11-18T10:00:10Z", {})
+                self.assertEqual(record, {"format": "abc2lab-eval-runner-fault-stall-v1", "judged": False,
+                                          "error": "fault_stall_rows_invalid"})
+        record = product_fault_stall(b"", [], "2026-11-18T10:00:10Z", "2026-11-18T10:00:00Z", {})
+        self.assertEqual(record["error"], "fault_stall_time_invalid")  # 창이 거꾸로면 B와 같은 코드
 
 
 if __name__ == "__main__":
