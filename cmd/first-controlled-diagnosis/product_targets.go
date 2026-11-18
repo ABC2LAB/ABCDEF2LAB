@@ -185,6 +185,12 @@ func newProductTargetRegistry(dir string, p productTargetPolicy, check func() er
 		_ = errors.Join(journal.Close(), contacts.Close(), accountJournal.Close())
 		return nil, err
 	}
+	// 첫 선언 전에 선언 디렉터리의 부모 엔트리도 동기 저장한다. 저널 Append는 파일과 declarations/만 동기화하므로, 기존
+	// 설치에서 디렉터리를 새로 만든 직후 전원이 끊기면 성공으로 응답한 선언과 감사 기록이 함께 사라질 수 있다.
+	if err := productSyncDirectory(dir); err != nil {
+		_ = errors.Join(journal.Close(), contacts.Close(), accountJournal.Close())
+		return nil, err
+	}
 	declarationJournal, declarationEvents, err := diagnosisprep.OpenProtectedJournal(declarationDir)
 	if err != nil {
 		_ = errors.Join(journal.Close(), contacts.Close(), accountJournal.Close())
@@ -224,6 +230,18 @@ func newProductTargetRegistry(dir string, p productTargetPolicy, check func() er
 	}
 	return r, nil
 }
+
+// productSyncDirectory는 디렉터리 엔트리를 동기 저장한다. 시험이 실패를 주입할 수 있게 변수로 둔다.
+var productSyncDirectory = func(path string) error {
+	d, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	syncErr := d.Sync()
+	closeErr := d.Close()
+	return errors.Join(syncErr, closeErr)
+}
+
 func (r *productTargetRegistry) replay(next productTargetRecord) error {
 	t := next.Target
 	old, exists := r.records[t.ID]
