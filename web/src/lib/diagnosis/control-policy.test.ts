@@ -239,8 +239,12 @@ describe("parseControlPolicyView (fail-closed)", () => {
       { limits: { ...(wire().limits as object), e3_confirmation_requests: 17, e3_confirmation_timeout_ms: 1000 } },
     ],
     [
-      "확정 시간 몫이 3,600,000ms 초과",
-      { limits: { ...(wire().limits as object), e3_confirmation_requests: 1, e3_confirmation_timeout_ms: 3_600_001 } },
+      "확정 시간 몫이 3,600,000ms 초과(창 5시간이라 1/4 검사는 통과)",
+      {
+        valid_from: "2026-11-13T00:00:00Z",
+        valid_until: "2026-11-13T05:00:00Z",
+        limits: { ...(wire().limits as object), e3_confirmation_requests: 1, e3_confirmation_timeout_ms: 3_600_001 },
+      },
     ],
     [
       "확정 시간 몫이 유효 창 1/4 초과(창 1시간, 1/4+1ms)",
