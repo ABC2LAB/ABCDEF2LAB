@@ -27,7 +27,8 @@ import {
 } from "@/lib/diagnosis/kg";
 
 import { cx } from "../../lib/cx";
-import { useUrl } from "../../live/urlDiagnosis";
+import { useUrl, useUrlSelectionKey } from "../../live/urlDiagnosis";
+import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
 import s from "../../workbench.module.css";
 import { UrlHead } from "./urlParts";
@@ -210,35 +211,42 @@ function failureText(error: unknown): string {
   return `접근통제 지도를 불러오지 못했습니다${status > 0 ? ` (HTTP ${status})` : ""}. 이전 결과는 표시하지 않습니다.`;
 }
 
-type Read = { task: string; map: AccessMap | null; error: unknown };
+/** 한 번 읽은 결과. key = 선택(useUrlSelectionKey) + task — 같은 task 를 다시 골라도 새 선택이면 지난 결과를 쓰지 않는다. */
+type Read = { key: string; map: AccessMap | null; error: unknown };
 
 /** 접근통제 지도 (운영자 전용 · 현재 Job 의 task). */
 export function UrlAccessMapLive() {
-  // 현재 이어 보는 진단의 실제 task id(Job 최신 응답). 없으면 부르지 않고 예시도 그리지 않는다.
-  const taskId = useUrl((st) => st.job?.task_id ?? null);
+  const { route } = useShell();
+  const visible = route === "accessmap";
+  // 서버에서 확인된(verified) 현재 Job 의 task 만. 없으면 부르지 않고 예시도 그리지 않는다.
+  const taskId = useUrl((st) => (st.verified ? (st.job?.task_id ?? null) : null));
+  // 점검 상태가 바뀌면(결속 · 실행 준비 · 마감) 열린 화면에서 다시 읽는다 — 처음 409 뒤 준비가 끝난 같은 task 도 새 응답을 본다
+  const revision = useUrl((st) => st.job?.revision ?? 0);
+  const selection = useUrlSelectionKey();
+  const key = taskId ? `${selection}|${taskId}` : "";
   const [read, setRead] = useState<Read | null>(null);
   const [attempt, setAttempt] = useState(0);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: attempt 는 '다시 읽기'가 같은 task 를 다시 부르는 트리거
+  // biome-ignore lint/correctness/useExhaustiveDependencies: revision · attempt 는 같은 선택을 다시 읽는 트리거
   useEffect(() => {
-    if (!taskId) return;
+    if (!taskId || !visible) return;
     let current = true;
     const controller = new AbortController();
     getAccessMap(taskId, controller.signal)
       .then((m) => {
-        if (current) setRead({ task: taskId, map: m, error: null });
+        if (current) setRead({ key, map: m, error: null });
       })
       .catch((error: unknown) => {
-        if (current) setRead({ task: taskId, map: null, error });
+        if (current) setRead({ key, map: null, error });
       });
     return () => {
       current = false;
       controller.abort();
     };
-  }, [taskId, attempt]);
+  }, [key, visible, revision, attempt]);
 
-  // 다른 task 의 결과(이전 Job · 전환 중)는 쓰지 않는다
-  const now = read && read.task === taskId ? read : null;
+  // 다른 선택 · task 의 결과(이전 Job · 전환 중 · 다시 고른 같은 task)는 쓰지 않는다
+  const now = read && key && read.key === key ? read : null;
   const map = now?.map ?? null;
   const resolve = map ? buildCellResolver(map.cells) : null;
   const hCounts = map ? countDecisions(map, "H") : null;

@@ -7,6 +7,7 @@ import { running } from "@/lib/diagnosis/diagnosis-url-fixtures";
 import { type AccessMap, getAccessMap } from "@/lib/diagnosis/kg";
 
 import { resetUrl, useUrl } from "../live/urlDiagnosis";
+import { type Shell, ShellContext, type View } from "../shell";
 import { UrlAccessMapLive } from "../views/live/UrlAccessMapLive";
 
 vi.mock("@/lib/diagnosis/api", async (original) => ({
@@ -52,6 +53,36 @@ const apiMap = (task = 42, over: Record<string, unknown> = {}) => ({
   ],
   ...over,
 });
+const noop = () => undefined;
+function shellAt(route: View): Shell {
+  return {
+    route,
+    navSeq: 1,
+    narrow: false,
+    phone: false,
+    reduce: false,
+    inspOpen: false,
+    railOpen: false,
+    railNewAtRoute: false,
+    goTo: noop,
+    openInsp: noop,
+    closeInsp: noop,
+    openRail: noop,
+    closeRail: noop,
+    foldRail: noop,
+    dashPick: noop,
+  };
+}
+/** Workbench 처럼 ShellContext 안에서 그린다(route=accessmap 일 때만 읽는다). */
+function show(route: View = "accessmap") {
+  const view = (r: View) => (
+    <ShellContext.Provider value={shellAt(r)}>
+      <UrlAccessMapLive />
+    </ShellContext.Provider>
+  );
+  const out = render(view(route));
+  return { ...out, at: (r: View) => out.rerender(view(r)) };
+}
 function deferred() {
   let resolve: (v: unknown) => void = () => undefined;
   const promise = new Promise<unknown>((r) => {
@@ -63,14 +94,14 @@ function deferred() {
 beforeEach(() => {
   vi.resetAllMocks();
   resetUrl();
-  useUrl.setState({ job: running });
+  useUrl.setState({ job: running, verified: true });
 });
 afterEach(cleanup);
 
 describe("UrlAccessMapLive (현재 task · 예시 없음)", () => {
   it("현재 task 의 지도를 읽어 수평 판정 · 격자를 그리고, 예시 배너는 없다", async () => {
     f.mockResolvedValue(apiMap());
-    render(<UrlAccessMapLive />);
+    show();
     expect(screen.getByText(/운영자 전용/)).toBeInTheDocument();
     const grid = await screen.findByRole("table", { name: /격자/ });
     expect(f).toHaveBeenCalledWith("/api/tasks/42/access-map", expect.objectContaining({ cache: "no-store" }));
@@ -83,7 +114,7 @@ describe("UrlAccessMapLive (현재 task · 예시 없음)", () => {
 
   it("확정과 의심은 색으로 구분한다(§4.2(3) 축소 화면 오인 방지)", async () => {
     f.mockResolvedValue(apiMap());
-    render(<UrlAccessMapLive />);
+    show();
     const grid = await screen.findByRole("table", { name: /격자/ });
     const vuln = within(grid).getAllByText("취약 확정")[0].closest("[data-decision]") as HTMLElement;
     const suspected = within(grid).getAllByText("취약 의심")[0].closest("[data-decision]") as HTMLElement;
@@ -105,7 +136,7 @@ describe("UrlAccessMapLive (현재 task · 예시 없음)", () => {
       ],
     };
     vi.mocked(getAccessMap).mockResolvedValueOnce(bad);
-    render(<UrlAccessMapLive />);
+    show();
     await screen.findByRole("table", { name: /격자/ });
     expect(screen.getByText(/지도 데이터 불일치/)).toBeInTheDocument();
   });
@@ -118,7 +149,7 @@ describe("UrlAccessMapLive (현재 task · 예시 없음)", () => {
     ["503 장애", 503, /불러오지 못했습니다 \(HTTP 503\)/],
   ])("%s 이면 빈 격자 · 예시로 바꾸지 않고 이유만 보인다", async (_, status, text) => {
     f.mockRejectedValue(new ApiError(status, "x"));
-    render(<UrlAccessMapLive />);
+    show();
     expect(await screen.findByRole("alert")).toHaveTextContent(text);
     expect(screen.queryByRole("table", { name: /격자/ })).toBeNull();
     expect(screen.queryByRole("heading", { name: "수평(교차 계정) 판정" })).toBeNull();
@@ -127,14 +158,14 @@ describe("UrlAccessMapLive (현재 task · 예시 없음)", () => {
 
   it("응답 task_id 가 선택한 task 와 다르면 그리지 않는다", async () => {
     f.mockResolvedValue(apiMap(41));
-    render(<UrlAccessMapLive />);
+    show();
     expect(await screen.findByRole("alert")).toHaveTextContent(/다른 점검의 지도/);
     expect(screen.queryByRole("table", { name: /격자/ })).toBeNull();
   });
 
   it("다시 읽기는 같은 task 를 다시 부르고, 성공하면 오류를 지운다", async () => {
     f.mockRejectedValueOnce(new ApiError(503, "x")).mockResolvedValueOnce(apiMap());
-    render(<UrlAccessMapLive />);
+    show();
     fireEvent.click(await screen.findByRole("button", { name: "다시 읽기" }));
     expect(await screen.findByRole("table", { name: /격자/ })).toBeInTheDocument();
     expect(screen.queryByRole("alert")).toBeNull();
@@ -146,8 +177,8 @@ describe("UrlAccessMapLive (현재 task · 예시 없음)", () => {
     f.mockReturnValueOnce(late.promise as never).mockResolvedValueOnce(
       apiMap(43, { cells: [cell("guest", "document:43", "suspected")] }),
     );
-    render(<UrlAccessMapLive />);
-    act(() => useUrl.setState({ job: other }));
+    show();
+    act(() => useUrl.setState((st) => ({ job: other, selectionEpoch: st.selectionEpoch + 1 })));
     expect(await screen.findByText("document:43")).toBeInTheDocument();
     expect((f.mock.calls[0][1] as RequestInit).signal?.aborted).toBe(true);
     await act(async () => late.resolve(apiMap(42)));
@@ -157,16 +188,16 @@ describe("UrlAccessMapLive (현재 task · 예시 없음)", () => {
 
   it("새 Job 의 응답을 기다리는 동안 이전 격자를 보이지 않는다", async () => {
     f.mockResolvedValueOnce(apiMap()).mockReturnValueOnce(new Promise(() => undefined) as never);
-    render(<UrlAccessMapLive />);
+    show();
     await screen.findByRole("table", { name: /격자/ });
-    act(() => useUrl.setState({ job: other }));
+    act(() => useUrl.setState((st) => ({ job: other, selectionEpoch: st.selectionEpoch + 1 })));
     expect(screen.getByText("불러오는 중…")).toBeInTheDocument();
     expect(screen.queryByRole("table", { name: /격자/ })).toBeNull();
   });
 
   it("Job 이 빠지면(권한 철회 · 재로그인) 격자를 지우고 예시로 채우지 않는다", async () => {
     f.mockResolvedValue(apiMap());
-    render(<UrlAccessMapLive />);
+    show();
     await screen.findByRole("table", { name: /격자/ });
     act(() => useUrl.setState({ job: null }));
     expect(screen.getByText("실제 진단 작업을 선택하세요.")).toBeInTheDocument();
@@ -175,9 +206,51 @@ describe("UrlAccessMapLive (현재 task · 예시 없음)", () => {
     expect(f).toHaveBeenCalledTimes(1);
   });
 
+  it("같은 점검을 다시 고르면(A → B → A) 새 응답 전엔 지난 A 격자를 보이지 않는다", async () => {
+    f.mockResolvedValueOnce(apiMap()) // 처음 A
+      .mockReturnValueOnce(new Promise(() => undefined) as never) // B (대기)
+      .mockReturnValueOnce(new Promise(() => undefined) as never); // 다시 A (대기)
+    show();
+    await screen.findByRole("table", { name: /격자/ });
+    act(() => useUrl.setState((st) => ({ job: other, selectionEpoch: st.selectionEpoch + 1 })));
+    act(() => useUrl.setState((st) => ({ job: running, selectionEpoch: st.selectionEpoch + 1 })));
+    expect(screen.getByText("불러오는 중…")).toBeInTheDocument();
+    expect(screen.queryByRole("table", { name: /격자/ })).toBeNull();
+    expect(f.mock.calls.map(([p]) => p)).toEqual([
+      "/api/tasks/42/access-map",
+      "/api/tasks/43/access-map",
+      "/api/tasks/42/access-map",
+    ]);
+  });
+
+  it("처음 409 뒤 같은 점검의 상태가 바뀌면 열린 화면에서 다시 읽는다", async () => {
+    f.mockRejectedValueOnce(new ApiError(409, "x")).mockResolvedValueOnce(apiMap());
+    show();
+    expect(await screen.findByRole("alert")).toHaveTextContent(/지도를 만들 수 없습니다/);
+    act(() => useUrl.setState({ job: { ...running, revision: running.revision + 1 } }));
+    expect(await screen.findByRole("table", { name: /격자/ })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("화면이 숨겨져 있으면 읽지 않고, 열리면 읽는다", async () => {
+    f.mockResolvedValue(apiMap());
+    const v = show("report");
+    expect(f).not.toHaveBeenCalled();
+    act(() => v.at("accessmap"));
+    expect(await screen.findByRole("table", { name: /격자/ })).toBeInTheDocument();
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+
+  it("서버 확인 전 Job 은 읽지 않는다", () => {
+    useUrl.setState({ verified: false });
+    show();
+    expect(f).not.toHaveBeenCalled();
+    expect(screen.queryByRole("table", { name: /격자/ })).toBeNull();
+  });
+
   it("§4: 내보내기·공유·export 버튼을 두지 않는다", async () => {
     f.mockResolvedValue(apiMap());
-    render(<UrlAccessMapLive />);
+    show();
     await screen.findByRole("table", { name: /격자/ });
     for (const el of [...screen.queryAllByRole("button"), ...screen.queryAllByRole("link")]) {
       expect(el.textContent ?? "").not.toMatch(/내보내기|공유|export/i);
