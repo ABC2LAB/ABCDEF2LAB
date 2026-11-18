@@ -17,7 +17,7 @@
 ## 2. 결과를 보기 전에 고정하는 것
 
 - 프로토콜 §5.1·§6, [공식 프로파일](profiles/official-35b.json)과 근거 파일, 이 문서, [러너 설정 예시](runner.example.json)를 시범 회차 전에 dev에 머지한다.
-  - **주의(2026-11-18)**: 이 문서의 공식 프로파일·[공식 정책 템플릿](profiles/official-e2-policy.json)(메서드 7개)과 그 고정·사용 단계(이 절, 4절 7번)는 e2-legacy 배치의 시범·이력용이다. 공식 측정은 탐색 분리 배치로 돌고 개선 후 승인 메서드는 5개다(프로토콜 §5.1). 분리 배치용으로 승인된 프로파일과 절차가 이 문서에 들어올 때까지 공식 회차는 보류한다.
+  - **주의(2026-11-18)**: 이 문서의 공식 프로파일·[공식 정책 템플릿](profiles/official-e2-policy.json)(메서드 7개)과 그 고정·사용 단계(이 절, 4절 7번)는 e2-legacy 배치의 시범·이력용이다. 공식 측정은 탐색 분리 배치로 돌고 개선 후 승인 메서드는 5개다(프로토콜 §5.1). 분리 배치용으로 승인된 프로파일과 절차가 이 문서에 들어올 때까지 공식 회차는 보류한다. 분리 배치 공식 회차는 B·O 모두 계측기 경로 기록을 켜고 같은 경로 가림 키 파일을 쓴다(2026-11-18 결정 (a), [러너](runner.md) `path_key_file`). 키는 제어 비밀이라 레포·결과물에 두지 않고, 6회 전체가 같은 키를 쓰며, 측정 조건 동결 목록에는 키 지문(`path_key_ref`)을 적는다.
 - **작업 문구도 비교 조건이다.** 러너는 `runner.json`의 `task`를 엔진 작업 생성 요청으로 보내고 그 본문 해시를 서명된 결과에 남긴다.
   공식 작업은 예시 설정의 `task` 그대로이며 요청 해시는 아래와 같다(시험이 예시와 이 값을 묶는다). 6절 집계 도구는 회차들의 해시가 하나가 아니면 멈춘다.
 
@@ -86,7 +86,8 @@
      (cd "$W/$1" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o dist/amd64/artex ./cmd/artex)
      docker build -q -t "abc2lab-eval-engine:$1-${2:0:12}" "$W/$1"
    done
-   ctx=$(mktemp -d); (cd "$W/ours" && CGO_ENABLED=0 GOOS=linux go build -trimpath -o "$ctx/eval-meter" ./cmd/eval-meter)
+   # 빌드 커밋을 계측기에 넣는다. 러너가 회차 전에 `-role describe`로 선언의 개선 후 커밋과 대조한다(다르면 시작 안 함).
+   ctx=$(mktemp -d); (cd "$W/ours" && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-X main.sourceRevision=$OURS" -o "$ctx/eval-meter" ./cmd/eval-meter)
    docker build -q -f "$W/ours/deploy/eval/meter.Dockerfile" -t "abc2lab-eval-meter:${OURS:0:12}" "$ctx"
    docker pull -q bkimminich/juice-shop:v15.0.0@sha256:fe8cecfec60f7856a02b52072c879b1baf73f5a97faafdeb12ed9e8eaccc0c3d
    docker pull -q postgres:16-alpine
@@ -103,6 +104,7 @@
    종료 코드 1(다름)이면 회차를 돌리지 않는다. `docker builder prune -f`로 빌드 캐시를 비우고 두 엔진을 위 명령으로 다시 빌드한 뒤, 이미지 ID를 새로 적는다. 다시 대조할 때는 `--out`에 새 이름(`tool-tree-2.json`)을 줘서 앞 결과를 남긴다. 대조를 건너뛰어도 채점기가 `tool_tree_sha256` 차이를 보고 채점을 멈춘다. 다만 그때는 돌린 회차를 못 쓴다.
 
 2. **`runner.json`:** `$T/docs/evaluation/runner.example.json`([예시](runner.example.json))을 복사해 `images`의 `<…>` 자리(태그·내용 ID)와 경로만 채운다. 그 밖의 값은 바꾸지 않는다.
+   - 모델 호출 사후 검증 설정(2026-11-18 사용자 결정): `llm_gateway.verify_attempts` 40, `verify_interval_seconds` 3, `run.llm_verify_timeout_seconds` 300. 조회는 라운드로 돌아서, 통계가 준비돼 있으면 첫 라운드에서 끝나고 창을 넓혀도 시간이 늘지 않는다. 쉬는 시간 합은 최대 117초이고 계측기 전체 조회 시한은 150초, 러너 대기 하한은 210초다. 근거: generation 통계는 호출 약 13초 뒤에 준비됐고(1회 측정이라 여유를 둠), 조회 한 번은 약 0.28초였다(GET 109건). 11/18 VAmPI 유료 쌍에서 B 39건·O 61건이 모두 첫 시도에 확인됐다(그때 설정 20번 × 3초).
    `runs_root`는 **세션마다 새 디렉터리**로 둔다(시범: `…/pilot/runs`, 공식: `…/official-<날짜>/runs`, 0700). 6절 집계는 runs_root 하나를 한 세션으로 본다.
 3. **사전검사 선언:** 손으로 쓰지 않고 공식 프로파일에서 만든다(사전검사는 양쪽이 서로 같은지만 보므로, 같은 오타는 못 잡는다).
 
@@ -189,7 +191,7 @@ cd "$T" && python3 -I -B scripts/eval/runner.py --config /srv/abc2lab-eval/runne
 | `image_id_mismatch` | `runner.json` 이미지 ID와 `docker image inspect` 값. 다시 빌드했으면 ID가 바뀐다 |
 | `*_host_condition_violation`, `window_host_*` | 3절 1·2번(다른 컨테이너·리슨). 허용 목록을 넓혀서 통과시키지 않는다 |
 | `engine_settings_mismatch` | 엔진 기본 workers·모델이 선언과 다른지, 프록시 설정 |
-| `llm_*`(제공자·fallback·sampling·미검증) | 3절 3번 재조회. 제공자 쪽 문제면 세션을 멈춘다 |
+| `llm_*`(제공자·fallback·sampling·미검증) | 3절 3번 재조회. 제공자 쪽 문제면 세션을 멈춘다. 미검증(`llm_generation_unverified`)이면 회차의 `llm-summary.json` `unverified_last`(미확인 건의 마지막 조회 응답 종류별 수)를 먼저 본다: `http_404`·`no_provider`는 통계 지연, `http_401`·`http_403`은 키·권한, `network_error`는 연결, `deadline`은 조회 시한 초과다. 검증 설정을 바꿔 통과시키지 않는다 |
 | `drain_timeout`, `seal_failed`, `tmpfs_full` | 같은 칸 재실행. 반복되면 원인 수정 |
 | `e2_<코드>`(`policy_fingerprint_sha256_mismatch`, `service_ready_timeout` 등) | 동결 지문·설정·E² 이미지. 값을 고쳐 통과시키지 않고 무엇이 달라졌는지부터 본다 |
 | `interrupted` | 같은 칸 재실행 |

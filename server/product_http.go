@@ -25,7 +25,7 @@ type ProductModelBinding struct {
 // 제품의 인증된 모델 키 설정은 진단 입력·실행 권위와 별도 경로다.
 // writer는 llm_profiles.api_key만 갱신하며 모델·URL·예산을 변경할 권한이 없다.
 func NewProductDiagnosisHandler(ctx context.Context, pool *sql.DB, keyDir, dataDir string, endpoint diagnosisprep.Endpoint, origin string, writer *sql.DB, models []ProductModelBinding) (http.Handler, error) {
-	base, err := NewURLDiagnosisManagementHandler(ctx, pool, keyDir, dataDir, endpoint, origin)
+	base, err := newURLDiagnosisManagementHandler(ctx, pool, keyDir, dataDir, endpoint, true, origin)
 	if err != nil {
 		return nil, err
 	}

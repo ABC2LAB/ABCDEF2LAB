@@ -534,8 +534,16 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 		done()
 		return unknown("gateway_unavailable", closeErr == nil)
 	}
+	liveHandler := newURLLiveHandler(d.runtime.Handler())
+	if runtime, ok := d.runtime.(*server.FirstDiagnosisHTTPRuntime); ok && b.product != nil && l.productTarget != nil {
+		liveHandler.candidates = &urlLiveCandidates{
+			handler: runtime.ProductCandidateHandler,
+			jobID:   execution.Job.ID, sourceDigest: execution.Job.SourceDigest,
+			targetRef: l.productTarget.Target.ID, targetRevision: l.productTarget.Target.Revision,
+		}
+	}
 	b.mu.Lock()
-	b.live[taskID] = newURLLiveHandler(d.runtime.Handler())
+	b.live[taskID] = liveHandler
 	b.mu.Unlock()
 	runner := &urlGatewayRunner{backend: b, launch: d, config: launch, loaded: l, taskID: taskID, operatorStop: func() bool {
 		return urlOperatorStop(parent, ctx)
@@ -800,6 +808,10 @@ func (r *urlGatewayRunner) Close(ctx context.Context) (diagnosis.Closure, error)
 	return result, saveErr
 }
 func (b *urlPreparationRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if server.ProductCandidatePath(r) {
+		b.serveLiveCandidates(w, r)
+		return
+	}
 	task := r.URL.Query().Get("task")
 	if tail, ok := strings.CutPrefix(r.URL.Path, "/api/tasks/"); ok {
 		task = strings.Split(tail, "/")[0]

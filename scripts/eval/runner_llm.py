@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import re
+
 _MARKER_FIELDS = frozenset({"role", "backend", "provider", "sampling", "sealed_at", "drained_at", "verified_at",
                             "forwarded_requests", "upstream_errors", "upstream_error_ends", "rejected_requests", "rejected_after_seal",
                             "cancelled_by_seal", "responses_without_generation_id", "generations", "log_complete",
@@ -29,6 +31,28 @@ _COUNTS = ("forwarded_requests", "upstream_errors", "rejected_requests", "reject
            "responses_without_generation_id", "rate_limited")
 SAMPLING_KEYS = frozenset({"temperature", "top_p", "top_k", "min_p", "presence_penalty", "repetition_penalty", "seed"})
 LOCAL_SAMPLING_KEYS = frozenset({"temperature", "top_p", "presence_penalty", "frequency_penalty", "seed"})
+
+
+# generation 조회 흔적(계측기 lookupTrace): 시도 수와 마지막 응답 종류만 있다. 미확인이 통계 지연(http_404·no_provider)인지
+# 즉시 거부(http_401·http_403)인지 회차 뒤에 가른다(2026-11-18 VAmPI 유료 파일럿에서 원인을 가를 수 없었다).
+# 시한 안에 한 번도 묻지 못한 것은 시도 0·deadline이다(계측기 lookupDeadline).
+LOOKUP_LAST = frozenset({"verified", "network_error", "request_error", "body_invalid", "no_provider", "deadline"})
+_LOOKUP_HTTP = re.compile(r"http_[1-5][0-9]{2}")
+# 계측기가 발행할 수 있는 시도 수 상한(cmd/eval-meter maxVerifyAttempts, 러너 설정 MAX_VERIFY_ATTEMPTS와 같은 값). 이보다 큰
+# 흔적은 계측기가 만들 수 없으므로 표식 오류다(#717 리뷰).
+MAX_LOOKUP_TRIES = 100
+
+
+def _lookup_ok(trace: object, status: str) -> bool:
+    if not isinstance(trace, dict) or set(trace) != {"tries", "last"}:
+        return False
+    tries, last = trace["tries"], trace["last"]
+    if (type(tries) is not int or not 0 <= tries <= MAX_LOOKUP_TRIES or not isinstance(last, str)
+            or (tries == 0) != (last == "deadline")):
+        return False
+    if last not in LOOKUP_LAST and not _LOOKUP_HTTP.fullmatch(last):
+        return False
+    return (last == "verified") == (status == "verified")
 
 
 class LLMMarkerError(ValueError):
@@ -57,8 +81,8 @@ def _check_shape(marker: object) -> None:
             or sum(ends.values()) != marker["upstream_errors"]):
         raise LLMMarkerError("llm_marker_invalid")
     for generation in marker["generations"]:
-        if (not isinstance(generation, dict) or set(generation) != {"id", "status", "provider_name", "attempts"}
-                or generation["status"] not in ("verified", "unverified")
+        if (not isinstance(generation, dict) or set(generation) != {"id", "status", "provider_name", "attempts", "lookup"}
+                or generation["status"] not in ("verified", "unverified") or not _lookup_ok(generation["lookup"], generation["status"])
                 or not isinstance(generation["provider_name"], str) or not isinstance(generation["attempts"], list)):
             raise LLMMarkerError("llm_marker_invalid")
         for attempt in generation["attempts"]:
@@ -92,6 +116,7 @@ def judge_llm(marker: object, backend: str, provider_slug: str, provider_name: s
     generations = marker["generations"]
     unverified = mismatched = fallback = fallback_unknown = 0
     providers, endpoints = set(), set()
+    unverified_last: dict[str, int] = {}
     if backend == "api":
         if marker["provider"] != provider_slug:
             reasons.add("llm_pin_mismatch")  # 게이트웨이가 다른 slug를 고정했다
@@ -100,6 +125,8 @@ def judge_llm(marker: object, backend: str, provider_slug: str, provider_name: s
         for generation in generations:
             if generation["status"] != "verified":
                 unverified += 1
+                last = generation["lookup"]["last"]
+                unverified_last[last] = unverified_last.get(last, 0) + 1
                 continue
             providers.add(generation["provider_name"])
             if generation["provider_name"] != provider_name:
@@ -121,7 +148,8 @@ def judge_llm(marker: object, backend: str, provider_slug: str, provider_name: s
         "sampling_applied": applied,
         **{name: marker[name] for name in _COUNTS}, "upstream_error_ends": dict(sorted(marker["upstream_error_ends"].items())),
         **{name: marker[name] for name in _BODY_KEY_REJECTIONS},
-        "generations": len(generations), "unverified": unverified,
+        "generations": len(generations), "unverified": unverified, "unverified_last": dict(sorted(unverified_last.items())),
+        "lookup_tries_max": max((generation["lookup"]["tries"] for generation in generations), default=0),
         "provider_mismatch": mismatched, "fallback_attempted": fallback, "fallback_unverifiable": fallback_unknown,
         "providers": sorted(providers), "endpoint_ids": sorted(endpoints),
         "sealed_at": marker["sealed_at"], "drained_at": marker["drained_at"], "verified_at": marker["verified_at"],

@@ -14,10 +14,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from runner_config import COMPOSE_SPLIT, REPO_ROOT, Image, RunnerConfigError, parse_runner_config  # noqa: E402
 from runner_split_config import (  # noqa: E402
-    COMPOSE_FILES, SplitConfigError, parse_split, plan_split_run, read_manifest, split_compose_args,
+    COMPOSE_FILES, COMPOSE_SYNTHETIC, SCRIPTED_MODEL_SCRIPT, SplitConfigError, parse_split, plan_split_run, read_manifest, split_compose_args,
     split_compose_environment,
 )
-from test_preservation_record import options  # noqa: E402
+from test_preservation_record import model_options, options  # noqa: E402
 from test_runner_config import runner_config  # noqa: E402
 
 TARGET = Image("example/target@sha256:" + "6" * 64, "sha256:" + "6" * 64)
@@ -25,7 +25,7 @@ TARGET = Image("example/target@sha256:" + "6" * 64, "sha256:" + "6" * 64)
 
 def acceptance_config():
     payload = runner_config()
-    payload.update(purpose="browser_acceptance", path_key_file="/srv/eval/path.key", preservation=options())
+    payload.update(purpose="browser_acceptance", path_key_file="/srv/eval/path.key", preservation=model_options())
     return parse_runner_config(payload)
 
 
@@ -36,7 +36,7 @@ def split_block(**changes):
              "product_port": 28787, "dns_control_port": 29083, "explore_port": 8082, "evidence_max_bytes": 4 << 20,
              "install_valid_hours": 4, "max_runs": 2, "registration_valid_hours": 2, "wide_writes": True,
              "profile_id": "product-model-openrouter", "task_wait_seconds": 120, "poll_interval_seconds": 2,
-             "boundary_stop_seconds": 30}
+             "boundary_stop_seconds": 30, "cli_usage_names": ["npx", "playwright-cli"]}
     block.update(changes)
     return block
 
@@ -86,6 +86,9 @@ class TestParseSplit(unittest.TestCase):
             "profile": ({"profile_id": "Product Model"}, "config.split.profile_id: INVALID"),
             "wait": ({"poll_interval_seconds": 120}, "config.split.wait: INVALID"),
             "stop_zero": ({"boundary_stop_seconds": 0}, "config.split.boundary_stop_seconds: INVALID"),
+            "cli_names_dup": ({"cli_usage_names": ["npx", "npx"]}, "config.split.cli_usage_names: INVALID"),
+            "cli_names_shape": ({"cli_usage_names": "npx"}, "config.split.cli_usage_names: INVALID"),
+            "cli_names_bad": ({"cli_usage_names": ["-rf"]}, "config.split.cli_usage_names: INVALID"),
             "stop_over_docker": ({"boundary_stop_seconds": 601}, "config.split.boundary_stop_seconds: INVALID"),
             "stop_bool": ({"boundary_stop_seconds": True}, "config.split.boundary_stop_seconds: INVALID"),
             "interval_not_below": ({"task_wait_seconds": 5, "poll_interval_seconds": 5}, "config.split.wait: INTERVAL_NOT_BELOW_WAIT"),
@@ -103,7 +106,7 @@ class TestParseSplit(unittest.TestCase):
 class TestRunnerConfigBlock(unittest.TestCase):
     def test_split_block_is_parsed_with_the_runner_config(self):
         payload = runner_config()
-        payload.update(purpose="browser_acceptance", path_key_file="/srv/eval/path.key", preservation=options(), split=split_block())
+        payload.update(purpose="browser_acceptance", path_key_file="/srv/eval/path.key", preservation=model_options(), split=split_block())
         config = parse_runner_config(payload)
         self.assertEqual(config.split.target_name, "app.eval.test")
         self.assertIsNone(acceptance_config().split)
@@ -111,11 +114,19 @@ class TestRunnerConfigBlock(unittest.TestCase):
         with self.assertRaises(RunnerConfigError) as caught:
             parse_runner_config(payload)
         self.assertEqual(caught.exception.errors, ["config.split.ports: INVALID"])
+        # 2026-11-18 결정 (a): 분리 배치는 공식 회차에서도 받는다. 대신 경로 가림 키·보존 옵션이 있어야 한다.
         official = runner_config()
         official["split"] = split_block()
         with self.assertRaises(RunnerConfigError) as caught:
             parse_runner_config(official)
+        self.assertEqual(caught.exception.errors, ["config.path_key_file: MISSING"])
+        official["path_key_file"] = "/srv/eval/path.key"
+        with self.assertRaises(RunnerConfigError) as caught:
+            parse_runner_config(official)
         self.assertEqual(caught.exception.errors, ["config.split: PRESERVATION_ONLY"])
+        official["preservation"] = model_options()
+        config = parse_runner_config(official)
+        self.assertEqual((config.purpose, config.split.target_name), ("official", "app.eval.test"))
 
 
 class TestReadManifest(unittest.TestCase):
@@ -179,6 +190,73 @@ class TestPlan(unittest.TestCase):
         for bad in ({"PRODUCT_TAG": "x"}, {"EVAL_EVIDENCE_DIR": "/x"}):
             with self.subTest(bad=bad), self.assertRaises(SplitConfigError):
                 split_compose_environment(self.plan, evidence_dir=Path("/runs/r/meter"), protected_env=bad)
+
+
+def synthetic_config(**changes):
+    payload = runner_config()
+    payload.update(purpose="browser_acceptance", path_key_file="/srv/eval/path.key", preservation=options(), **changes)
+    return parse_runner_config(payload)
+
+
+class TestSyntheticModelBlock(unittest.TestCase):
+    """합성 모델 모드(2026-11-18 사용자 결정 (a)): 보존 회차에서만, 실행 출처 synthetic_fixture로만, manifest 없이 받는다."""
+
+    def block(self, **changes):
+        values = {"manifest_path": None, "synthetic_model": {"plan_path": "/srv/eval/plans/vampi.json", "max_tokens": 2048}}
+        values.update(changes)
+        return split_block(**values)
+
+    def test_valid_synthetic_block_adds_the_overlay(self):
+        config = synthetic_config()
+        split = parse_split(self.block(), config)
+        self.assertTrue(split.synthetic)
+        self.assertEqual((split.manifest_path, split.synthetic_plan_path, split.synthetic_max_tokens),
+                         (None, Path("/srv/eval/plans/vampi.json"), 2048))
+        plan = plan_split_run(config, split, run_id="s1", target_image=TARGET, meter_port=8080)
+        self.assertEqual(plan.compose_files, (*COMPOSE_FILES, COMPOSE_SYNTHETIC))
+        self.assertEqual(plan.compose_env["EVAL_SCRIPTED_MODEL_SCRIPT"], str(SCRIPTED_MODEL_SCRIPT))
+        env = split_compose_environment(plan, evidence_dir=Path("/r/meter"), protected_env={},
+                                        scripted_plan=Path("/r/scripted-plan.json"))
+        self.assertEqual(env["EVAL_SCRIPTED_MODEL_PLAN"], "/r/scripted-plan.json")
+        # 합성 overlay가 있으면 계획 사본이 꼭 있어야 하고, 실제 모델 계획에는 줄 수 없다
+        with self.assertRaises(SplitConfigError):
+            split_compose_environment(plan, evidence_dir=Path("/r/meter"), protected_env={})
+        real = plan_split_run(acceptance_config(), parse_split(split_block(), acceptance_config()), run_id="s2",
+                              target_image=TARGET, meter_port=8080)
+        self.assertNotIn(COMPOSE_SYNTHETIC, real.compose_files)
+        self.assertNotIn("EVAL_SCRIPTED_MODEL_SCRIPT", real.compose_env)
+        with self.assertRaises(SplitConfigError):
+            split_compose_environment(real, evidence_dir=Path("/r/meter"), protected_env={}, scripted_plan=Path("/r/p.json"))
+
+    def test_synthetic_conditions(self):
+        cases = {
+            "manifest_given": (synthetic_config(), self.block(manifest_path="/srv/m.json"), "SYNTHETIC_HAS_NO_MANIFEST"),
+            "model_run_source": (acceptance_config(), self.block(), "EXECUTION_SOURCE_NOT_SYNTHETIC"),
+            "relative_plan": (synthetic_config(), self.block(synthetic_model={"plan_path": "p.json", "max_tokens": 1}), "INVALID"),
+            "no_tokens": (synthetic_config(), self.block(synthetic_model={"plan_path": "/p.json"}), "INVALID"),
+            "zero_tokens": (synthetic_config(), self.block(synthetic_model={"plan_path": "/p.json", "max_tokens": 0}), "INVALID"),
+            "extra": (synthetic_config(), self.block(synthetic_model={"plan_path": "/p.json", "max_tokens": 1, "x": 1}), "INVALID"),
+            "not_object": (synthetic_config(), self.block(synthetic_model="on"), "INVALID"),
+        }
+        for name, (config, block, reason) in cases.items():
+            with self.subTest(case=name), self.assertRaises(SplitConfigError) as caught:
+                parse_split(block, config)
+            self.assertTrue(any(reason in error for error in caught.exception.errors), caught.exception.errors)
+        # 실제 모델(OpenRouter) O 회차를 합성으로 표시하면 거부한다(실측이 채점·보존율에서 빠지지 않게)
+        with self.assertRaises(SplitConfigError) as caught:
+            parse_split(split_block(), synthetic_config())
+        self.assertIn("config.split: EXECUTION_SOURCE_NOT_MODEL_RUN", caught.exception.errors)
+        # 합성 모드도 실제 모델 모드처럼 manifest null은 합성 블록이 있을 때만이다
+        with self.assertRaises(SplitConfigError):
+            parse_split(split_block(manifest_path=None), acceptance_config())
+
+    def test_official_purpose_is_refused(self):
+        # 공식 회차에는 합성 모드를 쓸 수 없다(러너 설정이 보존 옵션부터 거부하고, split 검사도 따로 막는다).
+        payload = runner_config()
+        payload.update(purpose="official", path_key_file="/srv/eval/path.key", preservation=options(), split=self.block())
+        with self.assertRaises(RunnerConfigError) as caught:
+            parse_runner_config(payload)
+        self.assertTrue(any("OFFICIAL_FORBIDDEN" in error for error in caught.exception.errors), caught.exception.errors)
 
 
 def compose_available() -> bool:

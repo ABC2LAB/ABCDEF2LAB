@@ -289,16 +289,22 @@ func (h *URLHandler) BoundTask(ctx context.Context, owner, task string) bool {
 // CheckBoundTask는 읽기 중계가 소유권 거부와 준비 서비스 장애를 구분할 때 사용한다.
 // 영속 영수증의 동일 AuthorizeTask 경로를 사용하며 권위를 새로 발급하지 않는다.
 func (h *URLHandler) CheckBoundTask(ctx context.Context, owner, task string) (bool, error) {
+	job, err := h.ReadBoundTask(ctx, owner, task)
+	return job != nil, err
+}
+
+// ReadBoundTask는 소유권과 함께 검증된 영속 Job을 조회한다.
+func (h *URLHandler) ReadBoundTask(ctx context.Context, owner, task string) (*diagnosisprep.Job, error) {
 	n, err := strconv.ParseInt(task, 10, 64)
 	if owner == "" || err != nil || n <= 0 || strconv.FormatInt(n, 10) != task {
-		return false, nil
+		return nil, nil
 	}
 	response, err := h.call(ctx, diagnosisprep.Request{Version: diagnosisprep.Version, Command: diagnosisprep.AuthorizeTask, Principal: owner, TaskID: task})
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	if response.Error != "" || response.Authorized == nil {
-		return false, diagnosisprep.ErrProtocol
+		return nil, diagnosisprep.ErrProtocol
 	}
-	return *response.Authorized, nil
+	return response.Job, nil
 }

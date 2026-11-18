@@ -15,10 +15,12 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from runner_split_config import COMPOSE_SYNTHETIC  # noqa: E402
 from runner_config import (
     COMPOSE_ACCEPTANCE, COMPOSE_COMMON, COMPOSE_E2_PRODUCT, COMPOSE_SPLIT, COMPOSE_TARGET_ALIAS, COMPOSE_E2_STUB, COMPOSE_EVAL, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, E2_SERVICE, ENGINE_SERVICE, ENGINE_DATA_PATH,
     ENGINE_DB_DATA_PATH, METER_UPSTREAM_ALIAS,
-    MAX_DRAIN_GRACE_SECONDS, MAX_GATEWAY_TEMPERATURE, METER_SERVICE, REPO_ROOT, SECRET_ENV_NAMES, RunnerConfigError,
+    GENERATION_LOOKUP_TIMEOUT_SECONDS, MAX_DRAIN_GRACE_SECONDS, MAX_GATEWAY_TEMPERATURE, METER_SERVICE, REPO_ROOT, SECRET_ENV_NAMES,
+    RunnerConfigError,
     check_key_files, compose_base_args, secret_env_names, size_bytes, compose_environment, create_run_directory, load_runner_config,
     new_run_id, parse_runner_config, plan_run,
 )
@@ -339,6 +341,27 @@ class TestParseRunnerConfig(unittest.TestCase):
         payload = runner_config()
         payload["run"]["drain_grace_seconds"] = 59
         parse_runner_config(payload)
+
+    def test_verify_wait_covers_the_meter_lookup_deadline(self):
+        # 러너 대기 시한은 계측기 조회 시한(시도 수 × 간격 + 조회 한 번) + 마지막 조회 한 번 + 여유 이상이어야 표식을 늘 받는다.
+        # 2026-11-18 파일럿 설정(60번 × 5초, 대기 300초)은 표식 없이 시한을 넘었다 → 거부한다.
+        payload = runner_config()
+        payload["llm_gateway"].update(verify_attempts=60, verify_interval_seconds=5)
+        self.reject(payload, "config.run.llm_verify_timeout_seconds: BELOW_LOOKUP_DEADLINE")
+        floor = 5 * 2 + 2 * 30 + 30  # 이 픽스처(5번 × 2초)의 최소 대기
+        for wait, ok in ((floor - 1, False), (floor, True)):
+            payload = runner_config()
+            payload["run"]["llm_verify_timeout_seconds"] = wait
+            if ok:
+                parse_runner_config(payload)
+            else:
+                self.reject(payload, "config.run.llm_verify_timeout_seconds: BELOW_LOOKUP_DEADLINE")
+
+    def test_lookup_timeout_matches_the_go_meter(self):
+        text = (Path(__file__).resolve().parents[3] / "cmd/eval-meter/gateway.go").read_text(encoding="utf-8")
+        match = re.search(r"generationLookupTimeout = (\d+) \* time\.Second", text)
+        self.assertIsNotNone(match)
+        self.assertEqual(int(match.group(1)), GENERATION_LOOKUP_TIMEOUT_SECONDS)
 
     def test_drain_grace_limit_matches_the_go_meter(self):
         text = (Path(__file__).resolve().parents[3] / "cmd/eval-meter/main.go").read_text(encoding="utf-8")
@@ -929,7 +952,7 @@ class TestComposeContract(unittest.TestCase):
 
     def test_every_compose_file_is_covered(self):
         files = {COMPOSE_COMMON, COMPOSE_LLM_API, COMPOSE_LOCAL_LLM, COMPOSE_EVAL, COMPOSE_E2_STUB, COMPOSE_E2_PRODUCT,
-                 COMPOSE_ACCEPTANCE, COMPOSE_SPLIT, COMPOSE_TARGET_ALIAS}
+                 COMPOSE_ACCEPTANCE, COMPOSE_SPLIT, COMPOSE_TARGET_ALIAS, COMPOSE_SYNTHETIC}
         on_disk = set((REPO_ROOT / "deploy" / "engine-isolated").glob("compose*.yaml"))
         on_disk |= set((REPO_ROOT / "deploy" / "eval").glob("compose*.yaml"))
         self.assertEqual(on_disk, files)

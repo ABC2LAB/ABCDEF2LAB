@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import synthetic_gt  # noqa: E402,F401  합성 정답 목록을 먼저 끼운다(정답표 노출 방지)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from aggregate import ScanVerdict
@@ -22,7 +23,7 @@ from run_fixture import KEYS
 from run_fixture_v11 import E2_STUB_PLACEMENT, STUB_RECONCILIATION, make_v11, snapshot
 from test_score import _RunDir, _record
 
-KEY = "basketAccessChallenge"
+KEY = "synthBacH1Challenge"
 
 
 def drop(rows, row):
@@ -34,6 +35,27 @@ def drop(rows, row):
 
 def row_of(rows, kind, **match):
     return next(r for r in rows if r["kind"] == kind and all(r.get(k) == v for k, v in match.items()))
+
+
+def e3_disabled(status="disabled", reason="declaration_missing", expected=True, rows_count=1):
+    """공식 측정 E③ 비활성 회차의 근거(평가 프로토콜 §5.1): 기대 칸 + 상태 행."""
+    def tamper(rows):
+        row_of(rows, "run_conditions")["e3_status_expected"] = expected
+        for _ in range(rows_count):
+            rows.append({"kind": "e3_confirmation", "seq": len(rows) + 1, "at": rows[-1]["at"], "status": status, "reason": reason})
+    return tamper
+
+
+def split_ours(ref="0123456789abcdef", goal="7" * 64, **e3):
+    """분리 배치 O 공식 회차: 경로 키 지문·공통 목표 SHA·E③ 비활성 근거."""
+    def tamper(rows):
+        row_of(rows, "run_conditions").update(split=True, path_key_ref=ref, goal_common_sha256=goal)
+        e3_disabled(**e3)(rows)
+    return tamper
+
+
+def split_base(ref="0123456789abcdef", goal="7" * 64):
+    return lambda rows: row_of(rows, "run_conditions").update(split=True, path_key_ref=ref, goal_common_sha256=goal)
 
 
 class _V11(_RunDir):
@@ -109,7 +131,7 @@ class TestRejectedV11(_V11):
 
     def test_iw06_events_must_equal_the_delta(self):
         # 사전 해결 항목(pre=true)에 대한 이벤트: digest·시각은 올바르게 복사하고 키만 델타 밖으로.
-        presolved = "feedbackChallenge"
+        presolved = "synthBacV2Challenge"
         self.reject("델타", pre={presolved: True}, solved={KEY: True, presolved: True},
                     tamper_events=lambda e: e.append(dict(e[0], id="solve-x", challenge=presolved)))
         self.reject("델타", "b", solved={KEY: True}, tamper_events=lambda e: e.clear())
@@ -428,6 +450,67 @@ class TestRejectedV11(_V11):
         self.assertIsNone(self.inputs(self.v11("i2")).e2_identity)
         self.assertIsNone(self.inputs(self.v11("i3", e2=E2_STUB_PLACEMENT)).e2_identity)
 
+    def test_split_rounds_in_one_table_share_one_path_key(self):
+        # 2026-11-18 결정 (a): 분리 배치 공식 회차는 B·O 모두 같은 경로 가림 키(지문)로만 한 표에 합친다(공식 측정 6회 같은 키).
+        def keyed(ref):
+            return lambda rows: row_of(rows, "run_conditions").update(split=True, path_key_ref=ref)
+        same = [self.v11("k1", tamper_rows=split_ours()),
+                self.v11("k2", condition="baseline", engine="baseline", tamper_rows=split_base())]
+        build_report(self.load(same), self.correlate, self.correlatable, runner_key=self.runner_key)
+        for name, second in (("other_key", keyed("fedcba9876543210")), ("not_split", None)):
+            rounds = [self.v11(f"{name}1", tamper_rows=split_ours()),
+                      self.v11(f"{name}2", condition="baseline", engine="baseline", tamper_rows=second)]
+            with self.subTest(case=name), self.assertRaisesRegex(ComparabilityError, "경로 가림 키 지문 불일치"):
+                build_report(self.load(rounds), self.correlate, self.correlatable, runner_key=self.runner_key)
+
+    def test_official_e3_is_disabled_without_declaration(self):
+        # 공식 측정 E③ 비활성(평가 프로토콜 §5.1, 2026-11-18 합의): 분리 배치 O는 disabled + declaration_missing만 받는다.
+        base = self.v11("eb", condition="baseline", engine="baseline", tamper_rows=split_base())
+        ok = self.v11("eo", tamper_rows=split_ours())
+        self.assertEqual(self.inputs(ok).e3, (True, ("disabled", "declaration_missing")))
+        build_report(self.load([ok, base]), self.correlate, self.correlatable, runner_key=self.runner_key)
+        cases = {
+            "not_wired": (dict(reason="not_wired"), "E③ 비활성 조건 위반"),
+            "accounts": (dict(reason="test_accounts_unavailable"), "E③ 비활성 조건 위반"),
+            "completed": (dict(status="completed", reason=None), "E③ 비활성 조건 위반"),
+            "interrupted": (dict(status="interrupted", reason=None), "E③ 비활성 조건 위반"),
+            "refused": (dict(status="start_refused", reason="x"), "E③ 비활성 조건 위반"),
+            "integrity": (dict(status="confirmation_integrity_failed", reason="observation_invalid"), "E③ 비활성 조건 위반"),
+            "missing_row": (dict(rows_count=0), "E③ 상태 수집 실패"),
+            "not_expected": (dict(expected=False, rows_count=0), "E③ 상태 기대가 없음"),
+        }
+        for index, (name, (e3, pattern)) in enumerate(cases.items()):
+            run = self.v11(f"e{index}", repeat_index=1, tamper_rows=split_ours(**e3))
+            with self.subTest(case=name), self.assertRaisesRegex(ComparabilityError, pattern):
+                build_report(self.load([self.v11(f"f{index}", condition="baseline", engine="baseline", tamper_rows=split_base()),
+                                        run]), self.correlate, self.correlatable, runner_key=self.runner_key)
+
+    def test_e3_rows_are_validated_by_the_isolation_check(self):
+        cases = {
+            "two_rows": e3_disabled(rows_count=2), "unexpected_row": e3_disabled(expected=False),
+            "bad_status": e3_disabled(status="off"), "completed_with_reason": e3_disabled(status="completed", reason="x"),
+            "disabled_without_reason": e3_disabled(reason=None), "reason_shape": e3_disabled(reason="Not Wired"),
+            "expected_not_bool": e3_disabled(expected="yes", rows_count=0),
+            "goal_not_hex": lambda rows: row_of(rows, "run_conditions").update(goal_common_sha256="x"),
+        }
+        for index, (name, tamper) in enumerate(cases.items()):
+            with self.subTest(case=name):
+                self.reject("e3_confirmation|e3_status_expected|goal_common_sha256", f"v{index}", tamper_rows=tamper)
+        # 기대가 참인데 행이 없는 것은 입력 오류가 아니라 수집 실패다(격리 검증은 통과하고 채점 규칙이 다룬다)
+        self.assertEqual(self.inputs(self.v11("vm", tamper_rows=e3_disabled(rows_count=0))).e3, (True, None))
+        # 칸이 생기기 전 근거는 기대 거짓·목표 SHA 없음으로 읽는다
+        old = self.inputs(self.v11("vo"))
+        self.assertEqual((old.e3, old.goal_common_sha256), ((False, None), None))
+
+    def test_b_and_o_must_share_the_common_goal(self):
+        # 짝 비교의 목표 동일성(평가 프로토콜 §5.1): 분리 배치 B·O 공통 목표 SHA가 같아야 한다.
+        for index, (base_goal, ours_goal) in enumerate((("8" * 64, "7" * 64), (None, "7" * 64), ("7" * 64, None), (None, None))):
+            rounds = [self.v11(f"g{index}", tamper_rows=split_ours(goal=ours_goal)),
+                      self.v11(f"h{index}", condition="baseline", engine="baseline", tamper_rows=split_base(goal=base_goal))]
+            with self.subTest(base=base_goal and base_goal[:1], ours=ours_goal and ours_goal[:1]), \
+                    self.assertRaisesRegex(ComparabilityError, "공통 목표 SHA"):
+                build_report(self.load(rounds), self.correlate, self.correlatable, runner_key=self.runner_key)
+
     def test_output_language_may_differ_between_conditions_only(self):
         english = lambda rows: row_of(rows, "run_conditions").update(output_language="en")
         self.assertEqual(self.inputs(self.v11("l0")).output_language, "ko")
@@ -572,6 +655,18 @@ class TestRejectedV11(_V11):
         official = self.inputs(self.v11("offref", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
             path_key_ref=None)))
         self.assertEqual(official.purpose, "official")
+        # 2026-11-18 결정 (a): 분리 배치 공식 회차는 키 지문을 가진다. 분리 배치 표시 없이 키 지문이 있으면 거부, 표시가 있는데
+        # 지문이 없거나 표시가 bool이 아니면 거부.
+        split = self.inputs(self.v11("split", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
+            split=True, path_key_ref="0123456789abcdef")))
+        self.assertEqual((split.purpose, split.path_key), ("official", (True, "0123456789abcdef")))
+        self.assertEqual(official.path_key, (False, None))
+        for index, change in enumerate(({"split": False, "path_key_ref": "0123456789abcdef"},
+                                        {"split": True, "path_key_ref": None},
+                                        {"split": 1, "path_key_ref": "0123456789abcdef"},
+                                        {"split": "true", "path_key_ref": "0123456789abcdef"})):
+            self.reject("run_conditions", f"s{index}",
+                        tamper_rows=lambda rows, c=change: row_of(rows, "run_conditions").update(c))
         # 목적 칸이 생기기 전에 서명된 근거는 공식 회차로 읽는다.
         before = self.inputs(self.v11("old", tamper_rows=lambda rows: row_of(rows, "run_conditions").pop("purpose")))
         self.assertEqual(before.purpose, "official")
@@ -735,6 +830,38 @@ class TestComparison(_V11):
         with self.assertRaisesRegex(ComparabilityError, "공식 비교 회차가 아님"):
             build_report(self.load([self.v11("a0"), acceptance]), self.correlate, self.correlatable,
                          runner_key=self.runner_key)
+
+    def test_synthetic_runs_are_refused_by_the_scorer_and_the_table(self):
+        # 실행 출처 칸(2026-11-18): 합성 회차도 격리 검증은 통과하지만 채점기(회차 하나)와 비교 표가 둘 다 거부한다.
+        synthetic = self.v11("x1", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
+            execution_source="synthetic_fixture"))
+        self.assertEqual(self.inputs(synthetic).execution_source, "synthetic_fixture")
+        with self.assertRaisesRegex(ComparabilityError, "합성 실행 회차는 채점하지 않음"):
+            score_run(self.load([synthetic])[0], self.correlate, runner_key=self.runner_key, correlatable=self.correlatable)
+        later = self.v11("x2", repeat_index=1, tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
+            execution_source="synthetic_fixture"))
+        with self.assertRaisesRegex(ComparabilityError, "합성 실행 회차는 채점하지 않음"):
+            build_report(self.load([self.v11("x0"), later]), self.correlate, self.correlatable, runner_key=self.runner_key)
+        # 실제 모델 회차로 명시한 근거와 칸이 생기기 전 근거는 그대로 합산한다.
+        declared = self.v11("m1", repeat_index=1, tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
+            execution_source="model_run"))
+        self.assertEqual(self.inputs(declared).execution_source, "model_run")
+        self.assertEqual(self.inputs(self.v11("m2")).execution_source, "model_run")
+        build_report(self.load([self.v11("m0"), declared]), self.correlate, self.correlatable, runner_key=self.runner_key)
+        # 세 선택 칸(분리 배치 표시·경로 키 지문·실행 출처)은 함께 검증·전달되고, 합성이면 키가 같아도 표가 거부한다(#707 리뷰)
+        both = self.v11("sx", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
+            split=True, path_key_ref="0123456789abcdef", execution_source="synthetic_fixture"))
+        loaded = self.inputs(both)
+        self.assertEqual((loaded.path_key, loaded.execution_source), ((True, "0123456789abcdef"), "synthetic_fixture"))
+        real_split = self.v11("sy", repeat_index=1, tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
+            split=True, path_key_ref="0123456789abcdef", execution_source="model_run"))
+        with self.assertRaisesRegex(ComparabilityError, "합성 실행 회차는 채점하지 않음"):
+            build_report(self.load([both, real_split]), self.correlate, self.correlatable, runner_key=self.runner_key)
+        old = self.inputs(self.v11("so"))  # 세 칸 모두 없는 옛 근거: 엔진 직접 배치·키 없음·실제 모델 회차
+        self.assertEqual((old.path_key, old.execution_source), ((False, None), "model_run"))
+        for index, value in enumerate(("synthetic", "", None, 1)):
+            self.reject("run_conditions", f"e{index}", tamper_rows=lambda rows, v=value: row_of(rows, "run_conditions").update(
+                execution_source=v))
 
     def test_runs_with_different_drain_policies_are_not_compared(self):
         # 같은 환경 지문이라도 서명 근거의 유예·정착 대기가 다르면 비교하지 않는다(#153 리뷰).

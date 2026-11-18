@@ -22,7 +22,8 @@ from collect import VerdictRecord
 from ground_truth import bac_category, core_gt
 from isolation_proof import (
     IsolationError, attempt_reconciliation, check_isolated_events, check_isolation, check_unproven_events,
-    blocked_attempts, drain_policy, e2_collection_outcome, e2_identity, e2_mode, e2_prompt, output_language, run_conditions, run_purpose,
+    blocked_attempts, drain_policy, e2_collection_outcome, e2_identity, e2_mode, e2_prompt, output_language, run_conditions, run_path_key,
+    run_execution_source, run_purpose, e3_confirmation, run_goal_common,
     verdict_collection,
 )
 from manifest import RunManifest
@@ -35,6 +36,11 @@ _REQUIRED_ARTIFACTS = ("pre_raw", "pre", "post_raw", "post", "records")
 _OPTIONAL_ARTIFACTS = ("traffic", "coverage", "solve_events")
 # v1.1(run-record-v1.1.md): 격리 근거 descriptor가 추가되고, records는 null(판정 미수집)일 수 있다.
 V1, V11 = "1", "1.1"
+
+
+# 공식 Juice Shop 측정의 E③ 비활성 조건(평가 프로토콜 §5.1, 2026-11-18 합의). 선언이 없는 회차에서 제품이 내는 `disabled` 사유는
+# E③ 계약(e3contract, #698 §7)의 이 값 하나다. 판정 순서상 `not_wired`(연결 미구현)가 먼저라 그 값이면 비활성 조건이 아니다.
+OFFICIAL_E3_DISABLED_REASON = "declaration_missing"
 
 
 class RunRecordError(ValueError):
@@ -64,6 +70,11 @@ class RunInputs:
     e2_prompt: tuple[str, ...] | None = None  # 확인된 Worker 프롬프트 식별값. 제품 E² 완료 회차에만 있다
     attempt_reconciliation: dict | None = None  # E② 자리가 있는 회차의 시도별 대조 건수(§8.3). none·증명 없음이면 None
     purpose: str | None = None  # v1.1 격리 근거의 회차 목적. 증명이 없으면 근거가 없어 None
+    path_key: tuple[bool, str | None] | None = None  # v1.1 격리 근거의 (분리 배치 표시, 경로 가림 키 지문). 증명이 없으면 None
+    execution_source: str | None = None  # v1.1 격리 근거의 실행 출처(model_run|synthetic_fixture). 증명이 없으면 None
+    # v1.1 격리 근거의 E③ (기대, (상태, 사유) 또는 None)와 B·O 공통 목표 SHA. 증명이 없으면 None
+    e3: tuple[bool, tuple[str, str | None] | None] | None = None
+    goal_common_sha256: str | None = None
 
 
 def _unique_object(pairs: list[tuple[str, object]]) -> dict:
@@ -401,7 +412,7 @@ def _v11_inputs(receipt: dict, artifacts: dict, loaded: dict, times: dict, seque
     try:
         if proof is None:
             check_unproven_events(rows("solve_events", "events"))
-            language, outcome, purpose = None, None, None
+            language, outcome, purpose, path_key, source, e3, goal = None, None, None, None, None, None, None
             engine_solved, proof_id, policy, conditions, e2, reconciled, identity, prompt = frozenset(), None, None, None, None, None, None, None
         else:
             proof = check_isolation(receipt, steps, artifacts, proof, loaded["isolation_evidence"])
@@ -410,6 +421,10 @@ def _v11_inputs(receipt: dict, artifacts: dict, loaded: dict, times: dict, seque
             policy = drain_policy(receipt, loaded["isolation_evidence"])
             conditions = run_conditions(receipt, loaded["isolation_evidence"])
             purpose = run_purpose(receipt, loaded["isolation_evidence"])
+            path_key = run_path_key(receipt, loaded["isolation_evidence"])
+            source = run_execution_source(receipt, loaded["isolation_evidence"])
+            e3 = e3_confirmation(receipt, loaded["isolation_evidence"])
+            goal = run_goal_common(receipt, loaded["isolation_evidence"])
             language = output_language(receipt, loaded["isolation_evidence"])
             e2 = e2_mode(receipt, loaded["isolation_evidence"])
             identity = e2_identity(receipt, loaded["isolation_evidence"])
@@ -428,4 +443,4 @@ def _v11_inputs(receipt: dict, artifacts: dict, loaded: dict, times: dict, seque
                      version=V11, judgments_collected=loaded["records"] is not None, proof_id=proof_id,
                      drain_policy=policy, run_conditions=conditions, output_language=language, e2_mode=e2,
                      attempt_reconciliation=reconciled, e2_identity=identity, e2_outcome=outcome, e2_prompt=prompt,
-                     purpose=purpose)
+                     purpose=purpose, path_key=path_key, execution_source=source, e3=e3, goal_common_sha256=goal)

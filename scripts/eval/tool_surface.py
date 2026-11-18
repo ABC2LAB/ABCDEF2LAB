@@ -35,6 +35,8 @@ from runner_docker import BoundedResult, DockerError, client_environment, run_do
 from tool_tree import ToolTreeError, resolve_image_id  # noqa: E402
 
 FORMAT = "abc2lab.tool-surface/v1"
+# 회차 근거 한 쪽분(러너가 회차 전에 재서 tool-surface.json으로 남김, 보존 sidecar v3 칸의 출처).
+SIDE_FORMAT = "abc2lab.tool-surface-side/v1"
 # E² 샌드박스 Bash 환경과 붙이는 경로(e2sandbox/helper_linux.go). Go와 같은지는 시험이 원문으로 대조한다.
 SANDBOX_PATH = "/usr/local/bin:/usr/sbin:/usr/bin:/bin"
 SANDBOX_FIXED = ("/usr/bin", "/usr/sbin", "/bin", "/usr/local/bin", "/usr/lib/{triplet}", "/lib/{triplet}", "/usr/lib64", "/lib64",
@@ -419,6 +421,23 @@ def compare_cli(baseline: dict, ours: dict) -> dict:
             "content_differs": sorted(name for name in set(b) & set(o) if b[name]["sha256"] != o[name]["sha256"])}
 
 
+def ours_cli(ours_id: str, run: DockerRun) -> dict:
+    return collect_cli(ours_id, SANDBOX_PATH, sandbox_spec(image_architecture(ours_id, run)), run)
+
+
+def ours_mcp(browser_id: str, run: DockerRun, popen: Callable, env: dict) -> dict:
+    return mcp_side(browser_id, OURS_MCP_ARGS, mcp_version(browser_id, run), mcp_tools(browser_id, OURS_MCP_ARGS, popen, env),
+                    MCP_ALLOWED, "product_allowlist")
+
+
+def ours_side(ours_id: str, browser_id: str, run: DockerRun, popen: Callable, env: dict) -> dict:
+    """O 한 쪽의 회차 근거(이미지 ID로만 받는다). CLI는 제품 이미지 중 E② 샌드박스 경로, MCP는 탐색 브라우저 이미지."""
+    if not all(isinstance(image, str) and _IMAGE_ID.fullmatch(image) for image in (ours_id, browser_id)):
+        raise ToolSurfaceError("image_not_id")
+    return {"format": SIDE_FORMAT, "side": "ours", "image_id": ours_id, "browser_image_id": browser_id,
+            "cli": ours_cli(ours_id, run), "mcp": ours_mcp(browser_id, run, popen, env)}
+
+
 def build_report(baseline_ref: str, ours_ref: str, browser_ref: str, run: DockerRun, popen: Callable, env: dict) -> dict:
     try:
         baseline_id, ours_id, browser_id = (resolve_image_id(ref, run) for ref in (baseline_ref, ours_ref, browser_ref))
@@ -426,18 +445,17 @@ def build_report(baseline_ref: str, ours_ref: str, browser_ref: str, run: Docker
         raise ToolSurfaceError("image_inspect_failed") from None
     baseline_path = image_path(baseline_id, run)
     baseline_cli = collect_cli(baseline_id, baseline_path, None, run)
-    ours_cli = collect_cli(ours_id, SANDBOX_PATH, sandbox_spec(image_architecture(ours_id, run)), run)
+    ours_cli_report = ours_cli(ours_id, run)
     baseline_mcp = mcp_side(baseline_id, BASELINE_MCP_ARGS, mcp_version(baseline_id, run),
                             mcp_tools(baseline_id, BASELINE_MCP_ARGS, popen, env), None, BASELINE_MCP_EXPOSED_BASIS)
-    ours_mcp = mcp_side(browser_id, OURS_MCP_ARGS, mcp_version(browser_id, run), mcp_tools(browser_id, OURS_MCP_ARGS, popen, env),
-                        MCP_ALLOWED, "product_allowlist")
+    ours_mcp_report = ours_mcp(browser_id, run, popen, env)
     return {
         "format": FORMAT,
         "baseline": {"image_id": baseline_id, "cli": baseline_cli, "mcp": baseline_mcp},
-        "ours": {"image_id": ours_id, "cli": ours_cli, "mcp": ours_mcp},
-        "common": {"mcp_raw_same": baseline_mcp["raw"]["sha256"] == ours_mcp["raw"]["sha256"],
-                   "mcp_version_same": baseline_mcp["package_version"] == ours_mcp["package_version"]},
-        "cli_differences": compare_cli(baseline_cli, ours_cli),
+        "ours": {"image_id": ours_id, "cli": ours_cli_report, "mcp": ours_mcp_report},
+        "common": {"mcp_raw_same": baseline_mcp["raw"]["sha256"] == ours_mcp_report["raw"]["sha256"],
+                   "mcp_version_same": baseline_mcp["package_version"] == ours_mcp_report["package_version"]},
+        "cli_differences": compare_cli(baseline_cli, ours_cli_report),
     }
 
 

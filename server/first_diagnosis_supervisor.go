@@ -1038,7 +1038,7 @@ func (s *FirstDiagnosisSupervisor) checkRegisteredResult(ctx context.Context, ta
    OR (v.oracle_value IN ('suspected','undecidable','allowed') AND l.id IS NULL AND f.id IS NULL))
  FROM evidence_revision_initials r
  JOIN e3_evidence_manifests m ON m.task_id=r.task_id AND m.execution_ref=r.execution_ref AND m.evidence_revision=r.revision
- JOIN e3_verdict_issuances i ON i.manifest_id=m.id AND i.task_id=r.task_id AND i.exploration_id=r.exploration_id AND i.intent_id=r.intent_id AND i.mode_version=r.mode_version AND i.execution_ref=r.execution_ref AND i.eval_run_id IS NULL
+ JOIN e3_verdict_issuances i ON i.manifest_id=m.id AND i.task_id=r.task_id AND i.exploration_id=r.exploration_id AND i.intent_id=r.intent_id AND i.mode_version=r.mode_version AND i.execution_ref=r.execution_ref AND i.eval_run_id IS NULL AND i.source_kind='eval'
  JOIN e3_oracle_verdicts v ON v.id=i.verdict_id
  LEFT JOIN e3_verdict_links l ON l.issuance_id=i.id AND l.task_id=i.task_id AND l.purpose='initial'
  LEFT JOIN findings f ON f.id=l.finding_id AND f.task_id=l.task_id

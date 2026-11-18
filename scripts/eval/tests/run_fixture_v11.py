@@ -10,6 +10,7 @@ import hashlib
 import json
 from pathlib import Path
 
+import synthetic_gt  # noqa: F401  합성 정답 목록을 먼저 끼운다(정답표 노출 방지)
 from isolation_proof import blocked_attempts
 from run_record import sign_run_record
 from runner_checks import policy_sha256
