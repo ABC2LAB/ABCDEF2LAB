@@ -29,7 +29,7 @@ import {
 
 import { cx } from "../../lib/cx";
 import { disconnectUrl, runUrlAction, setUrlConfirmed, useUrl, useUrlGates } from "../../live/urlDiagnosis";
-import { scanViewFor, URL_ENDED_STATES, urlHost, urlTargetHint, usdText } from "../../live/urlMap";
+import { scanViewFor, URL_ENDED_STATES, urlHost, urlTargetHint } from "../../live/urlMap";
 import { useShell } from "../../shell";
 import { useWb } from "../../store";
 import { Icon } from "../../ui/icons";
@@ -1006,7 +1006,7 @@ export function UrlNewScanLive() {
             {scope ? (
               <ul className={s.policy} id="luPolicy">
                 <Rule
-                  t="승인된 사이트 · 경로에만 요청"
+                  t="승인된 사이트 및 경로에만 요청"
                   sub={`${scope.origin} · ${scope.path_prefixes.join(", ")} · ${scope.methods.join("/")}`}
                 />
                 {scope.origin.startsWith("http://") ? (
@@ -1017,17 +1017,8 @@ export function UrlNewScanLive() {
                   />
                 ) : null}
                 {excludedCount ? <Rule t="제외한 경로는 요청 안 함" sub={`직접 넣은 ${excludedCount}개`} /> : null}
-                {/* 상한은 대상 요청 · 시간만(모델 요청 · 토큰 · body 상한은 '정책 전체 보기') */}
-                <Rule
-                  t="요청 · 시간 상한"
-                  sub={`대상 요청 ${scope.budget.requests}회 · ${scope.budget.duration_seconds}초`}
-                />
-                {scope.model ? (
-                  <Rule
-                    t="외부 모델로 대상 응답 전송"
-                    sub={`${scope.model.provider} · 비용 상한 ${usdText(scope.budget.cost_usd_micros)}`}
-                  />
-                ) : null}
+                {/* 요청 · 시간 · 비용 상한 줄은 뺐다(사용자 11/18) — 상한 값은 '정책 전체 보기' */}
+                {scope.model ? <Rule t="외부 모델로 대상 응답 전송" sub={scope.model.provider} /> : null}
                 {/* 외부 CDN 사전고지 (external-llm-notice-ko.md §2): 브라우저 탐색이 대상 페이지를 그리며 외부 호스트의
                     자원을 받으면 그 호스트 로그에 흔적이 남는다. 완전 로컬 모드는 막는다(절대규칙 8). 브라우저 탐색 미착륙 = 사전 고지.
                     ※ comm_mode(external_allowed/full_local) 별도 신호가 없어 외부 모델(scope.model)을 proxy 로 쓴다.

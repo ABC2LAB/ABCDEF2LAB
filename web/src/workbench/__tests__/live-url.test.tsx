@@ -770,7 +770,7 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     fireEvent.click(nextBtn()[0]);
     expect((screen.getByLabelText("모델") as HTMLSelectElement).value).toBe("profile-1");
     // 범위 확인 전에는 서버 범위가 없다
-    expect(screen.queryByText("승인된 사이트 · 경로에만 요청")).toBeNull();
+    expect(screen.queryByText("승인된 사이트 및 경로에만 요청")).toBeNull();
     await act(async () => {
       fireEvent.click(send()[0]);
     });
@@ -781,7 +781,7 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     expect(who).toBe(owner);
     expect(u.commandURLDiagnosis).toHaveBeenCalledWith(draft, "validate", owner);
     // 같은 화면에서 서버가 돌려준 범위 · 상한과 시작 단계가 나온다(다른 화면으로 가지 않는다)
-    expect(await screen.findByText("승인된 사이트 · 경로에만 요청")).toBeInTheDocument();
+    expect(await screen.findByText("승인된 사이트 및 경로에만 요청")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "점검 시작" })).toBeDisabled();
     expect(goTo).not.toHaveBeenCalled();
     // 조회 핸들만 남는다(영수증 키 · 결속). 입력은 잠긴다.
@@ -796,8 +796,9 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     u.commandURLDiagnosis.mockResolvedValue(preparing);
     const { goTo } = mount("new");
     expect(await screen.findByText("https://target.example · / · GET")).toBeInTheDocument();
-    // 상한은 대상 요청 · 시간만(모델 · 토큰 · body 상한은 '정책 전체 보기', 사용자 11/18)
-    expect(screen.getByText("대상 요청 3회 · 60초")).toBeInTheDocument();
+    // 요청 · 시간 상한 줄은 두지 않는다(사용자 11/18 — 상한 값은 '정책 전체 보기')
+    expect(screen.queryByText("요청 · 시간 상한")).toBeNull();
+    expect(screen.queryByText(/대상 요청 3회/)).toBeNull();
     const start = screen.getByRole("button", { name: "점검 시작" });
     expect(screen.getByRole("complementary", { name: "점검 요약" }).contains(start)).toBe(true);
     expect(start).toBeDisabled();
@@ -861,6 +862,10 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     expect(
       await screen.findByText(/브라우저 탐색은 외부 자원\(CDN 등\)을 외부 호스트에서 받습니다/),
     ).toBeInTheDocument();
+    // 외부 모델 전송 줄 밑에는 제공자만 — 비용 상한은 적지 않는다(사용자 11/18)
+    const ext = screen.getByText("외부 모델로 대상 응답 전송").parentElement as HTMLElement;
+    expect(ext.querySelector("small")).toHaveTextContent(new RegExp(`^${externalModel.provider}$`));
+    expect(ext).not.toHaveTextContent("비용 상한");
   });
   it("로컬 모델(완전 로컬)에서는 외부 CDN 사전고지를 띄우지 않는다", async () => {
     const limits = {
@@ -875,7 +880,7 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     u.readURLStatus.mockResolvedValue(ready);
     mount("new");
     // 안전 장치(scope)는 떠도 CDN 고지는 없다
-    expect(await screen.findByText("승인된 사이트 · 경로에만 요청")).toBeInTheDocument();
+    expect(await screen.findByText("승인된 사이트 및 경로에만 요청")).toBeInTheDocument();
     expect(screen.queryByText(/브라우저 탐색은 외부 자원/)).toBeNull();
   });
   it("시작 결과가 불명이면 다시 보내지 않고 상태 조회만 남긴다", async () => {
@@ -2208,7 +2213,7 @@ it.each([
   saveHandle({ ...handle, input });
   mount("new");
   // 요약 '쓰기 요청' 줄이 말한다(안전 장치 목록의 긴 승인 방식 줄은 겹쳐 뺐다, 사용자 11/18)
-  await screen.findByText("승인된 사이트 · 경로에만 요청");
+  await screen.findByText("승인된 사이트 및 경로에만 요청");
   const sum = screen.getByRole("complementary", { name: "점검 요약" });
   expect(within(sum).getByText("쓰기 요청").nextElementSibling).toHaveTextContent(short);
   expect(within(sum).queryByText(/임의 query 로 진행/)).toBeNull();
@@ -2222,7 +2227,7 @@ it.each([
   u.readURLStatus.mockResolvedValue({ ...ready, scope: { ...scope, origin } });
   saveHandle(handle);
   mount("new");
-  await screen.findByText("승인된 사이트 · 경로에만 요청");
+  await screen.findByText("승인된 사이트 및 경로에만 요청");
   expect(screen.queryByText("암호화하지 않는 주소 (http)") !== null).toBe(warned);
 });
 
@@ -2241,7 +2246,7 @@ it("선택적 승인 범위는 읽기 사전 승인과 쓰기 건별 확인을 �
   u.readURLStatus.mockResolvedValue({ ...ready, input, scope: { ...scope, approval_mode: "workbench_selective_v1" } });
   saveHandle({ ...handle, input });
   mount("new");
-  await screen.findByText("승인된 사이트 · 경로에만 요청");
+  await screen.findByText("승인된 사이트 및 경로에만 요청");
   // 요약 '쓰기 요청' 줄이 범위 확인 뒤에는 서버 승인 방식을 따른다 (리뷰 #507). 같은 뜻 긴 줄은 안전 장치에서 뺐다(사용자 11/18)
   expect(screen.queryByText("쓰기 메서드 요청은 한 건씩 승인한 것만 보냄")).toBeNull();
   const sum = screen.getByRole("complementary", { name: "점검 요약" });
