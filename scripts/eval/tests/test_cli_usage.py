@@ -298,6 +298,10 @@ class TestCounting(unittest.TestCase):
             "<<\\2<<F npx b\nx\n2\ny\nF": (["npx"], []),
             "true 2\\\n<<E\nx\nE\nnpx d": (["true", "npx"], []),  # 서술자와 연산자 사이 줄 이음
             "2\\\n<<E npx g\nx\nE": (["npx"], []),  # 명령 앞 서술자와 연산자 사이 줄 이음(서술자가 명령 이름이 되지 않는다)
+            # #682 리뷰 12차: 서술자 숫자 사이 줄 이음도 건너뛴다(`1\⏎0<<D`는 서술자 10)
+            "1\\\n0<<D npx\nx\nD": (["npx"], []),
+            "true 1\\\n0<<D\nx\nD\nnpx b": (["true", "npx"], []),
+            "1\\\n\\\n2<<D npx d\nx\nD": (["npx"], []),
         }
         for command, (sure, maybe) in cases.items():
             with self.subTest(command=command):

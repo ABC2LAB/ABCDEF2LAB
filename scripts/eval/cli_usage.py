@@ -128,12 +128,15 @@ def _fd_before(command: str, i: int) -> bool:
     j = i
     while command.endswith("\\\n", 0, j):
         j -= 2
-    start = j
-    while start > 0 and command[start - 1].isdigit():
-        start -= 1
-    while command.endswith("\\\n", 0, start):
-        start -= 2
-    return start < j and (start == 0 or command[start - 1].isspace() or command[start - 1] in _METACHARACTERS)
+    start, digits = j, 0
+    while True:  # 숫자와 숫자 사이 줄 이음(`1\⏎0<<D`는 서술자 10)도 건너뛰며 거꾸로 읽는다
+        if start > 0 and command[start - 1].isdigit():
+            start, digits = start - 1, digits + 1
+        elif command.endswith("\\\n", 0, start):
+            start -= 2
+        else:
+            break
+    return digits > 0 and (start == 0 or command[start - 1].isspace() or command[start - 1] in _METACHARACTERS)
 
 
 def _heredoc_word(command: str, i: int) -> tuple[int, str, bool] | None:
