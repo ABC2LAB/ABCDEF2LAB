@@ -4,6 +4,8 @@ import { SERVER_EXTERNAL_ACCOUNT_STATEMENT } from "@/lib/diagnosis/external-acco
 // 검증 · 결속 함수(matchURLJob · matchURLHandle · urlDiagnosisInput · 핸들 저장)는 진짜를 쓴다.
 
 import "@testing-library/jest-dom/vitest";
+import { useState } from "react";
+
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -75,6 +77,7 @@ import { flowStageText } from "../live/workflow";
 import { type Shell, ShellContext, type View } from "../shell";
 import { createInitialState, useWb } from "../store";
 import { DashboardByMode, LiveByMode, NewScanByMode, ReportByMode, ScopeByMode } from "../views/live/byMode";
+import { UrlFindingLive } from "../views/live/UrlFindingLive";
 import { buildPocMarkdown, FINDINGS_POLL_MS } from "../views/live/UrlLiveLive";
 import { EXCLUDE_EXAMPLE } from "../views/live/UrlNewScanLive";
 import { WorkflowCrawlLive } from "../views/live/workflowViews";
@@ -1571,6 +1574,43 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     const back = screen.getByRole("tabpanel", { name: "발견 목록" });
     // 돌아오면 연 발견이 골라져 있다
     expect(within(back).getByRole("button", { name: /후보 2/ })).toHaveAttribute("aria-current", "true");
+  });
+
+  it("단독 발견 상세(#finding)에서 '발견 목록으로'를 누르면 보고서는 같은 상세가 아니라 발견 목록을 연다 (#695 리뷰)", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [candidate(1), candidate(2)] });
+    // Workbench 처럼 두 화면을 함께 두고 route 로 하나만 보인다
+    let go: (v: View) => void = noop;
+    function Both() {
+      const [route, setRoute] = useState<View>("report");
+      go = setRoute;
+      return (
+        <ShellContext.Provider value={shellValue({ route, goTo: setRoute })}>
+          <UrlFeeds />
+          <section hidden={route !== "report"}>
+            <ReportByMode />
+          </section>
+          <section hidden={route !== "finding"}>
+            <UrlFindingLive />
+          </section>
+        </ShellContext.Provider>
+      );
+    }
+    render(<Both />);
+    const list = await screen.findByRole("tabpanel", { name: "발견 목록" });
+    fireEvent.click(within(list).getByRole("button", { name: /후보 2/ }));
+    fireEvent.click(
+      within(screen.getByRole("complementary", { name: "발견 상세" })).getByRole("button", { name: "상세 보기" }),
+    );
+    expect(screen.getByRole("region", { name: "발견 상세 페이지" })).toBeInTheDocument();
+    // 주소창에 #finding — 같은 발견이 단독 화면에 뜬다
+    act(() => go("finding"));
+    expect(await screen.findByRole("heading", { level: 2, name: "후보 2" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "발견 목록으로" }));
+    // 보고서로 돌아오면 상세 페이지가 아니라 발견 목록
+    expect(await screen.findByRole("tabpanel", { name: "발견 목록" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "발견 상세 페이지" })).toBeNull();
   });
 
   it("보고서 발견 목록은 위험도로 거르고(있는 등급만 · 수) 판정 · 위험도 · 발견 시각 순으로 정렬한다", async () => {

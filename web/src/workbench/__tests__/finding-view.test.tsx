@@ -1,85 +1,236 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { FindingRecord } from "@/lib/diagnosis/finding";
+import type { URLDiagnosisJob } from "@/lib/diagnosis/diagnosis-url";
+import { running } from "@/lib/diagnosis/diagnosis-url-fixtures";
 
-// getFinding/getFindingHeld 만 스파이로 감싸고(기본은 실제 호출 = 목업), 보수 하향 테스트에서만 교체한다.
-// 판정·보수 하향·부족 증거 로직은 실 seam 그대로 — finding.test.ts 가 이미 검증.
-vi.mock("@/lib/diagnosis/finding", async (importOriginal) => {
-  const real = await importOriginal<typeof import("@/lib/diagnosis/finding")>();
-  return {
-    ...real,
-    getFinding: vi.fn().mockImplementation(real.getFinding),
-    getFindingHeld: vi.fn().mockImplementation(real.getFindingHeld),
-  };
-});
+vi.mock("../live/api", async (original) => ({
+  ...(await original<typeof import("../live/api")>()),
+  fetchRemediation: vi.fn(),
+}));
 
-import * as finding from "@/lib/diagnosis/finding";
+import { ApiError } from "@/lib/diagnosis/api";
 
+import * as api from "../live/api";
+import { clearFindingPick, pickFinding, useFindingPick } from "../live/findingPick";
+import { resetUrl, useUrl } from "../live/urlDiagnosis";
+import { type Shell, ShellContext, type View } from "../shell";
 import { UrlFindingLive } from "../views/live/UrlFindingLive";
 
-const m = vi.mocked(finding);
+const a = vi.mocked(api);
+const noop = () => undefined;
+const completed: URLDiagnosisJob = {
+  ...running,
+  state: "completed",
+  phase: "report",
+  drain_complete: true,
+  result_ready: true,
+};
+const other: URLDiagnosisJob = { ...completed, id: "job-2", task_id: "43" };
+function entry(n: number): api.Remediation["entries"][number] {
+  return {
+    entry_id: `candidate-${n}`,
+    title: `후보 ${n}`,
+    outcome: "review",
+    status: "completed",
+    verification: "manual_review_required",
+    evidence_digest: "e".repeat(64),
+    report_version: "1",
+    run: "run-1",
+    intent_id: 7,
+    observed_at: "2026-11-09T12:10:00Z",
+    evidence_version: 1,
+    source_digest: "d".repeat(64),
+    summary: "다른 계정 응답 후보",
+    evidence: "",
+    report: "",
+    remediation: "",
+    available: true,
+    unavailable_reason: "",
+  };
+}
+function shellAt(route: View, goTo: (v: View) => void): Shell {
+  return {
+    route,
+    navSeq: 1,
+    narrow: false,
+    phone: false,
+    reduce: false,
+    inspOpen: false,
+    railOpen: false,
+    railNewAtRoute: false,
+    goTo,
+    openInsp: noop,
+    closeInsp: noop,
+    openRail: noop,
+    closeRail: noop,
+    foldRail: noop,
+    dashPick: noop,
+  };
+}
+function mount(goTo = vi.fn<(v: View) => void>()) {
+  const view = (route: View) => (
+    <ShellContext.Provider value={shellAt(route, goTo)}>
+      <UrlFindingLive />
+    </ShellContext.Provider>
+  );
+  const r = render(view("finding"));
+  return Object.assign(goTo, { show: (route: View) => r.rerender(view(route)) });
+}
 
+beforeEach(() => {
+  vi.resetAllMocks();
+  resetUrl();
+  clearFindingPick();
+  useUrl.setState({ job: completed, verified: true });
+});
 afterEach(cleanup);
 
-describe("UrlFindingLive (예시)", () => {
-  it("확정 사례: 예시·마스킹 고지 + 확정 배지 + 다계정 비교(취약) + 표식 필드명만", async () => {
-    const { container } = render(<UrlFindingLive />);
-    expect(await screen.findByText(/예시 데이터/)).toBeInTheDocument();
-    // 마스킹 고지(응답 본문·값·자격 원문 비표시)
-    expect(screen.getByText(/표시하지 않습니다/)).toBeInTheDocument();
-    // 발견 제목
-    expect(screen.getByText("다른 사용자의 자원이 교차 계정으로 조회됨")).toBeInTheDocument();
-    // 화면 판정 배지 = 확정(증거 완비)
-    const badge = container.querySelector("[data-verdict]") as HTMLElement;
-    expect(badge).toHaveAttribute("data-verdict", "confirmed");
-    expect(badge).toHaveTextContent("확정");
-    // 다계정 비교: B 행이 취약(확정이라 보수 하향 없음)
-    expect(container.querySelector('[data-row="vuln"]')).not.toBeNull();
-    // 표식은 필드명만(값 없음) — 'body' 필드명이 보이고 raw 값/URL 은 없다
-    expect(screen.getByText(/표식 필드: body/)).toBeInTheDocument();
-    expect(container.textContent ?? "").not.toMatch(/https?:\/\//);
-    expect(container.textContent ?? "").not.toMatch(/Cookie:/i);
+describe("UrlFindingLive (단독 발견 상세 · 저장 결과)", () => {
+  it("보고서에서 고른 발견을 보고서 상세 페이지와 같은 짜임으로 그리고, 예시는 없다", async () => {
+    a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [entry(1), { ...entry(2), vuln_class: "idor" }] });
+    pickFinding("42", "candidate-2");
+    const goTo = mount();
+    const page = await screen.findByRole("region", { name: "발견 상세 페이지" });
+    expect(a.fetchRemediation).toHaveBeenCalledWith("42", "internal");
+    expect(screen.getByRole("heading", { level: 2, name: "후보 2" })).toBeInTheDocument();
+    expect(page).toHaveTextContent(/유형idor/);
+    expect(screen.queryByText(/예시/)).toBeNull();
+    // E③ 원문 판정 · 다계정 비교 칸은 두지 않는다(백엔드 후속)
+    expect(screen.queryByText(/다계정|교차 계정 비교/)).toBeNull();
+    // 목록으로 갈 때 공용 선택을 지운다(남으면 보고서가 같은 상세를 다시 연다)
+    fireEvent.click(screen.getByRole("button", { name: "발견 목록으로" }));
+    expect(goTo).toHaveBeenCalledWith("report");
+    expect(useFindingPick.getState()).toEqual({ task: null, entry: null });
   });
 
-  it("송신 전 차단 사례로 전환하면 판단 불가 + E² 차단 서사 + 비교 없음", async () => {
-    render(<UrlFindingLive />);
-    await screen.findByText(/예시 데이터/);
-    fireEvent.click(screen.getByRole("button", { name: "송신 전 차단 사례" }));
-    // 전환 후 판정 배지 = 판단 불가
-    const badge = await screen.findByText("판단 불가");
-    expect(badge).toHaveAttribute("data-verdict", "undecidable");
-    // E²가 송신 전 차단 서사(미실행→증거 없음)
-    expect(screen.getByText(/송신 전에 차단/)).toBeInTheDocument();
-    // 전송이 없어 비교 표가 없다
-    expect(screen.getByText(/비교가 없습니다/)).toBeInTheDocument();
+  it("같은 점검의 상세에 다시 들어오면 새 응답 전엔 직전 결과를 보이지 않는다", async () => {
+    a.fetchRemediation.mockResolvedValueOnce({ task_id: 42, entries: [entry(1)] });
+    pickFinding("42", "candidate-1");
+    const view = mount();
+    await screen.findByRole("region", { name: "발견 상세 페이지" });
+    act(() => view.show("report"));
+    let answer: (v: api.Remediation) => void = noop;
+    a.fetchRemediation.mockReturnValueOnce(
+      new Promise((r) => {
+        answer = r;
+      }),
+    );
+    act(() => view.show("finding"));
+    expect(screen.getByText("불러오는 중…")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "발견 상세 페이지" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /보안 조치/ })).toBeNull();
+    await act(async () => answer({ task_id: 42, entries: [{ ...entry(1), title: "후보 1 새 결과" }] }));
+    expect(screen.getByRole("heading", { level: 2, name: "후보 1 새 결과" })).toBeInTheDocument();
+    expect(a.fetchRemediation).toHaveBeenCalledTimes(2);
   });
 
-  it("confirmed 인데 증거 불완비면 화면 판정을 보수적으로 판단 불가로 내리고 원값은 감사용으로 보인다(절대규칙 5)", async () => {
-    const real = await vi.importActual<typeof import("@/lib/diagnosis/finding")>("@/lib/diagnosis/finding");
-    const base = await real.getFinding(null);
-    const incomplete: FindingRecord = {
-      ...base,
-      // 데이터 체크가 불명 → 증거 3조건 불완비 → 화면 판정 하향(원값 confirmed 는 보존)
-      checks: { ...base.checks, data: "unknown" },
-      signals: { ...base.signals, nontrivialDataMatch: "unknown" },
-    };
-    m.getFinding.mockResolvedValueOnce(incomplete);
-    const { container } = render(<UrlFindingLive />);
-    await screen.findByText(/예시 데이터/);
-    const badge = container.querySelector("[data-verdict]") as HTMLElement;
-    expect(badge).toHaveAttribute("data-verdict", "undecidable"); // 화면 판정 하향
-    expect(screen.getByText(/감사용/)).toBeInTheDocument(); // 원값 보존 고지
-    // 상단이 판단 불가면 비교 행의 취약도 보수 하향(모순 방지) — vuln 행이 남지 않는다
-    expect(container.querySelector('[data-row="vuln"]')).toBeNull();
+  it("앞선 성공과 다시 들어온 때가 같은 밀리초여도 직전 상세를 보이지 않는다", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000); // 시계를 고정
+    a.fetchRemediation.mockResolvedValueOnce({ task_id: 42, entries: [entry(1)] });
+    pickFinding("42", "candidate-1");
+    const view = mount();
+    await screen.findByRole("region", { name: "발견 상세 페이지" });
+    act(() => view.show("report"));
+    a.fetchRemediation.mockReturnValueOnce(new Promise(() => undefined));
+    act(() => view.show("finding"));
+    expect(screen.getByText("불러오는 중…")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "발견 상세 페이지" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /보안 조치/ })).toBeNull();
+    now.mockRestore();
   });
 
-  it("내보내기·공유·export 버튼을 두지 않는다", async () => {
-    render(<UrlFindingLive />);
-    await screen.findByText(/예시 데이터/);
-    for (const el of [...screen.queryAllByRole("button"), ...screen.queryAllByRole("link")]) {
-      expect(el.textContent ?? "").not.toMatch(/내보내기|공유|export/i);
-    }
+  it("직전 진입의 읽기 실패(403)도 다시 들어온 뒤 새 응답 전엔 보이지 않는다", async () => {
+    a.fetchRemediation.mockRejectedValueOnce(new ApiError(403, "x"));
+    pickFinding("42", "candidate-1");
+    const view = mount();
+    expect(await screen.findByRole("button", { name: /다시/ })).toBeInTheDocument();
+    act(() => view.show("report"));
+    let answer: (v: api.Remediation) => void = noop;
+    a.fetchRemediation.mockReturnValueOnce(
+      new Promise((r) => {
+        answer = r;
+      }),
+    );
+    act(() => view.show("finding"));
+    expect(screen.getByText("불러오는 중…")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /다시/ })).toBeNull();
+    await act(async () => answer({ task_id: 42, entries: [entry(1)] }));
+    expect(screen.getByRole("region", { name: "발견 상세 페이지" })).toBeInTheDocument();
+  });
+
+  it("읽기 실패 뒤 '다시 시도'는 같은 진입에서 다시 읽는다", async () => {
+    a.fetchRemediation
+      .mockRejectedValueOnce(new ApiError(503, "x"))
+      .mockResolvedValueOnce({ task_id: 42, entries: [entry(1)] });
+    pickFinding("42", "candidate-1");
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: /다시/ }));
+    expect(await screen.findByRole("region", { name: "발견 상세 페이지" })).toBeInTheDocument();
+    expect(a.fetchRemediation).toHaveBeenCalledTimes(2);
+  });
+
+  it("고른 발견이 없으면 부르지 않고 보고서로 안내한다", () => {
+    const goTo = mount();
+    expect(screen.getByText(/보고서 발견 목록에서 발견을 고르고/)).toBeInTheDocument();
+    expect(a.fetchRemediation).not.toHaveBeenCalled();
+    pickFinding("41", "candidate-1"); // 다른 task 에서 고른 것도 목록으로 가며 지운다
+    fireEvent.click(screen.getByRole("button", { name: "보고서 발견 목록으로" }));
+    expect(goTo).toHaveBeenCalledWith("report");
+    expect(useFindingPick.getState()).toEqual({ task: null, entry: null });
+  });
+
+  it("다른 task 에서 고른 발견은 열지 않는다", () => {
+    pickFinding("41", "candidate-2");
+    mount();
+    expect(screen.getByText(/보고서 발견 목록에서 발견을 고르고/)).toBeInTheDocument();
+    expect(a.fetchRemediation).not.toHaveBeenCalled();
+  });
+
+  it("고른 발견이 저장 결과에 없으면 다른 발견으로 대신하지 않는다", async () => {
+    a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [entry(1)] });
+    pickFinding("42", "candidate-9");
+    mount();
+    expect(await screen.findByText(/고른 발견이 지금 저장 결과에 없습니다/)).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "발견 상세 페이지" })).toBeNull();
+  });
+
+  it.each([403, 404, 503])("저장 결과를 못 읽으면(HTTP %s) 상세를 그리지 않는다", async (status) => {
+    a.fetchRemediation.mockRejectedValue(new ApiError(status, "x"));
+    pickFinding("42", "candidate-1");
+    mount();
+    expect(await screen.findByRole("button", { name: /다시/ })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "발견 상세 페이지" })).toBeNull();
+  });
+
+  it("Job 을 바꾸면 고른 발견을 지우고 이전 회차 상세를 보이지 않는다", async () => {
+    a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [entry(1)] });
+    pickFinding("42", "candidate-1");
+    mount();
+    await screen.findByRole("region", { name: "발견 상세 페이지" });
+    act(() => useUrl.setState({ job: other }));
+    expect(useFindingPick.getState()).toEqual({ task: null, entry: null });
+    expect(screen.queryByRole("region", { name: "발견 상세 페이지" })).toBeNull();
+    expect(screen.getByText(/보고서 발견 목록에서 발견을 고르고/)).toBeInTheDocument();
+  });
+
+  it("Job 이 빠지면(권한 철회 · 재로그인) 상세를 지우고 예시로 채우지 않는다", async () => {
+    a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [entry(1)] });
+    pickFinding("42", "candidate-1");
+    mount();
+    await screen.findByRole("region", { name: "발견 상세 페이지" });
+    act(() => useUrl.setState({ job: null }));
+    expect(screen.getByText("실제 진단 작업을 선택하세요.")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "발견 상세 페이지" })).toBeNull();
+    expect(screen.queryByText(/예시/)).toBeNull();
+  });
+
+  it("결과 저장 전 회차는 읽지 않는다", () => {
+    useUrl.setState({ job: { ...completed, state: "running", result_ready: false } });
+    pickFinding("42", "candidate-1");
+    mount();
+    expect(screen.getByText(/결과가 저장되면 발견 상세를 볼 수 있습니다/)).toBeInTheDocument();
+    expect(a.fetchRemediation).not.toHaveBeenCalled();
   });
 });
