@@ -457,7 +457,7 @@ class TestRejectedV11(_V11):
                 self.v11("k2", condition="baseline", engine="baseline", tamper_rows=split_base())]
         build_report(self.load(same), self.correlate, self.correlatable, runner_key=self.runner_key)
         for name, second in (("other_key", keyed("fedcba9876543210")), ("not_split", None)):
-            rounds = [self.v11(f"{name}1", tamper_rows=split_ours(goal=None)),
+            rounds = [self.v11(f"{name}1", tamper_rows=split_ours()),
                       self.v11(f"{name}2", condition="baseline", engine="baseline", tamper_rows=second)]
             with self.subTest(case=name), self.assertRaisesRegex(ComparabilityError, "경로 가림 키 지문 불일치"):
                 build_report(self.load(rounds), self.correlate, self.correlatable, runner_key=self.runner_key)
@@ -503,7 +503,7 @@ class TestRejectedV11(_V11):
 
     def test_b_and_o_must_share_the_common_goal(self):
         # 짝 비교의 목표 동일성(평가 프로토콜 §5.1): 분리 배치 B·O 공통 목표 SHA가 같아야 한다.
-        for index, (base_goal, ours_goal) in enumerate((("8" * 64, "7" * 64), (None, "7" * 64), ("7" * 64, None))):
+        for index, (base_goal, ours_goal) in enumerate((("8" * 64, "7" * 64), (None, "7" * 64), ("7" * 64, None), (None, None))):
             rounds = [self.v11(f"g{index}", tamper_rows=split_ours(goal=ours_goal)),
                       self.v11(f"h{index}", condition="baseline", engine="baseline", tamper_rows=split_base(goal=base_goal))]
             with self.subTest(base=base_goal and base_goal[:1], ours=ours_goal and ours_goal[:1]), \

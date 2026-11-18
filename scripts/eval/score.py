@@ -375,7 +375,10 @@ def build_report(
         if len(path_keys) > 1 and any(key is not None and key[0] for key in path_keys):
             raise ComparabilityError("분리 배치 표시·경로 가림 키 지문 불일치 — 한 표의 회차는 같은 배치·같은 키로만")
         _check_official_e3(inputs, m, f"{m.condition}#{m.repeat_index}")
-        # B·O 공통 목표 SHA(결정안 §6): 분리 배치 회차가 싣는다. 한 표 안에서 값이 다르거나 일부 회차에만 있으면 짝이 아니다.
+        # B·O 공통 목표 SHA(결정안 §6): 분리 배치 공식 회차는 반드시 싣는다(양쪽 다 없어도 짝 동일성을 확인할 수 없다, #713 리뷰).
+        # 한 표 안에서 값이 다르거나 일부 회차에만 있으면 짝이 아니다.
+        if inputs.path_key is not None and inputs.path_key[0] and inputs.goal_common_sha256 is None:
+            raise ComparabilityError(f"분리 배치 공식 회차에 공통 목표 SHA가 없음({m.condition}#{m.repeat_index}) — 짝 동일성 확인 불가")
         goals.add(inputs.goal_common_sha256)
         if len(goals) > 1:
             raise ComparabilityError("B·O 공통 목표 SHA 불일치 또는 일부 회차만 있음 — 같은 목표의 짝만 비교(프로토콜 §5.1)")
