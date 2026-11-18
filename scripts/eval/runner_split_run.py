@@ -48,6 +48,7 @@ from preservation_record import NAME as PRESERVATION_NAME, build_payload_v3 as p
 import preservation_v3_fields as v3f  # noqa: E402
 from runner_checks import compare_snapshots  # noqa: E402
 from runner_docker import HelperCleanupInterrupt  # noqa: E402
+from isolation_proof import PURPOSE_OFFICIAL  # noqa: E402
 from runner_evidence import MeterFiles  # noqa: E402
 from runner_fault import FAULT_STALL_FORMAT, FAULT_STALL_NAME, FaultRecordError, fault_stall_record  # noqa: E402
 from runner_llm import judge_product_llm  # noqa: E402
@@ -121,7 +122,7 @@ def checked_control_policy(view: dict, draft_id: str) -> dict:
 
 def check_official_e3_share(limits: dict) -> None:
     """공식 측정 E③ 비활성(평가 프로토콜 §5.1): 그 회차 E② 정책의 확정 몫이 0이어야 한다. 칸이 없으면 확인하지 못한 것이다.
-    O 공식 회차 흐름(O 공식 run-record R1, 회차 목적 칸은 #710)이 checked_control_policy 결과의 limits로 부른다."""
+    O 회차 흐름이 회차 목적이 공식(official)일 때 checked_control_policy 결과의 limits로 부른다."""
     if any(name not in limits for name in E3_SHARE_FIELDS):
         raise RunFailure("e3_share_unconfirmed")
     if any(limits[name] != 0 for name in E3_SHARE_FIELDS):
@@ -436,6 +437,9 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     # 제품을 멈춘 뒤라 파일이 더 바뀌지 않는다. 정책·실행 조건은 이 초안·작업에 결속돼야 한다(#693 리뷰). 내용 지문이 비면
     # (자격 pin 규칙 등) 짝 대조 칸을 만들 수 없어 무효다.
     policy = checked_control_policy(_step(state, "control_policy_failed", lambda: ports.control_policy(task_id)), draft_id)
+    if spec.purpose == PURPOSE_OFFICIAL:
+        # 공식 측정은 E③ 비활성으로 고정(평가 프로토콜 §5.1): 그 회차가 실제로 쓴 정책의 확정 몫이 0으로 적혀 있어야 한다.
+        check_official_e3_share(policy["limits"])
     fingerprint = policy["policy_fingerprint_sha256"]
     execution = diagnosis_entered(record, draft_id, task_id, policy["policy_revision"])
     entered = execution is not None
