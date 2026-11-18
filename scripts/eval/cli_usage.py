@@ -360,10 +360,15 @@ def analyze_command_detail(command: str, depth: int = 0) -> tuple[list[str], lis
         uncertain |= unsure
 
     stack: list[_Level] = []
-    and_or = function_seen = any_conditional = False
+    and_or = function_seen = any_conditional = continued = False
     segments = _segments(body)
     for index, (segment, sep) in enumerate(segments):
-        if sep in (None, ";", "\n", "&", ";;"):
+        # `&&`·`||`·`|` 바로 뒤 줄바꿈(사이에 주석·빈 줄 포함)은 같은 목록이 다음 줄로 이어지는 것이다(#682 리뷰)
+        carried = continued
+        continued = not segment.strip() and (sep in ("&&", "||", "|") or (sep == "\n" and carried))
+        if sep == "\n" and carried:
+            pass
+        elif sep in (None, ";", "\n", "&", ";;"):
             and_or = False
         elif sep in ("&&", "||"):
             and_or = True

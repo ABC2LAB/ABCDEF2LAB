@@ -223,6 +223,14 @@ class TestCounting(unittest.TestCase):
             "a && b | npx v": (["a"], ["b", "npx"]),
             "false && echo $(npx q)": (["false"], ["npx", "echo"]),
             "false && sh -c 'npx t'": (["false"], ["sh", "npx"]),
+            # #682 리뷰 7차: 연산자 바로 뒤 줄바꿈(주석·빈 줄 포함)은 같은 목록이 이어진다
+            "false &&\nnpx --version": (["false"], ["npx"]),
+            "true ||\nnpx a": (["true"], ["npx"]),
+            "false && # c\nnpx b": (["false"], ["npx"]),
+            "false &&\n\nnpx c": (["false"], ["npx"]),
+            "a |\nnpx d": (["a", "npx"], []),
+            "false && a |\nnpx e": (["false"], ["a", "npx"]),
+            "false && a\nnpx f": (["false", "npx"], ["a"]),       # 빈 조각이 아니면 줄바꿈이 목록을 끝낸다
         }
         for command, (sure, maybe) in cases.items():
             definite, conditional, _ = analyze_command_detail(command)
