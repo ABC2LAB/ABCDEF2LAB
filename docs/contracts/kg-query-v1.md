@@ -194,7 +194,7 @@ observation은 `node_id`, `kind=intent/fact/finding`, `source_state`, `claimed_c
 - 배열은 필수다. Asset 노드에는 소유자·판정 필드가 없다. `execution_scope=null`은 일반 자산에 실행 결속이 없음, `observation=null`은 해당 출처에 공개 가능한 관측 참조가 없음, `next_cursor=null`은 다음 페이지 없음을 뜻한다.
 - null과 생략을 대용하지 않는다. 종류별로 해당하지 않는 추가 필드만 생략한다. source_task 관계의 basis 생략도 명시된 계약이다.
 - 정상 빈 결과는 현재 Task 노드만 있고 edges/provenance는 빈 배열이다. 조회한 sections는 complete다. 미조회 ownership/diagnosis는 not_requested이며 근거 0건이라는 뜻이 아니다.
-- **정책 출처(2026-11-18 보완, §11-2)**: 최상위 `policy_source`와 `sections.policy_source`를 둔다. v1은 정책을 읽지 않으므로 항상 `policy_source: null`, `sections.policy_source: "not_requested"`다. 후속 판에서 읽으면 `{"kind", "ref", "digest_sha256", "target_approval_revision"}` 모양이고 칸 이름·`kind` 값은 E③ 계약(`e3contract.PolicySource`, `product_declaration`·`kg_snapshot`)과 같다. `kind`를 `policy_version` 문자열 모양으로 추정하지 않으며, `kg-fixture`를 기본값으로 채우지 않는다. 다른 `kind`·칸은 계약 오류다.
+- **정책 출처(2026-11-18 보완, §11-2)**: 최상위 `policy_source`와 `sections.policy_source`를 둔다. v1은 정책을 읽지 않으므로 항상 `policy_source: null`, `sections.policy_source: "not_requested"`다. 후속 판에서 읽으면 `{"kind", "ref", "digest_sha256", "target_approval_revision"}` 모양이고 칸 이름·`kind` 값은 E③ 계약(`e3contract.PolicySource`, `product_declaration`·`kg_snapshot`)과 같다. `kind`를 `policy_version` 문자열 모양으로 추정하지 않으며, `kg-fixture`를 기본값으로 채우지 않는다. 다른 `kind`·칸은 계약 오류다. 값은 그 회차 실행에 결속돼 동결된 정책 출처이고, 현재 대상 등록의 선언(동결 전·재승인 뒤 값)으로 대신하지 않는다(#703 리뷰 OD06).
 - v1의 알려진 필드·종류·상태 밖의 응답은 클라이언트가 계약 오류로 처리하고 그래프를 공개하지 않는다. unknown 변환은 앞에서 명시한 미등록 source·confidence에만 적용한다. 서버의 unknown과 JSON 손상을 혼동하지 않는다.
 
 ### 5.3 크기·페이지
