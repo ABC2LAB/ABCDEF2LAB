@@ -171,6 +171,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return fail(stderr, invalidInput)
 		}
 		return runStateRead(stdin, stdout, stderr)
+	case roleRedactText:
+		if *listen != "" || *upstream != "" || *logDir != "" || *allowPath != "" {
+			return fail(stderr, invalidInput)
+		}
+		return runRedactText(stdin, stdout, stderr)
 	case roleAPIFront:
 		engine, ok := parseUpstream(*upstream)
 		if !ok || *listen == "" || *logDir != "" || *allowPath != "" {
