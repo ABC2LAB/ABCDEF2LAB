@@ -423,6 +423,20 @@ describe("getAccessMap (현재 task · 예시 없음)", () => {
     ["정책 판 모양 밖", { ...body, policy_version: "kg-fixture/v1" }],
     ["셀의 신원 없음", { ...body, cells: [{ ...cell, principal: "" }] }],
     ["셀의 모르는 신호 값", { ...body, cells: [{ ...cell, data_check: "maybe" }] }],
+    ["셀의 신호가 하나 빠짐", { ...body, cells: [(({ template_excluded: _, ...rest }) => rest)(cell)] }],
+    [
+      "셀의 신호 9개가 모두 빠진 확정 셀",
+      {
+        ...body,
+        cells: [
+          Object.fromEntries(
+            Object.entries({ ...cell, state: "confirmed", oracle_value: "confirmed" }).filter(
+              ([k]) => !/_check$|^same_resource$|_normal_data$|_match$|_excluded$/.test(k),
+            ),
+          ),
+        ],
+      },
+    ],
     ["셀의 표식 필드가 문자열 아님", { ...body, cells: [{ ...cell, canary_fields: [{ value: "x" }] }] }],
     ["task_id 가 문자열", { ...body, task_id: "41" }],
   ])("%s 이면 빈 지도로 그리지 않고 거부한다", async (_, res) => {

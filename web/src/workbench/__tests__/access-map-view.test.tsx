@@ -36,6 +36,16 @@ const cell = (principal: string, resource: string, state: string, over: Record<s
   reason_codes: [],
   canary_fields: [],
   projection_error: null,
+  // 서버(access_map.go)가 늘 내는 신호 9개
+  policy_check: "unknown",
+  identity_check: "unknown",
+  data_check: "unknown",
+  same_resource: "unknown",
+  owner_normal_data: "unknown",
+  cross_normal_data: "unknown",
+  nontrivial_data_match: "unknown",
+  reflection_excluded: "unknown",
+  template_excluded: "unknown",
   ...over,
 });
 /** product-report-graph-read.md 지도 DTO 모양의 합성 응답(비민감). */

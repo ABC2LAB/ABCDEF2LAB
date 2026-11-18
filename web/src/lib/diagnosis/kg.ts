@@ -244,7 +244,7 @@ type ApiAccessCell = {
   reason_codes?: string[];
   canary_fields?: string[];
   projection_error?: string | null;
-  // 비교/체크 신호(현재 note 요약엔 안 쓰지만 계약 필드로 받아 둔다)
+  // 비교/체크 신호(매퍼는 안 쓴다. 서버 응답은 checkCell 이 9개가 모두 있고 yes/no/unknown 인지 먼저 본다)
   policy_check?: ApiSignal;
   identity_check?: ApiSignal;
   data_check?: ApiSignal;
@@ -372,7 +372,8 @@ function checkCell(c: unknown): ApiAccessCell {
     !c.reason_codes.every(isText) ||
     !isNames(c.canary_fields) ||
     !isOptText(c.projection_error) ||
-    SIGNAL_FIELDS.some((k) => k in c && c[k] !== "yes" && c[k] !== "no" && c[k] !== "unknown")
+    // 서버(access_map.go)는 신호 9개를 늘 낸다(omitempty 없음) — 하나라도 없으면 불완전한 셀이라 거부한다
+    SIGNAL_FIELDS.some((k) => c[k] !== "yes" && c[k] !== "no" && c[k] !== "unknown")
   )
     return badMap();
   return c as ApiAccessCell;
