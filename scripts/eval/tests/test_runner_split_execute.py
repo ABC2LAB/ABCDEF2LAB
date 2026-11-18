@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from runner import RESULT_NAME, Clock  # noqa: E402
 from runner_probe import INVALID, PASS, VIOLATION, ProbeOutcome  # noqa: E402
+from runner_product import ProductAPIError  # noqa: E402
 from runner_split_probe import SplitProbeOutcome  # noqa: E402
 from runner_split_run import SplitRunSpec, execute_split_run  # noqa: E402
 from runner_window import WatchSample  # noqa: E402
@@ -152,6 +153,10 @@ class FakePorts:
         self.probe_status = {"pre": PASS, "post": PASS}
         self.events_raw: list = []
         self.statuses = [{"id": "draft-1", "state": "running", "phase": "execution"}]
+        # 제품 snapshot 모양 그대로: 빠진 끝점이 없으면 counts.omitted 칸이 없다(omitempty)
+        self.workflow = {"job_id": "draft-1", "endpoints": [{"source": "browser_navigation"}, {"source": "api_recon_runtime"},
+                                                            {"source": "html_link"}, {"source": "html_link"}],
+                         "counts": {"pages": 2}}
         self.record = {"version": 1, "task_id": 42, "goal": dict(GOAL),
                        "model": {"requests": 2, "sampling_overwrites": 0, "sampling": dict(SAMPLING)},
                        "run": {"phase": "closed", "run_ref": "run-draft-1",
@@ -302,6 +307,12 @@ class FakePorts:
         self._call("run_record")
         return self.record
 
+    def workflow_snapshot(self, draft_id):
+        self._call("workflow_snapshot")
+        if isinstance(self.workflow, Exception):
+            raise self.workflow
+        return self.workflow
+
     def copy_boundary_evidence(self):
         self._call("copy_boundary_evidence")
 
@@ -359,7 +370,7 @@ def run(mutate=None, **spec_changes):
 
 ORDER_HEAD = ["preexisting", "image_ids", "meter_describe", "tool_surface", "host_spec", "planned_subnets", "up", "snapshot:pre", "check:pre", "probes:pre", "dns_token",
               "events:start", "watch:start", "scoreboard:pre", "prepare_round", "start_round"]
-ORDER_TAIL = ["seal", "meter:drained", "stop_round", "wait_closed", "snapshot:post", "check:post", "probes:post", "scoreboard:post",
+ORDER_TAIL = ["seal", "meter:drained", "stop_round", "wait_closed", "workflow_snapshot", "snapshot:post", "check:post", "probes:post", "scoreboard:post",
               "stop_boundary", "watch:stop",
               "events:stop", "status", "run_record", "control_policy", "product_files", "runtime_conditions",
               "copy_boundary_evidence",
@@ -381,7 +392,12 @@ class TestOrder(unittest.TestCase):
                                                "pre-probe.json",
                                                "post-probe.json", "task.json", "llm-summary.json",
                                                "window-watch.json", "product-end.json", "product-model.json", "tool-surface.json",
-                                               "product-files.json", "fault-stall.json", RESULT_NAME})
+                                               "product-files.json", "discovery-sources.json", "fault-stall.json", RESULT_NAME})
+        self.assertEqual(evidence.files["discovery-sources.json"], {
+            "format": "abc2lab-eval-runner-discovery-sources-v1", "endpoints": 4,
+            "by_source": {"api_recon_runtime": 1, "browser_navigation": 1, "html_link": 2}, "browser": 1, "api_recon": 1,
+            "omitted": 0, "detail_truncated": False})
+        self.assertEqual(result["discovery_sources"], evidence.files["discovery-sources.json"])
         self.assertEqual(evidence.files[RESULT_NAME], result)
         # 멈춤 집계는 B처럼 기록만 한다: 이 가짜 기록(시각 칸 없음)은 고정 코드로 남고 회차는 그대로 완료다
         self.assertEqual(evidence.files["fault-stall.json"], {"format": "abc2lab-eval-runner-fault-stall-v1", "judged": False,
@@ -997,6 +1013,47 @@ class TestPreservationV3(unittest.TestCase):
         self.assertNotIn("sign", ports.calls)
         self.assertNotIn(NAME, evidence.files)
 
+
+
+class TestDiscoverySources(unittest.TestCase):
+    """O 끝 워크플로 snapshot의 발견 출처별 건수(고정 초안 §8). 기록만 하고 회차 유효성에 쓰지 않는다."""
+
+    def test_counts_by_source_and_groups(self):
+        from runner_split_run import discovery_sources
+        snapshot = {"endpoints": [{"source": "browser_xhr"}, {"source": "browser_form"}, {"source": "api_recon_static"},
+                                  {"source": "bundle_string", "path": "/secret-looking"}, {"source": "Bad Source"}, {}, "x"],
+                    "counts": {"omitted": 3}, "detail_truncated": True}
+        got = discovery_sources(snapshot)
+        self.assertEqual(got, {"format": "abc2lab-eval-runner-discovery-sources-v1", "endpoints": 7,
+                               "by_source": {"api_recon_static": 1, "browser_form": 1, "browser_xhr": 1, "bundle_string": 1,
+                                             "invalid": 3},
+                               "browser": 2, "api_recon": 1, "omitted": 3, "detail_truncated": True})
+        self.assertNotIn("secret-looking", json.dumps(got))  # 경로는 남기지 않는다
+        # counts.omitted는 omitempty라 칸이 없으면 0, 정수가 아니거나 음수거나 counts가 객체가 아니면 모름(null)
+        for counts, want in (({}, 0), ({"pages": 3}, 0), ({"omitted": 0}, 0), ({"omitted": 5}, 5), ({"omitted": -1}, None),
+                             ({"omitted": "3"}, None), ({"omitted": True}, None), ({"omitted": None}, None)):
+            with self.subTest(counts=counts):
+                self.assertEqual(discovery_sources({"endpoints": [], "counts": counts})["omitted"], want)
+        self.assertIsNone(discovery_sources({"endpoints": []})["omitted"])
+        self.assertIsNone(discovery_sources({"endpoints": [], "counts": []})["omitted"])
+
+    def test_read_failure_is_recorded_not_fatal(self):
+        result, ports, evidence = run(lambda p: setattr(p, "workflow", ProductAPIError("product_workflow_invalid")))
+        self.assertEqual(result["status"], "complete", result)
+        self.assertEqual(evidence.files["discovery-sources.json"],
+                         {"format": "abc2lab-eval-runner-discovery-sources-v1", "error": "product_workflow_invalid"})
+
+    def test_failure_records_only_a_fixed_code(self):
+        # 구동기 오류 글에는 경로·초안 ID·제품 사유가 붙는다(예: HTTP 503). 근거·요약에는 앞부분 고정 코드만 남는다(#725 리뷰).
+        for message, code in (("product_http_503:/api/product/workflows/draft-1", "product_http_503"),
+                              ("product_http_409:/api/product/workflows/draft-1:workflow_busy", "product_http_409"),
+                              ("product_draft_mismatch", "product_draft_mismatch"),
+                              ("draft-1 leaked", "discovery_sources_failed"), ("", "discovery_sources_failed")):
+            with self.subTest(message=message):
+                result, _, evidence = run(lambda p, m=message: setattr(p, "workflow", ProductAPIError(m)))
+                recorded = evidence.files["discovery-sources.json"]
+                self.assertEqual(recorded, {"format": "abc2lab-eval-runner-discovery-sources-v1", "error": code})
+                self.assertNotIn("draft-1", json.dumps(recorded) + json.dumps(result["discovery_sources"]))
 
 
 class TestProductFaultStall(unittest.TestCase):

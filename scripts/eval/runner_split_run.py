@@ -257,6 +257,7 @@ class SplitRunPorts(Protocol):
     def seal(self, meter_container_id: str) -> None: ...
     def stop_boundary(self, boundary_container_id: str) -> None: ...
     def run_record(self, task_id: str) -> dict: ...
+    def workflow_snapshot(self, draft_id: str) -> dict: ...
     def control_policy(self, task_id: str) -> dict: ...
     def product_files(self) -> dict: ...
     def runtime_conditions(self, draft_id: str) -> bytes: ...
@@ -336,6 +337,48 @@ def _split_window(spec: SplitRunSpec, evidence, state: _SplitState, pre: dict, s
     return record
 
 
+DISCOVERY_SOURCES_FORMAT = "abc2lab-eval-runner-discovery-sources-v1"
+DISCOVERY_SOURCES_NAME = "discovery-sources.json"
+_SOURCE_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
+# 구동기 오류 글의 앞부분(`product_http_503` 등). 뒤의 경로·초안 ID·제품 사유는 근거에 남기지 않는다(#725 리뷰).
+_PRODUCT_CODE = re.compile(r"product_[a-z0-9_]{1,62}\Z")
+
+
+def discovery_sources(snapshot: dict) -> dict:
+    """O 회차 끝 워크플로 snapshot의 끝점 발견 출처별 건수(고정 초안 §8: MCP 출처 발견 비중). 출처 이름(프로그램 어휘)과
+    건수만 남기고 경로·값은 남기지 않는다. 브라우저(MCP) 출처는 `browser_*`, API Recon은 `api_recon_*`이다. 목록이 공개 투영
+    상한으로 잘렸으면(`counts.omitted`) 그 수도 같이 남긴다(잘린 끝점의 출처는 모른다)."""
+    by_source: dict[str, int] = {}
+    for endpoint in snapshot["endpoints"]:
+        source = endpoint.get("source") if isinstance(endpoint, dict) else None
+        name = source if isinstance(source, str) and _SOURCE_NAME.fullmatch(source) else "invalid"
+        by_source[name] = by_source.get(name, 0) + 1
+    # 제품은 counts.omitted를 omitempty로 낸다(diagnosisflow.Counts): 칸이 없으면 빠진 끝점이 없다는 뜻이라 0이다(#725 리뷰).
+    # counts 자체가 객체가 아니거나 칸이 정수가 아니거나 음수면 모른다(null).
+    counts = snapshot.get("counts")
+    if isinstance(counts, dict):
+        omitted = counts.get("omitted", 0)
+        omitted = omitted if type(omitted) is int and omitted >= 0 else None
+    else:
+        omitted = None
+    return {"format": DISCOVERY_SOURCES_FORMAT, "endpoints": len(snapshot["endpoints"]), "by_source": dict(sorted(by_source.items())),
+            "browser": sum(n for name, n in by_source.items() if name.startswith("browser_")),
+            "api_recon": sum(n for name, n in by_source.items() if name.startswith("api_recon_")),
+            "omitted": omitted,
+            "detail_truncated": snapshot.get("detail_truncated") is True}
+
+
+def _discovery_sources(ports, draft_id: str) -> dict:
+    """기록만 한다(회차 유효성에 쓰지 않음). 읽지 못하면 고정 코드만 남긴다."""
+    try:
+        return discovery_sources(ports.workflow_snapshot(draft_id))
+    except ProductAPIError as exc:
+        code = str(exc).split(":", 1)[0]
+        return {"format": DISCOVERY_SOURCES_FORMAT, "error": code if _PRODUCT_CODE.fullmatch(code) else "discovery_sources_failed"}
+    except Exception:
+        return {"format": DISCOVERY_SOURCES_FORMAT, "error": "discovery_sources_failed"}
+
+
 def product_fault_stall(calls: bytes, meter_rows: list[dict], window_start: str, window_end: str, engine_end: dict) -> dict:
     """O 회차의 제공자 장애 멈춤 판정 재료. 제품 호출 기록 줄을 게이트웨이 행 자리에 넣는다(칸·어휘가 같다, #629).
     B(runner._fault_stall)처럼 읽지 못하면 회차를 무효로 하지 않고 고정 코드만 남긴다."""
@@ -408,6 +451,9 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     # 실행 기록·장부·호출 기록을 읽는다(#665 리뷰).
     _step(state, "product_stop_failed", lambda: ports.stop_round(draft_id))
     closed = _step(state, "product_close_failed", lambda: ports.wait_closed(draft_id, spec.product_close_seconds))
+    # 끝난 회차의 발견 출처별 건수(고정 초안 §8의 MCP 출처 비중). 제품이 멈춘 뒤라 snapshot이 더 바뀌지 않는다.
+    state.summary["discovery_sources"] = _discovery_sources(ports, draft_id)
+    _step(state, "evidence_write_failed", lambda: evidence.write_json(DISCOVERY_SOURCES_NAME, state.summary["discovery_sources"]))
 
     post = _step(state, "post_facts_failed", lambda: ports.snapshot("post"))
     # pre~post 사이 데몬·망·구성원·주소·바인딩·컨테이너 교체·재시작(B와 같은 compare_snapshots, #668 리뷰). 배치 검사는

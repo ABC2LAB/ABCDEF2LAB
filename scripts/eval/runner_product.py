@@ -304,6 +304,19 @@ class ProductDriver:
             raise ProductAPIError("product_control_policy_invalid")
         return view
 
+    def workflow(self, draft_id: str) -> dict:
+        """그 초안 Job의 워크플로 snapshot(`GET /api/product/workflows/{job}`, 계약 workbench-live-data §5). 끝점마다 발견
+        출처(`source`)가 있다. 응답 Job ID가 요청한 초안과 다르면 거부한다."""
+        if not isinstance(draft_id, str) or not _REF.fullmatch(draft_id):
+            raise ProductAPIError("product_draft_invalid")
+        value = self._call("GET", f"/api/product/workflows/{draft_id}")
+        snapshot = value.get("workflow") if isinstance(value, dict) else None
+        if not isinstance(snapshot, dict) or not isinstance(snapshot.get("endpoints"), list):
+            raise ProductAPIError("product_workflow_invalid")
+        if snapshot.get("job_id") != draft_id:
+            raise ProductAPIError("product_draft_mismatch")
+        return snapshot
+
     def status(self, draft_id: str) -> dict:
         """그 초안의 상태. 응답 초안 ID가 요청한 ID와 다르면(다른 작업을 관찰·서명하게 됨) 거부한다."""
         draft = self._draft(self._call("GET", f"{DRAFTS_PATH}/{draft_id}/status"))
