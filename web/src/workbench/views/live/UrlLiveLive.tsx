@@ -1220,7 +1220,7 @@ export function FindingPage({
 
 /**
  * 보고서 발견 목록 위험도 거르기 값: 전체 · 심각 · 높음 · 중간 · 낮음. '등급 없음'(서버가 심각도를 안 줌)은 거르기로 두지 않는다
- * (사용자 11/17) — 그런 줄은 '전체'에서 본다.
+ * (사용자 11/17) — 그런 줄은 전체(거르기 안 함)에서 본다. 화면에 '전체' 칸은 두지 않고 고른 등급을 다시 누르면 전체(11/18).
  */
 export type SevFilter = "all" | SevKey;
 /** 보고서 발견 목록 정렬: 판정 순(기본) · 위험도 순 · 발견 시각 최신 순 · 오래된 순. */
@@ -1549,6 +1549,8 @@ export function UrlReportLive() {
   // 고른 위험도에 해당하는 줄이 (다시 읽은 뒤) 없어졌으면 전체로 본다 — 빈 목록이 '발견 없음'으로 읽히지 않게
   const sevCount = (k: SevFilter) => (k === "all" ? sorted.length : sorted.filter((e) => sevOf(e) === k).length);
   const sevNow: SevFilter = sevCount(sevF) ? sevF : "all";
+  // 거르기 칸: 줄이 있는 등급만('전체' 칸은 두지 않는다)
+  const sevChips = SEV_FILTERS.filter(([k]) => k !== "all" && sevCount(k) > 0);
   const shown = arrangeEntries(sorted, sevNow, order);
   // 고른 발견도 보이는 줄(거르기 · 정렬 결과) 안에서만 찾는다: 재조회로 위험도가 바뀌어 거르기에서 빠지면 오른쪽 상세 ·
   // '상세 보기'가 목록에 없는 발견에 남지 않고 보이는 줄로 옮긴다(#677 이동찬 리뷰)
@@ -1609,26 +1611,30 @@ export function UrlReportLive() {
   else
     listBody = (
       <>
-        {/* 거르기 · 정렬: 위험도(줄이 있는 등급만, 수와 함께) · 발견 시각 순 */}
+        {/* 거르기 · 정렬: 위험도(줄이 있는 등급만, 수와 함께) · 발견 시각 순. '전체 n개' 칸은 오른쪽 'n / n건'과 수가 겹쳐
+            두지 않는다(사용자 11/18) — 등급 칸을 누르면 그 등급만, 다시 누르면 전체 */}
         <div className={cx(s.fctl, s.rfil)}>
-          <div className={s.seg} role="radiogroup" aria-label="위험도로 거르기">
-            {SEV_FILTERS.filter(([k]) => k === "all" || sevCount(k) > 0).map(([k, label]) => (
-              <label key={k}>
-                <input
-                  type="radio"
-                  name="rSev"
-                  checked={sevNow === k}
-                  onChange={() => {
-                    setSevF(k);
-                    // 오른쪽 상세에 떠 있던 발견이 거르기로 빠지면 보이는 첫 줄로 옮긴다
-                    const next = arrangeEntries(sorted, k, order);
-                    if (sel && !next.some((e) => e.entry_id === sel)) setSel(next[0]?.entry_id ?? null);
-                  }}
-                />
-                <span>{`${label} ${sevCount(k)}개`}</span>
-              </label>
-            ))}
-          </div>
+          {sevChips.length ? (
+            // biome-ignore lint/a11y/useSemanticElements: 켜고 끄는 거르기 칸 묶음 (fieldset 은 폼 입력 묶음이라 맞지 않음)
+            <div className={s.seg} role="group" aria-label="위험도로 거르기">
+              {sevChips.map(([k, label]) => (
+                <label key={k}>
+                  <input
+                    type="checkbox"
+                    checked={sevNow === k}
+                    onChange={() => {
+                      const to: SevFilter = sevNow === k ? "all" : k;
+                      setSevF(to);
+                      // 오른쪽 상세에 떠 있던 발견이 거르기로 빠지면 보이는 첫 줄로 옮긴다
+                      const next = arrangeEntries(sorted, to, order);
+                      if (sel && !next.some((e) => e.entry_id === sel)) setSel(next[0]?.entry_id ?? null);
+                    }}
+                  />
+                  <span>{`${label} ${sevCount(k)}개`}</span>
+                </label>
+              ))}
+            </div>
+          ) : null}
           <label className={s.rord}>
             <span>정렬</span>
             <select className={s.inp} value={order} onChange={(ev) => setOrder(ev.target.value as EntryOrder)}>

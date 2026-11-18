@@ -1640,22 +1640,25 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
       [...(document.getElementById("rList") as HTMLElement).querySelectorAll("button")].map(
         (b) => /후보 \d/.exec(b.textContent ?? "")?.[0],
       );
-    const sevs = within(list).getByRole("radiogroup", { name: "위험도로 거르기" });
-    // 줄이 있는 등급만 수와 함께 (심각 · 중간은 없음, '등급 없음'은 거르기로 두지 않고 전체에서 본다)
+    const sevs = within(list).getByRole("group", { name: "위험도로 거르기" });
+    // 줄이 있는 등급만 수와 함께 (심각 · 중간은 없음, '등급 없음'은 거르기로 두지 않고 전체에서 본다).
+    // '전체 n개' 칸은 오른쪽 'n / n건'과 겹쳐 두지 않는다(사용자 11/18)
     expect(
       within(sevs)
-        .getAllByRole("radio")
+        .getAllByRole("checkbox")
         .map((r) => r.parentElement?.textContent),
-    ).toEqual(["전체 4개", "높음 1개", "낮음 1개"]);
+    ).toEqual(["높음 1개", "낮음 1개"]);
     expect(within(list).getByText("4 / 4건")).toBeInTheDocument();
-    fireEvent.click(within(sevs).getByRole("radio", { name: "높음 1개" }));
+    fireEvent.click(within(sevs).getByRole("checkbox", { name: "높음 1개" }));
     expect(names()).toEqual(["후보 2"]);
     expect(within(list).getByText("1 / 4건")).toBeInTheDocument();
     // 오른쪽 상세도 보이는 줄로 옮긴다
     expect(
       within(screen.getByRole("complementary", { name: "발견 상세" })).getByRole("heading", { level: 2 }),
     ).toHaveTextContent("후보 2");
-    fireEvent.click(within(sevs).getByRole("radio", { name: "전체 4개" }));
+    // 고른 등급을 다시 누르면 전체
+    fireEvent.click(within(sevs).getByRole("checkbox", { name: "높음 1개" }));
+    expect(within(list).getByText("4 / 4건")).toBeInTheDocument();
     const order = within(list).getByRole("combobox", { name: "정렬" });
     fireEvent.change(order, { target: { value: "new" } });
     // 시각을 못 읽는 줄은 시각 순에서 맨 뒤
@@ -1683,7 +1686,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     const list = await screen.findByRole("tabpanel", { name: "발견 목록" });
     const insp = () => screen.getByRole("complementary", { name: "발견 상세" });
     fireEvent.click(within(list).getByRole("button", { name: /후보 2/ }));
-    fireEvent.click(within(list).getByRole("radio", { name: "높음 1개" }));
+    fireEvent.click(within(list).getByRole("checkbox", { name: "높음 1개" }));
     expect(within(insp()).getByRole("heading", { level: 2 })).toHaveTextContent("후보 2");
     // 오른쪽 패널의 '생성·저장'이 저장 결과를 다시 읽는다: 이번엔 후보 2 가 낮음, 후보 3 이 높음
     a.fetchRemediation.mockResolvedValue({
@@ -1697,7 +1700,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     fireEvent.click(within(insp()).getByRole("button", { name: "보안 조치·AI 프롬프트 생성·저장" }));
     await waitFor(() => expect(within(list).queryByRole("button", { name: /후보 2/ })).toBeNull());
     // '높음' 거르기는 그대로, 목록은 후보 3 하나 — 오른쪽 상세 · 줄 표시도 후보 3
-    expect(within(list).getByRole("radio", { name: "높음 1개" })).toBeChecked();
+    expect(within(list).getByRole("checkbox", { name: "높음 1개" })).toBeChecked();
     expect(within(list).getByRole("button", { name: /후보 3/ })).toHaveAttribute("aria-current", "true");
     expect(within(insp()).getByRole("heading", { level: 2 })).toHaveTextContent("후보 3");
     fireEvent.click(within(insp()).getByRole("button", { name: "상세 보기" }));
