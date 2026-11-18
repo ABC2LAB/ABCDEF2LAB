@@ -32,6 +32,11 @@ def options():
             "declared_model_budget_sha256": "4" * 64, "execution_source": "synthetic_fixture"}
 
 
+def model_options():
+    """실제 모델 회차 옵션. 분리 배치 O 설정은 합성 모델 모드가 아니면 실행 출처가 model_run이어야 한다(2026-11-18)."""
+    return options() | {"execution_source": "model_run"}
+
+
 def conditions(side="baseline", **changes):
     return {"layout": "artex-direct/v1" if side == "baseline" else "exploration-split/v1",
             "request_budget": 3, "time_budget_seconds": 60, "model_pin_sha256": "5" * 64,

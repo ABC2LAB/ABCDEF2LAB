@@ -44,11 +44,14 @@ from runner import (  # noqa: E402
     INVALID, RESULT_NAME, RunFailure, _check_subnets, _event_time, _meter_preflight, _ns, _stamp, _step, _stop_events, _stop_watch,
     _wait_budget, _wait_drained, check_meter_logs, first_limit,
 )
-from preservation_record import NAME as PRESERVATION_NAME, build_payload_v3 as preservation_payload_v3, digest  # noqa: E402
+from preservation_record import (  # noqa: E402
+    LLM_NOT_APPLICABLE, LLM_VERIFIED, NAME as PRESERVATION_NAME, build_payload_v3 as preservation_payload_v3, digest,
+)
 import preservation_v3_fields as v3f  # noqa: E402
 from runner_checks import compare_snapshots  # noqa: E402
 from runner_docker import HelperCleanupInterrupt  # noqa: E402
 from runner_evidence import MeterFiles  # noqa: E402
+from runner_fault import FAULT_STALL_FORMAT, FAULT_STALL_NAME, FaultRecordError, fault_stall_record  # noqa: E402
 from runner_llm import judge_product_llm  # noqa: E402
 from runner_probe import PASS  # noqa: E402
 from runner_product_llm import (  # noqa: E402
@@ -224,6 +227,9 @@ class SplitRunSpec:
     driver_settings: dict = field(default_factory=dict)  # O 구동 설정(preservation_v3_fields.O_DRIVER_SETTINGS)
     model_budget_sha256: str = ""
     exploration_policy_sha256: str = ""  # 러너가 만든 경계 설정(boundary.json) 바이트 SHA
+    # 합성 모델 모드(평가 overlay 전용). 참이면 OpenRouter 장부·호출 기록 대조와 사후 검증이 '해당 없음(합성)'이다.
+    synthetic: bool = False
+    scripted_plan_sha256: str = ""  # 합성 모드에서 스크립트 모델이 읽은 계획 사본의 SHA
 
 
 class SplitRunPorts(Protocol):
@@ -329,6 +335,19 @@ def _split_window(spec: SplitRunSpec, evidence, state: _SplitState, pre: dict, s
     return record
 
 
+def product_fault_stall(calls: bytes, meter_rows: list[dict], window_start: str, window_end: str, engine_end: dict) -> dict:
+    """O 회차의 제공자 장애 멈춤 판정 재료. 제품 호출 기록 줄을 게이트웨이 행 자리에 넣는다(칸·어휘가 같다, #629).
+    B(runner._fault_stall)처럼 읽지 못하면 회차를 무효로 하지 않고 고정 코드만 남긴다."""
+    terminal = (engine_end.get("first_terminal") or {}).get("at")
+    try:
+        # 객체가 아닌 줄·빠진 칸은 fault_stall_record 안에서 TypeError·KeyError로 끝나 같은 고정 코드가 된다
+        rows = [json.loads(line) for line in calls.decode("utf-8").splitlines() if line]
+        return fault_stall_record(rows, meter_rows, window_start, window_end, terminal)
+    except (UnicodeDecodeError, ValueError, KeyError, TypeError) as exc:
+        code = str(exc) if isinstance(exc, FaultRecordError) else "fault_stall_rows_invalid"
+        return {"format": FAULT_STALL_FORMAT, "judged": False, "error": code}
+
+
 def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles, evidence, clock: Clock,
                      state: _SplitState) -> None:
     if _step(state, "project_check_failed", ports.preexisting):
@@ -374,6 +393,7 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     stop_reason, forwarded_at_stop = _wait_budget(spec, meter, clock, state, started, watch)
     stop_elapsed = clock.monotonic() - started
     _step(state, "seal_failed", lambda: ports.seal(pre["services"][METER]["id"]))
+    sealed_at = _stamp(clock)  # 멈춤 집계 창 끝(B의 engine_end_at과 같은 자리: 계측기 봉인 직후)
     drained = _wait_drained(spec, meter, clock, state)
     # 강제 취소된 요청이 있으면 B와 같은 공통 조건(run_drain.settle_seconds)만큼 기다린 뒤 관측한다(runner.py와 같은 규칙).
     settled = spec.post_settle_seconds if drained["forced_cancelled_requests"] else 0
@@ -434,12 +454,31 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
         "format": PRODUCT_FILES_FORMAT, "file_sha256": files, "diagnosis_entered": entered, "diagnosis_policy_sha256": fingerprint,
         "policy_ref": policy["policy_ref"], "policy_revision": policy["policy_revision"], "limits": policy["limits"]}))
     _step(state, "boundary_evidence_copy_failed", ports.copy_boundary_evidence)
+    if spec.synthetic:
+        # 합성 모델 회차: 제품은 로컬 모델 설치로 스크립트 모델을 불러 OpenRouter 장부·호출 기록이 없다. 사후 검증·장부 대조는
+        # '해당 없음(합성)'이고, 이 표시는 합성 회차에서만 허용된다(실제 모델 회차에서 나오면 sidecar 검증이 무효로 본다).
+        llm_summary = {"verification": LLM_NOT_APPLICABLE, "sampling_applied": usage["sampling"], "rate_limited": None}
+        _step(state, "evidence_write_failed", lambda: evidence.write_json("product-model.json", {
+            "usage": usage, "call_records": None, "verification": LLM_NOT_APPLICABLE}))
+        _step(state, "evidence_write_failed", lambda: evidence.write_json("llm-summary.json", dict(llm_summary, reasons=[])))
+        _finish_split_summary(spec, state, stop_reason, forwarded_at_stop, limit, drained, settled, pre_board, post_board,
+                              goal, window, usage, task_id, draft_id, files, fingerprint, entered, closed)
+        if spec.preservation is not None:
+            conditions = _step(state, "split_conditions_failed", ports.split_conditions)
+            state.preservation = _preservation_v3(spec, state, pre_board["state_sha256"], stop_reason, limit,
+                                                  engine_end["first_terminal"], llm_summary, files, fingerprint, conditions,
+                                                  usage["sampling_overwrites"], None, None, task_id)
+        return
     ledger, calls = _step(state, "product_records_copy_failed", ports.copy_product_records)
     record_reasons = call_records_reasons(ledger, calls)
     _step(state, "evidence_write_failed", lambda: evidence.write_json("product-model.json", {
         "usage": usage, "call_records": {"reasons": record_reasons}}))
     if record_reasons:
         raise RunFailure(record_reasons[0])
+    # 제공자 장애 멈춤 판정 재료(결정안 §7). B와 같은 함수·같은 창(시작 요청 직전~계측기 봉인 직후)이고, 모델 호출 행은
+    # 제품 호출 기록(게이트웨이 행과 같은 칸·어휘)이다. B처럼 기록만 하고 회차 유효성에 쓰지 않는다.
+    state.summary["fault_stall"] = product_fault_stall(calls, meter_rows, requested_at, sealed_at, engine_end)
+    _step(state, "evidence_write_failed", lambda: evidence.write_json(FAULT_STALL_NAME, state.summary["fault_stall"]))
     # 제품 호출 기록을 B 게이트웨이와 같은 조회 코드로 사후 검증하고(eval-meter -role generation-verify) B와 같은 규칙으로
     # 판정한다(결정안 D(b), 4-11). 샘플링은 제품이 실제로 보낸 값을 표식에 싣고 B 게이트웨이 적용값(선언)과 대조한다.
     _step(state, "llm_verify_failed", lambda: ports.generation_verify(calls, usage["sampling"]))
@@ -451,13 +490,9 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     _step(state, "evidence_write_failed", lambda: evidence.write_json("llm-summary.json", dict(llm_summary, reasons=llm_reasons)))
     if llm_reasons:
         raise RunFailure(llm_reasons[0])
-    state.summary.update(stop_reason=stop_reason, forwarded_at_stop=forwarded_at_stop, first_limit=limit,
-                         drained=drained, post_settle_seconds=spec.post_settle_seconds, post_settle_applied_seconds=settled,
-                         pre_solved=pre_board.get("solved"), post_solved=post_board.get("solved"),
-                         goal_common_sha256=goal["common_sha256"], window_reasons=window["reasons"],
-                         sampling_overwrites=usage["sampling_overwrites"], task_id=task_id, draft_id=draft_id,
-                         product_file_sha256=files, diagnosis_policy_sha256=fingerprint, diagnosis_entered=entered,
-                         product_closed={name: closed.get(name) for name in PRODUCT_END_FIELDS})
+    llm_summary = dict(llm_summary, verification=LLM_VERIFIED)
+    _finish_split_summary(spec, state, stop_reason, forwarded_at_stop, limit, drained, settled, pre_board, post_board,
+                          goal, window, usage, task_id, draft_id, files, fingerprint, entered, closed)
     if spec.preservation is not None:
         # 보존 sidecar v3 O 칸(결정안 §3.3). 해시는 내린 뒤 build_payload_v3가 최종 바이트로 뜬다(경계 원자료 검증 포함).
         conditions = _step(state, "split_conditions_failed", ports.split_conditions)
@@ -467,13 +502,30 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
                                               task_id)
 
 
+def _finish_split_summary(spec: SplitRunSpec, state: _SplitState, stop_reason, forwarded_at_stop, limit, drained, settled,
+                          pre_board: dict, post_board: dict, goal: dict, window: dict, usage: dict, task_id: str, draft_id: str,
+                          files: dict, fingerprint: str, entered: bool, closed: dict) -> None:
+    """완료 회차 요약 칸(실제·합성 모델 공통). 실행 출처와 모델 호출 검증 상태를 같이 남긴다."""
+    state.summary.update(stop_reason=stop_reason, forwarded_at_stop=forwarded_at_stop, first_limit=limit,
+                         drained=drained, post_settle_seconds=spec.post_settle_seconds, post_settle_applied_seconds=settled,
+                         pre_solved=pre_board.get("solved"), post_solved=post_board.get("solved"),
+                         goal_common_sha256=goal["common_sha256"], window_reasons=window["reasons"],
+                         sampling_overwrites=usage["sampling_overwrites"], task_id=task_id, draft_id=draft_id,
+                         product_file_sha256=files, diagnosis_policy_sha256=fingerprint, diagnosis_entered=entered,
+                         product_closed={name: closed.get(name) for name in PRODUCT_END_FIELDS},
+                         execution_source="synthetic_fixture" if spec.synthetic else "model_run",
+                         llm_verification=LLM_NOT_APPLICABLE if spec.synthetic else LLM_VERIFIED,
+                         scripted_plan_sha256=spec.scripted_plan_sha256 or None)
+
+
 def _preservation_v3(spec: SplitRunSpec, state: _SplitState, initial_state: str, stop_reason: str, limit: dict,
                      first_terminal: dict | None, llm_summary: dict, files: dict, fingerprint: str, conditions: dict,
-                     overwrites: dict, reservations: int, lines: int, task_id: str) -> dict:
+                     overwrites: dict, reservations: int | None, lines: int | None, task_id: str) -> dict:
     """O 회차의 v3 칸(공통·쪽별·회차별·제품 블록). 공통 칸은 B(runner._preservation_v3)와 같은 정의로 뜬다."""
     options, surface = spec.preservation, state.summary["tool_surface"]
     common = {"request_budget": spec.request_budget, "time_budget_seconds": spec.time_budget_seconds,
-              "model_pin_sha256": v3f.model_pin_sha256(backend="api", model=spec.model_tag, provider_slug=spec.llm_provider_slug,
+              "model_pin_sha256": v3f.model_pin_sha256(backend="local" if spec.synthetic else "api", model=spec.model_tag,
+                                                       provider_slug=spec.llm_provider_slug,
                                                        provider_name=spec.llm_provider_name,
                                                        sampling=llm_summary["sampling_applied"], serving=None),
               "target_image_id": spec.image_ids["target"], "initial_state_sha256": initial_state,
@@ -492,7 +544,8 @@ def _preservation_v3(spec: SplitRunSpec, state: _SplitState, initial_state: str,
     product = {"source_sha": spec.product_source_sha,
                "image_ids": {name: spec.image_ids[name] for name in ("product", "explore_browser", "fixture")},
                "file_sha256": dict(files), "split_conditions": conditions, "sampling_overwrites": overwrites,
-               "call_records": {"reservations": reservations, "lines": lines}}
+               "call_records": None if spec.synthetic else {"reservations": reservations, "lines": lines},
+               "llm_verification": llm_summary["verification"]}
     return dict(series_ref=options["series_ref"], execution_source=options["execution_source"], run_id=spec.run_id, side="ours",
                 repeat_index=spec.repeat_index, engine_source_sha=spec.product_source_sha,
                 engine_image_id=spec.image_ids["product"], common=common, side_conditions=side, run=run, product=product,

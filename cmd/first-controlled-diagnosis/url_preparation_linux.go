@@ -80,7 +80,20 @@ func (b *urlPreparationRuntime) issue(l *urlLoadedProfile, jobID string, actual 
 	if policy.ValidUntil, ok = urlAuthorityUntil(now, l.profile.Budget.DurationSeconds, int64(c.ShutdownTimeoutSeconds), l.profile.ValidUntil); !ok {
 		return c, errPreparation
 	}
-	// E③ 확정 단계 몫(사용자 결정 2026-11-18 ②). 이 판은 정책 선언을 실행에 연결하지 않아 시험할 종류가 0이다.
+	// E③ 정책 선언 동결(결정 §4.2): 지금 대상 판에 유효한 선언이 있으면 그 정본 바이트와 정책 출처를 회차 디렉터리에
+	// 쓴다. 선언이 없으면 쓰지 않고, 그 회차의 확정 단계는 꺼진다.
+	if l.productTarget != nil && l.productRegistry != nil {
+		if declaration, active := l.productRegistry.activeDeclaration(*l.productTarget); active {
+			frozen, frozenPolicy, err := freezeDeclaration(declaration, jobID, policy.ValidFrom, policy.ValidUntil,
+				l.productTarget.Target.ApprovedAt, l.productTarget.Target.ExpiresAt)
+			if err != nil || write(productFrozenDeclarationFile, frozen) != nil || write(productFrozenPolicyFile, frozenPolicy) != nil {
+				return c, errPreparation
+			}
+		}
+	}
+	// E③ 확정 단계 몫(사용자 결정 2026-11-18 ②). 확정 단계는 아직 서버에 연결되지 않아(E② Transport·Journal 통합 전)
+	// 이 회차는 확정 요청을 보내지 않는다. 그래서 위에서 선언을 동결했더라도 몫은 0이다. 동결 선언의 확정 대상 종류 수를
+	// 몫에 반영하는 일은 확정 단계 연결과 같이 한다. 그 전에 몫을 떼면 모델 단계 예산만 이유 없이 준다.
 	policy = withE3ConfirmationShare(policy, l.profile.Budget.DurationSeconds, 0)
 	raw, err := json.Marshal(policy)
 	if err != nil {

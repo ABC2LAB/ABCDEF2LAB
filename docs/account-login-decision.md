@@ -1,6 +1,6 @@
 # 시험 계정 분류와 로그인 복원 결정안 (C14·탐색 계약 §9-7)
 
-상태: **결정안**(최민준 작성, 이동찬·윤재상 리뷰, 화면·흐름은 이경준). 리뷰로 확정되기 전에는 구현하지 않는다. 확정되면 [개발 계획의 계정 항목](development-plan.md#1111-개선-순서--원본-능력-보존-우선), [탐색 계약](contracts/exploration-boundary.md) §8·§9-7, [수용시험](evaluation/browser-acceptance.md) S07~S09를 같은 PR 묶음으로 고친다.
+상태: **결정안**(최민준 작성, 이동찬·윤재상 리뷰, 화면·흐름은 이경준). 리뷰로 확정되기 전에는 구현하지 않는다. 확정되면 [개발 계획의 계정 항목](archive/development-plan-v3.md#1111-개선-순서--원본-능력-보존-우선), [탐색 계약](contracts/exploration-boundary.md) §8·§9-7, [수용시험](evaluation/browser-acceptance.md) S07~S09를 같은 PR 묶음으로 고친다.
 
 ## 왜
 

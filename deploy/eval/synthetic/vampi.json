@@ -1,0 +1,17 @@
+{
+ "format": "abc2lab.scripted-product-plan/v1",
+ "model": "scripted-product:v1",
+ "timeout_ms": 60000,
+ "exploration": [
+  {"navigate": "{origin}/"},
+  {"bash": "curl -s -o /dev/null -w 'status=%{http_code}\\n' {origin}/users/v1"}
+ ],
+ "intents": [
+  "Read the public user listing at {origin}/users/v1 and the book listing at {origin}/books/v1.",
+  "Re-read the book listing at {origin}/books/v1."
+ ],
+ "commands": [
+  "curl -s -o /dev/null -w 'status=%{http_code}\\n' {origin}/users/v1",
+  "curl -s -o /dev/null -w 'status=%{http_code}\\n' {origin}/books/v1"
+ ]
+}
