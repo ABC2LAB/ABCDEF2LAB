@@ -835,6 +835,24 @@ class TestPreservationV3(unittest.TestCase):
             result, ports, evidence = run(mutate, **self.v3_spec(**changes))
         return result, ports, evidence, seen
 
+    def test_signed_sidecar_write_failure_is_a_fixed_reason(self):
+        # #710 리뷰: 서명 파일 저장이 실패해도(이미 있음·쓰기 실패) 예외가 빠져나가지 않고 고정 사유와 결과 기록을 남긴다.
+        from preservation_record import NAME
+        from runner_evidence import EvidenceError
+        from test_runner import FakeEvidence
+        original = FakeEvidence.write_json
+
+        def failing(self, name, payload):
+            if name == NAME:
+                raise EvidenceError("evidence_exists")
+            return original(self, name, payload)
+        with mock.patch.object(FakeEvidence, "write_json", failing):
+            result, ports, evidence, _ = self.run_v3()
+        self.assertEqual((result["status"], result["reasons"]), ("invalid", ["preservation_write_failed"]))
+        self.assertEqual(evidence.files[RESULT_NAME]["reasons"], ["preservation_write_failed"])  # 결과 기록은 남는다
+        self.assertNotIn(NAME, evidence.files)
+        self.assertIn("sign", ports.calls)
+
     def test_parts_pass_the_v3_shape_and_are_signed_after_down(self):
         import preservation_v3_fields as v3f
         from preservation_record import FORMAT_V3, NAME, _validate_v3

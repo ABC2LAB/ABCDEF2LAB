@@ -140,7 +140,7 @@ def run_split_ours(config: RunnerConfig, preflight: object, *, repeat_index: int
         declared = split_declared(config, preflight, manifest)
         plan = plan_split_run(config, split, run_id=new_run_id(POLICY_SWITCH_SIDE, now), target_image=declared.target_image,
                               meter_port=declared.meter_port)
-        defaults, _ = read_workflow_defaults()
+        defaults, defaults_sha = read_workflow_defaults()
         # 경계는 계측기·B 회차와 같은 경로 가림 키를 받는다(계약 §4.1). runner.main이 check_key_files로 이미 확인했다.
         path_key = acceptance_path_key(config)
         # 키 지문은 경계 보호 입력에 넣는 바로 그 바이트에서 뜬다(#699 리뷰: 따로 읽으면 사이에 키 파일이 바뀌어도 통과).
@@ -162,7 +162,8 @@ def run_split_ours(config: RunnerConfig, preflight: object, *, repeat_index: int
                                sleep=time.sleep, monotonic=time.monotonic)
         ports = DockerSplitPorts(config=config, split=split, plan=plan, directory=directory, docker=docker, driver=driver,
                                  inputs=inputs, rendered=rendered, manifest=manifest, model_key=model_key,
-                                 exploration=dict(EXPLORATION_BLOCK), llm_env=llm_lookup_env(config, preflight))
+                                 exploration=dict(EXPLORATION_BLOCK), llm_env=llm_lookup_env(config, preflight),
+                                 workflow_defaults=(defaults, defaults_sha))
         # 경계 설정(boundary.json)은 회차 값 없이 정렬된 JSON이라 같은 설정이면 같은 지문이다(결정안 §3.3)
         boundary_sha = hashlib.sha256(inputs.files["boundary"].read_bytes()).hexdigest()
         spec = split_run_spec(config, plan, declared, rendered, path_key_ref, manifest=manifest, repeat_index=repeat_index,

@@ -190,7 +190,7 @@ def product_record_names(approval_id: str) -> tuple[str, str]:
 class DockerSplitPorts:
     def __init__(self, *, config: RunnerConfig, split: SplitConfig, plan: SplitPlan, directory: RunDirectory, docker: Docker,
                  driver: ProductDriver, inputs: SplitInputs, rendered: dict, manifest: dict, model_key: ModelKey,
-                 exploration: dict, llm_env: dict | None = None):
+                 exploration: dict, llm_env: dict | None = None, workflow_defaults: tuple[dict, str] | None = None):
         self.config, self.split, self.plan, self.directory = config, split, plan, directory
         self.docker, self.driver, self.inputs, self.rendered = docker, driver, inputs, rendered
         self.manifest, self.model_key, self.exploration = manifest, model_key, exploration
@@ -198,6 +198,9 @@ class DockerSplitPorts:
         self.llm_env = dict(llm_env or {})
         self.base_args = split_compose_args(plan)
         self.registration: dict | None = None
+        # 설치 입력을 만들 때 실제로 읽은 워크플로 기본값과 그 바이트 SHA(#710 리뷰: 회차 끝에 다시 읽으면 그 사이 바뀐 원본의
+        # SHA가 서명된다). 없으면(구 호출자) 회차 끝에 읽는다.
+        self.workflow_defaults = workflow_defaults
         self.timeout = config.run["snapshot_timeout_seconds"]
 
     # ── 회차 시작 전·띄우기 ──────────────────────────────────────────────────────────────────────────────────
@@ -321,8 +324,10 @@ class DockerSplitPorts:
         return self.driver.control_policy(task_id)
 
     def split_conditions(self) -> dict:
-        """이 회차의 설치·등록 조건(runner_split.split_conditions). 워크플로 기본값 파일은 레포 정본을 다시 읽는다."""
-        defaults, sha = read_workflow_defaults()
+        """이 회차의 설치·등록 조건(runner_split.split_conditions). 워크플로 기본값과 SHA는 설치 입력을 만들 때 읽은 값이다."""
+        if self.workflow_defaults is None:
+            raise ValueError("split ports: workflow defaults not bound")  # 회차 끝에 다시 읽어 다른 원본을 서명하지 않는다
+        defaults, sha = self.workflow_defaults
         return split_conditions(workflow_defaults=defaults, workflow_sha256=sha, install=self.inputs.install_public,
                                 registration=self.registration)
 

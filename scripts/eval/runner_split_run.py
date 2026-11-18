@@ -532,7 +532,9 @@ def execute_split_run(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFile
             parts = dict(state.preservation)
             parts["boundary"] = dict(parts["boundary"], directory=ports.boundary_directory())
             payload = _step(state, "preservation_record_failed", lambda: preservation_payload_v3(meter=meter, **parts))
-            evidence.write_json(PRESERVATION_NAME, _step(state, "preservation_sign_failed", lambda: ports.sign(payload)))
+            signed = _step(state, "preservation_sign_failed", lambda: ports.sign(payload))
+            # 저장 실패(이미 있는 파일·쓰기 실패)도 고정 사유로 남기고 결과 기록까지 간다(#710 리뷰)
+            _step(state, "preservation_write_failed", lambda: evidence.write_json(PRESERVATION_NAME, signed))
         except RunFailure as exc:
             reasons.append(exc.code)
             reasons.extend(exc.also)
