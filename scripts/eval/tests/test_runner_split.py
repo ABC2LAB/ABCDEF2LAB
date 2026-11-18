@@ -16,6 +16,7 @@ from pathlib import Path  # noqa: E402
 
 from runner_config import REPO_ROOT  # noqa: E402
 from runner_split import (  # noqa: E402
+    PRODUCT_MODEL_API, SCRIPTED_MODEL_BASE_URL, SCRIPTED_MODEL_IP, synthetic_local_model,
     BOUNDARY_EVIDENCE_DIR, EXPLORATION_BLOCK, METER_EXPLORE_IP, REGISTRATION_BASIS, WIDE_METHODS, WORKFLOW_DEFAULTS,
     SplitInputError, boundary_config, install_input, split_conditions, read_boundary_template, read_workflow_defaults, target_registration,
     to_eval_address,
@@ -127,6 +128,48 @@ class TestInstallInput(unittest.TestCase):
         block = text[text.index('"target_policy": { "exploration": {'):]
         block = block[:block.index("```")]
         self.assertEqual(dict(re.findall(r'"(\w+)": "([^"]+)"', block)), EXPLORATION_BLOCK)
+
+
+class TestSyntheticInstall(unittest.TestCase):
+    """합성 모델 모드 설치 입력(2026-11-18 사용자 결정 (a)): local_model 주소 핀은 스크립트 모델 주소·포트 하나만이다."""
+
+    def setUp(self):
+        self.defaults, _ = read_workflow_defaults()
+
+    def build(self, **changes):
+        options = dict(admin_password="x" * 24, manifest=None, meter_port=8080, workflow_defaults=self.defaults,
+                       wide_writes=True, valid_for_hours=4, max_runs=2, local_model=synthetic_local_model("scripted/m:v1", 32, 1024))
+        options.update(changes)
+        return install_input(**options)
+
+    def test_local_model_pins_one_address_and_port(self):
+        value = self.build()
+        self.assertNotIn("openrouter_manifest", value)
+        self.assertEqual(value["local_model"], {"model": "scripted/m:v1", "base_url": SCRIPTED_MODEL_BASE_URL,
+                                                "addresses": [SCRIPTED_MODEL_IP], "context_window_k": 32, "max_tokens": 1024})
+        self.assertEqual(value["target_policy"]["allowed_ports"], [8080])  # 대상 정책은 실제 모델 회차와 같다
+
+    def test_other_pins_and_mixed_models_are_refused(self):
+        good = synthetic_local_model("scripted/m:v1", 32, 1024)
+        bad = [dict(good, addresses=[SCRIPTED_MODEL_IP, "10.252.2.31"]), dict(good, addresses=["10.252.2.31"]),
+               dict(good, base_url="http://eval-scripted-model:8081/v1"), dict(good, base_url="http://other:8080/v1"),
+               dict(good, extra=1), {k: v for k, v in good.items() if k != "max_tokens"}, dict(good, context_window_k=0),
+               dict(good, model="")]
+        for local in bad:
+            with self.subTest(local=local), self.assertRaisesRegex(SplitInputError, "split_install_input_invalid"):
+                self.build(local_model=local)
+        with self.assertRaisesRegex(SplitInputError, "split_install_input_invalid"):
+            self.build(manifest=MANIFEST)  # 둘 다 주면 거부
+        with self.assertRaisesRegex(SplitInputError, "split_install_input_invalid"):
+            self.build(local_model=None)  # 둘 다 없으면 거부
+        for args in (("", 32, 1), ("m", 0, 1), ("m", 32, 0), ("m", True, 1)):
+            with self.subTest(args=args), self.assertRaisesRegex(SplitInputError, "split_synthetic_model_invalid"):
+                synthetic_local_model(*args)
+
+    def test_external_probe_sample_is_the_product_model_api(self):
+        # 여러 출발점 점검의 외부 견본은 제품이 고정한 모델 API 주소(llmpolicy.OpenRouterBaseURL)와 같다.
+        go = (REPO_ROOT / "llmpolicy" / "openrouter.go").read_text(encoding="utf-8")
+        self.assertEqual(re.search(r'const OpenRouterBaseURL = "([^"]+)"', go).group(1), PRODUCT_MODEL_API)
 
 
 class TestTargetRegistration(unittest.TestCase):

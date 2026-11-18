@@ -29,6 +29,14 @@ TARGET_CIDR = "10.252.3.0/24"
 # 계측기 본 입구(대상 이름이 풀리는 주소, target 망)와 탐색 입구(경계 평가 upstream, eval_explore_ingress 망).
 METER_MAIN_IP = "10.252.3.20"
 METER_EXPLORE_IP = "10.252.11.20"
+# 합성 모델 모드(평가 overlay compose.split-synthetic.yaml 전용, 2026-11-18 사용자 결정 (a)). 제품 local_model 주소 핀은 이 서비스의
+# 주소·포트 하나만이다(렌더 시험이 overlay와 대조). 제품 수용시험의 합성 모델(172.31.252.30)과 같은 호스트 번호다.
+SCRIPTED_MODEL_HOST = "eval-scripted-model"
+SCRIPTED_MODEL_IP = "10.252.2.30"
+SCRIPTED_MODEL_PORT = 8080
+SCRIPTED_MODEL_BASE_URL = f"http://{SCRIPTED_MODEL_HOST}:{SCRIPTED_MODEL_PORT}/v1"
+# 제품이 고정한 모델 API 주소(llmpolicy.OpenRouterBaseURL, 시험이 Go 상수와 대조). 여러 출발점 점검의 외부 견본 목적지다.
+PRODUCT_MODEL_API = "https://openrouter.ai/api/v1"
 # 경계 원자료 디렉터리(overlay init이 경계 uid 소유 0700으로 만든다, 계약 §4.1 결정 B).
 BOUNDARY_EVIDENCE_DIR = "/evidence/run"
 BOUNDARY_TEMPLATE = REPO_ROOT / "deploy" / "product" / "explore-boundary.example.json"
@@ -130,14 +138,32 @@ def read_workflow_defaults(path: Path = WORKFLOW_DEFAULTS) -> tuple[dict, str]:
     return value, hashlib.sha256(raw).hexdigest()
 
 
-def install_input(*, admin_password: str, manifest: dict, meter_port: int, workflow_defaults: dict, wide_writes: bool,
-                  valid_for_hours: int, max_runs: int) -> dict:
+def synthetic_local_model(model: str, context_window_k: int, max_tokens: int) -> dict:
+    """합성 모드의 제품 local_model 블록. 주소 핀은 스크립트 모델 서비스의 주소·포트 하나다(사용자 결정 조건)."""
+    if (not isinstance(model, str) or not model or type(context_window_k) is not int or not 1 <= context_window_k <= 4096
+            or type(max_tokens) is not int or not 1 <= max_tokens <= 1 << 20):
+        raise SplitInputError("split_synthetic_model_invalid")
+    return {"model": model, "base_url": SCRIPTED_MODEL_BASE_URL, "addresses": [SCRIPTED_MODEL_IP],
+            "context_window_k": context_window_k, "max_tokens": max_tokens}
+
+
+def install_input(*, admin_password: str, manifest: dict | None, meter_port: int, workflow_defaults: dict, wide_writes: bool,
+                  valid_for_hours: int, max_runs: int, local_model: dict | None = None) -> dict:
     """평가 O 회차의 제품 설치 입력(v2). 결정안 B(a): 상한 칸(max_requests·max_targets·runtime_limits)은 넣지 않아 제품
     기본값을 쓴다. 워크플로 블록은 제품 기본값 파일 그대로이고, 쓰기 허용만 회차 설정(wide_writes)을 따른다. 대상 망은
     평가 대역이고 http 대상(C22)이라 허용 포트는 계측기 본 입구 포트 하나, DNS 증명은 overlay의 fixture DNS로 한다.
     모델 키는 여기 넣지 않는다(설치 뒤 제품 API로 넣는다). 관리자 비밀번호는 호출자가 회차마다 만든 값이다."""
-    if (not isinstance(admin_password, str) or len(admin_password) < 12 or not isinstance(manifest, dict)
-            or manifest.get("version") != 3 or type(meter_port) is not int or not 0 < meter_port < 65536
+    # 모델은 둘 중 하나다: 승인 OpenRouter manifest(실제 모델) 또는 합성 모드의 local_model(스크립트 모델 주소 하나).
+    real = isinstance(manifest, dict) and manifest.get("version") == 3 and local_model is None
+    synthetic = False
+    if manifest is None and isinstance(local_model, dict):
+        try:  # 주소·포트·칸이 합성 블록과 정확히 같을 때만(다른 주소 핀은 받지 않는다)
+            synthetic = local_model == synthetic_local_model(*(local_model.get(name) for name in
+                                                               ("model", "context_window_k", "max_tokens")))
+        except SplitInputError:
+            synthetic = False
+    if (not isinstance(admin_password, str) or len(admin_password) < 12 or not (real or synthetic)
+            or type(meter_port) is not int or not 0 < meter_port < 65536
             or type(wide_writes) is not bool or type(valid_for_hours) is not int or valid_for_hours < 1
             or type(max_runs) is not int or max_runs < 1):
         raise SplitInputError("split_install_input_invalid")
@@ -150,7 +176,7 @@ def install_input(*, admin_password: str, manifest: dict, meter_port: int, workf
             "target_policy": {"format": TARGET_POLICY_FORMAT, "allowed_ports": [meter_port], "private_cidrs": [TARGET_CIDR],
                               "resolver_address": f"{FIXTURE_DNS_IP}:{FIXTURE_DNS_PORT}", "workflow": workflow,
                               "exploration": dict(EXPLORATION_BLOCK)},
-            "openrouter_manifest": manifest}
+            **({"openrouter_manifest": manifest} if real else {"local_model": dict(local_model)})}
 
 
 def _is_ip(value: str) -> bool:

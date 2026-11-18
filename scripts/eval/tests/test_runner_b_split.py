@@ -19,7 +19,7 @@ from runner_engine import EngineAPIError  # noqa: E402
 from runner_goal import common_goal, common_goal_sha256  # noqa: E402
 from runner_probe import POSITIVE, probe_expectations  # noqa: E402
 from test_preflight import configuration  # noqa: E402
-from test_preservation_record import options  # noqa: E402
+from test_preservation_record import model_options, options  # noqa: E402
 from test_runner_config import runner_config  # noqa: E402
 from test_runner_probe import make_snapshot  # noqa: E402
 from test_runner_split_config import split_block  # noqa: E402
@@ -27,7 +27,7 @@ from test_runner_split_config import split_block  # noqa: E402
 
 def split_config(with_split=True):
     payload = runner_config()
-    payload.update(purpose="browser_acceptance", path_key_file="/srv/eval/path.key", preservation=options())
+    payload.update(purpose="browser_acceptance", path_key_file="/srv/eval/path.key", preservation=model_options())
     if with_split:
         payload["split"] = split_block()
     return parse_runner_config(payload)
