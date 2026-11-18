@@ -1153,6 +1153,20 @@ class TestCompleteRun(unittest.TestCase):
         self.assertEqual(common["initial_state_sha256"], "state-pre")  # 가짜 점수판의 상태 지문(실제는 64 hex)
         payload["common"] = dict(common, initial_state_sha256="5" * 64)
         _validate_v3(payload)
+        self.assertEqual(seen["purpose"], "browser_acceptance")  # 서명되는 회차 목적
+
+    def test_official_split_sidecar_is_signed_as_official(self):
+        # #699 리뷰: 분리 배치 공식 회차의 보존 기록은 수용시험이 아니라 official로 서명한다(수용시험 표에 섞이지 않게).
+        seen = {}
+
+        def capture(**kwargs):
+            seen.update(kwargs)
+            return {"format": "test-unsigned-v3"}
+        spec = dataclasses.replace(self.split_b_spec(), purpose="official", split=True)
+        with patch.object(runner, "preservation_payload_v3", side_effect=capture):
+            result, _, _, _ = run(lambda p, m, c: setattr(m, "path_log", True), spec=spec)
+        self.assertEqual(result["status"], COMPLETE, result)
+        self.assertEqual(seen["purpose"], "official")
 
     def test_split_v3_fields_follow_the_runner_settings(self):
         # 공통 러너 설정 칸은 B·O가 같아야 하는 값만, 쪽별 구동 설정은 B 구동 칸만 묶는다.

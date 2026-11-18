@@ -940,7 +940,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         # 해시는 down 뒤 계산한다. seal/drain 이후에도 거부 행은 이 파일에 추가될 수 있다.
         state.preservation = dict(options=options, run_id=spec.run_id, side=spec.side, repeat_index=spec.repeat_index,
             engine_source_sha=spec.engine_source_sha, engine_image_id=spec.image_ids["engine"],
-            conditions=pc, stop_reason=stop_reason)
+            conditions=pc, stop_reason=stop_reason, purpose=spec.purpose)
         if _split_preservation(spec):
             state.preservation, state.preservation_v3 = _preservation_v3(spec, state, pc, stop_reason,
                                                                          llm_summary.get("rate_limited")), True
@@ -1084,7 +1084,7 @@ def _preservation_v3(spec: RunSpec, state: "_State", v2_conditions: dict, stop_r
     return dict(series_ref=options["series_ref"], execution_source=options["execution_source"], run_id=spec.run_id,
                 side=spec.side, repeat_index=spec.repeat_index, engine_source_sha=spec.engine_source_sha,
                 engine_image_id=spec.image_ids["engine"], common=common, side_conditions=side, run=run, product=None,
-                boundary=None)
+                boundary=None, purpose=spec.purpose)
 def _meter_preflight(spec, ports, evidence, state) -> None:
     """compose를 띄우기 전(모델을 부르기 전) 계측기·게이트웨이 이미지가 이 러너의 표식 칸·기대 빌드와 맞는지 본다.
     다르면 회차를 시작하지 않는다(2026-11-17 사용자 결정, 파일럿 B 1회차 llm_marker_invalid 재발 방지)."""

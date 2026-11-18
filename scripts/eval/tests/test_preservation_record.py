@@ -310,6 +310,21 @@ class SignedFixture(unittest.TestCase):
         with self.assertRaisesRegex(PreservationRecordError, "preservation_series_mismatch"):
             validate_series(b, changed, request_budget=3, read_only=False)
 
+    def test_round_purpose_is_signed_and_never_mixed(self):
+        # #699 리뷰: 분리 배치 공식 회차의 보존 기록은 official로 서명되고, 수용시험 묶음과 섞이지 않는다.
+        b, o = self.series()
+        official = [dict(r, purpose="official") for r in b], [dict(r, purpose="official") for r in o]
+        validate_series(*official, request_budget=3, read_only=False)
+        mixed = copy.deepcopy(o)
+        mixed[0]["purpose"] = "official"
+        with self.assertRaisesRegex(PreservationRecordError, "preservation_series_mismatch"):
+            validate_series(b, mixed, request_budget=3, read_only=False)
+        for bad in ("acceptance", None, "OFFICIAL"):
+            broken = copy.deepcopy(o)
+            broken[0]["purpose"] = bad
+            with self.subTest(purpose=bad), self.assertRaisesRegex(PreservationRecordError, "preservation_record_invalid"):
+                validate_series(b, broken, request_budget=3, read_only=False)
+
     def test_options_schema_is_closed_and_contains_no_free_secret_fields(self):
         for value in (options() | {"api_key": "not-a-secret"}, options() | {"mcp_version": "latest"},
                       options() | {"execution_source": "fallback"}, options() | {"comm_mode": "anything"}):
