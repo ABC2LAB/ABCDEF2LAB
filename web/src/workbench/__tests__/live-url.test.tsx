@@ -1011,8 +1011,8 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     });
     mount("live");
     const line = (await screen.findByText(/^작업 합계/)).parentElement as HTMLElement;
-    // 예약량으로 센 호출이 있으면 칩 옆에도 '(최대)' (#661 리뷰)
-    expect(line).toHaveTextContent(/^작업 합계 · 입 1.2k 출 300 \(최대\)$/);
+    // 예약량으로 센 호출이 있어도 점검 진행 칩 옆엔 '(최대)'를 두지 않고(사용자 11/18), 마우스를 올린 정확한 값에 최대치를 남긴다
+    expect(line).toHaveTextContent(/^작업 합계 · 입 1.2k 출 300$/);
     expect(line).toHaveAttribute("title", "입력 1,200 토큰 (최대치)\n출력 300 토큰 (최대치)");
     cleanup();
     resetUrl();
@@ -1384,7 +1384,9 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     });
     const { goTo } = mount("live");
     const sec = await screen.findByRole("region", { name: "발견 목록" });
-    await waitFor(() => expect(within(sec).getByText("2건 · 저장된 결과")).toBeInTheDocument());
+    // 머리 수는 'n건'만('· 저장된 결과'는 뺐다, 사용자 11/18)
+    await waitFor(() => expect(within(sec).getByText("2건")).toBeInTheDocument());
+    expect(sec).not.toHaveTextContent("저장된 결과");
     // 보고서와 같은 줄: 위험도(없으면 '등급 없음') · 제목 · 엔드포인트 · 유형 · 판정. 버튼이 아닌 읽기 줄 (사용자 11/17)
     expect(within(sec).queryAllByRole("button")).toHaveLength(0);
     const rows = [...(document.getElementById("lSaved") as HTMLElement).children] as HTMLElement[];

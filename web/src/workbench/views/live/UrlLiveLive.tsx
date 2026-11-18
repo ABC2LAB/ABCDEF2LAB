@@ -242,7 +242,7 @@ function TaskTokens({ u }: { u: URLDiagnosisUsage }) {
   return (
     <p className={s.toks} title={tokenExact(u)}>
       {/* 칸 사이 공백: 화면은 flex 간격으로 띄우고, 글로 읽을 때(화면 읽기 · 복사) 붙지 않게 */}
-      <span>작업 합계 ·</span> <TokenChips u={u} />
+      <span>작업 합계 ·</span> <TokenChips u={u} bound={false} />
     </p>
   );
 }
@@ -256,8 +256,11 @@ function tokenExact(u: URLDiagnosisUsage): string {
   return [`입력 ${fmtCount(u.input_tokens)} 토큰${bound}`, `출력 ${fmtCount(u.output_tokens)} 토큰${bound}`].join("\n");
 }
 
-/** 입 · 출 칩 (점검 진행 상태 카드 · 보고서 머리 줄이 같이 쓴다). 예약량으로 센 호출이 있으면 '(최대)'. */
-function TokenChips({ u }: { u: URLDiagnosisUsage }) {
+/**
+ * 입 · 출 칩 (점검 진행 상태 카드 · 보고서 머리 줄이 같이 쓴다). 예약량으로 센 호출이 있으면 보고서 머리 줄은 칩 옆에
+ * '(최대)'. 점검 진행은 칩 옆 '(최대)'를 빼고(사용자 11/18) 마우스를 올린 정확한 값(tokenExact)에만 '최대치'를 남긴다.
+ */
+function TokenChips({ u, bound = true }: { u: URLDiagnosisUsage; bound?: boolean }) {
   const chip = (k: string, n: number) => (
     <span>
       {`${k} `}
@@ -267,7 +270,7 @@ function TokenChips({ u }: { u: URLDiagnosisUsage }) {
   return (
     <>
       {chip("입", u.input_tokens)} {chip("출", u.output_tokens)}
-      {u.unknown_usage_calls ? <span> (최대)</span> : null}
+      {bound && u.unknown_usage_calls ? <span> (최대)</span> : null}
     </>
   );
 }
@@ -366,7 +369,7 @@ function SavedFindings({ poll }: { poll: Poll<Remediation> }) {
     <section className={s.sec} aria-labelledby="lSavedH">
       <div className={s.sh}>
         <h2 id="lSavedH">발견 목록</h2>
-        <span className={s.n}>{poll.data && !poll.error ? `${sorted.length}건 · 저장된 결과` : ""}</span>
+        <span className={s.n}>{poll.data && !poll.error ? `${sorted.length}건` : ""}</span>
       </div>
       {/* [보고서 보기]는 위 상태 카드에 있다 — 여기 또 두지 않는다 */}
       {body}
