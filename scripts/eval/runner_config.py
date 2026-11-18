@@ -102,6 +102,11 @@ E2_NET = "e2_net"
 CHAT_COMPLETIONS_SUFFIX = "/chat/completions"
 MAX_VERIFY_ATTEMPTS = 100
 MAX_VERIFY_INTERVAL_SECONDS = 600
+# 계측기 generation 조회 한 번의 시간 상한(cmd/eval-meter generationLookupTimeout과 같은 값). 조회 전체는 시도 수 × 간격 +
+# 이 값에서 멈추고 마지막 조회 하나가 이 값만큼 더 걸릴 수 있다. 러너 대기 시한은 그보다 VERIFY_WAIT_MARGIN_SECONDS 길어야
+# 표식을 늘 받는다(2026-11-18 VAmPI 유료 파일럿: 60×5초 설정에 대기 300초라 표식 없이 시한을 넘었다).
+GENERATION_LOOKUP_TIMEOUT_SECONDS = 30
+VERIFY_WAIT_MARGIN_SECONDS = 30
 MAX_HOST_LISTEN_ALLOW = 32
 MAX_REASON_LENGTH = 200
 # 점검 하나의 연결·해석 제한. 실패 기대 경로는 대부분 timeout으로 끝나므로 회차 준비 시간을 키운다.
@@ -436,17 +441,20 @@ def parse_runner_config(raw: object) -> RunnerConfig:
     if "purpose" in top and top["purpose"] not in PURPOSES:
         errors.append("config.purpose: UNSUPPORTED")
     acceptance = top.get("purpose") == PURPOSE_BROWSER_ACCEPTANCE
-    if "path_key_file" in top and not acceptance:
-        # 공식 회차에서 경로 기록을 켤 길을 설정에 두지 않는다.
+    # 경로 기록이 있어야 하는 회차: 수용시험, 그리고 탐색 분리 배치(공식 포함). 공식 비교의 발견 집계(공식 측정 프로토콜 §7)는
+    # B·O 계측기 전달 요청의 경로 틀이라 분리 배치 공식 회차도 같은 키로 기록한다(2026-11-18 사용자 결정 (a)). 분리 배치가
+    # 아닌 공식 회차(엔진 직접 배치, e2-legacy)에는 지금처럼 경로 기록을 켤 길을 두지 않는다.
+    paths_needed = acceptance or "split" in top
+    if "path_key_file" in top and not paths_needed:
         errors.append("config.path_key_file: OFFICIAL_FORBIDDEN")
-    elif acceptance and "path_key_file" not in top:
+    elif paths_needed and "path_key_file" not in top:
         errors.append("config.path_key_file: MISSING")
-    elif acceptance:
+    elif paths_needed:
         # 키는 근거와 함께 복사·공유되지 않게 회차 디렉터리 밖에 둔다. 실제 위치는 check_key_files가 다시 본다.
         _outside_runs_root(top, "path_key_file", errors)
     preservation = None
     if "preservation" in top:
-        if not acceptance:
+        if not paths_needed:
             errors.append("config.preservation: OFFICIAL_FORBIDDEN")
         try:
             preservation = validate_options(top["preservation"])
@@ -533,6 +541,11 @@ def parse_runner_config(raw: object) -> RunnerConfig:
             and _int(run.get("drain_timeout_seconds"), 1, MAX_RUN_SECONDS)
             and run["drain_grace_seconds"] >= run["drain_timeout_seconds"]):
         errors.append("config.run.drain_grace_seconds: NOT_BELOW_DRAIN_TIMEOUT")
+    if (_int(gateway.get("verify_attempts"), 1, MAX_VERIFY_ATTEMPTS)
+            and _int(gateway.get("verify_interval_seconds"), 1, MAX_VERIFY_INTERVAL_SECONDS)
+            and _int(run.get("llm_verify_timeout_seconds"), 1, MAX_RUN_SECONDS)
+            and run["llm_verify_timeout_seconds"] < verify_wait_floor(gateway)):
+        errors.append("config.run.llm_verify_timeout_seconds: BELOW_LOOKUP_DEADLINE")
     if errors:
         raise RunnerConfigError(errors)
     config = RunnerConfig(
@@ -732,6 +745,12 @@ def _reject_constant(_: str) -> None:
     raise RunnerConfigError(["config: NONFINITE_NUMBER"])
 
 
+def verify_wait_floor(gateway: dict) -> int:
+    """러너가 계측기 generation 조회 표식을 기다려야 하는 최소 시간(초): 조회 시한 + 마지막 조회 한 번 + 여유."""
+    return (gateway["verify_attempts"] * gateway["verify_interval_seconds"] + 2 * GENERATION_LOOKUP_TIMEOUT_SECONDS
+            + VERIFY_WAIT_MARGIN_SECONDS)
+
+
 def load_runner_config(path: str | Path) -> RunnerConfig:
     try:
         with open(path, "rb") as source:
@@ -755,6 +774,11 @@ def _same_file(a: Path, b: Path) -> bool:
     except OSError:
         return False  # 없는 파일과는 같을 수 없다. 없는 키 자체는 각자 읽을 때 거부된다.
     return (first.st_dev, first.st_ino) == (second.st_dev, second.st_ino)
+
+
+def path_log_required(config: RunnerConfig) -> bool:
+    """계측기 경로 기록(같은 키)이 있어야 하는 회차: 수용시험과 탐색 분리 배치(공식 포함, 2026-11-18 결정 (a))."""
+    return config.purpose == PURPOSE_BROWSER_ACCEPTANCE or config.split is not None
 
 
 def check_key_files(config: RunnerConfig) -> str | None:
@@ -841,8 +865,8 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
         files.append(COMPOSE_E2_STUB)
     elif e2_mode == E2_PRODUCT:
         files.append(COMPOSE_E2_PRODUCT)
-    # 보존 시험은 원본·개선 후 양쪽 회차의 경로를 같은 키로 가려야 비교할 수 있다.
-    if config.purpose == PURPOSE_BROWSER_ACCEPTANCE:
+    # 보존 시험·분리 배치 공식 회차는 원본·개선 후 양쪽 회차의 경로를 같은 키로 가려야 비교할 수 있다.
+    if path_log_required(config):
         files.append(COMPOSE_ACCEPTANCE)
     split = config.split
     if split is not None and side != BASELINE_SIDE:
@@ -881,7 +905,7 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
         "EVAL_LLM_CHAT_PATH": base_path + CHAT_COMPLETIONS_SUFFIX,
         "EVAL_LLM_SAMPLING": gateway_sampling(declared, side),
     }
-    if config.purpose == PURPOSE_BROWSER_ACCEPTANCE:
+    if path_log_required(config):
         env["EVAL_PATH_KEY_FILE"] = str(config.path_key_file)
     if split is not None:
         env["EVAL_TARGET_NAME"] = split.target_name

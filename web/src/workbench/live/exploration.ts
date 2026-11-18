@@ -5,11 +5,11 @@
 //   path_pattern 은 제품 회차에서 짧은 토큰·계정명 조각이 남을 수 있어(§4 한계) 보호 저장소·운영자
 //   화면에서만 보인다. 헤더 값·쿠키·본문·query 값은 계약상 없다(이름·수·yes/no 신호만, 절대규칙 2).
 //
-// ※ getExploration 의 live 점등은 탐색 실행기(최민준 '발견 결과 전달' + 이동찬 '경계 기록')가
-//   착륙한 뒤다. 그 전까지 jobId 없이 호출해 예시(MOCK_EXPLORATION)를 쓴다. 실 API 가 오면
-//   mapApiExploration 매퍼만 라우트에 연결한다(표현/데이터 분리 유지 — UI 는 안 바뀐다).
+// ※ 지금 화면은 공유 워크플로 스냅샷의 끝점에서 발견(경로 · 상태 · 출처)만 그린다(discoveriesFromWorkflow).
+//   경계 기록(§4)은 탐색 실행기(최민준 '발견 결과 전달' + 이동찬 '경계 기록')가 서버 경로를 내면 mapApiExploration 을
+//   그 경로에 연결한다. 그 전까지 예시로 채우지 않는다.
 
-import { apiFetch } from "@/lib/diagnosis/api";
+import type { WorkflowSnapshot } from "./workflow";
 
 // ---------- 경계 기록 (§4) ----------
 
@@ -294,211 +294,6 @@ export function summarizeDiscoveries(discoveries: readonly Discovery[]): Discove
   };
 }
 
-// ---------- 예시(mock) ----------
-
-// §4·§7 shape 예시. 승인 대상 전달 GET·외부 CDN 차단·내부망 차단·위험 경로 차단을 섞고,
-// 발견은 실제전송(observed, 경계 seq 동반)과 추정(inferred)을 구분한다.
-const MOCK_EXPLORATION: ExplorationResult = {
-  sessionRef: "explore-demo",
-  commMode: "external_allowed",
-  mock: true,
-  records: [
-    {
-      seq: 1,
-      at: "2026-11-12T01:00:00Z",
-      decision: "forwarded",
-      reason: "",
-      ingress: "browser",
-      destClass: "approved",
-      method: "GET",
-      status: 200,
-      bytes: 4210,
-      pathPattern: "/",
-      hasAuthHeader: false,
-    },
-    {
-      seq: 2,
-      at: "2026-11-12T01:00:01Z",
-      decision: "forwarded",
-      reason: "",
-      ingress: "browser",
-      destClass: "approved",
-      method: "GET",
-      status: 200,
-      bytes: 1180,
-      pathPattern: "/rest/products/{id}",
-      hasAuthHeader: true,
-    },
-    {
-      seq: 3,
-      at: "2026-11-12T01:00:02Z",
-      decision: "forwarded",
-      reason: "",
-      ingress: "direct",
-      destClass: "approved",
-      method: "GET",
-      status: 404,
-      bytes: 90,
-      pathPattern: "/rest/admin/{id}",
-      hasAuthHeader: true,
-    },
-    {
-      seq: 4,
-      at: "2026-11-12T01:00:03Z",
-      decision: "forwarded",
-      reason: "",
-      ingress: "browser",
-      destClass: "external",
-      method: "GET",
-      status: 200,
-      bytes: 23140,
-      externalHost: "cdn.jsdelivr.net",
-      hasAuthHeader: false,
-    },
-    {
-      seq: 5,
-      at: "2026-11-12T01:00:04Z",
-      decision: "denied",
-      reason: "external_navigation",
-      ingress: "browser",
-      destClass: "external",
-      method: "GET",
-      status: null,
-      bytes: null,
-      externalHost: "evil.example.com",
-      hasAuthHeader: false,
-    },
-    {
-      seq: 6,
-      at: "2026-11-12T01:00:05Z",
-      decision: "denied",
-      reason: "out_of_scope_path",
-      ingress: "browser",
-      destClass: "approved",
-      method: "GET",
-      status: null,
-      bytes: null,
-      pathPattern: "/admin",
-      hasAuthHeader: false,
-    },
-    {
-      seq: 7,
-      at: "2026-11-12T01:00:06Z",
-      decision: "denied",
-      reason: "internal_address",
-      ingress: "direct",
-      destClass: "internal",
-      method: "GET",
-      status: null,
-      bytes: null,
-      hasAuthHeader: false,
-    },
-    {
-      seq: 8,
-      at: "2026-11-12T01:00:07Z",
-      decision: "denied",
-      reason: "risky_path",
-      ingress: "browser",
-      destClass: "approved",
-      method: "GET",
-      status: null,
-      bytes: null,
-      pathPattern: "/rest/{id}/delete",
-      hasAuthHeader: false,
-    },
-    {
-      seq: 9,
-      at: "2026-11-12T01:00:08Z",
-      decision: "denied",
-      reason: "metadata_address",
-      ingress: "direct",
-      destClass: "metadata",
-      method: "GET",
-      status: null,
-      bytes: null,
-      hasAuthHeader: false,
-    },
-  ],
-  discoveries: [
-    {
-      id: "d1",
-      source: "browser_navigation",
-      provenance: "observed",
-      boundarySeq: 1,
-      method: "GET",
-      path: "/",
-      kind: "page",
-      change: "attested_read",
-      inScope: true,
-      visited: true,
-      status: 200,
-      queryKeys: [],
-      bodyKeys: [],
-    },
-    {
-      id: "d2",
-      source: "browser_xhr",
-      provenance: "observed",
-      boundarySeq: 2,
-      method: "GET",
-      path: "/rest/products/{id}",
-      kind: "api",
-      change: "attested_read",
-      inScope: true,
-      visited: true,
-      status: 200,
-      queryKeys: ["id"],
-      bodyKeys: [],
-      contentType: "application/json",
-    },
-    {
-      id: "d3",
-      source: "browser_form",
-      provenance: "observed",
-      boundarySeq: 3,
-      method: "POST",
-      path: "/rest/user/login",
-      kind: "api",
-      change: "possible",
-      inScope: true,
-      visited: false,
-      status: null,
-      queryKeys: [],
-      bodyKeys: ["email", "password"],
-      contentType: "application/json",
-    },
-    {
-      id: "d4",
-      source: "api_recon_static",
-      provenance: "inferred",
-      method: "GET",
-      path: "/rest/admin/application-version",
-      kind: "api",
-      change: "possible",
-      inScope: true,
-      visited: false,
-      status: null,
-      queryKeys: [],
-      bodyKeys: [],
-    },
-    {
-      id: "d5",
-      source: "api_recon_runtime",
-      provenance: "inferred",
-      method: "GET",
-      path: "/api/BasketItems/{id}",
-      kind: "api",
-      change: "possible",
-      inScope: false,
-      visited: false,
-      status: null,
-      queryKeys: ["coupon"],
-      bodyKeys: [],
-    },
-  ],
-  discoveriesDropped: 2,
-};
-
 // ---------- 실 API 매퍼(fail-closed) ----------
 
 type ApiBoundaryRow = {
@@ -604,15 +399,156 @@ export function mapApiExploration(res: ApiExploration): ExplorationResult {
   };
 }
 
+// ---------- 공유 워크플로 스냅샷 → 발견 (경로 · 상태 · 출처) ----------
+
 /**
- * 탐색 결과 조회. jobId 없으면 예시(데모), 있으면 실 라우트 매핑.
- * ※ 라우트·DTO 는 계약 §4·§7 기준 제안이다. 탐색 실행기(발견 결과 전달·경계 기록)가 착륙하면
- *   이동찬·최민준과 라우트명만 확정한다. 그 전까지 화면은 jobId=null 로 호출해 예시를 쓴다.
+ * 발견 근거. observed = 탐색 실행기가 실제로 보낸 요청에서 관찰(경계 seq 동반), observed_detail_omitted = 관찰로
+ * 기록됐지만 공개 투영의 바이트 압축으로 seq 같은 세부가 빠져 확인할 수 없음(추정으로 내리지 않는다 — #691 리뷰),
+ * inferred = 번들 · 코드 추정, null = 근거 칸 없음(HTTP 크롤러 발견 — 실제로 가 봤는지는 방문 · 응답 코드로 본다).
  */
-export async function getExploration(jobId: string | null): Promise<ExplorationResult> {
-  if (!jobId) return MOCK_EXPLORATION;
-  const res = await apiFetch<ApiExploration>(`/api/product/exploration/${encodeURIComponent(jobId)}`, {
-    cache: "no-store",
+export type WorkflowEvidence = "observed" | "observed_detail_omitted" | "inferred" | null;
+export const EVIDENCE_LABEL: Record<Exclude<WorkflowEvidence, null>, string> = {
+  observed: "실제 관찰",
+  observed_detail_omitted: "관찰 · 세부 생략",
+  inferred: "추정",
+};
+
+/** 스냅샷 끝점 하나를 탐색 결과 화면용으로 다시 검증한 것. 값(헤더 · 쿠키 · 본문 · query 값)은 없다. */
+export type WorkflowDiscovery = {
+  id: string;
+  method: string;
+  /** 표시해도 되는 경로 모양만(query · 조각 · 역슬래시 · 제어 문자가 섞이면 null) */
+  path: string | null;
+  /** 출처 원문(라벨은 화면이 붙인다) */
+  source: string;
+  /** 점검 시작 때 승인한 경로(출처 start) — 탐색이 찾은 것이 아니다 */
+  preRegistered: boolean;
+  /** 이 경로를 찾은 페이지(경로와 같은 규칙, 없거나 모양 밖이면 null) */
+  from: string | null;
+  inScope: boolean;
+  change: string;
+  visited: boolean;
+  status: number | null;
+  duplicates: number;
+  /** 관찰 오류 코드(라벨은 화면이 붙인다) */
+  observationError: string | null;
+  evidence: WorkflowEvidence;
+  queryKeys: string[];
+  bodyKeys: string[];
+  contentType: string | null;
+};
+
+const MAX_SHOWN_PATH = 512;
+/** 공백 · 제어 문자(0x20 이하 · 0x7f)와 query · 조각 · 역슬래시 */
+const unsafePathChar = (c: string) => c <= " " || c === "\x7f" || c === "?" || c === "#" || c === "\\";
+const safePath = (v: unknown): string | null =>
+  typeof v === "string" && v.length <= MAX_SHOWN_PATH && v.startsWith("/") && ![...v].some(unsafePathChar) ? v : null;
+const MEDIA_TYPE = /^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/i;
+
+/**
+ * 공유 워크플로 스냅샷(UrlFeeds 가 이미 읽고 Job 과 대조한 것)의 끝점 → 발견 목록. 추가 조회는 없다.
+ * 스냅샷 파서가 보지 않는 선택 칸(discovery_confidence · exploration_seq · query_keys · body_keys · content_type)은
+ * 여기서 다시 검증하고, 모양이 틀리면 그 칸만 버린다(절대규칙 4).
+ */
+export function discoveriesFromWorkflow(flow: Pick<WorkflowSnapshot, "endpoints">): WorkflowDiscovery[] {
+  return flow.endpoints.map((e) => {
+    const raw = e as unknown as Record<string, unknown>;
+    const seq = intOrNull(raw.exploration_seq);
+    let evidence: WorkflowEvidence = null;
+    if (raw.discovery_confidence === "observed") evidence = seq !== null ? "observed" : "observed_detail_omitted";
+    else if (raw.discovery_confidence === "inferred") evidence = "inferred";
+    const type = str(raw.content_type, 128);
+    return {
+      id: e.id,
+      method: e.method,
+      path: safePath(e.path),
+      source: e.source,
+      preRegistered: e.source === "start",
+      from: safePath(e.from),
+      inScope: e.in_scope,
+      change: e.change,
+      visited: e.visited,
+      status: e.status !== undefined && e.status >= 100 && e.status <= 599 ? e.status : null,
+      duplicates: e.duplicates,
+      observationError: e.observation_error || null,
+      evidence,
+      queryKeys: keyNames(raw.query_keys),
+      bodyKeys: keyNames(raw.body_keys),
+      contentType: MEDIA_TYPE.test(type) ? type : null,
+    };
   });
-  return mapApiExploration(res);
+}
+
+/** 탐색 발견 수(사전 등록 경로는 빼고 센다 — 탐색을 안 돌린 회차의 시작 경로를 '발견'으로 세지 않게, #691 리뷰). */
+export type WorkflowDiscoverySummary = {
+  /** 스냅샷 목록 전체(사전 등록 포함) */
+  listed: number;
+  /** 사전 등록 경로 수 */
+  preRegistered: number;
+  /** 아래부터는 탐색 발견만 */
+  found: number;
+  inScope: number;
+  outOfScope: number;
+  visited: number;
+  observed: number;
+  observedDetailOmitted: number;
+  inferred: number;
+  /** 출처별 수, 많은 것부터 */
+  bySource: { source: string; count: number }[];
+};
+
+export function summarizeWorkflowDiscoveries(all: readonly WorkflowDiscovery[]): WorkflowDiscoverySummary {
+  const list = all.filter((d) => !d.preRegistered);
+  const by = new Map<string, number>();
+  for (const d of list) by.set(d.source, (by.get(d.source) ?? 0) + 1);
+  const inScope = list.filter((d) => d.inScope).length;
+  return {
+    listed: all.length,
+    preRegistered: all.length - list.length,
+    found: list.length,
+    inScope,
+    outOfScope: list.length - inScope,
+    visited: list.filter((d) => d.visited).length,
+    observed: list.filter((d) => d.evidence === "observed").length,
+    observedDetailOmitted: list.filter((d) => d.evidence === "observed_detail_omitted").length,
+    inferred: list.filter((d) => d.evidence === "inferred").length,
+    bySource: [...by].map(([source, count]) => ({ source, count })).sort((a, b) => b.count - a.count),
+  };
+}
+
+// ---------- 탐색 실행 상태 (스냅샷 exploration_status) ----------
+
+export type ExplorationStatus = "RUNNING" | "NOT_RUN" | "COMPLETED" | "PARTIAL" | "STOPPED";
+export const EXPLORATION_STATUS_LABEL: Record<ExplorationStatus, string> = {
+  RUNNING: "탐색 중",
+  NOT_RUN: "탐색 안 함",
+  COMPLETED: "탐색 마침",
+  PARTIAL: "일부만 탐색",
+  STOPPED: "탐색 중지",
+};
+const EXPLORATION_REASON_LABEL: Record<string, string> = {
+  boundary_unavailable: "탐색 경계를 쓸 수 없음",
+  model_unavailable: "모델을 쓸 수 없음",
+  runtime_unavailable: "실행 환경을 쓸 수 없음",
+  browser_unavailable: "브라우저를 쓸 수 없음",
+};
+
+/**
+ * 스냅샷의 탐색 실행 상태(서버 diagnosisflow exploration_status · exploration_reason). 스냅샷 파서가 보지 않는 선택 칸이라
+ * 여기서 다시 검증하고, 모르는 값은 상태를 만들지 않는다(null). 칸이 없으면(옛 회차) 상태를 말하지 않는다.
+ */
+export function explorationStateOf(flow: Pick<WorkflowSnapshot, never>): {
+  status: ExplorationStatus | null;
+  reason: string | null;
+} {
+  const raw = flow as Record<string, unknown>;
+  const status =
+    typeof raw.exploration_status === "string" && Object.hasOwn(EXPLORATION_STATUS_LABEL, raw.exploration_status)
+      ? (raw.exploration_status as ExplorationStatus)
+      : null;
+  const reason =
+    typeof raw.exploration_reason === "string" && Object.hasOwn(EXPLORATION_REASON_LABEL, raw.exploration_reason)
+      ? EXPLORATION_REASON_LABEL[raw.exploration_reason]
+      : null;
+  return { status, reason: status ? reason : null };
 }

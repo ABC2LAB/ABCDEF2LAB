@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import os
 import stat
@@ -35,9 +36,13 @@ class FakeDocker:
         self.calls = []
         self.copies: dict[str, dict] = {}
 
-    def copy_volume_files(self, image, volume, directory, names, role, uid, gid, cidfile, max_bytes, timeout):
-        self.calls.append(("copy", image, volume, directory, tuple(names), role, uid, gid, cidfile.parent, max_bytes))
+    def copy_volume_files(self, image, volume, directory, names, role, uid, gid, cidfile, max_bytes, timeout, subpath=()):
+        self.calls.append(("copy", image, volume, directory, tuple(names), role, uid, gid, cidfile.parent, max_bytes)
+                          + ((tuple(subpath),) if subpath else ()))
         return dict(self.copies[role]), "c" * 64
+
+    def run_bounded(self, args, timeout, max_stdout):
+        raise AssertionError("시험은 도구 면 측정을 바꿔 끼운다")
 
     def signal(self, container_id, name):
         self.calls.append(("signal", container_id, name))
@@ -105,7 +110,8 @@ class PortsCase(unittest.TestCase):
         self.ports = DockerSplitPorts(config=self.config, split=self.split, plan=self.plan, directory=self.directory,
                                       docker=self.docker, driver=self.driver, inputs=self.inputs, rendered={"services": {"a": {}}},
                                       manifest=MANIFEST, model_key=ModelKey("sk-or-v1-test"),
-                                      exploration={"mcp_url": "http://explore-mcp:8931/mcp", "direct_proxy": "http://explore-direct:3129"})
+                                      exploration={"mcp_url": "http://explore-mcp:8931/mcp", "direct_proxy": "http://explore-direct:3129"},
+                                      workflow_defaults=read_workflow_defaults())
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -144,6 +150,65 @@ class TestRecords(PortsCase):
         _, image, volume, directory, names, role, uid, _, _, _ = self.docker.calls[0]
         self.assertEqual((image, volume, directory, names, role, uid),
                          (self.split.images["product"].id, "eval-r1_product-state", "config", (ledger, calls), "product-records", 1000))
+
+
+class TestV3Inputs(PortsCase):
+    def test_product_files_hash_config_only(self):
+        # 결정안 §3.3 제품 블록 근거. 내용은 지문만 돌려주고 회차 디렉터리에 남기지 않는다(설치 입력에 비밀 핀).
+        config = {"installation.json": b"i", "policy.json": b"p", "api-launch.json": b"a", "target-policy.json": b"t"}
+        self.docker.copies["product-files"] = config
+        before = sorted(os.listdir(self.directory.run))
+        sha = lambda data: hashlib.sha256(data).hexdigest()
+        self.assertEqual(self.ports.product_files(), {"installation": sha(b"i"), "policy": sha(b"p"), "api_launch": sha(b"a"),
+                                                      "target_policy": sha(b"t")})
+        (call,) = self.docker.calls
+        self.assertEqual(call[1:7], (self.split.images["product"].id, "eval-r1_product-state", "config",
+                                     ("installation.json", "policy.json", "api-launch.json", "target-policy.json"), "product-files", 1000))
+        self.assertEqual(len(call), 10)  # 하위 경로 없음
+        self.assertEqual(sorted(os.listdir(self.directory.run)), before)
+
+    def test_runtime_conditions_are_read_below_the_draft_run_directory(self):
+        self.docker.copies["product-run-conditions"] = {"runtime-conditions.json": b"{}\n"}
+        self.assertEqual(self.ports.runtime_conditions("prep-0a1b"), b"{}\n")
+        (call,) = self.docker.calls
+        self.assertEqual(call[1:7] + call[10:], (self.split.images["product"].id, "eval-r1_product-state", "runs",
+                                                 ("runtime-conditions.json",), "product-run-conditions", 1000, ("prep-0a1b", "state")))
+
+    def test_control_policy_and_tool_surface_go_to_the_product_and_images(self):
+        self.ports.control_policy("42")
+        self.assertEqual(self.driver.calls[-1][:2], ("control_policy", ("42",)))
+        with mock.patch("runner_split_ports.ours_side", return_value={"x": 1}) as side:
+            self.assertEqual(self.ports.tool_surface(), {"x": 1})
+        args = side.call_args.args
+        self.assertEqual(args[:3], (self.split.images["product"].id, self.split.images["explore_browser"].id, self.docker.run_bounded))
+
+
+class TestV3Publishing(PortsCase):
+    def test_split_conditions_use_the_installed_workflow_and_registration(self):
+        from runner_split import read_workflow_defaults, split_conditions
+        self.ports.prepare_round("tok")
+        defaults, sha = read_workflow_defaults()
+        got = self.ports.split_conditions()
+        self.assertEqual(got, split_conditions(workflow_defaults=defaults, workflow_sha256=sha,
+                                               install=self.inputs.install_public, registration=self.ports.registration))
+        self.assertEqual(got["workflow_defaults_sha256"], sha)
+        # #710 리뷰: 서명하는 SHA는 설치 입력을 만들 때 읽은 값이다. 회차 끝에 파일을 다시 읽지 않는다.
+        self.ports.workflow_defaults = (defaults, "e" * 64)
+        with mock.patch("runner_split_ports.read_workflow_defaults", side_effect=AssertionError("re-read")):
+            self.assertEqual(self.ports.split_conditions()["workflow_defaults_sha256"], "e" * 64)
+        self.ports.workflow_defaults = None
+        with self.assertRaises(ValueError):
+            self.ports.split_conditions()
+
+    def test_boundary_directory_and_signature_use_the_runner_key(self):
+        from run_record import sign_run_record
+        self.assertEqual(self.ports.boundary_directory(), self.directory.run / "boundary")
+        key = Path(self._tmp.name) / "runner.key"
+        key.write_bytes(bytes(range(32)))
+        key.chmod(0o600)
+        self.ports.config = dataclasses.replace(self.config, runner_key_path=key)
+        signed = self.ports.sign({"format": "x"})
+        self.assertEqual(signed, sign_run_record({"format": "x"}, bytes(range(32))))
 
 
 class TestDrive(PortsCase):

@@ -33,25 +33,144 @@ def product_end_watch(ports, driver: ProductDriver, draft_id: str, task_id: str,
 
 
 # ── O 회차 흐름(4-7c-3) ─────────────────────────────────────────────────────────────────────────────────────────
+import hashlib  # noqa: E402
+import json  # noqa: E402
+import re  # noqa: E402
 from dataclasses import dataclass, field  # noqa: E402
 from datetime import timedelta  # noqa: E402
 from typing import Protocol  # noqa: E402
 
 from runner import (  # noqa: E402
     INVALID, RESULT_NAME, RunFailure, _check_subnets, _event_time, _meter_preflight, _ns, _stamp, _step, _stop_events, _stop_watch,
-    _wait_budget, _wait_drained, first_limit,
+    _wait_budget, _wait_drained, check_meter_logs, first_limit,
 )
+from preservation_record import NAME as PRESERVATION_NAME, build_payload_v3 as preservation_payload_v3, digest  # noqa: E402
+import preservation_v3_fields as v3f  # noqa: E402
 from runner_checks import compare_snapshots  # noqa: E402
+from runner_docker import HelperCleanupInterrupt  # noqa: E402
 from runner_evidence import MeterFiles  # noqa: E402
 from runner_llm import judge_product_llm  # noqa: E402
 from runner_probe import PASS  # noqa: E402
-from runner_product_llm import ProductLLMError, call_records_reasons, product_model_usage  # noqa: E402
+from runner_product_llm import (  # noqa: E402
+    ProductLLMError, call_record_lines, call_records_reasons, ledger_reservations, product_model_usage,
+)
 from runner_split_probe import SplitProbeOutcome  # noqa: E402
 from runner_window import events_reasons, judge_events, watch_reasons, watch_summary  # noqa: E402
 
 SPLIT_RESULT_FORMAT = "abc2lab-eval-runner-split-result-v1"
 SPLIT_TASK_FORMAT = "abc2lab-eval-runner-split-task-v1"
 PRODUCT_END_NAME = "product-end.json"
+TOOL_SURFACE_NAME = "tool-surface.json"
+PRODUCT_FILES_NAME = "product-files.json"
+PRODUCT_FILES_FORMAT = "abc2lab-eval-runner-product-files-v1"
+# 제어 정책 보기 상한 칸(url_live_views.go controlPolicyLimits). 제품 검증(e2proxy execution.go)은 모두 양수만 받는다.
+CONTROL_LIMIT_FIELDS = ("max_requests", "max_attempts", "max_concurrent", "max_body_bytes", "max_response_body_bytes",
+                        "request_timeout_ms")
+MAX_INT64 = (1 << 63) - 1
+RUNTIME_CONDITIONS_VERSION = "e2-runtime-conditions/v1"
+MAX_RUNTIME_CONDITIONS_BYTES = 1 << 20
+# 제품 참조 규칙: 적용 정책을 검사하는 server/e2_http_runtime.go e2HTTPHostRef와 같은 문자 집합(슬래시 없음, #693 리뷰).
+_PRODUCT_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
+# 실행 조건 파일 칸(e2_http_factory.go가 쓰는 구조체 그대로)과 범위·프로세스 상한 칸(transmit.Scope, e2runner.ProcessLimits).
+RUNTIME_CONDITIONS_FIELDS = frozenset({"version", "scope", "policy_revision", "worker_count", "process_limits",
+                                       "queue_consumes_command_timeout"})
+SCOPE_FIELDS = frozenset({"RunRef", "TaskRef", "CaseRef", "ResetRef", "PolicyRef"})
+PROCESS_LIMIT_FIELDS = frozenset({"bash_slots", "container_tasks", "engine_reserve_tasks", "call_tasks", "command_tasks",
+                                  "helper_reserve_tasks"})
+RUN_RECORD_VERSION = 1  # first_diagnosis_run.go diagnosisRunRecord
+
+
+def _ref(value) -> bool:
+    return isinstance(value, str) and bool(_PRODUCT_REF.fullmatch(value))
+
+
+def _count(value) -> bool:
+    return type(value) is int and 0 <= value <= MAX_INT64
+
+
+def _hex64(value) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+
+
+def _run_refs(draft_id: str) -> dict:
+    """그 초안의 실행에 제품이 발급하는 참조(url_preparation_linux.go: run-·policy-<Job ID>)."""
+    return {"RunRef": f"run-{draft_id}", "PolicyRef": f"policy-{draft_id}"}
+
+
+def checked_control_policy(view: dict, draft_id: str) -> dict:
+    """제어 정책 보기 가운데 근거로 쓰는 칸만 계약대로 확인해 돌려준다(#693 리뷰). 그 초안의 정책이어야 하고, 내용 지문은
+    64 hex, 상한은 여섯 칸 모두 양의 정수(불리언·문자열·추가 칸 없음)다."""
+    if view.get("policy_ref") != _run_refs(draft_id)["PolicyRef"] or not _ref(view.get("policy_revision")):
+        raise RunFailure("control_policy_unbound")  # 개정도 제품 참조 규칙 안의 값만 근거에 남긴다(#693 리뷰)
+    if not _hex64(view.get("policy_fingerprint_sha256")):
+        raise RunFailure("diagnosis_policy_fingerprint_missing")  # 자격 pin 규칙이면 제품이 비운다
+    limits = view.get("limits")
+    if (not isinstance(limits, dict) or set(limits) != set(CONTROL_LIMIT_FIELDS)
+            or any(type(limits[name]) is not int or not 1 <= limits[name] <= MAX_INT64 for name in CONTROL_LIMIT_FIELDS)):
+        raise RunFailure("control_policy_limits_invalid")
+    return {"policy_ref": view["policy_ref"], "policy_revision": view["policy_revision"],
+            "policy_fingerprint_sha256": view["policy_fingerprint_sha256"], "limits": {name: limits[name] for name in CONTROL_LIMIT_FIELDS}}
+
+
+def _scope_bound(scope, draft_id: str, task_id: str) -> bool:
+    return (isinstance(scope, dict) and set(scope) == SCOPE_FIELDS and all(_ref(value) for value in scope.values())
+            and all(scope[key] == value for key, value in dict(_run_refs(draft_id), TaskRef=task_id).items()))
+
+
+def diagnosis_entered(record: dict, draft_id: str, task_id: str, policy_revision: str) -> dict | None:
+    """진단 실행이 붙었는지(실행 기록 run.execution, request_approvals.go runState). 실행 기록 자체가 이 회차의 것(형식
+    판·작업 번호, 작업 승인 때 붙는 실행 참조 run-<초안 ID>, e2_http_runtime.go admitRun)이어야 실행 부재를 믿는다(#693
+    리뷰). 붙었으면 그 실행이 이 초안·작업·정책 개정에 결속돼야 한다. 탐색 중에 예산이 끝나면 진단 실행이 없고 회차
+    실행 조건 파일도 만들어지지 않는다."""
+    run = record.get("run")
+    if type(record.get("version")) is not int or record["version"] != RUN_RECORD_VERSION or not isinstance(run, dict):
+        raise RunFailure("run_record_invalid")
+    if type(record.get("task_id")) is not int or str(record["task_id"]) != task_id or run.get("run_ref") != _run_refs(draft_id)["RunRef"]:
+        raise RunFailure("run_record_unbound")
+    execution = run.get("execution")
+    if execution is None:
+        return None
+    if (not isinstance(execution, dict) or not _scope_bound(execution.get("scope"), draft_id, task_id)
+            or execution.get("policy_revision") != policy_revision):
+        raise RunFailure("run_record_unbound")
+    return execution  # 범위는 실행 조건 파일과 그대로 대조한다(checked_runtime_conditions)
+
+
+def _unique_object(pairs: list) -> dict:
+    """같은 키가 두 번 나오면 거부한다(중첩 객체 포함). json 기본 동작은 마지막 값만 남겨 모순된 원본이 통과한다(#693 리뷰)."""
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate key")
+        value[key] = item
+    return value
+
+
+def _reject_constant(_name: str):
+    raise ValueError("non-finite number")
+
+
+def checked_runtime_conditions(raw: bytes, draft_id: str, task_id: str, policy_revision: str, execution: dict) -> str:
+    """회차 실행 조건(e2_http_factory.go)이 이 초안·작업·정책 개정의 것인지 확인하고 원본 바이트 SHA를 돌려준다."""
+    try:
+        if not isinstance(raw, bytes) or len(raw) > MAX_RUNTIME_CONDITIONS_BYTES:
+            raise ValueError
+        # 중복 키가 있는 원본은 범위를 대조하기 전에 거부한다. 마지막 값만 대조하고 모순된 원본 SHA를 남기면 안 된다.
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object, parse_constant=_reject_constant)
+    except (UnicodeError, ValueError, RecursionError):
+        raise RunFailure("runtime_conditions_invalid") from None
+    limits = value.get("process_limits") if isinstance(value, dict) else None
+    # 생산자가 쓰는 칸·타입이 다 있어야 실행 조건을 잃은 회차가 정상처럼 남지 않는다(#693 리뷰).
+    if (not isinstance(value, dict) or set(value) != RUNTIME_CONDITIONS_FIELDS or value["version"] != RUNTIME_CONDITIONS_VERSION
+            or not _count(value["worker_count"]) or type(value["queue_consumes_command_timeout"]) is not bool
+            or not isinstance(limits, dict) or set(limits) != PROCESS_LIMIT_FIELDS or not all(_count(v) for v in limits.values())):
+        raise RunFailure("runtime_conditions_invalid")
+    # 생산자는 실행 스냅숏 범위(execution.Snapshot().Scope)를 그대로 쓴다. 저장된 실행 기록 범위와 다섯 칸 모두 같아야 한다
+    # (#693 리뷰: ResetRef·CaseRef만 달라도 다른 범위의 SHA가 남았다).
+    if (not _scope_bound(value.get("scope"), draft_id, task_id) or value["scope"] != execution.get("scope")
+            or value.get("policy_revision") != policy_revision):
+        raise RunFailure("runtime_conditions_unbound")
+    return hashlib.sha256(raw).hexdigest()
 COMPLETE = "complete"
 METER, BOUNDARY, TARGET = "eval-meter", "explore-boundary", "target"
 
@@ -77,6 +196,19 @@ class SplitRunSpec:
     llm_provider_name: str = ""
     # 계측기 이미지의 기대 빌드 커밋(사전검사 선언의 개선 후 source_sha). B와 같은 회차 전 점검이 대조한다.
     meter_source_sha: str = ""
+    # 경로 가림 키 지문(16 hex, 키 값이 아님). 분리 배치는 B·O가 같은 키로 경로를 기록하고 같은 검사(check_meter_logs)를 받는다.
+    path_key_ref: str | None = None
+    # 보존 sidecar v3 O 발행(결정안 §3.3). preservation이 없으면 발행하지 않는다(그때 아래 칸은 쓰지 않는다).
+    preservation: dict | None = None
+    purpose: str = "browser_acceptance"
+    repeat_index: int = 0
+    drain_grace_seconds: float = 0
+    host_watch_interval_seconds: float = 0
+    model_tag: str = ""
+    product_source_sha: str = ""
+    driver_settings: dict = field(default_factory=dict)  # O 구동 설정(preservation_v3_fields.O_DRIVER_SETTINGS)
+    model_budget_sha256: str = ""
+    exploration_policy_sha256: str = ""  # 러너가 만든 경계 설정(boundary.json) 바이트 SHA
 
 
 class SplitRunPorts(Protocol):
@@ -103,6 +235,13 @@ class SplitRunPorts(Protocol):
     def seal(self, meter_container_id: str) -> None: ...
     def stop_boundary(self, boundary_container_id: str) -> None: ...
     def run_record(self, task_id: str) -> dict: ...
+    def control_policy(self, task_id: str) -> dict: ...
+    def product_files(self) -> dict: ...
+    def runtime_conditions(self, draft_id: str) -> bytes: ...
+    def tool_surface(self) -> dict: ...
+    def split_conditions(self) -> dict: ...
+    def boundary_directory(self): ...
+    def sign(self, payload: dict) -> dict: ...
     def copy_boundary_evidence(self) -> None: ...
     def copy_product_records(self) -> tuple: ...
     def generation_verify(self, calls: bytes, sampling: dict | None) -> None: ...
@@ -120,6 +259,7 @@ class _SplitState:
     up_attempted: bool = False
     runner_containers: set = field(default_factory=set)
     summary: dict = field(default_factory=dict)
+    preservation: dict | None = None  # 내린 뒤 build_payload_v3에 넘길 칸(서명 전)
 
 
 class _StatusReader:
@@ -181,6 +321,14 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     if _step(state, "image_id_failed", ports.image_ids) != spec.image_ids:
         raise RunFailure("image_id_mismatch")
     _meter_preflight(spec, ports, evidence, state)  # 띄우기 전(모델 호출 전) 계측기 표식 칸·빌드 점검
+    # 도구 면(결정안 §4): 회차 망을 띄우기 전에 1회용 컨테이너로 잰다(B는 tool_tree 다음 같은 자리).
+    surface = _step(state, "tool_surface_failed", ports.tool_surface)
+    if surface.get("image_id") != spec.image_ids["product"] or surface.get("browser_image_id") != spec.image_ids["explore_browser"]:
+        raise RunFailure("tool_surface_image_mismatch")
+    _step(state, "evidence_write_failed", lambda: evidence.write_json(TOOL_SURFACE_NAME, surface))
+    state.summary["tool_surface"] = {"cli_sha256": surface["cli"]["sha256"], "mcp_raw_sha256": surface["mcp"]["raw"]["sha256"],
+                                     "mcp_exposed_sha256": surface["mcp"]["exposed"]["sha256"],
+                                     "mcp_version": surface["mcp"]["package_version"]}
     state.summary["host"] = _step(state, "host_spec_failed", ports.host_spec)
     _check_subnets(ports, evidence, state)
     state.up_attempted = True
@@ -216,6 +364,9 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     settled = spec.post_settle_seconds if drained["forced_cancelled_requests"] else 0
     if settled:
         clock.sleep(settled)
+    # 계측기 기록 마감 대조는 B와 같은 함수·같은 사유다(경로 기록 필수·키 지문·전달 요청과 한 행씩, 2026-11-18 결정 (a)).
+    meter_rows = _step(state, "meter_read_failed", meter.engine_rows)
+    check_meter_logs(meter, state, meter_rows, drained, spec.path_key_ref)
     # B는 drain 뒤 게이트웨이를 봉인해 새 모델 요청을 막는다(#634). O는 같은 자리에서 제품 회차를 멈춘다. 러너 예산으로 먼저
     # 끝난 회차는 제품이 아직 실행 중이라 실행 기록(마감 때 저장)이 없고 모델 호출이 계속된다. 끝 상태·drain 완료를 본 뒤에야
     # 실행 기록·장부·호출 기록을 읽는다(#665 리뷰).
@@ -251,6 +402,22 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     except ProductLLMError as exc:
         raise RunFailure(str(exc)) from None
 
+    # 제품 블록 근거(결정안 §3.3): 그 회차에 제품이 쓴 E② 정책의 내용 지문·상한 스냅숏과 설치·실행 파일 원본 SHA.
+    # 제품을 멈춘 뒤라 파일이 더 바뀌지 않는다. 정책·실행 조건은 이 초안·작업에 결속돼야 한다(#693 리뷰). 내용 지문이 비면
+    # (자격 pin 규칙 등) 짝 대조 칸을 만들 수 없어 무효다.
+    policy = checked_control_policy(_step(state, "control_policy_failed", lambda: ports.control_policy(task_id)), draft_id)
+    fingerprint = policy["policy_fingerprint_sha256"]
+    execution = diagnosis_entered(record, draft_id, task_id, policy["policy_revision"])
+    entered = execution is not None
+    files = dict(_step(state, "product_files_failed", ports.product_files), control_limits=digest(policy["limits"]))
+    # 진단에 들어가지 않은 회차(탐색 중 예산 소진 등)는 실행 조건 파일이 없다. 그때만 null로 남기고 first_limit은 그대로다.
+    # 진단에 들어간 회차에서 빠지거나 다른 회차의 것이면 실패다.
+    files["runtime_conditions"] = checked_runtime_conditions(
+        _step(state, "runtime_conditions_failed", lambda: ports.runtime_conditions(draft_id)), draft_id, task_id,
+        policy["policy_revision"], execution) if entered else None
+    _step(state, "evidence_write_failed", lambda: evidence.write_json(PRODUCT_FILES_NAME, {
+        "format": PRODUCT_FILES_FORMAT, "file_sha256": files, "diagnosis_entered": entered, "diagnosis_policy_sha256": fingerprint,
+        "policy_ref": policy["policy_ref"], "policy_revision": policy["policy_revision"], "limits": policy["limits"]}))
     _step(state, "boundary_evidence_copy_failed", ports.copy_boundary_evidence)
     ledger, calls = _step(state, "product_records_copy_failed", ports.copy_product_records)
     record_reasons = call_records_reasons(ledger, calls)
@@ -274,7 +441,47 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
                          pre_solved=pre_board.get("solved"), post_solved=post_board.get("solved"),
                          goal_common_sha256=goal["common_sha256"], window_reasons=window["reasons"],
                          sampling_overwrites=usage["sampling_overwrites"], task_id=task_id, draft_id=draft_id,
+                         product_file_sha256=files, diagnosis_policy_sha256=fingerprint, diagnosis_entered=entered,
                          product_closed={name: closed.get(name) for name in PRODUCT_END_FIELDS})
+    if spec.preservation is not None:
+        # 보존 sidecar v3 O 칸(결정안 §3.3). 해시는 내린 뒤 build_payload_v3가 최종 바이트로 뜬다(경계 원자료 검증 포함).
+        conditions = _step(state, "split_conditions_failed", ports.split_conditions)
+        state.preservation = _preservation_v3(spec, state, pre_board["state_sha256"], stop_reason, limit,
+                                              engine_end["first_terminal"], llm_summary, files, fingerprint, conditions,
+                                              usage["sampling_overwrites"], ledger_reservations(ledger), call_record_lines(calls),
+                                              task_id)
+
+
+def _preservation_v3(spec: SplitRunSpec, state: _SplitState, initial_state: str, stop_reason: str, limit: dict,
+                     first_terminal: dict | None, llm_summary: dict, files: dict, fingerprint: str, conditions: dict,
+                     overwrites: dict, reservations: int, lines: int, task_id: str) -> dict:
+    """O 회차의 v3 칸(공통·쪽별·회차별·제품 블록). 공통 칸은 B(runner._preservation_v3)와 같은 정의로 뜬다."""
+    options, surface = spec.preservation, state.summary["tool_surface"]
+    common = {"request_budget": spec.request_budget, "time_budget_seconds": spec.time_budget_seconds,
+              "model_pin_sha256": v3f.model_pin_sha256(backend="api", model=spec.model_tag, provider_slug=spec.llm_provider_slug,
+                                                       provider_name=spec.llm_provider_name,
+                                                       sampling=llm_summary["sampling_applied"], serving=None),
+              "target_image_id": spec.image_ids["target"], "initial_state_sha256": initial_state,
+              "machine_sha256": digest(state.summary["host"]),
+              "runner_settings_sha256": v3f.settings_sha256(vars(spec), v3f.COMMON_RUNNER_SETTINGS),
+              "goal_common_sha256": state.summary["goal_common_sha256"], "comm_mode": options["comm_mode"],
+              "mcp_version": surface["mcp_version"], "mcp_raw_tools_sha256": surface["mcp_raw_sha256"]}
+    side = {"layout": "exploration-split/v1", "driver_sha256": v3f.driver_sha256(v3f.O_DRIVER_FILES),
+            "driver_settings_sha256": v3f.settings_sha256(spec.driver_settings, v3f.O_DRIVER_SETTINGS),
+            "write_mode": options["write_mode"], "declared_model_budget_sha256": spec.model_budget_sha256,
+            "browser_image_id": spec.image_ids["explore_browser"], "exploration_policy_sha256": spec.exploration_policy_sha256,
+            "diagnosis_policy_sha256": fingerprint, "cli_surface_sha256": surface["cli_sha256"],
+            "mcp_exposed_tools_sha256": surface["mcp_exposed_sha256"]}
+    run = {"stop_reason": stop_reason, "first_limit": limit, "end_signal": v3f.end_signal(first_terminal, product=True),
+           "rate_limited": llm_summary.get("rate_limited")}
+    product = {"source_sha": spec.product_source_sha,
+               "image_ids": {name: spec.image_ids[name] for name in ("product", "explore_browser", "fixture")},
+               "file_sha256": dict(files), "split_conditions": conditions, "sampling_overwrites": overwrites,
+               "call_records": {"reservations": reservations, "lines": lines}}
+    return dict(series_ref=options["series_ref"], execution_source=options["execution_source"], run_id=spec.run_id, side="ours",
+                repeat_index=spec.repeat_index, engine_source_sha=spec.product_source_sha,
+                engine_image_id=spec.image_ids["product"], common=common, side_conditions=side, run=run, product=product,
+                boundary={"task_id": task_id, "path_key_ref": spec.path_key_ref}, purpose=spec.purpose)
 
 
 def execute_split_run(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles, evidence, clock: Clock) -> dict:
@@ -290,10 +497,14 @@ def execute_split_run(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFile
         _run_split_steps(spec, ports, meter, evidence, clock, state)
     except RunFailure as exc:
         reasons.append(exc.code)
+        reasons.extend(exc.also)
         state.step = exc.code
-    except KeyboardInterrupt:
-        # 운영자 중단도 결과 기록 한 건(무효)을 남기고, 정리 뒤 중단 신호를 다시 올린다(execute_run과 같다).
+    except KeyboardInterrupt as exc:
+        # 운영자 중단도 결과 기록 한 건(무효)을 남기고, 정리 뒤 중단 신호를 다시 올린다(execute_run과 같다). 중단 중 복사
+        # 도우미 정리까지 실패했으면 그 사유를 따로 남긴다(#693 리뷰).
         reasons.append("interrupted")
+        if isinstance(exc, HelperCleanupInterrupt):
+            reasons.append("docker_helper_cleanup_failed")
         interrupted = True
     except Exception:
         reasons.append("unexpected_error")
@@ -315,6 +526,18 @@ def execute_split_run(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFile
             ports.remove_inputs()  # 비밀(설치 입력·비밀번호·CA 키)은 회차가 어떻게 끝나도 남기지 않는다
         except Exception:
             reasons.append("inputs_cleanup_failed")
+    if not reasons and state.preservation is not None:
+        # 내린 뒤에는 계측기 writer가 없다. 최종 바이트로 hash를 뜨고 경계 원자료(계약 §4.1)를 계측기 행과 대조한 뒤 서명한다.
+        try:
+            parts = dict(state.preservation)
+            parts["boundary"] = dict(parts["boundary"], directory=ports.boundary_directory())
+            payload = _step(state, "preservation_record_failed", lambda: preservation_payload_v3(meter=meter, **parts))
+            signed = _step(state, "preservation_sign_failed", lambda: ports.sign(payload))
+            # 저장 실패(이미 있는 파일·쓰기 실패)도 고정 사유로 남기고 결과 기록까지 간다(#710 리뷰)
+            _step(state, "preservation_write_failed", lambda: evidence.write_json(PRESERVATION_NAME, signed))
+        except RunFailure as exc:
+            reasons.append(exc.code)
+            reasons.extend(exc.also)
     base = {"format": SPLIT_RESULT_FORMAT, "run_id": spec.run_id, "side": "ours", "layout": "exploration-split/v1",
             "project": spec.project, "started_at": started_at, "finished_at": _stamp(clock)}
     if reasons:

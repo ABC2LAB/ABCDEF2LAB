@@ -20,6 +20,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import synthetic_gt  # noqa: E402,F401  합성 정답 목록을 먼저 끼운다(정답표 노출 방지)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import runner
@@ -509,6 +510,15 @@ class FakePorts:
     def findings(self):
         self._call("findings")
         return {"items": 0}
+
+    command_rows = [{"tool": "Bash", "command": '{"command":"npx playwright test && curl x"}', "output": "", "failed": False},
+                    {"tool": "Bash", "command": '{"command":"pip3 install y"}', "output": "", "failed": True},
+                    {"tool": "WebFetch", "command": '{"url":"http://x"}', "output": "", "failed": False}]
+
+    def command_records(self, task_id):
+        self._call("command_records")
+        self.command_task = task_id
+        return {"exploration_id": 5, "records": list(self.command_rows)}
 
     def e2_service_ready(self):
         self._call("e2_service_ready")
@@ -1109,6 +1119,31 @@ class TestCompleteRun(unittest.TestCase):
         task = evidence.files["task.json"]
         self.assertEqual((task["task_origin"], task["goal_common_sha256"]), ("http://app.eval.test:8080", "c" * 64))
 
+    def test_cli_usage_counts_only_names(self):
+        # 분리 배치 B 회차: 원본 도구 실행 기록에서 B에만 있는 CLI 이름별 등장 수(상한)만 남긴다(결정안 §10, 2026-11-18).
+        spec = dataclasses.replace(make_spec(), cli_usage_names=("npx", "pip3", "vim"))
+        result, ports, meter, evidence = run(spec=spec)
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertEqual(ports.calls[ports.calls.index("findings") + 1], "command_records")
+        self.assertEqual(ports.command_task, "17")  # 이 회차가 만든 작업 번호
+        usage = evidence.files["cli-usage.json"]
+        self.assertEqual((usage["bash_calls"], usage["occurrences"], usage["names_seen"], usage["names"], usage["exploration_id"]),
+                         (2, {"npx": 1, "pip3": 1}, ["npx", "pip3"], ["npx", "pip3", "vim"], 5))
+        self.assertEqual(usage["format"], "abc2lab.cli-usage/v3")
+        self.assertNotIn("not_found", usage)
+        self.assertNotIn("playwright test", json.dumps(evidence.files))  # 명령 원문은 남지 않는다
+        self.assertNotIn("command_records", run()[1].calls)  # 이름이 없으면(분리 배치 아님·O) 읽지 않는다
+
+    def test_cli_usage_failure_is_a_step_code(self):
+        spec = dataclasses.replace(make_spec(), cli_usage_names=("npx",))
+
+        def broken(ports, meter, clock):
+            def fail(task_id):
+                raise EngineAPIError("engine_commands_incomplete")
+            ports.command_records = fail
+        result, _, _, _ = run(broken, spec=spec)
+        self.assertEqual(result["reasons"][0], "cli_usage_failed")
+
     def split_b_spec(self):
         from test_preservation_record import options
         from test_runner_checks import PROJECT
@@ -1153,6 +1188,34 @@ class TestCompleteRun(unittest.TestCase):
         self.assertEqual(common["initial_state_sha256"], "state-pre")  # 가짜 점수판의 상태 지문(실제는 64 hex)
         payload["common"] = dict(common, initial_state_sha256="5" * 64)
         _validate_v3(payload)
+        self.assertEqual(seen["purpose"], "browser_acceptance")  # 서명되는 회차 목적
+
+    def test_official_split_sidecar_is_signed_as_official(self):
+        # #699 리뷰: 분리 배치 공식 회차의 보존 기록은 수용시험이 아니라 official로 서명한다(수용시험 표에 섞이지 않게).
+        seen = {}
+
+        def capture(**kwargs):
+            seen.update(kwargs)
+            return {"format": "test-unsigned-v3"}
+        spec = dataclasses.replace(self.split_b_spec(), purpose="official", split=True)
+        with patch.object(runner, "preservation_payload_v3", side_effect=capture):
+            result, _, _, _ = run(lambda p, m, c: setattr(m, "path_log", True), spec=spec)
+        self.assertEqual(result["status"], COMPLETE, result)
+        self.assertEqual(seen["purpose"], "official")
+
+    def test_split_round_records_cli_usage_and_v3_together(self):
+        # dev 합침(#696): 분리 배치 B 회차는 B 전용 CLI 호출 수(findings 뒤, 내리기 전)와 v3 발행(도구 면은 띄우기 전, 발행은
+        # 내린 뒤)을 한 회차에서 함께 한다. 단계 순서가 겹치지 않는다.
+        spec = dataclasses.replace(self.split_b_spec(), cli_usage_names=("npx",))
+        with patch.object(runner, "preservation_payload_v3", return_value={"format": "test-unsigned-v3"}):
+            result, ports, _, evidence = run(lambda p, m, c: setattr(m, "path_log", True), spec=spec)
+        self.assertEqual(result["status"], COMPLETE, result)
+        calls = ports.calls
+        self.assertLess(calls.index("tool_surface"), calls.index("up"))
+        self.assertLess(calls.index("findings"), calls.index("command_records"))
+        self.assertLess(calls.index("command_records"), calls.index("down"))
+        self.assertIn("cli-usage.json", evidence.files)
+        self.assertIn("tool-surface.json", evidence.files)
 
     def test_split_v3_fields_follow_the_runner_settings(self):
         # 공통 러너 설정 칸은 B·O가 같아야 하는 값만, 쪽별 구동 설정은 B 구동 칸만 묶는다.
@@ -1797,8 +1860,22 @@ class TestFailures(unittest.TestCase):
                          ["network.target_net: MEMBERS_MISMATCH", "service.engine: ATTACHMENT_INCONSISTENT"])
 
     def test_meter_path_log_invalidates_the_run(self):
+        # 공식 + 엔진 직접 배치(분리 배치 아님) + 경로 기록 있음 → 무효(2026-11-18 결정 (a)에서도 그대로)
         result, ports, _, evidence = run(lambda p, m, c: setattr(m, "path_log", True))
         self.assert_invalid(result, ports, evidence, "meter_path_log_enabled")
+
+    def test_official_split_round_needs_the_path_log(self):
+        # 2026-11-18 결정 (a): 공식 + 분리 배치 + 경로 기록 없음 → 무효, 있으면 완료이고 서명 조건에 분리 배치 표시·키 지문이 남는다.
+        spec = dataclasses.replace(make_spec(), split=True, path_key_ref=PATH_KEY_REF)
+        self.assertEqual(spec.purpose, "official")
+        result, ports, _, evidence = run(spec=spec)
+        self.assert_invalid(result, ports, evidence, "meter_path_log_missing")
+        result, _ports, meter, evidence = run(lambda p, m, c: setattr(m, "path_log", True), spec=spec)
+        self.assertEqual(result["status"], "complete", result)
+        self.assertEqual(meter.path_rows_seen, meter.engine_rows())
+        conditions = next(row for row in evidence.files["isolation-evidence.json"]["rows"] if row["kind"] == "run_conditions")
+        self.assertEqual((conditions["purpose"], conditions["split"], conditions["path_key_ref"]), ("official", True, PATH_KEY_REF))
+        self.assertNotIn("path_key_file", json.dumps(evidence.files))  # 키 값·경로는 근거에 없다
 
     def test_browser_acceptance_run_needs_the_path_log(self):
         spec = make_spec(purpose="browser_acceptance")
@@ -2982,8 +3059,8 @@ if __name__ == "__main__":
 class AcceptancePathKeyTests(unittest.TestCase):
     """수용시험 회차만 계측기와 같은 경로 가림 키를 eval-e2에 넘긴다(E② 시도 경로 투영)."""
 
-    def config(self, purpose, path):
-        return types.SimpleNamespace(purpose=purpose, path_key_file=path)
+    def config(self, purpose, path, split=None):
+        return types.SimpleNamespace(purpose=purpose, path_key_file=path, split=split)
 
     def test_only_acceptance_rounds_read_the_key(self):
         from runner import acceptance_path_key
@@ -2993,6 +3070,8 @@ class AcceptancePathKeyTests(unittest.TestCase):
             key.chmod(0o600)
             self.assertEqual(acceptance_path_key(self.config("browser_acceptance", key)), bytes(range(32)))
             self.assertIsNone(acceptance_path_key(self.config("official", key)))
+            # 분리 배치 공식 회차는 O 경계 보호 입력에 같은 키를 준다(2026-11-18 결정 (a))
+            self.assertEqual(acceptance_path_key(self.config("official", key, split=object())), bytes(range(32)))
             key.chmod(0o644)
             with self.assertRaises(RunnerConfigError) as caught:
                 acceptance_path_key(self.config("browser_acceptance", key))

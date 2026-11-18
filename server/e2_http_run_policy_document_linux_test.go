@@ -3,13 +3,84 @@
 package server
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/e2proxy"
 )
+
+func TestE2HTTPFileRulePurposeFailsClosed(t *testing.T) {
+	host, _, policy := e2HostPolicyFixture(t)
+	ordinary, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	program := policy.Rules[0]
+	program.Ref, program.PathScopeRef, program.PathPrefix = "auth-only", "auth-only-path", "/login"
+	program.Methods, program.Purpose = []string{"POST"}, e2proxy.PurposeAuthPrep
+	policy.Rules = append(policy.Rules, program)
+	withProgram, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	purpose := []byte(`"purpose":"auth_prep"`)
+	if bytes.Count(withProgram, purpose) != 1 {
+		t.Fatal("합성 정책에 인증 준비 목적이 한 번 있어야 합니다")
+	}
+	replace := func(field string) []byte {
+		return bytes.Replace(withProgram, purpose, []byte(field), 1)
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(ordinary, &doc); err != nil {
+		t.Fatal(err)
+	}
+	rulesAlias := append(bytes.Clone(withProgram[:len(withProgram)-1]), []byte(`,"Rules":`)...)
+	rulesAlias = append(rulesAlias, doc["rules"]...)
+	rulesAlias = append(rulesAlias, '}')
+	for _, tc := range []struct {
+		name string
+		raw  []byte
+		want bool
+	}{
+		{"ordinary-omits-purpose", ordinary, true},
+		{"canonical-auth-prep", withProgram, true},
+		{"null-purpose", replace(`"purpose":null`), false},
+		{"empty-purpose", replace(`"purpose":""`), false},
+		{"unknown-purpose", replace(`"purpose":"unsupported-program"`), false},
+		{"non-string-purpose", replace(`"purpose":true`), false},
+		{"case-alias", replace(`"Purpose":"auth_prep"`), false},
+		{"purpose-alias-override", replace(`"purpose":"auth_prep","Purpose":""`), false},
+		{"duplicate-purpose", replace(`"purpose":"auth_prep","purpose":""`), false},
+		{"rules-alias-override", rulesAlias, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			options, runtimeErr := loadE2HTTPRuntimeOptions(ctx, E2HTTPFileOptions{
+				PolicyFile: host.PolicyFile, Authority: &e2HTTPPolicyAuthorityFixture{ctx: ctx},
+				Supervisor: &e2HTTPSupervisorFixture{},
+			}, tc.raw, nil)
+			_, fingerprint, documentErr := ValidateE2HTTPRunPolicyDocument(tc.raw)
+			if tc.want {
+				if runtimeErr != nil || documentErr != nil || fingerprint == "" || fingerprint != options.PolicyFingerprintSHA256 {
+					t.Fatalf("합성 정책의 로더·문서 검증 결과가 다릅니다: %v / %v", runtimeErr, documentErr)
+				}
+				return
+			}
+			if !errors.Is(runtimeErr, ErrE2HTTPHost) || options.Acquire != nil || options.PolicyFingerprintSHA256 != "" {
+				t.Error("잘못된 목적 선언이 런타임 정책으로 로드됐습니다")
+			}
+			if !errors.Is(documentErr, ErrE2HTTPHost) || fingerprint != "" {
+				t.Error("잘못된 목적 선언에 유효한 정책 지문을 반환했습니다")
+			}
+		})
+	}
+}
 
 // 제품 실행 정책 검증기는 실행 factory가 받는 진단 워크플로 칸·승인 방식을 받고, 평가 단독 E② 서비스 검증기는
 // 지금처럼 거부한다. 워크플로 칸은 닫힌 형식만 받는다.

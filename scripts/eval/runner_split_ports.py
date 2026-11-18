@@ -15,6 +15,7 @@ import dataclasses
 import hashlib
 import os
 import platform
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -30,16 +31,18 @@ from runner_llm import PRODUCT_VERIFY_ROLE
 from meter_describe import MAX_DESCRIBE_BYTES, describe_args, parse as describe_parse
 
 METER_DESCRIBE_SECONDS = 30.0
-from runner_docker import Docker
+from runner_docker import Docker, client_environment
 from runner_engine import AdminSecret
 from runner_product import ModelKey, ProductDriver
-from runner_split import target_registration
+from run_record import read_runner_key, sign_run_record
+from runner_split import read_workflow_defaults, split_conditions, target_registration
 from runner_split_config import SplitConfig, SplitPlan, split_compose_args
 from runner_split_inputs import SplitInputs, remove_split_inputs
 from runner_split_probe import SplitProbeOutcome, run_split_probes, split_ports
 from runner_window import BackgroundWatch, HostWatch, healthcheck_actions
 from snapshot_collector import SnapshotEndpoint, collect_snapshot
 from snapshot_writer import SnapshotContext
+from tool_surface import ours_side
 
 TOKEN_FILE = "control-token"
 TOKEN_UID = 1000
@@ -48,6 +51,11 @@ PRODUCT_UID = 1000
 BOUNDARY_FILES = ("boundary-records.jsonl", "boundary-sealed.json")
 MAX_TOKEN_BYTES = 4096
 BOUNDARY_DIRECTORY = "boundary"
+# 제품 블록 원본 SHA 근거(결정안 §3.3, 대조하지 않음): product-state 볼륨 config/의 설정 넷과 회차 실행 조건.
+PRODUCT_CONFIG_FILES = (("installation", "installation.json"), ("policy", "policy.json"), ("api_launch", "api-launch.json"),
+                        ("target_policy", "target-policy.json"))
+RUNTIME_CONDITIONS_FILE = "runtime-conditions.json"
+MAX_PRODUCT_FILE_BYTES = 1 << 20
 
 
 UNUSED_PROFILE = "eval-split-unused"
@@ -182,7 +190,7 @@ def product_record_names(approval_id: str) -> tuple[str, str]:
 class DockerSplitPorts:
     def __init__(self, *, config: RunnerConfig, split: SplitConfig, plan: SplitPlan, directory: RunDirectory, docker: Docker,
                  driver: ProductDriver, inputs: SplitInputs, rendered: dict, manifest: dict, model_key: ModelKey,
-                 exploration: dict, llm_env: dict | None = None):
+                 exploration: dict, llm_env: dict | None = None, workflow_defaults: tuple[dict, str] | None = None):
         self.config, self.split, self.plan, self.directory = config, split, plan, directory
         self.docker, self.driver, self.inputs, self.rendered = docker, driver, inputs, rendered
         self.manifest, self.model_key, self.exploration = manifest, model_key, exploration
@@ -190,6 +198,9 @@ class DockerSplitPorts:
         self.llm_env = dict(llm_env or {})
         self.base_args = split_compose_args(plan)
         self.registration: dict | None = None
+        # 설치 입력을 만들 때 실제로 읽은 워크플로 기본값과 그 바이트 SHA(#710 리뷰: 회차 끝에 다시 읽으면 그 사이 바뀐 원본의
+        # SHA가 서명된다). 서명 출처를 보장하는 결속이라 꼭 넘겨야 한다. 없으면 split_conditions가 다시 읽지 않고 오류를 낸다.
+        self.workflow_defaults = workflow_defaults
         self.timeout = config.run["snapshot_timeout_seconds"]
 
     # ── 회차 시작 전·띄우기 ──────────────────────────────────────────────────────────────────────────────────
@@ -288,11 +299,50 @@ class DockerSplitPorts:
         threading.Thread(target=work, name="product-end-read", daemon=True).start()
 
     # ── 도우미 복사 ──────────────────────────────────────────────────────────────────────────────────────────
-    def _copy(self, volume_key: str, directory: str, names: tuple[str, ...], role: str, uid: int, max_bytes: int) -> dict:
+    def _copy(self, volume_key: str, directory: str, names: tuple[str, ...], role: str, uid: int, max_bytes: int,
+              subpath: tuple[str, ...] = ()) -> dict:
         image = self.plan.images["fixture" if role == "dns-token" else "product"].id
         files, _ = self.docker.copy_volume_files(image, f"{self.plan.project}_{volume_key}", directory, names, role, uid, uid,
-                                                 self.directory.run / f"{role}.cid", max_bytes, self.timeout)
+                                                 self.directory.run / f"{role}.cid", max_bytes, self.timeout, subpath=subpath)
         return files
+
+    def product_files(self) -> dict:
+        """제품 블록 설치 파일 넷의 원본 SHA(결정안 §3.3). 내용은 메모리에서 지문만 뜨고 남기지 않는다(설치 입력에 비밀
+        핀이 있다). 제품을 멈춘 뒤에 부른다."""
+        config = self._copy("product-state", "config", tuple(name for _, name in PRODUCT_CONFIG_FILES), "product-files",
+                            PRODUCT_UID, MAX_PRODUCT_FILE_BYTES)
+        return {key: hashlib.sha256(config[name]).hexdigest() for key, name in PRODUCT_CONFIG_FILES}
+
+    def runtime_conditions(self, draft_id: str) -> bytes:
+        """회차 실행 조건 원본 바이트(runs/<초안 ID>/state/). 초안(diagnosisprep Job) ID가 실행 디렉터리 이름이고, E② 상태
+        디렉터리가 그 아래 state다(url_preparation_linux.go). 진단 실행이 붙은 회차에만 있다(e2_http_factory.go).
+        결속·형식 검사는 회차 흐름이 한다(runner_split_run.checked_runtime_conditions)."""
+        return self._copy("product-state", "runs", (RUNTIME_CONDITIONS_FILE,), "product-run-conditions", PRODUCT_UID,
+                          MAX_PRODUCT_FILE_BYTES, subpath=(draft_id, "state"))[RUNTIME_CONDITIONS_FILE]
+
+    def control_policy(self, task_id: str) -> dict:
+        return self.driver.control_policy(task_id)
+
+    def split_conditions(self) -> dict:
+        """이 회차의 설치·등록 조건(runner_split.split_conditions). 워크플로 기본값과 SHA는 설치 입력을 만들 때 읽은 값이다."""
+        if self.workflow_defaults is None:
+            raise ValueError("split ports: workflow defaults not bound")  # 회차 끝에 다시 읽어 다른 원본을 서명하지 않는다
+        defaults, sha = self.workflow_defaults
+        return split_conditions(workflow_defaults=defaults, workflow_sha256=sha, install=self.inputs.install_public,
+                                registration=self.registration)
+
+    def boundary_directory(self) -> Path:
+        return self.directory.run / BOUNDARY_DIRECTORY
+
+    def sign(self, payload: dict) -> dict:
+        # 키는 서명 직전에만 읽는다(B DockerPorts.sign과 같다). 경로는 러너 설정(회차 디렉터리 밖)이다.
+        return sign_run_record(payload, read_runner_key(str(self.config.runner_key_path)))
+
+    def tool_surface(self) -> dict:
+        """O 도구 면(결정안 §4): 제품 이미지 중 E② 샌드박스가 보는 CLI, 탐색 브라우저 이미지의 MCP 원 목록·허용 목록 적용 뒤
+        목록. 1회용 컨테이너(망 없음)로 회차 망을 띄우기 전에 잰다."""
+        return ours_side(self.plan.images["product"].id, self.plan.images["explore_browser"].id, self.docker.run_bounded,
+                         subprocess.Popen, client_environment(os.environ, {}))
 
     def dns_token(self) -> str:
         data = self._copy("target-tls", ".", (TOKEN_FILE,), "dns-token", TOKEN_UID, MAX_TOKEN_BYTES)[TOKEN_FILE]

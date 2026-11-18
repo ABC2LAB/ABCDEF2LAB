@@ -54,7 +54,7 @@ func validateE2HTTPPolicyDocument(raw []byte, prepared bool) (E2HTTPFilePolicy, 
 
 func validateE2HTTPPolicyDocumentMode(raw []byte, prepared, run bool) (E2HTTPFilePolicy, string, error) {
 	var policy E2HTTPFilePolicy
-	if len(raw) == 0 || len(raw) > e2config.MaxPolicyBytes || !validE2HTTPPathMatchFields(raw) || !validE2HTTPPasswordResponseField(raw) || !utf8.Valid(raw) || strictJSON(raw, &policy) != nil {
+	if len(raw) == 0 || len(raw) > e2config.MaxPolicyBytes || !validE2HTTPRuleSelectorFields(raw) || !validE2HTTPPasswordResponseField(raw) || !utf8.Valid(raw) || strictJSON(raw, &policy) != nil {
 		return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
 	}
 	top := []string{"approval_mode", "format", "run_ref", "reset_ref", "policy_ref", "case_ref", "policy_revision", "budget_ref", "owner_ref", "account_ref", "session_ref", "valid_from", "valid_until", "max_requests", "header_mode", "evaluation", "state_dir", "helper", "helper_sha256", "ca_cert", "ca_key", "rules", "limits", "proxy", "runtime"}
@@ -149,10 +149,6 @@ func validateE2HTTPPolicyDocumentMode(raw []byte, prepared, run bool) (E2HTTPFil
 		}
 		var obj map[string]json.RawMessage
 		_ = json.Unmarshal(ruleJSON[i], &obj)
-		// 선택 칸이 명시됐다면 exact 하나만 받는다. null/빈 값이 접두 기본값으로 바뀌어 권한이 넓어지지 않는다.
-		if value, present := obj["path_match"]; present && !bytes.Equal(value, []byte(`"exact"`)) {
-			return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
-		}
 		if !e2HTTPExactJSON(obj["approval_display"], []string{"public_path", "query_keys", "json_fields"}, nil, "query_keys", "json_fields") {
 			return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
 		}
@@ -238,11 +234,16 @@ func e2HTTPExactJSON(raw []byte, required, optional []string, nullable ...string
 	return true
 }
 
-// validE2HTTPPathMatchFields는 파일 factory와 정적 문서 검증이 선택 칸 null을 접두 기본값으로 읽지 않게 한다.
-func validE2HTTPPathMatchFields(raw []byte) bool {
+// validE2HTTPRuleSelectorFields는 명시한 선택 칸이 접두 경로나 일반 Worker용 기본값으로 해석되는 것을 막는다.
+func validE2HTTPRuleSelectorFields(raw []byte) bool {
 	var document map[string]json.RawMessage
 	if json.Unmarshal(raw, &document) != nil {
 		return false
+	}
+	for name := range document {
+		if strings.EqualFold(name, "rules") && name != "rules" {
+			return false
+		}
 	}
 	var rules []map[string]json.RawMessage
 	if json.Unmarshal(document["rules"], &rules) != nil || rules == nil {
@@ -250,8 +251,16 @@ func validE2HTTPPathMatchFields(raw []byte) bool {
 	}
 	for _, rule := range rules {
 		for name, value := range rule {
-			if strings.EqualFold(name, "path_match") && (name != "path_match" || !bytes.Equal(value, []byte(`"exact"`))) {
-				return false
+			switch {
+			case strings.EqualFold(name, "path_match"):
+				if name != "path_match" || !bytes.Equal(value, []byte(`"exact"`)) {
+					return false
+				}
+			case strings.EqualFold(name, "purpose"):
+				var purpose string
+				if name != "purpose" || json.Unmarshal(value, &purpose) != nil || purpose == "" {
+					return false
+				}
 			}
 		}
 	}

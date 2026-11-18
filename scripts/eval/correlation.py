@@ -1,7 +1,7 @@
 """평가 전용 GT 상관 — 판정 레코드(계약 #16 모양) → GT 챌린지 키.
 
 parse_scan_output에 주입하는 correlate를 만든다(`load_correlation().correlate`). 매핑
-규칙은 코드가 아니라 gt_correlation.json(평가 전용 GT 데이터)에서 읽는다 — 엔진
+규칙은 코드가 아니라 evaluation-gt/juice-shop-v15/gt_correlation.json(평가 전용 GT 데이터)에서 읽는다 — 엔진
 seam·자원 명명이 바뀌어도 데이터만 고친다. 대상 앱 엔드포인트를 코드에 박지 않는다.
 
 이 모듈과 데이터는 **평가에만** 쓴다(CLAUDE.md 절대규칙 7). 엔진·탐색·판정 경로에서
@@ -22,7 +22,9 @@ from dataclasses import dataclass
 
 from ground_truth import Axis, core_gt
 
-DEFAULT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gt_correlation.json")
+# 평가 정답 디렉터리(저장소 루트 `.ignore`로 세션·에이전트 검색에서 빠지는 경로, 2026-11-18 정답표 노출 방지).
+DEFAULT_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                            "evaluation-gt", "juice-shop-v15", "gt_correlation.json")
 
 # 계약 §2(a) axis 값 ↔ ground_truth.Axis. 규칙 axis가 GT 축과 어긋나면 데이터 오류.
 # axis는 로드 시 데이터 정합 검사용 — 런타임 매칭 키는 type+vuln_class(위 확정)뿐이다.

@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import synthetic_gt  # noqa: E402,F401  합성 정답 목록을 먼저 끼운다(정답표 노출 방지)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from path_mask import key_ref  # noqa: E402
 from preservation_record import (FORMAT_V3, NAME, PreservationRecordError, _validate_v3, build_payload_v3,  # noqa: E402
@@ -87,7 +88,7 @@ class V3Fixture(unittest.TestCase):
             engine_image_id="sha256:" + ("a" if side == "baseline" else "b") * 64,
             common=parts.get("common", common()), side_conditions=parts.get("side_conditions", side_conditions(side)),
             run=parts.get("run", run(side)), product=parts.get("product", None if side == "baseline" else product()),
-            boundary=parts.get("boundary", boundary))
+            boundary=parts.get("boundary", boundary), purpose=parts.get("purpose", "browser_acceptance"))
         self.write(directory, NAME, sign_run_record(payload, RUNNER_KEY))
         return directory, meter, payload
 
@@ -109,10 +110,22 @@ class TestBuildAndLoad(V3Fixture):
         self.assertIsNone(b[0]["exploration_boundary"])
         self.assertEqual(o[0]["exploration_boundary"]["status"], "verified")
         verified = validate_series(b, o, request_budget=3, read_only=False)
-        self.assertEqual((verified["format"], verified["verified_signed_rounds"], verified["layout"]),
-                         (FORMAT_V3, 4, "exploration-split/v1"))
+        self.assertEqual((verified["format"], verified["verified_signed_rounds"], verified["layout"], verified["purpose"]),
+                         (FORMAT_V3, 4, "exploration-split/v1", b[0]["purpose"]))
         self.assertEqual(verified["exploration_boundary"]["status"], "PASS")
         self.assertEqual({row["value"] for row in verified["first_limits"]}, {"runner_request_budget"})
+
+    def test_round_purpose_is_signed_and_never_mixed(self):
+        # #699 리뷰: 분리 배치 공식 회차의 v3 보존 기록은 official로 서명되고, 묶음 안에서 목적이 섞이면 거부한다.
+        b, o = self.series_v3(change=lambda side, i: {"purpose": "official"})
+        self.assertEqual({r["purpose"] for r in b + o}, {"official"})
+        validate_series(b, o, request_budget=3, read_only=False)
+        b, o = self.series_v3(change=lambda side, i: {"purpose": "official"} if side == "ours" else {})
+        with self.assertRaisesRegex(PreservationRecordError, "preservation_series_mismatch"):
+            validate_series(b, o, request_budget=3, read_only=False)
+        for bad in ("acceptance", None):
+            with self.subTest(purpose=bad), self.assertRaisesRegex(PreservationRecordError, "preservation_record_invalid"):
+                self.fixture_v3("baseline", 0, purpose=bad)
 
     def test_signature_and_raw_bytes(self):
         directory, meter, _ = self.fixture_v3("ours")
@@ -268,6 +281,14 @@ class TestShape(V3Fixture):
         self.reject(self.o, "preservation_product_invalid", lambda r: r["product"]["image_ids"].__setitem__("fixture", "x"))
         self.reject(self.o, "preservation_product_invalid", lambda r: r["product"]["sampling_overwrites"].__setitem__("execution", -1))
         self.reject(self.o, "preservation_product_invalid", lambda r: r["product"]["split_conditions"].pop("registration"))
+        # 진단 실행이 붙지 않은 회차는 실행 조건 SHA만 null이다(#693). 다른 파일 SHA는 null이면 거부한다.
+        for name in ("installation", "policy", "control_limits"):
+            self.reject(self.o, "preservation_product_invalid", lambda r, n=name: r["product"]["file_sha256"].__setitem__(n, None))
+        self.reject(self.o, "preservation_product_invalid",
+                    lambda r: r["product"]["file_sha256"].__setitem__("runtime_conditions", "x"))
+        directory, meter, payload = self.fixture_v3("ours", 0, product=product(file_sha256=dict(
+            product()["file_sha256"], runtime_conditions=None)))
+        self.assertIsNone(self.load(directory, meter)["product"]["file_sha256"]["runtime_conditions"])
 
 
 class TestSeries(V3Fixture):
