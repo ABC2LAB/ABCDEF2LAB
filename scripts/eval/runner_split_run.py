@@ -320,9 +320,8 @@ def product_fault_stall(calls: bytes, meter_rows: list[dict], window_start: str,
     B(runner._fault_stall)처럼 읽지 못하면 회차를 무효로 하지 않고 고정 코드만 남긴다."""
     terminal = (engine_end.get("first_terminal") or {}).get("at")
     try:
+        # 객체가 아닌 줄·빠진 칸은 fault_stall_record 안에서 TypeError·KeyError로 끝나 같은 고정 코드가 된다
         rows = [json.loads(line) for line in calls.decode("utf-8").splitlines() if line]
-        if not all(isinstance(row, dict) for row in rows):
-            raise FaultRecordError("fault_stall_rows_invalid")
         return fault_stall_record(rows, meter_rows, window_start, window_end, terminal)
     except (UnicodeDecodeError, ValueError, KeyError, TypeError) as exc:
         code = str(exc) if isinstance(exc, FaultRecordError) else "fault_stall_rows_invalid"
