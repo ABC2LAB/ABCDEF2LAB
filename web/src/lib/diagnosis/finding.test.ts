@@ -7,14 +7,13 @@ import {
   displayComparisonRow,
   displayVerdict,
   type FindingRecord,
-  getFinding,
-  getFindingHeld,
   heldBeforeSend,
   missingEvidence,
   notTransmitted,
   ORACLE_BADGE,
   type Signal,
 } from "./finding";
+import { findingConfirmed, findingHeld } from "./finding-fixtures";
 
 // 판정 레코드 화면 읽기(verdict-record §2~§4)의 fail-closed·마스킹 로직 검증.
 // 목업/계약 shape 로직 테스트이며 실제 판정 건수를 증명하는 자료는 아니다.
@@ -216,9 +215,9 @@ describe("allEvidenceUnknown", () => {
   });
 });
 
-describe("getFindingHeld mock (상태변경·E² 송신전 차단)", () => {
-  it("undecidable·전송 held·canary 없음·신호 전부 unknown → 취약 주장 불가", async () => {
-    const r = await getFindingHeld(null);
+describe("송신 전 차단 예시 레코드 (상태변경·E² 송신전 차단)", () => {
+  it("undecidable·전송 held·canary 없음·신호 전부 unknown → 취약 주장 불가", () => {
+    const r = findingHeld;
     expect(r.oracleValue).toBe("undecidable");
     expect(r.transmission).toBe("held_pre_send");
     expect(r.stateChanging).toBe(true);
@@ -229,9 +228,9 @@ describe("getFindingHeld mock (상태변경·E² 송신전 차단)", () => {
   });
 });
 
-describe("getFinding mock (마스킹)", () => {
-  it("mock=true, canaryFields 는 필드명만(값·sentinel 문자열 없음)", async () => {
-    const r = await getFinding(null);
+describe("확정 예시 레코드 (마스킹)", () => {
+  it("mock=true, canaryFields 는 필드명만(값·sentinel 문자열 없음)", () => {
+    const r = findingConfirmed;
     expect(r.mock).toBe(true);
     expect(r.canaryFields.length).toBeGreaterThan(0);
     // canary **값**(sentinel) 으로 보이는 문자열이 레코드 어디에도 없어야 한다(§3 마스킹).
@@ -244,8 +243,8 @@ describe("getFinding mock (마스킹)", () => {
     for (const f of r.canaryFields) expect(f).toMatch(/^[A-Za-z_][A-Za-z0-9_]*$/);
   });
 
-  it("목업은 confirmed 이고 증거 3조건이 모두 모여 있다", async () => {
-    const r = await getFinding(null);
+  it("예시는 confirmed 이고 증거 3조건이 모두 모여 있다", () => {
+    const r = findingConfirmed;
     expect(r.oracleValue).toBe("confirmed");
     expect(confirmedEvidenceComplete(r)).toBe(true);
   });
