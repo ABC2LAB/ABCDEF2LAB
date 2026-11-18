@@ -111,11 +111,19 @@ class TestRunnerConfigBlock(unittest.TestCase):
         with self.assertRaises(RunnerConfigError) as caught:
             parse_runner_config(payload)
         self.assertEqual(caught.exception.errors, ["config.split.ports: INVALID"])
+        # 2026-11-18 결정 (a): 분리 배치는 공식 회차에서도 받는다. 대신 경로 가림 키·보존 옵션이 있어야 한다.
         official = runner_config()
         official["split"] = split_block()
         with self.assertRaises(RunnerConfigError) as caught:
             parse_runner_config(official)
+        self.assertEqual(caught.exception.errors, ["config.path_key_file: MISSING"])
+        official["path_key_file"] = "/srv/eval/path.key"
+        with self.assertRaises(RunnerConfigError) as caught:
+            parse_runner_config(official)
         self.assertEqual(caught.exception.errors, ["config.split: PRESERVATION_ONLY"])
+        official["preservation"] = options()
+        config = parse_runner_config(official)
+        self.assertEqual((config.purpose, config.split.target_name), ("official", "app.eval.test"))
 
 
 class TestReadManifest(unittest.TestCase):

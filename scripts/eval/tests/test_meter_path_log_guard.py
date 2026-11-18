@@ -18,9 +18,10 @@ class MeterPathLogGuardTests(unittest.TestCase):
         ]
         self.assertGreater(len(files), 20)
         self.assertTrue(any(path.name == "meter.Dockerfile" for path in files))
-        # 수용시험 전용 overlay 두 파일만 예외다. 러너는 purpose=browser_acceptance일 때만 compose.acceptance.yaml을 얹고
-        # (test_runner_config.TestAcceptanceWiring), 탐색 분리 배치 overlay는 split 설정이 있을 때만 쓰는데 split은 보존 회차
-        # 전용(PRESERVATION_ONLY, test_runner_split_config)이고 보존 옵션은 공식 회차에서 거부된다(OFFICIAL_FORBIDDEN).
+        # 경로 기록 overlay 두 파일만 예외다. 러너는 경로 기록이 필요한 회차(수용시험, 그리고 2026-11-18 결정 (a)로 분리 배치
+        # 공식 회차)에만 compose.acceptance.yaml을 얹고(runner_config.path_log_required, test_runner_config.TestAcceptanceWiring),
+        # 탐색 분리 배치 overlay는 split 설정이 있을 때만 쓴다. 분리 배치가 아닌 공식 회차(엔진 직접 배치)는 경로 키·보존 옵션을
+        # 설정에서 거부하고(OFFICIAL_FORBIDDEN), 경로 기록이 있으면 회차 무효다(meter_path_log_enabled).
         allowed = {REPO_ROOT / "deploy" / "eval" / name for name in ("compose.acceptance.yaml", "compose.split.yaml")}
         for path in allowed:
             self.assertIn(path, files)

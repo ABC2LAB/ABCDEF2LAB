@@ -35,9 +35,13 @@ class FakeDocker:
         self.calls = []
         self.copies: dict[str, dict] = {}
 
-    def copy_volume_files(self, image, volume, directory, names, role, uid, gid, cidfile, max_bytes, timeout):
-        self.calls.append(("copy", image, volume, directory, tuple(names), role, uid, gid, cidfile.parent, max_bytes))
+    def copy_volume_files(self, image, volume, directory, names, role, uid, gid, cidfile, max_bytes, timeout, subpath=()):
+        self.calls.append(("copy", image, volume, directory, tuple(names), role, uid, gid, cidfile.parent, max_bytes)
+                          + ((tuple(subpath),) if subpath else ()))
         return dict(self.copies[role]), "c" * 64
+
+    def run_bounded(self, args, timeout, max_stdout):
+        raise AssertionError("시험은 도구 면 측정을 바꿔 끼운다")
 
     def signal(self, container_id, name):
         self.calls.append(("signal", container_id, name))
@@ -144,6 +148,37 @@ class TestRecords(PortsCase):
         _, image, volume, directory, names, role, uid, _, _, _ = self.docker.calls[0]
         self.assertEqual((image, volume, directory, names, role, uid),
                          (self.split.images["product"].id, "eval-r1_product-state", "config", (ledger, calls), "product-records", 1000))
+
+
+class TestV3Inputs(PortsCase):
+    def test_product_files_hash_config_only(self):
+        # 결정안 §3.3 제품 블록 근거. 내용은 지문만 돌려주고 회차 디렉터리에 남기지 않는다(설치 입력에 비밀 핀).
+        config = {"installation.json": b"i", "policy.json": b"p", "api-launch.json": b"a", "target-policy.json": b"t"}
+        self.docker.copies["product-files"] = config
+        before = sorted(os.listdir(self.directory.run))
+        sha = lambda data: hashlib.sha256(data).hexdigest()
+        self.assertEqual(self.ports.product_files(), {"installation": sha(b"i"), "policy": sha(b"p"), "api_launch": sha(b"a"),
+                                                      "target_policy": sha(b"t")})
+        (call,) = self.docker.calls
+        self.assertEqual(call[1:7], (self.split.images["product"].id, "eval-r1_product-state", "config",
+                                     ("installation.json", "policy.json", "api-launch.json", "target-policy.json"), "product-files", 1000))
+        self.assertEqual(len(call), 10)  # 하위 경로 없음
+        self.assertEqual(sorted(os.listdir(self.directory.run)), before)
+
+    def test_runtime_conditions_are_read_below_the_draft_run_directory(self):
+        self.docker.copies["product-run-conditions"] = {"runtime-conditions.json": b"{}\n"}
+        self.assertEqual(self.ports.runtime_conditions("prep-0a1b"), b"{}\n")
+        (call,) = self.docker.calls
+        self.assertEqual(call[1:7] + call[10:], (self.split.images["product"].id, "eval-r1_product-state", "runs",
+                                                 ("runtime-conditions.json",), "product-run-conditions", 1000, ("prep-0a1b", "state")))
+
+    def test_control_policy_and_tool_surface_go_to_the_product_and_images(self):
+        self.ports.control_policy("42")
+        self.assertEqual(self.driver.calls[-1][:2], ("control_policy", ("42",)))
+        with mock.patch("runner_split_ports.ours_side", return_value={"x": 1}) as side:
+            self.assertEqual(self.ports.tool_surface(), {"x": 1})
+        args = side.call_args.args
+        self.assertEqual(args[:3], (self.split.images["product"].id, self.split.images["explore_browser"].id, self.docker.run_bounded))
 
 
 class TestDrive(PortsCase):
