@@ -22,6 +22,7 @@ import (
 	"github.com/Autumn-27/artex/auditcheckpoint"
 	"github.com/Autumn-27/artex/auditkeys"
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/evidencerevision"
 	"github.com/Autumn-27/artex/reportcapture"
@@ -32,6 +33,20 @@ import (
 )
 
 type productReportFrame struct{ png []byte }
+
+type productReportTestAuthority struct{ job diagnosisprep.Job }
+
+func (a productReportTestAuthority) Call(_ context.Context, r diagnosisprep.Request) (diagnosisprep.Response, error) {
+	if r.Command != diagnosisprep.AuthorizeTask {
+		return diagnosisprep.Response{}, diagnosisprep.ErrProtocol
+	}
+	allowed := r.Principal == "ARTEX" && r.TaskID == a.job.TaskID
+	out := diagnosisprep.Response{Version: diagnosisprep.Version, RequestID: r.RequestID, Authorized: &allowed}
+	if allowed {
+		out.Job = &a.job
+	}
+	return out, nil
+}
 
 func (f productReportFrame) CurrentFrame(context.Context) (reportcapture.Frame, error) {
 	return reportcapture.Frame{PNG: f.png, CapturedAt: time.Now()}, nil
@@ -218,19 +233,62 @@ func TestProductReportCaptureReadsOwnedPostgres(t *testing.T) {
 	if _, err := installer.Exec(`INSERT INTO task_scope(task_id,kind,domain,source) VALUES($1,'subdomain','report.owned.test','manual')`, row.ID); err != nil {
 		t.Fatal(err)
 	}
-	graphRequest := httptest.NewRequest("GET", fmt.Sprintf("/api/tasks/%d/coverage-graph", row.ID), nil)
-	graphRequest.Header.Set("Authorization", "Bearer "+session.Token)
-	graphResponse := httptest.NewRecorder()
-	handler.ServeHTTP(graphResponse, graphRequest)
-	var graph db.CoverageGraphData
-	if graphResponse.Code != 200 || json.Unmarshal(graphResponse.Body.Bytes(), &graph) != nil || len(graph.Nodes) != 1 || !graph.Nodes[0].InScope {
-		t.Fatal("실제 product_api 역할의 저장 그래프 GET 실패", graphResponse.Code)
+	upstream := httptest.NewServer(handler)
+	defer upstream.Close()
+	job := diagnosisprep.Job{
+		ID: "fixture-report", Revision: 1, SourceDigest: strings.Repeat("a", 64),
+		Input: diagnosisprep.Input{TargetURL: "https://report.owned.test/", ProfileID: "local"},
+		State: diagnosisprep.Unknown, Phase: diagnosisprep.Closure, PreparationStarted: true,
+		AuthorityState: diagnosisprep.AuthorityNotIssued, TaskID: strconv.FormatInt(row.ID, 10),
 	}
-	mapRequest := httptest.NewRequest("GET", fmt.Sprintf("/api/tasks/%d/access-map", row.ID), nil)
-	mapRequest.Header.Set("Authorization", "Bearer "+session.Token)
-	mapResponse := httptest.NewRecorder()
-	handler.ServeHTTP(mapResponse, mapRequest)
-	if mapResponse.Code != 409 {
-		t.Fatal("KG 미등록 URL Job의 지도를 합성함", mapResponse.Code)
+	product, err := server.NewProductDiagnosisHandler(t.Context(), apiPool, keyDir, dataDir,
+		productReportTestAuthority{job: job}, upstream.URL, nil, nil)
+	if err != nil {
+		t.Fatal("제품 관리 서버 기동 실패", err)
 	}
+	read := func(leaf string) *httptest.ResponseRecorder {
+		q := httptest.NewRequest("GET", fmt.Sprintf("/api/tasks/%d/%s", row.ID, leaf), nil)
+		q.Header.Set("Authorization", "Bearer "+session.Token)
+		out := httptest.NewRecorder()
+		product.ServeHTTP(out, q)
+		return out
+	}
+	assertGraph := func(t *testing.T) {
+		t.Helper()
+		out := read("coverage-graph")
+		var graph db.CoverageGraphData
+		if out.Code != 200 || json.Unmarshal(out.Body.Bytes(), &graph) != nil || len(graph.Nodes) != 1 || !graph.Nodes[0].InScope {
+			t.Fatal("실제 보고서 역할의 제품 그래프 GET 실패", out.Code)
+		}
+		if out := read("access-map"); out.Code != 409 {
+			t.Fatal("KG 미등록 URL Job의 지도 상태가 달라짐", out.Code)
+		}
+	}
+	t.Run("fresh-install", assertGraph)
+	t.Run("before-683", func(t *testing.T) {
+		if _, err := installer.Exec(`REVOKE SELECT ON public.task_scope FROM product_api`); err != nil {
+			t.Fatal(err)
+		}
+		out := read("coverage-graph")
+		if out.Code != 503 || strings.Contains(out.Body.String(), `"nodes"`) || strings.Contains(out.Body.String(), "task_scope") {
+			t.Fatal("조회 권한 누락이 그래프 또는 내부 오류로 공개됨", out.Code)
+		}
+		if out := read("access-map"); out.Code != 409 {
+			t.Fatal("그래프 전용 권한이 지도 읽기에 영향을 줌", out.Code)
+		}
+	})
+	t.Run("minimal-upgrade", func(t *testing.T) {
+		if _, err := installer.Exec(`GRANT SELECT (task_id, kind, company_id, domain, net, value) ON public.task_scope TO product_api`); err != nil {
+			t.Fatal(err)
+		}
+		var tableRead, unrelatedRead, writable, helper bool
+		if err := apiPool.QueryRow(`SELECT has_table_privilege(current_user,'public.task_scope','SELECT'),
+			has_column_privilege(current_user,'public.task_scope','reason','SELECT'),
+			has_table_privilege(current_user,'public.task_scope','INSERT,UPDATE,DELETE,TRUNCATE')
+			  OR has_any_column_privilege(current_user,'public.task_scope','INSERT,UPDATE'),
+			has_function_privilege(current_user,'public.try_inet(text)','EXECUTE')`).Scan(&tableRead, &unrelatedRead, &writable, &helper); err != nil || tableRead || unrelatedRead || writable || !helper {
+			t.Fatal("최소 이관 권한의 경계가 달라짐", err)
+		}
+		assertGraph(t)
+	})
 }
