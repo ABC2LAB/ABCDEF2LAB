@@ -1,6 +1,6 @@
 # KG 조회 계약 v1 — 작업 자산·관측 출처 검토안
 
-상태: **팀 검토용 초안 / API 미구현 / 실행 수용시험 NOT_RUN**. 문서 작성·PR 제출 승인은 계약의 팀 합의나 실행 권한 확대 승인이 아니다. 이경준(KG·UI)·이동찬(서버 통합)·최민준(정본 reader·E③ 근거)의 검토가 필요하다.
+상태: **구현 전 결정안(2026-11-18 보완, §11) / API 미구현 / 실행 수용시험 NOT_RUN**. 문서 작성·PR 제출 승인은 계약의 팀 합의나 실행 권한 확대 승인이 아니다. 이경준(KG·UI)·이동찬(서버 통합)·최민준(정본 reader·E③ 근거)의 검토가 필요하다. 2026-11-18 보완은 [개발 계획 v4.2](../development-plan.md) 이경준 칸(구현·정책 출처 칸 분리·D05 문구)에 따라 D01~D07의 채택안, 정책 출처 칸, 저장 보고서 서버 제공 범위를 정한다.
 
 분석 기준: 2026-11-17 `dev` **`89c6d74b66556f568d620164984fb51fecd22707`**. 아래 코드 링크는 이 기준의 저장소 상대 경로다. 후속 구현은 최신 dev와 다시 대조한다.
 
@@ -69,7 +69,8 @@ Authorization: Bearer <기존 관리자 JWT>
 - task ID는 선행 0 없는 양의 int64 십진 표기다. 직접 handler도 GET만 받고 HEAD는 405다. Go mux의 GET→HEAD 자동 매칭에 의존하지 않는다.
 - 기존 관리자 JWT의 Bearer 검증을 재사용한다. 새 projection은 cookie/query token으로 직접 인증하지 않는다. 범용 ARTEX의 기존 `requireAuth` 추출 방식과 구분해 handler에서 검증한다.
 - 제품 중계는 인증된 운영자의 현재 task 결속과 직접 원천의 읽기 권한을 확인한다. 원천 권한을 검증할 수 없으면 전체 요청을 403으로 거부하며 부분 그래프·원천 ID를 노출하지 않는다.
-- 실행 서버는 기동에 결속된 현재 task만 조회한다. 준비 전용 서버에는 열지 않는다. 저장 보고서 서버에서의 새 projection 제공은 기본 v1 범위 밖이며 별도 route·읽기 권한 검토 후 추가한다.
+- 실행 서버는 기동에 결속된 현재 task만 조회한다. 준비 전용 서버에는 열지 않는다. ~~저장 보고서 서버에서의 새 projection 제공은 기본 v1 범위 밖이며 별도 route·읽기 권한 검토 후 추가한다.~~
+  - **2026-11-18 보완(§11-3)**: 제품 보고서 그래프는 저장 보고서 서버(`server/first_diagnosis_report.go`의 `GET /api/tasks/{id}/coverage-graph`)를 거친다. 이 서버도 같은 `serveCoverageGraph`를 쓰므로 **v1을 같은 route로 연다**. 새 route·읽기 권한은 만들지 않고, [#683 보고서 읽기](product-report-graph-read.md)의 인증·결속 task·직접 원천 권한 확인·`X-ABC2LAB-Report-Read-Scope` 재확인을 그대로 따른다.
 - task/자산/출처는 한 read-only repeatable-read 트랜잭션에서 조회한다. 중계 권한은 응답 공개 전에도 재확인한다. 조회 중 관계·삭제가 바뀌면 한 DB snapshot의 결과만 반환한다.
 - `Cache-Control: no-store`. GET으로 모델·탐색·E②·E③ 발급·동기화·복구·DDL·GRANT·저장 갱신을 호출하지 않는다.
 
@@ -164,7 +165,8 @@ observation은 `node_id`, `kind=intent/fact/finding`, `source_state`, `claimed_c
   "version": "abc2lab.kg-query/v1",
   "task_id": "41",
   "scope": {"kind": "task_context", "task_ids": ["41"], "source_depth": 1, "execution_scope": null},
-  "sections": {"assets": "complete", "provenance": "complete", "ownership": "not_requested", "diagnosis": "not_requested"},
+  "sections": {"assets": "complete", "provenance": "complete", "ownership": "not_requested", "diagnosis": "not_requested", "policy_source": "not_requested"},
+  "policy_source": null,
   "nodes": [
     {"id": "t:41", "kind": "task", "task_id": "41", "label": "작업 #41", "role": "current"},
     {"id": "a:101", "kind": "asset", "asset_id": "101", "asset_type": "endpoint", "label": "엔드포인트 #101", "context_state": "included", "observation_state": "unknown"}
@@ -192,6 +194,7 @@ observation은 `node_id`, `kind=intent/fact/finding`, `source_state`, `claimed_c
 - 배열은 필수다. Asset 노드에는 소유자·판정 필드가 없다. `execution_scope=null`은 일반 자산에 실행 결속이 없음, `observation=null`은 해당 출처에 공개 가능한 관측 참조가 없음, `next_cursor=null`은 다음 페이지 없음을 뜻한다.
 - null과 생략을 대용하지 않는다. 종류별로 해당하지 않는 추가 필드만 생략한다. source_task 관계의 basis 생략도 명시된 계약이다.
 - 정상 빈 결과는 현재 Task 노드만 있고 edges/provenance는 빈 배열이다. 조회한 sections는 complete다. 미조회 ownership/diagnosis는 not_requested이며 근거 0건이라는 뜻이 아니다.
+- **정책 출처(2026-11-18 보완, §11-2)**: 최상위 `policy_source`와 `sections.policy_source`를 둔다. v1은 정책을 읽지 않으므로 항상 `policy_source: null`, `sections.policy_source: "not_requested"`다. 후속 판에서 읽으면 `{"kind", "ref", "digest_sha256", "target_approval_revision"}` 모양이고 칸 이름·`kind` 값은 E③ 계약(`e3contract.PolicySource`, `product_declaration`·`kg_snapshot`)과 같다. `kind`를 `policy_version` 문자열 모양으로 추정하지 않으며, `kg-fixture`를 기본값으로 채우지 않는다. 다른 `kind`·칸은 계약 오류다. 값은 그 회차 실행에 결속돼 동결된 정책 출처이고, 현재 대상 등록의 선언(동결 전·재승인 뒤 값)으로 대신하지 않는다(#703 리뷰 OD06).
 - v1의 알려진 필드·종류·상태 밖의 응답은 클라이언트가 계약 오류로 처리하고 그래프를 공개하지 않는다. unknown 변환은 앞에서 명시한 미등록 source·confidence에만 적용한다. 서버의 unknown과 JSON 손상을 혼동하지 않는다.
 
 ### 5.3 크기·페이지
@@ -338,10 +341,10 @@ scope와 저장 자산 필드의 일치다. 대상 전송 허가·미실행·안
 ### E07 소유 근거 없는 자산·자원
 
 ```json
-{"sections": {"assets": "complete", "provenance": "complete", "ownership": "not_requested", "diagnosis": "not_requested"}}
+{"sections": {"assets": "complete", "provenance": "complete", "ownership": "not_requested", "diagnosis": "not_requested", "policy_source": "not_requested"}}
 ```
 
-UI는 소유 미확인·미조회로 표시한다. 별도 정책 조회에서 근거가 없으면 unknown을 유지한다. not_requested를 조회 성공·근거 없음으로 바꾸지 않는다. Asset에서 미확인 Resource나 owner_ref를 생성하지 않는다.
+UI는 **소유 미조회**로 표시한다(D05 문구, §11-1). 별도 정책 조회에서 근거가 없으면 unknown을 유지한다. not_requested를 조회 성공·근거 없음으로 바꾸지 않는다. Asset에서 미확인 Resource나 owner_ref를 생성하지 않는다.
 
 ### E08 상충하는 관측·판정 또는 선택 모호
 
@@ -397,6 +400,8 @@ UI는 소유 미확인·미조회로 표시한다. 별도 정책 조회에서 �
 | Q16 | v1 조회와 source 변경 경쟁, 조회 중 권한 철회 | DB snapshot 일관성·응답 전 권한 검증. 이전 결과로 실패를 숨기지 않음 |
 | Q17 | 읽기 전용성 계측, GET/HEAD/POST와 잘못된 query | 진단 시작·모델·대상 HTTP·E②·E③ 발급·DB 변경 0건 |
 | Q18 | 기존 무인자 coverage-graph·access-map 회귀 | DTO·선택·판정·세대·비밀 보호의 기존 계약 보존 |
+| Q19 | 실제 제품 HTTP → 관리 중계 → 저장 보고서 서버에서 v1 상한 초과(2026-11-18 보완, §11-3) | 운영자가 413과 §5.4 본문(`kg_graph_too_large`, `retryable: false`)을 그대로 받음. 503·빈 그래프로 바뀌지 않음 |
+| Q20 | 같은 경로의 무인자 `coverage-graph`·`access-map` 응답 허용 목록 회귀(§11-3) | 200·400·401·403·404·409·503만 통과, 그 밖(413 포함)은 지금처럼 503 |
 
 ## 10. Open Decision과 리뷰 책임
 
@@ -415,3 +420,55 @@ UI는 소유 미확인·미조회로 표시한다. 별도 정책 조회에서 �
 리뷰 분담안: 이경준은 KG 의미·UI 소비·라벨·레이어, 이동찬은 서버/DB 읽기·제품 중계·격리, 최민준은 registry/resolver·Source·E③ 기록 의미를 검토한다. 정본 등록 책임을 이관하거나 각자의 개인 지침/STATUS를 바꾸는 제안이 아니다.
 
 완료 구분: **구현 조사·계약 초안=문서화 / 팀 합의=미완료 / API 구현=미착수 / 계약·제품 수용시험=NOT_RUN**. Open Decision의 담당자 답변을 기록해야 계약 채택으로 표시하고, 이후 구현·시험 결과를 별도로 보고한다.
+
+## 11. 2026-11-18 보완 — 구현 전 결정안
+
+[개발 계획 v4.2](../development-plan.md) 이경준 칸에 따라 구현 전에 정한다. 리뷰에서 반대가 없으면 이 절대로 구현한다(§10 담당자는 이 PR 리뷰로 답한다). 실행 권한 확대·fixture 정본 변경은 없다.
+
+### 11-1. D01~D07 채택안
+
+| ID | 채택 | 이경준 | 답변 필요 |
+|---|---|---|---|
+| D01 | 추천안 그대로: `GET /api/tasks/{id}/coverage-graph?view=kg-v1`, 무인자 응답 유지 | 동의 | 이동찬 |
+| D02 | 추천안 그대로: `a:<id>`·`t:<id>`, 안전 라벨 `<유형> #<id>`·`작업 #<id>`, 관측은 출처 패널 | 동의(UI 담당) | — |
+| D03 | 추천안 그대로: 포함(`basis`)과 관측 출처를 따로 보이고, 원천 task는 "읽기 전용 상속"으로 표시 | 동의 | 이동찬 |
+| D04 | 추천안 그대로: 전체 한 응답, 상한 초과는 413(절단 없음), 페이지는 후속 | 동의 | 이동찬 |
+| D05 | 아래 문구로 확정 | 제안 | 최민준 |
+| D06 | 추천안 그대로: 접근통제 판정은 기존 access-map, 자산↔자원 대응 추정 안 함 | 동의 | 이동찬·최민준 |
+| D07 | 추천안 그대로: fixture 정본 유지. 정책 출처는 §11-2 칸으로만 | 동의 | 최민준·이동찬 |
+
+**D05 표시 문구**(화면). 세 경우를 다른 문구로 보이고, 어느 것도 "소유 없음"·"접근 허용"·"안전"으로 칠하지 않는다.
+
+| 상태 | 뜻 | 문구 |
+|---|---|---|
+| `sections.ownership = "not_requested"` | 이 조회가 소유를 읽지 않음(v1은 항상) | **소유 미조회** — 이 그래프는 소유를 조회하지 않습니다 |
+| 소유를 조회했으나 근거 없음(후속 판, unknown) | 등록·관측 근거가 없음 | **소유 미확인** — 소유 근거가 없습니다 |
+| 소유를 조회하다 실패(후속 판에서 소유를 실제로 읽는 경우만) | 읽지 못함 | **소유 조회 실패** — 근거가 없다는 뜻이 아닙니다 |
+
+- **v1의 실패는 소유 문구로 보이지 않는다**(#703 리뷰). v1은 정책대로 소유를 읽지 않으므로, v1 HTTP 오류(§5.4)·계약 오류(§5.2 알려진 필드 밖)는 **그래프 조회 실패**로 보이고 오류 code별 문구를 쓴다. 이때 소유·정책 출처 칸은 그리지 않는다. "소유 조회 실패"는 후속 판에서 소유 조회가 실제로 일어나 그 부분만 실패한 경우에만 쓴다.
+
+정책 출처도 같은 원칙이다: `not_requested`는 **정책 출처 미조회**, 후속 판에서 정책 출처를 실제로 읽다 실패한 경우만 **정책 출처 조회 실패**. 값이 있으면 `kind`(제품 정책 선언 / 평가 KG snapshot)와 `ref`만 보이고 digest는 앞 12자만 보인다.
+
+### 11-2. 정책 출처 칸
+
+§5.2 보완대로다. 이유: E③ 판정이 읽는 정책 정본이 평가 경로(`kg_snapshot`)와 제품 경로(`product_declaration`)로 갈렸다(개발 계획 v4.2 "정책 정본과 KG 조회는 별개다"). KG 조회가 정책을 보여 줄 때 출처를 kg-fixture로 고정하면 제품 회차를 평가 정본으로 잘못 읽게 된다. v1은 칸만 두고 읽지 않는다(`null`). 칸을 미리 두는 것은 UI가 출처 자리를 따로 그리고, 후속 판에서 응답 모양을 바꾸지 않게 하려는 것이다.
+
+### 11-3. 저장 보고서 서버
+
+§3 보완대로 저장 보고서 서버도 v1을 같은 route로 연다. 이유: 제품 보고서 그래프(발표 전 필요)는 실행이 끝난 뒤 이 서버로 읽는다. 기존 무인자 응답과 같은 인증·결속·원천 권한 확인을 거치고, 다른 점은 응답 투영뿐이다. [product-report-graph-read.md](product-report-graph-read.md)의 "view=kg-v1 거부" 문장은 구현 PR에서 함께 고친다.
+
+**413 보존(#703 리뷰)**: 제품 중계(`server/diagnosis_management_bridge.go`)는 저장 그래프 응답 중 200·400·401·403·404·409·503만 그대로 넘기고 나머지는 재조회 가능한 503으로 바꾼다. 그대로 두면 D04의 `413 kg_graph_too_large`가 운영자에게 503으로 보여 "다시 읽으면 될 수 있다"로 잘못 전달된다. 그래서:
+
+- `view=kg-v1` 요청일 때만 허용 목록에 413을 더해 §5.4 본문(`kg_graph_too_large`, `retryable: false`)을 그대로 넘긴다. 무인자 `coverage-graph`·`access-map`의 허용 목록은 바꾸지 않는다(무인자 서버가 413을 내도 지금처럼 503).
+- 중계의 응답 크기 상한(`managementBridgeResponseLimit` = 보고서 16MiB + 캡처 4MiB)은 v1 응답 상한 16MiB보다 크므로, 상한 안의 정상 응답이 중계에서 잘리지 않는다. v1 상한을 올리려면 중계 상한도 같이 본다.
+- 중계가 스스로 내는 오류(인증 401·503, 권한·문맥 변경 403·409, redirect·크기 502, 응답 결속 503)는 기존 `writeErr` 본문이라 §5.4 kg 봉투가 아니다. 클라이언트는 HTTP 상태로 먼저 나누고, kg `code`·`retryable`은 본문에 있을 때만 쓴다. 중계 오류를 kg 봉투로 바꾸는 것은 v1 범위 밖이다.
+- 시험은 §9 Q19·Q20이다.
+
+### 11-4. 구현 순서와 리뷰
+
+| PR | 범위 | 담당 / 필수 리뷰 |
+|---|---|---|
+| 1. 서버·DB 읽기 | `db`의 읽기 어댑터(한 read-only 트랜잭션, §3.1 세 근거·§4.1 포함 규칙·§5 출력·상한), `reportGraphRequestTask`가 `coverage-graph`의 `view=kg-v1` 하나만 받음, kg 오류 봉투(§5.4), 제품 중계의 v1 413 보존(§11-3), §9 Q01~Q20 중 서버·DB·중계 시험 | 이경준 / **이동찬 필수**(서버·DB·중계), 최민준(의미·출처) |
+| 2. UI | v1 닫힌 파서, 보고서 탭 자산 그래프 패널(포함 트리·basis·출처 패널·상속 표시·issues), D05·정책 출처 문구, Job 전환 경쟁 시험 | 이경준 / 윤재상(디자인), 이동찬 |
+
+`server/`·`db/`는 원래 이동찬·최민준 영역이다. 개발 계획 v4.2가 구현을 이경준에게 두었으므로 PR 1은 이동찬 필수 리뷰로 올린다. PR 2는 PR 1을 기다리지 않고 §7 사례 JSON fixture로 먼저 만든다.
