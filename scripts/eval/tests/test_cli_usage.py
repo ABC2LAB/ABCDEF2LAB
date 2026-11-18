@@ -78,7 +78,8 @@ class TestCommandWords(unittest.TestCase):
         # 확장되지 않는 heredoc(따옴표·백슬래시 구분어)과 본문의 평문, for 목록은 명령이 아니다
         for command, words in {"cat <<'EOF'\n$(npx --version)\nEOF": ["cat"], "cat <<-\\EOF\n$(npx q)\nEOF": ["cat"],
                                "cat <<EOF\nnpx plain text\nEOF": ["cat"], "for x in npx pip; do echo $x; done": ["echo"],
-                               "cat <<<\"npx here-string\"": ["cat"]}.items():
+                               "cat <<<\"npx here-string\"": ["cat"],
+                               "cat <<< word\nnpx --version": ["cat", "npx"]}.items():  # here-string 뒤 줄은 본문이 아니다
             with self.subTest(command=command):
                 self.assertEqual(command_words(command), words)
 

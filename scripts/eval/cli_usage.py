@@ -103,7 +103,10 @@ def _heredoc_markers(line: str) -> list[tuple[str, bool]]:
             quote = char
         elif char == "\\":
             i += 1
-        elif line.startswith("<<", i) and not line.startswith("<<<", i):
+        elif line.startswith("<<<", i):
+            i += 3  # here-string: 뒤 낱말이 입력이고 다음 줄은 본문이 아니다(가운데 `<<`부터 다시 보지 않는다)
+            continue
+        elif line.startswith("<<", i):
             match = _HEREDOC_DELIMITER.match(line, i + 2)
             if match:
                 quoted = bool(match.group(1)) or "\\" in match.group(0)
