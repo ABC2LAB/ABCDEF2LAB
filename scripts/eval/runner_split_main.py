@@ -71,8 +71,11 @@ def split_declared(config: RunnerConfig, preflight: object, manifest: dict) -> S
         errors.append(f"preflight.{POLICY_SWITCH_SIDE}.run_drain: CONFIG_MISMATCH")
     llm = declared["llm"]
     # base_url도 승인 값과 같아야 한다. 다르면 같은 모델 키를 다른 origin으로 사후 조회(llm_lookup_env)하게 된다(#674 리뷰).
+    # 제품이 응답에서 검증할 제공자 표시 이름도 러너가 사후 판정에 쓰는 이름과 같아야 한다. 다르면 제품은 응답을 거부하거나
+    # 러너가 맞는 응답을 불일치로 판정해 유료 회차가 결과 없이 무효가 된다(2026-11-18 VAmPI 유료 파일럿 O, 표시 이름 띄어쓰기 차이).
     if (llm.get("backend") != "api" or llm.get("model") != manifest.get("model") or llm.get("provider") != manifest.get("provider_slug")
-            or llm.get("base_url") != manifest.get("base_url")):
+            or llm.get("base_url") != manifest.get("base_url")
+            or manifest.get("expected_provider_name") != config.llm_gateway["expected_provider_name"]):
         errors.append(f"preflight.{POLICY_SWITCH_SIDE}.llm: MANIFEST_MISMATCH")
     if errors:
         raise RunnerConfigError(errors)
