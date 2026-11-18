@@ -844,6 +844,14 @@ class TestPreservationV3(unittest.TestCase):
         values = {name: getattr(spec(**self.v3_spec()), name) for name in v3f.COMMON_RUNNER_SETTINGS}
         self.assertEqual(seen["common"]["runner_settings_sha256"], v3f.settings_sha256(values, v3f.COMMON_RUNNER_SETTINGS))
 
+    def test_product_end_signal_keeps_the_closing_reason(self):
+        # O 끝 신호는 제품 초안 끝 상태다(B는 closing_reason null). 예산 마감 사유가 회차별 칸에 남는다.
+        def closing(ports):
+            ports.statuses = [{"id": "draft-1", "state": "running"},
+                              {"id": "draft-1", "state": "completed", "closing_reason": "budget_limited", "outcome": "partial"}]
+        _, _, _, seen = self.run_v3(closing)
+        self.assertEqual(seen["run"]["end_signal"]["closing_reason"], "budget_limited")
+
     def test_round_without_diagnosis_publishes_null_run_conditions(self):
         def not_entered(ports):
             ports.record["run"].pop("execution")
