@@ -13,8 +13,10 @@ import {
   readCopyPrompt,
 } from "@/lib/diagnosis/remediation";
 
+import { cx } from "../../lib/cx";
 import { outcomeLabel } from "../../live/liveReport";
 import { maskSecrets } from "../../live/mask";
+import { Markdown } from "../../ui/Markdown";
 import { Isec } from "../../ui/parts";
 import s from "../../workbench.module.css";
 
@@ -114,14 +116,35 @@ export function DiagnosticEntrySections({
   task,
   entry,
   onReload,
+  layout = "panel",
 }: {
   task: string;
   entry: RemediationEntry;
   onReload: () => void;
+  /**
+   * panel = 오른쪽 발견 상세(① 판정과 영향 · ② 재현 절차 · ③ 보안 조치 · ④ AI 프롬프트).
+   * page = 상세 보기 페이지, ARTEX 발견 상세 순서와 이름(요약 · 증거 / PoC · 상세 보고서 · 보안 조치 · AI 프롬프트, 사용자 11/17)
+   */
+  layout?: "panel" | "page";
 }) {
   const [busy, setBusy] = useState(false),
     [show, setShow] = useState(false),
-    [message, setMessage] = useState("");
+    [message, setMessage] = useState(""),
+    [reportMsg, setReportMsg] = useState("");
+  const reportBox = useRef<HTMLDivElement>(null);
+  // 상세 보고 복사: 원문 Markdown 이 아니라 화면에 그려진(파싱 뒤 가린) 글을 복사한다 — 원문을 복사하면 붙여 넣은 곳의
+  // Markdown 이 엔티티(&#112;…)를 다시 풀어 비밀이 되살아날 수 있다(#677 리뷰). 한 번 더 가린다
+  async function copyReport() {
+    const box = reportBox.current;
+    const shown = box ? box.innerText || box.textContent || "" : "";
+    try {
+      await navigator.clipboard.writeText(maskSecrets(shown));
+      setReportMsg("상세 보고를 복사했습니다.");
+    } catch (error) {
+      console.warn("상세 보고 복사 실패", error);
+      setReportMsg("복사 권한을 확인하지 못했습니다.");
+    }
+  }
   const control = useRef<AbortController | null>(null);
   useEffect(() => () => control.current?.abort(), []);
   const record = entry.record;
@@ -189,143 +212,228 @@ export function DiagnosticEntrySections({
         ["남은 위험·검토", bundle.residual_risk],
       ] as const)
     : [];
+  // 두 짜임이 같이 쓰는 조각
+  const truncNote = entry.truncated ? (
+    <p role="status">실제 도구 출력이 잘렸습니다. 완전한 재현 증거가 아닙니다.</p>
+  ) : null;
+  const e3Help = (
+    <p className={s.help}>
+      HTTP 성공·AI 주장·정상 종료는 취약점 확정이 아닙니다. 판정은 현재 저장된 E③ 근거만 따릅니다.
+    </p>
+  );
+  const steps = (
+    <>
+      {entry.source_load_failed ? (
+        <p role="alert">근거 불러오기 실패. 현재 결속을 확인할 수 없어 재현 단계를 제공하지 않습니다.</p>
+      ) : null}
+      {entry.steps_truncated ? <p role="status">실행 관측이 잘렸습니다. 전체 재현 절차로 해석하지 마세요.</p> : null}
+      {entry.steps?.length ? (
+        entry.steps.map((step) => (
+          <section key={step.id}>
+            <h4>
+              Step {step.number}. {maskSecrets(step.title)}
+            </h4>
+            <p>
+              {step.method} {maskSecrets(step.path) || "비민감 경로 미기록"}
+            </p>
+            {step.prerequisites ? <p>사전 조건: {maskSecrets(step.prerequisites)}</p> : null}
+            <p>{maskSecrets(step.observation)}</p>
+            {step.truncated ? <p>이 단계의 관측이 잘렸습니다.</p> : null}
+            <StoredScreenshot
+              key={`${task}:${entry.entry_id}:${step.id}:${step.capture.digest ?? step.capture.status}`}
+              task={task}
+              entry={entry.entry_id}
+              step={step}
+            />
+          </section>
+        ))
+      ) : (
+        <p className={s.help}>구조화된 실제 재현 단계 미확보. 실행하지 않은 절차를 생성하지 않습니다.</p>
+      )}
+    </>
+  );
+  const evidenceText = maskSecrets(entry.evidence) || "저장된 증거 본문 없음";
+  const reportCopy = (
+    <button className={cx(s.btn, s.sm)} type="button" onClick={() => void copyReport()}>
+      복사
+    </button>
+  );
+  const remediationBody = (
+    <>
+      <p className={s["lv-pre"]}>{maskSecrets(entry.remediation) || "저장된 수정 권고 없음"}</p>
+      {bundle ? (
+        <details>
+          <summary>{`자세한 조치 (${groups.filter(([, items]) => items.length).length}묶음)`}</summary>
+          {groups.map(([title, items]) => (
+            <div key={title}>
+              <h4>{title}</h4>
+              <ul>
+                {Array.from(new Set(items)).map((v) => (
+                  <li key={v}>{maskSecrets(v)}</li>
+                ))}
+              </ul>
+            </div>
+          ))}
+          <p className={s.help}>
+            관측 기술은 저장소·배포 컴포넌트에서 다시 확인하세요. 미확인 프레임워크·파일 경로는 생성하지 않습니다.
+          </p>
+        </details>
+      ) : (
+        <p className={s.help}>유효한 저장 조치가 없습니다. 현재 근거를 확인해 명시적으로 생성하세요.</p>
+      )}
+    </>
+  );
+  const promptBody = (
+    <>
+      {record?.stale ? (
+        <p role="alert">근거·조치·기술 또는 생성기 버전 변경: 오래된 프롬프트 사용을 차단했습니다.</p>
+      ) : null}
+      {bundle?.missing_context_fields?.length ? <p>보완할 맥락: {bundle.missing_context_fields.join(", ")}</p> : null}
+      <div className={s.acts}>
+        {bundle ? (
+          <>
+            <button className={s.btn} type="button" onClick={() => setShow((v) => !v)} aria-expanded={show}>
+              {show ? "전체 프롬프트 접기" : "전체 프롬프트 보기"}
+            </button>
+            <button className={s.btn} type="button" disabled={busy} onClick={() => void copy()}>
+              AI 수정 프롬프트 복사
+            </button>
+          </>
+        ) : null}
+        <button className={s.btn} type="button" disabled={busy || !entry.available} onClick={() => void generate()}>
+          {busy ? "저장 근거 확인 중…" : "보안 조치·AI 프롬프트 생성·저장"}
+        </button>
+      </div>
+      {bundle && show ? <pre className={s.code}>{maskSecrets(bundle.ai_prompt)}</pre> : null}
+      {!entry.available ? <p className={s.help}>{maskSecrets(entry.unavailable_reason)}</p> : null}
+      {message ? <p role="status">{message}</p> : null}
+      <p className={s.help}>
+        고객 저장소·원인 코드를 확인한 뒤 최소 수정과 회귀 시험을 하도록 지시하는 프롬프트입니다. 코드 수정·운영
+        재현·배포 권한을 주지 않습니다.
+      </p>
+    </>
+  );
+  const tech = (
+    <Isec>
+      <details>
+        <summary>기술 정보</summary>
+        <dl className={s.kv}>
+          <dt>판정 · 검증</dt>
+          <dd>{`${outcomeLabel(entry.outcome)} · ${entry.verification}`}</dd>
+          <dt>실행</dt>
+          <dd className={s["kv-ref"]}>{entry.run || "미기록"}</dd>
+          <dt>증거</dt>
+          <dd
+            className={s["kv-ref"]}
+          >{`버전 ${entry.evidence_version} · ${entry.evidence_digest} · ${entry.observed_at}`}</dd>
+          {(entry.steps ?? []).map((step) => (
+            <Fragment key={step.id}>
+              <dt>{`Step ${step.number}`}</dt>
+              <dd className={s["kv-ref"]}>
+                {`${step.observed_at} · ${step.run_ref} · 호출 ${step.call_ref || "미기록"} · 근거 ${step.evidence_ref}`}
+              </dd>
+            </Fragment>
+          ))}
+          {bundle ? (
+            <>
+              <dt>조치 · 프롬프트</dt>
+              <dd className={s["kv-ref"]}>
+                {`조치 ${bundle.remediation_version} · 증거 ${bundle.evidence_version} · 입력 ${bundle.input_digest}`}
+              </dd>
+            </>
+          ) : null}
+        </dl>
+      </details>
+    </Isec>
+  );
+
+  if (layout === "page")
+    // ARTEX 발견 상세 페이지 순서(요약 → 증거 / PoC → 상세 보고서). ARTEX 의 재검증 · 연결된 트래픽 · 경로도는 제품 서버에
+    // 그 기능 · API 가 없어 빈 칸으로 두지 않는다. 우리 쪽 보안 조치 · AI 프롬프트 · 기술 정보는 그 아래에 둔다
+    return (
+      <>
+        <Isec>
+          <h3>요약</h3>
+          <p>{maskSecrets(entry.summary)}</p>
+          {truncNote}
+          {e3Help}
+        </Isec>
+        <Isec>
+          <h3>증거 / PoC</h3>
+          <p className={s.help}>엔진이 실제로 보내고 저장한 실행 관찰과 요청 · 응답입니다.</p>
+          {steps}
+          <pre className={cx(s.code, s.dbox)}>{evidenceText}</pre>
+        </Isec>
+        <Isec>
+          <section aria-label="상세 보고">
+            <div className={s["dcard-h"]}>
+              <h3>상세 보고서</h3>
+              {entry.report ? reportCopy : null}
+            </div>
+            {entry.report ? (
+              <div ref={reportBox}>
+                <Markdown text={maskSecrets(entry.report)} />
+              </div>
+            ) : (
+              <p className={s.help}>저장된 상세 보고가 없습니다.</p>
+            )}
+            {reportMsg ? <p role="status">{reportMsg}</p> : null}
+          </section>
+        </Isec>
+        <Isec>
+          <h3>보안 조치</h3>
+          {remediationBody}
+        </Isec>
+        <Isec>
+          <h3>AI 수정 작업용 프롬프트</h3>
+          {promptBody}
+        </Isec>
+        {tech}
+      </>
+    );
+
   return (
     <>
-      {/* 정리(사용자 11/17 '오른쪽 패널 지저분'): 판정 · 유형 · 위험도는 위 머리 딱지가 말하므로 겹쳐 적지 않고, 긴 본문은
-          접어 두며, 검증 방식 · 실행 · 증거 버전 · 단계별 호출/근거 ID · digest 같은 기록 값은 맨 아래 '기술 정보'로 모은다.
-          내용은 지우지 않는다 */}
+      {/* ARTEX 발견 상세처럼(사용자 11/17): 판정 · 유형 · 위험도 · 시각은 위 상태 칸이 말하고, 상세 보고(Markdown) · 증거는
+          칸 안 카드로 펼쳐 두되 높이를 묶은 상자에서 스크롤한다. 자세한 조치 묶음은 접어 두고, 검증 방식 · 실행 · 증거 버전 ·
+          단계별 호출/근거 ID · digest 같은 기록 값은 맨 아래 '기술 정보'로 모은다. 내용은 지우지 않는다 */}
       <Isec>
         <h3>① 판정과 영향</h3>
         <p>{maskSecrets(entry.summary)}</p>
         {entry.report ? (
-          <details>
-            <summary>저장된 상세 보고</summary>
-            <pre className={s.code}>{maskSecrets(entry.report)}</pre>
-          </details>
+          <section className={s.dcard} aria-label="상세 보고">
+            <div className={s["dcard-h"]}>
+              <h4>상세 보고</h4>
+              {reportCopy}
+            </div>
+            <div className={s.dbox} ref={reportBox}>
+              <Markdown text={maskSecrets(entry.report)} />
+            </div>
+            {reportMsg ? <p role="status">{reportMsg}</p> : null}
+          </section>
         ) : null}
-        {entry.truncated ? <p role="status">실제 도구 출력이 잘렸습니다. 완전한 재현 증거가 아닙니다.</p> : null}
-        <p className={s.help}>
-          HTTP 성공·AI 주장·정상 종료는 취약점 확정이 아닙니다. 판정은 현재 저장된 E③ 근거만 따릅니다.
-        </p>
+        {truncNote}
+        {e3Help}
       </Isec>
       <Isec>
         <h3>② 재현 절차 및 스크린샷</h3>
-        {entry.source_load_failed ? (
-          <p role="alert">근거 불러오기 실패. 현재 결속을 확인할 수 없어 재현 단계를 제공하지 않습니다.</p>
-        ) : null}
-        {entry.steps_truncated ? <p role="status">실행 관측이 잘렸습니다. 전체 재현 절차로 해석하지 마세요.</p> : null}
-        {entry.steps?.length ? (
-          entry.steps.map((step) => (
-            <section key={step.id}>
-              <h4>
-                Step {step.number}. {maskSecrets(step.title)}
-              </h4>
-              <p>
-                {step.method} {maskSecrets(step.path) || "비민감 경로 미기록"}
-              </p>
-              {step.prerequisites ? <p>사전 조건: {maskSecrets(step.prerequisites)}</p> : null}
-              <p>{maskSecrets(step.observation)}</p>
-              {step.truncated ? <p>이 단계의 관측이 잘렸습니다.</p> : null}
-              <StoredScreenshot
-                key={`${task}:${entry.entry_id}:${step.id}:${step.capture.digest ?? step.capture.status}`}
-                task={task}
-                entry={entry.entry_id}
-                step={step}
-              />
-            </section>
-          ))
-        ) : (
-          <p className={s.help}>구조화된 실제 재현 단계 미확보. 실행하지 않은 절차를 생성하지 않습니다.</p>
-        )}
-        <details>
-          <summary>저장된 요청·응답 및 실행 기록</summary>
-          <pre className={s.code}>{maskSecrets(entry.evidence) || "저장된 증거 본문 없음"}</pre>
-        </details>
+        {steps}
+        <section className={s.dcard} aria-label="증거">
+          <div className={s["dcard-h"]}>
+            <h4>증거 · 요청·응답 및 실행 기록</h4>
+          </div>
+          <pre className={cx(s.code, s.dbox)}>{evidenceText}</pre>
+        </section>
       </Isec>
       <Isec>
         <h3>③ 보안 조치</h3>
-        <p className={s["lv-pre"]}>{maskSecrets(entry.remediation) || "저장된 수정 권고 없음"}</p>
-        {bundle ? (
-          <details>
-            <summary>{`자세한 조치 (${groups.filter(([, items]) => items.length).length}묶음)`}</summary>
-            {groups.map(([title, items]) => (
-              <div key={title}>
-                <h4>{title}</h4>
-                <ul>
-                  {Array.from(new Set(items)).map((v) => (
-                    <li key={v}>{maskSecrets(v)}</li>
-                  ))}
-                </ul>
-              </div>
-            ))}
-            <p className={s.help}>
-              관측 기술은 저장소·배포 컴포넌트에서 다시 확인하세요. 미확인 프레임워크·파일 경로는 생성하지 않습니다.
-            </p>
-          </details>
-        ) : (
-          <p className={s.help}>유효한 저장 조치가 없습니다. 현재 근거를 확인해 명시적으로 생성하세요.</p>
-        )}
+        {remediationBody}
       </Isec>
       <Isec>
         <h3>④ AI 수정 작업용 프롬프트</h3>
-        {record?.stale ? (
-          <p role="alert">근거·조치·기술 또는 생성기 버전 변경: 오래된 프롬프트 사용을 차단했습니다.</p>
-        ) : null}
-        {bundle?.missing_context_fields?.length ? <p>보완할 맥락: {bundle.missing_context_fields.join(", ")}</p> : null}
-        <div className={s.acts}>
-          {bundle ? (
-            <>
-              <button className={s.btn} type="button" onClick={() => setShow((v) => !v)} aria-expanded={show}>
-                {show ? "전체 프롬프트 접기" : "전체 프롬프트 보기"}
-              </button>
-              <button className={s.btn} type="button" disabled={busy} onClick={() => void copy()}>
-                AI 수정 프롬프트 복사
-              </button>
-            </>
-          ) : null}
-          <button className={s.btn} type="button" disabled={busy || !entry.available} onClick={() => void generate()}>
-            {busy ? "저장 근거 확인 중…" : "보안 조치·AI 프롬프트 생성·저장"}
-          </button>
-        </div>
-        {bundle && show ? <pre className={s.code}>{maskSecrets(bundle.ai_prompt)}</pre> : null}
-        {!entry.available ? <p className={s.help}>{maskSecrets(entry.unavailable_reason)}</p> : null}
-        {message ? <p role="status">{message}</p> : null}
-        <p className={s.help}>
-          고객 저장소·원인 코드를 확인한 뒤 최소 수정과 회귀 시험을 하도록 지시하는 프롬프트입니다. 코드 수정·운영
-          재현·배포 권한을 주지 않습니다.
-        </p>
+        {promptBody}
       </Isec>
-      <Isec>
-        <details>
-          <summary>기술 정보</summary>
-          <dl className={s.kv}>
-            <dt>판정 · 검증</dt>
-            <dd>{`${outcomeLabel(entry.outcome)} · ${entry.verification}`}</dd>
-            <dt>실행</dt>
-            <dd className={s["kv-ref"]}>{entry.run || "미기록"}</dd>
-            <dt>증거</dt>
-            <dd
-              className={s["kv-ref"]}
-            >{`버전 ${entry.evidence_version} · ${entry.evidence_digest} · ${entry.observed_at}`}</dd>
-            {(entry.steps ?? []).map((step) => (
-              <Fragment key={step.id}>
-                <dt>{`Step ${step.number}`}</dt>
-                <dd className={s["kv-ref"]}>
-                  {`${step.observed_at} · ${step.run_ref} · 호출 ${step.call_ref || "미기록"} · 근거 ${step.evidence_ref}`}
-                </dd>
-              </Fragment>
-            ))}
-            {bundle ? (
-              <>
-                <dt>조치 · 프롬프트</dt>
-                <dd className={s["kv-ref"]}>
-                  {`조치 ${bundle.remediation_version} · 증거 ${bundle.evidence_version} · 입력 ${bundle.input_digest}`}
-                </dd>
-              </>
-            ) : null}
-          </dl>
-        </details>
-      </Isec>
+      {tech}
     </>
   );
 }

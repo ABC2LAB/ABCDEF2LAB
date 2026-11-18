@@ -29,13 +29,7 @@ import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
 import { InspHead, InspOpenButton, Isec, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
-import {
-  ApprovalActions,
-  ApprovalFacts,
-  ApprovalRequestCode,
-  RecoveredApprovalNotice,
-  useRequestApprovals,
-} from "./approvals";
+import { ApprovalActions, ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "./approvals";
 import { JobSummary, jobResult, pendingRows, useCoveragePct } from "./jobSummary";
 import { ReportReadError, RunListControls, RunListStatus, RunRow, SelectedRunStatus } from "./runRows";
 import { EntryEp, FindingDetail, ORDER, Outcome, Sev } from "./UrlLiveLive";
@@ -345,7 +339,6 @@ export function UrlDashboardLive() {
           }
         />
         <Isec t="보낼 요청">
-          <RecoveredApprovalNotice />
           <ApprovalRequestCode row={chosen} />
         </Isec>
         <Isec t="승인 정보">

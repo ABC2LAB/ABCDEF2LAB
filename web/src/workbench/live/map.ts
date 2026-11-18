@@ -133,6 +133,14 @@ export function clockOf(ts: string | number | null | undefined): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+/** 시각 → 로컬 "YYYY-MM-DD HH:MM:SS" (못 읽으면 ""). */
+export function dateTimeOf(ts: string | number | null | undefined): string {
+  const t = toMs(ts);
+  if (t === null) return "";
+  const d = new Date(t);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${clockOf(t)}`;
+}
+
 /** 수 → "12,345". */
 export function fmtCount(n: number): string {
   return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
