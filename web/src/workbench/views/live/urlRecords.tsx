@@ -168,9 +168,6 @@ function RecordList({ finished }: { finished: boolean }) {
               <span className={s.aside}>{page ? `${shown.length} / ${rows.length}건` : "—"}</span>
             </div>
             <RunListControls />
-            <p className={s.help}>
-              보존된 상태입니다. 선택하면 현재 상태를 다시 확인합니다. 목록의 승인 표시는 실행 허가가 아닙니다.
-            </p>
             <RunListStatus empty={shown.length ? undefined : emptyText} />
             <div className={s.list} id={finished ? "doneList" : "runList"}>
               {shown.map((row) => (

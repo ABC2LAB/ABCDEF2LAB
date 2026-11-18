@@ -39,13 +39,13 @@ export function RunRow({ row, onPick }: { row: URLRunSummary; onPick?: () => voi
     >
       <span className={s.mk} aria-hidden="true" />
       <span className={s["r-main"]}>
-        {/* 이름 줄: 작업 번호(서버 task) 회색 딱지 + 이름 (사용자 11/18 시안 '25  test web 8 35b'). 끝난 점검이 많아져도 줄마다
-            구분되고 오른쪽 패널 '작업 #n'과 같은 번호다 */}
+        {/* 이름 줄: '1. prep-…'처럼 작업 번호(서버 task) + 이름 (사용자 11/18). 끝난 점검이 많아져도 줄마다 구분되고 오른쪽
+            패널 '작업 #n'과 같은 번호다 */}
         <span className={s["r-title"]}>
           {row.task_id ? (
             <span className={s["r-no"]}>
               <span className={s["sr-only"]}>작업 </span>
-              {row.task_id}
+              {`${row.task_id}.`}
             </span>
           ) : null}
           <span className={s["r-name"]}>{maskSecrets(row.display_name?.trim() || row.id)}</span>

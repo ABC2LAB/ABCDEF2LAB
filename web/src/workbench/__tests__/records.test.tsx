@@ -220,13 +220,15 @@ describe("서버 보존 목록의 상태 필터와 선택한 보고서", () => {
     expect(panel).not.toHaveTextContent("실제 task");
     expect(panel).toHaveTextContent(`작업#${completed.task_id}`);
     // 목록 줄은 이름(prep-…) 왼쪽에 번호만 — 아래 작은 글에 '작업 #n'을 따로 적지 않는다(사용자 11/18)
-    const row = screen.getByRole("button", { name: new RegExp(`^작업\\s*${completed.task_id}\\s*${completed.id}`) });
+    // 목록 줄 이름은 '42. job-1'처럼 작업 번호 + 이름(사용자 11/18)
+    const row = screen.getByRole("button", { name: new RegExp(`^작업\\s*${completed.task_id}\\.\\s*${completed.id}`) });
     expect(row).not.toHaveTextContent("작업 #");
     // 끝난 점검 줄 아래 글엔 단계(결과 저장) · 승인 상태 · 확인 필요를 적지 않는다(사용자 11/18)
     expect(row).not.toHaveTextContent(/결과 저장|승인|확인 필요/);
     // 목록 머리 수는 'n / n건'(조회 글 없이), 패널엔 다시 점검 안내 글이 없다
     expect(screen.getByText("1 / 1건")).toBeInTheDocument();
     expect(panel).not.toHaveTextContent("다시 점검은 별도");
+    expect(screen.queryByText(/보존된 상태입니다/)).toBeNull();
   });
   it("결과 저장 미확인 회차는 보고서 조회를 하지 않는다", () => {
     selectSaved({ ...completed, result_ready: false });
