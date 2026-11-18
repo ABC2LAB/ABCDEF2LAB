@@ -24,12 +24,14 @@ FINGERPRINT = "f" * 64
 LIMITS = {"max_requests": 10, "max_attempts": 30, "max_concurrent": 2, "max_body_bytes": 1024, "max_response_body_bytes": 1024,
           "request_timeout_ms": 1000}
 PRODUCT_FILES = {"installation": "a" * 64, "policy": "b" * 64, "api_launch": "c" * 64, "target_policy": "d" * 64}
+PROCESS_LIMITS = {"bash_slots": 3, "container_tasks": 512, "engine_reserve_tasks": 64, "call_tasks": 128, "command_tasks": 96,
+                  "helper_reserve_tasks": 8}
 SCOPE = {"RunRef": "run-draft-1", "TaskRef": "42", "CaseRef": "first-diagnosis", "ResetRef": "r", "PolicyRef": "policy-draft-1"}
 
 
 def conditions(**changes) -> bytes:
     value = {"version": "e2-runtime-conditions/v1", "scope": dict(SCOPE), "policy_revision": "v1", "worker_count": 3,
-             "process_limits": {}, "queue_consumes_command_timeout": True}
+             "process_limits": dict(PROCESS_LIMITS), "queue_consumes_command_timeout": True}
     value.update(changes)
     return (json.dumps(value) + "\n").encode()
 
@@ -117,7 +119,8 @@ class FakePorts:
         self.statuses = [{"id": "draft-1", "state": "running", "phase": "execution"}]
         self.record = {"version": 1, "task_id": 42, "goal": dict(GOAL),
                        "model": {"requests": 2, "sampling_overwrites": 0, "sampling": dict(SAMPLING)},
-                       "run": {"phase": "closed", "execution": {"scope": dict(SCOPE), "policy_revision": "v1"}}}
+                       "run": {"phase": "closed", "run_ref": "run-draft-1",
+                               "execution": {"scope": dict(SCOPE), "policy_revision": "v1"}}}
         self.ledger, self.calls_file = LEDGER, CALLS
         self.forced = 0
         self.boundary_stopped = False
@@ -400,6 +403,19 @@ class TestOrder(unittest.TestCase):
             "execution_other_revision": (lambda p: p.record["run"]["execution"].update(policy_revision="v2"), "run_record_unbound"),
             "execution_not_object": (lambda p: p.record["run"].update(execution="x"), "run_record_unbound"),
             "run_missing": (lambda p: p.record.pop("run"), "run_record_invalid"),
+            # #693 리뷰 2차: 실행 기록 자체가 이 회차의 것이어야 실행 부재를 믿는다
+            "other_run_no_execution": (lambda p: p.record.update(task_id=43) or p.record["run"].update(run_ref="run-draft-2", execution=None),
+                                       "run_record_unbound"),
+            "other_run_ref_same_task": (lambda p: p.record["run"].update(run_ref="run-draft-2", execution=None), "run_record_unbound"),
+            "task_id_string": (lambda p: p.record.update(task_id="42"), "run_record_unbound"),
+            "version_other": (lambda p: p.record.update(version=2), "product_run_record_invalid"),  # 사용량 해석이 먼저 거부
+            "version_bool": (lambda p: p.record.update(version=True), "run_record_invalid"),
+            "revision_newline": (lambda p: p.view.update(policy_revision="v1\nx"), "control_policy_unbound"),
+            "revision_url": (lambda p: p.view.update(policy_revision="http://x"), "control_policy_unbound"),
+            "revision_long": (lambda p: p.view.update(policy_revision="v" * 129), "control_policy_unbound"),
+            "scope_extra": (lambda p: setattr(p, "conditions", conditions(scope=dict(SCOPE, More="x"))), "runtime_conditions_unbound"),
+            "scope_bad_ref": (lambda p: setattr(p, "conditions", conditions(scope=dict(SCOPE, CaseRef="a b"))),
+                              "runtime_conditions_unbound"),
         }
         for name, (mutate, reason) in cases.items():
             result, ports, evidence = run(mutate)
@@ -407,6 +423,24 @@ class TestOrder(unittest.TestCase):
                 self.assertEqual((result["status"], result["reasons"]), ("invalid", [reason]))
                 self.assertNotIn("product-files.json", evidence.files)
                 self.assertIn("down", ports.calls)
+
+    def test_run_conditions_need_every_producer_field(self):
+        # #693 리뷰 2차: 맞는 버전·개정·참조만 두고 나머지 칸을 뺀 실행 조건을 받으면 안 된다.
+        full = json.loads(conditions())
+        variants = {name: {k: v for k, v in full.items() if k != name}
+                    for name in ("worker_count", "process_limits", "queue_consumes_command_timeout")}
+        variants.update({"extra": dict(full, more=1), "worker_bool": dict(full, worker_count=True),
+                         "worker_negative": dict(full, worker_count=-1), "queue_string": dict(full, queue_consumes_command_timeout="true"),
+                         "limits_missing": dict(full, process_limits={k: v for k, v in PROCESS_LIMITS.items() if k != "call_tasks"}),
+                         "limits_float": dict(full, process_limits=dict(PROCESS_LIMITS, bash_slots=1.5)),
+                         "limits_list": dict(full, process_limits=[1])})
+        for name, value in variants.items():
+            def swap(ports, value=value):
+                ports.conditions = (json.dumps(value) + "\n").encode()
+            result, _, evidence = run(swap)
+            with self.subTest(case=name):
+                self.assertEqual((result["status"], result["reasons"]), ("invalid", ["runtime_conditions_invalid"]))
+                self.assertNotIn("product-files.json", evidence.files)
 
     def test_round_without_diagnosis_has_no_run_conditions(self):
         # #693 리뷰 ③: 탐색 중 예산이 끝나 진단 실행이 붙지 않은 회차는 실행 조건 파일이 없다. 진단 미진입(run.execution 없음)이
@@ -602,6 +636,15 @@ class TestInvalid(unittest.TestCase):
                     execute_split_run(spec(), ports, FakeMeter(ports), evidence, clock.clock())
                 self.assertEqual((evidence.files[RESULT_NAME]["status"], evidence.files[RESULT_NAME]["reasons"]), (INVALID, ["interrupted"]))
                 self.assertEqual(ports.calls[-2:], ["down", "remove_inputs"])
+        # 복사 도우미 정리까지 실패한 중단은 그 사유도 따로 남는다(#693 리뷰)
+        from runner_docker import HelperCleanupInterrupt
+        clock = FakeClockState()
+        ports = FakePorts(clock)
+        ports.fail["product_files"] = HelperCleanupInterrupt()
+        evidence = FakeEvidence()
+        with self.assertRaises(KeyboardInterrupt):
+            execute_split_run(spec(), ports, FakeMeter(ports), evidence, clock.clock())
+        self.assertEqual(evidence.files[RESULT_NAME]["reasons"], ["interrupted", "docker_helper_cleanup_failed"])
 
     def test_cleanup_failures_are_reported(self):
         result, _, _ = run(lambda p: p.fail.update(down=RuntimeError("x")))

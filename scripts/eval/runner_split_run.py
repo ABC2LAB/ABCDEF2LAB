@@ -35,6 +35,7 @@ def product_end_watch(ports, driver: ProductDriver, draft_id: str, task_id: str,
 # ── O 회차 흐름(4-7c-3) ─────────────────────────────────────────────────────────────────────────────────────────
 import hashlib  # noqa: E402
 import json  # noqa: E402
+import re  # noqa: E402
 from dataclasses import dataclass, field  # noqa: E402
 from datetime import timedelta  # noqa: E402
 from typing import Protocol  # noqa: E402
@@ -45,6 +46,7 @@ from runner import (  # noqa: E402
 )
 from preservation_record import digest  # noqa: E402
 from runner_checks import compare_snapshots  # noqa: E402
+from runner_docker import HelperCleanupInterrupt  # noqa: E402
 from runner_evidence import MeterFiles  # noqa: E402
 from runner_llm import judge_product_llm  # noqa: E402
 from runner_probe import PASS  # noqa: E402
@@ -64,6 +66,23 @@ CONTROL_LIMIT_FIELDS = ("max_requests", "max_attempts", "max_concurrent", "max_b
 MAX_INT64 = (1 << 63) - 1
 RUNTIME_CONDITIONS_VERSION = "e2-runtime-conditions/v1"
 MAX_RUNTIME_CONDITIONS_BYTES = 1 << 20
+# 제품 참조 규칙(e2proxy execution.go safeRef, 정책 문서 검사와 같음): 128자 안, `://` 없음.
+_PRODUCT_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}")
+# 실행 조건 파일 칸(e2_http_factory.go가 쓰는 구조체 그대로)과 범위·프로세스 상한 칸(transmit.Scope, e2runner.ProcessLimits).
+RUNTIME_CONDITIONS_FIELDS = frozenset({"version", "scope", "policy_revision", "worker_count", "process_limits",
+                                       "queue_consumes_command_timeout"})
+SCOPE_FIELDS = frozenset({"RunRef", "TaskRef", "CaseRef", "ResetRef", "PolicyRef"})
+PROCESS_LIMIT_FIELDS = frozenset({"bash_slots", "container_tasks", "engine_reserve_tasks", "call_tasks", "command_tasks",
+                                  "helper_reserve_tasks"})
+RUN_RECORD_VERSION = 1  # first_diagnosis_run.go diagnosisRunRecord
+
+
+def _ref(value) -> bool:
+    return isinstance(value, str) and bool(_PRODUCT_REF.fullmatch(value)) and "://" not in value
+
+
+def _count(value) -> bool:
+    return type(value) is int and 0 <= value <= MAX_INT64
 
 
 def _hex64(value) -> bool:
@@ -78,9 +97,8 @@ def _run_refs(draft_id: str) -> dict:
 def checked_control_policy(view: dict, draft_id: str) -> dict:
     """제어 정책 보기 가운데 근거로 쓰는 칸만 계약대로 확인해 돌려준다(#693 리뷰). 그 초안의 정책이어야 하고, 내용 지문은
     64 hex, 상한은 여섯 칸 모두 양의 정수(불리언·문자열·추가 칸 없음)다."""
-    if view.get("policy_ref") != _run_refs(draft_id)["PolicyRef"] or not isinstance(view.get("policy_revision"), str) \
-            or not view["policy_revision"]:
-        raise RunFailure("control_policy_unbound")
+    if view.get("policy_ref") != _run_refs(draft_id)["PolicyRef"] or not _ref(view.get("policy_revision")):
+        raise RunFailure("control_policy_unbound")  # 개정도 제품 참조 규칙 안의 값만 근거에 남긴다(#693 리뷰)
     if not _hex64(view.get("policy_fingerprint_sha256")):
         raise RunFailure("diagnosis_policy_fingerprint_missing")  # 자격 pin 규칙이면 제품이 비운다
     limits = view.get("limits")
@@ -92,16 +110,20 @@ def checked_control_policy(view: dict, draft_id: str) -> dict:
 
 
 def _scope_bound(scope, draft_id: str, task_id: str) -> bool:
-    return isinstance(scope, dict) and all(scope.get(key) == value for key, value in
-                                           dict(_run_refs(draft_id), TaskRef=task_id).items())
+    return (isinstance(scope, dict) and set(scope) == SCOPE_FIELDS and all(_ref(value) for value in scope.values())
+            and all(scope[key] == value for key, value in dict(_run_refs(draft_id), TaskRef=task_id).items()))
 
 
 def diagnosis_entered(record: dict, draft_id: str, task_id: str, policy_revision: str) -> bool:
-    """진단 실행이 붙었는지(실행 기록 run.execution, request_approvals.go runState). 붙었으면 그 실행이 이 초안·작업·정책
-    개정에 결속돼야 한다. 탐색 중에 예산이 끝나면 진단 실행이 없고 회차 실행 조건 파일도 만들어지지 않는다."""
+    """진단 실행이 붙었는지(실행 기록 run.execution, request_approvals.go runState). 실행 기록 자체가 이 회차의 것(형식
+    판·작업 번호, 작업 승인 때 붙는 실행 참조 run-<초안 ID>, e2_http_runtime.go admitRun)이어야 실행 부재를 믿는다(#693
+    리뷰). 붙었으면 그 실행이 이 초안·작업·정책 개정에 결속돼야 한다. 탐색 중에 예산이 끝나면 진단 실행이 없고 회차
+    실행 조건 파일도 만들어지지 않는다."""
     run = record.get("run")
-    if not isinstance(run, dict):
+    if type(record.get("version")) is not int or record["version"] != RUN_RECORD_VERSION or not isinstance(run, dict):
         raise RunFailure("run_record_invalid")
+    if type(record.get("task_id")) is not int or str(record["task_id"]) != task_id or run.get("run_ref") != _run_refs(draft_id)["RunRef"]:
+        raise RunFailure("run_record_unbound")
     execution = run.get("execution")
     if execution is None:
         return False
@@ -119,7 +141,11 @@ def checked_runtime_conditions(raw: bytes, draft_id: str, task_id: str, policy_r
         value = json.loads(raw.decode("utf-8"))
     except (UnicodeError, ValueError):
         raise RunFailure("runtime_conditions_invalid") from None
-    if not isinstance(value, dict) or value.get("version") != RUNTIME_CONDITIONS_VERSION:
+    limits = value.get("process_limits") if isinstance(value, dict) else None
+    # 생산자가 쓰는 칸·타입이 다 있어야 실행 조건을 잃은 회차가 정상처럼 남지 않는다(#693 리뷰).
+    if (not isinstance(value, dict) or set(value) != RUNTIME_CONDITIONS_FIELDS or value["version"] != RUNTIME_CONDITIONS_VERSION
+            or not _count(value["worker_count"]) or type(value["queue_consumes_command_timeout"]) is not bool
+            or not isinstance(limits, dict) or set(limits) != PROCESS_LIMIT_FIELDS or not all(_count(v) for v in limits.values())):
         raise RunFailure("runtime_conditions_invalid")
     if not _scope_bound(value.get("scope"), draft_id, task_id) or value.get("policy_revision") != policy_revision:
         raise RunFailure("runtime_conditions_unbound")
@@ -387,9 +413,12 @@ def execute_split_run(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFile
     except RunFailure as exc:
         reasons.append(exc.code)
         state.step = exc.code
-    except KeyboardInterrupt:
-        # 운영자 중단도 결과 기록 한 건(무효)을 남기고, 정리 뒤 중단 신호를 다시 올린다(execute_run과 같다).
+    except KeyboardInterrupt as exc:
+        # 운영자 중단도 결과 기록 한 건(무효)을 남기고, 정리 뒤 중단 신호를 다시 올린다(execute_run과 같다). 중단 중 복사
+        # 도우미 정리까지 실패했으면 그 사유를 따로 남긴다(#693 리뷰).
         reasons.append("interrupted")
+        if isinstance(exc, HelperCleanupInterrupt):
+            reasons.append("docker_helper_cleanup_failed")
         interrupted = True
     except Exception:
         reasons.append("unexpected_error")
