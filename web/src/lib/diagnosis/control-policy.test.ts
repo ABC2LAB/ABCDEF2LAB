@@ -110,7 +110,7 @@ const wire = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
       connect_ip: "10.0.0.5",
       path_prefix: "/api",
       path_scope_ref: "readonly-path-a",
-      methods: ["GET", "HEAD", "post"],
+      methods: ["GET", "HEAD", "POST"],
       tls_pinned: true,
     },
   ],
@@ -140,7 +140,7 @@ describe("parseControlPolicyView (fail-closed)", () => {
       limits: { maxRequests: 64, maxAttempts: 200, maxResponseBodyBytes: 16777216, requestTimeoutMs: 5000 },
     });
     expect(p?.rules[0]).toMatchObject({ connectIp: "10.0.0.5", pathMatch: "prefix", tlsPinned: true });
-    expect(p?.rules[0].methods).toEqual(["GET", "HEAD", "POST"]); // 대문자 정규화
+    expect(p?.rules[0].methods).toEqual(["GET", "HEAD", "POST"]);
     expect(p?.mock).toBeUndefined();
   });
   it("path_match exact 는 =/… 로 보이고, 생략은 접두", () => {
@@ -158,6 +158,12 @@ describe("parseControlPolicyView (fail-closed)", () => {
     ["상한 칸 빠짐", { limits: { max_requests: 1 } }],
     ["감사 결속 칸 없음", { audit_bound: undefined }],
     ["계정이 문자열 배열 아님", { accounts: [{ label: "a" }] }],
+    ["모르는 최상위 칸", { approved_by: "someone" }],
+    ["상한에 모르는 칸", { limits: { ...(wire().limits as object), max_bytes_total: 1 } }],
+    ["지문이 SHA-256 16진 아님", { policy_fingerprint_sha256: "AB".repeat(32) }],
+    ["지문이 빈 문자열", { policy_fingerprint_sha256: "" }],
+    ["유효 시작이 시각 아님", { valid_from: "soon" }],
+    ["유효 끝이 시간대 없는 시각", { valid_until: "2026-11-13T04:00:00" }],
   ])("%s → null (보수적으로 추정해 그리지 않는다)", (_name, over) => {
     expect(parseControlPolicyView(wire(over))).toBeNull();
   });
@@ -167,8 +173,21 @@ describe("parseControlPolicyView (fail-closed)", () => {
     ["ref 없음", { ref: "" }],
     ["methods 배열 아님", { methods: "GET" }],
     ["tls_pinned 없음", { tls_pinned: undefined }],
+    ["모르는 purpose", { purpose: "admin_only" }],
+    ["purpose null", { purpose: null }],
+    ["빈 경로(넓은 범위로 보일 수 있음)", { path_prefix: "" }],
+    ["origin 에 경로", { origin: "https://shop.example/api" }],
+    ["origin scheme 밖", { origin: "ftp://shop.example" }],
+    ["경로가 / 로 시작 안 함", { path_prefix: "api" }],
+    ["소문자 메서드", { methods: ["get"] }],
+    ["path_scope_ref 없음", { path_scope_ref: undefined }],
+    ["규칙에 모르는 칸", { header_value: "x" }],
   ])("규칙 하나가 깨지면(%s) 일부만 그리지 않고 정책 전체를 null", (_name, over) => {
     expect(parseControlPolicyView(wire({ rules: [...rule0({}), ...rule0({ ref: "b", ...over })] }))).toBeNull();
+  });
+  it("지문 생략(자격 pin 규칙)은 받고 빈 지문으로 둔다", () => {
+    const { policy_fingerprint_sha256: _omit, ...rest } = wire();
+    expect(parseControlPolicyView(rest)?.fingerprint).toBe("");
   });
   it("null·배열은 null", () => {
     expect(parseControlPolicyView(null)).toBeNull();

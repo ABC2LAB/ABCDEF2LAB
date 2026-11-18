@@ -27,7 +27,10 @@ import {
 
 import { cx } from "../../lib/cx";
 import { useUrl } from "../../live/urlDiagnosis";
+import { urlAccountAuthRows } from "../../live/urlMap";
+import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
+import { Kv } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { UrlHead } from "./urlParts";
 
@@ -62,6 +65,15 @@ const ruleBox: CSSProperties = {
   padding: "10px 12px",
 };
 const ruleHead: CSSProperties = { display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: 8 };
+
+/** setTimeout 상한(약 24.8일). 그보다 먼 경계는 상한만큼 기다렸다 다시 잰다. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
+/** 지금 시각 기준 다음 유효기간 경계(발효·만료)까지 ms. 경계가 지났거나 시각을 못 읽으면 null. */
+function nextBoundaryMs(validFrom: string, validUntil: string, now: number): number | null {
+  const next = [Date.parse(validFrom), Date.parse(validUntil)].filter((t) => Number.isFinite(t) && t > now);
+  return next.length ? Math.min(...next) - now : null;
+}
 
 const fmtTime = (iso: string): string => {
   const ms = Date.parse(iso);
@@ -125,9 +137,23 @@ function RuleBlock({ rule }: { rule: PolicyRule }) {
 /** 전송 통제 정책 — 현재 점검의 실행 결속 정책(없으면 예시). */
 export function UrlControlPolicyLive() {
   const task = useUrl((st) => st.job?.task_id ?? null);
+  // 서버는 정책 발급 전에 task_id 를 먼저 공개한다 — 같은 task 라도 실행 결속 사실이 바뀌면 다시 읽는다(#689 리뷰)
+  const binding = useUrl((st) =>
+    st.job ? `${st.job.state}:${st.job.phase}:${st.job.started}:${st.job.authority_state}` : "",
+  );
+  const accountAuth = useUrl((st) => st.job?.account_auth);
+  // 숨겨 마운트된 화면이라 들어올 때마다 같은 task 의 정책을 다시 확인한다
+  const visible = useShell().route === "controlpolicy";
   // 어느 task 의 결과인지 같이 들고, task 가 바뀌면 이전 정책을 보이지 않는다.
   const [result, setResult] = useState<{ task: string | null; load: PolicyLoad | "failed" } | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const [now, setNow] = useState(() => Date.now());
 
+  useEffect(() => {
+    if (visible) setAttempt((n) => n + 1);
+  }, [visible]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: attempt·binding 은 같은 task 를 다시 부르는 트리거(다시 읽기·화면 진입·결속 변화)
   useEffect(() => {
     let live = true;
     const controller = new AbortController();
@@ -142,12 +168,37 @@ export function UrlControlPolicyLive() {
       live = false;
       controller.abort();
     };
-  }, [task]);
+  }, [task, attempt, binding]);
 
   const load = result && result.task === task ? result.load : null;
+  // 실패·결속 전·불일치·형식 깨짐은 다시 읽기로 같은 task 를 다시 부른다(이전 결과는 그동안 보이지 않는다)
+  const retry = (
+    <button
+      className={cx(s.btn, s.sm)}
+      type="button"
+      onClick={() => {
+        setResult(null);
+        setAttempt((n) => n + 1);
+      }}
+    >
+      다시 읽기
+    </button>
+  );
   const policy = load && load !== "failed" && load.state === "ready" ? load.policy : null;
-  const sum = policy ? summarize(policy) : null;
-  const expired = policy ? policyExpired(policy) : false;
+  const sum = policy ? summarize(policy, now) : null;
+  const expired = policy ? policyExpired(policy, now) : false;
+  // 화면을 열어 둔 채 발효·만료 시각이 지나면 그 순간 다시 계산한다(렌더 때만 재면 '유효기간 내'가 남는다)
+  const validFrom = policy?.validFrom;
+  const validUntil = policy?.validUntil;
+  useEffect(() => {
+    if (!validFrom || !validUntil) return;
+    const wait = nextBoundaryMs(validFrom, validUntil, now);
+    if (wait === null) return;
+    const id = setTimeout(() => setNow(Date.now()), Math.min(wait + 1, MAX_TIMER_MS));
+    return () => clearTimeout(id);
+  }, [validFrom, validUntil, now]);
+  const authRows = accountAuth ? urlAccountAuthRows(accountAuth) : [];
+  const noneAuthenticated = !!accountAuth && !Object.values(accountAuth).includes("authenticated");
   const missingMethods = policy ? rulesMissingMethods(policy) : [];
 
   return (
@@ -170,25 +221,37 @@ export function UrlControlPolicyLive() {
           ) : null}
           {load === null ? <p className={s.empty}>불러오는 중…</p> : null}
           {load === "failed" ? (
-            <p className={s.empty} role="alert">
-              전송 통제 정책을 불러오지 못했습니다.
-            </p>
+            <div className={cx(s.note, s.warn)} role="alert">
+              <Icon name="alert" />
+              <span className={s["lv-grow"]}>전송 통제 정책을 불러오지 못했습니다.</span>
+              {retry}
+            </div>
           ) : null}
           {load !== null && load !== "failed" && load.state === "unbound" ? (
-            <p className={s.empty}>
-              아직 이 점검에 결속된 전송 통제 정책이 없습니다. 범위 확인 뒤 점검을 시작하면 보입니다.
-            </p>
+            <div className={s.note} role="status">
+              <Icon name="info" />
+              <span className={s["lv-grow"]}>
+                아직 이 점검에 결속된 전송 통제 정책이 없습니다. 범위 확인 뒤 점검을 시작하면 보입니다.
+              </span>
+              {retry}
+            </div>
           ) : null}
           {load !== null && load !== "failed" && load.state === "mismatch" ? (
             <div className={cx(s.note, s.warn)} role="alert">
               <Icon name="alert" />
-              <span>실행 정책이 운영자 승인과 다릅니다. 통제 범위를 신뢰할 수 없어 표시하지 않습니다.</span>
+              <span className={s["lv-grow"]}>
+                실행 정책이 운영자 승인과 다릅니다. 통제 범위를 신뢰할 수 없어 표시하지 않습니다.
+              </span>
+              {retry}
             </div>
           ) : null}
           {load !== null && load !== "failed" && load.state === "invalid" ? (
             <div className={cx(s.note, s.warn)} role="alert">
               <Icon name="alert" />
-              <span>정책 투영을 확인할 수 없습니다. 통제 범위를 신뢰할 수 없어 표시하지 않습니다(fail-closed).</span>
+              <span className={s["lv-grow"]}>
+                정책 투영을 확인할 수 없습니다. 통제 범위를 신뢰할 수 없어 표시하지 않습니다(fail-closed).
+              </span>
+              {retry}
             </div>
           ) : null}
 
@@ -229,7 +292,7 @@ export function UrlControlPolicyLive() {
                 <span style={monoChip}>정책 {policy.policyRef}</span>
                 <span style={monoChip}>개정 {policy.policyRevision || "미기재"}</span>
                 <span style={neutralChip}>승인 방식: {APPROVAL_LABEL[policy.approvalMode]}</span>
-                <span style={neutralChip}>자격 헤더: {HEADER_MODE_LABEL[policy.headerMode]}</span>
+                <span style={neutralChip}>자격 헤더(정책 설정): {HEADER_MODE_LABEL[policy.headerMode]}</span>
                 {policy.fingerprint ? (
                   <span style={monoChip} title={policy.fingerprint}>
                     지문 {policy.fingerprint.slice(0, 12)}…
@@ -252,6 +315,26 @@ export function UrlControlPolicyLive() {
                   <Icon name="alert" />
                   <span>지금은 정책 유효기간 밖입니다(만료·미발효). 이 정책으로는 새 전송을 신뢰할 수 없습니다.</span>
                 </div>
+              ) : null}
+              {accountAuth ? (
+                <>
+                  <h3>이 점검의 시험 계정 인증 결과</h3>
+                  <Kv rows={authRows} />
+                  {policy.headerMode === "test_account_passthrough" && noneAuthenticated ? (
+                    <div className={cx(s.note, s.warn)} role="note">
+                      <Icon name="alert" />
+                      <span>
+                        정책 설정은 ‘시험 계정 자격 사용’이지만 이 점검에서 인증된 시험 계정이 없습니다. 서버는 시험
+                        계정 자격 없이 진행했습니다.
+                      </span>
+                    </div>
+                  ) : null}
+                </>
+              ) : null}
+              {!accountAuth && policy.headerMode === "test_account_passthrough" ? (
+                <p className={s.help}>
+                  자격 헤더는 정책 설정입니다. 실제 계정 인증 결과는 점검이 끝나면 여기 함께 보입니다.
+                </p>
               ) : null}
               {policy.auditBound ? (
                 <p className={s.help}>감사 키 결속됨(키 값은 표시하지 않습니다).</p>

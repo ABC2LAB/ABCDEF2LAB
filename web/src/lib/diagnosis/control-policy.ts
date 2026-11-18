@@ -134,6 +134,47 @@ const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !
 const isStr = (v: unknown): v is string => typeof v === "string";
 const isNat = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 const strList = (v: unknown): string[] | null => (Array.isArray(v) && v.every(isStr) ? v : null);
+/** 서버 time.Time JSON(RFC3339, 소수 초·시간대 포함 가능). 모양 밖이면 만료 판정 전에 투영 자체를 거부한다. */
+const isInstant = (v: unknown): v is string =>
+  isStr(v) &&
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.test(v) &&
+  Number.isFinite(Date.parse(v));
+/** origin 은 scheme://host[:port] 만(경로·query·조각·공백 없음). */
+const ORIGIN = /^https?:\/\/[^/?#\s]+$/;
+/** 메서드는 대문자 토큰만 — 대소문자를 화면에서 고쳐 그리면 서버가 실제로 쥔 값과 달라 보일 수 있다. */
+const METHOD = /^[A-Z]+$/;
+const FINGERPRINT = /^[0-9a-f]{64}$/;
+
+/** 계약에 없는 키가 하나라도 있거나 필수 키가 빠지면 false(닫힌 파서 — 모르는 칸을 조용히 무시하지 않는다). */
+function exactKeys(v: Obj, required: readonly string[], optional: readonly string[] = []): boolean {
+  return (
+    Object.keys(v).every((k) => required.includes(k) || optional.includes(k)) &&
+    required.every((k) => Object.hasOwn(v, k))
+  );
+}
+
+const RULE_KEYS = ["ref", "purpose", "origin", "connect_ip", "path_prefix", "path_scope_ref", "methods", "tls_pinned"];
+const LIMIT_KEYS = [
+  "max_requests",
+  "max_attempts",
+  "max_concurrent",
+  "max_body_bytes",
+  "max_response_body_bytes",
+  "request_timeout_ms",
+] as const;
+const VIEW_KEYS = [
+  "format",
+  "policy_ref",
+  "policy_revision",
+  "approval_mode",
+  "header_mode",
+  "valid_from",
+  "valid_until",
+  "rules",
+  "limits",
+  "accounts",
+  "audit_bound",
+];
 
 function parseApprovalMode(v: unknown): ApprovalMode | null {
   return v === "confirm_every_request" || v === "preauthorized_scope" || v === "workbench_selective_v1" ? v : null;
@@ -150,45 +191,42 @@ function parsePathMatch(v: unknown): PathMatch | null {
 }
 
 function parseRule(raw: unknown): PolicyRule | null {
-  if (!isObj(raw)) return null;
+  if (!isObj(raw) || !exactKeys(raw, RULE_KEYS, ["path_match"])) return null;
   const methods = strList(raw.methods);
   const pathMatch = parsePathMatch(raw.path_match);
   if (
     !isStr(raw.ref) ||
     !raw.ref ||
+    // 모르는 purpose 를 일반 규칙으로 그리면 용도 제한이 사라진 것처럼 보인다
+    (raw.purpose !== "" && raw.purpose !== AUTH_PREP_PURPOSE) ||
     !isStr(raw.origin) ||
-    !raw.origin ||
+    !ORIGIN.test(raw.origin) ||
     !isStr(raw.connect_ip) ||
     !isStr(raw.path_prefix) ||
+    !raw.path_prefix.startsWith("/") ||
+    !isStr(raw.path_scope_ref) ||
     !methods ||
+    !methods.every((m) => METHOD.test(m)) ||
     !pathMatch ||
     typeof raw.tls_pinned !== "boolean"
   )
     return null;
   return {
     ref: raw.ref,
-    purpose: isStr(raw.purpose) ? raw.purpose : "",
+    purpose: raw.purpose,
     origin: raw.origin,
     connectIp: raw.connect_ip,
     pathMatch,
     pathPrefix: raw.path_prefix,
-    pathScopeRef: isStr(raw.path_scope_ref) && raw.path_scope_ref ? raw.path_scope_ref : null,
-    methods: methods.map((m) => m.toUpperCase()),
+    pathScopeRef: raw.path_scope_ref || null,
+    methods: [...methods],
     tlsPinned: raw.tls_pinned,
   };
 }
 
 function parseLimits(raw: unknown): PolicyLimits | null {
-  if (!isObj(raw)) return null;
-  const keys = [
-    "max_requests",
-    "max_attempts",
-    "max_concurrent",
-    "max_body_bytes",
-    "max_response_body_bytes",
-    "request_timeout_ms",
-  ] as const;
-  if (!keys.every((k) => isNat(raw[k]))) return null;
+  if (!isObj(raw) || !exactKeys(raw, LIMIT_KEYS)) return null;
+  if (!LIMIT_KEYS.every((k) => isNat(raw[k]))) return null;
   return {
     maxRequests: raw.max_requests as number,
     maxAttempts: raw.max_attempts as number,
@@ -205,6 +243,13 @@ function parseLimits(raw: unknown): PolicyLimits | null {
  */
 export function parseControlPolicyView(raw: unknown): ControlPolicy | null {
   if (!isObj(raw) || raw.format !== CONTROL_POLICY_VIEW_FORMAT) return null;
+  if (!exactKeys(raw, VIEW_KEYS, ["policy_fingerprint_sha256"])) return null;
+  // 지문은 생략(자격 pin 규칙) 또는 SHA-256 16진만. 빈 문자열·다른 모양은 결속 근거로 보이지 않게 거부한다
+  if (
+    Object.hasOwn(raw, "policy_fingerprint_sha256") &&
+    !(isStr(raw.policy_fingerprint_sha256) && FINGERPRINT.test(raw.policy_fingerprint_sha256))
+  )
+    return null;
   const approvalMode = parseApprovalMode(raw.approval_mode);
   const headerMode = parseHeaderMode(raw.header_mode);
   const limits = parseLimits(raw.limits);
@@ -215,8 +260,8 @@ export function parseControlPolicyView(raw: unknown): ControlPolicy | null {
     !isStr(raw.policy_revision) ||
     !approvalMode ||
     !headerMode ||
-    !isStr(raw.valid_from) ||
-    !isStr(raw.valid_until) ||
+    !isInstant(raw.valid_from) ||
+    !isInstant(raw.valid_until) ||
     !Array.isArray(raw.rules) ||
     !limits ||
     !accounts ||
