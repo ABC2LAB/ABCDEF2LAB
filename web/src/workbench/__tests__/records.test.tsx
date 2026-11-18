@@ -229,6 +229,7 @@ describe("서버 보존 목록의 상태 필터와 선택한 보고서", () => {
     expect(screen.getByText("1 / 1건")).toBeInTheDocument();
     expect(panel).not.toHaveTextContent("다시 점검은 별도");
     expect(screen.queryByText(/보존된 상태입니다/)).toBeNull();
+    expect(screen.queryByText(/활성 회차|조회 \d+건/)).toBeNull();
   });
   it("시험 계정 인증은 라벨 순으로 '계정 A · 계정 B'로 보이고 서버 라벨은 마우스를 올리면 보인다", async () => {
     vi.mocked(api.fetchRemediation).mockResolvedValue({ task_id: 42, entries: [] });

@@ -133,11 +133,6 @@ export function RunListControls() {
           {loading ? "다음 페이지 조회 중…" : "더 불러오기"}
         </button>
       ) : null}
-      {page ? (
-        <span
-          className={s.help}
-        >{`조회 ${page.runs.length}건${page.more ? " · 다음 페이지 있음" : ""} · 활성 회차 우선·식별자순`}</span>
-      ) : null}
     </div>
   );
 }
