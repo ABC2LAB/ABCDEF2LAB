@@ -29,7 +29,10 @@ const (
 type DisabledReason string
 
 const (
-	DisabledNotWired           DisabledReason = "not_wired"
+	// DisabledNotWired는 연결이 아직 없는 경우다(E² Transport·Journal 등). 최종 제품 이미지에서는 나오면 안 된다.
+	DisabledNotWired DisabledReason = "not_wired"
+	// DisabledNoDeclaration은 유효한 선언 동결본이 없는 회차다(공식 Juice Shop 측정처럼 E③ 없이 도는 회차).
+	DisabledNoDeclaration      DisabledReason = "declaration_missing"
 	DisabledBindingInvalid     DisabledReason = "binding_invalid"
 	DisabledPolicyKind         DisabledReason = "policy_kind_not_product"
 	DisabledWriteNotConsented  DisabledReason = "write_not_consented"
@@ -115,10 +118,11 @@ type Candidate struct {
 // RunResult는 확정 단계 한 회의 결과다. 서버는 회차 상태와 결과 화면에 Status·Reason을 그대로 싣고, 공식 회차 러너는
 // run-record에 옮겨 결과 보고에 보인다.
 type RunResult struct {
-	Version    string                  `json:"version"`
-	Status     ConfirmationStatus      `json:"status"`
-	Reason     string                  `json:"reason,omitempty"`
-	Binding    RunBinding              `json:"binding"`
+	Version string             `json:"version"`
+	Status  ConfirmationStatus `json:"status"`
+	Reason  string             `json:"reason,omitempty"`
+	// Binding은 검증을 통과한 실행 결속만이다. 결속이 틀려 거부했으면 비운다(검증 전 값을 결과에 남기지 않는다).
+	Binding    *RunBinding             `json:"binding,omitempty"`
 	Verdicts   []Verdict               `json:"verdicts"`
 	Skipped    []SkippedType           `json:"skipped"`
 	Candidates []CandidateConfirmation `json:"candidates"`
