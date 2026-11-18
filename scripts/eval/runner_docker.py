@@ -43,6 +43,9 @@ _HELPER_ROLE = re.compile(r"[a-z][a-z0-9-]{0,31}\Z")
 _FILE_NAME = re.compile(r"(?!\.+\Z)[A-Za-z0-9._-]{1,128}\Z")
 # 볼륨 안 디렉터리 하나(하위 경로 없음). `.`은 볼륨 루트다(시험 DNS 제어 토큰은 target-tls 볼륨 루트에 있다).
 _DIR_NAME = re.compile(r"(?:\.|[a-z0-9][a-z0-9_-]{0,31})\Z")
+# 그 디렉터리 아래 하위 경로 조각(제품 실행 디렉터리 `runs/<초안 ID>/state`, 초안 ID는 제품 managementReference 규칙).
+_SUBPATH_PART = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+MAX_SUBPATH_PARTS = 2
 # 컨테이너 정지 유예(초). 그 뒤에는 Docker가 SIGKILL을 보낸다.
 MAX_STOP_TIMEOUT_SECONDS = 600
 # tmpfs 사용량은 계측기 이미지의 statfs 역할이 잰다. 측정 컨테이너가 대상 컨테이너의 PID namespace에 붙어 대상의
@@ -467,20 +470,23 @@ class Docker:
         return data
 
     def copy_volume_files(self, image: str, volume: str, directory: str, names: Sequence[str], role: str, uid: int, gid: int,
-                          cidfile: Path, max_bytes: int, timeout: float) -> tuple[dict[str, bytes], str]:
+                          cidfile: Path, max_bytes: int, timeout: float, subpath: Sequence[str] = ()) -> tuple[dict[str, bytes], str]:
         """러너 도우미 컨테이너로 볼륨 안 디렉터리의 파일 몇 개를 복사한다(경계 원자료 꺼내기, 계약 §4.1 결정 B).
 
         도우미는 망 없이(--network none), 읽기 전용 루트, cap 전부 제거, no-new-privileges로 돌고 볼륨도 읽기 전용으로 붙인다.
         이미지는 내용 ID로만 받고 pull하지 않는다. 출력(원자료)은 로그 드라이버로 내보내지 않는다. 라벨(RUNNER_HELPER_LABEL=역할)과
         cidfile ID로 구간 감시가 이 도우미만 예외로 둔다. 받은 tar는 요청한 이름의 정규 파일이 정확히 한 번씩, 각자 상한 안이어야
         한다. 파일이 없거나 읽지 못하면(종료 코드가 0이 아님) 실패다. 호출자는 원자료를 쓰는 컨테이너를 멈춘 뒤에 부른다.
+        subpath는 그 디렉터리 아래 조각들이다(제품 회차 실행 조건: `runs` + (초안 ID, `state`)). `.`·`..`·구분자는 받지 않는다.
         """
         if not isinstance(image, str) or not _IMAGE_ID.fullmatch(image):
             raise DockerError("docker_helper_image_not_id")
         if (not isinstance(volume, str) or not _VOLUME.fullmatch(volume) or not isinstance(directory, str)
                 or not _DIR_NAME.fullmatch(directory) or not isinstance(role, str) or not _HELPER_ROLE.fullmatch(role)
                 or not names or len(set(names)) != len(names)
-                or not all(isinstance(name, str) and _FILE_NAME.fullmatch(name) for name in names)):
+                or not all(isinstance(name, str) and _FILE_NAME.fullmatch(name) for name in names)
+                or isinstance(subpath, str) or len(subpath) > MAX_SUBPATH_PARTS
+                or not all(isinstance(part, str) and _SUBPATH_PART.fullmatch(part) for part in subpath)):
             raise DockerError("docker_helper_invalid")
         if type(uid) is not int or type(gid) is not int or uid < 0 or gid < 0 or type(max_bytes) is not int or max_bytes < 1:
             raise DockerError("docker_helper_invalid")
@@ -488,7 +494,7 @@ class Docker:
                 "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
                 "--user", f"{uid}:{gid}", "--label", f"{RUNNER_HELPER_LABEL}={role}",
                 "--mount", f"type=volume,source={volume},target=/e,readonly",
-                "--entrypoint", "tar", "--", image, "-C", f"/e/{directory}", "-cf", "-", "--", *names]
+                "--entrypoint", "tar", "--", image, "-C", "/".join(("/e", directory, *subpath)), "-cf", "-", "--", *names]
         result = self._bounded(args, self._env, timeout, len(names) * (max_bytes + _TAR_OVERHEAD_BYTES))
         if result.returncode != 0:
             raise DockerError("docker_helper_copy_failed")

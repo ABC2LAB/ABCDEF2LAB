@@ -462,11 +462,22 @@ class TestHelperCopy(unittest.TestCase):
                        {"directory": "a/b"}, {"names": ()}, {"names": ("a", "a")}, {"names": ("../x",)}, {"names": ("a/b",)},
                        {"names": (".",)}, {"names": ("..",)}, {"names": ("...",)}, {"names": ("x" * 129,)}, {"directory": ".."},
                        {"directory": "./run"}, {"directory": ""},
-                       {"role": "Boundary"}, {"uid": -1}, {"gid": "1001"}, {"max_bytes": 0}):
+                       {"role": "Boundary"}, {"uid": -1}, {"gid": "1001"}, {"max_bytes": 0}, {"subpath": ("..",)},
+                       {"subpath": (".",)}, {"subpath": ("a/b",)}, {"subpath": ("",)}, {"subpath": ("-x",)}, {"subpath": ("x" * 129,)},
+                       {"subpath": (3,)}, {"subpath": ("a", "b", "c")}, {"subpath": "prep-1"}):
             fake = self.bounded(b"")
             with self.subTest(change=change), self.assertRaises(DockerError):
                 self.copy(fake, **change)
             self.assertEqual(fake.calls, [])
+
+    def test_subpath_reads_below_the_directory(self):
+        # 제품 회차 실행 조건: product-state 볼륨 runs/<초안 ID>/state/runtime-conditions.json.
+        fake = self.bounded(tar_bytes([("runtime-conditions.json", b"{}")]))
+        files, _ = self.copy(fake, volume="abc2lab-eval-ours-1_product-state", directory="runs", subpath=("prep-0aF.b_c", "state"),
+                             names=("runtime-conditions.json",))
+        self.assertEqual(files, {"runtime-conditions.json": b"{}"})
+        args = fake.calls[0][0]
+        self.assertEqual(args[args.index("-C") + 1], "/e/runs/prep-0aF.b_c/state")
 
 
 class TestStatfs(unittest.TestCase):
