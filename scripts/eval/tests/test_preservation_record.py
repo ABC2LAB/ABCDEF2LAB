@@ -54,7 +54,8 @@ class SignedFixture(unittest.TestCase):
         path.write_bytes(value if isinstance(value, bytes) else json.dumps(value, sort_keys=True).encode() + b"\n")
         path.chmod(0o600)
 
-    def fixture(self, side="baseline", repeat=0, *, meta=None, source="synthetic_fixture", boundary=None):
+    def fixture(self, side="baseline", repeat=0, *, meta=None, source="synthetic_fixture", boundary=None,
+                purpose="browser_acceptance"):
         self.serial += 1
         directory = self.root / str(self.serial)
         directory.mkdir(mode=0o700)
@@ -86,7 +87,7 @@ class SignedFixture(unittest.TestCase):
             run_id=f"{side}-{self.serial}", side=side, repeat_index=repeat,
             engine_source_sha=("a" if side == "baseline" else "b") * 40,
             engine_image_id="sha256:" + ("a" if side == "baseline" else "b") * 64,
-            conditions=conditions(side, **(meta or {})), stop_reason="request_budget", boundary=boundary)
+            conditions=conditions(side, **(meta or {})), stop_reason="request_budget", boundary=boundary, purpose=purpose)
         self.write(directory, NAME, sign_run_record(payload, RUNNER_KEY))
         return directory, meter, payload
 
@@ -309,6 +310,24 @@ class SignedFixture(unittest.TestCase):
         changed[0]["conditions"]["layout"] = "exploration-split/v1"
         with self.assertRaisesRegex(PreservationRecordError, "preservation_series_mismatch"):
             validate_series(b, changed, request_budget=3, read_only=False)
+
+    def test_round_purpose_is_signed_and_never_mixed(self):
+        # #699 리뷰: 분리 배치 공식 회차의 보존 기록은 official로 서명되고, 수용시험 묶음과 섞이지 않는다.
+        b, o = self.series()
+        # 빌더가 받은 목적이 서명된 기록에 그대로 실린다(공식 분리 배치 회차)
+        directory, meter, payload = self.fixture("baseline", 0, purpose="official")
+        self.assertEqual((payload["purpose"], self.load(directory, meter)["purpose"]), ("official", "official"))
+        official = [dict(r, purpose="official") for r in b], [dict(r, purpose="official") for r in o]
+        validate_series(*official, request_budget=3, read_only=False)
+        mixed = copy.deepcopy(o)
+        mixed[0]["purpose"] = "official"
+        with self.assertRaisesRegex(PreservationRecordError, "preservation_series_mismatch"):
+            validate_series(b, mixed, request_budget=3, read_only=False)
+        for bad in ("acceptance", None, "OFFICIAL"):
+            broken = copy.deepcopy(o)
+            broken[0]["purpose"] = bad
+            with self.subTest(purpose=bad), self.assertRaisesRegex(PreservationRecordError, "preservation_record_invalid"):
+                validate_series(b, broken, request_budget=3, read_only=False)
 
     def test_options_schema_is_closed_and_contains_no_free_secret_fields(self):
         for value in (options() | {"api_key": "not-a-secret"}, options() | {"mcp_version": "latest"},

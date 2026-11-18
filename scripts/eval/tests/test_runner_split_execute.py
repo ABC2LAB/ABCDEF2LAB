@@ -71,7 +71,8 @@ def spec(**changes):
     values = dict(run_id="ours-1", project="eval-ours-1", image_ids=dict(IMAGES), request_budget=10, time_budget_seconds=60.0,
                   poll_seconds=1.0, drain_timeout_seconds=5.0, events_lookback_seconds=10.0, host_watch_max_gap_seconds=15.0,
                   task_status_wait_seconds=2.0, healthchecks=dict(HEALTH), product_close_seconds=30.0, post_settle_seconds=2,
-                  llm_sampling=dict(SAMPLING), llm_provider_slug=LLM_SLUG, llm_provider_name=LLM_NAME, meter_source_sha="a" * 40)
+                  llm_sampling=dict(SAMPLING), llm_provider_slug=LLM_SLUG, llm_provider_name=LLM_NAME, meter_source_sha="a" * 40,
+                  path_key_ref=PATH_KEY_REF)
     values.update(changes)
     return SplitRunSpec(**values)
 
@@ -96,16 +97,45 @@ class FakeClockState:
         self.t += seconds
 
 
+PATH_KEY_REF = "a" * 16
+
+
 class FakeMeter:
+    """분리 배치 계측기 bind 흉내. 경로 기록은 늘 켜져 있다(compose.split.yaml)."""
+
     def __init__(self, ports):
         self.ports = ports
+        self.path_log = True
+        self.path_key_ref = PATH_KEY_REF
+        self.sealed = {"role": "engine", "sealed_at": "t"}
+        self.path_rows_error = None
+        self.log_complete = True
 
     def forwarded(self):
         return self.ports.forwarded
 
     def marker(self, name):
+        if name == "engine-sealed.json":
+            return self.sealed
         self.ports.calls.append("meter:drained")
-        return {"inflight_at_drain": 0, "log_complete": True, "forced_cancelled_requests": self.ports.forced}
+        return {"inflight_at_drain": 0, "log_complete": self.log_complete, "forced_cancelled_requests": self.ports.forced,
+                "forwarded_requests": self._total()}
+
+    def _total(self):
+        return max(self.ports.forwarded, self.ports.forced)  # 강제 취소된 요청도 전달 행이다
+
+    def engine_rows(self):
+        n, forced = self._total(), self.ports.forced
+        return [{"seq": i, "method": "GET", "kind": "request", "outcome": "forced_cancelled" if i <= forced else "completed",
+                 "response": "complete", "started_at": "t", "completed_at": "t"} for i in range(1, n + 1)]
+
+    def path_log_present(self):
+        return self.path_log
+
+    def path_rows(self, rows):
+        if self.path_rows_error:
+            raise self.path_rows_error
+        return [{"seq": row["seq"], "path_key_ref": self.path_key_ref} for row in rows]
 
 
 class FakePorts:
@@ -689,6 +719,51 @@ class TestInvalid(unittest.TestCase):
         self.assertEqual((result["status"], result["reasons"]), (INVALID, ["down_failed"]))
         result, _, _ = run(lambda p: p.fail.update(remove_inputs=RuntimeError("x")))
         self.assertEqual((result["status"], result["reasons"]), (INVALID, ["inputs_cleanup_failed"]))
+
+
+class TestMeterLogParity(unittest.TestCase):
+    """2026-11-18 결정 (a) 조건 3: 계측기 기록 실패는 B·O에 같은 사유로 걸린다(같은 check_meter_logs·_wait_drained)."""
+
+    def test_same_meter_failure_invalidates_b_and_o_alike(self):
+        import dataclasses as dc
+        import test_runner as b
+        from runner_evidence import EvidenceError
+        b_spec = dc.replace(b.make_spec(), split=True, path_key_ref=b.PATH_KEY_REF)
+        cases = {
+            "meter_path_log_missing": lambda meter: setattr(meter, "path_log", False),
+            "drain_incomplete": lambda meter: (setattr(meter, "log_complete", False) if hasattr(meter, "log_complete")
+                                               else meter.drained.update(log_complete=False)),
+            "meter_path_log_invalid": lambda meter: setattr(meter, "path_rows_error", EvidenceError("meter_path_log_invalid")),
+            "meter_path_key_mismatch": lambda meter: setattr(meter, "path_key_ref", "b" * 16),
+            "meter_log_inconsistent": lambda meter: setattr(meter, "sealed", None) if hasattr(meter, "sealed") else None,
+        }
+        for reason, broken in cases.items():
+            def b_mutate(ports, meter, clock, broken=broken, reason=reason):
+                meter.path_log = True
+                if reason == "meter_log_inconsistent":
+                    original = meter.marker
+                    meter.marker = lambda name: None if name == "engine-sealed.json" else original(name)
+                else:
+                    broken(meter)
+            b_result, _, _, _ = b.run(b_mutate, spec=b_spec)
+            clock = FakeClockState()
+            ports = FakePorts(clock)
+            original_start = ports.start_round
+
+            def start(prepared, ports=ports, original_start=original_start):
+                out = original_start(prepared)
+                ports.forwarded = 3  # 시작 뒤 대상에 전달한 요청(경로 행이 생긴다)
+                return out
+            ports.start_round = start
+            meter = FakeMeter(ports)
+            broken(meter)
+            o_result = execute_split_run(spec(), ports, meter, FakeEvidence(), clock.clock())
+            with self.subTest(reason=reason):
+                self.assertEqual(b_result["reasons"], [reason])
+                self.assertEqual(o_result["reasons"], [reason])
+        # 정상이면 둘 다 완료
+        self.assertEqual(b.run(lambda p, m, c: setattr(m, "path_log", True), spec=b_spec)[0]["status"], "complete")
+        self.assertEqual(run()[0]["status"], "complete")
 
 
 if __name__ == "__main__":

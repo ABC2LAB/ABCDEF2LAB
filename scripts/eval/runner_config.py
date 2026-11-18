@@ -436,17 +436,20 @@ def parse_runner_config(raw: object) -> RunnerConfig:
     if "purpose" in top and top["purpose"] not in PURPOSES:
         errors.append("config.purpose: UNSUPPORTED")
     acceptance = top.get("purpose") == PURPOSE_BROWSER_ACCEPTANCE
-    if "path_key_file" in top and not acceptance:
-        # 공식 회차에서 경로 기록을 켤 길을 설정에 두지 않는다.
+    # 경로 기록이 있어야 하는 회차: 수용시험, 그리고 탐색 분리 배치(공식 포함). 공식 비교의 발견 집계(공식 측정 프로토콜 §7)는
+    # B·O 계측기 전달 요청의 경로 틀이라 분리 배치 공식 회차도 같은 키로 기록한다(2026-11-18 사용자 결정 (a)). 분리 배치가
+    # 아닌 공식 회차(엔진 직접 배치, e2-legacy)에는 지금처럼 경로 기록을 켤 길을 두지 않는다.
+    paths_needed = acceptance or "split" in top
+    if "path_key_file" in top and not paths_needed:
         errors.append("config.path_key_file: OFFICIAL_FORBIDDEN")
-    elif acceptance and "path_key_file" not in top:
+    elif paths_needed and "path_key_file" not in top:
         errors.append("config.path_key_file: MISSING")
-    elif acceptance:
+    elif paths_needed:
         # 키는 근거와 함께 복사·공유되지 않게 회차 디렉터리 밖에 둔다. 실제 위치는 check_key_files가 다시 본다.
         _outside_runs_root(top, "path_key_file", errors)
     preservation = None
     if "preservation" in top:
-        if not acceptance:
+        if not paths_needed:
             errors.append("config.preservation: OFFICIAL_FORBIDDEN")
         try:
             preservation = validate_options(top["preservation"])
@@ -757,6 +760,11 @@ def _same_file(a: Path, b: Path) -> bool:
     return (first.st_dev, first.st_ino) == (second.st_dev, second.st_ino)
 
 
+def path_log_required(config: RunnerConfig) -> bool:
+    """계측기 경로 기록(같은 키)이 있어야 하는 회차: 수용시험과 탐색 분리 배치(공식 포함, 2026-11-18 결정 (a))."""
+    return config.purpose == PURPOSE_BROWSER_ACCEPTANCE or config.split is not None
+
+
 def check_key_files(config: RunnerConfig) -> str | None:
     """비밀번호를 묻거나 up 하기 전에 키 파일의 실제 위치를 확인한다(#378 리뷰).
 
@@ -841,8 +849,8 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
         files.append(COMPOSE_E2_STUB)
     elif e2_mode == E2_PRODUCT:
         files.append(COMPOSE_E2_PRODUCT)
-    # 보존 시험은 원본·개선 후 양쪽 회차의 경로를 같은 키로 가려야 비교할 수 있다.
-    if config.purpose == PURPOSE_BROWSER_ACCEPTANCE:
+    # 보존 시험·분리 배치 공식 회차는 원본·개선 후 양쪽 회차의 경로를 같은 키로 가려야 비교할 수 있다.
+    if path_log_required(config):
         files.append(COMPOSE_ACCEPTANCE)
     split = config.split
     if split is not None and side != BASELINE_SIDE:
@@ -881,7 +889,7 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
         "EVAL_LLM_CHAT_PATH": base_path + CHAT_COMPLETIONS_SUFFIX,
         "EVAL_LLM_SAMPLING": gateway_sampling(declared, side),
     }
-    if config.purpose == PURPOSE_BROWSER_ACCEPTANCE:
+    if path_log_required(config):
         env["EVAL_PATH_KEY_FILE"] = str(config.path_key_file)
     if split is not None:
         env["EVAL_TARGET_NAME"] = split.target_name
