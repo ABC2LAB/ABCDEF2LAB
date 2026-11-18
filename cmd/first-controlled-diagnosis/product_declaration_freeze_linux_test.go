@@ -194,7 +194,9 @@ func TestFrozenDeclarationDrivesConfirmationRun(t *testing.T) {
 		GenerationRef: "gen-1", InstanceRef: "inst-1", Policy: policy.Policy}
 	in := e3contract.Input{Binding: binding, TargetRef: target.ID, WriteConsent: true,
 		Owner: e3contract.Account{Label: "tester-a", Authenticated: true}, Cross: e3contract.Account{Label: "tester-b", Authenticated: true},
-		PolicyValidFrom: policy.ValidFrom, PolicyValidUntil: policy.ValidUntil}
+		PolicyValidFrom: policy.ValidFrom, PolicyValidUntil: policy.ValidUntil,
+		// 확정 몫(종류 수·확정 요청 시간 상한)은 실행 시작 때 서버가 정한다. 이 시험은 선언 종류가 모두 든다고 둔다.
+		AdmittedTypes: e3contract.MaxDeclarationTypes, RequestTimeout: 10 * time.Second}
 	deps := e3contract.Deps{Transport: fake, Journal: fake, Declarations: productDeclarationReader{runsDir: runs},
 		Reset: productResetGate{registry: r}, Logger: slog.New(slog.DiscardHandler)}
 	res := e3contract.Run(t.Context(), deps, in)

@@ -102,7 +102,9 @@ type Observation struct {
 	NotSent NotSentReason `json:"not_sent,omitempty"`
 	// ResponseComplete는 응답 전체를 받았는지다. Sent인데 false면 결과 불명이다(다시 보내지 않는다).
 	ResponseComplete bool `json:"response_complete"`
-	StatusCode       int  `json:"status_code,omitempty"`
+	// TimedOut은 확정 요청 전용 시간 상한(요청의 Timeout)이 지나 E²가 끊었는지다. 보낸 뒤 결과 불명일 때만 참일 수 있다.
+	TimedOut   bool `json:"timed_out,omitempty"`
+	StatusCode int  `json:"status_code,omitempty"`
 	// Normal은 선언한 상태 칸(없으면 E²의 HTTP 상태 판정)으로 본 정상 응답 여부다.
 	Normal oracle.CheckState `json:"normal,omitempty"`
 	// RequestMarkerFree는 조회·신원 요청에서 E²가 보낸 요청(URL·헤더·본문)에 표식이 없음을 확인했는지다.
@@ -178,6 +180,9 @@ func (o Observation) Validate() error {
 
 func (o Observation) validateResult() error {
 	bad := func(field string) error { return fmt.Errorf("%w: %s", ErrObservation, field) }
+	if o.TimedOut && (!o.Sent || o.ResponseComplete) {
+		return bad("timed_out")
+	}
 	if !o.Sent {
 		switch o.NotSent {
 		case NotSentApprovalDenied, NotSentApprovalTimeout, NotSentBudgetExhausted, NotSentPolicyDenied:

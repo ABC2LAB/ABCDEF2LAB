@@ -38,7 +38,9 @@ const (
 	DisabledWriteNotConsented  DisabledReason = "write_not_consented"
 	DisabledAccountsUnverified DisabledReason = "test_accounts_unavailable"
 	DisabledPolicyWindow       DisabledReason = "policy_window_invalid"
-	DisabledNoConfirmableType  DisabledReason = "no_confirmable_type"
+	// DisabledShareUnavailable은 확정 단계 몫(종류 수·요청 시간 상한)을 받지 못한 경우다.
+	DisabledShareUnavailable  DisabledReason = "confirmation_share_unavailable"
+	DisabledNoConfirmableType DisabledReason = "no_confirmable_type"
 )
 
 // IntegrityReason은 StatusIntegrityFailed의 세부 사유다.
@@ -75,7 +77,33 @@ const (
 	ReasonRequestResultUnknown ProductReason = "product_request_result_unknown"
 	ReasonRequestDenied        ProductReason = "product_request_denied"
 	ReasonCreateFailed         ProductReason = "product_create_failed"
+	// ReasonRequestTimeout은 확정 요청이 전용 시간 상한을 넘겨 결과 불명인 경우다(사용자 결정 2026-11-18). 결과 불명의
+	// 한 갈래이지만, 상한 값(VAmPI 파일럿에서 확정)을 정할 근거가 되도록 따로 센다.
+	ReasonRequestTimeout ProductReason = "product_request_timeout"
 )
+
+// WriteOutcome은 확정 단계 생성 요청이 대상에 남긴 결과다.
+type WriteOutcome string
+
+const (
+	// WriteCreated는 생성 응답을 다 받았고 객체 ID를 꺼낸 경우다.
+	WriteCreated WriteOutcome = "created"
+	// WriteUnknown은 생성 요청을 보냈거나 보냈을 수 있는데 객체가 생겼는지·ID가 무엇인지 모르는 경우다(시간 초과·결과
+	// 불명·비정상 응답·ID 없음). 객체가 생겼다고 보고 리셋 확인 대상에 넣는다.
+	WriteUnknown WriteOutcome = "unknown"
+)
+
+// ConfirmationWrite는 확정 단계 생성 요청 하나가 대상에 남겼을 수 있는 쓰기다. 서버는 이것으로 대상의 쓰기 기록
+// (confirmation_writes)을 남기고, 운영자 리셋 확인 전까지 다음 회차 확정 단계를 시작하지 않는다. 보내지 않은 것이 확실한
+// 생성(NotSent)은 넣지 않는다.
+type ConfirmationWrite struct {
+	ResourceType string       `json:"resource_type"`
+	Outcome      WriteOutcome `json:"outcome"`
+	// Ref는 생성 관찰의 참조다. 관찰을 받지 못했으면 비어 있다.
+	Ref CallRef `json:"ref,omitzero"`
+	// ObjectIDDigest는 created일 때만 있다.
+	ObjectIDDigest string `json:"object_id_digest,omitempty"`
+}
 
 // Verdict는 자원 종류 하나의 판정 행이다. 값은 oracle.Evaluate(Case, ObservedAt)가 만든 그대로다.
 type Verdict struct {
@@ -128,6 +156,8 @@ type RunResult struct {
 	Candidates []CandidateConfirmation `json:"candidates"`
 	// Requests는 E² 프로그램 요청을 부른 횟수다(보내지 않은 것으로 끝난 호출 포함).
 	Requests int `json:"requests"`
+	// Writes는 이 회차 생성 요청이 대상에 남겼을 수 있는 쓰기다. 상태와 관계없이(진위 실패로 판정을 버려도) 싣는다.
+	Writes []ConfirmationWrite `json:"writes"`
 }
 
 // LeakingSinks는 sinks 중 표식이 어느 모양으로든 들어 있는 이름들이다. 확정 단계를 돈 뒤 저널·영수증·승인 미리보기·
