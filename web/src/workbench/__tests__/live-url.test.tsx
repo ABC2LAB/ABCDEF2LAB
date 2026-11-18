@@ -1555,10 +1555,11 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     fireEvent.keyDown(listTab, { key: "ArrowRight" });
     expect(screen.getByRole("tab", { name: "자산 지식 그래프" })).toHaveAttribute("aria-selected", "true");
     expect(listTab).toHaveAttribute("tabindex", "-1");
-    // 시안의 자산 지식 그래프 · 접근통제 지도 탭은 서버 연결이 없어 '연결 전' (지도 화면 바로가기는 있다)
-    expect(within(screen.getByRole("tabpanel", { name: "자산 지식 그래프" })).getByRole("note")).toHaveTextContent(
-      /^연결 전/,
-    );
+    // 자산 지식 그래프 탭은 KG 조회 v1 을 읽는다(그리기·실패는 report-asset-graph.test.tsx). '연결 전' 자리는 없다
+    const graphTab = screen.getByRole("tabpanel", { name: "자산 지식 그래프" });
+    expect(within(graphTab).queryByText(/^연결 전/)).toBeNull();
+    expect(graphTab).toHaveTextContent(/자산 지식 그래프를 불러오는 중|그래프 조회 실패/);
+    // 접근통제 지도 탭은 서버 연결이 없어 '연결 전' (지도 화면 바로가기는 있다)
     fireEvent.click(screen.getByRole("tab", { name: "접근통제 지도" }));
     const mapTab = screen.getByRole("tabpanel", { name: "접근통제 지도" });
     expect(within(mapTab).getByRole("note")).toHaveTextContent(/^연결 전/);
