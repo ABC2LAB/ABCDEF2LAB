@@ -35,6 +35,7 @@ import {
   type LiveFinding,
   type Remediation,
 } from "../../live/api";
+import { clearFindingPick, pickFinding, usePickedFinding } from "../../live/findingPick";
 import { approvalCounts, clockOf, dateTimeOf, fmtCount, fmtTokensShort, planState, sevKey } from "../../live/map";
 import { maskSecrets } from "../../live/mask";
 import { ErrorNote, LoadingRow, NotYet } from "../../live/parts";
@@ -1128,7 +1129,7 @@ function StatusCard({ e, host }: { e: RemediationEntry; host?: string | null }) 
  * 보고서 가운데를 이 페이지로 바꾼다:
  * 왼쪽은 판정과 영향 · 재현 절차(증거) · 보안 조치 · AI 프롬프트 · 기술 정보 카드, 오른쪽은 따라오는 상태 카드.
  */
-function FindingPage({
+export function FindingPage({
   e,
   host,
   taskId,
@@ -1467,8 +1468,10 @@ export function UrlReportLive() {
   const [tab, setTab] = useState<RTab>("list");
   const tabRefs = useRef<Partial<Record<RTab, HTMLButtonElement | null>>>({});
   const [sel, setSel] = useState<string | null>(null);
-  // 오른쪽 패널 머리 '상세 보기'로 연 발견 (그 발견이 목록에서 사라지면 — 다른 점검 등 — 목록으로 돌아간다)
-  const [detail, setDetail] = useState<string | null>(null);
+  // 오른쪽 패널 머리 '상세 보기'로 연 발견 (그 발견이 목록에서 사라지면 — 다른 점검 등 — 목록으로 돌아간다).
+  // 단독 발견 상세(#finding)도 같은 발견을 보도록 공용 상태(findingPick)에 둔다
+  const detail = usePickedFinding(taskId);
+  const setDetail = (entry: string | null) => (entry && taskId ? pickFinding(taskId, entry) : clearFindingPick());
   // 발견 목록 거르기 · 정렬 (사용자 11/17)
   const [sevF, setSevF] = useState<SevFilter>("all");
   const [order, setOrder] = useState<EntryOrder>("verdict");

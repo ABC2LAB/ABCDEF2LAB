@@ -15,6 +15,7 @@ import dataclasses
 import hashlib
 import os
 import platform
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -30,7 +31,7 @@ from runner_llm import PRODUCT_VERIFY_ROLE
 from meter_describe import MAX_DESCRIBE_BYTES, describe_args, parse as describe_parse
 
 METER_DESCRIBE_SECONDS = 30.0
-from runner_docker import Docker
+from runner_docker import Docker, client_environment
 from runner_engine import AdminSecret
 from runner_product import ModelKey, ProductDriver
 from runner_split import target_registration
@@ -40,6 +41,7 @@ from runner_split_probe import SplitProbeOutcome, run_split_probes, split_ports
 from runner_window import BackgroundWatch, HostWatch, healthcheck_actions
 from snapshot_collector import SnapshotEndpoint, collect_snapshot
 from snapshot_writer import SnapshotContext
+from tool_surface import ours_side
 
 TOKEN_FILE = "control-token"
 TOKEN_UID = 1000
@@ -48,6 +50,11 @@ PRODUCT_UID = 1000
 BOUNDARY_FILES = ("boundary-records.jsonl", "boundary-sealed.json")
 MAX_TOKEN_BYTES = 4096
 BOUNDARY_DIRECTORY = "boundary"
+# 제품 블록 원본 SHA 근거(결정안 §3.3, 대조하지 않음): product-state 볼륨 config/의 설정 넷과 회차 실행 조건.
+PRODUCT_CONFIG_FILES = (("installation", "installation.json"), ("policy", "policy.json"), ("api_launch", "api-launch.json"),
+                        ("target_policy", "target-policy.json"))
+RUNTIME_CONDITIONS_FILE = "runtime-conditions.json"
+MAX_PRODUCT_FILE_BYTES = 1 << 20
 
 
 UNUSED_PROFILE = "eval-split-unused"
@@ -288,11 +295,35 @@ class DockerSplitPorts:
         threading.Thread(target=work, name="product-end-read", daemon=True).start()
 
     # ── 도우미 복사 ──────────────────────────────────────────────────────────────────────────────────────────
-    def _copy(self, volume_key: str, directory: str, names: tuple[str, ...], role: str, uid: int, max_bytes: int) -> dict:
+    def _copy(self, volume_key: str, directory: str, names: tuple[str, ...], role: str, uid: int, max_bytes: int,
+              subpath: tuple[str, ...] = ()) -> dict:
         image = self.plan.images["fixture" if role == "dns-token" else "product"].id
         files, _ = self.docker.copy_volume_files(image, f"{self.plan.project}_{volume_key}", directory, names, role, uid, uid,
-                                                 self.directory.run / f"{role}.cid", max_bytes, self.timeout)
+                                                 self.directory.run / f"{role}.cid", max_bytes, self.timeout, subpath=subpath)
         return files
+
+    def product_files(self) -> dict:
+        """제품 블록 설치 파일 넷의 원본 SHA(결정안 §3.3). 내용은 메모리에서 지문만 뜨고 남기지 않는다(설치 입력에 비밀
+        핀이 있다). 제품을 멈춘 뒤에 부른다."""
+        config = self._copy("product-state", "config", tuple(name for _, name in PRODUCT_CONFIG_FILES), "product-files",
+                            PRODUCT_UID, MAX_PRODUCT_FILE_BYTES)
+        return {key: hashlib.sha256(config[name]).hexdigest() for key, name in PRODUCT_CONFIG_FILES}
+
+    def runtime_conditions(self, draft_id: str) -> bytes:
+        """회차 실행 조건 원본 바이트(runs/<초안 ID>/state/). 초안(diagnosisprep Job) ID가 실행 디렉터리 이름이고, E② 상태
+        디렉터리가 그 아래 state다(url_preparation_linux.go). 진단 실행이 붙은 회차에만 있다(e2_http_factory.go).
+        결속·형식 검사는 회차 흐름이 한다(runner_split_run.checked_runtime_conditions)."""
+        return self._copy("product-state", "runs", (RUNTIME_CONDITIONS_FILE,), "product-run-conditions", PRODUCT_UID,
+                          MAX_PRODUCT_FILE_BYTES, subpath=(draft_id, "state"))[RUNTIME_CONDITIONS_FILE]
+
+    def control_policy(self, task_id: str) -> dict:
+        return self.driver.control_policy(task_id)
+
+    def tool_surface(self) -> dict:
+        """O 도구 면(결정안 §4): 제품 이미지 중 E② 샌드박스가 보는 CLI, 탐색 브라우저 이미지의 MCP 원 목록·허용 목록 적용 뒤
+        목록. 1회용 컨테이너(망 없음)로 회차 망을 띄우기 전에 잰다."""
+        return ours_side(self.plan.images["product"].id, self.plan.images["explore_browser"].id, self.docker.run_bounded,
+                         subprocess.Popen, client_environment(os.environ, {}))
 
     def dns_token(self) -> str:
         data = self._copy("target-tls", ".", (TOKEN_FILE,), "dns-token", TOKEN_UID, MAX_TOKEN_BYTES)[TOKEN_FILE]
