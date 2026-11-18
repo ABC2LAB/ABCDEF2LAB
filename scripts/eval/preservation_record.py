@@ -426,7 +426,8 @@ def validate_series_v3(baseline: list[dict], improved: list[dict], *, request_bu
             or any(r["side_conditions"]["write_mode"] != ("read_only" if read_only else "approved_writes") for r in improved)):
         _fail("preservation_write_mode_mismatch")
     return {"format": FORMAT_V3, "verified_signed_rounds": len(all_records), "series_ref": baseline[0]["series_ref"],
-            "execution_source": baseline[0]["execution_source"], "layout": improved[0]["side_conditions"]["layout"],
+            "execution_source": baseline[0]["execution_source"], "purpose": baseline[0]["purpose"],
+            "layout": improved[0]["side_conditions"]["layout"],
             "mcp_version": improved[0]["common"]["mcp_version"], "exploration_boundary": _boundary_series(improved),
             "first_limits": [{"repeat_index": r["repeat_index"], "side": r["side"], "value": r["run"]["first_limit"]["value"]}
                              for r in all_records],
@@ -513,7 +514,8 @@ def validate_series(baseline: list[dict], improved: list[dict], *, request_budge
             or any(r["conditions"]["write_mode"] != ("read_only" if read_only else "approved_writes") for r in improved)):
         _fail("preservation_write_mode_mismatch")
     return {"format": FORMAT, "verified_signed_rounds": len(all_records), "series_ref": baseline[0]["series_ref"],
-            "execution_source": baseline[0]["execution_source"], "layout": improved[0]["conditions"]["layout"],
+            "execution_source": baseline[0]["execution_source"], "purpose": baseline[0]["purpose"],
+            "layout": improved[0]["conditions"]["layout"],
             "mcp_version": improved[0]["conditions"]["mcp_version"],
             "exploration_boundary": _boundary_series(improved),
             "round_digests": [digest(r) for r in all_records]}

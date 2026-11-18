@@ -136,13 +136,28 @@ def diagnosis_entered(record: dict, draft_id: str, task_id: str, policy_revision
     return execution  # 범위는 실행 조건 파일과 그대로 대조한다(checked_runtime_conditions)
 
 
+def _unique_object(pairs: list) -> dict:
+    """같은 키가 두 번 나오면 거부한다(중첩 객체 포함). json 기본 동작은 마지막 값만 남겨 모순된 원본이 통과한다(#693 리뷰)."""
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate key")
+        value[key] = item
+    return value
+
+
+def _reject_constant(_name: str):
+    raise ValueError("non-finite number")
+
+
 def checked_runtime_conditions(raw: bytes, draft_id: str, task_id: str, policy_revision: str, execution: dict) -> str:
     """회차 실행 조건(e2_http_factory.go)이 이 초안·작업·정책 개정의 것인지 확인하고 원본 바이트 SHA를 돌려준다."""
     try:
         if not isinstance(raw, bytes) or len(raw) > MAX_RUNTIME_CONDITIONS_BYTES:
             raise ValueError
-        value = json.loads(raw.decode("utf-8"))
-    except (UnicodeError, ValueError):
+        # 중복 키가 있는 원본은 범위를 대조하기 전에 거부한다. 마지막 값만 대조하고 모순된 원본 SHA를 남기면 안 된다.
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object, parse_constant=_reject_constant)
+    except (UnicodeError, ValueError, RecursionError):
         raise RunFailure("runtime_conditions_invalid") from None
     limits = value.get("process_limits") if isinstance(value, dict) else None
     # 생산자가 쓰는 칸·타입이 다 있어야 실행 조건을 잃은 회차가 정상처럼 남지 않는다(#693 리뷰).

@@ -109,8 +109,8 @@ class TestBuildAndLoad(V3Fixture):
         self.assertIsNone(b[0]["exploration_boundary"])
         self.assertEqual(o[0]["exploration_boundary"]["status"], "verified")
         verified = validate_series(b, o, request_budget=3, read_only=False)
-        self.assertEqual((verified["format"], verified["verified_signed_rounds"], verified["layout"]),
-                         (FORMAT_V3, 4, "exploration-split/v1"))
+        self.assertEqual((verified["format"], verified["verified_signed_rounds"], verified["layout"], verified["purpose"]),
+                         (FORMAT_V3, 4, "exploration-split/v1", b[0]["purpose"]))
         self.assertEqual(verified["exploration_boundary"]["status"], "PASS")
         self.assertEqual({row["value"] for row in verified["first_limits"]}, {"runner_request_budget"})
 
