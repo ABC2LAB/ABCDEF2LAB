@@ -102,6 +102,11 @@ E2_NET = "e2_net"
 CHAT_COMPLETIONS_SUFFIX = "/chat/completions"
 MAX_VERIFY_ATTEMPTS = 100
 MAX_VERIFY_INTERVAL_SECONDS = 600
+# 계측기 generation 조회 한 번의 시간 상한(cmd/eval-meter generationLookupTimeout과 같은 값). 조회 전체는 시도 수 × 간격 +
+# 이 값에서 멈추고 마지막 조회 하나가 이 값만큼 더 걸릴 수 있다. 러너 대기 시한은 그보다 VERIFY_WAIT_MARGIN_SECONDS 길어야
+# 표식을 늘 받는다(2026-11-18 VAmPI 유료 파일럿: 60×5초 설정에 대기 300초라 표식 없이 시한을 넘었다).
+GENERATION_LOOKUP_TIMEOUT_SECONDS = 30
+VERIFY_WAIT_MARGIN_SECONDS = 30
 MAX_HOST_LISTEN_ALLOW = 32
 MAX_REASON_LENGTH = 200
 # 점검 하나의 연결·해석 제한. 실패 기대 경로는 대부분 timeout으로 끝나므로 회차 준비 시간을 키운다.
@@ -536,6 +541,11 @@ def parse_runner_config(raw: object) -> RunnerConfig:
             and _int(run.get("drain_timeout_seconds"), 1, MAX_RUN_SECONDS)
             and run["drain_grace_seconds"] >= run["drain_timeout_seconds"]):
         errors.append("config.run.drain_grace_seconds: NOT_BELOW_DRAIN_TIMEOUT")
+    if (_int(gateway.get("verify_attempts"), 1, MAX_VERIFY_ATTEMPTS)
+            and _int(gateway.get("verify_interval_seconds"), 1, MAX_VERIFY_INTERVAL_SECONDS)
+            and _int(run.get("llm_verify_timeout_seconds"), 1, MAX_RUN_SECONDS)
+            and run["llm_verify_timeout_seconds"] < verify_wait_floor(gateway)):
+        errors.append("config.run.llm_verify_timeout_seconds: BELOW_LOOKUP_DEADLINE")
     if errors:
         raise RunnerConfigError(errors)
     config = RunnerConfig(
@@ -733,6 +743,12 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
 
 def _reject_constant(_: str) -> None:
     raise RunnerConfigError(["config: NONFINITE_NUMBER"])
+
+
+def verify_wait_floor(gateway: dict) -> int:
+    """러너가 계측기 generation 조회 표식을 기다려야 하는 최소 시간(초): 조회 시한 + 마지막 조회 한 번 + 여유."""
+    return (gateway["verify_attempts"] * gateway["verify_interval_seconds"] + 2 * GENERATION_LOOKUP_TIMEOUT_SECONDS
+            + VERIFY_WAIT_MARGIN_SECONDS)
 
 
 def load_runner_config(path: str | Path) -> RunnerConfig:
