@@ -1,4 +1,5 @@
 import { ApiError, apiFetchLimitedJSON } from "./api";
+import { preservesURLRunTiming, sameURLRunTime, validURLRunTiming } from "./diagnosis-run-timing";
 import { type URLDiagnosisJob, urlPhaseLabels, urlStateLabels } from "./diagnosis-url";
 import { validTaskID } from "./first-diagnosis";
 
@@ -14,7 +15,17 @@ export const runApprovalLabels = {
 } as const;
 export type URLRunSummary = Pick<
   URLDiagnosisJob,
-  "id" | "revision" | "state" | "phase" | "reason_code" | "task_id" | "started" | "drain_complete" | "result_ready"
+  | "id"
+  | "revision"
+  | "state"
+  | "phase"
+  | "reason_code"
+  | "task_id"
+  | "started"
+  | "drain_complete"
+  | "started_at"
+  | "finished_at"
+  | "result_ready"
 > & {
   display_name?: string;
   report_available: boolean;
@@ -90,11 +101,14 @@ function parseRun(value: unknown): URLRunSummary {
     "task_id",
     "started",
     "drain_complete",
+    "started_at",
+    "finished_at",
     "result_ready",
     "report_available",
     "approval_status",
     "action_required",
   ]);
+  if (!validURLRunTiming(value)) return invalid();
   if (
     value.display_name !== undefined &&
     (typeof value.display_name !== "string" ||
@@ -228,7 +242,8 @@ export function matchURLRun(job: URLDiagnosisJob, run: URLRunSummary): URLDiagno
     (run.task_id && run.task_id !== job.task_id) ||
     (run.started && !job.started) ||
     (run.drain_complete && !job.drain_complete) ||
-    (run.result_ready && !job.result_ready)
+    (run.result_ready && !job.result_ready) ||
+    !preservesURLRunTiming(job, run)
   )
     return invalid();
   if ((endedURLRun(run) || run.state === "unknown") && job.state !== run.state) return invalid();
@@ -241,10 +256,15 @@ export function matchURLRun(job: URLDiagnosisJob, run: URLRunSummary): URLDiagno
       "task_id",
       "started",
       "drain_complete",
+      "started_at",
+      "finished_at",
       "result_ready",
       "reason_code",
-    ] as const)
-      if (job[key] !== run[key]) return invalid();
+    ] as const) {
+      const same =
+        key === "started_at" || key === "finished_at" ? sameURLRunTime(job[key], run[key]) : job[key] === run[key];
+      if (!same) return invalid();
+    }
   return job;
 }
 

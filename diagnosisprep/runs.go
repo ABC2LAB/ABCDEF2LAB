@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"strings"
+	"time"
 )
 
 const MaxRunPageSize = 50
@@ -19,19 +20,21 @@ type RunListRequest struct {
 // RunSummary는 보호 Job의 비민감 projection이다. 기록하지 않은 시작·종료 시각이나 원문 URL을 만들지 않는다.
 // State는 저장된 실행 상태이고 ApprovalStatus는 별도다. 목록 자체는 재개·송신 권위가 아니다.
 type RunSummary struct {
-	ID              string `json:"id"`
-	Revision        uint64 `json:"revision"`
-	DisplayName     string `json:"display_name,omitempty"`
-	State           State  `json:"state"`
-	Phase           Phase  `json:"phase"`
-	ReasonCode      string `json:"reason_code,omitempty"`
-	TaskID          string `json:"task_id,omitempty"`
-	Started         bool   `json:"started"`
-	DrainComplete   bool   `json:"drain_complete"`
-	ResultReady     bool   `json:"result_ready"`
-	ReportAvailable bool   `json:"report_available"`
-	ApprovalStatus  string `json:"approval_status"`
-	ActionRequired  bool   `json:"action_required"`
+	ID              string     `json:"id"`
+	Revision        uint64     `json:"revision"`
+	DisplayName     string     `json:"display_name,omitempty"`
+	State           State      `json:"state"`
+	Phase           Phase      `json:"phase"`
+	ReasonCode      string     `json:"reason_code,omitempty"`
+	TaskID          string     `json:"task_id,omitempty"`
+	Started         bool       `json:"started"`
+	DrainComplete   bool       `json:"drain_complete"`
+	StartedAt       *time.Time `json:"started_at,omitempty"`
+	FinishedAt      *time.Time `json:"finished_at,omitempty"`
+	ResultReady     bool       `json:"result_ready"`
+	ReportAvailable bool       `json:"report_available"`
+	ApprovalStatus  string     `json:"approval_status"`
+	ActionRequired  bool       `json:"action_required"`
 }
 type RunPage struct {
 	Runs       []RunSummary `json:"runs"`
@@ -93,6 +96,9 @@ func runBefore(a, b RunSummary) bool {
 	return a.ID > b.ID
 }
 func validRunSummary(run RunSummary) bool {
+	if !validRunTiming(run.Started, run.DrainComplete, run.StartedAt, run.FinishedAt) {
+		return false
+	}
 	// 상태/단계 조합은 원본 Job을 검사한 서비스가 만든다. 공개 projection도 고정된 상태·단계만 받는다.
 	switch run.State {
 	case AwaitingApproval, Ready, Preparing, Running, Stopping, Completed, Cancelled, Failed, Unknown:

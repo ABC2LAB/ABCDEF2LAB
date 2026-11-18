@@ -158,6 +158,9 @@ func TestRunListPublicEntryReconnectStopAndRestartOwnedPostgres(t *testing.T) {
 	if code != 201 || json.Unmarshal(raw, &draft) != nil || draft.Draft == nil {
 		t.Fatal("초안 생성 실패", code)
 	}
+	if strings.Contains(string(raw), `"started_at"`) || strings.Contains(string(raw), `"finished_at"`) {
+		t.Fatal("시작 전 응답에 미확인 시각을 게시했습니다")
+	}
 	id := draft.Draft.ID
 	mutation := func(revision uint64) string {
 		body, _ := json.Marshal(map[string]any{"version": "diagnosis-api.v2", "expected_revision": revision})
@@ -184,6 +187,10 @@ func TestRunListPublicEntryReconnectStopAndRestartOwnedPostgres(t *testing.T) {
 	if run.ID != id || run.TaskID != taskID || run.State != diagnosisprep.Running || !run.ActionRequired || backend.calls.Load() != 1 {
 		t.Fatal("기존 실행 연결·재실행 방지 실패")
 	}
+	if run.StartedAt == nil || run.StartedAt.IsZero() || run.StartedAt.Location() != time.UTC || run.FinishedAt != nil || strings.Contains(string(raw), `"finished_at"`) {
+		t.Fatal("실제 제품 목록의 시작 시각·마감 전 생략 계약 위반")
+	}
+	startedAt := *run.StartedAt
 	code, raw = request("GET", "/api/exploration/activity?task="+run.TaskID, "", "", token)
 	var activities struct {
 		Items []struct {
@@ -197,6 +204,9 @@ func TestRunListPublicEntryReconnectStopAndRestartOwnedPostgres(t *testing.T) {
 	code, raw = request("GET", base+"/drafts/"+run.ID+"/status", "", "", token)
 	if code != 200 || json.Unmarshal(raw, &draft) != nil {
 		t.Fatal("재발견한 회차 상태 조회 실패")
+	}
+	if draft.Draft.StartedAt == nil || !draft.Draft.StartedAt.Equal(startedAt) || draft.Draft.FinishedAt != nil {
+		t.Fatal("제품 상태 조회와 목록의 확인 시각이 다릅니다")
 	}
 	code, _ = request("POST", base+"/drafts/"+run.ID+"/stop", mutation(draft.Draft.Revision), "", token)
 	if code != 200 {
@@ -229,6 +239,15 @@ func TestRunListPublicEntryReconnectStopAndRestartOwnedPostgres(t *testing.T) {
 	code, raw = request("GET", base+"/runs", "", "", token)
 	if code != 200 || json.Unmarshal(raw, &list) != nil || len(list.Page.Runs) != 1 || list.Page.Runs[0].State != diagnosisprep.Cancelled || !list.Page.Runs[0].ReportAvailable || backend.calls.Load() != 1 {
 		t.Fatal("서비스 재시작 뒤 상태·결과 보존 또는 재실행 방지 실패", code)
+	}
+	closed := list.Page.Runs[0]
+	if closed.StartedAt == nil || closed.FinishedAt == nil || !closed.StartedAt.Equal(startedAt) || closed.FinishedAt.Location() != time.UTC || closed.FinishedAt.Before(startedAt) {
+		t.Fatal("재시작한 제품 목록의 시작·소요 근거가 없습니다")
+	}
+	code, raw = request("GET", base+"/drafts/"+closed.ID+"/status", "", "", token)
+	if code != 200 || json.Unmarshal(raw, &draft) != nil || draft.Draft.StartedAt == nil || draft.Draft.FinishedAt == nil ||
+		!draft.Draft.StartedAt.Equal(*closed.StartedAt) || !draft.Draft.FinishedAt.Equal(*closed.FinishedAt) {
+		t.Fatal("재시작 뒤 보고서 재연결에 쓰는 확인 시각이 달라졌습니다")
 	}
 	code, raw = request("GET", "/api/report/diagnostic?task="+list.Page.Runs[0].TaskID+"&audience=internal", "", "", token)
 	if code != 200 || !strings.Contains(string(raw), "다시 찾은 합성 점검") {
