@@ -114,7 +114,7 @@ def _scope_bound(scope, draft_id: str, task_id: str) -> bool:
             and all(scope[key] == value for key, value in dict(_run_refs(draft_id), TaskRef=task_id).items()))
 
 
-def diagnosis_entered(record: dict, draft_id: str, task_id: str, policy_revision: str) -> bool:
+def diagnosis_entered(record: dict, draft_id: str, task_id: str, policy_revision: str) -> dict | None:
     """진단 실행이 붙었는지(실행 기록 run.execution, request_approvals.go runState). 실행 기록 자체가 이 회차의 것(형식
     판·작업 번호, 작업 승인 때 붙는 실행 참조 run-<초안 ID>, e2_http_runtime.go admitRun)이어야 실행 부재를 믿는다(#693
     리뷰). 붙었으면 그 실행이 이 초안·작업·정책 개정에 결속돼야 한다. 탐색 중에 예산이 끝나면 진단 실행이 없고 회차
@@ -126,14 +126,14 @@ def diagnosis_entered(record: dict, draft_id: str, task_id: str, policy_revision
         raise RunFailure("run_record_unbound")
     execution = run.get("execution")
     if execution is None:
-        return False
+        return None
     if (not isinstance(execution, dict) or not _scope_bound(execution.get("scope"), draft_id, task_id)
             or execution.get("policy_revision") != policy_revision):
         raise RunFailure("run_record_unbound")
-    return True
+    return execution  # 범위는 실행 조건 파일과 그대로 대조한다(checked_runtime_conditions)
 
 
-def checked_runtime_conditions(raw: bytes, draft_id: str, task_id: str, policy_revision: str) -> str:
+def checked_runtime_conditions(raw: bytes, draft_id: str, task_id: str, policy_revision: str, execution: dict) -> str:
     """회차 실행 조건(e2_http_factory.go)이 이 초안·작업·정책 개정의 것인지 확인하고 원본 바이트 SHA를 돌려준다."""
     try:
         if not isinstance(raw, bytes) or len(raw) > MAX_RUNTIME_CONDITIONS_BYTES:
@@ -147,7 +147,10 @@ def checked_runtime_conditions(raw: bytes, draft_id: str, task_id: str, policy_r
             or not _count(value["worker_count"]) or type(value["queue_consumes_command_timeout"]) is not bool
             or not isinstance(limits, dict) or set(limits) != PROCESS_LIMIT_FIELDS or not all(_count(v) for v in limits.values())):
         raise RunFailure("runtime_conditions_invalid")
-    if not _scope_bound(value.get("scope"), draft_id, task_id) or value.get("policy_revision") != policy_revision:
+    # 생산자는 실행 스냅숏 범위(execution.Snapshot().Scope)를 그대로 쓴다. 저장된 실행 기록 범위와 다섯 칸 모두 같아야 한다
+    # (#693 리뷰: ResetRef·CaseRef만 달라도 다른 범위의 SHA가 남았다).
+    if (not _scope_bound(value.get("scope"), draft_id, task_id) or value["scope"] != execution.get("scope")
+            or value.get("policy_revision") != policy_revision):
         raise RunFailure("runtime_conditions_unbound")
     return hashlib.sha256(raw).hexdigest()
 COMPLETE = "complete"
@@ -366,13 +369,14 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     # (자격 pin 규칙 등) 짝 대조 칸을 만들 수 없어 무효다.
     policy = checked_control_policy(_step(state, "control_policy_failed", lambda: ports.control_policy(task_id)), draft_id)
     fingerprint = policy["policy_fingerprint_sha256"]
-    entered = diagnosis_entered(record, draft_id, task_id, policy["policy_revision"])
+    execution = diagnosis_entered(record, draft_id, task_id, policy["policy_revision"])
+    entered = execution is not None
     files = dict(_step(state, "product_files_failed", ports.product_files), control_limits=digest(policy["limits"]))
     # 진단에 들어가지 않은 회차(탐색 중 예산 소진 등)는 실행 조건 파일이 없다. 그때만 null로 남기고 first_limit은 그대로다.
     # 진단에 들어간 회차에서 빠지거나 다른 회차의 것이면 실패다.
     files["runtime_conditions"] = checked_runtime_conditions(
         _step(state, "runtime_conditions_failed", lambda: ports.runtime_conditions(draft_id)), draft_id, task_id,
-        policy["policy_revision"]) if entered else None
+        policy["policy_revision"], execution) if entered else None
     _step(state, "evidence_write_failed", lambda: evidence.write_json(PRODUCT_FILES_NAME, {
         "format": PRODUCT_FILES_FORMAT, "file_sha256": files, "diagnosis_entered": entered, "diagnosis_policy_sha256": fingerprint,
         "policy_ref": policy["policy_ref"], "policy_revision": policy["policy_revision"], "limits": policy["limits"]}))

@@ -425,6 +425,11 @@ class TestOrder(unittest.TestCase):
             "revision_slash": (lambda p: p.view.update(policy_revision="v1/synthetic"), "control_policy_unbound"),
             "scope_slash": (lambda p: setattr(p, "conditions", conditions(scope=dict(SCOPE, ResetRef="a/b"))),
                             "runtime_conditions_unbound"),
+            # #693 리뷰: 작업·회차·정책 참조가 같아도 ResetRef·CaseRef가 저장된 실행 범위와 다르면 다른 실행의 조건이다
+            "scope_other_reset": (lambda p: setattr(p, "conditions", conditions(scope=dict(SCOPE, ResetRef="other-reset"))),
+                                  "runtime_conditions_unbound"),
+            "scope_other_case": (lambda p: setattr(p, "conditions", conditions(scope=dict(SCOPE, CaseRef="other-case"))),
+                                 "runtime_conditions_unbound"),
             "revision_long": (lambda p: p.view.update(policy_revision="v" * 129), "control_policy_unbound"),
             "scope_extra": (lambda p: setattr(p, "conditions", conditions(scope=dict(SCOPE, More="x"))), "runtime_conditions_unbound"),
             "scope_bad_ref": (lambda p: setattr(p, "conditions", conditions(scope=dict(SCOPE, CaseRef="a b"))),
