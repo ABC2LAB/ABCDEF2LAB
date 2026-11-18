@@ -126,6 +126,51 @@ describe("UrlFindingLive (단독 발견 상세 · 저장 결과)", () => {
     expect(a.fetchRemediation).toHaveBeenCalledTimes(2);
   });
 
+  it("앞선 성공과 다시 들어온 때가 같은 밀리초여도 직전 상세를 보이지 않는다", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000); // 시계를 고정
+    a.fetchRemediation.mockResolvedValueOnce({ task_id: 42, entries: [entry(1)] });
+    pickFinding("42", "candidate-1");
+    const view = mount();
+    await screen.findByRole("region", { name: "발견 상세 페이지" });
+    act(() => view.show("report"));
+    a.fetchRemediation.mockReturnValueOnce(new Promise(() => undefined));
+    act(() => view.show("finding"));
+    expect(screen.getByText("불러오는 중…")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "발견 상세 페이지" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /보안 조치/ })).toBeNull();
+    now.mockRestore();
+  });
+
+  it("직전 진입의 읽기 실패(403)도 다시 들어온 뒤 새 응답 전엔 보이지 않는다", async () => {
+    a.fetchRemediation.mockRejectedValueOnce(new ApiError(403, "x"));
+    pickFinding("42", "candidate-1");
+    const view = mount();
+    expect(await screen.findByRole("button", { name: /다시/ })).toBeInTheDocument();
+    act(() => view.show("report"));
+    let answer: (v: api.Remediation) => void = noop;
+    a.fetchRemediation.mockReturnValueOnce(
+      new Promise((r) => {
+        answer = r;
+      }),
+    );
+    act(() => view.show("finding"));
+    expect(screen.getByText("불러오는 중…")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /다시/ })).toBeNull();
+    await act(async () => answer({ task_id: 42, entries: [entry(1)] }));
+    expect(screen.getByRole("region", { name: "발견 상세 페이지" })).toBeInTheDocument();
+  });
+
+  it("읽기 실패 뒤 '다시 시도'는 같은 진입에서 다시 읽는다", async () => {
+    a.fetchRemediation
+      .mockRejectedValueOnce(new ApiError(503, "x"))
+      .mockResolvedValueOnce({ task_id: 42, entries: [entry(1)] });
+    pickFinding("42", "candidate-1");
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: /다시/ }));
+    expect(await screen.findByRole("region", { name: "발견 상세 페이지" })).toBeInTheDocument();
+    expect(a.fetchRemediation).toHaveBeenCalledTimes(2);
+  });
+
   it("고른 발견이 없으면 부르지 않고 보고서로 안내한다", () => {
     const goTo = mount();
     expect(screen.getByText(/보고서 발견 목록에서 발견을 고르고/)).toBeInTheDocument();
