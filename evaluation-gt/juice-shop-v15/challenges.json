@@ -1,0 +1,127 @@
+{
+ "format": "abc2lab.eval-gt/v1",
+ "target": "juice-shop v15.0.0",
+ "source": "juice-shop tag v15.0.0 data/static/challenges.yml",
+ "challenges": [
+  {
+   "key": "adminSectionChallenge",
+   "name": "Admin Section",
+   "axis": "V",
+   "group": "bac_category",
+   "in_core_gt": true,
+   "in_bac_category": true
+  },
+  {
+   "key": "basketAccessChallenge",
+   "name": "View Basket",
+   "axis": "H",
+   "group": "bac_category",
+   "in_core_gt": true,
+   "in_bac_category": true
+  },
+  {
+   "key": "feedbackChallenge",
+   "name": "Five-Star Feedback",
+   "axis": "V",
+   "group": "bac_category",
+   "in_core_gt": true,
+   "in_bac_category": true
+  },
+  {
+   "key": "basketManipulateChallenge",
+   "name": "Manipulate Basket",
+   "axis": "H",
+   "group": "bac_category",
+   "in_core_gt": true,
+   "in_bac_category": true
+  },
+  {
+   "key": "changeProductChallenge",
+   "name": "Product Tampering",
+   "axis": "V",
+   "group": "bac_category",
+   "in_core_gt": true,
+   "in_bac_category": true
+  },
+  {
+   "key": "csrfChallenge",
+   "name": "CSRF",
+   "axis": "-",
+   "group": "bac_category",
+   "in_core_gt": false,
+   "in_bac_category": true
+  },
+  {
+   "key": "forgedFeedbackChallenge",
+   "name": "Forged Feedback",
+   "axis": "H",
+   "group": "bac_category",
+   "in_core_gt": true,
+   "in_bac_category": true
+  },
+  {
+   "key": "forgedReviewChallenge",
+   "name": "Forged Review",
+   "axis": "H",
+   "group": "bac_category",
+   "in_core_gt": true,
+   "in_bac_category": true
+  },
+  {
+   "key": "easterEggLevelOneChallenge",
+   "name": "Easter Egg",
+   "axis": "-",
+   "group": "bac_category",
+   "in_core_gt": false,
+   "in_bac_category": true
+  },
+  {
+   "key": "ssrfChallenge",
+   "name": "SSRF",
+   "axis": "-",
+   "group": "bac_category",
+   "in_core_gt": false,
+   "in_bac_category": true
+  },
+  {
+   "key": "registerAdminChallenge",
+   "name": "Admin Registration",
+   "axis": "V",
+   "group": "other_category_authz",
+   "in_core_gt": true,
+   "in_bac_category": false
+  },
+  {
+   "key": "dataExportChallenge",
+   "name": "GDPR Data Theft",
+   "axis": "H",
+   "group": "other_category_authz",
+   "in_core_gt": true,
+   "in_bac_category": false
+  },
+  {
+   "key": "negativeOrderChallenge",
+   "name": "Payback Time",
+   "axis": "BF",
+   "group": "business_flow",
+   "in_core_gt": false,
+   "in_bac_category": false
+  },
+  {
+   "key": "freeDeluxeChallenge",
+   "name": "Deluxe Fraud",
+   "axis": "BF",
+   "group": "business_flow",
+   "in_core_gt": false,
+   "in_bac_category": false
+  },
+  {
+   "key": "deprecatedInterfaceChallenge",
+   "name": "Deprecated Interface",
+   "axis": "BF",
+   "group": "business_flow",
+   "in_core_gt": false,
+   "in_bac_category": false
+  }
+ ]
+}

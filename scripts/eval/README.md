@@ -55,7 +55,7 @@ manifest의 회차 항목:
 - `runner.py`: 회차 생성·관측·종료·격리 근거·v1.1 서명 기록을 연결한다. 실제 수행된 스모크의 소스·조건·제한은 러너 안내의 날짜별 기록을 따른다.
 - `scoreboard.py`, `collect.py`: 정규화·판정 레코드 파싱. 채점은 해시 검증과 같은 바이트의 payload를 사용한다.
 - `score.py`, `aggregate.py`, `evidence.py`: 엔진 공통 판정·집계와 증거 확인.
-- `correlation.py`, `gt_correlation.json`, `ground_truth.py`: 평가 전용 상관·분모. 실제 type vocab 정렬은 후속이다.
+- `correlation.py`, `ground_truth.py`: 평가 전용 상관·분모. 데이터(정답 목록 `challenges.json`, 상관 규칙 `gt_correlation.json`)는 평가 정답 디렉터리 `evaluation-gt/juice-shop-v15/`에 있다(저장소 루트 `.ignore`로 세션·에이전트 검색에서 빠짐). 실제 type vocab 정렬은 후속이다.
 - `scripted_llm.py`·`canary_scan.py`: 스모크 도구. API 키 없이 정해진 명령으로 실제 엔진을 돌리고, 회차 디렉터리에 합성 토큰이 남았는지 본다. 사용법은 `docs/evaluation/runner.md` "스모크 도구".
 - `control_demo.py`: 통제 효과 시연 A 표(프로토콜 §8.1). 조건별 `runs_root` 하나가 열 하나고, 열 이름은 서명된 회차 기록의 조건 이름이다. 서명과 근거 파일 해시를 확인한 뒤 전달 요청의 메서드별 건수, E② 결정별 건수, 상태 차이, 해결 기록을 건수로만 낸다. 재지 않은 값은 `—`다. 막아서 못 한 것과 원본 ②에서 새는 경로는 재지 않으므로 결과 문서에 따로 적는다.
 - 원본 ② 규칙 주입: 러너 설정 `engine_rules`로 켠다. `runner_engine.py`가 파일을 검사하고 회차마다 새 엔진 DB에 넣은 뒤 다시 읽어 대조한다. 형식은 `docs/evaluation/engine-rules.md`.
