@@ -9,7 +9,7 @@
 - **O(제품, `exploration-split/v1`)**: 지금은 서명 전 요약만 낸다(`runner_split_run.execute_split_run`). 이 문서대로 B와 같은 v1.1 기록(서명된 러너 기록 + 격리 근거 + 해결 이벤트)을 낸다.
 - **첫 지표는 엔진 귀속 해결 수다**(평가 프로토콜 §5.1). 그래서 O에서 먼저 필요한 것은 점수판 pre/post, 격리 증명, 해결 이벤트(`isolated_window`)다.
 - **판정 레코드는 지금·첫 비교 범위에서 양쪽 다 `records: null`(판정 미수집)이다.** 판정 내보내기 API(`/api/tasks/{id}/verdict-exports`)는 [계약 제안](../contracts/verdict-record-page-api-proposal.md)에만 있고 서버 경로가 없다. 채점기는 run-record v1.1 §3대로 그 회차 GT 판정을 판단불가(사유: 판정 미수집)로 둔다. 이것은 지금 범위의 한정이지 영구 제외가 아니다. 평가 프로토콜 §5.1대로 판정 비교가 들어오면 B는 원본 출력 어댑터(A5) 출력, O는 동결 내보내기로 `records`를 채운다.
-- 범위 밖: 통제 효과 지표(E② 시도 대조·차단 시도 수, 프로토콜 §8). O의 E② 저널을 평가 내보내기로 읽는 일은 계획 v4.2 3번이다. 그 전까지 O의 `attempt_reconciliation`은 null이고 차단 시도 수는 미수집이다.
+- 범위 밖: 통제 효과 지표(E② 시도 대조·차단 시도 수, 프로토콜 §8). O의 E② 저널을 평가 내보내기로 읽는 일은 계획 v4.2 3번이다. 그 전까지 O는 E② 자리를 `e2_placement.mode = split_product`로 적고 `attempt_reconciliation` 행을 두지 않는다(대조 미수집). 차단 시도 수는 미측정(`blocked_attempts: null`)이다. 이 상태는 제품 실패도 차단 0건도 아니다(§4 표, run-record v1.1 §3.1).
 
 ## 2. 회차 문맥 다섯 칸
 
@@ -49,7 +49,8 @@ B와 같은 단계 이름을 쓰고, O에서 그 순간에 해당하는 곳을 �
 | `run_conditions` | §6 | §6 |
 | `verdict_collection` | 판정 내보내기 수집·무결성 | 지금은 `not_collected`(§1). 뜻은 바꾸지 않는다(§7) |
 | `e3_confirmation`(새 선택 행, §7) | 없음(원본 엔진) | E③ 확정 단계 결과의 `status`·`reason`. 받아야 하는지는 서명된 `run_conditions.e3_status_expected`가 정한다 |
-| `attempt_reconciliation` | E② 자리 회차의 시도 대조 | null(§1 범위 밖) |
+| `e2_placement` | E② 자리(`none`·`stub`·`product`) | 새 값 `split_product`(제품 안 E②, 분리 배치 회차만). 건수 칸은 모두 null이고 `e2_product` 행은 두지 않는다(그 행은 e2-legacy 별도 E² 서비스용) |
+| `attempt_reconciliation` | E② 자리 회차의 시도 대조 | 계획 v4.2 3번 전에는 행 없음 = **대조 미수집**(#700 리뷰). 허용 조건: `e2_placement.mode = split_product`이고 `run_conditions.split = true`이며 러너 기록 `blocked_attempts`가 null일 때만. 성능표(해결 수 등)에는 그대로 들어가고, 통제 검증 표에는 "대조 미수집 — 통제 주장 보류"로 따로 적는다. 제품 실패 수에 넣지 않고, 차단 시도 수를 0으로 채우지 않는다(`—`). 3번 뒤에는 지금 규칙(정확히 한 행)대로 싣는다 |
 
 ## 5. 격리 증명 칸
 
@@ -108,7 +109,7 @@ E③ 인터페이스(#698)의 확정 단계 결과 `e3-confirmation-run/v1`에�
 |---|---|
 | A | #699: 분리 배치 공식 회차 경로 기록·키 지문(머지 대기) |
 | R1 | O 회차 문맥·타임라인·pre/post 점수판 파일·관측기 GET. B 조립 함수(`_build_record`)를 배치와 무관한 입력으로 나눠 B·O가 함께 쓴다. O `verdict_collection`은 `not_collected`, `e3_confirmation` 행은 수집 경로가 생길 때까지 없음(§7) |
-| R2 | O 격리 근거 행(§4)과 격리 증명(§5). 채점기 `isolation_proof`가 분리 배치 근거를 받는다 |
+| R2 | O 격리 근거 행(§4)과 격리 증명(§5). 채점기 `isolation_proof`가 분리 배치 근거를 받는다. `e2_placement.mode = split_product`와 대조 미수집(행 없음·`blocked_attempts: null`) 허용 조건을 로더·격리 검증에 넣고, 통제 검증 표의 "대조 미수집" 표시·제품 실패 수 제외를 시험한다 |
 | R3 | 해결 이벤트, 러너 키 서명, O 결과 서명. 보존 sidecar v3 O 조립(경계 원자료 검증 포함)도 같은 서명 경로에서 마친다 |
 | R4 | 채점기 분리 배치 표 규칙(§6), `e3_confirmation`·`e3_status_expected` 검증·보고 주석과 정본 개정(§7), §8 1번 fixture 시험. 수용시험(행 부재 구분): ① 칸 없는 옛 기록 + 행 없음 → 7번대로 읽음 ② 기대 참 + 행 없음 + 서명된 빈 판정 묶음 + 해결 귀속 → `e3_status_not_collected`, GT 전부 판단불가(미탐 0) ③ 기대 참 + `completed` → 그대로 채점 ④ 기대 거짓 + 행 있음 → 입력 오류 |
 
