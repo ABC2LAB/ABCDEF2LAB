@@ -87,7 +87,7 @@ class V3Fixture(unittest.TestCase):
             engine_image_id="sha256:" + ("a" if side == "baseline" else "b") * 64,
             common=parts.get("common", common()), side_conditions=parts.get("side_conditions", side_conditions(side)),
             run=parts.get("run", run(side)), product=parts.get("product", None if side == "baseline" else product()),
-            boundary=parts.get("boundary", boundary))
+            boundary=parts.get("boundary", boundary), purpose=parts.get("purpose", "browser_acceptance"))
         self.write(directory, NAME, sign_run_record(payload, RUNNER_KEY))
         return directory, meter, payload
 
@@ -109,10 +109,22 @@ class TestBuildAndLoad(V3Fixture):
         self.assertIsNone(b[0]["exploration_boundary"])
         self.assertEqual(o[0]["exploration_boundary"]["status"], "verified")
         verified = validate_series(b, o, request_budget=3, read_only=False)
-        self.assertEqual((verified["format"], verified["verified_signed_rounds"], verified["layout"]),
-                         (FORMAT_V3, 4, "exploration-split/v1"))
+        self.assertEqual((verified["format"], verified["verified_signed_rounds"], verified["layout"], verified["purpose"]),
+                         (FORMAT_V3, 4, "exploration-split/v1", b[0]["purpose"]))
         self.assertEqual(verified["exploration_boundary"]["status"], "PASS")
         self.assertEqual({row["value"] for row in verified["first_limits"]}, {"runner_request_budget"})
+
+    def test_round_purpose_is_signed_and_never_mixed(self):
+        # #699 리뷰: 분리 배치 공식 회차의 v3 보존 기록은 official로 서명되고, 묶음 안에서 목적이 섞이면 거부한다.
+        b, o = self.series_v3(change=lambda side, i: {"purpose": "official"})
+        self.assertEqual({r["purpose"] for r in b + o}, {"official"})
+        validate_series(b, o, request_budget=3, read_only=False)
+        b, o = self.series_v3(change=lambda side, i: {"purpose": "official"} if side == "ours" else {})
+        with self.assertRaisesRegex(PreservationRecordError, "preservation_series_mismatch"):
+            validate_series(b, o, request_budget=3, read_only=False)
+        for bad in ("acceptance", None):
+            with self.subTest(purpose=bad), self.assertRaisesRegex(PreservationRecordError, "preservation_record_invalid"):
+                self.fixture_v3("baseline", 0, purpose=bad)
 
     def test_signature_and_raw_bytes(self):
         directory, meter, _ = self.fixture_v3("ours")

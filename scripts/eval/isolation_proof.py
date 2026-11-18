@@ -62,7 +62,7 @@ _ROW_FIELDS = {
 }
 # 목적 칸이 생기기 전에 서명된 근거(같은 v1 형식)도 다시 검증할 수 있게 빠지면 공식 회차로 읽는다.
 _PATH_KEY_REF = re.compile(r"[0-9a-f]{16}\Z")
-_OPTIONAL_ROW_FIELDS = {"run_conditions": frozenset({"purpose", "path_key_ref"})}
+_OPTIONAL_ROW_FIELDS = {"run_conditions": frozenset({"purpose", "path_key_ref", "split"})}
 # 개선 후 회차의 E② 자리(러너 e2.ours_mode). 회차 조건(run_conditions)과 달리 baseline·개선 후가 일부러 다르므로
 # 회차 사이 동일성 대조가 아니라 조건별로 섞이지 않는지만 채점기가 본다.
 E2_MODES = ("none", "stub", "product")
@@ -159,8 +159,8 @@ def _rows(evidence: object, receipt: dict) -> dict[str, list[dict]]:
         optional = _OPTIONAL_ROW_FIELDS.get(kind, frozenset()) & set(row)
         _fields(row, _ROW_FIELDS[kind] | optional | {"kind", "seq", "at"}, f"isolation_evidence.{kind}")
         if kind == "run_conditions":
-            # 수용시험 경로 가림 키 참조(#378)도 그 전 근거에는 없다. 공식 회차에는 원래 없다.
-            row = {"purpose": PURPOSE_OFFICIAL, "path_key_ref": None, **row}
+            # 수용시험 경로 가림 키 참조(#378)·분리 배치 표시(2026-11-18 (a))도 그 전 근거에는 없다(엔진 직접 배치로 읽는다).
+            row = {"purpose": PURPOSE_OFFICIAL, "path_key_ref": None, "split": False, **row}
         if row["seq"] != index or type(row["seq"]) is not int:
             raise IsolationError("isolation_evidence: 행 순번 공백·중복")
         _time(row["at"], f"isolation_evidence.{kind}.at")
@@ -266,10 +266,13 @@ def _check_conditions(rows: dict[str, list[dict]]) -> dict:
     row = _one(rows, "run_conditions")
     if row["purpose"] not in PURPOSES:
         raise IsolationError("isolation_evidence.run_conditions.purpose: official|browser_acceptance")
-    # 수용시험 회차는 경로 가림 키 참조가 있어야 하고, 공식 회차에는 없어야 한다.
-    if (row["purpose"] == PURPOSE_BROWSER_ACCEPTANCE) != _matches(_PATH_KEY_REF, row["path_key_ref"]) or (
-            row["purpose"] == PURPOSE_OFFICIAL and row["path_key_ref"] is not None):
-        raise IsolationError("isolation_evidence.run_conditions.path_key_ref: 수용시험 회차만 16 hex")
+    # 경로 가림 키 참조는 수용시험·탐색 분리 배치 회차에만 있어야 하고(16 hex), 분리 배치 표시 없는 공식 회차(엔진 직접
+    # 배치)에는 없어야 한다. 분리 배치 공식 회차는 공식 비교의 발견 집계(공식 측정 프로토콜 §7)에 경로가 필요하다.
+    if type(row["split"]) is not bool:
+        raise IsolationError("isolation_evidence.run_conditions.split: bool")
+    needs_key = row["purpose"] == PURPOSE_BROWSER_ACCEPTANCE or row["split"]
+    if needs_key != _matches(_PATH_KEY_REF, row["path_key_ref"]) or (not needs_key and row["path_key_ref"] is not None):
+        raise IsolationError("isolation_evidence.run_conditions.path_key_ref: 수용시험·분리 배치 회차만 16 hex")
     _hex(row["engine_settings_sha256"], "isolation_evidence.run_conditions.engine_settings_sha256")
     _hex(row["machine_id_sha256"], "isolation_evidence.run_conditions.machine_id_sha256")
     _hex(row["tool_tree_sha256"], "isolation_evidence.run_conditions.tool_tree_sha256")
@@ -481,6 +484,13 @@ def run_conditions(receipt: dict, evidence: object) -> tuple[str, str, str, str,
 def run_purpose(receipt: dict, evidence: object) -> str:
     """check_isolation을 통과한 근거의 회차 목적. 채점기는 official 회차만 합산한다."""
     return _one(_rows(evidence, receipt), "run_conditions")["purpose"]
+
+
+def run_path_key(receipt: dict, evidence: object) -> tuple[bool, str | None]:
+    """check_isolation을 통과한 근거의 (분리 배치 표시, 경로 가림 키 참조). 키 값이 아니라 키 지문(16 hex)이다. 채점기는 한
+    표의 회차가 모두 같은 값인지 본다(공식 측정 6회 같은 키, 2026-11-18 결정 (a))."""
+    row = _one(_rows(evidence, receipt), "run_conditions")
+    return row["split"], row["path_key_ref"]
 
 
 def output_language(receipt: dict, evidence: object) -> str:
