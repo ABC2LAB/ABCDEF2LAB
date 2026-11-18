@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -44,7 +45,14 @@ func targetNameHits(name string, src []byte) ([]string, error) {
 		if tok == token.EOF {
 			break
 		}
-		if lit != "" && targetNames.MatchString(lit) {
+		value := lit
+		// 문자열·문자 리터럴은 Go가 읽는 값으로 풀어서 본다(예: "\x6auice"는 juice다). 풀지 못하면 표기 그대로 본다.
+		if tok == token.STRING || tok == token.CHAR {
+			if unquoted, err := strconv.Unquote(lit); err == nil {
+				value = unquoted
+			}
+		}
+		if value != "" && (targetNames.MatchString(value) || targetNames.MatchString(lit)) {
 			// 리터럴 값은 출력하지 않고 위치와 토큰 종류만 남긴다.
 			hits = append(hits, fmt.Sprintf("%s:%d %s", name, fset.Position(pos).Line, tok))
 		}
@@ -126,6 +134,10 @@ func TestTargetNameHitsIgnoresComments(t *testing.T) {
 		"package p\nfunc juiceShop() {}\n":                            1,
 		"package p\ntype T struct { A string `json:\"vampi_id\"` }\n": 1,
 		"package p\nvar r = 'j'\n":                                    0,
+		"package p\nvar e = \"\\x6auice\"\n":                          1,
+		"package p\nvar u = \"\\u0076\\u0061mpi\"\n":                  1,
+		"package p\nvar o = \"\\152uice\"\n":                          1,
+		"package p\nvar c = '\\x6a'\n":                                0,
 	}
 	for src, want := range cases {
 		hits, err := targetNameHits("x.go", []byte(src))
