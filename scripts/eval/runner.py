@@ -238,6 +238,8 @@ class RunSpec:
     # 엔진 끝 신호 읽기 한 번의 시한(엔진 API 시한과 같다). 창이 끝난 뒤 진행 중인 읽기를 이만큼만 기다린다.
     task_status_wait_seconds: int
     task_request_sha256: str
+    # 호스트 리슨 감시 표본 간격(실제 수집 주기)과 그 허용 최장 간격(검증 기준). 둘 다 공통 러너 설정 지문에 든다.
+    host_watch_interval_seconds: float
     host_watch_max_gap_seconds: float
     events_lookback_seconds: float
     # 선언한 엔진 LLM 정책 모드. baseline(e53a79f)에는 이 스위치가 없어 None(선언 없음)이다.
@@ -1558,6 +1560,7 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         llm_verify_timeout_seconds=config.run["llm_verify_timeout_seconds"],
         task_status_wait_seconds=config.run["task_create_timeout_seconds"],
         task_request_sha256=task_request_sha256,
+        host_watch_interval_seconds=config.run["host_watch_interval_seconds"],
         host_watch_max_gap_seconds=config.run["host_watch_max_gap_seconds"],
         events_lookback_seconds=config.health_timeout_seconds,
         # compose는 두 엔진에 같은 값을 넘기지만 baseline은 읽지 않는다. 결과 기록에 external로 적으면 정책이 있는 것처럼

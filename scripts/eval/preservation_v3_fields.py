@@ -12,9 +12,10 @@ from typing import Mapping, Sequence
 from preservation_record import digest
 
 EVAL_DIR = Path(__file__).resolve().parent
-# 공통 러너 설정(B·O가 같아야 짝): 폴링·drain 시한·봉인 뒤 유예·정착 대기·호스트 감시 간격·이벤트 lookback.
+# 공통 러너 설정(B·O가 같아야 짝): 폴링·drain 시한·봉인 뒤 유예·정착 대기·호스트 감시 간격(실제 표본 주기와 허용 최장
+# 간격 둘 다, #696 리뷰)·이벤트 lookback.
 COMMON_RUNNER_SETTINGS = ("poll_seconds", "drain_timeout_seconds", "drain_grace_seconds", "post_settle_seconds",
-                          "host_watch_max_gap_seconds", "events_lookback_seconds")
+                          "host_watch_interval_seconds", "host_watch_max_gap_seconds", "events_lookback_seconds")
 # B 쪽 구동 설정(쪽 안에서만 고정): 작업 요청 SHA·LLM 스트리밍·tmpfs 하한·worker·컨텍스트·LLM 검증 시한.
 B_DRIVER_SETTINGS = ("task_request_sha256", "llm_stream", "tmpfs_min_free_bytes", "worker_count", "context_window_k",
                      "llm_verify_timeout_seconds")

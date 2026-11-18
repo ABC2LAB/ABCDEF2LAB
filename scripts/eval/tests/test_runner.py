@@ -1154,6 +1154,12 @@ class TestCompleteRun(unittest.TestCase):
                             v3f.settings_sha256(vars(dataclasses.replace(spec, worker_count=9)), v3f.B_DRIVER_SETTINGS))
         self.assertNotEqual(v3f.settings_sha256(vars(spec), v3f.COMMON_RUNNER_SETTINGS),
                             v3f.settings_sha256(vars(dataclasses.replace(spec, poll_seconds=99)), v3f.COMMON_RUNNER_SETTINGS))
+        # #696 리뷰: 허용 최장 간격은 같고 실제 감시 주기만 1초·2초로 다르면 지문도 달라야 한다.
+        one, two = (dataclasses.replace(spec, host_watch_interval_seconds=v, host_watch_max_gap_seconds=5) for v in (1, 2))
+        self.assertNotEqual(v3f.settings_sha256(vars(one), v3f.COMMON_RUNNER_SETTINGS),
+                            v3f.settings_sha256(vars(two), v3f.COMMON_RUNNER_SETTINGS))
+        # 실제 감시 주기는 설정 값(test_runner_config 기본 설정의 2초)이 그대로 spec으로 온다(발급 경로)
+        self.assertEqual(make_spec().host_watch_interval_seconds, 2)
         # 분리 배치가 아니거나 O면 v3가 아니다
         self.assertFalse(runner._split_preservation(dataclasses.replace(spec, task_origin=None)))
         self.assertFalse(runner._split_preservation(dataclasses.replace(spec, side="ours")))
