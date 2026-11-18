@@ -14,7 +14,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cli_usage import (  # noqa: E402
-    FORMAT, CliUsageError, count_usage, normalize, not_found, occurrences, tool_input_command, validate_names,
+    FORMAT, MAX_OBSERVED_LINE_CHARS, MAX_OBSERVED_LINES, CliUsageError, count_usage, normalize, not_found, observed_lines,
+    occurrences, tool_input_command, validate_names,
 )
 
 
@@ -99,6 +100,29 @@ class TestCounting(unittest.TestCase):
         self.assertEqual((none["occurrences"], none["names_seen"]), ({}, []))  # 목록이 비면 "원문에서 관측되지 않음(미확인)"(결정안 §10)
         spliced = count_usage([{"command": {"command": "'n''px' a && p\\\nip b"}}], ["npx", "pip"], with_failures=False)
         self.assertEqual(spliced["occurrences"], {"npx": 1, "pip": 1})  # 기록 세기에도 같은 정규화를 쓴다
+
+
+
+class TestObservedLines(unittest.TestCase):
+    def test_picks_the_line_where_the_name_is_seen(self):
+        records = [{"command": {"command": "cd /tmp\nexport A=1\nnpx playwright test"}},
+                   {"command": {"command": "echo hi"}},  # 관측 없음
+                   {"command": {"command": "n\\\npx b\nls"}},  # 줄 이음으로 쪼갠 이름: 이은 줄을 고른다
+                   {"command": {"command": "x='p''ip' && run"}},  # 따옴표 이어 붙인 이름: 원문 줄 그대로
+                   {"command": "not json"}]
+        lines, observed = observed_lines(records, ["npx", "pip"])
+        self.assertEqual(observed, 3)
+        self.assertEqual(lines, [{"names": ["npx"], "line": "npx playwright test"},
+                                 {"names": ["npx"], "line": "npx b"},
+                                 {"names": ["pip"], "line": "x='p''ip' && run"}])
+        self.assertEqual(observed_lines([{"command": {"command": "curl x"}}], ["npx"]), ([], 0))
+
+    def test_bounds(self):
+        long = "npx " + "a" * (MAX_OBSERVED_LINE_CHARS + 50)
+        lines, observed = observed_lines([{"command": {"command": long}}] * (MAX_OBSERVED_LINES + 3), ["npx"])
+        self.assertEqual((len(lines), observed), (MAX_OBSERVED_LINES, MAX_OBSERVED_LINES + 3))
+        self.assertTrue(lines[0]["line"].endswith(" [...]"))
+        self.assertEqual(len(lines[0]["line"]), MAX_OBSERVED_LINE_CHARS + len(" [...]"))
 
 
 if __name__ == "__main__":

@@ -520,6 +520,12 @@ class FakePorts:
         self.command_task = task_id
         return {"exploration_id": 5, "records": list(self.command_rows)}
 
+    def redact_text(self, lines):
+        # 계측기 redact-text 흉내: 가림을 거쳤다는 표시를 붙인다(실제 규칙은 Go 시험이 dlp.CredentialText와 대조).
+        self._call("redact_text")
+        self.redacted_input = list(lines)
+        return [f"<redacted>{line}" for line in lines]
+
     def e2_service_ready(self):
         self._call("e2_service_ready")
         if self.e2_ready_error is not None:
@@ -1131,8 +1137,35 @@ class TestCompleteRun(unittest.TestCase):
                          (2, {"npx": 1, "pip3": 1}, ["npx", "pip3"], ["npx", "pip3", "vim"], 5))
         self.assertEqual(usage["format"], "abc2lab.cli-usage/v3")
         self.assertNotIn("not_found", usage)
-        self.assertNotIn("playwright test", json.dumps(evidence.files))  # 명령 원문은 남지 않는다
+        self.assertNotIn("playwright test", json.dumps(usage))  # 건수 기록에는 명령 원문이 없다
+        # 관측된 명령만 원문 한 줄을 가림(redact-text)을 거쳐 따로 남긴다(2026-11-19 사용자 결정 4)
+        self.assertEqual(ports.redacted_input, ["npx playwright test && curl x", "pip3 install y"])
+        self.assertEqual(evidence.files["cli-observed-lines.json"], {
+            "format": "abc2lab.cli-observed-lines/v1", "observed_calls": 2,
+            "lines": [{"names": ["npx"], "line": "<redacted>npx playwright test && curl x"},
+                      {"names": ["pip3"], "line": "<redacted>pip3 install y"}]})
+        self.assertEqual(usage["observed_lines"], 2)
         self.assertNotIn("command_records", run()[1].calls)  # 이름이 없으면(분리 배치 아님·O) 읽지 않는다
+
+    def test_no_observation_leaves_no_lines(self):
+        # 관측이 없으면 아무것도 남기지 않는다(가림 호출도 없다)
+        spec = dataclasses.replace(make_spec(), cli_usage_names=("vim",))
+        result, ports, _, evidence = run(spec=spec)
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertNotIn("cli-observed-lines.json", evidence.files)
+        self.assertNotIn("redact_text", ports.calls)
+        self.assertNotIn("observed_lines", evidence.files["cli-usage.json"])
+
+    def test_redaction_failure_is_a_step_code(self):
+        spec = dataclasses.replace(make_spec(), cli_usage_names=("npx",))
+
+        def broken(ports, meter, clock):
+            def fail(lines):
+                raise RuntimeError("/secret/path")
+            ports.redact_text = fail
+        result, _, _, evidence = run(broken, spec=spec)
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["cli_usage_failed"]))
+        self.assertNotIn("cli-observed-lines.json", evidence.files)
 
     def test_cli_usage_failure_is_a_step_code(self):
         spec = dataclasses.replace(make_spec(), cli_usage_names=("npx",))

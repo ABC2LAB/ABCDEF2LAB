@@ -115,3 +115,36 @@ def count_usage(records: Iterable[Mapping], names: Iterable[str], *, with_failur
         out["not_found"] = {k: v for k, v in missing.items() if v}
         out["other_failures"] = {k: v for k, v in other.items() if v}
     return out
+
+
+OBSERVED_LINES_FORMAT = "abc2lab.cli-observed-lines/v1"
+MAX_OBSERVED_LINES = 64
+MAX_OBSERVED_LINE_CHARS = 1000
+_TRUNCATED_MARK = " [...]"
+
+
+def observed_lines(records: Iterable[Mapping], names: Iterable[str]) -> tuple[list[dict], int]:
+    """이름이 관측된 Bash 호출마다 원문 한 줄을 고른다(가림 전, 2026-11-19 사용자 결정 4). 줄 이음만 붙인 원문을 줄로 나눠
+    정규화했을 때 관측된 이름이 나오는 첫 줄이고, 없으면 첫 줄이다. 줄은 MAX_OBSERVED_LINE_CHARS로 자르고 항목은
+    MAX_OBSERVED_LINES까지다. 반환: ([{"names": [...], "line": 원문 한 줄}], 관측된 호출 수). 관측이 없으면 빈 목록이다.
+    호출자가 제품과 같은 자격 가림(계측기 redact-text)을 거친 뒤에만 근거에 쓴다."""
+    wanted = validate_names(list(names))
+    patterns = {name: _pattern(name) for name in wanted}
+    out: list[dict] = []
+    observed = 0
+    for record in records:
+        command = tool_input_command(record.get("command"))
+        if command is None:
+            continue
+        seen = [name for name, pattern in patterns.items() if pattern.search(normalize(command))]
+        if not seen:
+            continue
+        observed += 1
+        if len(out) >= MAX_OBSERVED_LINES:
+            continue
+        lines = command.replace("\\\n", "").splitlines() or [""]
+        line = next((raw for raw in lines if any(patterns[name].search(normalize(raw)) for name in seen)), lines[0])
+        if len(line) > MAX_OBSERVED_LINE_CHARS:
+            line = line[:MAX_OBSERVED_LINE_CHARS] + _TRUNCATED_MARK
+        out.append({"names": seen, "line": line})
+    return out, observed
