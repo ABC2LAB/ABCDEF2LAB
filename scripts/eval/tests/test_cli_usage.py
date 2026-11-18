@@ -297,6 +297,7 @@ class TestCounting(unittest.TestCase):
             '<< "2"<<F npx a\nx\n2\ny\nF': (["npx"], []),
             "<<\\2<<F npx b\nx\n2\ny\nF": (["npx"], []),
             "true 2\\\n<<E\nx\nE\nnpx d": (["true", "npx"], []),  # 서술자와 연산자 사이 줄 이음
+            "2\\\n<<E npx g\nx\nE": (["npx"], []),  # 명령 앞 서술자와 연산자 사이 줄 이음(서술자가 명령 이름이 되지 않는다)
         }
         for command, (sure, maybe) in cases.items():
             with self.subTest(command=command):
