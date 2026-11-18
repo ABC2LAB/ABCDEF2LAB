@@ -315,12 +315,15 @@ export function PolicyDeclarationLive() {
   const [saveError, setSaveError] = useState<SaveFailure | null>(null);
   // 서버가 저장을 거부하며 짚은 칸(400 invalid_declaration 의 field). 값은 오지 않는다 — 칸 이름만
   const [serverField, setServerField] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
+  // 저장 결과 문구: clean = 저장한 내용 그대로, newer = 저장을 기다리는 동안 더 고친 입력이 있어 그 입력을 남김
+  const [saved, setSaved] = useState<"" | "clean" | "newer">("");
   // 지금 화면 대상. 저장 응답은 저장을 시작한 대상이 아직 화면 대상일 때만 반영한다(대상을 바꾼 뒤 늦게 온 응답은 버림)
   const currentTarget = useRef("");
   currentTarget.current = targetId;
-  // 저장 성공 뒤 다시 읽은 서버 값으로 입력을 맞춘다(손댄 입력이어도)
+  // 저장 성공 뒤 다시 읽은 서버 값으로 입력을 맞춘다(손댄 입력이어도) — 저장을 누른 뒤 더 고치지 않았을 때만
   const reseedAfterSave = useRef(false);
+  // 입력 세대: 고칠 때마다 올린다. 저장 응답이 올 때 저장 시작 세대와 다르면 그 사이 고친 입력을 서버 값으로 덮지 않는다
+  const editGen = useRef(0);
 
   // 승인된 대상 목록(화면에 들어올 때마다 다시 읽는다 — 그사이 재승인·철회를 놓치지 않게)
   // biome-ignore lint/correctness/useExhaustiveDependencies: entry.gen 은 진입마다 다시 읽는 트리거
@@ -381,19 +384,26 @@ export function PolicyDeclarationLive() {
   const issues = [...(touched ? validateDraft(draft) : []), ...serverIssue];
   const allIssues = validateDraft(draft);
   const warnings = target ? scopeWarnings(draft, target) : [];
-  // 대상을 못 찾은 경우(삭제·남의 대상)는 입력을 열지 않는다 — 저장해도 같은 404 가 난다
-  const canEdit = !!target && now !== null && now !== "failed" && now.state !== "not_found";
+  // 기존 선언을 확인한 경우(없음·유효·무효)에만 입력을 연다. 조회 실패·모양 깨짐·라우트 없음·대상 없음에서 빈 입력을
+  // 열면 기존 내용을 모른 채 전체 교체 PUT 이 나갈 수 있다
+  const canEdit =
+    !!target &&
+    now !== null &&
+    now !== "failed" &&
+    (now.state === "none" || now.state === "current" || now.state === "invalidated");
 
   const pickTarget = (id: string) => {
     setTargetId(id);
     setSaveError(null);
     setServerField(null);
-    setSaved(false);
+    setSaved("");
   };
   const update = (next: DeclarationDraft) => {
+    editGen.current++;
+    reseedAfterSave.current = false;
     setDraft(next);
     setTouched(true);
-    setSaved(false);
+    setSaved("");
     setSaveError(null);
     setServerField(null);
   };
@@ -402,15 +412,17 @@ export function PolicyDeclarationLive() {
     setTouched(true);
     if (allIssues.length) return;
     const forTarget = target.id;
+    const startGen = editGen.current;
     setBusy(true);
     setSaveError(null);
     setServerField(null);
     saveDeclaration(target, normalizeDraft(draft))
       .then(() => {
         if (forTarget !== currentTarget.current) return;
-        setSaved(true);
-        // 로컬 값을 믿지 않고 서버 값을 다시 읽어 보인다
-        reseedAfterSave.current = true;
+        // 로컬 값을 믿지 않고 서버 값을 다시 읽어 보인다. 기다리는 동안 더 고쳤으면 그 입력은 덮지 않고 남긴다
+        const clean = editGen.current === startGen;
+        setSaved(clean ? "clean" : "newer");
+        reseedAfterSave.current = clean;
         setAttempt((n) => n + 1);
       })
       .catch((e: unknown) => {
@@ -494,7 +506,13 @@ export function PolicyDeclarationLive() {
               {now !== null && now !== "failed" && now.state === "invalid" ? (
                 <div className={cx(s.note, s.warn)} role="alert">
                   <Icon name="alert" />
-                  <span>저장된 선언의 모양을 확인할 수 없어 표시하지 않습니다(fail-closed).</span>
+                  <span className={s["lv-grow"]}>
+                    저장된 선언의 모양을 확인할 수 없어 표시하지 않습니다(fail-closed). 기존 선언을 확인하기 전에는
+                    입력을 열지 않습니다.
+                  </span>
+                  <button className={cx(s.btn, s.sm)} type="button" onClick={() => setAttempt((n) => n + 1)}>
+                    다시 읽기
+                  </button>
                 </div>
               ) : null}
               {now !== null && now !== "failed" && now.state === "none" ? (
@@ -591,9 +609,14 @@ export function PolicyDeclarationLive() {
                   ) : null}
                 </p>
               ) : null}
-              {saved && !saveError ? (
+              {saved === "clean" && !saveError ? (
                 <p className={s.help} role="status">
                   저장했습니다. 서버에 저장된 선언을 다시 읽어 보입니다.
+                </p>
+              ) : null}
+              {saved === "newer" && !saveError ? (
+                <p className={s.help} role="status">
+                  저장했습니다. 저장을 누른 뒤 고친 입력은 그대로 두었고 아직 저장 전입니다.
                 </p>
               ) : null}
             </section>

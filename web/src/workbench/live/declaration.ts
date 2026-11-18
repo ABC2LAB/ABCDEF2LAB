@@ -204,6 +204,67 @@ export function looksLikeSecretValue(v: string): boolean {
   return /^\s*(bearer|basic)\s+\S/i.test(v) || /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./.test(v);
 }
 
+// 서버 dlp.CredentialText(credentialSecrets)와 같은 형식. 서버(#705 e3contract.CredentialField)는 선언의 모든 칸 값에 이걸
+//   대 보고 가려지는 칸이 있으면 저장을 거부한다 — 화면도 같은 규칙으로 막아 원문이 요청에 실리기 전에 멈춘다.
+// Go RE2 와 맞추려고: `\s` 는 Go 처럼 [\t\n\f\r ] 만, `.` 은 줄바꿈 말고 전부, (?i) 는 Go 의 유니코드 대소문자 접기처럼
+//   s·k 에 ſ(U+017F)·K(U+212A)까지 넣는다(JS i 플래그는 u 없이는 이 둘을 접지 않고, u 를 켜면 \b 가 Go 와 달라진다).
+const GO_SPACE = "[\\t\\n\\f\\r ]";
+/** (?i) 단어 — s·k 만 Go 접기 짝을 더한다(나머지 ASCII 는 JS i 플래그와 같다). */
+const goFold = (word: string): string => word.replace(/s/g, "[sS\\u017F]").replace(/k/g, "[kK\\u212A]");
+const CRED_KEYS = goFold(
+  "(authorization|proxy-authorization|cookie|set-cookie|password|passwd|pwd|token|api[_-]?key|client[_-]?secret|secret|session[_-]?id)",
+);
+const CREDENTIAL_PATTERNS: readonly RegExp[] = [
+  // 인증·쿠키 헤더 줄(접힌 줄 포함)
+  new RegExp(
+    `\\b${goFold("(proxy-authorization|authorization|set-cookie|cookie)")}${GO_SPACE}*:${GO_SPACE}*[^\\r\\n]*(?:\\r?\\n[ \\t]+[^\\r\\n]*)*`,
+    "im",
+  ),
+  // 따옴표 값
+  new RegExp(
+    `${CRED_KEYS}${GO_SPACE}*["']?${GO_SPACE}*[:=]${GO_SPACE}*(?:"(?:\\\\[^\\n]|[^"\\\\])*"|'(?:\\\\[^\\n]|[^'\\\\])*')`,
+    "i",
+  ),
+  // 따옴표 없는 값
+  new RegExp(`${CRED_KEYS}${GO_SPACE}*["']?${GO_SPACE}*[:=]${GO_SPACE}*[^\\t\\n\\f\\r ,;}&"'<>]+`, "i"),
+  new RegExp(`\\b${goFold("(bearer|basic)")}${GO_SPACE}+[a-zA-Z0-9._~+/=\\u017F\\u212A-]+`, "i"),
+  /\beyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\b/,
+  /-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/,
+];
+
+/** 값에 서버가 가리는 자격 형식이 있는가(dlp.CredentialText(v) != v). 값 원문은 옮기지 않고 참·거짓만 본다. */
+export function hasCredentialText(v: string): boolean {
+  return v !== "" && CREDENTIAL_PATTERNS.some((re) => re.test(v));
+}
+
+/**
+ * 선언 칸 가운데 자격 형식이 든 칸(화면 칸 이름). 서버 CredentialField 와 같은 칸을 본다 — 공유 종류는 요청 칸을 보내지
+ * 않으므로(normalizeDraft 가 비움) 이름만 본다.
+ */
+export function credentialFields(d: DeclarationDraft): string[] {
+  const out: string[] = [];
+  const check = (field: string, v: string) => {
+    if (hasCredentialText(v) && !out.includes(field)) out.push(field);
+  };
+  check("identity.path", d.identity.path);
+  check("identity.subjectIdPath", d.identity.subjectIdPath);
+  d.types.forEach((t, i) => {
+    const at = `types.${i}`;
+    check(`${at}.type`, t.type);
+    if (t.sharing === "shared") return;
+    for (const f of t.ownerOnlyFields) check(`${at}.ownerOnlyFields`, f);
+    check(`${at}.create.path`, t.create.path);
+    check(`${at}.create.bodyTemplate`, t.create.bodyTemplate);
+    check(`${at}.create.markerField`, t.create.markerField);
+    check(`${at}.create.idPath`, t.create.idPath);
+    check(`${at}.read.pathTemplate`, t.read.pathTemplate);
+    check(`${at}.read.dataPath`, t.read.dataPath);
+    check(`${at}.read.statusPath`, t.read.statusPath);
+    check(`${at}.read.normalValue`, t.read.normalValue);
+  });
+  return out;
+}
+
 /** JSON 틀의 모든 키·문자열 값을 훑어 자격으로 보이는 키 이름을 모은다(값은 이름 대신 위치만). */
 function secretsInJson(v: unknown, at: string, out: string[]): void {
   if (Array.isArray(v)) {
@@ -309,6 +370,12 @@ export function validateDraft(d: DeclarationDraft): DraftIssue[] {
     names.add(t.type);
     validateType(t, `types.${i}`, issues);
   });
+  for (const field of credentialFields(d))
+    issues.push({
+      field,
+      message:
+        "자격 값 모양(인증 · 쿠키 헤더, 비밀번호 · 토큰 키=값, Bearer · Basic, JWT, 개인키)이 있어 저장하지 않습니다. 세션은 시험 계정 로그인이 따로 붙입니다.",
+    });
   return issues;
 }
 
@@ -511,8 +578,10 @@ function sameAudit(o: Record<string, unknown>, d: StoredDeclaration): boolean {
  * 조회 응답 → 결과(#705 productDeclarationView). 선언 없음 = `{"state":"none","declaration":null}`,
  * 유효 = `{"state":"active","target_revision","declared_by","declared_at","declaration":{…}}`,
  * 무효 = 같은 칸 + `invalid_reason`. 모양이 밖이면 invalid.
+ * 선언의 target_ref(서버가 채우는 대상 ID)가 요청한 대상과 다르면 invalid — 다른 대상의 선언을 이 대상 화면에 그리거나
+ * 입력에 채우지 않는다.
  */
-export function parseDeclarationResponse(res: unknown): DeclarationLoad {
+export function parseDeclarationResponse(res: unknown, targetId: string): DeclarationLoad {
   try {
     if (!isObj(res)) return { state: "invalid" };
     if (res.state === "none") {
@@ -523,7 +592,7 @@ export function parseDeclarationResponse(res: unknown): DeclarationLoad {
     if (res.state === "active") {
       const o = exact(res, ["state", "target_revision", "declared_by", "declared_at", "declaration"]);
       const declaration = parseStoredDeclaration(o.declaration);
-      if (!sameAudit(o, declaration)) fail();
+      if (!sameAudit(o, declaration) || declaration.targetRef !== targetId) fail();
       return { state: "current", declaration };
     }
     if (res.state === "invalid") {
@@ -531,7 +600,7 @@ export function parseDeclarationResponse(res: unknown): DeclarationLoad {
       const reason = str(o.invalid_reason);
       if (!Object.hasOwn(INVALIDATED_REASON_LABEL, reason)) fail();
       const declaration = parseStoredDeclaration(o.declaration);
-      if (!sameAudit(o, declaration)) fail();
+      if (!sameAudit(o, declaration) || declaration.targetRef !== targetId) fail();
       return { state: "invalidated", declaration, reason };
     }
     return { state: "invalid" };
@@ -621,7 +690,7 @@ const isRouteMissing = (e: unknown): boolean =>
 export async function getDeclaration(targetId: string, signal?: AbortSignal): Promise<DeclarationLoad> {
   try {
     const res = await apiFetch<unknown>(declarationPath(targetId), { cache: "no-store", redirect: "error", signal });
-    return parseDeclarationResponse(res);
+    return parseDeclarationResponse(res, targetId);
   } catch (e) {
     if (isTargetNotFound(e)) return { state: "not_found" };
     if (isRouteMissing(e)) return { state: "unavailable" };

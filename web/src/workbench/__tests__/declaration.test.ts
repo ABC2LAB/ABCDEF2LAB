@@ -16,6 +16,7 @@ import {
   emptyRead,
   getDeclaration,
   getDeclarationTargets,
+  hasCredentialText,
   looksLikeSecretName,
   normalizeDraft,
   parseDeclarationResponse,
@@ -193,6 +194,68 @@ describe("자격 차단(절대규칙 2)", () => {
     expect(secretFieldsInTemplate("form", "title=a&h=Basic%20eA")).toEqual(["h"]);
   });
 
+  // 5차 리뷰: 서버 dlp.CredentialText 가 가리는 형식(#705 CredentialField 가 저장을 거부) — 결과는 Go 로 같은 입력을 돌려 맞춘 값
+  it.each<[string, boolean]>([
+    ['{"note":"Cookie: sid=abc"}', true],
+    ["Cookie: a=b", true],
+    ["set-cookie:x", true],
+    ["Authorization: Basic eA==", true],
+    ["Proxy-Authorization:\tx", true],
+    ["COO\u212AIE: z", true], // Go (?i) 는 켈빈 기호를 k 로 접는다
+    ["authorization:''", true],
+    ['password="a b"', true],
+    ["api-key=1", true],
+    ["client_secret: x", true],
+    ["session_id=1", true],
+    ["Bearer abc", true],
+    ["\u017Fbearer x", true], // ſ 는 Go \b 에서 단어 문자가 아니다
+    ["eyJa.b.c", true],
+    ["-----BEGIN RSA PRIVATE KEY-----\nx\n-----END RSA PRIVATE KEY-----", true],
+    ["x", false],
+    ["author=1", false],
+    ['{"cookie_consent":true}', false],
+    ["/api/notes/{id}", false],
+    ['{"title":"t"}', false],
+    ["token\u00a0=1", false], // Go \s 는 NBSP 를 공백으로 보지 않는다
+    ["", false],
+  ])("hasCredentialText(%j) = %s (서버와 같음)", (v, want) => {
+    expect(hasCredentialText(v)).toBe(want);
+  });
+
+  it("본문 틀 말고 다른 칸의 자격 형식도 서버처럼 막고, 칸 이름만 알린다", () => {
+    const cases: [string, (d: DeclarationDraft) => void][] = [
+      [
+        "types.0.create.bodyTemplate",
+        (d) => (d.types[0].create.bodyTemplate = '{"title":"t","note":"Cookie: sid=synthetic"}'),
+      ],
+      [
+        "types.0.read.normalValue",
+        (d) => {
+          d.types[0].read.statusPath = "status";
+          d.types[0].read.normalValue = "Cookie: sid=synthetic";
+        },
+      ],
+      [
+        "types.0.create.bodyTemplate",
+        (d) => {
+          d.types[0].create.bodyKind = "form";
+          d.types[0].create.bodyTemplate = "title=a&h=Cookie%3A%20sid%3Dx&cookie=sid";
+        },
+      ],
+    ];
+    for (const [field, f] of cases) {
+      const issue = validateDraft(edit(f)).find((i) => /자격 값 모양/.test(i.message));
+      expect(issue?.field).toBe(field);
+      expect(issue?.message).not.toContain("synthetic");
+    }
+    // 공유 종류는 요청 칸을 보내지 않으므로 보지 않는다(서버도 정규화 뒤 빈 칸)
+    expect(
+      validateDraft(edit((d) => (d.types[1].create.bodyTemplate = "Cookie: sid=x"))).some((i) =>
+        /자격 값 모양/.test(i.message),
+      ),
+    ).toBe(false);
+  });
+
   it("author · passenger · passage · title 같은 정상 이름은 막지 않는다", () => {
     for (const k of ["author", "passenger", "passage", "title", "subtitle", "description"])
       expect(looksLikeSecretName(k)).toBe(false);
@@ -248,8 +311,8 @@ describe("normalizeDraft · toRequestBody", () => {
 
 describe("parseDeclarationResponse (닫힌 파서)", () => {
   it("서버 none · active · invalid 를 화면 none · current · invalidated 로 나눈다", () => {
-    expect(parseDeclarationResponse(noneRes)).toEqual({ state: "none" });
-    const cur = parseDeclarationResponse(activeRes());
+    expect(parseDeclarationResponse(noneRes, "target-1")).toEqual({ state: "none" });
+    const cur = parseDeclarationResponse(activeRes(), "target-1");
     expect(cur.state).toBe("current");
     if (cur.state === "current") {
       expect(cur.declaration.declaredBy).toBe("operator-1");
@@ -257,7 +320,7 @@ describe("parseDeclarationResponse (닫힌 파서)", () => {
       expect(cur.declaration.types.map((t) => t.type)).toEqual(["note", "post"]);
     }
     for (const reason of ["target_reapproved", "target_expired"]) {
-      const inv = parseDeclarationResponse(invalidRes(reason));
+      const inv = parseDeclarationResponse(invalidRes(reason), "target-1");
       expect(inv.state).toBe("invalidated");
       if (inv.state === "invalidated") expect(inv.reason).toBe(reason);
     }
@@ -300,8 +363,11 @@ describe("parseDeclarationResponse (닫힌 파서)", () => {
     ["무효 사유 없음", { ...activeRes(), state: "invalid" }],
     ["모르는 무효 사유", invalidRes("target_deleted")],
     ["배열", []],
+    // 5차 리뷰: 다른 대상의 정상 모양 선언(target_ref 가 요청 대상과 다름)
+    ["유효 선언의 대상이 다름", activeRes(storedJson({ target_ref: "target-2" }))],
+    ["무효 선언의 대상이 다름", invalidRes("target_reapproved", storedJson({ target_ref: "target-2" }))],
   ])("%s → invalid(빈 선언으로 바꾸지 않는다)", (_, res) => {
-    expect(parseDeclarationResponse(res)).toEqual({ state: "invalid" });
+    expect(parseDeclarationResponse(res, "target-1")).toEqual({ state: "invalid" });
   });
 });
 
@@ -366,6 +432,14 @@ describe("API", () => {
       saveDeclaration(
         target,
         edit((d) => (d.types = [])),
+      ),
+    ).rejects.toThrow();
+    expect(api).not.toHaveBeenCalled();
+    // 쿠키 헤더를 붙여넣은 선언은 요청을 만들기 전에 멈춘다(값이 서버로 가지 않는다)
+    await expect(
+      saveDeclaration(
+        target,
+        edit((d) => (d.types[0].create.bodyTemplate = '{"title":"t","note":"Cookie: sid=synthetic"}')),
       ),
     ).rejects.toThrow();
     expect(api).not.toHaveBeenCalled();

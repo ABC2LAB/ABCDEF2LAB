@@ -42,9 +42,9 @@ const TARGETS = {
     { id: "t3", origin: "https://c.example", state: "pending", revision: 1 },
   ],
 };
-const stored = (type = "note", by = "operator-1") => ({
+const stored = (type = "note", by = "operator-1", ref = "t1") => ({
   version: "e3-product-declaration/v1",
-  target_ref: "t1",
+  target_ref: ref,
   target_approval_revision: "3",
   declared_by: by,
   declared_at: "2026-11-18T00:00:00.000000Z",
@@ -154,6 +154,31 @@ describe("PolicyDeclarationLive (대상 · 조회 상태)", () => {
     await pick("t2");
     expect(await screen.findByText(/서버에 선언 저장 기능이 아직 없습니다/)).toBeInTheDocument();
     expect(screen.queryByText(/아직 선언이 없습니다/)).toBeNull();
+    // 기존 선언을 확인하지 못했으니 입력을 열지 않는다
+    expect(screen.queryByLabelText("신원 확인 경로")).toBeNull();
+  });
+
+  it("기존 선언 모양을 확인 못 하면 입력 · 저장을 잠그고, 다시 읽어 없음이 확인되면 빈 입력으로 연다", async () => {
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [active({ ...stored(), extra: 1 }), NONE] });
+    mount();
+    await pick("t1");
+    expect(await screen.findByText(/모양을 확인할 수 없어 표시하지 않습니다/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("신원 확인 경로")).toBeNull();
+    expect(screen.queryByRole("button", { name: "선언 저장" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "다시 읽기" }));
+    expect(await screen.findByText(/아직 선언이 없습니다/)).toBeInTheDocument();
+    expect(screen.getByLabelText("자원 종류 1 이름")).toHaveValue("");
+    expect(api.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
+  });
+
+  it("다른 대상의 선언 응답은 이 대상 화면에 보이지도 입력을 채우지도 않는다", async () => {
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [active(stored("memo", "operator-1", "t2"))] });
+    mount();
+    await pick("t1");
+    expect(await screen.findByText(/모양을 확인할 수 없어 표시하지 않습니다/)).toBeInTheDocument();
+    expect(screen.queryByText(/선언자/)).toBeNull();
+    expect(screen.queryByDisplayValue("memo")).toBeNull();
+    expect(screen.queryByLabelText("자원 종류 1 이름")).toBeNull();
   });
 
   it("조회 실패는 '선언 없음'이 아니고 다시 읽기로 같은 대상을 다시 부른다", async () => {
@@ -170,7 +195,7 @@ describe("PolicyDeclarationLive (대상 · 조회 상태)", () => {
     serve({
       [GET_T]: [TARGETS],
       [GET_D("t1")]: [active({ ...stored(), extra: 1 })],
-      [GET_D("t2")]: [invalidRes("target_reapproved", stored("memo"))],
+      [GET_D("t2")]: [invalidRes("target_reapproved", stored("memo", "operator-1", "t2"))],
     });
     mount();
     await pick("t1");
@@ -220,6 +245,48 @@ describe("PolicyDeclarationLive (입력 · 저장)", () => {
     expect(body.declaration.types[0]).toMatchObject({ type: "note", owner_only_fields: ["body"] });
     expect(await screen.findByText(/선언자/)).toHaveTextContent("operator-1");
     expect(screen.getByRole("status")).toHaveTextContent("저장했습니다");
+  });
+
+  it("저장을 기다리는 동안 고친 입력은 저장 · 재조회가 끝나도 덮지 않는다", async () => {
+    let finishPut: (v: unknown) => void = () => undefined;
+    serve({
+      [GET_T]: [TARGETS],
+      [GET_D("t1")]: [NONE, active(stored("first"))],
+      [PUT_D("t1")]: [() => new Promise((ok) => (finishPut = ok))],
+    });
+    mount();
+    await pick("t1");
+    await screen.findByText(/아직 선언이 없습니다/);
+    fillValid();
+    type("자원 종류 1 이름", "first");
+    fireEvent.click(screen.getByRole("button", { name: "선언 저장" }));
+    expect(screen.getByRole("button", { name: "저장 중…" })).toBeDisabled();
+    type("자원 종류 1 이름", "newer");
+    await act(async () => finishPut(undefined));
+    // 재조회한 서버 값(first)은 요약에 보이고, 입력은 그대로 newer
+    expect(await screen.findByText(/선언자/)).toBeInTheDocument();
+    expect(screen.getByLabelText("자원 종류 1 이름")).toHaveValue("newer");
+    expect(screen.getByRole("status")).toHaveTextContent("아직 저장 전");
+    expect(screen.getByRole("status")).not.toHaveTextContent("다시 읽어 보입니다");
+  });
+
+  it("쿠키 헤더를 붙여넣은 본문 틀은 저장 요청을 보내지 않는다(값 원문은 화면 문구에 없다)", async () => {
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [NONE], [PUT_D("t1")]: [undefined] });
+    mount();
+    await pick("t1");
+    await screen.findByText(/아직 선언이 없습니다/);
+    fillValid();
+    type("자원 종류 1 본문 틀", '{"title":"t","note":"Cookie: sid=synthetic-cookie"}');
+    expect(screen.getByText(/자격 값 모양/)).toBeInTheDocument();
+    const btn = screen.getByRole("button", { name: "선언 저장" });
+    expect(btn).toBeDisabled();
+    await act(async () => fireEvent.click(btn));
+    expect(api.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
+    const alerts = screen
+      .getAllByRole("alert")
+      .map((a) => a.textContent ?? "")
+      .join(" ");
+    expect(alerts).not.toContain("synthetic-cookie");
   });
 
   it("칸 오류는 고친 뒤 보이고, 오류가 있으면 저장하지 않는다", async () => {
