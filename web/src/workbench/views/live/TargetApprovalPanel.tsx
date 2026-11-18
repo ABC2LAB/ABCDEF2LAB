@@ -305,9 +305,20 @@ export function TargetApprovalPanel({
           <div className={s["fsec-b"]} id="targetRegister">
             <div className={s.two}>
               <div className={s.field}>
-                <label className={s.lbl} htmlFor="targetReadonlyPaths">
-                  허용할 읽기 경로 · 한 줄에 하나
-                </label>
+                <div className={s["fsec-ht"]}>
+                  <label className={s.lbl} htmlFor="targetReadonlyPaths">
+                    허용할 읽기 경로 · 한 줄에 하나
+                  </label>
+                  {/* 정확 일치(=/…)와 접두는 query 동작이 다르다(docs/contracts/exact-path-approval.md). 서버가 같은 규칙으로
+                      집행한다. 칸 밑에 늘 펼쳐 두던 설명은 (?) 메모로 옮겼다(사용자 11/18 '간략하게') */}
+                  <HelpTip label="경로 쓰는 법 보기">
+                    <span id="targetPathMatchNote">
+                      <code>/api/</code> 처럼 쓰면 접두 승인 · 그 아래 모든 경로와 query 를 허용합니다. <code>=/</code>{" "}
+                      처럼 앞에 <code>=</code> 를 붙이면 정확 일치 · 그 경로 하나만, query 가 붙은 요청(
+                      <code>/?x=1</code>, <code>/?</code> 포함)은 허용하지 않습니다.
+                    </span>
+                  </HelpTip>
+                </div>
                 <textarea
                   ref={firstField}
                   id="targetReadonlyPaths"
@@ -317,12 +328,6 @@ export function TargetApprovalPanel({
                   disabled={off}
                   placeholder="비우면 입력한 주소의 경로 · 예) /api/  =/"
                 />
-                {/* 정확 일치(=/…)와 접두는 query 동작이 다르다(docs/contracts/exact-path-approval.md). 서버가 같은 규칙으로 집행한다. */}
-                <p className={s.help} id="targetPathMatchNote">
-                  <code>/api/</code> 처럼 쓰면 접두 승인 · 그 아래 모든 경로와 query 를 허용합니다. <code>=/</code> 처럼
-                  앞에 <code>=</code> 를 붙이면 정확 일치 · 그 경로 하나만, query 가 붙은 요청(
-                  <code>/?x=1</code>, <code>/?</code> 포함)은 허용하지 않습니다.
-                </p>
               </div>
               <div className={s.field}>
                 <label className={s.lbl} htmlFor="targetReadonlyBasis">
@@ -354,8 +359,6 @@ export function TargetApprovalPanel({
                 {requestLimit ? ` · 회차당 요청 상한 ${requestLimit}` : ""} · 상태 변경 범위는 별도 동의한 설치에서만
                 등록할 수 있습니다
               </HelpTip>
-              <br />
-              서버는 GET · HEAD · query 의 무해성을 검증하지 않음
             </p>
             {origin.startsWith("http://") ? (
               <p className={cx(s.note, s.warn)} role="note">
@@ -378,11 +381,12 @@ export function TargetApprovalPanel({
                 </span>
               </label>
             ) : null}
-            <p className={s.help} id="targetRequestLimit">
-              {requestLimit
-                ? `회차당 요청 상한 ${requestLimit}`
-                : "설치의 회차당 요청 상한을 받지 못해 대상을 등록할 수 없습니다"}
-            </p>
+            {/* 회차당 요청 상한 줄은 뺐다(사용자 11/18) — 상한을 못 받아 등록할 수 없을 때만 이유를 보인다 */}
+            {requestLimit ? null : (
+              <p className={s.help} id="targetRequestLimit">
+                설치의 회차당 요청 상한을 받지 못해 대상을 등록할 수 없습니다
+              </p>
+            )}
             <div className={s.acts}>
               <button
                 className={cx(s.btn, s.pri, s.sm)}
@@ -390,7 +394,7 @@ export function TargetApprovalPanel({
                 disabled={off || basis.trim().length < 20 || !requestLimit}
                 onClick={() => void change("register")}
               >
-                대상 등록 · 소유 확인 준비
+                대상 등록
               </button>
               <button className={cx(s.btn, s.sm)} type="button" disabled={busy} onClick={() => setOpen(false)}>
                 접기
