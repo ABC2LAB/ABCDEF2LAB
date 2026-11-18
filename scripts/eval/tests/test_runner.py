@@ -1128,7 +1128,7 @@ class TestCompleteRun(unittest.TestCase):
         usage = evidence.files["cli-usage.json"]
         self.assertEqual((usage["bash_calls"], usage["occurrences"], usage["names_seen"], usage["names"], usage["exploration_id"]),
                          (2, {"npx": 1, "pip3": 1}, ["npx", "pip3"], ["npx", "pip3", "vim"], 5))
-        self.assertEqual(usage["format"], "abc2lab.cli-usage/v2")
+        self.assertEqual(usage["format"], "abc2lab.cli-usage/v3")
         self.assertNotIn("not_found", usage)
         self.assertNotIn("playwright test", json.dumps(evidence.files))  # 명령 원문은 남지 않는다
         self.assertNotIn("command_records", run()[1].calls)  # 이름이 없으면(분리 배치 아님·O) 읽지 않는다

@@ -1,12 +1,15 @@
-"""Bash 도구 입력 원문에서 정해진 CLI 이름의 등장 수(상한)를 센다(탐색 분리 배치 결정안 §10, 2026-11-18 사용자 결정).
+"""Bash 도구 입력 원문에서 정해진 CLI 이름이 관측되는지 센다(탐색 분리 배치 결정안 §10, 2026-11-18 사용자 결정).
 
-물음은 "B가 B 전용 CLI(도구 면 측정 `cli_differences.baseline_only`)를 쓰는가"라서 정확한 호출 수 대신 상한이면 된다. 셸 문법
-(따옴표·heredoc·연산자·줄 이음)은 해석하지 않는다. 이름이 입력 원문에 낱말 경계로 나오면 한 번 센다. 실제로 실행됐는지는 이
-값으로 정하지 않는다: 등장한 이름이 하나도 없으면 사용 없음으로 확정하고, 있으면 그 회차의 그 명령만 사람이 열어 실제 실행인지
-확인한다(결정안 §10).
+셸 문법(heredoc·연산자·치환)은 해석하지 않는다. 찾기 전에 싼 정규화 하나만 한다: 줄 이음(백슬래시+줄바꿈)을 붙이고 따옴표
+문자(' ")를 지운다. 그래서 줄 이음이나 따옴표 이어 붙이기로 쪼갠 이름(`n\\⏎px`, `'n''px'`)도 이어진 이름으로 보인다. 그 뒤
+이름이 낱말 경계로 나오면 센다.
+
+결과는 실행 수가 아니라 원문에서 관측한 등장 수다. 실제로 실행됐는지는 이 값으로 정하지 않는다. 등장한 이름이 없으면
+"원문에서 이름이 관측되지 않음(미확인)"이고, 있으면 그 회차의 그 명령만 사람이 열어 실제 실행인지 확인한다(결정안 §10).
+변수·eval·인코딩(base64 등)을 거쳐 이름을 만드는 호출은 관측하지 못한다.
 
 낱말 경계: 이름 바로 앞뒤 글자가 이름 글자(영숫자·`_` `.` `+` `-`)가 아니다(`/usr/bin/npx`·`$(npx …)`·`npx;`는 세고
-`npx2`·`my-npx`는 세지 않는다). 이름을 쪼개 쓴 입력(줄 이음·따옴표 이어 붙이기·문자열 조립)은 세지 못한다.
+`npx2`·`my-npx`는 세지 않는다).
 
 B는 회차를 내리기 전에 원본 엔진 `GET /api/commands?task=`로 읽고, O는 활동 기록에서 읽는다. 명령 원문·출력은 메모리에서만
 보고 어디에도 쓰지 않는다. 결과에는 이름·건수만 있다.
@@ -18,7 +21,7 @@ import json
 import re
 from typing import Iterable, Mapping
 
-FORMAT = "abc2lab.cli-usage/v2"
+FORMAT = "abc2lab.cli-usage/v3"
 MAX_NAMES = 256
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,127}\Z")
 _NAME_CHARS = "A-Za-z0-9_.+-"
@@ -40,9 +43,14 @@ def _pattern(name: str) -> re.Pattern:
     return re.compile(rf"(?<![{_NAME_CHARS}]){re.escape(name)}(?![{_NAME_CHARS}])")
 
 
+def normalize(command: str) -> str:
+    """찾기 전 정규화: 줄 이음(백슬래시+줄바꿈)을 붙이고 따옴표 문자를 지운다. 문법은 해석하지 않는다."""
+    return command.replace("\\\n", "").replace("'", "").replace('"', "")
+
+
 def occurrences(command: str, name: str) -> int:
-    """입력 원문에 이름이 낱말 경계로 나온 횟수. 문법을 해석하지 않으므로 실행 수의 상한이다(따옴표·주석 안도 센다)."""
-    return len(_pattern(name).findall(command))
+    """정규화한 입력에 이름이 낱말 경계로 나온 횟수(따옴표·주석 안도 센다). 실행 수가 아니라 관측 수다."""
+    return len(_pattern(name).findall(normalize(command)))
 
 
 def tool_input_command(raw: object) -> str | None:
@@ -73,7 +81,7 @@ def count_usage(records: Iterable[Mapping], names: Iterable[str], *, with_failur
     """records: {"command": Bash 도구 입력(JSON 문자열/객체), "output": 결과 글 또는 None, "exit_code": 정수 또는 None,
     "failed": 도구가 실패로 돌려줬는지(bool) 또는 None}. Bash 호출만 넘긴다.
 
-    occurrences는 이름별 등장 수(상한, 모든 입력의 등장 횟수 합), names_seen은 하나라도 등장한 이름이다. with_failures면 이름이
+    occurrences는 이름별 관측 등장 수(정규화한 입력의 등장 횟수 합), names_seen은 하나라도 관측된 이름이다. with_failures면 이름이
     등장한 호출 가운데 그 이름을 찾지 못한 것(not_found)과 그 밖의 실패(종료 코드 ≠ 0 또는 failed)를 이름별 호출 수로 센다."""
     wanted = validate_names(list(names))
     patterns = {name: _pattern(name) for name in wanted}
@@ -87,6 +95,7 @@ def count_usage(records: Iterable[Mapping], names: Iterable[str], *, with_failur
         if command is None:
             unreadable += 1
             continue
+        command = normalize(command)
         for name, pattern in patterns.items():
             count = len(pattern.findall(command))
             if not count:
@@ -99,7 +108,7 @@ def count_usage(records: Iterable[Mapping], names: Iterable[str], *, with_failur
                 missing[name] += 1
             elif (type(exit_code) is int and exit_code != 0) or record.get("failed") is True:
                 other[name] += 1
-    # 입력을 읽지 못한 호출(unreadable_calls)이 있으면 등장 0을 사용 없음으로 확정하지 않는다.
+    # 등장 0은 "원문에서 관측되지 않음(미확인)"이다. 입력을 읽지 못한 호출(unreadable_calls)은 그 관측 범위 밖이라 따로 센다.
     out = {"format": FORMAT, "names": list(wanted), "bash_calls": total, "unreadable_calls": unreadable,
            "occurrences": {k: v for k, v in seen.items() if v}, "names_seen": [k for k, v in seen.items() if v]}
     if with_failures:
