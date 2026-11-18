@@ -106,6 +106,84 @@ func TestRegisterProgramMarkerOnlyChangesMarkerOutput(t *testing.T) {
 	}
 }
 
+func TestProgramMarkerOutputRedactsEmbeddedBase64(t *testing.T) {
+	execution := &Execution{}
+	if err := execution.RegisterProgramMarker([]byte(fixtureMarker)); err != nil {
+		t.Fatal(err)
+	}
+	codecs := map[string]*base64.Encoding{
+		"standard": base64.StdEncoding, "raw_standard": base64.RawStdEncoding,
+		"url": base64.URLEncoding, "raw_url": base64.RawURLEncoding,
+	}
+	for name, codec := range codecs {
+		for offset := 0; offset < 3; offset++ {
+			t.Run(fmt.Sprintf("%s/%d", name, offset), func(t *testing.T) {
+				value := append(bytes.Repeat([]byte{0xff}, offset), fixtureMarker...)
+				value = append(value, 0xfe, 'z')
+				input := []byte(fmt.Sprintf("{\"blob\":%q}", codec.EncodeToString(value)))
+				if out := execution.RedactOutput(input); !bytes.Equal(out, []byte("[REDACTED]")) {
+					t.Fatal("공유 출력의 Base64 보호 값을 가리지 못함")
+				}
+			})
+		}
+	}
+	public := []byte(fmt.Sprintf("{\"blob\":%q}", base64.StdEncoding.EncodeToString([]byte("public data"))))
+	if out := execution.RedactOutput(public); !bytes.Equal(out, public) {
+		t.Fatal("표식이 없는 Base64 출력이 변경됨")
+	}
+}
+
+func TestProgramMarkerOutputRedactsUnterminatedNumericEntities(t *testing.T) {
+	execution := &Execution{}
+	if err := execution.RegisterProgramMarker([]byte(fixtureMarker)); err != nil {
+		t.Fatal(err)
+	}
+	for name, ref := range map[string]string{"decimal": "&#%d", "hex": "&#x%x", "escaped_ampersand": "\\u0026#%d"} {
+		t.Run(name, func(t *testing.T) {
+			var encoded strings.Builder
+			for _, b := range []byte(fixtureMarker) {
+				fmt.Fprintf(&encoded, ref, b)
+			}
+			if out := execution.RedactOutput([]byte(encoded.String())); !bytes.Equal(out, []byte("[REDACTED]")) {
+				t.Fatal("해석되지 않은 숫자 참조를 공유 출력으로 전달함")
+			}
+		})
+	}
+}
+
+func TestProgramMarkerOutputRedactsOverlappingSourceSpans(t *testing.T) {
+	execution := &Execution{}
+	marker := "j" + strings.Repeat("x", markerBytes-2) + "f"
+	if err := execution.RegisterProgramMarker([]byte(marker)); err != nil {
+		t.Fatal(err)
+	}
+	// The two copies of the marker share one entity in the original text.
+	input := []byte("before " + marker[:len(marker)-1] + "&fjlig;" + marker[1:] + " after")
+	if out := execution.RedactOutput(input); !bytes.Equal(out, []byte("before [REDACTED] after")) {
+		t.Fatal("겹치는 두 원문 범위 전체를 가리지 못함")
+	}
+}
+
+func TestRegisterProgramMarkerRejectsStoppedExecutionAndUppercase(t *testing.T) {
+	for _, tc := range []struct {
+		name, marker string
+		stopped      bool
+	}{
+		{name: "stopped", marker: fixtureMarker, stopped: true},
+		{name: "uppercase", marker: strings.ToUpper(fixtureMarker)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			execution := &Execution{stopped: tc.stopped}
+			if err := execution.RegisterProgramMarker([]byte(tc.marker)); err != ErrConfig {
+				t.Fatalf("등록 거부 오류 = %v, 기대 %v", err, ErrConfig)
+			}
+			if len(execution.marker) != 0 {
+				t.Fatal("거부한 표식을 실행에 저장함")
+			}
+		})
+	}
+}
+
 func TestProgramMarkerNormalizationBoundsLongEntityPrefixes(t *testing.T) {
 	input := bytes.Repeat([]byte{'&'}, maxMarkerOutput)
 	if present, method, supported := inspectProgramMarker(input, []byte(fixtureMarker)); present || method != "" || !supported {

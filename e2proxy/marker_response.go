@@ -117,6 +117,10 @@ func markerSpans(input, marker []byte) ([]markerSpan, bool) {
 	if !ok {
 		return nil, false
 	}
+	return markerSpansInView(decoded, sources, marker), true
+}
+
+func markerSpansInView(decoded []byte, sources []markerSource, marker []byte) []markerSpan {
 	spans := []markerSpan{}
 	// 표식은 ASCII만 사용한다. Unicode fold는 바이트 길이를 바꿀 수 있어 원문 위치표를 깨뜨린다.
 	lower := bytes.Clone(decoded)
@@ -154,7 +158,7 @@ func markerSpans(input, marker []byte) ([]markerSpan, bool) {
 		spans = append(spans, markerSpan{sources[start].begin, sources[end-1].end, method})
 		offset = end
 	}
-	return spans, true
+	return spans
 }
 
 // unsupportedMarkerForm은 표식의 지원 밖 표현을 아는 범위에서 감지한다.
@@ -197,14 +201,30 @@ func inspectProgramMarker(input, marker []byte) (bool, string, bool) {
 	return true, spans[0].method, true
 }
 
+// containsEmbeddedBase64Marker checks the output at every possible byte alignment.
+// Full groups of three marker bytes encode independently of adjacent bytes and padding.
+// For the marker's alphanumeric alphabet, standard and URL-safe groups are identical.
+func containsEmbeddedBase64Marker(input, decoded, marker []byte) bool {
+	hasDecodedView := !bytes.Equal(input, decoded)
+	for start := 0; start < 3; start++ {
+		end := start + (len(marker)-start)/3*3
+		interior := marker[start:end]
+		signature := []byte(base64.RawStdEncoding.EncodeToString(interior))
+		if bytes.Contains(input, signature) || hasDecodedView && bytes.Contains(decoded, signature) {
+			return true
+		}
+	}
+	return false
+}
+
 func redactMarker(input, marker []byte) []byte {
-	if unsupportedMarkerForm(input, marker) {
+	decoded, sources, ok := decodeMarkerView(input)
+	// Unresolved numeric entities have browser interpretations we do not expose in shared output.
+	if !ok || len(marker) != markerBytes || bytes.Contains(decoded, []byte("&#")) ||
+		containsEmbeddedBase64Marker(input, decoded, marker) || unsupportedMarkerForm(input, marker) {
 		return []byte("[REDACTED]")
 	}
-	spans, ok := markerSpans(input, marker)
-	if !ok {
-		return []byte("[REDACTED]")
-	}
+	spans := markerSpansInView(decoded, sources, marker)
 	if len(spans) == 0 {
 		return input
 	}
@@ -212,6 +232,7 @@ func redactMarker(input, marker []byte) []byte {
 	last := 0
 	for _, span := range spans {
 		if span.begin < last {
+			last = max(last, span.end)
 			continue
 		}
 		out = append(out, input[last:span.begin]...)
