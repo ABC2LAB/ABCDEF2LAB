@@ -442,6 +442,37 @@ class TestOrder(unittest.TestCase):
                 self.assertNotIn("product-files.json", evidence.files)
                 self.assertIn("down", ports.calls)
 
+    def test_run_conditions_with_duplicate_keys_are_refused_before_scope_check(self):
+        # #693 리뷰: 같은 키를 두 번 넣으면 json 기본 동작은 마지막 값만 남긴다. 앞 값이 다른 범위여도 맞는 마지막 값으로
+        # 대조를 지나고 모순된 원본의 SHA가 남았다. 중첩 객체까지 중복을 거부하고 SHA를 남기지 않는다.
+        good = json.dumps(dict(SCOPE))
+        other_reset = json.dumps(dict(SCOPE, ResetRef="other-reset"))
+        head = '{"version": "e2-runtime-conditions/v1", '
+        tail = (', "policy_revision": "v1", "worker_count": 3, "process_limits": ' + json.dumps(PROCESS_LIMITS)
+                + ', "queue_consumes_command_timeout": true}\n')
+        nested = good[:-1] + ', "ResetRef": "r"}'  # ResetRef 두 번(같은 값이어도 원본이 모순인지 판단하지 않는다)
+        cases = {
+            "scope_twice": head + f'"scope": {other_reset}, "scope": {good}' + tail,
+            "reset_twice": head + '"scope": ' + json.dumps(dict(SCOPE, ResetRef="other-reset"))[:-1] + ', "ResetRef": "r"}' + tail,
+            "case_twice": head + '"scope": ' + json.dumps(dict(SCOPE, CaseRef="other-case"))[:-1] + ', "CaseRef": "first-diagnosis"}' + tail,
+            "same_value_twice": head + '"scope": ' + nested + tail,
+            "limits_twice": head + f'"scope": {good}' + tail.replace('"call_tasks"', '"call_tasks": 1, "call_tasks"', 1),
+            "top_twice": head + f'"scope": {good}, "policy_revision": "v2"' + tail,
+        }
+        for name, text in cases.items():
+            def swap(ports, text=text):
+                ports.conditions = text.encode()
+            result, ports, evidence = run(swap)
+            with self.subTest(case=name):
+                self.assertEqual((result["status"], result["reasons"]), ("invalid", ["runtime_conditions_invalid"]))
+                self.assertNotIn("product-files.json", evidence.files)
+                self.assertIn("down", ports.calls)
+        # 중복 없는 같은 내용은 그대로 받는다(시험 입력 자체가 맞는지 대조).
+        def plain(ports):
+            ports.conditions = (head + f'"scope": {good}' + tail).encode()
+        result, _, _ = run(plain)
+        self.assertEqual(result["status"], "complete", result)
+
     def test_run_conditions_need_every_producer_field(self):
         # #693 리뷰 2차: 맞는 버전·개정·참조만 두고 나머지 칸을 뺀 실행 조건을 받으면 안 된다.
         full = json.loads(conditions())
