@@ -25,6 +25,10 @@ vi.mock("@/lib/diagnosis/api", async (original) => ({
   readAuthStatus: vi.fn(),
   restoreSession: vi.fn(),
 }));
+vi.mock("@/lib/diagnosis/remediation", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/diagnosis/remediation")>()),
+  generateRemediation: vi.fn(),
+}));
 vi.mock("../live/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../live/api")>()),
   fetchRequestApprovals: vi.fn(),
@@ -50,6 +54,7 @@ import {
   running,
   scope,
 } from "@/lib/diagnosis/diagnosis-url-fixtures";
+import { generateRemediation } from "@/lib/diagnosis/remediation";
 
 import * as api from "../live/api";
 import { checkLiveAuth, getLiveAuthState, setLiveAuthState } from "../live/auth";
@@ -1612,6 +1617,45 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     fireEvent.change(order, { target: { value: "sev" } });
     // 위험도 순: 높음 → 낮음 → 미평가(판정 순 유지: 검토 필요 후보 3 → 결과 불명 후보 4)
     expect(names()).toEqual(["후보 2", "후보 1", "후보 3", "후보 4"]);
+  });
+
+  it("보고서 발견 목록: 재조회로 고른 발견의 위험도가 바뀌어 거르기에서 빠지면 오른쪽 상세 · '상세 보기'도 보이는 줄로 옮긴다 (#677 리뷰)", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    a.fetchRemediation.mockResolvedValue({
+      task_id: 42,
+      entries: [
+        { ...candidate(1), severity: "low" },
+        { ...candidate(2), severity: "high" },
+        { ...candidate(3), severity: "low" },
+      ],
+    });
+    vi.mocked(generateRemediation).mockResolvedValue(undefined as never);
+    mount("report");
+    const list = await screen.findByRole("tabpanel", { name: "발견 목록" });
+    const insp = () => screen.getByRole("complementary", { name: "발견 상세" });
+    fireEvent.click(within(list).getByRole("button", { name: /후보 2/ }));
+    fireEvent.click(within(list).getByRole("radio", { name: "높음 1개" }));
+    expect(within(insp()).getByRole("heading", { level: 2 })).toHaveTextContent("후보 2");
+    // 오른쪽 패널의 '생성·저장'이 저장 결과를 다시 읽는다: 이번엔 후보 2 가 낮음, 후보 3 이 높음
+    a.fetchRemediation.mockResolvedValue({
+      task_id: 42,
+      entries: [
+        { ...candidate(1), severity: "low" },
+        { ...candidate(2), severity: "low" },
+        { ...candidate(3), severity: "high" },
+      ],
+    });
+    fireEvent.click(within(insp()).getByRole("button", { name: "보안 조치·AI 프롬프트 생성·저장" }));
+    await waitFor(() => expect(within(list).queryByRole("button", { name: /후보 2/ })).toBeNull());
+    // '높음' 거르기는 그대로, 목록은 후보 3 하나 — 오른쪽 상세 · 줄 표시도 후보 3
+    expect(within(list).getByRole("radio", { name: "높음 1개" })).toBeChecked();
+    expect(within(list).getByRole("button", { name: /후보 3/ })).toHaveAttribute("aria-current", "true");
+    expect(within(insp()).getByRole("heading", { level: 2 })).toHaveTextContent("후보 3");
+    fireEvent.click(within(insp()).getByRole("button", { name: "상세 보기" }));
+    expect(
+      within(screen.getByRole("region", { name: "발견 상세 페이지" })).getByRole("heading", { level: 2 }),
+    ).toHaveTextContent("후보 3");
   });
 
   it("보고서 탭(증거 · 감사 옆): 발견마다 위험도 · 판정 · 요약 · 재현 절차(PoC) · 요청·응답을 Markdown 문서 한 장으로, 정상 대조는 뺀다", async () => {

@@ -1533,8 +1533,10 @@ export function UrlReportLive() {
   const sevCount = (k: SevFilter) => (k === "all" ? sorted.length : sorted.filter((e) => sevOf(e) === k).length);
   const sevNow: SevFilter = sevCount(sevF) ? sevF : "all";
   const shown = arrangeEntries(sorted, sevNow, order);
+  // 고른 발견도 보이는 줄(거르기 · 정렬 결과) 안에서만 찾는다: 재조회로 위험도가 바뀌어 거르기에서 빠지면 오른쪽 상세 ·
+  // '상세 보기'가 목록에 없는 발견에 남지 않고 보이는 줄로 옮긴다(#677 이동찬 리뷰)
   const chosen =
-    (sel ? sorted.find((e) => e.entry_id === sel) : undefined) ??
+    (sel ? shown.find((e) => e.entry_id === sel) : undefined) ??
     shown.find((e) => diagnosticOutcome(e) !== "negative") ??
     shown[0] ??
     findings[0] ??
