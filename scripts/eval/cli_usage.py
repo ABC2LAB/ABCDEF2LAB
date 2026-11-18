@@ -123,16 +123,24 @@ def _operator_at(command: str, i: int, text: str) -> int | None:
     return i
 
 
+def _join_before(command: str, k: int) -> bool:
+    """k 바로 앞이 실제 줄 이음(막히지 않은 백슬래시 + 줄바꿈)인가. `\\\\⏎`(짝수 백슬래시)는 줄 이음이 아니라 경계다."""
+    if not command.endswith("\\\n", 0, k):
+        return False
+    body = command[:k - 1]
+    return (len(body) - len(body.rstrip("\\"))) % 2 == 1
+
+
 def _fd_before(command: str, i: int) -> bool:
     """원문 i(연산자 시작) 바로 앞이 낱말 경계에서 시작한 숫자(파일 서술자)인가. 사이 줄 이음은 셸처럼 건너뛴다."""
     j = i
-    while command.endswith("\\\n", 0, j):
+    while _join_before(command, j):
         j -= 2
     start, digits = j, 0
-    while True:  # 숫자와 숫자 사이 줄 이음(`1\⏎0<<D`는 서술자 10)도 건너뛰며 거꾸로 읽는다
+    while True:  # 숫자와 숫자 사이 실제 줄 이음(`1\⏎0<<D`는 서술자 10)도 건너뛰며 거꾸로 읽는다
         if start > 0 and command[start - 1].isdigit():
             start, digits = start - 1, digits + 1
-        elif command.endswith("\\\n", 0, start):
+        elif _join_before(command, start):
             start -= 2
         else:
             break

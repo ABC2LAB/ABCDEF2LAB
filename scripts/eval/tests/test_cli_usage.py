@@ -309,6 +309,9 @@ class TestCounting(unittest.TestCase):
             "x=a\\;10<<D npx\nx\nD": (["npx"], []),
             "true a\\\\ 10<<D\nx\nD\nnpx b": (["true", "npx"], []),  # 막힌 백슬래시 뒤 공백은 경계다(서술자 10)
             "x=a\\\\ 10<<D npx\nx\nD": (["npx"], []),  # 할당이 막힌 백슬래시로 끝나고 공백 뒤 서술자 10, 명령은 npx
+            # #682 리뷰 14차: 짝수 백슬래시 뒤 줄바꿈은 줄 이음이 아니라 경계다(서술자 10은 새 줄의 첫 낱말)
+            "x=a\\\\\n10<<D npx\nx\nD": (["npx"], []),
+            "x=a\\\\\\\n10<<D true\nx\nD\nnpx b": (["true", "npx"], []),  # 홀수(셋)면 마지막이 줄 이음이라 x=a\\10이 이어진다
         }
         for command, (sure, maybe) in cases.items():
             with self.subTest(command=command):
