@@ -42,14 +42,8 @@ import { reasonText, UrlHead, UrlNotices, UrlPill } from "./urlParts";
 
 /** 입력 → 서버에 보낼 초안 입력 (팀 lib 검사를 통과해야만). */
 
-/** 시작 전 범위의 승인 방식(서버 값) → 안전 정책 문구. */
-const APPROVAL_MODE_RULE: Readonly<
-  Record<"preauthorized_scope" | "confirm_every_request" | "workbench_selective_v1", string>
-> = {
-  preauthorized_scope: "사전 승인한 경로와 임의 query 로 진행 · 쓰기 메서드는 범위에 없어 보내지 않음",
-  confirm_every_request: "모든 요청을 한 건씩 승인한 것만 보냄",
-  workbench_selective_v1: "쓰기 메서드 요청은 한 건씩 승인한 것만 보냄",
-};
+/** 시작 전 범위의 승인 방식(서버 값). */
+type ApprovalMode = "preauthorized_scope" | "confirm_every_request" | "workbench_selective_v1";
 // 점검 이름(display_name)은 선택 칸으로 받는다(사용자 11/18 — 서버 목록은 원문 URL 을 주지 않아 이름이 없으면 줄이
 // 'prep-…' 진단 ID 로만 보였다). 비우면 보내지 않는다.
 function draftInput(
@@ -77,21 +71,19 @@ const MODES = [
   ],
 ] as const;
 
-// 요약 '쓰기 요청' 줄의 짧은 말 (범위 확인 뒤 scope.approval_mode, 위 APPROVAL_MODE_RULE 과 같은 뜻)
-const APPROVAL_MODE_SHORT: Readonly<Record<keyof typeof APPROVAL_MODE_RULE, string>> = {
+// 요약 '쓰기 요청' 줄의 짧은 말 (범위 확인 뒤 scope.approval_mode). 안전 장치 목록의 긴 승인 방식 줄은 이 줄과 겹쳐
+// 뺐다(사용자 11/18) — 임의 query 등 자세한 건 '정책 전체 보기'
+const APPROVAL_MODE_SHORT: Readonly<Record<ApprovalMode, string>> = {
   preauthorized_scope: "쓰기 요청 없음 (읽기만)",
   confirm_every_request: "모든 요청 한 건씩 승인",
   workbench_selective_v1: "쓰기 요청 한 건씩 승인",
 };
 // 자동 모드(preauthorized_scope)는 범위에 쓰기 메서드가 있으면 그 쓰기를 건별 확인 없이 보낸다(C21).
 const WRITE_METHODS = ["POST", "PUT", "PATCH", "DELETE"];
-function approvalRule(mode: keyof typeof APPROVAL_MODE_RULE, methods: readonly string[], short: boolean): string {
+function approvalRule(mode: ApprovalMode, methods: readonly string[]): string {
   const writes = methods.filter((m) => WRITE_METHODS.includes(m));
-  if (mode === "preauthorized_scope" && writes.length > 0)
-    return short
-      ? `쓰기(${writes.join("·")}) 건별 확인 없이 보냄`
-      : `사전 승인한 경로와 임의 query 로 진행 · 승인한 쓰기 메서드(${writes.join("·")})를 건별 확인 없이 보냄`;
-  return short ? APPROVAL_MODE_SHORT[mode] : APPROVAL_MODE_RULE[mode];
+  if (mode === "preauthorized_scope" && writes.length > 0) return `쓰기(${writes.join("·")}) 건별 확인 없이 보냄`;
+  return APPROVAL_MODE_SHORT[mode];
 }
 /** 안전 정책 한 줄 (시안 ilist). */
 function Rule({ t, sub, warn = false, tip }: { t: ReactNode; sub?: string; warn?: boolean; tip?: ReactNode }) {
@@ -323,7 +315,7 @@ export function UrlNewScanLive() {
   const scope = job?.scope;
   // 요약 '쓰기 요청': 범위 확인 뒤에는 서버 승인 방식, 그 전에는 진단 모드 기준
   let writeSummary = "승인 후 전송";
-  if (scope) writeSummary = approvalRule(scope.approval_mode, scope.methods, true);
+  if (scope) writeSummary = approvalRule(scope.approval_mode, scope.methods);
   else if (profile?.workflow && mv === "ai_auto_v1") writeSummary = "건별 확인 없이 (대상 쓰기 승인 시)";
   const to = job ? scanViewFor(job, flowStage) : null;
   const started = !!job && job.state !== "ready" && job.state !== "awaiting_approval";
@@ -1001,7 +993,9 @@ export function UrlNewScanLive() {
             </dl>
           </div>
           <div className={s.isec}>
-            {/* 안전 장치 (시안 v41): 짧은 말로, 서버 값 · 절대규칙 6 고지는 그대로 */}
+            {/* 안전 장치 (시안 v41): 짧은 말로, 서버 값 · 절대규칙 6 고지는 그대로. 위 요약 줄(사이트 · 쓰기 요청)과 겹치는
+                줄, 늘 같은 말이라 뜻을 더하지 않는 줄(기록 남김 · 범위 확인 전 안내)은 뺐다(사용자 11/18 '쓸모 없는 건 지워') —
+                자세한 정책은 '정책 전체 보기' */}
             {/* 전송 통제 정책은 결과가 아니라 범위라 여기서 연다(작업대 실데이터 계약 §7-(1)) */}
             <div className={s.sh}>
               <h3>안전 장치</h3>
@@ -1022,11 +1016,11 @@ export function UrlNewScanLive() {
                     sub="요청·응답(로그인 세션 포함)이 네트워크에서 그대로 보일 수 있고, 서버 신원(TLS)을 확인하지 않습니다"
                   />
                 ) : null}
-                <Rule t={approvalRule(scope.approval_mode, scope.methods, false)} />
                 {excludedCount ? <Rule t="제외한 경로는 요청 안 함" sub={`직접 넣은 ${excludedCount}개`} /> : null}
+                {/* 상한은 대상 요청 · 시간만(모델 요청 · 토큰 · body 상한은 '정책 전체 보기') */}
                 <Rule
                   t="요청 · 시간 상한"
-                  sub={`대상 요청 ${scope.budget.requests}회 · ${scope.budget.duration_seconds}초 · 모델 요청 ${scope.budget.model_requests}회 · 토큰 입력 ${scope.budget.input_tokens} · 출력 ${scope.budget.output_tokens} · body 최대 ${scope.max_body_bytes} bytes`}
+                  sub={`대상 요청 ${scope.budget.requests}회 · ${scope.budget.duration_seconds}초`}
                 />
                 {scope.model ? (
                   <Rule
@@ -1041,7 +1035,6 @@ export function UrlNewScanLive() {
                 {scope.model && profile?.workflow ? (
                   <Rule
                     t="브라우저 탐색은 외부 자원(CDN 등)을 외부 호스트에서 받습니다"
-                    sub="그 호스트 로그에 접속 IP · 시각 · 주소 · 출처가 남습니다 · 완전 로컬 모드는 막습니다"
                     tip={
                       <HelpTip label="설명 보기">
                         <b>
@@ -1059,32 +1052,20 @@ export function UrlNewScanLive() {
                     }
                   />
                 ) : null}
-                <Rule t="모든 요청 · 승인 기록 남김" sub={`승인 만료 ${scope.expires_at}`} />
                 {warnRule}
               </ul>
             ) : (
-              // 범위 확인 전 (시안 #pTarget · #pSendT · #pExcl): 서버가 늘 지키는 기본 원칙만. 범위 · 상한 수치는 확인 뒤에 나온다
-              <>
-                <p className={cx(s.help, s.pnote)}>범위 확인 전 기본 원칙 · 범위와 상한 수치는 확인 뒤 서버 값</p>
-                <ul className={s.policy} id="luPolicy">
-                  <Rule t="이 사이트에만 요청" sub={site ? urlHost(site) : "주소 없음"} />
-                  {external && profile?.model ? (
-                    <Rule t="외부 모델로 대상 응답 전송" sub={profile.model.provider} />
-                  ) : null}
-                  <Rule
-                    t={
-                      profile?.workflow && mv === "ai_auto_v1"
-                        ? "대상이 쓰기를 승인했으면 건별 확인 없이 전송"
-                        : "쓰기 요청은 승인 후 전송"
-                    }
-                  />
-                  {profile?.workflow ? (
-                    <Rule t="제외한 경로는 요청 안 함" sub={excludedCount ? `직접 넣은 ${excludedCount}개` : "없음"} />
-                  ) : null}
-                  <Rule t="모든 요청 · 승인 기록 남김" />
-                  {warnRule}
-                </ul>
-              </>
+              // 범위 확인 전 (시안 #pTarget · #pSendT · #pExcl): 범위 · 상한 수치는 확인 뒤에 나온다. 사이트 · 쓰기 요청은 위
+              // 요약 줄이 말한다
+              <ul className={s.policy} id="luPolicy">
+                {external && profile?.model ? (
+                  <Rule t="외부 모델로 대상 응답 전송" sub={profile.model.provider} />
+                ) : null}
+                {profile?.workflow && excludedCount ? (
+                  <Rule t="제외한 경로는 요청 안 함" sub={`직접 넣은 ${excludedCount}개`} />
+                ) : null}
+                {warnRule}
+              </ul>
             )}
           </div>
           <div className={s.isec}>

@@ -100,9 +100,9 @@ it("URL 입력 뒤 외부 LLM을 펼쳐 모델·키를 등록하고 범위 조�
   fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
   // 설치된 프로필이 외부 모델뿐이면 '외부 API' 가 골라져 있다
   expect(screen.getByRole("radio", { name: "외부 API" })).toBeChecked();
-  // 범위 확인 전 안전 장치는 기본 원칙임을 밝히고, 외부 모델 전송도 미리 보인다 (리뷰 #507, 절대규칙 8)
+  // 범위 확인 전에도 외부 모델 전송은 미리 보인다 (리뷰 #507, 절대규칙 8). '범위 확인 전 기본 원칙' 안내 글은 뺐다(사용자 11/18)
   const sum = screen.getByRole("complementary", { name: "점검 요약" });
-  expect(within(sum).getByText(/^범위 확인 전 기본 원칙/)).toBeInTheDocument();
+  expect(within(sum).queryByText(/^범위 확인 전 기본 원칙/)).toBeNull();
   expect(within(sum).getByText("외부 모델로 대상 응답 전송")).toBeInTheDocument();
   // 시안 #nApi: 외부 API 는 모델 대신 제공자(연결 방식 · 승인한 endpoint)와 API 키
   expect(screen.getByLabelText("제공자")).toHaveDisplayValue(`OpenRouter · ${externalModel.provider}`);
@@ -516,8 +516,8 @@ describe("서버 방식 확인 (catalog)", () => {
     });
   });
 
-  // 범위 확인 전 안전 장치·요약의 쓰기 줄은 고른 모드를 따른다. AI 자동 모드는 대상이 쓰기를 승인했으면 건별 확인 없이
-  // 보낸다(C21, #525 이경준 리뷰).
+  // 범위 확인 전 요약의 쓰기 줄은 고른 모드를 따른다. AI 자동 모드는 대상이 쓰기를 승인했으면 건별 확인 없이
+  // 보낸다(C21, #525 이경준 리뷰). 안전 장치 목록의 같은 뜻 줄은 요약 줄과 겹쳐 뺐다(사용자 11/18)
   it("범위 확인 전 쓰기 안내가 진단 모드를 따른다", async () => {
     const limits = {
       format: "abc2lab.workbench-flow/v1" as const,
@@ -533,13 +533,16 @@ describe("서버 방식 확인 (catalog)", () => {
     });
     fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
     const sum = screen.getByRole("complementary", { name: "점검 요약" });
-    expect(within(sum).getByText("쓰기 요청은 승인 후 전송")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("radio", { name: /AI 자동/ }));
-    expect(within(sum).getByText("대상이 쓰기를 승인했으면 건별 확인 없이 전송")).toBeInTheDocument();
+    expect(within(sum).getByText("쓰기 요청").nextElementSibling).toHaveTextContent("승인 후 전송");
     expect(within(sum).queryByText("쓰기 요청은 승인 후 전송")).toBeNull();
+    fireEvent.click(screen.getByRole("radio", { name: /AI 자동/ }));
     expect(within(sum).getByText("쓰기 요청").nextElementSibling).toHaveTextContent(
       "건별 확인 없이 (대상 쓰기 승인 시)",
     );
+    expect(within(sum).queryByText("대상이 쓰기를 승인했으면 건별 확인 없이 전송")).toBeNull();
+    // 사이트 줄과 겹치는 '이 사이트에만 요청' · 늘 같은 '모든 요청 · 승인 기록 남김'도 없다
+    expect(within(sum).queryByText("이 사이트에만 요청")).toBeNull();
+    expect(within(sum).queryByText("모든 요청 · 승인 기록 남김")).toBeNull();
   });
 
   it("제외 경로 흐린 예시는 실제 입력 검사를 통과하고, query 가 든 값은 막힌다 (경로 단위)", () => {
@@ -793,9 +796,8 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     u.commandURLDiagnosis.mockResolvedValue(preparing);
     const { goTo } = mount("new");
     expect(await screen.findByText("https://target.example · / · GET")).toBeInTheDocument();
-    expect(
-      screen.getByText(/^대상 요청 3회 · 60초 · 모델 요청 2회 · 토큰 입력 \d+ · 출력 \d+ · body 최대 \d+ bytes$/),
-    ).toBeInTheDocument();
+    // 상한은 대상 요청 · 시간만(모델 · 토큰 · body 상한은 '정책 전체 보기', 사용자 11/18)
+    expect(screen.getByText("대상 요청 3회 · 60초")).toBeInTheDocument();
     const start = screen.getByRole("button", { name: "점검 시작" });
     expect(screen.getByRole("complementary", { name: "점검 요약" }).contains(start)).toBe(true);
     expect(start).toBeDisabled();
@@ -2194,13 +2196,9 @@ it("탐색 화면에서 중지 버전 충돌을 안내하고 GET 확인 전에�
 
 // 자동 모드(preauthorized_scope)는 범위에 쓰기 메서드가 있으면 건별 확인 없이 보낸다(C21). 시작 전 동의 문구도 그렇게 말한다.
 it.each([
-  [
-    ["GET", "HEAD", "POST"],
-    "사전 승인한 경로와 임의 query 로 진행 · 승인한 쓰기 메서드(POST)를 건별 확인 없이 보냄",
-    "쓰기(POST) 건별 확인 없이 보냄",
-  ],
-  [["GET"], "사전 승인한 경로와 임의 query 로 진행 · 쓰기 메서드는 범위에 없어 보내지 않음", "쓰기 요청 없음 (읽기만)"],
-])("자동 모드 범위 %j 는 쓰기를 어떻게 보내는지 표시한다", async (methods, rule, short) => {
+  [["GET", "HEAD", "POST"], "쓰기(POST) 건별 확인 없이 보냄"],
+  [["GET"], "쓰기 요청 없음 (읽기만)"],
+])("자동 모드 범위 %j 는 쓰기를 어떻게 보내는지 표시한다", async (methods, short) => {
   const input = { ...ready.input, workflow_mode: "ai_auto_v1" as const };
   u.readURLStatus.mockResolvedValue({
     ...ready,
@@ -2209,9 +2207,11 @@ it.each([
   });
   saveHandle({ ...handle, input });
   mount("new");
-  expect(await screen.findByText(rule)).toBeInTheDocument();
+  // 요약 '쓰기 요청' 줄이 말한다(안전 장치 목록의 긴 승인 방식 줄은 겹쳐 뺐다, 사용자 11/18)
+  await screen.findByText("승인된 사이트 · 경로에만 요청");
   const sum = screen.getByRole("complementary", { name: "점검 요약" });
   expect(within(sum).getByText("쓰기 요청").nextElementSibling).toHaveTextContent(short);
+  expect(within(sum).queryByText(/임의 query 로 진행/)).toBeNull();
 });
 
 // http 대상(C22)은 범위 확인 뒤 안전 장치에 평문 경고를 보인다. https 대상에는 없다(#527 이경준 리뷰).
@@ -2241,14 +2241,15 @@ it("선택적 승인 범위는 읽기 사전 승인과 쓰기 건별 확인을 �
   u.readURLStatus.mockResolvedValue({ ...ready, input, scope: { ...scope, approval_mode: "workbench_selective_v1" } });
   saveHandle({ ...handle, input });
   mount("new");
-  expect(await screen.findByText("쓰기 메서드 요청은 한 건씩 승인한 것만 보냄")).toBeInTheDocument();
-  // 요약 '쓰기 요청' 줄도 범위 확인 뒤에는 서버 승인 방식을 따른다 (리뷰 #507)
+  await screen.findByText("승인된 사이트 · 경로에만 요청");
+  // 요약 '쓰기 요청' 줄이 범위 확인 뒤에는 서버 승인 방식을 따른다 (리뷰 #507). 같은 뜻 긴 줄은 안전 장치에서 뺐다(사용자 11/18)
+  expect(screen.queryByText("쓰기 메서드 요청은 한 건씩 승인한 것만 보냄")).toBeNull();
   const sum = screen.getByRole("complementary", { name: "점검 요약" });
   expect(within(sum).getByText("쓰기 요청").nextElementSibling).toHaveTextContent("쓰기 요청 한 건씩 승인");
   expect(within(sum).queryByText(/^범위 확인 전 기본 원칙/)).toBeNull();
   expect(screen.getByText("https://target.example · / · GET")).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "안전 장치" })).toBeInTheDocument();
-  expect(screen.getByText("모든 요청 · 승인 기록 남김")).toBeInTheDocument();
+  expect(screen.queryByText("모든 요청 · 승인 기록 남김")).toBeNull();
   // 절대규칙 6 고지 (시안 v52): 할 일을 경고 줄 제목으로, 자세한 설명과 원래 고지 문장은 (?) 메모에
   expect(screen.getByText("열면 지워지는 주소는 빼 두세요")).toBeInTheDocument();
   const tip = screen.getByRole("button", { name: "설명 보기" });
