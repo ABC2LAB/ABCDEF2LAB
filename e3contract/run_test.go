@@ -429,10 +429,16 @@ func TestRunDisabledSendsNothing(t *testing.T) {
 		edit   func(*fixture, *e3contract.Deps)
 		reason e3contract.DisabledReason
 	}{
-		"no_transport":     {func(_ *fixture, d *e3contract.Deps) { d.Transport = nil }, e3contract.DisabledNotWired},
-		"no_journal":       {func(_ *fixture, d *e3contract.Deps) { d.Journal = nil }, e3contract.DisabledNotWired},
-		"no_reset":         {func(_ *fixture, d *e3contract.Deps) { d.Reset = nil }, e3contract.DisabledNotWired},
-		"no_declaration":   {func(f *fixture, _ *e3contract.Deps) { f.in.Binding.Policy = e3contract.PolicySource{} }, e3contract.DisabledBindingInvalid},
+		"no_transport":    {func(_ *fixture, d *e3contract.Deps) { d.Transport = nil }, e3contract.DisabledNotWired},
+		"no_journal":      {func(_ *fixture, d *e3contract.Deps) { d.Journal = nil }, e3contract.DisabledNotWired},
+		"no_reset":        {func(_ *fixture, d *e3contract.Deps) { d.Reset = nil }, e3contract.DisabledNotWired},
+		"no_declaration":  {func(f *fixture, _ *e3contract.Deps) { f.in.Binding.Policy = e3contract.PolicySource{} }, e3contract.DisabledNoDeclaration},
+		"binding_invalid": {func(f *fixture, _ *e3contract.Deps) { f.in.Binding.RunRef = "run\n1" }, e3contract.DisabledBindingInvalid},
+		// 연결이 없으면 선언이 없어도 not_wired다(최종 이미지에서 not_wired가 나오지 않는지 이 순서로 드러난다).
+		"not_wired_first": {func(f *fixture, d *e3contract.Deps) {
+			d.Transport = nil
+			f.in.Binding.Policy = e3contract.PolicySource{}
+		}, e3contract.DisabledNotWired},
 		"no_write_consent": {func(f *fixture, _ *e3contract.Deps) { f.in.WriteConsent = false }, e3contract.DisabledWriteNotConsented},
 		"cross_unauth":     {func(f *fixture, _ *e3contract.Deps) { f.in.Cross.Authenticated = false }, e3contract.DisabledAccountsUnverified},
 		"owner_missing":    {func(f *fixture, _ *e3contract.Deps) { f.in.Owner = e3contract.Account{} }, e3contract.DisabledAccountsUnverified},
@@ -732,5 +738,28 @@ func TestLeakingSinksFindsEveryForm(t *testing.T) {
 	}
 	if leaks := e3contract.LeakingSinks(e3contract.Marker{}, map[string][]byte{"x": nil}); len(leaks) != 1 || leaks[0] != "all" {
 		t.Fatalf("모양이 틀린 표식은 확인할 수 없음을 드러내야 함: %v", leaks)
+	}
+}
+
+// 결속 검증에 실패한 입력은 결과에 남지 않는다. 거부 사유는 남고, 직렬화된 결과에 검증 전 값이 없다(#698 이동찬 리뷰).
+func TestRunResultOmitsUnvalidatedInput(t *testing.T) {
+	f := newFixture(t)
+	f.in.Binding.RunRef = "run-1\n<injected>"
+	f.in.Candidates = append(f.in.Candidates, e3contract.Candidate{Ref: "bad ref\n<x>", Method: "GET", PathPattern: "/api/notes/{id}"})
+	res := f.run(t)
+	raw, err := json.Marshal(res)
+	if err != nil || res.Status != e3contract.StatusDisabled || res.Reason != string(e3contract.DisabledBindingInvalid) || res.Binding != nil {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if bytes.Contains(raw, []byte("injected")) || bytes.Contains(raw, []byte("bad ref")) || bytes.Contains(raw, []byte(`"binding"`)) {
+		t.Fatalf("검증 전 값이 결과에 남음: %s", raw)
+	}
+	// 검증을 통과한 결속은 싣고, 모양이 틀린 후보 참조만 뺀다.
+	ok := newFixture(t)
+	ok.in.Candidates = append(ok.in.Candidates, e3contract.Candidate{Ref: "bad ref\n<x>", Method: "GET", PathPattern: "/api/notes/{id}"})
+	res = ok.run(t)
+	raw, _ = json.Marshal(res)
+	if res.Binding == nil || *res.Binding != ok.in.Binding || bytes.Contains(raw, []byte("bad ref")) || len(res.Candidates) != 2 {
+		t.Fatalf("검증된 결속·후보: %+v", res)
 	}
 }
