@@ -206,8 +206,10 @@ describe("서버 보존 목록의 상태 필터와 선택한 보고서", () => {
       intent_outcomes: { done: 1, incomplete: 1, stopped: 0, unknown: 0, policy_limited: 0 },
     });
     records(true);
+    // 오른쪽 패널 실행 결과는 일부만 마감한 회차도 '점검 완료'만 적는다(사용자 11/18 결정 — 남은 작업 · 결과 불명은 점검 진행
+    // 상태 카드에 남는다). 그래도 정상 대조를 '발견 없음'으로 올리지는 않는다(절대규칙 5)
     await waitFor(() =>
-      expect(screen.getByRole("complementary", { name: "선택한 점검" })).toHaveTextContent(/일부|부분/),
+      expect(screen.getByRole("complementary", { name: "선택한 점검" })).toHaveTextContent("실행 결과점검 완료"),
     );
     expect(screen.queryByRole("button", { name: /^발견 없음/ })).toBeNull();
   });
