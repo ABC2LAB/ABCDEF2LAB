@@ -1496,7 +1496,7 @@ class TestCompleteRun(unittest.TestCase):
         for marker in (True, 1.0):
             with self.subTest(marker=marker):
                 result, _, _, _ = run(lambda p, m, c, v=marker: setattr(m, "cap_marker", v), spec=spec)
-                self.assertEqual((result["status"], result["reasons"]), (INVALID, ["meter_request_cap_mismatch"]))
+                self.assertEqual((result["status"], result.get("reasons")), (INVALID, ["meter_request_cap_mismatch"]))
         self.assertEqual(run(spec=spec)[0]["status"], COMPLETE)  # 같은 예산의 정상 표식은 통과한다
 
     def test_time_budget_stop(self):
