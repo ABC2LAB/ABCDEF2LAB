@@ -330,7 +330,7 @@ class TestAttempts(unittest.TestCase):
 
     def test_each_row_is_closed_and_bound_to_the_execution(self):
         base = attempt(1, "result", A1, 1, "denied")
-        for changes, code in (({"extra": 1}, "ROW_FIELDS"), ({"version": "e2-http-v3"}, "ROW_VERSION"), ({"stage": "other"}, "ROW_STAGE"),
+        for changes, code in (({"extra": 1}, "ROW_FIELDS"), ({"version": "e2-http-v4"}, "ROW_VERSION"), ({"stage": "other"}, "ROW_STAGE"),
                               ({"index": 0}, "ROW_COUNT_INVALID"), ({"index": -1}, "ROW_COUNT_INVALID"), ({"sequence": True}, "ROW_COUNT_INVALID"),
                               ({"intent_id": "22"}, "ROW_COUNT_INVALID"), ({"intent_id": 1 << 63}, "ROW_COUNT_INVALID"), ({"reason": "other"}, "ROW_REASON"),
                               ({"not_sent": 1}, "ROW_BITS"), ({"audit_complete": None}, "ROW_BITS"), ({"at": ""}, "ROW_TIME"), ({"at": 1}, "ROW_TIME"),
@@ -424,6 +424,115 @@ class TestGoDefinitions(unittest.TestCase):
                 with self.subTest(start=start):
                     self.assertEqual(hashlib.sha256(go_block(text, start).encode()).hexdigest(), expected)
 
+
+
+V3 = {"version": "e2-http-v3"}
+E3_BIND = {"role": "owner", "account_label": "tester-a", "account_binding_ref": "binding-1",
+           "e3_binding": {"job_ref": "job-1", "generation_ref": "gen-1", "instance_ref": "inst-1",
+                          "policy": {"kind": "product_declaration", "ref": "declaration-job-1", "digest_sha256": "d" * 64,
+                                     "target_approval_revision": 3}}}
+DIGEST = {"normal": "yes", "body_digest_sha256": "b" * 64, "body_complete": True}
+
+
+def e3(index, stage, attempt_id, sequence, decision, program, reason="complete", **changes):
+    """v3 E③ 프로그램 호출 시도 행(v3 계약 §2.2·§2.3)."""
+    extra = dict(E3_BIND)
+    if program != "e3_identity":
+        extra["resource_type"] = "basket"
+    if program == "e3_read":
+        extra["create_ref"] = {"call_ref": CALL, "attempt_id": A1, "sequence": 1}
+    return attempt(index, stage, attempt_id, sequence, decision, reason, intent_id=0, program=program, **V3) | extra | changes
+
+
+class TestV3E3Rows(unittest.TestCase):
+    """E③ 프로그램 호출 행(e2-http-v3). 평가 읽기는 송신 판정 칸과 결속 칸을 단계 규칙대로 보고, 프로그램 호출을 따로 센다."""
+
+    parse = TestAttempts.parse
+    rejected = TestAttempts.rejected
+
+    def calls(self):
+        identity = [e3(1, "intent", A1, 1, "allowed", "e3_identity"),
+                    e3(2, "result", A1, 1, "allowed", "e3_identity", **SENT, **DIGEST, subject_digest="s1", request_marker_free=True)]
+        refused = [e3(3, "result", A2, 2, "denied", "e3_create", "policy_denied", not_sent_reason="policy_denied")]
+        read = [e3(4, "intent", A3, 3, "allowed", "e3_read"),
+                e3(5, "result", A3, 3, "allowed", "e3_read", **SENT, **DIGEST, request_marker_free=True,
+                   marker={"status": "complete", "presence": "absent", "method": "exact", "field": "f1"})]
+        return identity, refused, read
+
+    def test_e3_calls_are_read_and_counted_apart(self):
+        identity, refused, read = self.calls()
+        model = [attempt(6, "intent", "0" * 31 + "4", 4, "allowed", **V3), attempt(7, "result", "0" * 31 + "4", 4, "allowed", **V3, **SENT)]
+        result = self.parse(identity + refused + read + model)
+        self.assertEqual(len(result.decisions), 4)  # 시도 대조에는 모든 시도가 들어간다(평가 모드 E²는 프로그램 호출에도 시도 ID를 싣는다)
+        self.assertEqual(dict(result.attempts_by_program), {"e3_identity": 1, "e3_create": 1, "e3_read": 1, "model": 1})
+        self.assertEqual(result.e3_program_attempts, 3)
+        self.assertEqual(result.summary()["attempts_by_program"], {"e3_create": 1, "e3_identity": 1, "e3_read": 1, "model": 1})
+        # 끊긴 송신(결과 불명): 응답 칸 없이 timed_out
+        cut = e3(2, "result", A1, 1, "allowed", "e3_identity", forward_attempted=True, request_written=True, not_sent=False, timed_out=True)
+        self.assertEqual(self.parse([identity[0], cut]).e3_program_attempts, 1)
+        # 생성은 객체 ID digest를 꺼냈을 때만 싣는다
+        made = e3(2, "result", A1, 1, "allowed", "e3_create", **SENT, **DIGEST, object_id_digest="o1")
+        self.assertEqual(self.parse([e3(1, "intent", A1, 1, "allowed", "e3_create"), made]).e3_program_attempts, 1)
+        # v2 회차에는 E③ 호출이 없다
+        self.assertEqual(self.parse(normal_rows()).e3_program_attempts, 0)
+
+    def test_attribution_and_fields_by_version(self):
+        identity, refused, read = self.calls()
+        self.rejected([identity[0] | {"version": "e2-http-v2"}], "ROW_FIELDS")  # v3 칸은 v3 행에만
+        bare = {k: v for k, v in identity[0].items() if k not in E3_BIND} | {"version": "e2-http-v2"}
+        self.rejected([bare], "ROW_ATTEMPT_FIELDS")  # v2에는 E③ 프로그램이 없다
+        self.rejected([attempt(1, "intent", A1, 1, "allowed", **V3) | {"role": "owner"}], "ROW_E3_FIELDS")  # 모델 요청 행에 E③ 칸
+        self.rejected([control(1, **V3) | {"role": "owner"}], "ROW_E3_FIELDS")
+        self.rejected([identity[0] | {"intent_id": 3}], "ROW_ATTEMPT_FIELDS")  # program과 intent_id 둘 다
+        for name in ("role", "account_label", "account_binding_ref", "e3_binding"):
+            with self.subTest(missing=name):
+                self.rejected([{k: v for k, v in identity[0].items() if k != name}], "ROW_E3_FIELDS")
+        for changes in ({"role": "admin"}, {"account_label": ""}, {"account_binding_ref": "a b"}, {"e3_binding": {"job_ref": ""}},
+                        {"e3_binding": "job-1"}):
+            with self.subTest(changes=changes):
+                self.rejected([identity[0] | changes], "ROW_E3_BINDING")
+        self.rejected([identity[0] | {"resource_type": "basket"}], "ROW_E3_RESOURCE")
+        self.rejected([{k: v for k, v in refused[0].items() if k != "resource_type"}], "ROW_E3_RESOURCE")
+        self.rejected([{k: v for k, v in read[0].items() if k != "create_ref"}], "ROW_E3_CREATE_REF")
+        self.rejected([refused[0] | {"create_ref": read[0]["create_ref"]}], "ROW_E3_CREATE_REF")
+        for bad in ({"call_ref": CALL, "attempt_id": A1}, {"call_ref": CALL, "attempt_id": "x", "sequence": 1},
+                    {"call_ref": CALL, "attempt_id": A1, "sequence": 0}):
+            with self.subTest(create=bad):
+                self.rejected([read[0] | {"create_ref": bad}], "ROW_E3_CREATE_REF")
+
+    def test_send_judgment_fields_follow_the_stage(self):
+        identity, refused, read = self.calls()
+        # 송신 전 거부: not_sent_reason 넷 중 하나, 허용이 아님
+        self.rejected([{k: v for k, v in refused[0].items() if k != "not_sent_reason"}], "ROW_E3_NOT_SENT")
+        self.rejected([refused[0] | {"not_sent_reason": "transport_failed"}], "ROW_E3_NOT_SENT")
+        allowed_refusal = e3(1, "intent", A2, 2, "allowed", "e3_create")
+        self.rejected([allowed_refusal, e3(2, "result", A2, 2, "allowed", "e3_create", not_sent_reason="policy_denied")],
+                      "ROW_E3_NOT_SENT")
+        for reason in ("policy_denied", "approval_denied", "approval_timeout", "confirmation_budget_exhausted"):
+            with self.subTest(reason=reason):
+                self.assertEqual(self.parse([refused[0] | {"index": 1, "not_sent_reason": reason}]).e3_program_attempts, 1)
+        # 송신 전 허용(intent)·송신 뒤(result)에는 not_sent_reason이 없다
+        self.rejected([identity[0] | {"not_sent_reason": "policy_denied"}], "ROW_E3_NOT_SENT")
+        self.rejected([identity[0], identity[1] | {"not_sent_reason": "policy_denied"}], "ROW_E3_NOT_SENT")
+        # timed_out은 보낸 뒤만, bool만
+        self.rejected([refused[0] | {"timed_out": False}], "ROW_E3_TIMED_OUT")
+        self.rejected([identity[0], identity[1] | {"timed_out": 1}], "ROW_E3_TIMED_OUT")
+        # 응답 칸: 응답을 끝까지 받았을 때만, 목적별 필수 칸
+        self.rejected([identity[0] | {"normal": "yes"}], "ROW_E3_RESPONSE_FIELDS")
+        self.rejected([identity[0], {k: v for k, v in identity[1].items() if k != "subject_digest"}], "ROW_E3_RESPONSE_FIELDS")
+        self.rejected([read[0], {k: v for k, v in read[1].items() if k != "marker"}], "ROW_E3_RESPONSE_FIELDS")
+        self.rejected([identity[0], identity[1] | {"object_id_digest": "o1"}], "ROW_E3_RESPONSE_FIELDS")
+        for changes in ({"normal": "maybe"}, {"body_digest_sha256": "B" * 64}, {"body_complete": 1}, {"request_marker_free": "yes"},
+                        {"subject_digest": ""}):
+            with self.subTest(changes=changes):
+                self.rejected([identity[0], identity[1] | changes], "ROW_E3_RESPONSE")
+        for marker in ({"status": "complete", "presence": "absent", "method": "exact"},
+                       {"status": "done", "presence": "absent", "method": "exact", "field": "f"},
+                       {"status": "complete", "presence": "maybe", "method": "exact", "field": "f"}):
+            with self.subTest(marker=marker):
+                self.rejected([read[0], read[1] | {"marker": marker}], "ROW_E3_RESPONSE")
+        # 한 저널은 한 판으로만 쓴다(v2·v3 섞임)
+        self.rejected([control(1), identity[0] | {"index": 2}], "ROW_VERSION_MIXED")
 
 if __name__ == "__main__":
     unittest.main()
