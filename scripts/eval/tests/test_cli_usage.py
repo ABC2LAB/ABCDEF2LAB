@@ -105,7 +105,7 @@ class TestCounting(unittest.TestCase):
 
 
 class TestObservedShapes(unittest.TestCase):
-    """관측된 명령은 원문 대신 모양만 남긴다(#736 리뷰): 관측 이름·셸 연산자·값 없는 옵션 이름, 나머지는 <arg>."""
+    """관측된 명령은 원문 대신 모양만 남긴다(#736 리뷰): 관측 이름·셸 연산자·한 글자 짧은 옵션, 긴 옵션은 --<opt>, 나머지는 <arg>."""
 
     def test_shapes_keep_names_operators_and_flag_names_only(self):
         records = [{"command": {"command": "cd /tmp\nexport A=1\nnpx playwright test"}},
@@ -119,7 +119,7 @@ class TestObservedShapes(unittest.TestCase):
         self.assertEqual(picked, [{"names": ["npx"], "shape": "npx <arg> <arg>"},
                                   {"names": ["npx"], "shape": "npx <arg>"},
                                   {"names": ["pip"], "shape": "<arg> && <arg>"},
-                                  {"names": ["pip"], "shape": "<path>/pip <arg> -q --upgrade --index-url=<arg> <arg>"}])
+                                  {"names": ["pip"], "shape": "<path>/pip <arg> -q --<opt> --<opt>=<arg> <arg>"}])
         self.assertEqual(pick_line("a\nb", ["npx"]), "a")  # 이름이 정규화 뒤에만 보이면 첫 줄
         self.assertEqual(observed_lines([{"command": {"command": "curl x"}}], ["npx"]), ([], 0))
 
@@ -127,7 +127,10 @@ class TestObservedShapes(unittest.TestCase):
         # 자격 가림(dlp.CredentialText)이 못 가리는 별도 옵션 인자를 포함해 어떤 인자도 원문으로 남지 않는다
         for command in ("mysql -u root -p synthsecret", "npx run -psynthsecret", "npx --password synthsecret",
                         "npx --password=synthsecret", "TOKEN=synthsecret npx x", "npx 'synth secret'",
-                        "npx run --token=\"synthfirst\nsynthsecond\"", "npx -u user:synthsecret http://h"):
+                        "npx run --token=\"synthfirst\nsynthsecond\"", "npx -u user:synthsecret http://h",
+                        # 별도 인자 값이 긴 옵션 이름 모양(따옴표 있든 없든, #736 리뷰 재현)
+                        "npx --password '--synth-secret-1'", "npx --password --synth-secret-1", "npx \"--synth=x\"",
+                        "npx --Synth-Secret", "npx --synth_secret.1"):
             with self.subTest(command=command):
                 picked, _ = observed_lines([{"command": {"command": command}}], ["npx", "mysql"])
                 self.assertNotIn("synth", json.dumps(picked))

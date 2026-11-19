@@ -127,12 +127,15 @@ _TRUNCATED_MARK = " [...]"
 WITHHELD_TOO_LONG = "shape_input_too_long"
 WITHHELD_UNPARSEABLE = "shape_unparseable"
 ARG = "<arg>"
+LONG_OPTION = "--<opt>"
 # 원문 대신 남기는 것은 "모양"뿐이다(#736 리뷰). 자격 가림(dlp.CredentialText)은 알려진 자격 형식만 가려 `-p 값`처럼 별도
 # 옵션 인자로 준 자격을 남긴다. 그래서 줄의 낱말 가운데 안전을 확인할 수 있는 것만 그대로 두고 나머지는 ARG로 바꾼다:
-# 관측된 CLI 이름(그 이름 그대로, 또는 경로의 마지막 조각이 그 이름), 셸 연산자, 값이 붙지 않은 옵션 이름(한 글자 짧은
-# 옵션 `-x`, 긴 옵션 `--name`; `--name=값`은 `--name=<arg>`). 사람은 이 모양으로 그 이름이 명령 자리에서 실행됐는지 본다.
+# 관측된 CLI 이름(그 이름 그대로, 또는 경로의 마지막 조각이 그 이름), 셸 연산자, 한 글자 짧은 옵션 `-x`(한 글자라 자격을
+# 담을 수 없다). 긴 옵션 모양 낱말은 이름도 가린다(`--<opt>`, `--name=값`은 `--<opt>=<arg>`): 별도 인자로 준 값이 `--abc-1`
+# 처럼 옵션 이름 모양이면 모양만으로는 옵션 이름과 값을 가를 수 없다(#736 리뷰). 사람은 이 모양으로 그 이름이 명령 자리에서
+# 실행됐는지 본다.
 _SHORT_FLAG = re.compile(r"-[A-Za-z]\Z")
-_LONG_FLAG = re.compile(r"(--[a-z][a-z0-9-]{0,31})(=.*)?\Z", re.DOTALL)
+_LONG_FLAG = re.compile(r"--[^=\s]+(=.*)?\Z", re.DOTALL)
 _OPERATOR = re.compile(r"[;&|<>()]+\Z")
 
 
@@ -167,7 +170,7 @@ def command_shape(line: str, names: Iterable[str]) -> str | None:
         elif "/" in token and token.rsplit("/", 1)[1] in wanted:
             out.append("<path>/" + token.rsplit("/", 1)[1])
         elif long_flag:
-            out.append(long_flag.group(1) + ("" if long_flag.group(2) is None else "=" + ARG))
+            out.append(LONG_OPTION + ("" if long_flag.group(1) is None else "=" + ARG))
         else:
             out.append(ARG)
     return " ".join(out)
