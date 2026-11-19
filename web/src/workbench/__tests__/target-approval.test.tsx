@@ -9,7 +9,8 @@ vi.mock("@/lib/diagnosis/api", async (original) => ({
 
 import { ApiError, apiFetch } from "@/lib/diagnosis/api";
 
-import { PLAIN_TARGET_WARNING, TargetApprovalPanel } from "../views/live/TargetApprovalPanel";
+import { dateTimeOf } from "../live/map";
+import { PLAIN_TARGET_WARNING, TARGET_APPROVAL_HOURS, TargetApprovalPanel } from "../views/live/TargetApprovalPanel";
 
 const pending = {
   id: `target-${"a".repeat(32)}`,
@@ -116,6 +117,42 @@ it("등록의 읽기 범위와 TLS 사전 접촉을 안내한다", async () => {
     valid_hours: 4,
   });
   expect(screen.queryByText(/승인된 대상:/)).toBeNull();
+});
+it("승인 유효 시간은 기본 4시간이고, 서버 상한(720) 안 고정 선택지에서 고른 값만 등록에 싣는다", async () => {
+  // 선택지는 1…720 안이고 기본 4시간이 들어 있다(대상 승인 계약 UI 기본값, diagnosisprep.MaxTargetApprovalHours)
+  const hours = TARGET_APPROVAL_HOURS.map((c) => c.hours);
+  expect(hours).toEqual([4, 24, 72, 168, 720]);
+  expect(hours.every((h) => h >= 1 && h <= 720)).toBe(true);
+  vi.mocked(apiFetch).mockResolvedValueOnce({}).mockResolvedValueOnce({ target: pending });
+  render(<TargetApprovalPanel requestLimit={4} url={url} disabled={false} />);
+  await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1));
+  fireEvent.click(screen.getByRole("button", { name: "대상 등록하기" }));
+  const select = screen.getByLabelText("승인 유효 시간") as HTMLSelectElement;
+  expect(select).toHaveDisplayValue("4시간 (기본)");
+  expect([...select.options].map((o) => o.textContent)).toEqual(["4시간 (기본)", "1일", "3일", "7일", "30일"]);
+  // 칸 밑엔 할 일 한 줄만, 설치 기간 · 범위 불변 설명은 (?) 메모를 열어야 보인다(#802 리뷰)
+  expect(document.getElementById("targetValidHoursNote")).toHaveTextContent(
+    "승인 시각부터 이 시간이 지나면 새 점검을 못 합니다 · 시연 날까지 남게 고르세요",
+  );
+  expect(screen.getByText(/설치 유효 기간이 먼저 끝나면 그때 막힙니다/)).not.toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "승인 유효 시간 설명 보기" }));
+  expect(screen.getByText(/설치 유효 기간이 먼저 끝나면 그때 막힙니다/)).toBeVisible();
+  fireEvent.change(select, { target: { value: "168" } });
+  fireEvent.change(screen.getByLabelText("점검 근거"), {
+    target: { value: "승인된 테스트 소유 환경의 읽기 전용 GET 경로입니다." },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "대상 등록" }));
+  await screen.findByRole("button", { name: "TXT 레코드 확인" });
+  const body = JSON.parse(String(vi.mocked(apiFetch).mock.calls[1][1]?.body));
+  expect(body.valid_hours).toBe(168);
+  // 유효 시간만 바뀌고 승인 범위(경로 · 메서드 · 요청 상한)는 그대로
+  expect(body).toMatchObject({ path_prefixes: ["/read"], methods: ["GET", "HEAD"], requests: 4 });
+});
+it("승인된 대상의 만료는 읽을 수 있는 현지 시각으로 보인다", async () => {
+  vi.mocked(apiFetch).mockResolvedValueOnce({ target: approved });
+  render(<TargetApprovalPanel requestLimit={4} url={url} disabled={false} />);
+  await screen.findByText(new RegExp(`만료 ${dateTimeOf(approved.expires_at)}`));
+  expect(screen.queryByText(/2099-01-01T00:00:00Z/)).toBeNull();
 });
 it("정확 일치(=/…)와 접두의 query 차이를 안내하고 =/ 표현을 그대로 제출한다", async () => {
   vi.mocked(apiFetch).mockResolvedValueOnce({}).mockResolvedValueOnce({ target: pending });
