@@ -100,6 +100,7 @@ KG 등록이 있고 현재 실행이 결속된 회차만 성공한다. 아래는
 |---|---|
 | 인증·작업 문맥 | `settings`, `tasks`, 그래프에 한해 `task_relations`. 준비 영수증은 보호 서비스에서 확인 |
 | 자산 그래프 본문 | `assets`, `companies`, `exploration_nodes`, `exploration_anchors`, `task_scope`의 `task_id, kind, company_id, domain, net, value`, `try_inet(text)`의 유효 EXECUTE |
+| KG 조회 v1 본문(`view=kg-v1`) | 위 자산 그래프 본문 읽기 + `task_scope`의 `id, source`(범위 출처 ID·출처 값) + `task_asset_links`의 `task_id, asset_id, source, source_node_id`(`source_summary`는 읽지 않음) |
 | 지도 | `exploration_nodes`, `task_control_modes`, `e3_verdict_issuances`, `e3_oracle_verdicts`, `e3_evidence_manifests`. 조회는 현재 등록·세대에 결속 |
 
 설치 관리자는 보호된 접속 경로를 사용해 연결 DB·역할과 스키마 USAGE, 실제 SQL에서 사용하는 각 열의 SELECT, 함수 EXECUTE를 점검한다. 열 권한만 부여한 경우 `has_table_privilege(..., 'SELECT')`가 false여도 정상이다.
@@ -110,10 +111,15 @@ SELECT current_database(), current_user,
        has_function_privilege(current_user, 'public.try_inet(text)', 'EXECUTE') AS inet_access;
 
 SELECT col, has_column_privilege(current_user, 'public.task_scope', col, 'SELECT') AS can_read
-FROM unnest(ARRAY['task_id','kind','company_id','domain','net','value']) AS cols(col);
+FROM unnest(ARRAY['task_id','kind','company_id','domain','net','value','id','source']) AS cols(col);
+
+SELECT col, has_column_privilege(current_user, 'public.task_asset_links', col, 'SELECT') AS can_read
+FROM unnest(ARRAY['task_id','asset_id','source','source_node_id']) AS cols(col);
 ```
 
-활성 회차가 끝난 점검 시간에 설치 관리자가 설치 DB, 사용 중인 역할, 기존 열 ACL을 확인한다. 본문 조회가 `product_api`를 사용하고 위 6개 열이 누락된 경우에 한해 아래 명령을 검토한다. 이미 필요한 권한이 있는 설치는 그대로 유지한다.
+`id`·`source`는 KG 조회 v1에만 필요하다. 앞 6개 열만 있는 설치는 무인자 그래프가 그대로 되고 v1만 `503 kg_store_unavailable`(재조회 가능)로 닫힌다. 빈 그래프로 바뀌지 않는다. `task_asset_links`는 신규 설치가 테이블 SELECT를 주며, 기존 설치도 위 점검으로 확인한다.
+
+활성 회차가 끝난 점검 시간에 설치 관리자가 설치 DB, 사용 중인 역할, 기존 열 ACL을 확인한다. 본문 조회가 `product_api`를 사용하고 위 6개 열이 누락된 경우에 한해 아래 명령을 검토한다(무인자 그래프용). 이미 필요한 권한이 있는 설치는 그대로 유지한다.
 
 ```sql
 BEGIN;
@@ -124,6 +130,19 @@ SET LOCAL ROLE product_api;
 SELECT task_id, kind, company_id, domain, net, value FROM public.task_scope LIMIT 0;
 COMMIT;
 ```
+
+이미 위 6개 열을 이관한 설치가 KG 조회 v1을 쓰려면 `id, source` 두 열만 같은 방식으로 추가한다. 처음 이관하는 설치는 두 블록을 한 트랜잭션에서 실행해도 된다.
+
+```sql
+BEGIN;
+GRANT SELECT (id, source) ON public.task_scope TO product_api;
+SET LOCAL ROLE product_api;
+SELECT id, task_id, kind, company_id, domain, net, value, source FROM public.task_scope LIMIT 0;
+SELECT task_id, asset_id, source, source_node_id FROM public.task_asset_links LIMIT 0;
+COMMIT;
+```
+
+[설치 역할 회귀 시험](../../cmd/first-controlled-diagnosis/product_report_capture_linux_test.go)은 실제 설치 역할로 신규 설치·#683 전·6개 열 이관·v1 이관 네 상태에서 무인자 그래프와 v1을 각각 확인한다(6개 열 이관은 무인자 200·v1 503, v1 이관은 둘 다 200이고 `reason` 열·쓰기 권한은 여전히 없음).
 
 트랜잭션 내 확인에 실패하면 롤백한다. 함수 권한도 빠진 설치는 함수 소유자·스키마·정의의 설치 일치를 확인하고 해당 역할과 함수 하나의 EXECUTE를 별도로 검토한다. 다른 표나 역할로 권한을 넓혀 복구하지 않는다.
 
