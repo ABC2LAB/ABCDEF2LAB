@@ -1,7 +1,7 @@
 {
  "format": "abc2lab.scripted-product-plan/v1",
  "model": "scripted-product:v1",
- "timeout_ms": 60000,
+ "timeout_ms": 60000, "finish": "prove_goals",
  "exploration": [
   {"navigate": "{origin}/"},
   {"bash": "curl -s -o /dev/null -w 'status=%{http_code}\\n' {origin}/api/Products"}

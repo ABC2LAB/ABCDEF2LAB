@@ -13,7 +13,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripted_product_llm import (  # noqa: E402
-    DONE_TEXT, EXPLORATION_TOOL, NAVIGATE_TOOL, PLAN_FORMAT, PLANNER_TOOL, WORKER_TOOL, PlanError, Script, load_plan, make_server,
+    DONE_TEXT, EXPLORATION_TOOL, FACT_TOOL, FACTS_TOOL, GOALS_TOOL, NAVIGATE_TOOL, PLAN_FORMAT, PLANNER_TOOL, PROVE_REASON,
+    PROVE_TOOL, WORKER_TOOL, PlanError, Script, fact_ids, load_plan, make_server, open_goal_ids,
 )
 
 ORIGIN = "http://vampi.eval.test:8080"
@@ -65,7 +66,7 @@ class TestPlan(unittest.TestCase):
                plan(intents=[]), plan(commands=[]), plan(commands=[""]), plan(commands=["a\x00b"]), plan(intents=[1]),
                plan(exploration=[{"click": "x"}]), plan(exploration=[{"navigate": "a", "bash": "b"}]), plan(exploration=[{}]),
                plan(exploration={"navigate": "a"}), plan(timeout_ms=0), plan(timeout_ms=600_001), plan(timeout_ms=True),
-               plan(commands=["c"] * 65), [plan()]]
+               plan(commands=["c"] * 65), [plan()], plan(finish="goal_met"), plan(finish=True)]
         for value in bad:
             with self.subTest(value=str(value)[:60]), self.assertRaisesRegex(PlanError, "plan_invalid"):
                 load_plan(self.write(value), ORIGIN)
@@ -128,6 +129,82 @@ class TestRoles(unittest.TestCase):
         self.assertIsNone(script.decide({"messages": "x", "tools": "y"}))
         self.assertEqual(script.counts["requests"], 2)
         self.assertEqual(script.counts["done"], 2)
+
+
+def conversation(*tools: dict, turns=(), user: str = "go", tail_user: bool = False) -> dict:
+    """turns: (도구 이름, 결과 글) 순서. 모델이 부른 도구와 그 결과를 호출 ID로 짝지어 넣는다."""
+    messages = [{"role": "system", "content": "x"}, {"role": "user", "content": user}]
+    for index, (name, result) in enumerate(turns):
+        call_id = f"call_{index}"
+        messages.append({"role": "assistant", "content": None,
+                         "tool_calls": [{"id": call_id, "type": "function", "function": {"name": name, "arguments": "{}"}}]})
+        messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
+    if tail_user:
+        messages.append({"role": "user", "content": "next round"})
+    return {"messages": messages, "tools": list(tools)}
+
+
+GOALS = json.dumps([{"id": 3, "kind": "goal", "state": "open"}, {"id": 4, "kind": "goal", "state": "met"},
+                    {"id": 5, "kind": "goal", "state": "open"}])
+FACTS = json.dumps({"facts": [{"id": 9, "summary": "s"}, {"id": 8, "summary": "t"}], "total": 2, "has_more": False})
+
+
+class TestFinishWithGoals(unittest.TestCase):
+    """계획 finish=prove_goals: 의도를 다 낸 뒤 목표 달성 선언 도구(C26)로 끝낸다(빈 계획 마감 규칙이 빠져도 오래 기다리지 않게)."""
+
+    PLANNER = (tool(PLANNER_TOOL, {"intents": {}}), tool(GOALS_TOOL), tool(FACTS_TOOL, {"limit": {}, "before": {}, "q": {}}),
+               tool(PROVE_TOOL, {"goal_id": {}, "evidence_id": {}, "reason": {}}))
+
+    def script(self, **changes) -> Script:
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "p.json"
+            path.write_text(json.dumps(plan(finish="prove_goals", **changes)), encoding="utf-8")
+            loaded = load_plan(path, ORIGIN)
+        script = Script(loaded)
+        script.intents_sent = len(loaded["intents"])  # 의도는 다 냈다
+        return script
+
+    def test_planner_proves_each_open_goal_once_then_stops(self):
+        script = self.script()
+        self.assertEqual(script.decide(conversation(*self.PLANNER, tail_user=True)), (GOALS_TOOL, {}))
+        self.assertEqual(script.decide(conversation(*self.PLANNER, turns=[(GOALS_TOOL, GOALS)])), (FACTS_TOOL, {"limit": 1}))
+        self.assertEqual(script.decide(conversation(*self.PLANNER, turns=[(GOALS_TOOL, GOALS), (FACTS_TOOL, FACTS)])),
+                         (PROVE_TOOL, {"goal_id": 3, "evidence_id": 9, "reason": PROVE_REASON}))
+        done = [(GOALS_TOOL, GOALS), (FACTS_TOOL, FACTS), (PROVE_TOOL, "goal 3 marked met")]
+        self.assertEqual(script.decide(conversation(*self.PLANNER, turns=done)), (GOALS_TOOL, {}))
+        # 목표 3은 이미 증명을 시도했다: 아직 열려 있어도 다시 하지 않고 남은 목표 5로 간다
+        again = done + [(GOALS_TOOL, GOALS), (FACTS_TOOL, FACTS)]
+        self.assertEqual(script.decide(conversation(*self.PLANNER, turns=again))[1]["goal_id"], 5)
+        met = json.dumps([{"id": 3, "state": "met"}, {"id": 5, "state": "met"}])
+        self.assertIsNone(script.decide(conversation(*self.PLANNER, turns=[(GOALS_TOOL, met)])))  # 열린 목표 없음
+        self.assertEqual(script.counts["finish"], 5)
+
+    def test_planner_stops_without_facts_tools_or_finish(self):
+        script = self.script()
+        self.assertIsNone(script.decide(conversation(*self.PLANNER, turns=[(GOALS_TOOL, GOALS), (FACTS_TOOL, '{"facts": []}')])))
+        self.assertIsNone(script.decide(conversation(*self.PLANNER, turns=[(PLANNER_TOOL, "ok")])))  # 의도 결과 뒤는 라운드 끝
+        self.assertIsNone(script.decide(conversation(tool(PLANNER_TOOL), tool(GOALS_TOOL), tail_user=True)))  # prove_goal 없음
+        plain = Script(dict(script.plan, finish=False))
+        plain.intents_sent = len(plain.plan["intents"])
+        self.assertIsNone(plain.decide(conversation(*self.PLANNER, tail_user=True)))  # finish 없는 계획은 지금처럼
+
+    def test_worker_records_one_fact_for_its_intent_after_the_commands(self):
+        script = self.script()
+        script.commands_sent = len(script.plan["commands"])
+        worker = (tool(WORKER_TOOL, {"command": {}}), tool(FACT_TOOL, {"intent_id": {}, "summary": {}, "confidence": {}}))
+        message = "go\n\n[Your intent]:\n{}\nIntent id: 12 (pass it to record_fact / report_finding when writing back)"
+        self.assertEqual(script.decide(conversation(*worker, user=message)),
+                         (FACT_TOOL, {"intent_id": 12, "summary": "합성 회차 고정 관찰: 계획 명령을 모두 실행함", "confidence": "observed"}))
+        self.assertIsNone(script.decide(conversation(*worker, user=message, turns=[(FACT_TOOL, "ok")])))  # 대화마다 한 번
+        self.assertIsNone(script.decide(conversation(*worker, user="no id here")))
+        self.assertIsNone(script.decide(conversation(tool(WORKER_TOOL, {"command": {}}), user=message)))  # record_fact 없음
+
+    def test_result_parsers(self):
+        self.assertEqual(open_goal_ids(GOALS), [3, 5])
+        self.assertEqual(open_goal_ids(json.dumps({"goals": [{"id": "7", "state": "open"}, {"id": 0, "state": "open"}]})), [7])
+        self.assertEqual(open_goal_ids("not json"), [])
+        self.assertEqual(fact_ids(FACTS), [9, 8])
+        self.assertEqual(fact_ids(json.dumps([{"id": 1}])), [])
 
 
 class TestServer(unittest.TestCase):
