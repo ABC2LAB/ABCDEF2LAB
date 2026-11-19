@@ -57,6 +57,7 @@ func e3IdentityFixture(t *testing.T, target string, recorder Recorder) (*Executi
 	cfg := coreConfig(t, target, recorder, 3)
 	cfg.AuditVersion = JournalVersionV3
 	cfg.E3Verifier = e3IdentityVerifier{}
+	cfg.E3ConfirmationRequests = 3
 	cfg.Rules = append(cfg.Rules, Rule{Ref: "identity-rule", Purpose: PurposeE3Identity, Origin: target,
 		ConnectIP: netip.MustParseAddr("127.0.0.1"), PathPrefix: "/allowed/identity", PathScopeRef: "identity-path", Methods: []string{"GET"}})
 	e, err := NewExecution(t.Context(), cfg)
@@ -141,6 +142,85 @@ func TestE3IdentityPartialResponseIsNotNormalEvidence(t *testing.T) {
 	}
 	if event.ResponseComplete || event.E3Audit == nil || event.E3Audit.SubjectDigest != "" {
 		t.Fatal("부분 응답을 신원 정상 근거로 사용")
+	}
+}
+
+func TestE3IdentityNonSuccessAndWithheldResponses(t *testing.T) {
+	for _, tc := range []struct {
+		name, header, value string
+		status              int
+		limit               int64
+		normal              oracle.CheckState
+		complete            bool
+	}{
+		{name: "forbidden JSON", status: 403, normal: oracle.StateNo, complete: true},
+		{name: "206 without content-range", status: 206},
+		{name: "content-range without 206", status: 200, header: "Content-Range", value: "bytes 0-17/100"},
+		{name: "compressed", status: 200, header: "Content-Encoding", value: "gzip"},
+		{name: "oversized", status: 200, limit: 8},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if tc.header != "" {
+					w.Header().Set(tc.header, tc.value)
+				}
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, `{"id":"subject-a"}`)
+			}))
+			defer server.Close()
+			e, in := e3IdentityFixture(t, server.URL, &coreRecorder{})
+			if tc.limit > 0 {
+				e.cfg.Limits.MaxResponseBodyBytes = tc.limit
+			}
+			event, err := e.SendE3Identity(t.Context(), in)
+			if err != nil || event.E3Audit == nil || event.E3Audit.Normal != tc.normal ||
+				event.E3Audit.SubjectDigest != "" || event.ResponseComplete != tc.complete {
+				t.Fatalf("응답 보류·신원 digest 판정 불일치: %v normal=%s complete=%v digest_present=%v", err, event.E3Audit.Normal, event.ResponseComplete, event.E3Audit.SubjectDigest != "")
+			}
+		})
+	}
+}
+
+func TestE3IdentityUnregisteredMarkerAndMarkerInSessionNeverSend(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests.Add(1) }))
+	defer server.Close()
+	for _, change := range []func(*Execution, *E3IdentityInput){
+		func(_ *Execution, in *E3IdentityInput) {
+			other, err := e3contract.NewMarker(bytes.NewReader(bytes.Repeat([]byte{3}, 128)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			in.Marker = other
+		},
+		func(_ *Execution, in *E3IdentityInput) {
+			in.Accounts.(*e3IdentityAccounts).header.Set("Authorization", "Bearer "+string(in.Marker.Reveal()))
+		},
+		func(_ *Execution, in *E3IdentityInput) {
+			in.Accounts.(*e3IdentityAccounts).header.Set(string(in.Marker.Reveal()), "fixture")
+		},
+	} {
+		e, in := e3IdentityFixture(t, server.URL, &coreRecorder{})
+		change(e, &in)
+		if _, err := e.SendE3Identity(t.Context(), in); err == nil || requests.Load() != 0 {
+			t.Fatal("등록하지 않은 표식 또는 세션 표식이 대상에 송신됨")
+		}
+	}
+}
+
+func TestE3IdentityTargetTimeoutIsMarked(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	e, in := e3IdentityFixture(t, server.URL, &coreRecorder{})
+	in.Timeout = 20 * time.Millisecond
+	event, err := e.SendE3Identity(t.Context(), in)
+	if err != nil || requests.Load() != 1 || event.E3Audit == nil || !event.E3Audit.TimedOut || event.ResponseComplete {
+		t.Fatalf("송신 후 시간 초과가 보류되지 않음: %v requests=%d", err, requests.Load())
 	}
 }
 

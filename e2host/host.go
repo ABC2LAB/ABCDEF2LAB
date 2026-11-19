@@ -17,6 +17,7 @@ import (
 
 var ErrUnavailable = errors.New("e2host: product audit host unavailable")
 var ErrEventMissing = errors.New("e2host: verified event missing")
+var ErrBindingMismatch = errors.New("e2host: verified event binding mismatch")
 
 // Host는 보관소 접속과 감사 키를 실행 프로세스에 넘기지 않는다.
 type Host struct {
@@ -175,9 +176,11 @@ type Session struct{ run *run }
 // Verified는 현재 저장소 head와 같은 저널 스냅샷에서 마지막 E③ 결과만 돌려준다.
 // 호출자 제공 참조나 이전 ACK는 현재성의 근거로 사용하지 않는다.
 func (s *Session) Verified(ctx context.Context, binding e3contract.RunBinding, ref e3contract.CallRef) (e2proxy.Event, error) {
-	if s == nil || s.run == nil || ctx == nil || binding.Validate() != nil ||
-		ref.CallRef == "" || ref.AttemptID == "" || ref.Sequence == 0 {
+	if s == nil || s.run == nil || ctx == nil {
 		return e2proxy.Event{}, ErrUnavailable
+	}
+	if binding.Validate() != nil || ref.CallRef == "" || ref.AttemptID == "" || ref.Sequence == 0 {
+		return e2proxy.Event{}, ErrBindingMismatch
 	}
 	r := s.run
 	r.mu.Lock()
@@ -185,10 +188,12 @@ func (s *Session) Verified(ctx context.Context, binding e3contract.RunBinding, r
 	r.owner.mu.Lock()
 	fenced := r.fenced
 	r.owner.mu.Unlock()
-	if r.closed || fenced || r.recorder == nil || r.ctx.Err() != nil ||
-		binding.RunRef != r.scope.RunRef || binding.TaskRef != r.scope.TaskRef ||
-		binding.E2PolicyRef != r.scope.PolicyRef {
+	if r.closed || fenced || r.recorder == nil || r.ctx.Err() != nil {
 		return e2proxy.Event{}, ErrUnavailable
+	}
+	if binding.RunRef != r.scope.RunRef || binding.TaskRef != r.scope.TaskRef ||
+		binding.E2PolicyRef != r.scope.PolicyRef {
+		return e2proxy.Event{}, ErrBindingMismatch
 	}
 	events, head, err := r.verifiedEvents(ctx)
 	if err != nil || head.Phase != e2checkpoint.Open || !allAttemptsFinished(events) {
@@ -209,7 +214,7 @@ func (s *Session) Verified(ctx context.Context, binding e3contract.RunBinding, r
 		latest.E3Audit.E3.GenerationRef != binding.GenerationRef ||
 		latest.E3Audit.E3.InstanceRef != binding.InstanceRef ||
 		latest.E3Audit.E3.Policy != binding.Policy {
-		return e2proxy.Event{}, ErrUnavailable
+		return e2proxy.Event{}, ErrBindingMismatch
 	}
 	return latest, nil
 }

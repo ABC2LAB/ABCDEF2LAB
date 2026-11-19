@@ -796,6 +796,30 @@ func (r *E2HTTPRuntime) Execution(taskID string) (*e2proxy.Execution, bool) {
 	return local.runner.Execution(), true
 }
 
+// E3Handle은 모델 단계 뒤 감독자에게만 현재 로컬 E② 실행과 C14 저장소를 함께 돌려준다.
+func (r *E2HTTPRuntime) E3Handle(taskID string) (*e2proxy.Execution, E2HTTPAccountBindings, bool) {
+	if r == nil {
+		return nil, nil, false
+	}
+	r.mu.Lock()
+	t := r.task
+	r.mu.Unlock()
+	if t == nil || t.id != taskID {
+		return nil, nil, false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed || t.lease == nil || !t.validLease || t.lease.Runner == nil {
+		return nil, nil, false
+	}
+	local, ok := t.lease.Runner.(localE2HTTPRun)
+	accounts := t.lease.AccountBindings()
+	if !ok || accounts == nil {
+		return nil, nil, false
+	}
+	return local.runner.Execution(), accounts, true
+}
+
 func (r *E2HTTPRuntime) FenceTask(taskID string) error {
 	if r == nil {
 		return ErrE2HTTPHost

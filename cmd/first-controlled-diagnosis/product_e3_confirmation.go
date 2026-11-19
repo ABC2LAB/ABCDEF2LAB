@@ -9,7 +9,10 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e3contract"
+	"github.com/Autumn-27/artex/e3contract/e3v3"
+	"github.com/Autumn-27/artex/e3contract/e3v3/e2live"
 	"github.com/Autumn-27/artex/server"
 )
 
@@ -17,13 +20,8 @@ import (
 //   - 감독자가 모델 단계가 끝난 뒤(진행 중 작업·모델 호출 0, 실행 허가 닫힘) E② 마감 전에 run을 부른다.
 //   - 결과(e3contract.RunResult)는 회차 디렉터리의 e3-confirmation.json에 0600으로 한 번 쓴다. 표식 값은 결과에 없다.
 //   - 생성 요청이 대상에 남겼을 수 있는 쓰기는 상태와 관계없이 대상 선언 저널에 남긴다(리셋 확인 전까지 다음 회차 거절).
-//   - E② Transport·Journal(이동찬 갈래)은 아직 없어서 지금은 늘 disabled/not_wired로 끝나고 요청은 0건이다.
 const (
 	productE3ConfirmationFile = "e3-confirmation.json"
-	// 대상 세대·인스턴스 참조는 서버가 실행마다 발급한다(결정 §5 0단계). 제품 회차에는 아직 따로 발급한 값이 없어서 회차
-	// 번호에서 만든다. 실행 정책의 다른 참조(run-·policy-)와 같은 방식이다.
-	// TODO(최민준): 임시 값이다. E② Transport·Journal v3가 관찰·저널 결속에 쓰는 값이라, 이동찬님이 발급하는 값을 그대로
-	// 받도록 합의한 뒤 바꾼다(#738 질문). 합의 전에는 Transport가 없어 이 값이 대상 요청에 쓰이지 않는다.
 )
 
 // productE3Confirmation은 제품 회차 하나의 확정 단계다.
@@ -34,11 +32,13 @@ type productE3Confirmation struct {
 	registry *productTargetRegistry
 	// accounts는 그 실행의 시험 계정별 인증 준비 결과다(라벨 → 결과, 값 없음).
 	accounts func() map[string]string
-	deps     e3contract.Deps
+	// handle은 모델 단계가 끝난 뒤 현재 실행과 C14 세션을 함께 조회한다.
+	handle func(string) (*e2proxy.Execution, server.E2HTTPAccountBindings, bool)
+	deps   e3contract.Deps
 }
 
-// newProductE3Confirmation은 제품 의존(동결 선언 읽기·리셋 게이트)으로 확정 단계를 만든다. Transport·Journal은 비워 둔다:
-// 실제 E② 연동이 들어오기 전에는 확정 단계가 not_wired로 꺼진다(요청 0건). 가짜를 넣는 일은 시험만 한다.
+// newProductE3Confirmation은 제품 의존(동결 선언 읽기·리셋 게이트)으로 확정 단계를 만든다.
+// 실제 E② handle은 모델 단계 뒤에만 얻으므로 run에서 연결한다.
 func newProductE3Confirmation(runsDir, jobID string, target productTargetRecord, registry *productTargetRegistry, accounts func() map[string]string) *productE3Confirmation {
 	c := &productE3Confirmation{runsDir: runsDir, jobID: jobID, target: target, registry: registry, accounts: accounts,
 		deps: e3contract.Deps{Declarations: productDeclarationReader{runsDir: runsDir}, Reset: productResetGate{registry: registry}}}
@@ -100,6 +100,16 @@ func (c *productE3Confirmation) run(ctx context.Context, taskID string, begin fu
 		defer cancel()
 	}
 	deps := c.deps
+	if share > 0 && c.handle != nil && in.Binding.Validate() == nil && in.Binding.Policy.ValidateProduct() == nil {
+		if execution, accounts, ok := c.handle(taskID); ok {
+			if live, err := e2live.NewLive(execution, accounts, in.Binding); err == nil {
+				defer live.Close()
+				if adapter, err := e3v3.New(live); err == nil {
+					deps.Transport, deps.Journal = adapter, adapter
+				}
+			}
+		}
+	}
 	deps.Started = begin
 	res := e3contract.Run(confirmCtx, deps, in)
 	// TODO(최민준): 제품 판정 저장(db.RecordProductVerdict)과 실행 역할 권한은 4b-3b에서 붙인다.
