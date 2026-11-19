@@ -333,6 +333,56 @@ func TestProductResetConfirmationLifecycle(t *testing.T) {
 	}
 }
 
+func TestProductResetReplayBlocksPresentOrUnverifiedResidue(t *testing.T) {
+	registry, root, target, _ := declarationTestTarget(t)
+	if err := registry.recordConfirmationWrites(target.ID, "job-before-restart", confirmationObjects()); err != nil {
+		t.Fatal(err)
+	}
+	confirmed, err := registry.confirmReset("ARTEX", target.ID, true, writesRef(t, registry, target.ID))
+	if err != nil || confirmed.ResetRequired || confirmed.ConfirmedAt.IsZero() {
+		t.Fatalf("리셋 확인 기록 실패: %+v, %v", confirmed, err)
+	}
+	if err := registry.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := newProductTargetRegistry(root, registry.policy, func() error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	restored, err := reopened.resetConfirmation("ARTEX", target.ID)
+	if err != nil || restored.ResetRequired || restored.LastWritesJob != "job-before-restart" ||
+		!restored.ConfirmedAt.Equal(confirmed.ConfirmedAt) {
+		t.Fatalf("리셋 확인·이전 쓰기 복구 실패: %+v, %v", restored, err)
+	}
+
+	for _, tc := range []struct {
+		name      string
+		connected bool
+		residue   e3contract.Residue
+		err       error
+		want      e3contract.StartRefusal
+	}{
+		{name: "absent", connected: true, residue: e3contract.ResidueAbsent, want: ""},
+		{name: "present", connected: true, residue: e3contract.ResiduePresent, want: e3contract.RefusePreviousMarkersPresent},
+		{name: "unknown", connected: true, residue: e3contract.ResidueUnknown, want: e3contract.RefuseResetStateUnavailable},
+		{name: "checker_missing", want: e3contract.RefuseResetStateUnavailable},
+		{name: "checker_error", connected: true, residue: e3contract.ResidueAbsent, err: errors.New("synthetic check failure"), want: e3contract.RefuseResetStateUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gate := productResetGate{registry: reopened}
+			if tc.connected {
+				gate.residue = func(context.Context, e3contract.RunBinding, []productConfirmationObject) (e3contract.Residue, error) {
+					return tc.residue, tc.err
+				}
+			}
+			if got := e3contract.CheckRunStart(t.Context(), gate, e3contract.RunBinding{}, target.ID); got != tc.want {
+				t.Fatalf("리셋 확인 복구 후 게이트 결과 = %q, 기대 %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestProductResetRejectsBadLines(t *testing.T) {
 	r, root, target, _ := declarationTestTarget(t)
 	rec := r.records[target.ID]
@@ -574,7 +624,10 @@ func TestProductResetApplyCostIndependentOfHistory(t *testing.T) {
 			}
 		})
 	}
-	if small, large := allocs(1), allocs(4096); large > small {
+	// 경합 검사기(-race)는 큰 map을 읽을 때 할당을 몇 개 더 만든다(로컬 측정 14 → 16). 앞선 회차 수에 비례하는 복사는
+	// 회차 4096개에서 수천 개가 늘므로, 몇 개의 차이는 잡음으로 보고 그보다 크게 늘 때만 실패로 본다.
+	const allocNoise = 4
+	if small, large := allocs(1), allocs(4096); large > small+allocNoise {
 		t.Fatalf("앞선 회차 수에 따라 할당이 늚: %v → %v", small, large)
 	}
 	// 재생도 회차 목록을 줄마다 다시 만들지 않는다: 줄을 많이 받아도 목록은 하나이고 회차마다 한 번만 더해진다.
