@@ -150,14 +150,17 @@ def _calls(messages: list[dict]) -> list[tuple[str, str]]:
 
 
 def _last_result(messages: list[dict], name: str) -> str | None:
-    """그 이름의 가장 최근 도구 호출에 대한 결과 글."""
-    ids = [call_id for call_id, called in _calls(messages) if called == name]
-    if not ids:
-        return None
-    for message in reversed(messages):
-        if message.get("role") == "tool" and message.get("tool_call_id") == ids[-1]:
-            return _content(message)
-    return None
+    """그 이름의 가장 최근 도구 호출에 대한 결과 글. 호출 바로 뒤의 도구 결과로 짝짓는다. 이 서버는 호출 ID를 늘 같은 값으로
+    내므로(completion) ID로 찾으면 다른 도구의 결과가 잡힌다(2026-11-19 실제 제품 합성 회차)."""
+    found = None
+    for index, message in enumerate(messages):
+        if message.get("role") != "assistant":
+            continue
+        names = [call.get("function", {}).get("name") for call in message.get("tool_calls") or [] if isinstance(call, dict)]
+        if name in names:
+            following = messages[index + 1] if index + 1 < len(messages) else None
+            found = _content(following) if isinstance(following, dict) and following.get("role") == "tool" else None
+    return found
 
 
 def _json(text: str | None) -> object:

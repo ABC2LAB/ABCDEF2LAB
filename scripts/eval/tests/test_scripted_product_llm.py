@@ -131,11 +131,12 @@ class TestRoles(unittest.TestCase):
         self.assertEqual(script.counts["done"], 2)
 
 
-def conversation(*tools: dict, turns=(), user: str = "go", tail_user: bool = False) -> dict:
-    """turns: (도구 이름, 결과 글) 순서. 모델이 부른 도구와 그 결과를 호출 ID로 짝지어 넣는다."""
+def conversation(*tools: dict, turns=(), user: str = "go", tail_user: bool = False, same_ids: bool = False) -> dict:
+    """turns: (도구 이름, 결과 글) 순서. 모델이 부른 도구와 그 결과를 호출 ID로 짝지어 넣는다. same_ids면 이 서버처럼 모든
+    호출 ID가 같다."""
     messages = [{"role": "system", "content": "x"}, {"role": "user", "content": user}]
     for index, (name, result) in enumerate(turns):
-        call_id = f"call_{index}"
+        call_id = "call_scripted" if same_ids else f"call_{index}"
         messages.append({"role": "assistant", "content": None,
                          "tool_calls": [{"id": call_id, "type": "function", "function": {"name": name, "arguments": "{}"}}]})
         messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
@@ -178,6 +179,14 @@ class TestFinishWithGoals(unittest.TestCase):
         met = json.dumps([{"id": 3, "state": "met"}, {"id": 5, "state": "met"}])
         self.assertIsNone(script.decide(conversation(*self.PLANNER, turns=[(GOALS_TOOL, met)])))  # 열린 목표 없음
         self.assertEqual(script.counts["finish"], 5)
+
+    def test_results_are_paired_by_position_when_call_ids_repeat(self):
+        # 2026-11-19 실제 제품 합성 회차: 이 서버는 호출 ID를 늘 call_scripted로 내서, ID로 찾으면 list_goals 결과 자리에
+        # list_facts 결과가 잡혀 열린 목표가 0개로 읽혔다(prove_goal을 부르지 못함).
+        script = self.script()
+        turns = [(GOALS_TOOL, GOALS), (FACTS_TOOL, FACTS)]
+        self.assertEqual(script.decide(conversation(*self.PLANNER, turns=turns, same_ids=True)),
+                         (PROVE_TOOL, {"goal_id": 3, "evidence_id": 9, "reason": PROVE_REASON}))
 
     def test_planner_stops_without_facts_tools_or_finish(self):
         script = self.script()
