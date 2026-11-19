@@ -56,7 +56,6 @@ import {
   running,
   scope,
 } from "@/lib/diagnosis/diagnosis-url-fixtures";
-import { generateRemediation } from "@/lib/diagnosis/remediation";
 
 import * as api from "../live/api";
 import { checkLiveAuth, getLiveAuthState, setLiveAuthState } from "../live/auth";
@@ -80,7 +79,7 @@ import { createInitialState, useWb } from "../store";
 import { Markdown } from "../ui/Markdown";
 import { DashboardByMode, LiveByMode, NewScanByMode, ReportByMode, ScopeByMode } from "../views/live/byMode";
 import { UrlFindingLive } from "../views/live/UrlFindingLive";
-import { buildPocMarkdown, FINDINGS_POLL_MS } from "../views/live/UrlLiveLive";
+import { buildPocMarkdown, entryEp, FINDINGS_POLL_MS, FindingDetail } from "../views/live/UrlLiveLive";
 import { EXCLUDE_EXAMPLE } from "../views/live/UrlNewScanLive";
 import { WorkflowCrawlLive } from "../views/live/workflowViews";
 import s from "../workbench.module.css";
@@ -1511,7 +1510,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(facts.querySelector("details")).toBeNull();
   });
 
-  it("마감된 진단은 요청 승인을 다시 부르지 않고 보고서의 증거 · 요청 기록(전송 집계)로 안내한다", async () => {
+  it("마감된 진단은 요청 승인을 다시 부르지 않고 전송 상태를 더 조회하지 않는다고 안내한다", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(completed);
     const { goTo } = mount("live");
@@ -1522,7 +1521,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(card).toHaveTextContent(/완료점검을 마쳤습니다보고서 보기.*결과 저장 확인/);
     expect(screen.getAllByText(/점검을 마쳤습니다/)).toHaveLength(1);
     expect(screen.queryByText("실행을 마감했습니다")).toBeNull();
-    expect(screen.getByText(/마감된 점검의 전송 기록은 보고서의 증거 · 요청 기록에 있습니다/)).toBeInTheDocument();
+    expect(screen.getByText(/점검이 끝나 전송 상태를 더 조회하지 않습니다/)).toBeInTheDocument();
     expect(a.fetchRequestApprovals).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: /보고서 보기/ }));
     expect(goTo).toHaveBeenCalledWith("report");
@@ -1656,7 +1655,8 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(crumb).toHaveTextContent(/^끝난 점검\/target\.example$/);
     expect(crumb).not.toHaveTextContent("작업대");
     await waitFor(() => expect(a.fetchRemediation).toHaveBeenCalledWith("42", "internal"));
-    expect(a.fetchDiagnosisRun).toHaveBeenCalledWith("42");
+    // 저장된 실행 기록(diagnosis-run)은 보고서에서 쓰지 않아 부르지 않는다(사용자 11/19 — 실행 종료 기록 · 요청 수를 뺌)
+    expect(a.fetchDiagnosisRun).not.toHaveBeenCalled();
     // 판정 집계 (시안 짜임: 발견 · 판정 확정 · 의심/판단 불가 · 커버리지): 후보는 검토 필요, 확정 0 (팀 lib 분류).
     // 판단 불가 = 미실행 + 결과 불명. 커버리지는 서버 값 그대로
     const strip = await screen.findByRole("region", { name: "판정 집계" });
@@ -1665,17 +1665,17 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
       expect(cell("검토 필요 / 판단 불가")).toHaveTextContent(/^검토 필요 \/ 판단 불가1\/ 0추가 확인 권장$/),
     );
     expect(cell("판정 확정")).toHaveTextContent(/^판정 확정0증거 충분$/);
-    expect(within(cell("발견")).getByText("1")).toBeInTheDocument();
+    expect(within(cell("취약점")).getByText("1")).toBeInTheDocument();
     // 자산 커버리지(방문 · 검사한 자산 비율)라고 이름 붙인다 — 판정 커버리지로 읽히지 않게 (리뷰 #479)
     await waitFor(() => expect(cell("자산 커버리지")).toHaveTextContent("40%"));
     expect(cell("자산 커버리지")).toHaveTextContent("미검사 60%");
-    // 머리 줄: 시작 · 소요 · 모델 · 모델 사용량. 서버가 주지 않는 시작 · 소요는 '연결 전'(값을 만들지 않음).
-    // 자산 커버리지는 요약 칸에만 두고 머리에서 뺐다(사용자 11/17). 모델 사용량 기록이 없으면 '—'
+    // 머리 줄: 시작 · 소요 · 모델 · 토큰(모델 사용량, 사용자 11/19 짧게). 서버가 주지 않는 시작 · 소요는 '연결 전'(값을
+    // 만들지 않음). 자산 커버리지는 요약 칸에만 두고 머리에서 뺐다(사용자 11/17). 모델 사용량 기록이 없으면 '—'
     const header = screen
       .getByRole("heading", { level: 1, name: "target.example 보고서" })
       .closest("header") as HTMLElement;
     expect(header).not.toHaveTextContent("자산 커버리지");
-    expect(within(header).getByText(/^모델 사용량/)).toHaveTextContent(/^모델 사용량 —$/);
+    expect(within(header).getByText(/^토큰/)).toHaveTextContent(/^토큰 —$/);
     expect(header).toHaveTextContent("모델 합성 모델 · 로컬");
     // 단계 줄: 보고서가 지금 단계이고, 앞 단계(자산 탐색 · 범위 확인 · 점검 진행)로 눌러서 돌아간다 (사용자 11/17)
     const steps = within(header).getByRole("navigation", { name: "점검 단계" });
@@ -1689,18 +1689,18 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     // 시안 머리 버튼은 '발견 상세'(좁은 화면) 하나
     expect(within(header).queryByRole("button", { name: /새로고침/ })).toBeNull();
     // 발견 목록에 후보가 있다. 위험도 딱지가 맨 앞(심각도 없으면 '위험도 미평가'), 아래 줄은 엔드포인트 · 유형
-    const row = within(screen.getByRole("tabpanel", { name: "발견 목록" })).getByRole("button", { name: /후보 1/ });
+    const row = within(screen.getByRole("tabpanel", { name: "취약점 목록" })).getByRole("button", { name: /후보 1/ });
     expect(row.firstElementChild).toHaveTextContent("위험도 미평가");
     expect(row).toHaveTextContent("GET /api/items/{id}idor");
     expect(within(row).getByText("{id}").tagName).toBe("I");
     // 상세 머리: 유형 · 주소, 엔드포인트 (시안 findingHtml)
-    const insp = screen.getByRole("complementary", { name: "발견 상세" });
+    const insp = screen.getByRole("complementary", { name: "취약점 상세" });
     expect(within(insp).getByText(/^idor ·/)).toBeInTheDocument();
     expect(within(insp).getByText("GET")).toBeInTheDocument();
-    // 상태 칸 (ARTEX 발견 상세의 상태 카드): ID · 위험도 · 판정 · 유형 · 관련 자산 · 발견 시각. 여기서 바꾸는 손잡이는 없다
+    // 대표 경로는 취약점 확정이 아닌 관련 경로로 표시한다. 여기서 바꾸는 손잡이는 없다
     const state = within(insp).getByRole("heading", { name: "상태" }).parentElement as HTMLElement;
     expect(state).toHaveTextContent(
-      /^상태IDcandidate-1위험도위험도 미평가판정검토 필요유형idor관련 자산GET \/api\/items\/\{id\}발견 시각\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/,
+      /^상태IDcandidate-1위험도위험도 미평가판정검토 필요유형idor관련 경로GET \/api\/items\/\{id\}발견 시각\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/,
     );
     expect(within(state).queryByRole("combobox")).toBeNull();
     // 상세는 정리했다(사용자 11/17): '연결 전' 자리(계정별 응답 비교 · 다음 단계)와 머리와 겹치는 분류는 두지 않는다
@@ -1708,7 +1708,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(within(insp).queryByText("다음 단계")).toBeNull();
     expect(within(insp).queryByText("분류")).toBeNull();
     // 탭은 화살표로 옮긴다 (시안 selTab): 발견 목록 → 자산 지식 그래프, 고른 탭만 Tab 순서에
-    const listTab = screen.getByRole("tab", { name: /발견 목록/ });
+    const listTab = screen.getByRole("tab", { name: /취약점 목록/ });
     expect(listTab).toHaveAttribute("tabindex", "0");
     fireEvent.keyDown(listTab, { key: "ArrowRight" });
     expect(screen.getByRole("tab", { name: "자산 지식 그래프" })).toHaveAttribute("aria-selected", "true");
@@ -1723,37 +1723,20 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     const mapTab = screen.getByRole("tabpanel", { name: "접근통제 지도" });
     expect(within(mapTab).queryByText(/^연결 전/)).toBeNull();
     expect(within(mapTab).getByRole("button", { name: /접근통제 지도 화면 열기/ })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: "증거 · 요청 기록" }));
-    // 시안 증거 목록: 취약점마다 판정
-    // 서버 내부 ID 대신 '취약점 n'(보고서 문서 번호 순서), ID 는 마우스를 올리면 · 증거 버전 · 재현 단계 수는 두지 않고
-    // 확정 전을 확정으로 읽지 않게 판정 딱지(사용자 11/19, 절대규칙 5)
-    const evList = screen.getByRole("list", { name: "취약점별 증거" });
-    expect(evList).not.toHaveTextContent(/증거 버전|재현 단계/);
-    const first = within(evList).getByText("취약점 1");
-    expect(first).toHaveAttribute("title", "ID candidate-1");
-    // 판정 딱지는 줄 맨 끝(맨 오른쪽 고정은 .evi li > .vd 의 margin-left: auto)
-    expect(first.parentElement?.lastElementChild).toHaveTextContent("검토 필요");
-    expect(within(evList).queryByText("candidate-1")).toBeNull();
-    // 탭을 누르면 전송 집계(요청 접수 · 허용 · 차단 …, 저장 값 그대로)가 맨 위에 바로 보이고 취약점별 증거는 그 아래
-    // (사용자 11/19). 실행 종료 기록 칸(단계 · 결과 · 실행 ID · 감사 · 저장 시각)은 두지 않는다
-    const counts = await screen.findByRole("region", { name: "탐색 · 요청 집계" });
-    const evTab = screen.getByRole("tabpanel", { name: "증거 · 요청 기록" });
-    expect(evTab.firstElementChild).toBe(counts);
-    expect(counts.nextElementSibling).toBe(screen.getByRole("list", { name: "취약점별 증거" }));
-    // 한 줄 네 칸, 자산 탐색과 같은 이름(사용자 11/19): 요청 접수 · 허용 · 호출 · 미지원(0)은 두지 않는다
-    expect([...counts.querySelectorAll(":scope > div > div:first-child")].map((x) => x.textContent)).toEqual([
-      "보낸 요청",
-      "막은 요청",
-      "응답 받음",
-      "결과 불명",
-    ]);
-    // 값은 저장 값 그대로: 보낸 요청 = 대상 전송 시도, 막은 요청 = 차단, 결과 불명은 0이어도 둔다(절대규칙 5)
-    expect(counts.textContent).toBe("보낸 요청1막은 요청2응답 받음1결과 불명0");
-    for (const gone of ["요청 접수", "허용", "호출", "미지원", "지원 안 하는 요청"])
-      expect(within(counts).queryByText(new RegExp(gone))).toBeNull();
+    // '증거 · 요청 기록' 탭은 없고 머리 줄은 토큰(입 · 출)에서 끝난다(사용자 11/19 — 요청 수는 두지 않음).
+    // 실행 종료 기록(단계 · 결과 · 실행 ID · 감사)은 어디에도 없다
+    expect(screen.queryByRole("tab", { name: "증거 · 요청 기록" })).toBeNull();
+    expect(within(header).queryByText(/^요청/)).toBeNull();
+    // ('정상 종료'는 오른쪽 취약점 상세의 안내 글에도 있어 실행 종료 기록 칸 자체로 확인한다. 실행 ID 는 기술 정보를 뺀 뒤로
+    // 화면 어디에도 없다)
     expect(screen.queryByRole("region", { name: "실행 종료 기록" })).toBeNull();
-    for (const gone of ["정상 종료", "run-1", "완결"]) expect(within(evTab).queryByText(gone)).toBeNull();
-    // 모델 사용량은 머리 줄로 옮겨 증거 · 요청 기록 탭에 따로 두지 않는다
+    expect(screen.queryByText(/요청 접수|실행 종료 기록|run-1/)).toBeNull();
+    // 내려받기는 보고서 탭 문서 아래
+    fireEvent.click(screen.getByRole("tab", { name: "보고서" }));
+    const docTab = screen.getByRole("tabpanel", { name: "보고서" });
+    expect(within(docTab).getByRole("heading", { name: "내려받기" })).toBeInTheDocument();
+    expect(within(docTab).getByRole("button", { name: "공유용 사본" })).toBeInTheDocument();
+    // 모델 사용량은 머리 줄에(따로 제목 칸을 두지 않는다)
     expect(screen.queryByRole("heading", { name: "모델 사용량" })).toBeNull();
   });
 
@@ -1778,8 +1761,8 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
       );
     }
     render(<Shell />);
-    await screen.findByRole("tabpanel", { name: "발견 목록" });
-    // 다른 탭(발견 목록 · 자산 지식 그래프)에서는 지도를 읽지 않는다 — 탭을 무시하면(active={visible}) 여기서 걸린다
+    await screen.findByRole("tabpanel", { name: "취약점 목록" });
+    // 다른 탭(취약점 목록 · 자산 지식 그래프)에서는 지도를 읽지 않는다 — 탭을 무시하면(active={visible}) 여기서 걸린다
     fireEvent.click(screen.getByRole("tab", { name: "자산 지식 그래프" }));
     await act(async () => undefined);
     expect(mapReads()).toBe(0);
@@ -1787,7 +1770,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     fireEvent.click(screen.getByRole("tab", { name: "접근통제 지도" }));
     await waitFor(() => expect(mapReads()).toBe(1));
     // 다른 탭에 갔다 돌아오면 새 진입이라 한 번 더
-    fireEvent.click(screen.getByRole("tab", { name: /발견 목록/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /취약점 목록/ }));
     await act(async () => undefined);
     expect(mapReads()).toBe(1);
     fireEvent.click(screen.getByRole("tab", { name: "접근통제 지도" }));
@@ -1800,22 +1783,6 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     await waitFor(() => expect(mapReads()).toBe(3));
   });
 
-  it("증거 · 요청 기록 전송 집계: 지원 안 하는 요청이 있을 때만 막은 요청 칸에 적는다", async () => {
-    saveHandle();
-    u.readURLStatus.mockResolvedValue(completed);
-    if (RUN_RECORD.kind !== "run" || !RUN_RECORD.run.execution) throw new Error("fixture");
-    const execution = RUN_RECORD.run.execution;
-    a.fetchDiagnosisRun.mockResolvedValue({
-      ...RUN_RECORD,
-      run: { ...RUN_RECORD.run, execution: { ...execution, counts: { ...execution.counts, unsupported: 4 } } },
-    });
-    mount("report");
-    fireEvent.click(await screen.findByRole("tab", { name: "증거 · 요청 기록" }));
-    const counts = await screen.findByRole("region", { name: "탐색 · 요청 집계" });
-    const blocked = within(counts).getByText("막은 요청").parentElement as HTMLElement;
-    expect(blocked).toHaveTextContent(/^막은 요청2지원 안 하는 요청 4$/);
-  });
-
   it("오른쪽 발견 상세 머리의 '상세 보기'는 고른 발견의 상세 페이지(왼쪽 카드 · 오른쪽 상태 카드)로 가운데를 바꾸고, '발견 목록으로' 돌아온다", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(completed);
@@ -1824,16 +1791,16 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
       entries: [candidate(1), { ...candidate(2), vuln_class: "idor", report: "## 재현\n\n- 계정 B 조회" }],
     });
     mount("report");
-    const list = await screen.findByRole("tabpanel", { name: "발견 목록" });
+    const list = await screen.findByRole("tabpanel", { name: "취약점 목록" });
     // 줄에는 상세 보기를 두지 않는다 — 오른쪽 패널 머리 하나
     expect(within(list).queryByRole("button", { name: /상세 보기/ })).toBeNull();
     fireEvent.click(within(list).getByRole("button", { name: /후보 2/ }));
-    const insp = screen.getByRole("complementary", { name: "발견 상세" });
+    const insp = screen.getByRole("complementary", { name: "취약점 상세" });
     fireEvent.click(within(insp).getByRole("button", { name: "상세 보기" }));
-    const page = screen.getByRole("region", { name: "발견 상세 페이지" });
+    const page = screen.getByRole("region", { name: "취약점 상세 페이지" });
     expect(within(page).getByRole("heading", { level: 2, name: "후보 2" })).toHaveFocus();
-    // ARTEX 발견 상세 짜임: 오른쪽 상태 카드(점검 대상 포함), 왼쪽 요약 → 증거 / PoC → 상세 보고서 → 보안 조치 → AI 프롬프트
-    const side = within(page).getByRole("complementary", { name: "발견 상태" });
+    // ARTEX 발견 상세 짜임: 오른쪽 상태 카드(점검 대상 포함), 왼쪽 요약 → 증거 / PoC → 상세 보고서. 보안 조치 · AI 프롬프트는 뺐다(사용자 11/19)
+    const side = within(page).getByRole("complementary", { name: "취약점 상태" });
     expect(side).toHaveTextContent(/IDcandidate-2/);
     expect(side).toHaveTextContent(/유형idor/);
     expect(side).toHaveTextContent(/점검 대상target\.example/);
@@ -1841,16 +1808,16 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
       within(page)
         .getAllByRole("heading", { level: 3 })
         .map((h) => h.textContent),
-    ).toEqual(["요약", "증거 / PoC", "상세 보고서", "보안 조치", "AI 수정 작업용 프롬프트", "상태"]);
+    ).toEqual(["요약", "증거 / PoC", "상세 보고서", "상태"]);
     expect(
       within(within(page).getByRole("region", { name: "상세 보고" })).getByRole("heading", { name: "재현" }),
     ).toBeInTheDocument();
     // 페이지를 연 동안 목록 · 오른쪽 발견 상세 패널은 두지 않는다
-    expect(screen.queryByRole("tabpanel", { name: "발견 목록" })).toBeNull();
-    expect(screen.queryByRole("complementary", { name: "발견 상세" })).toBeNull();
-    fireEvent.click(within(page).getByRole("button", { name: "발견 목록으로" }));
-    expect(screen.queryByRole("region", { name: "발견 상세 페이지" })).toBeNull();
-    const back = screen.getByRole("tabpanel", { name: "발견 목록" });
+    expect(screen.queryByRole("tabpanel", { name: "취약점 목록" })).toBeNull();
+    expect(screen.queryByRole("complementary", { name: "취약점 상세" })).toBeNull();
+    fireEvent.click(within(page).getByRole("button", { name: "취약점 목록으로" }));
+    expect(screen.queryByRole("region", { name: "취약점 상세 페이지" })).toBeNull();
+    const back = screen.getByRole("tabpanel", { name: "취약점 목록" });
     // 돌아오면 연 발견이 골라져 있다
     expect(within(back).getByRole("button", { name: /후보 2/ })).toHaveAttribute("aria-current", "true");
   });
@@ -1860,16 +1827,16 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     u.readURLStatus.mockResolvedValue(completed);
     a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [candidate(1), candidate(2)] });
     mount("report");
-    const list = await screen.findByRole("tabpanel", { name: "발견 목록" });
+    const list = await screen.findByRole("tabpanel", { name: "취약점 목록" });
     fireEvent.click(within(list).getByRole("button", { name: /후보 2/ }));
     fireEvent.click(
-      within(screen.getByRole("complementary", { name: "발견 상세" })).getByRole("button", { name: "상세 보기" }),
+      within(screen.getByRole("complementary", { name: "취약점 상세" })).getByRole("button", { name: "상세 보기" }),
     );
-    expect(screen.getByRole("region", { name: "발견 상세 페이지" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "취약점 상세 페이지" })).toBeInTheDocument();
     const steps = screen.getByRole("navigation", { name: "점검 단계" });
     fireEvent.click(within(steps).getByRole("link", { name: /보고서/ }));
-    expect(screen.queryByRole("region", { name: "발견 상세 페이지" })).toBeNull();
-    const back = screen.getByRole("tabpanel", { name: "발견 목록" });
+    expect(screen.queryByRole("region", { name: "취약점 상세 페이지" })).toBeNull();
+    const back = screen.getByRole("tabpanel", { name: "취약점 목록" });
     expect(within(back).getByRole("button", { name: /후보 2/ })).toHaveAttribute("aria-current", "true");
   });
 
@@ -1895,19 +1862,19 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
       );
     }
     render(<Both />);
-    const list = await screen.findByRole("tabpanel", { name: "발견 목록" });
+    const list = await screen.findByRole("tabpanel", { name: "취약점 목록" });
     fireEvent.click(within(list).getByRole("button", { name: /후보 2/ }));
     fireEvent.click(
-      within(screen.getByRole("complementary", { name: "발견 상세" })).getByRole("button", { name: "상세 보기" }),
+      within(screen.getByRole("complementary", { name: "취약점 상세" })).getByRole("button", { name: "상세 보기" }),
     );
-    expect(screen.getByRole("region", { name: "발견 상세 페이지" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "취약점 상세 페이지" })).toBeInTheDocument();
     // 주소창에 #finding — 같은 발견이 단독 화면에 뜬다
     act(() => go("finding"));
     expect(await screen.findByRole("heading", { level: 2, name: "후보 2" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "발견 목록으로" }));
+    fireEvent.click(screen.getByRole("button", { name: "취약점 목록으로" }));
     // 보고서로 돌아오면 상세 페이지가 아니라 발견 목록
-    expect(await screen.findByRole("tabpanel", { name: "발견 목록" })).toBeInTheDocument();
-    expect(screen.queryByRole("region", { name: "발견 상세 페이지" })).toBeNull();
+    expect(await screen.findByRole("tabpanel", { name: "취약점 목록" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "취약점 상세 페이지" })).toBeNull();
   });
 
   it("보고서 발견 목록은 위험도로 거르고(있는 등급만 · 수) 판정 · 위험도 · 발견 시각 순으로 정렬한다", async () => {
@@ -1924,11 +1891,11 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
       ],
     });
     mount("report");
-    const list = await screen.findByRole("tabpanel", { name: "발견 목록" });
+    const list = await screen.findByRole("tabpanel", { name: "취약점 목록" });
     // 발견 칸 보조 글은 0건 등급을 빼고 확정 · 예상 · 위험도 미평가로 묶는다(사용자 11/18 '간단하게').
     // 확정 0 이라 '확정 …'은 없고, 결과 불명(후보 4)의 높음은 예상으로 세지 않는다
     const strip = screen.getByRole("region", { name: "판정 집계" });
-    expect((within(strip).getByText("발견").parentElement as HTMLElement).lastElementChild).toHaveTextContent(
+    expect((within(strip).getByText("취약점").parentElement as HTMLElement).lastElementChild).toHaveTextContent(
       /^예상 높음 1, 낮음 1 · 위험도 미평가 2$/,
     );
     const names = () =>
@@ -1950,7 +1917,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(within(list).getByText("1 / 4건")).toBeInTheDocument();
     // 오른쪽 상세도 보이는 줄로 옮긴다
     expect(
-      within(screen.getByRole("complementary", { name: "발견 상세" })).getByRole("heading", { level: 2 }),
+      within(screen.getByRole("complementary", { name: "취약점 상세" })).getByRole("heading", { level: 2 }),
     ).toHaveTextContent("후보 2");
     // 고른 등급을 다시 누르면 전체
     fireEvent.click(within(sevs).getByRole("button", { name: "높음 1개", pressed: true }));
@@ -1978,14 +1945,28 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
         { ...candidate(3), severity: "low" },
       ],
     });
-    vi.mocked(generateRemediation).mockResolvedValue(undefined as never);
-    mount("report");
-    const list = await screen.findByRole("tabpanel", { name: "발견 목록" });
-    const insp = () => screen.getByRole("complementary", { name: "발견 상세" });
+    const { rerender, goTo } = mount("report");
+    // 보고서에 다시 들어오면(다른 화면 → 보고서) 저장 결과를 다시 읽는다. 오른쪽 '생성·저장' 버튼은 뺐다(사용자 11/19)
+    // 두 화면 전환을 한 act 에 묶으면 React 가 합쳐 그려 다시 읽지 않으므로 따로 그린다
+    const show = (route: "live" | "report") =>
+      act(() =>
+        rerender(
+          <ShellContext.Provider value={shellValue({ route, goTo })}>
+            <UrlFeeds />
+            <ReportByMode />
+          </ShellContext.Provider>,
+        ),
+      );
+    const reenter = () => {
+      show("live");
+      show("report");
+    };
+    const list = await screen.findByRole("tabpanel", { name: "취약점 목록" });
+    const insp = () => screen.getByRole("complementary", { name: "취약점 상세" });
     fireEvent.click(within(list).getByRole("button", { name: /후보 2/ }));
     fireEvent.click(within(list).getByRole("button", { name: "높음 1개", pressed: false }));
     expect(within(insp()).getByRole("heading", { level: 2 })).toHaveTextContent("후보 2");
-    // 오른쪽 패널의 '생성·저장'이 저장 결과를 다시 읽는다: 이번엔 후보 2 가 낮음, 후보 3 이 높음
+    // 다시 들어와 저장 결과를 다시 읽는다: 이번엔 후보 2 가 낮음, 후보 3 이 높음
     a.fetchRemediation.mockResolvedValue({
       task_id: 42,
       entries: [
@@ -1994,15 +1975,18 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
         { ...candidate(3), severity: "high" },
       ],
     });
-    fireEvent.click(within(insp()).getByRole("button", { name: "보안 조치·AI 프롬프트 생성·저장" }));
-    await waitFor(() => expect(within(list).queryByRole("button", { name: /후보 2/ })).toBeNull());
+    reenter();
+    // 다시 들어오면 목록 요소가 새로 그려지므로 매번 찾는다
+    const listNow = () => screen.getByRole("tabpanel", { name: "취약점 목록" });
+    await waitFor(() => expect(within(listNow()).getByRole("button", { name: /후보 3/ })).toBeInTheDocument());
+    expect(within(listNow()).queryByRole("button", { name: /후보 2/ })).toBeNull();
     // '높음' 거르기는 그대로, 목록은 후보 3 하나 — 오른쪽 상세 · 줄 표시도 후보 3
-    expect(within(list).getByRole("button", { name: "높음 1개", pressed: true })).toBeInTheDocument();
-    expect(within(list).getByRole("button", { name: /후보 3/ })).toHaveAttribute("aria-current", "true");
+    expect(within(listNow()).getByRole("button", { name: "높음 1개", pressed: true })).toBeInTheDocument();
+    expect(within(listNow()).getByRole("button", { name: /후보 3/ })).toHaveAttribute("aria-current", "true");
     expect(within(insp()).getByRole("heading", { level: 2 })).toHaveTextContent("후보 3");
     fireEvent.click(within(insp()).getByRole("button", { name: "상세 보기" }));
     expect(
-      within(screen.getByRole("region", { name: "발견 상세 페이지" })).getByRole("heading", { level: 2 }),
+      within(screen.getByRole("region", { name: "취약점 상세 페이지" })).getByRole("heading", { level: 2 }),
     ).toHaveTextContent("후보 3");
   });
 
@@ -2028,7 +2012,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(writeText.mock.calls[0][0]).not.toMatch(/synthetic-reference-mask|&#/);
   });
 
-  it("보고서 탭(증거 · 요청 기록 옆): 발견마다 위험도 · 판정 · 요약 · 재현 절차(PoC) · 요청·응답을 Markdown 문서 한 장으로, 정상 대조는 뺀다", async () => {
+  it("보고서 탭: 발견마다 위험도 · 판정 · 요약 · 재현 절차(PoC) · 요청·응답을 Markdown 문서 한 장으로, 정상 대조는 뺀다", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
     saveHandle();
@@ -2087,7 +2071,9 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(doc).toHaveTextContent("점검 방식: 설치 범위");
     expect(doc).toHaveTextContent("모델: 합성 모델 · 로컬");
     // 요약은 확정 · 검토 필요를 나눠 센다(정상 대조는 빼고). '확인된 취약점'으로 묶지 않는다
-    expect(doc).toHaveTextContent("발견: 2건 (확정 0 · 검토 필요 2 · 미실행 0 · 결과 불명 0)");
+    // 합계 '취약점 n건'은 확정 수처럼 읽혀 두지 않고 판정별로만, 확정이 맨 앞(#773 P2, 절대규칙 5)
+    expect(doc).toHaveTextContent("취약점: 확정 0건 · 검토 필요 2건 · 미실행 0건 · 결과 불명 0건");
+    expect(doc).not.toHaveTextContent(/취약점: \d+건/);
     expect(doc).not.toHaveTextContent("확인된 취약점");
     // 취약점: '1. [등급 · 판정] 제목' 은 제목(h2)이고 취약점 사이에 구분선 — 어디까지가 몇 번인지 보인다. 정상 대조는 없다
     const items = within(doc)
@@ -2096,9 +2082,11 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(items).toEqual(["1. [위험도 미평가 · 검토 필요] 후보 1", "2. [위험도 미평가 · 검토 필요] 후보 2"]);
     expect(doc.querySelectorAll("hr")).toHaveLength(1);
     expect(doc).not.toHaveTextContent("정상 대조 줄");
-    expect(doc).toHaveTextContent("PoC / 증거:");
+    // 오른쪽 상세와 같은 이름: 거부된 시도도 있으므로 송신·응답을 단정하지 않는다.
+    expect(doc).toHaveTextContent("요청 시도 · 응답 관찰:");
+    expect(doc).not.toHaveTextContent(/PoC \/ 증거|ID candidate-/);
     expect(doc).toHaveTextContent("구조화된 실제 재현 단계 미확보");
-    expect(doc).toHaveTextContent("계정 B로 계정 A 주문 조회 — GET /api/orders/2");
+    expect(doc).toHaveTextContent("요청 1 · 계정 B로 계정 A 주문 조회 — GET /api/orders/2");
     expect(doc).toHaveTextContent("사전 조건: 시험 계정 A · B");
     // 요청·응답은 코드 상자, 비밀은 가린다(엔티티로 숨긴 값도 풀리지 않는다)
     expect(doc.querySelector("pre code")).not.toBeNull();
@@ -2106,6 +2094,109 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     fireEvent.click(within(doc).getByRole("button", { name: "복사" }));
     await within(doc).findByText("보고서 글을 복사했습니다.");
     expect(writeText.mock.calls[0][0]).not.toMatch(/synthetic-poc-token|synthetic-poc-entity|&#/);
+  });
+
+  it("대표 경로와 E② 요청 시도의 관찰 경로를 구분하고 취약한 경로로 단정하지 않는다", () => {
+    const obs = (endpoint: string, method?: string) => ({ endpoint, method });
+    const withCtx = (context: Record<string, unknown>) =>
+      ({ ...candidate(1), context }) as unknown as Parameters<typeof entryEp>[0];
+    // 서버가 엔진 후보의 대표 경로를 채우지 않음('미확인') → 관찰 경로
+    expect(entryEp(withCtx({ endpoint: "미확인", observations: [obs("GET /users/v1/name1", "GET")] }))).toEqual({
+      m: "GET",
+      p: "/users/v1/name1",
+      more: 0,
+    });
+    // 같은 경로는 한 번, 다른 경로는 '외 n개'
+    expect(
+      entryEp(
+        withCtx({
+          observations: [
+            obs("GET /users/v1/name1", "GET"),
+            obs("GET /users/v1/name1", "GET"),
+            obs("GET /users/v1/name2", "GET"),
+          ],
+        }),
+      ),
+    ).toEqual({ m: "GET", p: "/users/v1/name1", more: 1 });
+    // 경로 글에 메서드가 없으면 따로 받은 메서드, 경로가 / 로 시작하지 않거나 미확인이면 버린다
+    expect(entryEp(withCtx({ observations: [obs("/books/v1", "post")] }))).toEqual({
+      m: "POST",
+      p: "/books/v1",
+      more: 0,
+    });
+    expect(entryEp(withCtx({ observations: [obs("unknown"), obs("http://x.test/a")] }))).toBeNull();
+    // 대표 경로가 있으면 그것(메서드가 글에 있으면 그대로, 없으면 같은 경로 관찰이 한 가지일 때만)
+    expect(entryEp(withCtx({ endpoint: "PUT /api/orders/{id}" }))).toEqual({
+      m: "PUT",
+      p: "/api/orders/{id}",
+      more: 0,
+    });
+    expect(
+      entryEp(withCtx({ endpoint: "/api/orders/{id}", observations: [obs("/api/orders/{id}", "DELETE")] })),
+    ).toEqual({ m: "DELETE", p: "/api/orders/{id}", more: 0 });
+    // 보고서 문서에도 같은 경로와 나머지 수
+    const md = buildPocMarkdown(
+      [withCtx({ observations: [obs("GET /users/v1/name1", "GET"), obs("GET /users/v1/name2", "GET")] })],
+      { targetUrl: "https://target.example/", mode: null, model: null, excluded: null, crawl: null },
+    );
+    expect(md).toContain("관찰된 요청 경로 GET /users/v1/name1 외 1개");
+    expect(md).not.toContain("취약한 경로");
+    // 전송되지 않은 E② 요청 시도도 관찰에 남는다. 그 경로가 취약하다는 뜻으로 표시하면 안 된다.
+    const denied = buildPocMarkdown(
+      [withCtx({ observations: [{ endpoint: "GET /api/me", method: "GET", observation: "전송 시도=false" }] })],
+      { targetUrl: "https://target.example/", mode: null, model: null, excluded: null, crawl: null },
+    );
+    expect(denied).toContain("관찰된 요청 경로 GET /api/me");
+    expect(denied).not.toContain("취약한 경로");
+    expect(denied).toContain("**요청 시도 · 응답 관찰:**");
+    expect(denied).not.toContain("**실제 요청 · 응답:**");
+    const view = render(
+      <FindingDetail
+        e={withCtx({ observations: [{ endpoint: "GET /api/me", method: "GET", observation: "전송 시도=false" }] })}
+        host={null}
+        taskId="42"
+        onReload={noop}
+      />,
+    );
+    expect(within(view.container).getByText("관찰된 요청 경로")).toBeInTheDocument();
+    expect(within(view.container).queryByText("취약한 경로")).toBeNull();
+    view.unmount();
+    // 문서도 오른쪽 상세와 같은 이름: 발견 시각, 내부 ID 없음, 서버 기본 단계 제목은 '요청 n'(사용자 11/19 · 11/20)
+    expect(md).toMatch(/발견 시각 \d{4}-/);
+    expect(md).not.toMatch(/ID candidate-|저장된 실행 관찰/);
+    const withStep = buildPocMarkdown(
+      [
+        {
+          ...candidate(1),
+          steps: [
+            {
+              task_id: 42,
+              entry_id: "candidate-1",
+              id: `step-${"c".repeat(24)}`,
+              number: 1,
+              title: "저장된 실행 관찰 1",
+              source_step_id: "s1",
+              run_ref: "run-1",
+              call_ref: "",
+              evidence_ref: "e1",
+              evidence_version: 1,
+              evidence_digest: "e".repeat(64),
+              binding_digest: "b".repeat(64),
+              observed_at: "2026-11-09T12:10:00Z",
+              method: "GET",
+              path: "/users/v1/name1",
+              prerequisites: "",
+              observation: "200",
+              truncated: false,
+              capture: { status: "not_captured" as const },
+            },
+          ],
+        },
+      ],
+      { targetUrl: "https://target.example/", mode: null, model: null, excluded: null, crawl: null },
+    );
+    expect(withStep).toContain("- **요청 1** — GET /users/v1/name1");
+    expect(withStep).not.toContain("저장된 실행 관찰");
   });
 
   it("PoC 문서: 코드 상자 울타리는 본문의 ` 줄보다 길게, 목록 줄 글의 줄바꿈은 띄어쓰기로", () => {
@@ -2155,8 +2246,8 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     const header = (await screen.findByRole("heading", { level: 1, name: "target.example 보고서" })).closest(
       "header",
     ) as HTMLElement;
-    const use = await within(header).findByText(/^모델 사용량/);
-    expect(use).toHaveTextContent(/^모델 사용량 입 1.2k 출 300 \(최대\)$/);
+    const use = await within(header).findByText(/^토큰/);
+    expect(use).toHaveTextContent(/^토큰 입 1.2k 출 300 \(최대\)$/);
     expect(use).toHaveAttribute("title", "입력 1,200 토큰 (최대치)\n출력 300 토큰 (최대치)");
     expect(header).not.toHaveTextContent("자산 커버리지");
   });
