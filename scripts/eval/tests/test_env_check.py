@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import sys
 import unittest
@@ -164,7 +166,10 @@ class TestParsers(unittest.TestCase):
 
 class TestMain(unittest.TestCase):
     def test_unreadable_config_is_a_failure(self):
-        self.assertEqual(env_check.main(["--config", "/nonexistent/runner.json"]), 1)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(env_check.main(["--config", "/nonexistent/runner.json"]), 1)
+        self.assertEqual(out.getvalue(), "FAIL config: 러너 설정을 읽지 못함\n")
 
 
 if __name__ == "__main__":
