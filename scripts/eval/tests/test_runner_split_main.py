@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import dataclasses
 import io
 import json
 import os
@@ -17,6 +18,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import runner  # noqa: E402
+from runner_checks import Listener  # noqa: E402
 import runner_split_main  # noqa: E402
 from runner_config import Image, RunnerConfigError, gateway_sampling, parse_runner_config, plan_run  # noqa: E402
 from runner_docker import DockerError  # noqa: E402
@@ -156,7 +158,7 @@ class TestSyntheticDeclared(SyntheticFixture):
         with mock.patch.object(runner_split_main.Docker, "env_file_value", side_effect=AssertionError("key read")), \
                 mock.patch.object(runner_split_main, "prepare_split_inputs", wraps=runner_split_main.prepare_split_inputs) as prepared, \
                 redirect_stderr(io.StringIO()):
-            code = run_split_ours(self.config, synthetic_preflight(self.config), docker_runner=docker_runner)
+            code = run_split_ours(self.config, synthetic_preflight(self.config), docker_runner=docker_runner, condition="우리@test")
         self.assertEqual(code, 2)
         local = prepared.call_args.kwargs["local_model"]
         self.assertEqual((prepared.call_args.kwargs["manifest"], local["addresses"], local["base_url"], local["context_window_k"]),
@@ -173,7 +175,9 @@ class TestDeclared(Fixture):
                                                  meter_port=8080, request_budget=ours["request_budget"],
                                                  time_budget_seconds=ours["time_budget_seconds"], llm_provider="example-provider",
                                                  llm_sampling=json.loads(gateway_sampling(ours, "ours")),
-                                                 meter_source_sha=ours["source_sha"], llm_model=ours["llm"]["model"]))
+                                                 meter_source_sha=ours["source_sha"], llm_model=ours["llm"]["model"],
+                                                 target_origin=ours["target_origin"], fixture_fingerprint=ours["fixture_fingerprint"],
+                                                 environment_fingerprint=ours["environment_fingerprint"]))
 
     def test_lookup_env_and_sampling_match_the_b_gateway(self):
         # O 사후 검증의 조회 설정·샘플링 기대값은 같은 선언으로 만든 B 게이트웨이 compose 값과 같아야 한다.
@@ -218,7 +222,7 @@ class TestSpec(Fixture):
         plan = plan_split_run(self.config, self.config.split, run_id="ours-r1", target_image=declared.target_image,
                               meter_port=declared.meter_port, request_cap=100)
         rendered = {"services": {"api": {"healthcheck": {"test": ["CMD", "true"]}}, "target": {}}}
-        spec = split_run_spec(self.config, plan, declared, rendered)
+        spec = split_run_spec(self.config, plan, declared, rendered, condition="우리@test")
         run = self.config.run
         self.assertEqual((spec.run_id, spec.project), ("ours-r1", "eval-ours-r1"))
         self.assertEqual((spec.request_budget, spec.time_budget_seconds), (declared.request_budget, declared.time_budget_seconds))
@@ -234,6 +238,23 @@ class TestSpec(Fixture):
         self.assertEqual((spec.llm_sampling, spec.llm_provider_slug, spec.llm_provider_name),
                          (declared.llm_sampling, "example-provider", self.config.llm_gateway["expected_provider_name"]))
         self.assertEqual(spec.meter_source_sha, configuration()["ours"]["source_sha"])  # 계측기 기대 빌드
+        # v1.1 러너 기록 칸은 B build_spec과 같은 출처(사전검사 O 선언·러너 설정)다
+        ours = preflight_for(self.config)["ours"]
+        self.assertEqual((spec.fixture_fingerprint, spec.environment_fingerprint, spec.target_origin),
+                         (ours["fixture_fingerprint"], ours["environment_fingerprint"], ours["target_origin"]))
+        self.assertEqual((spec.observer_path, spec.observer_readonly_ref),
+                         (self.config.observer_path, self.config.observer_readonly_ref))
+        self.assertEqual(spec.allowed_listens,
+                         frozenset(Listener(e.address, e.port) for e in self.config.host_listen_allowlist))
+        from runner_config import HostListen
+        allowed = dataclasses.replace(self.config, host_listen_allowlist=(HostListen("10.0.0.5", 11434, "local model"),))
+        self.assertEqual(split_run_spec(allowed, plan, declared, rendered, condition="우리@test").allowed_listens, frozenset({Listener("10.0.0.5", 11434)}))
+        self.assertEqual(split_run_spec(self.config, plan, declared, rendered, condition="ours@35b").condition, "ours@35b")
+        # 실행 입력을 만드는 시점에 빈 기록 칸을 설정 오류로 거부한다(종료 코드 2, 회차를 만들지 않음, #745 리뷰)
+        for condition in ("", "   "):
+            with self.subTest(condition=condition), self.assertRaises(RunnerConfigError) as caught:
+                split_run_spec(self.config, plan, declared, rendered, condition=condition)
+            self.assertEqual(caught.exception.errors, ["split_run_spec.condition: MISSING"])
 
 
 class TestMainDispatch(Fixture):
@@ -255,6 +276,8 @@ class TestMainDispatch(Fixture):
         # 반복 순번은 B와 같이 --repeat에서 받는다(보존 sidecar v3의 repeat_index)
         _, split_run = self.call_main("ours", repeat="2")
         self.assertEqual(split_run.call_args.kwargs["repeat_index"], 2)
+        # 측정 매트릭스 행 이름도 B처럼 --condition에서 받아 v1.1 기록에 서명된다
+        self.assertEqual(split_run.call_args.kwargs["condition"], "x")
 
     def test_baseline_stays_on_the_direct_layout(self):
         with mock.patch.object(runner, "plan_run", side_effect=RunnerConfigError(["stop-here"])):
@@ -264,13 +287,23 @@ class TestMainDispatch(Fixture):
 
 
 class TestBeforeUp(Fixture):
-    def run_ours(self, **patches):
+    def run_ours(self, condition="우리@test", **patches):
         stdout, stderr = io.StringIO(), io.StringIO()
         defaults = {"run_openssl": FakeOpenssl()}
         defaults.update(patches)
         with mock.patch.multiple(runner_split_main, **defaults), redirect_stdout(stdout), redirect_stderr(stderr):
-            code = run_split_ours(self.config, preflight_for(self.config), environ={})
+            code = run_split_ours(self.config, preflight_for(self.config), environ={}, condition=condition)
         return code, stderr.getvalue()
+
+    def test_empty_condition_is_a_config_error_before_anything_starts(self):
+        # 조건 이름 없이 부르면 실행 입력을 만들 때 설정 오류다(종료 코드 2, 회차를 시작하지 않고 회차 디렉터리도 지움, #745 리뷰)
+        rendered = {"services": {"api": {"healthcheck": {"test": ["CMD-SHELL", "true"]}}}}
+        with mock.patch.object(runner_split_main.Docker, "compose_config", lambda self, args: copy.deepcopy(rendered)), \
+                mock.patch.object(runner_split_main.Docker, "env_file_value", lambda docker, path, name, scratch: "sk-or-v1-test"):
+            code, stderr = self.run_ours(execute_split_run=mock.Mock(side_effect=AssertionError("started")), condition="")
+        self.assertEqual(code, 2)
+        self.assertIn("split_run_spec.condition: MISSING", stderr)
+        self.assertEqual(list(self.runs.iterdir()), [])
 
     def test_render_failure_removes_inputs_and_the_run_directory(self):
         def compose_config(self, args):
