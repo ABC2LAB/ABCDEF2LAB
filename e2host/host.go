@@ -2,10 +2,14 @@
 package e2host
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -44,9 +48,45 @@ type run struct {
 	sealOK      bool
 	interruptOK bool
 	fenced      bool
-	ctx         context.Context
-	cancel      context.CancelFunc
+	// issued는 이 세션이 Verified로 내준 근거 체크포인트다. 봉인 때 봉인 head에 포함되는지 확인한다.
+	issued []e2proxy.JournalCheckpoint
+	ctx    context.Context
+	cancel context.CancelFunc
 }
+
+// maxSealChecks는 한 실행에서 근거로 내줄 수 있는 서로 다른 체크포인트 수의 상한이다. E③ 확정 단계는 실행마다
+// 신원 2 + 종류(최대 16) × 3번만 묻는다. 상한은 봉인 응답이 IPC 한 줄 상한 안에 들도록 둔 것이다.
+const maxSealChecks = 128
+
+// Verification은 확정 단계 결과 사건과 그 사건을 검증한 현재 head 체크포인트다. 판정은 이 체크포인트를 근거로
+// 저장하고, 봉인 뒤 그 체크포인트가 봉인 저널 앞부분에 있는지 따로 확인한다(E1, 2026-11-20 결정).
+type Verification struct {
+	Event      e2proxy.Event
+	Checkpoint e2proxy.JournalCheckpoint
+}
+
+// SealCheck는 내준 근거 체크포인트 하나의 봉인 포함 결과다. 같은 저널의 체크포인트라 저널 ID·범위는 Head와 같다.
+type SealCheck struct {
+	Sequence uint64 `json:"sequence"`
+	MAC      string `json:"mac"`
+	Included bool   `json:"included"`
+}
+
+// SealResult는 마감 head와 근거 체크포인트별 포함 결과다. Included=false는 마감 저널이 그 체크포인트를 앞부분으로
+// 갖지 않는다는 뜻이다(되감기·다른 분기). Phase는 마감 종류다. 봉인 응답은 늘 sealed이고, 연결이 끊겨 Host가
+// interrupted로 마감한 저널은 Host 볼륨 기록에만 interrupted로 남는다 — 포함돼도 정상 봉인으로 보지 않는다.
+type SealResult struct {
+	Phase  e2checkpoint.Phase        `json:"phase"`
+	Head   e2proxy.JournalCheckpoint `json:"head"`
+	Checks []SealCheck               `json:"checks"`
+}
+
+const (
+	sealChecksVersion = "jindo.e2host-seal-checks/v1"
+	issuedVersion     = "jindo.e2host-evidence-checkpoints/v1"
+	sealChecksFile    = "seal-checks"
+	issuedFile        = "evidence-checkpoints"
+)
 
 type lease struct{ run *run }
 
@@ -176,11 +216,27 @@ type Session struct{ run *run }
 // Verified는 현재 저장소 head와 같은 저널 스냅샷에서 마지막 E③ 결과만 돌려준다.
 // 호출자 제공 참조나 이전 ACK는 현재성의 근거로 사용하지 않는다.
 func (s *Session) Verified(ctx context.Context, binding e3contract.RunBinding, ref e3contract.CallRef) (e2proxy.Event, error) {
+	v, err := s.VerifiedAt(ctx, binding, ref)
+	return v.Event, err
+}
+
+// VerifiedAt은 Verified와 같고, 검증에 쓴 현재 head 체크포인트를 함께 돌려준다. 돌려준 체크포인트는 봉인 때 포함
+// 여부를 확인할 목록에 남긴다.
+func (s *Session) VerifiedAt(ctx context.Context, binding e3contract.RunBinding, ref e3contract.CallRef) (Verification, error) {
+	event, checkpoint, err := s.verified(ctx, binding, ref)
+	if err != nil {
+		return Verification{}, err
+	}
+	return Verification{Event: event, Checkpoint: checkpoint}, nil
+}
+
+func (s *Session) verified(ctx context.Context, binding e3contract.RunBinding, ref e3contract.CallRef) (e2proxy.Event, e2proxy.JournalCheckpoint, error) {
+	none := e2proxy.JournalCheckpoint{}
 	if s == nil || s.run == nil || ctx == nil {
-		return e2proxy.Event{}, ErrUnavailable
+		return e2proxy.Event{}, none, ErrUnavailable
 	}
 	if binding.Validate() != nil || ref.CallRef == "" || ref.AttemptID == "" || ref.Sequence == 0 {
-		return e2proxy.Event{}, ErrBindingMismatch
+		return e2proxy.Event{}, none, ErrBindingMismatch
 	}
 	r := s.run
 	r.mu.Lock()
@@ -189,15 +245,16 @@ func (s *Session) Verified(ctx context.Context, binding e3contract.RunBinding, r
 	fenced := r.fenced
 	r.owner.mu.Unlock()
 	if r.closed || fenced || r.recorder == nil || r.ctx.Err() != nil {
-		return e2proxy.Event{}, ErrUnavailable
+		return e2proxy.Event{}, none, ErrUnavailable
 	}
 	if binding.RunRef != r.scope.RunRef || binding.TaskRef != r.scope.TaskRef ||
 		binding.E2PolicyRef != r.scope.PolicyRef {
-		return e2proxy.Event{}, ErrBindingMismatch
+		return e2proxy.Event{}, none, ErrBindingMismatch
 	}
 	events, head, err := r.verifiedEvents(ctx)
-	if err != nil || head.Phase != e2checkpoint.Open || !allAttemptsFinished(events) {
-		return e2proxy.Event{}, ErrUnavailable
+	if err != nil || head.Phase != e2checkpoint.Open || !allAttemptsFinished(events) ||
+		head.Checkpoint.Version != e2proxy.JournalVersionV3 || head.Checkpoint.Scope != r.scope {
+		return e2proxy.Event{}, none, ErrUnavailable
 	}
 	var latest e2proxy.Event
 	for _, event := range events {
@@ -206,7 +263,7 @@ func (s *Session) Verified(ctx context.Context, binding e3contract.RunBinding, r
 		}
 	}
 	if latest.Stage == "" {
-		return e2proxy.Event{}, ErrEventMissing
+		return e2proxy.Event{}, none, ErrEventMissing
 	}
 	if latest.AttemptID != ref.AttemptID || latest.Sequence != ref.Sequence ||
 		latest.PolicyRevision != r.revision || latest.E3Audit == nil ||
@@ -214,9 +271,57 @@ func (s *Session) Verified(ctx context.Context, binding e3contract.RunBinding, r
 		latest.E3Audit.E3.GenerationRef != binding.GenerationRef ||
 		latest.E3Audit.E3.InstanceRef != binding.InstanceRef ||
 		latest.E3Audit.E3.Policy != binding.Policy {
-		return e2proxy.Event{}, ErrBindingMismatch
+		return e2proxy.Event{}, none, ErrBindingMismatch
 	}
-	return latest, nil
+	if !r.issue(head.Checkpoint) {
+		return e2proxy.Event{}, none, ErrUnavailable
+	}
+	return latest, head.Checkpoint, nil
+}
+
+// issue는 내줄 체크포인트를 봉인 확인 목록에 넣는다. 같은 head면 한 번만 넣고, 상한을 넘는 새 체크포인트는 내주지
+// 않는다(봉인 때 확인하지 못할 근거를 주지 않는다). 목록은 내주기 전에 Host 볼륨에 남겨, 연결이 끊겨 Host가
+// interrupted로 마감할 때(다른 run 객체·재기동 뒤)도 같은 목록으로 대조한다. 호출자는 run 잠금을 보유한다.
+func (r *run) issue(checkpoint e2proxy.JournalCheckpoint) bool {
+	for _, issued := range r.issued {
+		if issued == checkpoint {
+			return true
+		}
+	}
+	if len(r.issued) >= maxSealChecks {
+		return false
+	}
+	next := append(append([]e2proxy.JournalCheckpoint(nil), r.issued...), checkpoint)
+	data, err := json.Marshal(issuedRecord{Version: issuedVersion, Checkpoints: next})
+	if err != nil || writePrivateFile(r.directory, issuedFile, data) != nil {
+		return false
+	}
+	r.issued = next
+	return true
+}
+
+type issuedRecord struct {
+	Version     string                      `json:"version"`
+	Checkpoints []e2proxy.JournalCheckpoint `json:"checkpoints"`
+}
+
+// readIssued는 Host 볼륨의 근거 목록을 읽는다. 파일이 없으면 내준 근거가 없다.
+func readIssued(directory string) ([]e2proxy.JournalCheckpoint, error) {
+	path := filepath.Join(directory, issuedFile+".json")
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	raw, err := readSnapshot(path)
+	if err != nil {
+		return nil, ErrUnavailable
+	}
+	var record issuedRecord
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&record) != nil || record.Version != issuedVersion || len(record.Checkpoints) > maxSealChecks {
+		return nil, ErrUnavailable
+	}
+	return record.Checkpoints, nil
 }
 
 func (s *Session) Record(ctx context.Context, event e2proxy.Event) error {
@@ -250,8 +355,16 @@ func (s *Session) Record(ctx context.Context, event e2proxy.Event) error {
 
 // Seal은 실행 측의 drain 완료 통지를 받은 뒤에만 요청된다.
 func (s *Session) Seal(ctx context.Context) error {
+	_, err := s.SealChecked(ctx)
+	return err
+}
+
+// SealChecked는 Seal과 같고, 봉인한 뒤 이 세션이 내준 근거 체크포인트마다 봉인 head에 포함되는지 확인한 결과를
+// Host 볼륨(seal-checks.json)에 남기고 돌려준다. 확인 자체를 못 하면(읽기 실패 등) 봉인은 성공으로 두고 결과만
+// nil이다 — 호출자는 이를 "봉인 미확인"으로 다룬다.
+func (s *Session) SealChecked(ctx context.Context) (*SealResult, error) {
 	if s == nil || s.run == nil || ctx == nil {
-		return ErrUnavailable
+		return nil, ErrUnavailable
 	}
 	r := s.run
 	r.mu.Lock()
@@ -263,28 +376,65 @@ func (s *Session) Seal(ctx context.Context) error {
 	}
 	r.owner.mu.Unlock()
 	if r.closed || r.recorder == nil || fenced {
-		return ErrUnavailable
+		return nil, ErrUnavailable
 	}
 	// 호출자의 drain 주장만 믿지 않는다. 모든 송신 의도에 결과가 있고
 	// 현재 DB head와 Host 저널이 일치해야 감사 봉인을 허용한다.
 	if r.completeAudit(ctx, e2checkpoint.Open) != nil {
-		return ErrUnavailable
+		return nil, ErrUnavailable
 	}
 	if err := r.recorder.Seal(ctx); err != nil {
 		r.owner.mu.Lock()
 		r.fenced = true
 		r.owner.mu.Unlock()
-		return ErrUnavailable
+		return nil, ErrUnavailable
 	}
 	if r.persistHead(ctx) != nil {
 		r.owner.mu.Lock()
 		r.fenced = true
 		r.owner.mu.Unlock()
-		return ErrUnavailable
+		return nil, ErrUnavailable
+	}
+	// 확인을 못 해도(읽기·기록 실패) 봉인은 이미 저장소에 게시됐다. 결과 없음으로 돌려줘 호출자가 "봉인 미확인"으로
+	// 남기게 한다(봉인 실패·ACK 불명과는 오류 여부로 갈린다).
+	result, err := r.phaseChecks(ctx, e2checkpoint.Sealed, r.issued)
+	if err != nil {
+		result = nil
 	}
 	r.closed = true
 	r.owner.remove(r)
-	return nil
+	return result, nil
+}
+
+// phaseChecks는 신뢰 저장소가 인증한 현재 마감 head(VerifyCurrent)와 같은 스냅샷에서 근거 체크포인트마다
+// VerifyJournalV3Extension(근거 → 마감 head)을 돌리고 Host 볼륨에 남긴다. 인증 체인이 맞지 않으면
+// (ErrJournalIntegrity) 포함 실패이고, 그 밖의 오류는 확인 불가다. 호출자는 run 잠금을 보유한다(복구 중의 새
+// run은 다른 호출자가 볼 수 없다).
+func (r *run) phaseChecks(ctx context.Context, phase e2checkpoint.Phase, issued []e2proxy.JournalCheckpoint) (*SealResult, error) {
+	snapshot, current, err := r.verifiedSnapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(snapshot)
+	if current.Phase != phase || current.Checkpoint.Version != e2proxy.JournalVersionV3 || current.Checkpoint.Scope != r.scope {
+		return nil, ErrUnavailable
+	}
+	out := &SealResult{Phase: phase, Head: current.Checkpoint, Checks: make([]SealCheck, 0, len(issued))}
+	for _, checkpoint := range issued {
+		_, err := e2proxy.VerifyJournalV3Extension(ctx, bytes.NewReader(snapshot), r.owner.key, checkpoint, current.Checkpoint)
+		if err != nil && !errors.Is(err, e2proxy.ErrJournalIntegrity) {
+			return nil, ErrUnavailable
+		}
+		out.Checks = append(out.Checks, SealCheck{Sequence: checkpoint.Sequence, MAC: checkpoint.MAC, Included: err == nil})
+	}
+	data, err := json.Marshal(struct {
+		Version string `json:"version"`
+		*SealResult
+	}{sealChecksVersion, out})
+	if err != nil || writePrivateFile(r.directory, sealChecksFile, data) != nil {
+		return nil, ErrUnavailable
+	}
+	return out, nil
 }
 
 func (s *Session) Abort() error {

@@ -1,0 +1,289 @@
+// 제품 판정 목록(#801·#806): 파서는 서버가 만든 응답(server-golden: #806 server 조립 함수로 뽑은 실제 JSON)을 모두 받고,
+// 서버가 만들 수 없는 값은 응답 전체로 거절한다(#689 방어 파서 원칙). 화면은 평가 판정과 섞지 않고, 빈 목록을 '취약점 없음'으로
+// 읽히지 않게, 진위 실패 행은 값을 숨긴 채로 보인다.
+
+import "@testing-library/jest-dom/vitest";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@/lib/diagnosis/api", async (original) => ({
+  ...(await original<typeof import("@/lib/diagnosis/api")>()),
+  apiFetch: vi.fn(),
+}));
+
+import { ApiError, apiFetch } from "@/lib/diagnosis/api";
+import { running } from "@/lib/diagnosis/diagnosis-url-fixtures";
+
+import { dateTimeOf } from "../live/map";
+import { isProductVerdictsShapeError, parseProductVerdicts } from "../live/productVerdicts";
+import { resetUrl, useUrl } from "../live/urlDiagnosis";
+import { ProductVerdictMap, ProductVerdictReport } from "../views/live/productVerdictViews";
+import { AccessMapPanel } from "../views/live/UrlAccessMapLive";
+import golden from "./product-verdicts.server-golden.json";
+
+type Json = Record<string, unknown>;
+const cases = golden as unknown as Record<string, Json & { task_id: string; items: Json[] }>;
+const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
+
+beforeEach(() => vi.resetAllMocks());
+afterEach(cleanup);
+
+describe("parseProductVerdicts", () => {
+  it("서버가 만든 응답 7가지를 모두 받는다", () => {
+    expect(Object.keys(cases).sort()).toEqual([
+      "disabled_no_labels",
+      "empty",
+      "mixed_integrity",
+      "revisions_differ",
+      "source_not_found",
+      "unreadable",
+      "verified",
+    ]);
+    for (const [name, raw] of Object.entries(cases)) {
+      const got = parseProductVerdicts(raw, raw.task_id);
+      expect(got.taskId, name).toBe(raw.task_id);
+      expect(got.items, name).toHaveLength(raw.items.length);
+    }
+    const mixed = parseProductVerdicts(cases.mixed_integrity, cases.mixed_integrity.task_id);
+    expect(mixed.items.map((r) => r.recordStatus)).toEqual(["verified", "record_integrity_failed"]);
+    expect(mixed.policySource).toMatchObject({ ownerAccountLabel: "tester-a", crossAccountLabel: "tester-b" });
+    expect(mixed.confirmation).toEqual({ status: "completed", reason: null });
+    expect(parseProductVerdicts(cases.empty, cases.empty.task_id).confirmation).toBeNull();
+    expect(parseProductVerdicts(cases.source_not_found, cases.source_not_found.task_id).policySource).toBeNull();
+    expect(
+      parseProductVerdicts(cases.revisions_differ, cases.revisions_differ.task_id).policySource?.targetApprovalRevision,
+    ).toBeNull();
+  });
+
+  // 하나씩 서버가 만들 수 없는 값으로 바꾼다. 어느 것이든 응답 전체가 거절돼야 한다(일부만 그리지 않음)
+  const base = () => clone(cases.mixed_integrity);
+  const shown = (o: Json) => (o.items as Json[])[0];
+  const hidden = (o: Json) => (o.items as Json[])[1];
+  const bad: Record<string, (o: Json) => void> = {
+    "모르는 최상위 칸": (o) => {
+      o.extra = 1;
+    },
+    "최상위 칸 빠짐": (o) => {
+      delete o.confirmation;
+    },
+    "형식 판": (o) => {
+      o.format = "jindo.workbench-product-verdicts/v2";
+    },
+    "평가 판정 출처": (o) => {
+      o.source_kind = "eval";
+    },
+    "다른 작업": (o) => {
+      o.task_id = "999";
+    },
+    제목: (o) => {
+      o.title = "판정";
+    },
+    "정책 참조 접두": (o) => {
+      (o.policy_source as Json).ref = "kg-job-synthetic";
+    },
+    "정책 digest": (o) => {
+      (o.policy_source as Json).digest_sha256 = "ABC";
+    },
+    "라벨 하나만": (o) => {
+      (o.policy_source as Json).cross_account_label = null;
+    },
+    "같은 라벨": (o) => {
+      (o.policy_source as Json).cross_account_label = "tester-a";
+    },
+    "모르는 확정 단계 상태": (o) => {
+      (o.confirmation as Json).status = "skipped";
+    },
+    "unreadable 에 사유": (o) => {
+      o.confirmation = { status: "unreadable", reason: "io_error" };
+    },
+    "사유 형식": (o) => {
+      o.confirmation = { status: "disabled", reason: "Declaration Missing" };
+    },
+    "행 상한 초과": (o) => {
+      o.items = Array.from({ length: 17 }, (_, i) => ({ ...hidden(o), verdict_id: String(i + 1) }));
+    },
+    "판정 id 중복": (o) => {
+      hidden(o).verdict_id = shown(o).verdict_id;
+    },
+    "모르는 행 칸": (o) => {
+      shown(o).extra = 1;
+    },
+    "모르는 진위 상태": (o) => {
+      shown(o).record_status = "stale";
+    },
+    "숨긴 행에 값": (o) => {
+      hidden(o).oracle_value = "confirmed";
+    },
+    "숨긴 행에 후보": (o) => {
+      hidden(o).candidate_refs = ["candidate-1"];
+    },
+    "모르는 판정 값": (o) => {
+      shown(o).oracle_value = "vulnerable";
+    },
+    "검사 값": (o) => {
+      (shown(o).checks as Json).data = "maybe";
+    },
+    "자원 참조가 종류와 다름": (o) => {
+      shown(o).resource_ref = `other:${"b".repeat(64)}`;
+    },
+    "모르는 오라클 사유": (o) => {
+      shown(o).oracle_reason_codes = ["looks_vulnerable"];
+    },
+    "관찰 시각 정밀도": (o) => {
+      shown(o).observed_at = "2026-11-18T09:00:00Z";
+    },
+    "근거 호출 수 음수": (o) => {
+      shown(o).evidence_calls = -1;
+    },
+    "봉인 칸(E1 전)": (o) => {
+      shown(o).evidence_seal = "sealed";
+    },
+    "확정인데 검사 아니오": (o) => {
+      (shown(o).checks as Json).identity = "no";
+    },
+    "확정인데 근거 0": (o) => {
+      shown(o).evidence_calls = 0;
+    },
+    "확정인데 제품 사유": (o) => {
+      shown(o).product_reason_codes = ["product_write_record_unavailable"];
+    },
+    "정책 출처 없이 확인함": (o) => {
+      o.policy_source = null;
+    },
+  };
+  it.each(Object.entries(bad))("거절: %s", (_name, mutate) => {
+    const o = base();
+    // 변조 전 기준은 통과한다(공허한 거절이 아님)
+    expect(() => parseProductVerdicts(clone(o), o.task_id as string)).not.toThrow();
+    mutate(o);
+    let error: unknown = null;
+    try {
+      parseProductVerdicts(o, "2");
+    } catch (e) {
+      error = e;
+    }
+    expect(isProductVerdictsShapeError(error)).toBe(true);
+  });
+});
+
+function serve(body: unknown) {
+  vi.mocked(apiFetch).mockImplementation(async () => {
+    if (body instanceof Error) throw body;
+    return body as never;
+  });
+}
+
+describe("ProductVerdictReport", () => {
+  it("평가 목록과 따로, 출처 · 확정 단계 결과와 함께 행을 보이고 진위 실패 행은 값을 숨긴다", async () => {
+    serve(cases.mixed_integrity);
+    render(<ProductVerdictReport taskId="2" active />);
+    const sec = await screen.findByRole("region", { name: "제품 확정 단계 판정" });
+    await waitFor(() => expect(within(sec).getByText("2건")).toBeInTheDocument());
+    expect(vi.mocked(apiFetch).mock.calls[0][0]).toBe("/api/tasks/2/product-verdicts");
+    expect(sec).toHaveTextContent(
+      "출처: 제품 확정 단계 · 정책 선언 declaration-job-synthetic · 대상 승인 판 target-revision-1",
+    );
+    expect(sec).toHaveTextContent("확정 단계 마침");
+    const [ok, failed] = within(sec).getAllByRole("listitem");
+    expect(ok).toHaveTextContent("확정");
+    expect(ok).toHaveTextContent("document");
+    expect(ok).toHaveTextContent("검사: 정책 예 · 신원 예 · 데이터 예 · 근거 호출 1건");
+    expect(ok).toHaveTextContent(`관찰 ${dateTimeOf("2026-11-18T09:00:00.000000Z")}`);
+    expect(ok).toHaveTextContent("검토 대상 후보 1건 · 발견(finding)을 만들지 않고 후보는 수동 검토 필요 그대로입니다");
+    expect(failed).toHaveTextContent("값 숨김");
+    expect(failed).toHaveTextContent("판정 기록 무결성 확인 실패 · 값 숨김");
+    expect(failed).not.toHaveTextContent("note");
+  });
+
+  it("빈 목록은 '취약점 없음'으로 읽히지 않고, 확정 단계 결과가 없으면 꺼졌다고 하지 않는다", async () => {
+    serve(cases.empty);
+    render(<ProductVerdictReport taskId="4" active />);
+    const sec = await screen.findByRole("region", { name: "제품 확정 단계 판정" });
+    await waitFor(() =>
+      expect(sec).toHaveTextContent("제품 판정 없음 · 확정 단계 결과 미확인 · 취약점이 없다는 뜻이 아닙니다"),
+    );
+    expect(sec).not.toHaveTextContent("꺼짐");
+  });
+
+  it("확정 단계 꺼짐 · 사유와 당시 원본 미확인을 보인다", async () => {
+    serve(cases.disabled_no_labels);
+    const { unmount } = render(<ProductVerdictReport taskId="2" active />);
+    expect(await screen.findByText(/확정 단계 꺼짐 · 사유 declaration_missing/)).toBeInTheDocument();
+    unmount();
+    serve(cases.source_not_found);
+    render(<ProductVerdictReport taskId="2" active />);
+    const sec = await screen.findByRole("region", { name: "제품 확정 단계 판정" });
+    await waitFor(() => expect(within(sec).getAllByRole("listitem")).toHaveLength(2));
+    expect(sec).toHaveTextContent("출처: 제품 확정 단계 · 정책 선언 동결본 미확인");
+    expect(within(sec).getAllByText(/당시 원본 미확인 · 당시 정책 동결본을 읽지 못해/)).toHaveLength(2);
+  });
+
+  it("제품 관리 중계가 아니면(404) 구획을 두지 않고, 422 · 형식 오류는 '판정 없음'으로 접지 않는다", async () => {
+    serve(new ApiError(404, "not found"));
+    const { container, unmount } = render(<ProductVerdictReport taskId="2" active />);
+    await waitFor(() => expect(apiFetch).toHaveBeenCalled());
+    await waitFor(() => expect(container).toBeEmptyDOMElement());
+    unmount();
+    serve(new ApiError(422, "product_verdicts_integrity_failed"));
+    const r422 = render(<ProductVerdictReport taskId="2" active />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("상한을 넘어 표시하지 않습니다(잘라 보이지 않음)");
+    expect(screen.queryByText(/제품 판정 없음/)).toBeNull();
+    r422.unmount();
+    const broken = clone(cases.verified);
+    broken.source_kind = "eval";
+    serve(broken);
+    render(<ProductVerdictReport taskId="2" active />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "제품 판정 응답 형식을 확인하지 못해 표시하지 않습니다.",
+    );
+    expect(screen.queryByText(/제품 판정 없음/)).toBeNull();
+  });
+
+  it("탭이 안 보이거나 작업이 없으면 부르지 않는다", () => {
+    serve(cases.verified);
+    render(<ProductVerdictReport taskId="2" active={false} />);
+    render(<ProductVerdictReport taskId={null} active />);
+    expect(apiFetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("ProductVerdictMap", () => {
+  it("자원 종류 × 소유→교차 표, 열 머리는 동결본 라벨이고 숨긴 행은 표 밖에 건수만", async () => {
+    serve(cases.mixed_integrity);
+    render(<ProductVerdictMap taskId="2" active />);
+    const table = await screen.findByRole("table", { name: "자원 종류 × 소유→교차 제품 판정" });
+    expect(within(table).getByRole("columnheader", { name: "tester-a → tester-b" })).toBeInTheDocument();
+    expect(within(table).getAllByRole("row")).toHaveLength(2);
+    expect(within(table).getByRole("rowheader", { name: "document" })).toBeInTheDocument();
+    expect(screen.getByRole("note")).toHaveTextContent("판정 기록 무결성 확인 실패 · 값 숨김 1건");
+  });
+
+  it("라벨이 없으면 '소유 계정 → 교차 계정', 같은 종류에 판정이 둘이면 고르지 않는다", async () => {
+    const dup = clone(cases.disabled_no_labels);
+    (dup.items[1] as Json).resource_type = "document";
+    (dup.items[1] as Json).resource_ref = (dup.items[0] as Json).resource_ref;
+    serve(dup);
+    render(<ProductVerdictMap taskId="2" active />);
+    const table = await screen.findByRole("table", { name: "자원 종류 × 소유→교차 제품 판정" });
+    expect(within(table).getByRole("columnheader", { name: "소유 계정 → 교차 계정" })).toBeInTheDocument();
+    expect(within(table).getByText("판정 둘 이상 · 선택 안 함")).toBeInTheDocument();
+  });
+});
+
+describe("접근통제 지도 패널 연결", () => {
+  it("평가 지도가 409(KG 미등록)여도 같은 task 의 제품 판정 표를 따로 보인다", async () => {
+    resetUrl();
+    useUrl.setState({ job: running, verified: true });
+    const body = clone(cases.mixed_integrity);
+    body.task_id = running.task_id as string;
+    vi.mocked(apiFetch).mockImplementation(async (path) => {
+      if (path === `/api/tasks/${running.task_id}/access-map`) throw new ApiError(409, "kg_unregistered");
+      if (path === `/api/tasks/${running.task_id}/product-verdicts`) return body as never;
+      throw new Error(`unexpected ${String(path)}`);
+    });
+    render(<AccessMapPanel active />);
+    expect(await screen.findByRole("table", { name: "자원 종류 × 소유→교차 제품 판정" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(/KG 미등록/);
+    expect(screen.queryByRole("table", { name: /격자/ })).toBeNull();
+  });
+});
