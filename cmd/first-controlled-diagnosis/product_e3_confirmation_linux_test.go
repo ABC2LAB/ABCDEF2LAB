@@ -452,7 +452,7 @@ func TestProductWriteRecorderSettle(t *testing.T) {
 			r, _, target, _ := declarationTestTarget(t)
 			w := productWriteRecorder{registry: r, targetID: target.ID, jobID: liveJob}
 			binding := e3contract.RunBinding{JobRef: liveJob}
-			if err := w.Reserve(t.Context(), binding, "note"); err != nil {
+			if err := w.Reserve(t.Context(), binding, "note", ""); err != nil {
 				t.Fatal(err)
 			}
 			if err := w.Settle(t.Context(), binding, c.write); err != nil {
@@ -466,7 +466,7 @@ func TestProductWriteRecorderSettle(t *testing.T) {
 	r, _, target, _ := declarationTestTarget(t)
 	w := productWriteRecorder{registry: r, targetID: target.ID, jobID: liveJob}
 	other := e3contract.RunBinding{JobRef: "job-other"}
-	if w.Reserve(t.Context(), other, "note") == nil || w.Settle(t.Context(), other, e3contract.ConfirmationWrite{ResourceType: "note", Outcome: e3contract.WriteNotSent}) == nil {
+	if w.Reserve(t.Context(), other, "note", "") == nil || w.Settle(t.Context(), other, e3contract.ConfirmationWrite{ResourceType: "note", Outcome: e3contract.WriteNotSent}) == nil {
 		t.Fatal("다른 회차 결속으로 쓰기 기록을 남김")
 	}
 	if r.resets[target.ID] != nil {
@@ -647,11 +647,11 @@ type failingWrites struct {
 	reserve, settle bool
 }
 
-func (f failingWrites) Reserve(ctx context.Context, b e3contract.RunBinding, typ string) error {
+func (f failingWrites) Reserve(ctx context.Context, b e3contract.RunBinding, typ, objectID string) error {
 	if f.reserve {
 		return errors.New("synthetic reserve failure")
 	}
-	return f.WriteRecorder.Reserve(ctx, b, typ)
+	return f.WriteRecorder.Reserve(ctx, b, typ, objectID)
 }
 
 func (f failingWrites) Settle(ctx context.Context, b e3contract.RunBinding, w e3contract.ConfirmationWrite) error {

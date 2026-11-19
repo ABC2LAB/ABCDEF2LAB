@@ -23,7 +23,10 @@ type Request struct {
 	MarkerField  string
 	CreateRef    e3contract.CallRef
 	Marker       e3contract.Marker
-	Timeout      time.Duration
+	// Body는 확정 단계가 조립한 생성 본문이다(생성만). ObjectID는 요청 본문 칸 ID다(id_field일 때 생성·조회).
+	Body     e3contract.RequestBody
+	ObjectID string
+	Timeout  time.Duration
 }
 
 // E2는 어댑터가 E²(영수증·저널 v3, 이동찬)에 기대는 것이다(계약 §5·§9).
@@ -82,14 +85,14 @@ func (a *Adapter) Identity(ctx context.Context, req e3contract.IdentityRequest) 
 func (a *Adapter) Create(ctx context.Context, req e3contract.CreateRequest) (e3contract.Observation, error) {
 	return a.send(ctx, Request{Program: e3contract.PurposeCreate, Binding: req.Binding, Role: e3contract.RoleOwner,
 		AccountLabel: req.AccountLabel, ResourceType: req.ResourceType, Create: req.Spec, MarkerField: req.Spec.MarkerField,
-		Marker: req.Marker, Timeout: req.Timeout})
+		Marker: req.Marker, Body: req.Body, ObjectID: req.ObjectID, Timeout: req.Timeout})
 }
 
 // Read는 생성한 객체를 조회한다.
 func (a *Adapter) Read(ctx context.Context, req e3contract.ReadRequest) (e3contract.Observation, error) {
 	return a.send(ctx, Request{Program: e3contract.PurposeRead, Binding: req.Binding, Role: req.Role,
 		AccountLabel: req.AccountLabel, ResourceType: req.ResourceType, Read: req.Spec, MarkerField: req.MarkerField,
-		CreateRef: req.Create, Marker: req.Marker, Timeout: req.Timeout})
+		CreateRef: req.Create, ObjectID: req.ObjectID, Marker: req.Marker, Timeout: req.Timeout})
 }
 
 func (a *Adapter) send(ctx context.Context, req Request) (e3contract.Observation, error) {
