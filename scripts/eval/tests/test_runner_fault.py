@@ -192,6 +192,18 @@ class TestFaultStallJudge(unittest.TestCase):
         empty = fault_stall_record([], [], START, stamp(12.5), None)
         self.assertEqual(empty["max_event_gap_before_end_seconds"], 12.5)
 
+    def test_trailing_gap_is_last_activity_to_the_end(self):
+        # 시간 상한 마감 구분(고정 초안 §21): 마지막 활동 사건부터 끝까지. 중간의 긴 공백(190초)이 아니라 끝 공백이다.
+        record = fault_stall_record([llm(1, 0.0, 10.0), llm(2, 10.0, 200.0), llm(3, 205.0, 206.0)], [], START, stamp(220.0), None)
+        self.assertEqual(record["trailing_event_gap_seconds"], 14.0)
+        # 빈 계획 대기: 마지막 호출 뒤 창 끝(1500초)까지 아무 활동이 없다
+        idle = fault_stall_record([llm(1, 0.0, 10.0), llm(2, 300.0, 310.0)], [], START, stamp(1500.0), None)
+        self.assertEqual((idle["trailing_event_gap_seconds"], idle["max_event_gap_before_end_seconds"]), (1190.0, 1190.0))
+        # 엔진이 먼저 끝나면 끝 상태까지만 잰다. 창 밖 사건은 세지 않는다
+        ended = fault_stall_record([llm(1, 0.0, 10.0), llm(2, 40.0, 41.0)], [], START, stamp(500.0), stamp(30.0))
+        self.assertEqual(ended["trailing_event_gap_seconds"], 20.0)
+        self.assertEqual(fault_stall_record([], [], START, stamp(12.5), None)["trailing_event_gap_seconds"], 12.5)
+
     def test_engine_end_before_idle_end_is_not_a_stall(self):
         rows = [llm(1, 1.0, 2.0, decision="upstream_error", end="upstream_cut_before_done")]
         for terminal, stalls in ((None, 1), (1.0, 0), (100.0, 0), (300.0, 0), (300.5, 1)):

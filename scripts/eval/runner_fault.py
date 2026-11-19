@@ -138,6 +138,10 @@ def fault_stall_record(llm_rows: list[dict], meter_rows: list[dict], window_star
             # 판정과 같은 정의(활동 사건 = 요청 시작 + 응답 완료)의 활동 중 최장 공백. T를 고르는 근거다.
             "max_event_gap_before_end_seconds": _max_event_gap(moments, start, terminal if terminal is not None
                                                                and start <= terminal < end else end),
+            # 마지막 활동 사건부터 끝(엔진 끝 상태, 없으면 창 끝)까지. 시간 상한 마감을 '작업 중'과 '빈 계획 대기 중'으로 가르는
+            # 근거다(고정 초안 §21, 2026-11-19 사용자). 활동이 없었으면 창 시작부터 잰다.
+            "trailing_event_gap_seconds": _trailing_event_gap(moments, start, terminal if terminal is not None
+                                                              and start <= terminal < end else end),
             "activity_starts": len(starts)}
 
 
@@ -149,6 +153,12 @@ def _max_event_gap(moments: list[datetime], start: datetime, end: datetime) -> f
             longest = max(longest, (moment - cursor).total_seconds())
             cursor = moment
     return round(max(longest, (end - cursor).total_seconds()), 3)
+
+
+def _trailing_event_gap(moments: list[datetime], start: datetime, end: datetime) -> float:
+    """창 안 마지막 활동 사건(요청 시작·응답 완료)부터 끝까지의 간격. 활동이 없으면 창 전체다."""
+    last = max((moment for moment in moments if start <= moment < end), default=start)
+    return round((end - last).total_seconds(), 3)
 
 
 def judge_fault_stall(record: dict, stall_seconds: int) -> dict:
