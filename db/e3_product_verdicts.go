@@ -225,43 +225,59 @@ func uniqueMatching(list []string, limit int, valid func(string) bool) bool {
 
 // validProductVerdict는 저장 전에 칸 모양과 판정 일관성을 본다. 확정(CONFIRMED)은 세 검사가 모두 yes이고 근거 호출이
 // 하나 이상이며 제품 사유(증거 부족 표시)가 없을 때만 받는다(증거 없는 확정 금지).
-func validProductVerdict(in ProductVerdict) bool {
+func validProductVerdict(in ProductVerdict) bool { return ProductVerdictProblem(in) == "" }
+
+// ProductVerdictProblem은 저장 입력이 계약 모양이 아닐 때 처음 걸린 칸 이름(고정 코드)이다. 맞으면 빈 문자열이다. 값은
+// 돌려주지 않는다(로그에 칸 이름만 남기려는 것).
+func ProductVerdictProblem(in ProductVerdict) string {
 	b, p := in.Binding, in.Binding.Policy
-	if in.TaskID <= 0 || in.ObservedAt.IsZero() || in.ObservedAt.UTC().Year() < 2000 || in.ObservedAt.UTC().Year() > 9999 ||
-		!validProductRefs(b.JobRef, b.RunRef, b.E2PolicyRef, b.GenerationRef, b.InstanceRef, p.Ref, p.TargetApprovalRevision) ||
-		p.DigestSHA256 == ([32]byte{}) || in.Checkpoint != nil && !ValidProductCheckpoint(*in.Checkpoint) ||
-		!productCode.MatchString(in.ResourceType) || !strings.HasPrefix(in.ResourceRef, in.ResourceType+":") || !validProductRefs(in.ResourceRef) ||
-		in.ModelTag == "" || len(in.ModelTag) > 128 || !productRef.MatchString(in.ModelTag) ||
-		!validCheck(in.PolicyCheck) || !validCheck(in.IdentityCheck) || !validCheck(in.DataCheck) ||
-		len(in.Evidence) > maxProductEvidence || len(in.OracleReasons) > maxProductOracleReasons {
-		return false
+	checks := []struct {
+		field string
+		ok    bool
+	}{
+		{"task_id", in.TaskID > 0},
+		{"observed_at", !in.ObservedAt.IsZero() && in.ObservedAt.UTC().Year() >= 2000 && in.ObservedAt.UTC().Year() <= 9999},
+		{"job_ref", validProductRefs(b.JobRef)}, {"run_ref", validProductRefs(b.RunRef)}, {"e2_policy_ref", validProductRefs(b.E2PolicyRef)},
+		{"generation_ref", validProductRefs(b.GenerationRef)}, {"instance_ref", validProductRefs(b.InstanceRef)},
+		{"policy_ref", validProductRefs(p.Ref)}, {"target_approval_revision", validProductRefs(p.TargetApprovalRevision)},
+		{"policy_digest", p.DigestSHA256 != ([32]byte{})},
+		{"evidence_checkpoint", in.Checkpoint == nil || ValidProductCheckpoint(*in.Checkpoint)},
+		{"resource_type", productCode.MatchString(in.ResourceType)},
+		{"resource_ref", strings.HasPrefix(in.ResourceRef, in.ResourceType+":") && validProductRefs(in.ResourceRef)},
+		{"model_tag", in.ModelTag != "" && len(in.ModelTag) <= 128 && productRef.MatchString(in.ModelTag)},
+		{"checks", validCheck(in.PolicyCheck) && validCheck(in.IdentityCheck) && validCheck(in.DataCheck)},
+		{"evidence_count", len(in.Evidence) <= maxProductEvidence},
+		{"oracle_value", in.Value == oracle.Confirmed || in.Value == oracle.Suspected || in.Value == oracle.Undecidable || in.Value == oracle.Allowed},
 	}
-	switch in.Value {
-	case oracle.Confirmed, oracle.Suspected, oracle.Undecidable, oracle.Allowed:
-	default:
-		return false
+	for _, c := range checks {
+		if !c.ok {
+			return c.field
+		}
 	}
 	reasons := make([]string, len(in.OracleReasons))
 	for i, r := range in.OracleReasons {
 		reasons[i] = string(r)
 	}
-	if !uniqueMatching(reasons, maxProductOracleReasons, productCode.MatchString) ||
-		!uniqueMatching(in.ProductReasons, maxProductReasons, productCode.MatchString) ||
-		!uniqueMatching(in.CandidateRefs, maxProductCandidates, func(s string) bool { return validProductRefs(s) }) {
-		return false
+	switch {
+	case !uniqueMatching(reasons, maxProductOracleReasons, productCode.MatchString):
+		return "oracle_reason_codes"
+	case !uniqueMatching(in.ProductReasons, maxProductReasons, productCode.MatchString):
+		return "product_reason_codes"
+	case !uniqueMatching(in.CandidateRefs, maxProductCandidates, func(s string) bool { return validProductRefs(s) }):
+		return "candidate_refs"
 	}
 	seen := map[string]bool{}
 	for _, e := range in.Evidence {
 		if !validProductRefs(e.CallRef, e.AttemptID) || e.Sequence == 0 || e.Sequence > 1<<62 || seen[e.CallRef] {
-			return false
+			return "evidence"
 		}
 		seen[e.CallRef] = true
 	}
 	if in.Value == oracle.Confirmed && (in.PolicyCheck != oracle.StateYes || in.IdentityCheck != oracle.StateYes ||
 		in.DataCheck != oracle.StateYes || len(in.Evidence) == 0 || len(in.ProductReasons) != 0) {
-		return false
+		return "confirmed_invariant"
 	}
-	return true
+	return ""
 }
 
 type productSnapshot struct {

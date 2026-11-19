@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"github.com/jackc/pgx/v5/pgconn"
 	"strings"
 	"testing"
 	"time"
@@ -137,6 +138,35 @@ func TestProductE3ModelTag(t *testing.T) {
 	} {
 		if got := productE3ModelTag(tc.scope, 42); got != tc.want {
 			t.Fatalf("%+v: %q", tc.scope, got)
+		}
+	}
+}
+
+// 저장 실패 사유는 값 없이 고정 코드다(입력 칸·충돌·SQLSTATE).
+func TestProductE3StoreFailureCode(t *testing.T) {
+	good := db.ProductVerdict{TaskID: 9, ObservedAt: time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC),
+		Binding: db.ProductBinding{JobRef: "job", RunRef: "run", E2PolicyRef: "policy", GenerationRef: "gen", InstanceRef: "inst",
+			Policy: db.ProductPolicySource{Ref: "declaration-job", DigestSHA256: [32]byte{1}, TargetApprovalRevision: "3"}},
+		ResourceType: "note", ResourceRef: "note:unknown", ModelTag: "profile-1", Value: oracle.Undecidable,
+		PolicyCheck: oracle.StateYes, IdentityCheck: oracle.StateUnknown, DataCheck: oracle.StateUnknown,
+		OracleReasons: []oracle.JudgeReason{}, ProductReasons: []string{}, CandidateRefs: []string{}, Evidence: []db.ProductEvidence{}}
+	if p := db.ProductVerdictProblem(good); p != "" {
+		t.Fatal("정상 입력", p)
+	}
+	bad := good
+	bad.ModelTag = "a/b"
+	for _, tc := range []struct {
+		v    db.ProductVerdict
+		err  error
+		want string
+	}{
+		{bad, db.ErrProductVerdictInput, "input_model_tag"},
+		{good, db.ErrProductVerdictConflict, "conflict"},
+		{good, &pgconn.PgError{Code: "42501"}, "sqlstate_42501"},
+		{good, errors.New("other"), "store_error"},
+	} {
+		if got := productE3StoreFailure(tc.v, tc.err); got != tc.want {
+			t.Fatalf("%v: %q", tc.err, got)
 		}
 	}
 }

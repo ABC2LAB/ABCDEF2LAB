@@ -9,6 +9,7 @@ import (
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/oracle"
+	"github.com/jackc/pgx/v5/pgconn"
 	"log"
 	"os"
 	"path/filepath"
@@ -253,7 +254,7 @@ func (c *productE3Confirmation) storeVerdicts(ctx context.Context, taskID string
 			pv.Evidence = append(pv.Evidence, db.ProductEvidence{CallRef: e.CallRef, AttemptID: e.AttemptID, Sequence: e.Sequence})
 		}
 		if _, err := c.store(ctx, pv); err != nil {
-			log.Printf("[e3-confirmation] 회차 %s 판정 저장 실패(종류 하나)", c.jobID)
+			log.Printf("[e3-confirmation] 회차 %s 판정 저장 실패(종류 하나): 사유=%s", c.jobID, productE3StoreFailure(pv, err))
 			continue
 		}
 		stored++
@@ -278,6 +279,22 @@ func productE3ModelTag(scope *diagnosisprep.Scope, profileID int64) string {
 		out = out[:128]
 	}
 	return string(out)
+}
+
+// productE3StoreFailure는 판정 저장 실패의 고정 사유 코드다(값 없음): 입력 칸 문제는 input_<칸>, 같은 회차·종류의 다른
+// 판정은 conflict, DB 거부는 sqlstate_<코드>.
+func productE3StoreFailure(v db.ProductVerdict, err error) string {
+	if problem := db.ProductVerdictProblem(v); problem != "" {
+		return "input_" + problem
+	}
+	if errors.Is(err, db.ErrProductVerdictConflict) {
+		return "conflict"
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code != "" {
+		return "sqlstate_" + pgErr.Code
+	}
+	return "store_error"
 }
 
 // lastE3Evidence는 판정들의 근거 호출 중 마지막 것이다. 근거 호출이 없으면 false다(봉인 확인 해당 없음).
