@@ -27,6 +27,7 @@ import (
 
 const (
 	JournalVersion        = Version
+	JournalVersionV3      = "e2-http-v3"
 	journalIDBytes        = 16
 	journalMinKeyBytes    = 32
 	journalMaxKeyBytes    = 4096
@@ -83,6 +84,8 @@ type journalHeader struct {
 	Version   string
 	JournalID string
 	CreatedAt time.Time
+	Scope     transmit.Scope `json:",omitzero"`
+	KeyRef    string         `json:",omitempty"`
 }
 
 type journalRecord struct {
@@ -106,6 +109,7 @@ type Journal struct {
 	writer   journalWriter
 	key      []byte
 	head     JournalCheckpoint
+	size     int64 // gate를 잡은 쓰기 경로에서만 접근한다.
 	failed   bool
 	closed   bool
 	closeErr error
@@ -115,7 +119,17 @@ type Journal struct {
 // directory. The host supplies a key; this constructor issues no authority.
 // name is one component. O_EXCL and os.Root reject replacement/traversal.
 func CreateJournal(directory, name string, key []byte) (*Journal, error) {
-	if runtime.GOOS != "linux" || !validJournalName(name) || len(key) < journalMinKeyBytes || len(key) > journalMaxKeyBytes {
+	return createJournal(directory, name, key, journalHeader{Version: JournalVersion})
+}
+
+// CreateJournalV3는 실행 범위와 서버가 발급한 비민감 키 참조가 헤더에 결속된 일반 E② 저널을 만든다.
+// Checkpoint는 로컬 Sync 지점이다. 외부 정본 게시와 현재성 검증은 별도 권한 경계의 책임이다.
+func CreateJournalV3(directory, name string, key []byte, scope transmit.Scope, keyRef string) (*Journal, error) {
+	return createJournal(directory, name, key, journalHeader{Version: JournalVersionV3, Scope: scope, KeyRef: keyRef})
+}
+
+func createJournal(directory, name string, key []byte, header journalHeader) (*Journal, error) {
+	if runtime.GOOS != "linux" || !validJournalName(name) || len(key) < journalMinKeyBytes || len(key) > journalMaxKeyBytes || !validJournalHeaderBinding(header) {
 		return nil, ErrJournalConfig
 	}
 	root, err := os.OpenRoot(directory)
@@ -139,7 +153,8 @@ func CreateJournal(directory, name string, key []byte) (*Journal, error) {
 		}
 		return nil, ErrJournalStorage
 	}
-	j, err := newJournal(file, key, time.Now().UTC())
+	header.CreatedAt = time.Now().UTC()
+	j, err := newJournalWithHeader(file, key, header)
 	if err != nil {
 		return nil, err
 	}
@@ -150,8 +165,8 @@ func CreateJournal(directory, name string, key []byte) (*Journal, error) {
 	return j, nil
 }
 
-func newJournal(writer journalWriter, key []byte, at time.Time) (*Journal, error) {
-	if writer == nil || len(key) < journalMinKeyBytes || len(key) > journalMaxKeyBytes {
+func newJournalWithHeader(writer journalWriter, key []byte, header journalHeader) (*Journal, error) {
+	if writer == nil || len(key) < journalMinKeyBytes || len(key) > journalMaxKeyBytes || !validJournalHeaderBinding(header) {
 		return nil, ErrJournalConfig
 	}
 	ownedKey := bytes.Clone(key)
@@ -160,8 +175,8 @@ func newJournal(writer journalWriter, key []byte, at time.Time) (*Journal, error
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return fail()
 	}
-	header := journalHeader{Version: JournalVersion, JournalID: hex.EncodeToString(nonce[:]), CreatedAt: at}
-	mac, err := journalMAC(ownedKey, JournalVersion, "header", header)
+	header.JournalID = hex.EncodeToString(nonce[:])
+	mac, err := journalMAC(ownedKey, header.Version, "header", header)
 	if err != nil {
 		return fail()
 	}
@@ -175,8 +190,8 @@ func newJournal(writer journalWriter, key []byte, at time.Time) (*Journal, error
 	if err := writer.Sync(); err != nil {
 		return fail()
 	}
-	return &Journal{writer: writer, key: ownedKey, gate: make(chan struct{}, 1),
-		head: JournalCheckpoint{Version: JournalVersion, JournalID: header.JournalID, MAC: mac}}, nil
+	return &Journal{writer: writer, key: ownedKey, gate: make(chan struct{}, 1), size: int64(len(data)),
+		head: header.checkpoint(mac)}, nil
 }
 
 // Record returns success only after the entire authenticated event is synced.
@@ -204,19 +219,22 @@ func (j *Journal) Record(ctx context.Context, event Event) error {
 	if failed {
 		return ErrJournalFailed
 	}
-	if !validJournalEvent(event, JournalVersion) || head.Sequence == math.MaxUint64 ||
-		head.Sequence >= journalMaxEvents || event.Index != head.Sequence+1 || head.Sequence > 0 && event.Scope != head.Scope {
+	if !validJournalRecordEvent(event, head.Version) || head.Sequence == math.MaxUint64 ||
+		head.Sequence >= journalMaxEvents || event.Index != head.Sequence+1 || head.scopeMismatch(event.Scope) {
 		return ErrJournalEvent
 	}
 	event.At = event.At.UTC()
 	record := journalRecord{Index: head.Sequence + 1, Previous: head.MAC, Event: event}
-	mac, err := journalMAC(j.key, JournalVersion, "event", record)
+	mac, err := journalMAC(j.key, head.Version, "event", record)
 	if err != nil {
 		return ErrJournalEvent
 	}
 	data, err := encodeJournalLine(journalLine{Kind: "event", Record: &record, MAC: mac})
 	if err != nil {
 		return ErrJournalEvent
+	}
+	if head.Version == JournalVersionV3 && j.size+int64(len(data)) > journalMaxBytes {
+		return ErrJournalLimit
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -230,6 +248,7 @@ func (j *Journal) Record(ctx context.Context, event Event) error {
 		j.poisonJournal()
 		return ErrJournalStorage
 	}
+	j.size += int64(len(data))
 	j.mu.Lock()
 	j.head.Sequence, j.head.MAC, j.head.Scope = record.Index, mac, event.Scope
 	j.mu.Unlock()
@@ -283,17 +302,17 @@ func (j *Journal) Close() error {
 	return j.closeErr
 }
 
-// VerifyJournal accepts canonical newline records of this version or e2-http-v1 (read only). The
-// optional single expected head detects valid-prefix truncation/rollback. It
-// authenticates bytes, not the supplied key's operational authority. A blocking
-// Reader must itself support cancellation; no reader goroutine is abandoned.
+// VerifyJournal verifies canonical v1/v2 records with an optional checkpoint.
+// A v3 journal requires a checkpoint obtained independently of the input.
+// This method checks equality against that checkpoint. The caller supplies its
+// authority and freshness. A blocking Reader must itself support cancellation.
 func VerifyJournal(ctx context.Context, source io.Reader, key []byte, expected ...JournalCheckpoint) (JournalSummary, error) {
 	return verifyJournal(ctx, source, key, nil, expected...)
 }
 
 // VerifyJournalEvents는 VerifyJournal과 같은 검증을 하고 기록 전체가 검증됐을 때만 사건을 돌려준다.
 // 마지막 행 삭제나 과거 기록으로의 교체를 감지하려면 저널과 별도로 보관한 신뢰할 수 있는 체크포인트를 넘긴다.
-// 체크포인트를 생략하면 정상적으로 인증된 이전 접두부도 읽을 수 있다.
+// v1/v2는 체크포인트를 생략하면 정상적으로 인증된 이전 접두부도 읽을 수 있다. v3는 체크포인트가 필수다.
 func VerifyJournalEvents(ctx context.Context, source io.Reader, key []byte, expected ...JournalCheckpoint) ([]Event, JournalSummary, error) {
 	var events []Event
 	summary, err := verifyJournal(ctx, source, key, func(e Event) { events = append(events, e) }, expected...)
@@ -352,16 +371,22 @@ func verifyJournal(ctx context.Context, source io.Reader, key []byte, visit func
 		return JournalSummary{}, integrityUnlessContext(ctx, err)
 	}
 	if line.Kind != "header" || line.Header == nil || line.Record != nil ||
-		!knownJournalVersion(line.Header.Version) || !validJournalHex(line.Header.JournalID, journalIDBytes) ||
+		!validJournalHeaderBinding(*line.Header) || !validJournalHex(line.Header.JournalID, journalIDBytes) ||
 		!validJournalTime(line.Header.CreatedAt) || !validJournalHex(line.MAC, sha256.Size) {
 		return JournalSummary{}, ErrJournalIntegrity
 	}
 	version := line.Header.Version
+	head := line.Header.checkpoint(line.MAC)
+	if version == JournalVersionV3 {
+		if len(expected) != 1 || expected[0].Version != version || expected[0].JournalID != head.JournalID ||
+			expected[0].Scope != head.Scope {
+			return JournalSummary{}, ErrJournalIntegrity
+		}
+	}
 	want, err := journalMAC(ownedKey, version, "header", *line.Header)
 	if err != nil || !hmac.Equal([]byte(want), []byte(line.MAC)) {
 		return JournalSummary{}, ErrJournalIntegrity
 	}
-	head := JournalCheckpoint{Version: version, JournalID: line.Header.JournalID, MAC: line.MAC}
 	for {
 		line, err = readLine()
 		if errors.Is(err, io.EOF) {
@@ -375,8 +400,8 @@ func verifyJournal(ctx context.Context, source io.Reader, key []byte, visit func
 		}
 		if line.Kind != "event" || line.Header != nil || line.Record == nil ||
 			line.Record.Index != head.Sequence+1 || line.Record.Event.Index != line.Record.Index || line.Record.Previous != head.MAC ||
-			!validJournalHex(line.MAC, sha256.Size) || !validJournalEvent(line.Record.Event, version) ||
-			head.Sequence > 0 && line.Record.Event.Scope != head.Scope {
+			!validJournalHex(line.MAC, sha256.Size) || !validJournalRecordEvent(line.Record.Event, version) ||
+			head.scopeMismatch(line.Record.Event.Scope) {
 			return JournalSummary{}, ErrJournalIntegrity
 		}
 		want, err = journalMAC(ownedKey, version, "event", *line.Record)
@@ -415,7 +440,40 @@ func encodeJournalLine(line journalLine) ([]byte, error) {
 	return append(data, '\n'), nil
 }
 
-// knownJournalVersion은 검증할 수 있는 판이다. 새 기록은 JournalVersion으로만 쓴다.
+func (header journalHeader) checkpoint(mac string) JournalCheckpoint {
+	// 키 참조는 헤더 MAC과 그 뒤 체인에 이미 포함된다.
+	return JournalCheckpoint{Version: header.Version, JournalID: header.JournalID, MAC: mac, Scope: header.Scope}
+}
+
+func (head JournalCheckpoint) scopeMismatch(scope transmit.Scope) bool {
+	return (head.Version == JournalVersionV3 || head.Sequence > 0) && head.Scope != scope
+}
+
+func validJournalHeaderBinding(header journalHeader) bool {
+	if header.Version == JournalVersionV3 {
+		for _, ref := range [...]string{header.Scope.TaskRef, header.Scope.RunRef, header.Scope.CaseRef, header.Scope.ResetRef, header.Scope.PolicyRef, header.KeyRef} {
+			if !validJournalRef(ref) {
+				return false
+			}
+		}
+		return true
+	}
+	return knownJournalVersion(header.Version) && header.Scope == (transmit.Scope{}) && header.KeyRef == ""
+}
+
+// v3의 일반 감사 행은 기존 v2 행 규칙을 따른다. 판 표기는 실제 MAC 계산과 저장에 그대로 쓴다.
+func validJournalRecordEvent(event Event, version string) bool {
+	if event.Version != version {
+		return false
+	}
+	if version == JournalVersionV3 {
+		event.Version = Version
+		version = Version
+	}
+	return validJournalEvent(event, version)
+}
+
+// knownJournalVersion은 기존 행 검증기가 담당하는 판이다.
 func knownJournalVersion(version string) bool { return version == Version || version == VersionV1 }
 
 // journalMAC은 판을 MAC 도메인에 넣는다. 저장된 v1 기록은 v1 문자열로 다시 계산한다.

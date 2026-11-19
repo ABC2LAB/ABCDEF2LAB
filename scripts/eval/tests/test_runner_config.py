@@ -332,6 +332,21 @@ class TestParseRunnerConfig(unittest.TestCase):
         del payload["run"]["down_timeout_seconds"]
         self.reject(payload, "config.run.down_timeout_seconds: MISSING")
 
+    def test_fault_stall_t_is_optional_and_bounded(self):
+        # 멈춤 무효 판정 T(결정안 §7). 없으면 판정하지 않고(None), 있으면 1~3600 정수만 받는다.
+        self.assertIsNone(parse_runner_config(runner_config()).fault_stall_seconds)
+        for value in (1, 180, 3600):
+            payload = runner_config()
+            payload["run"]["fault_stall_seconds"] = value
+            self.assertEqual(parse_runner_config(payload).fault_stall_seconds, value)
+        for value in (0, 3601, True, 180.0, "180", None):
+            payload = runner_config()
+            payload["run"]["fault_stall_seconds"] = value
+            self.reject(payload, "config.run.fault_stall_seconds: INVALID")
+        payload = runner_config()
+        payload["run"]["fault_stall"] = 180
+        self.reject(payload, "config.run: UNKNOWN_FIELDS")
+
     def test_drain_grace_ends_before_the_runner_gives_up(self):
         # 계측기가 끊기 전에 러너가 drain_timeout으로 끝내면 유예는 쓸모가 없다. 같은 값도 경합이라 거부한다.
         for grace in (60, 61):
