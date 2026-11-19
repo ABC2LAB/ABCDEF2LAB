@@ -39,9 +39,12 @@ func (i storedInspection) runtime() Inspection {
 }
 
 type receipt struct {
-	ExecutionEvidenceVersion  uint8            `json:"execution_evidence_version,omitempty"`
-	RecoveryWitnessBootID     string           `json:"recovery_witness_boot_id,omitempty"`
-	ExecutionBootID           string           `json:"execution_boot_id,omitempty"`
+	ExecutionEvidenceVersion uint8  `json:"execution_evidence_version,omitempty"`
+	RecoveryWitnessBootID    string `json:"recovery_witness_boot_id,omitempty"`
+	ExecutionBootID          string `json:"execution_boot_id,omitempty"`
+	// 실행을 시작한 준비 서비스가 PID 1이던 init 인스턴스(PID namespace + 시작 tick)다.
+	// 컨테이너 재시작 복구 증거로만 쓴다(C04).
+	ExecutionInitInstance     string           `json:"execution_init_instance,omitempty"`
 	ExecutionReturned         bool             `json:"execution_returned,omitempty"`
 	ResourcesRecovered        bool             `json:"resources_recovered,omitempty"`
 	ExternalTransferConfirmed bool             `json:"external_transfer_confirmed,omitempty"`
@@ -65,9 +68,11 @@ type Service struct {
 	// 확인 시각 전용의 신뢰된 프로세스 시계다. RPC·환경 변수로 지정하지 않는다.
 	now        func() time.Time
 	executions map[string]executionHandle
-	closed     bool
-	failed     bool
-	released   bool
+	// 이 서비스가 PID 1일 때만 채운다. 비어 있으면 init 증거를 쓰지도 남기지도 않는다.
+	initInstance string
+	closed       bool
+	failed       bool
+	released     bool
 }
 
 func sourceDigest(input Input, installation string) string { return SourceDigest(input, installation) }
@@ -117,6 +122,14 @@ func newServiceForBoot(ctx context.Context, root string, backend Backend, boot s
 
 // hook는 시험에서만 전달하며 제품 설정이나 RPC에 노출하지 않는다.
 func newServiceForBootWithCompactionHook(ctx context.Context, root string, backend Backend, boot string, hook compactionHook) (*Service, error) {
+	return newServiceForRuntime(ctx, root, backend, boot, serviceInitInstance(), hook)
+}
+
+// boot·initInstance는 실제 커널 값을 읽어 넘긴다. 시험만 모의 값을 넘기며 RPC·설정으로 받지 않는다.
+func newServiceForRuntime(ctx context.Context, root string, backend Backend, boot, initInstance string, hook compactionHook) (*Service, error) {
+	if initInstance != "" && !initInstancePattern.MatchString(initInstance) {
+		return nil, ErrProtocol
+	}
 	if ctx == nil || ctx.Err() != nil || backend == nil {
 		return nil, ErrProtocol
 	}
@@ -125,7 +138,7 @@ func newServiceForBootWithCompactionHook(ctx context.Context, root string, backe
 		return nil, err
 	}
 	lifetime, cancel := context.WithCancel(ctx)
-	s := &Service{ctx: lifetime, cancel: cancel, backend: backend, journal: j, jobs: map[string]receipt{}, executions: map[string]executionHandle{}, now: time.Now}
+	s := &Service{ctx: lifetime, cancel: cancel, backend: backend, journal: j, jobs: map[string]receipt{}, executions: map[string]executionHandle{}, now: time.Now, initInstance: initInstance}
 	fail := func() (*Service, error) { cancel(); _ = j.close(); return nil, errStorage }
 	jobs, err := replayPreparationReceipts(ctx, records, j.snapshotCount)
 	if err != nil {
@@ -197,12 +210,70 @@ func newServiceForBootWithCompactionHook(ctx context.Context, root string, backe
 			if s.save(r) != nil {
 				return fail()
 			}
+			continue
+		}
+		// 같은 boot의 컨테이너 재시작(C04): 실행 서비스가 PID 1이던 PID namespace는 init 종료와 함께
+		// 커널이 남은 프로세스를 모두 죽인다. 지금 다른 init 인스턴스가 배타 저널 잠금을 쥐었으면 그 init은
+		// 끝났다(PID 1 서비스는 미마감 기록이 있으면 종료 때 잠금을 프로세스 종료까지 놓지 않는다).
+		// namespace 번호는 재시작 뒤 재사용되므로(docker restart에서 실측) init 시작 tick과 묶어 비교한다.
+		// 결과·감사 성공으로 해석하지 않고 새 시작 잠금만 푼다. tick은 같은 boot 안에서만 비교한다.
+		if r.ExecutionInitInstance != "" && r.ExecutionBootID == boot && s.initInstance != "" && s.initInstance != r.ExecutionInitInstance {
+			r.ExecutionReturned, r.ResourcesRecovered = true, true
+			if s.save(r) != nil {
+				return fail()
+			}
+			log.Print("진단 준비: 이전 컨테이너 init의 종료를 확인해 새 시작 잠금을 풉니다")
 		}
 	}
 	return s, nil
 }
 
 var bootIDPattern = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`)
+
+// init 인스턴스 = /proc/self/ns/pid 링크 값 + /proc/self/stat 시작 tick. 예: pid:[4026532281]@123456
+var initInstancePattern = regexp.MustCompile(`^pid:\[[0-9]{1,20}\]@[0-9]{1,20}$`)
+
+// /proc/<pid>/stat에서 comm 괄호 뒤 starttime(전체 22번째 칸)의 위치다. 괄호 뒤는 3번째 칸부터 센다.
+const statStartTimeField = 22 - 3
+
+// serviceInitInstance는 이 프로세스가 자기 PID namespace의 init(PID 1)일 때만 인스턴스를 돌려준다.
+// init이 아니면 프로세스 종료가 자식 종료를 뜻하지 않으므로 증거로 쓰지 않는다.
+func serviceInitInstance() string {
+	if os.Getpid() != 1 {
+		return ""
+	}
+	namespace, err := os.Readlink("/proc/self/ns/pid")
+	if err != nil {
+		return ""
+	}
+	stat, err := os.ReadFile("/proc/self/stat")
+	if err != nil {
+		return ""
+	}
+	end := strings.LastIndexByte(string(stat), ')')
+	if end < 0 {
+		return ""
+	}
+	fields := strings.Fields(string(stat[end+1:]))
+	if len(fields) <= statStartTimeField {
+		return ""
+	}
+	value := namespace + "@" + fields[statStartTimeField]
+	if !initInstancePattern.MatchString(value) {
+		return ""
+	}
+	return value
+}
+
+// unresolvedExecution은 실제 반환과 자원 마감 증거가 모두 없는 시작 기록이 있는지 본다.
+func (s *Service) unresolvedExecution() bool {
+	for _, r := range s.jobs {
+		if r.StartKey != "" && (!r.ExecutionReturned || !r.Job.DrainComplete && !r.ResourcesRecovered) {
+			return true
+		}
+	}
+	return false
+}
 
 func executionBootID() string {
 	raw, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
@@ -219,7 +290,7 @@ func validReceiptChange(old, next receipt) bool {
 	if old.RecoveryWitnessBootID != "" && old.RecoveryWitnessBootID != next.RecoveryWitnessBootID {
 		return false
 	}
-	if old.StartKey != "" && old.ExecutionBootID != next.ExecutionBootID {
+	if old.StartKey != "" && (old.ExecutionBootID != next.ExecutionBootID || old.ExecutionInitInstance != next.ExecutionInitInstance) {
 		return false
 	}
 	if old.ExecutionReturned && !next.ExecutionReturned || old.ResourcesRecovered && !next.ResourcesRecovered {
@@ -446,6 +517,9 @@ func (s *Service) Call(ctx context.Context, r Request) (Response, error) {
 		record.StartKey = r.IdempotencyKey
 		record.ExecutionEvidenceVersion = 1
 		record.ExecutionBootID = executionBootID()
+		if record.ExecutionBootID != "" {
+			record.ExecutionInitInstance = s.initInstance
+		}
 		record.ExternalTransferConfirmed = r.ExternalTransferConfirmed
 		record.Job.Revision++
 		record.Job.PreparationStarted = true
@@ -726,7 +800,14 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		}
 	}
 	s.released = true
-	err := s.journal.close()
+	var err error
+	if s.initInstance != "" && s.unresolvedExecution() {
+		// 잠금(lease)을 프로세스 종료까지 쥔다. 다음 init 인스턴스가 잠금을 얻었다는 사실이
+		// 이 init의 종료 증거가 되게 한다(C04 컨테이너 재시작 복구).
+		err = s.journal.closeData()
+	} else {
+		err = s.journal.close()
+	}
 	if timeout || s.failed {
 		return errors.Join(err, ErrUnavailable)
 	}
@@ -745,7 +826,7 @@ func replayPreparationReceipts(ctx context.Context, records []json.RawMessage, s
 			return nil, errStorage
 		}
 		var r receipt
-		if strictDecode(raw, &r) != nil || !validText(r.Principal, 256) || !reference.MatchString(r.CreateKey) || !validJob(r.Job) || r.ExecutionEvidenceVersion > 1 || r.ExecutionEvidenceVersion != 0 && r.StartKey == "" || r.ExecutionBootID != "" && !bootIDPattern.MatchString(r.ExecutionBootID) || r.RecoveryWitnessBootID != "" && (!bootIDPattern.MatchString(r.RecoveryWitnessBootID) || r.ExecutionBootID != "" || r.StartKey == "") || r.ResourcesRecovered && !r.ExecutionReturned || (r.ExecutionReturned || r.ExecutionBootID != "") && r.StartKey == "" || !inspectionOK(r.Inspection.runtime()) || r.Job.SourceDigest != sourceDigest(r.Job.Input, r.Inspection.InstallationDigest) || !reflect.DeepEqual(r.Job.Scope, r.Inspection.Scope) || (r.StartKey != "" && (!reference.MatchString(r.StartKey) || (r.Job.Scope != nil && r.Job.Scope.Model != nil && r.Job.Scope.Model.ExternalTransfer && !r.ExternalTransferConfirmed))) || r.Job.PreparationStarted != (r.StartKey != "") {
+		if strictDecode(raw, &r) != nil || r.ExecutionInitInstance != "" && (!initInstancePattern.MatchString(r.ExecutionInitInstance) || r.ExecutionBootID == "") || !validText(r.Principal, 256) || !reference.MatchString(r.CreateKey) || !validJob(r.Job) || r.ExecutionEvidenceVersion > 1 || r.ExecutionEvidenceVersion != 0 && r.StartKey == "" || r.ExecutionBootID != "" && !bootIDPattern.MatchString(r.ExecutionBootID) || r.RecoveryWitnessBootID != "" && (!bootIDPattern.MatchString(r.RecoveryWitnessBootID) || r.ExecutionBootID != "" || r.StartKey == "") || r.ResourcesRecovered && !r.ExecutionReturned || (r.ExecutionReturned || r.ExecutionBootID != "") && r.StartKey == "" || !inspectionOK(r.Inspection.runtime()) || r.Job.SourceDigest != sourceDigest(r.Job.Input, r.Inspection.InstallationDigest) || !reflect.DeepEqual(r.Job.Scope, r.Inspection.Scope) || (r.StartKey != "" && (!reference.MatchString(r.StartKey) || (r.Job.Scope != nil && r.Job.Scope.Model != nil && r.Job.Scope.Model.ExternalTransfer && !r.ExternalTransferConfirmed))) || r.Job.PreparationStarted != (r.StartKey != "") {
 			return nil, errStorage
 		}
 		key := r.Principal + "\x00" + r.CreateKey

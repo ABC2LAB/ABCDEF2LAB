@@ -355,6 +355,23 @@ Sparrow 정확 호스트 전체 진단 허가는 다른 origin·port·인증 수
 저장한다(`recovery_witness_boot_id`). 같은 boot에서는 잠금을 유지하고 이후 실제 호스트 재부팅으로
 boot가 바뀌었을 때 복구한다. 과거 시작 boot를 지어내지 않는다. 영수증 삭제는 복구 절차가 아니다.
 
+같은 boot의 **준비 컨테이너 재시작**도 복구 증거가 된다(C04 해제). 제품 준비 서비스는 컨테이너의
+PID 1이고(`preparation-entrypoint.sh`의 `exec`), PID namespace의 init이 끝나면 커널이 그 namespace의
+남은 프로세스(Bash·E² 송신·자식 namespace 포함)를 모두 죽인다. 그래서 시작할 때 서비스가 PID 1이면
+init 인스턴스(`/proc/self/ns/pid` 값 + `/proc/self/stat` 시작 tick)를 `execution_init_instance`에
+남기고, 다음 기동에서 다른 init 인스턴스가 배타 저널 잠금을 얻으면 그 기록을 `resources_recovered`로
+둔다. namespace 번호는 `docker restart` 뒤 그대로 재사용되므로(실측) 시작 tick과 묶는다. 미마감
+기록이 있으면 PID 1 서비스는 종료 때 저널 잠금을 프로세스 종료까지 놓지 않아, 잠금을 얻었다는
+사실이 이전 init 종료를 뜻하게 한다. 서비스가 PID 1이 아닌 실행(소스 서버 직접 실행 등)은 이 증거를
+남기지 않고 기존처럼 boot 변경으로만 복구한다. 결과 불명·예약·실행 횟수는 그대로이고 결과를 바꾸지
+않는다. 전제: 한 설치 볼륨에는 준비 컨테이너 하나만 붙는다(Compose 구성). 같은 볼륨에 두 번째 준비
+컨테이너를 따로 띄우는 운영은 지원하지 않는다.
+
+운영 절차: 진행 중인 회차가 없는데 새 시작이 `busy`면 이전 회차의 자원 마감을 확인하지 못한 것이다.
+`./scripts/product-compose.sh down` 뒤 `./scripts/product-compose.sh up -d --wait`로 재기동하면
+풀린다(`api`·`workbench`가 준비 컨테이너의 네트워크를 쓰므로 준비 컨테이너만 따로 재시작하지 않는다).
+`down -v`·영수증 삭제는 복구 절차가 아니다.
+
 URL v2 공개 관리 API는 영속 준비 영수증에 결속한 같은 운영자의 task에만
 `POST /api/tasks/{id}/control`의 `pause`·`resume`을 전달한다. chat·steer·rerun·설정 API는 열지 않는다.
 활동 조회·history·stream·seq 상세는 task를 명시해야 한다. 상속된 다른 task 의도 세션은 열지 않으며,
@@ -370,6 +387,9 @@ preparation-only 내부 서버 차단은 유지한다.
 `TestStartPersistsExecutionEvidenceVersion`,
 `TestURLClosureRecoveryWaitsForOriginalRunAndLateCloseIsSafe`,
 `TestURLPreparationRecoveryChecksExactTaskAndDrain`,
-`TestURLManagementOperationsPublicEntryOwnedPostgres`.
+`TestURLManagementOperationsPublicEntryOwnedPostgres`,
+`TestContainerRestartRecoveryRequiresNewInitInstance`,
+`TestNamespaceRecoveryNeedsRecordedInitNamespace`,
+`TestInitInstanceEvidenceIsValidatedAndImmutable`.
 마지막 시험은 실제 설치 인증·공개 관리 mux·작업 권한 조회·소유 HTTP 수신기를 사용한다.
 합성 실행 수신기는 실제 Planner/Worker·Qwen 수용을 대신하지 않으며 유료 모델 시험은 NOT_RUN이다.
