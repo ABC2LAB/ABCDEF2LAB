@@ -43,7 +43,7 @@ def result(status, reason="", verdicts=(), candidates=(), requests=0):
 
 GOOD = {
     "S01": result("completed", verdicts=[verdict("book", "confirmed", refs=["cand-1"])],
-                  candidates=[{"candidate_ref": "cand-1", "level": "confirmed"}], requests=5),
+                  candidates=[{"candidate_ref": "cand-1", "level": "confirmed", "resource_type": "book"}], requests=5),
     "S03": result("disabled", "declaration_missing"),
     "S05": result("completed", verdicts=[verdict("book", "undecidable", product=["product_subjects_identical"])], requests=2),
     "S13": result("confirmation_integrity_failed", "journal_event_mismatch", requests=3),
@@ -91,8 +91,18 @@ class TallyTest(unittest.TestCase):
         self.assertEqual(false_confirmed(result("completed", verdicts=[verdict("note", "confirmed")]), {}), ["verdict:note"])
         # 확정 판정이 가리키지 않는 확정 후보는 거짓이다(E③ 계약 §9).
         orphan = result("completed", verdicts=[verdict("book", "confirmed", refs=["cand-1"])],
-                        candidates=[{"candidate_ref": "cand-2", "level": "confirmed"}])
+                        candidates=[{"candidate_ref": "cand-2", "level": "confirmed", "resource_type": "book"}])
         self.assertEqual(false_confirmed(orphan, {"book": {"value": "confirmed"}}), ["candidate:cand-2"])
+        # 참조는 확정 판정에 있지만 후보의 종류가 다르면 거짓이다(#772 이동찬 리뷰 반례). 종류가 없어도 같다.
+        other = result("completed", verdicts=[verdict("book", "confirmed", refs=["cand-other"])],
+                       candidates=[{"candidate_ref": "cand-other", "level": "confirmed", "resource_type": "other"}])
+        self.assertEqual(false_confirmed(other, {"book": {"value": "confirmed"}}), ["candidate:cand-other"])
+        untyped = result("completed", verdicts=[verdict("book", "confirmed", refs=["cand-1"])],
+                         candidates=[{"candidate_ref": "cand-1", "level": "confirmed"}])
+        self.assertEqual(false_confirmed(untyped, {"book": {"value": "confirmed"}}), ["candidate:cand-1"])
+        same = result("completed", verdicts=[verdict("book", "confirmed", refs=["cand-1"])],
+                      candidates=[{"candidate_ref": "cand-1", "level": "confirmed", "resource_type": "book"}])
+        self.assertEqual(false_confirmed(same, {"book": {"value": "confirmed"}}), [])
         disabled = result("disabled", "declaration_missing", candidates=[{"candidate_ref": "cand-1", "level": "confirmed"}])
         self.assertEqual(false_confirmed(disabled, {}), ["candidate:cand-1"])
 

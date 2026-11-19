@@ -4,8 +4,8 @@
 결과 배치: <results>/<시나리오 ID>/e3-confirmation.json (제품 회차의 runs/<job>/e3-confirmation.json을 시나리오 ID 폴더로
 복사한 것, 또는 가짜 v3 사전 실행 E3_REHEARSAL_OUT 출력).
 
-거짓 CONFIRMED: 기대가 confirmed가 아닌 종류의 confirmed 판정, 또는 같은 회차의 confirmed 판정이 가리키지 않는 confirmed
-후보(E③ 계약 §9). 결과 파일이 없거나 읽지 못하면 그 시나리오는 미수집이고 통과로 세지 않는다.
+거짓 CONFIRMED: 기대가 confirmed가 아닌 종류의 confirmed 판정, 또는 같은 회차·같은 종류의 confirmed 판정이 가리키지 않는
+confirmed 후보(E③ 계약 §9: 검증된 종류에 연결된 후보만 확정). 후보의 종류가 없거나 다르면 거짓으로 센다. 결과 파일이 없거나 읽지 못하면 그 시나리오는 미수집이고 통과로 세지 않는다.
 
 모드:
   fake  목록에서 fake=true인 시나리오를 모두 비교한다.
@@ -93,8 +93,9 @@ def load_result(path: Path):
 
 
 def false_confirmed(result: dict, expected: dict) -> list[str]:
-    """거짓 CONFIRMED 목록. 기대가 confirmed가 아닌 종류의 확정 판정과, 확정 판정이 가리키지 않는 확정 후보."""
+    """거짓 CONFIRMED 목록. 기대가 confirmed가 아닌 종류의 확정 판정과, 같은 종류의 확정 판정이 가리키지 않는 확정 후보."""
     out = []
+    # (종류, 후보 참조): 후보는 참조뿐 아니라 그 판정의 종류와도 맞아야 한다(#772 이동찬 리뷰)
     confirmed_refs = set()
     for v in result.get("verdicts", []):
         if not isinstance(v, dict) or v.get("oracle_value") != CONFIRMED:
@@ -104,9 +105,10 @@ def false_confirmed(result: dict, expected: dict) -> list[str]:
         if not isinstance(want, dict) or want.get("value") != CONFIRMED:
             out.append(f"verdict:{typ}")
         for ref in v.get("candidate_refs") or []:
-            confirmed_refs.add(ref)
+            confirmed_refs.add((typ, ref))
     for c in result.get("candidates", []):
-        if isinstance(c, dict) and c.get("level") == CONFIRMED and c.get("candidate_ref") not in confirmed_refs:
+        if isinstance(c, dict) and c.get("level") == CONFIRMED and \
+                (c.get("resource_type"), c.get("candidate_ref")) not in confirmed_refs:
             out.append(f"candidate:{c.get('candidate_ref')}")
     return out
 
