@@ -503,7 +503,13 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		journal, createErr := e2proxy.CreateJournal(policy.StateDir, "events.jsonl", auditKey)
 		if createErr != nil {
 			if hostRecorder != nil {
-				hostRecorder.Abort()
+				// 아직 실행이나 송신자가 없다. 취소된 준비 문맥과 분리하여
+				// 빈 Host 저널을 봉인한다. ACK 실패는 미봉인으로 남긴다.
+				sealCtx, cancel := context.WithTimeout(context.WithoutCancel(taskctx), drainTimeout)
+				if hostRecorder.Seal(sealCtx) != nil {
+					hostRecorder.Abort()
+				}
+				cancel()
 			}
 			return E2HTTPRunOptions{}, ErrE2HTTPHost
 		}
@@ -523,11 +529,10 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		// 넣는다(계약 §3.4: 실행을 잡지 못하고 실패해도 인증 준비가 돌았으면 싣는다, #532 이동찬 리뷰).
 		var accountAuth map[string]string
 		failed := func(execution *e2proxy.Execution, runner *e2runner.Runner) (E2HTTPRunOptions, error) {
-			cleanup := release
-			if hostRecorder != nil {
-				cleanup = func(context.Context) error { hostRecorder.Abort(); return journal.Close() }
-			}
-			return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: cleanup, AccountAuth: accountAuth}, ErrE2HTTPHost
+			// Runtime이 Stop·Close와 활성 호출 drain을 확인한 뒤에만
+			// Release를 호출한다. 실패한 준비도 감사 head를 봉인해 다음
+			// 회차를 허용하되, 종료 불명·ACK 실패는 미봉인으로 차단한다.
+			return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: release, AccountAuth: accountAuth}, ErrE2HTTPHost
 		}
 		recorder := e2proxy.Recorder(journal)
 		if hostRecorder != nil {

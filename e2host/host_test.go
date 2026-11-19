@@ -158,6 +158,38 @@ func TestHostBindingAndAbortFailClosed(t *testing.T) {
 	}
 }
 
+func TestHostConfirmedPreparationFailureSealsBeforeNextRun(t *testing.T) {
+	host, _, scope := fixture(t)
+	session, err := host.Open(t.Context(), scope, "revision-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 준비 호출은 정책에 의해 송신 전에 거부됐다. 결과 기록만으로는
+	// 실행 종료가 확인되지 않으므로 그 사이에는 새 회차를 열 수 없다.
+	if err := session.Record(t.Context(), hostEvent(scope)); err != nil {
+		t.Fatal(err)
+	}
+	next := scope
+	next.RunRef = "run-after-preparation-failure"
+	if _, err := host.Open(t.Context(), next, "revision-host"); err == nil {
+		t.Fatal("준비 실행 마감 전에 다음 회차가 열림")
+	}
+	// 실행 소유자가 Stop·drain을 확인한 뒤에만 Seal ACK를 보낸다.
+	if err := session.Seal(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.CheckRestoredHeads(t.Context()); err != nil {
+		t.Fatal("준비 실패의 봉인된 저널을 검증하지 못함", err)
+	}
+	later, err := host.Open(t.Context(), next, "revision-host")
+	if err != nil {
+		t.Fatal("마감이 확인된 준비 실패 뒤 다음 회차가 막힘", err)
+	}
+	if err := later.Seal(t.Context()); err != nil {
+		t.Fatal("다음 회차 마감 실패", err)
+	}
+}
+
 func TestHostEpochChangePoisonsCurrentSession(t *testing.T) {
 	host, pool, scope := fixture(t)
 	session, err := host.Open(t.Context(), scope, "revision-host")

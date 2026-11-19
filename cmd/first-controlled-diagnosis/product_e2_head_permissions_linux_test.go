@@ -98,7 +98,16 @@ func TestProductE2HeadWriterRoleIsSeparated(t *testing.T) {
 	if err := os.Chmod(hostRoot, 0700); err != nil {
 		t.Fatal("Host fixture 권한 설정 실패", err)
 	}
-	if err := productProvisionE2Host(t.Context(), installer.DB, "127.0.0.1", name, hostRoot); err != nil {
+	// CI의 일회용 PostgreSQL은 TCP를 열지 않는다. 관리자 DSN과 같은
+	// Unix 소켓을 Host 전용 LOGIN 시험에도 사용한다.
+	databaseHost := u.Query().Get("host")
+	if databaseHost == "" {
+		databaseHost = u.Hostname()
+	}
+	if databaseHost == "" {
+		t.Fatal("시험 PostgreSQL host를 확인할 수 없음")
+	}
+	if err := productProvisionE2Host(t.Context(), installer.DB, databaseHost, name, hostRoot); err != nil {
 		t.Fatal("Host 전용 자격 발급 실패", err)
 	}
 	created = append(created, "product_e2_host")
