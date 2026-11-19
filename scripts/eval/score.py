@@ -262,8 +262,10 @@ def check_comparable(manifests: list[RunManifest]) -> None:
         raise ComparabilityError(f"비교 불가 {len(errors)}건:\n  " + "\n  ".join(errors))
 
 
-# 분리 배치 표에서 조건 안에서만 같아야 하는 실행 조건 칸(설계안 §6). 나머지 넷(샘플링·머신 사양·머신·스트리밍)은 표 전체.
-SPLIT_PER_CONDITION = frozenset({"엔진 설정", "엔진 규칙 파일", "도구 트리"})
+# 분리 배치 표에서 조건 안에서만 같아야 하는 실행 조건 칸(설계안 §6). LLM 스트리밍은 선언된 차이다(2026-11-19 사용자 결정:
+# 제품 transport가 stream:true를 거부하는 제품 설계이고 B는 원본 기본값(스트리밍)을 유지한다). 나머지 셋(샘플링·머신 사양·
+# 머신)은 표 전체.
+SPLIT_PER_CONDITION = frozenset({"엔진 설정", "엔진 규칙 파일", "도구 트리", "LLM 스트리밍"})
 
 # 통제 검증 표 행(프로토콜 §8.3). 칸 이름은 시도별 대조 다섯 칸, 기대 0인 행은 표에 그대로 적는다.
 _CONTROL_ROWS = (
@@ -370,8 +372,8 @@ def build_report(
     drain_policies: set[tuple[int, int]] = set()
     run_conditions: dict[str, set[str]] = {"엔진 설정": set(), "적용 샘플링": set(), "머신 사양": set(), "머신": set(),
                                            "LLM 스트리밍": set(), "엔진 규칙 파일": set(), "도구 트리": set()}
-    # 분리 배치 표(설계안 §6): B(원본 엔진)와 O(제품)는 엔진 설정·규칙·도구가 설계상 다르다. 이 셋은 조건 안에서만 같아야 하고,
-    # 샘플링·머신·스트리밍은 표 전체가 같아야 한다.
+    # 분리 배치 표(설계안 §6): B(원본 엔진)와 O(제품)는 엔진 설정·규칙·도구가 설계상 다르다. 이 셋과 LLM 스트리밍(선언된 차이,
+    # 2026-11-19 사용자 결정)은 조건 안에서만 같아야 하고, 샘플링·머신 사양·머신은 표 전체가 같아야 한다.
     per_condition: dict[tuple[str, str], set[str]] = {}
     # E② 자리는 baseline·개선 후가 일부러 다르다(프로토콜 §2, 선언된 차이). 조건 하나 안에서만 같아야 한다.
     e2_modes: dict[str, set[str]] = {}
@@ -432,12 +434,9 @@ def build_report(
                     seen = per_condition.setdefault((label, m.condition), set())
                 seen.add(value)
                 if len(seen) > 1:
-                    # 분리 배치 B·O 스트리밍 차이(B 게이트웨이 SSE, 제품 transport 비스트리밍)는 선언된 차이로 올릴지 결정 전이다
-                    # (설계안 §6·§10). 결정 전에는 이 짝을 비교하지 않는다.
-                    hint = " — 분리 배치 B·O 스트리밍 차이는 결정 전(설계안 §6·§10)" if split and label == "LLM 스트리밍" else ""
                     scope = "" if not split else f", {m.condition} 안" if label in SPLIT_PER_CONDITION else ", 표 전체"
                     raise ComparabilityError(f"회차 조건 불일치({label}{scope}) — 같은 실행 설정·샘플링·머신끼리만 비교"
-                                             f"(프로토콜 §5.1·§6){hint}")
+                                             "(프로토콜 §5.1·§6)")
         if inputs.e2_mode is not None:
             modes = e2_modes.setdefault(m.condition, set())
             modes.add(inputs.e2_mode)

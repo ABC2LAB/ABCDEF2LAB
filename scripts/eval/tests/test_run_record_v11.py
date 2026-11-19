@@ -1078,8 +1078,9 @@ class TestSplitO(_V11):
                 self.reject(pattern, f"x{index}", tamper_rows=tamper)
 
     def test_pair_table_and_control_rows(self):
-        # 스트리밍이 같다고 놓은 짝(결정 전 규칙 확인용): 엔진 설정·규칙·도구는 조건마다 달라도 되고, 통제 표는 대조 미수집이다
-        o = [self.v11(f"o{i}", repeat_index=i, tamper_rows=split_o(stream=True)) for i in range(2)]
+        # 실제 짝: B 게이트웨이 스트리밍(참)·O 제품 비스트리밍(거짓). 스트리밍·엔진 설정·규칙·도구는 조건마다 달라도 되고(선언된
+        # 차이), 통제 표는 대조 미수집이다
+        o = [self.v11(f"o{i}", repeat_index=i, tamper_rows=split_o()) for i in range(2)]
         report = self.report([self.base(), *o])
         rows = {line.split("|")[1].strip(): line.split("|")[2].strip() for line in report.text.splitlines()
                 if line.startswith("| ") and line.count("|") == 3}
@@ -1093,16 +1094,18 @@ class TestSplitO(_V11):
         self.assertTrue(any("대조 미수집" in w and "미측정" in w for w in report.warnings), report.warnings)
 
     def test_per_condition_and_table_wide_conditions(self):
-        mixed = [self.base("b1"), self.v11("m1", tamper_rows=split_o(stream=True)),
-                 self.v11("m2", repeat_index=1, tamper_rows=split_o(stream=True, settings="4" * 64))]
+        mixed = [self.base("b1"), self.v11("m1", tamper_rows=split_o()),
+                 self.v11("m2", repeat_index=1, tamper_rows=split_o(settings="4" * 64))]
         with self.assertRaisesRegex(ComparabilityError, "엔진 설정, 우리@test 안"):
             self.report(mixed)
-        sampled = lambda rows: (split_o(stream=True)(rows), row_of(rows, "run_conditions")["sampling"].update(seed=7))
+        sampled = lambda rows: (split_o()(rows), row_of(rows, "run_conditions")["sampling"].update(seed=7))
         with self.assertRaisesRegex(ComparabilityError, "적용 샘플링, 표 전체"):
             self.report([self.base("b2"), self.v11("m3", tamper_rows=sampled)])
-        # 실제 짝: B 게이트웨이 스트리밍(참) vs 제품 transport 비스트리밍(거짓) → 결정 전에는 비교하지 않는다
-        with self.assertRaisesRegex(ComparabilityError, "LLM 스트리밍, 표 전체.*결정 전"):
-            self.report([self.base("b3"), self.v11("m4", tamper_rows=split_o())])
+        # 스트리밍은 B·O 사이에서는 달라도 되지만(선언된 차이) 조건 안에서는 같아야 한다
+        self.report([self.base("b3"), self.v11("m4", tamper_rows=split_o())])
+        streams = [self.base("b4"), self.v11("m5", tamper_rows=split_o()), self.v11("m6", repeat_index=1, tamper_rows=split_o(stream=True))]
+        with self.assertRaisesRegex(ComparabilityError, "LLM 스트리밍, 우리@test 안"):
+            self.report(streams)
 
 
 if __name__ == "__main__":
