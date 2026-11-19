@@ -30,18 +30,22 @@ type IdentityRequest struct {
 	Timeout time.Duration
 }
 
-// CreateRequest는 A 세션으로 표식을 심은 시험 객체를 만드는 요청이다. E²가 본문 틀의 MarkerField에 표식을 넣는다.
+// CreateRequest는 A 세션으로 표식을 심은 시험 객체를 만드는 요청이다. 본문은 확정 단계가 본문 틀에 표식과(id_field면)
+// 객체 ID를 넣어 만든 것이고(AssembleBody), E²는 Spec.Path·Spec.Method로 그대로 보낸다(Content-Type은 Body.Kind).
+// ObjectID는 id_field일 때만 있다. E²는 생성 관찰의 객체 ID digest를 응답(id_path) 대신 이 ID로 만든다.
 type CreateRequest struct {
 	Binding      RunBinding
 	ResourceType string
 	Spec         CreateSpec
 	AccountLabel string
 	Marker       Marker
+	Body         RequestBody
+	ObjectID     string
 	Timeout      time.Duration
 }
 
-// ReadRequest는 생성한 객체를 조회하는 GET이다. E²가 Create 관찰의 객체 ID를 경로 틀에 넣고, 응답의 MarkerField를
-// 정규화기로 검사한다.
+// ReadRequest는 생성한 객체를 조회하는 GET이다. E²가 경로 틀의 {id}에 객체 ID를 넣는다: ObjectID가 있으면(id_field) 그
+// 값, 없으면(id_path) Create 관찰에서 E²가 꺼내 둔 ID다. 응답의 MarkerField를 정규화기로 검사한다.
 type ReadRequest struct {
 	Binding      RunBinding
 	ResourceType string
@@ -50,6 +54,7 @@ type ReadRequest struct {
 	Role         Role
 	AccountLabel string
 	Create       CallRef
+	ObjectID     string
 	Marker       Marker
 	Timeout      time.Duration
 }
@@ -108,13 +113,14 @@ type ResetState struct {
 
 // ResetGate는 리셋 확인 기록과 지난 표식 점검을 읽는다(최민준, 정책 선언 저장·동결).
 // WriteRecorder는 확정 단계 생성 요청의 쓰기 기록이다(기록하고 나서 보내기, 사용자 결정 2026-11-19).
-//   - Reserve: 생성 요청을 보내기 전에 그 종류의 쓰기를 "ID 모름"으로 먼저 남긴다. 남기지 못하면 확정 단계는 그 생성
+//   - Reserve: 생성 요청을 보내기 전에 그 종류의 쓰기를 먼저 남긴다. objectID가 있으면(id_field) 그 ID와 함께, 없으면
+//     "ID 모름"으로 남긴다. 남기지 못하면 확정 단계는 그 생성
 //     요청을 보내지 않고 그 종류를 UNDECIDABLE(product_write_record_unavailable)로 끝낸다.
 //   - Settle: 생성 관찰을 받은 뒤 결과로 갱신한다. created면 객체 ID digest를 채우고, not_sent(보내지 않은 것이 확실)면
 //     미리 남긴 기록을 거둔다. unknown이면 부르지 않는다(이미 ID 모름이다). 갱신이 실패해도 Reserve로 남긴 기록이 남아
 //     다음 회차를 리셋 확인 전까지 막는다.
 type WriteRecorder interface {
-	Reserve(ctx context.Context, binding RunBinding, resourceType string) error
+	Reserve(ctx context.Context, binding RunBinding, resourceType, objectID string) error
 	Settle(ctx context.Context, binding RunBinding, write ConfirmationWrite) error
 }
 

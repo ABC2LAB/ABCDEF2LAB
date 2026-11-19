@@ -36,7 +36,9 @@ export type CreateSpec = {
   bodyKind: BodyKind;
   bodyTemplate: string;
   markerField: string;
+  /** 객체 ID 출처는 둘 중 하나만(e3contract.CreateSpec): 생성 응답 JSON의 ID 경로 또는 생성 요청 본문의 ID 칸. */
   idPath: string;
+  idField: string;
 };
 /** 객체 조회 경로 틀과 응답 모양(e3contract.ReadSpec). statusPath·normalValue 는 둘 다 쓰거나 둘 다 비운다. */
 export type ReadSpec = { pathTemplate: string; dataPath: string; statusPath: string; normalValue: string };
@@ -74,6 +76,7 @@ export const emptyCreate = (): CreateSpec => ({
   bodyTemplate: "{}",
   markerField: "",
   idPath: "",
+  idField: "",
 });
 export const emptyRead = (): ReadSpec => ({ pathTemplate: "", dataPath: ".", statusPath: "", normalValue: "" });
 export const emptyType = (): TypeDraft => ({
@@ -275,6 +278,7 @@ export function credentialFields(d: DeclarationDraft): string[] {
     check(`${at}.create.bodyTemplate`, t.create.bodyTemplate, t.create.bodyKind);
     check(`${at}.create.markerField`, t.create.markerField);
     check(`${at}.create.idPath`, t.create.idPath);
+    check(`${at}.create.idField`, t.create.idField);
     check(`${at}.read.pathTemplate`, t.read.pathTemplate, "path");
     check(`${at}.read.dataPath`, t.read.dataPath);
     check(`${at}.read.statusPath`, t.read.statusPath);
@@ -350,7 +354,19 @@ function validateType(t: TypeDraft, at: string, issues: DraftIssue[]): void {
   if (!isPlainPath(c.path))
     bad("create.path", "생성 경로는 {id} 없는 절대 경로입니다(query · # · 공백 · 점 조각 불가).");
   if (c.method !== "POST" && c.method !== "PUT") bad("create.method", "생성 메서드는 POST 또는 PUT 입니다.");
-  if (!isFieldPath(c.idPath)) bad("create.idPath", "생성 응답의 객체 ID 위치(JSON 경로)를 적으세요.");
+  // 객체 ID 출처는 둘 중 하나만이다(서버 Validate: 둘 다면 create.id_field, 둘 다 없으면 create.id_path).
+  if (c.idPath !== "" && c.idField !== "")
+    bad("create.idField", "ID 출처는 생성 응답 경로와 요청 본문 칸 중 하나만 적습니다.");
+  else if (c.idPath === "" && c.idField === "")
+    bad("create.idPath", "생성 응답의 객체 ID 위치(JSON 경로)나 요청 본문의 ID 칸 중 하나를 적으세요.");
+  else if (c.idPath !== "" && !isFieldPath(c.idPath))
+    bad("create.idPath", "생성 응답의 객체 ID 위치(JSON 경로)를 적으세요.");
+  else if (c.idField !== "") {
+    const m = c.markerField;
+    const f = c.idField;
+    if (!isFieldPath(f) || f === m || f.startsWith(`${m}.`) || m.startsWith(`${f}.`))
+      bad("create.idField", "요청 본문 ID 칸은 칸 이름 형식이고 표식 칸과 같거나 그 위·아래 칸이면 안 됩니다.");
+  }
   // 크기 상한을 먼저 본다(서버 Validate create.body_template). 넘는 틀은 풀어 보지 않는다 — 아래 모양 검사가 재귀라
   // 편집 중인 아주 깊은 틀에서 스택이 넘치지 않게(#754 리뷰)
   const tooLong = utf8Length(c.bodyTemplate) > MAX_BODY_TEMPLATE_BYTES;
@@ -360,15 +376,22 @@ function validateType(t: TypeDraft, at: string, issues: DraftIssue[]): void {
   else if (!tooLong && c.bodyKind === "json") {
     const obj = parseJsonTemplate(c.bodyTemplate);
     if (!obj) bad("create.bodyTemplate", "JSON 본문 틀은 JSON 객체여야 합니다.");
-    // 표식 칸이 틀에 이미 있으면 덮어쓰는지 남기는지 모호하다. 맨 위 칸만 본다(중첩 칸은 프로그램이 만든다 — Go 와 같음)
-    else if (!c.markerField.includes(".") && Object.hasOwn(obj, c.markerField))
-      bad("create.bodyTemplate", "본문 틀에 표식 칸이 이미 있습니다. 표식 칸은 비워 두세요(프로그램이 넣습니다).");
+    // 표식 칸(ID 칸)이 틀에 이미 있으면 덮어쓰는지 남기는지 모호하다. 맨 위 칸만 본다(중첩 칸은 프로그램이 만든다 — Go 와 같음)
+    else if ([c.markerField, c.idField].some((f) => f !== "" && !f.includes(".") && Object.hasOwn(obj, f)))
+      bad(
+        "create.bodyTemplate",
+        "본문 틀에 표식 칸이나 ID 칸이 이미 있습니다. 그 칸은 비워 두세요(프로그램이 넣습니다).",
+      );
   } else if (!tooLong && c.bodyKind === "form") {
     const pairs = parseFormTemplate(c.bodyTemplate);
     if (!pairs || c.markerField.includes("."))
       bad("create.bodyTemplate", "form 본문 틀이 형식 밖이거나 표식 칸에 점(.)이 있습니다.");
-    else if (pairs.some(([k]) => k === c.markerField))
-      bad("create.bodyTemplate", "본문 틀에 표식 칸이 이미 있습니다. 표식 칸은 비워 두세요(프로그램이 넣습니다).");
+    else if (c.idField.includes(".")) bad("create.idField", "form 본문의 ID 칸에는 점(.)을 쓸 수 없습니다.");
+    else if (pairs.some(([k]) => k === c.markerField || (c.idField !== "" && k === c.idField)))
+      bad(
+        "create.bodyTemplate",
+        "본문 틀에 표식 칸이나 ID 칸이 이미 있습니다. 그 칸은 비워 두세요(프로그램이 넣습니다).",
+      );
   }
   const secrets = tooLong ? [] : secretFieldsInTemplate(c.bodyKind, c.bodyTemplate);
   if (secrets.length)
@@ -508,6 +531,7 @@ export function toRequestBody(d: DeclarationDraft, targetRevision: number): Reco
                 body_template: t.create.bodyTemplate,
                 marker_field: t.create.markerField,
                 id_path: t.create.idPath,
+                ...(t.create.idField ? { id_field: t.create.idField } : {}),
               },
               read: {
                 path_template: t.read.pathTemplate,
@@ -535,7 +559,9 @@ function exact(o: unknown, required: readonly string[], optional: readonly strin
 const str = (v: unknown): string => (typeof v === "string" ? v : fail());
 const optStr = (v: unknown): string => (v === undefined ? "" : str(v));
 
+// id_path는 서버가 늘 내보낸다(빈 값 포함). id_field는 요청 본문 칸 ID일 때만 있다(e3contract.CreateSpec).
 const CREATE_KEYS = ["path", "method", "body_kind", "body_template", "marker_field", "id_path"] as const;
+const CREATE_OPTIONAL = ["id_field"] as const;
 const READ_KEYS = ["path_template", "data_path"] as const;
 
 /** Go 는 공유 종류의 빈 create·read 도 칸째 낸다(omitempty 없음) — 없거나 전부 빈 값만 받는다. */
@@ -556,14 +582,19 @@ function parseType(v: unknown): TypeDraft {
   if (sharing === "shared") {
     if (
       ownerOnlyFields.length ||
+      // 서버는 빈 id_field를 내보내지 않는다(omitempty) — 공유 종류 create에 그 칸이 있으면 계약 밖이다
       !emptyRequestObject(o.create, CREATE_KEYS) ||
       !emptyRequestObject(o.read, READ_KEYS, ["status_path", "normal_value"])
     )
       fail();
     return { type: str(o.type), sharing, ownerOnlyFields: [], create: emptyCreate(), read: emptyRead() };
   }
-  const c = exact(o.create, CREATE_KEYS);
+  const c = exact(o.create, CREATE_KEYS, CREATE_OPTIONAL);
   const r = exact(o.read, READ_KEYS, ["status_path", "normal_value"]);
+  // 객체 ID 출처는 둘 중 정확히 하나다(서버 Validate와 같음). 어긋나면 계약 밖 응답이다. 서버는 빈 id_field를 내보내지
+  // 않으므로(omitempty) 칸이 있는데 빈 값이어도 계약 밖이다(#766 이경준 리뷰).
+  if ("id_field" in c && c.id_field === "") fail();
+  if ((str(c.id_path) === "") === (optStr(c.id_field) === "")) fail();
   const method = c.method === "POST" || c.method === "PUT" ? c.method : fail();
   const bodyKind = c.body_kind === "json" || c.body_kind === "form" ? c.body_kind : fail();
   return {
@@ -577,6 +608,7 @@ function parseType(v: unknown): TypeDraft {
       bodyTemplate: str(c.body_template),
       markerField: str(c.marker_field),
       idPath: str(c.id_path),
+      idField: optStr(c.id_field),
     },
     read: {
       pathTemplate: str(r.path_template),

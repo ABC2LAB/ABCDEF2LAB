@@ -63,8 +63,13 @@ type CreateSpec struct {
 	BodyTemplate string `json:"body_template"`
 	// MarkerField는 표식을 넣을 칸이다(json이면 점으로 이은 경로, form이면 칸 이름). OwnerOnlyFields 중 하나여야 한다.
 	MarkerField string `json:"marker_field"`
+	// 객체 ID 출처는 둘 중 하나만 준다(사용자 결정 2026-11-19).
 	// IDPath는 생성 응답 JSON에서 객체 ID가 있는 경로다. ID 원문은 E² 밖으로 나오지 않는다.
+	// 늘 내보낸다(빈 값 포함): 공유 종류의 빈 create도 이 칸을 담아 왔으므로 빼면 기존 선언의 정본 바이트·digest가 바뀐다.
 	IDPath string `json:"id_path"`
+	// IDField는 생성 요청 본문에서 객체 ID를 담는 칸이다(클라이언트가 ID를 정하는 API, 예: 제목이 ID). 확정 단계가 회차마다
+	// 표식과 따로 새 난수 ID를 만들어 이 칸에 넣는다. ID는 비밀이 아니라 조회 경로·기록에 남는다. 표식 칸과 같은 칸 경로 규칙이다.
+	IDField string `json:"id_field,omitempty"`
 }
 
 // ReadSpec은 객체 조회 경로 틀과 응답 모양이다.
@@ -194,6 +199,11 @@ func (d Declaration) Validate() error {
 	return nil
 }
 
+// pathsOverlap은 두 칸 경로가 같거나 한쪽이 다른 쪽의 상위 칸인지다(본문에 둘을 함께 넣을 수 없음).
+func pathsOverlap(a, b string) bool {
+	return a == b || strings.HasPrefix(a, b+".") || strings.HasPrefix(b, a+".")
+}
+
 func (t TypeDeclaration) validate(i int) error {
 	bad := func(field string) error { return &DeclarationFieldError{Field: fmt.Sprintf("types[%d].%s", i, field)} }
 	if t.Sharing != SharingShared && t.Sharing != SharingOwnerOnly {
@@ -225,8 +235,14 @@ func (t TypeDeclaration) validate(i int) error {
 		return bad("create.path")
 	case c.Method != "POST" && c.Method != "PUT":
 		return bad("create.method")
-	case !fieldPathPattern.MatchString(c.IDPath):
+	case c.IDPath != "" && c.IDField != "":
+		return bad("create.id_field")
+	case c.IDPath == "" && c.IDField == "":
 		return bad("create.id_path")
+	case c.IDPath != "" && !fieldPathPattern.MatchString(c.IDPath):
+		return bad("create.id_path")
+	case c.IDField != "" && (!fieldPathPattern.MatchString(c.IDField) || pathsOverlap(c.IDField, c.MarkerField)):
+		return bad("create.id_field")
 	case len(c.BodyTemplate) > MaxBodyTemplateBytes:
 		return bad("create.body_template")
 	}
@@ -236,9 +252,12 @@ func (t TypeDeclaration) validate(i int) error {
 		if json.Unmarshal([]byte(c.BodyTemplate), &obj) != nil || obj == nil {
 			return bad("create.body_template")
 		}
-		// 표식 칸이 틀에 이미 있으면 프로그램이 덮어쓰는지 남기는지 모호하다. 맨 위 칸만 확인한다(중첩 칸은 프로그램이 만든다).
-		if !strings.Contains(c.MarkerField, ".") {
-			if _, exists := obj[c.MarkerField]; exists {
+		// 표식 칸(ID 칸)이 틀에 이미 있으면 프로그램이 덮어쓰는지 남기는지 모호하다. 맨 위 칸만 확인한다(중첩 칸은 프로그램이 만든다).
+		for _, f := range []string{c.MarkerField, c.IDField} {
+			if f == "" || strings.Contains(f, ".") {
+				continue
+			}
+			if _, exists := obj[f]; exists {
 				return bad("create.body_template")
 			}
 		}
@@ -250,8 +269,13 @@ func (t TypeDeclaration) validate(i int) error {
 		if strings.Contains(c.MarkerField, ".") {
 			return bad("create.marker_field")
 		}
-		if _, exists := values[c.MarkerField]; exists {
-			return bad("create.body_template")
+		if strings.Contains(c.IDField, ".") {
+			return bad("create.id_field")
+		}
+		for _, f := range []string{c.MarkerField, c.IDField} {
+			if _, exists := values[f]; f != "" && exists {
+				return bad("create.body_template")
+			}
 		}
 	default:
 		return bad("create.body_kind")
@@ -311,7 +335,8 @@ func CredentialField(d Declaration) string {
 		p := fmt.Sprintf("types[%d].", i)
 		fields = append(fields, field{p + "type", t.Type}, field{p + "create.path", t.Create.Path},
 			field{p + "create.body_template", t.Create.BodyTemplate}, field{p + "create.marker_field", t.Create.MarkerField},
-			field{p + "create.id_path", t.Create.IDPath}, field{p + "read.path_template", t.Read.PathTemplate},
+			field{p + "create.id_path", t.Create.IDPath}, field{p + "create.id_field", t.Create.IDField},
+			field{p + "read.path_template", t.Read.PathTemplate},
 			field{p + "read.data_path", t.Read.DataPath}, field{p + "read.status_path", t.Read.StatusPath},
 			field{p + "read.normal_value", t.Read.NormalValue})
 		for j, f := range t.OwnerOnlyFields {

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -173,22 +174,39 @@ func productResetStatementSHA256() string {
 // 시간 초과·결과 불명이면 객체가 생겼는지·ID가 무엇인지 모르므로 IDUnknown이고 IDDigest는 비어 있다(사용자 결정
 // 2026-11-18). 그런 객체는 잔존을 읽어 볼 수 없어 운영자 리셋 확인에만 기댄다.
 type productConfirmationObject struct {
-	Type      string `json:"type"`
-	IDDigest  string `json:"id_digest,omitempty"`
+	Type     string `json:"type"`
+	IDDigest string `json:"id_digest,omitempty"`
+	// ID는 요청 본문 칸 ID(선언 create.id_field)다. 확정 단계가 보내기 전에 만들어 예약 때부터 남긴다. 비밀이 아니다(표식과
+	// 다른 난수). 리셋 확인 때 이 ID로 남은 객체를 조회해 볼 수 있다. 응답 경로 ID(id_path)면 비어 있다.
+	ID        string `json:"id,omitempty"`
 	IDUnknown bool   `json:"id_unknown,omitempty"`
 	// NotSent는 미리 남긴 쓰기를 거둔 것이다(생성 요청을 보내지 않은 것이 확실). 남은 쓰기로 세지 않는다.
 	NotSent bool `json:"not_sent,omitempty"`
 }
 
 func (o productConfirmationObject) valid() bool {
-	if o.Type == "" || len(o.Type) > 64 {
+	if o.Type == "" || len(o.Type) > 64 || o.ID != "" && !productObjectIDPattern.MatchString(o.ID) {
 		return false
 	}
 	if o.IDUnknown {
-		return o.IDDigest == ""
+		return o.IDDigest == "" && o.ID == ""
 	}
-	return !o.NotSent && urlDigestValid(o.IDDigest)
+	if o.NotSent {
+		// ID를 아는 예약을 거둔 것(id_field). ID 모름 예약을 거둔 것은 위 갈래다.
+		return o.IDDigest == "" && o.ID != ""
+	}
+	if o.IDDigest == "" {
+		// ID를 아는 예약(결과 전, 또는 결과 불명): ID가 있어야 한다.
+		return o.ID != ""
+	}
+	return urlDigestValid(o.IDDigest)
 }
+
+// pending은 결과로 아직 갱신하지 않은 예약이다(ID 모름 또는 ID만 앎).
+func (o productConfirmationObject) pending() bool { return o.IDDigest == "" && !o.NotSent }
+
+// productObjectIDPattern은 확정 단계가 만든 객체 ID 모양이다(e3contract.NewObjectID).
+var productObjectIDPattern = regexp.MustCompile(`^` + regexp.QuoteMeta(e3contract.ObjectIDPrefix) + `[0-9a-f]{32}$`)
 
 // liveConfirmationObjects는 거두지 않은(대상에 남았을 수 있는) 쓰기다.
 func liveConfirmationObjects(objects []productConfirmationObject) []productConfirmationObject {
@@ -282,11 +300,12 @@ func applyReset(rec productTargetRecord, st *productResetState, jobs map[string]
 			return nil, errPreparation
 		}
 		o := e.Objects[0]
-		if !o.valid() || o.IDUnknown && !o.NotSent {
+		// 갱신은 created(ID digest)나 not_sent(거둠)뿐이다. 예약과 같은 ID여야 한다(ID를 아는 예약을 다른 ID로 바꾸지 않음).
+		if !o.valid() || o.pending() {
 			return nil, errPreparation
 		}
 		objects := append([]productConfirmationObject(nil), next.writesObjects...)
-		i := slices.IndexFunc(objects, func(p productConfirmationObject) bool { return p.Type == o.Type && p.IDUnknown && !p.NotSent })
+		i := slices.IndexFunc(objects, func(p productConfirmationObject) bool { return p.Type == o.Type && p.pending() && p.ID == o.ID })
 		if i < 0 {
 			return nil, errPreparation
 		}
