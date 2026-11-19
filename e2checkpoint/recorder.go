@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
-	"syscall"
 
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/transmit"
@@ -83,21 +82,6 @@ func OpenRecorder(ctx context.Context, c RecorderConfig) (*Recorder, error) {
 	}
 	r.head = head
 	return r, nil
-}
-
-func validJournalDirectory(info os.FileInfo) bool {
-	if info == nil || info.Mode() != os.ModeDir|0700 {
-		return false
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	return ok && stat.Uid == uint32(os.Geteuid()) && stat.Nlink > 0
-}
-func validJournalFile(info os.FileInfo) bool {
-	if info == nil || info.Mode() != 0600 {
-		return false
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	return ok && stat.Uid == uint32(os.Geteuid()) && stat.Nlink == 1
 }
 
 // snapshot은 이 Recorder가 소유한 파일만 읽는다. Store는 받은 바이트를
