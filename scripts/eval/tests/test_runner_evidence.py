@@ -429,8 +429,10 @@ class FinalMeterChecksTests(unittest.TestCase):
         # 새 표식 쌍인데 봉인 표식에 거부 수가 빠지면 drain 값으로 대신 채우지 않는다(#734 리뷰)
         self.assertFalse(final_log_consistent(rows, {"role": "engine"}, drained))
         self.assertFalse(final_log_consistent(rows, {"role": "engine", "request_cap": 3}, drained))
-        # drain 표식에만 칸이 빠진 경우도 같다
+        # drain 표식에만 칸이 빠진 경우도 같다(상한 거부 행이 없어도 봉인 표식이 새 형식이면 이전 기록 호환이 아니다)
         self.assertFalse(final_log_consistent(rows, {"role": "engine", "rejected_over_cap": 1}, self.DRAINED))
+        self.assertFalse(final_log_consistent(self.rows(), {"role": "engine", "request_cap": 3, "rejected_over_cap": 0},
+                                              self.DRAINED))
         for marked, sealed_value in ((0, 0), (2, 2), (-1, -1), (True, True), (None, None), (1, 0)):
             with self.subTest(marked=marked, sealed=sealed_value):
                 self.assertFalse(final_log_consistent(rows, {"role": "engine", "rejected_over_cap": sealed_value},
