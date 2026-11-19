@@ -879,7 +879,7 @@ export function prettyEvidence(raw: string): string {
 }
 
 /**
- * 증거 · 요청 기록 탭 맨 위 탐색 · 요청 집계 한 줄 (사용자 11/19). 탭을 누르면 바로 보이고 발견별 증거는 그 아래로 내려 본다.
+ * 증거 · 요청 기록 탭 맨 위 탐색 · 요청 집계 한 줄 (사용자 11/19). 탭을 누르면 바로 보이고 취약점별 증거는 그 아래로 내려 본다.
  * - 탐색(탐색 흐름 스냅숏): 발견한 API(찾은 경로 수) · 방문(응답을 받은 경로 수). 아래 '탐색 · 선택 범위'에 따로 두던 두
  *   칸이 너무 비어 보여 여기로 합쳤다.
  * - 요청(저장된 실행 기록의 E② 집계 값 그대로): 보낸 요청(대상 전송 시도) · 막은 요청(차단) · 응답 받음 · 결과 불명.
@@ -1781,20 +1781,18 @@ export function UrlReportLive() {
                 hidden={tab !== "ev"}
                 style={{ display: tab === "ev" ? "flex" : undefined, flexDirection: "column", gap: 26 }}
               >
-                {/* 탭을 누르면 전송 집계가 바로 보이고, 발견별 증거는 아래로(사용자 11/19) */}
+                {/* 탭을 누르면 탐색 · 요청 집계가 바로 보이고, 취약점별 증거는 아래로(사용자 11/19) */}
                 <RunCounts run={run} />
                 {findings.length ? (
-                  // 시안 증거 목록 (evi): 발견마다 서버가 저장한 증거 버전 · 재현 단계 수
-                  <ul className={s.evi} aria-label="발견별 증거">
+                  // 시안 증거 목록 (evi): '취약점 n · 제목 · 판정'만(사용자 11/19 — 증거 버전 · 재현 단계 수는 뺌). 서버 내부
+                  // ID(candidate-n · verdict-n)는 마우스를 올리면. 확정 전(검토 필요 등)을 확정 취약점으로 읽지 않게 판정
+                  // 딱지를 같이 둔다(절대규칙 5, 보고서 문서의 '취약점' 목록과 같은 모양)
+                  <ul className={s.evi} aria-label="취약점별 증거">
                     {findings.map((e, i) => (
                       <li key={e.entry_id}>
-                        {/* 서버 내부 ID(candidate-n · verdict-n)는 화면에 두지 않고 '발견 n'(보고서 문서 번호와 같은 순서)으로,
-                            ID 는 마우스를 올리면 (사용자 11/19 '발견으로만') */}
-                        <b title={`ID ${e.entry_id}`}>{`발견 ${i + 1}`}</b>
+                        <b title={`ID ${e.entry_id}`}>{`취약점 ${i + 1}`}</b>
                         <span>{maskSecrets(e.title) || e.entry_id}</span>
-                        <span>
-                          {`${e.evidence_version >= 0 ? `증거 버전 ${e.evidence_version}` : "증거 버전 미확인"} · 재현 단계 ${e.steps?.length ?? 0}건`}
-                        </span>
+                        <Outcome o={diagnosticOutcome(e)} />
                       </li>
                     ))}
                   </ul>

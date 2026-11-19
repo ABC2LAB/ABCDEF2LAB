@@ -1588,17 +1588,21 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(within(mapTab).getByRole("note")).toHaveTextContent(/^연결 전/);
     expect(within(mapTab).getByRole("button", { name: /접근통제 지도 화면 열기/ })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: "증거 · 요청 기록" }));
-    // 시안 증거 목록: 발견마다 저장된 증거 버전 · 재현 단계 수
-    // 서버 내부 ID 대신 '발견 n'(보고서 문서 번호 순서), ID 는 마우스를 올리면(사용자 11/19)
-    const evList = screen.getByRole("list", { name: "발견별 증거" });
-    expect(within(evList).getByText("발견 1")).toHaveAttribute("title", "ID candidate-1");
+    // 시안 증거 목록: 취약점마다 판정
+    // 서버 내부 ID 대신 '취약점 n'(보고서 문서 번호 순서), ID 는 마우스를 올리면 · 증거 버전 · 재현 단계 수는 두지 않고
+    // 확정 전을 확정으로 읽지 않게 판정 딱지(사용자 11/19, 절대규칙 5)
+    const evList = screen.getByRole("list", { name: "취약점별 증거" });
+    expect(evList).not.toHaveTextContent(/증거 버전|재현 단계/);
+    const first = within(evList).getByText("취약점 1");
+    expect(first).toHaveAttribute("title", "ID candidate-1");
+    expect(first.parentElement).toHaveTextContent("검토 필요");
     expect(within(evList).queryByText("candidate-1")).toBeNull();
-    // 탭을 누르면 전송 집계(요청 접수 · 허용 · 차단 …, 저장 값 그대로)가 맨 위에 바로 보이고 발견별 증거는 그 아래
+    // 탭을 누르면 전송 집계(요청 접수 · 허용 · 차단 …, 저장 값 그대로)가 맨 위에 바로 보이고 취약점별 증거는 그 아래
     // (사용자 11/19). 실행 종료 기록 칸(단계 · 결과 · 실행 ID · 감사 · 저장 시각)은 두지 않는다
     const counts = await screen.findByRole("region", { name: "탐색 · 요청 집계" });
     const evTab = screen.getByRole("tabpanel", { name: "증거 · 요청 기록" });
     expect(evTab.firstElementChild).toBe(counts);
-    expect(counts.nextElementSibling).toBe(screen.getByRole("list", { name: "발견별 증거" }));
+    expect(counts.nextElementSibling).toBe(screen.getByRole("list", { name: "취약점별 증거" }));
     // 한 줄 네 칸, 자산 탐색과 같은 이름(사용자 11/19): 요청 접수 · 허용 · 호출 · 미지원(0)은 두지 않는다
     expect([...counts.querySelectorAll(":scope > div > div:first-child")].map((x) => x.textContent)).toEqual([
       "보낸 요청",
