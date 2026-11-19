@@ -17,7 +17,7 @@ import { entrySeverityLabel } from "@/lib/diagnosis/severity";
 
 import { cx } from "../../lib/cx";
 import { outcomeLabel } from "../../live/liveReport";
-import { maskSecrets } from "../../live/mask";
+import { maskForCopy, maskSecrets } from "../../live/mask";
 import { Markdown } from "../../ui/Markdown";
 import { Isec } from "../../ui/parts";
 import s from "../../workbench.module.css";
@@ -144,8 +144,8 @@ export function pocCopyText(entry: RemediationEntry): string {
   } else out.push("구조화된 실제 재현 단계 미확보. 실행하지 않은 절차를 생성하지 않습니다.", "");
   out.push("요청 · 응답 증거:", maskSecrets(entry.evidence) || "저장된 증거 본문 없음");
   if (entry.truncated) out.push("", "실제 도구 출력이 잘렸습니다. 완전한 재현 증거가 아닙니다.");
-  // 이어 붙인 뒤 한 번 더 가린다(칸 경계에 걸친 값)
-  return maskSecrets(out.join("\n"));
+  // 이어 붙인 뒤 한 번 더 가린다(칸 경계에 걸친 값). 클립보드용이라 엔티티 · 역슬래시로 숨긴 키까지 풀어 본다(#709 리뷰)
+  return maskForCopy(out.join("\n"));
 }
 
 export function DiagnosticEntrySections({
@@ -175,7 +175,7 @@ export function DiagnosticEntrySections({
     const box = reportBox.current;
     const shown = box ? box.innerText || box.textContent || "" : "";
     try {
-      await navigator.clipboard.writeText(maskSecrets(shown));
+      await navigator.clipboard.writeText(maskForCopy(shown));
       setReportMsg("상세 보고를 복사했습니다.");
     } catch (error) {
       console.warn("상세 보고 복사 실패", error);

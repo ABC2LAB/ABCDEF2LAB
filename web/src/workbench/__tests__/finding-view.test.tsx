@@ -223,6 +223,37 @@ describe("UrlFindingLive (단독 발견 상세 · 저장 결과)", () => {
     vi.unstubAllGlobals();
   });
 
+  it("'PoC 복사'는 엔티티로 키를 숨긴 응답 증거 값도 클립보드에 남기지 않는다 (#677 fixture · #709 리뷰)", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    const hidden = "&#112;&#97;&#115;&#115;&#119;&#111;&#114;&#100;";
+    a.fetchRemediation.mockResolvedValue({
+      task_id: 42,
+      entries: [
+        {
+          ...entry(1),
+          evidence: [
+            "HTTP/1.1 200 OK",
+            "Authorization: Bearer synthetic-poc-token",
+            `${hidden}=synthetic-entity-secret`,
+            `{"${hidden}":"synthetic-json-entity-secret"}`,
+          ].join("\n"),
+        },
+      ],
+    });
+    pickFinding("42", "candidate-1");
+    mount();
+    const page = await screen.findByRole("region", { name: "발견 상세 페이지" });
+    fireEvent.click(within(page).getByRole("button", { name: "PoC 복사" }));
+    expect(await within(page).findByText("PoC 를 복사했습니다.")).toBeInTheDocument();
+    const text = writeText.mock.calls[0][0] as string;
+    expect(text).not.toMatch(/synthetic-poc-token|synthetic-entity-secret|synthetic-json-entity-secret/);
+    // 붙여 넣은 앱이 풀 엔티티도 남지 않는다
+    expect(text).not.toContain("&#");
+    expect(text).toContain("HTTP/1.1 200 OK");
+    vi.unstubAllGlobals();
+  });
+
   it("고른 발견이 없으면 부르지 않고 보고서로 안내한다", () => {
     const goTo = mount();
     expect(screen.getByText(/보고서 발견 목록에서 발견을 고르고/)).toBeInTheDocument();

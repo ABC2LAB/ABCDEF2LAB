@@ -2,7 +2,8 @@
 
 import { describe, expect, it } from "vitest";
 
-import { isSensitiveKey, maskJson, maskParam, maskSecrets, REDACTED } from "../live/mask";
+import { isSensitiveKey, maskForCopy, maskJson, maskParam, maskSecrets, REDACTED, UNVERIFIED_LINE } from "../live/mask";
+import { MARKUP_HIDDEN_SECRETS } from "./mask-fixtures";
 
 const JWT =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJBUlRFWCIsImV4cCI6MTc5OTk5OTk5OX0.c2lnbmF0dXJlLWJ5dGVzLWhlcmU";
@@ -131,5 +132,59 @@ describe("maskParam · maskJson · isSensitiveKey", () => {
     expect(out).toContain('"url": "https://x.test/?apikey=[REDACTED]"');
     expect(maskJson(null)).toBe("");
     expect(maskJson("password=x")).toBe("password=[REDACTED]");
+  });
+});
+
+describe("maskForCopy — 클립보드로 나가는 글 (#709 리뷰)", () => {
+  // #677 리뷰의 합성 fixture: 키 이름을 HTML 엔티티로 숨기면 maskSecrets 는 키를 못 알아본다
+  const ENTITY_KEY = "&#112;&#97;&#115;&#115;&#119;&#111;&#114;&#100;";
+
+  it("maskSecrets 만으로는 엔티티로 숨긴 키의 값이 남는다 (고치기 전 모양)", () => {
+    expect(maskSecrets(`${ENTITY_KEY}=synthetic-entity-secret`)).toContain("synthetic-entity-secret");
+  });
+
+  it.each([
+    ["10진 엔티티", `${ENTITY_KEY}=synthetic-entity-secret`, "synthetic-entity-secret"],
+    ["16진 · 세미콜론 없는 엔티티", "&#x70;&#97ssword=synthetic-hex-secret", "synthetic-hex-secret"],
+    ["이름 엔티티 구분자", "password&equals;synthetic-named-secret", "synthetic-named-secret"],
+    ["두 겹 엔티티", "&amp;#112;assword=synthetic-double-secret", "synthetic-double-secret"],
+    ["Markdown 역슬래시", "api\\_key=synthetic-escape-secret", "synthetic-escape-secret"],
+    ["JSON 안 엔티티 키", `{"${ENTITY_KEY}":"synthetic-json-secret"}`, "synthetic-json-secret"],
+  ])("붙여 넣은 곳이 풀 모양까지 가린다 — %s", (_, line, secret) => {
+    const out = maskForCopy(`GET /api/orders/2\n${line}\n200 OK`);
+    expect(out).not.toContain(secret);
+    expect(out).toContain(REDACTED);
+    // 다른 줄은 그대로
+    expect(out.split("\n")[0]).toBe("GET /api/orders/2");
+    expect(out.split("\n")[2]).toBe("200 OK");
+  });
+
+  it("풀어도 새로 가릴 게 없는 줄은 원래 모양(가린 것)을 그대로 둔다", () => {
+    const escaped = '{"body":"{\\"password\\":\\"hunter2\\",\\"note\\":\\"ok\\"}"}';
+    expect(maskForCopy(escaped)).toBe(maskSecrets(escaped));
+    expect(maskForCopy(escaped)).not.toContain("hunter2");
+    const plain = "GET /search?q=a&amp;b HTTP/1.1";
+    expect(maskForCopy(plain)).toBe(plain);
+  });
+
+  it.each(MARKUP_HIDDEN_SECRETS)("상세 보고 카드와 같은 #677 fixture 도 가린다 — %s", (_, text, secret) => {
+    expect(maskForCopy(text)).not.toContain(secret);
+  });
+
+  it("숨긴 게 없는 줄은 서식 · 태그 · 링크 글자가 있어도 그대로 둔다", () => {
+    const line = "Accept: */* · `GET` <b>ok</b> [문서](/docs) user_id=7";
+    expect(maskForCopy(line)).toBe(line);
+  });
+
+  it("너무 깊게 감싼 줄은 안전을 확인하지 못해 복사하지 않는다", () => {
+    const deep = `&${"amp;".repeat(12)}#112;assword=synthetic-deep-secret`;
+    const out = maskForCopy(`앞 줄\n${deep}`);
+    expect(out).toBe(`앞 줄\n${UNVERIFIED_LINE}`);
+  });
+
+  it("빈 글은 그대로, 두 번 걸어도 같다", () => {
+    expect(maskForCopy("")).toBe("");
+    const once = maskForCopy(`${ENTITY_KEY}=synthetic-entity-secret`);
+    expect(maskForCopy(once)).toBe(once);
   });
 });

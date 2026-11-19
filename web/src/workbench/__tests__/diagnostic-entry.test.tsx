@@ -11,6 +11,7 @@ import {
 } from "@/lib/diagnosis/remediation";
 
 import { DiagnosticEntrySections } from "../views/live/DiagnosticEntrySections";
+import { MARKUP_HIDDEN_SECRETS } from "./mask-fixtures";
 
 vi.mock("@/lib/diagnosis/api", async (original) => ({
   ...(await original<typeof import("@/lib/diagnosis/api")>()),
@@ -211,23 +212,9 @@ it("상세 보고는 Markdown 으로 그리되 원문 HTML · 링크 이동 · �
   expect(writeText.mock.calls[0][0]).not.toContain("synthetic-private-token");
 });
 
-it.each([
-  ["HTML 엔티티", "&#112;&#97;&#115;&#115;&#119;&#111;&#114;&#100;=synthetic-entity-secret", "synthetic-entity-secret"],
-  ["서식으로 쪼갬", "**pass**word=synthetic-split-secret", "synthetic-split-secret"],
-  ["HTML 주석으로 쪼갬", "pass<!-- x -->word=synthetic-comment-secret", "synthetic-comment-secret"],
-  ["역슬래시", "password\\=synthetic-escape-secret", "synthetic-escape-secret"],
-  ["표 칸", "| 이름 | 값 |\n| --- | --- |\n| a | api_key=synthetic-table-secret |", "synthetic-table-secret"],
-  [
-    "직접 이미지 대체 글",
-    "![&#112;&#97;&#115;&#115;&#119;&#111;&#114;&#100;&#61;synthetic-image-secret](/synthetic.png)",
-    "synthetic-image-secret",
-  ],
-  [
-    "참조형 이미지 대체 글",
-    "![&#112;&#97;&#115;&#115;&#119;&#111;&#114;&#100;&#61;synthetic-reference-mask][proof]\n\n[proof]: /synthetic.png",
-    "synthetic-reference-mask",
-  ],
-])("상세 보고 Markdown 은 파서가 푼 글에도 가림을 건다 — %s (#677 리뷰)", async (_, report, secret) => {
+it.each(
+  MARKUP_HIDDEN_SECRETS,
+)("상세 보고 Markdown 은 파서가 푼 글에도 가림을 건다 — %s (#677 리뷰)", async (_, report, secret) => {
   const writeText = vi.fn().mockResolvedValue(undefined);
   vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
   // 대조: 원문 가림만으로는 못 잡는 모양이다
@@ -240,6 +227,28 @@ it.each([
   await within(card).findByText("상세 보고를 복사했습니다.");
   expect(writeText.mock.calls[0][0]).not.toContain(secret);
   expect(writeText.mock.calls[0][0]).not.toContain("&#");
+});
+
+it.each(
+  MARKUP_HIDDEN_SECRETS,
+)("'PoC 복사'는 응답 증거의 같은 모양도 클립보드에 남기지 않는다 — %s (#709 리뷰)", async (_, evidence, secret) => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+  render(
+    <DiagnosticEntrySections
+      task="42"
+      entry={{ ...fixture(), evidence: `HTTP/1.1 200 OK\n${evidence}` }}
+      onReload={vi.fn()}
+      layout="page"
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "PoC 복사" }));
+  await screen.findByText("PoC 를 복사했습니다.");
+  const text = writeText.mock.calls[0][0] as string;
+  expect(text).not.toContain(secret);
+  // 붙여 넣은 앱이 풀 엔티티도 남지 않고, 숨길 것 없는 줄은 그대로다
+  expect(text).not.toContain("&#");
+  expect(text).toContain("HTTP/1.1 200 OK");
 });
 
 it.each([

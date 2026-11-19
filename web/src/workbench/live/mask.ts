@@ -110,6 +110,130 @@ export function maskParam(name: string, value: string): string {
   return isSensitiveKey(name) ? REDACTED : maskSecrets(value);
 }
 
+/**
+ * 이름 붙은 HTML 엔티티 중 ASCII 문장부호 · 공백으로 풀리는 것. 키 이름의 구분자(= : _ " 등)를 숨길 수 있어서 푼다.
+ * 영문자로 풀리는 이름 엔티티는 없고, 글자는 숫자 엔티티(&#112;)로만 숨길 수 있다.
+ */
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: "&",
+  AMP: "&",
+  lt: "<",
+  LT: "<",
+  gt: ">",
+  GT: ">",
+  quot: '"',
+  QUOT: '"',
+  apos: "'",
+  excl: "!",
+  num: "#",
+  dollar: "$",
+  percnt: "%",
+  lpar: "(",
+  rpar: ")",
+  ast: "*",
+  midast: "*",
+  plus: "+",
+  comma: ",",
+  period: ".",
+  sol: "/",
+  colon: ":",
+  semi: ";",
+  equals: "=",
+  quest: "?",
+  commat: "@",
+  lsqb: "[",
+  lbrack: "[",
+  bsol: "\\",
+  rsqb: "]",
+  rbrack: "]",
+  Hat: "^",
+  lowbar: "_",
+  UnderBar: "_",
+  grave: "`",
+  DiacriticalGrave: "`",
+  lcub: "{",
+  lbrace: "{",
+  verbar: "|",
+  vert: "|",
+  VerticalLine: "|",
+  rcub: "}",
+  rbrace: "}",
+  Tab: "\t",
+  NewLine: "\n",
+  nbsp: " ",
+  NonBreakingSpace: " ",
+};
+const MAX_CODE_POINT = 0x10ffff;
+const ENTITY_RE = /&(?:#(\d{1,8})|#[xX]([0-9a-fA-F]{1,7})|([A-Za-z][A-Za-z0-9]{1,31}));?/g;
+/** Markdown 역슬래시 이스케이프(\= \_ \" …): 붙여 넣은 곳이 Markdown 이면 역슬래시가 빠진 글로 보인다. */
+const MD_ESCAPE_RE = /\\([!-/:-@[-`{-~])/g;
+/** 링크 · 이미지(직접 `[글](주소)` · 참조형 `[글][이름]`): 붙여 넣은 곳에는 글(대체 글)만 보인다. */
+const MD_LINK_RE = /!?\[([^\]]*)\](?:\([^)]*\)|\[[^\]]*\])/g;
+/** HTML 주석 · 태그: 그려지면 사라져 앞뒤 글이 붙는다(pass<!-- -->word, <b>pass</b>word). */
+const HTML_COMMENT_RE = /<!--[\s\S]*?-->/g;
+const HTML_TAG_RE = /<\/?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?\/?>/g;
+/** 강조 · 취소선 · 코드 표시(**pass**word, _pass_word, `pass`word): 그려지면 표시가 사라져 글이 붙는다. */
+const MD_MARK_RE = /[*_~`]+/g;
+/** 엔티티를 몇 겹(&amp;#112; …)까지 풀어 볼지. 이보다 깊으면 안전을 확인할 수 없는 줄로 본다. */
+const MAX_DECODE_ROUNDS = 8;
+/** 풀어 봐도 끝나지 않는 줄 대신 복사하는 글. */
+export const UNVERIFIED_LINE = `${REDACTED} (인코딩이 깊어 안전을 확인하지 못한 줄은 복사하지 않습니다)`;
+
+function fromCode(code: number): string {
+  return Number.isFinite(code) && code > 0 && code <= MAX_CODE_POINT ? String.fromCodePoint(code) : "�";
+}
+
+/**
+ * 붙여 넣은 앱(HTML · Markdown)이 그릴 모양으로 한 겹 푼다: 숫자 · 이름 엔티티, Markdown 역슬래시 이스케이프, 링크 · 이미지는
+ * 글만, HTML 주석 · 태그와 강조 표시는 지운다(#677 fixture 의 쪼갠 키). 가릴 게 있는지 보려는 모양이라 실제 그림보다 넓게
+ * 지운다(`a*b` 같은 글자도 지움) — 지나치게 가리는 쪽이 놓치는 쪽보다 낫다.
+ */
+function renderOnce(text: string): string {
+  return text
+    .replace(ENTITY_RE, (m, dec?: string, hex?: string, name?: string) => {
+      if (dec) return fromCode(Number.parseInt(dec, 10));
+      if (hex) return fromCode(Number.parseInt(hex, 16));
+      return (name && NAMED_ENTITIES[name]) ?? m;
+    })
+    .replace(MD_ESCAPE_RE, "$1")
+    .replace(MD_LINK_RE, "$1")
+    .replace(HTML_COMMENT_RE, "")
+    .replace(HTML_TAG_RE, "")
+    .replace(MD_MARK_RE, "");
+}
+
+/** 더 풀리지 않을 때까지 푼 글. MAX_DECODE_ROUNDS 안에 멈추지 않으면 null. */
+function settled(text: string): string | null {
+  let cur = text;
+  for (let i = 0; i < MAX_DECODE_ROUNDS; i++) {
+    const next = renderOnce(cur);
+    if (next === cur) return cur;
+    cur = next;
+  }
+  return null;
+}
+
+/**
+ * 클립보드로 내보낼 글 가리기 (#709 이동찬 리뷰). maskSecrets 는 글자 그대로만 보므로 `&#112;assword=값` 처럼 키를 엔티티 ·
+ * 역슬래시 · 서식 · 주석 · 이미지 대체 글로 숨기면 값을 놓치고, 붙여 넣은 앱이 그걸 풀면 비밀이 되살아난다(상세 보고 카드가
+ * 파싱 뒤에 다시 가리는 것과 같은 모양, #677 fixture). 그래서 줄마다 붙여 넣은 곳이 그릴 모양까지
+ * 풀어 다시 가려 보고, 풀린 모양에서 새로 가릴 게 나오면 그 줄은 푼 뒤 가린 글로 바꾼다. 아니면 원래 줄(가린 것)을 그대로
+ * 둔다(증거 원문 모양 유지). 끝까지 풀리지 않는 줄은 복사하지 않는다.
+ */
+export function maskForCopy(text: string): string {
+  if (!text) return text;
+  return text
+    .split("\n")
+    .map((line) => {
+      const masked = maskSecrets(line);
+      const shown = settled(masked);
+      if (shown === null) return UNVERIFIED_LINE;
+      const remasked = maskSecrets(shown);
+      return remasked === shown ? masked : remasked;
+    })
+    .join("\n");
+}
+
 /** 서버가 준 JSON 값을 보기 좋게 문자열로 만든 뒤 가린다 (문자열이면 그대로 가림). */
 export function maskJson(value: unknown): string {
   if (value === undefined || value === null) return "";
