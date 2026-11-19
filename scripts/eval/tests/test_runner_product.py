@@ -383,13 +383,22 @@ class TestTaskEndSignal(unittest.TestCase):
     def test_only_the_six_end_signal_fields_of_that_task_are_kept(self):
         fake = FakeProduct()
         task = {"id": "42", "status": "done", "completed_at": "2026-11-19T08:35:20Z", "goals_total": 3, "goals_met": 3, "in_flight": 0,
-                "llm_failover_state": "default", "name": "task-name-text", "goal": "goal-text"}
+                "llm_failover_state": "default", "name": "task-name-text", "goal": "goal-text", "exploration_id": 3}
         fake.overrides["/api/tasks"] = (200, {"tasks": [task, dict(task, id="7")]})
         got = driver(fake).task_end_signal("42")
         self.assertEqual(got, {k: task[k] for k in ("status", "completed_at", "goals_total", "goals_met", "in_flight", "llm_failover_state")})
         from runner_engine import EngineAPIError
         with self.assertRaises(EngineAPIError):
             driver(fake).task_end_signal("99")  # 목록에 없는 작업
+        self.assertEqual(driver(fake).task_exploration_id("42"), 3)
+        for bad in (None, 0, True, "3"):
+            with self.subTest(exploration_id=bad):
+                fake.overrides["/api/tasks"] = (200, {"tasks": [dict(task, exploration_id=bad)]})
+                with self.assertRaises(ProductAPIError):
+                    driver(fake).task_exploration_id("42")
+        fake.overrides["/api/tasks"] = (200, {"tasks": [task, dict(task)]})  # 같은 번호 둘
+        with self.assertRaises(ProductAPIError):
+            driver(fake).task_exploration_id("42")
         fake.overrides["/api/tasks"] = (403, {"reason": "forbidden"})
         with self.assertRaises(ProductAPIError) as caught:
             driver(fake).task_end_signal("42")

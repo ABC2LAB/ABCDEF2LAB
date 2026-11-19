@@ -42,7 +42,7 @@ from datetime import timedelta  # noqa: E402
 from typing import Protocol  # noqa: E402
 
 from runner import (  # noqa: E402
-    INVALID, RECORD_NAME, RESULT_FORMAT, RESULT_NAME, RunFailure, _check_subnets, check_request_cap, _event_time, _meter_preflight,
+    CLI_LINES_NAME, CLI_USAGE_NAME, INVALID, RECORD_NAME, RESULT_FORMAT, RESULT_NAME, RunFailure, _check_subnets, check_request_cap, _event_time, _meter_preflight,
     _ns, _stamp, _step, _stop_events, _stop_watch,
     _wait_budget, _wait_drained, check_meter_logs, first_limit,
 )
@@ -58,6 +58,7 @@ from runner_record import (  # noqa: E402
     solve_events, timeline,
 )
 from runner_docker import HelperCleanupError, HelperCleanupInterrupt  # noqa: E402
+from cli_usage import OBSERVED_LINES_FORMAT, count_usage, not_found_calls, observed_lines, product_command_record  # noqa: E402
 from isolation_proof import E3_STATUSES, PURPOSE_OFFICIAL  # noqa: E402
 from run_record import OFFICIAL_E3_DISABLED_REASON  # noqa: E402
 from runner_evidence import MeterFiles, forwarded_count  # noqa: E402
@@ -255,6 +256,8 @@ class SplitRunSpec:
     synthetic: bool = False
     scripted_plan_sha256: str = ""  # 합성 모드에서 스크립트 모델이 읽은 계획 사본의 SHA
     fault_stall_seconds: int | None = None  # 멈춤 무효 판정 T(초, B와 같은 run.fault_stall_seconds). None이면 판정 안 함
+    # B 전용 CLI 이름(split.cli_usage_names). 있으면 O 제품 활동의 Bash 호출에서 B와 같은 함수로 관측·이름 못 찾음 수를 센다.
+    cli_usage_names: tuple[str, ...] = ()
     # v1.1 러너 기록(설계안 §2·§5). B(build_spec)와 같은 선언·설정 칸이다. 비면 기록을 만들지 않고 회차가 무효다.
     condition: str = ""
     fixture_fingerprint: str = ""
@@ -291,6 +294,8 @@ class SplitRunPorts(Protocol):
     def stop_boundary(self, boundary_container_id: str) -> None: ...
     def run_record(self, task_id: str) -> dict: ...
     def task_signal(self, task_id: str) -> dict: ...
+    def task_exploration_id(self, task_id: str) -> int: ...
+    def product_commands(self, exploration_id: int) -> list[dict]: ...
     def workflow_snapshot(self, draft_id: str) -> dict: ...
     def control_policy(self, task_id: str) -> dict: ...
     def product_files(self) -> dict: ...
@@ -427,6 +432,23 @@ def _discovery_sources(ports, draft_id: str) -> dict:
         return {"format": DISCOVERY_SOURCES_FORMAT, "error": code if _PRODUCT_CODE.fullmatch(code) else "discovery_sources_failed"}
     except Exception:
         return {"format": DISCOVERY_SOURCES_FORMAT, "error": "discovery_sources_failed"}
+
+
+def _product_cli_usage(names: tuple[str, ...], ports, evidence, state, task_id: str) -> None:
+    """O 제품 활동의 Bash 호출에서 B 전용 CLI 이름별 관측(B와 같은 count_usage·observed_lines)과, O에 없는 이름이라 찾지 못한
+    호출 수(not_found)를 남긴다. 원문은 메모리에서만 보고 모양(이름·연산자만)만 쓴다. 이름과 상관없이 셸이 명령을 찾지 못한
+    호출 수(not_found_calls)도 같이 둔다. B 명령 기록 읽기 실패처럼 회차를 무효로 한다(cli_usage_failed)."""
+    exploration_id = _step(state, "cli_usage_failed", lambda: ports.task_exploration_id(task_id))
+    rows = _step(state, "cli_usage_failed", lambda: ports.product_commands(exploration_id))
+    bash = _step(state, "cli_usage_failed", lambda: [product_command_record(row) for row in rows])
+    usage = _step(state, "cli_usage_failed", lambda: dict(count_usage(bash, names, with_failures=True),
+                                                          exploration_id=exploration_id, not_found_calls=not_found_calls(bash)))
+    if usage["names_seen"]:
+        picked, observed = _step(state, "cli_usage_failed", lambda: observed_lines(bash, names))
+        _step(state, "evidence_write_failed", lambda: evidence.write_json(CLI_LINES_NAME, {
+            "format": OBSERVED_LINES_FORMAT, "observed_calls": observed, "lines": picked}))
+        usage["observed_lines"] = len(picked)
+    _step(state, "evidence_write_failed", lambda: evidence.write_json(CLI_USAGE_NAME, usage))
 
 
 def _task_end(ports, task_id: str) -> dict:
@@ -631,6 +653,8 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     # 마감 뒤 제품 작업의 목표 칸(목표 수·달성 수 등)을 남긴다. 판정에 쓰지 않는 근거라 읽지 못해도 회차를 무효로 하지 않고
     # 고정 코드만 남긴다(B의 끝 신호 읽기 실패와 같은 처리).
     _step(state, "evidence_write_failed", lambda: evidence.write_json(PRODUCT_TASK_END_NAME, _task_end(ports, task_id)))
+    if spec.cli_usage_names:
+        _product_cli_usage(spec.cli_usage_names, ports, evidence, state, task_id)
     goal = record.get("goal") if isinstance(record, dict) else None
     if not isinstance(goal, dict) or not isinstance(goal.get("common_sha256"), str):
         raise RunFailure("goal_digest_missing")  # #657 이전 제품 빌드이거나 실행 기록이 목표 SHA를 잃었다

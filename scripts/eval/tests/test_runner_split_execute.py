@@ -202,6 +202,13 @@ class FakePorts:
                        "run": {"phase": "closed", "run_ref": "run-draft-1",
                                "execution": {"scope": dict(SCOPE), "policy_revision": "v1"}}}
         self.ledger, self.calls_file = LEDGER, CALLS
+        # 제품 활동 표의 Bash 호출 줄(cmd·res·is_error). 기본은 O에 없는 python을 부른 Worker 호출 하나와 보통 호출 하나.
+        self.commands = [
+            {"cmd": json.dumps({"command": "python -c 'print(1)'"}), "is_error": True,
+             "res": json.dumps({"trusted": {"exit_code": 127}, "tool_output": "bash: line 1: python: command not found"})},
+            {"cmd": json.dumps({"command": "curl -s http://app.eval.test:8080/"}), "is_error": False,
+             "res": json.dumps({"trusted": {"exit_code": 0}, "tool_output": "ok"})},
+        ]
         self.task_end = {"status": "done", "completed_at": "2026-11-17T07:01:37Z", "goals_total": 3, "goals_met": 3, "in_flight": 0,
                          "llm_failover_state": "default"}
         self.forced = 0
@@ -365,6 +372,16 @@ class FakePorts:
     def run_record(self, task_id):
         self._call("run_record")
         return self.record
+
+    def task_exploration_id(self, task_id):
+        self._call("task_exploration_id")
+        return 7
+
+    def product_commands(self, exploration_id):
+        self._call("product_commands")
+        if isinstance(self.commands, Exception):
+            raise self.commands
+        return self.commands
 
     def task_signal(self, task_id):
         self._call("task_signal")
@@ -1153,6 +1170,43 @@ class TestProductTaskEnd(unittest.TestCase):
                 self.assertEqual(result["status"], "complete", result)
                 self.assertEqual(evidence.files["product-task-end.json"]["error"], code)
                 self.assertNotIn("task", evidence.files["product-task-end.json"])
+
+
+class TestProductCliUsage(unittest.TestCase):
+    """O 제품 활동의 Bash 호출을 B와 같은 함수로 센다(B 전용 CLI 관측·O에서 이름을 찾지 못한 호출)."""
+
+    def test_names_and_not_found_are_counted_after_the_task_signal(self):
+        result, ports, evidence = run(cli_usage_names=("python", "pip"))
+        self.assertEqual(result["status"], "complete", result)
+        usage = evidence.files["cli-usage.json"]
+        self.assertEqual((usage["bash_calls"], usage["names_seen"], usage["not_found"], usage["not_found_calls"],
+                          usage["exploration_id"], usage["observed_lines"]), (2, ["python"], {"python": 1}, 1, 7, 1))
+        lines = evidence.files["cli-observed-lines.json"]
+        self.assertEqual([line["shape"] for line in lines["lines"]], ["python <인자> <인자>"])  # 원문 인자는 남지 않는다
+        self.assertNotIn("print", json.dumps(evidence.files["cli-observed-lines.json"]))
+        order = ports.calls
+        self.assertLess(order.index("task_signal"), order.index("task_exploration_id"))
+        self.assertLess(order.index("product_commands"), order.index("down"))
+
+    def test_no_names_means_no_read(self):
+        result, ports, evidence = run()
+        self.assertEqual(result["status"], "complete", result)
+        self.assertNotIn("product_commands", ports.calls)
+        self.assertNotIn("cli-usage.json", evidence.files)
+
+    def test_no_observation_writes_no_lines(self):
+        result, _, evidence = run(lambda p: setattr(p, "commands", p.commands[1:]), cli_usage_names=("python",))
+        self.assertEqual(result["status"], "complete", result)
+        self.assertEqual((evidence.files["cli-usage.json"]["names_seen"], evidence.files["cli-usage.json"]["not_found_calls"]), ([], 0))
+        self.assertNotIn("cli-observed-lines.json", evidence.files)
+
+    def test_read_failure_invalidates_like_b(self):
+        for bad in (RuntimeError("boom"), ValueError("product_commands_invalid")):
+            with self.subTest(bad=str(bad)):
+                result, ports, evidence = run(lambda p, b=bad: setattr(p, "commands", b), cli_usage_names=("python",))
+                self.assertEqual((result["status"], result["reasons"][0]), ("invalid", "cli_usage_failed"), result)
+                self.assertIn("down", ports.calls)
+                self.assertNotIn("cli-usage.json", evidence.files)
 
 
 class TestProductFaultStall(unittest.TestCase):

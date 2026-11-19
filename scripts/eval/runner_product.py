@@ -293,6 +293,17 @@ class ProductDriver:
         listing = self._call("GET", "/api/tasks")
         return task_end_signal(json.dumps(listing).encode("utf-8"), task_id)
 
+    def task_exploration_id(self, task_id: str) -> int:
+        """작업의 탐색 번호(활동 표의 exploration_id). 작업 목록(`GET /api/tasks`) 항목의 `exploration_id`를 쓴다
+        (B는 원본 단건 조회의 같은 칸, runner_engine.task_exploration_id)."""
+        listing = self._call("GET", "/api/tasks")
+        tasks = listing.get("tasks") if isinstance(listing, dict) else None
+        matches = [item for item in tasks if isinstance(item, dict) and item.get("id") == task_id] if isinstance(tasks, list) else []
+        value = matches[0].get("exploration_id") if len(matches) == 1 else None
+        if type(value) is not int or value < 1:
+            raise ProductAPIError("product_task_exploration_invalid")
+        return value
+
     def run_record(self, task_id: str) -> dict:
         """그 작업의 저장된 실행 기록(`GET /api/tasks/{id}/diagnosis-run`): 실행·준비 모델 사용량, 목표 SHA(goal), 결과.
         해석은 runner_product_llm.product_model_usage가 한다. 작업 번호는 숫자만 받는다."""
