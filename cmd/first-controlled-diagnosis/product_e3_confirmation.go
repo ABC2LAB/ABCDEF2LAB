@@ -7,7 +7,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 
 	"github.com/Autumn-27/artex/e2proxy"
@@ -33,94 +32,21 @@ type productE3Confirmation struct {
 	registry *productTargetRegistry
 	// accounts는 그 실행의 시험 계정별 인증 준비 결과다(라벨 → 결과, 값 없음).
 	accounts func() map[string]string
-	// handle은 모델 단계가 끝난 뒤 현재 실행과 C14 세션을 함께 조회한다.
-	handle func(string) (*e2proxy.Execution, server.E2HTTPAccountBindings, bool)
+	// handle은 모델 단계가 끝난 뒤 현재 실행과 C14 세션을 함께 조회한다. 못 주면 그 사유 코드다(server.E3Handle*).
+	handle func(string) (*e2proxy.Execution, server.E2HTTPAccountBindings, string)
 	// newBridge는 실제 E² 브리지를 만든다(e2live.NewLive). 시험만 바꾼다.
 	newBridge func(*e2proxy.Execution, server.E2HTTPAccountBindings, e3contract.RunBinding) (productE3Bridge, error)
 	deps      e3contract.Deps
 }
 
 // productE3Bridge는 확정 단계가 쓰는 E² 브리지(e2live.Live)다.
-type productE3Bridge interface {
-	e3v3.E2
-	Close()
-}
+type productE3Bridge = e3v3.Bridge
 
 func newProductE3Bridge(exec *e2proxy.Execution, accounts server.E2HTTPAccountBindings, binding e3contract.RunBinding) (productE3Bridge, error) {
 	if exec == nil || accounts == nil {
 		return nil, e2proxy.ErrE3JournalUnavailable
 	}
 	return e2live.NewLive(exec, accounts, binding)
-}
-
-// productLazyE2는 E② 실행 연결이 있으면 확정 단계에 늘 붙이는 e3v3.E2다(Go 조건 2: 최종 이미지에서 not_wired가 나오지
-// 않고, 꺼진 회차는 실제 사유를 낸다). 실제 브리지는 표식 등록 때 처음 만든다. e3contract.Run은 꺼진 회차와 몫이 0인
-// 회차에서 표식을 등록하지 않으므로, 그런 회차에서는 브리지를 만들지 않고 E²·Host·저널·쓰기 기록에 아무 흔적도 남기지
-// 않는다(선언 없는 회차의 E② 동작 불변). 브리지를 만들지 못하면(v3 Host 없음·계정 저장소 없음·결속 불일치) 표식 등록이
-// 실패해 확정 단계는 계약 §7대로 start_refused·marker_registration_failed다.
-type productLazyE2 struct {
-	mu       sync.Mutex
-	exec     *e2proxy.Execution
-	accounts server.E2HTTPAccountBindings
-	create   func(*e2proxy.Execution, server.E2HTTPAccountBindings, e3contract.RunBinding) (productE3Bridge, error)
-	bridge   productE3Bridge
-}
-
-func (l *productLazyE2) RegisterMarker(ctx context.Context, binding e3contract.RunBinding, marker e3contract.Marker) error {
-	l.mu.Lock()
-	if l.bridge == nil {
-		bridge, err := l.create(l.exec, l.accounts, binding)
-		if err != nil || bridge == nil {
-			l.mu.Unlock()
-			return e2proxy.ErrE3JournalUnavailable
-		}
-		l.bridge = bridge
-	}
-	bridge := l.bridge
-	l.mu.Unlock()
-	return bridge.RegisterMarker(ctx, binding, marker)
-}
-
-// current는 표식 등록으로 만든 브리지다. 등록 전 호출은 보내지 않고 거부한다.
-func (l *productLazyE2) current() (productE3Bridge, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.bridge == nil {
-		return nil, e2proxy.ErrE3JournalUnavailable
-	}
-	return l.bridge, nil
-}
-
-func (l *productLazyE2) Send(ctx context.Context, req e3v3.Request) (e3v3.Event, error) {
-	bridge, err := l.current()
-	if err != nil {
-		return e3v3.Event{}, err
-	}
-	return bridge.Send(ctx, req)
-}
-
-func (l *productLazyE2) AccountBindingRef(ctx context.Context, binding e3contract.RunBinding, label string) (string, error) {
-	bridge, err := l.current()
-	if err != nil {
-		return "", err
-	}
-	return bridge.AccountBindingRef(ctx, binding, label)
-}
-
-func (l *productLazyE2) Verified(ctx context.Context, binding e3contract.RunBinding, ref e3contract.CallRef) (e3v3.Event, error) {
-	bridge, err := l.current()
-	if err != nil {
-		return e3v3.Event{}, err
-	}
-	return bridge.Verified(ctx, binding, ref)
-}
-
-func (l *productLazyE2) Close() {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.bridge != nil {
-		l.bridge.Close()
-	}
 }
 
 // newProductE3Confirmation은 제품 의존(동결 선언 읽기·리셋 게이트)으로 확정 단계를 만든다.
@@ -229,15 +155,29 @@ func (c *productE3Confirmation) stopped(ctx context.Context, taskID string) erro
 func (c *productE3Confirmation) wiredDeps(taskID string) (e3contract.Deps, func()) {
 	deps := c.deps
 	if c.handle == nil || c.newBridge == nil {
+		log.Printf("[e3-confirmation] task %s 확정 단계에 E② 연결 없음: 사유=handle_not_configured", taskID)
 		return deps, func() {}
 	}
-	execution, accounts, ok := c.handle(taskID)
-	if !ok || execution == nil {
+	execution, accounts, reason := c.handle(taskID)
+	if reason != "" || execution == nil {
+		if reason == "" {
+			reason = "execution_missing"
+		}
+		// 확정 단계는 not_wired로 꺼진다. 어느 조건인지 고정 코드로 남긴다(값 없음).
+		log.Printf("[e3-confirmation] task %s 확정 단계에 E② 연결 없음: 사유=%s", taskID, reason)
 		return deps, func() {}
 	}
-	lazy := &productLazyE2{exec: execution, accounts: accounts, create: c.newBridge}
+	newBridge := c.newBridge
+	lazy, err := e3v3.NewLazy(func(binding e3contract.RunBinding) (e3v3.Bridge, error) {
+		return newBridge(execution, accounts, binding)
+	})
+	if err != nil {
+		log.Printf("[e3-confirmation] task %s 확정 단계 어댑터 생성 실패", taskID)
+		return deps, func() {}
+	}
 	adapter, err := e3v3.New(lazy)
 	if err != nil {
+		log.Printf("[e3-confirmation] task %s 확정 단계 어댑터 생성 실패", taskID)
 		return deps, func() {}
 	}
 	deps.Transport, deps.Journal = adapter, adapter

@@ -540,7 +540,7 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 		confirmation := newProductE3Confirmation(b.config.RunsDir, execution.Job.ID, *l.productTarget, b.product.targets,
 			func() map[string]string { return launchAccountAuth(runtime) })
 		if local, ok := runtime.(*server.FirstDiagnosisHTTPRuntime); ok {
-			confirmation.handle = local.E3Handle
+			confirmation.handle = local.E3HandleReason
 		}
 		e3Confirmation = server.FirstDiagnosisE3Hooks{Run: confirmation.run, Stopped: confirmation.stopped}
 		confirmShare, shareErr = confirmation.timeShare()
