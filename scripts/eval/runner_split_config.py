@@ -16,7 +16,7 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 
-from runner_config import COMPOSE_SPLIT, REPO_ROOT, Image, RunnerConfig
+from runner_config import COMPOSE_SPLIT, MAX_REQUEST_CAP, REPO_ROOT, Image, RunnerConfig
 from cli_usage import CliUsageError, validate_names
 from runner_docker import MAX_STOP_TIMEOUT_SECONDS
 
@@ -214,10 +214,13 @@ class SplitPlan:
     explore_port: int
 
 
-def plan_split_run(config: RunnerConfig, split: SplitConfig, *, run_id: str, target_image: Image, meter_port: int) -> SplitPlan:
+def plan_split_run(config: RunnerConfig, split: SplitConfig, *, run_id: str, target_image: Image, meter_port: int,
+                   request_cap: int) -> SplitPlan:
     """O 회차 계획. 계측기·대상·관측 칸은 B와 같은 러너 설정 값이다. 대상 이름은 계측기 본 입구로 풀린다(overlay)."""
     if not _int(meter_port, 1, 65535) or meter_port in (split.product_port, split.dns_control_port, split.explore_port):
         raise SplitConfigError(["split.meter_port: INVALID"])
+    if not _int(request_cap, 1, MAX_REQUEST_CAP):
+        raise SplitConfigError(["split.request_cap: INVALID"])
     env = {
         "PRODUCT_TAG": split.product_tag,
         "PRODUCT_SOURCE_SHA": split.product_source_sha,
@@ -230,6 +233,8 @@ def plan_split_run(config: RunnerConfig, split: SplitConfig, *, run_id: str, tar
         "EVAL_METER_EXPLORE_PORT": str(split.explore_port),
         "EVAL_TARGET_PORT": str(config.ports["target"]),
         "EVAL_METER_DRAIN_GRACE": f"{config.run['drain_grace_seconds']}s",
+        # 계측기 요청 하드 상한 = 선언된 공통 요청 예산(B와 같은 값·같은 계측기 함수, 두 입구 합)
+        "EVAL_METER_REQUEST_CAP": str(request_cap),
         "EVAL_OBS_PORT": str(config.ports["obs"]),
         "EVAL_OBS_HOST_PORT": str(config.ports["obs_host"]),
         "EVAL_OBS_PATH": config.observer_path,
