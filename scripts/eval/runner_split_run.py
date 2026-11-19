@@ -55,7 +55,7 @@ from runner_record import (  # noqa: E402
     RecordContext, RecordError, canonical_sha256, descriptor, evidence_rows, isolation_evidence, isolation_proof, path_ref, run_record,
     solve_events, timeline,
 )
-from runner_docker import HelperCleanupInterrupt  # noqa: E402
+from runner_docker import HelperCleanupError, HelperCleanupInterrupt  # noqa: E402
 from isolation_proof import E3_STATUSES, PURPOSE_OFFICIAL  # noqa: E402
 from run_record import OFFICIAL_E3_DISABLED_REASON  # noqa: E402
 from runner_evidence import MeterFiles, forwarded_count  # noqa: E402
@@ -465,6 +465,10 @@ def _e3_confirmation(ports, draft_id: str) -> dict:
     수집 못 함(e3_confirmation_not_collected)으로 남긴다. 공식 회차의 처리는 호출자가 한다."""
     try:
         raw = ports.e3_confirmation(draft_id)
+    except HelperCleanupError:
+        # 도우미가 보호 볼륨을 계속 잡고 있거나 정리를 확인하지 못했다. 파일 미수집과 달리 회차 정리를 믿을 수 없어 다른 복사
+        # 단계처럼 무효다(#742 리뷰).
+        raise RunFailure("e3_confirmation_copy_failed", ("docker_helper_cleanup_failed",)) from None
     except Exception:
         return {"error": "e3_confirmation_not_collected"}
     return e3_confirmation_row(raw)
