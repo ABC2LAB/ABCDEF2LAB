@@ -90,16 +90,18 @@ func firstDiagnosisRegistrationContext(ctx context.Context, taskID string) conte
 type FirstDiagnosisSupervisor struct {
 	// goal은 작업 목표 문장의 공통 부분·제품 전용 부분 SHA다(SetGoalDigests). 실행 기록에 남겨 평가 러너가 원본(B)
 	// 본문의 공통 부분과 대조한다(평가 결정안 exploration-split-decision §6). 없으면 기록에 싣지 않는다.
-	goal             *diagnosisGoalDigests
-	ctx              context.Context
-	m                *Manager
-	mu               sync.Mutex
-	server           *Server
-	closing          bool
-	closed           bool
-	running          bool
-	preparing        bool
-	runStarted       bool
+	goal       *diagnosisGoalDigests
+	ctx        context.Context
+	m          *Manager
+	mu         sync.Mutex
+	server     *Server
+	closing    bool
+	closed     bool
+	running    bool
+	preparing  bool
+	runStarted bool
+	// e3Recorded는 이 감독자의 E③ 훅(확정 단계 또는 중지 기록)을 이미 불렀는지다. 결과 파일은 회차마다 하나다.
+	e3Recorded       bool
 	admissionGranted bool
 	permit           string
 	runTask          string
@@ -489,20 +491,51 @@ func (s *FirstDiagnosisSupervisor) PrepareIntents(ctx context.Context, taskID st
 
 func mustFirstDiagnosisTaskNumber(id string) int64 { n, _ := strconv.ParseInt(id, 10, 64); return n }
 
+// e3StoppedBeforeEntry는 Run이 실행에 들어가지 못하고 중지로 끝날 때 E③ 중지 기록을 한 번 부른다. 등록 GET 경로, 훅이
+// 없을 때, 이미 다른 Run이 시작했거나 기록했을 때는 부르지 않는다. 실행 문맥이 취소돼도 기록은 끝까지 한다(대상 요청 없음).
+func (s *FirstDiagnosisSupervisor) e3StoppedBeforeEntry(ctx context.Context, taskID, snapshotRef string) {
+	if snapshotRef != "" {
+		return
+	}
+	s.mu.Lock()
+	hooks := s.e3Confirmation
+	// 준비 서버·서버 없음은 확정 단계가 없는 설정이고, 다른 Run이 도는 중이거나 이미 시작했으면 그쪽이 기록한다.
+	skip := hooks.Stopped == nil || s.server == nil || s.server.firstDiagnosisPreparation || s.running || s.preparing ||
+		s.runStarted || s.e3Recorded
+	if !skip {
+		s.e3Recorded = true
+	}
+	s.mu.Unlock()
+	if skip {
+		return
+	}
+	if err := hooks.Stopped(context.WithoutCancel(ctx), taskID); err != nil {
+		log.Printf(logT("[first-diagnosis] task %s E③ 중지 기록 실패"), taskID)
+	}
+}
+
 func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, intentID int64, snapshotRef string) (err error) {
 	if s == nil || ctx == nil || intentID < 0 || (snapshotRef != "" && intentID == 0) {
 		return ErrFirstDiagnosisSupervisor
 	}
+	// 실행에 들어가기 전에 중지된 경우(실행 문맥·감독자 문맥 취소, 감독자 종료 중)에도 E③ 중지 기록을 한 번 남긴다(#738 이동찬
+	// 리뷰). 다른 Run이 이미 돌았거나 도는 중이면 그쪽이 기록한다.
 	if ctx.Err() != nil {
+		s.e3StoppedBeforeEntry(ctx, taskID, snapshotRef)
 		return firstDiagnosisFailure(ctx.Err())
 	}
 	if s.ctx.Err() != nil {
+		s.e3StoppedBeforeEntry(ctx, taskID, snapshotRef)
 		return firstDiagnosisFailure(s.ctx.Err())
 	}
 	s.mu.Lock()
 	server := s.server
 	if server == nil || server.firstDiagnosisPreparation || s.closing || s.closed || s.running || s.preparing || s.runStarted {
+		stoppedBeforeEntry := s.closing || s.closed
 		s.mu.Unlock()
+		if stoppedBeforeEntry {
+			s.e3StoppedBeforeEntry(ctx, taskID, snapshotRef)
+		}
 		return ErrFirstDiagnosisSupervisor
 	}
 	stage := "admission"
@@ -522,6 +555,11 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 	s.registered = snapshotRef != ""
 	timeCloseAt, timeDrain := s.timeCloseAt, s.timeDrain
 	e3Confirmation := s.e3Confirmation
+	if s.e3Recorded {
+		// 진입 전 중지로 이미 기록했다. 결과 파일은 회차마다 하나라 이 실행은 E③ 훅을 부르지 않는다.
+		e3Confirmation = FirstDiagnosisE3Hooks{}
+	}
+	s.e3Recorded = s.e3Recorded || e3Confirmation.Stopped != nil && snapshotRef == ""
 	s.operations.Add(1)
 	s.mu.Unlock()
 	// 확정 단계(Run)를 부르지 못하고 끝나는 모든 경로(중지·취소·실패·시간 초과 상태·준비 거부)에서 중지 기록을 남긴다. 등록 GET
