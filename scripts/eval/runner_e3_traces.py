@@ -5,6 +5,7 @@
   - 제품 쪽 E② 저널 사본(`product-state` 볼륨 `runs/<초안 ID>/state/events.jsonl`): E③ 프로그램 사건은 싣지 않는다.
   - 대상 선언 저널(`product-state` 볼륨 `state/targets/declarations/preparation.journal`): 선언·쓰기 기록(confirmation_writes)·
     리셋 확인 줄.
+E② 저널 한 줄은 e2proxy 저널 줄(`{"Kind": "header"|"event", "Header"|"Record": …, "MAC": …}`)이고 사건은 `Record.Event`다.
 원문은 메모리에서만 보고, 사건마다 (단계, 프로그램, 결정, 사유)의 어휘 값별 개수와 E③ 사건 수만 남긴다. 어휘 모양이 아닌
 값은 `invalid`로 센다(값을 옮기지 않는다). 저널 검증(HMAC·체크포인트)은 하지 않는다: 이 파일은 사건 종류·수의 근거이고, 통제
 대조는 v3 수집(#785)의 몫이다. 표식 등록은 저널에 따로 남지 않는다(E② 실행의 메모리 값). 비활성 회차는 e3contract.Run이
@@ -44,32 +45,46 @@ def _lines(raw: bytes):
             yield value
 
 
+JOURNAL_HEADER, JOURNAL_EVENT = "header", "event"
+
+
 def journal_counts(raw: bytes | None) -> dict:
-    """E② 저널(JSON 줄마다 e2proxy.Event) 사건 수. 파일이 없으면 not_found, 줄이 JSON 객체가 아니면 journal_unparsable."""
+    """E② 저널(e2proxy 저널 줄) 머리 줄 수와 사건 수. 파일이 없으면 not_found, 줄이 저널 줄 모양이 아니면 journal_unparsable."""
     if raw is None:
         return {"error": "not_found"}
-    kinds, events, e3 = Counter(), 0, 0
+    kinds, headers, events, e3 = Counter(), 0, 0, 0
     try:
-        for event in _lines(raw):
+        for line in _lines(raw):
+            if line.get("Kind") == JOURNAL_HEADER and isinstance(line.get("Header"), dict):
+                headers += 1
+                continue
+            record = line.get("Record")
+            event = record.get("Event") if line.get("Kind") == JOURNAL_EVENT and isinstance(record, dict) else None
+            if not isinstance(event, dict):
+                raise ValueError("journal line")
             events += 1
             kinds["|".join(_word(event.get(name)) for name in KIND_FIELDS)] += 1
             if event.get("program") in E3_PROGRAMS or E3_AUDIT_FIELD in event:
                 e3 += 1
     except (ValueError, RecursionError):
         return {"error": "journal_unparsable"}
-    return {"events": events, "e3_events": e3, "by_kind": dict(sorted(kinds.items()))}
+    return {"headers": headers, "events": events, "e3_events": e3, "by_kind": dict(sorted(kinds.items()))}
 
 
 def declaration_counts(raw: bytes | None) -> dict:
-    """대상 선언 보호 저널(줄마다 {sequence, previous, payload, digest}) 줄 수와 동작별 수. confirmation_writes 줄의 객체 수를 따로 센다."""
+    """대상 선언 보호 저널(줄마다 {sequence, previous, payload, digest}) 줄 수와 동작별 수. 저널을 만들 때 쓰는 형식 줄
+    (payload에 `format`만 있고 동작이 없음, diagnosisprep)은 따로 센다. confirmation_writes 줄의 객체 수를 따로 센다."""
     if raw is None:
         return {"error": "not_found"}
-    actions, records, objects = Counter(), 0, 0
+    actions, records, formats, objects = Counter(), 0, 0, 0
     try:
         for record in _lines(raw):
             payload = record.get("payload")
             if not isinstance(payload, dict):
                 raise ValueError("payload")
+            if "action" not in payload and "format" in payload:
+                formats += 1
+                continue
             records += 1
             action = _word(payload.get("action"))
             actions[action] += 1
@@ -78,7 +93,7 @@ def declaration_counts(raw: bytes | None) -> dict:
                 objects += len(items) if isinstance(items, list) else 0
     except (ValueError, RecursionError):
         return {"error": "journal_unparsable"}
-    return {"records": records, "by_action": dict(sorted(actions.items())), "write_objects": objects}
+    return {"format_records": formats, "records": records, "by_action": dict(sorted(actions.items())), "write_objects": objects}
 
 
 def result_writes(raw: bytes | None) -> int | None:

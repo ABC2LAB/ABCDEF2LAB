@@ -1442,8 +1442,10 @@ class TestE3ConfirmationRow(unittest.TestCase):
 
     def test_e3_traces_are_recorded_for_go_condition_2(self):
         # 선언 없는 회차가 E③를 건드리지 않았는지(개발 계획 Go 조건 2): 제품을 멈춘 뒤 세 저널을 세어 e3-traces.json에 남긴다.
-        event = json.dumps({"stage": "control", "decision": "allow"}).encode() + b"\n"
-        e3_event = json.dumps({"stage": "result", "program": "e3_read", "decision": "allow"}).encode() + b"\n"
+        def line(event):
+            return json.dumps({"Kind": "event", "Record": {"Index": 1, "Event": event}, "MAC": "m"}).encode() + b"\n"
+        event = line({"stage": "control", "decision": "allow"})
+        e3_event = line({"stage": "result", "program": "e3_read", "decision": "allow"})
         sources = {"e2_host_journal": event * 2 + e3_event, "e2_product_journal": event * 2, "declarations": b""}
         result, ports, evidence = run(lambda p: setattr(p, "trace_sources", sources))
         self.assertEqual(ports.trace_args, ["draft-1"])
