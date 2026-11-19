@@ -125,6 +125,14 @@ type E2HTTPRunOptions struct {
 	programCalls *e2HTTPProgramCalls
 }
 
+// AccountBindings는 이 실행의 계정 결속 참조 조회다(E③ 프로그램 요청에 세션을 붙이는 E²가 쓴다). 세션 저장소가 없으면 nil이다.
+func (o *E2HTTPRunOptions) AccountBindings() E2HTTPAccountBindings {
+	if o == nil || o.sessionStore == nil {
+		return nil
+	}
+	return o.sessionStore
+}
+
 // CurrentSessions는 실행이 지금 들고 있는 시험 계정 세션 사본이다(다시 로그인 반영). 저장소가 없으면 처음 인증 준비의 세션이다.
 func (o *E2HTTPRunOptions) CurrentSessions() E2HTTPSessions {
 	if o == nil {
