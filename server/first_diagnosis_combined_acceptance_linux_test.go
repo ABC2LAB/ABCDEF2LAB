@@ -198,8 +198,11 @@ func runFirstDiagnosisCombinedAcceptance(t *testing.T, browser bool) {
 	defer runtime.Close(context.Background())
 	worker := &combinedDiagnosisProvider{firstDiagnosisE2Provider: firstDiagnosisE2Provider{command: "curl --silent --show-error --max-time 15 " + target.URL + "/allowed; curl --silent --show-error --max-time 15 " + target.URL + "/denied"}}
 	planner := &firstDiagnosisPlannerProbeProvider{textOnly: true}
+	// 승인한 작업이 끝나 Planner가 빈 계획을 내도 마감하지 않고, 실행 상한에 닿아야 마감한다(원본과 같은 끝 규칙).
+	watched := firstDiagnosisIdleWatch(installer, task, planner)
+	idle := &firstDiagnosisIdleCap{quiet: func() bool { return watched.idle.Load() > 0 }}
 	// 합성 공급자는 원문·선택 usage DB 기록 없이 실제 메타데이터 wrapper만 통과한다.
-	firstDiagnosisInjectProfileProvider(t, runtime.server, profileID, llmrec.Wrap(&firstDiagnosisRoleRoutedProvider{worker: worker, planner: planner}, nil, "local:synthetic", "", "", "", func() bool { return false }))
+	firstDiagnosisInjectProfileProvider(t, runtime.server, profileID, llmrec.Wrap(&firstDiagnosisRoleRoutedProvider{worker: worker, planner: watched}, nil, "local:synthetic", "", "", "", func() bool { return false }))
 	api := httptest.NewServer(runtime.Handler())
 	defer api.Close()
 	client := &combinedHTTPClient{t: t, server: api}
@@ -238,6 +241,9 @@ running:
 			if err != nil {
 				t.Fatal("실제 감독 실행 실패", err)
 			}
+			if idle.closedEarly(supervisor) {
+				t.Fatal("계획이 비자 실행 상한 전에 마감함(원본에 없는 끝 규칙)")
+			}
 			break running
 		case browserErr := <-browserDone:
 			if browserErr != nil {
@@ -247,6 +253,7 @@ running:
 		case <-deadline.C:
 			t.Fatal("승인 대기 실행 시간 초과")
 		case <-ticker.C:
+			idle.step(task)
 			code, body, _ := client.request("GET", approvalBase, "")
 			if code == 403 {
 				continue
