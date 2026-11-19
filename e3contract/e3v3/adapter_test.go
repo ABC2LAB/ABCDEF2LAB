@@ -364,6 +364,43 @@ func (o *otherCall) Verified(ctx context.Context, b e3contract.RunBinding, ref e
 	return e, err
 }
 
+// 로컬 Sync 뒤 정본 head 게시가 실패하면 그 요청은 관찰 성공 없이 결과 불명이고, 그 뒤 송신은 없다(계약 §5).
+func TestAdapterPublishFailure(t *testing.T) {
+	createNote := key(e3contract.PurposeCreate, e3contract.RoleOwner, "note")
+	var sent int
+	res, e2 := viaV3(t, nil, func(e2 *v3fake.E2) {
+		e2.PublishFail = func(e e3v3.Event) bool {
+			return e.Program == e3contract.PurposeCreate && e.ResourceType == "note"
+		}
+	})
+	noConfirmed(t, res)
+	if res.Status == e3contract.StatusIntegrityFailed || res.Status == e3contract.StatusCompleted && len(res.Verdicts) == 0 {
+		t.Fatalf("%+v", res)
+	}
+	for _, v := range res.Verdicts {
+		if v.Value != oracle.Undecidable {
+			t.Fatalf("게시 실패 뒤 판정: %+v", v)
+		}
+	}
+	// 생성 요청은 보냈을 수 있으니 쓰기 기록은 ID 모름으로 남는다.
+	var unknown bool
+	for _, w := range res.Writes {
+		unknown = unknown || w.ResourceType == "note" && w.Outcome == e3contract.WriteUnknown
+	}
+	if !unknown {
+		t.Fatalf("결과 불명 생성의 쓰기 기록: %+v", res.Writes)
+	}
+	// 게시 실패 뒤로는 대상 요청이 없다(대상 동작 모델에 남은 호출 = 게시 실패한 생성까지).
+	for i, c := range e2.Target.Calls() {
+		if c.Key == createNote {
+			sent = len(e2.Target.Calls()) - i - 1
+		}
+	}
+	if sent != 0 {
+		t.Fatalf("게시 실패 뒤 요청 %d건", sent)
+	}
+}
+
 // 표식 등록 실패(E²의 v3 감사 미연결 등)면 요청 없이 시작 거절이고, 권한 철회는 그대로 진위 실패다.
 func TestAdapterRegisterAndAuthority(t *testing.T) {
 	res, e2 := viaV3(t, nil, func(e2 *v3fake.E2) { e2.RegisterErr = errors.New("e2proxy: e3 journal v3 unavailable") })

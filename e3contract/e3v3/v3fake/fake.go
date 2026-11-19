@@ -75,6 +75,9 @@ type E2 struct {
 	Recorded func(*e3v3.Event)
 	// Unrecorded가 참이면 그 이벤트(control·result 각각)를 저널에 남기지 않는다(이벤트 없음·불완전 기록).
 	Unrecorded func(e3v3.Event) bool
+	// PublishFail이 참이면 그 이벤트를 로컬 저널에 Sync한 뒤 정본 head 게시가 실패한다(ACK 없음). Send는 관찰 없이 오류이고
+	// 그 뒤 송신은 모두 거부한다(감사 계약: recorder 실패 상태).
+	PublishFail func(e3v3.Event) bool
 	// Snapshot은 조회 스냅샷을 바꾼다(끝 행 삭제·되감기·MAC 손상·다른 실행 끼우기).
 	Snapshot func([]Record) []Record
 	// AccountRefs는 지금 결속된 계정 결속 참조("<run>/<label>")를 바꾼다(다시 로그인 등). 이벤트에 실리는 값은 요청 때의
@@ -86,7 +89,11 @@ type E2 struct {
 	key     []byte
 	records []Record
 	index   uint64
+	failed  bool
 }
+
+// ErrPublish는 정본 head 게시 실패다(결과 불명).
+var ErrPublish = errors.New("v3fake: 정본 head 게시 실패")
 
 // New는 대상 동작과 실행별 감사 키로 가짜 E² v3를 만든다.
 func New(target *e3fake.Transport, key []byte) *E2 {
@@ -125,6 +132,12 @@ func sentAccountRef(b e3contract.RunBinding, label string) string {
 
 // Send는 대상 동작 모델로 관찰을 만들고, control(+result) 이벤트를 저널에 쌓은 뒤 마지막 이벤트를 돌려준다.
 func (f *E2) Send(ctx context.Context, req e3v3.Request) (e3v3.Event, error) {
+	f.mu.Lock()
+	failed := f.failed
+	f.mu.Unlock()
+	if failed {
+		return e3v3.Event{}, ErrPublish
+	}
 	var (
 		o   e3contract.Observation
 		err error
@@ -177,6 +190,10 @@ func (f *E2) Send(ctx context.Context, req e3v3.Request) (e3v3.Event, error) {
 		f.Recorded(&last)
 	}
 	if f.Unrecorded == nil || !f.Unrecorded(last) {
+		if f.PublishFail != nil && f.PublishFail(last) {
+			f.appendLocal(last)
+			return e3v3.Event{}, ErrPublish
+		}
 		last = f.append(last)
 	}
 	out := last
@@ -193,7 +210,22 @@ func method(req e3v3.Request) string {
 	return "GET"
 }
 
-// append는 이벤트에 순번을 매겨 체인 MAC과 함께 쌓고(Sync), 신뢰 저장소의 현재 head를 옮긴다.
+// appendLocal은 로컬 저널에만 쌓고(Sync) 정본 head는 옮기지 않는다. recorder는 실패 상태가 된다.
+func (f *E2) appendLocal(e e3v3.Event) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failed = true
+	f.index++
+	e.Index = f.index
+	raw, _ := json.Marshal(e)
+	var prev [sha256.Size]byte
+	if n := len(f.records); n > 0 {
+		prev = f.records[n-1].MAC
+	}
+	f.records = append(f.records, Record{Raw: raw, MAC: chain(f.key, prev, raw)})
+}
+
+// append는 이벤트에 순번을 매겨 체인 MAC과 함께 쌓고(Sync), 신뢰 저장소의 현재 head를 옮긴다(게시·ACK).
 func (f *E2) append(e e3v3.Event) e3v3.Event {
 	f.mu.Lock()
 	defer f.mu.Unlock()
