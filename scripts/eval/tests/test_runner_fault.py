@@ -213,6 +213,19 @@ class TestFaultStallJudge(unittest.TestCase):
         exact = fault_stall_record([llm(1, 0.0, 1.0)], [], START, "2026-11-17T00:03:01.000000000Z", None)
         self.assertEqual(exact["trailing_event_gap_nanoseconds"], 180 * 10**9)
 
+    def test_call_in_flight_at_the_end_is_not_an_idle_wait(self):
+        # #794 리뷰: 창 00:00~05:01에 모델 호출 00:01~10:00이 걸치면 끝 공백은 300초지만 호출이 진행 중이다.
+        record = fault_stall_record([llm(1, 1.0, 600.0)], [], START, stamp(301.0), None)
+        self.assertEqual((record["trailing_event_gap_seconds"], record["inflight_at_end"]), (300.0, 1))
+        # 계측기 대상 요청도 같다. 끝 전에 끝난 요청·끝 뒤에 시작한 요청은 진행 중이 아니다.
+        rows = [meter(1, 0.0, 400.0), meter(2, 10.0, 20.0), meter(3, 350.0, 360.0)]
+        self.assertEqual(fault_stall_record([], rows, START, stamp(301.0), None)["inflight_at_end"], 1)
+        idle = fault_stall_record([llm(1, 0.0, 10.0)], [], START, stamp(301.0), None)
+        self.assertEqual((idle["trailing_event_gap_seconds"], idle["inflight_at_end"]), (291.0, 0))
+        # 엔진이 먼저 끝나면 그 시각 기준이다
+        ended = fault_stall_record([llm(1, 0.0, 100.0)], [], START, stamp(500.0), stamp(50.0))
+        self.assertEqual(ended["inflight_at_end"], 1)
+
     def test_engine_end_before_idle_end_is_not_a_stall(self):
         rows = [llm(1, 1.0, 2.0, decision="upstream_error", end="upstream_cut_before_done")]
         for terminal, stalls in ((None, 1), (1.0, 0), (100.0, 0), (300.0, 0), (300.5, 1)):
