@@ -13,7 +13,7 @@ vi.mock("../live/api", async (importOriginal) => ({
 }));
 
 import { ApiError } from "@/lib/diagnosis/api";
-import type { URLRunSummary } from "@/lib/diagnosis/diagnosis-runs";
+import { activeURLRun, type URLRunSummary } from "@/lib/diagnosis/diagnosis-runs";
 import type { URLDiagnosisJob } from "@/lib/diagnosis/diagnosis-url";
 import { catalog, handle, running } from "@/lib/diagnosis/diagnosis-url-fixtures";
 
@@ -22,6 +22,7 @@ import { LiveRailTasks } from "../live/rail";
 import { resetUrl, useUrl } from "../live/urlDiagnosis";
 import { useUrlRuns } from "../live/urlRunList";
 import { type Shell, ShellContext, type View } from "../shell";
+import { RunRow } from "../views/live/runRows";
 import { recDoneKinds, recRunKind, UrlFinishedLive, UrlRunningLive } from "../views/live/urlRecords";
 
 const noop = () => undefined;
@@ -134,7 +135,7 @@ const projection = (job: URLDiagnosisJob): URLRunSummary => ({
   result_ready: job.result_ready,
   report_available: job.result_ready && !!job.task_id,
   approval_status: "not_revalidated",
-  action_required: true,
+  action_required: activeURLRun(job) || ["awaiting_approval", "failed", "unknown"].includes(job.state),
 });
 function savedRows(jobs: URLDiagnosisJob[]) {
   useUrlRuns.setState({
@@ -153,6 +154,26 @@ function records(finished = false) {
     </ShellContext.Provider>,
   );
 }
+it.each([
+  ["completed", "expired", "점검 완료", "승인 만료"],
+  ["awaiting_approval", "not_revalidated", "승인 대기", "확인 필요"],
+] as const)("%s 회차에 할 일이 있으면 목록에서 확인 신호를 보인다", (state, approval_status, pill, detail) => {
+  const row: URLRunSummary = {
+    ...projection(state === "completed" ? completed : running),
+    state,
+    approval_status,
+    action_required: true,
+  };
+  render(
+    <ShellContext.Provider value={shell("running")}>
+      <RunRow row={row} />
+    </ShellContext.Provider>,
+  );
+  const item = screen.getByRole("button", { name: /job-1/ });
+  expect(item).toHaveTextContent(pill);
+  expect(item).toHaveTextContent(detail);
+  expect(item).toHaveTextContent("확인 필요");
+});
 describe("서버 보존 목록의 상태 필터와 선택한 보고서", () => {
   it("여러 서버 회차를 상태로 거르고 목록에 없는 URL·진행률·판정을 만들지 않는다", () => {
     savedRows([
@@ -163,10 +184,12 @@ describe("서버 보존 목록의 상태 필터와 선택한 보고서", () => {
     records();
     const region = screen.getByRole("region", { name: "진행 중인 점검 목록" });
     expect(region.querySelectorAll("[data-url-run-id]")).toHaveLength(3);
+    expect(region).toHaveTextContent("목록의 승인 표시는 실행 허가를 대신하지 않습니다.");
     expect(chip(region, "엔진 실행")).toHaveTextContent("1");
     fireEvent.click(chip(region, "상태 확인 필요"));
     expect(region.querySelectorAll("[data-url-run-id]")).toHaveLength(1);
     expect(within(region).getByRole("button", { name: /job-3/ })).toHaveTextContent("결과 불명");
+    expect(region).not.toHaveTextContent("목록의 승인 표시는 실행 허가를 대신하지 않습니다.");
     expect(region).not.toHaveTextContent(/target\.example|%|취약점 없음/);
     expect(api.fetchRemediation).not.toHaveBeenCalled();
   });
@@ -190,6 +213,8 @@ describe("서버 보존 목록의 상태 필터와 선택한 보고서", () => {
     await waitFor(() => expect(detail).toHaveTextContent("검토 필요"));
     const row = screen.getByRole("button", { name: /job-1/ });
     expect(row).not.toHaveTextContent(/발견 1|취약점/);
+    // 패널 제목에 '발견 n건'을 적지 않는다(사용자 11/18) — 위험도 딱지 · 판정 줄이 말한다
+    expect(within(detail).getByRole("heading", { level: 2 })).not.toHaveTextContent(/발견 \d+건/);
   });
   it.each(["cancelled", "completed"] as const)("%s의 판정 0건은 취약점 없음이 아니다", async (state) => {
     vi.mocked(api.fetchRemediation).mockResolvedValue({ task_id: 42, entries: [] });
@@ -206,10 +231,76 @@ describe("서버 보존 목록의 상태 필터와 선택한 보고서", () => {
       intent_outcomes: { done: 1, incomplete: 1, stopped: 0, unknown: 0, policy_limited: 0 },
     });
     records(true);
+    // 일부만 마감한 회차는 패널에서도 완전한 점검으로 읽히지 않는다.
     await waitFor(() =>
-      expect(screen.getByRole("complementary", { name: "선택한 점검" })).toHaveTextContent(/일부|부분/),
+      expect(screen.getByRole("complementary", { name: "선택한 점검" })).toHaveTextContent("실행 결과일부 완료"),
     );
     expect(screen.queryByRole("button", { name: /^발견 없음/ })).toBeNull();
+    // 패널 머리 글엔 '끝난 점검'을 적지 않고 대상 주소만, 서버 작업 번호는 '작업 #n' — 목록 줄에도 같은 번호(사용자 11/18)
+    const panel = screen.getByRole("complementary", { name: "선택한 점검" });
+    expect(panel).not.toHaveTextContent("끝난 점검");
+    expect(panel).not.toHaveTextContent("실제 task");
+    expect(panel).toHaveTextContent(`작업#${completed.task_id}`);
+    // 목록 줄은 이름(prep-…) 왼쪽에 번호만 — 아래 작은 글에 '작업 #n'을 따로 적지 않는다(사용자 11/18)
+    // 목록 줄 이름은 '42. job-1'처럼 작업 번호 + 이름(사용자 11/18)
+    const row = screen.getByRole("button", { name: new RegExp(`^작업\\s*${completed.task_id}\\.\\s*${completed.id}`) });
+    expect(row).not.toHaveTextContent("작업 #");
+    // 끝난 점검 줄 아래 글엔 단계(결과 저장) · 승인 상태 · 확인 필요를 적지 않는다(사용자 11/18)
+    expect(row).not.toHaveTextContent(/결과 저장|승인|확인 필요/);
+    // 목록 머리 수는 'n / n건'(조회 글 없이), 패널엔 다시 점검 안내 글이 없다
+    expect(screen.getByText("1 / 1건")).toBeInTheDocument();
+    expect(panel).not.toHaveTextContent("다시 점검은 별도");
+    expect(screen.queryByText(/보존된 상태입니다/)).toBeNull();
+    expect(screen.queryByText(/활성 회차|조회 \d+건/)).toBeNull();
+  });
+  it("계획을 실행하지 않은 완료 회차는 검사 안 함으로 표시한다", async () => {
+    selectSaved({
+      ...completed,
+      outcome: "no_intents",
+      intent_outcomes: { done: 0, incomplete: 0, stopped: 0, unknown: 0, policy_limited: 0 },
+    });
+    records(true);
+    expect(screen.getByRole("complementary", { name: "선택한 점검" })).toHaveTextContent("실행 결과검사 안 함");
+  });
+  it("실행 결과가 없는 이전 형식 회차에는 실행 결과 줄을 만들지 않는다", () => {
+    selectSaved({ ...completed, outcome: undefined, intent_outcomes: undefined });
+    records(true);
+    const panel = screen.getByRole("complementary", { name: "선택한 점검" });
+    expect(within(panel).queryByText("실행 결과")).toBeNull();
+  });
+  it.each([
+    [0, undefined, "검사 안 함 · 정책상 검증 안 됨 2"],
+    [0, "budget_limited", "검사 안 함 · 정책상 검증 안 됨 2 · 예산 상한에서 마감"],
+    [1, "budget_limited", "점검 완료 · 정책상 검증 안 됨 2 · 예산 상한에서 마감"],
+  ] as const)("완료 회차의 검증 %d건과 마감 사유 %s를 함께 표시한다", (done, closing_reason, result) => {
+    selectSaved({
+      ...completed,
+      outcome: "complete",
+      closing_reason,
+      intent_outcomes: { done, incomplete: 0, stopped: 0, unknown: 0, policy_limited: 2 },
+    });
+    records(true);
+    const panel = screen.getByRole("complementary", { name: "선택한 점검" });
+    expect(within(panel).getByText("실행 결과").nextElementSibling).toHaveTextContent(result);
+  });
+  it("시험 계정은 라벨 순서로 보이고 도움말 버튼으로 서버 라벨을 확인할 수 있다", async () => {
+    vi.mocked(api.fetchRemediation).mockResolvedValue({ task_id: 42, entries: [] });
+    selectSaved({ ...completed, account_auth: { shopper: "login_failed", "acct-a": "authenticated" } });
+    records(true);
+    const panel = screen.getByRole("complementary", { name: "선택한 점검" });
+    const sec = within(panel).getByRole("heading", { name: "시험 계정 인증" }).parentElement as HTMLElement;
+    expect(within(sec).getByText("인증됨")).toBeVisible();
+    expect(within(sec).getByText("비인증 진행 · 로그인 실패")).toBeVisible();
+    const accountA = within(sec).getByRole("button", { name: "계정 A 서버 라벨 보기" });
+    expect(accountA).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(accountA);
+    expect(accountA).toHaveAttribute("aria-expanded", "true");
+    expect(within(sec).getByRole("note")).toHaveTextContent("서버 라벨: acct-a");
+    fireEvent.keyDown(accountA, { key: "Escape" });
+    expect(accountA).toHaveFocus();
+    expect(within(sec).queryByRole("note")).toBeNull();
+    fireEvent.click(within(sec).getByRole("button", { name: "계정 B 서버 라벨 보기" }));
+    expect(within(sec).getByRole("note")).toHaveTextContent("서버 라벨: shopper");
   });
   it("결과 저장 미확인 회차는 보고서 조회를 하지 않는다", () => {
     selectSaved({ ...completed, result_ready: false });

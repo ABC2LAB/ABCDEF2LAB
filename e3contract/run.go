@@ -151,6 +151,17 @@ func (r *run) run(ctx context.Context) RunResult {
 		r.integrity = IntegrityPolicyTargetMismatch
 		return r.integrityResult()
 	}
+	// 계정 역할은 동결한 선언이 정한다(계약 §4). 역할이 없거나, 입력의 A·B가 선언한 역할과 다르거나, 같은 권한 등급 확인이
+	// 없으면 요청 없이 끈다.
+	if decl.OwnerAccountLabel == "" {
+		return r.result(StatusDisabled, string(DisabledAccountRolesUndeclared))
+	}
+	if decl.OwnerAccountLabel != r.in.Owner.Label || decl.CrossAccountLabel != r.in.Cross.Label {
+		return r.result(StatusDisabled, string(DisabledAccountsUnverified))
+	}
+	if !decl.AccountsSamePrivilege {
+		return r.result(StatusDisabled, string(DisabledPrivilegeUnconfirmed))
+	}
 	r.decl = decl
 	var types []TypeDeclaration
 	var skipped []SkippedType
@@ -270,9 +281,11 @@ func (r *run) disabledReason() DisabledReason {
 	if !r.in.WriteConsent {
 		return DisabledWriteNotConsented
 	}
+	// 계정 역할은 동결한 선언이 정한다(계약 §4). 입력의 A·B가 둘 다 비어 있으면 선언에 역할이 없을 수 있으니 선언을 읽은 뒤
+	// 사유를 정한다(역할 없음 account_roles_undeclared / 계정 없음 test_accounts_unavailable). 요청은 그 전에 나가지 않는다.
 	o, c := r.in.Owner, r.in.Cross
-	if !o.Authenticated || !c.Authenticated || !refPattern.MatchString(o.Label) || !refPattern.MatchString(c.Label) ||
-		o.Label == c.Label {
+	if (o.Label != "" || c.Label != "") && (!o.Authenticated || !c.Authenticated || !refPattern.MatchString(o.Label) ||
+		!refPattern.MatchString(c.Label) || o.Label == c.Label) {
 		return DisabledAccountsUnverified
 	}
 	if r.in.PolicyValidFrom.IsZero() || !r.in.PolicyValidFrom.Before(r.in.PolicyValidUntil) {

@@ -71,7 +71,7 @@ func readFirstLine(t *testing.T, front *httptest.Server) *http.Response {
 func graceEngine(t *testing.T, target *httptest.Server, grace time.Duration) (*engineMeter, *httptest.Server, string) {
 	t.Helper()
 	path, dir := privateTestDir(t)
-	m, code := newEngineMeter(dir, targetURL(t, target), time.Now, grace)
+	m, code := newEngineMeter(dir, targetURL(t, target), time.Now, grace, 0)
 	if code != "" {
 		t.Fatalf("engine meter: %s", code)
 	}

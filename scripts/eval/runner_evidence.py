@@ -45,6 +45,8 @@ LLM_DECISIONS = frozenset({"forwarded", "upstream_error", "cancelled_by_seal", "
                            "rejected_sampling", "rejected_provider"})
 LLM_UPSTREAM_ENDS = frozenset({"client_closed_after_done", "client_closed_before_done", "upstream_cut_after_done",
                                "upstream_cut_before_done"})
+# cancelled_by_seal 행의 끝 모양(봉인 전 종료 이벤트 줄을 읽었는지, gateway.go sealEnd*). 칸이 생기기 전 계측기의 행에는 없다.
+LLM_SEAL_ENDS = frozenset({"sealed_before_done", "sealed_after_done"})
 MAX_METER_FILE_BYTES = 64 * 1024 * 1024
 _NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,62}\.json\Z")
 _ENGINE_ROW = frozenset({"seq", "kind", "method", "status", "started_at", "completed_at", "response_bytes", "outcome",
@@ -73,6 +75,8 @@ FORWARDED_KINDS = frozenset({"request", "stream"})
 ENGINE_KINDS = FORWARDED_KINDS | {"rejected"}
 # 봉인 뒤 유예(-drain-grace)가 지나 계측기가 대상 쪽으로 취소한 요청 행의 outcome. 건수는 drained 마커와 같아야 한다.
 FORCED_CANCELLED_OUTCOME = "forced_cancelled"
+# 요청 하드 상한(-request-cap)으로 거부한 행의 outcome. 건수는 seal·drained 마커의 rejected_over_cap과 같아야 한다.
+OVER_CAP_OUTCOME = "rejected_over_cap"
 COUNTED_METHODS = ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
 OTHER_METHOD = "OTHER"
 
@@ -295,15 +299,28 @@ def drain_complete(drained: dict) -> bool:
 
 
 def final_log_consistent(rows: list[dict], sealed: dict | None, drained: dict) -> bool:
-    """drain 뒤 요청 기록이 표식과 맞는지. 봉인 표식, 순번 1..n, 전달 수, 강제 취소 행 수를 본다.
+    """drain 뒤 요청 기록이 표식과 맞는지. 봉인 표식, 순번 1..n, 전달 수, 강제 취소 행 수, 상한 거부 행 수를 본다.
 
     drain_complete를 통과한 표식에만 쓴다. 모르는 kind는 forwarded_count가 거부한다.
-    러너(마감 확인)와 보존 집계가 같은 규칙을 쓴다.
+    러너(마감 확인)와 보존 집계가 같은 규칙을 쓴다. 상한 거부는 봉인 전에만 생기므로 행 수가 seal·drained 표식의
+    rejected_over_cap과 같아야 한다(#734 리뷰). 두 표식 모두 상한 칸이 없는 이전 계측기 기록이면 상한 거부 행도 없어야 한다.
     """
     expected = drained.get("forwarded_requests")
     cancelled = sum(1 for row in rows if row["outcome"] == FORCED_CANCELLED_OUTCOME)
+    over_cap = sum(1 for row in rows if row["outcome"] == OVER_CAP_OUTCOME)
+    cap_fields = ("request_cap", "rejected_over_cap")
+    new_pair = any(field in marker for marker in (drained, sealed or {}) for field in cap_fields)
+    if new_pair:
+        # 상한 칸이 있는 계측기의 표식 쌍은 두 표식 모두 거부 수를 적고(0 이상 정수, True == 1 같은 값 비교만으로 통과하지
+        # 않게) 서로·행 수와 같아야 한다. 한쪽에 칸이 없으면 다른 쪽 값으로 채우지 않는다(#734 리뷰).
+        marked = drained.get("rejected_over_cap")
+        sealed_mark = None if sealed is None else sealed.get("rejected_over_cap")
+        cap_ok = _count(marked) and _count(sealed_mark) and over_cap == marked and sealed_mark == marked
+    else:
+        # 이전 계측기(상한 칸이 두 표식 모두 없음)의 기록은 상한 거부 행도 없어야 받는다
+        cap_ok = over_cap == 0
     return (sealed is not None and sequence_complete(rows) and _count(expected)
-            and forwarded_count(rows) == expected and cancelled == drained["forced_cancelled_requests"])
+            and forwarded_count(rows) == expected and cancelled == drained["forced_cancelled_requests"] and cap_ok)
 
 
 class MeterFiles:
@@ -419,10 +436,13 @@ class GatewayFiles:
             raise EvidenceError("llm_row_invalid") from None
         for row in rows:
             upstream_error = row["decision"] == "upstream_error"
+            sealed = row["decision"] == "cancelled_by_seal"
+            end = row.get("unfinished_end")
             if (row["decision"] not in LLM_DECISIONS or type(row["status"]) is not int
                     or not all(isinstance(row[name], str) and _STAMP.fullmatch(row[name]) for name in ("started_at", "completed_at"))
-                    or ("unfinished_end" in row) != upstream_error
-                    or (upstream_error and row["unfinished_end"] not in LLM_UPSTREAM_ENDS)):
+                    or (upstream_error and end not in LLM_UPSTREAM_ENDS)
+                    or (sealed and end is not None and end not in LLM_SEAL_ENDS)
+                    or (not upstream_error and not sealed and "unfinished_end" in row)):
                 raise EvidenceError("llm_row_invalid")
         return rows
 

@@ -216,7 +216,7 @@ class TestSpec(Fixture):
     def test_spec_values_come_from_the_b_fields(self):
         declared = split_declared(self.config, preflight_for(self.config), MANIFEST)
         plan = plan_split_run(self.config, self.config.split, run_id="ours-r1", target_image=declared.target_image,
-                              meter_port=declared.meter_port)
+                              meter_port=declared.meter_port, request_cap=100)
         rendered = {"services": {"api": {"healthcheck": {"test": ["CMD", "true"]}}, "target": {}}}
         spec = split_run_spec(self.config, plan, declared, rendered)
         run = self.config.run

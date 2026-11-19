@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -53,7 +54,8 @@ func declarationTestInput() diagnosisprep.DeclarationInput {
 		Read: e3contract.ReadSpec{PathTemplate: "/app/notes/{id}", DataPath: "."}}
 	// 화면 입력 순서가 이름순이 아니어도 서버가 정렬한다.
 	return diagnosisprep.DeclarationInput{Identity: e3contract.IdentitySpec{Path: "/app/me", SubjectIDPath: "id"},
-		Types: []e3contract.TypeDeclaration{{Type: "post", Sharing: e3contract.SharingShared}, note}}
+		Types:             []e3contract.TypeDeclaration{{Type: "post", Sharing: e3contract.SharingShared}, note},
+		OwnerAccountLabel: "tester-a", CrossAccountLabel: "tester-b", AccountsSamePrivilege: true}
 }
 
 func declarationField(t *testing.T, err error) string {
@@ -778,6 +780,53 @@ func TestProductResetSettleLines(t *testing.T) {
 	}
 }
 
+// 선언 저장 API는 계정 역할 칸(계약 §4)을 받아 선언·동결본에 넣는다. 한쪽만 주거나 같은 계정을 두 역할에 두면 그 칸 이름으로
+// 거부한다. 역할 없이 저장한 선언은 정본 바이트가 칸을 넣기 전과 같다(확정 단계는 꺼진다).
+func TestProductDeclarationAccountRoles(t *testing.T) {
+	r, _, target, _ := declarationTestTarget(t)
+	v, err := r.putDeclaration("ARTEX", target.ID, target.Revision, declarationTestInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := v.Declaration; d == nil || d.OwnerAccountLabel != "tester-a" || d.CrossAccountLabel != "tester-b" || !d.AccountsSamePrivilege {
+		t.Fatalf("저장한 역할: %+v", v.Declaration)
+	}
+	got, err := r.declaration("ARTEX", target.ID)
+	if err != nil || got.Declaration == nil || got.Declaration.OwnerAccountLabel != "tester-a" || got.Declaration.CrossAccountLabel != "tester-b" {
+		t.Fatalf("조회한 역할: %+v %v", got, err)
+	}
+	for name, c := range map[string]struct {
+		edit  func(*diagnosisprep.DeclarationInput)
+		field string
+	}{
+		"owner_only":   {func(in *diagnosisprep.DeclarationInput) { in.CrossAccountLabel = "" }, "cross_account_label"},
+		"same_account": {func(in *diagnosisprep.DeclarationInput) { in.CrossAccountLabel = in.OwnerAccountLabel }, "cross_account_label"},
+		"bad_label":    {func(in *diagnosisprep.DeclarationInput) { in.OwnerAccountLabel = "tester a" }, "owner_account_label"},
+		// 자격 모양 라벨은 모양 검사(refPattern)를 지나도 자격 검사가 칸 이름으로 막는다(#743 이경준 리뷰).
+		"credential_owner": {func(in *diagnosisprep.DeclarationInput) { in.OwnerAccountLabel = "password:hunter2" }, "owner_account_label"},
+		"credential_cross": {func(in *diagnosisprep.DeclarationInput) { in.CrossAccountLabel = "token:abc-value" }, "cross_account_label"},
+		"privilege_without_roles": {func(in *diagnosisprep.DeclarationInput) {
+			in.OwnerAccountLabel, in.CrossAccountLabel = "", ""
+		}, "accounts_same_privilege"},
+	} {
+		in := declarationTestInput()
+		c.edit(&in)
+		if _, err := r.putDeclaration("ARTEX", target.ID, target.Revision, in); declarationField(t, err) != c.field {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	none := declarationTestInput()
+	none.OwnerAccountLabel, none.CrossAccountLabel, none.AccountsSamePrivilege = "", "", false
+	v, err = r.putDeclaration("ARTEX", target.ID, target.Revision, none)
+	if err != nil || v.Declaration == nil || v.Declaration.OwnerAccountLabel != "" {
+		t.Fatalf("역할 없는 선언 저장: %+v %v", v, err)
+	}
+	raw, err := v.Declaration.CanonicalBytes()
+	if err != nil || bytes.Contains(raw, []byte("account")) {
+		t.Fatalf("역할 없는 선언 정본에 역할 칸: %s %v", raw, err)
+	}
+}
+
 // 같은 대상에 회차가 둘 붙어 있어도 앞 회차의 미해결 쓰기(리셋 확인 전, 거두지 않은 쓰기)는 뒤 회차의 예약·정산이 지울 수
 // 없다(#738 이동찬 리뷰). 외부 송신 없이 저널 경계만 본다.
 func TestProductResetKeepsOtherJobUnresolvedWrites(t *testing.T) {
@@ -860,5 +909,47 @@ func TestProductResetConfirmRefusedWhileRunActive(t *testing.T) {
 	release()
 	if _, err := p.confirmReset("ARTEX", target.ID, true, v.LastWritesRef); err != nil {
 		t.Fatalf("실행이 끝난 뒤 리셋 확인: %v", err)
+	}
+}
+
+// 리셋 동의는 정확히 본 쓰기 기록에 묶인다. 예약과 같은 시각(마이크로초로 잘림)에 not_sent 정산이 오면 살아 있는 쓰기가
+// 바뀌므로 참조도 바뀌고, 정산 전에 본 참조로는 확인하지 못한다(#738 이동찬 리뷰).
+func TestProductResetRefCoversNotSentAtSameTime(t *testing.T) {
+	r, _, target, _ := declarationTestTarget(t)
+	rec := r.records[target.ID]
+	at := r.now().UTC().Truncate(time.Microsecond)
+	reserve := productDeclarationEvent{TargetID: target.ID, Action: declarationConfirmationWrites, Actor: productConfirmationActor, At: at,
+		TargetRevision: target.Revision, JobRef: "job-1",
+		Objects: []productConfirmationObject{{Type: "note", IDUnknown: true}, {Type: "card", IDUnknown: true}}}
+	reserved, err := applyReset(rec, nil, nil, reserve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settle := productDeclarationEvent{TargetID: target.ID, Action: declarationConfirmationWriteSettled, Actor: productConfirmationActor,
+		At: at, TargetRevision: target.Revision, JobRef: "job-1",
+		Objects: []productConfirmationObject{{Type: "card", IDUnknown: true, NotSent: true}}}
+	settled, err := applyReset(rec, reserved, nil, settle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settled.writesRef == reserved.writesRef {
+		t.Fatal("같은 시각 not_sent 정산 뒤에도 참조가 같음")
+	}
+	confirm := func(ref string) productDeclarationEvent {
+		return productDeclarationEvent{TargetID: target.ID, Action: declarationResetConfirmed, Actor: rec.Principal, At: at,
+			TargetRevision: target.Revision, JobRef: "job-1", WritesRef: ref, StatementSHA256: productResetStatementSHA256()}
+	}
+	if _, err := applyReset(rec, settled, nil, confirm(reserved.writesRef)); err == nil {
+		t.Fatal("정산 전에 본 참조로 리셋 확인을 받음")
+	}
+	if _, err := applyReset(rec, settled, nil, confirm(settled.writesRef)); err != nil {
+		t.Fatalf("지금 참조로 확인: %v", err)
+	}
+	// 같은 시각 created 정산(digest)도 참조를 바꾼다.
+	created, err := applyReset(rec, reserved, nil, productDeclarationEvent{TargetID: target.ID, Action: declarationConfirmationWriteSettled,
+		Actor: productConfirmationActor, At: at, TargetRevision: target.Revision, JobRef: "job-1",
+		Objects: []productConfirmationObject{{Type: "note", IDDigest: strings.Repeat("c", 64)}}})
+	if err != nil || created.writesRef == reserved.writesRef {
+		t.Fatalf("같은 시각 created 정산 참조: %v", err)
 	}
 }

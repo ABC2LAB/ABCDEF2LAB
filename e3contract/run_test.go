@@ -33,7 +33,8 @@ func declaration() e3contract.Declaration {
 		TargetApprovalRevision: "approval-3", DeclaredBy: "operator-1", DeclaredAt: t0,
 		Identity: e3contract.IdentitySpec{Path: "/api/me", SubjectIDPath: "id"},
 		Types: []e3contract.TypeDeclaration{ownerOnly("note", "/api/notes"),
-			{Type: "post", Sharing: e3contract.SharingShared}, ownerOnly("secret", "/api/secrets")}}
+			{Type: "post", Sharing: e3contract.SharingShared}, ownerOnly("secret", "/api/secrets")},
+		OwnerAccountLabel: "tester-a", CrossAccountLabel: "tester-b", AccountsSamePrivilege: true}
 }
 
 // seed는 표식 난수다. 같은 seed로 시험이 Run과 같은 표식을 다시 만들 수 있다.

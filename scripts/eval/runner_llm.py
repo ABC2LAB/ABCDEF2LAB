@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 
 _MARKER_FIELDS = frozenset({"role", "backend", "provider", "sampling", "sealed_at", "drained_at", "verified_at",
                             "forwarded_requests", "upstream_errors", "upstream_error_ends", "rejected_requests", "rejected_after_seal",
@@ -92,8 +93,83 @@ def _check_shape(marker: object) -> None:
                 raise LLMMarkerError("llm_marker_invalid")
 
 
+# 끊긴 호출(2026-11-19 사용자 결정, 평가 프로토콜 §6): 회차를 멈출 때 진행 중이던 호출은 응답이 끝나지 않아 제공자 통계가
+# 끝내 생기지 않을 수 있다. 기록으로 증명된 것만 끊긴 호출로 본다. 세 조건이 모두 기록에 있어야 한다:
+# (1) 시작이 정지 신호(B 게이트웨이 봉인) 전, (2) 응답 완료 기록 없음(결정이 forwarded가 아님), (3) 봉인으로 끊김(게이트웨이가
+# 봉인 때 끊은 cancelled_by_seal, 그리고 봉인 전에 종료 이벤트 줄을 읽지 않았음 = 끝 모양 sealed_before_done). 종료 줄을 읽은
+# 뒤 봉인된 호출은 엔진이 출력을 썼을 수 있어 넣지 않는다. 정지와 상관없이 회차 중간에 실패한 호출은 여기에 들지 않는다. O는
+# 보류(아래 함수 주석).
+_SEALED_BEFORE_DONE = "sealed_before_done"
+
+
+def _instant(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo is not None else None
+
+
+def rows_match_marker(rows: list[dict], marker: object) -> bool:
+    """읽은 게이트웨이 행이 검증 표식과 맞는지. 게이트웨이는 요청마다 행 하나를 쓰고 결정별로 센다(gateway.go ServeHTTP·
+    finish). log_complete는 쓰기 오류가 없었다는 것뿐이라, 읽은 행이 빠지거나 바뀌지 않았는지는 여기서 본다(#735 리뷰):
+    순번이 1..N으로 이어지고, 결정별 행 수가 표식의 셈과 같고, 행의 generation ID 집합이 표식의 generation 목록과 같다."""
+    if not isinstance(marker, dict):
+        return False
+    try:
+        seqs = sorted(row["seq"] for row in rows)
+        if any(type(seq) is not int for seq in seqs) or seqs != list(range(1, len(rows) + 1)):
+            return False
+        decisions = [row["decision"] for row in rows]
+        counts = {
+            "forwarded_requests": decisions.count("forwarded"), "upstream_errors": decisions.count("upstream_error"),
+            "cancelled_by_seal": decisions.count("cancelled_by_seal"),
+            "rejected_after_seal": decisions.count("rejected_after_seal"),
+            "rejected_requests": sum(1 for d in decisions if d.startswith("rejected_") and d != "rejected_after_seal"),
+        }
+        if any(type(marker.get(name)) is not int or marker[name] != count for name, count in counts.items()):
+            return False
+        row_ids = {row["generation_id"] for row in rows if row.get("generation_id")}
+        return row_ids == {generation["id"] for generation in marker["generations"]}
+    except (KeyError, TypeError, AttributeError):
+        return False
+
+
+def interrupted_generation_ids(rows: list[dict], stop_at: str, *, product: bool) -> frozenset[str]:
+    """호출 행(B 게이트웨이 행·O 제품 호출 기록, 같은 칸·어휘)과 정지 신호 시각으로 기록상 끊긴 호출의 generation ID를 고른다.
+    B의 증거는 게이트웨이가 봉인 때 직접 끊은 cancelled_by_seal 하나다. B 엔진은 봉인 때 멈추지 않으므로 B의 호출자 쪽 끊김은
+    봉인 탓이라고 기록상 말할 수 없어 넣지 않는다. 시각을 읽을 수 없는 행은 끊긴 호출로 보지 않는다(추정으로 분류하지 않는다).
+    O(product=True)는 끊긴 호출에 generation ID가 없어 늘 빈 집합이다(보류)."""
+    if product:
+        # O 예외는 보류한다(#735 리뷰). 제품 전송기는 응답을 끝까지 읽은 호출(forwarded)에만 generation ID를 남기고, 끊긴 호출
+        # (upstream_error/client_closed_before_done)은 ID가 비어 있다(llmpolicy/openrouter_transport.go). 그래서 끊긴 호출과 미확인
+        # generation을 잇는 기록 근거가 없다. 근거가 생길 때까지 O의 미확인은 모두 정상 완료 호출로 보고 무효 사유로 센다.
+        # (B 게이트웨이는 스트림 앞부분에서 받은 ID를 끊긴 호출에도 남긴다, cmd/eval-meter/gateway.go.)
+        return frozenset()
+    stop = _instant(stop_at)
+    if stop is None:
+        return frozenset()
+    ids, others = set(), set()
+    for row in rows:
+        gid = row.get("generation_id")
+        if not isinstance(gid, str) or not gid:
+            continue
+        started, completed = _instant(row.get("started_at")), _instant(row.get("completed_at"))
+        # 봉인 전에 종료 이벤트 줄을 읽지 않았다는 기록이 있어야 한다(#735 리뷰). 칸이 없는 이전 행은 예외로 보지 않는다.
+        if (started is not None and completed is not None and started < stop <= completed
+                and row.get("decision") == "cancelled_by_seal" and row.get("unfinished_end") == _SEALED_BEFORE_DONE):
+            ids.add(gid)
+        else:
+            others.add(gid)
+    # 게이트웨이 검증 표식은 같은 generation ID를 한 번만 싣는다(gateway.go seenIDs). 같은 ID에 예외가 아닌 호출 행(정상 완료 등)이
+    # 하나라도 있으면 그 미확인이 끊긴 호출 탓인지 기록으로 가를 수 없어 예외로 보지 않는다(#735 리뷰).
+    return frozenset(ids - others)
+
+
 def judge_llm(marker: object, backend: str, provider_slug: str, provider_name: str,
-              sampling: dict | None) -> tuple[list[str], dict]:
+              sampling: dict | None, interrupted: frozenset[str] = frozenset()) -> tuple[list[str], dict]:
     """(사유 목록, 기록용 요약). 사유가 없어야 그 회차의 LLM 조건을 고정됐다고 말할 수 있다.
 
     sampling은 선언에서 만든 기대 적용값이다. 백엔드마다 키 묶음이 다르다.
@@ -114,7 +190,7 @@ def judge_llm(marker: object, backend: str, provider_slug: str, provider_name: s
     if marker["rejected_sampling"]:
         reasons.add("llm_sampling_rejected")
     generations = marker["generations"]
-    unverified = mismatched = fallback = fallback_unknown = 0
+    unverified = mismatched = fallback = fallback_unknown = unverified_interrupted = 0
     providers, endpoints = set(), set()
     unverified_last: dict[str, int] = {}
     if backend == "api":
@@ -125,6 +201,8 @@ def judge_llm(marker: object, backend: str, provider_slug: str, provider_name: s
         for generation in generations:
             if generation["status"] != "verified":
                 unverified += 1
+                if generation["id"] in interrupted:
+                    unverified_interrupted += 1  # 기록상 끊긴 호출: 따로 세고 회차를 무효로 하지 않는다
                 last = generation["lookup"]["last"]
                 unverified_last[last] = unverified_last.get(last, 0) + 1
                 continue
@@ -137,7 +215,7 @@ def judge_llm(marker: object, backend: str, provider_slug: str, provider_name: s
             elif any(attempt["provider_name"] != generation["provider_name"] for attempt in attempts):
                 fallback += 1  # 라우팅이 다른 제공자를 거쳤다(불일치와 별개로 센다)
             endpoints.update(attempt["endpoint_id"] for attempt in attempts if attempt["endpoint_id"])
-        for count, reason in ((unverified, "llm_generation_unverified"), (mismatched, "llm_provider_mismatch"),
+        for count, reason in ((unverified - unverified_interrupted, "llm_generation_unverified"), (mismatched, "llm_provider_mismatch"),
                               (fallback, "llm_fallback_attempted"), (fallback_unknown, "llm_fallback_unverifiable")):
             if count:
                 reasons.add(reason)
@@ -149,6 +227,7 @@ def judge_llm(marker: object, backend: str, provider_slug: str, provider_name: s
         **{name: marker[name] for name in _COUNTS}, "upstream_error_ends": dict(sorted(marker["upstream_error_ends"].items())),
         **{name: marker[name] for name in _BODY_KEY_REJECTIONS},
         "generations": len(generations), "unverified": unverified, "unverified_last": dict(sorted(unverified_last.items())),
+        "unverified_interrupted": unverified_interrupted, "interrupted_calls": len(interrupted),
         "lookup_tries_max": max((generation["lookup"]["tries"] for generation in generations), default=0),
         "provider_mismatch": mismatched, "fallback_attempted": fallback, "fallback_unverifiable": fallback_unknown,
         "providers": sorted(providers), "endpoint_ids": sorted(endpoints),
@@ -163,7 +242,7 @@ PRODUCT_VERIFY_ROLE = "generation-verify"
 
 
 def judge_product_llm(marker: object, baseline_applied: dict | None, provider_slug: str,
-                      provider_name: str) -> tuple[list[str], dict]:
+                      provider_name: str, interrupted: frozenset[str] = frozenset()) -> tuple[list[str], dict]:
     """O의 호출 기록 사후 검증 표식을 B와 같은 규칙(judge_llm)으로 판정한다.
 
     샘플링은 선언이 아니라 같은 회차 묶음의 원본(B) 게이트웨이가 실제로 넣은 값(B 표식의 `sampling`)과 대조한다. O 표식의
@@ -175,4 +254,4 @@ def judge_product_llm(marker: object, baseline_applied: dict | None, provider_sl
     if not isinstance(baseline_applied, dict) or set(baseline_applied) != SAMPLING_KEYS or any(
             type(value) not in (int, float) for value in baseline_applied.values()):
         raise LLMMarkerError("llm_marker_invalid")
-    return judge_llm(marker, "api", provider_slug, provider_name, baseline_applied)
+    return judge_llm(marker, "api", provider_slug, provider_name, baseline_applied, interrupted)

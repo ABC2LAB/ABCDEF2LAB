@@ -232,6 +232,32 @@ func TestProductDeclarationHTTP(t *testing.T) {
 			t.Errorf("%s: 응답에 입력 값", name)
 		}
 	}
+	// 확정 단계 계정 역할(계약 §4)은 HTTP 입구가 막지 않고 준비 프로세스까지 그대로 간다. 짝·같은 계정 검사는 준비 프로세스가
+	// 칸 이름으로 하고, 그 거부는 그대로 전달된다.
+	roles := `{"target_revision":3,"declaration":{"identity":{"path":"/app/me","subject_id_path":"id"},"types":[{"type":"post","sharing":"shared"}],"owner_account_label":"tester-a","cross_account_label":"tester-b","accounts_same_privilege":true}}`
+	if w := invoke("PUT", roles); w.Code != 200 {
+		t.Fatalf("역할 저장: %d %s", w.Code, w.Body.String())
+	}
+	if d := p.requests[len(p.requests)-1].Product.Declaration; d.OwnerAccountLabel != "tester-a" || d.CrossAccountLabel != "tester-b" || !d.AccountsSamePrivilege ||
+		diagnosisprep.ValidateRequest(p.requests[len(p.requests)-1]) != nil {
+		t.Fatalf("역할이 준비 요청에 안 실림: %+v", d)
+	}
+	for name, c := range map[string]struct{ body, field string }{
+		"owner_only":   {`{"target_revision":3,"declaration":{"identity":{"path":"/app/me","subject_id_path":"id"},"types":[{"type":"post","sharing":"shared"}],"owner_account_label":"tester-a"}}`, "cross_account_label"},
+		"same_account": {`{"target_revision":3,"declaration":{"identity":{"path":"/app/me","subject_id_path":"id"},"types":[{"type":"post","sharing":"shared"}],"owner_account_label":"tester-a","cross_account_label":"tester-a","accounts_same_privilege":true}}`, "cross_account_label"},
+	} {
+		before := len(p.requests)
+		p.response = diagnosisprep.ProductResponse{Reason: "invalid_declaration", Field: c.field}
+		w := invoke("PUT", c.body)
+		if len(p.requests) != before+1 || w.Code != 400 || strings.TrimSpace(w.Body.String()) != `{"error":"invalid_declaration","field":"`+c.field+`"}` {
+			t.Fatalf("%s: HTTP가 막거나 준비 거부를 바꿈: %d %s", name, w.Code, w.Body.String())
+		}
+	}
+	// 역할 칸에 다른 형식(문자열 등급 확인)은 HTTP 엄격 해석에서 거부한다.
+	before := len(p.requests)
+	if w := invoke("PUT", `{"target_revision":3,"declaration":{"identity":{"path":"/app/me","subject_id_path":"id"},"types":[{"type":"post","sharing":"shared"}],"accounts_same_privilege":"yes"}}`); w.Code != 400 || len(p.requests) != before {
+		t.Fatalf("형식이 틀린 등급 확인: %d %s", w.Code, w.Body.String())
+	}
 	p.response = diagnosisprep.ProductResponse{Reason: "invalid_declaration", Field: "types[0].create.body_template"}
 	if w := invoke("PUT", good); w.Code != 400 || strings.TrimSpace(w.Body.String()) != `{"error":"invalid_declaration","field":"types[0].create.body_template"}` {
 		t.Fatalf("형식 오류 전달: %d %s", w.Code, w.Body.String())

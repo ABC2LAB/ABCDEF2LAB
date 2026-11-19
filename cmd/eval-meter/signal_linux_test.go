@@ -142,6 +142,48 @@ func TestRunEngineDrainGraceFlag(t *testing.T) {
 	}
 }
 
+// The -request-cap flag reaches the meter the command runs: past the cap the
+// meter refuses at once and the target sees exactly the cap.
+func TestRunEngineRequestCapFlag(t *testing.T) {
+	var hits atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1) }))
+	t.Cleanup(upstream.Close)
+	addr, dir, exit := runEngine(t, upstream.URL, "-request-cap", "2")
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	var statuses []int
+	for i := 0; i < 4; i++ {
+		resp, err := client.Get("http://" + addr + "/x")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		statuses = append(statuses, resp.StatusCode)
+	}
+	if hits.Load() != 2 || statuses[0] != http.StatusOK || statuses[1] != http.StatusOK ||
+		statuses[2] != http.StatusServiceUnavailable || statuses[3] != http.StatusServiceUnavailable {
+		t.Fatalf("hits %d statuses %v", hits.Load(), statuses)
+	}
+	if err := syscall.Kill(os.Getpid(), syscall.SIGUSR1); err != nil {
+		t.Fatal(err)
+	}
+	waitFile(t, filepath.Join(dir, drainedName))
+	if got := readMarker[drainedMarker](t, filepath.Join(dir, drainedName)); got.RequestCap != 2 || got.RejectedOverCap != 2 ||
+		got.Forwarded != 2 {
+		t.Fatalf("drained marker: %+v", got)
+	}
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case code := <-exit:
+		if code != 0 {
+			t.Fatalf("exit %d", code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("front did not stop on SIGTERM")
+	}
+}
+
 // A seal sent the moment the front is reachable must be recorded: the signal
 // handlers are installed before the port opens.
 func TestRunEngineSealAtFirstListenIsRecorded(t *testing.T) {

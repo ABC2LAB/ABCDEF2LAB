@@ -120,7 +120,8 @@ func (r *productTargetRegistry) putDeclaration(principal, id string, expected ui
 	}
 	d := e3contract.Normalize(e3contract.Declaration{Version: e3contract.DeclarationVersion, TargetRef: id,
 		TargetApprovalRevision: targetApprovalRevision(rec.Target.Revision), DeclaredBy: principal, DeclaredAt: now,
-		Identity: in.Identity, Types: in.Types})
+		Identity: in.Identity, Types: in.Types, OwnerAccountLabel: in.OwnerAccountLabel, CrossAccountLabel: in.CrossAccountLabel,
+		AccountsSamePrivilege: in.AccountsSamePrivilege})
 	// 자격 모양을 먼저 본다. 형식 검사 오류보다 앞서야 자격이 든 칸을 정확히 가리킨다.
 	if field := e3contract.CredentialField(d); field != "" {
 		return diagnosisprep.ProductDeclaration{}, &declarationInputError{field: field}

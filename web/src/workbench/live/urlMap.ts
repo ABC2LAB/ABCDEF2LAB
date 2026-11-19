@@ -67,7 +67,10 @@ export function urlStateText(state: UrlState, verified = true): string {
  */
 export function urlOutcomeText(
   job: Pick<URLDiagnosisJob, "state" | "outcome" | "closing_reason" | "intent_outcomes">,
+  format: "detail" | "compact" = "detail",
 ): string {
+  const compact = format === "compact";
+  if (compact && job.state === "cancelled") return "중지됨";
   const c = job.intent_outcomes;
   if (!c) return "";
   const finished = c.done + c.policy_limited;
@@ -75,13 +78,16 @@ export function urlOutcomeText(
   if (job.state === "cancelled") return `중지됨 · 끝난 ${finished} / 끊긴 ${remaining + c.unknown}`;
   if (job.state !== "completed" || !job.outcome) return "";
   const parts: string[] = [];
-  if (job.outcome === "no_intents") parts.push("시도한 계획 없음(검사 안 함)");
-  else if (job.outcome === "partial") parts.push(remaining > 0 ? `일부 완료 · 남은 작업 ${remaining}` : "일부 완료");
-  else parts.push("계획한 작업 모두 마감");
+  if (compact && c.done === 0) parts.push("검사 안 함");
+  else if (job.outcome === "no_intents") parts.push("시도한 계획 없음(검사 안 함)");
+  else if (job.outcome === "partial")
+    parts.push(!compact && remaining > 0 ? `일부 완료 · 남은 작업 ${remaining}` : "일부 완료");
+  else parts.push(compact ? "점검 완료" : "계획한 작업 모두 마감");
   // 결과 불명은 남은 작업과 따로 보인다(미실행·판단불가를 섞지 않는다).
   if (c.unknown > 0) parts.push(`결과 불명 ${c.unknown}`);
   if (c.policy_limited > 0) parts.push(`정책상 검증 안 됨 ${c.policy_limited}`);
-  if (job.closing_reason === "budget_limited") parts.push("예산 상한에서 마감 · 찾은 후보는 보존");
+  if (job.closing_reason === "budget_limited")
+    parts.push(compact ? "예산 상한에서 마감" : "예산 상한에서 마감 · 찾은 후보는 보존");
   return parts.join(" · ");
 }
 

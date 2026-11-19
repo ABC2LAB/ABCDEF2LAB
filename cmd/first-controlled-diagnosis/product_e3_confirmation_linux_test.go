@@ -31,10 +31,20 @@ type e3HookFixture struct {
 
 func newE3HookFixture(t *testing.T, declare bool, policy func(*server.E2HTTPFilePolicy)) e3HookFixture {
 	t.Helper()
+	return newE3HookFixtureWith(t, declare, policy, nil)
+}
+
+// newE3HookFixtureWith는 선언 입력을 바꿀 수 있는 newE3HookFixture다.
+func newE3HookFixtureWith(t *testing.T, declare bool, policy func(*server.E2HTTPFilePolicy), input func(*diagnosisprep.DeclarationInput)) e3HookFixture {
+	t.Helper()
 	r, _, target, _ := declarationTestTarget(t)
 	var decl *e3contract.Declaration
 	if declare {
-		v, err := r.putDeclaration("ARTEX", target.ID, target.Revision, declarationTestInput())
+		in := declarationTestInput()
+		if input != nil {
+			input(&in)
+		}
+		v, err := r.putDeclaration("ARTEX", target.ID, target.Revision, in)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -596,23 +606,25 @@ func TestProductE3AdmittedReadsShare(t *testing.T) {
 }
 
 // 인증 준비가 성공한 시험 계정만, 이름순 앞 둘을 A·B로 둔다(지도 순서와 관계없이 같다).
-func TestProductE3AccountsPicksAuthenticatedByName(t *testing.T) {
+// 소유(A)·교차(B)는 선언한 라벨 그대로이고 인증 결과만 붙인다. 이름순으로 고르지 않는다(사용자 결정 2026-11-19).
+func TestProductE3RolesFromDeclaration(t *testing.T) {
 	read := func() map[string]string {
-		return map[string]string{"zeta": server.E2HTTPAuthAuthenticated, "mu": server.E2HTTPAuthAuthenticated, "alpha": "login_failed",
-			"gamma": server.E2HTTPAuthAuthenticated, "beta": "result_unknown"}
+		return map[string]string{"admin": server.E2HTTPAuthAuthenticated, "zeta": server.E2HTTPAuthAuthenticated, "mu": "login_failed"}
 	}
-	for range 50 {
-		owner, cross := productE3Accounts(read)
-		if owner != (e3contract.Account{Label: "gamma", Authenticated: true}) || cross != (e3contract.Account{Label: "mu", Authenticated: true}) {
-			t.Fatalf("A=%+v B=%+v", owner, cross)
-		}
+	decl := e3contract.Declaration{OwnerAccountLabel: "zeta", CrossAccountLabel: "mu"}
+	owner, cross := productE3Roles(decl, read)
+	// 이름순이면 admin이 A가 됐을 것이다. 선언한 zeta가 A이고, 인증에 실패한 mu는 B지만 인증되지 않았다.
+	if owner != (e3contract.Account{Label: "zeta", Authenticated: true}) || cross != (e3contract.Account{Label: "mu"}) {
+		t.Fatalf("A=%+v B=%+v", owner, cross)
 	}
-	if owner, cross := productE3Accounts(nil); owner != (e3contract.Account{}) || cross != (e3contract.Account{}) {
-		t.Fatal("읽을 수 없는 인증 결과에서 계정을 지어냄")
+	if owner, cross := productE3Roles(e3contract.Declaration{OwnerAccountLabel: "zeta", CrossAccountLabel: "absent"}, read); !owner.Authenticated || cross.Authenticated {
+		t.Fatalf("인증 결과 없는 계정: %+v %+v", owner, cross)
 	}
-	one := func() map[string]string { return map[string]string{"solo": server.E2HTTPAuthAuthenticated} }
-	if owner, cross := productE3Accounts(one); owner.Label != "solo" || cross != (e3contract.Account{}) {
-		t.Fatalf("계정 하나: %+v %+v", owner, cross)
+	if owner, cross := productE3Roles(e3contract.Declaration{}, read); owner != (e3contract.Account{}) || cross != (e3contract.Account{}) {
+		t.Fatal("역할 없는 선언에서 계정을 지어냄")
+	}
+	if owner, _ := productE3Roles(decl, nil); owner != (e3contract.Account{Label: "zeta"}) {
+		t.Fatalf("인증 결과를 읽을 수 없으면 인증되지 않은 것: %+v", owner)
 	}
 }
 
@@ -747,6 +759,64 @@ func TestProductE3ConfirmationWriteRecordFailures(t *testing.T) {
 			t.Fatalf("보내지 않았는데 다음 회차를 막음: %q", refusal)
 		}
 	})
+}
+
+// 확정 단계 계정은 선언한 역할 그대로다(계약 §4). 역할이 없거나 같은 권한 등급 확인이 없거나 선언한 계정이 인증되지 않았으면
+// 요청 없이 꺼진다.
+func TestProductE3ConfirmationUsesDeclaredRoles(t *testing.T) {
+	// 이름순이면 tester-a가 A가 된다. 선언을 뒤집으면 tester-b가 소유·생성, tester-a가 교차 조회다.
+	f := newE3HookFixtureWith(t, true, nil, func(in *diagnosisprep.DeclarationInput) {
+		in.OwnerAccountLabel, in.CrossAccountLabel = "tester-b", "tester-a"
+	})
+	fake := e3HookFake()
+	if err := f.confirmation(fake, e3HookAccounts(), nil).run(t.Context(), "9", nil); err != nil {
+		t.Fatal(err)
+	}
+	if res, raw := readE3Result(t, f.runs); res.Status != e3contract.StatusCompleted || res.Requests == 0 {
+		t.Fatalf("선언한 역할로 확정: %s", raw)
+	}
+	for _, call := range fake.Calls() {
+		want := "tester-b"
+		if call.Key.Role == e3contract.RoleCross {
+			want = "tester-a"
+		}
+		if call.Account != want {
+			t.Fatalf("%s %s 계정 %s(기대 %s)", call.Key.Purpose, call.Key.Role, call.Account, want)
+		}
+	}
+	for name, c := range map[string]struct {
+		input    func(*diagnosisprep.DeclarationInput)
+		accounts map[string]string
+		reason   e3contract.DisabledReason
+	}{
+		"undeclared": {func(in *diagnosisprep.DeclarationInput) {
+			in.OwnerAccountLabel, in.CrossAccountLabel, in.AccountsSamePrivilege = "", "", false
+		}, nil, e3contract.DisabledAccountRolesUndeclared},
+		"privilege_unconfirmed": {func(in *diagnosisprep.DeclarationInput) { in.AccountsSamePrivilege = false }, nil, e3contract.DisabledPrivilegeUnconfirmed},
+		// 선언한 교차 계정(tester-c)이 인증에 실패했다. 인증된 다른 계정(tester-b)으로 대신하지 않는다.
+		"cross_not_authenticated": {func(in *diagnosisprep.DeclarationInput) { in.CrossAccountLabel = "tester-c" }, nil, e3contract.DisabledAccountsUnverified},
+		"owner_no_result":         {func(in *diagnosisprep.DeclarationInput) { in.OwnerAccountLabel = "tester-z" }, nil, e3contract.DisabledAccountsUnverified},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newE3HookFixtureWith(t, true, nil, c.input)
+			fake := e3HookFake()
+			accounts := c.accounts
+			if accounts == nil {
+				accounts = e3HookAccounts()
+			}
+			begins := 0
+			if err := f.confirmation(fake, accounts, nil).run(t.Context(), "9", func() { begins++ }); err != nil {
+				t.Fatal(err)
+			}
+			res, raw := readE3Result(t, f.runs)
+			if res.Status != e3contract.StatusDisabled || res.Reason != string(c.reason) || res.Requests != 0 || len(fake.Calls()) != 0 || begins != 0 {
+				t.Fatalf("꺼진 확정 단계: %s", raw)
+			}
+			if st := f.r.resets[f.target.ID]; st != nil {
+				t.Fatalf("꺼진 확정 단계가 쓰기를 남김: %+v", st)
+			}
+		})
+	}
 }
 
 // 중지 마감(감독자가 확정 단계를 부르지 못함)에서도 결과 파일에 확정 단계 상태가 남는다(#738 이동찬 리뷰). 요청은 0건이고,

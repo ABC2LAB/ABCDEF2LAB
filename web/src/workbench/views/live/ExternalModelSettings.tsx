@@ -102,7 +102,8 @@ export function ExternalModelSettings({
   return (
     <fieldset disabled={disabled || busy} className={cx(s.field, s.keyset)}>
       <legend className={s["sr-only"]}>외부 모델 API 키</legend>
-      <div className={s["fsec-ht"]}>
+      {/* tipline: (?) 메모가 이 줄 바로 아래에 뜨는 기준(없으면 화면 칸 맨 아래로 가서 안 보였다) */}
+      <div className={cx(s["fsec-ht"], s.tipline)}>
         {asking ? (
           <label className={s.lbl} htmlFor="externalModelKey">
             API 키
