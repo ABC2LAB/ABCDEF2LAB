@@ -43,9 +43,15 @@ export function runStartMissingWhy(job: Timing | null | undefined): string {
   return "서버가 시작 시각을 남기지 않은 이전 회차입니다";
 }
 
-/** 소요가 없을 때의 이유. */
+/**
+ * 소요가 없을 때의 이유. 마감 시각이 없을 때 실행 중(running·stopping)이면 '아직 없음', 그 밖(결과 불명·끝난 상태)이면
+ * '남기지 않음' — 결과 불명의 finished_at 부재를 곧 생길 값처럼 읽히게 하지 않는다(§화면 인계 4).
+ */
 export function runDurationMissingWhy(job: Timing | null | undefined): string {
   if (!job) return "점검 상태를 아직 읽지 못했습니다";
-  if (job.started_at && !job.finished_at) return "마감 시각이 아직 없습니다. 시작·마감 시각이 둘 다 있을 때만 셉니다";
+  if (job.started_at && !job.finished_at)
+    return TICKING.includes(job.state)
+      ? "마감 시각이 아직 없습니다. 시작·마감 시각이 둘 다 있을 때만 셉니다"
+      : "서버가 마감 시각을 남기지 않았습니다. 시작·마감 시각이 둘 다 있을 때만 셉니다";
   return "시작·마감 시각이 둘 다 있을 때만 셉니다";
 }

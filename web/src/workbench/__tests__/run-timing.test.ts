@@ -49,6 +49,10 @@ describe("점검 시작 · 경과 · 소요 표시 (diagnosis-run-timing.md 화�
     const j: URLDiagnosisJob = { ...job("running_with_start"), state: "unknown" };
     expect(runElapsedSec(j, START + 90_000)).toBeNull();
     expect(runStartText(j)).not.toBeNull(); // 확인된 시작 시각은 그대로 보인다
+    // 소요 이유도 '아직 없음'(곧 생길 값)이 아니라 '남기지 않음'
+    expect(runDurationMissingWhy(j)).toMatch(/^서버가 마감 시각을 남기지 않았습니다/);
+    expect(runDurationMissingWhy({ ...j, state: "completed" })).toMatch(/^서버가 마감 시각을 남기지 않았습니다/);
+    expect(runDurationMissingWhy({ ...j, state: "stopping" })).toMatch(/^마감 시각이 아직 없습니다/);
   });
 
   it("시작 전 · 시작 전 마감: 시작은 '실행 시작 전', 마감 시각 하나만으로 소요를 만들지 않는다", () => {
