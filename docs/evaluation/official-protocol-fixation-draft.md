@@ -368,3 +368,11 @@ B(원본 엔진)와 O(제품)가 설계상 다르고 일부러 맞추지 않는 
   - B: `first_limit`(engine_completed / runner_request_budget / runner_time_budget, 두 시각)와 엔진 끝 신호(`engine-end.json`)의 상태·목표 수·달성 수.
   - O: `first_limit`(product_limit 포함), 제품 끝 상태(`product-end.json` final의 상태·결과·마감 사유·의도 결과), 작업 끝 신호(`product-task-end.json` v2의 작업 상태·목표 상태별 수·의도 상태별 수).
   - O가 `engine_completed`로 미완 의도를 남기고 끝난 회차는 목표 상태로 분류해 따로 센다. 목표가 하나 이상이고 전부 met면 (가), 아니면 (나)다. `prove_goal`의 자동 완료는 모든 목표가 met일 때만 일어나므로(`agent/tools.go`), 목표 상태에 `abandoned`가 하나라도 있거나 목표가 0개면 (나)로 세고 `abandoned` 수를 같이 적는다. 이 분포가 측정 전에 고칠 제품 문제인지 판단하는 근거다.
+
+## 22. 분리 배치 제품 스택 변경 확인 [기록]
+
+- **E② v3 Host(#788, 2026-11-19 확인)**: #788 뒤 분리 배치 O 제품 스택에 `e2-host` 서비스가 들어간다. 최신 dev(#788·#796 포함, dff2baed)로 무료 합성 O 회차(`ours-20261119t153919z-2dbd7411`)를 돌렸다.
+  - 결과는 `complete`·서명이다. 구간 감시 무효 사유 0, 회차 밖 컨테이너 사건 0, 호스트 리슨 위반 0이고, 사전·사후 격리 검사 위반 0(컨테이너 17개, `e2-host` 포함)이다.
+  - 출발점 4곳 점검은 사전·사후 모두 통과했다. 분리 배치 렌더 시험(`scripts/ci/test_product_eval_split.py`)은 19/19 통과다.
+  - `e2-host`는 내부 전용 `control` 망(10.252.2.0/24, `internal=true`, 동적 주소)에만 붙고, 호스트 포트를 열지 않으며, Host 볼륨 두 개만 마운트한다. 대상이나 외부로 직접 나가는 경로는 없다.
+  - 그래서 분리 배치 overlay·healthcheck 허용 목록·렌더 시험은 바꾸지 않았다. healthcheck 허용 목록은 렌더에서 만들고, 표 고정값은 #788이 갱신했다.
