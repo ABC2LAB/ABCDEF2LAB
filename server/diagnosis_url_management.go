@@ -84,6 +84,15 @@ func newURLDiagnosisManagementHandler(ctx context.Context, pool *sql.DB, keyDir,
 			runtimeBridge.serveFindingVerdictDetail(w, r.WithContext(requestContext))
 			return
 		}
+		// 제품 판정 목록도 같은 자리다(#801 §2). 제품이 아니면 실행 API로 넘기지 않는다.
+		if ProductVerdictListPath(r) {
+			if runtimeBridge == nil {
+				http.NotFound(w, r)
+				return
+			}
+			runtimeBridge.serveProductVerdictList(w, r.WithContext(requestContext))
+			return
+		}
 		mux.ServeHTTP(w, r.WithContext(requestContext))
 	}), nil
 }

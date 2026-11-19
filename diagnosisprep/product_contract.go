@@ -206,8 +206,10 @@ type ProductResponse struct {
 	Reset *ProductResetState `json:"reset,omitempty"`
 	// Field는 Reason이 invalid_declaration일 때 실패한 칸 이름이다(값 없음).
 	Field string `json:"field,omitempty"`
-	// PolicySource는 policy_source의 결과다(동결본 digest만).
+	// PolicySource는 policy_source의 결과다(동결본 digest와 동결본의 계정 라벨 둘).
 	PolicySource *ProductPolicySource `json:"policy_source,omitempty"`
+	// Confirmation은 policy_source의 결과로 같이 주는 확정 단계 결과 상태다(제품 판정 목록 결정 3).
+	Confirmation *ProductConfirmationState `json:"confirmation,omitempty"`
 }
 
 func validProductAccount(a ProductAccount) bool {
