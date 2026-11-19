@@ -12,15 +12,26 @@ vi.mock("../live/api", async (importOriginal) => ({
 
 import { catalog, handle, running, scope } from "@/lib/diagnosis/diagnosis-url-fixtures";
 
+import type { DiagnosisRunView } from "../live/api";
 import * as api from "../live/api";
 import { LiveRailTasks } from "../live/rail";
 import { resetUrl, useUrl } from "../live/urlDiagnosis";
 import { useUrlRuns } from "../live/urlRunList";
+import type { Poll } from "../live/usePoll";
 import { FLOW_VERSION, type WorkflowSnapshot } from "../live/workflow";
 import { type Shell, ShellContext, type View } from "../shell";
 import { UrlDashboardLive } from "../views/live/UrlDashboardLive";
-import { gaugeSegments, prettyEvidence, UrlLiveLive } from "../views/live/UrlLiveLive";
-import { eventText, group, PauseButton, Pth, WorkflowCrawlLive, WorkflowScopeLive } from "../views/live/workflowViews";
+import { gaugeSegments, prettyEvidence, RunCounts, UrlLiveLive } from "../views/live/UrlLiveLive";
+import {
+  crawlBar,
+  eventText,
+  group,
+  PauseButton,
+  Pth,
+  WorkflowCrawlLive,
+  WorkflowReport,
+  WorkflowScopeLive,
+} from "../views/live/workflowViews";
 
 const noop = () => undefined;
 const shell = (route: View, over: Partial<Shell> = {}): Shell => ({
@@ -732,7 +743,8 @@ describe("자산 탐색", () => {
     expect(ended).toHaveAttribute("aria-valuenow", "25");
     expect((ended.querySelector("i") as HTMLElement).style.width).toBe("100%");
     expect(ended).toHaveAttribute("aria-valuetext", "탐색 끝 · 완료 확인 안 됨 · 방문 1 / 페이지 상한 4");
-    expect(ended.className).toMatch(/prog-part/);
+    // 색은 점검 진행 게이지와 같게 끝남 초록(사용자 11/19), 다 돌았는지 모른다는 건 위 탐색 줄이 말한다
+    expect(ended.className).toMatch(/prog-ok/);
     // 상태가 없으면 위 탐색 줄 하나에 '끝까지 봤는지 확인 안 됨'까지 붙인다(사용자 11/19 — 아래 줄을 따로 두지 않음)
     expect(document.getElementById("cNow")).toHaveTextContent(
       /^탐색을 마쳤습니다 · 끝까지 봤는지는 확인되지 않았습니다/,
@@ -794,7 +806,7 @@ describe("자산 탐색", () => {
       { exploration_status: "PARTIAL", exploration_reason: "constructor" },
       "탐색을 마쳤습니다 · 일부 페이지는 탐색하지 못했습니다",
     ],
-  ])("%s · 끝난 막대는 주황으로 채우고 실제 방문 수 · 탐색 상태를 글로 보인다", (_n, over, text) => {
+  ])("%s · 끝난 막대는 끝까지 채우고(점검 진행 게이지처럼 초록) 실제 방문 수 · 탐색 상태를 글로 보인다", (_n, over, text) => {
     // 방문 2 / 페이지 상한 8 = 25% — 서버는 PARTIAL 에서도 initial_completed 를 true 로 둔다
     useUrl.setState({
       handle,
@@ -815,18 +827,95 @@ describe("자산 탐색", () => {
         <WorkflowCrawlLive />
       </ShellContext.Provider>,
     );
-    // 방문 2 / 상한 8(25%)로 멈춘 것처럼 보이지 않게 끝까지 채우되 주황(사용자 11/18). 다 돈 게 아니라는 건 색과
-    // aria 글 · 탐색 상태 글이 말한다(리뷰 #479)
+    // 방문 2 / 상한 8(25%)로 멈춘 것처럼 보이지 않게 끝까지 채운다(사용자 11/18). 색은 점검 진행 게이지와 같은 끝남
+    // 초록(사용자 11/19), 다 돈 게 아니라는 건 aria 글 · 위 탐색 줄이 말한다(리뷰 #479)
     const bar = screen.getByRole("progressbar", { name: /탐색 진행/ });
     expect(bar).toHaveAttribute("aria-valuenow", "25"); // 값은 실제 방문 비율(#709 리뷰)
     expect((bar.querySelector("i") as HTMLElement).style.width).toBe("100%");
     expect(bar).toHaveAttribute("aria-valuetext", "탐색 끝 · 일부 완료 · 방문 2 / 페이지 상한 8");
-    expect(bar.className).toMatch(/prog-part/);
-    expect(bar.className).not.toMatch(/prog-ok/);
+    expect(bar.className).toMatch(/prog-ok/);
+    expect(bar.className).not.toMatch(/prog-stop/);
     // 화면은 status 중심: 뜻을 더하는 사유만 뒤에 붙고, 겹치거나 모순되는 토큰은 빠진다(원본 영문 토큰 노출 금지)
     // 위 탐색 줄 한 줄로(사용자 11/19): 막대 아래 '탐색: …' 줄은 따로 없다
     expect(document.getElementById("cNow")?.textContent).toBe(text);
     expect(screen.queryByText(/^탐색:/)).toBeNull();
+  });
+});
+
+describe("보고서 탐색 · 요청 집계 (사용자 11/19 한 줄로 합침)", () => {
+  const counts = {
+    attempts: 162,
+    allowed: 153,
+    denied: 9,
+    unsupported: 0,
+    forward_attempted: 153,
+    responses: 153,
+    unknown: 0,
+    calls: 90,
+  };
+  const poll = (data: unknown): Poll<DiagnosisRunView> => ({
+    data: data as DiagnosisRunView | null,
+    error: null,
+    loading: false,
+    unsupported: false,
+    reload: vi.fn(),
+    fetchedAt: 1,
+  });
+  const cellsOf = () =>
+    [...screen.getByRole("region", { name: "탐색 · 요청 집계" }).querySelectorAll(":scope > div")].map(
+      (x) => x.textContent,
+    );
+  it("탐색 두 칸(발견한 API · 방문) 뒤에 요청 네 칸을 한 줄로, 아래 탐색 · 선택 범위엔 숫자 칸을 두지 않는다", () => {
+    useUrl.setState({ flow: { ...flow, counts: { ...flow.counts, found: 6, visited: 4, sent: 145, blocked: 9 } } });
+    render(
+      <>
+        <RunCounts run={poll({ kind: "run", run: { execution: { counts } } })} />
+        <WorkflowReport />
+      </>,
+    );
+    expect(cellsOf()).toEqual(["발견한 API6", "방문4", "보낸 요청153", "막은 요청9", "응답 받음153", "결과 불명0"]);
+    const box = screen.getByRole("heading", { name: "탐색 · 선택 범위" }).closest("section") as HTMLElement;
+    expect(box.querySelector("[class*='meters']")).toBeNull();
+  });
+  it("실행 기록이 없으면 탐색 두 칸만, 탐색 흐름이 없으면 요청 네 칸만 (없는 쪽을 0 으로 그리지 않음)", () => {
+    useUrl.setState({ flow: { ...flow, counts: { ...flow.counts, found: 6, visited: 4 } } });
+    const { unmount } = render(<RunCounts run={poll({ kind: "none" })} />);
+    expect(cellsOf()).toEqual(["발견한 API6", "방문4"]);
+    unmount();
+    useUrl.setState({ flow: null });
+    render(<RunCounts run={poll({ kind: "run", run: { execution: { counts } } })} />);
+    expect(cellsOf()).toEqual(["보낸 요청153", "막은 요청9", "응답 받음153", "결과 불명0"]);
+  });
+});
+
+describe("탐색 막대 색은 점검 진행 게이지와 같게 (#765 리뷰)", () => {
+  const base = { ...flow, limits: { ...flow.limits, max_pages: 4 }, counts: { ...flow.counts, visited: 0 } };
+  it.each([
+    [
+      "탐색 전 실패(NOT_RUN · initial_completed=false → failed)",
+      { stage: "failed", initial_completed: false, exploration_status: "NOT_RUN" },
+      "stop",
+    ],
+    ["탐색 전 중지(상태 없음)", { stage: "stopped", initial_completed: false }, "stop"],
+    ["첫 탐색 뒤 실패(PARTIAL)", { stage: "failed", initial_completed: true, exploration_status: "PARTIAL" }, "stop"],
+    ["탐색 중", { stage: "crawling", initial_completed: false, exploration_status: "RUNNING" }, "run"],
+    ["일부만 돌고 끝남", { stage: "awaiting_selection", initial_completed: true, exploration_status: "PARTIAL" }, "ok"],
+    ["다 돌고 끝남", { stage: "diagnosing", initial_completed: true, exploration_status: "COMPLETED" }, "ok"],
+  ])("%s", (_n, over, tone) => {
+    const bar = crawlBar({ ...base, ...over } as WorkflowSnapshot);
+    expect(bar.tone).toBe(tone);
+    // 끝난 막대(초록 · 회색)는 끝까지 채우고, 값(aria)은 실제 방문 비율
+    if (tone !== "run") expect(bar.fill).toBe(100);
+    expect(bar.pct).toBe(0);
+  });
+  it("탐색 전 실패의 aria 글은 탐색 안 함을 말한다", () => {
+    const bar = crawlBar({
+      ...base,
+      stage: "failed",
+      initial_completed: false,
+      exploration_status: "NOT_RUN",
+    } as WorkflowSnapshot);
+    expect(bar.text).toBe("탐색 끝 · 안 함 · 방문 0 / 페이지 상한 4");
   });
 });
 
@@ -853,6 +942,10 @@ describe("탐색이 다 돌지 못하고 끝난 줄 (사용자 11/19 한 줄로)
     );
     expect(document.getElementById("cNow")?.textContent).toBe(text);
     expect(screen.queryByText(/탐색을 마쳤습니다/)).toBeNull();
+    // 막대 색은 점검 진행 게이지의 멈춤과 같은 회색(사용자 11/19)
+    const bar = screen.getByRole("progressbar", { name: /탐색 진행/ });
+    expect(bar.className).toMatch(/prog-stop/);
+    expect(bar.className).not.toMatch(/prog-ok/);
   });
 });
 
