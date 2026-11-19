@@ -208,6 +208,7 @@ func TestAdapterEventStageRules(t *testing.T) {
 		"not_sent_transport_failed": func(e *e3v3.Event) { e.NotSentReason = "transport_failed" },
 		"not_sent_with_response":    func(e *e3v3.Event) { e.StatusCode = 200 },
 		"not_sent_forwarded":        func(e *e3v3.Event) { e.ForwardAttempted = true },
+		"not_sent_allowed":          func(e *e3v3.Event) { e.Decision, e.RuleRef = e3v3.DecisionAllowed, "rule-x" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			res, _ := viaV3(t, map[e3fake.Key]e3fake.Behavior{crossNote: {NotSent: e3contract.NotSentPolicyDenied}},
@@ -504,7 +505,11 @@ func TestEventCheck(t *testing.T) {
 		"decision_unknown_sent":   {read, func(e *e3v3.Event) { e.Decision = "maybe" }, "decision"},
 		"decision_unknown_denied": {denied, func(e *e3v3.Event) { e.Decision = "maybe" }, "decision"},
 		"not_sent_unknown_reason": {denied, func(e *e3v3.Event) { e.NotSentReason = "unknown" }, "not_sent_reason"},
-		"not_sent_received":       {denied, func(e *e3v3.Event) { e.ResponseReceived = true }, "not_sent_has_response"},
+		"allowed_but_not_sent":    {denied, func(e *e3v3.Event) { e.Decision, e.RuleRef = e3v3.DecisionAllowed, "rule-x" }, "not_sent_decision"},
+		"allowed_closed_in_check": {denied, func(e *e3v3.Event) {
+			e.Decision, e.RuleRef, e.NotSentReason, e.Reason = e3v3.DecisionAllowed, "rule-x", "", e3v3.ReasonClosed
+		}, "not_sent_decision"},
+		"not_sent_received": {denied, func(e *e3v3.Event) { e.ResponseReceived = true }, "not_sent_has_response"},
 	}
 	for name, c := range cases {
 		e := c.base

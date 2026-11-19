@@ -181,7 +181,11 @@ func (e Event) Check() error {
 		return bad("stage")
 	}
 	if e.NotSent {
-		// 송신 전 거부: 연결을 시도하기 전에 거부한 것만 not_sent다(사유 넷).
+		// 송신 전 거부: 연결을 시도하기 전에 거부한 것만 not_sent다(사유 넷). 허용(allowed)인 미송신은 intent 뒤 송신 전
+		// 중단(reason=closed, 사유 없음)뿐이고 어댑터가 Check 전에 따로 다룬다(#760 이동찬 리뷰, 계약 §2.3).
+		if e.Decision == DecisionAllowed {
+			return bad("not_sent_decision")
+		}
 		switch e.NotSentReason {
 		case e3contract.NotSentPolicyDenied, e3contract.NotSentApprovalDenied, e3contract.NotSentApprovalTimeout,
 			e3contract.NotSentBudgetExhausted:
