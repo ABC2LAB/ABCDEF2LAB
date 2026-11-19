@@ -3,7 +3,7 @@
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { maskSecrets } from "../live/mask";
+import { maskAcrossBreaks, maskSecrets } from "../live/mask";
 import s from "../workbench.module.css";
 
 /**
@@ -39,10 +39,11 @@ function maskTree(node: MdNode): void {
   if (IMAGES.has(node.type) && node.alt) node.alt = maskSecrets(node.alt);
   if (BLOCKS.has(node.type)) {
     const shown = visibleText(node);
-    const masked = maskSecrets(shown);
     // 서식(**pass**word) · 주석(pass<!-- -->word) 으로 쪼개져 마디마다 가리면 놓치는 값: 블록 글 전체로 다시 보고, 가릴 게
-    // 있으면 그 블록은 서식을 버리고 가린 글 한 줄로 바꾼다
-    if (masked !== shown) {
+    // 있으면 그 블록은 서식을 버리고 가린 글 한 줄로 바꾼다. 엔티티 줄바꿈(password:&#10;값)으로 키와 값이 갈려도 이어 붙여
+    // 본다(#709 리뷰) — 문단 안 줄바꿈은 화면에서 띄어쓰기로 보여 이어 붙여도 보이는 글이 같다
+    const masked = maskAcrossBreaks(shown);
+    if (masked !== null) {
       node.children = [{ type: "text", value: masked }];
       return;
     }

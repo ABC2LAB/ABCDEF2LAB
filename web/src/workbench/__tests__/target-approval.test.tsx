@@ -39,7 +39,7 @@ it.each([
 ])("불가한 origin은 조회·등록하지 않는다: %s", (url) => {
   render(<TargetApprovalPanel requestLimit={4} url={url} disabled={false} />);
   // 정본 http·https origin 이 아니면 대상 승인 칸을 아예 그리지 않는다 (등록 버튼 없음). http 대상은 받는다(C22).
-  expect(screen.queryByRole("button", { name: "대상 등록 · 소유 확인 준비" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "대상 등록" })).toBeNull();
   expect(screen.queryByRole("button", { name: "대상 등록하기" })).toBeNull();
   expect(apiFetch).not.toHaveBeenCalled();
 });
@@ -81,10 +81,10 @@ it("등록 화면에 GET/HEAD · query 무해성을 서버가 검증하지 않�
   render(<TargetApprovalPanel requestLimit={4} url={url} disabled={false} />);
   await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1));
   fireEvent.click(screen.getByRole("button", { name: "대상 등록하기" }));
-  // 할 일 한 줄과 핵심 고지는 늘 보이고, 원래 고지 문장은 (?) 메모를 열면 보인다
+  // 할 일 한 줄은 늘 보이고, 무해성 미검증 고지 등 원래 고지 문장은 (?) 메모를 열면 보인다(둘째 줄은 뺐다, 사용자 11/18)
   const note = document.getElementById("targetHarmlessNote") as HTMLElement;
   expect(note).toHaveTextContent("상태를 바꿀 수 있는 경로는 넣지 마세요");
-  expect(note).toHaveTextContent("서버는 GET · HEAD · query 의 무해성을 검증하지 않음");
+  expect(note).not.toHaveTextContent("서버는 GET · HEAD · query 의 무해성을 검증하지 않음");
   expect(screen.getByText(/서버는 GET\/HEAD 의 무해성을 검증하지 않습니다/)).not.toBeVisible();
   fireEvent.click(screen.getByRole("button", { name: "읽기 승인 설명 보기" }));
   expect(screen.getByText(/서버는 GET\/HEAD 의 무해성을 검증하지 않습니다/)).toBeVisible();
@@ -98,10 +98,10 @@ it("등록의 읽기 범위와 TLS 사전 접촉을 안내한다", async () => {
   fireEvent.click(screen.getByRole("button", { name: "대상 등록하기" }));
   fireEvent.click(screen.getByRole("button", { name: "읽기 승인 설명 보기" }));
   expect(screen.getByText(/후보 IP별 연결\(https 대상은 TLS 확인\)/)).toBeVisible();
-  fireEvent.change(screen.getByLabelText("진단 권한 · 비변경 근거"), {
+  fireEvent.change(screen.getByLabelText("점검 근거"), {
     target: { value: "승인된 테스트 소유 환경의 읽기 전용 GET 경로입니다." },
   });
-  fireEvent.click(screen.getByRole("button", { name: "대상 등록 · 소유 확인 준비" }));
+  fireEvent.click(screen.getByRole("button", { name: "대상 등록" }));
   await screen.findByRole("button", { name: "TXT 레코드 확인" });
   const [path, init, retry] = vi.mocked(apiFetch).mock.calls[1];
   expect(path).toBe("/api/product/targets");
@@ -122,14 +122,20 @@ it("정확 일치(=/…)와 접두의 query 차이를 안내하고 =/ 표현을 
   render(<TargetApprovalPanel requestLimit={4} url={url} disabled={false} />);
   await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1));
   fireEvent.click(screen.getByRole("button", { name: "대상 등록하기" }));
+  // 경로 쓰는 법은 칸 옆 (?) 메모에(사용자 11/18 '간략하게') — 열면 보인다
   const note = document.getElementById("targetPathMatchNote") as HTMLElement;
+  expect(note).not.toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "경로 쓰는 법 보기" }));
+  expect(note).toBeVisible();
+  // 메모 위치 기준(tipline)이 칸 이름 줄에 있어야 그 바로 아래에 뜬다 — 없으면 화면 칸 맨 아래로 가 안 보였다
+  expect(note.closest("[role='note']")?.parentElement?.parentElement?.className).toMatch(/tipline/);
   expect(note).toHaveTextContent("접두 승인 · 그 아래 모든 경로와 query 를 허용합니다");
   expect(note).toHaveTextContent("정확 일치 · 그 경로 하나만, query 가 붙은 요청(/?x=1, /? 포함)은 허용하지 않습니다");
-  fireEvent.change(screen.getByLabelText("허용할 읽기 경로 · 한 줄에 하나"), { target: { value: "=/\n/users/v1" } });
-  fireEvent.change(screen.getByLabelText("진단 권한 · 비변경 근거"), {
+  fireEvent.change(screen.getByLabelText("점검할 경로 (조회만)"), { target: { value: "=/\n/users/v1" } });
+  fireEvent.change(screen.getByLabelText("점검 근거"), {
     target: { value: "승인된 테스트 소유 환경의 읽기 전용 GET 경로입니다." },
   });
-  fireEvent.click(screen.getByRole("button", { name: "대상 등록 · 소유 확인 준비" }));
+  fireEvent.click(screen.getByRole("button", { name: "대상 등록" }));
   await screen.findByRole("button", { name: "TXT 레코드 확인" });
   expect(JSON.parse(String(vi.mocked(apiFetch).mock.calls[1][1]?.body)).path_prefixes).toEqual(["=/", "/users/v1"]);
 });
@@ -169,7 +175,7 @@ it("철회 후 기존 승인 표시를 제거하고 새 등록을 허용한다",
   expect(screen.queryByRole("button", { name: "승인 철회" })).toBeNull();
   expect(screen.queryByText(/승인된 대상:/)).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "대상 등록하기" }));
-  expect(screen.getByRole("button", { name: "대상 등록 · 소유 확인 준비" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "대상 등록" })).toBeVisible();
   expect(changed).toHaveBeenCalledTimes(1);
 });
 it("다른 origin의 승인 응답은 적용하지 않는다", async () => {
@@ -195,7 +201,9 @@ it("중복 승인 클릭·URL 변경 뒤 늦은 응답이 새 대상에 영향�
   fireEvent.click(allow);
   fireEvent.click(allow);
   expect(apiFetch).toHaveBeenCalledTimes(2);
-  view.rerender(<TargetApprovalPanel requestLimit={4} url="https://new.example.test/read" disabled={false} onChanged={changed} />);
+  view.rerender(
+    <TargetApprovalPanel requestLimit={4} url="https://new.example.test/read" disabled={false} onChanged={changed} />,
+  );
   await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(3));
   await act(async () => finish({ target: approved }));
   expect(changed).not.toHaveBeenCalled();
@@ -214,16 +222,18 @@ it("새 origin에는 이전 대상의 쓰기 동의가 넘어가지 않는다", 
   );
   fireEvent.click(screen.getByRole("checkbox"));
   expect(screen.getByRole("checkbox")).toBeChecked();
-  view.rerender(<TargetApprovalPanel requestLimit={4} url="https://second.example.test/read" disabled={false} allowStateChanges />);
+  view.rerender(
+    <TargetApprovalPanel requestLimit={4} url="https://second.example.test/read" disabled={false} allowStateChanges />,
+  );
   await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(2));
   // 주소가 바뀌면 등록 칸은 다시 접힌다. 다시 펼쳐도 이전 대상의 동의는 없다
   expect(screen.queryByRole("checkbox")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "대상 등록하기" }));
   expect(screen.getByRole("checkbox")).not.toBeChecked();
-  fireEvent.change(screen.getByLabelText("진단 권한 · 비변경 근거"), {
+  fireEvent.change(screen.getByLabelText("점검 근거"), {
     target: { value: "승인된 테스트 소유 환경의 읽기 전용 GET 경로입니다." },
   });
-  fireEvent.click(screen.getByRole("button", { name: "대상 등록 · 소유 확인 준비" }));
+  fireEvent.click(screen.getByRole("button", { name: "대상 등록" }));
   await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(3));
   expect(JSON.parse(String(vi.mocked(apiFetch).mock.calls[2][1]?.body)).methods).toEqual(["GET", "HEAD"]);
 });
@@ -235,11 +245,11 @@ it("시안 v91 모양: 소유 확인 필요 딱지 · 등록 칸은 접혀 있�
   expect(screen.getByText("소유 확인 필요")).toBeVisible();
   expect(screen.getByText(/아직 승인되지 않은 대상입니다/)).toHaveTextContent("owned.example.test");
   // 접혀 있을 때는 입력칸이 없다 (시안처럼 한 줄 + 버튼)
-  expect(screen.queryByLabelText("진단 권한 · 비변경 근거")).toBeNull();
+  expect(screen.queryByLabelText("점검 근거")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "대상 등록하기" }));
-  await waitFor(() => expect(screen.getByLabelText("허용할 읽기 경로 · 한 줄에 하나")).toHaveFocus());
+  await waitFor(() => expect(screen.getByLabelText("점검할 경로 (조회만)")).toHaveFocus());
   fireEvent.click(screen.getByRole("button", { name: "접기" }));
-  expect(screen.queryByLabelText("진단 권한 · 비변경 근거")).toBeNull();
+  expect(screen.queryByLabelText("점검 근거")).toBeNull();
   expect(apiFetch).toHaveBeenCalledTimes(1);
 });
 it("시안 v91 모양: 소유 확인 대기는 TXT 레코드 이름 · 유형 · 값과 복사 버튼", async () => {
@@ -271,11 +281,11 @@ it("설치 상한이 없으면 등록하지 않고 이유를 보인다", async (
   render(<TargetApprovalPanel url={url} disabled={false} />);
   await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1));
   fireEvent.click(screen.getByRole("button", { name: "대상 등록하기" }));
-  fireEvent.change(screen.getByLabelText("진단 권한 · 비변경 근거"), {
+  fireEvent.change(screen.getByLabelText("점검 근거"), {
     target: { value: "승인된 테스트 소유 환경의 읽기 전용 GET 경로입니다." },
   });
   expect(screen.getByText("설치의 회차당 요청 상한을 받지 못해 대상을 등록할 수 없습니다")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "대상 등록 · 소유 확인 준비" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "대상 등록" })).toBeDisabled();
   expect(apiFetch).toHaveBeenCalledTimes(1);
 });
 it("설치 상한으로 등록하고 등록·승인 화면에 회차당 요청 상한을 보인다", async () => {
@@ -285,11 +295,12 @@ it("설치 상한으로 등록하고 등록·승인 화면에 회차당 요청 �
   render(<TargetApprovalPanel url={url} disabled={false} requestLimit={400} />);
   await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1));
   fireEvent.click(screen.getByRole("button", { name: "대상 등록하기" }));
-  expect(document.getElementById("targetRequestLimit")).toHaveTextContent("회차당 요청 상한 400");
-  fireEvent.change(screen.getByLabelText("진단 권한 · 비변경 근거"), {
+  // 등록 칸엔 상한 줄을 두지 않는다(사용자 11/18) — 값은 설치 상한 그대로 보낸다
+  expect(document.getElementById("targetRequestLimit")).toBeNull();
+  fireEvent.change(screen.getByLabelText("점검 근거"), {
     target: { value: "승인된 테스트 소유 환경의 읽기 전용 GET 경로입니다." },
   });
-  fireEvent.click(screen.getByRole("button", { name: "대상 등록 · 소유 확인 준비" }));
+  fireEvent.click(screen.getByRole("button", { name: "대상 등록" }));
   await screen.findByRole("button", { name: "TXT 레코드 확인" });
   expect(JSON.parse(String(vi.mocked(apiFetch).mock.calls[1][1]?.body)).requests).toBe(400);
   expect(document.getElementById("targetPendingRequestLimit")).toHaveTextContent("회차당 요청 상한 400");

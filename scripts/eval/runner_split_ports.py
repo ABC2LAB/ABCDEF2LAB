@@ -55,6 +55,8 @@ BOUNDARY_DIRECTORY = "boundary"
 PRODUCT_CONFIG_FILES = (("installation", "installation.json"), ("policy", "policy.json"), ("api_launch", "api-launch.json"),
                         ("target_policy", "target-policy.json"))
 RUNTIME_CONDITIONS_FILE = "runtime-conditions.json"
+# 제품이 회차 디렉터리(runs/<초안 ID>)에 한 번 쓰는 E③ 확정 단계 결과(e3contract.RunResult, 0600).
+E3_CONFIRMATION_FILE = "e3-confirmation.json"
 MAX_PRODUCT_FILE_BYTES = 1 << 20
 
 
@@ -293,6 +295,10 @@ class DockerSplitPorts:
                 "requested_at": collected.requested_at, "received_at": collected.received_at, "solved": normalized["solved"],
                 "state_sha256": snapshot_state_sha256(self.directory.run / phase, opaque, normalized["solved"])}
 
+    def host_listeners(self) -> frozenset:
+        """호스트 리슨(B DockerPorts.host_listeners와 같은 읽기). pre/post 검사와 격리 근거 host_condition 행에 쓴다."""
+        return read_host_listeners(_read_text)
+
     def start_events(self, since: str):
         return self.docker.event_stream(since)
 
@@ -325,6 +331,12 @@ class DockerSplitPorts:
         결속·형식 검사는 회차 흐름이 한다(runner_split_run.checked_runtime_conditions)."""
         return self._copy("product-state", "runs", (RUNTIME_CONDITIONS_FILE,), "product-run-conditions", PRODUCT_UID,
                           MAX_PRODUCT_FILE_BYTES, subpath=(draft_id, "state"))[RUNTIME_CONDITIONS_FILE]
+
+    def e3_confirmation(self, draft_id: str) -> bytes:
+        """E③ 확정 단계 결과 원본 바이트(runs/<초안 ID>/e3-confirmation.json). 제품을 멈춘 뒤에 부른다. 파일이 없으면(감독자
+        연결 전 제품 빌드) 복사 도우미가 실패한다. 해석은 회차 흐름이 한다(runner_split_run.e3_confirmation_row)."""
+        return self._copy("product-state", "runs", (E3_CONFIRMATION_FILE,), "product-e3-confirmation", PRODUCT_UID,
+                          MAX_PRODUCT_FILE_BYTES, subpath=(draft_id,))[E3_CONFIRMATION_FILE]
 
     def control_policy(self, task_id: str) -> dict:
         return self.driver.control_policy(task_id)

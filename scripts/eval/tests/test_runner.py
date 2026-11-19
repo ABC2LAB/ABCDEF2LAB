@@ -1161,8 +1161,50 @@ class TestCompleteRun(unittest.TestCase):
                          (2, {"npx": 1, "pip3": 1}, ["npx", "pip3"], ["npx", "pip3", "vim"], 5))
         self.assertEqual(usage["format"], "abc2lab.cli-usage/v3")
         self.assertNotIn("not_found", usage)
-        self.assertNotIn("playwright test", json.dumps(evidence.files))  # 명령 원문은 남지 않는다
+        self.assertNotIn("playwright test", json.dumps(usage))  # 건수 기록에는 명령 원문이 없다
+        # 관측된 명령만 한 줄의 모양(관측 이름·셸 연산자만, 나머지 <인자>)을 따로 남긴다(사용자 결정 4, #736 리뷰)
+        self.assertEqual(evidence.files["cli-observed-lines.json"], {
+            "format": "abc2lab.cli-observed-lines/v2", "observed_calls": 2,
+            "lines": [{"names": ["npx"], "shape": "npx <인자> <인자> && <인자> <인자>"},
+                      {"names": ["pip3"], "shape": "pip3 <인자> <인자>"}]})
+        self.assertEqual(usage["observed_lines"], 2)
         self.assertNotIn("command_records", run()[1].calls)  # 이름이 없으면(분리 배치 아님·O) 읽지 않는다
+
+    def test_secrets_in_option_arguments_never_reach_the_evidence(self):
+        # 자격 가림이 못 가리는 별도 옵션 인자 자격(#736 리뷰 재현): 모양에는 원문 인자가 남지 않는다. 셸 낱말로 못 나누는 줄과
+        # 상한을 넘는 원문은 보류만 적는다.
+        spec = dataclasses.replace(make_spec(), cli_usage_names=("npx",))
+        commands = ["mysql -u root -p synthsecret01 && npx run --password synthsecret02 --token=synthsecret03 -k synthsecret04",
+                    "npx login --password '--synthsecret07-x'",  # 옵션 이름 모양의 별도 값(#736 리뷰)
+                    "npx login --password '&&|;synthsecret08<>'",  # 기호가 든 따옴표 값(#736 리뷰)
+                    "PASSWORD=synthsecret05 npx thing",
+                    'npx run "synthsecret06',  # 닫히지 않은 따옴표
+                    "npx \ud800",  # 단독 surrogate(#736 리뷰: UTF-8 변환 오류로 회차가 무효가 되던 것)
+                    "npx " + "a" * (64 * 1024)]
+
+        def mutate(ports, meter, clock):
+            ports.command_rows = [{"tool": "Bash", "command": json.dumps({"command": c}), "output": "", "failed": False}
+                                  for c in commands]
+        result, _, _, evidence = run(mutate, spec=spec)
+        self.assertEqual(result["status"], COMPLETE)
+        lines = evidence.files["cli-observed-lines.json"]["lines"]
+        self.assertNotIn("synthsecret", json.dumps(evidence.files))
+        self.assertEqual(lines, [
+            {"names": ["npx"], "shape": "<인자> <인자> <인자> <인자> <인자> && npx <인자> <인자> <인자> <인자> <인자> <인자>"},
+            {"names": ["npx"], "shape": "npx <인자> <인자> <인자>"},
+            {"names": ["npx"], "shape": "npx <인자> <인자> <인자>"},
+            {"names": ["npx"], "shape": "<인자> npx <인자>"},
+            {"names": ["npx"], "shape": None, "withheld": "shape_unparseable"},
+            {"names": ["npx"], "shape": None, "withheld": "shape_input_invalid"},
+            {"names": ["npx"], "shape": None, "withheld": "shape_input_too_long"}])
+
+    def test_no_observation_leaves_no_lines(self):
+        # 관측이 없으면 아무것도 남기지 않는다(가림 호출도 없다)
+        spec = dataclasses.replace(make_spec(), cli_usage_names=("vim",))
+        result, ports, _, evidence = run(spec=spec)
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertNotIn("cli-observed-lines.json", evidence.files)
+        self.assertNotIn("observed_lines", evidence.files["cli-usage.json"])
 
     def test_cli_usage_failure_is_a_step_code(self):
         spec = dataclasses.replace(make_spec(), cli_usage_names=("npx",))

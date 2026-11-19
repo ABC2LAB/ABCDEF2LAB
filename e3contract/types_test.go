@@ -422,6 +422,9 @@ func TestCredentialField(t *testing.T) {
 		"escaped_key_bool":   {func(d *e3contract.Declaration) { d.Types[0].Create.BodyTemplate = `{"pass\u0077ord":true}` }, "types[0].create.body_template"},
 		"escaped_key_null":   {func(d *e3contract.Declaration) { d.Types[0].Create.BodyTemplate = `{"pass\u0077ord":null}` }, "types[0].create.body_template"},
 		"identity_escaped":   {func(d *e3contract.Declaration) { d.Identity.Path = "/api/me/session_id%3Dabc-value" }, "identity.path"},
+		// 계정 역할 라벨은 refPattern이 `:`를 받아 자격 모양이 모양 검사를 지난다(#743 이경준 리뷰 재현). 자격 검사가 막는다.
+		"owner_label": {func(d *e3contract.Declaration) { d.OwnerAccountLabel = "password:hunter2" }, "owner_account_label"},
+		"cross_label": {func(d *e3contract.Declaration) { d.CrossAccountLabel = "token:abc-value" }, "cross_account_label"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
