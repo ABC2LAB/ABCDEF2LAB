@@ -54,6 +54,8 @@ type Execution struct {
 	cfg            Config
 	rules          []compiledRule
 	calls          map[string]*Call
+	e3Admitted     uint64
+	e3Created      map[e3contract.CallRef]string
 	callOrder      []*Call
 	events         []Event
 	counts         Counts
@@ -1195,12 +1197,12 @@ func (c *Call) do(ctx context.Context, req *http.Request, purpose string, extrac
 	return c.doWithE3(ctx, req, purpose, extract, nil)
 }
 
-func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, extract AuthExtractor, e3 *e3IdentityCall) (*http.Response, http.Header, Receipt, error) {
+func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, extract AuthExtractor, e3 *e3ProgramCall) (*http.Response, http.Header, Receipt, error) {
 	if ctx == nil || c == nil {
 		return nil, nil, Receipt{}, ErrConfig
 	}
-	if c.program.isE3() && (e3 == nil || c.program != ProgramE3Identity || purpose != PurposeE3Identity) ||
-		e3 != nil && c.program != ProgramE3Identity {
+	if c.program.isE3() && (e3 == nil || c.program != e3.kind || purpose != string(c.program)) ||
+		e3 != nil && !c.program.isE3() {
 		return nil, nil, Receipt{}, ErrE3JournalUnavailable
 	}
 	if c.program == "" && purpose != "" ||
@@ -1300,6 +1302,9 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 	var body []byte
 	if req.Body != nil {
 		body, err = io.ReadAll(io.LimitReader(req.Body, e.cfg.Limits.MaxBodyBytes+1))
+		if e3 != nil {
+			defer clear(body)
+		}
 		if err != nil || int64(len(body)) > e.cfg.Limits.MaxBodyBytes {
 			r.Decision = "unsupported"
 			r.Reason = Unsupported
@@ -1418,11 +1423,17 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 	if reason == Complete && e.admitted >= e.cfg.Limits.MaxAttempts {
 		reason = AttemptLimit
 	}
+	if reason == Complete && e3 != nil && e.e3Admitted >= e.cfg.E3ConfirmationRequests {
+		reason = BudgetExhausted
+	}
 	if reason == Complete {
 		if err = e.cfg.Budget.Ledger.Reserve(e.cfg.Budget.Key, e.cfg.Budget.Binding, budget.Attempt{RunRef: e.cfg.Scope.RunRef, Sequence: r.Sequence}, time.Now()); err != nil {
 			reason = BudgetExhausted
 		} else {
 			e.admitted++
+			if e3 != nil {
+				e.e3Admitted++
+			}
 		}
 	}
 	e.mu.Unlock()

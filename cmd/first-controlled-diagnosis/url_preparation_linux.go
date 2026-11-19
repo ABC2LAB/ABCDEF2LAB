@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/diagnosisprep"
+	"github.com/Autumn-27/artex/e3contract"
 	"github.com/Autumn-27/artex/server"
 )
 
@@ -68,8 +69,11 @@ func (b *urlPreparationRuntime) issue(l *urlLoadedProfile, jobID string, actual 
 	}
 	// E③ 정책 선언 동결(결정 §4.2): 지금 대상 판에 유효한 선언이 있으면 그 정본 바이트와 정책 출처를 회차 디렉터리에
 	// 쓴다. 선언이 없으면 쓰지 않고, 그 회차의 확정 단계는 꺼진다.
+	var e3Declaration e3contract.Declaration
+	var e3Declared bool
 	if l.productTarget != nil && l.productRegistry != nil {
 		if declaration, active := l.productRegistry.activeDeclaration(*l.productTarget); active {
+			e3Declaration, e3Declared = declaration, true
 			frozen, frozenPolicy, err := freezeDeclaration(declaration, jobID, policy.ValidFrom, policy.ValidUntil,
 				l.productTarget.Target.ApprovedAt, l.productTarget.Target.ExpiresAt)
 			if err != nil || write(productFrozenDeclarationFile, frozen) != nil || write(productFrozenPolicyFile, frozenPolicy) != nil {
@@ -88,10 +92,16 @@ func (b *urlPreparationRuntime) issue(l *urlLoadedProfile, jobID string, actual 
 			return c, errPreparation
 		}
 	}
-	// E③ 확정 단계 몫(사용자 결정 2026-11-18 ②). 확정 단계는 감독자에 연결됐지만 E② Transport·Journal이 아직 없어
-	// not_wired로 끝나고, 이 회차는 확정 요청을 보내지 않는다. 그래서 위에서 선언을 동결했더라도 몫은 0이다. 동결 선언의 확정 대상 종류 수를
-	// 몫에 반영하는 일은 확정 단계 연결과 같이 한다. 그 전에 몫을 떼면 모델 단계 예산만 이유 없이 준다.
-	policy = withE3ConfirmationShare(policy, l.profile.Budget.DurationSeconds, 0)
+	// 목적 규칙은 동결한 선언과 승인 대상에서만 파생한다. 몫은 실행 정책과 권위 digest에 함께 결속한다.
+	e3Types := 0
+	if e3Declared && c.E2HostSocket != "" {
+		// 회차 시작 때 재확인한 pin을 써서 모델 규칙과 E③ 규칙의 연결 주소가 정확히 같다.
+		e3Target := *l.productTarget
+		e3Target.SelectedIP = l.productConnection.IP
+		e3Target.Target.TLSSPKISHA256 = l.productConnection.SPKI
+		policy, e3Types = productE3PolicyRules(policy, e3Target, e3Declaration)
+	}
+	policy = withE3ConfirmationShare(policy, l.profile.Budget.DurationSeconds, e3Types)
 	raw, err := json.Marshal(policy)
 	if err != nil {
 		return c, errPreparation

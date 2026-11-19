@@ -141,6 +141,11 @@ type Limits struct {
 type Config struct {
 	// E3Verifier가 없으면 v3 저널 선택만으로 프로그램 송신이 열리지 않는다.
 	E3Verifier E3Verifier `json:"-"`
+	// E③ 몫은 회차 전체 대상 예산 안에서 별도로 센다. 0이면 프로그램 송신은 닫힌다.
+	E3ConfirmationRequests uint64 `json:"-"`
+	// 생성은 제품 대상의 명시적 쓰기 동의와 리셋 가능 상태가 모두 확인된 실행만 허용한다.
+	E3WriteConsent bool `json:"-"`
+	E3Resettable   bool `json:"-"`
 	// AuditVersion은 신뢰된 호스트가 선택하는 저널 행 판이다. 빈 값은 v2다.
 	// v3 선택만으로 E③ 프로그램 송신 권한이 생기지 않는다.
 	AuditVersion string `json:"-"`

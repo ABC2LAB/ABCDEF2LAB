@@ -14,7 +14,7 @@ import (
 )
 
 const Version = "diagnostic-reproduction/v1"
-const MissingScreenshot = "스크린샷 미확보 — 실제 요청·응답 및 실행 기록으로 증거 제공"
+const MissingScreenshot = "스크린샷 미확보 — 저장된 요청 시도와 관찰 기록을 확인하세요"
 
 type Capture struct {
 	Status     string    `json:"status"`

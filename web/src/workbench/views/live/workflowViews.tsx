@@ -1542,12 +1542,11 @@ export function WorkflowReport() {
     <section className={s.sec} aria-labelledby="rWorkflowH">
       <div className={s.sh}>
         <h2 id="rWorkflowH">탐색 · 선택 범위</h2>
+        {/* 탐색 수(발견한 API · 방문)는 보고서 머리 줄이 길어 여기 옆 글로(사용자 11/19) */}
         <span
           className={s.aside}
-        >{`${flow.mode === "ai_auto_v1" ? "AI 자동" : "사용자 승인"} · ${flowStageText[flow.stage]}`}</span>
+        >{`${flow.mode === "ai_auto_v1" ? "AI 자동" : "사용자 승인"} · ${flowStageText[flow.stage]} · 발견한 API ${flow.counts.found} · 방문 ${flow.counts.visited}`}</span>
       </div>
-      {/* 숫자(발견한 API · 방문)는 탭 맨 위 탐색 · 요청 집계 한 줄로 옮겼다(사용자 11/19 — 두 칸만 따로 있으니 비어 보임).
-          여기는 탐색 방식 · 단계와 심화 점검으로 고른 경로만 */}
       <div className={s.list}>
         {flow.endpoints
           .filter((e) => e.selected)

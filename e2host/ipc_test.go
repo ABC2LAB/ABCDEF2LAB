@@ -96,6 +96,11 @@ func TestClientVerifiedReadsCurrentE3Result(t *testing.T) {
 	if _, err := client.Verified(ctx, binding, missing); !errors.Is(err, ErrEventMissing) {
 		t.Fatal("없는 사건을 구분하지 못함", err)
 	}
+	wrong := binding
+	wrong.JobRef = "other-job"
+	if _, err := client.Verified(ctx, wrong, ref); !errors.Is(err, ErrBindingMismatch) {
+		t.Fatal("결속 불일치를 구분하지 못함", err)
+	}
 	got, err := client.Verified(ctx, binding, ref)
 	if err != nil || got.Index != result.Index || got.E3Audit == nil || got.E3Audit.SubjectDigest != result.E3Audit.SubjectDigest {
 		t.Fatal("소켓을 통한 현재 head 검증 실패", err)
@@ -105,6 +110,54 @@ func TestClientVerifiedReadsCurrentE3Result(t *testing.T) {
 	case <-done:
 	case <-ctx.Done():
 		t.Fatal("Host 연결이 닫히지 않음")
+	}
+}
+
+func TestClientVerifiedTamperedJournalIsNotMissing(t *testing.T) {
+	host, _, scope := fixture(t)
+	path := filepath.Join(t.TempDir(), "audit.sock")
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	go func() {
+		conn, acceptErr := listener.AcceptUnix()
+		if acceptErr == nil {
+			host.serveConn(ctx, conn, uint32(os.Geteuid()))
+		}
+	}()
+	client, err := OpenClient(ctx, path, scope, "revision-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Abort()
+	binding, intent, result := hostE3Events(scope)
+	if err := client.Record(ctx, intent); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Record(ctx, result); err != nil {
+		t.Fatal(err)
+	}
+	host.mu.Lock()
+	r := host.active[scope.RunRef]
+	host.mu.Unlock()
+	if r == nil {
+		t.Fatal("현재 실행 없음")
+	}
+	journal := filepath.Join(r.directory, "events.jsonl")
+	info, err := os.Stat(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(journal, info.Size()-1); err != nil {
+		t.Fatal(err)
+	}
+	ref := e3contract.CallRef{CallRef: result.CallRef, AttemptID: result.AttemptID, Sequence: result.Sequence}
+	if _, err := client.Verified(ctx, binding, ref); !errors.Is(err, ErrUnavailable) || errors.Is(err, ErrEventMissing) {
+		t.Fatal("감사 손상을 사건 누락으로 분류", err)
 	}
 }
 

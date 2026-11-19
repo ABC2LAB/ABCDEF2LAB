@@ -69,7 +69,7 @@ func TestDOCXUsesSameVerdictsStepsAndStoredPromptAsHTML(t *testing.T) {
 	}
 	files := readWord(t, doc)
 	text := string(files["word/document.xml"])
-	for _, s := range []string{e.ID, e.Digest, "Step 1.", "actual-step", "스크린샷 미확보", "① 판정과 영향", "② 재현 절차", "③ 보안 조치", "④ AI 수정 작업용 프롬프트", bundle.InputDigest, "3장. 진단 결과 요약"} {
+	for _, s := range []string{e.ID, e.Digest, "Step 1.", "actual-step", reproduction.MissingScreenshot, "① 판정과 영향", "② 재현 절차", "③ 보안 조치", "④ AI 수정 작업용 프롬프트", bundle.InputDigest, "3장. 진단 결과 요약"} {
 		if !strings.Contains(text, s) || !strings.Contains(string(html), s) {
 			t.Fatalf("formats diverged: %s", s)
 		}
@@ -90,6 +90,30 @@ func TestDOCXUsesSameVerdictsStepsAndStoredPromptAsHTML(t *testing.T) {
 	for _, private := range []string{"Actual response", "/safe", "run-a", bundle.InputDigest, "[Execution procedure]"} {
 		if strings.Contains(string(sharedFiles["word/document.xml"]), private) {
 			t.Fatalf("shared detail leaked: %s", private)
+		}
+	}
+}
+
+func TestDeniedAttemptExportsDoNotClaimSentResponse(t *testing.T) {
+	in := diagnosticFixture()
+	e := &in.Entries[0]
+	e.Run = "run-a"
+	e.Digest = strings.Repeat("a", 64)
+	e.Steps = reproduction.FromStored(in.TaskID, e.ID, e.EvidenceVersion, e.Digest, remediation.Context{Observations: []remediation.ContextObservation{{Source: "observed", Observation: "전송 시도=false, HTTP 상태=0, 응답 완료=false", EvidenceRef: "proof-a", ObservedAt: "2026-11-11T00:00:00Z", RunID: e.Run, CallID: "call-a", StepID: "denied-step", Endpoint: "GET /safe"}}})
+	if len(e.Steps) != 1 {
+		t.Fatal("denied attempt was not projected")
+	}
+	html, err := DiagnosticHTML(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := DiagnosticDOCX(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{string(html), string(readWord(t, doc)["word/document.xml"])} {
+		if !strings.Contains(text, reproduction.MissingScreenshot) || strings.Contains(text, "실제 요청·응답 및 실행 기록으로 증거 제공") {
+			t.Fatal("denied attempt was presented as a sent request and response")
 		}
 	}
 }

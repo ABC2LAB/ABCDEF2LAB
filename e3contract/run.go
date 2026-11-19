@@ -381,6 +381,8 @@ func (r *run) call(ctx context.Context, want Observation, send func() (Observati
 		r.integrity = IntegrityJournalIntegrityFailed
 		if errors.Is(err, ErrJournalEventMissing) {
 			r.integrity = IntegrityJournalEventMissing
+		} else if errors.Is(err, ErrJournalBindingMismatch) {
+			r.integrity = IntegrityBindingMismatch
 		}
 		return Observation{}, false
 	}
