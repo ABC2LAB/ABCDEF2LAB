@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -731,8 +732,88 @@ func TestGatewayAbortedStreamStillDrainsAndVerifies(t *testing.T) {
 		t.Fatalf("marker %+v", marker)
 	}
 	rows := h.waitRows(t, 1)
-	if len(rows) != 1 || rows[0].Decision != "cancelled_by_seal" || rows[0].GenerationID != "gen-partial" {
+	if len(rows) != 1 || rows[0].Decision != "cancelled_by_seal" || rows[0].GenerationID != "gen-partial" ||
+		rows[0].UnfinishedEnd != sealEndBeforeDone {
 		t.Fatalf("rows %+v", rows)
+	}
+}
+
+// 종료 이벤트 줄까지 읽은 뒤(EOF 전) 봉인되면 cancelled_by_seal이지만 끝 모양은 종료 줄 뒤다(#735 리뷰). 엔진이 그 출력을
+// 썼을 수 있어 러너는 끊긴 호출 예외로 보지 않는다.
+func TestGatewaySealAfterTheTerminalEventIsMarked(t *testing.T) {
+	h := newHarness(t, backendAPI)
+	h.provider.lookups["gen-partial"] = []int{http.StatusOK}
+	req, err := http.NewRequest(http.MethodPost, h.front.URL+chatPath, strings.NewReader(`{"model":"done-then-hold","stream":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := h.front.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	<-h.provider.slowStarted
+	var got []byte
+	chunk := make([]byte, 64)
+	for !strings.Contains(string(got), "[DONE]") {
+		n, err := resp.Body.Read(chunk)
+		got = append(got, chunk[:n]...)
+		if err != nil {
+			t.Fatalf("read %q: %v", got, err)
+		}
+	}
+	h.sealAndWait(t)
+	rows := h.waitRows(t, 1)
+	if len(rows) != 1 || rows[0].Decision != "cancelled_by_seal" || rows[0].UnfinishedEnd != sealEndAfterDone {
+		t.Fatalf("rows %+v", rows)
+	}
+}
+
+// 봉인 분류는 봉인이 그 요청의 최초 취소 원인일 때만이다(#735 리뷰). 호출자 문맥이 먼저 끝났으면 뒤에 봉인이 같은 문맥을
+// 취소해도 원인은 바뀌지 않는다.
+func TestCutBySealFollowsTheFirstCancellationCause(t *testing.T) {
+	parent, cancelParent := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancelCause(parent)
+	if cutBySeal(ctx) {
+		t.Fatal("not cancelled yet")
+	}
+	cancelParent() // 호출자가 먼저 끊음
+	cancel(errSealCut)
+	if cutBySeal(ctx) {
+		t.Fatal("caller-first cancellation was attributed to the seal")
+	}
+	ctx2, cancel2 := context.WithCancelCause(context.Background())
+	cancel2(errSealCut) // 봉인이 먼저 끊음
+	if !cutBySeal(ctx2) {
+		t.Fatal("seal-first cancellation was not attributed to the seal")
+	}
+}
+
+// 봉인된 게이트웨이에서도 호출자가 먼저 끊은 호출은 호출자 쪽 끊김(upstream_error)으로 마감한다. 마감 시점의 봉인 여부로
+// 분류하면 이 호출의 미확인 generation이 끊긴 호출 예외로 빠진다(#735 리뷰 재현).
+func TestSealedGatewayKeepsCallerFirstCutsAsUpstreamErrors(t *testing.T) {
+	h := newHarness(t, backendAPI)
+	h.g.mu.Lock()
+	h.g.sealed = true
+	h.g.inflight = 1
+	h.g.cancels[1] = func(error) {}
+	h.g.mu.Unlock()
+	row := llmRow{Seq: 1, Method: http.MethodPost, StartedAt: stamp(time.Now())}
+	rec := &statusRecorder{ResponseWriter: httptest.NewRecorder(), status: http.StatusOK}
+	scan := &idScanner{}
+	h.g.finish(1, true, false, &row, rec, scan, "")
+	if row.Decision != "upstream_error" || row.UnfinishedEnd != endClientClosedBeforeDone {
+		t.Fatalf("row %+v", row)
+	}
+	row2 := llmRow{Seq: 2, Method: http.MethodPost, StartedAt: stamp(time.Now())}
+	h.g.mu.Lock()
+	h.g.inflight = 1
+	h.g.cancels[2] = func(error) {}
+	h.g.mu.Unlock()
+	h.g.finish(2, true, true, &row2, rec, scan, "")
+	if row2.Decision != "cancelled_by_seal" || row2.UnfinishedEnd != sealEndBeforeDone {
+		t.Fatalf("row %+v", row2)
 	}
 }
 
@@ -839,7 +920,8 @@ func TestGatewaySeparatesWhoEndedAnUnfinishedStream(t *testing.T) {
 }
 
 // 정상 완료와 봉인 취소는 종료 모양을 세지 않는다.
-func TestGatewayFinishedAndSealedRowsHaveNoUnfinishedEnd(t *testing.T) {
+// 완료 행에는 끝 모양이 없고, 봉인 취소 행에는 봉인 끝 모양(종료 줄 전·후)만 있다. 위쪽 끊김 집계에는 들지 않는다(#735 리뷰).
+func TestGatewayFinishedRowHasNoEndAndSealedRowHasASealEnd(t *testing.T) {
 	h := newHarness(t, backendAPI)
 	h.provider.lookups["gen-1"] = []int{http.StatusOK}
 	h.provider.lookups["gen-partial"] = []int{http.StatusOK}
@@ -880,7 +962,11 @@ func TestGatewayFinishedAndSealedRowsHaveNoUnfinishedEnd(t *testing.T) {
 		}
 	}
 	for _, row := range h.waitRows(t, 2) {
-		if row.UnfinishedEnd != "" {
+		want := ""
+		if row.Decision == "cancelled_by_seal" {
+			want = sealEndBeforeDone
+		}
+		if row.UnfinishedEnd != want {
 			t.Fatalf("row %+v", row)
 		}
 	}

@@ -399,7 +399,7 @@ class TestOrder(unittest.TestCase):
                                                "pre-probe.json",
                                                "post-probe.json", "task.json", "llm-summary.json",
                                                "window-watch.json", "product-end.json", "product-model.json", "tool-surface.json",
-                                               "product-files.json", "discovery-sources.json", "fault-stall.json", RESULT_NAME})
+                                               "product-files.json", "discovery-sources.json", "fault-stall.json", "product-calls.jsonl", RESULT_NAME})
         self.assertEqual(evidence.files["discovery-sources.json"], {
             "format": "abc2lab-eval-runner-discovery-sources-v1", "endpoints": 4,
             "by_source": {"api_recon_runtime": 1, "browser_navigation": 1, "html_link": 2}, "browser": 1, "api_recon": 1,
@@ -1096,6 +1096,49 @@ class TestProductFaultStall(unittest.TestCase):
         record = product_fault_stall(b"", [], "2026-11-18T10:00:10Z", "2026-11-18T10:00:00Z", {})
         self.assertEqual(record["error"], "fault_stall_time_invalid")  # 창이 거꾸로면 B와 같은 코드
 
+
+
+class TestInterruptedCallsO(unittest.TestCase):
+    """O: 제품 호출 기록·정지 요청 시각은 회차 근거에 남기되, 끊긴 호출 예외는 보류한다(#735 리뷰). 제품 전송기는 끊긴 호출에
+    generation ID를 남기지 않아(응답을 끝까지 읽은 forwarded에만 있음) 끊김과 미확인 ID를 잇는 근거가 없다."""
+
+    def ports(self, verified_late: bool):
+        def mutate(p):
+            # 제품이 실제로 쓰는 모양: 완료 호출은 ID가 있고, 정지로 끊긴 호출은 ID가 비어 있다(openrouter_transport.go)
+            rows = [{"seq": 1, "decision": "forwarded", "method": "POST", "status": 200, "started_at": "2000-01-01T00:00:00Z",
+                     "completed_at": "2000-01-01T00:00:01Z", "request_bytes": 1, "response_bytes": 1, "generation_id": "gen-1"},
+                    {"seq": 2, "decision": "upstream_error", "method": "POST", "status": 200, "started_at": "2000-01-01T00:00:02Z",
+                     "completed_at": "2999-01-01T00:00:00Z", "request_bytes": 1, "response_bytes": 0, "generation_id": "",
+                     "unfinished_end": "client_closed_before_done"},
+                    {"seq": 3, "decision": "forwarded", "method": "POST", "status": 200, "started_at": "2000-01-01T00:00:03Z",
+                     "completed_at": "2999-01-01T00:00:00Z", "request_bytes": 1, "response_bytes": 1, "generation_id": "late"}]
+            p.calls_file = b"".join(json.dumps(row).encode() + b"\n" for row in rows)
+            p.ledger = b"r1 10 20 30\n" * len(rows)  # 장부 예약 줄 수 = 호출 기록 줄 수
+            late = product_marker()["generations"][0] | {"id": "late"}
+            if not verified_late:
+                late = {"id": "late", "status": "unverified", "provider_name": "", "attempts": [],
+                        "lookup": {"tries": 40, "last": "http_404"}}
+            p.marker = product_marker(generations=[product_marker()["generations"][0], late])
+        return mutate
+
+    def test_records_are_kept_and_the_cut_call_without_an_id_does_not_count(self):
+        result, ports, evidence = run(self.ports(verified_late=True))
+        self.assertEqual(result["status"], "complete", result)
+        summary = evidence.files["llm-summary.json"]
+        self.assertEqual((summary["unverified_interrupted"], summary["interrupted_calls"]), (0, 0))
+        self.assertEqual(evidence.files["product-calls.jsonl"], ports.calls_file.decode())  # 받은 바이트 그대로
+        self.assertEqual(result["stop_requested_at"], summary["stop_requested_at"])  # 정지 요청 시각도 근거에 남는다
+
+    def test_unverified_completed_call_near_the_stop_still_invalidates(self):
+        # 정지 순간 즈음 끝난 호출이라도 ID가 있으면 응답을 끝까지 읽은 완료 호출이다. 미확인이면 지금처럼 무효다.
+        from runner_llm import interrupted_generation_ids
+        result, _, evidence = run(self.ports(verified_late=False))
+        self.assertEqual((result["status"], result["reasons"]), ("invalid", ["llm_generation_unverified"]))
+        summary = evidence.files["llm-summary.json"]
+        self.assertEqual(summary["unverified_interrupted"], 0)
+        rows = [json.loads(line) for line in evidence.files["product-calls.jsonl"].splitlines() if line]
+        # 저장된 기록·시각으로 다시 계산해도 같다(보류 중이라 빈 집합)
+        self.assertEqual(interrupted_generation_ids(rows, summary["stop_requested_at"], product=True), frozenset())
 
 
 class TestRequestCap(unittest.TestCase):
