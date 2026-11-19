@@ -13,6 +13,9 @@ import (
 	"github.com/Autumn-27/artex/e3contract"
 )
 
+// refsJob은 시험 회차다. 참조는 회차에 결속된다(규칙안 docs/e3-target-refs-rules.md).
+const refsJob = "job-refs-a"
+
 // targetRefsBase는 승인된 시험 대상 기록 하나다(세대·인스턴스를 모두 아는 상태).
 func targetRefsBase(t *testing.T) productTargetRecord {
 	t.Helper()
@@ -21,20 +24,20 @@ func targetRefsBase(t *testing.T) productTargetRecord {
 	rec := r.records[target.ID]
 	r.mu.Unlock()
 	rec.Target.Addresses = append([]string(nil), rec.Target.Addresses...)
-	if _, ok := productTargetGeneration(rec, nil); !ok {
+	if _, ok := productTargetGeneration(rec, nil, refsJob); !ok {
 		t.Fatalf("시험 대상 세대를 모름: %+v", rec.Target)
 	}
 	return rec
 }
 
-// 대상이 바뀌면 세대나 인스턴스 참조가 반드시 바뀐다. 같은 상태면 같은 참조다(v3 계약 §6, 사용자 지시 2026-11-19).
+// 대상이 바뀌면 세대나 인스턴스 참조가 반드시 바뀐다. 같은 회차·같은 상태면 같은 참조다(v3 계약 §6, 사용자 지시 2026-11-19).
 func TestProductTargetRefsChangeWithTarget(t *testing.T) {
 	base := targetRefsBase(t)
 	at := time.Date(2026, 11, 19, 1, 0, 0, 0, time.UTC)
 	written := &productResetState{writesJob: "job-old", writesAt: at, writesRef: strings.Repeat("a", 64)}
 	confirmed := &productResetState{writesJob: "job-old", writesAt: at, writesRef: strings.Repeat("a", 64), confirmedBy: "ARTEX", confirmedAt: at.Add(time.Hour)}
 	refs := func(rec productTargetRecord, reset *productResetState) (string, string) {
-		gen, ok := productTargetGeneration(rec, reset)
+		gen, ok := productTargetGeneration(rec, reset, refsJob)
 		if !ok {
 			t.Fatalf("세대를 모름: %+v", rec.Target)
 		}
@@ -125,11 +128,11 @@ func TestProductTargetRefsChangeWithTarget(t *testing.T) {
 	for name, edit := range unknownGen {
 		rec := base
 		edit(&rec)
-		if _, ok := productTargetGeneration(rec, nil); ok {
+		if _, ok := productTargetGeneration(rec, nil, refsJob); ok {
 			t.Fatalf("%s: 세대를 안다고 봄", name)
 		}
 	}
-	if _, ok := productTargetGeneration(base, &productResetState{writesJob: "job-old"}); ok {
+	if _, ok := productTargetGeneration(base, &productResetState{writesJob: "job-old"}, refsJob); ok {
 		t.Fatal("쓰기 참조 없는 쓰기 기록에서 세대를 안다고 봄")
 	}
 	unknownInst := map[string]func(*productTargetRecord){
@@ -156,11 +159,11 @@ func TestProductTargetRefsChangeWithTarget(t *testing.T) {
 // 모르는 상태면 실행마다 새 난수 참조를 발급하고(같은 참조가 두 번 나오지 않음), 그 참조는 대조에서 늘 바뀐 것으로 본다.
 func TestProductTargetRefsFreshWhenUnknown(t *testing.T) {
 	r, _, target, _ := declarationTestTarget(t)
-	known, err := r.issueTargetRefs(target.ID, rand.Reader)
+	known, err := r.issueTargetRefs(target.ID, refsJob, rand.Reader)
 	if err != nil || !known.GenerationKnown || !known.InstanceKnown {
 		t.Fatalf("%+v %v", known, err)
 	}
-	again, _ := r.issueTargetRefs(target.ID, rand.Reader)
+	again, _ := r.issueTargetRefs(target.ID, refsJob, rand.Reader)
 	if again != known {
 		t.Fatal("같은 대상 상태에서 다른 참조")
 	}
@@ -169,29 +172,29 @@ func TestProductTargetRefsFreshWhenUnknown(t *testing.T) {
 	rec.SelectedIP = ""
 	r.records[target.ID] = rec
 	r.mu.Unlock()
-	a, err := r.issueTargetRefs(target.ID, rand.Reader)
+	a, err := r.issueTargetRefs(target.ID, refsJob, rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, _ := r.issueTargetRefs(target.ID, rand.Reader)
+	b, _ := r.issueTargetRefs(target.ID, refsJob, rand.Reader)
 	if a.InstanceKnown || !strings.HasPrefix(a.InstanceRef, productFreshInstancePrefix) || a.InstanceRef == b.InstanceRef ||
 		a.GenerationRef != known.GenerationRef || !a.GenerationKnown {
 		t.Fatalf("모르는 인스턴스: %+v %+v", a, b)
 	}
-	binding := e3contract.RunBinding{GenerationRef: a.GenerationRef, InstanceRef: a.InstanceRef}
+	binding := e3contract.RunBinding{JobRef: refsJob, GenerationRef: a.GenerationRef, InstanceRef: a.InstanceRef}
 	if !r.targetRefsChanged(target.ID, binding) {
 		t.Fatal("새로 발급한 참조를 같다고 봄")
 	}
 	// 대상이 없으면 둘 다 모른다.
-	unknown, err := r.issueTargetRefs("missing-target", rand.Reader)
+	unknown, err := r.issueTargetRefs("missing-target", refsJob, rand.Reader)
 	if err != nil || unknown.GenerationKnown || unknown.InstanceKnown || !strings.HasPrefix(unknown.GenerationRef, productFreshGenerationPrefix) {
 		t.Fatalf("없는 대상: %+v %v", unknown, err)
 	}
-	if !r.targetRefsChanged("missing-target", e3contract.RunBinding{GenerationRef: unknown.GenerationRef, InstanceRef: unknown.InstanceRef}) {
+	if !r.targetRefsChanged("missing-target", e3contract.RunBinding{JobRef: refsJob, GenerationRef: unknown.GenerationRef, InstanceRef: unknown.InstanceRef}) {
 		t.Fatal("없는 대상을 같다고 봄")
 	}
 	// 난수를 못 읽으면 발급 실패다(지어내지 않음).
-	if _, err := r.issueTargetRefs("missing-target", bytes.NewReader(nil)); !errors.Is(err, errTargetRefs) {
+	if _, err := r.issueTargetRefs("missing-target", refsJob, bytes.NewReader(nil)); !errors.Is(err, errTargetRefs) {
 		t.Fatalf("난수 실패: %v", err)
 	}
 }
@@ -213,7 +216,9 @@ func TestReadTargetRefsStrict(t *testing.T) {
 		t.Fatalf("정상 파일: %+v %v", got, ok)
 	}
 	bad := map[string]func(*productTargetRefs){
-		"version":          func(r *productTargetRefs) { r.Version = "e3-target-refs/v0" },
+		"version": func(r *productTargetRefs) { r.Version = "e3-target-refs/v0" },
+		// v1은 회차에 결속되지 않은 참조라 읽지 않는다(그 회차의 확정 단계는 꺼짐)
+		"version_v1":       func(r *productTargetRefs) { r.Version = "e3-target-refs/v1" },
 		"generation_shape": func(r *productTargetRefs) { r.GenerationRef = "generation-job" },
 		"instance_shape":   func(r *productTargetRefs) { r.InstanceRef = "inst-" + strings.Repeat("Z", 32) },
 		"known_but_fresh":  func(r *productTargetRefs) { r.InstanceKnown = true },
@@ -227,12 +232,49 @@ func TestReadTargetRefsStrict(t *testing.T) {
 			t.Fatalf("%s: 깨진 파일을 읽음", name)
 		}
 	}
-	for name, raw := range map[string][]byte{"trailing": append(raw, []byte(` {}`)...), "unknown_field": []byte(`{"version":"e3-target-refs/v1","extra":1}`)} {
+	for name, raw := range map[string][]byte{"trailing": append(raw, []byte(` {}`)...), "unknown_field": []byte(`{"version":"e3-target-refs/v2","extra":1}`)} {
 		if _, ok := readTargetRefs(write(t, raw), "job"); ok {
 			t.Fatalf("%s: 깨진 파일을 읽음", name)
 		}
 	}
 	if _, ok := readTargetRefs(t.TempDir(), "job"); ok {
 		t.Fatal("없는 파일을 읽음")
+	}
+}
+
+// 회차 사이에는 참조를 재사용하지 않는다(사용자 지시 2026-11-19, 규칙안 §3). 대상 상태가 같아도 회차가 다르면 세대·인스턴스가
+// 모두 다르고, 둘 다 "아는" 참조다(확정 단계는 그대로 돈다). 한 회차 안에서는 다시 계산해도 같다. 다른 회차의 결속을 이 회차
+// 대상과 맞대면 바뀐 것이다. 회차를 모르면 세대를 모른다.
+func TestProductTargetRefsNotReusedAcrossRuns(t *testing.T) {
+	r, _, target, _ := declarationTestTarget(t)
+	a, err := r.issueTargetRefs(target.ID, "job-refs-a", rand.Reader)
+	if err != nil || !a.GenerationKnown || !a.InstanceKnown {
+		t.Fatalf("%+v %v", a, err)
+	}
+	b, err := r.issueTargetRefs(target.ID, "job-refs-b", rand.Reader)
+	if err != nil || !b.GenerationKnown || !b.InstanceKnown {
+		t.Fatalf("%+v %v", b, err)
+	}
+	if a.GenerationRef == b.GenerationRef || a.InstanceRef == b.InstanceRef {
+		t.Fatalf("다른 회차가 같은 참조: %+v %+v", a, b)
+	}
+	if again, _ := r.issueTargetRefs(target.ID, "job-refs-a", rand.Reader); again != a {
+		t.Fatal("같은 회차·같은 상태에서 다른 참조")
+	}
+	bindingA := e3contract.RunBinding{JobRef: "job-refs-a", GenerationRef: a.GenerationRef, InstanceRef: a.InstanceRef}
+	if r.targetRefsChanged(target.ID, bindingA) {
+		t.Fatal("같은 회차 안 대조가 바뀐 것으로 봄")
+	}
+	// 앞 회차의 참조를 다음 회차 결속에 실어도 그 회차의 대상과 맞지 않는다.
+	if !r.targetRefsChanged(target.ID, e3contract.RunBinding{JobRef: "job-refs-b", GenerationRef: a.GenerationRef, InstanceRef: a.InstanceRef}) {
+		t.Fatal("앞 회차 참조를 다음 회차에서 같다고 봄")
+	}
+	// 회차를 모르면 세대를 모른다(새 난수, 대조는 늘 바뀜).
+	unknown, err := r.issueTargetRefs(target.ID, "", rand.Reader)
+	if err != nil || unknown.GenerationKnown || unknown.InstanceKnown {
+		t.Fatalf("회차 없는 발급: %+v %v", unknown, err)
+	}
+	if !r.targetRefsChanged(target.ID, e3contract.RunBinding{GenerationRef: unknown.GenerationRef, InstanceRef: unknown.InstanceRef}) {
+		t.Fatal("회차 없는 결속을 같다고 봄")
 	}
 }
