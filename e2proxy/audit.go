@@ -307,7 +307,18 @@ func (j *Journal) Close() error {
 // This method checks equality against that checkpoint. The caller supplies its
 // authority and freshness. A blocking Reader must itself support cancellation.
 func VerifyJournal(ctx context.Context, source io.Reader, key []byte, expected ...JournalCheckpoint) (JournalSummary, error) {
-	return verifyJournal(ctx, source, key, nil, expected...)
+	return verifyJournal(ctx, source, key, nil, nil, expected...)
+}
+
+// VerifyJournalV3Extension은 읽기 전용 v3 검증이다. 같은 입력을 한 번 읽으면서
+// 별도로 보관한 두 체크포인트가 같은 인증 체인에 순서대로 있는지 확인한다.
+// 두 체크포인트가 같아도 검증할 수 있다. 입력과 체크포인트의 현재성은 제공자가 확인해야 한다.
+func VerifyJournalV3Extension(ctx context.Context, source io.Reader, key []byte, prior, expected JournalCheckpoint) (JournalSummary, error) {
+	if prior.Version != JournalVersionV3 || expected.Version != JournalVersionV3 ||
+		prior.JournalID != expected.JournalID || prior.Scope != expected.Scope || prior.Sequence > expected.Sequence {
+		return JournalSummary{}, ErrJournalIntegrity
+	}
+	return verifyJournal(ctx, source, key, nil, &prior, expected)
 }
 
 // VerifyJournalEvents는 VerifyJournal과 같은 검증을 하고 기록 전체가 검증됐을 때만 사건을 돌려준다.
@@ -315,14 +326,14 @@ func VerifyJournal(ctx context.Context, source io.Reader, key []byte, expected .
 // v1/v2는 체크포인트를 생략하면 정상적으로 인증된 이전 접두부도 읽을 수 있다. v3는 체크포인트가 필수다.
 func VerifyJournalEvents(ctx context.Context, source io.Reader, key []byte, expected ...JournalCheckpoint) ([]Event, JournalSummary, error) {
 	var events []Event
-	summary, err := verifyJournal(ctx, source, key, func(e Event) { events = append(events, e) }, expected...)
+	summary, err := verifyJournal(ctx, source, key, func(e Event) { events = append(events, e) }, nil, expected...)
 	if err != nil {
 		return nil, JournalSummary{}, err
 	}
 	return events, summary, nil
 }
 
-func verifyJournal(ctx context.Context, source io.Reader, key []byte, visit func(Event), expected ...JournalCheckpoint) (JournalSummary, error) {
+func verifyJournal(ctx context.Context, source io.Reader, key []byte, visit func(Event), prior *JournalCheckpoint, expected ...JournalCheckpoint) (JournalSummary, error) {
 	if ctx == nil || source == nil || len(key) < journalMinKeyBytes || len(key) > journalMaxKeyBytes || len(expected) > 1 {
 		return JournalSummary{}, ErrJournalConfig
 	}
@@ -387,6 +398,9 @@ func verifyJournal(ctx context.Context, source io.Reader, key []byte, visit func
 	if err != nil || !hmac.Equal([]byte(want), []byte(line.MAC)) {
 		return JournalSummary{}, ErrJournalIntegrity
 	}
+	if prior != nil && prior.Sequence == 0 && head != *prior {
+		return JournalSummary{}, ErrJournalIntegrity
+	}
 	for {
 		line, err = readLine()
 		if errors.Is(err, io.EOF) {
@@ -409,6 +423,9 @@ func verifyJournal(ctx context.Context, source io.Reader, key []byte, visit func
 			return JournalSummary{}, ErrJournalIntegrity
 		}
 		head.Sequence, head.MAC, head.Scope = line.Record.Index, line.MAC, line.Record.Event.Scope
+		if prior != nil && head.Sequence == prior.Sequence && head != *prior {
+			return JournalSummary{}, ErrJournalIntegrity
+		}
 		if visit != nil {
 			visit(line.Record.Event)
 		}

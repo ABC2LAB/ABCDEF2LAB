@@ -644,10 +644,12 @@ func TestRunCreateUnknownIsNotResent(t *testing.T) {
 		reason e3contract.ProductReason
 	}{
 		"incomplete": {e3fake.Behavior{Incomplete: true}, e3contract.ReasonRequestResultUnknown},
-		"error":      {e3fake.Behavior{Err: errors.New("연결 끊김")}, e3contract.ReasonRequestResultUnknown},
-		"no_id":      {e3fake.Behavior{NoObjectID: true}, e3contract.ReasonCreateFailed},
-		"not_normal": {e3fake.Behavior{Status: 400, Normal: oracle.StateNo}, e3contract.ReasonCreateFailed},
-		"denied":     {e3fake.Behavior{NotSent: e3contract.NotSentPolicyDenied}, e3contract.ReasonRequestDenied},
+		// 상태 줄은 받고 본문이 끊김: 진위 실패가 아니라 결과 불명이다(#774 리뷰)
+		"incomplete_with_status": {e3fake.Behavior{Incomplete: true, Status: 200}, e3contract.ReasonRequestResultUnknown},
+		"error":                  {e3fake.Behavior{Err: errors.New("연결 끊김")}, e3contract.ReasonRequestResultUnknown},
+		"no_id":                  {e3fake.Behavior{NoObjectID: true}, e3contract.ReasonCreateFailed},
+		"not_normal":             {e3fake.Behavior{Status: 400, Normal: oracle.StateNo}, e3contract.ReasonCreateFailed},
+		"denied":                 {e3fake.Behavior{NotSent: e3contract.NotSentPolicyDenied}, e3contract.ReasonRequestDenied},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFixture(t)

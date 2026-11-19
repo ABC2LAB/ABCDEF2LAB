@@ -82,8 +82,21 @@ journal v1과 별도 형식이다. `--journal-format e2-http-v2`(저장된 v1은
   그대로 적용되며, 초과 시 `audit_verification_limit_exceeded`·종료 코드 1·stdout 비움이다.
 - 나머지 취소·입력·무결성·출력 실패의 종료 코드와 고정 진단은 위 표를 따른다.
 
+일반 HTTP v3 파일에는 `--journal-format e2-http-v3`를 사용한다. 같은 실행에서 앞서 보관한
+신뢰 체크포인트가 있으면 `--prior-checkpoint /srv/trusted-checkpoints/PREVIOUS.checkpoint`를
+추가할 수 있다. 검증기는 같은 파일을 한 번 읽어 이전 MAC과 마지막 MAC이 같은 체인에서 그 순서대로
+나오는지 확인한다. 두 체크포인트가 같은 정상 입력도 검증할 수 있다. 이전 체크포인트가 별도 분기이거나
+최종 체크포인트보다 뒤에 있거나 파일 끝이 최종 체크포인트와 다르면 요약 없이 `audit_integrity_failed`를 반환한다.
+`--prior-checkpoint`는 v3에서만 허용한다. 체크포인트를 어디서 얻고 최신인지 확인하는 책임은 운영자에게 있다.
+
 `JournalCheckpoint`는 Sync가 확인된 prefix다. Record가 취소되면 이 prefix가 전진했어도
 호출자가 ACK를 받지 못했을 수 있다. 따라서 파일 일치는 Execution ACK·`AuditComplete`·
 호출 마감/결과의 완전성·현재 host head/epoch·키의 운영 권한·승인·E③ 판정을 증명하지 않는다.
 오래된 journal과 그때의 checkpoint를 함께 제공한 경우의 일치를 최신성으로 해석하지 않는다.
 외부 최신 정본 조회·일반 E②와 IDOR의 같은 실행 연결·실제 배치 수용은 별도 작업이다.
+
+**평가 v3 수집 후속.** 수집기가 같은 실행의 신뢰 체크포인트를 어디서 확보해 `--checkpoint`로
+전달할지는 [E② v3 현재 head 저장 코어(#770)](https://github.com/ABC2LAB/ABCDEF2LAB/pull/770)의
+인증된 현재 epoch·head 조회와 연동하는 후속에서 정한다. 수집 위치와 전달 방식은
+[평가 측 오프라인 검증 계약](e3-e2-v3-journal-contract.md#83-오프라인-검증)에서 함께 정하고,
+CLI는 전달된 체크포인트와 저널의 일치 및 연속성을 검증한다.

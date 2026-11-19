@@ -187,7 +187,8 @@ func (t *Transport) do(c Call, b e3contract.RunBinding, create e3contract.CallRe
 	case be.TimedOut:
 		o.Sent, o.TimedOut = true, true
 	case be.Incomplete:
-		o.Sent = true
+		// Status를 주면 상태 줄은 받았고 본문이 끊긴 경우다(결과 불명).
+		o.Sent, o.StatusCode = true, be.Status
 	default:
 		t.respond(&o, be, b, field)
 	}
