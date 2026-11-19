@@ -586,7 +586,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	// 같은지 본다(Go 조건 2).
 	e3Hooked := mode == "e3-hook" || mode == "e3-hook-error" || mode == "e3-hook-disabled"
 	// 중지 마감(cancel·user-stop)에서도 E③ 결과가 남도록 중지 기록 훅이 한 번 불리는지 본다(#738 이동찬 리뷰).
-	e3StopHooked := mode == "cancel" || mode == "user-stop"
+	e3StopHooked := mode == "cancel" || mode == "user-stop" || mode == "pre-run-stop"
 	e3Calls, e3State := 0, ""
 	var e3StoppedCalls atomic.Int64
 	var e3StoppedCtxLive atomic.Bool
@@ -655,6 +655,10 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		state := runtime.server.requestApprovals.runState(mustFirstDiagnosisTaskNumber(task.ID))
 		if !errors.Is(err, context.Canceled) || state.Phase != "closed" || !state.DrainComplete || state.Outcome != "cancelled" || hits.Load() != 0 || provider.calls != 0 || plannerProvider.calls != 0 {
 			t.Fatalf("실행 전 중지 마감 실패: state=%+v hits=%d", state, hits.Load())
+		}
+		// 실행에 들어가기 전에 중지돼도 E③ 결과가 남도록 중지 기록이 한 번 불린다(대상 요청 0, 확정 단계 0, #738 이동찬 리뷰).
+		if e3Calls != 0 || e3StoppedCalls.Load() != 1 || !e3StoppedCtxLive.Load() {
+			t.Fatalf("실행 전 중지의 E③ 기록: 확정 %d·중지 기록 %d·문맥 %v", e3Calls, e3StoppedCalls.Load(), e3StoppedCtxLive.Load())
 		}
 		return
 	}
