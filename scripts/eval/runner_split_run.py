@@ -437,8 +437,9 @@ _E3_REASON = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 
 
 def e3_confirmation_row(raw: bytes) -> dict:
-    """제품이 회차 디렉터리에 한 번 쓴 E③ 확정 단계 결과(e3contract.RunResult)에서 상태·사유만 꺼낸다(2026-11-19 사용자 결정).
-    원본 SHA를 같이 남긴다. 판정·요청·쓰기 칸은 옮기지 않는다(공식 측정은 E③ 비활성이라 판정 0건). 모양이 다르면 고정 코드다."""
+    """제품이 회차 디렉터리에 한 번 쓴 E③ 확정 단계 결과(e3contract.RunResult)에서 상태·사유·확정 요청 수를 꺼낸다(2026-11-19
+    사용자 결정). 원본 SHA를 같이 남긴다. 판정·쓰기 칸은 옮기지 않는다(공식 측정은 E③ 비활성이라 판정 0건). 모양이 다르거나
+    상태와 요청 수가 모순이면(비활성인데 확정 요청이 있음, #742 리뷰) 고정 코드 e3_confirmation_invalid다."""
     try:
         value = json.loads(raw)
     except ValueError:
@@ -452,7 +453,11 @@ def e3_confirmation_row(raw: bytes) -> dict:
         reason = None
     elif not isinstance(reason, str) or not _E3_REASON.fullmatch(reason):
         return {"error": "e3_confirmation_invalid"}
-    return {"status": value["status"], "reason": reason, "sha256": hashlib.sha256(raw).hexdigest()}
+    requests = value.get("requests")
+    # 계약상 비활성이면 확정 요청이 0건이다. 요청 수는 0 이상 정수만 받는다(bool·실수·문자열은 모양 오류).
+    if type(requests) is not int or requests < 0 or (value["status"] == "disabled" and requests != 0):
+        return {"error": "e3_confirmation_invalid"}
+    return {"status": value["status"], "reason": reason, "requests": requests, "sha256": hashlib.sha256(raw).hexdigest()}
 
 
 def _e3_confirmation(ports, draft_id: str) -> dict:
@@ -595,7 +600,8 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
         "e3_confirmation": e3}))
     if spec.purpose == PURPOSE_OFFICIAL:
         if "error" in e3:
-            raise RunFailure("e3_status_not_collected")
+            # 복사하지 못함(연결 전 빌드 등)과 모양·모순 오류를 사유로 가른다
+            raise RunFailure("e3_status_not_collected" if e3["error"] == "e3_confirmation_not_collected" else "e3_confirmation_invalid")
         if (e3["status"], e3["reason"]) != ("disabled", OFFICIAL_E3_DISABLED_REASON):
             raise RunFailure("e3_official_not_disabled")
     _step(state, "boundary_evidence_copy_failed", ports.copy_boundary_evidence)

@@ -1159,11 +1159,16 @@ class TestE3ConfirmationRow(unittest.TestCase):
         from runner_split_run import e3_confirmation_row
         import hashlib
         raw = self.result()
-        self.assertEqual(e3_confirmation_row(raw), {"status": "disabled", "reason": "declaration_missing",
+        self.assertEqual(e3_confirmation_row(raw), {"status": "disabled", "reason": "declaration_missing", "requests": 0,
                                                     "sha256": hashlib.sha256(raw).hexdigest()})
+        self.assertEqual(e3_confirmation_row(self.result(status="completed", reason=None, requests=7))["requests"], 7)
         self.assertEqual(e3_confirmation_row(self.result(status="completed", reason=None))["reason"], None)
         for raw in (b"not json", b"[]", self.result(version="v0"), self.result(status="maybe"),
-                    self.result(status="completed", reason="x"), self.result(reason="Bad Reason"), self.result(reason=None)):
+                    self.result(status="completed", reason="x"), self.result(reason="Bad Reason"), self.result(reason=None),
+                    # 비활성인데 확정 요청이 있음(모순, #742 리뷰)·요청 수 모양 오류
+                    self.result(requests=1), self.result(requests=True), self.result(requests=0.0), self.result(requests=-1),
+                    self.result(requests="0"), self.result(requests=None),
+                    self.result(status="completed", reason=None, requests=True)):  # bool은 요청 수가 아니다
             with self.subTest(raw=raw[:40]):
                 self.assertEqual(e3_confirmation_row(raw), {"error": "e3_confirmation_invalid"})
 
@@ -1177,7 +1182,8 @@ class TestE3ConfirmationRow(unittest.TestCase):
         for mutate, reason in ((file(self.result(reason="not_wired")), "e3_official_not_disabled"),
                                (file(self.result(status="completed", reason=None)), "e3_official_not_disabled"),
                                (file(RuntimeError("docker_helper_copy_failed")), "e3_status_not_collected"),
-                               (file(b"{}"), "e3_status_not_collected")):
+                               (file(b"{}"), "e3_confirmation_invalid"),
+                               (file(self.result(requests=1)), "e3_confirmation_invalid")):
             with self.subTest(reason=reason):
                 result, _, _ = run(mutate, purpose="official")
                 self.assertEqual((result["status"], result["reasons"]), ("invalid", [reason]))
