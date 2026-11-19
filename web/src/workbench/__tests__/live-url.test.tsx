@@ -1622,6 +1622,24 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(within(back).getByRole("button", { name: /후보 2/ })).toHaveAttribute("aria-current", "true");
   });
 
+  it("발견 상세 페이지에서 머리 단계 줄의 '보고서'를 눌러도 ← 처럼 발견 목록으로 돌아간다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [candidate(1), candidate(2)] });
+    mount("report");
+    const list = await screen.findByRole("tabpanel", { name: "발견 목록" });
+    fireEvent.click(within(list).getByRole("button", { name: /후보 2/ }));
+    fireEvent.click(
+      within(screen.getByRole("complementary", { name: "발견 상세" })).getByRole("button", { name: "상세 보기" }),
+    );
+    expect(screen.getByRole("region", { name: "발견 상세 페이지" })).toBeInTheDocument();
+    const steps = screen.getByRole("navigation", { name: "점검 단계" });
+    fireEvent.click(within(steps).getByRole("link", { name: /보고서/ }));
+    expect(screen.queryByRole("region", { name: "발견 상세 페이지" })).toBeNull();
+    const back = screen.getByRole("tabpanel", { name: "발견 목록" });
+    expect(within(back).getByRole("button", { name: /후보 2/ })).toHaveAttribute("aria-current", "true");
+  });
+
   it("단독 발견 상세(#finding)에서 '발견 목록으로'를 누르면 보고서는 같은 상세가 아니라 발견 목록을 연다 (#695 리뷰)", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(completed);
