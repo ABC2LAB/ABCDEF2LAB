@@ -73,7 +73,7 @@ type E2 struct {
 	Returned func(*e3v3.Event)
 	// Recorded는 저널에 남길 이벤트와 돌려줄 이벤트를 같이 바꾼다(모양 위반·결속 불일치를 만든다).
 	Recorded func(*e3v3.Event)
-	// Unrecorded가 참이면 그 이벤트(control·result 각각)를 저널에 남기지 않는다(이벤트 없음·불완전 기록).
+	// Unrecorded가 참이면 그 이벤트(intent·result 각각)를 저널에 남기지 않는다(이벤트 없음·불완전 기록).
 	Unrecorded func(e3v3.Event) bool
 	// PublishFail이 참이면 그 이벤트를 로컬 저널에 Sync한 뒤 정본 head 게시가 실패한다(ACK 없음). Send는 관찰 없이 오류이고
 	// 그 뒤 송신은 모두 거부한다(감사 계약: recorder 실패 상태).
@@ -130,7 +130,7 @@ func sentAccountRef(b e3contract.RunBinding, label string) string {
 	return "acct-" + b.RunRef + "-" + label
 }
 
-// Send는 대상 동작 모델로 관찰을 만들고, control(+result) 이벤트를 저널에 쌓은 뒤 마지막 이벤트를 돌려준다.
+// Send는 대상 동작 모델로 관찰을 만들고, (intent+)result 이벤트를 저널에 쌓은 뒤 마지막 이벤트(result)를 돌려준다.
 func (f *E2) Send(ctx context.Context, req e3v3.Request) (e3v3.Event, error) {
 	f.mu.Lock()
 	failed := f.failed
@@ -166,23 +166,23 @@ func (f *E2) Send(ctx context.Context, req e3v3.Request) (e3v3.Event, error) {
 		AccountLabel: o.AccountLabel, AccountBindingRef: acct, E3: e3v3.Binding{JobRef: o.Binding.JobRef,
 			GenerationRef: o.Binding.GenerationRef, InstanceRef: o.Binding.InstanceRef, Policy: o.Binding.Policy},
 		ResourceType: o.ResourceType, CreateRef: o.Create, AuditComplete: true}
-	control := base
-	control.Stage = e3v3.StageControl
 	var last e3v3.Event
 	if !o.Sent {
-		control.Decision, control.Reason, control.NotSent, control.NotSentReason = "deny", string(o.NotSent), true, o.NotSent
-		last = control
+		// 송신 전 거부: intent 없이 result 하나(not_sent).
+		last = base
+		last.Stage, last.Decision, last.Reason, last.NotSent, last.NotSentReason = e3v3.StageResult, e3v3.DecisionDenied, string(o.NotSent), true, o.NotSent
 	} else {
-		control.Decision, control.Reason, control.RuleRef = "allow", "purpose_rule", "rule-"+string(o.Purpose)
-		result := control
+		intent := base
+		intent.Stage, intent.Decision, intent.Reason, intent.RuleRef = e3v3.StageIntent, e3v3.DecisionAllowed, "purpose_rule", "rule-"+string(o.Purpose)
+		result := intent
 		result.Stage = e3v3.StageResult
 		result.ForwardAttempted, result.RequestWritten = true, true
 		result.ResponseReceived, result.ResponseComplete, result.TimedOut = o.ResponseComplete, o.ResponseComplete, o.TimedOut
 		result.StatusCode, result.Normal, result.RequestMarkerFree, result.Marker = o.StatusCode, o.Normal, o.RequestMarkerFree, o.Marker
 		result.BodyDigestSHA256, result.BodyComplete = o.BodyDigestSHA256, o.BodyComplete
 		result.ObjectIDDigest, result.SubjectDigest = o.ObjectIDDigest, o.SubjectDigest
-		if f.Unrecorded == nil || !f.Unrecorded(control) {
-			f.append(control)
+		if f.Unrecorded == nil || !f.Unrecorded(intent) {
+			f.append(intent)
 		}
 		last = result
 	}

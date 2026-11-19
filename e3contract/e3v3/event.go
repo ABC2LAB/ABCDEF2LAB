@@ -14,12 +14,20 @@ import (
 // Format은 v3 영수증·저널 형식 판이다(계약 §2).
 const Format = "e2-http-v3"
 
-// Stage는 v3 이벤트 단계다. E③ 프로그램 호출 하나는 control(송신 전 결정)과, 송신했으면 result를 남긴다(계약 §2.3).
+// Stage는 v3 시도 이벤트 단계다(v2와 같은 이름, 계약 §2.3). 송신 전 허용은 intent, 그 뒤 결과가 result다. 송신 전에
+// 거부하면 intent 없이 result 하나(not_sent)다. control·call_closed는 시도 밖 관리 행이라 관찰에 쓰지 않는다.
 type Stage string
 
 const (
-	StageControl Stage = "control"
-	StageResult  Stage = "result"
+	StageIntent Stage = "intent"
+	StageResult Stage = "result"
+)
+
+// 시도 판정(decision) 값.
+const (
+	DecisionAllowed     = "allowed"
+	DecisionDenied      = "denied"
+	DecisionUnsupported = "unsupported"
 )
 
 // Scope는 E² 실행 범위다(transmit.Scope의 RunRef·TaskRef·PolicyRef).
@@ -37,7 +45,7 @@ type Binding struct {
 	Policy        e3contract.PolicySource `json:"policy"`
 }
 
-// Event는 E③ 프로그램 호출 하나의 마지막 v3 이벤트다(송신했으면 result, 송신 전 거부면 control). E²가 MAC·체인·신뢰
+// Event는 E③ 프로그램 호출 하나의 마지막 v3 시도 이벤트(result)다. E²가 MAC·체인·신뢰
 // 체크포인트로 검증한 기록에서 나온다. URL·본문·표식·객체 ID·사용자 식별자·자격 원문은 없다(계약 §2.2 "넣지 않는 것").
 type Event struct {
 	Version string `json:"version"`
@@ -116,7 +124,20 @@ func (e Event) Check() error {
 	if e.CallRef == "" || e.AttemptID == "" || e.Sequence == 0 {
 		return bad("call_ref")
 	}
-	if e.PolicyRevision == "" || e.Method == "" || e.Decision == "" || e.Reason == "" {
+	if e.PolicyRevision == "" || e.Method == "" || e.Reason == "" {
+		return bad("decision")
+	}
+	switch e.Decision {
+	case DecisionAllowed:
+		if e.RuleRef == "" {
+			return bad("rule_ref")
+		}
+	case DecisionDenied, DecisionUnsupported:
+		// 허용하지 않은 시도는 보내지 않은 것이다(v2 validJournalEvent와 같음).
+		if !e.NotSent {
+			return bad("decision")
+		}
+	default:
 		return bad("decision")
 	}
 	if e.Role == "" || e.AccountLabel == "" || e.AccountBindingRef == "" {
@@ -140,11 +161,15 @@ func (e Event) Check() error {
 		}
 	}
 	switch e.Stage {
-	case StageControl:
-		// 호출의 마지막 이벤트가 control이면 송신 전 거부뿐이다. 허용한 control 뒤에는 result가 있어야 한다.
-		if !e.NotSent {
-			return bad("control_without_result")
-		}
+	case StageIntent:
+		// 송신 전 허용은 호출의 마지막 이벤트가 될 수 없다. 뒤에 result가 있어야 한다.
+		return bad("intent_without_result")
+	case StageResult:
+	default:
+		return bad("stage")
+	}
+	if e.NotSent {
+		// 송신 전 거부: 연결을 시도하기 전에 거부한 것만 not_sent다(사유 넷).
 		switch e.NotSentReason {
 		case e3contract.NotSentPolicyDenied, e3contract.NotSentApprovalDenied, e3contract.NotSentApprovalTimeout,
 			e3contract.NotSentBudgetExhausted:
@@ -154,21 +179,16 @@ func (e Event) Check() error {
 		if e.ForwardAttempted || e.RequestWritten || e.ResponseReceived || e.ResponseComplete || e.TimedOut ||
 			e.StatusCode != 0 || e.Normal != "" || e.RequestMarkerFree || e.Marker != (e3contract.MarkerCheck{}) ||
 			e.BodyDigestSHA256 != "" || e.BodyComplete || e.ObjectIDDigest != "" || e.SubjectDigest != "" {
-			return bad("control_has_response")
+			return bad("not_sent_has_response")
 		}
-	case StageResult:
-		// 연결을 시도한 뒤의 기록이다. 결과를 확실히 모르면 response_complete=false(결과 불명)이고 not_sent가 아니다.
-		if !e.ForwardAttempted || e.NotSent || e.NotSentReason != "" {
-			return bad("result_not_sent")
-		}
-		if e.RuleRef == "" {
-			return bad("rule_ref")
-		}
-		if e.ResponseComplete && (!e.RequestWritten || !e.ResponseReceived) {
-			return bad("result_response")
-		}
-	default:
-		return bad("stage")
+		return nil
+	}
+	// 송신 뒤: 연결을 시도한 뒤의 기록이다. 결과를 확실히 모르면 response_complete=false(결과 불명)이고 not_sent가 아니다.
+	if e.Decision != DecisionAllowed || !e.ForwardAttempted || e.NotSentReason != "" {
+		return bad("result_not_sent")
+	}
+	if e.ResponseComplete && (!e.RequestWritten || !e.ResponseReceived) {
+		return bad("result_response")
 	}
 	return nil
 }
@@ -181,7 +201,7 @@ func (e Event) Observation() (e3contract.Observation, error) {
 	}
 	o := e3contract.Observation{Binding: e.RunBinding(), Purpose: e.Program, Role: e.Role, AccountLabel: e.AccountLabel,
 		ResourceType: e.ResourceType, Ref: e.Ref(), Create: e.CreateRef, At: e.At}
-	if e.Stage == StageControl {
+	if e.NotSent {
 		o.NotSent = e.NotSentReason
 	} else {
 		o.Sent, o.ResponseComplete, o.TimedOut = true, e.ResponseComplete, e.TimedOut

@@ -180,12 +180,14 @@ func TestAdapterEventStageRules(t *testing.T) {
 		"e3_binding":              func(e *e3v3.Event) { e.E3.GenerationRef = "" },
 		"e3_binding_policy":       func(e *e3v3.Event) { e.E3.Policy.DigestSHA256 = "short" },
 		"read_without_create_ref": func(e *e3v3.Event) { e.CreateRef = e3contract.CallRef{} },
-		"control_allowed_as_last": func(e *e3v3.Event) { e.Stage = e3v3.StageControl },
+		"intent_as_last":          func(e *e3v3.Event) { e.Stage = e3v3.StageIntent },
 		"result_with_not_sent":    func(e *e3v3.Event) { e.NotSentReason = e3contract.NotSentPolicyDenied },
 		"result_not_forwarded":    func(e *e3v3.Event) { e.ForwardAttempted = false },
 		"result_without_rule":     func(e *e3v3.Event) { e.RuleRef = "" },
 		"complete_not_written":    func(e *e3v3.Event) { e.RequestWritten = false },
-		"unknown_stage":           func(e *e3v3.Event) { e.Stage = "intent" },
+		"control_stage":           func(e *e3v3.Event) { e.Stage = "control" },
+		"sent_but_denied":         func(e *e3v3.Event) { e.Decision = e3v3.DecisionDenied },
+		"decision_unknown":        func(e *e3v3.Event) { e.Decision = "maybe" },
 		"marker_presence_partial": func(e *e3v3.Event) { e.Marker.Status = e3contract.MarkerPartial },
 	}
 	for name, edit := range cases {
@@ -200,11 +202,11 @@ func TestAdapterEventStageRules(t *testing.T) {
 			integrityFailed(t, res, e3contract.IntegrityObservationInvalid)
 		})
 	}
-	// 송신 전 거부(control)의 사유가 연결 전 거부 넷이 아니면(예: 연결 뒤 실패를 not_sent로 옮김) 진위 실패다.
+	// 송신 전 거부(result, not_sent)의 사유가 연결 전 거부 넷이 아니면(예: 연결 뒤 실패를 not_sent로 옮김) 진위 실패다.
 	for name, edit := range map[string]func(*e3v3.Event){
 		"not_sent_transport_failed": func(e *e3v3.Event) { e.NotSentReason = "transport_failed" },
-		"control_with_response":     func(e *e3v3.Event) { e.StatusCode = 200 },
-		"control_forwarded":         func(e *e3v3.Event) { e.ForwardAttempted = true },
+		"not_sent_with_response":    func(e *e3v3.Event) { e.StatusCode = 200 },
+		"not_sent_forwarded":        func(e *e3v3.Event) { e.ForwardAttempted = true },
 	} {
 		t.Run(name, func(t *testing.T) {
 			res, _ := viaV3(t, map[e3fake.Key]e3fake.Behavior{crossNote: {NotSent: e3contract.NotSentPolicyDenied}},
@@ -264,7 +266,7 @@ func TestAdapterJournalCounterexamples(t *testing.T) {
 		"event_missing": {func(e2 *v3fake.E2) {
 			e2.Unrecorded = func(e e3v3.Event) bool { return e.Program == e3contract.PurposeRead && e.Role == e3contract.RoleCross }
 		}, e3contract.IntegrityJournalEventMissing},
-		// 허용한 control만 있고 result가 없는 호출은 이벤트 없음이 아니라 불완전 기록(무결성 실패)이다.
+		// intent만 있고 result가 없는 호출은 이벤트 없음이 아니라 불완전 기록(무결성 실패)이다.
 		"result_missing": {func(e2 *v3fake.E2) {
 			e2.Unrecorded = func(e e3v3.Event) bool {
 				return e.Program == e3contract.PurposeRead && e.Role == e3contract.RoleCross && e.Stage == e3v3.StageResult
@@ -469,35 +471,37 @@ func TestEventJSONFieldNames(t *testing.T) {
 // Event.Check는 계약 §2.3 규칙을 그 자리에서 지킨다(관찰 검증이 뒤에서 다시 막더라도 v3 이벤트 규칙으로 먼저 거부).
 func TestEventCheck(t *testing.T) {
 	_, e2 := viaV3(t, map[e3fake.Key]e3fake.Behavior{crossNote: {NotSent: e3contract.NotSentPolicyDenied}}, nil)
-	var read, control e3v3.Event
+	var read, denied e3v3.Event
 	for _, rec := range e2.Records() {
 		var e e3v3.Event
 		if err := json.Unmarshal(rec.Raw, &e); err != nil {
 			t.Fatal(err)
 		}
 		switch {
+		case e.Program == e3contract.PurposeRead && e.Stage == e3v3.StageResult && e.NotSent:
+			denied = e
 		case e.Program == e3contract.PurposeRead && e.Stage == e3v3.StageResult:
 			read = e
-		case e.Program == e3contract.PurposeRead && e.Stage == e3v3.StageControl && e.NotSent:
-			control = e
 		}
 	}
-	if read.CallRef == "" || control.CallRef == "" || read.Check() != nil || control.Check() != nil {
-		t.Fatalf("기준 이벤트: read=%v control=%v", read.Check(), control.Check())
+	if read.CallRef == "" || denied.CallRef == "" || read.Check() != nil || denied.Check() != nil {
+		t.Fatalf("기준 이벤트: read=%v denied=%v", read.Check(), denied.Check())
 	}
 	cases := map[string]struct {
 		base  e3v3.Event
 		edit  func(*e3v3.Event)
 		field string
 	}{
-		"scope":                  {read, func(e *e3v3.Event) { e.Scope.PolicyRef = "" }, "scope"},
-		"e3_binding_policy":      {read, func(e *e3v3.Event) { e.E3.Policy.DigestSHA256 = "short" }, "e3_binding"},
-		"read_create_ref":        {read, func(e *e3v3.Event) { e.CreateRef.Sequence = 0 }, "read_fields"},
-		"identity_resource_type": {read, func(e *e3v3.Event) { e.Program = e3contract.PurposeIdentity }, "identity_fields"},
-		"create_with_create_ref": {read, func(e *e3v3.Event) { e.Program = e3contract.PurposeCreate }, "create_fields"},
-		"control_allowed":        {control, func(e *e3v3.Event) { e.NotSent, e.NotSentReason = false, "" }, "control_without_result"},
-		"control_unknown_reason": {control, func(e *e3v3.Event) { e.NotSentReason = "unknown" }, "not_sent_reason"},
-		"control_received":       {control, func(e *e3v3.Event) { e.ResponseReceived = true }, "control_has_response"},
+		"scope":                   {read, func(e *e3v3.Event) { e.Scope.PolicyRef = "" }, "scope"},
+		"e3_binding_policy":       {read, func(e *e3v3.Event) { e.E3.Policy.DigestSHA256 = "short" }, "e3_binding"},
+		"read_create_ref":         {read, func(e *e3v3.Event) { e.CreateRef.Sequence = 0 }, "read_fields"},
+		"identity_resource_type":  {read, func(e *e3v3.Event) { e.Program = e3contract.PurposeIdentity }, "identity_fields"},
+		"create_with_create_ref":  {read, func(e *e3v3.Event) { e.Program = e3contract.PurposeCreate }, "create_fields"},
+		"intent_as_last":          {read, func(e *e3v3.Event) { e.Stage = e3v3.StageIntent }, "intent_without_result"},
+		"denied_but_sent":         {denied, func(e *e3v3.Event) { e.NotSent, e.NotSentReason = false, "" }, "decision"},
+		"allowed_without_rule":    {read, func(e *e3v3.Event) { e.RuleRef = "" }, "rule_ref"},
+		"not_sent_unknown_reason": {denied, func(e *e3v3.Event) { e.NotSentReason = "unknown" }, "not_sent_reason"},
+		"not_sent_received":       {denied, func(e *e3v3.Event) { e.ResponseReceived = true }, "not_sent_has_response"},
 	}
 	for name, c := range cases {
 		e := c.base
