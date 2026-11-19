@@ -33,6 +33,7 @@
 | `declared_by`·`declared_at` | 누가·언제(감사) |
 | `identity{path, subject_id_path}` | 신원 확인 GET. 대상마다 하나(결정 §5.1이 대상 단위로 확인하므로) |
 | `types[]` | 자원 종류마다 `type`·`sharing`·`owner_only_fields`·`create{path, method(POST·PUT), body_kind(json·form), body_template, marker_field, id_path}`·`read{path_template, data_path, status_path?, normal_value?}` |
+| `owner_account_label`·`cross_account_label`·`accounts_same_privilege` | 확정 단계 계정 역할(선택, 2026-11-19 사용자 결정). 소유·생성 시험 계정(A), 교차 조회 시험 계정(B), 두 계정이 같은 권한 등급이라는 운영자 확인. §4 |
 
 - `owner_only`이고 `marker_field`가 `owner_only_fields`에 있는 종류만 시험한다. `shared` 종류는 요청 칸을 두지 않고, 확정 단계는 요청도 판정 행도 만들지 않고 `skipped`로 보인다. 판정 값은 오라클만 만들기 때문에, 사유만으로 UNDECIDABLE 행을 꾸미지 않는다.
 - 경로는 승인 범위 안 절대 경로다. query·조각·점 조각·공백을 받지 않는다. `read.path_template`에는 `{id}` 조각이 정확히 하나다. 승인 범위 안인지는 E²가 요청마다 다시 본다.
@@ -58,7 +59,11 @@
 - 목적 셋: `e3_identity`(신원 GET), `e3_create`(A 세션 생성, POST·PUT), `e3_read`(A·B 세션 조회 GET). 인증 준비처럼 목적 규칙으로만 열리고 모델 요청의 규칙 찾기에서는 빠진다.
 - E② 정책을 읽을 때 목적 규칙 전체를 같은 실행의 Worker 승인 규칙 하나에 결속한다. 스킴·호스트·포트·연결 IP·TLS pin·메서드가 같고 해당 규칙이 경로를 덮어야 한다. 조회 틀은 `{id}` 앞의 고정 접두 범위가 필요하다. `/`, 끝 `/`, `/{id}`는 목적 규칙 경로로 받지 않는다. 제외 경로가 목적 경로 전체를 덮으면 정책을 거절하고, 일부 ID만 제외하는 경우 채운 경로를 요청마다 대조한다.
 - `confirm_every_request`의 E③ 요청별 확인 대상은 생성이다. 신원과 조회는 송신을 열기 전에 동결 선언과 실행 승인 범위에 결속해야 한다. 현재 v2 저널에서는 세 목적의 호출을 송신 전에 차단한다.
-- 계정 라벨은 서버가 C14 인증 결과(`authenticated`)에서 고른다. 관찰에는 E²가 실제로 붙인 라벨이 들어가고, 요청한 라벨과 다르면 진위 실패다.
+- **계정 역할은 선언이 정한다(2026-11-19 사용자 결정).** 소유·생성 계정(A)은 `owner_account_label`, 교차 조회 계정(B)은 `cross_account_label`이고, 운영자가 두 계정이 같은 권한 등급이라고 확인한다(`accounts_same_privilege: true`). 셋은 선언과 함께 동결본에 들어가 digest로 묶인다. 근거: 서버가 인증된 시험 계정을 이름순 등으로 고르면 관리자 계정이 교차 조회자(B)가 될 수 있다. 관리자는 남의 객체를 정상 권한으로 읽을 수 있어서, 그 조회에 표식이 보이면 접근통제 결함이 없는데도 CONFIRMED가 난다. 어느 계정이 같은 등급인지는 대상을 아는 운영자만 안다.
+  - 역할 둘은 함께 정하거나 함께 비운다. 같은 계정을 두 역할에 둘 수 없다. 역할이 없으면 등급 확인도 둘 수 없다(저장 API는 그 칸 이름으로 400).
+  - 확정 단계는 선언에 역할이 없으면 `account_roles_undeclared`, 등급 확인이 참이 아니면 `accounts_privilege_unconfirmed`, 선언한 두 계정 중 하나라도 그 실행의 인증 준비 결과가 `authenticated`가 아니면 `test_accounts_unavailable`로 꺼진다(요청 0). 인증된 다른 계정으로 대신하지 않는다.
+  - 칸은 선택 칸이다. 역할 없이 저장한 선언은 정본 바이트가 칸을 넣기 전과 같아서(형식 판 그대로) 이미 저장한 선언과 화면 파서가 그대로 읽는다.
+- 서버는 선언한 라벨에 C14 인증 결과(`authenticated`)를 붙인다. 관찰에는 E²가 실제로 붙인 라벨이 들어가고, 요청한 라벨과 다르면 진위 실패다.
 - 요청 하나는 영수증 하나(`CallRef{call_ref, attempt_id, sequence}`)다. 같은 요청을 다시 보내지 않는다(결과 불명 쓰기 포함).
 - 객체 ID 원문은 E² 밖으로 나오지 않는다. 생성 관찰은 실행별 키 digest만 주고, 조회 요청은 생성 관찰의 `CallRef`를 가리키면 E²가 그 ID로 경로를 채운다.
 - 조회 ID는 비어 있지 않은 단일 경로 조각이어야 한다. `/`·`;`·`?`·중괄호가 포함된 ID는 이 규칙으로 조회할 수 없다.
@@ -90,7 +95,7 @@
 | `request_marker_free` | 조회·신원 요청에서 E²가 보낸 요청에 표식이 없음을 확인했는지 |
 | `object_id_digest`·`subject_digest` | 생성·신원 관찰만. 실행별 키 digest |
 
-- **저널 대조(① (다)).** `Transport`가 돌려준 관찰을 받을 때마다 `Journal.Sealed(binding, ref)`로 봉인된 저널 이벤트를 읽어 같은지 본다(시각은 순간으로 비교). 이벤트가 없으면 `journal_event_missing`, 다르면 `journal_event_mismatch`다. 둘 다 진위 실패이고 판정 행을 만들지 않는다.
+- **저널 대조(① (다)).** `Transport`가 돌려준 관찰을 받을 때마다 `Journal.Sealed(binding, ref)`로 봉인된 저널 이벤트를 읽어 같은지 본다(시각은 순간으로 비교). `Sealed`는 저널과 따로 보관한 신뢰 체크포인트까지 검증한 스냅샷에서만 돌려준다([v3 계약](e3-e2-v3-journal-contract.md) §5). 검증된 스냅샷에 이벤트가 없으면 `journal_event_missing`, 저널을 검증하지 못하면(체크포인트 없음·불일치, MAC·체인·형식 오류, 그 밖의 읽기 오류) `journal_integrity_failed`, 다르면 `journal_event_mismatch`다. 셋 다 진위 실패이고 판정 행을 만들지 않는다.
 - 같은 `CallRef`가 두 번 오면 `observation_reused`(진위 실패)다.
 - `Journal`은 무결성 검증을 마친 이벤트만 돌려준다. E² 저널 v3의 새 칸도 무결성 범위에 든다(결정 §7).
 
@@ -108,7 +113,7 @@
 
 **비활성 사유 구분(2026-11-18 사용자·이동찬 합의).** 공식 Juice Shop 측정은 E③ 비활성(선언·시험 계정 없음)으로 돈다. 그래서 "선언 없음"(`declaration_missing`)·"시험 계정 없음"(`test_accounts_unavailable`)과 "연결 미구현"(`not_wired`)을 다른 사유로 내보낸다. `not_wired`를 먼저 판정하므로 연결이 빠진 이미지는 선언이 없어도 `not_wired`로 드러나고, 최종 제품 이미지에서는 `not_wired`가 나오면 안 된다(판정 쪽 PR 시험). 결과의 `binding`은 검증을 통과한 실행 결속만 싣고, 결속이 틀려 거부했으면 생략한다. 후보 참조도 모양이 맞는 것만 옮긴다.
 
-**진위 실패(② (다)).** 사유는 `policy_digest_mismatch`·`policy_target_mismatch`·`observation_invalid`·`binding_mismatch`·`observation_mismatch`·`observation_reused`·`journal_event_missing`·`journal_event_mismatch`·`authority_revoked`다.
+**진위 실패(② (다)).** 사유는 `policy_digest_mismatch`·`policy_target_mismatch`·`observation_invalid`·`binding_mismatch`·`observation_mismatch`·`observation_reused`·`journal_event_missing`·`journal_integrity_failed`·`journal_event_mismatch`·`authority_revoked`다.
 - 그때까지 만든 판정(이미 CONFIRMED였던 종류 포함)을 버리고 판정 행을 만들지 않는다.
 - 회차 상태와 결과 화면에 `confirmation_integrity_failed`와 사유를 그대로 보인다. "발견 없음"·"판정 없음"으로 보이면 안 된다.
 - 그 회차 후보는 모두 `level=suspected`, `reason=confirmation_integrity_failed`이고 CONFIRMED로 올라가지 않는다. 후보의 검토 상태(`manual_review_required`)는 그대로다.
@@ -174,6 +179,13 @@
   - 조회와 동의 사이에 새 쓰기 기록이 들어와 지금 기록이 본 것과 다르면(또는 기록이 없으면) 409 `reset_record_changed`이고 반영하지 않는다. 같은 기록을 이미 확인했으면 줄을 더 남기지 않는다.
   - 리셋은 더 안전한 쪽이라 대상 승인 상태와 관계없이 받는다.
 - 게이트는 지난 쓰기가 있으면 리셋 확인과 별개로 지난 객체를 읽어 표식 잔존을 본다(결정 §6.1 (b), E² 쪽 점검). 그 점검이 연결되기 전이나 실패하면 잔존은 `unknown`이라 시작하지 않는다.
+
+**감독자 연결(구현).**
+- 회차 시작: 실행 준비가 회차를 대상에 묶은 직후(모델 단계 전) 지금 대상 판에 유효한 선언이 있는 대상만 `CheckRunStart`로 본다. 거절이면 회차는 `failed`이고 `reason_code`가 거절 사유(`reset_confirmation_missing`·`previous_markers_present`·`reset_state_unavailable`)다. 선언이 없는 대상은 게이트가 없다. 잔존 점검이 아직 없어서 ID를 아는 지난 객체가 있는 대상은 리셋을 확인해도 `reset_state_unavailable`로 멈춘다.
+- 확정 단계: 일반 HTTP 감독자가 모델 활동이 끝난 뒤(진행 중 작업·모델 호출 0, 실행 허가 닫힘) E② 마감 전에 확정 단계를 한 번 부른다. 등록 GET(평가) 경로는 부르지 않는다. 확정 단계가 실제로 대상 요청을 시작할 때만(`Deps.Started`, 표식을 만들기 직전) 엔진을 정리 상태로 두고(새 계획·intent 없음) 진단 로그에 `e3_confirmation` 단계를 남긴다. 꺼진 회차(선언 없음·연결 없음·계정 없음·시작 거절·몫에 든 종류 없음)는 감독자 흐름(사건·단계·상태 전이 순서)이 E③가 없는 실행과 같다(통합 시험으로 고정). 확정 단계가 실패해도 모델 단계 실행 결과는 그대로다.
+- 중지 기록: 확정 단계를 부르지 못하고 실행이 끝나면(사용자 중지·실행 문맥 취소·실패·시간 초과 상태·준비 거부) 감독자가 중지 기록 훅을 한 번 부른다(#738 이동찬 리뷰). 요청 없이(`e3contract.RunStopped`) 비활성 근거가 있으면 `disabled`와 그 사유, 동결본을 읽지 못하는 등 비활성인지 확인할 수 없으면 `start_refused`(사유), 비활성 근거가 없어 돌 수 있었으면 `interrupted`(사유 없음)를 같은 결과 파일에 쓴다. 그래서 시간 상한·중지로 끝난 회차도 결과 파일이 있고, 파일이 없으면 비활성으로 추정하지 않는다.
+- 쓰기 기록은 **기록하고 나서 보낸다**(사용자 결정 2026-11-19). 생성 요청마다 보내기 전에 그 종류를 ID 모름으로 대상 선언 저널에 먼저 남기고(`confirmation_writes` 줄, `e3contract.WriteRecorder.Reserve`), 남기지 못하면 보내지 않고 그 종류는 UNDECIDABLE(`product_write_record_unavailable`)이다. 응답을 받으면 갱신한다(`confirmation_write_settled` 줄): created면 객체 ID digest를 채우고, 보내지 않은 것이 확실하면 그 쓰기를 거둔다(`not_sent`, 남은 쓰기로 세지 않음). 거두는 것은 E²가 대상으로 연결을 시도하기 전에 거부한 경우(sent=false와 §4의 연결 전 거부 사유 넷)와 회차가 멈춰 생성 요청을 부르지 않은 경우뿐이다. 연결 뒤 실패·결과 불명(E② C02의 Unknown·TransportFailed 등)은 오류나 sent=true 미완료로 돌려줘야 하고 기록은 ID 모름으로 남는다(그 밖의 사유로 sent=false를 주면 관찰 계약 위반으로 진위 실패). 결과 불명이면 ID 모름 그대로다. 갱신이 실패해도 먼저 남긴 기록이 리셋 확인 전까지 다음 회차를 막는다. 지금 쓰기 기록의 회차만 줄을 더 남길 수 있고(지나간 회차는 받지 않음), 기록이 바뀌면 참조(`last_writes_ref`)가 바뀌어 바뀌기 전 기록을 본 리셋 동의는 반영되지 않는다.
+- 결과: `RunResult`를 `runs/<job>/e3-confirmation.json`(0600, 한 번만)에 쓴다. 실행 결속의 `run_ref`·`e2_policy_ref`·확정 몫은 승인에 결속된 실행 정책에서 읽고, `generation_ref`·`instance_ref`는 지금 실행마다 `generation-<job>`·`instance-<job>`으로 만든 **임시 값**이다(E② Transport 연결 때 이동찬님이 발급하는 값으로 바꾼다). A·B는 지금 구현에서 인증 준비가 `authenticated`인 시험 계정의 이름순 앞 둘이다. 이 배정 규칙은 판정 의미에 닿아 아직 확정하지 않았다(열린 결정, E② Transport 연결 전에 정한다). 판정 레코드 저장은 다음 단계다.
 
 ## 9. 후보 연결
 

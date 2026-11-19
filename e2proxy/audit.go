@@ -291,11 +291,12 @@ func VerifyJournal(ctx context.Context, source io.Reader, key []byte, expected .
 	return verifyJournal(ctx, source, key, nil, expected...)
 }
 
-// VerifyJournalEvents는 VerifyJournal과 같은 검증을 하고, 기록 전체가 검증됐을 때만 사건 목록을 돌려준다. 하나라도
-// 틀리면 사건을 하나도 돌려주지 않는다(일부만 보이고 "정상"으로 읽히지 않게, 작업대 흐름 화면 계약 §4).
-func VerifyJournalEvents(ctx context.Context, source io.Reader, key []byte) ([]Event, JournalSummary, error) {
+// VerifyJournalEvents는 VerifyJournal과 같은 검증을 하고 기록 전체가 검증됐을 때만 사건을 돌려준다.
+// 마지막 행 삭제나 과거 기록으로의 교체를 감지하려면 저널과 별도로 보관한 신뢰할 수 있는 체크포인트를 넘긴다.
+// 체크포인트를 생략하면 정상적으로 인증된 이전 접두부도 읽을 수 있다.
+func VerifyJournalEvents(ctx context.Context, source io.Reader, key []byte, expected ...JournalCheckpoint) ([]Event, JournalSummary, error) {
 	var events []Event
-	summary, err := verifyJournal(ctx, source, key, func(e Event) { events = append(events, e) })
+	summary, err := verifyJournal(ctx, source, key, func(e Event) { events = append(events, e) }, expected...)
 	if err != nil {
 		return nil, JournalSummary{}, err
 	}

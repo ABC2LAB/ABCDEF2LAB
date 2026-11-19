@@ -13,6 +13,10 @@ import (
 type DeclarationInput struct {
 	Identity e3contract.IdentitySpec      `json:"identity"`
 	Types    []e3contract.TypeDeclaration `json:"types"`
+	// 확정 단계 계정 역할(계약 §4): 소유(A)·교차(B) 시험 계정 라벨과 두 계정이 같은 권한 등급이라는 운영자 확인.
+	OwnerAccountLabel     string `json:"owner_account_label,omitempty"`
+	CrossAccountLabel     string `json:"cross_account_label,omitempty"`
+	AccountsSamePrivilege bool   `json:"accounts_same_privilege,omitempty"`
 }
 
 // 선언 상태다. none은 선언이 없음, active는 지금 대상 판에 묶인 유효 선언, invalid는 대상 판이 바뀌었거나(재승인·철회)

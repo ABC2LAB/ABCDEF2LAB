@@ -208,9 +208,10 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 		return errPreparation
 	}
 	if l.productTarget != nil {
-		release, e := b.product.attach(*l.productTarget, execution.Job.ID, func() { stopTarget(server.ErrFirstDiagnosisTargetEnded) })
-		if e != nil {
-			return knownFailure("target_approval_changed", true)
+		// 대상에 묶고, 선언이 있는 대상이면 모델 단계 전에 E③ 리셋 게이트를 본다(결정 §6.1). 거절 사유는 회차의 reason_code다.
+		release, refusal := b.product.attachRun(ctx, *l.productTarget, execution.Job.ID, func() { stopTarget(server.ErrFirstDiagnosisTargetEnded) })
+		if refusal != "" {
+			return knownFailure(refusal, true)
 		}
 		defer release()
 		// 외부 API 실행에 시험 계정을 쓰면 그 동의(진술 해시·주체·시각·작업)를 시작 전에 감사 저널에 남긴다. 남기지 못하면
@@ -527,8 +528,17 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	// 마감한다(실행 결과 상태 값 계약 §3.4). 실행 끝 시각은 위 hard 문맥의 기한이다.
 	// 실행 기록(실행 단계 감독자가 씀)에도 준비 때와 같은 목표 SHA를 남긴다. 준비 단계 감독자에만 넣으면 실행 기록의
 	// goal 칸이 비어 평가 러너가 원본 본문의 공통 부분과 대조하지 못한다(VAmPI 3차 회차에서 발견).
+	// 제품 대상 회차는 모델 단계가 끝난 뒤 E② 마감 전에 E③ 확정 단계를 돈다(결정 §5). 시험 계정 인증 결과는 실행 runtime에서
+	// 그때 읽는다.
+	var e3Confirmation server.FirstDiagnosisE3Hooks
+	if b.product != nil && l.productTarget != nil {
+		runtime := d.runtime
+		confirmation := newProductE3Confirmation(b.config.RunsDir, execution.Job.ID, *l.productTarget, b.product.targets,
+			func() map[string]string { return launchAccountAuth(runtime) })
+		e3Confirmation = server.FirstDiagnosisE3Hooks{Run: confirmation.run, Stopped: confirmation.stopped}
+	}
 	if end, ok := hard.Deadline(); !ok || d.supervisor == nil || d.supervisor.SetTimeBudget(urlTimeBudgetClose(end, time.Duration(l.profile.Budget.DurationSeconds)*time.Second, time.Duration(launch.ShutdownTimeoutSeconds)*time.Second)) != nil ||
-		d.supervisor.SetGoalDigests(goalCommonSHA, goalProductSHA) != nil {
+		d.supervisor.SetGoalDigests(goalCommonSHA, goalProductSHA) != nil || e3Confirmation.Run != nil && d.supervisor.SetE3Confirmation(e3Confirmation) != nil {
 		cleanup, done := launchCleanupContext(context.WithoutCancel(parent), launch)
 		closeErr := d.Close(cleanup)
 		done()

@@ -42,12 +42,17 @@ type Deps struct {
 	Journal      Journal
 	Declarations DeclarationReader
 	Reset        ResetGate
+	// Writes는 생성 요청의 쓰기 기록이다(기록하고 나서 보내기). 없으면 연결 미구현(not_wired)이다.
+	Writes WriteRecorder
 	// Random은 표식 난수다. 없으면 crypto/rand다.
 	Random io.Reader
 	// Now는 관찰이 하나도 없을 때 판정 시각이다. 없으면 time.Now다.
 	Now func() time.Time
 	// Logger는 상태·건수만 남긴다. 없으면 남기지 않는다.
 	Logger *slog.Logger
+	// Started는 확정 단계가 실제로 대상 요청을 시작하기 직전(표식을 만들기 전)에 한 번 불린다. 꺼짐·시작 거절·몫에 든
+	// 종류 없음이면 부르지 않는다. 감독자는 이때만 엔진을 정리 상태로 두어, 꺼진 회차의 흐름이 E③가 없을 때와 같게 한다.
+	Started func()
 }
 
 // Run은 모델 단계가 끝난 뒤 확정 단계 한 회를 돈다(#596 §5). 순서: 조건 → 정책 동결본 대조 → 리셋 확인 → 표식 생성·등록 →
@@ -63,17 +68,32 @@ func Run(ctx context.Context, deps Deps, in Input) RunResult {
 	return res
 }
 
+// RunStopped는 확정 단계를 돌리지 못하고 실행이 끝났을 때(중지·취소·실패·시간 초과 마감) 그 회차의 확정 단계 상태를 요청
+// 없이 정한다(#738 이동찬 리뷰). 비활성 근거가 있으면 Run과 같은 disabled(사유)·start_refused·진위 실패 결과를 돌려주고,
+// 비활성 근거가 없어 확정 단계가 돌 수 있었으면 interrupted(사유 없음)다. 표식 등록·Transport·Journal·쓰기 기록을 부르지
+// 않으므로 대상 요청은 0건이다. 결과 파일이 없을 때 비활성으로 추정하지 않도록, 감독자는 중지 마감에서도 이것을 기록한다.
+func RunStopped(ctx context.Context, deps Deps, in Input) RunResult {
+	r := &run{deps: deps, in: in, seen: map[string]bool{}, stoppedBeforeStage: true}
+	res := r.run(ctx)
+	if deps.Logger != nil {
+		deps.Logger.Info("E③ 확정 단계 중지 기록", "status", string(res.Status), "reason", res.Reason)
+	}
+	return res
+}
+
 type run struct {
-	deps      Deps
-	in        Input
-	marker    Marker
-	decl      Declaration
-	requests  int
-	seen      map[string]bool
-	integrity IntegrityReason
-	budget    bool // 확정 단계 전용 몫이 다 됐다. 더 보내지 않는다.
-	stopped   bool // 회차 중지로 끊겼다.
-	lastAt    time.Time
+	deps Deps
+	// stoppedBeforeStage는 RunStopped다. 요청을 시작하기 전(비활성 판정까지만) 멈춘다.
+	stoppedBeforeStage bool
+	in                 Input
+	marker             Marker
+	decl               Declaration
+	requests           int
+	seen               map[string]bool
+	integrity          IntegrityReason
+	budget             bool // 확정 단계 전용 몫이 다 됐다. 더 보내지 않는다.
+	stopped            bool // 회차 중지로 끊겼다.
+	lastAt             time.Time
 	// bindingValid는 실행 결속이 검증을 통과했는지다. 통과한 결속만 결과에 싣는다.
 	bindingValid bool
 	// writes는 생성 요청이 대상에 남겼을 수 있는 쓰기다. 진위 실패로 판정을 버려도 남긴다.
@@ -131,6 +151,17 @@ func (r *run) run(ctx context.Context) RunResult {
 		r.integrity = IntegrityPolicyTargetMismatch
 		return r.integrityResult()
 	}
+	// 계정 역할은 동결한 선언이 정한다(계약 §4). 역할이 없거나, 입력의 A·B가 선언한 역할과 다르거나, 같은 권한 등급 확인이
+	// 없으면 요청 없이 끈다.
+	if decl.OwnerAccountLabel == "" {
+		return r.result(StatusDisabled, string(DisabledAccountRolesUndeclared))
+	}
+	if decl.OwnerAccountLabel != r.in.Owner.Label || decl.CrossAccountLabel != r.in.Cross.Label {
+		return r.result(StatusDisabled, string(DisabledAccountsUnverified))
+	}
+	if !decl.AccountsSamePrivilege {
+		return r.result(StatusDisabled, string(DisabledPrivilegeUnconfirmed))
+	}
 	r.decl = decl
 	var types []TypeDeclaration
 	var skipped []SkippedType
@@ -144,6 +175,10 @@ func (r *run) run(ctx context.Context) RunResult {
 	if len(types) == 0 {
 		return r.result(StatusDisabled, string(DisabledNoConfirmableType))
 	}
+	// 중지 기록(RunStopped): 비활성 근거가 없어 확정 단계가 돌 수 있었다. 요청을 시작하지 않고 중단으로 남긴다.
+	if r.stoppedBeforeStage {
+		return r.result(StatusInterrupted, "")
+	}
 	// 몫에 들지 않은 종류는 요청을 보내지 않고 UNDECIDABLE(예산)이다. 든 종류가 없으면 표식·신원 요청도 보내지 않는다.
 	admitted, overflow := types, []TypeDeclaration(nil)
 	if len(types) > r.in.AdmittedTypes {
@@ -155,6 +190,9 @@ func (r *run) run(ctx context.Context) RunResult {
 	types = admitted
 	if refusal := CheckRunStart(ctx, r.deps.Reset, r.in.Binding, r.in.TargetRef); refusal != "" {
 		return r.result(StatusStartRefused, string(refusal))
+	}
+	if r.deps.Started != nil {
+		r.deps.Started()
 	}
 	random := r.deps.Random
 	if random == nil {
@@ -227,7 +265,7 @@ func (r *run) run(ctx context.Context) RunResult {
 
 func (r *run) disabledReason() DisabledReason {
 	d := r.deps
-	if d.Transport == nil || d.Journal == nil || d.Declarations == nil || d.Reset == nil {
+	if d.Transport == nil || d.Journal == nil || d.Declarations == nil || d.Reset == nil || d.Writes == nil {
 		return DisabledNotWired
 	}
 	if r.in.Binding.Policy == (PolicySource{}) {
@@ -243,9 +281,11 @@ func (r *run) disabledReason() DisabledReason {
 	if !r.in.WriteConsent {
 		return DisabledWriteNotConsented
 	}
+	// 계정 역할은 동결한 선언이 정한다(계약 §4). 입력의 A·B가 둘 다 비어 있으면 선언에 역할이 없을 수 있으니 선언을 읽은 뒤
+	// 사유를 정한다(역할 없음 account_roles_undeclared / 계정 없음 test_accounts_unavailable). 요청은 그 전에 나가지 않는다.
 	o, c := r.in.Owner, r.in.Cross
-	if !o.Authenticated || !c.Authenticated || !refPattern.MatchString(o.Label) || !refPattern.MatchString(c.Label) ||
-		o.Label == c.Label {
+	if (o.Label != "" || c.Label != "") && (!o.Authenticated || !c.Authenticated || !refPattern.MatchString(o.Label) ||
+		!refPattern.MatchString(c.Label) || o.Label == c.Label) {
 		return DisabledAccountsUnverified
 	}
 	if r.in.PolicyValidFrom.IsZero() || !r.in.PolicyValidFrom.Before(r.in.PolicyValidUntil) {
@@ -314,7 +354,22 @@ func (r *run) call(ctx context.Context, want Observation, send func() (Observati
 	r.seen[key] = true
 	sealed, err := r.deps.Journal.Sealed(ctx, r.in.Binding, obs.Ref)
 	if err != nil {
-		r.integrity = IntegrityJournalEventMissing
+		// 실행 문맥이 끝나(운영자 중지·확정 단계 시간 몫 끝) 조회를 마치지 못한 것은 무결성 실패가 아니라 중지다(계약 §12, v3
+		// 계약 §5). 검증하지 못한 관찰은 쓰지 않는다. 문맥이 살아 있는데 취소 오류가 오면 아래처럼 무결성 실패다.
+		if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
+			if errors.Is(ctxErr, context.DeadlineExceeded) {
+				r.budget = true
+			} else {
+				r.stopped = true
+			}
+			return Observation{}, false
+		}
+		// 검증된 스냅샷에 이벤트가 없는 것과 저널을 검증하지 못한 것을 나눠 남긴다(v3 계약 §5·§7). 그 밖의 오류도 검증을
+		// 마치지 못한 것이라 무결성 실패로 본다. 어느 쪽이든 진위 실패라 판정 행을 만들지 않는다.
+		r.integrity = IntegrityJournalIntegrityFailed
+		if errors.Is(err, ErrJournalEventMissing) {
+			r.integrity = IntegrityJournalEventMissing
+		}
 		return Observation{}, false
 	}
 	if !sealed.Same(obs) {
@@ -389,13 +444,17 @@ func (r *run) confirmType(ctx context.Context, t TypeDeclaration, subjects oracl
 	if r.budget {
 		return r.verdict(t, subjects, facts, evidence, ReasonConfirmationBudgetExhaust)
 	}
+	// 기록하고 나서 보낸다: 생성 요청 전에 쓰기를 "ID 모름"으로 먼저 남긴다. 남기지 못하면 보내지 않는다.
+	if err := r.deps.Writes.Reserve(ctx, r.in.Binding, t.Type); err != nil {
+		return r.verdict(t, subjects, facts, evidence, ReasonWriteRecordUnavailable)
+	}
 	before := r.requests
 	created, ok := r.call(ctx, Observation{Purpose: PurposeCreate, Role: RoleOwner, AccountLabel: r.in.Owner.Label,
 		ResourceType: t.Type}, func() (Observation, error) {
 		return r.deps.Transport.Create(ctx, CreateRequest{Binding: r.in.Binding, ResourceType: t.Type, Spec: t.Create,
 			AccountLabel: r.in.Owner.Label, Marker: r.marker, Timeout: r.in.RequestTimeout})
 	})
-	r.recordWrite(t.Type, created, ok, r.requests > before)
+	r.settleWrite(ctx, r.recordWrite(t.Type, created, ok, r.requests > before))
 	if r.integrity != "" || r.stopped && !ok {
 		return Verdict{}
 	}
@@ -495,9 +554,11 @@ func (r *run) read(ctx context.Context, t TypeDeclaration, role Role, label stri
 
 // recordWrite는 생성 요청 하나가 대상에 남겼을 수 있는 쓰기를 남긴다. 부르지 않았거나 보내지 않은 것이 확실하면 남기지
 // 않는다. 객체 ID를 꺼낸 정상 응답만 created이고, 나머지(시간 초과·결과 불명·관찰 불일치·비정상 응답)는 unknown이다.
-func (r *run) recordWrite(resourceType string, obs Observation, ok, invoked bool) {
+// recordWrite는 생성 요청이 대상에 남겼을 수 있는 쓰기를 결과에 더한다. 보내지 않은 것이 확실하면 더하지 않고
+// not_sent를 돌려준다(쓰기 기록 갱신에 쓴다).
+func (r *run) recordWrite(resourceType string, obs Observation, ok, invoked bool) ConfirmationWrite {
 	if !invoked || ok && !obs.Sent {
-		return
+		return ConfirmationWrite{ResourceType: resourceType, Outcome: WriteNotSent}
 	}
 	w := ConfirmationWrite{ResourceType: resourceType, Outcome: WriteUnknown}
 	if ok {
@@ -507,6 +568,19 @@ func (r *run) recordWrite(resourceType string, obs Observation, ok, invoked bool
 		}
 	}
 	r.writes = append(r.writes, w)
+	return w
+}
+
+// settleWrite는 미리 남긴 쓰기 기록을 생성 결과로 갱신한다. unknown은 이미 기록과 같아 부르지 않는다. 회차가 멈춰도
+// 갱신은 끝까지 한다(멈춘 문맥으로 갱신을 놓치면 보내지 않은 생성도 리셋 확인이 필요해진다). 실패해도 미리 남긴 기록
+// (ID 모름)이 다음 회차를 막으므로 판정은 이어 간다.
+func (r *run) settleWrite(ctx context.Context, w ConfirmationWrite) {
+	if w.Outcome == WriteUnknown {
+		return
+	}
+	if err := r.deps.Writes.Settle(context.WithoutCancel(ctx), r.in.Binding, w); err != nil && r.deps.Logger != nil {
+		r.deps.Logger.Warn("E③ 쓰기 기록 갱신 실패", "resource_type", w.ResourceType, "outcome", string(w.Outcome))
+	}
 }
 
 // notUsable은 보내지 않았거나 결과가 불명인 관찰의 사유다. 쓸 수 있으면 빈 값이다.
