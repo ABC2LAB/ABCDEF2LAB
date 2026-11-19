@@ -40,7 +40,7 @@ E² 안에서 E③ 판정(CONFIRMED·UNDECIDABLE 등)을 하지 않는다. E²�
 | `request_marker_free` | E²가 보낸 조회·신원 요청(URL·헤더·본문)에 표식이 없음을 확인했는지 | `RequestMarkerFree` |
 | `marker{status, presence, method, field}` | 응답 표식 검사: `complete`·`partial`·`unsupported`·`failed`, `present`·`absent`, 일치 방식, 검사한 선언 칸 | `Marker` |
 | `body_digest_sha256`·`body_complete` | 응답 본문 digest와 전체 여부 | `BodyDigestSHA256`·`BodyComplete` |
-| `object_id_digest` | 생성 응답 객체 ID의 digest(생성만) | `ObjectIDDigest` |
+| `object_id_digest` | 생성한 객체 ID의 digest(생성만). `id_path`면 응답에서 꺼낸 ID, `id_field`면 요청이 실은 ID(`CreateRequest.ObjectID`)로 만든다([제품 확정 단계 인터페이스](e3-product-confirmation-interface.md) §4) | `ObjectIDDigest` |
 | `subject_digest` | 신원 응답 사용자 식별자의 digest(신원만) | `SubjectDigest` |
 
 넣지 않는 것: URL 원문·본문·표식 값(어느 인코딩이든)·객체 ID 원문·사용자 식별자 원문·자격 값·세션 값.
@@ -161,6 +161,7 @@ fail-closed는 #698 계약 그대로다. 진위 실패면 판정 행을 만들�
 
 - E²가 목적별 프로그램 요청(신원·생성·조회)과 검증된 v3 이벤트 조회를 Go 인터페이스로 내놓고, 어댑터가 그것을 `e3contract.Transport`·`Journal`로 바꾼다. E² 안에서 E③ 판정을 하지 않는다.
 - 어댑터가 기대는 E² 인터페이스(제안, 이동찬 확인): `RegisterMarker(binding, marker)`, `Send(요청) → 그 호출의 마지막 이벤트`(기록·Sync·정본 head 게시 ACK 뒤 반환, 게시 실패·ACK 미확인이면 이벤트 없이 오류, §5), `AccountBindingRef(binding, label) → 지금 결속된 참조`, `Verified(binding, ref) → 현재 head까지 검증한 스냅샷의 그 호출 마지막 이벤트`. 이벤트는 §2의 칸 이름 그대로다. 어댑터는 이벤트를 §2.3으로 검사하고 §2.2 표대로 관찰로 옮기며, 관찰에 없는 `account_binding_ref`만 직접 대조한다(나머지 대조는 `e3contract.Run`).
+- 요청 칸(`Send`의 요청): 생성은 확정 단계가 조립한 본문(`RequestBody`, 표식 포함, 직렬화 막힘)과 `id_field`면 객체 ID를, 조회는 `id_field`면 객체 ID를 싣는다. E²는 본문을 그대로 보내고 조회 경로 틀의 `{id}`에 그 ID를 넣는다([제품 확정 단계 인터페이스](e3-product-confirmation-interface.md) §4 "E²에서 바뀌는 것", 이동찬 확인). 객체 ID는 비밀이 아니라 이벤트의 경로·로그에 남아도 되고, 표식은 §2.2 "넣지 않는 것" 그대로다.
 - 어댑터는 먼저 **가짜 v3 저널**(같은 인터페이스, 시험 전용)로 구현하고, 실제 v3가 들어오면 가짜 자리에 바꿔 끼운다.
 - 가짜 저널로 고정할 반례(관찰을 돌려주지 않아야 하는 것):
   1. 신뢰 체크포인트 없음 → 무결성 실패. `Transport` 쪽: 로컬 Sync는 됐지만 정본 head 게시가 실패하거나 ACK를 확인하지 못함 → 관찰 성공 없이 오류(결과 불명), 그 뒤 송신 없음.
