@@ -182,6 +182,9 @@ class FakePorts:
                      "policy_fingerprint_sha256": FINGERPRINT, "limits": dict(LIMITS, **E3_SHARE_OFF), "rules": []}
         self.conditions = conditions()
         self.files_args: list = []
+        # 제품 회차 디렉터리의 E③ 확정 단계 결과(e3contract.RunResult). 기본은 공식 기대값(선언 없음으로 비활성)이다.
+        self.e3_file = json.dumps({"version": "e3-confirmation-run/v1", "status": "disabled", "reason": "declaration_missing",
+                                   "verdicts": [], "skipped": [], "candidates": [], "requests": 0, "writes": []}).encode()
 
     def _call(self, name):
         self.calls.append(name)
@@ -347,6 +350,12 @@ class FakePorts:
         self._call("sign")
         return dict(payload, signature="s")
 
+    def e3_confirmation(self, draft_id):
+        self._call("e3_confirmation")
+        if isinstance(self.e3_file, Exception):
+            raise self.e3_file
+        return self.e3_file
+
     def runtime_conditions(self, draft_id):
         self._call("runtime_conditions")
         self.files_args.append(draft_id)
@@ -379,7 +388,7 @@ ORDER_HEAD = ["preexisting", "image_ids", "meter_describe", "tool_surface", "hos
               "events:start", "watch:start", "scoreboard:pre", "prepare_round", "start_round"]
 ORDER_TAIL = ["seal", "meter:drained", "stop_round", "wait_closed", "workflow_snapshot", "snapshot:post", "check:post", "probes:post", "scoreboard:post",
               "stop_boundary", "watch:stop",
-              "events:stop", "status", "run_record", "control_policy", "product_files", "runtime_conditions",
+              "events:stop", "status", "run_record", "control_policy", "product_files", "runtime_conditions", "e3_confirmation",
               "copy_boundary_evidence",
               "copy_product_records",
               "generation_verify", "llm_verified", "down", "remove_inputs"]
@@ -1096,6 +1105,109 @@ class TestProductFaultStall(unittest.TestCase):
         record = product_fault_stall(b"", [], "2026-11-18T10:00:10Z", "2026-11-18T10:00:00Z", {})
         self.assertEqual(record["error"], "fault_stall_time_invalid")  # 창이 거꾸로면 B와 같은 코드
 
+
+
+class TestE3ConfirmationRow(unittest.TestCase):
+    """O 회차의 E③ 확정 단계 결과(runs/<초안>/e3-confirmation.json) 상태·사유 행(2026-11-19 사용자 결정)."""
+
+    def result(self, **fields):
+        base = {"version": "e3-confirmation-run/v1", "status": "disabled", "reason": "declaration_missing", "verdicts": [],
+                "skipped": [], "candidates": [], "requests": 0, "writes": []}
+        return json.dumps(dict(base, **fields)).encode()
+
+    def test_rows_and_shape(self):
+        from runner_split_run import e3_confirmation_row
+        import hashlib
+        raw = self.result()
+        self.assertEqual(e3_confirmation_row(raw), {"status": "disabled", "reason": "declaration_missing", "requests": 0,
+                                                    "sha256": hashlib.sha256(raw).hexdigest()})
+        self.assertEqual(e3_confirmation_row(self.result(status="completed", reason=None, requests=7))["requests"], 7)
+        self.assertEqual(e3_confirmation_row(self.result(status="completed", reason=None))["reason"], None)
+        # 비활성의 suspected 후보는 받는다(후보는 판정 없이 SUSPECTED로 남는다). confirmed 후보는 판정이 있는 결과에서만.
+        suspected = self.result(candidates=[{"candidate_ref": "1", "level": "suspected", "reason": "link_none"}])
+        self.assertEqual(e3_confirmation_row(suspected)["status"], "disabled")
+        confirmed = self.result(status="completed", reason=None, requests=5, verdicts=[{"type": "x"}],
+                                candidates=[{"candidate_ref": "1", "level": "confirmed"}])
+        self.assertEqual(e3_confirmation_row(confirmed)["status"], "completed")
+        for raw in (b"not json", b"[]", self.result(version="v0"), self.result(status="maybe"),
+                    self.result(status="completed", reason="x"), self.result(reason="Bad Reason"), self.result(reason=None),
+                    # 비활성인데 확정 요청이 있음(모순, #742 리뷰)·요청 수 모양 오류
+                    self.result(requests=1), self.result(requests=True), self.result(requests=0.0), self.result(requests=-1),
+                    self.result(requests="0"), self.result(requests=None),
+                    self.result(status="completed", reason=None, requests=True),  # bool은 요청 수가 아니다
+                    # 돌지 않은 상태인데 판정·쓰기 기록·요청이 있음(모순, #742 리뷰)과 배열이 아닌 목록 칸
+                    self.result(verdicts=[{"type": "x"}]), self.result(writes=[{"id_known": False}]),
+                    self.result(status="start_refused", reason="policy_source_unavailable", verdicts=[{"type": "x"}]),
+                    self.result(status="start_refused", reason="policy_source_unavailable", requests=1),
+                    self.result(verdicts=None), self.result(skipped={}), self.result(candidates="x"), self.result(writes=None),
+                    # 판정 없는 confirmed 후보(E③ 계약 §9, #742 리뷰)·후보 모양 오류
+                    self.result(candidates=[{"candidate_ref": "1", "level": "confirmed"}]),
+                    self.result(status="start_refused", reason="policy_source_unavailable",
+                                candidates=[{"candidate_ref": "1", "level": "confirmed"}]),
+                    self.result(status="completed", reason=None, candidates=[{"candidate_ref": "1", "level": "confirmed"}]),
+                    self.result(candidates=[{"candidate_ref": "1", "level": "CONFIRMED"}]), self.result(candidates=["1"])):
+            with self.subTest(raw=raw[:40]):
+                self.assertEqual(e3_confirmation_row(raw), {"error": "e3_confirmation_invalid"})
+
+    def test_official_round_needs_disabled_declaration_missing(self):
+        def file(value):
+            return lambda p: setattr(p, "e3_file", value)
+        result, _, evidence = run(purpose="official")
+        self.assertEqual(result["status"], "complete", result)
+        e3 = evidence.files["product-files.json"]["e3_confirmation"]
+        self.assertEqual((e3["status"], e3["reason"], result["e3_confirmation"]["status"]), ("disabled", "declaration_missing", "disabled"))
+        # 비활성 회차의 suspected 후보는 공식 회차를 막지 않는다
+        suspected = file(self.result(candidates=[{"candidate_ref": "1", "level": "suspected", "reason": "link_none"}]))
+        self.assertEqual(run(suspected, purpose="official")[0]["status"], "complete")
+        for mutate, reason in ((file(self.result(reason="not_wired")), "e3_official_not_disabled"),
+                               (file(self.result(status="completed", reason=None)), "e3_official_not_disabled"),
+                               # 비활성·요청 0이어도 판정이 있으면 모순이라 비활성 근거가 아니다(#742 리뷰)
+                               (file(self.result(verdicts=[{"type": "x"}])), "e3_confirmation_invalid"),
+                               (file(self.result(candidates=[{"candidate_ref": "1", "level": "confirmed"}])), "e3_confirmation_invalid"),
+                               (file(RuntimeError("docker_helper_copy_failed")), "e3_status_not_collected"),
+                               (file(b"{}"), "e3_confirmation_invalid"),
+                               (file(self.result(requests=1)), "e3_confirmation_invalid")):
+            with self.subTest(reason=reason):
+                result, _, _ = run(mutate, purpose="official")
+                self.assertEqual((result["status"], result["reasons"]), ("invalid", [reason]))
+
+    def test_official_time_budget_round_reads_the_stop_record(self):
+        # 러너 예산이 먼저 끝나 제품 회차를 멈추는 경로(#742 :559 리뷰). #738 중지 기록 뒤 제품은 이 경로에서도 결과 파일을
+        # 남긴다(e3contract.RunStopped: 비활성 근거가 있으면 disabled(사유), 확인 못 하면 start_refused, 돌 수 있었으면
+        # interrupted). 공식 회차는 disabled/declaration_missing만 유효하고, 파일이 없으면 비활성으로 추정하지 않는다.
+        def file(value):
+            return lambda p: setattr(p, "e3_file", value)
+        result, _, evidence = run(purpose="official")
+        self.assertEqual((result["status"], result["product_closed"]["state"], result["first_limit"]["value"]),
+                         ("complete", "cancelled", "runner_time_budget"))
+        self.assertEqual(evidence.files["product-files.json"]["e3_confirmation"]["reason"], "declaration_missing")
+        for mutate, reasons in ((file(self.result(status="interrupted", reason="")), ["e3_official_not_disabled"]),
+                                (file(self.result(status="start_refused", reason="policy_source_unavailable")),
+                                 ["e3_official_not_disabled"]),
+                                (file(self.result(reason="not_wired")), ["e3_official_not_disabled"]),
+                                (file(RuntimeError("docker_helper_copy_failed")), ["e3_status_not_collected"])):
+            with self.subTest(reasons=reasons, mutate=mutate):
+                result, ports, _ = run(mutate, purpose="official")
+                self.assertEqual((result["status"], result["reasons"]), ("invalid", reasons))
+                self.assertIn("stop_round", ports.calls)  # 같은 시간 상한 경로(제품 회차를 멈춤)에서 읽었다
+
+    def test_helper_cleanup_failure_is_not_a_missing_file(self):
+        # 복사 도우미 정리 실패는 보호 볼륨이 잡혀 있을 수 있다는 뜻이라 목적과 상관없이 무효다(#742 리뷰). 일반 복사 실패(파일
+        # 없음)는 수용시험이면 기록만, 공식이면 수집 실패다.
+        from runner_docker import HelperCleanupError
+        for purpose in ("browser_acceptance", "official"):
+            with self.subTest(purpose=purpose):
+                result, _, _ = run(lambda p: setattr(p, "e3_file", HelperCleanupError()), purpose=purpose)
+                self.assertEqual((result["status"], result.get("reasons")),
+                                 ("invalid", ["e3_confirmation_copy_failed", "docker_helper_cleanup_failed"]))
+        result, _, _ = run(lambda p: setattr(p, "e3_file", RuntimeError("docker_helper_copy_failed")))
+        self.assertEqual(result["status"], "complete")
+
+    def test_other_purposes_record_without_invalidating(self):
+        # 수용시험 목적은 기록만 한다(감독자 연결 전 빌드는 파일이 없어 수집 못 함으로 남는다)
+        result, _, evidence = run(lambda p: setattr(p, "e3_file", RuntimeError("missing")))
+        self.assertEqual(result["status"], "complete", result)
+        self.assertEqual(evidence.files["product-files.json"]["e3_confirmation"], {"error": "e3_confirmation_not_collected"})
 
 
 class TestInterruptedCallsO(unittest.TestCase):

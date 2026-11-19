@@ -49,8 +49,9 @@ from preservation_record import (  # noqa: E402
 )
 import preservation_v3_fields as v3f  # noqa: E402
 from runner_checks import compare_snapshots  # noqa: E402
-from runner_docker import HelperCleanupInterrupt  # noqa: E402
-from isolation_proof import PURPOSE_OFFICIAL  # noqa: E402
+from runner_docker import HelperCleanupError, HelperCleanupInterrupt  # noqa: E402
+from isolation_proof import E3_STATUSES, PURPOSE_OFFICIAL  # noqa: E402
+from run_record import OFFICIAL_E3_DISABLED_REASON  # noqa: E402
 from runner_evidence import MeterFiles  # noqa: E402
 from runner_fault import FAULT_STALL_FORMAT, FAULT_STALL_NAME, FaultRecordError, fault_stall_record  # noqa: E402
 from runner_llm import interrupted_generation_ids, judge_product_llm  # noqa: E402
@@ -261,6 +262,7 @@ class SplitRunPorts(Protocol):
     def control_policy(self, task_id: str) -> dict: ...
     def product_files(self) -> dict: ...
     def runtime_conditions(self, draft_id: str) -> bytes: ...
+    def e3_confirmation(self, draft_id: str) -> bytes: ...
     def tool_surface(self) -> dict: ...
     def split_conditions(self) -> dict: ...
     def boundary_directory(self): ...
@@ -392,6 +394,65 @@ def product_fault_stall(calls: bytes, meter_rows: list[dict], window_start: str,
         return {"format": FAULT_STALL_FORMAT, "judged": False, "error": code}
 
 
+E3_RESULT_VERSION = "e3-confirmation-run/v1"  # e3contract.RunResultVersion
+_E3_NO_REASON = ("completed", "interrupted")
+_E3_LIST_FIELDS = ("verdicts", "skipped", "candidates", "writes")  # e3contract.RunResult 배열 칸
+_E3_NOT_RUN = ("disabled", "start_refused")  # 확정 단계를 돌지 않은 상태(계약상 요청 0건)
+_E3_CANDIDATE_LEVELS = ("suspected", "confirmed")  # e3contract.CandidateConfirmation.Level
+_E3_REASON = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
+
+
+def e3_confirmation_row(raw: bytes) -> dict:
+    """제품이 회차 디렉터리에 한 번 쓴 E③ 확정 단계 결과(e3contract.RunResult)에서 상태·사유·확정 요청 수를 꺼낸다(2026-11-19
+    사용자 결정). 원본 SHA를 같이 남긴다. 판정·쓰기 칸은 옮기지 않는다(공식 측정은 E③ 비활성이라 판정 0건). 모양이 다르거나
+    상태와 요청 수가 모순이면(비활성인데 확정 요청이 있음, #742 리뷰) 고정 코드 e3_confirmation_invalid다."""
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return {"error": "e3_confirmation_invalid"}
+    if not isinstance(value, dict) or value.get("version") != E3_RESULT_VERSION or value.get("status") not in E3_STATUSES:
+        return {"error": "e3_confirmation_invalid"}
+    reason = value.get("reason")
+    if value["status"] in _E3_NO_REASON:
+        if reason not in (None, ""):
+            return {"error": "e3_confirmation_invalid"}
+        reason = None
+    elif not isinstance(reason, str) or not _E3_REASON.fullmatch(reason):
+        return {"error": "e3_confirmation_invalid"}
+    requests = value.get("requests")
+    # 계약상 비활성이면 확정 요청이 0건이다. 요청 수는 0 이상 정수만 받는다(bool·실수·문자열은 모양 오류).
+    if type(requests) is not int or requests < 0 or (value["status"] == "disabled" and requests != 0):
+        return {"error": "e3_confirmation_invalid"}
+    # 목록 칸은 계약 모양(배열)이어야 하고, 확정 단계를 돌지 않은 상태(비활성·시작 거부, 요청 0건)는 판정·쓰기 기록이 비어 있어야
+    # 한다. 판정이 있는 비활성 원본은 모순이라 비활성 근거로 쓰지 않는다(#742 리뷰).
+    if not all(isinstance(value.get(name), list) for name in _E3_LIST_FIELDS):
+        return {"error": "e3_confirmation_invalid"}
+    if value["status"] in _E3_NOT_RUN and (value["verdicts"] or value["writes"] or requests != 0):
+        return {"error": "e3_confirmation_invalid"}
+    # 후보 단계는 suspected·confirmed뿐이고, confirmed는 연결된 CONFIRMED 판정이 있을 때만이다(E③ 계약 §9). 판정이 없는
+    # 결과(돌지 않은 상태 포함)에 confirmed 후보가 있으면 모순이다(#742 리뷰). 비활성의 suspected 후보는 그대로 받는다.
+    candidates = value["candidates"]
+    if not all(isinstance(item, dict) and item.get("level") in _E3_CANDIDATE_LEVELS for item in candidates):
+        return {"error": "e3_confirmation_invalid"}
+    if any(item["level"] == "confirmed" for item in candidates) and (value["status"] in _E3_NOT_RUN or not value["verdicts"]):
+        return {"error": "e3_confirmation_invalid"}
+    return {"status": value["status"], "reason": reason, "requests": requests, "sha256": hashlib.sha256(raw).hexdigest()}
+
+
+def _e3_confirmation(ports, draft_id: str) -> dict:
+    """회차 디렉터리(runs/<초안 ID>)의 e3-confirmation.json. 파일이 없으면(감독자 연결 전 제품 빌드) 복사 도우미가 실패하므로
+    수집 못 함(e3_confirmation_not_collected)으로 남긴다. 공식 회차의 처리는 호출자가 한다."""
+    try:
+        raw = ports.e3_confirmation(draft_id)
+    except HelperCleanupError:
+        # 도우미가 보호 볼륨을 계속 잡고 있거나 정리를 확인하지 못했다. 파일 미수집과 달리 회차 정리를 믿을 수 없어 다른 복사
+        # 단계처럼 무효다(#742 리뷰).
+        raise RunFailure("e3_confirmation_copy_failed", ("docker_helper_cleanup_failed",)) from None
+    except Exception:
+        return {"error": "e3_confirmation_not_collected"}
+    return e3_confirmation_row(raw)
+
+
 PRODUCT_CALLS_NAME = "product-calls.jsonl"
 
 
@@ -518,9 +579,20 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     files["runtime_conditions"] = checked_runtime_conditions(
         _step(state, "runtime_conditions_failed", lambda: ports.runtime_conditions(draft_id)), draft_id, task_id,
         policy["policy_revision"], execution) if entered else None
+    # E③ 확정 단계 결과(2026-11-19 사용자 결정): 제품을 멈춘 뒤 회차 디렉터리에서 복사해 상태·사유·원본 SHA를 남긴다.
+    # 보존 sidecar의 제품 파일 칸(닫힌 목록)과 섞지 않고 따로 둔다. 공식 회차는 비활성(선언 없음)이어야 한다(평가 프로토콜 §5.1).
+    e3 = _e3_confirmation(ports, draft_id)
+    state.summary["e3_confirmation"] = e3
     _step(state, "evidence_write_failed", lambda: evidence.write_json(PRODUCT_FILES_NAME, {
         "format": PRODUCT_FILES_FORMAT, "file_sha256": files, "diagnosis_entered": entered, "diagnosis_policy_sha256": fingerprint,
-        "policy_ref": policy["policy_ref"], "policy_revision": policy["policy_revision"], "limits": policy["limits"]}))
+        "policy_ref": policy["policy_ref"], "policy_revision": policy["policy_revision"], "limits": policy["limits"],
+        "e3_confirmation": e3}))
+    if spec.purpose == PURPOSE_OFFICIAL:
+        if "error" in e3:
+            # 복사하지 못함(연결 전 빌드 등)과 모양·모순 오류를 사유로 가른다
+            raise RunFailure("e3_status_not_collected" if e3["error"] == "e3_confirmation_not_collected" else "e3_confirmation_invalid")
+        if (e3["status"], e3["reason"]) != ("disabled", OFFICIAL_E3_DISABLED_REASON):
+            raise RunFailure("e3_official_not_disabled")
     _step(state, "boundary_evidence_copy_failed", ports.copy_boundary_evidence)
     if spec.synthetic:
         # 합성 모델 회차: 제품은 로컬 모델 설치로 스크립트 모델을 불러 OpenRouter 장부·호출 기록이 없다. 사후 검증·장부 대조는
