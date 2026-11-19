@@ -599,7 +599,10 @@ func TestProductResetApplyCostIndependentOfHistory(t *testing.T) {
 			}
 		})
 	}
-	if small, large := allocs(1), allocs(4096); large > small {
+	// 경합 검사기(-race)는 큰 map을 읽을 때 할당을 몇 개 더 만든다(로컬 측정 14 → 16). 앞선 회차 수에 비례하는 복사는
+	// 회차 4096개에서 수천 개가 늘므로, 몇 개의 차이는 잡음으로 보고 그보다 크게 늘 때만 실패로 본다.
+	const allocNoise = 4
+	if small, large := allocs(1), allocs(4096); large > small+allocNoise {
 		t.Fatalf("앞선 회차 수에 따라 할당이 늚: %v → %v", small, large)
 	}
 	// 재생도 회차 목록을 줄마다 다시 만들지 않는다: 줄을 많이 받아도 목록은 하나이고 회차마다 한 번만 더해진다.
