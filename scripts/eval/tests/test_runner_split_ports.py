@@ -184,6 +184,8 @@ class TestV3Inputs(PortsCase):
     def test_control_policy_and_tool_surface_go_to_the_product_and_images(self):
         self.ports.control_policy("42")
         self.assertEqual(self.driver.calls[-1][:2], ("control_policy", ("42",)))
+        self.ports.task_signal("42")
+        self.assertEqual(self.driver.calls[-1][:2], ("task_end_signal", ("42",)))
         with mock.patch("runner_split_ports.ours_side", return_value={"x": 1}) as side:
             self.assertEqual(self.ports.tool_surface(), {"x": 1})
         args = side.call_args.args

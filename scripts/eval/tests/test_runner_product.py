@@ -379,6 +379,23 @@ class TestStartStopClose(unittest.TestCase):
         self.assertEqual(len(fake.calls), calls)
 
 
+class TestTaskEndSignal(unittest.TestCase):
+    def test_only_the_six_end_signal_fields_of_that_task_are_kept(self):
+        fake = FakeProduct()
+        task = {"id": "42", "status": "done", "completed_at": "2026-11-19T08:35:20Z", "goals_total": 3, "goals_met": 3, "in_flight": 0,
+                "llm_failover_state": "default", "name": "task-name-text", "goal": "goal-text"}
+        fake.overrides["/api/tasks"] = (200, {"tasks": [task, dict(task, id="7")]})
+        got = driver(fake).task_end_signal("42")
+        self.assertEqual(got, {k: task[k] for k in ("status", "completed_at", "goals_total", "goals_met", "in_flight", "llm_failover_state")})
+        from runner_engine import EngineAPIError
+        with self.assertRaises(EngineAPIError):
+            driver(fake).task_end_signal("99")  # 목록에 없는 작업
+        fake.overrides["/api/tasks"] = (403, {"reason": "forbidden"})
+        with self.assertRaises(ProductAPIError) as caught:
+            driver(fake).task_end_signal("42")
+        self.assertTrue(str(caught.exception).startswith("product_http_403:/api/tasks"))
+
+
 class TestInputs(unittest.TestCase):
     def test_model_key_is_redacted_and_checked(self):
         key = ModelKey(KEY)

@@ -20,7 +20,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from urllib.parse import quote, urlsplit
 
-from runner_engine import ADMIN_USERNAME, AdminSecret
+from runner_engine import ADMIN_USERNAME, AdminSecret, task_end_signal
 
 LOGIN_PATH = "/api/auth/login"
 MODEL_CREDENTIALS_PATH = "/api/product/model-credentials"
@@ -286,6 +286,12 @@ class ProductDriver:
             if self._monotonic() >= end:
                 raise ProductAPIError("product_close_timeout")
             self._sleep(interval_seconds)
+
+    def task_end_signal(self, task_id: str) -> dict:
+        """제품 작업의 끝 신호 칸(`GET /api/tasks`, B 엔진 끝 신호와 같은 6칸: 상태·완료 시각·목표 수·달성 수·진행 중 수·
+        모델 장애 전환 상태). 이름·설명·목표 원문은 옮기지 않는다(runner_engine.task_end_signal)."""
+        listing = self._call("GET", "/api/tasks")
+        return task_end_signal(json.dumps(listing).encode("utf-8"), task_id)
 
     def run_record(self, task_id: str) -> dict:
         """그 작업의 저장된 실행 기록(`GET /api/tasks/{id}/diagnosis-run`): 실행·준비 모델 사용량, 목표 SHA(goal), 결과.
