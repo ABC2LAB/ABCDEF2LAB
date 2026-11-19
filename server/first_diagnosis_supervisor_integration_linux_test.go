@@ -608,9 +608,14 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 			t.Fatal("E③ 중지 기록 훅 설정 실패", err)
 		}
 	}
+	// 확정 단계 훅 때 E② 실행 연결(E3Handle)을 꺼낼 수 있는지 본다. 이 픽스처는 시험 계정을 결속하지 않는다. 그래도 연결이
+	// 있어야 제품 확정 단계가 어댑터를 붙여, 공식 회차처럼 계정·선언이 없는 회차가 not_wired 대신 실제 사유를 낸다(Go 조건 2).
+	var e3HandleOK bool
 	if e3Hooked {
 		if err := supervisor.SetE3Confirmation(FirstDiagnosisE3Hooks{Stopped: stopRecord, Run: func(hookCtx context.Context, taskID string, begin func()) error {
 			e3Calls++
+			exec, _, ok := runtime.E3Handle(taskID)
+			e3HandleOK = ok && exec != nil
 			if mode != "e3-hook-disabled" {
 				begin()
 			}
@@ -1334,6 +1339,9 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 			if runtime.server.engine.isSettling(task.ID) {
 				t.Fatal("꺼진 E③ 확정 단계가 엔진 정리 상태를 남김")
 			}
+		}
+		if !e3HandleOK {
+			t.Fatal("시험 계정 없는 실행에서 확정 단계 훅 때 E② 연결을 꺼내지 못함")
 		}
 		result := supervisor.RunResult()
 		if e3Calls != 1 || e3StoppedCalls.Load() != 0 || e3State != wantE3State || result == nil || !result.Valid() || result.Outcome != diagnosis.OutcomeComplete ||

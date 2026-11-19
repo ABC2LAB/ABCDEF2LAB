@@ -25,6 +25,10 @@ import (
 )
 
 // 설치자는 일회용 시험 DB만 초기화한다. 제품의 실행 역할에는 DDL을 부여하지 않는다.
+
+// firstDiagnosisDatabaseTestTimeout은 소유 PostgreSQL 통합 시험 전체(하위 시험 포함)의 시한이다.
+const firstDiagnosisDatabaseTestTimeout = 5 * time.Minute
+
 func TestFirstDiagnosisRuntimeDatabaseOwnedPostgres(t *testing.T) {
 	dsn := os.Getenv("ARTEX_FIRST_DIAGNOSIS_ROLE_TEST_DSN")
 	if dsn == "" {
@@ -33,7 +37,9 @@ func TestFirstDiagnosisRuntimeDatabaseOwnedPostgres(t *testing.T) {
 	if os.Getenv("ARTEX_FIRST_DIAGNOSIS_ROLE_TEST_OWNED") != "1" {
 		t.Fatal("권한 시험 전용 일회용 DB 소유 확인이 필요함")
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	// 하위 시험 전체가 이 문맥을 같이 쓴다. 감독자 시험 틀이 모드마다 빈 계획 뒤 마감하지 않는지 지켜보고(#796) 작업 없는
+	// 모드는 시간 상한까지 기다리므로, 부하가 있는 기계에서도 끝나게 둔다. 시한을 넘기면 뒤 하위 시험이 준비 단계에서 실패한다.
+	ctx, cancel := context.WithTimeout(t.Context(), firstDiagnosisDatabaseTestTimeout)
 	defer cancel()
 	installer, err := pgdb.Open(dsn)
 	if err != nil {
