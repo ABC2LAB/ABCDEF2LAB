@@ -141,12 +141,17 @@ export function crawlBar(flow: WorkflowSnapshot): {
       tone: "ok",
       text: `탐색 완료 · 방문 ${flow.counts.visited} / 페이지 상한 ${flow.limits.max_pages}`,
     };
-  if (flow.stage !== "crawling" && flow.initial_completed) {
-    const st = exploreState(flow);
-    const what = st && st.status !== "RUNNING" ? st.text : "완료 확인 안 됨";
-    // 점검 진행 게이지의 '멈춤'과 같은 경우: 탐색이 중지 · 미실행이거나 점검이 멈춤 · 실패
-    const stopped =
-      st?.status === "STOPPED" || st?.status === "NOT_RUN" || flow.stage === "stopped" || flow.stage === "failed";
+  const st = exploreState(flow);
+  // 점검 진행 게이지의 '멈춤'과 같은 경우: 탐색이 중지 · 미실행이거나 점검이 멈춤 · 실패. 첫 탐색을 마쳤는지
+  // (initial_completed)와 따로 본다 — 탐색 전에 실패하면 서버가 NOT_RUN · initial_completed=false 를 저장한 뒤 failed 로
+  // 바꿀 수 있다(#765 이동찬 리뷰: 그때도 탐색 중 파랑이 아니라 회색)
+  const stopped =
+    st?.status === "STOPPED" || st?.status === "NOT_RUN" || flow.stage === "stopped" || flow.stage === "failed";
+  if (stopped || (flow.stage !== "crawling" && flow.initial_completed)) {
+    let what = "완료 확인 안 됨";
+    if (st && st.status !== "RUNNING") what = st.text;
+    else if (flow.stage === "failed") what = "실패";
+    else if (flow.stage === "stopped") what = "중지됨";
     return {
       fill: 100,
       pct,

@@ -20,7 +20,15 @@ import { FLOW_VERSION, type WorkflowSnapshot } from "../live/workflow";
 import { type Shell, ShellContext, type View } from "../shell";
 import { UrlDashboardLive } from "../views/live/UrlDashboardLive";
 import { gaugeSegments, prettyEvidence, UrlLiveLive } from "../views/live/UrlLiveLive";
-import { eventText, group, PauseButton, Pth, WorkflowCrawlLive, WorkflowScopeLive } from "../views/live/workflowViews";
+import {
+  crawlBar,
+  eventText,
+  group,
+  PauseButton,
+  Pth,
+  WorkflowCrawlLive,
+  WorkflowScopeLive,
+} from "../views/live/workflowViews";
 
 const noop = () => undefined;
 const shell = (route: View, over: Partial<Shell> = {}): Shell => ({
@@ -828,6 +836,37 @@ describe("자산 탐색", () => {
     // 위 탐색 줄 한 줄로(사용자 11/19): 막대 아래 '탐색: …' 줄은 따로 없다
     expect(document.getElementById("cNow")?.textContent).toBe(text);
     expect(screen.queryByText(/^탐색:/)).toBeNull();
+  });
+});
+
+describe("탐색 막대 색은 점검 진행 게이지와 같게 (#765 리뷰)", () => {
+  const base = { ...flow, limits: { ...flow.limits, max_pages: 4 }, counts: { ...flow.counts, visited: 0 } };
+  it.each([
+    [
+      "탐색 전 실패(NOT_RUN · initial_completed=false → failed)",
+      { stage: "failed", initial_completed: false, exploration_status: "NOT_RUN" },
+      "stop",
+    ],
+    ["탐색 전 중지(상태 없음)", { stage: "stopped", initial_completed: false }, "stop"],
+    ["첫 탐색 뒤 실패(PARTIAL)", { stage: "failed", initial_completed: true, exploration_status: "PARTIAL" }, "stop"],
+    ["탐색 중", { stage: "crawling", initial_completed: false, exploration_status: "RUNNING" }, "run"],
+    ["일부만 돌고 끝남", { stage: "awaiting_selection", initial_completed: true, exploration_status: "PARTIAL" }, "ok"],
+    ["다 돌고 끝남", { stage: "diagnosing", initial_completed: true, exploration_status: "COMPLETED" }, "ok"],
+  ])("%s", (_n, over, tone) => {
+    const bar = crawlBar({ ...base, ...over } as WorkflowSnapshot);
+    expect(bar.tone).toBe(tone);
+    // 끝난 막대(초록 · 회색)는 끝까지 채우고, 값(aria)은 실제 방문 비율
+    if (tone !== "run") expect(bar.fill).toBe(100);
+    expect(bar.pct).toBe(0);
+  });
+  it("탐색 전 실패의 aria 글은 탐색 안 함을 말한다", () => {
+    const bar = crawlBar({
+      ...base,
+      stage: "failed",
+      initial_completed: false,
+      exploration_status: "NOT_RUN",
+    } as WorkflowSnapshot);
+    expect(bar.text).toBe("탐색 끝 · 안 함 · 방문 0 / 페이지 상한 4");
   });
 });
 
