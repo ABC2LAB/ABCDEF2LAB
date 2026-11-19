@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 import hashlib
 import dataclasses
 import io
@@ -238,6 +239,11 @@ class TestSpec(Fixture):
         self.assertEqual((spec.llm_sampling, spec.llm_provider_slug, spec.llm_provider_name),
                          (declared.llm_sampling, "example-provider", self.config.llm_gateway["expected_provider_name"]))
         self.assertEqual(spec.meter_source_sha, configuration()["ours"]["source_sha"])  # 계측기 기대 빌드
+        # 멈춤 무효 판정 T는 B와 같은 run 칸에서 온다(설정에 없으면 판정 안 함)
+        self.assertIsNone(spec.fault_stall_seconds)
+        judged = split_run_spec(dataclasses.replace(self.config, fault_stall_seconds=180), plan, declared, rendered,
+                                condition="ours@35b")
+        self.assertEqual(judged.fault_stall_seconds, 180)
         # v1.1 러너 기록 칸은 B build_spec과 같은 출처(사전검사 O 선언·러너 설정)다
         ours = preflight_for(self.config)["ours"]
         self.assertEqual((spec.fixture_fingerprint, spec.environment_fingerprint, spec.target_origin),
