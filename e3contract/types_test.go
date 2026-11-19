@@ -217,6 +217,14 @@ func TestObservationValidate(t *testing.T) {
 		},
 		"sent_and_reason": func(o *e3contract.Observation) { o.NotSent = e3contract.NotSentApprovalDenied },
 		"unknown_result":  func(o *e3contract.Observation) { o.ResponseComplete = false },
+		"unknown_bad_status": func(o *e3contract.Observation) {
+			*o = receivedIncomplete(*o)
+			o.StatusCode = 99
+		},
+		"unknown_normal": func(o *e3contract.Observation) {
+			*o = receivedIncomplete(*o)
+			o.Normal = oracle.StateYes
+		},
 		"absent_partial": func(o *e3contract.Observation) {
 			o.Marker = e3contract.MarkerCheck{Status: e3contract.MarkerFailed, Presence: e3contract.MarkerAbsent, Field: "body"}
 		},
@@ -434,5 +442,31 @@ func TestCredentialField(t *testing.T) {
 				t.Fatalf("칸 %q, 기대 %q", f, c.field)
 			}
 		})
+	}
+}
+
+// receivedIncomplete는 보낸 뒤 상태 줄만 받고 본문이 끊긴 관찰이다(결과 불명).
+func receivedIncomplete(o e3contract.Observation) e3contract.Observation {
+	o.ResponseComplete, o.Normal, o.RequestMarkerFree, o.Marker = false, "", false, e3contract.MarkerCheck{}
+	o.BodyDigestSHA256, o.BodyComplete = "", false
+	return o
+}
+
+// 응답 상태 줄은 받았는데 본문이 끊긴 결과는 결과 불명으로 받는다. E② 일반 행은 response_received면 status_code를
+// 남기므로 이 관찰을 막으면 E²가 그 시도를 저널에 쓰지 못한다(#774 리뷰).
+func TestObservationIncompleteKeepsStatusCode(t *testing.T) {
+	for _, status := range []int{0, 100, 200, 599} {
+		o := receivedIncomplete(validRead(t))
+		o.StatusCode = status
+		if err := o.Validate(); err != nil {
+			t.Fatalf("status %d: %v", status, err)
+		}
+	}
+	for _, status := range []int{-1, 1, 99, 600} {
+		o := receivedIncomplete(validRead(t))
+		o.StatusCode = status
+		if err := o.Validate(); !errors.Is(err, e3contract.ErrObservation) {
+			t.Fatalf("status %d: %v", status, err)
+		}
 	}
 }
