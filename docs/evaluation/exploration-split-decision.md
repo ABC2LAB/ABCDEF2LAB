@@ -101,7 +101,7 @@
 | `driver_sha256`(새) | 원본 직접 구동 코드(러너 엔진 API 구동 모듈) 바이트 SHA | 제품 API 구동 코드(`runner_product.py`) 바이트 SHA |
 | `driver_settings_sha256`(새, 지금 `runner_settings_sha256`에서 뺀 것) | 작업 요청 SHA·LLM 스트리밍·tmpfs 하한·worker·컨텍스트·LLM 검증 시한 | 작업 번호 대기·폴링 간격·등록 유효 시간 |
 | `write_mode` | 지금과 같음 | 회차 설정(넓은 승인이면 `approved_writes`) |
-| `declared_model_budget_sha256` | 선언 | 제품 설치 예산 값(요청·토큰·USD·호출당 상한)만의 지문. `installation.json` 원본 SHA가 아니다(설치마다 유효 시각이 들어간다) |
+| `declared_model_budget_sha256` | 선언(보존 옵션 값을 그대로 옮긴다. 원본 엔진·평가 게이트웨이에는 모델 예산이 없어 공식 예시는 64자리 `0` = 선언 없음) | 제품 설치 예산 값(요청·토큰·USD·호출당 상한)만의 지문. `installation.json` 원본 SHA가 아니다(설치마다 유효 시각이 들어간다) |
 | `browser_image_id` | `null`(엔진 안 브라우저) | 탐색 브라우저 이미지 ID |
 | `exploration_policy_sha256` | `null` | 러너가 만든 경계 설정(`boundary.json`) SHA. 회차 값(시각·키)이 없고 경로·상한·주소·평가 칸만 있어 같은 설정이면 같다 |
 | `diagnosis_policy_sha256` | `null` | 그 회차에 제품이 쓴 E② 정책의 **내용 지문**(`e2export.PolicyFingerprint`, 기존 발행의 `policy_fingerprint_sha256`과 같은 정의: 규칙·제외 경로·상한·헤더 모드·승인 방식·실행 상한만, 시각·CA/감사 키 핀·회차 바인딩 제외). 제품 설치기는 설치마다 now/until과 새 CA·키 핀을 정책에 넣으므로 `policy.json` 원본 SHA는 같은 설정의 반복에서도 달라진다. 원본 SHA는 아래 `product` 회차별 근거에만 둔다. 러너가 읽는 길(제품 실행 쪽 값 또는 보호 상태의 정책 사본을 `cmd/e2-eval-policy`로 계산)은 구현 PR에서 정하고 둘이 같은지 시험한다 |

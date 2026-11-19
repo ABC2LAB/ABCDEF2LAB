@@ -4,9 +4,11 @@
 있는지 보고, 없으면 레지스트리 manifest만 읽는다(`docker buildx imagetools inspect`). 비밀 값은 읽지 않는다.
 
 기준값은 개발 머신(WSL2 Ubuntu 24.04, 네이티브 dockerd)에서 분리 배치 회차를 실제로 돌린 값과 레포 설정값이다(공식 회차 절차
-3절). 출력은 항목마다 한 줄 `PASS 항목: 사유` 또는 `FAIL 항목: 사유`이고, 하나라도 FAIL이면 종료 코드 1이다.
+3절). 출력은 항목마다 한 줄 `PASS|FAIL|SKIP 항목: 사유`다. 하나라도 FAIL이면 종료 코드 1, FAIL 없이 SKIP이 있으면 2(점검을
+끝내지 못함: 안내대로 다시 돌린다), 모두 PASS면 0이다.
 
-실행(동결 작업 트리 "$T"에서): python3 -I -B scripts/eval/env_check.py --config <러너 설정 runner.json>
+실행(동결 작업 트리 "$T"에서): python3 -I -B scripts/eval/env_check.py --config <공식 runner.json>
+공식 runner.json은 docs/evaluation/runner.official-split.example.json을 복사해 채운 파일이다(분리 배치 포트가 들어 있다).
 """
 
 from __future__ import annotations
@@ -49,14 +51,18 @@ CONFIG_PORTS = (("ports", "engine_api_host"), ("ports", "obs_host"), ("split", "
 Run = Callable[[list[str], float], "tuple[int, str]"]
 
 
+SPLIT_EXAMPLE = "docs/evaluation/runner.official-split.example.json"
+
+
 @dataclass(frozen=True)
 class Result:
     ok: bool
     name: str
     reason: str
+    skipped: bool = False  # 설정이 모자라 점검하지 못함(FAIL이 아니라 다시 돌릴 안내)
 
     def line(self) -> str:
-        return f"{'PASS' if self.ok else 'FAIL'} {self.name}: {self.reason}"
+        return f"{'SKIP' if self.skipped else 'PASS' if self.ok else 'FAIL'} {self.name}: {self.reason}"
 
 
 def run_command(args: list[str], timeout: float) -> tuple[int, str]:
@@ -174,6 +180,12 @@ def check_listeners(config: dict, read_text: Callable[[str], str | None]) -> lis
     outside = [v.removeprefix("host.listen.").removesuffix(": NOT_ALLOWED") for v in violations]
     results = [Result(not outside, "host_listen", "loopback 밖 리슨이 허용 목록 안에 있음" if not outside
                       else f"허용 목록 밖 리슨 {len(outside)}개(절차 3절 3번): " + ", ".join(outside))]
+    if not isinstance(config.get("split"), dict):
+        # 엔진 직접 배치 예시(runner.example.json)처럼 분리 배치 블록이 없으면 제품·DNS 포트를 알 수 없다. 환경 문제가 아니라
+        # 설정 문제라 FAIL로 세지 않고 다시 돌릴 방법을 안내한다(2026-11-19 재상님 PC 점검).
+        results.append(Result(True, "ports", f"분리 배치 설정 없음 → 공식 runner.json({SPLIT_EXAMPLE}를 채운 파일)으로 다시 실행",
+                              skipped=True))
+        return results
     ports = config_ports(config)
     if len(ports) != len(CONFIG_PORTS):
         missing = [f"{b}.{k}" for b, k in CONFIG_PORTS if f"{b}.{k}" not in ports]
@@ -323,8 +335,16 @@ def main(argv: list[str] | None = None) -> int:
     for result in results:
         print(result.line())
     failed = [result for result in results if not result.ok]
-    print(f"{'PASS' if not failed else 'FAIL'} 전체: {len(results) - len(failed)}/{len(results)} 통과")
-    return 0 if not failed else 1
+    skipped = [result for result in results if result.skipped]
+    passed = len(results) - len(failed) - len(skipped)
+    if failed:
+        print(f"FAIL 전체: {passed}/{len(results)} 통과" + (f", 건너뜀 {len(skipped)}" if skipped else ""))
+        return 1
+    if skipped:
+        print(f"SKIP 전체: {passed}/{len(results)} 통과, 건너뜀 {len(skipped)} → 공식 runner.json으로 다시 실행")
+        return 2
+    print(f"PASS 전체: {passed}/{len(results)} 통과")
+    return 0
 
 
 if __name__ == "__main__":
