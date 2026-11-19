@@ -1039,7 +1039,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(within(insp).getByText("점검 정보")).toBeInTheDocument();
   });
 
-  it("점검 진행 모델 사용량: 사용량을 못 받은 호출이 있으면 최대치라고 같이 적고, 기록이 없으면 줄을 두지 않는다", async () => {
+  it("점검 진행 모델 사용량: 사용량을 못 받은 호출이 있으면 마우스를 올린 값에 최대치라고 적고, 기록이 없으면 줄을 두지 않는다", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue({
       ...running,
@@ -1056,15 +1056,10 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     });
     mount("live");
     const line = (await screen.findByText(/^작업 합계/)).parentElement as HTMLElement;
-    // 예약량으로 센 호출이 있어도 점검 진행 칩 옆엔 '(최대)'를 두지 않고(사용자 11/18), 마우스를 올린 정확한 값에 최대치를 남긴다
-    expect(line).toHaveTextContent(/^작업 합계 · 입 1.2k 출 300\?/);
-    // 마우스를 올리지 않아도: 키보드 · 터치로 여는 (?) 설명이 최대치임을 말한다(#709 리뷰)
-    const tip = within(line).getByRole("button", { name: "최대치 설명" });
-    expect(line.className).toMatch(/tipline/); // 메모가 이 줄 바로 아래에 뜨는 기준
-    fireEvent.click(tip);
-    expect(within(line).getByRole("note")).toHaveTextContent(
-      "사용량을 받지 못한 호출 1건은 예약량으로 셌습니다. 두 수는 실제 사용량의 최대치입니다.",
-    );
+    // 예약량으로 센 호출이 있어도 점검 진행 칩 옆엔 '(최대)'(사용자 11/18) · (?) 설명(사용자 11/19)을 두지 않고,
+    // 마우스를 올린 정확한 값에 최대치를 남긴다
+    expect(line).toHaveTextContent(/^작업 합계 · 입 1.2k 출 300$/);
+    expect(within(line).queryByRole("button")).toBeNull();
     expect(line).toHaveAttribute("title", "입력 1,200 토큰 (최대치)\n출력 300 토큰 (최대치)");
     cleanup();
     resetUrl();
