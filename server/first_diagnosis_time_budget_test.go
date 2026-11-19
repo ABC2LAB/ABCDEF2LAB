@@ -44,3 +44,20 @@ func TestFirstDiagnosisSupervisorSetTimeBudget(t *testing.T) {
 		}
 	}
 }
+
+// 시간 상한을 정하지 않은 실행(CLI 단발 실행)은 엔진 기한 앞의 유예만큼 일찍 시간 상한 마감을 켠다. 유예는 엔진 정리 유예
+// 상한과 작업 시간의 1/4 중 작은 값이다.
+func TestFirstDiagnosisDeadlineDrain(t *testing.T) {
+	for _, tc := range []struct {
+		seconds int
+		want    time.Duration
+	}{
+		{20, 5 * time.Second},
+		{60, 15 * time.Second},
+		{3600, FirstDiagnosisTimeBudgetDrain},
+	} {
+		if got := firstDiagnosisDeadlineDrain(tc.seconds); got != tc.want {
+			t.Fatalf("%d초 작업: 유예 %s, want %s", tc.seconds, got, tc.want)
+		}
+	}
+}

@@ -973,7 +973,6 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		// coalesces a burst; empty for time/heartbeat wakes).
 		triggers := t.drainTriggers()
 		taskIDInt, _ := strconv.ParseInt(t.ID, 10, 64)
-		workSeq := t.firstDiagnosisWorkSeq.Load()
 		lastIntent, observed := e.plannerLogStart(ectx, t)
 		planStarted := time.Now()
 		e.BeginLLMCall(t.ID)
@@ -987,12 +986,6 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		met, reason, err := planner.Plan(ectx, taskIDInt, e.m.assets, t.Store, goal, triggers, emit, targetData)
 		e.EndLLMCall(t.ID)
 		e.plannerLogFinish(ectx, t, lastIntent, observed, err, planStarted)
-		if e.firstDiagnosis && err == nil && !met && ectx.Err() == nil {
-			t.firstDiagnosisPlannedSeq.Store(workSeq)
-		}
-		if e.firstDiagnosis && err == nil && ectx.Err() == nil {
-			t.firstDiagnosisPlanRounds.Add(1)
-		}
 		switch {
 		case err != nil && ectx.Err() == nil:
 			log.Printf("[planner] task %s 계획 오류: %v", t.ID, err)
@@ -1331,9 +1324,6 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	}
 	log.Printf("[worker %s] task %s 의도 #%d 종료: %s (기록 %s)", name, t.ID, intent.ID, state, wrote)
 	e.touch(t.ID)
-	if e.firstDiagnosis {
-		t.firstDiagnosisWorkSeq.Add(1)
-	}
 	t.NotifyDone(intent.ID) // results changed the graph -> wake the planner (with the just-finished intent id)
 	return true
 }
