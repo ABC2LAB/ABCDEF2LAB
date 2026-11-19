@@ -72,7 +72,7 @@ func recordingUpstream(t *testing.T) (*httptest.Server, func() []seenRequest) {
 func newTestEngine(t *testing.T, upstream *httptest.Server) (*engineMeter, *httptest.Server, string) {
 	t.Helper()
 	path, dir := privateTestDir(t)
-	m, code := newEngineMeter(dir, targetURL(t, upstream), time.Now, 0)
+	m, code := newEngineMeter(dir, targetURL(t, upstream), time.Now, 0, 0)
 	if code != "" {
 		t.Fatalf("engine meter: %s", code)
 	}

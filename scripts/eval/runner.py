@@ -600,6 +600,24 @@ def _wait_budget(spec: RunSpec, meter: MeterFiles, clock: Clock, state: _State, 
         clock.sleep(spec.poll_seconds)
 
 
+def check_request_cap(sealed: dict, drained: dict, request_budget: int) -> None:
+    """계측기 요청 하드 상한이 이 회차 예산으로 걸렸고 지켜졌는지(B·분리 배치 O 공용, 2026-11-19 사용자 결정 1). drain 표식의
+    상한이 예산과 다르면(설정이 계측기에 닿지 않음) 같은 기준에서 끊었다고 말할 수 없고, 전달 수가 예산을 넘으면 상한이 깨진
+    것이다. 같은 계측기의 봉인·drain 표식은 상한 값이 같아야 하고, 상한으로 거부한 요청이 있으면 그 전에 전달 수가 상한에
+    닿아 있어야 한다(계측기는 상한에 닿은 뒤에만 거부한다, #734 리뷰). 상한으로 거부한 수(rejected_over_cap)는 표식에서
+    근거·요약으로 옮긴다."""
+    # 값 비교만 하면 JSON true가 예산 1과 같다고 통과한다(#734 리뷰). 정상 계측기의 칸은 0 이상 JSON 정수다.
+    cap, over, sealed_cap = drained.get("request_cap"), drained.get("rejected_over_cap"), sealed.get("request_cap")
+    if (type(cap) is not int or cap != request_budget or type(over) is not int or over < 0
+            or type(sealed_cap) is not int or sealed_cap != cap):
+        raise RunFailure("meter_request_cap_mismatch")
+    forwarded = drained["forwarded_requests"]
+    if forwarded > request_budget:
+        raise RunFailure("meter_request_cap_exceeded")
+    if over and forwarded != cap:
+        raise RunFailure("meter_request_cap_mismatch")
+
+
 def check_meter_logs(meter: MeterFiles, state, rows: list[dict], drained: dict, path_key_ref: str | None) -> dict:
     """계측기 기록 마감 대조(B·분리 배치 O 공용, 같은 사유). 경로 기록은 키 참조가 있는 회차(수용시험·분리 배치)에만 있어야
     하고, 그 회차는 전달한 요청과 한 행씩 맞고 같은 키로 가렸어야 한다. 엔진 직접 배치 공식 회차에 있으면 무효다. 기록이나
@@ -860,6 +878,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     layout = "artex-direct/v1" if spec.side == "baseline" else "e2-legacy/v1"
     _step(state, "meter_explore_ingress_unexpected", lambda: validate_ingress_layout(rows, layout))
     sealed = check_meter_logs(meter, state, rows, drained, spec.path_key_ref)
+    check_request_cap(sealed, drained, spec.request_budget)
     forwarded = _step(state, "meter_log_inconsistent", lambda: forwarded_count(rows))
     meter_summary = {
         "task_requested_at": requested_at, "task_created_at": created_at, "stopped_at": stopped_at,
@@ -868,9 +887,11 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         "forwarded_requests": forwarded, "forwarded_by_method": forwarded_by_method(rows),
         "forwarded_by_ingress": ingress_counts(rows),
         "request_budget": spec.request_budget,
-        # 폴링 뒤 seal이라 넘칠 수 있다. 정확 준수를 주장하지 않고 초과분을 그대로 남긴다.
+        # 계측기 하드 상한(-request-cap)이 R번째 전달 뒤 새 요청을 거부하므로 0이어야 한다(넘치면 check_request_cap이
+        # 회차를 무효로 한다). 상한으로 거부한 수는 rejected_over_cap이다.
         "over_budget": max(0, forwarded - spec.request_budget),
         "rejected_after_seal": drained.get("rejected_after_seal"),
+        "rejected_over_cap": drained.get("rejected_over_cap"),
         "forced_closed_streams": drained.get("forced_closed_streams"),
         # 봉인 뒤 유예가 지나 계측기가 끊은 요청. 전달은 됐으므로 forwarded_requests에 들어 있다.
         "forced_cancelled_requests": drained["forced_cancelled_requests"],
