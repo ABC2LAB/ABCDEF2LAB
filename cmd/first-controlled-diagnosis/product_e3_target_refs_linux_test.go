@@ -93,6 +93,24 @@ func TestProductTargetRefsChangeWithTarget(t *testing.T) {
 			t.Fatalf("%s: 접속만 바뀌었는데 세대가 바뀜", name)
 		}
 	}
+	// 쓰기 기록끼리도 다르다: 다른 쓰기 줄(참조)·다른 회차·다른 시각은 다른 세대다.
+	writeStates := map[string]*productResetState{
+		"base":  written,
+		"ref":   {writesJob: "job-old", writesAt: at, writesRef: strings.Repeat("b", 64)},
+		"job":   {writesJob: "job-other", writesAt: at, writesRef: strings.Repeat("a", 64)},
+		"time":  {writesJob: "job-old", writesAt: at.Add(time.Second), writesRef: strings.Repeat("a", 64)},
+		"reset": confirmed,
+	}
+	gens := map[string]string{}
+	for name, st := range writeStates {
+		g, _ := refs(base, st)
+		for other, og := range gens {
+			if og == g {
+				t.Fatalf("쓰기 기록 %s와 %s의 세대가 같음", name, other)
+			}
+		}
+		gens[name] = g
+	}
 	// 리셋을 확인하면 쓰기만 남은 세대와도 다르다.
 	if g1, _ := refs(base, written); func() bool { g2, _ := refs(base, confirmed); return g1 == g2 }() {
 		t.Fatal("리셋 확인 전후 세대가 같음")
