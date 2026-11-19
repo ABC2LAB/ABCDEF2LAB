@@ -416,8 +416,13 @@ class TestTaskEndSignal(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(ProductAPIError) as caught:
                 driver(self.fake(**changes)).task_end_signal("42")
             self.assertEqual(str(caught.exception), "product_task_signal_invalid")
-        with self.assertRaises(ProductAPIError):
-            driver(self.fake()).task_end_signal("../42")
+        for bad in ("../42", "0", "42/goals", ""):
+            with self.subTest(task_id=bad):
+                fake = self.fake()
+                with self.assertRaises(ProductAPIError) as caught:
+                    driver(fake).task_end_signal(bad)
+                self.assertEqual(str(caught.exception), "product_task_signal_invalid")
+                self.assertEqual([c for c in fake.calls if c["path"].startswith("/api/tasks")], [])  # 보내지 않는다
 
     def test_http_error_is_a_fixed_code(self):
         fake = self.fake()
