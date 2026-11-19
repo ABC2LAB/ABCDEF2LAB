@@ -47,9 +47,10 @@ def e3_disabled(status="disabled", reason="declaration_missing", expected=True, 
 
 
 def split_ours(ref="0123456789abcdef", goal="7" * 64, **e3):
-    """분리 배치 O 공식 회차: 경로 키 지문·공통 목표 SHA·E③ 비활성 근거."""
+    """분리 배치 O 공식 회차: 경로 키 지문·공통 목표 SHA·E③ 비활성 근거, 제품 안 E²(split_product)."""
     def tamper(rows):
         row_of(rows, "run_conditions").update(split=True, path_key_ref=ref, goal_common_sha256=goal)
+        row_of(rows, "e2_placement").update(mode="split_product")
         e3_disabled(**e3)(rows)
     return tamper
 
@@ -685,8 +686,8 @@ class TestRejectedV11(_V11):
         self.assertEqual(official.purpose, "official")
         # 2026-11-18 결정 (a): 분리 배치 공식 회차는 키 지문을 가진다. 분리 배치 표시 없이 키 지문이 있으면 거부, 표시가 있는데
         # 지문이 없거나 표시가 bool이 아니면 거부.
-        split = self.inputs(self.v11("split", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
-            split=True, path_key_ref="0123456789abcdef")))
+        split = self.inputs(self.v11("split", tamper_rows=lambda rows: (row_of(rows, "run_conditions").update(
+            split=True, path_key_ref="0123456789abcdef"), row_of(rows, "e2_placement").update(mode="split_product"))))
         self.assertEqual((split.purpose, split.path_key), ("official", (True, "0123456789abcdef")))
         self.assertEqual(official.path_key, (False, None))
         for index, change in enumerate(({"split": False, "path_key_ref": "0123456789abcdef"},
@@ -877,12 +878,14 @@ class TestComparison(_V11):
         self.assertEqual(self.inputs(self.v11("m2")).execution_source, "model_run")
         build_report(self.load([self.v11("m0"), declared]), self.correlate, self.correlatable, runner_key=self.runner_key)
         # 세 선택 칸(분리 배치 표시·경로 키 지문·실행 출처)은 함께 검증·전달되고, 합성이면 키가 같아도 표가 거부한다(#707 리뷰)
-        both = self.v11("sx", tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
-            split=True, path_key_ref="0123456789abcdef", execution_source="synthetic_fixture"))
+        both = self.v11("sx", tamper_rows=lambda rows: (row_of(rows, "run_conditions").update(
+            split=True, path_key_ref="0123456789abcdef", execution_source="synthetic_fixture"),
+            row_of(rows, "e2_placement").update(mode="split_product")))
         loaded = self.inputs(both)
         self.assertEqual((loaded.path_key, loaded.execution_source), ((True, "0123456789abcdef"), "synthetic_fixture"))
-        real_split = self.v11("sy", repeat_index=1, tamper_rows=lambda rows: row_of(rows, "run_conditions").update(
-            split=True, path_key_ref="0123456789abcdef", execution_source="model_run"))
+        real_split = self.v11("sy", repeat_index=1, tamper_rows=lambda rows: (row_of(rows, "run_conditions").update(
+            split=True, path_key_ref="0123456789abcdef", execution_source="model_run"),
+            row_of(rows, "e2_placement").update(mode="split_product")))
         with self.assertRaisesRegex(ComparabilityError, "합성 실행 회차는 채점하지 않음"):
             build_report(self.load([both, real_split]), self.correlate, self.correlatable, runner_key=self.runner_key)
         old = self.inputs(self.v11("so"))  # 세 칸 모두 없는 옛 근거: 엔진 직접 배치·키 없음·실제 모델 회차
@@ -1076,6 +1079,12 @@ class TestSplitO(_V11):
         for index, (name, (tamper, pattern)) in enumerate(cases.items()):
             with self.subTest(case=name):
                 self.reject(pattern, f"x{index}", tamper_rows=tamper)
+
+    def test_split_o_must_be_split_product(self):
+        # 분리 배치 O 근거의 E② 자리가 none이면 통제 표·대조 미수집 경고가 빠진다. 채점 전에 거부한다(#746 리뷰).
+        self.reject("분리 배치 개선 후 회차는 split_product만", "on", tamper_rows=split_o(mode="none"))
+        with self.assertRaisesRegex(RunRecordError, "split_product만"):  # 비교 표도 같은 검증을 거친다
+            self.report([self.base("bn"), self.v11("on2", tamper_rows=split_o(mode="none"))])
 
     def test_o_only_allowances_are_refused_on_signed_b_records(self):
         # split_product·관측 못 하는 null 칸·기록 점검 행은 개선 후(O) 기록에만 있다. 분리 배치 B 기록이면 거부한다(#746 리뷰).

@@ -347,6 +347,12 @@ def e2_mode(receipt: dict, evidence: object) -> str:
             raise IsolationError("isolation_evidence.e2_placement: split_product는 분리 배치 개선 후 회차에만")
     else:
         raise IsolationError("isolation_evidence.e2_placement.mode: none|stub|product|split_product")
+    # 반대 방향 결속(#746 리뷰): 분리 배치 개선 후(O)는 제품 안 E²라 split_product만 받는다. 다른 모드로 적힌 O 근거를 받으면
+    # 통제 검증 표와 대조 미수집 경고가 빠진다.
+    conditions = rows["run_conditions"]  # 실행 조건 행 자체의 검사(정확히 한 행)는 check_isolation이 한다
+    split = len(conditions) == 1 and conditions[0]["split"] is True
+    if split and receipt["engine"] == ENGINE_OURS and row["mode"] != E2_SPLIT_PRODUCT:
+        raise IsolationError("isolation_evidence.e2_placement: 분리 배치 개선 후 회차는 split_product만")
     return row["mode"]
 
 
