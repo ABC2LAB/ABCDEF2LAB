@@ -133,7 +133,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   task.json                      작업 생성 요청 본문 SHA-256·엔진 작업 ID·요청/생성 시각(본문 자체는 없음), v2: 분리 배치 B 회차의 작업 origin·목표 공통 부분 SHA(그 밖은 null)
   subnet-check.json              up 전 대역 겹침 검사: 회차가 만들 고정 대역, 호스트 기존 Docker 망과 겹친 쌍(다른 망 목록은 없음)
   engine-end.json                엔진 끝 신호: 창 동안 첫 끝 상태·시각, down 전 마지막 작업 상태 칸(값 원본 그대로)
-  cli-observed-lines.json        (분리 배치 B, B 전용 CLI 이름이 관측된 때만) 관측된 명령마다 자격 가림을 거친 원문 한 줄(사람 확인용)
+  cli-observed-lines.json        (분리 배치 B, B 전용 CLI 이름이 관측된 때만) 관측된 명령마다 원문 전체를 자격 가림에 거친 뒤 고른 한 줄(사람 확인용, 가림 입력 상한을 넘는 원문은 줄 없이 보류 표시)
   fault-stall.json               제공자 장애 멈춤 판정 재료(결정안 §7): 장애별 무활동 길이·창 끝까지 이어졌는지·끝 신호, 최장 무활동(판정 안 함)
   intercept-summary.json         엔진 승인 기록의 건수: 상태별, 차단 출처별(파일 규칙·내장 규칙·모델·그 밖), 도구별(도구 입력 원문 없음)
   engine-rules.json              `engine_rules`가 있을 때만: 파일 SHA-256, 주입·내장 규칙 수, 내장 통제를 앞지를 수 있는 파일 allow 수, 내장·전체 규칙 해시, 적용 전후 도구 목록(규칙 본문 없음)
