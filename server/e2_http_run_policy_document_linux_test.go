@@ -82,6 +82,49 @@ func TestE2HTTPFileRulePurposeFailsClosed(t *testing.T) {
 	}
 }
 
+func TestE2HTTPFileE3RuleCannotExtendWorkerApproval(t *testing.T) {
+	host, _, policy := e2HostPolicyFixture(t)
+	program := policy.Rules[0]
+	program.Ref, program.PathScopeRef = "e3-read", "e3-read-path"
+	program.Purpose, program.PathPrefix = e2proxy.PurposeE3Read, "/items/{id}"
+	program.Origin = "https://EXAMPLE.invalid:443"
+	for _, tc := range []struct {
+		name, ip string
+		want     bool
+	}{
+		{"same_approval", policy.Rules[0].ConnectIP, true},
+		{"different_ip", "127.0.0.2", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			program.ConnectIP = tc.ip
+			policy.Rules = append(policy.Rules[:1], program)
+			raw, err := json.Marshal(policy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			options, runtimeErr := loadE2HTTPRuntimeOptions(ctx, E2HTTPFileOptions{
+				PolicyFile: host.PolicyFile, Authority: &e2HTTPPolicyAuthorityFixture{ctx: ctx},
+				Supervisor: &e2HTTPSupervisorFixture{},
+			}, raw, nil)
+			_, fingerprint, documentErr := ValidateE2HTTPRunPolicyDocument(raw)
+			if !tc.want {
+				if !errors.Is(runtimeErr, ErrE2HTTPHost) || options.Acquire != nil || !errors.Is(documentErr, ErrE2HTTPHost) || fingerprint != "" {
+					t.Fatalf("policy accepted an unapproved program IP: %v / %v", runtimeErr, documentErr)
+				}
+				return
+			}
+			if runtimeErr != nil || documentErr != nil || fingerprint == "" || fingerprint != options.PolicyFingerprintSHA256 {
+				t.Fatalf("bound program rule failed preflight: %v / %v", runtimeErr, documentErr)
+			}
+			if len(options.ApprovedOrigins) != 1 || options.ApprovedOrigins[0] != policy.Rules[0].Origin {
+				t.Fatalf("program origin entered Worker asset approvals: %v", options.ApprovedOrigins)
+			}
+		})
+	}
+}
+
 // 제품 실행 정책 검증기는 실행 factory가 받는 진단 워크플로 칸·승인 방식을 받고, 평가 단독 E② 서비스 검증기는
 // 지금처럼 거부한다. 워크플로 칸은 닫힌 형식만 받는다.
 func TestE2HTTPRunPolicyDocumentAcceptsWorkflowRuns(t *testing.T) {
