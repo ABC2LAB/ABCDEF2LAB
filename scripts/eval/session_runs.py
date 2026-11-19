@@ -10,6 +10,8 @@
 - 쪽별 시도·유효·무효(사유별)·무효율과 시작 시각 순서를 출력한다. 유효 회차 순서가 §5.1 교대 순서(N=3이면 B O O B B O)와
   다르거나, 쪽별 시도가 2N을 넘거나, 유효가 N개 미만이면 경고한다(stderr `경고[...]`).
 - 완료 회차들의 작업 생성 요청 해시(러너 결과 `task_request_sha256`)가 하나가 아니면 멈춘다 — 작업 문구도 비교 조건이다.
+  탐색 분리 배치 세션은 쪽마다 하나다: B는 엔진 작업 생성 본문, O는 제품 설치·등록 조건 지문이라 서로 다르고, B·O 목표
+  동일성은 채점기가 서명된 공통 목표 SHA로 본다. 분리 배치 회차와 엔진 직접 배치 회차가 섞이면 멈춘다.
 - 완료 회차만 manifest에 넣는다. 값은 서명된 `run-record.json`에서 그대로 옮기고, 서명 검증은 채점기(score.py)가 한다.
   판정 레코드가 없는 회차(records=null)의 `records_path`는 채점기가 읽지 않는다.
 - 제공자 장애 멈춤(결정안 §7): 완료 회차는 모두 같은 T로 판정한 서명 결과(`fault_stall.judged`, `stall_seconds`)여야 한다(T가
@@ -37,7 +39,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from aggregate import _optional_stat as optional_stat  # noqa: E402
-from isolation_proof import E2_MODES  # noqa: E402
+from isolation_proof import E2_MODES, E2_SPLIT_PRODUCT  # noqa: E402
 from run_record import RunRecordError, read_runner_key, sign_run_record  # noqa: E402
 from runner import COMPLETE, INVALID, RECORD_NAME, RESULT_FORMAT, RESULT_NAME  # noqa: E402
 from runner_fault import FAULT_STALL_REASON  # noqa: E402
@@ -151,7 +153,7 @@ def _attempt(directory: Path, key: bytes, errors: list[str], allow_fixture_e2: b
     # 서명된 E② 자리. 가짜 E²(stub) 회차는 배치 확인용이라 시범·공식 세션 집계에 넣지 않는다(프로토콜 §2).
     e2_mode = result.get("e2_mode")
     if e2_mode not in E2_MODES:
-        errors.append(f"{directory.name}: 완료 결과의 e2_mode가 none|stub|product가 아님")
+        errors.append(f"{directory.name}: 완료 결과의 e2_mode가 none|stub|product|split_product가 아님")
         return None
     if e2_mode == "stub" and not allow_fixture_e2:
         errors.append(f"{directory.name}: 가짜 E② 회차(e2_mode=stub)는 세션 집계에 넣지 않음 — 배치 확인용(프로토콜 §2), "
@@ -190,6 +192,13 @@ def _stall_seconds(attempt: Attempt) -> int | None:
     return value if type(value) is int else None
 
 
+def _split(attempt: Attempt) -> bool:
+    """서명된 결과에서 탐색 분리 배치 회차인지 본다. O는 E② 자리(split_product), B는 실행 조건의 분리 배치 표시다."""
+    result = attempt.result or {}
+    conditions = result.get("run_conditions")
+    return result.get("e2_mode") == E2_SPLIT_PRODUCT or (isinstance(conditions, dict) and conditions.get("split") is True)
+
+
 def read_session(runs_root: Path, key: bytes, allow_fixture_e2: bool = False,
                  allow_unjudged_fault_stall: bool = False) -> list[Attempt]:
     """runs_root 바로 아래 회차 디렉터리를 시작 시각 순으로 읽는다. key는 러너 서명 키."""
@@ -200,9 +209,15 @@ def read_session(runs_root: Path, key: bytes, allow_fixture_e2: bool = False,
                 if d.is_dir() and (a := _attempt(d, key, errors, allow_fixture_e2)) is not None]
     complete = [a for a in attempts if a.record is not None]
     # 작업 설명·목표·옵션도 비교 조건이다. 같은 설정이면 요청 본문 해시가 같다(baseline·개선 후 공통).
-    tasks = sorted({a.task_sha256 for a in complete})
-    if len(tasks) > 1:
-        errors.append(f"작업 생성 요청이 회차마다 다름(해시 {len(tasks)}종) — 같은 runner.json task로만 비교")
+    # 분리 배치 세션은 쪽마다 하나다(B 작업 생성 본문·O 설치·등록 조건 지문, 목표 동일성은 채점기가 공통 목표 SHA로 본다).
+    splits = {_split(a) for a in complete}
+    if len(splits) > 1:
+        errors.append("분리 배치 회차와 엔진 직접 배치 회차가 섞임 — 한 세션은 한 배치로만")
+    groups = [[a for a in complete if a.side == side] for side in SIDES] if splits == {True} else [complete]
+    for group in groups:
+        tasks = sorted({a.task_sha256 for a in group})
+        if len(tasks) > 1:
+            errors.append(f"작업 생성 요청이 회차마다 다름(해시 {len(tasks)}종) — 같은 runner.json task로만 비교")
     for side in SIDES:
         mine = [a.record for a in complete if a.side == side]
         conditions = {r["condition"] for r in mine}

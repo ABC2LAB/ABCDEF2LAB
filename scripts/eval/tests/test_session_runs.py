@@ -53,13 +53,13 @@ class Session:
 
     def complete(self, side: str, minute: int, repeat: int, condition: str | None = None,
                  task: str = "t" * 64, e2_mode: object = "none", total_requests: object = 400,
-                 stall: int | None = STALL_T) -> Path:
+                 stall: int | None = STALL_T, **result_fields) -> Path:
         directory = self._dir(side, minute)
         # 러너가 설정한 T로 판정한 멈춤 기록(결정안 §7). stall=None이면 판정하지 않은 회차다.
         fault_stall = ({"format": "abc2lab-eval-runner-fault-stall-v2", "judged": False} if stall is None else
                        {"format": "abc2lab-eval-runner-fault-stall-v2", "judged": True, "stall_seconds": stall, "stalls": 0})
         self._result(directory, side, minute, status="complete", task_request_sha256=task.replace("t", "a"),
-                     e2_mode=e2_mode, fault_stall=fault_stall)
+                     e2_mode=e2_mode, fault_stall=fault_stall, **result_fields)
         record = {"run_id": directory.name, "engine": side, "condition": condition or CONDITION[side],
                   "repeat_index": repeat, "model_tag": "qwen/qwen3.6-35b-a3b", "reset_generation": "r" * 64,
                   "total_requests": total_requests, "blocked_attempts": None, "elapsed_seconds": 1200.5,
@@ -122,6 +122,41 @@ class TestFixtureE2(SessionCase):
                 for child in directory.iterdir():
                     child.unlink()
                 directory.rmdir()
+
+
+class TestSplitSession(SessionCase):
+    """탐색 분리 배치 세션(설계안 §6): 작업 요청 지문은 쪽마다 하나다(B 작업 생성 본문·O 설치·등록 조건 지문)."""
+
+    SPLIT_B = {"run_conditions": {"split": True}}
+
+    def test_each_side_keeps_its_own_task_digest(self):
+        self.s.complete("baseline", 1, 0, task="b" * 64, **self.SPLIT_B)
+        self.s.complete("ours", 2, 0, task="c" * 64, e2_mode="split_product")
+        self.s.complete("ours", 3, 1, task="c" * 64, e2_mode="split_product")
+        self.assertEqual(len(read_session(self.root, KEY)), 3)
+
+    def test_one_side_with_two_digests_is_refused(self):
+        self.s.complete("baseline", 1, 0, task="b" * 64, **self.SPLIT_B)
+        self.s.complete("ours", 2, 0, task="c" * 64, e2_mode="split_product")
+        self.s.complete("ours", 3, 1, task="d" * 64, e2_mode="split_product")
+        with self.assertRaises(SessionError) as caught:
+            read_session(self.root, KEY)
+        self.assertTrue(any("작업 생성 요청" in e for e in caught.exception.errors), caught.exception.errors)
+
+    def test_split_and_direct_rounds_do_not_mix(self):
+        # 엔진 직접 배치 O(분리 배치 표시 없음)와 분리 배치 B가 한 세션에 있으면 멈춘다(작업 지문 규칙이 달라진다)
+        self.s.complete("baseline", 1, 0, task="b" * 64, **self.SPLIT_B)
+        self.s.complete("ours", 2, 0, task="b" * 64)
+        with self.assertRaises(SessionError) as caught:
+            read_session(self.root, KEY)
+        self.assertTrue(any("섞임" in e for e in caught.exception.errors), caught.exception.errors)
+
+    def test_direct_layout_keeps_one_digest_for_the_session(self):
+        self.s.complete("baseline", 1, 0, task="b" * 64)
+        self.s.complete("ours", 2, 0, task="c" * 64)
+        with self.assertRaises(SessionError) as caught:
+            read_session(self.root, KEY)
+        self.assertTrue(any("작업 생성 요청" in e for e in caught.exception.errors), caught.exception.errors)
 
 
 class TestAuxiliary(SessionCase):
