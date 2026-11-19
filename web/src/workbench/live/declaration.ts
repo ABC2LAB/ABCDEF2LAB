@@ -11,6 +11,8 @@
 
 import { ApiError, apiFetch } from "@/lib/diagnosis/api";
 
+import { type CredentialFormKind, credentialForms } from "./credentialForms";
+
 /** 정책 선언 레코드 형식 판(e3contract.DeclarationVersion). */
 export const DECLARATION_VERSION = "e3-product-declaration/v1";
 /** 조회 경로 틀의 객체 ID 자리(e3contract.IDPlaceholder). 한 경로에 정확히 한 번. */
@@ -243,21 +245,22 @@ export function hasCredentialText(v: string): boolean {
  */
 export function credentialFields(d: DeclarationDraft): string[] {
   const out: string[] = [];
-  const check = (field: string, v: string) => {
-    if (hasCredentialText(v) && !out.includes(field)) out.push(field);
+  // 서버처럼 원문과 함께 이스케이프를 푼 모양도 본다(본문 틀은 JSON·form 으로, 경로는 퍼센트 인코딩을 풀어 — credentialForms.ts)
+  const check = (field: string, v: string, kind: CredentialFormKind = "plain") => {
+    if (v !== "" && credentialForms(v, kind).some(hasCredentialText) && !out.includes(field)) out.push(field);
   };
-  check("identity.path", d.identity.path);
+  check("identity.path", d.identity.path, "path");
   check("identity.subjectIdPath", d.identity.subjectIdPath);
   d.types.forEach((t, i) => {
     const at = `types.${i}`;
     check(`${at}.type`, t.type);
     if (t.sharing === "shared") return;
     for (const f of t.ownerOnlyFields) check(`${at}.ownerOnlyFields`, f);
-    check(`${at}.create.path`, t.create.path);
-    check(`${at}.create.bodyTemplate`, t.create.bodyTemplate);
+    check(`${at}.create.path`, t.create.path, "path");
+    check(`${at}.create.bodyTemplate`, t.create.bodyTemplate, t.create.bodyKind);
     check(`${at}.create.markerField`, t.create.markerField);
     check(`${at}.create.idPath`, t.create.idPath);
-    check(`${at}.read.pathTemplate`, t.read.pathTemplate);
+    check(`${at}.read.pathTemplate`, t.read.pathTemplate, "path");
     check(`${at}.read.dataPath`, t.read.dataPath);
     check(`${at}.read.statusPath`, t.read.statusPath);
     check(`${at}.read.normalValue`, t.read.normalValue);
