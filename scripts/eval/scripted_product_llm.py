@@ -20,7 +20,9 @@
 계획 `finish: "prove_goals"`(선택)면 목표 달성 선언 도구(C26)로 끝을 낸다. 제품이 빈 계획에서 바로 마감하지 않고 원본처럼
 알림·심장박동 때 다시 계획하게 되면(마감 규칙 변경), 스크립트 회차가 빈 계획 뒤 오래 기다리지 않게 하려는 것이다.
 - Worker: 계획 명령을 다 낸 뒤 그 대화에서 한 번 `record_fact`로 고정 관찰 사실 하나를 남긴다(의도 번호는 Worker 메시지의
-  `Intent id: N`에서 읽는다. 제품은 다른 의도 번호의 사실을 거부한다).
+  `Intent id: N`에서 읽는다. 제품은 다른 의도 번호의 사실을 거부한다). 이 대화에서 Bash를 한 번 이상 불렀고 그 결과가 모두
+  E② 신뢰 결과 `classification: completed`·`exit_code: 0`일 때만 남긴다. 거부·실패·불명이나 명령을 하나도 안 낸 Worker는
+  사실을 남기지 않아, 실패한 회차가 목표 달성으로 끝나지 않는다(#797 리뷰).
 - Planner: 의도를 다 낸 뒤 `list_goals` → 열린 목표가 있으면 `list_facts` → 사실이 있으면 열린 목표 하나에 `prove_goal` →
   다시 `list_goals`를 되풀이한다. 목표마다 한 번만 증명을 시도한다. 열린 목표나 사실이 없으면 이번 라운드를 끝낸다.
   모든 목표가 met가 되면 엔진이 작업을 자동 완료한다(`agent/tools.go` prove_goal).
@@ -50,7 +52,7 @@ PLANNER_TOOL = "add_intent"
 WORKER_TOOL = "Bash"
 GOALS_TOOL, FACTS_TOOL, PROVE_TOOL, FACT_TOOL = "list_goals", "list_facts", "prove_goal", "record_fact"
 FINISH_TOOLS = frozenset({GOALS_TOOL, FACTS_TOOL, PROVE_TOOL, FACT_TOOL})
-FACT_FIELDS = {"summary": "합성 회차 고정 관찰: 계획 명령을 모두 실행함", "detail": "scripted fixture (not a model judgment)",
+FACT_FIELDS = {"summary": "합성 회차 고정 관찰: 이 의도의 계획 명령이 모두 완료됨", "detail": "scripted fixture (not a model judgment)",
                "evidence": "scripted fixture", "confidence": "observed"}
 PROVE_REASON = "scripted fixture: plan finished"
 _INTENT_ID = re.compile(r"Intent id: ([1-9][0-9]{0,18})\b")
@@ -183,6 +185,22 @@ def _ids(items: object, state: str | None = None) -> list[int]:
     return out
 
 
+def bash_succeeded(messages: list[dict]) -> bool:
+    """이 대화의 Bash 호출이 하나 이상이고, 그 결과(호출 바로 뒤 도구 결과)가 모두 E② 신뢰 결과로 완료·종료 코드 0인지."""
+    outcomes = []
+    for index, message in enumerate(messages):
+        if message.get("role") != "assistant":
+            continue
+        for call in message.get("tool_calls") or []:
+            if isinstance(call, dict) and isinstance(call.get("function"), dict) and call["function"].get("name") == WORKER_TOOL:
+                following = messages[index + 1] if index + 1 < len(messages) else None
+                value = _json(_content(following)) if isinstance(following, dict) and following.get("role") == "tool" else None
+                trusted = value.get("trusted") if isinstance(value, dict) else None
+                outcomes.append(isinstance(trusted, dict) and trusted.get("classification") == "completed"
+                                and type(trusted.get("exit_code")) is int and trusted["exit_code"] == 0)
+    return bool(outcomes) and all(outcomes)
+
+
 def open_goal_ids(text: str | None) -> list[int]:
     """list_goals 결과(목표 노드 배열 또는 {goals: [...]})의 열린 목표 번호."""
     value = _json(text)
@@ -251,7 +269,8 @@ class Script:
 
     def _finish_worker(self, tools: dict, messages: list[dict]) -> tuple[str, dict] | None:
         """명령을 다 낸 Worker가 그 의도로 고정 관찰 사실 하나를 남긴다(대화마다 한 번)."""
-        if not self.plan["finish"] or FACT_TOOL not in tools or any(name == FACT_TOOL for _, name in _calls(messages)):
+        if (not self.plan["finish"] or FACT_TOOL not in tools or any(name == FACT_TOOL for _, name in _calls(messages))
+                or not bash_succeeded(messages)):
             return None
         match = next((m for m in (_INTENT_ID.search(_content(message)) for message in messages
                                   if message.get("role") in ("system", "user")) if m), None)

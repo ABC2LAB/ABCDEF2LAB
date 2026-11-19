@@ -145,6 +145,7 @@ def conversation(*tools: dict, turns=(), user: str = "go", tail_user: bool = Fal
     return {"messages": messages, "tools": list(tools)}
 
 
+OK_BASH = json.dumps({"tool_output": "status=200", "trusted": {"classification": "completed", "exit_code": 0, "final": True}})
 GOALS = json.dumps([{"id": 3, "kind": "goal", "state": "open"}, {"id": 4, "kind": "goal", "state": "met"},
                     {"id": 5, "kind": "goal", "state": "open"}])
 FACTS = json.dumps({"facts": [{"id": 9, "summary": "s"}, {"id": 8, "summary": "t"}], "total": 2, "has_more": False})
@@ -206,11 +207,33 @@ class TestFinishWithGoals(unittest.TestCase):
         script.commands_sent = len(script.plan["commands"])
         worker = (tool(WORKER_TOOL, {"command": {}}), tool(FACT_TOOL, {"intent_id": {}, "summary": {}, "confidence": {}}))
         message = "go\n\n[Your intent]:\n{}\nIntent id: 12 (pass it to record_fact / report_finding when writing back)"
-        self.assertEqual(script.decide(conversation(*worker, user=message)),
-                         (FACT_TOOL, {"intent_id": 12, "summary": "합성 회차 고정 관찰: 계획 명령을 모두 실행함", "confidence": "observed"}))
-        self.assertIsNone(script.decide(conversation(*worker, user=message, turns=[(FACT_TOOL, "ok")])))  # 대화마다 한 번
-        self.assertIsNone(script.decide(conversation(*worker, user="no id here")))
-        self.assertIsNone(script.decide(conversation(tool(WORKER_TOOL, {"command": {}}), user=message)))  # record_fact 없음
+        ran = [(WORKER_TOOL, OK_BASH), (WORKER_TOOL, OK_BASH)]
+        self.assertEqual(script.decide(conversation(*worker, user=message, turns=ran)),
+                         (FACT_TOOL, {"intent_id": 12, "summary": "합성 회차 고정 관찰: 이 의도의 계획 명령이 모두 완료됨",
+                                      "confidence": "observed"}))
+        self.assertIsNone(script.decide(conversation(*worker, user=message, turns=ran + [(FACT_TOOL, "ok")])))  # 대화마다 한 번
+        self.assertIsNone(script.decide(conversation(*worker, user="no id here", turns=ran)))
+        self.assertIsNone(script.decide(conversation(tool(WORKER_TOOL, {"command": {}}), user=message, turns=ran)))  # record_fact 없음
+
+    def test_worker_records_nothing_unless_its_bash_calls_completed(self):
+        # #797 리뷰: E② 거부·실패·불명이나 명령을 하나도 안 낸 Worker가 '완료' 사실을 남기면 실패 회차가 목표 달성으로 끝난다.
+        script = self.script()
+        script.commands_sent = len(script.plan["commands"])
+        worker = (tool(WORKER_TOOL, {"command": {}}), tool(FACT_TOOL, {"intent_id": {}, "summary": {}}))
+        message = "Intent id: 12 (pass it as intent_id to record_fact)."
+        bad = {
+            "denied_text": "error: request denied",
+            "policy": json.dumps({"tool_output": "x", "trusted": {"classification": "policy_not_executed", "exit_code": 0}}),
+            "exit": json.dumps({"tool_output": "x", "trusted": {"classification": "completed", "exit_code": 7}}),
+            "unknown": json.dumps({"tool_output": "x", "trusted": {"classification": "result_unknown", "exit_code": 0}}),
+            "exit_text": json.dumps({"tool_output": "x", "trusted": {"classification": "completed", "exit_code": "0"}}),
+            "no_trusted": json.dumps({"tool_output": "completed"}),
+        }
+        for name, result in bad.items():
+            with self.subTest(name=name):
+                self.assertIsNone(script.decide(conversation(*worker, user=message, turns=[(WORKER_TOOL, OK_BASH), (WORKER_TOOL, result)])))
+        # 다른 의도가 명령을 다 가져가 이 대화에서 Bash를 하나도 안 냈다
+        self.assertIsNone(script.decide(conversation(*worker, user=message)))
 
     def test_result_parsers(self):
         self.assertEqual(open_goal_ids(GOALS), [3, 5])
