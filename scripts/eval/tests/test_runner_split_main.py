@@ -158,7 +158,7 @@ class TestSyntheticDeclared(SyntheticFixture):
         with mock.patch.object(runner_split_main.Docker, "env_file_value", side_effect=AssertionError("key read")), \
                 mock.patch.object(runner_split_main, "prepare_split_inputs", wraps=runner_split_main.prepare_split_inputs) as prepared, \
                 redirect_stderr(io.StringIO()):
-            code = run_split_ours(self.config, synthetic_preflight(self.config), docker_runner=docker_runner)
+            code = run_split_ours(self.config, synthetic_preflight(self.config), docker_runner=docker_runner, condition="우리@test")
         self.assertEqual(code, 2)
         local = prepared.call_args.kwargs["local_model"]
         self.assertEqual((prepared.call_args.kwargs["manifest"], local["addresses"], local["base_url"], local["context_window_k"]),
@@ -222,7 +222,7 @@ class TestSpec(Fixture):
         plan = plan_split_run(self.config, self.config.split, run_id="ours-r1", target_image=declared.target_image,
                               meter_port=declared.meter_port)
         rendered = {"services": {"api": {"healthcheck": {"test": ["CMD", "true"]}}, "target": {}}}
-        spec = split_run_spec(self.config, plan, declared, rendered)
+        spec = split_run_spec(self.config, plan, declared, rendered, condition="우리@test")
         run = self.config.run
         self.assertEqual((spec.run_id, spec.project), ("ours-r1", "eval-ours-r1"))
         self.assertEqual((spec.request_budget, spec.time_budget_seconds), (declared.request_budget, declared.time_budget_seconds))
@@ -248,8 +248,12 @@ class TestSpec(Fixture):
                          frozenset(Listener(e.address, e.port) for e in self.config.host_listen_allowlist))
         from runner_config import HostListen
         allowed = dataclasses.replace(self.config, host_listen_allowlist=(HostListen("10.0.0.5", 11434, "local model"),))
-        self.assertEqual(split_run_spec(allowed, plan, declared, rendered).allowed_listens, frozenset({Listener("10.0.0.5", 11434)}))
+        self.assertEqual(split_run_spec(allowed, plan, declared, rendered, condition="우리@test").allowed_listens, frozenset({Listener("10.0.0.5", 11434)}))
         self.assertEqual(split_run_spec(self.config, plan, declared, rendered, condition="ours@35b").condition, "ours@35b")
+        # 실행 입력을 만드는 시점에 빈 기록 칸을 설정 오류로 거부한다(종료 코드 2, 회차를 만들지 않음, #745 리뷰)
+        with self.assertRaises(RunnerConfigError) as caught:
+            split_run_spec(self.config, plan, declared, rendered)
+        self.assertEqual(caught.exception.errors, ["split_run_spec.condition: MISSING"])
 
 
 class TestMainDispatch(Fixture):
@@ -282,13 +286,23 @@ class TestMainDispatch(Fixture):
 
 
 class TestBeforeUp(Fixture):
-    def run_ours(self, **patches):
+    def run_ours(self, condition="우리@test", **patches):
         stdout, stderr = io.StringIO(), io.StringIO()
         defaults = {"run_openssl": FakeOpenssl()}
         defaults.update(patches)
         with mock.patch.multiple(runner_split_main, **defaults), redirect_stdout(stdout), redirect_stderr(stderr):
-            code = run_split_ours(self.config, preflight_for(self.config), environ={})
+            code = run_split_ours(self.config, preflight_for(self.config), environ={}, condition=condition)
         return code, stderr.getvalue()
+
+    def test_empty_condition_is_a_config_error_before_anything_starts(self):
+        # 조건 이름 없이 부르면 실행 입력을 만들 때 설정 오류다(종료 코드 2, 회차를 시작하지 않고 회차 디렉터리도 지움, #745 리뷰)
+        rendered = {"services": {"api": {"healthcheck": {"test": ["CMD-SHELL", "true"]}}}}
+        with mock.patch.object(runner_split_main.Docker, "compose_config", lambda self, args: copy.deepcopy(rendered)), \
+                mock.patch.object(runner_split_main.Docker, "env_file_value", lambda docker, path, name, scratch: "sk-or-v1-test"):
+            code, stderr = self.run_ours(execute_split_run=mock.Mock(side_effect=AssertionError("started")), condition="")
+        self.assertEqual(code, 2)
+        self.assertIn("split_run_spec.condition: MISSING", stderr)
+        self.assertEqual(list(self.runs.iterdir()), [])
 
     def test_render_failure_removes_inputs_and_the_run_directory(self):
         def compose_config(self, args):

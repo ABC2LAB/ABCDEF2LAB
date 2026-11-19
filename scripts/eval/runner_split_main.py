@@ -40,7 +40,7 @@ from runner_split_config import (
 )
 from runner_split_inputs import SplitInputsError, prepare_split_inputs, remove_split_inputs, run_openssl
 from runner_split_ports import DockerSplitPorts
-from runner_split_run import COMPLETE, SplitRunSpec, execute_split_run
+from runner_split_run import COMPLETE, SplitRunSpec, execute_split_run, missing_record_fields
 from runner_window import healthcheck_actions
 
 MODEL_KEY_NAME = "EVAL_LLM_API_KEY"
@@ -136,7 +136,7 @@ def split_run_spec(config: RunnerConfig, plan: SplitPlan, declared: SplitDeclare
                    path_key_ref: str | None = None, *, manifest: dict | None = None, repeat_index: int = 0,
                    exploration_policy_sha256: str = "", scripted_plan_sha256: str = "", condition: str = "") -> SplitRunSpec:
     """회차 시한·간격은 B(build_spec)와 같은 설정 칸에서 읽는다. 제품 멈춤 뒤 끝 상태 대기는 제품 상태 대기(split.task_wait_seconds)."""
-    return SplitRunSpec(
+    spec = SplitRunSpec(
         run_id=plan.run_id, project=plan.project, image_ids={role: image.id for role, image in plan.images.items()},
         request_budget=declared.request_budget, time_budget_seconds=declared.time_budget_seconds,
         poll_seconds=config.run["budget_poll_seconds"], drain_timeout_seconds=config.run["drain_timeout_seconds"],
@@ -162,6 +162,11 @@ def split_run_spec(config: RunnerConfig, plan: SplitPlan, declared: SplitDeclare
         environment_fingerprint=declared.environment_fingerprint, target_origin=declared.target_origin,
         observer_path=config.observer_path, observer_readonly_ref=config.observer_readonly_ref,
         allowed_listens=frozenset(Listener(entry.address, entry.port) for entry in config.host_listen_allowlist))
+    # 실행 입력을 만드는 시점에 v1.1 기록 칸을 본다. 비면 설정 오류(종료 코드 2, 회차를 만들지 않음)다(#745 리뷰).
+    missing = missing_record_fields(spec)
+    if missing:
+        raise RunnerConfigError([f"split_run_spec.{name}: MISSING" for name in missing])
+    return spec
 
 
 def run_split_ours(config: RunnerConfig, preflight: object, *, repeat_index: int = 0, condition: str = "", docker_runner=run_docker, environ=None,

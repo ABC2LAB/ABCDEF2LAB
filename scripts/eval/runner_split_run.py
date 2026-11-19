@@ -472,6 +472,9 @@ def _e3_confirmation(ports, draft_id: str) -> dict:
 
 def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles, evidence, clock: Clock,
                      state: _SplitState) -> None:
+    # 기록에 필요한 칸이 비었으면 아무것도 띄우지 않는다(제품 시작·모델 호출 전에 끝낸다, #745 리뷰)
+    if missing_record_fields(spec):
+        raise RunFailure("record_spec_incomplete")
     if _step(state, "project_check_failed", ports.preexisting):
         raise RunFailure("project_exists")
     if _step(state, "image_id_failed", ports.image_ids) != spec.image_ids:
@@ -685,16 +688,24 @@ def split_run_conditions(spec: SplitRunSpec, state: _SplitState, llm_summary: di
             "machine_id_sha256": host["machine_id_sha256"]}
 
 
+RECORD_SPEC_FIELDS = ("condition", "fixture_fingerprint", "environment_fingerprint", "target_origin", "observer_path",
+                      "observer_readonly_ref", "model_tag")
+
+
+def missing_record_fields(spec: SplitRunSpec) -> list[str]:
+    """v1.1 러너 기록에 필요한 선언·설정 칸 중 빈 것. 회차를 띄우기 전에 보고(#745 리뷰: 빈 입력으로 유료 회차를 쓰지 않게),
+    기록을 만들 때 다시 본다."""
+    return [name for name in RECORD_SPEC_FIELDS if not getattr(spec, name)]
+
+
 def _split_record(spec: SplitRunSpec, evidence, state: _SplitState, llm_summary: dict, *, pre: dict, post: dict, pre_board: dict,
                   post_board: dict, window: dict, observer: list, meter_rows: list, sealed: dict, drained: dict, settled: int,
                   goal: dict, files: dict, workers: int | None, steps: dict, pre_checked_at: str, post_check_at: str) -> None:
     """O v1.1 러너 기록(서명 전)과 근거 파일 둘(격리 근거·해결 이벤트). B(runner._build_record)와 같은 부품·같은 행 종류를
     쓰고 출처만 O다(설계안 §2~§5). 서명은 내린 뒤 한다."""
     def build() -> dict:
-        for name in ("condition", "fixture_fingerprint", "environment_fingerprint", "target_origin", "observer_path",
-                     "observer_readonly_ref", "model_tag"):
-            if not getattr(spec, name):
-                raise RecordError("record_spec_incomplete")
+        if missing_record_fields(spec):
+            raise RecordError("record_spec_incomplete")
         target = pre["services"][TARGET]["id"]
         context = RecordContext(run_id=spec.run_id, model_tag=spec.model_tag, reset_generation=target, instance_id=target,
                                 execution_id=pre["services"][PREPARATION]["id"])

@@ -1299,14 +1299,20 @@ class TestRunRecord(unittest.TestCase):
     def test_invalid_cases(self):
         def listener(ports):
             ports.listeners = {Listener("0.0.0.0", 9999)}
-        cases = [(listener, {}, "pre_host_condition_violation"), (None, {"condition": ""}, "record_build_failed"),
-                 (None, {"observer_path": ""}, "record_build_failed")]
-        for mutate, changes, reason in cases:
-            with self.subTest(reason=reason, changes=changes):
-                result, _, evidence = run(mutate, **changes)
-                self.assertEqual((result["status"], result["reasons"]), ("invalid", [reason]))
+        result, _, evidence = run(listener)
+        self.assertEqual((result["status"], result["reasons"]), ("invalid", ["pre_host_condition_violation"]))
+        self.assertNotIn("run-record.json", evidence.files)
+        self.assertNotIn("signature", result)
+
+    def test_empty_record_fields_stop_before_anything_starts(self):
+        # 기록 칸이 비면 회차를 띄우지 않는다: 제품 시작·모델 호출 사후 검증 없이 끝난다(#745 리뷰, 유료 회차를 쓰지 않게)
+        from runner_split_run import RECORD_SPEC_FIELDS
+        for name in RECORD_SPEC_FIELDS:
+            with self.subTest(field=name):
+                result, ports, evidence = run(**{name: ""})
+                self.assertEqual((result["status"], result["reasons"]), ("invalid", ["record_spec_incomplete"]))
+                self.assertFalse({"preexisting", "up", "start_round", "generation_verify"} & set(ports.calls), ports.calls)
                 self.assertNotIn("run-record.json", evidence.files)
-                self.assertNotIn("signature", result)
 
     def test_observer_count_and_listener_allowance(self):
         clock = FakeClockState()
