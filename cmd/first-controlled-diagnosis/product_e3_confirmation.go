@@ -111,6 +111,24 @@ func (c *productE3Confirmation) run(ctx context.Context, taskID string, begin fu
 	return nil
 }
 
+// stopped는 감독자의 중지 기록 훅이다. 확정 단계를 돌리지 못하고 실행이 끝났을 때(중지·취소·실패) 요청 없이 그 회차의 확정
+// 단계 상태를 결과 파일에 남긴다(e3contract.RunStopped). 비활성 근거가 있으면 disabled(사유), 돌 수 있었으면 interrupted다.
+// 결과 파일이 없을 때 비활성으로 추정하지 않게 하려는 것이다(#738 이동찬 리뷰).
+func (c *productE3Confirmation) stopped(ctx context.Context, taskID string) error {
+	in, _ := c.input(taskID)
+	res := e3contract.RunStopped(ctx, c.deps, in)
+	raw, err := json.Marshal(res)
+	if err == nil {
+		err = writeRunPrivateFile(c.runsDir, c.jobID, productE3ConfirmationFile, raw)
+	}
+	log.Printf("[e3-confirmation] 회차 %s 확정 단계 중지 기록 %s %s", c.jobID, res.Status, res.Reason)
+	if err != nil {
+		log.Printf("[e3-confirmation] 회차 %s 기록 실패: e3_result_unrecorded", c.jobID)
+		return errors.New("e3_result_unrecorded")
+	}
+	return nil
+}
+
 // input은 확정 단계 입력을 회차 기록에서 만든다. 모두 서버가 발급·동결한 값이고 모델이 쓴 값은 없다. 읽지 못한 칸은 비워 두고
 // 지어내지 않는다: e3contract.Run이 binding_invalid·confirmation_share_unavailable 등으로 확정 단계를 끈다.
 func (c *productE3Confirmation) input(taskID string) (e3contract.Input, time.Duration) {

@@ -19,7 +19,8 @@ const (
 	StatusStartRefused ConfirmationStatus = "start_refused"
 	// StatusCompleted는 확정 단계가 끝까지 돈 경우다. 종류마다 판정 행이 있다(UNDECIDABLE 포함).
 	StatusCompleted ConfirmationStatus = "completed"
-	// StatusInterrupted는 회차 중지로 확정 단계가 도중에 끊긴 경우다. 끝낸 종류의 판정만 있다.
+	// StatusInterrupted는 회차 중지로 확정 단계가 도중에 끊긴 경우다. 끝낸 종류의 판정만 있다. 확정 단계를 시작하기 전에
+	// 실행이 중지·취소로 끝났고 비활성 근거가 없었던 경우(RunStopped)도 이것이고, 그때는 판정·요청이 0이다.
 	StatusInterrupted ConfirmationStatus = "interrupted"
 	// StatusIntegrityFailed는 결속·진위가 깨진 경우다. 판정 행을 만들지 않는다. "발견 없음"·"판정 없음"으로 보이면 안 된다.
 	StatusIntegrityFailed ConfirmationStatus = "confirmation_integrity_failed"

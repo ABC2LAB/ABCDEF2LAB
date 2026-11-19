@@ -530,14 +530,15 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	// goal 칸이 비어 평가 러너가 원본 본문의 공통 부분과 대조하지 못한다(VAmPI 3차 회차에서 발견).
 	// 제품 대상 회차는 모델 단계가 끝난 뒤 E② 마감 전에 E③ 확정 단계를 돈다(결정 §5). 시험 계정 인증 결과는 실행 runtime에서
 	// 그때 읽는다.
-	var e3Confirmation func(context.Context, string, func()) error
+	var e3Confirmation server.FirstDiagnosisE3Hooks
 	if b.product != nil && l.productTarget != nil {
 		runtime := d.runtime
-		e3Confirmation = newProductE3Confirmation(b.config.RunsDir, execution.Job.ID, *l.productTarget, b.product.targets,
-			func() map[string]string { return launchAccountAuth(runtime) }).run
+		confirmation := newProductE3Confirmation(b.config.RunsDir, execution.Job.ID, *l.productTarget, b.product.targets,
+			func() map[string]string { return launchAccountAuth(runtime) })
+		e3Confirmation = server.FirstDiagnosisE3Hooks{Run: confirmation.run, Stopped: confirmation.stopped}
 	}
 	if end, ok := hard.Deadline(); !ok || d.supervisor == nil || d.supervisor.SetTimeBudget(urlTimeBudgetClose(end, time.Duration(l.profile.Budget.DurationSeconds)*time.Second, time.Duration(launch.ShutdownTimeoutSeconds)*time.Second)) != nil ||
-		d.supervisor.SetGoalDigests(goalCommonSHA, goalProductSHA) != nil || e3Confirmation != nil && d.supervisor.SetE3Confirmation(e3Confirmation) != nil {
+		d.supervisor.SetGoalDigests(goalCommonSHA, goalProductSHA) != nil || e3Confirmation.Run != nil && d.supervisor.SetE3Confirmation(e3Confirmation) != nil {
 		cleanup, done := launchCleanupContext(context.WithoutCancel(parent), launch)
 		closeErr := d.Close(cleanup)
 		done()

@@ -585,9 +585,28 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	// 그대로인지, e3-hook-disabled는 꺼진 확정 단계(선언 없음·연결 없음)가 begin을 부르지 않아 감독자 흐름이 E③ 없는 실행과
 	// 같은지 본다(Go 조건 2).
 	e3Hooked := mode == "e3-hook" || mode == "e3-hook-error" || mode == "e3-hook-disabled"
+	// 중지 마감(cancel·user-stop)에서도 E③ 결과가 남도록 중지 기록 훅이 한 번 불리는지 본다(#738 이동찬 리뷰).
+	e3StopHooked := mode == "cancel" || mode == "user-stop" || mode == "pre-run-stop"
 	e3Calls, e3State := 0, ""
+	var e3StoppedCalls atomic.Int64
+	var e3StoppedCtxLive atomic.Bool
+	stopRecord := func(hookCtx context.Context, taskID string) error {
+		if taskID == task.ID {
+			e3StoppedCalls.Add(1)
+		}
+		e3StoppedCtxLive.Store(hookCtx.Err() == nil)
+		return nil
+	}
+	if e3StopHooked {
+		if err := supervisor.SetE3Confirmation(FirstDiagnosisE3Hooks{Run: func(context.Context, string, func()) error {
+			e3Calls++
+			return nil
+		}, Stopped: stopRecord}); err != nil {
+			t.Fatal("E③ 중지 기록 훅 설정 실패", err)
+		}
+	}
 	if e3Hooked {
-		if err := supervisor.SetE3Confirmation(func(hookCtx context.Context, taskID string, begin func()) error {
+		if err := supervisor.SetE3Confirmation(FirstDiagnosisE3Hooks{Stopped: stopRecord, Run: func(hookCtx context.Context, taskID string, begin func()) error {
 			e3Calls++
 			if mode != "e3-hook-disabled" {
 				begin()
@@ -612,7 +631,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 				return errors.New("owned e3 confirmation fixture failure")
 			}
 			return nil
-		}); err != nil {
+		}}); err != nil {
 			t.Fatal("E③ 확정 단계 훅 설정 실패", err)
 		}
 	}
@@ -636,6 +655,10 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		state := runtime.server.requestApprovals.runState(mustFirstDiagnosisTaskNumber(task.ID))
 		if !errors.Is(err, context.Canceled) || state.Phase != "closed" || !state.DrainComplete || state.Outcome != "cancelled" || hits.Load() != 0 || provider.calls != 0 || plannerProvider.calls != 0 {
 			t.Fatalf("실행 전 중지 마감 실패: state=%+v hits=%d", state, hits.Load())
+		}
+		// 실행에 들어가기 전에 중지돼도 E③ 결과가 남도록 중지 기록이 한 번 불린다(대상 요청 0, 확정 단계 0, #738 이동찬 리뷰).
+		if e3Calls != 0 || e3StoppedCalls.Load() != 1 || !e3StoppedCtxLive.Load() {
+			t.Fatalf("실행 전 중지의 E③ 기록: 확정 %d·중지 기록 %d·문맥 %v", e3Calls, e3StoppedCalls.Load(), e3StoppedCtxLive.Load())
 		}
 		return
 	}
@@ -1081,6 +1104,10 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		if runErr == nil || !errors.Is(runErr, context.Canceled) {
 			t.Fatal("진행 중 실제 HTTP 요청 취소를 성공으로 반환하거나 취소 원인을 잃음")
 		}
+		// 중지 마감은 확정 단계를 부르지 않고 중지 기록을 한 번 남긴다. 실행 문맥이 취소돼도 기록 문맥은 살아 있다.
+		if e3Calls != 0 || e3StoppedCalls.Load() != 1 || !e3StoppedCtxLive.Load() {
+			t.Fatalf("중지 마감의 E③ 기록: 확정 %d·중지 기록 %d·문맥 %v", e3Calls, e3StoppedCalls.Load(), e3StoppedCtxLive.Load())
+		}
 		if mode == "user-stop" {
 			state := runtime.server.requestApprovals.runState(mustFirstDiagnosisTaskNumber(task.ID))
 			if state.Phase != "closed" || state.Outcome != "cancelled" || !state.DrainComplete || state.ClosureFailed {
@@ -1290,7 +1317,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 			}
 		}
 		result := supervisor.RunResult()
-		if e3Calls != 1 || e3State != wantE3State || result == nil || !result.Valid() || result.Outcome != diagnosis.OutcomeComplete ||
+		if e3Calls != 1 || e3StoppedCalls.Load() != 0 || e3State != wantE3State || result == nil || !result.Valid() || result.Outcome != diagnosis.OutcomeComplete ||
 			result.IntentOutcomes != (diagnosis.IntentOutcomes{Done: 1}) || result.ClosingReason != "" {
 			t.Fatalf("E③ 확정 단계 훅이 모델 단계 뒤·E② 마감 전에 한 번 불리지 않았거나 실행 결과가 바뀜 calls=%d state=%q result=%+v", e3Calls, e3State, result)
 		}

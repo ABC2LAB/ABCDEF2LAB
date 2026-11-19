@@ -195,7 +195,8 @@ func TestFirstDiagnosisRegisteredProductionThroughStoredFinding(t *testing.T) {
 	runtime.assembly.server.provCacheMu.Unlock()
 	// E③ 제품 확정 단계 훅은 일반 HTTP 실행에만 붙는다. 등록 GET(평가) 경로는 부르지 않는다.
 	var e3Calls atomic.Int64
-	if err := supervisor.SetE3Confirmation(func(context.Context, string, func()) error { e3Calls.Add(1); return nil }); err != nil {
+	if err := supervisor.SetE3Confirmation(FirstDiagnosisE3Hooks{Run: func(context.Context, string, func()) error { e3Calls.Add(1); return nil },
+		Stopped: func(context.Context, string) error { e3Calls.Add(1); return nil }}); err != nil {
 		t.Fatal("E③ 확정 단계 훅 설정 실패", err)
 	}
 	if err := supervisor.Run(ctx, task.ID, intentID, "approved"); err != nil {
