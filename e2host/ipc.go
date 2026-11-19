@@ -74,6 +74,8 @@ func (h *Host) Serve(ctx context.Context, socket string, expectedUID uint32) err
 
 func (h *Host) serveConn(ctx context.Context, conn *net.UnixConn, expectedUID uint32) {
 	defer conn.Close()
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
 	uid, err := peerUID(conn)
 	if err != nil || uid != expectedUID {
 		return
@@ -86,7 +88,6 @@ func (h *Host) serveConn(ctx context.Context, conn *net.UnixConn, expectedUID ui
 		}
 	}()
 	for ctx.Err() == nil {
-		_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
 		var request message
 		if decodeLine(reader, &request) != nil {
 			return
