@@ -21,7 +21,6 @@ import {
   summarizeDiagnosticEntries,
 } from "@/lib/diagnosis/diagnostic-results";
 import type { RemediationEntry } from "@/lib/diagnosis/remediation";
-import { RUN_COUNT_ROWS } from "@/lib/diagnosis/request-approvals";
 import { entrySeverity, entrySeverityLabel } from "@/lib/diagnosis/severity";
 
 import { SEVL, type SevKey } from "../../data/findings";
@@ -880,22 +879,32 @@ export function prettyEvidence(raw: string): string {
 }
 
 /**
- * 증거 · 요청 기록 탭 맨 위 전송 집계 (요청 접수 · 허용 · 차단 …, 저장된 실행 기록의 E② 집계 값 그대로). 탭을 누르면 바로
- * 보이고 발견별 증거는 그 아래로 내려 본다(사용자 11/19). 실행 종료 기록 칸(단계 · 결과 · 마감 · 실행 ID · 감사 · 저장
- * 시각)은 보는 사람에게 필요 없어 뺐다(사용자 11/19). 기록이 없거나 확인할 수 없으면 표를 두지 않고(0 으로 그리지 않음),
- * 읽기 실패만 다시 시도를 보인다.
+ * 증거 · 요청 기록 탭 맨 위 전송 집계 (저장된 실행 기록의 E② 집계 값 그대로). 탭을 누르면 바로 보이고 발견별 증거는 그
+ * 아래로 내려 본다(사용자 11/19). 실행 종료 기록 칸(단계 · 결과 · 마감 · 실행 ID · 감사 · 저장 시각)은 보는 사람에게 필요
+ * 없어 뺐다. 칸은 자산 탐색 숫자 칸과 같은 이름으로 넷만: 보낸 요청(대상 전송 시도) · 막은 요청(차단) · 응답 받음 · 결과
+ * 불명. 요청 접수 · 허용은 보낸 · 막은 요청과 겹치고 호출(도구 호출 수)은 뜻이 어려워 두지 않는다(사용자 11/19). 지원 안
+ * 하는 요청은 있을 때만 막은 요청 칸에 적고, 결과 불명은 0이어도 둔다(절대규칙 5). 기록이 없거나 확인할 수 없으면 표를
+ * 두지 않고(0 으로 그리지 않음), 읽기 실패만 다시 시도를 보인다.
  */
 function RunCounts({ run }: { run: Poll<DiagnosisRunView> }) {
   const d = run.data;
   if (!d && run.error) return <ErrorNote error={run.error} onRetry={run.reload} />;
   const e = d?.kind === "run" ? d.run.execution : null;
   if (!e) return null;
+  const c = e.counts;
+  const cells: [string, number, string][] = [
+    ["보낸 요청", c.forward_attempted, ""],
+    ["막은 요청", c.denied, c.unsupported ? `지원 안 하는 요청 ${fmtCount(c.unsupported)}` : ""],
+    ["응답 받음", c.responses, ""],
+    ["결과 불명", c.unknown, ""],
+  ];
   return (
-    <section className={cx(s.meters, s.m8)} aria-label="전송 집계">
-      {RUN_COUNT_ROWS.map(({ key, label }) => (
-        <div key={key} className={s.cell}>
+    <section className={s.meters} aria-label="전송 집계">
+      {cells.map(([label, n, sub]) => (
+        <div key={label} className={s.cell}>
           <div className={s.k}>{label}</div>
-          <div className={s.v}>{fmtCount(e.counts[key])}</div>
+          <div className={s.v}>{fmtCount(n)}</div>
+          {sub ? <div className={s.sub}>{sub}</div> : null}
         </div>
       ))}
     </section>

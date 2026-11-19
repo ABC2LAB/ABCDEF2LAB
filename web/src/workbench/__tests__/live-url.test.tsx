@@ -1599,21 +1599,37 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     const evTab = screen.getByRole("tabpanel", { name: "증거 · 요청 기록" });
     expect(evTab.firstElementChild).toBe(counts);
     expect(counts.nextElementSibling).toBe(screen.getByRole("list", { name: "발견별 증거" }));
+    // 한 줄 네 칸, 자산 탐색과 같은 이름(사용자 11/19): 요청 접수 · 허용 · 호출 · 미지원(0)은 두지 않는다
     expect([...counts.querySelectorAll(":scope > div > div:first-child")].map((x) => x.textContent)).toEqual([
-      "요청 접수",
-      "허용",
-      "차단",
-      "미지원",
-      "대상 전송 시도",
-      "응답 수신",
-      "불명",
-      "호출",
+      "보낸 요청",
+      "막은 요청",
+      "응답 받음",
+      "결과 불명",
     ]);
-    expect(within(within(counts).getByText("차단").parentElement as HTMLElement).getByText("2")).toBeInTheDocument();
+    // 값은 저장 값 그대로: 보낸 요청 = 대상 전송 시도, 막은 요청 = 차단, 결과 불명은 0이어도 둔다(절대규칙 5)
+    expect(counts.textContent).toBe("보낸 요청1막은 요청2응답 받음1결과 불명0");
+    for (const gone of ["요청 접수", "허용", "호출", "미지원", "지원 안 하는 요청"])
+      expect(within(counts).queryByText(new RegExp(gone))).toBeNull();
     expect(screen.queryByRole("region", { name: "실행 종료 기록" })).toBeNull();
     for (const gone of ["정상 종료", "run-1", "완결"]) expect(within(evTab).queryByText(gone)).toBeNull();
     // 모델 사용량은 머리 줄로 옮겨 증거 · 요청 기록 탭에 따로 두지 않는다
     expect(screen.queryByRole("heading", { name: "모델 사용량" })).toBeNull();
+  });
+
+  it("증거 · 요청 기록 전송 집계: 지원 안 하는 요청이 있을 때만 막은 요청 칸에 적는다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    if (RUN_RECORD.kind !== "run" || !RUN_RECORD.run.execution) throw new Error("fixture");
+    const execution = RUN_RECORD.run.execution;
+    a.fetchDiagnosisRun.mockResolvedValue({
+      ...RUN_RECORD,
+      run: { ...RUN_RECORD.run, execution: { ...execution, counts: { ...execution.counts, unsupported: 4 } } },
+    });
+    mount("report");
+    fireEvent.click(await screen.findByRole("tab", { name: "증거 · 요청 기록" }));
+    const counts = await screen.findByRole("region", { name: "전송 집계" });
+    const blocked = within(counts).getByText("막은 요청").parentElement as HTMLElement;
+    expect(blocked).toHaveTextContent(/^막은 요청2지원 안 하는 요청 4$/);
   });
 
   it("오른쪽 발견 상세 머리의 '상세 보기'는 고른 발견의 상세 페이지(왼쪽 카드 · 오른쪽 상태 카드)로 가운데를 바꾸고, '발견 목록으로' 돌아온다", async () => {
