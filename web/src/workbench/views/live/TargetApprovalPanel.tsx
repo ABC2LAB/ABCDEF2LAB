@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, apiFetch } from "@/lib/diagnosis/api";
 
 import { cx } from "../../lib/cx";
+import { dateTimeOf } from "../../live/map";
 import { Icon } from "../../ui/icons";
 import { HelpTip } from "../../ui/parts";
 import s from "../../workbench.module.css";
@@ -24,7 +25,19 @@ type Target = {
   expires_at?: string;
 };
 type Reply = { targets?: Target[]; target?: Target; reason?: string };
-const TARGET_APPROVAL_VALID_HOURS = 4;
+/**
+ * 대상 승인 유효 시간(승인 시각부터, 시간). 기본 4시간은 대상 승인 계약(product-target-approval-proposal.md)의 UI 기본값 그대로.
+ * 고를 수 있는 값은 서버 상한 `diagnosisprep.MaxTargetApprovalHours`(720) 안에서만 둔다. 서버는 1…720 밖을
+ * `readonly_scope_required`(엉뚱한 안내)로 거절하므로 화면에서 고정 선택지로만 보낸다. 승인 범위(어디로 · 무엇을)는 바꾸지 않는다.
+ */
+export const TARGET_APPROVAL_HOURS = [
+  { hours: 4, label: "4시간 (기본)" },
+  { hours: 24, label: "1일" },
+  { hours: 72, label: "3일" },
+  { hours: 168, label: "7일" },
+  { hours: 720, label: "30일" },
+] as const;
+const TARGET_APPROVAL_DEFAULT_HOURS = 4;
 const reasons: Record<string, string> = {
   dns_ownership_required: "IP 주소 직접 등록은 지원하지 않습니다. DNS 소유 확인이 가능한 호스트를 사용하세요.",
   target_approval_expired: "TLS 확인 중 승인 시간이 지났습니다. 현재 승인 상태를 다시 조회하세요.",
@@ -89,6 +102,7 @@ export function TargetApprovalPanel({
   const [paths, setPaths] = useState("");
   const [basis, setBasis] = useState("");
   const [reversible, setReversible] = useState(false);
+  const [validHours, setValidHours] = useState<number>(TARGET_APPROVAL_DEFAULT_HOURS);
   const [busy, setBusy] = useState(false);
   const [unsupported, setUnsupported] = useState(false);
   const [uncertain, setUncertain] = useState(false);
@@ -136,6 +150,7 @@ export function TargetApprovalPanel({
   }, [list]);
   useEffect(() => {
     setReversible(false);
+    setValidHours(TARGET_APPROVAL_DEFAULT_HOURS);
     setOpen(false);
     if (origin) {
       setPaths("");
@@ -149,6 +164,8 @@ export function TargetApprovalPanel({
   async function change(action: "register" | "approve" | "revoke") {
     if (disabled || busy || uncertain || mutationLock.current || !origin || (action !== "register" && !selected))
       return;
+    // 선택지 밖 값은 보내지 않는다(서버 상한 밖이면 다른 사유로 거절돼 원인을 알 수 없다)
+    if (action === "register" && !TARGET_APPROVAL_HOURS.some((c) => c.hours === validHours)) return;
     mutationLock.current = true;
     const version = ++generation.current;
     setBusy(true);
@@ -172,7 +189,7 @@ export function TargetApprovalPanel({
               ...(allowStateChanges && reversible ? { reversible_writes: true } : {}),
               readonly_basis: basis.trim(),
               requests: requestLimit,
-              valid_hours: TARGET_APPROVAL_VALID_HOURS,
+              valid_hours: validHours,
             }
           : {};
       const r = await apiFetch<Reply>(path, { method: "POST", redirect: "error", body: JSON.stringify(body) }, false);
@@ -236,7 +253,7 @@ export function TargetApprovalPanel({
         <div className={s.hostline}>
           <span className={cx(s.pill, s.ok)}>승인된 대상</span>
           <span className={s.help}>
-            {`${(selected.path_prefixes ?? []).join(", ")} · ${(selected.methods ?? []).join("/")} · 회차당 요청 상한 ${selected.requests} · 만료 ${selected.expires_at}`}
+            {`${(selected.path_prefixes ?? []).join(", ")} · ${(selected.methods ?? []).join("/")} · 회차당 요청 상한 ${selected.requests} · 만료 ${dateTimeOf(selected.expires_at) || selected.expires_at}`}
           </span>
           <button className={cx(s.btn, s.sm)} type="button" disabled={off} onClick={() => void change("revoke")}>
             승인 철회
@@ -384,6 +401,32 @@ export function TargetApprovalPanel({
                 </span>
               </label>
             ) : null}
+            <div className={s.field}>
+              <label className={s.lbl} htmlFor="targetValidHours">
+                승인 유효 시간
+              </label>
+              <select
+                id="targetValidHours"
+                className={s.inp}
+                value={validHours}
+                disabled={off}
+                onChange={(e) => setValidHours(Number(e.target.value))}
+              >
+                {TARGET_APPROVAL_HOURS.map((c) => (
+                  <option key={c.hours} value={c.hours}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
+              {/* 할 일 한 줄만 보이고 설치 기간 · 범위 불변 설명은 (?) 메모에(#802 윤재상 리뷰, 다른 칸과 같은 모양) */}
+              <p className={cx(s.help, s.tipline)} id="targetValidHoursNote">
+                승인 시각부터 이 시간이 지나면 새 점검을 못 합니다 · 시연 날까지 남게 고르세요{" "}
+                <HelpTip label="승인 유효 시간 설명 보기">
+                  TXT 확인으로 승인한 때부터 셉니다. 설치 유효 기간이 먼저 끝나면 그때 막힙니다. 유효 시간만 고르고 승인
+                  범위(주소 · 경로 · 메서드 · 요청 상한)는 바뀌지 않습니다.
+                </HelpTip>
+              </p>
+            </div>
             {/* 회차당 요청 상한 줄은 뺐다(사용자 11/18) — 상한을 못 받아 등록할 수 없을 때만 이유를 보인다 */}
             {requestLimit ? null : (
               <p className={s.help} id="targetRequestLimit">
