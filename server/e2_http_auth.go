@@ -3,8 +3,11 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -87,23 +90,106 @@ func validE2HTTPFileAuth(a *E2HTTPFileAuth, mode e2proxy.HeaderMode, rules []E2H
 
 var errAuthLoginFailed = errors.New("auth_login_failed")
 
+// 계정 결속 참조(E③↔E② v3 계약 §2.2·§4, account_binding_ref). C14 인증에 성공한 세션마다 세션 저장소가 새 난수로
+// 발급한다. 실행(run_ref)·계정 라벨·세션 판에 결속하는 것은 이 저장소의 표이고, 참조 값에는 실행·라벨·자격·세션 값이 하나도
+// 들어가지 않는다(그래서 참조에서 아무것도 추정할 수 없다). 다시 로그인으로 세션이 바뀌면 참조도 새로 발급하고 옛 참조는
+// 버린다. 참조는 비밀이 아니다(v3 이벤트·영수증에 실린다).
+const (
+	e2HTTPAccountBindingPrefix      = "acct-"
+	e2HTTPAccountBindingRandomBytes = 16
+)
+
+// ErrE2HTTPAccountBinding은 계정 결속 참조가 그 실행·라벨의 지금 결속이 아니어서 세션을 주지 않는 경우다(옛 참조·다른
+// 라벨·다른 실행·발급 안 됨).
+var ErrE2HTTPAccountBinding = errors.New("server: account binding is not current")
+
+// E2HTTPAccountBindings는 E²가 확정 단계(E③) 프로그램 요청에 시험 계정 세션을 붙일 때 쓰는 조회다(v3 계약 §9의
+// AccountBindingRef). 신뢰된 세션 저장소만 구현한다. 모델·요청이 준 참조로는 세션을 얻을 수 없고, 지금 결속과 같은
+// 참조만 그 순간의 세션 사본을 받는다.
+type E2HTTPAccountBindings interface {
+	// AccountBindingRef는 그 실행·라벨에 지금 결속된 참조다. 인증된 세션이 없거나 실행이 다르면 ok=false다.
+	AccountBindingRef(runRef, label string) (ref string, ok bool)
+	// BoundSession은 ref가 그 실행·라벨의 지금 결속일 때만 세션 헤더 사본을 준다. 아니면 ErrE2HTTPAccountBinding이다.
+	BoundSession(runRef, label, ref string) (http.Header, error)
+}
+
 // e2HTTPSessionStore는 실행이 들고 있는 시험 계정 세션이다. refresh_session이 성공하면 그 계정 세션을 바꾸고, Worker를
 // 시작할 때마다 사본을 읽는다(#550 이동찬 리뷰: 로그인이 이전 세션을 무효로 하는 대상에서 다음 Worker가 옛 세션으로 시작하지
-// 않게). 여러 Worker가 동시에 읽고 다시 로그인이 쓰므로 잠근다.
+// 않게). 여러 Worker가 동시에 읽고 다시 로그인이 쓰므로 잠근다. 세션마다 계정 결속 참조를 같은 잠금 안에서 바꾼다.
 type e2HTTPSessionStore struct {
 	mu        sync.RWMutex
 	sessions  E2HTTPSessions
 	gateMu    sync.Mutex
 	gates     map[string]chan struct{}
 	refreshes *e2HTTPRefreshCounter
+	// runRef는 이 저장소가 속한 실행이다. 비었으면 결속 참조를 발급하지 않는다(세션은 그대로 쓴다).
+	runRef   string
+	random   io.Reader
+	bindings map[string]string
 }
 
-func newE2HTTPSessionStore(initial E2HTTPSessions) *e2HTTPSessionStore {
-	s := &e2HTTPSessionStore{sessions: E2HTTPSessions{}, refreshes: &e2HTTPRefreshCounter{}}
-	for label, header := range initial {
-		s.sessions[label] = header.Clone()
+var _ E2HTTPAccountBindings = (*e2HTTPSessionStore)(nil)
+
+// newE2HTTPSessionStore는 처음 인증 준비의 세션(인증 성공만 들어 있음)으로 저장소를 만들고 계정마다 결속 참조를 발급한다.
+// random이 nil이면 crypto/rand다.
+func newE2HTTPSessionStore(initial E2HTTPSessions, runRef string, random io.Reader) *e2HTTPSessionStore {
+	if random == nil {
+		random = rand.Reader
+	}
+	s := &e2HTTPSessionStore{sessions: E2HTTPSessions{}, refreshes: &e2HTTPRefreshCounter{}, runRef: runRef, random: random,
+		bindings: map[string]string{}}
+	labels := make([]string, 0, len(initial))
+	for label := range initial {
+		labels = append(labels, label)
+	}
+	sort.Strings(labels) // 발급 순서를 정해 시험의 난수 소비가 재현되게 한다
+	for _, label := range labels {
+		s.sessions[label] = initial[label].Clone()
+		s.issueLocked(label) // 빈 세션에는 발급하지 않는다
 	}
 	return s
+}
+
+// issueLocked는 label의 지금 세션에 새 결속 참조를 발급한다. 실행을 모르거나 난수를 읽지 못하면 결속을 지운다(옛 참조가
+// 새 세션을 가리키지 않게, 그 계정은 확정 단계에 쓸 수 없음). 호출자는 s.mu를 쓰기로 잡는다.
+func (s *e2HTTPSessionStore) issueLocked(label string) {
+	delete(s.bindings, label)
+	if s.runRef == "" || len(s.sessions[label]) == 0 {
+		return
+	}
+	b := make([]byte, e2HTTPAccountBindingRandomBytes)
+	if _, err := io.ReadFull(s.random, b); err != nil {
+		log.Printf("E② 계정 결속 참조를 발급하지 못함: 확정 단계에서 이 계정을 쓰지 않음")
+		return
+	}
+	s.bindings[label] = e2HTTPAccountBindingPrefix + hex.EncodeToString(b)
+}
+
+func (s *e2HTTPSessionStore) AccountBindingRef(runRef, label string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ref, ok := s.bindings[label]
+	if s.runRef == "" || runRef != s.runRef || !ok || len(s.sessions[label]) == 0 {
+		return "", false
+	}
+	return ref, true
+}
+
+func (s *e2HTTPSessionStore) BoundSession(runRef, label, ref string) (http.Header, error) {
+	if s == nil {
+		return nil, ErrE2HTTPAccountBinding
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	current, ok := s.bindings[label]
+	header := s.sessions[label]
+	if s.runRef == "" || runRef != s.runRef || !ok || ref == "" || ref != current || len(header) == 0 {
+		return nil, ErrE2HTTPAccountBinding
+	}
+	return header.Clone(), nil
 }
 
 func (s *e2HTTPSessionStore) snapshot() E2HTTPSessions {
@@ -153,10 +239,12 @@ func (p *e2HTTPProgramCalls) snapshot() map[string]bool {
 	return out
 }
 
+// replace는 세션을 바꾸고 같은 잠금 안에서 결속 참조를 새로 발급한다. 조회가 새 세션과 옛 참조를 같이 보는 순간이 없다.
 func (s *e2HTTPSessionStore) replace(label string, header http.Header) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sessions[label] = header.Clone()
+	s.issueLocked(label)
 }
 
 func (s *e2HTTPSessionStore) gate(label string) chan struct{} {

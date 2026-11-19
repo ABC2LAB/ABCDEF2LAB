@@ -637,7 +637,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 			}
 		}
 		var refresh func(context.Context, string) (http.Header, string)
-		sessionStore := newE2HTTPSessionStore(auth.Sessions)
+		sessionStore := newE2HTTPSessionStore(auth.Sessions, execution.Snapshot().Scope.RunRef, nil)
 		programCalls := newE2HTTPProgramCalls(auth.CallRefs...)
 		if policy.Auth != nil && policy.HeaderMode == e2proxy.HeaderTestAccountPassthrough && len(auth.Sessions) > 0 {
 			authPolicy, origin := *policy.Auth, ""

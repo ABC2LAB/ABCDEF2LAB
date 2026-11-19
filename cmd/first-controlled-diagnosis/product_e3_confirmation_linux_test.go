@@ -66,7 +66,7 @@ func newE3HookFixtureWith(t *testing.T, declare bool, policy func(*server.E2HTTP
 	})
 	f := e3HookFixture{runs: runs, r: r, rec: rec, target: target}
 	// 실행 시작처럼 세대·인스턴스 참조를 발급해 동결한다(url_preparation_linux.go).
-	if f.refs, err = r.issueTargetRefs(target.ID, rand.Reader); err != nil {
+	if f.refs, err = r.issueTargetRefs(target.ID, liveJob, rand.Reader); err != nil {
 		t.Fatal(err)
 	}
 	if raw, err := f.refs.marshal(); err != nil || os.WriteFile(filepath.Join(runs, liveJob, productTargetRefsFile), raw, 0600) != nil {

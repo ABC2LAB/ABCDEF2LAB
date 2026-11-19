@@ -77,6 +77,37 @@ def not_found(name: str, output: str | None, exit_code: int | None) -> bool:
                      rf"env: [‘'\"]?{escaped}[’'\"]?: No such file or directory", output, re.M) is not None
 
 
+# 셸이 명령을 찾지 못했을 때 남기는 표준 줄(bash `bash: line 1: x: command not found`, dash `/bin/sh: 1: x: not found`).
+# 이름은 꺼내지 않고 있었는지만 본다(이름 자리에 모델이 넣은 아무 글이나 올 수 있어 기록하지 않는다).
+_SHELL_NOT_FOUND = re.compile(r"^(?:\S*/)?(?:ba|da|z|k)?sh(?:: line \d+)?: (?:\d+: )?\S+: (?:command )?not found$", re.M)
+
+
+def shell_not_found(output: str | None, exit_code: int | None) -> bool:
+    """이름과 상관없이 셸이 명령을 찾지 못했거나 실행하지 못한 흔적(종료 코드 126·127 또는 셸 표준 줄)."""
+    if exit_code in NOT_FOUND_EXIT_CODES:
+        return True
+    return bool(output) and _SHELL_NOT_FOUND.search(output) is not None
+
+
+def product_command_record(row: Mapping) -> dict:
+    """제품 활동 표의 Bash 호출 한 줄({"cmd": 도구 입력, "res": 결과 글, "is_error": bool})을 count_usage 입력으로 바꾼다.
+    E② Worker 결과는 신뢰 결과 JSON(`trusted.exit_code`·`tool_output`)이고, 탐색 직접 Bash 결과는 글 그대로다."""
+    res = row.get("res")
+    exit_code = None
+    output = res if isinstance(res, str) else None
+    if isinstance(res, str):
+        try:
+            parsed = json.loads(res)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict) and isinstance(parsed.get("trusted"), dict):
+            code = parsed["trusted"].get("exit_code")
+            exit_code = code if type(code) is int else None
+            tool_output = parsed.get("tool_output")
+            output = tool_output if isinstance(tool_output, str) else json.dumps(tool_output)
+    return {"command": row.get("cmd"), "output": output, "exit_code": exit_code, "failed": row.get("is_error") is True}
+
+
 def count_usage(records: Iterable[Mapping], names: Iterable[str], *, with_failures: bool) -> dict:
     """records: {"command": Bash 도구 입력(JSON 문자열/객체), "output": 결과 글 또는 None, "exit_code": 정수 또는 None,
     "failed": 도구가 실패로 돌려줬는지(bool) 또는 None}. Bash 호출만 넘긴다.
@@ -115,6 +146,13 @@ def count_usage(records: Iterable[Mapping], names: Iterable[str], *, with_failur
         out["not_found"] = {k: v for k, v in missing.items() if v}
         out["other_failures"] = {k: v for k, v in other.items() if v}
     return out
+
+
+def not_found_calls(records: Iterable[Mapping]) -> int:
+    """목록과 상관없이 셸이 명령을 찾지 못한 Bash 호출 수(이름은 남기지 않는다)."""
+    return sum(1 for record in records
+               if shell_not_found(record.get("output") if isinstance(record.get("output"), str) else None,
+                                  record.get("exit_code") if type(record.get("exit_code")) is int else None))
 
 
 OBSERVED_LINES_FORMAT = "abc2lab.cli-observed-lines/v2"

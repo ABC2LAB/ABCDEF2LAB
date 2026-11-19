@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import json
 import os
 import platform
+import re
 import subprocess
 import threading
 import time
@@ -181,6 +183,17 @@ def check_split_layout(rendered: dict, project: str, networks: list, containers:
         if want is None or container.image != want:
             violations.add(f"service.{container.service}: IMAGE_MISMATCH")
     return sorted(violations)
+
+
+# 제품 DB 서비스 이름(deploy/product compose)과 Bash 호출 조회. 활동 표에서 도구 입력(tool_use)과 같은 tool_use_id의
+# 결과(tool_result)를 짝지어 순서대로 한 줄씩 JSON으로 낸다. 탐색 번호는 정수로만 넣는다.
+PRODUCT_DB_SERVICE = "postgres"
+_DB_WORD = re.compile(r"[a-z_][a-z0-9_]{0,62}\Z")
+PRODUCT_COMMANDS_SQL = (
+    "select json_build_object('cmd', u.detail, 'res', r.detail, 'is_error', coalesce(r.is_error, false))::text "
+    "from activity u left join activity r on r.tool_use_id = u.tool_use_id and r.kind = 'tool_result' "
+    "and r.exploration_id = u.exploration_id "
+    "where u.kind = 'tool_use' and u.tool = 'Bash' and u.exploration_id = {exploration} order by u.id")
 
 
 def product_record_names(approval_id: str) -> tuple[str, str]:
@@ -431,6 +444,44 @@ class DockerSplitPorts:
 
     def run_record(self, task_id: str) -> dict:
         return self.driver.run_record(task_id)
+
+    def task_signal(self, task_id: str) -> dict:
+        return self.driver.task_end_signal(task_id)
+
+    def task_exploration_id(self, task_id: str) -> int:
+        return self.driver.task_exploration_id(task_id)
+
+    def product_commands(self, exploration_id: int) -> list[dict]:
+        """제품 활동 표에서 그 탐색의 Bash 호출(도구 입력·결과·실패 표시)을 읽는다. 원본 B가 `/api/commands`로 읽는 것과 같은
+        표다. 제품 모드는 공개 활동 API가 명령·결과를 지워(publicActivity) 제품 DB 컨테이너 안에서 읽기 전용 세션으로 조회한다.
+        원문은 호출자 메모리로만 넘기고 쓰지 않는다. 상한은 B 명령 기록과 같은 findings 설정(max_total_bytes)이다."""
+        if type(exploration_id) is not int or exploration_id < 1:
+            raise ValueError("product_commands_exploration_invalid")
+        service = self.rendered["services"].get(PRODUCT_DB_SERVICE, {})
+        environment = service.get("environment") if isinstance(service, dict) else None
+        user = environment.get("POSTGRES_USER") if isinstance(environment, dict) else None
+        database = environment.get("POSTGRES_DB") if isinstance(environment, dict) else None
+        if not all(isinstance(v, str) and _DB_WORD.fullmatch(v) for v in (user, database)):
+            raise ValueError("product_commands_db_unknown")
+        containers = [parse_container(c) for c in self.docker.inspect_containers(self.docker.project_container_ids(self.plan.project))]
+        ids = [c.id for c in containers if c.project == self.plan.project and c.service == PRODUCT_DB_SERVICE and c.running]
+        if len(ids) != 1:
+            raise ValueError("product_commands_db_container")
+        limit = self.config.findings["max_total_bytes"]
+        result = self.docker.run_bounded(
+            ["exec", "-e", "PGOPTIONS=-c default_transaction_read_only=on", ids[0], "psql", "-X", "-A", "-t", "-q",
+             "-v", "ON_ERROR_STOP=1", "-U", user, "-d", database, "-c", PRODUCT_COMMANDS_SQL.format(exploration=exploration_id)],
+            self.config.docker_timeout_seconds, limit)
+        if result.returncode != 0:
+            raise ValueError("product_commands_failed")
+        rows = []
+        for line in result.stdout.decode("utf-8").splitlines():
+            if line.strip():
+                row = json.loads(line)
+                if not isinstance(row, dict) or set(row) != {"cmd", "res", "is_error"}:
+                    raise ValueError("product_commands_invalid")
+                rows.append(row)
+        return rows
 
     def workflow_snapshot(self, draft_id: str) -> dict:
         return self.driver.workflow(draft_id)
