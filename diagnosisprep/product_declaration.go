@@ -106,16 +106,61 @@ var writesRefPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // ProductPolicySource는 회차 하나의 E③ 정책 동결본(runs/<job>/e3-declaration.json) 바이트의 SHA-256이다(판정 상세 조회
 // OD06). 동결본 원문·선언 내용은 담지 않는다. 동결본이 없으면 Present가 false이고 SHA256은 비어 있다.
+// OwnerAccountLabel·CrossAccountLabel은 동결본이 정한 소유(A)·교차(B) 시험 계정 라벨이다(제품 판정 목록 결정 2). C14 등록
+// 라벨이라 자격·세션이 아니다. 동결본에서만 읽고 현재 등록·현재 선언으로 대신하지 않으며, 동결본이 없거나 라벨을 정하지
+// 않았으면 둘 다 비어 있다.
 type ProductPolicySource struct {
-	Present bool   `json:"present"`
-	SHA256  string `json:"sha256,omitempty"`
+	Present           bool   `json:"present"`
+	SHA256            string `json:"sha256,omitempty"`
+	OwnerAccountLabel string `json:"owner_account_label,omitempty"`
+	CrossAccountLabel string `json:"cross_account_label,omitempty"`
 }
 
 var policySourceDigest = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func validProductPolicySource(p ProductPolicySource) bool {
 	if !p.Present {
-		return p.SHA256 == ""
+		return p.SHA256 == "" && p.OwnerAccountLabel == "" && p.CrossAccountLabel == ""
+	}
+	if (p.OwnerAccountLabel == "") != (p.CrossAccountLabel == "") || p.OwnerAccountLabel != "" &&
+		(!ValidAccountLabel(p.OwnerAccountLabel) || !ValidAccountLabel(p.CrossAccountLabel) || p.OwnerAccountLabel == p.CrossAccountLabel) {
+		return false
 	}
 	return policySourceDigest.MatchString(p.SHA256)
+}
+
+// ProductConfirmationState는 회차 하나의 E③ 확정 단계 결과 파일(runs/<job>/e3-confirmation.json)의 상태·사유만이다(제품
+// 판정 목록 결정 3). 판정·쓰기 기록·결속은 담지 않는다. 파일이 없으면 Present가 false다(확정 단계를 시작하지 않았거나 기록
+// 전). 파일이 있는데 읽지 못하거나 형식이 틀리면 Status가 unreadable이다. 화면은 빈 판정 목록의 이유를 이 값으로만 말하고
+// 추정하지 않는다.
+type ProductConfirmationState struct {
+	Present bool   `json:"present"`
+	Status  string `json:"status,omitempty"`
+	Reason  string `json:"reason,omitempty"`
+}
+
+// ConfirmationUnreadable은 확정 단계 결과 파일이 있는데 읽지 못했다는 상태다(e3contract 상태 값과 겹치지 않는다).
+const ConfirmationUnreadable = "unreadable"
+
+var confirmationStatuses = map[string]bool{"disabled": true, "start_refused": true, "completed": true, "interrupted": true,
+	"confirmation_integrity_failed": true, ConfirmationUnreadable: true}
+
+var confirmationReason = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+
+// ValidProductPolicySourceValue는 policy_source 응답 값의 모양 검사다(준비 서비스가 보내기 전에 쓴다).
+func ValidProductPolicySourceValue(p ProductPolicySource) bool { return validProductPolicySource(p) }
+
+// ValidProductConfirmationState는 확정 단계 상태 값의 모양 검사다(준비 서비스가 보내기 전에 쓴다).
+func ValidProductConfirmationState(c ProductConfirmationState) bool {
+	return validProductConfirmationState(c)
+}
+
+func validProductConfirmationState(c ProductConfirmationState) bool {
+	if !c.Present {
+		return c.Status == "" && c.Reason == ""
+	}
+	if c.Status == ConfirmationUnreadable {
+		return c.Reason == ""
+	}
+	return confirmationStatuses[c.Status] && (c.Reason == "" || confirmationReason.MatchString(c.Reason))
 }

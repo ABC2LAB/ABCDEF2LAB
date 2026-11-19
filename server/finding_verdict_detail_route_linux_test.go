@@ -70,4 +70,26 @@ func TestFindingVerdictDetailInstalledOnlyInProductRelayOwnedPostgres(t *testing
 	if forwarded.Load() != 0 {
 		t.Fatalf("판정 상세를 실행 API로 넘김: %d", forwarded.Load())
 	}
+	// 제품 판정 목록(#801 §2)도 같은 자리다: 제품 중계에만 있고, 실행 API로 넘기지 않는다.
+	for _, product := range []bool{false, true} {
+		handler, err := newURLDiagnosisManagementHandler(t.Context(), f.Runtime, keys, data, &verdictDetailTestEndpoint{}, product, runtime.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, target := range []string{"/api/tasks/1/product-verdicts", "/api/tasks/1/product-verdicts/extra"} {
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, target, nil))
+			switch {
+			case !product && w.Code != http.StatusNotFound:
+				t.Fatalf("제품 아닌 관리 API가 판정 목록을 받음: %s %d", target, w.Code)
+			case product && target == "/api/tasks/1/product-verdicts" && w.Code != http.StatusUnauthorized:
+				t.Fatalf("제품 중계 인증 거부: %d %s", w.Code, w.Body)
+			case product && target != "/api/tasks/1/product-verdicts" && w.Code != http.StatusBadRequest:
+				t.Fatalf("모양이 틀린 판정 목록 경로: %d %s", w.Code, w.Body)
+			}
+		}
+	}
+	if forwarded.Load() != 0 {
+		t.Fatalf("판정 목록을 실행 API로 넘김: %d", forwarded.Load())
+	}
 }
