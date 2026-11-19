@@ -55,14 +55,21 @@ describe("점검 시작 · 경과 · 소요 표시 (diagnosis-run-timing.md 화�
     expect(runDurationMissingWhy({ ...j, state: "stopping" })).toMatch(/^마감 시각이 아직 없습니다/);
   });
 
-  it("시작 전 · 시작 전 마감: 시작은 '실행 시작 전', 마감 시각 하나만으로 소요를 만들지 않는다", () => {
-    for (const name of ["ready_without_times", "failed_before_start_with_finish"]) {
+  it("시작 전 · 시작 전 마감: 마감 시각 하나만으로 소요를 만들지 않고, 끝난 회차를 곧 시작될 것처럼 쓰지 않는다", () => {
+    for (const [name, why] of [
+      ["ready_without_times", "아직 엔진 실행이 시작되지 않았습니다"],
+      ["failed_before_start_with_finish", "엔진 실행이 시작되지 않고 끝났습니다"],
+    ] as const) {
       const j = job(name);
       expect(runStartText(j)).toBeNull();
-      expect(runStartMissingWhy(j)).toBe("아직 엔진 실행이 시작되지 않았습니다");
+      expect(runStartMissingWhy(j)).toBe(why);
       expect(runDurationSec(j)).toBeNull();
       expect(runElapsedSec(j, START + 90_000)).toBeNull();
     }
+    const notStarted = job("ready_without_times");
+    expect(runStartMissingWhy({ ...notStarted, state: "cancelled" })).toBe("엔진 실행이 시작되지 않고 끝났습니다");
+    // 결과 불명은 시작을 확인하지 못했다는 뜻이라 '끝났다'고 단정하지 않는다
+    expect(runStartMissingWhy({ ...notStarted, state: "unknown" })).toBe("엔진 실행 시작이 확인되지 않았습니다");
   });
 
   it("구 기록(사실은 true, 시각 없음): '이전 회차'로 알리고 추정하지 않는다", () => {

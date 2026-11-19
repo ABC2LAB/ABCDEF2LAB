@@ -5,6 +5,7 @@
 import type { URLDiagnosisJob } from "@/lib/diagnosis/diagnosis-url";
 
 import { dateTimeOf, toMs } from "./map";
+import { URL_ENDED_STATES } from "./urlMap";
 
 type Timing = Pick<URLDiagnosisJob, "state" | "started" | "started_at" | "finished_at">;
 
@@ -36,10 +37,17 @@ export function runElapsedSec(job: Timing | null | undefined, nowMs: number): nu
   return Math.max(0, Math.floor((nowMs - start) / 1000));
 }
 
-/** 시작 시각이 없을 때 '연결 전' 딱지에 붙이는 이유. 시작 전과 시각을 남기지 않은 이전 회차를 나눈다. */
+/**
+ * 시작 시각이 없을 때 '연결 전' 딱지에 붙이는 이유. 시작 전 · 시작 없이 끝남 · 시작 확인 안 됨(결과 불명) ·
+ * 시각을 남기지 않은 이전 회차를 나눈다 — 끝난 회차를 곧 시작될 것처럼 읽히게 하지 않는다.
+ */
 export function runStartMissingWhy(job: Timing | null | undefined): string {
   if (!job) return "점검 상태를 아직 읽지 못했습니다";
-  if (!job.started) return "아직 엔진 실행이 시작되지 않았습니다";
+  if (!job.started) {
+    if (URL_ENDED_STATES.includes(job.state)) return "엔진 실행이 시작되지 않고 끝났습니다";
+    if (job.state === "unknown") return "엔진 실행 시작이 확인되지 않았습니다";
+    return "아직 엔진 실행이 시작되지 않았습니다";
+  }
   return "서버가 시작 시각을 남기지 않은 이전 회차입니다";
 }
 
