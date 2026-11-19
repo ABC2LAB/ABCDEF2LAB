@@ -14,7 +14,6 @@ import (
 
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/transmit"
-	"golang.org/x/sys/unix"
 )
 
 const maxMessage = 32 << 10
@@ -40,26 +39,6 @@ func decodeLine(reader *bufio.Reader, target any) error {
 		return ErrUnavailable
 	}
 	return nil
-}
-
-func peerUID(conn *net.UnixConn) (uint32, error) {
-	raw, err := conn.SyscallConn()
-	if err != nil {
-		return 0, ErrUnavailable
-	}
-	var uid uint32
-	var controlErr error
-	if err := raw.Control(func(fd uintptr) {
-		cred, e := unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
-		if e != nil {
-			controlErr = e
-			return
-		}
-		uid = cred.Uid
-	}); err != nil || controlErr != nil {
-		return 0, ErrUnavailable
-	}
-	return uid, nil
 }
 
 // Serve는 Host 비밀 볼륨 밖의 단일 소켓에만 노출된다. 호출자 UID는
