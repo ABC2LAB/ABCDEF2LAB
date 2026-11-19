@@ -217,6 +217,7 @@ func newServiceForRuntime(ctx context.Context, root string, backend Backend, boo
 		// 끝났다(PID 1 서비스는 미마감 기록이 있으면 종료 때 잠금을 프로세스 종료까지 놓지 않는다).
 		// namespace 번호는 재시작 뒤 재사용되므로(docker restart에서 실측) init 시작 tick과 묶어 비교한다.
 		// 결과·감사 성공으로 해석하지 않고 새 시작 잠금만 푼다. tick은 같은 boot 안에서만 비교한다.
+		// 준비 namespace 안의 E② 실행 자원만 증명한다. 다른 컨테이너(탐색 브라우저·경계)의 세션 종료는 아니다.
 		if r.ExecutionInitInstance != "" && r.ExecutionBootID == boot && s.initInstance != "" && s.initInstance != r.ExecutionInitInstance {
 			r.ExecutionReturned, r.ResourcesRecovered = true, true
 			if s.save(r) != nil {
