@@ -266,6 +266,20 @@ class TestFinishWithGoals(unittest.TestCase):
         done.decide(bash_turns((commands[0], OK_BASH), (commands[1], OK_BASH)))
         self.assertEqual(done.completed_commands, set(commands))
         self.assertEqual(done.decide(finishing)[0], PROVE_TOOL)
+        # 같은 명령이 계획에 두 번 있어 한 번은 성공·한 번은 거부면 증명하지 않는다(실패가 하나라도 있으면 open)
+        twice = self.script()
+        twice.completed_commands = set()
+        twice.decide(bash_turns((commands[0], OK_BASH), (commands[1], OK_BASH), (commands[0], denied)))
+        self.assertIsNone(twice.decide(finishing))
+        # 결과가 아직 없는 호출은 실패로 세지 않는다(뒤에 완료 결과가 오면 증명한다)
+        pending = self.script()
+        pending.completed_commands = set()
+        body = bash_turns((commands[0], OK_BASH), (commands[1], OK_BASH))
+        cut = body["messages"][:-1] + [{"role": "user", "content": "still running"}]  # 마지막 Bash 결과가 아직 없다
+        pending.decide(dict(body, messages=cut))
+        self.assertEqual(pending.failed_commands, set())
+        pending.decide(body)
+        self.assertEqual(pending.decide(finishing)[0], PROVE_TOOL)
 
     def test_result_parsers(self):
         self.assertEqual(open_goal_ids(GOALS), [3, 5])
