@@ -31,6 +31,7 @@ import (
 	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/e2checkpoint"
+	"github.com/Autumn-27/artex/e2host"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/evidencerevision"
 	"github.com/Autumn-27/artex/llmpolicy"
@@ -504,7 +505,7 @@ func productInstall(ctx context.Context, root string, c productInstallInput, hos
 		}
 		launch := launchConfig{Format: launchFormat, Mode: "general_http", ListenAddr: "127.0.0.1:28080", DataDir: filepath.Join(root, "data"), KeyDir: filepath.Join(root, "keys"), SkillDir: "/app/skills", ModelExecutionMode: mode, ModelProfileID: id, ModelFormat: "openai", ModelBaseURL: base, ModelRef: model, RuntimeDSNFile: filepath.Join(config, "runtime.dsn"), ShutdownTimeoutSeconds: productShutdownTimeoutSeconds, HTTP: &httpLaunch{PolicyFile: filepath.Join(config, "policy.json"), AuthorityFile: filepath.Join(config, "authority-template.json"), AuthorityRoot: config}}
 		if len(hostRoot) == 1 && hostRoot[0] != "" {
-			launch.E2HostSocket = "/run/e2-host/audit.sock"
+			launch.E2HostSocket = e2host.ProductSocketPath
 		}
 		runSeconds, ok := productRunSecondsFor(c.RuntimeLimits, c.TargetPolicy.Workflow != nil)
 		if !ok {

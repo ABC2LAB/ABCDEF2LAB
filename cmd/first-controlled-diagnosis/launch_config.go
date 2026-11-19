@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Autumn-27/artex/agent"
+	"github.com/Autumn-27/artex/e2host"
 	"github.com/Autumn-27/artex/llmpolicy"
 	"github.com/Autumn-27/artex/server"
 )
@@ -157,7 +158,7 @@ func parseLaunchConfig(data []byte) (launchConfig, error) {
 	if len(data) == 0 || len(data) > maxLaunchBytes || !utf8.Valid(data) || decodeLaunchJSON(data, &c) != nil || c.Format != launchFormat || c.ModelProfileID <= 0 || c.ShutdownTimeoutSeconds < 1 || c.ShutdownTimeoutSeconds > server.MaxFirstDiagnosisShutdownSeconds {
 		return launchConfig{}, errPreparation
 	}
-	if c.E2HostSocket != "" && (c.Mode != "general_http" || c.E2HostSocket != "/run/e2-host/audit.sock") {
+	if c.E2HostSocket != "" && (c.Mode != "general_http" || c.E2HostSocket != e2host.ProductSocketPath) {
 		return launchConfig{}, errPreparation
 	}
 	paths := []string{c.DataDir, c.KeyDir, c.SkillDir, c.RuntimeDSNFile}
