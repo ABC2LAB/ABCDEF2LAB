@@ -401,6 +401,13 @@ func ValidateResponse(r Request, response Response) error {
 		if response.Product.Field != "" && (r.Product.Operation != "declaration_put" || response.Product.Reason != "invalid_declaration" || !ValidDeclarationField(response.Product.Field)) {
 			return ErrProtocol
 		}
+		policySourceOp := r.Product.Operation == "policy_source"
+		if response.Product.PolicySource != nil && (!policySourceOp || response.Product.Reason != "" || !validProductPolicySource(*response.Product.PolicySource)) {
+			return ErrProtocol
+		}
+		if policySourceOp && response.Error == "" && response.Product.Reason == "" && response.Product.PolicySource == nil {
+			return ErrProtocol
+		}
 		accounts := response.Product.Accounts
 		if response.Product.Account != nil {
 			accounts = append(append([]ProductAccount(nil), accounts...), *response.Product.Account)

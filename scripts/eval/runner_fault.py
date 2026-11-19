@@ -86,7 +86,12 @@ def fault_stall_record(llm_rows: list[dict], meter_rows: list[dict], window_star
             "faults": counts, "events": events,
             "max_silence_after_fault_seconds": None if longest is None else longest["silence_seconds"],
             "max_silence_after_fault_censored": None if longest is None else longest["censored"],
-            "max_idle_gap_seconds": _max_idle_gap(spans, start, end), "activity_starts": len(starts)}
+            "max_idle_gap_seconds": _max_idle_gap(spans, start, end),
+            # 활동 중 최장 무활동(2026-11-19 사용자 결정 5): 엔진이 창 안에서 먼저 끝난 회차는 엔진 끝 상태까지만 잰다.
+            # 끝 뒤 남은 시간은 §7 무효 조건(3)에서 빠지는 구간이라 T를 정하는 근거에 넣지 않는다.
+            "max_idle_gap_before_end_seconds": _max_idle_gap(spans, start, terminal if terminal is not None and start <= terminal < end
+                                                             else end),
+            "activity_starts": len(starts)}
 
 
 def _max_idle_gap(spans: list[tuple[datetime, datetime]], start: datetime, end: datetime) -> float:
