@@ -7,6 +7,8 @@ export const MARKUP_HIDDEN_SECRETS: [string, string, string][] = [
   ["서식으로 쪼갬", "**pass**word=synthetic-split-secret", "synthetic-split-secret"],
   ["HTML 주석으로 쪼갬", "pass<!-- x -->word=synthetic-comment-secret", "synthetic-comment-secret"],
   ["역슬래시", "password\\=synthetic-escape-secret", "synthetic-escape-secret"],
+  // #709 이동찬 리뷰 반례: 풀면 줄이 갈려 'password:' 와 값이 다른 줄이 된다
+  ["엔티티 줄바꿈으로 키 · 값 가름", "password:&#10;synthetic-private-value-27", "synthetic-private-value-27"],
   ["표 칸", "| 이름 | 값 |\n| --- | --- |\n| a | api_key=synthetic-table-secret |", "synthetic-table-secret"],
   [
     "직접 이미지 대체 글",

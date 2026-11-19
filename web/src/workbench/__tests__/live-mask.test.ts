@@ -176,6 +176,31 @@ describe("maskForCopy — 클립보드로 나가는 글 (#709 리뷰)", () => {
     expect(maskForCopy(line)).toBe(line);
   });
 
+  it.each([
+    ["10진 줄바꿈", "password:&#10;synthetic-lf-secret", "synthetic-lf-secret"],
+    ["16진 줄바꿈", "password:&#x0A;synthetic-hex-lf-secret", "synthetic-hex-lf-secret"],
+    ["캐리지 리턴", "password:&#13;synthetic-cr-secret", "synthetic-cr-secret"],
+    ["이름 엔티티 줄바꿈", "password:&NewLine;synthetic-named-lf-secret", "synthetic-named-lf-secret"],
+    ["줄 구분 문자", "password:&#x2028;synthetic-ls-secret", "synthetic-ls-secret"],
+    ["헤더 값이 다음 줄", "Authorization:&#10;Bearer synthetic-header-secret", "synthetic-header-secret"],
+    ["= 앞에서 갈림", "token&#10;=synthetic-eq-secret", "synthetic-eq-secret"],
+  ])("풀면 줄이 갈려 키와 값이 다른 줄이 되어도 가린다 — %s (#709 리뷰)", (_, line, secret) => {
+    const out = maskForCopy(`HTTP/1.1 200 OK\n${line}\n본문 끝`);
+    expect(out).not.toContain(secret);
+    expect(out).not.toMatch(/&#|&NewLine;/);
+    // 이어 붙여 가린 한 줄이라 붙여 넣어도 다시 갈라지지 않고, 앞뒤 줄은 그대로다
+    expect(out.split("\n")).toHaveLength(3);
+    expect(out.split("\n")[0]).toBe("HTTP/1.1 200 OK");
+    expect(out.split("\n")[2]).toBe("본문 끝");
+  });
+
+  it("숨긴 값 없는 엔티티 줄바꿈 · CRLF 줄은 원래 모양 그대로 둔다", () => {
+    expect(maskForCopy("note:&#10;hello")).toBe("note:&#10;hello");
+    expect(maskForCopy("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r")).toBe(
+      "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r",
+    );
+  });
+
   it("너무 깊게 감싼 줄은 안전을 확인하지 못해 복사하지 않는다", () => {
     const deep = `&${"amp;".repeat(12)}#112;assword=synthetic-deep-secret`;
     const out = maskForCopy(`앞 줄\n${deep}`);

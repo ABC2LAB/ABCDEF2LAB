@@ -174,6 +174,11 @@ const HTML_COMMENT_RE = /<!--[\s\S]*?-->/g;
 const HTML_TAG_RE = /<\/?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?\/?>/g;
 /** 강조 · 취소선 · 코드 표시(**pass**word, _pass_word, `pass`word): 그려지면 표시가 사라져 글이 붙는다. */
 const MD_MARK_RE = /[*_~`]+/g;
+/**
+ * 붙여 넣은 곳에서 줄을 가르는 글자. 풀린 글(&#10; · &#13; · &NewLine; …)에 생기면 키와 값이 다른 줄로 갈려 한 줄 단위
+ * 가림(PLAIN_RE 등)이 못 알아본다(#709 이동찬 리뷰: `password:&#10;값`).
+ */
+const LINE_BREAK_RE = /[\r\n\v\f\u0085\u2028\u2029]+/g;
 /** 엔티티를 몇 겹(&amp;#112; …)까지 풀어 볼지. 이보다 깊으면 안전을 확인할 수 없는 줄로 본다. */
 const MAX_DECODE_ROUNDS = 8;
 /** 풀어 봐도 끝나지 않는 줄 대신 복사하는 글. */
@@ -219,6 +224,8 @@ function settled(text: string): string | null {
  * 파싱 뒤에 다시 가리는 것과 같은 모양, #677 fixture). 그래서 줄마다 붙여 넣은 곳이 그릴 모양까지
  * 풀어 다시 가려 보고, 풀린 모양에서 새로 가릴 게 나오면 그 줄은 푼 뒤 가린 글로 바꾼다. 아니면 원래 줄(가린 것)을 그대로
  * 둔다(증거 원문 모양 유지). 끝까지 풀리지 않는 줄은 복사하지 않는다.
+ * 풀린 글에 줄바꿈이 생기면 키와 값이 갈린 채로 대조하지 않도록 이어 붙인 한 줄로 가려 본다(maskAcrossBreaks) — 가릴 게
+ * 나오면 이어 붙인 채 가린 글을 내보내 붙여 넣은 곳에서 다시 갈라지지 않게 한다.
  */
 export function maskForCopy(text: string): string {
   if (!text) return text;
@@ -228,10 +235,20 @@ export function maskForCopy(text: string): string {
       const masked = maskSecrets(line);
       const shown = settled(masked);
       if (shown === null) return UNVERIFIED_LINE;
-      const remasked = maskSecrets(shown);
-      return remasked === shown ? masked : remasked;
+      return maskAcrossBreaks(shown) ?? masked;
     })
     .join("\n");
+}
+
+/**
+ * 줄바꿈을 띄어쓰기로 이어 붙인 한 줄로 가려 본다. 가릴 게 있으면 이어 붙인 채 가린 글, 없으면 null.
+ * 풀린 글(엔티티 줄바꿈)에서 키와 값이 다른 줄로 갈리면 한 줄 단위 가림이 못 알아봐서다(#709 이동찬 리뷰). 클립보드 복사와
+ * 상세 보고 카드(Markdown 파싱 뒤 가림)가 같이 쓴다.
+ */
+export function maskAcrossBreaks(text: string): string | null {
+  const joined = text.replace(LINE_BREAK_RE, " ");
+  const masked = maskSecrets(joined);
+  return masked === joined ? null : masked;
 }
 
 /** 서버가 준 JSON 값을 보기 좋게 문자열로 만든 뒤 가린다 (문자열이면 그대로 가림). */
