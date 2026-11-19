@@ -1521,6 +1521,10 @@ class TestCompleteRun(unittest.TestCase):
                 result, _, _, _ = run(mutate)
                 self.assertEqual((result["status"], result.get("reasons")), (INVALID, ["meter_request_cap_mismatch"]))
                 self.assertNotIn("signature", result)
+        # 봉인 표식만 JSON true인 예산 1 회차도 정수가 아니라 무효다
+        spec = dataclasses.replace(make_spec(), request_budget=1)
+        result, _, _, _ = run(lambda p, m, c: setattr(m, "sealed_cap", True), spec=spec)
+        self.assertEqual((result["status"], result.get("reasons")), (INVALID, ["meter_request_cap_mismatch"]))
         # 상한에 닿은 뒤의 상한 거부는 정상이다(기본 회차: 전달 = 예산, 넘친 몫은 거부)
         result, _, meter, _ = run(lambda p, m, c: setattr(m, "per_poll", 35))
         self.assertEqual(result["status"], COMPLETE, result)
