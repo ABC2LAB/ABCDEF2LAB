@@ -82,30 +82,40 @@ func readSnapshot(path string) ([]byte, error) {
 // 대조하고, 송신 의도마다 결과가 게시됐는지 확인한다. HTTP 결과 불명도
 // 결과 사건이 인증됐다면 마감할 수 있지만, 결과 사건 자체가 없으면 막는다.
 func (r *run) completeAudit(ctx context.Context, phase e2checkpoint.Phase) error {
+	events, head, err := r.verifiedEvents(ctx)
+	if err != nil || head.Phase != phase || !allAttemptsFinished(events) {
+		return ErrUnavailable
+	}
+	return nil
+}
+
+// verifiedEvents는 Host 전용 파일의 한 스냅샷을 현재 epoch/head와 대조한 뒤
+// 같은 바이트에서 MAC 체인을 검증한다. 호출자는 run 잠금을 보유한다.
+func (r *run) verifiedEvents(ctx context.Context) ([]e2proxy.Event, e2checkpoint.Head, error) {
 	mirror, err := readSnapshot(filepath.Join(r.directory, "head.json"))
 	if err != nil {
-		return ErrUnavailable
+		return nil, e2checkpoint.Head{}, ErrUnavailable
 	}
 	var expected e2checkpoint.Head
 	if json.Unmarshal(mirror, &expected) != nil || expected.Epoch != r.owner.epoch ||
-		expected.Binding != r.binding || expected.Phase != phase {
-		return ErrUnavailable
+		expected.Binding != r.binding {
+		return nil, e2checkpoint.Head{}, ErrUnavailable
 	}
 	snapshot, err := readSnapshot(filepath.Join(r.directory, "events.jsonl"))
 	if err != nil {
-		return ErrUnavailable
+		return nil, e2checkpoint.Head{}, ErrUnavailable
 	}
 	defer clear(snapshot)
 	_, current, err := r.owner.store.VerifyCurrent(ctx,
 		e2checkpoint.Query{Epoch: r.owner.epoch, Binding: r.binding}, bytes.NewReader(snapshot))
 	if err != nil || current != expected {
-		return ErrUnavailable
+		return nil, e2checkpoint.Head{}, ErrUnavailable
 	}
 	events, _, err := e2proxy.VerifyJournalEvents(ctx, bytes.NewReader(snapshot), r.owner.key, current.Checkpoint)
-	if err != nil || !allAttemptsFinished(events) {
-		return ErrUnavailable
+	if err != nil {
+		return nil, e2checkpoint.Head{}, ErrUnavailable
 	}
-	return nil
+	return events, current, nil
 }
 
 // allAttemptsFinished는 실제 송신에 앞서는 intent ACK와 마지막 result를
@@ -129,7 +139,8 @@ func allAttemptsFinished(events []e2proxy.Event) bool {
 				if intent.Program != event.Program || intent.IntentID != event.IntentID ||
 					intent.Scope != event.Scope || intent.CallRef != event.CallRef ||
 					intent.CommandRef != event.CommandRef || intent.PolicyRevision != event.PolicyRevision ||
-					intent.RuleRef != event.RuleRef || intent.Sequence != event.Sequence || intent.Method != event.Method {
+					intent.RuleRef != event.RuleRef || intent.Sequence != event.Sequence || intent.Method != event.Method ||
+					!sameE3IntentBinding(intent.E3Audit, event.E3Audit) {
 					return false
 				}
 				delete(pending, event.AttemptID)
@@ -141,6 +152,15 @@ func allAttemptsFinished(events []e2proxy.Event) bool {
 		}
 	}
 	return len(pending) == 0
+}
+
+func sameE3IntentBinding(intent, result *e2proxy.E3Audit) bool {
+	if intent == nil || result == nil {
+		return intent == nil && result == nil
+	}
+	return intent.Role == result.Role && intent.AccountLabel == result.AccountLabel &&
+		intent.AccountBindingRef == result.AccountBindingRef && intent.E3 == result.E3 &&
+		intent.ResourceType == result.ResourceType && intent.CreateRef == result.CreateRef
 }
 
 // CheckRestoredHeads는 과거 저널과 현재 head를 검사한다. 미봉인 회차를
