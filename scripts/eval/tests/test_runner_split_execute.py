@@ -209,8 +209,8 @@ class FakePorts:
             {"cmd": json.dumps({"command": "curl -s http://app.eval.test:8080/"}), "is_error": False,
              "res": json.dumps({"trusted": {"exit_code": 0}, "tool_output": "ok"})},
         ]
-        self.task_end = {"status": "done", "completed_at": "2026-11-17T07:01:37Z", "goals_total": 3, "goals_met": 3, "in_flight": 0,
-                         "llm_failover_state": "default"}
+        self.task_end = {"status": "done", "completed_at": "2026-11-17T07:01:37Z", "llm_failover_state": "default", "goals_total": 3,
+                         "goals_met": 3, "goal_states": {"met": 3}}
         self.forced = 0
         self.boundary_stopped = False
         self.snapshot_times: dict[str, float] = {}
