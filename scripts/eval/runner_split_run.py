@@ -9,6 +9,7 @@ B와 같은 감시 규칙(runner._EngineEndWatch: 창 동안 백그라운드 읽
 from __future__ import annotations
 
 from runner import Clock, _EngineEndWatch
+from runner_engine import EngineAPIError
 from runner_product import DRAFT_TERMINAL, ProductAPIError, ProductDriver
 
 PRODUCT_END_FORMAT = "abc2lab-eval-runner-product-end-v1"
@@ -82,6 +83,9 @@ PREPARATION = "preparation"
 VERDICT_NOT_COLLECTED = {"status": "not_collected", "reason": "product_verdict_export_unavailable"}
 SPLIT_TASK_FORMAT = "abc2lab-eval-runner-split-task-v1"
 PRODUCT_END_NAME = "product-end.json"
+# 제품 작업의 끝 신호 칸(B engine-end.json의 작업 칸과 같은 6칸). 제품 회차가 왜 마감했는지(목표 달성 여부)를 가르는 근거다.
+PRODUCT_TASK_END_NAME = "product-task-end.json"
+PRODUCT_TASK_END_FORMAT = "abc2lab-eval-runner-product-task-end-v1"
 TOOL_SURFACE_NAME = "tool-surface.json"
 PRODUCT_FILES_NAME = "product-files.json"
 PRODUCT_FILES_FORMAT = "abc2lab-eval-runner-product-files-v1"
@@ -286,6 +290,7 @@ class SplitRunPorts(Protocol):
     def seal(self, meter_container_id: str) -> None: ...
     def stop_boundary(self, boundary_container_id: str) -> None: ...
     def run_record(self, task_id: str) -> dict: ...
+    def task_signal(self, task_id: str) -> dict: ...
     def workflow_snapshot(self, draft_id: str) -> dict: ...
     def control_policy(self, task_id: str) -> dict: ...
     def product_files(self) -> dict: ...
@@ -385,6 +390,8 @@ DISCOVERY_SOURCES_NAME = "discovery-sources.json"
 _SOURCE_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 # 구동기 오류 글의 앞부분(`product_http_503` 등). 뒤의 경로·초안 ID·제품 사유는 근거에 남기지 않는다(#725 리뷰).
 _PRODUCT_CODE = re.compile(r"product_[a-z0-9_]{1,62}\Z")
+# 제품 구동·작업 목록 해석의 고정 오류 코드(예: product_http_403:tasks, engine_task_status_missing). 그 밖은 일반 코드로.
+_TASK_ERROR = re.compile(r"(product|engine)_[a-z0-9_]{1,62}(:[a-z0-9_./-]{1,64}){0,3}\Z")
 
 
 def discovery_sources(snapshot: dict) -> dict:
@@ -420,6 +427,17 @@ def _discovery_sources(ports, draft_id: str) -> dict:
         return {"format": DISCOVERY_SOURCES_FORMAT, "error": code if _PRODUCT_CODE.fullmatch(code) else "discovery_sources_failed"}
     except Exception:
         return {"format": DISCOVERY_SOURCES_FORMAT, "error": "discovery_sources_failed"}
+
+
+def _task_end(ports, task_id: str) -> dict:
+    try:
+        return {"format": PRODUCT_TASK_END_FORMAT, "task_id": task_id, "task": ports.task_signal(task_id)}
+    except (ProductAPIError, EngineAPIError) as exc:
+        code = str(exc)
+        return {"format": PRODUCT_TASK_END_FORMAT, "task_id": task_id,
+                "error": code if _TASK_ERROR.fullmatch(code) else "product_task_signal_failed"}
+    except Exception:
+        return {"format": PRODUCT_TASK_END_FORMAT, "task_id": task_id, "error": "product_task_signal_failed"}
 
 
 def product_fault_stall(calls: bytes, meter_rows: list[dict], window_start: str, window_end: str, engine_end: dict) -> dict:
@@ -610,6 +628,9 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     limit = first_limit(stop_reason, stop_elapsed, spec.time_budget_seconds, engine_end["first_terminal"])
 
     record = _step(state, "product_run_record_failed", lambda: ports.run_record(task_id))
+    # 마감 뒤 제품 작업의 목표 칸(목표 수·달성 수 등)을 남긴다. 판정에 쓰지 않는 근거라 읽지 못해도 회차를 무효로 하지 않고
+    # 고정 코드만 남긴다(B의 끝 신호 읽기 실패와 같은 처리).
+    _step(state, "evidence_write_failed", lambda: evidence.write_json(PRODUCT_TASK_END_NAME, _task_end(ports, task_id)))
     goal = record.get("goal") if isinstance(record, dict) else None
     if not isinstance(goal, dict) or not isinstance(goal.get("common_sha256"), str):
         raise RunFailure("goal_digest_missing")  # #657 이전 제품 빌드이거나 실행 기록이 목표 SHA를 잃었다

@@ -202,6 +202,8 @@ class FakePorts:
                        "run": {"phase": "closed", "run_ref": "run-draft-1",
                                "execution": {"scope": dict(SCOPE), "policy_revision": "v1"}}}
         self.ledger, self.calls_file = LEDGER, CALLS
+        self.task_end = {"status": "done", "completed_at": "2026-11-17T07:01:37Z", "llm_failover_state": "default", "goals_total": 3,
+                         "goals_met": 3, "goal_states": {"met": 3}}
         self.forced = 0
         self.boundary_stopped = False
         self.snapshot_times: dict[str, float] = {}
@@ -364,6 +366,12 @@ class FakePorts:
         self._call("run_record")
         return self.record
 
+    def task_signal(self, task_id):
+        self._call("task_signal")
+        if isinstance(self.task_end, Exception):
+            raise self.task_end
+        return self.task_end
+
     def workflow_snapshot(self, draft_id):
         self._call("workflow_snapshot")
         if isinstance(self.workflow, Exception):
@@ -435,7 +443,7 @@ ORDER_HEAD = ["preexisting", "image_ids", "meter_describe", "tool_surface", "hos
               "events:start", "watch:start", "scoreboard:pre", "prepare_round", "start_round"]
 ORDER_TAIL = ["seal", "meter:drained", "stop_round", "wait_closed", "workflow_snapshot", "snapshot:post", "check:post", "probes:post", "scoreboard:post",
               "stop_boundary", "watch:stop",
-              "events:stop", "status", "run_record", "control_policy", "product_files", "runtime_conditions", "e3_confirmation",
+              "events:stop", "status", "run_record", "task_signal", "control_policy", "product_files", "runtime_conditions", "e3_confirmation",
               "copy_boundary_evidence", "split_conditions",
               "copy_product_records",
               "generation_verify", "llm_verified", "down", "remove_inputs", "sign", "sign"]  # 내린 뒤 러너 기록·결과 서명
@@ -454,7 +462,8 @@ class TestOrder(unittest.TestCase):
         self.assertEqual(set(evidence.files), {"meter-preflight.json", "subnet-check.json", "pre-checks.json", "post-checks.json",
                                                "pre-probe.json",
                                                "post-probe.json", "task.json", "llm-summary.json",
-                                               "window-watch.json", "product-end.json", "product-model.json", "tool-surface.json",
+                                               "window-watch.json", "product-end.json", "product-task-end.json", "product-model.json",
+                                               "tool-surface.json",
                                                "product-files.json", "discovery-sources.json", "fault-stall.json", "product-calls.jsonl",
                                                RESULT_NAME, "isolation-evidence.json", "solve-events.json", "run-record.json"})
         self.assertEqual(evidence.files["discovery-sources.json"], {
@@ -1118,6 +1127,32 @@ class TestDiscoverySources(unittest.TestCase):
                 recorded = evidence.files["discovery-sources.json"]
                 self.assertEqual(recorded, {"format": "abc2lab-eval-runner-discovery-sources-v1", "error": code})
                 self.assertNotIn("draft-1", json.dumps(recorded) + json.dumps(result["discovery_sources"]))
+
+
+class TestProductTaskEnd(unittest.TestCase):
+    """마감 뒤 제품 작업의 끝 신호 칸(목표 수·달성 수 등). 제품 회차가 왜 마감했는지 가르는 근거라 판정에 쓰지 않는다."""
+
+    def test_task_end_signal_is_kept_after_the_run_record(self):
+        result, ports, evidence = run()
+        self.assertEqual(result["status"], "complete", result)
+        record = evidence.files["product-task-end.json"]
+        self.assertEqual((record["format"], record["task_id"], record["task"]["goals_total"], record["task"]["goals_met"]),
+                         ("abc2lab-eval-runner-product-task-end-v1", "42", 3, 3))
+        self.assertLess(ports.calls.index("run_record"), ports.calls.index("task_signal"))  # 마감 뒤 실행 기록 다음
+        self.assertLess(ports.calls.index("task_signal"), ports.calls.index("down"))  # 내리기 전
+
+    def test_read_failure_leaves_a_fixed_code_and_keeps_the_run(self):
+        from runner_engine import EngineAPIError
+        from runner_product import ProductAPIError
+        for error, code in ((ProductAPIError("product_http_403:tasks"), "product_http_403:tasks"),
+                            (EngineAPIError("engine_task_status_missing"), "engine_task_status_missing"),
+                            (ProductAPIError("/secret/path value"), "product_task_signal_failed"),
+                            (RuntimeError("boom"), "product_task_signal_failed")):
+            with self.subTest(code=code):
+                result, _, evidence = run(lambda p, e=error: setattr(p, "task_end", e))
+                self.assertEqual(result["status"], "complete", result)
+                self.assertEqual(evidence.files["product-task-end.json"]["error"], code)
+                self.assertNotIn("task", evidence.files["product-task-end.json"])
 
 
 class TestProductFaultStall(unittest.TestCase):

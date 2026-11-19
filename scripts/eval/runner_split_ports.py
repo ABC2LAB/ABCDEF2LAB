@@ -432,6 +432,9 @@ class DockerSplitPorts:
     def run_record(self, task_id: str) -> dict:
         return self.driver.run_record(task_id)
 
+    def task_signal(self, task_id: str) -> dict:
+        return self.driver.task_end_signal(task_id)
+
     def workflow_snapshot(self, draft_id: str) -> dict:
         return self.driver.workflow(draft_id)
 
