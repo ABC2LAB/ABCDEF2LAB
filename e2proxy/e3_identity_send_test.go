@@ -57,6 +57,7 @@ func e3IdentityFixture(t *testing.T, target string, recorder Recorder) (*Executi
 	cfg := coreConfig(t, target, recorder, 3)
 	cfg.AuditVersion = JournalVersionV3
 	cfg.E3Verifier = e3IdentityVerifier{}
+	cfg.E3ConfirmationRequests = 3
 	cfg.Rules = append(cfg.Rules, Rule{Ref: "identity-rule", Purpose: PurposeE3Identity, Origin: target,
 		ConnectIP: netip.MustParseAddr("127.0.0.1"), PathPrefix: "/allowed/identity", PathScopeRef: "identity-path", Methods: []string{"GET"}})
 	e, err := NewExecution(t.Context(), cfg)

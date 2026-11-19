@@ -38,8 +38,9 @@ type E3IdentityInput struct {
 	Timeout      time.Duration
 }
 
-type e3IdentityCall struct {
+type e3ProgramCall struct {
 	audit       E3Audit
+	kind        ProgramCallKind
 	session     http.Header
 	marker      []byte
 	subjectPath string
@@ -49,11 +50,18 @@ type e3IdentityCall struct {
 	runRef      string
 	label       string
 	accountRef  string
+	idPath      string
+	objectID    string
+	createdID   string
+	dataPath    string
+	statusPath  string
+	normalValue string
+	markerField string
 }
 
 var e3SubjectPathPattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`)
 
-func (c *e3IdentityCall) current() bool {
+func (c *e3ProgramCall) current() bool {
 	ref, ok := c.accounts.AccountBindingRef(c.runRef, c.label)
 	if !ok || ref != c.accountRef {
 		return false
@@ -79,7 +87,7 @@ func (e *Execution) SendE3Identity(ctx context.Context, in E3IdentityInput) (Eve
 	marker := in.Marker.Reveal()
 	defer clear(marker)
 	e.mu.Lock()
-	bound := e.cfg.AuditVersion == JournalVersionV3 && e.cfg.E3Verifier != nil && e.cfg.Scope.RunRef == in.Binding.RunRef &&
+	bound := e.cfg.AuditVersion == JournalVersionV3 && e.cfg.E3Verifier != nil && e.cfg.E3ConfirmationRequests > 0 && e.cfg.Scope.RunRef == in.Binding.RunRef &&
 		e.cfg.Scope.TaskRef == in.Binding.TaskRef && e.cfg.Scope.PolicyRef == in.Binding.E2PolicyRef &&
 		bytes.Equal(e.marker, marker) && !e.stopped && !e.auditFailed
 	var origin string
@@ -126,7 +134,7 @@ func (e *Execution) SendE3Identity(ctx context.Context, in E3IdentityInput) (Eve
 	if err != nil {
 		return Event{}, err
 	}
-	metadata := &e3IdentityCall{audit: E3Audit{Role: in.Role, AccountLabel: in.AccountLabel,
+	metadata := &e3ProgramCall{kind: ProgramE3Identity, audit: E3Audit{Role: in.Role, AccountLabel: in.AccountLabel,
 		AccountBindingRef: ref, E3: E3Binding{JobRef: in.Binding.JobRef,
 			GenerationRef: in.Binding.GenerationRef, InstanceRef: in.Binding.InstanceRef,
 			Policy: in.Binding.Policy}}, session: session, marker: bytes.Clone(marker),
@@ -137,6 +145,10 @@ func (e *Execution) SendE3Identity(ctx context.Context, in E3IdentityInput) (Eve
 	requestCtx, cancel := context.WithTimeout(ctx, in.Timeout)
 	defer cancel()
 	_, _, receipt, sendErr := call.doWithE3(requestCtx, request, PurposeE3Identity, nil, metadata)
+	return e.e3Result(ctx, requestCtx, call, receipt, sendErr, metadata)
+}
+
+func (e *Execution) e3Result(ctx, requestCtx context.Context, call *Call, receipt Receipt, sendErr error, metadata *e3ProgramCall) (Event, error) {
 	closeCtx, closeCancel := context.WithTimeout(context.WithoutCancel(ctx), e.cfg.Limits.RequestTimeout)
 	_, closeErr := call.Close(closeCtx)
 	closeCancel()
@@ -177,7 +189,7 @@ func (e *Execution) SendE3Identity(ctx context.Context, in E3IdentityInput) (Eve
 	return result, nil
 }
 
-func (c *e3IdentityCall) finish(r *Receipt, ctx context.Context) {
+func (c *e3ProgramCall) finish(r *Receipt, ctx context.Context) {
 	if !r.ForwardAttempted && r.Decision != "allowed" {
 		switch r.Reason {
 		case BudgetExhausted, AttemptLimit:
@@ -192,13 +204,22 @@ func (c *e3IdentityCall) finish(r *Receipt, ctx context.Context) {
 	*r.E3Audit = c.audit
 }
 
-func (c *e3IdentityCall) inspect(response *http.Response, body []byte, r *Receipt) {
+func (c *e3ProgramCall) inspect(response *http.Response, body []byte, r *Receipt) {
 	r.ResponseComplete, r.Reason = true, Complete
 	digest := sha256.Sum256(body)
 	c.audit.BodyDigestSHA256 = hex.EncodeToString(digest[:])
 	complete, markerFree := true, true
 	c.audit.BodyComplete, c.audit.RequestMarkerFree = &complete, &markerFree
 	c.audit.Normal = oracle.StateUnknown
+	if c.kind == ProgramE3Create {
+		c.audit.RequestMarkerFree = nil
+		c.inspectCreate(response, body)
+		return
+	}
+	if c.kind == ProgramE3Read {
+		c.inspectRead(response, body)
+		return
+	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		c.audit.Normal = oracle.StateNo
 		return
