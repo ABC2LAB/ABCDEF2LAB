@@ -64,6 +64,7 @@ import { DiagnosticEntrySections } from "./DiagnosticEntrySections";
 import { ReportAssetGraph } from "./ReportAssetGraph";
 import { ReportReadError } from "./runRows";
 import { TaskActivity } from "./TaskActivity";
+import { AccessMapPanel } from "./UrlAccessMapLive";
 import { reasonText, UrlFacts, UrlHead, UrlNotices, UrlPill, UrlRefreshButton, useUrlHost } from "./urlParts";
 import { crawlPct, PauseButton, useStopConfirm, WorkflowNotice, WorkflowReport } from "./workflowViews";
 
@@ -1471,7 +1472,7 @@ export function FindingRows({
   );
 }
 
-/** 보고서 탭 (시안 rTabs). 자산 지식 그래프 · 접근통제 지도는 이 점검의 서버 자료가 없어 탭만 두고 '연결 전'. */
+/** 보고서 탭 (시안 rTabs). 자산 지식 그래프는 KG 조회 v1, 접근통제 지도는 이 점검의 저장 지도를 읽는다. */
 const R_TABS = [
   ["list", "발견 목록"],
   ["graph", "자산 지식 그래프"],
@@ -1810,8 +1811,9 @@ export function UrlReportLive() {
                 hidden={tab !== "map"}
                 style={{ display: tab === "map" ? "flex" : undefined, flexDirection: "column", gap: 12 }}
               >
-                {/* 실제 지도는 KG API 연결 뒤. 지금은 따로 있는 접근통제 지도 화면(예시)으로 간다 */}
-                <NotYet block why="이 점검의 접근통제 지도 서버 연결이 없습니다" />
+                {/* 이 점검의 저장 지도(GET /api/tasks/{id}/access-map, #683). 탭이 보일 때만 읽고 409(KG 미등록 등)·503 은
+                    그 뜻대로 보인다 — 빈 격자 · 예시로 대신하지 않는다. 넓게 보려면 지도 화면으로 간다 */}
+                <AccessMapPanel active={visible && tab === "map"} />
                 <div>
                   <button className={s.btn} type="button" onClick={() => goTo("accessmap")}>
                     접근통제 지도 화면 열기

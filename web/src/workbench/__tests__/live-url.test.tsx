@@ -1582,10 +1582,11 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     const graphTab = screen.getByRole("tabpanel", { name: "자산 지식 그래프" });
     expect(within(graphTab).queryByText(/^연결 전/)).toBeNull();
     expect(graphTab).toHaveTextContent(/자산 지식 그래프를 불러오는 중|그래프 조회 실패/);
-    // 접근통제 지도 탭은 서버 연결이 없어 '연결 전' (지도 화면 바로가기는 있다)
+    // 접근통제 지도 탭은 이 점검의 저장 지도를 읽는다(그리기·409·경쟁은 report-access-map.test.tsx). '연결 전' 자리는 없고
+    // 지도 화면 바로가기는 있다
     fireEvent.click(screen.getByRole("tab", { name: "접근통제 지도" }));
     const mapTab = screen.getByRole("tabpanel", { name: "접근통제 지도" });
-    expect(within(mapTab).getByRole("note")).toHaveTextContent(/^연결 전/);
+    expect(within(mapTab).queryByText(/^연결 전/)).toBeNull();
     expect(within(mapTab).getByRole("button", { name: /접근통제 지도 화면 열기/ })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: "증거 · 감사" }));
     // 시안 증거 목록: 발견마다 저장된 증거 버전 · 재현 단계 수
