@@ -210,7 +210,7 @@ export function exploreState(
  */
 const CRAWL_END_TEXT: Readonly<Record<keyof typeof EXPLORE_TEXT, string | null>> = {
   COMPLETED: "탐색을 마쳤습니다",
-  PARTIAL: "탐색을 마쳤습니다 · 일부 페이지는 못 봤습니다",
+  PARTIAL: "탐색을 마쳤습니다 · 일부 페이지는 탐색하지 못했습니다",
   STOPPED: "탐색이 중간에 멈췄습니다",
   NOT_RUN: "탐색을 하지 않았습니다",
   // 끝났는데 서버가 아직 탐색 중이라고 하면 상태 없음과 같이 본다

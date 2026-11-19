@@ -777,22 +777,22 @@ describe("자산 탐색", () => {
     [
       "한도 소진 사유는 status 뒤에 보인다",
       { exploration_status: "PARTIAL", exploration_reason: "cap_exhausted" },
-      "탐색을 마쳤습니다 · 일부 페이지는 못 봤습니다 (요청 상한 소진)",
+      "탐색을 마쳤습니다 · 일부 페이지는 탐색하지 못했습니다 (요청 상한 소진)",
     ],
     [
       "모델 오류 사유는 status 뒤에 보인다",
       { exploration_status: "PARTIAL", exploration_reason: "model_error" },
-      "탐색을 마쳤습니다 · 일부 페이지는 못 봤습니다 (모델 오류)",
+      "탐색을 마쳤습니다 · 일부 페이지는 탐색하지 못했습니다 (모델 오류)",
     ],
     [
       "status 와 모순되는 사유(PARTIAL 의 completed)는 화면에서 숨긴다",
       { exploration_status: "PARTIAL", exploration_reason: "completed" },
-      "탐색을 마쳤습니다 · 일부 페이지는 못 봤습니다",
+      "탐색을 마쳤습니다 · 일부 페이지는 탐색하지 못했습니다",
     ],
     [
       "표에 없는 Object 기본 속성 이름(constructor) 사유는 붙이지 않는다",
       { exploration_status: "PARTIAL", exploration_reason: "constructor" },
-      "탐색을 마쳤습니다 · 일부 페이지는 못 봤습니다",
+      "탐색을 마쳤습니다 · 일부 페이지는 탐색하지 못했습니다",
     ],
   ])("%s · 끝난 막대는 주황으로 채우고 실제 방문 수 · 탐색 상태를 글로 보인다", (_n, over, text) => {
     // 방문 2 / 페이지 상한 8 = 25% — 서버는 PARTIAL 에서도 initial_completed 를 true 로 둔다
