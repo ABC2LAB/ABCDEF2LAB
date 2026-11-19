@@ -78,9 +78,11 @@ from runner_engine import (  # noqa: E402
     TaskRequest,
 )
 from runner_goal import common_goal, common_goal_sha256  # noqa: E402
-from cli_usage import count_usage  # noqa: E402
+from cli_usage import OBSERVED_LINES_FORMAT, count_usage, observed_lines  # noqa: E402
 
 CLI_USAGE_NAME = "cli-usage.json"
+# 이름이 관측된 명령의 가린 원문 한 줄(사람 확인용, 관측이 없으면 파일을 만들지 않는다).
+CLI_LINES_NAME = "cli-observed-lines.json"
 BASH_TOOL = "Bash"  # 원본 Worker 셸 도구 이름(activity.tool)
 from runner_split import REGISTRATION_PATHS  # noqa: E402
 from runner_fault import FAULT_STALL_FORMAT, FAULT_STALL_NAME, FaultRecordError, fault_stall_record  # noqa: E402
@@ -949,9 +951,17 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     if spec.cli_usage_names:
         # 원본 도구 실행 기록에서 B에만 있는 CLI 이름별 Bash 호출 수만 남긴다(원문은 메모리에서만 본다, 결정안 §10).
         commands = _step(state, "cli_usage_failed", lambda: ports.command_records(task_id))
-        usage = _step(state, "cli_usage_failed", lambda: dict(count_usage(
-            [record for record in commands["records"] if record["tool"] == BASH_TOOL], spec.cli_usage_names, with_failures=False),
-            exploration_id=commands["exploration_id"]))
+        bash = [record for record in commands["records"] if record["tool"] == BASH_TOOL]
+        usage = _step(state, "cli_usage_failed", lambda: dict(count_usage(bash, spec.cli_usage_names, with_failures=False),
+                                                              exploration_id=commands["exploration_id"]))
+        if usage["names_seen"]:
+            # 관측된 명령마다 한 줄의 모양(관측 이름·셸 연산자만, 나머지는 전부 <인자>)을 남긴다(2026-11-19 사용자
+            # 결정 4, #736 리뷰: 자격 가림은 별도 옵션 인자로 준 자격을 못 가려 원문 줄은 남기지 않는다). 확인은 사람이 이 모양만
+            # 보고 한다. 셸 낱말로 못 나누는 줄은 보류만 적는다. 관측이 없으면 아무것도 남기지 않는다.
+            picked, observed = _step(state, "cli_usage_failed", lambda: observed_lines(bash, spec.cli_usage_names))
+            _step(state, "evidence_write_failed", lambda: evidence.write_json(CLI_LINES_NAME, {
+                "format": OBSERVED_LINES_FORMAT, "observed_calls": observed, "lines": picked}))
+            usage["observed_lines"] = len(picked)
         _step(state, "evidence_write_failed", lambda: evidence.write_json(CLI_USAGE_NAME, usage))
     intercepted = _step(state, "intercept_summary_failed", ports.intercept_summary)
     _step(state, "evidence_write_failed", lambda: evidence.write_json("intercept-summary.json", intercepted))
