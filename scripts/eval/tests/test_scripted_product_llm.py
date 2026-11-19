@@ -164,6 +164,7 @@ class TestFinishWithGoals(unittest.TestCase):
             loaded = load_plan(path, ORIGIN)
         script = Script(loaded)
         script.intents_sent = len(loaded["intents"])  # 의도는 다 냈다
+        script.completed_commands = set(loaded["commands"])  # 계획 명령이 모두 완료됐다
         return script
 
     def test_planner_proves_each_open_goal_once_then_stops(self):
@@ -200,6 +201,7 @@ class TestFinishWithGoals(unittest.TestCase):
         self.assertIsNone(script.decide(conversation(tool(PLANNER_TOOL), tool(GOALS_TOOL), tail_user=True)))  # prove_goal 없음
         plain = Script(dict(script.plan, finish=False))
         plain.intents_sent = len(plain.plan["intents"])
+        plain.completed_commands = set(plain.plan["commands"])
         self.assertIsNone(plain.decide(conversation(*self.PLANNER, tail_user=True)))  # finish 없는 계획은 지금처럼
 
     def test_worker_records_one_fact_for_its_intent_after_the_commands(self):
@@ -234,6 +236,36 @@ class TestFinishWithGoals(unittest.TestCase):
                 self.assertIsNone(script.decide(conversation(*worker, user=message, turns=[(WORKER_TOOL, OK_BASH), (WORKER_TOOL, result)])))
         # 다른 의도가 명령을 다 가져가 이 대화에서 Bash를 하나도 안 냈다
         self.assertIsNone(script.decide(conversation(*worker, user=message)))
+
+    def test_goals_stay_open_unless_every_plan_command_completed(self):
+        # #797 리뷰: Worker A 성공·Worker B 거부인 혼합 회차는 A의 사실 하나로 목표를 증명하면 안 된다.
+        script = self.script()
+        script.completed_commands = set()
+        commands = script.plan["commands"]
+        worker = (tool(WORKER_TOOL, {"command": {}}), tool(FACT_TOOL, {"intent_id": {}, "summary": {}}))
+        denied = json.dumps({"tool_output": "x", "trusted": {"classification": "policy_not_executed", "exit_code": 0}})
+
+        def bash_turns(*pairs):
+            body = conversation(*worker, user="Intent id: 12", turns=[(WORKER_TOOL, result) for _, result in pairs])
+            for message, (command, _) in zip([m for m in body["messages"] if m.get("tool_calls")], pairs):
+                message["tool_calls"][0]["function"]["arguments"] = json.dumps({"command": command})
+            return body
+
+        script.decide(bash_turns((commands[0], OK_BASH)))   # Worker A: 성공(사실을 남긴다)
+        script.decide(bash_turns((commands[1], denied)))    # Worker B: 거부
+        finishing = conversation(*self.PLANNER, turns=[(GOALS_TOOL, GOALS), (FACTS_TOOL, FACTS)])
+        self.assertIsNone(script.decide(finishing))  # 사실이 있어도 증명하지 않는다
+        self.assertIsNone(script.decide(conversation(*self.PLANNER, tail_user=True)))  # 목표 조회도 시작하지 않는다
+        # 아직 다 실행되지 않았을 때도 같다
+        partial = self.script()
+        partial.completed_commands = {commands[0]}
+        self.assertIsNone(partial.decide(conversation(*self.PLANNER, tail_user=True)))
+        # 둘 다 완료되면 증명한다(Worker 대화에서 본 결과로 기억한다)
+        done = self.script()
+        done.completed_commands = set()
+        done.decide(bash_turns((commands[0], OK_BASH), (commands[1], OK_BASH)))
+        self.assertEqual(done.completed_commands, set(commands))
+        self.assertEqual(done.decide(finishing)[0], PROVE_TOOL)
 
     def test_result_parsers(self):
         self.assertEqual(open_goal_ids(GOALS), [3, 5])

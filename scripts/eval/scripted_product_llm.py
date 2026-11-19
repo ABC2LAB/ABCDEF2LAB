@@ -25,6 +25,8 @@
   사실을 남기지 않아, 실패한 회차가 목표 달성으로 끝나지 않는다(#797 리뷰).
 - Planner: 의도를 다 낸 뒤 `list_goals` → 열린 목표가 있으면 `list_facts` → 사실이 있으면 열린 목표 하나에 `prove_goal` →
   다시 `list_goals`를 되풀이한다. 목표마다 한 번만 증명을 시도한다. 열린 목표나 사실이 없으면 이번 라운드를 끝낸다.
+  계획 명령이 모두 완료(위 Worker 기준)되고 실패한 명령이 없을 때만 이 순서를 시작한다. 하나라도 거부·실패면 목표를 open으로
+  남겨 회차가 상한까지 가게 한다.
   모든 목표가 met가 되면 엔진이 작업을 자동 완료한다(`agent/tools.go` prove_goal).
 
 실행: python3 -I -B scripts/eval/scripted_product_llm.py --host <주소> --port <포트> --plan <계획 JSON> --origin <대상 origin>
@@ -185,20 +187,34 @@ def _ids(items: object, state: str | None = None) -> list[int]:
     return out
 
 
-def bash_succeeded(messages: list[dict]) -> bool:
-    """이 대화의 Bash 호출이 하나 이상이고, 그 결과(호출 바로 뒤 도구 결과)가 모두 E② 신뢰 결과로 완료·종료 코드 0인지."""
+def bash_outcomes(messages: list[dict]) -> list[tuple[str | None, bool | None]]:
+    """이 대화의 Bash 호출마다 (명령, 성공). 성공은 호출 바로 뒤 도구 결과가 E② 신뢰 결과로 완료·종료 코드 0인지이고, 결과가
+    아직 없으면 None이다."""
     outcomes = []
     for index, message in enumerate(messages):
         if message.get("role") != "assistant":
             continue
         for call in message.get("tool_calls") or []:
-            if isinstance(call, dict) and isinstance(call.get("function"), dict) and call["function"].get("name") == WORKER_TOOL:
-                following = messages[index + 1] if index + 1 < len(messages) else None
-                value = _json(_content(following)) if isinstance(following, dict) and following.get("role") == "tool" else None
-                trusted = value.get("trusted") if isinstance(value, dict) else None
-                outcomes.append(isinstance(trusted, dict) and trusted.get("classification") == "completed"
-                                and type(trusted.get("exit_code")) is int and trusted["exit_code"] == 0)
-    return bool(outcomes) and all(outcomes)
+            function = call.get("function") if isinstance(call, dict) else None
+            if not isinstance(function, dict) or function.get("name") != WORKER_TOOL:
+                continue
+            arguments = _json(function.get("arguments")) if isinstance(function.get("arguments"), str) else None
+            command = arguments.get("command") if isinstance(arguments, dict) and isinstance(arguments.get("command"), str) else None
+            following = messages[index + 1] if index + 1 < len(messages) else None
+            if not isinstance(following, dict) or following.get("role") != "tool":
+                outcomes.append((command, None))
+                continue
+            value = _json(_content(following))
+            trusted = value.get("trusted") if isinstance(value, dict) else None
+            outcomes.append((command, isinstance(trusted, dict) and trusted.get("classification") == "completed"
+                             and type(trusted.get("exit_code")) is int and trusted["exit_code"] == 0))
+    return outcomes
+
+
+def bash_succeeded(messages: list[dict]) -> bool:
+    """이 대화의 Bash 호출이 하나 이상이고, 그 결과가 모두 E② 신뢰 결과로 완료·종료 코드 0인지."""
+    outcomes = bash_outcomes(messages)
+    return bool(outcomes) and all(ok is True for _, ok in outcomes)
 
 
 def open_goal_ids(text: str | None) -> list[int]:
@@ -220,6 +236,10 @@ class Script:
         self.plan, self.lock = plan, threading.Lock()
         self.intents_sent = self.commands_sent = 0
         self.proved: set[int] = set()
+        # 프로세스 전체의 계획 명령 결과(Worker 대화에서 본 것). Planner는 계획 명령이 모두 완료되고 실패가 없을 때만 목표를
+        # 증명한다(#797 리뷰: 일부 Worker만 성공한 회차가 목표 달성으로 끝나 거부된 요청을 가리지 않게).
+        self.completed_commands: set[str] = set()
+        self.failed_commands: set[str] = set()
         self.counts = {"requests": 0, "exploration": 0, "planner": 0, "worker": 0, "finish": 0, "done": 0, "skipped": 0}
 
     def decide(self, body: dict) -> tuple[str, dict] | None:
@@ -235,6 +255,9 @@ class Script:
                 else:
                     call = self._finish_planner(tools, messages, last_is_result)
             elif WORKER_TOOL in tools:
+                for command, ok in bash_outcomes(messages):
+                    if command is not None and ok is not None:
+                        (self.completed_commands if ok else self.failed_commands).add(command)
                 call = self._worker(tools[WORKER_TOOL])
                 if call is None:
                     call = self._finish_worker(tools, messages)
@@ -249,6 +272,8 @@ class Script:
         """의도를 다 낸 뒤 목표 달성 선언으로 끝낸다(계획 finish). 도구가 없거나 할 일이 없으면 이번 라운드를 끝낸다."""
         if not self.plan["finish"] or not {GOALS_TOOL, FACTS_TOOL, PROVE_TOOL} <= set(tools):
             return None
+        if self.failed_commands or not set(self.plan["commands"]) <= self.completed_commands:
+            return None  # 계획 명령이 아직 다 끝나지 않았거나 실패가 있다: 목표를 open으로 둔다
         calls = _calls(messages)
         last = calls[-1][1] if last_is_result and calls else None
         if not last_is_result or last == PROVE_TOOL:
