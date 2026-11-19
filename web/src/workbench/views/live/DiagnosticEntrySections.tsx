@@ -90,7 +90,7 @@ function StoredScreenshot({ task, entry, step }: { task: string; entry: string; 
           width={step.capture.width ?? 1}
           height={step.capture.height ?? 1}
           src={url}
-          alt={`Step ${step.number} 실행 당시의 비민감 영역 캡처`}
+          alt={`요청 ${step.number} 실행 당시의 비민감 영역 캡처`}
           style={{ maxWidth: "100%", height: "auto" }}
         />
       ) : (
@@ -107,6 +107,18 @@ function StoredScreenshot({ task, entry, step }: { task: string; entry: string; 
 }
 
 // 판정·재현·조치·프롬프트는 같은 저장 항목만 사용한다. 이 화면은 대상이나 모델을 호출하지 않는다.
+/** 서버가 단계마다 붙이는 기본 제목(reproduction/model.go '저장된 실행 관찰 n'). 번호만 되풀이해 뜻이 없다. */
+const DEFAULT_STEP_TITLE = /^저장된 실행 관찰 \d+$/;
+
+/**
+ * 실행 단계 제목: '요청 n'(사용자 11/20 — 'Step 1. 저장된 실행 관찰 1'은 번호가 두 번이고 말이 어색했다). 서버 기본 제목이 아니면
+ * '요청 n · 제목'. 화면 칸 · PoC 복사가 같이 쓴다.
+ */
+export function stepHeading(step: Pick<ReproductionStep, "number" | "title">): string {
+  const title = maskSecrets(step.title);
+  return !title || DEFAULT_STEP_TITLE.test(title) ? `요청 ${step.number}` : `요청 ${step.number} · ${title}`;
+}
+
 /**
  * 상세 보기 '증거 / PoC' 칸의 복사 글 (사용자 11/18 'PoC 복사'): 화면 그 칸에 보이는 것과 같은 내용 — 제목 · 위험도 · 판정 ·
  * ID, 실행 단계(메서드 · 경로 · 사전 조건 · 관찰), 저장된 요청 · 응답 증거와 잘림 안내. 칸마다 화면처럼 가린 글만 쓰고
@@ -124,10 +136,7 @@ export function pocCopyText(entry: RemediationEntry): string {
     out.push("근거 불러오기 실패. 현재 결속을 확인할 수 없어 재현 단계를 제공하지 않습니다.", "");
   else if (entry.steps?.length) {
     for (const st of entry.steps) {
-      out.push(
-        `Step ${st.number}. ${maskSecrets(st.title)}`,
-        `${st.method} ${maskSecrets(st.path) || "비민감 경로 미기록"}`,
-      );
+      out.push(stepHeading(st), `${st.method} ${maskSecrets(st.path) || "비민감 경로 미기록"}`);
       if (st.prerequisites) out.push(`사전 조건: ${maskSecrets(st.prerequisites)}`);
       if (st.observation) out.push(`관찰: ${maskSecrets(st.observation)}`);
       if (st.truncated) out.push("이 단계의 관측이 잘렸습니다.");
@@ -201,9 +210,7 @@ export function DiagnosticEntrySections({
       {entry.steps?.length ? (
         entry.steps.map((step) => (
           <section key={step.id}>
-            <h4>
-              Step {step.number}. {maskSecrets(step.title)}
-            </h4>
+            <h4>{stepHeading(step)}</h4>
             <p>
               {step.method} {maskSecrets(step.path) || "비민감 경로 미기록"}
             </p>

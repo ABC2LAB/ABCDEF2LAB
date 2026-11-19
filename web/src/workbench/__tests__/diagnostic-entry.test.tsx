@@ -10,7 +10,7 @@ import {
   readCopyPrompt,
 } from "@/lib/diagnosis/remediation";
 
-import { DiagnosticEntrySections } from "../views/live/DiagnosticEntrySections";
+import { DiagnosticEntrySections, stepHeading } from "../views/live/DiagnosticEntrySections";
 import { MARKUP_HIDDEN_SECRETS } from "./mask-fixtures";
 
 vi.mock("@/lib/diagnosis/api", async (original) => ({
@@ -238,7 +238,7 @@ it("reports source load failure without presenting generated steps", () => {
   };
   render(<DiagnosticEntrySections task="42" entry={entry} onReload={vi.fn()} />);
   expect(screen.getByRole("alert")).toHaveTextContent("근거 불러오기 실패");
-  expect(screen.queryByRole("heading", { name: /Step 1/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: /요청 1/ })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /생성·저장/ })).toBeNull();
 });
 
@@ -250,4 +250,24 @@ it("distinguishes missing current images from integrity failures", async () => {
   render(<DiagnosticEntrySections task="42" entry={entry} onReload={vi.fn()} />);
   fireEvent.click(screen.getByRole("button", { name: "검증된 증적 이미지 보기" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("현재 회차에서 이미지를 찾지 못했습니다");
+});
+
+it("실행 단계 제목은 '요청 n' — 서버 기본 제목('저장된 실행 관찰 n')은 되풀이하지 않는다 (사용자 11/20)", () => {
+  expect(stepHeading({ number: 1, title: "저장된 실행 관찰 1" })).toBe("요청 1");
+  expect(stepHeading({ number: 2, title: "" })).toBe("요청 2");
+  expect(stepHeading({ number: 3, title: "계정 B로 계정 A 주문 조회" })).toBe("요청 3 · 계정 B로 계정 A 주문 조회");
+  // 제목의 비밀 값은 가린다
+  expect(stepHeading({ number: 4, title: "token=synthetic-step-secret" })).toBe("요청 4 · token=[REDACTED]");
+  const e = fixture();
+  const step = e.steps?.[0];
+  if (!step) throw new Error("fixture");
+  render(
+    <DiagnosticEntrySections
+      task="42"
+      entry={{ ...e, steps: [{ ...step, title: "저장된 실행 관찰 1" }] }}
+      onReload={vi.fn()}
+    />,
+  );
+  expect(screen.getByRole("heading", { level: 4, name: "요청 1" })).toBeInTheDocument();
+  expect(screen.queryByText(/Step 1|저장된 실행 관찰/)).toBeNull();
 });
