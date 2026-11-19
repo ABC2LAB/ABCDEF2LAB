@@ -36,7 +36,7 @@ from manifest import Engine, ManifestError, RunManifest, load_manifests  # noqa:
 from scoreboard import SnapshotError  # noqa: E402
 
 from e2_prompt_identity import PROMPT_FIELDS, PromptIdentityError, condition_prompt_identity  # noqa: E402
-from isolation_proof import E2_DECLARED_PROPOSED, E2_PRODUCT_FAILURE, EXECUTION_SYNTHETIC, PURPOSE_OFFICIAL  # noqa: E402
+from isolation_proof import E2_DECLARED_PROPOSED, E2_PRODUCT_FAILURE, E2_SPLIT_PRODUCT, EXECUTION_SYNTHETIC, PURPOSE_OFFICIAL  # noqa: E402
 from run_record import (  # noqa: E402
     OFFICIAL_E3_DISABLED_REASON, V1, V11, RunInputs, RunRecordError, load_run_inputs, read_runner_key,
 )
@@ -262,6 +262,11 @@ def check_comparable(manifests: list[RunManifest]) -> None:
         raise ComparabilityError(f"비교 불가 {len(errors)}건:\n  " + "\n  ".join(errors))
 
 
+# 분리 배치 표에서 조건 안에서만 같아야 하는 실행 조건 칸(설계안 §6). LLM 스트리밍은 선언된 차이다(2026-11-19 사용자 결정:
+# 제품 transport가 stream:true를 거부하는 제품 설계이고 B는 원본 기본값(스트리밍)을 유지한다). 나머지 셋(샘플링·머신 사양·
+# 머신)은 표 전체.
+SPLIT_PER_CONDITION = frozenset({"엔진 설정", "엔진 규칙 파일", "도구 트리", "LLM 스트리밍"})
+
 # 통제 검증 표 행(프로토콜 §8.3). 칸 이름은 시도별 대조 다섯 칸, 기대 0인 행은 표에 그대로 적는다.
 _CONTROL_ROWS = (
     ("허용·관측됨", lambda r: r["cells"]["allowed_observed"]),
@@ -280,6 +285,9 @@ def _withheld_runs(runs: list[dict | None]) -> int:
 
 
 def _control_claim(runs: list[dict | None], mode: str) -> str:
+    if mode == E2_SPLIT_PRODUCT:
+        # 제품 안 E²의 시도 대조는 평가 내보내기 전까지 미수집이다(설계안 §4). 차단 0건도 제품 실패도 아니다.
+        return f"대조 미수집 — 통제 주장 보류(회차 {len(runs)}/{len(runs)})"
     withheld = _withheld_runs(runs)
     claim = f"보류(회차 {withheld}/{len(runs)})" if withheld else "조건 충족"
     # 가짜 E²는 통과 전용이라 통제를 증명하지 않는다(프로토콜 §2). 조건을 채워도 주장으로 쓰지 않는다.
@@ -299,28 +307,38 @@ def render_control_table(control: dict[str, list[dict | None]], modes: dict[str,
              "| 회차 수 | " + " | ".join(str(len(control[c])) for c in conditions) + " |",
              "| E② 자리 | " + " | ".join(modes[c] for c in conditions) + " |",
              "| 대조 근거 없는 회차(증명 없음, 기대 0) | " + " | ".join(
-                 str(sum(1 for r in control[c] if r is None)) for c in conditions) + " |",
+                 ("— (대조 미수집)" if modes[c] == E2_SPLIT_PRODUCT else str(sum(1 for r in control[c] if r is None)))
+                 for c in conditions) + " |",
              # 무효가 아니라 그대로 세는 회차다. 무효율과 따로 싣는다(프로토콜 §2).
              "| 제품 실패 회차(무효 아님, 기대 0) | " + " | ".join(
                  str(product_failures.get(c, 0)) for c in conditions) + " |"]
     for label, value in _CONTROL_ROWS:
         cells = []
         for c in conditions:
+            if modes[c] == E2_SPLIT_PRODUCT:
+                cells.append("—")  # 대조 미수집: 0건이 아니라 미측정이다(설계안 §4)
+                continue
             values = [None if r is None else value(r) for r in control[c]]
             total = sum(v for v in values if v is not None)
             cells.append(f"{total} ({', '.join('—' if v is None else str(v) for v in values)})")
         lines.append(f"| {label} | " + " | ".join(cells) + " |")
     lines.append("| 허용 양성 근거 있는 회차 | " + " | ".join(
+        "—" if modes[c] == E2_SPLIT_PRODUCT else
         f"{sum(1 for r in control[c] if r is not None and r['positive_evidence'])}/{len(control[c])}"
         for c in conditions) + " |")
     lines.append("| 통제 주장 | " + " | ".join(_control_claim(control[c], modes[c]) for c in conditions) + " |")
     return "\n".join(lines) + "\n"
 
 
-def control_warnings(control: dict[str, list[dict | None]], product_failures: dict[str, int]) -> list[str]:
+def control_warnings(control: dict[str, list[dict | None]], product_failures: dict[str, int],
+                     modes: dict[str, str] | None = None) -> list[str]:
     """통제 주장을 보류한 조건마다 사유 건수를 경고로 올린다(결과 요약에도 표시, §8.3)."""
     warnings = []
     for condition, runs in control.items():
+        if (modes or {}).get(condition) == E2_SPLIT_PRODUCT:
+            warnings.append(f"경고[통제 주장 보류] {condition}: 회차 {len(runs)}/{len(runs)} — 대조 미수집(제품 안 E② 시도 대조는 "
+                            "E② 영수증·저널 v3 평가 내보내기 전, 설계안 §4). 차단 시도 수는 0이 아니라 미측정이다")
+            continue
         withheld = _withheld_runs(runs)
         if withheld:
             known = [r for r in runs if r is not None]
@@ -354,6 +372,9 @@ def build_report(
     drain_policies: set[tuple[int, int]] = set()
     run_conditions: dict[str, set[str]] = {"엔진 설정": set(), "적용 샘플링": set(), "머신 사양": set(), "머신": set(),
                                            "LLM 스트리밍": set(), "엔진 규칙 파일": set(), "도구 트리": set()}
+    # 분리 배치 표(설계안 §6): B(원본 엔진)와 O(제품)는 엔진 설정·규칙·도구가 설계상 다르다. 이 셋과 LLM 스트리밍(선언된 차이,
+    # 2026-11-19 사용자 결정)은 조건 안에서만 같아야 하고, 샘플링·머신 사양·머신은 표 전체가 같아야 한다.
+    per_condition: dict[tuple[str, str], set[str]] = {}
     # E② 자리는 baseline·개선 후가 일부러 다르다(프로토콜 §2, 선언된 차이). 조건 하나 안에서만 같아야 한다.
     e2_modes: dict[str, set[str]] = {}
     e2_identities: dict[str, set[tuple[str, str, str, str]]] = {}
@@ -407,10 +428,14 @@ def build_report(
                                          "같은 정책끼리만 비교(프로토콜 §2)")
         # 엔진 실행 설정·게이트웨이가 실제 넣은 샘플링·머신이 회차마다 같아야 같은 조건이다(프로토콜 §5.1·§6).
         if inputs.run_conditions is not None:
+            split = inputs.path_key is not None and inputs.path_key[0]
             for (label, seen), value in zip(run_conditions.items(), inputs.run_conditions):
+                if split and label in SPLIT_PER_CONDITION:
+                    seen = per_condition.setdefault((label, m.condition), set())
                 seen.add(value)
                 if len(seen) > 1:
-                    raise ComparabilityError(f"회차 조건 불일치({label}) — 같은 실행 설정·샘플링·머신끼리만 비교"
+                    scope = "" if not split else f", {m.condition} 안" if label in SPLIT_PER_CONDITION else ", 표 전체"
+                    raise ComparabilityError(f"회차 조건 불일치({label}{scope}) — 같은 실행 설정·샘플링·머신끼리만 비교"
                                              "(프로토콜 §5.1·§6)")
         if inputs.e2_mode is not None:
             modes = e2_modes.setdefault(m.condition, set())
@@ -468,8 +493,9 @@ def build_report(
     control = {c: runs for c, runs in control.items()
                if any(r is not None for r in runs) or e2_modes.get(c, set()) - {"none"}}
     if control:
-        sections.append(render_control_table(control, {c: next(iter(e2_modes[c])) for c in control}, product_failures))
-        warnings.extend(control_warnings(control, product_failures))
+        modes = {c: next(iter(e2_modes[c])) for c in control}
+        sections.append(render_control_table(control, modes, product_failures))
+        warnings.extend(control_warnings(control, product_failures, modes))
     return Report("\n".join(sections), tuple(warnings))
 
 
