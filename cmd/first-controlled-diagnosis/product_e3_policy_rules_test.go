@@ -6,11 +6,13 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Autumn-27/artex/diagnosisprep"
+	"github.com/Autumn-27/artex/e3contract"
 	"github.com/Autumn-27/artex/server"
 )
 
@@ -47,6 +49,50 @@ func TestProductE3PolicyRulesRequireFrozenDeclarationAndWorkerScope(t *testing.T
 			result, count := productE3PolicyRules(p, r, *stored.Declaration)
 			if count != 0 || len(result.Rules) != 1 || result.E3WriteConsent || result.E3Resettable {
 				t.Fatalf("승인 범위 밖 목적 규칙 발급: count=%d rules=%d", count, len(result.Rules))
+			}
+		})
+	}
+}
+
+// 목적 규칙이 한 조건이라도 범위를 벗어나면 기존 Worker 규칙은 보존하고 확정 몫만 닫는다.
+func TestProductE3PolicyRulesKeepWorkerScopeWhenPurposeIsNotCovered(t *testing.T) {
+	registry, _, target, _ := declarationTestTarget(t)
+	stored, err := registry.putDeclaration("ARTEX", target.ID, target.Revision, declarationTestInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := server.E2HTTPFilePolicy{Auth: &server.E2HTTPFileAuth{Accounts: []server.E2HTTPFileAuthAccount{{Label: "tester-a"}, {Label: "tester-b"}}},
+		Rules: []server.E2HTTPFileRule{
+			{Ref: "worker-identity", Origin: target.Origin, ConnectIP: "10.200.1.10", TLSSPKISHA256: target.TLSSPKISHA256, PathPrefix: "/app/me", Methods: []string{"GET"}},
+			{Ref: "worker-create", Origin: target.Origin, ConnectIP: "10.200.1.10", TLSSPKISHA256: target.TLSSPKISHA256, PathPrefix: "/app/notes", Methods: []string{"POST"}},
+			{Ref: "worker-read", Origin: target.Origin, ConnectIP: "10.200.1.10", TLSSPKISHA256: target.TLSSPKISHA256, PathPrefix: "/app/notes", Methods: []string{"GET"}},
+		}}
+	rec := productTargetRecord{Target: target, SelectedIP: "10.200.1.10", ReversibleWrites: true, WriteConsent: productWriteConsentAuto}
+	if got, count := productE3PolicyRules(base, rec, *stored.Declaration); count != 1 || len(got.Rules) != 6 {
+		t.Fatalf("세 Worker 규칙의 정상 확정 발급 실패: count=%d rules=%d", count, len(got.Rules))
+	}
+	for name, change := range map[string]func(*server.E2HTTPFilePolicy, *e3contract.Declaration){
+		"identity path": func(p *server.E2HTTPFilePolicy, _ *e3contract.Declaration) { p.Rules[0].PathPrefix = "/app/other" },
+		"read path":     func(p *server.E2HTTPFilePolicy, _ *e3contract.Declaration) { p.Rules[2].PathPrefix = "/app/other" },
+		"origin": func(p *server.E2HTTPFilePolicy, _ *e3contract.Declaration) {
+			p.Rules[0].Origin = "https://other.example.test"
+		},
+		"ip": func(p *server.E2HTTPFilePolicy, _ *e3contract.Declaration) { p.Rules[0].ConnectIP = "10.200.1.20" },
+		"spki": func(p *server.E2HTTPFilePolicy, _ *e3contract.Declaration) {
+			p.Rules[0].TLSSPKISHA256 = strings.Repeat("b", 64)
+		},
+		"identity ref": func(p *server.E2HTTPFilePolicy, _ *e3contract.Declaration) { p.Rules[0].Ref = "e3-identity" },
+		"read ref":     func(p *server.E2HTTPFilePolicy, _ *e3contract.Declaration) { p.Rules[2].Ref = "e3-0-read" },
+		"privilege":    func(_ *server.E2HTTPFilePolicy, d *e3contract.Declaration) { d.AccountsSamePrivilege = false },
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := base
+			p.Rules = append([]server.E2HTTPFileRule(nil), base.Rules...)
+			d := *stored.Declaration
+			change(&p, &d)
+			got, count := productE3PolicyRules(p, rec, d)
+			if count != 0 || got.E3WriteConsent || got.E3Resettable || !reflect.DeepEqual(got.Rules, p.Rules) {
+				t.Fatalf("범위 밖 확정 규칙이 발급되거나 Worker 규칙이 바뀜: count=%d rules=%d", count, len(got.Rules))
 			}
 		})
 	}
