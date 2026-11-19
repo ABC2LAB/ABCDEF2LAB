@@ -748,3 +748,43 @@ func TestProductE3ConfirmationWriteRecordFailures(t *testing.T) {
 		}
 	})
 }
+
+// 중지 마감(감독자가 확정 단계를 부르지 못함)에서도 결과 파일에 확정 단계 상태가 남는다(#738 이동찬 리뷰). 요청은 0건이고,
+// 비활성 근거가 있으면 그 사유, 돌 수 있었으면 interrupted다. 파일이 없을 때 비활성으로 추정하지 않게 하려는 것이다.
+func TestProductE3ConfirmationStoppedRecordsResult(t *testing.T) {
+	for name, tc := range map[string]struct {
+		declare, fake bool
+		status        e3contract.ConfirmationStatus
+		reason        string
+	}{
+		"product_deps_not_wired":    {true, false, e3contract.StatusDisabled, string(e3contract.DisabledNotWired)},
+		"no_declaration":            {false, true, e3contract.StatusDisabled, string(e3contract.DisabledNoDeclaration)},
+		"would_run_stopped_earlier": {true, true, e3contract.StatusInterrupted, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newE3HookFixture(t, tc.declare, nil)
+			var fake *e3fake.Transport
+			if tc.fake {
+				fake = e3HookFake()
+			}
+			c := f.confirmation(fake, e3HookAccounts(), nil)
+			if err := c.stopped(t.Context(), "9"); err != nil {
+				t.Fatal(err)
+			}
+			res, raw := readE3Result(t, f.runs)
+			if res.Status != tc.status || res.Reason != tc.reason || res.Requests != 0 || len(res.Verdicts) != 0 || len(res.Writes) != 0 {
+				t.Fatalf("중지 기록: %s", raw)
+			}
+			if fake != nil && len(fake.Calls()) != 0 {
+				t.Fatal("중지 기록이 요청을 보냄")
+			}
+			if st := f.r.resets[f.target.ID]; st != nil {
+				t.Fatalf("중지 기록이 쓰기를 남김: %+v", st)
+			}
+			// 결과 파일은 회차마다 한 번이다(확정 단계 결과든 중지 기록이든 덮어쓰지 않음).
+			if err := c.stopped(t.Context(), "9"); err == nil {
+				t.Fatal("중지 기록이 결과 파일을 덮어씀")
+			}
+		})
+	}
+}

@@ -120,8 +120,17 @@ type FirstDiagnosisSupervisor struct {
 	// 0이면 시간 마감을 하지 않는다(엔진 자체 기한과 실행 문맥만 남음).
 	timeCloseAt time.Time
 	timeDrain   time.Duration
-	// e3Confirmation은 일반 HTTP 실행의 E③ 확정 단계다(SetE3Confirmation). nil이면 확정 단계 없이 지금처럼 마감한다.
-	e3Confirmation func(ctx context.Context, taskID string, begin func()) error
+	// e3Confirmation은 일반 HTTP 실행의 E③ 확정 단계 훅이다(SetE3Confirmation). 비어 있으면 확정 단계 없이 지금처럼 마감한다.
+	e3Confirmation FirstDiagnosisE3Hooks
+}
+
+// FirstDiagnosisE3Hooks는 일반 HTTP 실행의 E③ 확정 단계 훅 둘이다(E③ 확정 경로 결정 §5).
+type FirstDiagnosisE3Hooks struct {
+	// Run은 모델 단계가 정상 마감에 닿았을 때 E② 마감 전에 한 번 부른다(확정 단계).
+	Run func(ctx context.Context, taskID string, begin func()) error
+	// Stopped는 Run을 부르지 못하고 실행이 끝날 때(중지·취소·실패·시간 초과 상태) 한 번 부른다. 요청 없이 그 회차의 확정
+	// 단계 상태(비활성 근거 또는 중단)만 기록한다(#738 이동찬 리뷰: 공식 평가가 읽는 결과 파일이 중지 마감에서 빠지지 않게).
+	Stopped func(ctx context.Context, taskID string) error
 }
 
 // SetE3Confirmation은 일반 HTTP 실행의 E③ 확정 단계를 정한다(E③ 확정 경로 결정 §5). 감독자는 모델 활동이 모두 끝난 뒤
@@ -130,16 +139,17 @@ type FirstDiagnosisSupervisor struct {
 // begin은 확정 단계가 실제로 대상 요청을 시작할 때만 훅이 부른다(e3contract.Deps.Started). 그때만 엔진을 정리 상태로 두고
 // 단계를 기록한다. 꺼진 회차(선언 없음·연결 없음 등)는 begin을 부르지 않아 감독자 흐름이 E③가 없을 때와 같다(Go 조건 2).
 // begin은 감독자 실행 흐름의 지역 상태를 바꾸므로 훅 안에서 같은 고루틴으로만 부른다.
-func (s *FirstDiagnosisSupervisor) SetE3Confirmation(hook func(ctx context.Context, taskID string, begin func()) error) error {
-	if s == nil || hook == nil {
+// 둘 다 있어야 받는다. Stopped는 확정 단계가 불리지 않은 채 끝나는 모든 경로에서 한 번 불린다.
+func (s *FirstDiagnosisSupervisor) SetE3Confirmation(hooks FirstDiagnosisE3Hooks) error {
+	if s == nil || hooks.Run == nil || hooks.Stopped == nil {
 		return ErrFirstDiagnosisSupervisor
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closing || s.closed || s.running || s.runStarted || s.e3Confirmation != nil {
+	if s.closing || s.closed || s.running || s.runStarted || s.e3Confirmation.Run != nil {
 		return ErrFirstDiagnosisSupervisor
 	}
-	s.e3Confirmation = hook
+	s.e3Confirmation = hooks
 	return nil
 }
 
@@ -514,6 +524,19 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 	e3Confirmation := s.e3Confirmation
 	s.operations.Add(1)
 	s.mu.Unlock()
+	// 확정 단계(Run)를 부르지 못하고 끝나는 모든 경로(중지·취소·실패·시간 초과 상태·준비 거부)에서 중지 기록을 남긴다. 등록 GET
+	// 경로는 확정 단계가 없다. 실행 문맥이 취소됐어도 기록은 끝까지 한다(대상 요청은 없다).
+	e3Handled := false
+	if e3Confirmation.Stopped != nil && snapshotRef == "" {
+		defer func() {
+			if e3Handled {
+				return
+			}
+			if stopErr := e3Confirmation.Stopped(context.WithoutCancel(ctx), taskID); stopErr != nil {
+				log.Printf(logT("[first-diagnosis] task %s E③ 중지 기록 실패"), taskID)
+			}
+		}()
+	}
 	_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "supervisor", Event: "run_started", TaskID: mustFirstDiagnosisTaskNumber(taskID), IntentID: intentID, Stage: "admission", Status: "started"})
 	defer func() {
 		loggedErr := err
@@ -681,7 +704,8 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 			s.admissionGranted = false
 			s.mu.Unlock()
 			if !registered {
-				if e3Confirmation != nil {
+				if e3Confirmation.Run != nil {
+					e3Handled = true
 					// E③ 확정 단계(결정 §5)는 모델 활동이 모두 끝난 뒤에만 돈다. 여기서는 진행 중 작업·모델 호출이 0이고
 					// 실행 허가를 닫았다. 확정 단계가 실제로 요청을 시작할 때만(begin) 엔진 정리 상태로 두어 그동안 새 계획·새
 					// intent가 시작되지 않게 하고 단계를 기록한다(E②는 확정 요청에 쓰므로 아직 마감하지 않는다). 꺼진 회차는
@@ -690,7 +714,7 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 						server.engine.markSettling(taskID)
 						setStage("e3-confirmation")
 					}
-					if hookErr := e3Confirmation(run, taskID, begin); hookErr != nil {
+					if hookErr := e3Confirmation.Run(run, taskID, begin); hookErr != nil {
 						log.Printf(logT("[first-diagnosis] task %s 단계 e3-confirmation 실패, 모델 단계 결과로 마감을 이어 간다"), taskID)
 					}
 				}

@@ -68,17 +68,32 @@ func Run(ctx context.Context, deps Deps, in Input) RunResult {
 	return res
 }
 
+// RunStopped는 확정 단계를 돌리지 못하고 실행이 끝났을 때(중지·취소·실패·시간 초과 마감) 그 회차의 확정 단계 상태를 요청
+// 없이 정한다(#738 이동찬 리뷰). 비활성 근거가 있으면 Run과 같은 disabled(사유)·start_refused·진위 실패 결과를 돌려주고,
+// 비활성 근거가 없어 확정 단계가 돌 수 있었으면 interrupted(사유 없음)다. 표식 등록·Transport·Journal·쓰기 기록을 부르지
+// 않으므로 대상 요청은 0건이다. 결과 파일이 없을 때 비활성으로 추정하지 않도록, 감독자는 중지 마감에서도 이것을 기록한다.
+func RunStopped(ctx context.Context, deps Deps, in Input) RunResult {
+	r := &run{deps: deps, in: in, seen: map[string]bool{}, stoppedBeforeStage: true}
+	res := r.run(ctx)
+	if deps.Logger != nil {
+		deps.Logger.Info("E③ 확정 단계 중지 기록", "status", string(res.Status), "reason", res.Reason)
+	}
+	return res
+}
+
 type run struct {
-	deps      Deps
-	in        Input
-	marker    Marker
-	decl      Declaration
-	requests  int
-	seen      map[string]bool
-	integrity IntegrityReason
-	budget    bool // 확정 단계 전용 몫이 다 됐다. 더 보내지 않는다.
-	stopped   bool // 회차 중지로 끊겼다.
-	lastAt    time.Time
+	deps Deps
+	// stoppedBeforeStage는 RunStopped다. 요청을 시작하기 전(비활성 판정까지만) 멈춘다.
+	stoppedBeforeStage bool
+	in                 Input
+	marker             Marker
+	decl               Declaration
+	requests           int
+	seen               map[string]bool
+	integrity          IntegrityReason
+	budget             bool // 확정 단계 전용 몫이 다 됐다. 더 보내지 않는다.
+	stopped            bool // 회차 중지로 끊겼다.
+	lastAt             time.Time
 	// bindingValid는 실행 결속이 검증을 통과했는지다. 통과한 결속만 결과에 싣는다.
 	bindingValid bool
 	// writes는 생성 요청이 대상에 남겼을 수 있는 쓰기다. 진위 실패로 판정을 버려도 남긴다.
@@ -148,6 +163,10 @@ func (r *run) run(ctx context.Context) RunResult {
 	}
 	if len(types) == 0 {
 		return r.result(StatusDisabled, string(DisabledNoConfirmableType))
+	}
+	// 중지 기록(RunStopped): 비활성 근거가 없어 확정 단계가 돌 수 있었다. 요청을 시작하지 않고 중단으로 남긴다.
+	if r.stoppedBeforeStage {
+		return r.result(StatusInterrupted, "")
 	}
 	// 몫에 들지 않은 종류는 요청을 보내지 않고 UNDECIDABLE(예산)이다. 든 종류가 없으면 표식·신원 요청도 보내지 않는다.
 	admitted, overflow := types, []TypeDeclaration(nil)
