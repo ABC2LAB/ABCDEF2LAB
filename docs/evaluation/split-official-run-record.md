@@ -109,7 +109,7 @@ E③ 인터페이스(#698)의 확정 단계 결과 `e3-confirmation-run/v1`에�
 |---|---|
 | A | #699: 분리 배치 공식 회차 경로 기록·키 지문(머지 대기) |
 | R1 | O 회차 문맥·타임라인·pre/post 점수판 파일·관측기 GET. B 조립 함수(`_build_record`)를 배치와 무관한 입력으로 나눠 B·O가 함께 쓴다. O `verdict_collection`은 `not_collected`, `e3_confirmation` 행은 수집 경로가 생길 때까지 없음(§7) |
-| R2 | O 격리 근거 행(§4)과 격리 증명(§5). 채점기 `isolation_proof`가 분리 배치 근거를 받는다. `e2_placement.mode = split_product`와 대조 미수집(행 없음·`blocked_attempts: null`) 허용 조건을 로더·격리 검증에 넣고, 통제 검증 표의 "대조 미수집" 표시·제품 실패 수 제외를 시험한다 |
+| R2 | (러너 쪽 #745, 채점기 쪽 R2·R4 PR) O 격리 근거 행(§4)과 격리 증명(§5). 채점기 `isolation_proof`가 분리 배치 근거를 받는다. `e2_placement.mode = split_product`와 대조 미수집(행 없음·`blocked_attempts: null`) 허용 조건을 로더·격리 검증에 넣고, 통제 검증 표의 "대조 미수집" 표시·제품 실패 수 제외를 시험한다 |
 | R3 | 해결 이벤트, 러너 키 서명, O 결과 서명. 보존 sidecar v3 O 조립(경계 원자료 검증 포함)도 같은 서명 경로에서 마친다 |
 | R4 | 채점기 분리 배치 표 규칙(§6), `e3_confirmation`·`e3_status_expected` 검증·보고 주석과 정본 개정(§7), §8 1번 fixture 시험. 수용시험(행 부재 구분): ① 칸 없는 옛 기록 + 행 없음 → 7번대로 읽음 ② 기대 참 + 행 없음 + 서명된 빈 판정 묶음 + 해결 귀속 → `e3_status_not_collected`, GT 전부 판단불가(미탐 0) ③ 기대 참 + `completed` → 그대로 채점 ④ 기대 거짓 + 행 있음 → 입력 오류 |
 
