@@ -81,8 +81,7 @@
 | 상태 | code | 뜻 |
 |---|---|---|
 | 401 | `authentication_required` | 인증 없음·만료 |
-| 403 | `product_verdicts_forbidden` | 다른 운영자 작업·결속 없음 |
-| 404 | `task_not_found` | 없는 작업(다른 작업과 같은 응답) |
+| 403 | `product_verdicts_forbidden` | `AuthorizeTask` 실패 전부(다른 운영자 작업·결속 없음·없는 작업). 판정 상세와 같게 작업이 있는지를 응답으로 가르지 않는다. 목록엔 판정 selector가 없어 404를 쓰지 않는다 |
 | 409 | `product_verdicts_binding_unavailable` | 작업에 회차 참조가 없음(아직 시작 전 등) |
 | 422 | `product_verdicts_integrity_failed` | `db.ProductVerdicts` 대조 실패·정책 동결본 digest 불일치·상한 초과. **잘라 보내지 않는다**(OD08) |
 | 503 | `product_verdicts_unavailable` | DB·IPC 장애 |
@@ -106,7 +105,7 @@
 
 - 평가 판정만 있는 작업 → `items: []`(평가 행이 섞이지 않음). 제품·평가 판정이 같이 있으면 제품만.
 - 정본 digest·정책 출처 칸 변조, 동결본 digest 불일치 각각 → 422, 응답에 부분 목록 없음. 동결본 없음 → 200 + `policy_source_unavailable`.
-- 다른 운영자 작업·결속 없음 → 403, 없는 작업·다른 작업 → 같은 404, 회차 참조 없음 → 409, query·HEAD·POST → 400/405.
+- 다른 운영자 작업·결속 없음·없는 작업 → 모두 같은 403 본문(작업 존재 여부를 가르지 않음), 회차 참조 없음 → 409, query·HEAD·POST → 400/405.
 - 조회 전후 판정·발급·manifest·link·finding 행 수와 대상 HTTP·모델 호출 0.
 - 응답에 비밀번호·쿠키·토큰·표식 값·계정 원문·파일 경로·저널 참조가 없음(건수 검사). 상한(종류 16·사유 32·후보 64) 경계와 초과 422.
 - 화면: 웹 파서가 서버가 만들 수 없는 값(모르는 `oracle_value`·`source_kind≠product`·사유 상한 초과)을 받으면 그 응답 전체를 깨진 응답으로 본다(#689 방어 파서 원칙).
