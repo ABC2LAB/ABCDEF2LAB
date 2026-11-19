@@ -69,7 +69,7 @@ func runProductE2Host(ctx context.Context, args []string, stdout, stderr io.Writ
 	flags.SetOutput(io.Discard)
 	root := flags.String("root", "", "protected Host volume")
 	socket := flags.String("socket", "", "private Host socket")
-	if flags.Parse(args) != nil || flags.NArg() != 0 || *root != "/h" || *socket != "/run/e2-host/audit.sock" ||
+	if flags.Parse(args) != nil || flags.NArg() != 0 || *root != "/h" || *socket != e2host.ProductSocketPath ||
 		os.Geteuid() != 1002 || ctx == nil || ctx.Err() != nil {
 		return 2
 	}

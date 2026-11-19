@@ -7,6 +7,7 @@ import io
 import os
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -140,9 +141,29 @@ class TestFailures(unittest.TestCase):
 
     def test_docker_unreachable_fails_and_missing_config_ports(self):
         self.assertIn("docker", self.failed(lambda h: h.failing.add(("docker", "version"))))
-        failed = self.failed(lambda h: None, config={"ports": {"engine_api_host": 38887}, "host_listen_allowlist": []})
+        failed = self.failed(lambda h: None, config={"ports": {"engine_api_host": 38887}, "split": {}, "host_listen_allowlist": []})
         self.assertIn("ports", failed)
         self.assertIn("split.product_port", failed["ports"])
+
+    def test_config_without_split_block_is_a_skip_with_guidance(self):
+        # 2026-11-19 재상님 PC: 엔진 직접 배치 예시(runner.example.json)로 돌리면 분리 배치 포트가 없다. 환경 FAIL이 아니다.
+        host = FakeHost()
+        results = {r.name: r for r in run_checks({k: v for k, v in CONFIG.items() if k != "split"}, REPO, host.run, host.read_text,
+                                                 lambda p: host.free)}
+        self.assertTrue(results["ports"].skipped)
+        self.assertTrue(results["ports"].ok)
+        self.assertTrue(results["ports"].line().startswith("SKIP ports: 분리 배치 설정 없음 → 공식 runner.json("))
+        self.assertIn("runner.official-split.example.json", results["ports"].reason)
+
+    def test_repo_examples(self):
+        # 레포의 공식 분리 배치 예시로는 ports가 점검되고(통과), 엔진 직접 배치 예시로는 건너뛴다.
+        import json as _json
+        host = FakeHost()
+        split = _json.loads((REPO / "docs/evaluation/runner.official-split.example.json").read_text(encoding="utf-8"))
+        direct = _json.loads((REPO / "docs/evaluation/runner.example.json").read_text(encoding="utf-8"))
+        ports = {r.name: r for r in run_checks(split, REPO, host.run, host.read_text, lambda p: host.free)}["ports"]
+        self.assertEqual((ports.ok, ports.skipped), (True, False), ports.reason)
+        self.assertTrue({r.name: r for r in run_checks(direct, REPO, host.run, host.read_text, lambda p: host.free)}["ports"].skipped)
 
 
 class TestParsers(unittest.TestCase):
@@ -165,6 +186,20 @@ class TestParsers(unittest.TestCase):
 
 
 class TestMain(unittest.TestCase):
+    def test_exit_codes(self):
+        with mock.patch("env_check.run_checks", return_value=[env_check.Result(True, "a", "x")]), \
+                mock.patch("env_check.Path.read_text", return_value="{}"), contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(env_check.main(["--config", "c.json"]), 0)
+        self.assertIn("PASS 전체: 1/1 통과", out.getvalue())
+        for results, code, last in (([env_check.Result(True, "a", "x"), env_check.Result(True, "b", "y", skipped=True)], 2,
+                                     "SKIP 전체: 1/2 통과, 건너뜀 1"),
+                                    ([env_check.Result(False, "a", "x"), env_check.Result(True, "b", "y", skipped=True)], 1,
+                                     "FAIL 전체: 0/2 통과, 건너뜀 1")):
+            with self.subTest(code=code), mock.patch("env_check.run_checks", return_value=results), \
+                    mock.patch("env_check.Path.read_text", return_value="{}"), contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(env_check.main(["--config", "c.json"]), code)
+            self.assertIn(last, out.getvalue().splitlines()[-1])
+
     def test_unreadable_config_is_a_failure(self):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):

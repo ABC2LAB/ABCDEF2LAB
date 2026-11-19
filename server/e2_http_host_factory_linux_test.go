@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -21,9 +22,9 @@ import (
 	"github.com/Autumn-27/artex/transmit"
 )
 
-// 실제 factory의 Host 접속·인증 준비·Release 경로를 지난다. 소켓 상대는
-// 프로토콜 fixture이며, DB head/MAC 검증은 e2host PostgreSQL 시험이 맡는다.
-func TestE2HTTPFactoryAuthFailureClosesHostBeforeNextRun(t *testing.T) {
+// 실제 factory가 로컬 저널 생성과 인증 준비에 실패한 뒤에도 Host를 마감하는지 본다.
+// 소켓 상대는 프로토콜 fixture이며, DB head/MAC 검증은 e2host PostgreSQL 시험이 맡는다.
+func TestE2HTTPFactoryPreparationFailuresCloseHostBeforeNextRun(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "host.sock")
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
@@ -105,20 +106,27 @@ func TestE2HTTPFactoryAuthFailureClosesHostBeforeNextRun(t *testing.T) {
 	pin := authCredentialPin(t, filepath.Dir(cfg.PolicyFile), "factory-host-account.json", "tester@owned.test", "seeded-pass-88ff")
 	auth := cookieAuth(E2HTTPFileAuthAccount{Label: "tester-a", Credential: pin})
 	policy.Auth = &auth
-	input := E2HTTPFileOptions{PolicyFile: cfg.PolicyFile, HostSocket: "/run/e2-host/audit.sock",
+	input := E2HTTPFileOptions{PolicyFile: cfg.PolicyFile, HostSocket: e2host.ProductSocketPath,
 		Authority: &e2HTTPPolicyAuthorityFixture{ctx: t.Context()}, Supervisor: &e2HTTPSupervisorFixture{}}
 	connect := func(ctx context.Context, socket string, scope transmit.Scope, revision string) (*e2host.Client, error) {
-		if socket != "/run/e2-host/audit.sock" {
+		if socket != e2host.ProductSocketPath {
 			t.Error("제품 Host 소켓 정책 우회")
 		}
 		return e2host.OpenClient(ctx, path, scope, revision)
 	}
-	for i := 0; i < 2; i++ {
+	for _, tc := range []struct {
+		name                           string
+		existingJournal, rejectAcquire bool
+	}{
+		{name: "journal-exists", existingJournal: true},
+		{name: "reject-after-auth", rejectAcquire: true},
+		{name: "next-run"},
+	} {
 		input.OnAcquire = nil
-		if i == 0 {
+		if tc.rejectAcquire {
 			input.OnAcquire = func(context.Context, E2HTTPAcquired) error { return ErrE2HTTPHost }
 		}
-		policy.RunRef = "fixture-host-run-" + string(rune('a'+i))
+		policy.RunRef = "fixture-host-" + tc.name
 		state, err := os.MkdirTemp("/var/tmp", "e2hf-")
 		if err != nil {
 			t.Fatal(err)
@@ -133,8 +141,19 @@ func TestE2HTTPFactoryAuthFailureClosesHostBeforeNextRun(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if tc.existingJournal {
+			if err := os.WriteFile(filepath.Join(state, "events.jsonl"), nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
 		acquired, err := options.Acquire(t.Context(), E2HTTPRequest{TaskID: "17", TaskIDNumber: 17, ExplorationID: 1, IntentID: 1})
-		if i == 0 && err == nil || i == 1 && err != nil || acquired.Release == nil ||
+		if tc.existingJournal {
+			if !errors.Is(err, ErrE2HTTPHost) || acquired.Release != nil || acquired.Execution != nil || posts.Load() != 0 {
+				t.Fatal("로컬 저널 생성 실패 전에 실행이 시작됨", err)
+			}
+			continue
+		}
+		if (err != nil) != tc.rejectAcquire || acquired.Release == nil ||
 			acquired.AccountAuth["tester-a"] != E2HTTPAuthLoginFailed {
 			t.Fatal("실제 인증 실패 준비 경로가 실행되지 않음", err)
 		}
@@ -150,7 +169,7 @@ func TestE2HTTPFactoryAuthFailureClosesHostBeforeNextRun(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if busy || opens != 2 || seals != 2 || records == 0 || posts.Load() != 2 {
-		t.Fatalf("인증 실패 뒤 다음 회차 재개 실패: open=%d seal=%d record=%d post=%d busy=%v", opens, seals, records, posts.Load(), busy)
+	if busy || opens != 3 || seals != 3 || records == 0 || posts.Load() != 2 {
+		t.Fatalf("준비 실패 뒤 다음 회차 재개 실패: open=%d seal=%d record=%d post=%d busy=%v", opens, seals, records, posts.Load(), busy)
 	}
 }

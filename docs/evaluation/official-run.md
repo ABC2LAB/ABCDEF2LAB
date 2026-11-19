@@ -14,6 +14,7 @@
 | 제품 E③ 감독자 연결(#738)과 E② Transport·Journal 연결. 연결 전 빌드는 O가 늘 `e3_official_not_disabled`로 무효다([러너](runner.md) 사유표) | GitHub PR |
 | 멈춤 무효 T 확정: **180초**(2026-11-19 확인 쌍, 사용자 동의). O 엔진 끝 전 최장 공백(활동 사건 = 요청 시작·응답 완료) 8.6초·B 13.6초로 §16 조건(O ≤ 90초)을 만족했다 | 고정 초안 §16·§19 |
 | **멈춤 무효 판정이 켜져 있음**(#756): 러너는 설정 `run.fault_stall_seconds`(T)가 있으면 B·O 회차를 같은 T로 판정해 멈춤이면 `provider_fault_stall`로 무효로 하고, 세션 집계는 판정하지 않은 완료 회차·T 섞임을 받지 않으며 쪽별 2회 이상이면 측정 전체 실패(종료 코드 3)다. 시작 전 확인: 4절 7번 `runner.json`에 `run.fault_stall_seconds: 180`(위 줄의 확정값)을 넣었고, 7절 집계를 `--allow-unjudged-fault-stall` 없이 돌린다 | 고정 초안 §2·§3·§16 |
+| 측정 PC(윤재상 PC) 확인([개발 계획](../development-plan.md#공식-측정-gono-go-조건) Go 조건 4). **환경 점검 통과(2026-11-20, 측정 때 끄는 FAIL 둘 제외)**: 공식 분리 배치 예시(4절 7번)로 3절 환경 점검 14/16, `ports` 통과, 남은 FAIL은 `containers`(다른 프로젝트 스택)·`host_listen`(:3000 개발 서버)뿐이고 측정 때 끈다. **측정 PC 파일럿 한 쌍 남음(조건 4는 아직 다 채우지 않음)** | 3절·5절 |
 | 이 문서·공식 분리 배치 프로파일·러너 설정이 태그 커밋에 있다(2절) | 레포 |
 
 ## 1. 역할
@@ -73,10 +74,10 @@
    ```
 
    `BASE`·`OURS`는 항상 `^{commit}`으로 커밋 SHA를 구한다(annotated 태그는 태그 객체 SHA가 나온다). `tools-frozen`이 나오지 않으면 시작하지 않는다. 아래 명령은 전부 `cd "$T"`에서 실행한다.
-   **환경 점검(읽기만, 세션마다):** 동결 작업 트리에서 아래를 돌린다. 이미지 빌드·pull, 컨테이너·망·볼륨 생성, 파일 쓰기를 하지 않는다. 항목마다 `PASS`/`FAIL`과 사유를 한 줄씩 내고, 하나라도 `FAIL`이면 종료 코드 1이며 세션을 시작하지 않는다(2번 '다른 일 끄기'를 마친 뒤 한 번 더 돌린다).
+   **환경 점검(읽기만, 세션마다):** 동결 작업 트리에서 아래를 돌린다. 이미지 빌드·pull, 컨테이너·망·볼륨 생성, 파일 쓰기를 하지 않는다. 항목마다 `PASS`/`FAIL`/`SKIP`과 사유를 한 줄씩 낸다. 하나라도 `FAIL`이면 종료 코드 1이며 세션을 시작하지 않는다. `SKIP`(종료 코드 2)은 설정이 모자라 점검하지 못한 것이라 안내대로 다시 돌린다(2번 '다른 일 끄기'를 마친 뒤 한 번 더 돌린다).
 
    ```bash
-   cd "$T" && python3 -I -B scripts/eval/env_check.py --config <4절 7번 runner.json>
+   cd "$T" && python3 -I -B scripts/eval/env_check.py --config <4절 7번 runner.json(공식 분리 배치 예시를 채운 파일)>
    ```
 
    - 확인 항목: Docker 서버·클라이언트 판(29.0 이상), 네이티브 dockerd(Docker Desktop 아님), Compose(2.40 이상), Go(go.mod와 같은 판), Python(3.12 이상), OpenSSL(3.0 이상), git, 메모리, Docker 루트의 남은 공간, 실행 중 컨테이너 0개, 허용 목록 밖 리슨 없음, 회차가 쓸 호스트 포트 비어 있음, 분리 배치 대역 겹침 없음, buildx, 기본 이미지를 받을 수 있음.
@@ -188,21 +189,16 @@ install -d -m 700 /srv/abc2lab-eval /srv/abc2lab-eval-keys "$SESSION" "$SESSION/
      --baseline-sha "$BASE" --ours-sha "$OURS" --out "$SESSION/preflight.json"
    ```
 
-7. **`runner.json`:** `$T/docs/evaluation/runner.example.json`([예시](runner.example.json))을 복사해 `images`의 태그·내용 ID와 경로를 채우고, 아래 칸을 더한다. 그 밖의 값은 바꾸지 않는다.
-   - `runs_root`: `$SESSION/runs`(세션마다 새 디렉터리). `path_key_file`: 4번 키(`$PATH_KEY_DIR/path.key`, 이 세션 것). `purpose`: `official`.
-   - `llm_gateway.verify_attempts` 40, `verify_interval_seconds` 3, `run.llm_verify_timeout_seconds` 300(2절).
-   - `run.fault_stall_seconds`: `180`(멈춤 무효 판정 T, 0절·2절). 없으면 러너가 판정하지 않고 7절 집계가 그 회차를 받지 않는다.
-   - `split` 블록(제품 배치):
-
-     ```json
-     {"product_tag": "<OURS 12자리>", "product_source_sha": "<OURS>", "image_ids": {"product": "sha256:…", "explore_browser": "sha256:…", "fixture": "sha256:…"},
-      "manifest_path": "/srv/abc2lab-eval/manifest.json", "target_name": "app.eval.test", "product_port": 28787, "dns_control_port": 29083,
-      "explore_port": 8082, "evidence_max_bytes": 4194304, "install_valid_hours": 4, "max_runs": 2, "registration_valid_hours": 2,
-      "wide_writes": true, "profile_id": "product-model-openrouter", "task_wait_seconds": 120, "poll_interval_seconds": 2,
-      "boundary_stop_seconds": 30, "cli_usage_names": [<2번 cli_differences.baseline_only 목록>]}
-     ```
-
-   - `preservation` 블록(분리 배치는 공식 회차여도 필수): `{"format": "abc2lab.preservation-options/v1", "series_ref": "official-<날짜>", "comm_mode": "external_allowed", "write_mode": "approved_writes", "mcp_version": "0.0.84", "browser_image_id": "<탐색 브라우저 이미지 ID>", "execution_source": "model_run", …}` 나머지 칸은 보정·확인 쌍 설정과 같은 값으로 둔다.
+7. **`runner.json`:** `$T/docs/evaluation/runner.official-split.example.json`([공식 분리 배치 예시](runner.official-split.example.json))을 `$SESSION/runner.json`으로 복사하고 0600으로 둔다. `<…>`로 표시된 칸만 채우고 그 밖의 값은 바꾸지 않는다(예시를 채우면 러너 설정 검사를 통과한다는 것을 시험이 고정한다).
+   - **채우는 칸(세션마다)**
+     - `images`의 태그·내용 ID와 `split.product_tag`·`product_source_sha`·`image_ids`, `preservation.browser_image_id`: 1번에서 빌드한 이미지(`docker image inspect --format '{{.Id}}' <태그>`). 동결 커밋은 `OURS`다.
+     - `path_key_file`: 4번 키 경로(`$PATH_KEY_DIR/path.key`). `preservation.series_ref`: `official-<세션 날짜>`.
+     - `split.cli_usage_names`: 2번 도구 면 측정의 `cli_differences.baseline_only` 이름 목록.
+     - 경로(`runs_root`·`secrets_env_file`·`runner_key_path`·`findings.vocabulary_path`·`split.manifest_path`): 예시는 `/srv/abc2lab-eval…`이다. 그 PC에서 다른 디렉터리를 쓰면 이 경로 칸만 바꾼다. `runs_root`는 세션마다 새 디렉터리다.
+   - **넣지 않는 것**: API 키, 관리자·DB 비밀번호, 경로 가림 키·러너 서명 키의 값, 승인 manifest 내용. 이것들은 회차 시작 때 따로 만드는 파일(3번·4번·5번)이고, `runner.json`에는 그 **경로만** 둔다.
+   - `preservation`의 0으로 채운 지문 셋(`mcp_tools_sha256`·`exploration_policy_sha256`·`declared_model_budget_sha256`, 64자리 `0`)은 그대로 둔다. 앞의 둘은 분리 배치(v3) 기록에서 쓰지 않고 측정값(도구 면 측정)과 B `null`로 대신한다. `declared_model_budget_sha256`은 B 기록에 그대로 옮겨지며, 원본 엔진과 평가 게이트웨이에는 모델 예산이 없어서 0×64는 **B 모델 예산 선언 없음**을 뜻한다(O는 제품 설치 예산 값에서 러너가 계산한다).
+   - 예시에 이미 들어 있는 공식 값: `purpose: official`, 검증 창(`llm_gateway.verify_attempts` 40·`verify_interval_seconds` 3, `run.llm_verify_timeout_seconds` 300), 멈춤 무효 T(`run.fault_stall_seconds` 180), 분리 배치 포트(`split.product_port` 28787·`dns_control_port` 29083)와 그 밖의 `split`·`preservation` 칸.
+   - 채운 뒤 3절 환경 점검을 이 파일로 다시 돌린다. 엔진 직접 배치 예시(`runner.example.json`)로 돌리면 분리 배치 포트가 없어 `ports`가 `SKIP`(종료 코드 2)이다.
 
 ## 5. 사전 점검 (첫 유료 회차 전)
 
