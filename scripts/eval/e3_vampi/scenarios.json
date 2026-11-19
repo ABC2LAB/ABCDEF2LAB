@@ -1,0 +1,279 @@
+{
+  "version": "e3-acceptance-scenarios/v1",
+  "target": "vampi",
+  "declaration": "declaration.json",
+  "scenarios": [
+    {
+      "id": "S01",
+      "name": "confirmed",
+      "fake": true,
+      "real": "runnable",
+      "expect": {
+        "status": "completed",
+        "reason": "",
+        "verdicts": {
+          "book": {
+            "value": "confirmed",
+            "reasons": []
+          }
+        }
+      }
+    },
+    {
+      "id": "S02",
+      "name": "fixed_target",
+      "fake": true,
+      "real": "runnable",
+      "expect": {
+        "status": "completed",
+        "reason": "",
+        "verdicts": {
+          "book": {
+            "value": "undecidable",
+            "reasons": [
+              "data_no_match"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "S03",
+      "name": "declaration_missing",
+      "fake": true,
+      "real": "runnable",
+      "expect": {
+        "status": "disabled",
+        "reason": "declaration_missing",
+        "requests_zero": true,
+        "verdicts": {}
+      }
+    },
+    {
+      "id": "S04",
+      "name": "account_unverified",
+      "fake": true,
+      "real": "runnable",
+      "expect": {
+        "status": "disabled",
+        "reason": "test_accounts_unavailable",
+        "requests_zero": true,
+        "verdicts": {}
+      }
+    },
+    {
+      "id": "S05",
+      "name": "identity_same_subject",
+      "fake": true,
+      "real": "runnable",
+      "expect": {
+        "status": "completed",
+        "reason": "",
+        "verdicts": {
+          "book": {
+            "value": "undecidable",
+            "reasons": [
+              "product_subjects_identical"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "S06",
+      "name": "identity_unverified",
+      "fake": true,
+      "real": "fake_only",
+      "expect": {
+        "status": "completed",
+        "reason": "",
+        "verdicts": {
+          "book": {
+            "value": "undecidable",
+            "reasons": [
+              "product_identity_unverified"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "S07",
+      "name": "marker_unsupported",
+      "fake": true,
+      "real": "fake_only",
+      "expect": {
+        "status": "completed",
+        "reason": "",
+        "verdicts": {
+          "book": {
+            "value": "undecidable",
+            "reasons": [
+              "product_data_encoding_unsupported"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "S08",
+      "name": "policy_mismatch",
+      "fake": true,
+      "real": "fake_only",
+      "expect": {
+        "status": "confirmation_integrity_failed",
+        "reason": "policy_digest_mismatch",
+        "requests_zero": true,
+        "verdicts": {}
+      }
+    },
+    {
+      "id": "S09",
+      "name": "generation_mismatch",
+      "fake": true,
+      "real": "fake_only",
+      "expect": {
+        "status": "start_refused",
+        "reason": "target_changed",
+        "requests_zero": true,
+        "verdicts": {}
+      }
+    },
+    {
+      "id": "S10",
+      "name": "approval_denied",
+      "fake": true,
+      "real": "runnable",
+      "expect": {
+        "status": "completed",
+        "reason": "",
+        "verdicts": {
+          "book": {
+            "value": "undecidable",
+            "reasons": [
+              "product_create_approval_denied"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "S11",
+      "name": "budget_exhausted",
+      "fake": true,
+      "real": "fake_only",
+      "expect": {
+        "status": "completed",
+        "reason": "",
+        "verdicts": {
+          "book": {
+            "value": "undecidable",
+            "reasons": [
+              "product_confirmation_budget_exhausted"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "S12",
+      "name": "reset_missing",
+      "fake": true,
+      "real": "runnable",
+      "expect": {
+        "status": "start_refused",
+        "reason": "reset_confirmation_missing",
+        "requests_zero": true,
+        "verdicts": {}
+      }
+    },
+    {
+      "id": "S13",
+      "name": "journal_mismatch",
+      "fake": true,
+      "real": "fake_only",
+      "expect": {
+        "status": "confirmation_integrity_failed",
+        "reason": "journal_event_mismatch",
+        "verdicts": {}
+      }
+    },
+    {
+      "id": "S14",
+      "name": "partial_response",
+      "fake": true,
+      "real": "fake_only",
+      "expect": {
+        "status": "completed",
+        "reason": "",
+        "verdicts": {
+          "book": {
+            "value": "undecidable",
+            "reasons": [
+              "product_data_partial_response"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "S15",
+      "name": "result_unknown",
+      "fake": true,
+      "real": "fake_only",
+      "expect": {
+        "status": "completed",
+        "reason": "",
+        "verdicts": {
+          "book": {
+            "value": "undecidable",
+            "reasons": [
+              "product_request_result_unknown"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "S16",
+      "name": "run_binding_mismatch",
+      "fake": true,
+      "real": "fake_only",
+      "expect": {
+        "status": "confirmation_integrity_failed",
+        "reason": "binding_mismatch",
+        "verdicts": {}
+      }
+    },
+    {
+      "id": "S17",
+      "name": "previous_markers_present",
+      "fake": true,
+      "real": "runnable",
+      "expect": {
+        "status": "start_refused",
+        "reason": "previous_markers_present",
+        "requests_zero": true,
+        "verdicts": {}
+      }
+    },
+    {
+      "id": "S18",
+      "name": "id_collision",
+      "fake": true,
+      "real": "fake_only",
+      "expect": {
+        "status": "completed",
+        "reason": "",
+        "verdicts": {
+          "book": {
+            "value": "undecidable",
+            "reasons": [
+              "product_create_failed"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}
