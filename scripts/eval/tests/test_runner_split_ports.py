@@ -192,6 +192,62 @@ class TestV3Inputs(PortsCase):
         self.assertEqual(args[:3], (self.split.images["product"].id, self.split.images["explore_browser"].id, self.docker.run_bounded))
 
 
+class TestE2V3Export(PortsCase):
+    """E② v3 저널·봉인 head 꺼내기와 검증 연결. 위치는 설정값, 상한은 파일마다 다르다."""
+
+    def setUp(self):
+        super().setUp()
+        from runner_e2v3 import parse_settings
+        raw = {"audit_key_variable": "PRODUCT_E2_AUDIT_KEY_FILE", "volume": "product-state", "directory": "runs",
+               "subpath": ["{draft_id}", "e2"], "journal_name": "events.jsonl", "head_name": "sealed-head.json", "uid": 1000,
+               "verify_tool": "/opt/abc2lab/e2-audit-verify", "verify_timeout_seconds": 120}
+        self.ports.split = dataclasses.replace(self.split, e2_v3=parse_settings(raw))
+        # 설정이 있으면 보호 입력이 감사 키를 만든다(runner_split_main이 변수 이름을 넘김).
+        (self.directory.run / "v3").mkdir(mode=0o700)
+        self.inputs = prepare_split_inputs(self.directory.run / "v3", manifest=MANIFEST, meter_port=8080, explore_port=8082,
+                                           evidence_max_bytes=4 << 20, workflow_defaults=read_workflow_defaults()[0],
+                                           wide_writes=True, valid_for_hours=4, max_runs=2, path_key=bytes(32),
+                                           openssl=FakeOpenssl(), random_bytes=counter_bytes(),
+                                           e2_audit_key_variable="PRODUCT_E2_AUDIT_KEY_FILE")
+        self.ports.inputs = self.inputs
+
+    def test_journal_and_head_are_copied_separately_below_the_draft(self):
+        from runner_e2v3 import MAX_HEAD_BYTES, MAX_JOURNAL_BYTES
+        self.docker.copies["e2v3-journal"] = {"events.jsonl": b"j"}
+        self.docker.copies["e2v3-head"] = {"sealed-head.json": b"h"}
+        self.assertEqual(self.ports.e2_v3_export("prep-0a1b"), (b"j", b"h"))
+        got = [(c[2], c[3], c[4], c[5], c[6], c[9], c[10]) for c in self.docker.calls]
+        self.assertEqual(got, [("eval-r1_product-state", "runs", ("events.jsonl",), "e2v3-journal", 1000, MAX_JOURNAL_BYTES, ("prep-0a1b", "e2")),
+                               ("eval-r1_product-state", "runs", ("sealed-head.json",), "e2v3-head", 1000, MAX_HEAD_BYTES, ("prep-0a1b", "e2"))])
+
+    def test_only_a_missing_file_is_none_and_runner_failures_are_raised(self):
+        # #785 리뷰: 시간 초과·출력 상한·tar 손상 같은 러너 장애가 '제품이 안 냄'(미수집)으로 가려지면 안 된다.
+        from runner_docker import HELPER_FILE_MISSING, DockerError, HelperCleanupError
+        self.docker.copy_volume_files = mock.Mock(side_effect=DockerError(HELPER_FILE_MISSING))
+        self.assertEqual(self.ports.e2_v3_export("prep-0a1b"), (None, None))
+        self.docker.copies["e2v3-journal"] = {"events.jsonl": b"j"}
+        real = FakeDocker.copy_volume_files.__get__(self.docker)
+        self.docker.copy_volume_files = mock.Mock(side_effect=lambda *a, **k: (real(*a, **k) if a[4] == "e2v3-journal"
+                                                                              else (_ for _ in ()).throw(DockerError(HELPER_FILE_MISSING))))
+        self.assertEqual(self.ports.e2_v3_export("prep-0a1b"), (b"j", None))
+        for error in (DockerError("docker_timeout"), DockerError("docker_copy_too_large"), DockerError("docker_helper_output_invalid"),
+                      DockerError("docker_helper_copy_failed"), HelperCleanupError()):
+            with self.subTest(error=str(error)):
+                self.docker.copy_volume_files = mock.Mock(side_effect=error)
+                with self.assertRaises(DockerError):
+                    self.ports.e2_v3_export("prep-0a1b")
+
+    def test_collect_uses_the_protected_key_and_the_configured_verifier(self):
+        with mock.patch("runner_split_ports.subprocess_verifier", return_value="verifier") as verifier, \
+                mock.patch("runner_split_ports.e2v3_collect", return_value={"outcome": "collected"}) as collect:
+            self.assertEqual(self.ports.e2_v3_collect(b"j", b"h"), {"outcome": "collected"})
+        verifier.assert_called_once_with("/opt/abc2lab/e2-audit-verify", 120)
+        kwargs = collect.call_args.kwargs
+        self.assertEqual((kwargs["run_verifier"], kwargs["key_path"], kwargs["journal"], kwargs["head"], kwargs["copy_directory"],
+                          kwargs["key_ref"]),
+                         ("verifier", self.inputs.files["e2_audit_key"], b"j", b"h", self.directory.run / "e2v3-copy",
+                          self.inputs.audit_key_ref))
+        self.assertIsNotNone(self.inputs.audit_key_ref)
 class TestProductCommands(PortsCase):
     """O 제품 활동 표의 Bash 호출을 제품 DB 컨테이너 안 읽기 전용 세션으로 읽는다(공개 활동 API는 명령·결과를 지운다)."""
 
