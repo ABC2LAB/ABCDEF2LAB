@@ -221,7 +221,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   **판정**: 설정 `run.fault_stall_seconds`(T, 1~3600초, 없으면 판정 안 함)가 있으면 그 T로 판정한다(`judged: true`, `stall_seconds`,
   장애별 `stall`, `stalls`). 조건 (2)의 무활동은 장애 뒤 **다음 활동 사건까지의 길이**(`idle_seconds`)다. 활동 사건은 요청 시작과 응답 완료(오류 응답 포함)이고, 모델 호출 행·대상 요청 행 모두, B·O 같게 센다(2026-11-19 사용자 결정). 진행 중인 요청은 활동이 아니다: 제공자 쪽에서 매달린 호출을 잡는 것이 T의 목적이다. 스트리밍 조각도 세지 않는다(세면 비스트리밍인 O와 같은 길이의 호출이 B에서만 공백이 아니게 된다). 이 길이가 T초 이상이고 그 전에 엔진 끝 신호가 없으면 멈춤이고, 회차는 `provider_fault_stall`로 무효다(같이 난 모델 호출 검증 사유는 뒤에 남는다 — 세션 집계가 첫 사유로 센다). 창이 T초 전에 끝나 무활동이 T에 못 미치면 멈춤이라고 하지 않는다. T를 고를 근거로 같은 정의의 활동 중 최장 공백(`max_event_gap_before_end_seconds`)을 남긴다. 시작만 본 무활동(`silence_seconds`)은 기록에 그대로 남긴다.
   T가 없으면 행이나 시각을 읽지 못해도 회차를 무효로 하지 않고 고정 코드(`error`)만 남긴다. T가 있는데 재료를 못 만들었으면 멈춤이
-  없다고 할 수 없어 `fault_stall_unjudgeable`로 무효다. 형식은 `abc2lab-eval-runner-fault-stall-v2`다. 마지막 활동 사건부터 끝(엔진 끝 상태, 없으면 창 끝)까지의 공백(나노초 정수 `trailing_event_gap_nanoseconds`, 기록용 초 `trailing_event_gap_seconds`)과 끝 시각에 진행 중인 요청 수(`inflight_at_end`)도 남긴다. 판정에는 쓰지 않고, 시간 상한 마감을 '빈 계획 대기 중'(나노초 끝 공백 ≥ T이고 진행 중 요청 0)과 '작업 중'으로 나눠 보고하는 근거다(고정 초안 §21).
+  없다고 할 수 없어 `fault_stall_unjudgeable`로 무효다. 형식은 `abc2lab-eval-runner-fault-stall-v2`다. 마지막 활동 사건부터 끝(엔진 끝 상태, 없으면 창 끝)까지의 공백(나노초 정수 `trailing_event_gap_nanoseconds`, 기록용 초 `trailing_event_gap_seconds`)과 끝 시각까지 이어진 요청 수(`inflight_at_end`, 끝 전에 시작해 끝 시각이나 그 뒤에 완료)도 남긴다. 판정에는 쓰지 않고, 시간 상한 마감을 '빈 계획 대기 중'(나노초 끝 공백 ≥ T이고 진행 중 요청 0)과 '작업 중'으로 나눠 보고하는 근거다(고정 초안 §21).
   세션 집계(`session_runs.py`)는 완료 회차가 모두 같은 T로 판정됐는지 보고(아니면 멈춤, 스모크는 `--allow-unjudged-fault-stall`),
   쪽별 `provider_fault_stall` 무효 수를 0이어도 출력하고, 한쪽이라도 2회 이상이면(고정 초안 §3) 측정 전체 실패로 종료 코드 3,
   manifest를 쓰지 않는다. 게이트웨이 행 읽기는 결정·끝 모양 어휘를

@@ -225,6 +225,9 @@ class TestFaultStallJudge(unittest.TestCase):
         # 엔진이 먼저 끝나면 그 시각 기준이다
         ended = fault_stall_record([llm(1, 0.0, 100.0)], [], START, stamp(500.0), stamp(50.0))
         self.assertEqual(ended["inflight_at_end"], 1)
+        # 끝 시각에 정확히 완료된 호출(00:01~05:01, 창 끝 05:01)은 끝까지 이어진 것이다. 끝 시각에 시작한 것은 창 밖이다
+        boundary = fault_stall_record([llm(1, 1.0, 301.0), llm(2, 301.0, 302.0)], [], START, stamp(301.0), None)
+        self.assertEqual((boundary["trailing_event_gap_seconds"], boundary["inflight_at_end"]), (300.0, 1))
 
     def test_engine_end_before_idle_end_is_not_a_stall(self):
         rows = [llm(1, 1.0, 2.0, decision="upstream_error", end="upstream_cut_before_done")]

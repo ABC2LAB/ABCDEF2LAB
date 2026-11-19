@@ -159,12 +159,13 @@ def _max_event_gap(moments: list[datetime], start: datetime, end: datetime) -> f
 
 def _trailing_event_gap(moments_ns: list[int], spans_ns: list[tuple[int, int]], start_ns: int, end_ns: int) -> dict:
     """창 안 마지막 활동 사건(요청 시작·응답 완료)부터 끝까지의 간격(나노초 정수와 기록용 초)과, 끝 시각에 아직 진행 중인
-    요청 수. 활동이 없으면 창 전체다. 끝에 진행 중인 요청(끝 전에 시작해 끝 뒤에 완료)이 있으면 끝 공백이 길어도 빈 계획
-    대기가 아니다(#794 리뷰: 긴 모델 호출 하나가 창 끝에 걸친 경우)."""
+    요청 수. 활동이 없으면 창 전체다. 끝에 진행 중인 요청(끝 전에 시작해 끝 시각이나 그 뒤에 완료)이 있으면 끝 공백이 길어도
+    빈 계획 대기가 아니다(#794 리뷰: 긴 모델 호출 하나가 창 끝까지 이어진 경우. 끝 시각에 정확히 완료된 것도 끝까지 이어진
+    것이다)."""
     last = max((moment for moment in moments_ns if start_ns <= moment < end_ns), default=start_ns)
     gap = end_ns - last
     return {"trailing_event_gap_nanoseconds": gap, "trailing_event_gap_seconds": round(gap / _NS_PER_SECOND, 3),
-            "inflight_at_end": sum(1 for began, done in spans_ns if began < end_ns < done)}
+            "inflight_at_end": sum(1 for began, done in spans_ns if began < end_ns <= done)}
 
 
 def judge_fault_stall(record: dict, stall_seconds: int) -> dict:
