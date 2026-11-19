@@ -125,6 +125,8 @@ MAX_SHAPE_INPUT_BYTES = 64 * 1024
 _TRUNCATED_MARK = " [...]"
 WITHHELD_TOO_LONG = "shape_input_too_long"
 WITHHELD_UNPARSEABLE = "shape_unparseable"
+# UTF-8로 나타낼 수 없는 원문(JSON 이스케이프로 들어온 단독 surrogate 등). 모양을 만들지 않고 보류만 남긴다(#736 리뷰).
+WITHHELD_INVALID = "shape_input_invalid"
 # 낱말 자리표시(사람이 읽는 근거라 한국어). 관측된 CLI 이름과 셸 연산자 말고는 무엇이든 이것으로 바꾼다.
 PLACEHOLDER = "<인자>"
 PATH_PREFIX = "<경로>/"
@@ -253,7 +255,12 @@ def observed_lines(records: Iterable[Mapping], names: Iterable[str]) -> tuple[li
         observed += 1
         if len(out) >= MAX_OBSERVED_LINES:
             continue
-        if len(command.encode("utf-8")) > MAX_SHAPE_INPUT_BYTES:
+        try:
+            size = len(command.encode("utf-8"))
+        except UnicodeEncodeError:
+            out.append({"names": seen, "shape": None, "withheld": WITHHELD_INVALID})
+            continue
+        if size > MAX_SHAPE_INPUT_BYTES:
             out.append({"names": seen, "shape": None, "withheld": WITHHELD_TOO_LONG})
             continue
         shape = command_shape(pick_line(command, seen), seen)

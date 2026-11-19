@@ -1179,6 +1179,7 @@ class TestCompleteRun(unittest.TestCase):
                     "npx login --password '&&|;synthsecret08<>'",  # 기호가 든 따옴표 값(#736 리뷰)
                     "PASSWORD=synthsecret05 npx thing",
                     'npx run "synthsecret06',  # 닫히지 않은 따옴표
+                    "npx \ud800",  # 단독 surrogate(#736 리뷰: UTF-8 변환 오류로 회차가 무효가 되던 것)
                     "npx " + "a" * (64 * 1024)]
 
         def mutate(ports, meter, clock):
@@ -1194,6 +1195,7 @@ class TestCompleteRun(unittest.TestCase):
             {"names": ["npx"], "shape": "npx <인자> <인자> <인자>"},
             {"names": ["npx"], "shape": "<인자> npx <인자>"},
             {"names": ["npx"], "shape": None, "withheld": "shape_unparseable"},
+            {"names": ["npx"], "shape": None, "withheld": "shape_input_invalid"},
             {"names": ["npx"], "shape": None, "withheld": "shape_input_too_long"}])
 
     def test_no_observation_leaves_no_lines(self):

@@ -170,7 +170,9 @@ class TestObservedShapes(unittest.TestCase):
                 shell_tokens(bad)
 
     def test_unparseable_and_long_commands_are_withheld(self):
-        for command, reason in (('npx run "open', "shape_unparseable"), ("npx " + "a" * MAX_SHAPE_INPUT_BYTES, "shape_input_too_long")):
+        for command, reason in (('npx run "open', "shape_unparseable"), ("npx " + "a" * MAX_SHAPE_INPUT_BYTES, "shape_input_too_long"),
+                                # JSON 이스케이프로 들어온 단독 surrogate는 UTF-8로 못 나타낸다: 보류만, 예외 없이(#736 리뷰)
+                                (json.loads('"npx \\ud800"'), "shape_input_invalid")):
             with self.subTest(reason=reason):
                 (item,), _ = observed_lines([{"command": {"command": command}}], ["npx"])
                 self.assertEqual(item, {"names": ["npx"], "shape": None, "withheld": reason})
