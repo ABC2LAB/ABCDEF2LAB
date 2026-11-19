@@ -112,6 +112,31 @@ def _instant(value: object) -> datetime | None:
     return moment if moment.tzinfo is not None else None
 
 
+def rows_match_marker(rows: list[dict], marker: object) -> bool:
+    """읽은 게이트웨이 행이 검증 표식과 맞는지. 게이트웨이는 요청마다 행 하나를 쓰고 결정별로 센다(gateway.go ServeHTTP·
+    finish). log_complete는 쓰기 오류가 없었다는 것뿐이라, 읽은 행이 빠지거나 바뀌지 않았는지는 여기서 본다(#735 리뷰):
+    순번이 1..N으로 이어지고, 결정별 행 수가 표식의 셈과 같고, 행의 generation ID 집합이 표식의 generation 목록과 같다."""
+    if not isinstance(marker, dict):
+        return False
+    try:
+        seqs = sorted(row["seq"] for row in rows)
+        if any(type(seq) is not int for seq in seqs) or seqs != list(range(1, len(rows) + 1)):
+            return False
+        decisions = [row["decision"] for row in rows]
+        counts = {
+            "forwarded_requests": decisions.count("forwarded"), "upstream_errors": decisions.count("upstream_error"),
+            "cancelled_by_seal": decisions.count("cancelled_by_seal"),
+            "rejected_after_seal": decisions.count("rejected_after_seal"),
+            "rejected_requests": sum(1 for d in decisions if d.startswith("rejected_") and d != "rejected_after_seal"),
+        }
+        if any(type(marker.get(name)) is not int or marker[name] != count for name, count in counts.items()):
+            return False
+        row_ids = {row["generation_id"] for row in rows if row.get("generation_id")}
+        return row_ids == {generation["id"] for generation in marker["generations"]}
+    except (KeyError, TypeError, AttributeError):
+        return False
+
+
 def interrupted_generation_ids(rows: list[dict], stop_at: str, *, product: bool) -> frozenset[str]:
     """호출 행(B 게이트웨이 행·O 제품 호출 기록, 같은 칸·어휘)과 정지 신호 시각으로 기록상 끊긴 호출의 generation ID를 고른다.
     B의 증거는 게이트웨이가 봉인 때 직접 끊은 cancelled_by_seal 하나다. B 엔진은 봉인 때 멈추지 않으므로 B의 호출자 쪽 끊김은

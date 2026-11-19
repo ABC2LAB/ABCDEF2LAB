@@ -3517,15 +3517,26 @@ class TestEngineEndSignal(unittest.TestCase):
 class TestInterruptedCallsB(unittest.TestCase):
     """B: 게이트웨이가 봉인 때 끊은 호출(cancelled_by_seal)의 미확인은 따로 세고 회차를 무효로 하지 않는다."""
 
-    def gateway(self, decision, end=None):
+    def gateway(self, decision, end=None, drop_completed=False, marker_changes=None):
+        """게이트웨이가 실제로 쓰는 모양: 완료 호출 행(gen-1)과 끊긴 호출 행(cut) 둘, 표식의 결정별 셈은 그 행과 같다."""
+        counts = {"forwarded": "forwarded_requests", "upstream_error": "upstream_errors", "cancelled_by_seal": "cancelled_by_seal"}
+
         def mutate(g):
-            g.marker = llm_marker(sealed_at="2026-11-19T00:00:10Z", generations=[
-                llm_generation("gen-1"), llm_generation("cut", status="unverified", last="http_404", tries=40)])
-            row = {"seq": 1, "decision": decision, "method": "POST", "status": 200, "started_at": "2026-11-19T00:00:05Z",
+            done = {"seq": 1, "decision": "forwarded", "method": "POST", "status": 200, "started_at": "2026-11-19T00:00:01Z",
+                    "completed_at": "2026-11-19T00:00:02Z", "generation_id": "gen-1", "request_bytes": 1, "response_bytes": 1}
+            row = {"seq": 2, "decision": decision, "method": "POST", "status": 200, "started_at": "2026-11-19T00:00:05Z",
                    "completed_at": "2026-11-19T00:00:11Z", "generation_id": "cut", "request_bytes": 1, "response_bytes": 0}
             if end:
                 row["unfinished_end"] = end
-            g.llm_rows = [row]
+            tally = {"forwarded_requests": 1, "upstream_errors": 0, "cancelled_by_seal": 0, "rejected_after_seal": 0}
+            tally[counts[decision]] += 1
+            if decision == "upstream_error":  # 끝 모양별 셈의 합이 upstream_errors와 같아야 한다(표식 모양)
+                tally["upstream_error_ends"] = dict(llm_marker()["upstream_error_ends"], **{end: 1})
+            g.marker = llm_marker(sealed_at="2026-11-19T00:00:10Z", generations=[
+                llm_generation("gen-1"), llm_generation("cut", status="unverified", last="http_404", tries=40)],
+                **dict(tally, **(marker_changes or {})))
+            # 완료 행을 뺀 기록(#735 리뷰 재현): 표식은 그대로 두고 읽은 행만 빠진 모양. 순번은 다시 매겨 1부터다.
+            g.llm_rows = [dict(row, seq=1)] if drop_completed else [done, row]
         return mutate
 
     def test_seal_cancellation_is_not_invalidating(self):
@@ -3540,6 +3551,19 @@ class TestInterruptedCallsB(unittest.TestCase):
             with self.subTest(end=end):
                 result, _, _, _ = run(mutate_gateway=self.gateway("cancelled_by_seal", end))
                 self.assertEqual((result["status"], result.get("reasons")), (INVALID, ["llm_generation_unverified"]))
+
+    def test_rows_that_do_not_match_the_marker_lose_the_exception(self):
+        # log_complete는 쓰기 오류 없음일 뿐이다. 읽은 행이 표식의 셈·generation 목록과 다르면 끊김을 증명할 수 없어
+        # 미확인을 그대로 무효로 센다(#735 리뷰: 완료 행만 빼면 예외로 빠지던 것)
+        for label, mutate in (("dropped_completed", self.gateway("cancelled_by_seal", "sealed_before_done", drop_completed=True)),
+                              ("count_mismatch", self.gateway("cancelled_by_seal", "sealed_before_done",
+                                                              marker_changes={"cancelled_by_seal": 2})),
+                              ("rejected_mismatch", self.gateway("cancelled_by_seal", "sealed_before_done",
+                                                                 marker_changes={"rejected_requests": 1}))):
+            with self.subTest(label=label):
+                result, _, _, evidence = run(mutate_gateway=mutate)
+                self.assertEqual((result["status"], result.get("reasons")), (INVALID, ["llm_generation_unverified"]))
+                self.assertEqual(evidence.files["llm-summary.json"]["unverified_interrupted"], 0)
 
     def test_other_unverified_calls_still_invalidate(self):
         # B에서 호출자 쪽 끊김은 봉인 탓이라고 기록상 말할 수 없다(엔진은 봉인 때 멈추지 않음)

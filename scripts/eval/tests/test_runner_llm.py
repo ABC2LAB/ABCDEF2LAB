@@ -371,6 +371,28 @@ class TestInterruptedCalls(unittest.TestCase):
         # 봉인 중단 행만 둘이면(같은 ID) 예외 그대로
         self.assertEqual(interrupted_generation_ids([cut, dict(cut)], STOP, product=False), frozenset({"same"}))
 
+    def test_rows_must_match_the_marker(self):
+        from runner_llm import rows_match_marker
+        rows = [call("gen-1", "forwarded", "2026-11-19T00:00:01Z", "2026-11-19T00:00:02Z"),
+                call("cut", "cancelled_by_seal", "2026-11-19T00:00:05Z", "2026-11-19T00:00:11Z"),
+                call("", "rejected_body", "2026-11-19T00:00:03Z", "2026-11-19T00:00:03Z"),
+                call("", "rejected_after_seal", "2026-11-19T00:00:12Z", "2026-11-19T00:00:12Z")]
+        for seq, row in enumerate(rows, 1):
+            row["seq"] = seq
+        m = marker(forwarded_requests=1, cancelled_by_seal=1, rejected_requests=1, rejected_after_seal=1,
+                   generations=[generation("gen-1"), generation("cut")])
+        self.assertTrue(rows_match_marker(rows, m))
+        bad = [("dropped", rows[1:], m), ("seq_gap", [dict(r, seq=r["seq"] * 2) for r in rows], m),
+               ("seq_bool", [dict(rows[0], seq=True)] + rows[1:], m),
+               ("count", rows, dict(m, cancelled_by_seal=2)), ("count_type", rows, dict(m, forwarded_requests=1.0)),
+               ("rejected", rows, dict(m, rejected_requests=0)), ("after_seal", rows, dict(m, rejected_after_seal=0)),
+               ("ids", rows, dict(m, generations=[generation("gen-1")])), ("extra_id", rows, dict(m, generations=m["generations"] + [generation("x")])),
+               ("decision_changed", [dict(rows[0], decision="upstream_error")] + rows[1:], m),
+               ("not_marker", rows, None), ("missing_field", [{k: v for k, v in rows[0].items() if k != "decision"}] + rows[1:], m)]
+        for label, got_rows, got_marker in bad:
+            with self.subTest(label=label):
+                self.assertFalse(rows_match_marker(got_rows, got_marker))
+
     def test_o_exception_is_on_hold(self):
         # 제품 전송기는 끊긴 호출(upstream_error/client_closed_before_done)에 generation ID를 남기지 않고, ID는 응답을 끝까지
         # 읽은 forwarded에만 있다(#735 리뷰). 끊김과 ID를 잇는 근거가 없어 O 예외는 보류: 어떤 행이든 빈 집합이다.

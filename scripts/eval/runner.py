@@ -103,7 +103,7 @@ from runner_state import copy_sqlite, discard_copy, memory_fingerprints, runtime
 from state_diff import (  # noqa: E402
     RUN_KEY_BYTES, diff as state_difference, memory_diff, runtime_diff, snapshot as state_snapshot,
 )
-from runner_llm import interrupted_generation_ids, judge_llm  # noqa: E402
+from runner_llm import interrupted_generation_ids, judge_llm, rows_match_marker  # noqa: E402
 from runner_probe import PASS, ProbeOutcome, run_probe  # noqa: E402
 from runner_record import (  # noqa: E402
     RecordContext, canonical_sha256, descriptor, evidence_rows, isolation_evidence, isolation_proof, path_ref,
@@ -666,13 +666,15 @@ def _fault_stall(gateway: GatewayFiles, meter_rows: list[dict], window_start: st
 
 
 def _interrupted_b(spec: RunSpec, gateway: GatewayFiles, verified: object) -> frozenset[str]:
-    """B의 기록상 끊긴 호출 generation ID(게이트웨이 cancelled_by_seal, 평가 프로토콜 §6). 행을 읽지 못하면 증명할 수
-    없으므로 빈 집합이다(미확인은 그대로 무효로 남는다). 행 완결성은 검증 표식의 log_complete가 따로 본다."""
+    """B의 기록상 끊긴 호출 generation ID(게이트웨이 cancelled_by_seal, 평가 프로토콜 §6). 행을 읽지 못하거나 읽은 행이
+    검증 표식과 맞지 않으면(행 누락·변경, #735 리뷰) 증명할 수 없으므로 빈 집합이다(미확인은 그대로 무효로 남는다)."""
     if spec.llm_backend != "api" or not isinstance(verified, dict):
         return frozenset()
     try:
         rows = gateway.rows()
     except Exception:  # 행을 못 읽으면 끊김을 증명할 수 없다(멈춤 기록도 같은 행을 따로 읽고 사유를 남긴다)
+        return frozenset()
+    if not rows_match_marker(rows, verified):
         return frozenset()
     return interrupted_generation_ids(rows, verified.get("sealed_at"), product=False)
 
