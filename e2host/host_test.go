@@ -231,21 +231,28 @@ func TestHostUnfinishedSendCannotSealOrRecover(t *testing.T) {
 }
 
 func TestHostRejectsUnmatchedOrForgedResult(t *testing.T) {
-	for _, mode := range []string{"allowed without intent", "wrong call reference"} {
-		t.Run(mode, func(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		changeResult func(*e2proxy.Event)
+	}{
+		{"allowed without intent", nil},
+		{"wrong call reference", func(event *e2proxy.Event) { event.CallRef = "other-call" }},
+		{"wrong rule on same attempt", func(event *e2proxy.Event) { event.RuleRef = "other-rule" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			host, _, scope := fixture(t)
 			session, err := host.Open(t.Context(), scope, "revision-host")
 			if err != nil {
 				t.Fatal(err)
 			}
 			intent, result := hostSentEvents(scope)
-			if mode == "wrong call reference" {
+			if tc.changeResult == nil {
+				result.Index = 1
+			} else {
 				if err := session.Record(t.Context(), intent); err != nil {
 					t.Fatal(err)
 				}
-				result.CallRef = "forged-call"
-			} else {
-				result.Index = 1
+				tc.changeResult(&result)
 			}
 			if err := session.Record(t.Context(), result); err != nil {
 				t.Fatal(err)
@@ -304,6 +311,49 @@ func TestHostInterruptedRecoveryRejectsEpochAndMirrorRollback(t *testing.T) {
 				t.Fatal("현재 권위 불일치를 안전 마감으로 승격")
 			}
 		})
+	}
+}
+
+func TestHostRecoverySkipsActiveRunBeforeStoreScan(t *testing.T) {
+	host, pool, scope := fixture(t)
+	session, err := host.Open(t.Context(), scope, "revision-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.Abort() })
+
+	// Host는 실행을 한 회차만 연다. DB의 유일한 접속을 잡아 복구가
+	// 저장소 조회에 들어가기 전에 거부되는지 확인한다.
+	pool.SetMaxOpenConns(1)
+	held, err := pool.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = held.Close() })
+	before := pool.Stats().WaitCount
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	recoverErr := host.RecoverDisconnectedHeads(ctx)
+	cancel()
+	if err := held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if recoverErr == nil || pool.Stats().WaitCount != before {
+		t.Fatal("활성 회차가 있는 동안 복구가 저장소 조회에 진입", recoverErr)
+	}
+
+	var phase string
+	query := "SELECT phase FROM e2_http_audit_heads WHERE run_ref=$1"
+	if err := pool.QueryRowContext(t.Context(), query, scope.RunRef).Scan(&phase); err != nil || phase != string(e2checkpoint.Open) {
+		t.Fatalf("활성 회차의 head가 open이 아님: %q, %v", phase, err)
+	}
+	if err := session.Record(t.Context(), hostEvent(scope)); err != nil {
+		t.Fatal("복구 거부 뒤 활성 회차 기록 실패", err)
+	}
+	if err := session.Seal(t.Context()); err != nil {
+		t.Fatal("복구 거부 뒤 활성 회차 봉인 실패", err)
+	}
+	if err := pool.QueryRowContext(t.Context(), query, scope.RunRef).Scan(&phase); err != nil || phase != string(e2checkpoint.Sealed) {
+		t.Fatalf("정상 종료한 회차의 head가 sealed가 아님: %q, %v", phase, err)
 	}
 }
 

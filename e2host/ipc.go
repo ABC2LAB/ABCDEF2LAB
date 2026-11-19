@@ -17,6 +17,9 @@ import (
 	"github.com/Autumn-27/artex/transmit"
 )
 
+// ProductSocketPath는 제품 설치와 실행에서 사용하는 감사 Host 소켓 경로다.
+const ProductSocketPath = "/run/e2-host/audit.sock"
+
 const maxMessage = 32 << 10
 
 type message struct {
