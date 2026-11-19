@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -572,5 +573,35 @@ func TestAdapterStoppedAfterIntent(t *testing.T) {
 		if x.StoppedAfterIntent() {
 			t.Fatalf("%s: 중단 행으로 봄", name)
 		}
+	}
+}
+
+// 가짜 v3를 거쳐도 상태 줄만 받고 본문이 끊긴 결과는 결과 불명이다(response_received=true·status_code·response_complete=false,
+// E② 일반 행 규칙과 같은 모양). 진위 실패로 버리지 않는다(#774 리뷰).
+func TestAdapterIncompleteWithStatusIsResultUnknown(t *testing.T) {
+	res, e2 := viaV3(t, map[e3fake.Key]e3fake.Behavior{crossNote: {Incomplete: true, Status: 200}}, nil)
+	if res.Status != e3contract.StatusCompleted {
+		t.Fatalf("진위 실패로 끝남: %+v", res)
+	}
+	found := false
+	for _, rec := range e2.Records() {
+		var e e3v3.Event
+		if err := json.Unmarshal(rec.Raw, &e); err != nil {
+			t.Fatal(err)
+		}
+		if e.Program == e3contract.PurposeRead && e.Stage == e3v3.StageResult && e.Role == e3contract.RoleCross && e.ResourceType == "note" {
+			found = true
+			if !e.ResponseReceived || e.ResponseComplete || e.StatusCode != 200 {
+				t.Fatalf("가짜 v3 이벤트 모양: %+v", e)
+			}
+		}
+	}
+	for _, v := range res.Verdicts {
+		if v.ResourceType == "note" && (v.Value != oracle.Undecidable || !slices.Contains(v.ProductReasons, e3contract.ReasonRequestResultUnknown)) {
+			t.Fatalf("note: %+v", v)
+		}
+	}
+	if !found {
+		t.Fatal("교차 조회 결과 이벤트 없음")
 	}
 }
