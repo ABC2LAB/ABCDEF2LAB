@@ -61,7 +61,7 @@ from isolation_proof import E3_STATUSES, PURPOSE_OFFICIAL  # noqa: E402
 from run_record import OFFICIAL_E3_DISABLED_REASON  # noqa: E402
 from runner_evidence import MeterFiles, forwarded_count  # noqa: E402
 from runner_fault import FAULT_STALL_FORMAT, FAULT_STALL_NAME, FaultRecordError, fault_stall_record  # noqa: E402
-from runner_llm import judge_product_llm  # noqa: E402
+from runner_llm import interrupted_generation_ids, judge_product_llm  # noqa: E402
 from runner_probe import PASS  # noqa: E402
 from runner_product_llm import (  # noqa: E402
     ProductLLMError, call_record_lines, call_records_reasons, ledger_reservations, product_model_usage,
@@ -436,6 +436,7 @@ E3_RESULT_VERSION = "e3-confirmation-run/v1"  # e3contract.RunResultVersion
 _E3_NO_REASON = ("completed", "interrupted")
 _E3_LIST_FIELDS = ("verdicts", "skipped", "candidates", "writes")  # e3contract.RunResult 배열 칸
 _E3_NOT_RUN = ("disabled", "start_refused")  # 확정 단계를 돌지 않은 상태(계약상 요청 0건)
+_E3_CANDIDATE_LEVELS = ("suspected", "confirmed")  # e3contract.CandidateConfirmation.Level
 _E3_REASON = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 
 
@@ -466,6 +467,13 @@ def e3_confirmation_row(raw: bytes) -> dict:
         return {"error": "e3_confirmation_invalid"}
     if value["status"] in _E3_NOT_RUN and (value["verdicts"] or value["writes"] or requests != 0):
         return {"error": "e3_confirmation_invalid"}
+    # 후보 단계는 suspected·confirmed뿐이고, confirmed는 연결된 CONFIRMED 판정이 있을 때만이다(E③ 계약 §9). 판정이 없는
+    # 결과(돌지 않은 상태 포함)에 confirmed 후보가 있으면 모순이다(#742 리뷰). 비활성의 suspected 후보는 그대로 받는다.
+    candidates = value["candidates"]
+    if not all(isinstance(item, dict) and item.get("level") in _E3_CANDIDATE_LEVELS for item in candidates):
+        return {"error": "e3_confirmation_invalid"}
+    if any(item["level"] == "confirmed" for item in candidates) and (value["status"] in _E3_NOT_RUN or not value["verdicts"]):
+        return {"error": "e3_confirmation_invalid"}
     return {"status": value["status"], "reason": reason, "requests": requests, "sha256": hashlib.sha256(raw).hexdigest()}
 
 
@@ -481,6 +489,22 @@ def _e3_confirmation(ports, draft_id: str) -> dict:
     except Exception:
         return {"error": "e3_confirmation_not_collected"}
     return e3_confirmation_row(raw)
+
+
+PRODUCT_CALLS_NAME = "product-calls.jsonl"
+
+
+def _call_rows(calls: bytes) -> list[dict]:
+    """제품 호출 기록 줄. 읽지 못한 줄은 버린다(끊긴 호출로 분류하지 않을 뿐, 줄 수 대조는 call_records_reasons가 이미 했다)."""
+    rows = []
+    for line in calls.decode("utf-8", "replace").splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
 
 
 def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles, evidence, clock: Clock,
@@ -549,6 +573,7 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     # B는 drain 뒤 게이트웨이를 봉인해 새 모델 요청을 막는다(#634). O는 같은 자리에서 제품 회차를 멈춘다. 러너 예산으로 먼저
     # 끝난 회차는 제품이 아직 실행 중이라 실행 기록(마감 때 저장)이 없고 모델 호출이 계속된다. 끝 상태·drain 완료를 본 뒤에야
     # 실행 기록·장부·호출 기록을 읽는다(#665 리뷰).
+    stop_requested_at = _stamp(clock)  # 끊긴 호출 증명의 정지 신호 시각(평가 프로토콜 §6)
     _step(state, "product_stop_failed", lambda: ports.stop_round(draft_id))
     closed = _step(state, "product_close_failed", lambda: ports.wait_closed(draft_id, spec.product_close_seconds))
     # 끝난 회차의 발견 출처별 건수(고정 초안 §8의 MCP 출처 비중). 제품이 멈춘 뒤라 snapshot이 더 바뀌지 않는다.
@@ -662,9 +687,17 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     verified = _step(state, "llm_read_failed", ports.llm_verified)
     if verified is None:
         raise RunFailure("llm_unverified")
+    # 제품 호출 기록을 회차 근거로 남긴다(칸: 순번·결정·메서드·상태·시각·바이트·generation ID·끝 모양, 본문·경로·키 없음).
+    # 미확인 generation이 기록상 끊긴 호출인지 대조하는 근거다(2026-11-19 사용자 결정).
+    _step(state, "evidence_write_failed", lambda: evidence.write_bytes(PRODUCT_CALLS_NAME, calls))
+    interrupted = interrupted_generation_ids(_call_rows(calls), stop_requested_at, product=True)
     llm_reasons, llm_summary = _step(state, "llm_marker_invalid", lambda: judge_product_llm(
-        verified, spec.llm_sampling, spec.llm_provider_slug, spec.llm_provider_name))
-    _step(state, "evidence_write_failed", lambda: evidence.write_json("llm-summary.json", dict(llm_summary, reasons=llm_reasons)))
+        verified, spec.llm_sampling, spec.llm_provider_slug, spec.llm_provider_name, interrupted))
+    # 끊긴 호출 분류에 실제로 쓴 정지 요청 시각을 근거에 남긴다(평가 프로토콜 §6: 회차 뒤에도 product-calls.jsonl과 이 시각으로
+    # 같은 분류를 다시 계산해 예외 적용을 재검증한다, #735 리뷰). 계측기 봉인 시각은 그 사이 drain·정착 대기가 있어 대신 못 쓴다.
+    state.summary["stop_requested_at"] = stop_requested_at
+    _step(state, "evidence_write_failed", lambda: evidence.write_json("llm-summary.json", dict(
+        llm_summary, reasons=llm_reasons, stop_requested_at=stop_requested_at)))
     if llm_reasons:
         raise RunFailure(llm_reasons[0])
     llm_summary = dict(llm_summary, verification=LLM_VERIFIED)

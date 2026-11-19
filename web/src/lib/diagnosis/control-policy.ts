@@ -525,6 +525,8 @@ const MOCK_POLICY: ControlPolicy = {
     maxBodyBytes: 65536,
     maxResponseBodyBytes: 65536,
     requestTimeoutMs: 5000,
+    // 제품 실행 정책은 확정 단계 몫을 늘 싣는다. 예시는 확정 단계가 꺼진 회차(0)로 둔다.
+    e3Confirmation: { requests: 0, timeoutMs: 0 },
   },
   accounts: ["tester-a"],
   auditBound: true,

@@ -90,6 +90,24 @@ describe("UrlControlPolicyLive (실 정책)", () => {
     expect(screen.getByText(/요청 시간/)).toHaveTextContent("5000");
   });
 
+  it("확정 단계 몫: 0 은 '꺼짐', 양수는 'n건 · m초', 칸 없음은 '정하지 않음(이전 회차)' — 셋을 섞지 않는다", async () => {
+    withTask("42");
+    for (const [share, text] of [
+      [{ requests: 0, timeoutMs: 0 }, "꺼짐(0)"],
+      [{ requests: 12, timeoutMs: 90_000 }, "12건 · 90초"],
+      [{ requests: 3, timeoutMs: 1_500 }, "3건 · 1.5초"],
+      [undefined, "정하지 않음(이전 회차)"],
+    ] as const) {
+      g.mockResolvedValueOnce(
+        ready({ limits: { ...good.limits, ...(share ? { e3Confirmation: { ...share } } : {}) } }),
+      );
+      const { unmount } = render(<UrlControlPolicyLive />);
+      const chip = await screen.findByText(/확정 단계 몫/);
+      expect(chip).toHaveTextContent(`확정 단계 몫 ${text}`);
+      unmount();
+    }
+  });
+
   it("http 대상은 'TLS 없음(평문 전송)' 경고, https 대상은 없다", async () => {
     withTask("1");
     g.mockResolvedValueOnce(ready());

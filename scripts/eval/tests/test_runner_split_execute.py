@@ -455,8 +455,8 @@ class TestOrder(unittest.TestCase):
                                                "pre-probe.json",
                                                "post-probe.json", "task.json", "llm-summary.json",
                                                "window-watch.json", "product-end.json", "product-model.json", "tool-surface.json",
-                                               "product-files.json", "discovery-sources.json", "fault-stall.json", RESULT_NAME,
-                                               "isolation-evidence.json", "solve-events.json", "run-record.json"})
+                                               "product-files.json", "discovery-sources.json", "fault-stall.json", "product-calls.jsonl",
+                                               RESULT_NAME, "isolation-evidence.json", "solve-events.json", "run-record.json"})
         self.assertEqual(evidence.files["discovery-sources.json"], {
             "format": "abc2lab-eval-runner-discovery-sources-v1", "endpoints": 4,
             "by_source": {"api_recon_runtime": 1, "browser_navigation": 1, "html_link": 2}, "browser": 1, "api_recon": 1,
@@ -1171,6 +1171,12 @@ class TestE3ConfirmationRow(unittest.TestCase):
                                                     "sha256": hashlib.sha256(raw).hexdigest()})
         self.assertEqual(e3_confirmation_row(self.result(status="completed", reason=None, requests=7))["requests"], 7)
         self.assertEqual(e3_confirmation_row(self.result(status="completed", reason=None))["reason"], None)
+        # 비활성의 suspected 후보는 받는다(후보는 판정 없이 SUSPECTED로 남는다). confirmed 후보는 판정이 있는 결과에서만.
+        suspected = self.result(candidates=[{"candidate_ref": "1", "level": "suspected", "reason": "link_none"}])
+        self.assertEqual(e3_confirmation_row(suspected)["status"], "disabled")
+        confirmed = self.result(status="completed", reason=None, requests=5, verdicts=[{"type": "x"}],
+                                candidates=[{"candidate_ref": "1", "level": "confirmed"}])
+        self.assertEqual(e3_confirmation_row(confirmed)["status"], "completed")
         for raw in (b"not json", b"[]", self.result(version="v0"), self.result(status="maybe"),
                     self.result(status="completed", reason="x"), self.result(reason="Bad Reason"), self.result(reason=None),
                     # 비활성인데 확정 요청이 있음(모순, #742 리뷰)·요청 수 모양 오류
@@ -1181,7 +1187,13 @@ class TestE3ConfirmationRow(unittest.TestCase):
                     self.result(verdicts=[{"type": "x"}]), self.result(writes=[{"id_known": False}]),
                     self.result(status="start_refused", reason="policy_source_unavailable", verdicts=[{"type": "x"}]),
                     self.result(status="start_refused", reason="policy_source_unavailable", requests=1),
-                    self.result(verdicts=None), self.result(skipped={}), self.result(candidates="x"), self.result(writes=None)):
+                    self.result(verdicts=None), self.result(skipped={}), self.result(candidates="x"), self.result(writes=None),
+                    # 판정 없는 confirmed 후보(E③ 계약 §9, #742 리뷰)·후보 모양 오류
+                    self.result(candidates=[{"candidate_ref": "1", "level": "confirmed"}]),
+                    self.result(status="start_refused", reason="policy_source_unavailable",
+                                candidates=[{"candidate_ref": "1", "level": "confirmed"}]),
+                    self.result(status="completed", reason=None, candidates=[{"candidate_ref": "1", "level": "confirmed"}]),
+                    self.result(candidates=[{"candidate_ref": "1", "level": "CONFIRMED"}]), self.result(candidates=["1"])):
             with self.subTest(raw=raw[:40]):
                 self.assertEqual(e3_confirmation_row(raw), {"error": "e3_confirmation_invalid"})
 
@@ -1192,10 +1204,14 @@ class TestE3ConfirmationRow(unittest.TestCase):
         self.assertEqual(result["status"], "complete", result)
         e3 = evidence.files["product-files.json"]["e3_confirmation"]
         self.assertEqual((e3["status"], e3["reason"], result["e3_confirmation"]["status"]), ("disabled", "declaration_missing", "disabled"))
+        # 비활성 회차의 suspected 후보는 공식 회차를 막지 않는다
+        suspected = file(self.result(candidates=[{"candidate_ref": "1", "level": "suspected", "reason": "link_none"}]))
+        self.assertEqual(run(suspected, purpose="official")[0]["status"], "complete")
         for mutate, reason in ((file(self.result(reason="not_wired")), "e3_official_not_disabled"),
                                (file(self.result(status="completed", reason=None)), "e3_official_not_disabled"),
                                # 비활성·요청 0이어도 판정이 있으면 모순이라 비활성 근거가 아니다(#742 리뷰)
                                (file(self.result(verdicts=[{"type": "x"}])), "e3_confirmation_invalid"),
+                               (file(self.result(candidates=[{"candidate_ref": "1", "level": "confirmed"}])), "e3_confirmation_invalid"),
                                (file(RuntimeError("docker_helper_copy_failed")), "e3_status_not_collected"),
                                (file(b"{}"), "e3_confirmation_invalid"),
                                (file(self.result(requests=1)), "e3_confirmation_invalid")):
@@ -1395,6 +1411,49 @@ class TestRunRecord(unittest.TestCase):
         self.assertEqual((result["status"], result["reasons"]), ("invalid", ["record_sign_failed"]))
         self.assertNotIn("run-record.json", evidence.files)
         self.assertNotIn("signature", result)
+
+
+class TestInterruptedCallsO(unittest.TestCase):
+    """O: 제품 호출 기록·정지 요청 시각은 회차 근거에 남기되, 끊긴 호출 예외는 보류한다(#735 리뷰). 제품 전송기는 끊긴 호출에
+    generation ID를 남기지 않아(응답을 끝까지 읽은 forwarded에만 있음) 끊김과 미확인 ID를 잇는 근거가 없다."""
+
+    def ports(self, verified_late: bool):
+        def mutate(p):
+            # 제품이 실제로 쓰는 모양: 완료 호출은 ID가 있고, 정지로 끊긴 호출은 ID가 비어 있다(openrouter_transport.go)
+            rows = [{"seq": 1, "decision": "forwarded", "method": "POST", "status": 200, "started_at": "2000-01-01T00:00:00Z",
+                     "completed_at": "2000-01-01T00:00:01Z", "request_bytes": 1, "response_bytes": 1, "generation_id": "gen-1"},
+                    {"seq": 2, "decision": "upstream_error", "method": "POST", "status": 200, "started_at": "2000-01-01T00:00:02Z",
+                     "completed_at": "2999-01-01T00:00:00Z", "request_bytes": 1, "response_bytes": 0, "generation_id": "",
+                     "unfinished_end": "client_closed_before_done"},
+                    {"seq": 3, "decision": "forwarded", "method": "POST", "status": 200, "started_at": "2000-01-01T00:00:03Z",
+                     "completed_at": "2999-01-01T00:00:00Z", "request_bytes": 1, "response_bytes": 1, "generation_id": "late"}]
+            p.calls_file = b"".join(json.dumps(row).encode() + b"\n" for row in rows)
+            p.ledger = b"r1 10 20 30\n" * len(rows)  # 장부 예약 줄 수 = 호출 기록 줄 수
+            late = product_marker()["generations"][0] | {"id": "late"}
+            if not verified_late:
+                late = {"id": "late", "status": "unverified", "provider_name": "", "attempts": [],
+                        "lookup": {"tries": 40, "last": "http_404"}}
+            p.marker = product_marker(generations=[product_marker()["generations"][0], late])
+        return mutate
+
+    def test_records_are_kept_and_the_cut_call_without_an_id_does_not_count(self):
+        result, ports, evidence = run(self.ports(verified_late=True))
+        self.assertEqual(result["status"], "complete", result)
+        summary = evidence.files["llm-summary.json"]
+        self.assertEqual((summary["unverified_interrupted"], summary["interrupted_calls"]), (0, 0))
+        self.assertEqual(evidence.files["product-calls.jsonl"], ports.calls_file.decode())  # 받은 바이트 그대로
+        self.assertEqual(result["stop_requested_at"], summary["stop_requested_at"])  # 정지 요청 시각도 근거에 남는다
+
+    def test_unverified_completed_call_near_the_stop_still_invalidates(self):
+        # 정지 순간 즈음 끝난 호출이라도 ID가 있으면 응답을 끝까지 읽은 완료 호출이다. 미확인이면 지금처럼 무효다.
+        from runner_llm import interrupted_generation_ids
+        result, _, evidence = run(self.ports(verified_late=False))
+        self.assertEqual((result["status"], result["reasons"]), ("invalid", ["llm_generation_unverified"]))
+        summary = evidence.files["llm-summary.json"]
+        self.assertEqual(summary["unverified_interrupted"], 0)
+        rows = [json.loads(line) for line in evidence.files["product-calls.jsonl"].splitlines() if line]
+        # 저장된 기록·시각으로 다시 계산해도 같다(보류 중이라 빈 집합)
+        self.assertEqual(interrupted_generation_ids(rows, summary["stop_requested_at"], product=True), frozenset())
 
 
 class TestRequestCap(unittest.TestCase):
