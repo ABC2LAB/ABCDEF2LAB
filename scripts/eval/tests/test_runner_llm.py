@@ -352,6 +352,25 @@ class TestInterruptedCalls(unittest.TestCase):
         self.assertEqual(interrupted_generation_ids(rows, STOP, product=False), frozenset({"cut"}))
         self.assertEqual(interrupted_generation_ids(rows, "not-a-time", product=False), frozenset())
 
+    def test_an_id_shared_with_a_non_exempt_call_is_not_exempt(self):
+        # 게이트웨이 표식은 같은 ID를 한 번만 싣는다. 같은 ID가 정상 완료 호출에도 있으면 미확인을 예외로 빼지 않는다(#735 리뷰).
+        cut = call("same", "cancelled_by_seal", "2026-11-19T00:00:05Z", "2026-11-19T00:00:11Z")
+        cut["unfinished_end"] = "sealed_before_done"
+        for other in (call("same", "forwarded", "2026-11-19T00:00:01Z", "2026-11-19T00:00:02Z"),
+                      call("same", "upstream_error", "2026-11-19T00:00:01Z", "2026-11-19T00:00:02Z", "client_closed_before_done"),
+                      call("same", "forwarded", "bad-time", "2026-11-19T00:00:02Z")):  # 시각을 못 읽는 행도 예외가 아니다
+            with self.subTest(other=other["decision"]):
+                for rows in ([cut, other], [other, cut]):
+                    self.assertEqual(interrupted_generation_ids(rows, STOP, product=False), frozenset())
+        # 판정까지: 같은 ID의 http_404 미확인은 무효 사유로 남는다
+        interrupted = interrupted_generation_ids([cut, call("same", "forwarded", "2026-11-19T00:00:01Z", "2026-11-19T00:00:02Z")],
+                                                 STOP, product=False)
+        m = marker(generations=[generation("same", status="unverified", last="http_404", tries=40)])
+        reasons, summary = judge_llm(m, "api", SLUG, NAME, SAMPLING, interrupted)
+        self.assertEqual((reasons, summary["unverified_interrupted"]), (["llm_generation_unverified"], 0))
+        # 봉인 중단 행만 둘이면(같은 ID) 예외 그대로
+        self.assertEqual(interrupted_generation_ids([cut, dict(cut)], STOP, product=False), frozenset({"same"}))
+
     def test_o_exception_is_on_hold(self):
         # 제품 전송기는 끊긴 호출(upstream_error/client_closed_before_done)에 generation ID를 남기지 않고, ID는 응답을 끝까지
         # 읽은 forwarded에만 있다(#735 리뷰). 끊김과 ID를 잇는 근거가 없어 O 예외는 보류: 어떤 행이든 빈 집합이다.

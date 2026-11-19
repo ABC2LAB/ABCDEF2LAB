@@ -126,16 +126,21 @@ def interrupted_generation_ids(rows: list[dict], stop_at: str, *, product: bool)
     stop = _instant(stop_at)
     if stop is None:
         return frozenset()
-    ids = set()
+    ids, others = set(), set()
     for row in rows:
-        started, completed, gid = _instant(row.get("started_at")), _instant(row.get("completed_at")), row.get("generation_id")
-        if not isinstance(gid, str) or not gid or started is None or completed is None or not started < stop <= completed:
+        gid = row.get("generation_id")
+        if not isinstance(gid, str) or not gid:
             continue
-        decision = row.get("decision")
+        started, completed = _instant(row.get("started_at")), _instant(row.get("completed_at"))
         # 봉인 전에 종료 이벤트 줄을 읽지 않았다는 기록이 있어야 한다(#735 리뷰). 칸이 없는 이전 행은 예외로 보지 않는다.
-        if decision == "cancelled_by_seal" and row.get("unfinished_end") == _SEALED_BEFORE_DONE:
+        if (started is not None and completed is not None and started < stop <= completed
+                and row.get("decision") == "cancelled_by_seal" and row.get("unfinished_end") == _SEALED_BEFORE_DONE):
             ids.add(gid)
-    return frozenset(ids)
+        else:
+            others.add(gid)
+    # 게이트웨이 검증 표식은 같은 generation ID를 한 번만 싣는다(gateway.go seenIDs). 같은 ID에 예외가 아닌 호출 행(정상 완료 등)이
+    # 하나라도 있으면 그 미확인이 끊긴 호출 탓인지 기록으로 가를 수 없어 예외로 보지 않는다(#735 리뷰).
+    return frozenset(ids - others)
 
 
 def judge_llm(marker: object, backend: str, provider_slug: str, provider_name: str,
