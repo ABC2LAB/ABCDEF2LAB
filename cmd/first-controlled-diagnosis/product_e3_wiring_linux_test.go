@@ -3,9 +3,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"net/netip"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -88,7 +91,7 @@ func (b *e3SpyBridge) Close() { b.closed.Store(true) }
 
 // wire는 확정 단계에 E② 실행 연결(handle)과 브리지 생성기를 붙인다. created는 브리지를 만든 횟수다.
 func wireE3(c *productE3Confirmation, exec *e2proxy.Execution, accounts server.E2HTTPAccountBindings, create func(*e2proxy.Execution, server.E2HTTPAccountBindings, e3contract.RunBinding) (productE3Bridge, error)) {
-	c.handle = func(string) (*e2proxy.Execution, server.E2HTTPAccountBindings, bool) { return exec, accounts, true }
+	c.handle = func(string) (*e2proxy.Execution, server.E2HTTPAccountBindings, string) { return exec, accounts, "" }
 	c.newBridge = create
 }
 
@@ -183,49 +186,45 @@ func TestProductE3WiredStoppedRecordsActualReason(t *testing.T) {
 	}
 }
 
-// 확정 단계가 실제로 돌면 브리지는 표식 등록 때 한 번만, 그 회차 결속으로 만들어진다. 등록 전 다른 호출은 브리지를 만들지 않고
-// 거부한다. 브리지를 만들지 못하면 표식 등록이 실패해 start_refused·marker_registration_failed다(계약 §7).
-func TestProductLazyE2(t *testing.T) {
-	var created atomic.Int64
-	var spy *e3SpyBridge
-	lazy := &productLazyE2{create: func(_ *e2proxy.Execution, _ server.E2HTTPAccountBindings, binding e3contract.RunBinding) (productE3Bridge, error) {
-		created.Add(1)
-		spy = &e3SpyBridge{created: &created, binding: binding}
-		return spy, nil
-	}}
-	binding := e3contract.RunBinding{JobRef: "job-1", RunRef: "run-1"}
-	if _, err := lazy.Send(t.Context(), e3v3.Request{}); !errors.Is(err, e2proxy.ErrE3JournalUnavailable) || created.Load() != 0 {
-		t.Fatal("표식 등록 전 송신이 브리지를 만들거나 통과함")
-	}
-	if _, err := lazy.Verified(t.Context(), binding, e3contract.CallRef{}); !errors.Is(err, e2proxy.ErrE3JournalUnavailable) || created.Load() != 0 {
-		t.Fatal("표식 등록 전 검증 조회가 브리지를 만들거나 통과함")
-	}
-	if _, err := lazy.AccountBindingRef(t.Context(), binding, "tester-a"); !errors.Is(err, e2proxy.ErrE3JournalUnavailable) || created.Load() != 0 {
-		t.Fatal("표식 등록 전 계정 결속 조회가 브리지를 만들거나 통과함")
-	}
-	for range 2 {
-		if err := lazy.RegisterMarker(t.Context(), binding, e3contract.Marker{}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if created.Load() != 1 || spy.binding != binding || spy.calls.Load() != 2 {
-		t.Fatalf("브리지 생성 %d·결속 %+v·위임 %d", created.Load(), spy.binding, spy.calls.Load())
-	}
-	if _, err := lazy.Send(t.Context(), e3v3.Request{}); err == nil || spy.calls.Load() != 3 {
-		t.Fatal("등록 뒤 송신이 브리지로 넘어가지 않음")
-	}
-	lazy.Close()
-	if !spy.closed.Load() {
-		t.Fatal("닫을 때 브리지를 닫지 않음")
-	}
-	failing := &productLazyE2{create: func(*e2proxy.Execution, server.E2HTTPAccountBindings, e3contract.RunBinding) (productE3Bridge, error) {
-		return nil, errors.New("no v3 host")
-	}}
-	if err := failing.RegisterMarker(t.Context(), binding, e3contract.Marker{}); !errors.Is(err, e2proxy.ErrE3JournalUnavailable) {
-		t.Fatal("브리지를 못 만들었는데 표식 등록이 성공함")
-	}
-	if _, err := newProductE3Bridge(nil, nil, binding); !errors.Is(err, e2proxy.ErrE3JournalUnavailable) {
+// 실제 브리지 생성기는 실행·계정 저장소 없이는 브리지를 만들지 않는다.
+func TestNewProductE3BridgeNeedsExecution(t *testing.T) {
+	if _, err := newProductE3Bridge(nil, nil, e3contract.RunBinding{JobRef: "job-1", RunRef: "run-1"}); !errors.Is(err, e2proxy.ErrE3JournalUnavailable) {
 		t.Fatal("실행·계정 저장소 없이 브리지를 만듦")
+	}
+}
+
+// E② 연결을 받지 못하면 not_wired이고, 어느 조건인지 고정 사유 코드를 서버 로그에 남긴다(값 없음).
+func TestProductE3UnwiredLogsHandleReason(t *testing.T) {
+	var buf bytes.Buffer
+	prev, flags := log.Writer(), log.Flags()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(prev); log.SetFlags(flags) })
+	for name, handle := range map[string]func(string) (*e2proxy.Execution, server.E2HTTPAccountBindings, string){
+		server.E3HandleTaskFenced: func(string) (*e2proxy.Execution, server.E2HTTPAccountBindings, string) {
+			return nil, nil, server.E3HandleTaskFenced
+		},
+		"execution_missing":     func(string) (*e2proxy.Execution, server.E2HTTPAccountBindings, string) { return nil, nil, "" },
+		"handle_not_configured": nil,
+		server.E3HandleExecutionStopped: func(string) (*e2proxy.Execution, server.E2HTTPAccountBindings, string) {
+			return nil, nil, server.E3HandleExecutionStopped
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			buf.Reset()
+			f := newE3HookFixture(t, false, nil)
+			c := f.confirmation(nil, e3HookAccounts(), nil)
+			c.handle = handle
+			if err := c.run(t.Context(), "9", func() {}); err != nil {
+				t.Fatal(err)
+			}
+			res, raw := readE3Result(t, f.runs)
+			if res.Status != e3contract.StatusDisabled || res.Reason != string(e3contract.DisabledNotWired) {
+				t.Fatalf("결과: %s", raw)
+			}
+			if !strings.Contains(buf.String(), "task 9 확정 단계에 E② 연결 없음: 사유="+name) {
+				t.Fatalf("사유 로그 없음: %q", buf.String())
+			}
+		})
 	}
 }
 
