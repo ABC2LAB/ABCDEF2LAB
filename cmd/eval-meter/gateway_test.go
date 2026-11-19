@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -754,6 +755,53 @@ func TestGatewaySealAfterTheTerminalEventIsMarked(t *testing.T) {
 	rows := h.waitRows(t, 1)
 	if len(rows) != 1 || rows[0].Decision != "cancelled_by_seal" || rows[0].UnfinishedEnd != sealEndAfterDone {
 		t.Fatalf("rows %+v", rows)
+	}
+}
+
+// 봉인 분류는 봉인이 그 요청의 최초 취소 원인일 때만이다(#735 리뷰). 호출자 문맥이 먼저 끝났으면 뒤에 봉인이 같은 문맥을
+// 취소해도 원인은 바뀌지 않는다.
+func TestCutBySealFollowsTheFirstCancellationCause(t *testing.T) {
+	parent, cancelParent := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancelCause(parent)
+	if cutBySeal(ctx) {
+		t.Fatal("not cancelled yet")
+	}
+	cancelParent() // 호출자가 먼저 끊음
+	cancel(errSealCut)
+	if cutBySeal(ctx) {
+		t.Fatal("caller-first cancellation was attributed to the seal")
+	}
+	ctx2, cancel2 := context.WithCancelCause(context.Background())
+	cancel2(errSealCut) // 봉인이 먼저 끊음
+	if !cutBySeal(ctx2) {
+		t.Fatal("seal-first cancellation was not attributed to the seal")
+	}
+}
+
+// 봉인된 게이트웨이에서도 호출자가 먼저 끊은 호출은 호출자 쪽 끊김(upstream_error)으로 마감한다. 마감 시점의 봉인 여부로
+// 분류하면 이 호출의 미확인 generation이 끊긴 호출 예외로 빠진다(#735 리뷰 재현).
+func TestSealedGatewayKeepsCallerFirstCutsAsUpstreamErrors(t *testing.T) {
+	h := newHarness(t, backendAPI)
+	h.g.mu.Lock()
+	h.g.sealed = true
+	h.g.inflight = 1
+	h.g.cancels[1] = func(error) {}
+	h.g.mu.Unlock()
+	row := llmRow{Seq: 1, Method: http.MethodPost, StartedAt: stamp(time.Now())}
+	rec := &statusRecorder{ResponseWriter: httptest.NewRecorder(), status: http.StatusOK}
+	scan := &idScanner{}
+	h.g.finish(1, true, false, &row, rec, scan, "")
+	if row.Decision != "upstream_error" || row.UnfinishedEnd != endClientClosedBeforeDone {
+		t.Fatalf("row %+v", row)
+	}
+	row2 := llmRow{Seq: 2, Method: http.MethodPost, StartedAt: stamp(time.Now())}
+	h.g.mu.Lock()
+	h.g.inflight = 1
+	h.g.cancels[2] = func(error) {}
+	h.g.mu.Unlock()
+	h.g.finish(2, true, true, &row2, rec, scan, "")
+	if row2.Decision != "cancelled_by_seal" || row2.UnfinishedEnd != sealEndBeforeDone {
+		t.Fatalf("row %+v", row2)
 	}
 }
 
