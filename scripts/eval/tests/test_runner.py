@@ -1176,6 +1176,7 @@ class TestCompleteRun(unittest.TestCase):
         spec = dataclasses.replace(make_spec(), cli_usage_names=("npx",))
         commands = ["mysql -u root -p synthsecret01 && npx run --password synthsecret02 --token=synthsecret03 -k synthsecret04",
                     "npx login --password '--synthsecret07-x'",  # 옵션 이름 모양의 별도 값(#736 리뷰)
+                    "npx login --password '&&|;synthsecret08<>'",  # 기호가 든 따옴표 값(#736 리뷰)
                     "PASSWORD=synthsecret05 npx thing",
                     'npx run "synthsecret06',  # 닫히지 않은 따옴표
                     "npx " + "a" * (64 * 1024)]
@@ -1189,7 +1190,8 @@ class TestCompleteRun(unittest.TestCase):
         self.assertNotIn("synthsecret", json.dumps(evidence.files))
         self.assertEqual(lines, [
             {"names": ["npx"], "shape": "<arg> -u <arg> -p <arg> && npx <arg> --<opt> <arg> --<opt>=<arg> -k <arg>"},
-            {"names": ["npx"], "shape": "npx <arg> --<opt> --<opt>"},
+            {"names": ["npx"], "shape": "npx <arg> --<opt> <arg>"},
+            {"names": ["npx"], "shape": "npx <arg> --<opt> <arg>"},
             {"names": ["npx"], "shape": "<arg> npx <arg>"},
             {"names": ["npx"], "shape": None, "withheld": "shape_unparseable"},
             {"names": ["npx"], "shape": None, "withheld": "shape_input_too_long"}])

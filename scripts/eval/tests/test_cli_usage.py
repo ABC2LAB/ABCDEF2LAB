@@ -14,7 +14,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cli_usage import (  # noqa: E402
-    FORMAT, MAX_OBSERVED_LINE_CHARS, MAX_OBSERVED_LINES, MAX_SHAPE_INPUT_BYTES, CliUsageError, clip_shape, command_shape, count_usage,
+    FORMAT, MAX_OBSERVED_LINE_CHARS, MAX_OBSERVED_LINES, MAX_SHAPE_INPUT_BYTES, CliUsageError, clip_shape, command_shape, count_usage, shell_tokens,
     normalize, not_found, observed_lines, pick_line,
     occurrences, tool_input_command, validate_names,
 )
@@ -134,6 +134,34 @@ class TestObservedShapes(unittest.TestCase):
             with self.subTest(command=command):
                 picked, _ = observed_lines([{"command": {"command": command}}], ["npx", "mysql"])
                 self.assertNotIn("synth", json.dumps(picked))
+
+    def test_only_unquoted_shell_operators_are_kept(self):
+        # 따옴표로 감싼 기호만의 값은 연산자가 아니라 문자열 인자다(#736 리뷰 재현: 25자 합성 비밀번호가 남던 것)
+        secret = "&&&|;;<><>&&&|;;<><>&&|<>"
+        self.assertEqual(len(secret), 25)
+        for command in (f"npx --password '{secret}'", f'npx --password "{secret}"', f"npx --password {secret[:2]}\\{secret[2:]}"):
+            with self.subTest(command=command):
+                picked, _ = observed_lines([{"command": {"command": command}}], ["npx"])
+                self.assertNotIn(secret, json.dumps(picked))
+                self.assertNotIn("&&&", json.dumps(picked))
+        self.assertEqual(command_shape(f"npx --password '{secret}'", ["npx"]), "npx --<opt> <arg>")
+        # 따옴표 안 '&&'는 연산자가 아니라 printf 인자다: npx가 별도 명령처럼 읽히지 않는다
+        self.assertEqual(command_shape("printf '%s' '&&' npx", ["npx"]), "<arg> <arg> <arg> npx")
+        self.assertEqual(command_shape("a && npx x || b; c | d >> f 2>&1 &", ["npx"]),
+                         "<arg> && npx <arg> || <arg> ; <arg> | <arg> >> <arg> <arg> >& <arg> &")
+        # 셸 연산자 목록 밖의 기호 묶음(따옴표 밖)은 가린다
+        self.assertEqual(command_shape("npx x ;;&| y &&& z", ["npx"]), "npx <arg> <op> <arg> <op> <arg>")
+        # 따옴표·역슬래시가 든 이름·옵션 모양 낱말도 문자열 인자다
+        self.assertEqual(command_shape("'npx' \\-x \"--long\"", ["npx"]), "<arg> <arg> <arg>")
+
+    def test_shell_tokens_follow_shell_quoting(self):
+        self.assertEqual(shell_tokens("a'b c'd \"e\\\"f\" g\\ h ''"),
+                         [("ab cd", True, False), ('e"f', True, False), ("g h", True, False), ("", True, False)])
+        self.assertEqual(shell_tokens('x "a\\nb" 2>&1'), [("x", False, False), ("a\\nb", True, False), ("2", False, False),
+                                                          (">&", False, True), ("1", False, False)])
+        for bad in ("a 'b", 'a "b', "a \\"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                shell_tokens(bad)
 
     def test_unparseable_and_long_commands_are_withheld(self):
         for command, reason in (('npx run "open', "shape_unparseable"), ("npx " + "a" * MAX_SHAPE_INPUT_BYTES, "shape_input_too_long")):

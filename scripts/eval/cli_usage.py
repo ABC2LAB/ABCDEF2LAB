@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import json
 import re
-import shlex
 from typing import Iterable, Mapping
 
 FORMAT = "abc2lab.cli-usage/v3"
@@ -136,7 +135,73 @@ LONG_OPTION = "--<opt>"
 # 실행됐는지 본다.
 _SHORT_FLAG = re.compile(r"-[A-Za-z]\Z")
 _LONG_FLAG = re.compile(r"--[^=\s]+(=.*)?\Z", re.DOTALL)
-_OPERATOR = re.compile(r"[;&|<>()]+\Z")
+_PUNCT = frozenset(";&|<>()")
+# 그대로 남기는 셸 연산자(따옴표 밖에서 기호 묶음으로 나온 것만). 그 밖의 기호 묶음은 UNKNOWN_OPERATOR로 가린다.
+_SHELL_OPERATORS = frozenset({";", "&", "&&", "|", "||", "|&", ";;", "<", ">", ">>", "<<", "<<<", "<&", ">&", "&>", "&>>", ">|",
+                              "<>", "(", ")"})
+UNKNOWN_OPERATOR = "<op>"
+
+
+def shell_tokens(line: str) -> list[tuple[str, bool, bool]]:
+    """한 줄을 셸 낱말로 나눈다: (낱말, 따옴표·역슬래시가 들었나, 따옴표 밖 기호 묶음인가). 작은따옴표·큰따옴표(안에서는 역슬래시
+    뒤 큰따옴표·역슬래시·달러·백틱만 탈출)·역슬래시를 셸처럼 다루고, 따옴표 밖 기호(;&|<>())는 이어진 묶음 하나로 끊는다(shlex punctuation_chars와 같은
+    경계). shlex는 따옴표를 떼어 '&&'와 && 를 가를 수 없어서 따로 둔다(#736 리뷰). 닫히지 않은 따옴표·끝 역슬래시는 ValueError."""
+    tokens: list[tuple[str, bool, bool]] = []
+    buf: list[str] = []
+    quoted = started = False
+
+    def flush() -> None:
+        nonlocal quoted, started
+        if started:
+            tokens.append(("".join(buf), quoted, False))
+        buf.clear()
+        quoted = started = False
+
+    i, n = 0, len(line)
+    while i < n:
+        c = line[i]
+        if c in " \t\n":
+            flush()
+            i += 1
+        elif c == "'":
+            end = line.find("'", i + 1)
+            if end < 0:
+                raise ValueError("unclosed quote")
+            buf.append(line[i + 1:end])
+            quoted = started = True
+            i = end + 1
+        elif c == '"':
+            i += 1
+            while i < n and line[i] != '"':
+                if line[i] == "\\" and i + 1 < n and line[i + 1] in '"\\$`':
+                    buf.append(line[i + 1])
+                    i += 2
+                else:
+                    buf.append(line[i])
+                    i += 1
+            if i >= n:
+                raise ValueError("unclosed quote")
+            quoted = started = True
+            i += 1
+        elif c == "\\":
+            if i + 1 >= n:
+                raise ValueError("trailing escape")
+            buf.append(line[i + 1])
+            quoted = started = True
+            i += 2
+        elif c in _PUNCT:
+            flush()
+            end = i
+            while end < n and line[end] in _PUNCT:
+                end += 1
+            tokens.append((line[i:end], False, True))
+            i = end
+        else:
+            buf.append(c)
+            started = True
+            i += 1
+    flush()
+    return tokens
 
 
 def clip_shape(line: str) -> str:
@@ -155,17 +220,23 @@ def pick_line(command: str, names: Iterable[str]) -> str:
 def command_shape(line: str, names: Iterable[str]) -> str | None:
     """한 줄의 모양. 셸 낱말로 나누지 못하면(닫히지 않은 따옴표 등) None이다(안전을 확인할 수 없어 남기지 않음)."""
     wanted = set(names)
-    lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|<>()")
-    lexer.whitespace_split = True
-    lexer.commenters = ""
     try:
-        tokens = list(lexer)
+        tokens = shell_tokens(line)
     except ValueError:
         return None
     out = []
-    for token in tokens:
+    for token, quoted, punct in tokens:
+        if punct:
+            # 따옴표 밖 기호 묶음만 연산자 후보다. 셸 연산자 목록에 있는 것만 그대로 두고, 그 밖의 묶음은 가린다(#736 리뷰).
+            out.append(token if token in _SHELL_OPERATORS else UNKNOWN_OPERATOR)
+            continue
+        if quoted:
+            # 따옴표·역슬래시가 든 낱말은 문자열 인자다. 기호·이름·옵션 모양이어도 그대로 두지 않는다(#736 리뷰: 따옴표로 감싼
+            # 기호 문자열이 연산자처럼 남거나 '&&'가 별도 명령처럼 읽힘).
+            out.append(ARG)
+            continue
         long_flag = _LONG_FLAG.match(token)
-        if token in wanted or _OPERATOR.match(token) or _SHORT_FLAG.match(token):
+        if token in wanted or _SHORT_FLAG.match(token):
             out.append(token)
         elif "/" in token and token.rsplit("/", 1)[1] in wanted:
             out.append("<path>/" + token.rsplit("/", 1)[1])
