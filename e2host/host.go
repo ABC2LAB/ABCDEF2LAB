@@ -11,10 +11,12 @@ import (
 
 	"github.com/Autumn-27/artex/e2checkpoint"
 	"github.com/Autumn-27/artex/e2proxy"
+	"github.com/Autumn-27/artex/e3contract"
 	"github.com/Autumn-27/artex/transmit"
 )
 
 var ErrUnavailable = errors.New("e2host: product audit host unavailable")
+var ErrEventMissing = errors.New("e2host: verified event missing")
 
 // Host는 보관소 접속과 감사 키를 실행 프로세스에 넘기지 않는다.
 type Host struct {
@@ -169,6 +171,48 @@ func (h *Host) remove(r *run) {
 
 // Session은 한 실행만 소유하며 Record 실패 뒤 같은 실행에서 재시도하지 않는다.
 type Session struct{ run *run }
+
+// Verified는 현재 저장소 head와 같은 저널 스냅샷에서 마지막 E③ 결과만 돌려준다.
+// 호출자 제공 참조나 이전 ACK는 현재성의 근거로 사용하지 않는다.
+func (s *Session) Verified(ctx context.Context, binding e3contract.RunBinding, ref e3contract.CallRef) (e2proxy.Event, error) {
+	if s == nil || s.run == nil || ctx == nil || binding.Validate() != nil ||
+		ref.CallRef == "" || ref.AttemptID == "" || ref.Sequence == 0 {
+		return e2proxy.Event{}, ErrUnavailable
+	}
+	r := s.run
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.owner.mu.Lock()
+	fenced := r.fenced
+	r.owner.mu.Unlock()
+	if r.closed || fenced || r.recorder == nil || r.ctx.Err() != nil ||
+		binding.RunRef != r.scope.RunRef || binding.TaskRef != r.scope.TaskRef ||
+		binding.E2PolicyRef != r.scope.PolicyRef {
+		return e2proxy.Event{}, ErrUnavailable
+	}
+	events, head, err := r.verifiedEvents(ctx)
+	if err != nil || head.Phase != e2checkpoint.Open || !allAttemptsFinished(events) {
+		return e2proxy.Event{}, ErrUnavailable
+	}
+	var latest e2proxy.Event
+	for _, event := range events {
+		if event.CallRef == ref.CallRef && event.Stage == "result" {
+			latest = event
+		}
+	}
+	if latest.Stage == "" {
+		return e2proxy.Event{}, ErrEventMissing
+	}
+	if latest.AttemptID != ref.AttemptID || latest.Sequence != ref.Sequence ||
+		latest.PolicyRevision != r.revision || latest.E3Audit == nil ||
+		latest.E3Audit.E3.JobRef != binding.JobRef ||
+		latest.E3Audit.E3.GenerationRef != binding.GenerationRef ||
+		latest.E3Audit.E3.InstanceRef != binding.InstanceRef ||
+		latest.E3Audit.E3.Policy != binding.Policy {
+		return e2proxy.Event{}, ErrUnavailable
+	}
+	return latest, nil
+}
 
 func (s *Session) Record(ctx context.Context, event e2proxy.Event) error {
 	if s == nil || s.run == nil || ctx == nil {

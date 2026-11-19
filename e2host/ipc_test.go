@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/Autumn-27/artex/e2checkpoint"
 	"github.com/Autumn-27/artex/e2proxy"
+	"github.com/Autumn-27/artex/e3contract"
 	"github.com/Autumn-27/artex/transmit"
 )
 
@@ -56,6 +58,99 @@ func TestClientUnknownACKStopsLaterEvents(t *testing.T) {
 	if got := <-count; got != 1 {
 		t.Fatal("예상 밖의 RPC 횟수", got)
 	}
+}
+
+func TestClientVerifiedReadsCurrentE3Result(t *testing.T) {
+	host, _, scope := fixture(t)
+	path := filepath.Join(t.TempDir(), "audit.sock")
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := listener.AcceptUnix()
+		if err == nil {
+			host.serveConn(ctx, conn, uint32(os.Geteuid()))
+		}
+	}()
+	client, err := OpenClient(ctx, path, scope, "revision-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Abort()
+	binding, intent, result := hostE3Events(scope)
+	if err := client.Record(ctx, intent); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Record(ctx, result); err != nil {
+		t.Fatal(err)
+	}
+	ref := e3contract.CallRef{CallRef: result.CallRef, AttemptID: result.AttemptID, Sequence: result.Sequence}
+	missing := ref
+	missing.CallRef = "missing-call"
+	if _, err := client.Verified(ctx, binding, missing); !errors.Is(err, ErrEventMissing) {
+		t.Fatal("없는 사건을 구분하지 못함", err)
+	}
+	got, err := client.Verified(ctx, binding, ref)
+	if err != nil || got.Index != result.Index || got.E3Audit == nil || got.E3Audit.SubjectDigest != result.E3Audit.SubjectDigest {
+		t.Fatal("소켓을 통한 현재 head 검증 실패", err)
+	}
+	client.Abort()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("Host 연결이 닫히지 않음")
+	}
+}
+
+func TestClientVerifiedUnknownACKFencesConnection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		reader := bufio.NewReader(conn)
+		var request message
+		if decodeLine(reader, &request) != nil || request.Operation != "open" ||
+			json.NewEncoder(conn).Encode(reply{OK: true}) != nil {
+			return
+		}
+		if decodeLine(reader, &request) != nil || request.Operation != "verified" {
+			return
+		}
+		// 요청을 받았지만 현재 head 확인 응답을 내지 못한 Host를 흉내 낸다.
+	}()
+	scope := transmit.Scope{TaskRef: "task-test", RunRef: "run-test", CaseRef: "case-test", ResetRef: "reset-test", PolicyRef: "policy-test"}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	client, err := OpenClient(ctx, path, scope, "revision-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Abort()
+	binding, _, result := hostE3Events(scope)
+	ref := e3contract.CallRef{CallRef: result.CallRef, AttemptID: result.AttemptID, Sequence: result.Sequence}
+	if _, err := client.Verified(ctx, binding, ref); !errors.Is(err, ErrUnavailable) {
+		t.Fatal("현재 head ACK 불명을 성공으로 처리", err)
+	}
+	if err := client.Record(ctx, hostEvent(scope)); !errors.Is(err, ErrUnavailable) {
+		t.Fatal("ACK 불명 뒤 기록 허용", err)
+	}
+	<-done
 }
 
 func TestDisconnectedHostSessionClosesOnlyCompleteAudit(t *testing.T) {

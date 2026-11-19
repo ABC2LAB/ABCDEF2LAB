@@ -13,19 +13,24 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/e2proxy"
+	"github.com/Autumn-27/artex/e3contract"
 	"github.com/Autumn-27/artex/transmit"
 )
 
 const maxMessage = 32 << 10
 
 type message struct {
-	Operation      string         `json:"operation"`
-	Scope          transmit.Scope `json:"scope,omitempty"`
-	PolicyRevision string         `json:"policy_revision,omitempty"`
-	Event          *e2proxy.Event `json:"event,omitempty"`
+	Operation      string                 `json:"operation"`
+	Scope          transmit.Scope         `json:"scope,omitempty"`
+	PolicyRevision string                 `json:"policy_revision,omitempty"`
+	Event          *e2proxy.Event         `json:"event,omitempty"`
+	Binding        *e3contract.RunBinding `json:"binding,omitempty"`
+	Ref            *e3contract.CallRef    `json:"ref,omitempty"`
 }
 type reply struct {
-	OK bool `json:"ok"`
+	OK      bool           `json:"ok"`
+	Missing bool           `json:"missing,omitempty"`
+	Event   *e2proxy.Event `json:"event,omitempty"`
 }
 
 func decodeLine(reader *bufio.Reader, target any) error {
@@ -99,24 +104,38 @@ func (h *Host) serveConn(ctx context.Context, conn *net.UnixConn, expectedUID ui
 			return
 		}
 		var actionErr error
+		var responseEvent *e2proxy.Event
 		switch request.Operation {
 		case "open":
-			if session != nil || request.Event != nil || request.PolicyRevision == "" {
+			if session != nil || request.Event != nil || request.Binding != nil || request.Ref != nil || request.PolicyRevision == "" {
 				actionErr = ErrUnavailable
 			} else {
 				session, actionErr = h.Open(ctx, request.Scope, request.PolicyRevision)
 			}
 		case "record":
-			if session == nil || request.Event == nil || request.Scope != (transmit.Scope{}) || request.PolicyRevision != "" {
+			if session == nil || request.Event == nil || request.Binding != nil || request.Ref != nil ||
+				request.Scope != (transmit.Scope{}) || request.PolicyRevision != "" {
 				actionErr = ErrUnavailable
 			} else {
 				actionErr = session.Record(ctx, *request.Event)
 			}
 		case "seal":
-			if session == nil || request.Event != nil || request.Scope != (transmit.Scope{}) || request.PolicyRevision != "" {
+			if session == nil || request.Event != nil || request.Binding != nil || request.Ref != nil ||
+				request.Scope != (transmit.Scope{}) || request.PolicyRevision != "" {
 				actionErr = ErrUnavailable
 			} else {
 				actionErr = session.Seal(ctx)
+			}
+		case "verified":
+			if session == nil || request.Event != nil || request.Scope != (transmit.Scope{}) ||
+				request.PolicyRevision != "" || request.Binding == nil || request.Ref == nil {
+				actionErr = ErrUnavailable
+			} else {
+				var event e2proxy.Event
+				event, actionErr = session.Verified(ctx, *request.Binding, *request.Ref)
+				if actionErr == nil {
+					responseEvent = &event
+				}
 			}
 		default:
 			actionErr = ErrUnavailable
@@ -124,7 +143,8 @@ func (h *Host) serveConn(ctx context.Context, conn *net.UnixConn, expectedUID ui
 		if request.Operation == "seal" && actionErr == nil {
 			sealed = true
 		}
-		if json.NewEncoder(conn).Encode(reply{OK: actionErr == nil}) != nil || actionErr != nil || request.Operation == "seal" {
+		response := reply{OK: actionErr == nil, Missing: errors.Is(actionErr, ErrEventMissing), Event: responseEvent}
+		if json.NewEncoder(conn).Encode(response) != nil || actionErr != nil && !response.Missing || request.Operation == "seal" {
 			return
 		}
 	}
@@ -157,8 +177,13 @@ func OpenClient(ctx context.Context, socket string, scope transmit.Scope, policy
 }
 
 func (c *Client) exchange(ctx context.Context, request message) error {
+	_, err := c.exchangeReply(ctx, request)
+	return err
+}
+
+func (c *Client) exchangeReply(ctx context.Context, request message) (reply, error) {
 	if c.failed || c.closed || ctx == nil || ctx.Err() != nil {
-		return ErrUnavailable
+		return reply{}, ErrUnavailable
 	}
 	deadline := time.Now().Add(20 * time.Second)
 	if userDeadline, ok := ctx.Deadline(); ok && userDeadline.Before(deadline) {
@@ -169,14 +194,37 @@ func (c *Client) exchange(ctx context.Context, request message) error {
 	defer stop()
 	if err := json.NewEncoder(c.conn).Encode(request); err != nil {
 		c.failed = true
-		return ErrUnavailable
+		return reply{}, ErrUnavailable
 	}
 	var response reply
-	if decodeLine(c.reader, &response) != nil || !response.OK || ctx.Err() != nil {
+	if decodeLine(c.reader, &response) != nil || ctx.Err() != nil || response.OK == response.Missing ||
+		request.Operation != "verified" && (response.Missing || response.Event != nil) ||
+		request.Operation == "verified" && (response.Missing && response.Event != nil || response.OK && response.Event == nil) {
 		c.failed = true
-		return ErrUnavailable
+		return reply{}, ErrUnavailable
 	}
-	return nil
+	if response.Missing {
+		return reply{}, ErrEventMissing
+	}
+	return response, nil
+}
+
+// Verified는 같은 Host 세션의 현재 head를 인증한 결과만 받는다.
+func (c *Client) Verified(ctx context.Context, binding e3contract.RunBinding, ref e3contract.CallRef) (e2proxy.Event, error) {
+	if c == nil {
+		return e2proxy.Event{}, ErrUnavailable
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	response, err := c.exchangeReply(ctx, message{Operation: "verified", Binding: &binding, Ref: &ref})
+	if err != nil {
+		return e2proxy.Event{}, err
+	}
+	if response.Event == nil {
+		c.failed = true
+		return e2proxy.Event{}, ErrUnavailable
+	}
+	return *response.Event, nil
 }
 
 func (c *Client) Record(ctx context.Context, event e2proxy.Event) error {

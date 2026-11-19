@@ -7,17 +7,21 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Autumn-27/artex/e2checkpoint"
 	"github.com/Autumn-27/artex/e2proxy"
+	"github.com/Autumn-27/artex/e3contract"
+	"github.com/Autumn-27/artex/oracle"
 	"github.com/Autumn-27/artex/transmit"
 	"github.com/Autumn-27/artex/transmit/budget"
 	"github.com/jackc/pgx/v5"
@@ -98,6 +102,108 @@ func hostSentEvents(scope transmit.Scope) (e2proxy.Event, e2proxy.Event) {
 	result.ResponseComplete = true
 	result.StatusCode = 200
 	return intent, result
+}
+
+func hostE3Events(scope transmit.Scope) (e3contract.RunBinding, e2proxy.Event, e2proxy.Event) {
+	intent, result := hostSentEvents(scope)
+	policy := e3contract.PolicySource{Kind: e3contract.PolicyProductDeclaration,
+		Ref: "declaration-host", DigestSHA256: strings.Repeat("a", 64), TargetApprovalRevision: "approval-host"}
+	binding := e3contract.RunBinding{JobRef: "job-host", RunRef: scope.RunRef, TaskRef: scope.TaskRef,
+		E2PolicyRef: scope.PolicyRef, GenerationRef: "generation-host", InstanceRef: "instance-host", Policy: policy}
+	audit := &e2proxy.E3Audit{Role: e3contract.RoleOwner, AccountLabel: "owner-a",
+		AccountBindingRef: "binding-a", E3: e2proxy.E3Binding{JobRef: binding.JobRef,
+			GenerationRef: binding.GenerationRef, InstanceRef: binding.InstanceRef, Policy: policy}}
+	intent.Program, result.Program = e2proxy.ProgramE3Identity, e2proxy.ProgramE3Identity
+	intent.IntentID, result.IntentID = 0, 0
+	intent.CommandRef, result.CommandRef = "", ""
+	intent.E3Audit = audit
+	complete := true
+	resultAudit := *audit
+	resultAudit.Normal = oracle.StateYes
+	resultAudit.RequestMarkerFree = &complete
+	resultAudit.BodyDigestSHA256 = strings.Repeat("b", 64)
+	resultAudit.BodyComplete = &complete
+	resultAudit.SubjectDigest = strings.Repeat("c", 64)
+	result.E3Audit = &resultAudit
+	return binding, intent, result
+}
+
+func TestHostVerifiedE3ResultUsesCurrentHead(t *testing.T) {
+	host, pool, scope := fixture(t)
+	session, err := host.Open(t.Context(), scope, "revision-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, intent, result := hostE3Events(scope)
+	if err := session.Record(t.Context(), intent); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Record(t.Context(), result); err != nil {
+		t.Fatal(err)
+	}
+	ref := e3contract.CallRef{CallRef: result.CallRef, AttemptID: result.AttemptID, Sequence: result.Sequence}
+	got, err := session.Verified(t.Context(), binding, ref)
+	if err != nil || got.Index != result.Index || got.E3Audit == nil ||
+		got.E3Audit.SubjectDigest != result.E3Audit.SubjectDigest {
+		t.Fatal("현재 결과 검증 실패", err)
+	}
+	other := ref
+	other.CallRef = "other-call"
+	if _, err := session.Verified(t.Context(), binding, other); !errors.Is(err, ErrEventMissing) {
+		t.Fatal("없는 호출을 현재 사건으로 반환", err)
+	}
+	other = ref
+	other.AttemptID = strings.Repeat("d", 32)
+	if _, err := session.Verified(t.Context(), binding, other); !errors.Is(err, ErrUnavailable) {
+		t.Fatal("다른 시도를 현재 호출로 반환", err)
+	}
+	wrong := binding
+	wrong.GenerationRef = "other-generation"
+	if _, err := session.Verified(t.Context(), wrong, ref); !errors.Is(err, ErrUnavailable) {
+		t.Fatal("다른 세대 결속을 수용", err)
+	}
+	if _, err := pool.Exec(`UPDATE e2_http_audit_epochs SET generation=generation+1 WHERE store_ref=$1`, host.epoch.StoreRef); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.Verified(t.Context(), binding, ref); !errors.Is(err, ErrUnavailable) {
+		t.Fatal("현재 epoch 변경 뒤 과거 사건 반환", err)
+	}
+}
+
+func TestHostVerifiedE3RejectsTamperAndChangedIntentBinding(t *testing.T) {
+	for _, name := range []string{"truncated_tail", "changed_account"} {
+		t.Run(name, func(t *testing.T) {
+			host, _, scope := fixture(t)
+			session, err := host.Open(t.Context(), scope, "revision-host")
+			if err != nil {
+				t.Fatal(err)
+			}
+			binding, intent, result := hostE3Events(scope)
+			if name == "changed_account" {
+				result.E3Audit.AccountLabel = "other-account"
+			}
+			if err := session.Record(t.Context(), intent); err != nil {
+				t.Fatal(err)
+			}
+			if err := session.Record(t.Context(), result); err != nil {
+				t.Fatal(err)
+			}
+			if name == "truncated_tail" {
+				path := filepath.Join(session.run.directory, "events.jsonl")
+				info, err := os.Stat(path)
+				if err != nil {
+					t.Fatal("저널 반례 준비 실패", err)
+				}
+				if err := os.Truncate(path, info.Size()-1); err != nil {
+					t.Fatal("저널 끝 삭제 실패", err)
+				}
+			}
+			ref := e3contract.CallRef{CallRef: result.CallRef, AttemptID: result.AttemptID, Sequence: result.Sequence}
+			if _, err := session.Verified(t.Context(), binding, ref); !errors.Is(err, ErrUnavailable) {
+				t.Fatal("깨진 감사 또는 intent 결속을 E③ 근거로 반환", err)
+			}
+		})
+	}
 }
 
 func TestHostUnfinishedSendCannotSealOrRecover(t *testing.T) {
