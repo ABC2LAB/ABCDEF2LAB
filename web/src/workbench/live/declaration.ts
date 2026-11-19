@@ -11,6 +11,8 @@
 
 import { ApiError, apiFetch } from "@/lib/diagnosis/api";
 
+import { type CredentialFormKind, credentialForms, MAX_BODY_TEMPLATE_BYTES } from "./credentialForms";
+
 /** 정책 선언 레코드 형식 판(e3contract.DeclarationVersion). */
 export const DECLARATION_VERSION = "e3-product-declaration/v1";
 /** 조회 경로 틀의 객체 ID 자리(e3contract.IDPlaceholder). 한 경로에 정확히 한 번. */
@@ -243,21 +245,31 @@ export function hasCredentialText(v: string): boolean {
  */
 export function credentialFields(d: DeclarationDraft): string[] {
   const out: string[] = [];
-  const check = (field: string, v: string) => {
-    if (hasCredentialText(v) && !out.includes(field)) out.push(field);
+  // 서버처럼 원문과 함께 이스케이프를 푼 모양도 본다(본문 틀은 JSON·form 으로, 경로는 퍼센트 인코딩을 풀어 — credentialForms.ts)
+  const check = (field: string, v: string, kind: CredentialFormKind = "plain") => {
+    if (v === "" || out.includes(field)) return;
+    let found: boolean;
+    try {
+      found = credentialForms(v, kind).some(hasCredentialText);
+    } catch (err) {
+      // 검사하지 못한 칸은 자격이 없다고 볼 수 없으니 저장을 막는다(렌더링 중 예외로 화면이 깨지지 않게도, #754 리뷰)
+      console.warn("선언 칸 자격 검사 실패", field, err instanceof Error ? err.name : "unknown");
+      found = true;
+    }
+    if (found) out.push(field);
   };
-  check("identity.path", d.identity.path);
+  check("identity.path", d.identity.path, "path");
   check("identity.subjectIdPath", d.identity.subjectIdPath);
   d.types.forEach((t, i) => {
     const at = `types.${i}`;
     check(`${at}.type`, t.type);
     if (t.sharing === "shared") return;
     for (const f of t.ownerOnlyFields) check(`${at}.ownerOnlyFields`, f);
-    check(`${at}.create.path`, t.create.path);
-    check(`${at}.create.bodyTemplate`, t.create.bodyTemplate);
+    check(`${at}.create.path`, t.create.path, "path");
+    check(`${at}.create.bodyTemplate`, t.create.bodyTemplate, t.create.bodyKind);
     check(`${at}.create.markerField`, t.create.markerField);
     check(`${at}.create.idPath`, t.create.idPath);
-    check(`${at}.read.pathTemplate`, t.read.pathTemplate);
+    check(`${at}.read.pathTemplate`, t.read.pathTemplate, "path");
     check(`${at}.read.dataPath`, t.read.dataPath);
     check(`${at}.read.statusPath`, t.read.statusPath);
     check(`${at}.read.normalValue`, t.read.normalValue);
@@ -328,20 +340,26 @@ function validateType(t: TypeDraft, at: string, issues: DraftIssue[]): void {
     bad("create.path", "생성 경로는 {id} 없는 절대 경로입니다(query · # · 공백 · 점 조각 불가).");
   if (c.method !== "POST" && c.method !== "PUT") bad("create.method", "생성 메서드는 POST 또는 PUT 입니다.");
   if (!isFieldPath(c.idPath)) bad("create.idPath", "생성 응답의 객체 ID 위치(JSON 경로)를 적으세요.");
-  if (c.bodyKind === "json") {
+  // 크기 상한을 먼저 본다(서버 Validate create.body_template). 넘는 틀은 풀어 보지 않는다 — 아래 모양 검사가 재귀라
+  // 편집 중인 아주 깊은 틀에서 스택이 넘치지 않게(#754 리뷰)
+  const tooLong = utf8Length(c.bodyTemplate) > MAX_BODY_TEMPLATE_BYTES;
+  if (tooLong) bad("create.bodyTemplate", `본문 틀은 ${MAX_BODY_TEMPLATE_BYTES}바이트 이하입니다.`);
+  // 크기가 넘으면 크기 오류 하나만 알린다(아래 모양 검사는 하지 않음)
+  if (c.bodyKind !== "json" && c.bodyKind !== "form") bad("create.bodyKind", "본문 모양은 JSON 또는 form 입니다.");
+  else if (!tooLong && c.bodyKind === "json") {
     const obj = parseJsonTemplate(c.bodyTemplate);
     if (!obj) bad("create.bodyTemplate", "JSON 본문 틀은 JSON 객체여야 합니다.");
     // 표식 칸이 틀에 이미 있으면 덮어쓰는지 남기는지 모호하다. 맨 위 칸만 본다(중첩 칸은 프로그램이 만든다 — Go 와 같음)
     else if (!c.markerField.includes(".") && Object.hasOwn(obj, c.markerField))
       bad("create.bodyTemplate", "본문 틀에 표식 칸이 이미 있습니다. 표식 칸은 비워 두세요(프로그램이 넣습니다).");
-  } else if (c.bodyKind === "form") {
+  } else if (!tooLong && c.bodyKind === "form") {
     const pairs = parseFormTemplate(c.bodyTemplate);
     if (!pairs || c.markerField.includes("."))
       bad("create.bodyTemplate", "form 본문 틀이 형식 밖이거나 표식 칸에 점(.)이 있습니다.");
     else if (pairs.some(([k]) => k === c.markerField))
       bad("create.bodyTemplate", "본문 틀에 표식 칸이 이미 있습니다. 표식 칸은 비워 두세요(프로그램이 넣습니다).");
-  } else bad("create.bodyKind", "본문 모양은 JSON 또는 form 입니다.");
-  const secrets = secretFieldsInTemplate(c.bodyKind, c.bodyTemplate);
+  }
+  const secrets = tooLong ? [] : secretFieldsInTemplate(c.bodyKind, c.bodyTemplate);
   if (secrets.length)
     bad(
       "create.bodyTemplate",

@@ -114,12 +114,48 @@ function crawlPill(flow: WorkflowSnapshot, verified: boolean): string {
 }
 /**
  * 탐색 막대 % — 실제 방문 수 ÷ 페이지 상한(서버 진행률 아님). 첫 탐색 단계가 끝났다는 initial_completed 는 완전 탐색을
- * 보장하지 않아(부분 완료 · 상한 소진에서도 true) 막대에 섞지 않는다 (리뷰 #479). 서버가 탐색을 끝까지 마쳤다고 할 때
- * (exploration_status COMPLETED — 부분 완료면 PARTIAL 이라 여기 들지 않음)만 찾은 링크를 다 돈 것이라 끝까지 채운다.
+ * 보장하지 않아(부분 완료 · 상한 소진에서도 true) 막대에 섞지 않는다 (리뷰 #479). 완료 상태도 실제 방문 비율을 알린다.
  */
 export function crawlPct(flow: WorkflowSnapshot): number {
-  if (exploreCompleted(flow)) return 100;
   return Math.min(100, Math.round((flow.counts.visited / Math.max(1, flow.limits.max_pages)) * 100));
+}
+/**
+ * 자산 탐색 화면 막대 (사용자 11/18): 탐색 중엔 페이지 상한 대비 방문 비율. 탐색이 끝나면 끝까지 채운다 — 서버가 완료
+ * (COMPLETED)라고 하면 초록, 아니면(부분 완료 · 중지 · 상태 없음) 주황. 끝난 뒤 상한 대비 몇 %만 남은 막대가 진행이 멈춘
+ * 것처럼 보여서다. 주황은 다 돌았다는 뜻이 아니다(리뷰 #479) — 색과 aria 글 · 아래 '탐색 상태' 글이 부분 완료를 말하고,
+ * 실제 방문 수는 aria 글에 남긴다.
+ */
+export function crawlBar(flow: WorkflowSnapshot): {
+  /** 막대에 채우는 너비(%). 끝난 모양은 100 */
+  fill: number;
+  /** 페이지 상한 대비 실제 방문 비율(%) — aria-valuenow (#709 리뷰: 끝난 모양이어도 값은 실제 비율) */
+  pct: number;
+  tone: "run" | "ok" | "part";
+  text: string;
+  /** 완료가 아닌 끝: 화면 '탐색 상태' 글 (상태가 없으면 '완료 확인 안 됨', #709 리뷰) */
+  ended: string | null;
+} {
+  const pct = crawlPct(flow);
+  if (exploreCompleted(flow))
+    return {
+      fill: 100,
+      pct,
+      tone: "ok",
+      text: `탐색 완료 · 방문 ${flow.counts.visited} / 페이지 상한 ${flow.limits.max_pages}`,
+      ended: null,
+    };
+  if (flow.stage !== "crawling" && flow.initial_completed) {
+    const st = exploreState(flow);
+    const what = st && st.status !== "RUNNING" ? st.text : "완료 확인 안 됨";
+    return {
+      fill: 100,
+      pct,
+      tone: "part",
+      text: `탐색 끝 · ${what} · 방문 ${flow.counts.visited} / 페이지 상한 ${flow.limits.max_pages}`,
+      ended: what,
+    };
+  }
+  return { fill: pct, pct, tone: "run", text: `${pct}% · 페이지 상한 대비 방문`, ended: null };
 }
 /** 서버가 탐색을 끝까지 마쳤다고 했는가 (exploration_status COMPLETED). */
 function exploreCompleted(flow: WorkflowSnapshot): boolean {
@@ -937,6 +973,8 @@ export function WorkflowCrawlLive() {
   const ready = verified && !!flow?.initial_completed;
   const crawling = flow?.stage === "crawling";
   const explore = flow ? exploreState(flow) : null;
+  // 막대는 아래 flow 가 있을 때만 그린다(없을 때 값은 쓰이지 않음)
+  const bar = flow ? crawlBar(flow) : { fill: 0, pct: 0, tone: "run" as const, text: "", ended: null };
   // 탐색 단계에서는 GET 만 보낸다(서버 Controller.Before). 심화 점검이 시작되면 보낸 요청에 그 요청도 들어간다
   const readOnly = !!flow && flow.deep_runs === 0 && (crawling || flow.stage === "awaiting_selection");
   // 탐색 줄: 탐색 중이면 새로 찾은 경로('… 찾음', 같은 조회에서 여럿이면 '외 N개'), 끝났으면 '탐색을 마쳤습니다'.
@@ -1005,29 +1043,28 @@ export function WorkflowCrawlLive() {
                     {nowLine}
                   </div>
                 ) : null}
-                {/* 탐색 진행: 서버에 진행률이 없어 페이지 상한 대비 방문 수로 그린다 (리뷰 #479). 서버가 탐색 완료라고
-                    하면 끝까지 채운다 */}
+                {/* 탐색 진행: 서버에 진행률이 없어 탐색 중엔 페이지 상한 대비 방문 수로 그린다 (리뷰 #479). 끝나면 끝까지
+                    채우고 완료는 초록 · 부분 완료 등은 주황 (crawlBar) */}
                 <div
-                  className={s.prog}
+                  className={cx(s.prog, bar.tone === "ok" && s["prog-ok"], bar.tone === "part" && s["prog-part"])}
                   id="cBar"
                   role="progressbar"
                   aria-label="탐색 진행 (페이지 상한 대비 방문)"
                   aria-valuemin={0}
                   aria-valuemax={100}
-                  aria-valuenow={crawlPct(flow)}
-                  aria-valuetext={
-                    explore?.status === "COMPLETED" ? "100% · 탐색 완료" : `${crawlPct(flow)}% · 페이지 상한 대비 방문`
-                  }
+                  aria-valuenow={bar.pct}
+                  aria-valuetext={bar.text}
                 >
-                  <i style={{ width: `${crawlPct(flow)}%` }} />
+                  <i style={{ width: `${bar.fill}%` }} />
                 </div>
                 {/* 탐색 중 · 탐색 완료는 상태 알약이 말하므로 적지 않는다. 부분 완료 · 중지 · 탐색 안 함은 알약
                     ('탐색 완료 · 확인 대기')만으로 다 돌지 못한 걸 알 수 없어 사유와 함께 남긴다(절대규칙 5) */}
-                {explore && explore.status !== "RUNNING" && explore.status !== "COMPLETED" ? (
+                {/* 끝났는데 완료가 아니면(주황 막대) 상태를 글로 — 서버 상태가 없으면 '완료 확인 안 됨'(#709 리뷰) */}
+                {bar.ended || (explore && explore.status !== "RUNNING" && explore.status !== "COMPLETED") ? (
                   <div className={s.pmeta}>
                     <span>
                       탐색 상태{" "}
-                      <b>{`${explore.text}${explore.reason && EXPLORE_REASON_TEXT[explore.reason] ? ` · ${EXPLORE_REASON_TEXT[explore.reason]}` : ""}`}</b>
+                      <b>{`${bar.ended ?? explore?.text ?? ""}${explore?.reason && EXPLORE_REASON_TEXT[explore.reason] ? ` · ${EXPLORE_REASON_TEXT[explore.reason]}` : ""}`}</b>
                     </span>
                   </div>
                 ) : null}

@@ -36,7 +36,9 @@ from manifest import Engine, ManifestError, RunManifest, load_manifests  # noqa:
 from scoreboard import SnapshotError  # noqa: E402
 
 from e2_prompt_identity import PROMPT_FIELDS, PromptIdentityError, condition_prompt_identity  # noqa: E402
-from isolation_proof import E2_DECLARED_PROPOSED, E2_PRODUCT_FAILURE, E2_SPLIT_PRODUCT, EXECUTION_SYNTHETIC, PURPOSE_OFFICIAL  # noqa: E402
+from isolation_proof import (  # noqa: E402
+    E2_DECLARED_PROPOSED, E2_PRODUCT_FAILURE, E2_SPLIT_PRODUCT, EXECUTION_SYNTHETIC, PURPOSE_OFFICIAL, PURPOSE_WIRING_CHECK,
+)
 from run_record import (  # noqa: E402
     OFFICIAL_E3_DISABLED_REASON, V1, V11, RunInputs, RunRecordError, load_run_inputs, read_runner_key,
 )
@@ -191,6 +193,9 @@ def score_run(
     # 거치므로 같이 막힌다. 판단불가로 바꿔 넣지 않고 거부한다(분모가 조용히 바뀌지 않게).
     if inputs.execution_source == EXECUTION_SYNTHETIC:
         raise ComparabilityError(f"합성 실행 회차는 채점하지 않음({run}, execution_source={EXECUTION_SYNTHETIC})")
+    # 배선 확인 회차는 실행 출처와 상관없이 채점하지 않는다(설계안 §8 3번: 별도 목적으로 서명하고 채점기가 거부).
+    if inputs.purpose == PURPOSE_WIRING_CHECK:
+        raise ComparabilityError(f"배선 확인 회차는 채점하지 않음({run}, purpose={PURPOSE_WIRING_CHECK})")
     if inputs.judgments_collected:
         parsed = _VERDICT_ADAPTERS[manifest.engine](manifest, correlate, inputs.records)
     else:

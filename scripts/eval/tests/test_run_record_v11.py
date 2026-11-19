@@ -877,6 +877,23 @@ class TestComparison(_V11):
         self.assertEqual(self.inputs(declared).execution_source, "model_run")
         self.assertEqual(self.inputs(self.v11("m2")).execution_source, "model_run")
         build_report(self.load([self.v11("m0"), declared]), self.correlate, self.correlatable, runner_key=self.runner_key)
+
+    def test_wiring_check_runs_are_refused_even_with_a_real_model(self):
+        # 배선 확인 목적(설계안 §8 3번): 격리 검증은 통과하고, 실행 출처가 실제 모델이어도 채점기·비교 표가 거부한다.
+        # 분리 배치 O 기록은 E② 자리가 split_product다(#746)
+        wiring = lambda rows: (row_of(rows, "run_conditions").update(purpose="wiring_check", split=True,
+                                                                     path_key_ref="0123456789abcdef", goal_common_sha256="7" * 64),
+                               row_of(rows, "e2_placement").update(mode="split_product"))
+        run = self.v11("w1", tamper_rows=wiring)
+        self.assertEqual(self.inputs(run).purpose, "wiring_check")
+        # 직접 배치(분리 배치 표시 없음·경로 키 없음) 배선 확인 기록은 격리 검증이 거부한다(러너 설정과 같은 제약, #747 리뷰)
+        self.reject("wiring_check는 분리 배치 회차에만", "w9",
+                    tamper_rows=lambda rows: row_of(rows, "run_conditions").update(purpose="wiring_check"))
+        with self.assertRaisesRegex(ComparabilityError, "배선 확인 회차는 채점하지 않음"):
+            score_run(self.load([run])[0], self.correlate, runner_key=self.runner_key, correlatable=self.correlatable)
+        with self.assertRaisesRegex(ComparabilityError, "배선 확인 회차는 채점하지 않음"):
+            build_report(self.load([self.v11("w0"), self.v11("w2", repeat_index=1, tamper_rows=wiring)]), self.correlate,
+                         self.correlatable, runner_key=self.runner_key)
         # 세 선택 칸(분리 배치 표시·경로 키 지문·실행 출처)은 함께 검증·전달되고, 합성이면 키가 같아도 표가 거부한다(#707 리뷰)
         both = self.v11("sx", tamper_rows=lambda rows: (row_of(rows, "run_conditions").update(
             split=True, path_key_ref="0123456789abcdef", execution_source="synthetic_fixture"),

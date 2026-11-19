@@ -22,6 +22,7 @@ import { SEVL } from "../../data/findings";
 import { cx } from "../../lib/cx";
 import { fetchCoverage } from "../../live/api";
 import { clockOf, fmtDur, planState, sevKey } from "../../live/map";
+import { maskSecrets } from "../../live/mask";
 import { NotYet, useNow } from "../../live/parts";
 import {
   runDurationMissingWhy,
@@ -47,7 +48,7 @@ import { flowStageText, type WorkflowSnapshot } from "../../live/workflow";
 import { useShell } from "../../shell";
 import { useWb } from "../../store";
 import { Icon } from "../../ui/icons";
-import { InspHead, Isec, Kv } from "../../ui/parts";
+import { HelpTip, InspHead, Isec, Kv } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import type { Approvals } from "./approvals";
 import { UrlNotices, UrlPill, UrlRefreshButton } from "./urlParts";
@@ -272,6 +273,11 @@ export function JobRow({
   );
 }
 
+/** 시험 계정 표시 이름: 라벨 순으로 계정 A · B · C …(26개를 넘으면 번호). */
+function accountName(i: number): string {
+  return i < 26 ? `계정 ${String.fromCharCode(65 + i)}` : `계정 ${i + 1}`;
+}
+
 /** 갈 화면 → 버튼 글 (시안: 진행 화면 열기 · 이어서 보기 · 보고서 열기). */
 const OPEN_TEXT = {
   live: "진행 화면 열기",
@@ -321,13 +327,15 @@ function summaryHead(
     };
   }
   const pill = <UrlPill job={job} verified={verified} />;
-  if (!result) return { eyebrow: "끝난 점검", title: urlStateText(job.state, verified), chips: pill };
+  // 끝난 점검은 머리 글(eyebrow)에 '끝난 점검'을 적지 않고 대상 주소만 둔다(사용자 11/18)
+  if (!result) return { eyebrow: "", title: urlStateText(job.state, verified), chips: pill };
   const c = result.counts;
   const und = c.not_executed + c.unknown;
+  // 발견이 있어도 제목에 '발견 n건'을 적지 않는다(사용자 11/18) — 위험도 딱지 · 판정 줄이 말한다
   if (c.confirmed + c.review > 0)
     return {
-      eyebrow: "끝난 점검",
-      title: `발견 ${result.found.length}건`,
+      eyebrow: "",
+      title: urlStateText(job.state, verified),
       chips: (
         <>
           {topSev(result.found).map(([k]) => (
@@ -341,7 +349,7 @@ function summaryHead(
     };
   if (und > 0) return { eyebrow: "결과 확인", title: `판단 불가 ${und}건`, chips: pill };
   return {
-    eyebrow: "끝난 점검",
+    eyebrow: "",
     title: result.kinds.includes("clean") ? "발견 없음" : urlStateText(job.state, verified),
     chips: pill,
   };
@@ -387,7 +395,7 @@ export function JobSummary({
   if (flow) stageText = flowStageText[flow.stage];
   else if (job) stageText = urlStateText(job.state, verified);
   const profile = cap.kind === "v2" ? cap.catalog.profiles.find((p) => p.id === handle.input.profile_id) : undefined;
-  const outcomeText = job ? urlOutcomeText(job) : "";
+  const outcomeText = job ? urlOutcomeText(job, "compact") : "";
   const pending = approvals?.length ?? 0;
   // 지금 하는 일 (시안 진행 중 상세): 진행 중인 계획 → 지금 보는 경로 → 단계 순으로 서버 값만
   const nowText = flow?.plan?.find((p) => planState(p.state).row === "run")?.title ?? flow?.current_path ?? null;
@@ -431,7 +439,8 @@ export function JobSummary({
     ["분석 모델", profile ? profile.model_label : handle.input.profile_id],
     ["진단 모드", MODE_TEXT[handle.input.workflow_mode ?? "none"]],
     ...(ended ? [] : [["단계", stageText] as const]),
-    ["실제 task", job?.task_id ? `#${job.task_id}` : "아직 없음"],
+    // 서버가 이 점검을 실제로 돌릴 때 붙인 작업 번호(task). 끝난 점검이 많아져도 목록 줄과 같은 번호로 가린다(사용자 11/18)
+    ["작업", job?.task_id ? `#${job.task_id}` : "아직 없음"],
     ...(flow ? [["보낸 요청", `${flow.counts.sent}건`] as const] : []),
     ...(outcomeText ? [["실행 결과", outcomeText] as const] : []),
   ];
@@ -463,7 +472,7 @@ export function JobSummary({
       <InspHead
         eyebrow={
           <>
-            {`${head.eyebrow} · `}
+            {head.eyebrow ? `${head.eyebrow} · ` : null}
             <span className={s.host}>{host}</span>
           </>
         }
@@ -475,23 +484,24 @@ export function JobSummary({
           <p>{nowText ?? stageText}</p>
         </Isec>
       ) : null}
-      {handle.kind === "recovered" ? (
-        <Isec>
-          <p className={s.help}>
-            서버에서 다시 찾은 점검입니다. 상태·활동·보고서를 읽을 수 있습니다. 새 진단은 ‘새 점검’에서 별도로 만드세요.
-          </p>
-        </Isec>
-      ) : null}
+      {/* 서버에서 다시 찾은 점검 안내 글은 뺐다(사용자 11/18) */}
       <Isec t="점검 정보">
         <Kv rows={rows} />
       </Isec>
       {job?.account_auth ? (
         <Isec t="시험 계정 인증">
-          <Kv rows={urlAccountAuthRows(job.account_auth)} />
-          <p className={s.help}>
-            인증하지 못한 계정은 비인증으로 진행한 것입니다. 그 계정 기준 인가 결과는 ‘접근 차단 확인’이 아니라
-            ‘비인증으로 확인 안 됨’입니다.
-          </p>
+          <Kv
+            rows={urlAccountAuthRows(job.account_auth).map(
+              ([label, result], i) =>
+                [
+                  <span key={label} className={s.tipline}>
+                    {accountName(i)}
+                    <HelpTip label={`${accountName(i)} 서버 라벨 보기`}>서버 라벨: {maskSecrets(label)}</HelpTip>
+                  </span>,
+                  result,
+                ] as const,
+            )}
+          />
         </Isec>
       ) : null}
       <Isec>
@@ -510,7 +520,6 @@ export function JobSummary({
           {ended ? again : open}
           {ended ? open : null}
         </div>
-        {ended ? <p className={s.help}>다시 점검은 별도 새 진단입니다. 이전 회차는 서버 목록에 보존됩니다.</p> : null}
         <UrlNotices />
         {uncertain || error ? (
           <div className={s.acts}>

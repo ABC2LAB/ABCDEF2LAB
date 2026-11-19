@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { URLDiagnosisJob } from "@/lib/diagnosis/diagnosis-url";
@@ -169,6 +169,89 @@ describe("UrlFindingLive (단독 발견 상세 · 저장 결과)", () => {
     fireEvent.click(await screen.findByRole("button", { name: /다시/ }));
     expect(await screen.findByRole("region", { name: "발견 상세 페이지" })).toBeInTheDocument();
     expect(a.fetchRemediation).toHaveBeenCalledTimes(2);
+  });
+
+  it("'증거 / PoC' 칸 맨 밑 'PoC 복사'는 단계 · 요청 · 응답 증거를 가린 글로 복사한다", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    const step = {
+      task_id: 42,
+      entry_id: "candidate-1",
+      id: `step-${"b".repeat(24)}`,
+      number: 1,
+      title: "계정 B로 계정 A 주문 조회",
+      source_step_id: "cross-read",
+      run_ref: "run-1",
+      call_ref: "",
+      evidence_ref: "cross-proof",
+      evidence_version: 1,
+      evidence_digest: "e".repeat(64),
+      binding_digest: "b".repeat(64),
+      observed_at: "2026-11-09T12:10:00Z",
+      method: "GET",
+      path: "/api/orders/2",
+      prerequisites: "시험 계정 A · B",
+      observation: "200 응답에 계정 A 주문",
+      truncated: false,
+      capture: { status: "not_captured" as const },
+    };
+    a.fetchRemediation.mockResolvedValue({
+      task_id: 42,
+      entries: [
+        {
+          ...entry(1),
+          steps: [step],
+          evidence: JSON.stringify({ status: 200, headers: { Authorization: "Bearer synthetic-poc-token" } }),
+        },
+      ],
+    });
+    pickFinding("42", "candidate-1");
+    mount();
+    const page = await screen.findByRole("region", { name: "발견 상세 페이지" });
+    fireEvent.click(within(page).getByRole("button", { name: "PoC 복사" }));
+    expect(await within(page).findByText("PoC 를 복사했습니다.")).toBeInTheDocument();
+    const text = writeText.mock.calls[0][0] as string;
+    expect(text).toMatch(/^저장된 근거 — 후보 1\n\[위험도 미평가 · 검토 필요\] ID candidate-1/);
+    expect(text).toContain("이 기록은 취약점 확정이 아닙니다.");
+    expect(text).toContain(
+      "Step 1. 계정 B로 계정 A 주문 조회\nGET /api/orders/2\n사전 조건: 시험 계정 A · B\n관찰: 200 응답에 계정 A 주문",
+    );
+    expect(text).toContain("요청 · 응답 증거:");
+    // 화면처럼 가린 글만 — 토큰 값 · 스크린샷 안내 글은 없다
+    expect(text).not.toContain("synthetic-poc-token");
+    expect(text).not.toContain("스크린샷");
+    vi.unstubAllGlobals();
+  });
+
+  it("'PoC 복사'는 엔티티로 키를 숨긴 응답 증거 값도 클립보드에 남기지 않는다 (#677 fixture · #709 리뷰)", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    const hidden = "&#112;&#97;&#115;&#115;&#119;&#111;&#114;&#100;";
+    a.fetchRemediation.mockResolvedValue({
+      task_id: 42,
+      entries: [
+        {
+          ...entry(1),
+          evidence: [
+            "HTTP/1.1 200 OK",
+            "Authorization: Bearer synthetic-poc-token",
+            `${hidden}=synthetic-entity-secret`,
+            `{"${hidden}":"synthetic-json-entity-secret"}`,
+          ].join("\n"),
+        },
+      ],
+    });
+    pickFinding("42", "candidate-1");
+    mount();
+    const page = await screen.findByRole("region", { name: "발견 상세 페이지" });
+    fireEvent.click(within(page).getByRole("button", { name: "PoC 복사" }));
+    expect(await within(page).findByText("PoC 를 복사했습니다.")).toBeInTheDocument();
+    const text = writeText.mock.calls[0][0] as string;
+    expect(text).not.toMatch(/synthetic-poc-token|synthetic-entity-secret|synthetic-json-entity-secret/);
+    // 붙여 넣은 앱이 풀 엔티티도 남지 않는다
+    expect(text).not.toContain("&#");
+    expect(text).toContain("HTTP/1.1 200 OK");
+    vi.unstubAllGlobals();
   });
 
   it("고른 발견이 없으면 부르지 않고 보고서로 안내한다", () => {

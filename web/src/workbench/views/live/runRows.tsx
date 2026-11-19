@@ -19,7 +19,9 @@ export function RunRow({ row, onPick }: { row: URLRunSummary; onPick?: () => voi
   const writeBusy = useUrl((st) => st.writeBusy);
   const { openInsp } = useShell();
   const named = !!row.display_name?.trim();
-  const approvalIssue = activeURLRun(row) && row.approval_status !== "not_revalidated";
+  const active = activeURLRun(row);
+  const approvalIssue = row.action_required && row.approval_status !== "not_revalidated";
+  const showStatus = active || row.action_required;
   return (
     <button
       type="button"
@@ -38,18 +40,31 @@ export function RunRow({ row, onPick }: { row: URLRunSummary; onPick?: () => voi
     >
       <span className={s.mk} aria-hidden="true" />
       <span className={s["r-main"]}>
-        <span className={s["r-host"]}>{maskSecrets(row.display_name?.trim() || row.id)}</span>
-        <span className={s["r-s"]}>
-          {named ? <span>{row.id}</span> : null}
-          <span>{urlPhaseLabels[row.phase]}</span>
-          <span>{runApprovalLabels[row.approval_status]}</span>
-          {row.action_required ? <span>확인 필요</span> : null}
-          {row.reason_code ? (
-            <span>
-              {Object.hasOwn(urlReasonLabels, row.reason_code) ? urlReasonLabels[row.reason_code] : "서버 사유 있음"}
+        {/* 이름 줄: '1. prep-…'처럼 작업 번호(서버 task) + 이름 (사용자 11/18). 끝난 점검이 많아져도 줄마다 구분되고 오른쪽
+            패널 '작업 #n'과 같은 번호다 */}
+        <span className={s["r-title"]}>
+          {row.task_id ? (
+            <span className={s["r-no"]}>
+              <span className={s["sr-only"]}>작업 </span>
+              {`${row.task_id}.`}
             </span>
           ) : null}
+          <span className={s["r-name"]}>{maskSecrets(row.display_name?.trim() || row.id)}</span>
         </span>
+        {/* 사람이 할 일이 남은 줄은 종료 여부와 관계없이 승인 상태와 확인 필요를 보인다. */}
+        {showStatus || named || row.reason_code ? (
+          <span className={s["r-s"]}>
+            {named ? <span>{row.id}</span> : null}
+            {active ? <span>{urlPhaseLabels[row.phase]}</span> : null}
+            {active || approvalIssue ? <span>{runApprovalLabels[row.approval_status]}</span> : null}
+            {row.action_required ? <span>확인 필요</span> : null}
+            {row.reason_code ? (
+              <span>
+                {Object.hasOwn(urlReasonLabels, row.reason_code) ? urlReasonLabels[row.reason_code] : "서버 사유 있음"}
+              </span>
+            ) : null}
+          </span>
+        ) : null}
       </span>
       <span className={s["r-side"]}>
         <span className={cx(s.pill, (row.state === "unknown" || approvalIssue) && s.wait)}>
@@ -117,11 +132,6 @@ export function RunListControls() {
         >
           {loading ? "다음 페이지 조회 중…" : "더 불러오기"}
         </button>
-      ) : null}
-      {page ? (
-        <span
-          className={s.help}
-        >{`조회 ${page.runs.length}건${page.more ? " · 다음 페이지 있음" : ""} · 활성 회차 우선·식별자순`}</span>
       ) : null}
     </div>
   );
