@@ -576,6 +576,38 @@ describe("PolicyDeclarationLive (객체 ID 출처, #757 · #766)", () => {
     expect(putCreate()).toMatchObject({ id_path: "", id_field: "title_id" });
   });
 
+  it("id_field 저장본에서 ID 칸을 다 지웠다 다시 쳐도 출처는 '요청 본문 칸'이고 id_field로 저장한다 (#775 리뷰)", async () => {
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [active(storedIdField())], [PUT_D("t1")]: [undefined] });
+    mount();
+    await pick("t1");
+    await screen.findByText(/선언자/);
+    expect(screen.getByLabelText(ID_SOURCE)).toHaveValue("field");
+    type(ID_NAME, "");
+    // 비운 순간에도 출처는 그대로(응답 경로로 떨어지지 않음)
+    expect(screen.getByLabelText(ID_SOURCE)).toHaveValue("field");
+    expect(screen.getByText("객체 ID — 요청 본문 칸")).toBeInTheDocument();
+    type(ID_NAME, "book_title");
+    expect(screen.getByLabelText(ID_SOURCE)).toHaveValue("field");
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "선언 저장" })));
+    expect(putCreate()).toMatchObject({ id_path: "", id_field: "book_title" });
+  });
+
+  it("응답 경로로 친 이름을 다 지웠다 다시 쳐도 출처는 '응답 경로'다", async () => {
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [NONE], [PUT_D("t1")]: [undefined] });
+    mount();
+    await pick("t1");
+    await screen.findByText(/아직 선언이 없습니다/);
+    fillValid();
+    type(ID_SOURCE, "field");
+    type(ID_SOURCE, "path");
+    type(ID_NAME, "");
+    expect(screen.getByLabelText(ID_SOURCE)).toHaveValue("path");
+    type(ID_NAME, "data.id");
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "선언 저장" })));
+    expect(putCreate()).toMatchObject({ id_path: "data.id" });
+    expect(putCreate()).not.toHaveProperty("id_field");
+  });
+
   it("둘 다 비었을 때도 고른 출처를 유지하고, 비운 채면 그 칸에 문제를 보이며 저장하지 않는다", async () => {
     serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [NONE] });
     mount();

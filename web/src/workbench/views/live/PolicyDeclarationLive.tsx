@@ -135,8 +135,13 @@ function TypeEditor({
   const setRead = (patch: Partial<TypeDraft["read"]>) => onChange({ ...t, read: { ...t.read, ...patch } });
   const owner = t.sharing === "owner_only";
   // 객체 ID 출처는 채워진 칸이 정한다. 둘 다 비었을 때만 운영자가 고른 쪽을 쓴다(선언에는 출처 칸이 따로 없다)
-  const [picked, setPicked] = useState<IdSource>("path");
-  const idSource = idSourceOf(t.create, picked);
+  const [picked, setPicked] = useState<IdSource>(() => idSourceOf(t.create, "path"));
+  // 채워진 칸(저장본에서 온 것이든 운영자가 친 것이든)의 출처를 고른 쪽으로 기억한다 — 칸 이름을 다 지웠다가 다시 쳐도 출처가
+  // '응답 경로'로 돌아가 id_field 이름이 id_path 로 들어가지 않게(#775 윤재상 리뷰). 렌더 중에 맞춰 같은 렌더에서 쓴다
+  const filled: IdSource | null =
+    t.create.idField !== "" || t.create.idPath !== "" ? idSourceOf(t.create, picked) : null;
+  if (filled && filled !== picked) setPicked(filled);
+  const idSource = idSourceOf(t.create, filled ?? picked);
   // 출처를 바꾸면 적던 이름을 옮긴다 — 두 칸이 같이 남지 않게(서버는 둘 다 있으면 거부)
   const pickIdSource = (next: IdSource) => {
     setPicked(next);
