@@ -192,7 +192,7 @@ func TestFrozenDeclarationDrivesConfirmationRun(t *testing.T) {
 	fake.Behaviors[e3fake.Key{Purpose: e3contract.PurposeIdentity, Role: e3contract.RoleOwner}] = e3fake.Behavior{SubjectID: "user-a"}
 	fake.Behaviors[e3fake.Key{Purpose: e3contract.PurposeIdentity, Role: e3contract.RoleCross}] = e3fake.Behavior{SubjectID: "user-b"}
 	// 세대·인스턴스 참조는 실행 시작처럼 지금 대상에서 발급한다(리셋 게이트가 확정 시작 때 다시 대조한다).
-	refs, err := r.issueTargetRefs(target.ID, rand.Reader)
+	refs, err := r.issueTargetRefs(target.ID, "job-e3", rand.Reader)
 	if err != nil || !refs.GenerationKnown || !refs.InstanceKnown {
 		t.Fatalf("세대·인스턴스 참조: %+v %v", refs, err)
 	}

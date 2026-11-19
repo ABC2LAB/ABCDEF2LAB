@@ -15,25 +15,29 @@ import (
 	"github.com/Autumn-27/artex/e3contract"
 )
 
-// E③ 세대·인스턴스 참조(E③↔E② v3 계약 §6, 결정 §5 0단계). 실행 시작 때 서버가 확인한 대상 상태로 발급해
-// runs/<job>/e3-target-refs.json에 한 번 쓰고, 확정 단계를 시작할 때 리셋 게이트가 지금 대상으로 다시 계산해 대조한다.
+// E③ 세대·인스턴스 참조(E③↔E② v3 계약 §6, 결정 §5 0단계, 규칙안 docs/e3-target-refs-rules.md). 실행 시작 때 서버가
+// 확인한 대상 상태로 발급해 runs/<job>/e3-target-refs.json에 한 번 쓰고, 확정 단계를 시작할 때 리셋 게이트가 지금 대상으로
+// 다시 계산해 대조한다.
 //
-//   - 세대: 대상 ID·origin·승인 판·승인 시각과 마지막 확정 쓰기 기록·리셋 확인. 대상을 다시 승인하거나, 우리 확정 쓰기가
-//     남거나, 리셋을 확인하면 바뀐다.
+//   - 세대: 대상 ID·origin·승인 판·승인 시각과 마지막 확정 쓰기 기록·리셋 확인, 그리고 그 회차(job). 대상을 다시
+//     승인하거나, 우리 확정 쓰기가 남거나, 리셋을 확인하면 바뀐다. 회차가 바뀌어도 바뀐다.
 //   - 인스턴스: 세대와, 실행이 고정한 접속 주소(고른 IP·주소 집합·포트)·TLS 공개 키(https). 같은 세대라도 주소나 키가
 //     바뀌면 바뀐다.
+//   - 회차 사이에는 재사용하지 않는다: 회차와 회차 사이에 대상이 이어졌는지 서버는 증명할 수 없다(확인 없는 리셋, 같은
+//     IP·TLS 키로 다시 만든 인스턴스, 다른 회차의 진단 쓰기). 그래서 같은 대상 상태여도 회차가 다르면 다른 참조다.
 //   - 모르면 새로 발급: 입력 중 하나라도 확인할 수 없으면 실행마다 새 난수 참조를 쓴다. 대조 때도 지금 상태를 확인하지
 //     못하면 바뀐 것으로 본다. 그래서 대상이 바뀌었는데 같은 참조가 남는 경우가 없다.
 //
-// 이동찬님 확인 항목: 대상 리셋·인스턴스 교체를 서버가 어떤 신호로 알게 할지(지금은 리셋 확인 기록과 주소·TLS 키뿐이라,
-// 같은 주소·키로 운영자 확인 없이 다시 만든 인스턴스는 같은 참조가 된다). 그 신호가 정해지면 입력에 더한다.
+// 한 회차 안에서 같은 IP·TLS 키로 운영자 확인 없이 인스턴스를 다시 만들면 서버는 알 수 없다(규칙안 §4: 확정 단계는 자기
+// 객체를 만들고 곧바로 읽으므로 그 경우 조회가 실패해 CONFIRMED가 나오지 않는다).
 const (
-	productTargetRefsFile     = "e3-target-refs.json"
-	productTargetRefsVersion  = "e3-target-refs/v1"
+	productTargetRefsFile = "e3-target-refs.json"
+	// v2: 참조가 회차(job)에 결속된다(v1은 회차를 섞지 않아 같은 대상 상태면 회차 사이에 같은 참조였다).
+	productTargetRefsVersion  = "e3-target-refs/v2"
 	productTargetRefsMaxBytes = 4096
 
-	productGenerationDomain = "e3-target-generation/v1"
-	productInstanceDomain   = "e3-target-instance/v1"
+	productGenerationDomain = "e3-target-generation/v2"
+	productInstanceDomain   = "e3-target-instance/v2"
 	// 참조 머리말. 아는 상태에서 나온 참조와 모르는 상태에서 새로 발급한 참조를 이름으로도 가른다.
 	productGenerationPrefix      = "gen-"
 	productInstancePrefix        = "inst-"
@@ -82,10 +86,11 @@ func (r *refHasher) ref(prefix string) string {
 	return prefix + hex.EncodeToString(sum[:])[:productTargetRefHexLen]
 }
 
-// productTargetGeneration은 대상 기록과 리셋 상태로 세대 참조를 만든다. 승인된 대상이 아니거나 승인 근거가 없으면 모른다.
-func productTargetGeneration(rec productTargetRecord, reset *productResetState) (string, bool) {
+// productTargetGeneration은 대상 기록·리셋 상태와 회차(job)로 세대 참조를 만든다. 승인된 대상이 아니거나 승인 근거가
+// 없거나 회차를 모르면 모른다.
+func productTargetGeneration(rec productTargetRecord, reset *productResetState, jobID string) (string, bool) {
 	t := rec.Target
-	if t.ID == "" || t.Origin == "" || t.State != "approved" || t.Revision == 0 || t.ApprovedAt.IsZero() {
+	if t.ID == "" || t.Origin == "" || t.State != "approved" || t.Revision == 0 || t.ApprovedAt.IsZero() || jobID == "" {
 		return "", false
 	}
 	h := newRefHasher(productGenerationDomain)
@@ -103,6 +108,8 @@ func productTargetGeneration(rec productTargetRecord, reset *productResetState) 
 			h.add("reset", reset.confirmedBy, timeString(reset.confirmedAt.UnixNano()))
 		}
 	}
+	// 회차 경계: 회차 사이 대상 연속성은 증명할 수 없으므로 같은 상태여도 회차가 다르면 다른 세대다(인스턴스도 따라 바뀜).
+	h.add("run", jobID)
 	return h.ref(productGenerationPrefix), true
 }
 
@@ -130,8 +137,8 @@ func uintString(v uint64) string {
 
 func timeString(v int64) string { return uintString(uint64(v)) }
 
-// currentTargetRefs는 지금 대상 상태의 참조다(잠금 안에서 읽는다). 대상이 없으면 둘 다 모른다.
-func (r *productTargetRegistry) currentTargetRefs(targetID string) (generation string, genKnown bool, instance string, instKnown bool) {
+// currentTargetRefs는 그 회차에서 본 지금 대상 상태의 참조다(잠금 안에서 읽는다). 대상이 없으면 둘 다 모른다.
+func (r *productTargetRegistry) currentTargetRefs(targetID, jobID string) (generation string, genKnown bool, instance string, instKnown bool) {
 	r.mu.Lock()
 	rec, ok := r.records[targetID]
 	var reset *productResetState
@@ -143,7 +150,7 @@ func (r *productTargetRegistry) currentTargetRefs(targetID string) (generation s
 	if !ok {
 		return "", false, "", false
 	}
-	generation, genKnown = productTargetGeneration(rec, reset)
+	generation, genKnown = productTargetGeneration(rec, reset, jobID)
 	if !genKnown {
 		return generation, false, "", false
 	}
@@ -151,9 +158,9 @@ func (r *productTargetRegistry) currentTargetRefs(targetID string) (generation s
 	return generation, genKnown, instance, instKnown
 }
 
-// issueTargetRefs는 실행 시작 때 참조를 발급한다. 모르는 참조는 random에서 새로 만든다(실행마다 다름).
-func (r *productTargetRegistry) issueTargetRefs(targetID string, random io.Reader) (productTargetRefs, error) {
-	gen, genKnown, inst, instKnown := r.currentTargetRefs(targetID)
+// issueTargetRefs는 실행(job) 시작 때 참조를 발급한다. 모르는 참조는 random에서 새로 만든다(실행마다 다름).
+func (r *productTargetRegistry) issueTargetRefs(targetID, jobID string, random io.Reader) (productTargetRefs, error) {
+	gen, genKnown, inst, instKnown := r.currentTargetRefs(targetID, jobID)
 	out := productTargetRefs{Version: productTargetRefsVersion, GenerationRef: gen, InstanceRef: inst,
 		GenerationKnown: genKnown, InstanceKnown: instKnown}
 	fresh := func(prefix string) (string, error) {
@@ -180,10 +187,10 @@ func (r *productTargetRegistry) issueTargetRefs(targetID string, random io.Reade
 	return out, nil
 }
 
-// targetRefsChanged는 결속의 참조가 지금 대상과 다른지다. 지금 상태를 확인하지 못하거나, 발급 때 몰라서 새로 만든
-// 참조면 바뀐 것으로 본다(같다고 증명할 수 없음).
+// targetRefsChanged는 결속의 참조가 그 회차(binding.JobRef)에서 본 지금 대상과 다른지다. 지금 상태를 확인하지 못하거나,
+// 발급 때 몰라서 새로 만든 참조면 바뀐 것으로 본다(같다고 증명할 수 없음).
 func (r *productTargetRegistry) targetRefsChanged(targetID string, binding e3contract.RunBinding) bool {
-	gen, genKnown, inst, instKnown := r.currentTargetRefs(targetID)
+	gen, genKnown, inst, instKnown := r.currentTargetRefs(targetID, binding.JobRef)
 	return !genKnown || !instKnown || gen != binding.GenerationRef || inst != binding.InstanceRef
 }
 

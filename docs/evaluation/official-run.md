@@ -12,8 +12,8 @@
 |---|---|
 | 러너·계측기·채점기 변경 머지: 계측기 하드 상한(#734), 끊긴 호출 처리(#735), B 전용 CLI 관측 줄(#736), 엔진 끝 전 최장 무활동(#737), O E③ 상태 수집(#742), O v1.1 러너 기록(#745), 채점기 분리 배치(#746) | GitHub PR |
 | 제품 E③ 감독자 연결(#738)과 E② Transport·Journal 연결. 연결 전 빌드는 O가 늘 `e3_official_not_disabled`로 무효다([러너](runner.md) 사유표) | GitHub PR |
-| 멈춤 무효 T 확정: 유료 확인 쌍에서 O 엔진 끝 전 최장 무활동(모델 호출 + 대상 요청)이 90초 이하이면 180초로 확정한다(고정 초안 §16). **[확인 쌍 뒤 채움]** | 고정 초안 §16 |
-| **멈춤 무효 판정이 켜져 있음**(#756): 러너는 설정 `run.fault_stall_seconds`(T)가 있으면 B·O 회차를 같은 T로 판정해 멈춤이면 `provider_fault_stall`로 무효로 하고, 세션 집계는 판정하지 않은 완료 회차·T 섞임을 받지 않으며 쪽별 2회 이상이면 측정 전체 실패(종료 코드 3)다. 시작 전 확인: 7번 `runner.json`에 T를 넣었고, 7절 집계를 `--allow-unjudged-fault-stall` 없이 돌린다. T 값은 위 줄대로 확인 쌍 뒤 채운다 | 고정 초안 §2·§3·§16 |
+| 멈춤 무효 T 확정: **180초**(2026-11-19 확인 쌍, 사용자 동의). O 엔진 끝 전 최장 공백(활동 사건 = 요청 시작·응답 완료) 8.6초·B 13.6초로 §16 조건(O ≤ 90초)을 만족했다 | 고정 초안 §16·§19 |
+| **멈춤 무효 판정이 켜져 있음**(#756): 러너는 설정 `run.fault_stall_seconds`(T)가 있으면 B·O 회차를 같은 T로 판정해 멈춤이면 `provider_fault_stall`로 무효로 하고, 세션 집계는 판정하지 않은 완료 회차·T 섞임을 받지 않으며 쪽별 2회 이상이면 측정 전체 실패(종료 코드 3)다. 시작 전 확인: 4절 7번 `runner.json`에 `run.fault_stall_seconds: 180`(위 줄의 확정값)을 넣었고, 7절 집계를 `--allow-unjudged-fault-stall` 없이 돌린다 | 고정 초안 §2·§3·§16 |
 | 이 문서·공식 분리 배치 프로파일·러너 설정이 태그 커밋에 있다(2절) | 레포 |
 
 ## 1. 역할
@@ -33,7 +33,7 @@
 | 계측기 하드 상한 | 요청 예산과 같은 값. R번째 전달 뒤 새 요청은 503으로 거부하고(`rejected_over_cap`), 대상에는 정확히 R건 이하만 닿는다 | #734 |
 | 모델 호출 사후 검증 | 조회 40번 × 3초, 조회 한 번 상한 10초, 러너 대기 300초 | 고정 초안 §15, #732 |
 | 경계 원자료 상한 | 4 MiB(4,194,304바이트) | 고정 초안 §16 |
-| 멈춤 무효 T | **[확인 쌍 뒤 채움]** (제안 180초, 조건부) | 고정 초안 §16 |
+| 멈춤 무효 T | **180초** — 4절 7번 `runner.json`의 `run.fault_stall_seconds` | 고정 초안 §16·§19 |
 | 멈춤 무효 비율 | 쪽별 `provider_fault_stall` 무효가 그 쪽 시도 중 2회 이상이면 측정 전체 실패 | 고정 초안 §16 |
 | O 모델 예산 | 2000건·$5(승인 manifest) | 고정 초안 §16 |
 | `O-nomcp` | 돌리지 않는다 | 고정 초안 §16 |
@@ -183,7 +183,7 @@ install -d -m 700 /srv/abc2lab-eval /srv/abc2lab-eval-keys "$SESSION" "$SESSION/
 7. **`runner.json`:** `$T/docs/evaluation/runner.example.json`([예시](runner.example.json))을 복사해 `images`의 태그·내용 ID와 경로를 채우고, 아래 칸을 더한다. 그 밖의 값은 바꾸지 않는다.
    - `runs_root`: `$SESSION/runs`(세션마다 새 디렉터리). `path_key_file`: 4번 키(`$PATH_KEY_DIR/path.key`, 이 세션 것). `purpose`: `official`.
    - `llm_gateway.verify_attempts` 40, `verify_interval_seconds` 3, `run.llm_verify_timeout_seconds` 300(2절).
-   - `run.fault_stall_seconds`: 멈춤 무효 판정 T(0절·2절, 확인 쌍 뒤 확정한 값). 없으면 러너가 판정하지 않고 7절 집계가 그 회차를 받지 않는다.
+   - `run.fault_stall_seconds`: `180`(멈춤 무효 판정 T, 0절·2절). 없으면 러너가 판정하지 않고 7절 집계가 그 회차를 받지 않는다.
    - `split` 블록(제품 배치):
 
      ```json

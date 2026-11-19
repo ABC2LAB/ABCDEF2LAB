@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from cli_usage import (  # noqa: E402
     FORMAT, MAX_OBSERVED_LINE_CHARS, MAX_OBSERVED_LINES, MAX_SHAPE_INPUT_BYTES, PATH_PREFIX, PLACEHOLDER, SHELL_OPERATORS,
     CliUsageError, clip_shape, command_shape, count_usage, shell_tokens,
-    normalize, not_found, observed_lines, pick_line,
+    normalize, not_found, not_found_calls, observed_lines, pick_line, product_command_record, shell_not_found,
     occurrences, tool_input_command, validate_names,
 )
 
@@ -188,3 +188,36 @@ class TestObservedShapes(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestProductRecords(unittest.TestCase):
+    """O 제품 활동 표 줄을 B와 같은 count_usage 입력으로 바꾸고, 이름 없이 '명령을 찾지 못함'을 센다."""
+
+    def test_trusted_worker_result_and_plain_exploration_result(self):
+        worker = product_command_record({"cmd": '{"command": "python x"}', "is_error": True,
+                                         "res": json.dumps({"trusted": {"exit_code": 127}, "tool_output": "bash: line 1: python: command not found"})})
+        self.assertEqual((worker["exit_code"], worker["failed"], worker["output"]), (127, True, "bash: line 1: python: command not found"))
+        plain = product_command_record({"cmd": '{"command": "xxd f"}', "is_error": False, "res": "/bin/sh: 1: xxd: not found"})
+        self.assertEqual((plain["exit_code"], plain["failed"], plain["output"]), (None, False, "/bin/sh: 1: xxd: not found"))
+        for res in (None, 7, json.dumps({"trusted": {"exit_code": "127"}, "tool_output": {"a": 1}})):
+            with self.subTest(res=res):
+                got = product_command_record({"cmd": "{}", "is_error": None, "res": res})
+                self.assertIsNone(got["exit_code"])
+                self.assertFalse(got["failed"])
+        self.assertEqual(product_command_record({"cmd": "{}", "is_error": False, "res": json.dumps({"trusted": {}, "tool_output": {"a": 1}})})["output"],
+                         '{"a": 1}')
+        usage = count_usage([worker, plain], ("python",), with_failures=True)
+        self.assertEqual((usage["not_found"], usage["other_failures"]), ({"python": 1}, {}))
+
+    def test_shell_not_found_is_the_shell_line_or_exit_code(self):
+        for output, code in (("bash: line 1: xxd: command not found", None), ("/bin/sh: 1: xxd: not found", None),
+                             ("ok\nbash: jq: command not found\n", None), ("sh: 2: jq: not found", None), ("", 127), (None, 126)):
+            with self.subTest(output=output, code=code):
+                self.assertTrue(shell_not_found(output, code))
+        for output, code in (("HTTP/1.1 404 Not Found", None), ('{"error": "user: not found"}', None), ("user: not found", 0),
+                             ("curl: (6) Could not resolve host", 6), ("", None), (None, None), ("x bash: jq: command not found", None)):
+            with self.subTest(output=output, code=code):
+                self.assertFalse(shell_not_found(output, code))
+        records = [{"output": "bash: line 1: a: command not found", "exit_code": None}, {"output": "", "exit_code": 127},
+                   {"output": "fine", "exit_code": 0}, {"output": 5, "exit_code": "127"}]
+        self.assertEqual(not_found_calls(records), 2)

@@ -5,6 +5,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -321,14 +322,37 @@ func TestE2HTTPFactoryRefreshSession(t *testing.T) {
 			t.Fatal("refused refresh spent a call/request")
 		}
 	}
+	// 계정 결속 참조(v3 계약 §2.2): 인증된 tester-a만 참조가 있고(tester-b는 비밀번호가 틀려 없음), 다시 로그인에 성공할
+	// 때마다 바뀌며 옛 참조로는 세션을 얻을 수 없다. 실패하면 그대로다.
+	bindings, runRef := lease.AccountBindings(), lease.Execution.Snapshot().Scope.RunRef
+	if _, ok := bindings.AccountBindingRef(runRef, "tester-a"); !ok {
+		t.Fatal("인증된 계정의 결속 참조가 없음")
+	}
+	if _, ok := bindings.AccountBindingRef(runRef, "tester-b"); ok {
+		t.Fatal("로그인 실패 계정에 결속 참조가 있음")
+	}
 	refresh := func(label, want string) {
 		t.Helper()
 		before := logins.Load()
+		prevRef, _ := bindings.AccountBindingRef(runRef, label)
 		header, result := lease.RefreshSession(ctx, label)
 		if result != want || logins.Load() != before+1 {
 			t.Fatalf("refresh %s: %s want %s logins=%d", label, result, want, logins.Load()-before)
 		}
+		nowRef, bound := bindings.AccountBindingRef(runRef, label)
+		if result != E2HTTPAuthAuthenticated && nowRef != prevRef {
+			t.Fatal("실패한 다시 로그인이 결속 참조를 바꿈")
+		}
 		if result == E2HTTPAuthAuthenticated {
+			if !bound || nowRef == prevRef {
+				t.Fatal("다시 로그인 뒤 결속 참조가 그대로", label)
+			}
+			if _, err := bindings.BoundSession(runRef, label, prevRef); prevRef != "" && !errors.Is(err, ErrE2HTTPAccountBinding) {
+				t.Fatal("옛 결속 참조로 세션을 얻음")
+			}
+			if got, err := bindings.BoundSession(runRef, label, nowRef); err != nil || got.Get("Authorization") != header.Get("Authorization") {
+				t.Fatal("지금 결속 참조가 새 세션을 가리키지 않음", err)
+			}
 			if value := strings.TrimPrefix(header.Get("Authorization"), "Bearer "); value == "" || strings.Contains(string(lease.Execution.RedactOutput([]byte(value))), value) {
 				t.Fatal("new session missing or not redacted")
 			}
@@ -606,7 +630,7 @@ func TestE2HTTPFactoryConcurrentRefreshKeepsNewestSession(t *testing.T) {
 
 // 같은 계정 다시 로그인을 기다리는 동안 문맥이 끝나면 보내지 않는다. 다른 계정은 기다리지 않는다.
 func TestE2HTTPSessionStoreRefreshQueuesPerAccount(t *testing.T) {
-	store := newE2HTTPSessionStore(E2HTTPSessions{"a": http.Header{"Cookie": {"s=1"}}})
+	store := newE2HTTPSessionStore(E2HTTPSessions{"a": http.Header{"Cookie": {"s=1"}}}, "run-1", nil)
 	inside, leave := make(chan struct{}), make(chan struct{})
 	done := make(chan struct{})
 	go func() {

@@ -30,6 +30,7 @@ import (
 	pgdb "github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/diagnosisprep"
+	"github.com/Autumn-27/artex/e2checkpoint"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/evidencerevision"
 	"github.com/Autumn-27/artex/llmpolicy"
@@ -363,7 +364,7 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 		return errPreparation
 	}
 	defer admin.Close()
-	for _, m := range []func(context.Context, *sql.DB) error{auditcheckpoint.Migrate, auditkeys.Migrate, evidencerevision.Migrate} {
+	for _, m := range []func(context.Context, *sql.DB) error{auditcheckpoint.Migrate, auditkeys.Migrate, evidencerevision.Migrate, e2checkpoint.Migrate} {
 		if m(ctx, admin.DB) != nil {
 			return errPreparation
 		}
@@ -401,6 +402,11 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 		if productWrite(filepath.Join(config, name), []byte(productDSN(c.DatabaseHost, c.DatabaseName, role, pw))) != nil {
 			return errPreparation
 		}
+	}
+	// 현재 head의 정본 쓰기 역할은 실행·API 역할과 분리한다. LOGIN 자격은
+	// 독립 Host 서비스가 준비되기 전에는 발급하지 않는다.
+	if _, err = admin.ExecContext(ctx, "CREATE ROLE product_e2_head_writer NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS"); err != nil {
+		return errPreparation
 	}
 	if productGrantRoles(ctx, admin.DB, c.DatabaseName, c.TargetPolicy.Workflow != nil) != nil {
 		return errPreparation
@@ -615,6 +621,11 @@ func productGrantRoles(ctx context.Context, pool *sql.DB, name string, workflow 
 		if exec("GRANT CONNECT ON DATABASE \""+name+"\" TO "+r) != nil || exec("GRANT USAGE ON SCHEMA public TO "+r) != nil {
 			return errPreparation
 		}
+	}
+	if exec("GRANT USAGE ON SCHEMA public TO product_e2_head_writer") != nil ||
+		exec("GRANT SELECT,UPDATE(lock_guard) ON e2_http_audit_epochs TO product_e2_head_writer") != nil ||
+		exec("GRANT SELECT,INSERT,UPDATE ON e2_http_audit_heads TO product_e2_head_writer") != nil {
+		return errPreparation
 	}
 	for _, table := range []string{"tasks", "explorations", "exploration_nodes", "task_llm_profiles", "request_approvals", "e2_prompt_runs", "e2_prompt_observations"} {
 		if exec("GRANT SELECT,INSERT,UPDATE ON "+table+" TO product_runtime") != nil {

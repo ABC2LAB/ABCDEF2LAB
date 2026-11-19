@@ -23,6 +23,7 @@ import (
 	"github.com/Autumn-27/artex/auditkeys"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/diagnosisprep"
+	"github.com/Autumn-27/artex/e2checkpoint"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/evidencerevision"
 	"github.com/Autumn-27/artex/reportcapture"
@@ -106,7 +107,7 @@ func TestProductReportCaptureReadsOwnedPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, m := range []func(context.Context, *sql.DB) error{auditcheckpoint.Migrate, auditkeys.Migrate, evidencerevision.Migrate} {
+	for _, m := range []func(context.Context, *sql.DB) error{auditcheckpoint.Migrate, auditkeys.Migrate, evidencerevision.Migrate, e2checkpoint.Migrate} {
 		if err := m(t.Context(), installer.DB); err != nil {
 			t.Fatal(err)
 		}
@@ -121,6 +122,10 @@ func TestProductReportCaptureReadsOwnedPostgres(t *testing.T) {
 		}
 		created = append(created, role)
 	}
+	if _, err := admin.Exec("CREATE ROLE product_e2_head_writer NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS"); err != nil {
+		t.Fatal("새 head 역할 준비 실패", err)
+	}
+	created = append(created, "product_e2_head_writer")
 	if productGrantRoles(t.Context(), installer.DB, name) != nil {
 		t.Fatal("실제 제품 설치 권한 적용 실패")
 	}

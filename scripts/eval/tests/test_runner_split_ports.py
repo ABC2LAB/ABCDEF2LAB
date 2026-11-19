@@ -184,10 +184,70 @@ class TestV3Inputs(PortsCase):
     def test_control_policy_and_tool_surface_go_to_the_product_and_images(self):
         self.ports.control_policy("42")
         self.assertEqual(self.driver.calls[-1][:2], ("control_policy", ("42",)))
+        self.ports.task_signal("42")
+        self.assertEqual(self.driver.calls[-1][:2], ("task_end_signal", ("42",)))
         with mock.patch("runner_split_ports.ours_side", return_value={"x": 1}) as side:
             self.assertEqual(self.ports.tool_surface(), {"x": 1})
         args = side.call_args.args
         self.assertEqual(args[:3], (self.split.images["product"].id, self.split.images["explore_browser"].id, self.docker.run_bounded))
+
+
+class TestProductCommands(PortsCase):
+    """O 제품 활동 표의 Bash 호출을 제품 DB 컨테이너 안 읽기 전용 세션으로 읽는다(공개 활동 API는 명령·결과를 지운다)."""
+
+    def setUp(self):
+        super().setUp()
+        from types import SimpleNamespace
+        from runner_docker import BoundedResult
+        self.BoundedResult = BoundedResult
+        self.ports.rendered = {"services": {"postgres": {"environment": {"POSTGRES_USER": "postgres", "POSTGRES_DB": "abc2lab"}}}}
+        self.containers = [SimpleNamespace(id="db1", project="eval-r1", service="postgres", running=True),
+                           SimpleNamespace(id="api1", project="eval-r1", service="api", running=True),
+                           SimpleNamespace(id="db9", project="other", service="postgres", running=True)]
+        self.docker.project_container_ids = lambda project: ["id"]
+        self.docker.inspect_containers = lambda ids: self.containers
+        self.bounded = []
+        self.output = self.BoundedResult(0, b'{"cmd": "{}", "res": null, "is_error": false}\n\n', b"")
+        self.docker.run_bounded = lambda args, timeout, limit: (self.bounded.append((list(args), timeout, limit)), self.output)[1]
+        patcher = mock.patch("runner_split_ports.parse_container", side_effect=lambda c: c)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_reads_only_that_exploration_in_a_read_only_session(self):
+        self.assertEqual(self.ports.product_commands(7), [{"cmd": "{}", "res": None, "is_error": False}])
+        ((args, timeout, limit),) = self.bounded
+        self.assertEqual(args[:4], ["exec", "-e", "PGOPTIONS=-c default_transaction_read_only=on", "db1"])
+        self.assertEqual(args[4:13], ["psql", "-X", "-A", "-t", "-q", "-v", "ON_ERROR_STOP=1", "-U", "postgres"])
+        self.assertEqual(args[13:15], ["-d", "abc2lab"])
+        self.assertIn("u.exploration_id = 7 order by u.id", args[-1])
+        self.assertIn("u.tool = 'Bash'", args[-1])
+        self.assertEqual((timeout, limit), (self.config.docker_timeout_seconds, self.config.findings["max_total_bytes"]))
+
+    def test_refuses_what_it_cannot_pin(self):
+        def db_name():
+            self.ports.rendered["services"]["postgres"]["environment"]["POSTGRES_DB"] = "a;b"
+
+        def stopped():
+            self.containers[0].running = False
+
+        def failed():
+            self.output = self.BoundedResult(1, b"", b"x")
+
+        def shape():
+            self.output = self.BoundedResult(0, b'{"cmd": "{}"}\n', b"")
+
+        for name, exploration, change in (("exploration_zero", 0, None), ("exploration_bool", True, None), ("db_name", 7, db_name),
+                                          ("db_stopped", 7, stopped), ("psql_failed", 7, failed), ("row_shape", 7, shape)):
+            with self.subTest(name=name):
+                self.setUp()
+                if change:
+                    change()
+                with self.assertRaises(ValueError):
+                    self.ports.product_commands(exploration)
+
+    def test_driver_gives_the_exploration_of_that_task(self):
+        self.ports.task_exploration_id("42")
+        self.assertEqual(self.driver.calls[-1][:2], ("task_exploration_id", ("42",)))
 
 
 class TestV3Publishing(PortsCase):
