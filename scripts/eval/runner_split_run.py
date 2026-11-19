@@ -558,7 +558,11 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     interrupted = interrupted_generation_ids(_call_rows(calls), stop_requested_at, product=True)
     llm_reasons, llm_summary = _step(state, "llm_marker_invalid", lambda: judge_product_llm(
         verified, spec.llm_sampling, spec.llm_provider_slug, spec.llm_provider_name, interrupted))
-    _step(state, "evidence_write_failed", lambda: evidence.write_json("llm-summary.json", dict(llm_summary, reasons=llm_reasons)))
+    # 끊긴 호출 분류에 실제로 쓴 정지 요청 시각을 근거에 남긴다(평가 프로토콜 §6: 회차 뒤에도 product-calls.jsonl과 이 시각으로
+    # 같은 분류를 다시 계산해 예외 적용을 재검증한다, #735 리뷰). 계측기 봉인 시각은 그 사이 drain·정착 대기가 있어 대신 못 쓴다.
+    state.summary["stop_requested_at"] = stop_requested_at
+    _step(state, "evidence_write_failed", lambda: evidence.write_json("llm-summary.json", dict(
+        llm_summary, reasons=llm_reasons, stop_requested_at=stop_requested_at)))
     if llm_reasons:
         raise RunFailure(llm_reasons[0])
     llm_summary = dict(llm_summary, verification=LLM_VERIFIED)

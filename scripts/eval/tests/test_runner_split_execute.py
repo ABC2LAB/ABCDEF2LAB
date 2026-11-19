@@ -1117,6 +1117,30 @@ class TestInterruptedCallsO(unittest.TestCase):
         result, _, _ = run(self.ports("2000-01-01T00:00:03Z"))  # 회차 중간 실패(정지와 무관)
         self.assertEqual((result["status"], result["reasons"]), ("invalid", ["llm_generation_unverified"]))
 
+    def test_saved_stop_time_recomputes_the_same_classification(self):
+        # 회차 뒤 재검증(평가 프로토콜 §6): 저장된 호출 기록과 저장된 정지 요청 시각만으로 같은 분류가 나와야 한다(#735 리뷰).
+        # 시험 시계는 결정적이라 한 번 돌려 정지 요청 시각을 알아낸 뒤, 그 시각에 끝난 호출(끊김)과 그 바로 앞에 끝난 호출(끊김
+        # 아님)로 경계를 찌른다. 다른 시각(계측기 봉인 등)을 저장하거나 쓰면 둘 중 하나가 달라진다.
+        from runner_llm import interrupted_generation_ids
+        _, _, first = run(self.ports("2999-01-01T00:00:00Z"))
+        stop = first.files["llm-summary.json"]["stop_requested_at"]
+        moment = datetime.fromisoformat(stop)
+        for completed, expected in ((moment, {"cut"}), (moment - timedelta(milliseconds=1), set())):
+            def mutate(p, completed=completed):
+                self.ports(completed.isoformat())(p)
+                rows = [json.loads(line) for line in p.calls_file.decode().splitlines()]
+                rows[1]["started_at"] = (moment - timedelta(seconds=1)).isoformat()
+                p.calls_file = b"".join(json.dumps(row).encode() + b"\n" for row in rows)
+            with self.subTest(completed=completed.isoformat()):
+                result, _, evidence = run(mutate)
+                summary = evidence.files["llm-summary.json"]
+                self.assertEqual(summary["stop_requested_at"], stop)
+                rows = [json.loads(line) for line in evidence.files["product-calls.jsonl"].splitlines() if line]
+                self.assertEqual(set(interrupted_generation_ids(rows, summary["stop_requested_at"], product=True)), expected)
+                self.assertEqual(summary.get("unverified_interrupted", 0), len(expected))
+                self.assertEqual(result["status"], "complete" if expected else "invalid")
+                if expected:
+                    self.assertEqual(result["stop_requested_at"], stop)
 
 if __name__ == "__main__":
     unittest.main()
