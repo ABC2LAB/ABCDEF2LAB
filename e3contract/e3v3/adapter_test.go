@@ -428,3 +428,45 @@ func TestEventJSONFieldNames(t *testing.T) {
 		}
 	}
 }
+
+// Event.Check는 계약 §2.3 규칙을 그 자리에서 지킨다(관찰 검증이 뒤에서 다시 막더라도 v3 이벤트 규칙으로 먼저 거부).
+func TestEventCheck(t *testing.T) {
+	_, e2 := viaV3(t, map[e3fake.Key]e3fake.Behavior{crossNote: {NotSent: e3contract.NotSentPolicyDenied}}, nil)
+	var read, control e3v3.Event
+	for _, rec := range e2.Records() {
+		var e e3v3.Event
+		if err := json.Unmarshal(rec.Raw, &e); err != nil {
+			t.Fatal(err)
+		}
+		switch {
+		case e.Program == e3contract.PurposeRead && e.Stage == e3v3.StageResult:
+			read = e
+		case e.Program == e3contract.PurposeRead && e.Stage == e3v3.StageControl && e.NotSent:
+			control = e
+		}
+	}
+	if read.CallRef == "" || control.CallRef == "" || read.Check() != nil || control.Check() != nil {
+		t.Fatalf("기준 이벤트: read=%v control=%v", read.Check(), control.Check())
+	}
+	cases := map[string]struct {
+		base  e3v3.Event
+		edit  func(*e3v3.Event)
+		field string
+	}{
+		"scope":                  {read, func(e *e3v3.Event) { e.Scope.PolicyRef = "" }, "scope"},
+		"e3_binding_policy":      {read, func(e *e3v3.Event) { e.E3.Policy.DigestSHA256 = "short" }, "e3_binding"},
+		"read_create_ref":        {read, func(e *e3v3.Event) { e.CreateRef.Sequence = 0 }, "read_fields"},
+		"identity_resource_type": {read, func(e *e3v3.Event) { e.Program = e3contract.PurposeIdentity }, "identity_fields"},
+		"create_with_create_ref": {read, func(e *e3v3.Event) { e.Program = e3contract.PurposeCreate }, "create_fields"},
+		"control_allowed":        {control, func(e *e3v3.Event) { e.NotSent, e.NotSentReason = false, "" }, "control_without_result"},
+		"control_unknown_reason": {control, func(e *e3v3.Event) { e.NotSentReason = "unknown" }, "not_sent_reason"},
+		"control_received":       {control, func(e *e3v3.Event) { e.ResponseReceived = true }, "control_has_response"},
+	}
+	for name, c := range cases {
+		e := c.base
+		c.edit(&e)
+		if err := e.Check(); !errors.Is(err, e3contract.ErrObservation) || !strings.HasSuffix(err.Error(), "v3 "+c.field) {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+}
