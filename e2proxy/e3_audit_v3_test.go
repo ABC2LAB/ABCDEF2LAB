@@ -211,6 +211,58 @@ func TestJournalV3E3BeforeSendAndStoppedAfterIntent(t *testing.T) {
 	}
 }
 
+// 응답 상태 줄을 받았으나 본문이 끝나지 않은 시도는 결과 불명으로 보존한다.
+// 세 프로그램 목적 모두 상태 코드와 미완료 사실을 MAC으로 묶고 관찰을 완료로 승격하지 않는다.
+func TestJournalV3E3IncompleteResponseWithStatus(t *testing.T) {
+	for _, program := range []ProgramCallKind{ProgramE3Identity, ProgramE3Create, ProgramE3Read} {
+		t.Run(string(program), func(t *testing.T) {
+			intent, result := e3JournalFixture(program)
+			result.Reason = Unknown
+			result.ResponseComplete = false
+			result.StatusCode = 200
+			result.Normal = ""
+			result.RequestMarkerFree = nil
+			result.Marker = e3contract.MarkerCheck{}
+			result.BodyDigestSHA256 = ""
+			result.BodyComplete = nil
+			result.ObjectIDDigest = ""
+			result.SubjectDigest = ""
+			if !validJournalRecordEvent(result, JournalVersionV3) {
+				t.Fatal("상태 줄을 받은 미완료 응답 차단")
+			}
+			w := newJournalTestWriter()
+			j, err := newJournalWithHeader(w, journalTestKey, journalHeader{
+				Version: JournalVersionV3, Scope: result.Scope, KeyRef: "audit-ref", CreatedAt: result.At})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer j.Close()
+			for _, event := range []Event{intent, result} {
+				if err := j.Record(t.Context(), event); err != nil {
+					t.Fatal(err)
+				}
+			}
+			rows, _, err := VerifyJournalEvents(t.Context(), bytes.NewReader(w.bytes()), journalTestKey, j.Checkpoint())
+			if err != nil || len(rows) != 2 || !reflect.DeepEqual(rows[1], result) {
+				t.Fatal("미완료 응답의 검증된 사건 조회 실패", err)
+			}
+			encoded, err := json.Marshal(rows[1])
+			if err != nil {
+				t.Fatal(err)
+			}
+			var adapter e3v3.Event
+			if err := json.Unmarshal(encoded, &adapter); err != nil {
+				t.Fatal(err)
+			}
+			adapter.Scope = e3v3.Scope{RunRef: result.Scope.RunRef,
+				TaskRef: result.Scope.TaskRef, PolicyRef: result.Scope.PolicyRef}
+			if err := adapter.Check(); err != nil {
+				t.Fatal("미완료 응답이 E③ 계약에서 거부됨", err)
+			}
+		})
+	}
+}
+
 // 목적별 메서드와 단계별 응답 칸 금지를 독립 반례로 고정한다.
 func TestJournalV3E3StageAndMethodBoundaries(t *testing.T) {
 	for _, tc := range []struct {
