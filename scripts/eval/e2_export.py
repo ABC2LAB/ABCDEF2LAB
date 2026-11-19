@@ -48,7 +48,8 @@ EVAL_HEADER_MODES = E2_HEADER_MODES - {HEADER_TEST_ACCOUNT}
 PROGRAM_CALL_KINDS = frozenset({"auth_prep", "refresh_session"})
 # E③ 프로그램 호출(v3 계약 §8.1). v3 행에만 있다.
 E3_PROGRAMS = frozenset({"e3_identity", "e3_create", "e3_read"})
-MODEL_PROGRAM = "model"  # 요약에서 program이 빈 시도(모델 진단 요청)를 세는 이름
+MODEL_PROGRAM = "model"
+_E3_TYPE = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")  # e3contract typePattern(선언한 자원 종류)  # 요약에서 program이 빈 시도(모델 진단 요청)를 세는 이름
 E3_ROLES = frozenset({"owner", "cross"})
 E3_NOT_SENT_REASONS = frozenset({"policy_denied", "approval_denied", "approval_timeout", "confirmation_budget_exhausted"})
 E3_NORMAL = frozenset({"yes", "no", "unknown"})
@@ -167,6 +168,16 @@ def strict_object(data: bytes) -> dict:
     if not isinstance(value, dict):
         _fail("JSON_INVALID")
     return value
+
+
+def _member(value: object, allowed: frozenset[str]) -> bool:
+    """닫힌 글 목록 안의 값인지. 글이 아니면(배열·객체 등 해시가 안 되는 값 포함) 예외 없이 아니다(#758 리뷰)."""
+    return isinstance(value, str) and value in allowed
+
+
+def _digest(value: object) -> bool:
+    """e3contract digestPattern(소문자 16진 64자)과 같은 모양."""
+    return isinstance(value, str) and bool(_SHA256.fullmatch(value))
 
 
 def _count(value: object) -> bool:
@@ -334,11 +345,12 @@ def _check_e3(row: dict) -> None:
     if not all(name in row for name in _E3_BINDING_FIELDS):
         _fail("ROW_E3_FIELDS")
     binding = row["e3_binding"]
-    if (row["role"] not in E3_ROLES or not _ref(row["account_label"]) or not _ref(row["account_binding_ref"])
+    if (not _member(row["role"], E3_ROLES) or not _ref(row["account_label"]) or not _ref(row["account_binding_ref"])
             or not isinstance(binding, dict) or not _ref(binding.get("job_ref"))):
         _fail("ROW_E3_BINDING")
     program = row["program"]
-    if (program != "e3_identity") != ("resource_type" in row) or ("resource_type" in row and not _ref(row["resource_type"])):
+    if (program != "e3_identity") != ("resource_type" in row) or ("resource_type" in row and not (
+            isinstance(row["resource_type"], str) and _E3_TYPE.fullmatch(row["resource_type"]))):
         _fail("ROW_E3_RESOURCE")
     create = row.get("create_ref")
     if (program == "e3_read") != (create is not None) or (create is not None and (
@@ -355,7 +367,7 @@ def _check_e3(row: dict) -> None:
     if unsent_result and not refused and (row["reason"] != "closed" or not row["not_sent"]):
         _fail("ROW_E3_NOT_SENT")
     if refused != ("not_sent_reason" in row) or (refused and (not row["not_sent"]
-                                                            or row["not_sent_reason"] not in E3_NOT_SENT_REASONS)):
+                                                            or not _member(row["not_sent_reason"], E3_NOT_SENT_REASONS))):
         _fail("ROW_E3_NOT_SENT")
     if "timed_out" in row and (not sent or type(row["timed_out"]) is not bool):
         _fail("ROW_E3_TIMED_OUT")
@@ -370,11 +382,12 @@ def _check_e3(row: dict) -> None:
         if not needed <= set(responses) or set(responses) - allowed:
             _fail("ROW_E3_RESPONSE_FIELDS")
         marker = row.get("marker")
-        if (row["normal"] not in E3_NORMAL or not isinstance(row["body_digest_sha256"], str) or not _SHA256.fullmatch(row["body_digest_sha256"])
+        if (not _member(row["normal"], E3_NORMAL) or not _digest(row["body_digest_sha256"])
                 or type(row["body_complete"]) is not bool or type(row.get("request_marker_free", False)) is not bool
-                or any(not isinstance(row.get(name, "x"), str) or not row.get(name, "x") for name in ("object_id_digest", "subject_digest"))
-                or (marker is not None and (not isinstance(marker, dict) or set(marker) != {"status", "presence", "method", "field"}
-                                            or marker["status"] not in E3_MARKER_STATUS or marker["presence"] not in E3_MARKER_PRESENCE
+                or any(name in row and not _digest(row[name]) for name in ("object_id_digest", "subject_digest"))
+                or ("marker" in row and (not isinstance(marker, dict) or set(marker) != {"status", "presence", "method", "field"}
+                                            or not _member(marker["status"], E3_MARKER_STATUS)
+                                            or not _member(marker["presence"], E3_MARKER_PRESENCE)
                                             or not isinstance(marker["method"], str) or not isinstance(marker["field"], str)))):
             _fail("ROW_E3_RESPONSE")
 
@@ -385,13 +398,13 @@ def _row(line: bytes, manifest: dict) -> dict:
     extra = _E3_ROW if row.get("version") == JOURNAL_VERSION_V3 else frozenset()
     if not _REQUIRED_ROW <= keys or keys - _REQUIRED_ROW - _OPTIONAL_ROW - extra:
         _fail("ROW_FIELDS")
-    if row["version"] not in JOURNAL_VERSIONS:
+    if not _member(row["version"], JOURNAL_VERSIONS):
         _fail("ROW_VERSION")
     if not _count(row["index"]) or row["index"] == 0 or not _count(row["sequence"]) or type(row["intent_id"]) is not int:
         _fail("ROW_COUNT_INVALID")
     if abs(row["intent_id"]) > MAX_INT:
         _fail("ROW_COUNT_INVALID")
-    if row["reason"] not in E2_REASONS:
+    if not _member(row["reason"], E2_REASONS):
         _fail("ROW_REASON")
     if any(type(row[name]) is not bool for name in _ROW_BITS):
         _fail("ROW_BITS")

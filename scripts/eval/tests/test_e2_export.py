@@ -432,6 +432,7 @@ E3_BIND = {"role": "owner", "account_label": "tester-a", "account_binding_ref": 
                           "policy": {"kind": "product_declaration", "ref": "declaration-job-1", "digest_sha256": "d" * 64,
                                      "target_approval_revision": 3}}}
 DIGEST = {"normal": "yes", "body_digest_sha256": "b" * 64, "body_complete": True}
+SUBJECT, OBJECT = "5" * 64, "6" * 64  # 합성 digest(e3contract digestPattern 모양)
 
 
 def e3(index, stage, attempt_id, sequence, decision, program, reason="complete", **changes):
@@ -452,7 +453,7 @@ class TestV3E3Rows(unittest.TestCase):
 
     def calls(self):
         identity = [e3(1, "intent", A1, 1, "allowed", "e3_identity"),
-                    e3(2, "result", A1, 1, "allowed", "e3_identity", **SENT, **DIGEST, subject_digest="s1", request_marker_free=True)]
+                    e3(2, "result", A1, 1, "allowed", "e3_identity", **SENT, **DIGEST, subject_digest=SUBJECT, request_marker_free=True)]
         refused = [e3(3, "result", A2, 2, "denied", "e3_create", "policy_denied", not_sent_reason="policy_denied")]
         read = [e3(4, "intent", A3, 3, "allowed", "e3_read"),
                 e3(5, "result", A3, 3, "allowed", "e3_read", **SENT, **DIGEST, request_marker_free=True,
@@ -471,7 +472,7 @@ class TestV3E3Rows(unittest.TestCase):
         cut = e3(2, "result", A1, 1, "allowed", "e3_identity", forward_attempted=True, request_written=True, not_sent=False, timed_out=True)
         self.assertEqual(self.parse([identity[0], cut]).e3_program_attempts, 1)
         # 생성은 객체 ID digest를 꺼냈을 때만 싣는다
-        made = e3(2, "result", A1, 1, "allowed", "e3_create", **SENT, **DIGEST, object_id_digest="o1")
+        made = e3(2, "result", A1, 1, "allowed", "e3_create", **SENT, **DIGEST, object_id_digest=OBJECT)
         self.assertEqual(self.parse([e3(1, "intent", A1, 1, "allowed", "e3_create"), made]).e3_program_attempts, 1)
         # v2 회차에는 E③ 호출이 없다
         self.assertEqual(self.parse(normal_rows()).e3_program_attempts, 0)
@@ -492,6 +493,9 @@ class TestV3E3Rows(unittest.TestCase):
             with self.subTest(changes=changes):
                 self.rejected([identity[0] | changes], "ROW_E3_BINDING")
         self.rejected([identity[0] | {"resource_type": "basket"}], "ROW_E3_RESOURCE")
+        for value in ("Basket", "a-b", "", [], 1):  # e3contract typePattern 밖
+            with self.subTest(resource_type=value):
+                self.rejected([refused[0] | {"index": 1, "resource_type": value}], "ROW_E3_RESOURCE")
         self.rejected([{k: v for k, v in refused[0].items() if k != "resource_type"}], "ROW_E3_RESOURCE")
         self.rejected([{k: v for k, v in read[0].items() if k != "create_ref"}], "ROW_E3_CREATE_REF")
         self.rejected([refused[0] | {"create_ref": read[0]["create_ref"]}], "ROW_E3_CREATE_REF")
@@ -499,6 +503,38 @@ class TestV3E3Rows(unittest.TestCase):
                     {"call_ref": CALL, "attempt_id": A1, "sequence": 0}):
             with self.subTest(create=bad):
                 self.rejected([read[0] | {"create_ref": bad}], "ROW_E3_CREATE_REF")
+
+    def parse_like(self, changed, rows):
+        """manifest 건수는 바꾸기 전 행으로 정한다(바꾼 칸이 건수 계산에 쓰이는 칸이어도 검사기가 고정 코드로 끝내는지 본다)."""
+        data = encode(changed)
+        counts = {"rows": len(rows), "last_index": rows[-1]["index"],
+                  "last_sequence": max((r["sequence"] for r in rows if "attempt_id" in r), default=0)}
+        return parse_attempts(data, manifest_for(data, **counts))
+
+    def test_any_malformed_field_ends_with_a_fixed_code(self):
+        # 칸마다 배열·객체·null·실수를 넣어도 TypeError 등이 아니라 고정 오류 코드로 끝난다(#758 리뷰: role·normal에 []).
+        identity, refused, read = self.calls()
+        made = [e3(1, "intent", A1, 1, "allowed", "e3_create"),
+                e3(2, "result", A1, 1, "allowed", "e3_create", **SENT, **DIGEST, object_id_digest=OBJECT)]
+        samples = [identity, [refused[0] | {"index": 1}], [read[0] | {"index": 1}, read[1] | {"index": 2}], made, normal_rows()]
+        for rows in samples:
+            for position, row in enumerate(rows):
+                for key in sorted(row):
+                    for bad in ([], {}, None, 1.5):
+                        if row[key] == bad:
+                            continue
+                        changed = [dict(r) for r in rows]
+                        changed[position][key] = bad
+                        with self.subTest(key=key, bad=bad, position=position):
+                            with self.assertRaises(E2ExportError):
+                                self.parse_like(changed, rows)
+                if "marker" in row:
+                    for sub in sorted(row["marker"]):
+                        for bad in ([], {}, None):
+                            changed = [dict(r) for r in rows]
+                            changed[position]["marker"] = dict(row["marker"], **{sub: bad})
+                            with self.subTest(marker=sub, bad=bad), self.assertRaises(E2ExportError):
+                                self.parse_like(changed, rows)
 
     def test_send_judgment_fields_follow_the_stage(self):
         identity, refused, read = self.calls()
@@ -536,9 +572,9 @@ class TestV3E3Rows(unittest.TestCase):
         self.rejected([identity[0] | {"normal": "yes"}], "ROW_E3_RESPONSE_FIELDS")
         self.rejected([identity[0], {k: v for k, v in identity[1].items() if k != "subject_digest"}], "ROW_E3_RESPONSE_FIELDS")
         self.rejected([read[0], {k: v for k, v in read[1].items() if k != "marker"}], "ROW_E3_RESPONSE_FIELDS")
-        self.rejected([identity[0], identity[1] | {"object_id_digest": "o1"}], "ROW_E3_RESPONSE_FIELDS")
+        self.rejected([identity[0], identity[1] | {"object_id_digest": OBJECT}], "ROW_E3_RESPONSE_FIELDS")
         for changes in ({"normal": "maybe"}, {"body_digest_sha256": "B" * 64}, {"body_complete": 1}, {"request_marker_free": "yes"},
-                        {"subject_digest": ""}):
+                        {"subject_digest": ""}, {"subject_digest": "secret"}, {"subject_digest": "A" * 64}, {"subject_digest": []}):
             with self.subTest(changes=changes):
                 self.rejected([identity[0], identity[1] | changes], "ROW_E3_RESPONSE")
         for marker in ({"status": "complete", "presence": "absent", "method": "exact"},
