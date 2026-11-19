@@ -43,7 +43,7 @@ import (
 )
 
 const usage = "Usage: eval-meter -role engine|observer -listen ADDR -upstream http://HOST:PORT -log-dir PRIVATE_DIR [-allow-path /PATH]\n" +
-	"                  [engine: -drain-grace DURATION -explore-listen ADDR -path-log -path-key-file PRIVATE_FILE]\n" +
+	"                  [engine: -drain-grace DURATION -request-cap N -explore-listen ADDR -path-log -path-key-file PRIVATE_FILE]\n" +
 	"       eval-meter -role llm-gateway -backend api|local -listen ADDR -upstream ORIGIN -allow-path /PATH -log-dir PRIVATE_DIR\n" +
 	"                  [api: -provider SLUG -generation-path /PATH -verify-attempts N -verify-interval DURATION, key in " + llmKeyEnv + "]\n" +
 	"       eval-meter -role generation-verify -upstream https://ORIGIN -provider SLUG -generation-path /PATH -verify-attempts N\n" +
@@ -94,6 +94,9 @@ const (
 // open requests; the runner's own drain timeout must be longer.
 const maxDrainGrace = 10 * time.Minute
 
+// maxRequestCap은 -request-cap의 상한이다(러너 요청 예산 상한과 같은 값, runner_config MAX_REQUEST_BUDGET).
+const maxRequestCap = 1_000_000
+
 // Slow clients must not hold the front open indefinitely; the target's own
 // behaviour is not limited by these values.
 const (
@@ -121,6 +124,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	verifyAttempts := flags.Int("verify-attempts", 0, "llm-gateway api: lookups per generation id")
 	verifyInterval := flags.Duration("verify-interval", 0, "llm-gateway api: wait between lookups")
 	drainGrace := flags.Duration("drain-grace", 0, "engine: after seal, cancel requests still open this long (0: wait)")
+	requestCap := flags.Int64("request-cap", 0, "engine: reject new requests once this many were forwarded, both ingresses together (0: no cap)")
 	pathLog := flags.Bool("path-log", false, "engine: record masked path patterns for the browser acceptance test; never set on official runs")
 	pathKeyFile := flags.String("path-key-file", "", "engine with -path-log: private 32-byte key shared by the compared runs")
 	exploreListen := flags.String("explore-listen", "", "engine: second listen address for the exploration ingress (exploration boundary)")
@@ -139,6 +143,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return fail(stderr, invalidInput)
 	}
 	if (*role != roleEngine && *drainGrace != 0) || *drainGrace < 0 || *drainGrace > maxDrainGrace {
+		return fail(stderr, invalidInput)
+	}
+	if (*role != roleEngine && *requestCap != 0) || *requestCap < 0 || *requestCap > maxRequestCap {
 		return fail(stderr, invalidInput)
 	}
 	if (*role != roleEngine && *pathLog) || *pathLog != (*pathKeyFile != "") {
@@ -239,7 +246,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 				return fail(stderr, code)
 			}
 		}
-		m, code := newEngineMeter(dir, target, time.Now, *drainGrace)
+		m, code := newEngineMeter(dir, target, time.Now, *drainGrace, uint64(*requestCap))
 		if code != "" {
 			return fail(stderr, code)
 		}

@@ -185,6 +185,8 @@ type sealedMarker struct {
 	ForcedClosed    uint64 `json:"forced_closed_streams"`
 	LogComplete     bool   `json:"log_complete"`
 	ForwardedAtSeal uint64 `json:"forwarded_at_seal"`
+	RequestCap      uint64 `json:"request_cap"`
+	RejectedOverCap uint64 `json:"rejected_over_cap"`
 }
 
 type drainedMarker struct {
@@ -198,6 +200,8 @@ type drainedMarker struct {
 	ForcedCancelled   uint64 `json:"forced_cancelled_requests"`
 	InflightAtDrain   int    `json:"inflight_at_drain"`
 	LogComplete       bool   `json:"log_complete"`
+	RequestCap        uint64 `json:"request_cap"`
+	RejectedOverCap   uint64 `json:"rejected_over_cap"`
 }
 
 // terminatedMarker separates a drained stop from one where the front was
@@ -215,6 +219,8 @@ type terminatedMarker struct {
 	Forwarded           uint64 `json:"forwarded_requests"`
 	RejectedAfterSeal   uint64 `json:"rejected_after_seal"`
 	LogComplete         bool   `json:"log_complete"`
+	RequestCap          uint64 `json:"request_cap"`
+	RejectedOverCap     uint64 `json:"rejected_over_cap"`
 }
 
 // engineMeter counts admitted requests. An upgrade handshake stays in flight
@@ -228,6 +234,10 @@ type engineMeter struct {
 	dir        *os.File
 	now        func() time.Time
 	drainGrace time.Duration
+	// requestCap은 대상에 전달할 요청 수의 하드 상한이다(0이면 없음). R번째 전달 뒤 새 요청은 봉인 뒤 거부와 같은 응답으로
+	// 바로 거부한다. 러너가 전달 수를 몇 초마다 보고 봉인하는 동안 몰아 보낸 요청이 예산을 넘지 않게 하려는 것이다
+	// (2026-11-18 보정 쌍: B가 300번째 뒤 3.4초 안에 192건을 더 보냄). B·O 계측기가 같은 함수로 센다(두 입구 합).
+	requestCap uint64
 
 	mu           sync.Mutex
 	log          *rowLog
@@ -241,6 +251,7 @@ type engineMeter struct {
 	forwarded    uint64
 	streamsTotal uint64
 	rejected     uint64
+	overCap      uint64
 	forcedClosed uint64
 	streams      map[uint64]net.Conn
 	forced       map[uint64]bool
@@ -254,7 +265,7 @@ type engineMeter struct {
 	markerFailed bool
 }
 
-func newEngineMeter(dir *os.File, target *url.URL, now func() time.Time, drainGrace time.Duration) (*engineMeter, string) {
+func newEngineMeter(dir *os.File, target *url.URL, now func() time.Time, drainGrace time.Duration, requestCap uint64) (*engineMeter, string) {
 	file, code := createPrivateFile(dir, engineLogName)
 	if code != "" {
 		return nil, code
@@ -264,6 +275,7 @@ func newEngineMeter(dir *os.File, target *url.URL, now func() time.Time, drainGr
 		dir:        dir,
 		now:        now,
 		drainGrace: drainGrace,
+		requestCap: requestCap,
 		log:        &rowLog{file: file},
 		streams:    map[uint64]net.Conn{},
 		forced:     map[uint64]bool{},
@@ -283,6 +295,16 @@ func (m *engineMeter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.rejected++
 		m.writeRowLocked(engineRow{Seq: seq, Kind: "rejected", Method: r.Method, Status: http.StatusServiceUnavailable,
 			StartedAt: stamp(started), CompletedAt: stamp(m.now()), Outcome: "rejected_after_seal",
+			Sent: sentNo, Response: responseNone, AttemptIDState: attemptState, AttemptID: attemptID, Ingress: requestIngress(r)})
+		m.mu.Unlock()
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	if m.requestCap > 0 && m.forwarded >= m.requestCap {
+		// 봉인 뒤 거부와 같은 응답(503, 본문 없음)이다. 엔진 쪽에서는 두 거부를 구분할 수 없다.
+		m.overCap++
+		m.writeRowLocked(engineRow{Seq: seq, Kind: "rejected", Method: r.Method, Status: http.StatusServiceUnavailable,
+			StartedAt: stamp(started), CompletedAt: stamp(m.now()), Outcome: "rejected_over_cap",
 			Sent: sentNo, Response: responseNone, AttemptIDState: attemptState, AttemptID: attemptID, Ingress: requestIngress(r)})
 		m.mu.Unlock()
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -395,7 +417,8 @@ func (m *engineMeter) seal() {
 	}
 	m.syncLogsLocked()
 	m.writeMarkerLocked(sealedName, sealedMarker{Role: roleEngine, SealedAt: stamp(m.sealedAt), InflightAtSeal: m.inflight,
-		ForcedClosed: m.forcedClosed, LogComplete: !m.logFailed, ForwardedAtSeal: m.forwarded})
+		ForcedClosed: m.forcedClosed, LogComplete: !m.logFailed, ForwardedAtSeal: m.forwarded,
+		RequestCap: m.requestCap, RejectedOverCap: m.overCap})
 	m.maybeDrainedLocked(m.sealedAt)
 	if m.drainedAt.IsZero() && m.drainGrace > 0 {
 		m.graceTimer = time.AfterFunc(m.drainGrace, m.cancelInflight)
@@ -427,7 +450,7 @@ func (m *engineMeter) maybeDrainedLocked(at time.Time) {
 	m.writeMarkerLocked(drainedName, drainedMarker{Role: roleEngine, SealedAt: stamp(m.sealedAt), DrainedAt: stamp(at),
 		Forwarded: m.forwarded, StreamsTotal: m.streamsTotal, RejectedAfterSeal: m.rejected,
 		ForcedClosed: m.forcedClosed, ForcedCancelled: m.forcedCancel, InflightAtDrain: m.inflight,
-		LogComplete: !m.logFailed})
+		LogComplete: !m.logFailed, RequestCap: m.requestCap, RejectedOverCap: m.overCap})
 	close(m.drained)
 }
 
@@ -496,7 +519,8 @@ func (m *engineMeter) terminate(reason string) {
 	m.syncLogsLocked()
 	m.writeMarkerLocked(terminatedName, terminatedMarker{Role: roleEngine, Reason: reason, TerminatedAt: stamp(m.now()),
 		Sealed: m.sealed, Drained: !m.drainedAt.IsZero(), InflightAtTerminate: m.inflight, OpenStreams: len(m.streams),
-		ForcedCancelled: m.forcedCancel, Forwarded: m.forwarded, RejectedAfterSeal: m.rejected, LogComplete: !m.logFailed})
+		ForcedCancelled: m.forcedCancel, Forwarded: m.forwarded, RejectedAfterSeal: m.rejected, LogComplete: !m.logFailed,
+		RequestCap: m.requestCap, RejectedOverCap: m.overCap})
 }
 
 func (m *engineMeter) close() error {

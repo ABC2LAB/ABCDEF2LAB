@@ -96,7 +96,7 @@ class PortsCase(unittest.TestCase):
         root = Path(self._tmp.name)
         self.config = acceptance_config()
         self.split = parse_split(split_block(), self.config)
-        self.plan = plan_split_run(self.config, self.split, run_id="r1", target_image=TARGET, meter_port=8080)
+        self.plan = plan_split_run(self.config, self.split, run_id="r1", target_image=TARGET, meter_port=8080, request_cap=100)
         (root / "run").mkdir(mode=0o700)
         defaults, _ = read_workflow_defaults()
         self.inputs = prepare_split_inputs(root / "run", manifest=MANIFEST, meter_port=8080, explore_port=8082,

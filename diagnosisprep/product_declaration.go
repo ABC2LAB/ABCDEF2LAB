@@ -99,3 +99,19 @@ func validProductResetState(s ProductResetState) bool {
 func ValidResetWritesRef(s string) bool { return writesRefPattern.MatchString(s) }
 
 var writesRefPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// ProductPolicySource는 회차 하나의 E③ 정책 동결본(runs/<job>/e3-declaration.json) 바이트의 SHA-256이다(판정 상세 조회
+// OD06). 동결본 원문·선언 내용은 담지 않는다. 동결본이 없으면 Present가 false이고 SHA256은 비어 있다.
+type ProductPolicySource struct {
+	Present bool   `json:"present"`
+	SHA256  string `json:"sha256,omitempty"`
+}
+
+var policySourceDigest = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+func validProductPolicySource(p ProductPolicySource) bool {
+	if !p.Present {
+		return p.SHA256 == ""
+	}
+	return policySourceDigest.MatchString(p.SHA256)
+}
