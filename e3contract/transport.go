@@ -13,8 +13,11 @@ var (
 	ErrMarkerNotRegistered = errors.New("e3contract: 표식이 이 실행의 보호 값으로 등록되지 않았다")
 	// ErrAuthorityRevoked는 실행 권한(대상 승인·실행 결속)이 철회된 경우다. 진위 실패로 다룬다.
 	ErrAuthorityRevoked = errors.New("e3contract: 실행 권한이 철회됐다")
-	// ErrJournalEventMissing은 관찰에 맞는 봉인된 저널 이벤트가 없는 경우다.
+	// ErrJournalEventMissing은 검증된 저널 스냅샷에 그 관찰의 봉인 이벤트가 없는 경우다(E③↔E② v3 계약 §5).
 	ErrJournalEventMissing = errors.New("e3contract: 봉인된 저널 이벤트가 없다")
+	// ErrJournalIntegrity는 저널을 검증하지 못한 경우다: 신뢰 체크포인트 없음·불일치, MAC·체인·형식 오류, 다른 실행의
+	// 저널(v3 계약 §5). 이벤트 없음과 다른 사유로 남지만 E③ 결과는 둘 다 진위 실패다.
+	ErrJournalIntegrity = errors.New("e3contract: 저널 무결성을 확인하지 못했다")
 )
 
 // IdentityRequest는 신원 확인 GET이다(#596 §5.1).
@@ -59,7 +62,8 @@ type ReadRequest struct {
 //     확정 단계는 시작하지 않는다. 등록하지 않은 표식으로 Create·Read를 부르면 보내지 않고 ErrMarkerNotRegistered다.
 //   - 요청 하나는 영수증 하나다. 같은 요청을 다시 보내지 않는다(결과 불명 쓰기 포함).
 //   - 돌려준 Observation과 같은 값이 저널에 봉인된다(Journal.Sealed). 다르면 E³는 진위 실패로 본다.
-//   - 실행 권한이 철회됐으면 ErrAuthorityRevoked다. 그 밖의 오류는 그 요청의 결과 불명이다.
+//   - 실행 권한이 철회됐으면 ErrAuthorityRevoked다. E²가 남긴 기록이 계약 모양이 아니면 ErrObservation, 관찰 밖 칸(계정
+//     결속 참조 등)이 요청과 다르면 ErrObservationMismatch다(둘 다 진위 실패). 그 밖의 오류는 그 요청의 결과 불명이다.
 //   - 확정 단계 전용 몫(시간·요청)이 다 되면 보내지 않고 NotSent=confirmation_budget_exhausted 관찰을 돌려준다.
 //   - 요청 하나는 요청의 Timeout(확정 요청 전용 시간 상한, 사용자 결정 2026-11-18) 안에 끝나야 한다. 넘으면 E²가 끊고,
 //     보낸 뒤면 Sent=true·ResponseComplete=false·TimedOut=true(결과 불명)를 돌려준다. 다시 보내지 않는다.
@@ -74,7 +78,8 @@ type Transport interface {
 	Read(ctx context.Context, req ReadRequest) (Observation, error)
 }
 
-// Journal은 E² 저널(v3)의 봉인된 이벤트를 읽는다. 무결성 검증을 마친 이벤트만 돌려준다. 없으면 ErrJournalEventMissing이다.
+// Journal은 E² 저널(v3)의 봉인된 이벤트를 읽는다. 저널과 따로 보관한 신뢰 체크포인트까지 검증한 스냅샷의 이벤트만 돌려주고
+// 기다리지 않는다(v3 계약 §5). 검증하지 못하면 ErrJournalIntegrity, 검증된 스냅샷에 없으면 ErrJournalEventMissing이다.
 type Journal interface {
 	Sealed(ctx context.Context, binding RunBinding, ref CallRef) (Observation, error)
 }
@@ -96,9 +101,23 @@ type ResetState struct {
 	ResetConfirmed bool
 	// Residue는 지난 회차 객체를 읽어 지난 표식이 보이는지 확인한 결과다. PreviousWrites가 false면 absent다.
 	Residue Residue
+	// TargetChanged는 결속의 세대·인스턴스 참조가 지금 대상과 다른지다(실행 시작 뒤 대상 승인 판·리셋 확인·쓰기 기록·주소·
+	// TLS 키가 바뀜, 또는 지금 대상 상태를 확인하지 못함). 결속에 참조가 없으면(서버의 회차 시작 점검) 보지 않는다.
+	TargetChanged bool
 }
 
 // ResetGate는 리셋 확인 기록과 지난 표식 점검을 읽는다(최민준, 정책 선언 저장·동결).
+// WriteRecorder는 확정 단계 생성 요청의 쓰기 기록이다(기록하고 나서 보내기, 사용자 결정 2026-11-19).
+//   - Reserve: 생성 요청을 보내기 전에 그 종류의 쓰기를 "ID 모름"으로 먼저 남긴다. 남기지 못하면 확정 단계는 그 생성
+//     요청을 보내지 않고 그 종류를 UNDECIDABLE(product_write_record_unavailable)로 끝낸다.
+//   - Settle: 생성 관찰을 받은 뒤 결과로 갱신한다. created면 객체 ID digest를 채우고, not_sent(보내지 않은 것이 확실)면
+//     미리 남긴 기록을 거둔다. unknown이면 부르지 않는다(이미 ID 모름이다). 갱신이 실패해도 Reserve로 남긴 기록이 남아
+//     다음 회차를 리셋 확인 전까지 막는다.
+type WriteRecorder interface {
+	Reserve(ctx context.Context, binding RunBinding, resourceType string) error
+	Settle(ctx context.Context, binding RunBinding, write ConfirmationWrite) error
+}
+
 type ResetGate interface {
 	Check(ctx context.Context, binding RunBinding, targetRef string) (ResetState, error)
 }
@@ -113,6 +132,9 @@ const (
 	RefusePolicySourceUnavailable  StartRefusal = "policy_source_unavailable"
 	RefuseMarkerGenerationFailed   StartRefusal = "marker_generation_failed"
 	RefuseMarkerRegistrationFailed StartRefusal = "marker_registration_failed"
+	// RefuseTargetChanged는 실행 시작 때 발급한 세대·인스턴스 참조가 지금 대상과 맞지 않는 경우다. 모델 단계의 후보와 다른
+	// 대상 상태에서 확정하지 않는다(E③↔E② v3 계약 §6, "모르면 새로 발급").
+	RefuseTargetChanged StartRefusal = "target_changed"
 )
 
 // CheckRunStart는 지난 회차 쓰기 뒤 리셋 확인과 표식 잔존을 본다. 서버는 회차 시작 때(모델 단계 전) 이것으로 회차를
@@ -124,6 +146,9 @@ func CheckRunStart(ctx context.Context, gate ResetGate, binding RunBinding, targ
 	state, err := gate.Check(ctx, binding, targetRef)
 	if err != nil {
 		return RefuseResetStateUnavailable
+	}
+	if state.TargetChanged {
+		return RefuseTargetChanged
 	}
 	// 리셋 확인이 없으면 잔존 점검 결과와 관계없이 그 사유로 멈춘다(운영자가 할 일을 정확히 보인다).
 	if state.PreviousWrites && !state.ResetConfirmed {

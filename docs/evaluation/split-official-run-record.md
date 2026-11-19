@@ -115,7 +115,7 @@ E③ 인터페이스(#698)의 확정 단계 결과 `e3-confirmation-run/v1`에�
 
 ## 10. 열린 항목
 
-- O `execution_id` 서비스(§2)와 LLM 스트리밍 칸(§6)은 구현 PR에서 렌더·제품 transport로 확인한다.
+- O `execution_id` 서비스(§2)는 `preparation`으로 구현했다(R1~R3 PR). LLM 스트리밍(§6)은 B·O가 다르다(B 원본 기본값 스트리밍, 제품 OpenRouter transport는 `stream: true` 거부 = 실제 모델 O 거짓). 2026-11-19 사용자 결정으로 **선언된 차이**이고 채점기는 조건 안에서만 대조한다([고정 초안](official-protocol-fixation-draft.md) §17). 러너는 실제 값만 기록한다.
 - O 판정 수집: 제품 판정 내보내기 경로(E③ 통합 담당). 생기면 `records`와 `verdict_collection`을 채운다.
 - O E② 시도 대조(통제 지표): 계획 v4.2 3번(E② 영수증·저널 v3 평가 내보내기) 뒤.
 - **E③를 켜는 비교(측정 뒤 후속)**: 공식 측정은 E③ 비활성으로 고정했다(프로토콜 §5.1). 켤 때 필요한 수정은 측정 뒤에 다룬다. 목록만 남긴다.

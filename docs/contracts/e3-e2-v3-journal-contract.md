@@ -40,7 +40,7 @@ E² 안에서 E③ 판정(CONFIRMED·UNDECIDABLE 등)을 하지 않는다. E²�
 | `request_marker_free` | E²가 보낸 조회·신원 요청(URL·헤더·본문)에 표식이 없음을 확인했는지 | `RequestMarkerFree` |
 | `marker{status, presence, method, field}` | 응답 표식 검사: `complete`·`partial`·`unsupported`·`failed`, `present`·`absent`, 일치 방식, 검사한 선언 칸 | `Marker` |
 | `body_digest_sha256`·`body_complete` | 응답 본문 digest와 전체 여부 | `BodyDigestSHA256`·`BodyComplete` |
-| `object_id_digest` | 생성 응답 객체 ID의 digest(생성만) | `ObjectIDDigest` |
+| `object_id_digest` | 생성한 객체 ID의 digest(생성만). `id_path`면 응답에서 꺼낸 ID, `id_field`면 요청이 실은 ID(`CreateRequest.ObjectID`)로 만든다([제품 확정 단계 인터페이스](e3-product-confirmation-interface.md) §4) | `ObjectIDDigest` |
 | `subject_digest` | 신원 응답 사용자 식별자의 digest(신원만) | `SubjectDigest` |
 
 넣지 않는 것: URL 원문·본문·표식 값(어느 인코딩이든)·객체 ID 원문·사용자 식별자 원문·자격 값·세션 값.
@@ -95,8 +95,11 @@ E③ 프로그램 호출 하나의 시도 단계는 v2와 같은 이름이다(`e
 ## 6. 세대·인스턴스 참조 — **송신 활성화 전 확정 필수**
 
 - `generation_ref`(대상 세대)·`instance_ref`(대상 인스턴스)는 **서버가 확인한 대상 세대·인스턴스에서** 실행마다 발급한다(결정 §5 0단계). 발급 구현은 최민준이 대상 등록 경로에서 맡겠다고 제안했다.
-- 지금 #738 제품 연결의 `generation-<job>`·`instance-<job>`은 임시 값이고 이 발급으로 바꾼다.
-- **이동찬 확인**: 대상 리셋·인스턴스 교체 때 참조가 바뀌는 규칙(리셋하면 세대가 바뀌는지, 같은 대상 판 안에서 인스턴스를 바꾸면 어떻게 되는지).
+- **발급(구현).** 실행 시작 때 서버가 대상 기록에서 발급해 `runs/<job>/e3-target-refs.json`(0600, 한 번만)에 동결한다([제품 확정 단계 인터페이스](e3-product-confirmation-interface.md) §8 "감독자 연결"의 결과 줄).
+  - 세대: 대상 ID·origin·승인 판·승인 시각과 마지막 확정 쓰기 기록(쓰기 줄 참조·회차·시각)·리셋 확인(확인자·시각). 대상을 다시 승인하거나, 우리 확정 쓰기가 남거나, 리셋을 확인하면 바뀐다.
+  - 인스턴스: 세대와, 실행이 고정한 접속 주소(고른 IP·주소 집합·포트)·TLS 공개 키(https). 같은 세대라도 주소나 키가 바뀌면 바뀐다.
+  - **모르면 새로 발급.** 입력을 하나라도 확인할 수 없으면 실행마다 새 난수 참조(`gen-x-`·`inst-x-`)다. 확정 단계를 시작할 때 리셋 게이트가 지금 대상으로 다시 계산해 동결값과 다르거나 지금 상태를 확인할 수 없으면 요청 없이 `start_refused`·`target_changed`다. 대상이 바뀌었는데 같은 참조가 남는 경우가 없다(시험으로 고정).
+- **이동찬 확인**: 대상 리셋·인스턴스 교체를 서버가 어떤 신호로 알게 할지. 지금은 리셋 확인 기록과 주소·TLS 키만 보므로, 같은 주소·키로 운영자 확인 없이 다시 만든 인스턴스는 같은 참조가 된다. 신호가 정해지면 입력에 더한다.
 
 ## 7. 실패 처리(어댑터 → E③ 상태·사유)
 
@@ -161,6 +164,7 @@ fail-closed는 #698 계약 그대로다. 진위 실패면 판정 행을 만들�
 
 - E²가 목적별 프로그램 요청(신원·생성·조회)과 검증된 v3 이벤트 조회를 Go 인터페이스로 내놓고, 어댑터가 그것을 `e3contract.Transport`·`Journal`로 바꾼다. E² 안에서 E③ 판정을 하지 않는다.
 - 어댑터가 기대는 E² 인터페이스(제안, 이동찬 확인): `RegisterMarker(binding, marker)`, `Send(요청) → 그 호출의 마지막 이벤트`(기록·Sync·정본 head 게시 ACK 뒤 반환, 게시 실패·ACK 미확인이면 이벤트 없이 오류, §5), `AccountBindingRef(binding, label) → 지금 결속된 참조`, `Verified(binding, ref) → 현재 head까지 검증한 스냅샷의 그 호출 마지막 이벤트`. 이벤트는 §2의 칸 이름 그대로다. 어댑터는 이벤트를 §2.3으로 검사하고 §2.2 표대로 관찰로 옮기며, 관찰에 없는 `account_binding_ref`만 직접 대조한다(나머지 대조는 `e3contract.Run`).
+- 요청 칸(`Send`의 요청): 생성은 확정 단계가 조립한 본문(`RequestBody`, 표식 포함, 직렬화 막힘)과 `id_field`면 객체 ID를, 조회는 `id_field`면 객체 ID를 싣는다. E²는 본문을 그대로 보내고 조회 경로 틀의 `{id}`에 그 ID를 넣는다([제품 확정 단계 인터페이스](e3-product-confirmation-interface.md) §4 "E²에서 바뀌는 것", 이동찬 확인). v3 이벤트·영수증·E² 공유 로그에는 `id_field` ID 원문도 넣지 않는다(§2.2 "넣지 않는 것" 그대로, `object_id_digest`만). ID가 비밀이 아니라는 것은 대상으로 보내는 조회 경로에 들어가고 E③ 결과·쓰기 기록에 원문이 남아도 된다는 뜻이지, 저널·로그에 일부러 남긴다는 뜻이 아니다. 표식은 어디에도 없다.
 - 어댑터는 먼저 **가짜 v3 저널**(같은 인터페이스, 시험 전용)로 구현하고, 실제 v3가 들어오면 가짜 자리에 바꿔 끼운다.
 - 가짜 저널로 고정할 반례(관찰을 돌려주지 않아야 하는 것):
   1. 신뢰 체크포인트 없음 → 무결성 실패. `Transport` 쪽: 로컬 Sync는 됐지만 정본 head 게시가 실패하거나 ACK를 확인하지 못함 → 관찰 성공 없이 오류(결과 불명), 그 뒤 송신 없음.

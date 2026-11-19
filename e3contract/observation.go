@@ -122,8 +122,13 @@ type Observation struct {
 	At            time.Time `json:"at"`
 }
 
-// ErrObservation은 관찰이 계약 모양이 아닌 경우다. 진위 실패로 다룬다.
+// ErrObservation은 관찰이 계약 모양이 아닌 경우다. 진위 실패로 다룬다. Transport가 이 오류를 돌려줘도(E² v3 이벤트가
+// 단계별 필수 조건을 어김 등, v3 계약 §2.3) 같다.
 var ErrObservation = errors.New("e3contract: 관찰이 계약 모양이 아니다")
+
+// ErrObservationMismatch는 Transport가 관찰 밖 칸으로 요청과 다름을 확인한 경우다(예: v3 이벤트의 계정 결속 참조가
+// 그 실행·라벨의 결속이 아님, v3 계약 §4). 진위 실패(observation_mismatch)로 다룬다.
+var ErrObservationMismatch = errors.New("e3contract: 관찰이 요청과 맞지 않는다")
 
 // Validate는 관찰 하나의 모양과 칸 사이 불변식을 본다.
 func (o Observation) Validate() error {

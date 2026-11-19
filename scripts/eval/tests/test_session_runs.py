@@ -18,12 +18,15 @@ from manifest import load_manifests  # noqa: E402
 from run_record import sign_run_record  # noqa: E402
 from runner import RESULT_FORMAT  # noqa: E402
 from session_runs import (  # noqa: E402
-    RESULT_MISSING, SessionError, auxiliary, build_manifest, expected_order, main, read_session, tally,
+    FAULT_STALL_LIMIT_PER_SIDE, RESULT_MISSING, SessionError, auxiliary, build_manifest, expected_order, fault_stall_tally, main,
+    read_session, tally,
 )
 
 CONDITION = {"baseline": "원본@35b", "ours": "우리@35b"}
 KEY = bytes(range(32))
 
+
+STALL_T = 180  # 시험용 멈춤 판정 T(초)
 
 def write(path: Path, value: dict, signed: bool) -> None:
     """러너처럼 완료 결과·회차 기록은 서명해서, 무효 결과는 서명 없이 쓴다."""
@@ -49,10 +52,14 @@ class Session:
         write(directory / "runner-result.json", result, signed=fields.get("status") == "complete")
 
     def complete(self, side: str, minute: int, repeat: int, condition: str | None = None,
-                 task: str = "t" * 64, e2_mode: object = "none", total_requests: object = 400, **result_fields) -> Path:
+                 task: str = "t" * 64, e2_mode: object = "none", total_requests: object = 400,
+                 stall: int | None = STALL_T, **result_fields) -> Path:
         directory = self._dir(side, minute)
+        # 러너가 설정한 T로 판정한 멈춤 기록(결정안 §7). stall=None이면 판정하지 않은 회차다.
+        fault_stall = ({"format": "abc2lab-eval-runner-fault-stall-v2", "judged": False} if stall is None else
+                       {"format": "abc2lab-eval-runner-fault-stall-v2", "judged": True, "stall_seconds": stall, "stalls": 0})
         self._result(directory, side, minute, status="complete", task_request_sha256=task.replace("t", "a"),
-                     e2_mode=e2_mode, **result_fields)
+                     e2_mode=e2_mode, fault_stall=fault_stall, **result_fields)
         record = {"run_id": directory.name, "engine": side, "condition": condition or CONDITION[side],
                   "repeat_index": repeat, "model_tag": "qwen/qwen3.6-35b-a3b", "reset_generation": "r" * 64,
                   "total_requests": total_requests, "blocked_attempts": None, "elapsed_seconds": 1200.5,
@@ -236,6 +243,62 @@ class TestTally(SessionCase):
         # 재실행이 교대 순서를 지켰으니 유효 순서는 기대의 앞부분과 같다.
         self.assertIn("유효 순서: B O (기대 B O O B B O: 일치)", lines)
         self.assertTrue(any(w.startswith("경고[유효 부족] ours") for w in warnings))
+
+    def test_fault_stall_counts_are_always_shown_per_side(self):
+        # 결정안 §7: 쪽별 provider_fault_stall 무효 수는 0이어도 늘 싣는다. 첫 사유로만 센다(러너가 멈춤을 첫 사유로 둔다).
+        self.s.complete("baseline", 0, 0)
+        self.s.invalid("ours", 5, "provider_fault_stall", "llm_generation_unverified")
+        self.s.invalid("ours", 7, "drain_timeout", "provider_fault_stall")
+        self.s.complete("ours", 10, 0)
+        lines, failures = fault_stall_tally(read_session(self.root, KEY))
+        self.assertIn(f"| baseline | 0 | {FAULT_STALL_LIMIT_PER_SIDE} |", lines)
+        self.assertIn(f"| ours | 1 | {FAULT_STALL_LIMIT_PER_SIDE} |", lines)
+        self.assertEqual(failures, [])
+
+    def test_fault_stall_limit_on_one_side_fails_the_whole_measurement(self):
+        # 고정 초안 §3: 한쪽이라도 상한(2) 이상이면 남은 유효 회차가 있어도 측정 전체 실패, manifest를 쓰지 않는다
+        self.official()
+        for minute in (40, 45):
+            self.s.invalid("baseline", minute, "provider_fault_stall")
+        lines, failures = fault_stall_tally(read_session(self.root, KEY))
+        self.assertEqual(len(failures), 1)
+        self.assertTrue(failures[0].startswith("측정 실패[멈춤 무효] baseline: provider_fault_stall 2회"), failures)
+        out = self.root.parent / "manifest.json"
+        with contextlib.redirect_stdout(io.StringIO()) as printed, contextlib.redirect_stderr(io.StringIO()) as err:
+            code = main([str(self.root), "--repeats", "3", "--runner-key-file", str(self.key_file), "--manifest", str(out)])
+        self.assertEqual(code, 3)
+        self.assertFalse(out.exists())
+        self.assertIn("| baseline | 2 |", printed.getvalue())
+        self.assertIn("측정 실패[멈춤 무효]", err.getvalue())
+
+    def test_one_fault_stall_per_side_still_writes_the_manifest(self):
+        self.official()
+        self.s.invalid("baseline", 40, "provider_fault_stall")
+        self.s.invalid("ours", 45, "provider_fault_stall")
+        out = self.root.parent / "manifest.json"
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            code = main([str(self.root), "--repeats", "3", "--runner-key-file", str(self.key_file), "--manifest", str(out)])
+        self.assertEqual(code, 0)
+        self.assertEqual(len(json.loads(out.read_text(encoding="utf-8"))["runs"]), 6)
+
+    def test_unjudged_or_mixed_t_runs_stop_the_session(self):
+        # 멈춤 여부를 모르는 완료 회차(T 없이 돈 회차)는 집계하지 않는다. 스모크만 플래그로 연다.
+        self.s.complete("baseline", 0, 0)
+        self.s.complete("ours", 5, 0, stall=None)
+        with self.assertRaises(SessionError) as caught:
+            read_session(self.root, KEY)
+        self.assertTrue(any("판정하지 않은 완료 회차" in e for e in caught.exception.errors), caught.exception.errors)
+        self.assertEqual(len(read_session(self.root, KEY, allow_unjudged_fault_stall=True)), 2)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(main([str(self.root), "--repeats", "3", "--runner-key-file", str(self.key_file)]), 2)
+            self.assertEqual(main([str(self.root), "--repeats", "3", "--runner-key-file", str(self.key_file),
+                                   "--allow-unjudged-fault-stall"]), 0)
+        # B·O가 다른 T로 판정했으면 플래그가 있어도 비교하지 않는다
+        self.s.complete("ours", 10, 1, stall=600)
+        for allow in (False, True):
+            with self.subTest(allow=allow), self.assertRaises(SessionError) as caught:
+                read_session(self.root, KEY, allow_unjudged_fault_stall=allow)
+            self.assertTrue(any("T가 회차마다 다름 [180, 600]" in e for e in caught.exception.errors), caught.exception.errors)
 
     def test_valid_order_that_breaks_the_alternation_is_flagged(self):
         for minute, (side, repeat) in enumerate([("baseline", 0), ("ours", 0), ("baseline", 1), ("ours", 1)]):

@@ -6,8 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,7 +33,8 @@ func declaration() e3contract.Declaration {
 		TargetApprovalRevision: "approval-3", DeclaredBy: "operator-1", DeclaredAt: t0,
 		Identity: e3contract.IdentitySpec{Path: "/api/me", SubjectIDPath: "id"},
 		Types: []e3contract.TypeDeclaration{ownerOnly("note", "/api/notes"),
-			{Type: "post", Sharing: e3contract.SharingShared}, ownerOnly("secret", "/api/secrets")}}
+			{Type: "post", Sharing: e3contract.SharingShared}, ownerOnly("secret", "/api/secrets")},
+		OwnerAccountLabel: "tester-a", CrossAccountLabel: "tester-b", AccountsSamePrivilege: true}
 }
 
 // seed는 표식 난수다. 같은 seed로 시험이 Run과 같은 표식을 다시 만들 수 있다.
@@ -55,11 +58,12 @@ func testMarker(t *testing.T) e3contract.Marker {
 }
 
 type fixture struct {
-	fake  *e3fake.Transport
-	decls e3fake.Declarations
-	reset e3fake.Reset
-	in    e3contract.Input
-	logs  *bytes.Buffer
+	fake   *e3fake.Transport
+	decls  e3fake.Declarations
+	reset  e3fake.Reset
+	writes *e3fake.Writes
+	in     e3contract.Input
+	logs   *bytes.Buffer
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -73,9 +77,10 @@ func newFixture(t *testing.T) *fixture {
 	fake.Behaviors[e3fake.Key{Purpose: e3contract.PurposeIdentity, Role: e3contract.RoleOwner}] = e3fake.Behavior{SubjectID: "user-a"}
 	fake.Behaviors[e3fake.Key{Purpose: e3contract.PurposeIdentity, Role: e3contract.RoleCross}] = e3fake.Behavior{SubjectID: "user-b"}
 	return &fixture{
-		fake:  fake,
-		decls: e3fake.Declarations{Stored: map[string]e3contract.Declaration{frozenRef: decl}},
-		reset: e3fake.Reset{State: e3contract.ResetState{Residue: e3contract.ResidueAbsent}},
+		fake:   fake,
+		writes: &e3fake.Writes{Transport: fake},
+		decls:  e3fake.Declarations{Stored: map[string]e3contract.Declaration{frozenRef: decl}},
+		reset:  e3fake.Reset{State: e3contract.ResetState{Residue: e3contract.ResidueAbsent}},
 		in: e3contract.Input{
 			Binding: e3contract.RunBinding{JobRef: "job-1", RunRef: "run-1", TaskRef: "task-1", E2PolicyRef: "e2-policy-1",
 				GenerationRef: "gen-1", InstanceRef: "inst-1", Policy: src},
@@ -92,7 +97,7 @@ func newFixture(t *testing.T) *fixture {
 }
 
 func (f *fixture) deps() e3contract.Deps {
-	return e3contract.Deps{Transport: f.fake, Journal: f.fake, Declarations: f.decls, Reset: f.reset,
+	return e3contract.Deps{Transport: f.fake, Journal: f.fake, Declarations: f.decls, Reset: f.reset, Writes: f.writes,
 		Random: bytes.NewReader(seed()), Now: func() time.Time { return t0 }, Logger: slog.New(slog.NewJSONHandler(f.logs, nil))}
 }
 
@@ -339,6 +344,24 @@ func TestRunJournalCrossCheck(t *testing.T) {
 		f.fake.DropJournal = func(c e3fake.Call) bool { return c.Key == cross }
 		integrityFailed(t, f.run(t), e3contract.IntegrityJournalEventMissing)
 	})
+	// 저널을 검증하지 못하면(신뢰 체크포인트 없음·불일치, MAC·체인 오류 등) 이벤트 없음과 다른 사유로 남는다(v3 계약 §5·§7).
+	// 그 밖의 오류도 검증을 마치지 못한 것이라 무결성 실패다. 어느 쪽이든 판정 행 없이 진위 실패다.
+	for name, err := range map[string]error{
+		"integrity":         e3contract.ErrJournalIntegrity,
+		"integrity_wrapped": fmt.Errorf("checkpoint mismatch: %w", e3contract.ErrJournalIntegrity),
+		"other":             errors.New("journal read failed"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			f.fake.SealedErr = err
+			integrityFailed(t, f.run(t), e3contract.IntegrityJournalIntegrityFailed)
+		})
+	}
+	t.Run("missing_wrapped", func(t *testing.T) {
+		f := newFixture(t)
+		f.fake.SealedErr = fmt.Errorf("not in verified snapshot: %w", e3contract.ErrJournalEventMissing)
+		integrityFailed(t, f.run(t), e3contract.IntegrityJournalEventMissing)
+	})
 	alter := map[string]func(*e3contract.Observation){
 		// 돌려준 값은 "표식 있음", 봉인된 저널은 "표식 없음"이다.
 		"presence": func(o *e3contract.Observation) {},
@@ -375,6 +398,17 @@ func TestRunJournalCrossCheck(t *testing.T) {
 		f := newFixture(t)
 		f.fake.Behaviors[cross] = e3fake.Behavior{Err: e3contract.ErrAuthorityRevoked}
 		integrityFailed(t, f.run(t), e3contract.IntegrityAuthorityRevoked)
+	})
+	// Transport가 E² 기록의 모양 위반·관찰 밖 칸 불일치를 오류로 알리면 결과 불명이 아니라 진위 실패다(v3 계약 §7).
+	t.Run("transport_observation_invalid", func(t *testing.T) {
+		f := newFixture(t)
+		f.fake.Behaviors[cross] = e3fake.Behavior{Err: fmt.Errorf("event stage: %w", e3contract.ErrObservation)}
+		integrityFailed(t, f.run(t), e3contract.IntegrityObservationInvalid)
+	})
+	t.Run("transport_observation_mismatch", func(t *testing.T) {
+		f := newFixture(t)
+		f.fake.Behaviors[cross] = e3fake.Behavior{Err: fmt.Errorf("account binding: %w", e3contract.ErrObservationMismatch)}
+		integrityFailed(t, f.run(t), e3contract.IntegrityObservationMismatch)
 	})
 }
 
@@ -433,6 +467,7 @@ func TestRunDisabledSendsNothing(t *testing.T) {
 		"no_transport":    {func(_ *fixture, d *e3contract.Deps) { d.Transport = nil }, e3contract.DisabledNotWired},
 		"no_journal":      {func(_ *fixture, d *e3contract.Deps) { d.Journal = nil }, e3contract.DisabledNotWired},
 		"no_reset":        {func(_ *fixture, d *e3contract.Deps) { d.Reset = nil }, e3contract.DisabledNotWired},
+		"no_writes":       {func(_ *fixture, d *e3contract.Deps) { d.Writes = nil }, e3contract.DisabledNotWired},
 		"no_declaration":  {func(f *fixture, _ *e3contract.Deps) { f.in.Binding.Policy = e3contract.PolicySource{} }, e3contract.DisabledNoDeclaration},
 		"binding_invalid": {func(f *fixture, _ *e3contract.Deps) { f.in.Binding.RunRef = "run\n1" }, e3contract.DisabledBindingInvalid},
 		// 연결이 없으면 선언이 없어도 not_wired다(최종 이미지에서 not_wired가 나오지 않는지 이 순서로 드러난다).
@@ -484,6 +519,10 @@ func TestRunResetGate(t *testing.T) {
 		"residue_empty":         {e3fake.Reset{State: e3contract.ResetState{}}, e3contract.RefuseResetStateUnavailable},
 		// 오류와 함께 돌아온 상태가 멀쩡해 보여도 오류가 이긴다.
 		"gate_error": {e3fake.Reset{State: e3contract.ResetState{Residue: e3contract.ResidueAbsent}, Err: errors.New("저널 읽기 실패")}, e3contract.RefuseResetStateUnavailable},
+		// 실행 시작 뒤 대상이 바뀌었으면(또는 지금 대상을 확인하지 못하면) 다른 상태가 깨끗해도 요청 없이 멈춘다(v3 계약 §6).
+		"target_changed": {e3fake.Reset{State: e3contract.ResetState{Residue: e3contract.ResidueAbsent, TargetChanged: true}}, e3contract.RefuseTargetChanged},
+		// 대상이 바뀐 것이 리셋 확인 없음보다 먼저다(지난 쓰기의 리셋 여부가 바뀐 대상 기준이 아님).
+		"target_changed_before_reset": {e3fake.Reset{State: e3contract.ResetState{PreviousWrites: true, Residue: e3contract.ResidueAbsent, TargetChanged: true}}, e3contract.RefuseTargetChanged},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -765,4 +804,99 @@ func TestRunResultOmitsUnvalidatedInput(t *testing.T) {
 	if res.Binding == nil || *res.Binding != ok.in.Binding || bytes.Contains(raw, []byte("bad ref")) || len(res.Candidates) != 2 {
 		t.Fatalf("검증된 결속·후보: %+v", res)
 	}
+}
+
+// 운영자 중지로 실행 문맥이 끝나 봉인 조회가 중단되면 진위 실패가 아니라 중단(interrupted)이다. 검증하지 못한 관찰은 판정에
+// 쓰지 않는다. 문맥이 살아 있는데 저널이 취소 오류를 돌려주면 여전히 무결성 실패다(#753 이동찬 리뷰).
+func TestRunSealedCancelledByStop(t *testing.T) {
+	cross := key(e3contract.PurposeRead, e3contract.RoleCross, "note")
+	f := newFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	deps := f.deps()
+	deps.Journal = cancelOnSealed{Transport: f.fake, cancel: cancel, key: cross, calls: f.fake.Calls}
+	res := e3contract.Run(ctx, deps, f.in)
+	noConfirmed(t, res)
+	if res.Status != e3contract.StatusInterrupted || res.Reason != "" {
+		t.Fatalf("중지로 끊긴 조회: %+v", res)
+	}
+	for _, v := range res.Verdicts {
+		if v.ResourceType == "note" {
+			t.Fatalf("검증 못 한 관찰로 판정: %+v", v)
+		}
+	}
+	// 문맥은 살아 있는데 저널이 취소 오류를 돌려줌 → 무결성 실패.
+	f = newFixture(t)
+	f.fake.SealedErr = context.Canceled
+	integrityFailed(t, f.run(t), e3contract.IntegrityJournalIntegrityFailed)
+}
+
+// cancelOnSealed는 교차 조회의 봉인 조회 때 실행 문맥을 끊고 그 오류를 돌려준다(운영자 중지가 조회 중에 옴).
+type cancelOnSealed struct {
+	*e3fake.Transport
+	cancel context.CancelFunc
+	key    e3fake.Key
+	calls  func() []e3fake.Call
+}
+
+func (c cancelOnSealed) Sealed(ctx context.Context, b e3contract.RunBinding, ref e3contract.CallRef) (e3contract.Observation, error) {
+	calls := c.calls()
+	if len(calls) > 0 && calls[len(calls)-1].Key == c.key {
+		c.cancel()
+		return e3contract.Observation{}, ctx.Err()
+	}
+	return c.Transport.Sealed(ctx, b, ref)
+}
+
+// 확정 단계 시간 몫이 끝나(실행 문맥 마감) 봉인 조회가 중단되면 그 종류는 예산 사유 UNDECIDABLE이고 진위 실패가 아니다.
+func TestRunSealedDeadlineIsBudget(t *testing.T) {
+	cross := key(e3contract.PurposeRead, e3contract.RoleCross, "note")
+	f := newFixture(t)
+	ctx := &flipDeadline{Context: context.Background(), done: make(chan struct{})}
+	deps := f.deps()
+	deps.Journal = expireOnSealed{Transport: f.fake, ctx: ctx, key: cross, calls: f.fake.Calls}
+	res := e3contract.Run(ctx, deps, f.in)
+	noConfirmed(t, res)
+	if res.Status == e3contract.StatusIntegrityFailed {
+		t.Fatalf("시간 몫 끝을 진위 실패로: %+v", res)
+	}
+	if v := verdictOf(t, res, "note"); v.Value != oracle.Undecidable || !hasReason(v, e3contract.ReasonConfirmationBudgetExhaust) {
+		t.Fatalf("note: %+v", v)
+	}
+}
+
+// flipDeadline은 expire 뒤로 마감이 지난 문맥이다.
+type flipDeadline struct {
+	context.Context
+	done    chan struct{}
+	expired atomic.Bool
+}
+
+func (d *flipDeadline) Done() <-chan struct{} { return d.done }
+func (d *flipDeadline) Err() error {
+	if d.expired.Load() {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+func (d *flipDeadline) expire() {
+	if d.expired.CompareAndSwap(false, true) {
+		close(d.done)
+	}
+}
+
+type expireOnSealed struct {
+	*e3fake.Transport
+	ctx   *flipDeadline
+	key   e3fake.Key
+	calls func() []e3fake.Call
+}
+
+func (e expireOnSealed) Sealed(ctx context.Context, b e3contract.RunBinding, ref e3contract.CallRef) (e3contract.Observation, error) {
+	calls := e.calls()
+	if len(calls) > 0 && calls[len(calls)-1].Key == e.key {
+		e.ctx.expire()
+		return e3contract.Observation{}, ctx.Err()
+	}
+	return e.Transport.Sealed(ctx, b, ref)
 }

@@ -78,12 +78,16 @@ from runner_engine import (  # noqa: E402
     TaskRequest,
 )
 from runner_goal import common_goal, common_goal_sha256  # noqa: E402
-from cli_usage import count_usage  # noqa: E402
+from cli_usage import OBSERVED_LINES_FORMAT, count_usage, observed_lines  # noqa: E402
 
 CLI_USAGE_NAME = "cli-usage.json"
+# 이름이 관측된 명령의 가린 원문 한 줄(사람 확인용, 관측이 없으면 파일을 만들지 않는다).
+CLI_LINES_NAME = "cli-observed-lines.json"
 BASH_TOOL = "Bash"  # 원본 Worker 셸 도구 이름(activity.tool)
 from runner_split import REGISTRATION_PATHS  # noqa: E402
-from runner_fault import FAULT_STALL_FORMAT, FAULT_STALL_NAME, FaultRecordError, fault_stall_record  # noqa: E402
+from runner_fault import (  # noqa: E402
+    FAULT_STALL_FORMAT, FAULT_STALL_NAME, FaultRecordError, fault_stall_outcome, fault_stall_record,
+)
 from runner_evidence import (  # noqa: E402
     DRAINED_MARKER, SEALED_MARKER, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles,
     drain_complete, e2_stub_counts, final_log_consistent, forwarded_by_method, forwarded_count, read_private_json, diagnostic_rows, ingress_counts, validate_ingress_layout,
@@ -307,6 +311,8 @@ class RunSpec:
     cli_usage_names: tuple[str, ...] = ()
     # 계측기 이미지의 기대 빌드 커밋(사전검사 선언의 개선 후 source_sha). 회차 전 점검이 대조한다.
     meter_source_sha: str = ""
+    # 멈춤 무효 판정 T(초). None이면 판정 재료만 남긴다(결정안 §7).
+    fault_stall_seconds: int | None = None
 
 
 class WatchHandle(Protocol):
@@ -653,8 +659,8 @@ def _wait_drained(spec: RunSpec, meter: MeterFiles, clock: Clock, state: _State)
 
 
 def _fault_stall(gateway: GatewayFiles, meter_rows: list[dict], window_start: str, window_end: str, engine_end: dict) -> dict:
-    """제공자 장애 멈춤 판정 재료(결정안 §7, 4-5). T·비율 상한이 아직 없어 회차 유효성에 쓰지 않고 기록만 한다. 그래서
-    게이트웨이 행이나 시각을 읽지 못해도 회차를 무효로 하지 않고 고정 코드만 남긴다(게이트웨이 기록 완결성은 검증 표식의
+    """제공자 장애 멈춤 판정 재료(결정안 §7, 4-5). 게이트웨이 행이나 시각을 읽지 못하면 고정 코드만 남긴다. 판정(T가 설정됐을
+    때)은 fault_stall_outcome이 하고, 그때 재료가 없으면 멈춤이 없다고 하지 않고 무효다(게이트웨이 기록 완결성은 검증 표식의
     log_complete가 따로 본다)."""
     terminal = (engine_end.get("first_terminal") or {}).get("at")
     try:
@@ -937,11 +943,15 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         verified, spec.llm_backend, spec.llm_provider_slug, spec.llm_provider_name, spec.llm_sampling, interrupted))
     _step(state, "evidence_write_failed", lambda: evidence.write_json("llm-summary.json",
                                                                       dict(llm_summary, reasons=llm_reasons)))
+    state.fault_stall, stall_reason = fault_stall_outcome(
+        _fault_stall(gateway, rows, requested_at, engine_end_at, state.engine_end), spec.fault_stall_seconds)
+    _step(state, "evidence_write_failed", lambda: evidence.write_json(FAULT_STALL_NAME, state.fault_stall))
+    if stall_reason:
+        # 멈춤을 첫 사유로 둔다(세션 집계가 쪽별 멈춤 무효 수를 첫 사유로 센다). 같이 난 모델 호출 검증 사유는 뒤에 남는다.
+        raise RunFailure(stall_reason, tuple(llm_reasons))
     if llm_reasons:
         # 사유가 여럿이면 정렬 첫째를 회차 사유로, 전부는 llm-summary.json에 남는다.
         raise RunFailure(llm_reasons[0])
-    state.fault_stall = _fault_stall(gateway, rows, requested_at, engine_end_at, state.engine_end)
-    _step(state, "evidence_write_failed", lambda: evidence.write_json(FAULT_STALL_NAME, state.fault_stall))
     if spec.llm_serving is not None:
         _check_serving(spec, ports, evidence, state, SERVING_POST)
     findings = _step(state, "findings_failed", ports.findings)
@@ -949,9 +959,17 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     if spec.cli_usage_names:
         # 원본 도구 실행 기록에서 B에만 있는 CLI 이름별 Bash 호출 수만 남긴다(원문은 메모리에서만 본다, 결정안 §10).
         commands = _step(state, "cli_usage_failed", lambda: ports.command_records(task_id))
-        usage = _step(state, "cli_usage_failed", lambda: dict(count_usage(
-            [record for record in commands["records"] if record["tool"] == BASH_TOOL], spec.cli_usage_names, with_failures=False),
-            exploration_id=commands["exploration_id"]))
+        bash = [record for record in commands["records"] if record["tool"] == BASH_TOOL]
+        usage = _step(state, "cli_usage_failed", lambda: dict(count_usage(bash, spec.cli_usage_names, with_failures=False),
+                                                              exploration_id=commands["exploration_id"]))
+        if usage["names_seen"]:
+            # 관측된 명령마다 한 줄의 모양(관측 이름·셸 연산자만, 나머지는 전부 <인자>)을 남긴다(2026-11-19 사용자
+            # 결정 4, #736 리뷰: 자격 가림은 별도 옵션 인자로 준 자격을 못 가려 원문 줄은 남기지 않는다). 확인은 사람이 이 모양만
+            # 보고 한다. 셸 낱말로 못 나누는 줄은 보류만 적는다. 관측이 없으면 아무것도 남기지 않는다.
+            picked, observed = _step(state, "cli_usage_failed", lambda: observed_lines(bash, spec.cli_usage_names))
+            _step(state, "evidence_write_failed", lambda: evidence.write_json(CLI_LINES_NAME, {
+                "format": OBSERVED_LINES_FORMAT, "observed_calls": observed, "lines": picked}))
+            usage["observed_lines"] = len(picked)
         _step(state, "evidence_write_failed", lambda: evidence.write_json(CLI_USAGE_NAME, usage))
     intercepted = _step(state, "intercept_summary_failed", ports.intercept_summary)
     _step(state, "evidence_write_failed", lambda: evidence.write_json("intercept-summary.json", intercepted))
@@ -1686,7 +1704,7 @@ def build_spec(config: RunnerConfig, plan: RunPlan, preflight: dict, task_reques
         state_memory_enabled=config.state is not None and config.state["memory"] is not None,
         engine_rules_sha256=engine_rules_sha256, task_origin=plan.task_origin, goal_common_sha256=goal_common_sha256,
         cli_usage_names=config.split.cli_usage_names if config.split is not None and plan.side == "baseline" else (),
-        meter_source_sha=preflight["ours"]["source_sha"])
+        meter_source_sha=preflight["ours"]["source_sha"], fault_stall_seconds=config.fault_stall_seconds)
 
 
 def plan_task(task: dict, plan: RunPlan, declared_origin: str) -> tuple[TaskRequest, str | None]:
@@ -1739,7 +1757,7 @@ def main(argv: list[str] | None = None) -> int:
         if config.split is not None and args.side == POLICY_SWITCH_SIDE:
             # 분리 배치 O는 제품 배치로만 돈다(runner_split_main). 늦게 불러오는 것은 그 모듈이 이 모듈을 쓰기 때문이다.
             from runner_split_main import run_split_ours
-            return run_split_ours(config, preflight, repeat_index=args.repeat)
+            return run_split_ours(config, preflight, repeat_index=args.repeat, condition=args.condition)
         plan = plan_run(config, preflight, args.side, new_run_id(args.side))
         task, goal_common_sha256 = plan_task(config.task, plan, preflight[plan.side]["target_origin"])
         vocabulary, vocabulary_sha256 = load_vocabulary(config.findings["vocabulary_path"])

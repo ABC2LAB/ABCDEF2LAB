@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -47,22 +48,7 @@ func (b *urlPreparationRuntime) issue(l *urlLoadedProfile, jobID string, actual 
 	if root.Mkdir("state", 0700) != nil {
 		return c, errPreparation
 	}
-	write := func(name string, raw []byte) error {
-		if !managementReference.MatchString(name) {
-			return errPreparation
-		}
-		f, err := root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-		if err != nil {
-			return errPreparation
-		}
-		_, writeErr := f.Write(raw)
-		syncErr := f.Sync()
-		closeErr := f.Close()
-		if writeErr != nil || syncErr != nil || closeErr != nil {
-			return errPreparation
-		}
-		return nil
-	}
+	write := func(name string, raw []byte) error { return writeRootPrivateFile(root, name, raw) }
 	for name, raw := range l.materials {
 		if write(name, raw) != nil {
 			return c, errPreparation
@@ -90,9 +76,19 @@ func (b *urlPreparationRuntime) issue(l *urlLoadedProfile, jobID string, actual 
 				return c, errPreparation
 			}
 		}
+		// E③ 세대·인스턴스 참조(v3 계약 §6): 지금 대상 상태로 실행마다 발급해 동결한다. 확정 단계를 시작할 때 리셋 게이트가
+		// 지금 대상과 다시 대조한다. 대상 상태를 모르면 새 난수 참조라 확정 단계는 target_changed로 멈춘다.
+		refs, err := l.productRegistry.issueTargetRefs(l.productTarget.Target.ID, rand.Reader)
+		if err != nil {
+			return c, errPreparation
+		}
+		raw, err := refs.marshal()
+		if err != nil || write(productTargetRefsFile, raw) != nil {
+			return c, errPreparation
+		}
 	}
-	// E③ 확정 단계 몫(사용자 결정 2026-11-18 ②). 확정 단계는 아직 서버에 연결되지 않아(E② Transport·Journal 통합 전)
-	// 이 회차는 확정 요청을 보내지 않는다. 그래서 위에서 선언을 동결했더라도 몫은 0이다. 동결 선언의 확정 대상 종류 수를
+	// E③ 확정 단계 몫(사용자 결정 2026-11-18 ②). 확정 단계는 감독자에 연결됐지만 E② Transport·Journal이 아직 없어
+	// not_wired로 끝나고, 이 회차는 확정 요청을 보내지 않는다. 그래서 위에서 선언을 동결했더라도 몫은 0이다. 동결 선언의 확정 대상 종류 수를
 	// 몫에 반영하는 일은 확정 단계 연결과 같이 한다. 그 전에 몫을 떼면 모델 단계 예산만 이유 없이 준다.
 	policy = withE3ConfirmationShare(policy, l.profile.Budget.DurationSeconds, 0)
 	raw, err := json.Marshal(policy)

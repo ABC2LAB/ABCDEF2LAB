@@ -213,7 +213,8 @@ var declarationServerFields = map[string]bool{"version": true, "target_ref": tru
 // productDeclarationRequest는 대상 정책 선언 경로를 제품 제어 요청으로 바꾼다(E③ 확정 경로 계약 §3).
 //
 //	GET /api/product/targets/{id}/declaration  조회(state none·active·invalid)
-//	PUT /api/product/targets/{id}/declaration  {"target_revision": N, "declaration": {"identity": …, "types": […]}} 통째 저장
+//	PUT /api/product/targets/{id}/declaration  {"target_revision": N, "declaration": {"identity": …, "types": […],
+//	    "owner_account_label"?, "cross_account_label"?, "accounts_same_privilege"?}} 통째 저장
 //
 // 거부한 칸의 값은 응답·로그에 넣지 않는다.
 func productDeclarationRequest(w http.ResponseWriter, r *http.Request, request *diagnosisprep.ProductRequest) bool {
@@ -250,7 +251,10 @@ func productDeclarationRequest(w http.ResponseWriter, r *http.Request, request *
 		if declarationServerFields[key] {
 			return invalid(key)
 		}
-		if key != "identity" && key != "types" {
+		switch key {
+		// 확정 단계 계정 역할(계약 §4)은 선택 칸이다. 모양·짝 검사는 준비 프로세스(e3contract.Declaration.Validate)가 칸 이름으로 한다.
+		case "identity", "types", "owner_account_label", "cross_account_label", "accounts_same_privilege":
+		default:
 			return invalid("declaration")
 		}
 	}

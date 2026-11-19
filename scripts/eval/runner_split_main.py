@@ -24,6 +24,7 @@ from runner_config import (
     METER_SERVICE, POLICY_SWITCH_SIDE, Image, RunnerConfig, RunnerConfigError, create_run_directory, gateway_sampling,
     new_run_id,
 )
+from runner_checks import Listener
 from runner_docker import Docker, DockerError, client_environment, run_docker
 from runner_evidence import EvidenceDir, MeterFiles
 from runner_product import ModelKey, ProductAPIError, ProductDriver, loopback_send
@@ -39,7 +40,7 @@ from runner_split_config import (
 )
 from runner_split_inputs import SplitInputsError, prepare_split_inputs, remove_split_inputs, run_openssl
 from runner_split_ports import DockerSplitPorts
-from runner_split_run import COMPLETE, SplitRunSpec, execute_split_run
+from runner_split_run import COMPLETE, SplitRunSpec, execute_split_run, missing_record_fields
 from runner_window import healthcheck_actions
 
 MODEL_KEY_NAME = "EVAL_LLM_API_KEY"
@@ -58,6 +59,10 @@ class SplitDeclared:
     llm_sampling: dict | None = None
     llm_model: str = ""  # 선언 모델(합성 모드는 스크립트 모델 이름)
     context_window_k: int = 0  # 합성 모드 local_model 칸(선언 context_window_k)
+    # v1.1 러너 기록 칸(B build_spec과 같은 선언 값)
+    target_origin: str = ""
+    fixture_fingerprint: str = ""
+    environment_fingerprint: str = ""
 
 
 def split_declared(config: RunnerConfig, preflight: object, manifest: dict | None) -> SplitDeclared:
@@ -96,7 +101,9 @@ def split_declared(config: RunnerConfig, preflight: object, manifest: dict | Non
     return SplitDeclared(target_image=Image(declared["target_image"], config.target_image_id), meter_port=origin.port,
                          request_budget=declared["request_budget"], time_budget_seconds=declared["time_budget_seconds"],
                          llm_provider=llm.get("provider", ""), llm_sampling=json.loads(gateway_sampling(declared, POLICY_SWITCH_SIDE)),
-                         meter_source_sha=declared["source_sha"], llm_model=llm["model"], context_window_k=context_k)
+                         meter_source_sha=declared["source_sha"], llm_model=llm["model"], context_window_k=context_k,
+                         target_origin=declared["target_origin"], fixture_fingerprint=declared["fixture_fingerprint"],
+                         environment_fingerprint=declared["environment_fingerprint"])
 
 
 def llm_lookup_env(config: RunnerConfig, preflight: dict) -> dict[str, str]:
@@ -127,9 +134,9 @@ def _model_budget(manifest: dict | None, config: RunnerConfig) -> str:
 
 def split_run_spec(config: RunnerConfig, plan: SplitPlan, declared: SplitDeclared, rendered: dict,
                    path_key_ref: str | None = None, *, manifest: dict | None = None, repeat_index: int = 0,
-                   exploration_policy_sha256: str = "", scripted_plan_sha256: str = "") -> SplitRunSpec:
+                   exploration_policy_sha256: str = "", scripted_plan_sha256: str = "", condition: str = "") -> SplitRunSpec:
     """회차 시한·간격은 B(build_spec)와 같은 설정 칸에서 읽는다. 제품 멈춤 뒤 끝 상태 대기는 제품 상태 대기(split.task_wait_seconds)."""
-    return SplitRunSpec(
+    spec = SplitRunSpec(
         run_id=plan.run_id, project=plan.project, image_ids={role: image.id for role, image in plan.images.items()},
         request_budget=declared.request_budget, time_budget_seconds=declared.time_budget_seconds,
         poll_seconds=config.run["budget_poll_seconds"], drain_timeout_seconds=config.run["drain_timeout_seconds"],
@@ -148,10 +155,21 @@ def split_run_spec(config: RunnerConfig, plan: SplitPlan, declared: SplitDeclare
                          "registration_valid_hours": config.split.registration_valid_hours},
         model_budget_sha256=_model_budget(manifest, config),
         exploration_policy_sha256=exploration_policy_sha256, synthetic=config.split.synthetic,
-        scripted_plan_sha256=scripted_plan_sha256)
+        scripted_plan_sha256=scripted_plan_sha256, fault_stall_seconds=config.fault_stall_seconds,
+        # v1.1 러너 기록(설계안 §2·§5): 측정 매트릭스 행 이름·선언 지문·대상 origin·관측 GET은 B(build_spec)와 같은 출처다.
+        # 호스트 리슨 허용은 api 백엔드의 B 규칙(allowed_host_listens)과 같은 설정 허용 목록이다(O는 모델 리슨이 없다).
+        condition=condition, fixture_fingerprint=declared.fixture_fingerprint,
+        environment_fingerprint=declared.environment_fingerprint, target_origin=declared.target_origin,
+        observer_path=config.observer_path, observer_readonly_ref=config.observer_readonly_ref,
+        allowed_listens=frozenset(Listener(entry.address, entry.port) for entry in config.host_listen_allowlist))
+    # 실행 입력을 만드는 시점에 v1.1 기록 칸을 본다. 비면 설정 오류(종료 코드 2, 회차를 만들지 않음)다(#745 리뷰).
+    missing = missing_record_fields(spec)
+    if missing:
+        raise RunnerConfigError([f"split_run_spec.{name}: MISSING" for name in missing])
+    return spec
 
 
-def run_split_ours(config: RunnerConfig, preflight: object, *, repeat_index: int = 0, docker_runner=run_docker, environ=None,
+def run_split_ours(config: RunnerConfig, preflight: object, *, repeat_index: int = 0, condition: str = "", docker_runner=run_docker, environ=None,
                    send=loopback_send, now=None) -> int:
     """O 회차 1회(자동 재시도 없음). 설정·입력 단계 실패는 2, 회차 무효는 1, 완료는 0."""
     environ = os.environ if environ is None else environ
@@ -199,6 +217,7 @@ def run_split_ours(config: RunnerConfig, preflight: object, *, repeat_index: int
         # 경계 설정(boundary.json)은 회차 값 없이 정렬된 JSON이라 같은 설정이면 같은 지문이다(결정안 §3.3)
         boundary_sha = hashlib.sha256(inputs.files["boundary"].read_bytes()).hexdigest()
         spec = split_run_spec(config, plan, declared, rendered, path_key_ref, manifest=manifest, repeat_index=repeat_index,
+                              condition=condition,
                               exploration_policy_sha256=boundary_sha, scripted_plan_sha256=scripted_sha)
     except BaseException as exc:
         # 회차 흐름(execute_split_run) 전의 어떤 실패·중단에서도 보호 입력을 먼저 지운다(#674 리뷰: 모델 키 모양 오류·

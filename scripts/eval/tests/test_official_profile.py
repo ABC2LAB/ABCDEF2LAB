@@ -23,6 +23,20 @@ class TestOfficialProfile(unittest.TestCase):
         self.profile = json.loads(OFFICIAL.read_text(encoding="utf-8"))
         self.evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
 
+    def test_split_profile_differs_only_in_budget_and_methods(self):
+        # 공식 분리 배치 프로파일(2026-11-18·19 확정): 공식 프로파일과 같고 예산 300·1500초와 개선 후 승인 메서드 5개만 다르다
+        split = json.loads((PROFILES / "official-split-35b.json").read_text(encoding="utf-8"))
+        official = json.loads(OFFICIAL.read_text(encoding="utf-8"))
+        self.assertEqual((split["environment"]["request_budget"], split["environment"]["time_budget_seconds"]), (300, 1500))
+        self.assertEqual(split["scope"]["methods"], ["GET", "HEAD", "POST", "PUT", "PATCH"])
+        for profile in (split, official):
+            for key in ("request_budget", "time_budget_seconds"):
+                profile["environment"].pop(key)
+            profile["scope"].pop("methods")
+        self.assertEqual(split, official)
+        self.assertEqual(generate_fingerprints(json.loads((PROFILES / "official-split-35b.json").read_text(encoding="utf-8"))).format,
+                         "abc2lab-eval-profile-v6")
+
     def test_declaration_passes_the_v6_validator(self):
         self.assertEqual(generate_fingerprints(self.profile).format, "abc2lab-eval-profile-v6")
 

@@ -660,7 +660,7 @@ func (e productPreparationEndpoint) Call(ctx context.Context, r diagnosisprep.Re
 		case "reset_confirmation", "reset_confirm":
 			var st diagnosisprep.ProductResetState
 			if r.Product.Operation == "reset_confirm" {
-				st, err = p.targets.confirmReset(r.Principal, r.Product.TargetID, r.Product.Reset.StatementConfirmed, r.Product.Reset.WritesRef)
+				st, err = p.confirmReset(r.Principal, r.Product.TargetID, r.Product.Reset.StatementConfirmed, r.Product.Reset.WritesRef)
 			} else {
 				st, err = p.targets.resetConfirmation(r.Principal, r.Product.TargetID)
 			}
@@ -730,6 +730,24 @@ func (p *productRuntime) attach(rec productTargetRecord, id string, cancel conte
 	p.active[rec.Target.ID][id] = cancel
 	return func() { p.activeMu.Lock(); defer p.activeMu.Unlock(); delete(p.active[rec.Target.ID], id) }, nil
 }
+
+// confirmReset은 리셋 확인을 받기 전에 그 쓰기 기록의 회차가 아직 실행 중인지 본다. 실행 중이면 확인 뒤에도 그 회차가
+// 생성 요청을 더 보낼 수 있어서, 확인이 아직 생기지 않은 객체까지 리셋한 것처럼 기록되면 안 된다(#738 이동찬 리뷰).
+func (p *productRuntime) confirmReset(principal, id string, statementConfirmed bool, writesRef string) (diagnosisprep.ProductResetState, error) {
+	p.activeMu.Lock()
+	defer p.activeMu.Unlock()
+	st, err := p.targets.resetConfirmation(principal, id)
+	if err != nil {
+		return st, err
+	}
+	if st.LastWritesJob != "" {
+		if _, running := p.active[id][st.LastWritesJob]; running {
+			return diagnosisprep.ProductResetState{}, errors.New("reset_run_active")
+		}
+	}
+	return p.targets.confirmReset(principal, id, statementConfirmed, writesRef)
+}
+
 func (p *productRuntime) revoke(principal, id string) (diagnosisprep.ProductTarget, error) {
 	p.activeMu.Lock()
 	defer p.activeMu.Unlock()
