@@ -1120,7 +1120,8 @@ class TestE3ConfirmationRow(unittest.TestCase):
                     self.result(status="completed", reason="x"), self.result(reason="Bad Reason"), self.result(reason=None),
                     # 비활성인데 확정 요청이 있음(모순, #742 리뷰)·요청 수 모양 오류
                     self.result(requests=1), self.result(requests=True), self.result(requests=0.0), self.result(requests=-1),
-                    self.result(requests="0"), self.result(requests=None)):
+                    self.result(requests="0"), self.result(requests=None),
+                    self.result(status="completed", reason=None, requests=True)):  # bool은 요청 수가 아니다
             with self.subTest(raw=raw[:40]):
                 self.assertEqual(e3_confirmation_row(raw), {"error": "e3_confirmation_invalid"})
 
