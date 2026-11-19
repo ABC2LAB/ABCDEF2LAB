@@ -699,7 +699,8 @@ RECORD_SPEC_FIELDS = ("condition", "fixture_fingerprint", "environment_fingerpri
 def missing_record_fields(spec: SplitRunSpec) -> list[str]:
     """v1.1 러너 기록에 필요한 선언·설정 칸 중 빈 것. 회차를 띄우기 전에 보고(#745 리뷰: 빈 입력으로 유료 회차를 쓰지 않게),
     기록을 만들 때 다시 본다."""
-    return [name for name in RECORD_SPEC_FIELDS if not getattr(spec, name)]
+    # 서명 기록 로더와 같은 비공백 규칙이다(공백뿐인 값은 로더가 거부하므로 회차 전에 막는다, #745 리뷰)
+    return [name for name in RECORD_SPEC_FIELDS if not isinstance(getattr(spec, name), str) or not getattr(spec, name).strip()]
 
 
 def _split_record(spec: SplitRunSpec, evidence, state: _SplitState, llm_summary: dict, *, pre: dict, post: dict, pre_board: dict,

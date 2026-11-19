@@ -251,9 +251,10 @@ class TestSpec(Fixture):
         self.assertEqual(split_run_spec(allowed, plan, declared, rendered, condition="우리@test").allowed_listens, frozenset({Listener("10.0.0.5", 11434)}))
         self.assertEqual(split_run_spec(self.config, plan, declared, rendered, condition="ours@35b").condition, "ours@35b")
         # 실행 입력을 만드는 시점에 빈 기록 칸을 설정 오류로 거부한다(종료 코드 2, 회차를 만들지 않음, #745 리뷰)
-        with self.assertRaises(RunnerConfigError) as caught:
-            split_run_spec(self.config, plan, declared, rendered)
-        self.assertEqual(caught.exception.errors, ["split_run_spec.condition: MISSING"])
+        for condition in ("", "   "):
+            with self.subTest(condition=condition), self.assertRaises(RunnerConfigError) as caught:
+                split_run_spec(self.config, plan, declared, rendered, condition=condition)
+            self.assertEqual(caught.exception.errors, ["split_run_spec.condition: MISSING"])
 
 
 class TestMainDispatch(Fixture):
