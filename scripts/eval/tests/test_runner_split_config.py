@@ -198,6 +198,25 @@ def synthetic_config(**changes):
     return parse_runner_config(payload)
 
 
+class TestE2V3Block(unittest.TestCase):
+    """E② v3 저널 수집 설정(선택 칸). 위치·파일명·주입 변수는 제품 Host 배선 뒤 확정이라 전부 설정값이다."""
+
+    RAW = {"audit_key_variable": "PRODUCT_E2_AUDIT_KEY_FILE", "volume": "product-state", "directory": "runs",
+           "subpath": ["{draft_id}", "e2"], "journal_name": "events.jsonl", "head_name": "sealed-head.json", "uid": 1000,
+           "verify_tool": "/opt/abc2lab/e2-audit-verify", "verify_timeout_seconds": 120}
+
+    def test_absent_means_no_collection_and_present_is_parsed(self):
+        self.assertIsNone(parse_split(split_block(), acceptance_config()).e2_v3)
+        split = parse_split(split_block(e2_v3=dict(self.RAW)), acceptance_config())
+        self.assertEqual((split.e2_v3.journal_name, split.e2_v3.resolved_subpath("d1")), ("events.jsonl", ("d1", "e2")))
+
+    def test_invalid_block_is_a_config_error(self):
+        for raw in (dict(self.RAW, uid=-1), {k: v for k, v in self.RAW.items() if k != "head_name"}, "on"):
+            with self.subTest(raw=raw), self.assertRaises(SplitConfigError) as caught:
+                parse_split(split_block(e2_v3=raw), acceptance_config())
+            self.assertTrue(any(error.startswith("config.split.e2_v3") for error in caught.exception.errors), caught.exception.errors)
+
+
 class TestSyntheticModelBlock(unittest.TestCase):
     """합성 모델 모드(2026-11-18 사용자 결정 (a)): 보존 회차에서만, 실행 출처 synthetic_fixture로만, manifest 없이 받는다."""
 

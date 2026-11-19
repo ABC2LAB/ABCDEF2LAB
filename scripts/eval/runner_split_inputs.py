@@ -22,11 +22,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from runner_engine import AdminSecret
+from runner_e2v3 import AUDIT_KEY_FILE, E2V3Invalid, audit_key_ref, new_audit_key
 from runner_split import boundary_config, install_input, read_boundary_template
 
 PRIVATE_DIRECTORY = "private"
 FILES = {"install": "install.json", "postgres_password": "postgres-password", "boundary": "boundary.json",
          "ca_cert": "explore-ca.pem", "ca_key": "explore-ca.key", "path_key": "path.key"}
+# 선택 보호 입력: E② v3 감사 키(split.e2_v3가 있을 때만 만든다, runner_e2v3). 지울 때는 늘 알려진 이름으로 본다.
+OPTIONAL_FILES = {"e2_audit_key": AUDIT_KEY_FILE}
 # compose가 읽는 변수(deploy/product/compose.yaml secrets) ← 위 파일.
 COMPOSE_FILE_ENV = {"PRODUCT_INSTALL_FILE": "install", "PRODUCT_POSTGRES_PASSWORD_FILE": "postgres_password",
                     "EXPLORE_BOUNDARY_CONFIG_FILE": "boundary", "EXPLORE_CA_CERT_FILE": "ca_cert",
@@ -63,6 +66,7 @@ class SplitInputs:
     admin: AdminSecret          # 제품 구동기 로그인용(repr에 값이 없다)
     install_public: dict        # 관리자 비밀번호를 뺀 설치 입력(서명 기록용)
     boundary: dict              # 경계 설정(비밀 없음)
+    audit_key_ref: str | None = None  # E② v3 감사 키 참조(값 아님). 키를 만들지 않았으면 None
 
 
 def _secret_text(random_bytes: Callable[[int], bytes], size: int) -> str:
@@ -95,21 +99,28 @@ def _private_regular(path: Path) -> bool:
 def prepare_split_inputs(run_directory: Path, *, manifest: dict | None, meter_port: int, explore_port: int, evidence_max_bytes: int,
                          workflow_defaults: dict, wide_writes: bool, valid_for_hours: int, max_runs: int, path_key: bytes,
                          openssl: Openssl, random_bytes: Callable[[int], bytes] = os.urandom,
-                         local_model: dict | None = None) -> SplitInputs:
+                         local_model: dict | None = None, e2_audit_key_variable: str | None = None) -> SplitInputs:
     """회차 디렉터리 안에 보호 입력을 만든다. 실패하면 만든 것을 지우고 고정 code로 멈춘다.
 
     path_key는 계측기 -path-key-file과 같은 키(러너 설정 path_key_file을 path_mask.read_path_key로 읽은 값)다. 경계는 이
     사본으로 경로를 가린다(계약 §4.1). 회차마다 새로 만들면 경계·계측기 행을 (메서드, 가린 경로)로 맞출 수 없다.
+
+    e2_audit_key_variable이 있으면 회차별 E② v3 감사 키를 새로 만들어 보호 입력으로 두고, 제품 overlay가 읽는 그 compose
+    변수에 경로를 건다(주입 경로는 동찬님 배선, 설정값). 검증기는 같은 파일을 --key-file로 받는다. 경로 가림 키와 같으면 거부한다.
     """
     if type(path_key) is not bytes or len(path_key) != PATH_KEY_BYTES:
         raise SplitInputsError("split_path_key_invalid")
+    if e2_audit_key_variable is not None and e2_audit_key_variable in COMPOSE_FILE_ENV:
+        raise SplitInputsError("split_audit_key_variable_invalid")
     directory = Path(run_directory) / PRIVATE_DIRECTORY
     try:
         os.mkdir(directory, 0o700)
         os.chmod(directory, 0o700)
     except OSError:
         raise SplitInputsError("split_input_directory_failed") from None
-    files = {name: directory / file_name for name, file_name in FILES.items()}
+    names = dict(FILES, **(OPTIONAL_FILES if e2_audit_key_variable is not None else {}))
+    files = {name: directory / file_name for name, file_name in names.items()}
+    key_ref = None
     try:
         admin = AdminSecret(_secret_text(random_bytes, PASSWORD_BYTES))
         install = install_input(admin_password=admin.reveal(), manifest=manifest, meter_port=meter_port,
@@ -120,6 +131,14 @@ def prepare_split_inputs(run_directory: Path, *, manifest: dict | None, meter_po
         _write_new(files["postgres_password"], _secret_text(random_bytes, PASSWORD_BYTES).encode("ascii"))
         _write_new(files["boundary"], json.dumps(boundary, sort_keys=True).encode("utf-8"))
         _write_new(files["path_key"], path_key)
+        if e2_audit_key_variable is not None:
+            try:
+                audit_key = new_audit_key(random_bytes, other_keys=(path_key,))
+            except E2V3Invalid:
+                raise SplitInputsError("split_audit_key_failed") from None
+            _write_new(files["e2_audit_key"], audit_key)
+            key_ref = audit_key_ref(audit_key)
+            del audit_key
         code = openssl(["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes",
                         "-days", str(CA_VALID_DAYS), "-subj", CA_SUBJECT,
                         "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign",
@@ -137,9 +156,11 @@ def prepare_split_inputs(run_directory: Path, *, manifest: dict | None, meter_po
         remove_split_inputs(directory, missing_ok=True)
         raise
     public = {key: value for key, value in install.items() if key != "admin_password"}
-    return SplitInputs(directory=directory, files=files,
-                       compose_env={env: str(files[name]) for env, name in COMPOSE_FILE_ENV.items()},
-                       admin=admin, install_public=public, boundary=boundary)
+    compose_env = {env: str(files[name]) for env, name in COMPOSE_FILE_ENV.items()}
+    if e2_audit_key_variable is not None:
+        compose_env[e2_audit_key_variable] = str(files["e2_audit_key"])
+    return SplitInputs(directory=directory, files=files, compose_env=compose_env,
+                       admin=admin, install_public=public, boundary=boundary, audit_key_ref=key_ref)
 
 
 def remove_split_inputs(directory: Path, *, missing_ok: bool = False) -> None:
@@ -149,7 +170,7 @@ def remove_split_inputs(directory: Path, *, missing_ok: bool = False) -> None:
         if missing_ok:
             return
         raise SplitInputsError("split_input_cleanup_failed")
-    known = set(FILES.values())
+    known = set(FILES.values()) | set(OPTIONAL_FILES.values())
     try:
         for entry in os.listdir(directory):
             if entry in known:
