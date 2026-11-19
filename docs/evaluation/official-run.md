@@ -13,6 +13,7 @@
 | 러너·계측기·채점기 변경 머지: 계측기 하드 상한(#734), 끊긴 호출 처리(#735), B 전용 CLI 관측 줄(#736), 엔진 끝 전 최장 무활동(#737), O E③ 상태 수집(#742), O v1.1 러너 기록(#745), 채점기 분리 배치(#746) | GitHub PR |
 | 제품 E③ 감독자 연결(#738)과 E② Transport·Journal 연결. 연결 전 빌드는 O가 늘 `e3_official_not_disabled`로 무효다([러너](runner.md) 사유표) | GitHub PR |
 | 멈춤 무효 T 확정: 유료 확인 쌍에서 O 엔진 끝 전 최장 무활동(모델 호출 + 대상 요청)이 90초 이하이면 180초로 확정한다(고정 초안 §16). **[확인 쌍 뒤 채움]** | 고정 초안 §16 |
+| **멈춤 무효 판정이 실제로 동작함**: 지금 러너는 제공자 장애 자료(`fault-stall.json`)를 `judged: false`로 기록만 하고 `provider_fault_stall` 무효 사유를 내지 않는다(#737도 최장 무활동 값만 더한다). T 확정과 별개로, 러너가 판정해 무효 사유를 내고 세션 집계가 쪽별 2회 규칙(2절)으로 측정 전체를 멈추는 것을 구현과 시험으로 확인해야 시작한다. **[미구현]** | 고정 초안 §2·§3·§16 |
 | 이 문서·공식 분리 배치 프로파일·러너 설정이 태그 커밋에 있다(2절) | 레포 |
 
 ## 1. 역할
@@ -250,7 +251,7 @@ python3 -I -B scripts/eval/runner.py --config /srv/abc2lab-eval/runner.json --pr
 | `model_usage_unknown`(O) | manifest 단가 상한이 재조회 단가보다 낮은지, 제공자 이름 글자 |
 | `e3_official_not_disabled`, `e3_status_not_collected`(O) | 제품 빌드에 E③ 감독자·Transport·Journal 연결이 있는지(0절). 연결 전 빌드로는 공식 O 회차를 돌릴 수 없다 |
 | `observer_count_mismatch`, `record_build_failed`, `record_sign_failed` | 관측기 GET이 러너 것 외에 더 있었는지, 선언·설정 칸, 러너 서명 키 |
-| `provider_fault_stall` | 제공자 장애(429·위쪽 끊김) 뒤 T초 무활동. 같은 칸 재실행, 비율 규칙(2절) |
+| `provider_fault_stall` | 제공자 장애(429·위쪽 끊김) 뒤 T초 무활동. 같은 칸 재실행, 비율 규칙(2절). 판정 구현 전(0절 [미구현])에는 이 사유가 나오지 않으므로 공식 세션을 시작하지 않는다 |
 | `drain_timeout`, `seal_failed`, `interrupted` | 같은 칸 재실행. 반복되면 원인 수정 |
 
 ## 7. 집계·채점
