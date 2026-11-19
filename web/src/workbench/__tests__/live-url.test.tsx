@@ -9,6 +9,18 @@ import { useState } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// 제품 판정 목록(#801)은 이 시험 범위가 아니다 — 제품 관리 중계가 아닌 서버처럼(404) 구획을 두지 않게 한다.
+// vi.fn 이 아니어서 resetAllMocks 에도 그대로다
+vi.mock("../live/productVerdicts", async (original) => {
+  const real = await original<typeof import("../live/productVerdicts")>();
+  const { ApiError: NotInstalled } = await import("@/lib/diagnosis/api");
+  return {
+    ...real,
+    fetchProductVerdicts: async () => {
+      throw new NotInstalled(404, "not found");
+    },
+  };
+});
 vi.mock("@/lib/diagnosis/diagnosis-url", async (original) => ({
   ...(await original<typeof import("@/lib/diagnosis/diagnosis-url")>()),
   readURLCatalog: vi.fn(),

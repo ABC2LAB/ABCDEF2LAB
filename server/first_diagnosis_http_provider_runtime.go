@@ -255,8 +255,19 @@ func (r *FirstDiagnosisHTTPRuntime) AccountAuth() map[string]string {
 
 // E3Handle은 실행 중인 로컬 E②와 C14 저장소만 제품 감독자에 제공한다.
 func (r *FirstDiagnosisHTTPRuntime) E3Handle(taskID string) (*e2proxy.Execution, E2HTTPAccountBindings, bool) {
-	if r == nil || r.host == nil || r.closing.Load() || r.closed.Load() {
-		return nil, nil, false
+	exec, accounts, reason := r.E3HandleReason(taskID)
+	return exec, accounts, reason == ""
+}
+
+// E3HandleReason은 E3Handle과 같고, 연결을 주지 못한 사유 코드를 함께 돌려준다(E2HTTPRuntime.E3HandleReason).
+func (r *FirstDiagnosisHTTPRuntime) E3HandleReason(taskID string) (*e2proxy.Execution, E2HTTPAccountBindings, string) {
+	switch {
+	case r == nil || r.host == nil:
+		return nil, nil, E3HandleRuntimeUnavailable
+	case r.closing.Load():
+		return nil, nil, E3HandleRuntimeClosing
+	case r.closed.Load():
+		return nil, nil, E3HandleRuntimeClosed
 	}
-	return r.host.runtime.E3Handle(taskID)
+	return r.host.runtime.E3HandleReason(taskID)
 }

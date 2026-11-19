@@ -798,26 +798,69 @@ func (r *E2HTTPRuntime) Execution(taskID string) (*e2proxy.Execution, bool) {
 
 // E3Handle은 모델 단계 뒤 감독자에게만 현재 로컬 E② 실행과 C14 저장소를 함께 돌려준다.
 func (r *E2HTTPRuntime) E3Handle(taskID string) (*e2proxy.Execution, E2HTTPAccountBindings, bool) {
+	exec, accounts, reason := r.E3HandleReason(taskID)
+	return exec, accounts, reason == ""
+}
+
+// E3Handle이 연결을 주지 못한 사유(고정 코드)다. 확정 단계가 not_wired로 꺼졌을 때 서버 로그에 남겨 실제 제품에서
+// 어느 조건인지 가린다(#805 뒤 합성 회차: 가짜 handle 시험만으로는 못 잡음).
+const (
+	E3HandleRuntimeUnavailable = "runtime_unavailable"
+	E3HandleRuntimeClosing     = "runtime_closing"
+	E3HandleRuntimeClosed      = "runtime_closed"
+	E3HandleTaskMissing        = "task_missing"
+	E3HandleTaskMismatch       = "task_mismatch"
+	E3HandleTaskFenced         = "task_fenced"
+	E3HandleLeaseMissing       = "lease_missing"
+	E3HandleLeaseInvalid       = "lease_invalid"
+	E3HandleRunnerMissing      = "runner_missing"
+	E3HandleRunnerNotLocal     = "runner_not_local"
+	E3HandleAccountsMissing    = "accounts_missing"
+	E3HandleExecutionStopped   = "execution_stopped"
+)
+
+// E3HandleReason은 E3Handle과 같고, 연결을 주지 못하면 그 사유 코드를 돌려준다(성공이면 빈 문자열). 실행 문맥이 이미
+// 끝났으면(작업 문맥 취소 등) 핸들이 있어도 송신할 수 없으므로 주지 않는다.
+func (r *E2HTTPRuntime) E3HandleReason(taskID string) (*e2proxy.Execution, E2HTTPAccountBindings, string) {
 	if r == nil {
-		return nil, nil, false
+		return nil, nil, E3HandleRuntimeUnavailable
 	}
 	r.mu.Lock()
 	t := r.task
 	r.mu.Unlock()
-	if t == nil || t.id != taskID {
-		return nil, nil, false
+	switch {
+	case t == nil:
+		return nil, nil, E3HandleTaskMissing
+	case t.id != taskID:
+		return nil, nil, E3HandleTaskMismatch
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.closed || t.lease == nil || !t.validLease || t.lease.Runner == nil {
-		return nil, nil, false
+	switch {
+	case t.closed:
+		return nil, nil, E3HandleTaskFenced
+	case t.lease == nil:
+		return nil, nil, E3HandleLeaseMissing
+	case !t.validLease:
+		return nil, nil, E3HandleLeaseInvalid
+	case t.lease.Runner == nil:
+		return nil, nil, E3HandleRunnerMissing
 	}
 	local, ok := t.lease.Runner.(localE2HTTPRun)
-	accounts := t.lease.AccountBindings()
-	if !ok || accounts == nil {
-		return nil, nil, false
+	if !ok {
+		return nil, nil, E3HandleRunnerNotLocal
 	}
-	return local.runner.Execution(), accounts, true
+	accounts := t.lease.AccountBindings()
+	if accounts == nil {
+		return nil, nil, E3HandleAccountsMissing
+	}
+	exec := local.runner.Execution()
+	select {
+	case <-exec.Done():
+		return nil, nil, E3HandleExecutionStopped
+	default:
+	}
+	return exec, accounts, ""
 }
 
 func (r *E2HTTPRuntime) FenceTask(taskID string) error {

@@ -64,7 +64,9 @@ func validateE2HTTPPolicyDocumentMode(raw []byte, prepared, run bool) (E2HTTPFil
 	optional := []string{"upstream_ca", "auth"}
 	approvalMode := policy.ApprovalMode == e2proxy.ApprovalPreauthorizedScope
 	if run {
-		optional = append(optional, "workflow")
+		// e3_write_consent·e3_resettable은 제품 발급(productE3PolicyRules)이 E③ 확정 단계를 켤 때 싣는 칸이다. factory는
+		// 같은 칸을 받으므로 실행 정책 문서도 받는다(선언 있는 회차의 확정 몫 읽기가 이 검증을 쓴다).
+		optional = append(optional, "workflow", "e3_write_consent", "e3_resettable")
 		approvalMode = approvalMode || policy.ApprovalMode == e2proxy.ApprovalConfirmEveryRequest || policy.ApprovalMode == e2proxy.ApprovalWorkbenchV1
 	}
 	if !e2HTTPExactJSON(raw, top, optional, "evaluation", "upstream_ca") || !validE2HTTPFileAuth(policy.Auth, policy.HeaderMode, policy.Rules) ||
@@ -135,6 +137,10 @@ func validateE2HTTPPolicyDocumentMode(raw []byte, prepared, run bool) (E2HTTPFil
 	}
 	share, shareOK := policy.e3ConfirmationShare()
 	if !shareOK || share != nil && !run {
+		return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
+	}
+	// 쓰기 동의·리셋 가능 표시는 E③ 확정 몫 칸이 있는 실행 정책에만 실린다.
+	if (policy.E3WriteConsent || policy.E3Resettable) && share == nil {
 		return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
 	}
 	for name, fields := range map[string]struct{ required, optional []string }{
