@@ -1104,6 +1104,12 @@ class TestRequestCap(unittest.TestCase):
             with self.subTest(cap=cap):
                 result, _, _ = run_with_meter(lambda m, c=cap: setattr(m, "request_cap", c))
                 self.assertEqual((result["status"], result["reasons"]), ("invalid", ["meter_request_cap_mismatch"]))
+        # 예산 1에서 표식 상한이 JSON true·1.0이면 값 비교로는 같아 보이지만 정수가 아니라 무효다(#734 리뷰)
+        for value in (True, 1.0):
+            with self.subTest(value=value):
+                result, _, _ = run_with_meter(lambda m, v=value: setattr(m, "request_cap", v), request_budget=1)
+                self.assertEqual((result["status"], result["reasons"]), ("invalid", ["meter_request_cap_mismatch"]))
+        self.assertEqual(run_with_meter(lambda m: setattr(m, "request_cap", 1), request_budget=1)[0]["status"], "complete")
         def overshoot(ports):  # 시작 뒤 계측기가 예산보다 많이 전달한 모양(상한이 깨진 계측기)
             original = ports.start_round
 
@@ -1116,7 +1122,7 @@ class TestRequestCap(unittest.TestCase):
         self.assertEqual((result["status"], result["reasons"]), ("invalid", ["meter_request_cap_exceeded"]))
 
 
-def run_with_meter(mutate_meter, mutate_ports=None):
+def run_with_meter(mutate_meter, mutate_ports=None, **spec_changes):
     clock = FakeClockState()
     ports = FakePorts(clock)
     if mutate_ports:
@@ -1124,7 +1130,7 @@ def run_with_meter(mutate_meter, mutate_ports=None):
     meter = FakeMeter(ports)
     mutate_meter(meter)
     evidence = FakeEvidence()
-    result = execute_split_run(spec(), ports, meter, evidence, clock.clock())
+    result = execute_split_run(spec(**spec_changes), ports, meter, evidence, clock.clock())
     return result, ports, evidence
 
 

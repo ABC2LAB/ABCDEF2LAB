@@ -1491,6 +1491,13 @@ class TestCompleteRun(unittest.TestCase):
             with self.subTest(reason=reason):
                 result, _, _, _ = run(mutate)
                 self.assertEqual((result["status"], result["reasons"]), (INVALID, [reason]))
+        # 예산 1인 회차에서 표식 상한이 JSON true·1.0이면 값 비교로는 같아 보이지만 정수가 아니다(#734 리뷰)
+        spec = dataclasses.replace(make_spec(), request_budget=1)
+        for marker in (True, 1.0):
+            with self.subTest(marker=marker):
+                result, _, _, _ = run(lambda p, m, c, v=marker: setattr(m, "cap_marker", v), spec=spec)
+                self.assertEqual((result["status"], result["reasons"]), (INVALID, ["meter_request_cap_mismatch"]))
+        self.assertEqual(run(spec=spec)[0]["status"], COMPLETE)  # 같은 예산의 정상 표식은 통과한다
 
     def test_time_budget_stop(self):
         result, _, meter, evidence = run(lambda p, m, c: setattr(m, "per_poll", 0))

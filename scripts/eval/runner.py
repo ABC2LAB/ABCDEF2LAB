@@ -604,7 +604,9 @@ def check_request_cap(drained: dict, request_budget: int) -> None:
     """계측기 요청 하드 상한이 이 회차 예산으로 걸렸고 지켜졌는지(B·분리 배치 O 공용, 2026-11-19 사용자 결정 1). drain 표식의
     상한이 예산과 다르면(설정이 계측기에 닿지 않음) 같은 기준에서 끊었다고 말할 수 없고, 전달 수가 예산을 넘으면 상한이 깨진
     것이다. 상한으로 거부한 수(rejected_over_cap)는 표식에서 근거·요약으로 옮긴다."""
-    if drained.get("request_cap") != request_budget or type(drained.get("rejected_over_cap")) is not int:
+    # 값 비교만 하면 JSON true가 예산 1과 같다고 통과한다(#734 리뷰). 정상 계측기의 두 칸은 0 이상 JSON 정수다.
+    cap, over = drained.get("request_cap"), drained.get("rejected_over_cap")
+    if type(cap) is not int or cap != request_budget or type(over) is not int or over < 0:
         raise RunFailure("meter_request_cap_mismatch")
     if drained["forwarded_requests"] > request_budget:
         raise RunFailure("meter_request_cap_exceeded")
