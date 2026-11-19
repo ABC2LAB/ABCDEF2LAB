@@ -578,7 +578,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		if hostRecorder != nil {
 			auditVersion = e2proxy.JournalVersionV3
 		}
-		execution, createErr := e2proxy.NewExecution(taskctx, e2proxy.Config{AuditVersion: auditVersion, RequestBoundary: workflowBoundary(input.Workflow), CheckAuthority: transmissionCheck, ApprovalMode: policy.ApprovalMode, RequestApproval: gate, Evaluation: policy.Evaluation, HeaderMode: policy.HeaderMode, PasswordResponse: e2HTTPPasswordResponse(policy.Auth), Scope: scope, IntentID: request.IntentID, OwnerRef: policy.OwnerRef, PolicyRevision: policy.PolicyRevision, AccountRef: policy.AccountRef, SessionRef: policy.SessionRef, ExpiresAt: policy.ValidUntil, Rules: rules, ExcludedPaths: policy.excludedPaths(), Budget: transmit.CumulativeBudget{Ledger: ledger, Key: grantKey, Binding: budgetBinding}, Recorder: recorder, RootCAs: upstreamRoots, Limits: limits, AttemptPathObserver: observer})
+		execution, createErr := e2proxy.NewExecution(taskctx, e2proxy.Config{AuditVersion: auditVersion, E3Verifier: hostRecorder, RequestBoundary: workflowBoundary(input.Workflow), CheckAuthority: transmissionCheck, ApprovalMode: policy.ApprovalMode, RequestApproval: gate, Evaluation: policy.Evaluation, HeaderMode: policy.HeaderMode, PasswordResponse: e2HTTPPasswordResponse(policy.Auth), Scope: scope, IntentID: request.IntentID, OwnerRef: policy.OwnerRef, PolicyRevision: policy.PolicyRevision, AccountRef: policy.AccountRef, SessionRef: policy.SessionRef, ExpiresAt: policy.ValidUntil, Rules: rules, ExcludedPaths: policy.excludedPaths(), Budget: transmit.CumulativeBudget{Ledger: ledger, Key: grantKey, Binding: budgetBinding}, Recorder: recorder, RootCAs: upstreamRoots, Limits: limits, AttemptPathObserver: observer})
 		if createErr != nil {
 			return failed(nil, nil)
 		}
@@ -688,19 +688,21 @@ type e2HTTPJournalObserver struct {
 }
 
 // 제품 화면의 기존 v2 흐름은 Host가 ACK한 일반 행만 투영한다. E③ 행은
-// 이 투영으로 대체할 수 없으므로 아직 실행 차단을 유지한다.
+// v3 검증 조회에만 쓰므로 v2 화면 저널에 넣지 않는다.
 type e2HTTPV3MirrorRecorder struct {
 	host   e2proxy.Recorder
 	legacy *e2proxy.Journal
 }
 
 func (r e2HTTPV3MirrorRecorder) Record(ctx context.Context, event e2proxy.Event) error {
-	if r.host == nil || r.legacy == nil || event.E3Audit != nil || event.Program == e2proxy.ProgramE3Identity ||
-		event.Program == e2proxy.ProgramE3Create || event.Program == e2proxy.ProgramE3Read {
+	if r.host == nil || r.legacy == nil {
 		return e2proxy.ErrAudit
 	}
 	if err := r.host.Record(ctx, event); err != nil {
 		return err
+	}
+	if e3ProgramEvent(event) {
+		return nil
 	}
 	event.Version = e2proxy.Version
 	return r.legacy.Record(ctx, event)
@@ -710,10 +712,17 @@ func (r e2HTTPJournalObserver) Record(ctx context.Context, event e2proxy.Event) 
 	if err := r.next.Record(ctx, event); err != nil {
 		return err
 	}
+	if e3ProgramEvent(event) {
+		return nil
+	}
 	if err := r.observe(ctx, event); err != nil {
 		return ErrE2HTTPHost
 	}
 	return nil
+}
+
+func e3ProgramEvent(event e2proxy.Event) bool {
+	return event.Program == e2proxy.ProgramE3Identity || event.Program == e2proxy.ProgramE3Create || event.Program == e2proxy.ProgramE3Read
 }
 
 func workflowBoundary(c *diagnosisflow.Controller) e2proxy.RequestBoundary {
