@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 from typing import Iterable, Mapping
 
 FORMAT = "abc2lab.cli-usage/v3"
@@ -117,35 +118,65 @@ def count_usage(records: Iterable[Mapping], names: Iterable[str], *, with_failur
     return out
 
 
-OBSERVED_LINES_FORMAT = "abc2lab.cli-observed-lines/v1"
+OBSERVED_LINES_FORMAT = "abc2lab.cli-observed-lines/v2"
 MAX_OBSERVED_LINES = 64
 MAX_OBSERVED_LINE_CHARS = 1000
-# 가림에 넘기는 명령 원문의 바이트 상한(계측기 redact-text maxRedactLineBytes와 같은 값). 가림은 원문 전체에 한 번 한다:
-# 자르거나 줄로 나눈 뒤 가리면 그 경계에 걸친 자격 값(따옴표 값의 앞부분, 줄바꿈이 든 값)이 남는다(#736 리뷰). 상한을 넘는
-# 원문은 통째로 가릴 수 없으므로 줄을 남기지 않는다(보류 표시만).
-MAX_REDACT_LINE_BYTES = 64 * 1024
+# 모양을 뜰 명령 원문의 바이트 상한. 넘으면 줄을 남기지 않는다(보류 표시만).
+MAX_SHAPE_INPUT_BYTES = 64 * 1024
 _TRUNCATED_MARK = " [...]"
-WITHHELD_TOO_LONG = "redaction_input_too_long"
+WITHHELD_TOO_LONG = "shape_input_too_long"
+WITHHELD_UNPARSEABLE = "shape_unparseable"
+ARG = "<arg>"
+# 원문 대신 남기는 것은 "모양"뿐이다(#736 리뷰). 자격 가림(dlp.CredentialText)은 알려진 자격 형식만 가려 `-p 값`처럼 별도
+# 옵션 인자로 준 자격을 남긴다. 그래서 줄의 낱말 가운데 안전을 확인할 수 있는 것만 그대로 두고 나머지는 ARG로 바꾼다:
+# 관측된 CLI 이름(그 이름 그대로, 또는 경로의 마지막 조각이 그 이름), 셸 연산자, 값이 붙지 않은 옵션 이름(한 글자 짧은
+# 옵션 `-x`, 긴 옵션 `--name`; `--name=값`은 `--name=<arg>`). 사람은 이 모양으로 그 이름이 명령 자리에서 실행됐는지 본다.
+_SHORT_FLAG = re.compile(r"-[A-Za-z]\Z")
+_LONG_FLAG = re.compile(r"(--[a-z][a-z0-9-]{0,31})(=.*)?\Z", re.DOTALL)
+_OPERATOR = re.compile(r"[;&|<>()]+\Z")
 
 
-def clip_redacted(line: str) -> str:
-    """가린 뒤의 줄을 근거 상한(MAX_OBSERVED_LINE_CHARS)으로 자른다. 자르기는 늘 가림 뒤다."""
+def clip_shape(line: str) -> str:
+    """모양 줄을 근거 상한(MAX_OBSERVED_LINE_CHARS)으로 자른다(모양에는 원문 인자가 없다)."""
     return line if len(line) <= MAX_OBSERVED_LINE_CHARS else line[:MAX_OBSERVED_LINE_CHARS] + _TRUNCATED_MARK
 
 
 def pick_line(command: str, names: Iterable[str]) -> str:
-    """가린 명령 원문에서 한 줄을 고른다. 줄 이음만 붙여 줄로 나눈 뒤 정규화했을 때 관측된 이름이 나오는 첫 줄이고, 없으면
-    첫 줄이다. 가린 뒤에 고른다(이름은 자격 값이 아니라 가림 뒤에도 남는다)."""
+    """명령 원문에서 한 줄을 고른다. 줄 이음만 붙여 줄로 나눈 뒤 정규화했을 때 관측된 이름이 나오는 첫 줄이고, 없으면
+    첫 줄이다."""
     patterns = [_pattern(name) for name in names]
     lines = command.replace("\\\n", "").splitlines() or [""]
     return next((raw for raw in lines if any(pattern.search(normalize(raw)) for pattern in patterns)), lines[0])
 
 
+def command_shape(line: str, names: Iterable[str]) -> str | None:
+    """한 줄의 모양. 셸 낱말로 나누지 못하면(닫히지 않은 따옴표 등) None이다(안전을 확인할 수 없어 남기지 않음)."""
+    wanted = set(names)
+    lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|<>()")
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return None
+    out = []
+    for token in tokens:
+        long_flag = _LONG_FLAG.match(token)
+        if token in wanted or _OPERATOR.match(token) or _SHORT_FLAG.match(token):
+            out.append(token)
+        elif "/" in token and token.rsplit("/", 1)[1] in wanted:
+            out.append("<path>/" + token.rsplit("/", 1)[1])
+        elif long_flag:
+            out.append(long_flag.group(1) + ("" if long_flag.group(2) is None else "=" + ARG))
+        else:
+            out.append(ARG)
+    return " ".join(out)
+
+
 def observed_lines(records: Iterable[Mapping], names: Iterable[str]) -> tuple[list[dict], int]:
-    """이름이 관측된 Bash 호출마다 가림에 넘길 명령 원문 전체를 고른다(2026-11-19 사용자 결정 4). 항목은 MAX_OBSERVED_LINES
-    까지다. 원문이 가림 입력 상한(MAX_REDACT_LINE_BYTES)을 넘으면 command는 None이다(통째로 가릴 수 없어 남기지 않음).
-    반환: ([{"names": [...], "command": 원문 전체 또는 None}], 관측된 호출 수). 호출자가 제품과 같은 자격 가림(계측기
-    redact-text)을 원문 전체에 거친 뒤 pick_line으로 줄을 고르고 clip_redacted로 잘라 근거에 쓴다."""
+    """이름이 관측된 Bash 호출마다 한 줄의 모양을 남긴다(2026-11-19 사용자 결정 4, #736 리뷰로 원문 대신 모양). 항목은
+    MAX_OBSERVED_LINES까지다. 반환: ([{"names": [...], "shape": 모양} 또는 {"names", "shape": None, "withheld": 사유}],
+    관측된 호출 수). 원문은 메모리에서만 보고 남기지 않는다."""
     wanted = validate_names(list(names))
     patterns = {name: _pattern(name) for name in wanted}
     out: list[dict] = []
@@ -160,6 +191,10 @@ def observed_lines(records: Iterable[Mapping], names: Iterable[str]) -> tuple[li
         observed += 1
         if len(out) >= MAX_OBSERVED_LINES:
             continue
-        fits = len(command.encode("utf-8")) <= MAX_REDACT_LINE_BYTES
-        out.append({"names": seen, "command": command if fits else None})
+        if len(command.encode("utf-8")) > MAX_SHAPE_INPUT_BYTES:
+            out.append({"names": seen, "shape": None, "withheld": WITHHELD_TOO_LONG})
+            continue
+        shape = command_shape(pick_line(command, seen), seen)
+        out.append({"names": seen, "shape": clip_shape(shape)} if shape is not None
+                   else {"names": seen, "shape": None, "withheld": WITHHELD_UNPARSEABLE})
     return out, observed

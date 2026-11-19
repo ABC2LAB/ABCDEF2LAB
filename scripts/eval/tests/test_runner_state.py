@@ -380,26 +380,6 @@ class TestMemoryFingerprints(unittest.TestCase):
                 self.read([ok(), result], required=False)
 
 
-class TestDockerRedactText(unittest.TestCase):
-    def test_runs_hardened_without_network_or_logs(self):
-        executor = Exec(CommandResult(0, b'["[REDACTED] x","b"]'))
-        out = Docker(executor, {}, 1).redact_text(IMAGE, ["Authorization: t x", "b"], 1000, 1001)
-        self.assertEqual(out, ["[REDACTED] x", "b"])
-        self.assertEqual(executor.calls, [["run", "--rm", "-i", "--pull", "never", "--log-driver", "none", "--network", "none",
-                                           "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
-                                           "--user", "1000:1001", "--", IMAGE, "-role=redact-text"]])
-
-    def test_arguments_and_output_are_checked(self):
-        for output in (b"not json", b'{"a":1}', b'["only one"]', b"[1, 2]"):
-            with self.subTest(output=output), self.assertRaisesRegex(DockerError, "docker_redact_output_invalid"):
-                Docker(Exec(CommandResult(0, output)), {}, 1).redact_text(IMAGE, ["a", "b"], 1, 1)
-        docker = Docker(Exec(CommandResult(0, b"[]")), {}, 1)
-        for args, code in (((IMAGE, "a", 1, 1), "docker_redact_input_invalid"), ((IMAGE, [1], 1, 1), "docker_redact_input_invalid"),
-                           (("img", [], 1, 1), "docker_redact_image_not_id"), ((IMAGE, [], -1, 1), "docker_redact_user_invalid")):
-            with self.subTest(args=args), self.assertRaisesRegex(DockerError, code):
-                docker.redact_text(*args)
-
-
 class TestDockerStateRead(unittest.TestCase):
     def test_runs_hardened_in_the_target_namespace(self):
         executor = Exec(CommandResult(0, b"{}"))

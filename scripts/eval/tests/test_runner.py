@@ -520,12 +520,6 @@ class FakePorts:
         self.command_task = task_id
         return {"exploration_id": 5, "records": list(self.command_rows)}
 
-    def redact_text(self, lines):
-        # 계측기 redact-text 흉내: 가림을 거쳤다는 표시를 붙인다(실제 규칙은 Go 시험이 dlp.CredentialText와 대조).
-        self._call("redact_text")
-        self.redacted_input = list(lines)
-        return [f"<redacted>{line}" for line in lines]
-
     def e2_service_ready(self):
         self._call("e2_service_ready")
         if self.e2_ready_error is not None:
@@ -1138,44 +1132,35 @@ class TestCompleteRun(unittest.TestCase):
         self.assertEqual(usage["format"], "abc2lab.cli-usage/v3")
         self.assertNotIn("not_found", usage)
         self.assertNotIn("playwright test", json.dumps(usage))  # 건수 기록에는 명령 원문이 없다
-        # 관측된 명령만 원문 전체를 가림(redact-text)에 넘기고, 가린 뒤 한 줄을 골라 따로 남긴다(2026-11-19 사용자 결정 4, #736 리뷰)
-        self.assertEqual(ports.redacted_input, ["npx playwright test && curl x", "pip3 install y"])
+        # 관측된 명령만 한 줄의 모양(관측 이름·연산자·값 없는 옵션만, 나머지 <arg>)을 따로 남긴다(사용자 결정 4, #736 리뷰)
         self.assertEqual(evidence.files["cli-observed-lines.json"], {
-            "format": "abc2lab.cli-observed-lines/v1", "observed_calls": 2,
-            "lines": [{"names": ["npx"], "line": "<redacted>npx playwright test && curl x"},
-                      {"names": ["pip3"], "line": "<redacted>pip3 install y"}]})
+            "format": "abc2lab.cli-observed-lines/v2", "observed_calls": 2,
+            "lines": [{"names": ["npx"], "shape": "npx <arg> <arg> && <arg> <arg>"},
+                      {"names": ["pip3"], "shape": "pip3 <arg> <arg>"}]})
         self.assertEqual(usage["observed_lines"], 2)
         self.assertNotIn("command_records", run()[1].calls)  # 이름이 없으면(분리 배치 아님·O) 읽지 않는다
 
-    def test_lines_are_clipped_after_redaction(self):
-        # 가림(redact_text)에는 긴 원문 줄을 그대로 넘기고, 근거에는 가린 뒤 1000자로 자른 줄만 남긴다(#736 리뷰)
-        long = "npx " + "a" * 2000
+    def test_secrets_in_option_arguments_never_reach_the_evidence(self):
+        # 자격 가림이 못 가리는 별도 옵션 인자 자격(#736 리뷰 재현): 모양에는 원문 인자가 남지 않는다. 셸 낱말로 못 나누는 줄과
+        # 상한을 넘는 원문은 보류만 적는다.
         spec = dataclasses.replace(make_spec(), cli_usage_names=("npx",))
-
-        def mutate(ports, meter, clock):
-            ports.command_rows = [{"tool": "Bash", "command": json.dumps({"command": long}), "output": "", "failed": False}]
-        result, ports, _, evidence = run(mutate, spec=spec)
-        self.assertEqual(result["status"], COMPLETE)
-        self.assertEqual(ports.redacted_input, [long])
-        line = evidence.files["cli-observed-lines.json"]["lines"][0]["line"]
-        self.assertTrue(line.startswith("<redacted>npx ") and line.endswith(" [...]"))
-        self.assertEqual(len(line), 1000 + len(" [...]"))
-
-    def test_whole_command_is_redacted_then_one_line_is_kept(self):
-        # 여러 줄 명령은 원문 전체를 한 항목으로 가린 뒤 관측 줄을 고른다. 가림 입력 상한을 넘는 원문은 줄을 남기지 않는다.
-        spec = dataclasses.replace(make_spec(), cli_usage_names=("npx",))
-        multi = "cd /tmp\nnpx thing --flag"
-        huge = "npx " + "a" * (64 * 1024)
+        commands = ["mysql -u root -p synthsecret01 && npx run --password synthsecret02 --token=synthsecret03 -k synthsecret04",
+                    "PASSWORD=synthsecret05 npx thing",
+                    'npx run "synthsecret06',  # 닫히지 않은 따옴표
+                    "npx " + "a" * (64 * 1024)]
 
         def mutate(ports, meter, clock):
             ports.command_rows = [{"tool": "Bash", "command": json.dumps({"command": c}), "output": "", "failed": False}
-                                  for c in (multi, huge)]
-        result, ports, _, evidence = run(mutate, spec=spec)
+                                  for c in commands]
+        result, _, _, evidence = run(mutate, spec=spec)
         self.assertEqual(result["status"], COMPLETE)
-        self.assertEqual(ports.redacted_input, [multi])  # 상한을 넘는 원문은 가림에도 보내지 않는다
-        self.assertEqual(evidence.files["cli-observed-lines.json"]["lines"], [
-            {"names": ["npx"], "line": "npx thing --flag"},  # 가린 글(<redacted> 표시는 첫 줄에만)에서 고른 줄
-            {"names": ["npx"], "line": None, "withheld": "redaction_input_too_long"}])
+        lines = evidence.files["cli-observed-lines.json"]["lines"]
+        self.assertNotIn("synthsecret", json.dumps(evidence.files))
+        self.assertEqual(lines, [
+            {"names": ["npx"], "shape": "<arg> -u <arg> -p <arg> && npx <arg> --password <arg> --token=<arg> -k <arg>"},
+            {"names": ["npx"], "shape": "<arg> npx <arg>"},
+            {"names": ["npx"], "shape": None, "withheld": "shape_unparseable"},
+            {"names": ["npx"], "shape": None, "withheld": "shape_input_too_long"}])
 
     def test_no_observation_leaves_no_lines(self):
         # 관측이 없으면 아무것도 남기지 않는다(가림 호출도 없다)
@@ -1183,19 +1168,7 @@ class TestCompleteRun(unittest.TestCase):
         result, ports, _, evidence = run(spec=spec)
         self.assertEqual(result["status"], COMPLETE)
         self.assertNotIn("cli-observed-lines.json", evidence.files)
-        self.assertNotIn("redact_text", ports.calls)
         self.assertNotIn("observed_lines", evidence.files["cli-usage.json"])
-
-    def test_redaction_failure_is_a_step_code(self):
-        spec = dataclasses.replace(make_spec(), cli_usage_names=("npx",))
-
-        def broken(ports, meter, clock):
-            def fail(lines):
-                raise RuntimeError("/secret/path")
-            ports.redact_text = fail
-        result, _, _, evidence = run(broken, spec=spec)
-        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["cli_usage_failed"]))
-        self.assertNotIn("cli-observed-lines.json", evidence.files)
 
     def test_cli_usage_failure_is_a_step_code(self):
         spec = dataclasses.replace(make_spec(), cli_usage_names=("npx",))

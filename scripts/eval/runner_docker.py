@@ -693,27 +693,6 @@ class Docker:
                          "--user", f"{uid}:{gid}", "--", image, "-role=state-read"],
                         stdin=plan, code="docker_state_read_failed")
 
-    def redact_text(self, image: str, lines: Sequence[str], uid: int, gid: int) -> list[str]:
-        """계측기 이미지의 redact-text 역할(제품과 같은 자격 가림 dlp.CredentialText)에 줄들을 통과시킨다. 망·마운트 없이
-        읽기 전용으로 돌고, 로그 드라이버로 내보내지 않는다(가리기 전 원문이 로그에 남지 않게). 같은 길이의 가린 줄을 돌려준다."""
-        if not isinstance(image, str) or not _IMAGE_ID.fullmatch(image):
-            raise DockerError("docker_redact_image_not_id")
-        if type(uid) is not int or type(gid) is not int or uid < 0 or gid < 0:
-            raise DockerError("docker_redact_user_invalid")
-        if not isinstance(lines, (list, tuple)) or not all(isinstance(line, str) for line in lines):
-            raise DockerError("docker_redact_input_invalid")
-        out = self.run(["run", "--rm", "-i", "--pull", "never", "--log-driver", "none", "--network", "none",
-                        "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
-                        "--user", f"{uid}:{gid}", "--", image, "-role=redact-text"],
-                       stdin=json.dumps(list(lines)).encode("utf-8"), code="docker_redact_failed")
-        try:
-            redacted = json.loads(out)
-        except ValueError:
-            raise DockerError("docker_redact_output_invalid") from None
-        if not isinstance(redacted, list) or len(redacted) != len(lines) or not all(isinstance(x, str) for x in redacted):
-            raise DockerError("docker_redact_output_invalid")
-        return redacted
-
     def statfs(self, image: str, container_id: str, mount_paths: Sequence[str]) -> list[dict]:
         """대상 컨테이너의 tmpfs 마운트를 대상 밖에서 잰다. 구간 감시가 끝난 뒤에만 부른다(새 컨테이너 시작은 구간 위반).
 

@@ -14,7 +14,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cli_usage import (  # noqa: E402
-    FORMAT, MAX_OBSERVED_LINE_CHARS, MAX_OBSERVED_LINES, MAX_REDACT_LINE_BYTES, CliUsageError, clip_redacted, count_usage,
+    FORMAT, MAX_OBSERVED_LINE_CHARS, MAX_OBSERVED_LINES, MAX_SHAPE_INPUT_BYTES, CliUsageError, clip_shape, command_shape, count_usage,
     normalize, not_found, observed_lines, pick_line,
     occurrences, tool_input_command, validate_names,
 )
@@ -104,85 +104,49 @@ class TestCounting(unittest.TestCase):
 
 
 
-class TestObservedLines(unittest.TestCase):
-    def test_whole_commands_go_to_redaction_and_the_line_is_picked_after(self):
+class TestObservedShapes(unittest.TestCase):
+    """관측된 명령은 원문 대신 모양만 남긴다(#736 리뷰): 관측 이름·셸 연산자·값 없는 옵션 이름, 나머지는 <arg>."""
+
+    def test_shapes_keep_names_operators_and_flag_names_only(self):
         records = [{"command": {"command": "cd /tmp\nexport A=1\nnpx playwright test"}},
                    {"command": {"command": "echo hi"}},  # 관측 없음
                    {"command": {"command": "n\\\npx b\nls"}},  # 줄 이음으로 쪼갠 이름: 이은 줄을 고른다
-                   {"command": {"command": "x='p''ip' && run"}},  # 따옴표 이어 붙인 이름: 원문 줄 그대로
+                   {"command": {"command": "x='p''ip' && run"}},  # 따옴표 이어 붙인 이름: 낱말은 이름이 아니다
+                   {"command": {"command": "/usr/local/bin/pip install -q --upgrade --index-url=https://x y"}},
                    {"command": "not json"}]
         picked, observed = observed_lines(records, ["npx", "pip"])
-        self.assertEqual(observed, 3)
-        # 가림에는 원문 전체를 넘긴다(줄로 나누거나 자르지 않는다, #736 리뷰)
-        self.assertEqual(picked, [{"names": ["npx"], "command": "cd /tmp\nexport A=1\nnpx playwright test"},
-                                  {"names": ["npx"], "command": "n\\\npx b\nls"},
-                                  {"names": ["pip"], "command": "x='p''ip' && run"}])
-        self.assertEqual([pick_line(item["command"], item["names"]) for item in picked],
-                         ["npx playwright test", "npx b", "x='p''ip' && run"])
+        self.assertEqual(observed, 4)
+        self.assertEqual(picked, [{"names": ["npx"], "shape": "npx <arg> <arg>"},
+                                  {"names": ["npx"], "shape": "npx <arg>"},
+                                  {"names": ["pip"], "shape": "<arg> && <arg>"},
+                                  {"names": ["pip"], "shape": "<path>/pip <arg> -q --upgrade --index-url=<arg> <arg>"}])
         self.assertEqual(pick_line("a\nb", ["npx"]), "a")  # 이름이 정규화 뒤에만 보이면 첫 줄
         self.assertEqual(observed_lines([{"command": {"command": "curl x"}}], ["npx"]), ([], 0))
 
+    def test_secrets_in_any_argument_form_are_not_kept(self):
+        # 자격 가림(dlp.CredentialText)이 못 가리는 별도 옵션 인자를 포함해 어떤 인자도 원문으로 남지 않는다
+        for command in ("mysql -u root -p synthsecret", "npx run -psynthsecret", "npx --password synthsecret",
+                        "npx --password=synthsecret", "TOKEN=synthsecret npx x", "npx 'synth secret'",
+                        "npx run --token=\"synthfirst\nsynthsecond\"", "npx -u user:synthsecret http://h"):
+            with self.subTest(command=command):
+                picked, _ = observed_lines([{"command": {"command": command}}], ["npx", "mysql"])
+                self.assertNotIn("synth", json.dumps(picked))
+
+    def test_unparseable_and_long_commands_are_withheld(self):
+        for command, reason in (('npx run "open', "shape_unparseable"), ("npx " + "a" * MAX_SHAPE_INPUT_BYTES, "shape_input_too_long")):
+            with self.subTest(reason=reason):
+                (item,), _ = observed_lines([{"command": {"command": command}}], ["npx"])
+                self.assertEqual(item, {"names": ["npx"], "shape": None, "withheld": reason})
+
     def test_bounds(self):
-        # 근거 상한 자르기는 가린 뒤다. 가림 입력 상한(바이트)을 넘는 원문은 통째로 가릴 수 없어 남기지 않는다(None).
-        long = "npx " + "a" * (MAX_OBSERVED_LINE_CHARS + 50)
-        picked, observed = observed_lines([{"command": {"command": long}}] * (MAX_OBSERVED_LINES + 3), ["npx"])
-        self.assertEqual((len(picked), observed), (MAX_OBSERVED_LINES, MAX_OBSERVED_LINES + 3))
-        self.assertEqual(picked[0]["command"], long)
-        clipped = clip_redacted(long)
-        self.assertTrue(clipped.endswith(" [...]"))
-        self.assertEqual(len(clipped), MAX_OBSERVED_LINE_CHARS + len(" [...]"))
-        fits = "npx " + "é" * ((MAX_REDACT_LINE_BYTES - 4) // 2)  # 2바이트 글자: 바이트로 센다
-        over = fits + "é"
-        self.assertEqual(observed_lines([{"command": {"command": fits}}], ["npx"])[0][0]["command"], fits)
-        self.assertIsNone(observed_lines([{"command": {"command": over}}], ["npx"])[0][0]["command"])
-
-
-def credential_text(text):
-    """계측기 dlp.CredentialText의 따옴표 값 규칙 흉내(줄바꿈 포함, 실제 규칙은 Go 시험이 대조)."""
-    import re
-    return re.sub(r'(?i)(token)\s*[:=]\s*"(?:\\.|[^"\\])*"', "[REDACTED]", text)
-
-
-class TestSecretsAcrossSplitBoundaries(unittest.TestCase):
-    """가림 전에 자르거나 줄로 나누면 경계에 걸친 합성 자격 값이 근거에 남는다(#736 리뷰 재현). 원문 전체를 가린 뒤 고른다."""
-
-    def evidence_line(self, command, names=("npx",)):
-        picked = observed_lines([{"command": {"command": command}}], list(names))[0][0]
-        if picked["command"] is None:
-            return None
-        return clip_redacted(pick_line(credential_text(picked["command"]), picked["names"]))
-
-    def test_quoted_value_closing_after_the_input_limit_is_not_kept(self):
-        secret = "synthsecret" + "z" * MAX_REDACT_LINE_BYTES
-        command = f'npx run --token="{secret}" && echo done'
-        self.assertIsNone(self.evidence_line(command))  # 통째로 가릴 수 없어 줄을 남기지 않는다
-        # 옛 순서(입력 상한으로 자른 뒤 가림)였다면 닫는 따옴표가 잘려 값 앞부분이 남았다
-        cut = command.encode()[:MAX_REDACT_LINE_BYTES].decode()
-        self.assertIn("synthsecret", clip_redacted(credential_text(cut)))
-
-    def test_quoted_value_with_a_newline_is_redacted_whole(self):
-        command = 'npx run --token="synthfirstpart\nsynthsecondpart" && echo done'
-        line = self.evidence_line(command)
-        self.assertNotIn("synth", line)
-        self.assertIn("npx run", line)
-        # 옛 순서(줄로 나눈 뒤 가림)였다면 첫 줄의 값 앞부분이 남았다
-        first = command.splitlines()[0]
-        self.assertIn("synthfirstpart", credential_text(first))
-
-    def test_secret_on_the_evidence_boundary_is_redacted_before_clipping(self):
-        prefix = "npx run " + "x" * (MAX_OBSERVED_LINE_CHARS - 20)
-        line = self.evidence_line(prefix + ' --token="abcdefghijklmnopqrstuvwxyz0123456789"')
-        self.assertNotIn("abcd", line)
-
-
-class TestRedactLimitMatchesTheMeter(unittest.TestCase):
-    def test_line_byte_limit_is_the_go_value(self):
-        import re
-        from pathlib import Path
-        text = (Path(__file__).resolve().parents[3] / "cmd/eval-meter/redact.go").read_text(encoding="utf-8")
-        match = re.search(r"maxRedactLineBytes\s*=\s*(\d+) << 10", text)
-        self.assertIsNotNone(match)
-        self.assertEqual(int(match.group(1)) * 1024, MAX_REDACT_LINE_BYTES)
+        many, observed = observed_lines([{"command": {"command": "npx x"}}] * (MAX_OBSERVED_LINES + 3), ["npx"])
+        self.assertEqual((len(many), observed), (MAX_OBSERVED_LINES, MAX_OBSERVED_LINES + 3))
+        flags = "npx " + " ".join(["-a"] * 600)  # 모양도 근거 상한으로 자른다
+        (item,), _ = observed_lines([{"command": {"command": flags}}], ["npx"])
+        self.assertTrue(item["shape"].endswith(" [...]"))
+        self.assertEqual(len(item["shape"]), MAX_OBSERVED_LINE_CHARS + len(" [...]"))
+        self.assertEqual(command_shape("npx -a", ["npx"]), "npx -a")
+        self.assertEqual(clip_shape("x" * 10), "x" * 10)
 
 
 if __name__ == "__main__":
