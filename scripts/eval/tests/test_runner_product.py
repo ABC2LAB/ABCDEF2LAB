@@ -424,6 +424,21 @@ class TestTaskEndSignal(unittest.TestCase):
                 self.assertEqual(str(caught.exception), "product_task_signal_invalid")
                 self.assertEqual([c for c in fake.calls if c["path"].startswith("/api/tasks")], [])  # 보내지 않는다
 
+    def test_exploration_id_comes_from_the_single_task(self):
+        fake = self.fake()
+        self.assertEqual(driver(fake).task_exploration_id("42"), 3)
+        self.assertEqual([c["path"] for c in fake.calls if c["path"].startswith("/api/tasks")], ["/api/tasks/42"])
+        for name, task in (("missing", {k: v for k, v in self.TASK.items() if k != "exploration_id"}),
+                           ("zero", dict(self.TASK, exploration_id=0)), ("bool", dict(self.TASK, exploration_id=True)),
+                           ("text", dict(self.TASK, exploration_id="3")), ("other_task", dict(self.TASK, id="7"))):
+            with self.subTest(name=name), self.assertRaises(ProductAPIError) as caught:
+                driver(self.fake(task=task)).task_exploration_id("42")
+            self.assertEqual(str(caught.exception), "product_task_exploration_invalid")
+        fake = self.fake()
+        with self.assertRaises(ProductAPIError):
+            driver(fake).task_exploration_id("4/2")
+        self.assertEqual([c for c in fake.calls if c["path"].startswith("/api/tasks")], [])
+
     def test_http_error_is_a_fixed_code(self):
         fake = self.fake()
         fake.overrides["/api/tasks/42/goals"] = (403, {"reason": "forbidden"})

@@ -320,6 +320,17 @@ class ProductDriver:
             raise ProductAPIError("product_task_signal_invalid")
         return product_task_end(self._call("GET", f"/api/tasks/{task_id}"), self._call("GET", f"/api/tasks/{task_id}/goals"), task_id)
 
+    def task_exploration_id(self, task_id: str) -> int:
+        """작업의 탐색 번호(활동 표의 exploration_id). B와 같은 원본 단건 조회(`GET /api/tasks/{id}`, taskDTO)의 칸이다
+        (runner_engine.task_exploration_id). 제품 관리 API는 목록 `GET /api/tasks`를 중계하지 않는다(307)."""
+        if not _TASK_ID.fullmatch(task_id):
+            raise ProductAPIError("product_task_exploration_invalid")
+        task = self._call("GET", f"/api/tasks/{task_id}")
+        value = task.get("exploration_id") if isinstance(task, dict) and task.get("id") == task_id else None
+        if type(value) is not int or value < 1:
+            raise ProductAPIError("product_task_exploration_invalid")
+        return value
+
     def run_record(self, task_id: str) -> dict:
         """그 작업의 저장된 실행 기록(`GET /api/tasks/{id}/diagnosis-run`): 실행·준비 모델 사용량, 목표 SHA(goal), 결과.
         해석은 runner_product_llm.product_model_usage가 한다. 작업 번호는 숫자만 받는다."""
