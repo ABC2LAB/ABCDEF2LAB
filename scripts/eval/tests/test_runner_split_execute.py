@@ -230,6 +230,8 @@ class FakePorts:
         self.drain_delay = 0.0
         self.listeners: set = set()
         # 제품 회차 디렉터리의 E③ 확정 단계 결과(e3contract.RunResult). 기본은 공식 기대값(선언 없음으로 비활성)이다.
+        self.trace_args: list[str] = []
+        self.trace_sources = {"e2_host_journal": b"", "e2_product_journal": b"", "declarations": b""}
         self.e3_file = json.dumps({"version": "e3-confirmation-run/v1", "status": "disabled", "reason": "declaration_missing",
                                    "verdicts": [], "skipped": [], "candidates": [], "requests": 0, "writes": []}).encode()
 
@@ -441,6 +443,13 @@ class FakePorts:
             raise self.e3_file
         return self.e3_file
 
+    def e3_trace_sources(self, draft_id):
+        self._call("e3_trace_sources")
+        self.trace_args.append(draft_id)
+        if isinstance(self.trace_sources, Exception):
+            raise self.trace_sources
+        return self.trace_sources
+
     def runtime_conditions(self, draft_id):
         self._call("runtime_conditions")
         self.files_args.append(draft_id)
@@ -474,7 +483,7 @@ ORDER_HEAD = ["preexisting", "image_ids", "meter_describe", "tool_surface", "hos
 ORDER_TAIL = ["seal", "meter:drained", "stop_round", "wait_closed", "workflow_snapshot", "snapshot:post", "check:post", "probes:post", "scoreboard:post",
               "stop_boundary", "watch:stop",
               "events:stop", "status", "run_record", "task_signal", "control_policy", "product_files", "runtime_conditions", "e3_confirmation",
-              "copy_boundary_evidence", "split_conditions",
+              "e3_trace_sources", "copy_boundary_evidence", "split_conditions",
               "copy_product_records",
               "generation_verify", "llm_verified", "down", "remove_inputs", "sign", "sign"]  # 내린 뒤 러너 기록·결과 서명
 
@@ -495,6 +504,7 @@ class TestOrder(unittest.TestCase):
                                                "window-watch.json", "product-end.json", "product-task-end.json", "product-model.json",
                                                "tool-surface.json",
                                                "product-files.json", "discovery-sources.json", "fault-stall.json", "product-calls.jsonl",
+                                               "e3-traces.json",
                                                RESULT_NAME, "isolation-evidence.json", "solve-events.json", "run-record.json"})
         self.assertEqual(evidence.files["discovery-sources.json"], {
             "format": "abc2lab-eval-runner-discovery-sources-v1", "endpoints": 4,
@@ -1429,6 +1439,40 @@ class TestE3ConfirmationRow(unittest.TestCase):
                                  ("invalid", ["e3_confirmation_copy_failed", "docker_helper_cleanup_failed"]))
         result, _, _ = run(lambda p: setattr(p, "e3_file", RuntimeError("docker_helper_copy_failed")))
         self.assertEqual(result["status"], "complete")
+
+    def test_e3_traces_are_recorded_for_go_condition_2(self):
+        # 선언 없는 회차가 E③를 건드리지 않았는지(개발 계획 Go 조건 2): 제품을 멈춘 뒤 세 저널을 세어 e3-traces.json에 남긴다.
+        def line(event):
+            return json.dumps({"Kind": "event", "Record": {"Index": 1, "Event": event}, "MAC": "m"}).encode() + b"\n"
+        event = line({"stage": "control", "decision": "allow"})
+        e3_event = line({"stage": "result", "program": "e3_read", "decision": "allow"})
+        sources = {"e2_host_journal": event * 2 + e3_event, "e2_product_journal": event * 2, "declarations": b""}
+        result, ports, evidence = run(lambda p: setattr(p, "trace_sources", sources))
+        self.assertEqual(ports.trace_args, ["draft-1"])
+        record = evidence.files["e3-traces.json"]
+        self.assertEqual((record["format"], record["e2_host_journal"]["events"], record["e2_product_journal"]["by_kind"]),
+                         ("abc2lab.e3-traces/v1", 3, {"control|-|allow|-": 2}))
+        # 결과 파일(쓰기 기록 0건)도 같이 센다
+        self.assertEqual(result["e3_traces"], {"e3_events": 1, "product_journal_e3_events": 0, "declaration_writes": 0,
+                                               "result_writes": 0, "host_seal_phase": None, "host_seal_checks": None,
+                                               "host_evidence_checkpoints": 0})
+        self.assertEqual(result["status"], "complete")
+        # 원본을 못 읽으면 기록만 하고(고정 코드) 회차는 그대로다. 공식 회차도 같다.
+        for purpose in ("browser_acceptance", "official"):
+            with self.subTest(purpose=purpose):
+                result, _, evidence = run(lambda p: setattr(p, "trace_sources", RuntimeError("docker_timeout")), purpose=purpose)
+                self.assertEqual(result["status"], "complete", result)
+                self.assertEqual(evidence.files["e3-traces.json"], {"format": "abc2lab.e3-traces/v1", "error": "e3_traces_copy_failed"})
+                self.assertEqual(result["e3_traces"], {"error": "e3_traces_copy_failed"})
+        # 결과 파일을 못 읽었으면 결과 쓰기 수는 null이다
+        result, _, _ = run(lambda p: setattr(p, "e3_file", RuntimeError("missing")))
+        self.assertIsNone(result["e3_traces"]["result_writes"])
+
+    def test_e3_traces_helper_cleanup_failure_is_invalid(self):
+        from runner_docker import HelperCleanupError
+        result, ports, _ = run(lambda p: setattr(p, "trace_sources", HelperCleanupError()))
+        self.assertEqual((result["status"], result.get("reasons")), ("invalid", ["e3_traces_copy_failed", "docker_helper_cleanup_failed"]))
+        self.assertIn("down", ports.calls)
 
     def test_other_purposes_record_without_invalidating(self):
         # 수용시험 목적은 기록만 한다(감독자 연결 전 빌드는 파일이 없어 수집 못 함으로 남는다)

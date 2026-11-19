@@ -59,6 +59,7 @@ from runner_record import (  # noqa: E402
 )
 from runner_docker import HelperCleanupError, HelperCleanupInterrupt  # noqa: E402
 from runner_e2v3 import EVIDENCE_NAME as E2V3_EVIDENCE_NAME, E2V3Invalid  # noqa: E402
+from runner_e3_traces import EVIDENCE_NAME as E3_TRACES_NAME, FORMAT as E3_TRACES_FORMAT, traces as e3_traces  # noqa: E402
 from cli_usage import OBSERVED_LINES_FORMAT, count_usage, not_found_calls, observed_lines, product_command_record  # noqa: E402
 from isolation_proof import E3_STATUSES, PURPOSE_OFFICIAL  # noqa: E402
 from run_record import OFFICIAL_E3_DISABLED_REASON  # noqa: E402
@@ -304,6 +305,7 @@ class SplitRunPorts(Protocol):
     def product_files(self) -> dict: ...
     def runtime_conditions(self, draft_id: str) -> bytes: ...
     def e3_confirmation(self, draft_id: str) -> bytes: ...
+    def e3_trace_sources(self, draft_id: str) -> dict: ...
     def tool_surface(self) -> dict: ...
     def split_conditions(self) -> dict: ...
     def boundary_directory(self): ...
@@ -537,9 +539,9 @@ def e3_confirmation_row(raw: bytes) -> dict:
     return {"status": value["status"], "reason": reason, "requests": requests, "sha256": hashlib.sha256(raw).hexdigest()}
 
 
-def _e3_confirmation(ports, draft_id: str) -> dict:
-    """회차 디렉터리(runs/<초안 ID>)의 e3-confirmation.json. 파일이 없으면(감독자 연결 전 제품 빌드) 복사 도우미가 실패하므로
-    수집 못 함(e3_confirmation_not_collected)으로 남긴다. 공식 회차의 처리는 호출자가 한다."""
+def _e3_confirmation(ports, draft_id: str) -> tuple[dict, bytes | None]:
+    """회차 디렉터리(runs/<초안 ID>)의 e3-confirmation.json 행과 원본. 파일이 없으면(감독자 연결 전 제품 빌드) 복사 도우미가
+    실패하므로 수집 못 함(e3_confirmation_not_collected)으로 남긴다. 공식 회차의 처리는 호출자가 한다."""
     try:
         raw = ports.e3_confirmation(draft_id)
     except HelperCleanupError:
@@ -547,8 +549,23 @@ def _e3_confirmation(ports, draft_id: str) -> dict:
         # 단계처럼 무효다(#742 리뷰).
         raise RunFailure("e3_confirmation_copy_failed", ("docker_helper_cleanup_failed",)) from None
     except Exception:
-        return {"error": "e3_confirmation_not_collected"}
-    return e3_confirmation_row(raw)
+        return {"error": "e3_confirmation_not_collected"}, None
+    return e3_confirmation_row(raw), raw
+
+
+def _e3_traces(ports, evidence, state, draft_id: str, result_raw: bytes | None) -> None:
+    """E③ 흔적·E② 저널 사건 수(e3-traces.json, 개발 계획 Go 조건 2 근거). 기록만 한다: 원본을 못 읽어도 회차 유효성은 그대로이고
+    고정 코드로 남긴다. 도우미 정리 실패는 다른 복사 단계처럼 무효다."""
+    try:
+        sources = ports.e3_trace_sources(draft_id)
+    except HelperCleanupError:
+        raise RunFailure("e3_traces_copy_failed", ("docker_helper_cleanup_failed",)) from None
+    except Exception:
+        record = {"format": E3_TRACES_FORMAT, "error": "e3_traces_copy_failed"}
+    else:
+        record = e3_traces(dict(sources, e3_result=result_raw))
+    state.summary["e3_traces"] = record.get("summary", {"error": record.get("error")})
+    _step(state, "evidence_write_failed", lambda: evidence.write_json(E3_TRACES_NAME, record))
 
 
 PRODUCT_CALLS_NAME = "product-calls.jsonl"
@@ -699,8 +716,9 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     files["runtime_conditions"] = None if runtime is None else runtime[0]
     # E③ 확정 단계 결과(2026-11-19 사용자 결정): 제품을 멈춘 뒤 회차 디렉터리에서 복사해 상태·사유·원본 SHA를 남긴다.
     # 보존 sidecar의 제품 파일 칸(닫힌 목록)과 섞지 않고 따로 둔다. 공식 회차는 비활성(선언 없음)이어야 한다(평가 프로토콜 §5.1).
-    e3 = _e3_confirmation(ports, draft_id)
+    e3, e3_raw = _e3_confirmation(ports, draft_id)
     state.summary["e3_confirmation"] = e3
+    _e3_traces(ports, evidence, state, draft_id, e3_raw)
     _step(state, "evidence_write_failed", lambda: evidence.write_json(PRODUCT_FILES_NAME, {
         "format": PRODUCT_FILES_FORMAT, "file_sha256": files, "diagnosis_entered": entered, "diagnosis_policy_sha256": fingerprint,
         "policy_ref": policy["policy_ref"], "policy_revision": policy["policy_revision"], "limits": policy["limits"],

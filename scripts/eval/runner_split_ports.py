@@ -61,6 +61,12 @@ PRODUCT_CONFIG_FILES = (("installation", "installation.json"), ("policy", "polic
 RUNTIME_CONDITIONS_FILE = "runtime-conditions.json"
 # 제품이 회차 디렉터리(runs/<초안 ID>)에 한 번 쓰는 E③ 확정 단계 결과(e3contract.RunResult, 0600).
 E3_CONFIRMATION_FILE = "e3-confirmation.json"
+# E③ 흔적 근거(runner_e3_traces): E② Host v3 저널(Host uid, compose `e2-host` user), 제품 쪽 사본, 대상 선언 보호 저널.
+E2_HOST_VOLUME, E2_HOST_JOURNALS, E2_HOST_UID = "e2-host-state", "journals", 1002
+E2_JOURNAL_NAME = "events.jsonl"
+DECLARATIONS_SUBPATH, DECLARATIONS_JOURNAL = ("targets", "declarations"), "preparation.journal"
+# Host 실행 디렉터리의 봉인 포함 확인·내준 근거 체크포인트 기록(#810 뒤 제품). 없으면 None이다.
+HOST_SEAL_CHECKS, HOST_EVIDENCE_CHECKPOINTS = "seal-checks.json", "evidence-checkpoints.json"
 MAX_PRODUCT_FILE_BYTES = 1 << 20
 
 
@@ -383,6 +389,31 @@ class DockerSplitPorts:
                     raise
                 out.append(None)
         return out[0], out[1]
+
+    def e3_trace_sources(self, draft_id: str) -> dict:
+        """E③ 흔적을 셀 원본 셋(runner_e3_traces). 제품을 멈춘 뒤에 부른다. 파일이 없어서만 실패하면(HELPER_FILE_MISSING) 그 칸은
+        None이다. 그 밖의 복사 실패·도우미 정리 실패는 그대로 올린다. 선언 저널이 압축돼 `preparation.current/` 아래로 옮겨졌으면
+        (도우미 하위 경로 상한 2) 읽지 못하고 None이다(새 설치 합성 회차에서는 압축되지 않는다)."""
+        run_directory = hashlib.sha256(f"run-{draft_id}".encode("utf-8")).hexdigest()
+        sources = (("e2_host_journal", E2_HOST_VOLUME, E2_HOST_JOURNALS, E2_JOURNAL_NAME, "e3trace-host", E2_HOST_UID,
+                    E2V3_MAX_JOURNAL_BYTES, (run_directory,)),
+                   ("e2_product_journal", "product-state", "runs", E2_JOURNAL_NAME, "e3trace-product", PRODUCT_UID,
+                    E2V3_MAX_JOURNAL_BYTES, (draft_id, "state")),
+                   ("declarations", "product-state", "state", DECLARATIONS_JOURNAL, "e3trace-declarations", PRODUCT_UID,
+                    MAX_PRODUCT_FILE_BYTES, DECLARATIONS_SUBPATH),
+                   ("host_seal_checks", E2_HOST_VOLUME, E2_HOST_JOURNALS, HOST_SEAL_CHECKS, "e3trace-seal", E2_HOST_UID,
+                    MAX_PRODUCT_FILE_BYTES, (run_directory,)),
+                   ("host_evidence_checkpoints", E2_HOST_VOLUME, E2_HOST_JOURNALS, HOST_EVIDENCE_CHECKPOINTS, "e3trace-issued",
+                    E2_HOST_UID, MAX_PRODUCT_FILE_BYTES, (run_directory,)))
+        out = {}
+        for key, volume, directory, name, role, uid, limit, subpath in sources:
+            try:
+                out[key] = self._copy(volume, directory, (name,), role, uid, limit, subpath)[name]
+            except DockerError as exc:
+                if str(exc) != HELPER_FILE_MISSING:  # 정리 실패(HelperCleanupError)도 여기서 올라간다
+                    raise
+                out[key] = None
+        return out
 
     def e2_v3_collect(self, journal: bytes | None, head: bytes | None) -> dict:
         settings = self.split.e2_v3
