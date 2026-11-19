@@ -979,20 +979,12 @@ func verifyProductVerdictDetail(taskID, exploration int64, r verdictDetailRow) (
 			return out, false
 		}
 	}
-	for _, reason := range payload.OracleReasons {
-		if !accessMapReason(oracle.JudgeReason(reason)) {
-			return out, false
-		}
-	}
-	for _, reason := range payload.ProductReasons {
-		if !verdictDetailProductCode.MatchString(reason) {
-			return out, false
-		}
-	}
-	for _, ref := range payload.CandidateRefs {
-		if !verdictDetailProductRef.MatchString(ref) {
-			return out, false
-		}
+	// 저장 검사(uniqueMatching)와 같이 사유·후보는 겹치지 않는다. 다시 서명한 위조 행이 겹친 값을 가지면 그 행만 진위
+	// 실패다(화면 파서가 응답 전체를 거절하지 않게, #808 리뷰).
+	if !verdictDetailUnique(payload.OracleReasons, func(r string) bool { return accessMapReason(oracle.JudgeReason(r)) }) ||
+		!verdictDetailUnique(payload.ProductReasons, verdictDetailProductCode.MatchString) ||
+		!verdictDetailUnique(payload.CandidateRefs, verdictDetailProductRef.MatchString) {
+		return out, false
 	}
 	// 저장 검사와 같은 불변식: 확정은 세 검사 모두 yes, 근거 호출 하나 이상, 제품 사유 없음.
 	out.complete = value == oracle.Confirmed && len(payload.Evidence) > 0 && len(payload.ProductReasons) == 0
@@ -1019,4 +1011,16 @@ func verifyProductVerdictDetail(taskID, exploration int64, r verdictDetailRow) (
 		ReasonCodes: append([]string{}, payload.OracleReasons...), ProductReasonCodes: append([]string{}, payload.ProductReasons...),
 		CandidateRefs: append([]string{}, payload.CandidateRefs...), EvidenceCount: len(payload.Evidence), ObservedAt: payload.ObservedAt, ModelTag: payload.ModelTag}
 	return out, true
+}
+
+// verdictDetailUnique는 값마다 ok이고 겹치는 값이 없는지다.
+func verdictDetailUnique(values []string, ok func(string) bool) bool {
+	seen := make(map[string]bool, len(values))
+	for _, v := range values {
+		if !ok(v) || seen[v] {
+			return false
+		}
+		seen[v] = true
+	}
+	return true
 }

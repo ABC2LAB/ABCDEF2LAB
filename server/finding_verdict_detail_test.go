@@ -692,6 +692,14 @@ func TestFindingVerdictDetailProductIntegrity(t *testing.T) {
 		{name: "forge-payload-key-missing", forge: true, payload: func(p map[string]any) { delete(p, "evidence") }},
 		{name: "forge-binding-key-missing", forge: true, binding: func(b map[string]any) { delete(b, "e2_policy_ref") }},
 		{name: "forge-manifest-key-missing", forge: true, manifest: func(m map[string]any) { delete(m, "evidence_checkpoint") }},
+		// 저장 검사처럼 읽기도 겹친 사유·후보를 받지 않는다(그 행만 진위 실패).
+		{name: "forge-duplicate-oracle-reason", forge: true, payload: func(p map[string]any) {
+			p["oracle_reason_codes"] = []any{"policy_deny_resolved", "policy_deny_resolved"}
+		}},
+		{name: "forge-duplicate-candidate", forge: true, payload: set("candidate_refs", []any{"candidate-1", "candidate-1"}),
+			sql: []string{`UPDATE e3_verdict_issuances SET candidate_refs='["candidate-1","candidate-1"]'::jsonb WHERE id={i}`}},
+		{name: "forge-duplicate-product-reason", forge: true, payload: set("product_reason_codes", []any{"product_x", "product_x"}),
+			sql: []string{`UPDATE e3_verdict_issuances SET product_reason_codes='["product_x","product_x"]'::jsonb WHERE id={i}`}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
