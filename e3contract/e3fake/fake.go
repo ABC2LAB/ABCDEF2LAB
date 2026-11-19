@@ -68,6 +68,8 @@ type Transport struct {
 	TamperBoth func(Call, *e3contract.Observation)
 	// DropJournal이 참이면 그 요청의 저널 이벤트를 남기지 않는다.
 	DropJournal func(Call) bool
+	// SealedErr가 있으면 Sealed가 그 오류를 돌려준다(검증 실패 등, v3 계약 §5).
+	SealedErr error
 	// Clock은 관찰 시각이다. 없으면 고정 시각에서 1초씩 늘린다.
 	Clock func() time.Time
 
@@ -250,6 +252,9 @@ func (t *Transport) write(sink string, data []byte) {
 func (t *Transport) Sealed(_ context.Context, _ e3contract.RunBinding, ref e3contract.CallRef) (e3contract.Observation, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.SealedErr != nil {
+		return e3contract.Observation{}, t.SealedErr
+	}
 	o, ok := t.journal[ref.CallRef+"\x00"+ref.AttemptID]
 	if !ok {
 		return e3contract.Observation{}, e3contract.ErrJournalEventMissing

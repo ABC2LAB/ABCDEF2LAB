@@ -55,8 +55,10 @@ const (
 	IntegrityObservationMismatch  IntegrityReason = "observation_mismatch"
 	IntegrityObservationReused    IntegrityReason = "observation_reused"
 	IntegrityJournalEventMissing  IntegrityReason = "journal_event_missing"
-	IntegrityJournalEventMismatch IntegrityReason = "journal_event_mismatch"
-	IntegrityAuthorityRevoked     IntegrityReason = "authority_revoked"
+	// IntegrityJournalIntegrityFailed는 Journal.Sealed가 저널을 검증하지 못한 경우다(ErrJournalIntegrity와 그 밖의 오류).
+	IntegrityJournalIntegrityFailed IntegrityReason = "journal_integrity_failed"
+	IntegrityJournalEventMismatch   IntegrityReason = "journal_event_mismatch"
+	IntegrityAuthorityRevoked       IntegrityReason = "authority_revoked"
 )
 
 // ProductReason은 제품 확정 단계의 UNDECIDABLE 세부 사유다(#692 §9.1). 오라클 사유 목록(oracle.JudgeReason)은 바꾸지
