@@ -204,6 +204,15 @@ class TestFaultStallJudge(unittest.TestCase):
         self.assertEqual(ended["trailing_event_gap_seconds"], 20.0)
         self.assertEqual(fault_stall_record([], [], START, stamp(12.5), None)["trailing_event_gap_seconds"], 12.5)
 
+    def test_trailing_gap_is_compared_in_exact_nanoseconds(self):
+        # #794 리뷰: 마지막 완료 00:00:01, 창 끝 00:03:00.9999은 실제 179.9999초다. 반올림한 초(180.0)가 아니라 나노초로 T와 비교한다.
+        record = fault_stall_record([llm(1, 0.0, 1.0)], [], START, "2026-11-17T00:03:00.999900000Z", None)
+        self.assertEqual(record["trailing_event_gap_seconds"], 180.0)  # 기록용 반올림
+        self.assertEqual(record["trailing_event_gap_nanoseconds"], 179_999_900_000)
+        self.assertLess(record["trailing_event_gap_nanoseconds"], 180 * 10**9)  # 빈 계획 대기(≥ T)가 아니다
+        exact = fault_stall_record([llm(1, 0.0, 1.0)], [], START, "2026-11-17T00:03:01.000000000Z", None)
+        self.assertEqual(exact["trailing_event_gap_nanoseconds"], 180 * 10**9)
+
     def test_engine_end_before_idle_end_is_not_a_stall(self):
         rows = [llm(1, 1.0, 2.0, decision="upstream_error", end="upstream_cut_before_done")]
         for terminal, stalls in ((None, 1), (1.0, 0), (100.0, 0), (300.0, 0), (300.5, 1)):

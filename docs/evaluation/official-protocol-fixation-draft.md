@@ -369,7 +369,7 @@ B(원본 엔진)와 O(제품)가 설계상 다르고 일부러 맞추지 않는 
   - O: `first_limit`(product_limit 포함), 제품 끝 상태(`product-end.json` final의 상태·결과·마감 사유·의도 결과), 작업 끝 신호(`product-task-end.json` v2의 작업 상태·목표 상태별 수·의도 상태별 수).
   - O가 `engine_completed`로 미완 의도를 남기고 끝난 회차는 목표 상태로 분류해 따로 센다. 목표가 하나 이상이고 전부 met면 (가), 아니면 (나)다. `prove_goal`의 자동 완료는 모든 목표가 met일 때만 일어나므로(`agent/tools.go`), 목표 상태에 `abandoned`가 하나라도 있거나 목표가 0개면 (나)로 세고 `abandoned` 수를 같이 적는다. 이 분포가 측정 전에 고칠 제품 문제인지 판단하는 근거다.
   - **시간 상한 마감은 둘로 나눠 센다(2026-11-19 사용자, 빈 계획 마감 규칙 변경 대비).** 제품의 '계획이 비면 마감'(`server/first_diagnosis_outcome.go`)을 빼면, O는 원본처럼 빈 계획 뒤에도 끝나지 않고 알림이나 심장박동(`db.MinPlanHeartbeatSeconds` 600초) 때 다시 계획한다. 그래서 의도를 다 쓴 O 회차가 다음 계획을 기다리다 `runner_time_budget`으로 끝나는 일이 늘 수 있다. 같은 시간 상한이라도 아래 둘을 따로 세서 보고한다.
-    - **빈 계획 대기 중 시간 상한**: 마지막 활동 사건(모델·대상 요청의 시작·완료)부터 끝까지의 공백(`fault-stall.json`의 `trailing_event_gap_seconds`)이 멈춤 무효 T(180초, §2) 이상이다. 그동안 모델 호출도 대상 요청도 없었다는 뜻이다. 제공자 장애가 없으면 이 공백은 멈춤 무효(`provider_fault_stall`)가 아니다.
+    - **빈 계획 대기 중 시간 상한**: 마지막 활동 사건(모델·대상 요청의 시작·완료)부터 끝까지의 공백이 멈춤 무효 T(180초, §2) 이상이다. 비교는 나노초 정수 `trailing_event_gap_nanoseconds`(`fault-stall.json`)로 하고, `trailing_event_gap_seconds`는 기록용 반올림이다(§2 판정과 같은 방식). 그동안 모델 호출도 대상 요청도 없었다는 뜻이다. 제공자 장애가 없으면 이 공백은 멈춤 무효(`provider_fault_stall`)가 아니다.
     - **작업 중 시간 상한**: 그 밖의 시간 상한 마감이다.
     - 두 경우 모두 작업 끝 신호(`product-task-end.json` v2)의 의도 상태별 수를 같이 적는다. 다만 멈출 때 실행 중이던 의도는 마무리 경로에 따라 `exhausted`·`stopped`·`open`으로 남아서(`server/engine.go` Worker 마감), 의도 상태만으로는 두 경우를 가르지 않는다.
     - B도 같은 함수·같은 기준(끝 공백 ≥ T)으로 가른다. 원본 B도 빈 계획 뒤 심장박동을 기다리는 엔진이다.
