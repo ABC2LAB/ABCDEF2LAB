@@ -146,7 +146,6 @@ func (c *e3ProgramCall) inspectCreate(response *http.Response, body []byte) {
 		c.audit.Normal = oracle.StateNo
 		return
 	}
-	c.audit.Normal = oracle.StateYes
 	id := c.objectID
 	if c.idPath != "" {
 		mediaType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
@@ -184,6 +183,7 @@ func (c *e3ProgramCall) inspectCreate(response *http.Response, body []byte) {
 	}
 	c.audit.ObjectIDDigest = e3ObjectDigest(c.digestKey, id)
 	c.createdID = id
+	c.audit.Normal = oracle.StateYes
 }
 
 func e3ObjectDigest(key []byte, id string) string {

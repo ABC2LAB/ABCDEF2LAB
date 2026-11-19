@@ -108,6 +108,35 @@ func TestE3CreateSendsOneMarkedRequestAndKeepsIDPrivate(t *testing.T) {
 	}
 }
 
+func TestE3CreateMissingOrInvalidResponseIDIsUnknown(t *testing.T) {
+	for _, tc := range []struct {
+		name, contentType, response string
+	}{
+		{name: "missing", contentType: "application/json", response: `{}`},
+		{name: "invalid_path", contentType: "application/json", response: `{"id":"../outside"}`},
+		{name: "non_json", contentType: "text/plain", response: `book-a`},
+		{name: "malformed", contentType: "application/json", response: `{"id":`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var requests atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				w.Header().Set("Content-Type", tc.contentType)
+				_, _ = io.WriteString(w, tc.response)
+			}))
+			defer server.Close()
+			spec := e3contract.CreateSpec{Path: "/allowed/books", Method: "POST", Kind: e3contract.BodyJSON,
+				BodyTemplate: `{}`, MarkerField: "marker", IDPath: "id"}
+			e, in, _ := e3CreateFixture(t, server.URL, spec, "")
+			event, err := e.SendE3Create(t.Context(), in)
+			if err != nil || requests.Load() != 1 || !event.ResponseComplete || event.E3Audit == nil ||
+				event.E3Audit.Normal != oracle.StateUnknown || event.E3Audit.ObjectIDDigest != "" || len(e.e3Created) != 0 {
+				t.Fatalf("객체 ID 추출 실패를 정상 생성으로 기록: err=%v requests=%d receipt=%+v", err, requests.Load(), event.Receipt)
+			}
+		})
+	}
+}
+
 func TestE3CreateRequiresWriteConsentAndReset(t *testing.T) {
 	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests.Add(1) }))
