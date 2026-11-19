@@ -1285,8 +1285,10 @@ export function buildPocMarkdown(entries: readonly RemediationEntry[], info: Poc
   if (info.model) out.push(`- **모델**: ${mdInline(info.model)}`);
   if (info.excluded) out.push(`- **제외 경로**: ${mdInline(info.excluded)}`);
   out.push("", "**요약**", "");
+  // 확정 전(검토 필요 · 미실행 · 결과 불명)까지 합한 수를 '취약점 n건'으로 쓰면 확정 수처럼 읽혀 합계를 두지 않고 판정별로만
+  // 센다. 확정이 맨 앞(절대규칙 5, #773 이동찬 · 이경준 P2)
   out.push(
-    `- 취약점: ${list.length}건 (확정 ${count("confirmed")} · 검토 필요 ${count("review")} · 미실행 ${count("not_executed")} · 결과 불명 ${count("unknown")})`,
+    `- 취약점: 확정 ${count("confirmed")}건 · 검토 필요 ${count("review")}건 · 미실행 ${count("not_executed")}건 · 결과 불명 ${count("unknown")}건`,
   );
   if (info.crawl) out.push(`- 탐색: 방문 ${info.crawl.visited} · 발견한 API ${info.crawl.found}`);
   out.push("", "**취약점**", "");

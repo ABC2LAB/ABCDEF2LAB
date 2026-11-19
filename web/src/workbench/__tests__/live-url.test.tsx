@@ -2071,7 +2071,9 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(doc).toHaveTextContent("점검 방식: 설치 범위");
     expect(doc).toHaveTextContent("모델: 합성 모델 · 로컬");
     // 요약은 확정 · 검토 필요를 나눠 센다(정상 대조는 빼고). '확인된 취약점'으로 묶지 않는다
-    expect(doc).toHaveTextContent("취약점: 2건 (확정 0 · 검토 필요 2 · 미실행 0 · 결과 불명 0)");
+    // 합계 '취약점 n건'은 확정 수처럼 읽혀 두지 않고 판정별로만, 확정이 맨 앞(#773 P2, 절대규칙 5)
+    expect(doc).toHaveTextContent("취약점: 확정 0건 · 검토 필요 2건 · 미실행 0건 · 결과 불명 0건");
+    expect(doc).not.toHaveTextContent(/취약점: \d+건/);
     expect(doc).not.toHaveTextContent("확인된 취약점");
     // 취약점: '1. [등급 · 판정] 제목' 은 제목(h2)이고 취약점 사이에 구분선 — 어디까지가 몇 번인지 보인다. 정상 대조는 없다
     const items = within(doc)
