@@ -1,6 +1,8 @@
 # 일반 E② v3 현재 head 저장 코어 — 구현 범위
 
-`e2checkpoint`는 `transmit/auditlog` 전용 `auditcheckpoint`와 별도 스키마를 사용한다. 새 스키마는 구조만 만들며 epoch, 독립 실행 권한, PostgreSQL 역할 또는 감사 키를 발급하지 않는다. `Store`는 호출자가 등록한 동일 epoch·실행·게시자·저널·키 참조를 인증하는 Host lease를 필요로 한다. 이 Host 구현과 역할 분리는 제품에 아직 연결되지 않았다.
+`e2checkpoint`는 `transmit/auditlog` 전용 `auditcheckpoint`와 별도 스키마를 사용한다. 코어의 `Migrate`는 구조만 만들며 epoch, 독립 실행 권한, PostgreSQL 역할 또는 감사 키를 발급하지 않는다. `Store`는 호출자가 등록한 동일 epoch·실행·게시자·저널·키 참조를 인증하는 Host lease를 필요로 한다. 독립 Host와 제품 실행 연결은 아직 없다.
+
+신규 Docker 제품 설치는 이 스키마를 만들고 `product_e2_head_writer` **NOLOGIN** 역할에만 head 조회·삽입·갱신과 epoch 조회 권한을 준다. `FOR SHARE`에 필요한 epoch 갱신 권한은 `CHECK (lock_guard)`로 참만 허용하는 잠금 전용 열 하나에 한정한다. `product_runtime`·`product_api`·`product_model_writer`에는 새 테이블 권한을 주지 않는다. 이 역할에는 로그인 자격도, 현재 epoch 발급 권한도 없다. 따라서 이 설치 변경은 독립 Host 서비스나 실제 송신 활성화를 뜻하지 않는다. 기존 설치의 DB에는 `update.sh`만으로 이 스키마·역할이 추가되지 않으며, 별도 검증된 설치 관리자 이관 절차가 필요하다.
 
 ## 게시 순서
 
