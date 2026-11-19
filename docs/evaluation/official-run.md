@@ -13,7 +13,7 @@
 | 러너·계측기·채점기 변경 머지: 계측기 하드 상한(#734), 끊긴 호출 처리(#735), B 전용 CLI 관측 줄(#736), 엔진 끝 전 최장 무활동(#737), O E③ 상태 수집(#742), O v1.1 러너 기록(#745), 채점기 분리 배치(#746) | GitHub PR |
 | 제품 E③ 감독자 연결(#738)과 E② Transport·Journal 연결. 연결 전 빌드는 O가 늘 `e3_official_not_disabled`로 무효다([러너](runner.md) 사유표) | GitHub PR |
 | 멈춤 무효 T 확정: 유료 확인 쌍에서 O 엔진 끝 전 최장 무활동(모델 호출 + 대상 요청)이 90초 이하이면 180초로 확정한다(고정 초안 §16). **[확인 쌍 뒤 채움]** | 고정 초안 §16 |
-| **멈춤 무효 판정이 실제로 동작함**: 지금 러너는 제공자 장애 자료(`fault-stall.json`)를 `judged: false`로 기록만 하고 `provider_fault_stall` 무효 사유를 내지 않는다(#737도 최장 무활동 값만 더한다). T 확정과 별개로, 러너가 판정해 무효 사유를 내고 세션 집계가 쪽별 2회 규칙(2절)으로 측정 전체를 멈추는 것을 구현과 시험으로 확인해야 시작한다. **[미구현]** | 고정 초안 §2·§3·§16 |
+| **멈춤 무효 판정이 켜져 있음**(#756): 러너는 설정 `run.fault_stall_seconds`(T)가 있으면 B·O 회차를 같은 T로 판정해 멈춤이면 `provider_fault_stall`로 무효로 하고, 세션 집계는 판정하지 않은 완료 회차·T 섞임을 받지 않으며 쪽별 2회 이상이면 측정 전체 실패(종료 코드 3)다. 시작 전 확인: 7번 `runner.json`에 T를 넣었고, 7절 집계를 `--allow-unjudged-fault-stall` 없이 돌린다. T 값은 위 줄대로 확인 쌍 뒤 채운다 | 고정 초안 §2·§3·§16 |
 | 이 문서·공식 분리 배치 프로파일·러너 설정이 태그 커밋에 있다(2절) | 레포 |
 
 ## 1. 역할
@@ -183,6 +183,7 @@ install -d -m 700 /srv/abc2lab-eval /srv/abc2lab-eval-keys "$SESSION" "$SESSION/
 7. **`runner.json`:** `$T/docs/evaluation/runner.example.json`([예시](runner.example.json))을 복사해 `images`의 태그·내용 ID와 경로를 채우고, 아래 칸을 더한다. 그 밖의 값은 바꾸지 않는다.
    - `runs_root`: `$SESSION/runs`(세션마다 새 디렉터리). `path_key_file`: 4번 키(`$PATH_KEY_DIR/path.key`, 이 세션 것). `purpose`: `official`.
    - `llm_gateway.verify_attempts` 40, `verify_interval_seconds` 3, `run.llm_verify_timeout_seconds` 300(2절).
+   - `run.fault_stall_seconds`: 멈춤 무효 판정 T(0절·2절, 확인 쌍 뒤 확정한 값). 없으면 러너가 판정하지 않고 7절 집계가 그 회차를 받지 않는다.
    - `split` 블록(제품 배치):
 
      ```json
@@ -252,7 +253,8 @@ python3 -I -B scripts/eval/runner.py --config /srv/abc2lab-eval/runner.json --pr
 | `model_usage_unknown`(O) | manifest 단가 상한이 재조회 단가보다 낮은지, 제공자 이름 글자 |
 | `e3_official_not_disabled`, `e3_status_not_collected`(O) | 제품 빌드에 E③ 감독자·Transport·Journal 연결이 있는지(0절). 연결 전 빌드로는 공식 O 회차를 돌릴 수 없다 |
 | `observer_count_mismatch`, `record_build_failed`, `record_sign_failed` | 관측기 GET이 러너 것 외에 더 있었는지, 선언·설정 칸, 러너 서명 키 |
-| `provider_fault_stall` | 제공자 장애(429·위쪽 끊김) 뒤 T초 무활동. 같은 칸 재실행, 비율 규칙(2절). 판정 구현 전(0절 [미구현])에는 이 사유가 나오지 않으므로 공식 세션을 시작하지 않는다 |
+| `provider_fault_stall` | 제공자 장애(429·위쪽 끊김) 뒤 다음 활동 사건(요청 시작·응답 완료)까지 T초 이상, 그 사이 엔진 끝 신호 없음(진행 중 요청·스트리밍 조각은 활동 아님, #756). 같은 칸 재실행. 한 쪽이 2회 이상이면 7절 집계가 측정 전체 실패(종료 코드 3)로 멈춘다(2절) |
+| `fault_stall_unjudgeable` | T가 설정됐는데 판정 재료(호출 행·시각)를 읽지 못함. 멈춤이 없다고 할 수 없어 무효다. 같은 칸 재실행 |
 | `drain_timeout`, `seal_failed`, `interrupted` | 같은 칸 재실행. 반복되면 원인 수정 |
 
 ## 7. 집계·채점
@@ -264,7 +266,7 @@ python3 -I -B scripts/eval/session_runs.py "$SESSION/runs" --repeats 3 \
 python3 -I -B scripts/eval/score.py "$SESSION/manifest.json" --runner-key-file /srv/abc2lab-eval-keys/runner.key
 ```
 
-- `session_runs.py`는 결과·회차 기록 서명을 먼저 검증하고, 쪽별 시도·유효·무효(사유별)·무효율·순서를 낸다. 분리 배치 세션은 작업 요청 지문이 쪽마다 하나여야 하고, 분리 배치와 엔진 직접 배치 회차가 섞이면 멈춘다.
+- `session_runs.py`는 결과·회차 기록 서명을 먼저 검증하고, 쪽별 시도·유효·무효(사유별)·무효율·순서를 낸다. 분리 배치 세션은 작업 요청 지문이 쪽마다 하나여야 하고, 분리 배치와 엔진 직접 배치 회차가 섞이면 멈춘다. 완료 회차가 모두 같은 T로 멈춤 판정됐는지 보고(아니면 멈춤), 쪽별 `provider_fault_stall` 무효 수를 0이어도 출력하며, 한 쪽이라도 2회 이상이면 측정 전체 실패로 종료 코드 3을 내고 manifest를 쓰지 않는다(그때는 채점하지 않고 결과 문서에 측정 실패로 적는다).
 - `score.py`의 첫 표가 주 지표(회차당 엔진 귀속 해결 수, 코어 GT 9·BAC 10, 평균 ± SD)다. 분리 배치 표는 엔진 설정·규칙 파일·도구 트리·LLM 스트리밍(선언된 차이)을 조건 안에서만, 샘플링·머신 사양·머신은 표 전체에서 대조한다. 통제 검증 표에서 O는 "대조 미수집 — 통제 주장 보류"다(E② 시도 대조 평가 내보내기 전). 판정 칸은 판정 미수집(판단불가)이다.
 - 결과 표에는 조건별 시도 수·유효 수·무효 사유별 수를 함께 싣고, 무효율은 쪽별로 따로 쓴다.
 
