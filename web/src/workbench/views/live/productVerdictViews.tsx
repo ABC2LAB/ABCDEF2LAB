@@ -14,6 +14,9 @@ import { dateTimeOf } from "../../live/map";
 import {
   CHECK_TEXT,
   CONFIRMATION_TEXT,
+  EVIDENCE_SEAL_TEXT,
+  type EvidenceSeal,
+  evidenceSealText,
   fetchProductVerdicts,
   isProductVerdictsShapeError,
   ORACLE_VALUE_TEXT,
@@ -22,9 +25,6 @@ import {
   type ProductVerdictRow,
   type ProductVerdictShown,
   RECORD_STATUS_TEXT,
-  EVIDENCE_SEAL_TEXT,
-  evidenceSealText,
-  type EvidenceSeal,
 } from "../../live/productVerdicts";
 import { type Poll, usePoll } from "../../live/usePoll";
 import { Icon } from "../../ui/icons";
