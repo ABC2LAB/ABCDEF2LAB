@@ -76,6 +76,7 @@ import { urlAccountAuthRows, urlOutcomeText, urlStateText, urlTargetHint, urlTon
 import { flowStageText } from "../live/workflow";
 import { type Shell, ShellContext, type View } from "../shell";
 import { createInitialState, useWb } from "../store";
+import { Markdown } from "../ui/Markdown";
 import { DashboardByMode, LiveByMode, NewScanByMode, ReportByMode, ScopeByMode } from "../views/live/byMode";
 import { UrlFindingLive } from "../views/live/UrlFindingLive";
 import { buildPocMarkdown, FINDINGS_POLL_MS } from "../views/live/UrlLiveLive";
@@ -99,9 +100,9 @@ it("URL 입력 뒤 외부 LLM을 펼쳐 모델·키를 등록하고 범위 조�
   fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
   // 설치된 프로필이 외부 모델뿐이면 '외부 API' 가 골라져 있다
   expect(screen.getByRole("radio", { name: "외부 API" })).toBeChecked();
-  // 범위 확인 전 안전 장치는 기본 원칙임을 밝히고, 외부 모델 전송도 미리 보인다 (리뷰 #507, 절대규칙 8)
+  // 범위 확인 전에도 외부 모델 전송은 미리 보인다 (리뷰 #507, 절대규칙 8). '범위 확인 전 기본 원칙' 안내 글은 뺐다(사용자 11/18)
   const sum = screen.getByRole("complementary", { name: "점검 요약" });
-  expect(within(sum).getByText(/^범위 확인 전 기본 원칙/)).toBeInTheDocument();
+  expect(within(sum).queryByText(/^범위 확인 전 기본 원칙/)).toBeNull();
   expect(within(sum).getByText("외부 모델로 대상 응답 전송")).toBeInTheDocument();
   // 시안 #nApi: 외부 API 는 모델 대신 제공자(연결 방식 · 승인한 endpoint)와 API 키
   expect(screen.getByLabelText("제공자")).toHaveDisplayValue(`OpenRouter · ${externalModel.provider}`);
@@ -390,7 +391,9 @@ describe("서버 방식 확인 (catalog)", () => {
     mount("new");
     const target = await screen.findByLabelText(/점검할 사이트 주소/);
     // 1쪽: 최근 점검한 주소는 줄 없이 빈 안내. 로그인은 지금 실제 동작(로그인 없이)이 기본이고 시안처럼 바꿀 수 있다
-    expect(screen.getByRole("link", { name: "진행·시작 전 점검 목록" })).toHaveAttribute("href", "#running");
+    // '기존 점검 다시 열기' 칸은 두지 않는다(사용자 11/18)
+    expect(screen.queryByText("기존 점검 다시 열기")).toBeNull();
+    expect(screen.queryByRole("link", { name: "진행·시작 전 점검 목록" })).toBeNull();
     expect(screen.queryAllByRole("button", { name: /\.(com|io)$/ })).toHaveLength(0);
     const login = screen.getByRole("radiogroup", { name: "로그인 여부" });
     for (const r of within(login).getAllByRole("radio")) expect(r).toBeEnabled();
@@ -472,7 +475,11 @@ describe("서버 방식 확인 (catalog)", () => {
     u.readURLCatalog.mockResolvedValue({ ...catalog, profiles: [{ ...catalog.profiles[0], workflow: limits }] });
     mount("new");
     const target = await screen.findByLabelText(/점검할 사이트 주소/);
-    expect(screen.queryByLabelText(/작업 이름/)).toBeNull();
+    // 점검 이름은 선택 칸(사용자 11/18)
+    expect(screen.getByLabelText("점검 이름 (선택)")).toHaveValue("");
+    expect(screen.getByLabelText("점검 이름 (선택)")).toHaveAccessibleDescription(
+      "목록과 상세에 표시되고, 모델에 작업 설명으로 전달됩니다.",
+    );
     // 점검 설정은 2쪽에 있다
     expect(screen.queryByRole("heading", { name: "점검 설정" })).toBeNull();
     fireEvent.change(target, { target: { value: "https://target.example/" } });
@@ -480,7 +487,7 @@ describe("서버 방식 확인 (catalog)", () => {
     expect(screen.getByRole("heading", { name: "점검 설정" })).toBeInTheDocument();
     // 제외 경로 칸의 흐린 예시는 안전 장치 (?) 메모와 같은 주소 (시안 v50)
     expect(screen.getByLabelText(/제외 경로/)).toHaveAttribute("placeholder", "/logout\n/delete");
-    // 작업 이름 없이 주소만으로 범위 확인을 보낼 수 있고, 입력에 display_name 이 없다
+    // 점검 이름 없이 주소만으로 범위 확인을 보낼 수 있고, 입력에 display_name 이 없다
     const send = screen.getAllByRole("button", { name: "승인 범위 확인" })[0];
     expect(send).toBeEnabled();
     await act(async () => {
@@ -493,8 +500,27 @@ describe("서버 방식 확인 (catalog)", () => {
     });
   });
 
-  // 범위 확인 전 안전 장치·요약의 쓰기 줄은 고른 모드를 따른다. AI 자동 모드는 대상이 쓰기를 승인했으면 건별 확인 없이
-  // 보낸다(C21, #525 이경준 리뷰).
+  it("점검 이름을 쓰면 앞뒤 공백을 뺀 이름이 display_name 으로 가고, 제어 문자는 칸에 남지 않는다", async () => {
+    u.readURLCatalog.mockResolvedValue(catalog);
+    mount("new");
+    fireEvent.change(await screen.findByLabelText(/점검할 사이트 주소/), {
+      target: { value: "https://target.example/" },
+    });
+    const name = screen.getByLabelText("점검 이름 (선택)");
+    fireEvent.change(name, { target: { value: "  쇼핑몰\t주문 점검  " } });
+    expect(name).toHaveValue("  쇼핑몰주문 점검  ");
+    fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]);
+    });
+    expect(u.createURLDraft.mock.calls[0][0]).toMatchObject({
+      target_url: "https://target.example/",
+      display_name: "쇼핑몰주문 점검",
+    });
+  });
+
+  // 범위 확인 전 요약의 쓰기 줄은 고른 모드를 따른다. AI 자동 모드는 대상이 쓰기를 승인했으면 건별 확인 없이
+  // 보낸다(C21, #525 이경준 리뷰). 안전 장치 목록의 같은 뜻 줄은 요약 줄과 겹쳐 뺐다(사용자 11/18)
   it("범위 확인 전 쓰기 안내가 진단 모드를 따른다", async () => {
     const limits = {
       format: "abc2lab.workbench-flow/v1" as const,
@@ -510,13 +536,16 @@ describe("서버 방식 확인 (catalog)", () => {
     });
     fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
     const sum = screen.getByRole("complementary", { name: "점검 요약" });
-    expect(within(sum).getByText("쓰기 요청은 승인 후 전송")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("radio", { name: /AI 자동/ }));
-    expect(within(sum).getByText("대상이 쓰기를 승인했으면 건별 확인 없이 전송")).toBeInTheDocument();
+    expect(within(sum).getByText("쓰기 요청").nextElementSibling).toHaveTextContent("승인 후 전송");
     expect(within(sum).queryByText("쓰기 요청은 승인 후 전송")).toBeNull();
+    fireEvent.click(screen.getByRole("radio", { name: /AI 자동/ }));
     expect(within(sum).getByText("쓰기 요청").nextElementSibling).toHaveTextContent(
       "건별 확인 없이 (대상 쓰기 승인 시)",
     );
+    expect(within(sum).queryByText("대상이 쓰기를 승인했으면 건별 확인 없이 전송")).toBeNull();
+    // 사이트 줄과 겹치는 '이 사이트에만 요청' · 늘 같은 '모든 요청 · 승인 기록 남김'도 없다
+    expect(within(sum).queryByText("이 사이트에만 요청")).toBeNull();
+    expect(within(sum).queryByText("모든 요청 · 승인 기록 남김")).toBeNull();
   });
 
   it("제외 경로 흐린 예시는 실제 입력 검사를 통과하고, query 가 든 값은 막힌다 (경로 단위)", () => {
@@ -744,7 +773,7 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     fireEvent.click(nextBtn()[0]);
     expect((screen.getByLabelText("모델") as HTMLSelectElement).value).toBe("profile-1");
     // 범위 확인 전에는 서버 범위가 없다
-    expect(screen.queryByText("승인된 사이트 · 경로에만 요청")).toBeNull();
+    expect(screen.queryByText("승인된 사이트 및 경로에만 요청")).toBeNull();
     await act(async () => {
       fireEvent.click(send()[0]);
     });
@@ -755,7 +784,7 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     expect(who).toBe(owner);
     expect(u.commandURLDiagnosis).toHaveBeenCalledWith(draft, "validate", owner);
     // 같은 화면에서 서버가 돌려준 범위 · 상한과 시작 단계가 나온다(다른 화면으로 가지 않는다)
-    expect(await screen.findByText("승인된 사이트 · 경로에만 요청")).toBeInTheDocument();
+    expect(await screen.findByText("승인된 사이트 및 경로에만 요청")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "점검 시작" })).toBeDisabled();
     expect(goTo).not.toHaveBeenCalled();
     // 조회 핸들만 남는다(영수증 키 · 결속). 입력은 잠긴다.
@@ -770,9 +799,12 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     u.commandURLDiagnosis.mockResolvedValue(preparing);
     const { goTo } = mount("new");
     expect(await screen.findByText("https://target.example · / · GET")).toBeInTheDocument();
-    expect(
-      screen.getByText(/^대상 요청 3회 · 60초 · 모델 요청 2회 · 토큰 입력 \d+ · 출력 \d+ · body 최대 \d+ bytes$/),
-    ).toBeInTheDocument();
+    const summary = screen.getByRole("complementary", { name: "점검 요약" });
+    // 상한 · 승인 만료는 한 줄(사용자 11/19): '요청 n회 · 시간 · 승인 만료 HH:MM'. 로컬 모델이라 비용은 없다
+    const limit = within(summary).getByText("상한").parentElement as HTMLElement;
+    // 시험 범위의 만료(2030-01-01)는 오늘이 아니라 날짜도 붙는다
+    expect(limit.querySelector("small")?.textContent).toMatch(/^요청 3회 · 1분 · 승인 만료 \d\d-\d\d \d\d:\d\d$/);
+    expect(summary).not.toHaveTextContent("모델 요청");
     const start = screen.getByRole("button", { name: "점검 시작" });
     expect(screen.getByRole("complementary", { name: "점검 요약" }).contains(start)).toBe(true);
     expect(start).toBeDisabled();
@@ -836,6 +868,11 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     expect(
       await screen.findByText(/브라우저 탐색은 외부 자원\(CDN 등\)을 외부 호스트에서 받습니다/),
     ).toBeInTheDocument();
+    // 범위 확인 뒤에는 전송 제공자를, 승인된 비용 상한은 상한 줄에 함께 보인다.
+    const ext = screen.getByText("외부 모델로 대상 응답 전송").parentElement as HTMLElement;
+    expect(ext.querySelector("small")).toHaveTextContent(externalModel.provider);
+    const limit = screen.getByText("상한").parentElement as HTMLElement;
+    expect(limit.querySelector("small")).toHaveTextContent(/ · 비용 \$6 · 승인 만료 (\d\d-\d\d )?\d\d:\d\d$/);
   });
   it("로컬 모델(완전 로컬)에서는 외부 CDN 사전고지를 띄우지 않는다", async () => {
     const limits = {
@@ -850,7 +887,7 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     u.readURLStatus.mockResolvedValue(ready);
     mount("new");
     // 안전 장치(scope)는 떠도 CDN 고지는 없다
-    expect(await screen.findByText("승인된 사이트 · 경로에만 요청")).toBeInTheDocument();
+    expect(await screen.findByText("승인된 사이트 및 경로에만 요청")).toBeInTheDocument();
     expect(screen.queryByText(/브라우저 탐색은 외부 자원/)).toBeNull();
   });
   it("시작 결과가 불명이면 다시 보내지 않고 상태 조회만 남긴다", async () => {
@@ -1011,8 +1048,15 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     });
     mount("live");
     const line = (await screen.findByText(/^작업 합계/)).parentElement as HTMLElement;
-    // 예약량으로 센 호출이 있으면 칩 옆에도 '(최대)' (#661 리뷰)
-    expect(line).toHaveTextContent(/^작업 합계 · 입 1.2k 출 300 \(최대\)$/);
+    // 예약량으로 센 호출이 있어도 점검 진행 칩 옆엔 '(최대)'를 두지 않고(사용자 11/18), 마우스를 올린 정확한 값에 최대치를 남긴다
+    expect(line).toHaveTextContent(/^작업 합계 · 입 1.2k 출 300\?/);
+    // 마우스를 올리지 않아도: 키보드 · 터치로 여는 (?) 설명이 최대치임을 말한다(#709 리뷰)
+    const tip = within(line).getByRole("button", { name: "최대치 설명" });
+    expect(line.className).toMatch(/tipline/); // 메모가 이 줄 바로 아래에 뜨는 기준
+    fireEvent.click(tip);
+    expect(within(line).getByRole("note")).toHaveTextContent(
+      "사용량을 받지 못한 호출 1건은 예약량으로 셌습니다. 두 수는 실제 사용량의 최대치입니다.",
+    );
     expect(line).toHaveAttribute("title", "입력 1,200 토큰 (최대치)\n출력 300 토큰 (최대치)");
     cleanup();
     resetUrl();
@@ -1384,7 +1428,9 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     });
     const { goTo } = mount("live");
     const sec = await screen.findByRole("region", { name: "발견 목록" });
-    await waitFor(() => expect(within(sec).getByText("2건 · 저장된 결과")).toBeInTheDocument());
+    // 머리 수는 'n건'만('· 저장된 결과'는 뺐다, 사용자 11/18)
+    await waitFor(() => expect(within(sec).getByText("2건")).toBeInTheDocument());
+    expect(sec).not.toHaveTextContent("저장된 결과");
     // 보고서와 같은 줄: 위험도(없으면 '등급 없음') · 제목 · 엔드포인트 · 유형 · 판정. 버튼이 아닌 읽기 줄 (사용자 11/17)
     expect(within(sec).queryAllByRole("button")).toHaveLength(0);
     const rows = [...(document.getElementById("lSaved") as HTMLElement).children] as HTMLElement[];
@@ -1577,6 +1623,24 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(within(back).getByRole("button", { name: /후보 2/ })).toHaveAttribute("aria-current", "true");
   });
 
+  it("발견 상세 페이지에서 머리 단계 줄의 '보고서'를 눌러도 ← 처럼 발견 목록으로 돌아간다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [candidate(1), candidate(2)] });
+    mount("report");
+    const list = await screen.findByRole("tabpanel", { name: "발견 목록" });
+    fireEvent.click(within(list).getByRole("button", { name: /후보 2/ }));
+    fireEvent.click(
+      within(screen.getByRole("complementary", { name: "발견 상세" })).getByRole("button", { name: "상세 보기" }),
+    );
+    expect(screen.getByRole("region", { name: "발견 상세 페이지" })).toBeInTheDocument();
+    const steps = screen.getByRole("navigation", { name: "점검 단계" });
+    fireEvent.click(within(steps).getByRole("link", { name: /보고서/ }));
+    expect(screen.queryByRole("region", { name: "발견 상세 페이지" })).toBeNull();
+    const back = screen.getByRole("tabpanel", { name: "발견 목록" });
+    expect(within(back).getByRole("button", { name: /후보 2/ })).toHaveAttribute("aria-current", "true");
+  });
+
   it("단독 발견 상세(#finding)에서 '발견 목록으로'를 누르면 보고서는 같은 상세가 아니라 발견 목록을 연다 (#695 리뷰)", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(completed);
@@ -1629,26 +1693,37 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     });
     mount("report");
     const list = await screen.findByRole("tabpanel", { name: "발견 목록" });
+    // 발견 칸 보조 글은 0건 등급을 빼고 확정 · 예상 · 위험도 미평가로 묶는다(사용자 11/18 '간단하게').
+    // 확정 0 이라 '확정 …'은 없고, 결과 불명(후보 4)의 높음은 예상으로 세지 않는다
+    const strip = screen.getByRole("region", { name: "판정 집계" });
+    expect((within(strip).getByText("발견").parentElement as HTMLElement).lastElementChild).toHaveTextContent(
+      /^예상 높음 1, 낮음 1 · 위험도 미평가 2$/,
+    );
     const names = () =>
       [...(document.getElementById("rList") as HTMLElement).querySelectorAll("button")].map(
         (b) => /후보 \d/.exec(b.textContent ?? "")?.[0],
       );
-    const sevs = within(list).getByRole("radiogroup", { name: "위험도로 거르기" });
-    // 줄이 있는 등급만 수와 함께 (심각 · 중간은 없음, '등급 없음'은 거르기로 두지 않고 전체에서 본다)
+    const sevs = within(list).getByRole("group", { name: "위험도로 거르기" });
+    // 줄이 있는 등급만 수와 함께 (심각 · 중간은 없음, '등급 없음'은 거르기로 두지 않고 전체에서 본다).
+    // '전체 n개' 칸은 오른쪽 'n / n건'과 겹쳐 두지 않는다(사용자 11/18)
     expect(
       within(sevs)
-        .getAllByRole("radio")
-        .map((r) => r.parentElement?.textContent),
-    ).toEqual(["전체 4개", "높음 1개", "낮음 1개"]);
+        .getAllByRole("button")
+        .map((r) => r.textContent),
+    ).toEqual(["높음 1개", "낮음 1개"]);
     expect(within(list).getByText("4 / 4건")).toBeInTheDocument();
-    fireEvent.click(within(sevs).getByRole("radio", { name: "높음 1개" }));
+    fireEvent.click(within(sevs).getByRole("button", { name: "높음 1개", pressed: false }));
+    expect(within(sevs).getByRole("button", { name: "높음 1개", pressed: true })).toBeInTheDocument();
     expect(names()).toEqual(["후보 2"]);
     expect(within(list).getByText("1 / 4건")).toBeInTheDocument();
     // 오른쪽 상세도 보이는 줄로 옮긴다
     expect(
       within(screen.getByRole("complementary", { name: "발견 상세" })).getByRole("heading", { level: 2 }),
     ).toHaveTextContent("후보 2");
-    fireEvent.click(within(sevs).getByRole("radio", { name: "전체 4개" }));
+    // 고른 등급을 다시 누르면 전체
+    fireEvent.click(within(sevs).getByRole("button", { name: "높음 1개", pressed: true }));
+    expect(within(sevs).getByRole("button", { name: "높음 1개", pressed: false })).toBeInTheDocument();
+    expect(within(list).getByText("4 / 4건")).toBeInTheDocument();
     const order = within(list).getByRole("combobox", { name: "정렬" });
     fireEvent.change(order, { target: { value: "new" } });
     // 시각을 못 읽는 줄은 시각 순에서 맨 뒤
@@ -1676,7 +1751,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     const list = await screen.findByRole("tabpanel", { name: "발견 목록" });
     const insp = () => screen.getByRole("complementary", { name: "발견 상세" });
     fireEvent.click(within(list).getByRole("button", { name: /후보 2/ }));
-    fireEvent.click(within(list).getByRole("radio", { name: "높음 1개" }));
+    fireEvent.click(within(list).getByRole("button", { name: "높음 1개", pressed: false }));
     expect(within(insp()).getByRole("heading", { level: 2 })).toHaveTextContent("후보 2");
     // 오른쪽 패널의 '생성·저장'이 저장 결과를 다시 읽는다: 이번엔 후보 2 가 낮음, 후보 3 이 높음
     a.fetchRemediation.mockResolvedValue({
@@ -1690,7 +1765,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     fireEvent.click(within(insp()).getByRole("button", { name: "보안 조치·AI 프롬프트 생성·저장" }));
     await waitFor(() => expect(within(list).queryByRole("button", { name: /후보 2/ })).toBeNull());
     // '높음' 거르기는 그대로, 목록은 후보 3 하나 — 오른쪽 상세 · 줄 표시도 후보 3
-    expect(within(list).getByRole("radio", { name: "높음 1개" })).toBeChecked();
+    expect(within(list).getByRole("button", { name: "높음 1개", pressed: true })).toBeInTheDocument();
     expect(within(list).getByRole("button", { name: /후보 3/ })).toHaveAttribute("aria-current", "true");
     expect(within(insp()).getByRole("heading", { level: 2 })).toHaveTextContent("후보 3");
     fireEvent.click(within(insp()).getByRole("button", { name: "상세 보기" }));
@@ -1782,9 +1857,12 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     // 요약은 확정 · 검토 필요를 나눠 센다(정상 대조는 빼고). '확인된 취약점'으로 묶지 않는다
     expect(doc).toHaveTextContent("발견: 2건 (확정 0 · 검토 필요 2 · 미실행 0 · 결과 불명 0)");
     expect(doc).not.toHaveTextContent("확인된 취약점");
-    // 취약점: '1. [등급 · 판정] 제목' 줄 (목록이 아니라 문단), 정상 대조는 없다
-    const items = [...doc.querySelectorAll("p")].map((x) => x.textContent ?? "").filter((x) => /^\d+\. \[/.test(x));
+    // 취약점: '1. [등급 · 판정] 제목' 은 제목(h2)이고 취약점 사이에 구분선 — 어디까지가 몇 번인지 보인다. 정상 대조는 없다
+    const items = within(doc)
+      .getAllByRole("heading", { level: 2 })
+      .map((x) => x.textContent);
     expect(items).toEqual(["1. [위험도 미평가 · 검토 필요] 후보 1", "2. [위험도 미평가 · 검토 필요] 후보 2"]);
+    expect(doc.querySelectorAll("hr")).toHaveLength(1);
     expect(doc).not.toHaveTextContent("정상 대조 줄");
     expect(doc).toHaveTextContent("PoC / 증거:");
     expect(doc).toHaveTextContent("구조화된 실제 재현 단계 미확보");
@@ -1806,7 +1884,21 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
       excluded: null,
       crawl: { visited: 3, found: 2 },
     });
-    expect(md).toContain("1\\. [위험도 미평가 · 검토 필요] 줄 바꿈");
+    expect(md).toContain("## 1. [위험도 미평가 · 검토 필요] 줄 바꿈");
+    // 제목 끝의 '#'는 Markdown 제목 닫기로 읽히지 않게 이스케이프한다(#709 리뷰)
+    const hashes = buildPocMarkdown([{ ...candidate(2), title: "후보 2 ###" }], {
+      targetUrl: null,
+      mode: null,
+      model: null,
+      excluded: null,
+      crawl: null,
+    });
+    expect(hashes).toContain("## 1. [위험도 미평가 · 검토 필요] 후보 2 \\#\\#\\#");
+    render(<Markdown text={hashes} />);
+    expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent(
+      /^1\. \[위험도 미평가 · 검토 필요\] 후보 2 ###$/,
+    );
+    expect(md).not.toContain("---"); // 구분선은 취약점 사이에만
     expect(md).toContain("- 탐색: 방문 3 · 발견한 API 2");
     expect(md).toContain("`````text\na ```` b\n`````");
   });
@@ -2138,13 +2230,9 @@ it("탐색 화면에서 중지 버전 충돌을 안내하고 GET 확인 전에�
 
 // 자동 모드(preauthorized_scope)는 범위에 쓰기 메서드가 있으면 건별 확인 없이 보낸다(C21). 시작 전 동의 문구도 그렇게 말한다.
 it.each([
-  [
-    ["GET", "HEAD", "POST"],
-    "사전 승인한 경로와 임의 query 로 진행 · 승인한 쓰기 메서드(POST)를 건별 확인 없이 보냄",
-    "쓰기(POST) 건별 확인 없이 보냄",
-  ],
-  [["GET"], "사전 승인한 경로와 임의 query 로 진행 · 쓰기 메서드는 범위에 없어 보내지 않음", "쓰기 요청 없음 (읽기만)"],
-])("자동 모드 범위 %j 는 쓰기를 어떻게 보내는지 표시한다", async (methods, rule, short) => {
+  [["GET", "HEAD", "POST"], "쓰기(POST) 건별 확인 없이 보냄"],
+  [["GET"], "쓰기 요청 없음 (읽기만)"],
+])("자동 모드 범위 %j 는 쓰기를 어떻게 보내는지 표시한다", async (methods, short) => {
   const input = { ...ready.input, workflow_mode: "ai_auto_v1" as const };
   u.readURLStatus.mockResolvedValue({
     ...ready,
@@ -2153,9 +2241,11 @@ it.each([
   });
   saveHandle({ ...handle, input });
   mount("new");
-  expect(await screen.findByText(rule)).toBeInTheDocument();
+  // 요약 '쓰기 요청' 줄이 말한다(안전 장치 목록의 긴 승인 방식 줄은 겹쳐 뺐다, 사용자 11/18)
+  await screen.findByText("승인된 사이트 및 경로에만 요청");
   const sum = screen.getByRole("complementary", { name: "점검 요약" });
   expect(within(sum).getByText("쓰기 요청").nextElementSibling).toHaveTextContent(short);
+  expect(within(sum).queryByText(/임의 query 로 진행/)).toBeNull();
 });
 
 // http 대상(C22)은 범위 확인 뒤 안전 장치에 평문 경고를 보인다. https 대상에는 없다(#527 이경준 리뷰).
@@ -2166,7 +2256,7 @@ it.each([
   u.readURLStatus.mockResolvedValue({ ...ready, scope: { ...scope, origin } });
   saveHandle(handle);
   mount("new");
-  await screen.findByText("승인된 사이트 · 경로에만 요청");
+  await screen.findByText("승인된 사이트 및 경로에만 요청");
   expect(screen.queryByText("암호화하지 않는 주소 (http)") !== null).toBe(warned);
 });
 
@@ -2185,14 +2275,15 @@ it("선택적 승인 범위는 읽기 사전 승인과 쓰기 건별 확인을 �
   u.readURLStatus.mockResolvedValue({ ...ready, input, scope: { ...scope, approval_mode: "workbench_selective_v1" } });
   saveHandle({ ...handle, input });
   mount("new");
-  expect(await screen.findByText("쓰기 메서드 요청은 한 건씩 승인한 것만 보냄")).toBeInTheDocument();
-  // 요약 '쓰기 요청' 줄도 범위 확인 뒤에는 서버 승인 방식을 따른다 (리뷰 #507)
+  await screen.findByText("승인된 사이트 및 경로에만 요청");
+  // 요약 '쓰기 요청' 줄이 범위 확인 뒤에는 서버 승인 방식을 따른다 (리뷰 #507). 같은 뜻 긴 줄은 안전 장치에서 뺐다(사용자 11/18)
+  expect(screen.queryByText("쓰기 메서드 요청은 한 건씩 승인한 것만 보냄")).toBeNull();
   const sum = screen.getByRole("complementary", { name: "점검 요약" });
   expect(within(sum).getByText("쓰기 요청").nextElementSibling).toHaveTextContent("쓰기 요청 한 건씩 승인");
   expect(within(sum).queryByText(/^범위 확인 전 기본 원칙/)).toBeNull();
   expect(screen.getByText("https://target.example · / · GET")).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "안전 장치" })).toBeInTheDocument();
-  expect(screen.getByText("모든 요청 · 승인 기록 남김")).toBeInTheDocument();
+  expect(screen.queryByText("모든 요청 · 승인 기록 남김")).toBeNull();
   // 절대규칙 6 고지 (시안 v52): 할 일을 경고 줄 제목으로, 자세한 설명과 원래 고지 문장은 (?) 메모에
   expect(screen.getByText("열면 지워지는 주소는 빼 두세요")).toBeInTheDocument();
   const tip = screen.getByRole("button", { name: "설명 보기" });

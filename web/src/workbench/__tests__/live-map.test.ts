@@ -28,6 +28,7 @@ import {
   planState,
   relTime,
   sevKey,
+  shortTimeOf,
   taskLabel,
   taskPhase,
   urlOf,
@@ -94,6 +95,15 @@ describe("시각 · 수", () => {
     expect(relTime("", now)).toBe("");
     expect(relTime(0, now)).toBe("");
     expect(relTime("nope", now)).toBe("");
+  });
+
+  it("shortTimeOf: 같은 날이면 HH:MM, 다른 날이면 MM-DD HH:MM (#709 리뷰)", () => {
+    expect(shortTimeOf(new Date(2026, 10, 9, 18, 30).toISOString(), now)).toBe("18:30");
+    expect(shortTimeOf(new Date(2026, 10, 10, 1, 5).toISOString(), now)).toBe("11-10 01:05");
+    expect(shortTimeOf(new Date(2027, 10, 9, 18, 30).toISOString(), now)).toBe("11-09 18:30");
+    // 첫 렌더(지금 시각 0)는 날짜를 비교하지 않는다
+    expect(shortTimeOf(new Date(2026, 10, 10, 1, 5).toISOString(), 0)).toBe("01:05");
+    expect(shortTimeOf("nope", now)).toBe("");
   });
 
   it("clockOf 는 로컬 HH:MM:SS", () => {

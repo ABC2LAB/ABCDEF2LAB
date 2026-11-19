@@ -133,6 +133,21 @@ export function clockOf(ts: string | number | null | undefined): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+/**
+ * 시각 → 로컬 짧은 시각: nowMs 와 같은 날이면 "HH:MM", 다른 날이면 "MM-DD HH:MM" (못 읽으면 "").
+ * 같은 시각의 다른 날을 헷갈리지 않게(#709 이경준 리뷰). nowMs 가 0(useNow 첫 렌더)이면 날짜를 비교하지 않고 "HH:MM".
+ */
+export function shortTimeOf(ts: string | number | null | undefined, nowMs: number): string {
+  const t = toMs(ts);
+  if (t === null) return "";
+  const d = new Date(t);
+  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  if (!nowMs) return hm;
+  const n = new Date(nowMs);
+  const sameDay = d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate();
+  return sameDay ? hm : `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${hm}`;
+}
+
 /** 시각 → 로컬 "YYYY-MM-DD HH:MM:SS" (못 읽으면 ""). */
 export function dateTimeOf(ts: string | number | null | undefined): string {
   const t = toMs(ts);
