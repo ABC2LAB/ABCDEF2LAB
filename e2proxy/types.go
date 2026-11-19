@@ -194,6 +194,7 @@ func ValidCallAttribution(intentID int64, program ProgramCallKind) bool {
 }
 
 type Receipt struct {
+	*E3Audit
 	Program          ProgramCallKind `json:"program,omitempty"`
 	IntentID         int64           `json:"intent_id"`
 	Version          string          `json:"version"`
