@@ -1595,7 +1595,8 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(evList).not.toHaveTextContent(/증거 버전|재현 단계/);
     const first = within(evList).getByText("취약점 1");
     expect(first).toHaveAttribute("title", "ID candidate-1");
-    expect(first.parentElement).toHaveTextContent("검토 필요");
+    // 판정 딱지는 줄 맨 끝(맨 오른쪽 고정은 .evi li > .vd 의 margin-left: auto)
+    expect(first.parentElement?.lastElementChild).toHaveTextContent("검토 필요");
     expect(within(evList).queryByText("candidate-1")).toBeNull();
     // 탭을 누르면 전송 집계(요청 접수 · 허용 · 차단 …, 저장 값 그대로)가 맨 위에 바로 보이고 취약점별 증거는 그 아래
     // (사용자 11/19). 실행 종료 기록 칸(단계 · 결과 · 실행 ID · 감사 · 저장 시각)은 두지 않는다

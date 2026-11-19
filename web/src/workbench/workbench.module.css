@@ -4636,6 +4636,10 @@ button.smm:hover {
 .evi li:first-child {
   border-top: 0;
 }
+/* 증거 탭 취약점 줄: 판정 딱지(검토 필요 등)는 줄 맨 오른쪽에 고정(사용자 11/19) */
+.evi li > .vd {
+  margin-left: auto;
+}
 
 .scrim {
   position: fixed;
