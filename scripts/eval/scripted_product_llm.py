@@ -25,8 +25,9 @@
   사실을 남기지 않아, 실패한 회차가 목표 달성으로 끝나지 않는다(#797 리뷰).
 - Planner: 의도를 다 낸 뒤 `list_goals` → 열린 목표가 있으면 `list_facts` → 사실이 있으면 열린 목표 하나에 `prove_goal` →
   다시 `list_goals`를 되풀이한다. 목표마다 한 번만 증명을 시도한다. 열린 목표나 사실이 없으면 이번 라운드를 끝낸다.
-  계획 명령이 모두 완료(위 Worker 기준)되고 실패한 명령이 없을 때만 이 순서를 시작한다. 하나라도 거부·실패면 목표를 open으로
-  남겨 회차가 상한까지 가게 한다.
+  계획의 명령 항목마다 완료된 호출이 있고(위 Worker 기준, 같은 명령이 두 번이면 호출 둘 다) 실패한 호출이 없을 때만 이 순서를
+  시작한다. 호출은 (대화, 그 대화 안 Bash 순번)으로 가린다. 하나라도 거부·실패·대기면 목표를 open으로 남겨 회차가 상한까지 가게
+  한다.
   모든 목표가 met가 되면 엔진이 작업을 자동 완료한다(`agent/tools.go` prove_goal).
 
 실행: python3 -I -B scripts/eval/scripted_product_llm.py --host <주소> --port <포트> --plan <계획 JSON> --origin <대상 origin>
@@ -36,10 +37,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
 import threading
+from collections import Counter
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -211,6 +214,17 @@ def bash_outcomes(messages: list[dict]) -> list[tuple[str | None, bool | None]]:
     return outcomes
 
 
+def conversation_key(messages: list[dict]) -> str:
+    """대화를 가리는 값: 첫 모델 응답 앞의 메시지(system·첫 user, 의도 번호가 든 곳)의 지문. 같은 대화는 요청마다 이 앞부분이
+    같다. 다른 대화가 같은 값을 가지면(같은 의도를 다시 보냄) 호출이 덜 세어져 목표를 증명하지 않는 쪽으로만 틀린다."""
+    head = []
+    for message in messages:
+        if message.get("role") == "assistant":
+            break
+        head.append(message)
+    return hashlib.sha256(json.dumps(head, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
 def bash_succeeded(messages: list[dict]) -> bool:
     """이 대화의 Bash 호출이 하나 이상이고, 그 결과가 모두 E② 신뢰 결과로 완료·종료 코드 0인지."""
     outcomes = bash_outcomes(messages)
@@ -236,10 +250,11 @@ class Script:
         self.plan, self.lock = plan, threading.Lock()
         self.intents_sent = self.commands_sent = 0
         self.proved: set[int] = set()
-        # 프로세스 전체의 계획 명령 결과(Worker 대화에서 본 것). Planner는 계획 명령이 모두 완료되고 실패가 없을 때만 목표를
-        # 증명한다(#797 리뷰: 일부 Worker만 성공한 회차가 목표 달성으로 끝나 거부된 요청을 가리지 않게).
-        self.completed_commands: set[str] = set()
-        self.failed_commands: set[str] = set()
+        # 프로세스 전체의 계획 명령 결과(Worker 대화에서 본 것). 호출 하나를 (대화, 그 대화 안 Bash 순번)으로 가린다. Planner는
+        # 계획의 명령 항목마다 완료된 호출이 있고 실패한 호출이 하나도 없을 때만 목표를 증명한다(#797 리뷰: 일부 Worker만 성공한
+        # 회차나, 같은 명령이 계획에 두 번 있는데 한 번만 완료된 회차가 목표 달성으로 끝나 거부·대기 중인 요청을 가리지 않게).
+        self.command_results: dict[tuple[str, int], tuple[str, bool]] = {}
+        self.failed_commands: set[str] = set()  # 한 번이라도 실패하면 남는다(같은 자리를 다른 대화가 덮어도 지워지지 않게)
         self.counts = {"requests": 0, "exploration": 0, "planner": 0, "worker": 0, "finish": 0, "done": 0, "skipped": 0}
 
     def decide(self, body: dict) -> tuple[str, dict] | None:
@@ -255,9 +270,12 @@ class Script:
                 else:
                     call = self._finish_planner(tools, messages, last_is_result)
             elif WORKER_TOOL in tools:
-                for command, ok in bash_outcomes(messages):
+                key = conversation_key(messages)
+                for position, (command, ok) in enumerate(bash_outcomes(messages)):
                     if command is not None and ok is not None:
-                        (self.completed_commands if ok else self.failed_commands).add(command)
+                        self.command_results[(key, position)] = (command, ok)
+                        if not ok:
+                            self.failed_commands.add(command)
                 call = self._worker(tools[WORKER_TOOL])
                 if call is None:
                     call = self._finish_worker(tools, messages)
@@ -268,11 +286,16 @@ class Script:
                                                       "planner" if call[0] == PLANNER_TOOL else "worker")] += 1
             return call
 
+    def plan_commands_completed(self) -> bool:
+        """계획의 명령 항목마다(같은 명령이 두 번이면 두 번) 완료된 호출이 있고 실패한 호출이 없는지."""
+        done = Counter(command for command, ok in self.command_results.values() if ok)
+        return not self.failed_commands and all(done[command] >= need for command, need in Counter(self.plan["commands"]).items())
+
     def _finish_planner(self, tools: dict, messages: list[dict], last_is_result: bool) -> tuple[str, dict] | None:
         """의도를 다 낸 뒤 목표 달성 선언으로 끝낸다(계획 finish). 도구가 없거나 할 일이 없으면 이번 라운드를 끝낸다."""
         if not self.plan["finish"] or not {GOALS_TOOL, FACTS_TOOL, PROVE_TOOL} <= set(tools):
             return None
-        if self.failed_commands or not set(self.plan["commands"]) <= self.completed_commands:
+        if not self.plan_commands_completed():
             return None  # 계획 명령이 아직 다 끝나지 않았거나 실패가 있다: 목표를 open으로 둔다
         calls = _calls(messages)
         last = calls[-1][1] if last_is_result and calls else None

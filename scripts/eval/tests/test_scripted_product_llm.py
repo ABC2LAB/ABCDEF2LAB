@@ -164,7 +164,7 @@ class TestFinishWithGoals(unittest.TestCase):
             loaded = load_plan(path, ORIGIN)
         script = Script(loaded)
         script.intents_sent = len(loaded["intents"])  # 의도는 다 냈다
-        script.completed_commands = set(loaded["commands"])  # 계획 명령이 모두 완료됐다
+        script.command_results = {("given", index): (command, True) for index, command in enumerate(loaded["commands"])}  # 모두 완료
         return script
 
     def test_planner_proves_each_open_goal_once_then_stops(self):
@@ -201,7 +201,7 @@ class TestFinishWithGoals(unittest.TestCase):
         self.assertIsNone(script.decide(conversation(tool(PLANNER_TOOL), tool(GOALS_TOOL), tail_user=True)))  # prove_goal 없음
         plain = Script(dict(script.plan, finish=False))
         plain.intents_sent = len(plain.plan["intents"])
-        plain.completed_commands = set(plain.plan["commands"])
+        plain.command_results = {("given", index): (command, True) for index, command in enumerate(plain.plan["commands"])}
         self.assertIsNone(plain.decide(conversation(*self.PLANNER, tail_user=True)))  # finish 없는 계획은 지금처럼
 
     def test_worker_records_one_fact_for_its_intent_after_the_commands(self):
@@ -240,7 +240,7 @@ class TestFinishWithGoals(unittest.TestCase):
     def test_goals_stay_open_unless_every_plan_command_completed(self):
         # #797 리뷰: Worker A 성공·Worker B 거부인 혼합 회차는 A의 사실 하나로 목표를 증명하면 안 된다.
         script = self.script()
-        script.completed_commands = set()
+        script.command_results = {}
         commands = script.plan["commands"]
         worker = (tool(WORKER_TOOL, {"command": {}}), tool(FACT_TOOL, {"intent_id": {}, "summary": {}}))
         denied = json.dumps({"tool_output": "x", "trusted": {"classification": "policy_not_executed", "exit_code": 0}})
@@ -258,28 +258,67 @@ class TestFinishWithGoals(unittest.TestCase):
         self.assertIsNone(script.decide(conversation(*self.PLANNER, tail_user=True)))  # 목표 조회도 시작하지 않는다
         # 아직 다 실행되지 않았을 때도 같다
         partial = self.script()
-        partial.completed_commands = {commands[0]}
+        partial.command_results = {("given", 0): (commands[0], True)}
         self.assertIsNone(partial.decide(conversation(*self.PLANNER, tail_user=True)))
         # 둘 다 완료되면 증명한다(Worker 대화에서 본 결과로 기억한다)
         done = self.script()
-        done.completed_commands = set()
+        done.command_results = {}
         done.decide(bash_turns((commands[0], OK_BASH), (commands[1], OK_BASH)))
-        self.assertEqual(done.completed_commands, set(commands))
+        self.assertEqual(sorted(command for command, ok in done.command_results.values() if ok), sorted(commands))
         self.assertEqual(done.decide(finishing)[0], PROVE_TOOL)
         # 같은 명령이 계획에 두 번 있어 한 번은 성공·한 번은 거부면 증명하지 않는다(실패가 하나라도 있으면 open)
         twice = self.script()
-        twice.completed_commands = set()
+        twice.command_results = {}
         twice.decide(bash_turns((commands[0], OK_BASH), (commands[1], OK_BASH), (commands[0], denied)))
         self.assertIsNone(twice.decide(finishing))
         # 결과가 아직 없는 호출은 실패로 세지 않는다(뒤에 완료 결과가 오면 증명한다)
         pending = self.script()
-        pending.completed_commands = set()
+        pending.command_results = {}
         body = bash_turns((commands[0], OK_BASH), (commands[1], OK_BASH))
         cut = body["messages"][:-1] + [{"role": "user", "content": "still running"}]  # 마지막 Bash 결과가 아직 없다
         pending.decide(dict(body, messages=cut))
         self.assertEqual(pending.failed_commands, set())
         pending.decide(body)
         self.assertEqual(pending.decide(finishing)[0], PROVE_TOOL)
+
+    def test_duplicate_plan_command_needs_each_call_completed(self):
+        # #797 2차 리뷰: 계획에 같은 명령이 두 번이면 호출도 둘이다. 한 호출의 완료로 두 항목을 채우면 안 된다.
+        same = "echo same"
+        script = self.script(commands=[same, same])
+        script.command_results = {}
+        worker = (tool(WORKER_TOOL, {"command": {}}), tool(FACT_TOOL, {"intent_id": {}, "summary": {}}))
+        denied = json.dumps({"tool_output": "x", "trusted": {"classification": "policy_not_executed", "exit_code": 0}})
+
+        def worker_turn(intent: int, *results):
+            body = conversation(*worker, user=f"Intent id: {intent}", turns=[(WORKER_TOOL, result) for result in results])
+            for message in body["messages"]:
+                if message.get("tool_calls"):
+                    message["tool_calls"][0]["function"]["arguments"] = json.dumps({"command": same})
+            return body
+
+        finishing = conversation(*self.PLANNER, turns=[(GOALS_TOOL, GOALS), (FACTS_TOOL, FACTS)])
+        a_done = worker_turn(12, OK_BASH)
+        b_waiting = worker_turn(13, OK_BASH)
+        b_waiting["messages"] = b_waiting["messages"][:-1] + [{"role": "user", "content": "still running"}]  # B 결과 대기
+        script.decide(a_done)
+        script.decide(b_waiting)
+        script.decide(a_done)  # 같은 대화를 다시 보내도 한 호출로 센다
+        self.assertFalse(script.plan_commands_completed())
+        self.assertIsNone(script.decide(finishing))  # 동찬님 반례: A 완료·B 대기면 open
+        script.decide(worker_turn(13, OK_BASH))  # B도 완료
+        self.assertTrue(script.plan_commands_completed())
+        self.assertEqual(script.decide(finishing)[0], PROVE_TOOL)
+        # 한 대화 안에서 같은 명령을 두 번 냈고 둘째가 거부면 open
+        one = self.script(commands=[same, same])
+        one.command_results = {}
+        one.decide(worker_turn(12, OK_BASH, denied))
+        self.assertIsNone(one.decide(finishing))
+        # 두 대화에서 하나는 완료·하나는 거부면 open
+        mixed = self.script(commands=[same, same])
+        mixed.command_results = {}
+        mixed.decide(worker_turn(12, OK_BASH))
+        mixed.decide(worker_turn(13, denied))
+        self.assertIsNone(mixed.decide(finishing))
 
     def test_result_parsers(self):
         self.assertEqual(open_goal_ids(GOALS), [3, 5])
