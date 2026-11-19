@@ -191,6 +191,41 @@ class TestV3Inputs(PortsCase):
         self.assertEqual(args[:3], (self.split.images["product"].id, self.split.images["explore_browser"].id, self.docker.run_bounded))
 
 
+class TestE3TraceSources(PortsCase):
+    """E③ 흔적 원본 셋: Host v3 저널(Host uid, 실행 참조 해시 디렉터리), 제품 쪽 사본, 대상 선언 보호 저널."""
+
+    def test_sources_are_copied_from_the_three_places(self):
+        import hashlib
+        from runner_e2v3 import MAX_JOURNAL_BYTES
+        from runner_split_ports import MAX_PRODUCT_FILE_BYTES
+        self.docker.copies.update({"e3trace-host": {"events.jsonl": b"h"}, "e3trace-product": {"events.jsonl": b"p"},
+                                   "e3trace-declarations": {"preparation.journal": b"d"}})
+        self.assertEqual(self.ports.e3_trace_sources("prep-0a1b"),
+                         {"e2_host_journal": b"h", "e2_product_journal": b"p", "declarations": b"d"})
+        run_directory = hashlib.sha256(b"run-prep-0a1b").hexdigest()  # 제품 실행 참조 = "run-" + 초안(작업) ID
+        got = [(c[1], c[2], c[3], c[4], c[5], c[6], c[9], c[10]) for c in self.docker.calls]
+        product = self.split.images["product"].id
+        self.assertEqual(got, [
+            (product, "eval-r1_e2-host-state", "journals", ("events.jsonl",), "e3trace-host", 1002, MAX_JOURNAL_BYTES, (run_directory,)),
+            (product, "eval-r1_product-state", "runs", ("events.jsonl",), "e3trace-product", 1000, MAX_JOURNAL_BYTES, ("prep-0a1b", "state")),
+            (product, "eval-r1_product-state", "state", ("preparation.journal",), "e3trace-declarations", 1000, MAX_PRODUCT_FILE_BYTES,
+             ("targets", "declarations"))])
+
+    def test_only_a_missing_file_is_none_and_other_failures_are_raised(self):
+        from runner_docker import HELPER_FILE_MISSING, DockerError, HelperCleanupError
+        real = FakeDocker.copy_volume_files.__get__(self.docker)
+        self.docker.copies["e3trace-product"] = {"events.jsonl": b"p"}
+        self.docker.copy_volume_files = mock.Mock(side_effect=lambda *a, **k: (real(*a, **k) if a[4] == "e3trace-product"
+                                                                              else (_ for _ in ()).throw(DockerError(HELPER_FILE_MISSING))))
+        self.assertEqual(self.ports.e3_trace_sources("prep-0a1b"),
+                         {"e2_host_journal": None, "e2_product_journal": b"p", "declarations": None})
+        for error in (DockerError("docker_timeout"), DockerError("docker_helper_copy_failed"), HelperCleanupError()):
+            with self.subTest(error=str(error)):
+                self.docker.copy_volume_files = mock.Mock(side_effect=error)
+                with self.assertRaises(DockerError):
+                    self.ports.e3_trace_sources("prep-0a1b")
+
+
 class TestE2V3Export(PortsCase):
     """E② v3 저널·봉인 head 꺼내기와 검증 연결. 위치는 설정값, 상한은 파일마다 다르다."""
 
