@@ -53,7 +53,7 @@ func targetApprovalRevision(revision uint64) string { return strconv.FormatUint(
 // 저널에 손댄 줄을 받지 않는다. 자격 모양 검사는 저장 때만 한다: 검사 규칙(dlp)이 넓어져 옛 줄이 걸리면 설치 전체가
 // 열리지 않기 때문이다.
 func (r *productTargetRegistry) replayDeclaration(e productDeclarationEvent) error {
-	if e.Action == declarationConfirmationWrites || e.Action == declarationResetConfirmed {
+	if e.Action == declarationConfirmationWrites || e.Action == declarationResetConfirmed || e.Action == declarationConfirmationWriteSettled {
 		return r.replayReset(e)
 	}
 	rec, ok := r.records[e.TargetID]

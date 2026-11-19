@@ -19,7 +19,8 @@ const (
 	StatusStartRefused ConfirmationStatus = "start_refused"
 	// StatusCompleted는 확정 단계가 끝까지 돈 경우다. 종류마다 판정 행이 있다(UNDECIDABLE 포함).
 	StatusCompleted ConfirmationStatus = "completed"
-	// StatusInterrupted는 회차 중지로 확정 단계가 도중에 끊긴 경우다. 끝낸 종류의 판정만 있다.
+	// StatusInterrupted는 회차 중지로 확정 단계가 도중에 끊긴 경우다. 끝낸 종류의 판정만 있다. 확정 단계를 시작하기 전에
+	// 실행이 중지·취소로 끝났고 비활성 근거가 없었던 경우(RunStopped)도 이것이고, 그때는 판정·요청이 0이다.
 	StatusInterrupted ConfirmationStatus = "interrupted"
 	// StatusIntegrityFailed는 결속·진위가 깨진 경우다. 판정 행을 만들지 않는다. "발견 없음"·"판정 없음"으로 보이면 안 된다.
 	StatusIntegrityFailed ConfirmationStatus = "confirmation_integrity_failed"
@@ -80,6 +81,8 @@ const (
 	// ReasonRequestTimeout은 확정 요청이 전용 시간 상한을 넘겨 결과 불명인 경우다(사용자 결정 2026-11-18). 결과 불명의
 	// 한 갈래이지만, 상한 값(VAmPI 파일럿에서 확정)을 정할 근거가 되도록 따로 센다.
 	ReasonRequestTimeout ProductReason = "product_request_timeout"
+	// ReasonWriteRecordUnavailable은 생성 요청 전에 쓰기 기록을 남기지 못해 보내지 않은 경우다(기록하고 나서 보내기).
+	ReasonWriteRecordUnavailable ProductReason = "product_write_record_unavailable"
 )
 
 // WriteOutcome은 확정 단계 생성 요청이 대상에 남긴 결과다.
@@ -91,6 +94,12 @@ const (
 	// WriteUnknown은 생성 요청을 보냈거나 보냈을 수 있는데 객체가 생겼는지·ID가 무엇인지 모르는 경우다(시간 초과·결과
 	// 불명·비정상 응답·ID 없음). 객체가 생겼다고 보고 리셋 확인 대상에 넣는다.
 	WriteUnknown WriteOutcome = "unknown"
+	// WriteNotSent는 쓰기 기록 갱신(WriteRecorder.Settle)에만 쓴다: 생성 요청을 보내지 않은 것이 확실하다. E²가 대상으로
+	// 연결을 시도하기 전에 거부한 경우(sent=false와 연결 전 거부 사유 넷: 정책 거부·승인 거절·승인 시간 초과·확정 몫 소진)와
+	// 회차가 멈춰 생성 요청을 부르지 않은 경우뿐이다. 연결 뒤 실패·결과 불명(E② 오류, 보냈지만 응답 미완료, 시간 초과)은
+	// 해당하지 않는다. E²가 그런 경우를 sent=false로 돌려주면 관찰 계약 위반(진위 실패)이고 기록은 ID 모름으로 남는다.
+	// 미리 남긴 기록을 거둔다. RunResult.Writes에는 넣지 않는다.
+	WriteNotSent WriteOutcome = "not_sent"
 )
 
 // ConfirmationWrite는 확정 단계 생성 요청 하나가 대상에 남겼을 수 있는 쓰기다. 서버는 이것으로 대상의 쓰기 기록

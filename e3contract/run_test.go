@@ -55,11 +55,12 @@ func testMarker(t *testing.T) e3contract.Marker {
 }
 
 type fixture struct {
-	fake  *e3fake.Transport
-	decls e3fake.Declarations
-	reset e3fake.Reset
-	in    e3contract.Input
-	logs  *bytes.Buffer
+	fake   *e3fake.Transport
+	decls  e3fake.Declarations
+	reset  e3fake.Reset
+	writes *e3fake.Writes
+	in     e3contract.Input
+	logs   *bytes.Buffer
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -73,9 +74,10 @@ func newFixture(t *testing.T) *fixture {
 	fake.Behaviors[e3fake.Key{Purpose: e3contract.PurposeIdentity, Role: e3contract.RoleOwner}] = e3fake.Behavior{SubjectID: "user-a"}
 	fake.Behaviors[e3fake.Key{Purpose: e3contract.PurposeIdentity, Role: e3contract.RoleCross}] = e3fake.Behavior{SubjectID: "user-b"}
 	return &fixture{
-		fake:  fake,
-		decls: e3fake.Declarations{Stored: map[string]e3contract.Declaration{frozenRef: decl}},
-		reset: e3fake.Reset{State: e3contract.ResetState{Residue: e3contract.ResidueAbsent}},
+		fake:   fake,
+		writes: &e3fake.Writes{Transport: fake},
+		decls:  e3fake.Declarations{Stored: map[string]e3contract.Declaration{frozenRef: decl}},
+		reset:  e3fake.Reset{State: e3contract.ResetState{Residue: e3contract.ResidueAbsent}},
 		in: e3contract.Input{
 			Binding: e3contract.RunBinding{JobRef: "job-1", RunRef: "run-1", TaskRef: "task-1", E2PolicyRef: "e2-policy-1",
 				GenerationRef: "gen-1", InstanceRef: "inst-1", Policy: src},
@@ -92,7 +94,7 @@ func newFixture(t *testing.T) *fixture {
 }
 
 func (f *fixture) deps() e3contract.Deps {
-	return e3contract.Deps{Transport: f.fake, Journal: f.fake, Declarations: f.decls, Reset: f.reset,
+	return e3contract.Deps{Transport: f.fake, Journal: f.fake, Declarations: f.decls, Reset: f.reset, Writes: f.writes,
 		Random: bytes.NewReader(seed()), Now: func() time.Time { return t0 }, Logger: slog.New(slog.NewJSONHandler(f.logs, nil))}
 }
 
@@ -433,6 +435,7 @@ func TestRunDisabledSendsNothing(t *testing.T) {
 		"no_transport":    {func(_ *fixture, d *e3contract.Deps) { d.Transport = nil }, e3contract.DisabledNotWired},
 		"no_journal":      {func(_ *fixture, d *e3contract.Deps) { d.Journal = nil }, e3contract.DisabledNotWired},
 		"no_reset":        {func(_ *fixture, d *e3contract.Deps) { d.Reset = nil }, e3contract.DisabledNotWired},
+		"no_writes":       {func(_ *fixture, d *e3contract.Deps) { d.Writes = nil }, e3contract.DisabledNotWired},
 		"no_declaration":  {func(f *fixture, _ *e3contract.Deps) { f.in.Binding.Policy = e3contract.PolicySource{} }, e3contract.DisabledNoDeclaration},
 		"binding_invalid": {func(f *fixture, _ *e3contract.Deps) { f.in.Binding.RunRef = "run\n1" }, e3contract.DisabledBindingInvalid},
 		// 연결이 없으면 선언이 없어도 not_wired다(최종 이미지에서 not_wired가 나오지 않는지 이 순서로 드러난다).
