@@ -54,7 +54,10 @@ E③ 프로그램 호출 하나의 시도 단계는 v2와 같은 이름이다(`e
 | 공통(시도 단계) | — | `version=e2-http-v3`, `program`, `scope`, `call_ref`, `attempt_id`, `sequence`, `policy_revision`, `method`, `decision`(`allowed`·`denied`·`unsupported`), `reason`, `role`, `account_label`, `account_binding_ref`, `e3_binding`, 생성·조회면 `resource_type`, 조회면 `create_ref`. `decision=allowed`면 `rule_ref` | §2.2의 "넣지 않는 것" |
 | `intent`(송신 전 허용) | 연결을 시도하기 전 허용 판정 | `decision=allowed`, `rule_ref` | 응답 칸 전부, `forward_attempted`·`request_written`·`response_received`·`response_complete` 참, `not_sent_reason`. 호출의 마지막 이벤트가 될 수 없음(뒤에 `result`가 있어야 함) |
 | `result`, 송신 전 거부 | E²가 연결을 시도하기 전에 거부 | `decision`이 `allowed`가 아님, `not_sent=true`, `not_sent_reason`(넷 중 하나). `rule_ref`는 맞는 규칙이 없는 거부(정책 거부·예산 소진)면 비어도 됨 | `intent` 이벤트, `forward_attempted` 참, 응답 칸 전부 |
+| `result`, `intent` 뒤 송신 전 중단 | `intent`를 기록한 뒤 실행 문맥이 끝나 연결을 시도하지 않음(v2 `execution.go`: `ctx.Err()`면 `reason=closed`로 끝냄) | `decision=allowed`, `not_sent=true`, `forward_attempted=false`, `reason=closed` | `not_sent_reason`, 응답 칸 전부 |
 | `result`, 송신 뒤 | 연결을 시도한 뒤(성공·실패·끊김 모두) | `decision=allowed`, `rule_ref`, `forward_attempted=true`, `request_written`, `response_received`, `response_complete`, 끊겼으면 `timed_out`. `response_complete=true`면 `status_code`·`normal`·`body_digest_sha256`·`body_complete`, 조회면 `marker`·`request_marker_free`, 생성이면 `object_id_digest`(꺼냈을 때), 신원이면 `subject_digest`·`request_marker_free` | `not_sent` 참, `not_sent_reason` |
+
+**`intent` 뒤 송신 전 중단**은 운영자 중지·취소·시간 몫 마감처럼 실행 문맥이 끝났을 때만 생긴다. 어댑터는 이 행으로 관찰을 만들지 않고 실행 문맥 오류를 돌려준다. 그래서 그 요청은 결과 불명으로 남고 회차는 중단(`interrupted`) 또는 시간 몫 끝으로 마감한다. 생성 요청이면 쓰기 기록을 거두지 않는다(ID 모름으로 남아 리셋 확인 대상). 보내지 않은 것이 거의 확실하지만, 쓰기 기록을 거두는 경우는 연결 전 거부 넷으로 정한 규칙(#738)을 넓히지 않는다. 실행 문맥이 살아 있는데 이 행이 오면 관찰 계약 위반(진위 실패)이다.
 
 **송신 판정은 E²가 한다.** 연결을 시도한 뒤 결과를 확실히 모르면(C02의 `Unknown`·`TransportFailed` 포함) `result` 이벤트에 `response_complete=false`로 남긴다(결과 불명). 확실한 송신 전 거부만 `result`의 `not_sent`다. E③는 이 구분으로 쓰기 기록을 남기거나 거둔다(#738 시험 `TestRunWriteWithdrawOnlyBeforeConnect`: 연결 전 거부 넷만 거둔다, 그 밖의 `sent=false`는 관찰 계약 위반).
 
@@ -104,7 +107,8 @@ fail-closed는 #698 계약 그대로다. 진위 실패면 판정 행을 만들�
 | 어댑터를 연결하지 않음(Transport·Journal 없음) | 확정 단계 `disabled`, `not_wired` | 없음(요청 전) |
 | 어댑터는 있는데 E²가 v3 감사 미연결로 거부(`ErrE3JournalUnavailable`) | 표식 등록에서 막혀 `start_refused`, `marker_registration_failed`. 어댑터는 이 오류를 생성·조회까지 넘기지 않는다 | 없음(요청 전) |
 | 실행 권한 철회(`ErrAuthorityRevoked`) | `confirmation_integrity_failed`, `authority_revoked` | 생성 뒤면 ID 모름으로 남음 |
-| `Transport` 그 밖의 오류(Sync 실패 포함) | 그 요청 결과 불명 → 그 종류 UNDECIDABLE(`product_request_result_unknown`) | 남음 |
+| `Transport` 그 밖의 오류(로컬 Sync 실패, 정본 head 게시 실패·ACK 미확인 포함) | 그 요청 결과 불명 → 그 종류 UNDECIDABLE(`product_request_result_unknown`) | 남음 |
+| `intent` 뒤 송신 전 중단, 실행 문맥이 끝남 | 관찰 없음(문맥 오류) → 그 요청 결과 불명, 회차는 `interrupted`(시간 몫 마감이면 그 종류 UNDECIDABLE 예산) | 남음(ID 모름) |
 | 관찰 모양 위반(연결 전 거부가 아닌 `sent=false` 포함), v3 이벤트가 §2.3 단계별 조건을 어김(어댑터가 `e3contract.ErrObservation`으로 알림) | `confirmation_integrity_failed`, `observation_invalid` | 남음 |
 | 결속 불일치(실행·세대·정책 출처) | `confirmation_integrity_failed`, `binding_mismatch` | 남음 |
 | 목적·역할·계정·종류·생성 참조 불일치, 이벤트의 `account_binding_ref`가 그 실행·라벨의 지금 결속이 아님(어댑터가 `e3contract.ErrObservationMismatch`로 알림) | `confirmation_integrity_failed`, `observation_mismatch` | 남음 |
@@ -156,7 +160,7 @@ fail-closed는 #698 계약 그대로다. 진위 실패면 판정 행을 만들�
 ## 9. 어댑터 구조와 가짜 v3 반례
 
 - E²가 목적별 프로그램 요청(신원·생성·조회)과 검증된 v3 이벤트 조회를 Go 인터페이스로 내놓고, 어댑터가 그것을 `e3contract.Transport`·`Journal`로 바꾼다. E² 안에서 E③ 판정을 하지 않는다.
-- 어댑터가 기대는 E² 인터페이스(제안, 이동찬 확인): `RegisterMarker(binding, marker)`, `Send(요청) → 그 호출의 마지막 이벤트`(기록·Sync 뒤 반환), `AccountBindingRef(binding, label) → 지금 결속된 참조`, `Verified(binding, ref) → 현재 head까지 검증한 스냅샷의 그 호출 마지막 이벤트`. 이벤트는 §2의 칸 이름 그대로다. 어댑터는 이벤트를 §2.3으로 검사하고 §2.2 표대로 관찰로 옮기며, 관찰에 없는 `account_binding_ref`만 직접 대조한다(나머지 대조는 `e3contract.Run`).
+- 어댑터가 기대는 E² 인터페이스(제안, 이동찬 확인): `RegisterMarker(binding, marker)`, `Send(요청) → 그 호출의 마지막 이벤트`(기록·Sync·정본 head 게시 ACK 뒤 반환, 게시 실패·ACK 미확인이면 이벤트 없이 오류, §5), `AccountBindingRef(binding, label) → 지금 결속된 참조`, `Verified(binding, ref) → 현재 head까지 검증한 스냅샷의 그 호출 마지막 이벤트`. 이벤트는 §2의 칸 이름 그대로다. 어댑터는 이벤트를 §2.3으로 검사하고 §2.2 표대로 관찰로 옮기며, 관찰에 없는 `account_binding_ref`만 직접 대조한다(나머지 대조는 `e3contract.Run`).
 - 어댑터는 먼저 **가짜 v3 저널**(같은 인터페이스, 시험 전용)로 구현하고, 실제 v3가 들어오면 가짜 자리에 바꿔 끼운다.
 - 가짜 저널로 고정할 반례(관찰을 돌려주지 않아야 하는 것):
   1. 신뢰 체크포인트 없음 → 무결성 실패. `Transport` 쪽: 로컬 Sync는 됐지만 정본 head 게시가 실패하거나 ACK를 확인하지 못함 → 관찰 성공 없이 오류(결과 불명), 그 뒤 송신 없음.
@@ -166,7 +170,8 @@ fail-closed는 #698 계약 그대로다. 진위 실패면 판정 행을 만들�
   5. 검증된 스냅샷에 그 참조 없음 → 이벤트 없음.
   6. 결속·계정 라벨·계정 결속 참조·목적·역할·생성 참조 불일치 → 해당 진위 실패.
   7. `Transport` 관찰과 봉인 이벤트가 칸 하나라도 다름 → `journal_event_mismatch`.
-  8. 송신 전 거부가 아닌 `not_sent`, `result` 단계에 `not_sent_reason` → 관찰 계약 위반.
+  8. 송신 뒤 `result`(`forward_attempted=true`)에 `not_sent`·`not_sent_reason`, 송신 전 거부 `result`의 `not_sent_reason`이 넷 밖 → 관찰 계약 위반.
+  9. `intent` 뒤 송신 전 중단 행이 실행 문맥이 살아 있는데 옴 → 관찰 계약 위반. 문맥이 끝났으면 관찰 없이 문맥 오류(결과 불명, 쓰기 기록 거두지 않음).
 
 ## 10. 답과 남은 확인
 
@@ -174,7 +179,7 @@ fail-closed는 #698 계약 그대로다. 진위 실패면 판정 행을 만들�
 
 **송신 활성화 전 확정 필수**(그 전에는 E² 프로그램 호출 거부 유지):
 1. 신뢰 체크포인트 보존 위치·형식, 감사 키·digest 키 보관 경로(§3).
-2. `Transport` 반환 전 Sync와 `Sealed`의 체크포인트 조회 구현(§5).
+2. `Transport` 반환 전 Sync·정본 head 게시 ACK와 `Sealed`의 체크포인트 조회 구현(§5).
 3. 세대·인스턴스 참조의 리셋·인스턴스 교체 규칙(§6, 이동찬 확인).
 
 **공식 평가 v3 읽기 전 확정 필수**(이동찬 확인, 그 전에는 분리 배치 O의 시도 대조는 지금처럼 "대조 미수집"):
