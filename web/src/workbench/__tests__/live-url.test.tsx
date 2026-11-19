@@ -61,6 +61,7 @@ import { generateRemediation } from "@/lib/diagnosis/remediation";
 import * as api from "../live/api";
 import { checkLiveAuth, getLiveAuthState, setLiveAuthState } from "../live/auth";
 import { LiveFeeds } from "../live/feeds";
+import { dateTimeOf } from "../live/map";
 import { LiveRailTasks } from "../live/rail";
 import {
   disconnectUrl,
@@ -138,6 +139,10 @@ const completed: url.URLDiagnosisJob = {
   drain_complete: true,
   result_ready: true,
 };
+
+/** 서버 확인 시각(diagnosis-run-timing.responses.example.json 의 완료 사례와 같은 값, 소요 5분). */
+const STARTED_AT = "2026-11-17T01:02:03.123456789Z";
+const FINISHED_AT = "2026-11-17T01:07:03.123456789Z";
 
 function shellValue(over: Partial<Shell> = {}): Shell {
   return {
@@ -312,6 +317,9 @@ beforeEach(() => {
               drain_complete: job.drain_complete,
               result_ready: job.result_ready,
               task_id: job.task_id,
+              // 서버 목록은 상태와 같은 저장 시각을 싣는다(diagnosis-run-timing.md) — 빠지면 목록 ↔ 상태 결속이 어긋난다
+              ...(job.started_at === undefined ? {} : { started_at: job.started_at }),
+              ...(job.finished_at === undefined ? {} : { finished_at: job.finished_at }),
               report_available: job.result_ready && !!job.task_id,
               approval_status: "not_revalidated",
               action_required: true,
@@ -1031,7 +1039,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(within(insp).getByText("점검 정보")).toBeInTheDocument();
   });
 
-  it("점검 진행 모델 사용량: 사용량을 못 받은 호출이 있으면 최대치라고 같이 적고, 기록이 없으면 줄을 두지 않는다", async () => {
+  it("점검 진행 모델 사용량: 사용량을 못 받은 호출이 있으면 마우스를 올린 값에 최대치라고 적고, 기록이 없으면 줄을 두지 않는다", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue({
       ...running,
@@ -1048,15 +1056,10 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     });
     mount("live");
     const line = (await screen.findByText(/^작업 합계/)).parentElement as HTMLElement;
-    // 예약량으로 센 호출이 있어도 점검 진행 칩 옆엔 '(최대)'를 두지 않고(사용자 11/18), 마우스를 올린 정확한 값에 최대치를 남긴다
-    expect(line).toHaveTextContent(/^작업 합계 · 입 1.2k 출 300\?/);
-    // 마우스를 올리지 않아도: 키보드 · 터치로 여는 (?) 설명이 최대치임을 말한다(#709 리뷰)
-    const tip = within(line).getByRole("button", { name: "최대치 설명" });
-    expect(line.className).toMatch(/tipline/); // 메모가 이 줄 바로 아래에 뜨는 기준
-    fireEvent.click(tip);
-    expect(within(line).getByRole("note")).toHaveTextContent(
-      "사용량을 받지 못한 호출 1건은 예약량으로 셌습니다. 두 수는 실제 사용량의 최대치입니다.",
-    );
+    // 예약량으로 센 호출이 있어도 점검 진행 칩 옆엔 '(최대)'(사용자 11/18) · (?) 설명(사용자 11/19)을 두지 않고,
+    // 마우스를 올린 정확한 값에 최대치를 남긴다
+    expect(line).toHaveTextContent(/^작업 합계 · 입 1.2k 출 300$/);
+    expect(within(line).queryByRole("button")).toBeNull();
     expect(line).toHaveAttribute("title", "입력 1,200 토큰 (최대치)\n출력 300 토큰 (최대치)");
     cleanup();
     resetUrl();
@@ -1464,6 +1467,19 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(u.commandURLDiagnosis).toHaveBeenCalledTimes(1);
     expect(u.commandURLDiagnosis).toHaveBeenCalledWith(running, "stop", owner);
     expect(await screen.findByText("중지·마감 중")).toBeInTheDocument();
+  });
+
+  it("보고서 머리: 서버 시작 · 마감 시각이 둘 다 있으면 시작 시각과 소요(finished − started)를 보인다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue({ ...completed, started_at: STARTED_AT, finished_at: FINISHED_AT });
+    a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [] });
+    mount("report");
+    const header = (await screen.findByRole("heading", { level: 1, name: "target.example 보고서" })).closest(
+      "header",
+    ) as HTMLElement;
+    await waitFor(() => expect(within(header).getByText(/^소요/)).toHaveTextContent(/^소요 5분$/));
+    expect(within(header).getByText(/^시작/)).toHaveTextContent(`시작 ${dateTimeOf(STARTED_AT)}`);
+    expect(header).not.toHaveTextContent("연결 전");
   });
 
   it("보고서는 결과 저장이 확인된 뒤에만 실제 task 의 조치 자료를 부른다", async () => {
@@ -1993,6 +2009,27 @@ describe("대시보드 · 인증 (URL 진단)", () => {
     expect(within(detail).getByRole("heading", { level: 2, name: "점검 진행" })).toBeInTheDocument();
     fireEvent.click(within(detail).getByRole("button", { name: /진행 화면 열기/ }));
     expect(goTo).toHaveBeenCalledWith("live");
+  });
+
+  it("진행 중 상세: 시작 칸은 서버 시작 시각과 그 기준 경과 — 화면이 새 스톱워치를 만들지 않는다", async () => {
+    // 새로 연 화면이라도 경과는 서버 started_at 부터 센다(시작 = 지금 − 90초 → '1분'). 시계는 모의하지 않는다
+    const startedAt = new Date(Date.now() - 90_000).toISOString();
+    saveHandle();
+    u.readURLStatus.mockResolvedValue({ ...running, started_at: startedAt });
+    mount("dashboard");
+    const region = await screen.findByRole("region", { name: "진행 중인 점검" });
+    const activeRow = await within(region).findByRole("button", { name: /job-1/ });
+    await act(async () => {
+      fireEvent.click(activeRow);
+    });
+    const detail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
+    await waitFor(() =>
+      expect(within(detail).getByText("시작").nextElementSibling).toHaveTextContent(
+        `${dateTimeOf(startedAt)} · 경과 1분`,
+      ),
+    );
+    // 남은 시간은 계약상 만들지 않는다
+    expect(within(detail).getByText("남은 시간").nextElementSibling).toHaveTextContent("연결 전");
   });
 
   it("대시보드: 결과가 저장되기 전에는 발견을 부르지 않고 '없음'이라 하지 않는다 · 위치 줄 없음", async () => {

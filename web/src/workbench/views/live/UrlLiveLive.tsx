@@ -4,7 +4,8 @@
 // 점검 진행: 상태 카드(지금 · 계획 · 심화 점검 · 발견 후보 · 확인 필요 · 작업 합계 토큰) · 확인 필요(요청 승인) ·
 //   발견 후보 목록(실시간, 검증 전 후보) · 활동 기록
 //   + 오른쪽 진행 요약(전송 통제 · 탐색 현황 · 커버리지 · 점검 정보).
-//   서버가 점검 중에 주지 않는 값(진행률 · 시작 · 경과 · 남은 시간 · 판정)은 자리도 두지 않는다.
+//   서버가 점검 중에 주지 않는 값(진행률 · 남은 시간 · 판정)은 자리도 두지 않는다. 시작 · 경과는 서버 started_at 으로
+//   진행 요약(jobSummary)의 시작 칸에만 보인다(이 카드에는 자리를 새로 두지 않음).
 // 보고서: 판정 집계 · 발견 목록 / 증거 · 감사 + 오른쪽 발견 상세. (우선 조치 칸은 11/17 사용자 요청으로 뺌)
 // 심각도 · 공격 경로 · 지식 그래프 · 계정 비교 · 재현 명령은 서버가 주지 않아 두지 않는다.
 // 판정은 팀 lib(summarizeDiagnosticEntries · diagnosticOutcome)의 분류만 쓰고 화면이 만들지 않는다.
@@ -36,9 +37,19 @@ import {
   type Remediation,
 } from "../../live/api";
 import { clearFindingPick, pickFinding, usePickedFinding } from "../../live/findingPick";
-import { approvalCounts, clockOf, dateTimeOf, fmtCount, fmtTokensShort, planState, sevKey } from "../../live/map";
+import {
+  approvalCounts,
+  clockOf,
+  dateTimeOf,
+  fmtCount,
+  fmtDur,
+  fmtTokensShort,
+  planState,
+  sevKey,
+} from "../../live/map";
 import { maskSecrets } from "../../live/mask";
 import { ErrorNote, LoadingRow, NotYet } from "../../live/parts";
+import { runDurationMissingWhy, runDurationSec, runStartMissingWhy, runStartText } from "../../live/runTiming";
 import { useUrl, useUrlGates } from "../../live/urlDiagnosis";
 import { factText, URL_ENDED_STATES, type UrlState, urlOutcomeText, urlStateText } from "../../live/urlMap";
 import { type Poll, usePoll } from "../../live/usePoll";
@@ -46,7 +57,7 @@ import { flowStageText, MAX_FLOW_PLAN, type WorkflowSnapshot } from "../../live/
 import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
 import { Markdown } from "../../ui/Markdown";
-import { HelpTip, InspHead, InspOpenButton, Isec, Kv, PaneToggle } from "../../ui/parts";
+import { InspHead, InspOpenButton, Isec, Kv, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "./approvals";
 import { DiagnosticEntrySections } from "./DiagnosticEntrySections";
@@ -237,20 +248,14 @@ function LiveFindings({
  * 점검 진행 상태 카드의 모델 사용량 한 줄 (입 · 출 칩, 사용자 11/17 '입출만'). 출처는 이 진단의 전송 통제 예산 기록
  * (job.model_usage): 제품(첫 진단) 서버가 원본 토큰 집계(/api/exploration/tokens)를 열지 않아 그쪽은 읽지 않는다.
  * 줄 어디에 올려도 두 수의 정확한 값을 한꺼번에 보인다. 실패 · 중지로 사용량을 못 받은 호출은 예약량으로 셌으므로
- * 그런 호출이 있으면 최대치라고 같이 적는다.
+ * 그런 호출이 있으면 마우스를 올린 정확한 값에 최대치라고 같이 적는다(tokenExact). 칩 옆 '(최대)'(사용자 11/18)와
+ * (?) 설명(사용자 11/19 '무슨 말인지 모르겠다')은 두지 않는다.
  */
 function TaskTokens({ u }: { u: URLDiagnosisUsage }) {
   return (
-    // tipline: 최대치 (?) 메모가 이 줄 바로 아래에 뜨는 기준
-    <p className={cx(s.toks, s.tipline)} title={tokenExact(u)}>
+    <p className={s.toks} title={tokenExact(u)}>
       {/* 칸 사이 공백: 화면은 flex 간격으로 띄우고, 글로 읽을 때(화면 읽기 · 복사) 붙지 않게 */}
       <span>작업 합계 ·</span> <TokenChips u={u} bound={false} />
-      {/* 칩 옆 '(최대)' 글 대신(사용자 11/18) 키보드 · 터치로도 여는 (?) 설명으로 최대치임을 알린다(#709 리뷰) */}
-      {u.unknown_usage_calls ? (
-        <HelpTip label="최대치 설명">
-          {`사용량을 받지 못한 호출 ${u.unknown_usage_calls}건은 예약량으로 셌습니다. 두 수는 실제 사용량의 최대치입니다.`}
-        </HelpTip>
-      ) : null}
     </p>
   );
 }
@@ -613,7 +618,8 @@ export function UrlLiveLive() {
           ) : null}
           {/* 상단 카드: 지금 하는 일을 크게(끝나면 결과와 [보고서 보기]), 숫자 칸(계획 · 심화 점검 · 발견 후보 · 확인 필요),
               작업 합계 토큰. 계획 단계 목록은 두지 않는다(사용자 11/17 '계획 접기 빼기' — 완료 수만 숫자 칸에).
-              결과 불명이면 첫 줄 대신 아래 안내가 말하고, 진행률 · 시작 · 경과 · 남은 시간은 서버가 주지 않아 두지 않는다 */}
+              결과 불명이면 첫 줄 대신 아래 안내가 말하고, 진행률 · 남은 시간은 서버가 주지 않아 두지 않는다.
+              시작 · 경과는 진행 요약의 시작 칸에 있다 */}
           {/* 맨 위 단계 게이지 (탐색 흐름이 있는 점검만, 상태를 모르면 두지 않는다) */}
           {gauge ? <StageGauge segs={gauge} /> : null}
           {job.state !== "unknown" || tokensBody || stats.length ? (
@@ -1669,16 +1675,17 @@ export function UrlReportLive() {
       </>
     );
 
-  // 머리 줄: 시작 · 소요 · 모델 · 모델 사용량(입 · 출). 서버가 주지 않는 시작 · 소요는 '연결 전'.
+  // 머리 줄: 시작 · 소요 · 모델 · 모델 사용량(입 · 출). 시작 · 소요는 서버가 확인한 started_at · finished_at 만 쓰고,
+  // 소요는 둘 다 있을 때만 센다(diagnosis-run-timing.md 화면 인계). 없으면 '연결 전' — saved_at 등으로 추정하지 않는다.
   // 자산 커버리지는 아래 요약 칸에 있어 머리에서 빼고 그 자리에 모델 사용량을 둔다(사용자 11/17).
   // 모델 사용량은 이 진단의 전송 통제 예산 기록(job.model_usage), 기록이 없으면 "—"
   const usage = job?.model_usage;
+  const startText = runStartText(job);
+  const durationSec = runDurationSec(job);
   const meta = [
-    <span key="start">
-      시작 <NotYet why="서버가 점검 시작 시각을 주지 않습니다" />
-    </span>,
+    <span key="start">시작 {startText ? <b>{startText}</b> : <NotYet why={runStartMissingWhy(job)} />}</span>,
     <span key="dur">
-      소요 <NotYet why="서버가 점검 소요 시간을 주지 않습니다" />
+      소요 {durationSec !== null ? <b>{fmtDur(durationSec)}</b> : <NotYet why={runDurationMissingWhy(job)} />}
     </span>,
     profile ? (
       <span key="model">

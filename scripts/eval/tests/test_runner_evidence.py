@@ -95,6 +95,20 @@ class TestEvidenceDir(unittest.TestCase):
         with self.assertRaises(EvidenceError):
             evidence.write_bytes("../escape.json", b"{}")
 
+    def test_line_records_keep_their_jsonl_name(self):
+        # 제품 호출 기록 원본(product-calls.jsonl, #735)은 받은 바이트 그대로 .jsonl로 남는다. 이름 규칙이 .json만 받으면
+        # 실제 O 회차가 모두 evidence_write_failed로 끝난다(분리 배치 끝까지 시험이 찾음).
+        evidence = EvidenceDir(self.dir)
+        data = b'{"seq":1}\n{"seq":2}\n'
+        digest = evidence.write_bytes("product-calls.jsonl", data)
+        self.assertEqual(((self.dir / "product-calls.jsonl").read_bytes(), evidence.digests()["product-calls.jsonl"]),
+                         (data, hashlib.sha256(data).hexdigest()))
+        self.assertEqual(digest, hashlib.sha256(data).hexdigest())
+        for name in ("calls.jsonx", "calls.txt", "calls.jsonl.json.bak", "Calls.jsonl", "../calls.jsonl"):
+            with self.subTest(name=name), self.assertRaises(EvidenceError) as caught:
+                evidence.write_bytes(name, data)
+            self.assertEqual(str(caught.exception), "evidence_name_invalid")
+
     def test_writes_once_private_and_remembers_digest(self):
         evidence = EvidenceDir(self.dir)
         digest = evidence.write_json("pre-checks.json", {"b": 1, "a": "한"})

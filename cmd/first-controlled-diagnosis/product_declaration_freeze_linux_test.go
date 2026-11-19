@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -190,8 +191,13 @@ func TestFrozenDeclarationDrivesConfirmationRun(t *testing.T) {
 	fake.Clock = func() time.Time { return time.Now().UTC() }
 	fake.Behaviors[e3fake.Key{Purpose: e3contract.PurposeIdentity, Role: e3contract.RoleOwner}] = e3fake.Behavior{SubjectID: "user-a"}
 	fake.Behaviors[e3fake.Key{Purpose: e3contract.PurposeIdentity, Role: e3contract.RoleCross}] = e3fake.Behavior{SubjectID: "user-b"}
+	// 세대·인스턴스 참조는 실행 시작처럼 지금 대상에서 발급한다(리셋 게이트가 확정 시작 때 다시 대조한다).
+	refs, err := r.issueTargetRefs(target.ID, rand.Reader)
+	if err != nil || !refs.GenerationKnown || !refs.InstanceKnown {
+		t.Fatalf("세대·인스턴스 참조: %+v %v", refs, err)
+	}
 	binding := e3contract.RunBinding{JobRef: "job-e3", RunRef: "run-job-e3", TaskRef: "42", E2PolicyRef: "policy-job-e3",
-		GenerationRef: "gen-1", InstanceRef: "inst-1", Policy: policy.Policy}
+		GenerationRef: refs.GenerationRef, InstanceRef: refs.InstanceRef, Policy: policy.Policy}
 	in := e3contract.Input{Binding: binding, TargetRef: target.ID, WriteConsent: true,
 		Owner: e3contract.Account{Label: "tester-a", Authenticated: true}, Cross: e3contract.Account{Label: "tester-b", Authenticated: true},
 		PolicyValidFrom: policy.ValidFrom, PolicyValidUntil: policy.ValidUntil,
@@ -302,5 +308,21 @@ func TestFrozenReadersStayInsideTheRun(t *testing.T) {
 	}
 	if _, _, err := readFrozenPolicy(runs, "job-other"); err == nil {
 		t.Fatal("다른 회차의 정책 파일을 받음")
+	}
+}
+
+// 제품 대상 회차는 선언 유무와 관계없이 실행 시작 때 세대·인스턴스 참조를 0600으로 동결한다(v3 계약 §6). 승인된 대상이면
+// 둘 다 아는 값이다.
+func TestIssueWritesTargetRefs(t *testing.T) {
+	for _, declare := range []bool{true, false} {
+		runs, job, _, _ := issueWithDeclaration(t, declare)
+		info, err := os.Stat(filepath.Join(runs, job, productTargetRefsFile))
+		if err != nil || info.Mode().Perm() != 0600 {
+			t.Fatalf("선언 %v: 참조 파일 %v", declare, err)
+		}
+		refs, ok := readTargetRefs(runs, job)
+		if !ok || !refs.GenerationKnown || !refs.InstanceKnown {
+			t.Fatalf("선언 %v: %+v %v", declare, refs, ok)
+		}
 	}
 }
