@@ -78,9 +78,11 @@ from runner_engine import (  # noqa: E402
     TaskRequest,
 )
 from runner_goal import common_goal, common_goal_sha256  # noqa: E402
-from cli_usage import count_usage  # noqa: E402
+from cli_usage import OBSERVED_LINES_FORMAT, count_usage, observed_lines  # noqa: E402
 
 CLI_USAGE_NAME = "cli-usage.json"
+# 이름이 관측된 명령의 가린 원문 한 줄(사람 확인용, 관측이 없으면 파일을 만들지 않는다).
+CLI_LINES_NAME = "cli-observed-lines.json"
 BASH_TOOL = "Bash"  # 원본 Worker 셸 도구 이름(activity.tool)
 from runner_split import REGISTRATION_PATHS  # noqa: E402
 from runner_fault import FAULT_STALL_FORMAT, FAULT_STALL_NAME, FaultRecordError, fault_stall_record  # noqa: E402
@@ -103,7 +105,7 @@ from runner_state import copy_sqlite, discard_copy, memory_fingerprints, runtime
 from state_diff import (  # noqa: E402
     RUN_KEY_BYTES, diff as state_difference, memory_diff, runtime_diff, snapshot as state_snapshot,
 )
-from runner_llm import judge_llm  # noqa: E402
+from runner_llm import interrupted_generation_ids, judge_llm, rows_match_marker  # noqa: E402
 from runner_probe import PASS, ProbeOutcome, run_probe  # noqa: E402
 from runner_record import (  # noqa: E402
     RecordContext, canonical_sha256, descriptor, evidence_rows, isolation_evidence, isolation_proof, path_ref,
@@ -600,6 +602,24 @@ def _wait_budget(spec: RunSpec, meter: MeterFiles, clock: Clock, state: _State, 
         clock.sleep(spec.poll_seconds)
 
 
+def check_request_cap(sealed: dict, drained: dict, request_budget: int) -> None:
+    """계측기 요청 하드 상한이 이 회차 예산으로 걸렸고 지켜졌는지(B·분리 배치 O 공용, 2026-11-19 사용자 결정 1). drain 표식의
+    상한이 예산과 다르면(설정이 계측기에 닿지 않음) 같은 기준에서 끊었다고 말할 수 없고, 전달 수가 예산을 넘으면 상한이 깨진
+    것이다. 같은 계측기의 봉인·drain 표식은 상한 값이 같아야 하고, 상한으로 거부한 요청이 있으면 그 전에 전달 수가 상한에
+    닿아 있어야 한다(계측기는 상한에 닿은 뒤에만 거부한다, #734 리뷰). 상한으로 거부한 수(rejected_over_cap)는 표식에서
+    근거·요약으로 옮긴다."""
+    # 값 비교만 하면 JSON true가 예산 1과 같다고 통과한다(#734 리뷰). 정상 계측기의 칸은 0 이상 JSON 정수다.
+    cap, over, sealed_cap = drained.get("request_cap"), drained.get("rejected_over_cap"), sealed.get("request_cap")
+    if (type(cap) is not int or cap != request_budget or type(over) is not int or over < 0
+            or type(sealed_cap) is not int or sealed_cap != cap):
+        raise RunFailure("meter_request_cap_mismatch")
+    forwarded = drained["forwarded_requests"]
+    if forwarded > request_budget:
+        raise RunFailure("meter_request_cap_exceeded")
+    if over and forwarded != cap:
+        raise RunFailure("meter_request_cap_mismatch")
+
+
 def check_meter_logs(meter: MeterFiles, state, rows: list[dict], drained: dict, path_key_ref: str | None) -> dict:
     """계측기 기록 마감 대조(B·분리 배치 O 공용, 같은 사유). 경로 기록은 키 참조가 있는 회차(수용시험·분리 배치)에만 있어야
     하고, 그 회차는 전달한 요청과 한 행씩 맞고 같은 키로 가렸어야 한다. 엔진 직접 배치 공식 회차에 있으면 무효다. 기록이나
@@ -645,6 +665,20 @@ def _fault_stall(gateway: GatewayFiles, meter_rows: list[dict], window_start: st
         return {"format": FAULT_STALL_FORMAT, "judged": False, "error": str(exc)}
     except Exception:
         return {"format": FAULT_STALL_FORMAT, "judged": False, "error": "fault_stall_failed"}
+
+
+def _interrupted_b(spec: RunSpec, gateway: GatewayFiles, verified: object) -> frozenset[str]:
+    """B의 기록상 끊긴 호출 generation ID(게이트웨이 cancelled_by_seal, 평가 프로토콜 §6). 행을 읽지 못하거나 읽은 행이
+    검증 표식과 맞지 않으면(행 누락·변경, #735 리뷰) 증명할 수 없으므로 빈 집합이다(미확인은 그대로 무효로 남는다)."""
+    if spec.llm_backend != "api" or not isinstance(verified, dict):
+        return frozenset()
+    try:
+        rows = gateway.rows()
+    except Exception:  # 행을 못 읽으면 끊김을 증명할 수 없다(멈춤 기록도 같은 행을 따로 읽고 사유를 남긴다)
+        return frozenset()
+    if not rows_match_marker(rows, verified):
+        return frozenset()
+    return interrupted_generation_ids(rows, verified.get("sealed_at"), product=False)
 
 
 def _wait_llm_verified(spec: RunSpec, gateway: GatewayFiles, clock: Clock, state: _State) -> dict:
@@ -860,6 +894,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     layout = "artex-direct/v1" if spec.side == "baseline" else "e2-legacy/v1"
     _step(state, "meter_explore_ingress_unexpected", lambda: validate_ingress_layout(rows, layout))
     sealed = check_meter_logs(meter, state, rows, drained, spec.path_key_ref)
+    check_request_cap(sealed, drained, spec.request_budget)
     forwarded = _step(state, "meter_log_inconsistent", lambda: forwarded_count(rows))
     meter_summary = {
         "task_requested_at": requested_at, "task_created_at": created_at, "stopped_at": stopped_at,
@@ -868,9 +903,11 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         "forwarded_requests": forwarded, "forwarded_by_method": forwarded_by_method(rows),
         "forwarded_by_ingress": ingress_counts(rows),
         "request_budget": spec.request_budget,
-        # 폴링 뒤 seal이라 넘칠 수 있다. 정확 준수를 주장하지 않고 초과분을 그대로 남긴다.
+        # 계측기 하드 상한(-request-cap)이 R번째 전달 뒤 새 요청을 거부하므로 0이어야 한다(넘치면 check_request_cap이
+        # 회차를 무효로 한다). 상한으로 거부한 수는 rejected_over_cap이다.
         "over_budget": max(0, forwarded - spec.request_budget),
         "rejected_after_seal": drained.get("rejected_after_seal"),
+        "rejected_over_cap": drained.get("rejected_over_cap"),
         "forced_closed_streams": drained.get("forced_closed_streams"),
         # 봉인 뒤 유예가 지나 계측기가 끊은 요청. 전달은 됐으므로 forwarded_requests에 들어 있다.
         "forced_cancelled_requests": drained["forced_cancelled_requests"],
@@ -896,8 +933,10 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
                                                  spec.image_ids["e2"], spec.e2_declared_differences_sha256, spec.e2_declared_differences_status)
         e2_prompt = _collect_e2_prompt(spec, ports, evidence, state, clock, task_id, e2_product["collection_outcome"])
     verified = _wait_llm_verified(spec, gateway, clock, state)
+    # 기록상 끊긴 호출(게이트웨이가 봉인 때 끊은 cancelled_by_seal, 평가 프로토콜 §6)의 미확인은 따로 센다.
+    interrupted = _interrupted_b(spec, gateway, verified)
     llm_reasons, llm_summary = _step(state, "llm_marker_invalid", lambda: judge_llm(
-        verified, spec.llm_backend, spec.llm_provider_slug, spec.llm_provider_name, spec.llm_sampling))
+        verified, spec.llm_backend, spec.llm_provider_slug, spec.llm_provider_name, spec.llm_sampling, interrupted))
     _step(state, "evidence_write_failed", lambda: evidence.write_json("llm-summary.json",
                                                                       dict(llm_summary, reasons=llm_reasons)))
     if llm_reasons:
@@ -912,9 +951,17 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     if spec.cli_usage_names:
         # 원본 도구 실행 기록에서 B에만 있는 CLI 이름별 Bash 호출 수만 남긴다(원문은 메모리에서만 본다, 결정안 §10).
         commands = _step(state, "cli_usage_failed", lambda: ports.command_records(task_id))
-        usage = _step(state, "cli_usage_failed", lambda: dict(count_usage(
-            [record for record in commands["records"] if record["tool"] == BASH_TOOL], spec.cli_usage_names, with_failures=False),
-            exploration_id=commands["exploration_id"]))
+        bash = [record for record in commands["records"] if record["tool"] == BASH_TOOL]
+        usage = _step(state, "cli_usage_failed", lambda: dict(count_usage(bash, spec.cli_usage_names, with_failures=False),
+                                                              exploration_id=commands["exploration_id"]))
+        if usage["names_seen"]:
+            # 관측된 명령마다 한 줄의 모양(관측 이름·셸 연산자만, 나머지는 전부 <인자>)을 남긴다(2026-11-19 사용자
+            # 결정 4, #736 리뷰: 자격 가림은 별도 옵션 인자로 준 자격을 못 가려 원문 줄은 남기지 않는다). 확인은 사람이 이 모양만
+            # 보고 한다. 셸 낱말로 못 나누는 줄은 보류만 적는다. 관측이 없으면 아무것도 남기지 않는다.
+            picked, observed = _step(state, "cli_usage_failed", lambda: observed_lines(bash, spec.cli_usage_names))
+            _step(state, "evidence_write_failed", lambda: evidence.write_json(CLI_LINES_NAME, {
+                "format": OBSERVED_LINES_FORMAT, "observed_calls": observed, "lines": picked}))
+            usage["observed_lines"] = len(picked)
         _step(state, "evidence_write_failed", lambda: evidence.write_json(CLI_USAGE_NAME, usage))
     intercepted = _step(state, "intercept_summary_failed", ports.intercept_summary)
     _step(state, "evidence_write_failed", lambda: evidence.write_json("intercept-summary.json", intercepted))
@@ -1702,7 +1749,7 @@ def main(argv: list[str] | None = None) -> int:
         if config.split is not None and args.side == POLICY_SWITCH_SIDE:
             # 분리 배치 O는 제품 배치로만 돈다(runner_split_main). 늦게 불러오는 것은 그 모듈이 이 모듈을 쓰기 때문이다.
             from runner_split_main import run_split_ours
-            return run_split_ours(config, preflight, repeat_index=args.repeat)
+            return run_split_ours(config, preflight, repeat_index=args.repeat, condition=args.condition)
         plan = plan_run(config, preflight, args.side, new_run_id(args.side))
         task, goal_common_sha256 = plan_task(config.task, plan, preflight[plan.side]["target_origin"])
         vocabulary, vocabulary_sha256 = load_vocabulary(config.findings["vocabulary_path"])

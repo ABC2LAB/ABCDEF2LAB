@@ -19,9 +19,25 @@ from runner_product import ProductAPIError  # noqa: E402
 from runner_split_probe import SplitProbeOutcome  # noqa: E402
 from runner_split_run import SplitRunSpec, execute_split_run  # noqa: E402
 from runner_window import WatchSample  # noqa: E402
+from runner_checks import Listener  # noqa: E402
 from test_runner import FakeEvidence  # noqa: E402
 
-IDS = {"eval-meter": "m" * 64, "explore-boundary": "b" * 64, "preparation": "p" * 64, "target": "t" * 64}
+IDS = {"eval-meter": "m" * 64, "explore-boundary": "b" * 64, "preparation": "p" * 64, "target": "t" * 64, "eval-obs": "o" * 64}
+DAEMON = {"version": "29.1.3", "os": "linux", "arch": "amd64", "platform": "Docker Engine - Community"}
+# 점검 행(runner_probe._row 모양): 출발점마다 양성·부정 하나씩과 판정하지 않는 기록 행 하나(분리 배치 §2.1 표)
+PROBE_ROWS = (
+    {"id": "meter_ip:10.252.3.2:8080", "kind": "tcp", "target": "10.252.3.2:8080", "role": "positive", "expected": "success",
+     "accepted": ["connected"], "observed": "success", "code": "connected", "verdict": "match"},
+    {"id": "target_ip:10.252.5.3:3000", "kind": "tcp", "target": "10.252.5.3:3000", "role": "negative", "expected": "fail",
+     "accepted": ["timeout", "unreachable"], "observed": "fail", "code": "timeout", "verdict": "match"},
+    {"id": "external", "kind": "tcp", "target": "openrouter.ai:443", "role": "record", "expected": "any", "accepted": [],
+     "observed": "success", "code": "connected", "verdict": "recorded"},
+)
+TARGET_ORIGIN = "http://eval-meter:8080"
+HOST = {"cpu_model": "x", "logical_cpus": 8, "memory_kib": 16 * 1024 * 1024, "kernel": "6.18", "docker_server_version": "29.1.3",
+        "machine_id_sha256": "8" * 64}
+OBSERVER_PATH = "/api/Challenges"
+SEALED_AT, DRAINED_AT = "2026-11-17T07:01:00.100000+00:00", "2026-11-17T07:01:00.200000+00:00"
 IMAGES = {"product": "sha256:" + "1" * 64, "meter": "sha256:" + "2" * 64, "explore_browser": "sha256:" + "3" * 64,
           "fixture": "sha256:" + "4" * 64, "target": "sha256:" + "5" * 64}
 FINGERPRINT = "f" * 64
@@ -78,17 +94,25 @@ def spec(**changes):
                   poll_seconds=1.0, drain_timeout_seconds=5.0, events_lookback_seconds=10.0, host_watch_max_gap_seconds=15.0,
                   task_status_wait_seconds=2.0, healthchecks=dict(HEALTH), product_close_seconds=30.0, post_settle_seconds=2,
                   llm_sampling=dict(SAMPLING), llm_provider_slug=LLM_SLUG, llm_provider_name=LLM_NAME, meter_source_sha="a" * 40,
-                  path_key_ref=PATH_KEY_REF)
+                  path_key_ref=PATH_KEY_REF, condition="ours@35b", fixture_fingerprint="e" * 64,
+                  environment_fingerprint="9" * 64, target_origin=TARGET_ORIGIN, observer_path=OBSERVER_PATH,
+                  observer_readonly_ref="readonly-1", model_tag="model-x", drain_grace_seconds=30,
+                  driver_settings={"task_wait_seconds": 30.0, "poll_interval_seconds": 1.0, "registration_valid_hours": 24})
     values.update(changes)
     return SplitRunSpec(**values)
 
 
 def snapshot():
-    return {"networks": {"target": {"id": "n" * 64}}, "services": {name: {"id": cid} for name, cid in IDS.items()}}
+    """runner_checks.network_snapshot 모양(격리 근거 행·정책 지문이 읽는 칸)."""
+    return {"daemon": dict(DAEMON), "project": "eval-ours-1",
+            "networks": {"eval_target_back": {"id": "n" * 64, "name": "eval-ours-1_eval_target_back", "internal": True, "gateways": [],
+                                              "members": {"eval-meter": ["10.252.5.2"], "target": ["10.252.5.3"]}, "names": {}}},
+            "services": {name: {"id": cid, "image": IMAGES["product"], "running": True, "started_at": "2026-11-17T06:59:00Z",
+                                "restart_count": 0, "exposed": [], "bindings": []} for name, cid in IDS.items()}}
 
 
 def probe(status=PASS, cid="c"):
-    origin = ProbeOutcome(status, () if status == PASS else ("negative_path_reachable",), (), "s", "f", cid * 64)
+    origin = ProbeOutcome(status, () if status == PASS else ("negative_path_reachable",), PROBE_ROWS, "s", "f", cid * 64)
     return SplitProbeOutcome(status, () if status == PASS else ("preparation:negative_path_reachable",), {"preparation": origin})
 
 
@@ -110,10 +134,13 @@ class FakeMeter:
     """분리 배치 계측기 bind 흉내. 경로 기록은 늘 켜져 있다(compose.split.yaml)."""
 
     def __init__(self, ports):
+        self.request_cap = 10
+        self.sealed_cap = None
         self.ports = ports
         self.path_log = True
         self.path_key_ref = PATH_KEY_REF
-        self.sealed = {"role": "engine", "sealed_at": "t"}
+        self.sealed = {"role": "engine", "sealed_at": SEALED_AT}
+        self.observer_extra = 0
         self.path_rows_error = None
         self.log_complete = True
 
@@ -122,10 +149,23 @@ class FakeMeter:
 
     def marker(self, name):
         if name == "engine-sealed.json":
-            return self.sealed
+            # 같은 계측기의 봉인 표식도 상한 값을 적는다(drain 표식과 같아야 한다, #734 리뷰)
+            if self.sealed is None:
+                return None
+            return dict(self.sealed, request_cap=self.request_cap if self.sealed_cap is None else self.sealed_cap,
+                        rejected_over_cap=0)
         self.ports.calls.append("meter:drained")
+        self.ports.clock.t += self.ports.drain_delay  # drain 확인에 걸린 시간(타임라인 engine_end·drained 구분 시험용)
+        # 계측기 하드 상한: 기본 시험 계획의 공통 요청 예산(10)이 계측기에 걸린 모양이다.
         return {"inflight_at_drain": 0, "log_complete": self.log_complete, "forced_cancelled_requests": self.ports.forced,
-                "forwarded_requests": self._total()}
+                "forwarded_requests": self._total(), "drained_at": DRAINED_AT, "rejected_after_seal": 0, "forced_closed_streams": 0,
+                "request_cap": self.request_cap, "rejected_over_cap": 0}
+
+    def observer_rows(self):
+        # 러너가 관측기로 보낸 pre·post 점수판 GET 두 건(대상 준비 확인 GET은 O에 없다)
+        count = 2 + self.observer_extra
+        return [{"seq": i, "decision": "registered", "method": "GET", "status": 200, "started_at": f"s{i}",
+                 "completed_at": f"c{i}", "response_bytes": 10} for i in range(1, count + 1)]
 
     def _total(self):
         return max(self.ports.forwarded, self.ports.forced)  # 강제 취소된 요청도 전달 행이다
@@ -175,6 +215,12 @@ class FakePorts:
                      "policy_fingerprint_sha256": FINGERPRINT, "limits": dict(LIMITS, **E3_SHARE_OFF), "rules": []}
         self.conditions = conditions()
         self.files_args: list = []
+        self.solved = {"pre": {"a": False, "b": False}, "post": {"a": True, "b": False}}
+        self.drain_delay = 0.0
+        self.listeners: set = set()
+        # 제품 회차 디렉터리의 E③ 확정 단계 결과(e3contract.RunResult). 기본은 공식 기대값(선언 없음으로 비활성)이다.
+        self.e3_file = json.dumps({"version": "e3-confirmation-run/v1", "status": "disabled", "reason": "declaration_missing",
+                                   "verdicts": [], "skipped": [], "candidates": [], "requests": 0, "writes": []}).encode()
 
     def _call(self, name):
         self.calls.append(name)
@@ -200,7 +246,7 @@ class FakePorts:
 
     def host_spec(self):
         self._call("host_spec")
-        return {"cpu_model": "x"}
+        return dict(HOST)
 
     def planned_subnets(self):
         self._call("planned_subnets")
@@ -263,7 +309,17 @@ class FakePorts:
 
     def scoreboard(self, phase, snap):
         self._call(f"scoreboard:{phase}")
-        return {"solved": {"a": False}, "state_sha256": "s" * 64}
+        context = {"run_id": "ours-1", "model_tag": "model-x", "reset_generation": snap["services"]["target"]["id"],
+                   "instance_id": snap["services"]["target"]["id"], "execution_id": snap["services"]["preparation"]["id"]}
+        at = START + timedelta(seconds=self.clock.t)
+        return {"raw": dict(context, path=f"{phase}/raw.json", sha256=("1" if phase == "pre" else "2") * 64, size=10, phase=phase),
+                "normalized": dict(context, path=f"{phase}/normalized.json", sha256=("3" if phase == "pre" else "4") * 64, size=5,
+                                   phase=phase),
+                "requested_at": at.isoformat(), "received_at": at.isoformat(), "solved": dict(self.solved[phase]),
+                "state_sha256": "s" * 64}
+
+    def host_listeners(self):
+        return frozenset(self.listeners)
 
     def prepare_round(self, token):
         self._call("prepare_round")
@@ -295,6 +351,7 @@ class FakePorts:
 
     def seal(self, meter_id):
         self._call("seal")
+        self.sealed_t = self.clock.t
         assert meter_id == IDS["eval-meter"]
         self.forwarded = self.forwarded  # 봉인 뒤 늘지 않는다
 
@@ -340,6 +397,12 @@ class FakePorts:
         self._call("sign")
         return dict(payload, signature="s")
 
+    def e3_confirmation(self, draft_id):
+        self._call("e3_confirmation")
+        if isinstance(self.e3_file, Exception):
+            raise self.e3_file
+        return self.e3_file
+
     def runtime_conditions(self, draft_id):
         self._call("runtime_conditions")
         self.files_args.append(draft_id)
@@ -372,10 +435,10 @@ ORDER_HEAD = ["preexisting", "image_ids", "meter_describe", "tool_surface", "hos
               "events:start", "watch:start", "scoreboard:pre", "prepare_round", "start_round"]
 ORDER_TAIL = ["seal", "meter:drained", "stop_round", "wait_closed", "workflow_snapshot", "snapshot:post", "check:post", "probes:post", "scoreboard:post",
               "stop_boundary", "watch:stop",
-              "events:stop", "status", "run_record", "control_policy", "product_files", "runtime_conditions",
-              "copy_boundary_evidence",
+              "events:stop", "status", "run_record", "control_policy", "product_files", "runtime_conditions", "e3_confirmation",
+              "copy_boundary_evidence", "split_conditions",
               "copy_product_records",
-              "generation_verify", "llm_verified", "down", "remove_inputs"]
+              "generation_verify", "llm_verified", "down", "remove_inputs", "sign", "sign"]  # 내린 뒤 러너 기록·결과 서명
 
 
 class TestOrder(unittest.TestCase):
@@ -392,7 +455,8 @@ class TestOrder(unittest.TestCase):
                                                "pre-probe.json",
                                                "post-probe.json", "task.json", "llm-summary.json",
                                                "window-watch.json", "product-end.json", "product-model.json", "tool-surface.json",
-                                               "product-files.json", "discovery-sources.json", "fault-stall.json", RESULT_NAME})
+                                               "product-files.json", "discovery-sources.json", "fault-stall.json", "product-calls.jsonl",
+                                               RESULT_NAME, "isolation-evidence.json", "solve-events.json", "run-record.json"})
         self.assertEqual(evidence.files["discovery-sources.json"], {
             "format": "abc2lab-eval-runner-discovery-sources-v1", "endpoints": 4,
             "by_source": {"api_recon_runtime": 1, "browser_navigation": 1, "html_link": 2}, "browser": 1, "api_recon": 1,
@@ -1008,9 +1072,9 @@ class TestPreservationV3(unittest.TestCase):
         self.assertEqual(result["reasons"], ["preservation_sign_failed"])
         from preservation_record import NAME
         self.assertNotIn(NAME, evidence.files)
-        # 보존 옵션이 없으면 발행하지 않는다
+        # 보존 옵션이 없으면 발행하지 않는다(서명은 러너 기록·결과 둘뿐)
         plain, ports, evidence = run()
-        self.assertNotIn("sign", ports.calls)
+        self.assertEqual(ports.calls.count("sign"), 2)
         self.assertNotIn(NAME, evidence.files)
 
 
@@ -1088,6 +1152,352 @@ class TestProductFaultStall(unittest.TestCase):
                                           "error": "fault_stall_rows_invalid"})
         record = product_fault_stall(b"", [], "2026-11-18T10:00:10Z", "2026-11-18T10:00:00Z", {})
         self.assertEqual(record["error"], "fault_stall_time_invalid")  # 창이 거꾸로면 B와 같은 코드
+
+
+
+class TestE3ConfirmationRow(unittest.TestCase):
+    """O 회차의 E③ 확정 단계 결과(runs/<초안>/e3-confirmation.json) 상태·사유 행(2026-11-19 사용자 결정)."""
+
+    def result(self, **fields):
+        base = {"version": "e3-confirmation-run/v1", "status": "disabled", "reason": "declaration_missing", "verdicts": [],
+                "skipped": [], "candidates": [], "requests": 0, "writes": []}
+        return json.dumps(dict(base, **fields)).encode()
+
+    def test_rows_and_shape(self):
+        from runner_split_run import e3_confirmation_row
+        import hashlib
+        raw = self.result()
+        self.assertEqual(e3_confirmation_row(raw), {"status": "disabled", "reason": "declaration_missing", "requests": 0,
+                                                    "sha256": hashlib.sha256(raw).hexdigest()})
+        self.assertEqual(e3_confirmation_row(self.result(status="completed", reason=None, requests=7))["requests"], 7)
+        self.assertEqual(e3_confirmation_row(self.result(status="completed", reason=None))["reason"], None)
+        # 비활성의 suspected 후보는 받는다(후보는 판정 없이 SUSPECTED로 남는다). confirmed 후보는 판정이 있는 결과에서만.
+        suspected = self.result(candidates=[{"candidate_ref": "1", "level": "suspected", "reason": "link_none"}])
+        self.assertEqual(e3_confirmation_row(suspected)["status"], "disabled")
+        confirmed = self.result(status="completed", reason=None, requests=5, verdicts=[{"type": "x"}],
+                                candidates=[{"candidate_ref": "1", "level": "confirmed"}])
+        self.assertEqual(e3_confirmation_row(confirmed)["status"], "completed")
+        for raw in (b"not json", b"[]", self.result(version="v0"), self.result(status="maybe"),
+                    self.result(status="completed", reason="x"), self.result(reason="Bad Reason"), self.result(reason=None),
+                    # 비활성인데 확정 요청이 있음(모순, #742 리뷰)·요청 수 모양 오류
+                    self.result(requests=1), self.result(requests=True), self.result(requests=0.0), self.result(requests=-1),
+                    self.result(requests="0"), self.result(requests=None),
+                    self.result(status="completed", reason=None, requests=True),  # bool은 요청 수가 아니다
+                    # 돌지 않은 상태인데 판정·쓰기 기록·요청이 있음(모순, #742 리뷰)과 배열이 아닌 목록 칸
+                    self.result(verdicts=[{"type": "x"}]), self.result(writes=[{"id_known": False}]),
+                    self.result(status="start_refused", reason="policy_source_unavailable", verdicts=[{"type": "x"}]),
+                    self.result(status="start_refused", reason="policy_source_unavailable", requests=1),
+                    self.result(verdicts=None), self.result(skipped={}), self.result(candidates="x"), self.result(writes=None),
+                    # 판정 없는 confirmed 후보(E③ 계약 §9, #742 리뷰)·후보 모양 오류
+                    self.result(candidates=[{"candidate_ref": "1", "level": "confirmed"}]),
+                    self.result(status="start_refused", reason="policy_source_unavailable",
+                                candidates=[{"candidate_ref": "1", "level": "confirmed"}]),
+                    self.result(status="completed", reason=None, candidates=[{"candidate_ref": "1", "level": "confirmed"}]),
+                    self.result(candidates=[{"candidate_ref": "1", "level": "CONFIRMED"}]), self.result(candidates=["1"])):
+            with self.subTest(raw=raw[:40]):
+                self.assertEqual(e3_confirmation_row(raw), {"error": "e3_confirmation_invalid"})
+
+    def test_official_round_needs_disabled_declaration_missing(self):
+        def file(value):
+            return lambda p: setattr(p, "e3_file", value)
+        result, _, evidence = run(purpose="official")
+        self.assertEqual(result["status"], "complete", result)
+        e3 = evidence.files["product-files.json"]["e3_confirmation"]
+        self.assertEqual((e3["status"], e3["reason"], result["e3_confirmation"]["status"]), ("disabled", "declaration_missing", "disabled"))
+        # 비활성 회차의 suspected 후보는 공식 회차를 막지 않는다
+        suspected = file(self.result(candidates=[{"candidate_ref": "1", "level": "suspected", "reason": "link_none"}]))
+        self.assertEqual(run(suspected, purpose="official")[0]["status"], "complete")
+        for mutate, reason in ((file(self.result(reason="not_wired")), "e3_official_not_disabled"),
+                               (file(self.result(status="completed", reason=None)), "e3_official_not_disabled"),
+                               # 비활성·요청 0이어도 판정이 있으면 모순이라 비활성 근거가 아니다(#742 리뷰)
+                               (file(self.result(verdicts=[{"type": "x"}])), "e3_confirmation_invalid"),
+                               (file(self.result(candidates=[{"candidate_ref": "1", "level": "confirmed"}])), "e3_confirmation_invalid"),
+                               (file(RuntimeError("docker_helper_copy_failed")), "e3_status_not_collected"),
+                               (file(b"{}"), "e3_confirmation_invalid"),
+                               (file(self.result(requests=1)), "e3_confirmation_invalid")):
+            with self.subTest(reason=reason):
+                result, _, _ = run(mutate, purpose="official")
+                self.assertEqual((result["status"], result["reasons"]), ("invalid", [reason]))
+
+    def test_official_time_budget_round_reads_the_stop_record(self):
+        # 러너 예산이 먼저 끝나 제품 회차를 멈추는 경로(#742 :559 리뷰). #738 중지 기록 뒤 제품은 이 경로에서도 결과 파일을
+        # 남긴다(e3contract.RunStopped: 비활성 근거가 있으면 disabled(사유), 확인 못 하면 start_refused, 돌 수 있었으면
+        # interrupted). 공식 회차는 disabled/declaration_missing만 유효하고, 파일이 없으면 비활성으로 추정하지 않는다.
+        def file(value):
+            return lambda p: setattr(p, "e3_file", value)
+        result, _, evidence = run(purpose="official")
+        self.assertEqual((result["status"], result["product_closed"]["state"], result["first_limit"]["value"]),
+                         ("complete", "cancelled", "runner_time_budget"))
+        self.assertEqual(evidence.files["product-files.json"]["e3_confirmation"]["reason"], "declaration_missing")
+        for mutate, reasons in ((file(self.result(status="interrupted", reason="")), ["e3_official_not_disabled"]),
+                                (file(self.result(status="start_refused", reason="policy_source_unavailable")),
+                                 ["e3_official_not_disabled"]),
+                                (file(self.result(reason="not_wired")), ["e3_official_not_disabled"]),
+                                (file(RuntimeError("docker_helper_copy_failed")), ["e3_status_not_collected"])):
+            with self.subTest(reasons=reasons, mutate=mutate):
+                result, ports, _ = run(mutate, purpose="official")
+                self.assertEqual((result["status"], result["reasons"]), ("invalid", reasons))
+                self.assertIn("stop_round", ports.calls)  # 같은 시간 상한 경로(제품 회차를 멈춤)에서 읽었다
+
+    def test_helper_cleanup_failure_is_not_a_missing_file(self):
+        # 복사 도우미 정리 실패는 보호 볼륨이 잡혀 있을 수 있다는 뜻이라 목적과 상관없이 무효다(#742 리뷰). 일반 복사 실패(파일
+        # 없음)는 수용시험이면 기록만, 공식이면 수집 실패다.
+        from runner_docker import HelperCleanupError
+        for purpose in ("browser_acceptance", "official"):
+            with self.subTest(purpose=purpose):
+                result, _, _ = run(lambda p: setattr(p, "e3_file", HelperCleanupError()), purpose=purpose)
+                self.assertEqual((result["status"], result.get("reasons")),
+                                 ("invalid", ["e3_confirmation_copy_failed", "docker_helper_cleanup_failed"]))
+        result, _, _ = run(lambda p: setattr(p, "e3_file", RuntimeError("docker_helper_copy_failed")))
+        self.assertEqual(result["status"], "complete")
+
+    def test_other_purposes_record_without_invalidating(self):
+        # 수용시험 목적은 기록만 한다(감독자 연결 전 빌드는 파일이 없어 수집 못 함으로 남는다)
+        result, _, evidence = run(lambda p: setattr(p, "e3_file", RuntimeError("missing")))
+        self.assertEqual(result["status"], "complete", result)
+        self.assertEqual(evidence.files["product-files.json"]["e3_confirmation"], {"error": "e3_confirmation_not_collected"})
+
+
+
+class TestRunRecord(unittest.TestCase):
+    """O v1.1 러너 기록(설계안 R1~R3): 회차 문맥·타임라인·점수판 파일·격리 근거·증명·해결 이벤트·서명."""
+
+    def rows(self, evidence, kind):
+        return [row for row in evidence.files["isolation-evidence.json"]["rows"] if row["kind"] == kind]
+
+    def test_record_context_timeline_and_artifacts(self):
+        from runner import RESULT_FORMAT
+        from preservation_record import digest
+        result, ports, evidence = run(lambda p: setattr(p, "drain_delay", 0.5))
+        self.assertEqual(result["status"], "complete", result)
+        record = evidence.files["run-record.json"]
+        self.assertEqual(record["signature"], "s")  # 내린 뒤 러너 키로 서명(가짜 서명)
+        context = {key: record[key] for key in ("run_id", "model_tag", "reset_generation", "instance_id", "execution_id")}
+        self.assertEqual(context, {"run_id": "ours-1", "model_tag": "model-x", "reset_generation": IDS["target"],
+                                   "instance_id": IDS["target"], "execution_id": IDS["preparation"]})
+        self.assertEqual((record["version"], record["engine"], record["condition"], record["repeat_index"]), ("1.1", "ours", "ours@35b", 0))
+        self.assertEqual((record["fixture_fingerprint"], record["environment_fingerprint"]), ("e" * 64, "9" * 64))
+        self.assertEqual((record["total_requests"], record["blocked_attempts"], record["elapsed_seconds"]), (0, None, None))
+        steps = record["timeline"]
+        self.assertEqual([steps[s]["sequence"] for s in ("fixture_ready", "pre", "engine_start", "engine_end", "drained", "post")],
+                         [1, 2, 3, 4, 5, 6])
+        self.assertEqual(steps["pre"]["at"], (START + timedelta(seconds=0)).isoformat())  # pre 점수판 받은 시각
+        # engine_end는 계측기 봉인 직후(B와 같은 자리), drained는 drain 확인 뒤다
+        self.assertEqual(steps["engine_end"]["at"], (START + timedelta(seconds=ports.sealed_t)).isoformat())
+        self.assertLess(steps["engine_end"]["at"], steps["drained"]["at"])
+        artifacts = record["artifacts"]
+        self.assertEqual((artifacts["records"], artifacts["traffic"], artifacts["coverage"]), (None, None, None))
+        self.assertEqual(artifacts["pre"]["sha256"], "3" * 64)
+        self.assertEqual(record["isolation_proof"]["snapshots"], {"pre_sha256": "3" * 64, "post_sha256": "4" * 64})
+        network = record["isolation_proof"]["network"]
+        self.assertEqual((network["mode"], network["target_origin"], network["allowed_actors"]),
+                         ("dedicated_network", TARGET_ORIGIN, ["engine", "observer"]))
+        self.assertEqual(record["isolation_proof"]["observer"]["ref"], "eval-obs:" + IDS["eval-obs"])
+        # 결과: B와 같은 형식, E② 자리·배치·작업 요청 지문(설치·등록 조건) 서명
+        self.assertEqual((result["format"], result["e2_mode"], result["layout"], result["signature"]),
+                         (RESULT_FORMAT, "split_product", "exploration-split/v1", "s"))
+        self.assertEqual(result["task_request_sha256"], digest(ports.split_conditions()))
+        self.assertEqual(set(result["evidence"]), set(evidence.files) - {RESULT_NAME})
+
+    def test_isolation_rows_carry_o_sources(self):
+        _, _, evidence = run()
+        (placement,) = self.rows(evidence, "e2_placement")
+        self.assertEqual({k: placement[k] for k in ("mode", "decision_rows", "allowed", "unsupported", "unavailable")},
+                         {"mode": "split_product", "decision_rows": None, "allowed": None, "unsupported": None, "unavailable": None})
+        self.assertEqual(self.rows(evidence, "attempt_reconciliation"), [])  # 대조 미수집(설계안 §4)
+        (verdicts,) = self.rows(evidence, "verdict_collection")
+        self.assertEqual((verdicts["status"], verdicts["reason"]), ("not_collected", "product_verdict_export_unavailable"))
+        (e3,) = self.rows(evidence, "e3_confirmation")
+        self.assertEqual((e3["status"], e3["reason"]), ("disabled", "declaration_missing"))
+        (conditions,) = self.rows(evidence, "run_conditions")
+        self.assertEqual({k: conditions[k] for k in ("split", "execution_source", "e3_status_expected", "goal_common_sha256", "workers",
+                                                     "output_language", "llm_stream", "engine_rules_sha256", "path_key_ref", "sampling")},
+                         {"split": True, "execution_source": "model_run", "e3_status_expected": True, "goal_common_sha256": "c" * 64,
+                          "workers": 3, "output_language": None, "llm_stream": False, "engine_rules_sha256": None,
+                          "path_key_ref": PATH_KEY_REF, "sampling": SAMPLING})
+        self.assertEqual(conditions["host"], {k: v for k, v in HOST.items() if k != "machine_id_sha256"})
+        checks = self.rows(evidence, "connectivity_check")
+        self.assertEqual(sorted(row["id"] for row in checks if row["phase"] == "pre"),
+                         sorted("preparation/" + row["id"] for row in PROBE_ROWS))
+        self.assertEqual({row["role"] for row in checks}, {"positive", "negative", "record"})
+        observer = self.rows(evidence, "observer_request")
+        self.assertEqual([row["window"] for row in observer], ["pre", "in_window"])
+        (drain,) = self.rows(evidence, "drain")
+        self.assertEqual((drain["sealed_at"], drain["drained_at"], drain["inflight"], drain["grace_seconds"]),
+                         (SEALED_AT, DRAINED_AT, 0, 30))
+
+    def test_new_solves_become_isolated_window_events(self):
+        from runner_record import canonical_sha256
+        _, _, evidence = run()
+        record = evidence.files["run-record.json"]
+        events = evidence.files["solve-events.json"]["events"]
+        self.assertEqual([(e["challenge"], e["basis"], e["actor"]) for e in events], [("a", "isolated_window", "engine")])
+        self.assertEqual(events[0]["isolation_proof_sha256"], canonical_sha256(record["isolation_proof"]))
+        self.assertEqual(events[0]["execution_id"], IDS["preparation"])
+
+        def regress(ports):
+            ports.solved = {"pre": {"a": True, "b": False}, "post": {"a": False, "b": False}}
+        result, _, _ = run(regress)
+        self.assertEqual((result["status"], result["reasons"]), ("invalid", ["record_build_failed"]))
+
+    def test_unknown_or_unobserved_values_stay_null(self):
+        # 진단에 들어가지 않은 회차는 Worker 수를 모른다. 합성 회차는 제품 OpenRouter transport를 지나지 않아 스트리밍을 모른다.
+        def explore_only(ports):
+            ports.record["run"].pop("execution")
+            ports.conditions = OSError("no such file")
+        _, _, evidence = run(explore_only)
+        (conditions,) = self.rows(evidence, "run_conditions")
+        self.assertIsNone(conditions["workers"])
+        _, _, evidence = run(synthetic=True)
+        (conditions,) = self.rows(evidence, "run_conditions")
+        self.assertEqual((conditions["execution_source"], conditions["llm_stream"]), ("synthetic_fixture", None))
+
+    def test_e3_row_only_when_collected(self):
+        result, _, evidence = run(lambda p: setattr(p, "e3_file", RuntimeError("missing")))
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(self.rows(evidence, "e3_confirmation"), [])
+        (conditions,) = self.rows(evidence, "run_conditions")
+        self.assertTrue(conditions["e3_status_expected"])  # 행이 없으면 채점기가 수집 실패로 본다
+
+    def test_invalid_cases(self):
+        def listener(ports):
+            ports.listeners = {Listener("0.0.0.0", 9999)}
+        result, _, evidence = run(listener)
+        self.assertEqual((result["status"], result["reasons"]), ("invalid", ["pre_host_condition_violation"]))
+        self.assertNotIn("run-record.json", evidence.files)
+        self.assertNotIn("signature", result)
+
+    def test_empty_record_fields_stop_before_anything_starts(self):
+        # 기록 칸이 비면 회차를 띄우지 않는다: 제품 시작·모델 호출 사후 검증 없이 끝난다(#745 리뷰, 유료 회차를 쓰지 않게)
+        from runner_split_run import RECORD_SPEC_FIELDS
+        for name, value in [(name, value) for name in RECORD_SPEC_FIELDS for value in ("", "   ", "\t")]:
+            with self.subTest(field=name, value=value):
+                result, ports, evidence = run(**{name: value})
+                self.assertEqual((result["status"], result["reasons"]), ("invalid", ["record_spec_incomplete"]))
+                self.assertFalse({"preexisting", "up", "start_round", "generation_verify"} & set(ports.calls), ports.calls)
+                self.assertNotIn("run-record.json", evidence.files)
+                self.assertNotIn("signature", result)
+
+    def test_observer_count_and_listener_allowance(self):
+        clock = FakeClockState()
+        ports = FakePorts(clock)
+        meter = FakeMeter(ports)
+        meter.observer_extra = 1
+        result = execute_split_run(spec(), ports, meter, FakeEvidence(), clock.clock())
+        self.assertEqual((result["status"], result["reasons"]), ("invalid", ["observer_count_mismatch"]))
+        allowed = Listener("10.0.0.5", 11434)
+        result, _, evidence = run(lambda p: setattr(p, "listeners", {allowed}), allowed_listens=frozenset({allowed}))
+        self.assertEqual(result["status"], "complete", result)
+        (pre,) = [row for row in self.rows(evidence, "host_condition") if row["phase"] == "pre"]
+        self.assertEqual(pre["listeners_outside_loopback"], ["10.0.0.5:11434"])
+        self.assertEqual(pre["allowed_listens"], [{"address": "10.0.0.5", "port": 11434}])
+
+    def test_complete_flow_without_a_record_is_invalid(self):
+        # 방어선: 흐름이 끝났는데 서명할 기록이 없으면 완료로 쓰지 않는다
+        import runner_split_run as module
+        with mock.patch.object(module, "_split_record", lambda *args, **kwargs: None):
+            result, _, _ = run()
+        self.assertEqual((result["status"], result["reasons"]), ("invalid", ["record_build_failed"]))
+
+    def test_record_sign_failure_leaves_unsigned_invalid_result(self):
+        def fail_first_sign(ports):
+            original = ports.sign
+            def sign(payload):
+                if "isolation_proof" in payload:
+                    raise OSError("key")
+                return original(payload)
+            ports.sign = sign
+        result, _, evidence = run(fail_first_sign)
+        self.assertEqual((result["status"], result["reasons"]), ("invalid", ["record_sign_failed"]))
+        self.assertNotIn("run-record.json", evidence.files)
+        self.assertNotIn("signature", result)
+
+
+class TestInterruptedCallsO(unittest.TestCase):
+    """O: 제품 호출 기록·정지 요청 시각은 회차 근거에 남기되, 끊긴 호출 예외는 보류한다(#735 리뷰). 제품 전송기는 끊긴 호출에
+    generation ID를 남기지 않아(응답을 끝까지 읽은 forwarded에만 있음) 끊김과 미확인 ID를 잇는 근거가 없다."""
+
+    def ports(self, verified_late: bool):
+        def mutate(p):
+            # 제품이 실제로 쓰는 모양: 완료 호출은 ID가 있고, 정지로 끊긴 호출은 ID가 비어 있다(openrouter_transport.go)
+            rows = [{"seq": 1, "decision": "forwarded", "method": "POST", "status": 200, "started_at": "2000-01-01T00:00:00Z",
+                     "completed_at": "2000-01-01T00:00:01Z", "request_bytes": 1, "response_bytes": 1, "generation_id": "gen-1"},
+                    {"seq": 2, "decision": "upstream_error", "method": "POST", "status": 200, "started_at": "2000-01-01T00:00:02Z",
+                     "completed_at": "2999-01-01T00:00:00Z", "request_bytes": 1, "response_bytes": 0, "generation_id": "",
+                     "unfinished_end": "client_closed_before_done"},
+                    {"seq": 3, "decision": "forwarded", "method": "POST", "status": 200, "started_at": "2000-01-01T00:00:03Z",
+                     "completed_at": "2999-01-01T00:00:00Z", "request_bytes": 1, "response_bytes": 1, "generation_id": "late"}]
+            p.calls_file = b"".join(json.dumps(row).encode() + b"\n" for row in rows)
+            p.ledger = b"r1 10 20 30\n" * len(rows)  # 장부 예약 줄 수 = 호출 기록 줄 수
+            late = product_marker()["generations"][0] | {"id": "late"}
+            if not verified_late:
+                late = {"id": "late", "status": "unverified", "provider_name": "", "attempts": [],
+                        "lookup": {"tries": 40, "last": "http_404"}}
+            p.marker = product_marker(generations=[product_marker()["generations"][0], late])
+        return mutate
+
+    def test_records_are_kept_and_the_cut_call_without_an_id_does_not_count(self):
+        result, ports, evidence = run(self.ports(verified_late=True))
+        self.assertEqual(result["status"], "complete", result)
+        summary = evidence.files["llm-summary.json"]
+        self.assertEqual((summary["unverified_interrupted"], summary["interrupted_calls"]), (0, 0))
+        self.assertEqual(evidence.files["product-calls.jsonl"], ports.calls_file.decode())  # 받은 바이트 그대로
+        self.assertEqual(result["stop_requested_at"], summary["stop_requested_at"])  # 정지 요청 시각도 근거에 남는다
+
+    def test_unverified_completed_call_near_the_stop_still_invalidates(self):
+        # 정지 순간 즈음 끝난 호출이라도 ID가 있으면 응답을 끝까지 읽은 완료 호출이다. 미확인이면 지금처럼 무효다.
+        from runner_llm import interrupted_generation_ids
+        result, _, evidence = run(self.ports(verified_late=False))
+        self.assertEqual((result["status"], result["reasons"]), ("invalid", ["llm_generation_unverified"]))
+        summary = evidence.files["llm-summary.json"]
+        self.assertEqual(summary["unverified_interrupted"], 0)
+        rows = [json.loads(line) for line in evidence.files["product-calls.jsonl"].splitlines() if line]
+        # 저장된 기록·시각으로 다시 계산해도 같다(보류 중이라 빈 집합)
+        self.assertEqual(interrupted_generation_ids(rows, summary["stop_requested_at"], product=True), frozenset())
+
+
+class TestRequestCap(unittest.TestCase):
+    """O도 B와 같은 검사(runner.check_request_cap): 계측기 상한이 이 회차 예산이고 전달이 넘지 않았어야 한다."""
+
+    def test_cap_must_be_the_budget_and_hold(self):
+        result, _, _ = run()
+        self.assertEqual(result["status"], "complete", result)
+        self.assertEqual((result["drained"]["request_cap"], result["drained"]["rejected_over_cap"]), (10, 0))
+        for cap in (0, 9, 11):
+            with self.subTest(cap=cap):
+                result, _, _ = run_with_meter(lambda m, c=cap: setattr(m, "request_cap", c))
+                self.assertEqual((result["status"], result["reasons"]), ("invalid", ["meter_request_cap_mismatch"]))
+        # 예산 1에서 표식 상한이 JSON true·1.0이면 값 비교로는 같아 보이지만 정수가 아니라 무효다(#734 리뷰)
+        for value in (True, 1.0):
+            with self.subTest(value=value):
+                result, _, _ = run_with_meter(lambda m, v=value: setattr(m, "request_cap", v), request_budget=1)
+                self.assertEqual((result["status"], result.get("reasons")), ("invalid", ["meter_request_cap_mismatch"]))
+        self.assertEqual(run_with_meter(lambda m: setattr(m, "request_cap", 1), request_budget=1)[0]["status"], "complete")
+        # 봉인 표식의 상한이 drain 표식과 다르면 같은 계측기의 상한 적용을 증명하지 못한다(#734 리뷰)
+        result, _, _ = run_with_meter(lambda m: setattr(m, "sealed_cap", 0))
+        self.assertEqual((result["status"], result.get("reasons")), ("invalid", ["meter_request_cap_mismatch"]))
+        def overshoot(ports):  # 시작 뒤 계측기가 예산보다 많이 전달한 모양(상한이 깨진 계측기)
+            original = ports.start_round
+
+            def start(prepared):
+                out = original(prepared)
+                ports.forwarded = 12
+                return out
+            ports.start_round = start
+        result, _, _ = run_with_meter(lambda m: setattr(m, "request_cap", 10), overshoot)
+        self.assertEqual((result["status"], result["reasons"]), ("invalid", ["meter_request_cap_exceeded"]))
+
+
+def run_with_meter(mutate_meter, mutate_ports=None, **spec_changes):
+    clock = FakeClockState()
+    ports = FakePorts(clock)
+    if mutate_ports:
+        mutate_ports(ports)
+    meter = FakeMeter(ports)
+    mutate_meter(meter)
+    evidence = FakeEvidence()
+    result = execute_split_run(spec(**spec_changes), ports, meter, evidence, clock.clock())
+    return result, ports, evidence
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@
 
 import { useState } from "react";
 
-import { endedURLRun, type URLRunSummary } from "@/lib/diagnosis/diagnosis-runs";
+import { activeURLRun, endedURLRun, type URLRunSummary } from "@/lib/diagnosis/diagnosis-runs";
 
 import { cx } from "../../lib/cx";
 import { fetchRemediation } from "../../live/api";
@@ -165,18 +165,18 @@ function RecordList({ finished }: { finished: boolean }) {
                 count={(key) => (page ? rows.filter((row) => matches(row, key)).length : null)}
                 onPick={setFilter}
               />
-              <span className={s.aside}>{page ? `${shown.length} / 조회 ${rows.length}건` : "—"}</span>
+              <span className={s.aside}>{page ? `${shown.length} / ${rows.length}건` : "—"}</span>
             </div>
             <RunListControls />
-            <p className={s.help}>
-              보존된 상태입니다. 선택하면 현재 상태를 다시 확인합니다. 목록의 승인 표시는 실행 허가가 아닙니다.
-            </p>
             <RunListStatus empty={shown.length ? undefined : emptyText} />
             <div className={s.list} id={finished ? "doneList" : "runList"}>
               {shown.map((row) => (
                 <RunRow key={row.id} row={row} />
               ))}
             </div>
+            {shown.some(activeURLRun) ? (
+              <p className={s.help}>목록의 승인 표시는 실행 허가를 대신하지 않습니다.</p>
+            ) : null}
             {selectedHere && rem.error ? <ReportReadError error={rem.error} onRetry={rem.reload} /> : null}
           </section>
         </div>

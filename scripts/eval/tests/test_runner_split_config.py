@@ -158,7 +158,7 @@ class TestPlan(unittest.TestCase):
     def setUp(self):
         self.config = acceptance_config()
         self.split = parse_split(split_block(), self.config)
-        self.plan = plan_split_run(self.config, self.split, run_id="run1", target_image=TARGET, meter_port=8080)
+        self.plan = plan_split_run(self.config, self.split, run_id="run1", target_image=TARGET, meter_port=8080, request_cap=100)
 
     def test_plan_reuses_b_meter_target_and_observer_values(self):
         env = self.plan.compose_env
@@ -166,7 +166,7 @@ class TestPlan(unittest.TestCase):
             "PRODUCT_TAG": "eval-split-0123456789ab", "PRODUCT_SOURCE_SHA": "a" * 40, "PRODUCT_PORT": "28787",
             "PRODUCT_DNS_CONTROL_PORT": "29083", "EVAL_TARGET_NAME": "app.eval.test", "EVAL_TARGET_IMAGE": TARGET.ref,
             "EVAL_METER_IMAGE": "example/m:fixed", "EVAL_METER_PORT": "8080", "EVAL_METER_EXPLORE_PORT": "8082",
-            "EVAL_TARGET_PORT": "3000", "EVAL_METER_DRAIN_GRACE": "30s", "EVAL_OBS_PORT": "8081", "EVAL_OBS_HOST_PORT": "18081",
+            "EVAL_TARGET_PORT": "3000", "EVAL_METER_DRAIN_GRACE": "30s", "EVAL_METER_REQUEST_CAP": "100", "EVAL_OBS_PORT": "8081", "EVAL_OBS_HOST_PORT": "18081",
             "EVAL_OBS_PATH": "/api/records", "EVAL_PATH_KEY_FILE": "/srv/eval/path.key"})
         self.assertEqual((self.plan.project, self.plan.target_origin, self.plan.profiles),
                          ("eval-run1", "http://app.eval.test:8080", ("exploration",)))
@@ -180,7 +180,7 @@ class TestPlan(unittest.TestCase):
     def test_meter_port_must_not_collide(self):
         for port in (0, 28787, 8082):
             with self.subTest(port=port), self.assertRaises(SplitConfigError):
-                plan_split_run(self.config, self.split, run_id="r", target_image=TARGET, meter_port=port)
+                plan_split_run(self.config, self.split, run_id="r", target_image=TARGET, meter_port=port, request_cap=100)
 
     def test_runtime_env_adds_evidence_uid_and_protected_paths_without_overlap(self):
         protected = {"PRODUCT_INSTALL_FILE": "/runs/r/private/install.json"}
@@ -194,7 +194,7 @@ class TestPlan(unittest.TestCase):
 
 def synthetic_config(**changes):
     payload = runner_config()
-    payload.update(purpose="browser_acceptance", path_key_file="/srv/eval/path.key", preservation=options(), **changes)
+    payload.update({"purpose": "browser_acceptance", "path_key_file": "/srv/eval/path.key", "preservation": options(), **changes})
     return parse_runner_config(payload)
 
 
@@ -212,7 +212,7 @@ class TestSyntheticModelBlock(unittest.TestCase):
         self.assertTrue(split.synthetic)
         self.assertEqual((split.manifest_path, split.synthetic_plan_path, split.synthetic_max_tokens),
                          (None, Path("/srv/eval/plans/vampi.json"), 2048))
-        plan = plan_split_run(config, split, run_id="s1", target_image=TARGET, meter_port=8080)
+        plan = plan_split_run(config, split, run_id="s1", target_image=TARGET, meter_port=8080, request_cap=100)
         self.assertEqual(plan.compose_files, (*COMPOSE_FILES, COMPOSE_SYNTHETIC))
         self.assertEqual(plan.compose_env["EVAL_SCRIPTED_MODEL_SCRIPT"], str(SCRIPTED_MODEL_SCRIPT))
         env = split_compose_environment(plan, evidence_dir=Path("/r/meter"), protected_env={},
@@ -222,7 +222,7 @@ class TestSyntheticModelBlock(unittest.TestCase):
         with self.assertRaises(SplitConfigError):
             split_compose_environment(plan, evidence_dir=Path("/r/meter"), protected_env={})
         real = plan_split_run(acceptance_config(), parse_split(split_block(), acceptance_config()), run_id="s2",
-                              target_image=TARGET, meter_port=8080)
+                              target_image=TARGET, meter_port=8080, request_cap=100)
         self.assertNotIn(COMPOSE_SYNTHETIC, real.compose_files)
         self.assertNotIn("EVAL_SCRIPTED_MODEL_SCRIPT", real.compose_env)
         with self.assertRaises(SplitConfigError):
@@ -258,6 +258,36 @@ class TestSyntheticModelBlock(unittest.TestCase):
             parse_runner_config(payload)
         self.assertTrue(any("OFFICIAL_FORBIDDEN" in error for error in caught.exception.errors), caught.exception.errors)
 
+    def test_wiring_check_purpose_runs_the_synthetic_model(self):
+        # 배선 확인(설계안 §8 3번)은 공식이 아닌 별도 목적으로 서명한다. 합성 모델 모드를 쓸 수 있다.
+        payload = runner_config()
+        payload.update(purpose="wiring_check", path_key_file="/srv/eval/path.key", preservation=options(), split=self.block())
+        config = parse_runner_config(payload)
+        self.assertEqual((config.purpose, config.split.synthetic), ("wiring_check", True))
+        # 분리 배치가 아닌 회차에는 쓸 수 없다
+        payload = runner_config()
+        payload.update(purpose="wiring_check")
+        with self.assertRaises(RunnerConfigError) as caught:
+            parse_runner_config(payload)
+        self.assertIn("config.purpose: WIRING_CHECK_NEEDS_SPLIT", caught.exception.errors)
+
+
+class TestJuiceShopWiringPlan(unittest.TestCase):
+    """배선 확인 회차의 스크립트 요청 목록(PR에 고정). 첫 화면이 부르는 공개 GET 둘뿐이고 챌린지·정답 정보는 없다."""
+
+    def test_plan_requests_are_pinned(self):
+        from scripted_product_llm import load_plan
+        from urllib.parse import urlsplit
+        import re
+        plan = load_plan(REPO_ROOT / "deploy" / "eval" / "synthetic" / "juice-shop.json", "http://juice.test:8080")
+        urls = re.findall(r"http://juice\.test:8080[^\s'\"]*", json.dumps(plan))
+        # 의도 문장 끝 마침표는 URL이 아니다
+        self.assertEqual(sorted({urlsplit(url.rstrip(".")).path for url in urls}), ["/", "/api/Products"])
+        self.assertTrue(all(not urlsplit(url).query for url in urls))
+        commands = plan["commands"] + [step["bash"] for step in plan["exploration"] if "bash" in step]
+        # 읽기만: curl 기본 GET, 본문·메서드 옵션 없음
+        self.assertTrue(all(c.startswith("curl -s -o /dev/null -w ") and " -X" not in c and " -d" not in c for c in commands), commands)
+
 
 def compose_available() -> bool:
     try:
@@ -273,7 +303,7 @@ class TestPlanRendersWithCompose(unittest.TestCase):
     def test_render(self):
         config = acceptance_config()
         split = parse_split(split_block(), config)
-        plan = plan_split_run(config, split, run_id="render1", target_image=TARGET, meter_port=8080)
+        plan = plan_split_run(config, split, run_id="render1", target_image=TARGET, meter_port=8080, request_cap=100)
         with tempfile.TemporaryDirectory() as tmp:
             protected = {}
             for env_name in ("PRODUCT_INSTALL_FILE", "PRODUCT_POSTGRES_PASSWORD_FILE", "EXPLORE_BOUNDARY_CONFIG_FILE",

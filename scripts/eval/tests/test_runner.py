@@ -133,6 +133,14 @@ class FakeMeter:
         self.path_log = False
         self.path_rows_error = None
         self.path_rows_seen = None
+        # 계측기 요청 하드 상한(-request-cap): 실제 계측기처럼 전달은 예산에서 멈추고 넘친 몫은 상한 거부로 센다.
+        # uncapped는 상한이 안 걸린 계측기, cap_marker는 표식에 적힌 상한 값을 바꿔 보는 시험용이다.
+        self.uncapped = False
+        self.cap_marker = None
+        self.over_cap_rows = None  # 상한 거부 행 수를 표식과 다르게 두는 시험용
+        self.over_cap_marker = None  # 표식의 상한 거부 수를 바꿔 보는 시험용(봉인·drain 둘 다)
+        self.sealed_cap = None  # 봉인 표식의 상한 값만 바꿔 보는 시험용
+        self.sealed_without_over = False  # 봉인 표식에서 상한 거부 수 칸을 빼 보는 시험용
         self.path_key_ref = PATH_KEY_REF
         # 가짜 E²(compose.e2-stub.yaml) 결정 행. 회차가 E²를 기대할 때만 읽는다. 기본은 허용 2·미지원 1이고,
         # 허용 둘의 ID는 계측기 행(engine_rows의 앞 두 요청)에 붙는다.
@@ -142,8 +150,12 @@ class FakeMeter:
         self.e2_error = None
         self.e2_reads = 0
 
-    def _forwarded(self):
+    def _raw(self):
         return self.pre_forwarded if not self.ports.started else min(self.polls * self.per_poll, 10**6)
+
+    def _forwarded(self):
+        raw = self._raw()
+        return raw if not self.ports.started or self.uncapped else min(raw, self.ports.spec.request_budget)
 
     def forwarded(self):
         if self.ports.started:
@@ -176,13 +188,18 @@ class FakeMeter:
         def attempt(i):
             return ({"attempt_id_state": "valid", "attempt_id": ids[i - 1]} if i <= len(ids)
                     else {"attempt_id_state": "absent", "attempt_id": ""})
+        # 상한으로 거부한 행은 실제 계측기처럼 봉인 전 행으로 남는다(drained 표식의 rejected_over_cap과 같은 수)
+        over = 0 if not self.ports.started or self.uncapped else max(0, self._raw() - n)
+        over = over if self.over_cap_rows is None else self.over_cap_rows
         return [{"seq": i, "method": "GET", "kind": "request", "outcome": "completed", "response": "complete",
                  "started_at": FAKE_ROW_AT, "completed_at": FAKE_ROW_AT, **attempt(i)}
                 for i in range(1, n + 1)] + \
-               [{"seq": n + 1, "kind": "rejected", "outcome": "rejected_after_seal", "response": "none",
-                 "started_at": FAKE_ROW_AT, "completed_at": FAKE_ROW_AT, **attempt(n + 1)},
-                {"seq": n + 2, "kind": "rejected", "outcome": "rejected_after_seal", "response": "none",
-                 "started_at": FAKE_ROW_AT, "completed_at": FAKE_ROW_AT, **attempt(n + 2)}]
+               [{"seq": n + i, "kind": "rejected", "outcome": "rejected_over_cap", "response": "none",
+                 "started_at": FAKE_ROW_AT, "completed_at": FAKE_ROW_AT, **attempt(n + i)} for i in range(1, over + 1)] + \
+               [{"seq": n + over + 1, "kind": "rejected", "outcome": "rejected_after_seal", "response": "none",
+                 "started_at": FAKE_ROW_AT, "completed_at": FAKE_ROW_AT, **attempt(n + over + 1)},
+                {"seq": n + over + 2, "kind": "rejected", "outcome": "rejected_after_seal", "response": "none",
+                 "started_at": FAKE_ROW_AT, "completed_at": FAKE_ROW_AT, **attempt(n + over + 2)}]
 
     def observer_rows(self):
         count = self.ports.ready_calls + 2 + self.observer_extra
@@ -194,8 +211,21 @@ class FakeMeter:
             return None
         if name == "engine-drained.json":
             forwarded = self._forwarded() if self.drained_forwarded is None else self.drained_forwarded
-            return dict(self.drained, forwarded_requests=forwarded)
-        return {"role": "engine", "sealed_at": "t"}
+            cap = 0 if self.uncapped else self.ports.spec.request_budget
+            return dict(self.drained, forwarded_requests=forwarded,
+                        request_cap=cap if self.cap_marker is None else self.cap_marker,
+                        rejected_over_cap=self._over_marker())
+        cap = 0 if self.uncapped else self.ports.spec.request_budget
+        # 같은 계측기의 봉인 표식은 drain 표식과 같은 상한 값을 적는다(cap_marker는 두 표식 모두에 적용)
+        cap = cap if self.cap_marker is None else self.cap_marker
+        sealed = {"role": "engine", "sealed_at": "t", "request_cap": cap if self.sealed_cap is None else self.sealed_cap,
+                  "rejected_over_cap": self._over_marker()}
+        if self.sealed_without_over:
+            sealed.pop("rejected_over_cap")
+        return sealed
+
+    def _over_marker(self):
+        return max(0, self._raw() - self._forwarded()) if self.over_cap_marker is None else self.over_cap_marker
 
 
 class FakeGateway:
@@ -1131,8 +1161,50 @@ class TestCompleteRun(unittest.TestCase):
                          (2, {"npx": 1, "pip3": 1}, ["npx", "pip3"], ["npx", "pip3", "vim"], 5))
         self.assertEqual(usage["format"], "abc2lab.cli-usage/v3")
         self.assertNotIn("not_found", usage)
-        self.assertNotIn("playwright test", json.dumps(evidence.files))  # 명령 원문은 남지 않는다
+        self.assertNotIn("playwright test", json.dumps(usage))  # 건수 기록에는 명령 원문이 없다
+        # 관측된 명령만 한 줄의 모양(관측 이름·셸 연산자만, 나머지 <인자>)을 따로 남긴다(사용자 결정 4, #736 리뷰)
+        self.assertEqual(evidence.files["cli-observed-lines.json"], {
+            "format": "abc2lab.cli-observed-lines/v2", "observed_calls": 2,
+            "lines": [{"names": ["npx"], "shape": "npx <인자> <인자> && <인자> <인자>"},
+                      {"names": ["pip3"], "shape": "pip3 <인자> <인자>"}]})
+        self.assertEqual(usage["observed_lines"], 2)
         self.assertNotIn("command_records", run()[1].calls)  # 이름이 없으면(분리 배치 아님·O) 읽지 않는다
+
+    def test_secrets_in_option_arguments_never_reach_the_evidence(self):
+        # 자격 가림이 못 가리는 별도 옵션 인자 자격(#736 리뷰 재현): 모양에는 원문 인자가 남지 않는다. 셸 낱말로 못 나누는 줄과
+        # 상한을 넘는 원문은 보류만 적는다.
+        spec = dataclasses.replace(make_spec(), cli_usage_names=("npx",))
+        commands = ["mysql -u root -p synthsecret01 && npx run --password synthsecret02 --token=synthsecret03 -k synthsecret04",
+                    "npx login --password '--synthsecret07-x'",  # 옵션 이름 모양의 별도 값(#736 리뷰)
+                    "npx login --password '&&|;synthsecret08<>'",  # 기호가 든 따옴표 값(#736 리뷰)
+                    "PASSWORD=synthsecret05 npx thing",
+                    'npx run "synthsecret06',  # 닫히지 않은 따옴표
+                    "npx \ud800",  # 단독 surrogate(#736 리뷰: UTF-8 변환 오류로 회차가 무효가 되던 것)
+                    "npx " + "a" * (64 * 1024)]
+
+        def mutate(ports, meter, clock):
+            ports.command_rows = [{"tool": "Bash", "command": json.dumps({"command": c}), "output": "", "failed": False}
+                                  for c in commands]
+        result, _, _, evidence = run(mutate, spec=spec)
+        self.assertEqual(result["status"], COMPLETE)
+        lines = evidence.files["cli-observed-lines.json"]["lines"]
+        self.assertNotIn("synthsecret", json.dumps(evidence.files))
+        self.assertEqual(lines, [
+            {"names": ["npx"], "shape": "<인자> <인자> <인자> <인자> <인자> && npx <인자> <인자> <인자> <인자> <인자> <인자>"},
+            {"names": ["npx"], "shape": "npx <인자> <인자> <인자>"},
+            {"names": ["npx"], "shape": "npx <인자> <인자> <인자>"},
+            {"names": ["npx"], "shape": "<인자> npx <인자>"},
+            {"names": ["npx"], "shape": None, "withheld": "shape_unparseable"},
+            {"names": ["npx"], "shape": None, "withheld": "shape_input_invalid"},
+            {"names": ["npx"], "shape": None, "withheld": "shape_input_too_long"}])
+
+    def test_no_observation_leaves_no_lines(self):
+        # 관측이 없으면 아무것도 남기지 않는다(가림 호출도 없다)
+        spec = dataclasses.replace(make_spec(), cli_usage_names=("vim",))
+        result, ports, _, evidence = run(spec=spec)
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertNotIn("cli-observed-lines.json", evidence.files)
+        self.assertNotIn("observed_lines", evidence.files["cli-usage.json"])
 
     def test_cli_usage_failure_is_a_step_code(self):
         spec = dataclasses.replace(make_spec(), cli_usage_names=("npx",))
@@ -1448,16 +1520,67 @@ class TestCompleteRun(unittest.TestCase):
         self.assertLess(elapsed, summary["time_budget_seconds"] + 100)
         self.assertEqual(result["status"], COMPLETE)
 
-    def test_request_budget_overshoot_recorded_not_hidden(self):
+    def test_request_cap_holds_and_over_cap_rejections_are_recorded(self):
+        # 계측기 하드 상한: 몰아 보내도(폴링 사이 35건) 전달은 예산 100에서 멈추고 넘친 5건은 상한 거부로 남는다.
         result, _, _, evidence = run(lambda p, m, c: setattr(m, "per_poll", 35))
         summary = evidence.files["meter-summary.json"]
         self.assertEqual((summary["stop_reason"], summary["forwarded_requests"], summary["request_budget"],
-                          summary["over_budget"]), ("request_budget", 105, 100, 5))
+                          summary["over_budget"], summary["rejected_over_cap"]), ("request_budget", 100, 100, 0, 5))
         self.assertEqual(summary["rejected_after_seal"], 2)
         self.assertEqual(result["meter"], summary)
         # 표로 나가는 메서드별 건수는 계측기 행에서 세고 전달 수와 맞아야 한다(프로토콜 §8.1)
         self.assertEqual(sum(summary["forwarded_by_method"].values()), summary["forwarded_requests"])
-        self.assertEqual(summary["forwarded_by_method"]["GET"], 105)
+        self.assertEqual(summary["forwarded_by_method"]["GET"], 100)
+
+    def test_sealed_marker_must_carry_its_own_over_cap_count(self):
+        # 예산 100·전달 100·상한 거부 행 5·drain 거부 5인데 봉인 표식에 거부 수가 없으면 일치로 보지 않는다(#734 리뷰)
+        result, _, _, _ = run(lambda p, m, c: (setattr(m, "per_poll", 35), setattr(m, "sealed_without_over", True)))
+        self.assertEqual((result["status"], result.get("reasons")), (INVALID, ["meter_log_inconsistent"]))
+        self.assertNotIn("signature", result)
+        self.assertEqual(run(lambda p, m, c: setattr(m, "per_poll", 35))[0]["status"], COMPLETE)
+
+    def test_over_cap_rows_must_match_the_marker(self):
+        # 표식의 상한 거부 수와 실제 거부 행 수가 다르면 마감 대조가 실패한다(#734 리뷰: 끝부분 거부 행이 빠진 기록)
+        result, _, _, _ = run(lambda p, m, c: (setattr(m, "per_poll", 35), setattr(m, "over_cap_rows", 4)))
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["meter_log_inconsistent"]))
+
+    def test_meter_without_the_cap_invalidates_the_round(self):
+        # 상한이 계측기에 닿지 않았거나(표식 0·다른 값) 전달이 예산을 넘었으면 같은 기준에서 끊었다고 말할 수 없다.
+        for mutate, reason in ((lambda p, m, c: setattr(m, "cap_marker", 0), "meter_request_cap_mismatch"),
+                               (lambda p, m, c: setattr(m, "cap_marker", 99), "meter_request_cap_mismatch"),
+                               (lambda p, m, c: (setattr(m, "per_poll", 35), setattr(m, "uncapped", True),
+                                                 setattr(m, "cap_marker", 100)), "meter_request_cap_exceeded")):
+            with self.subTest(reason=reason):
+                result, _, _, _ = run(mutate)
+                self.assertEqual((result["status"], result["reasons"]), (INVALID, [reason]))
+        # 예산 1인 회차에서 표식 상한이 JSON true·1.0이면 값 비교로는 같아 보이지만 정수가 아니다(#734 리뷰)
+        spec = dataclasses.replace(make_spec(), request_budget=1)
+        for marker in (True, 1.0):
+            with self.subTest(marker=marker):
+                result, _, _, _ = run(lambda p, m, c, v=marker: setattr(m, "cap_marker", v), spec=spec)
+                self.assertEqual((result["status"], result.get("reasons")), (INVALID, ["meter_request_cap_mismatch"]))
+        self.assertEqual(run(spec=spec)[0]["status"], COMPLETE)  # 같은 예산의 정상 표식은 통과한다
+
+    def test_markers_and_forwarded_count_must_agree_on_the_cap(self):
+        # 같은 계측기의 봉인·drain 표식은 상한 값이 같아야 하고, 상한 거부가 있으면 전달 수가 상한에 닿았어야 한다(#734 리뷰).
+        cases = {
+            "sealed_cap_differs": lambda p, m, c: setattr(m, "sealed_cap", 0),
+            # 시간 상한으로 끝난 회차(전달 0)인데 상한 거부 행·표식 거부 수가 1
+            "over_cap_without_reaching": lambda p, m, c: (setattr(m, "per_poll", 0), setattr(m, "over_cap_rows", 1),
+                                                         setattr(m, "over_cap_marker", 1)),
+        }
+        for name, mutate in cases.items():
+            with self.subTest(case=name):
+                result, _, _, _ = run(mutate)
+                self.assertEqual((result["status"], result.get("reasons")), (INVALID, ["meter_request_cap_mismatch"]))
+                self.assertNotIn("signature", result)
+        # 봉인 표식만 JSON true인 예산 1 회차도 정수가 아니라 무효다
+        spec = dataclasses.replace(make_spec(), request_budget=1)
+        result, _, _, _ = run(lambda p, m, c: setattr(m, "sealed_cap", True), spec=spec)
+        self.assertEqual((result["status"], result.get("reasons")), (INVALID, ["meter_request_cap_mismatch"]))
+        # 상한에 닿은 뒤의 상한 거부는 정상이다(기본 회차: 전달 = 예산, 넘친 몫은 거부)
+        result, _, meter, _ = run(lambda p, m, c: setattr(m, "per_poll", 35))
+        self.assertEqual(result["status"], COMPLETE, result)
 
     def test_time_budget_stop(self):
         result, _, meter, evidence = run(lambda p, m, c: setattr(m, "per_poll", 0))
@@ -3057,9 +3180,6 @@ class TestHostSpec(unittest.TestCase):
                 self.assertEqual(caught.exception.code, "host_spec_failed")
         self.assertFalse(runner._host_spec_ok(dict(self.spec(self.FILES), logical_cpus=None)))
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class AcceptancePathKeyTests(unittest.TestCase):
     """수용시험 회차만 계측기와 같은 경로 가림 키를 eval-e2에 넘긴다(E② 시도 경로 투영)."""
@@ -3434,3 +3554,64 @@ class TestEngineEndSignal(unittest.TestCase):
         end = evidence.files["engine-end.json"]
         self.assertEqual((end["window_last_error"], end["final_error"]), ("engine_task_status_failed", "engine_task_status_failed"))
         self.assertNotIn("secret", json.dumps(end))
+
+
+class TestInterruptedCallsB(unittest.TestCase):
+    """B: 게이트웨이가 봉인 때 끊은 호출(cancelled_by_seal)의 미확인은 따로 세고 회차를 무효로 하지 않는다."""
+
+    def gateway(self, decision, end=None, drop_completed=False, marker_changes=None):
+        """게이트웨이가 실제로 쓰는 모양: 완료 호출 행(gen-1)과 끊긴 호출 행(cut) 둘, 표식의 결정별 셈은 그 행과 같다."""
+        counts = {"forwarded": "forwarded_requests", "upstream_error": "upstream_errors", "cancelled_by_seal": "cancelled_by_seal"}
+
+        def mutate(g):
+            done = {"seq": 1, "decision": "forwarded", "method": "POST", "status": 200, "started_at": "2026-11-19T00:00:01Z",
+                    "completed_at": "2026-11-19T00:00:02Z", "generation_id": "gen-1", "request_bytes": 1, "response_bytes": 1}
+            row = {"seq": 2, "decision": decision, "method": "POST", "status": 200, "started_at": "2026-11-19T00:00:05Z",
+                   "completed_at": "2026-11-19T00:00:11Z", "generation_id": "cut", "request_bytes": 1, "response_bytes": 0}
+            if end:
+                row["unfinished_end"] = end
+            tally = {"forwarded_requests": 1, "upstream_errors": 0, "cancelled_by_seal": 0, "rejected_after_seal": 0}
+            tally[counts[decision]] += 1
+            if decision == "upstream_error":  # 끝 모양별 셈의 합이 upstream_errors와 같아야 한다(표식 모양)
+                tally["upstream_error_ends"] = dict(llm_marker()["upstream_error_ends"], **{end: 1})
+            g.marker = llm_marker(sealed_at="2026-11-19T00:00:10Z", generations=[
+                llm_generation("gen-1"), llm_generation("cut", status="unverified", last="http_404", tries=40)],
+                **dict(tally, **(marker_changes or {})))
+            # 완료 행을 뺀 기록(#735 리뷰 재현): 표식은 그대로 두고 읽은 행만 빠진 모양. 순번은 다시 매겨 1부터다.
+            g.llm_rows = [dict(row, seq=1)] if drop_completed else [done, row]
+        return mutate
+
+    def test_seal_cancellation_is_not_invalidating(self):
+        result, _, _, evidence = run(mutate_gateway=self.gateway("cancelled_by_seal", "sealed_before_done"))
+        self.assertEqual(result["status"], COMPLETE, result)
+        self.assertEqual((evidence.files["llm-summary.json"]["unverified_interrupted"],
+                          evidence.files["llm-summary.json"]["unverified"]), (1, 1))
+
+    def test_seal_after_the_terminal_event_still_invalidates(self):
+        # 종료 이벤트 줄을 읽은 뒤 봉인된 호출은 엔진이 출력을 썼을 수 있다(#735 리뷰). 끝 모양 칸이 없는 이전 행도 예외가 아니다.
+        for end in ("sealed_after_done", None):
+            with self.subTest(end=end):
+                result, _, _, _ = run(mutate_gateway=self.gateway("cancelled_by_seal", end))
+                self.assertEqual((result["status"], result.get("reasons")), (INVALID, ["llm_generation_unverified"]))
+
+    def test_rows_that_do_not_match_the_marker_lose_the_exception(self):
+        # log_complete는 쓰기 오류 없음일 뿐이다. 읽은 행이 표식의 셈·generation 목록과 다르면 끊김을 증명할 수 없어
+        # 미확인을 그대로 무효로 센다(#735 리뷰: 완료 행만 빼면 예외로 빠지던 것)
+        for label, mutate in (("dropped_completed", self.gateway("cancelled_by_seal", "sealed_before_done", drop_completed=True)),
+                              ("count_mismatch", self.gateway("cancelled_by_seal", "sealed_before_done",
+                                                              marker_changes={"cancelled_by_seal": 2})),
+                              ("rejected_mismatch", self.gateway("cancelled_by_seal", "sealed_before_done",
+                                                                 marker_changes={"rejected_requests": 1}))):
+            with self.subTest(label=label):
+                result, _, _, evidence = run(mutate_gateway=mutate)
+                self.assertEqual((result["status"], result.get("reasons")), (INVALID, ["llm_generation_unverified"]))
+                self.assertEqual(evidence.files["llm-summary.json"]["unverified_interrupted"], 0)
+
+    def test_other_unverified_calls_still_invalidate(self):
+        # B에서 호출자 쪽 끊김은 봉인 탓이라고 기록상 말할 수 없다(엔진은 봉인 때 멈추지 않음)
+        result, _, _, _ = run(mutate_gateway=self.gateway("upstream_error", "client_closed_before_done"))
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["llm_generation_unverified"]))
+
+
+if __name__ == "__main__":
+    unittest.main()

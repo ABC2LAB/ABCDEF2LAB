@@ -213,12 +213,20 @@ type productResetState struct {
 }
 
 // confirmationWritesRef는 쓰기 기록 줄 하나의 고유 참조다. 같은 회차라도 시각·객체 집합이 다르면 다른 값이다.
+// 객체는 칸 전체(거둠 여부 포함)를 JSON으로 넣는다. 같은 시각의 정산이 살아 있는 쓰기를 바꾸면 참조도 바뀌어, 정산 전에 본
+// 참조로는 리셋을 확인할 수 없다(#738 이동찬 리뷰). 칸이 늘어도 참조에서 빠지지 않는다.
 func confirmationWritesRef(job string, at time.Time, objects []productConfirmationObject) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "%s\x00%s", job, at.UTC().Format(time.RFC3339Nano))
-	for _, o := range objects {
-		fmt.Fprintf(h, "\x00%s\x01%s\x02%t", o.Type, o.IDDigest, o.IDUnknown)
+	fmt.Fprintf(h, "%s\x00%s\x00", job, at.UTC().Format(time.RFC3339Nano))
+	if objects == nil {
+		objects = []productConfirmationObject{}
 	}
+	raw, err := json.Marshal(objects)
+	if err != nil {
+		// 고정 모양 구조체라 실패하지 않는다. 실패하면 어느 기록과도 맞지 않는 참조를 돌려 확인을 막는다.
+		return ""
+	}
+	h.Write(raw)
 	return hex.EncodeToString(h.Sum(nil))
 }
 

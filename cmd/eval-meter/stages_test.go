@@ -42,7 +42,7 @@ func rawUpstream(t *testing.T, act func(net.Conn)) *url.URL {
 func newRawEngine(t *testing.T, target *url.URL) (*engineMeter, *httptest.Server, string) {
 	t.Helper()
 	path, dir := privateTestDir(t)
-	m, code := newEngineMeter(dir, target, time.Now, 0)
+	m, code := newEngineMeter(dir, target, time.Now, 0, 0)
 	if code != "" {
 		t.Fatalf("engine meter: %s", code)
 	}

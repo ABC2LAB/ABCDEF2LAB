@@ -115,3 +115,155 @@ def count_usage(records: Iterable[Mapping], names: Iterable[str], *, with_failur
         out["not_found"] = {k: v for k, v in missing.items() if v}
         out["other_failures"] = {k: v for k, v in other.items() if v}
     return out
+
+
+OBSERVED_LINES_FORMAT = "abc2lab.cli-observed-lines/v2"
+MAX_OBSERVED_LINES = 64
+MAX_OBSERVED_LINE_CHARS = 1000
+# 모양을 뜰 명령 원문의 바이트 상한. 넘으면 줄을 남기지 않는다(보류 표시만).
+MAX_SHAPE_INPUT_BYTES = 64 * 1024
+_TRUNCATED_MARK = " [...]"
+WITHHELD_TOO_LONG = "shape_input_too_long"
+WITHHELD_UNPARSEABLE = "shape_unparseable"
+# UTF-8로 나타낼 수 없는 원문(JSON 이스케이프로 들어온 단독 surrogate 등). 모양을 만들지 않고 보류만 남긴다(#736 리뷰).
+WITHHELD_INVALID = "shape_input_invalid"
+# 낱말 자리표시(사람이 읽는 근거라 한국어). 관측된 CLI 이름과 셸 연산자 말고는 무엇이든 이것으로 바꾼다.
+PLACEHOLDER = "<인자>"
+PATH_PREFIX = "<경로>/"
+# 원문 대신 남기는 것은 "모양"뿐이다(#736 리뷰, 2026-11-19 사용자 결정). 비밀을 골라 가리지 않고, 남겨도 되는 것만 남긴다:
+# 따옴표 밖 낱말이 관측된 B 전용 CLI 이름이면 그 이름(경로의 마지막 조각이 그 이름이면 `<경로>/이름`), 따옴표 밖 기호 묶음이
+# 셸 연산자 목록에 있으면 그 연산자. 그 밖의 낱말(옵션 이름·값·경로·따옴표 문자열·목록 밖 기호 묶음)은 전부 PLACEHOLDER다.
+# 사람은 이 모양으로 "그 이름이 명령 자리에 있나"만 본다. 남는 낱말이 이름·연산자·자리표시뿐이라 인자 값은 남을 수 없다.
+_PUNCT = frozenset(";&|<>()")
+# 그대로 남기는 셸 연산자(따옴표 밖에서 기호 묶음으로 나온 것만). 그 밖의 기호 묶음은 PLACEHOLDER다.
+SHELL_OPERATORS = frozenset({";", "&", "&&", "|", "||", "|&", ";;", "<", ">", ">>", "<<", "<<<", "<&", ">&", "&>", "&>>", ">|",
+                             "<>", "(", ")"})
+
+
+def shell_tokens(line: str) -> list[tuple[str, bool, bool]]:
+    """한 줄을 셸 낱말로 나눈다: (낱말, 따옴표·역슬래시가 들었나, 따옴표 밖 기호 묶음인가). 작은따옴표·큰따옴표(안에서는 역슬래시
+    뒤 큰따옴표·역슬래시·달러·백틱만 탈출)·역슬래시를 셸처럼 다루고, 따옴표 밖 기호(;&|<>())는 이어진 묶음 하나로 끊는다(shlex punctuation_chars와 같은
+    경계). shlex는 따옴표를 떼어 '&&'와 && 를 가를 수 없어서 따로 둔다(#736 리뷰). 닫히지 않은 따옴표·끝 역슬래시는 ValueError."""
+    tokens: list[tuple[str, bool, bool]] = []
+    buf: list[str] = []
+    quoted = started = False
+
+    def flush() -> None:
+        nonlocal quoted, started
+        if started:
+            tokens.append(("".join(buf), quoted, False))
+        buf.clear()
+        quoted = started = False
+
+    i, n = 0, len(line)
+    while i < n:
+        c = line[i]
+        if c in " \t\n":
+            flush()
+            i += 1
+        elif c == "'":
+            end = line.find("'", i + 1)
+            if end < 0:
+                raise ValueError("unclosed quote")
+            buf.append(line[i + 1:end])
+            quoted = started = True
+            i = end + 1
+        elif c == '"':
+            i += 1
+            while i < n and line[i] != '"':
+                if line[i] == "\\" and i + 1 < n and line[i + 1] in '"\\$`':
+                    buf.append(line[i + 1])
+                    i += 2
+                else:
+                    buf.append(line[i])
+                    i += 1
+            if i >= n:
+                raise ValueError("unclosed quote")
+            quoted = started = True
+            i += 1
+        elif c == "\\":
+            if i + 1 >= n:
+                raise ValueError("trailing escape")
+            buf.append(line[i + 1])
+            quoted = started = True
+            i += 2
+        elif c in _PUNCT:
+            flush()
+            end = i
+            while end < n and line[end] in _PUNCT:
+                end += 1
+            tokens.append((line[i:end], False, True))
+            i = end
+        else:
+            buf.append(c)
+            started = True
+            i += 1
+    flush()
+    return tokens
+
+
+def clip_shape(line: str) -> str:
+    """모양 줄을 근거 상한(MAX_OBSERVED_LINE_CHARS)으로 자른다(모양에는 원문 인자가 없다)."""
+    return line if len(line) <= MAX_OBSERVED_LINE_CHARS else line[:MAX_OBSERVED_LINE_CHARS] + _TRUNCATED_MARK
+
+
+def pick_line(command: str, names: Iterable[str]) -> str:
+    """명령 원문에서 한 줄을 고른다. 줄 이음만 붙여 줄로 나눈 뒤 정규화했을 때 관측된 이름이 나오는 첫 줄이고, 없으면
+    첫 줄이다."""
+    patterns = [_pattern(name) for name in names]
+    lines = command.replace("\\\n", "").splitlines() or [""]
+    return next((raw for raw in lines if any(pattern.search(normalize(raw)) for pattern in patterns)), lines[0])
+
+
+def command_shape(line: str, names: Iterable[str]) -> str | None:
+    """한 줄의 모양. 셸 낱말로 나누지 못하면(닫히지 않은 따옴표 등) None이다(안전을 확인할 수 없어 남기지 않음)."""
+    wanted = set(names)
+    try:
+        tokens = shell_tokens(line)
+    except ValueError:
+        return None
+    out = []
+    for token, quoted, punct in tokens:
+        if punct:
+            out.append(token if token in SHELL_OPERATORS else PLACEHOLDER)
+        elif quoted:
+            out.append(PLACEHOLDER)  # 따옴표·역슬래시가 든 낱말은 문자열 인자다(이름·연산자 모양이어도)
+        elif token in wanted:
+            out.append(token)
+        elif "/" in token and token.rsplit("/", 1)[1] in wanted:
+            out.append(PATH_PREFIX + token.rsplit("/", 1)[1])
+        else:
+            out.append(PLACEHOLDER)
+    return " ".join(out)
+
+
+def observed_lines(records: Iterable[Mapping], names: Iterable[str]) -> tuple[list[dict], int]:
+    """이름이 관측된 Bash 호출마다 한 줄의 모양을 남긴다(2026-11-19 사용자 결정 4, #736 리뷰로 원문 대신 모양). 항목은
+    MAX_OBSERVED_LINES까지다. 반환: ([{"names": [...], "shape": 모양} 또는 {"names", "shape": None, "withheld": 사유}],
+    관측된 호출 수). 원문은 메모리에서만 보고 남기지 않는다."""
+    wanted = validate_names(list(names))
+    patterns = {name: _pattern(name) for name in wanted}
+    out: list[dict] = []
+    observed = 0
+    for record in records:
+        command = tool_input_command(record.get("command"))
+        if command is None:
+            continue
+        seen = [name for name, pattern in patterns.items() if pattern.search(normalize(command))]
+        if not seen:
+            continue
+        observed += 1
+        if len(out) >= MAX_OBSERVED_LINES:
+            continue
+        try:
+            size = len(command.encode("utf-8"))
+        except UnicodeEncodeError:
+            out.append({"names": seen, "shape": None, "withheld": WITHHELD_INVALID})
+            continue
+        if size > MAX_SHAPE_INPUT_BYTES:
+            out.append({"names": seen, "shape": None, "withheld": WITHHELD_TOO_LONG})
+            continue
+        shape = command_shape(pick_line(command, seen), seen)
+        out.append({"names": seen, "shape": clip_shape(shape)} if shape is not None
+                   else {"names": seen, "shape": None, "withheld": WITHHELD_UNPARSEABLE})
+    return out, observed

@@ -289,6 +289,21 @@ describe("PolicyDeclarationLive (입력 · 저장)", () => {
     expect(alerts).not.toContain("synthetic-cookie");
   });
 
+  it("편집 중인 아주 깊은 본문 틀도 화면이 깨지지 않고 크기 오류로 저장을 막는다(#754 리뷰)", async () => {
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [NONE] });
+    mount();
+    await pick("t1");
+    await screen.findByText(/아직 선언이 없습니다/);
+    fillValid();
+    // 여는 괄호만 계속 친 미완성 틀 — 재귀 검사에 넣으면 스택이 넘치던 입력
+    expect(() => type("자원 종류 1 본문 틀", "[".repeat(200_000))).not.toThrow();
+    expect(screen.getByText(/본문 틀은 2048바이트 이하입니다/)).toBeInTheDocument();
+    const btn = screen.getByRole("button", { name: "선언 저장" });
+    expect(btn).toBeDisabled();
+    await act(async () => fireEvent.click(btn));
+    expect(api.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
+  });
+
   it("칸 오류는 고친 뒤 보이고, 오류가 있으면 저장하지 않는다", async () => {
     serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [NONE] });
     mount();

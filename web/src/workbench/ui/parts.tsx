@@ -139,8 +139,9 @@ const STAGE_AT = {
 /**
  * 단계 표시 `nav.phases`. 지금 보는 화면은 aria-current="step", 이 점검이 이미 지난 단계는 체크(done).
  * 보고서는 서버가 결과 저장을 확인하기 전에는 링크가 아닌 span.later.
+ * onCurrent: 지금 단계를 눌렀을 때 — 주소가 같아 화면이 안 바뀌므로, 안쪽 페이지(보고서의 발견 상세 등)를 닫을 때 쓴다.
  */
-export function Phases({ phase }: { phase: PhaseKey }) {
+export function Phases({ phase, onCurrent }: { phase: PhaseKey; onCurrent?: () => void }) {
   const rep = useUrl((st) => st.job?.result_ready === true);
   const started = useUrl((st) => st.job?.started === true);
   const stage = useUrl((st) => st.flow?.stage ?? null);
@@ -173,6 +174,7 @@ export function Phases({ phase }: { phase: PhaseKey }) {
             href={`#${k}`}
             aria-current={i === at ? "step" : undefined}
             title={done ? "이 점검에서 끝난 단계" : undefined}
+            onClick={i === at && onCurrent ? onCurrent : undefined}
           >
             {inner}
           </a>

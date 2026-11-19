@@ -12,6 +12,7 @@ services:
       - -upstream=http://target:${EVAL_TARGET_PORT:?}
       - -log-dir=/evidence
       - -drain-grace=${EVAL_METER_DRAIN_GRACE:?}
+      - -request-cap=${EVAL_METER_REQUEST_CAP:?}
       - -path-log
       - -path-key-file=/run/eval-path-key
     volumes:

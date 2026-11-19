@@ -95,7 +95,7 @@
 | `request_marker_free` | 조회·신원 요청에서 E²가 보낸 요청에 표식이 없음을 확인했는지 |
 | `object_id_digest`·`subject_digest` | 생성·신원 관찰만. 실행별 키 digest |
 
-- **저널 대조(① (다)).** `Transport`가 돌려준 관찰을 받을 때마다 `Journal.Sealed(binding, ref)`로 봉인된 저널 이벤트를 읽어 같은지 본다(시각은 순간으로 비교). 이벤트가 없으면 `journal_event_missing`, 다르면 `journal_event_mismatch`다. 둘 다 진위 실패이고 판정 행을 만들지 않는다.
+- **저널 대조(① (다)).** `Transport`가 돌려준 관찰을 받을 때마다 `Journal.Sealed(binding, ref)`로 봉인된 저널 이벤트를 읽어 같은지 본다(시각은 순간으로 비교). `Sealed`는 저널과 따로 보관한 신뢰 체크포인트까지 검증한 스냅샷에서만 돌려준다([v3 계약](e3-e2-v3-journal-contract.md) §5). 검증된 스냅샷에 이벤트가 없으면 `journal_event_missing`, 저널을 검증하지 못하면(체크포인트 없음·불일치, MAC·체인·형식 오류, 그 밖의 읽기 오류) `journal_integrity_failed`, 다르면 `journal_event_mismatch`다. 셋 다 진위 실패이고 판정 행을 만들지 않는다.
 - 같은 `CallRef`가 두 번 오면 `observation_reused`(진위 실패)다.
 - `Journal`은 무결성 검증을 마친 이벤트만 돌려준다. E² 저널 v3의 새 칸도 무결성 범위에 든다(결정 §7).
 
@@ -113,7 +113,7 @@
 
 **비활성 사유 구분(2026-11-18 사용자·이동찬 합의).** 공식 Juice Shop 측정은 E③ 비활성(선언·시험 계정 없음)으로 돈다. 그래서 "선언 없음"(`declaration_missing`)·"시험 계정 없음"(`test_accounts_unavailable`)과 "연결 미구현"(`not_wired`)을 다른 사유로 내보낸다. `not_wired`를 먼저 판정하므로 연결이 빠진 이미지는 선언이 없어도 `not_wired`로 드러나고, 최종 제품 이미지에서는 `not_wired`가 나오면 안 된다(판정 쪽 PR 시험). 결과의 `binding`은 검증을 통과한 실행 결속만 싣고, 결속이 틀려 거부했으면 생략한다. 후보 참조도 모양이 맞는 것만 옮긴다.
 
-**진위 실패(② (다)).** 사유는 `policy_digest_mismatch`·`policy_target_mismatch`·`observation_invalid`·`binding_mismatch`·`observation_mismatch`·`observation_reused`·`journal_event_missing`·`journal_event_mismatch`·`authority_revoked`다.
+**진위 실패(② (다)).** 사유는 `policy_digest_mismatch`·`policy_target_mismatch`·`observation_invalid`·`binding_mismatch`·`observation_mismatch`·`observation_reused`·`journal_event_missing`·`journal_integrity_failed`·`journal_event_mismatch`·`authority_revoked`다.
 - 그때까지 만든 판정(이미 CONFIRMED였던 종류 포함)을 버리고 판정 행을 만들지 않는다.
 - 회차 상태와 결과 화면에 `confirmation_integrity_failed`와 사유를 그대로 보인다. "발견 없음"·"판정 없음"으로 보이면 안 된다.
 - 그 회차 후보는 모두 `level=suspected`, `reason=confirmation_integrity_failed`이고 CONFIRMED로 올라가지 않는다. 후보의 검토 상태(`manual_review_required`)는 그대로다.
