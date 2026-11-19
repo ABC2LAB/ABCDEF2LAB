@@ -108,16 +108,6 @@ func firstDiagnosisBudgetLimited(task *Task, budget *FirstDiagnosisModelBudget) 
 	return task != nil && task.firstDiagnosisBudgetLimited.Load() || budget.LimitReached()
 }
 
-// firstDiagnosisPlanned는 마지막 작업 뒤 Planner가 계획했는지 본다. 작업이 하나도 없으면 Planner가 오류 없이 한 번
-// 이상 계획했는지 본다(그래도 intent가 없으면 no_intents로 마감한다).
-func firstDiagnosisPlanned(task *Task) bool {
-	work := task.firstDiagnosisWorkSeq.Load()
-	if work == 0 {
-		return task.firstDiagnosisPlanRounds.Load() > 0
-	}
-	return task.firstDiagnosisPlannedSeq.Load() >= work
-}
-
 // firstDiagnosisGoalMet은 Planner가 목표 달성으로 작업을 끝냈는지 본다(prove_goal로 모든 목표 달성·goal_met, C26).
 // 그때 남은 open intent는 시작하지 않고 마감하므로 incomplete로 센다(계약 §2).
 func firstDiagnosisGoalMet(task *Task) bool {
@@ -129,11 +119,12 @@ func firstDiagnosisForcedClose(budgetLimited bool, task *Task) bool {
 	return budgetLimited || firstDiagnosisGoalMet(task)
 }
 
-// firstDiagnosisClosingOutcomes는 마감 판정의 앞부분이다. 실행 중 intent가 있으면 기다린다. forced(실행 상한에 닿았거나
-// Planner가 목표 달성으로 끝냄)가 아니면 시작하지 않은 intent가 없고 마지막 작업 뒤 Planner가 계획했을 때만 마감한다.
-// forced면 Planner를 기다리지 않고, 시작하지 못한 intent를 incomplete로 센다(계약 §2·§3.2).
-func firstDiagnosisClosingOutcomes(c firstDiagnosisIntentCounts, forced, planned bool) (diagnosis.IntentOutcomes, bool) {
-	if c.running > 0 || !forced && (c.open > 0 || !planned) {
+// firstDiagnosisClosingOutcomes는 마감 판정의 앞부분이다. 실행이 끝나는 길은 원본 ARTEX와 같이 목표 달성 선언(C26)과
+// 실행 상한(예산·시간)뿐이다(forced). 계획이 비어도 마감하지 않는다: Planner는 원본처럼 다음 알림(Worker 완료·발견)이나
+// 심장박동 때 다시 계획한다(사용자 결정 2026-11-19, 결과 계약 §3.2). 실행 중 intent가 있으면 기다리고, forced면 시작하지
+// 못한 intent를 incomplete로 센다(계약 §2·§3.2).
+func firstDiagnosisClosingOutcomes(c firstDiagnosisIntentCounts, forced bool) (diagnosis.IntentOutcomes, bool) {
+	if c.running > 0 || !forced {
 		return diagnosis.IntentOutcomes{}, false
 	}
 	out := c.outcomes

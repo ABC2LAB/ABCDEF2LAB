@@ -531,13 +531,18 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	// 제품 대상 회차는 모델 단계가 끝난 뒤 E② 마감 전에 E③ 확정 단계를 돈다(결정 §5). 시험 계정 인증 결과는 실행 runtime에서
 	// 그때 읽는다.
 	var e3Confirmation server.FirstDiagnosisE3Hooks
+	// 확정 단계 시간 몫은 모델 단계 시간 상한에서 뺀다(모델 단계는 "전체 상한 − 확정 몫"에서 끝난다). 발급 정책을 읽지 못하면
+	// 확정 단계가 쓸 시간을 지킬 수 없으므로 시작하지 않는다.
+	var confirmShare time.Duration
+	var shareErr error
 	if b.product != nil && l.productTarget != nil {
 		runtime := d.runtime
 		confirmation := newProductE3Confirmation(b.config.RunsDir, execution.Job.ID, *l.productTarget, b.product.targets,
 			func() map[string]string { return launchAccountAuth(runtime) })
 		e3Confirmation = server.FirstDiagnosisE3Hooks{Run: confirmation.run, Stopped: confirmation.stopped}
+		confirmShare, shareErr = confirmation.timeShare()
 	}
-	if end, ok := hard.Deadline(); !ok || d.supervisor == nil || d.supervisor.SetTimeBudget(urlTimeBudgetClose(end, time.Duration(l.profile.Budget.DurationSeconds)*time.Second, time.Duration(launch.ShutdownTimeoutSeconds)*time.Second)) != nil ||
+	if end, ok := hard.Deadline(); !ok || shareErr != nil || d.supervisor == nil || d.supervisor.SetTimeBudget(urlTimeBudgetClose(end, time.Duration(l.profile.Budget.DurationSeconds)*time.Second, time.Duration(launch.ShutdownTimeoutSeconds)*time.Second, confirmShare)) != nil ||
 		d.supervisor.SetGoalDigests(goalCommonSHA, goalProductSHA) != nil || e3Confirmation.Run != nil && d.supervisor.SetE3Confirmation(e3Confirmation) != nil {
 		cleanup, done := launchCleanupContext(context.WithoutCancel(parent), launch)
 		closeErr := d.Close(cleanup)
@@ -694,12 +699,15 @@ func (r *urlGatewayRunner) final() *diagnosis.Closure {
 // 분모다. 짧은 회차도 실행 시간의 절반 이상은 작업에 쓴다.
 const urlTimeCloseShare = 4
 
-// urlTimeBudgetClose는 시간 상한 마감 시작 시각과 진행 중 작업 유예를 정한다. 유예(엔진 정리 유예 상한)와 결과
-// 저장 여유(launch 정리 시간 상한)를 실행 끝 시각에서 빼서, 마감이 승인한 실행 시간 안에서 끝나게 한다.
-func urlTimeBudgetClose(end time.Time, budget, shutdown time.Duration) (time.Time, time.Duration) {
+// urlTimeBudgetClose는 시간 상한 마감 시작 시각과 진행 중 작업 유예를 정한다. E③ 확정 단계 시간 몫(confirm, 실행 시작 때
+// 발급 정책에 적은 값), 유예(엔진 정리 유예 상한), 결과 저장 여유(launch 정리 시간 상한)를 실행 끝 시각에서 빼서, 모델 단계가
+// 시간 상한까지 가도 확정 단계가 예약한 시간을 다 쓰고 마감이 승인한 실행 시간 안에서 끝나게 한다. 계획이 비어도 마감하지
+// 않으므로(원본과 같은 끝 규칙) 확정 단계를 켠 회차는 보통 이 시각에 모델 단계를 끝낸다. 확정 몫은
+// server.ComputeE3ConfirmationShare가 실행 시간의 1/4 이하로 정하므로 모델 단계는 실행 시간의 1/4 이상을 쓴다.
+func urlTimeBudgetClose(end time.Time, budget, shutdown, confirm time.Duration) (time.Time, time.Duration) {
 	drain := min(server.FirstDiagnosisTimeBudgetDrain, budget/urlTimeCloseShare)
 	margin := min(shutdown, budget/urlTimeCloseShare)
-	return end.Add(-drain - margin), drain
+	return end.Add(-confirm - drain - margin), drain
 }
 
 // urlStoppedUpdate는 실행 문맥이 끝나 멈춘 실행(운영자 중지·대상 철회·결속 계정 변경·상태 조회 포기)의 마감 갱신이다.

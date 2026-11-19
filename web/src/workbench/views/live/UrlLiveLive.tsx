@@ -63,6 +63,7 @@ import { DiagnosticEntrySections } from "./DiagnosticEntrySections";
 import { ReportAssetGraph } from "./ReportAssetGraph";
 import { ReportReadError } from "./runRows";
 import { TaskActivity } from "./TaskActivity";
+import { TaskPauseButtons, useTaskControl } from "./TaskControl";
 import { AccessMapPanel } from "./UrlAccessMapLive";
 import { reasonText, UrlFacts, UrlHead, UrlNotices, UrlPill, UrlRefreshButton, useUrlHost } from "./urlParts";
 import { crawlPct, PauseButton, useStopConfirm, WorkflowNotice, WorkflowReport } from "./workflowViews";
@@ -410,8 +411,10 @@ function SavedFindings({ poll }: { poll: Poll<Remediation> }) {
  * 점검 진행 화면의 상태 알약 (시안 lState: 진행 중 · 일시정지됨). 실행 중이 아니거나 확인하지 못한 상태는
  * 공통 알약(서버 상태 글) 그대로.
  */
-function LivePill({ job, verified, paused }: { job: { state: UrlState }; verified: boolean; paused: boolean }) {
+function LivePill({ job, verified, paused }: { job: { state: UrlState }; verified: boolean; paused: boolean | null }) {
   if (!verified || job.state !== "running") return <UrlPill job={job} verified={verified} />;
+  // null = 제어 결과를 확인하지 못해 멈췄는지 모름 → 진행 중이라고 단정하지 않는다
+  if (paused === null) return <span className={s.pill}>일시정지 여부 모름</span>;
   return paused ? <span className={s.pill}>일시정지됨</span> : <span className={cx(s.pill, s.run)}>진행 중</span>;
 }
 
@@ -447,6 +450,10 @@ export function UrlLiveLive() {
   const saved = usePoll(() => fetchRemediation(savedTask as string, "internal"), [savedTask], {
     enabled: visible && !!savedTask,
   });
+  // 탐색 흐름 없는 점검의 일시정지 · 다시 시작(C33). 흐름이 있는 점검은 워크플로 PauseButton 이 맡는다
+  const uncertain = useUrl((st) => st.uncertain);
+  const plainTask = job && !job.input.workflow_mode && job.task_id ? job.task_id : null;
+  const control = useTaskControl(plainTask);
 
   if (!handle || !job) {
     return (
@@ -481,6 +488,11 @@ export function UrlLiveLive() {
   }
 
   const ended = URL_ENDED_STATES.includes(job.state);
+  // 일시정지 표시: 흐름이 있으면 흐름 스냅숏, 없으면 이 화면에서 받은 제어 응답. 아직 제어하지 않았으면 진행 중(서버 상태),
+  // 제어가 거절(409)되거나 결과를 모르면 알약은 '모름'이다
+  const pausedNow = flow ? !!flow.paused : control.paused === true;
+  const pillPaused = !flow && control.both ? null : pausedNow;
+  const canControl = !!plainTask && !flow && job.state === "running";
   const run = a.poll.data?.run;
   const ap = approvalCounts(run, a.poll.data?.approvals);
   const known = (n: number) => (ap.known ? fmtCount(n) : "—");
@@ -522,9 +534,9 @@ export function UrlLiveLive() {
     taskText = "새 요청을 보내지 않습니다";
   } else {
     nowK = (
-      <span className={cx(s["now-k"], flow?.paused && s.idle)}>
+      <span className={cx(s["now-k"], pausedNow && s.idle)}>
         <i />
-        {flow?.paused ? "멈춤" : "지금"}
+        {pausedNow ? "멈춤" : "지금"}
       </span>
     );
   }
@@ -597,10 +609,13 @@ export function UrlLiveLive() {
         crumb="점검 진행"
         host={host}
         phase="live"
-        pill={<LivePill job={job} verified={verified} paused={!!flow?.paused} />}
+        pill={<LivePill job={job} verified={verified} paused={pillPaused} />}
         acts={
           <>
             <PauseButton />
+            {canControl ? (
+              <TaskPauseButtons c={control} disabled={!verified || uncertain || handle.kind === "recovered"} />
+            ) : null}
             {stop.button}
             {/* 좁은 화면에서만 보이는 오른쪽 서랍 열기 (넓은 화면은 PaneToggle) */}
             <InspOpenButton>진행 요약</InspOpenButton>
@@ -654,6 +669,11 @@ export function UrlLiveLive() {
             </section>
           ) : null}
           {stateNote}
+          {canControl && control.message ? (
+            <p className={s.help} role="status" id="luControl">
+              {control.message}
+            </p>
+          ) : null}
           {/* 확인 필요: 보내기 전에 사람이 정할 요청을 노란 상자 하나에. 줄마다 메서드 · 경로 · 계획 제목 옆에 승인 · 거부,
               그 아래 보낼 요청 미리보기와 승인 정보(무엇을 승인하는지 보고 정하게 접지 않는다) */}
           {a.pending.length ? (

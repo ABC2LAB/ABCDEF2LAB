@@ -238,7 +238,7 @@ export interface TaskControlResult {
 
 /**
  * 일시정지/다시 시작. **종료(stop) API 는 없다.** 끝난 점검·이미 멈춘 점검이면 ApiError 409, 없는 id 는 404.
- * 일반 모드 전용(첫 진단 모드 403).
+ * 제품 관리 중계는 같은 운영자가 결속한 task 에만 pause · resume 을 넘긴다(그 밖 403). 다시 시작 응답은 paused=false.
  */
 export function controlTask(id: string, action: "pause" | "resume"): Promise<TaskControlResult> {
   return call(async () => {
@@ -399,7 +399,8 @@ export interface ActivityPage {
 
 /**
  * GET /api/exploration/activity?task=&since=&limit= — seq > since 인 활동을 **오래된 순으로** limit 건.
- * 최신 활동을 보려면 cursor 로 이어 받아야 한다 → 보통은 `useActivityTail` 을 쓸 것. 첫 진단 모드는 403.
+ * 최신 활동을 보려면 cursor 로 이어 받아야 한다 → 보통은 `useActivityTail` 을 쓸 것.
+ * 제품 관리 중계는 결속된 task 의 점검 중 활동만 고정 요약(kind=status, 원문 없음)으로 주고, 끝나면 403.
  */
 export function fetchActivity(taskId: string, limit = 300, since = 0): Promise<ActivityPage> {
   return call(async () => {
