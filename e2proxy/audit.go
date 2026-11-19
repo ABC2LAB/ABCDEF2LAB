@@ -461,14 +461,31 @@ func validJournalHeaderBinding(header journalHeader) bool {
 	return knownJournalVersion(header.Version) && header.Scope == (transmit.Scope{}) && header.KeyRef == ""
 }
 
-// v3의 일반 감사 행은 기존 v2 행 규칙을 따른다. 판 표기는 실제 MAC 계산과 저장에 그대로 쓴다.
+// v3는 일반 감사 행에 v2 검사를 재사용하고 E③ 전용 칸은 별도 검사한다.
+// 판 표기는 실제 MAC 계산과 저장에 그대로 쓴다. 일반 호출의 프로그램 귀속은 바꾸지 않는다.
 func validJournalRecordEvent(event Event, version string) bool {
 	if event.Version != version {
 		return false
 	}
 	if version == JournalVersionV3 {
+		if event.Program.isE3() {
+			if event.Stage == "call_closed" {
+				if event.E3Audit != nil {
+					return false
+				}
+			} else if !validE3AuditEvent(event) {
+				return false
+			}
+			// 일반 v2 귀속 검사는 지원되는 프로그램 호출과 같은 형태만 허용한다.
+			// 원본 Program은 이벤트와 MAC에 그대로 남는다.
+			event.Program = ProgramAuthPrep
+		} else if event.E3Audit != nil {
+			return false
+		}
 		event.Version = Version
 		version = Version
+	} else if event.E3Audit != nil {
+		return false
 	}
 	return validJournalEvent(event, version)
 }
