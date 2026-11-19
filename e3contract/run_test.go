@@ -508,6 +508,10 @@ func TestRunResetGate(t *testing.T) {
 		"residue_empty":         {e3fake.Reset{State: e3contract.ResetState{}}, e3contract.RefuseResetStateUnavailable},
 		// 오류와 함께 돌아온 상태가 멀쩡해 보여도 오류가 이긴다.
 		"gate_error": {e3fake.Reset{State: e3contract.ResetState{Residue: e3contract.ResidueAbsent}, Err: errors.New("저널 읽기 실패")}, e3contract.RefuseResetStateUnavailable},
+		// 실행 시작 뒤 대상이 바뀌었으면(또는 지금 대상을 확인하지 못하면) 다른 상태가 깨끗해도 요청 없이 멈춘다(v3 계약 §6).
+		"target_changed": {e3fake.Reset{State: e3contract.ResetState{Residue: e3contract.ResidueAbsent, TargetChanged: true}}, e3contract.RefuseTargetChanged},
+		// 대상이 바뀐 것이 리셋 확인 없음보다 먼저다(지난 쓰기의 리셋 여부가 바뀐 대상 기준이 아님).
+		"target_changed_before_reset": {e3fake.Reset{State: e3contract.ResetState{PreviousWrites: true, Residue: e3contract.ResidueAbsent, TargetChanged: true}}, e3contract.RefuseTargetChanged},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
