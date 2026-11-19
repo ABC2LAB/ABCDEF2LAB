@@ -154,13 +154,25 @@ func TestHostVerifiedE3ResultUsesCurrentHead(t *testing.T) {
 	}
 	other = ref
 	other.AttemptID = strings.Repeat("d", 32)
-	if _, err := session.Verified(t.Context(), binding, other); !errors.Is(err, ErrUnavailable) {
+	if _, err := session.Verified(t.Context(), binding, other); !errors.Is(err, ErrBindingMismatch) {
 		t.Fatal("다른 시도를 현재 호출로 반환", err)
 	}
-	wrong := binding
-	wrong.GenerationRef = "other-generation"
-	if _, err := session.Verified(t.Context(), wrong, ref); !errors.Is(err, ErrUnavailable) {
-		t.Fatal("다른 세대 결속을 수용", err)
+	for name, mutate := range map[string]func(*e3contract.RunBinding){
+		"job":        func(b *e3contract.RunBinding) { b.JobRef = "other-job" },
+		"generation": func(b *e3contract.RunBinding) { b.GenerationRef = "other-generation" },
+		"instance":   func(b *e3contract.RunBinding) { b.InstanceRef = "other-instance" },
+		"policy":     func(b *e3contract.RunBinding) { b.Policy.Ref = "other-declaration" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			wrong := binding
+			mutate(&wrong)
+			if _, err := session.Verified(t.Context(), wrong, ref); !errors.Is(err, ErrBindingMismatch) {
+				t.Fatal("다른 결속을 현재 사건으로 반환", err)
+			}
+		})
+	}
+	if got, err := session.Verified(t.Context(), binding, ref); err != nil || got.Index != result.Index {
+		t.Fatal("결속 불일치 뒤 정상 조회가 막힘", err)
 	}
 	if _, err := pool.Exec(`UPDATE e2_http_audit_epochs SET generation=generation+1 WHERE store_ref=$1`, host.epoch.StoreRef); err != nil {
 		t.Fatal(err)

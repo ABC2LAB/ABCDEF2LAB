@@ -1,6 +1,6 @@
 # E③ ↔ E② 영수증·저널 v3 계약
 
-**상태: 확정본 — 이동찬 답(2026-11-19) 반영, 리뷰 이동찬.** 작성: 최민준. "**송신 활성화 전 확정 필수**"로 표시한 항목(§3 MAC·체크포인트, §5 반환·봉인 순서, §6 세대·인스턴스)은 E③ 프로그램 송신을 켜기 전에 남은 세부를 정한다. 그 전에는 E²가 E③ 프로그램 호출을 거부한다(`ErrE3JournalUnavailable`).
+**상태: 확정본 — 이동찬 답(2026-11-19) 반영, 리뷰 이동찬.** 작성: 최민준. 송신 활성화 조건인 §3 MAC·체크포인트, §5 반환·봉인 순서, §6 세대·인스턴스의 구현 결정을 기록한다. 제품 Host 또는 현재 실행 결속이 없으면 E²는 E③ 프로그램 호출을 거부한다(`ErrE3JournalUnavailable`). 제품 판정 저장·실대상 검증은 별도다.
 
 근거: [E③ 확정 경로 결정](../e3-confirm-path-decision.md) §7(E② 쪽), [E③ 제품 확정 단계 인터페이스](e3-product-confirmation-interface.md)(#698, `e3contract`), [E② 감사 저널](e2-audit-journal.md), `e2proxy`의 E③ 목적 규칙(`PurposeE3Identity`·`PurposeE3Create`·`PurposeE3Read`, `Receipt.Program`의 `ProgramE3*`).
 
@@ -61,14 +61,15 @@ E③ 프로그램 호출 하나의 시도 단계는 v2와 같은 이름이다(`e
 
 **송신 판정은 E²가 한다.** 연결을 시도한 뒤 결과를 확실히 모르면(C02의 `Unknown`·`TransportFailed` 포함) `result` 이벤트에 `response_complete=false`로 남긴다(결과 불명). 확실한 송신 전 거부만 `result`의 `not_sent`다. E③는 이 구분으로 쓰기 기록을 남기거나 거둔다(#738 시험 `TestRunWriteWithdrawOnlyBeforeConnect`: 연결 전 거부 넷만 거둔다, 그 밖의 `sent=false`는 관찰 계약 위반).
 
-## 3. MAC 검증 범위 — **송신 활성화 전 확정 필수**
+## 3. MAC 검증 범위 — 송신 활성화 구현 결정
 
 - **HMAC-SHA256.** 머리와 이벤트의 도메인을 나누고, 이벤트는 순번·직전 MAC으로 체인한다(v2와 같은 성질: 삽입·삭제·순서 변경·되감기 거부).
 - **v3 새 칸은 전부 MAC 범위 안이다**(§2.2·§2.3의 모든 칸). 어댑터는 MAC 밖 칸을 근거로 쓰지 않는다.
 - **머리**는 형식 판·저널 ID·`Scope`·키 참조·만든 시각을 담고 인증한다.
-- **키 분리.** 실행별 감사 키(저널 HMAC)와 객체·신원 digest 키(`object_id_digest`·`subject_digest`)는 다른 키다. digest 키는 저널·로그·모델 어디에도 없다.
+- **키 분리.** 제품 설치의 Host 감사 키(회차별 저널 HMAC)와 확정 실행마다 새로 만드는 객체·신원 digest 키(`object_id_digest`·`subject_digest`)는 다른 키다. digest 키는 저널·로그·모델 어디에도 없다.
 - **신뢰 체크포인트.** E③ 검증은 저널과 **따로 보관된** 신뢰 체크포인트로 한다. 체크포인트가 없거나 맞지 않으면 검증 실패다(머리부터 끝까지 MAC·체인이 맞아도, 끝 행 삭제·이전 기록으로 되감기를 가르지 못하므로). 체크포인트는 조회 시점에 신뢰 저장소가 인증 경로로 확인한 **현재** epoch·head여야 한다([E② 감사 저널 계약](e2-audit-journal.md) "최신 조회·내보내기·복원"). 같은 실행의 과거 체크포인트·과거 ACK·체크포인트 파일·백업은 진본이어도 현재 값을 대신하지 않는다(과거 체크포인트와 과거 스냅샷은 서로 맞으므로).
-- 남은 세부(송신 활성화 전): 체크포인트 보존 위치와 형식, 키 보관 경로.
+- **제품 보존 위치·형식.** 설치 때 `/h/epoch.json`(0600)에 Host epoch를 두고, 독립 PostgreSQL의 `e2_http_audit_epochs`에 같은 store·epoch·generation·anchor를 둔다. 현재 head는 `e2_http_audit_heads`의 `(store_ref, run_ref)` 행이며 epoch·키/저널 참조·revision·phase·checkpoint(JSONB)·스냅샷 길이/digest를 담는다. Host 전용 `/h/journals/<sha256(run_ref)>/head.json`(0600)은 DB head를 Sync한 복사본이다. **복사본만으로 현재 head를 인정하지 않는다.** Host는 DB 현재 head, 복사본, 같은 디렉터리의 전체 MAC 저널을 대조하고 하나라도 다르면 조회·새 실행을 거부한다.
+- **키 보관·수명.** v3 저널 HMAC 키는 Host 전용 `/h/audit.key`(0600, 키 참조 `product-audit-key-v3`)에 둔다. 설치가 발급하는 별도 `/h/digest.key`는 현재 E③ 송신에서 사용하지 않는다. 실제 객체·신원 digest 키는 `e2live.NewLive`가 확정 실행마다 새 난수 32바이트를 메모리에 만들고 그 실행의 E² 관찰에만 쓰며 `Close`에서 지운다. 원문 ID·식별자나 키를 저널에 저장하지 않는다. 이 키는 보존되지 않아 회차 뒤 원문에서 digest를 다시 계산할 수 없다. 검증자는 MAC으로 인증된 사건에 이미 남은 digest만 대조한다.
 
 ## 4. 결속
 
@@ -89,6 +90,7 @@ E③ 프로그램 호출 하나의 시도 단계는 v2와 같은 이름이다(`e
 - **실패.**
   - 현재 epoch·head를 확인할 수 없음(신뢰 저장소 조회 실패·epoch 연속성 불명 포함), 체크포인트와 스냅샷 끝이 맞지 않음, MAC·체인·형식 오류, 다른 실행의 저널: `ErrJournalIntegrity`(무결성 실패). 관찰을 돌려주지 않는다.
   - 검증된 스냅샷에 그 참조의 이벤트가 없음: `ErrJournalEventMissing`(이벤트 없음).
+  - 현재 사건 또는 호출자가 제시한 실행·세대·인스턴스·정책 결속이 요청과 다름: `ErrJournalBindingMismatch`(`binding_mismatch`). Host 연결은 유지하고 다음 정상 조회에서 현재 head를 다시 검증한다.
   - 문맥 취소: 그 오류.
 - `Sealed`가 돌려준 관찰은 `Transport`가 돌려준 관찰과 칸별로 같아야 한다(`Observation.Same`).
 
@@ -118,6 +120,7 @@ fail-closed는 #698 계약 그대로다. 진위 실패면 판정 행을 만들�
 | 같은 참조 재사용 | `confirmation_integrity_failed`, `observation_reused` | 남음 |
 | `Sealed`가 무결성 실패(`ErrJournalIntegrity`), 검증 조회가 다른 호출의 이벤트나 `intent`만 있고 `result`가 없는 호출을 돌려줌 | `confirmation_integrity_failed`, `journal_integrity_failed` | 남음 |
 | `Sealed`가 이벤트 없음(`ErrJournalEventMissing`) | `confirmation_integrity_failed`, `journal_event_missing` | 남음 |
+| `Sealed`가 결속 불일치(`ErrJournalBindingMismatch`) | `confirmation_integrity_failed`, `binding_mismatch` | 남음 |
 | `Transport` 관찰 ≠ 봉인된 이벤트 | `confirmation_integrity_failed`, `journal_event_mismatch` | 남음 |
 | 연결 전 거부(`not_sent`, 넷) | 그 종류 UNDECIDABLE(거부·승인·예산 사유) | 거둠(not_sent) |
 
