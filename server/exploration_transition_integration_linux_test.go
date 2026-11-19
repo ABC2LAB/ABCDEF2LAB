@@ -31,7 +31,7 @@ import (
 type explorationTransitionProvider struct {
 	exploration *pipelineProvider
 	diagnosis   *firstDiagnosisE2Provider
-	planner     *firstDiagnosisPlannerProbeProvider
+	planner     llm.Provider
 	target      string
 }
 
@@ -186,7 +186,8 @@ func TestOwnedPostgresExplorationSelectionThenProtectedDiagnosis(t *testing.T) {
 	}
 	diagnosticProvider := &firstDiagnosisE2Provider{command: "curl --silent --show-error --max-time 5 '" + target.URL + "/read/browser-api'"}
 	plannerProvider := &firstDiagnosisPlannerProbeProvider{textOnly: true}
-	firstDiagnosisInjectProfileProvider(t, runtime.server, profileID, &explorationTransitionProvider{exploration: exploreProvider, diagnosis: diagnosticProvider, planner: plannerProvider, target: target.URL})
+	idlePlanner := firstDiagnosisIdleWatch(installer, task, plannerProvider)
+	firstDiagnosisInjectProfileProvider(t, runtime.server, profileID, &explorationTransitionProvider{exploration: exploreProvider, diagnosis: diagnosticProvider, planner: idlePlanner, target: target.URL})
 	done := make(chan error, 1)
 	go func() { done <- supervisor.Run(ctx, task.ID, 0, "") }()
 	select {
@@ -213,13 +214,9 @@ func TestOwnedPostgresExplorationSelectionThenProtectedDiagnosis(t *testing.T) {
 	if _, err = flow.Command(ctx, "ARTEX", "selection", "owned-transition-selection", snapshot.Revision, []string{selected}); err != nil {
 		t.Fatal("owned transition explicit selection failed")
 	}
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal("owned transition actual Supervisor diagnosis failed")
-		}
-	case <-ctx.Done():
-		t.Fatal("owned transition diagnosis did not finish")
+	// 선택한 작업이 끝나 Planner가 빈 계획을 내도 마감하지 않고, 실행 상한에 닿아야 마감한다(원본과 같은 끝 규칙).
+	if err := firstDiagnosisRunPastIdle(t, ctx, supervisor, task, func() bool { return idlePlanner.idle.Load() > 0 }, done); err != nil {
+		t.Fatal("owned transition actual Supervisor diagnosis failed")
 	}
 	result := supervisor.RunResult()
 	execution, ok := runtime.host.runtime.Execution(task.ID)

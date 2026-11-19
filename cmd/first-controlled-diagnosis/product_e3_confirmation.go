@@ -183,6 +183,21 @@ func (c *productE3Confirmation) input(taskID string) (e3contract.Input, time.Dur
 	return in, share
 }
 
+// timeShare는 실행 시작 때 발급한 실행 정책에 적힌 확정 단계 시간 몫이다. input이 확정 단계에 주는 몫과 같은 파일·같은
+// 함수(productE3Admitted)로 읽는다. 감독자는 이 몫을 모델 단계 시간 상한에서 뺀다(urlTimeBudgetClose). 몫을 받지 못한
+// 정책(-1)은 확정 단계도 요청을 보내지 않으므로 0이다. 정책을 읽지 못하면 오류다.
+func (c *productE3Confirmation) timeShare() (time.Duration, error) {
+	binding, err := openRunBinding(c.runsDir, c.jobID)
+	if err != nil {
+		return 0, err
+	}
+	_, share := productE3Admitted(binding.policy.Limits)
+	if err := binding.Close(); err != nil {
+		log.Printf("[e3-confirmation] 회차 %s 실행 정책 닫기 실패", c.jobID)
+	}
+	return share, nil
+}
+
 // productE3Admitted는 발급한 실행 정책의 확정 몫(withE3ConfirmationShare)에서 몫에 든 종류 수와 시간 몫을 되읽는다.
 // 요청 몫 = 신원 2 + 종류×3, 시간 몫 = 요청 몫 × 확정 요청 시간 상한(기본값)이다. 칸이 없거나 이 모양이 아니면 -1(몫을 받지
 // 못함)이고, 둘 다 0이면 든 종류가 없다.

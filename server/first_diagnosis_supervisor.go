@@ -177,6 +177,15 @@ func (s *FirstDiagnosisSupervisor) SetGoalDigests(common, product string) error 
 	return nil
 }
 
+// firstDiagnosisDeadlineDrain은 엔진 기한을 시간 상한으로 쓰는 실행의 진행 중 작업 유예다. 엔진 정리 유예 상한과 작업
+// 시간의 1/4 중 작은 값이라, 짧은 작업도 3/4 이상을 작업에 쓴다.
+func firstDiagnosisDeadlineDrain(timeoutSeconds int) time.Duration {
+	return min(FirstDiagnosisTimeBudgetDrain, time.Duration(timeoutSeconds)*time.Second/firstDiagnosisDeadlineDrainShare)
+}
+
+// firstDiagnosisDeadlineDrainShare는 엔진 기한 마감 유예가 작업 시간에서 차지할 수 있는 몫의 분모다.
+const firstDiagnosisDeadlineDrainShare = 4
+
 func (s *FirstDiagnosisSupervisor) SetTimeBudget(closeAt time.Time, drain time.Duration) error {
 	if s == nil || closeAt.IsZero() || drain < 0 || drain > FirstDiagnosisTimeBudgetDrain {
 		return ErrFirstDiagnosisSupervisor
@@ -477,8 +486,8 @@ func (s *FirstDiagnosisSupervisor) PrepareIntents(ctx context.Context, taskID st
 	_, _, planErr := planner.Plan(planning, mustFirstDiagnosisTaskNumber(task.ID), server.m.Assets(), task.Store, task.Goal, nil, emit)
 	server.engine.EndLLMCall(task.ID)
 	server.engine.plannerLogFinish(planning, task, lastIntent, observed, planErr, planStarted)
-	// 첫 계획에서 intent가 0개여도 실패가 아니다. 실행 단계의 Planner가 다시 계획하고, 그래도 없으면 no_intents로
-	// 마감한다(C11 결정 2). 저장소에서 못 읽은 경우만 실패다.
+	// 첫 계획에서 intent가 0개여도 실패가 아니다. 실행 단계의 Planner가 알림·심장박동 때 다시 계획하고, 실행이 상한·목표
+	// 달성으로 끝날 때까지 없으면 no_intents로 마감한다(C11 결정 2). 저장소에서 못 읽은 경우만 실패다.
 	_, readErr := task.Store.HasActiveIntent()
 	if readErr != nil {
 		_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "planner", Event: "stage_finished", TaskID: mustFirstDiagnosisTaskNumber(taskID), Stage: "planning", Status: "failed", ReasonCode: "intent_storage_failed"})
@@ -695,6 +704,15 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 			server.engine.Pause(taskID, agent.AbortPausedRaceGuard)
 			return firstDiagnosisFailure(run.Err())
 		}
+		if !registered && timeCloseAt.IsZero() {
+			// 시간 상한을 정하지 않은 실행(CLI 단발 실행)은 엔진 기한(작업 시간 상한)을 시간 상한으로 쓴다. 계획이 비어도
+			// 마감하지 않으므로(원본과 같은 끝 규칙) 엔진 기한 정리(timeout 상태 = 감독 실패)보다 먼저 같은 시간 상한 마감을
+			// 켠다. 기한은 엔진이 첫 실행 때 정한다.
+			if deadline := server.engine.taskDeadline(task); deadline > 0 {
+				timeDrain = firstDiagnosisDeadlineDrain(task.TimeoutSeconds)
+				timeCloseAt = time.Unix(deadline, 0).Add(-timeDrain)
+			}
+		}
 		if !registered && !timeCloseAt.IsZero() {
 			now := time.Now()
 			if !timeClosing && !now.Before(timeCloseAt) {
@@ -830,9 +848,9 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 		return fail(reasonClosureIntentReadFailed)
 	}
 	budgetLimited := firstDiagnosisBudgetLimited(task, server.firstModelBudget)
-	// 실행 상한이나 목표 달성이면 Planner를 기다리지 않고, 실행 중 intent가 끝나는 대로 마감한다. 마감 사유
-	// budget_limited는 실행 상한일 때만 붙는다.
-	outcomes, closing := firstDiagnosisClosingOutcomes(counts, firstDiagnosisForcedClose(budgetLimited, task), firstDiagnosisPlanned(task))
+	// 실행 상한(예산·시간)이나 목표 달성일 때만, 실행 중 intent가 끝나는 대로 마감한다. 계획이 비어도 마감하지 않는다(원본과
+	// 같은 끝 규칙). 마감 사유 budget_limited는 실행 상한일 때만 붙는다.
+	outcomes, closing := firstDiagnosisClosingOutcomes(counts, firstDiagnosisForcedClose(budgetLimited, task))
 	if !closing {
 		return false, none, nil
 	}
@@ -846,8 +864,8 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 	}
 	settled := outcomes.Done + outcomes.PolicyLimited + outcomes.Incomplete + outcomes.Unknown + outcomes.Stopped
 	if settled == 0 {
-		// 계획을 거쳤는데 intent가 하나도 없다. 실패가 아니라 no_intents로 마감한다(C11 결정 2). 작업이 없으므로
-		// 대조할 E② 호출도 없어야 한다.
+		// 실행이 상한·목표 달성으로 끝날 때까지 intent가 하나도 없었다. 실패가 아니라 no_intents로 마감한다(C11 결정 2).
+		// 작업이 없으므로 대조할 E② 호출도 없어야 한다.
 		if execution, ok := server.engine.e2HTTP.Execution(task.ID); ok && execution != nil {
 			program := server.engine.e2HTTP.ProgramCalls(task.ID)
 			calls := execution.Calls()
