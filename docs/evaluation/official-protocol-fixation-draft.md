@@ -367,4 +367,4 @@ B(원본 엔진)와 O(제품)가 설계상 다르고 일부러 맞추지 않는 
 - **공식 측정 보고 규칙(쪽별 마감 사유)**: 결과 보고에 회차마다 아래를 싣고, 쪽별 분포로 요약한다. 판정·무효에는 쓰지 않는다.
   - B: `first_limit`(engine_completed / runner_request_budget / runner_time_budget, 두 시각)와 엔진 끝 신호(`engine-end.json`)의 상태·목표 수·달성 수.
   - O: `first_limit`(product_limit 포함), 제품 끝 상태(`product-end.json` final의 상태·결과·마감 사유·의도 결과), 작업 끝 신호(`product-task-end.json` v2의 작업 상태·목표 상태별 수·의도 상태별 수).
-  - O가 `engine_completed`로 미완 의도를 남기고 끝난 회차는 목표 상태로 분류해 따로 센다. 목표가 전부 met면 (가), 아니면 (나)다. 이 분포가 측정 전에 고칠 제품 문제인지 판단하는 근거다.
+  - O가 `engine_completed`로 미완 의도를 남기고 끝난 회차는 목표 상태로 분류해 따로 센다. 목표가 하나 이상이고 전부 met면 (가), 아니면 (나)다. `prove_goal`의 자동 완료는 모든 목표가 met일 때만 일어나므로(`agent/tools.go`), 목표 상태에 `abandoned`가 하나라도 있거나 목표가 0개면 (나)로 세고 `abandoned` 수를 같이 적는다. 이 분포가 측정 전에 고칠 제품 문제인지 판단하는 근거다.

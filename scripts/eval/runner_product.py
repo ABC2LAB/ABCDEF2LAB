@@ -49,30 +49,6 @@ class ProductAPIError(RuntimeError):
     """제품 구동 실패. 고정 code와 제품이 돌려준 고정 사유 code만 담는다(응답 본문·비밀 값은 담지 않는다)."""
 
 
-_TASK_ID = re.compile(r"[1-9][0-9]{0,18}\Z")
-_SIGNAL_WORD = re.compile(r"[a-z_]{1,32}\Z")
-_SIGNAL_STAMP = re.compile(r"[0-9T:.+\-Z]{0,40}\Z")
-MAX_GOALS = 10000  # 서버 listGoals 상한
-
-
-def product_task_end(task: object, goals: object, task_id: str) -> dict:
-    """단건 작업 응답과 목표 목록에서 끝 신호 칸만 골라 검사한다. 맞지 않으면 고정 code로 거부한다."""
-    if (not isinstance(task, dict) or task.get("id") != task_id or not isinstance(goals, dict)
-            or not isinstance(goals.get("goals"), list) or len(goals["goals"]) > MAX_GOALS):
-        raise ProductAPIError("product_task_signal_invalid")
-    status, completed, failover = task.get("status"), task.get("completed_at"), task.get("llm_failover_state")
-    states = [goal.get("state") if isinstance(goal, dict) else None for goal in goals["goals"]]
-    if (not isinstance(status, str) or not _SIGNAL_WORD.fullmatch(status) or not isinstance(completed, str)
-            or not _SIGNAL_STAMP.fullmatch(completed) or not isinstance(failover, str) or not _SIGNAL_WORD.fullmatch(failover)
-            or not all(isinstance(state, str) and _SIGNAL_WORD.fullmatch(state) for state in states)):
-        raise ProductAPIError("product_task_signal_invalid")
-    by_state: dict[str, int] = {}
-    for state in states:
-        by_state[state] = by_state.get(state, 0) + 1
-    return {"status": status, "completed_at": completed, "llm_failover_state": failover, "goals_total": len(states),
-            "goals_met": by_state.get("met", 0), "goal_states": dict(sorted(by_state.items()))}
-
-
 class ModelKey:
     """모델 키를 담기만 한다. repr·str로 값이 드러나지 않는다."""
 
@@ -310,26 +286,6 @@ class ProductDriver:
             if self._monotonic() >= end:
                 raise ProductAPIError("product_close_timeout")
             self._sleep(interval_seconds)
-
-    def task_end_signal(self, task_id: str) -> dict:
-        """제품 작업의 끝 신호. 제품 관리 API는 `/api/tasks/` 아래 경로만 실행 서버로 중계해 목록 `GET /api/tasks`는 307이다
-        (2026-11-19 O 진단 회차). 그래서 단건 `GET /api/tasks/{id}`에서 상태·완료 시각·모델 장애 전환 상태를, 목표 목록
-        `GET /api/tasks/{id}/goals`에서 목표 수·달성 수·상태별 수를 읽는다. 단건 응답의 목표 수·진행 중 수는 목록 처리기만
-        채워(server listTasks) 늘 0이라 쓰지 않는다. 목표 글 등 원문은 옮기지 않는다."""
-        if not _TASK_ID.fullmatch(task_id):
-            raise ProductAPIError("product_task_signal_invalid")
-        return product_task_end(self._call("GET", f"/api/tasks/{task_id}"), self._call("GET", f"/api/tasks/{task_id}/goals"), task_id)
-
-    def task_exploration_id(self, task_id: str) -> int:
-        """작업의 탐색 번호(활동 표의 exploration_id). B와 같은 원본 단건 조회(`GET /api/tasks/{id}`, taskDTO)의 칸이다
-        (runner_engine.task_exploration_id). 제품 관리 API는 목록 `GET /api/tasks`를 중계하지 않는다(307)."""
-        if not _TASK_ID.fullmatch(task_id):
-            raise ProductAPIError("product_task_exploration_invalid")
-        task = self._call("GET", f"/api/tasks/{task_id}")
-        value = task.get("exploration_id") if isinstance(task, dict) and task.get("id") == task_id else None
-        if type(value) is not int or value < 1:
-            raise ProductAPIError("product_task_exploration_invalid")
-        return value
 
     def run_record(self, task_id: str) -> dict:
         """그 작업의 저장된 실행 기록(`GET /api/tasks/{id}/diagnosis-run`): 실행·준비 모델 사용량, 목표 SHA(goal), 결과.
