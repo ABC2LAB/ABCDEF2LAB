@@ -794,26 +794,31 @@ func TestCutBySealFollowsTheFirstCancellationCause(t *testing.T) {
 // 분류하면 이 호출의 미확인 generation이 끊긴 호출 예외로 빠진다(#735 리뷰 재현).
 func TestSealedGatewayKeepsCallerFirstCutsAsUpstreamErrors(t *testing.T) {
 	h := newHarness(t, backendAPI)
+	// 두 요청이 봉인 전에 진행 중이어야 첫 종료에서 비동기 검증이 시작되지 않는다.
 	h.g.mu.Lock()
-	h.g.sealed = true
-	h.g.inflight = 1
+	h.g.inflight = 2
 	h.g.cancels[1] = func(error) {}
+	h.g.cancels[2] = func(error) {}
 	h.g.mu.Unlock()
+	h.g.seal()
+
 	row := llmRow{Seq: 1, Method: http.MethodPost, StartedAt: stamp(time.Now())}
+	row2 := llmRow{Seq: 2, Method: http.MethodPost, StartedAt: stamp(time.Now())}
 	rec := &statusRecorder{ResponseWriter: httptest.NewRecorder(), status: http.StatusOK}
 	scan := &idScanner{}
 	h.g.finish(1, true, false, &row, rec, scan, "")
+	h.g.finish(2, true, true, &row2, rec, scan, "")
+	marker := h.sealAndWait(t)
+
 	if row.Decision != "upstream_error" || row.UnfinishedEnd != endClientClosedBeforeDone {
 		t.Fatalf("row %+v", row)
 	}
-	row2 := llmRow{Seq: 2, Method: http.MethodPost, StartedAt: stamp(time.Now())}
-	h.g.mu.Lock()
-	h.g.inflight = 1
-	h.g.cancels[2] = func(error) {}
-	h.g.mu.Unlock()
-	h.g.finish(2, true, true, &row2, rec, scan, "")
 	if row2.Decision != "cancelled_by_seal" || row2.UnfinishedEnd != sealEndBeforeDone {
 		t.Fatalf("row %+v", row2)
+	}
+	if marker.UpstreamErrors != 1 || marker.UpstreamEnds[endClientClosedBeforeDone] != 1 ||
+		marker.CancelledBySeal != 1 || !marker.LogComplete {
+		t.Fatalf("marker %+v", marker)
 	}
 }
 
