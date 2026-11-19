@@ -346,9 +346,15 @@ def _check_e3(row: dict) -> None:
             or not isinstance(create["attempt_id"], str) or not _ATTEMPT_ID.fullmatch(create["attempt_id"])
             or not _count(create["sequence"]) or create["sequence"] == 0)):
         _fail("ROW_E3_CREATE_REF")
-    sent, refused = row["forward_attempted"], row["stage"] == STAGE_RESULT and not row["forward_attempted"]
+    unsent_result = row["stage"] == STAGE_RESULT and not row["forward_attempted"]
+    sent = row["forward_attempted"]
     # 송신 전 거부(intent 없이 result 하나): 허용이 아니고 not_sent, 사유는 넷 중 하나, 응답 칸 없음
-    if refused != ("not_sent_reason" in row) or (refused and (row.get("decision") == ALLOWED or not row["not_sent"]
+    refused = unsent_result and row.get("decision") != ALLOWED
+    # intent 뒤 송신 전 중단(계약 §2.3, v2 execution.go): 실행 문맥이 끝나 연결을 시도하지 않은 허용 result. reason=closed,
+    # not_sent, not_sent_reason 없음. intent가 앞에 있어야 하는 것은 시도 묶음 규칙(허용 result만 있으면 거부)이 본다.
+    if unsent_result and not refused and (row["reason"] != "closed" or not row["not_sent"]):
+        _fail("ROW_E3_NOT_SENT")
+    if refused != ("not_sent_reason" in row) or (refused and (not row["not_sent"]
                                                             or row["not_sent_reason"] not in E3_NOT_SENT_REASONS)):
         _fail("ROW_E3_NOT_SENT")
     if "timed_out" in row and (not sent or type(row["timed_out"]) is not bool):

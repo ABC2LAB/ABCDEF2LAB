@@ -508,6 +508,14 @@ class TestV3E3Rows(unittest.TestCase):
         allowed_refusal = e3(1, "intent", A2, 2, "allowed", "e3_create")
         self.rejected([allowed_refusal, e3(2, "result", A2, 2, "allowed", "e3_create", not_sent_reason="policy_denied")],
                       "ROW_E3_NOT_SENT")
+        # intent 뒤 송신 전 중단(계약 §2.3): 허용 result, reason=closed, not_sent, 사유·응답 칸 없음. v2처럼 허용·미송신으로 센다.
+        stopped = e3(2, "result", A2, 2, "allowed", "e3_create", "closed")
+        result = self.parse([allowed_refusal, stopped])
+        self.assertEqual((result.allowed_not_sent, result.e3_program_attempts), (1, 1))
+        self.rejected([allowed_refusal, stopped | {"reason": "complete"}], "ROW_E3_NOT_SENT")  # 중단 사유가 아니면 위반
+        self.rejected([allowed_refusal, stopped | {"not_sent_reason": "policy_denied"}], "ROW_E3_NOT_SENT")
+        self.rejected([allowed_refusal, stopped | {"normal": "yes"}], "ROW_E3_RESPONSE_FIELDS")
+        self.rejected([stopped | {"index": 1}], "ATTEMPT_ALLOWED_WITHOUT_INTENT")  # intent 없는 중단은 앞 행이 빠진 것
         for reason in ("policy_denied", "approval_denied", "approval_timeout", "confirmation_budget_exhausted"):
             with self.subTest(reason=reason):
                 self.assertEqual(self.parse([refused[0] | {"index": 1, "not_sent_reason": reason}]).e3_program_attempts, 1)
