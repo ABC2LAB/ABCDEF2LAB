@@ -36,7 +36,10 @@
         ],
         "evidence_calls": 1,
         "observed_at": "2026-11-18T09:00:00.000000Z",
-        "evidence_seal": null
+        "evidence_seal": {
+          "status": "unconfirmed",
+          "reason": "seal_not_recorded"
+        }
       },
       {
         "verdict_id": "2",
@@ -58,7 +61,10 @@
         ],
         "evidence_calls": 1,
         "observed_at": "2026-11-18T09:00:00.000000Z",
-        "evidence_seal": null
+        "evidence_seal": {
+          "status": "unconfirmed",
+          "reason": "seal_not_recorded"
+        }
       }
     ]
   },
@@ -114,7 +120,10 @@
         ],
         "evidence_calls": 1,
         "observed_at": "2026-11-18T09:00:00.000000Z",
-        "evidence_seal": null
+        "evidence_seal": {
+          "status": "unconfirmed",
+          "reason": "seal_not_recorded"
+        }
       },
       {
         "verdict_id": "2",
@@ -166,7 +175,10 @@
         ],
         "evidence_calls": 1,
         "observed_at": "2026-11-18T09:00:00.000000Z",
-        "evidence_seal": null
+        "evidence_seal": {
+          "status": "unconfirmed",
+          "reason": "seal_not_recorded"
+        }
       },
       {
         "verdict_id": "4",
@@ -188,7 +200,10 @@
         ],
         "evidence_calls": 1,
         "observed_at": "2026-11-18T09:00:00.000000Z",
-        "evidence_seal": null
+        "evidence_seal": {
+          "status": "unconfirmed",
+          "reason": "seal_not_recorded"
+        }
       }
     ]
   },
@@ -220,7 +235,10 @@
         ],
         "evidence_calls": 1,
         "observed_at": "2026-11-18T09:00:00.000000Z",
-        "evidence_seal": null
+        "evidence_seal": {
+          "status": "unconfirmed",
+          "reason": "seal_not_recorded"
+        }
       },
       {
         "verdict_id": "2",
@@ -242,7 +260,10 @@
         ],
         "evidence_calls": 1,
         "observed_at": "2026-11-18T09:00:00.000000Z",
-        "evidence_seal": null
+        "evidence_seal": {
+          "status": "unconfirmed",
+          "reason": "seal_not_recorded"
+        }
       }
     ]
   },
@@ -283,7 +304,10 @@
         ],
         "evidence_calls": 1,
         "observed_at": "2026-11-18T09:00:00.000000Z",
-        "evidence_seal": null
+        "evidence_seal": {
+          "status": "unconfirmed",
+          "reason": "seal_not_recorded"
+        }
       },
       {
         "verdict_id": "2",
@@ -305,7 +329,10 @@
         ],
         "evidence_calls": 1,
         "observed_at": "2026-11-18T09:00:00.000000Z",
-        "evidence_seal": null
+        "evidence_seal": {
+          "status": "unconfirmed",
+          "reason": "seal_not_recorded"
+        }
       }
     ]
   },
@@ -346,7 +373,10 @@
         ],
         "evidence_calls": 1,
         "observed_at": "2026-11-18T09:00:00.000000Z",
-        "evidence_seal": null
+        "evidence_seal": {
+          "status": "unconfirmed",
+          "reason": "seal_not_recorded"
+        }
       },
       {
         "verdict_id": "2",
@@ -368,7 +398,10 @@
         ],
         "evidence_calls": 1,
         "observed_at": "2026-11-18T09:00:00.000000Z",
-        "evidence_seal": null
+        "evidence_seal": {
+          "status": "unconfirmed",
+          "reason": "seal_not_recorded"
+        }
       }
     ]
   },

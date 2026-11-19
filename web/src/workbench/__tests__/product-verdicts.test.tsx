@@ -83,13 +83,21 @@ describe("parseProductVerdicts", () => {
   });
 
   it.each([
-    ["근거 없는 판정에 봉인 표시", { status: "confirmed", reason: null }],
-    ["근거 없는 판정에 미확인", { status: "unconfirmed", reason: "seal_not_recorded" }],
-  ])("거절: %s", (_name, seal) => {
+    ["근거 없는 판정에 봉인 표시", 1, { status: "confirmed", reason: null }],
+    ["근거 없는 판정에 미확인", 1, { status: "unconfirmed", reason: "seal_not_recorded" }],
+    // 서버는 근거가 있는 판정에 늘 확인됨 · 미확인 중 하나를 준다(null 을 만들 수 없다)
+    ["근거 있는 판정에 null", 0, null],
+  ])("거절: %s", (_name, index, seal) => {
     const o = clone(cases.seal_confirmed);
     expect(() => parseProductVerdicts(clone(o), o.task_id)).not.toThrow();
-    (o.items[1] as Json).evidence_seal = seal;
-    expect(() => parseProductVerdicts(o, o.task_id)).toThrow();
+    (o.items[index] as Json).evidence_seal = seal;
+    let error: unknown = null;
+    try {
+      parseProductVerdicts(o, o.task_id);
+    } catch (e) {
+      error = e;
+    }
+    expect(isProductVerdictsShapeError(error)).toBe(true);
   });
 
   // 하나씩 서버가 만들 수 없는 값으로 바꾼다. 어느 것이든 응답 전체가 거절돼야 한다(일부만 그리지 않음)
@@ -273,9 +281,16 @@ describe("ProductVerdictReport", () => {
     sec = await screen.findByRole("region", { name: "제품 확정 단계 판정" });
     await waitFor(() => expect(within(sec).getAllByRole("listitem")).toHaveLength(2));
     [first] = within(sec).getAllByRole("listitem");
-    expect(first).toHaveTextContent("봉인 미확인");
+    expect(first).toHaveTextContent("봉인 미확인 · 봉인 확인 기록 없음 · 판정 값은 저장된 그대로");
     expect(first).toHaveTextContent("document");
     b.unmount();
+    serve(cases.seal_checkpoint_missing);
+    const c = render(<ProductVerdictReport taskId="2" active />);
+    sec = await screen.findByRole("region", { name: "제품 확정 단계 판정" });
+    await waitFor(() => expect(within(sec).getAllByRole("listitem")).toHaveLength(2));
+    [first] = within(sec).getAllByRole("listitem");
+    expect(first).toHaveTextContent("봉인 미확인 · 근거 체크포인트 없음 · 판정 값은 저장된 그대로");
+    c.unmount();
     serve(cases.seal_inclusion_failed);
     render(<ProductVerdictReport taskId="2" active />);
     sec = await screen.findByRole("region", { name: "제품 확정 단계 판정" });
@@ -347,6 +362,18 @@ describe("ProductVerdictMap", () => {
     expect(within(table).getAllByRole("row")).toHaveLength(2);
     expect(within(table).getByRole("rowheader", { name: "document" })).toBeInTheDocument();
     expect(screen.getByRole("note")).toHaveTextContent("판정 기록 무결성 확인 실패 · 값 숨김 1건");
+  });
+
+  it("지도 칸도 봉인 미확인을 보이고, 확인됨이면 붙이지 않는다", async () => {
+    serve(cases.seal_not_recorded);
+    const a = render(<ProductVerdictMap taskId="2" active />);
+    let table = await screen.findByRole("table", { name: "자원 종류 × 소유→교차 제품 판정" });
+    expect(within(table).getByRole("row", { name: /document/ })).toHaveTextContent("봉인 미확인");
+    a.unmount();
+    serve(cases.seal_confirmed);
+    render(<ProductVerdictMap taskId="2" active />);
+    table = await screen.findByRole("table", { name: "자원 종류 × 소유→교차 제품 판정" });
+    expect(within(table).getByRole("row", { name: /document/ })).not.toHaveTextContent("봉인");
   });
 
   it("라벨이 없으면 '소유 계정 → 교차 계정', 같은 종류에 판정이 둘이면 고르지 않는다", async () => {

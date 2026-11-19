@@ -23,6 +23,7 @@ import {
   type ProductVerdictShown,
   RECORD_STATUS_TEXT,
   EVIDENCE_SEAL_TEXT,
+  evidenceSealText,
   type EvidenceSeal,
 } from "../../live/productVerdicts";
 import { type Poll, usePoll } from "../../live/usePoll";
@@ -139,7 +140,7 @@ function ShownRow({ r }: { r: ProductVerdictShown }) {
           className={r.evidenceSeal.status === "confirmed" ? s.help : cx(s.note, s.warn)}
           data-seal={r.evidenceSeal.status}
         >
-          {EVIDENCE_SEAL_TEXT[r.evidenceSeal.status]}
+          {evidenceSealText(r.evidenceSeal)}
         </div>
       ) : null}
     </li>
@@ -212,6 +213,9 @@ function MapCell({ rows }: { rows: ProductVerdictShown[] }) {
       <Value v={r.oracleValue} />
       {r.recordStatus === "policy_source_unavailable" ? (
         <small className={s.help}>{` ${RECORD_STATUS_TEXT.policy_source_unavailable}`}</small>
+      ) : null}
+      {r.evidenceSeal?.status === "unconfirmed" ? (
+        <small className={s.help} data-seal="unconfirmed">{` ${EVIDENCE_SEAL_TEXT.unconfirmed}`}</small>
       ) : null}
     </>
   );

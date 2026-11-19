@@ -243,8 +243,9 @@ function parseItem(v: unknown, i: number): ProductVerdictRow {
     observedAt: str(o.observed_at, CANONICAL_TIME, `${where}.observed_at`),
     evidenceSeal: seal,
   };
-  // 값이 보이는 행은 포함 실패일 수 없다(서버가 숨긴다). 근거 호출이 없는 판정은 봉인 확인 대상이 아니다.
-  if (seal?.status === "inclusion_failed" || (seal !== null && row.evidenceCalls === 0))
+  // 값이 보이는 행은 포함 실패일 수 없다(서버가 숨긴다). 서버는 근거 호출이 없는 판정에만 null 을 주고, 근거가 있으면
+  // 늘 확인됨 · 미확인 중 하나를 준다(productEvidenceSealFor).
+  if (seal?.status === "inclusion_failed" || (row.evidenceCalls === 0) !== (seal === null))
     throw new ProductVerdictsShapeError(`${where}.evidence_seal`);
   // 서버 저장 불변식(verdict-record §2(f)): 확정은 세 검사 yes · 근거 호출 1개 이상 · 제품 사유 없음일 때만
   if (
@@ -342,3 +343,15 @@ export const EVIDENCE_SEAL_TEXT: Record<EvidenceSeal["status"], string> = {
   unconfirmed: "봉인 미확인",
   inclusion_failed: "봉인 포함 실패 · 값 숨김",
 };
+
+/** 봉인 미확인 사유 — 판정 값은 저장된 그대로다(E1 계약 §7). */
+export const EVIDENCE_SEAL_REASON_TEXT: Record<"seal_not_recorded" | "evidence_checkpoint_missing", string> = {
+  seal_not_recorded: "봉인 확인 기록 없음",
+  evidence_checkpoint_missing: "근거 체크포인트 없음",
+};
+
+/** 화면 한 줄 문구. 미확인이면 사유와 '값은 저장된 그대로'를 붙인다. */
+export function evidenceSealText(seal: EvidenceSeal): string {
+  if (seal.status !== "unconfirmed") return EVIDENCE_SEAL_TEXT[seal.status];
+  return `${EVIDENCE_SEAL_TEXT.unconfirmed} · ${EVIDENCE_SEAL_REASON_TEXT[seal.reason]} · 판정 값은 저장된 그대로`;
+}
