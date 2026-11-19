@@ -137,25 +137,56 @@ func (p productPolicySourceReader) CheckPolicySource(ctx context.Context, req ve
 	if req.SourceKind != db.E3SourceProduct || req.JobRef != p.jobID || req.Ref != verdictDetailProductPolicyRefPrefix+p.jobID {
 		return verdictPolicySourceMismatch
 	}
-	if p.endpoint == nil || p.principal == "" {
+	got, err := p.read(ctx)
+	if err != nil {
 		return verdictPolicySourceError
+	}
+	return got.check(req)
+}
+
+// productVerdictContext는 준비 서비스 IPC policy_source 한 번의 결과다. source가 nil이면 준비 서비스가 회차를 찾지 못했거나
+// 동결본을 읽지 못했다(당시 원본 미확인). confirmation은 확정 단계 결과 파일의 상태·사유다.
+type productVerdictContext struct {
+	jobID        string
+	source       *diagnosisprep.ProductPolicySource
+	confirmation *diagnosisprep.ProductConfirmationState
+}
+
+// read는 준비 서비스 IPC policy_source를 한 번 부른다. 관리 API 프로세스는 회차 디렉터리를 직접 읽지 않는다.
+func (p productPolicySourceReader) read(ctx context.Context) (productVerdictContext, error) {
+	if p.endpoint == nil || p.principal == "" || p.jobID == "" {
+		return productVerdictContext{}, errors.New("policy_source_unavailable")
 	}
 	call := diagnosisprep.Request{Version: diagnosisprep.Version, RequestID: "verdict-policy-source", Principal: p.principal,
 		Command: diagnosisprep.ProductControl, Product: &diagnosisprep.ProductRequest{Operation: "policy_source", JobID: p.jobID}}
 	response, err := p.endpoint.Call(ctx, call)
 	if err != nil || diagnosisprep.ValidateResponse(call, response) != nil || response.Error != "" || response.Product == nil {
-		return verdictPolicySourceError
+		return productVerdictContext{}, errors.New("policy_source_unavailable")
 	}
-	if response.Product.Reason != "" || response.Product.PolicySource == nil {
-		// 준비 서비스가 회차를 찾지 못했거나(not_found) 동결본을 읽지 못했다. 당시 원본을 확인할 수 없다는 뜻이다.
+	out := productVerdictContext{jobID: p.jobID}
+	if response.Product.Reason == "" {
+		out.source, out.confirmation = response.Product.PolicySource, response.Product.Confirmation
+	}
+	return out, nil
+}
+
+// check는 판정 하나의 정책 출처를 이 회차의 당시 동결본과 대조한다(OD06). 판정 상세와 목록이 같은 규칙을 쓴다. 판정의
+// 회차가 조회를 허가한 작업의 회차가 아니면(다른 회차의 동결본을 가리킴) 불일치다. 현재 등록·정책으로 대신하지 않는다.
+func (c productVerdictContext) check(req verdictPolicySourceRequest) verdictPolicySourceResult {
+	if req.SourceKind != db.E3SourceProduct || req.JobRef != c.jobID || req.Ref != verdictDetailProductPolicyRefPrefix+c.jobID {
+		return verdictPolicySourceMismatch
+	}
+	if c.source == nil || !c.source.Present {
+		// 준비 서비스가 회차를 찾지 못했거나(not_found) 동결본을 읽지 못했거나 동결본이 없다. 당시 원본을 확인할 수 없다.
 		return verdictPolicySourceUnavailable
 	}
-	source := response.Product.PolicySource
-	if !source.Present {
-		return verdictPolicySourceUnavailable
-	}
-	if source.SHA256 != hex.EncodeToString(req.DigestSHA256[:]) {
+	if c.source.SHA256 != hex.EncodeToString(req.DigestSHA256[:]) {
 		return verdictPolicySourceMismatch
 	}
 	return verdictPolicySourceMatched
+}
+
+// CheckPolicySource는 이미 받은 IPC 결과로 대조한다(목록은 회차당 IPC 한 번).
+func (c productVerdictContext) CheckPolicySource(_ context.Context, req verdictPolicySourceRequest) verdictPolicySourceResult {
+	return c.check(req)
 }
