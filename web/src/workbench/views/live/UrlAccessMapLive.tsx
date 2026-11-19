@@ -217,10 +217,26 @@ function failureText(error: unknown): string {
  */
 type Read = { key: string; map: AccessMap | null; error: unknown };
 
-/** 접근통제 지도 (운영자 전용 · 현재 Job 의 task). */
+/** 접근통제 지도 화면 (운영자 전용 · 현재 Job 의 task). 본문은 보고서 '접근통제 지도' 탭과 같은 AccessMapPanel 이다. */
 export function UrlAccessMapLive() {
   const { route } = useShell();
-  const visible = route === "accessmap";
+  return (
+    <>
+      <UrlHead title="접근통제 지도" crumb="접근통제 지도" />
+      <div className={s.vb}>
+        <div className={s.vm}>
+          <AccessMapPanel active={route === "accessmap"} />
+        </div>
+      </div>
+    </>
+  );
+}
+
+/**
+ * 접근통제 지도 본문(운영자 전용 · 현재 Job 의 task). active 일 때만 읽는다 — 지도 화면은 그 화면이 보일 때, 보고서는
+ * '접근통제 지도' 탭이 보일 때. 다시 active 가 되면 지난 결과를 버리고 새로 읽는다(진입 세대).
+ */
+export function AccessMapPanel({ active }: { active: boolean }) {
   // 서버에서 확인된(verified) 현재 Job 의 task 만. 없으면 부르지 않고 예시도 그리지 않는다.
   const taskId = useUrl((st) => (st.verified ? (st.job?.task_id ?? null) : null));
   // 점검 상태가 바뀌면(결속 · 실행 준비 · 마감) 열린 화면에서 다시 읽는다 — 처음 409 뒤 준비가 끝난 같은 task 도 새 응답을 본다
@@ -231,13 +247,13 @@ export function UrlAccessMapLive() {
   // 진입 세대: 읽을 수 있는 상태(화면이 보이고 확인된 Job 의 task 가 있음)로 들어올 때마다 올린다 — 화면에 다시 들어올 때,
   // 상태 조회 실패 · 권한 철회로 Job 이 비었다가 같은 task · revision 으로 돌아올 때(#691 리뷰) 모두 새 조회로 구분한다.
   // 렌더 중에 맞춰서 같은 렌더에서 지난 진입의 결과를 버린다
-  const live = visible && !!taskId;
+  const live = active && !!taskId;
   const [entry, setEntry] = useState({ live, gen: 0 });
   if (entry.live !== live) setEntry({ live, gen: live ? entry.gen + 1 : entry.gen });
   const request = taskId ? `${selection}|${taskId}|${revision}|${entry.gen}|${attempt}` : "";
 
   useEffect(() => {
-    if (!taskId || !visible || !request) return;
+    if (!taskId || !active || !request) return;
     let current = true;
     const controller = new AbortController();
     getAccessMap(taskId, controller.signal)
@@ -251,7 +267,7 @@ export function UrlAccessMapLive() {
       current = false;
       controller.abort();
     };
-  }, [taskId, visible, request]);
+  }, [taskId, active, request]);
 
   // 지금 요청이 받은 결과만 그린다 — 다른 선택 · task · 이전 진입 · 이전 revision 의 결과는 새 응답이 올 때까지 '불러오는 중…'
   const now = read && request && read.key === request ? read : null;
@@ -265,119 +281,112 @@ export function UrlAccessMapLive() {
 
   return (
     <>
-      <UrlHead title="접근통제 지도" crumb="접근통제 지도" />
-      <div className={s.vb}>
-        <div className={s.vm}>
-          {/* §4 운영자 전용 고지 — 내보내기·공유·모델 입력 금지 */}
-          <div className={s.note} role="note">
-            <Icon name="info" />
-            <span>접근통제 지도는 운영자 전용입니다. 내보내기·공유·모델 입력에 넣지 않습니다.</span>
-          </div>
-          {!taskId ? <p className={s.empty}>실제 진단 작업을 선택하세요.</p> : null}
-          {taskId && !now ? <p className={s.empty}>불러오는 중…</p> : null}
-          {now?.error ? (
-            <div className={cx(s.note, s.warn)} role="alert">
-              <Icon name="alert" />
-              <span className={s["lv-grow"]}>{failureText(now.error)}</span>
-              <button className={cx(s.btn, s.sm)} type="button" onClick={() => setAttempt((n) => n + 1)}>
-                다시 읽기
-              </button>
-            </div>
-          ) : null}
-
-          {/* projection 무결성 경고 — 데이터 불일치를 숨기지 않는다(§4.2(2)·N4, fail-closed) */}
-          {map && issues && hasProjectionIssues(issues) ? (
-            <div className={cx(s.note, s.warn)} role="alert">
-              <Icon name="alert" />
-              <span>
-                지도 데이터 불일치: 격자 밖 {issues.outOfGrid} · 중복 신원 {issues.dupPrincipals} · 중복 자원{" "}
-                {issues.dupResources}. 숨기지 않고 표시합니다.
-              </span>
-            </div>
-          ) : null}
-
-          {map && hCounts ? (
-            <section className={s.isec} aria-label="판정 요약">
-              <h2>수평(교차 계정) 판정</h2>
-              <p className={s.help}>
-                판정 축은 수평(같은 역할·교차 계정)입니다. 수직(역할 레벨)은 아래 격자에서 후속 미리보기로만 표시합니다.
-              </p>
-              {DISPLAY_ORDER.some((d) => hCounts[d] > 0) ? (
-                <div style={chipRow}>
-                  {DISPLAY_ORDER.filter((d) => hCounts[d] > 0).map((d) => (
-                    <span key={d} style={{ ...chipBase, ...DECISION_STYLE[d] }}>
-                      {DECISION_LABEL[d]} <b>{hCounts[d]}</b>
-                    </span>
-                  ))}
-                </div>
-              ) : (
-                <p className={s.help}>집계할 수평 판정이 없습니다.</p>
-              )}
-            </section>
-          ) : null}
-
-          {map && resolve ? (
-            <section className={s.isec} aria-label="접근통제 격자">
-              <h2>접근통제 격자</h2>
-              <p className={s.help}>
-                신원 × 자원 교차 접근 판정입니다. 색은 판정이며, 격자에는 계정·표식 값이 없습니다.
-              </p>
-              <Legend />
-              {/* deny-ok(정상 차단) 보류 안내(§4.2(3) Phase 3) + 미검사 Phase 2 안내 */}
-              <p className={s.help}>
-                정상 차단(deny-ok)은 앱 인가 차단 관측 계약 전까지 산출하지 않습니다(Phase 3) — 교차 차단 칸은 ‘판정
-                불가 (차단 미증명)’로 나옵니다. ‘미검사’는 명시적 미시도이며 ‘안전’이 아닙니다(Phase 2).
-              </p>
-              <div style={wrapStyle}>
-                <table style={tableStyle} aria-label="신원 × 자원 접근통제 격자">
-                  <thead>
-                    <tr>
-                      <th scope="col" style={thCorner}>
-                        신원 \ 자원
-                      </th>
-                      {map.resources.map((r) => (
-                        <th key={r.id} scope="col" style={thCol}>
-                          {r.label}
-                          <small style={ownerSmall}>소유 {r.ownerRef}</small>
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {hPrincipals.map((p) => (
-                      <MapRow key={p.ref} principal={p} resources={map.resources} resolve={resolve} />
-                    ))}
-                    {vPrincipals.length ? (
-                      <>
-                        <tr>
-                          <th scope="colgroup" colSpan={map.resources.length + 1} style={groupRow}>
-                            수직 — 후속 미리보기(판정 축 아님)
-                          </th>
-                        </tr>
-                        {vPrincipals.map((p) => (
-                          <MapRow key={p.ref} principal={p} resources={map.resources} resolve={resolve} preview />
-                        ))}
-                      </>
-                    ) : null}
-                  </tbody>
-                </table>
-              </div>
-              {vCounts && DISPLAY_ORDER.some((d) => vCounts[d] > 0) ? (
-                <p className={s.help}>
-                  수직 미리보기 합계:{" "}
-                  {DISPLAY_ORDER.filter((d) => vCounts[d] > 0)
-                    .map((d) => `${DECISION_LABEL[d]} ${vCounts[d]}`)
-                    .join(" · ")}
-                </p>
-              ) : null}
-              {/* 정책 버전은 변형·절단 없이 그대로 표기(§4.1 헤더 행 — 감사 표기와 1:1) */}
-              <p className={s.help}>
-                정책 버전: <span className={s.mono}>{map.policyVersion}</span>
-              </p>
-            </section>
-          ) : null}
-        </div>
+      {/* §4 운영자 전용 고지 — 내보내기·공유·모델 입력 금지 */}
+      <div className={s.note} role="note">
+        <Icon name="info" />
+        <span>접근통제 지도는 운영자 전용입니다. 내보내기·공유·모델 입력에 넣지 않습니다.</span>
       </div>
+      {!taskId ? <p className={s.empty}>실제 진단 작업을 선택하세요.</p> : null}
+      {taskId && !now ? <p className={s.empty}>불러오는 중…</p> : null}
+      {now?.error ? (
+        <div className={cx(s.note, s.warn)} role="alert">
+          <Icon name="alert" />
+          <span className={s["lv-grow"]}>{failureText(now.error)}</span>
+          <button className={cx(s.btn, s.sm)} type="button" onClick={() => setAttempt((n) => n + 1)}>
+            다시 읽기
+          </button>
+        </div>
+      ) : null}
+
+      {/* projection 무결성 경고 — 데이터 불일치를 숨기지 않는다(§4.2(2)·N4, fail-closed) */}
+      {map && issues && hasProjectionIssues(issues) ? (
+        <div className={cx(s.note, s.warn)} role="alert">
+          <Icon name="alert" />
+          <span>
+            지도 데이터 불일치: 격자 밖 {issues.outOfGrid} · 중복 신원 {issues.dupPrincipals} · 중복 자원{" "}
+            {issues.dupResources}. 숨기지 않고 표시합니다.
+          </span>
+        </div>
+      ) : null}
+
+      {map && hCounts ? (
+        <section className={s.isec} aria-label="판정 요약">
+          <h2>수평(교차 계정) 판정</h2>
+          <p className={s.help}>
+            판정 축은 수평(같은 역할·교차 계정)입니다. 수직(역할 레벨)은 아래 격자에서 후속 미리보기로만 표시합니다.
+          </p>
+          {DISPLAY_ORDER.some((d) => hCounts[d] > 0) ? (
+            <div style={chipRow}>
+              {DISPLAY_ORDER.filter((d) => hCounts[d] > 0).map((d) => (
+                <span key={d} style={{ ...chipBase, ...DECISION_STYLE[d] }}>
+                  {DECISION_LABEL[d]} <b>{hCounts[d]}</b>
+                </span>
+              ))}
+            </div>
+          ) : (
+            <p className={s.help}>집계할 수평 판정이 없습니다.</p>
+          )}
+        </section>
+      ) : null}
+
+      {map && resolve ? (
+        <section className={s.isec} aria-label="접근통제 격자">
+          <h2>접근통제 격자</h2>
+          <p className={s.help}>신원 × 자원 교차 접근 판정입니다. 색은 판정이며, 격자에는 계정·표식 값이 없습니다.</p>
+          <Legend />
+          {/* deny-ok(정상 차단) 보류 안내(§4.2(3) Phase 3) + 미검사 Phase 2 안내 */}
+          <p className={s.help}>
+            정상 차단(deny-ok)은 앱 인가 차단 관측 계약 전까지 산출하지 않습니다(Phase 3) — 교차 차단 칸은 ‘판정 불가
+            (차단 미증명)’로 나옵니다. ‘미검사’는 명시적 미시도이며 ‘안전’이 아닙니다(Phase 2).
+          </p>
+          <div style={wrapStyle}>
+            <table style={tableStyle} aria-label="신원 × 자원 접근통제 격자">
+              <thead>
+                <tr>
+                  <th scope="col" style={thCorner}>
+                    신원 \ 자원
+                  </th>
+                  {map.resources.map((r) => (
+                    <th key={r.id} scope="col" style={thCol}>
+                      {r.label}
+                      <small style={ownerSmall}>소유 {r.ownerRef}</small>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {hPrincipals.map((p) => (
+                  <MapRow key={p.ref} principal={p} resources={map.resources} resolve={resolve} />
+                ))}
+                {vPrincipals.length ? (
+                  <>
+                    <tr>
+                      <th scope="colgroup" colSpan={map.resources.length + 1} style={groupRow}>
+                        수직 — 후속 미리보기(판정 축 아님)
+                      </th>
+                    </tr>
+                    {vPrincipals.map((p) => (
+                      <MapRow key={p.ref} principal={p} resources={map.resources} resolve={resolve} preview />
+                    ))}
+                  </>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+          {vCounts && DISPLAY_ORDER.some((d) => vCounts[d] > 0) ? (
+            <p className={s.help}>
+              수직 미리보기 합계:{" "}
+              {DISPLAY_ORDER.filter((d) => vCounts[d] > 0)
+                .map((d) => `${DECISION_LABEL[d]} ${vCounts[d]}`)
+                .join(" · ")}
+            </p>
+          ) : null}
+          {/* 정책 버전은 변형·절단 없이 그대로 표기(§4.1 헤더 행 — 감사 표기와 1:1) */}
+          <p className={s.help}>
+            정책 버전: <span className={s.mono}>{map.policyVersion}</span>
+          </p>
+        </section>
+      ) : null}
     </>
   );
 }
