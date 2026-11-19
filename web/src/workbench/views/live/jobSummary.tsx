@@ -21,8 +21,16 @@ import type { RequestApproval } from "@/lib/diagnosis/request-approvals";
 import { SEVL } from "../../data/findings";
 import { cx } from "../../lib/cx";
 import { fetchCoverage } from "../../live/api";
-import { clockOf, planState, sevKey } from "../../live/map";
-import { NotYet } from "../../live/parts";
+import { clockOf, fmtDur, planState, sevKey } from "../../live/map";
+import { maskSecrets } from "../../live/mask";
+import { NotYet, useNow } from "../../live/parts";
+import {
+  runDurationMissingWhy,
+  runDurationSec,
+  runElapsedSec,
+  runStartMissingWhy,
+  runStartText,
+} from "../../live/runTiming";
 import { disconnectUrl, useUrl } from "../../live/urlDiagnosis";
 import {
   scanViewFor,
@@ -40,10 +48,15 @@ import { flowStageText, type WorkflowSnapshot } from "../../live/workflow";
 import { useShell } from "../../shell";
 import { useWb } from "../../store";
 import { Icon } from "../../ui/icons";
-import { InspHead, Isec, Kv } from "../../ui/parts";
+import { HelpTip, InspHead, Isec, Kv } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import type { Approvals } from "./approvals";
 import { UrlNotices, UrlPill, UrlRefreshButton } from "./urlParts";
+
+/** 진행 중 경과를 다시 세는 주기(ms). 서버 시각이 기준이라 주기는 표시 갱신 간격일 뿐이다. */
+const ELAPSED_TICK_MS = 10_000;
+/** 'YYYY-MM-DD HH:MM:SS' 에서 날짜 부분 길이 */
+const DATE_LENGTH = 10;
 
 const MODE_TEXT = { ai_auto_v1: "AI 자동", user_approval_v1: "사용자 승인", none: "설치 범위" } as const;
 
@@ -260,6 +273,11 @@ export function JobRow({
   );
 }
 
+/** 시험 계정 표시 이름: 라벨 순으로 계정 A · B · C …(26개를 넘으면 번호). */
+function accountName(i: number): string {
+  return i < 26 ? `계정 ${String.fromCharCode(65 + i)}` : `계정 ${i + 1}`;
+}
+
 /** 갈 화면 → 버튼 글 (시안: 진행 화면 열기 · 이어서 보기 · 보고서 열기). */
 const OPEN_TEXT = {
   live: "진행 화면 열기",
@@ -309,13 +327,15 @@ function summaryHead(
     };
   }
   const pill = <UrlPill job={job} verified={verified} />;
-  if (!result) return { eyebrow: "끝난 점검", title: urlStateText(job.state, verified), chips: pill };
+  // 끝난 점검은 머리 글(eyebrow)에 '끝난 점검'을 적지 않고 대상 주소만 둔다(사용자 11/18)
+  if (!result) return { eyebrow: "", title: urlStateText(job.state, verified), chips: pill };
   const c = result.counts;
   const und = c.not_executed + c.unknown;
+  // 발견이 있어도 제목에 '발견 n건'을 적지 않는다(사용자 11/18) — 위험도 딱지 · 판정 줄이 말한다
   if (c.confirmed + c.review > 0)
     return {
-      eyebrow: "끝난 점검",
-      title: `발견 ${result.found.length}건`,
+      eyebrow: "",
+      title: urlStateText(job.state, verified),
       chips: (
         <>
           {topSev(result.found).map(([k]) => (
@@ -329,7 +349,7 @@ function summaryHead(
     };
   if (und > 0) return { eyebrow: "결과 확인", title: `판단 불가 ${und}건`, chips: pill };
   return {
-    eyebrow: "끝난 점검",
+    eyebrow: "",
     title: result.kinds.includes("clean") ? "발견 없음" : urlStateText(job.state, verified),
     chips: pill,
   };
@@ -362,6 +382,8 @@ export function JobSummary({
   const cap = useUrl((st) => st.cap);
   const uncertain = useUrl((st) => st.uncertain);
   const error = useUrl((st) => st.error);
+  // 경과는 서버 started_at 기준이라 새로고침해도 0 으로 돌아가지 않는다. 화면은 이 주기로만 다시 센다.
+  const now = useNow(ELAPSED_TICK_MS);
   if (!handle) return null;
 
   const ended = !!job && URL_ENDED_STATES.includes(job.state);
@@ -373,7 +395,7 @@ export function JobSummary({
   if (flow) stageText = flowStageText[flow.stage];
   else if (job) stageText = urlStateText(job.state, verified);
   const profile = cap.kind === "v2" ? cap.catalog.profiles.find((p) => p.id === handle.input.profile_id) : undefined;
-  const outcomeText = job ? urlOutcomeText(job) : "";
+  const outcomeText = job ? urlOutcomeText(job, "compact") : "";
   const pending = approvals?.length ?? 0;
   // 지금 하는 일 (시안 진행 중 상세): 진행 중인 계획 → 지금 보는 경로 → 단계 순으로 서버 값만
   const nowText = flow?.plan?.find((p) => planState(p.state).row === "run")?.title ?? flow?.current_path ?? null;
@@ -382,16 +404,25 @@ export function JobSummary({
   const decide = job && !ended ? decideText(job, verified, stage, approvals ?? null) : null;
 
   // 시안 점검 정보 줄을 먼저 (진행 중: 시작 · 남은 시간 · 발견 · 결정 대기 / 끝난 점검: 점검일 · 소요 · 커버리지 · 판정).
-  // 서버가 주지 않는 값은 '연결 전'. 그 뒤에 서버가 확인한 진단 정보.
+  // 시작 · 경과 · 소요는 서버 started_at · finished_at 만 쓴다(diagnosis-run-timing.md 화면 인계). 서버가 주지 않는 값은
+  // '연결 전'. 남은 시간은 계약상 만들지 않는다. 그 뒤에 서버가 확인한 진단 정보.
+  const startText = runStartText(job);
+  const durationSec = runDurationSec(job);
+  const elapsedSec = runElapsedSec(job, now);
+  const startMissing = <NotYet key="s" why={runStartMissingWhy(job)} />;
+  // 진행 중 시작 칸: 시작 시각 + 경과(실행 중일 때만). 시작 시각이 없으면 '연결 전'
+  let runningStart: ReactNode = startMissing;
+  if (startText) runningStart = elapsedSec === null ? startText : `${startText} · 경과 ${fmtDur(elapsedSec)}`;
   const mockRows: Array<readonly [ReactNode, ReactNode]> = ended
     ? [
-        ["점검일", <NotYet key="d" why="서버가 점검 시작 시각을 주지 않습니다" />],
-        ["소요", <NotYet key="t" why="서버가 점검 소요 시간을 주지 않습니다" />],
+        // 점검일은 시작 확인 날짜(로컬). 시작 시각이 없는 회차는 마감 시각 등으로 대신하지 않는다
+        ["점검일", startText ? startText.slice(0, DATE_LENGTH) : startMissing],
+        ["소요", durationSec !== null ? fmtDur(durationSec) : <NotYet key="t" why={runDurationMissingWhy(job)} />],
         ["자산 커버리지", typeof coverage === "number" ? `${coverage}%` : "—"],
         ["판정", result ? verdictText(result.counts) : "—"],
       ]
     : [
-        ["시작", <NotYet key="s" why="서버가 점검 시작 시각을 주지 않습니다" />],
+        ["시작", runningStart],
         ["남은 시간", <NotYet key="r" why="서버가 남은 시간을 주지 않습니다" />],
         ["발견", <NotYet key="f" why="점검 중 발견 수는 서버가 주지 않습니다. 결과가 저장되면 셉니다" />],
         ["결정 대기", decide ?? "—"],
@@ -408,7 +439,8 @@ export function JobSummary({
     ["분석 모델", profile ? profile.model_label : handle.input.profile_id],
     ["진단 모드", MODE_TEXT[handle.input.workflow_mode ?? "none"]],
     ...(ended ? [] : [["단계", stageText] as const]),
-    ["실제 task", job?.task_id ? `#${job.task_id}` : "아직 없음"],
+    // 서버가 이 점검을 실제로 돌릴 때 붙인 작업 번호(task). 끝난 점검이 많아져도 목록 줄과 같은 번호로 가린다(사용자 11/18)
+    ["작업", job?.task_id ? `#${job.task_id}` : "아직 없음"],
     ...(flow ? [["보낸 요청", `${flow.counts.sent}건`] as const] : []),
     ...(outcomeText ? [["실행 결과", outcomeText] as const] : []),
   ];
@@ -440,7 +472,7 @@ export function JobSummary({
       <InspHead
         eyebrow={
           <>
-            {`${head.eyebrow} · `}
+            {head.eyebrow ? `${head.eyebrow} · ` : null}
             <span className={s.host}>{host}</span>
           </>
         }
@@ -452,23 +484,24 @@ export function JobSummary({
           <p>{nowText ?? stageText}</p>
         </Isec>
       ) : null}
-      {handle.kind === "recovered" ? (
-        <Isec>
-          <p className={s.help}>
-            서버에서 다시 찾은 점검입니다. 상태·활동·보고서를 읽을 수 있습니다. 새 진단은 ‘새 점검’에서 별도로 만드세요.
-          </p>
-        </Isec>
-      ) : null}
+      {/* 서버에서 다시 찾은 점검 안내 글은 뺐다(사용자 11/18) */}
       <Isec t="점검 정보">
         <Kv rows={rows} />
       </Isec>
       {job?.account_auth ? (
         <Isec t="시험 계정 인증">
-          <Kv rows={urlAccountAuthRows(job.account_auth)} />
-          <p className={s.help}>
-            인증하지 못한 계정은 비인증으로 진행한 것입니다. 그 계정 기준 인가 결과는 ‘접근 차단 확인’이 아니라
-            ‘비인증으로 확인 안 됨’입니다.
-          </p>
+          <Kv
+            rows={urlAccountAuthRows(job.account_auth).map(
+              ([label, result], i) =>
+                [
+                  <span key={label} className={s.tipline}>
+                    {accountName(i)}
+                    <HelpTip label={`${accountName(i)} 서버 라벨 보기`}>서버 라벨: {maskSecrets(label)}</HelpTip>
+                  </span>,
+                  result,
+                ] as const,
+            )}
+          />
         </Isec>
       ) : null}
       <Isec>
@@ -487,7 +520,6 @@ export function JobSummary({
           {ended ? again : open}
           {ended ? open : null}
         </div>
-        {ended ? <p className={s.help}>다시 점검은 별도 새 진단입니다. 이전 회차는 서버 목록에 보존됩니다.</p> : null}
         <UrlNotices />
         {uncertain || error ? (
           <div className={s.acts}>

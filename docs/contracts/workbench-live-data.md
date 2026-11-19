@@ -85,6 +85,10 @@
 
 그 task의 전송 통제 감사 기록(실행 결속 디렉터리의 저널, HMAC 체인 검증 뒤)을 호출(call) 단위로 묶은 투영이다. 저널 검증이 실패하면 사건을 하나도 보이지 않고 `journal: "invalid"`로 답한다(일부만 보이고 "정상"으로 보이게 하지 않는다).
 
+현재 [제품 조회](../../cmd/first-controlled-diagnosis/url_live_views.go)는 감사 키 pin과 읽은 저널의 HMAC 체인을 검증한다. `VerifyJournalEvents`에 신뢰 체크포인트를 전달하지 않아 끝 행이 삭제된 유효 접두부도 `journal: "verified"`로 표시될 수 있다.
+
+**후속 PR — 제품 `e2-flow`에 신뢰 체크포인트 연결.** 회차별 최종 체크포인트는 저널과 쓰기 권한·보존이 분리된 [내구 감사 체크포인트 저장소](e2-audit-journal.md)에 보관하는 방향으로 연결한다. 서버가 해당 회차 `Scope`와 `JournalID`의 현재 epoch·head·마감 상태를 인증된 경로로 읽고, 같은 저널 사본을 `VerifyJournalEvents(..., checkpoint)`에 전달한다. 완료 회차는 `sealed` 최종 head를 기준으로 대조한다. 체크포인트 조회 실패·불일치·끝 행 삭제 시 사건을 반환하지 않는지를 후속 PR에서 검증한다. 실행 디렉터리에 저널과 함께 놓인 체크포인트와 `e2export`의 `checkpoint.json`은 오프라인 검증 자료로 다룬다. 기존 회차와 진행 중 조회의 표시 방식은 연결 PR에서 정한다.
+
 **커서**: 기준은 감사 저널 사건 번호 `Event.Index`다(사건마다 1씩 오른다. 시도 번호 `sequence`가 아니다 — 한 시도의 `intent`·`result` 사건은 같은 `sequence`를 쓰고 `control`·`call_closed`에는 시도 번호가 없다).
 
 - `after` 없음(처음 조회): 가장 최근 호출 200개를 그 호출의 모든 사건으로 묶어 준다. 더 오래된 호출이 있으면 `omitted_calls`에 그 수를 적는다(이 오래된 호출은 다시 받을 방법이 없다 — 화면은 "이전 호출 n개 생략"으로 보인다). `last_index`는 검증한 마지막 사건 번호다.

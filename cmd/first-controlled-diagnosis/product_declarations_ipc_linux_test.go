@@ -53,6 +53,25 @@ func TestProductDeclarationControlOverUnixTransport(t *testing.T) {
 	if got.Reason != "" || got.Declaration == nil || got.Declaration.State != diagnosisprep.DeclarationActive {
 		t.Fatalf("저장: %+v", got)
 	}
+	// 계정 역할(계약 §4)도 IPC를 지나 저장·조회되고, 짝이 안 맞거나 같은 계정이면 칸 이름으로 거부된다.
+	if d := got.Declaration.Declaration; d == nil || d.OwnerAccountLabel != "tester-a" || d.CrossAccountLabel != "tester-b" || !d.AccountsSamePrivilege {
+		t.Fatalf("저장한 역할: %+v", got.Declaration)
+	}
+	if again := call(&diagnosisprep.ProductRequest{Operation: "declaration", TargetID: target.ID}); again.Declaration == nil || again.Declaration.Declaration == nil ||
+		again.Declaration.Declaration.CrossAccountLabel != "tester-b" {
+		t.Fatalf("조회한 역할: %+v", again)
+	}
+	for field, edit := range map[string]func(*diagnosisprep.DeclarationInput){
+		"cross_account_label": func(in *diagnosisprep.DeclarationInput) { in.CrossAccountLabel = in.OwnerAccountLabel },
+		"owner_account_label": func(in *diagnosisprep.DeclarationInput) { in.OwnerAccountLabel = "tester a" },
+	} {
+		roles := declarationTestInput()
+		roles.Types[0].OwnerOnlyFields = []string{}
+		edit(&roles)
+		if got := call(&diagnosisprep.ProductRequest{Operation: "declaration_put", TargetID: target.ID, ExpectedRevision: target.Revision, Declaration: &roles}); got.Reason != "invalid_declaration" || got.Field != field {
+			t.Fatalf("역할 %s: %+v", field, got)
+		}
+	}
 	bad := declarationTestInput()
 	// IPC는 null을 받지 않는다. 공개 API는 빈 필드 목록을 []로 바꿔 보낸다(server.productDeclarationRequest).
 	bad.Types[0].OwnerOnlyFields = []string{}

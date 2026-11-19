@@ -1340,6 +1340,29 @@ a.ph:hover {
   font-weight: 500;
   color: var(--ink-2);
 }
+/* 점검 목록 줄 이름 줄: '1. prep-…'처럼 작업 번호 + 이름 (사용자 11/18) */
+.r-title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.r-no {
+  flex: none;
+  font-size: 13.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+.r-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ink);
+}
 .r-s {
   font-size: 13px;
   color: var(--ink-2);
@@ -1638,6 +1661,22 @@ a.ph:hover {
 .pocbox .md pre {
   max-height: 240px;
   overflow: auto;
+}
+/* 취약점 제목(## n. [등급 · 판정] 제목): 진한 글 + 왼쪽 띠로 취약점마다 시작점을 보인다 */
+.pocbox .md h2 {
+  font-size: 14.5px;
+  font-weight: 700;
+  margin: 16px 0 6px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  background: var(--accent-bg);
+}
+/* 취약점 사이 구분선 */
+.pocbox .md hr {
+  border: 0;
+  border-top: 1px solid var(--rule);
+  margin: 20px 0 0;
 }
 /* 보고서 발견 목록 거르기 · 정렬 줄 */
 .rfil {
@@ -2191,7 +2230,8 @@ select.inp {
   margin: 0;
   cursor: pointer;
 }
-.seg span {
+.seg span,
+.seg button {
   display: block;
   padding: 6px 12px;
   border-radius: 5px;
@@ -2199,13 +2239,21 @@ select.inp {
   font-weight: 500;
   color: var(--ink-2);
 }
-.seg input:checked + span {
+.seg button {
+  border: 0;
+  background: transparent;
+  font-family: inherit;
+  cursor: pointer;
+}
+.seg input:checked + span,
+.seg button[aria-pressed="true"] {
   background: var(--bg);
   color: var(--ink);
   box-shadow: 0 0 0 1px var(--rule-2);
   font-weight: 600;
 }
-.seg input:focus-visible + span {
+.seg input:focus-visible + span,
+.seg button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
@@ -2570,6 +2618,13 @@ select.inp {
   background: var(--accent);
   transition: width 0.3s ease-out;
 }
+/* 탐색이 끝난 막대: 완료는 초록, 부분 완료 · 중지 등은 주황(다 돈 게 아님) */
+.prog.prog-ok > i {
+  background: var(--ok);
+}
+.prog.prog-part > i {
+  background: var(--warn);
+}
 .crwl-top {
   display: flex;
   flex-direction: column;
@@ -2584,18 +2639,6 @@ select.inp {
 }
 .now .k {
   color: var(--ink-3);
-}
-.pmeta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 16px;
-  font-size: 12.5px;
-  color: var(--ink-3);
-}
-.pmeta b {
-  font-family: var(--mono);
-  font-weight: 500;
-  color: var(--ink-2);
 }
 .log {
   border: 1px solid var(--rule);
@@ -4092,67 +4135,82 @@ button.smm:hover {
   font-weight: 500;
   color: var(--ink);
 }
-/* 점검 진행 맨 위 단계 게이지: 단계 네 칸, 칸마다 막대 + 이름 · 값. 끝남 초록 · 지금 파랑 · 기다림 빗금 · 멈춤 회색 */
+/* 점검 진행 맨 위 단계 게이지 (사용자 11/18 '지금 단계 크게 + 작은 점'): 위 줄 단계 점 · 단계 n/4, 가운데 지금 단계 글,
+   아래 지금 단계 막대. 끝남 초록 · 지금 강조 · 기다림 점선(막대는 빗금) · 멈춤 회색 · 아직 빈 점 */
 .lgauge {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 6px;
-}
-@container (max-width: 560px) {
-  .lgauge {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    row-gap: 12px;
-  }
-}
-.lgs {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   min-width: 0;
 }
-.lgs .prog {
-  height: 8px;
-  border-radius: 4px;
+.lgtop {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
-.lgs.done .prog > i {
+.lgdots {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.lgdot {
+  box-sizing: border-box;
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid var(--rule-2);
+  border-radius: 50%;
+}
+.lgdot.done {
+  border-color: var(--ok);
   background: var(--ok);
 }
-.lgs.stop .prog > i {
+.lgdot.run,
+.lgdot.hold,
+.lgdot.stop {
+  width: 13px;
+  height: 13px;
+}
+.lgdot.run {
+  border-color: var(--accent);
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+.lgdot.hold {
+  border: 2px dashed var(--accent);
+}
+.lgdot.stop {
+  border-color: var(--und);
   background: var(--und);
 }
-/* 사람(범위 선택) · 결과 저장을 기다리는 지금 단계: 채우지 않고 빗금 */
-.lgs.hold .prog {
-  background: repeating-linear-gradient(135deg, var(--rule-2) 0 3px, transparent 3px 6px);
-}
-.lgl {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 2px 8px;
+.lgstep {
+  font-family: var(--mono);
   font-size: 12px;
   color: var(--ink-3);
 }
-.lgl > span {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-.lgl .ic {
-  width: 12px;
-  height: 12px;
-  color: var(--ok);
-}
-.lgl b {
-  font-family: var(--mono);
-  font-weight: 500;
-}
-.lgs.run .lgl,
-.lgs.hold .lgl {
-  color: var(--ink);
+.lghead {
+  font-size: 15px;
   font-weight: 600;
+  color: var(--ink);
+  overflow-wrap: anywhere;
 }
-.lgs.stop .lgl {
+.lghead.stop {
   color: var(--und);
+}
+.prog.lgbar {
+  height: 8px;
+  border-radius: 4px;
+}
+.prog.lgbar.done > i {
+  background: var(--ok);
+}
+.prog.lgbar.stop > i {
+  background: var(--und);
+}
+.prog.lgbar.hold {
+  background: repeating-linear-gradient(135deg, var(--rule-2) 0 3px, transparent 3px 6px);
 }
 /* 점검 진행 가운데 맨 위 상태 카드: 지금 하는 일(끝나면 결과 · 보고서 보기) · 심화 점검 마감 수 · 작업 합계 토큰 */
 .lcard {

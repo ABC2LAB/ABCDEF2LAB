@@ -788,6 +788,67 @@ func TestVerifyJournalEventsAllOrNothing(t *testing.T) {
 	}
 }
 
+func TestVerifyJournalEventsChecksExpectedCheckpoint(t *testing.T) {
+	writer := newJournalTestWriter()
+	journal, err := newJournal(writer, journalTestKey, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = journal.Close() })
+	first, last := journalTestEvent(), journalTestEvent()
+	last.Index, last.Sequence = 2, 2
+	for _, event := range []Event{first, last} {
+		if err := journal.Record(t.Context(), event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	legacyFirst, legacyLast := v1Event(), v1Event()
+	legacyLast.Sequence = 2
+	legacy := v1Journal(t, legacyFirst, legacyLast)
+	legacySummary, err := VerifyJournal(t.Context(), bytes.NewReader(legacy), journalTestKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, fixture := range []struct {
+		data []byte
+		head JournalCheckpoint
+	}{
+		{legacy, legacySummary.Checkpoint},
+		{writer.bytes(), journal.Checkpoint()},
+	} {
+		t.Run(fixture.head.Version, func(t *testing.T) {
+			events, summary, err := VerifyJournalEvents(t.Context(), bytes.NewReader(fixture.data), journalTestKey, fixture.head)
+			if err != nil || summary.Checkpoint != fixture.head || summary.Events != 2 || len(events) != 2 {
+				t.Fatal("정상 저널과 체크포인트에서 사건 두 개를 읽지 못했습니다", err)
+			}
+			prefix := fixture.data[:bytes.LastIndexByte(fixture.data[:len(fixture.data)-1], '\n')+1]
+			// 끝 행을 지운 파일도 첫 행의 MAC은 정상이다. 체크포인트가 없으면 여전히 읽을 수 있다.
+			events, _, err = VerifyJournalEvents(t.Context(), bytes.NewReader(prefix), journalTestKey)
+			if err != nil || len(events) != 1 {
+				t.Fatal("합성 접두부가 독립 검증을 통과하지 못했습니다", err)
+			}
+			wrongScope := fixture.head
+			wrongScope.Scope.ResetRef = "other-reset"
+			for _, tc := range []struct {
+				name string
+				data []byte
+				head JournalCheckpoint
+			}{
+				{"deleted-tail", prefix, fixture.head},
+				{"wrong-scope", fixture.data, wrongScope},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					events, summary, err := VerifyJournalEvents(t.Context(), bytes.NewReader(tc.data), journalTestKey, tc.head)
+					if !errors.Is(err, ErrJournalIntegrity) || events != nil || summary != (JournalSummary{}) {
+						t.Fatal("체크포인트 불일치에도 사건이나 요약을 반환했습니다", err)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestJournalCheckpointRejectsOtherExecution(t *testing.T) {
 	write := func(t *testing.T, run, reset string) ([]byte, JournalCheckpoint) {
 		t.Helper()

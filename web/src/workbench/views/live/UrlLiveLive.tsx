@@ -4,7 +4,8 @@
 // 점검 진행: 상태 카드(지금 · 계획 · 심화 점검 · 발견 후보 · 확인 필요 · 작업 합계 토큰) · 확인 필요(요청 승인) ·
 //   발견 후보 목록(실시간, 검증 전 후보) · 활동 기록
 //   + 오른쪽 진행 요약(전송 통제 · 탐색 현황 · 커버리지 · 점검 정보).
-//   서버가 점검 중에 주지 않는 값(진행률 · 시작 · 경과 · 남은 시간 · 판정)은 자리도 두지 않는다.
+//   서버가 점검 중에 주지 않는 값(진행률 · 남은 시간 · 판정)은 자리도 두지 않는다. 시작 · 경과는 서버 started_at 으로
+//   진행 요약(jobSummary)의 시작 칸에만 보인다(이 카드에는 자리를 새로 두지 않음).
 // 보고서: 판정 집계 · 발견 목록 / 증거 · 감사 + 오른쪽 발견 상세. (우선 조치 칸은 11/17 사용자 요청으로 뺌)
 // 심각도 · 공격 경로 · 지식 그래프 · 계정 비교 · 재현 명령은 서버가 주지 않아 두지 않는다.
 // 판정은 팀 lib(summarizeDiagnosticEntries · diagnosticOutcome)의 분류만 쓰고 화면이 만들지 않는다.
@@ -36,9 +37,19 @@ import {
   type Remediation,
 } from "../../live/api";
 import { clearFindingPick, pickFinding, usePickedFinding } from "../../live/findingPick";
-import { approvalCounts, clockOf, dateTimeOf, fmtCount, fmtTokensShort, planState, sevKey } from "../../live/map";
+import {
+  approvalCounts,
+  clockOf,
+  dateTimeOf,
+  fmtCount,
+  fmtDur,
+  fmtTokensShort,
+  planState,
+  sevKey,
+} from "../../live/map";
 import { maskSecrets } from "../../live/mask";
 import { ErrorNote, LoadingRow, NotYet } from "../../live/parts";
+import { runDurationMissingWhy, runDurationSec, runStartMissingWhy, runStartText } from "../../live/runTiming";
 import { useUrl, useUrlGates } from "../../live/urlDiagnosis";
 import { factText, URL_ENDED_STATES, type UrlState, urlOutcomeText, urlStateText } from "../../live/urlMap";
 import { type Poll, usePoll } from "../../live/usePoll";
@@ -237,13 +248,14 @@ function LiveFindings({
  * 점검 진행 상태 카드의 모델 사용량 한 줄 (입 · 출 칩, 사용자 11/17 '입출만'). 출처는 이 진단의 전송 통제 예산 기록
  * (job.model_usage): 제품(첫 진단) 서버가 원본 토큰 집계(/api/exploration/tokens)를 열지 않아 그쪽은 읽지 않는다.
  * 줄 어디에 올려도 두 수의 정확한 값을 한꺼번에 보인다. 실패 · 중지로 사용량을 못 받은 호출은 예약량으로 셌으므로
- * 그런 호출이 있으면 최대치라고 같이 적는다.
+ * 그런 호출이 있으면 마우스를 올린 정확한 값에 최대치라고 같이 적는다(tokenExact). 칩 옆 '(최대)'(사용자 11/18)와
+ * (?) 설명(사용자 11/19 '무슨 말인지 모르겠다')은 두지 않는다.
  */
 function TaskTokens({ u }: { u: URLDiagnosisUsage }) {
   return (
     <p className={s.toks} title={tokenExact(u)}>
       {/* 칸 사이 공백: 화면은 flex 간격으로 띄우고, 글로 읽을 때(화면 읽기 · 복사) 붙지 않게 */}
-      <span>작업 합계 ·</span> <TokenChips u={u} />
+      <span>작업 합계 ·</span> <TokenChips u={u} bound={false} />
     </p>
   );
 }
@@ -257,8 +269,11 @@ function tokenExact(u: URLDiagnosisUsage): string {
   return [`입력 ${fmtCount(u.input_tokens)} 토큰${bound}`, `출력 ${fmtCount(u.output_tokens)} 토큰${bound}`].join("\n");
 }
 
-/** 입 · 출 칩 (점검 진행 상태 카드 · 보고서 머리 줄이 같이 쓴다). 예약량으로 센 호출이 있으면 '(최대)'. */
-function TokenChips({ u }: { u: URLDiagnosisUsage }) {
+/**
+ * 입 · 출 칩 (점검 진행 상태 카드 · 보고서 머리 줄이 같이 쓴다). 예약량으로 센 호출이 있으면 보고서 머리 줄은 칩 옆에
+ * '(최대)'. 점검 진행은 칩 옆 '(최대)'를 빼고(사용자 11/18) 마우스를 올린 정확한 값(tokenExact)에만 '최대치'를 남긴다.
+ */
+function TokenChips({ u, bound = true }: { u: URLDiagnosisUsage; bound?: boolean }) {
   const chip = (k: string, n: number) => (
     <span>
       {`${k} `}
@@ -268,7 +283,7 @@ function TokenChips({ u }: { u: URLDiagnosisUsage }) {
   return (
     <>
       {chip("입", u.input_tokens)} {chip("출", u.output_tokens)}
-      {u.unknown_usage_calls ? <span> (최대)</span> : null}
+      {bound && u.unknown_usage_calls ? <span> (최대)</span> : null}
     </>
   );
 }
@@ -323,28 +338,44 @@ export function gaugeSegments(flow: WorkflowSnapshot, resultReady: boolean): Gau
   });
 }
 
+/** 지금 단계 글: 진행 중이면 '… 중', 기다림 · 멈춤은 그 값과 같이. */
+function gaugeHeadline(x: GaugeSeg): string {
+  if (x.tone === "run") return `${x.label} 중${x.sub ? ` · ${x.sub}` : ""}`;
+  return x.sub ? `${x.label} · ${x.sub}` : x.label;
+}
+
+/**
+ * 단계 게이지 (사용자 11/18 '지금 단계 크게 + 작은 점'): 위 줄은 단계마다 작은 점(끝남 초록 · 지금 강조 · 기다림 점선 ·
+ * 멈춤 회색 · 아직 빈 점)과 '단계 n/4', 가운데는 지금 단계 글을 크게, 아래는 지금 단계 막대 하나(값은 gaugeSegments 그대로).
+ */
 function StageGauge({ segs }: { segs: GaugeSeg[] }) {
   const at = segs.findIndex((x) => x.tone !== "done");
-  const now = at < 0 ? segs[segs.length - 1] : segs[at];
-  const summary =
-    at < 0 ? "모든 단계 끝남" : `단계 ${at + 1}/${segs.length} ${now.label}${now.sub ? ` · ${now.sub}` : ""}`;
+  const allDone = at < 0;
+  const now = allDone ? segs[segs.length - 1] : segs[at];
+  const summary = allDone
+    ? "모든 단계 끝남"
+    : `단계 ${at + 1}/${segs.length} ${now.label}${now.sub ? ` · ${now.sub}` : ""}`;
+  const tone: GaugeTone = allDone ? "done" : now.tone;
+  let pct = Math.min(100, Math.max(0, now.pct));
+  if (allDone) pct = 100;
+  else if (tone === "hold") pct = 0; // 사람 · 저장을 기다리는 단계는 채우지 않고 빗금
   return (
-    // biome-ignore lint/a11y/useSemanticElements: 칸 여럿을 한 묶음으로 읽히게 (fieldset 은 입력 묶음이라 맞지 않음)
+    // biome-ignore lint/a11y/useSemanticElements: 점 · 글 · 막대를 한 묶음으로 읽히게 (fieldset 은 입력 묶음이라 맞지 않음)
     <div className={s.lgauge} id="lGauge" role="group" aria-label={`점검 단계 진행: ${summary}`}>
-      {segs.map((x) => (
-        <div className={cx(s.lgs, s[x.tone])} key={x.label}>
-          <div className={s.prog} aria-hidden="true">
-            <i style={{ width: `${Math.min(100, Math.max(0, x.pct))}%` }} />
-          </div>
-          <div className={s.lgl}>
-            <span>
-              {x.tone === "done" ? <Icon name="check" /> : null}
-              {x.label}
-            </span>
-            {x.sub ? <b>{x.sub}</b> : null}
-          </div>
-        </div>
-      ))}
+      <div className={s.lgtop} aria-hidden="true">
+        <ol className={s.lgdots}>
+          {segs.map((x) => (
+            <li key={x.label} className={cx(s.lgdot, s[x.tone])} title={`${x.label}${x.sub ? ` · ${x.sub}` : ""}`} />
+          ))}
+        </ol>
+        <span className={s.lgstep}>{`단계 ${allDone ? segs.length : at + 1}/${segs.length}`}</span>
+      </div>
+      <div className={cx(s.lghead, tone === "stop" && s.stop)} aria-hidden="true">
+        {allDone ? `모든 단계를 마쳤습니다${now.sub ? ` · ${now.sub}` : ""}` : gaugeHeadline(now)}
+      </div>
+      <div className={cx(s.prog, s.lgbar, s[tone])} aria-hidden="true">
+        <i style={{ width: `${pct}%` }} />
+      </div>
     </div>
   );
 }
@@ -367,7 +398,7 @@ function SavedFindings({ poll }: { poll: Poll<Remediation> }) {
     <section className={s.sec} aria-labelledby="lSavedH">
       <div className={s.sh}>
         <h2 id="lSavedH">발견 목록</h2>
-        <span className={s.n}>{poll.data && !poll.error ? `${sorted.length}건 · 저장된 결과` : ""}</span>
+        <span className={s.n}>{poll.data && !poll.error ? `${sorted.length}건` : ""}</span>
       </div>
       {/* [보고서 보기]는 위 상태 카드에 있다 — 여기 또 두지 않는다 */}
       {body}
@@ -587,7 +618,8 @@ export function UrlLiveLive() {
           ) : null}
           {/* 상단 카드: 지금 하는 일을 크게(끝나면 결과와 [보고서 보기]), 숫자 칸(계획 · 심화 점검 · 발견 후보 · 확인 필요),
               작업 합계 토큰. 계획 단계 목록은 두지 않는다(사용자 11/17 '계획 접기 빼기' — 완료 수만 숫자 칸에).
-              결과 불명이면 첫 줄 대신 아래 안내가 말하고, 진행률 · 시작 · 경과 · 남은 시간은 서버가 주지 않아 두지 않는다 */}
+              결과 불명이면 첫 줄 대신 아래 안내가 말하고, 진행률 · 남은 시간은 서버가 주지 않아 두지 않는다.
+              시작 · 경과는 진행 요약의 시작 칸에 있다 */}
           {/* 맨 위 단계 게이지 (탐색 흐름이 있는 점검만, 상태를 모르면 두지 않는다) */}
           {gauge ? <StageGauge segs={gauge} /> : null}
           {job.state !== "unknown" || tokensBody || stats.length ? (
@@ -1202,7 +1234,7 @@ export function FindingPage({
 
 /**
  * 보고서 발견 목록 위험도 거르기 값: 전체 · 심각 · 높음 · 중간 · 낮음. '등급 없음'(서버가 심각도를 안 줌)은 거르기로 두지 않는다
- * (사용자 11/17) — 그런 줄은 '전체'에서 본다.
+ * (사용자 11/17) — 그런 줄은 전체(거르기 안 함)에서 본다. 화면에 '전체' 칸은 두지 않고 고른 등급을 다시 누르면 전체(11/18).
  */
 export type SevFilter = "all" | SevKey;
 /** 보고서 발견 목록 정렬: 판정 순(기본) · 위험도 순 · 발견 시각 최신 순 · 오래된 순. */
@@ -1274,7 +1306,7 @@ export type PocInfo = {
 
 /**
  * 보고서 탭의 점검 보고서 (사용자 11/17 — ARTEX '침투 테스트 보고서 (Markdown)' 짜임: 제목(대상) → 설명 → 정보 줄 → 요약 →
- * 취약점(1. [등급] 제목 → 설명 → PoC / 증거)). 제품 서버는 ARTEX 원래 작업 보고서(GET /api/report)를 열지 않으므로
+ * 취약점(1. [등급] 제목 → 설명 → PoC / 증거, 취약점 사이 구분선)). 제품 서버는 ARTEX 원래 작업 보고서(GET /api/report)를 열지 않으므로
  * (first_diagnosis_startup.go 허용 목록), 이미 읽은 저장 결과(/api/report/diagnostic)로 화면에서 만든다.
  * ARTEX 와 달리 '확인된 취약점'이라 묶지 않고 확정 · 검토 필요를 나눠 센다(절대규칙 5). 정상 대조는 빼고 판정 순.
  * 재현 단계가 없으면 만들지 않고 없다고 적는다. 생성 시각은 서버가 주지 않아 두지 않는다.
@@ -1301,7 +1333,10 @@ export function buildPocMarkdown(entries: readonly RemediationEntry[], info: Poc
     const ep = entryEp(e);
     const at = dateTimeOf(e.observed_at);
     const tag = `[${entrySeverityLabel(e)} · ${diagnosticOutcomeLabels[diagnosticOutcome(e)]}]`;
-    out.push(`${i + 1}\\. ${tag} ${mdInline(e.title || e.entry_id)}`, "");
+    // 취약점마다 구분선 + 제목(h2, 진한 띠) — 어디까지가 몇 번 취약점인지 보이게(사용자 11/18)
+    if (i > 0) out.push("---", "");
+    // 제목 글의 '#'는 이스케이프한다 — 끝의 '###'가 Markdown 제목 닫기로 읽혀 사라지지 않게(#709 리뷰)
+    out.push(`## ${i + 1}. ${tag} ${mdInline(e.title || e.entry_id).replace(/#/g, "\\#")}`, "");
     const facts = [
       e.vuln_class ? `유형 ${mdInline(e.vuln_class)}` : "",
       ep ? `엔드포인트 ${ep.m ? `${ep.m} ` : ""}${mdInline(ep.p)}` : "",
@@ -1515,27 +1550,24 @@ export function UrlReportLive() {
   const sorted = sortEntries(entries);
   const counts = rem.data && !rem.error ? summarizeDiagnosticEntries(entries) : null;
   const findings = sorted.filter((e) => diagnosticOutcome(e) !== "negative");
-  const bySev = SEV_KEYS.map(
-    (k) =>
-      [
-        k,
-        findings.filter((e) => diagnosticOutcome(e) === "confirmed" && sevKey(entrySeverity(e) ?? "") === k).length,
-      ] as const,
-  );
-  const estimateSummary = SEV_KEYS.map(
-    (k) =>
-      [
-        k,
-        findings.filter((e) => diagnosticOutcome(e) === "review" && sevKey(entrySeverity(e) ?? "") === k).length,
-      ] as const,
-  )
-    .filter(([, n]) => n > 0)
-    .map(([k, n]) => `예상 ${SEVL[k]} ${n}`)
-    .join(" · ");
+  // 발견 칸 보조 글 (사용자 11/18 '간단하게'): 0건 등급은 빼고 확정 · 예상(검토 필요의 예상 심각도) · 위험도 미평가로 묶는다.
+  // '확정 심각 0 · 확정 높음 0 · …'처럼 등급마다 다 적으면 어지러웠다. 확정과 예상은 섞지 않는다(절대규칙 5)
+  const sevLine = (o: DiagnosticOutcome) =>
+    SEV_KEYS.map(
+      (k) =>
+        [k, findings.filter((e) => diagnosticOutcome(e) === o && sevKey(entrySeverity(e) ?? "") === k).length] as const,
+    )
+      .filter(([, n]) => n > 0)
+      .map(([k, n]) => `${SEVL[k]} ${n}`)
+      .join(", ");
+  const confirmedSev = sevLine("confirmed");
+  const estimatedSev = sevLine("review");
   const noSev = findings.filter((e) => !sevKey(entrySeverity(e) ?? "")).length;
   // 고른 위험도에 해당하는 줄이 (다시 읽은 뒤) 없어졌으면 전체로 본다 — 빈 목록이 '발견 없음'으로 읽히지 않게
   const sevCount = (k: SevFilter) => (k === "all" ? sorted.length : sorted.filter((e) => sevOf(e) === k).length);
   const sevNow: SevFilter = sevCount(sevF) ? sevF : "all";
+  // 거르기 칸: 줄이 있는 등급만('전체' 칸은 두지 않는다)
+  const sevChips = SEV_FILTERS.filter(([k]) => k !== "all" && sevCount(k) > 0);
   const shown = arrangeEntries(sorted, sevNow, order);
   // 고른 발견도 보이는 줄(거르기 · 정렬 결과) 안에서만 찾는다: 재조회로 위험도가 바뀌어 거르기에서 빠지면 오른쪽 상세 ·
   // '상세 보기'가 목록에 없는 발견에 남지 않고 보이는 줄로 옮긴다(#677 이동찬 리뷰)
@@ -1596,26 +1628,30 @@ export function UrlReportLive() {
   else
     listBody = (
       <>
-        {/* 거르기 · 정렬: 위험도(줄이 있는 등급만, 수와 함께) · 발견 시각 순 */}
+        {/* 거르기 · 정렬: 위험도(줄이 있는 등급만, 수와 함께) · 발견 시각 순. '전체 n개' 칸은 오른쪽 'n / n건'과 수가 겹쳐
+            두지 않는다(사용자 11/18) — 등급 칸을 누르면 그 등급만, 다시 누르면 전체 */}
         <div className={cx(s.fctl, s.rfil)}>
-          <div className={s.seg} role="radiogroup" aria-label="위험도로 거르기">
-            {SEV_FILTERS.filter(([k]) => k === "all" || sevCount(k) > 0).map(([k, label]) => (
-              <label key={k}>
-                <input
-                  type="radio"
-                  name="rSev"
-                  checked={sevNow === k}
-                  onChange={() => {
-                    setSevF(k);
+          {sevChips.length ? (
+            // biome-ignore lint/a11y/useSemanticElements: 켜고 끄는 거르기 칸 묶음 (fieldset 은 폼 입력 묶음이라 맞지 않음)
+            <div className={s.seg} role="group" aria-label="위험도로 거르기">
+              {sevChips.map(([k, label]) => (
+                <button
+                  key={k}
+                  type="button"
+                  aria-pressed={sevNow === k}
+                  onClick={() => {
+                    const to: SevFilter = sevNow === k ? "all" : k;
+                    setSevF(to);
                     // 오른쪽 상세에 떠 있던 발견이 거르기로 빠지면 보이는 첫 줄로 옮긴다
-                    const next = arrangeEntries(sorted, k, order);
+                    const next = arrangeEntries(sorted, to, order);
                     if (sel && !next.some((e) => e.entry_id === sel)) setSel(next[0]?.entry_id ?? null);
                   }}
-                />
-                <span>{`${label} ${sevCount(k)}개`}</span>
-              </label>
-            ))}
-          </div>
+                >
+                  {`${label} ${sevCount(k)}개`}
+                </button>
+              ))}
+            </div>
+          ) : null}
           <label className={s.rord}>
             <span>정렬</span>
             <select className={s.inp} value={order} onChange={(ev) => setOrder(ev.target.value as EntryOrder)}>
@@ -1639,16 +1675,17 @@ export function UrlReportLive() {
       </>
     );
 
-  // 머리 줄: 시작 · 소요 · 모델 · 모델 사용량(입 · 출). 서버가 주지 않는 시작 · 소요는 '연결 전'.
+  // 머리 줄: 시작 · 소요 · 모델 · 모델 사용량(입 · 출). 시작 · 소요는 서버가 확인한 started_at · finished_at 만 쓰고,
+  // 소요는 둘 다 있을 때만 센다(diagnosis-run-timing.md 화면 인계). 없으면 '연결 전' — saved_at 등으로 추정하지 않는다.
   // 자산 커버리지는 아래 요약 칸에 있어 머리에서 빼고 그 자리에 모델 사용량을 둔다(사용자 11/17).
   // 모델 사용량은 이 진단의 전송 통제 예산 기록(job.model_usage), 기록이 없으면 "—"
   const usage = job?.model_usage;
+  const startText = runStartText(job);
+  const durationSec = runDurationSec(job);
   const meta = [
-    <span key="start">
-      시작 <NotYet why="서버가 점검 시작 시각을 주지 않습니다" />
-    </span>,
+    <span key="start">시작 {startText ? <b>{startText}</b> : <NotYet why={runStartMissingWhy(job)} />}</span>,
     <span key="dur">
-      소요 <NotYet why="서버가 점검 소요 시간을 주지 않습니다" />
+      소요 {durationSec !== null ? <b>{fmtDur(durationSec)}</b> : <NotYet why={runDurationMissingWhy(job)} />}
     </span>,
     profile ? (
       <span key="model">
@@ -1673,6 +1710,8 @@ export function UrlReportLive() {
         // 다른 세 화면처럼 머리에 단계 줄(자산 탐색 · 범위 확인 · 점검 진행 · 보고서, 눌러서 이동)을 둔다(사용자 11/17 —
         // 보고서에서 앞 단계로 돌아갈 길이 주소 입력뿐이었다)
         phase="report"
+        // 상세 페이지에서 단계 줄 '보고서'를 누르면 ← 처럼 발견 목록으로 (사용자 11/19 — 주소가 같아 그냥은 안 바뀐다)
+        onCurrentPhase={detailEntry ? () => setDetail(null) : undefined}
       />
       {/* 상세 페이지를 열면 가운데를 그 페이지로 바꾸고 오른쪽 패널은 두지 않는다(페이지 안에 상태 카드가 있다) */}
       {detailEntry ? (
@@ -1699,10 +1738,12 @@ export function UrlReportLive() {
                   <div className={s.v}>{findings.length}</div>
                   <div className={s.sub}>
                     {[
-                      ...bySev.map(([k, n]) => `확정 ${SEVL[k]} ${n}`),
-                      ...(estimateSummary ? [estimateSummary] : []),
-                      ...(noSev ? [`위험도 미평가 ${noSev}`] : []),
-                    ].join(" · ")}
+                      confirmedSev && `확정 ${confirmedSev}`,
+                      estimatedSev && `예상 ${estimatedSev}`,
+                      noSev ? `위험도 미평가 ${noSev}` : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
                   </div>
                 </div>
                 <div className={s.cell}>

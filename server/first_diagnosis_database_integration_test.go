@@ -9,7 +9,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
+	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -254,6 +256,47 @@ func TestFirstDiagnosisRuntimeDatabaseOwnedPostgres(t *testing.T) {
 				t.Fatal("실제 도구 실패 intent 생성 실패")
 			}
 			firstDiagnosisSupervisorEngineRun(t, manager, installer, failedTool, "tool-failure")
+		})
+		t.Run("actual-engine-e3-confirmation-after-model-stage", func(t *testing.T) {
+			// E③ 확정 단계 훅은 모델 단계가 끝난 뒤 E② 마감 전에 한 번 불리고, 훅이 실패해도 실행 결과는 그대로다.
+			for _, mode := range []string{"e3-baseline", "e3-hook", "e3-hook-error", "e3-hook-disabled"} {
+				t.Run(mode, func(t *testing.T) {
+					hooked, err := manager.CreateTask("Owned E3 confirmation hook fixture "+mode, "Run the confirmation stage after the model stage", nil, 60, 60)
+					if err != nil || hooked == nil {
+						t.Fatal("독립 확정 단계 훅 task 생성 실패")
+					}
+					if _, err := runtimePool.ExecContext(ctx, "UPDATE tasks SET paused=true WHERE id=$1", hooked.ID); err != nil {
+						t.Fatal("확정 단계 훅 task 준비 상태 저장 실패")
+					}
+					hooked.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
+					if id, err := hooked.Store.AddIntent(map[string]any{"summary": "Read the owned fixture once"}, 1, nil, "system"); err != nil || id <= 0 {
+						t.Fatal("확정 단계 훅 intent 생성 실패")
+					}
+					firstDiagnosisSupervisorEngineRun(t, manager, installer, hooked, mode)
+				})
+			}
+			// Go 조건 2: 꺼진 확정 단계(선언 없음·연결 없음)는 감독자 흐름(사건·단계·상태 전이·사유 순서)이 훅이 없을 때와
+			// 같다. 켜진 확정 단계만 E② 마감 바로 앞에 e3_confirmation 단계가 하나 더 있다.
+			flow := func(mode string) []string {
+				v, ok := firstDiagnosisE3SupervisorFlows.Load(mode)
+				if !ok {
+					t.Fatalf("%s 감독자 흐름 기록 없음", mode)
+				}
+				return v.([]string)
+			}
+			baseline, disabled, hooked := flow("e3-baseline"), flow("e3-hook-disabled"), flow("e3-hook")
+			if len(baseline) == 0 || !slices.Equal(baseline, disabled) {
+				t.Fatalf("꺼진 확정 단계가 감독자 흐름을 바꿈\nbaseline=%q\ndisabled=%q", baseline, disabled)
+			}
+			fence := slices.Index(baseline, "stage_started/fence/started/")
+			if fence < 0 {
+				t.Fatalf("감독자 흐름에 E② 마감 단계 없음: %q", baseline)
+			}
+			if len(hooked) != len(baseline)+2 || hooked[fence] != "stage_started/e3_confirmation/started/" ||
+				!strings.HasPrefix(hooked[fence+1], "stage_finished/e3_confirmation/") ||
+				!slices.Equal(slices.Concat(hooked[:fence], hooked[fence+2:]), baseline) {
+				t.Fatalf("켜진 확정 단계 흐름\nbaseline=%q\nhooked  =%q", baseline, hooked)
+			}
 		})
 		t.Run("actual-engine-result-unknown-is-partial", func(t *testing.T) {
 			unknownTask, err := manager.CreateTask("Owned result-unknown fixture", "Close a run whose only request lost its response", nil, 60, 60)

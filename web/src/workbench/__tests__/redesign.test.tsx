@@ -687,13 +687,15 @@ describe("자산 탐색", () => {
         </ShellContext.Provider>,
       );
     };
-    const { unmount } = view({ ...flow, mode: "ai_auto_v1", stage: "diagnosing", initial_completed: true });
+    // 서버가 탐색 완료라고 한 경우(다 돌지 못한 끝은 아래 시험들)
+    const done = { exploration_status: "COMPLETED" } as Partial<WorkflowSnapshot>;
+    const { unmount } = view({ ...flow, ...done, mode: "ai_auto_v1", stage: "diagnosing", initial_completed: true });
     expect(document.getElementById("cNow")).toHaveTextContent(
       /^탐색을 마쳤습니다 · 지금은 심화 진단 중 \(아래 기록에 심화 진단 요청이 이어서 쌓입니다\)$/,
     );
     unmount();
     // 사용자 승인 모드의 범위 확인 대기는 '탐색을 마쳤습니다'만
-    view({ ...flow, stage: "awaiting_selection", initial_completed: true });
+    view({ ...flow, ...done, stage: "awaiting_selection", initial_completed: true });
     expect(document.getElementById("cNow")).toHaveTextContent(/^탐색을 마쳤습니다$/);
   });
 
@@ -716,7 +718,8 @@ describe("자산 탐색", () => {
     expect(screen.getByText(/^조회 1 · 데이터 변경 1 · 제외 1$/)).toBeInTheDocument();
     // 탐색 단계에서는 GET 만 보낸다 (서버 Controller.Before)
     expect(document.getElementById("cSent")?.nextElementSibling).toHaveTextContent(/^조회만$/);
-    // 첫 탐색 단계가 끝나도(서버가 탐색 완료라고 하지 않으면) 막대는 실제 방문 비율 그대로 (리뷰 #479).
+    // 첫 탐색 단계가 끝나면 막대는 끝까지 채우되(사용자 11/18 — 상한 대비 25% 로 멈춘 것처럼 보이지 않게), 서버가 탐색
+    // 완료라고 하지 않았으니 다 돈 것으로 적지 않는다(리뷰 #479): 글이 '완료 확인 안 됨'과 실제 방문 수를 말한다.
     // '첫 탐색 단계 끝남' 글은 위 '탐색을 마쳤습니다'와 겹쳐 적지 않는다
     useUrl.setState({ flow });
     rerender(
@@ -724,7 +727,17 @@ describe("자산 탐색", () => {
         <WorkflowCrawlLive />
       </ShellContext.Provider>,
     );
-    expect(screen.getByRole("progressbar", { name: /탐색 진행/ })).toHaveAttribute("aria-valuenow", "25");
+    const ended = screen.getByRole("progressbar", { name: /탐색 진행/ });
+    // 막대는 끝까지 채우되 값은 실제 방문 비율(#709 리뷰), 서버 상태가 없으면 '완료 확인 안 됨'을 화면 글로도
+    expect(ended).toHaveAttribute("aria-valuenow", "25");
+    expect((ended.querySelector("i") as HTMLElement).style.width).toBe("100%");
+    expect(ended).toHaveAttribute("aria-valuetext", "탐색 끝 · 완료 확인 안 됨 · 방문 1 / 페이지 상한 4");
+    expect(ended.className).toMatch(/prog-part/);
+    // 상태가 없으면 위 탐색 줄 하나에 '끝까지 봤는지 확인 안 됨'까지 붙인다(사용자 11/19 — 아래 줄을 따로 두지 않음)
+    expect(document.getElementById("cNow")).toHaveTextContent(
+      /^탐색을 마쳤습니다 · 끝까지 봤는지는 확인되지 않았습니다/,
+    );
+    expect(screen.queryByText(/^탐색:/)).toBeNull();
     expect(screen.queryByText("첫 탐색 단계 끝남")).toBeNull();
   });
 
@@ -751,10 +764,12 @@ describe("자산 탐색", () => {
       </ShellContext.Provider>,
     );
     const bar = screen.getByRole("progressbar", { name: /탐색 진행/ });
-    expect(bar).toHaveAttribute("aria-valuenow", "100");
-    expect(bar).toHaveAttribute("aria-valuetext", "100% · 탐색 완료");
+    expect(bar).toHaveAttribute("aria-valuenow", "75");
+    expect(bar).toHaveAttribute("aria-valuetext", "탐색 완료 · 방문 9 / 페이지 상한 12");
+    expect(bar.querySelector("i")).toHaveStyle({ width: "100%" });
+    expect(bar.className).toMatch(/prog-ok/); // 완료는 초록
     expect(document.getElementById("cNow")).toHaveTextContent(/^탐색을 마쳤습니다$/);
-    expect(screen.queryByText(/^탐색 상태/)).toBeNull();
+    expect(screen.queryByText(/^탐색:/)).toBeNull();
     expect(screen.queryByText("첫 탐색 단계 끝남")).toBeNull();
   });
 
@@ -762,19 +777,24 @@ describe("자산 탐색", () => {
     [
       "한도 소진 사유는 status 뒤에 보인다",
       { exploration_status: "PARTIAL", exploration_reason: "cap_exhausted" },
-      "탐색 상태 부분 완료 · 요청 상한 소진",
+      "탐색을 마쳤습니다 · 일부 페이지는 탐색하지 못했습니다 (요청 상한 소진)",
     ],
     [
       "모델 오류 사유는 status 뒤에 보인다",
       { exploration_status: "PARTIAL", exploration_reason: "model_error" },
-      "탐색 상태 부분 완료 · 모델 오류",
+      "탐색을 마쳤습니다 · 일부 페이지는 탐색하지 못했습니다 (모델 오류)",
     ],
     [
       "status 와 모순되는 사유(PARTIAL 의 completed)는 화면에서 숨긴다",
       { exploration_status: "PARTIAL", exploration_reason: "completed" },
-      "탐색 상태 부분 완료",
+      "탐색을 마쳤습니다 · 일부 페이지는 탐색하지 못했습니다",
     ],
-  ])("%s · 막대는 100%% 로 바꾸지 않고 탐색 상태를 따로 보인다 (리뷰 #479)", (_n, over, text) => {
+    [
+      "표에 없는 Object 기본 속성 이름(constructor) 사유는 붙이지 않는다",
+      { exploration_status: "PARTIAL", exploration_reason: "constructor" },
+      "탐색을 마쳤습니다 · 일부 페이지는 탐색하지 못했습니다",
+    ],
+  ])("%s · 끝난 막대는 주황으로 채우고 실제 방문 수 · 탐색 상태를 글로 보인다", (_n, over, text) => {
     // 방문 2 / 페이지 상한 8 = 25% — 서버는 PARTIAL 에서도 initial_completed 를 true 로 둔다
     useUrl.setState({
       handle,
@@ -795,9 +815,44 @@ describe("자산 탐색", () => {
         <WorkflowCrawlLive />
       </ShellContext.Provider>,
     );
-    expect(screen.getByRole("progressbar", { name: /탐색 진행/ })).toHaveAttribute("aria-valuenow", "25");
+    // 방문 2 / 상한 8(25%)로 멈춘 것처럼 보이지 않게 끝까지 채우되 주황(사용자 11/18). 다 돈 게 아니라는 건 색과
+    // aria 글 · 탐색 상태 글이 말한다(리뷰 #479)
+    const bar = screen.getByRole("progressbar", { name: /탐색 진행/ });
+    expect(bar).toHaveAttribute("aria-valuenow", "25"); // 값은 실제 방문 비율(#709 리뷰)
+    expect((bar.querySelector("i") as HTMLElement).style.width).toBe("100%");
+    expect(bar).toHaveAttribute("aria-valuetext", "탐색 끝 · 일부 완료 · 방문 2 / 페이지 상한 8");
+    expect(bar.className).toMatch(/prog-part/);
+    expect(bar.className).not.toMatch(/prog-ok/);
     // 화면은 status 중심: 뜻을 더하는 사유만 뒤에 붙고, 겹치거나 모순되는 토큰은 빠진다(원본 영문 토큰 노출 금지)
-    expect(screen.getByText(/^탐색 상태/).textContent).toBe(text);
+    // 위 탐색 줄 한 줄로(사용자 11/19): 막대 아래 '탐색: …' 줄은 따로 없다
+    expect(document.getElementById("cNow")?.textContent).toBe(text);
+    expect(screen.queryByText(/^탐색:/)).toBeNull();
+  });
+});
+
+describe("탐색이 다 돌지 못하고 끝난 줄 (사용자 11/19 한 줄로)", () => {
+  it.each([
+    ["중지", { exploration_status: "STOPPED", exploration_reason: "cancelled" }, "탐색이 중간에 멈췄습니다 (취소됨)"],
+    [
+      "탐색 안 함",
+      { exploration_status: "NOT_RUN", exploration_reason: "browser_unavailable" },
+      "탐색을 하지 않았습니다 (브라우저 사용 불가)",
+    ],
+  ])("%s 은 '탐색을 마쳤습니다'라고 적지 않는다", (_n, over, text) => {
+    useUrl.setState({
+      handle,
+      job,
+      verified: true,
+      flow: { ...flow, stage: "awaiting_selection", initial_completed: true, ...over } as WorkflowSnapshot,
+      flowVerified: true,
+    });
+    render(
+      <ShellContext.Provider value={shell("crawl")}>
+        <WorkflowCrawlLive />
+      </ShellContext.Provider>,
+    );
+    expect(document.getElementById("cNow")?.textContent).toBe(text);
+    expect(screen.queryByText(/탐색을 마쳤습니다/)).toBeNull();
   });
 });
 
@@ -1402,10 +1457,20 @@ describe("점검 진행", () => {
       </ShellContext.Provider>,
     );
     // 맨 위 단계 게이지: 자산 탐색 · 범위 확인 끝, 심화 점검 계획 1/2
-    expect(document.getElementById("lGauge")).toHaveAttribute(
-      "aria-label",
-      "점검 단계 진행: 단계 3/4 심화 점검 · 계획 1/2",
-    );
+    const gauge = document.getElementById("lGauge") as HTMLElement;
+    expect(gauge).toHaveAttribute("aria-label", "점검 단계 진행: 단계 3/4 심화 점검 · 계획 1/2");
+    // 모양(사용자 11/18 '지금 단계 크게 + 작은 점'): 단계 점 넷(끝남 둘 · 지금 · 아직) · '단계 3/4' · 지금 단계 글 · 막대 하나
+    const dots = [...gauge.querySelectorAll("li")];
+    expect(dots.map((d) => d.getAttribute("title"))).toEqual([
+      "자산 탐색 · 탐색 완료",
+      "범위 확인 · 범위 고름",
+      "심화 점검 · 계획 1/2",
+      "정리 · 저장",
+    ]);
+    expect(dots.map((d) => /done/.test(d.className))).toEqual([true, true, false, false]);
+    expect(dots[2].className).toMatch(/run/);
+    expect(gauge).toHaveTextContent(/^단계 3\/4심화 점검 중 · 계획 1\/2$/);
+    expect((gauge.querySelector("i") as HTMLElement).style.width).toBe("50%");
     // 상태 카드 한 장: 지금(진행 중 계획 제목) · 계획 완료 수 · 심화 점검 마감 수
     const card = screen.getByRole("region", { name: "지금 상태" });
     expect(within(card).getByText("지금")).toBeInTheDocument();

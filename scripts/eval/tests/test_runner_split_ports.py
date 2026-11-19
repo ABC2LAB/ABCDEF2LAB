@@ -174,6 +174,13 @@ class TestV3Inputs(PortsCase):
         self.assertEqual(call[1:7] + call[10:], (self.split.images["product"].id, "eval-r1_product-state", "runs",
                                                  ("runtime-conditions.json",), "product-run-conditions", 1000, ("prep-0a1b", "state")))
 
+    def test_e3_confirmation_is_read_from_the_draft_run_directory(self):
+        self.docker.copies["product-e3-confirmation"] = {"e3-confirmation.json": b'{"version":"x"}'}
+        self.assertEqual(self.ports.e3_confirmation("prep-0a1b"), b'{"version":"x"}')
+        (call,) = self.docker.calls
+        self.assertEqual(call[1:7] + call[10:], (self.split.images["product"].id, "eval-r1_product-state", "runs",
+                                                 ("e3-confirmation.json",), "product-e3-confirmation", 1000, ("prep-0a1b",)))
+
     def test_control_policy_and_tool_surface_go_to_the_product_and_images(self):
         self.ports.control_policy("42")
         self.assertEqual(self.driver.calls[-1][:2], ("control_policy", ("42",)))

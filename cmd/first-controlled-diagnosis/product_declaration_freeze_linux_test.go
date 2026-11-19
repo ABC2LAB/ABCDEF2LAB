@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -190,15 +191,20 @@ func TestFrozenDeclarationDrivesConfirmationRun(t *testing.T) {
 	fake.Clock = func() time.Time { return time.Now().UTC() }
 	fake.Behaviors[e3fake.Key{Purpose: e3contract.PurposeIdentity, Role: e3contract.RoleOwner}] = e3fake.Behavior{SubjectID: "user-a"}
 	fake.Behaviors[e3fake.Key{Purpose: e3contract.PurposeIdentity, Role: e3contract.RoleCross}] = e3fake.Behavior{SubjectID: "user-b"}
+	// 세대·인스턴스 참조는 실행 시작처럼 지금 대상에서 발급한다(리셋 게이트가 확정 시작 때 다시 대조한다).
+	refs, err := r.issueTargetRefs(target.ID, rand.Reader)
+	if err != nil || !refs.GenerationKnown || !refs.InstanceKnown {
+		t.Fatalf("세대·인스턴스 참조: %+v %v", refs, err)
+	}
 	binding := e3contract.RunBinding{JobRef: "job-e3", RunRef: "run-job-e3", TaskRef: "42", E2PolicyRef: "policy-job-e3",
-		GenerationRef: "gen-1", InstanceRef: "inst-1", Policy: policy.Policy}
+		GenerationRef: refs.GenerationRef, InstanceRef: refs.InstanceRef, Policy: policy.Policy}
 	in := e3contract.Input{Binding: binding, TargetRef: target.ID, WriteConsent: true,
 		Owner: e3contract.Account{Label: "tester-a", Authenticated: true}, Cross: e3contract.Account{Label: "tester-b", Authenticated: true},
 		PolicyValidFrom: policy.ValidFrom, PolicyValidUntil: policy.ValidUntil,
 		// 확정 몫(종류 수·확정 요청 시간 상한)은 실행 시작 때 서버가 정한다. 이 시험은 선언 종류가 모두 든다고 둔다.
 		AdmittedTypes: e3contract.MaxDeclarationTypes, RequestTimeout: 10 * time.Second}
 	deps := e3contract.Deps{Transport: fake, Journal: fake, Declarations: productDeclarationReader{runsDir: runs},
-		Reset: productResetGate{registry: r}, Logger: slog.New(slog.DiscardHandler)}
+		Reset: productResetGate{registry: r}, Writes: productWriteRecorder{registry: r, targetID: target.ID, jobID: "job-e3"}, Logger: slog.New(slog.DiscardHandler)}
 	res := e3contract.Run(t.Context(), deps, in)
 	if res.Status != e3contract.StatusCompleted || len(res.Verdicts) != 1 || res.Verdicts[0].Value != "confirmed" {
 		t.Fatalf("동결 사본으로 확정 단계: %+v", res)
@@ -207,7 +213,7 @@ func TestFrozenDeclarationDrivesConfirmationRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	res = e3contract.Run(t.Context(), e3contract.Deps{Transport: e3fake.New(), Journal: fake, Declarations: productDeclarationReader{runsDir: runs},
-		Reset: productResetGate{registry: r}}, in)
+		Reset: productResetGate{registry: r}, Writes: &e3fake.Writes{}}, in)
 	if res.Status != e3contract.StatusIntegrityFailed || res.Reason != string(e3contract.IntegrityPolicyDigestMismatch) {
 		t.Fatalf("손댄 사본: %+v", res)
 	}
@@ -302,5 +308,21 @@ func TestFrozenReadersStayInsideTheRun(t *testing.T) {
 	}
 	if _, _, err := readFrozenPolicy(runs, "job-other"); err == nil {
 		t.Fatal("다른 회차의 정책 파일을 받음")
+	}
+}
+
+// 제품 대상 회차는 선언 유무와 관계없이 실행 시작 때 세대·인스턴스 참조를 0600으로 동결한다(v3 계약 §6). 승인된 대상이면
+// 둘 다 아는 값이다.
+func TestIssueWritesTargetRefs(t *testing.T) {
+	for _, declare := range []bool{true, false} {
+		runs, job, _, _ := issueWithDeclaration(t, declare)
+		info, err := os.Stat(filepath.Join(runs, job, productTargetRefsFile))
+		if err != nil || info.Mode().Perm() != 0600 {
+			t.Fatalf("선언 %v: 참조 파일 %v", declare, err)
+		}
+		refs, ok := readTargetRefs(runs, job)
+		if !ok || !refs.GenerationKnown || !refs.InstanceKnown {
+			t.Fatalf("선언 %v: %+v %v", declare, refs, ok)
+		}
 	}
 }

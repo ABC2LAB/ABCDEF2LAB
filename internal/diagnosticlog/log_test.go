@@ -287,3 +287,15 @@ func TestDroppedCountsOnlyLostRecords(t *testing.T) {
 		t.Fatalf("invalid record then rejected record: dropped=%d", invalid.Dropped())
 	}
 }
+
+// E③ 확정 단계는 감독자 단계 어휘에 있다. 어휘에 없으면 로거가 기록 전체를 장애로 바꾼다.
+func TestE3ConfirmationStageIsInVocabulary(t *testing.T) {
+	for _, status := range []string{"started", "succeeded", "failed"} {
+		if !valid(Event{Component: "supervisor", Event: "stage_finished", Stage: "e3_confirmation", Status: status}) {
+			t.Fatal("e3_confirmation stage rejected:", status)
+		}
+	}
+	if valid(Event{Component: "supervisor", Event: "stage_finished", Stage: "e3-confirmation"}) {
+		t.Fatal("raw supervisor stage accepted")
+	}
+}

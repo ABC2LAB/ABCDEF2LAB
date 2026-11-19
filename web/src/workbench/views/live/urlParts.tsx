@@ -28,6 +28,7 @@ export function UrlHead({
   acts,
   meta,
   phase,
+  onCurrentPhase,
 }: {
   title: string;
   crumb: string;
@@ -39,6 +40,8 @@ export function UrlHead({
   meta?: ReactNode;
   /** 점검 하나를 보는 네 화면이면 단계 표시를 붙인다 */
   phase?: PhaseKey;
+  /** 단계 줄에서 지금 단계를 눌렀을 때 (안쪽 페이지를 닫고 그 화면 처음으로) */
+  onCurrentPhase?: () => void;
 }) {
   // crumb 이 빈 글이면 위치 끝에 화면 이름을 붙이지 않는다 (시안 보고서: 끝난 점검 / 주소)
   const items: Array<readonly [string, ReactNode]> = [];
@@ -81,7 +84,7 @@ export function UrlHead({
         {acts !== undefined ? <div className={s["vh-acts"]}>{acts}</div> : null}
       </div>
       {meta !== undefined ? <div className={s["vh-meta"]}>{meta}</div> : null}
-      {phase ? <Phases phase={phase} /> : null}
+      {phase ? <Phases phase={phase} onCurrent={onCurrentPhase} /> : null}
     </header>
   );
 }
