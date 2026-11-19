@@ -232,3 +232,44 @@ func TestE2HTTPRunPolicyDocumentExcludedPaths(t *testing.T) {
 		}
 	}
 }
+
+// 선언·쓰기 동의가 있는 제품 회차의 실행 정책(e3_write_consent·e3_resettable)을 실행 정책 문서 검증이 받는다. factory가
+// 받는 정책을 이 검증이 거부하면 확정 몫 읽기가 실패해 회차가 시작부터 gateway_unavailable이었다(합성 A/B 회차, 11/20).
+// 지문은 factory와 같게 두 칸을 넣지 않는다. 확정 몫 없이 두 칸만 있거나 평가 단독 정책에 있으면 거부한다.
+func TestE2HTTPRunPolicyDocumentAcceptsE3WriteConsent(t *testing.T) {
+	_, _, base := e2HostPolicyFixture(t)
+	encode := func(change func(*E2HTTPFilePolicy)) []byte {
+		p := base
+		change(&p)
+		raw, err := json.Marshal(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	withShare := func(p *E2HTTPFilePolicy) {
+		requests, timeout := uint64(E3ConfirmationIdentityRequests+E3ConfirmationRequestsPerType), int64(1000)
+		p.Limits.E3ConfirmationRequests, p.Limits.E3ConfirmationTimeoutMS = &requests, &timeout
+		// 몫은 실행 요청 상한의 1/4 이하여야 한다.
+		p.MaxRequests = max(p.MaxRequests, requests*E3ConfirmationShareDivisor)
+	}
+	_, shareFP, err := ValidateE2HTTPRunPolicyDocument(encode(withShare))
+	if err != nil {
+		t.Fatal("확정 몫만 있는 정책", err)
+	}
+	_, consentFP, err := ValidateE2HTTPRunPolicyDocument(encode(func(p *E2HTTPFilePolicy) { withShare(p); p.E3WriteConsent, p.E3Resettable = true, true }))
+	if err != nil || consentFP != shareFP {
+		t.Fatalf("쓰기 동의 정책: %v 지문 같음=%v", err, consentFP == shareFP)
+	}
+	for name, change := range map[string]func(*E2HTTPFilePolicy){
+		"consent_without_share":    func(p *E2HTTPFilePolicy) { p.E3WriteConsent = true },
+		"resettable_without_share": func(p *E2HTTPFilePolicy) { p.E3Resettable = true },
+	} {
+		if _, _, err := ValidateE2HTTPRunPolicyDocument(encode(change)); err == nil {
+			t.Fatalf("%s: 받음", name)
+		}
+	}
+	if _, err := ValidateE2HTTPPolicyDocument(encode(func(p *E2HTTPFilePolicy) { p.E3WriteConsent = true }), true); err == nil {
+		t.Fatal("평가 단독 정책이 쓰기 동의 칸을 받음")
+	}
+}
