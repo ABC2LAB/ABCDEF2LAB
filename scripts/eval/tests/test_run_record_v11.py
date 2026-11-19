@@ -1040,7 +1040,8 @@ class TestSplitO(_V11):
             split_o()(rows)
             row_of(rows, "e2_placement").update(decision_rows=0, allowed=0, unsupported=0, unavailable=0)
         def not_split(rows):
-            split_o()(rows)
+            # 기록 행·null 칸 검사가 먼저 걸리지 않게 판정 행만 두고 칸을 채운다(배치 검사 하나만 남긴다)
+            split_o(record_probe=False, language="ko", workers=3)(rows)
             row_of(rows, "run_conditions").update(split=False, path_key_ref=None)
         def reconciled(rows):
             split_o()(rows)
@@ -1063,7 +1064,7 @@ class TestSplitO(_V11):
         def null_in_direct(field):
             return lambda rows: row_of(rows, "run_conditions").update({field: None})
         cases = {
-            "counts": (counts, "split_product는 대조 미수집"), "not_split": (not_split, "분리 배치 회차에만"),
+            "counts": (counts, "split_product는 대조 미수집"), "not_split": (not_split, "split_product는 분리 배치 회차에만"),
             "reconciled": (reconciled, "대조 미수집\\(행 없음\\)만"), "record_in_direct": (record_in_direct, "기록 행은 분리 배치"),
             "record_accepted": (bad_record(accepted=["connected"]), "기록 행 형식"),
             "record_verdict": (bad_record(verdict="match"), "기록 행 형식"),
