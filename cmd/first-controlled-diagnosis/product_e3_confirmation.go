@@ -2,11 +2,18 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/diagnosisprep"
+	"github.com/Autumn-27/artex/oracle"
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Autumn-27/artex/e2proxy"
@@ -34,6 +41,11 @@ type productE3Confirmation struct {
 	accounts func() map[string]string
 	// handle은 모델 단계가 끝난 뒤 현재 실행과 C14 세션을 함께 조회한다. 못 주면 그 사유 코드다(server.E3Handle*).
 	handle func(string) (*e2proxy.Execution, server.E2HTTPAccountBindings, string)
+	// store는 판정 하나를 실행 역할로 저장한다(server.FirstDiagnosisHTTPRuntime.RecordProductVerdict, INSERT만). 없으면 저장하지
+	// 않는다(결과 파일만).
+	store func(context.Context, db.ProductVerdict) (db.ProductVerdictResult, error)
+	// modelTag는 이 회차 모델 단계의 모델 프로파일 식별자다(저장 판정의 model_tag).
+	modelTag string
 	// newBridge는 실제 E² 브리지를 만든다(e2live.NewLive). 시험만 바꾼다.
 	newBridge func(*e2proxy.Execution, server.E2HTTPAccountBindings, e3contract.RunBinding) (productE3Bridge, error)
 	deps      e3contract.Deps
@@ -111,12 +123,13 @@ func (c *productE3Confirmation) run(ctx context.Context, taskID string, begin fu
 		confirmCtx, cancel = context.WithTimeout(ctx, share)
 		defer cancel()
 	}
-	deps, release := c.wiredDeps(taskID)
+	deps, release, checkpoint := c.wiredDeps(taskID)
 	defer release()
 	deps.Started = begin
 	res := e3contract.Run(confirmCtx, deps, in)
-	// TODO(최민준): 제품 판정 저장(db.RecordProductVerdict)과 실행 역할 권한은 4b-3b에서 붙인다.
-	// 쓰기 기록은 생성 요청마다 보내기 전에 이미 남겼다(productWriteRecorder). 여기서는 결과 파일만 쓴다.
+	// 판정은 확정 단계에서 Host가 검증한 근거 체크포인트와 함께 바로 저장한다(E1 (가), 봉인 확인은 따로). 쓰기 기록은 생성
+	// 요청마다 보내기 전에 이미 남겼다(productWriteRecorder).
+	c.storeVerdicts(ctx, taskID, res, checkpoint)
 	raw, err := json.Marshal(res)
 	if err == nil {
 		err = writeRunPrivateFile(c.runsDir, c.jobID, productE3ConfirmationFile, raw)
@@ -134,7 +147,7 @@ func (c *productE3Confirmation) run(ctx context.Context, taskID string, begin fu
 // 결과 파일이 없을 때 비활성으로 추정하지 않게 하려는 것이다(#738 이동찬 리뷰).
 func (c *productE3Confirmation) stopped(ctx context.Context, taskID string) error {
 	in, _ := c.input(taskID)
-	deps, release := c.wiredDeps(taskID)
+	deps, release, _ := c.wiredDeps(taskID)
 	defer release()
 	res := e3contract.RunStopped(ctx, deps, in)
 	raw, err := json.Marshal(res)
@@ -152,11 +165,11 @@ func (c *productE3Confirmation) stopped(ctx context.Context, taskID string) erro
 // wiredDeps는 E② 실행 연결이 있으면 몫·선언과 관계없이 어댑터를 붙인 의존이다. 그래야 꺼진 회차가 not_wired 대신 실제
 // 사유(declaration_missing·write_not_consented 등)를 내고, not_wired는 연결이 정말 없는 판에서만 나온다(Go 조건 2). 실제
 // 브리지는 표식 등록 때만 만든다(productLazyE2). release는 만든 브리지를 닫는다.
-func (c *productE3Confirmation) wiredDeps(taskID string) (e3contract.Deps, func()) {
+func (c *productE3Confirmation) wiredDeps(taskID string) (e3contract.Deps, func(), productE3CheckpointFunc) {
 	deps := c.deps
 	if c.handle == nil || c.newBridge == nil {
 		log.Printf("[e3-confirmation] task %s 확정 단계에 E② 연결 없음: 사유=handle_not_configured", taskID)
-		return deps, func() {}
+		return deps, func() {}, nil
 	}
 	execution, accounts, reason := c.handle(taskID)
 	if reason != "" || execution == nil {
@@ -165,7 +178,7 @@ func (c *productE3Confirmation) wiredDeps(taskID string) (e3contract.Deps, func(
 		}
 		// 확정 단계는 not_wired로 꺼진다. 어느 조건인지 고정 코드로 남긴다(값 없음).
 		log.Printf("[e3-confirmation] task %s 확정 단계에 E② 연결 없음: 사유=%s", taskID, reason)
-		return deps, func() {}
+		return deps, func() {}, nil
 	}
 	newBridge := c.newBridge
 	lazy, err := e3v3.NewLazy(func(binding e3contract.RunBinding) (e3v3.Bridge, error) {
@@ -173,15 +186,116 @@ func (c *productE3Confirmation) wiredDeps(taskID string) (e3contract.Deps, func(
 	})
 	if err != nil {
 		log.Printf("[e3-confirmation] task %s 확정 단계 어댑터 생성 실패", taskID)
-		return deps, func() {}
+		return deps, func() {}, nil
 	}
 	adapter, err := e3v3.New(lazy)
 	if err != nil {
 		log.Printf("[e3-confirmation] task %s 확정 단계 어댑터 생성 실패", taskID)
-		return deps, func() {}
+		return deps, func() {}, nil
 	}
 	deps.Transport, deps.Journal = adapter, adapter
-	return deps, lazy.Close
+	checkpoint := func(ctx context.Context, binding e3contract.RunBinding, ref e3contract.CallRef) (e3v3.Checkpoint, error) {
+		_, cp, err := lazy.VerifiedCheckpoint(ctx, binding, ref)
+		return cp, err
+	}
+	return deps, lazy.Close, checkpoint
+}
+
+// productE3CheckpointFunc는 확정 단계 근거 호출 하나를 Host에 다시 검증받아 그 검증에 쓴 현재 head 체크포인트를 받는다.
+type productE3CheckpointFunc func(context.Context, e3contract.RunBinding, e3contract.CallRef) (e3v3.Checkpoint, error)
+
+// storeVerdicts는 확정 단계 판정을 실행 역할로 저장한다(docs/contracts/e3-product-verdict-store.md §2·§4). 근거 체크포인트는
+// 회차당 하나다: 마지막 근거 호출을 Host에 다시 검증받아, 그 검증에 쓴 현재 head를 받는다(그 head는 앞선 근거 사건을 모두
+// 앞부분으로 포함한다). 받지 못하면 체크포인트 없이 저장한다(표시는 봉인 미확인). 저장이 실패해도 결과 파일과 모델 단계
+// 결과는 그대로이고, 고정 문구로 로그만 남긴다.
+func (c *productE3Confirmation) storeVerdicts(ctx context.Context, taskID string, res e3contract.RunResult, checkpoint productE3CheckpointFunc) {
+	if len(res.Verdicts) == 0 || res.Binding == nil || res.Status != e3contract.StatusCompleted && res.Status != e3contract.StatusInterrupted {
+		return
+	}
+	if c.store == nil {
+		log.Printf("[e3-confirmation] 회차 %s 판정 저장 연결 없음", c.jobID)
+		return
+	}
+	task, err := strconv.ParseInt(taskID, 10, 64)
+	policyDigest, digestErr := hex.DecodeString(res.Binding.Policy.DigestSHA256)
+	if err != nil || task <= 0 || digestErr != nil || len(policyDigest) != sha256.Size {
+		log.Printf("[e3-confirmation] 회차 %s 판정 저장 입력이 계약 모양이 아님", c.jobID)
+		return
+	}
+	var cp *db.ProductCheckpoint
+	if ref, ok := lastE3Evidence(res.Verdicts); ok {
+		var got e3v3.Checkpoint
+		err := e3v3.ErrNoCheckpoint
+		if checkpoint != nil {
+			got, err = checkpoint(ctx, *res.Binding, ref)
+		}
+		if err == nil {
+			cp = &db.ProductCheckpoint{JournalID: got.JournalID, Sequence: got.Sequence, MAC: got.MAC}
+		} else {
+			log.Printf("[e3-confirmation] 회차 %s 근거 체크포인트를 받지 못함(판정은 봉인 미확인으로 저장)", c.jobID)
+		}
+	}
+	b := res.Binding
+	binding := db.ProductBinding{JobRef: b.JobRef, RunRef: b.RunRef, E2PolicyRef: b.E2PolicyRef, GenerationRef: b.GenerationRef, InstanceRef: b.InstanceRef,
+		Policy: db.ProductPolicySource{Ref: b.Policy.Ref, TargetApprovalRevision: b.Policy.TargetApprovalRevision}}
+	copy(binding.Policy.DigestSHA256[:], policyDigest)
+	stored := 0
+	for _, v := range res.Verdicts {
+		pv := db.ProductVerdict{TaskID: task, Binding: binding, Checkpoint: cp, ResourceType: v.ResourceType,
+			ResourceRef: productE3ResourceRef(v), ModelTag: c.modelTag, Value: v.Value,
+			PolicyCheck: v.PolicyCheck, IdentityCheck: v.IdentityCheck, DataCheck: v.DataCheck,
+			OracleReasons: append([]oracle.JudgeReason{}, v.OracleReasons...), ProductReasons: make([]string, 0, len(v.ProductReasons)),
+			CandidateRefs: append([]string{}, v.CandidateRefs...), Evidence: make([]db.ProductEvidence, 0, len(v.Evidence)), ObservedAt: v.ObservedAt}
+		for _, r := range v.ProductReasons {
+			pv.ProductReasons = append(pv.ProductReasons, string(r))
+		}
+		for _, e := range v.Evidence {
+			pv.Evidence = append(pv.Evidence, db.ProductEvidence{CallRef: e.CallRef, AttemptID: e.AttemptID, Sequence: e.Sequence})
+		}
+		if _, err := c.store(ctx, pv); err != nil {
+			log.Printf("[e3-confirmation] 회차 %s 판정 저장 실패(종류 하나)", c.jobID)
+			continue
+		}
+		stored++
+	}
+	log.Printf("[e3-confirmation] 회차 %s 판정 저장 %d/%d 근거 체크포인트 %v", c.jobID, stored, len(res.Verdicts), cp != nil)
+}
+
+// productE3ModelTag는 저장 판정의 model_tag다(참조 모양 [A-Za-z0-9._:-], 128자 이하). 외부 모델은 "<방식>:<모델 ID>"이고
+// 모델 ID의 "/"는 ":"로, 그 밖의 문자는 "-"로 바꾼다. 실행 범위에 모델 이름이 없는 로컬 모델은 모델 프로파일 번호다.
+func productE3ModelTag(scope *diagnosisprep.Scope, profileID int64) string {
+	tag := "profile-" + strconv.FormatInt(profileID, 10)
+	if scope != nil && scope.Model != nil && scope.Model.Mode != "" && scope.Model.Model != "" {
+		tag = scope.Model.Mode + ":" + strings.ReplaceAll(scope.Model.Model, "/", ":")
+	}
+	out := []byte(tag)
+	for i, ch := range out {
+		if !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '.' || ch == '_' || ch == ':' || ch == '-') {
+			out[i] = '-'
+		}
+	}
+	if len(out) > 128 {
+		out = out[:128]
+	}
+	return string(out)
+}
+
+// lastE3Evidence는 판정들의 근거 호출 중 마지막 것이다. 근거 호출이 없으면 false다(봉인 확인 해당 없음).
+func lastE3Evidence(verdicts []e3contract.Verdict) (e3contract.CallRef, bool) {
+	for i := len(verdicts) - 1; i >= 0; i-- {
+		if n := len(verdicts[i].Evidence); n > 0 {
+			return verdicts[i].Evidence[n-1], true
+		}
+	}
+	return e3contract.CallRef{}, false
+}
+
+// productE3ResourceRef는 저장 판정의 자원 참조 <종류>:<생성 객체 ID digest>다(OD11). 객체를 만들지 못한 종류는 unknown이다.
+func productE3ResourceRef(v e3contract.Verdict) string {
+	if v.ObjectIDDigest == "" {
+		return v.ResourceType + ":unknown"
+	}
+	return v.ResourceType + ":" + v.ObjectIDDigest
 }
 
 // input은 확정 단계 입력을 회차 기록에서 만든다. 모두 서버가 발급·동결한 값이고 모델이 쓴 값은 없다. 읽지 못한 칸은 비워 두고
