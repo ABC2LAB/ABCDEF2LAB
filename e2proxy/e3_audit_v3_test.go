@@ -210,3 +210,60 @@ func TestJournalV3E3BeforeSendAndStoppedAfterIntent(t *testing.T) {
 		t.Fatal("살아 있는 문맥의 미송신 성공 행 허용")
 	}
 }
+
+// 목적별 메서드와 단계별 응답 칸 금지를 독립 반례로 고정한다.
+func TestJournalV3E3StageAndMethodBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		program ProgramCallKind
+		change  func(*Event)
+	}{
+		{"identity POST", ProgramE3Identity, func(e *Event) { e.Method = "POST" }},
+		{"create GET", ProgramE3Create, func(e *Event) { e.Method = "GET" }},
+		{"create DELETE", ProgramE3Create, func(e *Event) { e.Method = "DELETE" }},
+		{"create response marker flag", ProgramE3Create, func(e *Event) { e.RequestMarkerFree = e3Bool(true) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, event := e3JournalFixture(tc.program)
+			tc.change(&event)
+			if validJournalRecordEvent(event, JournalVersionV3) {
+				t.Fatal("목적·메서드 또는 응답 칸 불일치를 허용")
+			}
+		})
+	}
+	_, create := e3JournalFixture(ProgramE3Create)
+	create.Method = "PUT"
+	if !validJournalRecordEvent(create, JournalVersionV3) {
+		t.Fatal("선언 가능한 PUT 생성 행 차단")
+	}
+	for _, tc := range []struct {
+		name   string
+		change func(*Event)
+	}{
+		{"timeout", func(e *Event) { e.TimedOut = true }},
+		{"normal", func(e *Event) { e.Normal = oracle.StateYes }},
+		{"marker flag", func(e *Event) { e.RequestMarkerFree = e3Bool(true) }},
+	} {
+		t.Run("intent "+tc.name, func(t *testing.T) {
+			intent, _ := e3JournalFixture(ProgramE3Identity)
+			tc.change(&intent)
+			if validJournalRecordEvent(intent, JournalVersionV3) {
+				t.Fatal("송신 전 사건에 응답 칸 허용")
+			}
+		})
+	}
+	_, closed := e3JournalFixture(ProgramE3Read)
+	closed.Stage, closed.AttemptID, closed.Sequence, closed.Decision = "call_closed", "", 0, ""
+	closed.RuleRef, closed.Method, closed.StatusCode = "", "", 0
+	closed.ForwardAttempted, closed.RequestWritten = false, false
+	closed.ResponseReceived, closed.ResponseComplete, closed.NotSent = false, false, false
+	audit := closed.E3Audit
+	closed.E3Audit = nil
+	if !validJournalRecordEvent(closed, JournalVersionV3) {
+		t.Fatal("시도 밖 E③ 호출 마감 행 차단")
+	}
+	closed.E3Audit = audit
+	if validJournalRecordEvent(closed, JournalVersionV3) {
+		t.Fatal("호출 마감 행에 E③ 시도 칸 허용")
+	}
+}
