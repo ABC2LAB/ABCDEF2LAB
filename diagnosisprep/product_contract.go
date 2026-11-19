@@ -206,6 +206,8 @@ type ProductResponse struct {
 	Reset *ProductResetState `json:"reset,omitempty"`
 	// Field는 Reason이 invalid_declaration일 때 실패한 칸 이름이다(값 없음).
 	Field string `json:"field,omitempty"`
+	// PolicySource는 policy_source의 결과다(동결본 digest만).
+	PolicySource *ProductPolicySource `json:"policy_source,omitempty"`
 }
 
 func validProductAccount(a ProductAccount) bool {
@@ -288,6 +290,11 @@ func validProductRequest(r *ProductRequest) bool {
 	}
 	if r.Account != nil || r.Login != nil || r.Credential != nil {
 		return false
+	}
+	// policy_source는 회차 하나의 정책 동결본 digest 조회다(판정 상세 조회 OD06). 회차 소유는 준비 서비스가 확인한다.
+	if r.Operation == "policy_source" {
+		return reference.MatchString(r.JobID) && r.TargetID == "" && r.ProfileID == "" && r.Registration == nil && r.CommandKey == "" &&
+			r.ExpectedRevision == 0 && len(r.SelectedIDs) == 0
 	}
 	if strings.HasPrefix(r.Operation, "workflow_") {
 		return reference.MatchString(r.JobID) && r.TargetID == "" && r.ProfileID == "" && r.Registration == nil && ((r.Operation == "workflow_status" && r.CommandKey == "" && r.ExpectedRevision == 0 && len(r.SelectedIDs) == 0) || ((r.Operation == "workflow_selection" || r.Operation == "workflow_pause" || r.Operation == "workflow_resume") && reference.MatchString(r.CommandKey) && r.ExpectedRevision > 0 && len(r.SelectedIDs) <= 64))

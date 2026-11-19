@@ -25,7 +25,7 @@ import (
 
 // 판정 상세 조회 1조각 코어(docs/contracts/finding-verdict-detail-decision.md OD01~OD11,
 // docs/contracts/workbench-finding-verdict-detail-proposal.md §2.2·§4·§6·§6.1·§8).
-// 경로 설치(OD10 제품 관리 중계)는 다음 PR이다. 여기서는 저장된 판정을 읽고 검증해 공개 칸만 투영한다.
+// 경로 설치(OD10 제품 관리 중계)는 finding_verdict_detail_route.go다. 여기서는 저장된 판정을 읽고 검증해 공개 칸만 투영한다.
 // 대상 HTTP·모델 호출·판정 생성·재검증 실행·쓰기를 하지 않는다. 평가 manifest 결속 대조는 기존 지도 읽기
 // 검사(accessMapManifest.matches)를 그대로 쓰며, 그 안의 오라클 재계산은 저장값 일관성 대조일 뿐 새 판정이 아니다.
 
@@ -90,7 +90,7 @@ type verdictDetailSelector struct {
 
 // parseVerdictDetailSelector는 query에서 selector 정확히 하나를 읽는다. 중복 키·selector 여럿·모르는 키·
 // 정규 십진(1..MaxInt64)이 아닌 값은 거부한다. candidate_id는 2조각에서 열기 전까지 400이다.
-// 경로 설치 쪽은 url.ParseQuery 오류(예: ';')도 400으로 거부해야 한다.
+// 경로 설치 쪽(findingVerdictDetailRequest)은 url.ParseQuery 오류(예: ';')도 400으로 거부한다.
 func parseVerdictDetailSelector(q url.Values) (verdictDetailSelector, bool) {
 	if len(q) != 1 {
 		return verdictDetailSelector{}, false
@@ -144,7 +144,7 @@ type verdictPolicySourceRequest struct {
 
 // policySourceReader는 제품 판정의 당시 정책 동결본(실행 결속의 e3-declaration.json, #708)을 읽어 digest를 대조한다.
 // 동결본 파일을 읽을 수 없으면 Unavailable, 읽었는데 다르면 Mismatch, 읽기 경로 자체의 장애는 Error다.
-// 실제 구현은 경로 설치 PR에서 붙인다. 현재 등록·정책을 대신 대입하지 않는다.
+// 제품 구현은 준비 서비스 IPC로 묻는 productPolicySourceReader다. 현재 등록·정책을 대신 대입하지 않는다.
 type policySourceReader interface {
 	CheckPolicySource(context.Context, verdictPolicySourceRequest) verdictPolicySourceResult
 }
