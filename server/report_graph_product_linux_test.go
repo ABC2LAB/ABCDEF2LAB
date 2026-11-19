@@ -493,6 +493,60 @@ func TestProductReportGraphsOwnedPostgres(t *testing.T) {
 			}
 		})
 	})
+	// KG 조회 v1(kg-query-v1 §9 Q15): 실제 제품 HTTP → 관리 중계 → 저장 보고서 서버 → 읽기 전용 runtime 역할.
+	kgNodes := func(t *testing.T, raw []byte) (map[string]bool, []string) {
+		t.Helper()
+		var out struct {
+			Version string `json:"version"`
+			TaskID  string `json:"task_id"`
+			Scope   struct {
+				TaskIDs []string `json:"task_ids"`
+			} `json:"scope"`
+			Nodes []struct {
+				ID string `json:"id"`
+			} `json:"nodes"`
+		}
+		if json.Unmarshal(raw, &out) != nil || out.Version != db.KGQueryVersion || out.TaskID != m.b.Scope.TaskRef {
+			t.Fatal("KG v1 응답 형식", string(raw))
+		}
+		ids := map[string]bool{}
+		for _, n := range out.Nodes {
+			ids[n.ID] = true
+		}
+		return ids, out.Scope.TaskIDs
+	}
+	t.Run("kg-v1-assets", func(t *testing.T) {
+		assertReadOnly(t, func() {
+			code, raw := request("GET", taskPath+"/coverage-graph?view=kg-v1", session.Token)
+			if code != 200 {
+				t.Fatal("제품 경로 KG v1 조회 실패", code, string(raw))
+			}
+			ids, tasks := kgNodes(t, raw)
+			if !ids[fmt.Sprintf("a:%d", serviceID)] || !ids[fmt.Sprintf("a:%d", endpointID)] || ids[fmt.Sprintf("a:%d", foreignID)] || len(tasks) != 1 {
+				t.Fatal("KG v1 자산 집합", string(raw))
+			}
+			if strings.Contains(string(raw), "private-token") || strings.Contains(string(raw), strings.TrimPrefix(target.URL, "http://")) {
+				t.Fatal("KG v1 응답에 URL 원문")
+			}
+		})
+	})
+	// Q19: 상한 초과는 중계를 지나도 413 kg_graph_too_large(재조회 불가) 본문 그대로다 — 503·빈 그래프로 바뀌지 않는다.
+	t.Run("kg-v1-too-large-through-bridge", func(t *testing.T) {
+		if _, err := pg.Exec(`INSERT INTO assets(type,url,task_ids) SELECT 'endpoint','https://kg-limit.owned.test/p'||g,ARRAY[$1::bigint] FROM generate_series(1,$2) g`, m.b.TaskID, db.KGLimits.Nodes); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if _, err := pg.Exec(`DELETE FROM assets WHERE url LIKE 'https://kg-limit.owned.test/%'`); err != nil {
+				t.Error(err)
+			}
+		}()
+		assertReadOnly(t, func() {
+			code, raw := request("GET", taskPath+"/coverage-graph?view=kg-v1", session.Token)
+			if code != 413 || string(raw) != `{"error":{"code":"kg_graph_too_large","retryable":false},"version":"abc2lab.kg-query/v1"}`+"\n" {
+				t.Fatal("상한 초과 전달", code, string(raw))
+			}
+		})
+	})
 	foreignRoot := insert("root_domain", "", "shared.owned.test", "", foreign.ID)
 	subdomain := insert("subdomain", "", "child.shared.owned.test", "shared.owned.test", m.b.TaskID)
 	if _, err := pg.Exec(`INSERT INTO exploration_anchors(node_id,asset_id) VALUES($1,$2)`, m.b.IntentID, subdomain); err != nil {
@@ -525,14 +579,16 @@ func TestProductReportGraphsOwnedPostgres(t *testing.T) {
 	t.Run("request-guards", func(t *testing.T) {
 		assertReadOnly(t, func() {
 			before := runtimeCalls.Load()
-			for _, path := range []string{taskPath + "/coverage-graph?view=kg-v1", taskPath + "/access-map?run_ref=old", taskPath + "/access-map?x=1&x=2", strings.Replace(taskPath, "/tasks/", "/tasks/0", 1) + "/coverage-graph", taskPath + "//coverage-graph", taskPath + "/%63overage-graph"} {
+			for _, path := range []string{taskPath + "/coverage-graph?view=kg-v2", taskPath + "/coverage-graph?view=kg-v1&view=kg-v1", taskPath + "/access-map?view=kg-v1", taskPath + "/access-map?run_ref=old", taskPath + "/access-map?x=1&x=2", strings.Replace(taskPath, "/tasks/", "/tasks/0", 1) + "/coverage-graph", taskPath + "//coverage-graph", taskPath + "/%63overage-graph"} {
 				if code, _ := request("GET", path, session.Token); code != 403 {
 					t.Fatal("잘못된 경로 허용", path, code)
 				}
 			}
 			for _, method := range []string{"HEAD", "POST", "PUT"} {
-				if code, _ := request(method, taskPath+"/coverage-graph", session.Token); code != 403 {
-					t.Fatal("GET 외 허용", code)
+				for _, query := range []string{"", "?view=kg-v1"} {
+					if code, _ := request(method, taskPath+"/coverage-graph"+query, session.Token); code != 403 {
+						t.Fatal("GET 외 허용", query, code)
+					}
 				}
 			}
 			if code, _ := request("GET", taskPath+"/coverage-graph", ""); code != 401 {
@@ -609,8 +665,10 @@ func TestProductReportGraphsOwnedPostgres(t *testing.T) {
 	t.Run("unauthorized-direct-source", func(t *testing.T) {
 		assertReadOnly(t, func() {
 			before := runtimeCalls.Load()
-			if code, _ := request("GET", taskPath+"/coverage-graph", session.Token); code != 403 || runtimeCalls.Load() != before {
-				t.Fatal("읽기 권한 없는 원천 노출", code)
+			for _, query := range []string{"", "?view=kg-v1"} {
+				if code, _ := request("GET", taskPath+"/coverage-graph"+query, session.Token); code != 403 || runtimeCalls.Load() != before {
+					t.Fatal("읽기 권한 없는 원천 노출", query, code)
+				}
 			}
 		})
 	})
@@ -659,6 +717,14 @@ func TestProductReportGraphsOwnedPostgres(t *testing.T) {
 			}
 			if !found || sourceBackend.executions.Load() != prior {
 				t.Fatal("직접 원천 조회 누락 또는 실행")
+			}
+			code, raw = request("GET", taskPath+"/coverage-graph?view=kg-v1", session.Token)
+			if code != 200 {
+				t.Fatal("KG v1 승인 원천 조회 실패", code, string(raw))
+			}
+			ids, tasks := kgNodes(t, raw)
+			if !ids[fmt.Sprintf("a:%d", sourceAsset)] || ids[fmt.Sprintf("a:%d", recursiveAsset)] || len(tasks) != 2 || tasks[1] != strconv.FormatInt(source, 10) {
+				t.Fatal("KG v1 직접 원천 한정", string(raw))
 			}
 		})
 	})

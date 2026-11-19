@@ -38,7 +38,7 @@ type reportReadQuery interface {
 }
 
 func reportGraphRequestTask(r *http.Request) (int64, bool) {
-	if r.Method != http.MethodGet || r.URL.RawQuery != "" || r.URL.ForceQuery || r.URL.RawPath != "" {
+	if r.Method != http.MethodGet || r.URL.ForceQuery || r.URL.RawPath != "" {
 		return 0, false
 	}
 	tail, ok := strings.CutPrefix(r.URL.Path, "/api/tasks/")
@@ -47,6 +47,10 @@ func reportGraphRequestTask(r *http.Request) (int64, bool) {
 	}
 	parts := strings.Split(tail, "/")
 	if len(parts) != 2 || parts[1] != "coverage-graph" && parts[1] != "access-map" {
+		return 0, false
+	}
+	// query는 coverage-graph의 KG 조회 v1 선택자 하나만 받는다(kg-query-v1 §3).
+	if r.URL.RawQuery != "" && (parts[1] != "coverage-graph" || r.URL.RawQuery != kgV1Query) {
 		return 0, false
 	}
 	id, err := strconv.ParseInt(parts[0], 10, 64)
@@ -143,28 +147,43 @@ func reportBindingUnchanged(ctx context.Context, pool *sql.DB, task int64, graph
 
 func (s *Server) serveCoverageGraph(w http.ResponseWriter, r *http.Request, boundTask int64) {
 	w.Header().Set("Cache-Control", "no-store")
+	// query가 붙은 요청은 KG 조회 v1을 뜻하므로 오류를 §5.4 kg 봉투로 낸다. 무인자 오류 본문은 그대로다.
+	kg := kgRequested(r)
+	fail := func(status int, message string) {
+		if kg {
+			writeKGError(w, status)
+			return
+		}
+		writeErr(w, status, message)
+	}
+	// Go mux의 GET 패턴은 HEAD도 받는다. v1은 GET만 받고 HEAD는 405다(§3).
+	if kg && r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeKGError(w, http.StatusMethodNotAllowed)
+		return
+	}
 	if !s.authenticateReportRead(w, r) {
 		return
 	}
 	task, ok := reportGraphRequestTask(r)
 	if !ok || !strings.HasSuffix(r.URL.Path, "/coverage-graph") {
-		writeErr(w, 400, "자산 그래프 조회 형식이 올바르지 않습니다")
+		fail(400, "자산 그래프 조회 형식이 올바르지 않습니다")
 		return
 	}
 	if boundTask > 0 && task != boundTask {
-		writeErr(w, 403, "선택한 작업의 자산 그래프만 사용할 수 있습니다")
+		fail(403, "선택한 작업의 자산 그래프만 사용할 수 있습니다")
 		return
 	}
 	expected, ok := reportExpectedScope(r)
 	if !ok {
-		writeErr(w, 400, "자산 그래프 조회 결속이 올바르지 않습니다")
+		fail(400, "자산 그래프 조회 결속이 올바르지 않습니다")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), accessMapTimeout)
 	defer cancel()
 	tx, err := s.m.pg.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
 	if err != nil {
-		writeErr(w, 503, "저장된 자산 그래프를 확인할 수 없습니다")
+		fail(503, "저장된 자산 그래프를 확인할 수 없습니다")
 		return
 	}
 	defer tx.Rollback()
@@ -173,8 +192,21 @@ func (s *Server) serveCoverageGraph(w http.ResponseWriter, r *http.Request, boun
 		err = errReportReadScope
 	}
 	var graph *db.CoverageGraphData
+	var kgGraph *db.KGGraph
 	if err == nil {
-		graph, err = s.m.pg.Assets().BuildCoverageGraphTx(ctx, tx, task)
+		// v1은 권한을 확인한 같은 작업 문맥(현재+직접 원천)을 같은 snapshot에서 읽는다(§3.1).
+		if kg {
+			kgGraph, err = db.QueryKGTx(ctx, tx, kgContextTasks(binding))
+		} else {
+			graph, err = s.m.pg.Assets().BuildCoverageGraphTx(ctx, tx, task)
+		}
+	}
+	var kgBody []byte
+	if err == nil && kg {
+		kgBody, err = json.Marshal(kgGraph)
+		if err == nil && len(kgBody) > db.KGLimits.Bytes {
+			err = db.ErrKGTooLarge
+		}
 	}
 	if err == nil {
 		err = tx.Commit()
@@ -184,11 +216,18 @@ func (s *Server) serveCoverageGraph(w http.ResponseWriter, r *http.Request, boun
 	}
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		writeErr(w, 404, "작업을 찾을 수 없습니다")
+		fail(404, "작업을 찾을 수 없습니다")
 	case errors.Is(err, errReportReadScope):
-		writeErr(w, 409, "자산 그래프의 조회 문맥이 변경되었습니다")
+		fail(409, "자산 그래프의 조회 문맥이 변경되었습니다")
+	case kg && errors.Is(err, db.ErrKGTooLarge):
+		fail(http.StatusRequestEntityTooLarge, "")
 	case err != nil:
-		writeErr(w, 503, "저장된 자산 그래프를 확인할 수 없습니다")
+		fail(503, "저장된 자산 그래프를 확인할 수 없습니다")
+	case kg:
+		w.Header().Set(reportReadScopeHeader, reportReadDigest(binding))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		_, _ = w.Write(kgBody)
 	default:
 		publicCoverageGraph(graph)
 		w.Header().Set(reportReadScopeHeader, reportReadDigest(binding))
@@ -270,19 +309,27 @@ func reportPublicHost(host string) bool {
 func (s *Server) authenticateReportRead(w http.ResponseWriter, r *http.Request) bool {
 	w.Header().Set("Cache-Control", "no-store")
 	header := r.Header.Get("Authorization")
+	// KG 조회 v1은 인증 실패도 §5.4 kg 봉투다. 무인자 조회의 본문은 그대로다.
+	fail := func(status int, message string) {
+		if kgRequested(r) {
+			writeKGError(w, status)
+			return
+		}
+		writeErr(w, status, message)
+	}
 	if len(r.Header.Values("Authorization")) != 1 || !strings.HasPrefix(header, "Bearer ") || len(header) <= len("Bearer ") {
-		writeErr(w, http.StatusUnauthorized, authErrUnauthorized)
+		fail(http.StatusUnauthorized, authErrUnauthorized)
 		return false
 	}
 	hash, err := s.reloadReportPassHash(r.Context())
 	if err != nil {
-		writeErr(w, http.StatusServiceUnavailable, authErrDataSourceUnavailable)
+		fail(http.StatusServiceUnavailable, authErrDataSourceUnavailable)
 		return false
 	}
 	claims := &jwt.RegisteredClaims{}
 	token, err := jwt.ParseWithClaims(strings.TrimPrefix(header, "Bearer "), claims, func(*jwt.Token) (any, error) { return s.signingKey(hash), nil }, jwt.WithValidMethods([]string{"HS256"}), jwt.WithExpirationRequired())
 	if err != nil || !token.Valid || claims.Subject != "ARTEX" {
-		writeErr(w, http.StatusUnauthorized, authErrTokenInvalid)
+		fail(http.StatusUnauthorized, authErrTokenInvalid)
 		return false
 	}
 	return true

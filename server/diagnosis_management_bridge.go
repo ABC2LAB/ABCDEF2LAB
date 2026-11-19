@@ -272,6 +272,13 @@ func (b *diagnosisManagementBridge) ServeHTTP(w http.ResponseWriter, r *http.Req
 				return
 			}
 		case 400, 401, 403, 404, 409, 503:
+		case http.StatusRequestEntityTooLarge:
+			// KG 조회 v1의 상한 초과(kg_graph_too_large, 재조회 불가)만 그대로 넘긴다(kg-query-v1 §11-3).
+			// 무인자 coverage-graph·access-map의 413은 지금처럼 503이다.
+			if !reportGraphKGView(r) {
+				writeErr(w, 503, "저장 조회 서버의 응답을 확인할 수 없습니다")
+				return
+			}
 		default:
 			writeErr(w, 503, "저장 조회 서버의 응답을 확인할 수 없습니다")
 			return

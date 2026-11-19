@@ -227,7 +227,8 @@ func TestProductReportCaptureReadsOwnedPostgres(t *testing.T) {
 	if apiPool.QueryRow(`SELECT has_table_privilege(current_user,'task_scope','SELECT'),has_table_privilege(current_user,'task_scope','INSERT,UPDATE,DELETE,TRUNCATE')`).Scan(&scopeRead, &scopeWrite) != nil || !scopeRead || scopeWrite {
 		t.Fatal("보고서 scope의 읽기 전용 설치 권한 불일치")
 	}
-	if _, err := installer.Exec(`INSERT INTO assets(type,domain,task_ids) VALUES('subdomain','report.owned.test',$1::bigint[])`, fmt.Sprintf("{%d}", row.ID)); err != nil {
+	var scopedAsset int64
+	if err := installer.QueryRow(`INSERT INTO assets(type,domain,task_ids) VALUES('subdomain','report.owned.test',$1::bigint[]) RETURNING id`, fmt.Sprintf("{%d}", row.ID)).Scan(&scopedAsset); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := installer.Exec(`INSERT INTO task_scope(task_id,kind,domain,source) VALUES($1,'subdomain','report.owned.test','manual')`, row.ID); err != nil {
@@ -264,7 +265,44 @@ func TestProductReportCaptureReadsOwnedPostgres(t *testing.T) {
 			t.Fatal("KG 미등록 URL Job의 지도 상태가 달라짐", out.Code)
 		}
 	}
-	t.Run("fresh-install", assertGraph)
+	// KG 조회 v1(kg-query-v1)은 무인자 본문 읽기에 더해 task_scope의 id·source를 읽는다(scope 출처 ID·출처 값).
+	// 권한이 모자라면 빈 그래프·내부 오류가 아니라 503 kg_store_unavailable(재조회 가능)이다.
+	assertKG := func(t *testing.T, want int) {
+		t.Helper()
+		out := read("coverage-graph?view=kg-v1")
+		body := out.Body.String()
+		// 성공 본문에는 출처 종류 "task_scope"가 정상으로 들어가므로 원문 도메인만 본다. 실패 본문은 고정 봉투와 통째로 비교한다.
+		if out.Code != want || strings.Contains(body, "report.owned.test") {
+			t.Fatal("실제 보고서 역할의 KG v1 GET", want, out.Code)
+		}
+		if want != 200 {
+			if body != `{"error":{"code":"kg_store_unavailable","retryable":true},"version":"abc2lab.kg-query/v1"}`+"\n" {
+				t.Fatal("KG v1 권한 부족 본문", body)
+			}
+			return
+		}
+		var graph struct {
+			Version    string `json:"version"`
+			Provenance []struct {
+				ID     string `json:"id"`
+				Source string `json:"source"`
+			} `json:"provenance"`
+		}
+		if json.Unmarshal(out.Body.Bytes(), &graph) != nil || graph.Version != db.KGQueryVersion || !strings.Contains(body, fmt.Sprintf(`"a:%d"`, scopedAsset)) {
+			t.Fatal("KG v1 본문", body)
+		}
+		scoped := false
+		for _, p := range graph.Provenance {
+			scoped = scoped || strings.HasPrefix(p.ID, "scope:") && strings.HasSuffix(p.ID, fmt.Sprintf(":%d", scopedAsset)) && p.Source == "manual"
+		}
+		if !scoped {
+			t.Fatal("KG v1 범위 출처(id·source) 누락", body)
+		}
+	}
+	t.Run("fresh-install", func(t *testing.T) {
+		assertGraph(t)
+		assertKG(t, 200)
+	})
 	t.Run("before-683", func(t *testing.T) {
 		if _, err := installer.Exec(`REVOKE SELECT ON public.task_scope FROM product_api`); err != nil {
 			t.Fatal(err)
@@ -276,6 +314,7 @@ func TestProductReportCaptureReadsOwnedPostgres(t *testing.T) {
 		if out := read("access-map"); out.Code != 409 {
 			t.Fatal("그래프 전용 권한이 지도 읽기에 영향을 줌", out.Code)
 		}
+		assertKG(t, 503)
 	})
 	t.Run("minimal-upgrade", func(t *testing.T) {
 		if _, err := installer.Exec(`GRANT SELECT (task_id, kind, company_id, domain, net, value) ON public.task_scope TO product_api`); err != nil {
@@ -290,5 +329,21 @@ func TestProductReportCaptureReadsOwnedPostgres(t *testing.T) {
 			t.Fatal("최소 이관 권한의 경계가 달라짐", err)
 		}
 		assertGraph(t)
+		// 6개 열만 이관한 기존 설치: 무인자 그래프는 그대로 되고 v1은 권한 부족으로 닫힌다.
+		assertKG(t, 503)
+	})
+	t.Run("minimal-upgrade-kg-v1", func(t *testing.T) {
+		if _, err := installer.Exec(`GRANT SELECT (id, source) ON public.task_scope TO product_api`); err != nil {
+			t.Fatal(err)
+		}
+		var tableRead, unrelatedRead, writable bool
+		if err := apiPool.QueryRow(`SELECT has_table_privilege(current_user,'public.task_scope','SELECT'),
+			has_column_privilege(current_user,'public.task_scope','reason','SELECT'),
+			has_table_privilege(current_user,'public.task_scope','INSERT,UPDATE,DELETE,TRUNCATE')
+			  OR has_any_column_privilege(current_user,'public.task_scope','INSERT,UPDATE')`).Scan(&tableRead, &unrelatedRead, &writable); err != nil || tableRead || unrelatedRead || writable {
+			t.Fatal("v1 이관 권한의 경계가 달라짐", err)
+		}
+		assertGraph(t)
+		assertKG(t, 200)
 	})
 }
