@@ -42,6 +42,10 @@ const (
 	// DisabledShareUnavailable은 확정 단계 몫(종류 수·요청 시간 상한)을 받지 못한 경우다.
 	DisabledShareUnavailable  DisabledReason = "confirmation_share_unavailable"
 	DisabledNoConfirmableType DisabledReason = "no_confirmable_type"
+	// DisabledAccountRolesUndeclared는 선언에 소유·교차 계정 역할이 없는 경우다(계약 §4).
+	DisabledAccountRolesUndeclared DisabledReason = "account_roles_undeclared"
+	// DisabledPrivilegeUnconfirmed는 두 계정이 같은 권한 등급이라는 운영자 확인이 없는 경우다(계약 §4).
+	DisabledPrivilegeUnconfirmed DisabledReason = "accounts_privilege_unconfirmed"
 )
 
 // IntegrityReason은 StatusIntegrityFailed의 세부 사유다.

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -53,7 +54,8 @@ func declarationTestInput() diagnosisprep.DeclarationInput {
 		Read: e3contract.ReadSpec{PathTemplate: "/app/notes/{id}", DataPath: "."}}
 	// 화면 입력 순서가 이름순이 아니어도 서버가 정렬한다.
 	return diagnosisprep.DeclarationInput{Identity: e3contract.IdentitySpec{Path: "/app/me", SubjectIDPath: "id"},
-		Types: []e3contract.TypeDeclaration{{Type: "post", Sharing: e3contract.SharingShared}, note}}
+		Types:             []e3contract.TypeDeclaration{{Type: "post", Sharing: e3contract.SharingShared}, note},
+		OwnerAccountLabel: "tester-a", CrossAccountLabel: "tester-b", AccountsSamePrivilege: true}
 }
 
 func declarationField(t *testing.T, err error) string {
@@ -775,6 +777,53 @@ func TestProductResetSettleLines(t *testing.T) {
 	if got := reopened.resets[target.ID]; got == nil || got.writesJob != want2.writesJob || got.writesRef != want2.writesRef ||
 		!slices.Equal(got.writesObjects, want2.writesObjects) {
 		t.Fatalf("재생 뒤: %+v, 기대 %+v", got, want2)
+	}
+}
+
+// 선언 저장 API는 계정 역할 칸(계약 §4)을 받아 선언·동결본에 넣는다. 한쪽만 주거나 같은 계정을 두 역할에 두면 그 칸 이름으로
+// 거부한다. 역할 없이 저장한 선언은 정본 바이트가 칸을 넣기 전과 같다(확정 단계는 꺼진다).
+func TestProductDeclarationAccountRoles(t *testing.T) {
+	r, _, target, _ := declarationTestTarget(t)
+	v, err := r.putDeclaration("ARTEX", target.ID, target.Revision, declarationTestInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := v.Declaration; d == nil || d.OwnerAccountLabel != "tester-a" || d.CrossAccountLabel != "tester-b" || !d.AccountsSamePrivilege {
+		t.Fatalf("저장한 역할: %+v", v.Declaration)
+	}
+	got, err := r.declaration("ARTEX", target.ID)
+	if err != nil || got.Declaration == nil || got.Declaration.OwnerAccountLabel != "tester-a" || got.Declaration.CrossAccountLabel != "tester-b" {
+		t.Fatalf("조회한 역할: %+v %v", got, err)
+	}
+	for name, c := range map[string]struct {
+		edit  func(*diagnosisprep.DeclarationInput)
+		field string
+	}{
+		"owner_only":   {func(in *diagnosisprep.DeclarationInput) { in.CrossAccountLabel = "" }, "cross_account_label"},
+		"same_account": {func(in *diagnosisprep.DeclarationInput) { in.CrossAccountLabel = in.OwnerAccountLabel }, "cross_account_label"},
+		"bad_label":    {func(in *diagnosisprep.DeclarationInput) { in.OwnerAccountLabel = "tester a" }, "owner_account_label"},
+		// 자격 모양 라벨은 모양 검사(refPattern)를 지나도 자격 검사가 칸 이름으로 막는다(#743 이경준 리뷰).
+		"credential_owner": {func(in *diagnosisprep.DeclarationInput) { in.OwnerAccountLabel = "password:hunter2" }, "owner_account_label"},
+		"credential_cross": {func(in *diagnosisprep.DeclarationInput) { in.CrossAccountLabel = "token:abc-value" }, "cross_account_label"},
+		"privilege_without_roles": {func(in *diagnosisprep.DeclarationInput) {
+			in.OwnerAccountLabel, in.CrossAccountLabel = "", ""
+		}, "accounts_same_privilege"},
+	} {
+		in := declarationTestInput()
+		c.edit(&in)
+		if _, err := r.putDeclaration("ARTEX", target.ID, target.Revision, in); declarationField(t, err) != c.field {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	none := declarationTestInput()
+	none.OwnerAccountLabel, none.CrossAccountLabel, none.AccountsSamePrivilege = "", "", false
+	v, err = r.putDeclaration("ARTEX", target.ID, target.Revision, none)
+	if err != nil || v.Declaration == nil || v.Declaration.OwnerAccountLabel != "" {
+		t.Fatalf("역할 없는 선언 저장: %+v %v", v, err)
+	}
+	raw, err := v.Declaration.CanonicalBytes()
+	if err != nil || bytes.Contains(raw, []byte("account")) {
+		t.Fatalf("역할 없는 선언 정본에 역할 칸: %s %v", raw, err)
 	}
 }
 
