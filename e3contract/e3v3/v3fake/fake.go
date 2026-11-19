@@ -174,11 +174,11 @@ func (f *E2) Send(ctx context.Context, req e3v3.Request) (e3v3.Event, error) {
 			AccountLabel: req.AccountLabel, Timeout: req.Timeout})
 	case e3contract.PurposeCreate:
 		o, err = f.Target.Create(ctx, e3contract.CreateRequest{Binding: req.Binding, ResourceType: req.ResourceType,
-			Spec: req.Create, AccountLabel: req.AccountLabel, Marker: req.Marker, Timeout: req.Timeout})
+			Spec: req.Create, AccountLabel: req.AccountLabel, Marker: req.Marker, Body: req.Body, ObjectID: req.ObjectID, Timeout: req.Timeout})
 	case e3contract.PurposeRead:
 		o, err = f.Target.Read(ctx, e3contract.ReadRequest{Binding: req.Binding, ResourceType: req.ResourceType, Spec: req.Read,
-			MarkerField: req.MarkerField, Role: req.Role, AccountLabel: req.AccountLabel, Create: req.CreateRef, Marker: req.Marker,
-			Timeout: req.Timeout})
+			MarkerField: req.MarkerField, Role: req.Role, AccountLabel: req.AccountLabel, Create: req.CreateRef, ObjectID: req.ObjectID,
+			Marker: req.Marker, Timeout: req.Timeout})
 	default:
 		return e3v3.Event{}, fmt.Errorf("v3fake: 목적 %q", req.Program)
 	}

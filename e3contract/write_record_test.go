@@ -216,8 +216,8 @@ type cancelOnReserve struct {
 	cancel context.CancelFunc
 }
 
-func (c cancelOnReserve) Reserve(ctx context.Context, b e3contract.RunBinding, typ string) error {
-	err := c.Writes.Reserve(ctx, b, typ)
+func (c cancelOnReserve) Reserve(ctx context.Context, b e3contract.RunBinding, typ, objectID string) error {
+	err := c.Writes.Reserve(ctx, b, typ, objectID)
 	c.cancel()
 	return err
 }

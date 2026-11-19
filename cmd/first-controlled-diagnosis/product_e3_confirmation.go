@@ -57,11 +57,16 @@ type productWriteRecorder struct {
 	jobID    string
 }
 
-func (w productWriteRecorder) Reserve(_ context.Context, b e3contract.RunBinding, resourceType string) error {
+func (w productWriteRecorder) Reserve(_ context.Context, b e3contract.RunBinding, resourceType, objectID string) error {
 	if w.registry == nil || b.JobRef != w.jobID {
 		return errPreparation
 	}
-	return w.registry.recordConfirmationWrites(w.targetID, w.jobID, []productConfirmationObject{{Type: resourceType, IDUnknown: true}})
+	o := productConfirmationObject{Type: resourceType, IDUnknown: true}
+	if objectID != "" {
+		// 요청 본문 칸 ID는 보내기 전에 알므로 ID와 함께 남긴다(결과 불명이어도 리셋 확인 때 이 ID로 조회해 볼 수 있음).
+		o = productConfirmationObject{Type: resourceType, ID: objectID}
+	}
+	return w.registry.recordConfirmationWrites(w.targetID, w.jobID, []productConfirmationObject{o})
 }
 
 func (w productWriteRecorder) Settle(_ context.Context, b e3contract.RunBinding, write e3contract.ConfirmationWrite) error {
@@ -71,7 +76,9 @@ func (w productWriteRecorder) Settle(_ context.Context, b e3contract.RunBinding,
 	var o productConfirmationObject
 	switch {
 	case write.Outcome == e3contract.WriteCreated && urlDigestValid(write.ObjectIDDigest):
-		o = productConfirmationObject{Type: write.ResourceType, IDDigest: write.ObjectIDDigest}
+		o = productConfirmationObject{Type: write.ResourceType, IDDigest: write.ObjectIDDigest, ID: write.ObjectID}
+	case write.Outcome == e3contract.WriteNotSent && write.ObjectID != "":
+		o = productConfirmationObject{Type: write.ResourceType, ID: write.ObjectID, NotSent: true}
 	case write.Outcome == e3contract.WriteNotSent:
 		o = productConfirmationObject{Type: write.ResourceType, IDUnknown: true, NotSent: true}
 	default:
