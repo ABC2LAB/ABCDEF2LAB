@@ -1123,6 +1123,12 @@ class TestE3ConfirmationRow(unittest.TestCase):
                                                     "sha256": hashlib.sha256(raw).hexdigest()})
         self.assertEqual(e3_confirmation_row(self.result(status="completed", reason=None, requests=7))["requests"], 7)
         self.assertEqual(e3_confirmation_row(self.result(status="completed", reason=None))["reason"], None)
+        # 비활성의 suspected 후보는 받는다(후보는 판정 없이 SUSPECTED로 남는다). confirmed 후보는 판정이 있는 결과에서만.
+        suspected = self.result(candidates=[{"candidate_ref": "1", "level": "suspected", "reason": "link_none"}])
+        self.assertEqual(e3_confirmation_row(suspected)["status"], "disabled")
+        confirmed = self.result(status="completed", reason=None, requests=5, verdicts=[{"type": "x"}],
+                                candidates=[{"candidate_ref": "1", "level": "confirmed"}])
+        self.assertEqual(e3_confirmation_row(confirmed)["status"], "completed")
         for raw in (b"not json", b"[]", self.result(version="v0"), self.result(status="maybe"),
                     self.result(status="completed", reason="x"), self.result(reason="Bad Reason"), self.result(reason=None),
                     # 비활성인데 확정 요청이 있음(모순, #742 리뷰)·요청 수 모양 오류
@@ -1133,7 +1139,13 @@ class TestE3ConfirmationRow(unittest.TestCase):
                     self.result(verdicts=[{"type": "x"}]), self.result(writes=[{"id_known": False}]),
                     self.result(status="start_refused", reason="policy_source_unavailable", verdicts=[{"type": "x"}]),
                     self.result(status="start_refused", reason="policy_source_unavailable", requests=1),
-                    self.result(verdicts=None), self.result(skipped={}), self.result(candidates="x"), self.result(writes=None)):
+                    self.result(verdicts=None), self.result(skipped={}), self.result(candidates="x"), self.result(writes=None),
+                    # 판정 없는 confirmed 후보(E③ 계약 §9, #742 리뷰)·후보 모양 오류
+                    self.result(candidates=[{"candidate_ref": "1", "level": "confirmed"}]),
+                    self.result(status="start_refused", reason="policy_source_unavailable",
+                                candidates=[{"candidate_ref": "1", "level": "confirmed"}]),
+                    self.result(status="completed", reason=None, candidates=[{"candidate_ref": "1", "level": "confirmed"}]),
+                    self.result(candidates=[{"candidate_ref": "1", "level": "CONFIRMED"}]), self.result(candidates=["1"])):
             with self.subTest(raw=raw[:40]):
                 self.assertEqual(e3_confirmation_row(raw), {"error": "e3_confirmation_invalid"})
 
@@ -1144,10 +1156,14 @@ class TestE3ConfirmationRow(unittest.TestCase):
         self.assertEqual(result["status"], "complete", result)
         e3 = evidence.files["product-files.json"]["e3_confirmation"]
         self.assertEqual((e3["status"], e3["reason"], result["e3_confirmation"]["status"]), ("disabled", "declaration_missing", "disabled"))
+        # 비활성 회차의 suspected 후보는 공식 회차를 막지 않는다
+        suspected = file(self.result(candidates=[{"candidate_ref": "1", "level": "suspected", "reason": "link_none"}]))
+        self.assertEqual(run(suspected, purpose="official")[0]["status"], "complete")
         for mutate, reason in ((file(self.result(reason="not_wired")), "e3_official_not_disabled"),
                                (file(self.result(status="completed", reason=None)), "e3_official_not_disabled"),
                                # 비활성·요청 0이어도 판정이 있으면 모순이라 비활성 근거가 아니다(#742 리뷰)
                                (file(self.result(verdicts=[{"type": "x"}])), "e3_confirmation_invalid"),
+                               (file(self.result(candidates=[{"candidate_ref": "1", "level": "confirmed"}])), "e3_confirmation_invalid"),
                                (file(RuntimeError("docker_helper_copy_failed")), "e3_status_not_collected"),
                                (file(b"{}"), "e3_confirmation_invalid"),
                                (file(self.result(requests=1)), "e3_confirmation_invalid")):

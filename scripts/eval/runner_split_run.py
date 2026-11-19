@@ -398,6 +398,7 @@ E3_RESULT_VERSION = "e3-confirmation-run/v1"  # e3contract.RunResultVersion
 _E3_NO_REASON = ("completed", "interrupted")
 _E3_LIST_FIELDS = ("verdicts", "skipped", "candidates", "writes")  # e3contract.RunResult 배열 칸
 _E3_NOT_RUN = ("disabled", "start_refused")  # 확정 단계를 돌지 않은 상태(계약상 요청 0건)
+_E3_CANDIDATE_LEVELS = ("suspected", "confirmed")  # e3contract.CandidateConfirmation.Level
 _E3_REASON = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 
 
@@ -427,6 +428,13 @@ def e3_confirmation_row(raw: bytes) -> dict:
     if not all(isinstance(value.get(name), list) for name in _E3_LIST_FIELDS):
         return {"error": "e3_confirmation_invalid"}
     if value["status"] in _E3_NOT_RUN and (value["verdicts"] or value["writes"] or requests != 0):
+        return {"error": "e3_confirmation_invalid"}
+    # 후보 단계는 suspected·confirmed뿐이고, confirmed는 연결된 CONFIRMED 판정이 있을 때만이다(E③ 계약 §9). 판정이 없는
+    # 결과(돌지 않은 상태 포함)에 confirmed 후보가 있으면 모순이다(#742 리뷰). 비활성의 suspected 후보는 그대로 받는다.
+    candidates = value["candidates"]
+    if not all(isinstance(item, dict) and item.get("level") in _E3_CANDIDATE_LEVELS for item in candidates):
+        return {"error": "e3_confirmation_invalid"}
+    if any(item["level"] == "confirmed" for item in candidates) and (value["status"] in _E3_NOT_RUN or not value["verdicts"]):
         return {"error": "e3_confirmation_invalid"}
     return {"status": value["status"], "reason": reason, "requests": requests, "sha256": hashlib.sha256(raw).hexdigest()}
 
