@@ -68,6 +68,11 @@ func boundedText(raw string, limit int) string {
 
 // normalizeRequest는 판정 전에 탐색 쪽이 고른 메타데이터를 정한 어휘로 맞춘다. 판정과 기록이 같은 값을 본다.
 func normalizeRequest(req Request) Request {
+	// 빈 경로는 "/"다(절대형 요청 대상 "http://host"처럼 경로 없이 온 요청). 판정(canonicalPath)은 이미 "/"로 보는데 기록은
+	// 빈 값으로 가린 경로를 만들어, 승인 대상 전달 행에 가린 경로가 빠졌다(확인 쌍 O 회차, 계약 §4.1 위반으로 보존 기록 거부).
+	if req.EscapedPath == "" {
+		req.EscapedPath = "/"
+	}
 	req.Method = boundedMethod(req.Method)
 	req.FetchDest = boundedFetch(req.FetchDest, fetchDests)
 	req.FetchMode = boundedFetch(req.FetchMode, fetchModes)
