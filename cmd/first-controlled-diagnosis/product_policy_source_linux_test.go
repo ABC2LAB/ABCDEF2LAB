@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -143,6 +144,27 @@ func TestReadPolicySourceLabelsFromFrozenOnly(t *testing.T) {
 	after, err := readPolicySource(f.runs, liveJob)
 	if err != nil || *after != *before {
 		t.Fatalf("현재 선언을 바꾸자 결과가 바뀜: %+v → %+v %v", before, after, err)
+	}
+}
+
+// 동결본 라벨이 계약 모양이 아니면(대문자·같은 라벨·하나만) 라벨 없이 digest만 준다. 라벨을 실으면 IPC 응답 검사가 응답
+// 전체를 거부하므로, 판정 상세의 동결본 대조까지 막히지 않게 하려는 것이다.
+func TestReadPolicySourceRejectsBadFrozenLabels(t *testing.T) {
+	for name, labels := range map[string][2]string{"upper": {"Tester A", "tester-b"}, "same": {"tester-a", "tester-a"}, "one": {"tester-a", ""}} {
+		t.Run(name, func(t *testing.T) {
+			runs := policySourceRuns(t)
+			d := e3contract.Declaration{OwnerAccountLabel: labels[0], CrossAccountLabel: labels[1]}
+			raw, err := json.Marshal(d)
+			if err != nil || os.WriteFile(filepath.Join(runs, liveJob, productFrozenDeclarationFile), raw, 0o600) != nil {
+				t.Fatal("동결본 쓰기")
+			}
+			got, err := readPolicySource(runs, liveJob)
+			sum := sha256.Sum256(raw)
+			if err != nil || !got.Present || got.SHA256 != hex.EncodeToString(sum[:]) || got.OwnerAccountLabel != "" || got.CrossAccountLabel != "" ||
+				!diagnosisprep.ValidProductPolicySourceValue(*got) {
+				t.Fatalf("라벨 거르기: %+v %v", got, err)
+			}
+		})
 	}
 }
 

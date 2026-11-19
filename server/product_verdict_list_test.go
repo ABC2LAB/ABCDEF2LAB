@@ -129,10 +129,15 @@ func productListInTx(t *testing.T, pg *db.DB, task int64, got productVerdictCont
 			t.Fatalf("상세 읽기 %d", s)
 		}
 		d, s, _ := assembleVerdictDetail(t.Context(), task, sel, loaded, got)
-		if s != http.StatusOK {
+		switch s {
+		case http.StatusOK:
+			details[r.verdictID.Int64] = d
+		case http.StatusUnprocessableEntity:
+			// 상세는 결속 이상(제품 판정의 link 등)을 응답 전체 422로 낸다. 목록에서는 그 행의 진위 실패와 같다.
+			details[r.verdictID.Int64] = verdictDetailEnvelope{RecordChecks: &verdictDetailRecordChecks{ReasonCodes: []string{verdictDetailRecordIntegrityFailed}}}
+		default:
 			t.Fatalf("상세 조립 %d", s)
 		}
-		details[r.verdictID.Int64] = d
 	}
 	return env, status, details
 }
@@ -176,6 +181,13 @@ func TestProductVerdictListRowAuthenticity(t *testing.T) {
 			forgeProductRow(t, tx, note.IssuanceID, func(p map[string]any) { p["policy_source"].(map[string]any)["digest_sha256"] = other },
 				func(b map[string]any) { b["policy"].(map[string]any)["digest_sha256"] = other })
 			if _, err := tx.ExecContext(t.Context(), `UPDATE e3_verdict_issuances SET policy_source_digest=decode($2,'hex') WHERE id=$1`, note.IssuanceID, other); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		// 제품 판정에 finding 연결이 붙음(제품 판정은 finding을 만들지 않는다, 결정 §9). 상세는 422, 목록은 그 행만 숨긴다.
+		"product_link": {func(t *testing.T, tx *sql.Tx) {
+			if _, err := tx.ExecContext(t.Context(), `INSERT INTO e3_verdict_links(issuance_id,task_id,finding_id,purpose,evidence_version) VALUES($1,$2,$3,'initial',1)`,
+				note.IssuanceID, task, 9_000_000_000+note.IssuanceID); err != nil {
 				t.Fatal(err)
 			}
 		}},
