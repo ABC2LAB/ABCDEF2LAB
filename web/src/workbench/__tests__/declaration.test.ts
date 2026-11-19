@@ -8,6 +8,7 @@ vi.mock("@/lib/diagnosis/api", async (importOriginal) => {
 import { ApiError, apiFetch } from "@/lib/diagnosis/api";
 
 import {
+  type AccountRoles,
   confirmable,
   credentialFields,
   type DeclarationDraft,
@@ -23,6 +24,7 @@ import {
   normalizeDraft,
   parseDeclarationResponse,
   rejectedFieldOf,
+  roleReadiness,
   saveDeclaration,
   saveFailureOf,
   scopeWarnings,
@@ -617,6 +619,66 @@ describe("계정 역할(계약 §4, 선택 칸)", () => {
   ])("계약 밖 역할 칸(%s)은 깨진 응답이다", (_name, over) => {
     expect(parseDeclarationResponse(activeRes(storedJson(over)), "target-1").state).toBe("invalid");
   });
+
+  const withRoles = (r: Partial<AccountRoles>) =>
+    edit((d) => {
+      d.roles = { ownerAccountLabel: "", crossAccountLabel: "", accountsSamePrivilege: false, ...r };
+    });
+  const roleIssues = (d: DeclarationDraft) =>
+    validateDraft(d).filter((i) =>
+      ["ownerAccountLabel", "crossAccountLabel", "accountsSamePrivilege"].includes(i.field),
+    );
+
+  it.each<[string, Partial<AccountRoles>, string]>([
+    ["한쪽만(A)", { ownerAccountLabel: "tester-a" }, "crossAccountLabel"],
+    ["한쪽만(B)", { crossAccountLabel: "tester-b" }, "ownerAccountLabel"],
+    ["같은 계정", { ownerAccountLabel: "tester-a", crossAccountLabel: "tester-a" }, "crossAccountLabel"],
+    ["라벨 모양", { ownerAccountLabel: "tester a", crossAccountLabel: "tester-b" }, "ownerAccountLabel"],
+    ["역할 없이 등급 확인", { accountsSamePrivilege: true }, "accountsSamePrivilege"],
+  ])("화면 검사도 서버와 같은 역할 규칙으로 막는다: %s", (_name, r, field) => {
+    const found = roleIssues(withRoles(r));
+    expect(found.map((i) => i.field)).toContain(field);
+    for (const i of found) expect(i.message).not.toMatch(/tester/); // 문구에 입력 원문 없음
+  });
+
+  it("규칙에 맞는 역할(둘 다 · 등급 확인 유무)과 빈 역할은 통과한다", () => {
+    expect(roleIssues(withRoles({ ownerAccountLabel: "tester-a", crossAccountLabel: "tester-b" }))).toEqual([]);
+    expect(
+      roleIssues(withRoles({ ownerAccountLabel: "a:1", crossAccountLabel: "b/2", accountsSamePrivilege: true })),
+    ).toEqual([]);
+    expect(roleIssues(withRoles({}))).toEqual([]);
+  });
+
+  it("라벨에 자격 모양이 있으면 서버 CredentialField 처럼 그 칸으로 막는다(라벨 형식은 맞아도)", () => {
+    const d = withRoles({ ownerAccountLabel: "password:synthetic", crossAccountLabel: "tester-b" });
+    expect(credentialFields(d)).toEqual(["ownerAccountLabel"]);
+    expect(validateDraft(d).find((i) => /자격 값 모양/.test(i.message))?.field).toBe("ownerAccountLabel");
+  });
+
+  it("화면 저장 경로(normalizeDraft → 저장 본문)에서도 역할을 지우지 않는다 — 셋 다 비면 칸을 뺀다", () => {
+    const cur = parseDeclarationResponse(activeRes(storedJson(roles)), "target-1");
+    if (cur.state !== "current") throw new Error("current 아님");
+    // 화면은 saveDeclaration(target, normalizeDraft(draft)) 로 보낸다 — 이 경로에서 역할이 빠지면 저장본의 역할이 지워진다
+    const body = toRequestBody(normalizeDraft(draftFromStored(cur.declaration)), 3) as {
+      declaration: Record<string, unknown>;
+    };
+    expect(body.declaration).toMatchObject(roles);
+    const cleared = toRequestBody(normalizeDraft(withRoles({})), 3) as { declaration: Record<string, unknown> };
+    expect(Object.keys(cleared.declaration).sort()).toEqual(["identity", "types"]);
+  });
+
+  it("확정 단계 준비 상태: 역할 없음 · 등급 확인 없음 · 정함", () => {
+    expect(roleReadiness(undefined)).toBe("undeclared");
+    expect(roleReadiness({ ownerAccountLabel: "a", crossAccountLabel: "", accountsSamePrivilege: true })).toBe(
+      "undeclared",
+    );
+    expect(roleReadiness({ ownerAccountLabel: "a", crossAccountLabel: "b", accountsSamePrivilege: false })).toBe(
+      "privilege_unconfirmed",
+    );
+    expect(roleReadiness({ ownerAccountLabel: "a", crossAccountLabel: "b", accountsSamePrivilege: true })).toBe(
+      "declared",
+    );
+  });
 });
 
 // 요청 본문 칸 ID(create.id_field, #757): 서버는 id_path를 늘 내보내고(빈 값 포함) id_field는 그 선언에만 싣는다.
@@ -638,6 +700,12 @@ describe("객체 ID 출처 id_field", () => {
     expect(body.declaration.types[0].create).toMatchObject({ id_path: "", id_field: "title_id" });
   });
 
+  it("공유 종류 create에 id_field 칸이 있으면 계약 밖이다(서버는 빈 값을 내보내지 않음)", () => {
+    const j = storedJson() as Record<string, unknown> & { types: Record<string, unknown>[] };
+    j.types[1] = { ...j.types[1], create: { ...(j.types[1].create as Json), id_field: "" } };
+    expect(parseDeclarationResponse(activeRes(j), "target-1").state).toBe("invalid");
+  });
+
   it("id_path 선언·공유 종류는 칸 모양이 그대로이고 저장 본문에 id_field를 넣지 않는다", () => {
     const cur = parseDeclarationResponse(activeRes(storedJson()), "target-1");
     if (cur.state !== "current") throw new Error("current 아님");
@@ -650,6 +718,8 @@ describe("객체 ID 출처 id_field", () => {
     ["둘 다", { id_path: "id", id_field: "title_id" }],
     ["둘 다 없음", { id_path: "" }],
     ["id_field 문자열 아님", { id_path: "", id_field: 1 }],
+    // 서버는 빈 id_field를 내보내지 않는다(omitempty)
+    ["id_field 빈 값", { id_path: "id", id_field: "" }],
   ])("ID 출처가 어긋난 응답은 계약 밖이다: %s", (_name, create) => {
     const j = storedJson() as Record<string, unknown> & { types: Record<string, unknown>[] };
     j.types[0] = { ...j.types[0], create: { ...(j.types[0].create as Json), ...create } };

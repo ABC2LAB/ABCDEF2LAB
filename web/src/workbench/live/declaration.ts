@@ -53,8 +53,8 @@ export type TypeDraft = {
   read: ReadSpec;
 };
 /**
- * 확정 단계 계정 역할(계약 §4, 선택 칸): 소유·생성 계정(A)·교차 조회 계정(B) 라벨과 같은 권한 등급 확인. 입력 화면은 아직
- * 없다(이경준 범위). 저장본에 있으면 화면 값에 그대로 두고 다시 저장할 때 보내서 지우지 않는다.
+ * 확정 단계 계정 역할(계약 §4, 선택 칸): 소유·생성 계정(A)·교차 조회 계정(B) 라벨과 같은 권한 등급 확인. 저장본에 있으면
+ * 화면 값에 그대로 두고 다시 저장할 때 보내서 지우지 않는다. 셋 다 비우면 칸을 빼고 보낸다(역할 없는 선언과 같은 정본).
  */
 export type AccountRoles = { ownerAccountLabel: string; crossAccountLabel: string; accountsSamePrivilege: boolean };
 
@@ -284,6 +284,11 @@ export function credentialFields(d: DeclarationDraft): string[] {
     check(`${at}.read.statusPath`, t.read.statusPath);
     check(`${at}.read.normalValue`, t.read.normalValue);
   });
+  // 계정 역할 라벨도 서버 CredentialField 가 원문으로 본다(owner_account_label · cross_account_label)
+  if (d.roles) {
+    check("ownerAccountLabel", d.roles.ownerAccountLabel);
+    check("crossAccountLabel", d.roles.crossAccountLabel);
+  }
   return out;
 }
 
@@ -425,6 +430,7 @@ export function validateDraft(d: DeclarationDraft): DraftIssue[] {
     else names.set(t.type, i);
     validateType(t, `types.${i}`, issues);
   });
+  validateRoles(d.roles, issues);
   for (const field of credentialFields(d))
     issues.push({
       field,
@@ -432,6 +438,42 @@ export function validateDraft(d: DeclarationDraft): DraftIssue[] {
         "자격 값 모양(인증 · 쿠키 헤더, 비밀번호 · 토큰 키=값, Bearer · Basic, JWT, 개인키)이 있어 저장하지 않습니다. 세션은 시험 계정 로그인이 따로 붙입니다.",
     });
   return issues;
+}
+
+/**
+ * 계정 역할 검사(서버 e3contract.Declaration.Validate 와 같은 규칙, 계약 §4). 칸 이름은 서버 거부 칸(draftFieldOf)과 같다.
+ * 둘 다 정하거나 둘 다 비운다 · 같은 계정을 두 역할에 둘 수 없다 · 역할이 없으면 등급 확인도 없다 · 라벨은 REF_PATTERN.
+ * 문구에는 입력 원문을 넣지 않는다.
+ */
+function validateRoles(roles: AccountRoles | undefined, issues: DraftIssue[]): void {
+  if (!roles) return;
+  const { ownerAccountLabel: owner, crossAccountLabel: cross, accountsSamePrivilege: privilege } = roles;
+  const shape = "계정 라벨은 영문 · 숫자로 시작하고 영문 · 숫자 · _ . : / - 만 씁니다(128자 이하).";
+  if (owner !== "" && !REF_PATTERN.test(owner)) issues.push({ field: "ownerAccountLabel", message: shape });
+  if (cross !== "" && !REF_PATTERN.test(cross)) issues.push({ field: "crossAccountLabel", message: shape });
+  if ((owner === "") !== (cross === ""))
+    issues.push({
+      field: owner === "" ? "ownerAccountLabel" : "crossAccountLabel",
+      message: "소유 · 생성 계정과 교차 조회 계정은 둘 다 적거나 둘 다 비웁니다.",
+    });
+  else if (owner !== "" && owner === cross)
+    issues.push({ field: "crossAccountLabel", message: "두 역할에 같은 계정을 둘 수 없습니다." });
+  if (owner === "" && cross === "" && privilege)
+    issues.push({
+      field: "accountsSamePrivilege",
+      message: "계정 역할을 정하지 않으면 같은 권한 등급 확인을 둘 수 없습니다.",
+    });
+}
+
+/** 역할 셋이 다 비었는가(그러면 칸을 빼고 보낸다 — 역할 없는 선언과 같은 정본). */
+const rolesEmpty = (r: AccountRoles | undefined): boolean =>
+  !r || (r.ownerAccountLabel === "" && r.crossAccountLabel === "" && !r.accountsSamePrivilege);
+
+/** 확정 단계가 이 선언의 역할로 켜질 수 있는가(계약 §4: 역할 없음·등급 확인 없음이면 꺼짐). 인증 결과는 실행 때 따로 본다. */
+export type RoleReadiness = "undeclared" | "privilege_unconfirmed" | "declared";
+export function roleReadiness(r: AccountRoles | undefined): RoleReadiness {
+  if (!r || r.ownerAccountLabel === "" || r.crossAccountLabel === "") return "undeclared";
+  return r.accountsSamePrivilege ? "declared" : "privilege_unconfirmed";
 }
 
 /** 정본 순서로 맞춘다: 종류·소유자 전용 필드 오름차순(Go 는 순서가 어긋나면 거부). 공유 종류의 요청 칸은 비운다. */
@@ -444,7 +486,12 @@ export function normalizeDraft(d: DeclarationDraft): DeclarationDraft {
           : { ...t, ownerOnlyFields: [...t.ownerOnlyFields].sort(byteOrder) },
     )
     .sort((a, b) => byteOrder(a.type, b.type));
-  return { identity: { ...d.identity }, types };
+  // 계정 역할은 보존한다(빼면 화면 저장이 저장본의 역할을 지운다). 셋 다 비면 뺀다
+  return {
+    identity: { ...d.identity },
+    types,
+    ...(rolesEmpty(d.roles) ? {} : { roles: { ...(d.roles as AccountRoles) } }),
+  };
 }
 // 규칙상 ASCII 이름만 통과하므로 UTF-16 비교가 Go 의 바이트 비교와 같다
 function byteOrder(a: string, b: string): number {
@@ -458,11 +505,11 @@ function byteOrder(a: string, b: string): number {
  */
 export function toRequestBody(d: DeclarationDraft, targetRevision: number): Record<string, unknown> {
   const n = normalizeDraft(d);
-  const roles = d.roles
+  const roles = n.roles
     ? {
-        owner_account_label: d.roles.ownerAccountLabel,
-        cross_account_label: d.roles.crossAccountLabel,
-        ...(d.roles.accountsSamePrivilege ? { accounts_same_privilege: true } : {}),
+        owner_account_label: n.roles.ownerAccountLabel,
+        cross_account_label: n.roles.crossAccountLabel,
+        ...(n.roles.accountsSamePrivilege ? { accounts_same_privilege: true } : {}),
       }
     : {};
   return {
@@ -535,7 +582,8 @@ function parseType(v: unknown): TypeDraft {
   if (sharing === "shared") {
     if (
       ownerOnlyFields.length ||
-      !emptyRequestObject(o.create, CREATE_KEYS, CREATE_OPTIONAL) ||
+      // 서버는 빈 id_field를 내보내지 않는다(omitempty) — 공유 종류 create에 그 칸이 있으면 계약 밖이다
+      !emptyRequestObject(o.create, CREATE_KEYS) ||
       !emptyRequestObject(o.read, READ_KEYS, ["status_path", "normal_value"])
     )
       fail();
@@ -543,7 +591,9 @@ function parseType(v: unknown): TypeDraft {
   }
   const c = exact(o.create, CREATE_KEYS, CREATE_OPTIONAL);
   const r = exact(o.read, READ_KEYS, ["status_path", "normal_value"]);
-  // 객체 ID 출처는 둘 중 정확히 하나다(서버 Validate와 같음). 어긋나면 계약 밖 응답이다.
+  // 객체 ID 출처는 둘 중 정확히 하나다(서버 Validate와 같음). 어긋나면 계약 밖 응답이다. 서버는 빈 id_field를 내보내지
+  // 않으므로(omitempty) 칸이 있는데 빈 값이어도 계약 밖이다(#766 이경준 리뷰).
+  if ("id_field" in c && c.id_field === "") fail();
   if ((str(c.id_path) === "") === (optStr(c.id_field) === "")) fail();
   const method = c.method === "POST" || c.method === "PUT" ? c.method : fail();
   const bodyKind = c.body_kind === "json" || c.body_kind === "form" ? c.body_kind : fail();

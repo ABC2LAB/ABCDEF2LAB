@@ -117,3 +117,38 @@ func TestRunAccountRolesGate(t *testing.T) {
 		})
 	}
 }
+
+// 계정 역할 라벨의 자격 모양 검사(CredentialField, 원문만 봄). 같은 표를 웹 화면 검사 시험(web/src/workbench/__tests__/
+// credential-forms.test.ts LABEL_CASES)이 그대로 쓴다 — 한쪽을 바꾸면 다른 쪽도 맞춘다. 값은 모두 합성 문자열이다.
+func TestCredentialFieldAccountLabels(t *testing.T) {
+	cases := []struct {
+		value    string
+		rejected bool
+	}{
+		{"tester-a", false}, {"vampi-b", false}, {"tester-a.session", false}, {"sid:1", false}, {"tester_secret", false},
+		{"token%3D1", false}, {"tester token", false},
+		{"Cookie: a", true}, {"cookie:x", true}, {"Bearer abc", true}, {"Basic eA==", true}, {"token=1", true},
+		{"token:abc", true}, {"pwd:1", true}, {"apikey:1", true}, {"Authorization: x", true}, {"password=1", true},
+		{"session_id=1", true}, {"set-cookie=1", true}, {"eyJhbGciOi.eyJzdWIi.sig", true},
+	}
+	for _, c := range cases {
+		for _, role := range []struct {
+			field string
+			set   func(*e3contract.Declaration, string)
+		}{
+			{"owner_account_label", func(d *e3contract.Declaration, v string) { d.OwnerAccountLabel = v }},
+			{"cross_account_label", func(d *e3contract.Declaration, v string) { d.CrossAccountLabel = v }},
+		} {
+			d := declaration()
+			d.OwnerAccountLabel, d.CrossAccountLabel = "tester-a", "tester-b"
+			role.set(&d, c.value)
+			want := ""
+			if c.rejected {
+				want = role.field
+			}
+			if got := e3contract.CredentialField(d); got != want {
+				t.Errorf("%s=%q: 거부 칸 %q, 기대 %q", role.field, c.value, got, want)
+			}
+		}
+	}
+}

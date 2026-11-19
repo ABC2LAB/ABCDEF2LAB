@@ -460,3 +460,64 @@ describe("PolicyDeclarationLive (#705 응답 모양)", () => {
     expect(await screen.findByText(/대상 승인이 만료돼 이전 선언이 무효가/)).toBeInTheDocument();
   });
 });
+
+describe("PolicyDeclarationLive (확정 단계 계정 역할, 계약 §4)", () => {
+  const putBody = () => {
+    const put = api.mock.calls.find(([, init]) => init?.method === "PUT");
+    return JSON.parse(String(put?.[1]?.body)) as { declaration: Record<string, unknown> };
+  };
+
+  it("두 계정과 등급 확인을 입력해 저장하면 본문에 세 칸을 싣고, 상태 문구가 바뀐다", async () => {
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [NONE, active(stored())], [PUT_D("t1")]: [undefined] });
+    mount();
+    await pick("t1");
+    await screen.findByText(/아직 선언이 없습니다/);
+    fillValid();
+    expect(screen.getByText(/계정 역할을 정하지 않았습니다/)).toBeInTheDocument();
+    type("소유 · 생성 계정", "tester-a");
+    type("교차 조회 계정", "tester-b");
+    expect(screen.getByText(/같은 권한 등급이라는 확인이 없습니다/)).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("두 계정이 같은 권한 등급"));
+    expect(screen.getByText(/계정 역할 정함/)).toBeInTheDocument();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "선언 저장" })));
+    expect(putBody().declaration).toMatchObject({
+      owner_account_label: "tester-a",
+      cross_account_label: "tester-b",
+      accounts_same_privilege: true,
+    });
+  });
+
+  it("역할이 든 저장본은 입력 칸에 채워지고, 다른 칸만 고쳐 다시 저장해도 역할을 지우지 않는다", async () => {
+    const withRoles = { ...stored(), owner_account_label: "tester-a", cross_account_label: "tester-b" };
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [active(withRoles)], [PUT_D("t1")]: [undefined] });
+    mount();
+    await pick("t1");
+    // 요약: 서버 값 그대로, 등급 확인이 없으니 확정 단계 꺼짐
+    await screen.findByText(/선언자/);
+    const summary = screen.getByRole("region", { name: "현재 선언" });
+    expect(summary).toHaveTextContent("소유 · 생성 계정 tester-a · 교차 조회 계정 tester-b");
+    expect(summary).toHaveTextContent("같은 권한 등급이라는 확인이 없습니다");
+    expect(screen.getByLabelText("소유 · 생성 계정")).toHaveValue("tester-a");
+    expect(screen.getByLabelText("교차 조회 계정")).toHaveValue("tester-b");
+    expect(screen.getByLabelText("두 계정이 같은 권한 등급")).not.toBeChecked();
+    type("신원 확인 경로", "/api/whoami");
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "선언 저장" })));
+    const body = putBody().declaration;
+    expect(body).toMatchObject({ owner_account_label: "tester-a", cross_account_label: "tester-b" });
+    expect(body).not.toHaveProperty("accounts_same_privilege");
+  });
+
+  it("한쪽만 적으면 그 칸에 문제를 보이고 저장 요청을 보내지 않는다(문구에 입력 원문 없음)", async () => {
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [NONE], [PUT_D("t1")]: [undefined] });
+    mount();
+    await pick("t1");
+    await screen.findByText(/아직 선언이 없습니다/);
+    fillValid();
+    type("소유 · 생성 계정", "tester-a");
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "선언 저장" })));
+    expect(api.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
+    const alert = screen.getByText(/둘 다 적거나 둘 다 비웁니다/);
+    expect(alert).toHaveAttribute("role", "alert");
+    expect(alert).not.toHaveTextContent("tester-a");
+  });
+});

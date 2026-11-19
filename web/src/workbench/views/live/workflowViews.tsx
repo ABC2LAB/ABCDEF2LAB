@@ -120,17 +120,17 @@ export function crawlPct(flow: WorkflowSnapshot): number {
   return Math.min(100, Math.round((flow.counts.visited / Math.max(1, flow.limits.max_pages)) * 100));
 }
 /**
- * 자산 탐색 화면 막대 (사용자 11/18): 탐색 중엔 페이지 상한 대비 방문 비율. 탐색이 끝나면 끝까지 채운다 — 서버가 완료
- * (COMPLETED)라고 하면 초록, 아니면(부분 완료 · 중지 · 상태 없음) 주황. 끝난 뒤 상한 대비 몇 %만 남은 막대가 진행이 멈춘
- * 것처럼 보여서다. 주황은 다 돌았다는 뜻이 아니다(리뷰 #479) — 색과 aria 글 · 아래 '탐색 상태' 글이 부분 완료를 말하고,
- * 실제 방문 수는 aria 글에 남긴다.
+ * 자산 탐색 화면 막대 (사용자 11/18): 탐색 중엔 페이지 상한 대비 방문 비율. 탐색이 끝나면 끝까지 채운다 — 끝난 뒤 상한 대비
+ * 몇 %만 남은 막대가 진행이 멈춘 것처럼 보여서다. 색은 점검 진행 단계 게이지와 같게(사용자 11/19 '색 통일'): 탐색 중 파랑,
+ * 끝남 초록, 중지 · 탐색 안 함 · 실패는 회색. 다 돌지 못한 끝(부분 완료 · 상태 없음)은 색이 아니라 위 탐색 줄
+ * (crawlEndText)과 aria 글이 말하고(리뷰 #479 · #709), 실제 방문 수는 aria 글에 남긴다.
  */
 export function crawlBar(flow: WorkflowSnapshot): {
   /** 막대에 채우는 너비(%). 끝난 모양은 100 */
   fill: number;
   /** 페이지 상한 대비 실제 방문 비율(%) — aria-valuenow (#709 리뷰: 끝난 모양이어도 값은 실제 비율) */
   pct: number;
-  tone: "run" | "ok" | "part";
+  tone: "run" | "ok" | "stop";
   text: string;
 } {
   const pct = crawlPct(flow);
@@ -141,13 +141,21 @@ export function crawlBar(flow: WorkflowSnapshot): {
       tone: "ok",
       text: `탐색 완료 · 방문 ${flow.counts.visited} / 페이지 상한 ${flow.limits.max_pages}`,
     };
-  if (flow.stage !== "crawling" && flow.initial_completed) {
-    const st = exploreState(flow);
-    const what = st && st.status !== "RUNNING" ? st.text : "완료 확인 안 됨";
+  const st = exploreState(flow);
+  // 점검 진행 게이지의 '멈춤'과 같은 경우: 탐색이 중지 · 미실행이거나 점검이 멈춤 · 실패. 첫 탐색을 마쳤는지
+  // (initial_completed)와 따로 본다 — 탐색 전에 실패하면 서버가 NOT_RUN · initial_completed=false 를 저장한 뒤 failed 로
+  // 바꿀 수 있다(#765 이동찬 리뷰: 그때도 탐색 중 파랑이 아니라 회색)
+  const stopped =
+    st?.status === "STOPPED" || st?.status === "NOT_RUN" || flow.stage === "stopped" || flow.stage === "failed";
+  if (stopped || (flow.stage !== "crawling" && flow.initial_completed)) {
+    let what = "완료 확인 안 됨";
+    if (st && st.status !== "RUNNING") what = st.text;
+    else if (flow.stage === "failed") what = "실패";
+    else if (flow.stage === "stopped") what = "중지됨";
     return {
       fill: 100,
       pct,
-      tone: "part",
+      tone: stopped ? "stop" : "ok",
       text: `탐색 끝 · ${what} · 방문 ${flow.counts.visited} / 페이지 상한 ${flow.limits.max_pages}`,
     };
   }
@@ -1071,9 +1079,9 @@ export function WorkflowCrawlLive() {
                   </div>
                 ) : null}
                 {/* 탐색 진행: 서버에 진행률이 없어 탐색 중엔 페이지 상한 대비 방문 수로 그린다 (리뷰 #479). 끝나면 끝까지
-                    채우고 완료는 초록 · 부분 완료 등은 주황 (crawlBar) */}
+                    채우고 색은 점검 진행 게이지와 같게 — 끝남 초록 · 멈춤 회색 (crawlBar) */}
                 <div
-                  className={cx(s.prog, bar.tone === "ok" && s["prog-ok"], bar.tone === "part" && s["prog-part"])}
+                  className={cx(s.prog, bar.tone === "ok" && s["prog-ok"], bar.tone === "stop" && s["prog-stop"])}
                   id="cBar"
                   role="progressbar"
                   aria-label="탐색 진행 (페이지 상한 대비 방문)"
@@ -1526,7 +1534,7 @@ export function WorkflowScopeLive() {
   );
 }
 
-/** 탐색 · 선택 요약 (보고서 증거 · 감사 탭). */
+/** 탐색 · 선택 요약 (보고서 증거 · 요청 기록 탭). */
 export function WorkflowReport() {
   const flow = useUrl((st) => st.flow);
   if (!flow) return null;
@@ -1538,21 +1546,8 @@ export function WorkflowReport() {
           className={s.aside}
         >{`${flow.mode === "ai_auto_v1" ? "AI 자동" : "사용자 승인"} · ${flowStageText[flow.stage]}`}</span>
       </div>
-      <div className={s.meters}>
-        {(
-          [
-            ["발견한 API", flow.counts.found],
-            ["방문", flow.counts.visited],
-            ["보낸 요청", flow.counts.sent],
-            ["막은 요청", flow.counts.blocked],
-          ] as const
-        ).map(([k, v]) => (
-          <div className={s.cell} key={k}>
-            <div className={s.k}>{k}</div>
-            <div className={s.v}>{v}</div>
-          </div>
-        ))}
-      </div>
+      {/* 숫자(발견한 API · 방문)는 탭 맨 위 탐색 · 요청 집계 한 줄로 옮겼다(사용자 11/19 — 두 칸만 따로 있으니 비어 보임).
+          여기는 탐색 방식 · 단계와 심화 점검으로 고른 경로만 */}
       <div className={s.list}>
         {flow.endpoints
           .filter((e) => e.selected)

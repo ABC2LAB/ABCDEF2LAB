@@ -330,3 +330,33 @@ func TestRunIDFieldRandomFailure(t *testing.T) {
 		t.Fatal("요청을 만들지 못했는데 쓰기 예약")
 	}
 }
+
+// Deps.Random이 없으면 crypto/rand가 기본이다(제품 생성자는 두지 않는다). 표식에 쓴 기본 난수원으로 ID도 만들어 확정까지
+// 간다 — ID 생성에 nil을 넘겨 생성 요청 0건·product_create_request_unavailable로 끝나던 것(#766 이동찬 리뷰)의 회귀 시험.
+func TestRunIDFieldDefaultRandom(t *testing.T) {
+	f := idFieldFixture(t)
+	deps := f.deps()
+	deps.Random = nil
+	res := e3contract.Run(t.Context(), deps, f.in)
+	if res.Status != e3contract.StatusCompleted {
+		t.Fatalf("%+v", res)
+	}
+	for _, typ := range []string{"note", "secret"} {
+		if v := verdictOf(t, res, typ); v.Value != oracle.Confirmed {
+			t.Fatalf("%s: %+v", typ, v)
+		}
+	}
+	ids := map[string]string{}
+	for _, c := range f.fake.Calls() {
+		if c.Key.Purpose != e3contract.PurposeCreate {
+			continue
+		}
+		if !strings.HasPrefix(c.ObjectID, e3contract.ObjectIDPrefix) || ids[c.Key.Type] != "" {
+			t.Fatalf("생성 요청 ID: %+v", c)
+		}
+		ids[c.Key.Type] = c.ObjectID
+	}
+	if len(ids) != 2 || ids["note"] == ids["secret"] {
+		t.Fatalf("종류마다 새 ID: %v", ids)
+	}
+}

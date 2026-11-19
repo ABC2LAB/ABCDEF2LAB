@@ -2618,12 +2618,12 @@ select.inp {
   background: var(--accent);
   transition: width 0.3s ease-out;
 }
-/* 탐색이 끝난 막대: 완료는 초록, 부분 완료 · 중지 등은 주황(다 돈 게 아님) */
+/* 탐색이 끝난 막대: 점검 진행 단계 게이지(.lgbar)와 같은 색 — 끝남 초록, 중지 · 탐색 안 함 · 실패 회색 */
 .prog.prog-ok > i {
   background: var(--ok);
 }
-.prog.prog-part > i {
-  background: var(--warn);
+.prog.prog-stop > i {
+  background: var(--und);
 }
 .crwl-top {
   display: flex;
@@ -4104,6 +4104,21 @@ button.smm:hover {
   }
 }
 /* 점검 진행 오른쪽(진행 요약)의 전송 통제 4칸: 패널이 좁아 2칸씩 두 줄 */
+/* 보고서 탐색 · 요청 집계: 칸 수만큼 한 줄(2칸 · 6칸). 6칸은 좁으면 2칸씩 세 줄 — 줄 첫 칸(홀수)의 세로줄을 없앤다 */
+.meters.m2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.meters.m6 {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+@container (max-width: 560px) {
+  .meters.m6 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .meters.m6 .cell:nth-child(odd) {
+    border-left: 0;
+  }
+}
 .vi .meters {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -4621,8 +4636,9 @@ button.smm:hover {
 .evi li:first-child {
   border-top: 0;
 }
-.evi code {
-  font-size: 12px;
+/* 증거 탭 취약점 줄: 판정 딱지(검토 필요 등)는 줄 맨 오른쪽에 고정(사용자 11/19) */
+.evi li > .vd {
+  margin-left: auto;
 }
 
 .scrim {
