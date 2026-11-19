@@ -498,7 +498,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		scope := transmit.Scope{TaskRef: request.TaskID, RunRef: policy.RunRef, CaseRef: policy.CaseRef, ResetRef: resetRef, PolicyRef: policy.PolicyRef}
 		var hostRecorder *e2host.Client
 		if input.HostSocket != "" {
-			if input.HostSocket != "/run/e2-host/audit.sock" || policy.Evaluation != nil {
+			if input.HostSocket != e2host.ProductSocketPath || policy.Evaluation != nil {
 				return E2HTTPRunOptions{}, ErrE2HTTPHost
 			}
 			hostRecorder, createErr = connectHost(taskctx, input.HostSocket, scope, policy.PolicyRevision)
