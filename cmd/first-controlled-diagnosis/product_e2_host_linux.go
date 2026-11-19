@@ -32,6 +32,18 @@ func infoOwner(info os.FileInfo) (int, bool) {
 	return int(stat.Uid), true
 }
 
+func checkHostSocketDirectory(path string, uid, gid int) error {
+	info, err := os.Lstat(path)
+	if err != nil || !info.IsDir() || info.Mode().Perm() != 0750 || info.Mode()&os.ModeSymlink != 0 {
+		return errPreparation
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || int(stat.Uid) != uid || int(stat.Gid) != gid {
+		return errPreparation
+	}
+	return nil
+}
+
 func hostSecret(path string, max int64) ([]byte, error) {
 	before, err := os.Lstat(path)
 	var owned bool
@@ -64,6 +76,9 @@ func runProductE2Host(ctx context.Context, args []string, stdout, stderr io.Writ
 	info, err := os.Lstat(*root)
 	owner, owned := infoOwner(info)
 	if err != nil || !info.IsDir() || info.Mode().Perm() != 0700 || info.Mode()&os.ModeSymlink != 0 || !owned || owner != os.Geteuid() {
+		return 1
+	}
+	if checkHostSocketDirectory(filepath.Dir(*socket), os.Geteuid(), 1000) != nil {
 		return 1
 	}
 	// 기존 설치에는 Host 자격이 없다. 무검증 자동 이관 없이 v2만 유지한다.

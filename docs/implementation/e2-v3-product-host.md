@@ -4,7 +4,7 @@
 
 신규 Compose 설치는 `product_e2_host` LOGIN을 발급하고 기존 NOLOGIN `product_e2_head_writer`의 최소 head 권한만 상속한다. Host DB DSN, v3 감사 HMAC 키, E③ 객체·신원 digest 키, epoch anchor, 저널은 Host 전용 `e2-host-state` 볼륨(`/h`, UID 1002, 0700)에 둔다. 일반 준비 프로세스(UID 1000)와 API는 이 볼륨을 마운트하지 않는다. 두 키는 각각 새 난수로 발급하며 일반 v2 화면 투영용 `/p` 감사 키와도 별개다. Host 컨테이너는 내부 `control` DB 망에만 붙는다.
 
-`e2-host-ipc`에는 Unix 소켓만 둔다. 디렉터리는 UID 1002/GID 1000, 0750이라 준비 프로세스가 소켓에 접속할 수는 있지만 파일을 지우거나 교체할 수 없다. 소켓은 0660이고 Host는 `SO_PEERCRED`로 UID 1000만 받는다. API·Workbench는 이 볼륨을 마운트하지 않는다. 설치 프로세스만 일회성으로 두 볼륨에 접근하며, 설치 성공 뒤 Host 비밀 볼륨을 UID 1002로 넘긴다.
+`e2-host-ipc`에는 Unix 소켓만 둔다. 디렉터리는 UID 1002/GID 1000, 0750이라 준비 프로세스가 소켓에 접속할 수는 있지만 파일을 지우거나 교체할 수 없다. Host는 기동 때 이 디렉터리의 소유자·그룹·권한·심볼릭 링크 여부를 다시 확인한다. 소켓은 0660이고 Host는 `SO_PEERCRED`로 UID 1000만 받는다. API·Workbench는 이 볼륨을 마운트하지 않는다. 설치 프로세스만 일회성으로 두 볼륨에 접근하며, 설치 성공 뒤 Host 비밀 볼륨을 UID 1002로 넘긴다.
 
 기존 설치에는 Host 자격을 자동 이관하지 않는다. 기존 launch의 `e2_host_socket`은 비어 있어 v2 실행이 유지된다. Host 서비스는 빈 비밀 볼륨일 때 `legacy-unavailable`로 대기하며 게시 소켓을 만들지 않는다. 일부만 복원된 Host 볼륨은 기동을 거부한다. 기존 설치의 이관은 별도 설치 관리자 절차와 시험이 필요하다.
 
