@@ -45,6 +45,8 @@ type launchConfig struct {
 	ModelBaseURL           string `json:"model_base_url"`
 	ModelRef               string `json:"model_ref"`
 	RuntimeDSNFile         string `json:"runtime_dsn_file"`
+	// 제품 설치가 고정하는 독립 감사 Host 소켓. 기존 설치에서는 비어 v2 경로다.
+	E2HostSocket           string `json:"e2_host_socket,omitempty"`
 	ShutdownTimeoutSeconds int    `json:"shutdown_timeout_seconds"`
 	// ModelConcurrency는 동시 모델 호출 수다(C32). 없거나 0이면 1이다.
 	ModelConcurrency int `json:"model_concurrency,omitempty"`
@@ -153,6 +155,9 @@ type taskPreparation struct {
 func parseLaunchConfig(data []byte) (launchConfig, error) {
 	var c launchConfig
 	if len(data) == 0 || len(data) > maxLaunchBytes || !utf8.Valid(data) || decodeLaunchJSON(data, &c) != nil || c.Format != launchFormat || c.ModelProfileID <= 0 || c.ShutdownTimeoutSeconds < 1 || c.ShutdownTimeoutSeconds > server.MaxFirstDiagnosisShutdownSeconds {
+		return launchConfig{}, errPreparation
+	}
+	if c.E2HostSocket != "" && (c.Mode != "general_http" || c.E2HostSocket != "/run/e2-host/audit.sock") {
 		return launchConfig{}, errPreparation
 	}
 	paths := []string{c.DataDir, c.KeyDir, c.SkillDir, c.RuntimeDSNFile}

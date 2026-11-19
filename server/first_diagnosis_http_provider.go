@@ -72,6 +72,8 @@ func (FirstDiagnosisHTTPApproval) GoString() string {
 type ExplorationStageFactory func(*Server) E2HTTPExplorationStage
 
 type FirstDiagnosisHTTPHooks struct {
+	// HostSocket은 제품 설치가 고정한 독립 v3 게시자 소켓이다. 비우면 기존 v2다.
+	HostSocket       string
 	Exploration      ExplorationStageFactory
 	Workflow         *diagnosisflow.Controller
 	CheckAuthority   func() error
@@ -137,7 +139,7 @@ func NewFirstDiagnosisHTTPHost(ctx context.Context, cfg FirstDiagnosisHTTPHostCo
 	if len(hooks) == 1 {
 		hook = hooks[0]
 	}
-	options, err := LoadE2HTTPRuntimeOptions(ctx, E2HTTPFileOptions{Workflow: hook.Workflow, RequestApprovals: hook.RequestApprovals, CheckAuthority: hook.CheckAuthority, PolicyFile: cfg.PolicyFile, Authority: authority, Supervisor: h, ObserveEvent: hook.ObserveEvent, ObserveResult: hook.ObserveResult, OnAcquire: hook.OnAcquire, PlannerLimits: cfg.PlannerLimits, WebSearch: cfg.WebSearch})
+	options, err := LoadE2HTTPRuntimeOptions(ctx, E2HTTPFileOptions{HostSocket: hook.HostSocket, Workflow: hook.Workflow, RequestApprovals: hook.RequestApprovals, CheckAuthority: hook.CheckAuthority, PolicyFile: cfg.PolicyFile, Authority: authority, Supervisor: h, ObserveEvent: hook.ObserveEvent, ObserveResult: hook.ObserveResult, OnAcquire: hook.OnAcquire, PlannerLimits: cfg.PlannerLimits, WebSearch: cfg.WebSearch})
 	if err != nil {
 		authority.revoke()
 		_ = authority.close()

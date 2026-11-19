@@ -52,16 +52,18 @@ type Binding struct {
 type Phase string
 
 const (
-	Open   Phase = "open"
-	Sealed Phase = "sealed"
+	Open        Phase = "open"
+	Sealed      Phase = "sealed"
+	Interrupted Phase = "interrupted"
 )
 
 type Kind string
 
 const (
-	Register Kind = "register"
-	Append   Kind = "append"
-	Seal     Kind = "seal"
+	Register  Kind = "register"
+	Append    Kind = "append"
+	Seal      Kind = "seal"
+	Interrupt Kind = "interrupt"
 )
 
 type Request struct {
@@ -158,7 +160,7 @@ func validRequest(r Request) bool {
 	case Append:
 		return r.ExpectedRevision > 0 && validCheckpoint(r.Previous, r.Binding) &&
 			r.Candidate.Sequence > r.Previous.Sequence
-	case Seal:
+	case Seal, Interrupt:
 		return r.ExpectedRevision > 0 && validCheckpoint(r.Previous, r.Binding) && r.Candidate == r.Previous
 	default:
 		return false
@@ -278,7 +280,7 @@ func readHead(ctx context.Context, q rowQuery, e Epoch, b Binding, lock bool) (s
 	if epochRef != e.EpochRef || generation != int64(e.Generation) || !bytes.Equal(anchor, e.AnchorDigest[:]) ||
 		publisherRef != b.PublisherRef || keyRef != b.KeyRef || journalID != b.JournalID ||
 		revision <= 0 || n <= 0 || len(digest) != sha256.Size ||
-		(phase != string(Open) && phase != string(Sealed)) {
+		(phase != string(Open) && phase != string(Sealed) && phase != string(Interrupted)) {
 		return storedHead{}, ErrIntegrity
 	}
 	if err := json.Unmarshal(encoded, &h.Checkpoint); err != nil || !validCheckpoint(h.Checkpoint, b) {
@@ -349,6 +351,8 @@ func (s *Store) Publish(ctx context.Context, request Request, source io.Reader) 
 	phase := Open
 	if request.Kind == Seal {
 		phase = Sealed
+	} else if request.Kind == Interrupt {
+		phase = Interrupted
 	}
 	if err != nil || head.Checkpoint != request.Candidate || head.Revision != request.ExpectedRevision+1 ||
 		head.Phase != phase {
@@ -420,11 +424,15 @@ func (s *Store) publish(ctx context.Context, r Request, source io.Reader) error 
 			return ErrConflict
 		}
 		phase := Open
-		if r.Kind == Seal {
+		if r.Kind == Seal || r.Kind == Interrupt {
 			if int64(len(snapshot)) != current.snapshotBytes {
 				return ErrConflict
 			}
-			phase = Sealed
+			if r.Kind == Seal {
+				phase = Sealed
+			} else {
+				phase = Interrupted
+			}
 		}
 		var result sql.Result
 		result, err = tx.ExecContext(ctx, "UPDATE e2_http_audit_heads SET revision=$3,phase=$4,checkpoint=$5,"+

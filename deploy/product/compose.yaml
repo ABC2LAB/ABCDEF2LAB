@@ -49,7 +49,7 @@ services:
     # explore_ca_cert는 탐색을 켠 설치만 준다. installer가 /tmp/product-private/explore-ca.pem으로 옮겨 설치 입력
     # target_policy.exploration.boundary_ca_file로 고정한다.
     secrets: [product_install, postgres_password, explore_ca_cert]
-    volumes: [product-state:/p]
+    volumes: [product-state:/p, e2-host-state:/h, e2-host-ipc:/run/e2-host]
     tmpfs: ['/tmp:rw,nosuid,nodev,size=16m']
     read_only: true
     cap_drop: [ALL]
@@ -64,7 +64,7 @@ services:
     depends_on:
       install: {condition: service_completed_successfully}
     # explore-control은 탐색 경계 제어 소켓 디렉터리다(경계가 소켓 소유자를 엔진 uid로 넘긴다). 탐색을 안 켜면 비어 있다.
-    volumes: [product-state:/p, explore-control:/run/explore-control]
+    volumes: [product-state:/p, explore-control:/run/explore-control, e2-host-ipc:/run/e2-host]
     tmpfs: ['/tmp:rw,nosuid,nodev,size=64m']
     read_only: true
     cap_drop: [ALL]
@@ -92,6 +92,28 @@ services:
       retries: 30
     restart: unless-stopped
     stop_grace_period: 60s
+  # v3 head 게시자. 전용 DB 자격·감사 키·digest 키·저널은 Host 볼륨에만 있다.
+  # 대상망·외부망에 붙지 않고, 실행 프로세스는 소켓의 ACK만 받는다.
+  e2-host:
+    <<: *product
+    user: '1002:1000'
+    entrypoint: [/app/first-controlled-diagnosis]
+    command: [product-e2-host, -root, /h, -socket, /run/e2-host/audit.sock]
+    depends_on:
+      install: {condition: service_completed_successfully}
+    volumes: [e2-host-state:/h, e2-host-ipc:/run/e2-host]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 2g
+    networks: [control]
+    healthcheck:
+      test: [CMD-SHELL, 'test -S /run/e2-host/audit.sock || test -f /run/e2-host/legacy-unavailable']
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    restart: unless-stopped
   api:
     <<: *product
     user: '1000:1000'
@@ -312,6 +334,10 @@ networks:
 volumes:
   postgres-data: {}
   product-state: {}
+  # 설치 관리자만 쓰고 Host UID 1002만 읽는 비밀·저널 볼륨.
+  e2-host-state: {}
+  # 준비 UID 1000과 Host UID 1002가 공유하는 소켓만 보관한다.
+  e2-host-ipc: {}
   # 탐색 경계 CA 인증서(공개 부분)만 있는 볼륨. explore-init이 쓰고 브라우저 샌드박스는 읽기만 한다.
   explore-ca: {}
   # 탐색 경계 보호 입력(설정·CA 개인키·경로 가림 키). explore-init이 경계 uid로 쓰고 경계만 읽는다.
