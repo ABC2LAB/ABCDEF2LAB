@@ -1454,7 +1454,8 @@ class TestE3ConfirmationRow(unittest.TestCase):
                          ("abc2lab.e3-traces/v1", 3, {"control|-|allow|-": 2}))
         # 결과 파일(쓰기 기록 0건)도 같이 센다
         self.assertEqual(result["e3_traces"], {"e3_events": 1, "product_journal_e3_events": 0, "declaration_writes": 0,
-                                               "result_writes": 0})
+                                               "result_writes": 0, "host_seal_phase": None, "host_seal_checks": None,
+                                               "host_evidence_checkpoints": 0})
         self.assertEqual(result["status"], "complete")
         # 원본을 못 읽으면 기록만 하고(고정 코드) 회차는 그대로다. 공식 회차도 같다.
         for purpose in ("browser_acceptance", "official"):

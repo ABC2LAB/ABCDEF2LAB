@@ -65,6 +65,8 @@ E3_CONFIRMATION_FILE = "e3-confirmation.json"
 E2_HOST_VOLUME, E2_HOST_JOURNALS, E2_HOST_UID = "e2-host-state", "journals", 1002
 E2_JOURNAL_NAME = "events.jsonl"
 DECLARATIONS_SUBPATH, DECLARATIONS_JOURNAL = ("targets", "declarations"), "preparation.journal"
+# Host 실행 디렉터리의 봉인 포함 확인·내준 근거 체크포인트 기록(#810 뒤 제품). 없으면 None이다.
+HOST_SEAL_CHECKS, HOST_EVIDENCE_CHECKPOINTS = "seal-checks.json", "evidence-checkpoints.json"
 MAX_PRODUCT_FILE_BYTES = 1 << 20
 
 
@@ -398,7 +400,11 @@ class DockerSplitPorts:
                    ("e2_product_journal", "product-state", "runs", E2_JOURNAL_NAME, "e3trace-product", PRODUCT_UID,
                     E2V3_MAX_JOURNAL_BYTES, (draft_id, "state")),
                    ("declarations", "product-state", "state", DECLARATIONS_JOURNAL, "e3trace-declarations", PRODUCT_UID,
-                    MAX_PRODUCT_FILE_BYTES, DECLARATIONS_SUBPATH))
+                    MAX_PRODUCT_FILE_BYTES, DECLARATIONS_SUBPATH),
+                   ("host_seal_checks", E2_HOST_VOLUME, E2_HOST_JOURNALS, HOST_SEAL_CHECKS, "e3trace-seal", E2_HOST_UID,
+                    MAX_PRODUCT_FILE_BYTES, (run_directory,)),
+                   ("host_evidence_checkpoints", E2_HOST_VOLUME, E2_HOST_JOURNALS, HOST_EVIDENCE_CHECKPOINTS, "e3trace-issued",
+                    E2_HOST_UID, MAX_PRODUCT_FILE_BYTES, (run_directory,)))
         out = {}
         for key, volume, directory, name, role, uid, limit, subpath in sources:
             try:

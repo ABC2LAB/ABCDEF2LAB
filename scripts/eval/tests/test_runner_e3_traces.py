@@ -9,7 +9,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from runner_e3_traces import declaration_counts, journal_counts, result_writes, traces  # noqa: E402
+from runner_e3_traces import (  # noqa: E402
+    declaration_counts, evidence_checkpoints_summary, journal_counts, result_writes, seal_checks_summary, traces)
 
 
 def lines(*items) -> bytes:
@@ -90,7 +91,8 @@ class TestTraces(unittest.TestCase):
     def test_summary_of_a_run_without_e3(self):
         record = traces({"e2_host_journal": journal(CONTROL, RESULT), "e2_product_journal": journal(CONTROL, RESULT),
                          "declarations": b"", "e3_result": json.dumps({"writes": []}).encode()})
-        self.assertEqual(record["summary"], {"e3_events": 0, "product_journal_e3_events": 0, "declaration_writes": 0, "result_writes": 0})
+        self.assertEqual(record["summary"], {"e3_events": 0, "product_journal_e3_events": 0, "declaration_writes": 0, "result_writes": 0,
+                                             "host_seal_phase": None, "host_seal_checks": None, "host_evidence_checkpoints": 0})
         self.assertEqual(record["e2_host_journal"]["by_kind"], record["e2_product_journal"]["by_kind"])
 
     def test_summary_shows_e3_traces_and_missing_sources(self):
@@ -98,12 +100,53 @@ class TestTraces(unittest.TestCase):
                          "declarations": lines({"sequence": 1, "payload": {"action": "confirmation_writes", "objects": [{}]}}),
                          "e3_result": json.dumps({"writes": [{}]}).encode()})
         self.assertEqual(record["summary"], {"e3_events": 1, "product_journal_e3_events": None, "declaration_writes": 1,
-                                             "result_writes": 1})
+                                             "result_writes": 1, "host_seal_phase": None, "host_seal_checks": None,
+                                             "host_evidence_checkpoints": 0})
         self.assertEqual(record["e2_product_journal"], {"error": "not_found"})
         # 선언 저널을 못 읽었으면 쓰기 기록 수를 0으로 단정하지 않는다
         missing = traces({"e2_host_journal": journal(), "e2_product_journal": journal(), "declarations": None, "e3_result": None})
         self.assertEqual(missing["summary"], {"e3_events": 0, "product_journal_e3_events": 0, "declaration_writes": None,
-                                              "result_writes": None})
+                                              "result_writes": None, "host_seal_phase": None, "host_seal_checks": None,
+                                              "host_evidence_checkpoints": 0})
+
+
+class TestHostSealFiles(unittest.TestCase):
+    """#810 뒤 Host 실행 디렉터리의 봉인 포함 확인·근거 체크포인트 기록. 값(MAC·head)은 옮기지 않는다."""
+
+    SEAL = {"version": "jindo.e2host-seal-checks/v1", "phase": "sealed", "head": {"MAC": "secret-mac"},
+            "checks": [{"sequence": 3, "mac": "m1", "included": True}, {"sequence": 5, "mac": "m2", "included": False}]}
+
+    def test_seal_checks(self):
+        summary = seal_checks_summary(json.dumps(self.SEAL).encode())
+        self.assertEqual(summary, {"version": "jindo.e2host-seal-checks/v1", "phase": "sealed", "checks": 2, "included": 1})
+        self.assertNotIn("m1", json.dumps(summary))
+        self.assertEqual(seal_checks_summary(json.dumps(dict(self.SEAL, checks=[])).encode())["checks"], 0)
+        self.assertEqual(seal_checks_summary(json.dumps(dict(self.SEAL, phase="Bad Phase", version="X Y")).encode())
+                         | {"checks": 0, "included": 0}, {"version": "invalid", "phase": "invalid", "checks": 0, "included": 0})
+        self.assertEqual(seal_checks_summary(None), {"error": "not_found"})
+        for broken in (b"x", b"[]", json.dumps({"phase": "sealed"}).encode(), json.dumps(dict(self.SEAL, checks=[1])).encode()):
+            with self.subTest(broken=broken):
+                self.assertEqual(seal_checks_summary(broken), {"error": "unparsable"})
+
+    def test_evidence_checkpoints(self):
+        raw = json.dumps({"version": "jindo.e2host-evidence-checkpoints/v1", "checkpoints": [{"MAC": "m"}, {"MAC": "n"}]}).encode()
+        self.assertEqual(evidence_checkpoints_summary(raw), {"version": "jindo.e2host-evidence-checkpoints/v1", "checkpoints": 2})
+        self.assertEqual(evidence_checkpoints_summary(None), {"error": "not_found"})
+        for broken in (b"x", b"{}", json.dumps({"checkpoints": 1}).encode()):
+            with self.subTest(broken=broken):
+                self.assertEqual(evidence_checkpoints_summary(broken), {"error": "unparsable"})
+
+    def test_summary_for_a_run_without_declaration(self):
+        # 선언 없는 회차(#810 확인 항목): 근거 기록 없음, 봉인 확인 sealed·0개
+        record = traces({"e2_host_journal": b"", "e2_product_journal": b"", "declarations": b"", "e3_result": None,
+                         "host_seal_checks": json.dumps(dict(self.SEAL, checks=[])).encode(), "host_evidence_checkpoints": None})
+        self.assertEqual((record["summary"]["host_seal_phase"], record["summary"]["host_seal_checks"],
+                          record["summary"]["host_evidence_checkpoints"]), ("sealed", 0, 0))
+        self.assertEqual(record["host_evidence_checkpoints"], {"error": "not_found"})
+        # 근거 기록이 있으면 그 수, 모양이 틀리면 null(없음과 구분)
+        with_issued = traces({"host_evidence_checkpoints": json.dumps({"version": "v1", "checkpoints": [{}]}).encode()})
+        self.assertEqual(with_issued["summary"]["host_evidence_checkpoints"], 1)
+        self.assertIsNone(traces({"host_evidence_checkpoints": b"x"})["summary"]["host_evidence_checkpoints"])
 
 
 if __name__ == "__main__":
