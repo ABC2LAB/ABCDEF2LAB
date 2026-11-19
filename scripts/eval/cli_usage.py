@@ -120,16 +120,12 @@ def count_usage(records: Iterable[Mapping], names: Iterable[str], *, with_failur
 OBSERVED_LINES_FORMAT = "abc2lab.cli-observed-lines/v1"
 MAX_OBSERVED_LINES = 64
 MAX_OBSERVED_LINE_CHARS = 1000
-# 가림에 넘기는 한 줄의 바이트 상한(계측기 redact-text maxRedactLineBytes와 같은 값). 이보다 긴 줄만 여기서 자른다.
-# 가린 뒤 MAX_OBSERVED_LINE_CHARS로 다시 자르므로, 이 경계에 걸린 자격 조각은 남지 않는다(#736 리뷰).
+# 가림에 넘기는 명령 원문의 바이트 상한(계측기 redact-text maxRedactLineBytes와 같은 값). 가림은 원문 전체에 한 번 한다:
+# 자르거나 줄로 나눈 뒤 가리면 그 경계에 걸친 자격 값(따옴표 값의 앞부분, 줄바꿈이 든 값)이 남는다(#736 리뷰). 상한을 넘는
+# 원문은 통째로 가릴 수 없으므로 줄을 남기지 않는다(보류 표시만).
 MAX_REDACT_LINE_BYTES = 64 * 1024
 _TRUNCATED_MARK = " [...]"
-
-
-def clip_for_redaction(line: str) -> str:
-    """가림 입력 상한에 맞게 바이트로 자른다(UTF-8 글자 중간이면 그 글자를 뺀다)."""
-    data = line.encode("utf-8")
-    return line if len(data) <= MAX_REDACT_LINE_BYTES else data[:MAX_REDACT_LINE_BYTES].decode("utf-8", "ignore")
+WITHHELD_TOO_LONG = "redaction_input_too_long"
 
 
 def clip_redacted(line: str) -> str:
@@ -137,11 +133,19 @@ def clip_redacted(line: str) -> str:
     return line if len(line) <= MAX_OBSERVED_LINE_CHARS else line[:MAX_OBSERVED_LINE_CHARS] + _TRUNCATED_MARK
 
 
+def pick_line(command: str, names: Iterable[str]) -> str:
+    """가린 명령 원문에서 한 줄을 고른다. 줄 이음만 붙여 줄로 나눈 뒤 정규화했을 때 관측된 이름이 나오는 첫 줄이고, 없으면
+    첫 줄이다. 가린 뒤에 고른다(이름은 자격 값이 아니라 가림 뒤에도 남는다)."""
+    patterns = [_pattern(name) for name in names]
+    lines = command.replace("\\\n", "").splitlines() or [""]
+    return next((raw for raw in lines if any(pattern.search(normalize(raw)) for pattern in patterns)), lines[0])
+
+
 def observed_lines(records: Iterable[Mapping], names: Iterable[str]) -> tuple[list[dict], int]:
-    """이름이 관측된 Bash 호출마다 원문 한 줄을 고른다(가림 전, 2026-11-19 사용자 결정 4). 줄 이음만 붙인 원문을 줄로 나눠
-    정규화했을 때 관측된 이름이 나오는 첫 줄이고, 없으면 첫 줄이다. 항목은 MAX_OBSERVED_LINES까지다. 줄은 여기서
-    근거 상한으로 자르지 않는다(가림 입력 상한 MAX_REDACT_LINE_BYTES만 맞춘다). 반환: ([{"names": [...], "line": 원문 한 줄}],
-    관측된 호출 수). 호출자가 제품과 같은 자격 가림(계측기 redact-text)을 거친 뒤 clip_redacted로 잘라 근거에 쓴다."""
+    """이름이 관측된 Bash 호출마다 가림에 넘길 명령 원문 전체를 고른다(2026-11-19 사용자 결정 4). 항목은 MAX_OBSERVED_LINES
+    까지다. 원문이 가림 입력 상한(MAX_REDACT_LINE_BYTES)을 넘으면 command는 None이다(통째로 가릴 수 없어 남기지 않음).
+    반환: ([{"names": [...], "command": 원문 전체 또는 None}], 관측된 호출 수). 호출자가 제품과 같은 자격 가림(계측기
+    redact-text)을 원문 전체에 거친 뒤 pick_line으로 줄을 고르고 clip_redacted로 잘라 근거에 쓴다."""
     wanted = validate_names(list(names))
     patterns = {name: _pattern(name) for name in wanted}
     out: list[dict] = []
@@ -156,7 +160,6 @@ def observed_lines(records: Iterable[Mapping], names: Iterable[str]) -> tuple[li
         observed += 1
         if len(out) >= MAX_OBSERVED_LINES:
             continue
-        lines = command.replace("\\\n", "").splitlines() or [""]
-        line = next((raw for raw in lines if any(patterns[name].search(normalize(raw)) for name in seen)), lines[0])
-        out.append({"names": seen, "line": clip_for_redaction(line)})
+        fits = len(command.encode("utf-8")) <= MAX_REDACT_LINE_BYTES
+        out.append({"names": seen, "command": command if fits else None})
     return out, observed

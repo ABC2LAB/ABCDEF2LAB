@@ -38,6 +38,28 @@ func TestRedactTextUsesTheProductCredentialRules(t *testing.T) {
 	}
 }
 
+// 러너는 명령 원문 전체(여러 줄)를 한 항목으로 넘기고 가린 뒤에 줄을 고른다(#736 리뷰). 줄바꿈이 든 따옴표 값도 한 항목
+// 안에서는 통째로 가려져, 가린 뒤 어느 줄을 골라도 값 조각이 남지 않는다.
+func TestRedactTextRedactsAQuotedValueAcrossLines(t *testing.T) {
+	in := []string{"npx run --token=\"synthfirstpart\nsynthsecondpart\" && echo done"}
+	raw, _ := json.Marshal(in)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"-role", "redact-text"}, bytes.NewReader(raw), &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d %s", code, stderr.String())
+	}
+	var out []string
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil || len(out) != 1 {
+		t.Fatalf("output %q", stdout.String())
+	}
+	if strings.Contains(out[0], "synthfirstpart") || strings.Contains(out[0], "synthsecondpart") || !strings.Contains(out[0], "npx run") {
+		t.Fatalf("redaction %q", out[0])
+	}
+	// 줄로 나눈 뒤 가리면 첫 줄의 값 앞부분이 남는다(옛 순서의 결함 재현)
+	if first := dlp.CredentialText(strings.SplitN(in[0], "\n", 2)[0]); !strings.Contains(first, "synthfirstpart") {
+		t.Fatalf("split-first premise changed: %q", first)
+	}
+}
+
 func TestRedactTextRejectsMalformedInput(t *testing.T) {
 	long := strings.Repeat("a", maxRedactLineBytes+1)
 	many, _ := json.Marshal(make([]string, maxRedactLines+1))

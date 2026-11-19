@@ -78,7 +78,9 @@ from runner_engine import (  # noqa: E402
     TaskRequest,
 )
 from runner_goal import common_goal, common_goal_sha256  # noqa: E402
-from cli_usage import OBSERVED_LINES_FORMAT, clip_redacted, count_usage, observed_lines  # noqa: E402
+from cli_usage import (  # noqa: E402
+    OBSERVED_LINES_FORMAT, WITHHELD_TOO_LONG, clip_redacted, count_usage, observed_lines, pick_line,
+)
 
 CLI_USAGE_NAME = "cli-usage.json"
 # 이름이 관측된 명령의 가린 원문 한 줄(사람 확인용, 관측이 없으면 파일을 만들지 않는다).
@@ -922,10 +924,15 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
             # 관측된 명령만 원문 한 줄을 제품과 같은 자격 가림을 거쳐 남긴다(2026-11-19 사용자 결정 4). 확인은 사람이 이 줄만
             # 보고 한다. 관측이 없으면 아무것도 남기지 않는다.
             picked, observed = observed_lines(bash, spec.cli_usage_names)
-            redacted = _step(state, "cli_usage_failed", lambda: ports.redact_text([item["line"] for item in picked]))
+            # 가림은 명령 원문 전체에 한 번 하고, 줄 고르기·자르기는 가린 뒤에 한다(#736 리뷰: 나눈 뒤 가리면 경계 조각이 남는다).
+            # 가림 입력 상한을 넘는 원문은 통째로 가릴 수 없어 줄을 남기지 않고 보류만 적는다.
+            whole = [item["command"] for item in picked if item["command"] is not None]
+            redacted = iter(_step(state, "cli_usage_failed", lambda: ports.redact_text(whole)) if whole else [])
+            lines = [{"names": item["names"], "line": None, "withheld": WITHHELD_TOO_LONG} if item["command"] is None
+                     else {"names": item["names"], "line": clip_redacted(pick_line(next(redacted), item["names"]))}
+                     for item in picked]
             _step(state, "evidence_write_failed", lambda: evidence.write_json(CLI_LINES_NAME, {
-                "format": OBSERVED_LINES_FORMAT, "observed_calls": observed,
-                "lines": [{"names": item["names"], "line": clip_redacted(line)} for item, line in zip(picked, redacted)]}))
+                "format": OBSERVED_LINES_FORMAT, "observed_calls": observed, "lines": lines}))
             usage["observed_lines"] = len(picked)
         _step(state, "evidence_write_failed", lambda: evidence.write_json(CLI_USAGE_NAME, usage))
     intercepted = _step(state, "intercept_summary_failed", ports.intercept_summary)

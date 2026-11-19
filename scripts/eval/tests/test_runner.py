@@ -1138,7 +1138,7 @@ class TestCompleteRun(unittest.TestCase):
         self.assertEqual(usage["format"], "abc2lab.cli-usage/v3")
         self.assertNotIn("not_found", usage)
         self.assertNotIn("playwright test", json.dumps(usage))  # 건수 기록에는 명령 원문이 없다
-        # 관측된 명령만 원문 한 줄을 가림(redact-text)을 거쳐 따로 남긴다(2026-11-19 사용자 결정 4)
+        # 관측된 명령만 원문 전체를 가림(redact-text)에 넘기고, 가린 뒤 한 줄을 골라 따로 남긴다(2026-11-19 사용자 결정 4, #736 리뷰)
         self.assertEqual(ports.redacted_input, ["npx playwright test && curl x", "pip3 install y"])
         self.assertEqual(evidence.files["cli-observed-lines.json"], {
             "format": "abc2lab.cli-observed-lines/v1", "observed_calls": 2,
@@ -1160,6 +1160,22 @@ class TestCompleteRun(unittest.TestCase):
         line = evidence.files["cli-observed-lines.json"]["lines"][0]["line"]
         self.assertTrue(line.startswith("<redacted>npx ") and line.endswith(" [...]"))
         self.assertEqual(len(line), 1000 + len(" [...]"))
+
+    def test_whole_command_is_redacted_then_one_line_is_kept(self):
+        # 여러 줄 명령은 원문 전체를 한 항목으로 가린 뒤 관측 줄을 고른다. 가림 입력 상한을 넘는 원문은 줄을 남기지 않는다.
+        spec = dataclasses.replace(make_spec(), cli_usage_names=("npx",))
+        multi = "cd /tmp\nnpx thing --flag"
+        huge = "npx " + "a" * (64 * 1024)
+
+        def mutate(ports, meter, clock):
+            ports.command_rows = [{"tool": "Bash", "command": json.dumps({"command": c}), "output": "", "failed": False}
+                                  for c in (multi, huge)]
+        result, ports, _, evidence = run(mutate, spec=spec)
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertEqual(ports.redacted_input, [multi])  # 상한을 넘는 원문은 가림에도 보내지 않는다
+        self.assertEqual(evidence.files["cli-observed-lines.json"]["lines"], [
+            {"names": ["npx"], "line": "npx thing --flag"},  # 가린 글(<redacted> 표시는 첫 줄에만)에서 고른 줄
+            {"names": ["npx"], "line": None, "withheld": "redaction_input_too_long"}])
 
     def test_no_observation_leaves_no_lines(self):
         # 관측이 없으면 아무것도 남기지 않는다(가림 호출도 없다)

@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cli_usage import (  # noqa: E402
     FORMAT, MAX_OBSERVED_LINE_CHARS, MAX_OBSERVED_LINES, MAX_REDACT_LINE_BYTES, CliUsageError, clip_redacted, count_usage,
-    normalize, not_found, observed_lines,
+    normalize, not_found, observed_lines, pick_line,
     occurrences, tool_input_command, validate_names,
 )
 
@@ -105,48 +105,74 @@ class TestCounting(unittest.TestCase):
 
 
 class TestObservedLines(unittest.TestCase):
-    def test_picks_the_line_where_the_name_is_seen(self):
+    def test_whole_commands_go_to_redaction_and_the_line_is_picked_after(self):
         records = [{"command": {"command": "cd /tmp\nexport A=1\nnpx playwright test"}},
                    {"command": {"command": "echo hi"}},  # 관측 없음
                    {"command": {"command": "n\\\npx b\nls"}},  # 줄 이음으로 쪼갠 이름: 이은 줄을 고른다
                    {"command": {"command": "x='p''ip' && run"}},  # 따옴표 이어 붙인 이름: 원문 줄 그대로
                    {"command": "not json"}]
-        lines, observed = observed_lines(records, ["npx", "pip"])
+        picked, observed = observed_lines(records, ["npx", "pip"])
         self.assertEqual(observed, 3)
-        self.assertEqual(lines, [{"names": ["npx"], "line": "npx playwright test"},
-                                 {"names": ["npx"], "line": "npx b"},
-                                 {"names": ["pip"], "line": "x='p''ip' && run"}])
+        # 가림에는 원문 전체를 넘긴다(줄로 나누거나 자르지 않는다, #736 리뷰)
+        self.assertEqual(picked, [{"names": ["npx"], "command": "cd /tmp\nexport A=1\nnpx playwright test"},
+                                  {"names": ["npx"], "command": "n\\\npx b\nls"},
+                                  {"names": ["pip"], "command": "x='p''ip' && run"}])
+        self.assertEqual([pick_line(item["command"], item["names"]) for item in picked],
+                         ["npx playwright test", "npx b", "x='p''ip' && run"])
+        self.assertEqual(pick_line("a\nb", ["npx"]), "a")  # 이름이 정규화 뒤에만 보이면 첫 줄
         self.assertEqual(observed_lines([{"command": {"command": "curl x"}}], ["npx"]), ([], 0))
 
     def test_bounds(self):
-        # 고른 줄은 근거 상한으로 자르지 않고(가림 전), 가림 입력 상한(바이트)만 맞춘다. 근거 상한 자르기는 가린 뒤다(#736 리뷰).
+        # 근거 상한 자르기는 가린 뒤다. 가림 입력 상한(바이트)을 넘는 원문은 통째로 가릴 수 없어 남기지 않는다(None).
         long = "npx " + "a" * (MAX_OBSERVED_LINE_CHARS + 50)
-        lines, observed = observed_lines([{"command": {"command": long}}] * (MAX_OBSERVED_LINES + 3), ["npx"])
-        self.assertEqual((len(lines), observed), (MAX_OBSERVED_LINES, MAX_OBSERVED_LINES + 3))
-        self.assertEqual(lines[0]["line"], long)
+        picked, observed = observed_lines([{"command": {"command": long}}] * (MAX_OBSERVED_LINES + 3), ["npx"])
+        self.assertEqual((len(picked), observed), (MAX_OBSERVED_LINES, MAX_OBSERVED_LINES + 3))
+        self.assertEqual(picked[0]["command"], long)
         clipped = clip_redacted(long)
         self.assertTrue(clipped.endswith(" [...]"))
         self.assertEqual(len(clipped), MAX_OBSERVED_LINE_CHARS + len(" [...]"))
-        huge = "npx " + "é" * MAX_REDACT_LINE_BYTES  # 2바이트 글자: 바이트 상한에서 글자 중간을 자르지 않는다
-        picked = observed_lines([{"command": {"command": huge}}], ["npx"])[0][0]["line"]
-        self.assertLessEqual(len(picked.encode("utf-8")), MAX_REDACT_LINE_BYTES)
-        self.assertTrue(huge.startswith(picked))
+        fits = "npx " + "é" * ((MAX_REDACT_LINE_BYTES - 4) // 2)  # 2바이트 글자: 바이트로 센다
+        over = fits + "é"
+        self.assertEqual(observed_lines([{"command": {"command": fits}}], ["npx"])[0][0]["command"], fits)
+        self.assertIsNone(observed_lines([{"command": {"command": over}}], ["npx"])[0][0]["command"])
 
-    def test_a_secret_on_the_evidence_boundary_is_redacted_before_clipping(self):
-        # 근거 상한(1000자) 경계에 걸친 자격 값: 자르기 전에 가리면 조각이 남지 않는다(#736 리뷰 재현).
+
+def credential_text(text):
+    """계측기 dlp.CredentialText의 따옴표 값 규칙 흉내(줄바꿈 포함, 실제 규칙은 Go 시험이 대조)."""
+    import re
+    return re.sub(r'(?i)(token)\s*[:=]\s*"(?:\\.|[^"\\])*"', "[REDACTED]", text)
+
+
+class TestSecretsAcrossSplitBoundaries(unittest.TestCase):
+    """가림 전에 자르거나 줄로 나누면 경계에 걸친 합성 자격 값이 근거에 남는다(#736 리뷰 재현). 원문 전체를 가린 뒤 고른다."""
+
+    def evidence_line(self, command, names=("npx",)):
+        picked = observed_lines([{"command": {"command": command}}], list(names))[0][0]
+        if picked["command"] is None:
+            return None
+        return clip_redacted(pick_line(credential_text(picked["command"]), picked["names"]))
+
+    def test_quoted_value_closing_after_the_input_limit_is_not_kept(self):
+        secret = "synthsecret" + "z" * MAX_REDACT_LINE_BYTES
+        command = f'npx run --token="{secret}" && echo done'
+        self.assertIsNone(self.evidence_line(command))  # 통째로 가릴 수 없어 줄을 남기지 않는다
+        # 옛 순서(입력 상한으로 자른 뒤 가림)였다면 닫는 따옴표가 잘려 값 앞부분이 남았다
+        cut = command.encode()[:MAX_REDACT_LINE_BYTES].decode()
+        self.assertIn("synthsecret", clip_redacted(credential_text(cut)))
+
+    def test_quoted_value_with_a_newline_is_redacted_whole(self):
+        command = 'npx run --token="synthfirstpart\nsynthsecondpart" && echo done'
+        line = self.evidence_line(command)
+        self.assertNotIn("synth", line)
+        self.assertIn("npx run", line)
+        # 옛 순서(줄로 나눈 뒤 가림)였다면 첫 줄의 값 앞부분이 남았다
+        first = command.splitlines()[0]
+        self.assertIn("synthfirstpart", credential_text(first))
+
+    def test_secret_on_the_evidence_boundary_is_redacted_before_clipping(self):
         prefix = "npx run " + "x" * (MAX_OBSERVED_LINE_CHARS - 20)
-        line = prefix + ' token="abcdefghijklmnopqrstuvwxyz0123456789"'
-        picked = observed_lines([{"command": {"command": line}}], ["npx"])[0][0]["line"]
-        self.assertIn("abcdefghijklmnop", picked)  # 가림 전 원문은 그대로 넘긴다(가림은 계측기)
-
-        def credential_text(text):  # 계측기 dlp.CredentialText의 따옴표 값 규칙 흉내(이 시험의 값 하나만)
-            return text.replace('token="abcdefghijklmnopqrstuvwxyz0123456789"', "[REDACTED]")
-        out = clip_redacted(credential_text(picked))
-        self.assertNotIn("abcd", out)
-        # 반대 순서(자른 뒤 가림)였다면 조각이 남았다
-        old = credential_text(clip_redacted(picked))
-        self.assertIn('token="abcd', old)
-
+        line = self.evidence_line(prefix + ' --token="abcdefghijklmnopqrstuvwxyz0123456789"')
+        self.assertNotIn("abcd", line)
 
 
 class TestRedactLimitMatchesTheMeter(unittest.TestCase):
