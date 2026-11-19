@@ -158,6 +158,7 @@ func (s *Server) serveCoverageGraph(w http.ResponseWriter, r *http.Request, boun
 	}
 	// Go mux의 GET 패턴은 HEAD도 받는다. v1은 GET만 받고 HEAD는 405다(§3).
 	if kg && r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
 		writeKGError(w, http.StatusMethodNotAllowed)
 		return
 	}

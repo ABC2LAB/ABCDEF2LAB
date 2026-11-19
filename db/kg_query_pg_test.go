@@ -111,6 +111,9 @@ func TestKGQueryPostgres(t *testing.T) {
 	anchor(done, a11)
 	// 원천의 원천은 넓히지 않는다
 	a12 := asset("endpoint", []int64{srcsrc.ID}, nil)
+	// 문맥 밖(원천의 원천) 탐색의 공개 상태 앵커도 읽지 않는다
+	a14 := asset("endpoint", none, nil)
+	anchor(node(srcsrc.ExplorationID, "fact", "confirmed", `{}`), a14)
 
 	tx, err := d.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
 	if err != nil {
@@ -144,7 +147,7 @@ func TestKGQueryPostgres(t *testing.T) {
 	if !slices.Equal(nodes, wantNodes) {
 		t.Fatalf("nodes=%v want %v", nodes, wantNodes)
 	}
-	for _, hidden := range []int64{a4, a7, a10, a12, a13} {
+	for _, hidden := range []int64{a4, a7, a10, a12, a13, a14} {
 		if strings.Contains(body, ref(`"a:`, hidden)+`"`) {
 			t.Fatalf("포함되면 안 되는 자산 %d가 응답에 있음", hidden)
 		}
@@ -200,6 +203,30 @@ func TestKGQueryPostgres(t *testing.T) {
 	}
 	if !slices.Equal(contained, []string{fmt.Sprintf("contained_by:a:%d:a:%d", a6, a5)}) {
 		t.Fatalf("contained_by=%v", contained)
+	}
+
+	// 숨은 앵커(원천의 진행 중 intent·현재의 삭제 intent·문맥 밖 탐색)는 노드 상한 계산에도 들어가지 않는다.
+	// 노드 상한을 응답 노드 수와 같게 두면 성공, 하나 줄이면 413 — 앵커 SQL 필터를 빼면 같을 때도 413이 된다.
+	query := func() error {
+		tx, err := d.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		_, err = QueryKGTx(ctx, tx, []KGContextTask{{cur.ID, cur.ExplorationID}, {src.ID, src.ExplorationID}})
+		return err
+	}
+	saved := KGLimits
+	KGLimits.Nodes = len(g.Nodes)
+	if err := query(); err != nil {
+		KGLimits = saved
+		t.Fatalf("노드 상한 경계(숨은 앵커 제외): %v", err)
+	}
+	KGLimits.Nodes = len(g.Nodes) - 1
+	err = query()
+	KGLimits = saved
+	if err != ErrKGTooLarge {
+		t.Fatalf("노드 상한-1: %v", err)
 	}
 
 	// Q13: 출처 상한+1 행은 자르지 않고 실패한다(범위 출처 상한+1개).

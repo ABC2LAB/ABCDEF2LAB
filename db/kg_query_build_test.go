@@ -321,8 +321,11 @@ func TestKGContainment(t *testing.T) {
 		{ID: 11, Type: "endpoint", URL: "http://192.0.2.10/login"},
 		{ID: 12, Type: "endpoint", URL: "ftp://app.example.test/file"},
 		{ID: 13, Type: "endpoint", URL: "https://other.test/x"},
+		// 같은 origin 루트의 서비스라도 HTTP 서비스가 아니면 엔드포인트의 부모가 아니다
+		{ID: 14, Type: "service", URL: "https://only-other.test/", Kind: "other"},
+		{ID: 15, Type: "endpoint", URL: "https://only-other.test/x"},
 	}
-	g := kgBuild(t, kgRows{Tasks: kgTasks(41), ScopeMatches: scope(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13), Assets: assets})
+	g := kgBuild(t, kgRows{Tasks: kgTasks(41), ScopeMatches: scope(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15), Assets: assets})
 	got := map[string]string{}
 	for _, e := range g.Edges {
 		if e.Kind == "contained_by" {
@@ -405,8 +408,16 @@ func TestKGKeywordScopeIssue(t *testing.T) {
 // Q02: 범위 일치 조건은 contextCoverageCTE와 같은 글자다(scopeTargetCTE의 IP-literal 확장을 쓰지 않음).
 func TestKGScopeConditionMatchesCoverageCTE(t *testing.T) {
 	norm := func(s string) string { return strings.Join(strings.Fields(s), " ") }
-	if !strings.Contains(norm(contextCoverageCTE), norm(kgScopeMatchCond)) {
-		t.Fatal("범위 일치 조건이 contextCoverageCTE와 달라짐")
+	// 부분 문자열이 아니라 CTE의 `JOIN task_scope ts ON ( … )` 괄호 안 전체와 같아야 한다 — 절 하나를 빼도 잡힌다.
+	cte := norm(contextCoverageCTE)
+	head, tail := "JOIN task_scope ts ON (", ") JOIN context_tasks ctx ON ctx.task_id=ts.task_id"
+	start := strings.Index(cte, head)
+	end := strings.Index(cte, tail)
+	if start < 0 || end < start {
+		t.Fatal("contextCoverageCTE의 범위 조건 위치를 찾지 못함")
+	}
+	if got := strings.TrimSpace(cte[start+len(head) : end]); got != norm(kgScopeMatchCond) {
+		t.Fatalf("범위 일치 조건이 contextCoverageCTE와 다름:\n cte %s\n  kg %s", got, norm(kgScopeMatchCond))
 	}
 	if strings.Contains(kgScopeMatchCond, "try_inet(a.domain)") {
 		t.Fatal("IP-literal domain 확장이 섞임")
@@ -448,6 +459,49 @@ func TestKGLimitsAndIDs(t *testing.T) {
 	in.ScopeMatches = in.ScopeMatches[:KGLimits.Provenance]
 	if _, err := buildKGGraph(in); err != nil {
 		t.Fatalf("출처 상한 경계: %v", err)
+	}
+}
+
+// kgWithLimits는 상한을 잠시 낮춰 경계(상한 = 성공, 상한+1 = 413)를 작은 입력으로 본다.
+func kgWithLimits(t *testing.T, edges, issues int) {
+	t.Helper()
+	saved := KGLimits
+	KGLimits.Edges, KGLimits.Issues = edges, issues
+	t.Cleanup(func() { KGLimits = saved })
+}
+
+// Q13: 관계·문제 상한도 '넘으면' 실패이고 같으면 성공이다(> 를 >= 로 바꾸면 잡힌다).
+func TestKGEdgeAndIssueLimits(t *testing.T) {
+	attached := func(n int) kgRows { // 자산 n개 = task_asset 관계 n개
+		in := kgRows{Tasks: kgTasks(41)}
+		for i := 1; i <= n; i++ {
+			in.Arrays = append(in.Arrays, kgPair{41, int64(i)})
+			in.Links = append(in.Links, kgLinkRow{Task: 41, Asset: int64(i), Source: "system"})
+			in.Assets = append(in.Assets, kgEndpoint(int64(i)))
+		}
+		return in
+	}
+	kgWithLimits(t, 3, KGLimits.Issues)
+	if _, err := buildKGGraph(attached(3)); err != nil {
+		t.Fatalf("관계 상한 경계: %v", err)
+	}
+	if _, err := buildKGGraph(attached(4)); !errors.Is(err, ErrKGTooLarge) {
+		t.Fatalf("관계 상한+1: %v", err)
+	}
+	legacy := func(n int) kgRows { // 출처 행 없는 배열 n개 = legacy_link_missing 문제 n개
+		in := kgRows{Tasks: kgTasks(41)}
+		for i := 1; i <= n; i++ {
+			in.Arrays = append(in.Arrays, kgPair{41, int64(i)})
+			in.Assets = append(in.Assets, kgEndpoint(int64(i)))
+		}
+		return in
+	}
+	kgWithLimits(t, 100, 3)
+	if _, err := buildKGGraph(legacy(3)); err != nil {
+		t.Fatalf("문제 상한 경계: %v", err)
+	}
+	if _, err := buildKGGraph(legacy(4)); !errors.Is(err, ErrKGTooLarge) {
+		t.Fatalf("문제 상한+1: %v", err)
 	}
 }
 

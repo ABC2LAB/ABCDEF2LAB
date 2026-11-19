@@ -68,6 +68,9 @@ func TestKGViewErrorsWithoutDatabase(t *testing.T) {
 				t.Fatalf("status=%d %s", w.Code, w.Body)
 			}
 			if tc.method == "HEAD" {
+				if w.Header().Get("Allow") != http.MethodGet {
+					t.Fatalf("405 Allow=%q", w.Header().Get("Allow"))
+				}
 				return
 			}
 			e := kgEnvelopeOf(t, w)
@@ -239,6 +242,25 @@ func TestKGViewHandlerPostgres(t *testing.T) {
 	var legacy map[string]any
 	if err := json.Unmarshal(w.Body.Bytes(), &legacy); err != nil || w.Code != 200 || legacy["version"] != nil || legacy["nodes"] == nil {
 		t.Fatalf("무인자 응답 변경: %d %s", w.Code, w.Body)
+	}
+
+	// Q13: 바이트 상한 — 응답 JSON 길이가 상한과 같으면 성공, 1바이트 넘으면 413이다(자르지 않음).
+	full := f.get(path+"?view=kg-v1", 0)
+	if full.Code != 200 {
+		t.Fatalf("바이트 상한 기준 응답: %d", full.Code)
+	}
+	size := full.Body.Len()
+	savedLimits := db.KGLimits
+	db.KGLimits.Bytes = size
+	atLimit := f.get(path+"?view=kg-v1", 0)
+	db.KGLimits.Bytes = size - 1
+	overLimit := f.get(path+"?view=kg-v1", 0)
+	db.KGLimits = savedLimits
+	if atLimit.Code != 200 || overLimit.Code != 413 {
+		t.Fatalf("바이트 상한 경계: 같음=%d 초과=%d", atLimit.Code, overLimit.Code)
+	}
+	if e := kgEnvelopeOf(t, overLimit); e.Error.Code != "kg_graph_too_large" || *e.Error.Retryable || strings.Contains(overLimit.Body.String(), `"nodes"`) {
+		t.Fatalf("바이트 상한 초과 본문: %s", overLimit.Body)
 	}
 
 	// Q13: 건수 상한 초과는 자르지 않고 413 kg_graph_too_large(재조회 불가).
