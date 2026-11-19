@@ -303,6 +303,11 @@ class TestFinishWithGoals(unittest.TestCase):
         script.decide(a_done)
         script.decide(b_waiting)
         script.decide(a_done)  # 같은 대화를 다시 보내도 한 호출로 센다
+        a_later = dict(a_done, messages=a_done["messages"] + [  # 그 대화가 이어져(사실 기록) 길어져도 같은 호출이다
+            {"role": "assistant", "content": None, "tool_calls": [{"id": "call_scripted", "type": "function",
+                                                                   "function": {"name": FACT_TOOL, "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call_scripted", "content": "{}"}])
+        script.decide(a_later)
         self.assertFalse(script.plan_commands_completed())
         self.assertIsNone(script.decide(finishing))  # 동찬님 반례: A 완료·B 대기면 open
         script.decide(worker_turn(13, OK_BASH))  # B도 완료
