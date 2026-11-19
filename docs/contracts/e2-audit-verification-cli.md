@@ -94,3 +94,9 @@ journal v1과 별도 형식이다. `--journal-format e2-http-v2`(저장된 v1은
 호출 마감/결과의 완전성·현재 host head/epoch·키의 운영 권한·승인·E③ 판정을 증명하지 않는다.
 오래된 journal과 그때의 checkpoint를 함께 제공한 경우의 일치를 최신성으로 해석하지 않는다.
 외부 최신 정본 조회·일반 E②와 IDOR의 같은 실행 연결·실제 배치 수용은 별도 작업이다.
+
+**평가 v3 수집 후속.** 수집기가 같은 실행의 신뢰 체크포인트를 어디서 확보해 `--checkpoint`로
+전달할지는 [E② v3 현재 head 저장 코어(#770)](https://github.com/ABC2LAB/ABCDEF2LAB/pull/770)의
+인증된 현재 epoch·head 조회와 연동하는 후속에서 정한다. 수집 위치와 전달 방식은
+[평가 측 오프라인 검증 계약](e3-e2-v3-journal-contract.md#83-오프라인-검증)에서 함께 정하고,
+CLI는 전달된 체크포인트와 저널의 일치 및 연속성을 검증한다.
