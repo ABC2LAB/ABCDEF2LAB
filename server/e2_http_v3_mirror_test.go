@@ -72,3 +72,27 @@ func TestV3MirrorRequiresHostACKBeforeLegacyProjection(t *testing.T) {
 		t.Fatal("기존 화면용 v2 투영 검증 실패", err)
 	}
 }
+
+func TestV3MirrorKeepsE3EventsOutOfLegacyJournal(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.Chmod(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	key := bytes.Repeat([]byte{0x53}, 32)
+	journal, err := e2proxy.CreateJournal(directory, "events.jsonl", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	host := &v3RecorderFixture{}
+	mirror := e2HTTPV3MirrorRecorder{host: host, legacy: journal}
+	event := e2proxy.Event{Stage: "result", Receipt: e2proxy.Receipt{
+		Version: e2proxy.JournalVersionV3, Program: e2proxy.ProgramE3Identity,
+	}}
+	if err := mirror.Record(t.Context(), event); err != nil {
+		t.Fatal(err)
+	}
+	if len(host.events) != 1 || journal.Checkpoint().Sequence != 0 {
+		t.Fatal("E③ 사건이 Host 또는 v2 화면 저널의 잘못된 경로로 감")
+	}
+}
