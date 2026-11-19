@@ -19,7 +19,7 @@ import { useUrlRuns } from "../live/urlRunList";
 import { FLOW_VERSION, type WorkflowSnapshot } from "../live/workflow";
 import { type Shell, ShellContext, type View } from "../shell";
 import { UrlDashboardLive } from "../views/live/UrlDashboardLive";
-import { gaugeSegments, prettyEvidence, reportCountsText, UrlLiveLive } from "../views/live/UrlLiveLive";
+import { gaugeSegments, prettyEvidence, UrlLiveLive } from "../views/live/UrlLiveLive";
 import {
   crawlBar,
   eventText,
@@ -840,26 +840,13 @@ describe("자산 탐색", () => {
   });
 });
 
-describe("보고서 머리 줄 요청 · 탐색 수 (사용자 11/19 — 증거 · 요청 기록 탭 대신)", () => {
-  const counts = { forward_attempted: 153, denied: 9, unsupported: 0, unknown: 0 };
-  it("요청은 보냄 · 막음 · 결과 불명(0이어도), 탐색은 발견한 API · 방문", () => {
-    expect(reportCountsText({ counts: { found: 6, visited: 4 } }, { counts })).toEqual({
-      req: "153 보냄 · 9 막음 · 결과 불명 0",
-      crawl: "발견한 API 6 · 방문 4",
-    });
-  });
-  it("지원 안 하는 요청은 있을 때만, 기록이 없는 쪽은 null(0 으로 만들지 않음)", () => {
-    expect(reportCountsText(null, { counts: { ...counts, unsupported: 4, unknown: 1 } })).toEqual({
-      req: "153 보냄 · 9 막음 · 지원 안 함 4 · 결과 불명 1",
-      crawl: null,
-    });
-    expect(reportCountsText({ counts: { found: 6, visited: 4 } }, null).req).toBeNull();
-  });
-  it("탐색 · 선택 범위에는 숫자 칸을 두지 않는다", () => {
+describe("보고서 탐색 · 선택 범위 (사용자 11/19)", () => {
+  it("탐색 수는 제목 옆 글로, 숫자 칸은 두지 않는다", () => {
     useUrl.setState({ flow: { ...flow, counts: { ...flow.counts, found: 6, visited: 4 } } });
     render(<WorkflowReport />);
     const box = screen.getByRole("heading", { name: "탐색 · 선택 범위" }).closest("section") as HTMLElement;
     expect(box.querySelector("[class*='meters']")).toBeNull();
+    expect(box).toHaveTextContent(/발견한 API 6 · 방문 4/);
   });
 });
 

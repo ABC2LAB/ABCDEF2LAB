@@ -1376,7 +1376,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(facts.querySelector("details")).toBeNull();
   });
 
-  it("마감된 진단은 요청 승인을 다시 부르지 않고 보고서 머리 줄(요청 수)로 안내한다", async () => {
+  it("마감된 진단은 요청 승인을 다시 부르지 않고 전송 상태를 더 조회하지 않는다고 안내한다", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(completed);
     const { goTo } = mount("live");
@@ -1387,7 +1387,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(card).toHaveTextContent(/완료점검을 마쳤습니다보고서 보기.*결과 저장 확인/);
     expect(screen.getAllByText(/점검을 마쳤습니다/)).toHaveLength(1);
     expect(screen.queryByText("실행을 마감했습니다")).toBeNull();
-    expect(screen.getByText(/마감된 점검의 요청 수는 보고서 머리 줄에 있습니다/)).toBeInTheDocument();
+    expect(screen.getByText(/점검이 끝나 전송 상태를 더 조회하지 않습니다/)).toBeInTheDocument();
     expect(a.fetchRequestApprovals).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: /보고서 보기/ }));
     expect(goTo).toHaveBeenCalledWith("report");
@@ -1521,7 +1521,8 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(crumb).toHaveTextContent(/^끝난 점검\/target\.example$/);
     expect(crumb).not.toHaveTextContent("작업대");
     await waitFor(() => expect(a.fetchRemediation).toHaveBeenCalledWith("42", "internal"));
-    expect(a.fetchDiagnosisRun).toHaveBeenCalledWith("42");
+    // 저장된 실행 기록(diagnosis-run)은 보고서에서 쓰지 않아 부르지 않는다(사용자 11/19 — 실행 종료 기록 · 요청 수를 뺌)
+    expect(a.fetchDiagnosisRun).not.toHaveBeenCalled();
     // 판정 집계 (시안 짜임: 발견 · 판정 확정 · 의심/판단 불가 · 커버리지): 후보는 검토 필요, 확정 0 (팀 lib 분류).
     // 판단 불가 = 미실행 + 결과 불명. 커버리지는 서버 값 그대로
     const strip = await screen.findByRole("region", { name: "판정 집계" });
@@ -1534,13 +1535,13 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     // 자산 커버리지(방문 · 검사한 자산 비율)라고 이름 붙인다 — 판정 커버리지로 읽히지 않게 (리뷰 #479)
     await waitFor(() => expect(cell("자산 커버리지")).toHaveTextContent("40%"));
     expect(cell("자산 커버리지")).toHaveTextContent("미검사 60%");
-    // 머리 줄: 시작 · 소요 · 모델 · 모델 사용량. 서버가 주지 않는 시작 · 소요는 '연결 전'(값을 만들지 않음).
-    // 자산 커버리지는 요약 칸에만 두고 머리에서 뺐다(사용자 11/17). 모델 사용량 기록이 없으면 '—'
+    // 머리 줄: 시작 · 소요 · 모델 · 토큰(모델 사용량, 사용자 11/19 짧게). 서버가 주지 않는 시작 · 소요는 '연결 전'(값을
+    // 만들지 않음). 자산 커버리지는 요약 칸에만 두고 머리에서 뺐다(사용자 11/17). 모델 사용량 기록이 없으면 '—'
     const header = screen
       .getByRole("heading", { level: 1, name: "target.example 보고서" })
       .closest("header") as HTMLElement;
     expect(header).not.toHaveTextContent("자산 커버리지");
-    expect(within(header).getByText(/^모델 사용량/)).toHaveTextContent(/^모델 사용량 —$/);
+    expect(within(header).getByText(/^토큰/)).toHaveTextContent(/^토큰 —$/);
     expect(header).toHaveTextContent("모델 합성 모델 · 로컬");
     // 단계 줄: 보고서가 지금 단계이고, 앞 단계(자산 탐색 · 범위 확인 · 점검 진행)로 눌러서 돌아간다 (사용자 11/17)
     const steps = within(header).getByRole("navigation", { name: "점검 단계" });
@@ -1587,11 +1588,10 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     const mapTab = screen.getByRole("tabpanel", { name: "접근통제 지도" });
     expect(within(mapTab).getByRole("note")).toHaveTextContent(/^연결 전/);
     expect(within(mapTab).getByRole("button", { name: /접근통제 지도 화면 열기/ })).toBeInTheDocument();
-    // '증거 · 요청 기록' 탭은 없고(사용자 11/19), 요청 수는 머리 줄 글 한 줄로 — 저장 값 그대로 보냄(대상 전송 시도) ·
-    // 막음(차단) · 결과 불명(0이어도, 절대규칙 5). 실행 종료 기록(단계 · 결과 · 실행 ID · 감사)은 어디에도 없다
+    // '증거 · 요청 기록' 탭은 없고 머리 줄은 토큰(입 · 출)에서 끝난다(사용자 11/19 — 요청 수는 두지 않음).
+    // 실행 종료 기록(단계 · 결과 · 실행 ID · 감사)은 어디에도 없다
     expect(screen.queryByRole("tab", { name: "증거 · 요청 기록" })).toBeNull();
-    const reqLine = await screen.findByText(/^요청/, { selector: "header span" });
-    expect(reqLine).toHaveTextContent(/^요청 1 보냄 · 2 막음 · 결과 불명 0$/);
+    expect(within(header).queryByText(/^요청/)).toBeNull();
     // ('정상 종료' · 'run-1'은 오른쪽 취약점 상세의 안내 글 · 기술 정보에도 있어 실행 종료 기록 칸 자체로 확인한다)
     expect(screen.queryByRole("region", { name: "실행 종료 기록" })).toBeNull();
     expect(screen.queryByText(/요청 접수|실행 종료 기록/)).toBeNull();
@@ -1602,20 +1602,6 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(within(docTab).getByRole("button", { name: "공유용 사본" })).toBeInTheDocument();
     // 모델 사용량은 머리 줄에(따로 제목 칸을 두지 않는다)
     expect(screen.queryByRole("heading", { name: "모델 사용량" })).toBeNull();
-  });
-
-  it("보고서 머리 줄 요청 수: 지원 안 하는 요청이 있을 때만 적는다", async () => {
-    saveHandle();
-    u.readURLStatus.mockResolvedValue(completed);
-    if (RUN_RECORD.kind !== "run" || !RUN_RECORD.run.execution) throw new Error("fixture");
-    const execution = RUN_RECORD.run.execution;
-    a.fetchDiagnosisRun.mockResolvedValue({
-      ...RUN_RECORD,
-      run: { ...RUN_RECORD.run, execution: { ...execution, counts: { ...execution.counts, unsupported: 4 } } },
-    });
-    mount("report");
-    const reqLine = await screen.findByText(/^요청/, { selector: "header span" });
-    expect(reqLine).toHaveTextContent(/^요청 1 보냄 · 2 막음 · 지원 안 함 4 · 결과 불명 0$/);
   });
 
   it("오른쪽 발견 상세 머리의 '상세 보기'는 고른 발견의 상세 페이지(왼쪽 카드 · 오른쪽 상태 카드)로 가운데를 바꾸고, '발견 목록으로' 돌아온다", async () => {
@@ -1957,8 +1943,8 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     const header = (await screen.findByRole("heading", { level: 1, name: "target.example 보고서" })).closest(
       "header",
     ) as HTMLElement;
-    const use = await within(header).findByText(/^모델 사용량/);
-    expect(use).toHaveTextContent(/^모델 사용량 입 1.2k 출 300 \(최대\)$/);
+    const use = await within(header).findByText(/^토큰/);
+    expect(use).toHaveTextContent(/^토큰 입 1.2k 출 300 \(최대\)$/);
     expect(use).toHaveAttribute("title", "입력 1,200 토큰 (최대치)\n출력 300 토큰 (최대치)");
     expect(header).not.toHaveTextContent("자산 커버리지");
   });

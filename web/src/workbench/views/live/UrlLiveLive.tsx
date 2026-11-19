@@ -28,7 +28,6 @@ import { cx } from "../../lib/cx";
 import {
   downloadDiagnostic,
   fetchCoverage,
-  fetchDiagnosisRun,
   fetchRemediation,
   fetchTaskFindings,
   type LiveFinding,
@@ -561,7 +560,7 @@ export function UrlLiveLive() {
   }
 
   let sendWaitText = "엔진이 시작되면 나옵니다.";
-  if (job.drain_complete) sendWaitText = "마감된 점검의 요청 수는 보고서 머리 줄에 있습니다.";
+  if (job.drain_complete) sendWaitText = "점검이 끝나 전송 상태를 더 조회하지 않습니다.";
   else if (job.state === "unknown" || !verified)
     sendWaitText = "결과 불명인 점검은 전송 상태를 이어 조회하지 않습니다. 상태를 다시 조회하세요.";
   const selected = flow?.endpoints.filter((e) => e.selected).length ?? 0;
@@ -875,31 +874,6 @@ export function prettyEvidence(raw: string): string {
   };
   const value = unwrap(raw);
   return maskSecrets(typeof value === "string" ? value : JSON.stringify(value, null, 2));
-}
-
-/**
- * 보고서 머리 줄의 요청 · 탐색 수 (사용자 11/19 — '증거 · 요청 기록' 탭을 없애고 상자 대신 머리 줄 글 한 줄로).
- * - 요청: 저장된 실행 기록의 E② 집계 값 그대로 — 보냄(대상 전송 시도) · 막음(차단) · 지원 안 함(있을 때만) · 결과 불명
- *   (0이어도 둠, 절대규칙 5). 요청 접수 · 허용 · 호출은 겹치거나 뜻이 어려워 두지 않는다.
- * - 탐색: 탐색 흐름 스냅숏의 발견한 API(찾은 경로 수) · 방문(응답을 받은 경로 수).
- * 기록이 없으면 null(0 으로 만들지 않음).
- */
-export function reportCountsText(
-  flow: { counts: { found: number; visited: number } } | null,
-  e: { counts: { forward_attempted: number; denied: number; unsupported: number; unknown: number } } | null,
-): { req: string | null; crawl: string | null } {
-  const req = e
-    ? [
-        `${fmtCount(e.counts.forward_attempted)} 보냄`,
-        `${fmtCount(e.counts.denied)} 막음`,
-        e.counts.unsupported ? `지원 안 함 ${fmtCount(e.counts.unsupported)}` : "",
-        `결과 불명 ${fmtCount(e.counts.unknown)}`,
-      ]
-        .filter(Boolean)
-        .join(" · ")
-    : null;
-  const crawl = flow ? `발견한 API ${fmtCount(flow.counts.found)} · 방문 ${fmtCount(flow.counts.visited)}` : null;
-  return { req, crawl };
 }
 
 type Audience = "shared" | "internal";
@@ -1429,8 +1403,7 @@ export function UrlReportLive() {
   const rem = usePoll(() => fetchRemediation(taskId as string, "internal"), [taskId], {
     enabled: visible && !!taskId,
   });
-  const run = usePoll(() => fetchDiagnosisRun(taskId as string), [taskId], { enabled: visible && !!taskId });
-  const flowNow = useUrl((st) => st.flow);
+  // 저장된 실행 기록(diagnosis-run)은 보고서에서 더 쓰지 않는다(사용자 11/19 — 실행 종료 기록 · 요청 수를 뺌)
   // 자산 커버리지 (요약 칸): 서버 task 의 방문 · 검사한 자산 비율(판정 커버리지 아님 · 리뷰 #479).
   // 꺼졌거나 못 읽으면 값을 만들지 않고 "—"
   const cov = usePoll(() => fetchCoverage(taskId as string), [taskId], { enabled: visible && !!taskId });
@@ -1614,9 +1587,6 @@ export function UrlReportLive() {
   // 자산 커버리지는 아래 요약 칸에 있어 머리에서 빼고 그 자리에 모델 사용량을 둔다(사용자 11/17).
   // 모델 사용량은 이 진단의 전송 통제 예산 기록(job.model_usage), 기록이 없으면 "—"
   const usage = job?.model_usage;
-  const runData = run.data;
-  const reqCounts = reportCountsText(flowNow, runData?.kind === "run" ? (runData.run.execution ?? null) : null);
-  const runFailed = !runData && !!run.error;
   const startText = runStartText(job);
   const durationSec = runDurationSec(job);
   const meta = [
@@ -1629,20 +1599,10 @@ export function UrlReportLive() {
         모델 <b>{`${profile.model_label} · ${profile.model?.external_transfer ? "외부" : "로컬"}`}</b>
       </span>
     ) : null,
+    // 머리 줄은 토큰(입 · 출)에서 끝낸다(사용자 11/19 — 길어서 '모델 사용량' → '토큰', 요청 수는 두지 않음)
     <span key="use" title={usage ? tokenExact(usage) : undefined}>
-      모델 사용량 {usage ? <TokenChips u={usage} /> : <b>—</b>}
+      토큰 {usage ? <TokenChips u={usage} /> : <b>—</b>}
     </span>,
-    // 요청 · 탐색 수: '증거 · 요청 기록' 탭을 없애고 머리 줄로(사용자 11/19). 실행 기록을 못 읽으면 '—'(0 으로 만들지 않음)
-    reqCounts.req !== null || runFailed ? (
-      <span key="req" title={runFailed ? "실행 기록을 읽지 못했습니다" : undefined}>
-        요청 <b>{reqCounts.req ?? "—"}</b>
-      </span>
-    ) : null,
-    reqCounts.crawl !== null ? (
-      <span key="crawl">
-        탐색 <b>{reqCounts.crawl}</b>
-      </span>
-    ) : null,
   ].filter(Boolean);
 
   return (
