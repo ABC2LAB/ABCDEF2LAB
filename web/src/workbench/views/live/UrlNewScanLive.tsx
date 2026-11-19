@@ -28,7 +28,8 @@ import {
 } from "@/lib/diagnosis/external-account-consent";
 
 import { cx } from "../../lib/cx";
-import { clockOf, fmtDur } from "../../live/map";
+import { fmtDur, shortTimeOf } from "../../live/map";
+import { useNow } from "../../live/parts";
 import { disconnectUrl, runUrlAction, setUrlConfirmed, useUrl, useUrlGates } from "../../live/urlDiagnosis";
 import { scanViewFor, URL_ENDED_STATES, urlHost, urlTargetHint } from "../../live/urlMap";
 import { useShell } from "../../shell";
@@ -86,9 +87,6 @@ function approvalRule(mode: ApprovalMode, methods: readonly string[]): string {
   if (mode === "preauthorized_scope" && writes.length > 0) return `쓰기(${writes.join("·")}) 건별 확인 없이 보냄`;
   return APPROVAL_MODE_SHORT[mode];
 }
-/** clockOf 의 "HH:MM:SS" 에서 "HH:MM" 까지의 길이 (승인 만료는 분까지만). */
-const HH_MM = 5;
-
 /** 안전 정책 한 줄 (시안 ilist). */
 function Rule({ t, sub, warn = false, tip }: { t: ReactNode; sub?: string; warn?: boolean; tip?: ReactNode }) {
   return (
@@ -145,6 +143,8 @@ function profileChoiceLabel(p: URLDiagnosisProfile): string {
 /** live 새 점검 (URL 진단). */
 export function UrlNewScanLive() {
   const { goTo, route } = useShell();
+  // 승인 만료가 오늘이 아니면 날짜도 보이려고 지금 시각을 둔다(렌더 중 시계를 읽지 않음)
+  const now = useNow();
   const cap = useUrl((st) => st.cap);
   const handle = useUrl((st) => st.handle);
   const job = useUrl((st) => st.job);
@@ -1032,7 +1032,7 @@ export function UrlNewScanLive() {
                     scope.model
                       ? `비용 $${(scope.budget.cost_usd_micros / 1_000_000).toLocaleString("en-US", { maximumFractionDigits: 6 })}`
                       : null,
-                    `승인 만료 ${clockOf(scope.expires_at).slice(0, HH_MM) || scope.expires_at}`,
+                    `승인 만료 ${shortTimeOf(scope.expires_at, now) || scope.expires_at}`,
                   ]
                     .filter(Boolean)
                     .join(" · ")}

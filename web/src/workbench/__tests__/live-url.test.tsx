@@ -802,7 +802,8 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     const summary = screen.getByRole("complementary", { name: "점검 요약" });
     // 상한 · 승인 만료는 한 줄(사용자 11/19): '요청 n회 · 시간 · 승인 만료 HH:MM'. 로컬 모델이라 비용은 없다
     const limit = within(summary).getByText("상한").parentElement as HTMLElement;
-    expect(limit.querySelector("small")?.textContent).toMatch(/^요청 3회 · 1분 · 승인 만료 \d\d:\d\d$/);
+    // 시험 범위의 만료(2030-01-01)는 오늘이 아니라 날짜도 붙는다
+    expect(limit.querySelector("small")?.textContent).toMatch(/^요청 3회 · 1분 · 승인 만료 \d\d-\d\d \d\d:\d\d$/);
     expect(summary).not.toHaveTextContent("모델 요청");
     const start = screen.getByRole("button", { name: "점검 시작" });
     expect(screen.getByRole("complementary", { name: "점검 요약" }).contains(start)).toBe(true);
@@ -871,7 +872,7 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     const ext = screen.getByText("외부 모델로 대상 응답 전송").parentElement as HTMLElement;
     expect(ext.querySelector("small")).toHaveTextContent(externalModel.provider);
     const limit = screen.getByText("상한").parentElement as HTMLElement;
-    expect(limit.querySelector("small")).toHaveTextContent(/ · 비용 \$6 · 승인 만료 \d\d:\d\d$/);
+    expect(limit.querySelector("small")).toHaveTextContent(/ · 비용 \$6 · 승인 만료 (\d\d-\d\d )?\d\d:\d\d$/);
   });
   it("로컬 모델(완전 로컬)에서는 외부 CDN 사전고지를 띄우지 않는다", async () => {
     const limits = {
