@@ -341,6 +341,16 @@ func (r *run) call(ctx context.Context, want Observation, send func() (Observati
 	r.seen[key] = true
 	sealed, err := r.deps.Journal.Sealed(ctx, r.in.Binding, obs.Ref)
 	if err != nil {
+		// 실행 문맥이 끝나(운영자 중지·확정 단계 시간 몫 끝) 조회를 마치지 못한 것은 무결성 실패가 아니라 중지다(계약 §12, v3
+		// 계약 §5). 검증하지 못한 관찰은 쓰지 않는다. 문맥이 살아 있는데 취소 오류가 오면 아래처럼 무결성 실패다.
+		if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
+			if errors.Is(ctxErr, context.DeadlineExceeded) {
+				r.budget = true
+			} else {
+				r.stopped = true
+			}
+			return Observation{}, false
+		}
 		// 검증된 스냅샷에 이벤트가 없는 것과 저널을 검증하지 못한 것을 나눠 남긴다(v3 계약 §5·§7). 그 밖의 오류도 검증을
 		// 마치지 못한 것이라 무결성 실패로 본다. 어느 쪽이든 진위 실패라 판정 행을 만들지 않는다.
 		r.integrity = IntegrityJournalIntegrityFailed
