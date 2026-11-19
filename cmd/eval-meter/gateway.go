@@ -35,6 +35,11 @@ const (
 	endUpstreamCutAfterDone   = "upstream_cut_after_done"
 	endUpstreamCutBeforeDone  = "upstream_cut_before_done"
 
+	// cancelled_by_seal 행이 멈춘 모양: 봉인 전에 위쪽 응답의 종료 이벤트 줄을 읽었는지다(#735 리뷰). 종료 줄을 읽은 뒤
+	// 봉인된 호출은 엔진이 그 출력을 썼을 수 있어, 끊긴 호출 예외는 종료 줄 전 봉인만 받는다.
+	sealEndBeforeDone = "sealed_before_done"
+	sealEndAfterDone  = "sealed_after_done"
+
 	// 엔진 본문의 샘플링 칸·provider 칸 거부 사유. 행 결정은 "rejected_"+사유다.
 	rejectSampling = "sampling"
 	rejectProvider = "provider"
@@ -95,7 +100,7 @@ type llmRow struct {
 	RequestBytes  int64  `json:"request_bytes"`
 	ResponseBytes int64  `json:"response_bytes"`
 	GenerationID  string `json:"generation_id"`
-	UnfinishedEnd string `json:"unfinished_end,omitempty"` // upstream_error 행에만 있다
+	UnfinishedEnd string `json:"unfinished_end,omitempty"` // upstream_error 행(end*)과 cancelled_by_seal 행(sealEnd*)에만 있다
 }
 
 type providerAttempt struct {
@@ -168,7 +173,7 @@ type llmGateway struct {
 	sealedAt          time.Time
 	drainedAt         time.Time
 	inflight          int
-	cancels           map[uint64]context.CancelFunc
+	cancels           map[uint64]context.CancelCauseFunc
 	forwarded         uint64
 	upstreamErrors    uint64
 	upstreamEnds      map[string]uint64
@@ -208,7 +213,7 @@ func newLLMGateway(dir *os.File, cfg gatewayConfig, transport http.RoundTripper,
 		return nil, code
 	}
 	g := &llmGateway{cfg: cfg, dir: dir, now: now, sleep: sleep, log: &rowLog{file: file}, lookupTransport: lookupTransport,
-		cancels: map[uint64]context.CancelFunc{}, seenIDs: map[string]bool{}, verifyErr: make(chan error, 1),
+		cancels: map[uint64]context.CancelCauseFunc{}, seenIDs: map[string]bool{}, verifyErr: make(chan error, 1),
 		upstreamEnds: map[string]uint64{endClientClosedAfterDone: 0, endClientClosedBeforeDone: 0, endUpstreamCutAfterDone: 0, endUpstreamCutBeforeDone: 0}}
 	g.proxy = &httputil.ReverseProxy{
 		Transport:     transport,
@@ -258,8 +263,9 @@ func isEventStream(contentType string) bool {
 
 func (g *llmGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	started := g.now()
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
+	// 취소 원인을 남긴다: 봉인이 먼저 끊었는지(errSealCut), 호출자가 먼저 끊었는지(부모 문맥의 원인)를 마감 때 가른다(#735 리뷰).
+	ctx, cancel := context.WithCancelCause(r.Context())
+	defer cancel(nil)
 	g.mu.Lock()
 	g.seq++
 	seq := g.seq
@@ -281,7 +287,7 @@ func (g *llmGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rejected := ""
 	// The proxy aborts a broken stream with panic(http.ErrAbortHandler); the
 	// bookkeeping must still run or the drain would wait forever.
-	defer func() { g.finish(seq, ctx.Err() != nil, &row, rec, scan, rejected) }()
+	defer func() { g.finish(seq, ctx.Err() != nil, cutBySeal(ctx), &row, rec, scan, rejected) }()
 
 	body, status, reason := g.prepare(r)
 	if reason != "" {
@@ -314,9 +320,27 @@ func unfinishedEnd(clientClosed, doneSeen bool) string {
 	}
 }
 
+// errSealCut은 봉인이 진행 중 요청을 끊을 때 남기는 취소 원인이다.
+var errSealCut = errors.New("sealed by the gateway")
+
+// cutBySeal은 그 요청 문맥을 처음 끊은 것이 게이트웨이 봉인인지 본다. 호출자가 먼저 끊었다가 그 호출이 마감되기 전에 봉인이
+// 와도 원인은 호출자 쪽(부모 문맥) 그대로라 봉인 취소로 세지 않는다(#735 리뷰).
+func cutBySeal(ctx context.Context) bool {
+	return errors.Is(context.Cause(ctx), errSealCut)
+}
+
+// sealEnd는 봉인으로 끊긴 호출이 종료 이벤트 줄을 읽기 전에 끊겼는지 남긴다.
+func sealEnd(doneSeen bool) string {
+	if doneSeen {
+		return sealEndAfterDone
+	}
+	return sealEndBeforeDone
+}
+
 // outcome classifies a forwarded request by whether the upstream answer was
 // read to the end, not by when seal arrived: an answer that completed just
-// before seal is still a served generation that must be verified.
+// before seal is still a served generation that must be verified. sealed는
+// 봉인이 그 요청의 최초 취소 원인이었는지다(cutBySeal).
 func outcome(complete, sealed, cancelled bool) string {
 	switch {
 	case complete:
@@ -329,7 +353,7 @@ func outcome(complete, sealed, cancelled bool) string {
 }
 
 // finish는 요청 하나를 센다. rejected는 게이트웨이가 거부한 사유(prepare의 reason)이고, 전달한 요청이면 빈 글이다.
-func (g *llmGateway) finish(seq uint64, cancelled bool, row *llmRow, rec *statusRecorder, scan *idScanner, rejected string) {
+func (g *llmGateway) finish(seq uint64, cancelled, sealCut bool, row *llmRow, rec *statusRecorder, scan *idScanner, rejected string) {
 	completed := g.now()
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -348,12 +372,13 @@ func (g *llmGateway) finish(seq uint64, cancelled bool, row *llmRow, rec *status
 		if row.Status == http.StatusTooManyRequests {
 			g.rateLimited++
 		}
-		row.Decision = outcome(scan.complete, g.sealed, cancelled)
+		row.Decision = outcome(scan.complete, sealCut, cancelled)
 		switch row.Decision {
 		case "forwarded":
 			g.forwarded++
 		case "cancelled_by_seal":
 			g.cancelledBySeal++
+			row.UnfinishedEnd = sealEnd(scan.done)
 		default:
 			g.upstreamErrors++
 			// 봉인 취소는 위 갈래로 빠지므로 여기서 cancelled는 호출자 쪽 취소다.
@@ -587,7 +612,7 @@ func (g *llmGateway) seal() {
 	g.sealed = true
 	g.sealedAt = g.now()
 	for _, cancel := range g.cancels {
-		cancel()
+		cancel(errSealCut) // 이미 호출자 쪽에서 끝난 문맥이면 원인이 바뀌지 않는다
 	}
 	g.maybeDrainedLocked(g.sealedAt)
 }
