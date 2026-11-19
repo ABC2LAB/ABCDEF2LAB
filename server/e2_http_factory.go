@@ -22,6 +22,7 @@ import (
 	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/e2config"
 	"github.com/Autumn-27/artex/e2export"
+	"github.com/Autumn-27/artex/e2host"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
 	"github.com/Autumn-27/artex/internal/privateinput"
@@ -58,7 +59,8 @@ func (E2HTTPAcquired) String() string   { return "server.E2HTTPAcquired[protecte
 func (E2HTTPAcquired) GoString() string { return "server.E2HTTPAcquired[protected]" }
 
 type E2HTTPFileOptions struct {
-	Workflow *diagnosisflow.Controller
+	HostSocket string
+	Workflow   *diagnosisflow.Controller
 	// 새 URL 준비의 상위 설치 위임을 재확인한다. 기존 호출자는 nil을 유지한다.
 	CheckAuthority   func() error
 	RequestApprovals *RequestApprovalService
@@ -256,8 +258,14 @@ func LoadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions) (E2H
 }
 
 // 평가 backend만 동결 원문과 단일 reset 결속을 제공한다. 일반 M01은 파일의 고정 reset을 유지한다.
-func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, frozen []byte, resetBinding func() (string, error)) (E2HTTPRuntimeOptions, error) {
+func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, frozen []byte, resetBinding func() (string, error), hostConnector ...func(context.Context, string, transmit.Scope, string) (*e2host.Client, error)) (E2HTTPRuntimeOptions, error) {
 	var empty E2HTTPRuntimeOptions
+	connectHost := e2host.OpenClient
+	if len(hostConnector) == 1 && hostConnector[0] != nil {
+		connectHost = hostConnector[0]
+	} else if len(hostConnector) > 1 {
+		return empty, ErrE2HTTPHost
+	}
 	if ctx == nil || ctx.Err() != nil || e2HTTPNil(input.Authority) || e2HTTPNil(input.Supervisor) {
 		return empty, ErrE2HTTPHost
 	}
@@ -487,20 +495,57 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		if ledger.Register(budget.Grant{Key: grantKey, Binding: budgetBinding, MaxRequests: diagnosisRequests, ValidFrom: policy.ValidFrom, ValidUntil: policy.ValidUntil}, time.Now()) != nil {
 			return E2HTTPRunOptions{}, ErrE2HTTPHost
 		}
+		scope := transmit.Scope{TaskRef: request.TaskID, RunRef: policy.RunRef, CaseRef: policy.CaseRef, ResetRef: resetRef, PolicyRef: policy.PolicyRef}
+		var hostRecorder *e2host.Client
+		if input.HostSocket != "" {
+			if input.HostSocket != "/run/e2-host/audit.sock" || policy.Evaluation != nil {
+				return E2HTTPRunOptions{}, ErrE2HTTPHost
+			}
+			hostRecorder, createErr = connectHost(taskctx, input.HostSocket, scope, policy.PolicyRevision)
+			if createErr != nil {
+				return E2HTTPRunOptions{}, ErrE2HTTPHost
+			}
+		}
 		journal, createErr := e2proxy.CreateJournal(policy.StateDir, "events.jsonl", auditKey)
 		if createErr != nil {
+			if hostRecorder != nil {
+				// 아직 실행이나 송신자가 없다. 취소된 준비 문맥과 분리하여
+				// 빈 Host 저널을 봉인한다. ACK 실패는 미봉인으로 남긴다.
+				sealCtx, cancel := context.WithTimeout(context.WithoutCancel(taskctx), drainTimeout)
+				if hostRecorder.Seal(sealCtx) != nil {
+					hostRecorder.Abort()
+				}
+				cancel()
+			}
 			return E2HTTPRunOptions{}, ErrE2HTTPHost
 		}
-		release := func(context.Context) error { return journal.Close() }
+		release := func(ctx context.Context) error {
+			if err := journal.Close(); err != nil {
+				if hostRecorder != nil {
+					hostRecorder.Abort()
+				}
+				return err
+			}
+			if hostRecorder != nil {
+				return hostRecorder.Seal(ctx)
+			}
+			return nil
+		}
 		// accountAuth는 인증 준비가 돈 뒤의 계정별 결과다. 그 뒤에 실행 획득이 실패해도 실행 결과에 싣도록 실패 반환에도
 		// 넣는다(계약 §3.4: 실행을 잡지 못하고 실패해도 인증 준비가 돌았으면 싣는다, #532 이동찬 리뷰).
 		var accountAuth map[string]string
 		failed := func(execution *e2proxy.Execution, runner *e2runner.Runner) (E2HTTPRunOptions, error) {
+			// Runtime이 Stop·Close와 활성 호출 drain을 확인한 뒤에만
+			// Release를 호출한다. 실패한 준비도 감사 head를 봉인해 다음
+			// 회차를 허용하되, 종료 불명·ACK 실패는 미봉인으로 차단한다.
 			return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: release, AccountAuth: accountAuth}, ErrE2HTTPHost
 		}
 		recorder := e2proxy.Recorder(journal)
+		if hostRecorder != nil {
+			recorder = e2HTTPV3MirrorRecorder{host: hostRecorder, legacy: journal}
+		}
 		if input.ObserveEvent != nil {
-			recorder = e2HTTPJournalObserver{next: journal, observe: input.ObserveEvent}
+			recorder = e2HTTPJournalObserver{next: recorder, observe: input.ObserveEvent}
 		}
 		var gate e2proxy.RequestApprovalGate
 		if input.RequestApprovals != nil {
@@ -529,7 +574,11 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 				}
 			})
 		}
-		execution, createErr := e2proxy.NewExecution(taskctx, e2proxy.Config{RequestBoundary: workflowBoundary(input.Workflow), CheckAuthority: transmissionCheck, ApprovalMode: policy.ApprovalMode, RequestApproval: gate, Evaluation: policy.Evaluation, HeaderMode: policy.HeaderMode, PasswordResponse: e2HTTPPasswordResponse(policy.Auth), Scope: transmit.Scope{TaskRef: request.TaskID, RunRef: policy.RunRef, CaseRef: policy.CaseRef, ResetRef: resetRef, PolicyRef: policy.PolicyRef}, IntentID: request.IntentID, OwnerRef: policy.OwnerRef, PolicyRevision: policy.PolicyRevision, AccountRef: policy.AccountRef, SessionRef: policy.SessionRef, ExpiresAt: policy.ValidUntil, Rules: rules, ExcludedPaths: policy.excludedPaths(), Budget: transmit.CumulativeBudget{Ledger: ledger, Key: grantKey, Binding: budgetBinding}, Recorder: recorder, RootCAs: upstreamRoots, Limits: limits, AttemptPathObserver: observer})
+		auditVersion := e2proxy.Version
+		if hostRecorder != nil {
+			auditVersion = e2proxy.JournalVersionV3
+		}
+		execution, createErr := e2proxy.NewExecution(taskctx, e2proxy.Config{AuditVersion: auditVersion, E3Verifier: hostRecorder, RequestBoundary: workflowBoundary(input.Workflow), CheckAuthority: transmissionCheck, ApprovalMode: policy.ApprovalMode, RequestApproval: gate, Evaluation: policy.Evaluation, HeaderMode: policy.HeaderMode, PasswordResponse: e2HTTPPasswordResponse(policy.Auth), Scope: scope, IntentID: request.IntentID, OwnerRef: policy.OwnerRef, PolicyRevision: policy.PolicyRevision, AccountRef: policy.AccountRef, SessionRef: policy.SessionRef, ExpiresAt: policy.ValidUntil, Rules: rules, ExcludedPaths: policy.excludedPaths(), Budget: transmit.CumulativeBudget{Ledger: ledger, Key: grantKey, Binding: budgetBinding}, Recorder: recorder, RootCAs: upstreamRoots, Limits: limits, AttemptPathObserver: observer})
 		if createErr != nil {
 			return failed(nil, nil)
 		}
@@ -638,14 +687,42 @@ type e2HTTPJournalObserver struct {
 	observe func(context.Context, e2proxy.Event) error
 }
 
+// 제품 화면의 기존 v2 흐름은 Host가 ACK한 일반 행만 투영한다. E③ 행은
+// v3 검증 조회에만 쓰므로 v2 화면 저널에 넣지 않는다.
+type e2HTTPV3MirrorRecorder struct {
+	host   e2proxy.Recorder
+	legacy *e2proxy.Journal
+}
+
+func (r e2HTTPV3MirrorRecorder) Record(ctx context.Context, event e2proxy.Event) error {
+	if r.host == nil || r.legacy == nil {
+		return e2proxy.ErrAudit
+	}
+	if err := r.host.Record(ctx, event); err != nil {
+		return err
+	}
+	if e3ProgramEvent(event) {
+		return nil
+	}
+	event.Version = e2proxy.Version
+	return r.legacy.Record(ctx, event)
+}
+
 func (r e2HTTPJournalObserver) Record(ctx context.Context, event e2proxy.Event) error {
 	if err := r.next.Record(ctx, event); err != nil {
 		return err
+	}
+	if e3ProgramEvent(event) {
+		return nil
 	}
 	if err := r.observe(ctx, event); err != nil {
 		return ErrE2HTTPHost
 	}
 	return nil
+}
+
+func e3ProgramEvent(event e2proxy.Event) bool {
+	return event.Program == e2proxy.ProgramE3Identity || event.Program == e2proxy.ProgramE3Create || event.Program == e2proxy.ProgramE3Read
 }
 
 func workflowBoundary(c *diagnosisflow.Controller) e2proxy.RequestBoundary {

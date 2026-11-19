@@ -105,7 +105,7 @@ func validE3AuditEvent(event Event) bool {
 		}
 		if event.Program == ProgramE3Create && a.RequestMarkerFree != nil ||
 			event.Program != ProgramE3Create && a.RequestMarkerFree == nil ||
-			event.Program == ProgramE3Identity && a.SubjectDigest == "" {
+			event.Program == ProgramE3Identity && a.Normal == oracle.StateYes && a.SubjectDigest == "" {
 			return false
 		}
 	} else if a.RequestMarkerFree != nil || a.BodyComplete != nil {

@@ -5,16 +5,22 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/url"
 	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Autumn-27/artex/auditcheckpoint"
 	"github.com/Autumn-27/artex/auditkeys"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/e2checkpoint"
+	"github.com/Autumn-27/artex/e2host"
+	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/evidencerevision"
+	"github.com/Autumn-27/artex/transmit"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -50,8 +56,8 @@ func TestProductE2HeadWriterRoleIsSeparated(t *testing.T) {
 				t.Error(e)
 			}
 		}
-		for _, role := range created {
-			if _, e := admin.Exec("DROP ROLE " + ident(role)); e != nil {
+		for i := len(created) - 1; i >= 0; i-- {
+			if _, e := admin.Exec("DROP ROLE " + ident(created[i])); e != nil {
 				t.Error(e)
 			}
 		}
@@ -88,17 +94,102 @@ func TestProductE2HeadWriterRoleIsSeparated(t *testing.T) {
 	if err := productGrantRoles(t.Context(), installer.DB, name); err != nil {
 		t.Fatal("제품 GRANT 실패", err)
 	}
-	var canLogin, headRead, headInsert, headUpdate, epochRead, guardUpdate, epochUpdate bool
+	hostRoot := t.TempDir()
+	if err := os.Chmod(hostRoot, 0700); err != nil {
+		t.Fatal("Host fixture 권한 설정 실패", err)
+	}
+	// CI의 일회용 PostgreSQL은 TCP를 열지 않는다. 관리자 DSN과 같은
+	// Unix 소켓을 Host 전용 LOGIN 시험에도 사용한다.
+	databaseHost := u.Query().Get("host")
+	if databaseHost == "" {
+		databaseHost = u.Hostname()
+	}
+	if databaseHost == "" {
+		t.Fatal("시험 PostgreSQL host를 확인할 수 없음")
+	}
+	if err := productProvisionE2Host(t.Context(), installer.DB, databaseHost, name, hostRoot); err != nil {
+		t.Fatal("Host 전용 자격 발급 실패", err)
+	}
+	created = append(created, "product_e2_host")
+	for _, filename := range []string{"host.dsn", "audit.key", "digest.key", "epoch.json"} {
+		info, err := os.Lstat(filepath.Join(hostRoot, filename))
+		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
+			t.Fatal("Host 비밀 파일 권한 오류", filename, err)
+		}
+	}
+	hostDSN, err := os.ReadFile(filepath.Join(hostRoot, "host.dsn"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostDB, err := sql.Open("pgx", string(hostDSN))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hostDB.Close()
+	var currentUser string
+	if err := hostDB.QueryRowContext(t.Context(), "SELECT current_user").Scan(&currentUser); err != nil || currentUser != "product_e2_host" {
+		t.Fatal("Host 전용 LOGIN 자격 연결 실패", err)
+	}
+	epochRaw, err := os.ReadFile(filepath.Join(hostRoot, "epoch.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hostEpoch e2checkpoint.Epoch
+	if json.Unmarshal(epochRaw, &hostEpoch) != nil {
+		t.Fatal("Host epoch 보호 파일을 읽지 못함")
+	}
+	auditKey, err := os.ReadFile(filepath.Join(hostRoot, "audit.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	actualHost, err := e2host.New(hostDB, hostEpoch, "product-audit-key-v3", auditKey, filepath.Join(hostRoot, "journals"))
+	if err != nil || actualHost.CheckEpoch(t.Context(), hostDB) != nil {
+		t.Fatal("최소 역할로 Host epoch 조회 실패", err)
+	}
+	scope := transmit.Scope{TaskRef: "task-role", RunRef: "run-role", CaseRef: "case-role", ResetRef: "reset-role", PolicyRef: "policy-role"}
+	session, err := actualHost.Open(t.Context(), scope, "revision-role")
+	if err != nil {
+		t.Fatal("최소 역할로 v3 헤더 게시 실패", err)
+	}
+	event := e2proxy.Event{Index: 1, Stage: "result", Receipt: e2proxy.Receipt{Version: e2proxy.JournalVersionV3,
+		Scope: scope, IntentID: 1, PolicyRevision: "revision-role", CallRef: "call-role",
+		AttemptID: "0123456789abcdef0123456789abcdef", Sequence: 1, Method: "GET",
+		Decision: "denied", Reason: e2proxy.PolicyDenied, NotSent: true, AuditComplete: true, At: time.Unix(1_700_000_000, 0).UTC()}}
+	if err := session.Record(t.Context(), event); err != nil {
+		t.Fatal("최소 역할로 v3 결과 게시 실패", err)
+	}
+	if err := session.Seal(t.Context()); err != nil || actualHost.CheckRestoredHeads(t.Context()) != nil {
+		t.Fatal("최소 역할로 v3 봉인·검증 실패", err)
+	}
+	audit, _ := os.ReadFile(filepath.Join(hostRoot, "audit.key"))
+	digest, _ := os.ReadFile(filepath.Join(hostRoot, "digest.key"))
+	if len(audit) < 32 || len(digest) < 32 || string(audit) == string(digest) {
+		t.Fatal("감사 키와 E③ digest 키가 분리되지 않음")
+	}
+	var hostLogin, hostInherits, hostDelete, hostTruncate, hostEpochUpdate bool
+	if err := installer.QueryRowContext(t.Context(), `SELECT rolcanlogin,
+		pg_has_role('product_e2_host','product_e2_head_writer','USAGE'),
+		has_table_privilege('product_e2_host','e2_http_audit_heads','DELETE'),
+		has_table_privilege('product_e2_host','e2_http_audit_heads','TRUNCATE'),
+		has_column_privilege('product_e2_host','e2_http_audit_epochs','epoch_ref','UPDATE')
+		FROM pg_roles WHERE rolname='product_e2_host'`).Scan(&hostLogin, &hostInherits, &hostDelete, &hostTruncate, &hostEpochUpdate); err != nil ||
+		!hostLogin || !hostInherits || hostDelete || hostTruncate || hostEpochUpdate {
+		t.Fatal("Host 최소 권한 불일치", err)
+	}
+	var canLogin, headRead, headInsert, headDelete, headTruncate, headUpdate, bindingUpdate, epochRead, guardUpdate, epochUpdate bool
 	if err := installer.QueryRowContext(t.Context(), `SELECT r.rolcanlogin,
 		has_table_privilege(r.rolname,'e2_http_audit_heads','SELECT'),
 		has_table_privilege(r.rolname,'e2_http_audit_heads','INSERT'),
-		has_table_privilege(r.rolname,'e2_http_audit_heads','UPDATE'),
+		has_table_privilege(r.rolname,'e2_http_audit_heads','DELETE'),
+		has_table_privilege(r.rolname,'e2_http_audit_heads','TRUNCATE'),
+		has_column_privilege(r.rolname,'e2_http_audit_heads','revision','UPDATE'),
+		has_column_privilege(r.rolname,'e2_http_audit_heads','journal_id','UPDATE'),
 		has_table_privilege(r.rolname,'e2_http_audit_epochs','SELECT'),
 		has_column_privilege(r.rolname,'e2_http_audit_epochs','lock_guard','UPDATE'),
 		has_column_privilege(r.rolname,'e2_http_audit_epochs','epoch_ref','UPDATE')
 		FROM pg_roles r WHERE r.rolname='product_e2_head_writer'`).Scan(
-		&canLogin, &headRead, &headInsert, &headUpdate, &epochRead, &guardUpdate, &epochUpdate); err != nil ||
-		canLogin || !headRead || !headInsert || !headUpdate || !epochRead || !guardUpdate || epochUpdate {
+		&canLogin, &headRead, &headInsert, &headDelete, &headTruncate, &headUpdate, &bindingUpdate, &epochRead, &guardUpdate, &epochUpdate); err != nil ||
+		canLogin || !headRead || !headInsert || headDelete || headTruncate || !headUpdate || bindingUpdate || !epochRead || !guardUpdate || epochUpdate {
 		t.Fatal("head 역할의 최소 권한 불일치", err)
 	}
 	for _, role := range roles[:3] {
