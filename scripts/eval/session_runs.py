@@ -12,8 +12,13 @@
 - 완료 회차들의 작업 생성 요청 해시(러너 결과 `task_request_sha256`)가 하나가 아니면 멈춘다 — 작업 문구도 비교 조건이다.
 - 완료 회차만 manifest에 넣는다. 값은 서명된 `run-record.json`에서 그대로 옮기고, 서명 검증은 채점기(score.py)가 한다.
   판정 레코드가 없는 회차(records=null)의 `records_path`는 채점기가 읽지 않는다.
+- 제공자 장애 멈춤(결정안 §7): 완료 회차는 모두 같은 T로 판정한 서명 결과(`fault_stall.judged`, `stall_seconds`)여야 한다(T가
+  회차·쪽마다 다르거나 판정하지 않은 회차가 있으면 멈춘다, 스모크는 `--allow-unjudged-fault-stall`). 쪽별
+  `provider_fault_stall` 무효 수를 0이어도 늘 출력하고, 한쪽이라도 상한(고정 초안 §3) 이상이면 측정 전체 실패다(manifest를
+  쓰지 않는다). 이 상한은 2N 시도 상한(§5.1)과 따로 둔다(고정 초안 §0).
 
-종료 코드: 0 집계·manifest 작성(경고가 있어도), 2 입력 오류(형식·중복·쪽 섞임) 또는 manifest 파일이 이미 있음.
+종료 코드: 0 집계·manifest 작성(경고가 있어도), 2 입력 오류(형식·중복·쪽 섞임·멈춤 판정 조건) 또는 manifest 파일이 이미 있음,
+3 측정 실패(쪽별 멈춤 무효가 상한 이상, manifest를 쓰지 않음).
 """
 
 from __future__ import annotations
@@ -35,6 +40,7 @@ from aggregate import _optional_stat as optional_stat  # noqa: E402
 from isolation_proof import E2_MODES  # noqa: E402
 from run_record import RunRecordError, read_runner_key, sign_run_record  # noqa: E402
 from runner import COMPLETE, INVALID, RECORD_NAME, RESULT_FORMAT, RESULT_NAME  # noqa: E402
+from runner_fault import FAULT_STALL_REASON  # noqa: E402
 
 SIDES = ("baseline", "ours")
 SIDE_LETTER = {"baseline": "B", "ours": "O"}
@@ -45,6 +51,10 @@ SHA256 = re.compile(r"^[0-9a-f]{64}$")
 SIGNATURE = re.compile(r"^[0-9a-f]{64}$")
 # 판정 레코드가 없는 회차의 자리값 — 채점기는 records=null이면 이 경로를 읽지 않는다(runner.md "실행").
 RECORDS_UNCOLLECTED = "records-uncollected.json"
+# 쪽별 provider_fault_stall 무효가 이 수 이상이면 측정 전체 실패(고정 초안 §3·§16, 2026-11-19 사용자 동의). 공식 결과를 본 뒤
+# 바꾸지 않는다(바꾸면 다음 측정부터).
+FAULT_STALL_LIMIT_PER_SIDE = 2
+MEASUREMENT_FAILED = 3
 
 
 class SessionError(Exception):
@@ -171,7 +181,17 @@ def _attempt(directory: Path, key: bytes, errors: list[str], allow_fixture_e2: b
     return Attempt(directory.name, side, started, COMPLETE, None, record, task_sha256, result)
 
 
-def read_session(runs_root: Path, key: bytes, allow_fixture_e2: bool = False) -> list[Attempt]:
+def _stall_seconds(attempt: Attempt) -> int | None:
+    """서명된 완료 결과의 멈춤 판정 T. 판정하지 않은 결과면 None."""
+    record = attempt.result.get("fault_stall") if attempt.result else None
+    if not isinstance(record, dict) or record.get("judged") is not True:
+        return None
+    value = record.get("stall_seconds")
+    return value if type(value) is int else None
+
+
+def read_session(runs_root: Path, key: bytes, allow_fixture_e2: bool = False,
+                 allow_unjudged_fault_stall: bool = False) -> list[Attempt]:
     """runs_root 바로 아래 회차 디렉터리를 시작 시각 순으로 읽는다. key는 러너 서명 키."""
     if not runs_root.is_dir():
         raise SessionError([f"{runs_root}: 디렉터리가 아님"])
@@ -192,6 +212,14 @@ def read_session(runs_root: Path, key: bytes, allow_fixture_e2: bool = False) ->
         duplicated = sorted(k for k, n in repeats.items() if n > 1)
         if duplicated:
             errors.append(f"{side}: 같은 repeat_index의 완료 회차가 둘 이상 {duplicated}")
+    # 멈춤 무효는 B·O 같은 T로 판정해야 비교가 된다(결정안 §7). 판정하지 않은 완료 회차는 멈춤 여부를 모르는 회차다.
+    unjudged = sorted(a.run_id for a in complete if _stall_seconds(a) is None)
+    if unjudged and not allow_unjudged_fault_stall:
+        errors.append(f"멈춤 무효를 판정하지 않은 완료 회차 {unjudged} — 설정 run.fault_stall_seconds로 판정한 회차만 집계한다"
+                      "(스모크면 --allow-unjudged-fault-stall)")
+    stall_values = sorted({value for a in complete if (value := _stall_seconds(a)) is not None})
+    if len(stall_values) > 1:
+        errors.append(f"멈춤 무효 판정 T가 회차마다 다름 {stall_values} — B·O 같은 T로만 비교")
     if errors:
         raise SessionError(errors)
     return sorted(attempts, key=lambda a: (a.started_at, a.run_id))
@@ -225,6 +253,19 @@ def tally(attempts: list[Attempt], repeats: int) -> tuple[list[str], list[str]]:
     if not matches:
         warnings.append("경고[교대 순서] 유효 회차 순서가 §5.1 교대 순서와 다름 — 결과 문서에 그대로 적는다")
     return lines, warnings
+
+
+def fault_stall_tally(attempts: list[Attempt]) -> tuple[list[str], list[str]]:
+    """쪽별 provider_fault_stall 무효 수(0이어도 늘)와 측정 실패 줄(한쪽이라도 상한 이상)."""
+    lines = ["| 쪽 | provider_fault_stall 무효 | 측정 실패 상한 |", "|---|---|---|"]
+    failures: list[str] = []
+    for side in SIDES:
+        count = sum(1 for a in attempts if a.side == side and a.status == INVALID and a.reason == FAULT_STALL_REASON)
+        lines.append(f"| {side} | {count} | {FAULT_STALL_LIMIT_PER_SIDE} |")
+        if count >= FAULT_STALL_LIMIT_PER_SIDE:
+            failures.append(f"측정 실패[멈춤 무효] {side}: {FAULT_STALL_REASON} {count}회 ≥ {FAULT_STALL_LIMIT_PER_SIDE} — "
+                            "남은 회차를 골라 쓰지 않고 측정 전체를 실패로 둔다(결정안 §7, 고정 초안 §3)")
+    return lines, failures
 
 
 def build_manifest(runs_root: Path, attempts: list[Attempt]) -> dict:
@@ -291,6 +332,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--manifest", help="완료 회차 채점 manifest를 쓸 새 파일(있으면 거부)")
     parser.add_argument("--allow-fixture-e2", action="store_true",
                         help="가짜 E②(e2_mode=stub) 회차도 읽는다 — 배치 스모크 확인용, 시범·공식 세션에는 쓰지 않음")
+    parser.add_argument("--allow-unjudged-fault-stall", action="store_true",
+                        help="멈춤 무효를 판정하지 않은 완료 회차도 읽는다 — 스모크·T 확정 전 확인용, 공식 세션에는 쓰지 않음")
     args = parser.parse_args(argv)
     if args.repeats < 3:
         print("--repeats는 3 이상이다(§5.1)", file=sys.stderr)
@@ -302,7 +345,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"러너 키를 읽지 못함: {error}", file=sys.stderr)
         return 2
     try:
-        attempts = read_session(runs_root, key, args.allow_fixture_e2)
+        attempts = read_session(runs_root, key, args.allow_fixture_e2, args.allow_unjudged_fault_stall)
         payload = build_manifest(runs_root, attempts)
     except SessionError as error:
         print(f"세션 읽기 중단: {error}", file=sys.stderr)
@@ -312,6 +355,12 @@ def main(argv: list[str] | None = None) -> int:
     print("\n".join(["", "보조 지표(프로토콜 §5, 효율 주장의 근거로 쓰지 않음):", *auxiliary(attempts)]))
     for warning in warnings:
         print(warning, file=sys.stderr)
+    stall_lines, failures = fault_stall_tally(attempts)
+    print("\n".join(["", "제공자 장애 멈춤 무효(결정안 §7, 0이어도 늘):", *stall_lines]))
+    if failures:
+        for failure in failures:
+            print(failure, file=sys.stderr)
+        return MEASUREMENT_FAILED  # 측정 전체 실패: 채점 manifest를 쓰지 않는다
     if args.manifest:
         try:
             write_new(Path(args.manifest), payload)

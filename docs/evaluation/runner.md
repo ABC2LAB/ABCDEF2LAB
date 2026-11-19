@@ -81,6 +81,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `run.task_create_timeout_seconds` | 작업 생성(로그인 + `POST /api/tasks`) 연결·읽기 시한(초) |
 | `run.llm_load_timeout_seconds` | local 서버의 모델 적재·조회 시한(초). 회차 전에 모델을 적재해 첫 회차만 적재 시간을 시간 예산에서 쓰지 않게 한다. 적재할 때 회차 길이(compose 기동·준비·작업 생성 시한 + 시간 예산 + 상태 확인·drain·정착·스냅샷·LLM 검증 시한)만큼 유지 기간을 주고, 작업 생성 직전에 같은 유지 기간으로 다시 적재·확인한다(준비 단계가 길어 그 사이 내려갔어도 적재 시간이 시간 예산에 섞이지 않는다). compose를 내린 뒤 모델을 내린다. 다음 회차도 같은 상태에서 시작한다. 내리기 결과는 결과 기록의 `llm_unloaded`에 남기고, 실패해도 그 회차를 무효로 돌리지 않는다 |
 | `run.drain_grace_seconds`, `run.post_settle_seconds` | 봉인 뒤 계측기가 진행 요청을 기다리는 유예(1~600초, `drain_timeout_seconds`보다 짧아야 함 — 계측기 `-drain-grace`로 넘김)와, 유예가 지나 취소한 요청이 있을 때 post 전 정착 대기(1~3600초). 둘 다 비교 조건이라 사전검사 `run_drain`의 `grace_seconds`·`settle_seconds`와 정확히 같아야 회차가 시작됨(`preflight.<side>.run_drain: CONFIG_MISMATCH`) |
+| `run.fault_stall_seconds` | 선택. 제공자 장애 멈춤 판정 T(1~3600초, 결정안 §7·고정 초안 §2). 있으면 B·O 회차가 이 T로 판정하고 멈춤이면 `provider_fault_stall`로 무효다. 없으면 판정 재료만 남기고, 세션 집계는 그런 완료 회차를 받지 않는다(스모크는 `--allow-unjudged-fault-stall`). B·O 같은 값이어야 하고 세션 집계가 서명 결과의 `fault_stall.stall_seconds`로 대조한다 |
 | `run.host_watch_interval_seconds`, `run.host_watch_max_gap_seconds` | 구간 중 호스트 리슨 확인 간격과 허용 최대 공백(초). 공백 상한은 간격보다 커야 한다 |
 | `task.{description,goal}` | 엔진 작업 설명·목표(각 4000자 이하, 줄바꿈 외 제어 문자 불가). 대상은 회차 대상 origin 하나만 적는다(아래) |
 | `task.{timeout_seconds,plan_heartbeat_seconds}` | 엔진 작업 시한·planner 주기(초, 0~86400, 엔진 의미 그대로: 0=시한 없음·기본 주기) |
@@ -133,7 +134,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   task.json                      작업 생성 요청 본문 SHA-256·엔진 작업 ID·요청/생성 시각(본문 자체는 없음), v2: 분리 배치 B 회차의 작업 origin·목표 공통 부분 SHA(그 밖은 null)
   subnet-check.json              up 전 대역 겹침 검사: 회차가 만들 고정 대역, 호스트 기존 Docker 망과 겹친 쌍(다른 망 목록은 없음)
   engine-end.json                엔진 끝 신호: 창 동안 첫 끝 상태·시각, down 전 마지막 작업 상태 칸(값 원본 그대로)
-  fault-stall.json               제공자 장애 멈춤 판정 재료(결정안 §7): 장애별 무활동 길이·창 끝까지 이어졌는지·끝 신호, 최장 무활동(판정 안 함)
+  fault-stall.json               제공자 장애 멈춤(결정안 §7): 장애별 무활동 길이·창 끝까지 이어졌는지·끝 신호, 최장 무활동, T가 설정되면 판정
   intercept-summary.json         엔진 승인 기록의 건수: 상태별, 차단 출처별(파일 규칙·내장 규칙·모델·그 밖), 도구별(도구 입력 원문 없음)
   engine-rules.json              `engine_rules`가 있을 때만: 파일 SHA-256, 주입·내장 규칙 수, 내장 통제를 앞지를 수 있는 파일 allow 수, 내장·전체 규칙 해시, 적용 전후 도구 목록(규칙 본문 없음)
   engine-settings.json           작업 생성 전 엔진 실행 설정 스냅샷(프록시는 설정 여부만, API 키 값 없음). 표시 언어를 뺀 값의 SHA-256은 서명 근거 `run_conditions`에
@@ -216,8 +217,17 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   (호출자 쪽 끊김·게이트웨이 자신의 거부는 아님). 장애마다 그 뒤 첫 활동(모델 호출 시도·두 입구의 대상 요청 시도의 시작)까지의 무활동
   길이, 창 끝까지 활동이 없었는지(`censored`), 그 사이 엔진 끝 신호가 있었는지, 장애 시점에 진행 중이던 요청 수를 남긴다. T 후보 근거로
   창 전체의 최장 무활동(진행 중인 요청이 하나도 없는 구간)도 남긴다. 엔진이 창 안에서 먼저 끝난 회차는 엔진 끝 상태까지만 잰 활동 중 최장 무활동(`max_idle_gap_before_end_seconds`)도 남긴다(끝 신호가 없거나 창 밖이면 창 끝까지, 2026-11-19 사용자 결정 5). T는 이 값으로 정한다(끝 뒤 남은 시간은 §7 무효 조건(3)에서 빠진다). 창은 작업 생성 요청 직전부터 러너가 계측기를 봉인한 시각까지다.
-  T와 무효 비율 상한은 파일럿 기록으로 정해 측정 전에 고정하므로 지금은 판정하지 않는다(`judged: false`, 회차 유효성에 안 씀).
-  행이나 시각을 읽지 못해도 회차를 무효로 하지 않고 고정 코드(`error`)만 남긴다. 게이트웨이 행 읽기는 결정·끝 모양 어휘를
+  **판정**: 설정 `run.fault_stall_seconds`(T, 1~3600초, 없으면 판정 안 함)가 있으면 그 T로 판정한다(`judged: true`, `stall_seconds`,
+  장애별 `stall`, `stalls`). 조건 (2)의 무활동은 장애 뒤 **첫 무활동 구간**(`idle_seconds`)이다: 장애 시점에 진행 중이던 요청(비스트리밍
+  모델 호출·대상 요청)이 끝날 때까지는 엔진이 응답을 기다리는 중이라 무활동이 아니고, 그 사이 새 요청이 시작되면 무활동이 없다(0).
+  활동 중 최장 무활동과 같은 정의라 T를 고른 근거와 판정이 같은 잣대다. 이 구간이 T초 이상이고 그 구간이 끝나기 전에 엔진 끝 신호가
+  없으면 멈춤이고, 회차는 `provider_fault_stall`로 무효다(같이 난 모델 호출 검증 사유는 뒤에 남는다 — 세션 집계가 첫 사유로 센다). 창이
+  T초 전에 끝나 무활동이 T에 못 미치면 멈춤이라고 하지 않는다. 시작만 본 무활동(`silence_seconds`)은 기록에 그대로 남긴다.
+  T가 없으면 행이나 시각을 읽지 못해도 회차를 무효로 하지 않고 고정 코드(`error`)만 남긴다. T가 있는데 재료를 못 만들었으면 멈춤이
+  없다고 할 수 없어 `fault_stall_unjudgeable`로 무효다. 형식은 `abc2lab-eval-runner-fault-stall-v2`다.
+  세션 집계(`session_runs.py`)는 완료 회차가 모두 같은 T로 판정됐는지 보고(아니면 멈춤, 스모크는 `--allow-unjudged-fault-stall`),
+  쪽별 `provider_fault_stall` 무효 수를 0이어도 출력하고, 한쪽이라도 2회 이상이면(고정 초안 §3) 측정 전체 실패로 종료 코드 3,
+  manifest를 쓰지 않는다. 게이트웨이 행 읽기는 결정·끝 모양 어휘를
   `cmd/eval-meter/gateway.go`와 같게 고정한다(시험이 원문과 대조). 제품(O) 분리 배치 회차도 같은 함수로 `fault-stall.json`을 남긴다(`runner_split_run.product_fault_stall`): 게이트웨이 행 자리에 제품 호출 기록 줄(같은 칸·어휘)을 넣고, 창은 시작 요청 직전부터 계측기 봉인 직후까지다. 호출 기록 완전성(장부 예약 수 = 기록 줄 수)을 확인한 뒤에 만들고, 결과 요약 `fault_stall`에도 싣는다.
 
 `findings.json`은 baseline·개선 후 모두 **같은 추출 경로**(`baseline_pages_collector` → `baseline_extract`, 수정 없음)를 거친

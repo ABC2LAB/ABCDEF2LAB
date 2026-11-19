@@ -400,7 +400,7 @@ class TestOrder(unittest.TestCase):
         self.assertEqual(result["discovery_sources"], evidence.files["discovery-sources.json"])
         self.assertEqual(evidence.files[RESULT_NAME], result)
         # 멈춤 집계는 B처럼 기록만 한다: 이 가짜 기록(시각 칸 없음)은 고정 코드로 남고 회차는 그대로 완료다
-        self.assertEqual(evidence.files["fault-stall.json"], {"format": "abc2lab-eval-runner-fault-stall-v1", "judged": False,
+        self.assertEqual(evidence.files["fault-stall.json"], {"format": "abc2lab-eval-runner-fault-stall-v2", "judged": False,
                                                               "error": "fault_stall_rows_invalid"})
         self.assertEqual(result["fault_stall"], evidence.files["fault-stall.json"])
         # 결정안 §3.3 제품 블록 근거: 파일 원본 SHA 다섯 + 상한 스냅숏 지문, E② 정책 내용 지문, 도구 면 지문.
@@ -1079,12 +1079,48 @@ class TestProductFaultStall(unittest.TestCase):
                          [("rate_limited", 1.0, False), ("upstream_cut", 14.0, False)])
         self.assertEqual(record["max_idle_gap_seconds"], 19.0)  # 21초~40초(봉인)
 
+    def stall_calls(self, ports):
+        """시작 직후 위쪽 끊김, 그 뒤 봉인까지 활동 없음(B 1차 멈춤 모양)인 제품 호출 기록 두 줄(장부 두 줄과 맞음)."""
+        start_round = ports.start_round
+
+        def start(prepared):
+            base = START + timedelta(seconds=ports.clock.t)
+            at = lambda seconds: (base + timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")  # noqa: E731
+            ports.calls_file = self.calls(
+                {"seq": 1, "decision": "forwarded", "status": 200, "started_at": at(0.5), "completed_at": at(1.0)},
+                {"seq": 2, "decision": "upstream_error", "status": 200, "unfinished_end": "upstream_cut_before_done",
+                 "started_at": at(1.5), "completed_at": at(2.0)})
+            return start_round(prepared)
+        ports.start_round = start
+
+    def test_configured_t_judges_o_like_b(self):
+        # B와 같은 T·같은 판정: 멈춤이면 provider_fault_stall이 첫 사유, T에 못 미치면 판정 기록과 함께 완료
+        result, _, evidence = run(self.stall_calls, fault_stall_seconds=1)
+        self.assertEqual((result["status"], result["reasons"][0]), ("invalid", "provider_fault_stall"))
+        record = evidence.files["fault-stall.json"]
+        self.assertEqual((record["judged"], record["stall_seconds"], record["stalls"]), (True, 1, 1))
+        result, _, evidence = run(self.stall_calls, fault_stall_seconds=3600)
+        self.assertEqual(result["status"], "complete", result)
+        self.assertEqual((result["fault_stall"]["judged"], result["fault_stall"]["stalls"]), (True, 0))
+        # T가 있는데 판정 재료가 없으면(가짜 기본 기록은 시각 칸이 없음) 멈춤 없음으로 두지 않는다
+        result, _, evidence = run(fault_stall_seconds=180)
+        self.assertEqual((result["status"], result["reasons"]), ("invalid", ["fault_stall_unjudgeable"]))
+        self.assertEqual(evidence.files["fault-stall.json"]["stall_seconds"], 180)
+
+    def test_o_stall_is_the_first_reason_with_llm_reasons_after(self):
+        def both(ports):
+            self.stall_calls(ports)
+            ports.marker = dict(ports.marker, log_complete=False)
+        result, _, _ = run(both, fault_stall_seconds=1)
+        self.assertEqual(result["reasons"][0], "provider_fault_stall")
+        self.assertGreater(len(result["reasons"]), 1)
+
     def test_unreadable_records_leave_a_fixed_code(self):
         from runner_split_run import product_fault_stall
         for calls in (b"\xff\n", b"not json\n", b"[1]\n", b'{"seq":1}\n'):
             with self.subTest(calls=calls):
                 record = product_fault_stall(calls, [], "2026-11-18T10:00:00Z", "2026-11-18T10:00:10Z", {})
-                self.assertEqual(record, {"format": "abc2lab-eval-runner-fault-stall-v1", "judged": False,
+                self.assertEqual(record, {"format": "abc2lab-eval-runner-fault-stall-v2", "judged": False,
                                           "error": "fault_stall_rows_invalid"})
         record = product_fault_stall(b"", [], "2026-11-18T10:00:10Z", "2026-11-18T10:00:00Z", {})
         self.assertEqual(record["error"], "fault_stall_time_invalid")  # 창이 거꾸로면 B와 같은 코드

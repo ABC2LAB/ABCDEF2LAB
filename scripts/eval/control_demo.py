@@ -199,7 +199,8 @@ def _run_facts(root: Path, attempt) -> RunFacts:
 
 def read_column(root: Path, key: bytes, allow_fixture_e2: bool = False) -> Column:
     """runs_root 하나를 표의 열 하나로 읽는다. 조건 하나·E② 자리 하나여야 한다."""
-    attempts = read_session(root, key, allow_fixture_e2)
+    # 제공자 장애 멈춤 판정(결정안 §7)은 성능 비교(보존율) 회차의 무효 규칙이라 통제 시연 표에는 걸지 않는다. 서명 검증은 같다.
+    attempts = read_session(root, key, allow_fixture_e2, allow_unjudged_fault_stall=True)
     complete = [a for a in attempts if a.record is not None]
     if not complete:
         raise DemoError([f"{root}: 완료 회차가 없음"])

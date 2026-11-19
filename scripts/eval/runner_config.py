@@ -24,6 +24,7 @@ from baseline_extract import MAX_INPUT_BYTES
 from baseline_pages_collector import MAX_PAGE_SIZE
 from e2_export import EVAL_HEADER_MODES
 from isolation_proof import PURPOSE_BROWSER_ACCEPTANCE, PURPOSE_OFFICIAL, PURPOSES
+from runner_fault import MAX_FAULT_STALL_SECONDS
 from path_mask import PathKeyError, key_ref, read_path_key
 from preservation_record import PreservationRecordError, validate_options
 from preflight import MAX_CONFIG_BYTES, PreflightError, _image_reference, check_preflight
@@ -198,6 +199,7 @@ _RUN_FIELDS = ("compose_wait_seconds", "down_timeout_seconds", "ready_timeout_se
                "task_create_timeout_seconds", "host_watch_interval_seconds", "host_watch_max_gap_seconds",
                "drain_grace_seconds", "post_settle_seconds")
 MAX_RUN_SECONDS = 3600
+_FAULT_STALL_FIELD = "fault_stall_seconds"
 # 계측기(cmd/eval-meter maxDrainGrace)가 받는 봉인 후 유예 상한과 같다(테스트로 고정).
 MAX_DRAIN_GRACE_SECONDS = 600
 # 게이트웨이(cmd/eval-meter sampling.go maxTemperature)가 받는 temperature 상한. 프로파일은 0 이상이면 받으므로
@@ -277,6 +279,8 @@ class RunnerConfig:
     preservation: dict | None = None
     # 탐색 분리 배치 O 회차 설정(runner_split_config.SplitConfig). 보존 측정 회차에만 있다.
     split: object | None = None
+    # 멈춤 무효 판정 T(초, run.fault_stall_seconds). None이면 판정하지 않는다.
+    fault_stall_seconds: int | None = None
 
     @property
     def tmpfs_min_free_bytes(self) -> int:
@@ -525,7 +529,10 @@ def parse_runner_config(raw: object) -> RunnerConfig:
     for name in ("seed_first_intent", "coverage_enabled"):
         if name in task and type(task[name]) is not bool:
             errors.append(f"config.task.{name}: EXPECTED_BOOL")
-    run = _exact(top.get("run"), _RUN_FIELDS, "config.run", errors) if "run" in top else {}
+    run = _exact(top.get("run"), _RUN_FIELDS, "config.run", errors, optional=(_FAULT_STALL_FIELD,)) if "run" in top else {}
+    # 멈춤 무효 판정 T(결정안 §7, 고정 초안 §2). 없으면 판정 재료만 남기고 판정하지 않는다(세션 집계가 미판정 회차를 막는다).
+    if _FAULT_STALL_FIELD in run and not _int(run[_FAULT_STALL_FIELD], 1, MAX_FAULT_STALL_SECONDS):
+        errors.append(f"config.run.{_FAULT_STALL_FIELD}: INVALID")
     for name in _RUN_FIELDS:
         limit = {"snapshot_max_bytes": MAX_SNAPSHOT_BYTES, "drain_grace_seconds": MAX_DRAIN_GRACE_SECONDS}.get(
             name, MAX_RUN_SECONDS)
@@ -559,6 +566,7 @@ def parse_runner_config(raw: object) -> RunnerConfig:
         docker_timeout_seconds=float(timeout), host_listen_allowlist=allowlist,
         probe_timeout_ms=top["probe_timeout_ms"], runner_key_path=Path(top["runner_key_path"]),
         run={name: run[name] for name in _RUN_FIELDS},
+        fault_stall_seconds=run.get(_FAULT_STALL_FIELD),
         llm_gateway={name: gateway[name] for name in _GATEWAY_FIELDS},
         findings={name: findings[name] for name in _FINDINGS_FIELDS},
         task={name: task[name] for name in _TASK_FIELDS},

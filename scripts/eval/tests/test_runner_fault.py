@@ -8,7 +8,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from runner_fault import FAULT_STALL_FORMAT, FaultRecordError, fault_stall_record  # noqa: E402
+from runner_fault import (  # noqa: E402
+    FAULT_STALL_FORMAT, MAX_FAULT_STALL_SECONDS, FaultRecordError, fault_stall_outcome, fault_stall_record, judge_fault_stall,
+)
 
 START = "2026-11-17T00:00:00+00:00"
 
@@ -42,7 +44,9 @@ class TestFaultStallRecord(unittest.TestCase):
         self.assertFalse(record["judged"])
         self.assertEqual(record["faults"], {"upstream_cut": 1, "rate_limited": 0})
         self.assertEqual(record["events"], [{"kind": "upstream_cut", "at_seconds": 20.0, "silence_seconds": 359.0,
-                                             "censored": True, "inflight_at_fault": 0, "engine_terminal_within": False}])
+                                             "censored": True, "inflight_at_fault": 0, "engine_terminal_within": False,
+                                             "idle_seconds": 359.0, "idle_censored": True,
+                                             "engine_terminal_before_idle_end": False}])
         self.assertEqual((record["max_silence_after_fault_seconds"], record["max_silence_after_fault_censored"]), (359.0, True))
         self.assertEqual(record["max_idle_gap_seconds"], 359.0)
         self.assertEqual(record["max_idle_gap_before_end_seconds"], 359.0)  # 끝 신호가 없으면 창 끝까지
@@ -136,6 +140,77 @@ class TestActiveGap(unittest.TestCase):
         self.assertEqual((within["max_idle_gap_before_end_seconds"], within["max_idle_gap_seconds"]), (3.0, 28.0))
         self.assertEqual(after["max_idle_gap_before_end_seconds"], 28.0)  # 창 밖 끝 상태는 쓰지 않는다
 
+
+
+class TestFaultStallJudge(unittest.TestCase):
+    """설정한 T로 §7 판정(멈춤 무효). 무활동은 장애 뒤 첫 무활동 구간이다(진행 중이던 요청은 활동)."""
+
+    PILOT = ([llm(1, 0.5, 3.0), llm(2, 3.5, 20.0, decision="upstream_error", end="upstream_cut_before_done")],
+             [meter(1, 4.0, 4.4), meter(2, 6.0, 6.1)])
+
+    def test_pilot_stall_is_judged_against_t(self):
+        record = fault_stall_record(*self.PILOT, START, stamp(379.0), None)
+        judged = judge_fault_stall(record, 180)
+        self.assertEqual((judged["judged"], judged["stall_seconds"], judged["stalls"], judged["events"][0]["stall"]),
+                         (True, 180, 1, True))
+        self.assertFalse(record["judged"])  # 원래 기록은 바꾸지 않는다
+        # 창이 T 전에 끝나 무활동이 T에 못 미치면(359초 < 360초) 멈춤이라고 하지 않는다
+        self.assertEqual(judge_fault_stall(record, 360)["stalls"], 0)
+        self.assertEqual(judge_fault_stall(record, 359)["stalls"], 1)  # 경계: T초 이상이면 멈춤
+
+    def test_inflight_request_is_activity_not_idle(self):
+        # 장애(10초) 때 긴 비스트리밍 모델 호출(5~200초)이 진행 중이었다. 다음 시작은 300초다. 시작만 보면 290초 무활동이지만
+        # 엔진은 200초까지 응답을 기다렸으므로 무활동은 100초다.
+        rows = [llm(1, 5.0, 200.0), llm(2, 8.0, 10.0, decision="upstream_error", end="upstream_cut_before_done"),
+                llm(3, 300.0, 301.0)]
+        record = fault_stall_record(rows, [], START, stamp(400.0), None)
+        event = record["events"][0]
+        self.assertEqual((event["silence_seconds"], event["idle_seconds"], event["inflight_at_fault"]), (290.0, 100.0, 1))
+        self.assertEqual(judge_fault_stall(record, 180)["stalls"], 0)
+        self.assertEqual(judge_fault_stall(record, 100)["stalls"], 1)
+        # 진행 중이던 요청이 끝나기 전에 새 요청이 시작되면 엔진이 이어서 움직인 것이라 무활동이 없다
+        rows = [llm(1, 5.0, 200.0), llm(2, 8.0, 10.0, decision="upstream_error", end="upstream_cut_before_done"),
+                llm(3, 150.0, 151.0)]
+        event = fault_stall_record(rows, [], START, stamp(400.0), None)["events"][0]
+        self.assertEqual((event["idle_seconds"], event["idle_censored"]), (0.0, False))
+        # 대상 요청(계측기 행)도 진행 중이면 활동이다
+        rows = [llm(1, 8.0, 10.0, decision="upstream_error", end="upstream_cut_before_done")]
+        event = fault_stall_record(rows, [meter(1, 9.0, 50.0)], START, stamp(400.0), None)["events"][0]
+        self.assertEqual((event["idle_seconds"], event["idle_censored"]), (350.0, True))
+
+    def test_engine_end_before_idle_end_is_not_a_stall(self):
+        rows = [llm(1, 1.0, 2.0, decision="upstream_error", end="upstream_cut_before_done")]
+        for terminal, stalls in ((None, 1), (1.0, 0), (100.0, 0), (300.0, 0), (300.5, 1)):
+            with self.subTest(terminal=terminal):
+                record = fault_stall_record(rows, [], START, stamp(300.0), None if terminal is None else stamp(terminal))
+                self.assertEqual(judge_fault_stall(record, 180)["stalls"], stalls)
+
+    def test_rate_limit_followed_by_retry_is_not_a_stall(self):
+        rows = [llm(1, 1.0, 1.2, status=429), llm(2, 3.2, 5.0), llm(3, 200.0, 201.0)]
+        judged = judge_fault_stall(fault_stall_record(rows, [], START, stamp(300.0), None), 180)
+        self.assertEqual([(e["kind"], e["idle_seconds"], e["stall"]) for e in judged["events"]], [("rate_limited", 2.0, False)])
+
+    def test_unjudgeable_inputs_are_refused(self):
+        record = fault_stall_record(*self.PILOT, START, stamp(379.0), None)
+        for value in (0, MAX_FAULT_STALL_SECONDS + 1, True, 180.0, "180", None):
+            with self.subTest(t=value), self.assertRaises(FaultRecordError):
+                judge_fault_stall(record, value)
+        self.assertEqual(judge_fault_stall(record, MAX_FAULT_STALL_SECONDS)["stall_seconds"], MAX_FAULT_STALL_SECONDS)
+        for bad in ({"format": FAULT_STALL_FORMAT, "judged": False, "error": "llm_row_invalid"},
+                    judge_fault_stall(record, 180), dict(record, format="abc2lab-eval-runner-fault-stall-v1")):
+            with self.subTest(bad=bad.get("error") or bad["judged"] or bad["format"]), self.assertRaises(FaultRecordError):
+                judge_fault_stall(bad, 180)
+
+    def test_outcome_reasons(self):
+        record = fault_stall_record(*self.PILOT, START, stamp(379.0), None)
+        self.assertEqual(fault_stall_outcome(record, None), (record, None))  # T가 없으면 판정하지 않는다
+        judged, reason = fault_stall_outcome(record, 180)
+        self.assertEqual((judged["judged"], reason), (True, "provider_fault_stall"))
+        judged, reason = fault_stall_outcome(record, 600)
+        self.assertEqual((judged["judged"], judged["stalls"], reason), (True, 0, None))
+        error = {"format": FAULT_STALL_FORMAT, "judged": False, "error": "llm_row_invalid"}
+        self.assertEqual(fault_stall_outcome(error, 180), (dict(error, stall_seconds=180), "fault_stall_unjudgeable"))
+        self.assertEqual(fault_stall_outcome(error, None), (error, None))
 
 if __name__ == "__main__":
     unittest.main()

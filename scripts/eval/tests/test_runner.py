@@ -1821,6 +1821,11 @@ class TestFailures(unittest.TestCase):
         config = parse_runner_config(payload)
         spec = build_spec(config, plan_run(config, preflight, "ours", "ours-1"), preflight, "t" * 64, "우리@35b", 0)
         self.assertEqual(spec.llm_sampling["seed"], 2 ** 53 + 1)
+        self.assertIsNone(spec.fault_stall_seconds)  # 멈춤 무효 판정 T는 설정 run 칸에서만 온다
+        payload["run"]["fault_stall_seconds"] = 180
+        judged = parse_runner_config(payload)
+        self.assertEqual(build_spec(judged, plan_run(judged, preflight, "ours", "ours-1"), preflight, "t" * 64, "우리@35b",
+                                    0).fault_stall_seconds, 180)
         result, ports, _, evidence = run(spec=spec, mutate_gateway=lambda g: g.marker.update(
             sampling=dict(spec.llm_sampling)))
         self.assertEqual((result["status"], ports.sign_calls), (COMPLETE, 2))
@@ -3157,7 +3162,59 @@ class TestFirstLimit(unittest.TestCase):
         self.assertGreater(limit["engine_terminal_elapsed_seconds"], limit["runner_limit_elapsed_seconds"])
         self.assertEqual(limit["value"], "runner_request_budget")
 class TestFaultStallRecord(unittest.TestCase):
-    """제공자 장애 멈춤 판정 재료(결정안 §7, 4-5). T·비율이 정해지기 전이라 기록만 하고 회차 유효성에 쓰지 않는다."""
+    """제공자 장애 멈춤 판정(결정안 §7, 4-5). 설정에 T(run.fault_stall_seconds)가 없으면 판정 재료만 남기고, 있으면 판정해
+    멈춤 회차를 provider_fault_stall로 무효로 한다."""
+
+    @staticmethod
+    def stall_setup():
+        """위쪽 끊김 뒤 봉인까지 모델·대상 활동 0, 끝 신호 없음(2026-11-16 1차 B 모양)."""
+        holder = {}
+
+        def setup(ports, meter, clock):
+            meter.per_poll = 0  # 시간 예산까지 간다
+
+            def started():
+                base = datetime(2026, 11, 2, tzinfo=timezone.utc) + timedelta(seconds=clock.t)
+                at = lambda seconds: (base + timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%S.%f000Z")
+                holder["gateway"].llm_rows = [
+                    {"seq": 1, "decision": "forwarded", "method": "POST", "status": 200, "started_at": at(0.5),
+                     "completed_at": at(1.0), "request_bytes": 10, "response_bytes": 5, "generation_id": "g"},
+                    {"seq": 2, "decision": "upstream_error", "method": "POST", "status": 200, "started_at": at(1.5),
+                     "completed_at": at(2.0), "request_bytes": 10, "response_bytes": 3, "generation_id": "",
+                     "unfinished_end": "upstream_cut_before_done"}]
+            ports.on_start = started
+        return setup, lambda g: holder.__setitem__("gateway", g)
+
+    def test_configured_t_judges_the_stall_and_invalidates(self):
+        setup, keep = self.stall_setup()
+        result, _, _, evidence = run(setup, mutate_gateway=keep, spec=dataclasses.replace(make_spec(), fault_stall_seconds=1))
+        record = evidence.files["fault-stall.json"]
+        self.assertEqual((result["status"], result["reasons"][0]), (INVALID, "provider_fault_stall"))
+        self.assertEqual((record["judged"], record["stall_seconds"], record["stalls"], record["events"][0]["stall"]),
+                         (True, 1, 1, True))
+        # 같은 모양이라도 무활동이 T에 못 미치면 멈춤이 아니다(판정 기록은 남고 회차는 완료)
+        setup, keep = self.stall_setup()
+        result, _, _, evidence = run(setup, mutate_gateway=keep, spec=dataclasses.replace(make_spec(), fault_stall_seconds=3600))
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertEqual((result["fault_stall"]["judged"], result["fault_stall"]["stalls"]), (True, 0))
+        self.assertEqual(evidence.files["fault-stall.json"], result["fault_stall"])
+
+    def test_stall_is_the_first_reason_with_llm_reasons_after(self):
+        # 세션 집계가 쪽별 멈춤 무효를 첫 사유로 센다. 같이 난 모델 호출 검증 사유는 지우지 않고 뒤에 둔다.
+        setup, keep = self.stall_setup()
+
+        def both(g):
+            keep(g)
+            g.marker = llm_marker(generations=[llm_generation("g", status="unverified")])
+        result, _, _, _ = run(setup, mutate_gateway=both, spec=dataclasses.replace(make_spec(), fault_stall_seconds=1))
+        self.assertEqual(result["reasons"], ["provider_fault_stall", "llm_generation_unverified"])
+
+    def test_configured_t_without_material_is_invalid(self):
+        # 판정 재료(게이트웨이 행)를 읽지 못하면 멈춤이 없다고 하지 않는다
+        result, _, _, evidence = run(mutate_gateway=lambda g: setattr(g, "llm_rows", runner.EvidenceError("llm_row_invalid")),
+                                     spec=dataclasses.replace(make_spec(), fault_stall_seconds=180))
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["fault_stall_unjudgeable"]))
+        self.assertEqual(evidence.files["fault-stall.json"]["stall_seconds"], 180)
 
     def test_default_round_records_no_faults(self):
         result, _, _, evidence = run()
@@ -3236,7 +3293,7 @@ class TestFaultStallRecord(unittest.TestCase):
         result, _, _, evidence = run(mutate_gateway=lambda g: setattr(g, "llm_rows", runner.EvidenceError("llm_row_invalid")))
         self.assertEqual(result["status"], COMPLETE)
         self.assertEqual(evidence.files["fault-stall.json"],
-                         {"format": "abc2lab-eval-runner-fault-stall-v1", "judged": False, "error": "llm_row_invalid"})
+                         {"format": "abc2lab-eval-runner-fault-stall-v2", "judged": False, "error": "llm_row_invalid"})
         result, _, _, evidence = run(mutate_gateway=lambda g: setattr(g, "llm_rows", RuntimeError("/secret/path")))
         self.assertEqual(evidence.files["fault-stall.json"]["error"], "fault_stall_failed")
         self.assertNotIn("secret", json.dumps(evidence.files["fault-stall.json"]))

@@ -148,7 +148,7 @@ def split_run_spec(config: RunnerConfig, plan: SplitPlan, declared: SplitDeclare
                          "registration_valid_hours": config.split.registration_valid_hours},
         model_budget_sha256=_model_budget(manifest, config),
         exploration_policy_sha256=exploration_policy_sha256, synthetic=config.split.synthetic,
-        scripted_plan_sha256=scripted_plan_sha256)
+        scripted_plan_sha256=scripted_plan_sha256, fault_stall_seconds=config.fault_stall_seconds)
 
 
 def run_split_ours(config: RunnerConfig, preflight: object, *, repeat_index: int = 0, docker_runner=run_docker, environ=None,
