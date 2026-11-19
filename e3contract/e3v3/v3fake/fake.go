@@ -78,6 +78,10 @@ type E2 struct {
 	// PublishFail이 참이면 그 이벤트를 로컬 저널에 Sync한 뒤 정본 head 게시가 실패한다(ACK 없음). Send는 관찰 없이 오류이고
 	// 그 뒤 송신은 모두 거부한다(감사 계약: recorder 실패 상태).
 	PublishFail func(e3v3.Event) bool
+	// StopAfterIntent가 참이면 그 요청은 intent를 남긴 뒤 연결을 시도하지 않고 reason=closed result로 끝낸다(대상에 요청
+	// 없음). Stop이 있으면 그때 부른다(실행 문맥 취소를 흉내 냄).
+	StopAfterIntent func(e3v3.Request) bool
+	Stop            func()
 	// Snapshot은 조회 스냅샷을 바꾼다(끝 행 삭제·되감기·MAC 손상·다른 실행 끼우기).
 	Snapshot func([]Record) []Record
 	// AccountRefs는 지금 결속된 계정 결속 참조("<run>/<label>")를 바꾼다(다시 로그인 등). 이벤트에 실리는 값은 요청 때의
@@ -90,6 +94,7 @@ type E2 struct {
 	records []Record
 	index   uint64
 	failed  bool
+	stops   int
 }
 
 // ErrPublish는 정본 head 게시 실패다(결과 불명).
@@ -137,6 +142,27 @@ func (f *E2) Send(ctx context.Context, req e3v3.Request) (e3v3.Event, error) {
 	f.mu.Unlock()
 	if failed {
 		return e3v3.Event{}, ErrPublish
+	}
+	if f.StopAfterIntent != nil && f.StopAfterIntent(req) {
+		acct := sentAccountRef(req.Binding, req.AccountLabel)
+		f.mu.Lock()
+		f.stops++
+		n := f.stops
+		f.mu.Unlock()
+		intent := e3v3.Event{Version: e3v3.Format, Stage: e3v3.StageIntent, Program: req.Program,
+			Scope:   e3v3.Scope{RunRef: req.Binding.RunRef, TaskRef: req.Binding.TaskRef, PolicyRef: req.Binding.E2PolicyRef},
+			CallRef: fmt.Sprintf("stop-call-%d", n), AttemptID: fmt.Sprintf("stop-attempt-%d", n), Sequence: uint64(1000 + n),
+			PolicyRevision: "policy-rev-1", Method: method(req), Decision: e3v3.DecisionAllowed, Reason: "purpose_rule",
+			RuleRef: "rule-" + string(req.Program), Role: req.Role, AccountLabel: req.AccountLabel, AccountBindingRef: acct,
+			E3: e3v3.Binding{JobRef: req.Binding.JobRef, GenerationRef: req.Binding.GenerationRef, InstanceRef: req.Binding.InstanceRef,
+				Policy: req.Binding.Policy}, ResourceType: req.ResourceType, CreateRef: req.CreateRef, AuditComplete: true}
+		f.append(intent)
+		if f.Stop != nil {
+			f.Stop()
+		}
+		closed := intent
+		closed.Stage, closed.NotSent, closed.Reason = e3v3.StageResult, true, e3v3.ReasonClosed
+		return f.append(closed), nil
 	}
 	var (
 		o   e3contract.Observation

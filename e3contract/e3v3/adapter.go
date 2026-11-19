@@ -95,6 +95,14 @@ func (a *Adapter) send(ctx context.Context, req Request) (e3contract.Observation
 	if err != nil {
 		return e3contract.Observation{}, err
 	}
+	// intent 뒤 송신 전 중단(계약 §2.3): 실행 문맥이 끝났을 때만 생긴다. 관찰 없이 문맥 오류를 돌려줘 그 요청은 결과 불명,
+	// 회차는 중지·시간 몫 끝으로 마감한다(생성이면 쓰기 기록을 거두지 않음). 문맥이 살아 있으면 관찰 계약 위반이다.
+	if ev.StoppedAfterIntent() {
+		if cerr := ctx.Err(); cerr != nil {
+			return e3contract.Observation{}, fmt.Errorf("e3v3: intent 뒤 송신 전 중단: %w", cerr)
+		}
+		return e3contract.Observation{}, fmt.Errorf("%w: v3 stopped_after_intent_without_stop", e3contract.ErrObservation)
+	}
 	return a.observe(ctx, req.Binding, ev)
 }
 

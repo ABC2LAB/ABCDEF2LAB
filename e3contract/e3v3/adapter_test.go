@@ -513,3 +513,58 @@ func TestEventCheck(t *testing.T) {
 		}
 	}
 }
+
+// intent 뒤 송신 전 중단(계약 §2.3): 실행 문맥이 끝났으면 관찰 없이 결과 불명·중단이고, 생성이면 쓰기 기록은 ID 모름으로
+// 남는다(거두지 않음). 문맥이 살아 있는데 이 행이 오면 관찰 계약 위반이다.
+func TestAdapterStoppedAfterIntent(t *testing.T) {
+	createNote := func(r e3v3.Request) bool { return r.Program == e3contract.PurposeCreate && r.ResourceType == "note" }
+	w := newWorld(t, nil)
+	e2 := v3fake.New(w.target, []byte("run-audit-key-for-tests-only-32b"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	e2.StopAfterIntent, e2.Stop = createNote, cancel
+	a, _ := e3v3.New(e2)
+	deps := e3contract.Deps{Transport: a, Journal: a, Declarations: w.decls,
+		Reset: e3fake.Reset{State: e3contract.ResetState{Residue: e3contract.ResidueAbsent}}, Writes: w.writes,
+		Random: bytes.NewReader(seed()), Now: func() time.Time { return t0 }, Logger: slog.New(slog.DiscardHandler)}
+	res := e3contract.Run(ctx, deps, w.in)
+	noConfirmed(t, res)
+	if res.Status != e3contract.StatusInterrupted || res.Reason != "" {
+		t.Fatalf("중단: %+v", res)
+	}
+	var note []e3contract.ConfirmationWrite
+	for _, wr := range res.Writes {
+		if wr.ResourceType == "note" {
+			note = append(note, wr)
+		}
+	}
+	if len(note) != 1 || note[0].Outcome != e3contract.WriteUnknown {
+		t.Fatalf("중단된 생성의 쓰기 기록은 ID 모름으로 남아야 함: %+v", res.Writes)
+	}
+	for _, c := range w.target.Calls() {
+		if c.Key.Purpose == e3contract.PurposeCreate && c.Key.Type == "note" {
+			t.Fatal("중단된 생성이 대상에 닿음")
+		}
+	}
+	// 문맥이 살아 있는데 중단 행이 오면 진위 실패다.
+	res, _ = viaV3(t, nil, func(e2 *v3fake.E2) { e2.StopAfterIntent = createNote })
+	integrityFailed(t, res, e3contract.IntegrityObservationInvalid)
+	// 중단 행 모양이 조금이라도 다르면(예: 사유가 closed가 아님) 중단으로 보지 않는다.
+	ev := e3v3.Event{Stage: e3v3.StageResult, Decision: e3v3.DecisionAllowed, NotSent: true, Reason: e3v3.ReasonClosed}
+	if !ev.StoppedAfterIntent() {
+		t.Fatal("중단 행을 못 알아봄")
+	}
+	for name, edit := range map[string]func(*e3v3.Event){
+		"reason":     func(e *e3v3.Event) { e.Reason = "denied" },
+		"forwarded":  func(e *e3v3.Event) { e.ForwardAttempted = true },
+		"with_cause": func(e *e3v3.Event) { e.NotSentReason = e3contract.NotSentPolicyDenied },
+		"denied":     func(e *e3v3.Event) { e.Decision = e3v3.DecisionDenied },
+		"response":   func(e *e3v3.Event) { e.StatusCode = 200 },
+	} {
+		x := ev
+		edit(&x)
+		if x.StoppedAfterIntent() {
+			t.Fatalf("%s: 중단 행으로 봄", name)
+		}
+	}
+}

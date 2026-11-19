@@ -91,6 +91,18 @@ type Event struct {
 	SubjectDigest     string                 `json:"subject_digest,omitempty"`
 }
 
+// ReasonClosed는 v2·v3에서 intent를 기록한 뒤 실행 문맥이 끝나 연결을 시도하지 않고 마감한 result의 사유다.
+const ReasonClosed = "closed"
+
+// StoppedAfterIntent는 intent 뒤 송신 전 중단 행인지다(계약 §2.3): decision=allowed·not_sent=true·forward_attempted=false·
+// reason=closed, not_sent_reason과 응답 칸 없음.
+func (e Event) StoppedAfterIntent() bool {
+	return e.Stage == StageResult && e.Decision == DecisionAllowed && e.NotSent && e.NotSentReason == "" &&
+		!e.ForwardAttempted && !e.RequestWritten && !e.ResponseReceived && !e.ResponseComplete && e.Reason == ReasonClosed &&
+		e.StatusCode == 0 && e.Normal == "" && !e.RequestMarkerFree && e.Marker == (e3contract.MarkerCheck{}) &&
+		e.BodyDigestSHA256 == "" && !e.BodyComplete && e.ObjectIDDigest == "" && e.SubjectDigest == "" && !e.TimedOut
+}
+
 // Ref는 이벤트가 가리키는 호출이다.
 func (e Event) Ref() e3contract.CallRef {
 	return e3contract.CallRef{CallRef: e.CallRef, AttemptID: e.AttemptID, Sequence: e.Sequence}
