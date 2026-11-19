@@ -82,9 +82,15 @@ func (h *Host) serveConn(ctx context.Context, conn *net.UnixConn, expectedUID ui
 	}
 	reader := bufio.NewReaderSize(conn, maxMessage)
 	var session *Session
+	var sealed bool
 	defer func() {
 		if session != nil {
-			session.Abort()
+			abortErr := session.Abort()
+			// 연결이 사라져 추가 송신 ACK는 불가능하다. 현재 Host가 살아
+			// 있으면 미완료 시도가 없는 저널만 별도로 검증해 마감한다.
+			if !sealed && abortErr == nil && ctx.Err() == nil {
+				_ = h.RecoverDisconnectedHeads(ctx)
+			}
 		}
 	}()
 	for ctx.Err() == nil {
@@ -114,6 +120,9 @@ func (h *Host) serveConn(ctx context.Context, conn *net.UnixConn, expectedUID ui
 			}
 		default:
 			actionErr = ErrUnavailable
+		}
+		if request.Operation == "seal" && actionErr == nil {
+			sealed = true
 		}
 		if json.NewEncoder(conn).Encode(reply{OK: actionErr == nil}) != nil || actionErr != nil || request.Operation == "seal" {
 			return

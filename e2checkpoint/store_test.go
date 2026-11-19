@@ -272,6 +272,53 @@ func TestCurrentHeadPublicationAndFailures(t *testing.T) {
 	}
 }
 
+func TestInterruptedHeadIsTerminalAndVerified(t *testing.T) {
+	store, host, journal, path := testFixture(t)
+	initial := journal.Checkpoint()
+	data := snapshot(t, path)
+	if _, err := store.Publish(t.Context(), request(host, Register, 0, e2proxy.JournalCheckpoint{}, initial), bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+	closed, err := store.Publish(t.Context(), request(host, Interrupt, 1, initial, initial), bytes.NewReader(data))
+	if err != nil || closed.Phase != Interrupted || closed.Revision != 2 {
+		t.Fatal("중단 마감 게시 실패", closed, err)
+	}
+	verified, head, err := store.VerifyCurrent(t.Context(), Query{Epoch: host.epoch, Binding: host.binding}, bytes.NewReader(data))
+	if err != nil || head != closed || verified.Checkpoint != initial {
+		t.Fatal("중단 마감 현재성 검증 실패", err)
+	}
+	if _, err := store.Publish(t.Context(), request(host, Seal, 2, initial, initial), bytes.NewReader(data)); !errors.Is(err, ErrConflict) {
+		t.Fatal("중단 마감을 정상 봉인으로 바꿈", err)
+	}
+	if err := journal.Record(t.Context(), testEvent(host.binding.Scope, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Publish(t.Context(), request(host, Append, 2, initial, journal.Checkpoint()), bytes.NewReader(snapshot(t, path))); !errors.Is(err, ErrConflict) {
+		t.Fatal("중단 마감 후 기록 추가", err)
+	}
+}
+
+func TestInterruptedPublicationWithoutACKIsNotSuccess(t *testing.T) {
+	store, host, journal, path := testFixture(t)
+	checkpoint := journal.Checkpoint()
+	data := snapshot(t, path)
+	if _, err := store.Publish(t.Context(), request(host, Register, 0, e2proxy.JournalCheckpoint{}, checkpoint), bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+	host.denyHead.Store(true)
+	if _, err := store.Publish(t.Context(), request(host, Interrupt, 1, checkpoint, checkpoint), bytes.NewReader(data)); !errors.Is(err, ErrACKUnknown) {
+		t.Fatal("중단 게시의 ACK 불명을 성공 처리", err)
+	}
+	host.denyHead.Store(false)
+	head, err := store.Head(t.Context(), Query{Epoch: host.epoch, Binding: host.binding})
+	if err != nil || head.Phase != Interrupted {
+		t.Fatal("미확인 게시 상태 조회 실패", err)
+	}
+	if _, err := store.Publish(t.Context(), request(host, Interrupt, 1, checkpoint, checkpoint), bytes.NewReader(data)); !errors.Is(err, ErrConflict) {
+		t.Fatal("ACK 불명 게시를 임의 재시도", err)
+	}
+}
+
 type changingReader struct {
 	reader  *bytes.Reader
 	before  func() error

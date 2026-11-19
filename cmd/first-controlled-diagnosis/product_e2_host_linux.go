@@ -162,7 +162,9 @@ func runProductE2Host(ctx context.Context, args []string, stdout, stderr io.Writ
 		return 1
 	}
 	host, err := e2host.New(pool, epoch, "product-audit-key-v3", key, filepath.Join(*root, "journals"))
-	if err != nil || host.CheckEpoch(ctx, pool) != nil || host.CheckRestoredHeads(ctx) != nil {
+	// host.lock을 독점 획득했으므로 이전 Host는 더 이상 ACK를 발급할 수
+	// 없다. 완전한 결과 사건이 남은 중단 회차만 검증해 마감한다.
+	if err != nil || host.CheckEpoch(ctx, pool) != nil || host.RecoverDisconnectedHeads(ctx) != nil || host.CheckRestoredHeads(ctx) != nil {
 		fmt.Fprintln(stderr, "E② 현재 epoch를 확인할 수 없습니다")
 		return 1
 	}

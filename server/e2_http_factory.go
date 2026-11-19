@@ -258,8 +258,14 @@ func LoadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions) (E2H
 }
 
 // 평가 backend만 동결 원문과 단일 reset 결속을 제공한다. 일반 M01은 파일의 고정 reset을 유지한다.
-func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, frozen []byte, resetBinding func() (string, error)) (E2HTTPRuntimeOptions, error) {
+func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, frozen []byte, resetBinding func() (string, error), hostConnector ...func(context.Context, string, transmit.Scope, string) (*e2host.Client, error)) (E2HTTPRuntimeOptions, error) {
 	var empty E2HTTPRuntimeOptions
+	connectHost := e2host.OpenClient
+	if len(hostConnector) == 1 && hostConnector[0] != nil {
+		connectHost = hostConnector[0]
+	} else if len(hostConnector) > 1 {
+		return empty, ErrE2HTTPHost
+	}
 	if ctx == nil || ctx.Err() != nil || e2HTTPNil(input.Authority) || e2HTTPNil(input.Supervisor) {
 		return empty, ErrE2HTTPHost
 	}
@@ -495,7 +501,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 			if input.HostSocket != "/run/e2-host/audit.sock" || policy.Evaluation != nil {
 				return E2HTTPRunOptions{}, ErrE2HTTPHost
 			}
-			hostRecorder, createErr = e2host.OpenClient(taskctx, input.HostSocket, scope, policy.PolicyRevision)
+			hostRecorder, createErr = connectHost(taskctx, input.HostSocket, scope, policy.PolicyRevision)
 			if createErr != nil {
 				return E2HTTPRunOptions{}, ErrE2HTTPHost
 			}

@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Autumn-27/artex/e2checkpoint"
+	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/transmit"
 )
 
@@ -53,6 +55,84 @@ func TestClientUnknownACKStopsLaterEvents(t *testing.T) {
 	}
 	if got := <-count; got != 1 {
 		t.Fatal("예상 밖의 RPC 횟수", got)
+	}
+}
+
+func TestDisconnectedHostSessionClosesOnlyCompleteAudit(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		events  string
+		recover bool
+	}{
+		{"runner failed before send", "none", true},
+		{"sent and completed", "complete", true},
+		{"sent with unknown outcome recorded", "unknown", true},
+		{"send result missing", "intent", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			host, pool, scope := fixture(t)
+			path := filepath.Join(t.TempDir(), "audit.sock")
+			listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				conn, err := listener.AcceptUnix()
+				if err == nil {
+					host.serveConn(ctx, conn, uint32(os.Geteuid()))
+				}
+			}()
+			client, err := OpenClient(ctx, path, scope, "revision-host")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.events != "none" {
+				intent, result := hostSentEvents(scope)
+				if err := client.Record(ctx, intent); err != nil {
+					t.Fatal(err)
+				}
+				if tc.events == "unknown" {
+					result.Reason = e2proxy.Unknown
+					result.ResponseReceived, result.ResponseComplete, result.StatusCode = false, false, 0
+				}
+				if tc.events != "intent" {
+					if err := client.Record(ctx, result); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			client.Abort()
+			select {
+			case <-done:
+			case <-ctx.Done():
+				t.Fatal("연결 종료 뒤 Host 검증이 끝나지 않음")
+			}
+			var phase string
+			if err := pool.QueryRowContext(ctx, `SELECT phase FROM e2_http_audit_heads WHERE run_ref=$1`, scope.RunRef).Scan(&phase); err != nil {
+				t.Fatal(err)
+			}
+			if tc.recover && phase != string(e2checkpoint.Interrupted) || !tc.recover && phase != string(e2checkpoint.Open) {
+				t.Fatalf("잘못된 감사 마감 상태: %s", phase)
+			}
+			next := scope
+			next.RunRef = "next-after-disconnect"
+			later, err := host.Open(ctx, next, "revision-host")
+			if tc.recover {
+				if err != nil {
+					t.Fatal("안전 마감 뒤 다음 회차 거부", err)
+				}
+				if err := later.Seal(ctx); err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil {
+				t.Fatal("미완료 송신 뒤 다음 회차 허용")
+			}
+		})
 	}
 }
 

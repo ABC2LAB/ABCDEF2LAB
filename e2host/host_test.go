@@ -82,6 +82,189 @@ func hostEvent(scope transmit.Scope) e2proxy.Event {
 	}}
 }
 
+func hostSentEvents(scope transmit.Scope) (e2proxy.Event, e2proxy.Event) {
+	intent := hostEvent(scope)
+	intent.Stage = "intent"
+	intent.Decision = "allowed"
+	intent.Reason = e2proxy.Complete
+	intent.RuleRef = "rule-host"
+	result := intent
+	result.Index = 2
+	result.Stage = "result"
+	result.NotSent = false
+	result.ForwardAttempted = true
+	result.RequestWritten = true
+	result.ResponseReceived = true
+	result.ResponseComplete = true
+	result.StatusCode = 200
+	return intent, result
+}
+
+func TestHostUnfinishedSendCannotSealOrRecover(t *testing.T) {
+	host, _, scope := fixture(t)
+	session, err := host.Open(t.Context(), scope, "revision-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, _ := hostSentEvents(scope)
+	if err := session.Record(t.Context(), intent); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Seal(t.Context()); err == nil {
+		t.Fatal("결과가 없는 송신 의도를 정상 봉인")
+	}
+	session.Abort()
+	if host.RecoverDisconnectedHeads(t.Context()) == nil || host.CheckRestoredHeads(t.Context()) == nil {
+		t.Fatal("미완료 송신을 복구 마감으로 승격")
+	}
+	next := scope
+	next.RunRef = "run-after-unfinished"
+	if _, err := host.Open(t.Context(), next, "revision-host"); err == nil {
+		t.Fatal("미완료 송신 뒤 새 실행 허용")
+	}
+}
+
+func TestHostRejectsUnmatchedOrForgedResult(t *testing.T) {
+	for _, mode := range []string{"allowed without intent", "wrong call reference"} {
+		t.Run(mode, func(t *testing.T) {
+			host, _, scope := fixture(t)
+			session, err := host.Open(t.Context(), scope, "revision-host")
+			if err != nil {
+				t.Fatal(err)
+			}
+			intent, result := hostSentEvents(scope)
+			if mode == "wrong call reference" {
+				if err := session.Record(t.Context(), intent); err != nil {
+					t.Fatal(err)
+				}
+				result.CallRef = "forged-call"
+			} else {
+				result.Index = 1
+			}
+			if err := session.Record(t.Context(), result); err != nil {
+				t.Fatal(err)
+			}
+			if err := session.Seal(t.Context()); err == nil {
+				t.Fatal("잘못 결속한 결과 사건으로 감사 마감")
+			}
+			session.Abort()
+			if host.RecoverDisconnectedHeads(t.Context()) == nil {
+				t.Fatal("잘못 결속한 결과 사건을 중단 마감")
+			}
+		})
+	}
+}
+
+func TestHostInterruptedRecoveryRejectsEpochAndMirrorRollback(t *testing.T) {
+	for _, change := range []string{"epoch", "head", "mirror", "journal"} {
+		t.Run(change, func(t *testing.T) {
+			host, pool, scope := fixture(t)
+			session, err := host.Open(t.Context(), scope, "revision-host")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := session.Record(t.Context(), hostEvent(scope)); err != nil {
+				t.Fatal(err)
+			}
+			session.Abort()
+			switch change {
+			case "epoch":
+				if _, err := pool.Exec(`UPDATE e2_http_audit_epochs SET epoch_ref='rollback' WHERE store_ref=$1`, host.epoch.StoreRef); err != nil {
+					t.Fatal(err)
+				}
+			case "head":
+				if _, err := pool.Exec(`UPDATE e2_http_audit_heads SET revision=revision-1 WHERE run_ref=$1`, scope.RunRef); err != nil {
+					t.Fatal(err)
+				}
+			case "mirror":
+				digest := sha256.Sum256([]byte(scope.RunRef))
+				path := filepath.Join(host.root, hex.EncodeToString(digest[:]), "head.json")
+				if err := os.WriteFile(path, []byte(`{"rollback":true}`), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "journal":
+				digest := sha256.Sum256([]byte(scope.RunRef))
+				path := filepath.Join(host.root, hex.EncodeToString(digest[:]), "events.jsonl")
+				data, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				data[len(data)-12] ^= 1
+				if err := os.WriteFile(path, data, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if host.RecoverDisconnectedHeads(t.Context()) == nil {
+				t.Fatal("현재 권위 불일치를 안전 마감으로 승격")
+			}
+		})
+	}
+}
+
+func TestHostRestartRecoversVerifiedInterruptedRun(t *testing.T) {
+	host, pool, scope := fixture(t)
+	session, err := host.Open(t.Context(), scope, "revision-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Record(t.Context(), hostEvent(scope)); err != nil {
+		t.Fatal(err)
+	}
+	if host.RecoverDisconnectedHeads(t.Context()) == nil {
+		t.Fatal("활성 소켓이 있는 실행을 복구")
+	}
+	session.Abort() // 이전 Host 프로세스가 사라진 상태를 합성한다.
+	restarted, err := New(pool, host.epoch, host.keyRef, host.key, host.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restarted.CheckRestoredHeads(t.Context()) == nil {
+		t.Fatal("명시적 검증 전 open head를 수용")
+	}
+	if err := restarted.RecoverDisconnectedHeads(t.Context()); err != nil {
+		t.Fatal("검증된 중단 회차 복구 실패", err)
+	}
+	if err := restarted.CheckRestoredHeads(t.Context()); err != nil {
+		t.Fatal("복구된 저널 검증 실패", err)
+	}
+	next := scope
+	next.RunRef = "run-after-host-restart"
+	later, err := restarted.Open(t.Context(), next, "revision-host")
+	if err != nil {
+		t.Fatal("재기동 뒤 다음 회차 거부", err)
+	}
+	if err := later.Seal(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHostSealRacesNewSendIntent(t *testing.T) {
+	host, _, scope := fixture(t)
+	session, err := host.Open(t.Context(), scope, "revision-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, _ := hostSentEvents(scope)
+	start := make(chan struct{})
+	recorded, sealed := make(chan error, 1), make(chan error, 1)
+	go func() { <-start; recorded <- session.Record(t.Context(), intent) }()
+	go func() { <-start; sealed <- session.Seal(t.Context()) }()
+	close(start)
+	recordErr, sealErr := <-recorded, <-sealed
+	if recordErr == nil && sealErr == nil {
+		t.Fatal("미완료 송신과 정상 봉인이 모두 성공")
+	}
+	if recordErr != nil && sealErr != nil {
+		t.Fatal("정상 경쟁의 두 경로가 모두 실패", recordErr, sealErr)
+	}
+	if recordErr == nil && sealErr != nil {
+		if host.CheckRestoredHeads(t.Context()) == nil {
+			t.Fatal("미완료 송신을 봉인")
+		}
+	}
+	session.Abort()
+}
+
 func TestHostPublishesCurrentAndRejectsRollback(t *testing.T) {
 	host, pool, scope := fixture(t)
 	session, err := host.Open(t.Context(), scope, "revision-host")

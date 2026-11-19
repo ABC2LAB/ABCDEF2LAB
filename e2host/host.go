@@ -18,6 +18,7 @@ var ErrUnavailable = errors.New("e2host: product audit host unavailable")
 
 // Host는 보관소 접속과 감사 키를 실행 프로세스에 넘기지 않는다.
 type Host struct {
+	scanMu sync.Mutex
 	mu     sync.Mutex
 	db     *sql.DB
 	store  *e2checkpoint.Store
@@ -29,18 +30,19 @@ type Host struct {
 }
 
 type run struct {
-	mu        sync.Mutex
-	owner     *Host
-	recorder  *e2checkpoint.Recorder
-	scope     transmit.Scope
-	directory string
-	revision  string
-	binding   e2checkpoint.Binding
-	closed    bool
-	sealOK    bool
-	fenced    bool
-	ctx       context.Context
-	cancel    context.CancelFunc
+	mu          sync.Mutex
+	owner       *Host
+	recorder    *e2checkpoint.Recorder
+	scope       transmit.Scope
+	directory   string
+	revision    string
+	binding     e2checkpoint.Binding
+	closed      bool
+	sealOK      bool
+	interruptOK bool
+	fenced      bool
+	ctx         context.Context
+	cancel      context.CancelFunc
 }
 
 type lease struct{ run *run }
@@ -65,8 +67,9 @@ func (h *Host) Acquire(_ context.Context, access e2checkpoint.Access) (e2checkpo
 		r.binding = access.Binding
 	}
 	if access.Purpose == e2checkpoint.PublishAccess &&
-		(r.fenced && access.Publication.Kind != e2checkpoint.Seal ||
-			access.Publication.Kind == e2checkpoint.Seal && !r.sealOK) {
+		(r.fenced && access.Publication.Kind != e2checkpoint.Seal && access.Publication.Kind != e2checkpoint.Interrupt ||
+			access.Publication.Kind == e2checkpoint.Seal && !r.sealOK ||
+			access.Publication.Kind == e2checkpoint.Interrupt && !r.interruptOK) {
 		return nil, ErrUnavailable
 	}
 	return lease{r}, nil
@@ -119,8 +122,10 @@ func (h *Host) Open(ctx context.Context, scope transmit.Scope, policyRevision st
 	if h == nil || ctx == nil || ctx.Err() != nil || scope.RunRef == "" || policyRevision == "" {
 		return nil, ErrUnavailable
 	}
-	// 이전 회차 head가 DB 또는 Host 볼륨에서 되감겼으면 새 회차도 열지 않는다.
-	if h.CheckRestoredHeads(ctx) != nil {
+	h.scanMu.Lock()
+	defer h.scanMu.Unlock()
+	// 검증과 새 실행 등록을 직렬화하여 종료 복구와 새 송신이 경합하지 않게 한다.
+	if h.checkRestoredHeads(ctx, false) != nil {
 		return nil, ErrUnavailable
 	}
 	h.mu.Lock()
@@ -211,6 +216,11 @@ func (s *Session) Seal(ctx context.Context) error {
 	if r.closed || r.recorder == nil || fenced {
 		return ErrUnavailable
 	}
+	// 호출자의 drain 주장만 믿지 않는다. 모든 송신 의도에 결과가 있고
+	// 현재 DB head와 Host 저널이 일치해야 감사 봉인을 허용한다.
+	if r.completeAudit(ctx, e2checkpoint.Open) != nil {
+		return ErrUnavailable
+	}
 	if err := r.recorder.Seal(ctx); err != nil {
 		r.owner.mu.Lock()
 		r.fenced = true
@@ -228,9 +238,9 @@ func (s *Session) Seal(ctx context.Context) error {
 	return nil
 }
 
-func (s *Session) Abort() {
+func (s *Session) Abort() error {
 	if s == nil || s.run == nil {
-		return
+		return ErrUnavailable
 	}
 	r := s.run
 	r.mu.Lock()
@@ -240,9 +250,14 @@ func (s *Session) Abort() {
 		r.owner.mu.Lock()
 		r.fenced = true
 		r.owner.mu.Unlock()
+		var closeErr error
 		if r.recorder != nil {
-			_ = r.recorder.Abort()
+			closeErr = r.recorder.Abort()
 		}
 		r.owner.remove(r)
+		if closeErr != nil {
+			return ErrUnavailable
+		}
 	}
+	return nil
 }

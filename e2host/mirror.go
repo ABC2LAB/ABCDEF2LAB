@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 
 	"github.com/Autumn-27/artex/e2checkpoint"
+	"github.com/Autumn-27/artex/e2proxy"
 )
 
 const maxSnapshot = 256 << 20
@@ -77,11 +78,104 @@ func readSnapshot(path string) ([]byte, error) {
 	return data, nil
 }
 
-// CheckRestoredHeads는 서비스를 열기 전에 모든 과거 저널과 두 저장소의
-// 현재 head를 대조한다. DB와 Host 볼륨을 함께 같은 과거 시점으로 되돌린
-// 경우는 독립적인 외부 단조 anchor 없이는 탐지할 수 없으므로 운영 복구 대상이다.
+// completeAudit는 DB의 현재 head와 Host 볼륨의 복사본 및 전체 MAC 체인을
+// 대조하고, 송신 의도마다 결과가 게시됐는지 확인한다. HTTP 결과 불명도
+// 결과 사건이 인증됐다면 마감할 수 있지만, 결과 사건 자체가 없으면 막는다.
+func (r *run) completeAudit(ctx context.Context, phase e2checkpoint.Phase) error {
+	mirror, err := readSnapshot(filepath.Join(r.directory, "head.json"))
+	if err != nil {
+		return ErrUnavailable
+	}
+	var expected e2checkpoint.Head
+	if json.Unmarshal(mirror, &expected) != nil || expected.Epoch != r.owner.epoch ||
+		expected.Binding != r.binding || expected.Phase != phase {
+		return ErrUnavailable
+	}
+	snapshot, err := readSnapshot(filepath.Join(r.directory, "events.jsonl"))
+	if err != nil {
+		return ErrUnavailable
+	}
+	defer clear(snapshot)
+	_, current, err := r.owner.store.VerifyCurrent(ctx,
+		e2checkpoint.Query{Epoch: r.owner.epoch, Binding: r.binding}, bytes.NewReader(snapshot))
+	if err != nil || current != expected {
+		return ErrUnavailable
+	}
+	events, _, err := e2proxy.VerifyJournalEvents(ctx, bytes.NewReader(snapshot), r.owner.key, current.Checkpoint)
+	if err != nil || !allAttemptsFinished(events) {
+		return ErrUnavailable
+	}
+	return nil
+}
+
+// allAttemptsFinished는 실제 송신에 앞서는 intent ACK와 마지막 result를
+// 같은 시도에 결속한다. 전송 전 거부에는 intent 없이 result만 남을 수 있다.
+func allAttemptsFinished(events []e2proxy.Event) bool {
+	pending := make(map[string]e2proxy.Event)
+	finished := make(map[string]bool)
+	for _, event := range events {
+		switch event.Stage {
+		case "intent":
+			if _, exists := pending[event.AttemptID]; exists || finished[event.AttemptID] {
+				return false
+			}
+			pending[event.AttemptID] = event
+		case "result":
+			if finished[event.AttemptID] {
+				return false
+			}
+			intent, exists := pending[event.AttemptID]
+			if exists {
+				if intent.Program != event.Program || intent.IntentID != event.IntentID ||
+					intent.Scope != event.Scope || intent.CallRef != event.CallRef ||
+					intent.CommandRef != event.CommandRef || intent.PolicyRevision != event.PolicyRevision ||
+					intent.RuleRef != event.RuleRef || intent.Sequence != event.Sequence || intent.Method != event.Method {
+					return false
+				}
+				delete(pending, event.AttemptID)
+			} else if event.Decision == "allowed" || !event.NotSent || event.ForwardAttempted ||
+				event.RequestWritten || event.ResponseReceived {
+				return false
+			}
+			finished[event.AttemptID] = true
+		}
+	}
+	return len(pending) == 0
+}
+
+// CheckRestoredHeads는 과거 저널과 현재 head를 검사한다. 미봉인 회차를
+// 이 읽기 전용 검사에서 자동 마감하지 않는다.
 func (h *Host) CheckRestoredHeads(ctx context.Context) error {
+	if h == nil {
+		return ErrUnavailable
+	}
+	h.scanMu.Lock()
+	defer h.scanMu.Unlock()
+	return h.checkRestoredHeads(ctx, false)
+}
+
+// RecoverDisconnectedHeads는 소켓 단절 뒤 또는 독점 Host 프로세스 잠금을
+// 새로 잡은 기동 경로에서만 호출한다. 열려 있는 실행은 절대 복구하지 않는다.
+// 송신 의도에 결과가 없거나 저장소 ACK가 불명이면 마감을 거부한다.
+func (h *Host) RecoverDisconnectedHeads(ctx context.Context) error {
+	if h == nil {
+		return ErrUnavailable
+	}
+	h.scanMu.Lock()
+	defer h.scanMu.Unlock()
+	return h.checkRestoredHeads(ctx, true)
+}
+
+// DB와 Host 볼륨을 함께 같은 과거 시점으로 되돌린 경우는 독립적인
+// 외부 단조 anchor 없이는 탐지할 수 없으므로 운영 복구 대상이다.
+func (h *Host) checkRestoredHeads(ctx context.Context, recoverDisconnected bool) error {
 	if h == nil || h.db == nil || ctx == nil || ctx.Err() != nil {
+		return ErrUnavailable
+	}
+	h.mu.Lock()
+	active := len(h.active)
+	h.mu.Unlock()
+	if active != 0 {
 		return ErrUnavailable
 	}
 	rows, err := h.db.QueryContext(ctx, `SELECT run_ref FROM e2_http_audit_heads WHERE store_ref=$1`, h.epoch.StoreRef)
@@ -119,9 +213,8 @@ func (h *Host) CheckRestoredHeads(ctx context.Context) error {
 		if json.Unmarshal(mirror, &expected) != nil || expected.Epoch != h.epoch || expected.Binding.KeyRef != h.keyRef {
 			return ErrUnavailable
 		}
-		// 비정상 종료 후 open head는 종료·drain 증거가 아니다. 별도 복구 없이
-		// 새 실행을 열면 이전 실행 소유권을 잃으므로 기동 자체를 막는다.
-		if expected.Phase != e2checkpoint.Sealed {
+		if expected.Phase != e2checkpoint.Sealed && expected.Phase != e2checkpoint.Interrupted &&
+			(!recoverDisconnected || expected.Phase != e2checkpoint.Open) {
 			return ErrUnavailable
 		}
 		digest := sha256.Sum256([]byte(expected.Binding.Scope.RunRef))
@@ -143,16 +236,35 @@ func (h *Host) CheckRestoredHeads(ctx context.Context) error {
 		h.active[r.scope.RunRef] = r
 		h.mu.Unlock()
 		actual, headErr := h.store.Head(ctx, e2checkpoint.Query{Epoch: h.epoch, Binding: r.binding})
-		if headErr == nil && actual == expected {
-			var snapshot []byte
-			snapshot, err = readSnapshot(filepath.Join(directory, "events.jsonl"))
-			if err == nil {
-				_, actual, err = h.store.VerifyCurrent(ctx, e2checkpoint.Query{Epoch: h.epoch, Binding: r.binding}, bytes.NewReader(snapshot))
-				clear(snapshot)
+		matched := headErr == nil && actual == expected
+		if matched && expected.Phase == e2checkpoint.Open {
+			if r.completeAudit(ctx, e2checkpoint.Open) == nil {
+				h.mu.Lock()
+				r.interruptOK = true
+				h.mu.Unlock()
+				var snapshot []byte
+				snapshot, err = readSnapshot(filepath.Join(directory, "events.jsonl"))
+				if err == nil {
+					actual, err = h.store.Publish(ctx, e2checkpoint.Request{Epoch: h.epoch,
+						Binding: r.binding, Kind: e2checkpoint.Interrupt, ExpectedRevision: expected.Revision,
+						Previous: expected.Checkpoint, Candidate: expected.Checkpoint}, bytes.NewReader(snapshot))
+					clear(snapshot)
+				}
+				if err == nil {
+					err = r.persistHead(ctx)
+				}
+				if err == nil {
+					expected = actual
+				}
+			} else {
+				err = ErrUnavailable
 			}
+		} else if matched {
+			err = r.completeAudit(ctx, expected.Phase)
 		}
 		h.remove(r)
-		if headErr != nil || err != nil || actual != expected {
+		if !matched || err != nil ||
+			(actual.Phase != e2checkpoint.Sealed && actual.Phase != e2checkpoint.Interrupted) || actual != expected {
 			return ErrUnavailable
 		}
 	}
