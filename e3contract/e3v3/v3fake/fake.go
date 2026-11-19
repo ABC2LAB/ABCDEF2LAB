@@ -203,7 +203,8 @@ func (f *E2) Send(ctx context.Context, req e3v3.Request) (e3v3.Event, error) {
 		result := intent
 		result.Stage = e3v3.StageResult
 		result.ForwardAttempted, result.RequestWritten = true, true
-		result.ResponseReceived, result.ResponseComplete, result.TimedOut = o.ResponseComplete, o.ResponseComplete, o.TimedOut
+		// 상태 줄을 받았으면 응답 수신이다(E² 일반 행: response_received면 status_code, 본문이 끊기면 response_complete=false).
+		result.ResponseReceived, result.ResponseComplete, result.TimedOut = o.ResponseComplete || o.StatusCode != 0, o.ResponseComplete, o.TimedOut
 		result.StatusCode, result.Normal, result.RequestMarkerFree, result.Marker = o.StatusCode, o.Normal, o.RequestMarkerFree, o.Marker
 		result.BodyDigestSHA256, result.BodyComplete = o.BodyDigestSHA256, o.BodyComplete
 		result.ObjectIDDigest, result.SubjectDigest = o.ObjectIDDigest, o.SubjectDigest

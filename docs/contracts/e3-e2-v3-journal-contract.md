@@ -30,7 +30,7 @@ E² 안에서 E③ 판정(CONFIRMED·UNDECIDABLE 등)을 하지 않는다. E²�
 | `program` | `e3_identity`·`e3_create`·`e3_read` | `Purpose` |
 | `role` | `owner`(A)·`cross`(B) | `Role` |
 | `account_label` | E²가 **실제로 붙인** C14 시험 계정 라벨(모델이 준 값 아님) | `AccountLabel` |
-| `account_binding_ref` | C14 인증 성공에 기반해 서버가 발급하는 비민감 참조. 실행·계정 라벨·세션 판에 결속하고, 다시 로그인해 세션이 바뀌면 다른 값이다(발급은 이동찬, 세션 저장소) | (대조만: 같은 실행·같은 라벨) |
+| `account_binding_ref` | C14 인증 성공에 기반해 서버가 발급하는 비민감 참조. 실행·계정 라벨·세션 판에 결속하고, 다시 로그인해 세션이 바뀌면 다른 값이다. 발급은 실행의 세션 저장소(`server` `e2HTTPSessionStore`)가 세션마다 새 난수로 한다(`acct-`+32hex, 실행·라벨·자격·세션 값을 넣지 않음, 세션 교체와 같은 잠금 안에서 바꿈, 난수를 못 읽으면 발급하지 않고 옛 참조도 지움). E²는 `E2HTTPRunOptions.AccountBindings()`의 `AccountBindingRef(run_ref, label)`로 지금 참조를 읽고, `BoundSession(run_ref, label, ref)`로 그 참조가 지금 결속일 때만 세션 사본을 받는다(옛 참조·다른 라벨·다른 실행은 `ErrE2HTTPAccountBinding`) | (대조만: 같은 실행·같은 라벨) |
 | `e3_binding{job_ref, generation_ref, instance_ref, policy{kind, ref, digest_sha256, target_approval_revision}}` | 확정 단계 실행 결속. `run_ref`·`task_ref`·`e2_policy_ref`는 `scope`와 같아야 한다 | `Binding` |
 | `resource_type` | 선언한 자원 종류(생성·조회) | `ResourceType` |
 | `create_ref{call_ref, attempt_id, sequence}` | 조회가 읽은 생성 관찰(조회만) | `Create` |
@@ -55,7 +55,7 @@ E③ 프로그램 호출 하나의 시도 단계는 v2와 같은 이름이다(`e
 | `intent`(송신 전 허용) | 연결을 시도하기 전 허용 판정 | `decision=allowed`, `rule_ref` | 응답 칸 전부, `forward_attempted`·`request_written`·`response_received`·`response_complete` 참, `not_sent_reason`. 호출의 마지막 이벤트가 될 수 없음(뒤에 `result`가 있어야 함) |
 | `result`, 송신 전 거부 | E²가 연결을 시도하기 전에 거부 | `decision`이 `allowed`가 아님, `not_sent=true`, `not_sent_reason`(넷 중 하나). `rule_ref`는 맞는 규칙이 없는 거부(정책 거부·예산 소진)면 비어도 됨 | `intent` 이벤트, `forward_attempted` 참, 응답 칸 전부 |
 | `result`, `intent` 뒤 송신 전 중단 | `intent`를 기록한 뒤 실행 문맥이 끝나 연결을 시도하지 않음(v2 `execution.go`: `ctx.Err()`면 `reason=closed`로 끝냄) | `decision=allowed`, `not_sent=true`, `forward_attempted=false`, `reason=closed` | `not_sent_reason`, 응답 칸 전부 |
-| `result`, 송신 뒤 | 연결을 시도한 뒤(성공·실패·끊김 모두) | `decision=allowed`, `rule_ref`, `forward_attempted=true`, `request_written`, `response_received`, `response_complete`, 끊겼으면 `timed_out`. `response_complete=true`면 `status_code`·`normal`·`body_digest_sha256`·`body_complete`, 조회면 `marker`·`request_marker_free`, 생성이면 `object_id_digest`(꺼냈을 때), 신원이면 `subject_digest`·`request_marker_free` | `not_sent` 참, `not_sent_reason` |
+| `result`, 송신 뒤 | 연결을 시도한 뒤(성공·실패·끊김 모두) | `decision=allowed`, `rule_ref`, `forward_attempted=true`, `request_written`, `response_received`, `response_complete`, 끊겼으면 `timed_out`. `response_complete=true`면 `status_code`·`normal`·`body_digest_sha256`·`body_complete`, 조회면 `marker`·`request_marker_free`, 생성이면 `object_id_digest`(꺼냈을 때), 신원이면 `subject_digest`·`request_marker_free`. `response_complete=false`(결과 불명)여도 상태 줄을 받았으면 `response_received=true`·`status_code`가 있다(E② 일반 행 규칙, 본문 칸은 없음) | `not_sent` 참, `not_sent_reason` |
 
 **`intent` 뒤 송신 전 중단**은 운영자 중지·취소·시간 몫 마감처럼 실행 문맥이 끝났을 때만 생긴다. 어댑터는 이 행으로 관찰을 만들지 않고 실행 문맥 오류를 돌려준다. 그래서 그 요청은 결과 불명으로 남고 회차는 중단(`interrupted`) 또는 시간 몫 끝으로 마감한다. 생성 요청이면 쓰기 기록을 거두지 않는다(ID 모름으로 남아 리셋 확인 대상). 보내지 않은 것이 거의 확실하지만, 쓰기 기록을 거두는 경우는 연결 전 거부 넷으로 정한 규칙(#738)을 넓히지 않는다. 실행 문맥이 살아 있는데 이 행이 오면 관찰 계약 위반(진위 실패)이다.
 
@@ -96,10 +96,10 @@ E③ 프로그램 호출 하나의 시도 단계는 v2와 같은 이름이다(`e
 
 - `generation_ref`(대상 세대)·`instance_ref`(대상 인스턴스)는 **서버가 확인한 대상 세대·인스턴스에서** 실행마다 발급한다(결정 §5 0단계). 발급 구현은 최민준이 대상 등록 경로에서 맡겠다고 제안했다.
 - **발급(구현).** 실행 시작 때 서버가 대상 기록에서 발급해 `runs/<job>/e3-target-refs.json`(0600, 한 번만)에 동결한다([제품 확정 단계 인터페이스](e3-product-confirmation-interface.md) §8 "감독자 연결"의 결과 줄).
-  - 세대: 대상 ID·origin·승인 판·승인 시각과 마지막 확정 쓰기 기록(쓰기 줄 참조·회차·시각)·리셋 확인(확인자·시각). 대상을 다시 승인하거나, 우리 확정 쓰기가 남거나, 리셋을 확인하면 바뀐다.
+  - 세대: 대상 ID·origin·승인 판·승인 시각과 마지막 확정 쓰기 기록(쓰기 줄 참조·회차·시각)·리셋 확인(확인자·시각), 그리고 그 회차(job). 대상을 다시 승인하거나, 우리 확정 쓰기가 남거나, 리셋을 확인하면 바뀐다. 회차 사이 연속성은 서버가 증명할 수 없으므로 회차가 바뀌어도 바뀐다(재사용 안 함).
   - 인스턴스: 세대와, 실행이 고정한 접속 주소(고른 IP·주소 집합·포트)·TLS 공개 키(https). 같은 세대라도 주소나 키가 바뀌면 바뀐다.
   - **모르면 새로 발급.** 입력을 하나라도 확인할 수 없으면 실행마다 새 난수 참조(`gen-x-`·`inst-x-`)다. 확정 단계를 시작할 때 리셋 게이트가 지금 대상으로 다시 계산해 동결값과 다르거나 지금 상태를 확인할 수 없으면 요청 없이 `start_refused`·`target_changed`다. 대상이 바뀌었는데 같은 참조가 남는 경우가 없다(시험으로 고정).
-- **이동찬 확인**: 대상 리셋·인스턴스 교체를 서버가 어떤 신호로 알게 할지. 지금은 리셋 확인 기록과 주소·TLS 키만 보므로, 같은 주소·키로 운영자 확인 없이 다시 만든 인스턴스는 같은 참조가 된다. 신호가 정해지면 입력에 더한다.
+- **리셋·인스턴스 교체 규칙(안, 이동찬 리뷰)**: [세대·인스턴스 참조 규칙안](../e3-target-refs-rules.md). 서버가 보는 신호는 대상 기록(승인)·확정 쓰기 기록·운영자 리셋 확인 기록·접속 고정(IP·포트·TLS 키, E²가 실행 내내 강제)·회차 경계다. 회차 사이에는 참조를 재사용하지 않는다. 한 회차 안에서 같은 주소·키로 확인 없이 다시 만든 인스턴스는 서버가 모르지만, 확정 단계가 새 표식 객체를 만들고 곧바로 읽으므로 거짓 CONFIRMED로 가지 않는다(규칙안 §4). 인스턴스 식별 값·전송 계층 신호는 E² 송신 경로와 같이 정할 후속 제안이다(규칙안 §5).
 
 ## 7. 실패 처리(어댑터 → E③ 상태·사유)
 
@@ -184,7 +184,7 @@ fail-closed는 #698 계약 그대로다. 진위 실패면 판정 행을 만들�
 **송신 활성화 전 확정 필수**(그 전에는 E² 프로그램 호출 거부 유지):
 1. 신뢰 체크포인트 보존 위치·형식, 감사 키·digest 키 보관 경로(§3).
 2. `Transport` 반환 전 Sync·정본 head 게시 ACK와 `Sealed`의 체크포인트 조회 구현(§5).
-3. 세대·인스턴스 참조의 리셋·인스턴스 교체 규칙(§6, 이동찬 확인).
+3. 세대·인스턴스 참조의 리셋·인스턴스 교체 규칙(§6, [규칙안](../e3-target-refs-rules.md) 이동찬 리뷰).
 
 **공식 평가 v3 읽기 전 확정 필수**(이동찬 확인, 그 전에는 분리 배치 O의 시도 대조는 지금처럼 "대조 미수집"):
 1. 평가 모드 제품 E²가 v3에서도 대상으로 보내는 모든 요청(E③ 프로그램 호출 포함)에 `X-ABC2LAB-E2-Attempt`를 싣는지(§8.2).

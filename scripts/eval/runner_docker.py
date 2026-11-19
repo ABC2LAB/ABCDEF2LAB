@@ -84,6 +84,20 @@ def container_file_ok(path: object) -> bool:
             and not any(part in (".", "..") for part in path.split("/")[1:]))
 
 
+# copy_volume_files: 요청한 파일·디렉터리가 없어서만 tar가 실패함. 호출자가 '제품이 아직 내지 않음'과 러너 장애를 가를 때 쓴다.
+HELPER_FILE_MISSING = "docker_helper_file_missing"
+# GNU tar(제품 이미지 Debian)의 '없음' 줄과 실패 끝맺음 줄(2026-11-19 실제 이미지로 확인: 없는 파일은 Cannot stat, 없는 -C 디렉터리는
+# Cannot open). 다른 내용이 한 줄이라도 섞이면 '없음'으로 보지 않는다.
+_TAR_MISSING_LINE = re.compile(rb"tar: [^\n]{1,4096}: Cannot (?:stat|open): No such file or directory\Z")
+_TAR_END_LINES = frozenset({b"tar: Exiting with failure status due to previous errors", b"tar: Error is not recoverable: exiting now"})
+
+
+def tar_missing_only(diagnostic: bytes) -> bool:
+    lines = [line.strip() for line in diagnostic.splitlines() if line.strip()]
+    return (any(_TAR_MISSING_LINE.fullmatch(line) for line in lines)
+            and all(_TAR_MISSING_LINE.fullmatch(line) or line in _TAR_END_LINES for line in lines))
+
+
 class DockerError(RuntimeError):
     """docker 호출 실패. 메시지는 고정 코드이며 docker 출력 원문을 담지 않는다."""
 
@@ -509,7 +523,9 @@ class Docker:
         try:
             result = self._bounded(args, self._env, timeout, len(names) * (max_bytes + _TAR_OVERHEAD_BYTES))
             if result.returncode != 0:
-                raise DockerError("docker_helper_copy_failed")
+                # 요청한 파일·디렉터리가 없어서만 실패했으면 따로 알린다(제품이 아직 그 파일을 만들지 않음). 그 밖의 tar 실패는
+                # 그대로 복사 실패다. 판정은 tar 진단 줄이 전부 '없음'과 그 뒤 끝맺음 줄일 때만이다.
+                raise DockerError(HELPER_FILE_MISSING if tar_missing_only(result.diagnostic) else "docker_helper_copy_failed")
         except DockerError:
             # 시간 초과·출력 상한이면 Docker CLI만 끝나고 도우미는 남아 보호 볼륨을 잡고 있을 수 있다(#693 리뷰). cidfile은
             # CLI가 쓰기 전에 끊길 수 있어, 이 호출의 라벨(역할)·볼륨으로 찾아 지우고 없어졌는지 확인한다.

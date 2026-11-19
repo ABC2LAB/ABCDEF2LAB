@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/Autumn-27/artex/e3contract"
 	"github.com/Autumn-27/artex/transmit"
 )
 
@@ -62,6 +63,11 @@ var (
 // honor ctx at I/O boundaries. It must not call back into this execution.
 type Recorder interface {
 	Record(context.Context, Event) error
+}
+
+// E3Verifier는 독립 Host가 현재 head를 확인한 결과만 돌려주는 경계다.
+type E3Verifier interface {
+	Verified(context.Context, e3contract.RunBinding, e3contract.CallRef) (Event, error)
 }
 
 // Rule is privileged input from the trusted approval issuer. A method grant
@@ -133,6 +139,11 @@ type Limits struct {
 	MaxUnknown   uint64
 }
 type Config struct {
+	// E3Verifier가 없으면 v3 저널 선택만으로 프로그램 송신이 열리지 않는다.
+	E3Verifier E3Verifier `json:"-"`
+	// AuditVersion은 신뢰된 호스트가 선택하는 저널 행 판이다. 빈 값은 v2다.
+	// v3 선택만으로 E③ 프로그램 송신 권한이 생기지 않는다.
+	AuditVersion string `json:"-"`
 	// CheckAuthority는 신뢰 호스트가 연결하는 위임 철회 검사다. nil은 기존 모드다.
 	// 짧고 제한된 로컬 검사만 수행하며 Execution으로 재진입하면 안 된다.
 	CheckAuthority func() error `json:"-"`
@@ -194,6 +205,7 @@ func ValidCallAttribution(intentID int64, program ProgramCallKind) bool {
 }
 
 type Receipt struct {
+	*E3Audit
 	Program          ProgramCallKind `json:"program,omitempty"`
 	IntentID         int64           `json:"intent_id"`
 	Version          string          `json:"version"`

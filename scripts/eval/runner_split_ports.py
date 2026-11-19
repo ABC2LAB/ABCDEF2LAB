@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import json
 import os
 import platform
+import re
 import subprocess
 import threading
 import time
@@ -31,7 +33,9 @@ from runner_llm import PRODUCT_VERIFY_ROLE
 from meter_describe import MAX_DESCRIBE_BYTES, describe_args, parse as describe_parse
 
 METER_DESCRIBE_SECONDS = 30.0
-from runner_docker import Docker, client_environment
+from runner_docker import HELPER_FILE_MISSING, Docker, DockerError, client_environment
+from runner_e2v3 import MAX_HEAD_BYTES as E2V3_MAX_HEAD_BYTES, MAX_JOURNAL_BYTES as E2V3_MAX_JOURNAL_BYTES, collect as e2v3_collect
+from e2_collect import subprocess_verifier
 from runner_engine import AdminSecret
 from runner_product import ModelKey, ProductDriver
 from run_record import read_runner_key, sign_run_record
@@ -183,6 +187,51 @@ def check_split_layout(rendered: dict, project: str, networks: list, containers:
     return sorted(violations)
 
 
+# 제품 DB 서비스 이름(deploy/product compose)과 Bash 호출 조회. 활동 표에서 도구 입력(tool_use)과 같은 tool_use_id의
+# 결과(tool_result)를 짝지어 순서대로 한 줄씩 JSON으로 낸다. 탐색 번호는 정수로만 넣는다.
+PRODUCT_DB_SERVICE = "postgres"
+_DB_WORD = re.compile(r"[a-z_][a-z0-9_]{0,62}\Z")
+PRODUCT_COMMANDS_SQL = (
+    "select json_build_object('cmd', u.detail, 'res', r.detail, 'is_error', coalesce(r.is_error, false))::text "
+    "from activity u left join activity r on r.tool_use_id = u.tool_use_id and r.kind = 'tool_result' "
+    "and r.exploration_id = u.exploration_id "
+    "where u.kind = 'tool_use' and u.tool = 'Bash' and u.exploration_id = {exploration} order by u.id")
+
+
+# 작업 끝 신호: tasks 한 행과 그 탐색의 목표(goal)·의도(intent) 상태별 수. 작업 번호는 정수로만 넣는다.
+PRODUCT_TASK_SQL = (
+    "select json_build_object('task_id', t.id, 'status', t.status, 'exploration_id', t.exploration_id, "
+    "'completed_at', coalesce(to_char(t.completed_at at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), ''), "
+    "'goal_states', (select coalesce(json_object_agg(g.state, g.n), '{{}}') from (select state, count(*) as n from exploration_nodes "
+    "where exploration_id = t.exploration_id and kind = 'goal' group by state) g), "
+    "'intent_states', (select coalesce(json_object_agg(i.state, i.n), '{{}}') from (select state, count(*) as n from exploration_nodes "
+    "where exploration_id = t.exploration_id and kind = 'intent' group by state) i))::text "
+    "from tasks t where t.id = {task}")
+PRODUCT_TASK_MAX_BYTES = 64 * 1024
+_TASK_ID = re.compile(r"[1-9][0-9]{0,18}\Z")
+_TASK_STATUSES = frozenset({"created", "running", "paused", "done", "failed", "timeout"})
+_GOAL_STATES = frozenset({"open", "met", "abandoned"})
+_INTENT_STATES = frozenset({"open", "running", "paused", "done", "blocked", "exhausted", "stopped", "deleted"})
+_UTC_STAMP = re.compile(r"(?:[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)?\Z")
+
+
+def checked_task_state(row: object) -> dict:
+    """제품 DB 작업 행 검사(db/schema.sql의 상태 어휘). 목표 수·달성 수는 목표 상태별 수에서 센다."""
+    fields = {"task_id", "status", "exploration_id", "completed_at", "goal_states", "intent_states"}
+    if not isinstance(row, dict) or set(row) != fields:
+        raise ValueError("product_task_invalid")
+    goals, intents = row["goal_states"], row["intent_states"]
+    if (type(row["task_id"]) is not int or row["status"] not in _TASK_STATUSES or type(row["exploration_id"]) is not int
+            or row["exploration_id"] < 1 or not isinstance(row["completed_at"], str) or not _UTC_STAMP.fullmatch(row["completed_at"])
+            or not isinstance(goals, dict) or not isinstance(intents, dict)
+            or not all(state in _GOAL_STATES and type(n) is int and n > 0 for state, n in goals.items())
+            or not all(state in _INTENT_STATES and type(n) is int and n > 0 for state, n in intents.items())):
+        raise ValueError("product_task_invalid")
+    return {"status": row["status"], "completed_at": row["completed_at"], "exploration_id": row["exploration_id"],
+            "goals_total": sum(goals.values()), "goals_met": goals.get("met", 0), "goal_states": dict(sorted(goals.items())),
+            "intent_states": dict(sorted(intents.items()))}
+
+
 def product_record_names(approval_id: str) -> tuple[str, str]:
     """제품 승인 장부·호출 기록 파일 이름(llmpolicy openrouter_file_linux.go와 같은 규칙)."""
     approval = hashlib.sha256(approval_id.encode("utf-8")).hexdigest()
@@ -318,6 +367,29 @@ class DockerSplitPorts:
                                                  self.directory.run / f"{role}.cid", max_bytes, self.timeout, subpath=subpath)
         return files
 
+    def e2_v3_export(self, draft_id: str) -> tuple[bytes | None, bytes | None]:
+        """제품 볼륨에서 E② v3 저널과 봉인된 최종 head를 따로 꺼낸다(상한이 달라서). 위치는 설정값(제품 Host 배선 뒤 확정).
+        그 파일·디렉터리가 없어서만 실패하면(tar 진단이 '없음'뿐, HELPER_FILE_MISSING) None이다(제품이 안 냄 → 통제 대조 미수집).
+        시간 초과·출력 상한·tar 손상·그 밖의 복사 실패·도우미 정리 실패는 러너 장애라 그대로 올린다(회차 무효, #785 리뷰)."""
+        settings = self.split.e2_v3
+        subpath = settings.resolved_subpath(draft_id)
+        out = []
+        for role, name, limit in (("e2v3-journal", settings.journal_name, E2V3_MAX_JOURNAL_BYTES),
+                                  ("e2v3-head", settings.head_name, E2V3_MAX_HEAD_BYTES)):
+            try:
+                out.append(self._copy(settings.volume, settings.directory, (name,), role, settings.uid, limit, subpath)[name])
+            except DockerError as exc:
+                if str(exc) != HELPER_FILE_MISSING:  # 정리 실패(HelperCleanupError)도 여기서 올라간다
+                    raise
+                out.append(None)
+        return out[0], out[1]
+
+    def e2_v3_collect(self, journal: bytes | None, head: bytes | None) -> dict:
+        settings = self.split.e2_v3
+        return e2v3_collect(run_verifier=subprocess_verifier(settings.verify_tool, settings.verify_timeout_seconds),
+                            copy_directory=self.directory.run / "e2v3-copy", key_path=self.inputs.files["e2_audit_key"],
+                            journal=journal, head=head, key_ref=self.inputs.audit_key_ref)
+
     def product_files(self) -> dict:
         """제품 블록 설치 파일 넷의 원본 SHA(결정안 §3.3). 내용은 메모리에서 지문만 뜨고 남기지 않는다(설치 입력에 비밀
         핀이 있다). 제품을 멈춘 뒤에 부른다."""
@@ -431,6 +503,54 @@ class DockerSplitPorts:
 
     def run_record(self, task_id: str) -> dict:
         return self.driver.run_record(task_id)
+
+    def task_signal(self, task_id: str) -> dict:
+        """제품 작업의 끝 신호(상태·완료 시각·탐색 번호·목표 상태별 수·의도 상태별 수). 제품 관리 API는 작업 단건·목표 목록을
+        중계하지 않아(목록 307, 단건·하위 경로 403, 2026-11-19 O 진단 회차) 제품 DB에서 읽기 전용으로 읽는다. 글은 옮기지 않는다."""
+        if not isinstance(task_id, str) or not _TASK_ID.fullmatch(task_id):
+            raise ValueError("product_task_invalid")
+        lines = self._product_sql(PRODUCT_TASK_SQL.format(task=int(task_id)), PRODUCT_TASK_MAX_BYTES)
+        if len(lines) != 1:
+            raise ValueError("product_task_missing")
+        return checked_task_state(json.loads(lines[0]))
+
+    def task_exploration_id(self, task_id: str) -> int:
+        return self.task_signal(task_id)["exploration_id"]
+
+    def product_commands(self, exploration_id: int) -> list[dict]:
+        """제품 활동 표에서 그 탐색의 Bash 호출(도구 입력·결과·실패 표시)을 읽는다. 원본 B가 `/api/commands`로 읽는 것과 같은
+        표다. 제품 모드는 공개 활동 API가 명령·결과를 지워(publicActivity) 제품 DB 컨테이너 안에서 읽기 전용 세션으로 조회한다.
+        원문은 호출자 메모리로만 넘기고 쓰지 않는다. 상한은 B 명령 기록과 같은 findings 설정(max_total_bytes)이다."""
+        if type(exploration_id) is not int or exploration_id < 1:
+            raise ValueError("product_commands_exploration_invalid")
+        rows = []
+        for line in self._product_sql(PRODUCT_COMMANDS_SQL.format(exploration=exploration_id), self.config.findings["max_total_bytes"]):
+            row = json.loads(line)
+            if not isinstance(row, dict) or set(row) != {"cmd", "res", "is_error"}:
+                raise ValueError("product_commands_invalid")
+            rows.append(row)
+        return rows
+
+    def _product_sql(self, sql: str, limit: int) -> list[str]:
+        """제품 DB 컨테이너 안에서 읽기 전용 세션(default_transaction_read_only)으로 조회 하나를 돌려 비지 않은 줄을 돌려준다.
+        사용자·DB 이름은 렌더한 compose의 postgres 환경값이다."""
+        service = self.rendered["services"].get(PRODUCT_DB_SERVICE, {})
+        environment = service.get("environment") if isinstance(service, dict) else None
+        user = environment.get("POSTGRES_USER") if isinstance(environment, dict) else None
+        database = environment.get("POSTGRES_DB") if isinstance(environment, dict) else None
+        if not all(isinstance(v, str) and _DB_WORD.fullmatch(v) for v in (user, database)):
+            raise ValueError("product_db_unknown")
+        containers = [parse_container(c) for c in self.docker.inspect_containers(self.docker.project_container_ids(self.plan.project))]
+        ids = [c.id for c in containers if c.project == self.plan.project and c.service == PRODUCT_DB_SERVICE and c.running]
+        if len(ids) != 1:
+            raise ValueError("product_db_container")
+        result = self.docker.run_bounded(
+            ["exec", "-e", "PGOPTIONS=-c default_transaction_read_only=on", ids[0], "psql", "-X", "-A", "-t", "-q",
+             "-v", "ON_ERROR_STOP=1", "-U", user, "-d", database, "-c", sql],
+            self.config.docker_timeout_seconds, limit)
+        if result.returncode != 0:
+            raise ValueError("product_db_query_failed")
+        return [line for line in result.stdout.decode("utf-8").splitlines() if line.strip()]
 
     def workflow_snapshot(self, draft_id: str) -> dict:
         return self.driver.workflow(draft_id)

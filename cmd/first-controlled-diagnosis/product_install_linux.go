@@ -30,6 +30,7 @@ import (
 	pgdb "github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/diagnosisprep"
+	"github.com/Autumn-27/artex/e2checkpoint"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/evidencerevision"
 	"github.com/Autumn-27/artex/llmpolicy"
@@ -156,7 +157,9 @@ func runProductInstall(ctx context.Context, args []string, stdout, stderr io.Wri
 	flags.SetOutput(io.Discard)
 	input := flags.String("input", "", "operator protected installation input")
 	root := flags.String("root", "/p", "private product volume")
-	if flags.Parse(args) != nil || flags.NArg() != 0 || *input == "" || os.Geteuid() == 0 {
+	hostRoot := flags.String("host-root", "", "separate E2 audit host volume")
+	if flags.Parse(args) != nil || flags.NArg() != 0 || *input == "" || os.Geteuid() == 0 ||
+		*hostRoot != "" && *hostRoot != "/h" {
 		return 2
 	}
 	if _, err := os.Stat(filepath.Join(*root, "config", "installation.json")); err == nil {
@@ -213,11 +216,14 @@ func runProductInstall(ctx context.Context, args []string, stdout, stderr io.Wri
 			return 1
 		}
 	}
+	if *hostRoot != "" && checkDirectory(*hostRoot, true) != nil {
+		return 1
+	}
 	cfgDir := filepath.Join(*root, "config")
 	if productWrite(filepath.Join(cfgDir, ".installing"), []byte("one_time_installation\n")) != nil {
 		return 1
 	}
-	if err = productInstall(ctx, *root, c); err != nil {
+	if err = productInstall(ctx, *root, c, *hostRoot); err != nil {
 		fmt.Fprintln(stderr, "product_installation_failed")
 		return 1
 	}
@@ -352,7 +358,7 @@ func productDelegateProfile(profile urlPreparationProfile, mode string, runs int
 	return profile
 }
 
-func productInstall(ctx context.Context, root string, c productInstallInput) error {
+func productInstall(ctx context.Context, root string, c productInstallInput, hostRoot ...string) error {
 	password, err := readPrivateFile(c.DatabasePasswordFile, 4096)
 	if err != nil {
 		return errPreparation
@@ -363,7 +369,7 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 		return errPreparation
 	}
 	defer admin.Close()
-	for _, m := range []func(context.Context, *sql.DB) error{auditcheckpoint.Migrate, auditkeys.Migrate, evidencerevision.Migrate} {
+	for _, m := range []func(context.Context, *sql.DB) error{auditcheckpoint.Migrate, auditkeys.Migrate, evidencerevision.Migrate, e2checkpoint.Migrate} {
 		if m(ctx, admin.DB) != nil {
 			return errPreparation
 		}
@@ -402,8 +408,18 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 			return errPreparation
 		}
 	}
+	// 현재 head의 정본 쓰기 역할은 실행·API 역할과 분리한다. LOGIN 자격은
+	// 독립 Host 서비스가 준비되기 전에는 발급하지 않는다.
+	if _, err = admin.ExecContext(ctx, "CREATE ROLE product_e2_head_writer NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS"); err != nil {
+		return errPreparation
+	}
 	if productGrantRoles(ctx, admin.DB, c.DatabaseName, c.TargetPolicy.Workflow != nil) != nil {
 		return errPreparation
+	}
+	if len(hostRoot) == 1 && hostRoot[0] != "" {
+		if productProvisionE2Host(ctx, admin.DB, c.DatabaseHost, c.DatabaseName, hostRoot[0]) != nil {
+			return errPreparation
+		}
 	}
 	if productWrite(filepath.Join(root, "keys", "jwt.key"), []byte(productRandom(32))) != nil {
 		return errPreparation
@@ -487,6 +503,9 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 			return errPreparation
 		}
 		launch := launchConfig{Format: launchFormat, Mode: "general_http", ListenAddr: "127.0.0.1:28080", DataDir: filepath.Join(root, "data"), KeyDir: filepath.Join(root, "keys"), SkillDir: "/app/skills", ModelExecutionMode: mode, ModelProfileID: id, ModelFormat: "openai", ModelBaseURL: base, ModelRef: model, RuntimeDSNFile: filepath.Join(config, "runtime.dsn"), ShutdownTimeoutSeconds: productShutdownTimeoutSeconds, HTTP: &httpLaunch{PolicyFile: filepath.Join(config, "policy.json"), AuthorityFile: filepath.Join(config, "authority-template.json"), AuthorityRoot: config}}
+		if len(hostRoot) == 1 && hostRoot[0] != "" {
+			launch.E2HostSocket = "/run/e2-host/audit.sock"
+		}
 		runSeconds, ok := productRunSecondsFor(c.RuntimeLimits, c.TargetPolicy.Workflow != nil)
 		if !ok {
 			return errPreparation
@@ -606,6 +625,40 @@ func productInstall(ctx context.Context, root string, c productInstallInput) err
 	}
 	return productPrepareAPIProjection(root)
 }
+
+// productProvisionE2Host는 신규 설치에서만 Host의 독립 자격을 발급한다.
+// 이미 설치된 제품의 무검증 자동 이관에는 호출하지 않는다.
+func productProvisionE2Host(ctx context.Context, admin *sql.DB, databaseHost, databaseName, hostRoot string) error {
+	if ctx == nil || admin == nil || !managementReference.MatchString(databaseName) || checkDirectory(hostRoot, true) != nil {
+		return errPreparation
+	}
+	password := productRandom(32)
+	if _, err := admin.ExecContext(ctx, "CREATE ROLE product_e2_host LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '"+password+"'"); err != nil {
+		return errPreparation
+	}
+	if _, err := admin.ExecContext(ctx, "GRANT product_e2_head_writer TO product_e2_host"); err != nil {
+		return errPreparation
+	}
+	if _, err := admin.ExecContext(ctx, "GRANT CONNECT ON DATABASE \""+databaseName+"\" TO product_e2_host"); err != nil {
+		return errPreparation
+	}
+	if os.Mkdir(filepath.Join(hostRoot, "journals"), 0700) != nil ||
+		productWrite(filepath.Join(hostRoot, "host.dsn"), []byte(productDSN(databaseHost, databaseName, "product_e2_host", password))) != nil ||
+		productWrite(filepath.Join(hostRoot, "audit.key"), []byte(productRandom(32))) != nil ||
+		productWrite(filepath.Join(hostRoot, "digest.key"), []byte(productRandom(32))) != nil {
+		return errPreparation
+	}
+	anchor := sha256.Sum256([]byte(productRandom(32)))
+	epoch := e2checkpoint.Epoch{StoreRef: "product-" + productRandom(8), EpochRef: "epoch-" + productRandom(8), Generation: 1, AnchorDigest: anchor}
+	if _, err := admin.ExecContext(ctx, `INSERT INTO e2_http_audit_epochs(store_ref,epoch_ref,generation,anchor_digest) VALUES($1,$2,$3,$4)`,
+		epoch.StoreRef, epoch.EpochRef, int64(epoch.Generation), epoch.AnchorDigest[:]); err != nil {
+		return errPreparation
+	}
+	if _, err := productJSON(filepath.Join(hostRoot, "epoch.json"), epoch); err != nil {
+		return errPreparation
+	}
+	return nil
+}
 func productGrantRoles(ctx context.Context, pool *sql.DB, name string, workflow ...bool) error {
 	exec := func(s string) error { _, e := pool.ExecContext(ctx, s); return e }
 	if exec("REVOKE CREATE,TEMP ON DATABASE \""+name+"\" FROM PUBLIC") != nil || exec("REVOKE CREATE ON SCHEMA public FROM PUBLIC") != nil {
@@ -615,6 +668,11 @@ func productGrantRoles(ctx context.Context, pool *sql.DB, name string, workflow 
 		if exec("GRANT CONNECT ON DATABASE \""+name+"\" TO "+r) != nil || exec("GRANT USAGE ON SCHEMA public TO "+r) != nil {
 			return errPreparation
 		}
+	}
+	if exec("GRANT USAGE ON SCHEMA public TO product_e2_head_writer") != nil ||
+		exec("GRANT SELECT,UPDATE(lock_guard) ON e2_http_audit_epochs TO product_e2_head_writer") != nil ||
+		exec("GRANT SELECT,INSERT,UPDATE(revision,phase,checkpoint,snapshot_bytes,snapshot_digest) ON e2_http_audit_heads TO product_e2_head_writer") != nil {
+		return errPreparation
 	}
 	for _, table := range []string{"tasks", "explorations", "exploration_nodes", "task_llm_profiles", "request_approvals", "e2_prompt_runs", "e2_prompt_observations"} {
 		if exec("GRANT SELECT,INSERT,UPDATE ON "+table+" TO product_runtime") != nil {

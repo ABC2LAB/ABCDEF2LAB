@@ -579,7 +579,10 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		worker = intentWorker
 	}
 	// 실제 taskLLMRuntime.current의 role/model guard를 유지하고 profile cache의 모델만 대체한다.
-	firstDiagnosisInjectProfileProvider(t, runtime.server, profileID, &firstDiagnosisRoleRoutedProvider{worker: worker, planner: plannerProvider})
+	// 작업이 끝난 뒤 남은 작업 없이 하는 Planner 호출(빈 계획)을 센다. 원본과 같은 끝 규칙에서는 그 뒤에도 실행이 마감되지
+	// 않는다.
+	idlePlanner := firstDiagnosisIdleWatch(installer, task, plannerProvider)
+	firstDiagnosisInjectProfileProvider(t, runtime.server, profileID, &firstDiagnosisRoleRoutedProvider{worker: worker, planner: idlePlanner})
 	// E③ 확정 단계 훅(결정 §5): 모델 활동이 모두 끝난 뒤(진행 중 작업·모델 호출 0, 실행 허가 닫힘), E② 마감 전에 한 번
 	// 불린다. 확정 단계가 실제로 시작할 때만(begin) 엔진 정리 상태가 된다. e3-hook-error는 훅이 실패해도 모델 단계 실행 결과가
 	// 그대로인지, e3-hook-disabled는 꺼진 확정 단계(선언 없음·연결 없음)가 begin을 부르지 않아 감독자 흐름이 E③ 없는 실행과
@@ -723,11 +726,12 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		}
 		killIntent.Store(running)
 		task.Notify()
-		select {
-		case runErr = <-done:
-		case <-ctx.Done():
-			t.Fatal("Planner 동시 실행 시험의 Supervisor Run이 반환하지 않음")
-		}
+		// Planner가 멈춘 작업은 Worker 완료 알림을 내지 않아 원본처럼 다음 알림·심장박동까지 다시 계획하지 않는다. 남은 작업이
+		// 없어도 마감하지 않고, 실행 상한에 닿아야 마감한다.
+		runErr = firstDiagnosisRunPastIdle(t, ctx, supervisor, task, func() bool {
+			pending, total, err := idlePlanner.intents(ctx)
+			return err == nil && total > 0 && pending == 0
+		}, done)
 	} else if goalConcurrent {
 		done := make(chan error, 1)
 		go func() { done <- supervisor.Run(ctx, task.ID, 0, "") }()
@@ -775,17 +779,31 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		if elapsed := time.Since(started); elapsed >= time.Duration(policy.Limits.RequestTimeoutMS)*time.Millisecond {
 			t.Fatalf("시간 상한 유예 뒤 진행 중 작업을 멈추지 않음(E② 요청 시간 상한으로 끝남) elapsed=%s", elapsed)
 		}
-	} else if mode == "planner-only" {
-		short, stopRun := context.WithTimeout(ctx, 4*time.Second)
-		runErr = supervisor.Run(short, task.ID, 0, "")
-		stopRun()
-	} else {
+	} else if mode == "planner-only" || mode == "plan-turns" {
+		// 작업이 없는 실행이다. 계획이 비어도 마감하지 않고(원본과 같은 끝 규칙), 시간 상한에서 no_intents·budget_limited로
+		// 마감한다. 시간 상한 전에 돌아오면 빈 계획으로 마감한 것이다.
+		closeAt := time.Now().Add(firstDiagnosisNoWorkTimeBudget)
+		if err := supervisor.SetTimeBudget(closeAt, 0); err != nil {
+			t.Fatal("시간 상한 설정 실패", err)
+		}
 		runErr = supervisor.Run(ctx, task.ID, 0, "")
+		if early := time.Until(closeAt); early > 0 {
+			t.Fatalf("시간 상한 %s 전에 빈 계획으로 마감함 err=%v result=%+v", early, runErr, supervisor.RunResult())
+		}
+	} else if goalAfterWork || mode == "goal-met" || mode == "request-budget" || mode == "request-budget-overflow" || mode == "planner-limit" || mode == "prepare-fail" {
+		// 목표 달성 선언·실행 상한으로 스스로 끝나거나 실행에 들어가지 못하는 모드다.
+		runErr = supervisor.Run(ctx, task.ID, 0, "")
+	} else {
+		// 작업이 다 끝나 Planner가 빈 계획을 내도 마감하지 않는지 보고, 실행 상한에 닿게 해서 마감 판정·근거 대조를 본다.
+		done := make(chan error, 1)
+		go func() { done <- supervisor.Run(ctx, task.ID, 0, "") }()
+		runErr = firstDiagnosisRunPastIdle(t, ctx, supervisor, task, func() bool { return idlePlanner.idle.Load() > 0 }, done)
 	}
 	if mode == "planner-only" {
-		// 계획을 거쳤는데 intent가 없으면 실패가 아니라 no_intents로 마감한다(C11 결정 2). 대상 송신은 없다.
+		// 시간 상한까지 intent가 없으면 실패가 아니라 no_intents로 마감한다(C11 결정 2). 마감 사유는 시간 상한(budget_limited)이고
+		// 대상 송신은 없다.
 		result := supervisor.RunResult()
-		if runErr != nil || result == nil || result.Outcome != diagnosis.OutcomeNoIntents || result.IntentOutcomes != (diagnosis.IntentOutcomes{}) || !result.Valid() ||
+		if runErr != nil || result == nil || result.Outcome != diagnosis.OutcomeNoIntents || result.ClosingReason != diagnosis.ClosingBudgetLimited || result.IntentOutcomes != (diagnosis.IntentOutcomes{}) || !result.Valid() ||
 			hits.Load() != 0 || provider.calls != 0 || plannerProvider.calls == 0 {
 			t.Fatalf("intent 없는 실행을 no_intents로 마감하지 않음 err=%v result=%+v hits=%d", runErr, result, hits.Load())
 		}
@@ -921,10 +939,10 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	if mode == "plan-turns" {
 		// 한 Plan 안에서 턴마다 assistant·도구 결과 두 메시지가 붙는다. 설치 상한 2턴이면 마지막 요청이 첫 요청보다
 		// 2개 많다(기본 16턴이면 30개). 턴 상한에 닿은 Plan은 원본처럼 "이번 라운드만 끝" 마무리 턴을 받는다(C26).
-		// intent가 없어 대상 송신 없이 no_intents로 마감한다.
+		// intent가 없어 대상 송신 없이 시간 상한에서 no_intents로 마감한다.
 		result := supervisor.RunResult()
 		if runErr != nil || plannerProvider.calls < installedPlanTurns || plannerProvider.maxMessages-plannerProvider.minMessages != 2*(installedPlanTurns-1) || plannerProvider.wrapUps == 0 ||
-			result == nil || result.Outcome != diagnosis.OutcomeNoIntents || hits.Load() != 0 || provider.calls != 0 {
+			result == nil || result.Outcome != diagnosis.OutcomeNoIntents || result.ClosingReason != diagnosis.ClosingBudgetLimited || hits.Load() != 0 || provider.calls != 0 {
 			t.Fatalf("설치한 Plan당 턴 상한·마무리 턴을 쓰지 않음 err=%v calls=%d messages=%d..%d wrapUps=%d result=%+v", runErr, plannerProvider.calls, plannerProvider.minMessages, plannerProvider.maxMessages, plannerProvider.wrapUps, result)
 		}
 		return
@@ -938,7 +956,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		if err := installer.QueryRowContext(ctx, "SELECT state,COALESCE(blocked_reason,'') FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent'", task.ExpID).Scan(&intentState, &blockedReason); err != nil {
 			t.Fatal("결과 불명 intent 조회 실패", err)
 		}
-		if runErr != nil || result == nil || !result.Valid() || result.Outcome != diagnosis.OutcomePartial || result.ClosingReason != "" ||
+		if runErr != nil || result == nil || !result.Valid() || result.Outcome != diagnosis.OutcomePartial || result.ClosingReason != diagnosis.ClosingBudgetLimited ||
 			result.IntentOutcomes != (diagnosis.IntentOutcomes{Unknown: 1}) || hits.Load() != 1 ||
 			len(results) != 1 || results[0].Classification != "result_unknown" || results[0].Call.Counts.Unknown != 1 || !results[0].Final || !results[0].Call.AuditComplete ||
 			intentState != "blocked" || blockedReason != "e2_http_result_unknown" {
@@ -1172,7 +1190,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		if _, err := installer.ExecContext(ctx, "DELETE FROM exploration_nodes WHERE exploration_id=$1 AND id=$2", task.ExpID, unmatched); err != nil {
 			t.Fatal("이 시험이 만든 미결속 intent 정리 실패")
 		}
-		if ready, result, err := supervisor.generalCompletion(ctx, runtime.server, task); err != nil || !ready || result.IntentOutcomes.PolicyLimited == 0 || result.Outcome == diagnosis.OutcomeNoIntents || result.ClosingReason != "" {
+		if ready, result, err := supervisor.generalCompletion(ctx, runtime.server, task); err != nil || !ready || result.IntentOutcomes.PolicyLimited == 0 || result.Outcome == diagnosis.OutcomeNoIntents || result.ClosingReason != diagnosis.ClosingBudgetLimited {
 			t.Fatal("감사에 결속된 정상 제한을 마감 실패로 처리함")
 		}
 		// 실행 결과 상태 값(C08): 불완전·운영자 중지 intent가 있으면 실패가 아니라 부분 완료다. 결과 불명 intent는
@@ -1216,9 +1234,10 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 			if addErr != nil {
 				t.Fatal("상한 fixture intent 생성 실패")
 			}
-			task.firstDiagnosisBudgetLimited.Store(true)
+			// 실행은 이미 실행 상한으로 끝났다(firstDiagnosisRunPastIdle). 표시를 바꾸지 않고 그대로 둔다.
+			limited := task.firstDiagnosisBudgetLimited.Swap(true)
 			ready, result, err := supervisor.generalCompletion(ctx, runtime.server, task)
-			task.firstDiagnosisBudgetLimited.Store(false)
+			task.firstDiagnosisBudgetLimited.Store(limited)
 			if err != nil || !ready || result.ClosingReason != diagnosis.ClosingBudgetLimited || result.IntentOutcomes.Incomplete == 0 || result.Outcome != diagnosis.OutcomePartial || !result.Valid() {
 				t.Fatalf("실행 상한 마감 아님 ready=%v result=%+v err=%v", ready, result, err)
 			}
@@ -1318,7 +1337,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		}
 		result := supervisor.RunResult()
 		if e3Calls != 1 || e3StoppedCalls.Load() != 0 || e3State != wantE3State || result == nil || !result.Valid() || result.Outcome != diagnosis.OutcomeComplete ||
-			result.IntentOutcomes != (diagnosis.IntentOutcomes{Done: 1}) || result.ClosingReason != "" {
+			result.IntentOutcomes != (diagnosis.IntentOutcomes{Done: 1}) || result.ClosingReason != diagnosis.ClosingBudgetLimited {
 			t.Fatalf("E③ 확정 단계 훅이 모델 단계 뒤·E② 마감 전에 한 번 불리지 않았거나 실행 결과가 바뀜 calls=%d state=%q result=%+v", e3Calls, e3State, result)
 		}
 	} else if runtime.server.engine.isSettling(task.ID) {
@@ -1505,6 +1524,87 @@ func firstDiagnosisInjectProfileProvider(t *testing.T, server *Server, profileID
 	server.provCacheMu.Unlock()
 }
 
+// firstDiagnosisNoWorkTimeBudget은 작업이 없는 실행 시험의 시간 상한 마감 시작까지의 시간이다. 준비 계획과 첫 실행 계획이
+// 그 안에 끝난다.
+const firstDiagnosisNoWorkTimeBudget = 2 * time.Second
+
+// firstDiagnosisIdleHold는 빈 계획 라운드 뒤 실행이 마감하지 않는지 지켜보는 시간이다. 감독자 판정 주기(25ms)의 여러 배다.
+const firstDiagnosisIdleHold = 500 * time.Millisecond
+
+// firstDiagnosisIdlePlanner는 작업(intent)이 있었고 남은 작업(open·running)이 없을 때의 Planner 호출을 센다. 작업이 생기기
+// 전의 첫 계획은 세지 않는다.
+type firstDiagnosisIdlePlanner struct {
+	llm.Provider
+	intents func(context.Context) (pending, total int, err error)
+	idle    atomic.Int64
+}
+
+// firstDiagnosisIdleWatch는 task의 intent 상태를 installer 연결로 읽어 빈 계획 호출을 세는 Planner 감싸개다.
+func firstDiagnosisIdleWatch(installer *pgdb.DB, task *Task, planner llm.Provider) *firstDiagnosisIdlePlanner {
+	return &firstDiagnosisIdlePlanner{Provider: planner, intents: func(c context.Context) (pending, total int, err error) {
+		err = installer.QueryRowContext(c, "SELECT count(*) FILTER (WHERE state IN ('open','running')), count(*) FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent' AND state<>'deleted'", task.ExpID).Scan(&pending, &total)
+		return pending, total, err
+	}}
+}
+
+func (p *firstDiagnosisIdlePlanner) Complete(ctx context.Context, request llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+	pending, total, err := p.intents(ctx)
+	message, stop, usage, callErr := p.Provider.Complete(ctx, request)
+	if err == nil && callErr == nil && total > 0 && pending == 0 {
+		p.idle.Add(1)
+	}
+	return message, stop, usage, callErr
+}
+
+// firstDiagnosisIdleCap은 원본과 같은 끝 규칙을 본다: 작업이 다 끝나(quiet) Planner가 빈 계획을 낸 뒤에도 실행은 마감하지
+// 않는다(Planner는 다음 알림·심장박동 때 다시 계획한다). 그 뒤 지켜본 다음, 요청·모델 예산 도달과 같은 실행 상한 표시를 해서
+// 마감 판정·근거 대조를 이어 본다. 대기 루프가 주기마다 step을 부른다.
+type firstDiagnosisIdleCap struct {
+	quiet  func() bool
+	seen   time.Time
+	capped bool
+}
+
+func (c *firstDiagnosisIdleCap) step(task *Task) {
+	if c.capped || !c.quiet() {
+		return
+	}
+	if c.seen.IsZero() {
+		c.seen = time.Now()
+		return
+	}
+	if time.Since(c.seen) >= firstDiagnosisIdleHold {
+		c.capped = true
+		task.firstDiagnosisBudgetLimited.Store(true)
+	}
+}
+
+// closedEarly는 실행 상한 표시 전에 정상 마감했는지 본다(빈 계획 마감). 실패로 돌아온 Run은 여기서 보지 않는다.
+func (c *firstDiagnosisIdleCap) closedEarly(supervisor *FirstDiagnosisSupervisor) bool {
+	return !c.capped && supervisor.RunResult() != nil
+}
+
+// firstDiagnosisRunPastIdle은 Run이 돌아올 때까지 firstDiagnosisIdleCap을 돌린다. 상한 표시 전에 정상 마감하면 실패다.
+func firstDiagnosisRunPastIdle(t *testing.T, ctx context.Context, supervisor *FirstDiagnosisSupervisor, task *Task, quiet func() bool, done <-chan error) error {
+	t.Helper()
+	idle := &firstDiagnosisIdleCap{quiet: quiet}
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-done:
+			if idle.closedEarly(supervisor) {
+				t.Fatalf("계획이 비자 실행 상한 전에 마감함(원본에 없는 끝 규칙) err=%v result=%+v", err, supervisor.RunResult())
+			}
+			return err
+		case <-ctx.Done():
+			t.Fatalf("Supervisor Run이 반환하지 않음 capped=%v", idle.capped)
+		case <-ticker.C:
+			idle.step(task)
+		}
+	}
+}
+
 type firstDiagnosisRoleRoutedProvider struct {
 	worker  llm.Provider
 	planner llm.Provider
@@ -1636,7 +1736,7 @@ func firstDiagnosisCheckStoppedCommand(t *testing.T, ctx context.Context, mode s
 		}
 		return e2proxy.Receipt{}, false
 	}
-	stopped := runErr == nil && planner.killed && result != nil && result.Valid() && result.Outcome == diagnosis.OutcomePartial && result.ClosingReason == "" &&
+	stopped := runErr == nil && planner.killed && result != nil && result.Valid() && result.Outcome == diagnosis.OutcomePartial && result.ClosingReason == diagnosis.ClosingBudgetLimited &&
 		len(results) == 1 && trusted.Final && trusted.ProcessDrained && trusted.ProxyDrained && !trusted.ProcessBashExited && trusted.Termination == "" &&
 		trusted.Call.AuditComplete && trusted.Execution.AuditComplete
 	var ok bool

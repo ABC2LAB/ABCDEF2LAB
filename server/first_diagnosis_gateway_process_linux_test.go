@@ -55,7 +55,9 @@ func prepareFirstDiagnosisGatewayProcessFixture(t *testing.T) *firstDiagnosisGat
 	if err != nil {
 		t.Fatal(err)
 	}
-	task, err := manager.CreateTask("독립 프로세스 합성 진단", "승인된 loopback 관찰을 저장합니다", nil, 60, 60)
+	// 작업 시간 상한이다. 계획이 비어도 마감하지 않으므로(원본과 같은 끝 규칙) 이 단발 실행은 엔진 기한 앞의 시간 상한
+	// 마감(기한 − 작업 시간의 1/4)으로 끝난다.
+	task, err := manager.CreateTask("독립 프로세스 합성 진단", "승인된 loopback 관찰을 저장합니다", nil, firstDiagnosisGatewayTaskSeconds, 60)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,6 +236,11 @@ func prepareFirstDiagnosisGatewayProcessFixture(t *testing.T) *firstDiagnosisGat
 	}
 	return &firstDiagnosisGatewayProcessFixture{ctx: ctx, binary: binary, root: root, launchPath: launchPath, addr: addr, dataDir: dataDir, keyDir: keyDir, taskID: task.ID, explorationID: task.ExpID, installer: installer, hits: &hits, modelCalls: &modelCalls}
 }
+
+// firstDiagnosisGatewayTaskSeconds는 독립 프로세스 시험 작업의 시간 상한이다. 합성 작업이 몇 초 안에 끝나고 나머지는
+// 빈 계획 뒤 시간 상한 마감을 기다린다.
+const firstDiagnosisGatewayTaskSeconds = 20
+
 func TestFirstDiagnosisGatewayIndependentProcessOwnedPostgres(t *testing.T) {
 	f := prepareFirstDiagnosisGatewayProcessFixture(t)
 	ctx, binary, launchPath, dataDir := f.ctx, f.binary, f.launchPath, f.dataDir

@@ -66,7 +66,7 @@ func newE3HookFixtureWith(t *testing.T, declare bool, policy func(*server.E2HTTP
 	})
 	f := e3HookFixture{runs: runs, r: r, rec: rec, target: target}
 	// 실행 시작처럼 세대·인스턴스 참조를 발급해 동결한다(url_preparation_linux.go).
-	if f.refs, err = r.issueTargetRefs(target.ID, rand.Reader); err != nil {
+	if f.refs, err = r.issueTargetRefs(target.ID, liveJob, rand.Reader); err != nil {
 		t.Fatal(err)
 	}
 	if raw, err := f.refs.marshal(); err != nil || os.WriteFile(filepath.Join(runs, liveJob, productTargetRefsFile), raw, 0600) != nil {
@@ -614,6 +614,30 @@ func TestProductE3AdmittedReadsShare(t *testing.T) {
 		if got, timeout := productE3Admitted(tc.limits); got != tc.want || timeout != 0 {
 			t.Fatalf("%s: %d %v", name, got, timeout)
 		}
+	}
+}
+
+// 감독자가 모델 단계 시간 상한에서 빼는 확정 몫(timeShare)은 확정 단계가 실제로 받는 몫(input)과 같은 발급 정책 값이다.
+// 몫을 받지 못한 정책은 0, 정책을 읽지 못하면 오류(실행을 시작하지 않음)다.
+func TestProductE3ConfirmationTimeShareMatchesInput(t *testing.T) {
+	f := newE3HookFixture(t, true, nil)
+	c := f.confirmation(e3HookFake(), e3HookAccounts(), e3Seed())
+	got, err := c.timeShare()
+	_, given := c.input("41")
+	if err != nil || got <= 0 || got != given {
+		t.Fatalf("time share %v (err %v), confirmation gets %v", got, err, given)
+	}
+	unshared := newE3HookFixture(t, true, func(p *server.E2HTTPFilePolicy) {
+		p.Limits.E3ConfirmationRequests, p.Limits.E3ConfirmationTimeoutMS = nil, nil
+	})
+	if got, err := unshared.confirmation(e3HookFake(), e3HookAccounts(), e3Seed()).timeShare(); err != nil || got != 0 {
+		t.Fatalf("policy without share: %v %v", got, err)
+	}
+	if os.Remove(filepath.Join(f.runs, liveJob, "policy.json")) != nil {
+		t.Fatal("remove")
+	}
+	if _, err := c.timeShare(); err == nil {
+		t.Fatal("unreadable run policy gave a time share")
 	}
 }
 

@@ -204,8 +204,9 @@ func (o Observation) validateResult() error {
 		return bad("sent_with_not_sent")
 	}
 	if !o.ResponseComplete {
-		// 결과 불명: 응답에서 나온 칸이 있으면 안 된다.
-		if o.StatusCode != 0 || o.Normal != "" || o.BodyDigestSHA256 != "" || o.BodyComplete || o.ObjectIDDigest != "" ||
+		// 결과 불명: 응답 본문에서 나온 칸이 있으면 안 된다. 상태 줄은 받았을 수 있다(헤더 뒤 본문이 끊김) — E② 일반 행은
+		// response_received면 status_code를 남기므로 0 또는 100~599를 받는다(#774 리뷰). 결과 불명이라 판정에 쓰지 않는다.
+		if o.StatusCode != 0 && (o.StatusCode < 100 || o.StatusCode > 599) || o.Normal != "" || o.BodyDigestSHA256 != "" || o.BodyComplete || o.ObjectIDDigest != "" ||
 			o.SubjectDigest != "" || o.Marker != (MarkerCheck{}) {
 			return bad("unknown_has_result")
 		}

@@ -115,21 +115,29 @@ def _instant(value: object) -> datetime | None:
 def rows_match_marker(rows: list[dict], marker: object) -> bool:
     """읽은 게이트웨이 행이 검증 표식과 맞는지. 게이트웨이는 요청마다 행 하나를 쓰고 결정별로 센다(gateway.go ServeHTTP·
     finish). log_complete는 쓰기 오류가 없었다는 것뿐이라, 읽은 행이 빠지거나 바뀌지 않았는지는 여기서 본다(#735 리뷰):
-    순번이 1..N으로 이어지고, 결정별 행 수가 표식의 셈과 같고, 행의 generation ID 집합이 표식의 generation 목록과 같다."""
+    순번이 1..M으로 이어지고, 표식을 쓸 때까지의 행(순번 1..N, N = 표식 셈의 합)의 결정별 수가 표식의 셈과 같고, 행의
+    generation ID 집합이 표식의 generation 목록과 같다. 표식은 drain 뒤 그 시점의 셈이라, 그 뒤 엔진이 보낸 요청은 순번 N보다
+    큰 봉인 뒤 거부(rejected_after_seal) 행으로만 붙는다(확인 쌍 B: 행 85·표식 76). 그 밖의 결정이 N 뒤에 있으면 맞지 않는다."""
     if not isinstance(marker, dict):
         return False
     try:
+        names = ("forwarded_requests", "upstream_errors", "cancelled_by_seal", "rejected_after_seal", "rejected_requests")
+        if any(type(marker.get(name)) is not int for name in names):
+            return False
+        marked = sum(marker[name] for name in names)
         seqs = sorted(row["seq"] for row in rows)
         if any(type(seq) is not int for seq in seqs) or seqs != list(range(1, len(rows) + 1)):
             return False
-        decisions = [row["decision"] for row in rows]
+        if any(row["decision"] != "rejected_after_seal" for row in rows if row["seq"] > marked):
+            return False
+        decisions = [row["decision"] for row in rows if row["seq"] <= marked]
         counts = {
             "forwarded_requests": decisions.count("forwarded"), "upstream_errors": decisions.count("upstream_error"),
             "cancelled_by_seal": decisions.count("cancelled_by_seal"),
             "rejected_after_seal": decisions.count("rejected_after_seal"),
             "rejected_requests": sum(1 for d in decisions if d.startswith("rejected_") and d != "rejected_after_seal"),
         }
-        if any(type(marker.get(name)) is not int or marker[name] != count for name, count in counts.items()):
+        if any(marker[name] != count for name, count in counts.items()):
             return False
         row_ids = {row["generation_id"] for row in rows if row.get("generation_id")}
         return row_ids == {generation["id"] for generation in marker["generations"]}

@@ -12,8 +12,8 @@
 |---|---|
 | 러너·계측기·채점기 변경 머지: 계측기 하드 상한(#734), 끊긴 호출 처리(#735), B 전용 CLI 관측 줄(#736), 엔진 끝 전 최장 무활동(#737), O E③ 상태 수집(#742), O v1.1 러너 기록(#745), 채점기 분리 배치(#746) | GitHub PR |
 | 제품 E③ 감독자 연결(#738)과 E② Transport·Journal 연결. 연결 전 빌드는 O가 늘 `e3_official_not_disabled`로 무효다([러너](runner.md) 사유표) | GitHub PR |
-| 멈춤 무효 T 확정: 유료 확인 쌍에서 O 엔진 끝 전 최장 무활동(모델 호출 + 대상 요청)이 90초 이하이면 180초로 확정한다(고정 초안 §16). **[확인 쌍 뒤 채움]** | 고정 초안 §16 |
-| **멈춤 무효 판정이 켜져 있음**(#756): 러너는 설정 `run.fault_stall_seconds`(T)가 있으면 B·O 회차를 같은 T로 판정해 멈춤이면 `provider_fault_stall`로 무효로 하고, 세션 집계는 판정하지 않은 완료 회차·T 섞임을 받지 않으며 쪽별 2회 이상이면 측정 전체 실패(종료 코드 3)다. 시작 전 확인: 7번 `runner.json`에 T를 넣었고, 7절 집계를 `--allow-unjudged-fault-stall` 없이 돌린다. T 값은 위 줄대로 확인 쌍 뒤 채운다 | 고정 초안 §2·§3·§16 |
+| 멈춤 무효 T 확정: **180초**(2026-11-19 확인 쌍, 사용자 동의). O 엔진 끝 전 최장 공백(활동 사건 = 요청 시작·응답 완료) 8.6초·B 13.6초로 §16 조건(O ≤ 90초)을 만족했다 | 고정 초안 §16·§19 |
+| **멈춤 무효 판정이 켜져 있음**(#756): 러너는 설정 `run.fault_stall_seconds`(T)가 있으면 B·O 회차를 같은 T로 판정해 멈춤이면 `provider_fault_stall`로 무효로 하고, 세션 집계는 판정하지 않은 완료 회차·T 섞임을 받지 않으며 쪽별 2회 이상이면 측정 전체 실패(종료 코드 3)다. 시작 전 확인: 4절 7번 `runner.json`에 `run.fault_stall_seconds: 180`(위 줄의 확정값)을 넣었고, 7절 집계를 `--allow-unjudged-fault-stall` 없이 돌린다 | 고정 초안 §2·§3·§16 |
 | 이 문서·공식 분리 배치 프로파일·러너 설정이 태그 커밋에 있다(2절) | 레포 |
 
 ## 1. 역할
@@ -33,7 +33,7 @@
 | 계측기 하드 상한 | 요청 예산과 같은 값. R번째 전달 뒤 새 요청은 503으로 거부하고(`rejected_over_cap`), 대상에는 정확히 R건 이하만 닿는다 | #734 |
 | 모델 호출 사후 검증 | 조회 40번 × 3초, 조회 한 번 상한 10초, 러너 대기 300초 | 고정 초안 §15, #732 |
 | 경계 원자료 상한 | 4 MiB(4,194,304바이트) | 고정 초안 §16 |
-| 멈춤 무효 T | **[확인 쌍 뒤 채움]** (제안 180초, 조건부) | 고정 초안 §16 |
+| 멈춤 무효 T | **180초** — 4절 7번 `runner.json`의 `run.fault_stall_seconds` | 고정 초안 §16·§19 |
 | 멈춤 무효 비율 | 쪽별 `provider_fault_stall` 무효가 그 쪽 시도 중 2회 이상이면 측정 전체 실패 | 고정 초안 §16 |
 | O 모델 예산 | 2000건·$5(승인 manifest) | 고정 초안 §16 |
 | `O-nomcp` | 돌리지 않는다 | 고정 초안 §16 |
@@ -73,6 +73,14 @@
    ```
 
    `BASE`·`OURS`는 항상 `^{commit}`으로 커밋 SHA를 구한다(annotated 태그는 태그 객체 SHA가 나온다). `tools-frozen`이 나오지 않으면 시작하지 않는다. 아래 명령은 전부 `cd "$T"`에서 실행한다.
+   **환경 점검(읽기만, 세션마다):** 동결 작업 트리에서 아래를 돌린다. 이미지 빌드·pull, 컨테이너·망·볼륨 생성, 파일 쓰기를 하지 않는다. 항목마다 `PASS`/`FAIL`과 사유를 한 줄씩 내고, 하나라도 `FAIL`이면 종료 코드 1이며 세션을 시작하지 않는다(2번 '다른 일 끄기'를 마친 뒤 한 번 더 돌린다).
+
+   ```bash
+   cd "$T" && python3 -I -B scripts/eval/env_check.py --config <4절 7번 runner.json>
+   ```
+
+   - 확인 항목: Docker 서버·클라이언트 판(29.0 이상), 네이티브 dockerd(Docker Desktop 아님), Compose(2.40 이상), Go(go.mod와 같은 판), Python(3.12 이상), OpenSSL(3.0 이상), git, 메모리, Docker 루트의 남은 공간, 실행 중 컨테이너 0개, 허용 목록 밖 리슨 없음, 회차가 쓸 호스트 포트 비어 있음, 분리 배치 대역 겹침 없음, buildx, 기본 이미지를 받을 수 있음.
+   - 기준값은 위 표의 개발 머신 실측과 레포 설정이다. 메모리·남은 공간 기준은 개발 머신에서 회차를 실제로 돌린 값과 공식 회차 이미지 합계라서 바닥값이다(빌드 캐시·회차 기록은 더 든다).
 2. **다른 일 끄기:** 다른 Claude Code 세션·개발 서버·시연 컨테이너를 끈다. **Docker Desktop을 종료하고 WSL 통합을 끈다.** 통합을 켰다 끄면 WSL dockerd 소켓이 사라지므로 `sudo systemctl restart docker.socket docker`로 되살린다.
 3. **버전·컨테이너·리슨 확인:**
 
@@ -183,7 +191,7 @@ install -d -m 700 /srv/abc2lab-eval /srv/abc2lab-eval-keys "$SESSION" "$SESSION/
 7. **`runner.json`:** `$T/docs/evaluation/runner.example.json`([예시](runner.example.json))을 복사해 `images`의 태그·내용 ID와 경로를 채우고, 아래 칸을 더한다. 그 밖의 값은 바꾸지 않는다.
    - `runs_root`: `$SESSION/runs`(세션마다 새 디렉터리). `path_key_file`: 4번 키(`$PATH_KEY_DIR/path.key`, 이 세션 것). `purpose`: `official`.
    - `llm_gateway.verify_attempts` 40, `verify_interval_seconds` 3, `run.llm_verify_timeout_seconds` 300(2절).
-   - `run.fault_stall_seconds`: 멈춤 무효 판정 T(0절·2절, 확인 쌍 뒤 확정한 값). 없으면 러너가 판정하지 않고 7절 집계가 그 회차를 받지 않는다.
+   - `run.fault_stall_seconds`: `180`(멈춤 무효 판정 T, 0절·2절). 없으면 러너가 판정하지 않고 7절 집계가 그 회차를 받지 않는다.
    - `split` 블록(제품 배치):
 
      ```json
@@ -221,6 +229,12 @@ install -d -m 700 /srv/abc2lab-eval /srv/abc2lab-eval-keys "$SESSION" "$SESSION/
 4. **키 사용량 기준:** OpenRouter 키 사용량(`GET /api/v1/key`)을 세션 기록에 적는다. 세션 중단선은 PM이 정한 금액이다.
 
 ## 6. 회차 실행
+
+**운영 규칙: 측정 중 같은 머신에서 다른 Docker 작업 금지(2026-11-19 사용자).**
+- 회차(유료·합성 모두)를 시작하기 전에, 같은 머신을 쓰는 다른 작업자(사람·자동 세션)에게 "측정 구간 시작"을 알린다.
+- 회차 결과를 읽고 나면 "끝"을 알린다.
+- 그 사이에는 `docker run`·`compose`, Docker를 쓰는 시험·빌드, 망·볼륨 조작을 하지 않는다.
+- 이유: 구간 감시는 회차 밖 컨테이너의 생성·시작을 `window_boundary_changed`로 무효 처리한다. 2026-11-19 O 진단 회차 1건이 다른 세션의 망 없는 조사용 컨테이너 때문에 무효였다.
 
 ```bash
 cd "$T"

@@ -15,12 +15,13 @@ import (
 	"runtime"
 	"syscall"
 
+	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/transmit/auditlog"
 )
 
 const maxCheckpointBytes = 4096
 
-const usage = "Usage: e2-audit-verify --journal FILE --checkpoint TRUSTED_FILE --key-file PRIVATE_FILE [--journal-format registered-get-v1|e2-http-v2|e2-http-v1] [--timeline [--max-events N]]\n"
+const usage = "Usage: e2-audit-verify --journal FILE --checkpoint TRUSTED_FILE --key-file PRIVATE_FILE [--journal-format registered-get-v1|e2-http-v3|e2-http-v2|e2-http-v1] [--prior-checkpoint TRUSTED_V3_FILE] [--timeline [--max-events N]]\n"
 
 var errInput = errors.New("audit_input_unavailable")
 
@@ -37,6 +38,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(io.Discard)
 	journal := flags.String("journal", "", "closed journal file")
 	checkpoint := flags.String("checkpoint", "", "independently trusted latest checkpoint")
+	prior := flags.String("prior-checkpoint", "", "independently trusted earlier v3 checkpoint")
 	key := flags.String("key-file", "", "private binary HMAC key file")
 	format := flags.String("journal-format", registeredGETJournalFormat, "journal wire format")
 	timeline := flags.Bool("timeline", false, "print authenticated event timeline")
@@ -53,9 +55,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 		return 2
 	}
-	usedLimit := false
-	flags.Visit(func(f *flag.Flag) { usedLimit = usedLimit || f.Name == "max-events" })
-	if usedLimit && !*timeline || httpJournalFormat(*format) && *timeline {
+	usedLimit, usedPrior := false, false
+	flags.Visit(func(f *flag.Flag) {
+		usedLimit = usedLimit || f.Name == "max-events"
+		usedPrior = usedPrior || f.Name == "prior-checkpoint"
+	})
+	if usedLimit && !*timeline || httpJournalFormat(*format) && *timeline ||
+		usedPrior && (*format != e2proxy.JournalVersionV3 || *prior == "") {
 		if n, err := io.WriteString(stderr, usage); err != nil || n != len(usage) {
 			return 1
 		}
@@ -70,7 +76,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	var result any
 	var code string
 	if httpJournalFormat(*format) {
-		result, code = verifyHTTPFiles(ctx, *format, *journal, *checkpoint, *key)
+		result, code = verifyHTTPFiles(ctx, *format, *journal, *checkpoint, *key, *prior)
 	} else {
 		result, code = verifyFiles(ctx, *journal, *checkpoint, *key, *timeline, *maxEvents)
 	}

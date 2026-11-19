@@ -147,6 +147,8 @@ def split_run_spec(config: RunnerConfig, plan: SplitPlan, declared: SplitDeclare
         llm_sampling=declared.llm_sampling, llm_provider_slug=declared.llm_provider,
         llm_provider_name=config.llm_gateway["expected_provider_name"], meter_source_sha=declared.meter_source_sha,
         path_key_ref=path_key_ref, preservation=config.preservation, purpose=config.purpose, repeat_index=repeat_index,
+        e2_v3=config.split.e2_v3 is not None,
+        cli_usage_names=config.split.cli_usage_names,
         drain_grace_seconds=config.run["drain_grace_seconds"],
         host_watch_interval_seconds=config.run["host_watch_interval_seconds"],
         model_tag=declared.llm_model if manifest is None else manifest["model"], product_source_sha=config.split.product_source_sha,
@@ -196,7 +198,8 @@ def run_split_ours(config: RunnerConfig, preflight: object, *, repeat_index: int
         inputs = prepare_split_inputs(directory.run, manifest=manifest, meter_port=plan.meter_port, explore_port=split.explore_port,
                                       evidence_max_bytes=split.evidence_max_bytes, workflow_defaults=defaults,
                                       wide_writes=split.wide_writes, valid_for_hours=split.install_valid_hours,
-                                      max_runs=split.max_runs, path_key=path_key, openssl=run_openssl, local_model=local_model)
+                                      max_runs=split.max_runs, path_key=path_key, openssl=run_openssl, local_model=local_model,
+                                      e2_audit_key_variable=None if split.e2_v3 is None else split.e2_v3.audit_key_variable)
         env = split_compose_environment(plan, evidence_dir=directory.meter, protected_env=inputs.compose_env,
                                         scripted_plan=scripted_plan)
         docker = Docker(docker_runner, client_environment(environ, env), config.docker_timeout_seconds)

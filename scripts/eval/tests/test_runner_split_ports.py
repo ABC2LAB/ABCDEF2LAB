@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import hashlib
 import os
 import stat
@@ -188,6 +189,163 @@ class TestV3Inputs(PortsCase):
             self.assertEqual(self.ports.tool_surface(), {"x": 1})
         args = side.call_args.args
         self.assertEqual(args[:3], (self.split.images["product"].id, self.split.images["explore_browser"].id, self.docker.run_bounded))
+
+
+class TestE2V3Export(PortsCase):
+    """E② v3 저널·봉인 head 꺼내기와 검증 연결. 위치는 설정값, 상한은 파일마다 다르다."""
+
+    def setUp(self):
+        super().setUp()
+        from runner_e2v3 import parse_settings
+        raw = {"audit_key_variable": "PRODUCT_E2_AUDIT_KEY_FILE", "volume": "product-state", "directory": "runs",
+               "subpath": ["{draft_id}", "e2"], "journal_name": "events.jsonl", "head_name": "sealed-head.json", "uid": 1000,
+               "verify_tool": "/opt/abc2lab/e2-audit-verify", "verify_timeout_seconds": 120}
+        self.ports.split = dataclasses.replace(self.split, e2_v3=parse_settings(raw))
+        # 설정이 있으면 보호 입력이 감사 키를 만든다(runner_split_main이 변수 이름을 넘김).
+        (self.directory.run / "v3").mkdir(mode=0o700)
+        self.inputs = prepare_split_inputs(self.directory.run / "v3", manifest=MANIFEST, meter_port=8080, explore_port=8082,
+                                           evidence_max_bytes=4 << 20, workflow_defaults=read_workflow_defaults()[0],
+                                           wide_writes=True, valid_for_hours=4, max_runs=2, path_key=bytes(32),
+                                           openssl=FakeOpenssl(), random_bytes=counter_bytes(),
+                                           e2_audit_key_variable="PRODUCT_E2_AUDIT_KEY_FILE")
+        self.ports.inputs = self.inputs
+
+    def test_journal_and_head_are_copied_separately_below_the_draft(self):
+        from runner_e2v3 import MAX_HEAD_BYTES, MAX_JOURNAL_BYTES
+        self.docker.copies["e2v3-journal"] = {"events.jsonl": b"j"}
+        self.docker.copies["e2v3-head"] = {"sealed-head.json": b"h"}
+        self.assertEqual(self.ports.e2_v3_export("prep-0a1b"), (b"j", b"h"))
+        got = [(c[2], c[3], c[4], c[5], c[6], c[9], c[10]) for c in self.docker.calls]
+        self.assertEqual(got, [("eval-r1_product-state", "runs", ("events.jsonl",), "e2v3-journal", 1000, MAX_JOURNAL_BYTES, ("prep-0a1b", "e2")),
+                               ("eval-r1_product-state", "runs", ("sealed-head.json",), "e2v3-head", 1000, MAX_HEAD_BYTES, ("prep-0a1b", "e2"))])
+
+    def test_only_a_missing_file_is_none_and_runner_failures_are_raised(self):
+        # #785 리뷰: 시간 초과·출력 상한·tar 손상 같은 러너 장애가 '제품이 안 냄'(미수집)으로 가려지면 안 된다.
+        from runner_docker import HELPER_FILE_MISSING, DockerError, HelperCleanupError
+        self.docker.copy_volume_files = mock.Mock(side_effect=DockerError(HELPER_FILE_MISSING))
+        self.assertEqual(self.ports.e2_v3_export("prep-0a1b"), (None, None))
+        self.docker.copies["e2v3-journal"] = {"events.jsonl": b"j"}
+        real = FakeDocker.copy_volume_files.__get__(self.docker)
+        self.docker.copy_volume_files = mock.Mock(side_effect=lambda *a, **k: (real(*a, **k) if a[4] == "e2v3-journal"
+                                                                              else (_ for _ in ()).throw(DockerError(HELPER_FILE_MISSING))))
+        self.assertEqual(self.ports.e2_v3_export("prep-0a1b"), (b"j", None))
+        for error in (DockerError("docker_timeout"), DockerError("docker_copy_too_large"), DockerError("docker_helper_output_invalid"),
+                      DockerError("docker_helper_copy_failed"), HelperCleanupError()):
+            with self.subTest(error=str(error)):
+                self.docker.copy_volume_files = mock.Mock(side_effect=error)
+                with self.assertRaises(DockerError):
+                    self.ports.e2_v3_export("prep-0a1b")
+
+    def test_collect_uses_the_protected_key_and_the_configured_verifier(self):
+        with mock.patch("runner_split_ports.subprocess_verifier", return_value="verifier") as verifier, \
+                mock.patch("runner_split_ports.e2v3_collect", return_value={"outcome": "collected"}) as collect:
+            self.assertEqual(self.ports.e2_v3_collect(b"j", b"h"), {"outcome": "collected"})
+        verifier.assert_called_once_with("/opt/abc2lab/e2-audit-verify", 120)
+        kwargs = collect.call_args.kwargs
+        self.assertEqual((kwargs["run_verifier"], kwargs["key_path"], kwargs["journal"], kwargs["head"], kwargs["copy_directory"],
+                          kwargs["key_ref"]),
+                         ("verifier", self.inputs.files["e2_audit_key"], b"j", b"h", self.directory.run / "e2v3-copy",
+                          self.inputs.audit_key_ref))
+        self.assertIsNotNone(self.inputs.audit_key_ref)
+class TestProductCommands(PortsCase):
+    """O 제품 활동 표의 Bash 호출을 제품 DB 컨테이너 안 읽기 전용 세션으로 읽는다(공개 활동 API는 명령·결과를 지운다)."""
+
+    def setUp(self):
+        super().setUp()
+        from types import SimpleNamespace
+        from runner_docker import BoundedResult
+        self.BoundedResult = BoundedResult
+        self.ports.rendered = {"services": {"postgres": {"environment": {"POSTGRES_USER": "postgres", "POSTGRES_DB": "abc2lab"}}}}
+        self.containers = [SimpleNamespace(id="db1", project="eval-r1", service="postgres", running=True),
+                           SimpleNamespace(id="api1", project="eval-r1", service="api", running=True),
+                           SimpleNamespace(id="db9", project="other", service="postgres", running=True)]
+        self.docker.project_container_ids = lambda project: ["id"]
+        self.docker.inspect_containers = lambda ids: self.containers
+        self.bounded = []
+        self.output = self.BoundedResult(0, b'{"cmd": "{}", "res": null, "is_error": false}\n\n', b"")
+        self.docker.run_bounded = lambda args, timeout, limit: (self.bounded.append((list(args), timeout, limit)), self.output)[1]
+        patcher = mock.patch("runner_split_ports.parse_container", side_effect=lambda c: c)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_reads_only_that_exploration_in_a_read_only_session(self):
+        self.assertEqual(self.ports.product_commands(7), [{"cmd": "{}", "res": None, "is_error": False}])
+        ((args, timeout, limit),) = self.bounded
+        self.assertEqual(args[:4], ["exec", "-e", "PGOPTIONS=-c default_transaction_read_only=on", "db1"])
+        self.assertEqual(args[4:13], ["psql", "-X", "-A", "-t", "-q", "-v", "ON_ERROR_STOP=1", "-U", "postgres"])
+        self.assertEqual(args[13:15], ["-d", "abc2lab"])
+        self.assertIn("u.exploration_id = 7 order by u.id", args[-1])
+        self.assertIn("u.tool = 'Bash'", args[-1])
+        self.assertEqual((timeout, limit), (self.config.docker_timeout_seconds, self.config.findings["max_total_bytes"]))
+
+    def test_refuses_what_it_cannot_pin(self):
+        def db_name():
+            self.ports.rendered["services"]["postgres"]["environment"]["POSTGRES_DB"] = "a;b"
+
+        def stopped():
+            self.containers[0].running = False
+
+        def failed():
+            self.output = self.BoundedResult(1, b"", b"x")
+
+        def shape():
+            self.output = self.BoundedResult(0, b'{"cmd": "{}"}\n', b"")
+
+        for name, exploration, change in (("exploration_zero", 0, None), ("exploration_bool", True, None), ("db_name", 7, db_name),
+                                          ("db_stopped", 7, stopped), ("psql_failed", 7, failed), ("row_shape", 7, shape)):
+            with self.subTest(name=name):
+                self.setUp()
+                if change:
+                    change()
+                with self.assertRaises(ValueError):
+                    self.ports.product_commands(exploration)
+
+    TASK_ROW = {"task_id": 42, "status": "done", "exploration_id": 7, "completed_at": "2026-11-19T08:35:20Z",
+                "goal_states": {"met": 2, "open": 1}, "intent_states": {"done": 1, "exhausted": 1}}
+
+    def test_task_state_comes_from_the_product_db(self):
+        # 제품 관리 API는 작업 단건·목표 목록을 중계하지 않는다(목록 307, 단건 403, 2026-11-19 O 진단 회차).
+        self.output = self.BoundedResult(0, json.dumps(self.TASK_ROW).encode() + b"\n", b"")
+        self.assertEqual(self.ports.task_signal("42"), {
+            "status": "done", "completed_at": "2026-11-19T08:35:20Z", "exploration_id": 7, "goals_total": 3, "goals_met": 2,
+            "goal_states": {"met": 2, "open": 1}, "intent_states": {"done": 1, "exhausted": 1}})
+        ((args, _, limit),) = self.bounded
+        self.assertEqual(args[:4], ["exec", "-e", "PGOPTIONS=-c default_transaction_read_only=on", "db1"])
+        self.assertIn("from tasks t where t.id = 42", args[-1])
+        self.assertIn("kind = 'goal'", args[-1])
+        self.assertEqual(limit, 64 * 1024)
+        self.assertEqual(self.ports.task_exploration_id("42"), 7)
+        self.assertEqual(self.driver.calls, [])  # 제품 API는 부르지 않는다
+
+    def test_task_state_refusals(self):
+        bad_rows = {
+            "extra": dict(self.TASK_ROW, name="x"),
+            "status": dict(self.TASK_ROW, status="finished"),
+            "exploration_zero": dict(self.TASK_ROW, exploration_id=0),
+            "exploration_bool": dict(self.TASK_ROW, exploration_id=True),
+            "stamp": dict(self.TASK_ROW, completed_at="2026-11-19 08:35"),
+            "goal_state": dict(self.TASK_ROW, goal_states={"done": 1}),
+            "goal_count": dict(self.TASK_ROW, goal_states={"met": 0}),
+            "intent_state": dict(self.TASK_ROW, intent_states={"finished": 1}),
+            "intent_count": dict(self.TASK_ROW, intent_states={"done": "1"}),
+        }
+        for name, row in bad_rows.items():
+            with self.subTest(name=name):
+                self.output = self.BoundedResult(0, json.dumps(row).encode() + b"\n", b"")
+                with self.assertRaises(ValueError):
+                    self.ports.task_signal("42")
+        row_line = (json.dumps(self.TASK_ROW) + "\n").encode()
+        for name, output in (("missing", b""), ("two", row_line * 2)):
+            with self.subTest(name=name):
+                self.output = self.BoundedResult(0, output, b"")
+                with self.assertRaises(ValueError):
+                    self.ports.task_signal("42")
+        for task_id in ("0", "4/2", "", "1; drop"):
+            with self.subTest(task_id=task_id):
+                self.bounded.clear()
+                with self.assertRaises(ValueError):
+                    self.ports.task_signal(task_id)
+                self.assertEqual(self.bounded, [])  # 조회하지 않는다
 
 
 class TestV3Publishing(PortsCase):
