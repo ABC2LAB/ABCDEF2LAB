@@ -2080,9 +2080,11 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(items).toEqual(["1. [위험도 미평가 · 검토 필요] 후보 1", "2. [위험도 미평가 · 검토 필요] 후보 2"]);
     expect(doc.querySelectorAll("hr")).toHaveLength(1);
     expect(doc).not.toHaveTextContent("정상 대조 줄");
-    expect(doc).toHaveTextContent("PoC / 증거:");
+    // 오른쪽 상세와 같은 이름(사용자 11/19): 실제 요청 · 응답, 단계는 '요청 n · 제목', 내부 ID 는 두지 않음
+    expect(doc).toHaveTextContent("실제 요청 · 응답:");
+    expect(doc).not.toHaveTextContent(/PoC \/ 증거|ID candidate-/);
     expect(doc).toHaveTextContent("구조화된 실제 재현 단계 미확보");
-    expect(doc).toHaveTextContent("계정 B로 계정 A 주문 조회 — GET /api/orders/2");
+    expect(doc).toHaveTextContent("요청 1 · 계정 B로 계정 A 주문 조회 — GET /api/orders/2");
     expect(doc).toHaveTextContent("사전 조건: 시험 계정 A · B");
     // 요청·응답은 코드 상자, 비밀은 가린다(엔티티로 숨긴 값도 풀리지 않는다)
     expect(doc.querySelector("pre code")).not.toBeNull();
@@ -2135,7 +2137,43 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
       [withCtx({ observations: [obs("GET /users/v1/name1", "GET"), obs("GET /users/v1/name2", "GET")] })],
       { targetUrl: "https://target.example/", mode: null, model: null, excluded: null, crawl: null },
     );
-    expect(md).toContain("엔드포인트 GET /users/v1/name1 외 1개");
+    expect(md).toContain("취약한 경로 GET /users/v1/name1 외 1개");
+    // 문서도 오른쪽 상세와 같은 이름: 발견 시각, 내부 ID 없음, 서버 기본 단계 제목은 '요청 n'(사용자 11/19 · 11/20)
+    expect(md).toMatch(/발견 시각 \d{4}-/);
+    expect(md).not.toMatch(/ID candidate-|저장된 실행 관찰/);
+    const withStep = buildPocMarkdown(
+      [
+        {
+          ...candidate(1),
+          steps: [
+            {
+              task_id: 42,
+              entry_id: "candidate-1",
+              id: `step-${"c".repeat(24)}`,
+              number: 1,
+              title: "저장된 실행 관찰 1",
+              source_step_id: "s1",
+              run_ref: "run-1",
+              call_ref: "",
+              evidence_ref: "e1",
+              evidence_version: 1,
+              evidence_digest: "e".repeat(64),
+              binding_digest: "b".repeat(64),
+              observed_at: "2026-11-09T12:10:00Z",
+              method: "GET",
+              path: "/users/v1/name1",
+              prerequisites: "",
+              observation: "200",
+              truncated: false,
+              capture: { status: "not_captured" as const },
+            },
+          ],
+        },
+      ],
+      { targetUrl: "https://target.example/", mode: null, model: null, excluded: null, crawl: null },
+    );
+    expect(withStep).toContain("- **요청 1** — GET /users/v1/name1");
+    expect(withStep).not.toContain("저장된 실행 관찰");
   });
 
   it("PoC 문서: 코드 상자 울타리는 본문의 ` 줄보다 길게, 목록 줄 글의 줄바꿈은 띄어쓰기로", () => {

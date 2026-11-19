@@ -57,7 +57,7 @@ import { Markdown } from "../../ui/Markdown";
 import { InspHead, InspOpenButton, Isec, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "./approvals";
-import { DiagnosticEntrySections } from "./DiagnosticEntrySections";
+import { DiagnosticEntrySections, stepHeading } from "./DiagnosticEntrySections";
 import { ReportAssetGraph } from "./ReportAssetGraph";
 import { ReportReadError } from "./runRows";
 import { TaskActivity } from "./TaskActivity";
@@ -1299,20 +1299,20 @@ export function buildPocMarkdown(entries: readonly RemediationEntry[], info: Poc
     if (i > 0) out.push("---", "");
     // 제목 글의 '#'는 이스케이프한다 — 끝의 '###'가 Markdown 제목 닫기로 읽혀 사라지지 않게(#709 리뷰)
     out.push(`## ${i + 1}. ${tag} ${mdInline(e.title || e.entry_id).replace(/#/g, "\\#")}`, "");
+    // 오른쪽 상세와 같은 이름(사용자 11/19): 취약한 경로 · 발견 시각, 내부 ID(candidate-n)는 두지 않는다
     const facts = [
       e.vuln_class ? `유형 ${mdInline(e.vuln_class)}` : "",
-      ep ? `엔드포인트 ${ep.m ? `${ep.m} ` : ""}${mdInline(ep.p)}${ep.more ? ` 외 ${ep.more}개` : ""}` : "",
-      at ? `발견 ${at}` : "",
-      `ID ${mdInline(e.entry_id)}`,
+      ep ? `취약한 경로 ${ep.m ? `${ep.m} ` : ""}${mdInline(ep.p)}${ep.more ? ` 외 ${ep.more}개` : ""}` : "",
+      at ? `발견 시각 ${at}` : "",
     ].filter(Boolean);
-    out.push(facts.join(" · "), "");
+    if (facts.length) out.push(facts.join(" · "), "");
     if (e.summary) out.push(mdText(e.summary), "");
-    out.push("**PoC / 증거:**", "");
+    out.push("**실제 요청 · 응답:**", "");
     if (e.source_load_failed)
       out.push("근거 불러오기 실패. 현재 결속을 확인할 수 없어 재현 단계를 제공하지 않습니다.", "");
     else if (e.steps?.length) {
       for (const st of e.steps) {
-        out.push(`- **${mdInline(st.title)}** — ${mdInline(`${st.method} ${st.path || "비민감 경로 미기록"}`)}`);
+        out.push(`- **${mdInline(stepHeading(st))}** — ${mdInline(`${st.method} ${st.path || "비민감 경로 미기록"}`)}`);
         if (st.prerequisites) out.push(`  - 사전 조건: ${mdInline(st.prerequisites)}`);
         if (st.observation) out.push(`  - 관찰: ${mdInline(st.observation)}`);
         if (st.truncated) out.push("  - 이 단계의 관측이 잘렸습니다.");
