@@ -2,8 +2,9 @@
 
 UI 인계 대상은 기존 `UrlLiveLive.tsx` 보고서 탭과 `UrlAccessMapLive.tsx`다. 프론트엔드 구현은 이 변경에 포함하지 않는다.
 기존 `CoverageGraphData`와 [접근통제 지도 DTO·셀 의미](access-map-read.md)를 사용한다.
-[#675](https://github.com/ABC2LAB/ABCDEF2LAB/pull/675)의 `kg-query-v1.md`와 D01~D07은 검토안이다.
-`view=kg-v1`이나 새 KG projection을 제공하지 않으며 해당 query는 거부한다.
+KG 조회 v1은 같은 `coverage-graph` route에 `?view=kg-v1` 하나를 붙여 연다([kg-query-v1.md](kg-query-v1.md) §3·§11-3).
+인증·결속 task·직접 원천 권한 확인·`X-ABC2LAB-Report-Read-Scope` 재확인은 아래 무인자 조회와 같고, 다른 점은 응답 투영뿐이다.
+v1 응답·오류 본문은 kg-query-v1 §5를 따른다. 그 밖의 query(다른 `view`, 중복 키, 추가 키)와 `access-map`의 query는 지금처럼 거부한다.
 
 ## 호출과 Job 선택
 
@@ -16,7 +17,7 @@ Authorization: Bearer <현재 관리자 JWT>
 ```
 
 제품 관리 서버의 동일 origin을 사용한다. `POST /api/auth/login`으로 받은 현재 JWT의 Bearer 헤더만 인증에 쓴다.
-쿠키·query token, 임의 task ID, 별도 run/reset/case/필터/query, HEAD·POST는 받지 않는다. ID는 정규 양의 int64 문자열이다.
+쿠키·query token, 임의 task ID, 별도 run/reset/case/필터/query(`coverage-graph`의 `view=kg-v1` 하나는 예외), HEAD·POST는 받지 않는다. ID는 정규 양의 int64 문자열이다.
 
 보고서 전용 인증 분기는 위 두 GET에만 적용한다. 평가 러너의 `POST /api/tasks` 생성과 `GET /api/tasks` 목록/종료 신호 조회는 기존 `requireAuth` 경로를 유지한다. [인증 회귀 시험](../../server/report_graph_runner_auth_test.go)은 실제 middleware에서 두 러너 경로의 무토큰·유효 Bearer·잘못된 서명을 대조하고, 그래프 GET은 보고서 인증 분기를 사용하는지 별도로 확인한다. [러너 계약 지문 시험](../../scripts/eval/tests/test_runner_engine.py)은 갱신한 전체 본문 지문과 함께 새 보고서 분기를 제외한 본문이 기존 기준과 같은지도 검사한다.
 
@@ -140,6 +141,7 @@ COMMIT;
 | 409 | KG 미등록/실행 전/세대·mode 무효 또는 조회 중 task 문맥 변경. 빈 데이터로 대체하지 않음 |
 | 503 | DB·인증 저장소·비공개 권한 조회·내부 읽기 서비스 장애. 오류 상태와 재조회 제공 |
 | 502 | 기존 중계의 응답 크기/읽기 실패·비허용 redirect. 정상 데이터로 처리하지 않음 |
+| 413 | `view=kg-v1`만: 그래프 상한 초과(`kg_graph_too_large`, 재조회 불가). 중계가 본문 그대로 넘김. 무인자 조회·지도의 413은 503 |
 
 관리 중계는 잘못된 입력도 기존 계약처럼 403으로 막는다. 내부 직접 핸들러의 400과 구분한다. 알 수 없는/다른 주체 task는
 존재 확인 전에 403이며, 허용된 영수증의 삭제 task만 404다. 기존 관리자 인증이 ARTEX 이외 JWT 주체를 거부하는 401도 유지한다.
