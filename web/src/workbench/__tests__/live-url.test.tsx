@@ -1601,6 +1601,49 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(screen.queryByRole("heading", { name: "모델 사용량" })).toBeNull();
   });
 
+  it("보고서 접근통제 지도 탭은 보고서가 보이고 그 탭일 때만 지도를 읽고, 탭이나 화면을 떠났다 오면 다시 읽는다 (#771 리뷰)", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [candidate(1)] });
+    const mapReads = () =>
+      vi.mocked(teamApi.apiFetch).mock.calls.filter(([path]) => String(path) === "/api/tasks/42/access-map").length;
+    // Workbench 처럼 보고서를 두고 route 로 보였다 숨겼다 한다(보고서 화면 visible = route === "report")
+    let go: (v: View) => void = noop;
+    function Shell() {
+      const [route, setRoute] = useState<View>("report");
+      go = setRoute;
+      return (
+        <ShellContext.Provider value={shellValue({ route, goTo: setRoute })}>
+          <UrlFeeds />
+          <section hidden={route !== "report"}>
+            <ReportByMode />
+          </section>
+        </ShellContext.Provider>
+      );
+    }
+    render(<Shell />);
+    await screen.findByRole("tabpanel", { name: "발견 목록" });
+    // 다른 탭(발견 목록 · 자산 지식 그래프)에서는 지도를 읽지 않는다 — 탭을 무시하면(active={visible}) 여기서 걸린다
+    fireEvent.click(screen.getByRole("tab", { name: "자산 지식 그래프" }));
+    await act(async () => undefined);
+    expect(mapReads()).toBe(0);
+    // 지도 탭으로 가면 한 번
+    fireEvent.click(screen.getByRole("tab", { name: "접근통제 지도" }));
+    await waitFor(() => expect(mapReads()).toBe(1));
+    // 다른 탭에 갔다 돌아오면 새 진입이라 한 번 더
+    fireEvent.click(screen.getByRole("tab", { name: /발견 목록/ }));
+    await act(async () => undefined);
+    expect(mapReads()).toBe(1);
+    fireEvent.click(screen.getByRole("tab", { name: "접근통제 지도" }));
+    await waitFor(() => expect(mapReads()).toBe(2));
+    // 지도 탭에 둔 채 다른 화면으로 가면 읽지 않고, 돌아오면 다시 읽는다 — 화면을 무시하면(active={tab === "map"}) 여기서 걸린다
+    act(() => go("dashboard"));
+    await act(async () => undefined);
+    expect(mapReads()).toBe(2);
+    act(() => go("report"));
+    await waitFor(() => expect(mapReads()).toBe(3));
+  });
+
   it("오른쪽 발견 상세 머리의 '상세 보기'는 고른 발견의 상세 페이지(왼쪽 카드 · 오른쪽 상태 카드)로 가운데를 바꾸고, '발견 목록으로' 돌아온다", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(completed);
