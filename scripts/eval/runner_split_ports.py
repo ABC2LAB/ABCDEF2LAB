@@ -31,7 +31,9 @@ from runner_llm import PRODUCT_VERIFY_ROLE
 from meter_describe import MAX_DESCRIBE_BYTES, describe_args, parse as describe_parse
 
 METER_DESCRIBE_SECONDS = 30.0
-from runner_docker import Docker, client_environment
+from runner_docker import Docker, DockerError, HelperCleanupError, client_environment
+from runner_e2v3 import MAX_HEAD_BYTES as E2V3_MAX_HEAD_BYTES, MAX_JOURNAL_BYTES as E2V3_MAX_JOURNAL_BYTES, collect as e2v3_collect
+from e2_collect import subprocess_verifier
 from runner_engine import AdminSecret
 from runner_product import ModelKey, ProductDriver
 from run_record import read_runner_key, sign_run_record
@@ -317,6 +319,29 @@ class DockerSplitPorts:
         files, _ = self.docker.copy_volume_files(image, f"{self.plan.project}_{volume_key}", directory, names, role, uid, uid,
                                                  self.directory.run / f"{role}.cid", max_bytes, self.timeout, subpath=subpath)
         return files
+
+    def e2_v3_export(self, draft_id: str) -> tuple[bytes | None, bytes | None]:
+        """제품 볼륨에서 E② v3 저널과 봉인된 최종 head를 따로 꺼낸다(상한이 달라서). 위치는 설정값(제품 Host 배선 뒤 확정).
+        꺼내지 못한 파일은 None이다(제품이 안 냈을 수 있고, 도우미는 없는 파일과 읽기 실패를 가르지 못한다 → 통제 대조 미수집).
+        도우미 정리 실패는 보호 볼륨이 잡혀 있을 수 있어 그대로 올린다."""
+        settings = self.split.e2_v3
+        subpath = settings.resolved_subpath(draft_id)
+        out = []
+        for role, name, limit in (("e2v3-journal", settings.journal_name, E2V3_MAX_JOURNAL_BYTES),
+                                  ("e2v3-head", settings.head_name, E2V3_MAX_HEAD_BYTES)):
+            try:
+                out.append(self._copy(settings.volume, settings.directory, (name,), role, settings.uid, limit, subpath)[name])
+            except HelperCleanupError:
+                raise
+            except DockerError:
+                out.append(None)
+        return out[0], out[1]
+
+    def e2_v3_collect(self, journal: bytes | None, head: bytes | None) -> dict:
+        settings = self.split.e2_v3
+        return e2v3_collect(run_verifier=subprocess_verifier(settings.verify_tool, settings.verify_timeout_seconds),
+                            copy_directory=self.directory.run / "e2v3-copy", key_path=self.inputs.files["e2_audit_key"],
+                            journal=journal, head=head, key_ref=self.inputs.audit_key_ref)
 
     def product_files(self) -> dict:
         """제품 블록 설치 파일 넷의 원본 SHA(결정안 §3.3). 내용은 메모리에서 지문만 뜨고 남기지 않는다(설치 입력에 비밀

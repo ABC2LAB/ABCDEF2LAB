@@ -202,6 +202,7 @@ class FakePorts:
                        "run": {"phase": "closed", "run_ref": "run-draft-1",
                                "execution": {"scope": dict(SCOPE), "policy_revision": "v1"}}}
         self.ledger, self.calls_file = LEDGER, CALLS
+        self.e2_v3_row = {"format": "abc2lab-eval-e2-v3-collection-v1", "outcome": "uncollected", "reason": "e2_v3_export_unavailable"}
         self.forced = 0
         self.boundary_stopped = False
         self.snapshot_times: dict[str, float] = {}
@@ -363,6 +364,16 @@ class FakePorts:
     def run_record(self, task_id):
         self._call("run_record")
         return self.record
+
+    def e2_v3_export(self, draft_id):
+        self._call("e2_v3_export")
+        return b"journal", b"head"
+
+    def e2_v3_collect(self, journal, head):
+        self._call("e2_v3_collect")
+        if isinstance(self.e2_v3_row, Exception):
+            raise self.e2_v3_row
+        return self.e2_v3_row
 
     def workflow_snapshot(self, draft_id):
         self._call("workflow_snapshot")
@@ -1118,6 +1129,33 @@ class TestDiscoverySources(unittest.TestCase):
                 recorded = evidence.files["discovery-sources.json"]
                 self.assertEqual(recorded, {"format": "abc2lab-eval-runner-discovery-sources-v1", "error": code})
                 self.assertNotIn("draft-1", json.dumps(recorded) + json.dumps(result["discovery_sources"]))
+
+
+class TestE2V3Collection(unittest.TestCase):
+    """E② v3 저널 수집(설정이 있을 때만). 미수집은 회차 유효·통제 대조만 미수집, 러너 쪽 장애는 무효(고정 초안 §20)."""
+
+    def test_uncollected_keeps_the_run_and_is_recorded_before_down(self):
+        result, ports, evidence = run(e2_v3=True)
+        self.assertEqual(result["status"], "complete", result)
+        self.assertEqual(evidence.files["e2-v3-collection.json"]["outcome"], "uncollected")
+        self.assertLess(ports.calls.index("e2_v3_export"), ports.calls.index("e2_v3_collect"))
+        self.assertLess(ports.calls.index("e2_v3_collect"), ports.calls.index("down"))
+
+    def test_off_by_default(self):
+        result, ports, evidence = run()
+        self.assertEqual(result["status"], "complete", result)
+        self.assertNotIn("e2_v3_export", ports.calls)
+        self.assertNotIn("e2-v3-collection.json", evidence.files)
+
+    def test_runner_side_failure_invalidates_with_its_code(self):
+        from runner_e2v3 import E2V3Invalid
+        for error, extra in ((E2V3Invalid("e2_v3_verifier_failed"), ["e2_v3_verifier_failed"]), (RuntimeError("x"), [])):
+            with self.subTest(error=str(error)):
+                result, ports, evidence = run(lambda p, e=error: setattr(p, "e2_v3_row", e), e2_v3=True)
+                self.assertEqual((result["status"], result["reasons"]), ("invalid", ["e2_v3_collect_failed", *extra]), result)
+                self.assertIn("down", ports.calls)
+                self.assertIn("remove_inputs", ports.calls)
+                self.assertNotIn("e2-v3-collection.json", evidence.files)
 
 
 class TestProductFaultStall(unittest.TestCase):
