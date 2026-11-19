@@ -183,7 +183,8 @@ function parseItem(v: unknown, i: number): ProductVerdictRow {
   const seal = parseSeal(o.evidence_seal, `${where}.evidence_seal`);
   if (status === "record_integrity_failed") {
     // 숨긴 행에는 봉인 포함 실패 표시만 남을 수 있다.
-    if (seal !== null && seal.status !== "inclusion_failed") throw new ProductVerdictsShapeError(`${where}.evidence_seal`);
+    if (seal !== null && seal.status !== "inclusion_failed")
+      throw new ProductVerdictsShapeError(`${where}.evidence_seal`);
     const empty = (k: string) => Array.isArray(o[k]) && (o[k] as unknown[]).length === 0;
     if (
       o.resource_type !== null ||
@@ -197,7 +198,11 @@ function parseItem(v: unknown, i: number): ProductVerdictRow {
       !empty("candidate_refs")
     )
       throw new ProductVerdictsShapeError(`${where}.hidden`);
-    return { verdictId: optStr(o.verdict_id, DECIMAL, `${where}.verdict_id`), recordStatus: status, evidenceSeal: seal };
+    return {
+      verdictId: optStr(o.verdict_id, DECIMAL, `${where}.verdict_id`),
+      recordStatus: status,
+      evidenceSeal: seal,
+    };
   }
   if (status !== "verified" && status !== "policy_source_unavailable")
     throw new ProductVerdictsShapeError(`${where}.record_status`);

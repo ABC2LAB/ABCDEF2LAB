@@ -135,7 +135,10 @@ function ShownRow({ r }: { r: ProductVerdictShown }) {
         </div>
       ) : null}
       {r.evidenceSeal ? (
-        <div className={r.evidenceSeal.status === "confirmed" ? s.help : cx(s.note, s.warn)} data-seal={r.evidenceSeal.status}>
+        <div
+          className={r.evidenceSeal.status === "confirmed" ? s.help : cx(s.note, s.warn)}
+          data-seal={r.evidenceSeal.status}
+        >
           {EVIDENCE_SEAL_TEXT[r.evidenceSeal.status]}
         </div>
       ) : null}
