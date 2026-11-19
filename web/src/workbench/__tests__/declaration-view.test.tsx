@@ -521,3 +521,171 @@ describe("PolicyDeclarationLive (확정 단계 계정 역할, 계약 §4)", () =
     expect(alert).not.toHaveTextContent("tester-a");
   });
 });
+
+describe("PolicyDeclarationLive (객체 ID 출처, #757 · #766)", () => {
+  const putCreate = () => {
+    const put = api.mock.calls.find(([, init]) => init?.method === "PUT");
+    const body = JSON.parse(String(put?.[1]?.body)) as { declaration: { types: { create: Json }[] } };
+    return body.declaration.types[0].create;
+  };
+  const ID_SOURCE = "자원 종류 1 객체 ID 출처";
+  const ID_NAME = "자원 종류 1 객체 ID 위치";
+  // 합성 선언: 클라이언트가 ID를 정하는 API(요청 본문 칸 ID)
+  const storedIdField = () => {
+    const d = stored();
+    d.types[0].create = { ...d.types[0].create, id_path: "", id_field: "title_id" } as (typeof d.types)[0]["create"];
+    return d;
+  };
+
+  it("요청 본문 칸으로 골라 저장하면 id_field만 싣고 id_path는 빈 값이다", async () => {
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [NONE, active(storedIdField())], [PUT_D("t1")]: [undefined] });
+    mount();
+    await pick("t1");
+    await screen.findByText(/아직 선언이 없습니다/);
+    fillValid();
+    expect(screen.getByLabelText(ID_SOURCE)).toHaveValue("path");
+    type(ID_SOURCE, "field");
+    // 적던 이름은 새 출처로 옮긴다(두 칸이 같이 남지 않음)
+    expect(screen.getByLabelText(ID_NAME)).toHaveValue("id");
+    expect(screen.getByText("객체 ID — 요청 본문 칸")).toBeInTheDocument();
+    type(ID_NAME, "title_id");
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "선언 저장" })));
+    expect(putCreate()).toMatchObject({ id_path: "", id_field: "title_id" });
+  });
+
+  it("응답 경로 선언은 저장 본문에 id_field 칸이 없다", async () => {
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [NONE, active(stored())], [PUT_D("t1")]: [undefined] });
+    mount();
+    await pick("t1");
+    await screen.findByText(/아직 선언이 없습니다/);
+    fillValid();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "선언 저장" })));
+    expect(putCreate()).toMatchObject({ id_path: "id" });
+    expect(putCreate()).not.toHaveProperty("id_field");
+  });
+
+  it("id_field 저장본은 '요청 본문 칸'으로 채워지고, 다른 칸만 고쳐 다시 저장해도 지우지 않는다", async () => {
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [active(storedIdField())], [PUT_D("t1")]: [undefined] });
+    mount();
+    await pick("t1");
+    await screen.findByText(/선언자/);
+    expect(screen.getByLabelText(ID_SOURCE)).toHaveValue("field");
+    expect(screen.getByLabelText(ID_NAME)).toHaveValue("title_id");
+    type("신원 확인 경로", "/api/whoami");
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "선언 저장" })));
+    expect(putCreate()).toMatchObject({ id_path: "", id_field: "title_id" });
+  });
+
+  it("id_field 저장본에서 ID 칸을 다 지웠다 다시 쳐도 출처는 '요청 본문 칸'이고 id_field로 저장한다 (#775 리뷰)", async () => {
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [active(storedIdField())], [PUT_D("t1")]: [undefined] });
+    mount();
+    await pick("t1");
+    await screen.findByText(/선언자/);
+    expect(screen.getByLabelText(ID_SOURCE)).toHaveValue("field");
+    type(ID_NAME, "");
+    // 비운 순간에도 출처는 그대로(응답 경로로 떨어지지 않음)
+    expect(screen.getByLabelText(ID_SOURCE)).toHaveValue("field");
+    expect(screen.getByText("객체 ID — 요청 본문 칸")).toBeInTheDocument();
+    type(ID_NAME, "book_title");
+    expect(screen.getByLabelText(ID_SOURCE)).toHaveValue("field");
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "선언 저장" })));
+    expect(putCreate()).toMatchObject({ id_path: "", id_field: "book_title" });
+  });
+
+  it("응답 경로로 친 이름을 다 지웠다 다시 쳐도 출처는 '응답 경로'다", async () => {
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [NONE], [PUT_D("t1")]: [undefined] });
+    mount();
+    await pick("t1");
+    await screen.findByText(/아직 선언이 없습니다/);
+    fillValid();
+    type(ID_SOURCE, "field");
+    type(ID_SOURCE, "path");
+    type(ID_NAME, "");
+    expect(screen.getByLabelText(ID_SOURCE)).toHaveValue("path");
+    type(ID_NAME, "data.id");
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "선언 저장" })));
+    expect(putCreate()).toMatchObject({ id_path: "data.id" });
+    expect(putCreate()).not.toHaveProperty("id_field");
+  });
+
+  it("둘 다 비었을 때도 고른 출처를 유지하고, 비운 채면 그 칸에 문제를 보이며 저장하지 않는다", async () => {
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [NONE] });
+    mount();
+    await pick("t1");
+    await screen.findByText(/아직 선언이 없습니다/);
+    fillValid();
+    type(ID_NAME, "");
+    type(ID_SOURCE, "field");
+    expect(screen.getByLabelText(ID_SOURCE)).toHaveValue("field");
+    expect(screen.getByText(/요청 본문의 ID 칸 중 하나를 적으세요/)).toHaveAttribute("role", "alert");
+    expect(screen.getByRole("button", { name: "선언 저장" })).toBeDisabled();
+    type(ID_SOURCE, "path");
+    expect(screen.getByLabelText(ID_SOURCE)).toHaveValue("path");
+    expect(api.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
+  });
+
+  it.each<[string, string, RegExp]>([
+    ["표식 칸과 같음", "body", /표식 칸과 같거나 그 위·아래 칸이면 안 됩니다/],
+    ["표식 칸 아래", "body.id", /표식 칸과 같거나 그 위·아래 칸이면 안 됩니다/],
+    ["본문 틀에 이미 있음", "title", /본문 틀에 표식 칸이나 ID 칸이 이미 있습니다/],
+  ])("ID 칸 규칙 위반(%s)은 문제를 보이고 저장하지 않는다", async (_name, value, text) => {
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [NONE] });
+    mount();
+    await pick("t1");
+    await screen.findByText(/아직 선언이 없습니다/);
+    fillValid();
+    type(ID_SOURCE, "field");
+    type(ID_NAME, value);
+    expect(screen.getByText(text)).toHaveAttribute("role", "alert");
+    expect(screen.getByRole("button", { name: "선언 저장" })).toBeDisabled();
+    expect(api.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
+  });
+
+  it("form 본문의 ID 칸에 점을 쓰면 그 칸에 문제를 보인다", async () => {
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [NONE] });
+    mount();
+    await pick("t1");
+    await screen.findByText(/아직 선언이 없습니다/);
+    fillValid();
+    type("자원 종류 1 본문 모양", "form");
+    type("자원 종류 1 본문 틀", "title=t");
+    type(ID_SOURCE, "field");
+    type(ID_NAME, "a.b");
+    expect(screen.getByText(/form 본문의 ID 칸에는 점/)).toHaveAttribute("role", "alert");
+  });
+
+  it("ID 칸에 자격 모양 값을 넣으면 이름만 알리고 원문은 문구에 없다", async () => {
+    serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [NONE] });
+    mount();
+    await pick("t1");
+    await screen.findByText(/아직 선언이 없습니다/);
+    fillValid();
+    type(ID_SOURCE, "field");
+    type(ID_NAME, "session_id=synthetic");
+    expect(screen.getByRole("button", { name: "선언 저장" })).toBeDisabled();
+    const alerts = screen
+      .getAllByRole("alert")
+      .map((a) => a.textContent ?? "")
+      .join(" ");
+    expect(alerts).toMatch(/자격 값 모양/);
+    expect(alerts).not.toContain("synthetic");
+  });
+
+  it("서버가 create.id_field를 짚으면 ID 칸 옆에 알린다", async () => {
+    serve({
+      [GET_T]: [TARGETS],
+      [GET_D("t1")]: [NONE],
+      [PUT_D("t1")]: [reject(400, "invalid_declaration", "types[0].create.id_field")],
+    });
+    mount();
+    await pick("t1");
+    await screen.findByText(/아직 선언이 없습니다/);
+    fillValid();
+    type(ID_SOURCE, "field");
+    type(ID_NAME, "title_id");
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "선언 저장" })));
+    const msg = await screen.findByText(/서버가 이 칸을 받지 않았습니다\(types\[0\]\.create\.id_field\)/);
+    expect(msg.closest("fieldset")).toBe(screen.getByLabelText(ID_NAME).closest("fieldset"));
+    expect(msg.parentElement).toContainElement(screen.getByLabelText(ID_NAME));
+  });
+});

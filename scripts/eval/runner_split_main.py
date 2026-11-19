@@ -148,6 +148,7 @@ def split_run_spec(config: RunnerConfig, plan: SplitPlan, declared: SplitDeclare
         llm_provider_name=config.llm_gateway["expected_provider_name"], meter_source_sha=declared.meter_source_sha,
         path_key_ref=path_key_ref, preservation=config.preservation, purpose=config.purpose, repeat_index=repeat_index,
         e2_v3=config.split.e2_v3 is not None,
+        cli_usage_names=config.split.cli_usage_names,
         drain_grace_seconds=config.run["drain_grace_seconds"],
         host_watch_interval_seconds=config.run["host_watch_interval_seconds"],
         model_tag=declared.llm_model if manifest is None else manifest["model"], product_source_sha=config.split.product_source_sha,

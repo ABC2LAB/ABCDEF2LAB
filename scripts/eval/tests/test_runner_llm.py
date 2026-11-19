@@ -385,13 +385,25 @@ class TestInterruptedCalls(unittest.TestCase):
         bad = [("dropped", rows[1:], m), ("seq_gap", [dict(r, seq=r["seq"] * 2) for r in rows], m),
                ("seq_bool", [dict(rows[0], seq=True)] + rows[1:], m),
                ("count", rows, dict(m, cancelled_by_seal=2)), ("count_type", rows, dict(m, forwarded_requests=1.0)),
-               ("rejected", rows, dict(m, rejected_requests=0)), ("after_seal", rows, dict(m, rejected_after_seal=0)),
+               ("rejected", rows, dict(m, rejected_requests=0)), ("after_seal", rows, dict(m, rejected_after_seal=2)),
                ("ids", rows, dict(m, generations=[generation("gen-1")])), ("extra_id", rows, dict(m, generations=m["generations"] + [generation("x")])),
                ("decision_changed", [dict(rows[0], decision="upstream_error")] + rows[1:], m),
                ("not_marker", rows, None), ("missing_field", [{k: v for k, v in rows[0].items() if k != "decision"}] + rows[1:], m)]
         for label, got_rows, got_marker in bad:
             with self.subTest(label=label):
                 self.assertFalse(rows_match_marker(got_rows, got_marker))
+        # 표식을 쓴 뒤 엔진이 보낸 요청은 순번이 더 큰 봉인 뒤 거부 행으로만 붙는다(확인 쌍 B: 행 85·표식 76). 대조는 표식
+        # 시점의 행(순번 1..N)까지이고, N 뒤 봉인 뒤 거부 행은 받는다.
+        late = [dict(call("", "rejected_after_seal", "2026-11-19T00:00:12Z", "2026-11-19T00:00:12Z"), seq=seq) for seq in (5, 6, 7)]
+        self.assertTrue(rows_match_marker(rows + late, m))
+        self.assertTrue(rows_match_marker(list(reversed(rows + late)), m))  # 줄 순서는 상관없다(순번으로 본다)
+        for label, got_rows in (("late_forwarded", rows + [dict(late[0], decision="forwarded", generation_id="x")]),
+                                ("late_cancelled", rows + [dict(late[0], decision="cancelled_by_seal", generation_id="")]),
+                                ("late_gap", rows + [late[1]]),  # 순번 5 없이 6
+                                ("short", rows[:3])):  # 표식 셈보다 행이 적음
+            with self.subTest(label=label):
+                self.assertFalse(rows_match_marker(got_rows, m))
+        self.assertFalse(rows_match_marker(rows, dict(m, rejected_after_seal=-1)))
 
     def test_o_exception_is_on_hold(self):
         # 제품 전송기는 끊긴 호출(upstream_error/client_closed_before_done)에 generation ID를 남기지 않고, ID는 응답을 끝까지

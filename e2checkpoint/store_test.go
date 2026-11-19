@@ -144,7 +144,7 @@ func testFixture(t *testing.T) (*Store, *testHost, *e2proxy.Journal, string) {
 	host := &testHost{epoch: Epoch{StoreRef: "store-test", EpochRef: "epoch-test", Generation: 1,
 		AnchorDigest: sha256.Sum256([]byte("separately owned test anchor"))}, key: bytes.Repeat([]byte{0x58}, 32)}
 	e := host.epoch
-	if _, err := db.Exec("INSERT INTO e2_http_audit_epochs VALUES($1,$2,$3,$4)",
+	if _, err := db.Exec("INSERT INTO e2_http_audit_epochs(store_ref,epoch_ref,generation,anchor_digest) VALUES($1,$2,$3,$4)",
 		e.StoreRef, e.EpochRef, int64(e.Generation), e.AnchorDigest[:]); err != nil {
 		t.Fatal(err)
 	}

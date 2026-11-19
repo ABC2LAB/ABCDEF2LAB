@@ -9,6 +9,7 @@ B와 같은 감시 규칙(runner._EngineEndWatch: 창 동안 백그라운드 읽
 from __future__ import annotations
 
 from runner import Clock, _EngineEndWatch
+from runner_engine import EngineAPIError
 from runner_product import DRAFT_TERMINAL, ProductAPIError, ProductDriver
 
 PRODUCT_END_FORMAT = "abc2lab-eval-runner-product-end-v1"
@@ -41,7 +42,7 @@ from datetime import timedelta  # noqa: E402
 from typing import Protocol  # noqa: E402
 
 from runner import (  # noqa: E402
-    INVALID, RECORD_NAME, RESULT_FORMAT, RESULT_NAME, RunFailure, _check_subnets, check_request_cap, _event_time, _meter_preflight,
+    CLI_LINES_NAME, CLI_USAGE_NAME, INVALID, RECORD_NAME, RESULT_FORMAT, RESULT_NAME, RunFailure, _check_subnets, check_request_cap, _event_time, _meter_preflight,
     _ns, _stamp, _step, _stop_events, _stop_watch,
     _wait_budget, _wait_drained, check_meter_logs, first_limit,
 )
@@ -58,6 +59,7 @@ from runner_record import (  # noqa: E402
 )
 from runner_docker import HelperCleanupError, HelperCleanupInterrupt  # noqa: E402
 from runner_e2v3 import EVIDENCE_NAME as E2V3_EVIDENCE_NAME, E2V3Invalid  # noqa: E402
+from cli_usage import OBSERVED_LINES_FORMAT, count_usage, not_found_calls, observed_lines, product_command_record  # noqa: E402
 from isolation_proof import E3_STATUSES, PURPOSE_OFFICIAL  # noqa: E402
 from run_record import OFFICIAL_E3_DISABLED_REASON  # noqa: E402
 from runner_evidence import MeterFiles, forwarded_count  # noqa: E402
@@ -83,6 +85,9 @@ PREPARATION = "preparation"
 VERDICT_NOT_COLLECTED = {"status": "not_collected", "reason": "product_verdict_export_unavailable"}
 SPLIT_TASK_FORMAT = "abc2lab-eval-runner-split-task-v1"
 PRODUCT_END_NAME = "product-end.json"
+# 제품 작업의 끝 신호 칸(B engine-end.json의 작업 칸과 같은 6칸). 제품 회차가 왜 마감했는지(목표 달성 여부)를 가르는 근거다.
+PRODUCT_TASK_END_NAME = "product-task-end.json"
+PRODUCT_TASK_END_FORMAT = "abc2lab-eval-runner-product-task-end-v1"
 TOOL_SURFACE_NAME = "tool-surface.json"
 PRODUCT_FILES_NAME = "product-files.json"
 PRODUCT_FILES_FORMAT = "abc2lab-eval-runner-product-files-v1"
@@ -253,6 +258,8 @@ class SplitRunSpec:
     scripted_plan_sha256: str = ""  # 합성 모드에서 스크립트 모델이 읽은 계획 사본의 SHA
     fault_stall_seconds: int | None = None  # 멈춤 무효 판정 T(초, B와 같은 run.fault_stall_seconds). None이면 판정 안 함
     e2_v3: bool = False  # 설정 split.e2_v3가 있으면 E② v3 저널·봉인 head를 꺼내 검증한다(runner_e2v3)
+    # B 전용 CLI 이름(split.cli_usage_names). 있으면 O 제품 활동의 Bash 호출에서 B와 같은 함수로 관측·이름 못 찾음 수를 센다.
+    cli_usage_names: tuple[str, ...] = ()
     # v1.1 러너 기록(설계안 §2·§5). B(build_spec)와 같은 선언·설정 칸이다. 비면 기록을 만들지 않고 회차가 무효다.
     condition: str = ""
     fixture_fingerprint: str = ""
@@ -288,6 +295,9 @@ class SplitRunPorts(Protocol):
     def seal(self, meter_container_id: str) -> None: ...
     def stop_boundary(self, boundary_container_id: str) -> None: ...
     def run_record(self, task_id: str) -> dict: ...
+    def task_signal(self, task_id: str) -> dict: ...
+    def task_exploration_id(self, task_id: str) -> int: ...
+    def product_commands(self, exploration_id: int) -> list[dict]: ...
     def workflow_snapshot(self, draft_id: str) -> dict: ...
     def control_policy(self, task_id: str) -> dict: ...
     def product_files(self) -> dict: ...
@@ -389,6 +399,8 @@ DISCOVERY_SOURCES_NAME = "discovery-sources.json"
 _SOURCE_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 # 구동기 오류 글의 앞부분(`product_http_503` 등). 뒤의 경로·초안 ID·제품 사유는 근거에 남기지 않는다(#725 리뷰).
 _PRODUCT_CODE = re.compile(r"product_[a-z0-9_]{1,62}\Z")
+# 제품 구동·작업 목록 해석의 고정 오류 코드(예: product_http_403:tasks, engine_task_status_missing). 그 밖은 일반 코드로.
+_TASK_ERROR = re.compile(r"(product|engine)_[a-z0-9_]{1,62}(:[a-z0-9_./-]{1,64}){0,3}\Z")
 
 
 def discovery_sources(snapshot: dict) -> dict:
@@ -438,6 +450,32 @@ def _collect_e2_v3(ports, evidence, state, draft_id: str) -> None:
     except Exception:
         raise RunFailure("e2_v3_collect_failed") from None
     _step(state, "evidence_write_failed", lambda: evidence.write_json(E2V3_EVIDENCE_NAME, row))
+def _product_cli_usage(names: tuple[str, ...], ports, evidence, state, task_id: str) -> None:
+    """O 제품 활동의 Bash 호출에서 B 전용 CLI 이름별 관측(B와 같은 count_usage·observed_lines)과, O에 없는 이름이라 찾지 못한
+    호출 수(not_found)를 남긴다. 원문은 메모리에서만 보고 모양(이름·연산자만)만 쓴다. 이름과 상관없이 셸이 명령을 찾지 못한
+    호출 수(not_found_calls)도 같이 둔다. B 명령 기록 읽기 실패처럼 회차를 무효로 한다(cli_usage_failed)."""
+    exploration_id = _step(state, "cli_usage_failed", lambda: ports.task_exploration_id(task_id))
+    rows = _step(state, "cli_usage_failed", lambda: ports.product_commands(exploration_id))
+    bash = _step(state, "cli_usage_failed", lambda: [product_command_record(row) for row in rows])
+    usage = _step(state, "cli_usage_failed", lambda: dict(count_usage(bash, names, with_failures=True),
+                                                          exploration_id=exploration_id, not_found_calls=not_found_calls(bash)))
+    if usage["names_seen"]:
+        picked, observed = _step(state, "cli_usage_failed", lambda: observed_lines(bash, names))
+        _step(state, "evidence_write_failed", lambda: evidence.write_json(CLI_LINES_NAME, {
+            "format": OBSERVED_LINES_FORMAT, "observed_calls": observed, "lines": picked}))
+        usage["observed_lines"] = len(picked)
+    _step(state, "evidence_write_failed", lambda: evidence.write_json(CLI_USAGE_NAME, usage))
+
+
+def _task_end(ports, task_id: str) -> dict:
+    try:
+        return {"format": PRODUCT_TASK_END_FORMAT, "task_id": task_id, "task": ports.task_signal(task_id)}
+    except (ProductAPIError, EngineAPIError) as exc:
+        code = str(exc)
+        return {"format": PRODUCT_TASK_END_FORMAT, "task_id": task_id,
+                "error": code if _TASK_ERROR.fullmatch(code) else "product_task_signal_failed"}
+    except Exception:
+        return {"format": PRODUCT_TASK_END_FORMAT, "task_id": task_id, "error": "product_task_signal_failed"}
 
 
 def product_fault_stall(calls: bytes, meter_rows: list[dict], window_start: str, window_end: str, engine_end: dict) -> dict:
@@ -628,6 +666,11 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     limit = first_limit(stop_reason, stop_elapsed, spec.time_budget_seconds, engine_end["first_terminal"])
 
     record = _step(state, "product_run_record_failed", lambda: ports.run_record(task_id))
+    # 마감 뒤 제품 작업의 목표 칸(목표 수·달성 수 등)을 남긴다. 판정에 쓰지 않는 근거라 읽지 못해도 회차를 무효로 하지 않고
+    # 고정 코드만 남긴다(B의 끝 신호 읽기 실패와 같은 처리).
+    _step(state, "evidence_write_failed", lambda: evidence.write_json(PRODUCT_TASK_END_NAME, _task_end(ports, task_id)))
+    if spec.cli_usage_names:
+        _product_cli_usage(spec.cli_usage_names, ports, evidence, state, task_id)
     goal = record.get("goal") if isinstance(record, dict) else None
     if not isinstance(goal, dict) or not isinstance(goal.get("common_sha256"), str):
         raise RunFailure("goal_digest_missing")  # #657 이전 제품 빌드이거나 실행 기록이 목표 SHA를 잃었다

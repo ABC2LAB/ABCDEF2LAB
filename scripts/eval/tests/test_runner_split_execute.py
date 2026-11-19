@@ -203,6 +203,15 @@ class FakePorts:
                                "execution": {"scope": dict(SCOPE), "policy_revision": "v1"}}}
         self.ledger, self.calls_file = LEDGER, CALLS
         self.e2_v3_row = {"format": "abc2lab-eval-e2-v3-collection-v1", "outcome": "uncollected", "reason": "e2_v3_export_unavailable"}
+        # 제품 활동 표의 Bash 호출 줄(cmd·res·is_error). 기본은 O에 없는 python을 부른 Worker 호출 하나와 보통 호출 하나.
+        self.commands = [
+            {"cmd": json.dumps({"command": "python -c 'print(1)'"}), "is_error": True,
+             "res": json.dumps({"trusted": {"exit_code": 127}, "tool_output": "bash: line 1: python: command not found"})},
+            {"cmd": json.dumps({"command": "curl -s http://app.eval.test:8080/"}), "is_error": False,
+             "res": json.dumps({"trusted": {"exit_code": 0}, "tool_output": "ok"})},
+        ]
+        self.task_end = {"status": "done", "completed_at": "2026-11-17T07:01:37Z", "llm_failover_state": "default", "goals_total": 3,
+                         "goals_met": 3, "goal_states": {"met": 3}}
         self.forced = 0
         self.boundary_stopped = False
         self.snapshot_times: dict[str, float] = {}
@@ -374,6 +383,21 @@ class FakePorts:
         if isinstance(self.e2_v3_row, Exception):
             raise self.e2_v3_row
         return self.e2_v3_row
+    def task_exploration_id(self, task_id):
+        self._call("task_exploration_id")
+        return 7
+
+    def product_commands(self, exploration_id):
+        self._call("product_commands")
+        if isinstance(self.commands, Exception):
+            raise self.commands
+        return self.commands
+
+    def task_signal(self, task_id):
+        self._call("task_signal")
+        if isinstance(self.task_end, Exception):
+            raise self.task_end
+        return self.task_end
 
     def workflow_snapshot(self, draft_id):
         self._call("workflow_snapshot")
@@ -446,7 +470,7 @@ ORDER_HEAD = ["preexisting", "image_ids", "meter_describe", "tool_surface", "hos
               "events:start", "watch:start", "scoreboard:pre", "prepare_round", "start_round"]
 ORDER_TAIL = ["seal", "meter:drained", "stop_round", "wait_closed", "workflow_snapshot", "snapshot:post", "check:post", "probes:post", "scoreboard:post",
               "stop_boundary", "watch:stop",
-              "events:stop", "status", "run_record", "control_policy", "product_files", "runtime_conditions", "e3_confirmation",
+              "events:stop", "status", "run_record", "task_signal", "control_policy", "product_files", "runtime_conditions", "e3_confirmation",
               "copy_boundary_evidence", "split_conditions",
               "copy_product_records",
               "generation_verify", "llm_verified", "down", "remove_inputs", "sign", "sign"]  # 내린 뒤 러너 기록·결과 서명
@@ -465,7 +489,8 @@ class TestOrder(unittest.TestCase):
         self.assertEqual(set(evidence.files), {"meter-preflight.json", "subnet-check.json", "pre-checks.json", "post-checks.json",
                                                "pre-probe.json",
                                                "post-probe.json", "task.json", "llm-summary.json",
-                                               "window-watch.json", "product-end.json", "product-model.json", "tool-surface.json",
+                                               "window-watch.json", "product-end.json", "product-task-end.json", "product-model.json",
+                                               "tool-surface.json",
                                                "product-files.json", "discovery-sources.json", "fault-stall.json", "product-calls.jsonl",
                                                RESULT_NAME, "isolation-evidence.json", "solve-events.json", "run-record.json"})
         self.assertEqual(evidence.files["discovery-sources.json"], {
@@ -1156,6 +1181,67 @@ class TestE2V3Collection(unittest.TestCase):
                 self.assertIn("down", ports.calls)
                 self.assertIn("remove_inputs", ports.calls)
                 self.assertNotIn("e2-v3-collection.json", evidence.files)
+class TestProductTaskEnd(unittest.TestCase):
+    """마감 뒤 제품 작업의 끝 신호 칸(목표 수·달성 수 등). 제품 회차가 왜 마감했는지 가르는 근거라 판정에 쓰지 않는다."""
+
+    def test_task_end_signal_is_kept_after_the_run_record(self):
+        result, ports, evidence = run()
+        self.assertEqual(result["status"], "complete", result)
+        record = evidence.files["product-task-end.json"]
+        self.assertEqual((record["format"], record["task_id"], record["task"]["goals_total"], record["task"]["goals_met"]),
+                         ("abc2lab-eval-runner-product-task-end-v1", "42", 3, 3))
+        self.assertLess(ports.calls.index("run_record"), ports.calls.index("task_signal"))  # 마감 뒤 실행 기록 다음
+        self.assertLess(ports.calls.index("task_signal"), ports.calls.index("down"))  # 내리기 전
+
+    def test_read_failure_leaves_a_fixed_code_and_keeps_the_run(self):
+        from runner_engine import EngineAPIError
+        from runner_product import ProductAPIError
+        for error, code in ((ProductAPIError("product_http_403:tasks"), "product_http_403:tasks"),
+                            (EngineAPIError("engine_task_status_missing"), "engine_task_status_missing"),
+                            (ProductAPIError("/secret/path value"), "product_task_signal_failed"),
+                            (RuntimeError("boom"), "product_task_signal_failed")):
+            with self.subTest(code=code):
+                result, _, evidence = run(lambda p, e=error: setattr(p, "task_end", e))
+                self.assertEqual(result["status"], "complete", result)
+                self.assertEqual(evidence.files["product-task-end.json"]["error"], code)
+                self.assertNotIn("task", evidence.files["product-task-end.json"])
+
+
+class TestProductCliUsage(unittest.TestCase):
+    """O 제품 활동의 Bash 호출을 B와 같은 함수로 센다(B 전용 CLI 관측·O에서 이름을 찾지 못한 호출)."""
+
+    def test_names_and_not_found_are_counted_after_the_task_signal(self):
+        result, ports, evidence = run(cli_usage_names=("python", "pip"))
+        self.assertEqual(result["status"], "complete", result)
+        usage = evidence.files["cli-usage.json"]
+        self.assertEqual((usage["bash_calls"], usage["names_seen"], usage["not_found"], usage["not_found_calls"],
+                          usage["exploration_id"], usage["observed_lines"]), (2, ["python"], {"python": 1}, 1, 7, 1))
+        lines = evidence.files["cli-observed-lines.json"]
+        self.assertEqual([line["shape"] for line in lines["lines"]], ["python <인자> <인자>"])  # 원문 인자는 남지 않는다
+        self.assertNotIn("print", json.dumps(evidence.files["cli-observed-lines.json"]))
+        order = ports.calls
+        self.assertLess(order.index("task_signal"), order.index("task_exploration_id"))
+        self.assertLess(order.index("product_commands"), order.index("down"))
+
+    def test_no_names_means_no_read(self):
+        result, ports, evidence = run()
+        self.assertEqual(result["status"], "complete", result)
+        self.assertNotIn("product_commands", ports.calls)
+        self.assertNotIn("cli-usage.json", evidence.files)
+
+    def test_no_observation_writes_no_lines(self):
+        result, _, evidence = run(lambda p: setattr(p, "commands", p.commands[1:]), cli_usage_names=("python",))
+        self.assertEqual(result["status"], "complete", result)
+        self.assertEqual((evidence.files["cli-usage.json"]["names_seen"], evidence.files["cli-usage.json"]["not_found_calls"]), ([], 0))
+        self.assertNotIn("cli-observed-lines.json", evidence.files)
+
+    def test_read_failure_invalidates_like_b(self):
+        for bad in (RuntimeError("boom"), ValueError("product_commands_invalid")):
+            with self.subTest(bad=str(bad)):
+                result, ports, evidence = run(lambda p, b=bad: setattr(p, "commands", b), cli_usage_names=("python",))
+                self.assertEqual((result["status"], result["reasons"][0]), ("invalid", "cli_usage_failed"), result)
+                self.assertIn("down", ports.calls)
+                self.assertNotIn("cli-usage.json", evidence.files)
 
 
 class TestProductFaultStall(unittest.TestCase):
