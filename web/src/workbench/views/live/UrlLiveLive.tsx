@@ -856,9 +856,9 @@ function splitEndpoint(raw: string, method?: string): { m: string | null; p: str
 }
 
 /**
- * 취약한 경로 (메서드 · 경로 · 그 밖 경로 수). 대표 경로(context.endpoint)가 있으면 그것, 메서드는 같은 경로 관찰이 한 가지로
- * 모일 때만. 대표 경로가 없으면 — 서버가 엔진 후보에는 채우지 않는다(db/diagnostic_remediation.go) — E② 가 실제로 보낸
- * 요청 기록(관찰)의 경로로 보인다(사용자 11/19: 늘 '—'로만 보였다). 관찰 경로가 여럿이면 첫 경로와 나머지 수. 지어내지 않는다.
+ * 관련 경로 (메서드 · 경로 · 그 밖 경로 수). 대표 경로(context.endpoint)가 있으면 그것, 메서드는 같은 경로 관찰이 한 가지로
+ * 모일 때만. 대표 경로가 없으면 — 서버가 엔진 후보에는 채우지 않는다(db/diagnostic_remediation.go) — E②에 기록된
+ * 요청 시도(차단된 시도 포함)의 경로로 보인다. 관찰 경로가 여럿이면 첫 경로와 나머지 수. 취약한 경로로 단정하지 않는다.
  */
 export function entryEp(e: RemediationEntry): { m: string | null; p: string; more: number } | null {
   const top = e.context?.endpoint;
@@ -882,6 +882,12 @@ export function entryEp(e: RemediationEntry): { m: string | null; p: string; mor
   }
   const [first, ...rest] = [...seen.values()];
   return first ? { m: first.m, p: maskSecrets(first.p), more: rest.length } : null;
+}
+
+/** 대표 경로와 E② 요청 시도의 관찰 경로를 구분한다. 둘 다 취약점 확정 근거가 아니다. */
+function entryPathLabel(e: RemediationEntry): string {
+  if (knownText(e.context?.endpoint) || !entryEp(e)) return "관련 경로";
+  return "관찰된 요청 경로";
 }
 
 /** 엔드포인트 글 (시안 ep · pth: 메서드 딱지 + 경로, 경로의 {이름} 자리는 기울임). */
@@ -1040,7 +1046,7 @@ export function FindingDetail({
           </>
         }
       />
-      {/* ARTEX 발견 상세처럼(사용자 11/17) 칸마다 흰 카드로: 맨 위 상태 카드(ID · 위험도 · 판정 · 유형 · 취약한 경로 · 발견 시각,
+      {/* ARTEX 발견 상세처럼(사용자 11/17) 칸마다 흰 카드로: 맨 위 상태 카드(ID · 위험도 · 판정 · 유형 · 관련 경로 · 발견 시각,
           줄마다 구분선 · 값은 오른쪽), 그 아래 AI 분석 · 재현 절차 · 보안 조치 · AI 프롬프트 · 기술 정보 카드.
           ARTEX 와 달리 위험도 · 처리 상태를 여기서 바꾸지 않는다 — 판정은 저장된 E③ 근거만 따른다(절대규칙 3 · 5) */}
       <div className={s.fdet}>
@@ -1070,7 +1076,7 @@ export function FindingDetail({
 }
 
 /**
- * 발견 상태 카드 (ARTEX 발견 상세의 상태 카드): ID · 위험도 · 판정 · 유형 · 취약한 경로 · 발견 시각. 오른쪽 패널과 상세 페이지가
+ * 발견 상태 카드 (ARTEX 발견 상세의 상태 카드): ID · 위험도 · 판정 · 유형 · 관련 경로 · 발견 시각. 오른쪽 패널과 상세 페이지가
  * 같이 쓴다. ARTEX 와 달리 위험도 · 처리 상태를 여기서 바꾸지 않는다 — 판정은 저장된 E③ 근거만 따른다(절대규칙 3 · 5).
  */
 function StatusCard({ e, host }: { e: RemediationEntry; host?: string | null }) {
@@ -1101,7 +1107,7 @@ function StatusCard({ e, host }: { e: RemediationEntry; host?: string | null }) 
           <dd>{e.vuln_class ? <span className={s.chip}>{maskSecrets(e.vuln_class)}</span> : "—"}</dd>
         </div>
         <div>
-          <dt>취약한 경로</dt>
+          <dt>{entryPathLabel(e)}</dt>
           <dd>{entryEp(e) ? <EntryEp e={e} /> : "—"}</dd>
         </div>
         {host ? (
@@ -1301,10 +1307,10 @@ export function buildPocMarkdown(entries: readonly RemediationEntry[], info: Poc
     if (i > 0) out.push("---", "");
     // 제목 글의 '#'는 이스케이프한다 — 끝의 '###'가 Markdown 제목 닫기로 읽혀 사라지지 않게(#709 리뷰)
     out.push(`## ${i + 1}. ${tag} ${mdInline(e.title || e.entry_id).replace(/#/g, "\\#")}`, "");
-    // 오른쪽 상세와 같은 이름(사용자 11/19): 취약한 경로 · 발견 시각, 내부 ID(candidate-n)는 두지 않는다
+    // 오른쪽 상세와 같은 출처별 경로 이름 · 발견 시각, 내부 ID(candidate-n)는 두지 않는다
     const facts = [
       e.vuln_class ? `유형 ${mdInline(e.vuln_class)}` : "",
-      ep ? `취약한 경로 ${ep.m ? `${ep.m} ` : ""}${mdInline(ep.p)}${ep.more ? ` 외 ${ep.more}개` : ""}` : "",
+      ep ? `${entryPathLabel(e)} ${ep.m ? `${ep.m} ` : ""}${mdInline(ep.p)}${ep.more ? ` 외 ${ep.more}개` : ""}` : "",
       at ? `발견 시각 ${at}` : "",
     ].filter(Boolean);
     if (facts.length) out.push(facts.join(" · "), "");

@@ -79,7 +79,7 @@ import { createInitialState, useWb } from "../store";
 import { Markdown } from "../ui/Markdown";
 import { DashboardByMode, LiveByMode, NewScanByMode, ReportByMode, ScopeByMode } from "../views/live/byMode";
 import { UrlFindingLive } from "../views/live/UrlFindingLive";
-import { buildPocMarkdown, entryEp, FINDINGS_POLL_MS } from "../views/live/UrlLiveLive";
+import { buildPocMarkdown, entryEp, FINDINGS_POLL_MS, FindingDetail } from "../views/live/UrlLiveLive";
 import { EXCLUDE_EXAMPLE } from "../views/live/UrlNewScanLive";
 import { WorkflowCrawlLive } from "../views/live/workflowViews";
 import s from "../workbench.module.css";
@@ -1697,10 +1697,10 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     const insp = screen.getByRole("complementary", { name: "취약점 상세" });
     expect(within(insp).getByText(/^idor ·/)).toBeInTheDocument();
     expect(within(insp).getByText("GET")).toBeInTheDocument();
-    // 상태 칸 (ARTEX 발견 상세의 상태 카드): ID · 위험도 · 판정 · 유형 · 취약한 경로 · 발견 시각. 여기서 바꾸는 손잡이는 없다
+    // 대표 경로는 취약점 확정이 아닌 관련 경로로 표시한다. 여기서 바꾸는 손잡이는 없다
     const state = within(insp).getByRole("heading", { name: "상태" }).parentElement as HTMLElement;
     expect(state).toHaveTextContent(
-      /^상태IDcandidate-1위험도위험도 미평가판정검토 필요유형idor취약한 경로GET \/api\/items\/\{id\}발견 시각\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/,
+      /^상태IDcandidate-1위험도위험도 미평가판정검토 필요유형idor관련 경로GET \/api\/items\/\{id\}발견 시각\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/,
     );
     expect(within(state).queryByRole("combobox")).toBeNull();
     // 상세는 정리했다(사용자 11/17): '연결 전' 자리(계정별 응답 비교 · 다음 단계)와 머리와 겹치는 분류는 두지 않는다
@@ -2096,7 +2096,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(writeText.mock.calls[0][0]).not.toMatch(/synthetic-poc-token|synthetic-poc-entity|&#/);
   });
 
-  it("취약한 경로: 대표 경로가 없으면 E② 가 실제로 보낸 요청 기록(관찰)의 경로로 (사용자 11/19 — 늘 '—'였음)", () => {
+  it("대표 경로와 E② 요청 시도의 관찰 경로를 구분하고 취약한 경로로 단정하지 않는다", () => {
     const obs = (endpoint: string, method?: string) => ({ endpoint, method });
     const withCtx = (context: Record<string, unknown>) =>
       ({ ...candidate(1), context }) as unknown as Parameters<typeof entryEp>[0];
@@ -2139,7 +2139,26 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
       [withCtx({ observations: [obs("GET /users/v1/name1", "GET"), obs("GET /users/v1/name2", "GET")] })],
       { targetUrl: "https://target.example/", mode: null, model: null, excluded: null, crawl: null },
     );
-    expect(md).toContain("취약한 경로 GET /users/v1/name1 외 1개");
+    expect(md).toContain("관찰된 요청 경로 GET /users/v1/name1 외 1개");
+    expect(md).not.toContain("취약한 경로");
+    // 전송되지 않은 E② 요청 시도도 관찰에 남는다. 그 경로가 취약하다는 뜻으로 표시하면 안 된다.
+    const denied = buildPocMarkdown(
+      [withCtx({ observations: [{ endpoint: "GET /api/me", method: "GET", observation: "전송 시도=false" }] })],
+      { targetUrl: "https://target.example/", mode: null, model: null, excluded: null, crawl: null },
+    );
+    expect(denied).toContain("관찰된 요청 경로 GET /api/me");
+    expect(denied).not.toContain("취약한 경로");
+    const view = render(
+      <FindingDetail
+        e={withCtx({ observations: [{ endpoint: "GET /api/me", method: "GET", observation: "전송 시도=false" }] })}
+        host={null}
+        taskId="42"
+        onReload={noop}
+      />,
+    );
+    expect(within(view.container).getByText("관찰된 요청 경로")).toBeInTheDocument();
+    expect(within(view.container).queryByText("취약한 경로")).toBeNull();
+    view.unmount();
     // 문서도 오른쪽 상세와 같은 이름: 발견 시각, 내부 ID 없음, 서버 기본 단계 제목은 '요청 n'(사용자 11/19 · 11/20)
     expect(md).toMatch(/발견 시각 \d{4}-/);
     expect(md).not.toMatch(/ID candidate-|저장된 실행 관찰/);
