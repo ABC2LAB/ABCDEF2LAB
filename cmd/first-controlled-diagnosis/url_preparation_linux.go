@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -74,6 +75,16 @@ func (b *urlPreparationRuntime) issue(l *urlLoadedProfile, jobID string, actual 
 			if err != nil || write(productFrozenDeclarationFile, frozen) != nil || write(productFrozenPolicyFile, frozenPolicy) != nil {
 				return c, errPreparation
 			}
+		}
+		// E③ 세대·인스턴스 참조(v3 계약 §6): 지금 대상 상태로 실행마다 발급해 동결한다. 확정 단계를 시작할 때 리셋 게이트가
+		// 지금 대상과 다시 대조한다. 대상 상태를 모르면 새 난수 참조라 확정 단계는 target_changed로 멈춘다.
+		refs, err := l.productRegistry.issueTargetRefs(l.productTarget.Target.ID, rand.Reader)
+		if err != nil {
+			return c, errPreparation
+		}
+		raw, err := refs.marshal()
+		if err != nil || write(productTargetRefsFile, raw) != nil {
+			return c, errPreparation
 		}
 	}
 	// E③ 확정 단계 몫(사용자 결정 2026-11-18 ②). 확정 단계는 감독자에 연결됐지만 E② Transport·Journal이 아직 없어

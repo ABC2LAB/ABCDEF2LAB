@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"os"
@@ -27,6 +28,7 @@ type e3HookFixture struct {
 	rec    productTargetRecord
 	target diagnosisprep.ProductTarget
 	frozen productFrozenPolicy
+	refs   productTargetRefs
 }
 
 func newE3HookFixture(t *testing.T, declare bool, policy func(*server.E2HTTPFilePolicy)) e3HookFixture {
@@ -63,6 +65,13 @@ func newE3HookFixtureWith(t *testing.T, declare bool, policy func(*server.E2HTTP
 		}
 	})
 	f := e3HookFixture{runs: runs, r: r, rec: rec, target: target}
+	// 실행 시작처럼 세대·인스턴스 참조를 발급해 동결한다(url_preparation_linux.go).
+	if f.refs, err = r.issueTargetRefs(target.ID, rand.Reader); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := f.refs.marshal(); err != nil || os.WriteFile(filepath.Join(runs, liveJob, productTargetRefsFile), raw, 0600) != nil {
+		t.Fatal("세대·인스턴스 참조 쓰기", err)
+	}
 	if decl != nil {
 		now := time.Now().UTC()
 		frozen, frozenPolicy, err := freezeDeclaration(*decl, liveJob, now.Add(-time.Minute), now.Add(time.Hour), target.ApprovedAt, target.ExpiresAt)
@@ -165,7 +174,10 @@ func TestProductE3ConfirmationCompletedRecordsResultAndWrites(t *testing.T) {
 		t.Fatalf("확정 단계 결과: %s", raw)
 	}
 	want := e3contract.RunBinding{JobRef: liveJob, RunRef: "run-live", TaskRef: "9", E2PolicyRef: "policy-live",
-		GenerationRef: "generation-" + liveJob, InstanceRef: "instance-" + liveJob, Policy: f.frozen.Policy}
+		GenerationRef: f.refs.GenerationRef, InstanceRef: f.refs.InstanceRef, Policy: f.frozen.Policy}
+	if !f.refs.GenerationKnown || !f.refs.InstanceKnown {
+		t.Fatalf("승인된 시험 대상의 참조를 모름: %+v", f.refs)
+	}
 	if res.Binding == nil || *res.Binding != want {
 		t.Fatalf("실행 결속: %+v", res.Binding)
 	}
@@ -856,5 +868,77 @@ func TestProductE3ConfirmationStoppedRecordsResult(t *testing.T) {
 				t.Fatal("중지 기록이 결과 파일을 덮어씀")
 			}
 		})
+	}
+}
+
+// 실행 시작 때 발급한 세대·인스턴스 참조가 확정 단계 시작 때 지금 대상과 다르면(대상 리셋 확인·주소·TLS 키 변경) 요청
+// 없이 target_changed로 멈춘다. 대상이 바뀌었는데 같은 참조로 확정하는 경우가 없다(v3 계약 §6, 사용자 지시 2026-11-19).
+func TestProductE3ConfirmationTargetChangedRefuses(t *testing.T) {
+	cases := map[string]struct {
+		change func(*testing.T, e3HookFixture)
+		reason string
+	}{
+		"selected_ip": {func(t *testing.T, f e3HookFixture) {
+			f.r.mu.Lock()
+			rec := f.r.records[f.target.ID]
+			rec.SelectedIP = "192.0.2.77"
+			f.r.records[f.target.ID] = rec
+			f.r.mu.Unlock()
+		}, string(e3contract.RefuseTargetChanged)},
+		"tls_key": {func(t *testing.T, f e3HookFixture) {
+			f.r.mu.Lock()
+			rec := f.r.records[f.target.ID]
+			rec.Target.TLSSPKISHA256 = strings.Repeat("d", 64)
+			f.r.records[f.target.ID] = rec
+			f.r.mu.Unlock()
+		}, string(e3contract.RefuseTargetChanged)},
+		// 다른 회차가 쓰기를 남기고 운영자가 리셋을 확인했다(대상 상태가 실행 시작 때와 다름).
+		"reset_confirmed": {func(t *testing.T, f e3HookFixture) {
+			if err := f.r.recordConfirmationWrites(f.target.ID, "job-other", []productConfirmationObject{{Type: "note", IDUnknown: true}}); err != nil {
+				t.Fatal(err)
+			}
+			st, err := f.r.resetConfirmation("ARTEX", f.target.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.r.confirmReset("ARTEX", f.target.ID, true, st.LastWritesRef); err != nil {
+				t.Fatal(err)
+			}
+		}, string(e3contract.RefuseTargetChanged)},
+		// 대상을 확인할 수 없으면(기록 없음) 대조 전에 리셋 상태를 모른다.
+		"target_gone": {func(t *testing.T, f e3HookFixture) {
+			f.r.mu.Lock()
+			delete(f.r.records, f.target.ID)
+			f.r.mu.Unlock()
+		}, string(e3contract.RefuseResetStateUnavailable)},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newE3HookFixture(t, true, nil)
+			c.change(t, f)
+			fake := e3HookFake()
+			begins := 0
+			if err := f.confirmation(fake, e3HookAccounts(), nil).run(t.Context(), "9", func() { begins++ }); err != nil {
+				t.Fatal(err)
+			}
+			res, raw := readE3Result(t, f.runs)
+			if res.Status != e3contract.StatusStartRefused || res.Reason != c.reason || res.Requests != 0 || len(fake.Calls()) != 0 ||
+				len(res.Verdicts) != 0 || len(res.Writes) != 0 {
+				t.Fatalf("대상이 바뀐 회차: %s calls=%d begins=%d", raw, len(fake.Calls()), begins)
+			}
+		})
+	}
+	// 동결한 참조 파일이 없거나 깨졌으면 결속이 비어 요청 없이 꺼진다.
+	f := newE3HookFixture(t, true, nil)
+	if os.Remove(filepath.Join(f.runs, liveJob, productTargetRefsFile)) != nil {
+		t.Fatal("참조 파일 지우기")
+	}
+	fake := e3HookFake()
+	if err := f.confirmation(fake, e3HookAccounts(), nil).run(t.Context(), "9", nil); err != nil {
+		t.Fatal(err)
+	}
+	if res, raw := readE3Result(t, f.runs); res.Status != e3contract.StatusDisabled || res.Reason != string(e3contract.DisabledBindingInvalid) ||
+		len(fake.Calls()) != 0 {
+		t.Fatalf("참조 없는 회차: %s", raw)
 	}
 }

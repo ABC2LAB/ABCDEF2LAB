@@ -100,6 +100,9 @@ type ResetState struct {
 	ResetConfirmed bool
 	// Residue는 지난 회차 객체를 읽어 지난 표식이 보이는지 확인한 결과다. PreviousWrites가 false면 absent다.
 	Residue Residue
+	// TargetChanged는 결속의 세대·인스턴스 참조가 지금 대상과 다른지다(실행 시작 뒤 대상 승인 판·리셋 확인·쓰기 기록·주소·
+	// TLS 키가 바뀜, 또는 지금 대상 상태를 확인하지 못함). 결속에 참조가 없으면(서버의 회차 시작 점검) 보지 않는다.
+	TargetChanged bool
 }
 
 // ResetGate는 리셋 확인 기록과 지난 표식 점검을 읽는다(최민준, 정책 선언 저장·동결).
@@ -128,6 +131,9 @@ const (
 	RefusePolicySourceUnavailable  StartRefusal = "policy_source_unavailable"
 	RefuseMarkerGenerationFailed   StartRefusal = "marker_generation_failed"
 	RefuseMarkerRegistrationFailed StartRefusal = "marker_registration_failed"
+	// RefuseTargetChanged는 실행 시작 때 발급한 세대·인스턴스 참조가 지금 대상과 맞지 않는 경우다. 모델 단계의 후보와 다른
+	// 대상 상태에서 확정하지 않는다(E③↔E② v3 계약 §6, "모르면 새로 발급").
+	RefuseTargetChanged StartRefusal = "target_changed"
 )
 
 // CheckRunStart는 지난 회차 쓰기 뒤 리셋 확인과 표식 잔존을 본다. 서버는 회차 시작 때(모델 단계 전) 이것으로 회차를
@@ -139,6 +145,9 @@ func CheckRunStart(ctx context.Context, gate ResetGate, binding RunBinding, targ
 	state, err := gate.Check(ctx, binding, targetRef)
 	if err != nil {
 		return RefuseResetStateUnavailable
+	}
+	if state.TargetChanged {
+		return RefuseTargetChanged
 	}
 	// 리셋 확인이 없으면 잔존 점검 결과와 관계없이 그 사유로 멈춘다(운영자가 할 일을 정확히 보인다).
 	if state.PreviousWrites && !state.ResetConfirmed {
