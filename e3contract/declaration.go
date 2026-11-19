@@ -304,7 +304,9 @@ func Normalize(d Declaration) Declaration {
 // 이름이다. 없으면 빈 값이다. 자격은 선언에 넣지 않고 등록된 시험 계정 세션에서만 붙는다(계약 §3). 돌려주는 이름에는 값이 없다.
 func CredentialField(d Declaration) string {
 	type field struct{ name, value string }
-	fields := []field{{"identity.path", d.Identity.Path}, {"identity.subject_id_path", d.Identity.SubjectIDPath}}
+	// 계정 역할 라벨도 선언 칸이라 같은 검사를 받는다(동결본·조회 응답·화면에 그대로 실린다, #743 이경준 리뷰).
+	fields := []field{{"identity.path", d.Identity.Path}, {"identity.subject_id_path", d.Identity.SubjectIDPath},
+		{"owner_account_label", d.OwnerAccountLabel}, {"cross_account_label", d.CrossAccountLabel}}
 	for i, t := range d.Types {
 		p := fmt.Sprintf("types[%d].", i)
 		fields = append(fields, field{p + "type", t.Type}, field{p + "create.path", t.Create.Path},

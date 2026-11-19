@@ -145,7 +145,11 @@ func (c *productE3Confirmation) input(taskID string) (e3contract.Input, time.Dur
 	// 등급 확인은 e3contract.Run이 한다. 선언을 못 읽으면 역할을 비워 둔다(확정 단계는 정책 출처·계정 사유로 꺼진다).
 	var decl e3contract.Declaration
 	if ok {
-		decl, _ = productDeclarationReader{runsDir: c.runsDir}.ReadFrozen(context.Background(), frozen.Policy)
+		var err error
+		if decl, err = (productDeclarationReader{runsDir: c.runsDir}).ReadFrozen(context.Background(), frozen.Policy); err != nil {
+			// 역할을 비워 두면 Run이 동결본을 다시 읽어 대조하고 꺼진다. 원인은 여기서 한 줄 남긴다(값 없음).
+			log.Printf("[e3-confirmation] 회차 %s 동결 선언을 읽지 못해 계정 역할을 비움", c.jobID)
+		}
 	}
 	in.Owner, in.Cross = productE3Roles(decl, c.accounts)
 	return in, share

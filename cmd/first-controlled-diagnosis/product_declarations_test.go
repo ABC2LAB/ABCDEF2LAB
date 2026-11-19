@@ -802,6 +802,9 @@ func TestProductDeclarationAccountRoles(t *testing.T) {
 		"owner_only":   {func(in *diagnosisprep.DeclarationInput) { in.CrossAccountLabel = "" }, "cross_account_label"},
 		"same_account": {func(in *diagnosisprep.DeclarationInput) { in.CrossAccountLabel = in.OwnerAccountLabel }, "cross_account_label"},
 		"bad_label":    {func(in *diagnosisprep.DeclarationInput) { in.OwnerAccountLabel = "tester a" }, "owner_account_label"},
+		// 자격 모양 라벨은 모양 검사(refPattern)를 지나도 자격 검사가 칸 이름으로 막는다(#743 이경준 리뷰).
+		"credential_owner": {func(in *diagnosisprep.DeclarationInput) { in.OwnerAccountLabel = "password:hunter2" }, "owner_account_label"},
+		"credential_cross": {func(in *diagnosisprep.DeclarationInput) { in.CrossAccountLabel = "token:abc-value" }, "cross_account_label"},
 		"privilege_without_roles": {func(in *diagnosisprep.DeclarationInput) {
 			in.OwnerAccountLabel, in.CrossAccountLabel = "", ""
 		}, "accounts_same_privilege"},
