@@ -266,6 +266,12 @@ export function credentialFields(d: DeclarationDraft): string[] {
   };
   check("identity.path", d.identity.path, "path");
   check("identity.subjectIdPath", d.identity.subjectIdPath);
+  // 계정 역할 라벨도 선언 칸이라 같은 검사를 받는다(서버 CredentialField는 owner_account_label·cross_account_label을 원문만
+  // 본다 — plain). 칸 이름은 서버 거부 칸을 draftFieldOf로 옮긴 이름과 같다.
+  if (d.roles) {
+    check("ownerAccountLabel", d.roles.ownerAccountLabel);
+    check("crossAccountLabel", d.roles.crossAccountLabel);
+  }
   d.types.forEach((t, i) => {
     const at = `types.${i}`;
     check(`${at}.type`, t.type);
