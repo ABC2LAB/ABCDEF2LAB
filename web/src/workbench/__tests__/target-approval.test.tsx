@@ -130,9 +130,13 @@ it("승인 유효 시간은 기본 4시간이고, 서버 상한(720) 안 고정 
   const select = screen.getByLabelText("승인 유효 시간") as HTMLSelectElement;
   expect(select).toHaveDisplayValue("4시간 (기본)");
   expect([...select.options].map((o) => o.textContent)).toEqual(["4시간 (기본)", "1일", "3일", "7일", "30일"]);
+  // 칸 밑엔 할 일 한 줄만, 설치 기간 · 범위 불변 설명은 (?) 메모를 열어야 보인다(#802 리뷰)
   expect(document.getElementById("targetValidHoursNote")).toHaveTextContent(
-    "설치 유효 기간이 먼저 끝나면 그때 막힙니다",
+    "승인 시각부터 이 시간이 지나면 새 점검을 못 합니다 · 시연 날까지 남게 고르세요",
   );
+  expect(screen.getByText(/설치 유효 기간이 먼저 끝나면 그때 막힙니다/)).not.toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "승인 유효 시간 설명 보기" }));
+  expect(screen.getByText(/설치 유효 기간이 먼저 끝나면 그때 막힙니다/)).toBeVisible();
   fireEvent.change(select, { target: { value: "168" } });
   fireEvent.change(screen.getByLabelText("점검 근거"), {
     target: { value: "승인된 테스트 소유 환경의 읽기 전용 GET 경로입니다." },

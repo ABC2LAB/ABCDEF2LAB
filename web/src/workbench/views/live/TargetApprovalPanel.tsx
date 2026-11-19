@@ -418,11 +418,14 @@ export function TargetApprovalPanel({
                   </option>
                 ))}
               </select>
-              <span className={s.help} id="targetValidHoursNote">
-                TXT 확인으로 승인한 때부터 이 시간이 지나면 새 점검을 시작할 수 없습니다 · 시연처럼 정해진 날 쓰려면
-                그날까지 남게 고르세요 · 설치 유효 기간이 먼저 끝나면 그때 막힙니다 · 승인 범위(주소 · 경로 · 메서드)는
-                바뀌지 않습니다
-              </span>
+              {/* 할 일 한 줄만 보이고 설치 기간 · 범위 불변 설명은 (?) 메모에(#802 윤재상 리뷰, 다른 칸과 같은 모양) */}
+              <p className={cx(s.help, s.tipline)} id="targetValidHoursNote">
+                승인 시각부터 이 시간이 지나면 새 점검을 못 합니다 · 시연 날까지 남게 고르세요{" "}
+                <HelpTip label="승인 유효 시간 설명 보기">
+                  TXT 확인으로 승인한 때부터 셉니다. 설치 유효 기간이 먼저 끝나면 그때 막힙니다. 유효 시간만 고르고 승인
+                  범위(주소 · 경로 · 메서드 · 요청 상한)는 바뀌지 않습니다.
+                </HelpTip>
+              </p>
             </div>
             {/* 회차당 요청 상한 줄은 뺐다(사용자 11/18) — 상한을 못 받아 등록할 수 없을 때만 이유를 보인다 */}
             {requestLimit ? null : (
