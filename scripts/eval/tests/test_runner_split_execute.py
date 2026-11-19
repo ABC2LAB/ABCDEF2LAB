@@ -1141,6 +1141,18 @@ class TestE3ConfirmationRow(unittest.TestCase):
                 result, _, _ = run(mutate, purpose="official")
                 self.assertEqual((result["status"], result["reasons"]), ("invalid", [reason]))
 
+    def test_helper_cleanup_failure_is_not_a_missing_file(self):
+        # 복사 도우미 정리 실패는 보호 볼륨이 잡혀 있을 수 있다는 뜻이라 목적과 상관없이 무효다(#742 리뷰). 일반 복사 실패(파일
+        # 없음)는 수용시험이면 기록만, 공식이면 수집 실패다.
+        from runner_docker import HelperCleanupError
+        for purpose in ("browser_acceptance", "official"):
+            with self.subTest(purpose=purpose):
+                result, _, _ = run(lambda p: setattr(p, "e3_file", HelperCleanupError()), purpose=purpose)
+                self.assertEqual((result["status"], result.get("reasons")),
+                                 ("invalid", ["e3_confirmation_copy_failed", "docker_helper_cleanup_failed"]))
+        result, _, _ = run(lambda p: setattr(p, "e3_file", RuntimeError("docker_helper_copy_failed")))
+        self.assertEqual(result["status"], "complete")
+
     def test_other_purposes_record_without_invalidating(self):
         # 수용시험 목적은 기록만 한다(감독자 연결 전 빌드는 파일이 없어 수집 못 함으로 남는다)
         result, _, evidence = run(lambda p: setattr(p, "e3_file", RuntimeError("missing")))
