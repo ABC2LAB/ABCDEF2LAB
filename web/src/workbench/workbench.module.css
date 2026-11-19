@@ -2618,12 +2618,12 @@ select.inp {
   background: var(--accent);
   transition: width 0.3s ease-out;
 }
-/* 탐색이 끝난 막대: 완료는 초록, 부분 완료 · 중지 등은 주황(다 돈 게 아님) */
+/* 탐색이 끝난 막대: 점검 진행 단계 게이지(.lgbar)와 같은 색 — 끝남 초록, 중지 · 탐색 안 함 · 실패 회색 */
 .prog.prog-ok > i {
   background: var(--ok);
 }
-.prog.prog-part > i {
-  background: var(--warn);
+.prog.prog-stop > i {
+  background: var(--und);
 }
 .crwl-top {
   display: flex;

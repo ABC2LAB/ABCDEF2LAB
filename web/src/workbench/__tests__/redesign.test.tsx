@@ -732,7 +732,8 @@ describe("자산 탐색", () => {
     expect(ended).toHaveAttribute("aria-valuenow", "25");
     expect((ended.querySelector("i") as HTMLElement).style.width).toBe("100%");
     expect(ended).toHaveAttribute("aria-valuetext", "탐색 끝 · 완료 확인 안 됨 · 방문 1 / 페이지 상한 4");
-    expect(ended.className).toMatch(/prog-part/);
+    // 색은 점검 진행 게이지와 같게 끝남 초록(사용자 11/19), 다 돌았는지 모른다는 건 위 탐색 줄이 말한다
+    expect(ended.className).toMatch(/prog-ok/);
     // 상태가 없으면 위 탐색 줄 하나에 '끝까지 봤는지 확인 안 됨'까지 붙인다(사용자 11/19 — 아래 줄을 따로 두지 않음)
     expect(document.getElementById("cNow")).toHaveTextContent(
       /^탐색을 마쳤습니다 · 끝까지 봤는지는 확인되지 않았습니다/,
@@ -794,7 +795,7 @@ describe("자산 탐색", () => {
       { exploration_status: "PARTIAL", exploration_reason: "constructor" },
       "탐색을 마쳤습니다 · 일부 페이지는 탐색하지 못했습니다",
     ],
-  ])("%s · 끝난 막대는 주황으로 채우고 실제 방문 수 · 탐색 상태를 글로 보인다", (_n, over, text) => {
+  ])("%s · 끝난 막대는 끝까지 채우고(점검 진행 게이지처럼 초록) 실제 방문 수 · 탐색 상태를 글로 보인다", (_n, over, text) => {
     // 방문 2 / 페이지 상한 8 = 25% — 서버는 PARTIAL 에서도 initial_completed 를 true 로 둔다
     useUrl.setState({
       handle,
@@ -815,14 +816,14 @@ describe("자산 탐색", () => {
         <WorkflowCrawlLive />
       </ShellContext.Provider>,
     );
-    // 방문 2 / 상한 8(25%)로 멈춘 것처럼 보이지 않게 끝까지 채우되 주황(사용자 11/18). 다 돈 게 아니라는 건 색과
-    // aria 글 · 탐색 상태 글이 말한다(리뷰 #479)
+    // 방문 2 / 상한 8(25%)로 멈춘 것처럼 보이지 않게 끝까지 채운다(사용자 11/18). 색은 점검 진행 게이지와 같은 끝남
+    // 초록(사용자 11/19), 다 돈 게 아니라는 건 aria 글 · 위 탐색 줄이 말한다(리뷰 #479)
     const bar = screen.getByRole("progressbar", { name: /탐색 진행/ });
     expect(bar).toHaveAttribute("aria-valuenow", "25"); // 값은 실제 방문 비율(#709 리뷰)
     expect((bar.querySelector("i") as HTMLElement).style.width).toBe("100%");
     expect(bar).toHaveAttribute("aria-valuetext", "탐색 끝 · 일부 완료 · 방문 2 / 페이지 상한 8");
-    expect(bar.className).toMatch(/prog-part/);
-    expect(bar.className).not.toMatch(/prog-ok/);
+    expect(bar.className).toMatch(/prog-ok/);
+    expect(bar.className).not.toMatch(/prog-stop/);
     // 화면은 status 중심: 뜻을 더하는 사유만 뒤에 붙고, 겹치거나 모순되는 토큰은 빠진다(원본 영문 토큰 노출 금지)
     // 위 탐색 줄 한 줄로(사용자 11/19): 막대 아래 '탐색: …' 줄은 따로 없다
     expect(document.getElementById("cNow")?.textContent).toBe(text);
@@ -853,6 +854,10 @@ describe("탐색이 다 돌지 못하고 끝난 줄 (사용자 11/19 한 줄로)
     );
     expect(document.getElementById("cNow")?.textContent).toBe(text);
     expect(screen.queryByText(/탐색을 마쳤습니다/)).toBeNull();
+    // 막대 색은 점검 진행 게이지의 멈춤과 같은 회색(사용자 11/19)
+    const bar = screen.getByRole("progressbar", { name: /탐색 진행/ });
+    expect(bar.className).toMatch(/prog-stop/);
+    expect(bar.className).not.toMatch(/prog-ok/);
   });
 });
 
