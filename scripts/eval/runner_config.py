@@ -105,7 +105,9 @@ MAX_VERIFY_INTERVAL_SECONDS = 600
 # 계측기 generation 조회 한 번의 시간 상한(cmd/eval-meter generationLookupTimeout과 같은 값). 조회 전체는 시도 수 × 간격 +
 # 이 값에서 멈추고 마지막 조회 하나가 이 값만큼 더 걸릴 수 있다. 러너 대기 시한은 그보다 VERIFY_WAIT_MARGIN_SECONDS 길어야
 # 표식을 늘 받는다(2026-11-18 VAmPI 유료 파일럿: 60×5초 설정에 대기 300초라 표식 없이 시한을 넘었다).
-GENERATION_LOOKUP_TIMEOUT_SECONDS = 30
+# 계측기 요청 하드 상한의 최댓값(cmd/eval-meter maxRequestCap과 같은 값). 선언된 공통 요청 예산이 이보다 크면 계측기가 뜨지 않는다.
+MAX_REQUEST_CAP = 1_000_000
+GENERATION_LOOKUP_TIMEOUT_SECONDS = 10
 VERIFY_WAIT_MARGIN_SECONDS = 30
 MAX_HOST_LISTEN_ALLOW = 32
 MAX_REASON_LENGTH = 200
@@ -840,6 +842,8 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
         raise RunnerConfigError(["config.engine_rules: BASELINE_ONLY"])
     declared = preflight[side]
     llm = dict(declared["llm"])
+    if type(declared.get("request_budget")) is not int or not 1 <= declared["request_budget"] <= MAX_REQUEST_CAP:
+        raise RunnerConfigError([f"preflight.{side}.request_budget: ABOVE_METER_CAP"])
     origin = urlsplit(declared["target_origin"])
     if origin.hostname != METER_SERVICE:
         raise RunnerConfigError([f"preflight.{side}.target_origin: NOT_EVAL_METER"])
@@ -896,6 +900,8 @@ def plan_run(config: RunnerConfig, preflight: object, side: str, run_id: str) ->
         "EVAL_TARGET_PORT": str(config.ports["target"]),
         "EVAL_METER_PORT": str(origin.port),
         "EVAL_METER_DRAIN_GRACE": f"{config.run['drain_grace_seconds']}s",
+        # 계측기 요청 하드 상한 = 선언된 공통 요청 예산(B·O 같은 값, 2026-11-19 사용자 결정 1)
+        "EVAL_METER_REQUEST_CAP": str(declared["request_budget"]),
         "EVAL_OBS_PORT": str(config.ports["obs"]),
         "EVAL_OBS_HOST_PORT": str(config.ports["obs_host"]),
         "EVAL_OBS_PATH": config.observer_path,
