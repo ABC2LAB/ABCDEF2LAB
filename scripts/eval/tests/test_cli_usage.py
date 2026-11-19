@@ -149,6 +149,9 @@ class TestObservedShapes(unittest.TestCase):
         self.assertTrue(item["shape"].endswith(" [...]"))
         self.assertEqual(len(item["shape"]), MAX_OBSERVED_LINE_CHARS + len(" [...]"))
         self.assertEqual(command_shape("npx -a", ["npx"]), "npx -a")
+        # 긴 옵션 모양 낱말은 글자 모양과 상관없이 이름을 가린 --<opt>다(소문자 이름만 옵션으로 보지 않는다)
+        self.assertEqual(command_shape("npx --Synth-Secret --synth_secret.1 --x=1 -- --", ["npx"]),
+                         "npx --<opt> --<opt> --<opt>=<arg> <arg> <arg>")
         self.assertEqual(clip_shape("x" * 10), "x" * 10)
 
 
