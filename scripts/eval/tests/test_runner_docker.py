@@ -389,13 +389,13 @@ class TestHelperCopy(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def bounded(self, stdout, returncode=0, cid=b"b" * 64):
+    def bounded(self, stdout, returncode=0, cid=b"b" * 64, diagnostic=b""):
         calls = []
 
         def run(args, env, timeout, max_stdout):
             calls.append((list(args), timeout, max_stdout))
             Path(args[args.index("--cidfile") + 1]).write_bytes(cid)
-            return runner_docker.BoundedResult(returncode, stdout, b"")
+            return runner_docker.BoundedResult(returncode, stdout, diagnostic)
         run.calls = calls
         return run
 
@@ -471,6 +471,23 @@ class TestHelperCopy(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(DockerError):
                 self.copy(fake, **change)
             self.assertEqual(fake.calls, [])
+
+    def test_missing_file_is_told_apart_from_other_tar_failures(self):
+        # #785 리뷰: 파일·디렉터리가 없어서만 실패한 것(제품이 아직 안 냄)만 따로 알리고, 그 밖의 tar 실패는 복사 실패다.
+        # 줄은 2026-11-19 제품 이미지(GNU tar)에서 실제로 나온 그대로다.
+        missing_file = b"tar: missing.jsonl: Cannot stat: No such file or directory\ntar: Exiting with failure status due to previous errors\n"
+        missing_dir = b"tar: /e/runs/d1/e2: Cannot open: No such file or directory\ntar: Error is not recoverable: exiting now\n"
+        mixed = missing_file + b"tar: other: Cannot open: Permission denied\n"
+        for name, diagnostic, code in (("file", missing_file, runner_docker.HELPER_FILE_MISSING),
+                                       ("dir", missing_dir, runner_docker.HELPER_FILE_MISSING),
+                                       ("mixed", mixed, "docker_helper_copy_failed"),
+                                       ("permission", b"tar: x: Cannot open: Permission denied\n", "docker_helper_copy_failed"),
+                                       ("end_only", b"tar: Exiting with failure status due to previous errors\n", "docker_helper_copy_failed"),
+                                       ("empty", b"", "docker_helper_copy_failed")):
+            with self.subTest(case=name), self.assertRaises(DockerError) as caught:
+                # 실패 뒤 도우미 정리: 남은 도우미 목록 조회 두 번(없음)
+                self.copy(self.bounded(b"", returncode=2, diagnostic=diagnostic), FakeExecutor(CommandResult(0, b""), CommandResult(0, b"")))
+            self.assertEqual(str(caught.exception), code)
 
     def test_failed_copy_removes_this_calls_helper_and_confirms(self):
         # #693 리뷰: 시간 초과면 Docker CLI만 끝나고 도우미가 보호 볼륨을 잡고 남을 수 있다. 이 호출의 라벨·볼륨으로 찾아

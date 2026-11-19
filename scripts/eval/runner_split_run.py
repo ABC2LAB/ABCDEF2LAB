@@ -58,6 +58,7 @@ from runner_record import (  # noqa: E402
     solve_events, timeline,
 )
 from runner_docker import HelperCleanupError, HelperCleanupInterrupt  # noqa: E402
+from runner_e2v3 import EVIDENCE_NAME as E2V3_EVIDENCE_NAME, E2V3Invalid  # noqa: E402
 from cli_usage import OBSERVED_LINES_FORMAT, count_usage, not_found_calls, observed_lines, product_command_record  # noqa: E402
 from isolation_proof import E3_STATUSES, PURPOSE_OFFICIAL  # noqa: E402
 from run_record import OFFICIAL_E3_DISABLED_REASON  # noqa: E402
@@ -257,6 +258,7 @@ class SplitRunSpec:
     synthetic: bool = False
     scripted_plan_sha256: str = ""  # 합성 모드에서 스크립트 모델이 읽은 계획 사본의 SHA
     fault_stall_seconds: int | None = None  # 멈춤 무효 판정 T(초, B와 같은 run.fault_stall_seconds). None이면 판정 안 함
+    e2_v3: bool = False  # 설정 split.e2_v3가 있으면 E② v3 저널·봉인 head를 꺼내 검증한다(runner_e2v3)
     # B 전용 CLI 이름(split.cli_usage_names). 있으면 O 제품 활동의 Bash 호출에서 B와 같은 함수로 관측·이름 못 찾음 수를 센다.
     cli_usage_names: tuple[str, ...] = ()
     # v1.1 러너 기록(설계안 §2·§5). B(build_spec)와 같은 선언·설정 칸이다. 비면 기록을 만들지 않고 회차가 무효다.
@@ -308,6 +310,8 @@ class SplitRunPorts(Protocol):
     def sign(self, payload: dict) -> dict: ...
     def copy_boundary_evidence(self) -> None: ...
     def copy_product_records(self) -> tuple: ...
+    def e2_v3_export(self, draft_id: str) -> tuple: ...
+    def e2_v3_collect(self, journal: bytes | None, head: bytes | None) -> dict: ...
     def generation_verify(self, calls: bytes, sampling: dict | None) -> None: ...
     def llm_verified(self) -> dict | None: ...
     def down(self) -> None: ...
@@ -435,6 +439,18 @@ def _discovery_sources(ports, draft_id: str) -> dict:
         return {"format": DISCOVERY_SOURCES_FORMAT, "error": "discovery_sources_failed"}
 
 
+def _collect_e2_v3(ports, evidence, state, draft_id: str) -> None:
+    """E② v3 저널과 신뢰 저장소의 봉인된 최종 head를 꺼내 검증한다. 제품이 안 냈거나 무결성·현재성 확인에 실패하면 회차는
+    유효하고 통제 대조만 미수집이다(고정 초안 §20). 러너 쪽 장애(키 파일·사본·검증기 실행)는 평가 환경 원인이라 무효다."""
+    journal, head = _step(state, "e2_v3_export_failed", lambda: ports.e2_v3_export(draft_id))
+    state.step = "e2_v3_collect_failed"
+    try:
+        row = ports.e2_v3_collect(journal, head)
+    except E2V3Invalid as exc:
+        raise RunFailure("e2_v3_collect_failed", (exc.code,)) from None
+    except Exception:
+        raise RunFailure("e2_v3_collect_failed") from None
+    _step(state, "evidence_write_failed", lambda: evidence.write_json(E2V3_EVIDENCE_NAME, row))
 def _product_cli_usage(names: tuple[str, ...], ports, evidence, state, task_id: str) -> None:
     """O 제품 활동의 Bash 호출에서 B 전용 CLI 이름별 관측(B와 같은 count_usage·observed_lines)과, O에 없는 이름이라 찾지 못한
     호출 수(not_found)를 남긴다. 원문은 메모리에서만 보고 모양(이름·연산자만)만 쓴다. 이름과 상관없이 셸이 명령을 찾지 못한
@@ -720,6 +736,8 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
                                                   engine_end["first_terminal"], llm_summary, files, fingerprint, conditions,
                                                   usage["sampling_overwrites"], None, None, task_id)
         return
+    if spec.e2_v3:
+        _collect_e2_v3(ports, evidence, state, draft_id)
     ledger, calls = _step(state, "product_records_copy_failed", ports.copy_product_records)
     record_reasons = call_records_reasons(ledger, calls)
     _step(state, "evidence_write_failed", lambda: evidence.write_json("product-model.json", {

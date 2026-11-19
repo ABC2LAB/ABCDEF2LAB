@@ -202,6 +202,8 @@ class FakePorts:
                        "run": {"phase": "closed", "run_ref": "run-draft-1",
                                "execution": {"scope": dict(SCOPE), "policy_revision": "v1"}}}
         self.ledger, self.calls_file = LEDGER, CALLS
+        self.e2_v3_row = {"format": "abc2lab-eval-e2-v3-collection-v1", "outcome": "uncollected", "reason": "e2_v3_export_unavailable"}
+        self.e2_v3_files = (b"journal", b"head")
         # 제품 활동 표의 Bash 호출 줄(cmd·res·is_error). 기본은 O에 없는 python을 부른 Worker 호출 하나와 보통 호출 하나.
         self.commands = [
             {"cmd": json.dumps({"command": "python -c 'print(1)'"}), "is_error": True,
@@ -373,6 +375,17 @@ class FakePorts:
         self._call("run_record")
         return self.record
 
+    def e2_v3_export(self, draft_id):
+        self._call("e2_v3_export")
+        if isinstance(self.e2_v3_files, Exception):
+            raise self.e2_v3_files
+        return self.e2_v3_files
+
+    def e2_v3_collect(self, journal, head):
+        self._call("e2_v3_collect")
+        if isinstance(self.e2_v3_row, Exception):
+            raise self.e2_v3_row
+        return self.e2_v3_row
     def task_exploration_id(self, task_id):
         self._call("task_exploration_id")
         return 7
@@ -1146,6 +1159,46 @@ class TestDiscoverySources(unittest.TestCase):
                 self.assertNotIn("draft-1", json.dumps(recorded) + json.dumps(result["discovery_sources"]))
 
 
+class TestE2V3Collection(unittest.TestCase):
+    """E② v3 저널 수집(설정이 있을 때만). 미수집은 회차 유효·통제 대조만 미수집, 러너 쪽 장애는 무효(고정 초안 §20)."""
+
+    def test_uncollected_keeps_the_run_and_is_recorded_before_down(self):
+        result, ports, evidence = run(e2_v3=True)
+        self.assertEqual(result["status"], "complete", result)
+        self.assertEqual(evidence.files["e2-v3-collection.json"]["outcome"], "uncollected")
+        self.assertLess(ports.calls.index("e2_v3_export"), ports.calls.index("e2_v3_collect"))
+        self.assertLess(ports.calls.index("e2_v3_collect"), ports.calls.index("down"))
+
+    def test_off_by_default(self):
+        result, ports, evidence = run()
+        self.assertEqual(result["status"], "complete", result)
+        self.assertNotIn("e2_v3_export", ports.calls)
+        self.assertNotIn("e2-v3-collection.json", evidence.files)
+
+    def test_order_after_task_end_and_cli_usage_before_down(self):
+        # #785 재상 봇: #780·#782와 같은 자리라 내리기 전 순서를 하나로 고정한다(작업 끝 신호 → CLI 관측 → v3 수집 → 호출 기록).
+        result, ports, _ = run(e2_v3=True, cli_usage_names=("python",))
+        self.assertEqual(result["status"], "complete", result)
+        order = [ports.calls.index(name) for name in ("run_record", "task_signal", "product_commands", "e2_v3_export",
+                                                        "e2_v3_collect", "copy_product_records", "down")]
+        self.assertEqual(order, sorted(order))
+
+    def test_export_failure_invalidates(self):
+        from runner_docker import DockerError
+        result, ports, evidence = run(lambda p: setattr(p, "e2_v3_files", DockerError("docker_timeout")), e2_v3=True)
+        self.assertEqual((result["status"], result["reasons"][0]), ("invalid", "e2_v3_export_failed"), result)
+        self.assertNotIn("e2_v3_collect", ports.calls)
+        self.assertIn("remove_inputs", ports.calls)
+
+    def test_runner_side_failure_invalidates_with_its_code(self):
+        from runner_e2v3 import E2V3Invalid
+        for error, extra in ((E2V3Invalid("e2_v3_verifier_failed"), ["e2_v3_verifier_failed"]), (RuntimeError("x"), [])):
+            with self.subTest(error=str(error)):
+                result, ports, evidence = run(lambda p, e=error: setattr(p, "e2_v3_row", e), e2_v3=True)
+                self.assertEqual((result["status"], result["reasons"]), ("invalid", ["e2_v3_collect_failed", *extra]), result)
+                self.assertIn("down", ports.calls)
+                self.assertIn("remove_inputs", ports.calls)
+                self.assertNotIn("e2-v3-collection.json", evidence.files)
 class TestProductTaskEnd(unittest.TestCase):
     """마감 뒤 제품 작업의 끝 신호 칸(목표 수·달성 수 등). 제품 회차가 왜 마감했는지 가르는 근거라 판정에 쓰지 않는다."""
 

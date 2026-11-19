@@ -131,7 +131,7 @@ workbench에는 DB·키·제품 상태 볼륨이 없다. preparation netns 안�
 
 런타임은 UID 1000, read-only rootfs, cap_drop ALL, no-new-privileges다. [준비 서비스 seccomp](seccomp-preparation.json)는 [Docker 기본 정책](https://docs.docker.com/engine/security/seccomp/)의 deny 기본값에 필요한 namespace 조합과 내부 mount·pivot만 추가한다. 원본 Moby profiles commit은 `4b8214fc4971e06172938a1f1554ccff6647ee80`; [라이선스](seccomp-preparation.LICENSE)를 포함한다. Bash helper의 기존 capability 제거·추가 seccomp·네트워크 격리는 유지한다. AppArmor가 별도로 막는 호스트에서는 운영자의 정책 검토가 필요하다.
 
-`postgres-data`(DB)와 `product-state`(키·정책·authority·receipt·audit)를 함께 백업하고 권한을 보존한다. `target-tls`는 소유 시험 전용이다. 재기동은 `docker compose down` 후 `docker compose up -d --wait`로 수행한다. `down -v`는 영속 상태를 삭제하므로 복구 절차에 사용하지 않는다. 실행 중 강제 종료는 unknown으로 남으며 자동 재실행하지 않는다. 완료된 회차는 재기동 후 저장 보고서로 조회한다.
+`postgres-data`(DB)와 `product-state`(키·정책·authority·receipt·audit)를 함께 백업하고 권한을 보존한다. `target-tls`는 소유 시험 전용이다. 재기동은 `docker compose down` 후 `docker compose up -d --wait`로 수행한다. `down -v`는 영속 상태를 삭제하므로 복구 절차에 사용하지 않는다. 실행 중 강제 종료는 unknown으로 남으며 자동 재실행하지 않는다. 진행 중인 회차가 없는데 새 시작이 `busy`로 막히면(이전 회차 자원 마감 미확인, C04) 같은 `down`·`up -d --wait` 재기동으로 풀린다. 준비 컨테이너의 init이 바뀐 것을 자원 종료 증거로 쓰며 이전 결과·예약·실행 횟수는 바꾸지 않는다([준비 문서](../../docs/url-diagnosis-preparation.md#c04c33-운영-보완-543-인계)). 완료된 회차는 재기동 후 저장 보고서로 조회한다.
 
 ### 탐색 경계·브라우저 샌드박스(설치 조직이 켬)
 
