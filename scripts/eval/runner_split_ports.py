@@ -33,7 +33,7 @@ from runner_llm import PRODUCT_VERIFY_ROLE
 from meter_describe import MAX_DESCRIBE_BYTES, describe_args, parse as describe_parse
 
 METER_DESCRIBE_SECONDS = 30.0
-from runner_docker import HELPER_FILE_MISSING, Docker, DockerError, HelperCleanupError, client_environment
+from runner_docker import HELPER_FILE_MISSING, Docker, DockerError, client_environment
 from runner_e2v3 import MAX_HEAD_BYTES as E2V3_MAX_HEAD_BYTES, MAX_JOURNAL_BYTES as E2V3_MAX_JOURNAL_BYTES, collect as e2v3_collect
 from e2_collect import subprocess_verifier
 from runner_engine import AdminSecret
@@ -345,7 +345,7 @@ class DockerSplitPorts:
             try:
                 out.append(self._copy(settings.volume, settings.directory, (name,), role, settings.uid, limit, subpath)[name])
             except DockerError as exc:
-                if isinstance(exc, HelperCleanupError) or str(exc) != HELPER_FILE_MISSING:
+                if str(exc) != HELPER_FILE_MISSING:  # 정리 실패(HelperCleanupError)도 여기서 올라간다
                     raise
                 out.append(None)
         return out[0], out[1]
