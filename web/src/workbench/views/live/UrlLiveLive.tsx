@@ -58,6 +58,7 @@ import { InspHead, InspOpenButton, Isec, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "./approvals";
 import { DiagnosticEntrySections, stepHeading } from "./DiagnosticEntrySections";
+import { ProductVerdictReport } from "./productVerdictViews";
 import { ReportAssetGraph } from "./ReportAssetGraph";
 import { ReportReadError } from "./runRows";
 import { TaskActivity } from "./TaskActivity";
@@ -1769,6 +1770,8 @@ export function UrlReportLive() {
               </div>
               <div role="tabpanel" id="rp-list" aria-label="취약점 목록" hidden={tab !== "list"}>
                 {listBody}
+                {/* 제품 확정 단계 판정은 위 목록(평가 · 일반 발견)과 섞지 않고 따로(#801 §3). 제품 관리 중계가 아니면(404) 두지 않는다 */}
+                <ProductVerdictReport taskId={taskId} active={visible && tab === "list"} />
               </div>
               <div role="tabpanel" id="rp-graph" aria-label="자산 지식 그래프" hidden={tab !== "graph"}>
                 <ReportAssetGraph taskId={taskId} active={visible && tab === "graph"} />

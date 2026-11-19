@@ -31,6 +31,7 @@ import { useUrl, useUrlSelectionKey } from "../../live/urlDiagnosis";
 import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
 import s from "../../workbench.module.css";
+import { ProductVerdictMap } from "./productVerdictViews";
 import { UrlHead } from "./urlParts";
 
 /**
@@ -387,6 +388,8 @@ export function AccessMapPanel({ active }: { active: boolean }) {
           </p>
         </section>
       ) : null}
+      {/* 제품 확정 단계 판정은 평가 KG 격자와 축 출처가 달라 아래 표로 따로(#801 §3). 평가 지도가 409(KG 미등록)여도 읽는다 */}
+      <ProductVerdictMap taskId={taskId} active={active} />
     </>
   );
 }
