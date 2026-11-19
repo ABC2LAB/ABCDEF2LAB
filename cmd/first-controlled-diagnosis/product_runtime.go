@@ -605,7 +605,7 @@ func (e productPreparationEndpoint) Call(ctx context.Context, r diagnosisprep.Re
 	out.Product = control
 	var err error
 	if r.Product.Operation == "policy_source" {
-		control.PolicySource, err = e.policySource(ctx, r)
+		control.PolicySource, control.Confirmation, err = e.policySource(ctx, r)
 	} else if strings.HasPrefix(r.Product.Operation, "workflow_") {
 		control.Workflow, err = e.workflowControl(ctx, r)
 	} else {
