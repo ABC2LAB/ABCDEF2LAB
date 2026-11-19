@@ -61,7 +61,7 @@ const (
 	verdictDetailProductRecordVersion   = 2
 	verdictDetailEvalRecordVersion      = 1
 	verdictDetailProductFormat          = "e3-product-verdict/v1"
-	verdictDetailProductManifestFormat  = "e3-product-manifest/v1"
+	verdictDetailProductManifestFormat  = "e3-product-manifest/v2"
 	verdictDetailProductBindingFormat   = "e3-product-binding/v1"
 	verdictDetailProductPolicyKind      = "product_declaration"
 	verdictDetailProductCasePrefix      = "e3-product:"
@@ -286,6 +286,8 @@ type verdictDetailEnvelope struct {
 	Transmission     verdictDetailTransmission  `json:"transmission"`
 	Finding          *verdictDetailFinding      `json:"finding"`
 	Candidate        *verdictDetailCandidate    `json:"candidate"`
+	// EvidenceSeal은 제품 판정 근거의 봉인 확인 표시다(E1 계약 §7). 평가 판정·근거 호출 없는 판정은 null이다.
+	EvidenceSeal *productEvidenceSeal `json:"evidence_seal"`
 }
 
 // verdictDetailCandidate는 candidate selector가 고른 후보의 최소 식별·검토 상태다(초안 §8.2 예시 ④). 후보 원문·근거는 싣지
@@ -329,10 +331,16 @@ type verdictDetailProductPayload struct {
 }
 
 type verdictDetailProductManifest struct {
-	Format        string `json:"format"`
-	RunRef        string `json:"run_ref"`
-	JournalRef    string `json:"journal_ref"`
-	JournalDigest string `json:"journal_digest_sha256"`
+	Format     string                   `json:"format"`
+	RunRef     string                   `json:"run_ref"`
+	Checkpoint *verdictDetailCheckpoint `json:"evidence_checkpoint"`
+}
+
+// verdictDetailCheckpoint는 제품 판정 manifest의 근거 체크포인트다(E1 계약 §3).
+type verdictDetailCheckpoint struct {
+	JournalID string `json:"journal_id"`
+	Sequence  uint64 `json:"sequence"`
+	MAC       string `json:"mac"`
 }
 
 type verdictDetailProductBinding struct {
@@ -372,6 +380,8 @@ type verdictDetailLoaded struct {
 	row         verdictDetailRow
 	// candidate는 candidate selector가 먼저 읽은 후보다(그 밖의 selector는 nil).
 	candidate *db.DiagnosticCandidate
+	// seals는 제품 판정 회차의 봉인 확인 기록이다(같은 읽기 스냅샷).
+	seals productSealChecks
 }
 
 const verdictDetailColumns = `f.id,f.task_id,f.status,f.evidence_version,
@@ -408,6 +418,11 @@ func readFindingVerdictDetail(ctx context.Context, pool *sql.DB, taskID int64, s
 	loaded, status, code := loadVerdictDetail(ctx, tx, taskID, sel)
 	if status != http.StatusOK {
 		return verdictDetailFail("load", status, code)
+	}
+	if loaded.row.issSource.String == db.E3SourceProduct {
+		if loaded.seals, err = loadProductSealChecks(ctx, tx, taskID, productVerdictRunRefs([]verdictDetailRow{loaded.row})); err != nil {
+			return verdictDetailFail("seal-checks", http.StatusServiceUnavailable, verdictDetailUnavailable)
+		}
 	}
 	if tx.Commit() != nil {
 		return verdictDetailFail("commit", http.StatusServiceUnavailable, verdictDetailUnavailable)
@@ -518,6 +533,10 @@ type verdictDetailVerified struct {
 	arrays     [][]string
 	canary     int
 	candidates int
+	// 제품 판정의 근거 체크포인트와 근거 호출 수다(봉인 확인 표시, E1 계약 §7). 평가 판정은 비어 있다.
+	checkpoint *db.ProductCheckpoint
+	evidence   int
+	runRef     string
 }
 
 type verdictDetailState struct {
@@ -632,6 +651,16 @@ func assembleVerdictDetail(ctx context.Context, taskID int64, sel verdictDetailS
 		checks.Status, checks.ReasonCodes = "unavailable", []string{verdictDetailRecordIntegrityFailed}
 		env.Transmission = verdictDetailUnverifiedTransmission(source)
 		return verdictDetailFinish(env)
+	}
+	if source == db.E3SourceProduct {
+		// 봉인 포함 실패(되감기·다른 분기)는 진위 실패다. 값은 숨기고 봉인 확인 표시만 남긴다(E1 계약 §7).
+		seal, sealFailed := productEvidenceSealFor(verified, loaded.seals)
+		env.EvidenceSeal = seal
+		if sealFailed {
+			checks.Status, checks.ReasonCodes = "unavailable", []string{verdictDetailRecordIntegrityFailed}
+			env.Transmission = verdictDetailUnverifiedTransmission(source)
+			return verdictDetailFinish(env)
+		}
 	}
 	if len(verified.steps) > maxVerdictDetailSteps || verified.canary > maxVerdictDetailCanaryFields || verified.candidates > maxVerdictDetailCandidateRefs {
 		return verdictDetailFail("array-limit", http.StatusUnprocessableEntity, verdictDetailIntegrityFailed)
@@ -922,7 +951,8 @@ func verifyProductVerdictDetail(taskID, exploration int64, r verdictDetailRow) (
 		manifest.Format != verdictDetailProductManifestFormat || binding.Format != verdictDetailProductBindingFormat ||
 		binding.TaskID != taskID || binding.RunRef != r.issExecution.String || manifest.RunRef != r.issExecution.String ||
 		!verdictDetailProductRef.MatchString(binding.JobRef) || !verdictDetailProductRef.MatchString(binding.E2PolicyRef) ||
-		!verdictDetailProductRef.MatchString(manifest.JournalRef) || !verdictDetailHexDigest.MatchString(manifest.JournalDigest) ||
+		manifest.Checkpoint != nil && !db.ValidProductCheckpoint(db.ProductCheckpoint{JournalID: manifest.Checkpoint.JournalID,
+			Sequence: manifest.Checkpoint.Sequence, MAC: manifest.Checkpoint.MAC}) ||
 		binding.GenerationRef == "" || binding.GenerationRef != r.issGeneration.String || binding.GenerationRef != r.issReset.String ||
 		binding.InstanceRef == "" || binding.InstanceRef != r.issInstance.String ||
 		!verdictDetailProductCode.MatchString(payload.ResourceType) || payload.CaseRef != verdictDetailProductCasePrefix+payload.ResourceType ||
@@ -980,6 +1010,10 @@ func verifyProductVerdictDetail(taskID, exploration int64, r verdictDetailRow) (
 	out.policyView = &verdictDetailPolicySource{Kind: p.Kind, Ref: p.Ref, DigestSHA256: p.DigestSHA256, TargetApprovalRevision: p.TargetApprovalRevision}
 	out.arrays = [][]string{payload.OracleReasons, payload.ProductReasons}
 	out.candidates = len(payload.CandidateRefs)
+	out.evidence, out.runRef = len(payload.Evidence), binding.RunRef
+	if c := manifest.Checkpoint; c != nil {
+		out.checkpoint = &db.ProductCheckpoint{JournalID: c.JournalID, Sequence: c.Sequence, MAC: c.MAC}
+	}
 	out.record = verdictDetailProductRecord{CaseRef: payload.CaseRef, ResourceType: payload.ResourceType, ResourceRef: payload.ResourceRef,
 		OracleValue: payload.OracleValue, PolicyCheck: payload.PolicyCheck, IdentityCheck: payload.IdentityCheck, DataCheck: payload.DataCheck,
 		ReasonCodes: append([]string{}, payload.OracleReasons...), ProductReasonCodes: append([]string{}, payload.ProductReasons...),

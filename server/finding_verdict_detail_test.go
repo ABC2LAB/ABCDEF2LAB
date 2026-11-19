@@ -632,8 +632,13 @@ func TestFindingVerdictDetailProductIntegrity(t *testing.T) {
 		{name: "forge-manifest-run", forge: true, manifest: set("run_ref", "other-run")},
 		{name: "forge-binding-job", forge: true, binding: set("job_ref", "bad ref")},
 		{name: "forge-binding-e2-policy", forge: true, binding: set("e2_policy_ref", "bad ref")},
-		{name: "forge-journal-ref", forge: true, manifest: set("journal_ref", "bad ref")},
-		{name: "forge-journal-digest", forge: true, manifest: set("journal_digest_sha256", "not-hex")},
+		// 옛 manifest 칸(봉인 뒤 저장 전제)은 v2에 없다. 남아 있으면 진위 실패다.
+		{name: "forge-old-journal-ref", forge: true, manifest: set("journal_ref", "journal-synthetic")},
+		{name: "forge-checkpoint-journal", forge: true, manifest: func(m map[string]any) { m["evidence_checkpoint"].(map[string]any)["journal_id"] = "bad ref" }},
+		{name: "forge-checkpoint-sequence", forge: true, manifest: func(m map[string]any) { m["evidence_checkpoint"].(map[string]any)["sequence"] = 0 }},
+		{name: "forge-checkpoint-mac", forge: true, manifest: func(m map[string]any) { m["evidence_checkpoint"].(map[string]any)["mac"] = "not-hex" }},
+		{name: "forge-checkpoint-extra", forge: true, manifest: func(m map[string]any) { m["evidence_checkpoint"].(map[string]any)["scope"] = "x" }},
+		{name: "forge-checkpoint-key-missing", forge: true, manifest: func(m map[string]any) { delete(m["evidence_checkpoint"].(map[string]any), "mac") }},
 		{name: "forge-binding-generation", forge: true, binding: set("generation_ref", "other-generation")},
 		{name: "forge-generation-empty", forge: true, binding: set("generation_ref", ""),
 			sql: []string{`UPDATE e3_verdict_issuances SET reset_generation='',harness_generation_ref='' WHERE id={i}`}},
@@ -686,7 +691,7 @@ func TestFindingVerdictDetailProductIntegrity(t *testing.T) {
 			`UPDATE e3_oracle_verdicts SET oracle_value='undecidable' WHERE id={v}`}},
 		{name: "forge-payload-key-missing", forge: true, payload: func(p map[string]any) { delete(p, "evidence") }},
 		{name: "forge-binding-key-missing", forge: true, binding: func(b map[string]any) { delete(b, "e2_policy_ref") }},
-		{name: "forge-manifest-key-missing", forge: true, manifest: func(m map[string]any) { delete(m, "journal_ref") }},
+		{name: "forge-manifest-key-missing", forge: true, manifest: func(m map[string]any) { delete(m, "evidence_checkpoint") }},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

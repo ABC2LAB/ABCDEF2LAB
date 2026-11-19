@@ -25,7 +25,7 @@ const (
 const (
 	productVerdictRecordVersion = 2
 	productVerdictFormat        = "e3-product-verdict/v1"
-	productManifestFormat       = "e3-product-manifest/v1"
+	productManifestFormat       = "e3-product-manifest/v2"
 	productBindingFormat        = "e3-product-binding/v1"
 	productPolicyKind           = "product_declaration"
 	// 제품 회차 하나는 근거 묶음(봉인한 E² 저널) 하나를 갖고, 종류별 판정이 그것을 함께 가리킨다.
@@ -72,18 +72,21 @@ type ProductEvidence struct {
 	Sequence  uint64
 }
 
-// ProductJournal은 확정 단계가 끝난 뒤 봉인한 E² 저널의 참조와 digest다.
-type ProductJournal struct {
-	Ref          string
-	DigestSHA256 [32]byte
+// ProductCheckpoint는 확정 단계에서 Host가 근거를 검증한 현재 head 체크포인트다(E1, docs/contracts/e3-product-verdict-store.md
+// §2). 그 head는 회차의 모든 근거 사건을 앞부분으로 포함한다. 봉인 포함 여부는 따로 기록한다(e3_seal_checks).
+type ProductCheckpoint struct {
+	JournalID string
+	Sequence  uint64
+	MAC       string
 }
 
 // ProductVerdict는 제품 확정 단계에서 나온 자원 종류 하나의 판정이다. 표식 값·본문·계정 자격은 들어 있지 않다.
 // 판정 값과 세 검사는 오라클(oracle.Evaluate)이 낸 그대로이고, 저장은 그 값을 다시 만들지 않는다.
 type ProductVerdict struct {
-	TaskID         int64
-	Binding        ProductBinding
-	Journal        ProductJournal
+	TaskID  int64
+	Binding ProductBinding
+	// Checkpoint는 회차의 근거 체크포인트다. 근거 호출이 없거나 Host에서 받지 못했으면 nil이다.
+	Checkpoint     *ProductCheckpoint
 	ResourceType   string
 	ResourceRef    string
 	ModelTag       string
@@ -139,10 +142,15 @@ type productPayloadJSON struct {
 }
 
 type productManifestJSON struct {
-	Format        string `json:"format"`
-	RunRef        string `json:"run_ref"`
-	JournalRef    string `json:"journal_ref"`
-	JournalDigest string `json:"journal_digest_sha256"`
+	Format     string                 `json:"format"`
+	RunRef     string                 `json:"run_ref"`
+	Checkpoint *productCheckpointJSON `json:"evidence_checkpoint"`
+}
+
+type productCheckpointJSON struct {
+	JournalID string `json:"journal_id"`
+	Sequence  uint64 `json:"sequence"`
+	MAC       string `json:"mac"`
 }
 
 type productBindingJSON struct {
@@ -169,6 +177,23 @@ func hexDigest(d [32]byte) string {
 		out[i*2], out[i*2+1] = digits[b>>4], digits[b&0x0f]
 	}
 	return string(out)
+}
+
+// ValidProductCheckpoint는 근거 체크포인트 모양이다(저널 ID는 참조 모양, 순번은 1 이상, MAC은 소문자 16진 64자).
+func ValidProductCheckpoint(c ProductCheckpoint) bool {
+	return validProductRefs(c.JournalID) && c.Sequence > 0 && c.Sequence <= 1<<62 && validLowerHex64(c.MAC)
+}
+
+func validLowerHex64(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, ch := range s {
+		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func validProductRefs(refs ...string) bool {
@@ -203,8 +228,8 @@ func uniqueMatching(list []string, limit int, valid func(string) bool) bool {
 func validProductVerdict(in ProductVerdict) bool {
 	b, p := in.Binding, in.Binding.Policy
 	if in.TaskID <= 0 || in.ObservedAt.IsZero() || in.ObservedAt.UTC().Year() < 2000 || in.ObservedAt.UTC().Year() > 9999 ||
-		!validProductRefs(b.JobRef, b.RunRef, b.E2PolicyRef, b.GenerationRef, b.InstanceRef, p.Ref, p.TargetApprovalRevision, in.Journal.Ref) ||
-		p.DigestSHA256 == ([32]byte{}) || in.Journal.DigestSHA256 == ([32]byte{}) ||
+		!validProductRefs(b.JobRef, b.RunRef, b.E2PolicyRef, b.GenerationRef, b.InstanceRef, p.Ref, p.TargetApprovalRevision) ||
+		p.DigestSHA256 == ([32]byte{}) || in.Checkpoint != nil && !ValidProductCheckpoint(*in.Checkpoint) ||
 		!productCode.MatchString(in.ResourceType) || !strings.HasPrefix(in.ResourceRef, in.ResourceType+":") || !validProductRefs(in.ResourceRef) ||
 		in.ModelTag == "" || len(in.ModelTag) > 128 || !productRef.MatchString(in.ModelTag) ||
 		!validCheck(in.PolicyCheck) || !validCheck(in.IdentityCheck) || !validCheck(in.DataCheck) ||
@@ -271,8 +296,11 @@ func prepareProductVerdict(in ProductVerdict) (productSnapshot, error) {
 		CandidateRefs: candidates, Evidence: evidence, ObservedAt: productTime(in.ObservedAt), ModelTag: in.ModelTag, Policy: policy}); err != nil {
 		return productSnapshot{}, ErrProductVerdictInput
 	}
-	if s.manifest, err = json.Marshal(productManifestJSON{Format: productManifestFormat, RunRef: in.Binding.RunRef,
-		JournalRef: in.Journal.Ref, JournalDigest: hexDigest(in.Journal.DigestSHA256)}); err != nil {
+	manifest := productManifestJSON{Format: productManifestFormat, RunRef: in.Binding.RunRef}
+	if c := in.Checkpoint; c != nil {
+		manifest.Checkpoint = &productCheckpointJSON{JournalID: c.JournalID, Sequence: c.Sequence, MAC: c.MAC}
+	}
+	if s.manifest, err = json.Marshal(manifest); err != nil {
 		return productSnapshot{}, ErrProductVerdictInput
 	}
 	b := in.Binding

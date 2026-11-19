@@ -135,3 +135,24 @@ CREATE TRIGGER trg_e3_link_immutable BEFORE UPDATE OR DELETE ON e3_verdict_links
 DROP TRIGGER IF EXISTS trg_e3_link_truncate ON e3_verdict_links;
 CREATE TRIGGER trg_e3_link_truncate BEFORE TRUNCATE ON e3_verdict_links
  FOR EACH STATEMENT EXECUTE FUNCTION guard_e3_immutable();
+
+-- E③ 제품 판정 봉인 확인(E1, docs/contracts/e3-product-verdict-store.md §6). E② Host가 봉인 뒤 근거 체크포인트마다 봉인
+-- head 포함 여부를 확인한 결과를 회차마다 한 번만 남긴다. 판정 행과 따로 두고 바꾸지 않는다. 봉인 실패·ACK 불명·interrupted는
+-- 행이 없다(표시는 "봉인 미확인").
+CREATE TABLE IF NOT EXISTS e3_seal_checks (
+ id BIGSERIAL PRIMARY KEY,
+ task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+ run_ref TEXT NOT NULL CHECK (char_length(run_ref) BETWEEN 1 AND 128),
+ journal_id TEXT NOT NULL CHECK (char_length(journal_id) BETWEEN 1 AND 128),
+ head_sequence BIGINT NOT NULL CHECK (head_sequence >= 0),
+ head_mac TEXT NOT NULL CHECK (head_mac ~ '^[0-9a-f]{64}$'),
+ checks JSONB NOT NULL CHECK (jsonb_typeof(checks) = 'array'),
+ recorded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+ UNIQUE(task_id, run_ref)
+);
+DROP TRIGGER IF EXISTS trg_e3_seal_check_immutable ON e3_seal_checks;
+CREATE TRIGGER trg_e3_seal_check_immutable BEFORE UPDATE OR DELETE ON e3_seal_checks
+ FOR EACH ROW EXECUTE FUNCTION guard_e3_immutable();
+DROP TRIGGER IF EXISTS trg_e3_seal_check_truncate ON e3_seal_checks;
+CREATE TRIGGER trg_e3_seal_check_truncate BEFORE TRUNCATE ON e3_seal_checks
+ FOR EACH STATEMENT EXECUTE FUNCTION guard_e3_immutable();
