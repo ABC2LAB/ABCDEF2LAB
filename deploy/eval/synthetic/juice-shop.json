@@ -1,0 +1,16 @@
+{
+ "format": "abc2lab.scripted-product-plan/v1",
+ "model": "scripted-product:v1",
+ "timeout_ms": 60000,
+ "exploration": [
+  {"navigate": "{origin}/"},
+  {"bash": "curl -s -o /dev/null -w 'status=%{http_code}\\n' {origin}/api/Products"}
+ ],
+ "intents": [
+  "Read the public home page at {origin}/ and the public product catalog at {origin}/api/Products."
+ ],
+ "commands": [
+  "curl -s -o /dev/null -w 'status=%{http_code}\\n' {origin}/",
+  "curl -s -o /dev/null -w 'status=%{http_code}\\n' {origin}/api/Products"
+ ]
+}
