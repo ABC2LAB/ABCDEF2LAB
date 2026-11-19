@@ -31,11 +31,16 @@ func (r *run) persistHead(ctx context.Context) error {
 	if err != nil {
 		return ErrUnavailable
 	}
+	return writePrivateFile(r.directory, "head", data)
+}
+
+// writePrivateFile은 <name>.json을 같은 디렉터리의 임시 파일로 쓰고 Sync한 뒤 원자적으로 바꾼다.
+func writePrivateFile(directory, name string, data []byte) error {
 	var nonce [8]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return ErrUnavailable
 	}
-	tmp := filepath.Join(r.directory, "head."+hex.EncodeToString(nonce[:])+".tmp")
+	tmp := filepath.Join(directory, name+"."+hex.EncodeToString(nonce[:])+".tmp")
 	file, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		return ErrUnavailable
@@ -46,10 +51,10 @@ func (r *run) persistHead(ctx context.Context) error {
 	if writeErr != nil || syncErr != nil || closeErr != nil {
 		return ErrUnavailable
 	}
-	if os.Rename(tmp, filepath.Join(r.directory, "head.json")) != nil {
+	if os.Rename(tmp, filepath.Join(directory, name+".json")) != nil {
 		return ErrUnavailable
 	}
-	dir, err := os.Open(r.directory)
+	dir, err := os.Open(directory)
 	if err != nil {
 		return ErrUnavailable
 	}
@@ -92,6 +97,21 @@ func (r *run) completeAudit(ctx context.Context, phase e2checkpoint.Phase) error
 // verifiedEvents는 Host 전용 파일의 한 스냅샷을 현재 epoch/head와 대조한 뒤
 // 같은 바이트에서 MAC 체인을 검증한다. 호출자는 run 잠금을 보유한다.
 func (r *run) verifiedEvents(ctx context.Context) ([]e2proxy.Event, e2checkpoint.Head, error) {
+	snapshot, current, err := r.verifiedSnapshot(ctx)
+	if err != nil {
+		return nil, e2checkpoint.Head{}, err
+	}
+	defer clear(snapshot)
+	events, _, err := e2proxy.VerifyJournalEvents(ctx, bytes.NewReader(snapshot), r.owner.key, current.Checkpoint)
+	if err != nil {
+		return nil, e2checkpoint.Head{}, ErrUnavailable
+	}
+	return events, current, nil
+}
+
+// verifiedSnapshot은 Host 볼륨의 head 복사본·저널 스냅샷을 현재 epoch/head(VerifyCurrent)와 대조한 바이트를
+// 돌려준다. 호출자가 다 쓴 뒤 지운다.
+func (r *run) verifiedSnapshot(ctx context.Context) ([]byte, e2checkpoint.Head, error) {
 	mirror, err := readSnapshot(filepath.Join(r.directory, "head.json"))
 	if err != nil {
 		return nil, e2checkpoint.Head{}, ErrUnavailable
@@ -105,17 +125,13 @@ func (r *run) verifiedEvents(ctx context.Context) ([]e2proxy.Event, e2checkpoint
 	if err != nil {
 		return nil, e2checkpoint.Head{}, ErrUnavailable
 	}
-	defer clear(snapshot)
 	_, current, err := r.owner.store.VerifyCurrent(ctx,
 		e2checkpoint.Query{Epoch: r.owner.epoch, Binding: r.binding}, bytes.NewReader(snapshot))
 	if err != nil || current != expected {
+		clear(snapshot)
 		return nil, e2checkpoint.Head{}, ErrUnavailable
 	}
-	events, _, err := e2proxy.VerifyJournalEvents(ctx, bytes.NewReader(snapshot), r.owner.key, current.Checkpoint)
-	if err != nil {
-		return nil, e2checkpoint.Head{}, ErrUnavailable
-	}
-	return events, current, nil
+	return snapshot, current, nil
 }
 
 // allAttemptsFinished는 실제 송신에 앞서는 intent ACK와 마지막 result를
@@ -275,6 +291,11 @@ func (h *Host) checkRestoredHeads(ctx context.Context, recoverDisconnected bool)
 				}
 				if err == nil {
 					expected = actual
+					// 끊긴 실행이 내준 근거도 interrupted head와 대조해 따로 남긴다. 정상 봉인이 아니므로 화면은
+					// 포함돼도 "봉인 미확인"이다. 남기지 못해도 마감은 그대로 진행한다(기록 없음 = 미확인).
+					if issued, readErr := readIssued(directory); readErr == nil {
+						_, _ = r.phaseChecks(ctx, e2checkpoint.Interrupted, issued)
+					}
 				}
 			} else {
 				err = ErrUnavailable
