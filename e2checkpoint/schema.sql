@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS e2_http_audit_heads (
     key_ref TEXT NOT NULL,
     journal_id TEXT NOT NULL,
     revision BIGINT NOT NULL CHECK (revision > 0),
-    phase TEXT NOT NULL CHECK (phase IN ('open', 'sealed')),
+    phase TEXT NOT NULL CHECK (phase IN ('open', 'sealed', 'interrupted')),
     checkpoint JSONB NOT NULL,
     snapshot_bytes BIGINT NOT NULL CHECK (snapshot_bytes > 0),
     snapshot_digest BYTEA NOT NULL CHECK (octet_length(snapshot_digest) = 32),

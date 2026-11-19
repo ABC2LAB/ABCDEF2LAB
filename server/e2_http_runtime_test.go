@@ -159,6 +159,59 @@ func TestE2HTTPRuntimeWaitsForOwnedWorkBeforeRelease(t *testing.T) {
 	}
 }
 
+type failedPreparationRunner struct {
+	E2HTTPLeaseRunner
+	stopCalls  int
+	closeCalls int
+	stopErr    error
+	closeErr   error
+}
+
+func (r *failedPreparationRunner) Stop(context.Context) error {
+	r.stopCalls++
+	return r.stopErr
+}
+func (r *failedPreparationRunner) Close(context.Context) error {
+	r.closeCalls++
+	return r.closeErr
+}
+
+func TestE2HTTPRuntimeFailedPreparationReleasesOnlyAfterDrain(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		stopErr  error
+		closeErr error
+		wantSeal bool
+	}{
+		{name: "closed", wantSeal: true},
+		{name: "stop_failed", stopErr: errors.New("synthetic stop failure")},
+		{name: "drain_failed", closeErr: errors.New("synthetic drain failure")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runtime, task := e2HTTPRuntimeFixture(t, nil)
+			if err := runtime.AdmitTask(t.Context(), task); err != nil {
+				t.Fatal(err)
+			}
+			runner := &failedPreparationRunner{stopErr: tc.stopErr, closeErr: tc.closeErr}
+			releases := 0
+			runtime.task.lease = &E2HTTPRunOptions{Runner: runner, Release: func(context.Context) error {
+				if runner.stopCalls != 1 || runner.closeCalls != 1 {
+					t.Error("Host 봉인이 실행 중지와 drain보다 먼저 호출됨")
+				}
+				releases++
+				return nil
+			}}
+			err := runtime.closeTaskResources(t.Context(), runtime.task)
+			if tc.wantSeal && (err != nil || releases != 1) {
+				t.Fatal("준비 실패의 확인된 마감을 봉인하지 못함", err)
+			}
+			if !tc.wantSeal && (!errors.Is(err, ErrE2HTTPClosure) || releases != 0) {
+				t.Fatal("종료·drain 불명인 준비 실패를 봉인함", err)
+			}
+		})
+	}
+}
+
 func TestE2HTTPRuntimeResultsArePrivateHistoryCopies(t *testing.T) {
 	runtime, task := e2HTTPRuntimeFixture(t, nil)
 	if err := runtime.AdmitTask(context.Background(), task); err != nil {

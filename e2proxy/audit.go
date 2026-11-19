@@ -484,6 +484,9 @@ func validJournalRecordEvent(event Event, version string) bool {
 	if event.Version != version {
 		return false
 	}
+	if version != JournalVersionV3 && event.Program.isE3() {
+		return false
+	}
 	if version == JournalVersionV3 {
 		if event.Program.isE3() {
 			if event.Stage == "call_closed" {

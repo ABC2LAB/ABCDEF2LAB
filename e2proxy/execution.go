@@ -27,6 +27,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/Autumn-27/artex/e3contract"
 	"github.com/Autumn-27/artex/internal/pathscope"
 	"github.com/Autumn-27/artex/transmit/budget"
 )
@@ -123,6 +124,12 @@ func randomRef(prefix string) (string, error) {
 }
 
 func NewExecution(parent context.Context, cfg Config) (*Execution, error) {
+	if cfg.AuditVersion == "" {
+		cfg.AuditVersion = Version
+	}
+	if cfg.AuditVersion != Version && cfg.AuditVersion != JournalVersionV3 {
+		return nil, ErrConfig
+	}
 	if !validApprovalConfig(cfg) || parent == nil || cfg.Recorder == nil || cfg.IntentID <= 0 || !validRef(cfg.OwnerRef) || !validRef(cfg.PolicyRevision) ||
 		!validRef(cfg.AccountRef) || !validRef(cfg.SessionRef) || cfg.ExpiresAt.IsZero() || !time.Now().Before(cfg.ExpiresAt) {
 		return nil, ErrConfig
@@ -424,7 +431,8 @@ func (e *Execution) beginCall(parent context.Context, id int64, program ProgramC
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	_, registered := e.intents[id]
-	if parent.Err() != nil || !ValidCallAttribution(id, program) || program == "" && !registered || e.blockedLocked() != Complete || len(e.calls) >= e.cfg.Limits.MaxCalls {
+	validAttribution := ValidCallAttribution(id, program) || id == 0 && e.cfg.AuditVersion == JournalVersionV3 && program.isE3()
+	if parent.Err() != nil || !validAttribution || program == "" && !registered || e.blockedLocked() != Complete || len(e.calls) >= e.cfg.Limits.MaxCalls {
 		return nil, ErrClosed
 	}
 	expires := time.Now().Add(e.cfg.Limits.CallTimeout)
@@ -440,7 +448,7 @@ func (e *Execution) beginCall(parent context.Context, id int64, program ProgramC
 	if counts := e.intentCounts[id]; counts != nil {
 		counts.Calls++
 	}
-	if program.Valid() {
+	if program.Valid() || program.isE3() {
 		e.programCounts.Calls++
 	}
 	accepted = true
@@ -472,7 +480,8 @@ func (e *Execution) blockedLocked() Reason {
 	return Complete
 }
 func (c *Call) blockedLocked() Reason {
-	if _, registered := c.e.intents[c.intentID]; !ValidCallAttribution(c.intentID, c.program) || c.program == "" && !registered {
+	validAttribution := ValidCallAttribution(c.intentID, c.program) || c.intentID == 0 && c.e.cfg.AuditVersion == JournalVersionV3 && c.program.isE3()
+	if _, registered := c.e.intents[c.intentID]; !validAttribution || c.program == "" && !registered {
 		return Invalid
 	}
 	if r := c.e.blockedLocked(); r != Complete {
@@ -501,6 +510,7 @@ func (e *Execution) recordEvent(ctx context.Context, ev Event) (_ Event, resultE
 		return Event{}, ErrAudit
 	}
 	ev.Index = e.eventIndex + 1
+	ev.Version = e.cfg.AuditVersion
 	ev.At = time.Now().UTC()
 	e.mu.Unlock()
 	ev.AuditComplete = ev.Reason != AuditFailed
@@ -898,7 +908,7 @@ func (c *Call) start(method string) (Receipt, error) {
 	if counts := e.intentCounts[c.intentID]; counts != nil {
 		counts.Attempts++
 	}
-	if c.program.Valid() {
+	if c.program.Valid() || c.program.isE3() {
 		e.programCounts.Attempts++
 	}
 	return r, nil
@@ -958,7 +968,7 @@ func (c *Call) finish(ctx context.Context, r Receipt, observe ...func(Receipt)) 
 	if counts := e.intentCounts[c.intentID]; counts != nil {
 		add(counts)
 	}
-	if c.program.Valid() {
+	if c.program.Valid() || c.program.isE3() {
 		add(&e.programCounts)
 	}
 	if (r.Decision == "denied" || r.Decision == "unsupported") && r.Reason == Closed {
@@ -1182,10 +1192,15 @@ func (c *Call) AuthPrep(ctx context.Context, req *http.Request, extract AuthExtr
 }
 
 func (c *Call) do(ctx context.Context, req *http.Request, purpose string, extract AuthExtractor) (*http.Response, http.Header, Receipt, error) {
+	return c.doWithE3(ctx, req, purpose, extract, nil)
+}
+
+func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, extract AuthExtractor, e3 *e3IdentityCall) (*http.Response, http.Header, Receipt, error) {
 	if ctx == nil || c == nil {
 		return nil, nil, Receipt{}, ErrConfig
 	}
-	if c.program.isE3() {
+	if c.program.isE3() && (e3 == nil || c.program != ProgramE3Identity || purpose != PurposeE3Identity) ||
+		e3 != nil && c.program != ProgramE3Identity {
 		return nil, nil, Receipt{}, ErrE3JournalUnavailable
 	}
 	if c.program == "" && purpose != "" ||
@@ -1202,8 +1217,14 @@ func (c *Call) do(ctx context.Context, req *http.Request, purpose string, extrac
 	if err != nil {
 		return nil, nil, r, err
 	}
+	if e3 != nil {
+		r.E3Audit = &e3.audit
+	}
 	var session http.Header
 	finish := func(resp *http.Response, cause error) (*http.Response, http.Header, Receipt, error) {
+		if e3 != nil {
+			e3.finish(&r, ctx)
+		}
 		var boundaryErr error
 		rr, aerr := c.finish(ctx, r, func(rr Receipt) {
 			c.observeHTTP(req, resp, rr)
@@ -1312,10 +1333,14 @@ func (c *Call) do(ctx context.Context, req *http.Request, purpose string, extrac
 	if needsApproval {
 		approvalCtx, cancelApproval := context.WithCancel(c.ctx)
 		stopApproval := context.AfterFunc(ctx, cancelApproval)
+		previewBody := bytes.Clone(body)
+		if e3 != nil {
+			previewBody = e.RedactOutput(body)
+		}
 		proposal := RequestApprovalProposal{
 			Receipt: r, OwnerRef: e.cfg.OwnerRef, AccountRef: e.cfg.AccountRef, SessionRef: e.cfg.SessionRef,
 			ExpiresAt: c.expires, Method: method, URL: req.URL.String(), Host: requestHost,
-			Headers: requestHeaders.Clone(), Body: bytes.Clone(body),
+			Headers: requestHeaders.Clone(), Body: previewBody,
 		}
 		// 보호 자격 원문은 승인 소비자에게 전달하지 않는다. 참조만 결속한다.
 		allowed, approvalErr := e.cfg.RequestApproval.AwaitRequestApproval(approvalCtx, proposal)
@@ -1364,6 +1389,10 @@ func (c *Call) do(ctx context.Context, req *http.Request, purpose string, extrac
 		r.Decision, r.Reason = "denied", PolicyDenied
 		return finish(nil, ErrDenied)
 	}
+	if e3 != nil && !e3.current() {
+		r.Decision, r.Reason = "denied", Revoked
+		return finish(nil, e3contract.ErrAuthorityRevoked)
+	}
 	r.Decision = "allowed"
 	e.mu.Lock()
 	reason = c.blockedLocked()
@@ -1404,7 +1433,13 @@ func (c *Call) do(ctx context.Context, req *http.Request, purpose string, extrac
 	}
 	// Once reserved, the intent ACK has a bounded persistence context, just like
 	// the result. Caller cancellation never abandons an audit write.
-	err = e.recordBounded(ctx, Event{Stage: "intent", Receipt: r})
+	intentReceipt := r
+	if e3 != nil {
+		// 응답 검사로 결과 칸을 채워도 intent의 메모리 사본은 바뀌지 않는다.
+		intentAudit := *r.E3Audit
+		intentReceipt.E3Audit = &intentAudit
+	}
+	err = e.recordBounded(ctx, Event{Stage: "intent", Receipt: intentReceipt})
 	if err != nil {
 		r.Decision = "denied"
 		r.Reason = AuditFailed
@@ -1414,13 +1449,21 @@ func (c *Call) do(ctx context.Context, req *http.Request, purpose string, extrac
 		r.Reason = Closed
 		return finish(nil, ErrClosed)
 	}
-	workCtx, cancel := context.WithTimeout(c.ctx, e.cfg.Limits.RequestTimeout)
+	if e3 != nil && !e3.current() {
+		r.Reason = Closed
+		return finish(nil, e3contract.ErrAuthorityRevoked)
+	}
+	requestTimeout := e.cfg.Limits.RequestTimeout
+	if e3 != nil && e3.timeout < requestTimeout {
+		requestTimeout = e3.timeout
+	}
+	workCtx, cancel := context.WithTimeout(c.ctx, requestTimeout)
 	defer cancel()
 	// 보낸 뒤에는 호출자 기한이 아니라 E② 요청 시간 상한(workCtx)으로만 끊는다. 대기열에서 호출자 기한을 거의 다 쓴
 	// 요청을 기한으로 끊으면 대상이 받은 요청이 결과 불명이 되고 그 intent가 멈춘다(#487 리뷰 P3). 호출자 취소는 그대로
 	// 끊는다.
 	stop := context.AfterFunc(ctx, func() {
-		if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		if e3 != nil || !errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			cancel()
 		}
 	})
@@ -1433,6 +1476,11 @@ func (c *Call) do(ctx context.Context, req *http.Request, purpose string, extrac
 	out.RequestURI = ""
 	out.Close = true
 	out.Header = requestHeaders
+	if e3 != nil {
+		for name, values := range e3.session {
+			out.Header[name] = append([]string(nil), values...)
+		}
+	}
 	for k, vs := range rule.CredentialHeaders {
 		out.Header[k] = append([]string(nil), vs...)
 	}
@@ -1501,6 +1549,11 @@ func (c *Call) do(ctx context.Context, req *http.Request, purpose string, extrac
 	r.RequestWritten = ob.written.Load()
 	r.NotSent = !r.ForwardAttempted
 	if sendErr != nil {
+		if e3 != nil && !r.ForwardAttempted {
+			// intent ACK 뒤 연결 전 취소는 E③ 관찰이 아니다.
+			r.Reason = Closed
+			return finish(nil, ErrClosed)
+		}
 		r.Reason = TransportFailed
 		// 대상이 요청을 받았을 수 있는 건 연결(TLS 포함)이 맺어진 뒤의 실패뿐이다. 그 전의 TCP 연결·TLS
 		// 검증 실패는 요청을 전달하지 않은 송신 실패다. 연결 시도 사실은 ForwardAttempted로 남긴다(C02).
@@ -1541,7 +1594,7 @@ func (c *Call) do(ctx context.Context, req *http.Request, purpose string, extrac
 		r.Reason = Unknown
 		return finish(nil, ErrDenied)
 	}
-	if purpose != "" {
+	if purpose == PurposeAuthPrep {
 		// 인증 준비 응답은 도구로 가지 않는다. extract가 보낼 세션 헤더만 뽑고 본문은 지운다. 상한을 넘은 응답은 끝까지 보지
 		// 못했으니 세션을 뽑지 않는다(대상은 답했으므로 결과 불명이 아니라 보류).
 		if oversized {
@@ -1556,6 +1609,17 @@ func (c *Call) do(ctx context.Context, req *http.Request, purpose string, extrac
 			return finish(nil, ErrAuthSession)
 		}
 		session = extracted
+		return finish(nil, nil)
+	}
+	if e3 != nil {
+		if oversized || resp.StatusCode == http.StatusPartialContent || resp.Header.Get("Content-Range") != "" ||
+			resp.Header.Get("Content-Encoding") != "" && !strings.EqualFold(resp.Header.Get("Content-Encoding"), "identity") {
+			clear(responseBody)
+			r.Reason, r.ResponseTruncated = Withheld, oversized
+			return finish(nil, ErrWithheld)
+		}
+		e3.inspect(resp, responseBody, &r)
+		clear(responseBody)
 		return finish(nil, nil)
 	}
 	// 대상이 답했지만(상태 줄·헤더 수신) 본문 상한·자격 응답·보호 값 반사·압축 때문에 표현을 주지 않는다. 대상이 요청을
@@ -1612,7 +1676,7 @@ func (c *Call) do(ctx context.Context, req *http.Request, purpose string, extrac
 	return finish(resp, nil)
 }
 
-// 생성 요청은 읽기 사전 승인으로 생략할 수 없다. 현재 E③ 호출은 v3 경계에서 먼저 거절된다.
+// 생성 요청은 읽기 사전 승인으로 생략할 수 없다.
 func (e *Execution) needsRequestApproval(purpose, method string, body []byte, view RequestView) bool {
 	if e.cfg.RequestApproval == nil {
 		return false
