@@ -263,7 +263,7 @@ func TestEnginePathLogFailureStopsForwarding(t *testing.T) {
 func TestEnginePathLogCloseReportsFailure(t *testing.T) {
 	upstream, _ := recordingUpstream(t)
 	path, dir := privateTestDir(t)
-	m, code := newEngineMeter(dir, targetURL(t, upstream), time.Now, 0)
+	m, code := newEngineMeter(dir, targetURL(t, upstream), time.Now, 0, 0)
 	if code != "" {
 		t.Fatal(code)
 	}
