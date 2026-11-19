@@ -1546,21 +1546,8 @@ export function WorkflowReport() {
           className={s.aside}
         >{`${flow.mode === "ai_auto_v1" ? "AI 자동" : "사용자 승인"} · ${flowStageText[flow.stage]}`}</span>
       </div>
-      <div className={s.meters}>
-        {(
-          [
-            ["발견한 API", flow.counts.found],
-            ["방문", flow.counts.visited],
-            ["보낸 요청", flow.counts.sent],
-            ["막은 요청", flow.counts.blocked],
-          ] as const
-        ).map(([k, v]) => (
-          <div className={s.cell} key={k}>
-            <div className={s.k}>{k}</div>
-            <div className={s.v}>{v}</div>
-          </div>
-        ))}
-      </div>
+      {/* 숫자(발견한 API · 방문)는 탭 맨 위 탐색 · 요청 집계 한 줄로 옮겼다(사용자 11/19 — 두 칸만 따로 있으니 비어 보임).
+          여기는 탐색 방식 · 단계와 심화 점검으로 고른 경로만 */}
       <div className={s.list}>
         {flow.endpoints
           .filter((e) => e.selected)

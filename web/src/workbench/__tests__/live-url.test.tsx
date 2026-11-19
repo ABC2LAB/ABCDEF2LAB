@@ -1595,7 +1595,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(within(evList).queryByText("candidate-1")).toBeNull();
     // 탭을 누르면 전송 집계(요청 접수 · 허용 · 차단 …, 저장 값 그대로)가 맨 위에 바로 보이고 발견별 증거는 그 아래
     // (사용자 11/19). 실행 종료 기록 칸(단계 · 결과 · 실행 ID · 감사 · 저장 시각)은 두지 않는다
-    const counts = await screen.findByRole("region", { name: "전송 집계" });
+    const counts = await screen.findByRole("region", { name: "탐색 · 요청 집계" });
     const evTab = screen.getByRole("tabpanel", { name: "증거 · 요청 기록" });
     expect(evTab.firstElementChild).toBe(counts);
     expect(counts.nextElementSibling).toBe(screen.getByRole("list", { name: "발견별 증거" }));
@@ -1627,7 +1627,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     });
     mount("report");
     fireEvent.click(await screen.findByRole("tab", { name: "증거 · 요청 기록" }));
-    const counts = await screen.findByRole("region", { name: "전송 집계" });
+    const counts = await screen.findByRole("region", { name: "탐색 · 요청 집계" });
     const blocked = within(counts).getByText("막은 요청").parentElement as HTMLElement;
     expect(blocked).toHaveTextContent(/^막은 요청2지원 안 하는 요청 4$/);
   });

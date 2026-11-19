@@ -4104,6 +4104,21 @@ button.smm:hover {
   }
 }
 /* 점검 진행 오른쪽(진행 요약)의 전송 통제 4칸: 패널이 좁아 2칸씩 두 줄 */
+/* 보고서 탐색 · 요청 집계: 칸 수만큼 한 줄(2칸 · 6칸). 6칸은 좁으면 2칸씩 세 줄 — 줄 첫 칸(홀수)의 세로줄을 없앤다 */
+.meters.m2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.meters.m6 {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+@container (max-width: 560px) {
+  .meters.m6 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .meters.m6 .cell:nth-child(odd) {
+    border-left: 0;
+  }
+}
 .vi .meters {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }

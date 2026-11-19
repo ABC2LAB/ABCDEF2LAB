@@ -879,37 +879,49 @@ export function prettyEvidence(raw: string): string {
 }
 
 /**
- * 증거 · 요청 기록 탭 맨 위 전송 집계 (저장된 실행 기록의 E② 집계 값 그대로). 탭을 누르면 바로 보이고 발견별 증거는 그
- * 아래로 내려 본다(사용자 11/19). 실행 종료 기록 칸(단계 · 결과 · 마감 · 실행 ID · 감사 · 저장 시각)은 보는 사람에게 필요
- * 없어 뺐다. 칸은 자산 탐색 숫자 칸과 같은 이름으로 넷만: 보낸 요청(대상 전송 시도) · 막은 요청(차단) · 응답 받음 · 결과
- * 불명. 요청 접수 · 허용은 보낸 · 막은 요청과 겹치고 호출(도구 호출 수)은 뜻이 어려워 두지 않는다(사용자 11/19). 지원 안
- * 하는 요청은 있을 때만 막은 요청 칸에 적고, 결과 불명은 0이어도 둔다(절대규칙 5). 기록이 없거나 확인할 수 없으면 표를
- * 두지 않고(0 으로 그리지 않음), 읽기 실패만 다시 시도를 보인다.
+ * 증거 · 요청 기록 탭 맨 위 탐색 · 요청 집계 한 줄 (사용자 11/19). 탭을 누르면 바로 보이고 발견별 증거는 그 아래로 내려 본다.
+ * - 탐색(탐색 흐름 스냅숏): 발견한 API(찾은 경로 수) · 방문(응답을 받은 경로 수). 아래 '탐색 · 선택 범위'에 따로 두던 두
+ *   칸이 너무 비어 보여 여기로 합쳤다.
+ * - 요청(저장된 실행 기록의 E② 집계 값 그대로): 보낸 요청(대상 전송 시도) · 막은 요청(차단) · 응답 받음 · 결과 불명.
+ *   실행 종료 기록 칸(단계 · 결과 · 마감 · 실행 ID · 감사 · 저장 시각)은 뺐고, 요청 접수 · 허용은 보낸 · 막은 요청과 겹치고
+ *   호출(도구 호출 수)은 뜻이 어려워 두지 않는다. 지원 안 하는 요청은 있을 때만 막은 요청 칸에 적고, 결과 불명은 0이어도
+ *   둔다(절대규칙 5).
+ * 한쪽 기록이 없거나 확인할 수 없으면 그쪽 칸을 두지 않고(0 으로 그리지 않음), 실행 기록 읽기 실패는 다시 시도를 보인다.
  */
-function RunCounts({ run }: { run: Poll<DiagnosisRunView> }) {
+export function RunCounts({ run }: { run: Poll<DiagnosisRunView> }) {
+  const flow = useUrl((st) => st.flow);
   const d = run.data;
-  if (!d && run.error) return <ErrorNote error={run.error} onRetry={run.reload} />;
   const e = d?.kind === "run" ? d.run.execution : null;
-  if (!e) return null;
-  const c = e.counts;
-  const cells: [string, number, string][] = [
-    ["보낸 요청", c.forward_attempted, ""],
-    ["막은 요청", c.denied, c.unsupported ? `지원 안 하는 요청 ${fmtCount(c.unsupported)}` : ""],
-    ["응답 받음", c.responses, ""],
-    ["결과 불명", c.unknown, ""],
-  ];
+  const cells: [string, number, string][] = [];
+  if (flow) cells.push(["발견한 API", flow.counts.found, ""], ["방문", flow.counts.visited, ""]);
+  if (e) {
+    const c = e.counts;
+    cells.push(
+      ["보낸 요청", c.forward_attempted, ""],
+      ["막은 요청", c.denied, c.unsupported ? `지원 안 하는 요청 ${fmtCount(c.unsupported)}` : ""],
+      ["응답 받음", c.responses, ""],
+      ["결과 불명", c.unknown, ""],
+    );
+  }
+  const failed = !d && run.error ? <ErrorNote error={run.error} onRetry={run.reload} /> : null;
+  if (!cells.length) return failed;
   return (
-    <section className={s.meters} aria-label="전송 집계">
-      {cells.map(([label, n, sub]) => (
-        <div key={label} className={s.cell}>
-          <div className={s.k}>{label}</div>
-          <div className={s.v}>{fmtCount(n)}</div>
-          {sub ? <div className={s.sub}>{sub}</div> : null}
-        </div>
-      ))}
-    </section>
+    <>
+      <section className={cx(s.meters, METER_COLS[cells.length])} aria-label="탐색 · 요청 집계">
+        {cells.map(([label, n, sub]) => (
+          <div key={label} className={s.cell}>
+            <div className={s.k}>{label}</div>
+            <div className={s.v}>{fmtCount(n)}</div>
+            {sub ? <div className={s.sub}>{sub}</div> : null}
+          </div>
+        ))}
+      </section>
+      {failed}
+    </>
   );
 }
+/** 칸 수 → 한 줄에 다 들어가는 상자 모양 (4칸은 기본 .meters). */
+const METER_COLS: Readonly<Record<number, string | undefined>> = { 2: s.m2, 6: s.m6 };
 
 type Audience = "shared" | "internal";
 type Format = "html" | "docx";
