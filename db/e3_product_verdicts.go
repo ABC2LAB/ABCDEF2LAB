@@ -390,13 +390,15 @@ VALUES($1,$2,$3,$4,$5) ON CONFLICT(task_id,execution_ref,evidence_revision) DO N
 			in.TaskID, in.Binding.RunRef, productEvidenceRevision, s.manifest, s.manifestDigest[:]); err != nil {
 			return err
 		}
+		// manifest 행은 불변 트리거로 바뀌지 않으므로 잠그지 않고 읽는다. 행 잠금(FOR UPDATE)은 UPDATE 권한이 필요한데 제품
+		// 실행 역할은 판정 표에 INSERT만 가진다(E1 계약 §5, 실제 제품 합성 회차에서 42501).
 		var manifest, digest []byte
 		if err := tx.QueryRowContext(ctx, `SELECT id,canonical,digest FROM e3_evidence_manifests
-WHERE task_id=$1 AND execution_ref=$2 AND evidence_revision=$3 FOR UPDATE`, in.TaskID, in.Binding.RunRef, productEvidenceRevision).
+WHERE task_id=$1 AND execution_ref=$2 AND evidence_revision=$3`, in.TaskID, in.Binding.RunRef, productEvidenceRevision).
 			Scan(&out.ManifestID, &manifest, &digest); err != nil {
 			return err
 		}
-		// 같은 회차의 종류별 판정은 같은 봉인 저널을 가리켜야 한다.
+		// 같은 회차의 종류별 판정은 같은 근거 체크포인트를 가리켜야 한다.
 		if !bytes.Equal(manifest, s.manifest) || !bytes.Equal(digest, s.manifestDigest[:]) {
 			return ErrProductVerdictConflict
 		}

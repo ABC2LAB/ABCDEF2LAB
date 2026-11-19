@@ -111,13 +111,20 @@ func TestProductRuntimeE3VerdictInsertOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 시험 DSN의 질의 칸(user=)이 URL 사용자보다 이긴다. 질의 칸을 바꿔 실제로 실행 역할로 접속하고 확인한다.
 	ru := *u
-	ru.User = url.User("product_runtime")
+	query := ru.Query()
+	query.Set("user", "product_runtime")
+	ru.RawQuery, ru.User = query.Encode(), nil
 	runtimePool, err := sql.Open("pgx", ru.String())
 	if err != nil {
 		t.Fatal(err)
 	}
 	runtime = &db.DB{DB: runtimePool}
+	var current string
+	if err := runtime.QueryRowContext(t.Context(), "SELECT current_user").Scan(&current); err != nil || current != "product_runtime" {
+		t.Fatalf("실행 역할로 접속하지 못함: %q %v", current, err)
+	}
 	taskID := task.ID
 	v := db.ProductVerdict{TaskID: taskID,
 		Binding: db.ProductBinding{JobRef: "job-store", RunRef: "run-store", E2PolicyRef: "e2-policy-store", GenerationRef: "generation-store",
