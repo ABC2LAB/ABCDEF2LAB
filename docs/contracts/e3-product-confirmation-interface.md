@@ -56,9 +56,12 @@
 ## 4. E② 프로그램 요청
 
 - 목적 셋: `e3_identity`(신원 GET), `e3_create`(A 세션 생성, POST·PUT), `e3_read`(A·B 세션 조회 GET). 인증 준비처럼 목적 규칙으로만 열리고 모델 요청의 규칙 찾기에서는 빠진다.
+- E② 정책을 읽을 때 목적 규칙 전체를 같은 실행의 Worker 승인 규칙 하나에 결속한다. 스킴·호스트·포트·연결 IP·TLS pin·메서드가 같고 해당 규칙이 경로를 덮어야 한다. 조회 틀은 `{id}` 앞의 고정 접두 범위가 필요하다. `/`, 끝 `/`, `/{id}`는 목적 규칙 경로로 받지 않는다. 제외 경로가 목적 경로 전체를 덮으면 정책을 거절하고, 일부 ID만 제외하는 경우 채운 경로를 요청마다 대조한다.
+- `confirm_every_request`의 E③ 요청별 확인 대상은 생성이다. 신원과 조회는 송신을 열기 전에 동결 선언과 실행 승인 범위에 결속해야 한다. 현재 v2 저널에서는 세 목적의 호출을 송신 전에 차단한다.
 - 계정 라벨은 서버가 C14 인증 결과(`authenticated`)에서 고른다. 관찰에는 E²가 실제로 붙인 라벨이 들어가고, 요청한 라벨과 다르면 진위 실패다.
 - 요청 하나는 영수증 하나(`CallRef{call_ref, attempt_id, sequence}`)다. 같은 요청을 다시 보내지 않는다(결과 불명 쓰기 포함).
 - 객체 ID 원문은 E² 밖으로 나오지 않는다. 생성 관찰은 실행별 키 digest만 주고, 조회 요청은 생성 관찰의 `CallRef`를 가리키면 E²가 그 ID로 경로를 채운다.
+- 조회 ID는 비어 있지 않은 단일 경로 조각이어야 한다. `/`·`;`·`?`·중괄호가 포함된 ID는 이 규칙으로 조회할 수 없다.
 - 보내지 않은 것이 확실하면 `sent=false`와 사유(`approval_denied`·`approval_timeout`·`confirmation_budget_exhausted`·`policy_denied`)다. 보냈는지 모르면 오류를 돌려주거나 `sent=true, response_complete=false`다.
 - 실행 권한이 철회됐으면 `ErrAuthorityRevoked`다(진위 실패).
 

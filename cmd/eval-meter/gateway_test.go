@@ -67,6 +67,13 @@ type fakeProvider struct {
 // but do not say who served, so the id must not count as verified.
 const lookupEmptyProvider = 1
 
+// lookupHang scripts a lookup that answers only after lookupHangDelay, past a short
+// client timeout, so the gateway sees a network error for that try.
+const (
+	lookupHang      = 2
+	lookupHangDelay = 300 * time.Millisecond
+)
+
 func (p *fakeProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	p.mu.Lock()
@@ -150,6 +157,11 @@ func (p *fakeProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			status, p.lookups[id] = script[0], script[1:]
 		}
 		p.mu.Unlock()
+		if status == lookupHang {
+			time.Sleep(lookupHangDelay)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		if status == lookupEmptyProvider {
 			_, _ = fmt.Fprintf(w, `{"data":{"id":%q,"provider_name":"","provider_responses":[]}}`, id)
 			return
@@ -1205,7 +1217,7 @@ func TestGenerationLookupStopsAtTheDeadline(t *testing.T) {
 	clock := time.Unix(0, 0)
 	v.now = func() time.Time {
 		at := clock
-		clock = clock.Add(20 * time.Second) // 부를 때마다 20초씩 지난다
+		clock = clock.Add(6 * time.Second) // 부를 때마다 6초씩 지난다(시한 = 3ms + 조회 한 번 상한 10초)
 		return at
 	}
 	v.sleep = func(time.Duration) { t.Fatal("must not sleep after the deadline") }
@@ -1272,5 +1284,26 @@ func TestGatewayTransportsDoNotShareThePool(t *testing.T) {
 		if tr, ok := rt.(*http.Transport); !ok || tr.Proxy != nil {
 			t.Fatalf("transport %T must not use an environment proxy", rt)
 		}
+	}
+}
+
+// 막힌 조회 한 번은 시간 상한에서 끊기고(network_error) 다음 라운드에서 다시 묻는다. 막힌 조회가 라운드를 오래 잡아 뒤
+// 건들을 묻지 못하게 되지 않는다(2026-11-18 보정 쌍 B1). 시험에서는 클라이언트 시간 상한만 짧게 바꾼다.
+func TestGenerationLookupTimeoutIsRetriedNextRound(t *testing.T) {
+	h := newHarness(t, backendAPI)
+	h.provider.lookups["hang"] = []int{lookupHang, http.StatusOK}
+	h.provider.lookups["ok"] = []int{http.StatusOK}
+	v := h.g.verifier()
+	v.client.Timeout = 50 * time.Millisecond
+	v.sleep = func(time.Duration) {}
+	got := v.lookupAll([]string{"hang", "ok"})
+	if got[0].Status != "verified" || got[0].Lookup != (lookupTrace{Tries: 2, Last: "verified"}) {
+		t.Fatalf("hang %+v", got[0])
+	}
+	if got[1].Status != "verified" || got[1].Lookup != (lookupTrace{Tries: 1, Last: "verified"}) {
+		t.Fatalf("ok %+v", got[1])
+	}
+	if generationLookupTimeout != 10*time.Second {
+		t.Fatalf("lookup timeout %v", generationLookupTimeout) // 러너 대기 하한(runner_config)과 같은 값이어야 한다
 	}
 }

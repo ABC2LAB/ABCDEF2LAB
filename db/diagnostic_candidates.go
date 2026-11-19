@@ -192,6 +192,39 @@ type DiagnosticCandidateQueryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
+// ReadDiagnosticCandidate는 작업 하나의 후보 하나를 같은 읽기 트랜잭션에서 읽는다(판정 상세 조회 candidate selector).
+// 없거나 다른 작업·탐색의 노드면 ok=false다. 노드는 있는데 저장 형식·작업 결속이 어긋나면 ErrDiagnosticCandidate다.
+func ReadDiagnosticCandidate(ctx context.Context, q DiagnosticCandidateQueryer, explorationID, taskID, id int64) (DiagnosticCandidate, bool, error) {
+	rows, err := q.QueryContext(ctx, `SELECT n.payload FROM exploration_nodes n JOIN tasks t ON t.exploration_id=n.exploration_id WHERE n.id=$1 AND t.id=$2 AND n.exploration_id=$3 AND n.origin=$4 AND n.kind='fact' LIMIT 2`,
+		id, taskID, explorationID, diagnosticCandidateOrigin)
+	if err != nil {
+		return DiagnosticCandidate{}, false, err
+	}
+	defer rows.Close()
+	var raw []byte
+	found := 0
+	for rows.Next() {
+		found++
+		if found > 1 {
+			return DiagnosticCandidate{}, false, ErrDiagnosticCandidate
+		}
+		if err := rows.Scan(&raw); err != nil {
+			return DiagnosticCandidate{}, false, err
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return DiagnosticCandidate{}, false, err
+	}
+	if found == 0 {
+		return DiagnosticCandidate{}, false, nil
+	}
+	c, err := decodeDiagnosticCandidate(id, raw, taskID, "")
+	if err != nil {
+		return DiagnosticCandidate{}, false, ErrDiagnosticCandidate
+	}
+	return c, true, nil
+}
+
 // ListDiagnosticCandidatesQuery는 보고서의 동일 repeatable-read 트랜잭션에 참여한다.
 func ListDiagnosticCandidatesQuery(ctx context.Context, q DiagnosticCandidateQueryer, explorationID, taskID int64, runRef string, limit int) ([]DiagnosticCandidate, error) {
 	if taskID <= 0 || limit <= 0 || limit > MaxDiagnosticCandidates+1 {
