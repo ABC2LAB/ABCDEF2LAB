@@ -47,16 +47,16 @@ E² 안에서 E③ 판정(CONFIRMED·UNDECIDABLE 등)을 하지 않는다. E²�
 
 ### 2.3 단계별 필수 조건
 
-E③ 프로그램 호출 하나는 `control`(송신 전 결정) 이벤트와, 송신했으면 `result` 이벤트를 남긴다. 어댑터의 관찰은 그 호출의 마지막 이벤트(송신했으면 `result`, 송신 전 거부면 `control`)에서 만든다.
+E③ 프로그램 호출 하나의 시도 단계는 v2와 같은 이름이다(`e2proxy.validJournalEvent`): 송신 전에 허용하면 `intent`, 그 뒤 결과가 `result`다. 송신 전에 거부하면 `intent` 없이 `result` 하나(`not_sent=true`)다. `control`·`call_closed`는 v2처럼 시도 밖 관리 행이라 시도 대조·관찰에 쓰지 않는다. 어댑터의 관찰은 그 호출의 마지막 시도 이벤트, 곧 `result`에서 만든다.
 
 | 단계 | 언제 | 반드시 있어야 하는 칸 | 없어야 하는 칸 |
 | --- | --- | --- | --- |
-| 공통(모든 단계) | — | `version=e2-http-v3`, `program`, `scope`, `call_ref`, `attempt_id`, `sequence`, `policy_revision`, `method`, `decision`, `reason`, `role`, `account_label`, `account_binding_ref`, `e3_binding`, 생성·조회면 `resource_type`, 조회면 `create_ref` | §2.2의 "넣지 않는 것" |
-| `control`, 송신 전 거부 | E²가 연결을 시도하기 전에 거부 | `not_sent=true`, `not_sent_reason`(넷 중 하나). `rule_ref`는 맞는 규칙이 없는 거부(정책 거부·예산 소진)면 비어도 됨 | `result` 이벤트, 응답 칸 전부 |
-| `control`, 허용 | 송신 허가 | `rule_ref` | `not_sent_reason`. 호출의 마지막 이벤트가 될 수 없음(뒤에 `result`가 있어야 함) |
-| `result` | 연결을 시도한 뒤(성공·실패·끊김 모두) | `rule_ref`, `forward_attempted=true`, `request_written`, `response_received`, `response_complete`, 끊겼으면 `timed_out`. `response_complete=true`면 `status_code`·`normal`·`body_digest_sha256`·`body_complete`, 조회면 `marker`·`request_marker_free`, 생성이면 `object_id_digest`(꺼냈을 때), 신원이면 `subject_digest`·`request_marker_free` | `not_sent_reason` |
+| 공통(시도 단계) | — | `version=e2-http-v3`, `program`, `scope`, `call_ref`, `attempt_id`, `sequence`, `policy_revision`, `method`, `decision`(`allowed`·`denied`·`unsupported`), `reason`, `role`, `account_label`, `account_binding_ref`, `e3_binding`, 생성·조회면 `resource_type`, 조회면 `create_ref`. `decision=allowed`면 `rule_ref` | §2.2의 "넣지 않는 것" |
+| `intent`(송신 전 허용) | 연결을 시도하기 전 허용 판정 | `decision=allowed`, `rule_ref` | 응답 칸 전부, `forward_attempted`·`request_written`·`response_received`·`response_complete` 참, `not_sent_reason`. 호출의 마지막 이벤트가 될 수 없음(뒤에 `result`가 있어야 함) |
+| `result`, 송신 전 거부 | E²가 연결을 시도하기 전에 거부 | `decision`이 `allowed`가 아님, `not_sent=true`, `not_sent_reason`(넷 중 하나). `rule_ref`는 맞는 규칙이 없는 거부(정책 거부·예산 소진)면 비어도 됨 | `intent` 이벤트, `forward_attempted` 참, 응답 칸 전부 |
+| `result`, 송신 뒤 | 연결을 시도한 뒤(성공·실패·끊김 모두) | `decision=allowed`, `rule_ref`, `forward_attempted=true`, `request_written`, `response_received`, `response_complete`, 끊겼으면 `timed_out`. `response_complete=true`면 `status_code`·`normal`·`body_digest_sha256`·`body_complete`, 조회면 `marker`·`request_marker_free`, 생성이면 `object_id_digest`(꺼냈을 때), 신원이면 `subject_digest`·`request_marker_free` | `not_sent` 참, `not_sent_reason` |
 
-**송신 판정은 E²가 한다.** 연결을 시도한 뒤 결과를 확실히 모르면(C02의 `Unknown`·`TransportFailed` 포함) `result` 이벤트에 `response_complete=false`로 남긴다(결과 불명). 확실한 송신 전 거부만 `control`의 `not_sent`다. E③는 이 구분으로 쓰기 기록을 남기거나 거둔다(#738 시험 `TestRunWriteWithdrawOnlyBeforeConnect`: 연결 전 거부 넷만 거둔다, 그 밖의 `sent=false`는 관찰 계약 위반).
+**송신 판정은 E²가 한다.** 연결을 시도한 뒤 결과를 확실히 모르면(C02의 `Unknown`·`TransportFailed` 포함) `result` 이벤트에 `response_complete=false`로 남긴다(결과 불명). 확실한 송신 전 거부만 `result`의 `not_sent`다. E③는 이 구분으로 쓰기 기록을 남기거나 거둔다(#738 시험 `TestRunWriteWithdrawOnlyBeforeConnect`: 연결 전 거부 넷만 거둔다, 그 밖의 `sent=false`는 관찰 계약 위반).
 
 ## 3. MAC 검증 범위 — **송신 활성화 전 확정 필수**
 
@@ -77,7 +77,7 @@ E③ 프로그램 호출 하나는 `control`(송신 전 결정) 이벤트와, �
 
 ## 5. 반환과 봉인 — **송신 활성화 전 확정 필수**
 
-- **`Transport`는 결과 이벤트가 정본 head로 게시된 뒤에 관찰을 반환한다**([E② 감사 저널 계약](e2-audit-journal.md) "의도/결과": 이벤트 전체 Write+Sync 뒤 후보 체크포인트를 게시하고, 신뢰 저장소의 ACK 성공 뒤에만 성공). 송신 전 거부면 `control` 이벤트, 송신했으면 `result` 이벤트를 포함한 head다. 그래서 바로 뒤 기다리지 않고 부르는 `Sealed`가 그 이벤트를 현재 head 안에서 찾는다.
+- **`Transport`는 결과 이벤트가 정본 head로 게시된 뒤에 관찰을 반환한다**([E② 감사 저널 계약](e2-audit-journal.md) "의도/결과": 이벤트 전체 Write+Sync 뒤 후보 체크포인트를 게시하고, 신뢰 저장소의 ACK 성공 뒤에만 성공). 송신 전 거부든 송신 뒤든 그 호출의 `result` 이벤트를 포함한 head다. 그래서 바로 뒤 기다리지 않고 부르는 `Sealed`가 그 이벤트를 현재 head 안에서 찾는다.
 - 로컬 Sync 실패, 또는 Sync 뒤 정본 게시가 실패하거나 ACK를 확인하지 못하면 관찰 성공을 돌려주지 않고 오류다. 송신했을 수 있으므로 결과 불명으로 다루고(그 종류 UNDECIDABLE, 생성이면 쓰기 기록은 ID 모름으로 남음), 감사 계약대로 그 recorder를 실패 상태로 두어 후속 송신을 막는다.
 - **`Journal.Sealed`는 기다리지 않고, 검증된 기록만 돌려준다.** Sync만으로는 검증 완료가 아니다. `Sealed(ctx, binding, CallRef)`는:
   1. 저널과 독립된 신뢰 저장소에서 같은 실행의 **현재** epoch·head를 인증 경로로 읽는다(E② 감사 저널 계약의 최신 조회 규칙). 과거 체크포인트·과거 ACK·체크포인트 파일·같은 쓰기 권한의 백업은 쓰지 않는다.
@@ -109,7 +109,7 @@ fail-closed는 #698 계약 그대로다. 진위 실패면 판정 행을 만들�
 | 결속 불일치(실행·세대·정책 출처) | `confirmation_integrity_failed`, `binding_mismatch` | 남음 |
 | 목적·역할·계정·종류·생성 참조 불일치, 이벤트의 `account_binding_ref`가 그 실행·라벨의 지금 결속이 아님(어댑터가 `e3contract.ErrObservationMismatch`로 알림) | `confirmation_integrity_failed`, `observation_mismatch` | 남음 |
 | 같은 참조 재사용 | `confirmation_integrity_failed`, `observation_reused` | 남음 |
-| `Sealed`가 무결성 실패(`ErrJournalIntegrity`), 검증 조회가 다른 호출의 이벤트나 허용한 `control`만 있고 `result`가 없는 호출을 돌려줌 | `confirmation_integrity_failed`, `journal_integrity_failed` | 남음 |
+| `Sealed`가 무결성 실패(`ErrJournalIntegrity`), 검증 조회가 다른 호출의 이벤트나 `intent`만 있고 `result`가 없는 호출을 돌려줌 | `confirmation_integrity_failed`, `journal_integrity_failed` | 남음 |
 | `Sealed`가 이벤트 없음(`ErrJournalEventMissing`) | `confirmation_integrity_failed`, `journal_event_missing` | 남음 |
 | `Transport` 관찰 ≠ 봉인된 이벤트 | `confirmation_integrity_failed`, `journal_event_mismatch` | 남음 |
 | 연결 전 거부(`not_sent`, 넷) | 그 종류 UNDECIDABLE(거부·승인·예산 사유) | 거둠(not_sent) |
