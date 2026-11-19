@@ -23,11 +23,11 @@ const (
 // This verifies only the supplied bytes and checkpoint. JournalSummary is not
 // an Execution ACK, a closure certificate, a current host head or E3 evidence.
 func httpJournalFormat(format string) bool {
-	return format == e2proxyJournalFormat || format == e2proxyJournalFormatV1
+	return format == e2proxyJournalFormat || format == e2proxyJournalFormatV1 || format == e2proxy.JournalVersionV3
 }
 
 // format은 운영자가 고른 판이다. 신뢰 checkpoint의 판과 같아야 한다(판을 잘못 고른 검증이 다른 판 규칙으로 통과하지 않게).
-func verifyHTTPFiles(ctx context.Context, format, journalPath, checkpointPath, keyPath string) (result any, code string) {
+func verifyHTTPFiles(ctx context.Context, format, journalPath, checkpointPath, keyPath, priorPath string) (result any, code string) {
 	if ctx.Err() != nil {
 		return nil, "audit_verification_canceled"
 	}
@@ -39,13 +39,16 @@ func verifyHTTPFiles(ctx context.Context, format, journalPath, checkpointPath, k
 	if len(key) < minHTTPJournalKeyBytes {
 		return nil, "audit_input_invalid"
 	}
-	encoded, err := readBounded(checkpointPath, maxCheckpointBytes, false)
-	if err != nil {
-		return nil, "audit_input_unavailable"
+	checkpoint, code := readHTTPCheckpoint(checkpointPath, format)
+	if code != "" {
+		return nil, code
 	}
-	checkpoint, err := decodeHTTPCheckpoint(encoded)
-	if err != nil || checkpoint.Version != format {
-		return nil, "audit_input_invalid"
+	var prior e2proxy.JournalCheckpoint
+	if priorPath != "" {
+		prior, code = readHTTPCheckpoint(priorPath, format)
+		if code != "" {
+			return nil, code
+		}
 	}
 	journal, err := openRegular(journalPath, false)
 	if err != nil {
@@ -58,7 +61,11 @@ func verifyHTTPFiles(ctx context.Context, format, journalPath, checkpointPath, k
 	}()
 	// Always supply the explicit head: VerifyJournal's optional unanchored mode
 	// accepts authentic older prefixes and must not be used by this command.
-	result, err = e2proxy.VerifyJournal(ctx, journal, key, checkpoint)
+	if priorPath != "" {
+		result, err = e2proxy.VerifyJournalV3Extension(ctx, journal, key, prior, checkpoint)
+	} else {
+		result, err = e2proxy.VerifyJournal(ctx, journal, key, checkpoint)
+	}
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
@@ -75,6 +82,18 @@ func verifyHTTPFiles(ctx context.Context, format, journalPath, checkpointPath, k
 		return nil, code
 	}
 	return result, ""
+}
+
+func readHTTPCheckpoint(path, format string) (e2proxy.JournalCheckpoint, string) {
+	encoded, err := readBounded(path, maxCheckpointBytes, false)
+	if err != nil {
+		return e2proxy.JournalCheckpoint{}, "audit_input_unavailable"
+	}
+	checkpoint, err := decodeHTTPCheckpoint(encoded)
+	if err != nil || checkpoint.Version != format {
+		return e2proxy.JournalCheckpoint{}, "audit_input_invalid"
+	}
+	return checkpoint, ""
 }
 
 func decodeHTTPCheckpoint(encoded []byte) (e2proxy.JournalCheckpoint, error) {
