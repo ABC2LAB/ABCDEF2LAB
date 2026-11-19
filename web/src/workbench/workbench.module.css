@@ -4113,6 +4113,19 @@ button.smm:hover {
 .vi .meters .cell:nth-child(n + 3) {
   border-top: 1px solid var(--rule);
 }
+/* 보고서 증거 · 요청 기록 탭 전송 집계 8칸: 넓으면 4칸씩 두 줄 — 둘째 줄 첫 칸의 왼쪽 세로줄을 없애고 줄 사이를 긋는다 */
+.meters.m8 .cell:nth-child(5) {
+  border-left: 0;
+}
+.meters.m8 .cell:nth-child(n + 5) {
+  border-top: 1px solid var(--rule);
+}
+@container (max-width: 560px) {
+  /* 좁으면 2칸씩 네 줄: 줄 첫 칸(홀수)의 세로줄을 없앤다 */
+  .meters.m8 .cell:nth-child(odd) {
+    border-left: 0;
+  }
+}
 /* 점검 진행 오른쪽 모델 사용량: 작업 합계 · 입 51M 캐 43M 출 868k (수는 둥근 칩) */
 .toks {
   display: flex;
@@ -4620,9 +4633,6 @@ button.smm:hover {
 }
 .evi li:first-child {
   border-top: 0;
-}
-.evi code {
-  font-size: 12px;
 }
 
 .scrim {

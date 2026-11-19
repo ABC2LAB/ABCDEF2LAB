@@ -1368,7 +1368,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(facts.querySelector("details")).toBeNull();
   });
 
-  it("마감된 진단은 요청 승인을 다시 부르지 않고 보고서의 실행 종료 기록으로 안내한다", async () => {
+  it("마감된 진단은 요청 승인을 다시 부르지 않고 보고서의 증거 · 요청 기록(전송 집계)로 안내한다", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(completed);
     const { goTo } = mount("live");
@@ -1379,7 +1379,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(card).toHaveTextContent(/완료점검을 마쳤습니다보고서 보기.*결과 저장 확인/);
     expect(screen.getAllByText(/점검을 마쳤습니다/)).toHaveLength(1);
     expect(screen.queryByText("실행을 마감했습니다")).toBeNull();
-    expect(screen.getByText(/마감된 점검의 전송 기록은 보고서의 증거 · 감사에 있습니다/)).toBeInTheDocument();
+    expect(screen.getByText(/마감된 점검의 전송 기록은 보고서의 증거 · 요청 기록에 있습니다/)).toBeInTheDocument();
     expect(a.fetchRequestApprovals).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: /보고서 보기/ }));
     expect(goTo).toHaveBeenCalledWith("report");
@@ -1566,16 +1566,32 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     const mapTab = screen.getByRole("tabpanel", { name: "접근통제 지도" });
     expect(within(mapTab).getByRole("note")).toHaveTextContent(/^연결 전/);
     expect(within(mapTab).getByRole("button", { name: /접근통제 지도 화면 열기/ })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: "증거 · 감사" }));
+    fireEvent.click(screen.getByRole("tab", { name: "증거 · 요청 기록" }));
     // 시안 증거 목록: 발견마다 저장된 증거 버전 · 재현 단계 수
-    expect(within(screen.getByRole("list", { name: "발견별 증거" })).getByText("candidate-1")).toBeInTheDocument();
-    // 실행 종료 기록: 실행 ID · 정상 종료 · 감사 · E② 집계는 저장 값 그대로 (증거 · 감사 탭)
-    const record = await screen.findByRole("region", { name: "실행 종료 기록" });
-    expect(within(record).getByText("정상 종료")).toBeInTheDocument();
-    expect(within(record).getByText("run-1")).toBeInTheDocument();
-    expect(within(record).getByText("완결")).toBeInTheDocument();
-    expect(within(within(record).getByText("차단").parentElement as HTMLElement).getByText("2")).toBeInTheDocument();
-    // 모델 사용량은 머리 줄로 옮겨 증거 · 감사 탭에 따로 두지 않는다
+    // 서버 내부 ID 대신 '발견 n'(보고서 문서 번호 순서), ID 는 마우스를 올리면(사용자 11/19)
+    const evList = screen.getByRole("list", { name: "발견별 증거" });
+    expect(within(evList).getByText("발견 1")).toHaveAttribute("title", "ID candidate-1");
+    expect(within(evList).queryByText("candidate-1")).toBeNull();
+    // 탭을 누르면 전송 집계(요청 접수 · 허용 · 차단 …, 저장 값 그대로)가 맨 위에 바로 보이고 발견별 증거는 그 아래
+    // (사용자 11/19). 실행 종료 기록 칸(단계 · 결과 · 실행 ID · 감사 · 저장 시각)은 두지 않는다
+    const counts = await screen.findByRole("region", { name: "전송 집계" });
+    const evTab = screen.getByRole("tabpanel", { name: "증거 · 요청 기록" });
+    expect(evTab.firstElementChild).toBe(counts);
+    expect(counts.nextElementSibling).toBe(screen.getByRole("list", { name: "발견별 증거" }));
+    expect([...counts.querySelectorAll(":scope > div > div:first-child")].map((x) => x.textContent)).toEqual([
+      "요청 접수",
+      "허용",
+      "차단",
+      "미지원",
+      "대상 전송 시도",
+      "응답 수신",
+      "불명",
+      "호출",
+    ]);
+    expect(within(within(counts).getByText("차단").parentElement as HTMLElement).getByText("2")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "실행 종료 기록" })).toBeNull();
+    for (const gone of ["정상 종료", "run-1", "완결"]) expect(within(evTab).queryByText(gone)).toBeNull();
+    // 모델 사용량은 머리 줄로 옮겨 증거 · 요청 기록 탭에 따로 두지 않는다
     expect(screen.queryByRole("heading", { name: "모델 사용량" })).toBeNull();
   });
 
@@ -1791,7 +1807,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(writeText.mock.calls[0][0]).not.toMatch(/synthetic-reference-mask|&#/);
   });
 
-  it("보고서 탭(증거 · 감사 옆): 발견마다 위험도 · 판정 · 요약 · 재현 절차(PoC) · 요청·응답을 Markdown 문서 한 장으로, 정상 대조는 뺀다", async () => {
+  it("보고서 탭(증거 · 요청 기록 옆): 발견마다 위험도 · 판정 · 요약 · 재현 절차(PoC) · 요청·응답을 Markdown 문서 한 장으로, 정상 대조는 뺀다", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
     saveHandle();
