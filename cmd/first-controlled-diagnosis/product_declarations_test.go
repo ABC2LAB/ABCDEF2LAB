@@ -911,3 +911,45 @@ func TestProductResetConfirmRefusedWhileRunActive(t *testing.T) {
 		t.Fatalf("실행이 끝난 뒤 리셋 확인: %v", err)
 	}
 }
+
+// 리셋 동의는 정확히 본 쓰기 기록에 묶인다. 예약과 같은 시각(마이크로초로 잘림)에 not_sent 정산이 오면 살아 있는 쓰기가
+// 바뀌므로 참조도 바뀌고, 정산 전에 본 참조로는 확인하지 못한다(#738 이동찬 리뷰).
+func TestProductResetRefCoversNotSentAtSameTime(t *testing.T) {
+	r, _, target, _ := declarationTestTarget(t)
+	rec := r.records[target.ID]
+	at := r.now().UTC().Truncate(time.Microsecond)
+	reserve := productDeclarationEvent{TargetID: target.ID, Action: declarationConfirmationWrites, Actor: productConfirmationActor, At: at,
+		TargetRevision: target.Revision, JobRef: "job-1",
+		Objects: []productConfirmationObject{{Type: "note", IDUnknown: true}, {Type: "card", IDUnknown: true}}}
+	reserved, err := applyReset(rec, nil, nil, reserve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settle := productDeclarationEvent{TargetID: target.ID, Action: declarationConfirmationWriteSettled, Actor: productConfirmationActor,
+		At: at, TargetRevision: target.Revision, JobRef: "job-1",
+		Objects: []productConfirmationObject{{Type: "card", IDUnknown: true, NotSent: true}}}
+	settled, err := applyReset(rec, reserved, nil, settle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settled.writesRef == reserved.writesRef {
+		t.Fatal("같은 시각 not_sent 정산 뒤에도 참조가 같음")
+	}
+	confirm := func(ref string) productDeclarationEvent {
+		return productDeclarationEvent{TargetID: target.ID, Action: declarationResetConfirmed, Actor: rec.Principal, At: at,
+			TargetRevision: target.Revision, JobRef: "job-1", WritesRef: ref, StatementSHA256: productResetStatementSHA256()}
+	}
+	if _, err := applyReset(rec, settled, nil, confirm(reserved.writesRef)); err == nil {
+		t.Fatal("정산 전에 본 참조로 리셋 확인을 받음")
+	}
+	if _, err := applyReset(rec, settled, nil, confirm(settled.writesRef)); err != nil {
+		t.Fatalf("지금 참조로 확인: %v", err)
+	}
+	// 같은 시각 created 정산(digest)도 참조를 바꾼다.
+	created, err := applyReset(rec, reserved, nil, productDeclarationEvent{TargetID: target.ID, Action: declarationConfirmationWriteSettled,
+		Actor: productConfirmationActor, At: at, TargetRevision: target.Revision, JobRef: "job-1",
+		Objects: []productConfirmationObject{{Type: "note", IDDigest: strings.Repeat("c", 64)}}})
+	if err != nil || created.writesRef == reserved.writesRef {
+		t.Fatalf("같은 시각 created 정산 참조: %v", err)
+	}
+}
