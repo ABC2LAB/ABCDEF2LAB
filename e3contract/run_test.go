@@ -397,6 +397,17 @@ func TestRunJournalCrossCheck(t *testing.T) {
 		f.fake.Behaviors[cross] = e3fake.Behavior{Err: e3contract.ErrAuthorityRevoked}
 		integrityFailed(t, f.run(t), e3contract.IntegrityAuthorityRevoked)
 	})
+	// Transport가 E² 기록의 모양 위반·관찰 밖 칸 불일치를 오류로 알리면 결과 불명이 아니라 진위 실패다(v3 계약 §7).
+	t.Run("transport_observation_invalid", func(t *testing.T) {
+		f := newFixture(t)
+		f.fake.Behaviors[cross] = e3fake.Behavior{Err: fmt.Errorf("event stage: %w", e3contract.ErrObservation)}
+		integrityFailed(t, f.run(t), e3contract.IntegrityObservationInvalid)
+	})
+	t.Run("transport_observation_mismatch", func(t *testing.T) {
+		f := newFixture(t)
+		f.fake.Behaviors[cross] = e3fake.Behavior{Err: fmt.Errorf("account binding: %w", e3contract.ErrObservationMismatch)}
+		integrityFailed(t, f.run(t), e3contract.IntegrityObservationMismatch)
+	})
 }
 
 func TestRunPolicySourceChecks(t *testing.T) {
