@@ -1176,7 +1176,12 @@ class TestE3ConfirmationRow(unittest.TestCase):
                     # 비활성인데 확정 요청이 있음(모순, #742 리뷰)·요청 수 모양 오류
                     self.result(requests=1), self.result(requests=True), self.result(requests=0.0), self.result(requests=-1),
                     self.result(requests="0"), self.result(requests=None),
-                    self.result(status="completed", reason=None, requests=True)):  # bool은 요청 수가 아니다
+                    self.result(status="completed", reason=None, requests=True),  # bool은 요청 수가 아니다
+                    # 돌지 않은 상태인데 판정·쓰기 기록·요청이 있음(모순, #742 리뷰)과 배열이 아닌 목록 칸
+                    self.result(verdicts=[{"type": "x"}]), self.result(writes=[{"id_known": False}]),
+                    self.result(status="start_refused", reason="policy_source_unavailable", verdicts=[{"type": "x"}]),
+                    self.result(status="start_refused", reason="policy_source_unavailable", requests=1),
+                    self.result(verdicts=None), self.result(skipped={}), self.result(candidates="x"), self.result(writes=None)):
             with self.subTest(raw=raw[:40]):
                 self.assertEqual(e3_confirmation_row(raw), {"error": "e3_confirmation_invalid"})
 
@@ -1189,6 +1194,8 @@ class TestE3ConfirmationRow(unittest.TestCase):
         self.assertEqual((e3["status"], e3["reason"], result["e3_confirmation"]["status"]), ("disabled", "declaration_missing", "disabled"))
         for mutate, reason in ((file(self.result(reason="not_wired")), "e3_official_not_disabled"),
                                (file(self.result(status="completed", reason=None)), "e3_official_not_disabled"),
+                               # 비활성·요청 0이어도 판정이 있으면 모순이라 비활성 근거가 아니다(#742 리뷰)
+                               (file(self.result(verdicts=[{"type": "x"}])), "e3_confirmation_invalid"),
                                (file(RuntimeError("docker_helper_copy_failed")), "e3_status_not_collected"),
                                (file(b"{}"), "e3_confirmation_invalid"),
                                (file(self.result(requests=1)), "e3_confirmation_invalid")):

@@ -434,6 +434,8 @@ def product_fault_stall(calls: bytes, meter_rows: list[dict], window_start: str,
 
 E3_RESULT_VERSION = "e3-confirmation-run/v1"  # e3contract.RunResultVersion
 _E3_NO_REASON = ("completed", "interrupted")
+_E3_LIST_FIELDS = ("verdicts", "skipped", "candidates", "writes")  # e3contract.RunResult 배열 칸
+_E3_NOT_RUN = ("disabled", "start_refused")  # 확정 단계를 돌지 않은 상태(계약상 요청 0건)
 _E3_REASON = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 
 
@@ -457,6 +459,12 @@ def e3_confirmation_row(raw: bytes) -> dict:
     requests = value.get("requests")
     # 계약상 비활성이면 확정 요청이 0건이다. 요청 수는 0 이상 정수만 받는다(bool·실수·문자열은 모양 오류).
     if type(requests) is not int or requests < 0 or (value["status"] == "disabled" and requests != 0):
+        return {"error": "e3_confirmation_invalid"}
+    # 목록 칸은 계약 모양(배열)이어야 하고, 확정 단계를 돌지 않은 상태(비활성·시작 거부, 요청 0건)는 판정·쓰기 기록이 비어 있어야
+    # 한다. 판정이 있는 비활성 원본은 모순이라 비활성 근거로 쓰지 않는다(#742 리뷰).
+    if not all(isinstance(value.get(name), list) for name in _E3_LIST_FIELDS):
+        return {"error": "e3_confirmation_invalid"}
+    if value["status"] in _E3_NOT_RUN and (value["verdicts"] or value["writes"] or requests != 0):
         return {"error": "e3_confirmation_invalid"}
     return {"status": value["status"], "reason": reason, "requests": requests, "sha256": hashlib.sha256(raw).hexdigest()}
 
