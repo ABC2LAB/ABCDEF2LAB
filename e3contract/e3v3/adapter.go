@@ -30,9 +30,11 @@ type Request struct {
 //
 //   - RegisterMarker: 표식을 그 실행의 보호 값으로 올린다. v3 감사가 아직 연결되지 않았으면 오류다(지금 e2proxy의
 //     ErrE3JournalUnavailable). 실패하면 확정 단계는 시작하지 않는다.
-//   - Send: 요청을 보내고, 그 호출의 마지막 이벤트(송신했으면 result, 송신 전 거부면 control)를 기록·Sync한 뒤에 그
-//     이벤트를 돌려준다. Sync에 실패하면 이벤트 없이 오류다(결과 불명). 실행 권한 철회는 e3contract.ErrAuthorityRevoked,
-//     등록하지 않은 표식은 e3contract.ErrMarkerNotRegistered다.
+//   - Send: 요청을 보내고, 그 호출의 마지막 시도 이벤트(result: 송신 전 거부면 intent 없이 result 하나, 송신했으면
+//     intent 뒤 result, intent 뒤 송신 전 중단이면 reason=closed result)를 기록·Sync하고 그 이벤트를 포함한 정본 head를
+//     신뢰 저장소에 게시해 ACK를 확인한 뒤에 돌려준다(계약 §2.3·§5·§9). 로컬 Sync 실패, 정본 게시 실패·ACK 미확인이면
+//     이벤트 없이 오류다(결과 불명). control·call_closed는 시도 밖 관리 행이라 돌려주지 않는다. 실행 권한 철회는
+//     e3contract.ErrAuthorityRevoked, 등록하지 않은 표식은 e3contract.ErrMarkerNotRegistered다.
 //   - AccountBindingRef: 그 실행·라벨에 지금 결속된 C14 계정 결속 참조다(세션 저장소가 발급, 다시 로그인하면 바뀜).
 //   - Verified: 기다리지 않고, 신뢰 저장소가 조회 시점에 인증한 현재 epoch·head까지 MAC·체인으로 검증한 같은 스냅샷에서
 //     그 호출의 마지막 이벤트를 돌려준다. 검증하지 못하면 e3contract.ErrJournalIntegrity, 검증된 스냅샷에 없으면
