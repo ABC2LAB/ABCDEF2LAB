@@ -60,7 +60,9 @@ from runner_docker import HelperCleanupError, HelperCleanupInterrupt  # noqa: E4
 from isolation_proof import E3_STATUSES, PURPOSE_OFFICIAL  # noqa: E402
 from run_record import OFFICIAL_E3_DISABLED_REASON  # noqa: E402
 from runner_evidence import MeterFiles, forwarded_count  # noqa: E402
-from runner_fault import FAULT_STALL_FORMAT, FAULT_STALL_NAME, FaultRecordError, fault_stall_record  # noqa: E402
+from runner_fault import (  # noqa: E402
+    FAULT_STALL_FORMAT, FAULT_STALL_NAME, FaultRecordError, fault_stall_outcome, fault_stall_record,
+)
 from runner_llm import interrupted_generation_ids, judge_product_llm  # noqa: E402
 from runner_probe import PASS  # noqa: E402
 from runner_product_llm import (  # noqa: E402
@@ -248,6 +250,7 @@ class SplitRunSpec:
     # 합성 모델 모드(평가 overlay 전용). 참이면 OpenRouter 장부·호출 기록 대조와 사후 검증이 '해당 없음(합성)'이다.
     synthetic: bool = False
     scripted_plan_sha256: str = ""  # 합성 모드에서 스크립트 모델이 읽은 계획 사본의 SHA
+    fault_stall_seconds: int | None = None  # 멈춤 무효 판정 T(초, B와 같은 run.fault_stall_seconds). None이면 판정 안 함
     # v1.1 러너 기록(설계안 §2·§5). B(build_spec)와 같은 선언·설정 칸이다. 비면 기록을 만들지 않고 회차가 무효다.
     condition: str = ""
     fixture_fingerprint: str = ""
@@ -421,7 +424,7 @@ def _discovery_sources(ports, draft_id: str) -> dict:
 
 def product_fault_stall(calls: bytes, meter_rows: list[dict], window_start: str, window_end: str, engine_end: dict) -> dict:
     """O 회차의 제공자 장애 멈춤 판정 재료. 제품 호출 기록 줄을 게이트웨이 행 자리에 넣는다(칸·어휘가 같다, #629).
-    B(runner._fault_stall)처럼 읽지 못하면 회차를 무효로 하지 않고 고정 코드만 남긴다."""
+    B(runner._fault_stall)처럼 읽지 못하면 고정 코드만 남기고, T가 설정된 회차면 fault_stall_outcome이 판정 불가로 무효로 한다."""
     terminal = (engine_end.get("first_terminal") or {}).get("at")
     try:
         # 객체가 아닌 줄·빠진 칸은 fault_stall_record 안에서 TypeError·KeyError로 끝나 같은 고정 코드가 된다
@@ -677,9 +680,10 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
         "usage": usage, "call_records": {"reasons": record_reasons}}))
     if record_reasons:
         raise RunFailure(record_reasons[0])
-    # 제공자 장애 멈춤 판정 재료(결정안 §7). B와 같은 함수·같은 창(시작 요청 직전~계측기 봉인 직후)이고, 모델 호출 행은
-    # 제품 호출 기록(게이트웨이 행과 같은 칸·어휘)이다. B처럼 기록만 하고 회차 유효성에 쓰지 않는다.
-    state.summary["fault_stall"] = product_fault_stall(calls, meter_rows, requested_at, sealed_at, engine_end)
+    # 제공자 장애 멈춤 판정(결정안 §7). B와 같은 함수·같은 창(시작 요청 직전~계측기 봉인 직후)·같은 T이고, 모델 호출 행은
+    # 제품 호출 기록(게이트웨이 행과 같은 칸·어휘)이다. B처럼 모델 호출 검증 사유보다 앞의 첫 사유로 둔다.
+    state.summary["fault_stall"], stall_reason = fault_stall_outcome(
+        product_fault_stall(calls, meter_rows, requested_at, sealed_at, engine_end), spec.fault_stall_seconds)
     _step(state, "evidence_write_failed", lambda: evidence.write_json(FAULT_STALL_NAME, state.summary["fault_stall"]))
     # 제품 호출 기록을 B 게이트웨이와 같은 조회 코드로 사후 검증하고(eval-meter -role generation-verify) B와 같은 규칙으로
     # 판정한다(결정안 D(b), 4-11). 샘플링은 제품이 실제로 보낸 값을 표식에 싣고 B 게이트웨이 적용값(선언)과 대조한다.
@@ -698,6 +702,8 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     state.summary["stop_requested_at"] = stop_requested_at
     _step(state, "evidence_write_failed", lambda: evidence.write_json("llm-summary.json", dict(
         llm_summary, reasons=llm_reasons, stop_requested_at=stop_requested_at)))
+    if stall_reason:
+        raise RunFailure(stall_reason, tuple(llm_reasons))
     if llm_reasons:
         raise RunFailure(llm_reasons[0])
     llm_summary = dict(llm_summary, verification=LLM_VERIFIED)

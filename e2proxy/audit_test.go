@@ -22,6 +22,10 @@ import (
 
 var journalTestKey = bytes.Repeat([]byte{0x5a}, 32)
 
+func newJournal(writer journalWriter, key []byte, at time.Time) (*Journal, error) {
+	return newJournalWithHeader(writer, key, journalHeader{Version: JournalVersion, CreatedAt: at})
+}
+
 func journalTestEvent() Event {
 	return Event{Index: 1, Stage: "result", Receipt: Receipt{
 		Version: JournalVersion, IntentID: 22, Scope: transmit.Scope{TaskRef: "task-1", RunRef: "run-1", CaseRef: "case-1", ResetRef: "reset-1", PolicyRef: "policy-1"},

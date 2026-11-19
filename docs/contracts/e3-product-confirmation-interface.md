@@ -32,7 +32,7 @@
 | `target_ref`·`target_approval_revision` | 선언이 붙은 대상과 승인 판. 다시 승인하면 무효 |
 | `declared_by`·`declared_at` | 누가·언제(감사) |
 | `identity{path, subject_id_path}` | 신원 확인 GET. 대상마다 하나(결정 §5.1이 대상 단위로 확인하므로) |
-| `types[]` | 자원 종류마다 `type`·`sharing`·`owner_only_fields`·`create{path, method(POST·PUT), body_kind(json·form), body_template, marker_field, id_path}`·`read{path_template, data_path, status_path?, normal_value?}` |
+| `types[]` | 자원 종류마다 `type`·`sharing`·`owner_only_fields`·`create{path, method(POST·PUT), body_kind(json·form), body_template, marker_field, id_path 또는 id_field}`·`read{path_template, data_path, status_path?, normal_value?}` |
 | `owner_account_label`·`cross_account_label`·`accounts_same_privilege` | 확정 단계 계정 역할(선택, 2026-11-19 사용자 결정). 소유·생성 시험 계정(A), 교차 조회 시험 계정(B), 두 계정이 같은 권한 등급이라는 운영자 확인. §4 |
 
 - `owner_only`이고 `marker_field`가 `owner_only_fields`에 있는 종류만 시험한다. `shared` 종류는 요청 칸을 두지 않고, 확정 단계는 요청도 판정 행도 만들지 않고 `skipped`로 보인다. 판정 값은 오라클만 만들기 때문에, 사유만으로 UNDECIDABLE 행을 꾸미지 않는다.
@@ -65,7 +65,18 @@
   - 칸은 선택 칸이다. 역할 없이 저장한 선언은 정본 바이트가 칸을 넣기 전과 같아서(형식 판 그대로) 이미 저장한 선언과 화면 파서가 그대로 읽는다.
 - 서버는 선언한 라벨에 C14 인증 결과(`authenticated`)를 붙인다. 관찰에는 E²가 실제로 붙인 라벨이 들어가고, 요청한 라벨과 다르면 진위 실패다.
 - 요청 하나는 영수증 하나(`CallRef{call_ref, attempt_id, sequence}`)다. 같은 요청을 다시 보내지 않는다(결과 불명 쓰기 포함).
-- 객체 ID 원문은 E² 밖으로 나오지 않는다. 생성 관찰은 실행별 키 digest만 주고, 조회 요청은 생성 관찰의 `CallRef`를 가리키면 E²가 그 ID로 경로를 채운다.
+- **객체 ID 출처(2026-11-19 사용자 결정).** 선언의 `create`는 둘 중 하나만 준다. 둘 다 주면 `create.id_field`, 둘 다 없으면 `create.id_path` 칸 이름으로 저장 API가 400이다.
+  - `id_path`(생성 응답 JSON의 ID 경로, 지금 방식): 객체 ID 원문은 E² 밖으로 나오지 않는다. 생성 관찰은 실행별 키 digest만 주고, 조회 요청은 생성 관찰의 `CallRef`를 가리키면 E²가 그 ID로 경로를 채운다.
+  - `id_field`(생성 요청 본문의 ID 칸, 클라이언트가 ID를 정하는 API — 예: VAmPI 책은 제목이 ID이고 생성 응답에 ID가 없다): 확정 단계가 회차·종류마다 새 난수 ID(`e3id-` + 16진 32자)를 만든다. 표식과 다른 난수에서 따로 뽑고 표식에서 파생하지 않으며, 표식과 같거나 한쪽이 다른 쪽에 들어 있으면 쓰지 않는다. **ID는 비밀이 아니다**: 대상으로 보내는 조회 경로에 들어가고, E③ 결과(`RunResult.Writes[].object_id`)와 쓰기 기록(`confirmation_writes`)에 원문이 남는다(리셋 확인 때 그 ID로 조회하려고). 다만 E²의 v3 이벤트·영수증·공유 로그에는 지금처럼 객체 ID 원문을 넣지 않고 digest만 둔다([v3 계약](e3-e2-v3-journal-contract.md) §2.2 그대로). 사용자 승인 모드의 승인 미리보기(`input_preview`)는 보낼 생성 본문을 그대로 보여 주므로(표식만 가림) 그 본문 칸의 ID가 보인다. **표식은 계속 비밀이다.** ID 칸은 표식 칸과 같은 칸 경로 규칙이고(json은 점 경로, form은 점 없음), 표식 칸과 같거나 상·하위 칸일 수 없다. "본문 틀에 이미 있으면 안 된다"는 표식 칸과 같은 범위다: 저장 검사는 json이면 맨 위 칸만 보고(점 경로는 안쪽까지 보지 않음), form이면 그 키를 본다. 점 경로 안쪽에 이미 값이 있으면 저장은 되지만 확정 단계가 본문을 만들 때 덮어쓰지 않고 멈춘다(`product_create_request_unavailable`, 요청 없음). `owner_only_fields`와는 상관없다(들어가도 되고 안 들어가도 된다). 판정은 표식 칸만 보고, 표식 칸은 지금처럼 `owner_only_fields` 중 하나여야 한다. 생성은 그 ID를 `CreateRequest.ObjectID`로, 조회는 `ReadRequest.ObjectID`로 싣는다. 서버 자격 모양 검사(`CredentialField`)에 `create.id_field`도 들어간다.
+  - 생성이 ID 충돌 등으로 정상 응답이 아니면 그 종류는 UNDECIDABLE(`product_create_failed`)이다. 다른 ID로 다시 보내지 않는다. ID를 만들 수 없거나 본문에 넣을 수 없으면 보내지 않고 `product_create_request_unavailable`(새 사유)이다.
+  - `id_field`가 없는 선언의 정본 바이트는 칸을 넣기 전과 같다(형식 판 그대로). 이미 저장한 선언은 바뀌지 않는다. 그래서 `id_path` 칸은 빈 값이어도 정본에 늘 실리고(공유 종류의 빈 `create` 포함, `id_field` 선언이면 빈 값), `id_field`만 있을 때 실린다.
+  - **호환·배포 순서.** 지금 화면 파서(`web/src/workbench/live/declaration.ts`의 `parseStoredDeclaration`)는 `create` 칸을 정확히 검사하고 `id_path`를 필수로 본다. 그래서 서버만 먼저 `id_field` 선언을 저장·응답하면 화면이 그 선언을 깨진 응답으로 잠근다. 이를 막으려고 구현은 **한 dev 변경(PR 하나)**에 서버와 웹 파서를 같이 넣는다: 서버(선언 타입·`Validate`·`CredentialField`·본문 조립·요청 칸·쓰기 기록)와 웹(`CREATE_KEYS`를 `id_path` XOR `id_field`로, 저장 본문 `toRequestBody`·`draftFromStored` 보존, `validateDraft`의 둘 중 하나 규칙, `credentialFields`에 `create.idField`). 화면 입력 칸("ID 출처: 응답 경로 / 요청 본문 칸" 고르기와 칸 이름)은 이경준님이 뒤이어 붙인다. `id_path`만 쓰는 지금 선언은 응답 모양이 그대로라 어느 순서에서도 깨지지 않는다.
+- **생성 본문은 확정 단계가 만든다(③(가) 확장: 표식을 만드는 쪽이 본문에도 넣는다).** 확정 단계가 본문 틀에 표식과(`id_field`면) ID를 넣어 본문을 만든다. json은 틀의 값·수 원문을 그대로 두고 칸을 더하고, form은 키를 더해 다시 인코딩한다. 만든 본문은 표식과 같은 방식으로 문자열·JSON·텍스트·바이너리·gob·slog 출력을 막은 `RequestBody`로 E²에 넘긴다(`CreateRequest.Body`). E²는 본문을 바꾸지 않고 `create.path`·`create.method`로 보낸다(Content-Type은 `body_kind`). 본문 속 표식은 그 회차에 등록한 보호 값이라 E²의 저널·영수증·승인 미리보기에서 가려진다.
+- **E²에서 바뀌는 것(이동찬 확인).** 동찬님 쪽 변경을 최소로 두려고 E²는 아래만 맞춘다.
+  1. 생성 본문을 조립하지 않고 받은 `RequestBody`를 그대로 보낸다(지금 계약의 "E²가 본문 틀의 표식 칸에 표식을 넣는다"를 대신함).
+  2. `id_field`면 조회 경로 틀의 `{id}`에 `ReadRequest.ObjectID`를 넣고(단일 경로 조각이 아니면 거부), 생성 관찰의 `object_id_digest`는 응답 대신 `CreateRequest.ObjectID`로 만든다(digest 키는 그대로).
+  3. 목적 규칙은 그대로다: 생성은 선언한 생성 경로, 조회는 경로 틀에 그 ID가 들어간 경로만 허용한다.
+  4. 리셋 게이트의 잔존 점검이 `id_field` 쓰기 기록의 ID로 남은 객체를 조회한다(ID를 아는 객체가 늘어남).
 - 조회 ID는 비어 있지 않은 단일 경로 조각이어야 한다. `/`·`;`·`?`·중괄호가 포함된 ID는 이 규칙으로 조회할 수 없다.
 - 보내지 않은 것이 확실하면 `sent=false`와 사유(`approval_denied`·`approval_timeout`·`confirmation_budget_exhausted`·`policy_denied`)다. 보냈는지 모르면 오류를 돌려주거나 `sent=true, response_complete=false`다.
 - 실행 권한이 철회됐으면 `ErrAuthorityRevoked`다(진위 실패).
@@ -157,9 +168,9 @@
 ### 7.2 쓰기 기록
 
 - `RunResult.Writes`는 이 회차 생성 요청이 대상에 남겼을 수 있는 쓰기다. 보낸(또는 보냈을 수 있는) 생성마다 하나이고, 보내지 않은 것이 확실한 생성(NotSent)은 넣지 않는다.
-- 객체 ID를 꺼낸 정상 응답만 `created`(ID digest 있음)이고, 시간 초과·결과 불명·비정상 응답·ID 없음은 `unknown`(ID 모름)이다. 객체가 생겼다고 본다.
+- 객체 ID를 꺼낸 정상 응답만 `created`(ID digest 있음)이고, 시간 초과·결과 불명·비정상 응답·ID 없음은 `unknown`이다. 객체가 생겼다고 본다. `id_field`면 보내기 전에 ID를 알므로 결과와 관계없이 `object_id`(그 ID 원문)가 실린다. 쓰기 기록 예약(`WriteRecorder.Reserve(…, objectID)`)부터 그 ID와 함께 남고, 정산은 같은 ID로만 받는다.
 - 상태와 관계없이 싣는다. 진위 실패로 판정을 버려도 대상에는 이미 쓰기가 있었다.
-- 서버는 이것으로 대상의 쓰기 기록(`confirmation_writes`, ID 모름은 `id_unknown`)을 남긴다. 그 대상은 운영자 리셋 확인 전까지 다음 회차 확정 단계를 시작하지 않는다(§8). 잔존 점검은 ID를 아는 객체만 읽는다. ID 모르는 객체는 리셋 확인에만 기댄다(표식이 회차마다 새 난수라 남은 객체가 다음 판정을 확정으로 만들지 못한다).
+- 서버는 이것으로 대상의 쓰기 기록(`confirmation_writes`, ID 모름은 `id_unknown`)을 남긴다. 그 대상은 운영자 리셋 확인 전까지 다음 회차 확정 단계를 시작하지 않는다(§8). 잔존 점검은 ID를 아는 객체만 읽는다(`id_field` 쓰기는 결과 불명이어도 ID를 안다). ID 모르는 객체(`id_path` 대상의 결과 불명)는 리셋 확인에만 기댄다(표식이 회차마다 새 난수라 남은 객체가 다음 판정을 확정으로 만들지 못한다).
 
 ## 8. 리셋 게이트
 

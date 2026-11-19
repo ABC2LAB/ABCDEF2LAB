@@ -155,7 +155,7 @@ def split_run_spec(config: RunnerConfig, plan: SplitPlan, declared: SplitDeclare
                          "registration_valid_hours": config.split.registration_valid_hours},
         model_budget_sha256=_model_budget(manifest, config),
         exploration_policy_sha256=exploration_policy_sha256, synthetic=config.split.synthetic,
-        scripted_plan_sha256=scripted_plan_sha256,
+        scripted_plan_sha256=scripted_plan_sha256, fault_stall_seconds=config.fault_stall_seconds,
         # v1.1 러너 기록(설계안 §2·§5): 측정 매트릭스 행 이름·선언 지문·대상 origin·관측 GET은 B(build_spec)와 같은 출처다.
         # 호스트 리슨 허용은 api 백엔드의 B 규칙(allowed_host_listens)과 같은 설정 허용 목록이다(O는 모델 리슨이 없다).
         condition=condition, fixture_fingerprint=declared.fixture_fingerprint,

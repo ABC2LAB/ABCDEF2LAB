@@ -35,6 +35,7 @@ PATH_KEY = "0123456789abcdef"
 GOAL = "7" * 64
 FIXTURE = __import__("hashlib").sha256(b"fixture-v1").hexdigest()
 ENVIRONMENT = __import__("hashlib").sha256(b"environment-v1").hexdigest()
+STALL_T = 180  # 시험용 멈춤 판정 T(초)
 
 
 class _DiskPorts(o.FakePorts):
@@ -112,7 +113,18 @@ class TestSplitRecordEndToEnd(_RunDir):
         ports.host_spec = lambda: dict(CONDITIONS["host"], machine_id_sha256=CONDITIONS["machine_id_sha256"])
         spec = o.spec(run_id=RUN_ID, purpose="official", path_key_ref=PATH_KEY, model_tag="test-model", condition="우리@test",
                       fixture_fingerprint=FIXTURE, environment_fingerprint=ENVIRONMENT, drain_grace_seconds=30, post_settle_seconds=2,
-                      llm_sampling=dict(CONDITIONS["sampling"]))
+                      llm_sampling=dict(CONDITIONS["sampling"]), fault_stall_seconds=STALL_T)
+        # 공식 회차는 멈춤 무효를 판정한다(#756): 시각이 있는 제품 호출 기록 두 줄(장부 두 줄과 맞음, 제공자 장애 없음)
+        start_round = ports.start_round
+
+        def start(prepared):
+            base = o.START + o.timedelta(seconds=clock.t)
+            at = lambda seconds: (base + o.timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")  # noqa: E731
+            ports.calls_file = b"".join(json.dumps(row).encode() + b"\n" for row in (
+                {"seq": 1, "decision": "forwarded", "status": 200, "started_at": at(0.5), "completed_at": at(1.0)},
+                {"seq": 2, "decision": "forwarded", "status": 200, "started_at": at(1.5), "completed_at": at(2.0)}))
+            return start_round(prepared)
+        ports.start_round = start
         ports.marker = o.product_marker(sampling=dict(CONDITIONS["sampling"]))
         ports.record["model"]["sampling"] = dict(CONDITIONS["sampling"])
         meter = _DiskMeter(ports)
@@ -139,6 +151,10 @@ class TestSplitRecordEndToEnd(_RunDir):
     def test_runner_signed_o_record_reaches_the_scorer(self):
         o_manifest = self.o_manifest()
         inputs = load_run_inputs(o_manifest, self.runner_key, self.correlate)
+        # 세션 집계가 받은 O 회차는 같은 T로 판정된 서명 결과다(장애 없음 → 멈춤 0)
+        o_result = json.loads((Path(self._tmp.name) / "runs" / RUN_ID / "runner-result.json").read_text())
+        self.assertEqual((o_result["fault_stall"]["judged"], o_result["fault_stall"]["stall_seconds"],
+                          o_result["fault_stall"]["stalls"]), (True, STALL_T, 0))
         # 격리 검증 통과, 신규 해결 하나가 isolated_window로 엔진에 귀속된다
         self.assertEqual((inputs.e2_mode, inputs.attempt_reconciliation, inputs.engine_solved),
                          ("split_product", None, frozenset({SOLVED_KEY})))
