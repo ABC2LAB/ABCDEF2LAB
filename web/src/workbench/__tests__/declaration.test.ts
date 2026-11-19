@@ -42,7 +42,15 @@ const ownerOnly = (type: string, path: string): TypeDraft => ({
   type,
   sharing: "owner_only",
   ownerOnlyFields: ["body"],
-  create: { path, method: "POST", bodyKind: "json", bodyTemplate: '{"title":"t"}', markerField: "body", idPath: "id" },
+  create: {
+    path,
+    method: "POST",
+    bodyKind: "json",
+    bodyTemplate: '{"title":"t"}',
+    markerField: "body",
+    idPath: "id",
+    idField: "",
+  },
   read: { pathTemplate: `${path}/{id}`, dataPath: ".", statusPath: "", normalValue: "" },
 });
 const shared = (type: string): TypeDraft => ({
@@ -125,6 +133,41 @@ describe("validateDraft (e3contract Declaration.Validate 화면 사본)", () => 
     ["status_half", (d) => (d.types[0].read.statusPath = "status"), "types.0.read.statusPath"],
     ["sharing", (d) => (d.types[0].sharing = "public" as never), "types.0.sharing"],
     ["id_path", (d) => (d.types[0].create.idPath = ""), "types.0.create.idPath"],
+    // 객체 ID 출처는 둘 중 하나만(id_path 또는 id_field, e3contract Validate와 같음)
+    ["id_both", (d) => (d.types[0].create.idField = "title_id"), "types.0.create.idField"],
+    [
+      "id_field_is_marker",
+      (d) => Object.assign(d.types[0].create, { idPath: "", idField: "body" }),
+      "types.0.create.idField",
+    ],
+    [
+      "id_field_under_marker",
+      (d) => Object.assign(d.types[0].create, { idPath: "", idField: "body.id" }),
+      "types.0.create.idField",
+    ],
+    [
+      "id_field_above_marker",
+      (d) => {
+        Object.assign(d.types[0].create, { idPath: "", idField: "meta", markerField: "meta.body" });
+        d.types[0].ownerOnlyFields = ["meta.body"];
+      },
+      "types.0.create.idField",
+    ],
+    [
+      "id_field_in_body",
+      (d) => Object.assign(d.types[0].create, { idPath: "", idField: "title" }),
+      "types.0.create.bodyTemplate",
+    ],
+    [
+      "id_field_form_dotted",
+      (d) => Object.assign(d.types[0].create, { idPath: "", idField: "a.b", bodyKind: "form", bodyTemplate: "a=1" }),
+      "types.0.create.idField",
+    ],
+    [
+      "id_field_form_in_body",
+      (d) => Object.assign(d.types[0].create, { idPath: "", idField: "a", bodyKind: "form", bodyTemplate: "a=1" }),
+      "types.0.create.bodyTemplate",
+    ],
     [
       "form_dotted",
       (d) => {
@@ -635,5 +678,61 @@ describe("계정 역할(계약 §4, 선택 칸)", () => {
     expect(roleReadiness({ ownerAccountLabel: "a", crossAccountLabel: "b", accountsSamePrivilege: true })).toBe(
       "declared",
     );
+  });
+});
+
+// 요청 본문 칸 ID(create.id_field, #757): 서버는 id_path를 늘 내보내고(빈 값 포함) id_field는 그 선언에만 싣는다.
+describe("객체 ID 출처 id_field", () => {
+  const withIDField = () => {
+    const j = storedJson() as Record<string, unknown> & { types: Record<string, unknown>[] };
+    j.types[0] = { ...j.types[0], create: { ...(j.types[0].create as Json), id_path: "", id_field: "title_id" } };
+    return j;
+  };
+
+  it("id_field 선언을 읽고 다시 저장해도 id_field를 지우지 않는다", () => {
+    const cur = parseDeclarationResponse(activeRes(withIDField()), "target-1");
+    expect(cur.state).toBe("current");
+    if (cur.state !== "current") return;
+    expect(cur.declaration.types[0].create).toMatchObject({ idPath: "", idField: "title_id" });
+    const draft = draftFromStored(cur.declaration);
+    expect(validateDraft(draft)).toEqual([]);
+    const body = toRequestBody(draft, 3) as { declaration: { types: { create?: Json }[] } };
+    expect(body.declaration.types[0].create).toMatchObject({ id_path: "", id_field: "title_id" });
+  });
+
+  it("공유 종류 create에 id_field 칸이 있으면 계약 밖이다(서버는 빈 값을 내보내지 않음)", () => {
+    const j = storedJson() as Record<string, unknown> & { types: Record<string, unknown>[] };
+    j.types[1] = { ...j.types[1], create: { ...(j.types[1].create as Json), id_field: "" } };
+    expect(parseDeclarationResponse(activeRes(j), "target-1").state).toBe("invalid");
+  });
+
+  it("id_path 선언·공유 종류는 칸 모양이 그대로이고 저장 본문에 id_field를 넣지 않는다", () => {
+    const cur = parseDeclarationResponse(activeRes(storedJson()), "target-1");
+    if (cur.state !== "current") throw new Error("current 아님");
+    expect(cur.declaration.types[0].create.idField).toBe("");
+    const body = toRequestBody(draftFromStored(cur.declaration), 3) as { declaration: { types: { create?: Json }[] } };
+    expect(body.declaration.types[0].create).not.toHaveProperty("id_field");
+  });
+
+  it.each<[string, Json]>([
+    ["둘 다", { id_path: "id", id_field: "title_id" }],
+    ["둘 다 없음", { id_path: "" }],
+    ["id_field 문자열 아님", { id_path: "", id_field: 1 }],
+    // 서버는 빈 id_field를 내보내지 않는다(omitempty)
+    ["id_field 빈 값", { id_path: "id", id_field: "" }],
+  ])("ID 출처가 어긋난 응답은 계약 밖이다: %s", (_name, create) => {
+    const j = storedJson() as Record<string, unknown> & { types: Record<string, unknown>[] };
+    j.types[0] = { ...j.types[0], create: { ...(j.types[0].create as Json), ...create } };
+    expect(parseDeclarationResponse(activeRes(j), "target-1").state).toBe("invalid");
+  });
+
+  it("자격 모양 검사에 ID 칸도 들어간다(서버 CredentialField와 같음)", () => {
+    const d = base();
+    Object.assign(d.types[0].create, { idPath: "", idField: "session_id=1" });
+    expect(credentialFields(d)).toContain("types.0.create.idField");
+  });
+
+  it("서버 칸 이름 create.id_field를 화면 칸으로 옮긴다", () => {
+    expect(draftFieldOf("types[0].create.id_field")).toBe("types.0.create.idField");
   });
 });

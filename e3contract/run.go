@@ -44,7 +44,7 @@ type Deps struct {
 	Reset        ResetGate
 	// Writes는 생성 요청의 쓰기 기록이다(기록하고 나서 보내기). 없으면 연결 미구현(not_wired)이다.
 	Writes WriteRecorder
-	// Random은 표식 난수다. 없으면 crypto/rand다.
+	// Random은 표식과 요청 본문 칸 객체 ID(id_field)의 난수원이다. 없으면 crypto/rand다(제품 생성자는 두지 않는다).
 	Random io.Reader
 	// Now는 관찰이 하나도 없을 때 판정 시각이다. 없으면 time.Now다.
 	Now func() time.Time
@@ -87,13 +87,15 @@ type run struct {
 	stoppedBeforeStage bool
 	in                 Input
 	marker             Marker
-	decl               Declaration
-	requests           int
-	seen               map[string]bool
-	integrity          IntegrityReason
-	budget             bool // 확정 단계 전용 몫이 다 됐다. 더 보내지 않는다.
-	stopped            bool // 회차 중지로 끊겼다.
-	lastAt             time.Time
+	// random은 이 회차의 난수원이다(Deps.Random, 없으면 crypto/rand). 표식과 요청 본문 칸 ID가 같은 출처에서 새 바이트를 읽는다.
+	random    io.Reader
+	decl      Declaration
+	requests  int
+	seen      map[string]bool
+	integrity IntegrityReason
+	budget    bool // 확정 단계 전용 몫이 다 됐다. 더 보내지 않는다.
+	stopped   bool // 회차 중지로 끊겼다.
+	lastAt    time.Time
 	// bindingValid는 실행 결속이 검증을 통과했는지다. 통과한 결속만 결과에 싣는다.
 	bindingValid bool
 	// writes는 생성 요청이 대상에 남겼을 수 있는 쓰기다. 진위 실패로 판정을 버려도 남긴다.
@@ -198,6 +200,7 @@ func (r *run) run(ctx context.Context) RunResult {
 	if random == nil {
 		random = rand.Reader
 	}
+	r.random = random
 	marker, err := NewMarker(random)
 	if err != nil {
 		return r.result(StatusStartRefused, string(RefuseMarkerGenerationFailed))
@@ -453,17 +456,31 @@ func (r *run) confirmType(ctx context.Context, t TypeDeclaration, subjects oracl
 	if r.budget {
 		return r.verdict(t, subjects, facts, evidence, ReasonConfirmationBudgetExhaust)
 	}
-	// 기록하고 나서 보낸다: 생성 요청 전에 쓰기를 "ID 모름"으로 먼저 남긴다. 남기지 못하면 보내지 않는다.
-	if err := r.deps.Writes.Reserve(ctx, r.in.Binding, t.Type); err != nil {
+	// 요청 본문 칸 ID(id_field)면 회차·종류마다 표식과 따로 새 난수 ID를 만든다. 본문은 확정 단계가 틀에 표식·ID를 넣어 만든다.
+	var objectID string
+	if t.Create.IDField != "" {
+		id, err := NewObjectID(r.random, r.marker)
+		if err != nil {
+			return r.verdict(t, subjects, facts, evidence, ReasonCreateRequestUnavailable)
+		}
+		objectID = id
+	}
+	body, err := AssembleBody(t.Create, r.marker, objectID)
+	if err != nil {
+		return r.verdict(t, subjects, facts, evidence, ReasonCreateRequestUnavailable)
+	}
+	// 기록하고 나서 보낸다: 생성 요청 전에 쓰기를 먼저 남긴다(id_field면 그 ID와 함께, 아니면 ID 모름). 남기지 못하면 보내지 않는다.
+	if err := r.deps.Writes.Reserve(ctx, r.in.Binding, t.Type, objectID); err != nil {
 		return r.verdict(t, subjects, facts, evidence, ReasonWriteRecordUnavailable)
 	}
 	before := r.requests
+	// 생성은 한 번만 보낸다. ID 충돌 등으로 실패해도 다른 ID로 다시 보내지 않는다(그 종류는 UNDECIDABLE).
 	created, ok := r.call(ctx, Observation{Purpose: PurposeCreate, Role: RoleOwner, AccountLabel: r.in.Owner.Label,
 		ResourceType: t.Type}, func() (Observation, error) {
 		return r.deps.Transport.Create(ctx, CreateRequest{Binding: r.in.Binding, ResourceType: t.Type, Spec: t.Create,
-			AccountLabel: r.in.Owner.Label, Marker: r.marker, Timeout: r.in.RequestTimeout})
+			AccountLabel: r.in.Owner.Label, Marker: r.marker, Body: body, ObjectID: objectID, Timeout: r.in.RequestTimeout})
 	})
-	r.settleWrite(ctx, r.recordWrite(t.Type, created, ok, r.requests > before))
+	r.settleWrite(ctx, r.recordWrite(t.Type, objectID, created, ok, r.requests > before))
 	if r.integrity != "" || r.stopped && !ok {
 		return Verdict{}
 	}
@@ -478,7 +495,7 @@ func (r *run) confirmType(ctx context.Context, t TypeDeclaration, subjects oracl
 		return r.verdict(t, subjects, facts, evidence, ReasonCreateFailed)
 	}
 
-	owner, reason := r.read(ctx, t, RoleOwner, r.in.Owner.Label, created.Ref)
+	owner, reason := r.read(ctx, t, RoleOwner, r.in.Owner.Label, created.Ref, objectID)
 	if r.integrity != "" || r.stopped && reason == "" && owner == (Observation{}) {
 		return Verdict{}
 	}
@@ -497,7 +514,7 @@ func (r *run) confirmType(ctx context.Context, t TypeDeclaration, subjects oracl
 		return r.verdict(t, subjects, facts, evidence, ReasonDataCheckFailed)
 	}
 
-	cross, reason := r.read(ctx, t, RoleCross, r.in.Cross.Label, created.Ref)
+	cross, reason := r.read(ctx, t, RoleCross, r.in.Cross.Label, created.Ref, objectID)
 	if r.integrity != "" || r.stopped && reason == "" && cross == (Observation{}) {
 		return Verdict{}
 	}
@@ -527,14 +544,14 @@ func (r *run) confirmType(ctx context.Context, t TypeDeclaration, subjects oracl
 }
 
 // read는 조회 하나를 부르고, 판정에 쓸 수 없으면 사유를 돌려준다. 관찰을 못 받았으면 빈 관찰이다.
-func (r *run) read(ctx context.Context, t TypeDeclaration, role Role, label string, create CallRef) (Observation, ProductReason) {
+func (r *run) read(ctx context.Context, t TypeDeclaration, role Role, label string, create CallRef, objectID string) (Observation, ProductReason) {
 	if r.budget {
 		return Observation{}, ReasonConfirmationBudgetExhaust
 	}
 	obs, ok := r.call(ctx, Observation{Purpose: PurposeRead, Role: role, AccountLabel: label, ResourceType: t.Type,
 		Create: create}, func() (Observation, error) {
 		return r.deps.Transport.Read(ctx, ReadRequest{Binding: r.in.Binding, ResourceType: t.Type, Spec: t.Read,
-			MarkerField: t.Create.MarkerField, Role: role, AccountLabel: label, Create: create, Marker: r.marker,
+			MarkerField: t.Create.MarkerField, Role: role, AccountLabel: label, Create: create, ObjectID: objectID, Marker: r.marker,
 			Timeout: r.in.RequestTimeout})
 	})
 	if r.integrity != "" || (r.stopped && !ok) {
@@ -565,11 +582,11 @@ func (r *run) read(ctx context.Context, t TypeDeclaration, role Role, label stri
 // 않는다. 객체 ID를 꺼낸 정상 응답만 created이고, 나머지(시간 초과·결과 불명·관찰 불일치·비정상 응답)는 unknown이다.
 // recordWrite는 생성 요청이 대상에 남겼을 수 있는 쓰기를 결과에 더한다. 보내지 않은 것이 확실하면 더하지 않고
 // not_sent를 돌려준다(쓰기 기록 갱신에 쓴다).
-func (r *run) recordWrite(resourceType string, obs Observation, ok, invoked bool) ConfirmationWrite {
+func (r *run) recordWrite(resourceType, objectID string, obs Observation, ok, invoked bool) ConfirmationWrite {
 	if !invoked || ok && !obs.Sent {
-		return ConfirmationWrite{ResourceType: resourceType, Outcome: WriteNotSent}
+		return ConfirmationWrite{ResourceType: resourceType, Outcome: WriteNotSent, ObjectID: objectID}
 	}
-	w := ConfirmationWrite{ResourceType: resourceType, Outcome: WriteUnknown}
+	w := ConfirmationWrite{ResourceType: resourceType, Outcome: WriteUnknown, ObjectID: objectID}
 	if ok {
 		w.Ref = obs.Ref
 		if obs.ResponseComplete && obs.Normal == oracle.StateYes && obs.ObjectIDDigest != "" {
