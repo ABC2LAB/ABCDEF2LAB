@@ -819,16 +819,48 @@ const knownText = (v?: string): v is string => !!v && v !== "unknown" && !v.star
  * 발견의 엔드포인트 (시안 ep(m,p)): 서버가 저장한 맥락의 경로 템플릿이 있을 때만. 메서드는 그 경로의 관찰이
  * 한 가지 메서드로 맞을 때만 붙인다(여러 개 · 모름이면 경로만). 없으면 null.
  */
-export function entryEp(e: RemediationEntry): { m: string | null; p: string } | null {
-  const p = e.context?.endpoint;
-  if (!knownText(p)) return null;
-  const ms = new Set(
-    (e.context?.observations ?? [])
-      .filter((o) => o.endpoint === p && knownText(o.method))
-      .map((o) => String(o.method).toUpperCase()),
-  );
-  const m = ms.size === 1 ? [...ms][0] : null;
-  return { m: m && /^[A-Z]{3,7}$/.test(m) ? m : null, p: maskSecrets(p) };
+const HTTP_METHOD = /^[A-Z]{3,7}$/;
+
+/** "GET /a" · "/a" → 메서드 · 경로 (경로가 / 로 시작하지 않으면 null). 메서드가 글에 없으면 따로 받은 값. */
+function splitEndpoint(raw: string, method?: string): { m: string | null; p: string } | null {
+  const text = raw.trim();
+  const sp = text.indexOf(" ");
+  const head = sp > 0 ? text.slice(0, sp) : "";
+  const hasMethod = HTTP_METHOD.test(head);
+  const p = hasMethod ? text.slice(sp + 1).trim() : text;
+  if (!p.startsWith("/")) return null;
+  if (hasMethod) return { m: head, p };
+  const given = method?.toUpperCase();
+  return { m: given && HTTP_METHOD.test(given) ? given : null, p };
+}
+
+/**
+ * 취약한 경로 (메서드 · 경로 · 그 밖 경로 수). 대표 경로(context.endpoint)가 있으면 그것, 메서드는 같은 경로 관찰이 한 가지로
+ * 모일 때만. 대표 경로가 없으면 — 서버가 엔진 후보에는 채우지 않는다(db/diagnostic_remediation.go) — E② 가 실제로 보낸
+ * 요청 기록(관찰)의 경로로 보인다(사용자 11/19: 늘 '—'로만 보였다). 관찰 경로가 여럿이면 첫 경로와 나머지 수. 지어내지 않는다.
+ */
+export function entryEp(e: RemediationEntry): { m: string | null; p: string; more: number } | null {
+  const top = e.context?.endpoint;
+  const obs = e.context?.observations ?? [];
+  if (knownText(top)) {
+    const ep = splitEndpoint(top) ?? { m: null, p: top };
+    let m = ep.m;
+    if (!m) {
+      const ms = new Set(
+        obs.filter((o) => o.endpoint === top && knownText(o.method)).map((o) => String(o.method).toUpperCase()),
+      );
+      m = ms.size === 1 ? [...ms][0] : null;
+    }
+    return { m: m && HTTP_METHOD.test(m) ? m : null, p: maskSecrets(ep.p), more: 0 };
+  }
+  const seen = new Map<string, { m: string | null; p: string }>();
+  for (const o of obs) {
+    if (!knownText(o.endpoint)) continue;
+    const ep = splitEndpoint(o.endpoint, o.method);
+    if (ep && !seen.has(`${ep.m ?? ""} ${ep.p}`)) seen.set(`${ep.m ?? ""} ${ep.p}`, ep);
+  }
+  const [first, ...rest] = [...seen.values()];
+  return first ? { m: first.m, p: maskSecrets(first.p), more: rest.length } : null;
 }
 
 /** 엔드포인트 글 (시안 ep · pth: 메서드 딱지 + 경로, 경로의 {이름} 자리는 기울임). */
@@ -848,6 +880,7 @@ export function EntryEp({ e }: { e: RemediationEntry }) {
           /^\{\w+\}$/.test(x) ? <i key={i}>{x}</i> : x,
         )}
       </span>
+      {ep.more ? ` 외 ${ep.more}개` : null}
     </>
   );
 }
@@ -986,7 +1019,7 @@ export function FindingDetail({
           </>
         }
       />
-      {/* ARTEX 발견 상세처럼(사용자 11/17) 칸마다 흰 카드로: 맨 위 상태 카드(ID · 위험도 · 판정 · 유형 · 관련 자산 · 발견 시각,
+      {/* ARTEX 발견 상세처럼(사용자 11/17) 칸마다 흰 카드로: 맨 위 상태 카드(ID · 위험도 · 판정 · 유형 · 취약한 경로 · 발견 시각,
           줄마다 구분선 · 값은 오른쪽), 그 아래 판정과 영향 · 재현 절차 · 보안 조치 · AI 프롬프트 · 기술 정보 카드.
           ARTEX 와 달리 위험도 · 처리 상태를 여기서 바꾸지 않는다 — 판정은 저장된 E③ 근거만 따른다(절대규칙 3 · 5) */}
       <div className={s.fdet}>
@@ -1016,7 +1049,7 @@ export function FindingDetail({
 }
 
 /**
- * 발견 상태 카드 (ARTEX 발견 상세의 상태 카드): ID · 위험도 · 판정 · 유형 · 관련 자산 · 발견 시각. 오른쪽 패널과 상세 페이지가
+ * 발견 상태 카드 (ARTEX 발견 상세의 상태 카드): ID · 위험도 · 판정 · 유형 · 취약한 경로 · 발견 시각. 오른쪽 패널과 상세 페이지가
  * 같이 쓴다. ARTEX 와 달리 위험도 · 처리 상태를 여기서 바꾸지 않는다 — 판정은 저장된 E③ 근거만 따른다(절대규칙 3 · 5).
  */
 function StatusCard({ e, host }: { e: RemediationEntry; host?: string | null }) {
@@ -1047,7 +1080,7 @@ function StatusCard({ e, host }: { e: RemediationEntry; host?: string | null }) 
           <dd>{e.vuln_class ? <span className={s.chip}>{maskSecrets(e.vuln_class)}</span> : "—"}</dd>
         </div>
         <div>
-          <dt>관련 자산</dt>
+          <dt>취약한 경로</dt>
           <dd>{entryEp(e) ? <EntryEp e={e} /> : "—"}</dd>
         </div>
         {host ? (
@@ -1247,7 +1280,7 @@ export function buildPocMarkdown(entries: readonly RemediationEntry[], info: Poc
     out.push(`## ${i + 1}. ${tag} ${mdInline(e.title || e.entry_id).replace(/#/g, "\\#")}`, "");
     const facts = [
       e.vuln_class ? `유형 ${mdInline(e.vuln_class)}` : "",
-      ep ? `엔드포인트 ${ep.m ? `${ep.m} ` : ""}${mdInline(ep.p)}` : "",
+      ep ? `엔드포인트 ${ep.m ? `${ep.m} ` : ""}${mdInline(ep.p)}${ep.more ? ` 외 ${ep.more}개` : ""}` : "",
       at ? `발견 ${at}` : "",
       `ID ${mdInline(e.entry_id)}`,
     ].filter(Boolean);

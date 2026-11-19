@@ -80,7 +80,7 @@ import { createInitialState, useWb } from "../store";
 import { Markdown } from "../ui/Markdown";
 import { DashboardByMode, LiveByMode, NewScanByMode, ReportByMode, ScopeByMode } from "../views/live/byMode";
 import { UrlFindingLive } from "../views/live/UrlFindingLive";
-import { buildPocMarkdown, FINDINGS_POLL_MS } from "../views/live/UrlLiveLive";
+import { buildPocMarkdown, entryEp, FINDINGS_POLL_MS } from "../views/live/UrlLiveLive";
 import { EXCLUDE_EXAMPLE } from "../views/live/UrlNewScanLive";
 import { WorkflowCrawlLive } from "../views/live/workflowViews";
 import s from "../workbench.module.css";
@@ -1563,10 +1563,10 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     const insp = screen.getByRole("complementary", { name: "취약점 상세" });
     expect(within(insp).getByText(/^idor ·/)).toBeInTheDocument();
     expect(within(insp).getByText("GET")).toBeInTheDocument();
-    // 상태 칸 (ARTEX 발견 상세의 상태 카드): ID · 위험도 · 판정 · 유형 · 관련 자산 · 발견 시각. 여기서 바꾸는 손잡이는 없다
+    // 상태 칸 (ARTEX 발견 상세의 상태 카드): ID · 위험도 · 판정 · 유형 · 취약한 경로 · 발견 시각. 여기서 바꾸는 손잡이는 없다
     const state = within(insp).getByRole("heading", { name: "상태" }).parentElement as HTMLElement;
     expect(state).toHaveTextContent(
-      /^상태IDcandidate-1위험도위험도 미평가판정검토 필요유형idor관련 자산GET \/api\/items\/\{id\}발견 시각\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/,
+      /^상태IDcandidate-1위험도위험도 미평가판정검토 필요유형idor취약한 경로GET \/api\/items\/\{id\}발견 시각\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/,
     );
     expect(within(state).queryByRole("combobox")).toBeNull();
     // 상세는 정리했다(사용자 11/17): '연결 전' 자리(계정별 응답 비교 · 다음 단계)와 머리와 겹치는 분류는 두지 않는다
@@ -1894,6 +1894,52 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     fireEvent.click(within(doc).getByRole("button", { name: "복사" }));
     await within(doc).findByText("보고서 글을 복사했습니다.");
     expect(writeText.mock.calls[0][0]).not.toMatch(/synthetic-poc-token|synthetic-poc-entity|&#/);
+  });
+
+  it("취약한 경로: 대표 경로가 없으면 E② 가 실제로 보낸 요청 기록(관찰)의 경로로 (사용자 11/19 — 늘 '—'였음)", () => {
+    const obs = (endpoint: string, method?: string) => ({ endpoint, method });
+    const withCtx = (context: Record<string, unknown>) =>
+      ({ ...candidate(1), context }) as unknown as Parameters<typeof entryEp>[0];
+    // 서버가 엔진 후보의 대표 경로를 채우지 않음('미확인') → 관찰 경로
+    expect(entryEp(withCtx({ endpoint: "미확인", observations: [obs("GET /users/v1/name1", "GET")] }))).toEqual({
+      m: "GET",
+      p: "/users/v1/name1",
+      more: 0,
+    });
+    // 같은 경로는 한 번, 다른 경로는 '외 n개'
+    expect(
+      entryEp(
+        withCtx({
+          observations: [
+            obs("GET /users/v1/name1", "GET"),
+            obs("GET /users/v1/name1", "GET"),
+            obs("GET /users/v1/name2", "GET"),
+          ],
+        }),
+      ),
+    ).toEqual({ m: "GET", p: "/users/v1/name1", more: 1 });
+    // 경로 글에 메서드가 없으면 따로 받은 메서드, 경로가 / 로 시작하지 않거나 미확인이면 버린다
+    expect(entryEp(withCtx({ observations: [obs("/books/v1", "post")] }))).toEqual({
+      m: "POST",
+      p: "/books/v1",
+      more: 0,
+    });
+    expect(entryEp(withCtx({ observations: [obs("unknown"), obs("http://x.test/a")] }))).toBeNull();
+    // 대표 경로가 있으면 그것(메서드가 글에 있으면 그대로, 없으면 같은 경로 관찰이 한 가지일 때만)
+    expect(entryEp(withCtx({ endpoint: "PUT /api/orders/{id}" }))).toEqual({
+      m: "PUT",
+      p: "/api/orders/{id}",
+      more: 0,
+    });
+    expect(
+      entryEp(withCtx({ endpoint: "/api/orders/{id}", observations: [obs("/api/orders/{id}", "DELETE")] })),
+    ).toEqual({ m: "DELETE", p: "/api/orders/{id}", more: 0 });
+    // 보고서 문서에도 같은 경로와 나머지 수
+    const md = buildPocMarkdown(
+      [withCtx({ observations: [obs("GET /users/v1/name1", "GET"), obs("GET /users/v1/name2", "GET")] })],
+      { targetUrl: "https://target.example/", mode: null, model: null, excluded: null, crawl: null },
+    );
+    expect(md).toContain("엔드포인트 GET /users/v1/name1 외 1개");
   });
 
   it("PoC 문서: 코드 상자 울타리는 본문의 ` 줄보다 길게, 목록 줄 글의 줄바꿈은 띄어쓰기로", () => {
