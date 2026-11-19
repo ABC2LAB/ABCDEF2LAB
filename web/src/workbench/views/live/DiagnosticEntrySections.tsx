@@ -158,7 +158,7 @@ export function DiagnosticEntrySections({
   entry: RemediationEntry;
   onReload: () => void;
   /**
-   * panel = 오른쪽 발견 상세(① 판정과 영향 · ② 재현 절차 · ③ 보안 조치 · ④ AI 프롬프트).
+   * panel = 오른쪽 발견 상세(① AI 분석 · ② 실제 요청 · 응답 · ③ 보안 조치 · ④ AI 프롬프트).
    * page = 상세 보기 페이지, ARTEX 발견 상세 순서와 이름(요약 · 증거 / PoC · 상세 보고서 · 보안 조치 · AI 프롬프트, 사용자 11/17)
    */
   layout?: "panel" | "page";
@@ -451,7 +451,8 @@ export function DiagnosticEntrySections({
           칸 안 카드로 펼쳐 두되 높이를 묶은 상자에서 스크롤한다. 자세한 조치 묶음은 접어 두고, 검증 방식 · 실행 · 증거 버전 ·
           단계별 호출/근거 ID · digest 같은 기록 값은 맨 아래 '기술 정보'로 모은다. 내용은 지우지 않는다 */}
       <Isec>
-        <h3>① 판정과 영향</h3>
+        {/* AI(엔진)가 쓴 요약 · 상세 보고라 '판정'으로 읽히지 않게 이름을 AI 분석으로(사용자 11/19) — 판정은 상태 칸 딱지 */}
+        <h3>① AI 분석</h3>
         <p>{maskSecrets(entry.summary)}</p>
         {entry.report ? (
           <section className={s.dcard} aria-label="상세 보고">
@@ -469,7 +470,9 @@ export function DiagnosticEntrySections({
         {e3Help}
       </Isec>
       <Isec>
-        <h3>② 재현 절차 및 스크린샷</h3>
+        {/* E② 가 실제로 보낸 요청 · 받은 응답 기록(실행 단계 · 증거). ① AI 분석과 구분되게, 스크린샷은 저장된 단계에만
+            버튼이 나오므로 이름에서 뺐다(사용자 11/19) */}
+        <h3>② 실제 요청 · 응답</h3>
         {steps}
         <section className={s.dcard} aria-label="증거">
           <div className={s["dcard-h"]}>

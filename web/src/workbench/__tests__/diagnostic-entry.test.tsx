@@ -264,7 +264,9 @@ it.each([
     truncated: true,
   };
   render(<DiagnosticEntrySections task="42" entry={entry} onReload={vi.fn()} />);
-  expect(screen.getByRole("heading", { name: "① 판정과 영향" })).toBeVisible();
+  expect(screen.getByRole("heading", { name: "① AI 분석" })).toBeVisible();
+  // ② 는 E② 가 실제로 보낸 요청 · 받은 응답 기록(사용자 11/19 — AI 분석과 구분, 스크린샷은 이름에서 뺌)
+  expect(screen.getByRole("heading", { name: "② 실제 요청 · 응답" })).toBeVisible();
   expect(screen.queryByText(/① 확인된 취약점/)).not.toBeInTheDocument();
   // 상세 보고는 ARTEX 발견 상세처럼 카드에 펼쳐 둔다(높이를 묶은 상자) — 가린 글이 보인다
   expect(

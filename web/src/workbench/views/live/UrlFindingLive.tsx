@@ -1,7 +1,7 @@
 "use client";
 
 // 단독 발견 상세 화면 (#finding). 보고서 오른쪽 패널 머리 '상세 보기'로 고른 발견을 보고서 안 상세 페이지와 같은 부품
-// (FindingPage — 판정과 영향 · 재현 절차 · 상세 보고서 · 보안 조치 · AI 프롬프트 · 상태 카드)으로 그린다.
+// (FindingPage — AI 분석 · 재현 절차 · 상세 보고서 · 보안 조치 · AI 프롬프트 · 상태 카드)으로 그린다.
 // 데이터는 저장 결과(내부 remediation, GET /api/report/diagnostic/remediation)뿐이다 — 예시 레코드로 채우지 않는다.
 // E③ 원문 판정 · 다계정 비교는 읽기 API 가 없어 이 화면에 두지 않는다(백엔드 후속, lib/diagnosis/finding 의 표시 규칙만 남김).
 
