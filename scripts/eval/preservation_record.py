@@ -142,7 +142,8 @@ def _boundary(directory: Path, rows: list[dict], meter: MeterFiles, path_key_ref
 
 # 보존 기록의 회차 목적. 수용시험 회차와 분리 배치 공식 회차(2026-11-18 결정 (a), 공식 측정 프로토콜 §7 경로 틀)가 낸다.
 # 목적은 서명되고, 한 묶음 안에서 섞이지 않는다(수용시험 표에 공식 회차가 섞이지 않게, #699 리뷰).
-PRESERVATION_PURPOSES = ("browser_acceptance", "official")
+# 배선 확인 회차(wiring_check)도 분리 배치라 sidecar를 내지만 보존율 프로파일 판정(수용시험 전용)에는 쓰지 않는다.
+PRESERVATION_PURPOSES = ("browser_acceptance", "official", "wiring_check")
 
 
 def build_payload(*, meter: MeterFiles, options: dict, run_id: str, side: str, repeat_index: int,

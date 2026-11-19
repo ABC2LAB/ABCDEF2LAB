@@ -23,7 +23,7 @@ from urllib.parse import urlsplit
 from baseline_extract import MAX_INPUT_BYTES
 from baseline_pages_collector import MAX_PAGE_SIZE
 from e2_export import EVAL_HEADER_MODES
-from isolation_proof import PURPOSE_BROWSER_ACCEPTANCE, PURPOSE_OFFICIAL, PURPOSES
+from isolation_proof import PURPOSE_BROWSER_ACCEPTANCE, PURPOSE_OFFICIAL, PURPOSE_WIRING_CHECK, PURPOSES
 from path_mask import PathKeyError, key_ref, read_path_key
 from preservation_record import PreservationRecordError, validate_options
 from preflight import MAX_CONFIG_BYTES, PreflightError, _image_reference, check_preflight
@@ -442,6 +442,9 @@ def parse_runner_config(raw: object) -> RunnerConfig:
     state = _state(top.get("state"), errors) if "state" in top else None
     if "purpose" in top and top["purpose"] not in PURPOSES:
         errors.append("config.purpose: UNSUPPORTED")
+    if top.get("purpose") == PURPOSE_WIRING_CHECK and "split" not in top:
+        # 배선 확인은 분리 배치 O 공식 흐름을 공식 전에 실제 대상으로 돌려 보는 회차다(설계안 §8 3번)
+        errors.append("config.purpose: WIRING_CHECK_NEEDS_SPLIT")
     acceptance = top.get("purpose") == PURPOSE_BROWSER_ACCEPTANCE
     # 경로 기록이 있어야 하는 회차: 수용시험, 그리고 탐색 분리 배치(공식 포함). 공식 비교의 발견 집계(공식 측정 프로토콜 §7)는
     # B·O 계측기 전달 요청의 경로 틀이라 분리 배치 공식 회차도 같은 키로 기록한다(2026-11-18 사용자 결정 (a)). 분리 배치가
