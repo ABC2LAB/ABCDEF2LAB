@@ -1,6 +1,7 @@
 package e3contract_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -123,4 +124,100 @@ func TestRunWriteSettleOutcomes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// 미리 남긴 쓰기 기록을 거두는(not_sent) 것은 E²가 대상으로 연결을 시도하기 전에 거부한 경우뿐이다: 정책 거부·승인 거절·
+// 승인 시간 초과·확정 몫 소진, 또는 회차가 이미 멈춰 생성 요청을 부르지 않은 경우. 연결 뒤 실패·결과 불명(E² 오류, 보냈지만
+// 응답 미완료, 시간 초과, ID 없음)과 사유를 알 수 없는 sent=false(E² C02의 Unknown·TransportFailed를 잘못 옮긴 경우)는 거두지
+// 않는다. 기록은 ID 모름으로 남아 리셋 확인 대상이다.
+func TestRunWriteWithdrawOnlyBeforeConnect(t *testing.T) {
+	for name, c := range map[string]struct {
+		be       e3fake.Behavior
+		withdraw bool
+	}{
+		"policy_denied":    {e3fake.Behavior{NotSent: e3contract.NotSentPolicyDenied}, true},
+		"approval_denied":  {e3fake.Behavior{NotSent: e3contract.NotSentApprovalDenied}, true},
+		"approval_timeout": {e3fake.Behavior{NotSent: e3contract.NotSentApprovalTimeout}, true},
+		"budget_exhausted": {e3fake.Behavior{NotSent: e3contract.NotSentBudgetExhausted}, true},
+		"transport_error":  {e3fake.Behavior{Err: errors.New("연결 뒤 끊김")}, false},
+		"sent_incomplete":  {e3fake.Behavior{Incomplete: true}, false},
+		"sent_timed_out":   {e3fake.Behavior{TimedOut: true}, false},
+		"no_object_id":     {e3fake.Behavior{NoObjectID: true}, false},
+		"not_normal":       {e3fake.Behavior{Status: 500, Normal: oracle.StateNo}, false},
+		// sent=false인데 연결 전 거부 사유가 아니면 관찰 계약 위반이다(진위 실패). 보냈을 수 있으니 거두지 않는다.
+		"not_sent_transport_failed": {e3fake.Behavior{NotSent: "transport_failed"}, false},
+		"not_sent_unknown":          {e3fake.Behavior{NotSent: "unknown"}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			f.fake.Behaviors[key(e3contract.PurposeCreate, e3contract.RoleOwner, "note")] = c.be
+			res := f.run(t)
+			reserved, withdrawn, settled := 0, 0, 0
+			for _, e := range f.writes.Events() {
+				if e.Type != "note" {
+					continue
+				}
+				switch {
+				case e.Reserve:
+					reserved++
+				case e.Write.Outcome == e3contract.WriteNotSent:
+					withdrawn++
+				default:
+					settled++
+				}
+			}
+			if reserved != 1 || settled != 0 {
+				t.Fatalf("note 예약 %d·갱신 %d", reserved, settled)
+			}
+			if c.withdraw != (withdrawn == 1) || withdrawn > 1 {
+				t.Fatalf("거둠 %d건(기대 %v), 결과 %+v", withdrawn, c.withdraw, res.Writes)
+			}
+			// 거두지 않은 생성은 결과 쓰기에도 ID 모름으로 남는다(진위 실패로 판정을 버려도 쓰기는 남김, 계약 §7.2).
+			var note []e3contract.ConfirmationWrite
+			for _, w := range res.Writes {
+				if w.ResourceType == "note" {
+					note = append(note, w)
+				}
+			}
+			if c.withdraw && len(note) != 0 || !c.withdraw && (len(note) != 1 || note[0].Outcome != e3contract.WriteUnknown) {
+				t.Fatalf("결과 쓰기: %+v", res.Writes)
+			}
+		})
+	}
+	// 예약 뒤 생성 요청 전에 회차가 멈췄으면 보내지 않은 것이 확실하다. 예약은 거둔다(멈춘 문맥과 관계없이 갱신한다).
+	t.Run("stopped_before_call", func(t *testing.T) {
+		f := newFixture(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		deps := f.deps()
+		deps.Writes = cancelOnReserve{Writes: f.writes, cancel: cancel}
+		e3contract.Run(ctx, deps, f.in)
+		creates := 0
+		for _, call := range f.fake.Calls() {
+			if call.Key.Purpose == e3contract.PurposeCreate {
+				creates++
+			}
+		}
+		var events []e3fake.WriteEvent
+		for _, e := range f.writes.Events() {
+			if e.Type == "note" {
+				events = append(events, e)
+			}
+		}
+		if creates != 0 || len(events) != 2 || !events[0].Reserve || events[1].Write.Outcome != e3contract.WriteNotSent {
+			t.Fatalf("생성 %d, 쓰기 기록 %+v", creates, events)
+		}
+	})
+}
+
+// cancelOnReserve는 예약을 남긴 직후 회차를 멈춘다(예약과 생성 요청 사이의 중지).
+type cancelOnReserve struct {
+	*e3fake.Writes
+	cancel context.CancelFunc
+}
+
+func (c cancelOnReserve) Reserve(ctx context.Context, b e3contract.RunBinding, typ string) error {
+	err := c.Writes.Reserve(ctx, b, typ)
+	c.cancel()
+	return err
 }

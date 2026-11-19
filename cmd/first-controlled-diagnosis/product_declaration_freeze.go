@@ -251,6 +251,12 @@ func applyReset(rec productTargetRecord, st *productResetState, jobs map[string]
 		if jobs[e.JobRef] && e.JobRef != next.writesJob || e.WritesRef != "" {
 			return nil, errPreparation
 		}
+		// 다른 회차의 미해결 쓰기(리셋 확인 전, 거두지 않은 쓰기)는 새 회차의 예약이 덮을 수 없다(#738 이동찬 리뷰). 같은 대상에
+		// 실행이 둘 붙어 있으면 앞 회차의 기록이 지워져 리셋 없이 다음 회차가 열릴 수 있기 때문이다. 받지 않으면 그 회차는
+		// 생성 요청을 보내지 않는다(기록하고 나서 보내기).
+		if e.JobRef != next.writesJob && next.writesJob != "" && next.confirmedAt.IsZero() && len(liveConfirmationObjects(next.writesObjects)) > 0 {
+			return nil, errPreparation
+		}
 		objects := append([]productConfirmationObject(nil), e.Objects...)
 		if e.JobRef == next.writesJob {
 			objects = append(append([]productConfirmationObject(nil), next.writesObjects...), e.Objects...)

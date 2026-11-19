@@ -722,6 +722,28 @@ func TestProductE3ConfirmationWriteRecordFailures(t *testing.T) {
 			t.Fatalf("리셋 확인 뒤: %q", refusal)
 		}
 	})
+	// 연결 뒤 실패·결과 불명은 거두지 않는다: 기록이 ID 모름으로 남아 리셋 확인 전까지 다음 회차를 막는다.
+	for name, be := range map[string]e3fake.Behavior{
+		"transport_error_kept":  {Err: errors.New("synthetic connection reset after connect")},
+		"sent_incomplete_kept":  {Incomplete: true},
+		"invalid_not_sent_kept": {NotSent: "transport_failed"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newE3HookFixture(t, true, nil)
+			fake := e3HookFake()
+			fake.Behaviors[e3fake.Key{Purpose: e3contract.PurposeCreate, Role: e3contract.RoleOwner, Type: "note"}] = be
+			if err := f.confirmation(fake, e3HookAccounts(), nil).run(t.Context(), "9", nil); err != nil {
+				t.Fatal(err)
+			}
+			st := f.r.resets[f.target.ID]
+			if st == nil || len(st.writesObjects) != 1 || st.writesObjects[0] != (productConfirmationObject{Type: "note", IDUnknown: true}) {
+				t.Fatalf("결과 불명 생성의 기록: %+v", st)
+			}
+			if refusal := f.r.e3RunStartRefusal(t.Context(), f.rec, "job-next"); refusal != e3contract.RefuseResetConfirmationMissing {
+				t.Fatalf("결과 불명 생성 뒤 다음 회차: %q", refusal)
+			}
+		})
+	}
 	t.Run("not_sent_withdraws", func(t *testing.T) {
 		// 보내지 않은 것이 확실한 생성(E² 거부)은 미리 남긴 기록을 거둬 다음 회차를 막지 않는다.
 		f := newE3HookFixture(t, true, nil)

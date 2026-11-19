@@ -97,8 +97,11 @@ const (
 	// WriteUnknown은 생성 요청을 보냈거나 보냈을 수 있는데 객체가 생겼는지·ID가 무엇인지 모르는 경우다(시간 초과·결과
 	// 불명·비정상 응답·ID 없음). 객체가 생겼다고 보고 리셋 확인 대상에 넣는다.
 	WriteUnknown WriteOutcome = "unknown"
-	// WriteNotSent는 쓰기 기록 갱신(WriteRecorder.Settle)에만 쓴다: 생성 요청을 보내지 않은 것이 확실하다(E²의 sent=false
-	// 또는 요청 전 중단). 미리 남긴 기록을 거둔다. RunResult.Writes에는 넣지 않는다.
+	// WriteNotSent는 쓰기 기록 갱신(WriteRecorder.Settle)에만 쓴다: 생성 요청을 보내지 않은 것이 확실하다. E²가 대상으로
+	// 연결을 시도하기 전에 거부한 경우(sent=false와 연결 전 거부 사유 넷: 정책 거부·승인 거절·승인 시간 초과·확정 몫 소진)와
+	// 회차가 멈춰 생성 요청을 부르지 않은 경우뿐이다. 연결 뒤 실패·결과 불명(E② 오류, 보냈지만 응답 미완료, 시간 초과)은
+	// 해당하지 않는다. E²가 그런 경우를 sent=false로 돌려주면 관찰 계약 위반(진위 실패)이고 기록은 ID 모름으로 남는다.
+	// 미리 남긴 기록을 거둔다. RunResult.Writes에는 넣지 않는다.
 	WriteNotSent WriteOutcome = "not_sent"
 )
 
