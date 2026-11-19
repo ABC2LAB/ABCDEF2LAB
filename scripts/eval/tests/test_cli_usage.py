@@ -159,6 +159,9 @@ class TestObservedShapes(unittest.TestCase):
                          [("ab cd", True, False), ('e"f', True, False), ("g h", True, False), ("", True, False)])
         self.assertEqual(shell_tokens('x "a\\nb" 2>&1'), [("x", False, False), ("a\\nb", True, False), ("2", False, False),
                                                           (">&", False, True), ("1", False, False)])
+        # 빈 따옴표도 셸에서는 빈 인자 하나다(작은·큰따옴표 모두)
+        self.assertEqual(shell_tokens('npx "" x'), [("npx", False, False), ("", True, False), ("x", False, False)])
+        self.assertEqual(command_shape("npx '' \"\"", ["npx"]), "npx <arg> <arg>")
         for bad in ("a 'b", 'a "b', "a \\"):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 shell_tokens(bad)
