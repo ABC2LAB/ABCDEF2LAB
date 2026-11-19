@@ -78,7 +78,7 @@ function StoredScreenshot({ task, entry, step }: { task: string; entry: string; 
   if (step.capture.status !== "captured")
     return (
       <p className={s.help}>
-        스크린샷 미확보 — 실제 요청·응답 및 실행 기록으로 증거 제공 · 상태{" "}
+        스크린샷 미확보 — 저장된 요청 시도와 관찰 기록을 확인하세요 · 상태{" "}
         {captureStatusLabels[step.capture.status] ?? "상태 미확인"}
       </p>
     );
@@ -144,7 +144,7 @@ export function pocCopyText(entry: RemediationEntry): string {
     }
     if (entry.steps_truncated) out.push("실행 관측이 잘렸습니다. 전체 재현 절차로 해석하지 마세요.", "");
   } else out.push("구조화된 실제 재현 단계 미확보. 실행하지 않은 절차를 생성하지 않습니다.", "");
-  out.push("요청 · 응답 증거:", maskSecrets(entry.evidence) || "저장된 증거 본문 없음");
+  out.push("요청 시도 · 응답 관찰:", maskSecrets(entry.evidence) || "저장된 증거 본문 없음");
   if (entry.truncated) out.push("", "실제 도구 출력이 잘렸습니다. 완전한 재현 증거가 아닙니다.");
   // 이어 붙인 뒤 한 번 더 가린다(칸 경계에 걸친 값). 클립보드용이라 엔티티 · 역슬래시로 숨긴 키까지 풀어 본다(#709 리뷰)
   return maskForCopy(out.join("\n"));
@@ -160,7 +160,7 @@ export function DiagnosticEntrySections({
   /** 상세를 다시 읽기. 보안 조치 · AI 프롬프트 생성을 뺀 뒤로 이 부품은 쓰지 않는다(부르는 쪽 모양 유지) */
   onReload: () => void;
   /**
-   * panel = 오른쪽 취약점 상세(① AI 분석 · ② 실제 요청 · 응답).
+   * panel = 오른쪽 취약점 상세(① AI 분석 · ② 요청 시도 · 응답 관찰).
    * page = 상세 보기 페이지, ARTEX 발견 상세 순서와 이름(요약 · 증거 / PoC · 상세 보고서, 사용자 11/17).
    * 보안 조치 · AI 수정 작업용 프롬프트 칸은 뺐다(사용자 11/19 — AI 가 권고를 비워 두고 생성 버튼을 눌러야만 채워져 빈 칸만
    * 보였다). 서버 API(조치 생성 · 프롬프트 복사)와 내려받기 보고서는 그대로다
@@ -249,7 +249,9 @@ export function DiagnosticEntrySections({
         </Isec>
         <Isec>
           <h3>증거 / PoC</h3>
-          <p className={s.help}>엔진이 실제로 보내고 저장한 실행 관찰과 요청 · 응답입니다.</p>
+          <p className={s.help}>
+            E②에 기록된 요청 시도와 응답 관찰입니다. 전송되지 않았거나 응답이 없는 시도도 포함될 수 있습니다.
+          </p>
           {steps}
           <pre className={cx(s.code, s.dbox)}>{evidenceText}</pre>
           {/* 칸 맨 밑: 이 칸 내용(단계 · 요청 · 응답 증거)을 글로 복사 (사용자 11/18) */}
@@ -304,13 +306,12 @@ export function DiagnosticEntrySections({
         {e3Help}
       </Isec>
       <Isec>
-        {/* E② 가 실제로 보낸 요청 · 받은 응답 기록(실행 단계 · 증거). ① AI 분석과 구분되게, 스크린샷은 저장된 단계에만
-            버튼이 나오므로 이름에서 뺐다(사용자 11/19) */}
-        <h3>② 실제 요청 · 응답</h3>
+        {/* E②의 요청 시도에는 거부된 미송신 시도도 포함된다. 응답이 없을 수 있으므로 송신·응답 완료를 단정하지 않는다. */}
+        <h3>② 요청 시도 · 응답 관찰</h3>
         {steps}
         <section className={s.dcard} aria-label="증거">
           <div className={s["dcard-h"]}>
-            <h4>증거 · 요청·응답 및 실행 기록</h4>
+            <h4>증거 · 전송 통제 기록</h4>
           </div>
           <pre className={cx(s.code, s.dbox)}>{evidenceText}</pre>
         </section>

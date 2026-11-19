@@ -1315,7 +1315,7 @@ export function buildPocMarkdown(entries: readonly RemediationEntry[], info: Poc
     ].filter(Boolean);
     if (facts.length) out.push(facts.join(" · "), "");
     if (e.summary) out.push(mdText(e.summary), "");
-    out.push("**실제 요청 · 응답:**", "");
+    out.push("**요청 시도 · 응답 관찰:**", "");
     if (e.source_load_failed)
       out.push("근거 불러오기 실패. 현재 결속을 확인할 수 없어 재현 단계를 제공하지 않습니다.", "");
     else if (e.steps?.length) {

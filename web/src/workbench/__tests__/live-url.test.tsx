@@ -2082,8 +2082,8 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(items).toEqual(["1. [위험도 미평가 · 검토 필요] 후보 1", "2. [위험도 미평가 · 검토 필요] 후보 2"]);
     expect(doc.querySelectorAll("hr")).toHaveLength(1);
     expect(doc).not.toHaveTextContent("정상 대조 줄");
-    // 오른쪽 상세와 같은 이름(사용자 11/19): 실제 요청 · 응답, 단계는 '요청 n · 제목', 내부 ID 는 두지 않음
-    expect(doc).toHaveTextContent("실제 요청 · 응답:");
+    // 오른쪽 상세와 같은 이름: 거부된 시도도 있으므로 송신·응답을 단정하지 않는다.
+    expect(doc).toHaveTextContent("요청 시도 · 응답 관찰:");
     expect(doc).not.toHaveTextContent(/PoC \/ 증거|ID candidate-/);
     expect(doc).toHaveTextContent("구조화된 실제 재현 단계 미확보");
     expect(doc).toHaveTextContent("요청 1 · 계정 B로 계정 A 주문 조회 — GET /api/orders/2");
@@ -2148,6 +2148,8 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     );
     expect(denied).toContain("관찰된 요청 경로 GET /api/me");
     expect(denied).not.toContain("취약한 경로");
+    expect(denied).toContain("**요청 시도 · 응답 관찰:**");
+    expect(denied).not.toContain("**실제 요청 · 응답:**");
     const view = render(
       <FindingDetail
         e={withCtx({ observations: [{ endpoint: "GET /api/me", method: "GET", observation: "전송 시도=false" }] })}

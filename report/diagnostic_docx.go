@@ -198,7 +198,7 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 				w.picture(step.Capture.PNG, step.Capture.Width, step.Capture.Height)
 				w.paragraph("Caption", "실행 시각 "+step.Capture.CapturedAt.UTC().Format(time.RFC3339)+" · SHA256 "+step.Capture.Digest)
 			} else {
-				w.paragraph("Normal", "스크린샷 미확보 — 실제 요청·응답 및 실행 기록으로 증거 제공 · 상태 "+captureStatusLabel(step.Capture.Status))
+				w.paragraph("Normal", "스크린샷 미확보 — 저장된 요청 시도와 관찰 기록을 확인하세요 · 상태 "+captureStatusLabel(step.Capture.Status))
 			}
 		}
 		w.paragraph("Heading3", "저장된 실제 증거")
