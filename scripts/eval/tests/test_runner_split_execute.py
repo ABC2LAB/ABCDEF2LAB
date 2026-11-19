@@ -1122,12 +1122,16 @@ class TestInterruptedCallsO(unittest.TestCase):
         # 시험 시계는 결정적이라 한 번 돌려 정지 요청 시각을 알아낸 뒤, 그 시각에 끝난 호출(끊김)과 그 바로 앞에 끝난 호출(끊김
         # 아님)로 경계를 찌른다. 다른 시각(계측기 봉인 등)을 저장하거나 쓰면 둘 중 하나가 달라진다.
         from runner_llm import interrupted_generation_ids
-        _, _, first = run(self.ports("2999-01-01T00:00:00Z"))
+
+        def settled(p):
+            p.forced = 1  # 강제 취소 1건 → 봉인 뒤 정착 대기만큼 시계가 흘러 봉인 시각과 정지 요청 시각이 갈린다
+        _, _, first = run(lambda p: (self.ports("2999-01-01T00:00:00Z")(p), settled(p)))
         stop = first.files["llm-summary.json"]["stop_requested_at"]
         moment = datetime.fromisoformat(stop)
         for completed, expected in ((moment, {"cut"}), (moment - timedelta(milliseconds=1), set())):
             def mutate(p, completed=completed):
                 self.ports(completed.isoformat())(p)
+                settled(p)
                 rows = [json.loads(line) for line in p.calls_file.decode().splitlines()]
                 rows[1]["started_at"] = (moment - timedelta(seconds=1)).isoformat()
                 p.calls_file = b"".join(json.dumps(row).encode() + b"\n" for row in rows)
