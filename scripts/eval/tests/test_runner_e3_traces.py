@@ -81,6 +81,10 @@ class TestTraces(unittest.TestCase):
         self.assertEqual(record["summary"], {"e3_events": 1, "product_journal_e3_events": None, "declaration_writes": 1,
                                              "result_writes": 1})
         self.assertEqual(record["e2_product_journal"], {"error": "not_found"})
+        # 선언 저널을 못 읽었으면 쓰기 기록 수를 0으로 단정하지 않는다
+        missing = traces({"e2_host_journal": b"", "e2_product_journal": b"", "declarations": None, "e3_result": None})
+        self.assertEqual(missing["summary"], {"e3_events": 0, "product_journal_e3_events": 0, "declaration_writes": None,
+                                              "result_writes": None})
 
 
 if __name__ == "__main__":
