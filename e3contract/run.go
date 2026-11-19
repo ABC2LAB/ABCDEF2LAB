@@ -341,7 +341,12 @@ func (r *run) call(ctx context.Context, want Observation, send func() (Observati
 	r.seen[key] = true
 	sealed, err := r.deps.Journal.Sealed(ctx, r.in.Binding, obs.Ref)
 	if err != nil {
-		r.integrity = IntegrityJournalEventMissing
+		// 검증된 스냅샷에 이벤트가 없는 것과 저널을 검증하지 못한 것을 나눠 남긴다(v3 계약 §5·§7). 그 밖의 오류도 검증을
+		// 마치지 못한 것이라 무결성 실패로 본다. 어느 쪽이든 진위 실패라 판정 행을 만들지 않는다.
+		r.integrity = IntegrityJournalIntegrityFailed
+		if errors.Is(err, ErrJournalEventMissing) {
+			r.integrity = IntegrityJournalEventMissing
+		}
 		return Observation{}, false
 	}
 	if !sealed.Same(obs) {

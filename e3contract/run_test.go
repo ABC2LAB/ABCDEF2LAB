@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -339,6 +340,24 @@ func TestRunJournalCrossCheck(t *testing.T) {
 	t.Run("missing", func(t *testing.T) {
 		f := newFixture(t)
 		f.fake.DropJournal = func(c e3fake.Call) bool { return c.Key == cross }
+		integrityFailed(t, f.run(t), e3contract.IntegrityJournalEventMissing)
+	})
+	// 저널을 검증하지 못하면(신뢰 체크포인트 없음·불일치, MAC·체인 오류 등) 이벤트 없음과 다른 사유로 남는다(v3 계약 §5·§7).
+	// 그 밖의 오류도 검증을 마치지 못한 것이라 무결성 실패다. 어느 쪽이든 판정 행 없이 진위 실패다.
+	for name, err := range map[string]error{
+		"integrity":         e3contract.ErrJournalIntegrity,
+		"integrity_wrapped": fmt.Errorf("checkpoint mismatch: %w", e3contract.ErrJournalIntegrity),
+		"other":             errors.New("journal read failed"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			f.fake.SealedErr = err
+			integrityFailed(t, f.run(t), e3contract.IntegrityJournalIntegrityFailed)
+		})
+	}
+	t.Run("missing_wrapped", func(t *testing.T) {
+		f := newFixture(t)
+		f.fake.SealedErr = fmt.Errorf("not in verified snapshot: %w", e3contract.ErrJournalEventMissing)
 		integrityFailed(t, f.run(t), e3contract.IntegrityJournalEventMissing)
 	})
 	alter := map[string]func(*e3contract.Observation){
