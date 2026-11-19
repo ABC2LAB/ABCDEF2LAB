@@ -1064,7 +1064,7 @@ class TestSplitO(_V11):
         def null_in_direct(field):
             return lambda rows: row_of(rows, "run_conditions").update({field: None})
         cases = {
-            "counts": (counts, "split_product는 대조 미수집"), "not_split": (not_split, "split_product는 분리 배치 회차에만"),
+            "counts": (counts, "split_product는 대조 미수집"), "not_split": (not_split, "split_product는 분리 배치 개선 후 회차에만"),
             "reconciled": (reconciled, "대조 미수집\\(행 없음\\)만"), "record_in_direct": (record_in_direct, "기록 행은 분리 배치"),
             "record_accepted": (bad_record(accepted=["connected"]), "기록 행 형식"),
             "record_verdict": (bad_record(verdict="match"), "기록 행 형식"),
@@ -1076,6 +1076,28 @@ class TestSplitO(_V11):
         for index, (name, (tamper, pattern)) in enumerate(cases.items()):
             with self.subTest(case=name):
                 self.reject(pattern, f"x{index}", tamper_rows=tamper)
+
+    def test_o_only_allowances_are_refused_on_signed_b_records(self):
+        # split_product·관측 못 하는 null 칸·기록 점검 행은 개선 후(O) 기록에만 있다. 분리 배치 B 기록이면 거부한다(#746 리뷰).
+        def b_with(**o_parts):
+            def tamper(rows):
+                split_o(**o_parts)(rows)
+                row_of(rows, "run_conditions").update(e3_status_expected=False)
+                rows[:] = [r for r in rows if r["kind"] != "e3_confirmation"]
+                renumber(rows)
+            return tamper
+        cases = {
+            "split_product": (b_with(record_probe=False, workers=3, language="ko"), "split_product는 분리 배치 개선 후 회차에만"),
+            "null_workers": (b_with(record_probe=False, mode="none", language="ko"), "workers"),
+            "null_language": (b_with(record_probe=False, mode="none", workers=3), "output_language"),
+            "record_rows": (b_with(mode="none", workers=3, language="ko"), "기록 행은 분리 배치 개선 후"),
+        }
+        for index, (name, (tamper, pattern)) in enumerate(cases.items()):
+            with self.subTest(case=name):
+                self.reject(pattern, f"bb{index}", condition="baseline", engine="baseline", tamper_rows=tamper)
+        # 같은 칸을 다 채운 분리 배치 B 기록은 받는다
+        self.inputs(self.v11("bb9", condition="baseline", engine="baseline",
+                             tamper_rows=b_with(record_probe=False, mode="none", workers=3, language="ko")))
 
     def test_pair_table_and_control_rows(self):
         # 실제 짝: B 게이트웨이 스트리밍(참)·O 제품 비스트리밍(거짓). 스트리밍·엔진 설정·규칙·도구는 조건마다 달라도 되고(선언된

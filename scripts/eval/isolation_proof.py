@@ -81,6 +81,8 @@ _E3_REASON = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 # split_product: 분리 배치 O의 제품 안 E②(설계안 §4). 건수 칸은 모두 null이고 시도 대조는 E② 영수증·저널 v3 평가 내보내기
 # 전까지 미수집이다(행 없음). 분리 배치 회차(run_conditions.split)에만 있다.
 E2_SPLIT_PRODUCT = "split_product"
+# 러너 기록 engine 값(manifest Engine). split_product·관측 못 하는 null 칸·기록 점검 행은 개선 후(제품) 기록에만 있다.
+ENGINE_OURS = "ours"
 E2_MODES = ("none", "stub", "product", E2_SPLIT_PRODUCT)
 _E2_COUNTS = ("decision_rows", "allowed", "unsupported", "unavailable")
 E2_CLOSE_STATES = ("complete", "incomplete", "no_execution", "unavailable")
@@ -244,7 +246,7 @@ def check_isolation(receipt: dict, steps: dict[str, tuple[datetime, int]], artif
     pre_at, post_at = steps["pre"][0], steps["post"][0]
     _check_boundary(rows, network, pre_at, post_at)
     _check_snapshots(rows, network["policy_sha256"])
-    _check_connectivity(rows)
+    _check_connectivity(rows, receipt["engine"])
     _check_host(rows, host_ref, pre_at, post_at)
     _check_preparation(rows, timeline)
     _check_observer(rows, gets, request_count, pre_at, post_at)
@@ -266,7 +268,7 @@ def check_isolation(receipt: dict, steps: dict[str, tuple[datetime, int]], artif
     drained_at = _time(drain["drained_at"], "isolation_evidence.drain.drained_at")
     if not sealed_at <= drained_at <= steps["drained"][0] <= post_at:
         raise IsolationError("isolation_evidence.drain: 봉인 ≤ drain 완료 ≤ timeline drained ≤ post 관측이어야 함")
-    _check_conditions(rows)
+    _check_conditions(rows, receipt["engine"])
     return proof
 
 
@@ -280,7 +282,7 @@ def valid_output_language(value: object) -> bool:
     return isinstance(value, str) and _OUTPUT_LANGUAGE.fullmatch(value) is not None
 
 
-def _check_conditions(rows: dict[str, list[dict]]) -> dict:
+def _check_conditions(rows: dict[str, list[dict]], engine: str) -> dict:
     row = _one(rows, "run_conditions")
     if row["purpose"] not in PURPOSES:
         raise IsolationError("isolation_evidence.run_conditions.purpose: official|browser_acceptance")
@@ -303,7 +305,8 @@ def _check_conditions(rows: dict[str, list[dict]]) -> dict:
         _hex(row["engine_rules_sha256"], "isolation_evidence.run_conditions.engine_rules_sha256")
     # 분리 배치 O는 러너가 관측할 수 없는 칸을 null로 남긴다(설계안 §6): 표시 언어(제품 엔진 설정을 읽을 경로 없음), Worker 수
     # (진단 미진입 회차), 스트리밍(합성 회차는 제품 OpenRouter transport를 지나지 않음). 그 밖의 회차는 값이 있어야 한다.
-    split = row["split"]
+    # null은 분리 배치 개선 후(O) 기록만 받는다(#746 리뷰: 분리 배치 B는 원본 엔진 설정에서 이 값들을 읽는다)
+    split = row["split"] is True and engine == ENGINE_OURS
     if not (valid_output_language(row["output_language"]) or (split and row["output_language"] is None)):
         raise IsolationError("isolation_evidence.run_conditions.output_language: 언어 코드 형식 오류")
     if not (split and row["workers"] is None):
@@ -340,8 +343,8 @@ def e2_mode(receipt: dict, evidence: object) -> str:
     elif row["mode"] == E2_SPLIT_PRODUCT:
         if any(count is not None for count in counts):
             raise IsolationError("isolation_evidence.e2_placement: split_product는 대조 미수집이라 건수가 없어야 함")
-        if not _one(rows, "run_conditions")["split"]:
-            raise IsolationError("isolation_evidence.e2_placement: split_product는 분리 배치 회차에만")
+        if not _one(rows, "run_conditions")["split"] or receipt["engine"] != ENGINE_OURS:
+            raise IsolationError("isolation_evidence.e2_placement: split_product는 분리 배치 개선 후 회차에만")
     else:
         raise IsolationError("isolation_evidence.e2_placement.mode: none|stub|product|split_product")
     return row["mode"]
@@ -609,10 +612,10 @@ def _check_snapshots(rows: dict, policy: str) -> None:
         raise IsolationError("isolation_evidence.network_snapshot: 정책 지문 재계산 불일치")
 
 
-def _check_connectivity(rows: dict) -> None:
+def _check_connectivity(rows: dict, engine: str) -> None:
     # 분리 배치 O의 여러 출발점 점검(§2.1 표)은 제품 설계상 닿는 경로를 판정하지 않고 기록만 한다(record). 그 행은 분리 배치
     # 회차에만 받고, 양성·부정 판정 행은 B와 같은 규칙이다.
-    split = _one(rows, "run_conditions")["split"] is True
+    split = _one(rows, "run_conditions")["split"] is True and engine == ENGINE_OURS
     for phase in ("pre", "post"):
         checks = [row for row in rows["connectivity_check"] if row["phase"] == phase]
         judged = [row for row in checks if row["role"] != _RECORD_ROLE]
@@ -623,7 +626,7 @@ def _check_connectivity(rows: dict) -> None:
         if any(row["verdict"] != "match" or not _probe_matches(row) for row in judged):
             raise IsolationError("isolation_evidence.connectivity_check: 불일치 경로 있음")
         if recorded and not split:
-            raise IsolationError("isolation_evidence.connectivity_check: 기록 행은 분리 배치 회차에만")
+            raise IsolationError("isolation_evidence.connectivity_check: 기록 행은 분리 배치 개선 후 회차에만")
         if any(not _record_row(row) for row in recorded):
             raise IsolationError("isolation_evidence.connectivity_check: 기록 행 형식 오류")
     if any(row["phase"] not in ("pre", "post") for row in rows["connectivity_check"]):
