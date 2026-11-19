@@ -20,7 +20,11 @@ EVIDENCE_FORMAT = "abc2lab-isolation-evidence-v1"
 # 수용시험 회차다(docs/evaluation/browser-acceptance.md). 격리 검증은 목적과 상관없이 하고, 합산 제외는 채점기가 한다.
 PURPOSE_OFFICIAL = "official"
 PURPOSE_BROWSER_ACCEPTANCE = "browser_acceptance"
-PURPOSES = (PURPOSE_OFFICIAL, PURPOSE_BROWSER_ACCEPTANCE)
+# 배선 확인(분리 배치 O 공식 run-record 설계안 §8 3번, 2026-11-18 사용자 결정): 점수판 관측 → pre/post 해결 맵 → isolated_window
+# 귀속 경로를 유료 공식 회차 전에 실제 대상으로 한 번 돌려 보는 회차다. 격리 검증은 같게 하고 채점기는 회차 하나·비교 표 모두
+# 거부한다(공식이 아닌 별도 목적으로 서명).
+PURPOSE_WIRING_CHECK = "wiring_check"
+PURPOSES = (PURPOSE_OFFICIAL, PURPOSE_BROWSER_ACCEPTANCE, PURPOSE_WIRING_CHECK)
 # 실행 출처(2026-11-18 사용자 결정). synthetic_fixture는 스크립트 모델 등 합성 입력으로 돈 회차다. 서명·격리 검증은 같게 하고,
 # 채점기·비교 표는 거부한다. 칸이 생기기 전 근거는 실제 모델 회차(model_run)로 읽는다(목적 칸과 같은 규칙).
 EXECUTION_MODEL_RUN = "model_run"
@@ -280,7 +284,7 @@ def valid_output_language(value: object) -> bool:
 def _check_conditions(rows: dict[str, list[dict]]) -> dict:
     row = _one(rows, "run_conditions")
     if row["purpose"] not in PURPOSES:
-        raise IsolationError("isolation_evidence.run_conditions.purpose: official|browser_acceptance")
+        raise IsolationError("isolation_evidence.run_conditions.purpose: official|browser_acceptance|wiring_check")
     if row["execution_source"] not in EXECUTION_SOURCES:
         raise IsolationError("isolation_evidence.run_conditions.execution_source: model_run|synthetic_fixture")
     # 경로 가림 키 참조는 수용시험·탐색 분리 배치 회차에만 있어야 하고(16 hex), 분리 배치 표시 없는 공식 회차(엔진 직접

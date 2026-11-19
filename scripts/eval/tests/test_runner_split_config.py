@@ -194,7 +194,7 @@ class TestPlan(unittest.TestCase):
 
 def synthetic_config(**changes):
     payload = runner_config()
-    payload.update(purpose="browser_acceptance", path_key_file="/srv/eval/path.key", preservation=options(), **changes)
+    payload.update({"purpose": "browser_acceptance", "path_key_file": "/srv/eval/path.key", "preservation": options(), **changes})
     return parse_runner_config(payload)
 
 
@@ -257,6 +257,36 @@ class TestSyntheticModelBlock(unittest.TestCase):
         with self.assertRaises(RunnerConfigError) as caught:
             parse_runner_config(payload)
         self.assertTrue(any("OFFICIAL_FORBIDDEN" in error for error in caught.exception.errors), caught.exception.errors)
+
+    def test_wiring_check_purpose_runs_the_synthetic_model(self):
+        # 배선 확인(설계안 §8 3번)은 공식이 아닌 별도 목적으로 서명한다. 합성 모델 모드를 쓸 수 있다.
+        payload = runner_config()
+        payload.update(purpose="wiring_check", path_key_file="/srv/eval/path.key", preservation=options(), split=self.block())
+        config = parse_runner_config(payload)
+        self.assertEqual((config.purpose, config.split.synthetic), ("wiring_check", True))
+        # 분리 배치가 아닌 회차에는 쓸 수 없다
+        payload = runner_config()
+        payload.update(purpose="wiring_check")
+        with self.assertRaises(RunnerConfigError) as caught:
+            parse_runner_config(payload)
+        self.assertIn("config.purpose: WIRING_CHECK_NEEDS_SPLIT", caught.exception.errors)
+
+
+class TestJuiceShopWiringPlan(unittest.TestCase):
+    """배선 확인 회차의 스크립트 요청 목록(PR에 고정). 첫 화면이 부르는 공개 GET 둘뿐이고 챌린지·정답 정보는 없다."""
+
+    def test_plan_requests_are_pinned(self):
+        from scripted_product_llm import load_plan
+        from urllib.parse import urlsplit
+        import re
+        plan = load_plan(REPO_ROOT / "deploy" / "eval" / "synthetic" / "juice-shop.json", "http://juice.test:8080")
+        urls = re.findall(r"http://juice\.test:8080[^\s'\"]*", json.dumps(plan))
+        # 의도 문장 끝 마침표는 URL이 아니다
+        self.assertEqual(sorted({urlsplit(url.rstrip(".")).path for url in urls}), ["/", "/api/Products"])
+        self.assertTrue(all(not urlsplit(url).query for url in urls))
+        commands = plan["commands"] + [step["bash"] for step in plan["exploration"] if "bash" in step]
+        # 읽기만: curl 기본 GET, 본문·메서드 옵션 없음
+        self.assertTrue(all(c.startswith("curl -s -o /dev/null -w ") and " -X" not in c and " -d" not in c for c in commands), commands)
 
 
 def compose_available() -> bool:
