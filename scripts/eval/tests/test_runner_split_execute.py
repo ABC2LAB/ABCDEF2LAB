@@ -111,6 +111,7 @@ class FakeMeter:
 
     def __init__(self, ports):
         self.request_cap = 10
+        self.sealed_cap = None
         self.ports = ports
         self.path_log = True
         self.path_key_ref = PATH_KEY_REF
@@ -123,7 +124,11 @@ class FakeMeter:
 
     def marker(self, name):
         if name == "engine-sealed.json":
-            return self.sealed
+            # 같은 계측기의 봉인 표식도 상한 값을 적는다(drain 표식과 같아야 한다, #734 리뷰)
+            if self.sealed is None:
+                return None
+            return dict(self.sealed, request_cap=self.request_cap if self.sealed_cap is None else self.sealed_cap,
+                        rejected_over_cap=0)
         self.ports.calls.append("meter:drained")
         # 계측기 하드 상한: 기본 시험 계획의 공통 요청 예산(10)이 계측기에 걸린 모양이다.
         return {"inflight_at_drain": 0, "log_complete": self.log_complete, "forced_cancelled_requests": self.ports.forced,
@@ -1110,6 +1115,9 @@ class TestRequestCap(unittest.TestCase):
                 result, _, _ = run_with_meter(lambda m, v=value: setattr(m, "request_cap", v), request_budget=1)
                 self.assertEqual((result["status"], result.get("reasons")), ("invalid", ["meter_request_cap_mismatch"]))
         self.assertEqual(run_with_meter(lambda m: setattr(m, "request_cap", 1), request_budget=1)[0]["status"], "complete")
+        # 봉인 표식의 상한이 drain 표식과 다르면 같은 계측기의 상한 적용을 증명하지 못한다(#734 리뷰)
+        result, _, _ = run_with_meter(lambda m: setattr(m, "sealed_cap", 0))
+        self.assertEqual((result["status"], result.get("reasons")), ("invalid", ["meter_request_cap_mismatch"]))
         def overshoot(ports):  # 시작 뒤 계측기가 예산보다 많이 전달한 모양(상한이 깨진 계측기)
             original = ports.start_round
 

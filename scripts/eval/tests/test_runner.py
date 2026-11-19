@@ -138,6 +138,8 @@ class FakeMeter:
         self.uncapped = False
         self.cap_marker = None
         self.over_cap_rows = None  # 상한 거부 행 수를 표식과 다르게 두는 시험용
+        self.over_cap_marker = None  # 표식의 상한 거부 수를 바꿔 보는 시험용(봉인·drain 둘 다)
+        self.sealed_cap = None  # 봉인 표식의 상한 값만 바꿔 보는 시험용
         self.path_key_ref = PATH_KEY_REF
         # 가짜 E²(compose.e2-stub.yaml) 결정 행. 회차가 E²를 기대할 때만 읽는다. 기본은 허용 2·미지원 1이고,
         # 허용 둘의 ID는 계측기 행(engine_rows의 앞 두 요청)에 붙는다.
@@ -211,8 +213,15 @@ class FakeMeter:
             cap = 0 if self.uncapped else self.ports.spec.request_budget
             return dict(self.drained, forwarded_requests=forwarded,
                         request_cap=cap if self.cap_marker is None else self.cap_marker,
-                        rejected_over_cap=max(0, self._raw() - self._forwarded()))
-        return {"role": "engine", "sealed_at": "t"}
+                        rejected_over_cap=self._over_marker())
+        cap = 0 if self.uncapped else self.ports.spec.request_budget
+        # 같은 계측기의 봉인 표식은 drain 표식과 같은 상한 값을 적는다(cap_marker는 두 표식 모두에 적용)
+        cap = cap if self.cap_marker is None else self.cap_marker
+        return {"role": "engine", "sealed_at": "t", "request_cap": cap if self.sealed_cap is None else self.sealed_cap,
+                "rejected_over_cap": self._over_marker()}
+
+    def _over_marker(self):
+        return max(0, self._raw() - self._forwarded()) if self.over_cap_marker is None else self.over_cap_marker
 
 
 class FakeGateway:
@@ -1498,6 +1507,23 @@ class TestCompleteRun(unittest.TestCase):
                 result, _, _, _ = run(lambda p, m, c, v=marker: setattr(m, "cap_marker", v), spec=spec)
                 self.assertEqual((result["status"], result.get("reasons")), (INVALID, ["meter_request_cap_mismatch"]))
         self.assertEqual(run(spec=spec)[0]["status"], COMPLETE)  # 같은 예산의 정상 표식은 통과한다
+
+    def test_markers_and_forwarded_count_must_agree_on_the_cap(self):
+        # 같은 계측기의 봉인·drain 표식은 상한 값이 같아야 하고, 상한 거부가 있으면 전달 수가 상한에 닿았어야 한다(#734 리뷰).
+        cases = {
+            "sealed_cap_differs": lambda p, m, c: setattr(m, "sealed_cap", 0),
+            # 시간 상한으로 끝난 회차(전달 0)인데 상한 거부 행·표식 거부 수가 1
+            "over_cap_without_reaching": lambda p, m, c: (setattr(m, "per_poll", 0), setattr(m, "over_cap_rows", 1),
+                                                         setattr(m, "over_cap_marker", 1)),
+        }
+        for name, mutate in cases.items():
+            with self.subTest(case=name):
+                result, _, _, _ = run(mutate)
+                self.assertEqual((result["status"], result.get("reasons")), (INVALID, ["meter_request_cap_mismatch"]))
+                self.assertNotIn("signature", result)
+        # 상한에 닿은 뒤의 상한 거부는 정상이다(기본 회차: 전달 = 예산, 넘친 몫은 거부)
+        result, _, meter, _ = run(lambda p, m, c: setattr(m, "per_poll", 35))
+        self.assertEqual(result["status"], COMPLETE, result)
 
     def test_time_budget_stop(self):
         result, _, meter, evidence = run(lambda p, m, c: setattr(m, "per_poll", 0))
