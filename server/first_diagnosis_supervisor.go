@@ -821,7 +821,15 @@ func firstDiagnosisProgramCall(call e2proxy.CallResult, program map[string]bool,
 	if !program[call.CallRef] && call.Program == "" {
 		return false, false
 	}
-	return program[call.CallRef] && call.Program.Valid() && call.IntentID == 0 && call.Final && call.AuditComplete && observed[call.CallRef].CallRef == "", true
+	// 서버가 연 호출(인증 준비·세션 다시 받기)은 서버 등록부에 있어야 한다. E③ 확정 단계 호출은 제품 확정 단계가 E② 실행에
+	// 직접 보내 등록부에 없고, Program 칸은 신뢰 경로(SendE3*)에서만 정해진다(Worker가 정하지 못함).
+	known := program[call.CallRef] && call.Program.Valid() || !program[call.CallRef] && firstDiagnosisE3ProgramCall(call.Program)
+	return known && call.IntentID == 0 && call.Final && call.AuditComplete && observed[call.CallRef].CallRef == "", true
+}
+
+// firstDiagnosisE3ProgramCall은 E③ 확정 단계의 프로그램 호출 종류다(신원·생성·조회).
+func firstDiagnosisE3ProgramCall(kind e2proxy.ProgramCallKind) bool {
+	return kind == e2proxy.ProgramE3Identity || kind == e2proxy.ProgramE3Create || kind == e2proxy.ProgramE3Read
 }
 
 // 일반 HTTP의 마감 판정이다. ready는 감사가 닫힌 실행 마감을 할 수 있다는 뜻이며 목표 충족이나 E③ 판정이 아니다.
@@ -874,12 +882,16 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 					return fail(reasonClosureResultsUnavailable)
 				}
 			}
+			registered := 0
 			for _, call := range calls {
 				if settled, isProgram := firstDiagnosisProgramCall(call, program, nil); !settled || !isProgram {
 					return fail(reasonClosureCallsWithoutIntents)
 				}
+				if program[call.CallRef] {
+					registered++
+				}
 			}
-			if len(program) != len(calls) {
+			if len(program) != registered {
 				return fail(reasonClosureCallCountMismatch)
 			}
 		}
@@ -958,7 +970,7 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 	// 서버가 연 호출(인증 준비 등)은 Worker Bash 결과가 없다. E② 기록이 최종·감사 완료인지만 보고 intent 결과 대조에서
 	// 뺀다(C14: 시험 계정을 결속한 실행이 마감 대조에서 늘 실패하던 것, 11/13 S07 실제 회차).
 	program := server.engine.e2HTTP.ProgramCalls(task.ID)
-	programCalls := 0
+	programCalls, registeredCalls := 0, 0
 	missing := 0
 	for _, call := range calls {
 		if settled, isProgram := firstDiagnosisProgramCall(call, program, observed); isProgram {
@@ -966,6 +978,9 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 				return fail(reasonClosureProgramCallOpen)
 			}
 			programCalls++
+			if program[call.CallRef] {
+				registeredCalls++
+			}
 			continue
 		}
 		result, ok := observed[call.CallRef]
@@ -1006,7 +1021,7 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 		}
 	}
 	// 저장된 신뢰 결과는 모두 서로 다른 실제 호출이어야 한다.
-	if len(program) != programCalls || len(results)+missing+programCalls != len(calls) {
+	if len(program) != registeredCalls || len(results)+missing+programCalls != len(calls) {
 		return fail(reasonClosureCallCountMismatch)
 	}
 	// 결과 불명 intent 수가 E② 근거로 확인한 수와 같아야 한다. 근거는 결과 불명 송신 수와, 멈춘 명령의 시도 단위 기록에서
