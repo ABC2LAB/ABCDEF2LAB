@@ -462,7 +462,8 @@ func TestProductDeclarationDirectorySyncsParent(t *testing.T) {
 	}
 }
 
-// 운영자가 회차 A의 기록을 보고 동의하는 사이에 회차 B의 쓰기가 들어오면 그 동의는 B에 반영되지 않는다.
+// 운영자가 회차 A의 기록을 보고 동의하는 사이에 기록이 바뀌면(A가 쓰기를 더 남김) 그 동의는 반영되지 않는다. 다른 회차 B의
+// 쓰기는 A가 미해결인 동안 아예 들어오지 못한다(#738 이동찬 리뷰).
 func TestProductResetConfirmationBoundToSeenRecord(t *testing.T) {
 	r, root, target, _ := declarationTestTarget(t)
 	if err := r.recordConfirmationWrites(target.ID, "job-a", confirmationObjects()); err != nil {
@@ -472,14 +473,17 @@ func TestProductResetConfirmationBoundToSeenRecord(t *testing.T) {
 	if seen.LastWritesJob != "job-a" {
 		t.Fatalf("본 기록: %+v", seen)
 	}
-	if err := r.recordConfirmationWrites(target.ID, "job-b", confirmationObjects()); err != nil {
+	if err := r.recordConfirmationWrites(target.ID, "job-b", confirmationObjects()); err == nil {
+		t.Fatal("A 미해결 중 B 쓰기를 받음")
+	}
+	if err := r.recordConfirmationWrites(target.ID, "job-a", []productConfirmationObject{{Type: "secret", IDUnknown: true}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := r.confirmReset("ARTEX", target.ID, true, seen.LastWritesRef); err == nil || err.Error() != "reset_record_changed" {
 		t.Fatalf("바뀐 기록에 동의를 반영함: %v", err)
 	}
-	if v, _ := r.resetConfirmation("ARTEX", target.ID); !v.ResetRequired || v.LastWritesJob != "job-b" || v.ConfirmedBy != "" {
-		t.Fatalf("B가 확인됨: %+v", v)
+	if v, _ := r.resetConfirmation("ARTEX", target.ID); !v.ResetRequired || v.LastWritesJob != "job-a" || v.LastWritesObjects != 2 || v.ConfirmedBy != "" {
+		t.Fatalf("바뀐 기록이 확인됨: %+v", v)
 	}
 	if got := e3contract.CheckRunStart(t.Context(), productResetGate{registry: r}, e3contract.RunBinding{}, target.ID); got != e3contract.RefuseResetConfirmationMissing {
 		t.Fatalf("B 확인 없이 시작: %s", got)
@@ -489,10 +493,10 @@ func TestProductResetConfirmationBoundToSeenRecord(t *testing.T) {
 	if _, err := r2.confirmReset("ARTEX", target2.ID, true, strings.Repeat("a", 64)); err == nil || err.Error() != "reset_record_changed" {
 		t.Fatalf("기록 없이 동의: %v", err)
 	}
-	// B를 본 동의는 반영되고, 저널에는 B가 남는다.
+	// 바뀐 기록을 본 동의는 반영되고, 저널에는 그 기록(A의 쓰기 둘)이 남는다.
 	v, err := r.confirmReset("ARTEX", target.ID, true, writesRef(t, r, target.ID))
 	if err != nil || v.ResetRequired || v.ConfirmedBy != "ARTEX" {
-		t.Fatalf("B 확인: %+v %v", v, err)
+		t.Fatalf("바뀐 기록 확인: %+v %v", v, err)
 	}
 	if err := r.Close(); err != nil {
 		t.Fatal(err)
@@ -502,7 +506,7 @@ func TestProductResetConfirmationBoundToSeenRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	if v, _ := reopened.resetConfirmation("ARTEX", target.ID); v.ResetRequired || v.LastWritesJob != "job-b" {
+	if v, _ := reopened.resetConfirmation("ARTEX", target.ID); v.ResetRequired || v.LastWritesJob != "job-a" || v.LastWritesObjects != 2 {
 		t.Fatalf("재생: %+v", v)
 	}
 }
@@ -535,15 +539,12 @@ func TestProductResetConsentBoundToWritesRecord(t *testing.T) {
 		t.Fatalf("바뀌기 전 기록에 동의 반영: %v", err)
 	}
 	first = writesRef(t, r, target.ID)
-	// 다른 회차의 새 기록이 들어오면 첫 기록을 본 동의는 반영되지 않는다.
-	if err := r.recordConfirmationWrites(target.ID, "job-2", other); err != nil {
-		t.Fatal(err)
+	// 다른 회차의 새 기록은 미해결 기록을 덮지 못한다(#738 이동찬 리뷰). 기록과 참조가 그대로라 지금 본 기록에는 동의할 수 있다.
+	if err := r.recordConfirmationWrites(target.ID, "job-2", other); err == nil {
+		t.Fatal("미해결 기록을 다른 회차가 덮음")
 	}
-	if _, err := r.confirmReset("ARTEX", target.ID, true, first); err == nil || err.Error() != "reset_record_changed" {
-		t.Fatalf("다른 기록에 동의 반영: %v", err)
-	}
-	if v, _ := r.resetConfirmation("ARTEX", target.ID); !v.ResetRequired || v.LastWritesRef == first {
-		t.Fatalf("확인 필요가 지워짐: %+v", v)
+	if v, _ := r.resetConfirmation("ARTEX", target.ID); !v.ResetRequired || v.LastWritesRef != first || v.LastWritesJob != "job-1" {
+		t.Fatalf("미해결 기록이 바뀜: %+v", v)
 	}
 	// 같은 회차라도 시각·객체가 다르면 참조가 다르다.
 	at := time.Date(2026, 11, 18, 0, 0, 0, 0, time.UTC)
@@ -577,6 +578,10 @@ func TestProductResetApplyCostIndependentOfHistory(t *testing.T) {
 	// 재생도 회차 목록을 줄마다 다시 만들지 않는다: 줄을 많이 받아도 목록은 하나이고 회차마다 한 번만 더해진다.
 	for i := range 64 {
 		if err := r.recordConfirmationWrites(target.ID, fmt.Sprintf("job-%d", i), confirmationObjects()); err != nil {
+			t.Fatal(err)
+		}
+		// 다음 회차가 쓰기를 남기려면 앞 회차 기록의 리셋 확인이 먼저다(#738 이동찬 리뷰).
+		if _, err := r.confirmReset("ARTEX", target.ID, true, r.resets[target.ID].writesRef); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -717,5 +722,90 @@ func TestProductResetSettleLines(t *testing.T) {
 	if got := reopened.resets[target.ID]; got == nil || got.writesJob != want2.writesJob || got.writesRef != want2.writesRef ||
 		!slices.Equal(got.writesObjects, want2.writesObjects) {
 		t.Fatalf("재생 뒤: %+v, 기대 %+v", got, want2)
+	}
+}
+
+// 같은 대상에 회차가 둘 붙어 있어도 앞 회차의 미해결 쓰기(리셋 확인 전, 거두지 않은 쓰기)는 뒤 회차의 예약·정산이 지울 수
+// 없다(#738 이동찬 리뷰). 외부 송신 없이 저널 경계만 본다.
+func TestProductResetKeepsOtherJobUnresolvedWrites(t *testing.T) {
+	r, root, target, _ := declarationTestTarget(t)
+	reserve := func(job, typ string) error {
+		return r.recordConfirmationWrites(target.ID, job, []productConfirmationObject{{Type: typ, IDUnknown: true}})
+	}
+	if err := reserve("job-a", "note"); err != nil {
+		t.Fatal(err)
+	}
+	// 리뷰 재현: 뒤 회차가 예약하고 not_sent로 정산하면 앞 회차의 기록이 사라졌다. 이제 뒤 회차의 예약부터 받지 않는다.
+	if err := reserve("job-b", "note"); err == nil {
+		t.Fatal("앞 회차 미해결 쓰기를 뒤 회차 예약이 덮음")
+	}
+	if err := r.settleConfirmationWrite(target.ID, "job-b", productConfirmationObject{Type: "note", IDUnknown: true, NotSent: true}); err == nil {
+		t.Fatal("뒤 회차 정산이 앞 회차 기록을 바꿈")
+	}
+	v, _ := r.resetConfirmation("ARTEX", target.ID)
+	if !v.ResetRequired || v.LastWritesJob != "job-a" || v.LastWritesObjects != 1 {
+		t.Fatalf("앞 회차 미해결 쓰기가 사라짐: %+v", v)
+	}
+	// applyReset 수준에서도 같은 줄은 받지 않는다(재생이 거부한 줄을 만나지 않게).
+	rec := r.records[target.ID]
+	other := productDeclarationEvent{TargetID: target.ID, Action: declarationConfirmationWrites, Actor: productConfirmationActor,
+		At: r.now().UTC(), TargetRevision: target.Revision, JobRef: "job-b", Objects: []productConfirmationObject{{Type: "note", IDUnknown: true}}}
+	if _, err := applyReset(rec, r.resets[target.ID], r.resetJobs[target.ID], other); err == nil {
+		t.Fatal("applyReset이 다른 회차 예약으로 미해결 쓰기를 덮음")
+	}
+	// 앞 회차가 자기 예약을 거두면(보내지 않음) 남은 쓰기가 없으니 뒤 회차가 예약할 수 있다.
+	if err := r.settleConfirmationWrite(target.ID, "job-a", productConfirmationObject{Type: "note", IDUnknown: true, NotSent: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reserve("job-b", "note"); err != nil {
+		t.Fatalf("남은 쓰기가 없는데 뒤 회차 예약을 거부: %v", err)
+	}
+	// 뒤 회차가 미해결이면 셋째 회차도 막히고, 리셋을 확인하면 열린다.
+	if err := reserve("job-c", "note"); err == nil {
+		t.Fatal("미해결 쓰기를 셋째 회차가 덮음")
+	}
+	v, _ = r.resetConfirmation("ARTEX", target.ID)
+	if _, err := r.confirmReset("ARTEX", target.ID, true, v.LastWritesRef); err != nil {
+		t.Fatal(err)
+	}
+	if err := reserve("job-c", "note"); err != nil {
+		t.Fatalf("리셋 확인 뒤 새 회차 예약을 거부: %v", err)
+	}
+	want := r.resets[target.ID]
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := newProductTargetRegistry(root, r.policy, func() error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if got := reopened.resets[target.ID]; got == nil || got.writesJob != "job-c" || got.writesRef != want.writesRef {
+		t.Fatalf("재생 뒤: %+v", got)
+	}
+}
+
+// 쓰기 기록의 회차가 아직 실행 중이면 리셋 확인을 받지 않는다. 확인 뒤에도 그 회차가 생성 요청을 더 보낼 수 있어서다.
+func TestProductResetConfirmRefusedWhileRunActive(t *testing.T) {
+	r, _, target, _ := declarationTestTarget(t)
+	p := &productRuntime{targets: r}
+	rec := r.records[target.ID]
+	release, err := p.attach(rec, "job-a", func() {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.recordConfirmationWrites(target.ID, "job-a", []productConfirmationObject{{Type: "note", IDUnknown: true}}); err != nil {
+		t.Fatal(err)
+	}
+	v, _ := r.resetConfirmation("ARTEX", target.ID)
+	if _, err := p.confirmReset("ARTEX", target.ID, true, v.LastWritesRef); err == nil || err.Error() != "reset_run_active" {
+		t.Fatalf("실행 중 회차의 리셋 확인: %v", err)
+	}
+	if v, _ := r.resetConfirmation("ARTEX", target.ID); !v.ResetRequired {
+		t.Fatal("거부한 확인이 상태를 바꿈")
+	}
+	release()
+	if _, err := p.confirmReset("ARTEX", target.ID, true, v.LastWritesRef); err != nil {
+		t.Fatalf("실행이 끝난 뒤 리셋 확인: %v", err)
 	}
 }
