@@ -45,7 +45,7 @@ class TestFaultStallRecord(unittest.TestCase):
         self.assertEqual(record["faults"], {"upstream_cut": 1, "rate_limited": 0})
         self.assertEqual(record["events"], [{"kind": "upstream_cut", "at_seconds": 20.0, "silence_seconds": 359.0,
                                              "censored": True, "inflight_at_fault": 0, "engine_terminal_within": False,
-                                             "idle_seconds": 359.0, "idle_censored": True,
+                                             "idle_nanoseconds": 359_000_000_000, "idle_seconds": 359.0, "idle_censored": True,
                                              "engine_terminal_before_idle_end": False}])
         self.assertEqual((record["max_silence_after_fault_seconds"], record["max_silence_after_fault_censored"]), (359.0, True))
         self.assertEqual(record["max_idle_gap_seconds"], 359.0)
@@ -203,6 +203,27 @@ class TestFaultStallJudge(unittest.TestCase):
         rows = [llm(1, 1.0, 1.2, status=429), llm(2, 3.2, 5.0), llm(3, 200.0, 201.0)]
         judged = judge_fault_stall(fault_stall_record(rows, [], START, stamp(300.0), None), 180)
         self.assertEqual([(e["kind"], e["idle_seconds"], e["stall"]) for e in judged["events"]], [("rate_limited", 2.0, False)])
+
+    def test_judgment_uses_exact_time_not_the_rounded_record(self):
+        # #756 리뷰 재현: 장애가 1초에 끝나고 창이 1.9996초에 끝나면 공백은 0.9996초다. 기록용 idle_seconds는 1.0이지만
+        # T=1 판정은 반올림 전 나노초로 해 멈춤이 아니다.
+        rows = [llm(1, 0.5, 1.0, decision="upstream_error", end="upstream_cut_before_done")]
+        record = fault_stall_record(rows, [], START, "2026-11-17T00:00:01.999600000Z", None)
+        event = record["events"][0]
+        self.assertEqual((event["idle_seconds"], event["idle_nanoseconds"]), (1.0, 999_600_000))
+        self.assertEqual(judge_fault_stall(record, 1)["stalls"], 0)
+        # 나노초 경계: 1초에서 1나노초 모자라면 아님, 정확히 1초면 멈춤
+        for end, stalls in (("2026-11-17T00:00:01.999999999Z", 0), ("2026-11-17T00:00:02.000000000Z", 1)):
+            with self.subTest(end=end):
+                self.assertEqual(judge_fault_stall(fault_stall_record(rows, [], START, end, None), 1)["stalls"], stalls)
+        # 다음 사건도 나노초로 고른다(같은 마이크로초 안 뒤 사건)
+        rows2 = rows + [{**llm(2, 1.0, 1.0), "started_at": "2026-11-17T00:00:01.000000500Z",
+                         "completed_at": "2026-11-17T00:00:01.000000600Z"}]
+        self.assertEqual(fault_stall_record(rows2, [], START, stamp(10.0), None)["events"][0]["idle_nanoseconds"], 500)
+        # 나노초로 못 읽는 시각은 기록 오류다
+        for bad in ("2026-11-17T00:00:01.0000000001Z", "2026-11-17 00:00:01Z", "2026-11-17T00:00:01"):
+            with self.subTest(bad=bad), self.assertRaises(FaultRecordError):
+                fault_stall_record(rows, [], START, bad, None)
 
     def test_unjudgeable_inputs_are_refused(self):
         record = fault_stall_record(*self.PILOT, START, stamp(379.0), None)

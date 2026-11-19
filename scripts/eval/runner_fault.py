@@ -18,7 +18,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+import re
+from datetime import datetime, timedelta, timezone
 
 # v2: 장애별 첫 무활동 구간(idle)과 판정 칸(judged·stall_seconds·stall·stalls)을 더함
 FAULT_STALL_FORMAT = "abc2lab-eval-runner-fault-stall-v2"
@@ -49,6 +50,25 @@ def _at(value: object) -> datetime:
     return moment
 
 
+_STAMP_PARTS = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})\Z")
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+_NS_PER_SECOND = 10 ** 9
+
+
+def _ns(value: object) -> int:
+    """시각 문자열의 정확한 나노초(반올림·부동소수 없이). 판정 비교는 이 값으로 한다(#756 리뷰: 기록용 반올림으로 T 미만
+    공백이 T로 보이던 것). 행 시각은 나노초 9자리까지다(게이트웨이·계측기·제품 호출 기록)."""
+    matched = _STAMP_PARTS.fullmatch(value) if isinstance(value, str) else None
+    if matched is None:
+        raise FaultRecordError("fault_stall_time_invalid")
+    zone = "+00:00" if matched.group(3) == "Z" else matched.group(3)
+    try:
+        whole = datetime.fromisoformat(matched.group(1) + zone)
+    except ValueError:
+        raise FaultRecordError("fault_stall_time_invalid") from None
+    return (whole - _EPOCH) // timedelta(seconds=1) * _NS_PER_SECOND + int((matched.group(2) or "").ljust(9, "0"))
+
+
 def _fault_kind(row: dict) -> str | None:
     if row["decision"] == "upstream_error" and row.get("unfinished_end") in UPSTREAM_CUT_ENDS:
         return "upstream_cut"
@@ -72,8 +92,11 @@ def fault_stall_record(llm_rows: list[dict], meter_rows: list[dict], window_star
     if any(done < began for began, done in spans):
         raise FaultRecordError("fault_stall_time_invalid")
     starts = sorted(began for began, _ in spans if start <= began < end)
-    # 활동 사건: 모든 행의 시작과 완료(오류 응답 포함). 진행 중 구간은 사건이 아니다.
+    # 활동 사건: 모든 행의 시작과 완료(오류 응답 포함). 진행 중 구간은 사건이 아니다. 판정용은 나노초 정수다.
     moments = sorted({moment for span in spans for moment in span})
+    rows = [*llm_rows, *meter_rows]
+    moments_ns = sorted({_ns(row[name]) for row in rows for name in ("started_at", "completed_at")})
+    end_ns, terminal_ns = _ns(window_end), None if engine_terminal_at is None else _ns(engine_terminal_at)
     counts = {"upstream_cut": 0, "rate_limited": 0}
     events = []
     for row in llm_rows:
@@ -84,7 +107,9 @@ def fault_stall_record(llm_rows: list[dict], meter_rows: list[dict], window_star
         counts[kind] += 1
         following = next((began for began in starts if began > at), None)
         silence_end = end if following is None else following
-        idle_to, idle_censored = _next_event(at, moments, end)
+        at_ns = _ns(row["completed_at"])
+        following_ns = next((moment for moment in moments_ns if at_ns < moment < end_ns), None)
+        idle_to_ns, idle_censored = (end_ns, True) if following_ns is None else (following_ns, False)
         events.append({
             "kind": kind, "at_seconds": _seconds(at, start), "silence_seconds": _seconds(silence_end, at),
             # 창 끝까지 활동이 없었다(실제 무활동은 이보다 길 수 있다).
@@ -92,10 +117,12 @@ def fault_stall_record(llm_rows: list[dict], meter_rows: list[dict], window_star
             # 장애 시점에 진행 중이던 요청(긴 명령 등). 무활동 판정을 해석할 때 본다.
             "inflight_at_fault": sum(1 for began, done in spans if began < at < done),
             "engine_terminal_within": terminal is not None and at <= terminal <= silence_end,
-            # 장애 뒤 다음 활동 사건(요청 시작·응답 완료)까지. 판정은 이 길이를 T와 비교한다.
-            "idle_seconds": _seconds(idle_to, at), "idle_censored": idle_censored,
+            # 장애 뒤 다음 활동 사건(요청 시작·응답 완료)까지. 판정은 나노초 정수(idle_nanoseconds)를 T와 비교하고,
+            # idle_seconds는 기록용 반올림 값이다.
+            "idle_nanoseconds": idle_to_ns - at_ns, "idle_seconds": round((idle_to_ns - at_ns) / _NS_PER_SECOND, 3),
+            "idle_censored": idle_censored,
             # 그 구간이 끝나기 전에 엔진이 끝났으면(먼저 끝난 경우 포함) 조건 (3)이 서지 않는다.
-            "engine_terminal_before_idle_end": terminal is not None and terminal <= idle_to,
+            "engine_terminal_before_idle_end": terminal_ns is not None and terminal_ns <= idle_to_ns,
         })
     events.sort(key=lambda event: event["at_seconds"])
     longest = max(events, key=lambda event: event["silence_seconds"], default=None)
@@ -112,12 +139,6 @@ def fault_stall_record(llm_rows: list[dict], meter_rows: list[dict], window_star
             "max_event_gap_before_end_seconds": _max_event_gap(moments, start, terminal if terminal is not None
                                                                and start <= terminal < end else end),
             "activity_starts": len(starts)}
-
-
-def _next_event(at: datetime, moments: list[datetime], end: datetime) -> tuple[datetime, bool]:
-    """장애 뒤 다음 활동 사건(창 안)과 창 끝까지 사건이 없었는지. 같은 순간의 다른 사건은 장애와 함께 일어난 것이라 넘긴다."""
-    following = next((moment for moment in moments if at < moment < end), None)
-    return (end, True) if following is None else (following, False)
 
 
 def _max_event_gap(moments: list[datetime], start: datetime, end: datetime) -> float:
@@ -137,7 +158,8 @@ def judge_fault_stall(record: dict, stall_seconds: int) -> dict:
     if (type(stall_seconds) is not int or not 1 <= stall_seconds <= MAX_FAULT_STALL_SECONDS or record.get("error") is not None
             or record.get("judged") is not False or record.get("format") != FAULT_STALL_FORMAT):
         raise FaultRecordError("fault_stall_unjudgeable")
-    events = [dict(event, stall=event["idle_seconds"] >= stall_seconds and not event["engine_terminal_before_idle_end"])
+    events = [dict(event, stall=event["idle_nanoseconds"] >= stall_seconds * _NS_PER_SECOND
+                   and not event["engine_terminal_before_idle_end"])
               for event in record["events"]]
     return dict(record, judged=True, stall_seconds=stall_seconds, events=events,
                 stalls=sum(1 for event in events if event["stall"]))
