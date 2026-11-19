@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -205,5 +206,76 @@ func TestJournalV3CanceledVerificationReturnsNoEvents(t *testing.T) {
 	cancel()
 	if rows, _, err := VerifyJournalEvents(ctx, bytes.NewReader(nil), journalTestKey, JournalCheckpoint{Version: JournalVersionV3}); !errors.Is(err, context.Canceled) || rows != nil {
 		t.Fatal("취소한 읽기가 이벤트를 반환했습니다", err)
+	}
+}
+
+func TestVerifyJournalV3ExtensionChecksBothHeadsInOneChain(t *testing.T) {
+	w := newJournalTestWriter()
+	event := journalV3Event()
+	j, err := newJournalWithHeader(w, journalTestKey, journalHeader{
+		Version: JournalVersionV3, Scope: event.Scope, KeyRef: "fixture-key", CreatedAt: event.At,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	header := j.Checkpoint()
+	if err := j.Record(t.Context(), event); err != nil {
+		t.Fatal(err)
+	}
+	prior := j.Checkpoint()
+	priorBytes := w.bytes()
+	second := event
+	second.Index, second.Sequence = 2, 2
+	second.AttemptID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	if err := j.Record(t.Context(), second); err != nil {
+		t.Fatal(err)
+	}
+	head, data := j.Checkpoint(), w.bytes()
+
+	for _, anchor := range []JournalCheckpoint{header, prior, head} {
+		summary, err := VerifyJournalV3Extension(t.Context(), bytes.NewReader(data), journalTestKey, anchor, head)
+		if err != nil || summary.Checkpoint != head || summary.Events != 2 {
+			t.Fatalf("정상 연속 지점 %d 검증 실패: %v", anchor.Sequence, err)
+		}
+	}
+
+	// 헤더는 같지만 첫 행이 다른 별도 분기를 만든다. 이 분기는 자기 MAC과 체크포인트로는 정상이다.
+	headerLine := priorBytes[:bytes.IndexByte(priorBytes, '\n')+1]
+	event.StatusCode = 201
+	alternate := journalRecord{Index: 1, Previous: header.MAC, Event: event}
+	diverged := prior
+	diverged.MAC, err = journalMAC(journalTestKey, JournalVersionV3, "event", alternate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	line, err := encodeJournalLine(journalLine{Kind: "event", Record: &alternate, MAC: diverged.MAC})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifyJournal(t.Context(), bytes.NewReader(append(bytes.Clone(headerLine), line...)), journalTestKey, diverged); err != nil {
+		t.Fatal("독립 분기 대조 검증 실패", err)
+	}
+	badHeader, differentScope := header, prior
+	badHeader.MAC = strings.Repeat("0", 64)
+	differentScope.Scope.RunRef = "other-run"
+	for _, tc := range []struct {
+		name        string
+		data        []byte
+		prior, head JournalCheckpoint
+	}{
+		{"different-authentic-branch", data, diverged, head},
+		{"wrong-header", data, badHeader, head},
+		{"different-scope", data, differentScope, head},
+		{"missing-tail", priorBytes, prior, head},
+		{"extra-tail", data, prior, prior},
+		{"rollback", priorBytes, head, prior},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			summary, err := VerifyJournalV3Extension(t.Context(), bytes.NewReader(tc.data), journalTestKey, tc.prior, tc.head)
+			if !errors.Is(err, ErrJournalIntegrity) || summary != (JournalSummary{}) {
+				t.Fatal("연속성 검증 실패 데이터에서 요약을 반환했습니다", err)
+			}
+		})
 	}
 }
