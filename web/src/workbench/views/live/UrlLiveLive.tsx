@@ -57,7 +57,7 @@ import { flowStageText, MAX_FLOW_PLAN, type WorkflowSnapshot } from "../../live/
 import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
 import { Markdown } from "../../ui/Markdown";
-import { HelpTip, InspHead, InspOpenButton, Isec, Kv, PaneToggle } from "../../ui/parts";
+import { InspHead, InspOpenButton, Isec, Kv, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "./approvals";
 import { DiagnosticEntrySections } from "./DiagnosticEntrySections";
@@ -248,20 +248,14 @@ function LiveFindings({
  * 점검 진행 상태 카드의 모델 사용량 한 줄 (입 · 출 칩, 사용자 11/17 '입출만'). 출처는 이 진단의 전송 통제 예산 기록
  * (job.model_usage): 제품(첫 진단) 서버가 원본 토큰 집계(/api/exploration/tokens)를 열지 않아 그쪽은 읽지 않는다.
  * 줄 어디에 올려도 두 수의 정확한 값을 한꺼번에 보인다. 실패 · 중지로 사용량을 못 받은 호출은 예약량으로 셌으므로
- * 그런 호출이 있으면 최대치라고 같이 적는다.
+ * 그런 호출이 있으면 마우스를 올린 정확한 값에 최대치라고 같이 적는다(tokenExact). 칩 옆 '(최대)'(사용자 11/18)와
+ * (?) 설명(사용자 11/19 '무슨 말인지 모르겠다')은 두지 않는다.
  */
 function TaskTokens({ u }: { u: URLDiagnosisUsage }) {
   return (
-    // tipline: 최대치 (?) 메모가 이 줄 바로 아래에 뜨는 기준
-    <p className={cx(s.toks, s.tipline)} title={tokenExact(u)}>
+    <p className={s.toks} title={tokenExact(u)}>
       {/* 칸 사이 공백: 화면은 flex 간격으로 띄우고, 글로 읽을 때(화면 읽기 · 복사) 붙지 않게 */}
       <span>작업 합계 ·</span> <TokenChips u={u} bound={false} />
-      {/* 칩 옆 '(최대)' 글 대신(사용자 11/18) 키보드 · 터치로도 여는 (?) 설명으로 최대치임을 알린다(#709 리뷰) */}
-      {u.unknown_usage_calls ? (
-        <HelpTip label="최대치 설명">
-          {`사용량을 받지 못한 호출 ${u.unknown_usage_calls}건은 예약량으로 셌습니다. 두 수는 실제 사용량의 최대치입니다.`}
-        </HelpTip>
-      ) : null}
     </p>
   );
 }

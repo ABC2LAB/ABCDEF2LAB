@@ -22,13 +22,16 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 from e2_attempt_paths import ATTEMPT_PATHS_DONE_FILE, ATTEMPT_PATHS_FILE, MAX_ATTEMPT_PATHS_BYTES, MAX_DONE_BYTES
-from e2_export import (ATTEMPTS_FILE, JOURNAL_VERSIONS, STATE_COMPLETE, E2Expectation, E2Export, E2ExportError, parse_attempts, parse_manifest,
+from e2_export import (ATTEMPTS_FILE, JOURNAL_VERSION, JOURNAL_VERSION_V1, STATE_COMPLETE, E2Expectation, E2Export, E2ExportError, parse_attempts, parse_manifest,
                        strict_object)
 
 OUTCOME_COMPLETE, OUTCOME_PRODUCT_FAILURE = "complete", "product_failure"
 MANIFEST_FILE = "manifest.json"
 _COPY_JOURNAL, _COPY_CHECKPOINT = "journal.jsonl", "checkpoint.json"
 MAX_MANIFEST_BYTES = 64 * 1024
+# 수집(오프라인 검증)이 받는 저널 판. v3 행 해석은 e2_export에 있지만, v3 수집은 e2-audit-verify의 v3 지원·제품 볼륨의
+# 저널·현재 체크포인트 위치·평가 모드 감사 키가 정해진 뒤에 연다(E③↔E② v3 계약 §8.3·§10). 그 전 v3 체크포인트는 수집 실패다.
+COLLECT_VERSIONS = frozenset({JOURNAL_VERSION, JOURNAL_VERSION_V1})
 # e2-audit-verify의 checkpoint 상한과 e2proxy journalMaxBytes다. 시험이 Go 소스와 대조한다.
 MAX_CHECKPOINT_BYTES = 4 * 1024
 MAX_JOURNAL_BYTES = 256 << 20
@@ -204,7 +207,7 @@ def _parsed_checkpoint(data: bytes, manifest: dict) -> dict:
         checkpoint = strict_object(data)
     except E2ExportError:
         raise _ProductFailure("checkpoint_invalid") from None
-    if set(checkpoint) != _CHECKPOINT_FIELDS or checkpoint["Version"] not in JOURNAL_VERSIONS or type(checkpoint["Sequence"]) is not int or \
+    if set(checkpoint) != _CHECKPOINT_FIELDS or checkpoint["Version"] not in COLLECT_VERSIONS or type(checkpoint["Sequence"]) is not int or \
             not isinstance(checkpoint["JournalID"], str) or not _JOURNAL_ID.fullmatch(checkpoint["JournalID"]) or \
             not isinstance(checkpoint["MAC"], str) or not _MAC.fullmatch(checkpoint["MAC"]):
         raise _ProductFailure("checkpoint_invalid")

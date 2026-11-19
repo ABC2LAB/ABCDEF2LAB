@@ -132,8 +132,6 @@ export function crawlBar(flow: WorkflowSnapshot): {
   pct: number;
   tone: "run" | "ok" | "part";
   text: string;
-  /** 완료가 아닌 끝: 화면 '탐색 상태' 글 (상태가 없으면 '완료 확인 안 됨', #709 리뷰) */
-  ended: string | null;
 } {
   const pct = crawlPct(flow);
   if (exploreCompleted(flow))
@@ -142,7 +140,6 @@ export function crawlBar(flow: WorkflowSnapshot): {
       pct,
       tone: "ok",
       text: `탐색 완료 · 방문 ${flow.counts.visited} / 페이지 상한 ${flow.limits.max_pages}`,
-      ended: null,
     };
   if (flow.stage !== "crawling" && flow.initial_completed) {
     const st = exploreState(flow);
@@ -152,22 +149,24 @@ export function crawlBar(flow: WorkflowSnapshot): {
       pct,
       tone: "part",
       text: `탐색 끝 · ${what} · 방문 ${flow.counts.visited} / 페이지 상한 ${flow.limits.max_pages}`,
-      ended: what,
     };
   }
-  return { fill: pct, pct, tone: "run", text: `${pct}% · 페이지 상한 대비 방문`, ended: null };
+  return { fill: pct, pct, tone: "run", text: `${pct}% · 페이지 상한 대비 방문` };
 }
 /** 서버가 탐색을 끝까지 마쳤다고 했는가 (exploration_status COMPLETED). */
 function exploreCompleted(flow: WorkflowSnapshot): boolean {
   return (flow as unknown as Record<string, unknown>).exploration_status === "COMPLETED";
 }
-/** 서버 탐색 상태 (snapshot.exploration_status) → 글. */
+/**
+ * 서버 탐색 상태 (snapshot.exploration_status) → 글. 화면은 '탐색: 일부 완료'처럼 앞에 '탐색:'을 붙여 쓴다(사용자 11/19).
+ * 다 못 돈 PARTIAL 을 '완료'로 줄이지 않는다(절대규칙 5) — 오른쪽 패널 실행 결과의 '일부 완료'와 같은 말.
+ */
 const EXPLORE_TEXT = {
-  RUNNING: "탐색 중",
-  COMPLETED: "탐색 완료",
-  PARTIAL: "부분 완료",
+  RUNNING: "진행 중",
+  COMPLETED: "완료",
+  PARTIAL: "일부 완료",
   STOPPED: "중지됨",
-  NOT_RUN: "탐색 안 함",
+  NOT_RUN: "안 함",
 } as const;
 /**
  * 서버가 실제 내보내는 탐색 종료·미실행 사유만 한글로 매핑한다(팀 결정: 화면은 status 중심, 사유는 뜻을 더할 때만).
@@ -204,6 +203,31 @@ export function exploreState(
   const reason = typeof r === "string" && /^[a-z0-9_]{1,64}$/.test(r) ? r : undefined;
   return { status, text: EXPLORE_TEXT[status], reason };
 }
+/**
+ * 탐색이 끝난 뒤 위 탐색 줄(cNow) 글 (사용자 11/19 — 위 '탐색을 마쳤습니다'와 아래 '탐색: 일부 완료'가 따로 있어 헷갈림 →
+ * 한 줄로). 다 돌지 못한 끝(PARTIAL · 중지 · 탐색 안 함 · 상태 없음)은 '마쳤다'만 적지 않고 같은 줄에 붙인다(절대규칙 5,
+ * #709 리뷰: 탐색 완료 여부가 잘못 읽히지 않게). 사유는 뜻을 더하는 것만 괄호로.
+ */
+const CRAWL_END_TEXT: Readonly<Record<keyof typeof EXPLORE_TEXT, string | null>> = {
+  COMPLETED: "탐색을 마쳤습니다",
+  PARTIAL: "탐색을 마쳤습니다 · 일부 페이지는 탐색하지 못했습니다",
+  STOPPED: "탐색이 중간에 멈췄습니다",
+  NOT_RUN: "탐색을 하지 않았습니다",
+  // 끝났는데 서버가 아직 탐색 중이라고 하면 상태 없음과 같이 본다
+  RUNNING: null,
+};
+/** 서버가 탐색 상태를 주지 않았을 때 — 다 돌았다고 적지 않는다(#709 리뷰 '완료 확인 안 됨'). */
+const CRAWL_END_UNKNOWN = "탐색을 마쳤습니다 · 끝까지 봤는지는 확인되지 않았습니다";
+function crawlEndText(explore: ReturnType<typeof exploreState>): string {
+  const base = (explore && CRAWL_END_TEXT[explore.status]) ?? CRAWL_END_UNKNOWN;
+  // 표에 있는 사유만(Object 기본 속성 이름 — constructor 등 — 은 사유가 아니다). 서버는 COMPLETED 에 completed 만 준다
+  const why =
+    explore?.reason && Object.hasOwn(EXPLORE_REASON_TEXT, explore.reason)
+      ? EXPLORE_REASON_TEXT[explore.reason]
+      : undefined;
+  return why && base !== CRAWL_END_UNKNOWN ? `${base} (${why})` : base;
+}
+
 /** 범위 확인 화면 상태 알약 글. */
 function scopePill(flow: WorkflowSnapshot, verified: boolean): string {
   if (!verified) return "현재 상태 미확인";
@@ -974,12 +998,15 @@ export function WorkflowCrawlLive() {
   const crawling = flow?.stage === "crawling";
   const explore = flow ? exploreState(flow) : null;
   // 막대는 아래 flow 가 있을 때만 그린다(없을 때 값은 쓰이지 않음)
-  const bar = flow ? crawlBar(flow) : { fill: 0, pct: 0, tone: "run" as const, text: "", ended: null };
+  const bar = flow ? crawlBar(flow) : { fill: 0, pct: 0, tone: "run" as const, text: "" };
   // 탐색 단계에서는 GET 만 보낸다(서버 Controller.Before). 심화 점검이 시작되면 보낸 요청에 그 요청도 들어간다
   const readOnly = !!flow && flow.deep_runs === 0 && (crawling || flow.stage === "awaiting_selection");
-  // 탐색 줄: 탐색 중이면 새로 찾은 경로('… 찾음', 같은 조회에서 여럿이면 '외 N개'), 끝났으면 '탐색을 마쳤습니다'.
-  // AI 자동 모드는 끝나자마자 심화 진단으로 넘어가고(서버 diagnosisflow crawl.go) 그 요청도 아래 기록에 이어서 쌓여,
-  // '탐색을 마쳤습니다'만 두면 탐색이 계속되는 것처럼 보여 지금 하는 일을 같이 적는다
+  // 탐색 줄: 탐색 중이면 새로 찾은 경로('… 찾음', 같은 조회에서 여럿이면 '외 N개'), 끝났으면 '탐색을 마쳤습니다'
+  // (다 돌지 못했으면 같은 줄에 그 사실까지, crawlEndText). AI 자동 모드는 끝나자마자 심화 진단으로 넘어가고(서버
+  // diagnosisflow crawl.go) 그 요청도 아래 기록에 이어서 쌓여, 끝 글만 두면 탐색이 계속되는 것처럼 보여 지금 하는 일을 같이 적는다
+  const ended =
+    !crawling &&
+    (!!flow?.initial_completed || (!!explore && explore.status !== "RUNNING" && explore.status !== "COMPLETED"));
   let nowLine: ReactElement | string | null = null;
   if (crawling && found)
     nowLine = (
@@ -991,11 +1018,11 @@ export function WorkflowCrawlLive() {
         {` 찾음${found.more ? ` (외 ${found.more}개)` : ""}`}
       </>
     );
-  else if (flow?.initial_completed && !crawling)
+  else if (flow && ended)
     nowLine =
       flow.stage === "diagnosing"
-        ? "탐색을 마쳤습니다 · 지금은 심화 진단 중 (아래 기록에 심화 진단 요청이 이어서 쌓입니다)"
-        : "탐색을 마쳤습니다";
+        ? `${crawlEndText(explore)} · 지금은 심화 진단 중 (아래 기록에 심화 진단 요청이 이어서 쌓입니다)`
+        : crawlEndText(explore);
   return (
     <>
       <UrlHead
@@ -1057,17 +1084,8 @@ export function WorkflowCrawlLive() {
                 >
                   <i style={{ width: `${bar.fill}%` }} />
                 </div>
-                {/* 탐색 중 · 탐색 완료는 상태 알약이 말하므로 적지 않는다. 부분 완료 · 중지 · 탐색 안 함은 알약
-                    ('탐색 완료 · 확인 대기')만으로 다 돌지 못한 걸 알 수 없어 사유와 함께 남긴다(절대규칙 5) */}
-                {/* 끝났는데 완료가 아니면(주황 막대) 상태를 글로 — 서버 상태가 없으면 '완료 확인 안 됨'(#709 리뷰) */}
-                {bar.ended || (explore && explore.status !== "RUNNING" && explore.status !== "COMPLETED") ? (
-                  <div className={s.pmeta}>
-                    <span>
-                      탐색 상태{" "}
-                      <b>{`${bar.ended ?? explore?.text ?? ""}${explore?.reason && EXPLORE_REASON_TEXT[explore.reason] ? ` · ${EXPLORE_REASON_TEXT[explore.reason]}` : ""}`}</b>
-                    </span>
-                  </div>
-                ) : null}
+                {/* 다 돌지 못한 끝(부분 완료 · 중지 · 탐색 안 함 · 상태 없음)은 막대 아래 따로 두지 않고 위 탐색 줄에 붙인다
+                    (crawlEndText, 사용자 11/19) */}
               </div>
               {/* 숫자 칸 상자 (보고서 판정 집계 · 점검 진행 전송 통제와 같은 모양): 이름 · 수 · 설명.
                   발견한 API 설명은 경로 종류(조회 · 데이터 변경 · 제외)로 나눠 합이 발견 수와 맞게 적는다.
