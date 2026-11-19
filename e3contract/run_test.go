@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -798,4 +799,99 @@ func TestRunResultOmitsUnvalidatedInput(t *testing.T) {
 	if res.Binding == nil || *res.Binding != ok.in.Binding || bytes.Contains(raw, []byte("bad ref")) || len(res.Candidates) != 2 {
 		t.Fatalf("검증된 결속·후보: %+v", res)
 	}
+}
+
+// 운영자 중지로 실행 문맥이 끝나 봉인 조회가 중단되면 진위 실패가 아니라 중단(interrupted)이다. 검증하지 못한 관찰은 판정에
+// 쓰지 않는다. 문맥이 살아 있는데 저널이 취소 오류를 돌려주면 여전히 무결성 실패다(#753 이동찬 리뷰).
+func TestRunSealedCancelledByStop(t *testing.T) {
+	cross := key(e3contract.PurposeRead, e3contract.RoleCross, "note")
+	f := newFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	deps := f.deps()
+	deps.Journal = cancelOnSealed{Transport: f.fake, cancel: cancel, key: cross, calls: f.fake.Calls}
+	res := e3contract.Run(ctx, deps, f.in)
+	noConfirmed(t, res)
+	if res.Status != e3contract.StatusInterrupted || res.Reason != "" {
+		t.Fatalf("중지로 끊긴 조회: %+v", res)
+	}
+	for _, v := range res.Verdicts {
+		if v.ResourceType == "note" {
+			t.Fatalf("검증 못 한 관찰로 판정: %+v", v)
+		}
+	}
+	// 문맥은 살아 있는데 저널이 취소 오류를 돌려줌 → 무결성 실패.
+	f = newFixture(t)
+	f.fake.SealedErr = context.Canceled
+	integrityFailed(t, f.run(t), e3contract.IntegrityJournalIntegrityFailed)
+}
+
+// cancelOnSealed는 교차 조회의 봉인 조회 때 실행 문맥을 끊고 그 오류를 돌려준다(운영자 중지가 조회 중에 옴).
+type cancelOnSealed struct {
+	*e3fake.Transport
+	cancel context.CancelFunc
+	key    e3fake.Key
+	calls  func() []e3fake.Call
+}
+
+func (c cancelOnSealed) Sealed(ctx context.Context, b e3contract.RunBinding, ref e3contract.CallRef) (e3contract.Observation, error) {
+	calls := c.calls()
+	if len(calls) > 0 && calls[len(calls)-1].Key == c.key {
+		c.cancel()
+		return e3contract.Observation{}, ctx.Err()
+	}
+	return c.Transport.Sealed(ctx, b, ref)
+}
+
+// 확정 단계 시간 몫이 끝나(실행 문맥 마감) 봉인 조회가 중단되면 그 종류는 예산 사유 UNDECIDABLE이고 진위 실패가 아니다.
+func TestRunSealedDeadlineIsBudget(t *testing.T) {
+	cross := key(e3contract.PurposeRead, e3contract.RoleCross, "note")
+	f := newFixture(t)
+	ctx := &flipDeadline{Context: context.Background(), done: make(chan struct{})}
+	deps := f.deps()
+	deps.Journal = expireOnSealed{Transport: f.fake, ctx: ctx, key: cross, calls: f.fake.Calls}
+	res := e3contract.Run(ctx, deps, f.in)
+	noConfirmed(t, res)
+	if res.Status == e3contract.StatusIntegrityFailed {
+		t.Fatalf("시간 몫 끝을 진위 실패로: %+v", res)
+	}
+	if v := verdictOf(t, res, "note"); v.Value != oracle.Undecidable || !hasReason(v, e3contract.ReasonConfirmationBudgetExhaust) {
+		t.Fatalf("note: %+v", v)
+	}
+}
+
+// flipDeadline은 expire 뒤로 마감이 지난 문맥이다.
+type flipDeadline struct {
+	context.Context
+	done    chan struct{}
+	expired atomic.Bool
+}
+
+func (d *flipDeadline) Done() <-chan struct{} { return d.done }
+func (d *flipDeadline) Err() error {
+	if d.expired.Load() {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+func (d *flipDeadline) expire() {
+	if d.expired.CompareAndSwap(false, true) {
+		close(d.done)
+	}
+}
+
+type expireOnSealed struct {
+	*e3fake.Transport
+	ctx   *flipDeadline
+	key   e3fake.Key
+	calls func() []e3fake.Call
+}
+
+func (e expireOnSealed) Sealed(ctx context.Context, b e3contract.RunBinding, ref e3contract.CallRef) (e3contract.Observation, error) {
+	calls := e.calls()
+	if len(calls) > 0 && calls[len(calls)-1].Key == e.key {
+		e.ctx.expire()
+		return e3contract.Observation{}, ctx.Err()
+	}
+	return e.Transport.Sealed(ctx, b, ref)
 }
