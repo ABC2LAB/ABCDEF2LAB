@@ -78,9 +78,10 @@ def journal_counts(raw: bytes | None) -> dict:
                                  "decision": _word(event.get("decision")), "reason": _word(event.get("reason")),
                                  "model": type(intent) is int and intent > 0,
                                  "at": at if isinstance(at, str) and _AT.fullmatch(at) else None})
-            if event.get("program") in E3_PROGRAMS or E3_AUDIT_FIELD in event:
+            # 어휘 모양이 아닌 값(배열·객체 등)은 _word가 invalid로 바꾼다. 해시할 수 없는 값을 집합에 바로 넣지 않는다(#807 리뷰).
+            if _word(event.get("program")) in E3_PROGRAMS or E3_AUDIT_FIELD in event:
                 e3 += 1
-    except (ValueError, RecursionError):
+    except (ValueError, TypeError, RecursionError):
         return {"error": "journal_unparsable"}
     return {"headers": headers, "events": events, "e3_events": e3, "by_kind": dict(sorted(kinds.items())),
             "timeline": timeline, "timeline_truncated": events > len(timeline)}
@@ -106,7 +107,7 @@ def declaration_counts(raw: bytes | None) -> dict:
             if action == DECLARATION_WRITES:
                 items = payload.get("objects")
                 objects += len(items) if isinstance(items, list) else 0
-    except (ValueError, RecursionError):
+    except (ValueError, TypeError, RecursionError):
         return {"error": "journal_unparsable"}
     return {"format_records": formats, "records": records, "by_action": dict(sorted(actions.items())), "write_objects": objects}
 

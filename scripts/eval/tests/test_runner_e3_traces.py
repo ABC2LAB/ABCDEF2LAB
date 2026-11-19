@@ -67,6 +67,20 @@ class TestJournalCounts(unittest.TestCase):
         self.assertEqual((counts["events"], len(counts["timeline"]), counts["timeline_truncated"]), (3, 2, True))
         self.assertFalse(journal_counts(journal(CONTROL))["timeline_truncated"])
 
+    def test_non_scalar_vocabulary_values_do_not_raise(self):
+        # #807 리뷰: program·stage·decision·reason이 배열·객체여도 예외 없이 invalid로 센다(고정 오류 경로 밖으로 새지 않게).
+        for value in ([], ["e3_read"], {}, {"e3_read": 1}):
+            with self.subTest(value=value):
+                counts = journal_counts(journal(dict(CONTROL, program=value, stage=value, decision=value, reason=value)))
+                self.assertEqual((counts["events"], counts["e3_events"]), (1, 0))
+                self.assertEqual(counts["by_kind"], {"invalid|invalid|invalid|invalid": 1})
+                self.assertEqual({e["program"] for e in counts["timeline"]}, {"invalid"})
+        # E③ 감사 칸이 있으면 program 값과 상관없이 E③ 사건이다
+        self.assertEqual(journal_counts(journal(dict(E3_AUDIT_ONLY, program=[])))["e3_events"], 1)
+        # 선언 저널 동작 칸도 같다
+        record = {"sequence": 1, "previous": "", "payload": {"action": ["confirmation_writes"]}, "digest": "d"}
+        self.assertEqual(declaration_counts(lines(record))["by_action"], {"invalid": 1})
+
     def test_non_vocabulary_values_are_counted_as_invalid(self):
         counts = journal_counts(journal(dict(CONTROL, reason="Bad Value/../x", decision=7)))
         self.assertEqual(counts["by_kind"], {"control|-|invalid|invalid": 1})
