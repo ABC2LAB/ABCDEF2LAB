@@ -19,6 +19,7 @@ from pathlib import Path
 from runner_config import COMPOSE_SPLIT, MAX_REQUEST_CAP, REPO_ROOT, Image, RunnerConfig
 from cli_usage import CliUsageError, validate_names
 from runner_docker import MAX_STOP_TIMEOUT_SECONDS
+from runner_e2v3 import E2V3Settings, parse_settings as parse_e2_v3
 
 PRODUCT_COMPOSE = (REPO_ROOT / "deploy" / "product" / "compose.yaml", REPO_ROOT / "deploy" / "product" / "compose.acceptance.yaml",
                    REPO_ROOT / "deploy" / "product" / "compose.exploration-acceptance.yaml")
@@ -37,7 +38,7 @@ SPLIT_FIELDS = frozenset({"product_tag", "product_source_sha", "image_ids", "man
                           "registration_valid_hours", "wide_writes", "profile_id", "task_wait_seconds",
                           "poll_interval_seconds", "boundary_stop_seconds", "cli_usage_names"})
 # 선택 칸. 합성 모델 모드(2026-11-18 사용자 결정 (a))는 보존 회차(수용시험 목적)에서만, 실행 출처 synthetic_fixture로만 받는다.
-SPLIT_OPTIONAL_FIELDS = frozenset({"synthetic_model"})
+SPLIT_OPTIONAL_FIELDS = frozenset({"synthetic_model", "e2_v3"})
 MAX_MANIFEST_BYTES = 64 * 1024
 MAX_EVIDENCE_BYTES = 1 << 30
 MAX_HOURS = 24 * 30
@@ -82,6 +83,8 @@ class SplitConfig:
     synthetic_max_tokens: int | None = None
     # B에만 있는 CLI 이름(도구 면 측정 cli_differences.baseline_only). B 회차가 이 이름별 Bash 호출 수를 남긴다(결정안 §10).
     cli_usage_names: tuple[str, ...] = ()
+    # E② v3 저널 수집(runner_e2v3). 없으면 수집하지 않는다(지금 제품은 v2 저널·Recorder 미주입, 고정 초안 §20).
+    e2_v3: E2V3Settings | None = None
 
     @property
     def synthetic(self) -> bool:
@@ -157,6 +160,12 @@ def parse_split(raw: object, config: RunnerConfig) -> SplitConfig:
     except CliUsageError:
         errors.append("config.split.cli_usage_names: INVALID")
         cli_names = ()
+    e2_v3 = None
+    if "e2_v3" in raw:
+        try:
+            e2_v3 = parse_e2_v3(raw["e2_v3"])
+        except ValueError as exc:
+            errors.append(str(exc))
     if errors:
         raise SplitConfigError(errors)
     images = {name: Image(f"{repository}:{raw['product_tag']}", ids[name]) for name, repository in IMAGE_REPOSITORIES.items()}
@@ -171,7 +180,7 @@ def parse_split(raw: object, config: RunnerConfig) -> SplitConfig:
                        poll_interval_seconds=raw["poll_interval_seconds"], boundary_stop_seconds=raw["boundary_stop_seconds"],
                        synthetic_plan_path=None if synthetic is None else Path(synthetic["plan_path"]),
                        synthetic_max_tokens=None if synthetic is None else synthetic["max_tokens"],
-                       cli_usage_names=cli_names)
+                       cli_usage_names=cli_names, e2_v3=e2_v3)
 
 
 def read_manifest(path: Path) -> dict:

@@ -160,6 +160,43 @@ class TestPrepare(unittest.TestCase):
         self.assertEqual((self.run_dir / PRIVATE_DIRECTORY / "install.json").read_text(), "old")  # 손대지 않는다
 
 
+class TestAuditKeyInput(TestPrepare):
+    """E② v3 감사 키(동찬님 답 2026-11-19): 러너가 회차마다 만들어 보호 입력으로 두고, 제품 overlay가 읽는 compose 변수(설정값)에
+    경로를 건다. 경로 가림 키와 다르고, 값은 기록에 없고, 지울 때 같이 지운다."""
+
+    def test_key_file_variable_and_reference(self):
+        inputs = self.prepare(e2_audit_key_variable="PRODUCT_E2_AUDIT_KEY_FILE")
+        path = inputs.files["e2_audit_key"]
+        self.assertEqual(path, self.run_dir / PRIVATE_DIRECTORY / "e2-audit.key")
+        info = os.lstat(path)
+        self.assertEqual((stat.S_IMODE(info.st_mode), info.st_size), (0o600, 32))
+        key = path.read_bytes()
+        self.assertNotEqual(key, PATH_KEY)
+        self.assertEqual(inputs.compose_env["PRODUCT_E2_AUDIT_KEY_FILE"], str(path))
+        self.assertRegex(inputs.audit_key_ref, r"\A[0-9a-f]{16}\Z")
+        self.assertNotIn(key.hex(), json.dumps({"public": inputs.install_public, "boundary": inputs.boundary,
+                                                 "ref": inputs.audit_key_ref}))
+        remove_split_inputs(inputs.directory)
+        self.assertFalse(inputs.directory.exists())
+
+    def test_without_variable_there_is_no_key(self):
+        inputs = self.prepare()
+        self.assertNotIn("e2_audit_key", inputs.files)
+        self.assertIsNone(inputs.audit_key_ref)
+        self.assertEqual(sorted(os.listdir(inputs.directory)), sorted(FILES.values()))
+
+    def test_refusals_leave_nothing_behind(self):
+        for name, changes, code in (
+                ("variable_taken", dict(e2_audit_key_variable="EXPLORE_PATH_KEY_FILE"), "split_audit_key_variable_invalid"),
+                ("same_as_path_key", dict(e2_audit_key_variable="PRODUCT_E2_AUDIT_KEY_FILE",
+                                          random_bytes=lambda n: PATH_KEY if n == 32 else bytes([5]) * n), "split_audit_key_failed")):
+            with self.subTest(name=name):
+                with self.assertRaises(SplitInputsError) as caught:
+                    self.prepare(**changes)
+                self.assertEqual(str(caught.exception), code)
+                self.assertFalse((self.run_dir / PRIVATE_DIRECTORY).exists())
+
+
 class TestWriteNew(unittest.TestCase):
     def test_existing_file_or_link_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as tmp:
