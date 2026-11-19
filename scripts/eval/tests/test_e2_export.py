@@ -516,6 +516,13 @@ class TestV3E3Rows(unittest.TestCase):
         self.rejected([allowed_refusal, stopped | {"not_sent_reason": "policy_denied"}], "ROW_E3_NOT_SENT")
         self.rejected([allowed_refusal, stopped | {"normal": "yes"}], "ROW_E3_RESPONSE_FIELDS")
         self.rejected([stopped | {"index": 1}], "ATTEMPT_ALLOWED_WITHOUT_INTENT")  # intent 없는 중단은 앞 행이 빠진 것
+        # 송신 전 거부는 intent 없이 result 하나다: intent(허용) 뒤 거부 result는 E③ 시도에서 위반(#758 리뷰)
+        denied_after = e3(2, "result", A2, 2, "denied", "e3_create", "policy_denied", not_sent_reason="policy_denied")
+        self.rejected([allowed_refusal, denied_after], "ATTEMPT_E3_DENIED_AFTER_INTENT")
+        # v2 모델 요청은 intent 기록 뒤 거부가 남을 수 있어 그대로 받는다(공통 규칙은 바꾸지 않음)
+        model_intent = attempt(1, "intent", A2, 2, "allowed")
+        model_denied = attempt(2, "result", A2, 2, "denied", "audit_failed")
+        self.assertEqual(self.parse([model_intent, model_denied]).denied_by_reason, (("audit_failed", 1),))
         for reason in ("policy_denied", "approval_denied", "approval_timeout", "confirmation_budget_exhausted"):
             with self.subTest(reason=reason):
                 self.assertEqual(self.parse([refused[0] | {"index": 1, "not_sent_reason": reason}]).e3_program_attempts, 1)

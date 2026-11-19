@@ -426,6 +426,11 @@ def _attempt_final(rows: list[dict]) -> tuple[dict, bool]:
     # 허용은 intent 저장이 끝난 뒤에만 나간다. 허용 result만 있으면 앞 행이 빠진 것이다.
     if stages == [STAGE_RESULT] and final["decision"] == ALLOWED:
         _fail("ATTEMPT_ALLOWED_WITHOUT_INTENT")
+    # v3 E③ 프로그램 시도의 송신 전 거부는 intent 없이 result 하나다(계약 §2.3). intent(허용) 뒤 result는 송신 뒤이거나 intent 뒤
+    # 송신 전 중단(허용·closed)뿐이라 거부 result가 오면 위반이다. v2 모델 요청은 intent 기록 실패 뒤 거부가 남을 수 있어 그대로 둔다.
+    if (stages == [STAGE_INTENT, STAGE_RESULT] and final["version"] == JOURNAL_VERSION_V3
+            and final.get("program", "") in E3_PROGRAMS and final["decision"] != ALLOWED):
+        _fail("ATTEMPT_E3_DENIED_AFTER_INTENT")
     return final, final["stage"] == STAGE_RESULT
 
 
