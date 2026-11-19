@@ -295,6 +295,10 @@ class DockerSplitPorts:
                 "requested_at": collected.requested_at, "received_at": collected.received_at, "solved": normalized["solved"],
                 "state_sha256": snapshot_state_sha256(self.directory.run / phase, opaque, normalized["solved"])}
 
+    def host_listeners(self) -> frozenset:
+        """호스트 리슨(B DockerPorts.host_listeners와 같은 읽기). pre/post 검사와 격리 근거 host_condition 행에 쓴다."""
+        return read_host_listeners(_read_text)
+
     def start_events(self, since: str):
         return self.docker.event_stream(since)
 

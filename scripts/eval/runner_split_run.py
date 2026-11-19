@@ -41,18 +41,24 @@ from datetime import timedelta  # noqa: E402
 from typing import Protocol  # noqa: E402
 
 from runner import (  # noqa: E402
-    INVALID, RESULT_NAME, RunFailure, _check_subnets, _event_time, _meter_preflight, _ns, _stamp, _step, _stop_events, _stop_watch,
+    INVALID, RECORD_NAME, RESULT_FORMAT, RESULT_NAME, RunFailure, _check_subnets, _event_time, _meter_preflight, _ns, _stamp, _step, _stop_events, _stop_watch,
     _wait_budget, _wait_drained, check_meter_logs, first_limit,
 )
 from preservation_record import (  # noqa: E402
     LLM_NOT_APPLICABLE, LLM_VERIFIED, NAME as PRESERVATION_NAME, build_payload_v3 as preservation_payload_v3, digest,
 )
 import preservation_v3_fields as v3f  # noqa: E402
-from runner_checks import compare_snapshots  # noqa: E402
+from runner_checks import (  # noqa: E402
+    check_host_listeners, compare_snapshots, listeners_outside_loopback, policy_sha256,
+)
+from runner_record import (  # noqa: E402
+    RecordContext, RecordError, canonical_sha256, descriptor, evidence_rows, isolation_evidence, isolation_proof, path_ref, run_record,
+    solve_events, timeline,
+)
 from runner_docker import HelperCleanupInterrupt  # noqa: E402
 from isolation_proof import E3_STATUSES, PURPOSE_OFFICIAL  # noqa: E402
 from run_record import OFFICIAL_E3_DISABLED_REASON  # noqa: E402
-from runner_evidence import MeterFiles  # noqa: E402
+from runner_evidence import MeterFiles, forwarded_count  # noqa: E402
 from runner_fault import FAULT_STALL_FORMAT, FAULT_STALL_NAME, FaultRecordError, fault_stall_record  # noqa: E402
 from runner_llm import judge_product_llm  # noqa: E402
 from runner_probe import PASS  # noqa: E402
@@ -62,7 +68,15 @@ from runner_product_llm import (  # noqa: E402
 from runner_split_probe import SplitProbeOutcome  # noqa: E402
 from runner_window import events_reasons, judge_events, watch_reasons, watch_summary  # noqa: E402
 
-SPLIT_RESULT_FORMAT = "abc2lab-eval-runner-split-result-v1"
+# O 결과도 B와 같은 결과 형식이다(세션 집계·채점기가 같은 규칙으로 읽는다). 배치는 `layout`·`e2_mode`로 가른다.
+SPLIT_RESULT_FORMAT = RESULT_FORMAT
+LAYOUT = "exploration-split/v1"
+# O의 E② 자리(설계안 §4): 제품 안 E②. 건수 칸은 모두 null이고 시도 대조는 E② 영수증·저널 v3 평가 내보내기 전까지 미수집이다.
+E2_SPLIT_PRODUCT = "split_product"
+OBS = "eval-obs"
+PREPARATION = "preparation"
+# O 판정 내보내기는 지금 없다(2026-11-19 사용자 결정: 공식 측정은 E③ 비활성이라 제품 판정 0건). records=null(판정 미수집).
+VERDICT_NOT_COLLECTED = {"status": "not_collected", "reason": "product_verdict_export_unavailable"}
 SPLIT_TASK_FORMAT = "abc2lab-eval-runner-split-task-v1"
 PRODUCT_END_NAME = "product-end.json"
 TOOL_SURFACE_NAME = "tool-surface.json"
@@ -170,8 +184,9 @@ def _reject_constant(_name: str):
     raise ValueError("non-finite number")
 
 
-def checked_runtime_conditions(raw: bytes, draft_id: str, task_id: str, policy_revision: str, execution: dict) -> str:
-    """회차 실행 조건(e2_http_factory.go)이 이 초안·작업·정책 개정의 것인지 확인하고 원본 바이트 SHA를 돌려준다."""
+def checked_runtime_conditions(raw: bytes, draft_id: str, task_id: str, policy_revision: str, execution: dict) -> tuple[str, int]:
+    """회차 실행 조건(e2_http_factory.go)이 이 초안·작업·정책 개정의 것인지 확인하고 (원본 바이트 SHA, 실제 Worker 수)를
+    돌려준다. Worker 수는 제품이 그 회차에 결속한 값이다(외부 입력이 아님, e2_http_runtime.go)."""
     try:
         if not isinstance(raw, bytes) or len(raw) > MAX_RUNTIME_CONDITIONS_BYTES:
             raise ValueError
@@ -190,7 +205,7 @@ def checked_runtime_conditions(raw: bytes, draft_id: str, task_id: str, policy_r
     if (not _scope_bound(value.get("scope"), draft_id, task_id) or value["scope"] != execution.get("scope")
             or value.get("policy_revision") != policy_revision):
         raise RunFailure("runtime_conditions_unbound")
-    return hashlib.sha256(raw).hexdigest()
+    return hashlib.sha256(raw).hexdigest(), value["worker_count"]
 COMPLETE = "complete"
 METER, BOUNDARY, TARGET = "eval-meter", "explore-boundary", "target"
 
@@ -232,6 +247,14 @@ class SplitRunSpec:
     # 합성 모델 모드(평가 overlay 전용). 참이면 OpenRouter 장부·호출 기록 대조와 사후 검증이 '해당 없음(합성)'이다.
     synthetic: bool = False
     scripted_plan_sha256: str = ""  # 합성 모드에서 스크립트 모델이 읽은 계획 사본의 SHA
+    # v1.1 러너 기록(설계안 §2·§5). B(build_spec)와 같은 선언·설정 칸이다. 비면 기록을 만들지 않고 회차가 무효다.
+    condition: str = ""
+    fixture_fingerprint: str = ""
+    environment_fingerprint: str = ""
+    target_origin: str = ""  # 선언 target_origin(B 분리 배치 회차 증명과 같은 문자열)
+    observer_path: str = ""
+    observer_readonly_ref: str = ""
+    allowed_listens: frozenset = frozenset()  # loopback 밖 호스트 리슨 허용(설정 허용 목록, B allowed_host_listens의 api 경우)
 
 
 class SplitRunPorts(Protocol):
@@ -249,6 +272,7 @@ class SplitRunPorts(Protocol):
     def start_events(self, since: str): ...
     def start_host_watch(self): ...
     def scoreboard(self, phase: str, snapshot: dict) -> dict: ...
+    def host_listeners(self) -> frozenset: ...
     def prepare_round(self, dns_token: str) -> dict: ...
     def start_round(self, prepared: dict) -> dict: ...
     def product_status(self, draft_id: str) -> dict: ...
@@ -285,6 +309,11 @@ class _SplitState:
     runner_containers: set = field(default_factory=set)
     summary: dict = field(default_factory=dict)
     preservation: dict | None = None  # 내린 뒤 build_payload_v3에 넘길 칸(서명 전)
+    probes: dict = field(default_factory=dict)  # 단계별 점검 행(출발점 이름을 행 ID 앞에 붙인 평면 목록)
+    listeners: dict = field(default_factory=dict)  # 단계별 loopback 밖 호스트 리슨
+    observer_calls: int = 0  # 러너가 관측기로 보낸 GET 수(pre·post 점수판)
+    record: dict | None = None  # 서명 전 v1.1 러너 기록(내린 뒤 서명)
+    task_request_sha256: str | None = None
 
 
 class _StatusReader:
@@ -297,18 +326,26 @@ class _StatusReader:
         return self.ports.product_status(draft_id)
 
 
-def _split_check(ports: SplitRunPorts, evidence, state: _SplitState, phase: str) -> None:
-    """배치 검사(망·publish·고정 주소·이미지·netns 공유·회차 밖 publish). 구간 이전 상태는 이벤트 감시로 안 잡히므로
-    pre/post에서 본다(#668 리뷰). 위반이면 무효."""
+def _split_check(spec: SplitRunSpec, ports: SplitRunPorts, evidence, state: _SplitState, phase: str) -> None:
+    """배치 검사(망·publish·고정 주소·이미지·netns 공유·회차 밖 publish)와 호스트 리슨(B _check_phase와 같은 규칙). 구간 이전
+    상태는 이벤트 감시로 안 잡히므로 pre/post에서 본다(#668 리뷰). 위반이면 무효. 리슨은 격리 근거 host_condition 행이 된다."""
     result = _step(state, f"{phase}_checks_failed", lambda: ports.check(phase))
-    _step(state, "evidence_write_failed", lambda: evidence.write_json(f"{phase}-checks.json", result))
+    listeners = _step(state, f"{phase}_host_listeners_failed", ports.host_listeners)
+    state.listeners[phase] = listeners_outside_loopback(listeners)
+    host = check_host_listeners(listeners, spec.allowed_listens)
+    _step(state, "evidence_write_failed", lambda: evidence.write_json(f"{phase}-checks.json", dict(result, host_violations=host)))
     if result["violations"]:
         raise RunFailure(f"{phase}_layout_violation")
+    if host:
+        raise RunFailure(f"{phase}_host_condition_violation")
 
 
 def _split_probe(ports: SplitRunPorts, evidence, state: _SplitState, phase: str, snapshot: dict) -> None:
     outcome = _step(state, f"{phase}_probe_invalid", lambda: ports.probes(phase, snapshot))
     state.runner_containers.update(outcome.container_ids)
+    # 격리 근거 connectivity_check 행(설계안 §4): 출발점마다 같은 경로 ID가 있으므로 출발점 이름을 앞에 붙인다.
+    state.probes[phase] = [dict(row, id=f"{origin}/{row['id']}") for origin, o in sorted(outcome.origins.items())
+                           for row in o.rows]
     _step(state, "evidence_write_failed", lambda: evidence.write_json(f"{phase}-probe.json", {
         "phase": phase, "status": outcome.status, "reasons": list(outcome.reasons),
         "origins": {origin: {"status": o.status, "reasons": list(o.reasons), "rows": list(o.rows),
@@ -449,14 +486,18 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     _step(state, "compose_up_failed", ports.up)
 
     pre = _step(state, "pre_facts_failed", lambda: ports.snapshot("pre"))
-    _split_check(ports, evidence, state, "pre")
+    _split_check(spec, ports, evidence, state, "pre")
     _split_probe(ports, evidence, state, "pre", pre)
+    pre_checked_at = _stamp(clock)  # 경계 적용·점검 완료(pre 관측 전)
     token = _step(state, "dns_token_failed", ports.dns_token)
+    # 러너에는 대상 준비 채널이 없다(대상 준비는 띄울 때 끝남). 제품 준비(로그인~초안)는 대상 요청이 아니다(설계안 §3).
+    fixture_ready_at = _stamp(clock)
 
     window_start = clock.now()
     state.events = _step(state, "window_events_failed", lambda: ports.start_events(
         _event_time(window_start - timedelta(seconds=spec.events_lookback_seconds))))
     state.watch = _step(state, "window_watch_failed", ports.start_host_watch)
+    state.observer_calls += 1
     pre_board = _step(state, "pre_scoreboard_failed", lambda: ports.scoreboard("pre", pre))
     if _step(state, "meter_read_failed", meter.forwarded) != 0:
         raise RunFailure("pre_requests_nonzero")
@@ -475,13 +516,14 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     _step(state, "seal_failed", lambda: ports.seal(pre["services"][METER]["id"]))
     sealed_at = _stamp(clock)  # 멈춤 집계 창 끝(B의 engine_end_at과 같은 자리: 계측기 봉인 직후)
     drained = _wait_drained(spec, meter, clock, state)
+    drained_at = _stamp(clock)
     # 강제 취소된 요청이 있으면 B와 같은 공통 조건(run_drain.settle_seconds)만큼 기다린 뒤 관측한다(runner.py와 같은 규칙).
     settled = spec.post_settle_seconds if drained["forced_cancelled_requests"] else 0
     if settled:
         clock.sleep(settled)
     # 계측기 기록 마감 대조는 B와 같은 함수·같은 사유다(경로 기록 필수·키 지문·전달 요청과 한 행씩, 2026-11-18 결정 (a)).
     meter_rows = _step(state, "meter_read_failed", meter.engine_rows)
-    check_meter_logs(meter, state, meter_rows, drained, spec.path_key_ref)
+    sealed = check_meter_logs(meter, state, meter_rows, drained, spec.path_key_ref)
     # B는 drain 뒤 게이트웨이를 봉인해 새 모델 요청을 막는다(#634). O는 같은 자리에서 제품 회차를 멈춘다. 러너 예산으로 먼저
     # 끝난 회차는 제품이 아직 실행 중이라 실행 기록(마감 때 저장)이 없고 모델 호출이 계속된다. 끝 상태·drain 완료를 본 뒤에야
     # 실행 기록·장부·호출 기록을 읽는다(#665 리뷰).
@@ -498,14 +540,20 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
         raise RunFailure("boundary_changed")
     # 사후 점검은 경계의 두 입구·netns가 살아 있어야 한다(#653 기대값). 그래서 경계 정지는 post 관측·점검 뒤, 구간이 끝나기
     # 전이다. 경계는 SIGTERM 정지 한 번으로 봉인 표식까지 쓰고 끝난다(계약 §4.1 결정 B). 구간 감시가 그 정지만 허용한다.
-    _split_check(ports, evidence, state, "post")
+    _split_check(spec, ports, evidence, state, "post")
+    post_check_at = _stamp(clock)
     _split_probe(ports, evidence, state, "post", post)
+    state.observer_calls += 1
     post_board = _step(state, "post_scoreboard_failed", lambda: ports.scoreboard("post", post))
     _step(state, "boundary_stop_failed", lambda: ports.stop_boundary(pre["services"][BOUNDARY]["id"]))
     window_end = clock.now()
     stopped = _step(state, "window_watch_failed", lambda: _stop_watch(state))
     streamed = _step(state, "window_events_failed", lambda: _stop_events(state, _ns(window_end)))
     window = _split_window(spec, evidence, state, pre, window_start, window_end, stopped, streamed)
+    # 관측기 GET은 러너가 보낸 pre·post 두 건뿐이어야 한다(B와 같은 규칙, 대상 준비 확인 GET은 O에 없다).
+    observer = _step(state, "meter_read_failed", meter.observer_rows)
+    if len(observer) != state.observer_calls or any(row["decision"] != "registered" for row in observer):
+        raise RunFailure("observer_count_mismatch")
 
     engine_end = watch.record()
     _step(state, "evidence_write_failed", lambda: evidence.write_json(PRODUCT_END_NAME, engine_end))
@@ -533,9 +581,10 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     files = dict(_step(state, "product_files_failed", ports.product_files), control_limits=digest(policy["limits"]))
     # 진단에 들어가지 않은 회차(탐색 중 예산 소진 등)는 실행 조건 파일이 없다. 그때만 null로 남기고 first_limit은 그대로다.
     # 진단에 들어간 회차에서 빠지거나 다른 회차의 것이면 실패다.
-    files["runtime_conditions"] = checked_runtime_conditions(
+    runtime = checked_runtime_conditions(
         _step(state, "runtime_conditions_failed", lambda: ports.runtime_conditions(draft_id)), draft_id, task_id,
         policy["policy_revision"], execution) if entered else None
+    files["runtime_conditions"] = None if runtime is None else runtime[0]
     # E③ 확정 단계 결과(2026-11-19 사용자 결정): 제품을 멈춘 뒤 회차 디렉터리에서 복사해 상태·사유·원본 SHA를 남긴다.
     # 보존 sidecar의 제품 파일 칸(닫힌 목록)과 섞지 않고 따로 둔다. 공식 회차는 비활성(선언 없음)이어야 한다(평가 프로토콜 §5.1).
     e3 = _e3_confirmation(ports, draft_id)
@@ -550,6 +599,15 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
         if (e3["status"], e3["reason"]) != ("disabled", OFFICIAL_E3_DISABLED_REASON):
             raise RunFailure("e3_official_not_disabled")
     _step(state, "boundary_evidence_copy_failed", ports.copy_boundary_evidence)
+    # 설치·등록 조건(서명 근거). 같은 설정이면 같은 값이라 O 쪽 작업 요청 지문으로 쓴다(B는 작업 생성 본문 SHA).
+    conditions = _step(state, "split_conditions_failed", ports.split_conditions)
+    state.task_request_sha256 = digest(conditions)
+    record_inputs = dict(pre=pre, post=post, pre_board=pre_board, post_board=post_board, window=window, observer=observer,
+                         meter_rows=meter_rows, sealed=sealed, drained=drained, settled=settled, goal=goal, files=files,
+                         workers=None if runtime is None else runtime[1],
+                         steps={"fixture_ready": fixture_ready_at, "pre": pre_board["received_at"], "engine_start": requested_at,
+                                "engine_end": sealed_at, "drained": drained_at, "post": post_board["received_at"]},
+                         pre_checked_at=pre_checked_at, post_check_at=post_check_at)
     if spec.synthetic:
         # 합성 모델 회차: 제품은 로컬 모델 설치로 스크립트 모델을 불러 OpenRouter 장부·호출 기록이 없다. 사후 검증·장부 대조는
         # '해당 없음(합성)'이고, 이 표시는 합성 회차에서만 허용된다(실제 모델 회차에서 나오면 sidecar 검증이 무효로 본다).
@@ -559,8 +617,8 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
         _step(state, "evidence_write_failed", lambda: evidence.write_json("llm-summary.json", dict(llm_summary, reasons=[])))
         _finish_split_summary(spec, state, stop_reason, forwarded_at_stop, limit, drained, settled, pre_board, post_board,
                               goal, window, usage, task_id, draft_id, files, fingerprint, entered, closed)
+        _split_record(spec, evidence, state, llm_summary, **record_inputs)
         if spec.preservation is not None:
-            conditions = _step(state, "split_conditions_failed", ports.split_conditions)
             state.preservation = _preservation_v3(spec, state, pre_board["state_sha256"], stop_reason, limit,
                                                   engine_end["first_terminal"], llm_summary, files, fingerprint, conditions,
                                                   usage["sampling_overwrites"], None, None, task_id)
@@ -589,13 +647,94 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     llm_summary = dict(llm_summary, verification=LLM_VERIFIED)
     _finish_split_summary(spec, state, stop_reason, forwarded_at_stop, limit, drained, settled, pre_board, post_board,
                           goal, window, usage, task_id, draft_id, files, fingerprint, entered, closed)
+    _split_record(spec, evidence, state, llm_summary, **record_inputs)
     if spec.preservation is not None:
         # 보존 sidecar v3 O 칸(결정안 §3.3). 해시는 내린 뒤 build_payload_v3가 최종 바이트로 뜬다(경계 원자료 검증 포함).
-        conditions = _step(state, "split_conditions_failed", ports.split_conditions)
         state.preservation = _preservation_v3(spec, state, pre_board["state_sha256"], stop_reason, limit,
                                               engine_end["first_terminal"], llm_summary, files, fingerprint, conditions,
                                               usage["sampling_overwrites"], ledger_reservations(ledger), call_record_lines(calls),
                                               task_id)
+
+
+def split_run_conditions(spec: SplitRunSpec, state: _SplitState, llm_summary: dict, goal: dict, files: dict,
+                         workers: int | None) -> dict:
+    """O 회차의 run_conditions 행(설계안 §6). B와 같은 칸 이름에 O 출처의 값을 넣는다.
+
+    - 엔진 설정: 제품 구동 설정(v3 쪽별 driver_settings와 같은 정의)과 그 회차 정책 상한 지문을 묶은 지문.
+    - 엔진 규칙 파일: 없음(원본 ② 규칙은 B 쪽 장치). 도구 트리: 도구 면 지문(tool-surface.json의 요약 네 칸).
+    - Worker 수: 제품이 그 회차에 결속한 값(실행 조건 파일). 진단에 들어가지 않은 회차는 파일이 없어 모른다(null).
+    - 표시 언어: 러너가 제품 엔진 설정을 읽을 경로가 없어 모른다(null). 스트리밍: 제품 OpenRouter transport는 stream:true를
+      거부하므로(openrouter_transport.go) 실제 모델 회차는 거짓이다. 합성 회차는 그 transport를 지나지 않아 모른다(null).
+    """
+    host = state.summary["host"]
+    return {"purpose": spec.purpose, "path_key_ref": spec.path_key_ref, "split": True,
+            "execution_source": "synthetic_fixture" if spec.synthetic else "model_run",
+            # 제품 회차는 E③ 상태를 늘 기대한다(감독자 연결 전 빌드는 행이 없어 수집 실패로 드러난다, #713)
+            "e3_status_expected": True, "goal_common_sha256": goal["common_sha256"],
+            "engine_settings_sha256": digest({"driver_settings_sha256": v3f.settings_sha256(spec.driver_settings, v3f.O_DRIVER_SETTINGS),
+                                              "control_limits_sha256": files["control_limits"]}),
+            "engine_rules_sha256": None, "output_language": None, "tool_tree_sha256": digest(state.summary["tool_surface"]),
+            "workers": workers, "llm_stream": None if spec.synthetic else False, "sampling": llm_summary["sampling_applied"],
+            "host": {key: value for key, value in host.items() if key != "machine_id_sha256"},
+            "machine_id_sha256": host["machine_id_sha256"]}
+
+
+def _split_record(spec: SplitRunSpec, evidence, state: _SplitState, llm_summary: dict, *, pre: dict, post: dict, pre_board: dict,
+                  post_board: dict, window: dict, observer: list, meter_rows: list, sealed: dict, drained: dict, settled: int,
+                  goal: dict, files: dict, workers: int | None, steps: dict, pre_checked_at: str, post_check_at: str) -> None:
+    """O v1.1 러너 기록(서명 전)과 근거 파일 둘(격리 근거·해결 이벤트). B(runner._build_record)와 같은 부품·같은 행 종류를
+    쓰고 출처만 O다(설계안 §2~§5). 서명은 내린 뒤 한다."""
+    def build() -> dict:
+        for name in ("condition", "fixture_fingerprint", "environment_fingerprint", "target_origin", "observer_path",
+                     "observer_readonly_ref", "model_tag"):
+            if not getattr(spec, name):
+                raise RecordError("record_spec_incomplete")
+        target = pre["services"][TARGET]["id"]
+        context = RecordContext(run_id=spec.run_id, model_tag=spec.model_tag, reset_generation=target, instance_id=target,
+                                execution_id=pre["services"][PREPARATION]["id"])
+        boundary_ref, host_ref = "compose:" + spec.project, "host-condition:" + spec.run_id
+        get_ref = path_ref(spec.observer_path)
+        policy = policy_sha256(pre)
+        allowed = [{"address": item.address, "port": item.port} for item in spec.allowed_listens]
+        meter = {"sealed_at": sealed.get("sealed_at"), "drained_at": drained.get("drained_at"),
+                 "drain_grace_seconds": spec.drain_grace_seconds, "post_settle_seconds": spec.post_settle_seconds,
+                 "forced_cancelled_requests": drained["forced_cancelled_requests"], "post_settle_applied_seconds": settled,
+                 "forwarded_requests": forwarded_count(meter_rows), "rejected_after_seal": drained.get("rejected_after_seal"),
+                 "forced_closed_streams": drained.get("forced_closed_streams")}
+        e3 = state.summary.get("e3_confirmation") or {"error": "e3_confirmation_not_collected"}
+        timeline_steps = timeline(steps)
+        rows = evidence_rows(
+            pre_at=pre_checked_at, post_check_at=post_check_at, window=window, pre=pre, post=post,
+            pre_probe=state.probes["pre"], post_probe=state.probes["post"], host_ref=host_ref,
+            pre_listeners=state.listeners["pre"], post_listeners=state.listeners["post"], allowed=allowed,
+            boundary_ref=boundary_ref, policy=policy, steps=timeline_steps, observer_rows=observer, ready_calls=0,
+            observer_path_ref=get_ref, readonly_ref=spec.observer_readonly_ref, meter=meter, drained=drained,
+            engine_rows=len(meter_rows), conditions=split_run_conditions(spec, state, llm_summary, goal, files, workers),
+            e2={"mode": E2_SPLIT_PRODUCT, "decision_rows": None, "allowed": None, "unsupported": None, "unavailable": None},
+            verdict_collection=dict(VERDICT_NOT_COLLECTED),
+            e3_confirmation=None if "error" in e3 else {"status": e3["status"], "reason": e3["reason"]})
+        evidence.write_json("isolation-evidence.json", isolation_evidence(context, rows))
+        evidence_sha, evidence_size = evidence.describe("isolation-evidence.json")
+        in_window = sum(1 for row in rows if row["kind"] == "observer_request" and row["window"] == "in_window")
+        proof = isolation_proof(context, timeline_steps, pre_board["normalized"]["sha256"], post_board["normalized"]["sha256"],
+                                spec.target_origin, boundary_ref, policy, host_ref, evidence_sha,
+                                f"{OBS}:" + pre["services"][OBS]["id"], get_ref, in_window)
+        events = solve_events(context, pre_board["solved"], post_board["solved"], timeline_steps["post"], canonical_sha256(proof))
+        evidence.write_json("solve-events.json", dict(context.fields(), phase="engine", events=events))
+        events_sha, events_size = evidence.describe("solve-events.json")
+        artifacts = {
+            "pre_raw": pre_board["raw"], "pre": pre_board["normalized"],
+            "post_raw": post_board["raw"], "post": post_board["normalized"],
+            "records": None, "traffic": None, "coverage": None,  # 판정 미수집(run-record-v1.1 §3)
+            "solve_events": descriptor(context, "solve-events.json", events_sha, events_size, "engine"),
+            "isolation_evidence": descriptor(context, "isolation-evidence.json", evidence_sha, evidence_size, "engine"),
+        }
+        # 차단 시도 수는 미측정(대조 미수집, 설계안 §4): 0이 아니라 null이다.
+        return run_record(context, engine="ours", condition=spec.condition, repeat_index=spec.repeat_index,
+                          total_requests=meter["forwarded_requests"], fixture_fingerprint=spec.fixture_fingerprint,
+                          environment_fingerprint=spec.environment_fingerprint, steps=timeline_steps, artifacts=artifacts,
+                          proof=proof, blocked_attempts=None)
+    state.record = _step(state, "record_build_failed", build)
 
 
 def _finish_split_summary(spec: SplitRunSpec, state: _SplitState, stop_reason, forwarded_at_stop, limit, drained, settled,
@@ -651,7 +790,8 @@ def _preservation_v3(spec: SplitRunSpec, state: _SplitState, initial_state: str,
 def execute_split_run(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles, evidence, clock: Clock) -> dict:
     """O 회차 1회. 실패해도 감시를 멈추고, 띄웠으면 내리고, 보호 입력은 늘 지운다. 결과 기록을 정확히 하나 쓴다.
 
-    서명·보존 sidecar v3·경계 원자료 검증은 다음 단계(4-9)다. 여기 결과는 서명 전 요약이다.
+    완료 회차는 내린 뒤 보존 sidecar v3(경계 원자료 검증 포함)·v1.1 러너 기록·결과를 러너 키로 서명한다(B execute_run과
+    같은 순서·같은 결과 형식). 무효 결과는 서명하지 않는다.
     """
     state = _SplitState()
     started_at = _stamp(clock)
@@ -702,12 +842,26 @@ def execute_split_run(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFile
         except RunFailure as exc:
             reasons.append(exc.code)
             reasons.extend(exc.also)
-    base = {"format": SPLIT_RESULT_FORMAT, "run_id": spec.run_id, "side": "ours", "layout": "exploration-split/v1",
+    if not reasons and state.record is not None:
+        # v1.1 러너 기록도 내린 뒤에만 서명한다(B와 같은 러너 키).
+        try:
+            evidence.write_json(RECORD_NAME, ports.sign(state.record))
+        except Exception:
+            reasons.append("record_sign_failed")
+    elif not reasons:
+        reasons.append("record_build_failed")  # 완료까지 왔는데 기록이 없으면 서명할 것이 없다
+    base = {"format": SPLIT_RESULT_FORMAT, "run_id": spec.run_id, "side": "ours", "layout": LAYOUT, "e2_mode": E2_SPLIT_PRODUCT,
             "project": spec.project, "started_at": started_at, "finished_at": _stamp(clock)}
+    result = None
+    if not reasons:
+        payload = dict(base, status=COMPLETE, images=dict(spec.image_ids), task_request_sha256=state.task_request_sha256,
+                       evidence=evidence.digests(), **state.summary)
+        try:
+            result = ports.sign(payload)
+        except Exception:
+            reasons.append("sign_failed")
     if reasons:
         result = dict(base, status=INVALID, reasons=reasons, failed_step=state.step)
-    else:
-        result = dict(base, status=COMPLETE, images=dict(spec.image_ids), **state.summary)
     evidence.write_json(RESULT_NAME, result)
     if interrupted:
         raise KeyboardInterrupt

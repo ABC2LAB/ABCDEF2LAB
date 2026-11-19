@@ -17,6 +17,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import runner  # noqa: E402
+from runner_checks import Listener  # noqa: E402
 import runner_split_main  # noqa: E402
 from runner_config import Image, RunnerConfigError, gateway_sampling, parse_runner_config, plan_run  # noqa: E402
 from runner_docker import DockerError  # noqa: E402
@@ -173,7 +174,9 @@ class TestDeclared(Fixture):
                                                  meter_port=8080, request_budget=ours["request_budget"],
                                                  time_budget_seconds=ours["time_budget_seconds"], llm_provider="example-provider",
                                                  llm_sampling=json.loads(gateway_sampling(ours, "ours")),
-                                                 meter_source_sha=ours["source_sha"], llm_model=ours["llm"]["model"]))
+                                                 meter_source_sha=ours["source_sha"], llm_model=ours["llm"]["model"],
+                                                 target_origin=ours["target_origin"], fixture_fingerprint=ours["fixture_fingerprint"],
+                                                 environment_fingerprint=ours["environment_fingerprint"]))
 
     def test_lookup_env_and_sampling_match_the_b_gateway(self):
         # O 사후 검증의 조회 설정·샘플링 기대값은 같은 선언으로 만든 B 게이트웨이 compose 값과 같아야 한다.
@@ -234,6 +237,15 @@ class TestSpec(Fixture):
         self.assertEqual((spec.llm_sampling, spec.llm_provider_slug, spec.llm_provider_name),
                          (declared.llm_sampling, "example-provider", self.config.llm_gateway["expected_provider_name"]))
         self.assertEqual(spec.meter_source_sha, configuration()["ours"]["source_sha"])  # 계측기 기대 빌드
+        # v1.1 러너 기록 칸은 B build_spec과 같은 출처(사전검사 O 선언·러너 설정)다
+        ours = preflight_for(self.config)["ours"]
+        self.assertEqual((spec.fixture_fingerprint, spec.environment_fingerprint, spec.target_origin),
+                         (ours["fixture_fingerprint"], ours["environment_fingerprint"], ours["target_origin"]))
+        self.assertEqual((spec.observer_path, spec.observer_readonly_ref),
+                         (self.config.observer_path, self.config.observer_readonly_ref))
+        self.assertEqual(spec.allowed_listens,
+                         frozenset(Listener(e.address, e.port) for e in self.config.host_listen_allowlist))
+        self.assertEqual(split_run_spec(self.config, plan, declared, rendered, condition="ours@35b").condition, "ours@35b")
 
 
 class TestMainDispatch(Fixture):
@@ -255,6 +267,8 @@ class TestMainDispatch(Fixture):
         # 반복 순번은 B와 같이 --repeat에서 받는다(보존 sidecar v3의 repeat_index)
         _, split_run = self.call_main("ours", repeat="2")
         self.assertEqual(split_run.call_args.kwargs["repeat_index"], 2)
+        # 측정 매트릭스 행 이름도 B처럼 --condition에서 받아 v1.1 기록에 서명된다
+        self.assertEqual(split_run.call_args.kwargs["condition"], "x")
 
     def test_baseline_stays_on_the_direct_layout(self):
         with mock.patch.object(runner, "plan_run", side_effect=RunnerConfigError(["stop-here"])):
