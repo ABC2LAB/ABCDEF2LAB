@@ -627,6 +627,12 @@ func TestProductE3ConfirmationTimeShareMatchesInput(t *testing.T) {
 	if err != nil || got <= 0 || got != given {
 		t.Fatalf("time share %v (err %v), confirmation gets %v", got, err, given)
 	}
+	// 실제 발급(productE3PolicyRules)은 확정 단계를 켤 때 쓰기 동의·리셋 가능 칸을 싣는다. 그 정책도 읽는다(이 칸을 정책
+	// 문서 검증이 거부해 선언 있는 제품 회차가 시작부터 gateway_unavailable이었다, 합성 A/B 회차 11/20).
+	consented := newE3HookFixture(t, true, func(p *server.E2HTTPFilePolicy) { p.E3WriteConsent, p.E3Resettable = true, true })
+	if got, err := consented.confirmation(e3HookFake(), e3HookAccounts(), e3Seed()).timeShare(); err != nil || got <= 0 {
+		t.Fatalf("쓰기 동의 칸이 있는 발급 정책: %v %v", got, err)
+	}
 	unshared := newE3HookFixture(t, true, func(p *server.E2HTTPFilePolicy) {
 		p.Limits.E3ConfirmationRequests, p.Limits.E3ConfirmationTimeoutMS = nil, nil
 	})
