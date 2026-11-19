@@ -107,7 +107,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 [작업]   새로 로그인 → workers·압축 기준 창 적용 → (engine_rules가 있으면) 규칙 등록·다시 읽어 대조 → engine-rules.json
          → 실행 설정 스냅샷(GET /api/settings·/api/llm, 프록시는 설정 여부로) → workers·엔진 LLM 모델·프록시 대조
          → engine-settings.json → POST /api/tasks(설정의 task, 생성=기동) → task.json
-         요청 예산 또는 시간 예산까지 폴링 → 계측기 seal → drain 확인(유예가 지나도 열린 요청은 계측기가 취소·건수 기록)
+         요청 예산 또는 시간 예산까지 폴링(계측기가 R번째 전달 뒤 새 요청을 바로 거부하므로 폴링 지연은 전달 수에 영향 없음) → 계측기 seal → drain 확인(유예가 지나도 열린 요청은 계측기가 취소·건수 기록)
          → 취소가 있었으면 정착 대기
          LLM 게이트웨이 seal(새 LLM 요청 거부·진행 중 취소 → generation 조회 시작)
 [post]   점검 반복 + pre와 비교(망·주소·컨테이너 교체·재시작) → 부정 연결 점검 → post 스코어보드
@@ -215,7 +215,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   계측기 행으로 §7 무효 조건의 재료를 만든다. 제공자 장애는 위쪽 스트림 끊김(`upstream_error` + `upstream_cut_*`)과 위쪽 429 응답이다
   (호출자 쪽 끊김·게이트웨이 자신의 거부는 아님). 장애마다 그 뒤 첫 활동(모델 호출 시도·두 입구의 대상 요청 시도의 시작)까지의 무활동
   길이, 창 끝까지 활동이 없었는지(`censored`), 그 사이 엔진 끝 신호가 있었는지, 장애 시점에 진행 중이던 요청 수를 남긴다. T 후보 근거로
-  창 전체의 최장 무활동(진행 중인 요청이 하나도 없는 구간)도 남긴다. 창은 작업 생성 요청 직전부터 러너가 계측기를 봉인한 시각까지다.
+  창 전체의 최장 무활동(진행 중인 요청이 하나도 없는 구간)도 남긴다. 엔진이 창 안에서 먼저 끝난 회차는 엔진 끝 상태까지만 잰 활동 중 최장 무활동(`max_idle_gap_before_end_seconds`)도 남긴다(끝 신호가 없거나 창 밖이면 창 끝까지, 2026-11-19 사용자 결정 5). T는 이 값으로 정한다(끝 뒤 남은 시간은 §7 무효 조건(3)에서 빠진다). 창은 작업 생성 요청 직전부터 러너가 계측기를 봉인한 시각까지다.
   T와 무효 비율 상한은 파일럿 기록으로 정해 측정 전에 고정하므로 지금은 판정하지 않는다(`judged: false`, 회차 유효성에 안 씀).
   행이나 시각을 읽지 못해도 회차를 무효로 하지 않고 고정 코드(`error`)만 남긴다. 게이트웨이 행 읽기는 결정·끝 모양 어휘를
   `cmd/eval-meter/gateway.go`와 같게 고정한다(시험이 원문과 대조). 제품(O) 분리 배치 회차도 같은 함수로 `fault-stall.json`을 남긴다(`runner_split_run.product_fault_stall`): 게이트웨이 행 자리에 제품 호출 기록 줄(같은 칸·어휘)을 넣고, 창은 시작 요청 직전부터 계측기 봉인 직후까지다. 호출 기록 완전성(장부 예약 수 = 기록 줄 수)을 확인한 뒤에 만들고, 결과 요약 `fault_stall`에도 싣는다.
@@ -267,6 +267,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `meter_path_log_enabled`, `meter_path_log_missing` | 분리 배치가 아닌 `purpose=official` 회차에 계측기 경로 기록(`engine-paths.jsonl`)이 있음, 수용시험·분리 배치 회차에 없음. 계측기 기록 마감 대조(`check_meter_logs`)는 B와 분리 배치 O가 같은 함수·같은 사유다 |
 | `meter_path_log_invalid` | `purpose=browser_acceptance` 회차의 경로 기록이 러너 소유 일반 파일이 아니거나, 꼬리가 잘렸거나, 가림 판(`abc2lab.path-mask/v2`)이 다르거나, 행마다 키 참조가 다르거나, 전달한 요청과 `seq`·메서드가 한 행씩 맞지 않음(봉인 뒤 거부한 요청은 행이 없어야 함) |
 | `e3_status_not_collected`, `e3_confirmation_invalid`, `e3_official_not_disabled`, `e3_confirmation_copy_failed` | (분리 배치 O 공식 회차) 제품을 멈춘 뒤 회차 디렉터리 `runs/<초안 ID>/e3-confirmation.json`(제품 E③ 확정 단계 결과, e3contract.RunResult)을 복사하지 못함(`e3_status_not_collected`. 복사 도우미 정리 실패는 목적과 상관없이 `e3_confirmation_copy_failed`·`docker_helper_cleanup_failed`로 무효), 모양이 다르거나 상태와 확정 요청 수가 모순(비활성인데 `requests`가 0이 아님, `e3_confirmation_invalid`), 또는 상태·사유가 `disabled`/`declaration_missing`(선언 없음으로 비활성)이 아님(예: 연결 전 빌드의 `not_wired`). 상태·사유·확정 요청 수·원본 SHA는 `product-files.json`의 `e3_confirmation`과 결과 요약에 남는다(판정·쓰기 칸은 옮기지 않음). 공식이 아닌 목적은 기록만 하고 무효로 하지 않는다. 제품은 연결이 빠진 빌드(E② Transport·Journal 등)에서 선언 여부보다 먼저 `not_wired`를 쓴다(E③ 계약 §7 비활성 사유 구분, 2026-11-18 합의: 연결 빠진 이미지가 `declaration_missing`으로 공식 통과하지 않게). 그래서 **Transport·Journal 연결 전 제품 빌드로는 공식 O 회차를 돌릴 수 없다**(늘 `e3_official_not_disabled`). 공식 측정은 E③ 통합 뒤다 |
+| `meter_request_cap_mismatch`, `meter_request_cap_exceeded` | 계측기 drain 표식의 요청 하드 상한(`request_cap`)이 이 회차 공통 요청 예산과 다르거나(설정이 계측기에 닿지 않음) 상한 수(`rejected_over_cap`)가 없음, 전달 수가 예산을 넘음. B·분리 배치 O 같은 검사(`runner.check_request_cap`)이고, 러너가 compose 변수 `EVAL_METER_REQUEST_CAP`(= 선언 `request_budget`, 1~1,000,000)으로 계측기 `-request-cap`에 넘긴다. 상한으로 거부한 수는 계측기 요약 `rejected_over_cap`에 남는다 |
 | `meter_path_key_mismatch` | `purpose=browser_acceptance` 회차의 경로 행 키 참조가 러너가 실행 전에 확인한 키의 참조와 다름 |
 | `meter_read_failed`, `meter_log_inconsistent` | 계측기 기록 읽기 실패, 순번 누락·건수 불일치(강제 취소 행 수 ≠ drain 마커의 취소 수 포함) |
 | `e2_stub_log_invalid` | `e2.ours_mode=stub` 회차에서 가짜 E² 결정 행(`e2/e2-stub-decisions.jsonl`)이 없거나 형식이 틀림: 개행으로 끝나지 않은 꼬리(잘린 행), fixture 표식 아님, 모르는 결정, 메서드·결정 시각 형식, 발급된 결정에 시도 ID 없음·발급 실패에 ID 있음, ID 중복, 순번 공백 |

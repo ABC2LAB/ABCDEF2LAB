@@ -134,6 +134,8 @@ class FakeMeter:
     """분리 배치 계측기 bind 흉내. 경로 기록은 늘 켜져 있다(compose.split.yaml)."""
 
     def __init__(self, ports):
+        self.request_cap = 10
+        self.sealed_cap = None
         self.ports = ports
         self.path_log = True
         self.path_key_ref = PATH_KEY_REF
@@ -147,11 +149,17 @@ class FakeMeter:
 
     def marker(self, name):
         if name == "engine-sealed.json":
-            return self.sealed
+            # 같은 계측기의 봉인 표식도 상한 값을 적는다(drain 표식과 같아야 한다, #734 리뷰)
+            if self.sealed is None:
+                return None
+            return dict(self.sealed, request_cap=self.request_cap if self.sealed_cap is None else self.sealed_cap,
+                        rejected_over_cap=0)
         self.ports.calls.append("meter:drained")
         self.ports.clock.t += self.ports.drain_delay  # drain 확인에 걸린 시간(타임라인 engine_end·drained 구분 시험용)
+        # 계측기 하드 상한: 기본 시험 계획의 공통 요청 예산(10)이 계측기에 걸린 모양이다.
         return {"inflight_at_drain": 0, "log_complete": self.log_complete, "forced_cancelled_requests": self.ports.forced,
-                "forwarded_requests": self._total(), "drained_at": DRAINED_AT, "rejected_after_seal": 0, "forced_closed_streams": 0}
+                "forwarded_requests": self._total(), "drained_at": DRAINED_AT, "rejected_after_seal": 0, "forced_closed_streams": 0,
+                "request_cap": self.request_cap, "rejected_over_cap": 0}
 
     def observer_rows(self):
         # 러너가 관측기로 보낸 pre·post 점수판 GET 두 건(대상 준비 확인 GET은 O에 없다)
@@ -1380,6 +1388,50 @@ class TestRunRecord(unittest.TestCase):
         self.assertEqual((result["status"], result["reasons"]), ("invalid", ["record_sign_failed"]))
         self.assertNotIn("run-record.json", evidence.files)
         self.assertNotIn("signature", result)
+
+
+class TestRequestCap(unittest.TestCase):
+    """O도 B와 같은 검사(runner.check_request_cap): 계측기 상한이 이 회차 예산이고 전달이 넘지 않았어야 한다."""
+
+    def test_cap_must_be_the_budget_and_hold(self):
+        result, _, _ = run()
+        self.assertEqual(result["status"], "complete", result)
+        self.assertEqual((result["drained"]["request_cap"], result["drained"]["rejected_over_cap"]), (10, 0))
+        for cap in (0, 9, 11):
+            with self.subTest(cap=cap):
+                result, _, _ = run_with_meter(lambda m, c=cap: setattr(m, "request_cap", c))
+                self.assertEqual((result["status"], result["reasons"]), ("invalid", ["meter_request_cap_mismatch"]))
+        # 예산 1에서 표식 상한이 JSON true·1.0이면 값 비교로는 같아 보이지만 정수가 아니라 무효다(#734 리뷰)
+        for value in (True, 1.0):
+            with self.subTest(value=value):
+                result, _, _ = run_with_meter(lambda m, v=value: setattr(m, "request_cap", v), request_budget=1)
+                self.assertEqual((result["status"], result.get("reasons")), ("invalid", ["meter_request_cap_mismatch"]))
+        self.assertEqual(run_with_meter(lambda m: setattr(m, "request_cap", 1), request_budget=1)[0]["status"], "complete")
+        # 봉인 표식의 상한이 drain 표식과 다르면 같은 계측기의 상한 적용을 증명하지 못한다(#734 리뷰)
+        result, _, _ = run_with_meter(lambda m: setattr(m, "sealed_cap", 0))
+        self.assertEqual((result["status"], result.get("reasons")), ("invalid", ["meter_request_cap_mismatch"]))
+        def overshoot(ports):  # 시작 뒤 계측기가 예산보다 많이 전달한 모양(상한이 깨진 계측기)
+            original = ports.start_round
+
+            def start(prepared):
+                out = original(prepared)
+                ports.forwarded = 12
+                return out
+            ports.start_round = start
+        result, _, _ = run_with_meter(lambda m: setattr(m, "request_cap", 10), overshoot)
+        self.assertEqual((result["status"], result["reasons"]), ("invalid", ["meter_request_cap_exceeded"]))
+
+
+def run_with_meter(mutate_meter, mutate_ports=None, **spec_changes):
+    clock = FakeClockState()
+    ports = FakePorts(clock)
+    if mutate_ports:
+        mutate_ports(ports)
+    meter = FakeMeter(ports)
+    mutate_meter(meter)
+    evidence = FakeEvidence()
+    result = execute_split_run(spec(**spec_changes), ports, meter, evidence, clock.clock())
+    return result, ports, evidence
 
 
 if __name__ == "__main__":

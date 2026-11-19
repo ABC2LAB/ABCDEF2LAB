@@ -238,6 +238,7 @@ func TestParseVerdictDetailSelector(t *testing.T) {
 		"verdict_id=1":                   {verdictDetailByVerdict, 1},
 		"finding_id=42":                  {verdictDetailByFinding, 42},
 		"verdict_id=9223372036854775807": {verdictDetailByVerdict, math.MaxInt64},
+		"candidate_id=7":                 {verdictDetailByCandidate, 7},
 	} {
 		q, err := url.ParseQuery(raw)
 		if err != nil {
@@ -249,7 +250,7 @@ func TestParseVerdictDetailSelector(t *testing.T) {
 		}
 	}
 	for _, raw := range []string{"", "verdict_id=1&finding_id=1", "verdict_id=1&verdict_id=1", "verdict_id=1&verdict_id=2", "verdict_id=1&x=1", "x=1",
-		"candidate_id=1", "verdict_id=01", "verdict_id=+1", "verdict_id=0", "verdict_id=-1", "verdict_id=9223372036854775808", "verdict_id=",
+		"candidate_id=1&verdict_id=1", "candidate_id=01", "candidate_id=0", "verdict_id=01", "verdict_id=+1", "verdict_id=0", "verdict_id=-1", "verdict_id=9223372036854775808", "verdict_id=",
 		"verdict_id=1.0", "verdict_id=%201", "finding_id=1e3", "VERDICT_ID=1", "verdict_id"} {
 		q, err := url.ParseQuery(raw)
 		if err != nil {
@@ -813,6 +814,7 @@ func TestFindingVerdictDetailNotFoundIsUniform(t *testing.T) {
 		"other-task-verdict": {verdictDetailByVerdict, theirs.verdict}, "missing-verdict": {verdictDetailByVerdict, math.MaxInt64},
 		"other-task-finding": {verdictDetailByFinding, theirs.finding}, "missing-finding": {verdictDetailByFinding, math.MaxInt64},
 		"other-task-unlinked-verdict": {verdictDetailByVerdict, unlinked.verdict},
+		"missing-candidate":           {verdictDetailByCandidate, math.MaxInt64},
 	} {
 		env, status, code := readFindingVerdictDetail(t.Context(), pg.DB, mine.task, sel, nil)
 		if (result{status, code}) != want || env.Format != "" {
@@ -838,7 +840,7 @@ func TestFindingVerdictDetailNotFoundIsUniform(t *testing.T) {
 	if _, status, code := readFindingVerdictDetail(t.Context(), pg.DB, removed.ID, sel, nil); (result{status, code}) != want {
 		t.Fatalf("삭제된 작업: %d %s", status, code)
 	}
-	for _, sel := range []verdictDetailSelector{{verdictDetailByVerdict, 0}, {"candidate", 1}} {
+	for _, sel := range []verdictDetailSelector{{verdictDetailByVerdict, 0}, {verdictDetailByCandidate, 0}, {"issuance", 1}} {
 		if _, status, code := readFindingVerdictDetail(t.Context(), pg.DB, mine.task, sel, nil); status != http.StatusBadRequest || code != verdictDetailInvalidRequest {
 			t.Fatalf("잘못된 selector %+v: %d %s", sel, status, code)
 		}

@@ -180,7 +180,7 @@ def run_split_ours(config: RunnerConfig, preflight: object, *, repeat_index: int
         manifest = None if split.synthetic else read_manifest(split.manifest_path)
         declared = split_declared(config, preflight, manifest)
         plan = plan_split_run(config, split, run_id=new_run_id(POLICY_SWITCH_SIDE, now), target_image=declared.target_image,
-                              meter_port=declared.meter_port)
+                              meter_port=declared.meter_port, request_cap=declared.request_budget)
         defaults, defaults_sha = read_workflow_defaults()
         # 경계는 계측기·B 회차와 같은 경로 가림 키를 받는다(계약 §4.1). runner.main이 check_key_files로 이미 확인했다.
         path_key = acceptance_path_key(config)
