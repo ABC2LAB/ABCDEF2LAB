@@ -92,7 +92,7 @@ describe("UrlFindingLive (단독 발견 상세 · 저장 결과)", () => {
     a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [entry(1), { ...entry(2), vuln_class: "idor" }] });
     pickFinding("42", "candidate-2");
     const goTo = mount();
-    const page = await screen.findByRole("region", { name: "발견 상세 페이지" });
+    const page = await screen.findByRole("region", { name: "취약점 상세 페이지" });
     expect(a.fetchRemediation).toHaveBeenCalledWith("42", "internal");
     expect(screen.getByRole("heading", { level: 2, name: "후보 2" })).toBeInTheDocument();
     expect(page).toHaveTextContent(/유형idor/);
@@ -100,7 +100,7 @@ describe("UrlFindingLive (단독 발견 상세 · 저장 결과)", () => {
     // E③ 원문 판정 · 다계정 비교 칸은 두지 않는다(백엔드 후속)
     expect(screen.queryByText(/다계정|교차 계정 비교/)).toBeNull();
     // 목록으로 갈 때 공용 선택을 지운다(남으면 보고서가 같은 상세를 다시 연다)
-    fireEvent.click(screen.getByRole("button", { name: "발견 목록으로" }));
+    fireEvent.click(screen.getByRole("button", { name: "취약점 목록으로" }));
     expect(goTo).toHaveBeenCalledWith("report");
     expect(useFindingPick.getState()).toEqual({ task: null, entry: null });
   });
@@ -109,7 +109,7 @@ describe("UrlFindingLive (단독 발견 상세 · 저장 결과)", () => {
     a.fetchRemediation.mockResolvedValueOnce({ task_id: 42, entries: [entry(1)] });
     pickFinding("42", "candidate-1");
     const view = mount();
-    await screen.findByRole("region", { name: "발견 상세 페이지" });
+    await screen.findByRole("region", { name: "취약점 상세 페이지" });
     act(() => view.show("report"));
     let answer: (v: api.Remediation) => void = noop;
     a.fetchRemediation.mockReturnValueOnce(
@@ -119,7 +119,7 @@ describe("UrlFindingLive (단독 발견 상세 · 저장 결과)", () => {
     );
     act(() => view.show("finding"));
     expect(screen.getByText("불러오는 중…")).toBeInTheDocument();
-    expect(screen.queryByRole("region", { name: "발견 상세 페이지" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "취약점 상세 페이지" })).toBeNull();
     expect(screen.queryByRole("button", { name: /보안 조치/ })).toBeNull();
     await act(async () => answer({ task_id: 42, entries: [{ ...entry(1), title: "후보 1 새 결과" }] }));
     expect(screen.getByRole("heading", { level: 2, name: "후보 1 새 결과" })).toBeInTheDocument();
@@ -131,12 +131,12 @@ describe("UrlFindingLive (단독 발견 상세 · 저장 결과)", () => {
     a.fetchRemediation.mockResolvedValueOnce({ task_id: 42, entries: [entry(1)] });
     pickFinding("42", "candidate-1");
     const view = mount();
-    await screen.findByRole("region", { name: "발견 상세 페이지" });
+    await screen.findByRole("region", { name: "취약점 상세 페이지" });
     act(() => view.show("report"));
     a.fetchRemediation.mockReturnValueOnce(new Promise(() => undefined));
     act(() => view.show("finding"));
     expect(screen.getByText("불러오는 중…")).toBeInTheDocument();
-    expect(screen.queryByRole("region", { name: "발견 상세 페이지" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "취약점 상세 페이지" })).toBeNull();
     expect(screen.queryByRole("button", { name: /보안 조치/ })).toBeNull();
     now.mockRestore();
   });
@@ -157,7 +157,7 @@ describe("UrlFindingLive (단독 발견 상세 · 저장 결과)", () => {
     expect(screen.getByText("불러오는 중…")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /다시/ })).toBeNull();
     await act(async () => answer({ task_id: 42, entries: [entry(1)] }));
-    expect(screen.getByRole("region", { name: "발견 상세 페이지" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "취약점 상세 페이지" })).toBeInTheDocument();
   });
 
   it("읽기 실패 뒤 '다시 시도'는 같은 진입에서 다시 읽는다", async () => {
@@ -167,7 +167,7 @@ describe("UrlFindingLive (단독 발견 상세 · 저장 결과)", () => {
     pickFinding("42", "candidate-1");
     mount();
     fireEvent.click(await screen.findByRole("button", { name: /다시/ }));
-    expect(await screen.findByRole("region", { name: "발견 상세 페이지" })).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "취약점 상세 페이지" })).toBeInTheDocument();
     expect(a.fetchRemediation).toHaveBeenCalledTimes(2);
   });
 
@@ -207,7 +207,7 @@ describe("UrlFindingLive (단독 발견 상세 · 저장 결과)", () => {
     });
     pickFinding("42", "candidate-1");
     mount();
-    const page = await screen.findByRole("region", { name: "발견 상세 페이지" });
+    const page = await screen.findByRole("region", { name: "취약점 상세 페이지" });
     fireEvent.click(within(page).getByRole("button", { name: "PoC 복사" }));
     expect(await within(page).findByText("PoC 를 복사했습니다.")).toBeInTheDocument();
     const text = writeText.mock.calls[0][0] as string;
@@ -243,7 +243,7 @@ describe("UrlFindingLive (단독 발견 상세 · 저장 결과)", () => {
     });
     pickFinding("42", "candidate-1");
     mount();
-    const page = await screen.findByRole("region", { name: "발견 상세 페이지" });
+    const page = await screen.findByRole("region", { name: "취약점 상세 페이지" });
     fireEvent.click(within(page).getByRole("button", { name: "PoC 복사" }));
     expect(await within(page).findByText("PoC 를 복사했습니다.")).toBeInTheDocument();
     const text = writeText.mock.calls[0][0] as string;
@@ -256,10 +256,10 @@ describe("UrlFindingLive (단독 발견 상세 · 저장 결과)", () => {
 
   it("고른 발견이 없으면 부르지 않고 보고서로 안내한다", () => {
     const goTo = mount();
-    expect(screen.getByText(/보고서 발견 목록에서 발견을 고르고/)).toBeInTheDocument();
+    expect(screen.getByText(/보고서 취약점 목록에서 취약점을 고르고/)).toBeInTheDocument();
     expect(a.fetchRemediation).not.toHaveBeenCalled();
     pickFinding("41", "candidate-1"); // 다른 task 에서 고른 것도 목록으로 가며 지운다
-    fireEvent.click(screen.getByRole("button", { name: "보고서 발견 목록으로" }));
+    fireEvent.click(screen.getByRole("button", { name: "보고서 취약점 목록으로" }));
     expect(goTo).toHaveBeenCalledWith("report");
     expect(useFindingPick.getState()).toEqual({ task: null, entry: null });
   });
@@ -267,7 +267,7 @@ describe("UrlFindingLive (단독 발견 상세 · 저장 결과)", () => {
   it("다른 task 에서 고른 발견은 열지 않는다", () => {
     pickFinding("41", "candidate-2");
     mount();
-    expect(screen.getByText(/보고서 발견 목록에서 발견을 고르고/)).toBeInTheDocument();
+    expect(screen.getByText(/보고서 취약점 목록에서 취약점을 고르고/)).toBeInTheDocument();
     expect(a.fetchRemediation).not.toHaveBeenCalled();
   });
 
@@ -275,8 +275,8 @@ describe("UrlFindingLive (단독 발견 상세 · 저장 결과)", () => {
     a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [entry(1)] });
     pickFinding("42", "candidate-9");
     mount();
-    expect(await screen.findByText(/고른 발견이 지금 저장 결과에 없습니다/)).toBeInTheDocument();
-    expect(screen.queryByRole("region", { name: "발견 상세 페이지" })).toBeNull();
+    expect(await screen.findByText(/고른 취약점이 지금 저장 결과에 없습니다/)).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "취약점 상세 페이지" })).toBeNull();
   });
 
   it.each([403, 404, 503])("저장 결과를 못 읽으면(HTTP %s) 상세를 그리지 않는다", async (status) => {
@@ -284,28 +284,28 @@ describe("UrlFindingLive (단독 발견 상세 · 저장 결과)", () => {
     pickFinding("42", "candidate-1");
     mount();
     expect(await screen.findByRole("button", { name: /다시/ })).toBeInTheDocument();
-    expect(screen.queryByRole("region", { name: "발견 상세 페이지" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "취약점 상세 페이지" })).toBeNull();
   });
 
   it("Job 을 바꾸면 고른 발견을 지우고 이전 회차 상세를 보이지 않는다", async () => {
     a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [entry(1)] });
     pickFinding("42", "candidate-1");
     mount();
-    await screen.findByRole("region", { name: "발견 상세 페이지" });
+    await screen.findByRole("region", { name: "취약점 상세 페이지" });
     act(() => useUrl.setState({ job: other }));
     expect(useFindingPick.getState()).toEqual({ task: null, entry: null });
-    expect(screen.queryByRole("region", { name: "발견 상세 페이지" })).toBeNull();
-    expect(screen.getByText(/보고서 발견 목록에서 발견을 고르고/)).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "취약점 상세 페이지" })).toBeNull();
+    expect(screen.getByText(/보고서 취약점 목록에서 취약점을 고르고/)).toBeInTheDocument();
   });
 
   it("Job 이 빠지면(권한 철회 · 재로그인) 상세를 지우고 예시로 채우지 않는다", async () => {
     a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [entry(1)] });
     pickFinding("42", "candidate-1");
     mount();
-    await screen.findByRole("region", { name: "발견 상세 페이지" });
+    await screen.findByRole("region", { name: "취약점 상세 페이지" });
     act(() => useUrl.setState({ job: null }));
     expect(screen.getByText("실제 진단 작업을 선택하세요.")).toBeInTheDocument();
-    expect(screen.queryByRole("region", { name: "발견 상세 페이지" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "취약점 상세 페이지" })).toBeNull();
     expect(screen.queryByText(/예시/)).toBeNull();
   });
 
@@ -313,7 +313,7 @@ describe("UrlFindingLive (단독 발견 상세 · 저장 결과)", () => {
     useUrl.setState({ job: { ...completed, state: "running", result_ready: false } });
     pickFinding("42", "candidate-1");
     mount();
-    expect(screen.getByText(/결과가 저장되면 발견 상세를 볼 수 있습니다/)).toBeInTheDocument();
+    expect(screen.getByText(/결과가 저장되면 취약점 상세를 볼 수 있습니다/)).toBeInTheDocument();
     expect(a.fetchRemediation).not.toHaveBeenCalled();
   });
 });

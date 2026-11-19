@@ -378,7 +378,7 @@ export function Workbench() {
             {section("explore", pick("탐색 결과", <UrlExploreLive />))}
             {section("accessmap", pick("접근통제 지도", <UrlAccessMapLive />))}
             {section("coverage", pick("커버리지", <UrlCoverageLive />))}
-            {section("finding", pick("발견 상세", <UrlFindingLive />))}
+            {section("finding", pick("취약점 상세", <UrlFindingLive />))}
             {section("e2flow", pick("전송 통제 흐름", <UrlE2FlowLive />))}
             {section("controlpolicy", pick("전송 통제 정책", <UrlControlPolicyLive />))}
             {section("classify", pick("계정 분류", <AccountClassifyLive />))}

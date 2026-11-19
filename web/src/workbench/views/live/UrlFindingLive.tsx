@@ -72,17 +72,19 @@ export function UrlFindingLive() {
   };
   const toReport = (
     <button className={cx(s.btn, s.sm)} type="button" onClick={backToList}>
-      보고서 발견 목록으로
+      보고서 취약점 목록으로
     </button>
   );
 
   let body: ReactNode;
   if (!job?.task_id) body = <p className={s.empty}>실제 진단 작업을 선택하세요.</p>;
-  else if (!taskId) body = <p className={s.empty}>점검이 끝나고 결과가 저장되면 발견 상세를 볼 수 있습니다.</p>;
+  else if (!taskId) body = <p className={s.empty}>점검이 끝나고 결과가 저장되면 취약점 상세를 볼 수 있습니다.</p>;
   else if (!entryId)
     body = (
       <div className={s.note} role="note">
-        <span className={s["lv-grow"]}>보고서 발견 목록에서 발견을 고르고 오른쪽 패널의 ‘상세 보기’를 누르세요.</span>
+        <span className={s["lv-grow"]}>
+          보고서 취약점 목록에서 취약점을 고르고 오른쪽 패널의 ‘상세 보기’를 누르세요.
+        </span>
         {toReport}
       </div>
     );
@@ -91,7 +93,7 @@ export function UrlFindingLive() {
   else if (!entry)
     body = (
       <div className={s.note} role="note">
-        <span className={s["lv-grow"]}>고른 발견이 지금 저장 결과에 없습니다. 보고서에서 다시 고르세요.</span>
+        <span className={s["lv-grow"]}>고른 취약점이 지금 저장 결과에 없습니다. 보고서에서 다시 고르세요.</span>
         {toReport}
       </div>
     );
@@ -102,7 +104,7 @@ export function UrlFindingLive() {
 
   return (
     <>
-      <UrlHead title="발견 상세" crumb="발견 상세" />
+      <UrlHead title="취약점 상세" crumb="취약점 상세" />
       <div className={cx(s.vb, s.solo)}>
         <div className={s.vm}>{body}</div>
       </div>

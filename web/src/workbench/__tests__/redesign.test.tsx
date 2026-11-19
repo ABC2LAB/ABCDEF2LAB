@@ -12,16 +12,14 @@ vi.mock("../live/api", async (importOriginal) => ({
 
 import { catalog, handle, running, scope } from "@/lib/diagnosis/diagnosis-url-fixtures";
 
-import type { DiagnosisRunView } from "../live/api";
 import * as api from "../live/api";
 import { LiveRailTasks } from "../live/rail";
 import { resetUrl, useUrl } from "../live/urlDiagnosis";
 import { useUrlRuns } from "../live/urlRunList";
-import type { Poll } from "../live/usePoll";
 import { FLOW_VERSION, type WorkflowSnapshot } from "../live/workflow";
 import { type Shell, ShellContext, type View } from "../shell";
 import { UrlDashboardLive } from "../views/live/UrlDashboardLive";
-import { gaugeSegments, prettyEvidence, RunCounts, UrlLiveLive } from "../views/live/UrlLiveLive";
+import { gaugeSegments, prettyEvidence, reportCountsText, UrlLiveLive } from "../views/live/UrlLiveLive";
 import {
   crawlBar,
   eventText,
@@ -842,49 +840,26 @@ describe("자산 탐색", () => {
   });
 });
 
-describe("보고서 탐색 · 요청 집계 (사용자 11/19 한 줄로 합침)", () => {
-  const counts = {
-    attempts: 162,
-    allowed: 153,
-    denied: 9,
-    unsupported: 0,
-    forward_attempted: 153,
-    responses: 153,
-    unknown: 0,
-    calls: 90,
-  };
-  const poll = (data: unknown): Poll<DiagnosisRunView> => ({
-    data: data as DiagnosisRunView | null,
-    error: null,
-    loading: false,
-    unsupported: false,
-    reload: vi.fn(),
-    fetchedAt: 1,
+describe("보고서 머리 줄 요청 · 탐색 수 (사용자 11/19 — 증거 · 요청 기록 탭 대신)", () => {
+  const counts = { forward_attempted: 153, denied: 9, unsupported: 0, unknown: 0 };
+  it("요청은 보냄 · 막음 · 결과 불명(0이어도), 탐색은 발견한 API · 방문", () => {
+    expect(reportCountsText({ counts: { found: 6, visited: 4 } }, { counts })).toEqual({
+      req: "153 보냄 · 9 막음 · 결과 불명 0",
+      crawl: "발견한 API 6 · 방문 4",
+    });
   });
-  const cellsOf = () =>
-    [...screen.getByRole("region", { name: "탐색 · 요청 집계" }).querySelectorAll(":scope > div")].map(
-      (x) => x.textContent,
-    );
-  it("탐색 두 칸(발견한 API · 방문) 뒤에 요청 네 칸을 한 줄로, 아래 탐색 · 선택 범위엔 숫자 칸을 두지 않는다", () => {
-    useUrl.setState({ flow: { ...flow, counts: { ...flow.counts, found: 6, visited: 4, sent: 145, blocked: 9 } } });
-    render(
-      <>
-        <RunCounts run={poll({ kind: "run", run: { execution: { counts } } })} />
-        <WorkflowReport />
-      </>,
-    );
-    expect(cellsOf()).toEqual(["발견한 API6", "방문4", "보낸 요청153", "막은 요청9", "응답 받음153", "결과 불명0"]);
+  it("지원 안 하는 요청은 있을 때만, 기록이 없는 쪽은 null(0 으로 만들지 않음)", () => {
+    expect(reportCountsText(null, { counts: { ...counts, unsupported: 4, unknown: 1 } })).toEqual({
+      req: "153 보냄 · 9 막음 · 지원 안 함 4 · 결과 불명 1",
+      crawl: null,
+    });
+    expect(reportCountsText({ counts: { found: 6, visited: 4 } }, null).req).toBeNull();
+  });
+  it("탐색 · 선택 범위에는 숫자 칸을 두지 않는다", () => {
+    useUrl.setState({ flow: { ...flow, counts: { ...flow.counts, found: 6, visited: 4 } } });
+    render(<WorkflowReport />);
     const box = screen.getByRole("heading", { name: "탐색 · 선택 범위" }).closest("section") as HTMLElement;
     expect(box.querySelector("[class*='meters']")).toBeNull();
-  });
-  it("실행 기록이 없으면 탐색 두 칸만, 탐색 흐름이 없으면 요청 네 칸만 (없는 쪽을 0 으로 그리지 않음)", () => {
-    useUrl.setState({ flow: { ...flow, counts: { ...flow.counts, found: 6, visited: 4 } } });
-    const { unmount } = render(<RunCounts run={poll({ kind: "none" })} />);
-    expect(cellsOf()).toEqual(["발견한 API6", "방문4"]);
-    unmount();
-    useUrl.setState({ flow: null });
-    render(<RunCounts run={poll({ kind: "run", run: { execution: { counts } } })} />);
-    expect(cellsOf()).toEqual(["보낸 요청153", "막은 요청9", "응답 받음153", "결과 불명0"]);
   });
 });
 

@@ -6,7 +6,7 @@
 //   + 오른쪽 진행 요약(전송 통제 · 탐색 현황 · 커버리지 · 점검 정보).
 //   서버가 점검 중에 주지 않는 값(진행률 · 남은 시간 · 판정)은 자리도 두지 않는다. 시작 · 경과는 서버 started_at 으로
 //   진행 요약(jobSummary)의 시작 칸에만 보인다(이 카드에는 자리를 새로 두지 않음).
-// 보고서: 판정 집계 · 발견 목록 / 증거 · 요청 기록 + 오른쪽 발견 상세. (우선 조치 칸은 11/17 사용자 요청으로 뺌)
+// 보고서: 판정 집계 · 취약점 목록 / 보고서 + 오른쪽 취약점 상세(화면 글은 '취약점', 사용자 11/19 — 판정 딱지로 확정 여부 구분). (우선 조치 칸은 11/17 사용자 요청으로 뺌)
 // 심각도 · 공격 경로 · 지식 그래프 · 계정 비교 · 재현 명령은 서버가 주지 않아 두지 않는다.
 // 판정은 팀 lib(summarizeDiagnosticEntries · diagnosticOutcome)의 분류만 쓰고 화면이 만들지 않는다.
 
@@ -26,7 +26,6 @@ import { entrySeverity, entrySeverityLabel } from "@/lib/diagnosis/severity";
 import { SEVL, type SevKey } from "../../data/findings";
 import { cx } from "../../lib/cx";
 import {
-  type DiagnosisRunView,
   downloadDiagnostic,
   fetchCoverage,
   fetchDiagnosisRun,
@@ -562,7 +561,7 @@ export function UrlLiveLive() {
   }
 
   let sendWaitText = "엔진이 시작되면 나옵니다.";
-  if (job.drain_complete) sendWaitText = "마감된 점검의 전송 기록은 보고서의 증거 · 요청 기록에 있습니다.";
+  if (job.drain_complete) sendWaitText = "마감된 점검의 요청 수는 보고서 머리 줄에 있습니다.";
   else if (job.state === "unknown" || !verified)
     sendWaitText = "결과 불명인 점검은 전송 상태를 이어 조회하지 않습니다. 상태를 다시 조회하세요.";
   const selected = flow?.endpoints.filter((e) => e.selected).length ?? 0;
@@ -879,49 +878,29 @@ export function prettyEvidence(raw: string): string {
 }
 
 /**
- * 증거 · 요청 기록 탭 맨 위 탐색 · 요청 집계 한 줄 (사용자 11/19). 탭을 누르면 바로 보이고 취약점별 증거는 그 아래로 내려 본다.
- * - 탐색(탐색 흐름 스냅숏): 발견한 API(찾은 경로 수) · 방문(응답을 받은 경로 수). 아래 '탐색 · 선택 범위'에 따로 두던 두
- *   칸이 너무 비어 보여 여기로 합쳤다.
- * - 요청(저장된 실행 기록의 E② 집계 값 그대로): 보낸 요청(대상 전송 시도) · 막은 요청(차단) · 응답 받음 · 결과 불명.
- *   실행 종료 기록 칸(단계 · 결과 · 마감 · 실행 ID · 감사 · 저장 시각)은 뺐고, 요청 접수 · 허용은 보낸 · 막은 요청과 겹치고
- *   호출(도구 호출 수)은 뜻이 어려워 두지 않는다. 지원 안 하는 요청은 있을 때만 막은 요청 칸에 적고, 결과 불명은 0이어도
- *   둔다(절대규칙 5).
- * 한쪽 기록이 없거나 확인할 수 없으면 그쪽 칸을 두지 않고(0 으로 그리지 않음), 실행 기록 읽기 실패는 다시 시도를 보인다.
+ * 보고서 머리 줄의 요청 · 탐색 수 (사용자 11/19 — '증거 · 요청 기록' 탭을 없애고 상자 대신 머리 줄 글 한 줄로).
+ * - 요청: 저장된 실행 기록의 E② 집계 값 그대로 — 보냄(대상 전송 시도) · 막음(차단) · 지원 안 함(있을 때만) · 결과 불명
+ *   (0이어도 둠, 절대규칙 5). 요청 접수 · 허용 · 호출은 겹치거나 뜻이 어려워 두지 않는다.
+ * - 탐색: 탐색 흐름 스냅숏의 발견한 API(찾은 경로 수) · 방문(응답을 받은 경로 수).
+ * 기록이 없으면 null(0 으로 만들지 않음).
  */
-export function RunCounts({ run }: { run: Poll<DiagnosisRunView> }) {
-  const flow = useUrl((st) => st.flow);
-  const d = run.data;
-  const e = d?.kind === "run" ? d.run.execution : null;
-  const cells: [string, number, string][] = [];
-  if (flow) cells.push(["발견한 API", flow.counts.found, ""], ["방문", flow.counts.visited, ""]);
-  if (e) {
-    const c = e.counts;
-    cells.push(
-      ["보낸 요청", c.forward_attempted, ""],
-      ["막은 요청", c.denied, c.unsupported ? `지원 안 하는 요청 ${fmtCount(c.unsupported)}` : ""],
-      ["응답 받음", c.responses, ""],
-      ["결과 불명", c.unknown, ""],
-    );
-  }
-  const failed = !d && run.error ? <ErrorNote error={run.error} onRetry={run.reload} /> : null;
-  if (!cells.length) return failed;
-  return (
-    <>
-      <section className={cx(s.meters, METER_COLS[cells.length])} aria-label="탐색 · 요청 집계">
-        {cells.map(([label, n, sub]) => (
-          <div key={label} className={s.cell}>
-            <div className={s.k}>{label}</div>
-            <div className={s.v}>{fmtCount(n)}</div>
-            {sub ? <div className={s.sub}>{sub}</div> : null}
-          </div>
-        ))}
-      </section>
-      {failed}
-    </>
-  );
+export function reportCountsText(
+  flow: { counts: { found: number; visited: number } } | null,
+  e: { counts: { forward_attempted: number; denied: number; unsupported: number; unknown: number } } | null,
+): { req: string | null; crawl: string | null } {
+  const req = e
+    ? [
+        `${fmtCount(e.counts.forward_attempted)} 보냄`,
+        `${fmtCount(e.counts.denied)} 막음`,
+        e.counts.unsupported ? `지원 안 함 ${fmtCount(e.counts.unsupported)}` : "",
+        `결과 불명 ${fmtCount(e.counts.unknown)}`,
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : null;
+  const crawl = flow ? `발견한 API ${fmtCount(flow.counts.found)} · 방문 ${fmtCount(flow.counts.visited)}` : null;
+  return { req, crawl };
 }
-/** 칸 수 → 한 줄에 다 들어가는 상자 모양 (4칸은 기본 .meters). */
-const METER_COLS: Readonly<Record<number, string | undefined>> = { 2: s.m2, 6: s.m6 };
 
 type Audience = "shared" | "internal";
 type Format = "html" | "docx";
@@ -1003,8 +982,8 @@ export function FindingDetail({
   if (!e) {
     return (
       <>
-        <InspHead title="발견 상세" />
-        <p className={s.empty}>저장된 발견이 없습니다.</p>
+        <InspHead title="취약점 상세" />
+        <p className={s.empty}>저장된 취약점이 없습니다.</p>
       </>
     );
   }
@@ -1139,15 +1118,15 @@ export function FindingPage({
     head.current?.focus({ preventScroll: true });
   }, []);
   return (
-    <section className={s.fpage} aria-label="발견 상세 페이지">
+    <section className={s.fpage} aria-label="취약점 상세 페이지">
       {/* ARTEX 발견 상세 머리: ← · 제목 · 위험도 · 판정 딱지를 한 줄로 (유형 · 대상 · ID 는 오른쪽 상태 카드) */}
       <div className={s["fpage-h"]}>
         <button
           className={cx(s["icon-btn"], s["fpage-back"])}
           type="button"
           onClick={onBack}
-          aria-label="발견 목록으로"
-          title="발견 목록으로"
+          aria-label="취약점 목록으로"
+          title="취약점 목록으로"
         >
           <Icon name="arrow" />
         </button>
@@ -1173,7 +1152,7 @@ export function FindingPage({
             layout="page"
           />
         </div>
-        <aside className={s.fdet} aria-label="발견 상태">
+        <aside className={s.fdet} aria-label="취약점 상태">
           <StatusCard e={e} host={host} />
           {entrySeverity(e) && e.severity_source === "worker_estimate" ? (
             <Isec t="예상 심각도 근거 · 모델 제안">
@@ -1279,11 +1258,11 @@ export function buildPocMarkdown(entries: readonly RemediationEntry[], info: Poc
   if (info.excluded) out.push(`- **제외 경로**: ${mdInline(info.excluded)}`);
   out.push("", "**요약**", "");
   out.push(
-    `- 발견: ${list.length}건 (확정 ${count("confirmed")} · 검토 필요 ${count("review")} · 미실행 ${count("not_executed")} · 결과 불명 ${count("unknown")})`,
+    `- 취약점: ${list.length}건 (확정 ${count("confirmed")} · 검토 필요 ${count("review")} · 미실행 ${count("not_executed")} · 결과 불명 ${count("unknown")})`,
   );
   if (info.crawl) out.push(`- 탐색: 방문 ${info.crawl.visited} · 발견한 API ${info.crawl.found}`);
   out.push("", "**취약점**", "");
-  if (!list.length) out.push("저장된 발견이 없습니다. 결과가 없다고 안전하다는 뜻은 아닙니다.");
+  if (!list.length) out.push("저장된 취약점이 없습니다. 결과가 없다고 안전하다는 뜻은 아닙니다.");
   list.forEach((e, i) => {
     const ep = entryEp(e);
     const at = dateTimeOf(e.observed_at);
@@ -1428,10 +1407,9 @@ export function FindingRows({
 
 /** 보고서 탭 (시안 rTabs). 자산 지식 그래프 · 접근통제 지도는 이 점검의 서버 자료가 없어 탭만 두고 '연결 전'. */
 const R_TABS = [
-  ["list", "발견 목록"],
+  ["list", "취약점 목록"],
   ["graph", "자산 지식 그래프"],
   ["map", "접근통제 지도"],
-  ["ev", "증거 · 요청 기록"],
   ["doc", "보고서"],
 ] as const;
 type RTab = (typeof R_TABS)[number][0];
@@ -1452,6 +1430,7 @@ export function UrlReportLive() {
     enabled: visible && !!taskId,
   });
   const run = usePoll(() => fetchDiagnosisRun(taskId as string), [taskId], { enabled: visible && !!taskId });
+  const flowNow = useUrl((st) => st.flow);
   // 자산 커버리지 (요약 칸): 서버 task 의 방문 · 검사한 자산 비율(판정 커버리지 아님 · 리뷰 #479).
   // 꺼졌거나 못 읽으면 값을 만들지 않고 "—"
   const cov = usePoll(() => fetchCoverage(taskId as string), [taskId], { enabled: visible && !!taskId });
@@ -1635,6 +1614,9 @@ export function UrlReportLive() {
   // 자산 커버리지는 아래 요약 칸에 있어 머리에서 빼고 그 자리에 모델 사용량을 둔다(사용자 11/17).
   // 모델 사용량은 이 진단의 전송 통제 예산 기록(job.model_usage), 기록이 없으면 "—"
   const usage = job?.model_usage;
+  const runData = run.data;
+  const reqCounts = reportCountsText(flowNow, runData?.kind === "run" ? (runData.run.execution ?? null) : null);
+  const runFailed = !runData && !!run.error;
   const startText = runStartText(job);
   const durationSec = runDurationSec(job);
   const meta = [
@@ -1650,6 +1632,17 @@ export function UrlReportLive() {
     <span key="use" title={usage ? tokenExact(usage) : undefined}>
       모델 사용량 {usage ? <TokenChips u={usage} /> : <b>—</b>}
     </span>,
+    // 요청 · 탐색 수: '증거 · 요청 기록' 탭을 없애고 머리 줄로(사용자 11/19). 실행 기록을 못 읽으면 '—'(0 으로 만들지 않음)
+    reqCounts.req !== null || runFailed ? (
+      <span key="req" title={runFailed ? "실행 기록을 읽지 못했습니다" : undefined}>
+        요청 <b>{reqCounts.req ?? "—"}</b>
+      </span>
+    ) : null,
+    reqCounts.crawl !== null ? (
+      <span key="crawl">
+        탐색 <b>{reqCounts.crawl}</b>
+      </span>
+    ) : null,
   ].filter(Boolean);
 
   return (
@@ -1660,7 +1653,7 @@ export function UrlReportLive() {
         parent={FINISHED}
         host={host}
         pill={<UrlPill job={job} verified={verified} />}
-        acts={detailEntry ? undefined : <InspOpenButton>발견 상세</InspOpenButton>}
+        acts={detailEntry ? undefined : <InspOpenButton>취약점 상세</InspOpenButton>}
         meta={meta}
         // 다른 세 화면처럼 머리에 단계 줄(자산 탐색 · 범위 확인 · 점검 진행 · 보고서, 눌러서 이동)을 둔다(사용자 11/17 —
         // 보고서에서 앞 단계로 돌아갈 길이 주소 입력뿐이었다)
@@ -1689,7 +1682,7 @@ export function UrlReportLive() {
               // 요약 칸 (시안 짜임: 발견 · 판정 확정 · 검토 필요/판단 불가 · 자산 커버리지)
               <section className={s.strip} aria-label="판정 집계">
                 <div className={s.cell}>
-                  <div className={s.k}>발견</div>
+                  <div className={s.k}>취약점</div>
                   <div className={s.v}>{findings.length}</div>
                   <div className={s.sub}>
                     {[
@@ -1752,7 +1745,7 @@ export function UrlReportLive() {
                   </button>
                 ))}
               </div>
-              <div role="tabpanel" id="rp-list" aria-label="발견 목록" hidden={tab !== "list"}>
+              <div role="tabpanel" id="rp-list" aria-label="취약점 목록" hidden={tab !== "list"}>
                 {listBody}
               </div>
               <div role="tabpanel" id="rp-graph" aria-label="자산 지식 그래프" hidden={tab !== "graph"}>
@@ -1774,38 +1767,22 @@ export function UrlReportLive() {
                   </button>
                 </div>
               </div>
+              {/* '증거 · 요청 기록' 탭은 없앴다(사용자 11/19 — 취약점 목록과 겹치고 볼 게 적음). 내려받기 · 심화 점검으로
+                  고른 경로는 보고서 문서 아래로, 요청 · 탐색 수는 머리 줄로 */}
               <div
                 role="tabpanel"
-                id="rp-ev"
-                aria-label="증거 · 요청 기록"
-                hidden={tab !== "ev"}
-                style={{ display: tab === "ev" ? "flex" : undefined, flexDirection: "column", gap: 26 }}
+                id="rp-doc"
+                aria-label="보고서"
+                hidden={tab !== "doc"}
+                style={{ display: tab === "doc" ? "flex" : undefined, flexDirection: "column", gap: 26 }}
               >
-                {/* 탭을 누르면 탐색 · 요청 집계가 바로 보이고, 취약점별 증거는 아래로(사용자 11/19) */}
-                <RunCounts run={run} />
-                {findings.length ? (
-                  // 시안 증거 목록 (evi): '취약점 n · 제목 · 판정'만(사용자 11/19 — 증거 버전 · 재현 단계 수는 뺌). 서버 내부
-                  // ID(candidate-n · verdict-n)는 마우스를 올리면. 확정 전(검토 필요 등)을 확정 취약점으로 읽지 않게 판정
-                  // 딱지를 같이 둔다(절대규칙 5, 보고서 문서의 '취약점' 목록과 같은 모양)
-                  <ul className={s.evi} aria-label="취약점별 증거">
-                    {findings.map((e, i) => (
-                      <li key={e.entry_id}>
-                        <b title={`ID ${e.entry_id}`}>{`취약점 ${i + 1}`}</b>
-                        <span>{maskSecrets(e.title) || e.entry_id}</span>
-                        <Outcome o={diagnosticOutcome(e)} />
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-                <WorkflowReport />
-                <Download taskId={taskId} />
-              </div>
-              <div role="tabpanel" id="rp-doc" aria-label="보고서" hidden={tab !== "doc"}>
                 {docBody}
+                <Download taskId={taskId} />
+                <WorkflowReport />
               </div>
             </section>
           </div>
-          <aside className={s.vi} id="rInsp" aria-label="발견 상세">
+          <aside className={s.vi} id="rInsp" aria-label="취약점 상세">
             <FindingDetail
               e={chosen}
               host={host}
