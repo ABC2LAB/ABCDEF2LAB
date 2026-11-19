@@ -25,6 +25,12 @@ export type ConfirmationStatus =
   | "confirmation_integrity_failed"
   | "unreadable";
 
+/** 판정 근거의 봉인 확인(E1, docs/contracts/e3-product-verdict-store.md §7). 근거 호출이 없는 판정은 null. */
+export type EvidenceSeal =
+  | { status: "confirmed"; reason: null }
+  | { status: "unconfirmed"; reason: "seal_not_recorded" | "evidence_checkpoint_missing" }
+  | { status: "inclusion_failed"; reason: null };
+
 /** 진위를 확인했거나(verified) 당시 원본만 못 읽은(policy_source_unavailable) 행 — 값이 있다. */
 export interface ProductVerdictShown {
   verdictId: string;
@@ -38,11 +44,14 @@ export interface ProductVerdictShown {
   candidateRefs: string[];
   evidenceCalls: number;
   observedAt: string;
+  evidenceSeal: EvidenceSeal | null;
 }
 /** 진위 확인 실패 행 — 서버가 값 · 검사 · 자원을 숨긴다. verdict_id 만 있을 수 있다. */
 export interface ProductVerdictHidden {
   verdictId: string | null;
   recordStatus: "record_integrity_failed";
+  /** 봉인 포함 실패로 숨긴 행이면 그 표시가 남는다. */
+  evidenceSeal: EvidenceSeal | null;
 }
 export type ProductVerdictRow = ProductVerdictShown | ProductVerdictHidden;
 
@@ -119,6 +128,18 @@ const ITEM_KEYS = [
   "evidence_seal",
 ];
 const CHECK_KEYS = ["policy", "identity", "data"];
+const SEAL_KEYS = ["status", "reason"];
+const SEAL_UNCONFIRMED_REASONS = new Set<string>(["seal_not_recorded", "evidence_checkpoint_missing"]);
+
+function parseSeal(v: unknown, where: string): EvidenceSeal | null {
+  if (v === null) return null;
+  const o = obj(v, SEAL_KEYS, where);
+  if (o.status === "unconfirmed" && typeof o.reason === "string" && SEAL_UNCONFIRMED_REASONS.has(o.reason))
+    return { status: "unconfirmed", reason: o.reason as "seal_not_recorded" | "evidence_checkpoint_missing" };
+  if ((o.status === "confirmed" || o.status === "inclusion_failed") && o.reason === null)
+    return { status: o.status, reason: null };
+  throw new ProductVerdictsShapeError(where);
+}
 
 class ProductVerdictsShapeError extends Error {
   constructor(where: string) {
@@ -159,9 +180,10 @@ function parseItem(v: unknown, i: number): ProductVerdictRow {
   const where = `items[${i}]`;
   const o = obj(v, ITEM_KEYS, where);
   const status = o.record_status;
-  // 봉인 확인(E1) 전에는 서버가 늘 null 이다 — E1 이 이 칸을 채우는 PR 에서 화면 파서도 같이 바꾼다
-  if (o.evidence_seal !== null) throw new ProductVerdictsShapeError(`${where}.evidence_seal`);
+  const seal = parseSeal(o.evidence_seal, `${where}.evidence_seal`);
   if (status === "record_integrity_failed") {
+    // 숨긴 행에는 봉인 포함 실패 표시만 남을 수 있다.
+    if (seal !== null && seal.status !== "inclusion_failed") throw new ProductVerdictsShapeError(`${where}.evidence_seal`);
     const empty = (k: string) => Array.isArray(o[k]) && (o[k] as unknown[]).length === 0;
     if (
       o.resource_type !== null ||
@@ -175,7 +197,7 @@ function parseItem(v: unknown, i: number): ProductVerdictRow {
       !empty("candidate_refs")
     )
       throw new ProductVerdictsShapeError(`${where}.hidden`);
-    return { verdictId: optStr(o.verdict_id, DECIMAL, `${where}.verdict_id`), recordStatus: status };
+    return { verdictId: optStr(o.verdict_id, DECIMAL, `${where}.verdict_id`), recordStatus: status, evidenceSeal: seal };
   }
   if (status !== "verified" && status !== "policy_source_unavailable")
     throw new ProductVerdictsShapeError(`${where}.record_status`);
@@ -214,7 +236,11 @@ function parseItem(v: unknown, i: number): ProductVerdictRow {
     candidateRefs: list(o.candidate_refs, MAX_CANDIDATES, (s) => PRODUCT_REF.test(s), `${where}.candidate_refs`),
     evidenceCalls: evidence,
     observedAt: str(o.observed_at, CANONICAL_TIME, `${where}.observed_at`),
+    evidenceSeal: seal,
   };
+  // 값이 보이는 행은 포함 실패일 수 없다(서버가 숨긴다). 근거 호출이 없는 판정은 봉인 확인 대상이 아니다.
+  if (seal?.status === "inclusion_failed" || (seal !== null && row.evidenceCalls === 0))
+    throw new ProductVerdictsShapeError(`${where}.evidence_seal`);
   // 서버 저장 불변식(verdict-record §2(f)): 확정은 세 검사 yes · 근거 호출 1개 이상 · 제품 사유 없음일 때만
   if (
     row.oracleValue === "confirmed" &&
@@ -304,4 +330,10 @@ export const RECORD_STATUS_TEXT: Record<RecordStatus, string> = {
   verified: "당시 정책 원본과 대조함",
   policy_source_unavailable: "당시 원본 미확인",
   record_integrity_failed: "판정 기록 무결성 확인 실패 · 값 숨김",
+};
+
+export const EVIDENCE_SEAL_TEXT: Record<EvidenceSeal["status"], string> = {
+  confirmed: "봉인 확인됨",
+  unconfirmed: "봉인 미확인",
+  inclusion_failed: "봉인 포함 실패 · 값 숨김",
 };
