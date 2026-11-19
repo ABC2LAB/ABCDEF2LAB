@@ -140,10 +140,11 @@ install -d -m 700 /srv/abc2lab-eval /srv/abc2lab-eval-keys "$SESSION" "$SESSION/
    cd "$T" && go run ./cmd/e2-audit-keygen --key-file /srv/abc2lab-eval-keys/runner.key   # 0600, runs_root 밖
    ```
 
-4. **경로 가림 키:** 32바이트 무작위 키를 0600으로 만든다. B·O 6회 전체가 같은 파일을 쓴다. 값은 어디에도 옮기지 않는다.
+4. **경로 가림 키:** 세션마다 **새 디렉터리**에 32바이트 무작위 키를 0600으로 만든다. 그 세션의 B·O 6회 전체가 같은 파일을 쓴다. 이전 세션의 키는 그 세션 기록의 키 지문(`path_key_ref`)을 재현하는 데 필요하므로 덮어쓰지 않는다. 디렉터리가 이미 있거나 파일이 이미 있으면 아래 명령이 멈춘다(`mkdir`·`set -C`). 값은 어디에도 옮기지 않는다.
 
    ```bash
-   ( umask 077 && head -c 32 /dev/urandom > /srv/abc2lab-eval-keys/path.key )
+   PATH_KEY_DIR=/srv/abc2lab-eval-keys/path-$(basename "$SESSION")   # 예: …/path-official-20261127
+   ( umask 077 && mkdir "$PATH_KEY_DIR" && set -C && head -c 32 /dev/urandom > "$PATH_KEY_DIR/path.key" )
    ```
 
 5. **비밀 파일(세션 시작 때 만들고 끝나면 지운다):**
@@ -180,7 +181,7 @@ install -d -m 700 /srv/abc2lab-eval /srv/abc2lab-eval-keys "$SESSION" "$SESSION/
    ```
 
 7. **`runner.json`:** `$T/docs/evaluation/runner.example.json`([예시](runner.example.json))을 복사해 `images`의 태그·내용 ID와 경로를 채우고, 아래 칸을 더한다. 그 밖의 값은 바꾸지 않는다.
-   - `runs_root`: `$SESSION/runs`(세션마다 새 디렉터리). `path_key_file`: 4번 키. `purpose`: `official`.
+   - `runs_root`: `$SESSION/runs`(세션마다 새 디렉터리). `path_key_file`: 4번 키(`$PATH_KEY_DIR/path.key`, 이 세션 것). `purpose`: `official`.
    - `llm_gateway.verify_attempts` 40, `verify_interval_seconds` 3, `run.llm_verify_timeout_seconds` 300(2절).
    - `split` 블록(제품 배치):
 
@@ -271,7 +272,7 @@ python3 -I -B scripts/eval/score.py "$SESSION/manifest.json" --runner-key-file /
 
 - 세션이 끝나면 비밀 env·관리자 비밀번호·manifest 파일을 지운다(`shred -u` 또는 `rm`). 필요하면 키를 폐기·재발급한다.
 - runs_root(서명된 회차 기록·근거 파일)와 manifest·채점 출력을 레포 밖에 그대로 보관하고, 디렉터리별 SHA-256 목록을 함께 둔다. **레포에 커밋하지 않는다**(절대 규칙 2).
-- 러너 서명 키·경로 가림 키는 채점 재현에 필요하므로 회차 기록과 **다른 곳**에 보관한다.
+- 러너 서명 키·경로 가림 키는 채점 재현에 필요하므로 회차 기록과 **다른 곳**(`/srv/abc2lab-eval-keys`, 0700)에 보관한다. 경로 가림 키는 세션별 디렉터리(`path-<세션 이름>/path.key`)에 두고, 끝난 세션의 키 파일에는 다시 쓰지 않는다. 다음 세션은 4절 4번대로 새 디렉터리에 새 키를 만든다. 세션 기록에는 그 세션의 키 지문(`path_key_ref`)과 키 디렉터리 이름을 적어, 어느 키로 어느 기록을 재현하는지 잇는다. 러너 서명 키는 세션 사이에 유지한다(`e2-audit-keygen`은 있는 파일을 덮어쓰지 않는다).
 - 세션 기록(날짜, 도구 버전 실측, 제공자 재조회 응답 sha256, 이미지 ID, `tool-surface.json`, 태그 커밋, `tools-frozen` 확인, 키 지문, 키 사용량 전후, 집계 출력)을 결과 문서에 옮긴다.
 
 ## 부록 A. e2-legacy 배치 고정값(이력)
