@@ -942,3 +942,44 @@ func TestProductE3ConfirmationTargetChangedRefuses(t *testing.T) {
 		t.Fatalf("참조 없는 회차: %s", raw)
 	}
 }
+
+// 제품 생성자는 Deps.Random을 두지 않는다(crypto/rand). id_field 선언도 그 기본 난수원으로 ID를 만들어 생성·조회에 싣고
+// 확정까지 간다(#766 이동찬 리뷰: ID 생성에 nil을 넘겨 생성 요청 0건으로 끝나던 것).
+func TestProductE3ConfirmationIDFieldDefaultRandom(t *testing.T) {
+	f := newE3HookFixtureWith(t, true, nil, func(in *diagnosisprep.DeclarationInput) {
+		for i := range in.Types {
+			if in.Types[i].Type == "note" {
+				in.Types[i].Create.IDPath, in.Types[i].Create.IDField = "", "title_id"
+			}
+		}
+	})
+	fake := e3HookFake()
+	c := f.confirmation(fake, e3HookAccounts(), nil)
+	if c.deps.Random != nil {
+		t.Fatal("제품 생성자가 난수원을 정함 — 이 시험은 기본 난수원 경로를 본다")
+	}
+	if err := c.run(t.Context(), "9", nil); err != nil {
+		t.Fatal(err)
+	}
+	res, raw := readE3Result(t, f.runs)
+	if res.Status != e3contract.StatusCompleted || len(res.Verdicts) != 1 || res.Verdicts[0].Value != "confirmed" {
+		t.Fatalf("id_field 확정 결과: %s", raw)
+	}
+	created := ""
+	for _, call := range fake.Calls() {
+		switch call.Key.Purpose {
+		case e3contract.PurposeCreate:
+			if created != "" || !strings.HasPrefix(call.ObjectID, e3contract.ObjectIDPrefix) {
+				t.Fatalf("생성 요청: %+v", call)
+			}
+			created = call.ObjectID
+		case e3contract.PurposeRead:
+			if call.ObjectID != created {
+				t.Fatalf("조회가 생성한 ID를 싣지 않음: %+v", call)
+			}
+		}
+	}
+	if created == "" || len(res.Writes) != 1 || res.Writes[0].ObjectID != created || res.Writes[0].Outcome != e3contract.WriteCreated {
+		t.Fatalf("생성 ID·쓰기: %q %+v", created, res.Writes)
+	}
+}

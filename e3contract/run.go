@@ -44,7 +44,7 @@ type Deps struct {
 	Reset        ResetGate
 	// Writes는 생성 요청의 쓰기 기록이다(기록하고 나서 보내기). 없으면 연결 미구현(not_wired)이다.
 	Writes WriteRecorder
-	// Random은 표식 난수다. 없으면 crypto/rand다.
+	// Random은 표식과 요청 본문 칸 객체 ID(id_field)의 난수원이다. 없으면 crypto/rand다(제품 생성자는 두지 않는다).
 	Random io.Reader
 	// Now는 관찰이 하나도 없을 때 판정 시각이다. 없으면 time.Now다.
 	Now func() time.Time
@@ -87,13 +87,15 @@ type run struct {
 	stoppedBeforeStage bool
 	in                 Input
 	marker             Marker
-	decl               Declaration
-	requests           int
-	seen               map[string]bool
-	integrity          IntegrityReason
-	budget             bool // 확정 단계 전용 몫이 다 됐다. 더 보내지 않는다.
-	stopped            bool // 회차 중지로 끊겼다.
-	lastAt             time.Time
+	// random은 이 회차의 난수원이다(Deps.Random, 없으면 crypto/rand). 표식과 요청 본문 칸 ID가 같은 출처에서 새 바이트를 읽는다.
+	random    io.Reader
+	decl      Declaration
+	requests  int
+	seen      map[string]bool
+	integrity IntegrityReason
+	budget    bool // 확정 단계 전용 몫이 다 됐다. 더 보내지 않는다.
+	stopped   bool // 회차 중지로 끊겼다.
+	lastAt    time.Time
 	// bindingValid는 실행 결속이 검증을 통과했는지다. 통과한 결속만 결과에 싣는다.
 	bindingValid bool
 	// writes는 생성 요청이 대상에 남겼을 수 있는 쓰기다. 진위 실패로 판정을 버려도 남긴다.
@@ -198,6 +200,7 @@ func (r *run) run(ctx context.Context) RunResult {
 	if random == nil {
 		random = rand.Reader
 	}
+	r.random = random
 	marker, err := NewMarker(random)
 	if err != nil {
 		return r.result(StatusStartRefused, string(RefuseMarkerGenerationFailed))
@@ -456,7 +459,7 @@ func (r *run) confirmType(ctx context.Context, t TypeDeclaration, subjects oracl
 	// 요청 본문 칸 ID(id_field)면 회차·종류마다 표식과 따로 새 난수 ID를 만든다. 본문은 확정 단계가 틀에 표식·ID를 넣어 만든다.
 	var objectID string
 	if t.Create.IDField != "" {
-		id, err := NewObjectID(r.deps.Random, r.marker)
+		id, err := NewObjectID(r.random, r.marker)
 		if err != nil {
 			return r.verdict(t, subjects, facts, evidence, ReasonCreateRequestUnavailable)
 		}
