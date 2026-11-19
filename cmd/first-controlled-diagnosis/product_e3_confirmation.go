@@ -7,7 +7,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"slices"
 	"time"
 
 	"github.com/Autumn-27/artex/e3contract"
@@ -142,7 +141,13 @@ func (c *productE3Confirmation) input(taskID string) (e3contract.Input, time.Dur
 		in.Binding.Policy = frozen.Policy
 		in.PolicyValidFrom, in.PolicyValidUntil = frozen.ValidFrom, frozen.ValidUntil
 	}
-	in.Owner, in.Cross = productE3Accounts(c.accounts)
+	// 계정 역할(A·B)은 동결한 선언이 정한다(계약 §4). 여기서는 그 라벨을 읽어 인증 결과를 붙이기만 하고, 동결본 대조와 역할·
+	// 등급 확인은 e3contract.Run이 한다. 선언을 못 읽으면 역할을 비워 둔다(확정 단계는 정책 출처·계정 사유로 꺼진다).
+	var decl e3contract.Declaration
+	if ok {
+		decl, _ = productDeclarationReader{runsDir: c.runsDir}.ReadFrozen(context.Background(), frozen.Policy)
+	}
+	in.Owner, in.Cross = productE3Roles(decl, c.accounts)
 	return in, share
 }
 
@@ -164,25 +169,21 @@ func productE3Admitted(l server.E2HTTPFileLimits) (int, time.Duration) {
 	return int((requests - identity) / perType), timeout
 }
 
-// productE3Accounts는 인증 준비가 성공한(authenticated) 시험 계정을 이름순으로 소유 계정(A)·교차 계정(B)에 둔다. 셋 이상이면
-// 앞의 둘만 쓴다. 둘이 안 되면 빈 칸이 남아 확정 단계는 test_accounts_unavailable로 꺼진다.
-// TODO(최민준): A·B 배정 규칙은 판정 의미에 닿아 아직 확정하지 않았다(계약 §8 열린 결정). E② Transport 연결 전에 정한다.
-func productE3Accounts(read func() map[string]string) (owner, cross e3contract.Account) {
-	if read == nil {
-		return owner, cross
+// productE3Roles는 선언한 소유(A)·교차(B) 계정 라벨에 그 실행의 인증 준비 결과를 붙인다. 인증 결과가 authenticated가 아니면
+// Authenticated가 거짓이라 확정 단계는 test_accounts_unavailable로 꺼진다. 계정을 이름순 등으로 고르지 않는다(관리자 계정이
+// 교차 조회자가 되어 거짓 CONFIRMED가 날 수 있어서, 사용자 결정 2026-11-19).
+func productE3Roles(decl e3contract.Declaration, read func() map[string]string) (owner, cross e3contract.Account) {
+	results := map[string]string{}
+	if read != nil {
+		results = read()
 	}
-	var labels []string
-	for label, result := range read() {
-		if result == server.E2HTTPAuthAuthenticated {
-			labels = append(labels, label)
+	role := func(label string) e3contract.Account {
+		if label == "" {
+			return e3contract.Account{}
 		}
+		return e3contract.Account{Label: label, Authenticated: results[label] == server.E2HTTPAuthAuthenticated}
 	}
-	slices.Sort(labels)
-	accounts := make([]e3contract.Account, 2)
-	for i := 0; i < len(labels) && i < len(accounts); i++ {
-		accounts[i] = e3contract.Account{Label: labels[i], Authenticated: true}
-	}
-	return accounts[0], accounts[1]
+	return role(decl.OwnerAccountLabel), role(decl.CrossAccountLabel)
 }
 
 // e3RunStartRefusal은 회차 시작 때(모델 단계 전)의 리셋 게이트다(결정 §6.1 (a), 계약 §8). 지금 대상 판에 유효한 선언이 있는

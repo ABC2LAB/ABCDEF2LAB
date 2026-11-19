@@ -33,6 +33,7 @@
 | `declared_by`·`declared_at` | 누가·언제(감사) |
 | `identity{path, subject_id_path}` | 신원 확인 GET. 대상마다 하나(결정 §5.1이 대상 단위로 확인하므로) |
 | `types[]` | 자원 종류마다 `type`·`sharing`·`owner_only_fields`·`create{path, method(POST·PUT), body_kind(json·form), body_template, marker_field, id_path}`·`read{path_template, data_path, status_path?, normal_value?}` |
+| `owner_account_label`·`cross_account_label`·`accounts_same_privilege` | 확정 단계 계정 역할(선택, 2026-11-19 사용자 결정). 소유·생성 시험 계정(A), 교차 조회 시험 계정(B), 두 계정이 같은 권한 등급이라는 운영자 확인. §4 |
 
 - `owner_only`이고 `marker_field`가 `owner_only_fields`에 있는 종류만 시험한다. `shared` 종류는 요청 칸을 두지 않고, 확정 단계는 요청도 판정 행도 만들지 않고 `skipped`로 보인다. 판정 값은 오라클만 만들기 때문에, 사유만으로 UNDECIDABLE 행을 꾸미지 않는다.
 - 경로는 승인 범위 안 절대 경로다. query·조각·점 조각·공백을 받지 않는다. `read.path_template`에는 `{id}` 조각이 정확히 하나다. 승인 범위 안인지는 E²가 요청마다 다시 본다.
@@ -56,7 +57,11 @@
 ## 4. E② 프로그램 요청
 
 - 목적 셋: `e3_identity`(신원 GET), `e3_create`(A 세션 생성, POST·PUT), `e3_read`(A·B 세션 조회 GET). 인증 준비처럼 목적 규칙으로만 열리고 모델 요청의 규칙 찾기에서는 빠진다.
-- 계정 라벨은 서버가 C14 인증 결과(`authenticated`)에서 고른다. 관찰에는 E²가 실제로 붙인 라벨이 들어가고, 요청한 라벨과 다르면 진위 실패다.
+- **계정 역할은 선언이 정한다(2026-11-19 사용자 결정).** 소유·생성 계정(A)은 `owner_account_label`, 교차 조회 계정(B)은 `cross_account_label`이고, 운영자가 두 계정이 같은 권한 등급이라고 확인한다(`accounts_same_privilege: true`). 셋은 선언과 함께 동결본에 들어가 digest로 묶인다. 근거: 서버가 인증된 시험 계정을 이름순 등으로 고르면 관리자 계정이 교차 조회자(B)가 될 수 있다. 관리자는 남의 객체를 정상 권한으로 읽을 수 있어서, 그 조회에 표식이 보이면 접근통제 결함이 없는데도 CONFIRMED가 난다. 어느 계정이 같은 등급인지는 대상을 아는 운영자만 안다.
+  - 역할 둘은 함께 정하거나 함께 비운다. 같은 계정을 두 역할에 둘 수 없다. 역할이 없으면 등급 확인도 둘 수 없다(저장 API는 그 칸 이름으로 400).
+  - 확정 단계는 선언에 역할이 없으면 `account_roles_undeclared`, 등급 확인이 참이 아니면 `accounts_privilege_unconfirmed`, 선언한 두 계정 중 하나라도 그 실행의 인증 준비 결과가 `authenticated`가 아니면 `test_accounts_unavailable`로 꺼진다(요청 0). 인증된 다른 계정으로 대신하지 않는다.
+  - 칸은 선택 칸이다. 역할 없이 저장한 선언은 정본 바이트가 칸을 넣기 전과 같아서(형식 판 그대로) 이미 저장한 선언과 화면 파서가 그대로 읽는다.
+- 서버는 선언한 라벨에 C14 인증 결과(`authenticated`)를 붙인다. 관찰에는 E²가 실제로 붙인 라벨이 들어가고, 요청한 라벨과 다르면 진위 실패다.
 - 요청 하나는 영수증 하나(`CallRef{call_ref, attempt_id, sequence}`)다. 같은 요청을 다시 보내지 않는다(결과 불명 쓰기 포함).
 - 객체 ID 원문은 E² 밖으로 나오지 않는다. 생성 관찰은 실행별 키 digest만 주고, 조회 요청은 생성 관찰의 `CallRef`를 가리키면 E²가 그 ID로 경로를 채운다.
 - 보내지 않은 것이 확실하면 `sent=false`와 사유(`approval_denied`·`approval_timeout`·`confirmation_budget_exhausted`·`policy_denied`)다. 보냈는지 모르면 오류를 돌려주거나 `sent=true, response_complete=false`다.

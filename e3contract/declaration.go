@@ -115,6 +115,14 @@ type Declaration struct {
 	DeclaredAt             time.Time         `json:"declared_at"`
 	Identity               IdentitySpec      `json:"identity"`
 	Types                  []TypeDeclaration `json:"types"`
+	// 확정 단계의 계정 역할(사용자 결정 2026-11-19, 계약 §4). OwnerAccountLabel은 객체를 만들고 소유하는 시험 계정(A),
+	// CrossAccountLabel은 그 객체를 교차 조회하는 시험 계정(B)이다. AccountsSamePrivilege는 두 계정이 같은 권한 등급이라는
+	// 운영자 확인이다. 서버가 계정을 이름순 등으로 고르면 관리자 계정이 B가 되어 정상 권한으로 읽은 것을 거짓 CONFIRMED로 낼
+	// 수 있어서, 운영자가 정하고 동결본에 묶는다. 셋 다 선택 칸이다: 비어 있는 선언은 정본 바이트가 칸을 넣기 전과 같고,
+	// 확정 단계는 꺼진다(account_roles_undeclared). AccountsSamePrivilege가 참이 아니면 역시 꺼진다.
+	OwnerAccountLabel     string `json:"owner_account_label,omitempty"`
+	CrossAccountLabel     string `json:"cross_account_label,omitempty"`
+	AccountsSamePrivilege bool   `json:"accounts_same_privilege,omitempty"`
 }
 
 // 선언 크기 상한이다. 선언은 준비 프로세스 IPC 한 프레임(diagnosisprep.MaxFrameBytes 64KiB)에 요청·응답으로 실리므로,
@@ -156,6 +164,17 @@ func (d Declaration) Validate() error {
 		return bad("identity.subject_id_path")
 	case len(d.Types) == 0 || len(d.Types) > MaxDeclarationTypes:
 		return bad("types")
+	case d.OwnerAccountLabel != "" && !refPattern.MatchString(d.OwnerAccountLabel):
+		return bad("owner_account_label")
+	case d.CrossAccountLabel != "" && !refPattern.MatchString(d.CrossAccountLabel):
+		return bad("cross_account_label")
+	// 역할은 둘 다 정하거나 둘 다 비운다. 같은 계정을 두 역할에 둘 수 없다. 역할이 없으면 등급 확인도 없다.
+	case (d.OwnerAccountLabel == "") != (d.CrossAccountLabel == ""):
+		return bad("cross_account_label")
+	case d.OwnerAccountLabel != "" && d.OwnerAccountLabel == d.CrossAccountLabel:
+		return bad("cross_account_label")
+	case d.OwnerAccountLabel == "" && d.AccountsSamePrivilege:
+		return bad("accounts_same_privilege")
 	}
 	for i, t := range d.Types {
 		if !typePattern.MatchString(t.Type) {
@@ -425,6 +444,9 @@ func (d Declaration) CanonicalBytes() ([]byte, error) {
 		DeclaredAt             string            `json:"declared_at"`
 		Identity               IdentitySpec      `json:"identity"`
 		Types                  []TypeDeclaration `json:"types"`
+		OwnerAccountLabel      string            `json:"owner_account_label,omitempty"`
+		CrossAccountLabel      string            `json:"cross_account_label,omitempty"`
+		AccountsSamePrivilege  bool              `json:"accounts_same_privilege,omitempty"`
 	}
 	// 빈 목록과 nil이 다른 바이트가 되지 않게 맞춘다.
 	types := make([]TypeDeclaration, len(d.Types))
@@ -440,7 +462,8 @@ func (d Declaration) CanonicalBytes() ([]byte, error) {
 	err := enc.Encode(canonicalDeclaration{Version: d.Version, TargetRef: d.TargetRef,
 		TargetApprovalRevision: d.TargetApprovalRevision, DeclaredBy: d.DeclaredBy,
 		DeclaredAt: d.DeclaredAt.UTC().Truncate(time.Microsecond).Format(declarationTimeLayout),
-		Identity:   d.Identity, Types: types})
+		Identity:   d.Identity, Types: types, OwnerAccountLabel: d.OwnerAccountLabel, CrossAccountLabel: d.CrossAccountLabel,
+		AccountsSamePrivilege: d.AccountsSamePrivilege})
 	if err != nil {
 		return nil, fmt.Errorf("%w: 정본 바이트를 만들지 못함", ErrDeclaration)
 	}
