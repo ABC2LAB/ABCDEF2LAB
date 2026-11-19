@@ -187,6 +187,10 @@ class TestFinishWithGoals(unittest.TestCase):
         turns = [(GOALS_TOOL, GOALS), (FACTS_TOOL, FACTS)]
         self.assertEqual(script.decide(conversation(*self.PLANNER, turns=turns, same_ids=True)),
                          (PROVE_TOOL, {"goal_id": 3, "evidence_id": 9, "reason": PROVE_REASON}))
+        # 같은 도구를 두 번 불렀으면 가장 최근 결과를 쓴다: 두 번째 list_goals에서 3은 met, 5만 열려 있다
+        later = json.dumps([{"id": 3, "state": "met"}, {"id": 5, "state": "open"}])
+        turns = [(GOALS_TOOL, GOALS), (FACTS_TOOL, FACTS), (PROVE_TOOL, "ok"), (GOALS_TOOL, later), (FACTS_TOOL, FACTS)]
+        self.assertEqual(self.script().decide(conversation(*self.PLANNER, turns=turns, same_ids=True))[1]["goal_id"], 5)
 
     def test_planner_stops_without_facts_tools_or_finish(self):
         script = self.script()
