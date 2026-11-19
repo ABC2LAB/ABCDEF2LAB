@@ -30,7 +30,7 @@ E² 안에서 E③ 판정(CONFIRMED·UNDECIDABLE 등)을 하지 않는다. E²�
 | `program` | `e3_identity`·`e3_create`·`e3_read` | `Purpose` |
 | `role` | `owner`(A)·`cross`(B) | `Role` |
 | `account_label` | E²가 **실제로 붙인** C14 시험 계정 라벨(모델이 준 값 아님) | `AccountLabel` |
-| `account_binding_ref` | C14 인증 성공에 기반해 서버가 발급하는 비민감 참조. 실행·계정 라벨·세션 판에 결속하고, 다시 로그인해 세션이 바뀌면 다른 값이다(발급은 이동찬, 세션 저장소) | (대조만: 같은 실행·같은 라벨) |
+| `account_binding_ref` | C14 인증 성공에 기반해 서버가 발급하는 비민감 참조. 실행·계정 라벨·세션 판에 결속하고, 다시 로그인해 세션이 바뀌면 다른 값이다. 발급은 실행의 세션 저장소(`server` `e2HTTPSessionStore`)가 세션마다 새 난수로 한다(`acct-`+32hex, 실행·라벨·자격·세션 값을 넣지 않음, 세션 교체와 같은 잠금 안에서 바꿈, 난수를 못 읽으면 발급하지 않고 옛 참조도 지움). E²는 `E2HTTPRunOptions.AccountBindings()`의 `AccountBindingRef(run_ref, label)`로 지금 참조를 읽고, `BoundSession(run_ref, label, ref)`로 그 참조가 지금 결속일 때만 세션 사본을 받는다(옛 참조·다른 라벨·다른 실행은 `ErrE2HTTPAccountBinding`) | (대조만: 같은 실행·같은 라벨) |
 | `e3_binding{job_ref, generation_ref, instance_ref, policy{kind, ref, digest_sha256, target_approval_revision}}` | 확정 단계 실행 결속. `run_ref`·`task_ref`·`e2_policy_ref`는 `scope`와 같아야 한다 | `Binding` |
 | `resource_type` | 선언한 자원 종류(생성·조회) | `ResourceType` |
 | `create_ref{call_ref, attempt_id, sequence}` | 조회가 읽은 생성 관찰(조회만) | `Create` |
