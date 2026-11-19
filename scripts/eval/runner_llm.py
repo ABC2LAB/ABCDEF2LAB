@@ -95,10 +95,8 @@ def _check_shape(marker: object) -> None:
 
 # 끊긴 호출(2026-11-19 사용자 결정, 평가 프로토콜 §6): 회차를 멈출 때 진행 중이던 호출은 응답이 끝나지 않아 제공자 통계가
 # 끝내 생기지 않을 수 있다. 기록으로 증명된 것만 끊긴 호출로 본다. 세 조건이 모두 기록에 있어야 한다:
-# (1) 시작이 정지 신호(B 게이트웨이 봉인, O 제품 정지 요청) 전, (2) 응답 완료 기록 없음(결정이 forwarded가 아님),
-# (3) 정지·봉인으로 끊김(B: 게이트웨이가 봉인 때 끊은 cancelled_by_seal, O: 정지 신호 뒤에 호출자 쪽 끊김으로 끝난
-# upstream_error/client_closed_before_done). 정지와 상관없이 회차 중간에 실패한 호출은 여기에 들지 않는다.
-_INTERRUPTED_O_END = "client_closed_before_done"
+# (1) 시작이 정지 신호(B 게이트웨이 봉인) 전, (2) 응답 완료 기록 없음(결정이 forwarded가 아님), (3) 봉인으로 끊김(게이트웨이가
+# 봉인 때 끊은 cancelled_by_seal). 정지와 상관없이 회차 중간에 실패한 호출은 여기에 들지 않는다. O는 보류(아래 함수 주석).
 
 
 def _instant(value: object) -> datetime | None:
@@ -113,9 +111,15 @@ def _instant(value: object) -> datetime | None:
 
 def interrupted_generation_ids(rows: list[dict], stop_at: str, *, product: bool) -> frozenset[str]:
     """호출 행(B 게이트웨이 행·O 제품 호출 기록, 같은 칸·어휘)과 정지 신호 시각으로 기록상 끊긴 호출의 generation ID를 고른다.
-    끊김의 증거는 쪽마다 하나다: B는 게이트웨이가 봉인 때 직접 끊은 cancelled_by_seal, O는 제품 정지 요청 뒤 호출자 쪽
-    끊김으로 끝난 upstream_error/client_closed_before_done. B 엔진은 봉인 때 멈추지 않으므로 B의 호출자 쪽 끊김은 봉인 탓이라고
-    기록상 말할 수 없어 넣지 않는다. 시각을 읽을 수 없는 행은 끊긴 호출로 보지 않는다(추정으로 분류하지 않는다)."""
+    B의 증거는 게이트웨이가 봉인 때 직접 끊은 cancelled_by_seal 하나다. B 엔진은 봉인 때 멈추지 않으므로 B의 호출자 쪽 끊김은
+    봉인 탓이라고 기록상 말할 수 없어 넣지 않는다. 시각을 읽을 수 없는 행은 끊긴 호출로 보지 않는다(추정으로 분류하지 않는다).
+    O(product=True)는 끊긴 호출에 generation ID가 없어 늘 빈 집합이다(보류)."""
+    if product:
+        # O 예외는 보류한다(#735 리뷰). 제품 전송기는 응답을 끝까지 읽은 호출(forwarded)에만 generation ID를 남기고, 끊긴 호출
+        # (upstream_error/client_closed_before_done)은 ID가 비어 있다(llmpolicy/openrouter_transport.go). 그래서 끊긴 호출과 미확인
+        # generation을 잇는 기록 근거가 없다. 근거가 생길 때까지 O의 미확인은 모두 정상 완료 호출로 보고 무효 사유로 센다.
+        # (B 게이트웨이는 스트림 앞부분에서 받은 ID를 끊긴 호출에도 남긴다, cmd/eval-meter/gateway.go.)
+        return frozenset()
     stop = _instant(stop_at)
     if stop is None:
         return frozenset()
@@ -125,9 +129,7 @@ def interrupted_generation_ids(rows: list[dict], stop_at: str, *, product: bool)
         if not isinstance(gid, str) or not gid or started is None or completed is None or not started < stop <= completed:
             continue
         decision = row.get("decision")
-        cut = (decision == "upstream_error" and row.get("unfinished_end") == _INTERRUPTED_O_END) if product \
-            else decision == "cancelled_by_seal"
-        if cut:
+        if decision == "cancelled_by_seal":
             ids.add(gid)
     return frozenset(ids)
 

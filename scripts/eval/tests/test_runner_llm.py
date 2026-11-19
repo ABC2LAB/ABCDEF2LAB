@@ -344,13 +344,14 @@ class TestInterruptedCalls(unittest.TestCase):
         self.assertEqual(interrupted_generation_ids(rows, STOP, product=False), frozenset({"cut"}))
         self.assertEqual(interrupted_generation_ids(rows, "not-a-time", product=False), frozenset())
 
-    def test_o_counts_only_caller_side_cuts_ending_after_the_stop(self):
-        rows = [call("cut", "upstream_error", "2026-11-19T00:00:05Z", "2026-11-19T00:00:10Z", "client_closed_before_done"),
-                call("midrun", "upstream_error", "2026-11-19T00:00:01Z", "2026-11-19T00:00:02Z", "client_closed_before_done"),
-                call("upcut", "upstream_error", "2026-11-19T00:00:05Z", "2026-11-19T00:00:11Z", "upstream_cut_before_done"),
-                call("after", "upstream_error", "2026-11-19T00:00:05Z", "2026-11-19T00:00:11Z", "client_closed_after_done"),
+    def test_o_exception_is_on_hold(self):
+        # 제품 전송기는 끊긴 호출(upstream_error/client_closed_before_done)에 generation ID를 남기지 않고, ID는 응답을 끝까지
+        # 읽은 forwarded에만 있다(#735 리뷰). 끊김과 ID를 잇는 근거가 없어 O 예외는 보류: 어떤 행이든 빈 집합이다.
+        rows = [call("", "upstream_error", "2026-11-19T00:00:05Z", "2026-11-19T00:00:11Z", "client_closed_before_done"),  # 실제 모양
+                call("late", "forwarded", "2026-11-19T00:00:05Z", "2026-11-19T00:00:10Z"),  # 정지 순간에 끝난 완료 호출
+                call("synthetic", "upstream_error", "2026-11-19T00:00:05Z", "2026-11-19T00:00:10Z", "client_closed_before_done"),
                 call("seal", "cancelled_by_seal", "2026-11-19T00:00:05Z", "2026-11-19T00:00:11Z")]
-        self.assertEqual(interrupted_generation_ids(rows, STOP, product=True), frozenset({"cut"}))
+        self.assertEqual(interrupted_generation_ids(rows, STOP, product=True), frozenset())
 
     def test_interrupted_unverified_is_counted_apart_and_does_not_invalidate(self):
         m = marker(generations=[generation("gen-1"), generation("cut", status="unverified", last="http_404", tries=40)])

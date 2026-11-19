@@ -1092,59 +1092,46 @@ class TestProductFaultStall(unittest.TestCase):
 
 
 class TestInterruptedCallsO(unittest.TestCase):
-    """O: 제품 정지 요청 뒤 호출자 쪽 끊김으로 끝난 호출의 미확인은 따로 세고, 제품 호출 기록을 회차 근거에 남긴다."""
+    """O: 제품 호출 기록·정지 요청 시각은 회차 근거에 남기되, 끊긴 호출 예외는 보류한다(#735 리뷰). 제품 전송기는 끊긴 호출에
+    generation ID를 남기지 않아(응답을 끝까지 읽은 forwarded에만 있음) 끊김과 미확인 ID를 잇는 근거가 없다."""
 
-    def ports(self, end_completed_at):
+    def ports(self, verified_late: bool):
         def mutate(p):
+            # 제품이 실제로 쓰는 모양: 완료 호출은 ID가 있고, 정지로 끊긴 호출은 ID가 비어 있다(openrouter_transport.go)
             rows = [{"seq": 1, "decision": "forwarded", "method": "POST", "status": 200, "started_at": "2000-01-01T00:00:00Z",
                      "completed_at": "2000-01-01T00:00:01Z", "request_bytes": 1, "response_bytes": 1, "generation_id": "gen-1"},
                     {"seq": 2, "decision": "upstream_error", "method": "POST", "status": 200, "started_at": "2000-01-01T00:00:02Z",
-                     "completed_at": end_completed_at, "request_bytes": 1, "response_bytes": 0, "generation_id": "cut",
-                     "unfinished_end": "client_closed_before_done"}]
+                     "completed_at": "2999-01-01T00:00:00Z", "request_bytes": 1, "response_bytes": 0, "generation_id": "",
+                     "unfinished_end": "client_closed_before_done"},
+                    {"seq": 3, "decision": "forwarded", "method": "POST", "status": 200, "started_at": "2000-01-01T00:00:03Z",
+                     "completed_at": "2999-01-01T00:00:00Z", "request_bytes": 1, "response_bytes": 1, "generation_id": "late"}]
             p.calls_file = b"".join(json.dumps(row).encode() + b"\n" for row in rows)
-            unverified = {"id": "cut", "status": "unverified", "provider_name": "", "attempts": [],
-                          "lookup": {"tries": 40, "last": "http_404"}}
-            p.marker = product_marker(generations=[product_marker()["generations"][0], unverified])
+            p.ledger = b"r1 10 20 30\n" * len(rows)  # 장부 예약 줄 수 = 호출 기록 줄 수
+            late = product_marker()["generations"][0] | {"id": "late"}
+            if not verified_late:
+                late = {"id": "late", "status": "unverified", "provider_name": "", "attempts": [],
+                        "lookup": {"tries": 40, "last": "http_404"}}
+            p.marker = product_marker(generations=[product_marker()["generations"][0], late])
         return mutate
 
-    def test_cut_by_the_stop_is_counted_apart(self):
-        result, ports, evidence = run(self.ports("2999-01-01T00:00:00Z"))  # 정지 신호 뒤에 끝남
+    def test_records_are_kept_and_the_cut_call_without_an_id_does_not_count(self):
+        result, ports, evidence = run(self.ports(verified_late=True))
         self.assertEqual(result["status"], "complete", result)
-        self.assertEqual(evidence.files["llm-summary.json"]["unverified_interrupted"], 1)
+        summary = evidence.files["llm-summary.json"]
+        self.assertEqual((summary["unverified_interrupted"], summary["interrupted_calls"]), (0, 0))
         self.assertEqual(evidence.files["product-calls.jsonl"], ports.calls_file.decode())  # 받은 바이트 그대로
+        self.assertEqual(result["stop_requested_at"], summary["stop_requested_at"])  # 정지 요청 시각도 근거에 남는다
 
-    def test_failure_before_the_stop_still_invalidates(self):
-        result, _, _ = run(self.ports("2000-01-01T00:00:03Z"))  # 회차 중간 실패(정지와 무관)
-        self.assertEqual((result["status"], result["reasons"]), ("invalid", ["llm_generation_unverified"]))
-
-    def test_saved_stop_time_recomputes_the_same_classification(self):
-        # 회차 뒤 재검증(평가 프로토콜 §6): 저장된 호출 기록과 저장된 정지 요청 시각만으로 같은 분류가 나와야 한다(#735 리뷰).
-        # 시험 시계는 결정적이라 한 번 돌려 정지 요청 시각을 알아낸 뒤, 그 시각에 끝난 호출(끊김)과 그 바로 앞에 끝난 호출(끊김
-        # 아님)로 경계를 찌른다. 다른 시각(계측기 봉인 등)을 저장하거나 쓰면 둘 중 하나가 달라진다.
+    def test_unverified_completed_call_near_the_stop_still_invalidates(self):
+        # 정지 순간 즈음 끝난 호출이라도 ID가 있으면 응답을 끝까지 읽은 완료 호출이다. 미확인이면 지금처럼 무효다.
         from runner_llm import interrupted_generation_ids
-
-        def settled(p):
-            p.forced = 1  # 강제 취소 1건 → 봉인 뒤 정착 대기만큼 시계가 흘러 봉인 시각과 정지 요청 시각이 갈린다
-        _, _, first = run(lambda p: (self.ports("2999-01-01T00:00:00Z")(p), settled(p)))
-        stop = first.files["llm-summary.json"]["stop_requested_at"]
-        moment = datetime.fromisoformat(stop)
-        for completed, expected in ((moment, {"cut"}), (moment - timedelta(milliseconds=1), set())):
-            def mutate(p, completed=completed):
-                self.ports(completed.isoformat())(p)
-                settled(p)
-                rows = [json.loads(line) for line in p.calls_file.decode().splitlines()]
-                rows[1]["started_at"] = (moment - timedelta(seconds=1)).isoformat()
-                p.calls_file = b"".join(json.dumps(row).encode() + b"\n" for row in rows)
-            with self.subTest(completed=completed.isoformat()):
-                result, _, evidence = run(mutate)
-                summary = evidence.files["llm-summary.json"]
-                self.assertEqual(summary["stop_requested_at"], stop)
-                rows = [json.loads(line) for line in evidence.files["product-calls.jsonl"].splitlines() if line]
-                self.assertEqual(set(interrupted_generation_ids(rows, summary["stop_requested_at"], product=True)), expected)
-                self.assertEqual(summary.get("unverified_interrupted", 0), len(expected))
-                self.assertEqual(result["status"], "complete" if expected else "invalid")
-                if expected:
-                    self.assertEqual(result["stop_requested_at"], stop)
+        result, _, evidence = run(self.ports(verified_late=False))
+        self.assertEqual((result["status"], result["reasons"]), ("invalid", ["llm_generation_unverified"]))
+        summary = evidence.files["llm-summary.json"]
+        self.assertEqual(summary["unverified_interrupted"], 0)
+        rows = [json.loads(line) for line in evidence.files["product-calls.jsonl"].splitlines() if line]
+        # 저장된 기록·시각으로 다시 계산해도 같다(보류 중이라 빈 집합)
+        self.assertEqual(interrupted_generation_ids(rows, summary["stop_requested_at"], product=True), frozenset())
 
 if __name__ == "__main__":
     unittest.main()
