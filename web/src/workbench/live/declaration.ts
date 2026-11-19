@@ -541,7 +541,8 @@ function parseType(v: unknown): TypeDraft {
   if (sharing === "shared") {
     if (
       ownerOnlyFields.length ||
-      !emptyRequestObject(o.create, CREATE_KEYS, CREATE_OPTIONAL) ||
+      // 서버는 빈 id_field를 내보내지 않는다(omitempty) — 공유 종류 create에 그 칸이 있으면 계약 밖이다
+      !emptyRequestObject(o.create, CREATE_KEYS) ||
       !emptyRequestObject(o.read, READ_KEYS, ["status_path", "normal_value"])
     )
       fail();
@@ -549,7 +550,9 @@ function parseType(v: unknown): TypeDraft {
   }
   const c = exact(o.create, CREATE_KEYS, CREATE_OPTIONAL);
   const r = exact(o.read, READ_KEYS, ["status_path", "normal_value"]);
-  // 객체 ID 출처는 둘 중 정확히 하나다(서버 Validate와 같음). 어긋나면 계약 밖 응답이다.
+  // 객체 ID 출처는 둘 중 정확히 하나다(서버 Validate와 같음). 어긋나면 계약 밖 응답이다. 서버는 빈 id_field를 내보내지
+  // 않으므로(omitempty) 칸이 있는데 빈 값이어도 계약 밖이다(#766 이경준 리뷰).
+  if ("id_field" in c && c.id_field === "") fail();
   if ((str(c.id_path) === "") === (optStr(c.id_field) === "")) fail();
   const method = c.method === "POST" || c.method === "PUT" ? c.method : fail();
   const bodyKind = c.body_kind === "json" || c.body_kind === "form" ? c.body_kind : fail();

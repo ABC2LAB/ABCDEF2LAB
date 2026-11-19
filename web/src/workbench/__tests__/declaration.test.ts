@@ -638,6 +638,12 @@ describe("객체 ID 출처 id_field", () => {
     expect(body.declaration.types[0].create).toMatchObject({ id_path: "", id_field: "title_id" });
   });
 
+  it("공유 종류 create에 id_field 칸이 있으면 계약 밖이다(서버는 빈 값을 내보내지 않음)", () => {
+    const j = storedJson() as Record<string, unknown> & { types: Record<string, unknown>[] };
+    j.types[1] = { ...j.types[1], create: { ...(j.types[1].create as Json), id_field: "" } };
+    expect(parseDeclarationResponse(activeRes(j), "target-1").state).toBe("invalid");
+  });
+
   it("id_path 선언·공유 종류는 칸 모양이 그대로이고 저장 본문에 id_field를 넣지 않는다", () => {
     const cur = parseDeclarationResponse(activeRes(storedJson()), "target-1");
     if (cur.state !== "current") throw new Error("current 아님");
@@ -650,6 +656,8 @@ describe("객체 ID 출처 id_field", () => {
     ["둘 다", { id_path: "id", id_field: "title_id" }],
     ["둘 다 없음", { id_path: "" }],
     ["id_field 문자열 아님", { id_path: "", id_field: 1 }],
+    // 서버는 빈 id_field를 내보내지 않는다(omitempty)
+    ["id_field 빈 값", { id_path: "id", id_field: "" }],
   ])("ID 출처가 어긋난 응답은 계약 밖이다: %s", (_name, create) => {
     const j = storedJson() as Record<string, unknown> & { types: Record<string, unknown>[] };
     j.types[0] = { ...j.types[0], create: { ...(j.types[0].create as Json), ...create } };
