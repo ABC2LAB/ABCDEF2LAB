@@ -1162,11 +1162,11 @@ class TestCompleteRun(unittest.TestCase):
         self.assertEqual(usage["format"], "abc2lab.cli-usage/v3")
         self.assertNotIn("not_found", usage)
         self.assertNotIn("playwright test", json.dumps(usage))  # 건수 기록에는 명령 원문이 없다
-        # 관측된 명령만 한 줄의 모양(관측 이름·연산자·값 없는 옵션만, 나머지 <arg>)을 따로 남긴다(사용자 결정 4, #736 리뷰)
+        # 관측된 명령만 한 줄의 모양(관측 이름·셸 연산자만, 나머지 <인자>)을 따로 남긴다(사용자 결정 4, #736 리뷰)
         self.assertEqual(evidence.files["cli-observed-lines.json"], {
             "format": "abc2lab.cli-observed-lines/v2", "observed_calls": 2,
-            "lines": [{"names": ["npx"], "shape": "npx <arg> <arg> && <arg> <arg>"},
-                      {"names": ["pip3"], "shape": "pip3 <arg> <arg>"}]})
+            "lines": [{"names": ["npx"], "shape": "npx <인자> <인자> && <인자> <인자>"},
+                      {"names": ["pip3"], "shape": "pip3 <인자> <인자>"}]})
         self.assertEqual(usage["observed_lines"], 2)
         self.assertNotIn("command_records", run()[1].calls)  # 이름이 없으면(분리 배치 아님·O) 읽지 않는다
 
@@ -1189,10 +1189,10 @@ class TestCompleteRun(unittest.TestCase):
         lines = evidence.files["cli-observed-lines.json"]["lines"]
         self.assertNotIn("synthsecret", json.dumps(evidence.files))
         self.assertEqual(lines, [
-            {"names": ["npx"], "shape": "<arg> -u <arg> -p <arg> && npx <arg> --<opt> <arg> --<opt>=<arg> -k <arg>"},
-            {"names": ["npx"], "shape": "npx <arg> --<opt> <arg>"},
-            {"names": ["npx"], "shape": "npx <arg> --<opt> <arg>"},
-            {"names": ["npx"], "shape": "<arg> npx <arg>"},
+            {"names": ["npx"], "shape": "<인자> <인자> <인자> <인자> <인자> && npx <인자> <인자> <인자> <인자> <인자> <인자>"},
+            {"names": ["npx"], "shape": "npx <인자> <인자> <인자>"},
+            {"names": ["npx"], "shape": "npx <인자> <인자> <인자>"},
+            {"names": ["npx"], "shape": "<인자> npx <인자>"},
             {"names": ["npx"], "shape": None, "withheld": "shape_unparseable"},
             {"names": ["npx"], "shape": None, "withheld": "shape_input_too_long"}])
 

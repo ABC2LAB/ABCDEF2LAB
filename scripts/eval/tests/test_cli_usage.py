@@ -14,7 +14,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cli_usage import (  # noqa: E402
-    FORMAT, MAX_OBSERVED_LINE_CHARS, MAX_OBSERVED_LINES, MAX_SHAPE_INPUT_BYTES, CliUsageError, clip_shape, command_shape, count_usage, shell_tokens,
+    FORMAT, MAX_OBSERVED_LINE_CHARS, MAX_OBSERVED_LINES, MAX_SHAPE_INPUT_BYTES, PATH_PREFIX, PLACEHOLDER, SHELL_OPERATORS,
+    CliUsageError, clip_shape, command_shape, count_usage, shell_tokens,
     normalize, not_found, observed_lines, pick_line,
     occurrences, tool_input_command, validate_names,
 )
@@ -105,54 +106,56 @@ class TestCounting(unittest.TestCase):
 
 
 class TestObservedShapes(unittest.TestCase):
-    """관측된 명령은 원문 대신 모양만 남긴다(#736 리뷰): 관측 이름·셸 연산자·한 글자 짧은 옵션, 긴 옵션은 --<opt>, 나머지는 <arg>."""
+    """관측된 명령은 원문 대신 모양만 남긴다(#736 리뷰, 2026-11-19 사용자 결정): 관측된 CLI 이름과 셸 연산자만, 나머지는
+    전부 <인자>."""
 
-    def test_shapes_keep_names_operators_and_flag_names_only(self):
+    def allowed(self, names):
+        return set(names) | SHELL_OPERATORS | {PLACEHOLDER} | {PATH_PREFIX + name for name in names}
+
+    def test_shapes_keep_names_and_operators_only(self):
         records = [{"command": {"command": "cd /tmp\nexport A=1\nnpx playwright test"}},
                    {"command": {"command": "echo hi"}},  # 관측 없음
                    {"command": {"command": "n\\\npx b\nls"}},  # 줄 이음으로 쪼갠 이름: 이은 줄을 고른다
                    {"command": {"command": "x='p''ip' && run"}},  # 따옴표 이어 붙인 이름: 낱말은 이름이 아니다
-                   {"command": {"command": "/usr/local/bin/pip install -q --upgrade --index-url=https://x y"}},
+                   {"command": {"command": "pip install x --index-url https://example.invalid/simple"}},
+                   {"command": {"command": "/usr/local/bin/pip install -q --upgrade y | tee log 2>&1"}},
                    {"command": "not json"}]
         picked, observed = observed_lines(records, ["npx", "pip"])
-        self.assertEqual(observed, 4)
-        self.assertEqual(picked, [{"names": ["npx"], "shape": "npx <arg> <arg>"},
-                                  {"names": ["npx"], "shape": "npx <arg>"},
-                                  {"names": ["pip"], "shape": "<arg> && <arg>"},
-                                  {"names": ["pip"], "shape": "<path>/pip <arg> -q --<opt> --<opt>=<arg> <arg>"}])
+        self.assertEqual(observed, 5)
+        self.assertEqual(picked, [{"names": ["npx"], "shape": "npx <인자> <인자>"},
+                                  {"names": ["npx"], "shape": "npx <인자>"},
+                                  {"names": ["pip"], "shape": "<인자> && <인자>"},
+                                  {"names": ["pip"], "shape": "pip <인자> <인자> <인자> <인자>"},
+                                  {"names": ["pip"], "shape": "<경로>/pip <인자> <인자> <인자> <인자> | <인자> <인자> <인자> >& <인자>"}])
         self.assertEqual(pick_line("a\nb", ["npx"]), "a")  # 이름이 정규화 뒤에만 보이면 첫 줄
         self.assertEqual(observed_lines([{"command": {"command": "curl x"}}], ["npx"]), ([], 0))
 
-    def test_secrets_in_any_argument_form_are_not_kept(self):
-        # 자격 가림(dlp.CredentialText)이 못 가리는 별도 옵션 인자를 포함해 어떤 인자도 원문으로 남지 않는다
-        for command in ("mysql -u root -p synthsecret", "npx run -psynthsecret", "npx --password synthsecret",
-                        "npx --password=synthsecret", "TOKEN=synthsecret npx x", "npx 'synth secret'",
-                        "npx run --token=\"synthfirst\nsynthsecond\"", "npx -u user:synthsecret http://h",
-                        # 별도 인자 값이 긴 옵션 이름 모양(따옴표 있든 없든, #736 리뷰 재현)
-                        "npx --password '--synth-secret-1'", "npx --password --synth-secret-1", "npx \"--synth=x\"",
-                        "npx --Synth-Secret", "npx --synth_secret.1"):
+    def test_no_raw_token_survives(self):
+        # 이름·연산자 밖의 원문 낱말은 어떤 모양으로 줘도 0개다(원천 차단). 합성 비밀번호·토큰을 여러 모양으로 넣는다.
+        names = ["npx", "mysql"]
+        symbols = "&&&|;;<><>&&&|;;<><>&&|<>"  # 기호만의 25자 비밀번호(#736 리뷰 재현)
+        commands = ["mysql -u root -p synthsecret", "npx run -psynthsecret", "npx --password synthsecret",
+                    "npx --password=synthsecret", "TOKEN=synthsecret npx x", "npx 'synth secret'",
+                    'npx run --token="synthfirst synthsecond"', "npx -u user:synthsecret http://h",
+                    "npx --password '--synth-secret-1'", "npx --password --synth-secret-1", 'npx "--synth=x"',
+                    "npx --Synth-Secret", "npx --synth_secret.1", "npx -X", "npx -- --synth",
+                    f"npx --password '{symbols}'", f'npx --password "{symbols}"', f"npx --password {symbols[:2]}\\{symbols[2:]}",
+                    f"npx --password {symbols}", "npx a\\ synth\\ secret", "npx $(synthsecret) `synthsecret`",
+                    "printf '%s' '&&' npx", "npx 'npx' \\npx \"mysql\"", "npx x ;;&| y &&& z"]
+        for command in commands:
             with self.subTest(command=command):
-                picked, _ = observed_lines([{"command": {"command": command}}], ["npx", "mysql"])
+                picked, _ = observed_lines([{"command": {"command": command}}], names)
+                (item,) = picked
+                self.assertTrue(set(item["shape"].split(" ")) <= self.allowed(names), item["shape"])
                 self.assertNotIn("synth", json.dumps(picked))
-
-    def test_only_unquoted_shell_operators_are_kept(self):
-        # 따옴표로 감싼 기호만의 값은 연산자가 아니라 문자열 인자다(#736 리뷰 재현: 25자 합성 비밀번호가 남던 것)
-        secret = "&&&|;;<><>&&&|;;<><>&&|<>"
-        self.assertEqual(len(secret), 25)
-        for command in (f"npx --password '{secret}'", f'npx --password "{secret}"', f"npx --password {secret[:2]}\\{secret[2:]}"):
-            with self.subTest(command=command):
-                picked, _ = observed_lines([{"command": {"command": command}}], ["npx"])
-                self.assertNotIn(secret, json.dumps(picked))
                 self.assertNotIn("&&&", json.dumps(picked))
-        self.assertEqual(command_shape(f"npx --password '{secret}'", ["npx"]), "npx --<opt> <arg>")
         # 따옴표 안 '&&'는 연산자가 아니라 printf 인자다: npx가 별도 명령처럼 읽히지 않는다
-        self.assertEqual(command_shape("printf '%s' '&&' npx", ["npx"]), "<arg> <arg> <arg> npx")
+        self.assertEqual(command_shape("printf '%s' '&&' npx", ["npx"]), "<인자> <인자> <인자> npx")
         self.assertEqual(command_shape("a && npx x || b; c | d >> f 2>&1 &", ["npx"]),
-                         "<arg> && npx <arg> || <arg> ; <arg> | <arg> >> <arg> <arg> >& <arg> &")
-        # 셸 연산자 목록 밖의 기호 묶음(따옴표 밖)은 가린다
-        self.assertEqual(command_shape("npx x ;;&| y &&& z", ["npx"]), "npx <arg> <op> <arg> <op> <arg>")
-        # 따옴표·역슬래시가 든 이름·옵션 모양 낱말도 문자열 인자다
-        self.assertEqual(command_shape("'npx' \\-x \"--long\"", ["npx"]), "<arg> <arg> <arg>")
+                         "<인자> && npx <인자> || <인자> ; <인자> | <인자> >> <인자> <인자> >& <인자> &")
+        # 셸 연산자 목록 밖의 기호 묶음·따옴표 든 이름도 자리표시다
+        self.assertEqual(command_shape("npx x ;;&| y &&& z", ["npx"]), "npx <인자> <인자> <인자> <인자> <인자>")
+        self.assertEqual(command_shape("'npx' \\npx \"npx\" npx", ["npx"]), "<인자> <인자> <인자> npx")
 
     def test_shell_tokens_follow_shell_quoting(self):
         self.assertEqual(shell_tokens("a'b c'd \"e\\\"f\" g\\ h ''"),
@@ -161,7 +164,7 @@ class TestObservedShapes(unittest.TestCase):
                                                           (">&", False, True), ("1", False, False)])
         # 빈 따옴표도 셸에서는 빈 인자 하나다(작은·큰따옴표 모두)
         self.assertEqual(shell_tokens('npx "" x'), [("npx", False, False), ("", True, False), ("x", False, False)])
-        self.assertEqual(command_shape("npx '' \"\"", ["npx"]), "npx <arg> <arg>")
+        self.assertEqual(command_shape("npx '' \"\"", ["npx"]), "npx <인자> <인자>")
         for bad in ("a 'b", 'a "b', "a \\"):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 shell_tokens(bad)
@@ -179,12 +182,7 @@ class TestObservedShapes(unittest.TestCase):
         (item,), _ = observed_lines([{"command": {"command": flags}}], ["npx"])
         self.assertTrue(item["shape"].endswith(" [...]"))
         self.assertEqual(len(item["shape"]), MAX_OBSERVED_LINE_CHARS + len(" [...]"))
-        self.assertEqual(command_shape("npx -a", ["npx"]), "npx -a")
-        # 긴 옵션 모양 낱말은 글자 모양과 상관없이 이름을 가린 --<opt>다(소문자 이름만 옵션으로 보지 않는다)
-        self.assertEqual(command_shape("npx --Synth-Secret --synth_secret.1 --x=1 -- --", ["npx"]),
-                         "npx --<opt> --<opt> --<opt>=<arg> <arg> <arg>")
         self.assertEqual(clip_shape("x" * 10), "x" * 10)
-
 
 if __name__ == "__main__":
     unittest.main()

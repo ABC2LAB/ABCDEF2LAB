@@ -125,21 +125,17 @@ MAX_SHAPE_INPUT_BYTES = 64 * 1024
 _TRUNCATED_MARK = " [...]"
 WITHHELD_TOO_LONG = "shape_input_too_long"
 WITHHELD_UNPARSEABLE = "shape_unparseable"
-ARG = "<arg>"
-LONG_OPTION = "--<opt>"
-# 원문 대신 남기는 것은 "모양"뿐이다(#736 리뷰). 자격 가림(dlp.CredentialText)은 알려진 자격 형식만 가려 `-p 값`처럼 별도
-# 옵션 인자로 준 자격을 남긴다. 그래서 줄의 낱말 가운데 안전을 확인할 수 있는 것만 그대로 두고 나머지는 ARG로 바꾼다:
-# 관측된 CLI 이름(그 이름 그대로, 또는 경로의 마지막 조각이 그 이름), 셸 연산자, 한 글자 짧은 옵션 `-x`(한 글자라 자격을
-# 담을 수 없다). 긴 옵션 모양 낱말은 이름도 가린다(`--<opt>`, `--name=값`은 `--<opt>=<arg>`): 별도 인자로 준 값이 `--abc-1`
-# 처럼 옵션 이름 모양이면 모양만으로는 옵션 이름과 값을 가를 수 없다(#736 리뷰). 사람은 이 모양으로 그 이름이 명령 자리에서
-# 실행됐는지 본다.
-_SHORT_FLAG = re.compile(r"-[A-Za-z]\Z")
-_LONG_FLAG = re.compile(r"--[^=\s]+(=.*)?\Z", re.DOTALL)
+# 낱말 자리표시(사람이 읽는 근거라 한국어). 관측된 CLI 이름과 셸 연산자 말고는 무엇이든 이것으로 바꾼다.
+PLACEHOLDER = "<인자>"
+PATH_PREFIX = "<경로>/"
+# 원문 대신 남기는 것은 "모양"뿐이다(#736 리뷰, 2026-11-19 사용자 결정). 비밀을 골라 가리지 않고, 남겨도 되는 것만 남긴다:
+# 따옴표 밖 낱말이 관측된 B 전용 CLI 이름이면 그 이름(경로의 마지막 조각이 그 이름이면 `<경로>/이름`), 따옴표 밖 기호 묶음이
+# 셸 연산자 목록에 있으면 그 연산자. 그 밖의 낱말(옵션 이름·값·경로·따옴표 문자열·목록 밖 기호 묶음)은 전부 PLACEHOLDER다.
+# 사람은 이 모양으로 "그 이름이 명령 자리에 있나"만 본다. 남는 낱말이 이름·연산자·자리표시뿐이라 인자 값은 남을 수 없다.
 _PUNCT = frozenset(";&|<>()")
-# 그대로 남기는 셸 연산자(따옴표 밖에서 기호 묶음으로 나온 것만). 그 밖의 기호 묶음은 UNKNOWN_OPERATOR로 가린다.
-_SHELL_OPERATORS = frozenset({";", "&", "&&", "|", "||", "|&", ";;", "<", ">", ">>", "<<", "<<<", "<&", ">&", "&>", "&>>", ">|",
-                              "<>", "(", ")"})
-UNKNOWN_OPERATOR = "<op>"
+# 그대로 남기는 셸 연산자(따옴표 밖에서 기호 묶음으로 나온 것만). 그 밖의 기호 묶음은 PLACEHOLDER다.
+SHELL_OPERATORS = frozenset({";", "&", "&&", "|", "||", "|&", ";;", "<", ">", ">>", "<<", "<<<", "<&", ">&", "&>", "&>>", ">|",
+                             "<>", "(", ")"})
 
 
 def shell_tokens(line: str) -> list[tuple[str, bool, bool]]:
@@ -227,23 +223,15 @@ def command_shape(line: str, names: Iterable[str]) -> str | None:
     out = []
     for token, quoted, punct in tokens:
         if punct:
-            # 따옴표 밖 기호 묶음만 연산자 후보다. 셸 연산자 목록에 있는 것만 그대로 두고, 그 밖의 묶음은 가린다(#736 리뷰).
-            out.append(token if token in _SHELL_OPERATORS else UNKNOWN_OPERATOR)
-            continue
-        if quoted:
-            # 따옴표·역슬래시가 든 낱말은 문자열 인자다. 기호·이름·옵션 모양이어도 그대로 두지 않는다(#736 리뷰: 따옴표로 감싼
-            # 기호 문자열이 연산자처럼 남거나 '&&'가 별도 명령처럼 읽힘).
-            out.append(ARG)
-            continue
-        long_flag = _LONG_FLAG.match(token)
-        if token in wanted or _SHORT_FLAG.match(token):
+            out.append(token if token in SHELL_OPERATORS else PLACEHOLDER)
+        elif quoted:
+            out.append(PLACEHOLDER)  # 따옴표·역슬래시가 든 낱말은 문자열 인자다(이름·연산자 모양이어도)
+        elif token in wanted:
             out.append(token)
         elif "/" in token and token.rsplit("/", 1)[1] in wanted:
-            out.append("<path>/" + token.rsplit("/", 1)[1])
-        elif long_flag:
-            out.append(LONG_OPTION + ("" if long_flag.group(1) is None else "=" + ARG))
+            out.append(PATH_PREFIX + token.rsplit("/", 1)[1])
         else:
-            out.append(ARG)
+            out.append(PLACEHOLDER)
     return " ".join(out)
 
 

@@ -939,7 +939,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         usage = _step(state, "cli_usage_failed", lambda: dict(count_usage(bash, spec.cli_usage_names, with_failures=False),
                                                               exploration_id=commands["exploration_id"]))
         if usage["names_seen"]:
-            # 관측된 명령마다 한 줄의 모양(관측 이름·셸 연산자·한 글자 짧은 옵션만, 긴 옵션은 --<opt>, 나머지는 <arg>)을 남긴다(2026-11-19 사용자
+            # 관측된 명령마다 한 줄의 모양(관측 이름·셸 연산자만, 나머지는 전부 <인자>)을 남긴다(2026-11-19 사용자
             # 결정 4, #736 리뷰: 자격 가림은 별도 옵션 인자로 준 자격을 못 가려 원문 줄은 남기지 않는다). 확인은 사람이 이 모양만
             # 보고 한다. 셸 낱말로 못 나누는 줄은 보류만 적는다. 관측이 없으면 아무것도 남기지 않는다.
             picked, observed = _step(state, "cli_usage_failed", lambda: observed_lines(bash, spec.cli_usage_names))
