@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Autumn-27/artex/e2checkpoint"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e3contract"
 	"github.com/Autumn-27/artex/transmit"
@@ -31,10 +32,12 @@ type message struct {
 	Ref            *e3contract.CallRef    `json:"ref,omitempty"`
 }
 type reply struct {
-	OK       bool           `json:"ok"`
-	Missing  bool           `json:"missing,omitempty"`
-	Mismatch bool           `json:"mismatch,omitempty"`
-	Event    *e2proxy.Event `json:"event,omitempty"`
+	OK         bool                       `json:"ok"`
+	Missing    bool                       `json:"missing,omitempty"`
+	Mismatch   bool                       `json:"mismatch,omitempty"`
+	Event      *e2proxy.Event             `json:"event,omitempty"`
+	Checkpoint *e2proxy.JournalCheckpoint `json:"checkpoint,omitempty"`
+	Seal       *SealResult                `json:"seal,omitempty"`
 }
 
 func decodeLine(reader *bufio.Reader, target any) error {
@@ -109,6 +112,8 @@ func (h *Host) serveConn(ctx context.Context, conn *net.UnixConn, expectedUID ui
 		}
 		var actionErr error
 		var responseEvent *e2proxy.Event
+		var responseCheckpoint *e2proxy.JournalCheckpoint
+		var responseSeal *SealResult
 		switch request.Operation {
 		case "open":
 			if session != nil || request.Event != nil || request.Binding != nil || request.Ref != nil || request.PolicyRevision == "" {
@@ -128,17 +133,17 @@ func (h *Host) serveConn(ctx context.Context, conn *net.UnixConn, expectedUID ui
 				request.Scope != (transmit.Scope{}) || request.PolicyRevision != "" {
 				actionErr = ErrUnavailable
 			} else {
-				actionErr = session.Seal(ctx)
+				responseSeal, actionErr = session.SealChecked(ctx)
 			}
 		case "verified":
 			if session == nil || request.Event != nil || request.Scope != (transmit.Scope{}) ||
 				request.PolicyRevision != "" || request.Binding == nil || request.Ref == nil {
 				actionErr = ErrUnavailable
 			} else {
-				var event e2proxy.Event
-				event, actionErr = session.Verified(ctx, *request.Binding, *request.Ref)
+				var verified Verification
+				verified, actionErr = session.VerifiedAt(ctx, *request.Binding, *request.Ref)
 				if actionErr == nil {
-					responseEvent = &event
+					responseEvent, responseCheckpoint = &verified.Event, &verified.Checkpoint
 				}
 			}
 		default:
@@ -148,7 +153,7 @@ func (h *Host) serveConn(ctx context.Context, conn *net.UnixConn, expectedUID ui
 			sealed = true
 		}
 		response := reply{OK: actionErr == nil, Missing: errors.Is(actionErr, ErrEventMissing),
-			Mismatch: errors.Is(actionErr, ErrBindingMismatch), Event: responseEvent}
+			Mismatch: errors.Is(actionErr, ErrBindingMismatch), Event: responseEvent, Checkpoint: responseCheckpoint, Seal: responseSeal}
 		if json.NewEncoder(conn).Encode(response) != nil ||
 			actionErr != nil && !response.Missing && !response.Mismatch || request.Operation == "seal" {
 			return
@@ -204,11 +209,14 @@ func (c *Client) exchangeReply(ctx context.Context, request message) (reply, err
 	}
 	var response reply
 	if decodeLine(c.reader, &response) != nil || ctx.Err() != nil ||
-		request.Operation != "verified" && (!response.OK || response.Missing || response.Mismatch || response.Event != nil) ||
+		request.Operation != "verified" && (!response.OK || response.Missing || response.Mismatch || response.Event != nil || response.Checkpoint != nil) ||
+		request.Operation != "seal" && response.Seal != nil ||
+		request.Operation == "seal" && response.Seal != nil && !validSealResult(*response.Seal) ||
 		request.Operation == "verified" && (!response.OK && !response.Missing && !response.Mismatch ||
-			response.OK && (response.Missing || response.Mismatch || response.Event == nil) ||
-			response.Missing && (response.Mismatch || response.Event != nil) ||
-			response.Mismatch && response.Event != nil) {
+			response.OK && (response.Missing || response.Mismatch || response.Event == nil || response.Checkpoint == nil ||
+				!validCheckpoint(*response.Checkpoint) || response.Checkpoint.Sequence == 0) ||
+			response.Missing && (response.Mismatch || response.Event != nil || response.Checkpoint != nil) ||
+			response.Mismatch && (response.Event != nil || response.Checkpoint != nil)) {
 		c.failed = true
 		return reply{}, ErrUnavailable
 	}
@@ -223,20 +231,55 @@ func (c *Client) exchangeReply(ctx context.Context, request message) (reply, err
 
 // Verified는 같은 Host 세션의 현재 head를 인증한 결과만 받는다.
 func (c *Client) Verified(ctx context.Context, binding e3contract.RunBinding, ref e3contract.CallRef) (e2proxy.Event, error) {
+	v, err := c.VerifiedAt(ctx, binding, ref)
+	return v.Event, err
+}
+
+// VerifiedAt은 Verified와 같고, Host가 검증에 쓴 현재 head 체크포인트를 함께 받는다.
+func (c *Client) VerifiedAt(ctx context.Context, binding e3contract.RunBinding, ref e3contract.CallRef) (Verification, error) {
 	if c == nil {
-		return e2proxy.Event{}, ErrUnavailable
+		return Verification{}, ErrUnavailable
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	response, err := c.exchangeReply(ctx, message{Operation: "verified", Binding: &binding, Ref: &ref})
 	if err != nil {
-		return e2proxy.Event{}, err
+		return Verification{}, err
 	}
-	if response.Event == nil {
+	if response.Event == nil || response.Checkpoint == nil {
 		c.failed = true
-		return e2proxy.Event{}, ErrUnavailable
+		return Verification{}, ErrUnavailable
 	}
-	return *response.Event, nil
+	return Verification{Event: *response.Event, Checkpoint: *response.Checkpoint}, nil
+}
+
+// validCheckpoint는 v3 체크포인트 모양만 본다(저널 ID·범위 있음, MAC은 소문자 16진 64자). 인증은 Host 몫이다.
+func validCheckpoint(c e2proxy.JournalCheckpoint) bool {
+	return c.Version == e2proxy.JournalVersionV3 && c.JournalID != "" && c.Scope.RunRef != "" && validMAC(c.MAC)
+}
+
+func validMAC(mac string) bool {
+	if len(mac) != 64 {
+		return false
+	}
+	for _, ch := range mac {
+		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func validSealResult(s SealResult) bool {
+	if s.Phase != e2checkpoint.Sealed || !validCheckpoint(s.Head) || s.Checks == nil || len(s.Checks) > maxSealChecks {
+		return false
+	}
+	for _, check := range s.Checks {
+		if check.Sequence == 0 || check.Sequence > s.Head.Sequence && check.Included || !validMAC(check.MAC) {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *Client) Record(ctx context.Context, event e2proxy.Event) error {
@@ -248,18 +291,26 @@ func (c *Client) Record(ctx context.Context, event e2proxy.Event) error {
 	return c.exchange(ctx, message{Operation: "record", Event: &event})
 }
 func (c *Client) Seal(ctx context.Context) error {
+	_, err := c.SealChecked(ctx)
+	return err
+}
+
+// SealChecked는 Seal과 같고, Host가 봉인 뒤 확인한 근거 체크포인트별 포함 결과를 함께 받는다. 봉인 ACK가 왔지만
+// 결과가 없으면 nil 결과다(호출자는 "봉인 미확인"). 봉인 ACK 자체가 불명이면 오류다.
+func (c *Client) SealChecked(ctx context.Context) (*SealResult, error) {
 	if c == nil {
-		return ErrUnavailable
+		return nil, ErrUnavailable
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.exchange(ctx, message{Operation: "seal"}) != nil {
+	response, err := c.exchangeReply(ctx, message{Operation: "seal"})
+	if err != nil {
 		c.conn.Close()
 		c.closed = true
-		return ErrUnavailable
+		return nil, ErrUnavailable
 	}
 	c.closed = true
-	return c.conn.Close()
+	return response.Seal, c.conn.Close()
 }
 func (c *Client) Abort() {
 	if c == nil {
