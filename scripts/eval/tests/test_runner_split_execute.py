@@ -1188,6 +1188,26 @@ class TestE3ConfirmationRow(unittest.TestCase):
                 result, _, _ = run(mutate, purpose="official")
                 self.assertEqual((result["status"], result["reasons"]), ("invalid", [reason]))
 
+    def test_official_time_budget_round_reads_the_stop_record(self):
+        # 러너 예산이 먼저 끝나 제품 회차를 멈추는 경로(#742 :559 리뷰). #738 중지 기록 뒤 제품은 이 경로에서도 결과 파일을
+        # 남긴다(e3contract.RunStopped: 비활성 근거가 있으면 disabled(사유), 확인 못 하면 start_refused, 돌 수 있었으면
+        # interrupted). 공식 회차는 disabled/declaration_missing만 유효하고, 파일이 없으면 비활성으로 추정하지 않는다.
+        def file(value):
+            return lambda p: setattr(p, "e3_file", value)
+        result, _, evidence = run(purpose="official")
+        self.assertEqual((result["status"], result["product_closed"]["state"], result["first_limit"]["value"]),
+                         ("complete", "cancelled", "runner_time_budget"))
+        self.assertEqual(evidence.files["product-files.json"]["e3_confirmation"]["reason"], "declaration_missing")
+        for mutate, reasons in ((file(self.result(status="interrupted", reason="")), ["e3_official_not_disabled"]),
+                                (file(self.result(status="start_refused", reason="policy_source_unavailable")),
+                                 ["e3_official_not_disabled"]),
+                                (file(self.result(reason="not_wired")), ["e3_official_not_disabled"]),
+                                (file(RuntimeError("docker_helper_copy_failed")), ["e3_status_not_collected"])):
+            with self.subTest(reasons=reasons, mutate=mutate):
+                result, ports, _ = run(mutate, purpose="official")
+                self.assertEqual((result["status"], result["reasons"]), ("invalid", reasons))
+                self.assertIn("stop_round", ports.calls)  # 같은 시간 상한 경로(제품 회차를 멈춤)에서 읽었다
+
     def test_helper_cleanup_failure_is_not_a_missing_file(self):
         # 복사 도우미 정리 실패는 보호 볼륨이 잡혀 있을 수 있다는 뜻이라 목적과 상관없이 무효다(#742 리뷰). 일반 복사 실패(파일
         # 없음)는 수용시험이면 기록만, 공식이면 수집 실패다.
