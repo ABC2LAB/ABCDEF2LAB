@@ -731,7 +731,7 @@ describe("자산 탐색", () => {
     expect((ended.querySelector("i") as HTMLElement).style.width).toBe("100%");
     expect(ended).toHaveAttribute("aria-valuetext", "탐색 끝 · 완료 확인 안 됨 · 방문 1 / 페이지 상한 4");
     expect(ended.className).toMatch(/prog-part/);
-    expect(screen.getByText(/^탐색 상태/).textContent).toBe("탐색 상태 완료 확인 안 됨");
+    expect(screen.getByText(/^탐색:/).textContent).toBe("탐색: 완료 확인 안 됨");
     expect(screen.queryByText("첫 탐색 단계 끝남")).toBeNull();
   });
 
@@ -763,7 +763,7 @@ describe("자산 탐색", () => {
     expect(bar.querySelector("i")).toHaveStyle({ width: "100%" });
     expect(bar.className).toMatch(/prog-ok/); // 완료는 초록
     expect(document.getElementById("cNow")).toHaveTextContent(/^탐색을 마쳤습니다$/);
-    expect(screen.queryByText(/^탐색 상태/)).toBeNull();
+    expect(screen.queryByText(/^탐색:/)).toBeNull();
     expect(screen.queryByText("첫 탐색 단계 끝남")).toBeNull();
   });
 
@@ -771,17 +771,17 @@ describe("자산 탐색", () => {
     [
       "한도 소진 사유는 status 뒤에 보인다",
       { exploration_status: "PARTIAL", exploration_reason: "cap_exhausted" },
-      "탐색 상태 부분 완료 · 요청 상한 소진",
+      "탐색: 일부 완료 (요청 상한 소진)",
     ],
     [
       "모델 오류 사유는 status 뒤에 보인다",
       { exploration_status: "PARTIAL", exploration_reason: "model_error" },
-      "탐색 상태 부분 완료 · 모델 오류",
+      "탐색: 일부 완료 (모델 오류)",
     ],
     [
       "status 와 모순되는 사유(PARTIAL 의 completed)는 화면에서 숨긴다",
       { exploration_status: "PARTIAL", exploration_reason: "completed" },
-      "탐색 상태 부분 완료",
+      "탐색: 일부 완료",
     ],
   ])("%s · 끝난 막대는 주황으로 채우고 실제 방문 수 · 탐색 상태를 글로 보인다", (_n, over, text) => {
     // 방문 2 / 페이지 상한 8 = 25% — 서버는 PARTIAL 에서도 initial_completed 를 true 로 둔다
@@ -809,11 +809,11 @@ describe("자산 탐색", () => {
     const bar = screen.getByRole("progressbar", { name: /탐색 진행/ });
     expect(bar).toHaveAttribute("aria-valuenow", "25"); // 값은 실제 방문 비율(#709 리뷰)
     expect((bar.querySelector("i") as HTMLElement).style.width).toBe("100%");
-    expect(bar).toHaveAttribute("aria-valuetext", "탐색 끝 · 부분 완료 · 방문 2 / 페이지 상한 8");
+    expect(bar).toHaveAttribute("aria-valuetext", "탐색 끝 · 일부 완료 · 방문 2 / 페이지 상한 8");
     expect(bar.className).toMatch(/prog-part/);
     expect(bar.className).not.toMatch(/prog-ok/);
     // 화면은 status 중심: 뜻을 더하는 사유만 뒤에 붙고, 겹치거나 모순되는 토큰은 빠진다(원본 영문 토큰 노출 금지)
-    expect(screen.getByText(/^탐색 상태/).textContent).toBe(text);
+    expect(screen.getByText(/^탐색:/).textContent).toBe(text);
   });
 });
 

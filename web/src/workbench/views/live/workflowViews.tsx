@@ -161,13 +161,16 @@ export function crawlBar(flow: WorkflowSnapshot): {
 function exploreCompleted(flow: WorkflowSnapshot): boolean {
   return (flow as unknown as Record<string, unknown>).exploration_status === "COMPLETED";
 }
-/** 서버 탐색 상태 (snapshot.exploration_status) → 글. */
+/**
+ * 서버 탐색 상태 (snapshot.exploration_status) → 글. 화면은 '탐색: 일부 완료'처럼 앞에 '탐색:'을 붙여 쓴다(사용자 11/19).
+ * 다 못 돈 PARTIAL 을 '완료'로 줄이지 않는다(절대규칙 5) — 오른쪽 패널 실행 결과의 '일부 완료'와 같은 말.
+ */
 const EXPLORE_TEXT = {
-  RUNNING: "탐색 중",
-  COMPLETED: "탐색 완료",
-  PARTIAL: "부분 완료",
+  RUNNING: "진행 중",
+  COMPLETED: "완료",
+  PARTIAL: "일부 완료",
   STOPPED: "중지됨",
-  NOT_RUN: "탐색 안 함",
+  NOT_RUN: "안 함",
 } as const;
 /**
  * 서버가 실제 내보내는 탐색 종료·미실행 사유만 한글로 매핑한다(팀 결정: 화면은 status 중심, 사유는 뜻을 더할 때만).
@@ -1063,8 +1066,8 @@ export function WorkflowCrawlLive() {
                 {bar.ended || (explore && explore.status !== "RUNNING" && explore.status !== "COMPLETED") ? (
                   <div className={s.pmeta}>
                     <span>
-                      탐색 상태{" "}
-                      <b>{`${bar.ended ?? explore?.text ?? ""}${explore?.reason && EXPLORE_REASON_TEXT[explore.reason] ? ` · ${EXPLORE_REASON_TEXT[explore.reason]}` : ""}`}</b>
+                      탐색:{" "}
+                      <b>{`${bar.ended ?? explore?.text ?? ""}${explore?.reason && EXPLORE_REASON_TEXT[explore.reason] ? ` (${EXPLORE_REASON_TEXT[explore.reason]})` : ""}`}</b>
                     </span>
                   </div>
                 ) : null}
