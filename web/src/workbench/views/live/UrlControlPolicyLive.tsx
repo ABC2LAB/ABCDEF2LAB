@@ -17,6 +17,7 @@ import {
   getControlPolicy,
   HEADER_MODE_LABEL,
   instantCeilMs,
+  type PolicyLimits,
   type PolicyLoad,
   type PolicyRule,
   policyExpired,
@@ -85,6 +86,17 @@ const fmtTime = (iso: string): string => {
     return "—";
   }
 };
+
+/**
+ * E③ 확정 단계 몫(모델 단계와 따로 떼어 둔 요청 수·시간) 표시(#716).
+ * 0 은 '꺼짐', 칸 없음은 몫을 싣기 전 회차라 '정하지 않음'이다 — 둘을 섞지 않는다.
+ * 파서가 요청·시간이 함께 0 이거나 함께 양수인 것만 통과시킨다.
+ */
+export function e3ConfirmationShareText(share: PolicyLimits["e3Confirmation"]): string {
+  if (!share) return "정하지 않음(이전 회차)";
+  if (share.requests === 0) return "꺼짐(0)";
+  return `${share.requests}건 · ${share.timeoutMs / 1000}초`;
+}
 
 /** 한 전송 규칙 — 승인된 origin·IP·경로·메서드·자격 헤더(이름만). methods 가 비면 '전부'가 아니라 '차단'으로 명시. */
 function RuleBlock({ rule }: { rule: PolicyRule }) {
@@ -391,6 +403,12 @@ export function UrlControlPolicyLive() {
                 </span>
                 <span style={neutralChip}>
                   요청 시간 <b>{policy.limits.requestTimeoutMs}</b> ms
+                </span>
+                <span
+                  style={neutralChip}
+                  title="E③ 확정 단계에 따로 떼어 둔 대상 요청 수·시간입니다. 모델 단계는 이 몫을 뺀 범위에서 돕니다."
+                >
+                  확정 단계 몫 <b>{e3ConfirmationShareText(policy.limits.e3Confirmation)}</b>
                 </span>
               </div>
             </section>
