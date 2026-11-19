@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import { ApiError, apiFetchBlob } from "@/lib/diagnosis/api";
@@ -96,70 +96,21 @@ afterEach(() => {
   vi.unstubAllGlobals();
   Reflect.deleteProperty(URL, "createObjectURL");
 });
-it("shows four sections in order and only reads on explicit copy", async () => {
+it("shows two sections in order and never offers remediation generation or prompt copy (사용자 11/19)", () => {
   const e = fixture();
   render(<DiagnosticEntrySections task="42" entry={e} onReload={vi.fn()} />);
-  expect(screen.getAllByRole("heading", { level: 3 }).map((x) => x.textContent?.[0])).toEqual(["①", "②", "③", "④"]);
-  // 정리(사용자 11/17): 검증 방식 · 실행 · 단계별 근거 ID 같은 기록 값은 맨 아래 '기술 정보'에만, 접어 둔다
-  const tech = screen.getByText("기술 정보").closest("details") as HTMLElement;
-  expect(tech).not.toHaveAttribute("open");
-  expect(screen.getAllByText(/e3_structured/)).toHaveLength(1);
-  expect(within(tech).getByText(/e3_structured/)).not.toBeVisible();
-  expect(within(tech).getByText(/owner-proof/)).toBeInTheDocument();
-  // 자세한 조치 묶음도 지우지 않고 접어 둔다
-  expect(screen.getByText(/^자세한 조치 \(\d+묶음\)$/)).toBeInTheDocument();
-  expect(screen.getByText("서버 인가 검사")).not.toBeVisible();
+  expect(screen.getAllByRole("heading", { level: 3 }).map((x) => x.textContent?.[0])).toEqual(["①", "②"]);
+  // 검증 방식 · 실행 · 단계별 근거 ID 같은 기록 값('기술 정보')은 화면에 두지 않는다(사용자 11/19 — 내부 사본에 남음)
+  expect(screen.queryByText("기술 정보")).toBeNull();
+  expect(screen.queryByText(/e3_structured|owner-proof/)).toBeNull();
   expect(screen.getByText(/스크린샷 미확보 — 실제 요청·응답 및 실행 기록으로 증거 제공/)).toBeVisible();
+  // 보안 조치 · AI 수정 작업용 프롬프트 칸은 뺐다 — 저장 조치(bundle)가 있어도 보이거나 만들거나 복사하지 않는다
+  expect(screen.queryByRole("heading", { name: /보안 조치|AI 수정 작업용 프롬프트/ })).toBeNull();
+  expect(screen.queryByText(/자세한 조치|조치 · 프롬프트/)).toBeNull();
+  expect(screen.queryByRole("button", { name: /AI 수정 프롬프트 복사|생성·저장|전체 프롬프트/ })).toBeNull();
   expect(readCopyPrompt).not.toHaveBeenCalled();
   expect(generateRemediation).not.toHaveBeenCalled();
   expect(apiFetchBlob).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button", { name: "전체 프롬프트 보기" }));
-  expect(screen.getByText(bundle.ai_prompt)).toBeVisible();
-  vi.mocked(readCopyPrompt).mockResolvedValue({
-    entry_id: e.entry_id,
-    record_id: 7,
-    input_digest: bundle.input_digest,
-    ai_prompt: bundle.ai_prompt,
-  });
-  fireEvent.click(screen.getByRole("button", { name: "AI 수정 프롬프트 복사" }));
-  await waitFor(() => expect(copy).toHaveBeenCalledWith(bundle.ai_prompt));
-});
-it("rejects a superseded server response and never copies stale stored data", async () => {
-  const e = fixture();
-  vi.mocked(readCopyPrompt).mockResolvedValue({
-    entry_id: e.entry_id,
-    record_id: 8,
-    input_digest: bundle.input_digest,
-    ai_prompt: bundle.ai_prompt,
-  });
-  const v = render(<DiagnosticEntrySections task="42" entry={e} onReload={vi.fn()} />);
-  fireEvent.click(screen.getByRole("button", { name: "AI 수정 프롬프트 복사" }));
-  await screen.findByText(/프롬프트가 변경됐거나 복사 권한을 확인하지 못했습니다/);
-  expect(copy).not.toHaveBeenCalled();
-  v.unmount();
-  render(
-    <DiagnosticEntrySections
-      task="42"
-      entry={{ ...e, record: { id: 7, entry_id: e.entry_id, stale: true } }}
-      onReload={vi.fn()}
-    />,
-  );
-  expect(screen.queryByRole("button", { name: "AI 수정 프롬프트 복사" })).not.toBeInTheDocument();
-  expect(screen.getByRole("alert")).toHaveTextContent("오래된 프롬프트 사용을 차단");
-});
-it("stores remediation only on explicit generation and reloads current evidence", async () => {
-  const reload = vi.fn(),
-    e = fixture();
-  render(<DiagnosticEntrySections task="42" entry={{ ...e, record: undefined }} onReload={reload} />);
-  expect(generateRemediation).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button", { name: "보안 조치·AI 프롬프트 생성·저장" }));
-  await waitFor(() => expect(reload).toHaveBeenCalledOnce());
-  expect(generateRemediation).toHaveBeenCalledWith(
-    "42",
-    expect.objectContaining({ entry_id: e.entry_id }),
-    [],
-    expect.any(AbortSignal),
-  );
 });
 it("fetches images only on explicit view and rejects a mismatched image hash", async () => {
   const e = fixture();
@@ -276,7 +227,7 @@ it.each([
   expect(screen.getByText(/실제 도구 출력이 잘렸습니다/)).toBeVisible();
 });
 
-it("reports source load failure without presenting generated steps or offering generation", () => {
+it("reports source load failure without presenting generated steps", () => {
   const entry = {
     ...fixture(),
     outcome: "unknown",
@@ -288,23 +239,7 @@ it("reports source load failure without presenting generated steps or offering g
   render(<DiagnosticEntrySections task="42" entry={entry} onReload={vi.fn()} />);
   expect(screen.getByRole("alert")).toHaveTextContent("근거 불러오기 실패");
   expect(screen.queryByRole("heading", { name: /Step 1/ })).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "보안 조치·AI 프롬프트 생성·저장" })).toBeDisabled();
-});
-
-it("blocks copying a stored prompt that differs from its masked display", async () => {
-  const entry = fixture();
-  const prompt = "Authorization: Bearer synthetic-secret-value";
-  entry.record = { id: 7, entry_id: entry.entry_id, stale: false, bundle: { ...bundle, ai_prompt: prompt } };
-  vi.mocked(readCopyPrompt).mockResolvedValue({
-    entry_id: entry.entry_id,
-    record_id: 7,
-    input_digest: bundle.input_digest,
-    ai_prompt: prompt,
-  });
-  render(<DiagnosticEntrySections task="42" entry={entry} onReload={vi.fn()} />);
-  fireEvent.click(screen.getByRole("button", { name: "AI 수정 프롬프트 복사" }));
-  await screen.findByText(/민감값으로 보이는 내용이 있어 복사를 막았습니다/);
-  expect(copy).not.toHaveBeenCalled();
+  expect(screen.queryByRole("button", { name: /생성·저장/ })).toBeNull();
 });
 
 it("distinguishes missing current images from integrity failures", async () => {

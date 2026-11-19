@@ -56,7 +56,6 @@ import {
   running,
   scope,
 } from "@/lib/diagnosis/diagnosis-url-fixtures";
-import { generateRemediation } from "@/lib/diagnosis/remediation";
 
 import * as api from "../live/api";
 import { checkLiveAuth, getLiveAuthState, setLiveAuthState } from "../live/auth";
@@ -1592,9 +1591,10 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     // 실행 종료 기록(단계 · 결과 · 실행 ID · 감사)은 어디에도 없다
     expect(screen.queryByRole("tab", { name: "증거 · 요청 기록" })).toBeNull();
     expect(within(header).queryByText(/^요청/)).toBeNull();
-    // ('정상 종료' · 'run-1'은 오른쪽 취약점 상세의 안내 글 · 기술 정보에도 있어 실행 종료 기록 칸 자체로 확인한다)
+    // ('정상 종료'는 오른쪽 취약점 상세의 안내 글에도 있어 실행 종료 기록 칸 자체로 확인한다. 실행 ID 는 기술 정보를 뺀 뒤로
+    // 화면 어디에도 없다)
     expect(screen.queryByRole("region", { name: "실행 종료 기록" })).toBeNull();
-    expect(screen.queryByText(/요청 접수|실행 종료 기록/)).toBeNull();
+    expect(screen.queryByText(/요청 접수|실행 종료 기록|run-1/)).toBeNull();
     // 내려받기는 보고서 탭 문서 아래
     fireEvent.click(screen.getByRole("tab", { name: "보고서" }));
     const docTab = screen.getByRole("tabpanel", { name: "보고서" });
@@ -1620,7 +1620,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     fireEvent.click(within(insp).getByRole("button", { name: "상세 보기" }));
     const page = screen.getByRole("region", { name: "취약점 상세 페이지" });
     expect(within(page).getByRole("heading", { level: 2, name: "후보 2" })).toHaveFocus();
-    // ARTEX 발견 상세 짜임: 오른쪽 상태 카드(점검 대상 포함), 왼쪽 요약 → 증거 / PoC → 상세 보고서 → 보안 조치 → AI 프롬프트
+    // ARTEX 발견 상세 짜임: 오른쪽 상태 카드(점검 대상 포함), 왼쪽 요약 → 증거 / PoC → 상세 보고서. 보안 조치 · AI 프롬프트는 뺐다(사용자 11/19)
     const side = within(page).getByRole("complementary", { name: "취약점 상태" });
     expect(side).toHaveTextContent(/IDcandidate-2/);
     expect(side).toHaveTextContent(/유형idor/);
@@ -1629,7 +1629,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
       within(page)
         .getAllByRole("heading", { level: 3 })
         .map((h) => h.textContent),
-    ).toEqual(["요약", "증거 / PoC", "상세 보고서", "보안 조치", "AI 수정 작업용 프롬프트", "상태"]);
+    ).toEqual(["요약", "증거 / PoC", "상세 보고서", "상태"]);
     expect(
       within(within(page).getByRole("region", { name: "상세 보고" })).getByRole("heading", { name: "재현" }),
     ).toBeInTheDocument();
@@ -1766,14 +1766,28 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
         { ...candidate(3), severity: "low" },
       ],
     });
-    vi.mocked(generateRemediation).mockResolvedValue(undefined as never);
-    mount("report");
+    const { rerender, goTo } = mount("report");
+    // 보고서에 다시 들어오면(다른 화면 → 보고서) 저장 결과를 다시 읽는다. 오른쪽 '생성·저장' 버튼은 뺐다(사용자 11/19)
+    // 두 화면 전환을 한 act 에 묶으면 React 가 합쳐 그려 다시 읽지 않으므로 따로 그린다
+    const show = (route: "live" | "report") =>
+      act(() =>
+        rerender(
+          <ShellContext.Provider value={shellValue({ route, goTo })}>
+            <UrlFeeds />
+            <ReportByMode />
+          </ShellContext.Provider>,
+        ),
+      );
+    const reenter = () => {
+      show("live");
+      show("report");
+    };
     const list = await screen.findByRole("tabpanel", { name: "취약점 목록" });
     const insp = () => screen.getByRole("complementary", { name: "취약점 상세" });
     fireEvent.click(within(list).getByRole("button", { name: /후보 2/ }));
     fireEvent.click(within(list).getByRole("button", { name: "높음 1개", pressed: false }));
     expect(within(insp()).getByRole("heading", { level: 2 })).toHaveTextContent("후보 2");
-    // 오른쪽 패널의 '생성·저장'이 저장 결과를 다시 읽는다: 이번엔 후보 2 가 낮음, 후보 3 이 높음
+    // 다시 들어와 저장 결과를 다시 읽는다: 이번엔 후보 2 가 낮음, 후보 3 이 높음
     a.fetchRemediation.mockResolvedValue({
       task_id: 42,
       entries: [
@@ -1782,11 +1796,14 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
         { ...candidate(3), severity: "high" },
       ],
     });
-    fireEvent.click(within(insp()).getByRole("button", { name: "보안 조치·AI 프롬프트 생성·저장" }));
-    await waitFor(() => expect(within(list).queryByRole("button", { name: /후보 2/ })).toBeNull());
+    reenter();
+    // 다시 들어오면 목록 요소가 새로 그려지므로 매번 찾는다
+    const listNow = () => screen.getByRole("tabpanel", { name: "취약점 목록" });
+    await waitFor(() => expect(within(listNow()).getByRole("button", { name: /후보 3/ })).toBeInTheDocument());
+    expect(within(listNow()).queryByRole("button", { name: /후보 2/ })).toBeNull();
     // '높음' 거르기는 그대로, 목록은 후보 3 하나 — 오른쪽 상세 · 줄 표시도 후보 3
-    expect(within(list).getByRole("button", { name: "높음 1개", pressed: true })).toBeInTheDocument();
-    expect(within(list).getByRole("button", { name: /후보 3/ })).toHaveAttribute("aria-current", "true");
+    expect(within(listNow()).getByRole("button", { name: "높음 1개", pressed: true })).toBeInTheDocument();
+    expect(within(listNow()).getByRole("button", { name: /후보 3/ })).toHaveAttribute("aria-current", "true");
     expect(within(insp()).getByRole("heading", { level: 2 })).toHaveTextContent("후보 3");
     fireEvent.click(within(insp()).getByRole("button", { name: "상세 보기" }));
     expect(

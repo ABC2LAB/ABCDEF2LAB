@@ -1,22 +1,15 @@
 "use client";
 
-import { Fragment, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import Image from "next/image";
 
 import { ApiError, apiFetchBlob } from "@/lib/diagnosis/api";
 import { diagnosticOutcome, diagnosticOutcomeLabels } from "@/lib/diagnosis/diagnostic-results";
-import {
-  DIAGNOSTIC_CAPTURE_LIMITS,
-  generateRemediation,
-  type RemediationEntry,
-  type ReproductionStep,
-  readCopyPrompt,
-} from "@/lib/diagnosis/remediation";
+import { DIAGNOSTIC_CAPTURE_LIMITS, type RemediationEntry, type ReproductionStep } from "@/lib/diagnosis/remediation";
 import { entrySeverityLabel } from "@/lib/diagnosis/severity";
 
 import { cx } from "../../lib/cx";
-import { outcomeLabel } from "../../live/liveReport";
 import { maskForCopy, maskSecrets } from "../../live/mask";
 import { Markdown } from "../../ui/Markdown";
 import { Isec } from "../../ui/parts";
@@ -151,22 +144,21 @@ export function pocCopyText(entry: RemediationEntry): string {
 export function DiagnosticEntrySections({
   task,
   entry,
-  onReload,
   layout = "panel",
 }: {
   task: string;
   entry: RemediationEntry;
+  /** 상세를 다시 읽기. 보안 조치 · AI 프롬프트 생성을 뺀 뒤로 이 부품은 쓰지 않는다(부르는 쪽 모양 유지) */
   onReload: () => void;
   /**
-   * panel = 오른쪽 발견 상세(① AI 분석 · ② 실제 요청 · 응답 · ③ 보안 조치 · ④ AI 프롬프트).
-   * page = 상세 보기 페이지, ARTEX 발견 상세 순서와 이름(요약 · 증거 / PoC · 상세 보고서 · 보안 조치 · AI 프롬프트, 사용자 11/17)
+   * panel = 오른쪽 취약점 상세(① AI 분석 · ② 실제 요청 · 응답).
+   * page = 상세 보기 페이지, ARTEX 발견 상세 순서와 이름(요약 · 증거 / PoC · 상세 보고서, 사용자 11/17).
+   * 보안 조치 · AI 수정 작업용 프롬프트 칸은 뺐다(사용자 11/19 — AI 가 권고를 비워 두고 생성 버튼을 눌러야만 채워져 빈 칸만
+   * 보였다). 서버 API(조치 생성 · 프롬프트 복사)와 내려받기 보고서는 그대로다
    */
   layout?: "panel" | "page";
 }) {
-  const [busy, setBusy] = useState(false),
-    [show, setShow] = useState(false),
-    [message, setMessage] = useState(""),
-    [reportMsg, setReportMsg] = useState(""),
+  const [reportMsg, setReportMsg] = useState(""),
     [pocMsg, setPocMsg] = useState("");
   const reportBox = useRef<HTMLDivElement>(null);
   // 상세 보고 복사: 원문 Markdown 이 아니라 화면에 그려진(파싱 뒤 가린) 글을 복사한다 — 원문을 복사하면 붙여 넣은 곳의
@@ -191,73 +183,6 @@ export function DiagnosticEntrySections({
       setPocMsg("복사 권한을 확인하지 못했습니다.");
     }
   }
-  const control = useRef<AbortController | null>(null);
-  useEffect(() => () => control.current?.abort(), []);
-  const record = entry.record;
-  const bundle = record && !record.stale ? record.bundle : undefined;
-  async function generate() {
-    if (busy || !entry.available) return;
-    const controller = new AbortController();
-    control.current = controller;
-    setBusy(true);
-    setMessage("");
-    try {
-      await generateRemediation(task, entry, [], controller.signal);
-      if (!controller.signal.aborted) {
-        setMessage("현재 저장 근거에 결속한 보안 조치·AI 프롬프트를 저장했습니다.");
-        onReload();
-      }
-    } catch {
-      if (!controller.signal.aborted)
-        setMessage("현재 증거 버전을 확인하지 못해 저장하지 않았습니다. 다시 조회하세요.");
-    } finally {
-      if (!controller.signal.aborted) setBusy(false);
-    }
-  }
-  async function copy() {
-    if (busy || !bundle || !record) return;
-    const controller = new AbortController();
-    control.current = controller;
-    setBusy(true);
-    setMessage("");
-    try {
-      const reply = await readCopyPrompt(task, entry, controller.signal);
-      if (controller.signal.aborted) return;
-      if (
-        reply.entry_id !== entry.entry_id ||
-        reply.record_id !== record.id ||
-        reply.input_digest !== bundle.input_digest ||
-        reply.ai_prompt !== bundle.ai_prompt
-      )
-        throw Error("prompt_mismatch");
-      // Copy the exact stored prompt only when the displayed masking projection is identical.
-      // The server rebuilds from normalized DLP context; this guard also rejects a compromised response.
-      if (maskSecrets(reply.ai_prompt) !== reply.ai_prompt) throw Error("prompt_contains_sensitive_value");
-      await navigator.clipboard.writeText(reply.ai_prompt);
-      if (!controller.signal.aborted) setMessage("같은 저장 프롬프트를 복사했습니다.");
-    } catch (error) {
-      if (!controller.signal.aborted)
-        setMessage(
-          error instanceof Error && error.message === "prompt_contains_sensitive_value"
-            ? "민감값으로 보이는 내용이 있어 복사를 막았습니다. 저장 근거와 프롬프트를 검토하세요."
-            : "프롬프트가 변경됐거나 복사 권한을 확인하지 못했습니다. 현재 버전을 다시 조회하세요.",
-        );
-    } finally {
-      if (!controller.signal.aborted) setBusy(false);
-    }
-  }
-  const groups = bundle
-    ? ([
-        ["수정할 보안 조건", bundle.security_condition],
-        ["즉시 완화책", bundle.immediate_mitigation],
-        ["근본 수정", bundle.root_fix],
-        ["서버·배포 보안 설정", bundle.configuration],
-        ["기술에 맞는 코드 조치", bundle.code_example],
-        ["정상 기능·적용 전제", bundle.assumptions],
-        ["수정 후 재검증", bundle.verification],
-        ["남은 위험·검토", bundle.residual_risk],
-      ] as const)
-    : [];
   // 두 짜임이 같이 쓰는 조각
   const truncNote = entry.truncated ? (
     <p role="status">실제 도구 출력이 잘렸습니다. 완전한 재현 증거가 아닙니다.</p>
@@ -304,98 +229,9 @@ export function DiagnosticEntrySections({
       복사
     </button>
   );
-  const remediationBody = (
-    <>
-      <p className={s["lv-pre"]}>{maskSecrets(entry.remediation) || "저장된 수정 권고 없음"}</p>
-      {bundle ? (
-        <details>
-          <summary>{`자세한 조치 (${groups.filter(([, items]) => items.length).length}묶음)`}</summary>
-          {groups.map(([title, items]) => (
-            <div key={title}>
-              <h4>{title}</h4>
-              <ul>
-                {Array.from(new Set(items)).map((v) => (
-                  <li key={v}>{maskSecrets(v)}</li>
-                ))}
-              </ul>
-            </div>
-          ))}
-          <p className={s.help}>
-            관측 기술은 저장소·배포 컴포넌트에서 다시 확인하세요. 미확인 프레임워크·파일 경로는 생성하지 않습니다.
-          </p>
-        </details>
-      ) : (
-        <p className={s.help}>유효한 저장 조치가 없습니다. 현재 근거를 확인해 명시적으로 생성하세요.</p>
-      )}
-    </>
-  );
-  const promptBody = (
-    <>
-      {record?.stale ? (
-        <p role="alert">근거·조치·기술 또는 생성기 버전 변경: 오래된 프롬프트 사용을 차단했습니다.</p>
-      ) : null}
-      {bundle?.missing_context_fields?.length ? <p>보완할 맥락: {bundle.missing_context_fields.join(", ")}</p> : null}
-      <div className={s.acts}>
-        {bundle ? (
-          <>
-            <button className={s.btn} type="button" onClick={() => setShow((v) => !v)} aria-expanded={show}>
-              {show ? "전체 프롬프트 접기" : "전체 프롬프트 보기"}
-            </button>
-            <button className={s.btn} type="button" disabled={busy} onClick={() => void copy()}>
-              AI 수정 프롬프트 복사
-            </button>
-          </>
-        ) : null}
-        <button className={s.btn} type="button" disabled={busy || !entry.available} onClick={() => void generate()}>
-          {busy ? "저장 근거 확인 중…" : "보안 조치·AI 프롬프트 생성·저장"}
-        </button>
-      </div>
-      {bundle && show ? <pre className={s.code}>{maskSecrets(bundle.ai_prompt)}</pre> : null}
-      {!entry.available ? <p className={s.help}>{maskSecrets(entry.unavailable_reason)}</p> : null}
-      {message ? <p role="status">{message}</p> : null}
-      <p className={s.help}>
-        고객 저장소·원인 코드를 확인한 뒤 최소 수정과 회귀 시험을 하도록 지시하는 프롬프트입니다. 코드 수정·운영
-        재현·배포 권한을 주지 않습니다.
-      </p>
-    </>
-  );
-  const tech = (
-    <Isec>
-      <details>
-        <summary>기술 정보</summary>
-        <dl className={s.kv}>
-          <dt>판정 · 검증</dt>
-          <dd>{`${outcomeLabel(entry.outcome)} · ${entry.verification}`}</dd>
-          <dt>실행</dt>
-          <dd className={s["kv-ref"]}>{entry.run || "미기록"}</dd>
-          <dt>증거</dt>
-          <dd
-            className={s["kv-ref"]}
-          >{`버전 ${entry.evidence_version} · ${entry.evidence_digest} · ${entry.observed_at}`}</dd>
-          {(entry.steps ?? []).map((step) => (
-            <Fragment key={step.id}>
-              <dt>{`Step ${step.number}`}</dt>
-              <dd className={s["kv-ref"]}>
-                {`${step.observed_at} · ${step.run_ref} · 호출 ${step.call_ref || "미기록"} · 근거 ${step.evidence_ref}`}
-              </dd>
-            </Fragment>
-          ))}
-          {bundle ? (
-            <>
-              <dt>조치 · 프롬프트</dt>
-              <dd className={s["kv-ref"]}>
-                {`조치 ${bundle.remediation_version} · 증거 ${bundle.evidence_version} · 입력 ${bundle.input_digest}`}
-              </dd>
-            </>
-          ) : null}
-        </dl>
-      </details>
-    </Isec>
-  );
-
   if (layout === "page")
     // ARTEX 발견 상세 페이지 순서(요약 → 증거 / PoC → 상세 보고서). ARTEX 의 재검증 · 연결된 트래픽 · 경로도는 제품 서버에
-    // 그 기능 · API 가 없어 빈 칸으로 두지 않는다. 우리 쪽 보안 조치 · AI 프롬프트 · 기술 정보는 그 아래에 둔다
+    // 그 기능 · API 가 없어 빈 칸으로 두지 않는다
     return (
       <>
         <Isec>
@@ -433,23 +269,14 @@ export function DiagnosticEntrySections({
             {reportMsg ? <p role="status">{reportMsg}</p> : null}
           </section>
         </Isec>
-        <Isec>
-          <h3>보안 조치</h3>
-          {remediationBody}
-        </Isec>
-        <Isec>
-          <h3>AI 수정 작업용 프롬프트</h3>
-          {promptBody}
-        </Isec>
-        {tech}
       </>
     );
 
   return (
     <>
       {/* ARTEX 발견 상세처럼(사용자 11/17): 판정 · 유형 · 위험도 · 시각은 위 상태 칸이 말하고, 상세 보고(Markdown) · 증거는
-          칸 안 카드로 펼쳐 두되 높이를 묶은 상자에서 스크롤한다. 자세한 조치 묶음은 접어 두고, 검증 방식 · 실행 · 증거 버전 ·
-          단계별 호출/근거 ID · digest 같은 기록 값은 맨 아래 '기술 정보'로 모은다. 내용은 지우지 않는다 */}
+          칸 안 카드로 펼쳐 두되 높이를 묶은 상자에서 스크롤한다. 검증 방식 · 실행 · 증거 버전 · 단계별 호출/근거 ID · digest
+          같은 기록 값('기술 정보')은 보는 사람에게 필요 없어 뺐다(사용자 11/19) — 내부 상세 사본(내려받기)에는 남는다 */}
       <Isec>
         {/* AI(엔진)가 쓴 요약 · 상세 보고라 '판정'으로 읽히지 않게 이름을 AI 분석으로(사용자 11/19) — 판정은 상태 칸 딱지 */}
         <h3>① AI 분석</h3>
@@ -481,15 +308,6 @@ export function DiagnosticEntrySections({
           <pre className={cx(s.code, s.dbox)}>{evidenceText}</pre>
         </section>
       </Isec>
-      <Isec>
-        <h3>③ 보안 조치</h3>
-        {remediationBody}
-      </Isec>
-      <Isec>
-        <h3>④ AI 수정 작업용 프롬프트</h3>
-        {promptBody}
-      </Isec>
-      {tech}
     </>
   );
 }
