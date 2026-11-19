@@ -103,7 +103,7 @@ from runner_state import copy_sqlite, discard_copy, memory_fingerprints, runtime
 from state_diff import (  # noqa: E402
     RUN_KEY_BYTES, diff as state_difference, memory_diff, runtime_diff, snapshot as state_snapshot,
 )
-from runner_llm import judge_llm  # noqa: E402
+from runner_llm import interrupted_generation_ids, judge_llm, rows_match_marker  # noqa: E402
 from runner_probe import PASS, ProbeOutcome, run_probe  # noqa: E402
 from runner_record import (  # noqa: E402
     RecordContext, canonical_sha256, descriptor, evidence_rows, isolation_evidence, isolation_proof, path_ref,
@@ -665,6 +665,20 @@ def _fault_stall(gateway: GatewayFiles, meter_rows: list[dict], window_start: st
         return {"format": FAULT_STALL_FORMAT, "judged": False, "error": "fault_stall_failed"}
 
 
+def _interrupted_b(spec: RunSpec, gateway: GatewayFiles, verified: object) -> frozenset[str]:
+    """B의 기록상 끊긴 호출 generation ID(게이트웨이 cancelled_by_seal, 평가 프로토콜 §6). 행을 읽지 못하거나 읽은 행이
+    검증 표식과 맞지 않으면(행 누락·변경, #735 리뷰) 증명할 수 없으므로 빈 집합이다(미확인은 그대로 무효로 남는다)."""
+    if spec.llm_backend != "api" or not isinstance(verified, dict):
+        return frozenset()
+    try:
+        rows = gateway.rows()
+    except Exception:  # 행을 못 읽으면 끊김을 증명할 수 없다(멈춤 기록도 같은 행을 따로 읽고 사유를 남긴다)
+        return frozenset()
+    if not rows_match_marker(rows, verified):
+        return frozenset()
+    return interrupted_generation_ids(rows, verified.get("sealed_at"), product=False)
+
+
 def _wait_llm_verified(spec: RunSpec, gateway: GatewayFiles, clock: Clock, state: _State) -> dict:
     """게이트웨이는 drain 뒤 generation마다 조회해서 마커를 쓴다. 시한 안에 없으면 그 회차의 LLM 조건은 미검증이다."""
     deadline = clock.monotonic() + spec.llm_verify_timeout_seconds
@@ -917,8 +931,10 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
                                                  spec.image_ids["e2"], spec.e2_declared_differences_sha256, spec.e2_declared_differences_status)
         e2_prompt = _collect_e2_prompt(spec, ports, evidence, state, clock, task_id, e2_product["collection_outcome"])
     verified = _wait_llm_verified(spec, gateway, clock, state)
+    # 기록상 끊긴 호출(게이트웨이가 봉인 때 끊은 cancelled_by_seal, 평가 프로토콜 §6)의 미확인은 따로 센다.
+    interrupted = _interrupted_b(spec, gateway, verified)
     llm_reasons, llm_summary = _step(state, "llm_marker_invalid", lambda: judge_llm(
-        verified, spec.llm_backend, spec.llm_provider_slug, spec.llm_provider_name, spec.llm_sampling))
+        verified, spec.llm_backend, spec.llm_provider_slug, spec.llm_provider_name, spec.llm_sampling, interrupted))
     _step(state, "evidence_write_failed", lambda: evidence.write_json("llm-summary.json",
                                                                       dict(llm_summary, reasons=llm_reasons)))
     if llm_reasons:
