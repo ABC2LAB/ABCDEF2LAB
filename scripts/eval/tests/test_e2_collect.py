@@ -118,7 +118,14 @@ class TestComplete(Fixture):
         self.assertEqual(self.calls[0][:2], ["--journal-format", "e2-http-v1"])
 
     def test_unknown_checkpoint_version_is_a_product_failure(self):
-        self.checkpoint = json.dumps(checkpoint_for(Version="e2-http-v3")).encode()
+        self._unknown_checkpoint("e2-http-v4")
+
+    def test_v3_collection_is_not_open_yet(self):
+        # v3는 행 해석만 있고 수집(오프라인 검증)은 아직 열지 않았다(v3 계약 §8.3·§10). 열기 전에는 모르는 판과 같다.
+        self._unknown_checkpoint("e2-http-v3")
+
+    def _unknown_checkpoint(self, version):
+        self.checkpoint = json.dumps(checkpoint_for(Version=version)).encode()
         self.manifest = manifest_for(self.attempts, 6, 6, 3, audit_checkpoint_sha256=hashlib.sha256(self.checkpoint).hexdigest())
         self.publish()
         self.assert_product_failure("checkpoint_invalid")

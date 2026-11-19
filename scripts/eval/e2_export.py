@@ -8,6 +8,9 @@
 - 거부된 시도는 result 행만 있을 수 있다. 허용된 시도는 intent 행이 먼저 있고, 그 뒤 result가 없으면 전달됐을 수 있어 허용으로 둔다.
 - 시도 ID 없는 행은 control·call_closed뿐이다. 시도별 대조에 넣지 않고 따로 센다.
 - 오류에는 고정 코드만 담는다. 입력 값은 담지 않는다.
+- v3(e2-http-v3, E③↔E② v3 계약)는 E③ 프로그램 호출(e3_identity·e3_create·e3_read) 시도 행을 더한다. 시도 단계 이름·묶음은 v2와
+  같고, 평가가 쓰는 송신 판정 칸(not_sent·not_sent_reason·timed_out)과 결속 칸은 단계 규칙대로 보고, 관찰 칸은 모양만 본다.
+  프로그램 호출은 시도 대조에 그대로 넣고 요약에서만 program별로 따로 센다. v3 수집(오프라인 검증)은 e2_collect가 아직 열지 않는다.
 """
 
 from __future__ import annotations
@@ -21,9 +24,11 @@ from datetime import datetime
 
 MANIFEST_FORMAT = "abc2lab.e2-runner-manifest/v1"
 # 새 회차는 v2로 쓴다. v1은 C16 전에 저장한 회차를 다시 읽을 때만 받는다(withheld·response_truncated 없음).
+# v3는 E③ 프로그램 호출 칸을 더한 판이다(E③↔E② v3 계약 §2). 모델 진단 요청 행은 v2와 같은 규칙이다.
 JOURNAL_VERSION = "e2-http-v2"
 JOURNAL_VERSION_V1 = "e2-http-v1"
-JOURNAL_VERSIONS = frozenset({JOURNAL_VERSION, JOURNAL_VERSION_V1})
+JOURNAL_VERSION_V3 = "e2-http-v3"
+JOURNAL_VERSIONS = frozenset({JOURNAL_VERSION, JOURNAL_VERSION_V1, JOURNAL_VERSION_V3})
 WITHHELD = "withheld"
 ATTEMPTS_FILE = "attempts.jsonl"
 STATE_COMPLETE, STATE_INCOMPLETE = "complete", "incomplete"
@@ -41,6 +46,20 @@ E2_HEADER_MODES = frozenset({"preserve", "protected_session_proposal", HEADER_PA
 # 자격 통과 모드) 밖이다.
 EVAL_HEADER_MODES = E2_HEADER_MODES - {HEADER_TEST_ACCOUNT}
 PROGRAM_CALL_KINDS = frozenset({"auth_prep", "refresh_session"})
+# E③ 프로그램 호출(v3 계약 §8.1). v3 행에만 있다.
+E3_PROGRAMS = frozenset({"e3_identity", "e3_create", "e3_read"})
+MODEL_PROGRAM = "model"
+_E3_TYPE = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")  # e3contract typePattern(선언한 자원 종류)  # 요약에서 program이 빈 시도(모델 진단 요청)를 세는 이름
+E3_ROLES = frozenset({"owner", "cross"})
+E3_NOT_SENT_REASONS = frozenset({"policy_denied", "approval_denied", "approval_timeout", "confirmation_budget_exhausted"})
+E3_NORMAL = frozenset({"yes", "no", "unknown"})
+E3_MARKER_STATUS = frozenset({"complete", "partial", "unsupported", "failed"})
+E3_MARKER_PRESENCE = frozenset({"present", "absent"})
+# v3 E③ 시도 행에만 있는 칸(계약 §2.2). 결속 칸은 시도 단계마다 있고, 송신 판정·관찰 칸은 단계 규칙(§2.3)을 따른다.
+_E3_BINDING_FIELDS = ("role", "account_label", "account_binding_ref", "e3_binding")
+_E3_RESPONSE_FIELDS = ("normal", "request_marker_free", "marker", "body_digest_sha256", "body_complete", "object_id_digest",
+                       "subject_digest")
+_E3_ROW = frozenset(_E3_BINDING_FIELDS + _E3_RESPONSE_FIELDS + ("resource_type", "create_ref", "not_sent_reason", "timed_out"))
 E2_LLM_BACKENDS = frozenset({"local", "api"})
 TARGET_PUBLIC_PRACTICE = "public_practice"
 _SCOPE_KEYS = frozenset({"RunRef", "TaskRef", "CaseRef", "ResetRef", "PolicyRef"})
@@ -106,11 +125,20 @@ class E2Export:
     administrative_rows: int
     administrative_by_reason: tuple[tuple[str, int], ...]
     denied_by_reason: tuple[tuple[str, int], ...]
+    # 시도의 program별 수(빈 program = 모델 진단 요청은 "model"). 시도 대조(decisions)는 모든 시도를 그대로 쓴다: 평가 모드
+    # E²는 프로그램 호출에도 시도 ID 헤더를 싣는다(v3 계약 §8.2). 프로그램 호출을 진단 요청 수와 따로 세는 데만 쓴다(§8).
+    attempts_by_program: tuple[tuple[str, int], ...] = ()
+
+    @property
+    def e3_program_attempts(self) -> int:
+        """E③ 프로그램 호출 시도 수(v3 계약 §8.1). 공식 측정은 0이어야 한다(§8, 판정은 마감 인증된 저널에서만 §8.4)."""
+        return sum(count for program, count in self.attempts_by_program if program in E3_PROGRAMS)
 
     def summary(self) -> dict:
         """서명 근거에 넣을 비민감 요약. 시도 ID·참조는 없다."""
         decided = Counter(row["decision"] for row in self.decisions)
-        return {"format": "abc2lab-eval-e2-export-v1", "state": self.state, "rows": self.rows, "attempts": len(self.decisions),
+        return {"format": "abc2lab-eval-e2-export-v2", "state": self.state, "rows": self.rows, "attempts": len(self.decisions),
+                "attempts_by_program": dict(self.attempts_by_program),
                 "decisions": dict(sorted(decided.items())), "attempts_without_result": self.attempts_without_result,
                 "allowed_not_sent": self.allowed_not_sent, "administrative_rows": self.administrative_rows,
                 "administrative_by_reason": dict(self.administrative_by_reason), "denied_by_reason": dict(self.denied_by_reason)}
@@ -140,6 +168,16 @@ def strict_object(data: bytes) -> dict:
     if not isinstance(value, dict):
         _fail("JSON_INVALID")
     return value
+
+
+def _member(value: object, allowed: frozenset[str]) -> bool:
+    """닫힌 글 목록 안의 값인지. 글이 아니면(배열·객체 등 해시가 안 되는 값 포함) 예외 없이 아니다(#758 리뷰)."""
+    return isinstance(value, str) and value in allowed
+
+
+def _digest(value: object) -> bool:
+    """e3contract digestPattern(소문자 16진 64자)과 같은 모양."""
+    return isinstance(value, str) and bool(_SHA256.fullmatch(value))
 
 
 def _count(value: object) -> bool:
@@ -237,12 +275,17 @@ def _check_evaluation(manifest: dict, expected: E2Expectation) -> None:
         _fail("EVALUATION_TARGET_MISMATCH")
 
 
+def _program_kinds(version: str) -> frozenset[str]:
+    return PROGRAM_CALL_KINDS | E3_PROGRAMS if version == JOURNAL_VERSION_V3 else PROGRAM_CALL_KINDS
+
+
 def _check_stage(row: dict) -> None:
     stage, decision, attempt, call_ref = row["stage"], row.get("decision", ""), row.get("attempt_id", ""), row.get("call_ref", "")
     program = row.get("program", "")
     if program and row["version"] == JOURNAL_VERSION_V1:
         _fail("ROW_ATTRIBUTION")
-    attributed = row["intent_id"] > 0 and program == "" or row["intent_id"] == 0 and program in PROGRAM_CALL_KINDS
+    # intent_id와 program은 하나만 있다(v3 계약 §8.1, e2proxy.ValidCallAttribution). 목록 밖 program·둘 다·둘 다 없음은 거부다.
+    attributed = row["intent_id"] > 0 and program == "" or row["intent_id"] == 0 and program in _program_kinds(row["version"])
     if stage in (STAGE_INTENT, STAGE_RESULT):
         if not attributed or row["sequence"] == 0 or not _ref(call_ref):
             _fail("ROW_ATTEMPT_FIELDS")
@@ -291,18 +334,77 @@ def _check_observation(row: dict) -> None:
         _fail("ROW_STATUS")
 
 
+def _check_e3(row: dict) -> None:
+    """v3 E③ 프로그램 호출 시도 행(계약 §2.2·§2.3). 평가가 쓰는 송신 판정 칸은 단계 규칙대로 있거나 없어야 하고, 관찰 칸은
+    모양만 본다(값의 뜻은 어댑터·E②가 본다). E③ 프로그램이 아닌 행에는 이 칸이 하나도 없어야 한다."""
+    present = set(row) & _E3_ROW
+    if row.get("program", "") not in E3_PROGRAMS or row["stage"] not in (STAGE_INTENT, STAGE_RESULT):
+        if present:
+            _fail("ROW_E3_FIELDS")
+        return
+    if not all(name in row for name in _E3_BINDING_FIELDS):
+        _fail("ROW_E3_FIELDS")
+    binding = row["e3_binding"]
+    if (not _member(row["role"], E3_ROLES) or not _ref(row["account_label"]) or not _ref(row["account_binding_ref"])
+            or not isinstance(binding, dict) or not _ref(binding.get("job_ref"))):
+        _fail("ROW_E3_BINDING")
+    program = row["program"]
+    if (program != "e3_identity") != ("resource_type" in row) or ("resource_type" in row and not (
+            isinstance(row["resource_type"], str) and _E3_TYPE.fullmatch(row["resource_type"]))):
+        _fail("ROW_E3_RESOURCE")
+    create = row.get("create_ref")
+    if (program == "e3_read") != (create is not None) or (create is not None and (
+            not isinstance(create, dict) or set(create) != {"call_ref", "attempt_id", "sequence"} or not _ref(create["call_ref"])
+            or not isinstance(create["attempt_id"], str) or not _ATTEMPT_ID.fullmatch(create["attempt_id"])
+            or not _count(create["sequence"]) or create["sequence"] == 0)):
+        _fail("ROW_E3_CREATE_REF")
+    unsent_result = row["stage"] == STAGE_RESULT and not row["forward_attempted"]
+    sent = row["forward_attempted"]
+    # 송신 전 거부(intent 없이 result 하나): 허용이 아니고 not_sent, 사유는 넷 중 하나, 응답 칸 없음
+    refused = unsent_result and row.get("decision") != ALLOWED
+    # intent 뒤 송신 전 중단(계약 §2.3, v2 execution.go): 실행 문맥이 끝나 연결을 시도하지 않은 허용 result. reason=closed,
+    # not_sent, not_sent_reason 없음. intent가 앞에 있어야 하는 것은 시도 묶음 규칙(허용 result만 있으면 거부)이 본다.
+    if unsent_result and not refused and (row["reason"] != "closed" or not row["not_sent"]):
+        _fail("ROW_E3_NOT_SENT")
+    if refused != ("not_sent_reason" in row) or (refused and (not row["not_sent"]
+                                                            or not _member(row["not_sent_reason"], E3_NOT_SENT_REASONS))):
+        _fail("ROW_E3_NOT_SENT")
+    if "timed_out" in row and (not sent or type(row["timed_out"]) is not bool):
+        _fail("ROW_E3_TIMED_OUT")
+    responses = [name for name in _E3_RESPONSE_FIELDS if name in row]
+    if responses and not row["response_complete"]:
+        _fail("ROW_E3_RESPONSE_FIELDS")
+    if row["response_complete"]:
+        needed = {"normal", "body_digest_sha256", "body_complete"} | (
+            {"marker", "request_marker_free"} if program == "e3_read" else {"subject_digest", "request_marker_free"}
+            if program == "e3_identity" else set())
+        allowed = needed | ({"object_id_digest"} if program == "e3_create" else set())
+        if not needed <= set(responses) or set(responses) - allowed:
+            _fail("ROW_E3_RESPONSE_FIELDS")
+        marker = row.get("marker")
+        if (not _member(row["normal"], E3_NORMAL) or not _digest(row["body_digest_sha256"])
+                or type(row["body_complete"]) is not bool or type(row.get("request_marker_free", False)) is not bool
+                or any(name in row and not _digest(row[name]) for name in ("object_id_digest", "subject_digest"))
+                or ("marker" in row and (not isinstance(marker, dict) or set(marker) != {"status", "presence", "method", "field"}
+                                            or not _member(marker["status"], E3_MARKER_STATUS)
+                                            or not _member(marker["presence"], E3_MARKER_PRESENCE)
+                                            or not isinstance(marker["method"], str) or not isinstance(marker["field"], str)))):
+            _fail("ROW_E3_RESPONSE")
+
+
 def _row(line: bytes, manifest: dict) -> dict:
     row = strict_object(line)
     keys = set(row)
-    if not _REQUIRED_ROW <= keys or keys - _REQUIRED_ROW - _OPTIONAL_ROW:
+    extra = _E3_ROW if row.get("version") == JOURNAL_VERSION_V3 else frozenset()
+    if not _REQUIRED_ROW <= keys or keys - _REQUIRED_ROW - _OPTIONAL_ROW - extra:
         _fail("ROW_FIELDS")
-    if row["version"] not in JOURNAL_VERSIONS:
+    if not _member(row["version"], JOURNAL_VERSIONS):
         _fail("ROW_VERSION")
     if not _count(row["index"]) or row["index"] == 0 or not _count(row["sequence"]) or type(row["intent_id"]) is not int:
         _fail("ROW_COUNT_INVALID")
     if abs(row["intent_id"]) > MAX_INT:
         _fail("ROW_COUNT_INVALID")
-    if row["reason"] not in E2_REASONS:
+    if not _member(row["reason"], E2_REASONS):
         _fail("ROW_REASON")
     if any(type(row[name]) is not bool for name in _ROW_BITS):
         _fail("ROW_BITS")
@@ -316,6 +418,8 @@ def _row(line: bytes, manifest: dict) -> dict:
         _fail("ROW_METHOD")
     _check_stage(row)
     _check_observation(row)
+    if row["version"] == JOURNAL_VERSION_V3:
+        _check_e3(row)
     # 모든 행이 같은 실행·정책에 묶여야 한다.
     if _scope(row["scope"]) != manifest["scope"]:
         _fail("ROW_SCOPE_MISMATCH")
@@ -335,6 +439,11 @@ def _attempt_final(rows: list[dict]) -> tuple[dict, bool]:
     # 허용은 intent 저장이 끝난 뒤에만 나간다. 허용 result만 있으면 앞 행이 빠진 것이다.
     if stages == [STAGE_RESULT] and final["decision"] == ALLOWED:
         _fail("ATTEMPT_ALLOWED_WITHOUT_INTENT")
+    # v3 E③ 프로그램 시도의 송신 전 거부는 intent 없이 result 하나다(계약 §2.3). intent(허용) 뒤 result는 송신 뒤이거나 intent 뒤
+    # 송신 전 중단(허용·closed)뿐이라 거부 result가 오면 위반이다. v2 모델 요청은 intent 기록 실패 뒤 거부가 남을 수 있어 그대로 둔다.
+    if (stages == [STAGE_INTENT, STAGE_RESULT] and final["version"] == JOURNAL_VERSION_V3
+            and final.get("program", "") in E3_PROGRAMS and final["decision"] != ALLOWED):
+        _fail("ATTEMPT_E3_DENIED_AFTER_INTENT")
     return final, final["stage"] == STAGE_RESULT
 
 
@@ -364,6 +473,7 @@ def parse_attempts(data: bytes, manifest: dict) -> E2Export:
             administrative[row["reason"]] += 1
     decisions, without_result, allowed_not_sent = [], 0, 0
     denied: Counter[str] = Counter()
+    programs: Counter[str] = Counter()
     sequences = set()
     for attempt, group in by_attempt.items():
         final, has_result = _attempt_final(group)
@@ -371,6 +481,7 @@ def parse_attempts(data: bytes, manifest: dict) -> E2Export:
             _fail("SEQUENCE_REPEATED")
         sequences.add(final["sequence"])
         decisions.append({"attempt_id": attempt, "decision": final["decision"]})
+        programs[final.get("program", "") or MODEL_PROGRAM] += 1
         if not has_result:
             without_result += 1
         elif final["decision"] == ALLOWED:
@@ -383,7 +494,8 @@ def parse_attempts(data: bytes, manifest: dict) -> E2Export:
     if manifest["state"] == STATE_COMPLETE and without_result:
         _fail("COMPLETE_WITH_OPEN_ATTEMPT")
     return E2Export(manifest["state"], manifest, tuple(decisions), len(rows), without_result, allowed_not_sent,
-                    sum(administrative.values()), tuple(sorted(administrative.items())), tuple(sorted(denied.items())))
+                    sum(administrative.values()), tuple(sorted(administrative.items())), tuple(sorted(denied.items())),
+                    tuple(sorted(programs.items())))
 
 
 def parse_export(manifest_data: bytes, attempts_data: bytes, expected: E2Expectation) -> E2Export:
