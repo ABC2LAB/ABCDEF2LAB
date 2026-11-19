@@ -149,6 +149,7 @@ class FakeMeter:
         if name == "engine-sealed.json":
             return self.sealed
         self.ports.calls.append("meter:drained")
+        self.ports.clock.t += self.ports.drain_delay  # drain 확인에 걸린 시간(타임라인 engine_end·drained 구분 시험용)
         return {"inflight_at_drain": 0, "log_complete": self.log_complete, "forced_cancelled_requests": self.ports.forced,
                 "forwarded_requests": self._total(), "drained_at": DRAINED_AT, "rejected_after_seal": 0, "forced_closed_streams": 0}
 
@@ -207,6 +208,7 @@ class FakePorts:
         self.conditions = conditions()
         self.files_args: list = []
         self.solved = {"pre": {"a": False, "b": False}, "post": {"a": True, "b": False}}
+        self.drain_delay = 0.0
         self.listeners: set = set()
         # 제품 회차 디렉터리의 E③ 확정 단계 결과(e3contract.RunResult). 기본은 공식 기대값(선언 없음으로 비활성)이다.
         self.e3_file = json.dumps({"version": "e3-confirmation-run/v1", "status": "disabled", "reason": "declaration_missing",
@@ -341,6 +343,7 @@ class FakePorts:
 
     def seal(self, meter_id):
         self._call("seal")
+        self.sealed_t = self.clock.t
         assert meter_id == IDS["eval-meter"]
         self.forwarded = self.forwarded  # 봉인 뒤 늘지 않는다
 
@@ -1196,7 +1199,7 @@ class TestRunRecord(unittest.TestCase):
     def test_record_context_timeline_and_artifacts(self):
         from runner import RESULT_FORMAT
         from preservation_record import digest
-        result, ports, evidence = run()
+        result, ports, evidence = run(lambda p: setattr(p, "drain_delay", 0.5))
         self.assertEqual(result["status"], "complete", result)
         record = evidence.files["run-record.json"]
         self.assertEqual(record["signature"], "s")  # 내린 뒤 러너 키로 서명(가짜 서명)
@@ -1210,6 +1213,9 @@ class TestRunRecord(unittest.TestCase):
         self.assertEqual([steps[s]["sequence"] for s in ("fixture_ready", "pre", "engine_start", "engine_end", "drained", "post")],
                          [1, 2, 3, 4, 5, 6])
         self.assertEqual(steps["pre"]["at"], (START + timedelta(seconds=0)).isoformat())  # pre 점수판 받은 시각
+        # engine_end는 계측기 봉인 직후(B와 같은 자리), drained는 drain 확인 뒤다
+        self.assertEqual(steps["engine_end"]["at"], (START + timedelta(seconds=ports.sealed_t)).isoformat())
+        self.assertLess(steps["engine_end"]["at"], steps["drained"]["at"])
         artifacts = record["artifacts"]
         self.assertEqual((artifacts["records"], artifacts["traffic"], artifacts["coverage"]), (None, None, None))
         self.assertEqual(artifacts["pre"]["sha256"], "3" * 64)
@@ -1308,6 +1314,14 @@ class TestRunRecord(unittest.TestCase):
         self.assertEqual(result["status"], "complete", result)
         (pre,) = [row for row in self.rows(evidence, "host_condition") if row["phase"] == "pre"]
         self.assertEqual(pre["listeners_outside_loopback"], ["10.0.0.5:11434"])
+        self.assertEqual(pre["allowed_listens"], [{"address": "10.0.0.5", "port": 11434}])
+
+    def test_complete_flow_without_a_record_is_invalid(self):
+        # 방어선: 흐름이 끝났는데 서명할 기록이 없으면 완료로 쓰지 않는다
+        import runner_split_run as module
+        with mock.patch.object(module, "_split_record", lambda *args, **kwargs: None):
+            result, _, _ = run()
+        self.assertEqual((result["status"], result["reasons"]), ("invalid", ["record_build_failed"]))
 
     def test_record_sign_failure_leaves_unsigned_invalid_result(self):
         def fail_first_sign(ports):

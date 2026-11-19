@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import dataclasses
 import io
 import json
 import os
@@ -245,6 +246,9 @@ class TestSpec(Fixture):
                          (self.config.observer_path, self.config.observer_readonly_ref))
         self.assertEqual(spec.allowed_listens,
                          frozenset(Listener(e.address, e.port) for e in self.config.host_listen_allowlist))
+        from runner_config import HostListen
+        allowed = dataclasses.replace(self.config, host_listen_allowlist=(HostListen("10.0.0.5", 11434, "local model"),))
+        self.assertEqual(split_run_spec(allowed, plan, declared, rendered).allowed_listens, frozenset({Listener("10.0.0.5", 11434)}))
         self.assertEqual(split_run_spec(self.config, plan, declared, rendered, condition="ours@35b").condition, "ours@35b")
 
 
