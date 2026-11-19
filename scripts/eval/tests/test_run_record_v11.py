@@ -855,6 +855,9 @@ class TestComparison(_V11):
                                                                     path_key_ref="0123456789abcdef", goal_common_sha256="7" * 64)
         run = self.v11("w1", tamper_rows=wiring)
         self.assertEqual(self.inputs(run).purpose, "wiring_check")
+        # 직접 배치(분리 배치 표시 없음·경로 키 없음) 배선 확인 기록은 격리 검증이 거부한다(러너 설정과 같은 제약, #747 리뷰)
+        self.reject("wiring_check는 분리 배치 회차에만", "w9",
+                    tamper_rows=lambda rows: row_of(rows, "run_conditions").update(purpose="wiring_check"))
         with self.assertRaisesRegex(ComparabilityError, "배선 확인 회차는 채점하지 않음"):
             score_run(self.load([run])[0], self.correlate, runner_key=self.runner_key, correlatable=self.correlatable)
         with self.assertRaisesRegex(ComparabilityError, "배선 확인 회차는 채점하지 않음"):

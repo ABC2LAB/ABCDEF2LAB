@@ -287,6 +287,9 @@ def _check_conditions(rows: dict[str, list[dict]]) -> dict:
         raise IsolationError("isolation_evidence.run_conditions.purpose: official|browser_acceptance|wiring_check")
     if row["execution_source"] not in EXECUTION_SOURCES:
         raise IsolationError("isolation_evidence.run_conditions.execution_source: model_run|synthetic_fixture")
+    # 배선 확인은 분리 배치 회차에만 있다(러너 설정 WIRING_CHECK_NEEDS_SPLIT과 같은 제약, #747 리뷰)
+    if row["purpose"] == PURPOSE_WIRING_CHECK and row["split"] is not True:
+        raise IsolationError("isolation_evidence.run_conditions.purpose: wiring_check는 분리 배치 회차에만")
     # 경로 가림 키 참조는 수용시험·탐색 분리 배치 회차에만 있어야 하고(16 hex), 분리 배치 표시 없는 공식 회차(엔진 직접
     # 배치)에는 없어야 한다. 분리 배치 공식 회차는 공식 비교의 발견 집계(공식 측정 프로토콜 §7)에 경로가 필요하다.
     if type(row["split"]) is not bool:
