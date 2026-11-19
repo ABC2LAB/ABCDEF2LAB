@@ -36,7 +36,9 @@ export type CreateSpec = {
   bodyKind: BodyKind;
   bodyTemplate: string;
   markerField: string;
+  /** 객체 ID 출처는 둘 중 하나만(e3contract.CreateSpec): 생성 응답 JSON의 ID 경로 또는 생성 요청 본문의 ID 칸. */
   idPath: string;
+  idField: string;
 };
 /** 객체 조회 경로 틀과 응답 모양(e3contract.ReadSpec). statusPath·normalValue 는 둘 다 쓰거나 둘 다 비운다. */
 export type ReadSpec = { pathTemplate: string; dataPath: string; statusPath: string; normalValue: string };
@@ -51,8 +53,8 @@ export type TypeDraft = {
   read: ReadSpec;
 };
 /**
- * 확정 단계 계정 역할(계약 §4, 선택 칸): 소유·생성 계정(A)·교차 조회 계정(B) 라벨과 같은 권한 등급 확인. 입력 화면은 아직
- * 없다(이경준 범위). 저장본에 있으면 화면 값에 그대로 두고 다시 저장할 때 보내서 지우지 않는다.
+ * 확정 단계 계정 역할(계약 §4, 선택 칸): 소유·생성 계정(A)·교차 조회 계정(B) 라벨과 같은 권한 등급 확인. 저장본에 있으면
+ * 화면 값에 그대로 두고 다시 저장할 때 보내서 지우지 않는다. 셋 다 비우면 칸을 빼고 보낸다(역할 없는 선언과 같은 정본).
  */
 export type AccountRoles = { ownerAccountLabel: string; crossAccountLabel: string; accountsSamePrivilege: boolean };
 
@@ -74,6 +76,7 @@ export const emptyCreate = (): CreateSpec => ({
   bodyTemplate: "{}",
   markerField: "",
   idPath: "",
+  idField: "",
 });
 export const emptyRead = (): ReadSpec => ({ pathTemplate: "", dataPath: ".", statusPath: "", normalValue: "" });
 export const emptyType = (): TypeDraft => ({
@@ -275,11 +278,17 @@ export function credentialFields(d: DeclarationDraft): string[] {
     check(`${at}.create.bodyTemplate`, t.create.bodyTemplate, t.create.bodyKind);
     check(`${at}.create.markerField`, t.create.markerField);
     check(`${at}.create.idPath`, t.create.idPath);
+    check(`${at}.create.idField`, t.create.idField);
     check(`${at}.read.pathTemplate`, t.read.pathTemplate, "path");
     check(`${at}.read.dataPath`, t.read.dataPath);
     check(`${at}.read.statusPath`, t.read.statusPath);
     check(`${at}.read.normalValue`, t.read.normalValue);
   });
+  // 계정 역할 라벨도 서버 CredentialField 가 원문으로 본다(owner_account_label · cross_account_label)
+  if (d.roles) {
+    check("ownerAccountLabel", d.roles.ownerAccountLabel);
+    check("crossAccountLabel", d.roles.crossAccountLabel);
+  }
   return out;
 }
 
@@ -345,7 +354,19 @@ function validateType(t: TypeDraft, at: string, issues: DraftIssue[]): void {
   if (!isPlainPath(c.path))
     bad("create.path", "생성 경로는 {id} 없는 절대 경로입니다(query · # · 공백 · 점 조각 불가).");
   if (c.method !== "POST" && c.method !== "PUT") bad("create.method", "생성 메서드는 POST 또는 PUT 입니다.");
-  if (!isFieldPath(c.idPath)) bad("create.idPath", "생성 응답의 객체 ID 위치(JSON 경로)를 적으세요.");
+  // 객체 ID 출처는 둘 중 하나만이다(서버 Validate: 둘 다면 create.id_field, 둘 다 없으면 create.id_path).
+  if (c.idPath !== "" && c.idField !== "")
+    bad("create.idField", "ID 출처는 생성 응답 경로와 요청 본문 칸 중 하나만 적습니다.");
+  else if (c.idPath === "" && c.idField === "")
+    bad("create.idPath", "생성 응답의 객체 ID 위치(JSON 경로)나 요청 본문의 ID 칸 중 하나를 적으세요.");
+  else if (c.idPath !== "" && !isFieldPath(c.idPath))
+    bad("create.idPath", "생성 응답의 객체 ID 위치(JSON 경로)를 적으세요.");
+  else if (c.idField !== "") {
+    const m = c.markerField;
+    const f = c.idField;
+    if (!isFieldPath(f) || f === m || f.startsWith(`${m}.`) || m.startsWith(`${f}.`))
+      bad("create.idField", "요청 본문 ID 칸은 칸 이름 형식이고 표식 칸과 같거나 그 위·아래 칸이면 안 됩니다.");
+  }
   // 크기 상한을 먼저 본다(서버 Validate create.body_template). 넘는 틀은 풀어 보지 않는다 — 아래 모양 검사가 재귀라
   // 편집 중인 아주 깊은 틀에서 스택이 넘치지 않게(#754 리뷰)
   const tooLong = utf8Length(c.bodyTemplate) > MAX_BODY_TEMPLATE_BYTES;
@@ -355,15 +376,22 @@ function validateType(t: TypeDraft, at: string, issues: DraftIssue[]): void {
   else if (!tooLong && c.bodyKind === "json") {
     const obj = parseJsonTemplate(c.bodyTemplate);
     if (!obj) bad("create.bodyTemplate", "JSON 본문 틀은 JSON 객체여야 합니다.");
-    // 표식 칸이 틀에 이미 있으면 덮어쓰는지 남기는지 모호하다. 맨 위 칸만 본다(중첩 칸은 프로그램이 만든다 — Go 와 같음)
-    else if (!c.markerField.includes(".") && Object.hasOwn(obj, c.markerField))
-      bad("create.bodyTemplate", "본문 틀에 표식 칸이 이미 있습니다. 표식 칸은 비워 두세요(프로그램이 넣습니다).");
+    // 표식 칸(ID 칸)이 틀에 이미 있으면 덮어쓰는지 남기는지 모호하다. 맨 위 칸만 본다(중첩 칸은 프로그램이 만든다 — Go 와 같음)
+    else if ([c.markerField, c.idField].some((f) => f !== "" && !f.includes(".") && Object.hasOwn(obj, f)))
+      bad(
+        "create.bodyTemplate",
+        "본문 틀에 표식 칸이나 ID 칸이 이미 있습니다. 그 칸은 비워 두세요(프로그램이 넣습니다).",
+      );
   } else if (!tooLong && c.bodyKind === "form") {
     const pairs = parseFormTemplate(c.bodyTemplate);
     if (!pairs || c.markerField.includes("."))
       bad("create.bodyTemplate", "form 본문 틀이 형식 밖이거나 표식 칸에 점(.)이 있습니다.");
-    else if (pairs.some(([k]) => k === c.markerField))
-      bad("create.bodyTemplate", "본문 틀에 표식 칸이 이미 있습니다. 표식 칸은 비워 두세요(프로그램이 넣습니다).");
+    else if (c.idField.includes(".")) bad("create.idField", "form 본문의 ID 칸에는 점(.)을 쓸 수 없습니다.");
+    else if (pairs.some(([k]) => k === c.markerField || (c.idField !== "" && k === c.idField)))
+      bad(
+        "create.bodyTemplate",
+        "본문 틀에 표식 칸이나 ID 칸이 이미 있습니다. 그 칸은 비워 두세요(프로그램이 넣습니다).",
+      );
   }
   const secrets = tooLong ? [] : secretFieldsInTemplate(c.bodyKind, c.bodyTemplate);
   if (secrets.length)
@@ -402,6 +430,7 @@ export function validateDraft(d: DeclarationDraft): DraftIssue[] {
     else names.set(t.type, i);
     validateType(t, `types.${i}`, issues);
   });
+  validateRoles(d.roles, issues);
   for (const field of credentialFields(d))
     issues.push({
       field,
@@ -409,6 +438,42 @@ export function validateDraft(d: DeclarationDraft): DraftIssue[] {
         "자격 값 모양(인증 · 쿠키 헤더, 비밀번호 · 토큰 키=값, Bearer · Basic, JWT, 개인키)이 있어 저장하지 않습니다. 세션은 시험 계정 로그인이 따로 붙입니다.",
     });
   return issues;
+}
+
+/**
+ * 계정 역할 검사(서버 e3contract.Declaration.Validate 와 같은 규칙, 계약 §4). 칸 이름은 서버 거부 칸(draftFieldOf)과 같다.
+ * 둘 다 정하거나 둘 다 비운다 · 같은 계정을 두 역할에 둘 수 없다 · 역할이 없으면 등급 확인도 없다 · 라벨은 REF_PATTERN.
+ * 문구에는 입력 원문을 넣지 않는다.
+ */
+function validateRoles(roles: AccountRoles | undefined, issues: DraftIssue[]): void {
+  if (!roles) return;
+  const { ownerAccountLabel: owner, crossAccountLabel: cross, accountsSamePrivilege: privilege } = roles;
+  const shape = "계정 라벨은 영문 · 숫자로 시작하고 영문 · 숫자 · _ . : / - 만 씁니다(128자 이하).";
+  if (owner !== "" && !REF_PATTERN.test(owner)) issues.push({ field: "ownerAccountLabel", message: shape });
+  if (cross !== "" && !REF_PATTERN.test(cross)) issues.push({ field: "crossAccountLabel", message: shape });
+  if ((owner === "") !== (cross === ""))
+    issues.push({
+      field: owner === "" ? "ownerAccountLabel" : "crossAccountLabel",
+      message: "소유 · 생성 계정과 교차 조회 계정은 둘 다 적거나 둘 다 비웁니다.",
+    });
+  else if (owner !== "" && owner === cross)
+    issues.push({ field: "crossAccountLabel", message: "두 역할에 같은 계정을 둘 수 없습니다." });
+  if (owner === "" && cross === "" && privilege)
+    issues.push({
+      field: "accountsSamePrivilege",
+      message: "계정 역할을 정하지 않으면 같은 권한 등급 확인을 둘 수 없습니다.",
+    });
+}
+
+/** 역할 셋이 다 비었는가(그러면 칸을 빼고 보낸다 — 역할 없는 선언과 같은 정본). */
+const rolesEmpty = (r: AccountRoles | undefined): boolean =>
+  !r || (r.ownerAccountLabel === "" && r.crossAccountLabel === "" && !r.accountsSamePrivilege);
+
+/** 확정 단계가 이 선언의 역할로 켜질 수 있는가(계약 §4: 역할 없음·등급 확인 없음이면 꺼짐). 인증 결과는 실행 때 따로 본다. */
+export type RoleReadiness = "undeclared" | "privilege_unconfirmed" | "declared";
+export function roleReadiness(r: AccountRoles | undefined): RoleReadiness {
+  if (!r || r.ownerAccountLabel === "" || r.crossAccountLabel === "") return "undeclared";
+  return r.accountsSamePrivilege ? "declared" : "privilege_unconfirmed";
 }
 
 /** 정본 순서로 맞춘다: 종류·소유자 전용 필드 오름차순(Go 는 순서가 어긋나면 거부). 공유 종류의 요청 칸은 비운다. */
@@ -421,7 +486,12 @@ export function normalizeDraft(d: DeclarationDraft): DeclarationDraft {
           : { ...t, ownerOnlyFields: [...t.ownerOnlyFields].sort(byteOrder) },
     )
     .sort((a, b) => byteOrder(a.type, b.type));
-  return { identity: { ...d.identity }, types };
+  // 계정 역할은 보존한다(빼면 화면 저장이 저장본의 역할을 지운다). 셋 다 비면 뺀다
+  return {
+    identity: { ...d.identity },
+    types,
+    ...(rolesEmpty(d.roles) ? {} : { roles: { ...(d.roles as AccountRoles) } }),
+  };
 }
 // 규칙상 ASCII 이름만 통과하므로 UTF-16 비교가 Go 의 바이트 비교와 같다
 function byteOrder(a: string, b: string): number {
@@ -435,11 +505,11 @@ function byteOrder(a: string, b: string): number {
  */
 export function toRequestBody(d: DeclarationDraft, targetRevision: number): Record<string, unknown> {
   const n = normalizeDraft(d);
-  const roles = d.roles
+  const roles = n.roles
     ? {
-        owner_account_label: d.roles.ownerAccountLabel,
-        cross_account_label: d.roles.crossAccountLabel,
-        ...(d.roles.accountsSamePrivilege ? { accounts_same_privilege: true } : {}),
+        owner_account_label: n.roles.ownerAccountLabel,
+        cross_account_label: n.roles.crossAccountLabel,
+        ...(n.roles.accountsSamePrivilege ? { accounts_same_privilege: true } : {}),
       }
     : {};
   return {
@@ -461,6 +531,7 @@ export function toRequestBody(d: DeclarationDraft, targetRevision: number): Reco
                 body_template: t.create.bodyTemplate,
                 marker_field: t.create.markerField,
                 id_path: t.create.idPath,
+                ...(t.create.idField ? { id_field: t.create.idField } : {}),
               },
               read: {
                 path_template: t.read.pathTemplate,
@@ -488,7 +559,9 @@ function exact(o: unknown, required: readonly string[], optional: readonly strin
 const str = (v: unknown): string => (typeof v === "string" ? v : fail());
 const optStr = (v: unknown): string => (v === undefined ? "" : str(v));
 
+// id_path는 서버가 늘 내보낸다(빈 값 포함). id_field는 요청 본문 칸 ID일 때만 있다(e3contract.CreateSpec).
 const CREATE_KEYS = ["path", "method", "body_kind", "body_template", "marker_field", "id_path"] as const;
+const CREATE_OPTIONAL = ["id_field"] as const;
 const READ_KEYS = ["path_template", "data_path"] as const;
 
 /** Go 는 공유 종류의 빈 create·read 도 칸째 낸다(omitempty 없음) — 없거나 전부 빈 값만 받는다. */
@@ -509,14 +582,19 @@ function parseType(v: unknown): TypeDraft {
   if (sharing === "shared") {
     if (
       ownerOnlyFields.length ||
+      // 서버는 빈 id_field를 내보내지 않는다(omitempty) — 공유 종류 create에 그 칸이 있으면 계약 밖이다
       !emptyRequestObject(o.create, CREATE_KEYS) ||
       !emptyRequestObject(o.read, READ_KEYS, ["status_path", "normal_value"])
     )
       fail();
     return { type: str(o.type), sharing, ownerOnlyFields: [], create: emptyCreate(), read: emptyRead() };
   }
-  const c = exact(o.create, CREATE_KEYS);
+  const c = exact(o.create, CREATE_KEYS, CREATE_OPTIONAL);
   const r = exact(o.read, READ_KEYS, ["status_path", "normal_value"]);
+  // 객체 ID 출처는 둘 중 정확히 하나다(서버 Validate와 같음). 어긋나면 계약 밖 응답이다. 서버는 빈 id_field를 내보내지
+  // 않으므로(omitempty) 칸이 있는데 빈 값이어도 계약 밖이다(#766 이경준 리뷰).
+  if ("id_field" in c && c.id_field === "") fail();
+  if ((str(c.id_path) === "") === (optStr(c.id_field) === "")) fail();
   const method = c.method === "POST" || c.method === "PUT" ? c.method : fail();
   const bodyKind = c.body_kind === "json" || c.body_kind === "form" ? c.body_kind : fail();
   return {
@@ -530,6 +608,7 @@ function parseType(v: unknown): TypeDraft {
       bodyTemplate: str(c.body_template),
       markerField: str(c.marker_field),
       idPath: str(c.id_path),
+      idField: optStr(c.id_field),
     },
     read: {
       pathTemplate: str(r.path_template),

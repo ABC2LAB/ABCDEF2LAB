@@ -8,7 +8,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -51,6 +53,9 @@ type Behavior struct {
 type Call struct {
 	Key     Key
 	Account string
+	// ObjectID는 생성·조회 요청이 실은 요청 본문 칸 ID다(id_field). Path는 조회면 경로 틀의 {id}에 ID를 넣은 경로다.
+	ObjectID string
+	Path     string
 	// Timeout은 요청이 가져온 확정 요청 시간 상한이다.
 	Timeout time.Duration
 }
@@ -74,6 +79,7 @@ type Transport struct {
 	Clock func() time.Time
 
 	registered map[string][][]byte
+	objectIDs  map[string]string
 	journal    map[string]e3contract.Observation
 	calls      []Call
 	seq        uint64
@@ -83,7 +89,7 @@ type Transport struct {
 
 // New는 빈 가짜 E²다.
 func New() *Transport {
-	return &Transport{Behaviors: map[Key]Behavior{}, registered: map[string][][]byte{},
+	return &Transport{Behaviors: map[Key]Behavior{}, registered: map[string][][]byte{}, objectIDs: map[string]string{},
 		journal: map[string]e3contract.Observation{}, base: time.Date(2026, 11, 18, 3, 0, 0, 0, time.UTC),
 		sinks: map[string]*bytes.Buffer{"journal": {}, "receipts": {}, "approval_preview": {}, "log": {}, "export": {}}}
 }
@@ -125,15 +131,20 @@ func (t *Transport) Identity(_ context.Context, req e3contract.IdentityRequest) 
 }
 
 func (t *Transport) Create(_ context.Context, req e3contract.CreateRequest) (e3contract.Observation, error) {
-	// 생성 요청 본문을 만든다. 실제 E²처럼 본문 틀의 표식 칸에 표식을 넣는다.
-	body := []byte(fmt.Sprintf(`{"template":%q,"%s":"%s"}`, req.Spec.BodyTemplate, req.Spec.MarkerField, req.Marker.Reveal()))
-	return t.do(Call{Key: Key{e3contract.PurposeCreate, e3contract.RoleOwner, req.ResourceType}, Account: req.AccountLabel, Timeout: req.Timeout},
-		req.Binding, e3contract.CallRef{}, "", body)
+	// 본문은 확정 단계가 본문 틀에 표식(과 ID)을 넣어 만든 것이다. 실제 E²처럼 그대로 보낸다(본문 검사는 do에서 표식 등록 뒤).
+	return t.do(Call{Key: Key{e3contract.PurposeCreate, e3contract.RoleOwner, req.ResourceType}, Account: req.AccountLabel,
+		ObjectID: req.ObjectID, Path: req.Spec.Path, Timeout: req.Timeout}, req.Binding, e3contract.CallRef{}, "", req.Body.Reveal())
 }
 
 func (t *Transport) Read(_ context.Context, req e3contract.ReadRequest) (e3contract.Observation, error) {
-	return t.do(Call{Key: Key{e3contract.PurposeRead, req.Role, req.ResourceType}, Account: req.AccountLabel, Timeout: req.Timeout},
-		req.Binding, req.Create, req.MarkerField, req.Marker.Reveal())
+	// 경로 틀의 {id}에 ID를 넣는다(id_field면 요청의 ID, 아니면 생성 관찰의 참조로 가짜 ID).
+	id := req.ObjectID
+	if id == "" {
+		id = "obj-" + req.Create.CallRef
+	}
+	path := strings.Replace(req.Spec.PathTemplate, e3contract.IDPlaceholder, url.PathEscape(id), 1)
+	return t.do(Call{Key: Key{e3contract.PurposeRead, req.Role, req.ResourceType}, Account: req.AccountLabel, ObjectID: req.ObjectID,
+		Path: path, Timeout: req.Timeout}, req.Binding, req.Create, req.MarkerField, req.Marker.Reveal())
 }
 
 // do는 요청 하나를 처리한다. markerBytes는 생성이면 보낼 본문, 조회면 검사할 표식이다.
@@ -145,9 +156,16 @@ func (t *Transport) do(c Call, b e3contract.RunBinding, create e3contract.CallRe
 	if c.Key.Purpose != e3contract.PurposeIdentity && len(t.registered[b.RunRef]) == 0 {
 		return e3contract.Observation{}, e3contract.ErrMarkerNotRegistered
 	}
+	if c.Key.Purpose == e3contract.PurposeCreate && len(markerBytes) == 0 {
+		return e3contract.Observation{}, errors.New("e3fake: 생성 본문 없음")
+	}
 	be := t.Behaviors[c.Key]
 	if be.Err != nil {
 		return e3contract.Observation{}, be.Err
+	}
+	// 조회가 생성 때와 다른 ID로 오면 그 객체는 없다(404).
+	if c.Key.Purpose == e3contract.PurposeRead && c.ObjectID != "" && t.objectIDs[create.CallRef] != c.ObjectID {
+		be = Behavior{Status: 404, Normal: oracle.StateNo}
 	}
 	t.seq++
 	ref := e3contract.CallRef{CallRef: fmt.Sprintf("fake-call-%d", t.seq), AttemptID: fmt.Sprintf("fake-attempt-%d", t.seq),
@@ -157,7 +175,11 @@ func (t *Transport) do(c Call, b e3contract.RunBinding, create e3contract.CallRe
 	if c.Key.Purpose == e3contract.PurposeCreate {
 		// 승인 미리보기에는 보내려던 본문이 들어간다. 실제 E²처럼 등록한 표식을 가린 뒤 쓴다.
 		t.write("approval_preview", markerBytes)
-		t.write("log", []byte("create "+c.Key.Type+" body="+string(markerBytes)))
+		// 공유 로그에는 본문(표식·요청 칸 ID)을 남기지 않는다. 보낼 본문을 보여 주는 곳은 승인 미리보기다.
+		t.write("log", []byte("create "+c.Key.Type))
+		if c.ObjectID != "" {
+			t.objectIDs[ref.CallRef] = c.ObjectID
+		}
 	}
 	switch {
 	case be.NotSent != "":
@@ -206,7 +228,12 @@ func (t *Transport) respond(o *e3contract.Observation, be Behavior, b e3contract
 		o.RequestMarkerFree = true
 	case e3contract.PurposeCreate:
 		if !be.NoObjectID {
-			o.ObjectIDDigest = digest(b.RunRef, o.Ref.CallRef)
+			// 요청 본문 칸 ID면 그 ID로, 아니면 응답에서 꺼낸 ID(가짜는 호출 참조)로 digest를 만든다.
+			id := o.Ref.CallRef
+			if objectID := t.objectIDs[o.Ref.CallRef]; objectID != "" {
+				id = objectID
+			}
+			o.ObjectIDDigest = digest(b.RunRef, id)
 		}
 	case e3contract.PurposeRead:
 		o.RequestMarkerFree = !be.MarkerInRequest

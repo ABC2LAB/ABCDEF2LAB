@@ -11,6 +11,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { cx } from "../../lib/cx";
 import {
+  type AccountRoles,
   BODY_KIND_LABEL,
   type BodyKind,
   CREATE_METHODS,
@@ -28,7 +29,9 @@ import {
   getDeclarationTargets,
   invalidatedReasonText,
   normalizeDraft,
+  type RoleReadiness,
   rejectedFieldOf,
+  roleReadiness,
   SAVE_FAILURE_TEXT,
   type SaveFailure,
   SHARING_LABEL,
@@ -286,14 +289,97 @@ function TypeEditor({
   );
 }
 
+/** 계정 역할 상태 문구(계약 §4). 확정 단계는 역할 없음·등급 확인 없음이면 꺼진다. 인증 결과는 실행 때 서버가 따로 본다. */
+const ROLE_READINESS_TEXT: Record<RoleReadiness, string> = {
+  undeclared: "확정 단계 꺼짐 — 계정 역할을 정하지 않았습니다",
+  privilege_unconfirmed: "확정 단계 꺼짐 — 두 계정이 같은 권한 등급이라는 확인이 없습니다",
+  declared: "계정 역할 정함 — 두 계정이 실행 때 인증되어야 확정 단계가 돕니다",
+};
+
 /** 저장된 선언 요약(서버 값). */
 function StoredSummary({ d }: { d: StoredDeclaration }) {
   return (
-    <p className={s.help}>
-      선언자 <span className={s.mono}>{d.declaredBy}</span> · 선언 시각 <span className={s.mono}>{d.declaredAt}</span> ·
-      대상 승인 판 <span className={s.mono}>{d.targetApprovalRevision}</span> · 자원 종류 {d.types.length}개(시험 대상{" "}
-      {d.types.filter(confirmable).length}개)
-    </p>
+    <>
+      <p className={s.help}>
+        선언자 <span className={s.mono}>{d.declaredBy}</span> · 선언 시각 <span className={s.mono}>{d.declaredAt}</span>{" "}
+        · 대상 승인 판 <span className={s.mono}>{d.targetApprovalRevision}</span> · 자원 종류 {d.types.length}개(시험
+        대상 {d.types.filter(confirmable).length}개)
+      </p>
+      <p className={s.help}>
+        {d.roles ? (
+          <>
+            소유 · 생성 계정 <span className={s.mono}>{d.roles.ownerAccountLabel}</span> · 교차 조회 계정{" "}
+            <span className={s.mono}>{d.roles.crossAccountLabel}</span> ·{" "}
+          </>
+        ) : null}
+        {ROLE_READINESS_TEXT[roleReadiness(d.roles)]}
+      </p>
+    </>
+  );
+}
+
+const NO_ROLES: AccountRoles = { ownerAccountLabel: "", crossAccountLabel: "", accountsSamePrivilege: false };
+
+/**
+ * 확정 단계 계정 역할 입력(계약 §4, 선택 칸). 서버가 계정을 이름순 등으로 고르면 관리자가 교차 조회자가 되어 거짓 확정이
+ * 날 수 있어서, 운영자가 두 계정과 같은 권한 등급임을 정한다. 라벨은 등록된 시험 계정의 이름이고 자격 값이 아니다.
+ */
+function RolesEditor({
+  roles,
+  issues,
+  onChange,
+}: {
+  roles: AccountRoles | undefined;
+  issues: DraftIssue[];
+  onChange: (next: AccountRoles) => void;
+}) {
+  const r = roles ?? NO_ROLES;
+  return (
+    <>
+      <h3>확정 단계 시험 계정 (선택)</h3>
+      <p className={s.help}>
+        객체를 만드는 계정(A)과 그 객체를 교차 조회하는 계정(B)을 정하고, 두 계정이 같은 권한 등급임을 확인해야 확정
+        단계가 돕니다. 관리자처럼 남의 객체를 정상 권한으로 읽는 계정을 B로 두면 결함이 없어도 확정이 날 수 있습니다.
+      </p>
+      <Field
+        label="소유 · 생성 계정 (A)"
+        issues={at(issues, "ownerAccountLabel")}
+        help="등록된 시험 계정 이름(예: tester-a)"
+      >
+        <input
+          className={cx(s.inp, s.mono, s["w-sel"])}
+          aria-label="소유 · 생성 계정"
+          value={r.ownerAccountLabel}
+          onChange={(e) => onChange({ ...r, ownerAccountLabel: e.target.value })}
+        />
+      </Field>
+      <Field
+        label="교차 조회 계정 (B)"
+        issues={at(issues, "crossAccountLabel")}
+        help="A 와 다른 시험 계정, 같은 권한 등급"
+      >
+        <input
+          className={cx(s.inp, s.mono, s["w-sel"])}
+          aria-label="교차 조회 계정"
+          value={r.crossAccountLabel}
+          onChange={(e) => onChange({ ...r, crossAccountLabel: e.target.value })}
+        />
+      </Field>
+      <Field label="권한 등급 확인" issues={at(issues, "accountsSamePrivilege")}>
+        <label className={s.ckline}>
+          <input
+            type="checkbox"
+            aria-label="두 계정이 같은 권한 등급"
+            checked={r.accountsSamePrivilege}
+            onChange={(e) => onChange({ ...r, accountsSamePrivilege: e.target.checked })}
+          />
+          <span>두 계정은 같은 권한 등급입니다(예: 둘 다 일반 사용자, 관리자 아님)</span>
+        </label>
+      </Field>
+      <p className={s.help} data-role-readiness={roleReadiness(roles)}>
+        {ROLE_READINESS_TEXT[roleReadiness(roles)]}
+      </p>
+    </>
   );
 }
 
@@ -558,6 +644,7 @@ export function PolicyDeclarationLive() {
                   onChange={(e) => update({ ...draft, identity: { ...draft.identity, subjectIdPath: e.target.value } })}
                 />
               </Field>
+              <RolesEditor roles={draft.roles} issues={issues} onChange={(roles) => update({ ...draft, roles })} />
               {at(issues, "types").map((m) => (
                 <p key={m} className={s.err} role="alert">
                   {m}

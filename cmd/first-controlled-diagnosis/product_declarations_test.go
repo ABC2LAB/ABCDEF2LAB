@@ -953,3 +953,84 @@ func TestProductResetRefCoversNotSentAtSameTime(t *testing.T) {
 		t.Fatalf("같은 시각 created 정산 참조: %v", err)
 	}
 }
+
+// 요청 본문 칸 ID(id_field) 쓰기 기록: 예약 때부터 ID가 남고, 정산은 같은 ID로만 받으며, 결과 불명이어도 리셋 확인의 잔존
+// 점검이 그 ID로 객체를 읽어 볼 수 있다(사용자 결정 2026-11-19).
+func TestProductResetObjectIDWrites(t *testing.T) {
+	r, _, target, _ := declarationTestTarget(t)
+	id := e3contract.ObjectIDPrefix + strings.Repeat("a", 32)
+	other := e3contract.ObjectIDPrefix + strings.Repeat("b", 32)
+	w := productWriteRecorder{registry: r, targetID: target.ID, jobID: "job-1"}
+	binding := e3contract.RunBinding{JobRef: "job-1"}
+	if err := w.Reserve(t.Context(), binding, "note", id); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Reserve(t.Context(), binding, "card", other); err != nil {
+		t.Fatal(err)
+	}
+	objects := r.resets[target.ID].writesObjects
+	if len(objects) != 2 || objects[0].ID != id || objects[0].IDUnknown || objects[1].ID != other {
+		t.Fatalf("예약: %+v", objects)
+	}
+	digest := strings.Repeat("c", 64)
+	// 다른 ID로는 정산하지 않는다.
+	if err := w.Settle(t.Context(), binding, e3contract.ConfirmationWrite{ResourceType: "note", Outcome: e3contract.WriteCreated,
+		ObjectIDDigest: digest, ObjectID: other}); err == nil {
+		t.Fatal("다른 ID로 정산함")
+	}
+	if err := w.Settle(t.Context(), binding, e3contract.ConfirmationWrite{ResourceType: "note", Outcome: e3contract.WriteCreated,
+		ObjectIDDigest: digest, ObjectID: id}); err != nil {
+		t.Fatal(err)
+	}
+	objects = r.resets[target.ID].writesObjects
+	if objects[0].IDDigest != digest || objects[0].ID != id {
+		t.Fatalf("created 정산: %+v", objects[0])
+	}
+	// card는 결과 불명이라 ID만 남는다. 잔존 점검은 ID를 아는 객체를 모두 읽어 본다.
+	var seen []productConfirmationObject
+	gate := productResetGate{registry: r, residue: func(_ context.Context, _ e3contract.RunBinding, objs []productConfirmationObject) (e3contract.Residue, error) {
+		seen = append(seen, objs...)
+		return e3contract.ResidueAbsent, nil
+	}}
+	if _, err := gate.Check(t.Context(), e3contract.RunBinding{JobRef: "job-2"}, target.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 2 || seen[1].ID != other || seen[1].IDDigest != "" {
+		t.Fatalf("잔존 점검이 받은 객체: %+v", seen)
+	}
+	// 보내지 않은 것이 확실하면 ID와 함께 거둔다.
+	r2, _, target2, _ := declarationTestTarget(t)
+	w2 := productWriteRecorder{registry: r2, targetID: target2.ID, jobID: "job-1"}
+	if err := w2.Reserve(t.Context(), binding, "note", id); err != nil {
+		t.Fatal(err)
+	}
+	if err := w2.Settle(t.Context(), binding, e3contract.ConfirmationWrite{ResourceType: "note", Outcome: e3contract.WriteNotSent, ObjectID: id}); err != nil {
+		t.Fatal(err)
+	}
+	if live := liveConfirmationObjects(r2.resets[target2.ID].writesObjects); len(live) != 0 {
+		t.Fatalf("거둔 쓰기가 남음: %+v", live)
+	}
+}
+
+// 쓰기 기록 객체 모양: ID는 우리가 만든 모양만, ID 모름과 ID를 함께 두지 않는다.
+func TestProductConfirmationObjectIDShape(t *testing.T) {
+	id := e3contract.ObjectIDPrefix + strings.Repeat("a", 32)
+	for name, c := range map[string]struct {
+		o  productConfirmationObject
+		ok bool
+	}{
+		"id_reserved":      {productConfirmationObject{Type: "note", ID: id}, true},
+		"id_created":       {productConfirmationObject{Type: "note", ID: id, IDDigest: strings.Repeat("c", 64)}, true},
+		"id_not_sent":      {productConfirmationObject{Type: "note", ID: id, NotSent: true}, true},
+		"unknown_not_sent": {productConfirmationObject{Type: "note", IDUnknown: true, NotSent: true}, true},
+		"bad_id":           {productConfirmationObject{Type: "note", ID: "book-1"}, false},
+		"unknown_with_id":  {productConfirmationObject{Type: "note", IDUnknown: true, ID: id}, false},
+		"empty":            {productConfirmationObject{Type: "note"}, false},
+		"not_sent_no_id":   {productConfirmationObject{Type: "note", NotSent: true}, false},
+		"not_sent_digest":  {productConfirmationObject{Type: "note", ID: id, NotSent: true, IDDigest: strings.Repeat("c", 64)}, false},
+	} {
+		if c.o.valid() != c.ok {
+			t.Fatalf("%s: valid=%v", name, c.o.valid())
+		}
+	}
+}
