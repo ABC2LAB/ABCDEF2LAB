@@ -33,3 +33,8 @@ v4.2 계획 4번 4a의 두 번째 PR이다. 첫 PR은 판정 표의 출처 종�
   - 조회 전후 판정·manifest·발급·link·finding 행 수와 대상 HTTP·모델 호출이 0
   - 응답에 비밀번호·쿠키·토큰·표식·계정 원문·파일 경로가 없음(건수 검사)
 - 리뷰: 이동찬(필수), 이경준(응답 칸·화면).
+
+**경로 설치(1조각 둘째 PR).**
+- 경로: `GET /api/tasks/{task_id}/finding-verdict-detail?verdict_id=…|finding_id=…`. 제품 관리 중계(`NewProductDiagnosisHandler`)에만 있다. 제품이 아닌 관리 API는 404이고, 어느 쪽도 실행 API로 넘기지 않는다(경로 조각 이름이 같으면 모양이 틀려도 이 처리기가 400으로 답한다).
+- 순서: 인증(401 `authentication_required`, 인증 저장소 장애는 503) → 준비 서비스 `AuthorizeTask`(Principal·Task 소유, 없으면 403 `verdict_detail_forbidden`, 응답 Job의 작업 번호가 다르거나 회차 참조가 없으면 409 `verdict_detail_binding_unavailable`) → 저장 판정 읽기·검증. 실행 상태(진행 중·마감)와 대상 승인 상태는 보지 않는다(저장 자료 조회, 초안 §7).
+- 제품 정책 동결본(OD06): 관리 API 프로세스는 회차 디렉터리를 읽지 않는다. 준비 서비스 IPC `product_control`의 `policy_source`(회차 참조만)로 묻고, 준비 서비스는 상태 조회로 회차 소유를 확인한 뒤 `runs/<job>/e3-declaration.json` 바이트의 SHA-256만 돌려준다(원문 없음, 파일이 없으면 `present=false`). 판정 발급의 회차·참조(`declaration-<job>`)가 조회를 허가한 작업의 회차와 다르면 묻지 않고 불일치(`record_integrity_failed`)다. IPC 장애는 503이다.

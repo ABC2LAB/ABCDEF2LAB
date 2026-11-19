@@ -99,6 +99,7 @@ services:
       - -upstream=http://target:${EVAL_TARGET_PORT:?}
       - -log-dir=/evidence
       - -drain-grace=${EVAL_METER_DRAIN_GRACE:?}
+      - -request-cap=${EVAL_METER_REQUEST_CAP:?}
       # 경로 가림 키는 B 회차 계측기와 같은 파일(러너 설정 path_key_file)이다. 경계는 같은 바이트의 보호 입력 사본을
       # 받는다(계약 §4.1: 경계 path_mask_key_file = 계측기 -path-key-file). 같아야 P03 대조와 B·O 경로 비교가 된다.
       - -path-log

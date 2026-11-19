@@ -158,7 +158,7 @@ class TestPlan(unittest.TestCase):
     def setUp(self):
         self.config = acceptance_config()
         self.split = parse_split(split_block(), self.config)
-        self.plan = plan_split_run(self.config, self.split, run_id="run1", target_image=TARGET, meter_port=8080)
+        self.plan = plan_split_run(self.config, self.split, run_id="run1", target_image=TARGET, meter_port=8080, request_cap=100)
 
     def test_plan_reuses_b_meter_target_and_observer_values(self):
         env = self.plan.compose_env
@@ -166,7 +166,7 @@ class TestPlan(unittest.TestCase):
             "PRODUCT_TAG": "eval-split-0123456789ab", "PRODUCT_SOURCE_SHA": "a" * 40, "PRODUCT_PORT": "28787",
             "PRODUCT_DNS_CONTROL_PORT": "29083", "EVAL_TARGET_NAME": "app.eval.test", "EVAL_TARGET_IMAGE": TARGET.ref,
             "EVAL_METER_IMAGE": "example/m:fixed", "EVAL_METER_PORT": "8080", "EVAL_METER_EXPLORE_PORT": "8082",
-            "EVAL_TARGET_PORT": "3000", "EVAL_METER_DRAIN_GRACE": "30s", "EVAL_OBS_PORT": "8081", "EVAL_OBS_HOST_PORT": "18081",
+            "EVAL_TARGET_PORT": "3000", "EVAL_METER_DRAIN_GRACE": "30s", "EVAL_METER_REQUEST_CAP": "100", "EVAL_OBS_PORT": "8081", "EVAL_OBS_HOST_PORT": "18081",
             "EVAL_OBS_PATH": "/api/records", "EVAL_PATH_KEY_FILE": "/srv/eval/path.key"})
         self.assertEqual((self.plan.project, self.plan.target_origin, self.plan.profiles),
                          ("eval-run1", "http://app.eval.test:8080", ("exploration",)))
@@ -180,7 +180,7 @@ class TestPlan(unittest.TestCase):
     def test_meter_port_must_not_collide(self):
         for port in (0, 28787, 8082):
             with self.subTest(port=port), self.assertRaises(SplitConfigError):
-                plan_split_run(self.config, self.split, run_id="r", target_image=TARGET, meter_port=port)
+                plan_split_run(self.config, self.split, run_id="r", target_image=TARGET, meter_port=port, request_cap=100)
 
     def test_runtime_env_adds_evidence_uid_and_protected_paths_without_overlap(self):
         protected = {"PRODUCT_INSTALL_FILE": "/runs/r/private/install.json"}
@@ -212,7 +212,7 @@ class TestSyntheticModelBlock(unittest.TestCase):
         self.assertTrue(split.synthetic)
         self.assertEqual((split.manifest_path, split.synthetic_plan_path, split.synthetic_max_tokens),
                          (None, Path("/srv/eval/plans/vampi.json"), 2048))
-        plan = plan_split_run(config, split, run_id="s1", target_image=TARGET, meter_port=8080)
+        plan = plan_split_run(config, split, run_id="s1", target_image=TARGET, meter_port=8080, request_cap=100)
         self.assertEqual(plan.compose_files, (*COMPOSE_FILES, COMPOSE_SYNTHETIC))
         self.assertEqual(plan.compose_env["EVAL_SCRIPTED_MODEL_SCRIPT"], str(SCRIPTED_MODEL_SCRIPT))
         env = split_compose_environment(plan, evidence_dir=Path("/r/meter"), protected_env={},
@@ -222,7 +222,7 @@ class TestSyntheticModelBlock(unittest.TestCase):
         with self.assertRaises(SplitConfigError):
             split_compose_environment(plan, evidence_dir=Path("/r/meter"), protected_env={})
         real = plan_split_run(acceptance_config(), parse_split(split_block(), acceptance_config()), run_id="s2",
-                              target_image=TARGET, meter_port=8080)
+                              target_image=TARGET, meter_port=8080, request_cap=100)
         self.assertNotIn(COMPOSE_SYNTHETIC, real.compose_files)
         self.assertNotIn("EVAL_SCRIPTED_MODEL_SCRIPT", real.compose_env)
         with self.assertRaises(SplitConfigError):
@@ -303,7 +303,7 @@ class TestPlanRendersWithCompose(unittest.TestCase):
     def test_render(self):
         config = acceptance_config()
         split = parse_split(split_block(), config)
-        plan = plan_split_run(config, split, run_id="render1", target_image=TARGET, meter_port=8080)
+        plan = plan_split_run(config, split, run_id="render1", target_image=TARGET, meter_port=8080, request_cap=100)
         with tempfile.TemporaryDirectory() as tmp:
             protected = {}
             for env_name in ("PRODUCT_INSTALL_FILE", "PRODUCT_POSTGRES_PASSWORD_FILE", "EXPLORE_BOUNDARY_CONFIG_FILE",
