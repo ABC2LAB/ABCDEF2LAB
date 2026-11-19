@@ -431,6 +431,10 @@ class FinalMeterChecksTests(unittest.TestCase):
             with self.subTest(marked=marked, sealed=sealed_value):
                 self.assertFalse(final_log_consistent(rows, {"role": "engine", "rejected_over_cap": sealed_value},
                                                       dict(self.DRAINED, rejected_over_cap=marked)))
+        # 봉인 표식만 타입이 틀린 경우(drain 쪽은 정수): True == 1, 1.0 == 1이어도 받지 않는다(#734 리뷰)
+        for sealed_value in (True, 1.0, "1", None, -1):
+            with self.subTest(sealed_only=sealed_value):
+                self.assertFalse(final_log_consistent(rows, {"role": "engine", "rejected_over_cap": sealed_value}, drained))
         self.assertFalse(final_log_consistent(self.rows(), {"role": "engine"}, drained))  # 끝부분 거부 행이 빠짐
         self.assertFalse(final_log_consistent(rows, {"role": "engine"}, self.DRAINED))  # 이전 표식인데 상한 거부 행이 있음
         self.assertTrue(final_log_consistent(self.rows(), {"role": "engine"}, self.DRAINED))

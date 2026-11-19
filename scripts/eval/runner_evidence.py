@@ -308,8 +308,10 @@ def final_log_consistent(rows: list[dict], sealed: dict | None, drained: dict) -
     over_cap = sum(1 for row in rows if row["outcome"] == OVER_CAP_OUTCOME)
     if "rejected_over_cap" in drained:
         marked = drained["rejected_over_cap"]
-        cap_ok = (_count(marked) and over_cap == marked and sealed is not None
-                  and sealed.get("rejected_over_cap", marked) == marked)
+        # 봉인 표식에 칸이 있으면 같은 타입 규칙(0 이상 정수)으로 본 뒤 비교한다. 값 비교만 하면 True == 1이 통과한다(#734 리뷰).
+        sealed_mark = None if sealed is None else sealed.get("rejected_over_cap", marked)
+        cap_ok = (_count(marked) and over_cap == marked and sealed is not None and _count(sealed_mark)
+                  and sealed_mark == marked)
     else:
         cap_ok = over_cap == 0
     return (sealed is not None and sequence_complete(rows) and _count(expected)
