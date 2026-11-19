@@ -430,7 +430,17 @@ type productResetGate struct {
 	residue  func(ctx context.Context, binding e3contract.RunBinding, objects []productConfirmationObject) (e3contract.Residue, error)
 }
 
+// Check는 리셋 확인·표식 잔존과 함께, 결속에 세대·인스턴스 참조가 있으면(확정 단계 시작) 그 참조가 지금 대상과 같은지
+// 본다(v3 계약 §6). 서버의 회차 시작 점검은 참조 없는 결속으로 불러 대조하지 않는다.
 func (g productResetGate) Check(ctx context.Context, binding e3contract.RunBinding, targetRef string) (e3contract.ResetState, error) {
+	state, err := g.check(ctx, binding, targetRef)
+	if err == nil && (binding.GenerationRef != "" || binding.InstanceRef != "") {
+		state.TargetChanged = g.registry.targetRefsChanged(targetRef, binding)
+	}
+	return state, err
+}
+
+func (g productResetGate) check(ctx context.Context, binding e3contract.RunBinding, targetRef string) (e3contract.ResetState, error) {
 	if g.registry == nil {
 		return e3contract.ResetState{}, errPreparation
 	}

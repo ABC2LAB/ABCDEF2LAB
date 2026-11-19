@@ -304,3 +304,19 @@ func TestFrozenReadersStayInsideTheRun(t *testing.T) {
 		t.Fatal("다른 회차의 정책 파일을 받음")
 	}
 }
+
+// 제품 대상 회차는 선언 유무와 관계없이 실행 시작 때 세대·인스턴스 참조를 0600으로 동결한다(v3 계약 §6). 승인된 대상이면
+// 둘 다 아는 값이다.
+func TestIssueWritesTargetRefs(t *testing.T) {
+	for _, declare := range []bool{true, false} {
+		runs, job, _, _ := issueWithDeclaration(t, declare)
+		info, err := os.Stat(filepath.Join(runs, job, productTargetRefsFile))
+		if err != nil || info.Mode().Perm() != 0600 {
+			t.Fatalf("선언 %v: 참조 파일 %v", declare, err)
+		}
+		refs, ok := readTargetRefs(runs, job)
+		if !ok || !refs.GenerationKnown || !refs.InstanceKnown {
+			t.Fatalf("선언 %v: %+v %v", declare, refs, ok)
+		}
+	}
+}

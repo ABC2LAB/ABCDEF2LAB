@@ -24,8 +24,6 @@ const (
 	// 번호에서 만든다. 실행 정책의 다른 참조(run-·policy-)와 같은 방식이다.
 	// TODO(최민준): 임시 값이다. E② Transport·Journal v3가 관찰·저널 결속에 쓰는 값이라, 이동찬님이 발급하는 값을 그대로
 	// 받도록 합의한 뒤 바꾼다(#738 질문). 합의 전에는 Transport가 없어 이 값이 대상 요청에 쓰이지 않는다.
-	productE3GenerationRefPrefix = "generation-"
-	productE3InstanceRefPrefix   = "instance-"
 )
 
 // productE3Confirmation은 제품 회차 하나의 확정 단계다.
@@ -136,8 +134,13 @@ func (c *productE3Confirmation) input(taskID string) (e3contract.Input, time.Dur
 		// 쓰기 동의(write_consent)와 리셋할 수 있는 쓰기(reversible_writes)가 둘 다 등록돼야 한다(결정 §3 조건 1).
 		WriteConsent:   c.target.ReversibleWrites && c.target.WriteConsent != "",
 		RequestTimeout: server.E3ConfirmationRequestTimeoutDefault, AdmittedTypes: -1,
-		Binding: e3contract.RunBinding{JobRef: c.jobID, TaskRef: taskID,
-			GenerationRef: productE3GenerationRefPrefix + c.jobID, InstanceRef: productE3InstanceRefPrefix + c.jobID}}
+		Binding: e3contract.RunBinding{JobRef: c.jobID, TaskRef: taskID}}
+	// 세대·인스턴스 참조는 실행 시작 때 동결한 값이다(v3 계약 §6). 없거나 깨졌으면 비워 둔다(binding_invalid로 꺼짐).
+	if refs, ok := readTargetRefs(c.runsDir, c.jobID); ok {
+		in.Binding.GenerationRef, in.Binding.InstanceRef = refs.GenerationRef, refs.InstanceRef
+	} else {
+		log.Printf("[e3-confirmation] 회차 %s 세대·인스턴스 참조를 읽지 못함", c.jobID)
+	}
 	var share time.Duration
 	// 실행 범위 참조와 확정 몫은 운영자 승인(authority.json)에 결속된 실행 정책에서 읽는다(E② 실행 범위와 같은 값).
 	if binding, err := openRunBinding(c.runsDir, c.jobID); err != nil {
