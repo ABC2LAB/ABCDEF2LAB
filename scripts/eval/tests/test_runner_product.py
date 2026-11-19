@@ -380,20 +380,51 @@ class TestStartStopClose(unittest.TestCase):
 
 
 class TestTaskEndSignal(unittest.TestCase):
-    def test_only_the_six_end_signal_fields_of_that_task_are_kept(self):
+    """제품 관리 API는 `/api/tasks/` 아래만 중계해 목록은 307이다(2026-11-19 O 진단 회차). 단건 작업과 목표 목록을 읽는다."""
+
+    TASK = {"id": "42", "status": "done", "completed_at": "2026-11-19T08:35:20Z", "goals_total": 0, "goals_met": 0, "in_flight": 0,
+            "llm_failover_state": "default", "name": "task-name-text", "goal": "goal-text", "exploration_id": 3}
+    GOALS = {"goals": [{"id": "1", "text": "goal-one-text", "state": "met"}, {"id": "2", "text": "goal-two-text", "state": "met"},
+                       {"id": "3", "text": "goal-three-text", "state": "open"}]}
+
+    def fake(self, task=None, goals=None):
         fake = FakeProduct()
-        task = {"id": "42", "status": "done", "completed_at": "2026-11-19T08:35:20Z", "goals_total": 3, "goals_met": 3, "in_flight": 0,
-                "llm_failover_state": "default", "name": "task-name-text", "goal": "goal-text"}
-        fake.overrides["/api/tasks"] = (200, {"tasks": [task, dict(task, id="7")]})
+        fake.overrides["/api/tasks/42"] = (200, self.TASK if task is None else task)
+        fake.overrides["/api/tasks/42/goals"] = (200, self.GOALS if goals is None else goals)
+        return fake
+
+    def test_status_from_the_task_and_counts_from_the_goals(self):
+        fake = self.fake()
         got = driver(fake).task_end_signal("42")
-        self.assertEqual(got, {k: task[k] for k in ("status", "completed_at", "goals_total", "goals_met", "in_flight", "llm_failover_state")})
-        from runner_engine import EngineAPIError
-        with self.assertRaises(EngineAPIError):
-            driver(fake).task_end_signal("99")  # 목록에 없는 작업
-        fake.overrides["/api/tasks"] = (403, {"reason": "forbidden"})
+        self.assertEqual(got, {"status": "done", "completed_at": "2026-11-19T08:35:20Z", "llm_failover_state": "default",
+                               "goals_total": 3, "goals_met": 2, "goal_states": {"met": 2, "open": 1}})
+        self.assertNotIn("text", json.dumps(got))  # 목표 글·작업 이름은 옮기지 않는다
+        self.assertEqual([c["path"] for c in fake.calls if c["path"].startswith("/api/tasks")], ["/api/tasks/42", "/api/tasks/42/goals"])
+
+    def test_mismatch_or_odd_values_are_refused(self):
+        cases = {
+            "other_task": dict(task=dict(self.TASK, id="7")),
+            "status_type": dict(task=dict(self.TASK, status=1)),
+            "status_text": dict(task=dict(self.TASK, status="Done now")),
+            "stamp": dict(task=dict(self.TASK, completed_at="yesterday")),
+            "failover": dict(task=dict(self.TASK, llm_failover_state=None)),
+            "goals_shape": dict(goals={"goals": "x"}),
+            "goal_state": dict(goals={"goals": [{"state": 3}]}),
+            "goal_item": dict(goals={"goals": ["met"]}),
+        }
+        for name, changes in cases.items():
+            with self.subTest(name=name), self.assertRaises(ProductAPIError) as caught:
+                driver(self.fake(**changes)).task_end_signal("42")
+            self.assertEqual(str(caught.exception), "product_task_signal_invalid")
+        with self.assertRaises(ProductAPIError):
+            driver(self.fake()).task_end_signal("../42")
+
+    def test_http_error_is_a_fixed_code(self):
+        fake = self.fake()
+        fake.overrides["/api/tasks/42/goals"] = (403, {"reason": "forbidden"})
         with self.assertRaises(ProductAPIError) as caught:
             driver(fake).task_end_signal("42")
-        self.assertTrue(str(caught.exception).startswith("product_http_403:/api/tasks"))
+        self.assertTrue(str(caught.exception).startswith("product_http_403:"))
 
 
 class TestInputs(unittest.TestCase):
