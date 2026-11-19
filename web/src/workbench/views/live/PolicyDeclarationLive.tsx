@@ -99,6 +99,20 @@ function TypeBadge({ t }: { t: TypeDraft }) {
   return <span className={cx(s.tag, s.in)}>확정 단계 시험 대상</span>;
 }
 
+/** 객체 ID 출처(e3contract.CreateSpec): 생성 응답 JSON 경로(id_path) 또는 생성 요청 본문 칸(id_field) 중 하나. */
+type IdSource = "path" | "field";
+const ID_SOURCE_LABEL: Record<IdSource, string> = { path: "응답 경로", field: "요청 본문 칸" };
+const ID_SOURCE_HELP: Record<IdSource, string> = {
+  path: "서버가 ID를 정하는 API — 생성 응답 JSON 경로(예: id, data.id).",
+  field:
+    "클라이언트가 ID를 정하는 API — 확정 단계가 새 난수 ID를 이 본문 칸과 조회 경로의 {id}에 넣습니다. json은 점 경로, form은 점 없는 키. 본문 틀에는 이 칸을 넣지 않습니다. ID는 비밀이 아니라 결과 · 쓰기 기록에 남습니다.",
+};
+function idSourceOf(c: TypeDraft["create"], picked: IdSource): IdSource {
+  if (c.idField !== "") return "field";
+  if (c.idPath !== "") return "path";
+  return picked;
+}
+
 /** 자원 종류 하나의 입력. */
 function TypeEditor({
   t,
@@ -120,6 +134,16 @@ function TypeEditor({
   const setCreate = (patch: Partial<TypeDraft["create"]>) => onChange({ ...t, create: { ...t.create, ...patch } });
   const setRead = (patch: Partial<TypeDraft["read"]>) => onChange({ ...t, read: { ...t.read, ...patch } });
   const owner = t.sharing === "owner_only";
+  // 객체 ID 출처는 채워진 칸이 정한다. 둘 다 비었을 때만 운영자가 고른 쪽을 쓴다(선언에는 출처 칸이 따로 없다)
+  const [picked, setPicked] = useState<IdSource>("path");
+  const idSource = idSourceOf(t.create, picked);
+  // 출처를 바꾸면 적던 이름을 옮긴다 — 두 칸이 같이 남지 않게(서버는 둘 다 있으면 거부)
+  const pickIdSource = (next: IdSource) => {
+    setPicked(next);
+    if (next === idSource) return;
+    const name = idSource === "path" ? t.create.idPath : t.create.idField;
+    setCreate(next === "path" ? { idPath: name, idField: "" } : { idPath: "", idField: name });
+  };
   return (
     <fieldset className={s.isec} aria-label={`자원 종류 ${index + 1}`} data-type-index={index}>
       <div className={s.now}>
@@ -206,7 +230,7 @@ function TypeEditor({
           <Field
             label="본문 틀"
             issues={f("create.bodyTemplate")}
-            help="표식 칸은 비워 두세요(프로그램이 넣습니다). 비밀번호 · 토큰 · 쿠키 · 세션 값은 넣지 않습니다."
+            help="표식 칸 · 요청 본문 ID 칸은 비워 두세요(프로그램이 넣습니다). 비밀번호 · 토큰 · 쿠키 · 세션 값은 넣지 않습니다."
           >
             <textarea
               className={cx(s.inp, s.mono)}
@@ -231,13 +255,34 @@ function TypeEditor({
               ))}
             </select>
           </Field>
-          <Field label="생성 응답의 객체 ID 위치" issues={f("create.idPath")} help="응답 JSON 경로(예: id, data.id)">
-            <input
-              className={cx(s.inp, s.mono, s["w-sel"])}
-              aria-label={`자원 종류 ${index + 1} 객체 ID 위치`}
-              value={t.create.idPath}
-              onChange={(e) => setCreate({ idPath: e.target.value })}
-            />
+          <Field
+            label={idSource === "path" ? "객체 ID — 생성 응답 경로" : "객체 ID — 요청 본문 칸"}
+            issues={[...f("create.idPath"), ...f("create.idField")]}
+            help={ID_SOURCE_HELP[idSource]}
+          >
+            <div className={s.now}>
+              <select
+                className={cx(s.inp, s["w-sel"])}
+                aria-label={`자원 종류 ${index + 1} 객체 ID 출처`}
+                value={idSource}
+                onChange={(e) => pickIdSource(e.target.value as IdSource)}
+              >
+                {(Object.keys(ID_SOURCE_LABEL) as IdSource[]).map((k) => (
+                  <option key={k} value={k}>
+                    {ID_SOURCE_LABEL[k]}
+                  </option>
+                ))}
+              </select>
+              <input
+                className={cx(s.inp, s.mono, s["w-sel"])}
+                aria-label={`자원 종류 ${index + 1} 객체 ID 위치`}
+                value={idSource === "path" ? t.create.idPath : t.create.idField}
+                onChange={(e) =>
+                  setCreate(idSource === "path" ? { idPath: e.target.value } : { idField: e.target.value })
+                }
+                placeholder={idSource === "path" ? "id" : "title"}
+              />
+            </div>
           </Field>
           <h3>객체 조회</h3>
           <Field label="조회 경로 틀" issues={f("read.pathTemplate")} warnings={w("read.pathTemplate")}>
