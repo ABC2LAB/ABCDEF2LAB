@@ -1,0 +1,30 @@
+{
+  "identity": {
+    "path": "/me",
+    "subject_id_path": "data.username"
+  },
+  "types": [
+    {
+      "type": "book",
+      "sharing": "owner_only",
+      "owner_only_fields": [
+        "secret"
+      ],
+      "create": {
+        "path": "/books/v1",
+        "method": "POST",
+        "body_kind": "json",
+        "body_template": "{}",
+        "marker_field": "secret",
+        "id_field": "book_title"
+      },
+      "read": {
+        "path_template": "/books/v1/{id}",
+        "data_path": "."
+      }
+    }
+  ],
+  "owner_account_label": "vampi-a",
+  "cross_account_label": "vampi-b",
+  "accounts_same_privilege": true
+}
