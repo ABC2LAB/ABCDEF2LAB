@@ -500,6 +500,8 @@ func TestEventCheck(t *testing.T) {
 		"intent_as_last":          {read, func(e *e3v3.Event) { e.Stage = e3v3.StageIntent }, "intent_without_result"},
 		"denied_but_sent":         {denied, func(e *e3v3.Event) { e.NotSent, e.NotSentReason = false, "" }, "decision"},
 		"allowed_without_rule":    {read, func(e *e3v3.Event) { e.RuleRef = "" }, "rule_ref"},
+		"decision_unknown_sent":   {read, func(e *e3v3.Event) { e.Decision = "maybe" }, "decision"},
+		"decision_unknown_denied": {denied, func(e *e3v3.Event) { e.Decision = "maybe" }, "decision"},
 		"not_sent_unknown_reason": {denied, func(e *e3v3.Event) { e.NotSentReason = "unknown" }, "not_sent_reason"},
 		"not_sent_received":       {denied, func(e *e3v3.Event) { e.ResponseReceived = true }, "not_sent_has_response"},
 	}
