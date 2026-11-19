@@ -31,6 +31,10 @@ import (
 	"github.com/Autumn-27/artex/diagnosis"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
+	"github.com/Autumn-27/artex/e3contract"
+	"github.com/Autumn-27/artex/e3contract/e3fake"
+	"github.com/Autumn-27/artex/e3contract/e3v3"
+	"github.com/Autumn-27/artex/e3contract/e3v3/e2live"
 	"github.com/Autumn-27/artex/internal/diagnosticlog"
 	"github.com/Autumn-27/artex/transmit"
 	"golang.org/x/crypto/bcrypt"
@@ -643,6 +647,23 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 			t.Fatal("E③ 확정 단계 훅 설정 실패", err)
 		}
 	}
+	// 목표 달성으로 끝나는 실행에서도 확정 단계 훅 때 E② 실행이 살아 있어야 한다. #805 뒤 실제 제품 합성 회차(목표 달성
+	// 마감)는 엔진의 목표 달성 취소가 E② 작업을 먼저 닫아(FenceTask: 작업 문맥 취소 → 실행 문맥 취소) 확정 단계가 늘
+	// not_wired였다. 가짜 handle이 아니라 이 실제 runtime의 E3HandleReason → 제품과 같은 지연 어댑터(e3v3.LazyE2, 실제
+	// 브리지 e2live.NewLive) → e3contract.Run까지 간다. 선언 없음은 declaration_missing(브리지 0), 선언 있음은 어댑터가 붙어
+	// 표식 등록에서 실제 실행으로 브리지를 만든다(이 픽스처의 E②는 v3 Host가 없어 브리지가 거부 → marker_registration_failed).
+	// 훅은 감독자 begin을 부르지 않아 감독자 흐름은 그대로다.
+	var goalE3Calls int
+	var goalE3State string
+	if mode == "goal-met-after-work" {
+		if err := supervisor.SetE3Confirmation(FirstDiagnosisE3Hooks{Stopped: stopRecord, Run: func(hookCtx context.Context, taskID string, _ func()) error {
+			goalE3Calls++
+			goalE3State = firstDiagnosisRealE3Hook(t, hookCtx, runtime, taskID)
+			return nil
+		}}); err != nil {
+			t.Fatal("목표 달성 E③ 확정 단계 훅 설정 실패", err)
+		}
+	}
 	if mode == "pre-run-stop" {
 		hash, err := runtime.server.reloadPassHash()
 		if err != nil {
@@ -890,6 +911,9 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	if goalConcurrent {
 		firstDiagnosisCheckGoalConcurrent(t, ctx, mode, runErr, supervisor, runtime, installer, task, plannerProvider, intentWorker, hits.Load(), targetExited)
 		return
+	}
+	if mode == "goal-met-after-work" && (goalE3Calls != 1 || goalE3State != firstDiagnosisRealE3Want || e3StoppedCalls.Load() != 0) {
+		t.Fatalf("목표 달성 마감에서 확정 단계 훅 때 E② 실행을 쓸 수 없음 calls=%d state=%q stopped=%d", goalE3Calls, goalE3State, e3StoppedCalls.Load())
 	}
 	if mode == "goal-met-after-work" || mode == "goal-met-auth-unknown" {
 		// 목표 달성은 Planner의 판정이고 실행 마감 실패가 아니다. 정책 거부로 끝난 intent는 정책 제한, 정상 작업은 done이다.
@@ -2050,4 +2074,79 @@ func firstDiagnosisUntrustedClosure(t *testing.T, ctx context.Context, superviso
 	owned.mu.Lock()
 	owned.resultsFailed = false
 	owned.mu.Unlock()
+}
+
+// firstDiagnosisRealE3Want는 실제 runtime 확정 단계 훅의 기대 결과다(firstDiagnosisRealE3Hook).
+const firstDiagnosisRealE3Want = "handle= ctx=true | undeclared=disabled/declaration_missing bridges=0 started=0 | declared=start_refused/marker_registration_failed bridges=1 started=1 requests=0"
+
+// firstDiagnosisRealE3Hook은 감독자 훅 안에서 실제 runtime으로 확정 단계를 두 번 돈다. 선언 없음은 연결이 붙어도 사유만
+// 내고 브리지를 만들지 않는다. 선언 있음은 표식 등록 때 실제 E② 실행으로 브리지를 만든다.
+func firstDiagnosisRealE3Hook(t *testing.T, ctx context.Context, runtime *FirstDiagnosisHTTPRuntime, taskID string) string {
+	exec, accounts, reason := runtime.E3HandleReason(taskID)
+	state := fmt.Sprintf("handle=%s ctx=%v", reason, ctx.Err() == nil)
+	if reason != "" {
+		return state
+	}
+	run := func(in e3contract.Input, decl *e3contract.Declaration) string {
+		bridges, started := 0, 0
+		lazy, err := e3v3.NewLazy(func(binding e3contract.RunBinding) (e3v3.Bridge, error) {
+			bridges++
+			return e2live.NewLive(exec, accounts, binding)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer lazy.Close()
+		adapter, err := e3v3.New(lazy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stored := map[string]e3contract.Declaration{}
+		if decl != nil {
+			stored[in.Binding.Policy.Ref] = *decl
+		}
+		res := e3contract.Run(ctx, e3contract.Deps{Transport: adapter, Journal: adapter, Declarations: e3fake.Declarations{Stored: stored},
+			Reset: e3fake.Reset{State: e3contract.ResetState{Residue: e3contract.ResidueAbsent}}, Writes: &e3fake.Writes{},
+			Started: func() { started++ }}, in)
+		return fmt.Sprintf("%s/%s bridges=%d started=%d", res.Status, res.Reason, bridges, started) +
+			map[bool]string{true: fmt.Sprintf(" requests=%d", res.Requests), false: ""}[decl != nil]
+	}
+	scope := exec.Snapshot().Scope
+	now := time.Now()
+	in := e3contract.Input{TargetRef: "target-harness", WriteConsent: true, RequestTimeout: E3ConfirmationRequestTimeoutDefault, AdmittedTypes: 1,
+		Binding: e3contract.RunBinding{JobRef: "job-harness", RunRef: scope.RunRef, TaskRef: taskID, E2PolicyRef: scope.PolicyRef,
+			GenerationRef: "generation-harness", InstanceRef: "instance-harness"},
+		PolicyValidFrom: now.Add(-time.Hour), PolicyValidUntil: now.Add(time.Hour)}
+	undeclared := run(in, nil)
+	decl := firstDiagnosisHarnessDeclaration(t, in.TargetRef)
+	digest, err := decl.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.Binding.Policy = e3contract.PolicySource{Kind: e3contract.PolicyProductDeclaration, Ref: "declaration-harness", DigestSHA256: digest,
+		TargetApprovalRevision: decl.TargetApprovalRevision}
+	in.Owner = e3contract.Account{Label: decl.OwnerAccountLabel, Authenticated: true}
+	in.Cross = e3contract.Account{Label: decl.CrossAccountLabel, Authenticated: true}
+	declared := run(in, &decl)
+	return state + " | undeclared=" + undeclared + " | declared=" + declared
+}
+
+// firstDiagnosisHarnessDeclaration은 VAmPI 확정 시나리오의 선언(scripts/eval/e3_vampi/declaration.json)을 이 시험 대상에
+// 붙인 동결본이다.
+func firstDiagnosisHarnessDeclaration(t *testing.T, targetRef string) e3contract.Declaration {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "scripts", "eval", "e3_vampi", "declaration.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decl e3contract.Declaration
+	if err := json.Unmarshal(raw, &decl); err != nil {
+		t.Fatal(err)
+	}
+	decl.Version, decl.TargetRef, decl.TargetApprovalRevision = e3contract.DeclarationVersion, targetRef, "approval-harness"
+	decl.DeclaredBy, decl.DeclaredAt = "ARTEX", time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC)
+	if err := decl.Validate(); err != nil {
+		t.Fatal("시험 선언", err)
+	}
+	return decl
 }
