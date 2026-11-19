@@ -133,6 +133,9 @@ type Limits struct {
 	MaxUnknown   uint64
 }
 type Config struct {
+	// AuditVersion은 신뢰된 호스트가 선택하는 저널 행 판이다. 빈 값은 v2다.
+	// v3 선택만으로 E③ 프로그램 송신 권한이 생기지 않는다.
+	AuditVersion string `json:"-"`
 	// CheckAuthority는 신뢰 호스트가 연결하는 위임 철회 검사다. nil은 기존 모드다.
 	// 짧고 제한된 로컬 검사만 수행하며 Execution으로 재진입하면 안 된다.
 	CheckAuthority func() error `json:"-"`

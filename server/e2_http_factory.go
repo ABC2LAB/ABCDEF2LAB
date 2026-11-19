@@ -22,6 +22,7 @@ import (
 	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/e2config"
 	"github.com/Autumn-27/artex/e2export"
+	"github.com/Autumn-27/artex/e2host"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
 	"github.com/Autumn-27/artex/internal/privateinput"
@@ -58,7 +59,8 @@ func (E2HTTPAcquired) String() string   { return "server.E2HTTPAcquired[protecte
 func (E2HTTPAcquired) GoString() string { return "server.E2HTTPAcquired[protected]" }
 
 type E2HTTPFileOptions struct {
-	Workflow *diagnosisflow.Controller
+	HostSocket string
+	Workflow   *diagnosisflow.Controller
 	// 새 URL 준비의 상위 설치 위임을 재확인한다. 기존 호출자는 nil을 유지한다.
 	CheckAuthority   func() error
 	RequestApprovals *RequestApprovalService
@@ -487,20 +489,52 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		if ledger.Register(budget.Grant{Key: grantKey, Binding: budgetBinding, MaxRequests: diagnosisRequests, ValidFrom: policy.ValidFrom, ValidUntil: policy.ValidUntil}, time.Now()) != nil {
 			return E2HTTPRunOptions{}, ErrE2HTTPHost
 		}
+		scope := transmit.Scope{TaskRef: request.TaskID, RunRef: policy.RunRef, CaseRef: policy.CaseRef, ResetRef: resetRef, PolicyRef: policy.PolicyRef}
+		var hostRecorder *e2host.Client
+		if input.HostSocket != "" {
+			if input.HostSocket != "/run/e2-host/audit.sock" || policy.Evaluation != nil {
+				return E2HTTPRunOptions{}, ErrE2HTTPHost
+			}
+			hostRecorder, createErr = e2host.OpenClient(taskctx, input.HostSocket, scope, policy.PolicyRevision)
+			if createErr != nil {
+				return E2HTTPRunOptions{}, ErrE2HTTPHost
+			}
+		}
 		journal, createErr := e2proxy.CreateJournal(policy.StateDir, "events.jsonl", auditKey)
 		if createErr != nil {
+			if hostRecorder != nil {
+				hostRecorder.Abort()
+			}
 			return E2HTTPRunOptions{}, ErrE2HTTPHost
 		}
-		release := func(context.Context) error { return journal.Close() }
+		release := func(ctx context.Context) error {
+			if err := journal.Close(); err != nil {
+				if hostRecorder != nil {
+					hostRecorder.Abort()
+				}
+				return err
+			}
+			if hostRecorder != nil {
+				return hostRecorder.Seal(ctx)
+			}
+			return nil
+		}
 		// accountAuth는 인증 준비가 돈 뒤의 계정별 결과다. 그 뒤에 실행 획득이 실패해도 실행 결과에 싣도록 실패 반환에도
 		// 넣는다(계약 §3.4: 실행을 잡지 못하고 실패해도 인증 준비가 돌았으면 싣는다, #532 이동찬 리뷰).
 		var accountAuth map[string]string
 		failed := func(execution *e2proxy.Execution, runner *e2runner.Runner) (E2HTTPRunOptions, error) {
-			return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: release, AccountAuth: accountAuth}, ErrE2HTTPHost
+			cleanup := release
+			if hostRecorder != nil {
+				cleanup = func(context.Context) error { hostRecorder.Abort(); return journal.Close() }
+			}
+			return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: cleanup, AccountAuth: accountAuth}, ErrE2HTTPHost
 		}
 		recorder := e2proxy.Recorder(journal)
+		if hostRecorder != nil {
+			recorder = e2HTTPV3MirrorRecorder{host: hostRecorder, legacy: journal}
+		}
 		if input.ObserveEvent != nil {
-			recorder = e2HTTPJournalObserver{next: journal, observe: input.ObserveEvent}
+			recorder = e2HTTPJournalObserver{next: recorder, observe: input.ObserveEvent}
 		}
 		var gate e2proxy.RequestApprovalGate
 		if input.RequestApprovals != nil {
@@ -529,7 +563,11 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 				}
 			})
 		}
-		execution, createErr := e2proxy.NewExecution(taskctx, e2proxy.Config{RequestBoundary: workflowBoundary(input.Workflow), CheckAuthority: transmissionCheck, ApprovalMode: policy.ApprovalMode, RequestApproval: gate, Evaluation: policy.Evaluation, HeaderMode: policy.HeaderMode, PasswordResponse: e2HTTPPasswordResponse(policy.Auth), Scope: transmit.Scope{TaskRef: request.TaskID, RunRef: policy.RunRef, CaseRef: policy.CaseRef, ResetRef: resetRef, PolicyRef: policy.PolicyRef}, IntentID: request.IntentID, OwnerRef: policy.OwnerRef, PolicyRevision: policy.PolicyRevision, AccountRef: policy.AccountRef, SessionRef: policy.SessionRef, ExpiresAt: policy.ValidUntil, Rules: rules, ExcludedPaths: policy.excludedPaths(), Budget: transmit.CumulativeBudget{Ledger: ledger, Key: grantKey, Binding: budgetBinding}, Recorder: recorder, RootCAs: upstreamRoots, Limits: limits, AttemptPathObserver: observer})
+		auditVersion := e2proxy.Version
+		if hostRecorder != nil {
+			auditVersion = e2proxy.JournalVersionV3
+		}
+		execution, createErr := e2proxy.NewExecution(taskctx, e2proxy.Config{AuditVersion: auditVersion, RequestBoundary: workflowBoundary(input.Workflow), CheckAuthority: transmissionCheck, ApprovalMode: policy.ApprovalMode, RequestApproval: gate, Evaluation: policy.Evaluation, HeaderMode: policy.HeaderMode, PasswordResponse: e2HTTPPasswordResponse(policy.Auth), Scope: scope, IntentID: request.IntentID, OwnerRef: policy.OwnerRef, PolicyRevision: policy.PolicyRevision, AccountRef: policy.AccountRef, SessionRef: policy.SessionRef, ExpiresAt: policy.ValidUntil, Rules: rules, ExcludedPaths: policy.excludedPaths(), Budget: transmit.CumulativeBudget{Ledger: ledger, Key: grantKey, Binding: budgetBinding}, Recorder: recorder, RootCAs: upstreamRoots, Limits: limits, AttemptPathObserver: observer})
 		if createErr != nil {
 			return failed(nil, nil)
 		}
@@ -636,6 +674,25 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 type e2HTTPJournalObserver struct {
 	next    e2proxy.Recorder
 	observe func(context.Context, e2proxy.Event) error
+}
+
+// 제품 화면의 기존 v2 흐름은 Host가 ACK한 일반 행만 투영한다. E③ 행은
+// 이 투영으로 대체할 수 없으므로 아직 실행 차단을 유지한다.
+type e2HTTPV3MirrorRecorder struct {
+	host   e2proxy.Recorder
+	legacy *e2proxy.Journal
+}
+
+func (r e2HTTPV3MirrorRecorder) Record(ctx context.Context, event e2proxy.Event) error {
+	if r.host == nil || r.legacy == nil || event.E3Audit != nil || event.Program == e2proxy.ProgramE3Identity ||
+		event.Program == e2proxy.ProgramE3Create || event.Program == e2proxy.ProgramE3Read {
+		return e2proxy.ErrAudit
+	}
+	if err := r.host.Record(ctx, event); err != nil {
+		return err
+	}
+	event.Version = e2proxy.Version
+	return r.legacy.Record(ctx, event)
 }
 
 func (r e2HTTPJournalObserver) Record(ctx context.Context, event e2proxy.Event) error {

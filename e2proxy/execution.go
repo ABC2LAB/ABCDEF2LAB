@@ -123,6 +123,12 @@ func randomRef(prefix string) (string, error) {
 }
 
 func NewExecution(parent context.Context, cfg Config) (*Execution, error) {
+	if cfg.AuditVersion == "" {
+		cfg.AuditVersion = Version
+	}
+	if cfg.AuditVersion != Version && cfg.AuditVersion != JournalVersionV3 {
+		return nil, ErrConfig
+	}
 	if !validApprovalConfig(cfg) || parent == nil || cfg.Recorder == nil || cfg.IntentID <= 0 || !validRef(cfg.OwnerRef) || !validRef(cfg.PolicyRevision) ||
 		!validRef(cfg.AccountRef) || !validRef(cfg.SessionRef) || cfg.ExpiresAt.IsZero() || !time.Now().Before(cfg.ExpiresAt) {
 		return nil, ErrConfig
@@ -501,6 +507,7 @@ func (e *Execution) recordEvent(ctx context.Context, ev Event) (_ Event, resultE
 		return Event{}, ErrAudit
 	}
 	ev.Index = e.eventIndex + 1
+	ev.Version = e.cfg.AuditVersion
 	ev.At = time.Now().UTC()
 	e.mu.Unlock()
 	ev.AuditComplete = ev.Reason != AuditFailed
