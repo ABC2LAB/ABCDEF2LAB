@@ -426,7 +426,11 @@ class FinalMeterChecksTests(unittest.TestCase):
         rows = self.rows() + [over]
         drained = dict(self.DRAINED, rejected_over_cap=1)
         self.assertTrue(final_log_consistent(rows, {"role": "engine", "rejected_over_cap": 1}, drained))
-        self.assertTrue(final_log_consistent(rows, {"role": "engine"}, drained))  # seal 표식에 칸이 없으면 drained만 본다
+        # 새 표식 쌍인데 봉인 표식에 거부 수가 빠지면 drain 값으로 대신 채우지 않는다(#734 리뷰)
+        self.assertFalse(final_log_consistent(rows, {"role": "engine"}, drained))
+        self.assertFalse(final_log_consistent(rows, {"role": "engine", "request_cap": 3}, drained))
+        # drain 표식에만 칸이 빠진 경우도 같다
+        self.assertFalse(final_log_consistent(rows, {"role": "engine", "rejected_over_cap": 1}, self.DRAINED))
         for marked, sealed_value in ((0, 0), (2, 2), (-1, -1), (True, True), (None, None), (1, 0)):
             with self.subTest(marked=marked, sealed=sealed_value):
                 self.assertFalse(final_log_consistent(rows, {"role": "engine", "rejected_over_cap": sealed_value},
@@ -435,9 +439,9 @@ class FinalMeterChecksTests(unittest.TestCase):
         for sealed_value in (True, 1.0, "1", None, -1):
             with self.subTest(sealed_only=sealed_value):
                 self.assertFalse(final_log_consistent(rows, {"role": "engine", "rejected_over_cap": sealed_value}, drained))
-        self.assertFalse(final_log_consistent(self.rows(), {"role": "engine"}, drained))  # 끝부분 거부 행이 빠짐
+        self.assertFalse(final_log_consistent(self.rows(), {"role": "engine", "rejected_over_cap": 1}, drained))  # 끝부분 거부 행이 빠짐
         self.assertFalse(final_log_consistent(rows, {"role": "engine"}, self.DRAINED))  # 이전 표식인데 상한 거부 행이 있음
-        self.assertTrue(final_log_consistent(self.rows(), {"role": "engine"}, self.DRAINED))
+        self.assertTrue(final_log_consistent(self.rows(), {"role": "engine"}, self.DRAINED))  # 이전 표식·거부 행 없음
 
     def test_final_log_consistent(self):
         sealed = {"role": "engine"}

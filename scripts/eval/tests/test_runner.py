@@ -140,6 +140,7 @@ class FakeMeter:
         self.over_cap_rows = None  # 상한 거부 행 수를 표식과 다르게 두는 시험용
         self.over_cap_marker = None  # 표식의 상한 거부 수를 바꿔 보는 시험용(봉인·drain 둘 다)
         self.sealed_cap = None  # 봉인 표식의 상한 값만 바꿔 보는 시험용
+        self.sealed_without_over = False  # 봉인 표식에서 상한 거부 수 칸을 빼 보는 시험용
         self.path_key_ref = PATH_KEY_REF
         # 가짜 E²(compose.e2-stub.yaml) 결정 행. 회차가 E²를 기대할 때만 읽는다. 기본은 허용 2·미지원 1이고,
         # 허용 둘의 ID는 계측기 행(engine_rows의 앞 두 요청)에 붙는다.
@@ -217,8 +218,11 @@ class FakeMeter:
         cap = 0 if self.uncapped else self.ports.spec.request_budget
         # 같은 계측기의 봉인 표식은 drain 표식과 같은 상한 값을 적는다(cap_marker는 두 표식 모두에 적용)
         cap = cap if self.cap_marker is None else self.cap_marker
-        return {"role": "engine", "sealed_at": "t", "request_cap": cap if self.sealed_cap is None else self.sealed_cap,
-                "rejected_over_cap": self._over_marker()}
+        sealed = {"role": "engine", "sealed_at": "t", "request_cap": cap if self.sealed_cap is None else self.sealed_cap,
+                  "rejected_over_cap": self._over_marker()}
+        if self.sealed_without_over:
+            sealed.pop("rejected_over_cap")
+        return sealed
 
     def _over_marker(self):
         return max(0, self._raw() - self._forwarded()) if self.over_cap_marker is None else self.over_cap_marker
@@ -1485,6 +1489,13 @@ class TestCompleteRun(unittest.TestCase):
         # 표로 나가는 메서드별 건수는 계측기 행에서 세고 전달 수와 맞아야 한다(프로토콜 §8.1)
         self.assertEqual(sum(summary["forwarded_by_method"].values()), summary["forwarded_requests"])
         self.assertEqual(summary["forwarded_by_method"]["GET"], 100)
+
+    def test_sealed_marker_must_carry_its_own_over_cap_count(self):
+        # 예산 100·전달 100·상한 거부 행 5·drain 거부 5인데 봉인 표식에 거부 수가 없으면 일치로 보지 않는다(#734 리뷰)
+        result, _, _, _ = run(lambda p, m, c: (setattr(m, "per_poll", 35), setattr(m, "sealed_without_over", True)))
+        self.assertEqual((result["status"], result.get("reasons")), (INVALID, ["meter_log_inconsistent"]))
+        self.assertNotIn("signature", result)
+        self.assertEqual(run(lambda p, m, c: setattr(m, "per_poll", 35))[0]["status"], COMPLETE)
 
     def test_over_cap_rows_must_match_the_marker(self):
         # 표식의 상한 거부 수와 실제 거부 행 수가 다르면 마감 대조가 실패한다(#734 리뷰: 끝부분 거부 행이 빠진 기록)
