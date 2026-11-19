@@ -1,0 +1,375 @@
+{
+  "disabled_no_labels": {
+    "format": "jindo.workbench-product-verdicts/v1",
+    "task_id": "2",
+    "source_kind": "product",
+    "title": "제품 확정 단계 판정",
+    "policy_source": {
+      "ref": "declaration-job-synthetic",
+      "digest_sha256": "26bf52f44204817e9ba66fc86e6b5f4e15560630b39f4ba7209f3ed7910e1e0b",
+      "target_approval_revision": "target-revision-1",
+      "owner_account_label": null,
+      "cross_account_label": null
+    },
+    "confirmation": {
+      "status": "disabled",
+      "reason": "declaration_missing"
+    },
+    "items": [
+      {
+        "verdict_id": "1",
+        "record_status": "verified",
+        "resource_type": "document",
+        "resource_ref": "document:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "oracle_value": "confirmed",
+        "checks": {
+          "policy": "yes",
+          "identity": "yes",
+          "data": "yes"
+        },
+        "oracle_reason_codes": [
+          "policy_deny_resolved"
+        ],
+        "product_reason_codes": [],
+        "candidate_refs": [
+          "candidate-1"
+        ],
+        "evidence_calls": 1,
+        "observed_at": "2026-11-18T09:00:00.000000Z",
+        "evidence_seal": null
+      },
+      {
+        "verdict_id": "2",
+        "record_status": "verified",
+        "resource_type": "note",
+        "resource_ref": "note:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "oracle_value": "undecidable",
+        "checks": {
+          "policy": "yes",
+          "identity": "yes",
+          "data": "yes"
+        },
+        "oracle_reason_codes": [
+          "policy_deny_resolved"
+        ],
+        "product_reason_codes": [],
+        "candidate_refs": [
+          "candidate-1"
+        ],
+        "evidence_calls": 1,
+        "observed_at": "2026-11-18T09:00:00.000000Z",
+        "evidence_seal": null
+      }
+    ]
+  },
+  "empty": {
+    "format": "jindo.workbench-product-verdicts/v1",
+    "task_id": "4",
+    "source_kind": "product",
+    "title": "제품 확정 단계 판정",
+    "policy_source": {
+      "ref": "declaration-job-synthetic",
+      "digest_sha256": "26bf52f44204817e9ba66fc86e6b5f4e15560630b39f4ba7209f3ed7910e1e0b",
+      "target_approval_revision": null,
+      "owner_account_label": "tester-a",
+      "cross_account_label": "tester-b"
+    },
+    "confirmation": null,
+    "items": []
+  },
+  "mixed_integrity": {
+    "format": "jindo.workbench-product-verdicts/v1",
+    "task_id": "2",
+    "source_kind": "product",
+    "title": "제품 확정 단계 판정",
+    "policy_source": {
+      "ref": "declaration-job-synthetic",
+      "digest_sha256": "26bf52f44204817e9ba66fc86e6b5f4e15560630b39f4ba7209f3ed7910e1e0b",
+      "target_approval_revision": "target-revision-1",
+      "owner_account_label": "tester-a",
+      "cross_account_label": "tester-b"
+    },
+    "confirmation": {
+      "status": "completed",
+      "reason": null
+    },
+    "items": [
+      {
+        "verdict_id": "1",
+        "record_status": "verified",
+        "resource_type": "document",
+        "resource_ref": "document:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "oracle_value": "confirmed",
+        "checks": {
+          "policy": "yes",
+          "identity": "yes",
+          "data": "yes"
+        },
+        "oracle_reason_codes": [
+          "policy_deny_resolved"
+        ],
+        "product_reason_codes": [],
+        "candidate_refs": [
+          "candidate-1"
+        ],
+        "evidence_calls": 1,
+        "observed_at": "2026-11-18T09:00:00.000000Z",
+        "evidence_seal": null
+      },
+      {
+        "verdict_id": "2",
+        "record_status": "record_integrity_failed",
+        "resource_type": null,
+        "resource_ref": null,
+        "oracle_value": null,
+        "checks": null,
+        "oracle_reason_codes": [],
+        "product_reason_codes": [],
+        "candidate_refs": [],
+        "evidence_calls": null,
+        "observed_at": null,
+        "evidence_seal": null
+      }
+    ]
+  },
+  "revisions_differ": {
+    "format": "jindo.workbench-product-verdicts/v1",
+    "task_id": "3",
+    "source_kind": "product",
+    "title": "제품 확정 단계 판정",
+    "policy_source": {
+      "ref": "declaration-job-synthetic",
+      "digest_sha256": "26bf52f44204817e9ba66fc86e6b5f4e15560630b39f4ba7209f3ed7910e1e0b",
+      "target_approval_revision": null,
+      "owner_account_label": "tester-a",
+      "cross_account_label": "tester-b"
+    },
+    "confirmation": null,
+    "items": [
+      {
+        "verdict_id": "3",
+        "record_status": "verified",
+        "resource_type": "document",
+        "resource_ref": "document:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "oracle_value": "confirmed",
+        "checks": {
+          "policy": "yes",
+          "identity": "yes",
+          "data": "yes"
+        },
+        "oracle_reason_codes": [
+          "policy_deny_resolved"
+        ],
+        "product_reason_codes": [],
+        "candidate_refs": [
+          "candidate-1"
+        ],
+        "evidence_calls": 1,
+        "observed_at": "2026-11-18T09:00:00.000000Z",
+        "evidence_seal": null
+      },
+      {
+        "verdict_id": "4",
+        "record_status": "verified",
+        "resource_type": "note",
+        "resource_ref": "note:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "oracle_value": "suspected",
+        "checks": {
+          "policy": "yes",
+          "identity": "yes",
+          "data": "yes"
+        },
+        "oracle_reason_codes": [
+          "policy_deny_resolved"
+        ],
+        "product_reason_codes": [],
+        "candidate_refs": [
+          "candidate-1"
+        ],
+        "evidence_calls": 1,
+        "observed_at": "2026-11-18T09:00:00.000000Z",
+        "evidence_seal": null
+      }
+    ]
+  },
+  "source_not_found": {
+    "format": "jindo.workbench-product-verdicts/v1",
+    "task_id": "2",
+    "source_kind": "product",
+    "title": "제품 확정 단계 판정",
+    "policy_source": null,
+    "confirmation": null,
+    "items": [
+      {
+        "verdict_id": "1",
+        "record_status": "policy_source_unavailable",
+        "resource_type": "document",
+        "resource_ref": "document:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "oracle_value": "confirmed",
+        "checks": {
+          "policy": "yes",
+          "identity": "yes",
+          "data": "yes"
+        },
+        "oracle_reason_codes": [
+          "policy_deny_resolved"
+        ],
+        "product_reason_codes": [],
+        "candidate_refs": [
+          "candidate-1"
+        ],
+        "evidence_calls": 1,
+        "observed_at": "2026-11-18T09:00:00.000000Z",
+        "evidence_seal": null
+      },
+      {
+        "verdict_id": "2",
+        "record_status": "policy_source_unavailable",
+        "resource_type": "note",
+        "resource_ref": "note:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "oracle_value": "undecidable",
+        "checks": {
+          "policy": "yes",
+          "identity": "yes",
+          "data": "yes"
+        },
+        "oracle_reason_codes": [
+          "policy_deny_resolved"
+        ],
+        "product_reason_codes": [],
+        "candidate_refs": [
+          "candidate-1"
+        ],
+        "evidence_calls": 1,
+        "observed_at": "2026-11-18T09:00:00.000000Z",
+        "evidence_seal": null
+      }
+    ]
+  },
+  "unreadable": {
+    "format": "jindo.workbench-product-verdicts/v1",
+    "task_id": "2",
+    "source_kind": "product",
+    "title": "제품 확정 단계 판정",
+    "policy_source": {
+      "ref": "declaration-job-synthetic",
+      "digest_sha256": "26bf52f44204817e9ba66fc86e6b5f4e15560630b39f4ba7209f3ed7910e1e0b",
+      "target_approval_revision": "target-revision-1",
+      "owner_account_label": "tester-a",
+      "cross_account_label": "tester-b"
+    },
+    "confirmation": {
+      "status": "unreadable",
+      "reason": null
+    },
+    "items": [
+      {
+        "verdict_id": "1",
+        "record_status": "verified",
+        "resource_type": "document",
+        "resource_ref": "document:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "oracle_value": "confirmed",
+        "checks": {
+          "policy": "yes",
+          "identity": "yes",
+          "data": "yes"
+        },
+        "oracle_reason_codes": [
+          "policy_deny_resolved"
+        ],
+        "product_reason_codes": [],
+        "candidate_refs": [
+          "candidate-1"
+        ],
+        "evidence_calls": 1,
+        "observed_at": "2026-11-18T09:00:00.000000Z",
+        "evidence_seal": null
+      },
+      {
+        "verdict_id": "2",
+        "record_status": "verified",
+        "resource_type": "note",
+        "resource_ref": "note:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "oracle_value": "undecidable",
+        "checks": {
+          "policy": "yes",
+          "identity": "yes",
+          "data": "yes"
+        },
+        "oracle_reason_codes": [
+          "policy_deny_resolved"
+        ],
+        "product_reason_codes": [],
+        "candidate_refs": [
+          "candidate-1"
+        ],
+        "evidence_calls": 1,
+        "observed_at": "2026-11-18T09:00:00.000000Z",
+        "evidence_seal": null
+      }
+    ]
+  },
+  "verified": {
+    "format": "jindo.workbench-product-verdicts/v1",
+    "task_id": "2",
+    "source_kind": "product",
+    "title": "제품 확정 단계 판정",
+    "policy_source": {
+      "ref": "declaration-job-synthetic",
+      "digest_sha256": "26bf52f44204817e9ba66fc86e6b5f4e15560630b39f4ba7209f3ed7910e1e0b",
+      "target_approval_revision": "target-revision-1",
+      "owner_account_label": "tester-a",
+      "cross_account_label": "tester-b"
+    },
+    "confirmation": {
+      "status": "completed",
+      "reason": null
+    },
+    "items": [
+      {
+        "verdict_id": "1",
+        "record_status": "verified",
+        "resource_type": "document",
+        "resource_ref": "document:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "oracle_value": "confirmed",
+        "checks": {
+          "policy": "yes",
+          "identity": "yes",
+          "data": "yes"
+        },
+        "oracle_reason_codes": [
+          "policy_deny_resolved"
+        ],
+        "product_reason_codes": [],
+        "candidate_refs": [
+          "candidate-1"
+        ],
+        "evidence_calls": 1,
+        "observed_at": "2026-11-18T09:00:00.000000Z",
+        "evidence_seal": null
+      },
+      {
+        "verdict_id": "2",
+        "record_status": "verified",
+        "resource_type": "note",
+        "resource_ref": "note:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "oracle_value": "undecidable",
+        "checks": {
+          "policy": "yes",
+          "identity": "yes",
+          "data": "yes"
+        },
+        "oracle_reason_codes": [
+          "policy_deny_resolved"
+        ],
+        "product_reason_codes": [],
+        "candidate_refs": [
+          "candidate-1"
+        ],
+        "evidence_calls": 1,
+        "observed_at": "2026-11-18T09:00:00.000000Z",
+        "evidence_seal": null
+      }
+    ]
+  }
+}
