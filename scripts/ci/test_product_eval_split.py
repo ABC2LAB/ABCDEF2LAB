@@ -232,6 +232,24 @@ class EvalSplitOverlayTests(unittest.TestCase):
             with self.subTest(service=name):
                 self.assertEqual(self.split["services"][name].get("volumes"), self.product["services"][name].get("volumes"))
 
+    def test_e2_host_secret_volume_stays_out_of_runtime_and_api(self):
+        # DB 자격·키·저널은 독립 Host와 일회성 설치자만 읽는다.
+        for rendered in (self.product, self.split):
+            services = rendered["services"]
+            host = services["e2-host"]
+            self.assertEqual(host["user"], "1002:1000")
+            self.assertEqual(set(host["networks"]), {"control"})
+            self.assertTrue(host["read_only"])
+            self.assertEqual(host["cap_drop"], ["ALL"])
+            by_target = {m["target"]: m["source"] for m in host["volumes"]}
+            secret, socket = by_target["/h"], by_target["/run/e2-host"]
+            holders = {name for name, service in services.items()
+                       if any(m.get("source") == secret for m in service.get("volumes") or [])}
+            self.assertEqual(holders, {"install", "e2-host"})
+            socket_holders = {name for name, service in services.items()
+                              if any(m.get("source") == socket for m in service.get("volumes") or [])}
+            self.assertEqual(socket_holders, {"install", "e2-host", "preparation"})
+
     def test_evidence_dir_only_on_meter_and_observer(self):
         # ④ 계측기 근거 디렉터리는 계측기·관측 front에만 붙는다.
         holders = {name for name, service in self.split["services"].items()
