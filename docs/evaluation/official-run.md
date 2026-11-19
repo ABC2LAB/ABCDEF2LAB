@@ -1,41 +1,65 @@
-# 평가 회차 실행 절차 (공식 회차·시범)
+# 평가 회차 실행 절차 (공식 측정 — 탐색 분리 배치)
 
-규칙의 정본은 [평가 프로토콜](evaluation-protocol.md) §5.1(반복·순서·예산·무효 회차·지표)과 §6(모델·제공자·샘플링)이다. 이 문서는 그 규칙대로 회차를
-돌리는 **순서와 명령**만 적는다. 러너 설정 필드·사유 코드·근거 파일은 [러너 안내](runner.md)에 있다. 둘이 다르면 프로토콜이 이긴다.
+규칙의 정본은 [평가 프로토콜](evaluation-protocol.md) §5.1(반복·순서·예산·무효 회차·지표)과 §6(모델·제공자·샘플링), 그리고 [공식 측정 프로토콜 고정 초안](official-protocol-fixation-draft.md)의 확정 항목이다. 이 문서는 그 규칙대로 회차를 돌리는 **순서와 명령**만 적는다. 러너 설정 칸·사유 코드·근거 파일은 [러너 안내](runner.md)에 있다. 둘이 다르면 프로토콜이 이긴다.
 
-> **11/09 결정(프로토콜 §6 측정 흐름):** 공식 비교 수치는 파이프라인이 완성된 뒤 API로 원본·개선 후를 같은 세션에서 잰 회차만 쓴다. 그 전의 API 회차는 개발 측정이고 공식 비교표에 넣지 않는다.
+공식 측정은 **탐색 분리 배치**로 돈다(2026-11-17·18 결정). B는 원본 엔진(`artex-direct/v1`, LLM 게이트웨이 경유), O는 제품(`exploration-split/v1`, 제품 안 E②·탐색 경계)이다. 둘 다 같은 계측기·관측기·대상(Juice Shop v15.0.0)을 쓴다. 이전 e2-legacy 배치 절차는 [이력 판](../archive/official-run-e2-legacy.md)에 옮겼다.
+
+## 0. 공식 세션 시작 조건
+
+아래가 하나라도 안 됐으면 공식 세션을 시작하지 않는다. 시범·확인 회차는 돌릴 수 있다.
+
+| 조건 | 상태를 보는 곳 |
+|---|---|
+| 러너·계측기·채점기 변경 머지: 계측기 하드 상한(#734), 끊긴 호출 처리(#735), B 전용 CLI 관측 줄(#736), 엔진 끝 전 최장 무활동(#737), O E③ 상태 수집(#742), O v1.1 러너 기록(#745), 채점기 분리 배치(#746) | GitHub PR |
+| 제품 E③ 감독자 연결(#738)과 E② Transport·Journal 연결. 연결 전 빌드는 O가 늘 `e3_official_not_disabled`로 무효다([러너](runner.md) 사유표) | GitHub PR |
+| 멈춤 무효 T 확정: 유료 확인 쌍에서 O 엔진 끝 전 최장 무활동(모델 호출 + 대상 요청)이 90초 이하이면 180초로 확정한다(고정 초안 §16). **[확인 쌍 뒤 채움]** | 고정 초안 §16 |
+| LLM 스트리밍 차이 결정: B 게이트웨이는 스트리밍, 제품 transport는 비스트리밍이다. 결정 전에는 채점기가 짝을 거부한다([O run-record 설계안](split-official-run-record.md) §6·§10) | 설계안 §10 |
+| 이 문서·공식 분리 배치 프로파일·러너 설정이 태그 커밋에 있다(2절) | 레포 |
 
 ## 1. 역할
 
 | 사람 | 맡는 것 |
 |---|---|
-| 윤재상 | **baseline·개선 후 회차 전부 실행.** 자기 PC(평가 머신)에서 아래 5절 명령으로 돌리고, 그 PC의 세션 준비(이미지 빌드·키 파일·제공자 재조회)를 맡는다. 같은 머신에서 돌려야 시간 예산 안의 진척·API 지연 차이가 결과에 섞이지 않는다 |
+| 윤재상 | **B·O 회차 전부 실행.** 자기 PC(평가 머신)에서 아래 6절 명령으로 돌리고, 그 PC의 세션 준비(이미지 빌드·키 파일·제공자 재조회·사전 점검)를 맡는다. 같은 머신에서 돌려야 시간 예산 안의 진척·API 지연 차이가 결과에 섞이지 않는다 |
 | 최민준 | 절차와 입력 파일 준비, 시도·무효 집계, 채점, 보관, 결과 문서 |
 
-한 세션 안에서 원본과 개선 후를 번갈아 돌린다. 순서는 5절의 교대 순서를 그대로 따른다.
+## 2. 결과를 보기 전에 고정하는 값
 
-## 2. 결과를 보기 전에 고정하는 것
+| 항목 | 값 | 출처 |
+|---|---|---|
+| 요청 예산 | 300건(쪽마다 같음) | 프로토콜 §5.1, 고정 초안 §1·§10 |
+| 시간 예산 | 1500초 | 같음 |
+| 먼저 걸릴 상한 | 러너 요청 예산. 엔진 끝 신호는 기록만 한다 | 프로토콜 §5.1 |
+| 계측기 하드 상한 | 요청 예산과 같은 값. R번째 전달 뒤 새 요청은 503으로 거부하고(`rejected_over_cap`), 대상에는 정확히 R건 이하만 닿는다 | #734 |
+| 모델 호출 사후 검증 | 조회 40번 × 3초, 조회 한 번 상한 10초, 러너 대기 300초 | 고정 초안 §15, #732 |
+| 경계 원자료 상한 | 4 MiB(4,194,304바이트) | 고정 초안 §16 |
+| 멈춤 무효 T | **[확인 쌍 뒤 채움]** (제안 180초, 조건부) | 고정 초안 §16 |
+| 멈춤 무효 비율 | 쪽별 `provider_fault_stall` 무효가 그 쪽 시도 중 2회 이상이면 측정 전체 실패 | 고정 초안 §16 |
+| O 모델 예산 | 2000건·$5(승인 manifest) | 고정 초안 §16 |
+| `O-nomcp` | 돌리지 않는다 | 고정 초안 §16 |
+| 반복·순서 | 쪽마다 유효 N=3, `B O O B B O` | 프로토콜 §5.1 |
+| 모델·제공자·샘플링 | `qwen/qwen3.6-35b-a3b`, `primeintellect/fp8`, 프로토콜 §6 일곱 값 | 프로토콜 §6 |
+| E③ | 비활성(`disabled`/`declaration_missing`만 받음) | 프로토콜 §5.1 |
+| 경로 가림 키 | B·O 6회 전체가 같은 키 파일. 동결 목록에는 키 지문(`path_key_ref`)만 적는다 | 2026-11-18 결정 (a) |
 
-- 프로토콜 §5.1·§6, [공식 프로파일](profiles/official-35b.json)과 근거 파일, 이 문서, [러너 설정 예시](runner.example.json)를 시범 회차 전에 dev에 머지한다.
-  - **주의(2026-11-18)**: 이 문서의 공식 프로파일·[공식 정책 템플릿](profiles/official-e2-policy.json)(메서드 7개)과 그 고정·사용 단계(이 절, 4절 7번)는 e2-legacy 배치의 시범·이력용이다. 공식 측정은 탐색 분리 배치로 돌고 개선 후 승인 메서드는 5개다(프로토콜 §5.1). 분리 배치용으로 승인된 프로파일과 절차가 이 문서에 들어올 때까지 공식 회차는 보류한다. 분리 배치 공식 회차는 B·O 모두 계측기 경로 기록을 켜고 같은 경로 가림 키 파일을 쓴다(2026-11-18 결정 (a), [러너](runner.md) `path_key_file`). 키는 제어 비밀이라 레포·결과물에 두지 않고, 6회 전체가 같은 키를 쓰며, 측정 조건 동결 목록에는 키 지문(`path_key_ref`)을 적는다.
-- **작업 문구도 비교 조건이다.** 러너는 `runner.json`의 `task`를 엔진 작업 생성 요청으로 보내고 그 본문 해시를 서명된 결과에 남긴다.
-  공식 작업은 예시 설정의 `task` 그대로이며 요청 해시는 아래와 같다(시험이 예시와 이 값을 묶는다). 6절 집계 도구는 회차들의 해시가 하나가 아니면 멈춘다.
-
-  ```
-  official_task_request_sha256 = 0e968b84bb712bd64ceabbc8583932c1e52dca87ee10a8d8e616d4d68abc3b8b
-  ```
-
-- 2026-11-17에 확정한 회차 규칙(먼저 걸릴 상한 = 러너 요청 예산, 끝 신호는 기록만, N=3, 무효 두 규칙, 개선 후 승인 메서드 5개, 경로 틀 커버리지, 차이 보고 규칙)은 프로토콜 §5.1에 있다. 같은 절의 **[파일럿 뒤 확정]** 값(멈춤 무효 T·무효 비율 상한·경계 원자료 바이트 상한·`O-nomcp` 실행 여부·예산 조정값·개선 후 모델 예산)은 파일럿 기록을 보고 §5.1에 적은 뒤 태그 전에 고정한다. 하나라도 비어 있으면 공식 세션을 시작하지 않는다.
-- 시범 뒤에는 예산(`time_budget_seconds`·`request_budget`)만 **한 번** 바꿀 수 있다(§5.1). 바꾼 커밋에 근거를 쓰고, 그 커밋에 태그를 붙인다
-  (공식 세션은 `eval-official-v1`, 그 전의 개발 측정 세션은 `eval-api-<YYYYMMDD>`). 세션의 개선 후 엔진·계측기 이미지와 **평가 도구·
-  프로파일·compose·설정 예시 전부**를 그 태그 커밋의 작업 트리에서 쓴다(3절 0번). 태그 뒤에는 규칙·프로파일·작업 문구를 바꾸지 않는다.
+- 프로파일은 [공식 분리 배치 프로파일](profiles/official-split-35b.json)이다. 공식 프로파일과 같고 예산(300·1500초)과 개선 후 승인 메서드 5개(GET·HEAD·POST·PUT·PATCH, 프로토콜 §5.1)만 다르다(시험이 묶는다).
+- **작업 요청 지문은 쪽마다 하나다.** B는 엔진 작업 생성 본문(목표는 제품 공통 목표 문장으로 렌더), O는 제품 설치·등록 조건 지문이다. 세션 집계가 쪽마다 하나인지 보고, B·O 목표가 같은지는 채점기가 서명된 공통 목표 SHA로 본다.
+- 시범 뒤에는 예산만 **한 번** 바꿀 수 있다(§5.1). 바꾼 커밋에 근거를 쓰고 태그(`eval-official-v1`, annotated)를 붙인다. 세션의 이미지와 **평가 도구·프로파일·compose·설정 예시 전부**를 그 태그 커밋의 작업 트리에서 쓴다(3절 1번). 태그 뒤에는 규칙·프로파일·작업 문구를 바꾸지 않는다.
 
 ## 3. 세션마다 머신 준비
 
-평가 머신은 윤재상 PC다(2026-11-09 결정). 아래 버전·리슨 값은 지금까지 쓴 개발 머신(WSL2 Ubuntu, `docker.io` 29.1.3 네이티브 dockerd) 기준이라 그 PC에서 첫 세션 전에 실측해 맞춘다. 세션을 시작하기 전에 전부 확인한다.
+평가 머신은 윤재상 PC다(2026-11-09 결정). 아래 버전은 개발 머신(WSL2 Ubuntu 24.04, 네이티브 dockerd)에서 분리 배치 회차를 실제로 돌린 값이다. 그 PC에서 처음 돌리기 전에 실측해 세션 기록에 적고, 다르면 첫 세션 전에 알린다(무료 합성 회차로 먼저 확인한다).
 
-0. **동결 작업 트리(가장 먼저):** 이미지뿐 아니라 평가 도구·프로파일·compose·설정 예시도 태그 커밋에서 쓴다. 호출자의 현재 체크아웃에서
-   도구를 실행하면 이미지는 동결 커밋인데 사전검사·실행 구성·채점 규칙은 다른 소스가 될 수 있다.
+| 도구 | 개발 머신 실측 |
+|---|---|
+| Docker Engine(서버·클라이언트) | 29.1.3 |
+| Docker Compose | 2.40.3 |
+| buildx | 0.30.1 |
+| Go | 1.26.3 |
+| Python | 3.12.3 |
+| OpenSSL | 3.0.13 |
+
+1. **동결 작업 트리(가장 먼저):** 이미지뿐 아니라 평가 도구·프로파일·compose·설정 예시도 태그 커밋에서 쓴다.
 
    ```bash
    BASE=$(git rev-parse 'e53a79f^{commit}')
@@ -47,21 +71,20 @@
    test "$(git -C "$T" rev-parse HEAD)" = "$OURS" && test -z "$(git -C "$T" status --porcelain)" && echo tools-frozen
    ```
 
-   태그는 `git tag -a`(annotated)로 만든다. annotated 태그에 `git rev-parse <태그>`만 쓰면 커밋이 아니라 태그 객체 SHA가 나와
-   아래 비교와 `--ours-sha`가 틀어지므로, `BASE`·`OURS`는 항상 `^{commit}`으로 커밋 SHA를 구한다.
-   `tools-frozen`이 나오지 않으면 세션을 시작하지 않는다. 아래 명령은 전부 `cd "$T"`에서 실행한다(러너는 자기 파일 위치를 기준으로 compose를
-   찾으므로 `$T`의 compose가 쓰인다). 도구 출처 커밋(`$OURS`)과 이 확인 결과를 세션 기록에 남긴다(7절).
-1. **다른 일 끄기:** 다른 Claude Code 세션·개발 서버·LAN 시연 컨테이너를 끈다. **Docker Desktop을 종료하고 WSL 통합을 끈다.**
-   통합을 켰다 끄면 WSL dockerd 소켓이 사라지므로 WSL 터미널에서 `sudo systemctl restart docker.socket docker`로 되살린다.
-2. **Docker·리슨 확인:**
+   `BASE`·`OURS`는 항상 `^{commit}`으로 커밋 SHA를 구한다(annotated 태그는 태그 객체 SHA가 나온다). `tools-frozen`이 나오지 않으면 시작하지 않는다. 아래 명령은 전부 `cd "$T"`에서 실행한다.
+2. **다른 일 끄기:** 다른 Claude Code 세션·개발 서버·시연 컨테이너를 끈다. **Docker Desktop을 종료하고 WSL 통합을 끈다.** 통합을 켰다 끄면 WSL dockerd 소켓이 사라지므로 `sudo systemctl restart docker.socket docker`로 되살린다.
+3. **버전·컨테이너·리슨 확인:**
 
    ```bash
-   docker version --format '{{.Server.Version}}'      # 29.1.3 (Desktop이면 다른 버전이 나온다)
-   docker ps -q | wc -l                                # 0
-   ss -ltnH | awk '{print $4}' | grep -v '^127\.\|^\[::1\]'   # 10.255.255.254:53 하나만(설정 허용 목록)
+   docker version --format '{{.Server.Version}} {{.Client.Version}}'
+   docker compose version --short
+   docker buildx version; go version; python3 --version; openssl version
+   docker ps -q | wc -l                                         # 0
+   ss -ltnH | awk '{print $4}' | grep -v '^127\.\|^\[::1\]'    # 설정 허용 목록(host_listen_allowlist)에 있는 것만
    ```
 
-3. **제공자 재조회(§6, 세션마다):** 메타데이터가 고정 때와 같아야 세션을 시작한다. 응답은 새 빈 디렉터리에 받는다.
+   loopback 밖 리슨이 허용 목록과 다르면 회차가 `pre_host_condition_violation`으로 무효다. WSL DNS 리졸버(`10.255.255.254:53`)처럼 그 PC에 늘 있는 리슨은 세션 전에 사유와 함께 허용 목록에 넣고 세션 기록에 적는다. 회차가 무효가 난 뒤에 허용 목록을 넓혀 통과시키지 않는다.
+4. **제공자 재조회(§6, 세션마다):** 메타데이터가 고정 때와 같아야 세션을 시작한다. 응답은 새 빈 디렉터리에 받는다.
 
    ```bash
    D=$(mktemp -d) && curl -sS --max-time 20 -o "$D/endpoints.json" \
@@ -69,224 +92,194 @@
    cd "$T" && python3 -I -B scripts/eval/provider_recheck.py "$D/endpoints.json"
    ```
 
-   샘플링 7개와 엔진이 보내는 파라미터(`tools`·`max_tokens`)가 모두 지원 목록에 있어야 한다(게이트웨이가
-   `require_parameters:true`를 넣는다). 종료 코드 0이면 출력의 응답 sha256을 세션 기록에 남긴다. 1이면 무엇이 달라졌는지 stderr에 나온다. **그 세션은 시작하지 않고** 팀에 알린다.
+   종료 코드 0이면 출력의 응답 sha256을 세션 기록에 남긴다. 1이면 **그 세션은 시작하지 않고** 팀에 알린다. 응답의 `primeintellect/fp8` 단가는 5절 manifest 단가 상한에 쓴다.
 
 ## 4. 입력 준비 (세션 전 1회)
 
-세션 디렉터리를 먼저 정한다. 시범은 `SESSION=/srv/abc2lab-eval/pilot`, 공식은 `SESSION=/srv/abc2lab-eval/official-<날짜>`이고 0700으로 만든다. 아래 출력 파일은 덮어쓰기가 거부되므로 세션마다 여기에 둔다.
+레포 밖에 러너 uid 소유 0700 디렉터리를 만든다(`/srv/abc2lab-eval`, 키는 `/srv/abc2lab-eval-keys`). 세션 디렉터리는 `SESSION=/srv/abc2lab-eval/official-<날짜>`(시범은 `…/pilot`)이고, **`$SESSION/runs`도 0700으로 미리 만든다**(아니면 러너가 `runs_root: NOT_PRIVATE`로 시작하지 않는다). 회차 결과·로그·키는 레포에 넣지 않는다.
 
-레포 밖에 러너 uid 소유 0700 디렉터리를 만든다(예: `/srv/abc2lab-eval`, 키는 `/srv/abc2lab-eval-keys`). 회차 결과·로그·키는 레포에 넣지 않는다.
+```bash
+install -d -m 700 /srv/abc2lab-eval /srv/abc2lab-eval-keys "$SESSION" "$SESSION/runs"
+```
 
-1. **이미지 빌드:** 엔진·계측기는 3절 0번의 동결 작업 트리(`$W/baseline`·`$W/ours`)에서 빌드한다. 웹 UI는 넣지 않는다(양쪽 같음, 평가는 API만 쓴다).
+1. **이미지 빌드(동결 작업 트리에서):**
 
    ```bash
-   for pair in "baseline $BASE" "ours $OURS"; do
-     set -- $pair
-     (cd "$W/$1" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o dist/amd64/artex ./cmd/artex)
-     docker build -q -t "abc2lab-eval-engine:$1-${2:0:12}" "$W/$1"
+   # B: 원본 엔진 + 도구 판 핀 패치(제품과 같은 MCP·CLI 판, 탐색 분리 배치 결정안 §4)
+   git -C "$W/baseline" apply "$T/deploy/eval/baseline-tool-pins.patch"
+   (cd "$W/baseline" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o dist/amd64/artex ./cmd/artex)
+   docker build -q -t "abc2lab-eval-engine:baseline-${BASE:0:12}" "$W/baseline"
+   # 러너 설정 images.engine_ours 칸이 필수라 개선 후 엔진도 만든다(분리 배치 O는 제품 이미지로 돌고 이 이미지는 쓰지 않는다)
+   (cd "$T" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o dist/amd64/artex ./cmd/artex)
+   docker build -q -t "abc2lab-eval-engine:ours-${OURS:0:12}" "$T"
+   # O: 제품·탐색 브라우저·준비 fixture
+   for target in product explore-browser acceptance-fixture; do
+     case $target in product) repo=abc2lab-product;; explore-browser) repo=abc2lab-explore-browser;; acceptance-fixture) repo=abc2lab-product-fixture;; esac
+     docker build -q -f "$T/deploy/product/Dockerfile" --target $target --build-arg VCS_REF=$OURS -t $repo:${OURS:0:12} "$T"
    done
-   # 빌드 커밋을 계측기에 넣는다. 러너가 회차 전에 `-role describe`로 선언의 개선 후 커밋과 대조한다(다르면 시작 안 함).
-   ctx=$(mktemp -d); (cd "$W/ours" && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-X main.sourceRevision=$OURS" -o "$ctx/eval-meter" ./cmd/eval-meter)
-   docker build -q -f "$W/ours/deploy/eval/meter.Dockerfile" -t "abc2lab-eval-meter:${OURS:0:12}" "$ctx"
+   # 계측기: 빌드 커밋을 넣는다. 러너가 회차 전에 `-role describe`로 선언의 개선 후 커밋과 대조한다(다르면 시작 안 함)
+   ctx=$(mktemp -d); (cd "$T" && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-X main.sourceRevision=$OURS" -o "$ctx/eval-meter" ./cmd/eval-meter)
+   docker build -q -f "$T/deploy/eval/meter.Dockerfile" -t "abc2lab-eval-meter:${OURS:0:12}" "$ctx"
    docker pull -q bkimminich/juice-shop:v15.0.0@sha256:fe8cecfec60f7856a02b52072c879b1baf73f5a97faafdeb12ed9e8eaccc0c3d
    docker pull -q postgres:16-alpine
-   docker image inspect --format '{{.Id}}' <위 태그 4개>   # runner.json images.*.id에 넣는다
+   docker image inspect --format '{{.Id}}' <위 태그들>   # runner.json images.*.id·split.image_ids에 넣는다
    ```
 
-   **도구 트리 대조:** 루트 Dockerfile이 베이스 이미지·apt·npm `@latest`를 고정하지 않아, 빌드 시점이 다르면 도구가 달라진다(프로토콜 §2). 그래서 위처럼 두 엔진을 연달아 빌드한다. 두 번째 빌드가 첫 번째의 층을 캐시로 쓰면 `/app` 앞까지 같아진다. 회차 전에 대조한다.
+2. **도구 면 측정과 B 전용 CLI 목록:** B 엔진과 제품 샌드박스의 CLI·MCP 목록을 재고, B에만 있는 CLI 이름을 러너 설정 `split.cli_usage_names`에 넣는다(B 회차가 그 이름의 호출 수를 센다).
 
    ```bash
-   cd "$T" && python3 -I -B scripts/eval/tool_tree.py --baseline "abc2lab-eval-engine:baseline-${BASE:0:12}" \
-     --ours "abc2lab-eval-engine:ours-${OURS:0:12}" --out "$SESSION/tool-tree.json"
+   cd "$T" && python3 -I -B scripts/eval/tool_surface.py --baseline "abc2lab-eval-engine:baseline-${BASE:0:12}" \
+     --ours "abc2lab-product:${OURS:0:12}" --ours-browser "abc2lab-explore-browser:${OURS:0:12}" --out "$SESSION/tool-surface.json"
    ```
 
-   종료 코드 1(다름)이면 회차를 돌리지 않는다. `docker builder prune -f`로 빌드 캐시를 비우고 두 엔진을 위 명령으로 다시 빌드한 뒤, 이미지 ID를 새로 적는다. 다시 대조할 때는 `--out`에 새 이름(`tool-tree-2.json`)을 줘서 앞 결과를 남긴다. 대조를 건너뛰어도 채점기가 `tool_tree_sha256` 차이를 보고 채점을 멈춘다. 다만 그때는 돌린 회차를 못 쓴다.
-
-2. **`runner.json`:** `$T/docs/evaluation/runner.example.json`([예시](runner.example.json))을 복사해 `images`의 `<…>` 자리(태그·내용 ID)와 경로만 채운다. 그 밖의 값은 바꾸지 않는다.
-   - 모델 호출 사후 검증 설정(2026-11-18 사용자 결정): `llm_gateway.verify_attempts` 40, `verify_interval_seconds` 3, `run.llm_verify_timeout_seconds` 300. 조회는 라운드로 돌아서, 통계가 준비돼 있으면 첫 라운드에서 끝나고 창을 넓혀도 시간이 늘지 않는다. 쉬는 시간 합은 최대 117초이고 계측기 전체 조회 시한은 130초, 러너 대기 하한은 170초다(조회 한 번 상한 10초). 근거: generation 통계는 호출 약 13초 뒤에 준비됐고(1회 측정이라 여유를 둠), 조회 한 번은 약 0.28초였다(GET 109건). 11/18 VAmPI 유료 쌍에서 B 39건·O 61건이 모두 첫 시도에 확인됐다(그때 설정 20번 × 3초).
-   `runs_root`는 **세션마다 새 디렉터리**로 둔다(시범: `…/pilot/runs`, 공식: `…/official-<날짜>/runs`, 0700). 6절 집계는 runs_root 하나를 한 세션으로 본다.
-3. **사전검사 선언:** 손으로 쓰지 않고 공식 프로파일에서 만든다(사전검사는 양쪽이 서로 같은지만 보므로, 같은 오타는 못 잡는다).
+   보고서의 `cli_differences.baseline_only`(원본에만 있는 CLI) 목록을 그대로 옮긴다. MCP 원 목록·판이 B·O 같은지는 `common.mcp_raw_same`·`common.mcp_version_same`으로 본다(둘 다 참이어야 한다).
+3. **러너 서명 키:** 엔진 감사 키와 **별도로** 만든다. 세션 사이에 유지한다.
 
    ```bash
-   cd "$T" && python3 -I -B scripts/eval/official_preflight.py docs/evaluation/profiles/official-35b.json \
+   cd "$T" && go run ./cmd/e2-audit-keygen --key-file /srv/abc2lab-eval-keys/runner.key   # 0600, runs_root 밖
+   ```
+
+4. **경로 가림 키:** 32바이트 무작위 키를 0600으로 만든다. B·O 6회 전체가 같은 파일을 쓴다. 값은 어디에도 옮기지 않는다.
+
+   ```bash
+   ( umask 077 && head -c 32 /dev/urandom > /srv/abc2lab-eval-keys/path.key )
+   ```
+
+5. **비밀 파일(세션 시작 때 만들고 끝나면 지운다):**
+   - 비밀 env: `deploy/eval/eval.secrets.env.example`을 `/srv/abc2lab-eval/eval.secrets.env`로 복사하고 0600으로 둔다. 관리자·DB 비밀번호는 무작위로 만든다. **API 키는 본인 터미널에서만 넣는다**(채팅·명령 인자·셸 기록에 남기지 않는다).
+
+     ```bash
+     read -rs K; printf 'EVAL_LLM_API_KEY=%s\n' "$K" >> /srv/abc2lab-eval/eval.secrets.env; unset K
+     ```
+
+   - B 관리자 비밀번호 파일: 0600, runs_root 밖, 키 파일들과 다른 파일. B 회차에 `--admin-password-file`로 준다(O는 묻지 않는다).
+
+     ```bash
+     ( umask 077 && python3 -c "import secrets; print(secrets.token_urlsafe(24))" > /srv/abc2lab-eval/admin.password )
+     ```
+
+   - O 승인 manifest(0600): **O 회차마다 새 승인 ID로 다시 만든다**(보정·확인 쌍과 같은 방식). 칸은 아래 값 그대로이고, 단가 상한은 3절 4번 재조회 응답의 `primeintellect/fp8` 단가 이상이어야 한다(낮으면 첫 호출이 거절돼 모델 호출 없이 `model_usage_unknown`). `expected_provider_name`은 러너 설정 `llm_gateway.expected_provider_name`과 글자까지 같아야 한다.
+
+     ```json
+     {"version": 3, "profile_id": 1, "format": "openai", "base_url": "https://openrouter.ai/api/v1", "model": "qwen/qwen3.6-35b-a3b",
+      "provider_slug": "primeintellect/fp8", "expected_provider_name": "PrimeIntellect", "approval_id": "<회차마다 새 값>",
+      "expires_at": "<UTC, 회차 끝 뒤 몇 시간>", "strict_privacy_ack": true, "account_spend_cap_ack": true,
+      "max_requests": 2000, "max_input_tokens": 80000000, "max_output_tokens": 8000000, "max_cost_usd_micros": 5000000,
+      "max_input_tokens_per_call": 262144, "max_output_tokens_per_call": 8192, "timeout_seconds": 120, "max_concurrent": 1,
+      "max_input_price_usd_micros_per_million": <재조회 단가 이상>, "max_output_price_usd_micros_per_million": <재조회 단가 이상>,
+      "max_consecutive_transient_errors": 8,
+      "sampling": {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0, "presence_penalty": 1.5, "repetition_penalty": 1.0, "seed": 42}}
+     ```
+
+6. **사전검사 선언:** 손으로 쓰지 않고 공식 분리 배치 프로파일에서 만든다.
+
+   ```bash
+   cd "$T" && python3 -I -B scripts/eval/official_preflight.py docs/evaluation/profiles/official-split-35b.json \
      --baseline-sha "$BASE" --ours-sha "$OURS" --out "$SESSION/preflight.json"
    ```
 
-   시범과 공식은 ours 커밋이 다르므로 선언 파일도 세션 디렉터리마다 따로 만든다(덮어쓰기는 거부된다).
+7. **`runner.json`:** `$T/docs/evaluation/runner.example.json`([예시](runner.example.json))을 복사해 `images`의 태그·내용 ID와 경로를 채우고, 아래 칸을 더한다. 그 밖의 값은 바꾸지 않는다.
+   - `runs_root`: `$SESSION/runs`(세션마다 새 디렉터리). `path_key_file`: 4번 키. `purpose`: `official`.
+   - `llm_gateway.verify_attempts` 40, `verify_interval_seconds` 3, `run.llm_verify_timeout_seconds` 300(2절).
+   - `split` 블록(제품 배치):
 
-4. **비밀 env 파일:** `deploy/eval/eval.secrets.env.example`을 `/srv/abc2lab-eval/eval.secrets.env`로 복사하고 0600으로 둔다. 관리자·DB 비밀번호는
-   무작위로 만든다. **API 키는 본인 터미널에서만 넣는다**(채팅·명령 인자·셸 기록에 남기지 않는다):
+     ```json
+     {"product_tag": "<OURS 12자리>", "product_source_sha": "<OURS>", "image_ids": {"product": "sha256:…", "explore_browser": "sha256:…", "fixture": "sha256:…"},
+      "manifest_path": "/srv/abc2lab-eval/manifest.json", "target_name": "app.eval.test", "product_port": 28787, "dns_control_port": 29083,
+      "explore_port": 8082, "evidence_max_bytes": 4194304, "install_valid_hours": 4, "max_runs": 2, "registration_valid_hours": 2,
+      "wide_writes": true, "profile_id": "product-model-openrouter", "task_wait_seconds": 120, "poll_interval_seconds": 2,
+      "boundary_stop_seconds": 30, "cli_usage_names": [<2번 cli_differences.baseline_only 목록>]}
+     ```
 
-   ```bash
-   read -rs K; printf 'EVAL_LLM_API_KEY=%s\n' "$K" >> /srv/abc2lab-eval/eval.secrets.env; unset K
-   ```
+   - `preservation` 블록(분리 배치는 공식 회차여도 필수): `{"format": "abc2lab.preservation-options/v1", "series_ref": "official-<날짜>", "comm_mode": "external_allowed", "write_mode": "approved_writes", "mcp_version": "0.0.84", "browser_image_id": "<탐색 브라우저 이미지 ID>", "execution_source": "model_run", …}` 나머지 칸은 보정·확인 쌍 설정과 같은 값으로 둔다.
 
-   관리자 비밀번호는 러너가 회차마다 한 번 묻는다(getpass). 세션이 끝나면 비밀 파일을 지우고, 필요하면 키를 폐기·재발급한다.
-5. **러너 서명 키:** 엔진 감사 키와 **별도로** `cd "$T" && go run ./cmd/e2-audit-keygen --key-file /srv/abc2lab-eval-keys/runner.key`(0600, runs_root 밖). 세션 사이에 유지한다.
-6. **분류 매핑:** 평가자가 검토한 매핑 JSON 하나를 양쪽이 같이 쓴다(`findings.vocabulary_path`). 원본 SHA-256이 회차 기록에 남는다.
+## 5. 사전 점검 (첫 유료 회차 전)
 
-7. **제품 E②(개선 후 회차, e2-legacy 배치의 시범·이력용 — 2절 주의):** 정책은 [공식 정책 템플릿](profiles/official-e2-policy.json)을 그대로 쓴다. 범위는 공식 프로파일의 scope를 옮긴 것이고(프로토콜 §2), 한도는 러너 예산보다 먼저 걸리지 않게 잡았다. 파일을 고치면 아래 값과 달라져 시험과 러너가 멈춘다.
+모두 통과해야 첫 회차를 시작한다.
 
-   ```
-   official_e2_policy_sha256 = 285ab34ccccdc966200f3c1afcf557c73612bf34be7dc0148efdad100a8e4fd5
-   official_e2_policy_fingerprint_sha256 = abb0a92df713f0d4aedd1dffb2ae794e517ade234a14f8726d23e49169abe70d
-   official_e2_declared_differences_sha256 = af6c46a57d06ce3890d978a8f67d35987e1ae9389aac706064232ddba3d77363
-   ```
-
-   이미지와 도구는 동결 작업 트리에서 만든다. `$TOOLS`는 레포 밖 러너 uid 소유 디렉터리다.
+1. **설정·선언·키 파일:** 러너가 띄우기 전에 보는 것과 같은 검사를 먼저 돌린다. 오류가 나오면 그 칸을 고친다.
 
    ```bash
-   ctx=$(mktemp -d)
-   (cd "$W/ours" && CGO_ENABLED=0 GOOS=linux go build -trimpath -o "$ctx/e2-eval-service" ./cmd/e2-eval-service \
-     && CGO_ENABLED=0 GOOS=linux go build -trimpath -o "$ctx/e2-bash-sandbox" ./cmd/e2-bash-sandbox \
-     && go build -trimpath -o "$TOOLS/e2-eval-policy" ./cmd/e2-eval-policy \
-     && go build -trimpath -o "$TOOLS/e2-audit-verify" ./cmd/e2-audit-verify)
-   docker build -q -f "$W/ours/deploy/eval/e2.Dockerfile" --build-arg ENGINE_IMAGE="abc2lab-eval-engine:ours-${OURS:0:12}" -t "abc2lab-eval-e2:${OURS:0:12}" "$ctx"
-   sha256sum "$ctx/e2-bash-sandbox"   # e2.helper_sha256
+   cd "$T" && python3 -I -B -c "
+   import sys; sys.path.insert(0, 'scripts/eval')
+   from runner_config import load_runner_config; from runner import check_key_files
+   from preflight import load_preflight, check_preflight
+   c = load_runner_config('/srv/abc2lab-eval/runner.json'); check_key_files(c)
+   check_preflight(load_preflight('$SESSION/preflight.json')); print('config-ok')"
    ```
 
-   `runner.json`의 `e2`는 아래처럼 채운다. `policy_path`는 템플릿 파일 경로, `image.id`는 위 이미지의 ID, `approval_valid_until`은 세션이 끝나는 날의 승인 만료 시각이다.
+2. **계측기 빌드 커밋:** 아래 출력의 `build.source_revision`이 `$OURS`와 같아야 한다(러너가 회차 전에 같은 명령으로 다시 보고, 다르면 모델을 부르기 전에 무효로 끝낸다).
 
-   ```json
-   {"ours_mode": "product", "image": {"ref": "abc2lab-eval-e2:<OURS 12자리>", "id": "sha256:..."}, "policy_path": ".../official-e2-policy.json",
-    "policy_fingerprint_sha256": "<위 지문>", "header_mode": "evaluation_caller_passthrough",
-    "ready_timeout_seconds": 60, "close_ack_timeout_seconds": 20, "close_timeout_seconds": 60, "poll_seconds": 1, "exchange_timeout_seconds": 10,
-    "verify_tool": "$TOOLS/e2-audit-verify", "verify_timeout_seconds": 30, "policy_tool": "$TOOLS/e2-eval-policy", "policy_tool_timeout_seconds": 60,
-    "helper": "/app/e2/e2-bash-sandbox", "helper_sha256": "<위 sha256>", "subnet": "172.30.9.0/24", "meter_ip": "172.30.9.10",
-    "window_seconds": 7200, "approval_valid_until": "<RFC3339>", "prompt_wait_seconds": 30,
-    "declared_differences_path": ".../official-e2-declared-differences.json", "declared_differences_sha256": "<위 해시>"}
+   ```bash
+   docker run --rm --pull never --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+     <계측기 이미지 ID> -role describe
    ```
+3. **리슨·컨테이너:** 3절 3번을 다시 본다.
+4. **키 사용량 기준:** OpenRouter 키 사용량(`GET /api/v1/key`)을 세션 기록에 적는다. 세션 중단선은 PM이 정한 금액이다.
 
-   **공식 회차 전에 남은 것:** `Accept-Encoding` 처리(프로토콜 §2)와 [샌드박스 도구 차이](e2-tool-equivalence.md)를 담은 [선언 차이 목록](profiles/official-e2-declared-differences.json)은 PM 확정이 필요하다. 지금 `status`는 `proposed`다. 확정하면 `confirmed`로 바꾸고 위 해시를 다시 고정한다. 그 전의 회차는 공식 비교가 아니고, 채점기가 그 조건에 경고를 낸다.
-
-## 5. 회차 실행
-
-한 회차:
-
-```bash
-cd "$T" && python3 -I -B scripts/eval/runner.py --config /srv/abc2lab-eval/runner.json --preflight "$SESSION/preflight.json" \
-  --side baseline --condition "원본@35b" --repeat 0      # 개선 후는 --side ours --condition "우리@35b"
-```
-
-- 조건 이름은 쪽마다 고정이다: baseline `원본@35b`, 개선 후 `우리@35b`. `--repeat`는 그 쪽의 유효 회차 번호(0부터)다.
-- 종료 코드 0 완료(서명됨), 1 무효(사유는 `runner-result.json`, 사유표는 [러너 안내](runner.md#사유-코드)), 2 설정·입력 오류(회차를 만들지 않음 — 시도로 세지 않는다).
-- 회차 중에는 아무것도 하지 않는다. 끝나면 `docker ps -q | wc -l`이 0인지 본다.
-
-**시범(채점 안 함):** baseline 1회 → 개선 후 1회(`--repeat 0`). 러너 요약의 종료 사유·전달 건수·초과분·소요 시간과 비용만 보고 예산을 정한다(§5.1).
-시범 결과로 점수를 보지 않는다.
-
-**측정 세션(공식·개발 측정 공통):** 조건당 유효 N=3(§5.1, 2026-11-17 확정). 순서는 짝마다 먼저 도는 쪽을 바꾼다. `O-nomcp`를 돌리기로 정하면 세 칸 묶음 교대로 바꾼다(§5.1).
-
-| 순서 | 1 | 2 | 3 | 4 | 5 | 6 |
-|---|---|---|---|---|---|---|
-| 쪽 | baseline | 개선 후 | 개선 후 | baseline | baseline | 개선 후 |
-| `--repeat` | 0 | 0 | 1 | 1 | 2 | 2 |
-
-**무효가 나오면:** 결과 디렉터리를 지우지 않는다. 같은 칸을 같은 `--repeat`로 다시 돌린 뒤 다음 칸으로 간다(교대 순서 유지).
-한 쪽 시도가 2N(=6)에 닿았는데 유효 회차가 N개 미만이면 7번째를 시작하지 않고 원인부터 고친다. 그 조건은 미완으로 보고한다. 이와 별도로 쪽별 `provider_fault_stall` 무효 비율이 §5.1의 상한을 넘으면 측정 전체를 실패로 한다.
-
-| 무효 사유(예) | 먼저 볼 것 |
-|---|---|
-| `image_id_mismatch` | `runner.json` 이미지 ID와 `docker image inspect` 값. 다시 빌드했으면 ID가 바뀐다 |
-| `*_host_condition_violation`, `window_host_*` | 3절 1·2번(다른 컨테이너·리슨). 허용 목록을 넓혀서 통과시키지 않는다 |
-| `engine_settings_mismatch` | 엔진 기본 workers·모델이 선언과 다른지, 프록시 설정 |
-| `llm_*`(제공자·fallback·sampling·미검증) | 3절 3번 재조회. 제공자 쪽 문제면 세션을 멈춘다. 미검증(`llm_generation_unverified`)이면 회차의 `llm-summary.json` `unverified_last`(미확인 건의 마지막 조회 응답 종류별 수)를 먼저 본다: `http_404`·`no_provider`는 통계 지연, `http_401`·`http_403`은 키·권한, `network_error`는 연결, `deadline`은 조회 시한 초과다. 검증 설정을 바꿔 통과시키지 않는다 |
-| `drain_timeout`, `seal_failed`, `tmpfs_full` | 같은 칸 재실행. 반복되면 원인 수정 |
-| `e2_<코드>`(`policy_fingerprint_sha256_mismatch`, `service_ready_timeout` 등) | 동결 지문·설정·E² 이미지. 값을 고쳐 통과시키지 않고 무엇이 달라졌는지부터 본다 |
-| `interrupted` | 같은 칸 재실행 |
-
-**제품 E②가 있는 개선 후 회차:** 제품 실패(`e2_product.collection_outcome=product_failure`)는 무효가 아니다. 다시 돌리지 않고 그대로 세며 통제 주장만 보류된다(연결 제안 §4.3). 다시 돌리면 실패를 지우는 셈이다. 정책 입력·동결 지문·E² 이미지는 태그 커밋 기준으로 고정하고, 세션 중에 바꾸지 않는다. 조건 안에서 지문이나 이미지가 다르면 채점기가 비교를 중단한다.
-
-## 6. 집계·채점
-
-세션이 끝나면 runs_root 하나를 읽어 시도·무효 집계와 채점 manifest를 만든다.
+## 6. 회차 실행
 
 ```bash
 cd "$T"
-python3 -I -B scripts/eval/session_runs.py /srv/abc2lab-eval/official-<날짜>/runs --repeats 3 \
-  --runner-key-file /srv/abc2lab-eval-keys/runner.key --manifest /srv/abc2lab-eval/official-<날짜>/manifest.json
-python3 -I -B scripts/eval/score.py /srv/abc2lab-eval/official-<날짜>/manifest.json --runner-key-file /srv/abc2lab-eval-keys/runner.key
+# B(원본)
+python3 -I -B scripts/eval/runner.py --config /srv/abc2lab-eval/runner.json --preflight "$SESSION/preflight.json" \
+  --side baseline --condition "원본@35b" --repeat 0 --admin-password-file /srv/abc2lab-eval/admin.password
+# O(개선 후): manifest를 새 승인 ID로 다시 만든 뒤
+python3 -I -B scripts/eval/runner.py --config /srv/abc2lab-eval/runner.json --preflight "$SESSION/preflight.json" \
+  --side ours --condition "우리@35b" --repeat 0
 ```
 
-- `session_runs.py`는 완료 회차의 결과 파일과 회차 기록 서명(HMAC)을 먼저 검증한다(채점기는 회차 기록만 검증하므로 결과
-  파일의 작업 요청 해시는 여기서 확인된다). 그다음 쪽별 시도·유효·무효(사유별)·무효율, 시작 시각 순서, 유효 순서가 교대 순서와 맞는지를 출력한다.
-  2N 초과·유효 부족·순서 어긋남은 `경고[…]`로 알린다. 서명 불일치, 형식이 틀린 결과, 쪽 안의 조건 이름 섞임, 같은 `--repeat`의
-  완료 중복, 작업 요청 해시 불일치는 집계를 멈춘다. manifest에는 완료(서명) 회차만 들어간다.
-- `session_runs.py`는 보조 지표(쪽별 종료 사유 분포·예산 초과분·구간 소요 시간)도 함께 낸다. 값이 빠진 회차가 있으면 그 칸은 0이 아니라 `—`다.
-- 결과 표에는 §5.1대로 조건별 시도 수·유효 수·무효 사유별 수를 함께 싣는다. 무효율은 쪽별로 따로 쓴다.
-- 주 지표는 회차당 엔진 귀속 해결 수(코어 GT 9·BAC 10), 평균 ± SD다. `score.py` 출력의 첫 표다. 격리 증명이 없는 회차가 있으면 그 칸은 0이 아니라 `—`다(공식 비교·개발 측정 공통). 판정 칸은 판정 레코드가 붙을 때까지 판단불가(판정 미수집)이며,
-  붙으면 같은 서명 회차 묶음으로 다시 채점한다(§5.1). 익명 fixture라 IDOR 개선 효과는 주장하지 않는다.
+- 조건 이름은 쪽마다 고정이다: B `원본@35b`, O `우리@35b`. `--repeat`는 그 쪽의 유효 회차 번호(0부터)다.
+- 종료 코드 0 완료(서명됨), 1 무효(사유는 `runner-result.json`), 2 설정·입력 오류(회차를 만들지 않음 — 시도로 세지 않는다).
+- 회차 중에는 아무것도 하지 않는다. 끝나면 `docker ps -q | wc -l`이 0인지 본다.
+- 순서(유효 기준, N=3):
 
-## 7. 보관
+| 순서 | 1 | 2 | 3 | 4 | 5 | 6 |
+|---|---|---|---|---|---|---|
+| 쪽 | B | O | O | B | B | O |
+| `--repeat` | 0 | 0 | 1 | 1 | 2 | 2 |
 
+**무효가 나오면:** 결과 디렉터리를 지우지 않는다. 같은 칸을 같은 `--repeat`로 다시 돌린 뒤 다음 칸으로 간다. 한 쪽 시도가 2N(=6)에 닿았는데 유효가 N개 미만이면 7번째를 시작하지 않고 원인부터 고친다(그 조건은 미완). 쪽별 `provider_fault_stall` 무효가 2회 이상이면 측정 전체 실패다(2절).
+
+| 무효 사유(예) | 먼저 볼 것 |
+|---|---|
+| `image_id_mismatch`, `tool_surface_image_mismatch` | `runner.json` 이미지 ID와 `docker image inspect` 값. 다시 빌드했으면 ID가 바뀐다 |
+| `meter_*`(빌드·표식·경로 키·하드 상한) | 5절 2번 계측기 빌드 커밋, 경로 가림 키 파일. `meter_request_cap_*`는 계측기 상한과 선언 예산이 다른 것이다 |
+| `pre_host_condition_violation`, `pre_layout_violation`, `window_*` | 3절 2·3번(다른 컨테이너·리슨). 허용 목록을 넓혀서 통과시키지 않는다 |
+| `llm_*`(제공자·샘플링·미검증) | 3절 4번 재조회. 미검증이면 `llm-summary.json`의 `unverified_last`를 먼저 본다(`http_404`·`no_provider` 통계 지연, `http_401`·`http_403` 키·권한, `network_error` 연결, `deadline` 조회 시한). 끊긴 호출로 증명된 미확인은 따로 센다(#735). 검증 설정을 바꿔 통과시키지 않는다 |
+| `model_usage_unknown`(O) | manifest 단가 상한이 재조회 단가보다 낮은지, 제공자 이름 글자 |
+| `e3_official_not_disabled`, `e3_status_not_collected`(O) | 제품 빌드에 E③ 감독자·Transport·Journal 연결이 있는지(0절). 연결 전 빌드로는 공식 O 회차를 돌릴 수 없다 |
+| `observer_count_mismatch`, `record_build_failed`, `record_sign_failed` | 관측기 GET이 러너 것 외에 더 있었는지, 선언·설정 칸, 러너 서명 키 |
+| `provider_fault_stall` | 제공자 장애(429·위쪽 끊김) 뒤 T초 무활동. 같은 칸 재실행, 비율 규칙(2절) |
+| `drain_timeout`, `seal_failed`, `interrupted` | 같은 칸 재실행. 반복되면 원인 수정 |
+
+## 7. 집계·채점
+
+```bash
+cd "$T"
+python3 -I -B scripts/eval/session_runs.py "$SESSION/runs" --repeats 3 \
+  --runner-key-file /srv/abc2lab-eval-keys/runner.key --manifest "$SESSION/manifest.json"
+python3 -I -B scripts/eval/score.py "$SESSION/manifest.json" --runner-key-file /srv/abc2lab-eval-keys/runner.key
+```
+
+- `session_runs.py`는 결과·회차 기록 서명을 먼저 검증하고, 쪽별 시도·유효·무효(사유별)·무효율·순서를 낸다. 분리 배치 세션은 작업 요청 지문이 쪽마다 하나여야 하고, 분리 배치와 엔진 직접 배치 회차가 섞이면 멈춘다.
+- `score.py`의 첫 표가 주 지표(회차당 엔진 귀속 해결 수, 코어 GT 9·BAC 10, 평균 ± SD)다. 분리 배치 표는 엔진 설정·규칙 파일·도구 트리를 조건 안에서만, 샘플링·머신·스트리밍은 표 전체에서 대조한다. 통제 검증 표에서 O는 "대조 미수집 — 통제 주장 보류"다(E② 시도 대조 평가 내보내기 전). 판정 칸은 판정 미수집(판단불가)이다.
+- 결과 표에는 조건별 시도 수·유효 수·무효 사유별 수를 함께 싣고, 무효율은 쪽별로 따로 쓴다.
+
+## 8. 보관·정리
+
+- 세션이 끝나면 비밀 env·관리자 비밀번호·manifest 파일을 지운다(`shred -u` 또는 `rm`). 필요하면 키를 폐기·재발급한다.
 - runs_root(서명된 회차 기록·근거 파일)와 manifest·채점 출력을 레포 밖에 그대로 보관하고, 디렉터리별 SHA-256 목록을 함께 둔다. **레포에 커밋하지 않는다**(절대 규칙 2).
-- 러너 서명 키는 채점 재현에 필요하므로 회차 기록과 **다른 곳**에 보관한다.
-- 세션 기록(날짜, 제공자 재조회 응답 sha256, 이미지 ID, `tool-tree.json`, 태그 커밋, **도구 출처 커밋과 `tools-frozen` 확인**, 집계 출력)을 결과 문서에 옮긴다.
+- 러너 서명 키·경로 가림 키는 채점 재현에 필요하므로 회차 기록과 **다른 곳**에 보관한다.
+- 세션 기록(날짜, 도구 버전 실측, 제공자 재조회 응답 sha256, 이미지 ID, `tool-surface.json`, 태그 커밋, `tools-frozen` 확인, 키 지문, 키 사용량 전후, 집계 출력)을 결과 문서에 옮긴다.
 
-## 8. GPU 로컬 세션 준비(초안)
+## 부록 A. e2-legacy 배치 고정값(이력)
 
-**11/09 결정으로 공식 회차에는 쓰지 않는다.** 로컬 서빙으로 따로 잴 때를 위해 절차만 남긴다.
+e2-legacy 시범·이력 재현에만 쓴다. 절차 전체는 [이력 판](../archive/official-run-e2-legacy.md)에 있다. 시험이 아래 값을 예시 설정·템플릿과 묶는다.
 
-**상태: 초안.** 실제 GPU와 35B 모델로 돌린 적이 없다. 소형 모델·CPU 실측([근거](profiles/evidence/ollama-context-parallel-20261107.json), [러너 문서](runner.md) "스모크 실측")으로 절차만 맞췄다. 업체·사양을 정하면 빈칸을 채우고 시범으로 확인한다. 서빙 서버는 지금 러너가 읽을 수 있는 Ollama 기준이다.
-
-### 정할 값
-
-| 값 | 어디에 | 정하는 법 |
-|---|---|---|
-| 모델 태그·digest | 프로파일 `llm.model`·`llm.model_digest` | 프로토콜 §6의 Qwen3.6 35B-A3B. 정확한 양자화 태그는 그 GPU에 전부 올라가는 것으로 고르고, digest는 적재 뒤 `/api/ps`에서 옮긴다. 추측해서 적지 않는다 |
-| 서버 버전 | `llm.server_version` | `/api/version` 값. 세션 동안 바꾸지 않는다 |
-| 컨텍스트 | `llm.context_length`, 서버 `OLLAMA_CONTEXT_LENGTH` | 긴 회차에서 입력이 잘리지 않을 만큼. 넘친 입력은 오류 없이 절반쯤으로 잘린다 |
-| 압축 기준 창 | `context_window_k` | ×1000이 `context_length` 이하. 사전검사가 넘으면 거부한다 |
-| 동시 요청 슬롯 | 서버 `OLLAMA_NUM_PARALLEL` | `worker_count`에 Planner를 더한 수 이상을 기본으로 하고, 시범의 게이트웨이 행으로 실제 동시 요청 수를 확인한다. 모자라면 요청이 줄을 서서 시간 예산을 쓴다 |
-| worker 수 | `worker_count` | 러너가 양쪽에 같은 값을 넣는다 |
-| 위치 | `llm.placement` | `gpu` |
-
-메모리는 슬롯 수에 비례해 늘고 `context_length`는 요청 하나의 상한이다. 그래서 컨텍스트와 슬롯을 함께 정한 뒤 `size`와 VRAM을 재서 전부 올라가는지 본다. 안 올라가면 양자화·컨텍스트·슬롯 중 하나를 줄인다. 값을 바꾸면 양쪽 회차를 처음부터 다시 돈다.
-
-### 서버 띄우기
-
-컨테이너가 닿는 고정 IP에만 바인딩한다. `0.0.0.0`은 러너 호스트 점검에 걸린다. 값은 위 표에서 정한 것을 넣는다.
-
-```bash
-OLLAMA_HOST=<docker0 IP>:<포트> OLLAMA_CONTEXT_LENGTH=<컨텍스트> OLLAMA_NUM_PARALLEL=<슬롯> OLLAMA_MAX_LOADED_MODELS=1 ollama serve
 ```
-
-유지 기간은 환경 변수로 주지 않는다. 러너가 적재할 때 회차 길이만큼 주고 작업 생성 직전에 다시 주며, 회차 뒤에 내린다.
-
-### 선언 확인
-
-적재한 뒤 서버 값을 읽어 프로파일에 옮기고, 전부 GPU에 있는지 본다.
-
-```bash
-curl -s http://<docker0 IP>:<포트>/api/generate -d '{"model":"<태그>","stream":false,"keep_alive":"300s"}'
-curl -s http://<docker0 IP>:<포트>/api/version
-curl -s http://<docker0 IP>:<포트>/api/ps   # digest, context_length, size, size_vram
+official_task_request_sha256 = 0e968b84bb712bd64ceabbc8583932c1e52dca87ee10a8d8e616d4d68abc3b8b
+official_e2_policy_sha256 = 285ab34ccccdc966200f3c1afcf557c73612bf34be7dc0148efdad100a8e4fd5
+official_e2_policy_fingerprint_sha256 = abb0a92df713f0d4aedd1dffb2ae794e517ade234a14f8726d23e49169abe70d
+official_e2_declared_differences_sha256 = af6c46a57d06ce3890d978a8f67d35987e1ae9389aac706064232ddba3d77363
 ```
-
-`size_vram`이 `size`보다 작으면 일부가 CPU에 있는 것이다. 그 상태로는 회차가 `llm_serving_not_on_gpu`로 무효가 된다.
-
-**서버 값만으로는 GPU 적재를 증명하지 못한다.** Ollama는 버퍼 통계가 없으면 모델 파일 크기를 `size`·`size_vram` 양쪽에 넣는다(v0.32.6 `llm/llama_server.go` `MemorySize`). 그래서 `placement`가 `gpu`이면 러너가 `/api/ps`와 따로 `nvidia-smi --query-compute-apps=used_memory --format=csv,noheader,nounits`를 읽어 `size_vram`의 90% 이상인지 본다. 값은 `llm-serving.json`의 `gpu_used_bytes`에 남는다.
-
-- **지원 범위:** `nvidia-smi`가 프로세스별 메모리를 내주는 NVIDIA GPU만이다. 다른 backend나 `[N/A]`이면 `llm_serving_unverified`로 공식 회차를 만들지 않는다.
-- **90%는 실제 GPU로 맞춘 값이 아니다.** 시범에서 `gpu_used_bytes`와 `size_vram`을 비교해 확인한다. 값을 바꾸면 양쪽 회차를 처음부터 다시 돈다.
-- **모든 compute 프로세스의 합이다.** 다른 GPU 작업이 있으면 부풀어서 이 검사가 뚫린다. `/api/ps`에 다른 모델이 보이면 러너가 `llm_serving_unverified`로 막지만, Ollama 밖의 GPU 프로세스는 구분하지 못한다. 그래서 아래 세션 점검을 지킨다.
-
-프로파일은 `official-35b.json`을 복사해 `environment`만 바꾼다. local의 `sampling`은 서버가 적용하는 세 값뿐이다(프로토콜 §6).
-
-```json
-{
-  "llm": {"backend": "local", "base_url": "http://<호스트 이름>:<포트>/v1", "model": "<태그>", "hostname": "<호스트 이름>",
-          "host_ip": "<docker0 IP>", "model_digest": "<digest>", "context_length": 0, "server_version": "<버전>", "placement": "gpu"},
-  "sampling": {"top_p": 0.95, "presence_penalty": 1.5, "frequency_penalty": 0.0},
-  "context_window_k": 0,
-  "worker_count": 0
-}
-```
-
-### 세션 점검
-
-- **API 절차와 다른 점:** 3절 제공자 재조회와 API 키가 필요 없다. 비밀 파일에는 관리자·DB 비밀번호만 둔다. 4·5·6절은 같다.
-- **기록할 것:** GPU 모델·VRAM·드라이버 버전, 서버 환경 변수, 양자화 태그. 러너 기록에 없는 값이라 세션 기록에 직접 남긴다.
-- **세션 중 서버를 재시작하지 않는다.** 슬롯 수는 `/api/ps`에 없어서 러너가 대조하지 못한다. 회차마다 `llm-serving.json`의 `size`가 같은지 보고, 다르면 설정이 바뀐 것으로 보고 원인을 확인한다.
-- **다른 GPU 작업을 같이 돌리지 않는다.** 메모리가 밀리면 무효로 끝나고, 무효 규칙은 프로토콜 §5.1을 따른다.
