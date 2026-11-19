@@ -58,6 +58,34 @@ def split_base(ref="0123456789abcdef", goal="7" * 64):
     return lambda rows: row_of(rows, "run_conditions").update(split=True, path_key_ref=ref, goal_common_sha256=goal)
 
 
+def renumber(rows):
+    for index, item in enumerate(rows, start=1):
+        item["seq"] = index
+
+
+RECORD_PROBE = {"kind": "connectivity_check", "id": "preparation/external", "probe_kind": "tcp", "target": "openrouter.ai:443",
+                "role": "record", "expected": "any", "accepted": [], "observed": "success", "code": "connected",
+                "verdict": "recorded"}
+
+
+def split_o(ref="0123456789abcdef", goal="7" * 64, *, stream=False, workers=None, language=None, source="model_run",
+            record_probe=True, mode="split_product", settings="5" * 64, **e3):
+    """분리 배치 O 회차 근거(#745 러너가 쓰는 모양): 제품 안 E②(split_product, 건수 null·대조 행 없음), 출발점 기록 행,
+    러너가 관측할 수 없는 칸 null(Worker 수·표시 언어), 제품 transport 비스트리밍, E③ 비활성 행."""
+    def tamper(rows):
+        row_of(rows, "run_conditions").update(split=True, path_key_ref=ref, goal_common_sha256=goal, workers=workers,
+                                              output_language=language, llm_stream=stream, execution_source=source,
+                                              engine_rules_sha256=None, engine_settings_sha256=settings, tool_tree_sha256="6" * 64)
+        row_of(rows, "e2_placement").update(mode=mode)
+        if record_probe:
+            for phase in ("pre", "post"):
+                last = max(i for i, r in enumerate(rows) if r["kind"] == "connectivity_check" and r["phase"] == phase)
+                rows.insert(last + 1, dict(RECORD_PROBE, phase=phase, at=rows[last]["at"]))
+            renumber(rows)
+        e3_disabled(**e3)(rows)
+    return tamper
+
+
 class _V11(_RunDir):
     def v11(self, name="a", **kwargs):
         return make_v11(Path(self._tmp.name), self.runner_key, name, **kwargs)
@@ -986,6 +1014,94 @@ class TestComparison(_V11):
         report = build_report(self.load([self.v11("x")]), self.correlate, self.correlatable,
                               runner_key=self.runner_key)
         self.assertFalse(any("공식 비교 아님" in w for w in report.warnings))
+
+
+
+class TestSplitO(_V11):
+    """분리 배치 O 기록의 채점기 수용(설계안 R2 채점기·R4): split_product, 기록 행, null 칸, 표 규칙(§6), 통제 표."""
+
+    def base(self, name="b", **kwargs):
+        return self.v11(name, condition="baseline", engine="baseline", tamper_rows=split_base(), **kwargs)
+
+    def report(self, runs):
+        return build_report(self.load(runs), self.correlate, self.correlatable, runner_key=self.runner_key)
+
+    def test_o_record_is_accepted_without_reconciliation(self):
+        inputs = self.inputs(self.v11("o", tamper_rows=split_o()))
+        self.assertEqual((inputs.e2_mode, inputs.attempt_reconciliation, inputs.e2_identity), ("split_product", None, None))
+        self.assertEqual(inputs.e3, (True, ("disabled", "declaration_missing")))
+        self.assertIsNone(inputs.output_language)
+        # 합성 회차는 스트리밍을 모른다(null)
+        self.assertEqual(self.inputs(self.v11("s", tamper_rows=split_o(stream=None, source="synthetic_fixture"))).execution_source,
+                         "synthetic_fixture")
+
+    def test_shapes_outside_the_split_rules_are_refused(self):
+        def counts(rows):
+            split_o()(rows)
+            row_of(rows, "e2_placement").update(decision_rows=0, allowed=0, unsupported=0, unavailable=0)
+        def not_split(rows):
+            split_o()(rows)
+            row_of(rows, "run_conditions").update(split=False, path_key_ref=None)
+        def reconciled(rows):
+            split_o()(rows)
+            rows.append(dict({"kind": "attempt_reconciliation", "seq": len(rows) + 1, "at": rows[-1]["at"]}, **STUB_RECONCILIATION))
+        def record_in_direct(rows):
+            last = max(i for i, r in enumerate(rows) if r["kind"] == "connectivity_check" and r["phase"] == "pre")
+            rows.insert(last + 1, dict(RECORD_PROBE, phase="pre", at=rows[last]["at"]))
+            renumber(rows)
+        def bad_record(**change):
+            def tamper(rows):
+                split_o()(rows)
+                for row in rows:
+                    if row["kind"] == "connectivity_check" and row["role"] == "record":
+                        row.update(change)
+            return tamper
+        def only_record(rows):
+            split_o()(rows)
+            rows[:] = [r for r in rows if not (r["kind"] == "connectivity_check" and r["role"] == "negative" and r["phase"] == "pre")]
+            renumber(rows)
+        def null_in_direct(field):
+            return lambda rows: row_of(rows, "run_conditions").update({field: None})
+        cases = {
+            "counts": (counts, "split_product는 대조 미수집"), "not_split": (not_split, "분리 배치 회차에만"),
+            "reconciled": (reconciled, "대조 미수집\\(행 없음\\)만"), "record_in_direct": (record_in_direct, "기록 행은 분리 배치"),
+            "record_accepted": (bad_record(accepted=["connected"]), "기록 행 형식"),
+            "record_verdict": (bad_record(verdict="match"), "기록 행 형식"),
+            "record_observed": (bad_record(observed=None), "기록 행 형식"),
+            "no_negative": (only_record, "양성·부정 점검 필요"),
+            "workers_direct": (null_in_direct("workers"), "workers"), "language_direct": (null_in_direct("output_language"), "output_language"),
+            "stream_model_run": (split_o(stream=None), "llm_stream"),
+        }
+        for index, (name, (tamper, pattern)) in enumerate(cases.items()):
+            with self.subTest(case=name):
+                self.reject(pattern, f"x{index}", tamper_rows=tamper)
+
+    def test_pair_table_and_control_rows(self):
+        # 스트리밍이 같다고 놓은 짝(결정 전 규칙 확인용): 엔진 설정·규칙·도구는 조건마다 달라도 되고, 통제 표는 대조 미수집이다
+        o = [self.v11(f"o{i}", repeat_index=i, tamper_rows=split_o(stream=True)) for i in range(2)]
+        report = self.report([self.base(), *o])
+        rows = {line.split("|")[1].strip(): line.split("|")[2].strip() for line in report.text.splitlines()
+                if line.startswith("| ") and line.count("|") == 3}
+        self.assertEqual(rows["E② 자리"], "split_product")
+        self.assertEqual(rows["통제 주장"], "대조 미수집 — 통제 주장 보류(회차 2/2)")
+        self.assertEqual(rows["대조 근거 없는 회차(증명 없음, 기대 0)"], "— (대조 미수집)")
+        self.assertEqual(rows["제품 실패 회차(무효 아님, 기대 0)"], "0")  # 대조 미수집은 제품 실패가 아니다
+        # 건수는 0으로 채우지 않는다(미측정)
+        for label in ("차단·관측되지 않음", "차단 후 대상 도달(기대 0)", "허용·관측됨", "허용 양성 근거 있는 회차"):
+            self.assertEqual(rows[label], "—", label)
+        self.assertTrue(any("대조 미수집" in w and "미측정" in w for w in report.warnings), report.warnings)
+
+    def test_per_condition_and_table_wide_conditions(self):
+        mixed = [self.base("b1"), self.v11("m1", tamper_rows=split_o(stream=True)),
+                 self.v11("m2", repeat_index=1, tamper_rows=split_o(stream=True, settings="4" * 64))]
+        with self.assertRaisesRegex(ComparabilityError, "엔진 설정, 우리@test 안"):
+            self.report(mixed)
+        sampled = lambda rows: (split_o(stream=True)(rows), row_of(rows, "run_conditions")["sampling"].update(seed=7))
+        with self.assertRaisesRegex(ComparabilityError, "적용 샘플링, 표 전체"):
+            self.report([self.base("b2"), self.v11("m3", tamper_rows=sampled)])
+        # 실제 짝: B 게이트웨이 스트리밍(참) vs 제품 transport 비스트리밍(거짓) → 결정 전에는 비교하지 않는다
+        with self.assertRaisesRegex(ComparabilityError, "LLM 스트리밍, 표 전체.*결정 전"):
+            self.report([self.base("b3"), self.v11("m4", tamper_rows=split_o())])
 
 
 if __name__ == "__main__":

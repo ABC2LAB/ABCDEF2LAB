@@ -78,7 +78,10 @@ _E3_NO_REASON = ("completed", "interrupted")
 _E3_REASON = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 # 개선 후 회차의 E② 자리(러너 e2.ours_mode). 회차 조건(run_conditions)과 달리 baseline·개선 후가 일부러 다르므로
 # 회차 사이 동일성 대조가 아니라 조건별로 섞이지 않는지만 채점기가 본다.
-E2_MODES = ("none", "stub", "product")
+# split_product: 분리 배치 O의 제품 안 E②(설계안 §4). 건수 칸은 모두 null이고 시도 대조는 E② 영수증·저널 v3 평가 내보내기
+# 전까지 미수집이다(행 없음). 분리 배치 회차(run_conditions.split)에만 있다.
+E2_SPLIT_PRODUCT = "split_product"
+E2_MODES = ("none", "stub", "product", E2_SPLIT_PRODUCT)
 _E2_COUNTS = ("decision_rows", "allowed", "unsupported", "unavailable")
 E2_CLOSE_STATES = ("complete", "incomplete", "no_execution", "unavailable")
 E2_PRODUCT_FAILURE = "product_failure"
@@ -298,10 +301,15 @@ def _check_conditions(rows: dict[str, list[dict]]) -> dict:
     _hex(row["tool_tree_sha256"], "isolation_evidence.run_conditions.tool_tree_sha256")
     if row["engine_rules_sha256"] is not None:
         _hex(row["engine_rules_sha256"], "isolation_evidence.run_conditions.engine_rules_sha256")
-    if not valid_output_language(row["output_language"]):
+    # 분리 배치 O는 러너가 관측할 수 없는 칸을 null로 남긴다(설계안 §6): 표시 언어(제품 엔진 설정을 읽을 경로 없음), Worker 수
+    # (진단 미진입 회차), 스트리밍(합성 회차는 제품 OpenRouter transport를 지나지 않음). 그 밖의 회차는 값이 있어야 한다.
+    split = row["split"]
+    if not (valid_output_language(row["output_language"]) or (split and row["output_language"] is None)):
         raise IsolationError("isolation_evidence.run_conditions.output_language: 언어 코드 형식 오류")
-    _int(row["workers"], "isolation_evidence.run_conditions.workers", low=1)
-    if type(row["llm_stream"]) is not bool:
+    if not (split and row["workers"] is None):
+        _int(row["workers"], "isolation_evidence.run_conditions.workers", low=1)
+    if not (type(row["llm_stream"]) is bool
+            or (split and row["llm_stream"] is None and row["execution_source"] == EXECUTION_SYNTHETIC)):
         raise IsolationError("isolation_evidence.run_conditions.llm_stream: bool")
     sampling = row["sampling"]
     if sampling is not None and (not isinstance(sampling, dict) or set(sampling) not in (_SAMPLING_KEYS, _LOCAL_SAMPLING_KEYS) or any(
@@ -317,7 +325,8 @@ def _check_conditions(rows: dict[str, list[dict]]) -> dict:
 
 def e2_mode(receipt: dict, evidence: object) -> str:
     """격리 근거의 E② 자리 행. none이면 건수가 없고, stub이면 결정별 건수의 합이 결정 행 수와 같아야 한다."""
-    row = _one(_rows(evidence, receipt), "e2_placement")
+    rows = _rows(evidence, receipt)
+    row = _one(rows, "e2_placement")
     counts = [row[key] for key in _E2_COUNTS]
     if row["mode"] == "none":
         if any(count is not None for count in counts):
@@ -328,8 +337,13 @@ def e2_mode(receipt: dict, evidence: object) -> str:
     elif row["mode"] == "product":
         if any(count is not None for count in counts):
             raise IsolationError("isolation_evidence.e2_placement: product 건수는 e2_product 행에 있음")
+    elif row["mode"] == E2_SPLIT_PRODUCT:
+        if any(count is not None for count in counts):
+            raise IsolationError("isolation_evidence.e2_placement: split_product는 대조 미수집이라 건수가 없어야 함")
+        if not _one(rows, "run_conditions")["split"]:
+            raise IsolationError("isolation_evidence.e2_placement: split_product는 분리 배치 회차에만")
     else:
-        raise IsolationError("isolation_evidence.e2_placement.mode: none|stub|product")
+        raise IsolationError("isolation_evidence.e2_placement.mode: none|stub|product|split_product")
     return row["mode"]
 
 
@@ -495,6 +509,12 @@ def attempt_reconciliation(receipt: dict, evidence: object) -> dict | None:
         if rows["attempt_reconciliation"]:
             raise IsolationError("isolation_evidence.attempt_reconciliation: E② 없는 회차에는 없어야 함")
         return None
+    if mode == E2_SPLIT_PRODUCT:
+        # 대조 미수집(설계안 §4, #700 리뷰): 셀 합과 대조할 독립 결정 건수의 출처(E② 영수증·저널 v3 평가 내보내기)가 생기기
+        # 전에는 행 없음만 받는다. 성능표에는 그대로 들어가고 통제 검증 표에는 "대조 미수집"으로 따로 적는다.
+        if rows["attempt_reconciliation"]:
+            raise IsolationError("isolation_evidence.attempt_reconciliation: split_product 회차는 대조 미수집(행 없음)만")
+        return None
     if mode == "product" and e2_product_row(receipt, evidence)["collection_outcome"] == E2_PRODUCT_FAILURE:
         # 제품 실패 회차는 대조 근거가 없다. 분모에 남아 통제 주장이 보류된다(연결 제안 §4.3).
         if rows["attempt_reconciliation"]:
@@ -590,15 +610,33 @@ def _check_snapshots(rows: dict, policy: str) -> None:
 
 
 def _check_connectivity(rows: dict) -> None:
+    # 분리 배치 O의 여러 출발점 점검(§2.1 표)은 제품 설계상 닿는 경로를 판정하지 않고 기록만 한다(record). 그 행은 분리 배치
+    # 회차에만 받고, 양성·부정 판정 행은 B와 같은 규칙이다.
+    split = _one(rows, "run_conditions")["split"] is True
     for phase in ("pre", "post"):
         checks = [row for row in rows["connectivity_check"] if row["phase"] == phase]
-        roles = {row["role"] for row in checks}
-        if not checks or roles != {"positive", "negative"}:
+        judged = [row for row in checks if row["role"] != _RECORD_ROLE]
+        recorded = [row for row in checks if row["role"] == _RECORD_ROLE]
+        roles = {row["role"] for row in judged}
+        if not judged or roles != {"positive", "negative"}:
             raise IsolationError("isolation_evidence.connectivity_check: 단계마다 양성·부정 점검 필요")
-        if any(row["verdict"] != "match" or not _probe_matches(row) for row in checks):
+        if any(row["verdict"] != "match" or not _probe_matches(row) for row in judged):
             raise IsolationError("isolation_evidence.connectivity_check: 불일치 경로 있음")
+        if recorded and not split:
+            raise IsolationError("isolation_evidence.connectivity_check: 기록 행은 분리 배치 회차에만")
+        if any(not _record_row(row) for row in recorded):
+            raise IsolationError("isolation_evidence.connectivity_check: 기록 행 형식 오류")
     if any(row["phase"] not in ("pre", "post") for row in rows["connectivity_check"]):
         raise IsolationError("isolation_evidence.connectivity_check: 모르는 단계")
+
+
+_RECORD_ROLE = "record"
+
+
+def _record_row(row: dict) -> bool:
+    """판정하지 않는 기록 행(runner_probe RECORD): 기대 any·허용 목록 빔·관측 결과와 실패 종류가 있고 verdict는 recorded."""
+    return (row["probe_kind"] in ("tcp", "dns") and row["expected"] == "any" and row["accepted"] == []
+            and row["observed"] in ("success", "fail") and isinstance(row["code"], str) and row["verdict"] == "recorded")
 
 
 def _probe_matches(row: dict) -> bool:
