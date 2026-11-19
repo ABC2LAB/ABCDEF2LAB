@@ -31,6 +31,7 @@ func declaration() e3contract.Declaration {
 	}
 	return e3contract.Declaration{Version: e3contract.DeclarationVersion, TargetRef: "target-1",
 		TargetApprovalRevision: "approval-3", DeclaredBy: "operator-1", DeclaredAt: t0,
+		OwnerAccountLabel: "tester-a", CrossAccountLabel: "tester-b", AccountsSamePrivilege: true,
 		Identity: e3contract.IdentitySpec{Path: "/api/me", SubjectIDPath: "id"},
 		Types:    []e3contract.TypeDeclaration{ownerOnly("note", "/api/notes"), ownerOnly("secret", "/api/secrets")}}
 }
