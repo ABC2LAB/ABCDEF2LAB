@@ -698,8 +698,16 @@ func TestFindingVerdictDetailProductIntegrity(t *testing.T) {
 		}},
 		{name: "forge-duplicate-candidate", forge: true, payload: set("candidate_refs", []any{"candidate-1", "candidate-1"}),
 			sql: []string{`UPDATE e3_verdict_issuances SET candidate_refs='["candidate-1","candidate-1"]'::jsonb WHERE id={i}`}},
-		{name: "forge-duplicate-product-reason", forge: true, payload: set("product_reason_codes", []any{"product_x", "product_x"}),
-			sql: []string{`UPDATE e3_verdict_issuances SET product_reason_codes='["product_x","product_x"]'::jsonb WHERE id={i}`}},
+		// 확정이 아닌 판정으로 바꿔 제품 사유 불변식이 아니라 중복 검사만 걸리게 한다.
+		{name: "forge-duplicate-product-reason", forge: true, payload: func(p map[string]any) {
+			p["oracle_value"], p["product_reason_codes"] = "undecidable", []any{"product_x", "product_x"}
+		}, sql: []string{`UPDATE e3_oracle_verdicts SET oracle_value='undecidable' WHERE id={v}`,
+			`UPDATE e3_verdict_issuances SET product_reason_codes='["product_x","product_x"]'::jsonb WHERE id={i}`}},
+		// 같은 위조에서 중복만 빼면 진위 실패가 아니다(위 사례가 중복 때문에 실패함을 고정).
+		{name: "forge-single-product-reason", forge: true, status: http.StatusOK, payload: func(p map[string]any) {
+			p["oracle_value"], p["product_reason_codes"] = "undecidable", []any{"product_x"}
+		}, sql: []string{`UPDATE e3_oracle_verdicts SET oracle_value='undecidable' WHERE id={v}`,
+			`UPDATE e3_verdict_issuances SET product_reason_codes='["product_x"]'::jsonb WHERE id={i}`}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
