@@ -158,25 +158,39 @@ class TestFaultStallJudge(unittest.TestCase):
         self.assertEqual(judge_fault_stall(record, 360)["stalls"], 0)
         self.assertEqual(judge_fault_stall(record, 359)["stalls"], 1)  # 경계: T초 이상이면 멈춤
 
-    def test_inflight_request_is_activity_not_idle(self):
-        # 장애(10초) 때 긴 비스트리밍 모델 호출(5~200초)이 진행 중이었다. 다음 시작은 300초다. 시작만 보면 290초 무활동이지만
-        # 엔진은 200초까지 응답을 기다렸으므로 무활동은 100초다.
-        rows = [llm(1, 5.0, 200.0), llm(2, 8.0, 10.0, decision="upstream_error", end="upstream_cut_before_done"),
-                llm(3, 300.0, 301.0)]
-        record = fault_stall_record(rows, [], START, stamp(400.0), None)
+    def test_activity_is_request_start_and_response_completion(self):
+        # 활동 사건 = 요청 시작 + 응답 완료(2026-11-19 사용자 결정). 진행 중 구간은 활동이 아니다.
+        cut = llm(2, 8.0, 10.0, decision="upstream_error", end="upstream_cut_before_done")
+        # 장애(10초) 때 진행 중이던 긴 호출(5~200초)은 완료(200초)가 다음 사건이다: 무활동 190초
+        record = fault_stall_record([llm(1, 5.0, 200.0), cut, llm(3, 300.0, 301.0)], [], START, stamp(400.0), None)
         event = record["events"][0]
-        self.assertEqual((event["silence_seconds"], event["idle_seconds"], event["inflight_at_fault"]), (290.0, 100.0, 1))
-        self.assertEqual(judge_fault_stall(record, 180)["stalls"], 0)
-        self.assertEqual(judge_fault_stall(record, 100)["stalls"], 1)
-        # 진행 중이던 요청이 끝나기 전에 새 요청이 시작되면 엔진이 이어서 움직인 것이라 무활동이 없다
-        rows = [llm(1, 5.0, 200.0), llm(2, 8.0, 10.0, decision="upstream_error", end="upstream_cut_before_done"),
-                llm(3, 150.0, 151.0)]
-        event = fault_stall_record(rows, [], START, stamp(400.0), None)["events"][0]
-        self.assertEqual((event["idle_seconds"], event["idle_censored"]), (0.0, False))
-        # 대상 요청(계측기 행)도 진행 중이면 활동이다
-        rows = [llm(1, 8.0, 10.0, decision="upstream_error", end="upstream_cut_before_done")]
-        event = fault_stall_record(rows, [meter(1, 9.0, 50.0)], START, stamp(400.0), None)["events"][0]
-        self.assertEqual((event["idle_seconds"], event["idle_censored"]), (350.0, True))
+        self.assertEqual((event["silence_seconds"], event["idle_seconds"], event["idle_censored"], event["inflight_at_fault"]),
+                         (290.0, 190.0, False, 1))
+        self.assertEqual(judge_fault_stall(record, 180)["stalls"], 1)
+        self.assertEqual(judge_fault_stall(record, 191)["stalls"], 0)
+        # 제공자 쪽에서 매달린 호출(창이 끝날 때까지 완료 없음): 진행 중이어도 활동이 아니라 멈춤으로 잡힌다
+        hung = fault_stall_record([llm(1, 5.0, 500.0), cut], [], START, stamp(400.0), None)["events"][0]
+        self.assertEqual((hung["idle_seconds"], hung["idle_censored"]), (390.0, True))
+        # 오류 응답 완료도 활동이다(장애 때 진행 중이던 다른 호출이 500으로 끝남)
+        error_done = fault_stall_record([llm(1, 5.0, 60.0, status=500), cut], [], START, stamp(400.0), None)["events"][0]
+        self.assertEqual(error_done["idle_seconds"], 50.0)
+        # 대상 요청의 시작·완료도 활동이다
+        target = fault_stall_record([cut], [meter(1, 9.0, 50.0), meter(2, 70.0, 71.0)], START, stamp(400.0), None)["events"][0]
+        self.assertEqual(target["idle_seconds"], 40.0)
+        # 같은 순간 끝난 다른 호출은 장애와 함께 일어난 것이라 다음 사건이 아니다
+        same = fault_stall_record([llm(1, 5.0, 10.0), cut, llm(3, 30.0, 31.0)], [], START, stamp(400.0), None)["events"][0]
+        self.assertEqual(same["idle_seconds"], 20.0)
+
+    def test_max_event_gap_uses_the_same_definition(self):
+        # T를 고를 근거: 활동 사건 사이 최장 간격. 긴 호출 하나(10~200초)는 사건 둘이라 그 사이 190초가 공백이다.
+        record = fault_stall_record([llm(1, 0.0, 10.0), llm(2, 10.0, 200.0), llm(3, 205.0, 206.0)], [], START, stamp(220.0), None)
+        self.assertEqual(record["max_event_gap_before_end_seconds"], 190.0)
+        self.assertEqual(record["max_idle_gap_before_end_seconds"], 14.0)  # 진행 중을 활동으로 본 값(#737)은 그대로 남는다
+        # 엔진이 먼저 끝나면 끝 상태까지만 잰다
+        ended = fault_stall_record([llm(1, 0.0, 10.0)], [], START, stamp(500.0), stamp(30.0))
+        self.assertEqual(ended["max_event_gap_before_end_seconds"], 20.0)
+        empty = fault_stall_record([], [], START, stamp(12.5), None)
+        self.assertEqual(empty["max_event_gap_before_end_seconds"], 12.5)
 
     def test_engine_end_before_idle_end_is_not_a_stall(self):
         rows = [llm(1, 1.0, 2.0, decision="upstream_error", end="upstream_cut_before_done")]
