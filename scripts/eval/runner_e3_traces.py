@@ -30,6 +30,10 @@ E3_AUDIT_FIELD = "e3_binding"
 KIND_FIELDS = ("stage", "program", "decision", "reason")
 DECLARATION_WRITES = "confirmation_writes"
 _WORD = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
+# 사건 시각(e2proxy Receipt.At, RFC 3339 UTC). 모양이 아니면 null로 둔다.
+_AT = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})\Z")
+# 시각 순서 줄 상한. 넘으면 앞부분만 두고 timeline_truncated를 참으로 둔다(수·종류는 그대로 다 센다).
+MAX_TIMELINE = 4096
 ABSENT, INVALID = "-", "invalid"
 
 
@@ -55,7 +59,7 @@ def journal_counts(raw: bytes | None) -> dict:
     """E② 저널(e2proxy 저널 줄) 머리 줄 수와 사건 수. 파일이 없으면 not_found, 줄이 저널 줄 모양이 아니면 journal_unparsable."""
     if raw is None:
         return {"error": "not_found"}
-    kinds, headers, events, e3 = Counter(), 0, 0, 0
+    kinds, headers, events, e3, timeline = Counter(), 0, 0, 0, []
     try:
         for line in _lines(raw):
             if line.get("Kind") == JOURNAL_HEADER and isinstance(line.get("Header"), dict):
@@ -67,11 +71,19 @@ def journal_counts(raw: bytes | None) -> dict:
                 raise ValueError("journal line")
             events += 1
             kinds["|".join(_word(event.get(name)) for name in KIND_FIELDS)] += 1
+            if len(timeline) < MAX_TIMELINE:
+                # 시각 순서 근거: 단계·프로그램·결정·사유 어휘와 모델 쪽(의도 번호 > 0, Worker) 여부·시각만. 호출 참조·경로·값은 없다.
+                at, intent = event.get("at"), event.get("intent_id")
+                timeline.append({"stage": _word(event.get("stage")), "program": _word(event.get("program")),
+                                 "decision": _word(event.get("decision")), "reason": _word(event.get("reason")),
+                                 "model": type(intent) is int and intent > 0,
+                                 "at": at if isinstance(at, str) and _AT.fullmatch(at) else None})
             if event.get("program") in E3_PROGRAMS or E3_AUDIT_FIELD in event:
                 e3 += 1
     except (ValueError, RecursionError):
         return {"error": "journal_unparsable"}
-    return {"headers": headers, "events": events, "e3_events": e3, "by_kind": dict(sorted(kinds.items()))}
+    return {"headers": headers, "events": events, "e3_events": e3, "by_kind": dict(sorted(kinds.items())),
+            "timeline": timeline, "timeline_truncated": events > len(timeline)}
 
 
 def declaration_counts(raw: bytes | None) -> dict:

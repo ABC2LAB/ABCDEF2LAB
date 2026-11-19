@@ -41,6 +41,32 @@ class TestJournalCounts(unittest.TestCase):
                                              "intent|-|allow|-": 1})
         self.assertNotIn("c1", json.dumps(counts))  # 호출 참조·메서드 같은 값은 옮기지 않는다
 
+    def test_timeline_keeps_order_model_flag_and_time_only(self):
+        # #809 확인: 목표 달성 뒤 감독자가 닫을 때까지 모델 쪽(Worker, 의도 번호 > 0) 사건이 없는지 시각 순서로 본다.
+        events = (dict(CONTROL, intent_id=0, at="2026-11-19T18:53:20.1Z"),
+                  {"stage": "intent", "decision": "allowed", "intent_id": 7, "at": "2026-11-19T18:53:29.5+00:00", "call_ref": "c9"},
+                  {"stage": "result", "decision": "allowed", "intent_id": 7, "at": "2026-11-19T18:53:30Z"},
+                  {"stage": "control", "reason": "closed", "intent_id": 0, "at": "not a time"},
+                  {"stage": "result", "intent_id": True, "at": 5})
+        timeline = journal_counts(journal(*events))["timeline"]
+        self.assertEqual([(e["stage"], e["model"], e["at"]) for e in timeline],
+                         [("control", False, "2026-11-19T18:53:20.1Z"), ("intent", True, "2026-11-19T18:53:29.5+00:00"),
+                          ("result", True, "2026-11-19T18:53:30Z"), ("control", False, None), ("result", False, None)])
+        self.assertEqual(set(timeline[0]), {"stage", "program", "decision", "reason", "model", "at"})
+        self.assertEqual(timeline[3]["reason"], "closed")
+        self.assertNotIn("c9", json.dumps(timeline))
+
+    def test_timeline_is_capped_but_counts_are_not(self):
+        import runner_e3_traces
+        original = runner_e3_traces.MAX_TIMELINE
+        runner_e3_traces.MAX_TIMELINE = 2
+        try:
+            counts = journal_counts(journal(CONTROL, RESULT, RESULT))
+        finally:
+            runner_e3_traces.MAX_TIMELINE = original
+        self.assertEqual((counts["events"], len(counts["timeline"]), counts["timeline_truncated"]), (3, 2, True))
+        self.assertFalse(journal_counts(journal(CONTROL))["timeline_truncated"])
+
     def test_non_vocabulary_values_are_counted_as_invalid(self):
         counts = journal_counts(journal(dict(CONTROL, reason="Bad Value/../x", decision=7)))
         self.assertEqual(counts["by_kind"], {"control|-|invalid|invalid": 1})
@@ -48,8 +74,9 @@ class TestJournalCounts(unittest.TestCase):
 
     def test_missing_empty_and_broken_journals(self):
         self.assertEqual(journal_counts(None), {"error": "not_found"})
-        self.assertEqual(journal_counts(b""), {"headers": 0, "events": 0, "e3_events": 0, "by_kind": {}})
-        self.assertEqual(journal_counts(b"\n\n"), {"headers": 0, "events": 0, "e3_events": 0, "by_kind": {}})
+        empty = {"headers": 0, "events": 0, "e3_events": 0, "by_kind": {}, "timeline": [], "timeline_truncated": False}
+        self.assertEqual(journal_counts(b""), empty)
+        self.assertEqual(journal_counts(b"\n\n"), empty)
         self.assertEqual(journal_counts(journal())["headers"], 1)
         # 저널 줄 모양이 아니면(사건만 펼친 줄, 사건 칸 없음, 모르는 종류) 세지 않고 실패로 남긴다
         for broken in (b"{not json}\n", b"[1]\n", journal(CONTROL) + b"x\n", lines(CONTROL),
