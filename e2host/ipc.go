@@ -28,9 +28,10 @@ type message struct {
 	Ref            *e3contract.CallRef    `json:"ref,omitempty"`
 }
 type reply struct {
-	OK      bool           `json:"ok"`
-	Missing bool           `json:"missing,omitempty"`
-	Event   *e2proxy.Event `json:"event,omitempty"`
+	OK       bool           `json:"ok"`
+	Missing  bool           `json:"missing,omitempty"`
+	Mismatch bool           `json:"mismatch,omitempty"`
+	Event    *e2proxy.Event `json:"event,omitempty"`
 }
 
 func decodeLine(reader *bufio.Reader, target any) error {
@@ -143,8 +144,10 @@ func (h *Host) serveConn(ctx context.Context, conn *net.UnixConn, expectedUID ui
 		if request.Operation == "seal" && actionErr == nil {
 			sealed = true
 		}
-		response := reply{OK: actionErr == nil, Missing: errors.Is(actionErr, ErrEventMissing), Event: responseEvent}
-		if json.NewEncoder(conn).Encode(response) != nil || actionErr != nil && !response.Missing || request.Operation == "seal" {
+		response := reply{OK: actionErr == nil, Missing: errors.Is(actionErr, ErrEventMissing),
+			Mismatch: errors.Is(actionErr, ErrBindingMismatch), Event: responseEvent}
+		if json.NewEncoder(conn).Encode(response) != nil ||
+			actionErr != nil && !response.Missing && !response.Mismatch || request.Operation == "seal" {
 			return
 		}
 	}
@@ -197,14 +200,20 @@ func (c *Client) exchangeReply(ctx context.Context, request message) (reply, err
 		return reply{}, ErrUnavailable
 	}
 	var response reply
-	if decodeLine(c.reader, &response) != nil || ctx.Err() != nil || response.OK == response.Missing ||
-		request.Operation != "verified" && (response.Missing || response.Event != nil) ||
-		request.Operation == "verified" && (response.Missing && response.Event != nil || response.OK && response.Event == nil) {
+	if decodeLine(c.reader, &response) != nil || ctx.Err() != nil ||
+		request.Operation != "verified" && (!response.OK || response.Missing || response.Mismatch || response.Event != nil) ||
+		request.Operation == "verified" && (!response.OK && !response.Missing && !response.Mismatch ||
+			response.OK && (response.Missing || response.Mismatch || response.Event == nil) ||
+			response.Missing && (response.Mismatch || response.Event != nil) ||
+			response.Mismatch && response.Event != nil) {
 		c.failed = true
 		return reply{}, ErrUnavailable
 	}
 	if response.Missing {
 		return reply{}, ErrEventMissing
+	}
+	if response.Mismatch {
+		return reply{}, ErrBindingMismatch
 	}
 	return response, nil
 }

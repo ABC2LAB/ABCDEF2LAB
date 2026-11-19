@@ -362,6 +362,11 @@ func TestRunJournalCrossCheck(t *testing.T) {
 		f.fake.SealedErr = fmt.Errorf("not in verified snapshot: %w", e3contract.ErrJournalEventMissing)
 		integrityFailed(t, f.run(t), e3contract.IntegrityJournalEventMissing)
 	})
+	t.Run("binding_mismatch", func(t *testing.T) {
+		f := newFixture(t)
+		f.fake.SealedErr = e3contract.ErrJournalBindingMismatch
+		integrityFailed(t, f.run(t), e3contract.IntegrityBindingMismatch)
+	})
 	alter := map[string]func(*e3contract.Observation){
 		// 돌려준 값은 "표식 있음", 봉인된 저널은 "표식 없음"이다.
 		"presence": func(o *e3contract.Observation) {},

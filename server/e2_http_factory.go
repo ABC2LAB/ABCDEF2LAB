@@ -209,10 +209,13 @@ type E2HTTPFilePolicy struct {
 	UpstreamCA     *E2HTTPFilePin                   `json:"upstream_ca,omitempty"`
 	Rules          []E2HTTPFileRule                 `json:"rules"`
 	// Auth는 인증 준비 칸이다(C14). 없으면 로그인하지 않는다.
-	Auth    *E2HTTPFileAuth   `json:"auth,omitempty"`
-	Limits  E2HTTPFileLimits  `json:"limits"`
-	Proxy   E2HTTPFileProxy   `json:"proxy"`
-	Runtime E2HTTPFileRuntime `json:"runtime"`
+	Auth *E2HTTPFileAuth `json:"auth,omitempty"`
+	// 제품 실행의 동결된 쓰기 승인과 리셋 가능 대상 판이다. 확정 요청에만 적용한다.
+	E3WriteConsent bool              `json:"e3_write_consent,omitempty"`
+	E3Resettable   bool              `json:"e3_resettable,omitempty"`
+	Limits         E2HTTPFileLimits  `json:"limits"`
+	Proxy          E2HTTPFileProxy   `json:"proxy"`
+	Runtime        E2HTTPFileRuntime `json:"runtime"`
 }
 
 func e2HTTPNil(value any) bool {
@@ -578,7 +581,11 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		if hostRecorder != nil {
 			auditVersion = e2proxy.JournalVersionV3
 		}
-		execution, createErr := e2proxy.NewExecution(taskctx, e2proxy.Config{AuditVersion: auditVersion, E3Verifier: hostRecorder, RequestBoundary: workflowBoundary(input.Workflow), CheckAuthority: transmissionCheck, ApprovalMode: policy.ApprovalMode, RequestApproval: gate, Evaluation: policy.Evaluation, HeaderMode: policy.HeaderMode, PasswordResponse: e2HTTPPasswordResponse(policy.Auth), Scope: scope, IntentID: request.IntentID, OwnerRef: policy.OwnerRef, PolicyRevision: policy.PolicyRevision, AccountRef: policy.AccountRef, SessionRef: policy.SessionRef, ExpiresAt: policy.ValidUntil, Rules: rules, ExcludedPaths: policy.excludedPaths(), Budget: transmit.CumulativeBudget{Ledger: ledger, Key: grantKey, Binding: budgetBinding}, Recorder: recorder, RootCAs: upstreamRoots, Limits: limits, AttemptPathObserver: observer})
+		e3Requests := uint64(0)
+		if share != nil {
+			e3Requests = share.Requests
+		}
+		execution, createErr := e2proxy.NewExecution(taskctx, e2proxy.Config{AuditVersion: auditVersion, E3Verifier: hostRecorder, E3ConfirmationRequests: e3Requests, E3WriteConsent: policy.E3WriteConsent, E3Resettable: policy.E3Resettable, RequestBoundary: workflowBoundary(input.Workflow), CheckAuthority: transmissionCheck, ApprovalMode: policy.ApprovalMode, RequestApproval: gate, Evaluation: policy.Evaluation, HeaderMode: policy.HeaderMode, PasswordResponse: e2HTTPPasswordResponse(policy.Auth), Scope: scope, IntentID: request.IntentID, OwnerRef: policy.OwnerRef, PolicyRevision: policy.PolicyRevision, AccountRef: policy.AccountRef, SessionRef: policy.SessionRef, ExpiresAt: policy.ValidUntil, Rules: rules, ExcludedPaths: policy.excludedPaths(), Budget: transmit.CumulativeBudget{Ledger: ledger, Key: grantKey, Binding: budgetBinding}, Recorder: recorder, RootCAs: upstreamRoots, Limits: limits, AttemptPathObserver: observer})
 		if createErr != nil {
 			return failed(nil, nil)
 		}

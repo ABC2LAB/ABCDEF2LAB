@@ -535,6 +535,9 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 		runtime := d.runtime
 		confirmation := newProductE3Confirmation(b.config.RunsDir, execution.Job.ID, *l.productTarget, b.product.targets,
 			func() map[string]string { return launchAccountAuth(runtime) })
+		if local, ok := runtime.(*server.FirstDiagnosisHTTPRuntime); ok {
+			confirmation.handle = local.E3Handle
+		}
 		e3Confirmation = server.FirstDiagnosisE3Hooks{Run: confirmation.run, Stopped: confirmation.stopped}
 	}
 	if end, ok := hard.Deadline(); !ok || d.supervisor == nil || d.supervisor.SetTimeBudget(urlTimeBudgetClose(end, time.Duration(l.profile.Budget.DurationSeconds)*time.Second, time.Duration(launch.ShutdownTimeoutSeconds)*time.Second)) != nil ||

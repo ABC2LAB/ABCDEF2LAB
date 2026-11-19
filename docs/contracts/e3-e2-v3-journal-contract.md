@@ -89,6 +89,7 @@ E③ 프로그램 호출 하나의 시도 단계는 v2와 같은 이름이다(`e
 - **실패.**
   - 현재 epoch·head를 확인할 수 없음(신뢰 저장소 조회 실패·epoch 연속성 불명 포함), 체크포인트와 스냅샷 끝이 맞지 않음, MAC·체인·형식 오류, 다른 실행의 저널: `ErrJournalIntegrity`(무결성 실패). 관찰을 돌려주지 않는다.
   - 검증된 스냅샷에 그 참조의 이벤트가 없음: `ErrJournalEventMissing`(이벤트 없음).
+  - 현재 사건 또는 호출자가 제시한 실행·세대·인스턴스·정책 결속이 요청과 다름: `ErrJournalBindingMismatch`(`binding_mismatch`). Host 연결은 유지하고 다음 정상 조회에서 현재 head를 다시 검증한다.
   - 문맥 취소: 그 오류.
 - `Sealed`가 돌려준 관찰은 `Transport`가 돌려준 관찰과 칸별로 같아야 한다(`Observation.Same`).
 
@@ -118,6 +119,7 @@ fail-closed는 #698 계약 그대로다. 진위 실패면 판정 행을 만들�
 | 같은 참조 재사용 | `confirmation_integrity_failed`, `observation_reused` | 남음 |
 | `Sealed`가 무결성 실패(`ErrJournalIntegrity`), 검증 조회가 다른 호출의 이벤트나 `intent`만 있고 `result`가 없는 호출을 돌려줌 | `confirmation_integrity_failed`, `journal_integrity_failed` | 남음 |
 | `Sealed`가 이벤트 없음(`ErrJournalEventMissing`) | `confirmation_integrity_failed`, `journal_event_missing` | 남음 |
+| `Sealed`가 결속 불일치(`ErrJournalBindingMismatch`) | `confirmation_integrity_failed`, `binding_mismatch` | 남음 |
 | `Transport` 관찰 ≠ 봉인된 이벤트 | `confirmation_integrity_failed`, `journal_event_mismatch` | 남음 |
 | 연결 전 거부(`not_sent`, 넷) | 그 종류 UNDECIDABLE(거부·승인·예산 사유) | 거둠(not_sent) |
 
