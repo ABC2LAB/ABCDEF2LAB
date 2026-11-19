@@ -48,8 +48,14 @@ export type TypeDraft = {
   create: CreateSpec;
   read: ReadSpec;
 };
+/**
+ * 확정 단계 계정 역할(계약 §4, 선택 칸): 소유·생성 계정(A)·교차 조회 계정(B) 라벨과 같은 권한 등급 확인. 입력 화면은 아직
+ * 없다(이경준 범위). 저장본에 있으면 화면 값에 그대로 두고 다시 저장할 때 보내서 지우지 않는다.
+ */
+export type AccountRoles = { ownerAccountLabel: string; crossAccountLabel: string; accountsSamePrivilege: boolean };
+
 /** 화면에서 고치는 선언. 서버가 채우는 칸(대상·판·감사)은 없다. */
-export type DeclarationDraft = { identity: IdentitySpec; types: TypeDraft[] };
+export type DeclarationDraft = { identity: IdentitySpec; types: TypeDraft[]; roles?: AccountRoles };
 
 /** 서버에 저장된 선언(조회 결과). 감사·대상 결속 칸은 서버 값 그대로 보인다. */
 export type StoredDeclaration = DeclarationDraft & {
@@ -411,9 +417,17 @@ function byteOrder(a: string, b: string): number {
  */
 export function toRequestBody(d: DeclarationDraft, targetRevision: number): Record<string, unknown> {
   const n = normalizeDraft(d);
+  const roles = d.roles
+    ? {
+        owner_account_label: d.roles.ownerAccountLabel,
+        cross_account_label: d.roles.crossAccountLabel,
+        ...(d.roles.accountsSamePrivilege ? { accounts_same_privilege: true } : {}),
+      }
+    : {};
   return {
     target_revision: targetRevision,
     declaration: {
+      ...roles,
       identity: { path: n.identity.path, subject_id_path: n.identity.subjectIdPath },
       types: n.types.map((t) =>
         t.sharing === "shared"
@@ -510,15 +524,11 @@ function parseType(v: unknown): TypeDraft {
 
 /** 저장된 선언 레코드(e3contract.Declaration JSON) → 화면 값. 모양·규칙이 어긋나면 ShapeError. */
 export function parseStoredDeclaration(v: unknown): StoredDeclaration {
-  const o = exact(v, [
-    "version",
-    "target_ref",
-    "target_approval_revision",
-    "declared_by",
-    "declared_at",
-    "identity",
-    "types",
-  ]);
+  const o = exact(
+    v,
+    ["version", "target_ref", "target_approval_revision", "declared_by", "declared_at", "identity", "types"],
+    ["owner_account_label", "cross_account_label", "accounts_same_privilege"],
+  );
   if (o.version !== DECLARATION_VERSION) fail();
   const id = exact(o.identity, ["path", "subject_id_path"]);
   const types = Array.isArray(o.types) ? o.types.map(parseType) : fail();
@@ -530,6 +540,26 @@ export function parseStoredDeclaration(v: unknown): StoredDeclaration {
     identity: { path: str(id.path), subjectIdPath: str(id.subject_id_path) },
     types,
   };
+  // 계정 역할은 둘 다 있거나 둘 다 없다(서버 e3contract.Declaration.Validate와 같은 규칙). 등급 확인은 역할이 있을 때만이다.
+  const owner = o.owner_account_label;
+  const cross = o.cross_account_label;
+  const privilege = o.accounts_same_privilege;
+  if (owner !== undefined || cross !== undefined || privilege !== undefined) {
+    if (
+      typeof owner !== "string" ||
+      typeof cross !== "string" ||
+      !REF_PATTERN.test(owner) ||
+      !REF_PATTERN.test(cross) ||
+      owner === cross
+    )
+      fail();
+    if (privilege !== undefined && privilege !== true) fail();
+    stored.roles = {
+      ownerAccountLabel: owner as string,
+      crossAccountLabel: cross as string,
+      accountsSamePrivilege: privilege === true,
+    };
+  }
   if (
     !REF_PATTERN.test(stored.targetRef) ||
     !REF_PATTERN.test(stored.targetApprovalRevision) ||
@@ -780,5 +810,6 @@ export function draftFromStored(d: StoredDeclaration): DeclarationDraft {
       create: { ...t.create },
       read: { ...t.read },
     })),
+    ...(d.roles ? { roles: { ...d.roles } } : {}),
   };
 }

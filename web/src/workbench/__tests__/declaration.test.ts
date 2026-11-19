@@ -12,6 +12,7 @@ import {
   type DeclarationDraft,
   type DeclarationTarget,
   draftFieldOf,
+  draftFromStored,
   emptyCreate,
   emptyRead,
   getDeclaration,
@@ -522,5 +523,54 @@ describe("API", () => {
       "types.2.read.pathTemplate",
     ]);
     expect(scopeWarnings(base(), target)).toEqual([]);
+  });
+});
+
+describe("계정 역할(계약 §4, 선택 칸)", () => {
+  const roles = { owner_account_label: "tester-a", cross_account_label: "tester-b", accounts_same_privilege: true };
+
+  it("역할이 든 저장본을 읽고, 화면 값으로 옮겨 다시 저장해도 지우지 않는다", () => {
+    const cur = parseDeclarationResponse(activeRes(storedJson(roles)), "target-1");
+    expect(cur.state).toBe("current");
+    if (cur.state !== "current") return;
+    expect(cur.declaration.roles).toEqual({
+      ownerAccountLabel: "tester-a",
+      crossAccountLabel: "tester-b",
+      accountsSamePrivilege: true,
+    });
+    const body = toRequestBody(draftFromStored(cur.declaration), 3) as { declaration: Record<string, unknown> };
+    expect(body.declaration).toMatchObject(roles);
+  });
+
+  it("역할 없는 저장본은 그대로 읽고, 저장 본문에 역할 칸을 넣지 않는다", () => {
+    const cur = parseDeclarationResponse(activeRes(storedJson()), "target-1");
+    expect(cur.state).toBe("current");
+    if (cur.state !== "current") return;
+    expect(cur.declaration.roles).toBeUndefined();
+    const body = toRequestBody(draftFromStored(cur.declaration), 3) as { declaration: Record<string, unknown> };
+    expect(Object.keys(body.declaration).sort()).toEqual(["identity", "types"]);
+  });
+
+  it("등급 확인이 거짓이면 본문에서 빼고(서버 정본과 같음) 역할은 보낸다", () => {
+    const cur = parseDeclarationResponse(
+      activeRes(storedJson({ owner_account_label: "tester-a", cross_account_label: "tester-b" })),
+      "target-1",
+    );
+    if (cur.state !== "current") throw new Error("current 아님");
+    expect(cur.declaration.roles?.accountsSamePrivilege).toBe(false);
+    const body = toRequestBody(draftFromStored(cur.declaration), 3) as { declaration: Record<string, unknown> };
+    expect(body.declaration).not.toHaveProperty("accounts_same_privilege");
+    expect(body.declaration).toMatchObject({ owner_account_label: "tester-a", cross_account_label: "tester-b" });
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ["한쪽만", { owner_account_label: "tester-a" }],
+    ["같은 계정", { owner_account_label: "tester-a", cross_account_label: "tester-a" }],
+    ["라벨 모양", { owner_account_label: "tester a", cross_account_label: "tester-b" }],
+    ["등급 확인만", { accounts_same_privilege: true }],
+    ["등급 확인이 문자열", { ...roles, accounts_same_privilege: "yes" }],
+    ["등급 확인이 false로 직접", { ...roles, accounts_same_privilege: false }],
+  ])("계약 밖 역할 칸(%s)은 깨진 응답이다", (_name, over) => {
+    expect(parseDeclarationResponse(activeRes(storedJson(over)), "target-1").state).toBe("invalid");
   });
 });
