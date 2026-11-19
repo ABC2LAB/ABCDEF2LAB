@@ -617,6 +617,30 @@ func TestProductE3AdmittedReadsShare(t *testing.T) {
 	}
 }
 
+// 감독자가 모델 단계 시간 상한에서 빼는 확정 몫(timeShare)은 확정 단계가 실제로 받는 몫(input)과 같은 발급 정책 값이다.
+// 몫을 받지 못한 정책은 0, 정책을 읽지 못하면 오류(실행을 시작하지 않음)다.
+func TestProductE3ConfirmationTimeShareMatchesInput(t *testing.T) {
+	f := newE3HookFixture(t, true, nil)
+	c := f.confirmation(e3HookFake(), e3HookAccounts(), e3Seed())
+	got, err := c.timeShare()
+	_, given := c.input("41")
+	if err != nil || got <= 0 || got != given {
+		t.Fatalf("time share %v (err %v), confirmation gets %v", got, err, given)
+	}
+	unshared := newE3HookFixture(t, true, func(p *server.E2HTTPFilePolicy) {
+		p.Limits.E3ConfirmationRequests, p.Limits.E3ConfirmationTimeoutMS = nil, nil
+	})
+	if got, err := unshared.confirmation(e3HookFake(), e3HookAccounts(), e3Seed()).timeShare(); err != nil || got != 0 {
+		t.Fatalf("policy without share: %v %v", got, err)
+	}
+	if os.Remove(filepath.Join(f.runs, liveJob, "policy.json")) != nil {
+		t.Fatal("remove")
+	}
+	if _, err := c.timeShare(); err == nil {
+		t.Fatal("unreadable run policy gave a time share")
+	}
+}
+
 // 인증 준비가 성공한 시험 계정만, 이름순 앞 둘을 A·B로 둔다(지도 순서와 관계없이 같다).
 // 소유(A)·교차(B)는 선언한 라벨 그대로이고 인증 결과만 붙인다. 이름순으로 고르지 않는다(사용자 결정 2026-11-19).
 func TestProductE3RolesFromDeclaration(t *testing.T) {

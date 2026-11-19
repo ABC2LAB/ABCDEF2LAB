@@ -96,6 +96,7 @@ def fault_stall_record(llm_rows: list[dict], meter_rows: list[dict], window_star
     moments = sorted({moment for span in spans for moment in span})
     rows = [*llm_rows, *meter_rows]
     moments_ns = sorted({_ns(row[name]) for row in rows for name in ("started_at", "completed_at")})
+    spans_ns = [(_ns(row["started_at"]), _ns(row["completed_at"])) for row in rows]
     end_ns, terminal_ns = _ns(window_end), None if engine_terminal_at is None else _ns(engine_terminal_at)
     counts = {"upstream_cut": 0, "rate_limited": 0}
     events = []
@@ -138,6 +139,11 @@ def fault_stall_record(llm_rows: list[dict], meter_rows: list[dict], window_star
             # 판정과 같은 정의(활동 사건 = 요청 시작 + 응답 완료)의 활동 중 최장 공백. T를 고르는 근거다.
             "max_event_gap_before_end_seconds": _max_event_gap(moments, start, terminal if terminal is not None
                                                                and start <= terminal < end else end),
+            # 마지막 활동 사건부터 끝(엔진 끝 상태, 없으면 창 끝)까지. 시간 상한 마감을 '작업 중'과 '빈 계획 대기 중'으로 가르는
+            # 근거다(고정 초안 §21, 2026-11-19 사용자). 활동이 없었으면 창 시작부터 잰다. T와 비교할 때는 나노초 정수
+            # (trailing_event_gap_nanoseconds)를 쓰고, 초 값은 기록용 반올림이다(#794 리뷰, #756 판정과 같은 방식).
+            **_trailing_event_gap(moments_ns, spans_ns, _ns(window_start), terminal_ns if terminal is not None and start <= terminal < end
+                                  else end_ns),
             "activity_starts": len(starts)}
 
 
@@ -149,6 +155,17 @@ def _max_event_gap(moments: list[datetime], start: datetime, end: datetime) -> f
             longest = max(longest, (moment - cursor).total_seconds())
             cursor = moment
     return round(max(longest, (end - cursor).total_seconds()), 3)
+
+
+def _trailing_event_gap(moments_ns: list[int], spans_ns: list[tuple[int, int]], start_ns: int, end_ns: int) -> dict:
+    """창 안 마지막 활동 사건(요청 시작·응답 완료)부터 끝까지의 간격(나노초 정수와 기록용 초)과, 끝 시각에 아직 진행 중인
+    요청 수. 활동이 없으면 창 전체다. 끝에 진행 중인 요청(끝 전에 시작해 끝 시각이나 그 뒤에 완료)이 있으면 끝 공백이 길어도
+    빈 계획 대기가 아니다(#794 리뷰: 긴 모델 호출 하나가 창 끝까지 이어진 경우. 끝 시각에 정확히 완료된 것도 끝까지 이어진
+    것이다)."""
+    last = max((moment for moment in moments_ns if start_ns <= moment < end_ns), default=start_ns)
+    gap = end_ns - last
+    return {"trailing_event_gap_nanoseconds": gap, "trailing_event_gap_seconds": round(gap / _NS_PER_SECOND, 3),
+            "inflight_at_end": sum(1 for began, done in spans_ns if began < end_ns <= done)}
 
 
 def judge_fault_stall(record: dict, stall_seconds: int) -> dict:

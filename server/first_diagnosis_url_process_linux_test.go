@@ -71,6 +71,10 @@ const urlFullContextQuote = 262144 + 2048
 
 // urlRequestSizedReservation은 calls번 호출의 비용 예약이 요청 크기로 견적됐는지 본다(C28 결정 1): 호출마다 출력 상한과
 // framing 여유보다는 크고, 입력 상한 전체 견적보다는 작다.
+// urlProcessRunSeconds는 URL 프로세스 시험 회차의 실행 시간이다. 시간 상한 마감은 끝 시각에서 유예(실행 시간의 1/4)와 결과
+// 저장 여유(launch 정리 시간)를 뺀 때 시작한다.
+const urlProcessRunSeconds = 60
+
 func urlRequestSizedReservation(reserved, calls int64) bool {
 	return calls > 0 && reserved > calls*(2048+firstDiagnosisFramingTokens) && reserved < calls*urlFullContextQuote
 }
@@ -267,7 +271,9 @@ func newURLProcessFixtureMode(t *testing.T, multi *urlMultiIntentModel, external
 	apiLaunchHash := urlTestWrite(t, f.apiLaunch, launch)
 	f.socket = filepath.Join(f.root, "prepare.sock")
 	f.installation = filepath.Join(f.root, "installation.json")
-	budget := diagnosisprep.Budget{Requests: int64(policy.MaxRequests), ModelRequests: 20, InputTokens: 20 * 131072, OutputTokens: 20 * 2048, DurationSeconds: 120}
+	// 계획이 비어도 마감하지 않으므로(원본과 같은 끝 규칙) 목표 달성 선언이 없는 합성 실행은 시간 상한 마감(실행 끝 − 유예 −
+	// 저장 여유)으로 끝난다. 실행 시간을 짧게 둬서 그 마감이 시험 대기 안에 오게 한다.
+	budget := diagnosisprep.Budget{Requests: int64(policy.MaxRequests), ModelRequests: 20, InputTokens: 20 * 131072, OutputTokens: 20 * 2048, DurationSeconds: urlProcessRunSeconds}
 	if external {
 		budget.InputTokens, budget.CostUSDMicros = 20*262144, 6000000
 	}
@@ -990,8 +996,10 @@ func (f *urlProcessFixture) startPreparation() *urlOwnedProcess {
 }
 
 // 실제 모델 응답 대기 중 중지를 시험한다. 실행 전 취소를 취약점 없음이나 모델 사용량 확인으로 바꾸지 않는다.
-// 계획을 거쳐도 intent가 하나도 없으면 실패가 아니라 completed + no_intents로 마감한다(C11 결정 2, C08 2-4).
-// 준비의 첫 계획이 0개여도 실행으로 넘어가고, 실행 단계 Planner가 다시 계획한 뒤 마감한다. Worker 호출·대상 송신은 없다.
+// 시간 상한까지 intent가 하나도 없으면 실패가 아니라 completed + no_intents로 마감한다(C11 결정 2, C08 2-4). 빈 계획 한
+// 번으로는 마감하지 않으므로 마감 사유는 시간 상한(budget_limited)이다.
+// 준비의 첫 계획이 0개여도 실행으로 넘어가고, 실행 단계 Planner가 다시 계획해도 시간 상한 전에는 마감하지 않는다. Worker
+// 호출·대상 송신은 없다.
 func TestFirstDiagnosisURLNoIntentsOwnedPostgres(t *testing.T) {
 	if os.Getenv("ARTEX_URL_DIAGNOSIS_TEST") != "1" {
 		t.Skip("NOT_RUN: 소유 로컬 URL 프로세스 수용 시험 opt-in 필요")
@@ -1019,7 +1027,7 @@ func TestFirstDiagnosisURLNoIntentsOwnedPostgres(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	if final.State != diagnosisprep.Completed || !final.Started || !final.DrainComplete || !final.ResultReady || final.AuthorityState != diagnosisprep.AuthorityConsumed ||
-		final.Outcome != diagnosis.OutcomeNoIntents || final.ClosingReason != "" || final.IntentOutcomes == nil || *final.IntentOutcomes != (diagnosis.IntentOutcomes{}) {
+		final.Outcome != diagnosis.OutcomeNoIntents || final.ClosingReason != diagnosis.ClosingBudgetLimited || final.IntentOutcomes == nil || *final.IntentOutcomes != (diagnosis.IntentOutcomes{}) {
 		t.Fatalf("intent 없는 실행 마감 불일치 state=%s phase=%s reason=%s outcome=%s closing=%s planner=%d", final.State, final.Phase, final.ReasonCode, final.Outcome, final.ClosingReason, f.plannerCalls.Load())
 	}
 	var intents int

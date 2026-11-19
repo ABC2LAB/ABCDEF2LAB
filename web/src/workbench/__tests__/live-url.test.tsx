@@ -61,7 +61,7 @@ import { generateRemediation } from "@/lib/diagnosis/remediation";
 import * as api from "../live/api";
 import { checkLiveAuth, getLiveAuthState, setLiveAuthState } from "../live/auth";
 import { LiveFeeds } from "../live/feeds";
-import { dateTimeOf } from "../live/map";
+import { clockOf, dateTimeOf } from "../live/map";
 import { LiveRailTasks } from "../live/rail";
 import {
   disconnectUrl,
@@ -1150,6 +1150,141 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     mount("live");
     expect(await screen.findByText(/점검을 마쳤습니다/)).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "서버 진단 활동" })).toBeNull();
+  });
+
+  /** 제어 · 활동 요청만 골라 답한다(그 밖 apiFetch 는 빈 값). */
+  function controlApi(control: (body: { action: string }) => unknown) {
+    const calls: { path: string; body: unknown }[] = [];
+    vi.mocked(teamApi.apiFetch).mockImplementation(async (path, init) => {
+      const p = String(path);
+      if (p === "/api/tasks/42/control") {
+        const body = JSON.parse(String(init?.body));
+        calls.push({ path: p, body });
+        return control(body) as never;
+      }
+      return undefined as never;
+    });
+    return calls;
+  }
+
+  it("탐색 흐름 없는 점검: 일시정지 · 다시 시작을 결속 task 의 control 로 보내고 받은 응답으로만 상태를 바꾼다 (C33)", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    const calls = controlApi((b) =>
+      b.action === "pause"
+        ? { id: "42", paused: true, status: "paused" }
+        : { id: "42", queued: false, status: "running" },
+    );
+    mount("live");
+    const pause = await screen.findByRole("button", { name: "일시정지" });
+    // 응답 전에는 멈춤으로 보이지 않는다
+    expect(screen.queryByText("일시정지됨")).toBeNull();
+    await act(async () => {
+      fireEvent.click(pause);
+    });
+    expect(calls).toEqual([{ path: "/api/tasks/42/control", body: { action: "pause" } }]);
+    expect(await screen.findByText("일시정지됨")).toBeInTheDocument();
+    expect(document.getElementById("luControl")).toHaveTextContent("일시정지했습니다.");
+    expect(screen.queryByRole("button", { name: "일시정지" })).toBeNull();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "다시 시작" }));
+    });
+    expect(calls.at(-1)).toEqual({ path: "/api/tasks/42/control", body: { action: "resume" } });
+    expect(await screen.findByRole("button", { name: "일시정지" })).toBeInTheDocument();
+    expect(screen.queryByText("일시정지됨")).toBeNull();
+    expect(document.getElementById("luControl")).toHaveTextContent("다시 시작했습니다.");
+  });
+
+  it("일시정지 409(이미 멈춤 등)는 서버 사유를 보이고, 상태를 모르니 두 버튼을 다 둔다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    controlApi(() => {
+      throw new ApiError(409, "작업이 이미 일시정지되어 있습니다");
+    });
+    mount("live");
+    await act(async () => {
+      fireEvent.click(await screen.findByRole("button", { name: "일시정지" }));
+    });
+    expect(document.getElementById("luControl")).toHaveTextContent("일시정지 거절 · 작업이 이미 일시정지되어 있습니다");
+    expect(screen.getByRole("button", { name: "일시정지" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "다시 시작" })).toBeInTheDocument();
+    expect(screen.queryByText("일시정지됨")).toBeNull();
+    expect(screen.getByText("일시정지 여부 모름")).toBeInTheDocument();
+    expect(screen.queryByText("진행 중")).toBeNull();
+  });
+
+  it("제어 결과를 모르면(연결 실패) 멈췄다고 하지 않고 두 버튼을 다 두며, 권한 실패(403)는 상태를 바꾸지 않는다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    let fail: unknown = new TypeError("network");
+    controlApi(() => {
+      throw fail;
+    });
+    mount("live");
+    await act(async () => {
+      fireEvent.click(await screen.findByRole("button", { name: "일시정지" }));
+    });
+    expect(document.getElementById("luControl")).toHaveTextContent("일시정지 결과를 확인하지 못했습니다");
+    expect(screen.getByRole("button", { name: "다시 시작" })).toBeInTheDocument();
+    expect(screen.queryByText("일시정지됨")).toBeNull();
+    fail = new ApiError(403, "forbidden");
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "다시 시작" }));
+    });
+    expect(document.getElementById("luControl")).toHaveTextContent(
+      "다시 시작 실패 (HTTP 403) · 이 점검을 제어할 권한이",
+    );
+    expect(screen.getByRole("button", { name: "일시정지" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "다시 시작" })).toBeInTheDocument();
+  });
+
+  it("끝난 점검 · 상태를 확인하지 못한 점검에는 일시정지 버튼을 두지 않거나 막는다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    const { unmount } = mount("live");
+    expect(await screen.findByText(/점검을 마쳤습니다/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "일시정지" })).toBeNull();
+    unmount();
+    resetUrl();
+    u.readURLStatus.mockResolvedValue(preparing);
+    mount("live");
+    await waitFor(() => expect(u.readURLStatus).toHaveBeenCalled());
+    expect(screen.queryByRole("button", { name: "일시정지" })).toBeNull();
+  });
+
+  it("서버 진단 활동 줄은 순번 · 시각 · 주체 · 의도 · 오류만 보이고 원문은 없다고 말한다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    const ts = "2026-11-19T01:02:03Z";
+    vi.mocked(teamApi.apiFetch).mockImplementation(async (path) =>
+      String(path).startsWith("/api/exploration/activity?")
+        ? ({
+            items: [
+              {
+                seq: 3,
+                ts,
+                worker: "planner",
+                intent_id: "7",
+                kind: "status",
+                is_error: true,
+                summary: "진단 활동 기록",
+              },
+              { seq: 4, ts: "", worker: "unknown-role", intent_id: "", kind: "status", is_error: false, summary: "" },
+            ],
+            cursor: 4,
+          } as never)
+        : (undefined as never),
+    );
+    mount("live");
+    const region = await screen.findByRole("region", { name: "서버 진단 활동" });
+    await waitFor(() => expect(within(region).getAllByRole("listitem")).toHaveLength(2));
+    const [newest, older] = within(region).getAllByRole("listitem");
+    expect(older).toHaveTextContent(`#3 ${clockOf(ts)} · 계획 · 의도 #7 · 진단 활동 기록 · 오류`);
+    // 시각 · 주체 · 의도가 없으면 그 칸을 두지 않는다
+    expect(newest).toHaveTextContent(/^#4 · 진단 활동 기록$/);
+    expect(region).toHaveTextContent(
+      "원문 명령 · 모델 글 · 요청 내용은 비밀이 섞일 수 있어 공개 활동에 싣지 않습니다.",
+    );
   });
 
   it("점검 진행 발견 후보가 없으면 '없음'을 안전으로 읽히지 않게 말한다", async () => {

@@ -78,7 +78,7 @@ func firstDiagnosisSupervisorExplorationBudget(t *testing.T, manager *Manager, i
 			done := e2.task.explorationDone
 			e2.task.mu.Unlock()
 			counts, countErr := firstDiagnosisIntentOutcomes(t.Context(), manager.pg.DB, task.ExpID)
-			out, closing := firstDiagnosisClosingOutcomes(counts, firstDiagnosisBudgetLimited(task, budget), firstDiagnosisPlanned(task))
+			out, closing := firstDiagnosisClosingOutcomes(counts, firstDiagnosisBudgetLimited(task, budget))
 			_, allowed := e2.explorationBudgetOutcome(task, budget, out)
 			t.Fatalf("supervisor failed: outcome_error=%v stage_budget=%v stage_done=%v proof=%v valid=%v allowed=%v count_error=%v closing=%v incomplete=%d running=%d unknown=%d task_status=%s provider=%d requests=%d known=%v limited=%v status=%s reason=%s phase=%s observed=%d", errors.Is(err, ErrFirstDiagnosisOutcome), errors.Is(stageErr, ErrE2HTTPBudgetLimited), done, proof != nil, proof != nil && proof.validFlow(), allowed, countErr != nil, closing, out.Incomplete, counts.running, out.Unknown, task.lifecycleSnapshot().Status, provider.calls.Load(), usage.Requests, usage.UsageKnown, budget.LimitReached(), snap.ExplorationStatus, snap.ExplorationReason, snap.Stage, snap.Counts.ExplorationRequests)
 		}
