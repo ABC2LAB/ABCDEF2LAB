@@ -10,6 +10,16 @@
 
 export type CredentialFormKind = "plain" | "path" | "json" | "form";
 
+/**
+ * 본문 틀 크기 상한(e3contract.MaxBodyTemplateBytes, UTF-8 바이트). 서버는 이보다 긴 틀을 저장하지 않으므로(Validate
+ * create.body_template), 화면은 그 크기 검사를 먼저 하고 더 긴 틀은 풀어 보지 않는다 — 풀기·모양 만들기가 재귀라
+ * 편집 중인 아주 깊은 틀에서 스택이 넘치지 않게(#754 리뷰).
+ */
+export const MAX_BODY_TEMPLATE_BYTES = 2048;
+
+const encoder = new TextEncoder();
+const utf8Bytes = (s: string): number => encoder.encode(s).length;
+
 /** Go 가 JSON 수를 원문(json.Number)으로 들고 있으므로 수는 원문 문자열로 둔다. */
 type GoJson = null | boolean | string | { num: string } | GoJson[] | { obj: Map<string, GoJson> };
 
@@ -252,9 +262,13 @@ function goParseQuery(q: string): [string, string][] | null {
   return bad ? null : out;
 }
 
-/** 칸 값 → 서버가 자격 검사에 대는 모양들(첫 원소는 원문). */
+/**
+ * 칸 값 → 서버가 자격 검사에 대는 모양들(첫 원소는 원문). 본문 틀(json·form)이 크기 상한을 넘으면 원문만 준다 — 그 틀은
+ * 크기 검사(validateDraft)가 이미 저장을 막는다.
+ */
 export function credentialForms(value: string, kind: CredentialFormKind): string[] {
   const forms = [value];
+  if ((kind === "json" || kind === "form") && utf8Bytes(value) > MAX_BODY_TEMPLATE_BYTES) return forms;
   if (kind === "json") {
     const parsed = goDecodeFirstJson(value);
     if (parsed !== undefined) jsonForms(parsed, forms);

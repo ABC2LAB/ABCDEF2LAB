@@ -151,3 +151,59 @@ describe("credentialFields — 이스케이프로 숨긴 자격도 칸 이름으
     expect(credentialFields(base())).toEqual([]);
   });
 });
+
+describe("본문 틀 크기 상한 — 재귀 검사 전에 막는다(#754 리뷰, e3contract.MaxBodyTemplateBytes)", () => {
+  const draft = (bodyKind: "json" | "form", bodyTemplate: string): DeclarationDraft => ({
+    identity: { path: "/api/me", subjectIdPath: "id" },
+    types: [
+      {
+        type: "note",
+        sharing: "owner_only",
+        ownerOnlyFields: ["title"],
+        create: { path: "/api/notes", method: "POST", bodyKind, bodyTemplate, markerField: "title", idPath: "id" },
+        read: { pathTemplate: "/api/notes/{id}", dataPath: ".", statusPath: "", normalValue: "" },
+      },
+    ],
+  });
+  const sizeIssue = (d: DeclarationDraft) =>
+    validateDraft(d).filter((i) => i.field === "types.0.create.bodyTemplate" && /바이트 이하/.test(i.message));
+
+  it.each<[string, "json" | "form", string]>([
+    ["깊게 중첩된 미완성 JSON", "json", "[".repeat(200_000)],
+    ["깊게 중첩된 완성 JSON", "json", `${"[".repeat(100_000)}${"]".repeat(100_000)}`],
+    ["깊은 객체 JSON", "json", `${'{"a":'.repeat(50_000)}1${"}".repeat(50_000)}`],
+    ["긴 form", "form", "a=1&".repeat(10_000)],
+  ])("%s는 예외 없이 크기 오류 하나로 저장을 막는다", (_name, kind, body) => {
+    const d = draft(kind, body);
+    expect(() => validateDraft(d)).not.toThrow();
+    expect(() => credentialFields(d)).not.toThrow();
+    expect(sizeIssue(d)).toHaveLength(1);
+    expect(validateDraft(d).filter((i) => i.field === "types.0.create.bodyTemplate")).toHaveLength(1);
+  });
+
+  it("경계: 2048바이트는 통과, 2049바이트는 막는다(UTF-8 바이트로 셈)", () => {
+    const at = (n: number) => `{"note":"${"x".repeat(n - '{"note":""}'.length)}"}`;
+    expect(new TextEncoder().encode(at(2048)).length).toBe(2048);
+    expect(sizeIssue(draft("json", at(2048)))).toEqual([]);
+    expect(sizeIssue(draft("json", at(2049)))).toHaveLength(1);
+    // '가'는 3바이트 — 글자 수가 아니라 바이트로 센다(Go len)
+    const ga = `{"n":"${"가".repeat(681)}"}`;
+    expect(ga.length).toBeLessThan(2048);
+    expect(sizeIssue(draft("json", ga))).toHaveLength(1);
+  });
+
+  it("상한 안의 가장 깊은 틀은 그대로 풀어 자격을 본다", () => {
+    const deepArr = `${"[".repeat(1015)}"tok\\u0065n=1"${"]".repeat(1015)}`;
+    expect(new TextEncoder().encode(deepArr).length).toBeLessThanOrEqual(2048);
+    expect(credentialForms(deepArr, "json").some(hasCredentialText)).toBe(true);
+    const deepObj = `${'{"a":'.repeat(330)}"tok\\u0065n=1"${"}".repeat(330)}`;
+    expect(new TextEncoder().encode(deepObj).length).toBeLessThanOrEqual(2048);
+    expect(() => validateDraft(draft("json", deepObj))).not.toThrow();
+    expect(credentialFields(draft("json", deepObj))).toEqual(["types.0.create.bodyTemplate"]);
+  });
+
+  it("상한을 넘는 틀은 풀지 않고 원문만 본다(크기 오류가 저장을 막음)", () => {
+    const big = `{"a":"tok\\u0065n=1","pad":"${"x".repeat(2100)}"}`;
+    expect(credentialForms(big, "json")).toEqual([big]);
+  });
+});
