@@ -330,6 +330,15 @@ func (r *run) call(ctx context.Context, want Observation, send func() (Observati
 		r.integrity = IntegrityAuthorityRevoked
 		return Observation{}, false
 	}
+	// E²가 돌려준 기록이 계약 모양이 아니거나 요청과 맞지 않는 것은 결과 불명이 아니라 진위 실패다(v3 계약 §7).
+	if errors.Is(err, ErrObservation) {
+		r.integrity = IntegrityObservationInvalid
+		return Observation{}, false
+	}
+	if errors.Is(err, ErrObservationMismatch) {
+		r.integrity = IntegrityObservationMismatch
+		return Observation{}, false
+	}
 	if err != nil {
 		return Observation{}, false // 결과 불명. 다시 보내지 않는다.
 	}

@@ -62,7 +62,8 @@ type ReadRequest struct {
 //     확정 단계는 시작하지 않는다. 등록하지 않은 표식으로 Create·Read를 부르면 보내지 않고 ErrMarkerNotRegistered다.
 //   - 요청 하나는 영수증 하나다. 같은 요청을 다시 보내지 않는다(결과 불명 쓰기 포함).
 //   - 돌려준 Observation과 같은 값이 저널에 봉인된다(Journal.Sealed). 다르면 E³는 진위 실패로 본다.
-//   - 실행 권한이 철회됐으면 ErrAuthorityRevoked다. 그 밖의 오류는 그 요청의 결과 불명이다.
+//   - 실행 권한이 철회됐으면 ErrAuthorityRevoked다. E²가 남긴 기록이 계약 모양이 아니면 ErrObservation, 관찰 밖 칸(계정
+//     결속 참조 등)이 요청과 다르면 ErrObservationMismatch다(둘 다 진위 실패). 그 밖의 오류는 그 요청의 결과 불명이다.
 //   - 확정 단계 전용 몫(시간·요청)이 다 되면 보내지 않고 NotSent=confirmation_budget_exhausted 관찰을 돌려준다.
 //   - 요청 하나는 요청의 Timeout(확정 요청 전용 시간 상한, 사용자 결정 2026-11-18) 안에 끝나야 한다. 넘으면 E²가 끊고,
 //     보낸 뒤면 Sent=true·ResponseComplete=false·TimedOut=true(결과 불명)를 돌려준다. 다시 보내지 않는다.
