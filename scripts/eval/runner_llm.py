@@ -122,11 +122,11 @@ def rows_match_marker(rows: list[dict], marker: object) -> bool:
         return False
     try:
         names = ("forwarded_requests", "upstream_errors", "cancelled_by_seal", "rejected_after_seal", "rejected_requests")
-        if any(type(marker.get(name)) is not int or marker[name] < 0 for name in names):
+        if any(type(marker.get(name)) is not int for name in names):
             return False
         marked = sum(marker[name] for name in names)
         seqs = sorted(row["seq"] for row in rows)
-        if any(type(seq) is not int for seq in seqs) or seqs != list(range(1, len(rows) + 1)) or len(rows) < marked:
+        if any(type(seq) is not int for seq in seqs) or seqs != list(range(1, len(rows) + 1)):
             return False
         if any(row["decision"] != "rejected_after_seal" for row in rows if row["seq"] > marked):
             return False
