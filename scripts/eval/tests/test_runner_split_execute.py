@@ -1154,7 +1154,7 @@ class TestProductTaskEnd(unittest.TestCase):
         self.assertEqual(result["status"], "complete", result)
         record = evidence.files["product-task-end.json"]
         self.assertEqual((record["format"], record["task_id"], record["task"]["goals_total"], record["task"]["goals_met"]),
-                         ("abc2lab-eval-runner-product-task-end-v1", "42", 3, 3))
+                         ("abc2lab-eval-runner-product-task-end-v2", "42", 3, 3))
         self.assertLess(ports.calls.index("run_record"), ports.calls.index("task_signal"))  # 마감 뒤 실행 기록 다음
         self.assertLess(ports.calls.index("task_signal"), ports.calls.index("down"))  # 내리기 전
 
@@ -1162,6 +1162,7 @@ class TestProductTaskEnd(unittest.TestCase):
         from runner_engine import EngineAPIError
         from runner_product import ProductAPIError
         for error, code in ((ProductAPIError("product_http_403:tasks"), "product_http_403:tasks"),
+                            (ValueError("product_task_invalid"), "product_task_invalid"),
                             (EngineAPIError("engine_task_status_missing"), "engine_task_status_missing"),
                             (ProductAPIError("/secret/path value"), "product_task_signal_failed"),
                             (RuntimeError("boom"), "product_task_signal_failed")):

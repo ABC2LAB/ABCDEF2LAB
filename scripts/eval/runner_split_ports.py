@@ -196,6 +196,40 @@ PRODUCT_COMMANDS_SQL = (
     "where u.kind = 'tool_use' and u.tool = 'Bash' and u.exploration_id = {exploration} order by u.id")
 
 
+# 작업 끝 신호: tasks 한 행과 그 탐색의 목표(goal)·의도(intent) 상태별 수. 작업 번호는 정수로만 넣는다.
+PRODUCT_TASK_SQL = (
+    "select json_build_object('task_id', t.id, 'status', t.status, 'exploration_id', t.exploration_id, "
+    "'completed_at', coalesce(to_char(t.completed_at at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), ''), "
+    "'goal_states', (select coalesce(json_object_agg(g.state, g.n), '{{}}') from (select state, count(*) as n from exploration_nodes "
+    "where exploration_id = t.exploration_id and kind = 'goal' group by state) g), "
+    "'intent_states', (select coalesce(json_object_agg(i.state, i.n), '{{}}') from (select state, count(*) as n from exploration_nodes "
+    "where exploration_id = t.exploration_id and kind = 'intent' group by state) i))::text "
+    "from tasks t where t.id = {task}")
+PRODUCT_TASK_MAX_BYTES = 64 * 1024
+_TASK_ID = re.compile(r"[1-9][0-9]{0,18}\Z")
+_TASK_STATUSES = frozenset({"created", "running", "paused", "done", "failed", "timeout"})
+_GOAL_STATES = frozenset({"open", "met", "abandoned"})
+_INTENT_STATES = frozenset({"open", "running", "paused", "done", "blocked", "exhausted", "stopped", "deleted"})
+_UTC_STAMP = re.compile(r"(?:[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)?\Z")
+
+
+def checked_task_state(row: object) -> dict:
+    """제품 DB 작업 행 검사(db/schema.sql의 상태 어휘). 목표 수·달성 수는 목표 상태별 수에서 센다."""
+    fields = {"task_id", "status", "exploration_id", "completed_at", "goal_states", "intent_states"}
+    if not isinstance(row, dict) or set(row) != fields:
+        raise ValueError("product_task_invalid")
+    goals, intents = row["goal_states"], row["intent_states"]
+    if (type(row["task_id"]) is not int or row["status"] not in _TASK_STATUSES or type(row["exploration_id"]) is not int
+            or row["exploration_id"] < 1 or not isinstance(row["completed_at"], str) or not _UTC_STAMP.fullmatch(row["completed_at"])
+            or not isinstance(goals, dict) or not isinstance(intents, dict)
+            or not all(state in _GOAL_STATES and type(n) is int and n > 0 for state, n in goals.items())
+            or not all(state in _INTENT_STATES and type(n) is int and n > 0 for state, n in intents.items())):
+        raise ValueError("product_task_invalid")
+    return {"status": row["status"], "completed_at": row["completed_at"], "exploration_id": row["exploration_id"],
+            "goals_total": sum(goals.values()), "goals_met": goals.get("met", 0), "goal_states": dict(sorted(goals.items())),
+            "intent_states": dict(sorted(intents.items()))}
+
+
 def product_record_names(approval_id: str) -> tuple[str, str]:
     """제품 승인 장부·호출 기록 파일 이름(llmpolicy openrouter_file_linux.go와 같은 규칙)."""
     approval = hashlib.sha256(approval_id.encode("utf-8")).hexdigest()
@@ -446,10 +480,17 @@ class DockerSplitPorts:
         return self.driver.run_record(task_id)
 
     def task_signal(self, task_id: str) -> dict:
-        return self.driver.task_end_signal(task_id)
+        """제품 작업의 끝 신호(상태·완료 시각·탐색 번호·목표 상태별 수·의도 상태별 수). 제품 관리 API는 작업 단건·목표 목록을
+        중계하지 않아(목록 307, 단건·하위 경로 403, 2026-11-19 O 진단 회차) 제품 DB에서 읽기 전용으로 읽는다. 글은 옮기지 않는다."""
+        if not isinstance(task_id, str) or not _TASK_ID.fullmatch(task_id):
+            raise ValueError("product_task_invalid")
+        lines = self._product_sql(PRODUCT_TASK_SQL.format(task=int(task_id)), PRODUCT_TASK_MAX_BYTES)
+        if len(lines) != 1:
+            raise ValueError("product_task_missing")
+        return checked_task_state(json.loads(lines[0]))
 
     def task_exploration_id(self, task_id: str) -> int:
-        return self.driver.task_exploration_id(task_id)
+        return self.task_signal(task_id)["exploration_id"]
 
     def product_commands(self, exploration_id: int) -> list[dict]:
         """제품 활동 표에서 그 탐색의 Bash 호출(도구 입력·결과·실패 표시)을 읽는다. 원본 B가 `/api/commands`로 읽는 것과 같은
@@ -457,31 +498,34 @@ class DockerSplitPorts:
         원문은 호출자 메모리로만 넘기고 쓰지 않는다. 상한은 B 명령 기록과 같은 findings 설정(max_total_bytes)이다."""
         if type(exploration_id) is not int or exploration_id < 1:
             raise ValueError("product_commands_exploration_invalid")
+        rows = []
+        for line in self._product_sql(PRODUCT_COMMANDS_SQL.format(exploration=exploration_id), self.config.findings["max_total_bytes"]):
+            row = json.loads(line)
+            if not isinstance(row, dict) or set(row) != {"cmd", "res", "is_error"}:
+                raise ValueError("product_commands_invalid")
+            rows.append(row)
+        return rows
+
+    def _product_sql(self, sql: str, limit: int) -> list[str]:
+        """제품 DB 컨테이너 안에서 읽기 전용 세션(default_transaction_read_only)으로 조회 하나를 돌려 비지 않은 줄을 돌려준다.
+        사용자·DB 이름은 렌더한 compose의 postgres 환경값이다."""
         service = self.rendered["services"].get(PRODUCT_DB_SERVICE, {})
         environment = service.get("environment") if isinstance(service, dict) else None
         user = environment.get("POSTGRES_USER") if isinstance(environment, dict) else None
         database = environment.get("POSTGRES_DB") if isinstance(environment, dict) else None
         if not all(isinstance(v, str) and _DB_WORD.fullmatch(v) for v in (user, database)):
-            raise ValueError("product_commands_db_unknown")
+            raise ValueError("product_db_unknown")
         containers = [parse_container(c) for c in self.docker.inspect_containers(self.docker.project_container_ids(self.plan.project))]
         ids = [c.id for c in containers if c.project == self.plan.project and c.service == PRODUCT_DB_SERVICE and c.running]
         if len(ids) != 1:
-            raise ValueError("product_commands_db_container")
-        limit = self.config.findings["max_total_bytes"]
+            raise ValueError("product_db_container")
         result = self.docker.run_bounded(
             ["exec", "-e", "PGOPTIONS=-c default_transaction_read_only=on", ids[0], "psql", "-X", "-A", "-t", "-q",
-             "-v", "ON_ERROR_STOP=1", "-U", user, "-d", database, "-c", PRODUCT_COMMANDS_SQL.format(exploration=exploration_id)],
+             "-v", "ON_ERROR_STOP=1", "-U", user, "-d", database, "-c", sql],
             self.config.docker_timeout_seconds, limit)
         if result.returncode != 0:
-            raise ValueError("product_commands_failed")
-        rows = []
-        for line in result.stdout.decode("utf-8").splitlines():
-            if line.strip():
-                row = json.loads(line)
-                if not isinstance(row, dict) or set(row) != {"cmd", "res", "is_error"}:
-                    raise ValueError("product_commands_invalid")
-                rows.append(row)
-        return rows
+            raise ValueError("product_db_query_failed")
+        return [line for line in result.stdout.decode("utf-8").splitlines() if line.strip()]
 
     def workflow_snapshot(self, draft_id: str) -> dict:
         return self.driver.workflow(draft_id)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import hashlib
 import os
 import stat
@@ -184,8 +185,6 @@ class TestV3Inputs(PortsCase):
     def test_control_policy_and_tool_surface_go_to_the_product_and_images(self):
         self.ports.control_policy("42")
         self.assertEqual(self.driver.calls[-1][:2], ("control_policy", ("42",)))
-        self.ports.task_signal("42")
-        self.assertEqual(self.driver.calls[-1][:2], ("task_end_signal", ("42",)))
         with mock.patch("runner_split_ports.ours_side", return_value={"x": 1}) as side:
             self.assertEqual(self.ports.tool_surface(), {"x": 1})
         args = side.call_args.args
@@ -245,9 +244,52 @@ class TestProductCommands(PortsCase):
                 with self.assertRaises(ValueError):
                     self.ports.product_commands(exploration)
 
-    def test_driver_gives_the_exploration_of_that_task(self):
-        self.ports.task_exploration_id("42")
-        self.assertEqual(self.driver.calls[-1][:2], ("task_exploration_id", ("42",)))
+    TASK_ROW = {"task_id": 42, "status": "done", "exploration_id": 7, "completed_at": "2026-11-19T08:35:20Z",
+                "goal_states": {"met": 2, "open": 1}, "intent_states": {"done": 1, "exhausted": 1}}
+
+    def test_task_state_comes_from_the_product_db(self):
+        # 제품 관리 API는 작업 단건·목표 목록을 중계하지 않는다(목록 307, 단건 403, 2026-11-19 O 진단 회차).
+        self.output = self.BoundedResult(0, json.dumps(self.TASK_ROW).encode() + b"\n", b"")
+        self.assertEqual(self.ports.task_signal("42"), {
+            "status": "done", "completed_at": "2026-11-19T08:35:20Z", "exploration_id": 7, "goals_total": 3, "goals_met": 2,
+            "goal_states": {"met": 2, "open": 1}, "intent_states": {"done": 1, "exhausted": 1}})
+        ((args, _, limit),) = self.bounded
+        self.assertEqual(args[:4], ["exec", "-e", "PGOPTIONS=-c default_transaction_read_only=on", "db1"])
+        self.assertIn("from tasks t where t.id = 42", args[-1])
+        self.assertIn("kind = 'goal'", args[-1])
+        self.assertEqual(limit, 64 * 1024)
+        self.assertEqual(self.ports.task_exploration_id("42"), 7)
+        self.assertEqual(self.driver.calls, [])  # 제품 API는 부르지 않는다
+
+    def test_task_state_refusals(self):
+        bad_rows = {
+            "extra": dict(self.TASK_ROW, name="x"),
+            "status": dict(self.TASK_ROW, status="finished"),
+            "exploration_zero": dict(self.TASK_ROW, exploration_id=0),
+            "exploration_bool": dict(self.TASK_ROW, exploration_id=True),
+            "stamp": dict(self.TASK_ROW, completed_at="2026-11-19 08:35"),
+            "goal_state": dict(self.TASK_ROW, goal_states={"done": 1}),
+            "goal_count": dict(self.TASK_ROW, goal_states={"met": 0}),
+            "intent_state": dict(self.TASK_ROW, intent_states={"finished": 1}),
+            "intent_count": dict(self.TASK_ROW, intent_states={"done": "1"}),
+        }
+        for name, row in bad_rows.items():
+            with self.subTest(name=name):
+                self.output = self.BoundedResult(0, json.dumps(row).encode() + b"\n", b"")
+                with self.assertRaises(ValueError):
+                    self.ports.task_signal("42")
+        row_line = (json.dumps(self.TASK_ROW) + "\n").encode()
+        for name, output in (("missing", b""), ("two", row_line * 2)):
+            with self.subTest(name=name):
+                self.output = self.BoundedResult(0, output, b"")
+                with self.assertRaises(ValueError):
+                    self.ports.task_signal("42")
+        for task_id in ("0", "4/2", "", "1; drop"):
+            with self.subTest(task_id=task_id):
+                self.bounded.clear()
+                with self.assertRaises(ValueError):
+                    self.ports.task_signal(task_id)
+                self.assertEqual(self.bounded, [])  # 조회하지 않는다
 
 
 class TestV3Publishing(PortsCase):

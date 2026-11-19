@@ -86,7 +86,8 @@ SPLIT_TASK_FORMAT = "abc2lab-eval-runner-split-task-v1"
 PRODUCT_END_NAME = "product-end.json"
 # 제품 작업의 끝 신호 칸(B engine-end.json의 작업 칸과 같은 6칸). 제품 회차가 왜 마감했는지(목표 달성 여부)를 가르는 근거다.
 PRODUCT_TASK_END_NAME = "product-task-end.json"
-PRODUCT_TASK_END_FORMAT = "abc2lab-eval-runner-product-task-end-v1"
+# v2: 제품 DB에서 읽는다(상태·완료 시각·탐색 번호·목표/의도 상태별 수). v1(제품 API)은 관리 API가 중계하지 않아 늘 실패였다.
+PRODUCT_TASK_END_FORMAT = "abc2lab-eval-runner-product-task-end-v2"
 TOOL_SURFACE_NAME = "tool-surface.json"
 PRODUCT_FILES_NAME = "product-files.json"
 PRODUCT_FILES_FORMAT = "abc2lab-eval-runner-product-files-v1"
@@ -454,7 +455,7 @@ def _product_cli_usage(names: tuple[str, ...], ports, evidence, state, task_id: 
 def _task_end(ports, task_id: str) -> dict:
     try:
         return {"format": PRODUCT_TASK_END_FORMAT, "task_id": task_id, "task": ports.task_signal(task_id)}
-    except (ProductAPIError, EngineAPIError) as exc:
+    except (ProductAPIError, EngineAPIError, ValueError) as exc:
         code = str(exc)
         return {"format": PRODUCT_TASK_END_FORMAT, "task_id": task_id,
                 "error": code if _TASK_ERROR.fullmatch(code) else "product_task_signal_failed"}
