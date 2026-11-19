@@ -127,15 +127,25 @@ func TestRecorderDirectoryReplacementStopsLaterRecords(t *testing.T) {
 	if err := os.Rename(original, moved); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(moved, original); err != nil {
+	if err := os.Mkdir(original, 0700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(moved, r.filename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(original, r.filename), data, 0600); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		_ = os.Remove(original)
+		_ = os.RemoveAll(original)
 		if err := os.Rename(moved, original); err != nil {
 			t.Error("fixture directory restore failed")
 		}
 	})
+	if _, err := r.snapshot(t.Context()); !errors.Is(err, ErrIntegrity) {
+		t.Fatal("같은 바이트의 다른 디렉터리에서 스냅샷을 읽음", err)
+	}
 	if err := r.Record(t.Context(), testEvent(host.binding.Scope, 1)); !errors.Is(err, ErrRecorderFailed) {
 		t.Fatal("replaced directory accepted", err)
 	}
@@ -145,5 +155,36 @@ func TestRecorderDirectoryReplacementStopsLaterRecords(t *testing.T) {
 	head, err := store.Head(t.Context(), Query{Epoch: host.epoch, Binding: host.binding})
 	if err != nil || head.Revision != 1 {
 		t.Fatal("replaced directory changed current head", err)
+	}
+}
+
+func TestRecorderFileReplacementWithSameBytesRejected(t *testing.T) {
+	r, store, host := recorderFixture(t)
+	path, moved := filepath.Join(r.directory, r.filename), filepath.Join(r.directory, r.filename+".moved")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(path, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Remove(path)
+		if err := os.Rename(moved, path); err != nil {
+			t.Error("fixture file restore failed")
+		}
+	})
+	if _, err := r.snapshot(t.Context()); !errors.Is(err, ErrIntegrity) {
+		t.Fatal("같은 바이트의 다른 파일에서 스냅샷을 읽음", err)
+	}
+	if err := r.Record(t.Context(), testEvent(host.binding.Scope, 1)); !errors.Is(err, ErrRecorderFailed) {
+		t.Fatal("replaced file accepted", err)
+	}
+	head, err := store.Head(t.Context(), Query{Epoch: host.epoch, Binding: host.binding})
+	if err != nil || head.Revision != 1 {
+		t.Fatal("replaced file changed current head", err)
 	}
 }

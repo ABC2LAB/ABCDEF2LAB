@@ -335,11 +335,6 @@ func (r *contextReader) Read(p []byte) (int, error) {
 	}
 	return r.reader.Read(p)
 }
-func clear(p []byte) {
-	for i := range p {
-		p[i] = 0
-	}
-}
 
 // Publish는 현재 head를 확정한 뒤 별도 인증된 Head 읽기까지 성공해야 ACK한다.
 // 실패 후 동일 저널 재시도·송신 허용 여부는 상위 recorder가 fail-closed로 정한다.

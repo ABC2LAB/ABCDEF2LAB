@@ -3,10 +3,12 @@ package e2checkpoint
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -299,5 +301,129 @@ func TestVerifyCurrentRejectsHeadChangeDuringSnapshot(t *testing.T) {
 	}}
 	if _, _, err := store.VerifyCurrent(t.Context(), Query{Epoch: host.epoch, Binding: host.binding}, source); !errors.Is(err, ErrIntegrity) {
 		t.Fatal("head changed during read", err)
+	}
+}
+
+// reSignEarlierEvent는 같은 저널 ID와 감사 키로 이전 사건을 바꾼 다른 유효 체인을 만든다.
+// 새 후보의 MAC 검증만 통과해도 저장된 접두부의 바이트 digest가 달라야 한다.
+func reSignEarlierEvent(t *testing.T, data, key []byte, candidate e2proxy.JournalCheckpoint) ([]byte, e2proxy.JournalCheckpoint) {
+	t.Helper()
+	type record struct {
+		Index    uint64
+		Previous string
+		Event    e2proxy.Event
+	}
+	type line struct {
+		Kind   string
+		Record *record `json:",omitempty"`
+		MAC    string
+	}
+	parts := bytes.Split(bytes.TrimSuffix(data, []byte("\n")), []byte("\n"))
+	if len(parts) != 3 {
+		t.Fatal("fixture needs header and two events")
+	}
+	var header struct{ MAC string }
+	if err := json.Unmarshal(parts[0], &header); err != nil {
+		t.Fatal(err)
+	}
+	previous := header.MAC
+	altered := append(bytes.Clone(parts[0]), '\n')
+	for index, part := range parts[1:] {
+		var row line
+		if err := json.Unmarshal(part, &row); err != nil || row.Record == nil {
+			t.Fatal("invalid fixture row", err)
+		}
+		if index == 0 {
+			row.Record.Event.PolicyRevision = "revision-replaced"
+		}
+		row.Record.Previous = previous
+		encoded, err := json.Marshal(row.Record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mac := hmac.New(sha256.New, key)
+		mac.Write([]byte(e2proxy.JournalVersionV3 + "\x00event\x00"))
+		mac.Write(encoded)
+		row.MAC = hex.EncodeToString(mac.Sum(nil))
+		previous = row.MAC
+		encoded, err = json.Marshal(row)
+		if err != nil {
+			t.Fatal(err)
+		}
+		altered = append(append(altered, encoded...), '\n')
+	}
+	candidate.MAC = previous
+	return altered, candidate
+}
+
+func TestAppendRejectsReSignedEarlierHistory(t *testing.T) {
+	store, host, journal, path := testFixture(t)
+	initial := journal.Checkpoint()
+	if _, err := store.Publish(t.Context(), request(host, Register, 0, e2proxy.JournalCheckpoint{}, initial),
+		bytes.NewReader(snapshot(t, path))); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Record(t.Context(), testEvent(host.binding.Scope, 1)); err != nil {
+		t.Fatal(err)
+	}
+	first := journal.Checkpoint()
+	if _, err := store.Publish(t.Context(), request(host, Append, 1, initial, first),
+		bytes.NewReader(snapshot(t, path))); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Record(t.Context(), testEvent(host.binding.Scope, 2)); err != nil {
+		t.Fatal(err)
+	}
+	original, final := snapshot(t, path), journal.Checkpoint()
+	altered, alteredFinal := reSignEarlierEvent(t, original, host.key, final)
+	if _, err := e2proxy.VerifyJournal(t.Context(), bytes.NewReader(altered), host.key, alteredFinal); err != nil {
+		t.Fatal("독립적으로 유효한 다른 체인이 아님", err)
+	}
+	if _, err := store.Publish(t.Context(), request(host, Append, 2, first, alteredFinal), bytes.NewReader(altered)); !errors.Is(err, ErrConflict) {
+		t.Fatal("게시된 접두부의 다른 체인을 허용", err)
+	}
+	head, err := store.Publish(t.Context(), request(host, Append, 2, first, final), bytes.NewReader(original))
+	if err != nil || head.Revision != 3 || head.Checkpoint != final {
+		t.Fatal("정상 접두부 잇기 실패", err)
+	}
+}
+
+func TestPublishAfterEpochRotationDoesNotCommit(t *testing.T) {
+	store, host, journal, path := testFixture(t)
+	initial := journal.Checkpoint()
+	if _, err := store.Publish(t.Context(), request(host, Register, 0, e2proxy.JournalCheckpoint{}, initial),
+		bytes.NewReader(snapshot(t, path))); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Record(t.Context(), testEvent(host.binding.Scope, 1)); err != nil {
+		t.Fatal(err)
+	}
+	next := journal.Checkpoint()
+	if _, err := store.db.Exec("UPDATE e2_http_audit_epochs SET generation=2 WHERE store_ref=$1", host.epoch.StoreRef); err != nil {
+		t.Fatal(err)
+	}
+	_, err := store.Publish(t.Context(), request(host, Append, 1, initial, next), bytes.NewReader(snapshot(t, path)))
+	var revision int64
+	if qerr := store.db.QueryRow("SELECT revision FROM e2_http_audit_heads WHERE store_ref=$1", host.epoch.StoreRef).Scan(&revision); qerr != nil {
+		t.Fatal(qerr)
+	}
+	if !errors.Is(err, ErrEpoch) || revision != 1 {
+		t.Fatalf("stale epoch publish: err=%v revision=%d", err, revision)
+	}
+}
+
+func TestVerifyCurrentRejectsEpochChangeDuringSnapshot(t *testing.T) {
+	store, host, journal, path := testFixture(t)
+	initial, data := journal.Checkpoint(), snapshot(t, path)
+	if _, err := store.Publish(t.Context(), request(host, Register, 0, e2proxy.JournalCheckpoint{}, initial),
+		bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+	source := &changingReader{reader: bytes.NewReader(data), before: func() error {
+		_, err := store.db.Exec("UPDATE e2_http_audit_epochs SET generation=2 WHERE store_ref=$1", host.epoch.StoreRef)
+		return err
+	}}
+	if _, _, err := store.VerifyCurrent(t.Context(), Query{Epoch: host.epoch, Binding: host.binding}, source); !errors.Is(err, ErrEpoch) {
+		t.Fatal("검증 중 epoch 교체를 허용", err)
 	}
 }
