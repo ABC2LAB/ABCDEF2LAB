@@ -62,12 +62,14 @@ func TestFindingVerdictDetailRequestShape(t *testing.T) {
 	}
 }
 
-// verdictDetailTestEndpoint는 준비 서비스 IPC의 policy_source만 답한다.
+// verdictDetailTestEndpoint는 준비 서비스 IPC의 policy_source만 답한다. confirmation이 nil이고 source가 있으면 결과 파일
+// 없음(present=false)으로 답한다.
 type verdictDetailTestEndpoint struct {
-	source *diagnosisprep.ProductPolicySource
-	reason string
-	err    error
-	calls  []diagnosisprep.Request
+	source       *diagnosisprep.ProductPolicySource
+	confirmation *diagnosisprep.ProductConfirmationState
+	reason       string
+	err          error
+	calls        []diagnosisprep.Request
 }
 
 func (e *verdictDetailTestEndpoint) Call(_ context.Context, req diagnosisprep.Request) (diagnosisprep.Response, error) {
@@ -75,8 +77,12 @@ func (e *verdictDetailTestEndpoint) Call(_ context.Context, req diagnosisprep.Re
 	if e.err != nil {
 		return diagnosisprep.Response{}, e.err
 	}
+	confirmation := e.confirmation
+	if confirmation == nil && e.source != nil && e.reason == "" {
+		confirmation = &diagnosisprep.ProductConfirmationState{}
+	}
 	return diagnosisprep.Response{Version: req.Version, RequestID: req.RequestID,
-		Product: &diagnosisprep.ProductResponse{PolicySource: e.source, Reason: e.reason}}, nil
+		Product: &diagnosisprep.ProductResponse{PolicySource: e.source, Confirmation: confirmation, Reason: e.reason}}, nil
 }
 
 func TestProductPolicySourceReader(t *testing.T) {

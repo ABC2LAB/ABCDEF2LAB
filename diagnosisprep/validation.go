@@ -405,7 +405,10 @@ func ValidateResponse(r Request, response Response) error {
 		if response.Product.PolicySource != nil && (!policySourceOp || response.Product.Reason != "" || !validProductPolicySource(*response.Product.PolicySource)) {
 			return ErrProtocol
 		}
-		if policySourceOp && response.Error == "" && response.Product.Reason == "" && response.Product.PolicySource == nil {
+		if policySourceOp && response.Error == "" && response.Product.Reason == "" && (response.Product.PolicySource == nil || response.Product.Confirmation == nil) {
+			return ErrProtocol
+		}
+		if response.Product.Confirmation != nil && (!policySourceOp || response.Product.Reason != "" || !validProductConfirmationState(*response.Product.Confirmation)) {
 			return ErrProtocol
 		}
 		accounts := response.Product.Accounts

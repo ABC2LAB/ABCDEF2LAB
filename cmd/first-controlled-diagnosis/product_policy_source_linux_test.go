@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/Autumn-27/artex/diagnosisprep"
+	"github.com/Autumn-27/artex/e3contract"
 )
 
 // policySourceBase는 기본 준비 서비스의 상태 조회만 흉내 낸다(회차 소유 확인).
@@ -54,8 +55,9 @@ func TestReadPolicySource(t *testing.T) {
 		t.Fatal("동결본 쓰기")
 	}
 	sum := sha256.Sum256(raw)
-	if got, err := readPolicySource(runs, liveJob); err != nil || !got.Present || got.SHA256 != hex.EncodeToString(sum[:]) {
-		t.Fatalf("동결본 digest: %+v %v", got, err)
+	if got, err := readPolicySource(runs, liveJob); err != nil || !got.Present || got.SHA256 != hex.EncodeToString(sum[:]) ||
+		got.OwnerAccountLabel != "" || got.CrossAccountLabel != "" {
+		t.Fatalf("동결본 digest(선언 모양 아님 → 라벨 없음): %+v %v", got, err)
 	}
 	if os.Chmod(path, 0o644) != nil {
 		t.Fatal("권한 바꾸기")
@@ -119,5 +121,74 @@ func TestProductPolicySourceEndpoint(t *testing.T) {
 				t.Fatalf("회차 소유 확인: %+v", tc.base.calls)
 			}
 		})
+	}
+}
+
+// 계정 라벨은 그 회차의 동결본에서만 읽는다. 대상의 현재 선언을 다른 라벨로 바꿔도 결과가 같다(현재 등록으로 대신하지 않음).
+func TestReadPolicySourceLabelsFromFrozenOnly(t *testing.T) {
+	f := newE3HookFixture(t, true, nil)
+	before, err := readPolicySource(f.runs, liveJob)
+	if err != nil || !before.Present || before.OwnerAccountLabel != "tester-a" || before.CrossAccountLabel != "tester-b" {
+		t.Fatalf("동결본 라벨: %+v %v", before, err)
+	}
+	in := declarationTestInput()
+	in.OwnerAccountLabel, in.CrossAccountLabel = "tester-c", "tester-d"
+	current, err := f.r.lookup("ARTEX", f.target.Origin+"/app", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.r.putDeclaration("ARTEX", current.Target.ID, current.Target.Revision, in); err != nil {
+		t.Fatal(err)
+	}
+	after, err := readPolicySource(f.runs, liveJob)
+	if err != nil || *after != *before {
+		t.Fatalf("현재 선언을 바꾸자 결과가 바뀜: %+v → %+v %v", before, after, err)
+	}
+}
+
+// 확정 단계 결과 파일은 상태·사유만 읽는다. 없으면 present=false, 있는데 읽지 못하거나 계약 밖이면 unreadable이다(없음과 섞지
+// 않는다).
+func TestReadConfirmationState(t *testing.T) {
+	runs := policySourceRuns(t)
+	path := filepath.Join(runs, liveJob, productE3ConfirmationFile)
+	if got := readConfirmationState(runs, liveJob); *got != (diagnosisprep.ProductConfirmationState{}) {
+		t.Fatalf("파일 없음: %+v", got)
+	}
+	write := func(raw string, mode os.FileMode) {
+		t.Helper()
+		_ = os.Remove(path)
+		if os.WriteFile(path, []byte(raw), mode) != nil || os.Chmod(path, mode) != nil {
+			t.Fatal("결과 파일 쓰기")
+		}
+	}
+	version := e3contract.RunResultVersion
+	unreadable := diagnosisprep.ProductConfirmationState{Present: true, Status: diagnosisprep.ConfirmationUnreadable}
+	for name, tc := range map[string]struct {
+		raw  string
+		mode os.FileMode
+		want diagnosisprep.ProductConfirmationState
+	}{
+		"disabled":       {`{"version":"` + version + `","status":"disabled","reason":"declaration_missing","verdicts":[]}`, 0o600, diagnosisprep.ProductConfirmationState{Present: true, Status: "disabled", Reason: "declaration_missing"}},
+		"completed":      {`{"version":"` + version + `","status":"completed","verdicts":[{"resource_type":"note"}]}`, 0o600, diagnosisprep.ProductConfirmationState{Present: true, Status: "completed"}},
+		"broken_json":    {`{"version":`, 0o600, unreadable},
+		"wrong_version":  {`{"version":"other/v9","status":"completed"}`, 0o600, unreadable},
+		"unknown_status": {`{"version":"` + version + `","status":"maybe"}`, 0o600, unreadable},
+		"status_literal": {`{"version":"` + version + `","status":"unreadable"}`, 0o600, unreadable},
+		"bad_reason":     {`{"version":"` + version + `","status":"disabled","reason":"Not Wired"}`, 0o600, unreadable},
+		"world_readable": {`{"version":"` + version + `","status":"completed"}`, 0o644, unreadable},
+	} {
+		t.Run(name, func(t *testing.T) {
+			write(tc.raw, tc.mode)
+			if got := readConfirmationState(runs, liveJob); *got != tc.want {
+				t.Fatalf("%+v, want %+v", got, tc.want)
+			}
+		})
+	}
+	_ = os.Remove(path)
+	if os.Symlink(filepath.Join(runs, "elsewhere"), path) != nil {
+		t.Fatal("링크 만들기")
+	}
+	if got := readConfirmationState(runs, liveJob); *got != unreadable {
+		t.Fatalf("링크 결과 파일: %+v", got)
 	}
 }
