@@ -800,8 +800,10 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     const { goTo } = mount("new");
     expect(await screen.findByText("https://target.example · / · GET")).toBeInTheDocument();
     const summary = screen.getByRole("complementary", { name: "점검 요약" });
-    expect(summary).toHaveTextContent("대상 요청 3회 · 시간 60초 · 모델 요청 2회");
-    expect(summary).toHaveTextContent(`승인 만료${scope.expires_at}`);
+    // 상한 · 승인 만료는 한 줄(사용자 11/19): '요청 n회 · 시간 · 승인 만료 HH:MM'. 로컬 모델이라 비용은 없다
+    const limit = within(summary).getByText("상한").parentElement as HTMLElement;
+    expect(limit.querySelector("small")?.textContent).toMatch(/^요청 3회 · 1분 · 승인 만료 \d\d:\d\d$/);
+    expect(summary).not.toHaveTextContent("모델 요청");
     const start = screen.getByRole("button", { name: "점검 시작" });
     expect(screen.getByRole("complementary", { name: "점검 요약" }).contains(start)).toBe(true);
     expect(start).toBeDisabled();
@@ -865,9 +867,11 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     expect(
       await screen.findByText(/브라우저 탐색은 외부 자원\(CDN 등\)을 외부 호스트에서 받습니다/),
     ).toBeInTheDocument();
-    // 범위 확인 뒤에는 전송 제공자와 승인된 비용 상한을 함께 보인다.
+    // 범위 확인 뒤에는 전송 제공자를, 승인된 비용 상한은 상한 줄에 함께 보인다.
     const ext = screen.getByText("외부 모델로 대상 응답 전송").parentElement as HTMLElement;
-    expect(ext.querySelector("small")).toHaveTextContent(`${externalModel.provider} · 비용 상한 $6`);
+    expect(ext.querySelector("small")).toHaveTextContent(externalModel.provider);
+    const limit = screen.getByText("상한").parentElement as HTMLElement;
+    expect(limit.querySelector("small")).toHaveTextContent(/ · 비용 \$6 · 승인 만료 \d\d:\d\d$/);
   });
   it("로컬 모델(완전 로컬)에서는 외부 CDN 사전고지를 띄우지 않는다", async () => {
     const limits = {
