@@ -45,6 +45,7 @@ class TestFaultStallRecord(unittest.TestCase):
                                              "censored": True, "inflight_at_fault": 0, "engine_terminal_within": False}])
         self.assertEqual((record["max_silence_after_fault_seconds"], record["max_silence_after_fault_censored"]), (359.0, True))
         self.assertEqual(record["max_idle_gap_seconds"], 359.0)
+        self.assertEqual(record["max_idle_gap_before_end_seconds"], 359.0)  # 끝 신호가 없으면 창 끝까지
         self.assertEqual((record["window_seconds"], record["activity_starts"]), (379.0, 4))
 
     def test_fault_followed_by_activity_and_end_signal(self):
@@ -58,6 +59,8 @@ class TestFaultStallRecord(unittest.TestCase):
                          [("rate_limited", 2.0, False, False), ("upstream_cut", 1.5, False, True)])
         self.assertEqual(record["max_silence_after_fault_seconds"], 2.0)
         self.assertEqual(record["max_idle_gap_seconds"], 20.4)  # 마지막 활동 끝(9.6) → 창 끝(30)
+        # 활동 중 최장 무활동은 엔진 끝 상태(9.0)까지만 잰다: 1.2→3.2의 2.0초(끝 뒤 9.6→30은 넣지 않는다)
+        self.assertEqual(record["max_idle_gap_before_end_seconds"], 2.0)
 
     def test_not_faults(self):
         # 호출자 쪽 끊김·게이트웨이 자신의 거부(상태가 429여도)·정상 응답은 제공자 장애가 아니다. 창 밖 장애도 세지 않는다.
@@ -122,6 +125,16 @@ class TestFaultStallRecord(unittest.TestCase):
     def test_empty_round(self):
         record = fault_stall_record([], [], START, stamp(12.5), None)
         self.assertEqual((record["max_idle_gap_seconds"], record["activity_starts"], record["events"]), (12.5, 0, []))
+
+
+
+class TestActiveGap(unittest.TestCase):
+    def test_terminal_outside_the_window_falls_back_to_the_window_end(self):
+        rows = [llm(1, 1.0, 2.0)]
+        within = fault_stall_record(rows, [], START, stamp(30.0), stamp(5.0))
+        after = fault_stall_record(rows, [], START, stamp(30.0), stamp(31.0))
+        self.assertEqual((within["max_idle_gap_before_end_seconds"], within["max_idle_gap_seconds"]), (3.0, 28.0))
+        self.assertEqual(after["max_idle_gap_before_end_seconds"], 28.0)  # 창 밖 끝 상태는 쓰지 않는다
 
 
 if __name__ == "__main__":
