@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from runner_evidence import (
     ATTEMPT_STATES, DRAINED_MARKER, ENGINE_KINDS, ENGINE_LOG, ENGINE_RESPONSE, ENGINE_SENT, LLM_DECISIONS, LLM_LOG,
-    LLM_UPSTREAM_ENDS, LLM_VERIFIED_MARKER,
+    LLM_SEAL_ENDS, LLM_UPSTREAM_ENDS, LLM_VERIFIED_MARKER,
     OBSERVER_LOG, PATH_AUTH_FIELDS, PATH_LOG, PATH_PROFILE, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles,
     diagnostic_rows, ingress_counts, validate_ingress_layout, drain_complete, final_log_consistent, forwarded_by_method, forwarded_count, sequence_complete,
 )
@@ -354,11 +354,20 @@ class TestMeterFiles(unittest.TestCase):
         sampling = dict(ok, seq=4, decision="rejected_sampling", status=400)  # #638 게이트웨이 사유
         self.write(LLM_LOG, "".join(json.dumps(row) + "\n" for row in (ok, cut, rejected, sampling)) + '{"seq": 5, "deci')
         self.assertEqual(gateway.rows(), [ok, cut, rejected, sampling])  # 쓰는 중인 마지막 줄은 다음 읽기로 미룬다
+        # 봉인 취소 행은 봉인 끝 모양(종료 줄 전·후)을 가진다. 칸이 생기기 전 계측기의 행은 칸이 없어도 읽는다(#735 리뷰).
+        sealed = dict(ok, seq=1, decision="cancelled_by_seal", status=200)
+        for end in ("sealed_before_done", "sealed_after_done", None):
+            row = sealed if end is None else dict(sealed, unfinished_end=end)
+            self.write(LLM_LOG, json.dumps(row) + "\n")
+            self.assertEqual(gateway.rows(), [row])
         bad = {
             "unknown_decision": dict(ok, decision="rejected_sampling_x"),
             "end_on_forwarded": dict(ok, unfinished_end="upstream_cut_before_done"),
             "error_without_end": {key: value for key, value in cut.items() if key != "unfinished_end"},
             "unknown_end": dict(cut, unfinished_end="upstream_gone"),
+            "upstream_end_on_seal": dict(ok, decision="cancelled_by_seal", unfinished_end="client_closed_before_done"),
+            "seal_end_on_error": dict(cut, unfinished_end="sealed_before_done"),
+            "seal_end_on_forwarded": dict(ok, unfinished_end="sealed_after_done"),
             "local_time": dict(ok, started_at="2026-11-17T00:00:01"),
             "bool_status": dict(ok, status=True),
             "extra_field": dict(ok, path="/x"),
@@ -393,6 +402,7 @@ class TestMeterFiles(unittest.TestCase):
         self.assertEqual(LLM_DECISIONS, go)
         ends = set(re.findall(r'\n\tend[A-Z]\w* += "(\w+)"', source))
         self.assertEqual(LLM_UPSTREAM_ENDS, ends)
+        self.assertEqual(LLM_SEAL_ENDS, set(re.findall(r'\n\tsealEnd[A-Z]\w* += "(\w+)"', source)))
 
     def test_meter_dir_must_be_private(self):
         os.chmod(self.dir, 0o755)

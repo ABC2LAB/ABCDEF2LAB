@@ -719,7 +719,40 @@ func TestGatewayAbortedStreamStillDrainsAndVerifies(t *testing.T) {
 		t.Fatalf("marker %+v", marker)
 	}
 	rows := h.waitRows(t, 1)
-	if len(rows) != 1 || rows[0].Decision != "cancelled_by_seal" || rows[0].GenerationID != "gen-partial" {
+	if len(rows) != 1 || rows[0].Decision != "cancelled_by_seal" || rows[0].GenerationID != "gen-partial" ||
+		rows[0].UnfinishedEnd != sealEndBeforeDone {
+		t.Fatalf("rows %+v", rows)
+	}
+}
+
+// 종료 이벤트 줄까지 읽은 뒤(EOF 전) 봉인되면 cancelled_by_seal이지만 끝 모양은 종료 줄 뒤다(#735 리뷰). 엔진이 그 출력을
+// 썼을 수 있어 러너는 끊긴 호출 예외로 보지 않는다.
+func TestGatewaySealAfterTheTerminalEventIsMarked(t *testing.T) {
+	h := newHarness(t, backendAPI)
+	h.provider.lookups["gen-partial"] = []int{http.StatusOK}
+	req, err := http.NewRequest(http.MethodPost, h.front.URL+chatPath, strings.NewReader(`{"model":"done-then-hold","stream":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := h.front.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	<-h.provider.slowStarted
+	var got []byte
+	chunk := make([]byte, 64)
+	for !strings.Contains(string(got), "[DONE]") {
+		n, err := resp.Body.Read(chunk)
+		got = append(got, chunk[:n]...)
+		if err != nil {
+			t.Fatalf("read %q: %v", got, err)
+		}
+	}
+	h.sealAndWait(t)
+	rows := h.waitRows(t, 1)
+	if len(rows) != 1 || rows[0].Decision != "cancelled_by_seal" || rows[0].UnfinishedEnd != sealEndAfterDone {
 		t.Fatalf("rows %+v", rows)
 	}
 }
@@ -827,7 +860,8 @@ func TestGatewaySeparatesWhoEndedAnUnfinishedStream(t *testing.T) {
 }
 
 // 정상 완료와 봉인 취소는 종료 모양을 세지 않는다.
-func TestGatewayFinishedAndSealedRowsHaveNoUnfinishedEnd(t *testing.T) {
+// 완료 행에는 끝 모양이 없고, 봉인 취소 행에는 봉인 끝 모양(종료 줄 전·후)만 있다. 위쪽 끊김 집계에는 들지 않는다(#735 리뷰).
+func TestGatewayFinishedRowHasNoEndAndSealedRowHasASealEnd(t *testing.T) {
 	h := newHarness(t, backendAPI)
 	h.provider.lookups["gen-1"] = []int{http.StatusOK}
 	h.provider.lookups["gen-partial"] = []int{http.StatusOK}
@@ -868,7 +902,11 @@ func TestGatewayFinishedAndSealedRowsHaveNoUnfinishedEnd(t *testing.T) {
 		}
 	}
 	for _, row := range h.waitRows(t, 2) {
-		if row.UnfinishedEnd != "" {
+		want := ""
+		if row.Decision == "cancelled_by_seal" {
+			want = sealEndBeforeDone
+		}
+		if row.UnfinishedEnd != want {
 			t.Fatalf("row %+v", row)
 		}
 	}

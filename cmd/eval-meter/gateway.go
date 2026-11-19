@@ -35,6 +35,11 @@ const (
 	endUpstreamCutAfterDone   = "upstream_cut_after_done"
 	endUpstreamCutBeforeDone  = "upstream_cut_before_done"
 
+	// cancelled_by_seal 행이 멈춘 모양: 봉인 전에 위쪽 응답의 종료 이벤트 줄을 읽었는지다(#735 리뷰). 종료 줄을 읽은 뒤
+	// 봉인된 호출은 엔진이 그 출력을 썼을 수 있어, 끊긴 호출 예외는 종료 줄 전 봉인만 받는다.
+	sealEndBeforeDone = "sealed_before_done"
+	sealEndAfterDone  = "sealed_after_done"
+
 	// 엔진 본문의 샘플링 칸·provider 칸 거부 사유. 행 결정은 "rejected_"+사유다.
 	rejectSampling = "sampling"
 	rejectProvider = "provider"
@@ -93,7 +98,7 @@ type llmRow struct {
 	RequestBytes  int64  `json:"request_bytes"`
 	ResponseBytes int64  `json:"response_bytes"`
 	GenerationID  string `json:"generation_id"`
-	UnfinishedEnd string `json:"unfinished_end,omitempty"` // upstream_error 행에만 있다
+	UnfinishedEnd string `json:"unfinished_end,omitempty"` // upstream_error 행(end*)과 cancelled_by_seal 행(sealEnd*)에만 있다
 }
 
 type providerAttempt struct {
@@ -312,6 +317,14 @@ func unfinishedEnd(clientClosed, doneSeen bool) string {
 	}
 }
 
+// sealEnd는 봉인으로 끊긴 호출이 종료 이벤트 줄을 읽기 전에 끊겼는지 남긴다.
+func sealEnd(doneSeen bool) string {
+	if doneSeen {
+		return sealEndAfterDone
+	}
+	return sealEndBeforeDone
+}
+
 // outcome classifies a forwarded request by whether the upstream answer was
 // read to the end, not by when seal arrived: an answer that completed just
 // before seal is still a served generation that must be verified.
@@ -352,6 +365,7 @@ func (g *llmGateway) finish(seq uint64, cancelled bool, row *llmRow, rec *status
 			g.forwarded++
 		case "cancelled_by_seal":
 			g.cancelledBySeal++
+			row.UnfinishedEnd = sealEnd(scan.done)
 		default:
 			g.upstreamErrors++
 			// 봉인 취소는 위 갈래로 빠지므로 여기서 cancelled는 호출자 쪽 취소다.

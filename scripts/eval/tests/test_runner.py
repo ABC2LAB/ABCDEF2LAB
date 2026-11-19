@@ -3448,10 +3448,17 @@ class TestInterruptedCallsB(unittest.TestCase):
         return mutate
 
     def test_seal_cancellation_is_not_invalidating(self):
-        result, _, _, evidence = run(mutate_gateway=self.gateway("cancelled_by_seal"))
+        result, _, _, evidence = run(mutate_gateway=self.gateway("cancelled_by_seal", "sealed_before_done"))
         self.assertEqual(result["status"], COMPLETE, result)
         self.assertEqual((evidence.files["llm-summary.json"]["unverified_interrupted"],
                           evidence.files["llm-summary.json"]["unverified"]), (1, 1))
+
+    def test_seal_after_the_terminal_event_still_invalidates(self):
+        # 종료 이벤트 줄을 읽은 뒤 봉인된 호출은 엔진이 출력을 썼을 수 있다(#735 리뷰). 끝 모양 칸이 없는 이전 행도 예외가 아니다.
+        for end in ("sealed_after_done", None):
+            with self.subTest(end=end):
+                result, _, _, _ = run(mutate_gateway=self.gateway("cancelled_by_seal", end))
+                self.assertEqual((result["status"], result.get("reasons")), (INVALID, ["llm_generation_unverified"]))
 
     def test_other_unverified_calls_still_invalidate(self):
         # B에서 호출자 쪽 끊김은 봉인 탓이라고 기록상 말할 수 없다(엔진은 봉인 때 멈추지 않음)

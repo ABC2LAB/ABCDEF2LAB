@@ -96,7 +96,10 @@ def _check_shape(marker: object) -> None:
 # 끊긴 호출(2026-11-19 사용자 결정, 평가 프로토콜 §6): 회차를 멈출 때 진행 중이던 호출은 응답이 끝나지 않아 제공자 통계가
 # 끝내 생기지 않을 수 있다. 기록으로 증명된 것만 끊긴 호출로 본다. 세 조건이 모두 기록에 있어야 한다:
 # (1) 시작이 정지 신호(B 게이트웨이 봉인) 전, (2) 응답 완료 기록 없음(결정이 forwarded가 아님), (3) 봉인으로 끊김(게이트웨이가
-# 봉인 때 끊은 cancelled_by_seal). 정지와 상관없이 회차 중간에 실패한 호출은 여기에 들지 않는다. O는 보류(아래 함수 주석).
+# 봉인 때 끊은 cancelled_by_seal, 그리고 봉인 전에 종료 이벤트 줄을 읽지 않았음 = 끝 모양 sealed_before_done). 종료 줄을 읽은
+# 뒤 봉인된 호출은 엔진이 출력을 썼을 수 있어 넣지 않는다. 정지와 상관없이 회차 중간에 실패한 호출은 여기에 들지 않는다. O는
+# 보류(아래 함수 주석).
+_SEALED_BEFORE_DONE = "sealed_before_done"
 
 
 def _instant(value: object) -> datetime | None:
@@ -129,7 +132,8 @@ def interrupted_generation_ids(rows: list[dict], stop_at: str, *, product: bool)
         if not isinstance(gid, str) or not gid or started is None or completed is None or not started < stop <= completed:
             continue
         decision = row.get("decision")
-        if decision == "cancelled_by_seal":
+        # 봉인 전에 종료 이벤트 줄을 읽지 않았다는 기록이 있어야 한다(#735 리뷰). 칸이 없는 이전 행은 예외로 보지 않는다.
+        if decision == "cancelled_by_seal" and row.get("unfinished_end") == _SEALED_BEFORE_DONE:
             ids.add(gid)
     return frozenset(ids)
 

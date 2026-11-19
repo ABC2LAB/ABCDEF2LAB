@@ -45,6 +45,8 @@ LLM_DECISIONS = frozenset({"forwarded", "upstream_error", "cancelled_by_seal", "
                            "rejected_sampling", "rejected_provider"})
 LLM_UPSTREAM_ENDS = frozenset({"client_closed_after_done", "client_closed_before_done", "upstream_cut_after_done",
                                "upstream_cut_before_done"})
+# cancelled_by_seal 행의 끝 모양(봉인 전 종료 이벤트 줄을 읽었는지, gateway.go sealEnd*). 칸이 생기기 전 계측기의 행에는 없다.
+LLM_SEAL_ENDS = frozenset({"sealed_before_done", "sealed_after_done"})
 MAX_METER_FILE_BYTES = 64 * 1024 * 1024
 _NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,62}\.json\Z")
 _ENGINE_ROW = frozenset({"seq", "kind", "method", "status", "started_at", "completed_at", "response_bytes", "outcome",
@@ -419,10 +421,13 @@ class GatewayFiles:
             raise EvidenceError("llm_row_invalid") from None
         for row in rows:
             upstream_error = row["decision"] == "upstream_error"
+            sealed = row["decision"] == "cancelled_by_seal"
+            end = row.get("unfinished_end")
             if (row["decision"] not in LLM_DECISIONS or type(row["status"]) is not int
                     or not all(isinstance(row[name], str) and _STAMP.fullmatch(row[name]) for name in ("started_at", "completed_at"))
-                    or ("unfinished_end" in row) != upstream_error
-                    or (upstream_error and row["unfinished_end"] not in LLM_UPSTREAM_ENDS)):
+                    or (upstream_error and end not in LLM_UPSTREAM_ENDS)
+                    or (sealed and end is not None and end not in LLM_SEAL_ENDS)
+                    or (not upstream_error and not sealed and "unfinished_end" in row)):
                 raise EvidenceError("llm_row_invalid")
         return rows
 

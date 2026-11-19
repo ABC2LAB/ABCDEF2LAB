@@ -335,12 +335,20 @@ class TestInterruptedCalls(unittest.TestCase):
     """끊긴 호출(평가 프로토콜 §6, 2026-11-19): 기록으로 증명된 것만. 세 조건이 모두 기록에 있어야 한다."""
 
     def test_b_counts_only_gateway_seal_cancellations_spanning_the_seal(self):
-        rows = [call("cut", "cancelled_by_seal", "2026-11-19T00:00:05Z", "2026-11-19T00:00:11Z"),
-                call("late", "cancelled_by_seal", "2026-11-19T00:00:10.5Z", "2026-11-19T00:00:11Z"),  # 정지 신호 뒤 시작
+        def sealed(gid, started, completed, end="sealed_before_done"):
+            row = call(gid, "cancelled_by_seal", started, completed)
+            if end is not None:
+                row["unfinished_end"] = end
+            return row
+        rows = [sealed("cut", "2026-11-19T00:00:05Z", "2026-11-19T00:00:11Z"),
+                # 종료 이벤트 줄을 읽은 뒤 봉인(엔진이 출력을 썼을 수 있음, #735 리뷰)·끝 모양 칸이 없는 이전 행은 넣지 않는다
+                sealed("after-done", "2026-11-19T00:00:05Z", "2026-11-19T00:00:11Z", "sealed_after_done"),
+                sealed("old-row", "2026-11-19T00:00:05Z", "2026-11-19T00:00:11Z", None),
+                sealed("late", "2026-11-19T00:00:10.5Z", "2026-11-19T00:00:11Z"),  # 정지 신호 뒤 시작
                 call("done", "forwarded", "2026-11-19T00:00:05Z", "2026-11-19T00:00:11Z"),  # 응답 완료 기록
                 call("client", "upstream_error", "2026-11-19T00:00:05Z", "2026-11-19T00:00:11Z", "client_closed_before_done"),
-                call("", "cancelled_by_seal", "2026-11-19T00:00:05Z", "2026-11-19T00:00:11Z"),  # ID 없음
-                call("bad", "cancelled_by_seal", "yesterday", "2026-11-19T00:00:11Z")]  # 시각을 못 읽음
+                sealed("", "2026-11-19T00:00:05Z", "2026-11-19T00:00:11Z"),  # ID 없음
+                sealed("bad", "yesterday", "2026-11-19T00:00:11Z")]  # 시각을 못 읽음
         self.assertEqual(interrupted_generation_ids(rows, STOP, product=False), frozenset({"cut"}))
         self.assertEqual(interrupted_generation_ids(rows, "not-a-time", product=False), frozenset())
 
