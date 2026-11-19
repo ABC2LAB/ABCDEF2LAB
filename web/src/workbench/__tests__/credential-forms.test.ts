@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import { type CredentialFormKind, credentialForms, goDecodeFirstJson, goMarshal } from "../live/credentialForms";
-import { credentialFields, type DeclarationDraft, hasCredentialText, validateDraft } from "../live/declaration";
+import {
+  credentialFields,
+  type DeclarationDraft,
+  draftFieldOf,
+  hasCredentialText,
+  validateDraft,
+} from "../live/declaration";
 
 // 서버 #705 e3contract.CredentialField 는 칸 원문과 함께 이스케이프를 푼 모양(credentialForms)에도 dlp.CredentialText 를 댄다.
 // 아래 기대값은 같은 입력을 Go(e3contract.CredentialField, 칸: 경로=identity.path·read.path_template, json·form=create.body_template,
@@ -113,6 +119,7 @@ describe("credentialFields — 이스케이프로 숨긴 자격도 칸 이름으
           bodyTemplate: "{}",
           markerField: "title",
           idPath: "id",
+          idField: "",
         },
         read: { pathTemplate: "/api/notes/{id}", dataPath: ".", statusPath: "", normalValue: "" },
       },
@@ -160,7 +167,15 @@ describe("본문 틀 크기 상한 — 재귀 검사 전에 막는다(#754 리�
         type: "note",
         sharing: "owner_only",
         ownerOnlyFields: ["title"],
-        create: { path: "/api/notes", method: "POST", bodyKind, bodyTemplate, markerField: "title", idPath: "id" },
+        create: {
+          path: "/api/notes",
+          method: "POST",
+          bodyKind,
+          bodyTemplate,
+          markerField: "title",
+          idPath: "id",
+          idField: "",
+        },
         read: { pathTemplate: "/api/notes/{id}", dataPath: ".", statusPath: "", normalValue: "" },
       },
     ],
@@ -205,5 +220,58 @@ describe("본문 틀 크기 상한 — 재귀 검사 전에 막는다(#754 리�
   it("상한을 넘는 틀은 풀지 않고 원문만 본다(크기 오류가 저장을 막음)", () => {
     const big = `{"a":"tok\\u0065n=1","pad":"${"x".repeat(2100)}"}`;
     expect(credentialForms(big, "json")).toEqual([big]);
+  });
+});
+
+// 계정 역할 라벨(#743): 서버 e3contract.CredentialField는 owner_account_label·cross_account_label을 원문만 본다(plain).
+// 같은 표를 Go 시험 TestCredentialFieldAccountLabels(e3contract/account_roles_test.go)가 쓴다 — 한쪽을 바꾸면 다른 쪽도 맞춘다.
+const LABEL_CASES: [string, boolean][] = [
+  ["tester-a", false],
+  ["vampi-b", false],
+  ["tester-a.session", false],
+  ["sid:1", false],
+  ["tester_secret", false],
+  ["token%3D1", false],
+  ["tester token", false],
+  ["Cookie: a", true],
+  ["cookie:x", true],
+  ["Bearer abc", true],
+  ["Basic eA==", true],
+  ["token=1", true],
+  ["token:abc", true],
+  ["pwd:1", true],
+  ["apikey:1", true],
+  ["Authorization: x", true],
+  ["password=1", true],
+  ["session_id=1", true],
+  ["set-cookie=1", true],
+  ["eyJhbGciOi.eyJzdWIi.sig", true],
+];
+
+describe("credentialFields — 계정 역할 라벨도 서버와 같은 자격 검사(#743)", () => {
+  const withRoles = (owner: string, cross: string): DeclarationDraft => ({
+    identity: { path: "/api/me", subjectIdPath: "id" },
+    types: [],
+    roles: { ownerAccountLabel: owner, crossAccountLabel: cross, accountsSamePrivilege: true },
+  });
+
+  it.each(LABEL_CASES)("%j → 서버 거부=%s", (value, rejected) => {
+    expect(credentialFields(withRoles(value, "tester-b"))).toEqual(rejected ? ["ownerAccountLabel"] : []);
+    expect(credentialFields(withRoles("tester-a", value))).toEqual(rejected ? ["crossAccountLabel"] : []);
+  });
+
+  it("칸 이름은 서버 거부 칸(owner_account_label·cross_account_label)을 화면 칸으로 옮긴 이름과 같다", () => {
+    expect(draftFieldOf("owner_account_label")).toBe("ownerAccountLabel");
+    expect(draftFieldOf("cross_account_label")).toBe("crossAccountLabel");
+  });
+
+  it("저장 전 검사가 라벨 칸을 막고, 문구에 원문을 넣지 않는다", () => {
+    const issue = validateDraft(withRoles("pwd:synthetic", "tester-b")).find((i) => /자격 값 모양/.test(i.message));
+    expect(issue?.field).toBe("ownerAccountLabel");
+    expect(issue?.message).not.toContain("synthetic");
+  });
+
+  it("역할이 없는 선언은 라벨을 보지 않는다", () => {
+    expect(credentialFields({ identity: { path: "/api/me", subjectIdPath: "id" }, types: [] })).toEqual([]);
   });
 });

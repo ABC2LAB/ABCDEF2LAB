@@ -89,6 +89,9 @@ const (
 	ReasonRequestTimeout ProductReason = "product_request_timeout"
 	// ReasonWriteRecordUnavailable은 생성 요청 전에 쓰기 기록을 남기지 못해 보내지 않은 경우다(기록하고 나서 보내기).
 	ReasonWriteRecordUnavailable ProductReason = "product_write_record_unavailable"
+	// ReasonCreateRequestUnavailable은 생성 요청을 만들 수 없어(객체 ID 난수 실패·표식과 겹침, 본문 틀에 표식·ID를 넣을 수
+	// 없음) 보내지 않은 경우다.
+	ReasonCreateRequestUnavailable ProductReason = "product_create_request_unavailable"
 )
 
 // WriteOutcome은 확정 단계 생성 요청이 대상에 남긴 결과다.
@@ -118,6 +121,9 @@ type ConfirmationWrite struct {
 	Ref CallRef `json:"ref,omitzero"`
 	// ObjectIDDigest는 created일 때만 있다.
 	ObjectIDDigest string `json:"object_id_digest,omitempty"`
+	// ObjectID는 요청 본문 칸 ID(선언 create.id_field)일 때 확정 단계가 만들어 보낸 ID다. 보내기 전에 알므로 결과와 관계없이
+	// 남고, 리셋 확인 때 이 ID로 남은 객체를 조회해 볼 수 있다. 비밀이 아니다(표식과 다른 난수). 응답 경로 ID(id_path)면 비어 있다.
+	ObjectID string `json:"object_id,omitempty"`
 }
 
 // Verdict는 자원 종류 하나의 판정 행이다. 값은 oracle.Evaluate(Case, ObservedAt)가 만든 그대로다.

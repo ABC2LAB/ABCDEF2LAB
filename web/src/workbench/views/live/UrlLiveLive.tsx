@@ -6,7 +6,7 @@
 //   + 오른쪽 진행 요약(전송 통제 · 탐색 현황 · 커버리지 · 점검 정보).
 //   서버가 점검 중에 주지 않는 값(진행률 · 남은 시간 · 판정)은 자리도 두지 않는다. 시작 · 경과는 서버 started_at 으로
 //   진행 요약(jobSummary)의 시작 칸에만 보인다(이 카드에는 자리를 새로 두지 않음).
-// 보고서: 판정 집계 · 발견 목록 / 증거 · 감사 + 오른쪽 발견 상세. (우선 조치 칸은 11/17 사용자 요청으로 뺌)
+// 보고서: 판정 집계 · 발견 목록 / 증거 · 요청 기록 + 오른쪽 발견 상세. (우선 조치 칸은 11/17 사용자 요청으로 뺌)
 // 심각도 · 공격 경로 · 지식 그래프 · 계정 비교 · 재현 명령은 서버가 주지 않아 두지 않는다.
 // 판정은 팀 lib(summarizeDiagnosticEntries · diagnosticOutcome)의 분류만 쓰고 화면이 만들지 않는다.
 
@@ -21,7 +21,6 @@ import {
   summarizeDiagnosticEntries,
 } from "@/lib/diagnosis/diagnostic-results";
 import type { RemediationEntry } from "@/lib/diagnosis/remediation";
-import { type RequestApprovalRunState, RUN_COUNT_ROWS } from "@/lib/diagnosis/request-approvals";
 import { entrySeverity, entrySeverityLabel } from "@/lib/diagnosis/severity";
 
 import { SEVL, type SevKey } from "../../data/findings";
@@ -57,7 +56,7 @@ import { flowStageText, MAX_FLOW_PLAN, type WorkflowSnapshot } from "../../live/
 import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
 import { Markdown } from "../../ui/Markdown";
-import { InspHead, InspOpenButton, Isec, Kv, PaneToggle } from "../../ui/parts";
+import { InspHead, InspOpenButton, Isec, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "./approvals";
 import { DiagnosticEntrySections } from "./DiagnosticEntrySections";
@@ -564,7 +563,7 @@ export function UrlLiveLive() {
   }
 
   let sendWaitText = "엔진이 시작되면 나옵니다.";
-  if (job.drain_complete) sendWaitText = "마감된 점검의 전송 기록은 보고서의 증거 · 감사에 있습니다.";
+  if (job.drain_complete) sendWaitText = "마감된 점검의 전송 기록은 보고서의 증거 · 요청 기록에 있습니다.";
   else if (job.state === "unknown" || !verified)
     sendWaitText = "결과 불명인 점검은 전송 상태를 이어 조회하지 않습니다. 상태를 다시 조회하세요.";
   const selected = flow?.endpoints.filter((e) => e.selected).length ?? 0;
@@ -799,19 +798,6 @@ export function UrlLiveLive() {
 
 // ---------- 보고서 ----------
 
-const RUN_PHASE: Readonly<Record<RequestApprovalRunState["phase"], string>> = {
-  prepared: "준비됨 · 실행 전",
-  running: "실행 중",
-  stopping: "중지 처리 중",
-  closed: "종료됨",
-  failed: "실패",
-};
-const RUN_OUTCOME: Readonly<Record<RequestApprovalRunState["outcome"], string>> = {
-  "": "결과 미기록",
-  completed: "정상 종료",
-  cancelled: "취소로 종료",
-  failed: "실패로 종료",
-};
 /** 목록 순서: 확정 → 검토 필요 → 미실행 → 결과 불명 → 정상 대조. */
 export const ORDER: readonly DiagnosticOutcome[] = ["confirmed", "review", "not_executed", "unknown", "negative"];
 /** 심각도 순서. 정보성도 집계하며 미평가와 구분한다. */
@@ -893,81 +879,50 @@ export function prettyEvidence(raw: string): string {
   return maskSecrets(typeof value === "string" ? value : JSON.stringify(value, null, 2));
 }
 
-/** 감사 완결 여부 글. */
-function auditText(e: RequestApprovalRunState["execution"]): string {
-  if (!e) return "—";
-  return e.audit_complete ? "완결" : "미완결";
-}
-
-/** 저장된 실행 종료 기록 (증거 · 감사 탭). */
-function RunRecord({ run }: { run: Poll<DiagnosisRunView> }) {
+/**
+ * 증거 · 요청 기록 탭 맨 위 탐색 · 요청 집계 한 줄 (사용자 11/19). 탭을 누르면 바로 보이고 취약점별 증거는 그 아래로 내려 본다.
+ * - 탐색(탐색 흐름 스냅숏): 발견한 API(찾은 경로 수) · 방문(응답을 받은 경로 수). 아래 '탐색 · 선택 범위'에 따로 두던 두
+ *   칸이 너무 비어 보여 여기로 합쳤다.
+ * - 요청(저장된 실행 기록의 E② 집계 값 그대로): 보낸 요청(대상 전송 시도) · 막은 요청(차단) · 응답 받음 · 결과 불명.
+ *   실행 종료 기록 칸(단계 · 결과 · 마감 · 실행 ID · 감사 · 저장 시각)은 뺐고, 요청 접수 · 허용은 보낸 · 막은 요청과 겹치고
+ *   호출(도구 호출 수)은 뜻이 어려워 두지 않는다. 지원 안 하는 요청은 있을 때만 막은 요청 칸에 적고, 결과 불명은 0이어도
+ *   둔다(절대규칙 5).
+ * 한쪽 기록이 없거나 확인할 수 없으면 그쪽 칸을 두지 않고(0 으로 그리지 않음), 실행 기록 읽기 실패는 다시 시도를 보인다.
+ */
+export function RunCounts({ run }: { run: Poll<DiagnosisRunView> }) {
+  const flow = useUrl((st) => st.flow);
   const d = run.data;
-  let body: ReactNode;
-  if (!d && run.error) body = <ErrorNote error={run.error} onRetry={run.reload} />;
-  else if (!d) body = <LoadingRow />;
-  else if (d.kind === "none") body = <p className={s.empty}>저장된 실행 종료 기록이 없습니다.</p>;
-  else if (d.kind === "not_run") body = <p className={s.empty}>실행 종료 기록 없음 · 준비만 기록됨</p>;
-  else if (d.kind === "unavailable") body = <p className={s.empty}>이 점검의 실행 기록을 확인할 수 없습니다.</p>;
-  else {
-    const r = d.run;
-    const e = r.execution;
-    body = (
-      <>
-        <Kv
-          rows={[
-            ["단계", RUN_PHASE[r.phase] ?? String(r.phase)],
-            ["결과", RUN_OUTCOME[r.outcome] ?? String(r.outcome)],
-            [
-              "마감",
-              [
-                r.drain_complete ? "진행 중 요청 정리 완료" : "진행 중 요청 정리 미완료",
-                r.stop_requested ? "중지 요청됨" : "",
-                r.closure_failed ? "마감 실패" : "",
-              ]
-                .filter(Boolean)
-                .join(" · "),
-            ],
-            [
-              "실행 ID",
-              <span key="run" className={s.mono}>
-                {r.run_ref || "—"}
-              </span>,
-            ],
-            ["감사", auditText(e)],
-            [
-              "저장 시각",
-              d.savedAt ? (
-                <span key="saved" className={s.mono}>
-                  {d.savedAt}
-                </span>
-              ) : (
-                "—"
-              ),
-            ],
-          ]}
-        />
-        {e ? (
-          <div className={s.meters}>
-            {RUN_COUNT_ROWS.map(({ key, label }) => (
-              <div key={key} className={s.cell}>
-                <div className={s.k}>{label}</div>
-                <div className={s.v}>{fmtCount(e.counts[key])}</div>
-              </div>
-            ))}
-          </div>
-        ) : null}
-      </>
+  const e = d?.kind === "run" ? d.run.execution : null;
+  const cells: [string, number, string][] = [];
+  if (flow) cells.push(["발견한 API", flow.counts.found, ""], ["방문", flow.counts.visited, ""]);
+  if (e) {
+    const c = e.counts;
+    cells.push(
+      ["보낸 요청", c.forward_attempted, ""],
+      ["막은 요청", c.denied, c.unsupported ? `지원 안 하는 요청 ${fmtCount(c.unsupported)}` : ""],
+      ["응답 받음", c.responses, ""],
+      ["결과 불명", c.unknown, ""],
     );
   }
+  const failed = !d && run.error ? <ErrorNote error={run.error} onRetry={run.reload} /> : null;
+  if (!cells.length) return failed;
   return (
-    <section className={s.sec} aria-label="실행 종료 기록">
-      <div className={s.sh}>
-        <h2>실행 종료 기록</h2>
-      </div>
-      {body}
-    </section>
+    <>
+      <section className={cx(s.meters, METER_COLS[cells.length])} aria-label="탐색 · 요청 집계">
+        {cells.map(([label, n, sub]) => (
+          <div key={label} className={s.cell}>
+            <div className={s.k}>{label}</div>
+            <div className={s.v}>{fmtCount(n)}</div>
+            {sub ? <div className={s.sub}>{sub}</div> : null}
+          </div>
+        ))}
+      </section>
+      {failed}
+    </>
   );
 }
+/** 칸 수 → 한 줄에 다 들어가는 상자 모양 (4칸은 기본 .meters). */
+const METER_COLS: Readonly<Record<number, string | undefined>> = { 2: s.m2, 6: s.m6 };
 
 type Audience = "shared" | "internal";
 type Format = "html" | "docx";
@@ -1477,7 +1432,7 @@ const R_TABS = [
   ["list", "발견 목록"],
   ["graph", "자산 지식 그래프"],
   ["map", "접근통제 지도"],
-  ["ev", "증거 · 감사"],
+  ["ev", "증거 · 요청 기록"],
   ["doc", "보고서"],
 ] as const;
 type RTab = (typeof R_TABS)[number][0];
@@ -1824,25 +1779,26 @@ export function UrlReportLive() {
               <div
                 role="tabpanel"
                 id="rp-ev"
-                aria-label="증거 · 감사"
+                aria-label="증거 · 요청 기록"
                 hidden={tab !== "ev"}
                 style={{ display: tab === "ev" ? "flex" : undefined, flexDirection: "column", gap: 26 }}
               >
+                {/* 탭을 누르면 탐색 · 요청 집계가 바로 보이고, 취약점별 증거는 아래로(사용자 11/19) */}
+                <RunCounts run={run} />
                 {findings.length ? (
-                  // 시안 증거 목록 (evi): 발견마다 서버가 저장한 증거 버전 · 재현 단계 수
-                  <ul className={s.evi} aria-label="발견별 증거">
-                    {findings.map((e) => (
+                  // 시안 증거 목록 (evi): '취약점 n · 제목 · 판정'만(사용자 11/19 — 증거 버전 · 재현 단계 수는 뺌). 서버 내부
+                  // ID(candidate-n · verdict-n)는 마우스를 올리면. 확정 전(검토 필요 등)을 확정 취약점으로 읽지 않게 판정
+                  // 딱지를 같이 둔다(절대규칙 5, 보고서 문서의 '취약점' 목록과 같은 모양)
+                  <ul className={s.evi} aria-label="취약점별 증거">
+                    {findings.map((e, i) => (
                       <li key={e.entry_id}>
-                        <code>{e.entry_id}</code>
+                        <b title={`ID ${e.entry_id}`}>{`취약점 ${i + 1}`}</b>
                         <span>{maskSecrets(e.title) || e.entry_id}</span>
-                        <span>
-                          {`${e.evidence_version >= 0 ? `증거 버전 ${e.evidence_version}` : "증거 버전 미확인"} · 재현 단계 ${e.steps?.length ?? 0}건`}
-                        </span>
+                        <Outcome o={diagnosticOutcome(e)} />
                       </li>
                     ))}
                   </ul>
                 ) : null}
-                <RunRecord run={run} />
                 <WorkflowReport />
                 <Download taskId={taskId} />
               </div>

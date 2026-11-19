@@ -255,3 +255,65 @@ func TestRunHTTPFormatMustMatchCheckpointVersion(t *testing.T) {
 	args[len(args)-1] = e2proxy.VersionV1
 	assertHTTPFailure(t, args, "audit_input_invalid")
 }
+
+func TestRunHTTPV3WithPriorCheckpoint(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	j, err := e2proxy.CreateJournalV3(dir, "http.journal", verifyTestKey, verifyTestScope(), "fixture-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	prior := j.Checkpoint()
+	ev := e2proxy.Event{Index: 1, Stage: "result", Receipt: e2proxy.Receipt{
+		Version: e2proxy.JournalVersionV3, IntentID: 1, Scope: verifyTestScope(),
+		PolicyRevision: "revision-test", CallRef: "call-test", AttemptID: "0123456789abcdef0123456789abcdef",
+		Sequence: 1, Method: "GET", Decision: "denied", Reason: e2proxy.PolicyDenied, NotSent: true,
+		AuditComplete: true, At: time.Unix(1_700_000_000, 0).UTC(),
+	}}
+	if err := j.Record(t.Context(), ev); err != nil {
+		t.Fatal(err)
+	}
+	head := j.Checkpoint()
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	journalPath, headPath := filepath.Join(dir, "http.journal"), filepath.Join(dir, "head.json")
+	priorPath, keyPath := filepath.Join(dir, "prior.json"), filepath.Join(dir, "audit.key")
+	for path, data := range map[string][]byte{headPath: mustJSON(t, head), priorPath: mustJSON(t, prior), keyPath: verifyTestKey} {
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	args := []string{"--journal", journalPath, "--checkpoint", headPath, "--key-file", keyPath, "--journal-format", e2proxy.JournalVersionV3}
+	both := append(append([]string(nil), args...), "--prior-checkpoint", priorPath)
+	for _, argv := range [][]string{args, both} {
+		code, out, diagnostic := invokeVerify(t, t.Context(), argv...)
+		var summary e2proxy.JournalSummary
+		if err := json.Unmarshal([]byte(out), &summary); code != 0 || err != nil || diagnostic != "" || summary.Checkpoint != head || summary.Events != 1 {
+			t.Fatalf("exit=%d stdout=%q stderr=%q", code, out, diagnostic)
+		}
+	}
+	wrong := head
+	wrong.MAC = strings.Repeat("0", 64)
+	if err := os.WriteFile(priorPath, mustJSON(t, wrong), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assertHTTPFailure(t, both, "audit_integrity_failed")
+	if err := os.Remove(priorPath); err != nil {
+		t.Fatal(err)
+	}
+	assertHTTPFailure(t, both, "audit_input_unavailable")
+	legacyArgs, _ := writeHTTPVerifyFixture(t, verifyTestKey, false)
+	for _, argv := range [][]string{
+		append(legacyArgs, "--prior-checkpoint", priorPath),
+		append(append([]string(nil), args...), "--prior-checkpoint", ""),
+	} {
+		code, out, diagnostic := invokeVerify(t, t.Context(), argv...)
+		if code != 2 || out != "" || diagnostic != usage {
+			t.Fatalf("exit=%d stdout=%q stderr=%q", code, out, diagnostic)
+		}
+	}
+}

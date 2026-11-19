@@ -11,7 +11,9 @@ import (
 type WriteEvent struct {
 	Reserve bool
 	Type    string
-	Write   e3contract.ConfirmationWrite
+	// ObjectID는 Reserve 때 받은 요청 본문 칸 ID다(id_field). 없으면 ID 모름 예약이다.
+	ObjectID string
+	Write    e3contract.ConfirmationWrite
 	// SentBefore는 이 호출 때까지 가짜 E²가 받은 생성 요청 수다(기록하고 나서 보내기 순서 확인용).
 	SentBefore int
 }
@@ -47,14 +49,14 @@ func pick(m map[string]error, typ string) error {
 	return m[""]
 }
 
-func (w *Writes) Reserve(_ context.Context, _ e3contract.RunBinding, resourceType string) error {
+func (w *Writes) Reserve(_ context.Context, _ e3contract.RunBinding, resourceType, objectID string) error {
 	sent := w.creates()
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if err := pick(w.ReserveErr, resourceType); err != nil {
 		return err
 	}
-	w.events = append(w.events, WriteEvent{Reserve: true, Type: resourceType, SentBefore: sent})
+	w.events = append(w.events, WriteEvent{Reserve: true, Type: resourceType, ObjectID: objectID, SentBefore: sent})
 	return nil
 }
 

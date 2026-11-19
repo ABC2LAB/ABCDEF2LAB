@@ -1376,7 +1376,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(facts.querySelector("details")).toBeNull();
   });
 
-  it("마감된 진단은 요청 승인을 다시 부르지 않고 보고서의 실행 종료 기록으로 안내한다", async () => {
+  it("마감된 진단은 요청 승인을 다시 부르지 않고 보고서의 증거 · 요청 기록(전송 집계)로 안내한다", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(completed);
     const { goTo } = mount("live");
@@ -1387,7 +1387,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(card).toHaveTextContent(/완료점검을 마쳤습니다보고서 보기.*결과 저장 확인/);
     expect(screen.getAllByText(/점검을 마쳤습니다/)).toHaveLength(1);
     expect(screen.queryByText("실행을 마감했습니다")).toBeNull();
-    expect(screen.getByText(/마감된 점검의 전송 기록은 보고서의 증거 · 감사에 있습니다/)).toBeInTheDocument();
+    expect(screen.getByText(/마감된 점검의 전송 기록은 보고서의 증거 · 요청 기록에 있습니다/)).toBeInTheDocument();
     expect(a.fetchRequestApprovals).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: /보고서 보기/ }));
     expect(goTo).toHaveBeenCalledWith("report");
@@ -1588,16 +1588,37 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     const mapTab = screen.getByRole("tabpanel", { name: "접근통제 지도" });
     expect(within(mapTab).queryByText(/^연결 전/)).toBeNull();
     expect(within(mapTab).getByRole("button", { name: /접근통제 지도 화면 열기/ })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: "증거 · 감사" }));
-    // 시안 증거 목록: 발견마다 저장된 증거 버전 · 재현 단계 수
-    expect(within(screen.getByRole("list", { name: "발견별 증거" })).getByText("candidate-1")).toBeInTheDocument();
-    // 실행 종료 기록: 실행 ID · 정상 종료 · 감사 · E② 집계는 저장 값 그대로 (증거 · 감사 탭)
-    const record = await screen.findByRole("region", { name: "실행 종료 기록" });
-    expect(within(record).getByText("정상 종료")).toBeInTheDocument();
-    expect(within(record).getByText("run-1")).toBeInTheDocument();
-    expect(within(record).getByText("완결")).toBeInTheDocument();
-    expect(within(within(record).getByText("차단").parentElement as HTMLElement).getByText("2")).toBeInTheDocument();
-    // 모델 사용량은 머리 줄로 옮겨 증거 · 감사 탭에 따로 두지 않는다
+    fireEvent.click(screen.getByRole("tab", { name: "증거 · 요청 기록" }));
+    // 시안 증거 목록: 취약점마다 판정
+    // 서버 내부 ID 대신 '취약점 n'(보고서 문서 번호 순서), ID 는 마우스를 올리면 · 증거 버전 · 재현 단계 수는 두지 않고
+    // 확정 전을 확정으로 읽지 않게 판정 딱지(사용자 11/19, 절대규칙 5)
+    const evList = screen.getByRole("list", { name: "취약점별 증거" });
+    expect(evList).not.toHaveTextContent(/증거 버전|재현 단계/);
+    const first = within(evList).getByText("취약점 1");
+    expect(first).toHaveAttribute("title", "ID candidate-1");
+    // 판정 딱지는 줄 맨 끝(맨 오른쪽 고정은 .evi li > .vd 의 margin-left: auto)
+    expect(first.parentElement?.lastElementChild).toHaveTextContent("검토 필요");
+    expect(within(evList).queryByText("candidate-1")).toBeNull();
+    // 탭을 누르면 전송 집계(요청 접수 · 허용 · 차단 …, 저장 값 그대로)가 맨 위에 바로 보이고 취약점별 증거는 그 아래
+    // (사용자 11/19). 실행 종료 기록 칸(단계 · 결과 · 실행 ID · 감사 · 저장 시각)은 두지 않는다
+    const counts = await screen.findByRole("region", { name: "탐색 · 요청 집계" });
+    const evTab = screen.getByRole("tabpanel", { name: "증거 · 요청 기록" });
+    expect(evTab.firstElementChild).toBe(counts);
+    expect(counts.nextElementSibling).toBe(screen.getByRole("list", { name: "취약점별 증거" }));
+    // 한 줄 네 칸, 자산 탐색과 같은 이름(사용자 11/19): 요청 접수 · 허용 · 호출 · 미지원(0)은 두지 않는다
+    expect([...counts.querySelectorAll(":scope > div > div:first-child")].map((x) => x.textContent)).toEqual([
+      "보낸 요청",
+      "막은 요청",
+      "응답 받음",
+      "결과 불명",
+    ]);
+    // 값은 저장 값 그대로: 보낸 요청 = 대상 전송 시도, 막은 요청 = 차단, 결과 불명은 0이어도 둔다(절대규칙 5)
+    expect(counts.textContent).toBe("보낸 요청1막은 요청2응답 받음1결과 불명0");
+    for (const gone of ["요청 접수", "허용", "호출", "미지원", "지원 안 하는 요청"])
+      expect(within(counts).queryByText(new RegExp(gone))).toBeNull();
+    expect(screen.queryByRole("region", { name: "실행 종료 기록" })).toBeNull();
+    for (const gone of ["정상 종료", "run-1", "완결"]) expect(within(evTab).queryByText(gone)).toBeNull();
+    // 모델 사용량은 머리 줄로 옮겨 증거 · 요청 기록 탭에 따로 두지 않는다
     expect(screen.queryByRole("heading", { name: "모델 사용량" })).toBeNull();
   });
 
@@ -1642,6 +1663,22 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(mapReads()).toBe(2);
     act(() => go("report"));
     await waitFor(() => expect(mapReads()).toBe(3));
+  });
+
+  it("증거 · 요청 기록 전송 집계: 지원 안 하는 요청이 있을 때만 막은 요청 칸에 적는다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    if (RUN_RECORD.kind !== "run" || !RUN_RECORD.run.execution) throw new Error("fixture");
+    const execution = RUN_RECORD.run.execution;
+    a.fetchDiagnosisRun.mockResolvedValue({
+      ...RUN_RECORD,
+      run: { ...RUN_RECORD.run, execution: { ...execution, counts: { ...execution.counts, unsupported: 4 } } },
+    });
+    mount("report");
+    fireEvent.click(await screen.findByRole("tab", { name: "증거 · 요청 기록" }));
+    const counts = await screen.findByRole("region", { name: "탐색 · 요청 집계" });
+    const blocked = within(counts).getByText("막은 요청").parentElement as HTMLElement;
+    expect(blocked).toHaveTextContent(/^막은 요청2지원 안 하는 요청 4$/);
   });
 
   it("오른쪽 발견 상세 머리의 '상세 보기'는 고른 발견의 상세 페이지(왼쪽 카드 · 오른쪽 상태 카드)로 가운데를 바꾸고, '발견 목록으로' 돌아온다", async () => {
@@ -1856,7 +1893,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(writeText.mock.calls[0][0]).not.toMatch(/synthetic-reference-mask|&#/);
   });
 
-  it("보고서 탭(증거 · 감사 옆): 발견마다 위험도 · 판정 · 요약 · 재현 절차(PoC) · 요청·응답을 Markdown 문서 한 장으로, 정상 대조는 뺀다", async () => {
+  it("보고서 탭(증거 · 요청 기록 옆): 발견마다 위험도 · 판정 · 요약 · 재현 절차(PoC) · 요청·응답을 Markdown 문서 한 장으로, 정상 대조는 뺀다", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
     saveHandle();

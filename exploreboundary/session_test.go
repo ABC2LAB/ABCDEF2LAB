@@ -153,6 +153,31 @@ func TestApprovedRequestForwardsToPinnedAddressAndRecordsWithoutValues(t *testin
 	}
 }
 
+func TestEmptyPathIsRecordedAsRoot(t *testing.T) {
+	// 경로 없이 온 요청(절대형 "http://host")은 판정과 기록 모두 "/"다. 기록의 가린 경로가 비면 승인 대상 전달 행이 원자료 계약
+	// (§4.1, 가린 경로 필수)을 어겨 평가 보존 기록이 회차를 무효로 한다(확인 쌍 O 회차 재현).
+	s, _, _ := fixtureSession(t, exploration.ReadOnly, exploration.FullLocal, func(target *Target, _ *Policy) {
+		target.PathPrefixes = []string{"/"}
+		target.ExcludedPrefixes = nil
+	})
+	d, ticket := s.Admit(t.Context(), approved("GET", ""))
+	if !d.Forward || ticket == nil {
+		t.Fatalf("root request was not forwarded: %+v", d)
+	}
+	ticket.Done(Result{Status: 200, Bytes: 5, ResponseReceived: true})
+	// 승인 경로 밖(기본 fixture는 /app)으로 막힌 빈 경로 요청도 같은 값으로 기록한다
+	denied, _, _ := fixtureSession(t, exploration.ReadOnly, exploration.FullLocal, nil)
+	if d, _ := denied.Admit(t.Context(), approved("GET", "")); d.Forward || d.Reason != ReasonOutOfScopePath {
+		t.Fatalf("empty path outside the prefix: %+v", d)
+	}
+	for _, session := range []*Session{s, denied} {
+		records, _ := session.Records()
+		if len(records) != 1 || records[0].PathPattern != "pattern:/" {
+			t.Fatalf("empty path record: %+v", records)
+		}
+	}
+}
+
 func TestApprovedOriginDenials(t *testing.T) {
 	for _, tc := range []struct {
 		name, write, method, path string
