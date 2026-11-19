@@ -1582,10 +1582,11 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     const graphTab = screen.getByRole("tabpanel", { name: "자산 지식 그래프" });
     expect(within(graphTab).queryByText(/^연결 전/)).toBeNull();
     expect(graphTab).toHaveTextContent(/자산 지식 그래프를 불러오는 중|그래프 조회 실패/);
-    // 접근통제 지도 탭은 서버 연결이 없어 '연결 전' (지도 화면 바로가기는 있다)
+    // 접근통제 지도 탭은 이 점검의 저장 지도를 읽는다(그리기·409·경쟁은 report-access-map.test.tsx). '연결 전' 자리는 없고
+    // 지도 화면 바로가기는 있다
     fireEvent.click(screen.getByRole("tab", { name: "접근통제 지도" }));
     const mapTab = screen.getByRole("tabpanel", { name: "접근통제 지도" });
-    expect(within(mapTab).getByRole("note")).toHaveTextContent(/^연결 전/);
+    expect(within(mapTab).queryByText(/^연결 전/)).toBeNull();
     expect(within(mapTab).getByRole("button", { name: /접근통제 지도 화면 열기/ })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: "증거 · 요청 기록" }));
     // 시안 증거 목록: 취약점마다 판정
@@ -1619,6 +1620,49 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     for (const gone of ["정상 종료", "run-1", "완결"]) expect(within(evTab).queryByText(gone)).toBeNull();
     // 모델 사용량은 머리 줄로 옮겨 증거 · 요청 기록 탭에 따로 두지 않는다
     expect(screen.queryByRole("heading", { name: "모델 사용량" })).toBeNull();
+  });
+
+  it("보고서 접근통제 지도 탭은 보고서가 보이고 그 탭일 때만 지도를 읽고, 탭이나 화면을 떠났다 오면 다시 읽는다 (#771 리뷰)", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [candidate(1)] });
+    const mapReads = () =>
+      vi.mocked(teamApi.apiFetch).mock.calls.filter(([path]) => String(path) === "/api/tasks/42/access-map").length;
+    // Workbench 처럼 보고서를 두고 route 로 보였다 숨겼다 한다(보고서 화면 visible = route === "report")
+    let go: (v: View) => void = noop;
+    function Shell() {
+      const [route, setRoute] = useState<View>("report");
+      go = setRoute;
+      return (
+        <ShellContext.Provider value={shellValue({ route, goTo: setRoute })}>
+          <UrlFeeds />
+          <section hidden={route !== "report"}>
+            <ReportByMode />
+          </section>
+        </ShellContext.Provider>
+      );
+    }
+    render(<Shell />);
+    await screen.findByRole("tabpanel", { name: "발견 목록" });
+    // 다른 탭(발견 목록 · 자산 지식 그래프)에서는 지도를 읽지 않는다 — 탭을 무시하면(active={visible}) 여기서 걸린다
+    fireEvent.click(screen.getByRole("tab", { name: "자산 지식 그래프" }));
+    await act(async () => undefined);
+    expect(mapReads()).toBe(0);
+    // 지도 탭으로 가면 한 번
+    fireEvent.click(screen.getByRole("tab", { name: "접근통제 지도" }));
+    await waitFor(() => expect(mapReads()).toBe(1));
+    // 다른 탭에 갔다 돌아오면 새 진입이라 한 번 더
+    fireEvent.click(screen.getByRole("tab", { name: /발견 목록/ }));
+    await act(async () => undefined);
+    expect(mapReads()).toBe(1);
+    fireEvent.click(screen.getByRole("tab", { name: "접근통제 지도" }));
+    await waitFor(() => expect(mapReads()).toBe(2));
+    // 지도 탭에 둔 채 다른 화면으로 가면 읽지 않고, 돌아오면 다시 읽는다 — 화면을 무시하면(active={tab === "map"}) 여기서 걸린다
+    act(() => go("dashboard"));
+    await act(async () => undefined);
+    expect(mapReads()).toBe(2);
+    act(() => go("report"));
+    await waitFor(() => expect(mapReads()).toBe(3));
   });
 
   it("증거 · 요청 기록 전송 집계: 지원 안 하는 요청이 있을 때만 막은 요청 칸에 적는다", async () => {
