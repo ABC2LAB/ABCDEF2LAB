@@ -75,6 +75,15 @@ func newURLDiagnosisManagementHandler(ctx context.Context, pool *sql.DB, keyDir,
 			runtimeBridge.serveProductCandidates(w, r.WithContext(requestContext))
 			return
 		}
+		// 판정 상세 조회는 제품 관리 중계에만 있다(OD10). 제품이 아니면 실행 API로 넘기지 않고 없는 경로로 답한다.
+		if FindingVerdictDetailPath(r) {
+			if runtimeBridge == nil {
+				http.NotFound(w, r)
+				return
+			}
+			runtimeBridge.serveFindingVerdictDetail(w, r.WithContext(requestContext))
+			return
+		}
 		mux.ServeHTTP(w, r.WithContext(requestContext))
 	}), nil
 }

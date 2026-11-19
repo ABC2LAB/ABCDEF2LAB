@@ -348,7 +348,7 @@ class TestParseRunnerConfig(unittest.TestCase):
         payload = runner_config()
         payload["llm_gateway"].update(verify_attempts=60, verify_interval_seconds=5)
         self.reject(payload, "config.run.llm_verify_timeout_seconds: BELOW_LOOKUP_DEADLINE")
-        floor = 5 * 2 + 2 * 30 + 30  # 이 픽스처(5번 × 2초)의 최소 대기
+        floor = 5 * 2 + 2 * 10 + 30  # 이 픽스처(5번 × 2초)의 최소 대기
         for wait, ok in ((floor - 1, False), (floor, True)):
             payload = runner_config()
             payload["run"]["llm_verify_timeout_seconds"] = wait
@@ -370,6 +370,7 @@ class TestParseRunnerConfig(unittest.TestCase):
         self.assertEqual(int(match.group(1)) * 60, MAX_DRAIN_GRACE_SECONDS)
         compose = (Path(__file__).resolve().parents[3] / "deploy/eval/compose.eval.yaml").read_text(encoding="utf-8")
         self.assertIn("- -drain-grace=${EVAL_METER_DRAIN_GRACE:?}", compose)
+        self.assertIn("- -request-cap=${EVAL_METER_REQUEST_CAP:?}", compose)
 
     def test_load_rejects_duplicate_key_and_nonfinite(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -704,6 +705,8 @@ class TestPlanRun(unittest.TestCase):
         self.assertEqual((plan.compose_env["EVAL_LLM_GW_PORT"], plan.compose_env["EVAL_API_FRONT_PORT"]), ("8090", "8091"))
         self.assertEqual(plan.compose_env["EVAL_METER_PORT"], "8080")
         self.assertEqual(plan.compose_env["EVAL_METER_DRAIN_GRACE"], "30s")
+        # 계측기 요청 하드 상한 = 선언 공통 요청 예산(같은 계측기 함수, 2026-11-19 결정)
+        self.assertEqual(plan.compose_env["EVAL_METER_REQUEST_CAP"], str(preflight["ours"]["request_budget"]))
         self.assertEqual(plan.compose_env["ARTEX_LLM_STREAM"], "true")
         no_stream = runner_config()
         no_stream["engine"]["llm_stream"] = False

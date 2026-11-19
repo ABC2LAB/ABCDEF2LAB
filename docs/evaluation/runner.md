@@ -73,7 +73,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `state` | 상태 차이(프로토콜 §8.1·§8.2) 설정. `null`이면 사본을 뜨지 않는다. 객체면 `sqlite_path`(대상 컨테이너 안 SQLite 절대 경로), `signal_tables`(같은 DB에 있는 해결 기록 등 신호 테이블 이름 목록, 상태 차이 판정에서 빼고 건수만 따로), `max_copy_bytes`(사본 하나의 상한), `runtime_roots`(비교할 런타임 디렉터리 절대 경로 목록, 겹치면 거부, 비어도 됨. 각 루트는 실제 디렉터리여야 하고 링크·정규 파일이면 pre에서 무효. 루트 안의 링크는 링크 자체만 비교하고 링크 대상은 보지 않음), `memory`(메모리 저장 읽기, `null`이면 안 읽음. 객체면 `paths`·`count_field`·`max_body_bytes`·`timeout_ms`)를 정확히 받는다. 앱별 값은 여기서만 받는다(Juice Shop v15: `/juice-shop/data/juiceshop.sqlite`, `["Challenges"]`, 주문 PDF가 쌓이는 `/juice-shop/ftp`와 업로드 디렉터리). 요청이나 기동만으로 바뀌는 디렉터리(접근 로그 `logs`, 기동 때 만드는 `i18n`)는 넣지 않는다. `memory.paths`에는 부작용 없음을 확인한 비로그인 GET만 넣는다. 응답의 `count_field` 배열 길이와 본문 지문을 비교한다. Juice Shop v15는 상품별 리뷰 경로가 해당하고(2회 읽기 동일·해결 신호 변화 0 확인), 주문 목록은 비로그인·일반 계정으로 읽을 수 없어(403·500) 주문은 런타임 디렉터리의 PDF 차이로만 본다. 양쪽 회차에 같게 적용한다. pre 사본은 대상 준비 확인 뒤·구간 시작 전에, post 사본은 구간이 닫히고 tmpfs를 잰 뒤에 뜬다(대상 `docker pause`가 Docker 이벤트를 만들기 때문). SQLite 사본은 회차 키(메모리에만)로 행 지문을 뜬 즉시 지우고, 런타임 디렉터리는 호스트에 파일을 만들지 않고 tar에서 바로 지문을 뜬다. 메모리 읽기는 계측기 이미지의 `state-read` 역할을 대상 netns에서 1회 실행한다(구간 밖, loopback만, 권한·마운트 없음, 로그 드라이버 끔). 등록 관측 front를 거치지 않으므로 관측 로그 대조와 섞이지 않는다 |
 | `engine_db.{user,name}`, `tmpfs.{engine_db,engine_data,min_free}`, `health.{interval,timeout,retries}` | 엔진 DB 계정 이름, 회차 메모리 크기 상한과 구간 종료 뒤 남아야 할 최소 공간(두 상한보다 작아야 함), DB healthcheck. `tmpfs` 세 값은 사전검사 `run_storage`(프로파일 v3 환경 지문 입력)와 글자 그대로 같아야 시작한다 |
 | `llm_gateway.generation_path` | api: generation 조회 경로(예: OpenRouter `/api/v1/generation`) |
-| `llm_gateway.verify_attempts`, `verify_interval_seconds` | generation마다 조회 횟수(1~100)와 라운드 사이 간격. 조회는 라운드로 돈다(라운드마다 답이 안 정해진 것만 한 번씩 묻고 라운드 사이에만 쉰다). 전체 조회 시한은 `횟수 × 간격 + 30초`(조회 한 번의 시간 상한)이고, 시한이 지나면 더 묻지 않고 표식을 쓴다. `run.llm_verify_timeout_seconds`는 `횟수 × 간격 + 90초` 이상이어야 한다(아니면 `BELOW_LOOKUP_DEADLINE`) |
+| `llm_gateway.verify_attempts`, `verify_interval_seconds` | generation마다 조회 횟수(1~100)와 라운드 사이 간격. 조회는 라운드로 돈다(라운드마다 답이 안 정해진 것만 한 번씩 묻고 라운드 사이에만 쉰다). 전체 조회 시한은 `횟수 × 간격 + 10초`(조회 한 번의 시간 상한. 막힌 조회는 이 상한에서 끊기고 다음 라운드에서 다시 묻는다)이고, 시한이 지나면 더 묻지 않고 표식을 쓴다. `run.llm_verify_timeout_seconds`는 `횟수 × 간격 + 50초` 이상이어야 한다(아니면 `BELOW_LOOKUP_DEADLINE`) |
 | `llm_gateway.ca_bundle`, `expected_provider_name` | 호스트 CA 묶음 경로, 기대 응답 제공자 표시 이름 |
 | `docker_timeout_seconds`, `probe_timeout_ms` | docker 호출 하나와 부정 연결 점검 하나의 시한 |
 | `host_listen_allowlist` | loopback 밖 호스트 리슨 중 허용할 것. `{"address", "port", "reason"}`, 특정 주소만(0.0.0.0·`::`·loopback 불가), 근거 필수. 기본은 빈 목록 |
@@ -107,7 +107,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 [작업]   새로 로그인 → workers·압축 기준 창 적용 → (engine_rules가 있으면) 규칙 등록·다시 읽어 대조 → engine-rules.json
          → 실행 설정 스냅샷(GET /api/settings·/api/llm, 프록시는 설정 여부로) → workers·엔진 LLM 모델·프록시 대조
          → engine-settings.json → POST /api/tasks(설정의 task, 생성=기동) → task.json
-         요청 예산 또는 시간 예산까지 폴링 → 계측기 seal → drain 확인(유예가 지나도 열린 요청은 계측기가 취소·건수 기록)
+         요청 예산 또는 시간 예산까지 폴링(계측기가 R번째 전달 뒤 새 요청을 바로 거부하므로 폴링 지연은 전달 수에 영향 없음) → 계측기 seal → drain 확인(유예가 지나도 열린 요청은 계측기가 취소·건수 기록)
          → 취소가 있었으면 정착 대기
          LLM 게이트웨이 seal(새 LLM 요청 거부·진행 중 취소 → generation 조회 시작)
 [post]   점검 반복 + pre와 비교(망·주소·컨테이너 교체·재시작) → 부정 연결 점검 → post 스코어보드
@@ -216,7 +216,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   계측기 행으로 §7 무효 조건의 재료를 만든다. 제공자 장애는 위쪽 스트림 끊김(`upstream_error` + `upstream_cut_*`)과 위쪽 429 응답이다
   (호출자 쪽 끊김·게이트웨이 자신의 거부는 아님). 장애마다 그 뒤 첫 활동(모델 호출 시도·두 입구의 대상 요청 시도의 시작)까지의 무활동
   길이, 창 끝까지 활동이 없었는지(`censored`), 그 사이 엔진 끝 신호가 있었는지, 장애 시점에 진행 중이던 요청 수를 남긴다. T 후보 근거로
-  창 전체의 최장 무활동(진행 중인 요청이 하나도 없는 구간)도 남긴다. 창은 작업 생성 요청 직전부터 러너가 계측기를 봉인한 시각까지다.
+  창 전체의 최장 무활동(진행 중인 요청이 하나도 없는 구간)도 남긴다. 엔진이 창 안에서 먼저 끝난 회차는 엔진 끝 상태까지만 잰 활동 중 최장 무활동(`max_idle_gap_before_end_seconds`)도 남긴다(끝 신호가 없거나 창 밖이면 창 끝까지, 2026-11-19 사용자 결정 5). T는 이 값으로 정한다(끝 뒤 남은 시간은 §7 무효 조건(3)에서 빠진다). 창은 작업 생성 요청 직전부터 러너가 계측기를 봉인한 시각까지다.
   T와 무효 비율 상한은 파일럿 기록으로 정해 측정 전에 고정하므로 지금은 판정하지 않는다(`judged: false`, 회차 유효성에 안 씀).
   행이나 시각을 읽지 못해도 회차를 무효로 하지 않고 고정 코드(`error`)만 남긴다. 게이트웨이 행 읽기는 결정·끝 모양 어휘를
   `cmd/eval-meter/gateway.go`와 같게 고정한다(시험이 원문과 대조). 제품(O) 분리 배치 회차도 같은 함수로 `fault-stall.json`을 남긴다(`runner_split_run.product_fault_stall`): 게이트웨이 행 자리에 제품 호출 기록 줄(같은 칸·어휘)을 넣고, 창은 시작 요청 직전부터 계측기 봉인 직후까지다. 호출 기록 완전성(장부 예약 수 = 기록 줄 수)을 확인한 뒤에 만들고, 결과 요약 `fault_stall`에도 싣는다.
@@ -267,6 +267,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 | `observer_count_mismatch` | 관측 로그 건수가 러너 호출 수와 다르거나 거부 기록이 있음 |
 | `meter_path_log_enabled`, `meter_path_log_missing` | 분리 배치가 아닌 `purpose=official` 회차에 계측기 경로 기록(`engine-paths.jsonl`)이 있음, 수용시험·분리 배치 회차에 없음. 계측기 기록 마감 대조(`check_meter_logs`)는 B와 분리 배치 O가 같은 함수·같은 사유다 |
 | `meter_path_log_invalid` | `purpose=browser_acceptance` 회차의 경로 기록이 러너 소유 일반 파일이 아니거나, 꼬리가 잘렸거나, 가림 판(`abc2lab.path-mask/v2`)이 다르거나, 행마다 키 참조가 다르거나, 전달한 요청과 `seq`·메서드가 한 행씩 맞지 않음(봉인 뒤 거부한 요청은 행이 없어야 함) |
+| `meter_request_cap_mismatch`, `meter_request_cap_exceeded` | 계측기 drain 표식의 요청 하드 상한(`request_cap`)이 이 회차 공통 요청 예산과 다르거나(설정이 계측기에 닿지 않음) 상한 수(`rejected_over_cap`)가 없음, 전달 수가 예산을 넘음. B·분리 배치 O 같은 검사(`runner.check_request_cap`)이고, 러너가 compose 변수 `EVAL_METER_REQUEST_CAP`(= 선언 `request_budget`, 1~1,000,000)으로 계측기 `-request-cap`에 넘긴다. 상한으로 거부한 수는 계측기 요약 `rejected_over_cap`에 남는다 |
 | `meter_path_key_mismatch` | `purpose=browser_acceptance` 회차의 경로 행 키 참조가 러너가 실행 전에 확인한 키의 참조와 다름 |
 | `meter_read_failed`, `meter_log_inconsistent` | 계측기 기록 읽기 실패, 순번 누락·건수 불일치(강제 취소 행 수 ≠ drain 마커의 취소 수 포함) |
 | `e2_stub_log_invalid` | `e2.ours_mode=stub` 회차에서 가짜 E² 결정 행(`e2/e2-stub-decisions.jsonl`)이 없거나 형식이 틀림: 개행으로 끝나지 않은 꼬리(잘린 행), fixture 표식 아님, 모르는 결정, 메서드·결정 시각 형식, 발급된 결정에 시도 ID 없음·발급 실패에 ID 있음, ID 중복, 순번 공백 |

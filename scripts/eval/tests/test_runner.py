@@ -133,6 +133,14 @@ class FakeMeter:
         self.path_log = False
         self.path_rows_error = None
         self.path_rows_seen = None
+        # 계측기 요청 하드 상한(-request-cap): 실제 계측기처럼 전달은 예산에서 멈추고 넘친 몫은 상한 거부로 센다.
+        # uncapped는 상한이 안 걸린 계측기, cap_marker는 표식에 적힌 상한 값을 바꿔 보는 시험용이다.
+        self.uncapped = False
+        self.cap_marker = None
+        self.over_cap_rows = None  # 상한 거부 행 수를 표식과 다르게 두는 시험용
+        self.over_cap_marker = None  # 표식의 상한 거부 수를 바꿔 보는 시험용(봉인·drain 둘 다)
+        self.sealed_cap = None  # 봉인 표식의 상한 값만 바꿔 보는 시험용
+        self.sealed_without_over = False  # 봉인 표식에서 상한 거부 수 칸을 빼 보는 시험용
         self.path_key_ref = PATH_KEY_REF
         # 가짜 E²(compose.e2-stub.yaml) 결정 행. 회차가 E²를 기대할 때만 읽는다. 기본은 허용 2·미지원 1이고,
         # 허용 둘의 ID는 계측기 행(engine_rows의 앞 두 요청)에 붙는다.
@@ -142,8 +150,12 @@ class FakeMeter:
         self.e2_error = None
         self.e2_reads = 0
 
-    def _forwarded(self):
+    def _raw(self):
         return self.pre_forwarded if not self.ports.started else min(self.polls * self.per_poll, 10**6)
+
+    def _forwarded(self):
+        raw = self._raw()
+        return raw if not self.ports.started or self.uncapped else min(raw, self.ports.spec.request_budget)
 
     def forwarded(self):
         if self.ports.started:
@@ -176,13 +188,18 @@ class FakeMeter:
         def attempt(i):
             return ({"attempt_id_state": "valid", "attempt_id": ids[i - 1]} if i <= len(ids)
                     else {"attempt_id_state": "absent", "attempt_id": ""})
+        # 상한으로 거부한 행은 실제 계측기처럼 봉인 전 행으로 남는다(drained 표식의 rejected_over_cap과 같은 수)
+        over = 0 if not self.ports.started or self.uncapped else max(0, self._raw() - n)
+        over = over if self.over_cap_rows is None else self.over_cap_rows
         return [{"seq": i, "method": "GET", "kind": "request", "outcome": "completed", "response": "complete",
                  "started_at": FAKE_ROW_AT, "completed_at": FAKE_ROW_AT, **attempt(i)}
                 for i in range(1, n + 1)] + \
-               [{"seq": n + 1, "kind": "rejected", "outcome": "rejected_after_seal", "response": "none",
-                 "started_at": FAKE_ROW_AT, "completed_at": FAKE_ROW_AT, **attempt(n + 1)},
-                {"seq": n + 2, "kind": "rejected", "outcome": "rejected_after_seal", "response": "none",
-                 "started_at": FAKE_ROW_AT, "completed_at": FAKE_ROW_AT, **attempt(n + 2)}]
+               [{"seq": n + i, "kind": "rejected", "outcome": "rejected_over_cap", "response": "none",
+                 "started_at": FAKE_ROW_AT, "completed_at": FAKE_ROW_AT, **attempt(n + i)} for i in range(1, over + 1)] + \
+               [{"seq": n + over + 1, "kind": "rejected", "outcome": "rejected_after_seal", "response": "none",
+                 "started_at": FAKE_ROW_AT, "completed_at": FAKE_ROW_AT, **attempt(n + over + 1)},
+                {"seq": n + over + 2, "kind": "rejected", "outcome": "rejected_after_seal", "response": "none",
+                 "started_at": FAKE_ROW_AT, "completed_at": FAKE_ROW_AT, **attempt(n + over + 2)}]
 
     def observer_rows(self):
         count = self.ports.ready_calls + 2 + self.observer_extra
@@ -194,8 +211,21 @@ class FakeMeter:
             return None
         if name == "engine-drained.json":
             forwarded = self._forwarded() if self.drained_forwarded is None else self.drained_forwarded
-            return dict(self.drained, forwarded_requests=forwarded)
-        return {"role": "engine", "sealed_at": "t"}
+            cap = 0 if self.uncapped else self.ports.spec.request_budget
+            return dict(self.drained, forwarded_requests=forwarded,
+                        request_cap=cap if self.cap_marker is None else self.cap_marker,
+                        rejected_over_cap=self._over_marker())
+        cap = 0 if self.uncapped else self.ports.spec.request_budget
+        # 같은 계측기의 봉인 표식은 drain 표식과 같은 상한 값을 적는다(cap_marker는 두 표식 모두에 적용)
+        cap = cap if self.cap_marker is None else self.cap_marker
+        sealed = {"role": "engine", "sealed_at": "t", "request_cap": cap if self.sealed_cap is None else self.sealed_cap,
+                  "rejected_over_cap": self._over_marker()}
+        if self.sealed_without_over:
+            sealed.pop("rejected_over_cap")
+        return sealed
+
+    def _over_marker(self):
+        return max(0, self._raw() - self._forwarded()) if self.over_cap_marker is None else self.over_cap_marker
 
 
 class FakeGateway:
@@ -1486,16 +1516,67 @@ class TestCompleteRun(unittest.TestCase):
         self.assertLess(elapsed, summary["time_budget_seconds"] + 100)
         self.assertEqual(result["status"], COMPLETE)
 
-    def test_request_budget_overshoot_recorded_not_hidden(self):
+    def test_request_cap_holds_and_over_cap_rejections_are_recorded(self):
+        # 계측기 하드 상한: 몰아 보내도(폴링 사이 35건) 전달은 예산 100에서 멈추고 넘친 5건은 상한 거부로 남는다.
         result, _, _, evidence = run(lambda p, m, c: setattr(m, "per_poll", 35))
         summary = evidence.files["meter-summary.json"]
         self.assertEqual((summary["stop_reason"], summary["forwarded_requests"], summary["request_budget"],
-                          summary["over_budget"]), ("request_budget", 105, 100, 5))
+                          summary["over_budget"], summary["rejected_over_cap"]), ("request_budget", 100, 100, 0, 5))
         self.assertEqual(summary["rejected_after_seal"], 2)
         self.assertEqual(result["meter"], summary)
         # 표로 나가는 메서드별 건수는 계측기 행에서 세고 전달 수와 맞아야 한다(프로토콜 §8.1)
         self.assertEqual(sum(summary["forwarded_by_method"].values()), summary["forwarded_requests"])
-        self.assertEqual(summary["forwarded_by_method"]["GET"], 105)
+        self.assertEqual(summary["forwarded_by_method"]["GET"], 100)
+
+    def test_sealed_marker_must_carry_its_own_over_cap_count(self):
+        # 예산 100·전달 100·상한 거부 행 5·drain 거부 5인데 봉인 표식에 거부 수가 없으면 일치로 보지 않는다(#734 리뷰)
+        result, _, _, _ = run(lambda p, m, c: (setattr(m, "per_poll", 35), setattr(m, "sealed_without_over", True)))
+        self.assertEqual((result["status"], result.get("reasons")), (INVALID, ["meter_log_inconsistent"]))
+        self.assertNotIn("signature", result)
+        self.assertEqual(run(lambda p, m, c: setattr(m, "per_poll", 35))[0]["status"], COMPLETE)
+
+    def test_over_cap_rows_must_match_the_marker(self):
+        # 표식의 상한 거부 수와 실제 거부 행 수가 다르면 마감 대조가 실패한다(#734 리뷰: 끝부분 거부 행이 빠진 기록)
+        result, _, _, _ = run(lambda p, m, c: (setattr(m, "per_poll", 35), setattr(m, "over_cap_rows", 4)))
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["meter_log_inconsistent"]))
+
+    def test_meter_without_the_cap_invalidates_the_round(self):
+        # 상한이 계측기에 닿지 않았거나(표식 0·다른 값) 전달이 예산을 넘었으면 같은 기준에서 끊었다고 말할 수 없다.
+        for mutate, reason in ((lambda p, m, c: setattr(m, "cap_marker", 0), "meter_request_cap_mismatch"),
+                               (lambda p, m, c: setattr(m, "cap_marker", 99), "meter_request_cap_mismatch"),
+                               (lambda p, m, c: (setattr(m, "per_poll", 35), setattr(m, "uncapped", True),
+                                                 setattr(m, "cap_marker", 100)), "meter_request_cap_exceeded")):
+            with self.subTest(reason=reason):
+                result, _, _, _ = run(mutate)
+                self.assertEqual((result["status"], result["reasons"]), (INVALID, [reason]))
+        # 예산 1인 회차에서 표식 상한이 JSON true·1.0이면 값 비교로는 같아 보이지만 정수가 아니다(#734 리뷰)
+        spec = dataclasses.replace(make_spec(), request_budget=1)
+        for marker in (True, 1.0):
+            with self.subTest(marker=marker):
+                result, _, _, _ = run(lambda p, m, c, v=marker: setattr(m, "cap_marker", v), spec=spec)
+                self.assertEqual((result["status"], result.get("reasons")), (INVALID, ["meter_request_cap_mismatch"]))
+        self.assertEqual(run(spec=spec)[0]["status"], COMPLETE)  # 같은 예산의 정상 표식은 통과한다
+
+    def test_markers_and_forwarded_count_must_agree_on_the_cap(self):
+        # 같은 계측기의 봉인·drain 표식은 상한 값이 같아야 하고, 상한 거부가 있으면 전달 수가 상한에 닿았어야 한다(#734 리뷰).
+        cases = {
+            "sealed_cap_differs": lambda p, m, c: setattr(m, "sealed_cap", 0),
+            # 시간 상한으로 끝난 회차(전달 0)인데 상한 거부 행·표식 거부 수가 1
+            "over_cap_without_reaching": lambda p, m, c: (setattr(m, "per_poll", 0), setattr(m, "over_cap_rows", 1),
+                                                         setattr(m, "over_cap_marker", 1)),
+        }
+        for name, mutate in cases.items():
+            with self.subTest(case=name):
+                result, _, _, _ = run(mutate)
+                self.assertEqual((result["status"], result.get("reasons")), (INVALID, ["meter_request_cap_mismatch"]))
+                self.assertNotIn("signature", result)
+        # 봉인 표식만 JSON true인 예산 1 회차도 정수가 아니라 무효다
+        spec = dataclasses.replace(make_spec(), request_budget=1)
+        result, _, _, _ = run(lambda p, m, c: setattr(m, "sealed_cap", True), spec=spec)
+        self.assertEqual((result["status"], result.get("reasons")), (INVALID, ["meter_request_cap_mismatch"]))
+        # 상한에 닿은 뒤의 상한 거부는 정상이다(기본 회차: 전달 = 예산, 넘친 몫은 거부)
+        result, _, meter, _ = run(lambda p, m, c: setattr(m, "per_poll", 35))
+        self.assertEqual(result["status"], COMPLETE, result)
 
     def test_time_budget_stop(self):
         result, _, meter, evidence = run(lambda p, m, c: setattr(m, "per_poll", 0))
