@@ -48,7 +48,8 @@ LLM_UPSTREAM_ENDS = frozenset({"client_closed_after_done", "client_closed_before
 # cancelled_by_seal 행의 끝 모양(봉인 전 종료 이벤트 줄을 읽었는지, gateway.go sealEnd*). 칸이 생기기 전 계측기의 행에는 없다.
 LLM_SEAL_ENDS = frozenset({"sealed_before_done", "sealed_after_done"})
 MAX_METER_FILE_BYTES = 64 * 1024 * 1024
-_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,62}\.json\Z")
+# 근거 파일 이름. 줄 단위 원본(제품 호출 기록 product-calls.jsonl, #735)도 받는다.
+_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,62}\.jsonl?\Z")
 _ENGINE_ROW = frozenset({"seq", "kind", "method", "status", "started_at", "completed_at", "response_bytes", "outcome",
                          "sent", "response", "attempt_id_state", "attempt_id"})
 # 계측기 행의 요청 단계(cmd/eval-meter proxy.go와 같은 값). sent=대상까지 갔는지, response=대상이 답했는지이며
