@@ -220,13 +220,22 @@ class TestE2V3Export(PortsCase):
         self.assertEqual(got, [("eval-r1_product-state", "runs", ("events.jsonl",), "e2v3-journal", 1000, MAX_JOURNAL_BYTES, ("prep-0a1b", "e2")),
                                ("eval-r1_product-state", "runs", ("sealed-head.json",), "e2v3-head", 1000, MAX_HEAD_BYTES, ("prep-0a1b", "e2"))])
 
-    def test_missing_file_is_none_but_cleanup_failure_is_raised(self):
-        from runner_docker import DockerError, HelperCleanupError
-        self.docker.copy_volume_files = mock.Mock(side_effect=DockerError("docker_helper_copy_failed"))
+    def test_only_a_missing_file_is_none_and_runner_failures_are_raised(self):
+        # #785 리뷰: 시간 초과·출력 상한·tar 손상 같은 러너 장애가 '제품이 안 냄'(미수집)으로 가려지면 안 된다.
+        from runner_docker import HELPER_FILE_MISSING, DockerError, HelperCleanupError
+        self.docker.copy_volume_files = mock.Mock(side_effect=DockerError(HELPER_FILE_MISSING))
         self.assertEqual(self.ports.e2_v3_export("prep-0a1b"), (None, None))
-        self.docker.copy_volume_files = mock.Mock(side_effect=HelperCleanupError())
-        with self.assertRaises(HelperCleanupError):
-            self.ports.e2_v3_export("prep-0a1b")
+        self.docker.copies["e2v3-journal"] = {"events.jsonl": b"j"}
+        real = FakeDocker.copy_volume_files.__get__(self.docker)
+        self.docker.copy_volume_files = mock.Mock(side_effect=lambda *a, **k: (real(*a, **k) if a[4] == "e2v3-journal"
+                                                                              else (_ for _ in ()).throw(DockerError(HELPER_FILE_MISSING))))
+        self.assertEqual(self.ports.e2_v3_export("prep-0a1b"), (b"j", None))
+        for error in (DockerError("docker_timeout"), DockerError("docker_copy_too_large"), DockerError("docker_helper_output_invalid"),
+                      DockerError("docker_helper_copy_failed"), HelperCleanupError()):
+            with self.subTest(error=str(error)):
+                self.docker.copy_volume_files = mock.Mock(side_effect=error)
+                with self.assertRaises(DockerError):
+                    self.ports.e2_v3_export("prep-0a1b")
 
     def test_collect_uses_the_protected_key_and_the_configured_verifier(self):
         with mock.patch("runner_split_ports.subprocess_verifier", return_value="verifier") as verifier, \

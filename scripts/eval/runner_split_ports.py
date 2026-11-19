@@ -33,7 +33,7 @@ from runner_llm import PRODUCT_VERIFY_ROLE
 from meter_describe import MAX_DESCRIBE_BYTES, describe_args, parse as describe_parse
 
 METER_DESCRIBE_SECONDS = 30.0
-from runner_docker import Docker, DockerError, HelperCleanupError, client_environment
+from runner_docker import HELPER_FILE_MISSING, Docker, DockerError, HelperCleanupError, client_environment
 from runner_e2v3 import MAX_HEAD_BYTES as E2V3_MAX_HEAD_BYTES, MAX_JOURNAL_BYTES as E2V3_MAX_JOURNAL_BYTES, collect as e2v3_collect
 from e2_collect import subprocess_verifier
 from runner_engine import AdminSecret
@@ -335,8 +335,8 @@ class DockerSplitPorts:
 
     def e2_v3_export(self, draft_id: str) -> tuple[bytes | None, bytes | None]:
         """제품 볼륨에서 E② v3 저널과 봉인된 최종 head를 따로 꺼낸다(상한이 달라서). 위치는 설정값(제품 Host 배선 뒤 확정).
-        꺼내지 못한 파일은 None이다(제품이 안 냈을 수 있고, 도우미는 없는 파일과 읽기 실패를 가르지 못한다 → 통제 대조 미수집).
-        도우미 정리 실패는 보호 볼륨이 잡혀 있을 수 있어 그대로 올린다."""
+        그 파일·디렉터리가 없어서만 실패하면(tar 진단이 '없음'뿐, HELPER_FILE_MISSING) None이다(제품이 안 냄 → 통제 대조 미수집).
+        시간 초과·출력 상한·tar 손상·그 밖의 복사 실패·도우미 정리 실패는 러너 장애라 그대로 올린다(회차 무효, #785 리뷰)."""
         settings = self.split.e2_v3
         subpath = settings.resolved_subpath(draft_id)
         out = []
@@ -344,9 +344,9 @@ class DockerSplitPorts:
                                   ("e2v3-head", settings.head_name, E2V3_MAX_HEAD_BYTES)):
             try:
                 out.append(self._copy(settings.volume, settings.directory, (name,), role, settings.uid, limit, subpath)[name])
-            except HelperCleanupError:
-                raise
-            except DockerError:
+            except DockerError as exc:
+                if isinstance(exc, HelperCleanupError) or str(exc) != HELPER_FILE_MISSING:
+                    raise
                 out.append(None)
         return out[0], out[1]
 

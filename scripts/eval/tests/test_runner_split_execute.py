@@ -203,6 +203,7 @@ class FakePorts:
                                "execution": {"scope": dict(SCOPE), "policy_revision": "v1"}}}
         self.ledger, self.calls_file = LEDGER, CALLS
         self.e2_v3_row = {"format": "abc2lab-eval-e2-v3-collection-v1", "outcome": "uncollected", "reason": "e2_v3_export_unavailable"}
+        self.e2_v3_files = (b"journal", b"head")
         # 제품 활동 표의 Bash 호출 줄(cmd·res·is_error). 기본은 O에 없는 python을 부른 Worker 호출 하나와 보통 호출 하나.
         self.commands = [
             {"cmd": json.dumps({"command": "python -c 'print(1)'"}), "is_error": True,
@@ -376,7 +377,9 @@ class FakePorts:
 
     def e2_v3_export(self, draft_id):
         self._call("e2_v3_export")
-        return b"journal", b"head"
+        if isinstance(self.e2_v3_files, Exception):
+            raise self.e2_v3_files
+        return self.e2_v3_files
 
     def e2_v3_collect(self, journal, head):
         self._call("e2_v3_collect")
@@ -1171,6 +1174,21 @@ class TestE2V3Collection(unittest.TestCase):
         self.assertEqual(result["status"], "complete", result)
         self.assertNotIn("e2_v3_export", ports.calls)
         self.assertNotIn("e2-v3-collection.json", evidence.files)
+
+    def test_order_after_task_end_and_cli_usage_before_down(self):
+        # #785 재상 봇: #780·#782와 같은 자리라 내리기 전 순서를 하나로 고정한다(작업 끝 신호 → CLI 관측 → v3 수집 → 호출 기록).
+        result, ports, _ = run(e2_v3=True, cli_usage_names=("python",))
+        self.assertEqual(result["status"], "complete", result)
+        order = [ports.calls.index(name) for name in ("run_record", "task_signal", "product_commands", "e2_v3_export",
+                                                        "e2_v3_collect", "copy_product_records", "down")]
+        self.assertEqual(order, sorted(order))
+
+    def test_export_failure_invalidates(self):
+        from runner_docker import DockerError
+        result, ports, evidence = run(lambda p: setattr(p, "e2_v3_files", DockerError("docker_timeout")), e2_v3=True)
+        self.assertEqual((result["status"], result["reasons"][0]), ("invalid", "e2_v3_export_failed"), result)
+        self.assertNotIn("e2_v3_collect", ports.calls)
+        self.assertIn("remove_inputs", ports.calls)
 
     def test_runner_side_failure_invalidates_with_its_code(self):
         from runner_e2v3 import E2V3Invalid
