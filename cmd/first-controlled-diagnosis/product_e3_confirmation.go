@@ -10,6 +10,7 @@ import (
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/oracle"
 	"github.com/jackc/pgx/v5/pgconn"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -416,8 +417,7 @@ func productE3Roles(decl e3contract.Declaration, read func() map[string]string) 
 
 // e3RunStartRefusal은 회차 시작 때(모델 단계 전)의 리셋 게이트다(결정 §6.1 (a), 계약 §8). 지금 대상 판에 유효한 선언이 있는
 // 대상만 본다(선언이 없으면 확정 단계가 꺼진 회차라 게이트도 없다). 지난 표식 잔존 점검(결정 §6.1 (b), E² 쪽)은 아직
-// 없어서, ID를 아는 지난 객체가 있는 대상은 리셋을 확인해도 잔존을 모르므로 시작하지 않는다(reset_state_unavailable).
-// 지난 객체가 모두 ID 모름이면 리셋 확인만으로 시작한다(계약 §12).
+// 없어서, 지난 객체가 있으면 ID를 알든 모르든 리셋 확인만으로 시작한다(계약 §12, 사용자 결정 2026-11-20).
 func (r *productTargetRegistry) e3RunStartRefusal(ctx context.Context, rec productTargetRecord, jobID string) e3contract.StartRefusal {
 	if _, active := r.activeDeclaration(rec); !active {
 		return ""
@@ -427,17 +427,44 @@ func (r *productTargetRegistry) e3RunStartRefusal(ctx context.Context, rec produ
 }
 
 // attachRun은 회차를 대상에 묶고 모델 단계 전에 E③ 리셋 게이트를 본다. 대상이 바뀌었으면 target_approval_changed, 게이트가
-// 거절하면 묶음을 풀고 그 사유(e3contract.StartRefusal)를 돌려준다. 호출자는 이 사유로 회차를 실패로 마감한다.
-func (p *productRuntime) attachRun(ctx context.Context, rec productTargetRecord, jobID string, cancel context.CancelFunc) (func(), string) {
+// 거절하면 묶음을 풀고 그 사유(e3contract.StartRefusal)를 확정 단계 결과 파일에 남긴 뒤(runsDir/<job>, 남기지 못해도 로그만)
+// 돌려준다. 호출자는 이 사유로 회차를 실패로 마감한다.
+func (p *productRuntime) attachRun(ctx context.Context, rec productTargetRecord, jobID, runsDir string, cancel context.CancelFunc) (func(), string) {
 	release, err := p.attach(rec, jobID, cancel)
 	if err != nil {
 		return nil, "target_approval_changed"
 	}
 	if refusal := p.targets.e3RunStartRefusal(ctx, rec, jobID); refusal != "" {
 		release()
+		if recordRunStartRefusal(runsDir, jobID, refusal) != nil {
+			log.Printf("[e3-confirmation] 회차 %s 시작 거부 기록 실패: e3_result_unrecorded", jobID)
+		}
 		return nil, string(refusal)
 	}
 	return release, ""
+}
+
+// recordRunStartRefusal은 회차 시작 리셋 게이트가 거절한 회차의 확정 단계 결과(start_refused, 요청 0)를 회차 디렉터리에
+// 남긴다. 거절은 회차 디렉터리를 만들기 전이라 여기서 만든다(이미 있으면 그대로 쓴다). 결과 파일이 이미 있으면 덮어쓰지
+// 않는다.
+func recordRunStartRefusal(runsDir, jobID string, refusal e3contract.StartRefusal) error {
+	if !refusal.Valid() || !managementReference.MatchString(jobID) || filepath.Base(jobID) != jobID || jobID == "." || jobID == ".." {
+		return errPreparation
+	}
+	parent, err := os.OpenRoot(runsDir)
+	if err != nil {
+		return errPreparation
+	}
+	mkdirErr := parent.Mkdir(jobID, 0700)
+	closeErr := parent.Close()
+	if mkdirErr != nil && !errors.Is(mkdirErr, fs.ErrExist) || closeErr != nil {
+		return errPreparation
+	}
+	raw, err := json.Marshal(e3contract.RefusedAtRunStart(refusal))
+	if err != nil {
+		return errPreparation
+	}
+	return writeRunPrivateFile(runsDir, jobID, productE3ConfirmationFile, raw)
 }
 
 // writeRunPrivateFile은 회차 디렉터리(runs/<job>)에 새 파일을 0600으로 한 번만 쓰고(있으면 덮어쓰지 않음) 디렉터리까지

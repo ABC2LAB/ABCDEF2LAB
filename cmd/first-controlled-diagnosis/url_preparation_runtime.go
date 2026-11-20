@@ -209,7 +209,7 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	}
 	if l.productTarget != nil {
 		// 대상에 묶고, 선언이 있는 대상이면 모델 단계 전에 E③ 리셋 게이트를 본다(결정 §6.1). 거절 사유는 회차의 reason_code다.
-		release, refusal := b.product.attachRun(ctx, *l.productTarget, execution.Job.ID, func() { stopTarget(server.ErrFirstDiagnosisTargetEnded) })
+		release, refusal := b.product.attachRun(ctx, *l.productTarget, execution.Job.ID, b.config.RunsDir, func() { stopTarget(server.ErrFirstDiagnosisTargetEnded) })
 		if refusal != "" {
 			return knownFailure(refusal, true)
 		}

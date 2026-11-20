@@ -192,6 +192,13 @@ type RunResult struct {
 	Writes []ConfirmationWrite `json:"writes"`
 }
 
+// RefusedAtRunStart는 서버가 회차 시작 때(모델 단계 전) 리셋 게이트로 회차를 거절했을 때의 확정 단계 결과다. 요청 0건이고
+// 결속·판정·후보·쓰기가 없다. 결과 파일이 없으면 화면·집계가 거절 사유를 모른다(S12 제품 직접 실행, 2026-11-20).
+func RefusedAtRunStart(refusal StartRefusal) RunResult {
+	return RunResult{Version: RunResultVersion, Status: StatusStartRefused, Reason: string(refusal), Verdicts: []Verdict{},
+		Skipped: []SkippedType{}, Candidates: []CandidateConfirmation{}, Writes: []ConfirmationWrite{}}
+}
+
 // LeakingSinks는 sinks 중 표식이 어느 모양으로든 들어 있는 이름들이다. 확정 단계를 돈 뒤 저널·영수증·승인 미리보기·
 // 로그·평가 내보내기를 이것으로 확인한다. 표식이 계약 모양이 아니면 확인할 수 없으므로 "all"을 돌려준다.
 func LeakingSinks(m Marker, sinks map[string][]byte) []string {

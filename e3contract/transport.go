@@ -99,6 +99,10 @@ const (
 	ResidueAbsent  Residue = "absent"
 	ResiduePresent Residue = "present"
 	ResidueUnknown Residue = "unknown"
+	// ResidueNotChecked는 잔존 점검(E² 조회, 결정 §6.1 (b))이 없어 지난 객체를 읽어 보지 않은 경우다. 리셋 확인이 있으면
+	// 시작한다(사용자 결정 2026-11-20). 표식은 회차마다 새 난수라 남은 객체가 다음 회차 판정을 CONFIRMED로 만들 수 없다
+	// (계약 §12). 점검이 있는데 실패하면 ResidueUnknown이고 시작하지 않는다.
+	ResidueNotChecked Residue = "not_checked"
 )
 
 // ResetState는 대상의 지난 확정 단계 쓰기와 리셋 확인 상태다(#596 §6.1 (a)).
@@ -146,6 +150,16 @@ const (
 	RefuseTargetChanged StartRefusal = "target_changed"
 )
 
+// Valid는 정해진 시작 거부 사유인지다.
+func (r StartRefusal) Valid() bool {
+	switch r {
+	case RefuseResetConfirmationMissing, RefusePreviousMarkersPresent, RefuseResetStateUnavailable, RefusePolicySourceUnavailable,
+		RefuseMarkerGenerationFailed, RefuseMarkerRegistrationFailed, RefuseTargetChanged:
+		return true
+	}
+	return false
+}
+
 // CheckRunStart는 지난 회차 쓰기 뒤 리셋 확인과 표식 잔존을 본다. 서버는 회차 시작 때(모델 단계 전) 이것으로 회차를
 // 거절하고, Run은 확정 단계 시작 때 다시 본다. 읽기 실패·모르는 값은 거절이다.
 func CheckRunStart(ctx context.Context, gate ResetGate, binding RunBinding, targetRef string) StartRefusal {
@@ -165,6 +179,9 @@ func CheckRunStart(ctx context.Context, gate ResetGate, binding RunBinding, targ
 	}
 	switch state.Residue {
 	case ResidueAbsent:
+		return ""
+	case ResidueNotChecked:
+		// 지난 쓰기가 있으면 위에서 리셋 확인을 이미 요구했다. 점검하지 않은 잔존은 리셋 확인만으로 시작한다.
 		return ""
 	case ResiduePresent:
 		return RefusePreviousMarkersPresent

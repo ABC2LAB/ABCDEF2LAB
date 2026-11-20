@@ -500,10 +500,14 @@ func (g productResetGate) check(ctx context.Context, binding e3contract.RunBindi
 		state.Residue = e3contract.ResidueAbsent
 		return state, nil
 	}
-	if g.residue != nil {
-		if residue, err := g.residue(ctx, binding, readable); err == nil {
-			state.Residue = residue
-		}
+	if g.residue == nil {
+		// 잔존 점검(E² 조회)이 아직 없다. ID를 아는 객체도 ID 모르는 객체와 같이 리셋 확인에만 기댄다(사용자 결정
+		// 2026-11-20): 그러지 않으면 같은 대상을 두 번째 회차부터 점검할 수 없다. 점검은 측정 뒤 개선(계약 §12).
+		state.Residue = e3contract.ResidueNotChecked
+		return state, nil
+	}
+	if residue, err := g.residue(ctx, binding, readable); err == nil {
+		state.Residue = residue
 	}
 	return state, nil
 }
