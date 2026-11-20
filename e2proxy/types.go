@@ -70,6 +70,12 @@ type E3Verifier interface {
 	Verified(context.Context, e3contract.RunBinding, e3contract.CallRef) (Event, error)
 }
 
+// E3CheckpointVerifier는 E3Verifier와 같고, 독립 Host가 검증에 쓴 현재 head 체크포인트를 함께 돌려준다(E③ 판정 저장 근거,
+// docs/contracts/e3-product-verdict-store.md §2). 이 인터페이스가 없는 검증자는 근거 체크포인트를 주지 못한다.
+type E3CheckpointVerifier interface {
+	VerifiedCheckpoint(context.Context, e3contract.RunBinding, e3contract.CallRef) (Event, JournalCheckpoint, error)
+}
+
 // Rule is privileged input from the trusted approval issuer. A method grant
 // does not assert that an application operation has no side effects.
 // HeaderMode is a transfer-support selection, not an approval or policy digest.

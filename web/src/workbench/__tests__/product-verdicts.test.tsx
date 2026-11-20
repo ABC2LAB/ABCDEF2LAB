@@ -29,12 +29,16 @@ beforeEach(() => vi.resetAllMocks());
 afterEach(cleanup);
 
 describe("parseProductVerdicts", () => {
-  it("서버가 만든 응답 7가지를 모두 받는다", () => {
+  it("서버가 만든 응답 11가지를 모두 받는다", () => {
     expect(Object.keys(cases).sort()).toEqual([
       "disabled_no_labels",
       "empty",
       "mixed_integrity",
       "revisions_differ",
+      "seal_checkpoint_missing",
+      "seal_confirmed",
+      "seal_inclusion_failed",
+      "seal_not_recorded",
       "source_not_found",
       "unreadable",
       "verified",
@@ -53,6 +57,47 @@ describe("parseProductVerdicts", () => {
     expect(
       parseProductVerdicts(cases.revisions_differ, cases.revisions_differ.task_id).policySource?.targetApprovalRevision,
     ).toBeNull();
+  });
+
+  // 봉인 확인(E1, e3-product-verdict-store §7): 서버가 실제로 낸 세 단계를 그대로 받고, 근거 호출이 없는 판정은 null 이다.
+  // 포함 실패는 진위 실패라 값이 숨겨진 행으로 온다.
+  it("서버가 만든 봉인 확인 표시를 받는다", () => {
+    const seals = (name: string) =>
+      parseProductVerdicts(cases[name], cases[name].task_id).items.map((r) => [r.recordStatus, r.evidenceSeal]);
+    expect(seals("seal_confirmed")).toEqual([
+      ["verified", { status: "confirmed", reason: null }],
+      ["verified", null],
+    ]);
+    expect(seals("seal_not_recorded")).toEqual([
+      ["verified", { status: "unconfirmed", reason: "seal_not_recorded" }],
+      ["verified", null],
+    ]);
+    expect(seals("seal_checkpoint_missing")).toEqual([
+      ["verified", { status: "unconfirmed", reason: "evidence_checkpoint_missing" }],
+      ["verified", null],
+    ]);
+    expect(seals("seal_inclusion_failed")).toEqual([
+      ["record_integrity_failed", { status: "inclusion_failed", reason: null }],
+      ["verified", null],
+    ]);
+  });
+
+  it.each([
+    ["근거 없는 판정에 봉인 표시", 1, { status: "confirmed", reason: null }],
+    ["근거 없는 판정에 미확인", 1, { status: "unconfirmed", reason: "seal_not_recorded" }],
+    // 서버는 근거가 있는 판정에 늘 확인됨 · 미확인 중 하나를 준다(null 을 만들 수 없다)
+    ["근거 있는 판정에 null", 0, null],
+  ])("거절: %s", (_name, index, seal) => {
+    const o = clone(cases.seal_confirmed);
+    expect(() => parseProductVerdicts(clone(o), o.task_id)).not.toThrow();
+    (o.items[index] as Json).evidence_seal = seal;
+    let error: unknown = null;
+    try {
+      parseProductVerdicts(o, o.task_id);
+    } catch (e) {
+      error = e;
+    }
+    expect(isProductVerdictsShapeError(error)).toBe(true);
   });
 
   // 하나씩 서버가 만들 수 없는 값으로 바꾼다. 어느 것이든 응답 전체가 거절돼야 한다(일부만 그리지 않음)
@@ -135,8 +180,35 @@ describe("parseProductVerdicts", () => {
     "근거 호출 수 음수": (o) => {
       shown(o).evidence_calls = -1;
     },
-    "봉인 칸(E1 전)": (o) => {
+    "봉인 칸 문자열": (o) => {
       shown(o).evidence_seal = "sealed";
+    },
+    "봉인 모르는 상태": (o) => {
+      shown(o).evidence_seal = { status: "sealed", reason: null };
+    },
+    "봉인 사유 칸 빠짐": (o) => {
+      shown(o).evidence_seal = { status: "confirmed" };
+    },
+    "봉인 모르는 칸": (o) => {
+      shown(o).evidence_seal = { status: "confirmed", reason: null, head: 28 };
+    },
+    "확인됨에 사유": (o) => {
+      shown(o).evidence_seal = { status: "confirmed", reason: "seal_not_recorded" };
+    },
+    "미확인에 사유 없음": (o) => {
+      shown(o).evidence_seal = { status: "unconfirmed", reason: null };
+    },
+    "미확인 모르는 사유": (o) => {
+      shown(o).evidence_seal = { status: "unconfirmed", reason: "io_error" };
+    },
+    "보이는 행에 포함 실패": (o) => {
+      shown(o).evidence_seal = { status: "inclusion_failed", reason: null };
+    },
+    "숨긴 행에 확인됨": (o) => {
+      hidden(o).evidence_seal = { status: "confirmed", reason: null };
+    },
+    "숨긴 행에 미확인": (o) => {
+      hidden(o).evidence_seal = { status: "unconfirmed", reason: "seal_not_recorded" };
     },
     "확정인데 검사 아니오": (o) => {
       (shown(o).checks as Json).identity = "no";
@@ -193,6 +265,40 @@ describe("ProductVerdictReport", () => {
     expect(failed).toHaveTextContent("값 숨김");
     expect(failed).toHaveTextContent("판정 기록 무결성 확인 실패 · 값 숨김");
     expect(failed).not.toHaveTextContent("note");
+  });
+
+  it("봉인 확인 표시: 확인됨 · 미확인은 값과 함께, 포함 실패는 값을 숨기고 그 사유를 보인다", async () => {
+    serve(cases.seal_confirmed);
+    const a = render(<ProductVerdictReport taskId="2" active />);
+    let sec = await screen.findByRole("region", { name: "제품 확정 단계 판정" });
+    await waitFor(() => expect(within(sec).getAllByRole("listitem")).toHaveLength(2));
+    let [first, second] = within(sec).getAllByRole("listitem");
+    expect(first).toHaveTextContent("봉인 확인됨");
+    expect(second).not.toHaveTextContent("봉인");
+    a.unmount();
+    serve(cases.seal_not_recorded);
+    const b = render(<ProductVerdictReport taskId="2" active />);
+    sec = await screen.findByRole("region", { name: "제품 확정 단계 판정" });
+    await waitFor(() => expect(within(sec).getAllByRole("listitem")).toHaveLength(2));
+    [first] = within(sec).getAllByRole("listitem");
+    expect(first).toHaveTextContent("봉인 미확인 · 봉인 확인 기록 없음 · 판정 값은 저장된 그대로");
+    expect(first).toHaveTextContent("document");
+    b.unmount();
+    serve(cases.seal_checkpoint_missing);
+    const c = render(<ProductVerdictReport taskId="2" active />);
+    sec = await screen.findByRole("region", { name: "제품 확정 단계 판정" });
+    await waitFor(() => expect(within(sec).getAllByRole("listitem")).toHaveLength(2));
+    [first] = within(sec).getAllByRole("listitem");
+    expect(first).toHaveTextContent("봉인 미확인 · 근거 체크포인트 없음 · 판정 값은 저장된 그대로");
+    c.unmount();
+    serve(cases.seal_inclusion_failed);
+    render(<ProductVerdictReport taskId="2" active />);
+    sec = await screen.findByRole("region", { name: "제품 확정 단계 판정" });
+    await waitFor(() => expect(within(sec).getAllByRole("listitem")).toHaveLength(2));
+    [first] = within(sec).getAllByRole("listitem");
+    expect(first).toHaveTextContent("값 숨김");
+    expect(first).toHaveTextContent("봉인 포함 실패 · 값 숨김");
+    expect(first).not.toHaveTextContent("document");
   });
 
   it("빈 목록은 '취약점 없음'으로 읽히지 않고, 확정 단계 결과가 없으면 꺼졌다고 하지 않는다", async () => {
@@ -256,6 +362,18 @@ describe("ProductVerdictMap", () => {
     expect(within(table).getAllByRole("row")).toHaveLength(2);
     expect(within(table).getByRole("rowheader", { name: "document" })).toBeInTheDocument();
     expect(screen.getByRole("note")).toHaveTextContent("판정 기록 무결성 확인 실패 · 값 숨김 1건");
+  });
+
+  it("지도 칸도 봉인 미확인을 보이고, 확인됨이면 붙이지 않는다", async () => {
+    serve(cases.seal_not_recorded);
+    const a = render(<ProductVerdictMap taskId="2" active />);
+    let table = await screen.findByRole("table", { name: "자원 종류 × 소유→교차 제품 판정" });
+    expect(within(table).getByRole("row", { name: /document/ })).toHaveTextContent("봉인 미확인");
+    a.unmount();
+    serve(cases.seal_confirmed);
+    render(<ProductVerdictMap taskId="2" active />);
+    table = await screen.findByRole("table", { name: "자원 종류 × 소유→교차 제품 판정" });
+    expect(within(table).getByRole("row", { name: /document/ })).not.toHaveTextContent("봉인");
   });
 
   it("라벨이 없으면 '소유 계정 → 교차 계정', 같은 종류에 판정이 둘이면 고르지 않는다", async () => {

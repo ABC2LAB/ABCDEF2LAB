@@ -100,6 +100,8 @@ type run struct {
 	bindingValid bool
 	// writes는 생성 요청이 대상에 남겼을 수 있는 쓰기다. 진위 실패로 판정을 버려도 남긴다.
 	writes []ConfirmationWrite
+	// objectDigest는 지금 확정 중인 종류의 생성 객체 ID digest다(confirmType 안에서만).
+	objectDigest string
 }
 
 func (r *run) result(status ConfirmationStatus, reason string) RunResult {
@@ -453,6 +455,9 @@ func (r *run) identity(ctx context.Context) (oracle.SubjectContext, ProductReaso
 
 // confirmType은 종류 하나를 생성 → A 조회 → B 교차로 시험한다. 앞 단계가 판정에 쓸 수 없는 결과면 뒤 요청을 보내지 않는다.
 func (r *run) confirmType(ctx context.Context, t TypeDeclaration, subjects oracle.SubjectContext, identityEvidence []CallRef) Verdict {
+	// 이 종류의 판정에만 생성 객체 digest를 싣는다. 다른 종류·종류 밖 판정에 남지 않게 끝나면 지운다.
+	r.objectDigest = ""
+	defer func() { r.objectDigest = "" }()
 	evidence := append([]CallRef(nil), identityEvidence...)
 	facts := unknownFacts()
 	if r.budget {
@@ -496,6 +501,7 @@ func (r *run) confirmType(ctx context.Context, t TypeDeclaration, subjects oracl
 	if created.Normal != oracle.StateYes || created.ObjectIDDigest == "" {
 		return r.verdict(t, subjects, facts, evidence, ReasonCreateFailed)
 	}
+	r.objectDigest = created.ObjectIDDigest
 
 	owner, reason := r.read(ctx, t, RoleOwner, r.in.Owner.Label, created.Ref, objectID)
 	if r.integrity != "" || r.stopped && reason == "" && owner == (Observation{}) {
@@ -672,7 +678,7 @@ func (r *run) verdict(t TypeDeclaration, subjects oracle.SubjectContext, facts o
 	out := oracle.Evaluate(c, observedAt)
 	v := Verdict{ResourceType: t.Type, Value: out.Value, PolicyCheck: out.PolicyCheck, IdentityCheck: out.IdentityCheck,
 		DataCheck: out.DataCheck, OracleReasons: out.ReasonCodes, ProductReasons: []ProductReason{},
-		CandidateRefs: []string{}, Evidence: evidence, ObservedAt: observedAt.UTC(), Case: c}
+		CandidateRefs: []string{}, Evidence: evidence, ObjectIDDigest: r.objectDigest, ObservedAt: observedAt.UTC(), Case: c}
 	if v.Evidence == nil {
 		v.Evidence = []CallRef{}
 	}

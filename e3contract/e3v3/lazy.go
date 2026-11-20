@@ -103,3 +103,32 @@ func (l *LazyE2) Close() {
 		l.bridge.Close()
 	}
 }
+
+// Checkpoint는 독립 Host가 확정 단계 근거를 검증한 현재 head 체크포인트다(E③ 판정 저장 근거, docs/contracts/
+// e3-product-verdict-store.md §2). 같은 회차 저널이라 범위는 결속과 같다.
+type Checkpoint struct {
+	JournalID string
+	Sequence  uint64
+	MAC       string
+}
+
+// CheckpointE2는 Verified와 같고 검증에 쓴 현재 head 체크포인트를 함께 돌려주는 E2다(e2live.Live).
+type CheckpointE2 interface {
+	VerifiedCheckpoint(ctx context.Context, binding e3contract.RunBinding, ref e3contract.CallRef) (Event, Checkpoint, error)
+}
+
+// ErrNoCheckpoint는 브리지가 근거 체크포인트를 주지 못하는 것이다.
+var ErrNoCheckpoint = errors.New("e3v3: 근거 체크포인트를 줄 수 없음")
+
+// VerifiedCheckpoint는 표식 등록으로 만든 브리지에 근거 체크포인트를 묻는다. 브리지가 주지 못하면 ErrNoCheckpoint다.
+func (l *LazyE2) VerifiedCheckpoint(ctx context.Context, binding e3contract.RunBinding, ref e3contract.CallRef) (Event, Checkpoint, error) {
+	bridge, err := l.current()
+	if err != nil {
+		return Event{}, Checkpoint{}, err
+	}
+	withCheckpoint, ok := bridge.(CheckpointE2)
+	if !ok {
+		return Event{}, Checkpoint{}, ErrNoCheckpoint
+	}
+	return withCheckpoint.VerifiedCheckpoint(ctx, binding, ref)
+}
