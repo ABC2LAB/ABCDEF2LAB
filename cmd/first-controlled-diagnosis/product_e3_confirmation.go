@@ -189,12 +189,13 @@ func (c *productE3Confirmation) stoppedDeps(taskID string) (e3contract.Deps, fun
 	return deps, release
 }
 
-// e3HandleExecutionEnded는 E② 연결을 주지 못한 사유가 "이 작업의 실행이 이미 끝남"인지다. 실행기·계정 저장소가 없는 사유
-// (runner_missing·runner_not_local·accounts_missing·runtime_unavailable)는 연결이 없는 판이라 여기 들지 않는다.
+// e3HandleExecutionEnded는 E② 연결을 주지 못한 사유가 "이 작업의 실행이 이미 끝남"인지다. 호스트가 닫히는 중·닫힘
+// (runtime_closing·runtime_closed)도 연결이 있던 판이라 여기 든다(#825 윤재상 봇 리뷰). 실행기·계정 저장소가 없는 사유
+// (runner_missing·runner_not_local·accounts_missing·lease_invalid·runtime_unavailable)는 연결이 없는 판이라 여기 들지 않는다.
 func e3HandleExecutionEnded(reason string) bool {
 	switch reason {
 	case server.E3HandleTaskMissing, server.E3HandleTaskMismatch, server.E3HandleTaskFenced, server.E3HandleLeaseMissing,
-		server.E3HandleExecutionStopped:
+		server.E3HandleExecutionStopped, server.E3HandleRuntimeClosing, server.E3HandleRuntimeClosed:
 		return true
 	}
 	return false
