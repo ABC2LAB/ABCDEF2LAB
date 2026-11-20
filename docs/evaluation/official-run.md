@@ -80,7 +80,7 @@
    cd "$T" && python3 -I -B scripts/eval/env_check.py --config <4절 7번 runner.json(공식 분리 배치 예시를 채운 파일)>
    ```
 
-   - 확인 항목: Docker 서버·클라이언트 판(29.0 이상), 네이티브 dockerd(Docker Desktop 아님), Compose(2.40 이상), Go(go.mod와 같은 판), Python(3.12 이상), OpenSSL(3.0 이상), git, 메모리, Docker 루트의 남은 공간, 실행 중 컨테이너 0개, 허용 목록 밖 리슨 없음, 회차가 쓸 호스트 포트 비어 있음, 분리 배치 대역 겹침 없음, buildx, 기본 이미지를 받을 수 있음.
+   - 확인 항목: Docker 서버·클라이언트 판(29.0 이상), 네이티브 dockerd(Docker Desktop 아님), Compose(2.40 이상), Go(go.mod와 같은 판), Python(3.12 이상), OpenSSL(3.0 이상), git, 메모리, Docker 루트의 남은 공간, 절전·Windows 업데이트(`power`: 전원 연결 때 절전·최대 절전 '안 함', 재부팅을 기다리는 업데이트 없음, 업데이트 일시 중지 중), Docker 자동 업데이트(`docker_updates`: Windows의 Docker Desktop 꺼짐, 이 배포판 dockerd 엔진 패키지 고정 또는 자동 업그레이드 꺼짐), 실행 중 컨테이너 0개, 허용 목록 밖 리슨 없음, 회차가 쓸 호스트 포트 비어 있음, 분리 배치 대역 겹침 없음, buildx, 기본 이미지를 받을 수 있음.
    - 기준값은 위 표의 개발 머신 실측과 레포 설정이다. 메모리·남은 공간 기준은 개발 머신에서 회차를 실제로 돌린 값과 공식 회차 이미지 합계라서 바닥값이다(빌드 캐시·회차 기록은 더 든다).
 2. **다른 일 끄기:** 다른 Claude Code 세션·개발 서버·시연 컨테이너를 끈다. **Docker Desktop을 종료하고 WSL 통합을 끈다.** 통합을 켰다 끄면 WSL dockerd 소켓이 사라지므로 `sudo systemctl restart docker.socket docker`로 되살린다.
 3. **버전·컨테이너·리슨 확인:**
@@ -234,8 +234,23 @@ install -d -m 700 /srv/abc2lab-eval /srv/abc2lab-eval-keys "$SESSION" "$SESSION/
 
 **운영 규칙: 측정 PC가 멈추지 않게(2026-11-20 사용자).**
 - 세션 전 3절 환경 점검의 `power` 항목이 PASS여야 한다. 전원 연결(AC) 때 절전(`STANDBYIDLE`)·최대 절전(`HIBERNATEIDLE`)이 '안 함'(0)이다. 측정은 전원을 연결한 채로 한다(배터리 값은 사유에만 나온다).
-- 측정 구간 동안 PC를 덮거나(덮개 동작이 절전이면), 로그아웃·재시작·Windows 업데이트 재부팅을 하지 않는다. 업데이트는 세션 전에 끝내거나 사용 시간에 걸리지 않게 미룬다.
+- 측정 구간 동안 PC를 덮거나(덮개 동작이 절전이면), 로그아웃·재시작·Windows 업데이트 재부팅을 하지 않는다.
+- **측정 날은 Windows 업데이트를 일시 중지한다**(설정 > Windows 업데이트 > 업데이트 일시 중지, 세션이 끝난 뒤까지). 재부팅을 기다리는 업데이트가 있으면 세션 전에 재부팅으로 끝낸다. `power` 항목이 재부팅 대기 표시(Windows 업데이트 `RebootRequired`·구성 요소 서비스 `RebootPending`)와 일시 중지 만료 시각을 읽어 본다(2026-11-20 사용자).
 - 화면 잠금은 WSL·Docker를 멈추지 않지만, 잠금 뒤 절전으로 이어지는 설정이면 위 절전 '안 함'으로 막힌다. 세션 기록에 `power` 줄을 그대로 옮긴다.
+
+**운영 규칙: 측정 중 Docker가 스스로 업데이트·재시작하지 않게(2026-11-20 사용자).**
+- 이 PC의 엔진은 WSL 배포판의 dockerd(`docker.io`·`containerd`·`runc`)다. Ubuntu 자동 보안 업데이트(`unattended-upgrades`, 매일 `apt-daily-upgrade.timer`)가 켜져 있고 세 패키지는 보안 저장소에 있다. 측정 중에 업데이트되면 패키지 스크립트가 dockerd·containerd를 다시 띄워 도는 회차의 컨테이너가 멈춘다.
+- 세션 전에 고정하고, 세션이 끝나면 푼다.
+
+  ```bash
+  sudo apt-mark hold docker.io containerd runc      # 세션 전
+  sudo apt-mark unhold docker.io containerd runc    # 세션 끝난 뒤(보안 업데이트를 미루지 않게)
+  ```
+
+- Windows의 Docker Desktop은 종료한다(3절 2번). 스스로 업데이트·재시작하고, WSL 통합이 켜지면 이 배포판의 Docker 소켓을 가져간다(2026-11-02 이 PC에서 겪음). `docker_updates` 항목이 Docker Desktop 프로세스와 엔진 패키지 고정을 본다.
+
+**운영 규칙: 관찰자는 화면을 읽기만 한다(2026-11-20 사용자).**
+- O 회차를 제품 화면으로 지켜볼 수 있다. 화면에서는 읽기만 하고, 일시정지·재개·중지·승인·거부·설정 저장·대상 등록처럼 제품 상태를 바꾸는 조작을 하지 않는다. 조작이 회차에 들어가면 B와 같은 조건이 깨진다.
 
 ```bash
 cd "$T"
