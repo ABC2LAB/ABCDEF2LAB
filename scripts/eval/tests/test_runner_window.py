@@ -66,7 +66,7 @@ class TestPerServiceHealthchecks(unittest.TestCase):
 
     PREP, PG = "p" * 64, "q" * 64
     RUN2 = dict(RUN, **{"p" * 64: "preparation", "q" * 64: "postgres"})
-    CHECKS = {"preparation": "test -S /p/ipc/preparation.sock", "postgres": "pg_isready -U postgres -d abc2lab"}
+    CHECKS = {"preparation": "test -S /p/ipc/preparation.sock", "postgres": "pg_isready -h 127.0.0.1 -U postgres -d abc2lab"}
 
     def judge(self, events, checks=None):
         return judge_events(events, START, NET, self.RUN2, SEALABLE, frozenset(), frozenset(), True,
