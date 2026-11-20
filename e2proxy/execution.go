@@ -43,18 +43,21 @@ type compiledRule struct {
 }
 type Execution struct {
 	// passwords는 호스트가 등록한 비밀번호다. 일반 제어 비밀과 응답 처리 의미를 분리한다.
-	passwords      [][]byte
-	issued         map[string]bool
-	intents        map[int64]struct{}
-	intentGate     chan struct{}
-	mu             sync.Mutex
-	recordMu       sync.Mutex
-	ctx            context.Context
-	cancel         context.CancelFunc
-	cfg            Config
-	rules          []compiledRule
-	calls          map[string]*Call
-	e3Admitted     uint64
+	passwords  [][]byte
+	issued     map[string]bool
+	intents    map[int64]struct{}
+	intentGate chan struct{}
+	mu         sync.Mutex
+	recordMu   sync.Mutex
+	ctx        context.Context
+	cancel     context.CancelFunc
+	cfg        Config
+	rules      []compiledRule
+	calls      map[string]*Call
+	e3Admitted uint64
+	// e3ShareOpen은 확정 몫이 열렸는지다(OpenE3Share). 열리기 전에는 확정 단계 밖 요청이 예산의 마지막 확정 몫만큼을 쓰지
+	// 못한다(계약 §7.1 "모델 단계는 그 몫을 뺀 범위에서 돈다").
+	e3ShareOpen    bool
 	e3Created      map[e3contract.CallRef]string
 	callOrder      []*Call
 	events         []Event
@@ -808,17 +811,60 @@ func (e *Execution) Policy() PolicyView {
 
 // BudgetRemaining is an observation of the existing shared grant, never send
 // permission. Reading zero must not cancel already reserved in-flight work.
+// 확정 몫이 열리기 전에는 떼어 둔 확정 몫을 뺀 값이다. 모델 단계가 그 몫을 남겨 둔 채 예산 소진으로 마감하게 한다.
 func (e *Execution) BudgetRemaining() (uint64, error) {
 	if e == nil {
 		return 0, ErrConfig
 	}
 	e.mu.Lock()
 	shared := e.cfg.Budget
+	held := e.e3ShareHeldLocked()
 	e.mu.Unlock()
 	if shared.Ledger == nil {
 		return 0, ErrConfig
 	}
-	return shared.Ledger.Remaining(shared.Key, shared.Binding, time.Now())
+	remaining, err := shared.Ledger.Remaining(shared.Key, shared.Binding, time.Now())
+	if err != nil {
+		return 0, err
+	}
+	if remaining <= held {
+		return 0, nil
+	}
+	return remaining - held, nil
+}
+
+// OpenE3Share는 확정 단계가 실제로 요청을 시작할 때 떼어 둔 확정 몫을 연다. 그 뒤로는 확정 단계의 다시 로그인(인증 준비
+// 경로)과 E③ 프로그램 요청이 그 몫을 쓴다. 감독자는 모델 활동이 모두 끝난 뒤에만 확정 단계를 부르므로, 연 뒤에 모델
+// 단계 요청이 몫을 가져가지 않는다. 몫이 0이면 아무 것도 바뀌지 않는다.
+func (e *Execution) OpenE3Share() {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	e.e3ShareOpen = true
+	e.mu.Unlock()
+}
+
+// e3ShareHeldLocked는 아직 열리지 않은 확정 몫 가운데 E③ 프로그램 요청이 쓰지 않은 수다. e.mu를 잡고 부른다.
+func (e *Execution) e3ShareHeldLocked() uint64 {
+	if e.e3ShareOpen || e.e3Admitted >= e.cfg.E3ConfirmationRequests {
+		return 0
+	}
+	return e.cfg.E3ConfirmationRequests - e.e3Admitted
+}
+
+// e3ShareAvailableLocked는 확정 단계 밖 요청 하나가 떼어 둔 확정 몫을 건드리지 않고 예산을 예약할 수 있는지다. e.mu를
+// 잡고 부른다. 예산을 읽지 못하면 뒤의 예약(Reserve)이 같은 이유로 거부하므로 여기서는 막지 않는다.
+func (e *Execution) e3ShareAvailableLocked() bool {
+	held := e.e3ShareHeldLocked()
+	if held == 0 || e.cfg.Budget.Ledger == nil {
+		return true
+	}
+	remaining, err := e.cfg.Budget.Ledger.Remaining(e.cfg.Budget.Key, e.cfg.Budget.Binding, time.Now())
+	if err != nil {
+		return true
+	}
+	return remaining > held
 }
 
 func (e *Execution) Calls() []CallResult {
@@ -1424,6 +1470,9 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 		reason = AttemptLimit
 	}
 	if reason == Complete && e3 != nil && e.e3Admitted >= e.cfg.E3ConfirmationRequests {
+		reason = BudgetExhausted
+	}
+	if reason == Complete && e3 == nil && !e.e3ShareAvailableLocked() {
 		reason = BudgetExhausted
 	}
 	if reason == Complete {
