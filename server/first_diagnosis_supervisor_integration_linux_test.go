@@ -655,6 +655,20 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	// 훅은 감독자 begin을 부르지 않아 감독자 흐름은 그대로다.
 	var goalE3Calls int
 	var goalE3State string
+	// 시간 상한 마감(유예 뒤 진행 중 작업 취소)에서도 확정 단계 훅 때 E② 실행이 살아 있어야 한다. 2026-11-20 실제 모델
+	// VAmPI 회차는 시간 상한 마감에서 유예 끝 취소가 E② 작업을 먼저 닫아(task_fenced) 확정 단계가 not_wired였다.
+	var timeE3Calls int
+	var timeE3Reason string
+	if mode == "time-budget" {
+		if err := supervisor.SetE3Confirmation(FirstDiagnosisE3Hooks{Stopped: stopRecord, Run: func(hookCtx context.Context, taskID string, _ func()) error {
+			timeE3Calls++
+			exec, _, reason := runtime.E3HandleReason(taskID)
+			timeE3Reason = fmt.Sprintf("handle=%q exec=%v ctx=%v", reason, exec != nil, hookCtx.Err() == nil)
+			return nil
+		}}); err != nil {
+			t.Fatal("시간 상한 E③ 확정 단계 훅 설정 실패", err)
+		}
+	}
 	if mode == "goal-met-after-work" {
 		if err := supervisor.SetE3Confirmation(FirstDiagnosisE3Hooks{Stopped: stopRecord, Run: func(hookCtx context.Context, taskID string, _ func()) error {
 			goalE3Calls++
@@ -1090,6 +1104,9 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		return
 	}
 	if mode == "time-budget" {
+		if timeE3Calls != 1 || timeE3Reason != `handle="" exec=true ctx=true` {
+			t.Fatalf("시간 상한 마감의 확정 단계 훅 때 E② 연결: 호출 %d %s", timeE3Calls, timeE3Reason)
+		}
 		result := supervisor.RunResult()
 		entered, exited := false, false
 		select {

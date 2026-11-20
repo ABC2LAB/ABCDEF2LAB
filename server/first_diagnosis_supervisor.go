@@ -726,7 +726,8 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 			if timeClosing && !timeStopped && !now.Before(drainUntil) && server.engine.inflightCount(taskID) > 0 {
 				// 유예 안에 끝나지 않은 작업은 엔진 정리 순서의 마지막 단계처럼 멈춘다. 그 intent는 exhausted(미완료)로 남는다.
 				timeStopped = true
-				server.engine.cancelExec(taskID, agent.AbortSettleDrainTimeout)
+				// E②는 여기서 닫지 않는다(AbortTimeBudgetDrain): 아래 마감에서 E③ 확정 단계 뒤에 닫는다.
+				server.engine.cancelExec(taskID, agent.AbortTimeBudgetDrain)
 			}
 		}
 		intentState := ""

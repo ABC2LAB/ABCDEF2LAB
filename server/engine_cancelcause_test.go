@@ -129,6 +129,7 @@ func TestSettleDrainAndGoalMetCausesAreDistinct(t *testing.T) {
 		code  string
 	}{
 		{agent.AbortSettleDrainTimeout, "settle_drain_timeout"},
+		{agent.AbortTimeBudgetDrain, "time_budget_drain_timeout"},
 		{agent.AbortGoalMet, "goal_met"},
 	} {
 		e := NewEngine(nil)
@@ -213,5 +214,33 @@ func TestBootstrapAdmissionClearsQueuedPauseBarrier(t *testing.T) {
 	s.startAdmittedTask(task, "bootstrap")
 	if e.IsPaused(task.ID) {
 		t.Fatal("bootstrap admission left the queued task behind the pause barrier")
+	}
+}
+
+// 목표 달성·시간 상한 마감 유예 끝 취소는 E② 작업을 닫지 않는다(감독자가 E③ 확정 단계 뒤에 닫는다). 엔진 자체 기한의
+// 정리(settle_drain_timeout)·그 밖의 취소는 지금처럼 바로 닫는다(2026-11-20 실제 모델 VAmPI 회차: 시간 상한 마감에서
+// 확정 단계가 task_fenced로 꺼짐).
+func TestCancelExecFencesE2HTTPExceptBeforeConfirmation(t *testing.T) {
+	for _, tc := range []struct {
+		cause  *agent.AbortCause
+		fenced bool
+	}{
+		{agent.AbortGoalMet, false},
+		{agent.AbortTimeBudgetDrain, false},
+		{agent.AbortSettleDrainTimeout, true},
+		{agent.AbortPausedByUser, true},
+		{agent.AbortTaskDeleted, true},
+	} {
+		cancelled := false
+		task := &e2HTTPRuntimeTask{id: "t1", cancel: func() { cancelled = true }}
+		e := NewEngine(nil)
+		e.e2HTTP = &E2HTTPRuntime{task: task}
+		e.cancelExec("t1", tc.cause)
+		task.mu.Lock()
+		closed := task.closed
+		task.mu.Unlock()
+		if closed != tc.fenced || cancelled != tc.fenced {
+			t.Fatalf("%s: E② 작업 닫힘 %v(문맥 취소 %v), 원함 %v", tc.cause.Code, closed, cancelled, tc.fenced)
+		}
 	}
 }

@@ -206,7 +206,7 @@ func TestTerminalRecordActivityCarriesDisplayText(t *testing.T) {
 func TestAbortCausesAreWellFormed(t *testing.T) {
 	all := []*AbortCause{
 		AbortPausedByUser, AbortPausedByOrchestrator, AbortTaskDeleted, AbortPausedOnReload,
-		AbortGoalMet, AbortSettleDrainTimeout, AbortKilledByPlanner, AbortWorkPausedByUser,
+		AbortGoalMet, AbortSettleDrainTimeout, AbortTimeBudgetDrain, AbortKilledByPlanner, AbortWorkPausedByUser,
 		AbortWorkCancelledByUser, AbortWorkFinished, AbortPausedRaceGuard,
 		AbortChatStoppedByUser, AbortChatPausedWithTask, AbortChatTurnFinished,
 		AbortShutdown, AbortRunHardTimeout,

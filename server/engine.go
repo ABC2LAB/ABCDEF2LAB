@@ -320,11 +320,12 @@ func (e *Engine) StopTask(taskID string) {
 // planner.Plan / worker.Execute), if present. Shared by Pause and the settle
 // sequence's hard-drain backstop.
 func (e *Engine) cancelExec(taskID string, cause error) {
-	// 목표 달성 취소는 Worker·Planner 실행만 멈춘다. E② 작업은 감독자가 E③ 확정 단계 뒤·drain 전에 직접 닫는다
-	// (FirstDiagnosisSupervisor: e3-confirmation → fence). 여기서 닫으면 작업 문맥이 끊겨 E② 실행도 같이 끝나, 목표
-	// 달성으로 끝나는 회차의 확정 단계가 늘 not_wired였다(#805 뒤 실제 제품 합성 회차). 새 송신은 그동안에도 열리지
-	// 않는다: 취소된 Worker 문맥은 PrepareWork에서 거부되고, 작업이 done이라 새 intent를 받지 않는다.
-	if e.e2HTTP != nil && !errors.Is(cause, agent.AbortGoalMet) {
+	// 목표 달성 취소와 시간 상한 마감 유예 끝 취소는 Worker·Planner 실행만 멈춘다. E② 작업은 감독자가 E③ 확정 단계
+	// 뒤·drain 전에 직접 닫는다(FirstDiagnosisSupervisor: e3-confirmation → fence). 여기서 닫으면 작업 문맥이 끊겨 E②
+	// 실행도 같이 끝나, 그렇게 끝나는 회차의 확정 단계가 늘 not_wired(task_fenced)였다(#805 뒤 합성 회차: 목표 달성,
+	// 2026-11-20 실제 모델 VAmPI 회차: 시간 상한 마감). 새 송신은 그동안에도 열리지 않는다: 취소된 Worker 문맥은
+	// PrepareWork에서 거부되고, 목표 달성이면 작업이 done이고 시간 상한이면 정리 상태라 새 계획·intent를 받지 않는다.
+	if e.e2HTTP != nil && !errors.Is(cause, agent.AbortGoalMet) && !errors.Is(cause, agent.AbortTimeBudgetDrain) {
 		_ = e.e2HTTP.FenceTask(taskID)
 	}
 	// A task cancellation and controlled completion cannot pass one another's

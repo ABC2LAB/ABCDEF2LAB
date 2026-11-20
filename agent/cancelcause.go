@@ -43,6 +43,9 @@ var (
 	AbortGoalMet = cause("goal_met", "Planner가 작업 목표 달성으로 판정함",
 		"Planner가 작업 목표 달성으로 판정해 작업을 done으로 두고 아직 실행 중인 Worker를 취소했다. 이 의도들은 실패가 아니라 stopped로 표시한다",
 		"The planner judged the task goals met and set the task to done, then cancelled the Workers still running; those intents are marked stopped, not failed")
+	AbortTimeBudgetDrain = cause("time_budget_drain_timeout", "회차 실행 시간 상한 마감 유예를 다 씀",
+		"회차가 실행 시간 상한에 닿아 새 계획·intent를 멈춘 뒤 실행 중인 Worker의 마무리를 유예만큼 기다렸지만 끝나지 않아 취소했다. 의도는 미완료로 남고, E② 실행은 E③ 확정 단계 뒤 감독자가 닫는다",
+		"The run reached its time budget, so no new plans or intents were started; the running Workers were given a grace period to wrap up but did not finish, so they were cancelled. Their intents stay incomplete")
 	AbortSettleDrainTimeout = cause("settle_drain_timeout", "작업 시간 초과 마무리 대기를 다 씀",
 		"작업이 timeout에 도달한 뒤 실행 중인 Worker의 마무리를 기다렸지만 90초 drain 유예로도 부족해 강제로 취소했다. 의도는 exhausted로 표시하고, 마무리 단계에서 쓴 사실과 자산은 유지한다",
 		"After the task reached its timeout, the engine waited for running Workers to wrap up, but the 90-second drain grace wasn't enough, so it cancelled them hard; intents are marked exhausted, and facts and assets already written during wrap-up are kept")
