@@ -365,5 +365,52 @@ class TestServer(unittest.TestCase):
             server.server_close()
 
 
+class TestPlannerError(unittest.TestCase):
+    """계획 planner_error_status: 진단 Planner 요청에만 제공자 오류 상태를 돌려준다(고정 초안 §26 합성 확인)."""
+
+    def load(self, **changes):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "p.json"
+            path.write_text(json.dumps(plan(**changes)), encoding="utf-8")
+            return load_plan(path, ORIGIN)
+
+    def test_plan_field(self):
+        self.assertIsNone(self.load()["planner_error_status"])
+        for status in (429, 500, 502, 503):
+            self.assertEqual(self.load(planner_error_status=status)["planner_error_status"], status)
+        for bad in (200, 401, 504, "503", True, None):
+            with self.subTest(bad=bad), self.assertRaises(PlanError):
+                self.load(planner_error_status=bad)
+
+    def test_only_planner_requests_get_the_error(self):
+        script = Script(self.load(planner_error_status=503))
+        self.assertEqual(script.planner_error(body(tool(PLANNER_TOOL))), 503)
+        self.assertIsNone(script.planner_error(body(tool(WORKER_TOOL, {"command": {}}))))
+        self.assertIsNone(script.planner_error(body(tool(PLANNER_TOOL), tool(WORKER_TOOL))))
+        self.assertIsNone(script.planner_error(body(tool(EXPLORATION_TOOL), tool(PLANNER_TOOL))))
+        self.assertIsNone(script.planner_error(body(tool("x"))))
+        self.assertEqual(script.counts["provider_error"], 1)
+        self.assertIsNone(Script(self.load()).planner_error(body(tool(PLANNER_TOOL))))
+
+    def test_server_replies_with_the_status(self):
+        server = make_server("127.0.0.1", 0, Script(self.load(planner_error_status=502)))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = f"http://127.0.0.1:{server.server_address[1]}/v1/chat/completions"
+            request = urllib.request.Request(url, data=json.dumps(body(tool(PLANNER_TOOL))).encode(), method="POST",
+                                             headers={"Content-Type": "application/json"})
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(request, timeout=5)
+            self.assertEqual(caught.exception.code, 502)
+            self.assertEqual(json.loads(caught.exception.read())["error"]["code"], 502)
+            worker = urllib.request.Request(url, data=json.dumps(body(tool(WORKER_TOOL, {"command": {}}))).encode(), method="POST",
+                                            headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(worker, timeout=5) as response:
+                self.assertEqual(response.status, 200)
+        finally:
+            server.shutdown()
+            server.server_close()
+
 if __name__ == "__main__":
     unittest.main()
