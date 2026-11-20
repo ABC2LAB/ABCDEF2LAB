@@ -193,6 +193,8 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	var hits atomic.Int64
 	targetEntered := make(chan struct{}, 1)
 	targetExited := make(chan struct{}, 1)
+	// 대상이 붙잡은 요청을 받은 시각·놓은 시각이다(시간 상한 모드가 진행 중 요청이 요청 시간 상한 전에 끊겼는지 본다).
+	var targetEnteredAt, targetExitedAt atomic.Int64
 	releaseTarget := make(chan struct{})
 	// 목표를 증명할 intent의 요청은 다른 Worker의 명령이 자리를 잡을 때까지 대상에서 붙잡는다. 두 명령이 실제로 겹쳤는지
 	// overlapped로 남긴다.
@@ -229,6 +231,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 				}
 				select {
 				case targetEntered <- struct{}{}:
+					targetEnteredAt.CompareAndSwap(0, time.Now().UnixNano())
 				default:
 				}
 				openConcurrentGate()
@@ -236,6 +239,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 				case <-r.Context().Done():
 					select {
 					case targetExited <- struct{}{}:
+						targetExitedAt.CompareAndSwap(0, time.Now().UnixNano())
 					default:
 					}
 				case <-releaseTarget:
@@ -263,12 +267,14 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		if mode == "cancel" || mode == "user-stop" || mode == "pause" || mode == "engine-pause" || mode == "planner-kill" || mode == "time-budget" || mode == "planner-kill-mid-response" {
 			select {
 			case targetEntered <- struct{}{}:
+				targetEnteredAt.CompareAndSwap(0, time.Now().UnixNano())
 			default:
 			}
 			select {
 			case <-r.Context().Done():
 				select {
 				case targetExited <- struct{}{}:
+					targetExitedAt.CompareAndSwap(0, time.Now().UnixNano())
 				default:
 				}
 			case <-releaseTarget:
@@ -853,10 +859,16 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		}
 		started := time.Now()
 		runErr = supervisor.Run(ctx, task.ID, 0, "")
-		// 붙잡힌 요청은 Run 시작 뒤에 나갔으므로, E② 요청 시간 상한으로 끝났다면 Run은 그 상한보다 늦게 돌아온다.
-		// 유예 뒤 멈췄다면 그 전에 돌아온다.
-		if elapsed := time.Since(started); elapsed >= time.Duration(policy.Limits.RequestTimeoutMS)*time.Millisecond {
-			t.Fatalf("시간 상한 유예 뒤 진행 중 작업을 멈추지 않음(E② 요청 시간 상한으로 끝남) elapsed=%s", elapsed)
+		// 유예 뒤 진행 중 작업을 멈췄다면 대상이 붙잡은 요청은 E② 요청 시간 상한 전에 끊긴다. 대상이 요청을 붙잡은 시간을
+		// 직접 본다. Run 전체 시간은 정리·감사 마감을 포함해 부하에 따라 흔들리므로(race 부하에서 5초를 넘긴 적 있음,
+		// 2026-11-20 dev·새 판 비교에서 분포가 같았다) 느슨한 상한만 둔다.
+		requestTimeout := time.Duration(policy.Limits.RequestTimeoutMS) * time.Millisecond
+		entered, exited := targetEnteredAt.Load(), targetExitedAt.Load()
+		if entered == 0 || exited == 0 || time.Duration(exited-entered) >= requestTimeout {
+			t.Fatalf("시간 상한 유예 뒤 진행 중 요청을 끊지 않음(E② 요청 시간 상한까지 감) hold=%s", time.Duration(exited-entered))
+		}
+		if elapsed := time.Since(started); elapsed >= 2*requestTimeout {
+			t.Fatalf("시간 상한 마감이 너무 늦음 elapsed=%s", elapsed)
 		}
 	} else if mode == "planner-only" || mode == "plan-turns" {
 		// 작업이 없는 실행이다. 계획이 비어도 마감하지 않고(원본과 같은 끝 규칙), 시간 상한에서 no_intents·budget_limited로
