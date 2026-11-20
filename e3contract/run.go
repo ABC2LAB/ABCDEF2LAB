@@ -529,7 +529,11 @@ func (r *run) confirmType(ctx context.Context, t TypeDeclaration, subjects oracl
 	// 조회 둘은 같은 생성 관찰을 읽었다(call이 Create 참조를 대조했다).
 	facts.SameResource = oracle.StateYes
 	facts.CrossNormalData = cross.Normal
-	if cross.Marker.Presence == MarkerPresent {
+	if CrossDenied(cross.StatusCode) {
+		// 거부 응답은 상태를 먼저 본다. 표식 검사가 "있음"인 거부는 read가 모순으로 돌려보냈다.
+		facts.CrossNormalData = oracle.StateNo
+	}
+	if cross.Marker.Status == MarkerComplete && cross.Marker.Presence == MarkerPresent {
 		facts.NontrivialDataMatch = oracle.StateYes
 	} else {
 		facts.NontrivialDataMatch = oracle.StateNo
@@ -568,6 +572,15 @@ func (r *run) read(ctx context.Context, t TypeDeclaration, role Role, label stri
 	if obs.Marker.Field != t.Create.MarkerField {
 		r.integrity = IntegrityObservationMismatch
 		return Observation{}, ""
+	}
+	if role == RoleCross && CrossDenied(obs.StatusCode) {
+		// 교차 조회의 거부 응답은 표식 검사보다 상태를 먼저 본다(사용자 결정 2026-11-20). 거부 본문에서 표식을 못 찾거나
+		// 검사하지 못한 것은 데이터 검사 실패가 아니라 정상 데이터가 아닌 응답이다(오라클 data_no_match). 거부인데 표식이
+		// 보이면 모순이라 판정하지 않는다.
+		if obs.Marker.Status == MarkerComplete && obs.Marker.Presence == MarkerPresent {
+			return obs, ReasonDataCheckContradiction
+		}
+		return obs, ""
 	}
 	switch obs.Marker.Status {
 	case MarkerPartial:
