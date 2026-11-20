@@ -392,7 +392,7 @@ B(원본 엔진)와 O(제품)가 설계상 다르고 일부러 맞추지 않는 
 | #804 머지 판(dev 0fe37b9e) | `ours-20261119t175406z-c28fa602` | `disabled`/`not_wired` | 0 | 기준선: Host v3·제품 사본 모두 머리 1·사건 8 |
 | #805 판(810ec3a6) | `ours-20261119t180840z-d8e02308` | `disabled`/`not_wired` | 0 | 기준선과 같음 |
 | #809 판(39e413f8, 머지 전) | `ours-20261119t185243z-1573378d` | **`disabled`/`declaration_missing`** | 0 | 기준선과 같음 |
-| **dev 36c4edf2**(#807·#809·#810 머지 뒤) | `ours-20261120t000834z-ff0da991` | **`disabled`/`declaration_missing`** | 0 | 기준선과 같음. Host 봉인 확인 `sealed`·확인 0, 근거 체크포인트 기록 없음 |
+| **dev 36c4edf2**(#807·#809·#810·#812 머지 뒤) | `ours-20261120t000834z-ff0da991` | **`disabled`/`declaration_missing`** | 0 | 기준선과 같음. Host 봉인 확인 `sealed`·확인 0, 근거 체크포인트 기록 없음 |
 | 통합 46ca5944(dev+#810·#811·#813, 선언 없음) | `ours-20261119t235311z-1d42bc1a` | `disabled`/`declaration_missing` | 0 | 기준선과 같음 |
 
 - E③ 흔적 0은 세 가지를 뜻한다.
