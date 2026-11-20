@@ -197,7 +197,7 @@ install -d -m 700 /srv/abc2lab-eval /srv/abc2lab-eval-keys "$SESSION" "$SESSION/
      - 경로(`runs_root`·`secrets_env_file`·`runner_key_path`·`findings.vocabulary_path`·`split.manifest_path`): 예시는 `/srv/abc2lab-eval…`이다. 그 PC에서 다른 디렉터리를 쓰면 이 경로 칸만 바꾼다. `runs_root`는 세션마다 새 디렉터리다.
    - **넣지 않는 것**: API 키, 관리자·DB 비밀번호, 경로 가림 키·러너 서명 키의 값, 승인 manifest 내용. 이것들은 회차 시작 때 따로 만드는 파일(3번·4번·5번)이고, `runner.json`에는 그 **경로만** 둔다.
    - `preservation`의 0으로 채운 지문 셋(`mcp_tools_sha256`·`exploration_policy_sha256`·`declared_model_budget_sha256`, 64자리 `0`)은 그대로 둔다. 앞의 둘은 분리 배치(v3) 기록에서 쓰지 않고 측정값(도구 면 측정)과 B `null`로 대신한다. `declared_model_budget_sha256`은 B 기록에 그대로 옮겨지며, 원본 엔진과 평가 게이트웨이에는 모델 예산이 없어서 0×64는 **B 모델 예산 선언 없음**을 뜻한다(O는 제품 설치 예산 값에서 러너가 계산한다).
-   - 예시에 이미 들어 있는 공식 값: `purpose: official`, 검증 창(`llm_gateway.verify_attempts` 40·`verify_interval_seconds` 3, `run.llm_verify_timeout_seconds` 300), 멈춤 무효 T(`run.fault_stall_seconds` 180), 분리 배치 포트(`split.product_port` 28787·`dns_control_port` 29083)와 그 밖의 `split`·`preservation` 칸.
+   - 예시에 이미 들어 있는 공식 값: `purpose: official`, E③ 비활성 요구(`split.e3_disabled_required: true`, 공식 회차는 켜야만 설정 검사를 통과한다), 검증 창(`llm_gateway.verify_attempts` 40·`verify_interval_seconds` 3, `run.llm_verify_timeout_seconds` 300), 멈춤 무효 T(`run.fault_stall_seconds` 180), 분리 배치 포트(`split.product_port` 28787·`dns_control_port` 29083)와 그 밖의 `split`·`preservation` 칸.
    - 채운 뒤 3절 환경 점검을 이 파일로 다시 돌린다. 엔진 직접 배치 예시(`runner.example.json`)로 돌리면 분리 배치 포트가 없어 `ports`가 `SKIP`(종료 코드 2)이다.
 
 ## 5. 사전 점검 (첫 유료 회차 전)

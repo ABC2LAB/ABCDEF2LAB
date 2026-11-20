@@ -61,6 +61,7 @@ class TestOfficialSplitExample(unittest.TestCase):
         self.assertIsNotNone(config.split)
         self.assertEqual((config.split.product_port, config.split.dns_control_port), (28787, 29083))
         self.assertEqual(config.fault_stall_seconds, 180)  # 멈춤 무효 T(고정 초안 §2)
+        self.assertIs(config.split.e3_disabled_required, True)  # 공식 회차는 E③ 비활성 요구를 켜야 통과한다
 
     def test_common_fields_match_the_engine_direct_example(self):
         example, base = load(EXAMPLE), load(BASE_EXAMPLE)
