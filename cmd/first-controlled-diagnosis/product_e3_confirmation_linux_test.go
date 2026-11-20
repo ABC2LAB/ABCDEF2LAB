@@ -227,12 +227,12 @@ func TestProductE3ConfirmationCompletedRecordsResultAndWrites(t *testing.T) {
 	if refusal := f.r.e3RunStartRefusal(t.Context(), f.rec, "job-next"); refusal != e3contract.RefuseResetConfirmationMissing {
 		t.Fatalf("리셋 확인 전 다음 회차: %q", refusal)
 	}
-	// ID를 아는 객체는 잔존 점검(E² 쪽)이 아직 없어 리셋을 확인해도 잔존을 모른다 → 시작하지 않는다.
+	// ID를 아는 객체도 잔존 점검(E² 쪽)이 없으면 리셋 확인만으로 다음 회차를 시작한다(사용자 결정 2026-11-20, 계약 §12).
 	if _, err := f.r.confirmReset("ARTEX", f.target.ID, true, state.LastWritesRef); err != nil {
 		t.Fatal(err)
 	}
-	if refusal := f.r.e3RunStartRefusal(t.Context(), f.rec, "job-next"); refusal != e3contract.RefuseResetStateUnavailable {
-		t.Fatalf("ID 아는 객체의 잔존 모름: %q", refusal)
+	if refusal := f.r.e3RunStartRefusal(t.Context(), f.rec, "job-next"); refusal != "" {
+		t.Fatalf("ID 아는 객체·리셋 확인함: %q", refusal)
 	}
 	// 같은 회차의 결과 파일은 한 번만 쓴다(덮어쓰지 않음).
 	if err := f.confirmation(e3HookFake(), e3HookAccounts(), nil).run(t.Context(), "9", nil); err == nil {
@@ -483,17 +483,31 @@ func TestProductRunStartResetGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := &productRuntime{targets: r}
+	runs := t.TempDir()
 	attach := func(job string) string {
 		t.Helper()
-		release, reason := p.attachRun(t.Context(), rec, job, func() {})
+		release, reason := p.attachRun(t.Context(), rec, job, runs, func() {})
 		p.activeMu.Lock()
 		_, attached := p.active[rec.Target.ID][job]
 		p.activeMu.Unlock()
+		raw, readErr := os.ReadFile(filepath.Join(runs, job, productE3ConfirmationFile))
 		if reason != "" {
 			if release != nil || attached {
 				t.Fatal("거절한 회차가 대상에 묶임")
 			}
+			// E③ 시작 거부는 확정 단계 결과 파일에 start_refused와 그 사유를 남긴다(대상 변경 거절은 E③ 사유가 아니라 남기지 않음).
+			var res e3contract.RunResult
+			if e3contract.StartRefusal(reason).Valid() {
+				if readErr != nil || json.Unmarshal(raw, &res) != nil || res.Status != e3contract.StatusStartRefused || res.Reason != reason || res.Requests != 0 {
+					t.Fatalf("거절 결과 파일(%s): %s %v", reason, raw, readErr)
+				}
+			} else if readErr == nil {
+				t.Fatalf("E③ 사유가 아닌 거절에 결과 파일: %s", reason)
+			}
 			return reason
+		}
+		if readErr == nil {
+			t.Fatal("받은 회차에 거절 결과 파일")
 		}
 		if release == nil || !attached {
 			t.Fatal("받은 회차가 묶이지 않음")
@@ -524,16 +538,19 @@ func TestProductRunStartResetGate(t *testing.T) {
 	if reason := attach("job-3"); reason != "" {
 		t.Fatalf("ID 모름 객체만 있고 리셋 확인함: %q", reason)
 	}
-	// ID를 아는 객체는 잔존 점검이 없어 리셋을 확인해도 시작하지 않는다.
+	// ID를 아는 객체가 남아도 리셋 확인 전에는 시작하지 않고, 확인 뒤에는 잔존 점검 없이 시작한다(사용자 결정 2026-11-20).
 	if err := r.recordConfirmationWrites(target.ID, "job-3", []productConfirmationObject{{Type: "note", IDDigest: strings.Repeat("b", 64)}}); err != nil {
 		t.Fatal(err)
+	}
+	if reason := attach("job-4"); reason != string(e3contract.RefuseResetConfirmationMissing) {
+		t.Fatalf("ID 아는 객체·리셋 확인 전: %q", reason)
 	}
 	state, _ = r.resetConfirmation("ARTEX", target.ID)
 	if _, err := r.confirmReset("ARTEX", target.ID, true, state.LastWritesRef); err != nil {
 		t.Fatal(err)
 	}
-	if reason := attach("job-4"); reason != string(e3contract.RefuseResetStateUnavailable) {
-		t.Fatalf("ID 아는 객체: %q", reason)
+	if reason := attach("job-4b"); reason != "" {
+		t.Fatalf("ID 아는 객체·리셋 확인함: %q", reason)
 	}
 	// 대상이 바뀌었으면(철회) 게이트 전에 거절한다.
 	if _, err := r.revoke("ARTEX", target.ID); err != nil {
@@ -561,7 +578,7 @@ func TestProductRunStartGateOpenWithoutWrites(t *testing.T) {
 			t.Fatalf("declare=%v 쓰기 없는 대상 게이트: %q", declare, refusal)
 		}
 		p := &productRuntime{targets: r}
-		release, reason := p.attachRun(t.Context(), rec, "job-1", func() {})
+		release, reason := p.attachRun(t.Context(), rec, "job-1", t.TempDir(), func() {})
 		if reason != "" || release == nil {
 			t.Fatalf("declare=%v 쓰기 없는 대상 시작 거절: %q", declare, reason)
 		}
@@ -1011,5 +1028,63 @@ func TestProductE3ConfirmationIDFieldDefaultRandom(t *testing.T) {
 	}
 	if created == "" || len(res.Writes) != 1 || res.Writes[0].ObjectID != created || res.Writes[0].Outcome != e3contract.WriteCreated {
 		t.Fatalf("생성 ID·쓰기: %q %+v", created, res.Writes)
+	}
+}
+
+// 회차 시작 리셋 게이트가 거절한 회차는 회차 디렉터리를 만들기 전이다. 그래도 확정 단계 결과 파일에 start_refused와 사유를
+// 남겨 화면·집계가 거절 사유를 본다(S12 제품 직접 실행, 2026-11-20). 이미 있는 디렉터리에도 쓰고, 결과 파일은 덮어쓰지 않으며,
+// 정해진 거부 사유가 아니면 쓰지 않는다.
+func TestRecordRunStartRefusal(t *testing.T) {
+	runs := t.TempDir()
+	if err := recordRunStartRefusal(runs, "prep-refused", e3contract.RefuseResetConfirmationMissing); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(runs, "prep-refused"))
+	if err != nil || info.Mode().Perm() != 0700 {
+		t.Fatalf("회차 디렉터리: %v %v", info, err)
+	}
+	path := filepath.Join(runs, "prep-refused", productE3ConfirmationFile)
+	if st, err := os.Stat(path); err != nil || st.Mode().Perm() != 0600 {
+		t.Fatalf("결과 파일 권한: %v %v", st, err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res map[string]any
+	if json.Unmarshal(raw, &res) != nil || res["version"] != e3contract.RunResultVersion || res["status"] != string(e3contract.StatusStartRefused) ||
+		res["reason"] != string(e3contract.RefuseResetConfirmationMissing) || res["requests"] != float64(0) {
+		t.Fatalf("결과: %s", raw)
+	}
+	for _, k := range []string{"verdicts", "candidates", "writes", "skipped"} {
+		if list, ok := res[k].([]any); !ok || len(list) != 0 {
+			t.Fatalf("%s: %s", k, raw)
+		}
+	}
+	if _, ok := res["binding"]; ok {
+		t.Fatalf("결속 없는 거절에 결속: %s", raw)
+	}
+	// 이미 결과가 있으면 덮어쓰지 않는다.
+	if recordRunStartRefusal(runs, "prep-refused", e3contract.RefuseTargetChanged) == nil {
+		t.Fatal("결과 파일을 덮어씀")
+	}
+	// 디렉터리가 이미 있으면 그 안에 쓴다.
+	if err := os.Mkdir(filepath.Join(runs, "prep-existing"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := recordRunStartRefusal(runs, "prep-existing", e3contract.RefuseResetStateUnavailable); err != nil {
+		t.Fatal(err)
+	}
+	// 정해진 사유가 아니거나 회차 참조가 아니면 쓰지 않는다.
+	for name, tc := range map[string]struct {
+		job     string
+		refusal e3contract.StartRefusal
+	}{"unknown_reason": {"prep-other", "target_approval_changed"}, "bad_job": {"../escape", e3contract.RefuseResetConfirmationMissing}} {
+		if recordRunStartRefusal(runs, tc.job, tc.refusal) == nil {
+			t.Fatalf("%s: 받음", name)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(runs, "prep-other")); !os.IsNotExist(err) {
+		t.Fatal("거절한 입력으로 디렉터리를 만듦")
 	}
 }
