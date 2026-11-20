@@ -256,13 +256,14 @@ class TestRealRunner(unittest.TestCase):
                 return code
         return P
 
-    def go(self, code, make_dir, result, containers=0, timed_out=False):
+    def go(self, code, make_dir, result, containers=0, timed_out=False, networks=0):
         for d in list(self.runs.iterdir()):
             for f in d.iterdir():
                 f.unlink()
             d.rmdir()
         patches = [mock.patch("official_session.subprocess.Popen", self.fake_popen(code, make_dir, result)),
-                   mock.patch("official_session.running_containers", return_value=containers)]
+                   mock.patch("official_session.running_containers", return_value=containers),
+                   mock.patch("official_session.eval_networks", return_value=networks)]
         if timed_out:
             patches.append(mock.patch("official_session.wait_process", return_value=None))
         with contextlib.ExitStack() as stack:
@@ -331,6 +332,7 @@ class TestRealRunner(unittest.TestCase):
             common = ["--tree", root, "--config", str(config), "--preflight", root + "/p", "--admin-password-file", root + "/a"]
             started = mock.Mock(side_effect=AssertionError("runner started"))
             with mock.patch("official_session.running_containers", return_value=2), \
+                    mock.patch("official_session.eval_networks", side_effect=AssertionError("networks read before containers")), \
                     mock.patch("official_session.RealRunner.__call__", started), contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(o.main(["--session-dir", root + "/s", *common]), o.EXIT_STOPPED)
                 lines = [json.loads(l) for l in Path(root, "s", o.LOG_NAME).read_text().splitlines()]
@@ -340,10 +342,32 @@ class TestRealRunner(unittest.TestCase):
                 self.assertEqual(o.main(["--session-dir", root + "/s", "--resume", *common]), o.EXIT_STOPPED)
             started.assert_not_called()
 
+    def test_networks_left_after_a_run_stop_the_session(self):
+        late = self.go(0, True, {"status": "complete"}, networks=1)
+        self.assertEqual((late.status, late.run_id, late.stop_after), ("complete", self.RUN_ID, "networks_left:B0"))
+        with mock.patch.object(self.runner, "post_timeout", 0):
+            gone = self.go(0, True, {"status": "complete"}, containers=1, networks=1)
+        self.assertEqual(gone.stop_after, "containers_left:B0")  # 컨테이너가 먼저다
+
+    def test_eval_networks_counts_only_eval_projects(self):
+        done = mock.Mock(returncode=0, stdout="eval-ours-1\neval-ours-1\nother\nabc2lab-rehearsal\n")
+        with mock.patch("official_session.subprocess.run", return_value=done) as run:
+            self.assertEqual(o.eval_networks(), 2)
+        self.assertIn("label=com.docker.compose.project", run.call_args.args[0])
+        with mock.patch("official_session.subprocess.run", return_value=mock.Mock(returncode=1, stdout="")):
+            self.assertIsNone(o.eval_networks())
+        with mock.patch("official_session.subprocess.run", side_effect=OSError):
+            self.assertIsNone(o.eval_networks())
+
     def test_containers_present_before_a_run_stops_without_counting(self):
         self.assertIsNone(o.containers_stop(lambda: 0))
         self.assertEqual(o.containers_stop(lambda: 3), "containers_present")
         self.assertEqual(o.containers_stop(lambda: None), "containers_unknown")
+        # 평가 compose 망이 남아 있으면 다음 회차 고정 대역과 겹친다(2026-11-20 compose_up_failed)
+        self.assertIsNone(o.containers_stop(lambda: 0, lambda: 0))
+        self.assertEqual(o.containers_stop(lambda: 0, lambda: 2), "networks_present")
+        self.assertEqual(o.containers_stop(lambda: 0, lambda: None), "networks_unknown")
+        self.assertEqual(o.containers_stop(lambda: 1, lambda: 2), "containers_present")
         schedule, calls, logs = Schedule(1), [], []
         run_session(schedule, lambda side, repeat: calls.append(side) or Outcome("complete"), logs.append,
                     before_run=lambda side, repeat: o.containers_stop(lambda: 1))
