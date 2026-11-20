@@ -1,0 +1,325 @@
+"""공식 회차 세션 실행(official_session) 시험. 러너·Docker·네트워크는 부르지 않는다(가짜 실행·점검 모드)."""
+
+from __future__ import annotations
+
+import contextlib
+import io
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import official_session as o  # noqa: E402
+from official_session import Outcome, Schedule, parse_outcomes, run_session  # noqa: E402
+
+STALL = "provider_fault_stall"
+
+
+def drive(outcomes: list[Outcome], repeats: int = 3) -> tuple[Schedule, list[tuple[str, int]], list[dict]]:
+    schedule, calls, logs = Schedule(repeats), [], []
+    pending = list(outcomes)
+
+    def run_one(side: str, repeat: int) -> Outcome:
+        calls.append((o.LETTER_OF[side], repeat))
+        return pending.pop(0) if pending else Outcome("complete")
+
+    run_session(schedule, run_one, logs.append)
+    return schedule, calls, logs
+
+
+class TestSchedule(unittest.TestCase):
+    def test_all_complete_follows_boobbo_with_repeat_numbers(self):
+        schedule, calls, logs = drive([])
+        self.assertEqual(calls, [("B", 0), ("O", 0), ("O", 1), ("B", 1), ("B", 2), ("O", 2)])
+        self.assertTrue(schedule.done())
+        self.assertEqual(logs[-1]["event"], "summary")
+        self.assertEqual((logs[-1]["complete"], logs[-1]["stop_reason"]), (True, None))
+        self.assertEqual(logs[-1]["order"], ["B", "O", "O", "B", "B", "O"])
+
+    def test_invalid_reruns_the_same_slot_with_the_same_repeat(self):
+        schedule, calls, _ = drive([Outcome("complete"), Outcome("invalid", ["window_boundary_changed"])])
+        self.assertEqual(calls, [("B", 0), ("O", 0), ("O", 0), ("O", 1), ("B", 1), ("B", 2), ("O", 2)])
+        self.assertEqual(schedule.attempts, {"baseline": 3, "ours": 4})
+        self.assertTrue(schedule.done())
+
+    def test_attempt_limit_2n_stops_before_the_seventh_attempt(self):
+        # B가 계속 무효면 6번째 시도 뒤 7번째를 시작하지 않는다(2N = 6)
+        schedule, calls, logs = drive([Outcome("invalid", ["drain_timeout"])] * 10)
+        self.assertEqual(calls, [("B", 0)] * 6)
+        self.assertEqual(schedule.stop_reason, "attempt_limit:baseline")
+        self.assertFalse(schedule.done())
+        self.assertFalse(schedule.failed)
+        self.assertEqual(logs[-1]["stop_reason"], "attempt_limit:baseline")
+
+    def test_attempt_limit_counts_valid_and_invalid_of_one_side(self):
+        # O: 유효 2 + 무효 4 = 6 시도, 유효 N 미만이라 마지막 O 칸을 시작하지 않는다
+        outcomes = [Outcome("complete"),                                     # B0
+                    Outcome("invalid", ["a"]), Outcome("invalid", ["a"]),   # O0 ×2
+                    Outcome("complete"),                                     # O0
+                    Outcome("invalid", ["a"]), Outcome("invalid", ["a"]),   # O1 ×2
+                    Outcome("complete"),                                     # O1
+                    Outcome("complete"), Outcome("complete")]                # B1, B2
+        schedule, calls, _ = drive(outcomes)
+        self.assertEqual(calls[-1], ("B", 2))
+        self.assertEqual(schedule.attempts["ours"], 6)
+        self.assertEqual(schedule.stop_reason, "attempt_limit:ours")
+
+    def test_fault_stall_limit_is_measurement_failure(self):
+        # 쪽별 provider_fault_stall 무효가 2회면 측정 전체 실패(다른 사유와 섞여 있어도 센다)
+        schedule, calls, _ = drive([Outcome("invalid", [STALL]), Outcome("invalid", ["x", STALL])])
+        self.assertEqual(calls, [("B", 0), ("B", 0)])
+        self.assertEqual((schedule.stop_reason, schedule.failed), ("fault_stall_limit:baseline", True))
+        # 한 번은 실패가 아니다
+        schedule, _, _ = drive([Outcome("invalid", [STALL])])
+        self.assertTrue(schedule.done())
+        self.assertEqual(schedule.stalls["baseline"], 1)
+
+    def test_config_error_is_not_an_attempt_and_stops(self):
+        schedule, calls, _ = drive([Outcome("complete"), Outcome("config_error", ["runner_exit_2"])])
+        self.assertEqual(calls, [("B", 0), ("O", 0)])
+        self.assertEqual(schedule.attempts, {"baseline": 1, "ours": 0})
+        self.assertEqual(schedule.stop_reason, "runner_config_error")
+
+    def test_stop_outcome_keeps_its_reason_and_is_not_an_attempt(self):
+        schedule, _, _ = drive([Outcome("stop", ["run_wait_timeout:B0"])])
+        self.assertEqual(schedule.stop_reason, "run_wait_timeout:B0")
+        self.assertEqual(schedule.attempts["baseline"], 0)
+
+    def test_before_run_can_stop_the_session(self):
+        schedule, logs = Schedule(3), []
+        calls = []
+        run_session(schedule, lambda side, repeat: calls.append(side) or Outcome("complete"), logs.append,
+                    before_run=lambda side, repeat: "usage_cap" if side == "ours" else None)
+        self.assertEqual(calls, ["baseline"])
+        self.assertEqual(schedule.stop_reason, "usage_cap")
+        self.assertEqual(logs[-2]["event"], "stopped_before_run")
+
+    def test_repeats_one_and_invalid_input(self):
+        schedule, calls, _ = drive([], repeats=1)
+        self.assertEqual(calls, [("B", 0), ("O", 0)])
+        for bad in (0, -1, 1.5, "3"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                Schedule(bad)
+
+
+class TestParseOutcomes(unittest.TestCase):
+    def test_parse(self):
+        got = parse_outcomes("complete, invalid:provider_fault_stall+drain_timeout ,config_error,stop:x")
+        self.assertEqual([(g.status, g.reasons) for g in got],
+                         [("complete", []), ("invalid", [STALL, "drain_timeout"]), ("config_error", []), ("stop", ["x"])])
+        for bad in ("done", "invalid", "invalid:", "complete,xx"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                parse_outcomes(bad)
+
+
+class TestDryRunCli(unittest.TestCase):
+    def test_dry_run_writes_log_and_exit_codes(self):
+        with tempfile.TemporaryDirectory() as root:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = o.main(["--session-dir", root + "/s", "--dry-run", "--outcomes", "complete,invalid:window_boundary_changed"])
+            self.assertEqual(code, o.EXIT_DONE)
+            lines = [json.loads(l) for l in Path(root, "s", o.LOG_NAME).read_text(encoding="utf-8").splitlines()]
+            self.assertEqual([(l["side"], l["repeat"], l["status"]) for l in lines if l["event"] == "attempt"],
+                             [("B", 0, "complete"), ("O", 0, "invalid"), ("O", 0, "complete"), ("O", 1, "complete"),
+                              ("B", 1, "complete"), ("B", 2, "complete"), ("O", 2, "complete")])
+            self.assertTrue(all(l["dry_run"] for l in lines))
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(o.main(["--session-dir", root + "/f", "--dry-run", "--outcomes", f"invalid:{STALL},invalid:{STALL}"]),
+                                 o.EXIT_FAILED)
+                self.assertEqual(o.main(["--session-dir", root + "/t", "--dry-run", "--outcomes", "stop:run_wait_timeout:B0"]),
+                                 o.EXIT_STOPPED)
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(o.main(["--session-dir", root + "/e", "--dry-run", "--outcomes", "bogus"]), o.EXIT_INPUT)
+                self.assertEqual(o.main(["--session-dir", root + "/r"]), o.EXIT_INPUT)  # 실제 실행에 필요한 칸 없음
+
+
+class TestResume(unittest.TestCase):
+    def lines(self, *items, dry=False):
+        return [{"event": "attempt", "side": side, "repeat": repeat, "status": status, "reasons": reasons, "dry_run": dry}
+                for side, repeat, status, reasons in items]
+
+    def test_replay_continues_from_the_next_slot(self):
+        schedule = Schedule(3)
+        n = o.replay(schedule, self.lines(("B", 0, "complete", []), ("O", 0, "invalid", ["x"]), ("O", 0, "complete", []))
+                     + [{"event": "attempt", "side": "O", "repeat": 1, "status": "stop", "reasons": ["run_wait_timeout:O1"]},
+                        {"event": "summary"}])
+        self.assertEqual(n, 3)  # 멈춤 줄은 시도로 세지 않는다
+        self.assertEqual(schedule.next_slot(), ("ours", 1))
+        self.assertEqual(schedule.attempts, {"baseline": 1, "ours": 2})
+        self.assertIsNone(schedule.stop_reason)
+
+    def test_replay_rejects_out_of_order_and_dry_logs(self):
+        with self.assertRaises(ValueError):
+            o.replay(Schedule(3), self.lines(("O", 0, "complete", [])))
+        with self.assertRaises(ValueError):
+            o.replay(Schedule(3), self.lines(("B", 1, "complete", [])))
+        with self.assertRaises(ValueError):
+            o.replay(Schedule(3), self.lines(("B", 0, "complete", []), dry=True))
+
+    def test_replay_keeps_stall_and_attempt_limits(self):
+        schedule = Schedule(3)
+        o.replay(schedule, self.lines(("B", 0, "invalid", [STALL]), ("B", 0, "invalid", [STALL])))
+        self.assertEqual((schedule.stop_reason, schedule.failed), ("fault_stall_limit:baseline", True))
+
+    def test_cli_resume(self):
+        with tempfile.TemporaryDirectory() as root:
+            session = Path(root, "s")
+            session.mkdir()
+            log = session / o.LOG_NAME
+            log.write_text("\n".join(json.dumps(l) for l in self.lines(("B", 0, "complete", []))) + "\n")
+            with contextlib.redirect_stderr(io.StringIO()):
+                # 기록이 있는데 --resume 없이 시작하면 거부
+                self.assertEqual(o.main(["--session-dir", str(session), "--dry-run"]), o.EXIT_INPUT)
+                # --resume은 점검 모드와 같이 쓰지 않는다
+                self.assertEqual(o.main(["--session-dir", str(session), "--dry-run", "--resume"]), o.EXIT_INPUT)
+            # 기록만으로 이미 멈춘 세션은 잇지 않는다
+            stalled = Path(root, "t")
+            stalled.mkdir()
+            (stalled / o.LOG_NAME).write_text("\n".join(json.dumps(l) for l in self.lines(
+                ("B", 0, "invalid", [STALL]), ("B", 0, "invalid", [STALL]))) + "\n")
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(o.main(["--session-dir", str(stalled), "--resume", "--tree", root, "--config", root + "/c",
+                                         "--preflight", root + "/p", "--admin-password-file", root + "/a"]), o.EXIT_FAILED)
+
+
+class TestWaits(unittest.TestCase):
+    def test_wait_process_returns_code_or_kills_group_after_timeout(self):
+        done = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+        self.assertEqual(o.wait_process(done, timeout=30, grace=5), 0)
+        slow = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True,
+                                stderr=subprocess.DEVNULL)
+        started = time.monotonic()
+        self.assertIsNone(o.wait_process(slow, timeout=0.5, grace=5))
+        self.assertLess(time.monotonic() - started, 20)
+        self.assertIsNotNone(slow.poll())  # 시한 뒤 끝났다(SIGINT)
+
+    def test_wait_process_escalates_to_sigkill(self):
+        stubborn = subprocess.Popen([sys.executable, "-c",
+                                     "import signal, time; signal.signal(signal.SIGINT, signal.SIG_IGN); time.sleep(60)"],
+                                    start_new_session=True, stderr=subprocess.DEVNULL)
+        time.sleep(0.3)
+        self.assertIsNone(o.wait_process(stubborn, timeout=0.2, grace=0.5))
+        self.assertIsNotNone(stubborn.poll())
+
+    def test_wait_containers_gone(self):
+        counts = iter([3, 1, 0])
+        self.assertTrue(o.wait_containers_gone(lambda: next(counts), timeout=100, interval=1, sleep=lambda s: None))
+        clock = iter([0, 0, 50, 101])
+        self.assertFalse(o.wait_containers_gone(lambda: 2, timeout=100, interval=1, sleep=lambda s: None,
+                                                clock=lambda: next(clock)))
+        # 읽기 실패(None)는 0으로 보지 않는다
+        clock = iter([0, 101])
+        self.assertFalse(o.wait_containers_gone(lambda: None, timeout=100, interval=1, sleep=lambda s: None,
+                                                clock=lambda: next(clock)))
+
+
+class TestRealRunner(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.runs = self.root / "runs"
+        self.runs.mkdir()
+        self.runner = o.RealRunner(self.root, self.root / "c.json", self.root / "p.json", self.runs, self.root / "admin",
+                                   dict(o.DEFAULT_CONDITIONS), run_timeout=5, grace=1, post_timeout=1, log_dir=self.root)
+
+    def fake_popen(self, code: int, result: dict | None):
+        runs = self.runs
+
+        class P:
+            pid = 999999
+
+            def __init__(self, args, **kw):
+                self.args = args
+                if result is not None:
+                    d = runs / "baseline-20261120t000000z-0000abcd"
+                    d.mkdir()
+                    (d / o.RESULT_NAME).write_text(json.dumps(result))
+
+            def wait(self, timeout=None):
+                return code
+        return P
+
+    def go(self, code, result, containers=0):
+        with mock.patch("official_session.subprocess.Popen", self.fake_popen(code, result)) as popen, \
+                mock.patch("official_session.running_containers", return_value=containers):
+            outcome = self.runner("baseline", 0)
+        return outcome
+
+    def test_outcomes(self):
+        self.assertEqual(self.go(0, {"status": "complete"}).status, "complete")
+        for d in list(self.runs.iterdir()):
+            for f in d.iterdir():
+                f.unlink()
+            d.rmdir()
+        invalid = self.go(1, {"status": "invalid", "reasons": [STALL]})
+        self.assertEqual((invalid.status, invalid.reasons, invalid.run_id),
+                         ("invalid", [STALL], "baseline-20261120t000000z-0000abcd"))
+
+    def test_config_error_missing_result_mismatch_and_containers(self):
+        self.assertEqual(self.go(2, None).status, "config_error")
+        missing = self.go(1, None)
+        self.assertEqual((missing.status, missing.reasons), ("stop", ["result_missing:B0"]))
+        mismatch = self.go(0, {"status": "invalid"})
+        self.assertEqual(mismatch.reasons, ["result_status_mismatch:B0"])
+        for d in list(self.runs.iterdir()):
+            for f in d.iterdir():
+                f.unlink()
+            d.rmdir()
+        left = self.go(0, {"status": "complete"}, containers=3)
+        self.assertEqual(left.reasons, ["containers_left:B0"])
+
+    def test_timeout_is_a_stop_with_reason(self):
+        with mock.patch("official_session.subprocess.Popen", self.fake_popen(0, None)), \
+                mock.patch("official_session.wait_process", return_value=None):
+            outcome = self.runner("ours", 1)
+        self.assertEqual((outcome.status, outcome.reasons), ("stop", ["run_wait_timeout:O1"]))
+
+    def test_baseline_gets_admin_password_file_and_conditions(self):
+        seen = {}
+
+        class P:
+            pid = 1
+
+            def __init__(self, args, **kw):
+                seen["args"] = args
+
+            def wait(self, timeout=None):
+                return 2
+        with mock.patch("official_session.subprocess.Popen", P):
+            self.runner("baseline", 2)
+        args = seen["args"]
+        self.assertEqual(args[args.index("--side") + 1], "baseline")
+        self.assertEqual(args[args.index("--repeat") + 1], "2")
+        self.assertEqual(args[args.index("--condition") + 1], "원본@35b")
+        self.assertIn("--admin-password-file", args)
+        with mock.patch("official_session.subprocess.Popen", P):
+            self.runner("ours", 0)
+        self.assertNotIn("--admin-password-file", seen["args"])
+        self.assertEqual(seen["args"][seen["args"].index("--condition") + 1], "우리@35b")
+
+
+class TestManifest(unittest.TestCase):
+    def test_new_approval_id_each_time_and_private(self):
+        with tempfile.TemporaryDirectory() as root:
+            template, target = Path(root, "t.json"), Path(root, "m.json")
+            template.write_text(json.dumps({"version": 3, "approval_id": "x", "model": "m"}))
+            o.write_manifest(template, target, 6)
+            first = json.loads(target.read_text())
+            self.assertEqual(os.stat(target).st_mode & 0o777, 0o600)
+            o.write_manifest(template, target, 6)
+            second = json.loads(target.read_text())
+            self.assertNotEqual(first["approval_id"], second["approval_id"])
+            self.assertTrue(second["approval_id"].startswith("official-o-"))
+            self.assertRegex(second["expires_at"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+            self.assertEqual(second["model"], "m")
+
+
+if __name__ == "__main__":
+    unittest.main()
