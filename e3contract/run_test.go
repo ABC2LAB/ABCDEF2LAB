@@ -1116,3 +1116,128 @@ func TestRunReloginsBeforeIdentity(t *testing.T) {
 		}
 	})
 }
+
+// recheckTransport는 B 신원 요청을 센다. 두 번째 B 신원 요청(교차 거부 뒤 재확인)부터 recheck 동작으로 답한다.
+type recheckTransport struct {
+	*e3fake.Transport
+	recheck e3fake.Behavior
+	cross   int
+}
+
+func (r *recheckTransport) Identity(ctx context.Context, req e3contract.IdentityRequest) (e3contract.Observation, error) {
+	if req.Role == e3contract.RoleCross {
+		r.cross++
+		if r.cross == 2 {
+			r.Transport.Behaviors[key(e3contract.PurposeIdentity, e3contract.RoleCross, "")] = r.recheck
+		}
+	}
+	return r.Transport.Identity(ctx, req)
+}
+
+// 사용자 결정 2026-11-20 S21 (나): 교차 조회가 거부(401·403·404)면 B 신원을 한 번 더 확인한다. 살아 있으면(처음과 같은
+// 주체) data_no_match, 신원 응답이 401·403이면 세션 만료(product_session_expired), 그 밖에 확인하지 못하면 확인 못 함
+// (product_cross_denial_unverified)이다. 뒤의 둘은 B 신원 미확인으로 UNDECIDABLE이고, 어느 경우든 CONFIRMED가 아니다.
+// 재확인은 거부일 때만 보내고 확정 몫(종류당 1건)으로 센다.
+func TestRunCrossDenialRechecksIdentity(t *testing.T) {
+	for name, c := range map[string]struct {
+		recheck e3fake.Behavior
+		reason  e3contract.ProductReason
+		sent    bool
+	}{
+		"alive":              {e3fake.Behavior{SubjectID: "user-b"}, "", true},
+		"expired_401":        {e3fake.Behavior{Status: 401, Normal: oracle.StateNo}, e3contract.ReasonSessionExpired, true},
+		"expired_403":        {e3fake.Behavior{Status: 403, Normal: oracle.StateNo}, e3contract.ReasonSessionExpired, true},
+		"other_subject":      {e3fake.Behavior{SubjectID: "user-c"}, e3contract.ReasonCrossDenialUnverified, true},
+		"no_subject":         {e3fake.Behavior{}, e3contract.ReasonCrossDenialUnverified, true},
+		"server_error":       {e3fake.Behavior{Status: 500, Normal: oracle.StateNo}, e3contract.ReasonCrossDenialUnverified, true},
+		"not_found_identity": {e3fake.Behavior{Status: 404, Normal: oracle.StateNo}, e3contract.ReasonCrossDenialUnverified, true},
+		"incomplete":         {e3fake.Behavior{Incomplete: true}, e3contract.ReasonCrossDenialUnverified, true},
+		"timed_out":          {e3fake.Behavior{TimedOut: true, Incomplete: true}, e3contract.ReasonCrossDenialUnverified, true},
+		"not_sent_policy":    {e3fake.Behavior{NotSent: e3contract.NotSentPolicyDenied}, e3contract.ReasonCrossDenialUnverified, false},
+		"not_sent_budget":    {e3fake.Behavior{NotSent: e3contract.NotSentBudgetExhausted}, e3contract.ReasonCrossDenialUnverified, false},
+		"result_unknown":     {e3fake.Behavior{Err: errors.New("결과 불명")}, e3contract.ReasonCrossDenialUnverified, true},
+	} {
+		for _, status := range []int{401, 403, 404} {
+			t.Run(fmt.Sprintf("%s_%d", name, status), func(t *testing.T) {
+				f := newFixture(t)
+				f.in.AdmittedTypes = 1 // note 하나만(재확인 뒤 다른 종류 동작과 섞이지 않게)
+				f.fake.Behaviors[key(e3contract.PurposeRead, e3contract.RoleCross, "note")] = e3fake.Behavior{Status: status,
+					Normal: oracle.StateNo, Presence: e3contract.MarkerAbsent}
+				tr := &recheckTransport{Transport: f.fake, recheck: c.recheck}
+				deps := f.deps()
+				deps.Transport = tr
+				res := e3contract.Run(context.Background(), deps, f.in)
+				noConfirmed(t, res)
+				if tr.cross != 2 {
+					t.Fatalf("B 신원 요청 %d건(처음 + 재확인 1건이어야 함)", tr.cross)
+				}
+				v := verdictOf(t, res, "note")
+				if v.Value != oracle.Undecidable {
+					t.Fatalf("note: %+v", v)
+				}
+				if c.reason == "" {
+					if len(v.ProductReasons) != 0 || !slices.Contains(v.OracleReasons, oracle.ReasonDataNoMatch) ||
+						v.Case.Facts.CrossNormalData != oracle.StateNo || v.IdentityCheck != oracle.StateYes {
+						t.Fatalf("살아 있는 세션의 거부가 data_no_match가 아님: %+v", v)
+					}
+				} else {
+					if !hasReason(v, c.reason) || len(v.ProductReasons) != 1 || slices.Contains(v.OracleReasons, oracle.ReasonDataNoMatch) ||
+						v.IdentityCheck == oracle.StateYes || v.Case.Facts.CrossNormalData != oracle.StateUnknown {
+						t.Fatalf("재확인 실패가 사유 %s로 남지 않음: %+v", c.reason, v)
+					}
+				}
+				// 신원 2 + 생성 + A 조회 + B 조회 + 재확인(보냈으면 셈).
+				want := 5
+				if c.sent || c.recheck.NotSent != "" {
+					want = 6
+				}
+				if res.Requests != want {
+					t.Fatalf("요청 %d건, 원함 %d", res.Requests, want)
+				}
+			})
+		}
+	}
+}
+
+// 거부가 아닌 교차 응답(표식 없음·있음)에는 재확인을 보내지 않는다.
+func TestRunCrossNotDeniedDoesNotRecheck(t *testing.T) {
+	for name, be := range map[string]e3fake.Behavior{
+		"visible": {},
+		"absent":  {Presence: e3contract.MarkerAbsent},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			f.in.AdmittedTypes = 1
+			f.fake.Behaviors[key(e3contract.PurposeRead, e3contract.RoleCross, "note")] = be
+			tr := &recheckTransport{Transport: f.fake, recheck: e3fake.Behavior{SubjectID: "user-b"}}
+			deps := f.deps()
+			deps.Transport = tr
+			res := e3contract.Run(context.Background(), deps, f.in)
+			if tr.cross != 1 || res.Requests != 5 {
+				t.Fatalf("거부 아닌 응답에 재확인: B 신원 %d건 요청 %d", tr.cross, res.Requests)
+			}
+		})
+	}
+}
+
+// 재확인 관찰이 저널과 맞지 않으면 진위 실패다(판정 행 없음).
+func TestRunCrossRecheckIntegrityFailure(t *testing.T) {
+	f := newFixture(t)
+	f.in.AdmittedTypes = 1
+	f.fake.Behaviors[key(e3contract.PurposeRead, e3contract.RoleCross, "note")] = e3fake.Behavior{Status: 404, Normal: oracle.StateNo,
+		Presence: e3contract.MarkerAbsent}
+	tr := &recheckTransport{Transport: f.fake, recheck: e3fake.Behavior{SubjectID: "user-b"}}
+	calls := 0
+	f.fake.Tamper = func(_ e3fake.Call, o *e3contract.Observation) {
+		if o.Purpose == e3contract.PurposeIdentity && o.Role == e3contract.RoleCross {
+			calls++
+			if calls == 2 {
+				o.StatusCode = 418
+			}
+		}
+	}
+	deps := f.deps()
+	deps.Transport = tr
+	res := e3contract.Run(context.Background(), deps, f.in)
+	integrityFailed(t, res, e3contract.IntegrityJournalEventMismatch)
+}

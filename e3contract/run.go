@@ -558,7 +558,22 @@ func (r *run) confirmType(ctx context.Context, t TypeDeclaration, subjects oracl
 	facts.SameResource = oracle.StateYes
 	facts.CrossNormalData = cross.Normal
 	if CrossDenied(cross.StatusCode) {
-		// 거부 응답은 상태를 먼저 본다. 표식 검사가 "있음"인 거부는 read가 모순으로 돌려보냈다.
+		// 거부 응답은 상태를 먼저 본다. 표식 검사가 "있음"인 거부는 read가 모순으로 돌려보냈다. 거부가 접근 통제 때문인지
+		// 세션 만료 때문인지 가리려고 B 신원을 한 번 더 확인한다(사용자 결정 2026-11-20 S21 (나)). 살아 있을 때만 접근
+		// 거부(정상 데이터 아님)이고, 만료면 세션 만료, 확인하지 못하면 확인 못 함으로 남긴다(둘 다 B 신원 미확인 → UNDECIDABLE).
+		recheck, reason := r.recheckCross(ctx, subjects)
+		if r.integrity != "" {
+			return Verdict{}
+		}
+		if recheck != (Observation{}) {
+			evidence = append(evidence, recheck.Ref)
+		}
+		if reason != "" {
+			unverified := subjects
+			unverified.EvaluatedStatus = oracle.SubjectUnknown
+			facts.CrossNormalData = oracle.StateUnknown
+			return r.verdict(t, unverified, facts, evidence, reason)
+		}
 		facts.CrossNormalData = oracle.StateNo
 	}
 	if cross.Marker.Status == MarkerComplete && cross.Marker.Presence == MarkerPresent {
@@ -575,6 +590,37 @@ func (r *run) confirmType(ctx context.Context, t TypeDeclaration, subjects oracl
 	// 표식은 이 회차에 새로 만든 무작위 값이고 A의 객체 한 칸에만 넣었다. 공통 화면 틀이 담을 수 없다.
 	facts.TemplateExcluded = oracle.StateYes
 	return r.verdict(t, subjects, facts, evidence, "")
+}
+
+// recheckCross는 교차 조회가 거부로 끝났을 때 B 신원을 한 번 더 확인한다(확정 몫의 종류당 1건, 거부일 때만 씀). 처음
+// 신원과 같은 주체가 정상 응답하면 사유 없음(살아 있음), 신원 응답이 401·403이면 세션 만료, 그 밖에는 확인 못 함이다.
+// 만료여도 다시 로그인해서 다시 조회하지 않는다: 확정 직전에 이미 다시 로그인했으므로 확정 단계 몇 초 사이에 만료되는
+// 것은 수명이 비정상적으로 짧은 대상뿐이고, 사유만 정확히 남긴다.
+func (r *run) recheckCross(ctx context.Context, subjects oracle.SubjectContext) (Observation, ProductReason) {
+	if r.budget || r.stopped {
+		return Observation{}, ReasonCrossDenialUnverified
+	}
+	want := Observation{Purpose: PurposeIdentity, Role: RoleCross, AccountLabel: r.in.Cross.Label}
+	obs, ok := r.call(ctx, want, func() (Observation, error) {
+		return r.deps.Transport.Identity(ctx, IdentityRequest{Binding: r.in.Binding, Spec: r.decl.Identity,
+			Role: RoleCross, AccountLabel: r.in.Cross.Label, Timeout: r.in.RequestTimeout})
+	})
+	if r.integrity != "" {
+		return Observation{}, ""
+	}
+	if !ok {
+		return Observation{}, ReasonCrossDenialUnverified
+	}
+	if !obs.Sent || obs.TimedOut || !obs.ResponseComplete {
+		return obs, ReasonCrossDenialUnverified
+	}
+	if obs.Normal == oracle.StateYes && obs.SubjectDigest != "" && obs.SubjectDigest == subjects.EvaluatedRef {
+		return obs, ""
+	}
+	if obs.StatusCode == 401 || obs.StatusCode == 403 {
+		return obs, ReasonSessionExpired
+	}
+	return obs, ReasonCrossDenialUnverified
 }
 
 // read는 조회 하나를 부르고, 판정에 쓸 수 없으면 사유를 돌려준다. 관찰을 못 받았으면 빈 관찰이다.
