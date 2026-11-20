@@ -918,12 +918,17 @@ func TestRunCrossDeniedReadsStatusFirst(t *testing.T) {
 		"absent":  {Presence: e3contract.MarkerAbsent},
 		"failed":  {MarkerStatus: e3contract.MarkerFailed},
 		"present": {Presence: e3contract.MarkerPresent},
+		// 거부 본문이 JSON이 아니어서 E²가 정상 여부를 unknown으로 둔 경우(e2proxy inspectRead)도 상태로 정한다.
+		"failed_normal_unknown": {MarkerStatus: e3contract.MarkerFailed, Normal: oracle.StateUnknown},
 	}
 	for _, status := range []int{401, 403, 404} {
 		for name, marker := range markers {
 			t.Run(fmt.Sprintf("%d_%s", status, name), func(t *testing.T) {
 				be := marker
-				be.Status, be.Normal = status, oracle.StateNo
+				be.Status = status
+				if be.Normal == "" {
+					be.Normal = oracle.StateNo
+				}
 				f := newFixture(t)
 				f.fake.Behaviors[key(e3contract.PurposeRead, e3contract.RoleCross, "note")] = be
 				res := f.run(t)
@@ -941,7 +946,8 @@ func TestRunCrossDeniedReadsStatusFirst(t *testing.T) {
 					}
 					return
 				}
-				if len(v.ProductReasons) != 0 || !slices.Contains(v.OracleReasons, oracle.ReasonDataNoMatch) || v.DataCheck != oracle.StateNo {
+				if len(v.ProductReasons) != 0 || !slices.Contains(v.OracleReasons, oracle.ReasonDataNoMatch) || v.DataCheck != oracle.StateNo ||
+					v.Case.Facts.CrossNormalData != oracle.StateNo {
 					t.Fatalf("거부 응답이 data_no_match가 아님: %+v", v)
 				}
 			})
@@ -962,14 +968,22 @@ func TestRunCrossDeniedReadsStatusFirst(t *testing.T) {
 			}
 		})
 	}
-	// A(소유) 조회는 이 순서를 쓰지 않는다: A가 404면 그대로 데이터 검사 실패이고 B 조회를 보내지 않는다.
-	f := newFixture(t)
-	f.fake.Behaviors[key(e3contract.PurposeRead, e3contract.RoleOwner, "note")] = e3fake.Behavior{Status: 404, Normal: oracle.StateNo, MarkerStatus: e3contract.MarkerFailed}
-	res := f.run(t)
-	if v := verdictOf(t, res, "note"); v.Value != oracle.Undecidable || !hasReason(v, e3contract.ReasonDataCheckFailed) {
-		t.Fatalf("A 404: %+v", v)
-	}
-	if n := countCalls(f.fake.Calls(), func(k e3fake.Key) bool { return k == key(e3contract.PurposeRead, e3contract.RoleCross, "note") }); n != 0 {
-		t.Fatalf("A 404 뒤 B 조회 %d번", n)
+	// A(소유) 조회는 이 순서를 쓰지 않는다: A가 404면 표식 검사 결과와 상관없이 그대로 데이터 검사 실패이고(모순 사유가
+	// 아님) B 조회를 보내지 않는다.
+	for name, owner := range map[string]e3fake.Behavior{
+		"failed":  {Status: 404, Normal: oracle.StateNo, MarkerStatus: e3contract.MarkerFailed},
+		"present": {Status: 404, Normal: oracle.StateNo, Presence: e3contract.MarkerPresent},
+	} {
+		t.Run("owner_404_"+name, func(t *testing.T) {
+			f := newFixture(t)
+			f.fake.Behaviors[key(e3contract.PurposeRead, e3contract.RoleOwner, "note")] = owner
+			res := f.run(t)
+			if v := verdictOf(t, res, "note"); v.Value != oracle.Undecidable || !hasReason(v, e3contract.ReasonDataCheckFailed) {
+				t.Fatalf("A 404: %+v", v)
+			}
+			if n := countCalls(f.fake.Calls(), func(k e3fake.Key) bool { return k == key(e3contract.PurposeRead, e3contract.RoleCross, "note") }); n != 0 {
+				t.Fatalf("A 404 뒤 B 조회 %d번", n)
+			}
+		})
 	}
 }
