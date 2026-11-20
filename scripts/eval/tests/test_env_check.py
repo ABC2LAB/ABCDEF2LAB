@@ -235,6 +235,11 @@ class TestFailures(unittest.TestCase):
         skipped = host.checks()["power"]
         self.assertTrue(skipped.skipped)
         self.assertIn("Windows 업데이트 상태를 읽을 수 없음", skipped.reason)
+        # 재부팅 대기 키 하나라도 못 읽으면 일시 중지가 읽혀도 '확인 못 함'이다(없음으로 읽지 않는다)
+        base = FakeHost().reg
+        for key in (REBOOT_REQUIRED, REBOOT_PENDING):
+            with self.subTest(unreadable=key):
+                self.assertIsNone(env_check.windows_update_state(lambda k, v: None if k == key else base(k, v), lambda: NOW))
         # 절전이 켜져 있으면 업데이트가 괜찮아도 FAIL
         host = FakeHost()
         host.power_values["STANDBYIDLE"] = (600, 0)
