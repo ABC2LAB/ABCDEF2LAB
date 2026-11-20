@@ -9,6 +9,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"github.com/Autumn-27/artex/e3contract"
+	"log"
 	"net/http"
 	"net/netip"
 	"path/filepath"
@@ -76,6 +78,49 @@ type E2HTTPFileOptions struct {
 	PlannerLimits agent.E2HTTPPlannerLimits
 	// WebSearch는 진단 Planner·Worker의 원본 검색 도구 설정이다(루프 복원 결정안 §2-1).
 	WebSearch agent.E2HTTPWebSearch
+	// SealChecked는 E② Host가 봉인 뒤 근거 체크포인트마다 봉인 head 포함 여부를 확인한 결과를 기록한다(E③ 판정 저장 E1,
+	// docs/contracts/e3-product-verdict-store.md §6). nil이면 기록하지 않는다(표시는 봉인 미확인).
+	SealChecked func(context.Context, E2HTTPSealCheck) error
+}
+
+// E2HTTPSealCheck는 회차 하나의 봉인 확인 결과다. Host가 신뢰 저장소의 sealed head로 확인했다.
+type E2HTTPSealCheck struct {
+	TaskID int64
+	RunRef string
+	Result e2host.SealResult
+}
+
+// e2HTTPSealCheckRecordTimeout은 봉인 확인 결과 기록 한 번에 쓰는 시간 상한이다. 봉인은 이미 신뢰 저장소에 게시됐으므로
+// 기록이 늦거나 멈춰도 회차 마감(Release → CloseTask → audit-close)을 붙잡지 않는다(#816 리뷰). 기록하지 못한 판정은
+// 봉인 미확인으로 보인다. 행 하나를 넣는 DB 쓰기라 짧게 둔다. 시험이 줄인다.
+var e2HTTPSealCheckRecordTimeout = 10 * time.Second
+
+// recordE2HTTPSealCheck는 봉인 확인 기록 훅을 부르되 e2HTTPSealCheckRecordTimeout 안에 끝나지 않으면 기다리지 않는다. 호출자의
+// 취소와는 떼어(중지 정리 문맥이 이미 끝났어도 성공한 봉인의 결과는 남기려고) 별도 기한을 둔다. 훅이 문맥을 무시하고 멈춰
+// 있어도 반환한다(그 훅은 끝날 때까지 혼자 돈다).
+func recordE2HTTPSealCheck(parent context.Context, hook func(context.Context, E2HTTPSealCheck) error, check E2HTTPSealCheck) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), e2HTTPSealCheckRecordTimeout)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- hook(ctx, check) }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// e2HostE3Verifier는 E② Host 클라이언트를 E③ 검증자로 쓴다. 근거 체크포인트도 돌려준다(e2proxy.E3CheckpointVerifier).
+type e2HostE3Verifier struct{ host *e2host.Client }
+
+func (v e2HostE3Verifier) Verified(ctx context.Context, b e3contract.RunBinding, ref e3contract.CallRef) (e2proxy.Event, error) {
+	return v.host.Verified(ctx, b, ref)
+}
+
+func (v e2HostE3Verifier) VerifiedCheckpoint(ctx context.Context, b e3contract.RunBinding, ref e3contract.CallRef) (e2proxy.Event, e2proxy.JournalCheckpoint, error) {
+	got, err := v.host.VerifiedAt(ctx, b, ref)
+	return got.Event, got.Checkpoint, err
 }
 
 func (E2HTTPFileOptions) String() string   { return "server.E2HTTPFileOptions[protected]" }
@@ -530,7 +575,16 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 				return err
 			}
 			if hostRecorder != nil {
-				return hostRecorder.Seal(ctx)
+				result, err := hostRecorder.SealChecked(ctx)
+				if err != nil {
+					return err
+				}
+				// 봉인은 이미 저장소에 게시됐다. 확인 결과를 남기지 못해도 봉인 성공이고, 판정 표시는 봉인 미확인이다.
+				if result != nil && input.SealChecked != nil {
+					if recordErr := recordE2HTTPSealCheck(ctx, input.SealChecked, E2HTTPSealCheck{TaskID: request.TaskIDNumber, RunRef: scope.RunRef, Result: *result}); recordErr != nil {
+						log.Printf(logT("[e2-host] task %d 봉인 확인 기록 실패(판정은 봉인 미확인)"), request.TaskIDNumber)
+					}
+				}
 			}
 			return nil
 		}
@@ -585,7 +639,11 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		if share != nil {
 			e3Requests = share.Requests
 		}
-		execution, createErr := e2proxy.NewExecution(taskctx, e2proxy.Config{AuditVersion: auditVersion, E3Verifier: hostRecorder, E3ConfirmationRequests: e3Requests, E3WriteConsent: policy.E3WriteConsent, E3Resettable: policy.E3Resettable, RequestBoundary: workflowBoundary(input.Workflow), CheckAuthority: transmissionCheck, ApprovalMode: policy.ApprovalMode, RequestApproval: gate, Evaluation: policy.Evaluation, HeaderMode: policy.HeaderMode, PasswordResponse: e2HTTPPasswordResponse(policy.Auth), Scope: scope, IntentID: request.IntentID, OwnerRef: policy.OwnerRef, PolicyRevision: policy.PolicyRevision, AccountRef: policy.AccountRef, SessionRef: policy.SessionRef, ExpiresAt: policy.ValidUntil, Rules: rules, ExcludedPaths: policy.excludedPaths(), Budget: transmit.CumulativeBudget{Ledger: ledger, Key: grantKey, Binding: budgetBinding}, Recorder: recorder, RootCAs: upstreamRoots, Limits: limits, AttemptPathObserver: observer})
+		var e3Verifier e2proxy.E3Verifier
+		if hostRecorder != nil {
+			e3Verifier = e2HostE3Verifier{host: hostRecorder}
+		}
+		execution, createErr := e2proxy.NewExecution(taskctx, e2proxy.Config{AuditVersion: auditVersion, E3Verifier: e3Verifier, E3ConfirmationRequests: e3Requests, E3WriteConsent: policy.E3WriteConsent, E3Resettable: policy.E3Resettable, RequestBoundary: workflowBoundary(input.Workflow), CheckAuthority: transmissionCheck, ApprovalMode: policy.ApprovalMode, RequestApproval: gate, Evaluation: policy.Evaluation, HeaderMode: policy.HeaderMode, PasswordResponse: e2HTTPPasswordResponse(policy.Auth), Scope: scope, IntentID: request.IntentID, OwnerRef: policy.OwnerRef, PolicyRevision: policy.PolicyRevision, AccountRef: policy.AccountRef, SessionRef: policy.SessionRef, ExpiresAt: policy.ValidUntil, Rules: rules, ExcludedPaths: policy.excludedPaths(), Budget: transmit.CumulativeBudget{Ledger: ledger, Key: grantKey, Binding: budgetBinding}, Recorder: recorder, RootCAs: upstreamRoots, Limits: limits, AttemptPathObserver: observer})
 		if createErr != nil {
 			return failed(nil, nil)
 		}

@@ -81,6 +81,8 @@ type FirstDiagnosisHTTPHooks struct {
 	ObserveEvent     func(context.Context, e2proxy.Event) error
 	ObserveResult    func(context.Context, e2runner.Result) error
 	OnAcquire        func(context.Context, E2HTTPAcquired) error
+	// SealChecked는 E② Host 봉인 확인 결과 기록이다(StartFirstDiagnosisHTTP가 실행 역할 DB로 채운다).
+	SealChecked func(context.Context, E2HTTPSealCheck) error
 }
 
 func (FirstDiagnosisHTTPHooks) String() string   { return "server.FirstDiagnosisHTTPHooks[protected]" }
@@ -139,7 +141,7 @@ func NewFirstDiagnosisHTTPHost(ctx context.Context, cfg FirstDiagnosisHTTPHostCo
 	if len(hooks) == 1 {
 		hook = hooks[0]
 	}
-	options, err := LoadE2HTTPRuntimeOptions(ctx, E2HTTPFileOptions{HostSocket: hook.HostSocket, Workflow: hook.Workflow, RequestApprovals: hook.RequestApprovals, CheckAuthority: hook.CheckAuthority, PolicyFile: cfg.PolicyFile, Authority: authority, Supervisor: h, ObserveEvent: hook.ObserveEvent, ObserveResult: hook.ObserveResult, OnAcquire: hook.OnAcquire, PlannerLimits: cfg.PlannerLimits, WebSearch: cfg.WebSearch})
+	options, err := LoadE2HTTPRuntimeOptions(ctx, E2HTTPFileOptions{HostSocket: hook.HostSocket, Workflow: hook.Workflow, RequestApprovals: hook.RequestApprovals, CheckAuthority: hook.CheckAuthority, PolicyFile: cfg.PolicyFile, Authority: authority, Supervisor: h, ObserveEvent: hook.ObserveEvent, ObserveResult: hook.ObserveResult, OnAcquire: hook.OnAcquire, PlannerLimits: cfg.PlannerLimits, WebSearch: cfg.WebSearch, SealChecked: hook.SealChecked})
 	if err != nil {
 		authority.revoke()
 		_ = authority.close()
