@@ -59,6 +59,9 @@ func TestLazyE2(t *testing.T) {
 	if _, err := lazy.AccountBindingRef(t.Context(), binding, "tester-a"); !errors.Is(err, ErrNotRegistered) || created.Load() != 0 {
 		t.Fatal("표식 등록 전 계정 결속 조회가 브리지를 만들거나 통과함")
 	}
+	if _, _, err := lazy.VerifiedCheckpoint(t.Context(), binding, e3contract.CallRef{}); !errors.Is(err, ErrNotRegistered) || created.Load() != 0 {
+		t.Fatal("표식 등록 전 체크포인트 조회가 브리지를 만들거나 통과함")
+	}
 	if lazy.Created() {
 		t.Fatal("등록 전 생성 표시")
 	}
@@ -78,6 +81,10 @@ func TestLazyE2(t *testing.T) {
 	}
 	if _, err := lazy.AccountBindingRef(t.Context(), binding, "tester-a"); err == nil || spy.calls.Load() != 5 {
 		t.Fatal("등록 뒤 계정 결속 조회가 브리지로 넘어가지 않음")
+	}
+	// 체크포인트를 주지 못하는 브리지는 근거 체크포인트 없음이다(저장 쪽은 봉인 미확인으로 남긴다).
+	if _, _, err := lazy.VerifiedCheckpoint(t.Context(), binding, e3contract.CallRef{}); !errors.Is(err, ErrNoCheckpoint) {
+		t.Fatal("체크포인트 없는 브리지", err)
 	}
 	lazy.Close()
 	if !spy.closed.Load() {

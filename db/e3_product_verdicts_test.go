@@ -18,7 +18,7 @@ func productVerdictFor(taskID int64, run, resourceType string, value oracle.Verd
 		Binding: ProductBinding{JobRef: "job-synthetic", RunRef: run, E2PolicyRef: "e2-policy-synthetic", GenerationRef: "generation-synthetic",
 			InstanceRef: "instance-synthetic", Policy: ProductPolicySource{Ref: "declaration-job-synthetic",
 				DigestSHA256: sha256.Sum256([]byte("synthetic declaration")), TargetApprovalRevision: "target-revision-3"}},
-		Journal:      ProductJournal{Ref: "journal-synthetic", DigestSHA256: sha256.Sum256([]byte("synthetic sealed journal"))},
+		Checkpoint:   &ProductCheckpoint{JournalID: "journal-synthetic", Sequence: 12, MAC: strings.Repeat("c", 64)},
 		ResourceType: resourceType, ResourceRef: resourceType + ":" + strings.Repeat("a", 64), ModelTag: "synthetic-model",
 		Value: value, PolicyCheck: oracle.StateYes, IdentityCheck: oracle.StateYes, DataCheck: oracle.StateYes,
 		OracleReasons:  []oracle.JudgeReason{oracle.ReasonPolicyDenyResolved, oracle.ReasonSubjectsDistinctVerified, oracle.ReasonDataNontrivialMatch},
@@ -50,7 +50,10 @@ func TestProductVerdictInputValidation(t *testing.T) {
 		"unknown value":            func(v *ProductVerdict) { v.Value = "maybe" },
 		"unknown check":            func(v *ProductVerdict) { v.DataCheck = "partial" },
 		"zero policy digest":       func(v *ProductVerdict) { v.Binding.Policy.DigestSHA256 = [32]byte{} },
-		"zero journal digest":      func(v *ProductVerdict) { v.Journal.DigestSHA256 = [32]byte{} },
+		"zero checkpoint sequence": func(v *ProductVerdict) { v.Checkpoint.Sequence = 0 },
+		"upper checkpoint mac":     func(v *ProductVerdict) { v.Checkpoint.MAC = strings.Repeat("C", 64) },
+		"short checkpoint mac":     func(v *ProductVerdict) { v.Checkpoint.MAC = strings.Repeat("c", 63) },
+		"bad checkpoint journal":   func(v *ProductVerdict) { v.Checkpoint.JournalID = "../journal" },
 		"no approval revision":     func(v *ProductVerdict) { v.Binding.Policy.TargetApprovalRevision = "" },
 		"no policy ref":            func(v *ProductVerdict) { v.Binding.Policy.Ref = "" },
 		"bad run ref":              func(v *ProductVerdict) { v.Binding.RunRef = "../run" },
@@ -170,7 +173,7 @@ func TestProductVerdictStoredSeparatelyFromEval(t *testing.T) {
 		t.Fatal("다른 입력을 같은 판정으로 받음", err)
 	}
 	otherJournal := productVerdictFor(f.taskID, run, "receipt", oracle.Allowed)
-	otherJournal.Journal.DigestSHA256 = sha256.Sum256([]byte("other journal"))
+	otherJournal.Checkpoint = &ProductCheckpoint{JournalID: "journal-synthetic", Sequence: 13, MAC: strings.Repeat("d", 64)}
 	if _, err := d.RecordProductVerdict(t.Context(), otherJournal); !errors.Is(err, ErrProductVerdictConflict) {
 		t.Fatal("같은 회차에 다른 근거 묶음", err)
 	}

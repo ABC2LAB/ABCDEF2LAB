@@ -64,8 +64,8 @@ type productVerdictListItem struct {
 	CandidateRefs      []string                  `json:"candidate_refs"`
 	EvidenceCalls      *int                      `json:"evidence_calls"`
 	ObservedAt         *string                   `json:"observed_at"`
-	// EvidenceSeal은 판정 근거 체크포인트가 봉인된 저널에 포함되는지다(E1, 봉인 확인). 그 연결 전에는 늘 null이다.
-	EvidenceSeal *string `json:"evidence_seal"`
+	// EvidenceSeal은 판정 근거 체크포인트가 봉인된 저널에 포함되는지다(E1 계약 §7). 근거 호출이 없는 판정은 null이다.
+	EvidenceSeal *productEvidenceSeal `json:"evidence_seal"`
 }
 
 type productVerdictListEnvelope struct {
@@ -105,6 +105,10 @@ func readProductVerdictList(ctx context.Context, pool *sql.DB, taskID int64, job
 	if status != http.StatusOK {
 		return productVerdictListFail("load", status, code)
 	}
+	seals, err := loadProductSealChecks(ctx, tx, taskID, productVerdictRunRefs(rows))
+	if err != nil {
+		return productVerdictListFail("seal-checks", http.StatusServiceUnavailable, productVerdictsUnavailable)
+	}
 	if tx.Commit() != nil {
 		return productVerdictListFail("commit", http.StatusServiceUnavailable, productVerdictsUnavailable)
 	}
@@ -112,7 +116,7 @@ func readProductVerdictList(ctx context.Context, pool *sql.DB, taskID int64, job
 	if err != nil {
 		return productVerdictListFail("policy-source", http.StatusServiceUnavailable, productVerdictsUnavailable)
 	}
-	return assembleProductVerdictList(taskID, exploration, jobID, rows, got)
+	return assembleProductVerdictList(taskID, exploration, jobID, rows, got, seals)
 }
 
 // loadProductVerdictRows는 작업의 제품 판정 발급을 판정 상세와 같은 칸으로 읽는다. 상한을 넘으면 잘라 읽지 않고 422다.
@@ -151,7 +155,7 @@ func loadProductVerdictRows(ctx context.Context, q reportReadQuery, taskID int64
 }
 
 // assembleProductVerdictList는 행마다 판정 상세(OD06)와 같은 검사로 진위를 확인하고 공개 칸만 옮긴다. DB를 다시 읽지 않는다.
-func assembleProductVerdictList(taskID, exploration int64, jobID string, rows []verdictDetailRow, got productVerdictContext) (productVerdictListEnvelope, int, string) {
+func assembleProductVerdictList(taskID, exploration int64, jobID string, rows []verdictDetailRow, got productVerdictContext, seals productSealChecks) (productVerdictListEnvelope, int, string) {
 	got.jobID = jobID
 	env := productVerdictListEnvelope{Format: productVerdictListFormat, TaskID: strconv.FormatInt(taskID, 10),
 		SourceKind: db.E3SourceProduct, Title: verdictDetailProductTitle, Items: make([]productVerdictListItem, 0, len(rows))}
@@ -164,7 +168,7 @@ func assembleProductVerdictList(taskID, exploration int64, jobID string, rows []
 	}
 	revisions := map[string]bool{}
 	for _, r := range rows {
-		item, ok := productVerdictListRow(taskID, exploration, r, got)
+		item, ok := productVerdictListRow(taskID, exploration, r, got, seals)
 		if !ok {
 			return productVerdictListFail("array-limit", http.StatusUnprocessableEntity, productVerdictsIntegrityFailed)
 		}
@@ -203,7 +207,7 @@ type productVerdictListRowView struct {
 }
 
 // productVerdictListRow는 행 하나를 판정 상세와 같은 규칙으로 확인한다. ok=false는 배열 상한 초과(응답 전체 422)다.
-func productVerdictListRow(taskID, exploration int64, r verdictDetailRow, got productVerdictContext) (productVerdictListRowView, bool) {
+func productVerdictListRow(taskID, exploration int64, r verdictDetailRow, got productVerdictContext, seals productSealChecks) (productVerdictListRowView, bool) {
 	var out productVerdictListRowView
 	if r.verdictID.Valid {
 		out.VerdictID = verdictDetailString(r.verdictID.Int64)
@@ -241,6 +245,14 @@ func productVerdictListRow(taskID, exploration int64, r verdictDetailRow, got pr
 	if !ok {
 		return failed()
 	}
+	// 봉인 포함 실패(되감기·다른 분기)는 진위 실패다. 값은 숨기고 봉인 확인 표시만 남긴다.
+	seal, sealFailed := productEvidenceSealFor(verified, seals)
+	if sealFailed {
+		row, ok := failed()
+		row.EvidenceSeal = seal
+		return row, ok
+	}
+	out.EvidenceSeal = seal
 	out.RecordStatus = status
 	out.ResourceType, out.ResourceRef, out.OracleValue = &record.ResourceType, &record.ResourceRef, &record.OracleValue
 	out.Checks = &productVerdictListChecks{Policy: record.PolicyCheck, Identity: record.IdentityCheck, Data: record.DataCheck}

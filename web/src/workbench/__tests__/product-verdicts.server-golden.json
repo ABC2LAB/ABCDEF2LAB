@@ -36,7 +36,10 @@
         ],
         "evidence_calls": 1,
         "observed_at": "2026-11-18T09:00:00.000000Z",
-        "evidence_seal": null
+        "evidence_seal": {
+          "status": "unconfirmed",
+          "reason": "seal_not_recorded"
+        }
       },
       {
         "verdict_id": "2",
@@ -58,7 +61,10 @@
         ],
         "evidence_calls": 1,
         "observed_at": "2026-11-18T09:00:00.000000Z",
-        "evidence_seal": null
+        "evidence_seal": {
+          "status": "unconfirmed",
+          "reason": "seal_not_recorded"
+        }
       }
     ]
   },
@@ -114,7 +120,10 @@
         ],
         "evidence_calls": 1,
         "observed_at": "2026-11-18T09:00:00.000000Z",
-        "evidence_seal": null
+        "evidence_seal": {
+          "status": "unconfirmed",
+          "reason": "seal_not_recorded"
+        }
       },
       {
         "verdict_id": "2",
@@ -166,7 +175,10 @@
         ],
         "evidence_calls": 1,
         "observed_at": "2026-11-18T09:00:00.000000Z",
-        "evidence_seal": null
+        "evidence_seal": {
+          "status": "unconfirmed",
+          "reason": "seal_not_recorded"
+        }
       },
       {
         "verdict_id": "4",
@@ -188,7 +200,10 @@
         ],
         "evidence_calls": 1,
         "observed_at": "2026-11-18T09:00:00.000000Z",
-        "evidence_seal": null
+        "evidence_seal": {
+          "status": "unconfirmed",
+          "reason": "seal_not_recorded"
+        }
       }
     ]
   },
@@ -220,7 +235,10 @@
         ],
         "evidence_calls": 1,
         "observed_at": "2026-11-18T09:00:00.000000Z",
-        "evidence_seal": null
+        "evidence_seal": {
+          "status": "unconfirmed",
+          "reason": "seal_not_recorded"
+        }
       },
       {
         "verdict_id": "2",
@@ -242,7 +260,10 @@
         ],
         "evidence_calls": 1,
         "observed_at": "2026-11-18T09:00:00.000000Z",
-        "evidence_seal": null
+        "evidence_seal": {
+          "status": "unconfirmed",
+          "reason": "seal_not_recorded"
+        }
       }
     ]
   },
@@ -283,7 +304,10 @@
         ],
         "evidence_calls": 1,
         "observed_at": "2026-11-18T09:00:00.000000Z",
-        "evidence_seal": null
+        "evidence_seal": {
+          "status": "unconfirmed",
+          "reason": "seal_not_recorded"
+        }
       },
       {
         "verdict_id": "2",
@@ -305,7 +329,10 @@
         ],
         "evidence_calls": 1,
         "observed_at": "2026-11-18T09:00:00.000000Z",
-        "evidence_seal": null
+        "evidence_seal": {
+          "status": "unconfirmed",
+          "reason": "seal_not_recorded"
+        }
       }
     ]
   },
@@ -346,7 +373,10 @@
         ],
         "evidence_calls": 1,
         "observed_at": "2026-11-18T09:00:00.000000Z",
-        "evidence_seal": null
+        "evidence_seal": {
+          "status": "unconfirmed",
+          "reason": "seal_not_recorded"
+        }
       },
       {
         "verdict_id": "2",
@@ -368,8 +398,241 @@
         ],
         "evidence_calls": 1,
         "observed_at": "2026-11-18T09:00:00.000000Z",
-        "evidence_seal": null
+        "evidence_seal": {
+          "status": "unconfirmed",
+          "reason": "seal_not_recorded"
+        }
       }
     ]
+  },
+  "seal_checkpoint_missing": {
+    "confirmation": null,
+    "format": "jindo.workbench-product-verdicts/v1",
+    "items": [
+      {
+        "candidate_refs": [],
+        "checks": {
+          "data": "unknown",
+          "identity": "unknown",
+          "policy": "yes"
+        },
+        "evidence_calls": 1,
+        "evidence_seal": {
+          "reason": "evidence_checkpoint_missing",
+          "status": "unconfirmed"
+        },
+        "observed_at": "2026-11-18T09:00:00.000000Z",
+        "oracle_reason_codes": [
+          "subject_not_verified"
+        ],
+        "oracle_value": "undecidable",
+        "product_reason_codes": [],
+        "record_status": "verified",
+        "resource_ref": "document:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "resource_type": "document",
+        "verdict_id": "1"
+      },
+      {
+        "candidate_refs": [],
+        "checks": {
+          "data": "unknown",
+          "identity": "unknown",
+          "policy": "yes"
+        },
+        "evidence_calls": 0,
+        "evidence_seal": null,
+        "observed_at": "2026-11-18T09:00:00.000000Z",
+        "oracle_reason_codes": [
+          "subject_not_verified"
+        ],
+        "oracle_value": "undecidable",
+        "product_reason_codes": [],
+        "record_status": "verified",
+        "resource_ref": "note:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "resource_type": "note",
+        "verdict_id": "2"
+      }
+    ],
+    "policy_source": {
+      "cross_account_label": "tester-b",
+      "digest_sha256": "26bf52f44204817e9ba66fc86e6b5f4e15560630b39f4ba7209f3ed7910e1e0b",
+      "owner_account_label": "tester-a",
+      "ref": "declaration-job-synthetic",
+      "target_approval_revision": "target-revision-1"
+    },
+    "source_kind": "product",
+    "task_id": "2",
+    "title": "제품 확정 단계 판정"
+  },
+  "seal_confirmed": {
+    "confirmation": null,
+    "format": "jindo.workbench-product-verdicts/v1",
+    "items": [
+      {
+        "candidate_refs": [],
+        "checks": {
+          "data": "unknown",
+          "identity": "unknown",
+          "policy": "yes"
+        },
+        "evidence_calls": 1,
+        "evidence_seal": {
+          "reason": null,
+          "status": "confirmed"
+        },
+        "observed_at": "2026-11-18T09:00:00.000000Z",
+        "oracle_reason_codes": [
+          "subject_not_verified"
+        ],
+        "oracle_value": "undecidable",
+        "product_reason_codes": [],
+        "record_status": "verified",
+        "resource_ref": "document:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "resource_type": "document",
+        "verdict_id": "1"
+      },
+      {
+        "candidate_refs": [],
+        "checks": {
+          "data": "unknown",
+          "identity": "unknown",
+          "policy": "yes"
+        },
+        "evidence_calls": 0,
+        "evidence_seal": null,
+        "observed_at": "2026-11-18T09:00:00.000000Z",
+        "oracle_reason_codes": [
+          "subject_not_verified"
+        ],
+        "oracle_value": "undecidable",
+        "product_reason_codes": [],
+        "record_status": "verified",
+        "resource_ref": "note:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "resource_type": "note",
+        "verdict_id": "2"
+      }
+    ],
+    "policy_source": {
+      "cross_account_label": "tester-b",
+      "digest_sha256": "26bf52f44204817e9ba66fc86e6b5f4e15560630b39f4ba7209f3ed7910e1e0b",
+      "owner_account_label": "tester-a",
+      "ref": "declaration-job-synthetic",
+      "target_approval_revision": "target-revision-1"
+    },
+    "source_kind": "product",
+    "task_id": "2",
+    "title": "제품 확정 단계 판정"
+  },
+  "seal_inclusion_failed": {
+    "confirmation": null,
+    "format": "jindo.workbench-product-verdicts/v1",
+    "items": [
+      {
+        "candidate_refs": [],
+        "checks": null,
+        "evidence_calls": null,
+        "evidence_seal": {
+          "reason": null,
+          "status": "inclusion_failed"
+        },
+        "observed_at": null,
+        "oracle_reason_codes": [],
+        "oracle_value": null,
+        "product_reason_codes": [],
+        "record_status": "record_integrity_failed",
+        "resource_ref": null,
+        "resource_type": null,
+        "verdict_id": "1"
+      },
+      {
+        "candidate_refs": [],
+        "checks": {
+          "data": "unknown",
+          "identity": "unknown",
+          "policy": "yes"
+        },
+        "evidence_calls": 0,
+        "evidence_seal": null,
+        "observed_at": "2026-11-18T09:00:00.000000Z",
+        "oracle_reason_codes": [
+          "subject_not_verified"
+        ],
+        "oracle_value": "undecidable",
+        "product_reason_codes": [],
+        "record_status": "verified",
+        "resource_ref": "note:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "resource_type": "note",
+        "verdict_id": "2"
+      }
+    ],
+    "policy_source": {
+      "cross_account_label": "tester-b",
+      "digest_sha256": "26bf52f44204817e9ba66fc86e6b5f4e15560630b39f4ba7209f3ed7910e1e0b",
+      "owner_account_label": "tester-a",
+      "ref": "declaration-job-synthetic",
+      "target_approval_revision": "target-revision-1"
+    },
+    "source_kind": "product",
+    "task_id": "2",
+    "title": "제품 확정 단계 판정"
+  },
+  "seal_not_recorded": {
+    "confirmation": null,
+    "format": "jindo.workbench-product-verdicts/v1",
+    "items": [
+      {
+        "candidate_refs": [],
+        "checks": {
+          "data": "unknown",
+          "identity": "unknown",
+          "policy": "yes"
+        },
+        "evidence_calls": 1,
+        "evidence_seal": {
+          "reason": "seal_not_recorded",
+          "status": "unconfirmed"
+        },
+        "observed_at": "2026-11-18T09:00:00.000000Z",
+        "oracle_reason_codes": [
+          "subject_not_verified"
+        ],
+        "oracle_value": "undecidable",
+        "product_reason_codes": [],
+        "record_status": "verified",
+        "resource_ref": "document:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "resource_type": "document",
+        "verdict_id": "1"
+      },
+      {
+        "candidate_refs": [],
+        "checks": {
+          "data": "unknown",
+          "identity": "unknown",
+          "policy": "yes"
+        },
+        "evidence_calls": 0,
+        "evidence_seal": null,
+        "observed_at": "2026-11-18T09:00:00.000000Z",
+        "oracle_reason_codes": [
+          "subject_not_verified"
+        ],
+        "oracle_value": "undecidable",
+        "product_reason_codes": [],
+        "record_status": "verified",
+        "resource_ref": "note:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "resource_type": "note",
+        "verdict_id": "2"
+      }
+    ],
+    "policy_source": {
+      "cross_account_label": "tester-b",
+      "digest_sha256": "26bf52f44204817e9ba66fc86e6b5f4e15560630b39f4ba7209f3ed7910e1e0b",
+      "owner_account_label": "tester-a",
+      "ref": "declaration-job-synthetic",
+      "target_approval_revision": "target-revision-1"
+    },
+    "source_kind": "product",
+    "task_id": "2",
+    "title": "제품 확정 단계 판정"
   }
 }

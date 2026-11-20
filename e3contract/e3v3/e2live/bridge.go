@@ -185,6 +185,41 @@ func (l *Live) Verified(ctx context.Context, binding e3contract.RunBinding, ref 
 	return liveEvent(ev)
 }
 
+// VerifiedCheckpoint는 Verified와 같고, Host가 그 검증에 쓴 현재 head 체크포인트를 함께 돌려준다(E③ 판정 저장 근거). 오류
+// 분류는 Verified와 같다.
+func (l *Live) VerifiedCheckpoint(ctx context.Context, binding e3contract.RunBinding, ref e3contract.CallRef) (e3v3.Event, e3v3.Checkpoint, error) {
+	if ctx == nil || l == nil {
+		return e3v3.Event{}, e3v3.Checkpoint{}, e2proxy.ErrE3JournalUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return e3v3.Event{}, e3v3.Checkpoint{}, err
+	}
+	l.mu.Lock()
+	if err := l.check(binding); err != nil {
+		l.mu.Unlock()
+		return e3v3.Event{}, e3v3.Checkpoint{}, err
+	}
+	l.mu.Unlock()
+	ev, checkpoint, err := l.exec.VerifiedE3Checkpoint(ctx, binding, ref)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return e3v3.Event{}, e3v3.Checkpoint{}, ctxErr
+		}
+		if errors.Is(err, e2host.ErrEventMissing) {
+			return e3v3.Event{}, e3v3.Checkpoint{}, e3contract.ErrJournalEventMissing
+		}
+		if errors.Is(err, e2host.ErrBindingMismatch) {
+			return e3v3.Event{}, e3v3.Checkpoint{}, e3contract.ErrJournalBindingMismatch
+		}
+		return e3v3.Event{}, e3v3.Checkpoint{}, e3contract.ErrJournalIntegrity
+	}
+	out, err := liveEvent(ev)
+	if err != nil {
+		return e3v3.Event{}, e3v3.Checkpoint{}, err
+	}
+	return out, e3v3.Checkpoint{JournalID: checkpoint.JournalID, Sequence: checkpoint.Sequence, MAC: checkpoint.MAC}, nil
+}
+
 // liveEvent는 E②의 확장 영수증을 E③ v3 계약의 평탄한 사건으로 옮긴다.
 func liveEvent(ev e2proxy.Event) (e3v3.Event, error) {
 	a := ev.E3Audit

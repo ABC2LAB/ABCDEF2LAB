@@ -632,8 +632,13 @@ func TestFindingVerdictDetailProductIntegrity(t *testing.T) {
 		{name: "forge-manifest-run", forge: true, manifest: set("run_ref", "other-run")},
 		{name: "forge-binding-job", forge: true, binding: set("job_ref", "bad ref")},
 		{name: "forge-binding-e2-policy", forge: true, binding: set("e2_policy_ref", "bad ref")},
-		{name: "forge-journal-ref", forge: true, manifest: set("journal_ref", "bad ref")},
-		{name: "forge-journal-digest", forge: true, manifest: set("journal_digest_sha256", "not-hex")},
+		// 옛 manifest 칸(봉인 뒤 저장 전제)은 v2에 없다. 남아 있으면 진위 실패다.
+		{name: "forge-old-journal-ref", forge: true, manifest: set("journal_ref", "journal-synthetic")},
+		{name: "forge-checkpoint-journal", forge: true, manifest: func(m map[string]any) { m["evidence_checkpoint"].(map[string]any)["journal_id"] = "bad ref" }},
+		{name: "forge-checkpoint-sequence", forge: true, manifest: func(m map[string]any) { m["evidence_checkpoint"].(map[string]any)["sequence"] = 0 }},
+		{name: "forge-checkpoint-mac", forge: true, manifest: func(m map[string]any) { m["evidence_checkpoint"].(map[string]any)["mac"] = "not-hex" }},
+		{name: "forge-checkpoint-extra", forge: true, manifest: func(m map[string]any) { m["evidence_checkpoint"].(map[string]any)["scope"] = "x" }},
+		{name: "forge-checkpoint-key-missing", forge: true, manifest: func(m map[string]any) { delete(m["evidence_checkpoint"].(map[string]any), "mac") }},
 		{name: "forge-binding-generation", forge: true, binding: set("generation_ref", "other-generation")},
 		{name: "forge-generation-empty", forge: true, binding: set("generation_ref", ""),
 			sql: []string{`UPDATE e3_verdict_issuances SET reset_generation='',harness_generation_ref='' WHERE id={i}`}},
@@ -686,7 +691,23 @@ func TestFindingVerdictDetailProductIntegrity(t *testing.T) {
 			`UPDATE e3_oracle_verdicts SET oracle_value='undecidable' WHERE id={v}`}},
 		{name: "forge-payload-key-missing", forge: true, payload: func(p map[string]any) { delete(p, "evidence") }},
 		{name: "forge-binding-key-missing", forge: true, binding: func(b map[string]any) { delete(b, "e2_policy_ref") }},
-		{name: "forge-manifest-key-missing", forge: true, manifest: func(m map[string]any) { delete(m, "journal_ref") }},
+		{name: "forge-manifest-key-missing", forge: true, manifest: func(m map[string]any) { delete(m, "evidence_checkpoint") }},
+		// 저장 검사처럼 읽기도 겹친 사유·후보를 받지 않는다(그 행만 진위 실패).
+		{name: "forge-duplicate-oracle-reason", forge: true, payload: func(p map[string]any) {
+			p["oracle_reason_codes"] = []any{"policy_deny_resolved", "policy_deny_resolved"}
+		}},
+		{name: "forge-duplicate-candidate", forge: true, payload: set("candidate_refs", []any{"candidate-1", "candidate-1"}),
+			sql: []string{`UPDATE e3_verdict_issuances SET candidate_refs='["candidate-1","candidate-1"]'::jsonb WHERE id={i}`}},
+		// 확정이 아닌 판정으로 바꿔 제품 사유 불변식이 아니라 중복 검사만 걸리게 한다.
+		{name: "forge-duplicate-product-reason", forge: true, payload: func(p map[string]any) {
+			p["oracle_value"], p["product_reason_codes"] = "undecidable", []any{"product_x", "product_x"}
+		}, sql: []string{`UPDATE e3_oracle_verdicts SET oracle_value='undecidable' WHERE id={v}`,
+			`UPDATE e3_verdict_issuances SET product_reason_codes='["product_x","product_x"]'::jsonb WHERE id={i}`}},
+		// 같은 위조에서 중복만 빼면 진위 실패가 아니다(위 사례가 중복 때문에 실패함을 고정).
+		{name: "forge-single-product-reason", forge: true, status: http.StatusOK, payload: func(p map[string]any) {
+			p["oracle_value"], p["product_reason_codes"] = "undecidable", []any{"product_x"}
+		}, sql: []string{`UPDATE e3_oracle_verdicts SET oracle_value='undecidable' WHERE id={v}`,
+			`UPDATE e3_verdict_issuances SET product_reason_codes='["product_x"]'::jsonb WHERE id={i}`}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

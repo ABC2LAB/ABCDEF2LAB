@@ -541,7 +541,9 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 			func() map[string]string { return launchAccountAuth(runtime) })
 		if local, ok := runtime.(*server.FirstDiagnosisHTTPRuntime); ok {
 			confirmation.handle = local.E3HandleReason
+			confirmation.store = local.RecordProductVerdict
 		}
+		confirmation.modelTag = productE3ModelTag(l.inspection.Scope, l.launch.ModelProfileID)
 		e3Confirmation = server.FirstDiagnosisE3Hooks{Run: confirmation.run, Stopped: confirmation.stopped}
 		confirmShare, shareErr = confirmation.timeShare()
 	}

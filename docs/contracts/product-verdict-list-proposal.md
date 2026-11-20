@@ -58,7 +58,7 @@
       "candidate_refs": ["cand-7"],
       "evidence_calls": 2,
       "observed_at": "2026-11-20T01:02:03.000000Z",
-      "evidence_seal": null
+      "evidence_seal": { "status": "confirmed", "reason": null }
     }
   ]
 }
@@ -72,7 +72,7 @@
 | `policy_source.target_approval_revision` | IPC는 주지 않는다. 진위 확인을 통과한 행들의 정책 출처가 모두 같은 판일 때만 그 값, 행이 없거나 판이 다르면 `null` |
 | `policy_source.*_account_label` | 동결 선언의 소유·교차 계정 라벨(C14 등록 라벨, 자격·세션 없음). IPC `policy_source`가 digest와 함께 이 둘만 준다(선언 원문은 안 줌). 동결본에 라벨이 없거나 모양이 계약 밖이면 `null`, 화면은 "소유 계정 → 교차 계정" |
 | `confirmation` | 준비 서비스 IPC로 받은 `e3-confirmation.json`의 `status`·`reason`만(`reason`이 없으면 `null`). 파일이 없으면 `confirmation` 자체가 `null`이고 화면은 이를 "꺼짐"으로 추정하지 않는다. 파일이 있는데 읽지 못하거나 결과 형식·상태 값이 계약 밖이면 `status: "unreadable"`(`reason: null`)로 "없음"과 따로 둔다 |
-| `evidence_seal` | 판정 근거 체크포인트가 봉인된 저널에 포함되는지(E1 봉인 확인, 2026-11-20 결정: 확인됨·봉인 미확인·포함 실패). **자리만 둔다.** E1 저장 연결 전에는 늘 `null`이고 화면은 표시하지 않는다 |
+| `evidence_seal` | 판정 근거 체크포인트가 봉인된 저널에 포함되는지(E1 봉인 확인). 모양·조건은 `e3-product-verdict-store.md` §7: 근거 호출 없는 판정 `null`, `{"status":"confirmed","reason":null}`, `{"status":"unconfirmed","reason":"seal_not_recorded"\|"evidence_checkpoint_missing"}`(값 유지·"봉인 미확인"), `{"status":"inclusion_failed","reason":null}`(행은 `record_integrity_failed`, 값 숨김) |
 | `record_status` | 행마다 진위 확인 결과(§2.2): `verified` · `record_integrity_failed` · `policy_source_unavailable` |
 | `verdict_id` | `e3_oracle_verdicts.id` 정규 십진 문자열. 상세 API selector 그대로(OD02, issuance selector는 열지 않음) |
 | `resource_ref` | `<종류>:<ID digest>`(OD11). 객체 ID·경로 원문 없음 |
