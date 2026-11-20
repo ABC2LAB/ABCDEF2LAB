@@ -700,20 +700,19 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 		if !registered && server.requestApprovals.userStopped(number) {
 			return firstDiagnosisFailure(context.Canceled)
 		}
-		if !registered && server.engine.IsPaused(taskID) {
-			// 운영자 일시정지인지, LLM을 정하지 못한 대기 등 엔진 사정인지 회차를 읽을 때 가를 수 있게 원인 고정 코드를 남긴다.
-			log.Printf(logT("[first-diagnosis] task %s 엔진 일시정지(원인=%s)를 운영자 중지로 마감"), taskID, server.engine.PauseCause(taskID))
-			// 회차 중 엔진 일시정지(운영자 일시정지·동시 실행 조정 등)는 회차를 바로 끝내는 운영자 중지와 같다(사용자 결정
-			// 2026-11-20 분기점 1). 일시정지 상태로 시간 상한까지 걸려 있지 않게 중지를 기록하고 중지 마감(drain·E② 닫기·
-			// 확정 단계 interrupted)으로 간다. 재개는 지원하지 않는다.
-			if stopErr := server.requestApprovals.stop(context.WithoutCancel(run), number, "ARTEX"); stopErr != nil && !errors.Is(stopErr, db.ErrRequestApprovalConflict) {
-				log.Printf(logT("[first-diagnosis] task %s 일시정지를 중지로 기록하지 못함"), taskID)
-			}
-			return firstDiagnosisFailure(context.Canceled)
-		}
 		if run.Err() != nil {
+			// 실행 문맥 취소(서버 종료 등)를 엔진 일시정지보다 먼저 본다. 감독자 종료는 실행 문맥을 끊은 뒤 경쟁 방지 일시정지를
+			// 걸므로, 순서가 바뀌면 그 일시정지가 아래 엔진 일시정지 마감으로 잘못 기록된다.
 			server.engine.Pause(taskID, agent.AbortPausedRaceGuard)
 			return firstDiagnosisFailure(run.Err())
+		}
+		if !registered && server.engine.IsPaused(taskID) {
+			// 운영자 일시정지는 엔진 일시정지를 거치지 않는다(control pause는 firstDiagnosisControl이 운영자 중지로 기록하고 위의
+			// userStopped가 받는다, 사용자 결정 2026-11-20 분기점 1). 그러니 회차 도중 엔진 일시정지는 운영자 중지가 아니다.
+			// 운영자 중지와 섞지 않고 감독 실패(engine_paused)로 끝내 정상 완료로 읽히지 않게 하고, 원인 고정 코드를 남긴다.
+			// 지금 첫 진단 서버에서 회차 도중 엔진 일시정지가 생기는 경로는 없다(계약 §7.3 일시정지 원인 표·시험 고정). 방어 경로다.
+			log.Printf(logT("[first-diagnosis] task %s 회차 도중 엔진 일시정지(원인=%s)로 마감"), taskID, server.engine.PauseCause(taskID))
+			return firstDiagnosisCheckFailed(reasonEnginePaused, ErrFirstDiagnosisSupervisor)
 		}
 		if !registered && timeCloseAt.IsZero() {
 			// 시간 상한을 정하지 않은 실행(CLI 단발 실행)은 엔진 기한(작업 시간 상한)을 시간 상한으로 쓴다. 계획이 비어도

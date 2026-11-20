@@ -759,7 +759,17 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 				t.Fatalf("일시정지가 중지로 처리되지 않음: %d %s", code, body)
 			}
 		} else if mode == "engine-pause" {
-			// 운영자 control이 아닌 엔진 일시정지(동시 실행 조정 등)도 감독자가 운영자 중지로 바꿔 회차를 바로 끝낸다.
+			// 운영자 control이 아닌 엔진 일시정지는 회차 도중 생기는 경로가 없다(일시정지 원인 표). 방어 경로가 운영자 중지와
+			// 섞이지 않는지 직접 걸어 본다. 그 전에 회차 도중 엔진 일시정지 원인들이 닫혀 있는지 이 실제 서버에서 확인한다.
+			if runtime.server.engine.controlledReads != nil {
+				t.Fatal("E② HTTP 첫 진단 서버에 통제 조회 대기(paused_by_orchestrator) 경로가 열려 있음")
+			}
+			if on, _ := runtime.server.m.ConcurrencyLimit(); on {
+				t.Fatal("첫 진단 서버에 동시 실행 제한이 켜져 있음(llm_unavailable_queued 경로)")
+			}
+			if !runtime.server.firstDiagnosis || runtime.server.engine.IsPaused(task.ID) {
+				t.Fatal("회차 도중 엔진이 이미 일시정지됨")
+			}
 			runtime.server.engine.Pause(task.ID, agent.AbortPausedByOrchestrator)
 		} else if mode == "user-stop" {
 			hash, err := runtime.server.reloadPassHash()
@@ -893,6 +903,10 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		done := make(chan error, 1)
 		go func() { done <- supervisor.Run(ctx, task.ID, 0, "") }()
 		runErr = firstDiagnosisRunPastIdle(t, ctx, supervisor, task, func() bool { return idlePlanner.idle.Load() > 0 }, done)
+	}
+	if reason, ok := diagnosisCheckReason(runErr); ok && reason == reasonEnginePaused && mode != "engine-pause" {
+		// 회차 도중 운영자 밖 엔진 일시정지가 생기는 경로가 없음을 모든 마감 경로에서 고정한다.
+		t.Fatalf("회차 도중 엔진 일시정지로 끝남 mode=%s", mode)
 	}
 	t.Logf("마감 경로 관찰 mode=%s run=%d stop=%d handle=%q modelClosed=%v hitsAtClose=%d hitsNow=%d err=%v",
 		mode, closeProbe.runCalls, closeProbe.stopCalls, closeProbe.handle, closeProbe.modelClosed, closeProbe.hitsAtClose, hits.Load(), runErr)
@@ -1224,7 +1238,15 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		return
 	}
 	if mode == "cancel" || mode == "user-stop" || mode == "pause" || mode == "engine-pause" {
-		if runErr == nil || !errors.Is(runErr, context.Canceled) {
+		if mode == "engine-pause" {
+			// 운영자 밖 엔진 일시정지는 운영자 중지(취소)와 섞지 않고 감독 실패 engine_paused로 끝난다.
+			if reason, ok := diagnosisCheckReason(runErr); !ok || reason != reasonEnginePaused || !errors.Is(runErr, ErrFirstDiagnosisSupervisor) || errors.Is(runErr, context.Canceled) {
+				t.Fatalf("엔진 일시정지 마감 사유: %v", runErr)
+			}
+			if runtime.server.requestApprovals.userStopped(mustFirstDiagnosisTaskNumber(task.ID)) {
+				t.Fatal("엔진 일시정지를 운영자 중지로 기록함")
+			}
+		} else if runErr == nil || !errors.Is(runErr, context.Canceled) {
 			t.Fatal("진행 중 실제 HTTP 요청 취소를 성공으로 반환하거나 취소 원인을 잃음")
 		}
 		// 중지 마감은 확정 단계를 부르지 않고 중지 기록을 한 번 남긴다. 실행 문맥이 취소돼도 기록 문맥은 살아 있다.
@@ -1238,10 +1260,17 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 				t.Fatalf("재개 거절 사유: %d %s", code, body)
 			}
 		}
-		if mode == "user-stop" || mode == "pause" || mode == "engine-pause" {
+		if mode == "user-stop" || mode == "pause" {
 			state := runtime.server.requestApprovals.runState(mustFirstDiagnosisTaskNumber(task.ID))
 			if state.Phase != "closed" || state.Outcome != "cancelled" || !state.DrainComplete || state.ClosureFailed {
 				t.Fatalf("중지 마감 상태 불일치: %+v", state)
+			}
+		}
+		if mode == "engine-pause" {
+			state := runtime.server.requestApprovals.runState(mustFirstDiagnosisTaskNumber(task.ID))
+			t.Logf("엔진 일시정지 마감 상태: %+v closure=%+v", state, supervisor.ClosureResult())
+			if state.Outcome == "cancelled" {
+				t.Fatalf("엔진 일시정지를 취소(운영자 중지)로 닫음: %+v", state)
 			}
 		}
 		closeCtx, stop := context.WithTimeout(context.Background(), 8*time.Second)
@@ -1498,7 +1527,7 @@ func TestFirstDiagnosisCheckReasonsAreLoggable(t *testing.T) {
 	for _, reason := range []string{reasonClosureWorkflowFailed, reasonClosureWorkflowNotReady, reasonClosureIntentReadFailed, reasonClosureCallsWithoutIntents,
 		reasonClosureExecutionMissing, reasonClosureCallsMissing, reasonClosureResultsUnavailable, reasonClosureResultNotClosed, reasonClosureToolOutcomeInvalid,
 		reasonClosureResultMismatch, reasonClosureUntrustedIntentMismatch, reasonClosureProgramCallOpen, reasonClosureCallMismatch, reasonClosureUnknownIntentMismatch,
-		reasonClosurePolicyLimitedUnmatched, reasonClosureIntentStateInvalid, reasonClosureCallCountMismatch, reasonClosureNotReady, reasonEngineTaskFailed} {
+		reasonClosurePolicyLimitedUnmatched, reasonClosureIntentStateInvalid, reasonClosureCallCountMismatch, reasonClosureNotReady, reasonEngineTaskFailed, reasonEnginePaused} {
 		failed := firstDiagnosisCheckFailed(reason, ErrFirstDiagnosisSupervisor)
 		diagnosisStage(ctx, 1, "execution", failed, diagnosisFailureReason("execution", failed), time.Now())
 		if logger.Err() != nil {
@@ -2045,9 +2074,14 @@ func verifySupervisorFailureLog(t *testing.T, path, mode string) {
 		}
 		found++
 		switch mode {
-		case "cancel", "user-stop", "pause", "engine-pause":
+		case "cancel", "user-stop", "pause":
 			if event.Status != "cancelled" || event.ReasonCode != "user_cancelled" {
 				t.Error("실제 취소와 로그 상태 불일치")
+			}
+		case "engine-pause":
+			// 운영자 밖 엔진 일시정지는 운영자 취소(user_cancelled)가 아니라 실행 단계 실패 engine_paused로 남는다.
+			if event.Status != "failed" || event.Stage != "execution" || event.ReasonCode != reasonEnginePaused {
+				t.Errorf("엔진 일시정지의 로그 상태 불일치: stage=%s status=%s reason=%s", event.Stage, event.Status, event.ReasonCode)
 			}
 		case "close-fail":
 			if event.Status != "failed" || event.Stage != "audit_close" || event.ReasonCode != "audit_failed" {

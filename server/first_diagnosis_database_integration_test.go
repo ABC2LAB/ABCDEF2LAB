@@ -642,7 +642,7 @@ func TestFirstDiagnosisRuntimeDatabaseOwnedPostgres(t *testing.T) {
 			}
 			firstDiagnosisSupervisorEngineRun(t, manager, installer, cancelled, "pause")
 		})
-		t.Run("actual-engine-engine-pause-is-operator-stop", func(t *testing.T) {
+		t.Run("actual-engine-engine-pause-is-not-operator-stop", func(t *testing.T) {
 			cancelled, err := manager.CreateTask("Owned cancelled engine fixture", "Cancel an active owned request", nil, 60, 60)
 			if err != nil || cancelled == nil {
 				t.Fatal("독립 취소 task 생성 실패")
