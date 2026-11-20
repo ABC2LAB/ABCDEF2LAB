@@ -392,6 +392,18 @@ class TestPlannerError(unittest.TestCase):
         self.assertEqual(script.counts["provider_error"], 1)
         self.assertIsNone(Script(self.load()).planner_error(body(tool(PLANNER_TOOL))))
 
+    def test_errors_start_after_the_given_planner_requests(self):
+        self.assertEqual(self.load(planner_error_status=503)["planner_error_after"], 0)
+        script = Script(self.load(planner_error_status=503, planner_error_after=2))
+        planner = body(tool(PLANNER_TOOL))
+        self.assertEqual([script.planner_error(planner) for _ in range(4)], [None, None, 503, 503])
+        self.assertIsNone(script.planner_error(body(tool(WORKER_TOOL, {"command": {}}))))  # Worker는 세지 않는다
+        self.assertEqual(script.counts["provider_error"], 2)
+        for bad in ({"planner_error_after": 1}, {"planner_error_status": 503, "planner_error_after": -1},
+                    {"planner_error_status": 503, "planner_error_after": 65}, {"planner_error_status": 503, "planner_error_after": True}):
+            with self.subTest(bad=bad), self.assertRaises(PlanError):
+                self.load(**bad)
+
     def test_server_replies_with_the_status(self):
         server = make_server("127.0.0.1", 0, Script(self.load(planner_error_status=502)))
         thread = threading.Thread(target=server.serve_forever, daemon=True)
