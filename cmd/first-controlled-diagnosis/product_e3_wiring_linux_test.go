@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net/http"
 	"net/netip"
 	"strings"
 	"sync/atomic"
@@ -183,6 +184,141 @@ func TestProductE3WiredStoppedRecordsActualReason(t *testing.T) {
 				t.Fatalf("중지 기록: %s 브리지 %d 사건 %d", raw, created.Load(), recorder.events.Load())
 			}
 		})
+	}
+}
+
+// 실제 제품에서 중지 기록 훅은 실행이 끝난 뒤 불려 연결 사유가 "실행 끝남"(lease_missing 등)이다. 연결이 있던 판이면
+// not_wired가 아니라 실제 상태를 남긴다. 실행기·계정 저장소가 없는 사유와 연결 자체가 없는 판은 그대로 not_wired다.
+func TestProductE3StoppedAfterExecutionEnded(t *testing.T) {
+	ended := func(reason string) func(string) (*e2proxy.Execution, server.E2HTTPAccountBindings, string) {
+		return func(string) (*e2proxy.Execution, server.E2HTTPAccountBindings, string) { return nil, nil, reason }
+	}
+	for name, tc := range map[string]struct {
+		handle  func(string) (*e2proxy.Execution, server.E2HTTPAccountBindings, string)
+		bridge  bool
+		declare bool
+		status  e3contract.ConfirmationStatus
+		reason  string
+	}{
+		"lease-missing-would-run":      {ended(server.E3HandleLeaseMissing), true, true, e3contract.StatusInterrupted, ""},
+		"task-fenced-would-run":        {ended(server.E3HandleTaskFenced), true, true, e3contract.StatusInterrupted, ""},
+		"execution-stopped-would-run":  {ended(server.E3HandleExecutionStopped), true, true, e3contract.StatusInterrupted, ""},
+		"task-missing-would-run":       {ended(server.E3HandleTaskMissing), true, true, e3contract.StatusInterrupted, ""},
+		"task-mismatch-would-run":      {ended(server.E3HandleTaskMismatch), true, true, e3contract.StatusInterrupted, ""},
+		"lease-missing-no-declaration": {ended(server.E3HandleLeaseMissing), true, false, e3contract.StatusDisabled, string(e3contract.DisabledNoDeclaration)},
+		"runtime-closing-would-run":    {ended(server.E3HandleRuntimeClosing), true, true, e3contract.StatusInterrupted, ""},
+		"runtime-closed-would-run":     {ended(server.E3HandleRuntimeClosed), true, true, e3contract.StatusInterrupted, ""},
+		"runner-missing":               {ended(server.E3HandleRunnerMissing), true, true, e3contract.StatusDisabled, string(e3contract.DisabledNotWired)},
+		"lease-invalid":                {ended(server.E3HandleLeaseInvalid), true, true, e3contract.StatusDisabled, string(e3contract.DisabledNotWired)},
+		"runner-not-local":             {ended(server.E3HandleRunnerNotLocal), true, true, e3contract.StatusDisabled, string(e3contract.DisabledNotWired)},
+		"accounts-missing":             {ended(server.E3HandleAccountsMissing), true, true, e3contract.StatusDisabled, string(e3contract.DisabledNotWired)},
+		"runtime-unavailable":          {ended(server.E3HandleRuntimeUnavailable), true, true, e3contract.StatusDisabled, string(e3contract.DisabledNotWired)},
+		"handle-not-configured":        {nil, true, true, e3contract.StatusDisabled, string(e3contract.DisabledNotWired)},
+		"bridge-not-configured":        {ended(server.E3HandleLeaseMissing), false, true, e3contract.StatusDisabled, string(e3contract.DisabledNotWired)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newE3HookFixture(t, tc.declare, nil)
+			c := f.confirmation(nil, e3HookAccounts(), nil)
+			var created atomic.Int64
+			c.handle, c.newBridge = tc.handle, nil
+			if tc.bridge {
+				c.newBridge = countingBridge(&created)
+			}
+			if err := c.stopped(t.Context(), "9"); err != nil {
+				t.Fatal(err)
+			}
+			res, raw := readE3Result(t, f.runs)
+			if res.Status != tc.status || res.Reason != tc.reason || res.Requests != 0 || created.Load() != 0 {
+				t.Fatalf("중지 기록: %s 브리지 %d", raw, created.Load())
+			}
+		})
+	}
+}
+
+// 닫힌 연결은 부르면 늘 실패한다(중지 기록은 부르지 않는다).
+func TestProductEndedE3ConnectionAlwaysFails(t *testing.T) {
+	var c productEndedE3Connection
+	ctx := t.Context()
+	if c.RegisterMarker(ctx, e3contract.RunBinding{}, e3contract.Marker{}) == nil {
+		t.Fatal("표식 등록")
+	}
+	if _, err := c.Identity(ctx, e3contract.IdentityRequest{}); err == nil {
+		t.Fatal("신원")
+	}
+	if _, err := c.Create(ctx, e3contract.CreateRequest{}); err == nil {
+		t.Fatal("생성")
+	}
+	if _, err := c.Read(ctx, e3contract.ReadRequest{}); err == nil {
+		t.Fatal("읽기")
+	}
+	if _, err := c.Sealed(ctx, e3contract.RunBinding{}, e3contract.CallRef{}); err == nil {
+		t.Fatal("봉인 사건")
+	}
+}
+
+// e3ReloginAccounts는 계정 결속 조회에 확정 전 다시 로그인을 더한 가짜다. 결과 코드를 고정해 돌려주고 부른 라벨을 센다.
+type e3ReloginAccounts struct {
+	result string
+	labels []string
+}
+
+func (a *e3ReloginAccounts) AccountBindingRef(string, string) (string, bool) { return "", false }
+func (a *e3ReloginAccounts) BoundSession(string, string, string) (http.Header, error) {
+	return nil, server.ErrE2HTTPAccountBinding
+}
+func (a *e3ReloginAccounts) Relogin(_ context.Context, label string) string {
+	a.labels = append(a.labels, label)
+	return a.result
+}
+
+type e3PlainAccounts struct{}
+
+func (e3PlainAccounts) AccountBindingRef(string, string) (string, bool) { return "", false }
+func (e3PlainAccounts) BoundSession(string, string, string) (http.Header, error) {
+	return nil, server.ErrE2HTTPAccountBinding
+}
+
+// 사용자 결정 2026-11-20 (가): 연결이 있는 확정 단계는 계정 저장소의 다시 로그인을 붙인다(보낸 결과만 몫으로 셈). 다시
+// 로그인 경로가 없는 저장소면 붙이지 않는다.
+func TestProductE3WiredRelogin(t *testing.T) {
+	for name, tc := range map[string]struct {
+		accounts server.E2HTTPAccountBindings
+		relogin  bool
+		results  map[string]bool
+	}{
+		"relogin-authenticated": {&e3ReloginAccounts{result: server.E2HTTPAuthAuthenticated}, true, map[string]bool{"tester-a": true}},
+		"relogin-not-sent":      {&e3ReloginAccounts{result: server.E2HTTPRefreshCooldown}, true, map[string]bool{"tester-a": false}},
+		"no-relogin-path":       {e3PlainAccounts{}, false, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newE3HookFixture(t, true, nil)
+			c := f.confirmation(nil, e3HookAccounts(), nil)
+			exec, _ := e3TraceExecution(t)
+			var created atomic.Int64
+			wireE3(c, exec, tc.accounts, countingBridge(&created))
+			deps, release, _ := c.wiredDeps("9")
+			defer release()
+			if (deps.Relogin != nil) != tc.relogin {
+				t.Fatalf("다시 로그인 연결: %v", deps.Relogin != nil)
+			}
+			for label, want := range tc.results {
+				if got := deps.Relogin(t.Context(), label); got != want {
+					t.Fatalf("%s: 보냄=%v", label, got)
+				}
+			}
+			if r, ok := tc.accounts.(*e3ReloginAccounts); ok && len(r.labels) != len(tc.results) {
+				t.Fatalf("다시 로그인 호출 %v", r.labels)
+			}
+		})
+	}
+	// 연결이 없으면 다시 로그인도 없다.
+	f := newE3HookFixture(t, true, nil)
+	c := f.confirmation(nil, e3HookAccounts(), nil)
+	c.handle = nil
+	deps, release, _ := c.wiredDeps("9")
+	defer release()
+	if deps.Relogin != nil {
+		t.Fatal("연결 없는 판에 다시 로그인이 붙음")
 	}
 }
 

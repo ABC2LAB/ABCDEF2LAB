@@ -140,7 +140,7 @@ func TestIssueE3RulesUseCurrentConnectionPin(t *testing.T) {
 	if err := json.Unmarshal(raw, &issued); err != nil {
 		t.Fatal(err)
 	}
-	if len(issued.Rules) != 4 || issued.Limits.E3ConfirmationRequests == nil || *issued.Limits.E3ConfirmationRequests != 5 ||
+	if len(issued.Rules) != 4 || issued.Limits.E3ConfirmationRequests == nil || *issued.Limits.E3ConfirmationRequests != 8 ||
 		!issued.E3WriteConsent || !issued.E3Resettable {
 		t.Fatalf("확정 규칙 또는 몫 미발급: rules=%d", len(issued.Rules))
 	}

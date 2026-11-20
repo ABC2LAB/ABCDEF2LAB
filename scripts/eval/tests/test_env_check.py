@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import datetime
 import io
 import os
 import sys
@@ -31,7 +32,12 @@ ROUTES = ("Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU
 
 # 읽기만 하는 명령(첫 두 낱말). 이 밖의 명령을 부르면 시험이 실패한다.
 READ_ONLY = {("docker", "version"), ("docker", "info"), ("docker", "ps"), ("docker", "network"), ("docker", "image"),
-             ("docker", "buildx"), ("docker", "compose"), ("go", "version"), ("openssl", "version"), ("git", "--version")}
+             ("docker", "buildx"), ("docker", "compose"), ("go", "version"), ("openssl", "version"), ("git", "--version"),
+             ("apt-config", "dump"), ("dpkg-query", "-W"), ("systemctl", "is-active")}
+NOW = datetime.datetime(2026, 11, 27, 0, 0, tzinfo=datetime.timezone.utc)
+REBOOT_REQUIRED, REBOOT_PENDING = (key for key, _ in env_check.WINDOWS_REBOOT_KEYS)
+APT_ON = ('APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n'
+          'Unattended-Upgrade::Allowed-Origins:: "${distro_id}:${distro_codename}-security";\n')
 
 
 class FakeHost:
@@ -49,6 +55,16 @@ class FakeHost:
         self.routes = ROUTES
         self.failing: set[tuple[str, ...]] = set()
         self.power_values = {"STANDBYIDLE": (0, 0), "HIBERNATEIDLE": (0, 172800)}
+        # Windows 업데이트: 재부팅 대기 키(있으면 대기), 일시 중지 만료 시각(None = 없음), None이면 레지스트리를 못 읽음
+        self.reboot_keys: set[str] = set()
+        self.pause_expiry: str | None = "2026-12-04T00:00:00Z"
+        self.registry_readable = True
+        # 개발 머신 실측 모양: 자동 보안 업데이트 켜짐, 엔진 패키지 고정(측정 날 hold)
+        self.apt = APT_ON
+        self.packages = {"unattended-upgrades": "ii ", "docker.io": "hi ", "containerd": "hi ", "runc": "hi "}
+        self.timer = "active"
+        self.dpkg_code: int | None = None
+        self.desktop_running: bool | None = False
 
     def run(self, args, timeout):
         self.calls.append(list(args))
@@ -79,7 +95,26 @@ class FakeHost:
             return 0, self.openssl
         if args[:2] == ["git", "--version"]:
             return 0, "git version 2.43.0\n"
+        if args[:2] == ["apt-config", "dump"]:
+            return 0, self.apt
+        if args[:2] == ["dpkg-query", "-W"]:
+            if self.dpkg_code is not None:
+                return self.dpkg_code, ""
+            names = args[4:]
+            lines = "".join(f"{name}\t{self.packages[name]}\n" for name in names if name in self.packages)
+            return (0 if all(name in self.packages for name in names) else 1), lines
+        if args[:2] == ["systemctl", "is-active"]:
+            return (0 if self.timer == "active" else 3), self.timer + "\n"
         raise AssertionError(f"모르는 명령: {args}")
+
+    def reg(self, key, value):
+        if not self.registry_readable:
+            return None
+        if value is None:
+            return key in self.reboot_keys, ""
+        if self.pause_expiry is None:
+            return False, ""
+        return True, f"\r\nHKEY_LOCAL_MACHINE\\...\\Settings\r\n    {value}    REG_SZ    {self.pause_expiry}\r\n\r\n"
 
     def read_text(self, path):
         return {"/proc/net/tcp": self.tcp, "/proc/net/tcp6": None, "/proc/meminfo": self.meminfo, "/proc/net/route": self.routes}.get(path)
@@ -95,7 +130,7 @@ class FakeHost:
 
     def checks(self, config=None):
         return {r.name: r for r in run_checks(CONFIG if config is None else config, REPO, self.run, self.read_text, lambda p: self.free,
-                                              self.power)}
+                                              self.power, self.reg, lambda: NOW, lambda image: self.desktop_running)}
 
 
 class TestAllPass(unittest.TestCase):
@@ -104,7 +139,8 @@ class TestAllPass(unittest.TestCase):
         results = host.checks()
         self.assertEqual([name for name, r in results.items() if not r.ok], [])
         self.assertEqual(set(results), {"docker_server", "docker_client", "docker_native", "compose", "go", "python", "openssl", "git",
-                                        "memory", "disk", "power", "containers", "host_listen", "ports", "subnets", "buildx", "base_images"})
+                                        "memory", "disk", "power", "docker_updates", "containers", "host_listen", "ports", "subnets", "buildx",
+                                        "base_images"})
         for call in host.calls:
             self.assertIn(tuple(call[:2]), READ_ONLY, call)
             self.assertNotIn("pull", call)
@@ -136,6 +172,7 @@ class TestFailures(unittest.TestCase):
             "buildx": lambda h: h.failing.add(("docker", "buildx")),
             "git": lambda h: h.failing.add(("git", "--version")),
             "power": lambda h: h.power_values.update(STANDBYIDLE=(1800, 600)),
+            "docker_updates": lambda h: h.packages.update({"docker.io": "ii "}),
         }
         for name, change in cases.items():
             with self.subTest(name=name):
@@ -160,10 +197,109 @@ class TestFailures(unittest.TestCase):
         self.assertTrue(skipped.skipped)
         self.assertTrue(skipped.line().startswith("SKIP power:"))
         # AC 값이 없는 출력은 FAIL(읽지 못함)
-        self.assertFalse(env_check.check_power(lambda sub, setting: "no index here").ok)
+        reg, now = FakeHost().reg, (lambda: NOW)
+        self.assertFalse(env_check.check_power(lambda sub, setting: "no index here", reg, now).ok)
         # 영어 Windows 출력도 같은 값으로 읽는다
         english = "Current AC Power Setting Index: 0x00000000\nCurrent DC Power Setting Index: 0x00000e10\n"
-        self.assertTrue(env_check.check_power(lambda sub, setting: english).ok)
+        self.assertTrue(env_check.check_power(lambda sub, setting: english, reg, now).ok)
+
+    def test_windows_update_reboot_and_pause(self):
+        # 2026-11-20 사용자: 재부팅을 기다리는 Windows 업데이트가 없고, 측정 날 업데이트를 일시 중지한다(공식 회차 절차 6절)
+        host = FakeHost()
+        ok = host.checks()["power"]
+        self.assertTrue(ok.ok and not ok.skipped, ok.reason)
+        self.assertIn("재부팅 대기 없음, 일시 중지 2026-12-04T00:00:00Z까지", ok.reason)
+        for key, label in ((REBOOT_REQUIRED, "Windows 업데이트 재부팅 대기"), (REBOOT_PENDING, "구성 요소 업데이트 재부팅 대기")):
+            with self.subTest(key=label):
+                host = FakeHost()
+                host.reboot_keys.add(key)
+                bad = host.checks()["power"]
+                self.assertFalse(bad.ok)
+                self.assertIn(label, bad.reason)
+                self.assertIn("재부팅 대기 있음", bad.reason)
+        for expiry, words in ((None, "일시 중지 없음"), ("2026-11-26T23:59:59Z", "에 끝남"), ("2026-11-27T00:00:00Z", "에 끝남")):
+            with self.subTest(expiry=expiry):
+                host = FakeHost()
+                host.pause_expiry = expiry
+                bad = host.checks()["power"]
+                self.assertFalse(bad.ok)
+                self.assertIn("업데이트 일시 중지 안 됨", bad.reason)
+                self.assertIn(words, bad.reason)
+        # 모르는 시각 모양은 일시 중지로 읽지 않는다
+        host = FakeHost()
+        host.pause_expiry = "2026-12-04 00:00:00"
+        self.assertFalse(host.checks()["power"].ok)
+        # 레지스트리를 못 읽으면 직접 확인하라고 SKIP(전원 설정은 읽혀도)
+        host = FakeHost()
+        host.registry_readable = False
+        skipped = host.checks()["power"]
+        self.assertTrue(skipped.skipped)
+        self.assertIn("Windows 업데이트 상태를 읽을 수 없음", skipped.reason)
+        # 재부팅 대기 키 하나라도 못 읽으면 일시 중지가 읽혀도 '확인 못 함'이다(없음으로 읽지 않는다)
+        base = FakeHost().reg
+        for key in (REBOOT_REQUIRED, REBOOT_PENDING):
+            with self.subTest(unreadable=key):
+                self.assertIsNone(env_check.windows_update_state(lambda k, v: None if k == key else base(k, v), lambda: NOW))
+        # 레지스트리를 못 읽어도 절전이 켜져 있으면 SKIP이 아니라 FAIL(#823 리뷰: 절전 FAIL이 가려지지 않게)
+        host = FakeHost()
+        host.registry_readable = False
+        host.power_values["STANDBYIDLE"] = (900, 0)
+        hidden = host.checks()["power"]
+        self.assertFalse(hidden.ok)
+        self.assertFalse(hidden.skipped)
+        self.assertIn("절전", hidden.reason)
+        # 절전이 켜져 있으면 업데이트가 괜찮아도 FAIL
+        host = FakeHost()
+        host.power_values["STANDBYIDLE"] = (600, 0)
+        self.assertFalse(host.checks()["power"].ok)
+
+    def test_docker_self_update(self):
+        # 2026-11-20 사용자: 측정 중 Docker가 스스로 업데이트·재시작하지 않게
+        host = FakeHost()
+        held = host.checks()["docker_updates"]
+        self.assertTrue(held.ok and not held.skipped, held.reason)
+        self.assertIn("고정·제외", held.reason)
+        host.packages.update({"docker.io": "ii ", "runc": "ii "})
+        bad = host.checks()["docker_updates"]
+        self.assertFalse(bad.ok)
+        self.assertIn("sudo apt-mark hold docker.io runc", bad.reason)
+        # 제외 목록(정규식)에 있으면 고정과 같다
+        host.apt = APT_ON + 'Unattended-Upgrade::Package-Blacklist:: "docker\\.io$";\nUnattended-Upgrade::Package-Blacklist:: "ru";\n'
+        self.assertTrue(host.checks()["docker_updates"].ok)
+        host.apt = APT_ON + 'Unattended-Upgrade::Package-Blacklist:: "docker.io$";\n'
+        self.assertFalse(host.checks()["docker_updates"].ok)  # runc가 남음
+        # 자동 업그레이드가 꺼져 있으면(설정 0·패키지 없음·타이머 꺼짐) 고정하지 않아도 된다
+        for change in (lambda h: setattr(h, "apt", APT_ON.replace('Unattended-Upgrade "1"', 'Unattended-Upgrade "0"')),
+                       lambda h: setattr(h, "apt", 'APT::Periodic::Update-Package-Lists "1";\n'),
+                       lambda h: h.packages.pop("unattended-upgrades"),
+                       lambda h: h.packages.update({"unattended-upgrades": "rc "}),
+                       lambda h: setattr(h, "timer", "inactive")):
+            with self.subTest(change=change):
+                host = FakeHost()
+                host.packages.update({"docker.io": "ii "})
+                change(host)
+                result = host.checks()["docker_updates"]
+                self.assertTrue(result.ok, result.reason)
+                self.assertIn("자동 업그레이드 꺼짐", result.reason)
+        # Windows에서 Docker Desktop이 돌면 FAIL(종료), 확인 못 하면 통과하되 사유에 남긴다
+        host = FakeHost()
+        host.desktop_running = True
+        self.assertIn("Docker Desktop이 돌고 있음", self.failed(lambda h: setattr(h, "desktop_running", True))["docker_updates"])
+        host.desktop_running = None
+        unknown = host.checks()["docker_updates"]
+        self.assertTrue(unknown.ok)
+        self.assertIn("Docker Desktop 실행 여부는 확인 못 함", unknown.reason)
+        # Docker Desktop 엔진은 설정 파일 키를 확인하지 못해 직접 확인(SKIP). 엔진 종류 항목(docker_native)이 따로 FAIL이다.
+        host = FakeHost()
+        host.os = "Docker Desktop"
+        self.assertTrue(host.checks()["docker_updates"].skipped)
+        # 읽지 못하면 FAIL(dpkg-query 종료 코드 1은 '목록 일부가 없음'이라 정상, 2는 오류)
+        for change in (lambda h: h.failing.add(("apt-config", "dump")), lambda h: setattr(h, "dpkg_code", 2),
+                       lambda h: h.failing.add(("docker", "info"))):
+            with self.subTest(change=change):
+                host = FakeHost()
+                change(host)
+                self.assertFalse(host.checks()["docker_updates"].ok)
 
     def test_route_overlap_and_missing_image_that_can_be_pulled(self):
         # 호스트 경로 10.252.0.0/16(/proc/net/route는 리틀엔디언 16진수 0000FC0A·0000FFFF)이 분리 배치 대역과 겹친다.

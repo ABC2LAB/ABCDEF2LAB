@@ -256,6 +256,10 @@ class TestSpec(Fixture):
         allowed = dataclasses.replace(self.config, host_listen_allowlist=(HostListen("10.0.0.5", 11434, "local model"),))
         self.assertEqual(split_run_spec(allowed, plan, declared, rendered, condition="우리@test").allowed_listens, frozenset({Listener("10.0.0.5", 11434)}))
         self.assertEqual(split_run_spec(self.config, plan, declared, rendered, condition="ours@35b").condition, "ours@35b")
+        # E③ 비활성 요구는 설정 칸에서 온다(purpose와 따로, 2026-11-20 사용자)
+        self.assertIs(spec.e3_disabled_required, False)
+        required = dataclasses.replace(self.config, split=dataclasses.replace(self.config.split, e3_disabled_required=True))
+        self.assertIs(split_run_spec(required, plan, declared, rendered, condition="우리@test").e3_disabled_required, True)
         # 실행 입력을 만드는 시점에 빈 기록 칸을 설정 오류로 거부한다(종료 코드 2, 회차를 만들지 않음, #745 리뷰)
         for condition in ("", "   "):
             with self.subTest(condition=condition), self.assertRaises(RunnerConfigError) as caught:

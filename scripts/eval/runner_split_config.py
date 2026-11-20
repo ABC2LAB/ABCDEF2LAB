@@ -38,7 +38,10 @@ SPLIT_FIELDS = frozenset({"product_tag", "product_source_sha", "image_ids", "man
                           "registration_valid_hours", "wide_writes", "profile_id", "task_wait_seconds",
                           "poll_interval_seconds", "boundary_stop_seconds", "cli_usage_names"})
 # 선택 칸. 합성 모델 모드(2026-11-18 사용자 결정 (a))는 보존 회차(수용시험 목적)에서만, 실행 출처 synthetic_fixture로만 받는다.
-SPLIT_OPTIONAL_FIELDS = frozenset({"synthetic_model", "e2_v3"})
+# e3_disabled_required: E③ 비활성 요구(2026-11-20 사용자). 켜면 러너가 그 회차 정책의 확정 몫이 0이고 확정 단계 기록이
+# disabled/declaration_missing인지 확인한다(아니면 회차 무효). 공식 회차(purpose official)는 켜져 있어야 설정 검사를 통과한다.
+# 확정 단계를 켠 회차는 끈다. purpose는 채점 가능 여부만 정하고 이 검사를 걸지 않는다.
+SPLIT_OPTIONAL_FIELDS = frozenset({"synthetic_model", "e2_v3", "e3_disabled_required"})
 MAX_MANIFEST_BYTES = 64 * 1024
 MAX_EVIDENCE_BYTES = 1 << 30
 MAX_HOURS = 24 * 30
@@ -85,6 +88,8 @@ class SplitConfig:
     cli_usage_names: tuple[str, ...] = ()
     # E② v3 저널 수집(runner_e2v3). 없으면 수집하지 않는다(지금 제품은 v2 저널·Recorder 미주입, 고정 초안 §20).
     e2_v3: E2V3Settings | None = None
+    # E③ 비활성 요구(위 SPLIT_OPTIONAL_FIELDS 설명). 없으면 거짓.
+    e3_disabled_required: bool = False
 
     @property
     def synthetic(self) -> bool:
@@ -160,6 +165,11 @@ def parse_split(raw: object, config: RunnerConfig) -> SplitConfig:
     except CliUsageError:
         errors.append("config.split.cli_usage_names: INVALID")
         cli_names = ()
+    e3_disabled_required = raw.get("e3_disabled_required", False)
+    if type(e3_disabled_required) is not bool:
+        errors.append("config.split.e3_disabled_required: INVALID")
+    elif config.purpose == "official" and not e3_disabled_required:
+        errors.append("config.split.e3_disabled_required: OFFICIAL_REQUIRES_TRUE")  # 공식 측정은 E③ 비활성(프로토콜 §5.1)
     e2_v3 = None
     if "e2_v3" in raw:
         try:
@@ -180,7 +190,7 @@ def parse_split(raw: object, config: RunnerConfig) -> SplitConfig:
                        poll_interval_seconds=raw["poll_interval_seconds"], boundary_stop_seconds=raw["boundary_stop_seconds"],
                        synthetic_plan_path=None if synthetic is None else Path(synthetic["plan_path"]),
                        synthetic_max_tokens=None if synthetic is None else synthetic["max_tokens"],
-                       cli_usage_names=cli_names, e2_v3=e2_v3)
+                       cli_usage_names=cli_names, e2_v3=e2_v3, e3_disabled_required=e3_disabled_required)
 
 
 def read_manifest(path: Path) -> dict:

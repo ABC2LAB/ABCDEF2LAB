@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -148,7 +149,7 @@ func TestLiveE3RunWithCurrentHostHeadAndSyntheticAccounts(t *testing.T) {
 			}
 			grant := budget.Grant{Key: budget.Key{TaskRef: scope.TaskRef, BudgetRef: "budget-live"},
 				Binding:     budget.Binding{PolicyRef: scope.PolicyRef, ResetRef: scope.ResetRef},
-				MaxRequests: 5, ValidFrom: now.Add(-time.Minute), ValidUntil: now.Add(time.Hour)}
+				MaxRequests: 8, ValidFrom: now.Add(-time.Minute), ValidUntil: now.Add(time.Hour)}
 			if err := ledger.Register(grant, now); err != nil {
 				t.Fatal(err)
 			}
@@ -158,7 +159,7 @@ func TestLiveE3RunWithCurrentHostHeadAndSyntheticAccounts(t *testing.T) {
 					PathPrefix: path, PathScopeRef: ref + "-path", Methods: methods}
 			}
 			config := e2proxy.Config{AuditVersion: e2proxy.JournalVersionV3, E3Verifier: session,
-				E3ConfirmationRequests: 5, E3WriteConsent: true, E3Resettable: true,
+				E3ConfirmationRequests: 8, E3WriteConsent: true, E3Resettable: true,
 				ApprovalMode: e2proxy.ApprovalPreauthorizedScope, Scope: scope, IntentID: 1,
 				OwnerRef: "ARTEX", PolicyRevision: "revision-live", AccountRef: "anonymous",
 				SessionRef: "anonymous-session", ExpiresAt: now.Add(time.Hour),
@@ -209,7 +210,13 @@ func TestLiveE3RunWithCurrentHostHeadAndSyntheticAccounts(t *testing.T) {
 			mu.Lock()
 			count := requests
 			mu.Unlock()
-			if result.Status != e3contract.StatusCompleted || result.Requests != 5 || count != 5 ||
+			// 몫 = 고정 4(다시 로그인 2 + 신원 2) + 종류 1×4(생성·A·B·B 재확인). 이 시험은 다시 로그인을 붙이지 않아(Relogin
+			// 없음) 신원 2 + 생성 + A 조회 + B 조회 = 5이고, B 조회가 거부(403)면 B 신원 재확인 1건을 더 보낸다(S21 (나)).
+			want := 5
+			if !crossAllowed {
+				want = 6
+			}
+			if result.Status != e3contract.StatusCompleted || result.Requests != want || count != want ||
 				len(result.Verdicts) != 1 || len(result.Candidates) != 1 || len(writes.Events()) != 2 {
 				t.Fatalf("실제 E②→Host→E③ 회차 불완전: status=%s reason=%s requests=%d target=%d verdicts=%d candidates=%d writes=%d",
 					result.Status, result.Reason, result.Requests, count, len(result.Verdicts), len(result.Candidates), len(writes.Events()))
@@ -219,6 +226,10 @@ func TestLiveE3RunWithCurrentHostHeadAndSyntheticAccounts(t *testing.T) {
 			if crossAllowed && (got != oracle.Confirmed || level != oracle.Confirmed) ||
 				!crossAllowed && (got != oracle.Undecidable || level == oracle.Confirmed) {
 				t.Fatalf("교차 조회 정책 판정 오류: cross_allowed=%v verdict=%s candidate=%s", crossAllowed, got, level)
+			}
+			// 거부 뒤 재확인에서 B 세션이 살아 있으므로 접근 거부(data_no_match)이고 제품 사유는 없다.
+			if v := result.Verdicts[0]; !crossAllowed && (len(v.ProductReasons) != 0 || !slices.Contains(v.OracleReasons, oracle.ReasonDataNoMatch)) {
+				t.Fatalf("거부 경로 사유: 제품 %v 오라클 %v", v.ProductReasons, v.OracleReasons)
 			}
 			if err := session.Seal(t.Context()); err != nil {
 				t.Fatal("실제 감사 head 봉인 실패", err)

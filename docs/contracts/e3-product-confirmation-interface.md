@@ -144,12 +144,17 @@
 | `product_request_denied`(추가) | E² 정책이 프로그램 요청을 거부 | 그 종류 0 |
 | `product_create_failed`(추가) | 생성 응답이 정상이 아니거나 객체 ID를 못 꺼냄 | 그 종류 0 |
 | `product_data_check_contradiction`(추가, 2026-11-20) | B 조회가 거부 응답(401·403·404)인데 표식 검사가 `present` | - |
+| `product_session_expired`(추가, 2026-11-20) | B 조회 거부 뒤 B 신원 재확인 응답도 401·403(세션 만료일 수 있음) | - (다시 로그인해 다시 조회하지 않음) |
+| `product_cross_denial_unverified`(추가, 2026-11-20) | B 조회 거부 뒤 B 신원을 다시 확인하지 못함(보내지 못함·결과 불명·시간 초과·몫 끝·중지·처음과 다른 주체·그 밖의 비정상 응답) | - |
 
 **B 조회 해석 순서(사용자 결정 2026-11-20).** B 조회 응답은 이 순서로 본다.
 1. 결과 불명·시간 초과·보내지 않음은 위 사유 코드다.
 2. 상태가 거부(401·403·404)면 표식 검사보다 상태를 먼저 본다.
-   - 표식 검사가 `present`가 아니면(`absent`·`failed`·`unsupported`·`partial`) `cross_normal_data = no`로 오라클에 넘긴다. 오라클 사유는 `data_no_match`이고 판정 값은 UNDECIDABLE 그대로다.
    - `present`면 거부와 데이터 노출이 함께 나온 모순이라 판정하지 않는다(`product_data_check_contradiction`, UNDECIDABLE).
+   - 표식 검사가 `present`가 아니면(`absent`·`failed`·`unsupported`·`partial`) 거부가 접근 통제 때문인지 세션 만료 때문인지 가리려고 B 신원을 한 번 더 확인한다(사용자 결정 2026-11-20 S21 (나), 확정 몫의 종류당 1건, 거부일 때만 씀).
+     - 처음 신원과 같은 주체가 정상 응답하면(살아 있음) `cross_normal_data = no`로 오라클에 넘긴다. 오라클 사유는 `data_no_match`이고 판정 값은 UNDECIDABLE 그대로다.
+     - 재확인 응답이 401·403이면 `product_session_expired`, 그 밖에 확인하지 못하면 `product_cross_denial_unverified`다. 둘 다 B 신원을 미확인(`evaluated_status = unknown`)·`cross_normal_data = unknown`으로 넘겨 UNDECIDABLE이다. 원인을 모르는 거부를 접근 거부(`data_no_match`)로 적지 않는다.
+     - 만료여도 다시 로그인해서 다시 조회하지 않는다. 확정 직전에 이미 다시 로그인했으므로(§7.1) 확정 단계 몇 초 사이에 만료되는 것은 수명이 비정상적으로 짧은 대상뿐이고, 사유만 정확히 남긴다.
 3. 그 밖의 상태(2xx 등)는 표식 검사가 `partial`·`unsupported`·`failed`면 위 사유 코드다(`product_data_check_failed` 등).
 4. 표식 검사가 `complete`면 아래 데이터 사실로 오라클이 정한다.
 
@@ -160,7 +165,7 @@ A(소유) 조회는 이 순서를 쓰지 않는다. A 조회가 정상이 아니
 - 신원: C14 인증 성공과 신원 확인이 둘 다 섰을 때만 `verified`이고, 참조는 실행별 키 digest다.
 - 데이터:
   - `same_resource`: 두 조회가 같은 생성 관찰을 읽음.
-  - `owner_normal_data`·`cross_normal_data`: A·B 조회의 정상 여부. B가 거부 응답(401·403·404)이면 `cross_normal_data`는 no다.
+  - `owner_normal_data`·`cross_normal_data`: A·B 조회의 정상 여부. B가 거부 응답(401·403·404)이고 B 신원 재확인에서 살아 있으면 `cross_normal_data`는 no, 재확인을 못 했거나 만료면 unknown이다.
   - `nontrivial_data_match`: B 검사 `complete`에서 `present`면 yes, `absent`면 no.
   - `reflection_excluded`: B 요청에 표식이 없음을 E²가 확인했을 때만 yes.
   - `template_excluded`: 이 회차에 새로 만든 무작위 표식을 A 객체 한 칸에만 넣었으므로 yes.
@@ -171,7 +176,9 @@ A(소유) 조회는 이 순서를 쓰지 않는다. A 조회가 정상이 아니
 - 확정 단계 몫(요청·시간)은 실행 시작 때 정하고, 모델 단계는 그 몫을 뺀 범위에서 돈다(결정 §7 예산).
 - **확정 단계가 꺼질 회차는 몫이 0이다.** 실행 시작 때 쓰는 조건(결정 §3)이 모자라면 꺼진다: 유효한 선언 동결본이 없음, 시험 계정 A·B 인증이 없음, 쓰기 동의가 없음, 제품 경로가 아닌 정책 출처(`kg_snapshot`). 이런 회차는 요청 몫과 시간 몫을 모두 0으로 두고 모델 단계가 실행 예산 전부를 쓴다. 꺼졌는데 몫만 떼면 모델 몫이 이유 없이 줄어든다.
 - 몫은 E² 실행 정책 `limits.e3_confirmation_requests`·`limits.e3_confirmation_timeout_ms`에 명시한다(0 포함, 둘이 같이). 칸이 있으면 0도 정책 내용 지문에 들어가 "칸 없음"과 구분된다. 러너는 이 두 칸으로 꺼진 회차의 몫이 0인지 확인한다.
-- 몫 계산(사용자 결정 2026-11-18 ②): 요청 몫 = 신원 2 + 종류×3, 시간 몫 = 요청 몫 × 확정 요청 전용 시간 상한. 요청·시간 모두 실행 상한의 1/4 안에 드는 만큼만 종류를 받는다(`Input.AdmittedTypes`). 넘치는 종류는 요청을 보내지 않고 UNDECIDABLE(`product_confirmation_budget_exhausted`)이다. 하나도 들지 않으면 몫은 0이고 표식·신원 요청도 보내지 않는다.
+- 몫 계산(사용자 결정 2026-11-18 ②, 2026-11-20 (가)·S21 (나)): 요청 몫 = 고정 4(확정 직전 다시 로그인 A·B 2 + 신원 확인 2) + 종류×4(생성 1 + A 조회 1 + B 조회 1 + B 거부 뒤 신원 재확인 1), 시간 몫 = 요청 몫 × 확정 요청 전용 시간 상한. 요청·시간 모두 실행 상한의 1/4 안에 드는 만큼만 종류를 받는다(`Input.AdmittedTypes`). 넘치는 종류는 요청을 보내지 않고 UNDECIDABLE(`product_confirmation_budget_exhausted`)이다. 하나도 들지 않으면 몫은 0이고 표식·신원 요청도 보내지 않는다.
+- **몫 집행(2026-11-20).** 확정 몫은 확정 단계 요청만 쓴다: E③ 프로그램 요청(신원·생성·조회)과 확정 단계가 연 다시 로그인 호출(`e2proxy.BeginE3ReloginCall`). 그 밖의 요청(모델 단계 Worker, 인증 준비, Worker `refresh_session`)은 확정 단계 전이든 뒤든 대상 예산의 마지막 확정 몫만큼을 쓰지 못한다(`budget_exhausted`). 몫을 "여는" 단계가 없으므로, 확정 단계가 돌기 시작한 뒤 늦게 도착한 모델 단계 요청(취소 중인 Worker·재시도)도 몫을 쓰지 못해 예산 통제를 우회할 수 없다. 남은 예산 조회(`BudgetRemaining`)도 확정 단계가 아직 쓰지 않은 몫을 빼서, 모델 단계는 확정 몫을 남긴 채 예산 소진(`budget_limited`)으로 마감한다. 확정 단계 요청이 몫을 쓸 때마다 떼어 둘 몫이 줄고, 몫을 다 쓰면 확정 단계 요청도 막힌다. 몫이 0인 회차(꺼짐)는 아무 것도 떼지 않고 확정 단계 다시 로그인도 보낼 몫이 없다.
+- **확정 직전 다시 로그인(사용자 결정 2026-11-20 (가)).** 몫에 든 종류가 있고 시작 검사를 통과하면, 표식을 등록한 뒤 신원 확인 직전에 A·B를 한 번씩 다시 로그인시킨다(`Deps.Relogin`). 경로는 Worker의 `refresh_session`과 같고(E② 인증 준비 규칙, 같은 계정 줄 세우기, 계정별 연속 실패 3회·간격 10초 상한) 확정 몫을 쓰는 호출로 연다. 보낸 다시 로그인은 확정 몫으로 센다. 실패하거나 보내지 못해도(간격 상한 등) 멈추지 않고, 바로 뒤의 신원 확인이 판정 근거를 정한다(만료면 `product_identity_unverified`). 모델 단계가 길어 대상이 준 세션이 만료돼도 확정 단계가 새 세션으로 돌게 하려는 것이다. 꺼진 회차·몫에 든 종류가 없는 회차는 다시 로그인하지 않는다.
 - 확정 요청 전용 시간 상한(`Input.RequestTimeout`, 요청마다 `Timeout`)은 E² 요청 시간 상한과 따로다. 기본 10초이고, VAmPI 파일럿에서 확정 요청의 실제 시간을 잰 뒤 정한다. 상한이 없거나 몫이 음수면 `confirmation_share_unavailable`로 꺼진다.
 - 확정 요청(신원·생성·조회)이 이 상한으로 끊기면 결과 불명이다(`TimedOut`). 다시 보내지 않고 판정은 UNDECIDABLE(`product_request_timeout`)이다. 신원 요청이 끊기면 그 대상의 모든 종류가 이 사유이고 생성·조회는 보내지 않는다(다른 계정이 다른 이유로 실패해도 시간 초과를 남긴다).
 - 시험: "disabled → 예약 0"(실행 정책 칸·지문), 상한 전달, 시간 초과, 몫 밖 종류, 몫 0.
