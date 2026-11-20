@@ -273,6 +273,76 @@ class TestORound(unittest.TestCase):
                          (CLASS_ENDED_VALID, "no_call_records"))
 
 
+class TestONotExecuted(unittest.TestCase):
+    """준비 단계에서 끝나 실행 기록이 없는 회차(diagnosis-run `execution: NOT_RUN` 또는 404)는 실행 기록을 요구하기 전에 분류한다."""
+
+    NOT_RUN = {"version": 1, "task_id": 42, "run": None, "execution": "NOT_RUN", "model_preparation": []}
+
+    def test_provider_error_before_preparation_end_is_provider_fault(self):
+        def mutate(ports):
+            ports.record = dict(self.NOT_RUN)
+        result, _, evidence = o_round_with("failed", [call(1, 0.2), call(2, 0.3, status=429)], mutate)
+        self.assertEqual((result["status"], result["reasons"]), ("invalid", [PROVIDER_FAULT_END_REASON, "product_not_executed"]))
+        self.assertEqual(evidence.files["early-end.json"]["class"], CLASS_PROVIDER_FAULT)
+
+    def test_auth_status_before_preparation_end_is_config(self):
+        result, _, _ = o_round_with("unknown", [call(1, 0.3, status=401)], lambda p: setattr(p, "record", dict(self.NOT_RUN)))
+        self.assertEqual(result["reasons"], [CONFIG_END_REASON, "product_not_executed"])
+
+    def test_other_preparation_end_is_not_executed(self):
+        result, _, evidence = o_round_with("failed", [call(1, 0.2), call(2, 0.3)], lambda p: setattr(p, "record", dict(self.NOT_RUN)))
+        self.assertEqual((result["status"], result["reasons"]), ("invalid", ["product_not_executed"]))
+        record = evidence.files["early-end.json"]
+        self.assertEqual((record["class"], record["reason"], record["end_state"], record["first_limit"]),
+                         ("ended_not_executed", "product_not_executed", "failed", "engine_ended:failed"))
+
+    def test_synthetic_404_is_not_executed(self):
+        def missing(ports):
+            ports.statuses = [{"id": "draft-1", "state": "running"}, {"id": "draft-1", "state": "failed", "reason_code": "planning_failed"}]
+
+            def run_record(task_id):
+                raise ProductAPIError("product_http_404:/api/tasks/42/diagnosis-run")
+            ports.run_record = run_record
+        result, _, evidence = o_harness.run(missing, synthetic=True)
+        self.assertEqual(result["reasons"], ["product_not_executed"])
+        self.assertEqual(evidence.files["early-end.json"]["evidence"], {"kind": "no_call_records"})
+
+    def test_missing_record_without_an_early_end_stays_a_read_failure(self):
+        def missing(ports):
+            def run_record(task_id):
+                raise ProductAPIError("product_http_404:/api/tasks/42/diagnosis-run")
+            ports.run_record = run_record
+        result, _, _ = o_harness.run(missing)
+        self.assertEqual(result["reasons"], ["product_run_record_failed"])
+        for error in (ProductAPIError("product_http_503:/api/tasks/42/diagnosis-run"), RuntimeError("boom")):
+            def broken(ports, error=error):
+                ports.statuses = [{"id": "draft-1", "state": "running"}, {"id": "draft-1", "state": "failed"}]
+
+                def run_record(task_id):
+                    raise error
+                ports.run_record = run_record
+            with self.subTest(error=error):
+                result, _, _ = o_harness.run(broken)
+                self.assertEqual(result["reasons"], ["product_run_record_failed"])
+
+
+def o_round_with(status, rows, extra, reason_code="planning_failed"):
+    def mutate(ports):
+        ports.statuses = [{"id": "draft-1", "state": "running"}, {"id": "draft-1", "state": status, "reason_code": reason_code}]
+        ports.ledger = b"r1 10 20 30\n" * len(rows)
+        extra(ports)
+        start_round = ports.start_round
+
+        def start(prepared):
+            base = o_harness.START + timedelta(seconds=ports.clock.t)
+            stamp = lambda s: (base + timedelta(seconds=s)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")  # noqa: E731
+            ports.calls_file = b"".join(json.dumps(dict(r, started_at=stamp(r["s"] - 0.4), completed_at=stamp(r["s"]))).encode() + b"\n"
+                                        for r in rows)
+            return start_round(prepared)
+        ports.start_round = start
+    return o_harness.run(mutate)
+
+
 # ── B 회차 흐름 ─────────────────────────────────────────────────────────────────────────────────────────────
 def b_round(view_status, rows):
     holder = {}

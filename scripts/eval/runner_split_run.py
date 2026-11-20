@@ -73,7 +73,8 @@ from runner_product_llm import (  # noqa: E402
     ProductLLMError, call_record_lines, call_records_reasons, ledger_reservations, ledger_totals, product_model_usage,
 )
 from runner_early_end import (  # noqa: E402
-    CONFIG_END_REASON, EARLY_END_NAME, PRODUCT_BUDGET_LIMIT, PROVIDER_FAULT_END_REASON, approval_budget, early_end_record,
+    CONFIG_END_REASON, EARLY_END_NAME, ENGINE_ENDED_PREFIX, PRODUCT_BUDGET_LIMIT, PROVIDER_FAULT_END_REASON, approval_budget,
+    early_end_record,
     start_refusal_code, start_refusal_record,
 )
 from runner_split_probe import SplitProbeOutcome  # noqa: E402
@@ -580,6 +581,37 @@ def _e3_traces(ports, evidence, state, draft_id: str, result_raw: bytes | None) 
 PRODUCT_CALLS_NAME = "product-calls.jsonl"
 
 
+# 러너 상한 전에 준비 단계에서 끝나 실행 기록이 없는 회차(제품 `diagnosis-run`이 `execution: NOT_RUN` 또는 404). 실행 기록의
+# 목표 SHA·모델 사용량이 없어 완료 기록을 만들 수 없다. 이런 회차를 유효로 셀지는 채점(B·O 목표 SHA 대조)에 닿아 사용자 결정
+# 대기다(2026-11-21). 그 전까지는 이 사유로 무효(시도로 셈)이고, 일찍 끝난 회차 목록에 따로 나온다.
+PRODUCT_NOT_EXECUTED_REASON = "product_not_executed"
+CLASS_NOT_EXECUTED = "ended_not_executed"
+
+
+def _run_record_or_not_executed(spec, ports, evidence, state, task_id: str, limit: dict, engine_end: dict) -> dict:
+    """제품 실행 기록을 읽는다. 제품이 러너 상한 전에 끝났고 실행 기록이 없으면(준비 단계에서 끝남) 실행 기록을 요구하기 전에
+    일찍 끝난 회차 분류를 한다: 설정 오류·제공자 장애 끝은 그 사유로, 그 밖은 product_not_executed로 끝낸다."""
+    state.step = "product_run_record_failed"
+    try:
+        record = ports.run_record(task_id)
+        not_executed = isinstance(record, dict) and record.get("execution") == "NOT_RUN"
+    except ProductAPIError as exc:
+        record, not_executed = None, str(exc).startswith("product_http_404:")
+    except Exception:
+        raise RunFailure("product_run_record_failed") from None
+    if not (not_executed and limit["value"].startswith(ENGINE_ENDED_PREFIX)):
+        if record is None:
+            raise RunFailure("product_run_record_failed")
+        return record
+    ledger = calls = None
+    if not spec.synthetic:
+        ledger, calls = _step(state, "product_records_copy_failed", ports.copy_product_records)
+    early = _split_early_end(spec, evidence, state, limit, engine_end, calls, ledger, not_executed=True)
+    if early["reason"] in (CONFIG_END_REASON, PROVIDER_FAULT_END_REASON):
+        raise RunFailure(early["reason"], (PRODUCT_NOT_EXECUTED_REASON,))
+    raise RunFailure(PRODUCT_NOT_EXECUTED_REASON)
+
+
 def _start_step(evidence, state, code: str, action):
     """제품 준비·시작 단계. 제품이 설정 문제 고정 사유(승인 만료·승인 필요 등)로 거부하면 설정 오류(config_end)로, 그 밖은
     그 단계의 고정 사유로 바꾼다(_step과 같음). 설정 오류는 세션이 시도로 세지 않고 멈춘다(고정 초안 §26, 2026-11-21 사용자)."""
@@ -600,14 +632,18 @@ def _start_step(evidence, state, code: str, action):
         raise RunFailure(code, ("docker_helper_cleanup_failed",) if isinstance(exc, HelperCleanupError) else ()) from None
 
 
-def _split_early_end(spec, evidence, state, limit: dict, engine_end: dict, calls: bytes | None, ledger: bytes | None) -> dict:
-    """일찍 끝난 회차 분류 기록을 만들어 요약과 근거에 남긴다. 호출 기록이 없으면(합성) 근거 없음으로 분류한다."""
+def _split_early_end(spec, evidence, state, limit: dict, engine_end: dict, calls: bytes | None, ledger: bytes | None,
+                     not_executed: bool = False) -> dict:
+    """일찍 끝난 회차 분류 기록을 만들어 요약과 근거에 남긴다. 호출 기록이 없으면(합성) 근거 없음으로 분류한다. not_executed면
+    (준비 단계에서 끝나 실행 기록 없음) 설정 오류·제공자 장애 끝이 아닌 분류를 실행 전 끝남(product_not_executed)으로 둔다."""
     rows = None if calls is None else _call_rows(calls)
     budget = None
     if ledger is not None and spec.approval_caps is not None and limit["value"] == PRODUCT_BUDGET_LIMIT:
         totals = _step(state, "early_end_failed", lambda: ledger_totals(ledger))
         budget = approval_budget(totals, *spec.approval_caps)
     record = _step(state, "early_end_failed", lambda: early_end_record("ours", limit, engine_end["first_terminal"], rows, budget))
+    if not_executed and record["reason"] not in (CONFIG_END_REASON, PROVIDER_FAULT_END_REASON):
+        record = dict(record, **{"class": CLASS_NOT_EXECUTED, "reason": PRODUCT_NOT_EXECUTED_REASON})
     state.summary["early_end"] = record
     _step(state, "evidence_write_failed", lambda: evidence.write_json(EARLY_END_NAME, record))
     return record
@@ -725,7 +761,7 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     _step(state, "evidence_write_failed", lambda: evidence.write_json(PRODUCT_END_NAME, engine_end))
     limit = first_limit(stop_reason, stop_elapsed, spec.time_budget_seconds, engine_end["first_terminal"])
 
-    record = _step(state, "product_run_record_failed", lambda: ports.run_record(task_id))
+    record = _run_record_or_not_executed(spec, ports, evidence, state, task_id, limit, engine_end)
     # 마감 뒤 제품 작업의 목표 칸(목표 수·달성 수 등)을 남긴다. 판정에 쓰지 않는 근거라 읽지 못해도 회차를 무효로 하지 않고
     # 고정 코드만 남긴다(B의 끝 신호 읽기 실패와 같은 처리).
     _step(state, "evidence_write_failed", lambda: evidence.write_json(PRODUCT_TASK_END_NAME, _task_end(ports, task_id)))

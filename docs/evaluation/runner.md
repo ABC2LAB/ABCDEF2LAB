@@ -233,7 +233,9 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   고정 사유)는 `config_end`로 무효이고 세션이 시도로 세지 않고 멈춘다. 러너 상한 전에 O `failed`·`unknown`(B `failed`)으로 끝났고 끝 직전
   마지막 호출이 제공자 오류(끊김·429·5xx)이며 그 뒤 성공 호출이 없으면 `provider_fault_end`로 무효이고 멈춤 상한에 같이 센다. 그 밖에
   일찍 끝난 회차는 유효로 두고 분류만 남는다. 호출 행을 읽지 못하거나 없으면(합성 O) 근거 없음으로 두고 무효로 빼지 않는다. 사유
-  순서는 설정 오류 → 멈춤 → 제공자 장애 끝 → 모델 호출 검증이다. 결과 요약 `early_end`에도 싣는다.
+  순서는 설정 오류 → 멈춤 → 제공자 장애 끝 → 모델 호출 검증이다. 결과 요약 `early_end`에도 싣는다. O 제품이 준비 단계에서 끝나
+  실행 기록이 없으면(`diagnosis-run` `NOT_RUN`·404) 실행 기록을 요구하기 전에 분류하고, 설정 오류·제공자 장애 끝이 아니면
+  `product_not_executed`(분류 `ended_not_executed`)로 끝낸다(유효로 셀지는 사용자 결정 대기).
 
 `findings.json`은 baseline·개선 후 모두 **같은 추출 경로**(`baseline_pages_collector` → `baseline_extract`, 수정 없음)를 거친
 투영만 담는다. API 응답 원본·제목·설명·자산 이름은 저장하지 않는다(절대규칙 2). 추출기는 원본 FindingDTO 형식(upstream
