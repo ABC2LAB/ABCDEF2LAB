@@ -135,6 +135,7 @@ class TestEarlyEndRecord(unittest.TestCase):
                     record = early_end_record("ours", limit, ended("unknown")[1], [row(1, 10), row(2, 20, status=status)])
                     self.assertEqual((record["class"], record["reason"]), (CLASS_CONFIG, CONFIG_END_REASON))
                     self.assertEqual((record["evidence"]["kind"], record["evidence"]["call"]["status"]), ("model_auth_status", status))
+                    self.assertIs(record["evidence"]["moderation_possible"], status == 403)  # 403만 검열 가능 표시
         for value in (row(1, 10, status=400), row(1, 10, status=405), row(1, 10, "cancelled_by_seal", 401)):
             with self.subTest(value=value):
                 record = early_end_record("ours", {"value": "runner_time_budget"}, None, [value])
@@ -354,6 +355,10 @@ class TestSession(unittest.TestCase):
         self.assertEqual(len(listed), 4)
         self.assertIn("rate_limited #2 forwarded 429 t", listed[2])
         self.assertIn("start_refused approval_required", listed[3])
+        moderated = dataclasses.replace(attempts[0], early_end=dict(attempts[0].early_end, evidence={
+            "kind": "model_auth_status", "moderation_possible": True,
+            "call": {"seq": 3, "decision": "forwarded", "status": 403, "completed_at": "t"}}))
+        self.assertIn("(검열 가능: 403)", session_runs.early_end_list([moderated])[2])
         self.assertEqual(session_runs.early_end_list(attempts[1:2]), ["없음"])
         tally_lines, warnings = session_runs.tally(attempts, 3)
         self.assertIn("| ours | — | 0 | 0 | 0 | — | — |", tally_lines)  # 설정 오류는 시도가 아니다

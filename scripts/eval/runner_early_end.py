@@ -39,6 +39,9 @@ _SERVER_ERRORS = range(500, 600)
 _SUCCESS = range(200, 300)
 # 키·크레딧·권한·모델 이름 문제(OpenRouter 401 잘못된 키, 402 크레딧, 403 권한·검열, 404 모델·엔드포인트 없음).
 CONFIG_STATUSES = frozenset({401, 402, 403, 404})
+# 403은 OpenRouter 검열(입력이 flagged)일 수도 있다. 검열은 내용 때문이라 키·manifest를 고쳐도 사라지지 않는다. 호출 기록에는
+# 응답 본문이 없어 둘을 가르지 못하므로, 403이면 근거에 검열 가능 표시를 남겨 측정 뒤 검토 때 사람이 구분하게 한다(#831 리뷰).
+MODERATION_POSSIBLE_STATUS = 403
 # 제품 시작 전 거부 가운데 설정 문제인 고정 사유(diagnosisprep service_linux·url_preparation_runtime). busy·capacity·
 # unavailable 같은 일시 거부는 넣지 않는다(시작 실패 무효로 센다).
 START_CONFIG_CODES = frozenset({"approval_expired", "approval_required", "approval_changed", "budget_exhausted",
@@ -115,7 +118,8 @@ def early_end_record(side: str, limit: dict, first_terminal: dict | None, llm_ro
         auth = next((row for row in rows if row.get("decision") in _PROVIDER_DECISIONS and row.get("status") in CONFIG_STATUSES), None)
         if auth is not None:
             return dict(record, **{"class": CLASS_CONFIG, "reason": CONFIG_END_REASON,
-                                   "evidence": {"kind": "model_auth_status", "call": _call(auth)}})
+                                   "evidence": {"kind": "model_auth_status", "call": _call(auth),
+                                                "moderation_possible": auth.get("status") == MODERATION_POSSIBLE_STATUS}})
     if value == PRODUCT_BUDGET_LIMIT and budget is not None and budget["reached"]:
         return dict(record, **{"class": CLASS_CONFIG, "reason": CONFIG_END_REASON,
                                "evidence": dict(budget, kind="approval_budget")})

@@ -321,7 +321,7 @@ def early_end_list(attempts: list[Attempt]) -> list[str]:
         e = a.early_end
         evidence = e.get("evidence") if isinstance(e.get("evidence"), dict) else {}
         kind = evidence.get("kind", "—")
-        detail = _call_text(evidence["call"]) if "call" in evidence else (
+        detail = _call_text(evidence["call"]) + (" (검열 가능: 403)" if evidence.get("moderation_possible") else "") if "call" in evidence else (
             evidence.get("code") or (f"요청 {evidence.get('requests')}/{evidence.get('max_requests')} · 비용 "
                                      f"{evidence.get('cost_usd_micros')}/{evidence.get('max_cost_usd_micros')}µ$"
                                      if kind == "approval_budget" else ""))
