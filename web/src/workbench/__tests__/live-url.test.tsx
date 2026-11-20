@@ -1287,53 +1287,77 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     return calls;
   }
 
-  it("탐색 흐름 없는 점검: 일시정지 · 다시 시작을 결속 task 의 control 로 보내고 받은 응답으로만 상태를 바꾼다 (C33)", async () => {
+  it("탐색 흐름 없는 점검: '중지'는 '이 점검을 끝냅니다'를 확인받은 뒤에만 control pause 를 보내고, 재개 버튼은 없다 (#830)", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(running);
-    const calls = controlApi((b) =>
-      b.action === "pause"
-        ? { id: "42", paused: true, status: "paused" }
-        : { id: "42", queued: false, status: "running" },
-    );
+    const calls = controlApi(() => ({
+      id: "42",
+      paused: false,
+      queued: false,
+      status: "stopping",
+      reason_code: "pause_stops_run",
+    }));
     mount("live");
-    const pause = await screen.findByRole("button", { name: "일시정지" });
-    // 응답 전에는 멈춤으로 보이지 않는다
-    expect(screen.queryByText("일시정지됨")).toBeNull();
+    const stopBtn = await screen.findByRole("button", { name: "중지" });
+    // 일시정지 · 다시 시작 · 재개 버튼은 두지 않는다
+    expect(screen.queryByRole("button", { name: /일시정지|다시 시작|재개/ })).toBeNull();
+    // 누르기만 해서는 보내지 않는다 — 확인 상자부터
+    fireEvent.click(stopBtn);
+    const dialog = screen.getByRole("alertdialog", { name: "이 점검을 끝냅니다. 중지할까요?" });
+    expect(dialog).toHaveTextContent("다시 이어 갈 수 없습니다(재개는 아직 지원하지 않습니다)");
+    expect(calls).toEqual([]);
+    fireEvent.click(within(dialog).getByRole("button", { name: "계속 점검" }));
+    expect(screen.queryByRole("alertdialog", { name: /이 점검을 끝냅니다/ })).toBeNull();
+    expect(calls).toEqual([]);
+    fireEvent.click(screen.getByRole("button", { name: "중지" }));
+    const reads = u.readURLStatus.mock.calls.length;
+    u.readURLStatus.mockResolvedValue({ ...running, revision: 6, state: "stopping" });
     await act(async () => {
-      fireEvent.click(pause);
+      fireEvent.click(
+        within(screen.getByRole("alertdialog", { name: /이 점검을 끝냅니다/ })).getByRole("button", { name: "중지" }),
+      );
     });
     expect(calls).toEqual([{ path: "/api/tasks/42/control", body: { action: "pause" } }]);
-    expect(await screen.findByText("일시정지됨")).toBeInTheDocument();
-    expect(document.getElementById("luControl")).toHaveTextContent("일시정지했습니다.");
-    expect(screen.queryByRole("button", { name: "일시정지" })).toBeNull();
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "다시 시작" }));
-    });
-    expect(calls.at(-1)).toEqual({ path: "/api/tasks/42/control", body: { action: "resume" } });
-    expect(await screen.findByRole("button", { name: "일시정지" })).toBeInTheDocument();
-    expect(screen.queryByText("일시정지됨")).toBeNull();
-    expect(document.getElementById("luControl")).toHaveTextContent("다시 시작했습니다.");
+    expect(await screen.findByText("중지·마감 중")).toBeInTheDocument();
+    // 중지 뒤 진단 상태를 바로 다시 읽어 마감 중을 보인다
+    expect(u.readURLStatus.mock.calls.length).toBeGreaterThan(reads);
+    expect(document.getElementById("luControl")).toHaveTextContent(
+      "중지를 요청했습니다. 점검을 마감하는 중이고, 마감되면 모은 결과로 보고서를 만듭니다.",
+    );
+    expect(screen.queryByRole("button", { name: "중지" })).toBeNull();
+    expect(screen.queryByText(/일시정지됨|일시정지 여부 모름/)).toBeNull();
   });
 
-  it("일시정지 409(이미 멈춤 등)는 서버 사유를 보이고, 상태를 모르니 두 버튼을 다 둔다", async () => {
+  it("409 resume_unsupported 는 오류 대신 '재개는 아직 지원하지 않습니다', 그 밖 409 는 서버 사유를 보인다", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(running);
+    let fail: ApiError = Object.assign(new ApiError(409, "첫 진단 회차는 재개를 지원하지 않습니다"), {
+      reasonCode: "resume_unsupported",
+    });
     controlApi(() => {
-      throw new ApiError(409, "작업이 이미 일시정지되어 있습니다");
+      throw fail;
     });
     mount("live");
-    await act(async () => {
-      fireEvent.click(await screen.findByRole("button", { name: "일시정지" }));
-    });
-    expect(document.getElementById("luControl")).toHaveTextContent("일시정지 거절 · 작업이 이미 일시정지되어 있습니다");
-    expect(screen.getByRole("button", { name: "일시정지" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "다시 시작" })).toBeInTheDocument();
-    expect(screen.queryByText("일시정지됨")).toBeNull();
-    expect(screen.getByText("일시정지 여부 모름")).toBeInTheDocument();
-    expect(screen.queryByText("진행 중")).toBeNull();
+    const send = async () => {
+      fireEvent.click(await screen.findByRole("button", { name: "중지" }));
+      await act(async () => {
+        fireEvent.click(
+          within(screen.getByRole("alertdialog", { name: /이 점검을 끝냅니다/ })).getByRole("button", { name: "중지" }),
+        );
+      });
+    };
+    await send();
+    const note = document.getElementById("luControl") as HTMLElement;
+    expect(note).toHaveTextContent(/^재개는 아직 지원하지 않습니다\.$/);
+    expect(note).toHaveAttribute("role", "status");
+    fail = new ApiError(409, "이미 종료된 실행은 중지할 수 없습니다");
+    await send();
+    expect(document.getElementById("luControl")).toHaveTextContent("중지 거절 · 이미 종료된 실행은 중지할 수 없습니다");
+    // 거절 뒤에는 다시 누를 수 있다(상태는 서버 조회가 정한다)
+    expect(screen.getByRole("button", { name: "중지" })).toBeEnabled();
   });
 
-  it("제어 결과를 모르면(연결 실패) 멈췄다고 하지 않고 두 버튼을 다 두며, 권한 실패(403)는 상태를 바꾸지 않는다", async () => {
+  it("중지 결과를 모르면(연결 실패) 끝났다고 하지 않고, 권한 실패(403)는 그 사유를 보인다", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(running);
     let fail: unknown = new TypeError("network");
@@ -1341,35 +1365,53 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
       throw fail;
     });
     mount("live");
-    await act(async () => {
-      fireEvent.click(await screen.findByRole("button", { name: "일시정지" }));
-    });
-    expect(document.getElementById("luControl")).toHaveTextContent("일시정지 결과를 확인하지 못했습니다");
-    expect(screen.getByRole("button", { name: "다시 시작" })).toBeInTheDocument();
-    expect(screen.queryByText("일시정지됨")).toBeNull();
-    fail = new ApiError(403, "forbidden");
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "다시 시작" }));
-    });
+    const send = async () => {
+      fireEvent.click(await screen.findByRole("button", { name: "중지" }));
+      await act(async () => {
+        fireEvent.click(
+          within(screen.getByRole("alertdialog", { name: /이 점검을 끝냅니다/ })).getByRole("button", { name: "중지" }),
+        );
+      });
+    };
+    await send();
     expect(document.getElementById("luControl")).toHaveTextContent(
-      "다시 시작 실패 (HTTP 403) · 이 점검을 제어할 권한이",
+      "중지 결과를 확인하지 못했습니다. [상태 다시 조회]로 점검이 끝났는지 확인하세요.",
     );
-    expect(screen.getByRole("button", { name: "일시정지" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "다시 시작" })).toBeInTheDocument();
+    expect(screen.queryByText("중지·마감 중")).toBeNull();
+    fail = new ApiError(403, "forbidden");
+    await send();
+    expect(document.getElementById("luControl")).toHaveTextContent("중지 실패 (HTTP 403) · 이 점검을 제어할 권한이");
   });
 
-  it("끝난 점검 · 상태를 확인하지 못한 점검에는 일시정지 버튼을 두지 않거나 막는다", async () => {
+  it("중지를 일시정지로만 처리한 서버(#830 이전)면 중지됐다고 하지 않고 [종료]를 안내한다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    controlApi(() => ({ id: "42", paused: true, status: "paused" }));
+    mount("live");
+    fireEvent.click(await screen.findByRole("button", { name: "중지" }));
+    await act(async () => {
+      fireEvent.click(
+        within(screen.getByRole("alertdialog", { name: /이 점검을 끝냅니다/ })).getByRole("button", { name: "중지" }),
+      );
+    });
+    expect(document.getElementById("luControl")).toHaveTextContent(
+      "서버가 이 요청을 중지가 아닌 일시정지로 처리했습니다. 점검을 끝내려면 [종료]를 누르세요.",
+    );
+    expect(screen.getByRole("button", { name: "중지" })).toBeInTheDocument();
+  });
+
+  it("끝난 점검 · 상태를 확인하지 못한 점검에는 중지 버튼을 두지 않는다", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(completed);
     const { unmount } = mount("live");
     expect(await screen.findByText(/점검을 마쳤습니다/)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "일시정지" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "중지" })).toBeNull();
     unmount();
     resetUrl();
     u.readURLStatus.mockResolvedValue(preparing);
     mount("live");
     await waitFor(() => expect(u.readURLStatus).toHaveBeenCalled());
-    expect(screen.queryByRole("button", { name: "일시정지" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "중지" })).toBeNull();
   });
 
   it("서버 진단 활동 줄은 순번 · 시각 · 주체 · 의도 · 오류만 보이고 원문은 없다고 말한다", async () => {

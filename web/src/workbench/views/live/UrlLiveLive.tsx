@@ -65,7 +65,7 @@ import { ProductVerdictReport } from "./productVerdictViews";
 import { ReportAssetGraph } from "./ReportAssetGraph";
 import { ReportReadError } from "./runRows";
 import { TaskActivity } from "./TaskActivity";
-import { TaskPauseButtons, useTaskControl } from "./TaskControl";
+import { useTaskControl, useTaskStopConfirm } from "./TaskControl";
 import { AccessMapPanel } from "./UrlAccessMapLive";
 import { reasonText, UrlFacts, UrlHead, UrlNotices, UrlPill, UrlRefreshButton, useUrlHost } from "./urlParts";
 import { crawlPct, PauseButton, useStopConfirm, WorkflowNotice, WorkflowReport } from "./workflowViews";
@@ -448,12 +448,10 @@ function SavedFindings({ poll }: { poll: Poll<Remediation> }) {
 
 /**
  * 점검 진행 화면의 상태 알약 (시안 lState: 진행 중 · 일시정지됨). 실행 중이 아니거나 확인하지 못한 상태는
- * 공통 알약(서버 상태 글) 그대로.
+ * 공통 알약(서버 상태 글) 그대로. 일시정지됨은 탐색 흐름이 있는 점검의 흐름 스냅숏일 때만이다.
  */
-function LivePill({ job, verified, paused }: { job: { state: UrlState }; verified: boolean; paused: boolean | null }) {
+function LivePill({ job, verified, paused }: { job: { state: UrlState }; verified: boolean; paused: boolean }) {
   if (!verified || job.state !== "running") return <UrlPill job={job} verified={verified} />;
-  // null = 제어 결과를 확인하지 못해 멈췄는지 모름 → 진행 중이라고 단정하지 않는다
-  if (paused === null) return <span className={s.pill}>일시정지 여부 모름</span>;
   return paused ? <span className={s.pill}>일시정지됨</span> : <span className={cx(s.pill, s.run)}>진행 중</span>;
 }
 
@@ -490,10 +488,12 @@ export function UrlLiveLive() {
   const saved = usePoll(() => fetchRemediation(savedTask as string, "internal"), [savedTask], {
     enabled: visible && !!savedTask,
   });
-  // 탐색 흐름 없는 점검의 일시정지 · 다시 시작(C33). 흐름이 있는 점검은 워크플로 PauseButton 이 맡는다
+  // 탐색 흐름 없는 점검의 중지(C33 → #830: 제품 첫 진단의 일시정지는 회차를 끝내는 중지, 재개 없음).
+  // 흐름이 있는 점검은 워크플로 PauseButton 이 맡는다
   const uncertain = useUrl((st) => st.uncertain);
   const plainTask = job && !job.input.workflow_mode && job.task_id ? job.task_id : null;
   const control = useTaskControl(plainTask);
+  const taskStop = useTaskStopConfirm(control, !verified || uncertain || handle?.kind === "recovered");
 
   if (!handle || !job) {
     return (
@@ -528,10 +528,9 @@ export function UrlLiveLive() {
   }
 
   const ended = URL_ENDED_STATES.includes(job.state);
-  // 일시정지 표시: 흐름이 있으면 흐름 스냅숏, 없으면 이 화면에서 받은 제어 응답. 아직 제어하지 않았으면 진행 중(서버 상태),
-  // 제어가 거절(409)되거나 결과를 모르면 알약은 '모름'이다
-  const pausedNow = flow ? !!flow.paused : control.paused === true;
-  const pillPaused = !flow && control.both ? null : pausedNow;
+  // 일시정지 표시: 흐름이 있는 점검만(흐름 스냅숏). 흐름 없는 점검은 일시정지가 곧 중지라(#830) 멈춤 상태가 없고,
+  // 중지 뒤에는 서버 상태(중지 · 마감 중)가 알약에 나온다
+  const pausedNow = flow ? !!flow.paused : false;
   const canControl = !!plainTask && !flow && job.state === "running";
   const run = a.poll.data?.run;
   const ap = approvalCounts(run, a.poll.data?.approvals);
@@ -657,13 +656,11 @@ export function UrlLiveLive() {
         crumb="점검 진행"
         host={host}
         phase="live"
-        pill={<LivePill job={job} verified={verified} paused={pillPaused} />}
+        pill={<LivePill job={job} verified={verified} paused={pausedNow} />}
         acts={
           <>
             <PauseButton />
-            {canControl ? (
-              <TaskPauseButtons c={control} disabled={!verified || uncertain || handle.kind === "recovered"} />
-            ) : null}
+            {canControl ? taskStop.button : null}
             {stop.button}
             {/* 좁은 화면에서만 보이는 오른쪽 서랍 열기 (넓은 화면은 PaneToggle) */}
             <InspOpenButton>진행 요약</InspOpenButton>
@@ -673,6 +670,7 @@ export function UrlLiveLive() {
       <div className={s.vb}>
         <div className={s.vm}>
           {stop.box}
+          {canControl ? taskStop.box : null}
           <UrlNotices />
           <WorkflowNotice />
           {job.reason_code ? <p className={s.help}>{`서버 사유: ${reasonText(job.reason_code)}`}</p> : null}
@@ -717,7 +715,8 @@ export function UrlLiveLive() {
             </section>
           ) : null}
           {stateNote}
-          {canControl && control.message ? (
+          {/* 중지 응답 안내는 마감 중(stopping)으로 바뀐 뒤에도 남긴다 */}
+          {plainTask && control.message ? (
             <p className={s.help} role="status" id="luControl">
               {control.message}
             </p>

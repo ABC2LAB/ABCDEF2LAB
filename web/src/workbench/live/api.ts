@@ -234,19 +234,33 @@ export interface TaskControlResult {
   paused: boolean;
   queued: boolean;
   status: string;
+  /** 서버 고정 사유 코드(예: 제품 첫 진단의 일시정지 = 중지 `pause_stops_run`, #830). 없거나 모양이 틀리면 "". */
+  reasonCode: string;
 }
 
 /**
  * 일시정지/다시 시작. **종료(stop) API 는 없다.** 끝난 점검·이미 멈춘 점검이면 ApiError 409, 없는 id 는 404.
  * 제품 관리 중계는 같은 운영자가 결속한 task 에만 pause · resume 을 넘긴다(그 밖 403). 다시 시작 응답은 paused=false.
+ * 제품 첫 진단(#830 뒤): pause 는 회차를 바로 끝내는 중지라 `status: stopping` · `reason_code: pause_stops_run`,
+ * resume 은 409 `reason_code: resume_unsupported`(ApiError.reasonCode).
  */
 export function controlTask(id: string, action: "pause" | "resume"): Promise<TaskControlResult> {
   return call(async () => {
-    const r = await apiFetch<Partial<TaskControlResult>>(`/api/tasks/${enc(id)}/control`, {
-      method: "POST",
-      body: JSON.stringify({ action }),
-    });
-    return { id: String(r?.id ?? id), paused: !!r?.paused, queued: !!r?.queued, status: str(r?.status) };
+    const r = await apiFetch<Partial<Omit<TaskControlResult, "reasonCode">> & { reason_code?: unknown }>(
+      `/api/tasks/${enc(id)}/control`,
+      {
+        method: "POST",
+        body: JSON.stringify({ action }),
+      },
+    );
+    const reason = str(r?.reason_code);
+    return {
+      id: String(r?.id ?? id),
+      paused: !!r?.paused,
+      queued: !!r?.queued,
+      status: str(r?.status),
+      reasonCode: /^[a-z][a-z0-9_]{0,63}$/.test(reason) ? reason : "",
+    };
   });
 }
 

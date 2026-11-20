@@ -1,123 +1,159 @@
 "use client";
 
-// 탐색 흐름 없는 점검(일반 URL 진단)의 일시정지 · 다시 시작 (C33).
-// 제품 관리 중계는 결속된 task 의 POST /api/tasks/{id}/control 에 pause · resume 만 넘긴다(server diagnosis_management_bridge.go).
+// 탐색 흐름 없는 점검(일반 URL 진단)의 중지 (C33 → #830).
+// 제품 첫 진단 서버에서 control pause 는 엔진을 멈춰 두지 않고 회차를 바로 끝내는 운영자 중지다(확정 단계 interrupted,
+// 응답 status: stopping · reason_code: pause_stops_run). 재개는 지원하지 않는다(409 reason_code: resume_unsupported) —
+// 일시정지 뒤에는 실행 연결이 닫혀 이어 갈 수 없었다. 그래서 화면은 '일시정지 · 다시 시작' 대신 확인을 거친 '중지' 하나만 둔다.
+// 진짜 재개 지원은 측정 뒤 개선(개발 계획)이라, 그때 다시 시작 버튼을 되살린다.
 // 흐름이 있는 점검은 워크플로 API 의 PauseButton(workflowViews) 을 쓴다 — 둘을 같이 두지 않는다.
-// 일시정지 상태를 읽는 조회 API 가 없어서, 화면은 이 화면에서 받은 제어 응답만 안다(paused: null = 모름).
 
-import { useCallback, useEffect, useState } from "react";
+import { type ReactElement, useCallback, useEffect, useRef, useState } from "react";
 
 import { ApiError } from "@/lib/diagnosis/api";
 
 import { cx } from "../../lib/cx";
 import { controlTask } from "../../live/api";
 import { maskSecrets } from "../../live/mask";
+import { runUrlAction } from "../../live/urlDiagnosis";
 import { Icon } from "../../ui/icons";
 import s from "../../workbench.module.css";
 
-type Action = "pause" | "resume";
+/** 서버 고정 사유 코드(server first_diagnosis_startup.go firstDiagnosisControl). */
+export const PAUSE_STOPS_RUN = "pause_stops_run";
+export const RESUME_UNSUPPORTED = "resume_unsupported";
 
-/** 일시정지 제어 상태. paused 는 이 화면에서 받은 응답으로만 정한다. */
+/** 중지 제어 상태. */
 export interface TaskControl {
-  /** true = 멈춤 · false = 진행 · null = 모름(아직 제어하지 않았거나 결과를 확인하지 못함) */
-  paused: boolean | null;
-  /** 서버가 지금 상태와 맞지 않는다고 거절했거나(409) 결과를 모른다 → 두 버튼을 다 보인다 */
-  both: boolean;
+  /** 서버가 중지를 받아 마감 중이다(stopping) → 버튼을 다시 두지 않는다 */
+  stopped: boolean;
   busy: boolean;
   message: string;
-  run: (action: Action) => Promise<void>;
+  /** 중지를 보낸다(서버 control 의 pause). 확인 상자를 거친 뒤에만 부른다. */
+  stop: () => Promise<void>;
 }
 
-const actionText: Record<Action, string> = { pause: "일시정지", resume: "다시 시작" };
-
-/** 실패 안내. 409 는 서버 사유(이미 멈춤 · 종료됨 등)를 그대로, 그 밖은 HTTP 상태와 다음 할 일. */
-function failText(action: Action, err: unknown): string {
+/** 실패 안내. resume_unsupported 는 오류가 아니라 '아직 지원하지 않음', 그 밖 409 는 서버 사유를 가려서 그대로. */
+export function controlFailText(err: unknown): string {
   const status = err instanceof ApiError ? err.status : 0;
-  if (status === 409 && err instanceof Error && err.message)
-    return `${actionText[action]} 거절 · ${maskSecrets(err.message)}`;
-  if (status === 0)
-    return `${actionText[action]} 결과를 확인하지 못했습니다. 상태가 바뀌었는지 모르니 다시 눌러 확인하세요.`;
+  if (err instanceof ApiError && err.status === 409 && err.reasonCode === RESUME_UNSUPPORTED)
+    return "재개는 아직 지원하지 않습니다.";
+  if (status === 409 && err instanceof Error && err.message) return `중지 거절 · ${maskSecrets(err.message)}`;
+  if (status === 0) return "중지 결과를 확인하지 못했습니다. [상태 다시 조회]로 점검이 끝났는지 확인하세요.";
   const next: Record<number, string> = {
     401: "다시 로그인해 주세요.",
     403: "이 점검을 제어할 권한이 없거나 승인이 바뀌었습니다.",
     404: "점검을 찾지 못했습니다.",
     503: "진단 서비스가 응답하지 않습니다.",
   };
-  return `${actionText[action]} 실패 (HTTP ${status}) · ${next[status] ?? "응답을 확인하지 못했습니다."}`;
+  return `중지 실패 (HTTP ${status}) · ${next[status] ?? "응답을 확인하지 못했습니다."}`;
 }
 
-/** taskId 가 바뀌면 처음부터(모름) 다시 센다. */
+/** taskId 가 바뀌면 처음부터 다시 센다. */
 export function useTaskControl(taskId: string | null): TaskControl {
-  const [st, setSt] = useState<{
-    task: string | null;
-    paused: boolean | null;
-    both: boolean;
-    busy: boolean;
-    message: string;
-  }>({ task: taskId, paused: null, both: false, busy: false, message: "" });
+  const [st, setSt] = useState<{ task: string | null; stopped: boolean; busy: boolean; message: string }>({
+    task: taskId,
+    stopped: false,
+    busy: false,
+    message: "",
+  });
   useEffect(() => {
-    setSt((cur) => (cur.task === taskId ? cur : { task: taskId, paused: null, both: false, busy: false, message: "" }));
+    setSt((cur) => (cur.task === taskId ? cur : { task: taskId, stopped: false, busy: false, message: "" }));
   }, [taskId]);
-  const run = useCallback(
-    async (action: Action) => {
-      if (!taskId) return;
-      setSt((cur) => ({ ...cur, busy: true, message: "" }));
-      try {
-        const r = await controlTask(taskId, action);
-        // 다시 시작 응답은 paused 칸 없이 status(queued · running)만 준다
-        const paused = action === "pause" ? r.paused : false;
-        setSt((cur) =>
-          cur.task === taskId
-            ? { ...cur, paused, both: false, busy: false, message: paused ? "일시정지했습니다." : "다시 시작했습니다." }
-            : cur,
-        );
-      } catch (err) {
-        const status = err instanceof ApiError ? err.status : 0;
-        setSt((cur) =>
-          cur.task === taskId
-            ? {
-                ...cur,
-                // 409(상태 불일치) · 결과 모름은 지금 상태를 모른다 → 둘 다 보인다. 그 밖(권한 등)은 상태를 바꾸지 않는다
-                paused: status === 409 || status === 0 ? null : cur.paused,
-                both: status === 409 || status === 0 ? true : cur.both,
-                busy: false,
-                message: failText(action, err),
-              }
-            : cur,
-        );
-      }
-    },
-    [taskId],
-  );
+  const stop = useCallback(async () => {
+    if (!taskId) return;
+    setSt((cur) => ({ ...cur, busy: true, message: "" }));
+    try {
+      const r = await controlTask(taskId, "pause");
+      // #830 이전 서버는 pause 를 일시정지로만 처리한다(재개도 실패) — 중지됐다고 말하지 않고 종료를 안내한다
+      const stopped = r.status === "stopping" && r.reasonCode === PAUSE_STOPS_RUN;
+      setSt((cur) =>
+        cur.task === taskId
+          ? {
+              ...cur,
+              stopped,
+              busy: false,
+              message: stopped
+                ? "중지를 요청했습니다. 점검을 마감하는 중이고, 마감되면 모은 결과로 보고서를 만듭니다."
+                : "서버가 이 요청을 중지가 아닌 일시정지로 처리했습니다. 점검을 끝내려면 [종료]를 누르세요.",
+            }
+          : cur,
+      );
+      // 마감 상태(stopping)를 바로 보이게 진단 상태를 한 번 다시 읽는다(조회만, 새 전송 없음)
+      if (stopped) void runUrlAction("refresh");
+    } catch (err) {
+      setSt((cur) => (cur.task === taskId ? { ...cur, busy: false, message: controlFailText(err) } : cur));
+    }
+  }, [taskId]);
   const same = st.task === taskId;
   return {
-    paused: same ? st.paused : null,
-    both: same && st.both,
+    stopped: same && st.stopped,
     busy: same && st.busy,
     message: same ? st.message : "",
-    run,
+    stop,
   };
 }
 
-/** 일시정지 · 다시 시작 버튼. 상태를 모르고 서버가 거절했으면 둘 다 보인다. */
-export function TaskPauseButtons({ c, disabled }: { c: TaskControl; disabled: boolean }) {
-  const actions: Action[] = c.both ? ["pause", "resume"] : [c.paused ? "resume" : "pause"];
-  return (
-    <>
-      {actions.map((action) => (
-        <button
-          key={action}
-          className={cx(s.btn)}
-          type="button"
-          disabled={disabled || c.busy}
-          aria-pressed={c.both ? undefined : c.paused === true}
-          title="일시정지해도 점검 실행 시간 상한은 계속 흐릅니다"
-          onClick={() => void c.run(action)}
-        >
-          <Icon name={action === "resume" ? "play" : "pause"} />
-          <span>{c.busy ? "보내는 중…" : actionText[action]}</span>
-        </button>
-      ))}
-    </>
+/**
+ * 중지 버튼 + 확인 상자. 누르면 바로 보내지 않고 '이 점검을 끝냅니다'를 한 번 확인받는다(되돌릴 수 없음).
+ * 버튼은 머리(acts)에, 확인 상자는 본문 맨 위에 둔다(종료 확인 상자와 같은 자리).
+ */
+export function useTaskStopConfirm(
+  c: TaskControl,
+  disabled: boolean,
+): { button: ReactElement | null; box: ReactElement | null } {
+  const [open, setOpen] = useState(false);
+  const opener = useRef<HTMLButtonElement>(null);
+  const yes = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (open) yes.current?.focus();
+  }, [open]);
+  const hidden = c.stopped;
+  const button = hidden ? null : (
+    <button
+      ref={opener}
+      className={s.btn}
+      type="button"
+      disabled={disabled || c.busy}
+      aria-expanded={open}
+      onClick={() => setOpen(true)}
+    >
+      <Icon name="stop" />
+      <span>{c.busy ? "보내는 중…" : "중지"}</span>
+    </button>
   );
+  const box =
+    open && !hidden && !disabled ? (
+      <div className={s.confirm} role="alertdialog" aria-labelledby="taskStopH">
+        <h2 id="taskStopH">이 점검을 끝냅니다. 중지할까요?</h2>
+        <ul>
+          <li>중지하면 바로 마감하고, 다시 이어 갈 수 없습니다(재개는 아직 지원하지 않습니다).</li>
+          <li>새 요청을 보내지 않고, 모은 증거와 발견은 남겨 중지 시점까지의 결과로 보고서를 만듭니다.</li>
+          <li>확정 단계를 켠 점검이면 확정 단계는 중단(interrupted)으로 기록됩니다.</li>
+        </ul>
+        <div className={s.acts}>
+          <button
+            ref={yes}
+            className={cx(s.btn, s.danger)}
+            type="button"
+            onClick={() => {
+              setOpen(false);
+              void c.stop();
+            }}
+          >
+            중지
+          </button>
+          <button
+            className={s.btn}
+            type="button"
+            onClick={() => {
+              setOpen(false);
+              opener.current?.focus();
+            }}
+          >
+            계속 점검
+          </button>
+        </div>
+      </div>
+    ) : null;
+  return { button, box };
 }
