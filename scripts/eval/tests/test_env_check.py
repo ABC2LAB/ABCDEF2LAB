@@ -240,6 +240,14 @@ class TestFailures(unittest.TestCase):
         for key in (REBOOT_REQUIRED, REBOOT_PENDING):
             with self.subTest(unreadable=key):
                 self.assertIsNone(env_check.windows_update_state(lambda k, v: None if k == key else base(k, v), lambda: NOW))
+        # 레지스트리를 못 읽어도 절전이 켜져 있으면 SKIP이 아니라 FAIL(#823 리뷰: 절전 FAIL이 가려지지 않게)
+        host = FakeHost()
+        host.registry_readable = False
+        host.power_values["STANDBYIDLE"] = (900, 0)
+        hidden = host.checks()["power"]
+        self.assertFalse(hidden.ok)
+        self.assertFalse(hidden.skipped)
+        self.assertIn("절전", hidden.reason)
         # 절전이 켜져 있으면 업데이트가 괜찮아도 FAIL
         host = FakeHost()
         host.power_values["STANDBYIDLE"] = (600, 0)

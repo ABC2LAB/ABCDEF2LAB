@@ -235,13 +235,14 @@ def check_power(query: PowerQuery, reg: RegQuery, now: Now) -> Result:
         found[label] = {side: (int(m.group(1), 16) if m else None) for side, m in values.items()}
     bad = [label for label, v in found.items() if v["AC"] != 0]
     detail = ", ".join(f"{label} AC {v['AC']}초·DC {v['DC']}초" for label, v in found.items())
+    # 절전 FAIL을 먼저 낸다. 업데이트 상태를 못 읽어도(SKIP) 절전이 켜진 사실이 가려지지 않게 한다(#823 리뷰).
+    if bad:
+        return Result(False, "power", f"전원 연결 때 {'·'.join(bad)}이 켜져 있음({detail}) → 측정 동안 '안 함'(0)으로")
     update = windows_update_state(reg, now)
     if update is None:
         return Result(True, "power", "Windows 업데이트 상태를 읽을 수 없음 → 재부팅 대기 업데이트가 없고 업데이트가 일시 중지인지 직접 확인",
                       skipped=True)
     problems, update_detail = update
-    if bad:
-        return Result(False, "power", f"전원 연결 때 {'·'.join(bad)}이 켜져 있음({detail}; {update_detail}) → 측정 동안 '안 함'(0)으로")
     if problems:
         return Result(False, "power", f"{'·'.join(problems)}({update_detail}; {detail}) → 재부팅 대기는 세션 전에 재부팅으로 끝내고, "
                                       "측정 날 업데이트를 일시 중지(설정 > Windows 업데이트)")
