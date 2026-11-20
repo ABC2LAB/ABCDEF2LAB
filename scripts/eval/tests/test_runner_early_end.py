@@ -49,6 +49,8 @@ class TestProviderErrorKind(unittest.TestCase):
                  (row(1, 1, status=429), "rate_limited"), (row(1, 1, "upstream_error", 503), "server_error"),
                  (row(1, 1, status=500), "server_error"), (row(1, 1, status=599), "server_error"),
                  (row(1, 1), None), (row(1, 1, status=400), None), (row(1, 1, status=600), None),
+                 # 끊김은 위쪽 오류 행에만 있다(완료된 forwarded 행에 끝 모양이 붙어도 끊김이 아니다, runner_fault와 같은 규칙)
+                 (row(1, 1, "forwarded", 200, "upstream_cut_before_done"), None),
                  # 호출자가 먼저 닫은 행·봉인 때 게이트웨이가 끊은 행은 제공자 오류가 아니다
                  (row(1, 1, "upstream_error", 200, "client_closed_before_done"), None),
                  (row(1, 1, "cancelled_by_seal", 429), None), (row(1, 1, "rejected_sampling", 503), None)]
@@ -293,6 +295,11 @@ class TestBRound(unittest.TestCase):
         result, _, _, evidence = b_round("failed", [call(1, 0.2), call(2, 0.3, status=429)])
         self.assertEqual((result["status"], result["reasons"][0]), (b_harness.INVALID, PROVIDER_FAULT_END_REASON), result)
         self.assertEqual(evidence.files["early-end.json"]["class"], CLASS_PROVIDER_FAULT)
+
+    def test_auth_status_is_a_config_end_first(self):
+        result, _, _, evidence = b_round("failed", [call(1, 0.2), call(2, 0.3, status=401)])
+        self.assertEqual((result["status"], result["reasons"][0]), (b_harness.INVALID, CONFIG_END_REASON), result)
+        self.assertEqual(evidence.files["early-end.json"]["evidence"]["kind"], "model_auth_status")
 
     def test_failed_after_success_stays_valid(self):
         result, _, _, evidence = b_round("failed", [call(1, 0.2), call(2, 0.3)])
