@@ -158,3 +158,20 @@ func TestE3ShareZeroLeavesModelBudget(t *testing.T) {
 		t.Fatal("몫 0 회차의 Worker refresh_session이 막힘")
 	}
 }
+
+// 확정 단계 다시 로그인도 확정 몫 사용으로 센다. 몫을 다 쓰면 예산이 남아도 확정 단계 요청을 더 보내지 않는다.
+func TestE3ShareCountsRelogins(t *testing.T) {
+	e, _, server, _ := e3ShareFixture(t, 10, 2)
+	for i := 0; i < 2; i++ {
+		if sent, reason := relogin(t, e, server.URL, true); !sent {
+			t.Fatalf("확정 전 다시 로그인 %d: %s", i, reason)
+		}
+	}
+	// 확정 단계 요청은 떼어 둔 몫에서 나가므로 모델 단계가 쓸 남은 예산(10 − 2)은 그대로다.
+	if remaining, err := e.BudgetRemaining(); err != nil || remaining != 8 {
+		t.Fatalf("확정 단계 요청 뒤 남은 예산 %d %v", remaining, err)
+	}
+	if sent, reason := relogin(t, e, server.URL, true); sent || reason != BudgetExhausted {
+		t.Fatalf("확정 몫을 넘겨 다시 로그인(예산은 남음): %v %s", sent, reason)
+	}
+}

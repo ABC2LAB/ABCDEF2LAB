@@ -380,8 +380,16 @@ func TestE2HTTPFactoryRefreshSession(t *testing.T) {
 	clock.Advance(minSessionRefreshInterval)
 	prevRef, _ := bindings.AccountBindingRef(runRef, "tester-a")
 	before := logins.Load()
+	modelBudget, err := lease.Execution.BudgetRemaining()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result := relogin.Relogin(ctx, "tester-a"); result != E2HTTPAuthAuthenticated || logins.Load() != before+1 {
 		t.Fatalf("확정 전 다시 로그인: %s logins=%d", result, logins.Load()-before)
+	}
+	// 확정 몫에서 나갔으므로 모델 단계가 쓸 남은 예산은 그대로다(Worker refresh_session은 1 줄인다).
+	if after, err := lease.Execution.BudgetRemaining(); err != nil || after != modelBudget {
+		t.Fatalf("확정 전 다시 로그인이 모델 단계 예산을 씀: %d → %d %v", modelBudget, after, err)
 	}
 	if nowRef, _ := bindings.AccountBindingRef(runRef, "tester-a"); nowRef == prevRef {
 		t.Fatal("확정 전 다시 로그인 뒤 결속 참조가 그대로")
