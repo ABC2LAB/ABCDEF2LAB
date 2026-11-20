@@ -246,3 +246,24 @@ func TestCancelExecClosesOnlyModelStage(t *testing.T) {
 		t.Fatal("다른 작업의 취소가 모델 단계를 마감함")
 	}
 }
+
+// 일시정지 원인은 고정 코드로 남고(첫 진단 감독자가 중지로 바꿀 때 로그에 씀), 재개하면 지워진다. 정해진 취소 사유가 아니면
+// unknown이다(#830 윤재상 봇 리뷰: 운영자 일시정지와 LLM 대기 등 엔진 사정을 가르게).
+func TestEnginePauseCauseIsRecorded(t *testing.T) {
+	e := NewEngine(nil)
+	if e.PauseCause("t1") != "" {
+		t.Fatal("일시정지 전 원인이 있음")
+	}
+	e.Pause("t1", agent.AbortPausedByOrchestrator)
+	if got := e.PauseCause("t1"); got != agent.AbortPausedByOrchestrator.Code {
+		t.Fatalf("원인 %q", got)
+	}
+	e.Resume(&Task{ID: "t1", notify: make(chan struct{}, 1)})
+	if got := e.PauseCause("t1"); got != "" {
+		t.Fatalf("재개 뒤 원인 %q", got)
+	}
+	e.Pause("t2", errors.New("다른 오류"))
+	if got := e.PauseCause("t2"); got != "unknown" {
+		t.Fatalf("정해지지 않은 원인 %q", got)
+	}
+}

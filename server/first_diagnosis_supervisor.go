@@ -701,6 +701,8 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 			return firstDiagnosisFailure(context.Canceled)
 		}
 		if !registered && server.engine.IsPaused(taskID) {
+			// 운영자 일시정지인지, LLM을 정하지 못한 대기 등 엔진 사정인지 회차를 읽을 때 가를 수 있게 원인 고정 코드를 남긴다.
+			log.Printf(logT("[first-diagnosis] task %s 엔진 일시정지(원인=%s)를 운영자 중지로 마감"), taskID, server.engine.PauseCause(taskID))
 			// 회차 중 엔진 일시정지(운영자 일시정지·동시 실행 조정 등)는 회차를 바로 끝내는 운영자 중지와 같다(사용자 결정
 			// 2026-11-20 분기점 1). 일시정지 상태로 시간 상한까지 걸려 있지 않게 중지를 기록하고 중지 마감(drain·E② 닫기·
 			// 확정 단계 interrupted)으로 간다. 재개는 지원하지 않는다.

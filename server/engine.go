@@ -121,8 +121,10 @@ type Engine struct {
 	lastAct  sync.Map // taskID -> int64 unix, last planner/worker activity (heartbeat)
 	llmCalls sync.Map // taskID -> *int64, actual planner/worker/main-agent LLM calls
 	paused   sync.Map // taskID -> bool, user-paused (planner + workers idle but loops alive)
-	deleting sync.Map // taskID -> bool, delete barrier (no new task-owned writes)
-	dropCnt  sync.Map // taskID -> *int64, running count of dropped (unpersistable) activity records
+	// pauseCauses는 일시정지 원인의 고정 코드다(agent 취소 사유 코드). 첫 진단 감독자가 일시정지를 중지로 바꿀 때 남긴다.
+	pauseCauses sync.Map // taskID -> string
+	deleting    sync.Map // taskID -> bool, delete barrier (no new task-owned writes)
+	dropCnt     sync.Map // taskID -> *int64, running count of dropped (unpersistable) activity records
 
 	// deleteMu makes installing the delete barrier atomic with registering a new
 	// task operation. Once BeginDelete returns, every admitted writer is reflected
@@ -200,7 +202,28 @@ func (e *Engine) nextPlannerRound(taskID string) int {
 // for it (a long worker.Execute would otherwise keep going until it finishes).
 func (e *Engine) Pause(taskID string, cause error) {
 	e.paused.Store(taskID, true)
+	e.pauseCauses.Store(taskID, pauseCauseCode(cause))
 	e.cancelExec(taskID, cause)
+}
+
+// pauseCauseCode는 일시정지 원인의 고정 코드다. 정해진 취소 사유가 아니면 unknown이다.
+func pauseCauseCode(cause error) string {
+	var abort *agent.AbortCause
+	if errors.As(cause, &abort) && abort.Code != "" {
+		return abort.Code
+	}
+	return "unknown"
+}
+
+// PauseCause는 이 작업을 일시정지한 원인의 고정 코드다(일시정지가 아니면 빈 값).
+func (e *Engine) PauseCause(taskID string) string {
+	if !e.IsPaused(taskID) {
+		return ""
+	}
+	if code, ok := e.pauseCauses.Load(taskID); ok {
+		return code.(string)
+	}
+	return "unknown"
 }
 
 // BeginDelete installs an execution barrier before task data/files are removed.
@@ -228,6 +251,7 @@ func (e *Engine) AbortDelete(taskID string, keepPaused bool) {
 	e.deleting.Delete(taskID)
 	if !keepPaused {
 		e.paused.Delete(taskID)
+		e.pauseCauses.Delete(taskID)
 	}
 	e.deleteMu.Unlock()
 	if !keepPaused && e.m != nil {
@@ -304,6 +328,7 @@ func (e *Engine) StopTask(taskID string) {
 	e.lastAct.Delete(taskID)
 	e.llmCalls.Delete(taskID)
 	e.paused.Delete(taskID)
+	e.pauseCauses.Delete(taskID)
 	e.dropCnt.Delete(taskID)
 	e.plannerRound.Delete(taskID)
 	e.settling.Delete(taskID)
@@ -356,6 +381,7 @@ func (e *Engine) Resume(t *Task) {
 		return
 	}
 	e.paused.Delete(t.ID)
+	e.pauseCauses.Delete(t.ID)
 	t.Notify()
 }
 
