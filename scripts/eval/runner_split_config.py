@@ -99,6 +99,19 @@ def _int(value: object, low: int, high: int) -> bool:
     return type(value) is int and low <= value <= high
 
 
+def _config_files(raw: dict, config: RunnerConfig) -> list[Path]:
+    """러너 설정이 가리키는 파일들(키·비밀·선언 보조·manifest·합성 계획). 관찰 로그인 파일과 디렉터리를 나누는지 볼 때 쓴다."""
+    paths = [config.secrets_env_file, config.runner_key_path, config.path_key_file, config.engine_rules,
+             (config.findings or {}).get("vocabulary_path"), raw.get("manifest_path"),
+             (raw.get("synthetic_model") or {}).get("plan_path") if isinstance(raw.get("synthetic_model"), dict) else None]
+    return [Path(p) for p in paths if isinstance(p, (str, Path)) and str(p).startswith("/")]
+
+
+def _shares_directory(observer: Path, files: list[Path]) -> bool:
+    folder = observer.resolve().parent
+    return any(path.resolve() == observer.resolve() or path.resolve().is_relative_to(folder) for path in files)
+
+
 def parse_split(raw: object, config: RunnerConfig) -> SplitConfig:
     """`split` 블록 검사. 보존 측정 회차(수용시험 목적·preservation 옵션)에서만 받는다. 오류는 모아서 낸다."""
     errors: list[str] = []
@@ -171,8 +184,9 @@ def parse_split(raw: object, config: RunnerConfig) -> SplitConfig:
             errors.append("config.split.observer_password_file: INVALID")
         elif Path(observer).resolve().is_relative_to(runs_root):
             errors.append("config.split.observer_password_file: INSIDE_RUNS_ROOT")  # 근거와 같이 복사되지 않게 밖에 둔다
-        elif isinstance(raw["manifest_path"], str) and Path(observer).resolve() == Path(raw["manifest_path"]).resolve():
-            errors.append("config.split.observer_password_file: SAME_AS_MANIFEST")
+        elif _shares_directory(Path(observer), _config_files(raw, config)):
+            # 관찰 파일 디렉터리 안에는 다른 설정 파일이 없어야 한다(#824 리뷰: 같은 경로면 쓰기·정리가 그 키 파일을 지운다).
+            errors.append("config.split.observer_password_file: SHARED_DIRECTORY")
     e2_v3 = None
     if "e2_v3" in raw:
         try:

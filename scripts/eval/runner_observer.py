@@ -5,8 +5,10 @@
 적으면, 그 비밀번호를 이 PC의 0600 파일 하나에만 쓰고 회차가 어떻게 끝나도 보호 입력과 같이 지운다.
 - 로그·결과·서명 근거에는 경로도 값도 남기지 않는다. 설정 지문(러너 설정·구동기 설정 SHA)에도 넣지 않는다. 화면 관찰
   여부는 회차 조건이 아니기 때문이다.
-- 위치: runs_root 밖(근거와 같이 복사되지 않게), 부모는 러너 uid 소유 0700 디렉터리. 파일은 새로 만든다(O_EXCL·O_NOFOLLOW,
-  0600). 강제 종료로 전 회차 파일이 남아 있으면, 러너 uid 소유 일반 파일일 때만 지우고 새로 쓴다(전 회차 값은 쓸모없다).
+- 위치: runs_root 밖(근거와 같이 복사되지 않게), 부모는 러너 uid 소유 0700 디렉터리이고 그 안에 다른 설정 파일(키·비밀·
+  manifest 등)이 없어야 한다(설정 검사). 파일은 새로 만든다(O_EXCL·O_NOFOLLOW, 0600). 강제 종료로 전 회차 파일이 남아
+  있으면, 러너 uid 소유 일반 파일이고 관찰 로그인 파일 모양(첫 줄 '아이디: ')일 때만 지우고 새로 쓴다. 그 밖의 파일은 지우지
+  않고 멈춘다(설정을 잘못 적어 키 파일을 가리켜도 지우지 않게, #824 리뷰).
 """
 
 from __future__ import annotations
@@ -30,6 +32,9 @@ def _private_parent(path: Path) -> bool:
     return stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid() and stat.S_IMODE(info.st_mode) == 0o700
 
 
+HEADER = "아이디: ".encode("utf-8")
+
+
 def _remove_stale(path: Path) -> None:
     try:
         info = os.lstat(path)
@@ -39,6 +44,13 @@ def _remove_stale(path: Path) -> None:
         raise ObserverFileError("observer_file_unreadable") from None
     if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
         raise ObserverFileError("observer_file_untrusted")
+    try:
+        with open(path, "rb") as stream:
+            head = stream.read(len(HEADER))
+    except OSError:
+        raise ObserverFileError("observer_file_unreadable") from None
+    if head != HEADER:
+        raise ObserverFileError("observer_file_not_ours")  # 관찰 로그인 파일이 아닌 것(키 파일 등)은 지우지 않는다
     try:
         os.unlink(path)
     except OSError:

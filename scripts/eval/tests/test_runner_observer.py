@@ -53,10 +53,19 @@ class TestObserverFile(unittest.TestCase):
         remove_observer_password(None)
 
     def test_stale_file_from_a_killed_run_is_replaced(self):
-        self.path.write_text("old")
+        self.path.write_text("아이디: ABC2LAB\n비밀번호: old\n", encoding="utf-8")
         write_observer_password(self.path, AdminSecret(SECRET))
         self.assertIn(SECRET, self.path.read_text(encoding="utf-8"))
         self.assertEqual(stat.S_IMODE(os.lstat(self.path).st_mode), 0o600)
+
+    def test_a_file_that_is_not_an_observer_file_is_never_removed(self):
+        # #824 리뷰: 칸을 키 파일 경로로 잘못 적어도 쓰기·정리가 그 파일을 지우지 않는다(내용 그대로, 고정 코드로 멈춤)
+        self.path.write_bytes(b"KEYBYTES")
+        os.chmod(self.path, 0o600)
+        for call in (lambda: write_observer_password(self.path, AdminSecret(SECRET)), lambda: remove_observer_password(self.path)):
+            with self.assertRaisesRegex(ObserverFileError, "observer_file_not_ours"):
+                call()
+            self.assertEqual(self.path.read_bytes(), b"KEYBYTES")
 
     def test_untrusted_places_are_refused(self):
         os.chmod(self.dir, 0o755)
@@ -89,11 +98,12 @@ class TestObserverFile(unittest.TestCase):
 
 
 class TestConfig(unittest.TestCase):
-    def config(self, root: Path, value):
+    def config(self, root: Path, value, **top):
         payload = runner_config()
-        payload.update(runs_root=str(root / "runs"), purpose="browser_acceptance", path_key_file=str(root / "path.key"),
-                       preservation=model_options(), split=split_block(manifest_path=str(root / "m.json"),
+        payload.update(runs_root=str(root / "runs"), purpose="browser_acceptance", path_key_file=str(root / "keys" / "path.key"),
+                       preservation=model_options(), split=split_block(manifest_path=str(root / "m" / "m.json"),
                                                                        observer_password_file=value))
+        payload.update(top)
         return parse_runner_config(payload)
 
     def test_optional_field(self):
@@ -101,11 +111,24 @@ class TestConfig(unittest.TestCase):
             root = Path(tmp)
             self.assertEqual(self.config(root, str(root / "o" / "admin.txt")).split.observer_password_file, root / "o" / "admin.txt")
             for value, code in ((7, "INVALID"), ("relative/admin.txt", "INVALID"), (str(root / "o") + "/", "INVALID"),
-                                (str(root / "runs" / "admin.txt"), "INSIDE_RUNS_ROOT"), (str(root / "m.json"), "SAME_AS_MANIFEST")):
+                                (str(root / "runs" / "admin.txt"), "INSIDE_RUNS_ROOT"),
+                                (str(root / "m" / "m.json"), "SHARED_DIRECTORY"), (str(root / "m" / "admin.txt"), "SHARED_DIRECTORY"),
+                                (str(root / "keys" / "path.key"), "SHARED_DIRECTORY"), (str(root / "keys" / "admin.txt"), "SHARED_DIRECTORY")):
                 with self.subTest(value=value):
                     with self.assertRaises((RunnerConfigError, SplitConfigError)) as caught:
                         self.config(root, value)
                     self.assertIn(f"config.split.observer_password_file: {code}", str(caught.exception))
+            # #824 리뷰: 다른 파일 칸(러너 키·비밀 env·어휘)과 같은 디렉터리도 거부(관찰 파일 디렉터리에는 다른 설정 파일이 없다)
+            for field, nested in (("runner_key_path", None), ("secrets_env_file", None), ("findings", "vocabulary_path")):
+                with self.subTest(field=field):
+                    base = runner_config()
+                    value = str(root / "shared" / "x.file")
+                    top = {field: value} if nested is None else {field: dict(base[field], **{nested: value})}
+                    with self.assertRaises((RunnerConfigError, SplitConfigError)) as caught:
+                        self.config(root, str(root / "shared" / "admin.txt"), **top)
+                    self.assertIn("config.split.observer_password_file: SHARED_DIRECTORY", str(caught.exception))
+            # 상위 디렉터리에 키가 있는 것은 괜찮다(공식 절차: 키 디렉터리 아래 observer/ 하위 디렉터리)
+            self.assertIsNotNone(self.config(root, str(root / "keys" / "observer" / "admin.txt")).split.observer_password_file)
 
     def test_absent_by_default(self):
         with tempfile.TemporaryDirectory() as tmp:
