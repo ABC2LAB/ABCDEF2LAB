@@ -120,6 +120,9 @@ func StartFirstDiagnosisHTTP(ctx context.Context, manager *Manager, options Firs
 	}
 	run, cancel := context.WithCancel(ctx)
 	options.Hooks.RequestApprovals = newRequestApprovalService(manager.pg)
+	options.Hooks.SealChecked = func(ctx context.Context, s E2HTTPSealCheck) error {
+		return manager.pg.RecordSealCheck(ctx, e2HTTPSealCheckRecord(s))
+	}
 	host, err := NewFirstDiagnosisHTTPHost(run, options.Host, options.Supervisor, options.Hooks)
 	if err != nil {
 		cancel()
@@ -279,4 +282,15 @@ func (r *FirstDiagnosisHTTPRuntime) E3HandleReason(taskID string) (*e2proxy.Exec
 		return nil, nil, E3HandleRuntimeClosed
 	}
 	return r.host.runtime.E3HandleReason(taskID)
+}
+
+// e2HTTPSealCheckRecord는 Host 봉인 확인 결과를 저장 기록으로 옮긴다(E1 계약 §6). 봉인 응답은 phase sealed만 온다.
+func e2HTTPSealCheckRecord(s E2HTTPSealCheck) db.SealCheckRecord {
+	h := s.Result.Head
+	out := db.SealCheckRecord{TaskID: s.TaskID, RunRef: s.RunRef, Head: db.ProductCheckpoint{JournalID: h.JournalID, Sequence: h.Sequence, MAC: h.MAC},
+		Checks: make([]db.SealCheck, 0, len(s.Result.Checks))}
+	for _, c := range s.Result.Checks {
+		out.Checks = append(out.Checks, db.SealCheck{Sequence: c.Sequence, MAC: c.MAC, Included: c.Included})
+	}
+	return out
 }

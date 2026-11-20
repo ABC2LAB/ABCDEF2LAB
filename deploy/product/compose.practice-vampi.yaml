@@ -14,6 +14,11 @@ services:
     networks:
       target: {ipv4_address: 172.31.253.21}
     security_opt: [no-new-privileges:true]
+    # VAmPI 원본 환경 변수다. 기본은 원본 기본값(BOLA 있음·토큰 60초). E③ 실제 검증의 회차 조건(고쳐진 대상 S02,
+    # 재로그인·확정 단계 중 토큰 만료)만 바꾸고, 바꾼 값은 회차 조건에 적는다(docs/evaluation/e3-vampi-acceptance.md §3).
+    environment:
+      vulnerable: '${VAMPI_VULNERABLE:-1}'
+      tokentimetolive: '${VAMPI_TOKEN_TTL:-60}'
   # Juice Shop 수용시험의 대상과 두 번째 앞단은 이 회차에 띄우지 않는다.
   juice-shop:
     profiles: [juice-acceptance]

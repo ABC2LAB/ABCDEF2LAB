@@ -144,7 +144,9 @@ var rehearsalSetups = map[string]func(*rehearsalWorld){
 	"confirmed": func(*rehearsalWorld) {},
 	// 고쳐진 대상(교차 조회가 차단): 확정하지 않는다.
 	"fixed_target": func(w *rehearsalWorld) {
-		w.target.Behaviors[w.key(e3contract.PurposeRead, e3contract.RoleCross)] = e3fake.Behavior{Status: 404, Normal: oracle.StateNo}
+		// 고쳐진 대상의 교차 조회는 404이고 본문에 표식 칸이 없다(실제 VAmPI 회차에서 E²가 표식 검사 failed로 보고함).
+		w.target.Behaviors[w.key(e3contract.PurposeRead, e3contract.RoleCross)] = e3fake.Behavior{Status: 404, Normal: oracle.StateNo,
+			MarkerStatus: e3contract.MarkerFailed}
 	},
 	"declaration_missing": func(w *rehearsalWorld) { w.in.Binding.Policy = e3contract.PolicySource{} },
 	"account_unverified":  func(w *rehearsalWorld) { w.in.Cross.Authenticated = false },
