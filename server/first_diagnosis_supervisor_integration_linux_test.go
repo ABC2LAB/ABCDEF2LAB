@@ -168,7 +168,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	e3Logged := mode == "e3-baseline" || mode == "e3-hook" || mode == "e3-hook-disabled"
-	if mode == "cancel" || mode == "user-stop" || mode == "pause" || mode == "close-fail" || mode == "plan-turns" || goalAfterWork || goalConcurrent || e3Logged {
+	if mode == "cancel" || mode == "user-stop" || mode == "pause" || mode == "engine-pause" || mode == "close-fail" || mode == "plan-turns" || goalAfterWork || goalConcurrent || e3Logged {
 		logger, err := diagnosticlog.Create(firstDiagnosisPrivateTemp(t), "run", mustFirstDiagnosisTaskNumber(task.ID), "")
 		if err != nil {
 			t.Fatal(err)
@@ -260,7 +260,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 				flusher.Flush()
 			}
 		}
-		if mode == "cancel" || mode == "user-stop" || mode == "pause" || mode == "planner-kill" || mode == "time-budget" || mode == "planner-kill-mid-response" {
+		if mode == "cancel" || mode == "user-stop" || mode == "pause" || mode == "engine-pause" || mode == "planner-kill" || mode == "time-budget" || mode == "planner-kill-mid-response" {
 			select {
 			case targetEntered <- struct{}{}:
 			default:
@@ -440,7 +440,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	defer func() {
 		closeCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
 		defer stop()
-		if err := runtime.Close(closeCtx); err != nil && !(((mode == "cancel" || mode == "user-stop" || mode == "pause") || mode == "prepare-fail" || mode == "pre-run-stop" || mode == "goal-met-unmatched-limit") && errors.Is(err, ErrFirstDiagnosisOutcome) || mode == "close-fail" && errors.Is(err, ErrE2HTTPClosure)) {
+		if err := runtime.Close(closeCtx); err != nil && !(((mode == "cancel" || mode == "user-stop" || mode == "pause" || mode == "engine-pause") || mode == "prepare-fail" || mode == "pre-run-stop" || mode == "goal-met-unmatched-limit") && errors.Is(err, ErrFirstDiagnosisOutcome) || mode == "close-fail" && errors.Is(err, ErrE2HTTPClosure)) {
 			t.Error("실제 Engine 경로 최종 종료 실패")
 		}
 
@@ -610,7 +610,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		exec, _, reason := runtime.E3HandleReason(taskID)
 		closeProbe.handle, closeProbe.modelClosed, closeProbe.hitsAtClose = reason, exec != nil && exec.ModelStageClosed(), hits.Load()
 	}
-	e3StopHooked := mode == "cancel" || mode == "user-stop" || mode == "pause" || mode == "pre-run-stop"
+	e3StopHooked := mode == "cancel" || mode == "user-stop" || mode == "pause" || mode == "engine-pause" || mode == "pre-run-stop"
 	e3Calls, e3State := 0, ""
 	var e3StoppedCalls atomic.Int64
 	var e3StoppedCtxLive atomic.Bool
@@ -736,7 +736,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		return
 	}
 	var runErr error
-	if mode == "cancel" || mode == "user-stop" || mode == "pause" {
+	if mode == "cancel" || mode == "user-stop" || mode == "pause" || mode == "engine-pause" {
 		runCtx, stopRun := context.WithCancel(ctx)
 		defer stopRun()
 		done := make(chan error, 1)
@@ -752,6 +752,9 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 			if code != 200 || !strings.Contains(body, `"status":"stopping"`) {
 				t.Fatalf("일시정지가 중지로 처리되지 않음: %d %s", code, body)
 			}
+		} else if mode == "engine-pause" {
+			// 운영자 control이 아닌 엔진 일시정지(동시 실행 조정 등)도 감독자가 운영자 중지로 바꿔 회차를 바로 끝낸다.
+			runtime.server.engine.Pause(task.ID, agent.AbortPausedByOrchestrator)
 		} else if mode == "user-stop" {
 			hash, err := runtime.server.reloadPassHash()
 			if err != nil {
@@ -1204,7 +1207,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		}
 		return
 	}
-	if mode == "cancel" || mode == "user-stop" || mode == "pause" {
+	if mode == "cancel" || mode == "user-stop" || mode == "pause" || mode == "engine-pause" {
 		if runErr == nil || !errors.Is(runErr, context.Canceled) {
 			t.Fatal("진행 중 실제 HTTP 요청 취소를 성공으로 반환하거나 취소 원인을 잃음")
 		}
@@ -1219,7 +1222,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 				t.Fatalf("재개 거절 사유: %d %s", code, body)
 			}
 		}
-		if mode == "user-stop" || mode == "pause" {
+		if mode == "user-stop" || mode == "pause" || mode == "engine-pause" {
 			state := runtime.server.requestApprovals.runState(mustFirstDiagnosisTaskNumber(task.ID))
 			if state.Phase != "closed" || state.Outcome != "cancelled" || !state.DrainComplete || state.ClosureFailed {
 				t.Fatalf("중지 마감 상태 불일치: %+v", state)
@@ -2026,7 +2029,7 @@ func verifySupervisorFailureLog(t *testing.T, path, mode string) {
 		}
 		found++
 		switch mode {
-		case "cancel", "user-stop", "pause":
+		case "cancel", "user-stop", "pause", "engine-pause":
 			if event.Status != "cancelled" || event.ReasonCode != "user_cancelled" {
 				t.Error("실제 취소와 로그 상태 불일치")
 			}
@@ -2257,7 +2260,7 @@ func firstDiagnosisCheckClosingPath(t *testing.T, mode string, runCalls, stopCal
 		// 스스로 끝났지만 E② 실행을 한 번도 잡지 않음 → 확정 단계 훅이 실행 없음으로 기록한다.
 		"planner-only": "no-execution", "plan-turns": "no-execution", "goal-met": "no-execution",
 		// 강제 중지·실패 → 중지 기록(interrupted).
-		"cancel": "stop", "user-stop": "stop", "pause": "stop", "prepare-fail": "stop", "goal-met-unmatched-limit": "stop",
+		"cancel": "stop", "user-stop": "stop", "pause": "stop", "engine-pause": "stop", "prepare-fail": "stop", "goal-met-unmatched-limit": "stop",
 	}[mode]
 	got := "run"
 	switch {

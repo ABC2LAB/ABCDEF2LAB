@@ -642,6 +642,20 @@ func TestFirstDiagnosisRuntimeDatabaseOwnedPostgres(t *testing.T) {
 			}
 			firstDiagnosisSupervisorEngineRun(t, manager, installer, cancelled, "pause")
 		})
+		t.Run("actual-engine-engine-pause-is-operator-stop", func(t *testing.T) {
+			cancelled, err := manager.CreateTask("Owned cancelled engine fixture", "Cancel an active owned request", nil, 60, 60)
+			if err != nil || cancelled == nil {
+				t.Fatal("독립 취소 task 생성 실패")
+			}
+			if _, err := runtimePool.ExecContext(ctx, "UPDATE tasks SET paused=true WHERE id=$1", cancelled.ID); err != nil {
+				t.Fatal("취소 task 준비 상태 저장 실패")
+			}
+			cancelled.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
+			if id, err := cancelled.Store.AddIntent(map[string]any{"summary": "Cancel the owned in-flight request"}, 1, nil, "system"); err != nil || id <= 0 {
+				t.Fatal("실제 취소 intent 생성 실패")
+			}
+			firstDiagnosisSupervisorEngineRun(t, manager, installer, cancelled, "engine-pause")
+		})
 		t.Run("actual-engine-pre-run-stop-no-acquire", func(t *testing.T) {
 			cancelled, err := manager.CreateTask("Owned cancelled engine fixture", "Cancel an active owned request", nil, 60, 60)
 			if err != nil || cancelled == nil {
