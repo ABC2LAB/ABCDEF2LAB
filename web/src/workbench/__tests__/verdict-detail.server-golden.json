@@ -1,0 +1,566 @@
+{
+  "confirmed_sealed": {
+    "format": "jindo.workbench-finding-verdict-detail/v1",
+    "task_id": "11",
+    "selection": {
+      "kind": "candidate",
+      "id": "41"
+    },
+    "ids": {
+      "verdict_id": "11",
+      "issuance_id": "11",
+      "manifest_id": "11",
+      "finding_id": null,
+      "candidate_id": "41"
+    },
+    "source_kind": "product",
+    "policy_source": {
+      "kind": "product_declaration",
+      "ref": "declaration-job-synthetic",
+      "digest_sha256": "26bf52f44204817e9ba66fc86e6b5f4e15560630b39f4ba7209f3ed7910e1e0b",
+      "target_approval_revision": "target-revision-1"
+    },
+    "candidate_link": null,
+    "availability": "recorded",
+    "evaluation_status": "recorded",
+    "record": {
+      "case_ref": "e3-product:document",
+      "resource_type": "document",
+      "resource_ref": "document:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "oracle_value": "confirmed",
+      "policy_check": "yes",
+      "identity_check": "yes",
+      "data_check": "yes",
+      "reason_codes": [
+        "policy_deny_resolved"
+      ],
+      "product_reason_codes": [],
+      "candidate_refs": [
+        "41"
+      ],
+      "evidence_count": 1,
+      "observed_at": "2026-11-18T09:00:00.000000Z",
+      "model_tag": "synthetic-model"
+    },
+    "record_checks": {
+      "status": "verified",
+      "binding_status": "current",
+      "reason_codes": []
+    },
+    "presentation": {
+      "title": "제품 확정 단계 판정",
+      "severity": null,
+      "mock": false
+    },
+    "view": {
+      "display_verdict": "confirmed",
+      "confirmation_evidence_complete": true,
+      "missing_requirements": []
+    },
+    "transmission": {
+      "state": "unknown",
+      "source": "e2proxy",
+      "scope_role": null,
+      "coverage": "unavailable",
+      "audit_status": "unavailable",
+      "reason_codes": [
+        "journal_v3_unavailable"
+      ],
+      "steps": []
+    },
+    "finding": null,
+    "candidate": {
+      "id": "41",
+      "verification": "manual_review_required"
+    },
+    "evidence_seal": {
+      "status": "confirmed",
+      "reason": null
+    }
+  },
+  "inclusion_failed": {
+    "format": "jindo.workbench-finding-verdict-detail/v1",
+    "task_id": "8",
+    "selection": {
+      "kind": "candidate",
+      "id": "32"
+    },
+    "ids": {
+      "verdict_id": "9",
+      "issuance_id": "9",
+      "manifest_id": "9",
+      "finding_id": null,
+      "candidate_id": "32"
+    },
+    "source_kind": "product",
+    "policy_source": null,
+    "candidate_link": null,
+    "availability": "recorded",
+    "evaluation_status": "recorded",
+    "record": null,
+    "record_checks": {
+      "status": "unavailable",
+      "binding_status": "current",
+      "reason_codes": [
+        "record_integrity_failed"
+      ]
+    },
+    "presentation": {
+      "title": "제품 확정 단계 판정",
+      "severity": null,
+      "mock": false
+    },
+    "view": {
+      "display_verdict": null,
+      "confirmation_evidence_complete": null,
+      "missing_requirements": []
+    },
+    "transmission": {
+      "state": "unknown",
+      "source": "e2proxy",
+      "scope_role": null,
+      "coverage": "unavailable",
+      "audit_status": "unavailable",
+      "reason_codes": [
+        "journal_v3_unavailable"
+      ],
+      "steps": []
+    },
+    "finding": null,
+    "candidate": {
+      "id": "32",
+      "verification": "manual_review_required"
+    },
+    "evidence_seal": {
+      "status": "inclusion_failed",
+      "reason": null
+    }
+  },
+  "integrity_failed": {
+    "format": "jindo.workbench-finding-verdict-detail/v1",
+    "task_id": "9",
+    "selection": {
+      "kind": "candidate",
+      "id": "35"
+    },
+    "ids": {
+      "verdict_id": "10",
+      "issuance_id": "10",
+      "manifest_id": "10",
+      "finding_id": null,
+      "candidate_id": "35"
+    },
+    "source_kind": "product",
+    "policy_source": null,
+    "candidate_link": null,
+    "availability": "recorded",
+    "evaluation_status": "recorded",
+    "record": null,
+    "record_checks": {
+      "status": "unavailable",
+      "binding_status": "current",
+      "reason_codes": [
+        "record_integrity_failed"
+      ]
+    },
+    "presentation": {
+      "title": "제품 확정 단계 판정",
+      "severity": null,
+      "mock": false
+    },
+    "view": {
+      "display_verdict": null,
+      "confirmation_evidence_complete": null,
+      "missing_requirements": []
+    },
+    "transmission": {
+      "state": "unknown",
+      "source": "e2proxy",
+      "scope_role": null,
+      "coverage": "unavailable",
+      "audit_status": "unavailable",
+      "reason_codes": [
+        "journal_v3_unavailable"
+      ],
+      "steps": []
+    },
+    "finding": null,
+    "candidate": {
+      "id": "35",
+      "verification": "manual_review_required"
+    },
+    "evidence_seal": null
+  },
+  "no_link": {
+    "format": "jindo.workbench-finding-verdict-detail/v1",
+    "task_id": "10",
+    "selection": {
+      "kind": "candidate",
+      "id": "38"
+    },
+    "ids": {
+      "verdict_id": null,
+      "issuance_id": null,
+      "manifest_id": null,
+      "finding_id": null,
+      "candidate_id": "38"
+    },
+    "source_kind": null,
+    "policy_source": null,
+    "candidate_link": null,
+    "availability": "no_link",
+    "evaluation_status": "unknown",
+    "record": null,
+    "record_checks": null,
+    "presentation": {
+      "title": null,
+      "severity": null,
+      "mock": false
+    },
+    "view": {
+      "display_verdict": null,
+      "confirmation_evidence_complete": null,
+      "missing_requirements": []
+    },
+    "transmission": {
+      "state": "unknown",
+      "source": "unbound",
+      "scope_role": null,
+      "coverage": "unavailable",
+      "audit_status": "unavailable",
+      "reason_codes": [],
+      "steps": []
+    },
+    "finding": null,
+    "candidate": {
+      "id": "38",
+      "verification": "manual_review_required"
+    },
+    "evidence_seal": null
+  },
+  "policy_missing": {
+    "format": "jindo.workbench-finding-verdict-detail/v1",
+    "task_id": "7",
+    "selection": {
+      "kind": "candidate",
+      "id": "29"
+    },
+    "ids": {
+      "verdict_id": "8",
+      "issuance_id": "8",
+      "manifest_id": "8",
+      "finding_id": null,
+      "candidate_id": "29"
+    },
+    "source_kind": "product",
+    "policy_source": {
+      "kind": "product_declaration",
+      "ref": "declaration-job-synthetic",
+      "digest_sha256": "26bf52f44204817e9ba66fc86e6b5f4e15560630b39f4ba7209f3ed7910e1e0b",
+      "target_approval_revision": "target-revision-1"
+    },
+    "candidate_link": null,
+    "availability": "recorded",
+    "evaluation_status": "recorded",
+    "record": {
+      "case_ref": "e3-product:document",
+      "resource_type": "document",
+      "resource_ref": "document:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "oracle_value": "confirmed",
+      "policy_check": "yes",
+      "identity_check": "yes",
+      "data_check": "yes",
+      "reason_codes": [
+        "policy_deny_resolved"
+      ],
+      "product_reason_codes": [],
+      "candidate_refs": [
+        "29"
+      ],
+      "evidence_count": 1,
+      "observed_at": "2026-11-18T09:00:00.000000Z",
+      "model_tag": "synthetic-model"
+    },
+    "record_checks": {
+      "status": "unavailable",
+      "binding_status": "current",
+      "reason_codes": [
+        "policy_source_unavailable"
+      ]
+    },
+    "presentation": {
+      "title": "제품 확정 단계 판정",
+      "severity": null,
+      "mock": false
+    },
+    "view": {
+      "display_verdict": "confirmed",
+      "confirmation_evidence_complete": null,
+      "missing_requirements": []
+    },
+    "transmission": {
+      "state": "unknown",
+      "source": "e2proxy",
+      "scope_role": null,
+      "coverage": "unavailable",
+      "audit_status": "unavailable",
+      "reason_codes": [
+        "journal_v3_unavailable"
+      ],
+      "steps": []
+    },
+    "finding": null,
+    "candidate": {
+      "id": "29",
+      "verification": "manual_review_required"
+    },
+    "evidence_seal": {
+      "status": "confirmed",
+      "reason": null
+    }
+  },
+  "seal_not_recorded": {
+    "format": "jindo.workbench-finding-verdict-detail/v1",
+    "task_id": "12",
+    "selection": {
+      "kind": "candidate",
+      "id": "44"
+    },
+    "ids": {
+      "verdict_id": "12",
+      "issuance_id": "12",
+      "manifest_id": "12",
+      "finding_id": null,
+      "candidate_id": "44"
+    },
+    "source_kind": "product",
+    "policy_source": {
+      "kind": "product_declaration",
+      "ref": "declaration-job-synthetic",
+      "digest_sha256": "26bf52f44204817e9ba66fc86e6b5f4e15560630b39f4ba7209f3ed7910e1e0b",
+      "target_approval_revision": "target-revision-1"
+    },
+    "candidate_link": null,
+    "availability": "recorded",
+    "evaluation_status": "recorded",
+    "record": {
+      "case_ref": "e3-product:document",
+      "resource_type": "document",
+      "resource_ref": "document:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "oracle_value": "confirmed",
+      "policy_check": "yes",
+      "identity_check": "yes",
+      "data_check": "yes",
+      "reason_codes": [
+        "policy_deny_resolved"
+      ],
+      "product_reason_codes": [],
+      "candidate_refs": [
+        "44"
+      ],
+      "evidence_count": 1,
+      "observed_at": "2026-11-18T09:00:00.000000Z",
+      "model_tag": "synthetic-model"
+    },
+    "record_checks": {
+      "status": "verified",
+      "binding_status": "current",
+      "reason_codes": []
+    },
+    "presentation": {
+      "title": "제품 확정 단계 판정",
+      "severity": null,
+      "mock": false
+    },
+    "view": {
+      "display_verdict": "confirmed",
+      "confirmation_evidence_complete": true,
+      "missing_requirements": []
+    },
+    "transmission": {
+      "state": "unknown",
+      "source": "e2proxy",
+      "scope_role": null,
+      "coverage": "unavailable",
+      "audit_status": "unavailable",
+      "reason_codes": [
+        "journal_v3_unavailable"
+      ],
+      "steps": []
+    },
+    "finding": null,
+    "candidate": {
+      "id": "44",
+      "verification": "manual_review_required"
+    },
+    "evidence_seal": {
+      "status": "unconfirmed",
+      "reason": "seal_not_recorded"
+    }
+  },
+  "undecidable_no_evidence": {
+    "format": "jindo.workbench-finding-verdict-detail/v1",
+    "task_id": "6",
+    "selection": {
+      "kind": "candidate",
+      "id": "26"
+    },
+    "ids": {
+      "verdict_id": "7",
+      "issuance_id": "7",
+      "manifest_id": "7",
+      "finding_id": null,
+      "candidate_id": "26"
+    },
+    "source_kind": "product",
+    "policy_source": {
+      "kind": "product_declaration",
+      "ref": "declaration-job-synthetic",
+      "digest_sha256": "26bf52f44204817e9ba66fc86e6b5f4e15560630b39f4ba7209f3ed7910e1e0b",
+      "target_approval_revision": "target-revision-1"
+    },
+    "candidate_link": null,
+    "availability": "recorded",
+    "evaluation_status": "recorded",
+    "record": {
+      "case_ref": "e3-product:document",
+      "resource_type": "document",
+      "resource_ref": "document:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "oracle_value": "undecidable",
+      "policy_check": "yes",
+      "identity_check": "unknown",
+      "data_check": "unknown",
+      "reason_codes": [
+        "subject_not_verified"
+      ],
+      "product_reason_codes": [
+        "product_request_denied"
+      ],
+      "candidate_refs": [
+        "26"
+      ],
+      "evidence_count": 0,
+      "observed_at": "2026-11-18T09:00:00.000000Z",
+      "model_tag": "synthetic-model"
+    },
+    "record_checks": {
+      "status": "verified",
+      "binding_status": "current",
+      "reason_codes": []
+    },
+    "presentation": {
+      "title": "제품 확정 단계 판정",
+      "severity": null,
+      "mock": false
+    },
+    "view": {
+      "display_verdict": "undecidable",
+      "confirmation_evidence_complete": false,
+      "missing_requirements": [
+        "identity_check",
+        "data_check"
+      ]
+    },
+    "transmission": {
+      "state": "unknown",
+      "source": "e2proxy",
+      "scope_role": null,
+      "coverage": "unavailable",
+      "audit_status": "unavailable",
+      "reason_codes": [
+        "journal_v3_unavailable"
+      ],
+      "steps": []
+    },
+    "finding": null,
+    "candidate": {
+      "id": "26",
+      "verification": "manual_review_required"
+    },
+    "evidence_seal": null
+  },
+  "undecidable_reasons": {
+    "format": "jindo.workbench-finding-verdict-detail/v1",
+    "task_id": "5",
+    "selection": {
+      "kind": "candidate",
+      "id": "23"
+    },
+    "ids": {
+      "verdict_id": "6",
+      "issuance_id": "6",
+      "manifest_id": "6",
+      "finding_id": null,
+      "candidate_id": "23"
+    },
+    "source_kind": "product",
+    "policy_source": {
+      "kind": "product_declaration",
+      "ref": "declaration-job-synthetic",
+      "digest_sha256": "26bf52f44204817e9ba66fc86e6b5f4e15560630b39f4ba7209f3ed7910e1e0b",
+      "target_approval_revision": "target-revision-1"
+    },
+    "candidate_link": null,
+    "availability": "recorded",
+    "evaluation_status": "recorded",
+    "record": {
+      "case_ref": "e3-product:document",
+      "resource_type": "document",
+      "resource_ref": "document:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "oracle_value": "undecidable",
+      "policy_check": "yes",
+      "identity_check": "unknown",
+      "data_check": "unknown",
+      "reason_codes": [
+        "subject_not_verified"
+      ],
+      "product_reason_codes": [
+        "product_identity_unverified"
+      ],
+      "candidate_refs": [
+        "23"
+      ],
+      "evidence_count": 1,
+      "observed_at": "2026-11-18T09:00:00.000000Z",
+      "model_tag": "synthetic-model"
+    },
+    "record_checks": {
+      "status": "verified",
+      "binding_status": "current",
+      "reason_codes": []
+    },
+    "presentation": {
+      "title": "제품 확정 단계 판정",
+      "severity": null,
+      "mock": false
+    },
+    "view": {
+      "display_verdict": "undecidable",
+      "confirmation_evidence_complete": false,
+      "missing_requirements": [
+        "identity_check",
+        "data_check"
+      ]
+    },
+    "transmission": {
+      "state": "unknown",
+      "source": "e2proxy",
+      "scope_role": null,
+      "coverage": "unavailable",
+      "audit_status": "unavailable",
+      "reason_codes": [
+        "journal_v3_unavailable"
+      ],
+      "steps": []
+    },
+    "finding": null,
+    "candidate": {
+      "id": "23",
+      "verification": "manual_review_required"
+    },
+    "evidence_seal": {
+      "status": "unconfirmed",
+      "reason": "evidence_checkpoint_missing"
+    }
+  }
+}

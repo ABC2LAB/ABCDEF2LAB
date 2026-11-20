@@ -137,9 +137,10 @@ function Value({ v }: { v: OracleValue }) {
   return <span className={cx(s.vd, VALUE_CLASS[v])}>{ORACLE_VALUE_TEXT[v]}</span>;
 }
 
-function ShownRow({ r }: { r: ProductVerdictShown }) {
+/** 값이 보이는 판정 한 건의 내용. 목록 줄과 판정 상세(후보 상세 페이지)가 같은 규칙으로 그린다. */
+export function VerdictBody({ r }: { r: ProductVerdictShown }) {
   return (
-    <li data-verdict={r.verdictId}>
+    <>
       <div>
         <Value v={r.oracleValue} /> <b className={s.mono}>{r.resourceType}</b>{" "}
         <span className={s.help}>{`판정 #${r.verdictId}`}</span>
@@ -176,15 +177,32 @@ function ShownRow({ r }: { r: ProductVerdictShown }) {
           {evidenceSealText(r.evidenceSeal)}
         </div>
       ) : null}
+    </>
+  );
+}
+
+function ShownRow({ r }: { r: ProductVerdictShown }) {
+  return (
+    <li data-verdict={r.verdictId}>
+      <VerdictBody r={r} />
     </li>
+  );
+}
+
+/** 진위 확인 실패로 값을 숨긴 판정 한 건. 봉인 포함 실패면 그 표시를 보인다. 판정 상세도 쓴다. */
+export function HiddenVerdict({ id, seal }: { id: string | null; seal: EvidenceSeal | null }) {
+  return (
+    <>
+      <span className={cx(s.vd, s.und)}>값 숨김</span>{" "}
+      <span>{`${id ? `판정 #${id} · ` : ""}${seal ? EVIDENCE_SEAL_TEXT[seal.status] : RECORD_STATUS_TEXT.record_integrity_failed}`}</span>
+    </>
   );
 }
 
 function HiddenRow({ id, seal }: { id: string | null; seal: EvidenceSeal | null }) {
   return (
     <li>
-      <span className={cx(s.vd, s.und)}>값 숨김</span>{" "}
-      <span>{`${id ? `판정 #${id} · ` : ""}${seal ? EVIDENCE_SEAL_TEXT[seal.status] : RECORD_STATUS_TEXT.record_integrity_failed}`}</span>
+      <HiddenVerdict id={id} seal={seal} />
     </li>
   );
 }

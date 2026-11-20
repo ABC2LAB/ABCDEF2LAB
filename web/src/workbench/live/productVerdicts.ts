@@ -315,6 +315,254 @@ export async function fetchProductVerdicts(taskId: string, signal?: AbortSignal)
   return parseProductVerdicts(raw, taskId);
 }
 
+// ---------- 판정 상세 (GET /api/tasks/{id}/finding-verdict-detail?candidate_id=…) ----------
+// 계약: docs/contracts/finding-verdict-detail-decision.md(OD01~OD11) · 서버 server/finding_verdict_detail.go. 화면은 후보
+// selector 만 쓴다 — 후보를 참조하는 제품 판정(OD05)이고, 결과는 목록 행과 같은 모양(ProductVerdictRow)으로 바꿔 목록과 같은
+// 규칙으로 그린다(봉인 표시 · 사유 문구 · 값 숨김). 평가 판정(finding selector)은 이 화면에서 읽지 않는다.
+
+export const VERDICT_DETAIL_FORMAT = "jindo.workbench-finding-verdict-detail/v1";
+const MAX_DETAIL_MODEL_TAG = 256;
+const DETAIL_TOP_KEYS = [
+  "format",
+  "task_id",
+  "selection",
+  "ids",
+  "source_kind",
+  "policy_source",
+  "candidate_link",
+  "availability",
+  "evaluation_status",
+  "record",
+  "record_checks",
+  "presentation",
+  "view",
+  "transmission",
+  "finding",
+  "candidate",
+  "evidence_seal",
+];
+const DETAIL_ID_KEYS = ["verdict_id", "issuance_id", "manifest_id", "finding_id", "candidate_id"];
+const DETAIL_RECORD_KEYS = [
+  "case_ref",
+  "resource_type",
+  "resource_ref",
+  "oracle_value",
+  "policy_check",
+  "identity_check",
+  "data_check",
+  "reason_codes",
+  "product_reason_codes",
+  "candidate_refs",
+  "evidence_count",
+  "observed_at",
+  "model_tag",
+];
+const DETAIL_REQUIREMENTS = ["policy_check", "identity_check", "data_check"] as const;
+
+/** 판정 상세 결과. 연결된 판정이 없으면(no_link) 판정 미실행 증명이 아니다(초안 §6). */
+export type VerdictDetail =
+  | { availability: "no_link" }
+  | {
+      availability: "recorded";
+      /** 목록 행과 같은 모양. 진위 실패면 값을 숨긴 행이다. */
+      row: ProductVerdictRow;
+      /** 확정에 모자란 검사(정책상 허용이면 비어 있다). */
+      missingRequirements: string[];
+    };
+
+function same(v: unknown, want: unknown): boolean {
+  return JSON.stringify(v) === JSON.stringify(want);
+}
+
+/** 응답 본문 검사. taskId · candidateId 는 요청한 값 — 다른 작업 · 다른 후보의 응답을 받지 않는다. */
+export function parseVerdictDetail(raw: unknown, taskId: string, candidateId: string): VerdictDetail {
+  const top = obj(raw, DETAIL_TOP_KEYS, "detail");
+  if (
+    top.format !== VERDICT_DETAIL_FORMAT ||
+    top.task_id !== taskId ||
+    !same(top.selection, { kind: "candidate", id: candidateId }) ||
+    top.candidate_link !== null ||
+    // 제품 판정은 finding 을 만들지 않는다(결정 §9). 후보는 연결된 판정이 있어도 수동 검토 필요 그대로다(OD05)
+    top.finding !== null ||
+    !same(top.candidate, { id: candidateId, verification: "manual_review_required" })
+  )
+    throw new ProductVerdictsShapeError("detail.envelope");
+  const ids = obj(top.ids, DETAIL_ID_KEYS, "detail.ids");
+  if (ids.candidate_id !== candidateId || ids.finding_id !== null) throw new ProductVerdictsShapeError("detail.ids");
+  const verdictId = optStr(ids.verdict_id, DECIMAL, "detail.ids.verdict_id");
+  const issuanceId = optStr(ids.issuance_id, DECIMAL, "detail.ids.issuance_id");
+  const manifestId = optStr(ids.manifest_id, DECIMAL, "detail.ids.manifest_id");
+  const t = obj(
+    top.transmission,
+    ["state", "source", "scope_role", "coverage", "audit_status", "reason_codes", "steps"],
+    "detail.transmission",
+  );
+  // 송신 근거(3조각, E² 저널 v3)는 아직 화면에 보이지 않는다. 모양만 본다
+  list(t.reason_codes, MAX_REASONS, (s) => PRODUCT_CODE.test(s), "detail.transmission.reason_codes");
+  if (!Array.isArray(t.steps)) throw new ProductVerdictsShapeError("detail.transmission.steps");
+  const view = obj(
+    top.view,
+    ["display_verdict", "confirmation_evidence_complete", "missing_requirements"],
+    "detail.view",
+  );
+  const missing = list(
+    view.missing_requirements,
+    DETAIL_REQUIREMENTS.length,
+    (s) => (DETAIL_REQUIREMENTS as readonly string[]).includes(s),
+    "detail.view.missing_requirements",
+  );
+  const seal = parseSeal(top.evidence_seal, "detail.evidence_seal");
+
+  if (top.availability === "no_link") {
+    if (
+      top.evaluation_status !== "unknown" ||
+      top.source_kind !== null ||
+      top.policy_source !== null ||
+      top.record !== null ||
+      top.record_checks !== null ||
+      !same(top.presentation, { title: null, severity: null, mock: false }) ||
+      view.display_verdict !== null ||
+      view.confirmation_evidence_complete !== null ||
+      missing.length ||
+      seal !== null ||
+      verdictId !== null ||
+      issuanceId !== null ||
+      manifestId !== null
+    )
+      throw new ProductVerdictsShapeError("detail.no_link");
+    return { availability: "no_link" };
+  }
+  if (
+    top.availability !== "recorded" ||
+    top.evaluation_status !== "recorded" ||
+    top.source_kind !== "product" ||
+    issuanceId === null ||
+    !same(top.presentation, { title: PRODUCT_VERDICTS_TITLE, severity: null, mock: false })
+  )
+    throw new ProductVerdictsShapeError("detail.recorded");
+  const checks = obj(top.record_checks, ["status", "binding_status", "reason_codes"], "detail.record_checks");
+  // 제품 판정에는 finding link 가 없어 결속은 늘 current 다
+  if (checks.binding_status !== "current") throw new ProductVerdictsShapeError("detail.record_checks.binding_status");
+  const reasons = list(checks.reason_codes, 1, (s) => PRODUCT_CODE.test(s), "detail.record_checks.reason_codes");
+
+  if (top.record === null) {
+    // 진위 실패: 서버가 값 · 정책 출처 · 표시 판정을 숨긴다. 봉인 포함 실패 표시만 남을 수 있다
+    if (
+      checks.status !== "unavailable" ||
+      !same(reasons, ["record_integrity_failed"]) ||
+      top.policy_source !== null ||
+      view.display_verdict !== null ||
+      view.confirmation_evidence_complete !== null ||
+      missing.length ||
+      (seal !== null && seal.status !== "inclusion_failed")
+    )
+      throw new ProductVerdictsShapeError("detail.hidden");
+    return {
+      availability: "recorded",
+      row: { verdictId, recordStatus: "record_integrity_failed", evidenceSeal: seal },
+      missingRequirements: [],
+    };
+  }
+
+  let recordStatus: ProductVerdictShown["recordStatus"];
+  if (checks.status === "verified" && reasons.length === 0) recordStatus = "verified";
+  else if (checks.status === "unavailable" && same(reasons, ["policy_source_unavailable"]))
+    recordStatus = "policy_source_unavailable";
+  else throw new ProductVerdictsShapeError("detail.record_checks");
+  const p = obj(
+    top.policy_source,
+    ["kind", "ref", "digest_sha256", "target_approval_revision"],
+    "detail.policy_source",
+  );
+  if (
+    p.kind !== "product_declaration" ||
+    typeof p.ref !== "string" ||
+    !p.ref.startsWith(POLICY_REF_PREFIX) ||
+    !PRODUCT_REF.test(p.ref.slice(POLICY_REF_PREFIX.length))
+  )
+    throw new ProductVerdictsShapeError("detail.policy_source");
+  str(p.digest_sha256, HEX64, "detail.policy_source.digest_sha256");
+  str(p.target_approval_revision, PRODUCT_REF, "detail.policy_source.target_approval_revision");
+  const r = obj(top.record, DETAIL_RECORD_KEYS, "detail.record");
+  const resourceType = str(r.resource_type, PRODUCT_CODE, "detail.record.resource_type");
+  const resourceRef = str(r.resource_ref, PRODUCT_REF, "detail.record.resource_ref");
+  if (r.case_ref !== `e3-product:${resourceType}` || !resourceRef.startsWith(`${resourceType}:`))
+    throw new ProductVerdictsShapeError("detail.record.resource");
+  const value = r.oracle_value;
+  if (typeof value !== "string" || !ORACLE_VALUES.has(value))
+    throw new ProductVerdictsShapeError("detail.record.oracle_value");
+  const state = (k: string): CheckState => {
+    const v = r[k];
+    if (typeof v !== "string" || !CHECK_STATES.has(v)) throw new ProductVerdictsShapeError(`detail.record.${k}`);
+    return v as CheckState;
+  };
+  const evidence = r.evidence_count;
+  if (typeof evidence !== "number" || !Number.isSafeInteger(evidence) || evidence < 0)
+    throw new ProductVerdictsShapeError("detail.record.evidence_count");
+  if (typeof r.model_tag !== "string" || r.model_tag.length > MAX_DETAIL_MODEL_TAG)
+    throw new ProductVerdictsShapeError("detail.record.model_tag");
+  const row: ProductVerdictShown = {
+    verdictId: str(verdictId, DECIMAL, "detail.ids.verdict_id"),
+    recordStatus,
+    resourceType,
+    resourceRef,
+    oracleValue: value as OracleValue,
+    checks: { policy: state("policy_check"), identity: state("identity_check"), data: state("data_check") },
+    oracleReasonCodes: list(r.reason_codes, MAX_REASONS, (s) => ORACLE_REASONS.has(s), "detail.record.reason_codes"),
+    productReasonCodes: list(
+      r.product_reason_codes,
+      MAX_REASONS,
+      (s) => PRODUCT_CODE.test(s),
+      "detail.record.product_reason_codes",
+    ),
+    candidateRefs: list(r.candidate_refs, MAX_CANDIDATES, (s) => PRODUCT_REF.test(s), "detail.record.candidate_refs"),
+    evidenceCalls: evidence,
+    observedAt: str(r.observed_at, CANONICAL_TIME, "detail.record.observed_at"),
+    evidenceSeal: seal,
+  };
+  str(manifestId, DECIMAL, "detail.ids.manifest_id");
+  // 후보 selector 로 고른 판정은 그 후보를 참조한다(OD05)
+  if (!row.candidateRefs.includes(candidateId)) throw new ProductVerdictsShapeError("detail.record.candidate_refs");
+  // 목록과 같은 봉인 규칙: 값이 보이면 포함 실패일 수 없고, 근거 호출이 없을 때만 null
+  if (seal?.status === "inclusion_failed" || (row.evidenceCalls === 0) !== (seal === null))
+    throw new ProductVerdictsShapeError("detail.evidence_seal");
+  const confirmed = row.oracleValue === "confirmed";
+  const allYes = row.checks.policy === "yes" && row.checks.identity === "yes" && row.checks.data === "yes";
+  if (confirmed && (!allYes || row.evidenceCalls < 1 || row.productReasonCodes.length > 0))
+    throw new ProductVerdictsShapeError("detail.record.confirmed");
+  // 표시 사본: 결속이 current 라 원값 그대로, 당시 원본 미확인이면 충분성을 주장하지 않는다(null)
+  const complete = recordStatus === "verified" ? confirmed : null;
+  const wantMissing =
+    row.oracleValue === "allowed" ? [] : DETAIL_REQUIREMENTS.filter((k) => state(k) !== "yes").map((k) => k as string);
+  if (
+    view.display_verdict !== row.oracleValue ||
+    view.confirmation_evidence_complete !== complete ||
+    !same(missing, wantMissing)
+  )
+    throw new ProductVerdictsShapeError("detail.view");
+  return { availability: "recorded", row, missingRequirements: missing };
+}
+
+/** 후보 상세의 판정 ID: 보고서 줄 'candidate-<id>' 만. 다른 줄(finding · verdict)은 null — 이 화면에서 읽지 않는다. */
+export function candidateIdOf(entryId: string): string | null {
+  const m = /^candidate-([1-9][0-9]{0,18})$/.exec(entryId);
+  return m ? m[1] : null;
+}
+
+/** GET /api/tasks/{id}/finding-verdict-detail?candidate_id=…. 제품 관리 중계에만 있다(제품이 아니면 404). */
+export async function fetchVerdictDetail(
+  taskId: string,
+  candidateId: string,
+  signal?: AbortSignal,
+): Promise<VerdictDetail> {
+  if (!DECIMAL.test(taskId) || !DECIMAL.test(candidateId)) throw new ProductVerdictsShapeError("detail.request");
+  const raw = await apiFetch<unknown>(`/api/tasks/${taskId}/finding-verdict-detail?candidate_id=${candidateId}`, {
+    cache: "no-store",
+    signal,
+  });
+  return parseVerdictDetail(raw, taskId, candidateId);
+}
+
 // ---------- 표시 글 ----------
 
 export const ORACLE_VALUE_TEXT: Record<OracleValue, string> = {
