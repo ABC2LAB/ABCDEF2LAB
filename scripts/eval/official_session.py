@@ -7,6 +7,10 @@
 - 대기는 이름 패턴이 아니라 PID(러너 프로세스)와 완료 파일(회차 디렉터리의 `runner-result.json`)로 건다. 대기마다 시한을 두고,
   넘으면 사유를 남기고 끝낸다(러너는 SIGINT → 유예 → SIGKILL, 2026-11-20 사용자 규칙).
 - 회차 뒤 실행 중 컨테이너가 0이 될 때까지(시한 안) 기다린다. 남아 있으면 멈춘다(`containers_left`).
+- **새 회차 디렉터리가 생겼으면 무슨 일이 있어도 시도 1회로 센다**(2026-11-20 사용자). 결과 파일이 있으면 그 상태를, 없으면
+  무효(사유 = 멈춘 사유: `run_wait_timeout`·`result_missing`·`result_unreadable`)로 기록하고 그다음 멈춘다. 종료 코드와 상태가
+  어긋나면 무효(`result_status_mismatch`)로 센다. 컨테이너가 남으면 그 회차의 실제 상태로 세고 멈춘다. 회차 디렉터리가 안 생긴
+  경우(러너 종료 코드 2 등)만 시도로 세지 않는다. 측정 결과를 골라 버리는 길(멈춘 회차를 다시 돌려 기록에서 빼기)을 막는다.
 - 선택: O 회차마다 manifest 틀에서 새 승인 ID·만료 시각으로 manifest를 다시 만든다(`--o-manifest-template`). 키 사용량
   상한(`--key-file`·`--usage-cap-usd`·`--min-remaining-usd`)을 넘으면 다음 회차를 시작하지 않는다. 키·승인 ID는 출력하지 않는다.
 - 점검 모드(`--dry-run --outcomes …`): 러너·Docker·네트워크를 부르지 않고 결과를 차례로 흉내 내어 순서·무효 처리만 확인한다.
@@ -22,6 +26,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import math
 import os
 import secrets
 import signal
@@ -53,6 +58,8 @@ class Outcome:
     status: str
     reasons: list[str] = field(default_factory=list)
     run_id: str | None = None
+    # 시도로 센 뒤 세션을 멈출 사유(회차 디렉터리가 생긴 회차의 대기 시한·결과 없음·컨테이너 남음 등)
+    stop_after: str | None = None
 
 
 @dataclass
@@ -93,11 +100,12 @@ class Schedule:
         if outcome.status == COMPLETE:
             self.valid[side] += 1
             self.position += 1
-            return
-        if FAULT_STALL_REASON in outcome.reasons:
+        elif FAULT_STALL_REASON in outcome.reasons:
             self.stalls[side] += 1
             if self.stalls[side] >= self.fault_limit:
                 self.stop_reason, self.failed = f"fault_stall_limit:{side}", True
+        if outcome.stop_after is not None and self.stop_reason is None:
+            self.stop_reason = outcome.stop_after
 
     def done(self) -> bool:
         return self.stop_reason is None and self.position >= len(self.order)
@@ -158,6 +166,42 @@ def key_usage(key_file: Path) -> dict:
     return {"usage": data.get("usage"), "limit_remaining": data.get("limit_remaining")}
 
 
+def _usd(value: object) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) else None
+
+
+@dataclass
+class UsageGuard:
+    """유료 회차 시작 전 키 사용량 확인. 세션 첫 확인의 사용량이 기준이다. 사용량·남은 한도를 읽지 못하거나 숫자가 아니면
+    확인하지 못한 것이라 시작하지 않는다(#819 리뷰: 확인 못 한 채 유료 회차를 시작하지 않게)."""
+    read: Callable[[], dict]
+    cap_usd: float
+    floor_usd: float
+    base: float | None = None
+    # 기준값을 처음 정할 때 부른다(세션 기록에 남겨 --resume 뒤에도 세션 전체 기준으로 건다)
+    on_base: Callable[[float], None] = lambda base: None
+
+    def check(self) -> str | None:
+        try:
+            now = self.read()
+        except Exception:
+            return "usage_read_failed"
+        usage = _usd(now.get("usage")) if isinstance(now, dict) else None
+        remaining = _usd(now.get("limit_remaining")) if isinstance(now, dict) else None
+        if usage is None:
+            return "usage_unknown"
+        if remaining is None:
+            return "remaining_unknown"  # 한도 없는 키·응답 이상: 하한을 확인할 수 없다
+        if self.base is None:
+            self.base = usage
+            self.on_base(usage)
+        if usage - self.base >= self.cap_usd:
+            return "usage_cap"
+        if remaining <= self.floor_usd:
+            return "remaining_floor"
+        return None
+
+
 def write_manifest(template: Path, target: Path, hours: int) -> None:
     """O 회차마다 새 승인 ID·만료 시각으로 manifest를 만든다(0600, 덮어씀). 값은 출력하지 않는다."""
     value = json.loads(template.read_text(encoding="utf-8"))
@@ -197,21 +241,33 @@ class RealRunner:
         with open(f"{stem}.stdout", "w") as out, open(f"{stem}.stderr", "w") as err:
             proc = subprocess.Popen(args, cwd=self.tree, stdout=out, stderr=err, start_new_session=True)
             code = wait_process(proc, self.run_timeout, self.grace)
-        if code is None:
-            return Outcome("stop", [f"run_wait_timeout:{LETTER_OF[side]}{repeat}"])
-        if code == 2:
-            return Outcome("config_error", ["runner_exit_2"])
+        slot = f"{LETTER_OF[side]}{repeat}"
         new = sorted(run_dirs(self.runs_root) - before)
-        result = self.runs_root / new[-1] / RESULT_NAME if new else None
-        if result is None or not result.is_file():
-            return Outcome("stop", [f"result_missing:{LETTER_OF[side]}{repeat}"])
-        value = json.loads(result.read_text(encoding="utf-8"))
-        if not wait_containers_gone(running_containers, self.post_timeout, 5):
-            return Outcome("stop", [f"containers_left:{LETTER_OF[side]}{repeat}"])
-        status = value.get("status")
+        run_id = new[-1] if new else None
+        if run_id is None:
+            # 회차 디렉터리가 안 생겼다: 회차를 만들지 않은 것이라 시도로 세지 않는다
+            if code == 2:
+                return Outcome("config_error", ["runner_exit_2"])
+            return Outcome("stop", [f"run_wait_timeout:{slot}" if code is None else f"no_run_directory:{slot}"])
+        if code is None:
+            reason = f"run_wait_timeout:{slot}"
+            return Outcome(INVALID, [reason], run_id, stop_after=reason)
+        result = self.runs_root / run_id / RESULT_NAME
+        if not result.is_file():
+            reason = f"result_missing:{slot}"
+            return Outcome(INVALID, [reason], run_id, stop_after=reason)
+        try:
+            value = json.loads(result.read_text(encoding="utf-8"))
+            status, reasons = value.get("status"), list(value.get("reasons") or [])
+        except (OSError, ValueError, AttributeError, TypeError):
+            reason = f"result_unreadable:{slot}"
+            return Outcome(INVALID, [reason], run_id, stop_after=reason)
         if status not in (COMPLETE, INVALID) or (code == 0) != (status == COMPLETE):
-            return Outcome("stop", [f"result_status_mismatch:{LETTER_OF[side]}{repeat}"])
-        return Outcome(status, list(value.get("reasons") or []), new[-1])
+            reason = f"result_status_mismatch:{slot}"
+            return Outcome(INVALID, [reason] + [r for r in reasons if isinstance(r, str)], run_id, stop_after=reason)
+        if not wait_containers_gone(running_containers, self.post_timeout, 5):
+            return Outcome(status, reasons, run_id, stop_after=f"containers_left:{slot}")
+        return Outcome(status, reasons, run_id)
 
 
 def run_session(schedule: Schedule, run_one: Callable[[str, int], Outcome], log: Callable[[dict], None],
@@ -228,7 +284,8 @@ def run_session(schedule: Schedule, run_one: Callable[[str, int], Outcome], log:
         outcome = run_one(side, repeat)
         schedule.record(side, outcome)
         log({"event": "attempt", "side": LETTER_OF[side], "repeat": repeat, "status": outcome.status, "reasons": outcome.reasons,
-             "run_id": outcome.run_id, "started_at": started, "attempts": dict(schedule.attempts), "valid": dict(schedule.valid)})
+             "run_id": outcome.run_id, "stop_after": outcome.stop_after, "started_at": started,
+             "attempts": dict(schedule.attempts), "valid": dict(schedule.valid)})
     log(dict(event="summary", **schedule.summary()))
     return schedule
 
@@ -245,6 +302,7 @@ def replay(schedule: Schedule, lines: list[dict]) -> int:
         side = SIDE_OF.get(line.get("side"))
         if slot is None or slot != (side, line.get("repeat")):
             raise ValueError(f"resume_order:{line.get('side')}{line.get('repeat')}")
+        # 시도 뒤 멈춤(stop_after)은 다시 걸지 않는다: 사유를 고친 뒤 잇는 것이다. 시도는 그대로 센다.
         schedule.record(side, Outcome(line["status"], list(line.get("reasons") or []), line.get("run_id")))
         count += 1
     return count
@@ -289,6 +347,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_INPUT
     a.session_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     log_path = a.session_dir / LOG_NAME
+    resumed_base: float | None = None
     if log_path.exists() and not a.resume:
         print("입력 오류: 세션 기록이 이미 있음(이어 돌리려면 --resume)", file=sys.stderr)
         return EXIT_INPUT
@@ -298,6 +357,10 @@ def main(argv: list[str] | None = None) -> int:
             if a.dry_run:
                 raise ValueError("resume_with_dry_run")
             replayed = replay(schedule, lines)
+            bases = [l.get("usage_usd") for l in lines if l.get("event") == "usage_base"]
+            resumed_base = _usd(bases[0]) if bases else None
+            if bases and resumed_base is None:
+                raise ValueError("resume_usage_base_invalid")
         except (ValueError, OSError) as exc:
             print(f"입력 오류: {exc}", file=sys.stderr)
             return EXIT_INPUT
@@ -320,22 +383,31 @@ def main(argv: list[str] | None = None) -> int:
         if missing:
             print(f"입력 오류: 필요한 칸 {missing}", file=sys.stderr)
             return EXIT_INPUT
+        if (a.key_file is None) != (a.usage_cap_usd is None):
+            print("입력 오류: --key-file과 --usage-cap-usd는 같이 준다", file=sys.stderr)
+            return EXIT_INPUT
         config = json.loads(a.config.read_text(encoding="utf-8"))
         runs_root = Path(config["runs_root"])
         manifest_path = Path(config["split"]["manifest_path"]) if isinstance(config.get("split"), dict) else None
-        base_usage = key_usage(a.key_file)["usage"] if a.key_file and a.usage_cap_usd is not None else None
+        guard = None
+        if a.key_file:
+            guard = UsageGuard(lambda: key_usage(a.key_file), a.usage_cap_usd, a.min_remaining_usd,
+                               on_base=lambda base: log({"event": "usage_base", "usage_usd": base}))
+            if resumed_base is not None:
+                guard.base = resumed_base
 
         def before_run(side: str, repeat: int) -> str | None:
-            if a.key_file and a.usage_cap_usd is not None:
-                now = key_usage(a.key_file)
-                if now["usage"] is None or now["usage"] - base_usage >= a.usage_cap_usd:
-                    return "usage_cap"
-                if now["limit_remaining"] is not None and now["limit_remaining"] <= a.min_remaining_usd:
-                    return "remaining_floor"
+            if guard is not None:
+                stop = guard.check()
+                if stop is not None:
+                    return stop
             if side == "ours" and a.o_manifest_template is not None:
                 if manifest_path is None:
                     return "manifest_path_missing"
-                write_manifest(a.o_manifest_template, manifest_path, a.manifest_hours)
+                try:
+                    write_manifest(a.o_manifest_template, manifest_path, a.manifest_hours)
+                except (OSError, ValueError):
+                    return "manifest_write_failed"
             return None
 
         runner = RealRunner(a.tree, a.config, a.preflight, runs_root, a.admin_password_file, DEFAULT_CONDITIONS, a.run_timeout,

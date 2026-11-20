@@ -188,6 +188,13 @@ class TestResume(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(o.main(["--session-dir", str(stalled), "--resume", "--tree", root, "--config", root + "/c",
                                          "--preflight", root + "/p", "--admin-password-file", root + "/a"]), o.EXIT_FAILED)
+            # 기록의 사용량 기준값이 숫자가 아니면 잇지 않는다
+            bad_base = Path(root, "u")
+            bad_base.mkdir()
+            (bad_base / o.LOG_NAME).write_text(json.dumps({"event": "usage_base", "usage_usd": "x"}) + "\n")
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(o.main(["--session-dir", str(bad_base), "--resume", "--tree", root, "--config", root + "/c",
+                                         "--preflight", root + "/p", "--admin-password-file", root + "/a"]), o.EXIT_INPUT)
 
 
 class TestWaits(unittest.TestCase):
@@ -222,6 +229,8 @@ class TestWaits(unittest.TestCase):
 
 
 class TestRealRunner(unittest.TestCase):
+    RUN_ID = "baseline-20261120t000000z-0000abcd"
+
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
         self.runs = self.root / "runs"
@@ -229,57 +238,93 @@ class TestRealRunner(unittest.TestCase):
         self.runner = o.RealRunner(self.root, self.root / "c.json", self.root / "p.json", self.runs, self.root / "admin",
                                    dict(o.DEFAULT_CONDITIONS), run_timeout=5, grace=1, post_timeout=1, log_dir=self.root)
 
-    def fake_popen(self, code: int, result: dict | None):
-        runs = self.runs
+    def fake_popen(self, code, make_dir: bool, result):
+        runs, run_id = self.runs, self.RUN_ID
 
         class P:
             pid = 999999
 
             def __init__(self, args, **kw):
                 self.args = args
-                if result is not None:
-                    d = runs / "baseline-20261120t000000z-0000abcd"
+                if make_dir:
+                    d = runs / run_id
                     d.mkdir()
-                    (d / o.RESULT_NAME).write_text(json.dumps(result))
+                    if result is not None:
+                        (d / o.RESULT_NAME).write_text(result if isinstance(result, str) else json.dumps(result))
 
             def wait(self, timeout=None):
                 return code
         return P
 
-    def go(self, code, result, containers=0):
-        with mock.patch("official_session.subprocess.Popen", self.fake_popen(code, result)) as popen, \
-                mock.patch("official_session.running_containers", return_value=containers):
-            outcome = self.runner("baseline", 0)
-        return outcome
-
-    def test_outcomes(self):
-        self.assertEqual(self.go(0, {"status": "complete"}).status, "complete")
+    def go(self, code, make_dir, result, containers=0, timed_out=False):
         for d in list(self.runs.iterdir()):
             for f in d.iterdir():
                 f.unlink()
             d.rmdir()
-        invalid = self.go(1, {"status": "invalid", "reasons": [STALL]})
-        self.assertEqual((invalid.status, invalid.reasons, invalid.run_id),
-                         ("invalid", [STALL], "baseline-20261120t000000z-0000abcd"))
+        patches = [mock.patch("official_session.subprocess.Popen", self.fake_popen(code, make_dir, result)),
+                   mock.patch("official_session.running_containers", return_value=containers)]
+        if timed_out:
+            patches.append(mock.patch("official_session.wait_process", return_value=None))
+        with contextlib.ExitStack() as stack:
+            for patch in patches:
+                stack.enter_context(patch)
+            return self.runner("baseline", 0)
 
-    def test_config_error_missing_result_mismatch_and_containers(self):
-        self.assertEqual(self.go(2, None).status, "config_error")
-        missing = self.go(1, None)
-        self.assertEqual((missing.status, missing.reasons), ("stop", ["result_missing:B0"]))
-        mismatch = self.go(0, {"status": "invalid"})
-        self.assertEqual(mismatch.reasons, ["result_status_mismatch:B0"])
-        for d in list(self.runs.iterdir()):
-            for f in d.iterdir():
-                f.unlink()
-            d.rmdir()
-        left = self.go(0, {"status": "complete"}, containers=3)
-        self.assertEqual(left.reasons, ["containers_left:B0"])
+    def test_normal_outcomes(self):
+        ok = self.go(0, True, {"status": "complete"})
+        self.assertEqual((ok.status, ok.run_id, ok.stop_after), ("complete", self.RUN_ID, None))
+        bad = self.go(1, True, {"status": "invalid", "reasons": [STALL]})
+        self.assertEqual((bad.status, bad.reasons, bad.stop_after), ("invalid", [STALL], None))
 
-    def test_timeout_is_a_stop_with_reason(self):
-        with mock.patch("official_session.subprocess.Popen", self.fake_popen(0, None)), \
-                mock.patch("official_session.wait_process", return_value=None):
-            outcome = self.runner("ours", 1)
-        self.assertEqual((outcome.status, outcome.reasons), ("stop", ["run_wait_timeout:O1"]))
+    def test_created_run_directory_always_counts_as_an_attempt(self):
+        # 2026-11-20 사용자: 회차 디렉터리가 생겼으면 무슨 일이 있어도 시도 1회. 결과 없으면 무효(사유 = 멈춘 사유) 뒤 멈춤.
+        timeout = self.go(0, True, None, timed_out=True)
+        self.assertEqual((timeout.status, timeout.reasons, timeout.run_id, timeout.stop_after),
+                         ("invalid", ["run_wait_timeout:B0"], self.RUN_ID, "run_wait_timeout:B0"))
+        missing = self.go(1, True, None)
+        self.assertEqual((missing.status, missing.reasons, missing.stop_after),
+                         ("invalid", ["result_missing:B0"], "result_missing:B0"))
+        broken = self.go(1, True, "{not json")
+        self.assertEqual((broken.status, broken.stop_after), ("invalid", "result_unreadable:B0"))
+        mismatch = self.go(0, True, {"status": "invalid", "reasons": ["x"]})
+        self.assertEqual((mismatch.status, mismatch.reasons, mismatch.stop_after),
+                         ("invalid", ["result_status_mismatch:B0", "x"], "result_status_mismatch:B0"))
+        # 결과 파일이 있으면 그 상태로 센다: 끝까지 간 회차는 컨테이너만 늦게 내려가도 버려지지 않는다
+        late = self.go(0, True, {"status": "complete"}, containers=3)
+        self.assertEqual((late.status, late.run_id, late.stop_after), ("complete", self.RUN_ID, "containers_left:B0"))
+        # 종료 코드 2인데 회차 디렉터리가 생겼으면 시도로 센다(무효)
+        cfg_dir = self.go(2, True, None)
+        self.assertEqual((cfg_dir.status, cfg_dir.stop_after), ("invalid", "result_missing:B0"))
+
+    def test_no_run_directory_is_not_an_attempt(self):
+        self.assertEqual(self.go(2, False, None).status, "config_error")
+        timeout = self.go(0, False, None, timed_out=True)
+        self.assertEqual((timeout.status, timeout.reasons), ("stop", ["run_wait_timeout:B0"]))
+        self.assertEqual(self.go(1, False, None).reasons, ["no_run_directory:B0"])
+
+    def test_schedule_counts_stopped_attempts_and_resume_keeps_them(self):
+        # 시한 넘긴 회차는 시도로 센 뒤 멈추고, --resume은 그 시도를 다시 세어 같은 칸부터 잇는다(2N에 걸린다)
+        schedule, logs = Schedule(1), []
+        outcomes = iter([Outcome("invalid", ["run_wait_timeout:B0"], "r1", stop_after="run_wait_timeout:B0")])
+        run_session(schedule, lambda side, repeat: next(outcomes), logs.append)
+        self.assertEqual((schedule.attempts["baseline"], schedule.stop_reason), (1, "run_wait_timeout:B0"))
+        resumed = Schedule(1)
+        self.assertEqual(o.replay(resumed, logs), 1)
+        self.assertIsNone(resumed.stop_reason)
+        self.assertEqual(resumed.next_slot(), ("baseline", 0))
+        self.assertEqual(resumed.attempts["baseline"], 1)
+        # 시한 넘김이 되풀이되면 2N에서 더 시작하지 않는다
+        again = Schedule(1)
+        o.replay(again, logs + logs[:1])
+        self.assertEqual(again.next_slot(), None)
+        self.assertEqual(again.stop_reason, "attempt_limit:baseline")
+        # 끝까지 간 회차가 컨테이너만 늦게 내려가 멈췄으면, 잇는 세션은 다음 칸부터 간다
+        late = Schedule(1)
+        run_session(late, lambda side, repeat: Outcome("complete", [], "r2", stop_after="containers_left:B0"), (lines := []).append)
+        self.assertEqual((late.valid["baseline"], late.stop_reason), (1, "containers_left:B0"))
+        cont = Schedule(1)
+        o.replay(cont, lines)
+        self.assertEqual(cont.next_slot(), ("ours", 0))
 
     def test_baseline_gets_admin_password_file_and_conditions(self):
         seen = {}
@@ -303,6 +348,67 @@ class TestRealRunner(unittest.TestCase):
             self.runner("ours", 0)
         self.assertNotIn("--admin-password-file", seen["args"])
         self.assertEqual(seen["args"][seen["args"].index("--condition") + 1], "우리@35b")
+
+
+class TestUsageGuard(unittest.TestCase):
+    def guard(self, *responses):
+        pending = list(responses)
+
+        def read():
+            value = pending.pop(0)
+            if isinstance(value, Exception):
+                raise value
+            return value
+        return o.UsageGuard(read, cap_usd=3.0, floor_usd=0.30)
+
+    def test_unknown_values_stop_before_a_paid_run(self):
+        # #819 리뷰: 남은 한도를 모르면(None) 하한을 확인하지 못한 것이라 시작하지 않는다
+        self.assertEqual(self.guard({"usage": 0.0, "limit_remaining": None}).check(), "remaining_unknown")
+        # 첫 사용량을 모르면 TypeError 없이 멈춘다
+        guard = self.guard({"usage": None, "limit_remaining": 10.0}, {"usage": 1.0, "limit_remaining": 10.0})
+        self.assertEqual(guard.check(), "usage_unknown")
+        self.assertIsNone(guard.base)
+        for bad in (True, float("nan"), "1.0", float("inf")):
+            with self.subTest(bad=bad):
+                self.assertEqual(self.guard({"usage": bad, "limit_remaining": 10.0}).check(), "usage_unknown")
+                self.assertEqual(self.guard({"usage": 1.0, "limit_remaining": bad}).check(), "remaining_unknown")
+        self.assertEqual(self.guard(OSError("network")).check(), "usage_read_failed")
+        self.assertEqual(self.guard(["not", "a", "dict"]).check(), "usage_unknown")
+
+    def test_cap_and_floor_from_the_first_check(self):
+        guard = self.guard({"usage": 10.0, "limit_remaining": 40.0}, {"usage": 12.9, "limit_remaining": 37.1},
+                           {"usage": 13.0, "limit_remaining": 37.0})
+        self.assertIsNone(guard.check())
+        self.assertEqual(guard.base, 10.0)
+        self.assertIsNone(guard.check())
+        self.assertEqual(guard.check(), "usage_cap")
+        self.assertEqual(self.guard({"usage": 0.0, "limit_remaining": 0.30}).check(), "remaining_floor")
+
+    def test_base_is_reported_once_and_can_be_restored(self):
+        seen = []
+        guard = o.UsageGuard(lambda: {"usage": 5.0, "limit_remaining": 40.0}, 3.0, 0.30, on_base=seen.append)
+        guard.check()
+        guard.check()
+        self.assertEqual(seen, [5.0])
+        # --resume: 기록의 기준값으로 시작하면 세션 전체 기준으로 건다(다시 0부터 세지 않음)
+        restored = o.UsageGuard(lambda: {"usage": 8.0, "limit_remaining": 40.0}, 3.0, 0.30, base=5.0, on_base=seen.append)
+        self.assertEqual(restored.check(), "usage_cap")
+        self.assertEqual(seen, [5.0])
+
+    def test_runner_is_not_called_when_the_guard_stops(self):
+        guard, calls, logs = self.guard({"usage": 0.0, "limit_remaining": None}), [], []
+        schedule = run_session(Schedule(3), lambda side, repeat: calls.append(side) or Outcome("complete"), logs.append,
+                               before_run=lambda side, repeat: guard.check())
+        self.assertEqual(calls, [])
+        self.assertEqual(schedule.stop_reason, "remaining_unknown")
+        self.assertEqual(logs[-2]["reason"], "remaining_unknown")
+
+    def test_key_file_and_cap_go_together(self):
+        with tempfile.TemporaryDirectory() as root:
+            common = ["--tree", root, "--config", root + "/c", "--preflight", root + "/p", "--admin-password-file", root + "/a"]
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(o.main(["--session-dir", root + "/s1", *common, "--key-file", root + "/k"]), o.EXIT_INPUT)
+                self.assertEqual(o.main(["--session-dir", root + "/s2", *common, "--usage-cap-usd", "3"]), o.EXIT_INPUT)
 
 
 class TestManifest(unittest.TestCase):
