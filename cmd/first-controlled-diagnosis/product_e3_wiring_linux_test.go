@@ -186,6 +186,71 @@ func TestProductE3WiredStoppedRecordsActualReason(t *testing.T) {
 	}
 }
 
+// 실제 제품에서 중지 기록 훅은 실행이 끝난 뒤 불려 연결 사유가 "실행 끝남"(lease_missing 등)이다. 연결이 있던 판이면
+// not_wired가 아니라 실제 상태를 남긴다. 실행기·계정 저장소가 없는 사유와 연결 자체가 없는 판은 그대로 not_wired다.
+func TestProductE3StoppedAfterExecutionEnded(t *testing.T) {
+	ended := func(reason string) func(string) (*e2proxy.Execution, server.E2HTTPAccountBindings, string) {
+		return func(string) (*e2proxy.Execution, server.E2HTTPAccountBindings, string) { return nil, nil, reason }
+	}
+	for name, tc := range map[string]struct {
+		handle  func(string) (*e2proxy.Execution, server.E2HTTPAccountBindings, string)
+		bridge  bool
+		declare bool
+		status  e3contract.ConfirmationStatus
+		reason  string
+	}{
+		"lease-missing-would-run":      {ended(server.E3HandleLeaseMissing), true, true, e3contract.StatusInterrupted, ""},
+		"task-fenced-would-run":        {ended(server.E3HandleTaskFenced), true, true, e3contract.StatusInterrupted, ""},
+		"execution-stopped-would-run":  {ended(server.E3HandleExecutionStopped), true, true, e3contract.StatusInterrupted, ""},
+		"task-missing-would-run":       {ended(server.E3HandleTaskMissing), true, true, e3contract.StatusInterrupted, ""},
+		"task-mismatch-would-run":      {ended(server.E3HandleTaskMismatch), true, true, e3contract.StatusInterrupted, ""},
+		"lease-missing-no-declaration": {ended(server.E3HandleLeaseMissing), true, false, e3contract.StatusDisabled, string(e3contract.DisabledNoDeclaration)},
+		"runner-not-local":             {ended(server.E3HandleRunnerNotLocal), true, true, e3contract.StatusDisabled, string(e3contract.DisabledNotWired)},
+		"accounts-missing":             {ended(server.E3HandleAccountsMissing), true, true, e3contract.StatusDisabled, string(e3contract.DisabledNotWired)},
+		"runtime-unavailable":          {ended(server.E3HandleRuntimeUnavailable), true, true, e3contract.StatusDisabled, string(e3contract.DisabledNotWired)},
+		"handle-not-configured":        {nil, true, true, e3contract.StatusDisabled, string(e3contract.DisabledNotWired)},
+		"bridge-not-configured":        {ended(server.E3HandleLeaseMissing), false, true, e3contract.StatusDisabled, string(e3contract.DisabledNotWired)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newE3HookFixture(t, tc.declare, nil)
+			c := f.confirmation(nil, e3HookAccounts(), nil)
+			var created atomic.Int64
+			c.handle, c.newBridge = tc.handle, nil
+			if tc.bridge {
+				c.newBridge = countingBridge(&created)
+			}
+			if err := c.stopped(t.Context(), "9"); err != nil {
+				t.Fatal(err)
+			}
+			res, raw := readE3Result(t, f.runs)
+			if res.Status != tc.status || res.Reason != tc.reason || res.Requests != 0 || created.Load() != 0 {
+				t.Fatalf("중지 기록: %s 브리지 %d", raw, created.Load())
+			}
+		})
+	}
+}
+
+// 닫힌 연결은 부르면 늘 실패한다(중지 기록은 부르지 않는다).
+func TestProductEndedE3ConnectionAlwaysFails(t *testing.T) {
+	var c productEndedE3Connection
+	ctx := t.Context()
+	if c.RegisterMarker(ctx, e3contract.RunBinding{}, e3contract.Marker{}) == nil {
+		t.Fatal("표식 등록")
+	}
+	if _, err := c.Identity(ctx, e3contract.IdentityRequest{}); err == nil {
+		t.Fatal("신원")
+	}
+	if _, err := c.Create(ctx, e3contract.CreateRequest{}); err == nil {
+		t.Fatal("생성")
+	}
+	if _, err := c.Read(ctx, e3contract.ReadRequest{}); err == nil {
+		t.Fatal("읽기")
+	}
+	if _, err := c.Sealed(ctx, e3contract.RunBinding{}, e3contract.CallRef{}); err == nil {
+		t.Fatal("봉인 사건")
+	}
+}
+
 // 실제 브리지 생성기는 실행·계정 저장소 없이는 브리지를 만들지 않는다.
 func TestNewProductE3BridgeNeedsExecution(t *testing.T) {
 	if _, err := newProductE3Bridge(nil, nil, e3contract.RunBinding{JobRef: "job-1", RunRef: "run-1"}); !errors.Is(err, e2proxy.ErrE3JournalUnavailable) {

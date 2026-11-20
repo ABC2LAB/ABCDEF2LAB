@@ -149,7 +149,7 @@ func (c *productE3Confirmation) run(ctx context.Context, taskID string, begin fu
 // 결과 파일이 없을 때 비활성으로 추정하지 않게 하려는 것이다(#738 이동찬 리뷰).
 func (c *productE3Confirmation) stopped(ctx context.Context, taskID string) error {
 	in, _ := c.input(taskID)
-	deps, release, _ := c.wiredDeps(taskID)
+	deps, release := c.stoppedDeps(taskID)
 	defer release()
 	res := e3contract.RunStopped(ctx, deps, in)
 	raw, err := json.Marshal(res)
@@ -162,6 +162,59 @@ func (c *productE3Confirmation) stopped(ctx context.Context, taskID string) erro
 		return errors.New("e3_result_unrecorded")
 	}
 	return nil
+}
+
+// stoppedDeps는 중지 기록용 의존이다. 중지 기록 훅은 실행이 끝난 뒤(중지·취소·실패) 불려서, 연결이 있던 판이어도 E② 실행이
+// 이미 끝나 연결을 받지 못한다(lease_missing 등). 그때 not_wired로 남기면 연결이 없는 판과 구별되지 않는다(Go 조건 2는 최종
+// 이미지의 not_wired를 No-Go로 본다). 그래서 연결이 있던 판이고 사유가 "실행 끝남"이면 닫힌 연결을 붙여 실제 상태(돌 수
+// 있었으면 interrupted, 아니면 입력 사유)를 남긴다. RunStopped는 요청을 보내지 않고 연결은 nil 여부만 본다.
+func (c *productE3Confirmation) stoppedDeps(taskID string) (e3contract.Deps, func()) {
+	if c.handle != nil && c.newBridge != nil {
+		if execution, _, reason := c.handle(taskID); execution == nil && e3HandleExecutionEnded(reason) {
+			log.Printf("[e3-confirmation] task %s 중지 기록: E② 실행이 이미 끝남(사유=%s)", taskID, reason)
+			deps := c.deps
+			deps.Transport, deps.Journal = productEndedE3Connection{}, productEndedE3Connection{}
+			return deps, func() {}
+		}
+	}
+	deps, release, _ := c.wiredDeps(taskID)
+	return deps, release
+}
+
+// e3HandleExecutionEnded는 E② 연결을 주지 못한 사유가 "이 작업의 실행이 이미 끝남"인지다. 실행기·계정 저장소가 없는 사유
+// (runner_missing·runner_not_local·accounts_missing·runtime_unavailable)는 연결이 없는 판이라 여기 들지 않는다.
+func e3HandleExecutionEnded(reason string) bool {
+	switch reason {
+	case server.E3HandleTaskMissing, server.E3HandleTaskMismatch, server.E3HandleTaskFenced, server.E3HandleLeaseMissing,
+		server.E3HandleExecutionStopped:
+		return true
+	}
+	return false
+}
+
+// productEndedE3Connection은 실행이 끝난 뒤의 닫힌 확정 단계 연결이다. 중지 기록에만 쓰고, 부르면 늘 실패한다.
+type productEndedE3Connection struct{}
+
+var errProductE3ExecutionEnded = errors.New("e3_execution_ended")
+
+func (productEndedE3Connection) RegisterMarker(context.Context, e3contract.RunBinding, e3contract.Marker) error {
+	return errProductE3ExecutionEnded
+}
+
+func (productEndedE3Connection) Identity(context.Context, e3contract.IdentityRequest) (e3contract.Observation, error) {
+	return e3contract.Observation{}, errProductE3ExecutionEnded
+}
+
+func (productEndedE3Connection) Create(context.Context, e3contract.CreateRequest) (e3contract.Observation, error) {
+	return e3contract.Observation{}, errProductE3ExecutionEnded
+}
+
+func (productEndedE3Connection) Read(context.Context, e3contract.ReadRequest) (e3contract.Observation, error) {
+	return e3contract.Observation{}, errProductE3ExecutionEnded
+}
+
+func (productEndedE3Connection) Sealed(context.Context, e3contract.RunBinding, e3contract.CallRef) (e3contract.Observation, error) {
+	return e3contract.Observation{}, errProductE3ExecutionEnded
 }
 
 // wiredDeps는 E② 실행 연결이 있으면 몫·선언과 관계없이 어댑터를 붙인 의존이다. 그래야 꺼진 회차가 not_wired 대신 실제
