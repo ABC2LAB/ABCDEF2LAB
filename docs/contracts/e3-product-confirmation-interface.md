@@ -207,11 +207,25 @@ E②를 닫는 순서는 이렇다(사유별로 E②를 닫지 않는다).
 | 예산 소진·실행 상한(요청·도구·계획 라운드·모델 예산) | completed, budget_limited | 감독자 마감 판정 | 확정 단계 뒤 감독자 | 돈다 |
 | 자연 마감인데 E② 실행이 한 번도 없음(no_intents 등) | completed, no_intents 등 | — | — | 요청 없이 기록: 꺼진 회차는 실제 사유, 켜진 회차는 `no_confirmation_candidates`(후보가 있으면 `e2_execution_unavailable`) |
 | 운영자 중지(요청 승인 중지 API) | cancelled | 중지 | 중지 경로 | 중지 기록 `interrupted` |
-| 일시정지(작업 control pause, 엔진 일시정지) | cancelled(운영자 중지와 같음) | 중지 | 중지 경로 | 중지 기록 `interrupted`. 재개는 `resume_unsupported` |
+| 운영자 일시정지(작업 control pause) | cancelled(운영자 중지와 같음, 엔진 일시정지를 거치지 않음) | 중지 | 중지 경로 | 중지 기록 `interrupted`. 재개는 409 `resume_unsupported`. 화면 표시는 '중지'(다시 시작 없음) |
+| 회차 도중 운영자 밖 엔진 일시정지(아래 원인 표) | failed(감독 실패, 진단 로그 사유 `engine_paused`·서버 로그에 원인 코드) — 운영자 중지와 따로 | 취소 | 마감 정리 | 중지 기록 `interrupted`. 첫 진단 서버에서 생기는 경로는 없다(방어 경로) |
 | 초안 중지·대상 철회·결속 계정 변경·hard 기한·서비스 종료 | cancelled(사유는 각 경로) | 문맥 취소 | 작업 문맥 취소 | 중지 기록 `interrupted` |
 | 실패(엔진 실패·마감 판정 실패·준비 실패) | failed | 취소 | 마감 정리 | 중지 기록 `interrupted` |
 | 마감 판정 뒤 실패(감사 마감 실패 등) | failed | 감독자 마감 판정 | 확정 단계 뒤 감독자 | 이미 돌았다 |
 
+- **엔진 일시정지 원인 표**(`Engine.Pause`를 부르는 곳 전부). 첫 진단 서버(E② HTTP)에서 회차 도중 생기는 것은 운영자 일시정지뿐이고, 그것은 엔진 일시정지가 아니라 운영자 중지로 받는다.
+
+  | 원인 코드 | 부르는 곳 | 첫 진단 회차 도중 | 막는 것(시험) |
+  |---|---|---|---|
+  | `paused_by_user` | 작업 control pause·일괄 control(`applyTaskControl`) | 단일 control은 운영자 중지로 바뀜, 일괄은 없음 | 단일 control → `firstDiagnosisControl`(통합 pause 모드), 일괄 라우트 403(`TestFirstDiagnosisClosesEnginePauseEntries`) |
+  | `llm_unavailable_queued` | 동시 실행 조정(`reconcileConcurrency`) | 없음 | 동시 실행 제한이 꺼져 있어야 동작하지 않음: 설정 라우트 403, 설치·러너가 쓰지 않음, 실제 서버에서 꺼짐 확인(통합 engine-pause 모드). 스케줄러는 자동 허가 끈 서버에서 시작 안 함 |
+  | `queued_for_admission` | 재개·재실행 허가(`admitTask`) | 없음 | 첫 진단 허가는 회차 시작 때 한 번(이미 준비 일시정지 상태), 재개 라우트 403·control 재개 409 |
+  | `paused_by_orchestrator` | 통제 조회 대기(`parkControlledReadTask`), 오케스트레이터 `pause_task` 도구 | 없음 | E② HTTP 서버는 통제 조회 런타임이 없음(통합 engine-pause 모드), 진단 프로필에 `pause_task` 없음(`TestDiagnosisProfilesHaveNoTaskPauseTool`), 대화 라우트 403 |
+  | `paused_on_reload` | 재시작·보관 복원 | 없음(재시작은 회차를 끝냄) | 첫 진단 기동은 일시정지 표시만(엔진 `Pause` 아님), 보관 복원 라우트 403 |
+  | `task_deleted`(삭제 장벽) | `BeginDelete` | 없음 | 삭제 라우트 403 |
+  | `paused_race_guard` | 감독자 자신(준비·마감·종료) | 회차 마감 뒤에만 | 감독자는 실행 문맥 취소를 엔진 일시정지보다 먼저 본다(서버 종료 때 경쟁 방지 일시정지가 `engine_paused`로 잘못 기록되지 않게) |
+
+  모든 통합 마감 경로에서 회차가 `engine_paused`로 끝나지 않음을 고정한다(engine-pause 모드만 일부러 건다). LLM 준비 판정(`ReadyFor`)은 첫 진단에서 모델 결속·프로필 설정만 보고 제공자 오류(429·5xx·끊김)로 바뀌지 않는다. 바뀌어도 엔진은 일시정지하지 않고 Planner·Worker가 모델 없이 기다린다.
 - 워크플로 일시정지(`/api/product/workflows/{job}/pause`)는 마감 경로가 아니라 모델 요청 관문이다. 그 상태로 시간 상한에 닿으면 시간 상한 행과 같고, 관문은 모델 요청에만 걸려 확정 단계 요청은 지난다.
 - 시험: 감독자 통합 시험(`firstDiagnosisCheckClosingPath`)이 모든 모드에서 확정 단계 훅과 중지 기록 가운데 정확히 하나가 한 번 불리고, 확정 단계 훅 때 E② 연결이 살아 있고 모델 단계가 마감돼 있거나(사유 없음) 실행이 한 번도 없었는지(`lease_missing`), 그 뒤 모델 단계 송신이 0인지 본다.
 - `RunResult.Requests`는 "보낸 요청"이 아니라 확정 단계가 **보내려고 시도한 수**다(E②가 몫 끝·정책으로 보내지 않은 것 포함, 다시 로그인은 실제로 보낸 것만).
