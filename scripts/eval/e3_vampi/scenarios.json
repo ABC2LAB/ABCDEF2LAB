@@ -247,14 +247,18 @@
     },
     {
       "id": "S17",
-      "name": "previous_markers_present",
-      "fake": true,
+      "name": "reset_confirmed_residue_unchecked",
+      "fake": false,
       "real": "runnable",
       "expect": {
-        "status": "start_refused",
-        "reason": "previous_markers_present",
-        "requests_zero": true,
-        "verdicts": {}
+        "status": "completed",
+        "reason": "",
+        "verdicts": {
+          "book": {
+            "value": "confirmed",
+            "reasons": []
+          }
+        }
       }
     },
     {
@@ -321,6 +325,18 @@
             "reasons": []
           }
         }
+      }
+    },
+    {
+      "id": "S22",
+      "name": "previous_markers_present",
+      "fake": true,
+      "real": "fake_only",
+      "expect": {
+        "status": "start_refused",
+        "reason": "previous_markers_present",
+        "requests_zero": true,
+        "verdicts": {}
       }
     }
   ]

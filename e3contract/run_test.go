@@ -527,9 +527,11 @@ func TestRunResetGate(t *testing.T) {
 		"reset_missing": {e3fake.Reset{State: e3contract.ResetState{PreviousWrites: true, Residue: e3contract.ResidueAbsent}}, e3contract.RefuseResetConfirmationMissing},
 		// 리셋 확인이 없으면 잔존을 아직 모르더라도 확인 없음이 사유다.
 		"reset_missing_unknown": {e3fake.Reset{State: e3contract.ResetState{PreviousWrites: true, Residue: e3contract.ResidueUnknown}}, e3contract.RefuseResetConfirmationMissing},
-		"residue_present":       {e3fake.Reset{State: e3contract.ResetState{PreviousWrites: true, ResetConfirmed: true, Residue: e3contract.ResiduePresent}}, e3contract.RefusePreviousMarkersPresent},
-		"residue_unknown":       {e3fake.Reset{State: e3contract.ResetState{PreviousWrites: true, ResetConfirmed: true, Residue: e3contract.ResidueUnknown}}, e3contract.RefuseResetStateUnavailable},
-		"residue_empty":         {e3fake.Reset{State: e3contract.ResetState{}}, e3contract.RefuseResetStateUnavailable},
+		// 잔존 점검이 없어도(not_checked) 리셋 확인이 없으면 시작하지 않는다.
+		"reset_missing_not_checked": {e3fake.Reset{State: e3contract.ResetState{PreviousWrites: true, Residue: e3contract.ResidueNotChecked}}, e3contract.RefuseResetConfirmationMissing},
+		"residue_present":           {e3fake.Reset{State: e3contract.ResetState{PreviousWrites: true, ResetConfirmed: true, Residue: e3contract.ResiduePresent}}, e3contract.RefusePreviousMarkersPresent},
+		"residue_unknown":           {e3fake.Reset{State: e3contract.ResetState{PreviousWrites: true, ResetConfirmed: true, Residue: e3contract.ResidueUnknown}}, e3contract.RefuseResetStateUnavailable},
+		"residue_empty":             {e3fake.Reset{State: e3contract.ResetState{}}, e3contract.RefuseResetStateUnavailable},
 		// 오류와 함께 돌아온 상태가 멀쩡해 보여도 오류가 이긴다.
 		"gate_error": {e3fake.Reset{State: e3contract.ResetState{Residue: e3contract.ResidueAbsent}, Err: errors.New("저널 읽기 실패")}, e3contract.RefuseResetStateUnavailable},
 		// 실행 시작 뒤 대상이 바뀌었으면(또는 지금 대상을 확인하지 못하면) 다른 상태가 깨끗해도 요청 없이 멈춘다(v3 계약 §6).
@@ -551,6 +553,14 @@ func TestRunResetGate(t *testing.T) {
 	t.Run("reset_confirmed_runs", func(t *testing.T) {
 		f := newFixture(t)
 		f.reset = e3fake.Reset{State: e3contract.ResetState{PreviousWrites: true, ResetConfirmed: true, Residue: e3contract.ResidueAbsent}}
+		if res := f.run(t); res.Status != e3contract.StatusCompleted {
+			t.Fatalf("%+v", res)
+		}
+	})
+	// 잔존 점검이 없으면 리셋 확인만으로 시작하고, 새 표식으로 판정한다(사용자 결정 2026-11-20, 계약 §12).
+	t.Run("reset_confirmed_not_checked_runs", func(t *testing.T) {
+		f := newFixture(t)
+		f.reset = e3fake.Reset{State: e3contract.ResetState{PreviousWrites: true, ResetConfirmed: true, Residue: e3contract.ResidueNotChecked}}
 		if res := f.run(t); res.Status != e3contract.StatusCompleted {
 			t.Fatalf("%+v", res)
 		}
@@ -1008,5 +1018,27 @@ func TestRunCrossDeniedReadsStatusFirst(t *testing.T) {
 				t.Fatalf("A 404 뒤 B 조회 %d번", n)
 			}
 		})
+	}
+}
+
+// 회차 시작 때 서버가 거절한 결과는 요청 0건이고 결속·판정·후보·쓰기가 없다. 정해진 시작 거부 사유만 Valid다.
+func TestRefusedAtRunStart(t *testing.T) {
+	res := e3contract.RefusedAtRunStart(e3contract.RefuseResetConfirmationMissing)
+	if res.Version != e3contract.RunResultVersion || res.Status != e3contract.StatusStartRefused || res.Reason != "reset_confirmation_missing" ||
+		res.Requests != 0 || res.Binding != nil || res.Verdicts == nil || len(res.Verdicts) != 0 || res.Candidates == nil || len(res.Candidates) != 0 ||
+		res.Writes == nil || len(res.Writes) != 0 || res.Skipped == nil || len(res.Skipped) != 0 {
+		t.Fatalf("%+v", res)
+	}
+	for _, r := range []e3contract.StartRefusal{e3contract.RefuseResetConfirmationMissing, e3contract.RefusePreviousMarkersPresent,
+		e3contract.RefuseResetStateUnavailable, e3contract.RefusePolicySourceUnavailable, e3contract.RefuseMarkerGenerationFailed,
+		e3contract.RefuseMarkerRegistrationFailed, e3contract.RefuseTargetChanged} {
+		if !r.Valid() {
+			t.Fatalf("%s 거부", r)
+		}
+	}
+	for _, r := range []e3contract.StartRefusal{"", "target_approval_changed", "reset_confirmation_missing "} {
+		if r.Valid() {
+			t.Fatalf("%q 받음", r)
+		}
 	}
 }

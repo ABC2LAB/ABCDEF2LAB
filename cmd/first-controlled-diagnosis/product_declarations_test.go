@@ -287,8 +287,9 @@ func TestProductResetConfirmationLifecycle(t *testing.T) {
 	if again, err := r.confirmReset("ARTEX", target.ID, true, writesRef(t, r, target.ID)); err != nil || !again.ConfirmedAt.Equal(v.ConfirmedAt) {
 		t.Fatalf("두 번째 확인: %+v %v", again, err)
 	}
-	if got := start(gate); got != e3contract.RefuseResetStateUnavailable {
-		t.Fatalf("잔존 점검 없이: %s", got)
+	// 잔존 점검(E² 조회)이 없으면 ID를 아는 객체도 리셋 확인만으로 시작한다(사용자 결정 2026-11-20, 계약 §12).
+	if got := start(gate); got != "" {
+		t.Fatalf("잔존 점검 없이 리셋 확인함: %s", got)
 	}
 	for residue, want := range map[e3contract.Residue]e3contract.StartRefusal{
 		e3contract.ResidueAbsent: "", e3contract.ResiduePresent: e3contract.RefusePreviousMarkersPresent, e3contract.ResidueUnknown: e3contract.RefuseResetStateUnavailable,
@@ -366,7 +367,8 @@ func TestProductResetReplayBlocksPresentOrUnverifiedResidue(t *testing.T) {
 		{name: "absent", connected: true, residue: e3contract.ResidueAbsent, want: ""},
 		{name: "present", connected: true, residue: e3contract.ResiduePresent, want: e3contract.RefusePreviousMarkersPresent},
 		{name: "unknown", connected: true, residue: e3contract.ResidueUnknown, want: e3contract.RefuseResetStateUnavailable},
-		{name: "checker_missing", want: e3contract.RefuseResetStateUnavailable},
+		// 점검이 없으면 리셋 확인만으로 시작한다(사용자 결정 2026-11-20). 점검이 있는데 모르거나 실패하면 시작하지 않는다.
+		{name: "checker_missing", want: ""},
 		{name: "checker_error", connected: true, residue: e3contract.ResidueAbsent, err: errors.New("synthetic check failure"), want: e3contract.RefuseResetStateUnavailable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
