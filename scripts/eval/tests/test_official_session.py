@@ -341,6 +341,14 @@ class TestRealRunner(unittest.TestCase):
                 # --resume도 같은 확인을 먼저 한다
                 self.assertEqual(o.main(["--session-dir", root + "/s", "--resume", *common]), o.EXIT_STOPPED)
             started.assert_not_called()
+            # 컨테이너는 없지만 앞 회차 평가 망이 남았으면 같은 자리에서 멈춘다(시도 0)
+            with mock.patch("official_session.running_containers", return_value=0), \
+                    mock.patch("official_session.eval_networks", return_value=3), \
+                    mock.patch("official_session.RealRunner.__call__", started), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(o.main(["--session-dir", root + "/n", *common]), o.EXIT_STOPPED)
+                lines = [json.loads(l) for l in Path(root, "n", o.LOG_NAME).read_text().splitlines()]
+                self.assertEqual((lines[0]["reason"], lines[-1]["attempts"]), ("networks_present", {"baseline": 0, "ours": 0}))
+            started.assert_not_called()
 
     def test_networks_left_after_a_run_stop_the_session(self):
         late = self.go(0, True, {"status": "complete"}, networks=1)
