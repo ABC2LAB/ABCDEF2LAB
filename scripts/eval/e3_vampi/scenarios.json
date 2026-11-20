@@ -274,6 +274,54 @@
           }
         }
       }
+    },
+    {
+      "id": "S19",
+      "name": "budget_pressure",
+      "fake": false,
+      "real": "runnable",
+      "expect": {
+        "status": "completed",
+        "reason": "",
+        "verdicts": {
+          "book": {
+            "value": "confirmed",
+            "reasons": []
+          }
+        }
+      }
+    },
+    {
+      "id": "S20",
+      "name": "session_relogin",
+      "fake": false,
+      "real": "runnable",
+      "expect": {
+        "status": "completed",
+        "reason": "",
+        "verdicts": {
+          "book": {
+            "value": "confirmed",
+            "reasons": []
+          }
+        }
+      }
+    },
+    {
+      "id": "S21",
+      "name": "token_expiry_during_confirmation",
+      "fake": false,
+      "real": "runnable",
+      "expect": {
+        "status": "completed",
+        "reason": "",
+        "verdicts": {
+          "book": {
+            "value": "confirmed",
+            "reasons": []
+          }
+        }
+      }
     }
   ]
 }
