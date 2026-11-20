@@ -253,7 +253,8 @@ class ProductDriver:
         draft = self._draft(value)
         scope = draft.get("scope")
         if draft["state"] != "ready" or not isinstance(scope, dict) or scope.get("target_ref") != target_id:
-            raise ProductAPIError("product_draft_not_ready")
+            # 제품이 준비 안 됨 사유(approval_expired 등)를 고정 code로 붙인다. 설정 오류 분류(runner_early_end)가 쓴다.
+            raise ProductAPIError("product_draft_not_ready" + self._safe_reason(draft.get("reason_code")))
         return draft
 
     def start(self, draft: dict) -> None:

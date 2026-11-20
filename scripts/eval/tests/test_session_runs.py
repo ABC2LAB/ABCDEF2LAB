@@ -251,9 +251,18 @@ class TestTally(SessionCase):
         self.s.invalid("ours", 7, "drain_timeout", "provider_fault_stall")
         self.s.complete("ours", 10, 0)
         lines, failures = fault_stall_tally(read_session(self.root, KEY))
-        self.assertIn(f"| baseline | 0 | {FAULT_STALL_LIMIT_PER_SIDE} |", lines)
-        self.assertIn(f"| ours | 1 | {FAULT_STALL_LIMIT_PER_SIDE} |", lines)
+        self.assertIn(f"| baseline | 0 | 0 | 0 | {FAULT_STALL_LIMIT_PER_SIDE} |", lines)
+        self.assertIn(f"| ours | 1 | 0 | 1 | {FAULT_STALL_LIMIT_PER_SIDE} |", lines)
         self.assertEqual(failures, [])
+
+    def test_provider_fault_end_counts_with_stalls(self):
+        # 고정 초안 §26: 러너 상한 전에 제공자 장애로 끝난 회차는 멈춤과 같은 상한에 같이 센다
+        self.s.invalid("baseline", 5, "provider_fault_stall")
+        self.s.invalid("baseline", 7, "provider_fault_end")
+        lines, failures = fault_stall_tally(read_session(self.root, KEY))
+        self.assertIn(f"| baseline | 1 | 1 | 2 | {FAULT_STALL_LIMIT_PER_SIDE} |", lines)
+        self.assertEqual(len(failures), 1)
+        self.assertIn("provider_fault_end 1회", failures[0])
 
     def test_fault_stall_limit_on_one_side_fails_the_whole_measurement(self):
         # 고정 초안 §3: 한쪽이라도 상한(2) 이상이면 남은 유효 회차가 있어도 측정 전체 실패, manifest를 쓰지 않는다

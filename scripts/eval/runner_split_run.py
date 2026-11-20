@@ -70,7 +70,11 @@ from runner_fault import (  # noqa: E402
 from runner_llm import interrupted_generation_ids, judge_product_llm  # noqa: E402
 from runner_probe import PASS  # noqa: E402
 from runner_product_llm import (  # noqa: E402
-    ProductLLMError, call_record_lines, call_records_reasons, ledger_reservations, product_model_usage,
+    ProductLLMError, call_record_lines, call_records_reasons, ledger_reservations, ledger_totals, product_model_usage,
+)
+from runner_early_end import (  # noqa: E402
+    CONFIG_END_REASON, EARLY_END_NAME, PRODUCT_BUDGET_LIMIT, PROVIDER_FAULT_END_REASON, approval_budget, early_end_record,
+    start_refusal_code, start_refusal_record,
 )
 from runner_split_probe import SplitProbeOutcome  # noqa: E402
 from runner_window import events_reasons, judge_events, watch_reasons, watch_summary  # noqa: E402
@@ -273,6 +277,8 @@ class SplitRunSpec:
     # E③ 비활성 요구(설정 split.e3_disabled_required). 켜면 그 회차 정책의 확정 몫 0과 기록 disabled/declaration_missing을
     # 확인하고 회차 조건(서명 근거)에 남긴다. purpose와 따로다(2026-11-20 사용자).
     e3_disabled_required: bool = False
+    # 승인 요청·비용 상한(manifest). 승인 예산에 닿은 budget_limited를 설정 오류로 가른다(고정 초안 §26). 합성 모델 모드는 None.
+    approval_caps: tuple[int, int] | None = None
 
 
 class SplitRunPorts(Protocol):
@@ -574,6 +580,39 @@ def _e3_traces(ports, evidence, state, draft_id: str, result_raw: bytes | None) 
 PRODUCT_CALLS_NAME = "product-calls.jsonl"
 
 
+def _start_step(evidence, state, code: str, action):
+    """제품 준비·시작 단계. 제품이 설정 문제 고정 사유(승인 만료·승인 필요 등)로 거부하면 설정 오류(config_end)로, 그 밖은
+    그 단계의 고정 사유로 바꾼다(_step과 같음). 설정 오류는 세션이 시도로 세지 않고 멈춘다(고정 초안 §26, 2026-11-21 사용자)."""
+    state.step = code
+    try:
+        return action()
+    except RunFailure:
+        raise
+    except ProductAPIError as exc:
+        refused = start_refusal_code(str(exc))
+        if refused is None:
+            raise RunFailure(code) from None
+        record = start_refusal_record("ours", refused)
+        state.summary["early_end"] = record
+        _step(state, "evidence_write_failed", lambda: evidence.write_json(EARLY_END_NAME, record))
+        raise RunFailure(CONFIG_END_REASON, (f"start_refused:{refused}",)) from None
+    except Exception as exc:
+        raise RunFailure(code, ("docker_helper_cleanup_failed",) if isinstance(exc, HelperCleanupError) else ()) from None
+
+
+def _split_early_end(spec, evidence, state, limit: dict, engine_end: dict, calls: bytes | None, ledger: bytes | None) -> dict:
+    """일찍 끝난 회차 분류 기록을 만들어 요약과 근거에 남긴다. 호출 기록이 없으면(합성) 근거 없음으로 분류한다."""
+    rows = None if calls is None else _call_rows(calls)
+    budget = None
+    if ledger is not None and spec.approval_caps is not None and limit["value"] == PRODUCT_BUDGET_LIMIT:
+        totals = _step(state, "early_end_failed", lambda: ledger_totals(ledger))
+        budget = approval_budget(totals, *spec.approval_caps)
+    record = _step(state, "early_end_failed", lambda: early_end_record("ours", limit, engine_end["first_terminal"], rows, budget))
+    state.summary["early_end"] = record
+    _step(state, "evidence_write_failed", lambda: evidence.write_json(EARLY_END_NAME, record))
+    return record
+
+
 def _call_rows(calls: bytes) -> list[dict]:
     """제품 호출 기록 줄. 읽지 못한 줄은 버린다(끊긴 호출로 분류하지 않을 뿐, 줄 수 대조는 call_records_reasons가 이미 했다)."""
     rows = []
@@ -628,9 +667,9 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
         raise RunFailure("pre_requests_nonzero")
 
     # 제품 사용자 순서: 로그인~초안까지는 준비, 예산 시계는 B의 작업 생성 직전과 같은 뜻으로 시작 요청 직전부터 잰다.
-    prepared = _step(state, "product_prepare_failed", lambda: ports.prepare_round(token))
+    prepared = _start_step(evidence, state, "product_prepare_failed", lambda: ports.prepare_round(token))
     requested_at, started = _stamp(clock), clock.monotonic()
-    running = _step(state, "product_start_failed", lambda: ports.start_round(prepared))
+    running = _start_step(evidence, state, "product_start_failed", lambda: ports.start_round(prepared))
     task_id, draft_id = running["task_id"], running["draft_id"]
     _step(state, "evidence_write_failed", lambda: evidence.write_json("task.json", {
         "format": SPLIT_TASK_FORMAT, "draft_id": draft_id, "task_id": task_id, "target": prepared["target"],
@@ -749,6 +788,8 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
         _step(state, "evidence_write_failed", lambda: evidence.write_json("product-model.json", {
             "usage": usage, "call_records": None, "verification": LLM_NOT_APPLICABLE}))
         _step(state, "evidence_write_failed", lambda: evidence.write_json("llm-summary.json", dict(llm_summary, reasons=[])))
+        # 합성 회차는 호출 기록이 없어 제공자 장애·설정 오류 근거가 없다. 일찍 끝났으면 유효로 두고 끝 상태만 남는다.
+        _split_early_end(spec, evidence, state, limit, engine_end, None, None)
         _finish_split_summary(spec, state, stop_reason, forwarded_at_stop, limit, drained, settled, pre_board, post_board,
                               goal, window, usage, task_id, draft_id, files, fingerprint, entered, closed)
         _split_record(spec, evidence, state, llm_summary, **record_inputs)
@@ -770,6 +811,11 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     state.summary["fault_stall"], stall_reason = fault_stall_outcome(
         product_fault_stall(calls, meter_rows, requested_at, sealed_at, engine_end), spec.fault_stall_seconds)
     _step(state, "evidence_write_failed", lambda: evidence.write_json(FAULT_STALL_NAME, state.summary["fault_stall"]))
+    # 러너 상한 전에 일찍 끝난 회차의 분류(평가 프로토콜 §5.1·고정 초안 §26). 근거 호출은 제품 호출 기록, 승인 예산은 장부와 manifest다.
+    early = _split_early_end(spec, evidence, state, limit, engine_end, calls, ledger)
+    if early["reason"] == CONFIG_END_REASON:
+        # 설정 오류는 세션이 시도로 세지 않고 멈춘다. 사후 검증(제공자 조회)을 하지 않고 여기서 끝낸다.
+        raise RunFailure(CONFIG_END_REASON, (stall_reason,) if stall_reason else ())
     # 제품 호출 기록을 B 게이트웨이와 같은 조회 코드로 사후 검증하고(eval-meter -role generation-verify) B와 같은 규칙으로
     # 판정한다(결정안 D(b), 4-11). 샘플링은 제품이 실제로 보낸 값을 표식에 싣고 B 게이트웨이 적용값(선언)과 대조한다.
     _step(state, "llm_verify_failed", lambda: ports.generation_verify(calls, usage["sampling"]))
@@ -789,6 +835,9 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
         llm_summary, reasons=llm_reasons, stop_requested_at=stop_requested_at)))
     if stall_reason:
         raise RunFailure(stall_reason, tuple(llm_reasons))
+    if early["reason"] == PROVIDER_FAULT_END_REASON:
+        # 제공자 장애로 끝남은 멈춤과 같은 부류다(B와 같은 순서: 멈춤 다음, 모델 호출 검증 사유 앞).
+        raise RunFailure(PROVIDER_FAULT_END_REASON, tuple(llm_reasons))
     if llm_reasons:
         raise RunFailure(llm_reasons[0])
     llm_summary = dict(llm_summary, verification=LLM_VERIFIED)
