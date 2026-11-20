@@ -143,13 +143,24 @@
 | `product_request_timeout`(추가) | 확정 요청 전용 시간 상한으로 끊김(결과 불명의 한 갈래, 상한 값 근거로 따로 셈) | 다시 보내지 않음. 생성이면 쓰기 기록(ID 모름) |
 | `product_request_denied`(추가) | E² 정책이 프로그램 요청을 거부 | 그 종류 0 |
 | `product_create_failed`(추가) | 생성 응답이 정상이 아니거나 객체 ID를 못 꺼냄 | 그 종류 0 |
+| `product_data_check_contradiction`(추가, 2026-11-20) | B 조회가 거부 응답(401·403·404)인데 표식 검사가 `present` | - |
+
+**B 조회 해석 순서(사용자 결정 2026-11-20).** B 조회 응답은 이 순서로 본다.
+1. 결과 불명·시간 초과·보내지 않음은 위 사유 코드다.
+2. 상태가 거부(401·403·404)면 표식 검사보다 상태를 먼저 본다.
+   - 표식 검사가 `present`가 아니면(`absent`·`failed`·`unsupported`·`partial`) `cross_normal_data = no`로 오라클에 넘긴다. 오라클 사유는 `data_no_match`이고 판정 값은 UNDECIDABLE 그대로다.
+   - `present`면 거부와 데이터 노출이 함께 나온 모순이라 판정하지 않는다(`product_data_check_contradiction`, UNDECIDABLE).
+3. 그 밖의 상태(2xx 등)는 표식 검사가 `partial`·`unsupported`·`failed`면 위 사유 코드다(`product_data_check_failed` 등).
+4. 표식 검사가 `complete`면 아래 데이터 사실로 오라클이 정한다.
+
+A(소유) 조회는 이 순서를 쓰지 않는다. A 조회가 정상이 아니면 그대로 `product_data_check_failed`다.
 
 **오라클 입력.** `Run`은 사실만 모으고 값은 `oracle.Evaluate`가 정한다.
 - 정책: `owner_only` 선언 → B 기대 접근 거부, 공유·위임 없음. 동결본 대조를 통과한 뒤에만 `has_registered_source`·`hint_matches_canonical`이 참이다. 유효창은 대상 승인 기간과 실행 기간이 겹치는 구간(입력)이다.
 - 신원: C14 인증 성공과 신원 확인이 둘 다 섰을 때만 `verified`이고, 참조는 실행별 키 digest다.
 - 데이터:
   - `same_resource`: 두 조회가 같은 생성 관찰을 읽음.
-  - `owner_normal_data`·`cross_normal_data`: A·B 조회의 정상 여부.
+  - `owner_normal_data`·`cross_normal_data`: A·B 조회의 정상 여부. B가 거부 응답(401·403·404)이면 `cross_normal_data`는 no다.
   - `nontrivial_data_match`: B 검사 `complete`에서 `present`면 yes, `absent`면 no.
   - `reflection_excluded`: B 요청에 표식이 없음을 E²가 확인했을 때만 yes.
   - `template_excluded`: 이 회차에 새로 만든 무작위 표식을 A 객체 한 칸에만 넣었으므로 yes.

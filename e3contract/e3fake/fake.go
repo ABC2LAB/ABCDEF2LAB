@@ -163,9 +163,10 @@ func (t *Transport) do(c Call, b e3contract.RunBinding, create e3contract.CallRe
 	if be.Err != nil {
 		return e3contract.Observation{}, be.Err
 	}
-	// 조회가 생성 때와 다른 ID로 오면 그 객체는 없다(404).
+	// 조회가 생성 때와 다른 ID로 오면 그 객체는 없다(404). 실제 대상의 404 본문에는 표식 칸이 없으므로 표식 검사는
+	// failed다(실제 VAmPI 회차, 2026-11-20).
 	if c.Key.Purpose == e3contract.PurposeRead && c.ObjectID != "" && t.objectIDs[create.CallRef] != c.ObjectID {
-		be = Behavior{Status: 404, Normal: oracle.StateNo}
+		be = Behavior{Status: 404, Normal: oracle.StateNo, MarkerStatus: e3contract.MarkerFailed}
 	}
 	t.seq++
 	ref := e3contract.CallRef{CallRef: fmt.Sprintf("fake-call-%d", t.seq), AttemptID: fmt.Sprintf("fake-attempt-%d", t.seq),
