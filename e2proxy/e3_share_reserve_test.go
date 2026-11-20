@@ -62,6 +62,9 @@ func modelRequests(t *testing.T, e *Execution, target string, n int) (admitted i
 // 쓰지 못하고(budget_exhausted), 남은 예산 조회도 그만큼 뺀다. 몫을 열면 확정 단계가 그 몫으로 보낸다.
 func TestE3ShareIsHeldFromModelStage(t *testing.T) {
 	e, in, server, received := e3ShareFixture(t, 5, 2)
+	if remaining, err := e.BudgetRemaining(); err != nil || remaining != 3 {
+		t.Fatalf("처음 남은 예산 %d %v (예산 5 − 확정 몫 2)", remaining, err)
+	}
 	admitted, last := modelRequests(t, e, server.URL, 5)
 	if admitted != 3 || last != BudgetExhausted {
 		t.Fatalf("모델 단계가 확정 몫까지 씀: 보냄 %d 마지막 거부 %s", admitted, last)
@@ -84,10 +87,11 @@ func TestE3ShareIsHeldFromModelStage(t *testing.T) {
 	}
 }
 
-// 확정 몫이 열리기 전에도 E③ 프로그램 요청 자체는 몫을 쓴다(몫은 확정 단계 밖 요청만 막는다).
+// 확정 몫이 열리기 전에도 E③ 프로그램 요청 자체는 몫을 쓴다(몫은 확정 단계 밖 요청만 막는다). 프로그램 요청이 쓴 만큼
+// 떼어 둘 몫이 줄어든다.
 func TestE3ShareHeldStillAdmitsProgramRequests(t *testing.T) {
 	e, in, server, received := e3ShareFixture(t, 5, 2)
-	if admitted, _ := modelRequests(t, e, server.URL, 3); admitted != 3 {
+	if admitted, _ := modelRequests(t, e, server.URL, 2); admitted != 2 {
 		t.Fatal("몫 밖 예산을 모델 단계가 쓰지 못함")
 	}
 	before := received.Load()
@@ -95,9 +99,12 @@ func TestE3ShareHeldStillAdmitsProgramRequests(t *testing.T) {
 	if err != nil || event.NotSent || received.Load() != before+1 {
 		t.Fatalf("E③ 프로그램 요청이 떼어 둔 몫을 쓰지 못함: %+v %v", event, err)
 	}
-	// 프로그램 요청이 몫을 쓴 만큼 떼어 둘 몫이 줄어, 남은 1건은 여전히 모델 단계가 못 쓴다.
-	if admitted, last := modelRequests(t, e, server.URL, 1); admitted != 0 || last != BudgetExhausted {
-		t.Fatalf("남은 확정 몫을 모델 단계가 씀: %d %s", admitted, last)
+	// 남은 예산 2 가운데 떼어 둘 몫은 이제 1이라 모델 단계는 1건만 더 쓴다.
+	if remaining, err := e.BudgetRemaining(); err != nil || remaining != 1 {
+		t.Fatalf("E③가 몫을 쓴 뒤 남은 예산 %d %v", remaining, err)
+	}
+	if admitted, last := modelRequests(t, e, server.URL, 2); admitted != 1 || last != BudgetExhausted {
+		t.Fatalf("떼어 둘 몫이 E③ 사용만큼 줄지 않음: 보냄 %d 마지막 %s", admitted, last)
 	}
 }
 

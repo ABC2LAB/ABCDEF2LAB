@@ -1152,6 +1152,8 @@ func TestRunCrossDenialRechecksIdentity(t *testing.T) {
 		"server_error":       {e3fake.Behavior{Status: 500, Normal: oracle.StateNo}, e3contract.ReasonCrossDenialUnverified, true},
 		"not_found_identity": {e3fake.Behavior{Status: 404, Normal: oracle.StateNo}, e3contract.ReasonCrossDenialUnverified, true},
 		"incomplete":         {e3fake.Behavior{Incomplete: true}, e3contract.ReasonCrossDenialUnverified, true},
+		// 상태 줄(401)만 받고 본문이 끊긴 재확인은 결과 불명이라 만료로 단정하지 않는다.
+		"incomplete_401": {e3fake.Behavior{Incomplete: true, Status: 401}, e3contract.ReasonCrossDenialUnverified, true},
 		"timed_out":          {e3fake.Behavior{TimedOut: true, Incomplete: true}, e3contract.ReasonCrossDenialUnverified, true},
 		"not_sent_policy":    {e3fake.Behavior{NotSent: e3contract.NotSentPolicyDenied}, e3contract.ReasonCrossDenialUnverified, false},
 		"not_sent_budget":    {e3fake.Behavior{NotSent: e3contract.NotSentBudgetExhausted}, e3contract.ReasonCrossDenialUnverified, false},
