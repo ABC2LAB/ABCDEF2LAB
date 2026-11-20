@@ -247,6 +247,31 @@ python3 -I -B scripts/eval/runner.py --config /srv/abc2lab-eval/runner.json --pr
   --side ours --condition "우리@35b" --repeat 0
 ```
 
+**세션 실행 스크립트(2026-11-20):** 아래 순서·무효 처리를 `scripts/eval/official_session.py`가 한 번에 한다. 먼저 점검 모드로 순서·무효 처리를 확인하고, 그다음 실제로 돌린다.
+
+```bash
+cd "$T"
+# 점검 모드: 러너·Docker·네트워크를 부르지 않고 결과를 흉내 내 순서·무효 처리만 본다(시도마다 차례로 쓰고, 모자라면 complete)
+python3 -I -B scripts/eval/official_session.py --session-dir "$SESSION/dry" --dry-run \
+  --outcomes "complete,invalid:window_boundary_changed,complete,invalid:provider_fault_stall"
+# 실제 세션
+python3 -I -B scripts/eval/official_session.py --session-dir "$SESSION" --tree "$T" \
+  --config /srv/abc2lab-eval/runner.json --preflight "$SESSION/preflight.json" \
+  --admin-password-file /srv/abc2lab-eval/admin.password --o-manifest-template "$SESSION/manifest-template.json" \
+  --run-timeout 3600 --grace 120 --post-timeout 300 \
+  [--key-file <키 파일> --usage-cap-usd <세션 상한> --min-remaining-usd 0.30]
+```
+
+- 칸마다 러너를 프로세스 그룹으로 띄우고 **PID로** 기다린다. 대기 시한(`--run-timeout`)을 넘으면 SIGINT → 유예(`--grace`) → SIGKILL을 보내고 `run_wait_timeout`으로 멈춘다. 이름 패턴(`pgrep -f`)으로 기다리지 않는다(2026-11-20 사용자 규칙).
+- **회차마다 시작 전에 실행 중 컨테이너가 0개인지 본다**(`--resume`의 첫 회차 포함). 남아 있으면 시도로 세지 않고 `containers_present`로 멈춘다(못 읽으면 `containers_unknown`). 남은 컨테이너 때문에 다음 회차가 격리 검사에서 무효가 되어 시도 한 번이 날아가지 않게 한다(2026-11-20 사용자).
+- 회차가 끝나면 **완료 파일**(새 회차 디렉터리의 `runner-result.json`)을 읽는다. 회차가 어떻게 끝나든(시한 넘김·결과 없음 포함) 그 뒤 실행 중 컨테이너가 0이 될 때까지 기다리고(`--post-timeout`), 안 내려가면 멈춘 사유에 `containers_left`를 같이 적는다.
+- **새 회차 디렉터리가 생겼으면 무슨 일이 있어도 시도 1회로 센다**(2026-11-20 사용자). 결과 파일이 있으면 그 상태로, 없으면 무효(사유 = 멈춘 사유: `run_wait_timeout`·`result_missing`·`result_unreadable`)로 기록하고 멈춘다. 종료 코드와 상태가 어긋나면 무효(`result_status_mismatch`)로 센다. 컨테이너가 남으면 그 회차의 실제 상태로 세고 `containers_left`로 멈춘다(끝까지 간 회차가 버려지지 않는다). 회차 디렉터리가 안 생긴 경우(러너 종료 코드 2 등)만 시도로 세지 않는다. 멈춘 회차를 다시 돌려 기록에서 빼는 길(측정 결과를 골라 버리는 길)을 막고, 시한 넘김이 되풀이되면 2N에 걸리게 한다.
+- O 회차마다 manifest 틀(`--o-manifest-template`, 4절 5번 manifest에서 `approval_id`·`expires_at`만 빼고 같은 칸, 0600)로 새 승인 ID·만료 시각의 manifest를 `split.manifest_path`에 다시 쓴다(못 쓰면 `manifest_write_failed`로 멈춘다).
+- 키 사용량 상한(`--key-file`·`--usage-cap-usd`는 같이 준다)은 회차마다 시작 전에 본다. 세션 첫 확인의 사용량이 기준이고, 그 값을 세션 기록(`usage_base`)에 남겨 `--resume` 뒤에도 세션 전체 기준으로 건다. 넘으면 `usage_cap`, 남은 한도가 하한 이하면 `remaining_floor`, 조회 실패·값을 모름(한도 없는 키 포함)이면 `usage_read_failed`·`usage_unknown`·`remaining_unknown`으로 멈춘다(확인 못 한 채 유료 회차를 시작하지 않는다). 키·승인 ID는 출력하지 않는다.
+- 기록: `$SESSION/session-log.jsonl`(시도마다 쪽·`--repeat`·상태·사유·회차 ID, 마지막 요약). 러너 출력은 `$SESSION/<쪽><번호>-<시각>.stdout|stderr`.
+- 종료 코드: 0 쪽마다 유효 N회 완료, 3 측정 실패(쪽별 `provider_fault_stall` 2회 이상), 4 멈춤(시도 상한·러너 설정 오류·대기 시한·결과 없음·컨테이너 남음·사용량 상한), 2 입력 오류. 멈추면 사유를 고친 뒤 같은 명령에 `--resume`을 붙여 잇는다. 같은 세션 기록의 완료·무효 시도를 다시 세어 남은 칸부터 돌린다(회차 디렉터리가 생긴 뒤 멈춘 시도도 그대로 센다. 회차 디렉터리가 안 생긴 멈춤·설정 오류 줄은 시도로 세지 않는다). 기록만으로 이미 시도 상한·멈춤 무효 상한에 닿았으면 잇지 않는다. 기록이 있는데 `--resume` 없이 시작하면 거부한다.
+- 측정 구간 알림(아래 운영 규칙)은 스크립트를 띄우기 직전·끝난 직후에 사람이 보낸다.
+
 - 조건 이름은 쪽마다 고정이다: B `원본@35b`, O `우리@35b`. `--repeat`는 그 쪽의 유효 회차 번호(0부터)다.
 - 종료 코드 0 완료(서명됨), 1 무효(사유는 `runner-result.json`), 2 설정·입력 오류(회차를 만들지 않음 — 시도로 세지 않는다).
 - 회차 중에는 아무것도 하지 않는다. 끝나면 `docker ps -q | wc -l`이 0인지 본다.
