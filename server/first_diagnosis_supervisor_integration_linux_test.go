@@ -862,10 +862,14 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		// 유예 뒤 진행 중 작업을 멈췄다면 대상이 붙잡은 요청은 E② 요청 시간 상한 전에 끊긴다. 대상이 요청을 붙잡은 시간을
 		// 직접 본다. Run 전체 시간은 정리·감사 마감을 포함해 부하에 따라 흔들리므로(race 부하에서 5초를 넘긴 적 있음,
 		// 2026-11-20 dev·새 판 비교에서 분포가 같았다) 느슨한 상한만 둔다.
+		// 기대 끊김 시점은 시간 상한 시작 + 유예이고, 끊지 않으면 E② 요청 시간 상한에 끊긴다. 그 중간보다 먼저 끊겨야 한다.
 		requestTimeout := time.Duration(policy.Limits.RequestTimeoutMS) * time.Millisecond
+		drainAt := timeBudgetStart + timeBudgetDrain
+		cutBy := drainAt + (requestTimeout-drainAt)/2
 		entered, exited := targetEnteredAt.Load(), targetExitedAt.Load()
-		if entered == 0 || exited == 0 || time.Duration(exited-entered) >= requestTimeout {
-			t.Fatalf("시간 상한 유예 뒤 진행 중 요청을 끊지 않음(E② 요청 시간 상한까지 감) hold=%s", time.Duration(exited-entered))
+		if entered == 0 || exited == 0 || time.Duration(exited-started.UnixNano()) >= cutBy {
+			t.Fatalf("시간 상한 유예 뒤 진행 중 요청을 끊지 않음(E② 요청 시간 상한 쪽으로 감) cut=%s by=%s",
+				time.Duration(exited-started.UnixNano()), cutBy)
 		}
 		if elapsed := time.Since(started); elapsed >= 2*requestTimeout {
 			t.Fatalf("시간 상한 마감이 너무 늦음 elapsed=%s", elapsed)
