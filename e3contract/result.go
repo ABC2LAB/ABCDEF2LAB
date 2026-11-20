@@ -145,8 +145,11 @@ type Verdict struct {
 	ProductReasons []ProductReason      `json:"product_reason_codes"`
 	CandidateRefs  []string             `json:"candidate_refs"`
 	Evidence       []CallRef            `json:"evidence"`
-	ObservedAt     time.Time            `json:"observed_at"`
-	Case           oracle.CaseInput     `json:"-"`
+	// ObjectIDDigest는 이 종류의 생성 요청이 만든 객체 ID의 실행별 키 digest다(생성이 정상일 때만). 저장 판정의 자원 참조
+	// (<종류>:<digest>)가 된다(E1). 객체 ID 원문은 싣지 않는다.
+	ObjectIDDigest string           `json:"object_id_digest,omitempty"`
+	ObservedAt     time.Time        `json:"observed_at"`
+	Case           oracle.CaseInput `json:"-"`
 }
 
 // SkippedType은 확정 대상이 아닌 종류다(owner_only가 아님). 요청을 보내지 않고 판정 행도 만들지 않는다.

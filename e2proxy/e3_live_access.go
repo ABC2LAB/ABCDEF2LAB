@@ -36,3 +36,30 @@ func (e *Execution) VerifiedE3(ctx context.Context, binding e3contract.RunBindin
 	}
 	return verifier.Verified(ctx, binding, ref)
 }
+
+// VerifiedE3Checkpoint는 VerifiedE3과 같고, Host가 그 검증에 쓴 현재 head 체크포인트를 함께 돌려준다. 검증자가 체크포인트를
+// 주지 못하면 ErrE3JournalUnavailable이다(판정 저장 쪽은 근거 체크포인트 없음으로 남긴다).
+func (e *Execution) VerifiedE3Checkpoint(ctx context.Context, binding e3contract.RunBinding, ref e3contract.CallRef) (Event, JournalCheckpoint, error) {
+	if ctx == nil || ctx.Err() != nil || e.CheckE3Binding(binding) != nil {
+		return Event{}, JournalCheckpoint{}, ErrE3JournalUnavailable
+	}
+	e.mu.Lock()
+	registered := len(e.marker) == markerBytes
+	verifier, ok := e.cfg.E3Verifier.(E3CheckpointVerifier)
+	e.mu.Unlock()
+	if !registered {
+		return Event{}, JournalCheckpoint{}, e3contract.ErrMarkerNotRegistered
+	}
+	if !ok {
+		return Event{}, JournalCheckpoint{}, ErrE3JournalUnavailable
+	}
+	ev, checkpoint, err := verifier.VerifiedCheckpoint(ctx, binding, ref)
+	if err != nil {
+		return Event{}, JournalCheckpoint{}, err
+	}
+	// 체크포인트는 이 실행 범위의 v3 저널 것이어야 한다.
+	if checkpoint.Version != JournalVersionV3 || checkpoint.Scope != e.cfg.Scope || checkpoint.Sequence == 0 {
+		return Event{}, JournalCheckpoint{}, ErrE3JournalUnavailable
+	}
+	return ev, checkpoint, nil
+}

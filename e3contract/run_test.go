@@ -166,6 +166,13 @@ func TestRunConfirmsWhenCrossSeesMarker(t *testing.T) {
 		if again := oracle.Evaluate(v.Case, v.ObservedAt); again.Value != v.Value || again.DataCheck != v.DataCheck {
 			t.Fatalf("판정 값이 오라클 결과와 다름: %+v vs %+v", again, v)
 		}
+		// 저장 판정의 자원 참조가 될 생성 객체 digest는 종류마다 그 종류의 생성 관찰에서 온다(E1).
+		if v.ObjectIDDigest == "" {
+			t.Fatalf("%s: 생성 객체 digest 없음", typ)
+		}
+	}
+	if verdictOf(t, res, "note").ObjectIDDigest == verdictOf(t, res, "secret").ObjectIDDigest {
+		t.Fatal("종류가 다른데 생성 객체 digest가 같음")
 	}
 	if len(res.Skipped) != 1 || res.Skipped[0].ResourceType != "post" {
 		t.Fatalf("공유 종류를 건너뛰지 않음: %+v", res.Skipped)
@@ -591,7 +598,7 @@ func TestRunApprovalDenialStopsThatType(t *testing.T) {
 			f := newFixture(t)
 			f.fake.Behaviors[key(e3contract.PurposeCreate, e3contract.RoleOwner, "note")] = e3fake.Behavior{NotSent: reason}
 			res := f.run(t)
-			if v := verdictOf(t, res, "note"); v.Value != oracle.Undecidable || !hasReason(v, want) {
+			if v := verdictOf(t, res, "note"); v.Value != oracle.Undecidable || !hasReason(v, want) || v.ObjectIDDigest != "" {
 				t.Fatalf("note: %+v", v)
 			}
 			calls := f.fake.Calls()
@@ -599,7 +606,7 @@ func TestRunApprovalDenialStopsThatType(t *testing.T) {
 				t.Fatalf("승인 거부 뒤 그 종류 요청 %d건(생성 1건만 기대)", n)
 			}
 			// #596 §7: 거부·만료는 그 종류만 UNDECIDABLE이다. 다른 종류는 계속 시험한다.
-			if v := verdictOf(t, res, "secret"); v.Value != oracle.Confirmed {
+			if v := verdictOf(t, res, "secret"); v.Value != oracle.Confirmed || v.ObjectIDDigest == "" {
 				t.Fatalf("secret: %+v", v)
 			}
 		})
@@ -907,6 +914,22 @@ func (e expireOnSealed) Sealed(ctx context.Context, b e3contract.RunBinding, ref
 		return e3contract.Observation{}, ctx.Err()
 	}
 	return e.Transport.Sealed(ctx, b, ref)
+}
+
+// 앞 종류의 생성 객체 digest가 뒤 종류의 판정에 남지 않는다(생성 전에 멈춘 종류는 digest 없음).
+func TestRunObjectDigestDoesNotCarryOver(t *testing.T) {
+	for _, denied := range []string{"note", "secret"} {
+		t.Run(denied, func(t *testing.T) {
+			f := newFixture(t)
+			f.fake.Behaviors[key(e3contract.PurposeCreate, e3contract.RoleOwner, denied)] = e3fake.Behavior{NotSent: e3contract.NotSentApprovalDenied}
+			res := f.run(t)
+			for _, typ := range []string{"note", "secret"} {
+				if v := verdictOf(t, res, typ); (v.ObjectIDDigest == "") != (typ == denied) {
+					t.Fatalf("%s: %+v", typ, v)
+				}
+			}
+		})
+	}
 }
 
 // 교차(B) 조회가 거부 응답(401·403·404)이면 표식 검사보다 상태를 먼저 본다(사용자 결정 2026-11-20). 표식 검사가 없음·실패면

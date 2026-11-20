@@ -690,16 +690,24 @@ func productGrantRoles(ctx context.Context, pool *sql.DB, name string, workflow 
 			return errPreparation
 		}
 	}
-	// 판정의 발급 권한은 주지 않는다. 일반 HTTP 후보는 확정 취약점으로 승격되지 않는다.
+	// 평가 판정의 발급·finding 연결 권한은 주지 않는다. 일반 HTTP 후보는 확정 취약점으로 승격되지 않는다.
 	for _, table := range []string{"diagnostic_captures_v1", "findings", "task_archives", "task_control_modes", "llm_profiles", "settings", "agents", "agent_prompts", "task_categories", "task_relations", "intercept_rules", "assets", "companies", "company_scope", "task_asset_links", "asset_intercept_rules", "task_intercept_rules", "e3_evidence_manifests", "e3_oracle_verdicts", "e3_verdict_issuances", "e3_verdict_links"} {
 		if exec("GRANT SELECT ON "+table+" TO product_runtime") != nil {
+			return errPreparation
+		}
+	}
+	// E③ 제품 확정 단계 판정과 봉인 확인은 실행 역할이 INSERT만 한다(docs/contracts/e3-product-verdict-store.md §5). 바꾸거나
+	// 지우는 권한(UPDATE·DELETE·TRUNCATE)은 주지 않고, 불변 트리거도 막는다. finding과 잇는 link는 주지 않는다(제품 판정은
+	// finding을 만들지 않는다).
+	for _, table := range []string{"e3_evidence_manifests", "e3_oracle_verdicts", "e3_verdict_issuances", "e3_seal_checks"} {
+		if exec("GRANT SELECT,INSERT ON "+table+" TO product_runtime") != nil {
 			return errPreparation
 		}
 	}
 	if exec("GRANT SELECT,INSERT,UPDATE ON findings TO product_runtime") != nil || exec("GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO product_runtime") != nil || exec("GRANT EXECUTE ON FUNCTION try_inet(text) TO product_runtime") != nil {
 		return errPreparation
 	}
-	for _, table := range []string{"diagnostic_captures_v1", "tasks", "exploration_nodes", "findings", "task_archives", "task_control_modes", "settings", "agents", "agent_prompts", "task_categories", "task_relations", "task_scope", "intercept_rules", "assets", "companies", "company_scope", "task_asset_links", "asset_intercept_rules", "task_intercept_rules", "exploration_anchors", "e3_evidence_manifests", "e3_oracle_verdicts", "e3_verdict_issuances", "e3_verdict_links"} {
+	for _, table := range []string{"diagnostic_captures_v1", "tasks", "exploration_nodes", "findings", "task_archives", "task_control_modes", "settings", "agents", "agent_prompts", "task_categories", "task_relations", "task_scope", "intercept_rules", "assets", "companies", "company_scope", "task_asset_links", "asset_intercept_rules", "task_intercept_rules", "exploration_anchors", "e3_evidence_manifests", "e3_oracle_verdicts", "e3_verdict_issuances", "e3_verdict_links", "e3_seal_checks"} {
 		if exec("GRANT SELECT ON "+table+" TO product_api") != nil {
 			return errPreparation
 		}

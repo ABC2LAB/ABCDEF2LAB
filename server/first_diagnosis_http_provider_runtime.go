@@ -253,6 +253,15 @@ func (r *FirstDiagnosisHTTPRuntime) AccountAuth() map[string]string {
 	return r.host.runtime.AccountAuth()
 }
 
+// RecordProductVerdict는 제품 확정 단계 판정 하나를 이 실행의 DB 역할로 저장한다(INSERT만, 바꾸지 않음, docs/contracts/
+// e3-product-verdict-store.md §4·§5).
+func (r *FirstDiagnosisHTTPRuntime) RecordProductVerdict(ctx context.Context, v db.ProductVerdict) (db.ProductVerdictResult, error) {
+	if r == nil || r.server == nil || r.server.m == nil || r.server.m.pg == nil {
+		return db.ProductVerdictResult{}, ErrFirstDiagnosisHTTPHost
+	}
+	return r.server.m.pg.RecordProductVerdict(ctx, v)
+}
+
 // E3Handle은 실행 중인 로컬 E②와 C14 저장소만 제품 감독자에 제공한다.
 func (r *FirstDiagnosisHTTPRuntime) E3Handle(taskID string) (*e2proxy.Execution, E2HTTPAccountBindings, bool) {
 	exec, accounts, reason := r.E3HandleReason(taskID)

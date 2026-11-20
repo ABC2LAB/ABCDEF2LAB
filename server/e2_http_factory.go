@@ -711,7 +711,12 @@ func (r e2HTTPV3MirrorRecorder) Record(ctx context.Context, event e2proxy.Event)
 	if e3ProgramEvent(event) {
 		return nil
 	}
+	// 화면용 v2 사본은 E③ 사건을 싣지 않으므로 Host v3 순번을 그대로 쓰면 E③ 사건 뒤 첫 사건(정지 때 control 등)이
+	// 사본의 연속 순번 검사에 걸려 감사 실패로 래치된다(실제 제품 합성 A/B 회차에서 회차 마감 실패, 11/20). 사본은
+	// 자기 MAC 체인의 다음 순번을 쓴다. Host v3 저널이 권위 원본이고 사건 내용·MAC은 그대로다. 기록은 실행의 기록
+	// 잠금으로 직렬화된다(e2proxy Execution.recordEvent).
 	event.Version = e2proxy.Version
+	event.Index = r.legacy.Checkpoint().Sequence + 1
 	return r.legacy.Record(ctx, event)
 }
 

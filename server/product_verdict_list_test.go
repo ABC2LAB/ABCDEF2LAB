@@ -34,7 +34,7 @@ func storeProductVerdictKind(t *testing.T, pg *db.DB, taskID int64, kind, revisi
 		Binding: db.ProductBinding{JobRef: productListJob, RunRef: "product-run-list", E2PolicyRef: "e2-policy-synthetic", GenerationRef: "generation-synthetic",
 			InstanceRef: "instance-synthetic", Policy: db.ProductPolicySource{Ref: "declaration-" + productListJob,
 				DigestSHA256: productListDeclaration(), TargetApprovalRevision: revision}},
-		Journal:      db.ProductJournal{Ref: "journal-synthetic", DigestSHA256: sha256.Sum256([]byte("synthetic journal"))},
+		Checkpoint:   &db.ProductCheckpoint{JournalID: "journal-synthetic", Sequence: 12, MAC: strings.Repeat("c", 64)},
 		ResourceType: kind, ResourceRef: kind + ":" + strings.Repeat("b", 64), ModelTag: "synthetic-model",
 		Value: value, PolicyCheck: oracle.StateYes, IdentityCheck: oracle.StateYes, DataCheck: oracle.StateYes,
 		OracleReasons:  []oracle.JudgeReason{oracle.ReasonPolicyDenyResolved},
@@ -112,12 +112,15 @@ func productListInTx(t *testing.T, pg *db.DB, task int64, got productVerdictCont
 	if forge != nil {
 		forge(tx)
 	}
-	exploration, rows, status, code := loadProductVerdictRows(t.Context(), tx, task)
+	exploration, rows, status, _ := loadProductVerdictRows(t.Context(), tx, task)
 	if status != http.StatusOK {
 		return productVerdictListEnvelope{}, status, nil
 	}
-	env, status, code := assembleProductVerdictList(task, exploration, productListJob, rows, got)
-	_ = code
+	seals, err := loadProductSealChecks(t.Context(), tx, task, productVerdictRunRefs(rows))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, status, _ := assembleProductVerdictList(task, exploration, productListJob, rows, got, seals)
 	details := map[int64]verdictDetailEnvelope{}
 	for _, r := range rows {
 		if !r.verdictID.Valid {
@@ -128,6 +131,7 @@ func productListInTx(t *testing.T, pg *db.DB, task int64, got productVerdictCont
 		if s != http.StatusOK {
 			t.Fatalf("상세 읽기 %d", s)
 		}
+		loaded.seals = seals
 		d, s, _ := assembleVerdictDetail(t.Context(), task, sel, loaded, got)
 		switch s {
 		case http.StatusOK:
@@ -481,9 +485,111 @@ func TestProductVerdictListRoute(t *testing.T) {
 				if body["format"] != productVerdictListFormat || body["source_kind"] != "product" || len(items) != 1 || first["record_status"] != "verified" {
 					t.Fatalf("응답: %s", w.Body.String())
 				}
-				if v, ok := first["evidence_seal"]; !ok || v != nil {
-					t.Fatalf("봉인 확인 칸은 자리만(null): %s", w.Body.String())
+				// 근거 체크포인트는 있는데 봉인 확인 기록이 없으면 봉인 미확인이다(값은 그대로, E1 계약 §7).
+				if seal, _ := first["evidence_seal"].(map[string]any); seal["status"] != "unconfirmed" || seal["reason"] != "seal_not_recorded" {
+					t.Fatalf("봉인 확인 표시: %s", w.Body.String())
 				}
+			}
+		})
+	}
+}
+
+// storeSealVerdict는 근거 체크포인트·근거 호출 유무를 바꿔 제품 판정을 저장한다.
+func storeSealVerdict(t *testing.T, pg *db.DB, taskID int64, kind string, checkpoint *db.ProductCheckpoint, evidence bool) db.ProductVerdictResult {
+	t.Helper()
+	v := db.ProductVerdict{TaskID: taskID,
+		Binding: db.ProductBinding{JobRef: productListJob, RunRef: "product-run-list", E2PolicyRef: "e2-policy-synthetic", GenerationRef: "generation-synthetic",
+			InstanceRef: "instance-synthetic", Policy: db.ProductPolicySource{Ref: "declaration-" + productListJob,
+				DigestSHA256: productListDeclaration(), TargetApprovalRevision: "target-revision-1"}},
+		Checkpoint:   checkpoint,
+		ResourceType: kind, ResourceRef: kind + ":" + strings.Repeat("b", 64), ModelTag: "synthetic-model",
+		Value: oracle.Undecidable, PolicyCheck: oracle.StateYes, IdentityCheck: oracle.StateUnknown, DataCheck: oracle.StateUnknown,
+		OracleReasons: []oracle.JudgeReason{oracle.ReasonSubjectNotVerified}, ProductReasons: []string{}, CandidateRefs: []string{},
+		Evidence:   []db.ProductEvidence{},
+		ObservedAt: time.Date(2026, 11, 18, 9, 0, 0, 0, time.UTC)}
+	if evidence {
+		v.Evidence = []db.ProductEvidence{{CallRef: "call-" + kind, AttemptID: "attempt-" + kind, Sequence: 1}}
+	}
+	out, err := pg.RecordProductVerdict(t.Context(), v)
+	if err != nil || !out.Created {
+		t.Fatal("제품 판정 저장", err)
+	}
+	return out
+}
+
+// 판정 행은 바꾸지 않고 회차의 봉인 확인 기록과 근거 체크포인트를 대조해 세 단계로 보인다(E1 계약 §7). 포함 실패는 진위
+// 실패라 값을 숨긴다. 목록과 상세가 같은 표시를 낸다.
+func TestProductVerdictListEvidenceSeal(t *testing.T) {
+	s, _, _ := trafficEvidenceServer(t)
+	pg := s.m.pg
+	cp := &db.ProductCheckpoint{JournalID: "journal-synthetic", Sequence: 12, MAC: strings.Repeat("c", 64)}
+	head := db.ProductCheckpoint{JournalID: "journal-synthetic", Sequence: 20, MAC: strings.Repeat("e", 64)}
+	got := productListContext(matchedProductSource(), &diagnosisprep.ProductConfirmationState{})
+	for name, tc := range map[string]struct {
+		checkpoint *db.ProductCheckpoint
+		evidence   bool
+		seal       *db.SealCheckRecord
+		forge      string
+		status     string
+		reason     string
+		hidden     bool
+	}{
+		"confirmed": {checkpoint: cp, evidence: true, seal: &db.SealCheckRecord{Head: head, Checks: []db.SealCheck{{Sequence: 5, MAC: strings.Repeat("a", 64), Included: true}, {Sequence: 12, MAC: cp.MAC, Included: true}}},
+			status: productEvidenceSealConfirmed},
+		"seal_not_recorded":   {checkpoint: cp, evidence: true, status: productEvidenceSealUnconfirmed, reason: productEvidenceSealNotRecorded},
+		"checkpoint_missing":  {evidence: true, status: productEvidenceSealUnconfirmed, reason: productEvidenceSealCheckpointMissing},
+		"no_evidence":         {checkpoint: cp},
+		"no_evidence_no_seal": {},
+		"not_included": {checkpoint: cp, evidence: true, seal: &db.SealCheckRecord{Head: head, Checks: []db.SealCheck{{Sequence: 12, MAC: cp.MAC, Included: false}}},
+			status: productEvidenceSealInclusionFailed, hidden: true},
+		"not_listed": {checkpoint: cp, evidence: true, seal: &db.SealCheckRecord{Head: head, Checks: []db.SealCheck{{Sequence: 12, MAC: strings.Repeat("d", 64), Included: true}}},
+			status: productEvidenceSealInclusionFailed, hidden: true},
+		"other_journal": {checkpoint: cp, evidence: true, seal: &db.SealCheckRecord{Head: db.ProductCheckpoint{JournalID: "journal-other", Sequence: 20, MAC: head.MAC},
+			Checks: []db.SealCheck{{Sequence: 12, MAC: cp.MAC, Included: true}}}, status: productEvidenceSealInclusionFailed, hidden: true},
+		"stored_invalid": {checkpoint: cp, evidence: true, seal: &db.SealCheckRecord{Head: head, Checks: []db.SealCheck{{Sequence: 12, MAC: cp.MAC, Included: true}}},
+			forge: `UPDATE e3_seal_checks SET checks='[{"sequence":0,"mac":"x","included":true}]'::jsonb WHERE task_id=$1`, status: productEvidenceSealInclusionFailed, hidden: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			task := productListTask(t, pg)
+			v := storeSealVerdict(t, pg, task, "document", tc.checkpoint, tc.evidence)
+			if tc.seal != nil {
+				record := *tc.seal
+				record.TaskID, record.RunRef = task, "product-run-list"
+				if err := pg.RecordSealCheck(t.Context(), record); err != nil {
+					t.Fatal(err)
+				}
+			}
+			env, status, details := productListInTx(t, pg, task, got, func(tx *sql.Tx) {
+				if tc.forge != "" {
+					if _, err := tx.ExecContext(t.Context(), tc.forge, task); err != nil {
+						t.Fatal(err)
+					}
+				}
+			})
+			if status != http.StatusOK || len(env.Items) != 1 {
+				t.Fatalf("목록: %d %+v", status, env)
+			}
+			item := productListItem(t, env, v.VerdictID)
+			seal := item.EvidenceSeal
+			switch {
+			case tc.status == "":
+				if seal != nil {
+					t.Fatalf("근거 없는 판정에 봉인 확인 표시: %+v", seal)
+				}
+			case seal == nil || seal.Status != tc.status || (seal.Reason == nil) != (tc.reason == "") || tc.reason != "" && *seal.Reason != tc.reason:
+				t.Fatalf("봉인 확인 표시: %+v", seal)
+			}
+			if hidden := item.RecordStatus == verdictDetailRecordIntegrityFailed; hidden != tc.hidden || hidden && item.OracleValue != nil || !hidden && item.OracleValue == nil {
+				t.Fatalf("값 숨김: %+v", item)
+			}
+			d := details[v.VerdictID]
+			if (d.EvidenceSeal == nil) != (seal == nil) || seal != nil && (d.EvidenceSeal.Status != seal.Status || (d.EvidenceSeal.Reason == nil) != (seal.Reason == nil)) ||
+				tc.hidden != (d.Record == nil) {
+				t.Fatalf("목록과 상세가 다름: 목록 %+v 상세 %+v", seal, d.EvidenceSeal)
+			}
+			raw, _ := json.Marshal(item)
+			if tc.status != "" && !strings.Contains(string(raw), `"evidence_seal":{"status":"`+tc.status+`","reason":`) {
+				t.Fatalf("칸 모양: %s", raw)
 			}
 		})
 	}

@@ -14,6 +14,9 @@ import { dateTimeOf } from "../../live/map";
 import {
   CHECK_TEXT,
   CONFIRMATION_TEXT,
+  EVIDENCE_SEAL_TEXT,
+  type EvidenceSeal,
+  evidenceSealText,
   fetchProductVerdicts,
   isProductVerdictsShapeError,
   ORACLE_VALUE_TEXT,
@@ -132,21 +135,33 @@ function ShownRow({ r }: { r: ProductVerdictShown }) {
           <span>{`${RECORD_STATUS_TEXT.policy_source_unavailable} · 당시 정책 동결본을 읽지 못해 대조하지 못했습니다(값은 저장된 그대로)`}</span>
         </div>
       ) : null}
+      {r.evidenceSeal ? (
+        <div
+          className={r.evidenceSeal.status === "confirmed" ? s.help : cx(s.note, s.warn)}
+          data-seal={r.evidenceSeal.status}
+        >
+          {evidenceSealText(r.evidenceSeal)}
+        </div>
+      ) : null}
     </li>
   );
 }
 
-function HiddenRow({ id }: { id: string | null }) {
+function HiddenRow({ id, seal }: { id: string | null; seal: EvidenceSeal | null }) {
   return (
     <li>
       <span className={cx(s.vd, s.und)}>값 숨김</span>{" "}
-      <span>{`${id ? `판정 #${id} · ` : ""}${RECORD_STATUS_TEXT.record_integrity_failed}`}</span>
+      <span>{`${id ? `판정 #${id} · ` : ""}${seal ? EVIDENCE_SEAL_TEXT[seal.status] : RECORD_STATUS_TEXT.record_integrity_failed}`}</span>
     </li>
   );
 }
 
 function Row({ r }: { r: ProductVerdictRow }) {
-  return r.recordStatus === "record_integrity_failed" ? <HiddenRow id={r.verdictId} /> : <ShownRow r={r} />;
+  return r.recordStatus === "record_integrity_failed" ? (
+    <HiddenRow id={r.verdictId} seal={r.evidenceSeal} />
+  ) : (
+    <ShownRow r={r} />
+  );
 }
 
 /** 보고서 '취약점 목록' 탭 아래 구획. */
@@ -198,6 +213,9 @@ function MapCell({ rows }: { rows: ProductVerdictShown[] }) {
       <Value v={r.oracleValue} />
       {r.recordStatus === "policy_source_unavailable" ? (
         <small className={s.help}>{` ${RECORD_STATUS_TEXT.policy_source_unavailable}`}</small>
+      ) : null}
+      {r.evidenceSeal?.status === "unconfirmed" ? (
+        <small className={s.help} data-seal="unconfirmed">{` ${EVIDENCE_SEAL_TEXT.unconfirmed}`}</small>
       ) : null}
     </>
   );

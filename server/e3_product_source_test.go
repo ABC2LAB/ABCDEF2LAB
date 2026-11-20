@@ -22,7 +22,7 @@ func storeProductVerdict(t *testing.T, pg *db.DB, taskID int64, run string, valu
 		Binding: db.ProductBinding{JobRef: "job-synthetic", RunRef: run, E2PolicyRef: "e2-policy-synthetic", GenerationRef: "generation-synthetic",
 			InstanceRef: "instance-synthetic", Policy: db.ProductPolicySource{Ref: "declaration-job-synthetic",
 				DigestSHA256: sha256.Sum256([]byte("synthetic declaration")), TargetApprovalRevision: "target-revision-1"}},
-		Journal:      db.ProductJournal{Ref: "journal-synthetic", DigestSHA256: sha256.Sum256([]byte("synthetic journal"))},
+		Checkpoint:   &db.ProductCheckpoint{JournalID: "journal-synthetic", Sequence: 12, MAC: strings.Repeat("c", 64)},
 		ResourceType: "document", ResourceRef: "document:" + strings.Repeat("b", 64), ModelTag: "synthetic-model",
 		Value: value, PolicyCheck: oracle.StateYes, IdentityCheck: oracle.StateYes, DataCheck: oracle.StateYes,
 		OracleReasons:  []oracle.JudgeReason{oracle.ReasonPolicyDenyResolved},
