@@ -11,7 +11,7 @@ import (
 
 // e3ShareFixture는 대상 예산 total 가운데 확정 몫 share를 떼어 둔 실행이다(신원 규칙·인증 준비 규칙 포함, 나머지는
 // e3IdentityFixture와 같음).
-func e3ShareFixture(t *testing.T, total, share uint64) (*Execution, E3IdentityInput, *httptest.Server, *atomic.Int64) {
+func e3ShareFixture(t *testing.T, total, share uint64, attempts ...uint64) (*Execution, E3IdentityInput, *httptest.Server, *atomic.Int64) {
 	t.Helper()
 	var received atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -29,6 +29,9 @@ func e3ShareFixture(t *testing.T, total, share uint64) (*Execution, E3IdentityIn
 	cfg.AuditVersion = JournalVersionV3
 	cfg.E3Verifier = e3IdentityVerifier{}
 	cfg.E3ConfirmationRequests = share
+	if len(attempts) > 0 {
+		cfg.Limits.MaxAttempts = attempts[0]
+	}
 	cfg.Rules = append(cfg.Rules,
 		Rule{Ref: "identity-rule", Purpose: PurposeE3Identity, Origin: server.URL, ConnectIP: netip.MustParseAddr("127.0.0.1"),
 			PathPrefix: "/allowed/identity", PathScopeRef: "identity-path", Methods: []string{"GET"}},
@@ -173,5 +176,34 @@ func TestE3ShareCountsRelogins(t *testing.T) {
 	}
 	if sent, reason := relogin(t, e, server.URL, true); sent || reason != BudgetExhausted {
 		t.Fatalf("확정 몫을 넘겨 다시 로그인(예산은 남음): %v %s", sent, reason)
+	}
+}
+
+// 송신 시도 상한(MaxAttempts)을 예산보다 작게 설정해도 확정 몫은 시도 상한에서도 떼어 둔다(#826 윤재상 봇 리뷰). 예산 10·
+// 시도 4·몫 2면 모델 단계는 시도 2까지만 쓰고, 확정 단계가 남은 시도로 보낸다.
+func TestE3ShareHeldFromAttemptLimit(t *testing.T) {
+	e, in, server, _ := e3ShareFixture(t, 10, 2, 4)
+	if remaining, err := e.BudgetRemaining(); err != nil || remaining != 2 {
+		t.Fatalf("처음 남은 예산 %d %v (시도 4 − 확정 몫 2)", remaining, err)
+	}
+	if admitted, last := modelRequests(t, e, server.URL, 4); admitted != 2 || last != BudgetExhausted {
+		t.Fatalf("모델 단계가 확정 몫만큼의 시도까지 씀: 보냄 %d 마지막 %s", admitted, last)
+	}
+	if event, err := e.SendE3Identity(t.Context(), in); err != nil || event.NotSent {
+		t.Fatalf("확정 단계 신원 요청이 시도 상한에 막힘: %+v %v", event, err)
+	}
+	if sent, reason := relogin(t, e, server.URL, true); !sent {
+		t.Fatalf("확정 전 다시 로그인이 시도 상한에 막힘: %s", reason)
+	}
+}
+
+// 확정 몫이 0이면 시도 상한도 지금처럼 모델 단계가 전부 쓴다.
+func TestE3ShareZeroLeavesAttemptLimit(t *testing.T) {
+	e, _, server, _ := e3ShareFixture(t, 10, 0, 4)
+	if remaining, err := e.BudgetRemaining(); err != nil || remaining != 10 {
+		t.Fatalf("몫 0 회차의 남은 예산이 바뀜: %d %v", remaining, err)
+	}
+	if admitted, last := modelRequests(t, e, server.URL, 5); admitted != 4 || last != AttemptLimit {
+		t.Fatalf("몫 0 회차의 시도 상한 동작이 바뀜: 보냄 %d 마지막 %s", admitted, last)
 	}
 }

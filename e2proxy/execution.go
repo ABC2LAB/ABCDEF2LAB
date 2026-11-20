@@ -831,6 +831,7 @@ func (e *Execution) BudgetRemaining() (uint64, error) {
 	e.mu.Lock()
 	shared := e.cfg.Budget
 	held := e.e3ShareHeldLocked()
+	attemptsLeft := e.attemptsLeftLocked()
 	e.mu.Unlock()
 	if shared.Ledger == nil {
 		return 0, ErrConfig
@@ -839,10 +840,26 @@ func (e *Execution) BudgetRemaining() (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
+	if held == 0 {
+		// 확정 몫이 없으면(꺼진 회차) 지금처럼 예산만 본다.
+		return remaining, nil
+	}
+	// 확정 몫은 송신 시도 상한에서도 뗀다. 시도 상한이 예산보다 작으면 그쪽이 먼저 닿는다(#826 윤재상 봇 리뷰).
+	if attemptsLeft < remaining {
+		remaining = attemptsLeft
+	}
 	if remaining <= held {
 		return 0, nil
 	}
 	return remaining - held, nil
+}
+
+// attemptsLeftLocked는 송신 시도 상한(MaxAttempts) 가운데 남은 수다. e.mu를 잡고 부른다.
+func (e *Execution) attemptsLeftLocked() uint64 {
+	if e.admitted >= e.cfg.Limits.MaxAttempts {
+		return 0
+	}
+	return e.cfg.Limits.MaxAttempts - e.admitted
 }
 
 // e3ShareHeldLocked는 확정 몫 가운데 확정 단계 요청이 아직 쓰지 않은 수다. e.mu를 잡고 부른다.
@@ -853,11 +870,19 @@ func (e *Execution) e3ShareHeldLocked() uint64 {
 	return e.cfg.E3ConfirmationRequests - e.e3Admitted
 }
 
-// e3ShareAvailableLocked는 확정 단계 밖 요청 하나가 떼어 둔 확정 몫을 건드리지 않고 예산을 예약할 수 있는지다. e.mu를
-// 잡고 부른다. 예산을 읽지 못하면 뒤의 예약(Reserve)이 같은 이유로 거부하므로 여기서는 막지 않는다.
+// e3ShareAvailableLocked는 확정 단계 밖 요청 하나가 떼어 둔 확정 몫을 건드리지 않고 예산과 송신 시도 상한을 예약할 수
+// 있는지다. e.mu를 잡고 부른다. 예산을 읽지 못하면 뒤의 예약(Reserve)이 같은 이유로 거부하므로 여기서는 막지 않는다.
 func (e *Execution) e3ShareAvailableLocked() bool {
 	held := e.e3ShareHeldLocked()
-	if held == 0 || e.cfg.Budget.Ledger == nil {
+	if held == 0 {
+		return true
+	}
+	// 송신 시도 상한(MaxAttempts)이 예산보다 작게 설정돼도 모델 단계가 시도를 다 써서 확정 요청이 AttemptLimit으로
+	// 막히지 않게, 시도 상한에서도 같은 몫을 뗀다(#826 윤재상 봇 리뷰).
+	if e.attemptsLeftLocked() <= held {
+		return false
+	}
+	if e.cfg.Budget.Ledger == nil {
 		return true
 	}
 	remaining, err := e.cfg.Budget.Ledger.Remaining(e.cfg.Budget.Key, e.cfg.Budget.Binding, time.Now())
