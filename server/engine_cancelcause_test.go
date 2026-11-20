@@ -217,30 +217,32 @@ func TestBootstrapAdmissionClearsQueuedPauseBarrier(t *testing.T) {
 	}
 }
 
-// 목표 달성·시간 상한 마감 유예 끝 취소는 E② 작업을 닫지 않는다(감독자가 E③ 확정 단계 뒤에 닫는다). 엔진 자체 기한의
-// 정리(settle_drain_timeout)·그 밖의 취소는 지금처럼 바로 닫는다(2026-11-20 실제 모델 VAmPI 회차: 시간 상한 마감에서
-// 확정 단계가 task_fenced로 꺼짐).
-func TestCancelExecFencesE2HTTPExceptBeforeConfirmation(t *testing.T) {
-	for _, tc := range []struct {
-		cause  *agent.AbortCause
-		fenced bool
-	}{
-		{agent.AbortGoalMet, false},
-		{agent.AbortTimeBudgetDrain, false},
-		{agent.AbortSettleDrainTimeout, true},
-		{agent.AbortPausedByUser, true},
-		{agent.AbortTaskDeleted, true},
+// 취소는 사유와 관계없이 E② 실행 전체를 닫지 않고 모델 단계만 마감한다(CloseModelStage). 실행 전체를 닫는 것은 감독자
+// 한 곳(확정 단계 뒤 또는 마감 정리)이다. 사유별로 닫으면 새 마감 경로마다 확정 단계 전에 E②가 닫히는 결함이 다시 났다
+// (#809 목표 달성, 2026-11-20 실제 모델 VAmPI 회차 시간 상한 마감).
+func TestCancelExecClosesOnlyModelStage(t *testing.T) {
+	for _, cause := range []*agent.AbortCause{
+		agent.AbortGoalMet, agent.AbortTimeBudgetDrain, agent.AbortSettleDrainTimeout, agent.AbortPausedByUser,
+		agent.AbortTaskDeleted, agent.AbortPausedRaceGuard, agent.AbortShutdown, agent.AbortRunHardTimeout,
 	} {
 		cancelled := false
 		task := &e2HTTPRuntimeTask{id: "t1", cancel: func() { cancelled = true }}
 		e := NewEngine(nil)
 		e.e2HTTP = &E2HTTPRuntime{task: task}
-		e.cancelExec("t1", tc.cause)
+		e.cancelExec("t1", cause)
 		task.mu.Lock()
-		closed := task.closed
+		closed, modelClosed := task.closed, task.modelClosed
 		task.mu.Unlock()
-		if closed != tc.fenced || cancelled != tc.fenced {
-			t.Fatalf("%s: E② 작업 닫힘 %v(문맥 취소 %v), 원함 %v", tc.cause.Code, closed, cancelled, tc.fenced)
+		if closed || cancelled || !modelClosed {
+			t.Fatalf("%s: E② 실행 닫힘 %v(문맥 취소 %v)·모델 단계 마감 %v", cause.Code, closed, cancelled, modelClosed)
 		}
+	}
+	// 다른 작업의 취소는 이 작업의 모델 단계를 마감하지 않는다.
+	task := &e2HTTPRuntimeTask{id: "t1", cancel: func() {}}
+	e := NewEngine(nil)
+	e.e2HTTP = &E2HTTPRuntime{task: task}
+	e.cancelExec("t2", agent.AbortPausedByUser)
+	if task.modelClosed {
+		t.Fatal("다른 작업의 취소가 모델 단계를 마감함")
 	}
 }

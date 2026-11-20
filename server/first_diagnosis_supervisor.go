@@ -700,6 +700,15 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 		if !registered && server.requestApprovals.userStopped(number) {
 			return firstDiagnosisFailure(context.Canceled)
 		}
+		if !registered && server.engine.IsPaused(taskID) {
+			// 회차 중 엔진 일시정지(운영자 일시정지·동시 실행 조정 등)는 회차를 바로 끝내는 운영자 중지와 같다(사용자 결정
+			// 2026-11-20 분기점 1). 일시정지 상태로 시간 상한까지 걸려 있지 않게 중지를 기록하고 중지 마감(drain·E② 닫기·
+			// 확정 단계 interrupted)으로 간다. 재개는 지원하지 않는다.
+			if stopErr := server.requestApprovals.stop(context.WithoutCancel(run), number, "ARTEX"); stopErr != nil && !errors.Is(stopErr, db.ErrRequestApprovalConflict) {
+				log.Printf(logT("[first-diagnosis] task %s 일시정지를 중지로 기록하지 못함"), taskID)
+			}
+			return firstDiagnosisFailure(context.Canceled)
+		}
 		if run.Err() != nil {
 			server.engine.Pause(taskID, agent.AbortPausedRaceGuard)
 			return firstDiagnosisFailure(run.Err())
@@ -761,6 +770,9 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 			s.admissionGranted = false
 			s.mu.Unlock()
 			if !registered {
+				// 모델 단계가 스스로 끝났다(목표 달성·시간 상한·예산 소진 등). 확정 단계 전에 모델 단계를 마감해 그 뒤로는
+				// 확정 단계 요청만 E②를 지나게 한다(모델 단계 마감 뒤 모델 단계 송신 0). E② 실행 전체는 확정 단계 뒤에 닫는다.
+				server.engine.e2HTTP.CloseModelStage(taskID)
 				if e3Confirmation.Run != nil {
 					e3Handled = true
 					// E③ 확정 단계(결정 §5)는 모델 활동이 모두 끝난 뒤에만 돈다. 여기서는 진행 중 작업·모델 호출이 0이고

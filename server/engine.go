@@ -320,13 +320,12 @@ func (e *Engine) StopTask(taskID string) {
 // planner.Plan / worker.Execute), if present. Shared by Pause and the settle
 // sequence's hard-drain backstop.
 func (e *Engine) cancelExec(taskID string, cause error) {
-	// 목표 달성 취소와 시간 상한 마감 유예 끝 취소는 Worker·Planner 실행만 멈춘다. E② 작업은 감독자가 E③ 확정 단계
-	// 뒤·drain 전에 직접 닫는다(FirstDiagnosisSupervisor: e3-confirmation → fence). 여기서 닫으면 작업 문맥이 끊겨 E②
-	// 실행도 같이 끝나, 그렇게 끝나는 회차의 확정 단계가 늘 not_wired(task_fenced)였다(#805 뒤 합성 회차: 목표 달성,
-	// 2026-11-20 실제 모델 VAmPI 회차: 시간 상한 마감). 새 송신은 그동안에도 열리지 않는다: 취소된 Worker 문맥은
-	// PrepareWork에서 거부되고, 목표 달성이면 작업이 done이고 시간 상한이면 정리 상태라 새 계획·intent를 받지 않는다.
-	if e.e2HTTP != nil && !errors.Is(cause, agent.AbortGoalMet) && !errors.Is(cause, agent.AbortTimeBudgetDrain) {
-		_ = e.e2HTTP.FenceTask(taskID)
+	// 취소는 모델 단계(Worker·Planner)만 멈춘다. E②에서는 모델 단계를 마감해 진행 중 모델 단계 요청을 끊고 그 뒤 요청을
+	// 거부한다(CloseModelStage, 확정 단계 요청만 열림). E② 실행 전체를 닫는 것(FenceTask)은 감독자 한 곳에서만 한다:
+	// 확정 단계를 돌리는 마감이면 확정 단계 뒤에, 그 밖의 마감은 마감 정리에서. 취소 사유마다 E②를 닫으면 새 마감
+	// 경로가 생길 때마다 확정 단계 전에 E②가 닫히는 결함이 다시 났다(#809 목표 달성, 2026-11-20 시간 상한 마감).
+	if e.e2HTTP != nil {
+		e.e2HTTP.CloseModelStage(taskID)
 	}
 	// A task cancellation and controlled completion cannot pass one another's
 	// execution decision unnoticed. No registry/DB work is performed here.
