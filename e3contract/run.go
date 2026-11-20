@@ -53,6 +53,9 @@ type Deps struct {
 	// Started는 확정 단계가 실제로 대상 요청을 시작하기 직전(표식을 만들기 전)에 한 번 불린다. 꺼짐·시작 거절·몫에 든
 	// 종류 없음이면 부르지 않는다. 감독자는 이때만 엔진을 정리 상태로 두어, 꺼진 회차의 흐름이 E③가 없을 때와 같게 한다.
 	Started func()
+	// Relogin은 신원 확인 직전에 시험 계정 하나를 다시 로그인시킨다(사용자 결정 2026-11-20 (가)). 로그인 요청을 실제로
+	// 보냈으면 참이다(확정 몫으로 센다). 결과는 판정 근거가 아니고 바로 뒤의 신원 확인이 근거다. 없으면 다시 로그인하지 않는다.
+	Relogin func(ctx context.Context, label string) (sent bool)
 }
 
 // Run은 모델 단계가 끝난 뒤 확정 단계 한 회를 돈다(#596 §5). 순서: 조건 → 정책 동결본 대조 → 리셋 확인 → 표식 생성·등록 →
@@ -215,6 +218,7 @@ func (r *run) run(ctx context.Context) RunResult {
 		return r.result(StatusStartRefused, string(RefuseMarkerRegistrationFailed))
 	}
 	r.marker = marker
+	r.relogin(ctx)
 
 	subjects, identityReason, evidence := r.identity(ctx)
 	if r.integrity != "" {
@@ -399,6 +403,24 @@ func (r *run) call(ctx context.Context, want Observation, send func() (Observati
 		r.budget = true
 	}
 	return obs, true
+}
+
+// relogin은 신원 확인 직전에 A·B를 다시 로그인시킨다(사용자 결정 2026-11-20 (가)). 모델 단계가 길어 대상이 준 세션이
+// 만료됐어도 확정 단계가 새 세션으로 돌게 하려는 것이다. 다시 로그인이 실패하거나 보내지 못해도 멈추지 않는다: 바로 뒤의
+// 신원 확인이 그 세션으로 판정 근거를 정한다(만료면 product_identity_unverified). 보낸 요청은 확정 몫으로 센다. 문맥이
+// 끝났으면 보내지 않는다(뒤의 신원 확인이 중지·시간 몫 끝으로 처리한다).
+func (r *run) relogin(ctx context.Context) {
+	if r.deps.Relogin == nil {
+		return
+	}
+	for _, label := range []string{r.in.Owner.Label, r.in.Cross.Label} {
+		if ctx.Err() != nil {
+			return
+		}
+		if r.deps.Relogin(ctx, label) {
+			r.requests++
+		}
+	}
 }
 
 // identity는 A·B 신원을 확인한다(#596 §5.1). 실패하면 그 대상의 모든 종류가 UNDECIDABLE이고 생성·조회를 하지 않는다.

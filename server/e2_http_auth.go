@@ -126,9 +126,40 @@ type e2HTTPSessionStore struct {
 	runRef   string
 	random   io.Reader
 	bindings map[string]string
+	// relogin은 refresh_session과 같은 다시 로그인 경로다(인증 준비 규칙·같은 계정 줄 세우기·실패·간격 상한). 시험 계정
+	// 실행이고 인증된 계정이 있을 때만 채운다(저장소를 넘기기 전에 정하고 바꾸지 않는다).
+	relogin func(context.Context, string) (http.Header, string)
 }
 
-var _ E2HTTPAccountBindings = (*e2HTTPSessionStore)(nil)
+var (
+	_ E2HTTPAccountBindings = (*e2HTTPSessionStore)(nil)
+	_ E2HTTPAccountRelogin  = (*e2HTTPSessionStore)(nil)
+)
+
+// E2HTTPAccountRelogin은 확정 단계(E③) 직전에 시험 계정 하나를 다시 로그인시킨다(사용자 결정 2026-11-20 (가)). 세션
+// 저장소만 구현한다. 결과는 인증 준비와 같은 고정 코드(authenticated·login_failed·session_not_found·result_unknown·
+// not_sent·refresh_limit·refresh_cooldown)이고 세션 값은 저장소 안에만 둔다.
+type E2HTTPAccountRelogin interface {
+	Relogin(ctx context.Context, label string) string
+}
+
+// Relogin은 refresh_session과 같은 경로로 계정 하나를 다시 로그인시킨다. 다시 로그인 경로가 없는 실행이면 보내지 않는다.
+func (s *e2HTTPSessionStore) Relogin(ctx context.Context, label string) string {
+	if s == nil || s.relogin == nil {
+		return E2HTTPAuthNotSent
+	}
+	_, result := s.relogin(ctx, label)
+	return result
+}
+
+// E2HTTPAuthSent는 다시 로그인 결과 코드가 로그인 요청을 실제로 보낸 경우인지다(보내지 않음·상한·간격 거부는 아니다).
+func E2HTTPAuthSent(result string) bool {
+	switch result {
+	case E2HTTPAuthAuthenticated, E2HTTPAuthLoginFailed, E2HTTPAuthSessionNotFound, E2HTTPAuthResultUnknown:
+		return true
+	}
+	return false
+}
 
 // newE2HTTPSessionStore는 처음 인증 준비의 세션(인증 성공만 들어 있음)으로 저장소를 만들고 계정마다 결속 참조를 발급한다.
 // random이 nil이면 crypto/rand다.

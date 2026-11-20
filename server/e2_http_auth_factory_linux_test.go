@@ -368,6 +368,23 @@ func TestE2HTTPFactoryRefreshSession(t *testing.T) {
 		unsent("tester-a", E2HTTPRefreshCooldown)
 	}
 	unsent("someone-else", E2HTTPAuthNotSent)
+	// 확정 단계 직전 다시 로그인(사용자 결정 2026-11-20 (가))도 같은 경로(인증 준비 규칙)·같은 간격 상한이다.
+	relogin, ok := bindings.(E2HTTPAccountRelogin)
+	if !ok {
+		t.Fatal("세션 저장소가 확정 단계 다시 로그인을 주지 않음")
+	}
+	clock.Advance(minSessionRefreshInterval)
+	prevRef, _ := bindings.AccountBindingRef(runRef, "tester-a")
+	before := logins.Load()
+	if result := relogin.Relogin(ctx, "tester-a"); result != E2HTTPAuthAuthenticated || logins.Load() != before+1 {
+		t.Fatalf("확정 전 다시 로그인: %s logins=%d", result, logins.Load()-before)
+	}
+	if nowRef, _ := bindings.AccountBindingRef(runRef, "tester-a"); nowRef == prevRef {
+		t.Fatal("확정 전 다시 로그인 뒤 결속 참조가 그대로")
+	}
+	if result := relogin.Relogin(ctx, "tester-a"); result != E2HTTPRefreshCooldown || logins.Load() != before+1 {
+		t.Fatalf("간격 상한 안 확정 전 다시 로그인: %s", result)
+	}
 	// A의 2회 실패와 B의 3회 실패는 합산하지 않는다. B의 상한 뒤에도 A는 성공할 수 있다.
 	rejectA.Store(true)
 	for range 2 {

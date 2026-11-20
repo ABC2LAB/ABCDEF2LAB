@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net/http"
 	"net/netip"
 	"strings"
 	"sync/atomic"
@@ -248,6 +249,75 @@ func TestProductEndedE3ConnectionAlwaysFails(t *testing.T) {
 	}
 	if _, err := c.Sealed(ctx, e3contract.RunBinding{}, e3contract.CallRef{}); err == nil {
 		t.Fatal("봉인 사건")
+	}
+}
+
+// e3ReloginAccounts는 계정 결속 조회에 확정 전 다시 로그인을 더한 가짜다. 결과 코드를 고정해 돌려주고 부른 라벨을 센다.
+type e3ReloginAccounts struct {
+	result string
+	labels []string
+}
+
+func (a *e3ReloginAccounts) AccountBindingRef(string, string) (string, bool) { return "", false }
+func (a *e3ReloginAccounts) BoundSession(string, string, string) (http.Header, error) {
+	return nil, server.ErrE2HTTPAccountBinding
+}
+func (a *e3ReloginAccounts) Relogin(_ context.Context, label string) string {
+	a.labels = append(a.labels, label)
+	return a.result
+}
+
+type e3PlainAccounts struct{}
+
+func (e3PlainAccounts) AccountBindingRef(string, string) (string, bool) { return "", false }
+func (e3PlainAccounts) BoundSession(string, string, string) (http.Header, error) {
+	return nil, server.ErrE2HTTPAccountBinding
+}
+
+// 사용자 결정 2026-11-20 (가): 연결이 있는 확정 단계는 계정 저장소의 다시 로그인을 붙이고(보낸 결과만 몫으로 셈), 떼어
+// 둔 확정 몫을 여는 함수를 돌려준다. 다시 로그인 경로가 없는 저장소면 붙이지 않는다.
+func TestProductE3WiredReloginAndShare(t *testing.T) {
+	for name, tc := range map[string]struct {
+		accounts server.E2HTTPAccountBindings
+		relogin  bool
+		results  map[string]bool
+	}{
+		"relogin-authenticated": {&e3ReloginAccounts{result: server.E2HTTPAuthAuthenticated}, true, map[string]bool{"tester-a": true}},
+		"relogin-not-sent":      {&e3ReloginAccounts{result: server.E2HTTPRefreshCooldown}, true, map[string]bool{"tester-a": false}},
+		"no-relogin-path":       {e3PlainAccounts{}, false, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newE3HookFixture(t, true, nil)
+			c := f.confirmation(nil, e3HookAccounts(), nil)
+			exec, _ := e3TraceExecution(t)
+			var created atomic.Int64
+			wireE3(c, exec, tc.accounts, countingBridge(&created))
+			deps, release, _, open := c.wiredDeps("9")
+			defer release()
+			if open == nil {
+				t.Fatal("연결이 있는데 확정 몫 열기 함수가 없음")
+			}
+			if (deps.Relogin != nil) != tc.relogin {
+				t.Fatalf("다시 로그인 연결: %v", deps.Relogin != nil)
+			}
+			for label, want := range tc.results {
+				if got := deps.Relogin(t.Context(), label); got != want {
+					t.Fatalf("%s: 보냄=%v", label, got)
+				}
+			}
+			if r, ok := tc.accounts.(*e3ReloginAccounts); ok && len(r.labels) != len(tc.results) {
+				t.Fatalf("다시 로그인 호출 %v", r.labels)
+			}
+		})
+	}
+	// 연결이 없으면 몫 열기 함수도 다시 로그인도 없다.
+	f := newE3HookFixture(t, true, nil)
+	c := f.confirmation(nil, e3HookAccounts(), nil)
+	c.handle = nil
+	deps, release, _, open := c.wiredDeps("9")
+	defer release()
+	if open != nil || deps.Relogin != nil {
+		t.Fatal("연결 없는 판에 몫 열기·다시 로그인이 붙음")
 	}
 }
 

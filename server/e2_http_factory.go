@@ -728,6 +728,8 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 					return e2HTTPRefreshSession(ctx, execution, dir, origin, authPolicy, sessionStore.refreshes, programCalls, label)
 				})
 			}
+			// 확정 단계 직전 다시 로그인도 같은 경로다(사용자 결정 2026-11-20 (가)).
+			sessionStore.relogin = refresh
 		}
 		return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: release, ObserveResult: input.ObserveResult, AccountAuth: auth.AccountAuth, Sessions: auth.Sessions, RefreshSession: refresh, sessionStore: sessionStore, programCalls: programCalls}, nil
 	}

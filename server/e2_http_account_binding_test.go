@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"net/http"
 	"regexp"
@@ -186,4 +187,36 @@ func TestAccountBindingConcurrentRefresh(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// 다시 로그인 경로가 없는 저장소(시험 계정 실행이 아님)는 확정 단계 다시 로그인을 보내지 않는다.
+func TestAccountReloginWithoutPathIsNotSent(t *testing.T) {
+	s := bindingStore(t, E2HTTPSessions{"tester-a": http.Header{"Cookie": {"sid=synthetic-a"}}})
+	if got := s.Relogin(t.Context(), "tester-a"); got != E2HTTPAuthNotSent {
+		t.Fatalf("다시 로그인 경로 없이 결과 %q", got)
+	}
+	var nilStore *e2HTTPSessionStore
+	if got := nilStore.Relogin(t.Context(), "tester-a"); got != E2HTTPAuthNotSent {
+		t.Fatalf("nil 저장소 결과 %q", got)
+	}
+	called := ""
+	s.relogin = func(_ context.Context, label string) (http.Header, string) {
+		called = label
+		return http.Header{"Cookie": {"sid=synthetic-new"}}, E2HTTPAuthLoginFailed
+	}
+	if got := s.Relogin(t.Context(), "tester-a"); got != E2HTTPAuthLoginFailed || called != "tester-a" {
+		t.Fatalf("다시 로그인 결과 %q label %q", got, called)
+	}
+}
+
+// 보낸 다시 로그인만 확정 몫으로 센다.
+func TestE2HTTPAuthSent(t *testing.T) {
+	for result, want := range map[string]bool{
+		E2HTTPAuthAuthenticated: true, E2HTTPAuthLoginFailed: true, E2HTTPAuthSessionNotFound: true, E2HTTPAuthResultUnknown: true,
+		E2HTTPAuthNotSent: false, E2HTTPRefreshLimit: false, E2HTTPRefreshCooldown: false, "": false, "other": false,
+	} {
+		if E2HTTPAuthSent(result) != want {
+			t.Fatalf("%q: %v", result, !want)
+		}
+	}
 }

@@ -1042,3 +1042,77 @@ func TestRefusedAtRunStart(t *testing.T) {
 		}
 	}
 }
+
+// 사용자 결정 2026-11-20 (가): 신원 확인 직전에 A·B를 한 번씩 다시 로그인시킨다. 보낸 다시 로그인은 확정 몫(Requests)으로
+// 세고, 보내지 못했거나 실패해도 멈추지 않는다(바로 뒤 신원 확인이 근거다). 확정 단계가 돌지 않는 회차는 다시 로그인도 없다.
+func TestRunReloginsBeforeIdentity(t *testing.T) {
+	type event struct{ kind, label string }
+	for name, c := range map[string]struct {
+		sent     bool
+		requests int
+	}{
+		"sent":     {true, 8 + 2},
+		"not-sent": {false, 8},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			var order []event
+			deps := f.deps()
+			deps.Relogin = func(_ context.Context, label string) bool {
+				// 다시 로그인 때는 아직 신원 요청이 없어야 한다.
+				if n := countCalls(f.fake.Calls(), func(k e3fake.Key) bool { return true }); n != 0 {
+					t.Errorf("다시 로그인 전에 확정 요청 %d건", n)
+				}
+				order = append(order, event{"relogin", label})
+				return c.sent
+			}
+			res := e3contract.Run(context.Background(), deps, f.in)
+			if res.Status != e3contract.StatusCompleted || res.Requests != c.requests {
+				t.Fatalf("status=%s requests=%d", res.Status, res.Requests)
+			}
+			if len(order) != 2 || order[0] != (event{"relogin", "tester-a"}) || order[1] != (event{"relogin", "tester-b"}) {
+				t.Fatalf("다시 로그인 순서: %+v", order)
+			}
+			for _, typ := range []string{"note", "secret"} {
+				if v := verdictOf(t, res, typ); v.Value != oracle.Confirmed {
+					t.Fatalf("%s: %+v", typ, v)
+				}
+			}
+		})
+	}
+	t.Run("disabled-run-no-relogin", func(t *testing.T) {
+		f := newFixture(t)
+		f.in.Owner.Authenticated = false
+		calls := 0
+		deps := f.deps()
+		deps.Relogin = func(context.Context, string) bool { calls++; return true }
+		res := e3contract.Run(context.Background(), deps, f.in)
+		if res.Status != e3contract.StatusDisabled || calls != 0 || res.Requests != 0 {
+			t.Fatalf("꺼진 회차에서 다시 로그인: %s calls=%d requests=%d", res.Status, calls, res.Requests)
+		}
+	})
+	t.Run("no-admitted-type-no-relogin", func(t *testing.T) {
+		f := newFixture(t)
+		f.in.AdmittedTypes = 0
+		calls := 0
+		deps := f.deps()
+		deps.Relogin = func(context.Context, string) bool { calls++; return true }
+		res := e3contract.Run(context.Background(), deps, f.in)
+		if calls != 0 || res.Requests != 0 {
+			t.Fatalf("몫에 든 종류가 없는데 다시 로그인: calls=%d requests=%d", calls, res.Requests)
+		}
+	})
+	t.Run("stopped-context-no-relogin", func(t *testing.T) {
+		f := newFixture(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		calls := 0
+		deps := f.deps()
+		deps.Started = cancel // 시작 직후 중지된 것처럼
+		deps.Relogin = func(context.Context, string) bool { calls++; return true }
+		res := e3contract.Run(ctx, deps, f.in)
+		noConfirmed(t, res)
+		if calls != 0 {
+			t.Fatalf("중지된 문맥에서 다시 로그인 %d건", calls)
+		}
+	})
+}

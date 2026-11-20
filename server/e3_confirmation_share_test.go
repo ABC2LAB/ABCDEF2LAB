@@ -16,19 +16,19 @@ func TestComputeE3ConfirmationShare(t *testing.T) {
 	}{
 		// 꺼짐: 시험할 종류가 없으면 몫 0, 모델 단계 예산 그대로.
 		"disabled": {0, 400, run, E3ConfirmationRequestTimeoutDefault, E3ConfirmationShare{}},
-		// 제품 기본(요청 400·1800초)에서 종류 1개: 5건·50초.
-		"one type": {1, 400, run, E3ConfirmationRequestTimeoutDefault, E3ConfirmationShare{Requests: 5, Timeout: 50 * time.Second, Admitted: 1}},
-		// 시간 1/4(450초)÷10초 = 45건 → 종류 14개(2+42=44건)까지. 넘치는 종류는 예산으로 건너뜀.
-		"time bound": {20, 400, run, E3ConfirmationRequestTimeoutDefault, E3ConfirmationShare{Requests: 44, Timeout: 440 * time.Second, Admitted: 14, BudgetSkipped: 6}},
-		// 요청 1/4(100건) → 종류 32개(2+96=98건)까지.
-		"request bound": {40, 400, run, time.Second, E3ConfirmationShare{Requests: 98, Timeout: 98 * time.Second, Admitted: 32, BudgetSkipped: 8}},
-		// 종류 하나도 안 들면 몫 0이고 전부 예산으로 건너뜀(신원 요청 2건만 떼지 않는다).
+		// 제품 기본(요청 400·1800초)에서 종류 1개: 고정 4(다시 로그인 2 + 신원 2) + 4 = 8건·80초.
+		"one type": {1, 400, run, E3ConfirmationRequestTimeoutDefault, E3ConfirmationShare{Requests: 8, Timeout: 80 * time.Second, Admitted: 1}},
+		// 시간 1/4(450초)÷10초 = 45건 → 종류 10개(4+40=44건)까지. 넘치는 종류는 예산으로 건너뜀.
+		"time bound": {20, 400, run, E3ConfirmationRequestTimeoutDefault, E3ConfirmationShare{Requests: 44, Timeout: 440 * time.Second, Admitted: 10, BudgetSkipped: 10}},
+		// 요청 1/4(100건) → 종류 24개(4+96=100건)까지.
+		"request bound": {40, 400, run, time.Second, E3ConfirmationShare{Requests: 100, Timeout: 100 * time.Second, Admitted: 24, BudgetSkipped: 16}},
+		// 종류 하나도 안 들면 몫 0이고 전부 예산으로 건너뜀(고정 몫만 떼지 않는다).
 		"none fits":       {3, 16, run, E3ConfirmationRequestTimeoutDefault, E3ConfirmationShare{BudgetSkipped: 3}},
 		"none fits time":  {3, 400, 60 * time.Second, E3ConfirmationRequestTimeoutDefault, E3ConfirmationShare{BudgetSkipped: 3}},
-		"exact time edge": {1, 400, 200 * time.Second, E3ConfirmationRequestTimeoutDefault, E3ConfirmationShare{Requests: 5, Timeout: 50 * time.Second, Admitted: 1}},
-		"just over time":  {1, 400, 199 * time.Second, E3ConfirmationRequestTimeoutDefault, E3ConfirmationShare{BudgetSkipped: 1}},
-		"exact req edge":  {1, 20, run, E3ConfirmationRequestTimeoutDefault, E3ConfirmationShare{Requests: 5, Timeout: 50 * time.Second, Admitted: 1}},
-		"just over req":   {1, 19, run, E3ConfirmationRequestTimeoutDefault, E3ConfirmationShare{BudgetSkipped: 1}},
+		"exact time edge": {1, 400, 320 * time.Second, E3ConfirmationRequestTimeoutDefault, E3ConfirmationShare{Requests: 8, Timeout: 80 * time.Second, Admitted: 1}},
+		"just over time":  {1, 400, 319 * time.Second, E3ConfirmationRequestTimeoutDefault, E3ConfirmationShare{BudgetSkipped: 1}},
+		"exact req edge":  {1, 32, run, E3ConfirmationRequestTimeoutDefault, E3ConfirmationShare{Requests: 8, Timeout: 80 * time.Second, Admitted: 1}},
+		"just over req":   {1, 31, run, E3ConfirmationRequestTimeoutDefault, E3ConfirmationShare{BudgetSkipped: 1}},
 		"no per-request":  {2, 400, run, 0, E3ConfirmationShare{BudgetSkipped: 2}},
 		"no run budget":   {2, 0, run, E3ConfirmationRequestTimeoutDefault, E3ConfirmationShare{BudgetSkipped: 2}},
 	} {

@@ -125,9 +125,17 @@ func (c *productE3Confirmation) run(ctx context.Context, taskID string, begin fu
 		confirmCtx, cancel = context.WithTimeout(ctx, share)
 		defer cancel()
 	}
-	deps, release, checkpoint := c.wiredDeps(taskID)
+	deps, release, checkpoint, openShare := c.wiredDeps(taskID)
 	defer release()
-	deps.Started = begin
+	// 확정 단계가 실제로 요청을 시작할 때 떼어 둔 확정 몫을 연다. 그 몫에서 다시 로그인과 확정 요청이 나간다(계약 §7.1).
+	deps.Started = func() {
+		if openShare != nil {
+			openShare()
+		}
+		if begin != nil {
+			begin()
+		}
+	}
 	res := e3contract.Run(confirmCtx, deps, in)
 	// 판정은 확정 단계에서 Host가 검증한 근거 체크포인트와 함께 바로 저장한다(E1 (가), 봉인 확인은 따로). 쓰기 기록은 생성
 	// 요청마다 보내기 전에 이미 남겼다(productWriteRecorder).
@@ -177,7 +185,7 @@ func (c *productE3Confirmation) stoppedDeps(taskID string) (e3contract.Deps, fun
 			return deps, func() {}
 		}
 	}
-	deps, release, _ := c.wiredDeps(taskID)
+	deps, release, _, _ := c.wiredDeps(taskID)
 	return deps, release
 }
 
@@ -220,11 +228,11 @@ func (productEndedE3Connection) Sealed(context.Context, e3contract.RunBinding, e
 // wiredDeps는 E② 실행 연결이 있으면 몫·선언과 관계없이 어댑터를 붙인 의존이다. 그래야 꺼진 회차가 not_wired 대신 실제
 // 사유(declaration_missing·write_not_consented 등)를 내고, not_wired는 연결이 정말 없는 판에서만 나온다(Go 조건 2). 실제
 // 브리지는 표식 등록 때만 만든다(productLazyE2). release는 만든 브리지를 닫는다.
-func (c *productE3Confirmation) wiredDeps(taskID string) (e3contract.Deps, func(), productE3CheckpointFunc) {
+func (c *productE3Confirmation) wiredDeps(taskID string) (e3contract.Deps, func(), productE3CheckpointFunc, func()) {
 	deps := c.deps
 	if c.handle == nil || c.newBridge == nil {
 		log.Printf("[e3-confirmation] task %s 확정 단계에 E② 연결 없음: 사유=handle_not_configured", taskID)
-		return deps, func() {}, nil
+		return deps, func() {}, nil, nil
 	}
 	execution, accounts, reason := c.handle(taskID)
 	if reason != "" || execution == nil {
@@ -233,7 +241,7 @@ func (c *productE3Confirmation) wiredDeps(taskID string) (e3contract.Deps, func(
 		}
 		// 확정 단계는 not_wired로 꺼진다. 어느 조건인지 고정 코드로 남긴다(값 없음).
 		log.Printf("[e3-confirmation] task %s 확정 단계에 E② 연결 없음: 사유=%s", taskID, reason)
-		return deps, func() {}, nil
+		return deps, func() {}, nil, nil
 	}
 	newBridge := c.newBridge
 	lazy, err := e3v3.NewLazy(func(binding e3contract.RunBinding) (e3v3.Bridge, error) {
@@ -241,19 +249,27 @@ func (c *productE3Confirmation) wiredDeps(taskID string) (e3contract.Deps, func(
 	})
 	if err != nil {
 		log.Printf("[e3-confirmation] task %s 확정 단계 어댑터 생성 실패", taskID)
-		return deps, func() {}, nil
+		return deps, func() {}, nil, nil
 	}
 	adapter, err := e3v3.New(lazy)
 	if err != nil {
 		log.Printf("[e3-confirmation] task %s 확정 단계 어댑터 생성 실패", taskID)
-		return deps, func() {}, nil
+		return deps, func() {}, nil, nil
 	}
 	deps.Transport, deps.Journal = adapter, adapter
+	if relogin, ok := accounts.(server.E2HTTPAccountRelogin); ok {
+		deps.Relogin = func(ctx context.Context, label string) bool {
+			result := relogin.Relogin(ctx, label)
+			// 라벨·세션 값 없이 고정 결과 코드만 남긴다.
+			log.Printf("[e3-confirmation] task %s 확정 전 다시 로그인: %s", taskID, result)
+			return server.E2HTTPAuthSent(result)
+		}
+	}
 	checkpoint := func(ctx context.Context, binding e3contract.RunBinding, ref e3contract.CallRef) (e3v3.Checkpoint, error) {
 		_, cp, err := lazy.VerifiedCheckpoint(ctx, binding, ref)
 		return cp, err
 	}
-	return deps, lazy.Close, checkpoint
+	return deps, lazy.Close, checkpoint, execution.OpenE3Share
 }
 
 // productE3CheckpointFunc는 확정 단계 근거 호출 하나를 Host에 다시 검증받아 그 검증에 쓴 현재 head 체크포인트를 받는다.
@@ -434,7 +450,7 @@ func (c *productE3Confirmation) timeShare() (time.Duration, error) {
 }
 
 // productE3Admitted는 발급한 실행 정책의 확정 몫(withE3ConfirmationShare)에서 몫에 든 종류 수와 시간 몫을 되읽는다.
-// 요청 몫 = 신원 2 + 종류×3, 시간 몫 = 요청 몫 × 확정 요청 시간 상한(기본값)이다. 칸이 없거나 이 모양이 아니면 -1(몫을 받지
+// 요청 몫 = 고정 4(다시 로그인 2 + 신원 2) + 종류×4, 시간 몫 = 요청 몫 × 확정 요청 시간 상한(기본값)이다. 칸이 없거나 이 모양이 아니면 -1(몫을 받지
 // 못함)이고, 둘 다 0이면 든 종류가 없다.
 func productE3Admitted(l server.E2HTTPFileLimits) (int, time.Duration) {
 	if l.E3ConfirmationRequests == nil || l.E3ConfirmationTimeoutMS == nil {
@@ -444,11 +460,11 @@ func productE3Admitted(l server.E2HTTPFileLimits) (int, time.Duration) {
 	if requests == 0 && timeout == 0 {
 		return 0, 0
 	}
-	identity, perType := uint64(server.E3ConfirmationIdentityRequests), uint64(server.E3ConfirmationRequestsPerType)
-	if requests <= identity || (requests-identity)%perType != 0 || timeout != time.Duration(requests)*server.E3ConfirmationRequestTimeoutDefault {
+	fixed, perType := uint64(server.E3ConfirmationFixedRequests), uint64(server.E3ConfirmationRequestsPerType)
+	if requests <= fixed || (requests-fixed)%perType != 0 || timeout != time.Duration(requests)*server.E3ConfirmationRequestTimeoutDefault {
 		return -1, 0
 	}
-	return int((requests - identity) / perType), timeout
+	return int((requests - fixed) / perType), timeout
 }
 
 // productE3Roles는 선언한 소유(A)·교차(B) 계정 라벨에 그 실행의 인증 준비 결과를 붙인다. 인증 결과가 authenticated가 아니면
