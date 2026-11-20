@@ -13,7 +13,7 @@
 import { type KeyboardEvent, type ReactElement, type ReactNode, useEffect, useRef, useState } from "react";
 
 import { ApiError } from "@/lib/diagnosis/api";
-import { type URLDiagnosisUsage, urlPhaseLabels } from "@/lib/diagnosis/diagnosis-url";
+import { type URLDiagnosisJob, type URLDiagnosisUsage, urlPhaseLabels } from "@/lib/diagnosis/diagnosis-url";
 import {
   type DiagnosticOutcome,
   diagnosticOutcome,
@@ -21,18 +21,21 @@ import {
   summarizeDiagnosticEntries,
 } from "@/lib/diagnosis/diagnostic-results";
 import type { RemediationEntry } from "@/lib/diagnosis/remediation";
-import { entrySeverity, entrySeverityLabel } from "@/lib/diagnosis/severity";
+import { entrySeverity, entrySeverityLabel, type SeverityLevel } from "@/lib/diagnosis/severity";
 
 import { SEVL, type SevKey } from "../../data/findings";
 import { cx } from "../../lib/cx";
+import { downloadDiagnostic, fetchCoverage, fetchRemediation, type Remediation } from "../../live/api";
 import {
-  downloadDiagnostic,
-  fetchCoverage,
-  fetchRemediation,
-  fetchTaskFindings,
-  type LiveFinding,
-  type Remediation,
-} from "../../live/api";
+  candidateCountText,
+  candidateErrorText,
+  candidateSeverityText,
+  fetchLiveCandidates,
+  isCandidateRunNotActive,
+  LIVE_CANDIDATES_POLL_MS,
+  type LiveCandidate,
+  type LiveCandidatePage,
+} from "../../live/diagnosticCandidates";
 import { clearFindingPick, pickFinding, usePickedFinding } from "../../live/findingPick";
 import {
   approvalCounts,
@@ -95,25 +98,36 @@ export function Outcome({ o, short = false }: { o: DiagnosticOutcome; short?: bo
   );
 }
 
-/** 점검 중 발견 후보 다시 읽는 간격. 진행 중에만 (끝난 점검은 한 번 읽고 멈춘다). */
-export const FINDINGS_POLL_MS = 5000;
+/**
+ * 후보를 읽지 않는 까닭. 서버 조회 경계(ProductCandidateJobActive)가 열리는 때 — 시작 확인 · running/stopping ·
+ * 마감 · 결과 저장 전 — 에만 null(읽음). 끝난 점검은 따로(CandidatesEnded) 안내하므로 여기서는 시작 전과 같이 본다.
+ */
+export function candidateIdle(job: URLDiagnosisJob | null | undefined, verified: boolean): CandidateIdle {
+  if (!job) return "prestart";
+  if (job.state === "unknown") return "unknown";
+  if (!verified) return "unverified";
+  const live =
+    job.started && !job.drain_complete && !job.result_ready && (job.state === "running" || job.state === "stopping");
+  return live ? null : "prestart";
+}
 
-/** 심각도 딱지 (엔진 값). 모르는 값 · 없음은 '등급 없음'. */
-function SevOf({ severity }: { severity: string }) {
-  const k = sevKey(severity);
-  return k ? <span className={cx(s.sev, s[k])}>{SEVL[k]}</span> : <span className={s.sev}>등급 없음</span>;
+/** 후보 등급 딱지. 추정 등급은 '예상 …', 없으면 '위험도 미평가'(낮음 · 정보성으로 바꾸지 않는다). */
+function CandidateSev({ sev }: { sev: SeverityLevel | null }) {
+  const k = sev ? sevKey(sev) : null;
+  return <span className={cx(s.sev, k && s[k])}>{candidateSeverityText(sev)}</span>;
 }
 
 /**
- * 화면을 연 뒤 새로 들어온 발견 id (처음 읽은 목록은 '새로'가 아니다). 점검이 바뀌면 다시 센다.
+ * 화면을 연 뒤 새로 들어온 후보 id (처음 읽은 목록은 '새로'가 아니다). 점검이 바뀌면 다시 센다.
  * 새 줄은 들어올 때 한 번 반짝이고 '새로' 딱지가 붙는다.
  */
-function useFreshIds(task: string | undefined, list: readonly LiveFinding[] | null | undefined): ReadonlySet<string> {
+function useFreshIds(task: string | undefined, list: readonly LiveCandidate[] | null | undefined): ReadonlySet<string> {
   const first = useRef<{ task: string; ids: Set<string> } | null>(null);
-  if (task && list && first.current?.task !== task) first.current = { task, ids: new Set(list.map((f) => f.id)) };
+  if (task && list && first.current?.task !== task)
+    first.current = { task, ids: new Set(list.map((c) => c.candidateId)) };
   const cur = first.current;
   const base = cur && cur.task === task ? cur.ids : null;
-  return new Set(base && list ? list.filter((f) => !base.has(f.id)).map((f) => f.id) : []);
+  return new Set(base && list ? list.filter((c) => !base.has(c.candidateId)).map((c) => c.candidateId) : []);
 }
 
 /**
@@ -127,8 +141,8 @@ function FindReadError({ error, onRetry, stale = false }: { error: unknown; onRe
       <Icon name="alert" />
       <span className={s["lv-grow"]}>
         {stale
-          ? `발견 후보를 다시 읽지 못해 갱신이 멈췄습니다${status}. 아래는 마지막으로 읽은 목록이라 최신이 아닐 수 있습니다.`
-          : `발견 후보를 읽지 못했습니다${status}.`}
+          ? `발견 후보를 다시 읽지 못해 갱신이 멈췄습니다${status}. ${candidateErrorText(error)} 아래는 마지막으로 읽은 목록이라 최신이 아닐 수 있습니다.`
+          : `발견 후보를 읽지 못했습니다${status}. ${candidateErrorText(error)}`}
       </span>
       <button className={cx(s.btn, s.sm)} type="button" onClick={onRetry}>
         다시 읽기
@@ -137,110 +151,136 @@ function FindReadError({ error, onRetry, stale = false }: { error: unknown; onRe
   );
 }
 
+/** 후보 목록을 읽지 않는(또는 더 읽지 않는) 까닭. null 이면 실행 중이라 읽는다. */
+export type CandidateIdle = "prestart" | "unknown" | "unverified" | null;
+
 /**
- * 점검 진행 가운데의 발견 후보 목록 (사용자 11/17 '취약점 나온 것들 다 나열, 실시간'). 원본 ARTEX 가 점검 중에 쌓는
- * 발견(GET /api/exploration/findings?task=)을 최신 순으로 전부. 점검 중 발견은 검증 전 후보라, 엔진 처리 상태
- * ('검토 확인' · '오탐 처리' 등)는 판정처럼 읽혀 줄에 붙이지 않는다(절대규칙 5, #661 리뷰). 심각도도 엔진이 붙인 값이라고
- * 안내에 적는다. 요약 · 증거는 서버 원문이라 가려서 보인다.
+ * 점검 진행 가운데의 발견 후보 목록 (사용자 11/17 '취약점 나온 것들 다 나열, 실시간'). 제품 Worker 는 원본 ARTEX
+ * report_finding 이 없고(agent/tool_profile.go) 진단 후보를 저장하므로, 제품 후보 조회
+ * (GET /api/tasks/{id}/diagnostic-candidates, #694)를 최근 순으로 보인다. 서버가 주는 것은 후보 ID · 검토 상태 ·
+ * 관측 시각 · 추정 등급뿐이라 제목 · 경로 · 증거 자리는 두지 않는다. 후보는 검증 전 검토 대상이다(절대 규칙 5).
+ * 409 candidate_run_not_active 는 오류가 아니라 '실행 조회 경계가 닫힘'이라 경고 대신 안내로 바꾸고 다시 읽지 않는다.
  */
-function LiveFindings({
+function LiveCandidates({
   poll,
   fresh,
-  ended,
+  idle,
 }: {
-  poll: Poll<LiveFinding[]>;
+  poll: Poll<LiveCandidatePage>;
   fresh: ReadonlySet<string>;
-  ended: boolean;
+  idle: CandidateIdle;
 }) {
-  const [open, setOpen] = useState<string | null>(null);
-  const list = [...(poll.data ?? [])].sort(
-    (x, y) => (y.ts || "").localeCompare(x.ts || "") || Number(y.id) - Number(x.id),
-  );
-  const bySev = SEV_KEYS.map((k) => [k, list.filter((f) => sevKey(f.severity) === k).length] as const).filter(
-    ([k, n]) => k !== "info" || n > 0,
-  );
-  const noSev = list.filter((f) => !sevKey(f.severity)).length;
-  let body: ReactNode;
+  const page = poll.data;
+  const list = page?.items ?? [];
+  const closed = isCandidateRunNotActive(poll.error);
   // 한 번 읽은 뒤의 실패도 숨기지 않는다: usePoll 은 직전 목록을 남기고 403 · 404 · 503 이면 다시 부르지 않으므로,
-  // 목록 위에 갱신 실패와 [다시 시도]를 보이고 아래 목록은 마지막으로 읽은 것이라고 적는다
-  const stale = !!poll.data && !!poll.error;
-  if (!poll.data && poll.error) body = <FindReadError error={poll.error} onRetry={poll.reload} />;
-  else if (!poll.data) body = <LoadingRow />;
-  else if (!list.length)
-    body = (
-      <p className={s.empty}>
-        {`${ended ? "이 점검에서 나온 발견이 없습니다." : "아직 나온 발견이 없습니다."} 발견이 없다고 안전하다는 뜻은 아닙니다.`}
-      </p>
+  // 목록 위에 갱신 실패와 [다시 읽기]를 보이고 아래 목록은 마지막으로 읽은 것이라고 적는다. 409 는 실패가 아니다
+  const failed = !!poll.error && !closed;
+  // 결과 불명 · 상태 미확인으로 읽기를 멈췄을 때 남은 목록도 마지막으로 읽은 것이다
+  const stale = !!page && (failed || closed || idle !== null);
+  const bySev = SEV_LEVELS.map((v) => [v, list.filter((c) => c.suggestedSeverity === v).length] as const).filter(
+    ([v, n]) => v !== "info" || n > 0,
+  );
+  const noSev = list.filter((c) => !c.suggestedSeverity).length;
+  let lead: ReactNode = null;
+  if (idle === "prestart") lead = <p className={s.empty}>점검 시작이 확인되면 후보를 읽습니다.</p>;
+  else if (idle === "unknown")
+    lead = <p className={s.empty}>결과 불명인 점검은 후보를 이어 읽지 않습니다. 상태를 다시 조회하세요.</p>;
+  else if (idle === "unverified")
+    lead = <p className={s.empty}>점검 상태를 확인하지 못해 후보를 읽지 않습니다. 상태를 다시 조회하세요.</p>;
+  else if (closed)
+    lead = (
+      <div className={s.note} role="status" id="lFindsClosed">
+        <Icon name="info" />
+        <span className={s["lv-grow"]}>
+          {`점검 실행이 닫혀(시작 확인 전 · 마감 · 결과 불명) 후보를 더 읽지 않습니다.${page ? " 아래는 마지막으로 읽은 목록입니다." : ""} 끝난 점검의 결과와 판정은 보고서에서 봅니다.`}
+        </span>
+      </div>
     );
-  else
+  else if (stale) lead = <FindReadError error={poll.error} onRetry={poll.reload} stale />;
+  let body: ReactNode = null;
+  if (idle && !page) body = null;
+  else if (!page && failed) body = <FindReadError error={poll.error} onRetry={poll.reload} />;
+  else if (!page && !closed) body = <LoadingRow />;
+  else if (page && !list.length)
+    body = <p className={s.empty}>아직 나온 후보가 없습니다. 후보가 없다고 안전하다는 뜻은 아닙니다.</p>;
+  else if (page)
     body = (
       <ul className={s.lfinds} id="lFinds">
-        {list.map((f) => {
-          const on = open === f.id;
-          const where = f.assets.map((x) => x.label).filter(Boolean)[0];
-          return (
-            <li key={f.id} className={cx(s.lfind, fresh.has(f.id) && s.fresh)}>
-              <button
-                className={s["lfind-row"]}
-                type="button"
-                aria-expanded={on}
-                aria-controls={`lFind-${f.id}`}
-                onClick={() => setOpen(on ? null : f.id)}
-              >
-                <SevOf severity={f.severity} />
-                <span className={s["lfind-m"]}>
-                  <span className={s["lfind-t"]}>
-                    {maskSecrets(f.name || f.vulnclass) || "이름 없는 발견"}
-                    {fresh.has(f.id) ? <span className={cx(s.tag, s.new)}>새로</span> : null}
-                  </span>
-                  <span className={s["lfind-s"]}>
-                    {[where ? maskSecrets(where) : "", f.vulnclass ? maskSecrets(f.vulnclass) : "", clockOf(f.ts)]
-                      .filter(Boolean)
-                      .join(" · ")}
-                  </span>
+        {list.map((c) => (
+          <li key={c.candidateId} className={cx(s.lfind, fresh.has(c.candidateId) && s.fresh)}>
+            <div className={s["lfind-row"]}>
+              <CandidateSev sev={c.suggestedSeverity} />
+              <span className={s["lfind-m"]}>
+                <span className={s["lfind-t"]}>
+                  {`후보 #${c.candidateId}`}
+                  {fresh.has(c.candidateId) ? <span className={cx(s.tag, s.new)}>새로</span> : null}
                 </span>
-              </button>
-              {on ? (
-                <div className={s["lfind-d"]} id={`lFind-${f.id}`}>
-                  <p>{f.summary ? maskSecrets(f.summary) : "서버가 요약을 주지 않았습니다."}</p>
-                  {f.evidence ? <pre className={s.code}>{prettyEvidence(f.evidence)}</pre> : null}
-                </div>
-              ) : null}
-            </li>
-          );
-        })}
+                <span className={s["lfind-s"]}>
+                  <time dateTime={c.observedAt} title={dateTimeOf(c.observedAt)}>
+                    {`관측 ${clockOf(c.observedAt)}`}
+                  </time>
+                  {" · 검토 필요"}
+                </span>
+              </span>
+            </div>
+          </li>
+        ))}
       </ul>
     );
+  let countText = "";
+  if (page) countText = `${candidateCountText(page)} · ${stale ? "마지막으로 읽은 목록" : "최근 순"}`;
   return (
     <section className={s.sec} aria-labelledby="lFindsH">
       <div className={s.sh}>
         <h2 id="lFindsH">발견 후보</h2>
-        <span className={s.n}>
-          {poll.data ? `${list.length}건 · ${stale ? "마지막으로 읽은 목록" : "최신 순"}` : ""}
+        <span className={s.n} id="lFindsN">
+          {countText}
         </span>
       </div>
       {list.length ? (
         <div className={s.vbar}>
-          {bySev.map(([k, n]) => (
-            <span key={k}>
-              {`${SEVL[k]} `}
+          {bySev.map(([v, n]) => (
+            <span key={v}>
+              {`${candidateSeverityText(v)} `}
               <b>{n}</b>
             </span>
           ))}
           {noSev ? (
             <span>
-              등급 없음 <b>{noSev}</b>
+              {`${candidateSeverityText(null)} `}
+              <b>{noSev}</b>
             </span>
           ) : null}
         </div>
       ) : null}
       <p className={s.help}>
-        점검 중에 나온 검증 전 후보입니다. 심각도는 엔진이 붙인 값이고, 확정 여부는 점검이 끝난 뒤 보고서의 판정에서
-        봅니다.
+        {`점검 중에 저장된 검증 전 후보입니다(모두 검토 필요). 등급은 Worker 가 붙인 예상값이고, 확정 여부는 점검이 끝난 뒤 보고서의 판정에서 봅니다.${
+          page?.truncated
+            ? ` 후보가 많아 최근 ${page.returned}건만 받았고, 위 집계도 받은 ${page.returned}건 기준입니다.`
+            : ""
+        }`}
       </p>
-      {stale ? <FindReadError error={poll.error} onRetry={poll.reload} stale /> : null}
+      {lead}
       {body}
     </section>
+  );
+}
+
+/** 후보 추정 등급 순서(집계 띠). 정보성은 있을 때만 보인다. */
+const SEV_LEVELS: readonly SeverityLevel[] = ["critical", "high", "medium", "low", "info"];
+
+/**
+ * 끝난 점검의 안내: 점검 중 후보 목록은 실행 중에만 서버가 열어 둔다(409). 결과 · 확정 단계 판정은 보고서에서 본다.
+ */
+function CandidatesEnded({ reportReadable }: { reportReadable: boolean }) {
+  // [보고서 보기]는 위 상태 카드에 이미 있어(결과 저장 확인 때) 여기에 또 두지 않는다
+  return (
+    <p className={s.help} role="note" id="lFindsEnded">
+      {reportReadable
+        ? "점검이 끝나 진행 중 후보 목록을 더 읽지 않습니다. 결과와 확정 단계 판정 목록은 위 [보고서 보기]에서 봅니다."
+        : "점검이 끝나 진행 중 후보 목록을 더 읽지 않습니다. 결과 저장이 확인되면 보고서에서 결과와 판정 목록을 봅니다."}
+    </p>
   );
 }
 
@@ -436,14 +476,15 @@ export function UrlLiveLive() {
     intervalMs: 15000,
   });
   // 모델 사용량: 원본 ARTEX 작업 합계(입력 · 캐시 읽기 · 출력). 전송 통제 예산 기록(model_usage)에는 캐시가 없다
-  // 점검 중 발견 후보 (원본 ARTEX 발견 목록, 진행 중엔 다시 읽는다)
-  // 점검 중에만 읽는다(끝나면 제품 서버가 이 목록을 닫는다). 상태를 확인하지 못했으면(결과 불명 등) 이어 읽지 않는다
-  const findsLive = !!job?.task_id && verified && !!job && !URL_ENDED_STATES.includes(job.state);
-  const finds = usePoll(() => fetchTaskFindings(job?.task_id as string), [job?.task_id], {
-    enabled: visible && findsLive,
-    intervalMs: job && URL_ENDED_STATES.includes(job.state) ? 0 : FINDINGS_POLL_MS,
+  // 점검 중 발견 후보 (제품 후보 조회 #694). 서버가 여는 조건(ProductCandidateJobActive: 시작 확인 · running/stopping ·
+  // 마감 · 결과 저장 전)과 같을 때만 읽어 시작 전 · 끝난 뒤에 409 를 일부러 부르지 않는다. 화면이 안 보이면(다른 탭 ·
+  // 문서 숨김) 멈추고, 응답 뒤 5초 쉬고 다시 읽는다(겹치지 않음). task 가 바뀌면 남은 요청을 끊는다(usePoll)
+  const findsIdle = candidateIdle(job, verified);
+  const finds = usePoll((signal) => fetchLiveCandidates(job?.task_id as string, signal), [job?.task_id], {
+    enabled: visible && !!job?.task_id && findsIdle === null,
+    intervalMs: LIVE_CANDIDATES_POLL_MS,
   });
-  const fresh = useFreshIds(job?.task_id, finds.data);
+  const fresh = useFreshIds(job?.task_id, finds.data?.items);
   // 끝난 점검의 발견: 결과 저장이 확인된 task 의 저장 판정 결과 (보고서와 같은 자료)
   const savedTask = g.reportReadable && job?.task_id ? job.task_id : null;
   const saved = usePoll(() => fetchRemediation(savedTask as string, "internal"), [savedTask], {
@@ -582,7 +623,9 @@ export function UrlLiveLive() {
   const planDone = plan.filter((p) => planState(p.state).row === "done").length;
   // 상단 카드 숫자 칸: 서버 값이 있는 것만 (계획은 계획이 있을 때만, 발견 후보는 읽었을 때만)
   const found = finds.data ?? null;
-  const highUp = found ? found.filter((f) => ["crit", "hi"].includes(sevKey(f.severity) ?? "")).length : 0;
+  const highUp = found
+    ? found.items.filter((c) => c.suggestedSeverity === "critical" || c.suggestedSeverity === "high").length
+    : 0;
   const gauge = flow && job.state !== "unknown" ? gaugeSegments(flow, !!job.result_ready) : null;
   const stats: { k: string; v: string; sub: string; warn?: boolean }[] = [];
   if (flow && job.state !== "unknown") {
@@ -595,7 +638,13 @@ export function UrlLiveLive() {
     const savedFindings = saved.data.entries.filter((e) => diagnosticOutcome(e) !== "negative");
     const confirmed = savedFindings.filter((e) => diagnosticOutcome(e) === "confirmed").length;
     stats.push({ k: "발견", v: String(savedFindings.length), sub: `확정 ${confirmed}` });
-  } else if (!ended && found) stats.push({ k: "발견 후보", v: String(found.length), sub: `심각 · 높음 ${highUp}` });
+  } else if (!ended && found)
+    // 일부만 왔으면 받은 행 수에 '+' — 전체 수는 모른다(candidate_total null). 받은 수를 전체로 쓰지 않는다
+    stats.push({
+      k: "발견 후보",
+      v: found.truncated ? `${found.returned}+` : String(found.returned),
+      sub: found.truncated ? `최근 ${found.returned}건만 받음` : `예상 심각 · 높음 ${highUp}`,
+    });
   if (g.runReadable)
     stats.push({ k: "확인 필요", v: String(a.pending.length), sub: "승인 대기", warn: a.pending.length > 0 });
   // 모델 사용량은 상태 카드 안 한 줄 (입 · 출). 서버 기록이 아직 없으면 자리를 두지 않는다
@@ -717,7 +766,8 @@ export function UrlLiveLive() {
             </section>
           ) : null}
           {/* 발견: 점검 중엔 발견 후보(실시간), 끝나면 저장된 결과를 보고서 형식으로 */}
-          {!ended && job.task_id ? <LiveFindings poll={finds} fresh={fresh} ended={ended} /> : null}
+          {!ended && job.task_id ? <LiveCandidates poll={finds} fresh={fresh} idle={findsIdle} /> : null}
+          {ended && job.task_id ? <CandidatesEnded reportReadable={g.reportReadable} /> : null}
           {ended && savedTask ? <SavedFindings poll={saved} /> : null}
           {ended && !savedTask ? <p className={s.empty}>결과 저장이 확인되면 발견 목록이 여기에 나옵니다.</p> : null}
           {a.message ? <p role="status">{a.message}</p> : null}

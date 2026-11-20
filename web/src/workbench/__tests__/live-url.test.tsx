@@ -49,8 +49,11 @@ vi.mock("../live/api", async (importOriginal) => ({
   fetchRemediation: vi.fn(),
   fetchDiagnosisRun: vi.fn(),
   fetchCoverage: vi.fn(),
-  fetchTaskFindings: vi.fn(),
   fetchTasks: vi.fn(),
+}));
+vi.mock("../live/diagnosticCandidates", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../live/diagnosticCandidates")>()),
+  fetchLiveCandidates: vi.fn(),
 }));
 
 import * as teamApi from "@/lib/diagnosis/api";
@@ -71,6 +74,7 @@ import {
 
 import * as api from "../live/api";
 import { checkLiveAuth, getLiveAuthState, setLiveAuthState } from "../live/auth";
+import * as cands from "../live/diagnosticCandidates";
 import { LiveFeeds } from "../live/feeds";
 import { clockOf, dateTimeOf } from "../live/map";
 import { LiveRailTasks } from "../live/rail";
@@ -91,13 +95,32 @@ import { createInitialState, useWb } from "../store";
 import { Markdown } from "../ui/Markdown";
 import { DashboardByMode, LiveByMode, NewScanByMode, ReportByMode, ScopeByMode } from "../views/live/byMode";
 import { UrlFindingLive } from "../views/live/UrlFindingLive";
-import { buildPocMarkdown, entryEp, FINDINGS_POLL_MS, FindingDetail } from "../views/live/UrlLiveLive";
+import { buildPocMarkdown, entryEp, FindingDetail } from "../views/live/UrlLiveLive";
 import { EXCLUDE_EXAMPLE } from "../views/live/UrlNewScanLive";
 import { WorkflowCrawlLive } from "../views/live/workflowViews";
 import s from "../workbench.module.css";
 
 const u = vi.mocked(url);
 const a = vi.mocked(api);
+const c = vi.mocked(cands);
+/** 서버 모양 그대로의 후보 쪽 (진짜 파서를 지나게 해 계약 밖 모의값이 화면에 닿지 않게). */
+function candPage(ids: number[], opts: { truncated?: boolean; sev?: Record<number, string> } = {}) {
+  return cands.parseLiveCandidates(
+    {
+      task_id: "42",
+      items: ids.map((id) => ({
+        candidate_id: String(id),
+        state: "manual_review_required",
+        observed_at: `2026-11-11T01:00:${String(id % 60).padStart(2, "0")}Z`,
+        ...(opts.sev?.[id] ? { suggested_severity: opts.sev[id] } : {}),
+      })),
+      returned: ids.length,
+      candidate_total: opts.truncated ? null : ids.length,
+      truncated: !!opts.truncated,
+    },
+    "42",
+  );
+}
 const noop = () => undefined;
 
 it("URL 입력 뒤 외부 LLM을 펼쳐 모델·키를 등록하고 범위 조회만 한다", async () => {
@@ -344,7 +367,7 @@ beforeEach(() => {
   a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [] });
   a.fetchDiagnosisRun.mockResolvedValue(RUN_RECORD);
   a.fetchCoverage.mockRejectedValue(new ApiError(503, "coverage disabled"));
-  a.fetchTaskFindings.mockResolvedValue([]);
+  c.fetchLiveCandidates.mockResolvedValue(candPage([]));
   a.fetchTasks.mockResolvedValue({ active: "", tasks: [] });
   vi.mocked(teamApi.readAuthStatus).mockResolvedValue({ initialized: true });
   vi.mocked(teamApi.restoreSession).mockResolvedValue(true);
@@ -1080,73 +1103,159 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(screen.queryByText(/^작업 합계/)).toBeNull();
   });
 
-  it("점검 진행 발견 후보: 진행 중엔 다시 읽고, 화면을 연 뒤 새로 들어온 발견에만 '새로'", async () => {
+  it("점검 진행 발견 후보: 진행 중엔 5초 쉬고 다시 읽고, 화면을 연 뒤 새로 들어온 후보에만 '새로'", async () => {
     vi.useFakeTimers();
     saveHandle();
     u.readURLStatus.mockResolvedValue(running);
-    const one: api.LiveFinding = {
-      id: "1",
-      finding_id: "1",
-      vulnclass: "idor",
-      name: "처음 발견",
-      severity: "high",
-      status: "pending",
-      summary: "",
-      evidence: "",
-      traffic_count: 1,
-      assets: [],
-      task_id: "42",
-      source_task_id: "",
-      inherited: false,
-      ts: "2026-11-11T01:00:00Z",
-    };
-    a.fetchTaskFindings.mockResolvedValue([one]);
+    c.fetchLiveCandidates.mockResolvedValue(candPage([7], { sev: { 7: "high" } }));
     mount("live");
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
-    expect(a.fetchTaskFindings).toHaveBeenCalledWith("42");
+    expect(c.fetchLiveCandidates).toHaveBeenCalledWith("42", expect.any(AbortSignal));
     const finds = screen.getByRole("region", { name: "발견 후보" });
-    expect(within(finds).getByText("1건 · 최신 순")).toBeInTheDocument();
-    expect(within(finds).queryByText(/^정보성$/)).toBeNull();
+    expect(within(finds).getByText("1건 · 최근 순")).toBeInTheDocument();
     expect(within(finds).queryByText("새로")).toBeNull();
-    a.fetchTaskFindings.mockResolvedValue([{ ...one, id: "2", name: "새 발견", ts: "2026-11-11T01:00:30Z" }, one]);
+    c.fetchLiveCandidates.mockResolvedValue(candPage([8, 7], { sev: { 7: "high" } }));
+    const calls = c.fetchLiveCandidates.mock.calls.length;
+    // 5초 전에는 다시 부르지 않는다(공식 측정 중 화면을 켜 둬도 제품에 부담 없게)
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(FINDINGS_POLL_MS);
+      await vi.advanceTimersByTimeAsync(cands.LIVE_CANDIDATES_POLL_MS - 1);
     });
-    expect(within(finds).getByText("2건 · 최신 순")).toBeInTheDocument();
-    expect(within(finds).getByText("새로").closest("li")).toHaveTextContent("새 발견");
+    expect(c.fetchLiveCandidates.mock.calls.length).toBe(calls);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(c.fetchLiveCandidates.mock.calls.length).toBe(calls + 1);
+    expect(within(finds).getByText("2건 · 최근 순")).toBeInTheDocument();
+    expect(within(finds).getByText("새로").closest("li")).toHaveTextContent("후보 #8");
     expect(within(finds).getAllByText("새로")).toHaveLength(1);
+    expect(within(finds).getByText("후보 #8").closest("li")).toHaveTextContent(/^위험도 미평가/);
+  });
+
+  it("점검 진행 발견 후보: 폴링 간격은 5초 이상, 문서가 숨으면 멈추고 다시 보이면 바로 읽는다", async () => {
+    expect(cands.LIVE_CANDIDATES_POLL_MS).toBeGreaterThanOrEqual(5000);
+    vi.useFakeTimers();
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    mount("live");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    const before = c.fetchLiveCandidates.mock.calls.length;
+    const vis = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    try {
+      await act(async () => {
+        document.dispatchEvent(new Event("visibilitychange"));
+        await vi.advanceTimersByTimeAsync(cands.LIVE_CANDIDATES_POLL_MS * 6);
+      });
+      expect(c.fetchLiveCandidates.mock.calls.length).toBe(before);
+      vis.mockReturnValue("visible");
+      await act(async () => {
+        document.dispatchEvent(new Event("visibilitychange"));
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(c.fetchLiveCandidates.mock.calls.length).toBe(before + 1);
+    } finally {
+      vis.mockRestore();
+    }
+  });
+
+  it("점검 진행 발견 후보: 일부만 오면(truncated) 받은 수로 '최근 N건만 표시', 전체 수는 미상", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    const ids = Array.from({ length: 200 }, (_, i) => 400 - i);
+    c.fetchLiveCandidates.mockResolvedValue(candPage(ids, { truncated: true, sev: { 400: "critical" } }));
+    mount("live");
+    const finds = await screen.findByRole("region", { name: "발견 후보" });
+    expect(await within(finds).findByText("최근 200건만 표시 · 전체 수 미상 · 최근 순")).toBeInTheDocument();
+    expect(
+      within(finds).getByText(/후보가 많아 최근 200건만 받았고, 위 집계도 받은 200건 기준입니다/),
+    ).toBeInTheDocument();
+    expect((document.getElementById("lFinds") as HTMLElement).children).toHaveLength(200);
+    // 상태 카드 숫자 칸도 받은 수 + '+' (받은 수를 전체로 쓰지 않는다)
+    const stat = within(document.getElementById("lMeta") as HTMLElement).getByText("발견 후보")
+      .parentElement as HTMLElement;
+    expect(stat).toHaveTextContent(/^발견 후보200\+최근 200건만 받음$/);
+  });
+
+  it("점검 진행 발견 후보: 409 candidate_run_not_active 는 오류로 보이지 않고 폴링을 멈춘다", async () => {
+    vi.useFakeTimers();
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    c.fetchLiveCandidates.mockResolvedValue(candPage([3]));
+    mount("live");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    const finds = screen.getByRole("region", { name: "발견 후보" });
+    c.fetchLiveCandidates.mockRejectedValue(new ApiError(409, "candidate_run_not_active"));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(cands.LIVE_CANDIDATES_POLL_MS);
+    });
+    const calls = c.fetchLiveCandidates.mock.calls.length;
+    expect(within(finds).queryByRole("alert")).toBeNull();
+    expect(within(finds).getByRole("status")).toHaveTextContent(
+      "점검 실행이 닫혀(시작 확인 전 · 마감 · 결과 불명) 후보를 더 읽지 않습니다. 아래는 마지막으로 읽은 목록입니다. 끝난 점검의 결과와 판정은 보고서에서 봅니다.",
+    );
+    expect(within(finds).getByText("1건 · 마지막으로 읽은 목록")).toBeInTheDocument();
+    expect(within(finds).queryByRole("button", { name: "다시 읽기" })).toBeNull();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(cands.LIVE_CANDIDATES_POLL_MS * 4);
+    });
+    expect(c.fetchLiveCandidates.mock.calls.length).toBe(calls);
+  });
+
+  it("점검 진행 발견 후보: 시작 확인 전 · 결과 불명이면 부르지 않는다(409 를 일부러 만들지 않음)", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue({ ...running, started: false, state: "stopping", phase: "closure" });
+    mount("live");
+    const finds = await screen.findByRole("region", { name: "발견 후보" });
+    expect(within(finds).getByText("점검 시작이 확인되면 후보를 읽습니다.")).toBeInTheDocument();
+    expect(c.fetchLiveCandidates).not.toHaveBeenCalled();
+  });
+
+  it("점검 진행 발견 후보: 응답이 계약과 다르면 일부만 그리지 않고 실패로 알린다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    c.fetchLiveCandidates.mockImplementation(async () =>
+      cands.parseLiveCandidates({ task_id: "42", items: [], returned: 0, candidate_total: 3, truncated: false }, "42"),
+    );
+    mount("live");
+    const finds = await screen.findByRole("region", { name: "발견 후보" });
+    expect(await within(finds).findByRole("alert")).toHaveTextContent(
+      "발견 후보를 읽지 못했습니다 (HTTP 422). 서버 응답 형식이 계약과 달라 후보를 표시하지 않습니다.",
+    );
+    expect(document.getElementById("lFinds")).toBeNull();
   });
 
   it("점검 진행 발견 후보: 한 번 읽은 뒤 다시 읽다 실패(503)해도 숨기지 않고, 마지막 목록이라고 알리며 다시 읽을 수 있다", async () => {
     vi.useFakeTimers();
     saveHandle();
     u.readURLStatus.mockResolvedValue(running);
-    a.fetchTaskFindings.mockResolvedValue([]);
     mount("live");
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
     const finds = screen.getByRole("region", { name: "발견 후보" });
-    expect(within(finds).getByText("0건 · 최신 순")).toBeInTheDocument();
-    a.fetchTaskFindings.mockRejectedValue(new ApiError(503, "unavailable"));
+    expect(within(finds).getByText("0건 · 최근 순")).toBeInTheDocument();
+    c.fetchLiveCandidates.mockRejectedValue(new ApiError(503, "candidate_read_unavailable"));
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(FINDINGS_POLL_MS);
+      await vi.advanceTimersByTimeAsync(cands.LIVE_CANDIDATES_POLL_MS);
     });
     expect(within(finds).getByRole("alert")).toHaveTextContent(
-      "발견 후보를 다시 읽지 못해 갱신이 멈췄습니다 (HTTP 503). 아래는 마지막으로 읽은 목록이라 최신이 아닐 수 있습니다.",
+      "발견 후보를 다시 읽지 못해 갱신이 멈췄습니다 (HTTP 503). 후보 저장 근거를 지금 읽을 수 없습니다. 아래는 마지막으로 읽은 목록이라 최신이 아닐 수 있습니다.",
     );
     expect(within(finds).getByText("0건 · 마지막으로 읽은 목록")).toBeInTheDocument();
-    const calls = a.fetchTaskFindings.mock.calls.length;
-    a.fetchTaskFindings.mockResolvedValue([]);
+    const calls = c.fetchLiveCandidates.mock.calls.length;
+    c.fetchLiveCandidates.mockResolvedValue(candPage([]));
     await act(async () => {
       fireEvent.click(within(finds).getByRole("button", { name: "다시 읽기" }));
       await vi.advanceTimersByTimeAsync(0);
     });
-    expect(a.fetchTaskFindings.mock.calls.length).toBe(calls + 1);
+    expect(c.fetchLiveCandidates.mock.calls.length).toBe(calls + 1);
     expect(within(finds).queryByRole("alert")).toBeNull();
-    expect(within(finds).getByText("0건 · 최신 순")).toBeInTheDocument();
+    expect(within(finds).getByText("0건 · 최근 순")).toBeInTheDocument();
   });
 
   it("탐색 흐름 없는 점검은 점검 중에만 서버 진단 활동을 두고(활동 기록 대신), 끝나면 두지 않는다", async () => {
@@ -1304,7 +1413,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     mount("live");
     const finds = await screen.findByRole("region", { name: "발견 후보" });
     expect(
-      await within(finds).findByText("아직 나온 발견이 없습니다. 발견이 없다고 안전하다는 뜻은 아닙니다."),
+      await within(finds).findByText("아직 나온 후보가 없습니다. 후보가 없다고 안전하다는 뜻은 아닙니다."),
     ).toBeInTheDocument();
   });
 
@@ -1587,15 +1696,21 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(rows[0].tagName).toBe("DIV");
     expect(rows[0]).toHaveTextContent(/^위험도 미평가후보 1\/api\/items\/\{id\}idor검토 필요$/);
     expect(a.fetchRemediation).toHaveBeenCalledWith("42", "internal");
-    // 끝난 점검은 제품 서버가 점검 중 발견 목록을 닫으므로 부르지 않는다
-    expect(a.fetchTaskFindings).not.toHaveBeenCalled();
+    // 끝난 점검은 제품 서버가 점검 중 후보 조회를 닫으므로(409) 부르지 않고, 보고서 · 판정 목록으로 안내한다
+    expect(c.fetchLiveCandidates).not.toHaveBeenCalled();
     expect(screen.queryByRole("region", { name: "발견 후보" })).toBeNull();
+    const ended = document.getElementById("lFindsEnded") as HTMLElement;
+    expect(ended).toHaveTextContent(
+      "점검이 끝나 진행 중 후보 목록을 더 읽지 않습니다. 결과와 확정 단계 판정 목록은 위 [보고서 보기]에서 봅니다.",
+    );
     // 상태 카드 숫자 칸: 발견 2 · 확정 0
     expect(within(document.getElementById("lMeta") as HTMLElement).getByText("발견").parentElement).toHaveTextContent(
       /^발견2확정 0$/,
     );
     fireEvent.click(rows[1]);
     expect(goTo).not.toHaveBeenCalledWith("report");
+    // 안내 줄에는 버튼을 또 두지 않는다(상태 카드의 [보고서 보기] 하나)
+    expect(within(ended).queryByRole("button")).toBeNull();
   });
 
   it("중지 요청은 같은 진단에 한 번 (expected revision 은 팀 lib 이 넣는다)", async () => {
