@@ -164,7 +164,8 @@ def split_run_spec(config: RunnerConfig, plan: SplitPlan, declared: SplitDeclare
         condition=condition, fixture_fingerprint=declared.fixture_fingerprint,
         environment_fingerprint=declared.environment_fingerprint, target_origin=declared.target_origin,
         observer_path=config.observer_path, observer_readonly_ref=config.observer_readonly_ref,
-        allowed_listens=frozenset(Listener(entry.address, entry.port) for entry in config.host_listen_allowlist))
+        allowed_listens=frozenset(Listener(entry.address, entry.port) for entry in config.host_listen_allowlist),
+        observer_login_file=config.split.observer_password_file is not None)
     # 실행 입력을 만드는 시점에 v1.1 기록 칸을 본다. 비면 설정 오류(종료 코드 2, 회차를 만들지 않음)다(#745 리뷰).
     missing = missing_record_fields(spec)
     if missing:

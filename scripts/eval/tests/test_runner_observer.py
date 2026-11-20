@@ -140,6 +140,7 @@ class TestFlow(Fixture):
         def execute(spec, ports, meter, evidence, clock):
             install = (Path(ports.inputs.directory) / "install.json").read_text(encoding="utf-8")
             seen["observer"] = self.observer.read_text(encoding="utf-8")
+            seen["spec"] = spec
             seen["install"] = install
             seen["mode"] = stat.S_IMODE(os.lstat(self.observer).st_mode)
             ports.remove_inputs()  # 회차 흐름(execute_split_run)이 끝에 늘 부른다
@@ -149,6 +150,7 @@ class TestFlow(Fixture):
         code, out = self.run_ours(execute_split_run=execute)
         self.assertEqual(code, 0)
         self.assertEqual(seen["mode"], 0o600)
+        self.assertIs(seen["spec"].observer_login_file, True)  # 결과에는 예/아니오만(경로·값 없음)
         password = seen["observer"].split("비밀번호: ", 1)[1].strip()
         self.assertIn(f'"{password}"', seen["install"])  # 설치 입력의 그 회차 관리자 비밀번호
         self.assertFalse(seen["after"])
@@ -168,6 +170,17 @@ class TestFlow(Fixture):
         self.assertEqual(code, 2)
         self.assertFalse(self.observer.exists())
         self.assertEqual(list(self.runs.iterdir()), [])
+
+    def test_not_set_means_no(self):
+        seen = {}
+
+        def execute(spec, ports, meter, evidence, clock):
+            seen["spec"] = spec
+            return {"run_id": spec.run_id, "status": "complete"}
+        self.config = dataclasses.replace(self.config, split=dataclasses.replace(self.config.split, observer_password_file=None))
+        code, _ = self.run_ours(execute_split_run=execute)
+        self.assertEqual(code, 0)
+        self.assertIs(seen["spec"].observer_login_file, False)
 
     def test_unwritable_place_stops_before_up_with_a_code(self):
         os.chmod(self.observer_dir, 0o755)
