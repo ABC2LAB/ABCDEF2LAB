@@ -40,6 +40,7 @@ docker build -f deploy/eval/practice/vampi.Dockerfile -t abc2lab-practice-vampi:
 - 관측 경로 `GET /`는 고정 문자열을 돌려주는 `api_views.main.basic`이다. DB를 읽거나 쓰지 않는다.
 - `/createdb`는 그대로 열려 있다. 엔진이 부르면 DB를 지우고 다시 채우며, 그 변화는 상태 차이에 잡힌다.
 - 토큰 수명은 원본 기본값(`tokentimetolive=60`, 60초)이다. 응답이 느린 모델에서는 재로그인이 늘 수 있다.
+- 제품 회차 overlay(`compose.practice-vampi.yaml`)는 원본 환경 변수 `vulnerable`·`tokentimetolive`를 `VAMPI_VULNERABLE`(기본 1)·`VAMPI_TOKEN_TTL`(기본 60)로 받는다. E③ 실제 검증의 회차 조건에서만 바꾼다.
 - Flask 디버그 모드로 뜬다. 회차 전용 내부 망에만 붙으므로 러너의 격리 조건 안에 있다.
 
 알려진 취약점 목록(원본 README)은 사람이 결과를 읽을 때만 본다. 엔진 입력에 넣지 않는다.

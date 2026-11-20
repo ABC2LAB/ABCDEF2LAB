@@ -1,6 +1,6 @@
 # E③ 실제 검증 — VAmPI (공식 측정 Go 조건 1 준비)
 
-**상태: 준비만 해 둠(실행하지 않음).** 제품 회차라 모델 단계에서 유료 모델 호출이 든다. E② 영수증·저널 v3가 들어오는 날 바로 돌릴 수 있게 시나리오·기대 결과·집계를 고정해 둔다. 가짜 v3로 돌릴 수 있는 부분은 미리 돌렸다(§8).
+**상태: 실행 계획 확정(2026-11-20 사용자, §10).** E② v3 송신·판정 저장·봉인 확인까지 제품에 연결됐고(#804·#809~#813, #815·#816 머지 뒤), 합성 A/B 회차로 끝까지 확인했다. 실제 검증은 그 뒤 dev 빌드로 돈다. 가짜 v3로 돌릴 수 있는 부분은 미리 돌렸다(§8).
 
 근거: [개발 계획](../development-plan.md) "공식 측정 Go/No-Go 조건" 1, [E③ 확정 경로 결정](../e3-confirm-path-decision.md), [제품 확정 단계 인터페이스](../contracts/e3-product-confirmation-interface.md), [E③↔E② v3 계약](../contracts/e3-e2-v3-journal-contract.md).
 
@@ -30,7 +30,8 @@ Go 조건 1: E③ 제품 경로 통합과 VAmPI 실제 검증, 반례 포함, �
 ## 3. 대상 준비
 
 - 이미지: `deploy/eval/practice/vampi.Dockerfile`(원본 VAmPI에 DB를 미리 채움). 회차마다 새 컨테이너로 띄운다(상태 변경 재현 전 리셋, CLAUDE.md 규칙 6). 대상 쓰기를 남기는 회차 뒤에는 제품의 리셋 확인(`POST /api/product/targets/{id}/reset-confirmation`)을 컨테이너를 새로 띄운 뒤에만 한다(S17은 일부러 안 띄우고 확인).
-- 환경 변수: `vulnerable=1`(BOLA 있음). S02는 `vulnerable=0`인 별도 인스턴스(교차 조회가 404). `tokentimetolive`는 기본 60초 그대로 둔다. 제품 E²의 세션 다시 받기(`refresh_session`)로 이어지는지가 이 검증에 포함된다. 끊기면 그 회차 기록에 남기고 값은 바꾸지 않는다(바꾸면 결정안 §14.1처럼 회차 조건에 적는다).
+- 환경 변수: `vulnerable=1`(BOLA 있음). S02는 `vulnerable=0`인 별도 인스턴스(교차 조회가 404). `tokentimetolive`는 기본 60초다. 제품 E²의 세션 다시 받기(`refresh_session`)로 이어지는지가 이 검증에 포함된다. 바꾸는 회차(S20 재로그인, S21 확정 단계 중 만료)는 회차 조건에 값을 적는다.
+- 값 넣는 곳: 제품 직접 실행은 `compose.practice-vampi.yaml`이 `VAMPI_VULNERABLE`(기본 1)·`VAMPI_TOKEN_TTL`(기본 60)을 받는다. 러너 회차는 대상 서비스 환경 overlay로 넣는다.
 - 대상 등록: 제품 대상 등록·DNS 증명·승인에서 경로 접두 `/`, 메서드 GET·POST, 쓰기 동의와 리셋할 수 있는 쓰기(`reversible_writes`)를 켠다(결정 §3 조건 1). 확정 몫은 승인된 실행 정책에서 서버가 계산한다.
 
 ## 4. 시험 계정 둘 등록 절차
@@ -77,6 +78,11 @@ Go 조건 1: E③ 제품 경로 통합과 VAmPI 실제 검증, 반례 포함, �
 | S16 | 실행 결속 불일치 | E² 기록 변조 필요 | `confirmation_integrity_failed` / `binding_mismatch` | 없음 | | 가짜만 |
 | S17 | 이전 표식 잔존 | 컨테이너를 새로 띄우지 않고 리셋 확인 뒤 다시 | `start_refused` / `previous_markers_present` | 없음 | ✓ | 가능(잔존 점검 = E² 조회) |
 | S18 | ID 충돌 | 같은 제목이 이미 있음(난수라 실제로는 만들기 어려움) | `completed` | undecidable(`product_create_failed`), 생성 1번 | | 가짜만 |
+| S19 | 예산 압박 | 제품 대상 요청 상한을 낮게 잡아 모델 단계가 상한까지 씀 | `completed` | confirmed(확정 몫으로 끝까지) | | 가능(실제 모델) |
+| S20 | 세션 재로그인 | `VAMPI_TOKEN_TTL`을 짧게 해 모델 단계 중 재로그인 | `completed` | confirmed(바뀐 계정 결속으로) | | 가능(실제 모델) |
+| S21 | 확정 단계 중 토큰 만료 | `VAMPI_TOKEN_TTL`을 몇 초로 줄여 확정 단계 도중 만료 | `completed` | confirmed | | 가능(스크립트 모델) |
+
+- S19~S21은 모두 취약 대상(`vulnerable=1`)이라 기대가 확정이다. 확정이 안 나오면 놓친 확정으로 원인을 찾는다(거짓 CONFIRMED와 따로 센다).
 
 - "가짜만"은 실제 VAmPI로 그 상황을 만들 수 없거나(대상 응답 인코딩·부분 응답), E② 기록을 바꿔야 하는 경우다. 가짜 v3 사전 실행(§8)과 제품·감독자 통합 시험으로 대신한다.
 - S12는 S01 회차가 남긴 쓰기(ID와 함께)로 만든다.
@@ -102,6 +108,27 @@ python3 -I scripts/eval/e3_vampi_tally.py --manifest scripts/eval/e3_vampi/scena
 - `TestAcceptanceRehearsal`은 선언·시나리오 목록을 데이터 파일에서 읽어 가짜 v3 E²와 어댑터로 시나리오마다 확정 단계를 돌리고 기대와 대조한다. 선언은 `e3contract.Declaration.Validate`를 통과해야 한다.
 - 결과(2026-11-19, dev(#766) 위, `id_field` 선언): 18개 시나리오 모두 기대와 같음, 집계 통과 18, 거짓 CONFIRMED 0. `id_field` 선언이면 생성·조회가 같은 ID를 싣고 조회 경로에 그 ID가 들어가며 생성은 종류마다 한 번인지도 이 시험이 본다.
 - 가짜 v3가 보이지 못하는 것: 실제 E²의 목적 규칙·계정 붙이기·표식 정규화기·저널 MAC·신뢰 저장소, 실제 VAmPI 응답 모양, 토큰 만료와 세션 다시 받기, 확정 몫 계산. 이것들이 실제 회차의 몫이다.
+
+## 10. 실행 계획(2026-11-20 사용자 확정)
+
+모든 회차는 #815·#816이 머지된 dev로 빌드한 이미지로 돈다. 수정이 들어가면 dev로 다시 빌드한다. 누적 사용량 상한 $10, 키 남은 금액 $0.30 이하면 멈추고, 거짓 CONFIRMED가 1건이라도 나오면 전체를 멈춘다.
+
+**실제 모델(유료, 6회).** 판정 연결이 모델 단계 결과(후보·저널 길이)에 기대는 시나리오다.
+- S01 3회: 편차, 모델 후보와 판정의 연결, 긴 저널의 근거 체크포인트·봉인 확인·ACK를 본다. 3회 중 확정이 안 나온 회차가 있으면 원인을 찾는다.
+- S02 1회, S19 1회, S20 1회.
+
+**스크립트 모델 + 실제 VAmPI(무료).** 판정 논리는 모델과 상관없다.
+- S03·S04·S05·S10·S21.
+- 연속 회차는 러너가 아니라 제품 직접 실행으로 돈다. 제품 compose(`compose.yaml`+`compose.acceptance.yaml`+탐색 수용+`compose.practice-vampi.yaml`)를 한 번 띄우고, 대상 등록·DNS 증명·승인·선언·시험 계정을 넣는다. 설치는 실제 모델(OpenRouter manifest)과 스크립트 모델(local_model)을 함께 둔다. 첫 회차는 실제 모델 S01이고, 같은 설치에서 다음 작업을 스크립트 모델로 잇는다.
+  - S12: 첫 회차가 남긴 쓰기 뒤 리셋 확인 없이 다음 작업 → `start_refused`/`reset_confirmation_missing`.
+  - S17: 컨테이너를 새로 띄우지 않고 리셋 확인 뒤 다음 작업 → `start_refused`/`previous_markers_present`.
+  - S10: 사용자 승인 모드(`workflow_mode=user_approval_v1`)로 시작한다. 크롤 뒤 끝점을 고르고, 진단 중 승인 API(`GET /api/tasks/{id}/request-approvals`, `POST …/{approvalID}/decision`)에서 모델 요청은 승인하고 확정 단계 생성 요청만 거부한다. 기대는 UNDECIDABLE(`product_create_approval_denied`)이고, 그 종류의 뒤 요청은 0건이다.
+- 실행 방식은 결과 표에 "제품 직접 실행"으로 적는다.
+
+**결과 표와 집계.**
+- 회차마다 빌드 커밋, 모델 종류(실제·스크립트), 상한(대상 요청·시간·모델 비용), 저널 사건 수(Host v3·화면 사본·선언 저널), 확정 단계 상태·사유, 종류별 판정·사유를 적는다.
+- §7 집계로 센다. S01 3회는 회차마다 결과 폴더를 따로 두고 각각 센다.
+- 실제 S01 한 회차는 보고서·지도 화면 표시까지 확인한다.
 
 ## 9. 한계
 
