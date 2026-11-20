@@ -301,6 +301,30 @@ describe("ProductVerdictReport", () => {
     expect(first).not.toHaveTextContent("document");
   });
 
+  it("판정 사유 · 세부 사유는 한국어 문구로, 코드는 마우스를 올렸을 때만, 표에 없는 코드는 '서버 사유 있음'", async () => {
+    const raw = clone(cases.verified);
+    const item = raw.items[1] as Json;
+    item.oracle_value = "undecidable";
+    item.oracle_reason_codes = ["policy_deny_resolved", "data_unverifiable"];
+    item.product_reason_codes = ["product_request_timeout", "product_future_reason"];
+    serve(raw);
+    render(<ProductVerdictReport taskId={raw.task_id} active />);
+    const sec = await screen.findByRole("region", { name: "제품 확정 단계 판정" });
+    await waitFor(() => expect(within(sec).getAllByRole("listitem")).toHaveLength(2));
+    const second = within(sec).getAllByRole("listitem")[1];
+    expect(second).toHaveTextContent("판정 사유 정책상 교차 계정 접근 금지 · 데이터를 확인할 수 없음");
+    expect(second).toHaveTextContent("세부 사유 요청 시간 초과 · 서버 사유 있음");
+    for (const code of [
+      "policy_deny_resolved",
+      "data_unverifiable",
+      "product_request_timeout",
+      "product_future_reason",
+    ]) {
+      expect(second).not.toHaveTextContent(code);
+      expect(within(second).getByTitle(code)).toBeInTheDocument();
+    }
+  });
+
   it("빈 목록은 '취약점 없음'으로 읽히지 않고, 확정 단계 결과가 없으면 꺼졌다고 하지 않는다", async () => {
     serve(cases.empty);
     render(<ProductVerdictReport taskId="4" active />);
@@ -314,7 +338,11 @@ describe("ProductVerdictReport", () => {
   it("확정 단계 꺼짐 · 사유와 당시 원본 미확인을 보인다", async () => {
     serve(cases.disabled_no_labels);
     const { unmount } = render(<ProductVerdictReport taskId="2" active />);
-    expect(await screen.findByText(/확정 단계 꺼짐 · 사유 declaration_missing/)).toBeInTheDocument();
+    const off = await screen.findByRole("region", { name: "제품 확정 단계 판정" });
+    await waitFor(() => expect(off).toHaveTextContent("확정 단계 꺼짐 · 정책 선언 없음"));
+    // 사유 코드 원문은 글에 두지 않고 마우스를 올렸을 때만(title)
+    expect(off).not.toHaveTextContent("declaration_missing");
+    expect(within(off).getByTitle("declaration_missing")).toHaveTextContent("정책 선언 없음");
     unmount();
     serve(cases.source_not_found);
     render(<ProductVerdictReport taskId="2" active />);

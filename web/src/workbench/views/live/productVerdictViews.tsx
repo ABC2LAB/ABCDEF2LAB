@@ -27,6 +27,7 @@ import {
   RECORD_STATUS_TEXT,
 } from "../../live/productVerdicts";
 import { type Poll, usePoll } from "../../live/usePoll";
+import { verdictReasonText } from "../../live/verdictReasons";
 import { Icon } from "../../ui/icons";
 import s from "../../workbench.module.css";
 
@@ -64,11 +65,43 @@ function failText(error: unknown): string {
   return text[status] ?? `제품 판정을 읽지 못했습니다 (HTTP ${status}).`;
 }
 
+/** 사유 코드들을 한국어 문구로. 코드 원문은 마우스를 올리면 보인다(표에 없는 코드는 '서버 사유 있음'). 판정 상세도 쓴다. */
+export function ReasonCodes({ codes }: { codes: readonly string[] }) {
+  return (
+    <>
+      {codes.map((c, i) => (
+        <span key={c} title={c} data-reason={c}>
+          {`${i ? " · " : ""}${verdictReasonText(c)}`}
+        </span>
+      ))}
+    </>
+  );
+}
+
 /** 확정 단계 결과 한 줄. 결과 파일이 없으면 '미확인' — 꺼졌다고 추정하지 않는다. */
-function confirmationText(list: ProductVerdictList): string {
+function Confirmation({ list }: { list: ProductVerdictList }) {
   const c = list.confirmation;
-  if (!c) return "확정 단계 결과 미확인";
-  return c.reason ? `${CONFIRMATION_TEXT[c.status]} · 사유 ${c.reason}` : CONFIRMATION_TEXT[c.status];
+  if (!c) return <>확정 단계 결과 미확인</>;
+  return (
+    <>
+      {CONFIRMATION_TEXT[c.status]}
+      {c.reason ? (
+        <>
+          {" · "}
+          <ReasonCodes codes={[c.reason]} />
+        </>
+      ) : null}
+    </>
+  );
+}
+
+/** 판정이 없을 때 한 줄. 빈 목록은 '취약점 없음'이 아니다(규칙 5). */
+function NoVerdicts({ list }: { list: ProductVerdictList }) {
+  return (
+    <p className={s.empty}>
+      제품 판정 없음 · <Confirmation list={list} /> · 취약점이 없다는 뜻이 아닙니다
+    </p>
+  );
 }
 
 /** 출처 딱지: 제품 · 정책 선언 참조 (대상 승인 판은 행들이 같은 판일 때만). */
@@ -116,12 +149,12 @@ function ShownRow({ r }: { r: ProductVerdictShown }) {
       </div>
       {r.oracleReasonCodes.length ? (
         <div className={s.help}>
-          오라클 사유 <span className={s.mono}>{r.oracleReasonCodes.join(", ")}</span>
+          판정 사유 <ReasonCodes codes={r.oracleReasonCodes} />
         </div>
       ) : null}
       {r.productReasonCodes.length ? (
         <div className={s.help}>
-          제품 사유 <span className={s.mono}>{r.productReasonCodes.join(", ")}</span>
+          세부 사유 <ReasonCodes codes={r.productReasonCodes} />
         </div>
       ) : null}
       <div className={s.help}>
@@ -186,7 +219,7 @@ function ReportBody({ list }: { list: ProductVerdictList }) {
   return (
     <>
       <p className={s.help}>
-        <span className={s.pill}>제품</span> {sourceText(list)} · {confirmationText(list)}
+        <span className={s.pill}>제품</span> {sourceText(list)} · <Confirmation list={list} />
       </p>
       <p className={s.help}>
         위 목록(평가 · 일반 발견)과 섞지 않습니다. 확정 단계가 시험 계정 둘로 직접 확인한 판정입니다.
@@ -198,7 +231,7 @@ function ReportBody({ list }: { list: ProductVerdictList }) {
           ))}
         </ul>
       ) : (
-        <p className={s.empty}>{`제품 판정 없음 · ${confirmationText(list)} · 취약점이 없다는 뜻이 아닙니다`}</p>
+        <NoVerdicts list={list} />
       )}
     </>
   );
@@ -248,7 +281,7 @@ function MapBody({ list }: { list: ProductVerdictList }) {
   return (
     <>
       <p className={s.help}>
-        <span className={s.pill}>제품</span> {sourceText(list)} · {confirmationText(list)}
+        <span className={s.pill}>제품</span> {sourceText(list)} · <Confirmation list={list} />
       </p>
       {types.length ? (
         <table aria-label="자원 종류 × 소유→교차 제품 판정">
@@ -278,9 +311,7 @@ function MapBody({ list }: { list: ProductVerdictList }) {
           <span>{`${RECORD_STATUS_TEXT.record_integrity_failed} ${hidden}건 · 자원 종류도 숨겨져 표에 두지 않습니다`}</span>
         </p>
       ) : null}
-      {list.items.length ? null : (
-        <p className={s.empty}>{`제품 판정 없음 · ${confirmationText(list)} · 취약점이 없다는 뜻이 아닙니다`}</p>
-      )}
+      {list.items.length ? null : <NoVerdicts list={list} />}
     </>
   );
 }
