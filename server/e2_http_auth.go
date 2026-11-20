@@ -126,8 +126,9 @@ type e2HTTPSessionStore struct {
 	runRef   string
 	random   io.Reader
 	bindings map[string]string
-	// relogin은 refresh_session과 같은 다시 로그인 경로다(인증 준비 규칙·같은 계정 줄 세우기·실패·간격 상한). 시험 계정
-	// 실행이고 인증된 계정이 있을 때만 채운다(저장소를 넘기기 전에 정하고 바꾸지 않는다).
+	// relogin은 확정 단계 직전 다시 로그인이다. refresh_session과 같은 경로(인증 준비 규칙·같은 계정 줄 세우기·실패·간격
+	// 상한)이고, 확정 몫을 쓰는 호출로 연다. 시험 계정 실행이고 인증된 계정이 있을 때만 채운다(저장소를 넘기기 전에 정하고
+	// 바꾸지 않는다).
 	relogin func(context.Context, string) (http.Header, string)
 }
 
@@ -380,7 +381,9 @@ func (c *e2HTTPRefreshCounter) finish(label string, success bool) {
 
 // e2HTTPRefreshSession은 계정 하나를 인증 준비와 같은 경로(E② 인증 준비 규칙, 보호 값 등록, 세션 가림)로 다시
 // 로그인시킨다. 정책에 없는 라벨은 보내지 않는다. 상한에 닿으면 보내지 않는다.
-func e2HTTPRefreshSession(ctx context.Context, execution *e2proxy.Execution, dir, origin string, auth E2HTTPFileAuth, counter *e2HTTPRefreshCounter, program *e2HTTPProgramCalls, label string) (header http.Header, result string) {
+// e3Share가 참이면 확정 단계 직전 다시 로그인이라 떼어 둔 확정 몫을 쓰는 호출로 연다(e2proxy.BeginE3ReloginCall). Worker의
+// refresh_session은 거짓이라 확정 몫을 쓰지 못한다.
+func e2HTTPRefreshSession(ctx context.Context, execution *e2proxy.Execution, dir, origin string, auth E2HTTPFileAuth, counter *e2HTTPRefreshCounter, program *e2HTTPProgramCalls, label string, e3Share bool) (header http.Header, result string) {
 	var account *E2HTTPFileAuthAccount
 	for i := range auth.Accounts {
 		if auth.Accounts[i].Label == label {
@@ -394,7 +397,13 @@ func e2HTTPRefreshSession(ctx context.Context, execution *e2proxy.Execution, dir
 		return nil, status
 	}
 	defer func() { counter.finish(label, result == E2HTTPAuthAuthenticated && len(header) > 0) }()
-	call, err := execution.BeginProgramCall(ctx, e2proxy.ProgramRefreshSession, "auth-refresh")
+	begin := func() (*e2proxy.Call, error) {
+		return execution.BeginProgramCall(ctx, e2proxy.ProgramRefreshSession, "auth-refresh")
+	}
+	if e3Share {
+		begin = func() (*e2proxy.Call, error) { return execution.BeginE3ReloginCall(ctx, "e3-relogin") }
+	}
+	call, err := begin()
 	if err != nil {
 		return nil, E2HTTPAuthNotSent
 	}

@@ -267,6 +267,9 @@ func TestE2HTTPFactoryRefreshSession(t *testing.T) {
 	policy.Rules = append(policy.Rules, E2HTTPFileRule{Ref: "auth-login", Origin: target.URL, ConnectIP: "127.0.0.1", PathPrefix: "/login", PathScopeRef: "auth-login", Methods: []string{"POST"}, Purpose: e2proxy.PurposeAuthPrep})
 	policy.HeaderMode = e2proxy.HeaderTestAccountPassthrough
 	policy.Limits.MaxAttempts, policy.Limits.MaxCalls, policy.MaxRequests = 64, 64, 64
+	// 확정 몫 4건(다시 로그인 2 + 신원 2): 확정 단계 직전 다시 로그인은 이 몫을 쓰는 호출로 나간다.
+	e3Requests, e3TimeoutMS := uint64(4), int64(4000)
+	policy.Limits.E3ConfirmationRequests, policy.Limits.E3ConfirmationTimeoutMS = &e3Requests, &e3TimeoutMS
 	// tester-b는 비밀번호가 틀린다. 첫 인증 준비 실패는 재로그인 연속 실패에 포함하지 않는다.
 	auth := cookieAuth(E2HTTPFileAuthAccount{Label: "tester-a", Credential: authCredentialPin(t, cfg.AuthorityRoot, "tester-a.json", "tester@owned.test", "seeded-pass-88ff")},
 		E2HTTPFileAuthAccount{Label: "tester-b", Credential: authCredentialPin(t, cfg.AuthorityRoot, "tester-b.json", "tester@owned.test", "wrong-pass-value")})
@@ -368,7 +371,8 @@ func TestE2HTTPFactoryRefreshSession(t *testing.T) {
 		unsent("tester-a", E2HTTPRefreshCooldown)
 	}
 	unsent("someone-else", E2HTTPAuthNotSent)
-	// 확정 단계 직전 다시 로그인(사용자 결정 2026-11-20 (가))도 같은 경로(인증 준비 규칙)·같은 간격 상한이다.
+	// 확정 단계 직전 다시 로그인(사용자 결정 2026-11-20 (가))도 같은 경로(인증 준비 규칙)·같은 간격 상한이고, 확정 몫을
+	// 쓰는 호출로 나간다.
 	relogin, ok := bindings.(E2HTTPAccountRelogin)
 	if !ok {
 		t.Fatal("세션 저장소가 확정 단계 다시 로그인을 주지 않음")

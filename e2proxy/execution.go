@@ -43,21 +43,18 @@ type compiledRule struct {
 }
 type Execution struct {
 	// passwords는 호스트가 등록한 비밀번호다. 일반 제어 비밀과 응답 처리 의미를 분리한다.
-	passwords  [][]byte
-	issued     map[string]bool
-	intents    map[int64]struct{}
-	intentGate chan struct{}
-	mu         sync.Mutex
-	recordMu   sync.Mutex
-	ctx        context.Context
-	cancel     context.CancelFunc
-	cfg        Config
-	rules      []compiledRule
-	calls      map[string]*Call
-	e3Admitted uint64
-	// e3ShareOpen은 확정 몫이 열렸는지다(OpenE3Share). 열리기 전에는 확정 단계 밖 요청이 예산의 마지막 확정 몫만큼을 쓰지
-	// 못한다(계약 §7.1 "모델 단계는 그 몫을 뺀 범위에서 돈다").
-	e3ShareOpen    bool
+	passwords      [][]byte
+	issued         map[string]bool
+	intents        map[int64]struct{}
+	intentGate     chan struct{}
+	mu             sync.Mutex
+	recordMu       sync.Mutex
+	ctx            context.Context
+	cancel         context.CancelFunc
+	cfg            Config
+	rules          []compiledRule
+	calls          map[string]*Call
+	e3Admitted     uint64
 	e3Created      map[e3contract.CallRef]string
 	callOrder      []*Call
 	events         []Event
@@ -102,14 +99,16 @@ type Call struct {
 	commandRef           string
 	intentID             int64
 	program              ProgramCallKind
-	expires              time.Time
-	closing              bool
-	finalized            bool
-	active               int
-	idle                 chan struct{}
-	counts               Counts
-	auditComplete        bool
-	reason               Reason
+	// e3Share는 확정 단계가 연 다시 로그인 호출이다(BeginE3ReloginCall). E③ 프로그램 요청과 함께 떼어 둔 확정 몫을 쓴다.
+	e3Share       bool
+	expires       time.Time
+	closing       bool
+	finalized     bool
+	active        int
+	idle          chan struct{}
+	counts        Counts
+	auditComplete bool
+	reason        Reason
 	// fence는 이 call의 요청 단위 실패가 상한에 닿았을 때의 사유다. 비어 있으면 열려 있다.
 	// 실행 전체가 아니라 이 call의 새 요청만 막는다. 이미 송신 중인 요청은 건드리지 않는다(C01).
 	fence Reason
@@ -412,6 +411,18 @@ func (e *Execution) BeginProgramCall(parent context.Context, program ProgramCall
 		return nil, ErrConfig
 	}
 	return e.beginCall(parent, 0, program, commandRef)
+}
+
+// BeginE3ReloginCall은 확정 단계 직전 다시 로그인(사용자 결정 2026-11-20 (가)) 호출을 연다. 경로·감사 행은 Worker의
+// refresh_session과 같고(ProgramRefreshSession), 다른 점은 떼어 둔 확정 몫을 쓴다는 것뿐이다. 신뢰된 호스트의 확정 단계만
+// 부른다. 모델 단계 요청은 확정 몫을 쓰지 못하므로(늦게 도착한 Worker 요청 포함) 예산 통제를 우회할 수 없다.
+func (e *Execution) BeginE3ReloginCall(parent context.Context, commandRef string) (*Call, error) {
+	c, err := e.BeginProgramCall(parent, ProgramRefreshSession, commandRef)
+	if err != nil {
+		return nil, err
+	}
+	c.e3Share = true
+	return c, nil
 }
 
 func (e *Execution) beginCall(parent context.Context, id int64, program ProgramCallKind, commandRef string) (*Call, error) {
@@ -811,7 +822,8 @@ func (e *Execution) Policy() PolicyView {
 
 // BudgetRemaining is an observation of the existing shared grant, never send
 // permission. Reading zero must not cancel already reserved in-flight work.
-// 확정 몫이 열리기 전에는 떼어 둔 확정 몫을 뺀 값이다. 모델 단계가 그 몫을 남겨 둔 채 예산 소진으로 마감하게 한다.
+// 떼어 둔 확정 몫 가운데 확정 단계 요청이 아직 쓰지 않은 만큼을 뺀 값이다. 모델 단계가 그 몫을 남겨 둔 채 예산
+// 소진으로 마감하게 한다.
 func (e *Execution) BudgetRemaining() (uint64, error) {
 	if e == nil {
 		return 0, ErrConfig
@@ -833,21 +845,9 @@ func (e *Execution) BudgetRemaining() (uint64, error) {
 	return remaining - held, nil
 }
 
-// OpenE3Share는 확정 단계가 실제로 요청을 시작할 때 떼어 둔 확정 몫을 연다. 그 뒤로는 확정 단계의 다시 로그인(인증 준비
-// 경로)과 E③ 프로그램 요청이 그 몫을 쓴다. 감독자는 모델 활동이 모두 끝난 뒤에만 확정 단계를 부르므로, 연 뒤에 모델
-// 단계 요청이 몫을 가져가지 않는다. 몫이 0이면 아무 것도 바뀌지 않는다.
-func (e *Execution) OpenE3Share() {
-	if e == nil {
-		return
-	}
-	e.mu.Lock()
-	e.e3ShareOpen = true
-	e.mu.Unlock()
-}
-
-// e3ShareHeldLocked는 아직 열리지 않은 확정 몫 가운데 E③ 프로그램 요청이 쓰지 않은 수다. e.mu를 잡고 부른다.
+// e3ShareHeldLocked는 확정 몫 가운데 확정 단계 요청이 아직 쓰지 않은 수다. e.mu를 잡고 부른다.
 func (e *Execution) e3ShareHeldLocked() uint64 {
-	if e.e3ShareOpen || e.e3Admitted >= e.cfg.E3ConfirmationRequests {
+	if e.e3Admitted >= e.cfg.E3ConfirmationRequests {
 		return 0
 	}
 	return e.cfg.E3ConfirmationRequests - e.e3Admitted
@@ -1469,10 +1469,13 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 	if reason == Complete && e.admitted >= e.cfg.Limits.MaxAttempts {
 		reason = AttemptLimit
 	}
-	if reason == Complete && e3 != nil && e.e3Admitted >= e.cfg.E3ConfirmationRequests {
+	// 확정 몫은 확정 단계 요청(E③ 프로그램 요청·확정 단계가 연 다시 로그인)만 쓴다. 그 밖의 요청(모델 단계 Worker·인증
+	// 준비·Worker refresh_session)은 확정 단계 전이든 뒤든 예산의 마지막 확정 몫만큼을 쓰지 못한다(계약 §7.1).
+	shareConsumer := e3 != nil || c.e3Share
+	if reason == Complete && shareConsumer && e.e3Admitted >= e.cfg.E3ConfirmationRequests {
 		reason = BudgetExhausted
 	}
-	if reason == Complete && e3 == nil && !e.e3ShareAvailableLocked() {
+	if reason == Complete && !shareConsumer && !e.e3ShareAvailableLocked() {
 		reason = BudgetExhausted
 	}
 	if reason == Complete {
@@ -1480,7 +1483,7 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 			reason = BudgetExhausted
 		} else {
 			e.admitted++
-			if e3 != nil {
+			if shareConsumer {
 				e.e3Admitted++
 			}
 		}

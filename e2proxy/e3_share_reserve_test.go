@@ -1,7 +1,6 @@
 package e2proxy
 
 import (
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,12 +9,17 @@ import (
 	"testing"
 )
 
-// e3ShareFixture는 대상 예산 total 가운데 확정 몫 share를 떼어 둔 실행이다(신원 규칙 포함, 나머지는 e3IdentityFixture와 같음).
+// e3ShareFixture는 대상 예산 total 가운데 확정 몫 share를 떼어 둔 실행이다(신원 규칙·인증 준비 규칙 포함, 나머지는
+// e3IdentityFixture와 같음).
 func e3ShareFixture(t *testing.T, total, share uint64) (*Execution, E3IdentityInput, *httptest.Server, *atomic.Int64) {
 	t.Helper()
 	var received atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		received.Add(1)
+		if r.URL.Path == "/login" {
+			http.SetCookie(w, &http.Cookie{Name: "session", Value: "synthetic-relogin-session"})
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"id":"subject-a"}`)
 	}))
@@ -25,8 +29,11 @@ func e3ShareFixture(t *testing.T, total, share uint64) (*Execution, E3IdentityIn
 	cfg.AuditVersion = JournalVersionV3
 	cfg.E3Verifier = e3IdentityVerifier{}
 	cfg.E3ConfirmationRequests = share
-	cfg.Rules = append(cfg.Rules, Rule{Ref: "identity-rule", Purpose: PurposeE3Identity, Origin: server.URL,
-		ConnectIP: netip.MustParseAddr("127.0.0.1"), PathPrefix: "/allowed/identity", PathScopeRef: "identity-path", Methods: []string{"GET"}})
+	cfg.Rules = append(cfg.Rules,
+		Rule{Ref: "identity-rule", Purpose: PurposeE3Identity, Origin: server.URL, ConnectIP: netip.MustParseAddr("127.0.0.1"),
+			PathPrefix: "/allowed/identity", PathScopeRef: "identity-path", Methods: []string{"GET"}},
+		Rule{Ref: "auth-login", Purpose: PurposeAuthPrep, Origin: server.URL, ConnectIP: netip.MustParseAddr("127.0.0.1"),
+			PathPrefix: "/login", PathScopeRef: "auth-login-path", Methods: []string{"POST"}})
 	e, err := NewExecution(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -39,6 +46,7 @@ func e3ShareFixture(t *testing.T, total, share uint64) (*Execution, E3IdentityIn
 	return e, in, server, &received
 }
 
+// modelRequests는 모델 단계 Worker 요청 n건을 보내고 보낸 수와 마지막 거부 사유를 돌려준다.
 func modelRequests(t *testing.T, e *Execution, target string, n int) (admitted int, last Reason) {
 	t.Helper()
 	c, err := e.BeginCall(t.Context(), "model")
@@ -58,77 +66,95 @@ func modelRequests(t *testing.T, e *Execution, target string, n int) (admitted i
 	return admitted, last
 }
 
-// 계약 §7.1: 모델 단계는 확정 몫을 뺀 범위에서 돈다. 몫이 열리기 전 확정 단계 밖 요청은 예산의 마지막 확정 몫만큼을
-// 쓰지 못하고(budget_exhausted), 남은 예산 조회도 그만큼 뺀다. 몫을 열면 확정 단계가 그 몫으로 보낸다.
-func TestE3ShareIsHeldFromModelStage(t *testing.T) {
-	e, in, server, received := e3ShareFixture(t, 5, 2)
-	if remaining, err := e.BudgetRemaining(); err != nil || remaining != 3 {
-		t.Fatalf("처음 남은 예산 %d %v (예산 5 − 확정 몫 2)", remaining, err)
+// relogin은 다시 로그인 호출 하나를 열어 로그인 요청을 보낸다. e3이 참이면 확정 단계 전용 호출, 거짓이면 Worker
+// refresh_session 호출이다.
+func relogin(t *testing.T, e *Execution, target string, e3 bool) (sent bool, reason Reason) {
+	t.Helper()
+	open := func() (*Call, error) { return e.BeginProgramCall(t.Context(), ProgramRefreshSession, "auth-refresh") }
+	if e3 {
+		open = func() (*Call, error) { return e.BeginE3ReloginCall(t.Context(), "e3-relogin") }
 	}
-	admitted, last := modelRequests(t, e, server.URL, 5)
-	if admitted != 3 || last != BudgetExhausted {
+	c, err := open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = c.Close(t.Context()) }()
+	_, r, err := c.AuthPrep(t.Context(), loginRequest(t, target+"/login"), cookieExtractor("session"))
+	return err == nil, r.Reason
+}
+
+// 계약 §7.1: 확정 몫은 확정 단계 요청(E③ 프로그램 요청·확정 단계가 연 다시 로그인)만 쓴다. 모델 단계 요청은 확정 단계
+// 전이든 뒤든(늦게 도착한 Worker 요청) 예산의 마지막 확정 몫만큼을 쓰지 못하고(budget_exhausted), 남은 예산 조회도 그만큼
+// 뺀다. 확정 단계 요청이 몫을 쓸 때마다 떼어 둘 몫이 줄고, 몫을 다 쓰면 확정 단계 요청도 막힌다.
+func TestE3ShareOnlyForConfirmationRequests(t *testing.T) {
+	e, in, server, received := e3ShareFixture(t, 6, 3)
+	if remaining, err := e.BudgetRemaining(); err != nil || remaining != 3 {
+		t.Fatalf("처음 남은 예산 %d %v (예산 6 − 확정 몫 3)", remaining, err)
+	}
+	if admitted, last := modelRequests(t, e, server.URL, 5); admitted != 3 || last != BudgetExhausted {
 		t.Fatalf("모델 단계가 확정 몫까지 씀: 보냄 %d 마지막 거부 %s", admitted, last)
 	}
 	if remaining, err := e.BudgetRemaining(); err != nil || remaining != 0 {
-		t.Fatalf("몫이 열리기 전 남은 예산 %d %v (0이어야 모델 단계가 마감)", remaining, err)
+		t.Fatalf("확정 몫만 남았는데 남은 예산 %d %v (0이어야 모델 단계가 마감)", remaining, err)
 	}
-	e.OpenE3Share()
-	if remaining, err := e.BudgetRemaining(); err != nil || remaining != 2 {
-		t.Fatalf("몫을 연 뒤 남은 예산 %d %v", remaining, err)
-	}
+	// 확정 단계: 신원 요청은 몫을 쓴다.
 	before := received.Load()
-	event, err := e.SendE3Identity(t.Context(), in)
-	if err != nil || event.NotSent || received.Load() != before+1 {
+	if event, err := e.SendE3Identity(t.Context(), in); err != nil || event.NotSent || received.Load() != before+1 {
 		t.Fatalf("확정 단계 신원 요청이 몫으로 나가지 않음: %+v %v", event, err)
 	}
-	// 연 뒤에는 확정 단계의 다시 로그인처럼 확정 단계 밖 경로 요청도 남은 예산을 쓴다.
-	if admitted, _ := modelRequests(t, e, server.URL, 1); admitted != 1 {
-		t.Fatal("몫을 연 뒤 남은 예산을 쓰지 못함")
+	// 확정 단계가 시작된 뒤에도 늦게 도착한 모델 단계 요청·Worker refresh_session은 몫을 쓰지 못한다.
+	if admitted, last := modelRequests(t, e, server.URL, 1); admitted != 0 || last != BudgetExhausted {
+		t.Fatalf("확정 단계 중 모델 단계 요청이 몫을 씀: %d %s", admitted, last)
+	}
+	if sent, reason := relogin(t, e, server.URL, false); sent || reason != BudgetExhausted {
+		t.Fatalf("Worker refresh_session이 확정 몫을 씀: %v %s", sent, reason)
+	}
+	// 확정 단계가 연 다시 로그인은 몫을 쓴다(남은 몫 2).
+	for i := 0; i < 2; i++ {
+		if sent, reason := relogin(t, e, server.URL, true); !sent {
+			t.Fatalf("확정 전 다시 로그인 %d이 몫으로 나가지 않음: %s", i, reason)
+		}
+	}
+	// 몫을 다 쓰면 확정 단계 요청도 더 보내지 않는다.
+	if sent, reason := relogin(t, e, server.URL, true); sent || reason != BudgetExhausted {
+		t.Fatalf("확정 몫을 넘겨 다시 로그인: %v %s", sent, reason)
+	}
+	if event, err := e.SendE3Identity(t.Context(), in); err != nil || !event.NotSent {
+		t.Fatalf("확정 몫을 넘겨 신원 요청: %+v %v", event, err)
 	}
 }
 
-// 확정 몫이 열리기 전에도 E③ 프로그램 요청 자체는 몫을 쓴다(몫은 확정 단계 밖 요청만 막는다). 프로그램 요청이 쓴 만큼
-// 떼어 둘 몫이 줄어든다.
-func TestE3ShareHeldStillAdmitsProgramRequests(t *testing.T) {
-	e, in, server, received := e3ShareFixture(t, 5, 2)
+// 확정 단계 요청이 몫을 쓴 만큼 떼어 둘 몫이 줄어, 그 밖의 예산은 모델 단계가 쓴다.
+func TestE3ShareShrinksAsConfirmationUsesIt(t *testing.T) {
+	e, in, server, _ := e3ShareFixture(t, 5, 2)
 	if admitted, _ := modelRequests(t, e, server.URL, 2); admitted != 2 {
 		t.Fatal("몫 밖 예산을 모델 단계가 쓰지 못함")
 	}
-	before := received.Load()
-	event, err := e.SendE3Identity(t.Context(), in)
-	if err != nil || event.NotSent || received.Load() != before+1 {
-		t.Fatalf("E③ 프로그램 요청이 떼어 둔 몫을 쓰지 못함: %+v %v", event, err)
+	if event, err := e.SendE3Identity(t.Context(), in); err != nil || event.NotSent {
+		t.Fatalf("확정 단계 신원 요청: %+v %v", event, err)
 	}
-	// 남은 예산 2 가운데 떼어 둘 몫은 이제 1이라 모델 단계는 1건만 더 쓴다.
 	if remaining, err := e.BudgetRemaining(); err != nil || remaining != 1 {
-		t.Fatalf("E③가 몫을 쓴 뒤 남은 예산 %d %v", remaining, err)
+		t.Fatalf("확정 단계가 몫을 쓴 뒤 남은 예산 %d %v", remaining, err)
 	}
 	if admitted, last := modelRequests(t, e, server.URL, 2); admitted != 1 || last != BudgetExhausted {
-		t.Fatalf("떼어 둘 몫이 E③ 사용만큼 줄지 않음: 보냄 %d 마지막 %s", admitted, last)
+		t.Fatalf("떼어 둘 몫이 확정 단계 사용만큼 줄지 않음: 보냄 %d 마지막 %s", admitted, last)
 	}
 }
 
-// 확정 단계가 꺼진 회차(몫 0)는 지금처럼 모델 단계가 예산 전부를 쓴다.
+// 확정 단계가 꺼진 회차(몫 0)는 지금처럼 모델 단계가 예산 전부를 쓰고, 확정 단계 전용 다시 로그인은 보낼 몫이 없다.
 func TestE3ShareZeroLeavesModelBudget(t *testing.T) {
 	e, _, server, _ := e3ShareFixture(t, 5, 0)
-	admitted, last := modelRequests(t, e, server.URL, 6)
-	if admitted != 5 || last != BudgetExhausted {
+	if remaining, err := e.BudgetRemaining(); err != nil || remaining != 5 {
+		t.Fatalf("몫 0인데 남은 예산 %d %v", remaining, err)
+	}
+	if admitted, last := modelRequests(t, e, server.URL, 6); admitted != 5 || last != BudgetExhausted {
 		t.Fatalf("몫 0인데 모델 예산이 줄어듦: 보냄 %d 마지막 %s", admitted, last)
 	}
-	if remaining, err := e.BudgetRemaining(); err != nil || remaining != 0 {
-		t.Fatalf("남은 예산 %d %v", remaining, err)
+	e2, _, server2, _ := e3ShareFixture(t, 5, 0)
+	if sent, reason := relogin(t, e2, server2.URL, true); sent || reason != BudgetExhausted {
+		t.Fatalf("몫 0 회차에서 확정 단계 다시 로그인이 나감: %v %s", sent, reason)
 	}
-	e.OpenE3Share() // 몫 0이면 아무 것도 바뀌지 않는다.
-	if admitted, _ := modelRequests(t, e, server.URL, 1); admitted != 0 {
-		t.Fatal("몫 0 회차에서 몫을 열자 예산이 늘어남")
-	}
-}
-
-// nil 실행에서 OpenE3Share는 아무 일도 하지 않는다.
-func TestOpenE3ShareNil(t *testing.T) {
-	var e *Execution
-	e.OpenE3Share()
-	if _, err := e.BudgetRemaining(); !errors.Is(err, ErrConfig) {
-		t.Fatal("nil 실행의 남은 예산")
+	if sent, _ := relogin(t, e2, server2.URL, false); !sent {
+		t.Fatal("몫 0 회차의 Worker refresh_session이 막힘")
 	}
 }
