@@ -12,7 +12,7 @@
 // 없는 값을 치게 하지 않고, 시작 조건에도 넣지 않는다. 고른 상태는 지금 실제 동작(로그인 없이)만 표시하고, 서버가 정하는
 // 값(점검 범위 · 워커 수 · 등록 날짜 · LLM 연결 상태 · 최근 주소)은 지어내지 않는다.
 
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 
 import {
   type URLDiagnosisInput,
@@ -28,8 +28,11 @@ import {
 } from "@/lib/diagnosis/external-account-consent";
 
 import { cx } from "../../lib/cx";
+import { type ConfirmationPlan, confirmationPlanOf } from "../../live/confirmationPlan";
+import { getDeclaration } from "../../live/declaration";
 import { fmtDur, shortTimeOf } from "../../live/map";
 import { useNow } from "../../live/parts";
+import type { ResetState } from "../../live/resetConfirmation";
 import { disconnectUrl, runUrlAction, setUrlConfirmed, useUrl, useUrlGates } from "../../live/urlDiagnosis";
 import { scanViewFor, URL_ENDED_STATES, urlHost, urlTargetHint } from "../../live/urlMap";
 import { useShell } from "../../shell";
@@ -39,6 +42,7 @@ import { CloseInspButton, HelpTip, InspOpenButton, PaneToggle } from "../../ui/p
 import s from "../../workbench.module.css";
 import { ApprovedWriteNotice } from "./ApprovedWriteNotice";
 import { ExternalModelSettings } from "./ExternalModelSettings";
+import { ResetConfirmationBox } from "./ResetConfirmationBox";
 import { TargetApprovalPanel } from "./TargetApprovalPanel";
 import { reasonText, UrlHead, UrlNotices, UrlPill } from "./urlParts";
 
@@ -167,6 +171,40 @@ export function UrlNewScanLive() {
   const [excluded, setExcluded] = useState("");
   const [credentialReady, setCredentialReady] = useState(false);
   const [accountRevision, setAccountRevision] = useState(0);
+  // E③: 대상 칸이 서버에서 확인한 대상(id · 상태), 그 대상 선언으로 본 확정 단계 계획, 리셋 확인 상태
+  const [productTarget, setProductTarget] = useState<{ id: string; state: string } | null>(null);
+  const [confirmationPlan, setConfirmationPlan] = useState<ConfirmationPlan | null>(null);
+  // 지금 대상 판에 유효한 선언이 있는지. 서버 리셋 게이트는 이때만 시작을 거절한다(e3RunStartRefusal)
+  const [declarationActive, setDeclarationActive] = useState(false);
+  const [resetState, setResetState] = useState<ResetState | null>(null);
+  const [planUnknown, setPlanUnknown] = useState(false);
+  // 승인된 대상만 선언을 읽는다(선언은 승인된 대상에만 저장된다). 못 읽으면 '확정 단계 없음'으로 추정하지 않는다(규칙 5)
+  const approvedTargetId = productTarget?.state === "approved" ? productTarget.id : null;
+  useEffect(() => {
+    setConfirmationPlan(null);
+    setDeclarationActive(false);
+    setPlanUnknown(false);
+    if (!approvedTargetId) return;
+    const controller = new AbortController();
+    getDeclaration(approvedTargetId, controller.signal)
+      .then((load) => {
+        if (controller.signal.aborted) return;
+        setConfirmationPlan(confirmationPlanOf(load));
+        setDeclarationActive(load.state === "current");
+        setPlanUnknown(load.state === "unavailable" || load.state === "invalid");
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        console.warn("정책 선언을 읽지 못해 확정 단계 여부를 모름", error instanceof Error ? error.name : "unknown");
+        setPlanUnknown(true);
+      });
+    return () => controller.abort();
+  }, [approvedTargetId]);
+  // 대상(또는 그 상태)이 바뀌면 지난 리셋 상태를 버린다. 상자는 key 로 다시 그려져 새 상태를 알린다
+  const onProductTarget = useCallback((t: { id: string; state: string } | null) => {
+    setProductTarget(t);
+    setResetState(null);
+  }, []);
   const [accountPresence, setAccountPresence] = useState<{
     key: string;
     value: boolean;
@@ -658,11 +696,20 @@ export function UrlNewScanLive() {
                     allowStateChanges={profile?.workflow?.allow_reversible_writes}
                     url={tv}
                     disabled={busy}
+                    onTarget={onProductTarget}
                     onChanged={() => {
                       setAccountRevision((value) => value + 1);
                       if (handle && !job?.preparation_started) void runUrlAction("validate");
                     }}
                   />
+                  {productTarget ? (
+                    <ResetConfirmationBox
+                      key={`${productTarget.id}:${productTarget.state}`}
+                      targetId={productTarget.id}
+                      disabled={busy}
+                      onState={setResetState}
+                    />
+                  ) : null}
                   {/* '기존 점검 다시 열기'(진행 · 끝난 점검 목록 링크)는 두지 않는다(사용자 11/18) — 대시보드의 진행 중 · 보존된 끝난 점검 목록('전체 보기')으로 간다 */}
                 </div>
               </div>
@@ -1038,6 +1085,35 @@ export function UrlNewScanLive() {
                     .join(" · ")}
                 />
                 {scope.model ? <Rule t="외부 모델로 대상 응답 전송" sub={scope.model.provider} /> : null}
+                {/* E③ 확정 단계 안내: 이 대상의 현재 정책 선언이 확정 단계를 켤 모양일 때. 서버가 실행 때 최종으로 정하므로
+                    조건은 (?) 메모에 둔다. 선언을 못 읽으면 '없음'으로 추정하지 않고 모른다고 보인다(규칙 5) */}
+                {confirmationPlan ? (
+                  <Rule
+                    warn
+                    t="확정 단계: 대상에 시험 객체를 만듭니다"
+                    sub={`소유자 전용 종류 ${confirmationPlan.types}개 · 계정 ${confirmationPlan.ownerAccount}가 만들고 ${confirmationPlan.crossAccount}가 읽어 봄`}
+                    tip={
+                      <HelpTip label="확정 단계 설명 보기">
+                        확정 단계는 점검 시작 때 정책 선언을 고정해 읽고, 모델 단계가 끝난 뒤 프로그램이 소유자 전용
+                        종류마다 시험 객체를 만들어 두 시험 계정으로 읽어 봅니다. 두 계정이 인증되고 대상 등록에 되돌릴
+                        수 있는 쓰기 동의가 있을 때만 돌고, 아니면 확정 단계는 꺼진 채 점검합니다. 끝나면 대상을
+                        리셋하고 확인해야 다음 확정 점검이 시작됩니다.
+                      </HelpTip>
+                    }
+                  />
+                ) : null}
+                {!confirmationPlan && planUnknown ? (
+                  <Rule
+                    warn
+                    t="확정 단계 여부를 확인하지 못했습니다"
+                    sub="정책 선언을 읽지 못함 · 정책 선언 화면에서 확인"
+                  />
+                ) : null}
+                {/* 서버가 실제로 시작을 거절할 때만(유효한 선언 + 지난 확정 단계 쓰기 + 리셋 확인 없음,
+                    reset_confirmation_missing). 처음 점검하는 대상은 쓰기 기록이 없어 리셋 확인 없이 시작한다 */}
+                {declarationActive && resetState?.resetRequired ? (
+                  <Rule warn t="대상 리셋 확인 전" sub="리셋을 확인해야 이 점검이 시작됩니다 · 대상 칸 아래에서 확인" />
+                ) : null}
                 {/* 외부 CDN 사전고지 (external-llm-notice-ko.md §2): 브라우저 탐색이 대상 페이지를 그리며 외부 호스트의
                     자원을 받으면 그 호스트 로그에 흔적이 남는다. 완전 로컬 모드는 막는다(절대규칙 8). 브라우저 탐색 미착륙 = 사전 고지.
                     ※ comm_mode(external_allowed/full_local) 별도 신호가 없어 외부 모델(scope.model)을 proxy 로 쓴다.

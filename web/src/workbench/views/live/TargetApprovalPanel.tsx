@@ -88,10 +88,13 @@ export function TargetApprovalPanel({
   onChanged,
   requestLimit,
   allowStateChanges = false,
+  onTarget,
 }: {
   url: string;
   disabled: boolean;
   onChanged?: () => void;
+  // 이 주소의 서버 확인 대상(id · 상태). 없거나 모르면 null. 시작 화면이 확정 단계 안내 · 리셋 확인을 붙일 때 쓴다(E③)
+  onTarget?: (target: { id: string; state: Target["state"] } | null) => void;
   // 설치의 회차당 요청 상한(서버 프로필 workflow_request_limit, 모드와 상관없음). 없으면 등록하지 않는다.
   requestLimit?: number;
   allowStateChanges?: boolean;
@@ -112,6 +115,11 @@ export function TargetApprovalPanel({
   const firstField = useRef<HTMLTextAreaElement>(null);
   const origin = originOf(url);
   const selected = details?.origin === origin ? details : null;
+  const selectedId = selected?.id ?? null;
+  const selectedState = selected?.state ?? null;
+  useEffect(() => {
+    onTarget?.(selectedId && selectedState ? { id: selectedId, state: selectedState } : null);
+  }, [onTarget, selectedId, selectedState]);
   const list = useCallback(async () => {
     const version = ++generation.current;
     if (!origin) return;

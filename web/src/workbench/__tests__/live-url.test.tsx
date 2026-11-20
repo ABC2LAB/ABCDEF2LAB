@@ -2926,3 +2926,149 @@ it("대시보드 보고서 재조회 오류도 이전 성공의 발견 목록으
   expect(await screen.findByRole("alert")).toHaveTextContent("보고서 조회 실패 (HTTP 503)");
   expect(screen.queryByRole("button", { name: /후보 1/ })).toBeNull();
 });
+
+describe("새 점검의 E③ 확정 단계 안내 · 대상 리셋 확인", () => {
+  const ZERO = "0001-01-01T00:00:00Z";
+  // 대상 칸이 받는 서버 승인 대상 모양(TargetApprovalPanel targetReply): id 형식 · 승인 칸 · TLS 고정값
+  const TARGET_ID = `target-${"a".repeat(32)}`;
+  const declaration = (roles = true) => ({
+    version: "e3-product-declaration/v1",
+    target_ref: TARGET_ID,
+    target_approval_revision: "3",
+    declared_by: "operator-1",
+    declared_at: "2026-11-18T00:00:00.000000Z",
+    identity: { path: "/api/me", subject_id_path: "id" },
+    types: [
+      {
+        type: "note",
+        sharing: "owner_only",
+        owner_only_fields: ["body"],
+        create: {
+          path: "/api/notes",
+          method: "POST",
+          body_kind: "json",
+          body_template: '{"title":"t"}',
+          marker_field: "body",
+          id_path: "id",
+        },
+        read: { path_template: "/api/notes/{id}", data_path: "." },
+      },
+    ],
+    ...(roles
+      ? { owner_account_label: "tester-a", cross_account_label: "tester-b", accounts_same_privilege: true }
+      : {}),
+  });
+  function serve(decl: unknown, reset: unknown) {
+    vi.mocked(teamApi.apiFetch).mockImplementation(async (path) => {
+      const p = String(path);
+      if (p.includes("targets/resolve"))
+        return {
+          target: {
+            id: TARGET_ID,
+            origin: new URL(new URL(p, "http://fixture.test").searchParams.get("url") ?? "https://target.example/")
+              .origin,
+            state: "approved",
+            requests: 3,
+            port: 443,
+            path_prefixes: ["/"],
+            methods: ["GET"],
+            addresses: ["10.200.1.10"],
+            tls_spki_sha256: "a".repeat(64),
+            expires_at: "2099-01-01T00:00:00Z",
+          },
+        } as never;
+      if (p.endsWith(`/${TARGET_ID}/declaration`)) return decl as never;
+      if (p.endsWith(`/${TARGET_ID}/reset-confirmation`)) return reset as never;
+      return { configured: true } as never;
+    });
+  }
+  const resetRequired = {
+    reset: {
+      reset_required: true,
+      last_writes_job: "job-7",
+      last_writes_at: "2026-11-20T01:02:03Z",
+      last_writes_objects: 1,
+      last_writes_ref: "b".repeat(64),
+      confirmed_at: ZERO,
+      statement: "확정 단계가 남긴 시험 객체를 지웠습니다.",
+    },
+  };
+  const noWrites = { reset: { reset_required: false, last_writes_at: ZERO, confirmed_at: ZERO, statement: "s" } };
+  const active = (decl: ReturnType<typeof declaration>) => ({
+    state: "active",
+    target_revision: 3,
+    declared_by: decl.declared_by,
+    declared_at: decl.declared_at,
+    declaration: decl,
+  });
+
+  it("선언이 확정 단계를 켤 모양이면 시작 요약에 시험 객체 안내를, 리셋 확인 전이면 경고와 확인 상자를 보인다", async () => {
+    serve(active(declaration()), resetRequired);
+    saveHandle();
+    mount("new");
+    const summary = await screen.findByRole("complementary", { name: "점검 요약" });
+    expect(await within(summary).findByText("확정 단계: 대상에 시험 객체를 만듭니다")).toBeInTheDocument();
+    expect(summary).toHaveTextContent("소유자 전용 종류 1개 · 계정 tester-a가 만들고 tester-b가 읽어 봄");
+    expect(await within(summary).findByText("대상 리셋 확인 전")).toBeInTheDocument();
+    const box = await screen.findByRole("region", { name: "대상 리셋 확인" });
+    expect(box).toHaveTextContent("시험 객체 1개");
+    expect(within(box).getByRole("button", { name: "리셋 확인" })).toBeDisabled();
+  });
+
+  it("역할이 없는 선언·쓰기 기록 없음이면 안내도 리셋 상자도 없다", async () => {
+    serve(active(declaration(false)), noWrites);
+    saveHandle();
+    mount("new");
+    const summary = await screen.findByRole("complementary", { name: "점검 요약" });
+    await within(summary).findByText("승인된 사이트 및 경로에만 요청");
+    await waitFor(() =>
+      expect(
+        vi
+          .mocked(teamApi.apiFetch)
+          .mock.calls.some(([path]) => String(path).endsWith(`/${TARGET_ID}/reset-confirmation`)),
+      ).toBe(true),
+    );
+    expect(within(summary).queryByText("확정 단계: 대상에 시험 객체를 만듭니다")).toBeNull();
+    expect(within(summary).queryByText("확정 단계 여부를 확인하지 못했습니다")).toBeNull();
+    expect(screen.queryByRole("region", { name: "대상 리셋 확인" })).toBeNull();
+  });
+
+  // 시작 거절 경고는 서버 리셋 게이트(e3RunStartRefusal)와 같은 조건일 때만: 유효한 선언 + 지난 쓰기 + 리셋 확인 없음
+  it("처음 점검하는 대상(쓰기 기록 없음)은 선언이 있어도 시작 거절 경고가 없다", async () => {
+    serve(active(declaration()), noWrites);
+    saveHandle();
+    mount("new");
+    const summary = await screen.findByRole("complementary", { name: "점검 요약" });
+    expect(await within(summary).findByText("확정 단계: 대상에 시험 객체를 만듭니다")).toBeInTheDocument();
+    expect(within(summary).queryByText("대상 리셋 확인 전")).toBeNull();
+    expect(screen.queryByRole("region", { name: "대상 리셋 확인" })).toBeNull();
+  });
+
+  it("선언이 없으면 지난 쓰기가 있어도 서버가 거절하지 않으므로 경고는 없고 리셋 확인 상자만 둔다", async () => {
+    serve({ state: "none", declaration: null }, resetRequired);
+    saveHandle();
+    mount("new");
+    const summary = await screen.findByRole("complementary", { name: "점검 요약" });
+    expect(await screen.findByRole("region", { name: "대상 리셋 확인" })).toHaveTextContent("시험 객체 1개");
+    expect(within(summary).queryByText("대상 리셋 확인 전")).toBeNull();
+    expect(within(summary).queryByText("확정 단계 여부를 확인하지 못했습니다")).toBeNull();
+  });
+
+  it("역할이 없는 선언이라도 유효하면 서버가 거절하므로 리셋 확인 전 경고를 보인다", async () => {
+    serve(active(declaration(false)), resetRequired);
+    saveHandle();
+    mount("new");
+    const summary = await screen.findByRole("complementary", { name: "점검 요약" });
+    expect(await within(summary).findByText("대상 리셋 확인 전")).toBeInTheDocument();
+    expect(within(summary).queryByText("확정 단계: 대상에 시험 객체를 만듭니다")).toBeNull();
+  });
+
+  it("선언을 읽지 못하면 '확정 단계 없음'으로 숨기지 않고 모른다고 보인다", async () => {
+    serve({ state: "broken" }, noWrites);
+    saveHandle();
+    mount("new");
+    const summary = await screen.findByRole("complementary", { name: "점검 요약" });
+    expect(await within(summary).findByText("확정 단계 여부를 확인하지 못했습니다")).toBeInTheDocument();
+    expect(within(summary).queryByText("확정 단계: 대상에 시험 객체를 만듭니다")).toBeNull();
+  });
+});
