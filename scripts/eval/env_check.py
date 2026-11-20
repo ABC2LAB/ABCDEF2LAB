@@ -1,4 +1,4 @@
-"""평가 머신 환경 점검(읽기만 한다). 공식 측정 세션 전에 평가 머신(윤재상 PC)에서 돌린다.
+"""평가 머신 환경 점검(읽기만 한다). 공식 측정 세션 전에 평가 머신(이 PC, 2026-11-20 결정)에서 돌린다.
 
 무엇도 만들거나 바꾸지 않는다: 이미지 빌드·pull, 컨테이너·망·볼륨 생성, 파일 쓰기를 하지 않는다. 기본 이미지는 로컬에
 있는지 보고, 없으면 레지스트리 manifest만 읽는다(`docker buildx imagetools inspect`). 비밀 값은 읽지 않는다.
@@ -144,6 +144,45 @@ def check_disk(run: Run, free_bytes: Callable[[str], int | None]) -> Result:
         return Result(False, "disk", "Docker 루트 디렉터리의 남은 공간을 읽지 못함")
     return Result(free >= MIN_DOCKER_FREE_BYTES, "disk",
                   f"{root} 남은 {free / 1e9:.1f} GB (바닥: 공식 회차 이미지 합계 {MIN_DOCKER_FREE_BYTES / 1e9:.1f} GB, 빌드 캐시·회차 기록 제외)")
+
+
+POWERCFG = "/mnt/c/Windows/System32/powercfg.exe"
+# (하위 그룹, 설정, 이름). 전원 연결(AC) 때 둘 다 '안 함'(0)이어야 측정 중 멈추지 않는다.
+POWER_SETTINGS = (("SUB_SLEEP", "STANDBYIDLE", "절전"), ("SUB_SLEEP", "HIBERNATEIDLE", "최대 절전"))
+_POWER_INDEX = {side: re.compile(side + r"[^\n]*?0x([0-9a-fA-F]{8})") for side in ("AC", "DC")}
+PowerQuery = Callable[[str, str], "str | None"]
+
+
+def powercfg_query(subgroup: str, setting: str) -> str | None:
+    """WSL에서 Windows 전원 설정 하나를 읽는다(powercfg /query, 읽기만). Windows가 아니거나 못 읽으면 None. 출력은 로캘
+    인코딩이라 바이트로 받아 깨진 글자는 바꾼다(AC·DC·0x 값은 ASCII)."""
+    if not os.path.exists(POWERCFG):
+        return None
+    try:
+        done = subprocess.run([POWERCFG, "/query", "SCHEME_CURRENT", subgroup, setting], stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=COMMAND_TIMEOUT, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout.decode("utf-8", errors="replace") if done.returncode == 0 else None
+
+
+def check_power(query: PowerQuery) -> Result:
+    """측정 PC가 절전·최대 절전으로 멈추지 않는지(2026-11-20 사용자). 전원 연결(AC) 때 두 설정이 '안 함'이어야 한다. 배터리(DC)
+    값은 사유에만 적는다(측정은 전원 연결로 한다). Windows 전원 설정을 읽을 수 없으면(WSL이 아님) 직접 확인하라고 SKIP이다."""
+    found = {}
+    for subgroup, setting, label in POWER_SETTINGS:
+        text = query(subgroup, setting)
+        if text is None:
+            return Result(True, "power", "Windows 전원 설정을 읽을 수 없음 → 측정 PC의 절전·최대 절전을 직접 '안 함'으로 확인", skipped=True)
+        values = {side: pattern.search(text) for side, pattern in _POWER_INDEX.items()}
+        if values["AC"] is None:
+            return Result(False, "power", f"{label} 설정 값을 읽지 못함")
+        found[label] = {side: (int(m.group(1), 16) if m else None) for side, m in values.items()}
+    bad = [label for label, v in found.items() if v["AC"] != 0]
+    detail = ", ".join(f"{label} AC {v['AC']}초·DC {v['DC']}초" for label, v in found.items())
+    if bad:
+        return Result(False, "power", f"전원 연결 때 {'·'.join(bad)}이 켜져 있음({detail}) → 측정 동안 '안 함'(0)으로")
+    return Result(True, "power", f"전원 연결 때 절전·최대 절전 안 함({detail}, 0 = 안 함). 측정은 전원 연결로")
 
 
 def check_running_containers(run: Run) -> Result:
@@ -301,7 +340,7 @@ def _free_bytes(path: str) -> int | None:
 
 
 def run_checks(config: dict, repo: Path, run: Run = run_command, read_text: Callable[[str], str | None] = _read_text,
-               free_bytes: Callable[[str], int | None] = _free_bytes) -> list[Result]:
+               free_bytes: Callable[[str], int | None] = _free_bytes, power_query: PowerQuery = powercfg_query) -> list[Result]:
     results = check_docker(run)
     results.append(check_version("compose", run, ["docker", "compose", "version", "--short"], MIN_COMPOSE, "2.40.3"))
     results.append(check_go(run, repo))
@@ -311,6 +350,7 @@ def run_checks(config: dict, repo: Path, run: Run = run_command, read_text: Call
     results.append(Result(code == 0, "git", "git 있음" if code == 0 else "git 없음"))
     results.append(check_memory(read_text))
     results.append(check_disk(run, free_bytes))
+    results.append(check_power(power_query))
     results.append(check_running_containers(run))
     results.extend(check_listeners(config, read_text))
     results.append(check_subnets(run, repo, read_text))

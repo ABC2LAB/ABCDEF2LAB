@@ -48,6 +48,7 @@ class FakeHost:
         self.free = MIN_DOCKER_FREE_BYTES
         self.routes = ROUTES
         self.failing: set[tuple[str, ...]] = set()
+        self.power_values = {"STANDBYIDLE": (0, 0), "HIBERNATEIDLE": (0, 172800)}
 
     def run(self, args, timeout):
         self.calls.append(list(args))
@@ -83,8 +84,18 @@ class FakeHost:
     def read_text(self, path):
         return {"/proc/net/tcp": self.tcp, "/proc/net/tcp6": None, "/proc/meminfo": self.meminfo, "/proc/net/route": self.routes}.get(path)
 
+    def power(self, subgroup, setting):
+        value = self.power_values.get(setting)
+        if value is None:
+            return None
+        ac, dc = value
+        # 한국어 Windows 출력 모양(로캘 글자는 깨져도 AC·DC·0x는 ASCII)
+        return (f"    GUID 별칭: {setting}\n    현재 AC 전원 설정 색인: 0x{ac:08x}\n"
+                f"    현재 DC 전원 설정 색인: 0x{dc:08x}\n")
+
     def checks(self, config=None):
-        return {r.name: r for r in run_checks(CONFIG if config is None else config, REPO, self.run, self.read_text, lambda p: self.free)}
+        return {r.name: r for r in run_checks(CONFIG if config is None else config, REPO, self.run, self.read_text, lambda p: self.free,
+                                              self.power)}
 
 
 class TestAllPass(unittest.TestCase):
@@ -93,7 +104,7 @@ class TestAllPass(unittest.TestCase):
         results = host.checks()
         self.assertEqual([name for name, r in results.items() if not r.ok], [])
         self.assertEqual(set(results), {"docker_server", "docker_client", "docker_native", "compose", "go", "python", "openssl", "git",
-                                        "memory", "disk", "containers", "host_listen", "ports", "subnets", "buildx", "base_images"})
+                                        "memory", "disk", "power", "containers", "host_listen", "ports", "subnets", "buildx", "base_images"})
         for call in host.calls:
             self.assertIn(tuple(call[:2]), READ_ONLY, call)
             self.assertNotIn("pull", call)
@@ -124,6 +135,7 @@ class TestFailures(unittest.TestCase):
                                       h.unpullable.add("postgres:16-bookworm@sha256:5264710be20f409750ac6dc4e5706dcef929c87e241605463f0f9aefa932a8d9")),
             "buildx": lambda h: h.failing.add(("docker", "buildx")),
             "git": lambda h: h.failing.add(("git", "--version")),
+            "power": lambda h: h.power_values.update(STANDBYIDLE=(1800, 600)),
         }
         for name, change in cases.items():
             with self.subTest(name=name):
@@ -131,6 +143,27 @@ class TestFailures(unittest.TestCase):
                 self.assertIn(name, failed)
                 if name not in ("buildx",):  # buildx가 없으면 imagetools 조회도 실패해 기본 이미지 항목도 같이 실패할 수 있다
                     self.assertEqual(set(failed), {name}, failed)
+
+    def test_power_settings(self):
+        # 2026-11-20 사용자: 측정 PC가 절전·최대 절전으로 멈추지 않게. 전원 연결(AC) 값만 판정하고 배터리 값은 사유에 적는다.
+        host = FakeHost()
+        ok = host.checks()["power"]
+        self.assertTrue(ok.ok and not ok.skipped)
+        self.assertIn("최대 절전 AC 0초·DC 172800초", ok.reason)
+        host.power_values["HIBERNATEIDLE"] = (3600, 0)
+        bad = host.checks()["power"]
+        self.assertFalse(bad.ok)
+        self.assertIn("최대 절전", bad.reason)
+        # Windows 전원 설정을 못 읽으면(WSL 아님) 직접 확인하라고 SKIP
+        host.power_values = {}
+        skipped = host.checks()["power"]
+        self.assertTrue(skipped.skipped)
+        self.assertTrue(skipped.line().startswith("SKIP power:"))
+        # AC 값이 없는 출력은 FAIL(읽지 못함)
+        self.assertFalse(env_check.check_power(lambda sub, setting: "no index here").ok)
+        # 영어 Windows 출력도 같은 값으로 읽는다
+        english = "Current AC Power Setting Index: 0x00000000\nCurrent DC Power Setting Index: 0x00000e10\n"
+        self.assertTrue(env_check.check_power(lambda sub, setting: english).ok)
 
     def test_route_overlap_and_missing_image_that_can_be_pulled(self):
         # 호스트 경로 10.252.0.0/16(/proc/net/route는 리틀엔디언 16진수 0000FC0A·0000FFFF)이 분리 배치 대역과 겹친다.
