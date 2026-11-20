@@ -148,7 +148,7 @@ func TestE2HTTPFactoryPreparationFailuresCloseHostBeforeNextRun(t *testing.T) {
 			// 봉인 응답에 Host 봉인 확인 결과가 실리면 그 회차·작업으로 기록 훅에 넘긴다(E1 계약 §6).
 			sealReply = &e2host.SealResult{Phase: "sealed", Head: e2proxy.JournalCheckpoint{Version: e2proxy.JournalVersionV3, JournalID: "journal-fixture",
 				Sequence: 7, MAC: strings.Repeat("e", 64), Scope: transmit.Scope{RunRef: policy.RunRef, TaskRef: "17"}},
-				Checks: []e2host.SealCheck{{Sequence: 5, MAC: strings.Repeat("c", 64), Included: true}}}
+				Checks: []e2host.SealCheck{{Sequence: 5, MAC: strings.Repeat("c", 64), Included: true}, {Sequence: 6, MAC: strings.Repeat("d", 64), Included: false}}}
 		}
 		mu.Unlock()
 		state, err := os.MkdirTemp("/var/tmp", "e2hf-")
@@ -198,12 +198,13 @@ func TestE2HTTPFactoryPreparationFailuresCloseHostBeforeNextRun(t *testing.T) {
 	}
 	// 결과 없는 봉인 ACK(앞 두 회차)는 기록하지 않고, 결과가 있는 회차만 한 번 넘긴다. 기록 실패도 마감 실패가 아니다.
 	if len(sealChecks) != 1 || sealChecks[0].TaskID != 17 || sealChecks[0].RunRef != "fixture-host-next-run" ||
-		sealChecks[0].Result.Head.Sequence != 7 || len(sealChecks[0].Result.Checks) != 1 || !sealChecks[0].Result.Checks[0].Included {
+		sealChecks[0].Result.Head.Sequence != 7 || len(sealChecks[0].Result.Checks) != 2 || !sealChecks[0].Result.Checks[0].Included {
 		t.Fatalf("봉인 확인 기록 훅: %+v", sealChecks)
 	}
 	rec := e2HTTPSealCheckRecord(sealChecks[0])
 	if rec.TaskID != 17 || rec.RunRef != "fixture-host-next-run" || rec.Head != (db.ProductCheckpoint{JournalID: "journal-fixture", Sequence: 7, MAC: strings.Repeat("e", 64)}) ||
-		len(rec.Checks) != 1 || rec.Checks[0] != (db.SealCheck{Sequence: 5, MAC: strings.Repeat("c", 64), Included: true}) {
+		len(rec.Checks) != 2 || rec.Checks[0] != (db.SealCheck{Sequence: 5, MAC: strings.Repeat("c", 64), Included: true}) ||
+		rec.Checks[1] != (db.SealCheck{Sequence: 6, MAC: strings.Repeat("d", 64), Included: false}) {
 		t.Fatalf("봉인 확인 저장 기록: %+v", rec)
 	}
 }
