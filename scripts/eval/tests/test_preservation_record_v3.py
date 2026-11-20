@@ -256,14 +256,37 @@ class TestShape(V3Fixture):
             for stop_elapsed in (10.0, 40.0, 39.9994, 39.9995, 39.9996, 40.0004, 40.0005, 59.9996):
                 for engine in (None, 5.0, 39.999, 40.0, 40.001, 70.0, 60.0):
                     for closing in (None, "budget_limited", "complete"):
-                        terminal = None if engine is None else {"status": "x", "elapsed_seconds": engine, "closing_reason": closing}
-                        got = runner.first_limit(stop, stop_elapsed, 60.0, terminal)
-                        with self.subTest(stop=stop, stop_elapsed=stop_elapsed, engine=engine, closing=closing):
-                            # 기록에 남는 값(러너 출력)만으로 다시 계산한다
-                            self.assertEqual(expected_first_limit(stop, got["runner_limit_elapsed_seconds"], 60.0,
-                                                                  got["engine_terminal_elapsed_seconds"],
-                                                                  None if engine is None else closing, got["runner_limit"]),
-                                             got["value"])
+                        # 끝 상태: 정상 완료(B done·O completed)와 그 밖(B failed·timeout, O cancelled·failed·unknown)
+                        for status in ("done", "completed", "failed", "timeout", "cancelled", "unknown"):
+                            terminal = None if engine is None else {"status": status, "elapsed_seconds": engine,
+                                                                    "closing_reason": closing}
+                            got = runner.first_limit(stop, stop_elapsed, 60.0, terminal)
+                            with self.subTest(stop=stop, stop_elapsed=stop_elapsed, engine=engine, closing=closing, status=status):
+                                # 기록에 남는 값(러너 출력과 끝 신호의 상태)만으로 다시 계산한다
+                                self.assertEqual(expected_first_limit(stop, got["runner_limit_elapsed_seconds"], 60.0,
+                                                                      got["engine_terminal_elapsed_seconds"],
+                                                                      None if engine is None else closing, got["runner_limit"],
+                                                                      None if engine is None else status),
+                                                 got["value"])
+
+    def test_engine_first_records_the_real_end_state(self):
+        # 2026-11-20 사용자(평가 프로토콜 §7·고정 초안 §21): 엔진이 먼저 끝났어도 정상 완료가 아니면 engine_completed로 적지
+        # 않고 실제 끝 상태를 남긴다(예전에는 cancelled·failed도 engine_completed였다).
+        import runner
+        for status, want in (("done", "engine_completed"), ("completed", "engine_completed"), ("failed", "engine_ended:failed"),
+                             ("timeout", "engine_ended:timeout"), ("cancelled", "engine_ended:cancelled"),
+                             ("unknown", "engine_ended:unknown")):
+            with self.subTest(status=status):
+                got = runner.first_limit("time_budget", 100.0, 60.0, {"status": status, "elapsed_seconds": 5.0})
+                self.assertEqual(got["value"], want)
+        # 예산 마감도 정상 완료일 때만 제품 상한이다
+        got = runner.first_limit("time_budget", 100.0, 60.0, {"status": "cancelled", "elapsed_seconds": 5.0,
+                                                              "closing_reason": "budget_limited"})
+        self.assertEqual(got["value"], "engine_ended:cancelled")
+        self.assertEqual(runner.ENGINE_SUCCESS_STATUSES, frozenset({"done", "completed"}))
+        # 끝 신호 상태 없이는 엔진이 먼저인 분류를 다시 계산할 수 없다(모순)
+        self.assertIsNone(expected_first_limit("time_budget", 60.0, 60.0, 5.0, None, "runner_time_budget", None))
+        self.assertIsNone(expected_first_limit("time_budget", 60.0, 60.0, 5.0, None, "runner_time_budget", "Bad Status"))
 
     def test_review_boundary_case_is_accepted(self):
         # #676 리뷰 예: 엔진 끝 읽기 39.99955초 → 기록 40.0, 요청 예산 정지 39.9996초. 회차 분류와 기록 재계산이 같다.

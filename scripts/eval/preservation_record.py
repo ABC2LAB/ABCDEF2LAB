@@ -252,8 +252,12 @@ def _seconds(value) -> bool:
     return type(value) in (int, float) and math.isfinite(value) and value >= 0
 
 
+_ENGINE_SUCCESS = frozenset({"done", "completed"})  # runner.ENGINE_SUCCESS_STATUSES와 같다(시험이 대조)
+_END_STATUS = re.compile(r"[a-z][a-z_]{0,31}\Z")
+
+
 def expected_first_limit(stop_reason: str, runner_elapsed: float, time_budget_seconds: float, engine_elapsed: float | None,
-                         closing_reason: str | None, runner_limit: str) -> str | None:
+                         closing_reason: str | None, runner_limit: str, end_status: str | None = None) -> str | None:
     """기록에 적힌 관측으로 first_limit 분류를 다시 계산한다(runner.first_limit과 같은 규칙). 러너 상한 이름·시각이 종료
     사유와 맞지 않으면 None(모순)이다. 엔진 끝 시각이 러너 상한 시각 이하일 때만 엔진이 먼저이고, 그 끝 상태의 마감
     사유가 budget_limited(O 제품 예산 마감)면 제품 상한이다."""
@@ -262,6 +266,8 @@ def expected_first_limit(stop_reason: str, runner_elapsed: float, time_budget_se
     if stop_reason == "time_budget" and runner_elapsed != round(time_budget_seconds, 3):
         return None
     if engine_elapsed is not None and engine_elapsed <= runner_elapsed:
+        if end_status not in _ENGINE_SUCCESS:
+            return None if end_status is None or not _END_STATUS.fullmatch(end_status) else "engine_ended:" + end_status
         return "product_limit:budget_limited" if closing_reason == "budget_limited" else "engine_completed"
     return runner_limit
 
@@ -306,6 +312,7 @@ def _validate_v3(p: dict) -> None:
     f = r["first_limit"]
     if (not isinstance(f, dict) or set(f) != FIRST_LIMIT_FIELDS or f["runner_limit"] not in RUNNER_LIMITS
             or not isinstance(f["value"], str) or not (f["value"] in RUNNER_LIMITS or f["value"] == "engine_completed"
+                                                       or f["value"].startswith("engine_ended:")
                                                        or not baseline and f["value"] == "product_limit:budget_limited")
             or not _seconds(f["runner_limit_elapsed_seconds"])
             or f["engine_terminal_elapsed_seconds"] is not None and not _seconds(f["engine_terminal_elapsed_seconds"])
@@ -320,7 +327,7 @@ def _validate_v3(p: dict) -> None:
         _fail("preservation_run_invalid")  # 끝 신호와 first_limit의 엔진 끝 시각은 같은 읽기다
     if f["value"] != expected_first_limit(r["stop_reason"], f["runner_limit_elapsed_seconds"], c["time_budget_seconds"],
                                          f["engine_terminal_elapsed_seconds"], None if e is None else e["closing_reason"],
-                                         f["runner_limit"]):
+                                         f["runner_limit"], None if e is None else e["status"]):
         _fail("preservation_run_invalid")  # 서명돼 있어도 관측 시각·마감 사유와 모순된 분류는 받지 않는다(#676 리뷰)
     if r["rate_limited"] is not None and not _count(r["rate_limited"]):
         _fail("preservation_run_invalid")
