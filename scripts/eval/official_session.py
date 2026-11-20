@@ -11,6 +11,10 @@
   무효(사유 = 멈춘 사유: `run_wait_timeout`·`result_missing`·`result_unreadable`)로 기록하고 그다음 멈춘다. 종료 코드와 상태가
   어긋나면 무효(`result_status_mismatch`)로 센다. 컨테이너가 남으면 그 회차의 실제 상태로 세고 멈춘다. 회차 디렉터리가 안 생긴
   경우(러너 종료 코드 2 등)만 시도로 세지 않는다. 측정 결과를 골라 버리는 길(멈춘 회차를 다시 돌려 기록에서 빼기)을 막는다.
+- 회차마다 시작 전에 실행 중 컨테이너가 0개인지 본다(`--resume` 첫 회차 포함). 남아 있으면 시도로 세지 않고
+  `containers_present`로 멈춘다(남은 컨테이너 때문에 다음 회차가 격리 검사에서 무효가 되어 시도가 날아가지 않게). 회차가 어떻게
+  끝나든(시한 넘김·결과 없음 포함) 회차 뒤 컨테이너가 0이 될 때까지 기다리고, 안 내려가면 멈춘 사유에 `containers_left`를 같이
+  적는다(2026-11-20 사용자).
 - 선택: O 회차마다 manifest 틀에서 새 승인 ID·만료 시각으로 manifest를 다시 만든다(`--o-manifest-template`). 키 사용량
   상한(`--key-file`·`--usage-cap-usd`·`--min-remaining-usd`)을 넘으면 다음 회차를 시작하지 않는다. 키·승인 ID는 출력하지 않는다.
 - 점검 모드(`--dry-run --outcomes …`): 러너·Docker·네트워크를 부르지 않고 결과를 차례로 흉내 내어 순서·무효 처리만 확인한다.
@@ -146,6 +150,14 @@ def running_containers() -> int | None:
     return len(done.stdout.split()) if done.returncode == 0 else None
 
 
+def containers_stop(count: Callable[[], int | None]) -> str | None:
+    """회차 시작 전 확인: 실행 중 컨테이너가 0개가 아니면 멈출 사유(시도로 세지 않음)."""
+    present = count()
+    if present is None:
+        return "containers_unknown"
+    return None if present == 0 else "containers_present"
+
+
 def wait_containers_gone(count: Callable[[], int | None], timeout: float, interval: float,
                          sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic) -> bool:
     deadline = clock() + timeout
@@ -243,7 +255,17 @@ class RealRunner:
             code = wait_process(proc, self.run_timeout, self.grace)
         slot = f"{LETTER_OF[side]}{repeat}"
         new = sorted(run_dirs(self.runs_root) - before)
-        run_id = new[-1] if new else None
+        outcome = self._judge(slot, code, new[-1] if new else None)
+        # 회차가 어떻게 끝나든 컨테이너가 내려갈 때까지 기다린다. 안 내려가면 멈추고 사유에 같이 적는다.
+        if outcome.status != "config_error" and not wait_containers_gone(running_containers, self.post_timeout, 5):
+            left = f"containers_left:{slot}"
+            if outcome.status == "stop":
+                outcome.reasons.append(left)
+            else:
+                outcome.stop_after = left if outcome.stop_after is None else f"{outcome.stop_after},{left}"
+        return outcome
+
+    def _judge(self, slot: str, code: int | None, run_id: str | None) -> Outcome:
         if run_id is None:
             # 회차 디렉터리가 안 생겼다: 회차를 만들지 않은 것이라 시도로 세지 않는다
             if code == 2:
@@ -265,8 +287,6 @@ class RealRunner:
         if status not in (COMPLETE, INVALID) or (code == 0) != (status == COMPLETE):
             reason = f"result_status_mismatch:{slot}"
             return Outcome(INVALID, [reason] + [r for r in reasons if isinstance(r, str)], run_id, stop_after=reason)
-        if not wait_containers_gone(running_containers, self.post_timeout, 5):
-            return Outcome(status, reasons, run_id, stop_after=f"containers_left:{slot}")
         return Outcome(status, reasons, run_id)
 
 
@@ -397,6 +417,9 @@ def main(argv: list[str] | None = None) -> int:
                 guard.base = resumed_base
 
         def before_run(side: str, repeat: int) -> str | None:
+            stop = containers_stop(running_containers)  # 시도로 세지 않는다(남은 컨테이너가 격리 검사를 깨서 시도가 날아가지 않게)
+            if stop is not None:
+                return stop
             if guard is not None:
                 stop = guard.check()
                 if stop is not None:

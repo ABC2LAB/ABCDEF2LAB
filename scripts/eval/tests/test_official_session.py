@@ -301,6 +301,53 @@ class TestRealRunner(unittest.TestCase):
         timeout = self.go(0, False, None, timed_out=True)
         self.assertEqual((timeout.status, timeout.reasons), ("stop", ["run_wait_timeout:B0"]))
         self.assertEqual(self.go(1, False, None).reasons, ["no_run_directory:B0"])
+        # 회차 디렉터리가 없어도 남은 컨테이너는 멈춘 사유에 같이 적는다
+        self.assertEqual(self.go(0, False, None, timed_out=True, containers=2).reasons,
+                         ["run_wait_timeout:B0", "containers_left:B0"])
+
+    def test_containers_are_awaited_after_every_kind_of_end(self):
+        # 2026-11-20 사용자: 시한 넘김·결과 없음·결과 못 읽음·상태 불일치 뒤에도 컨테이너가 내려가는지 기다리고, 안 내려가면 사유에 같이
+        cases = {"timeout": dict(code=0, result=None, timed_out=True), "missing": dict(code=1, result=None),
+                 "broken": dict(code=1, result="{"), "mismatch": dict(code=0, result={"status": "invalid"}),
+                 "complete": dict(code=0, result={"status": "complete"})}
+        for name, case in cases.items():
+            with self.subTest(case=name):
+                gone = self.go(case["code"], True, case["result"], timed_out=case.get("timed_out", False))
+                left = self.go(case["code"], True, case["result"], timed_out=case.get("timed_out", False), containers=1)
+                self.assertEqual(left.status, gone.status)  # 시도 세기는 그대로
+                self.assertEqual(left.run_id, self.RUN_ID)
+                want = "containers_left:B0" if gone.stop_after is None else f"{gone.stop_after},containers_left:B0"
+                self.assertEqual(left.stop_after, want)
+        # 설정 오류(회차 디렉터리 없음, 종료 코드 2)는 기다리지 않는다
+        with mock.patch("official_session.wait_containers_gone", side_effect=AssertionError("waited")):
+            self.assertEqual(self.go(2, False, None).status, "config_error")
+
+    def test_real_session_checks_containers_before_each_run_including_resume(self):
+        # main의 실제 경로: 회차 전 확인이 러너보다 먼저 불리고, 남아 있으면 러너를 부르지 않고 시도 0으로 멈춘다
+        with tempfile.TemporaryDirectory() as root:
+            config = Path(root, "c.json")
+            config.write_text(json.dumps({"runs_root": str(Path(root, "runs"))}))
+            Path(root, "runs").mkdir()
+            common = ["--tree", root, "--config", str(config), "--preflight", root + "/p", "--admin-password-file", root + "/a"]
+            started = mock.Mock(side_effect=AssertionError("runner started"))
+            with mock.patch("official_session.running_containers", return_value=2), \
+                    mock.patch("official_session.RealRunner.__call__", started), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(o.main(["--session-dir", root + "/s", *common]), o.EXIT_STOPPED)
+                lines = [json.loads(l) for l in Path(root, "s", o.LOG_NAME).read_text().splitlines()]
+                self.assertEqual(lines[0]["reason"], "containers_present")
+                self.assertEqual(lines[-1]["attempts"], {"baseline": 0, "ours": 0})
+                # --resume도 같은 확인을 먼저 한다
+                self.assertEqual(o.main(["--session-dir", root + "/s", "--resume", *common]), o.EXIT_STOPPED)
+            started.assert_not_called()
+
+    def test_containers_present_before_a_run_stops_without_counting(self):
+        self.assertIsNone(o.containers_stop(lambda: 0))
+        self.assertEqual(o.containers_stop(lambda: 3), "containers_present")
+        self.assertEqual(o.containers_stop(lambda: None), "containers_unknown")
+        schedule, calls, logs = Schedule(1), [], []
+        run_session(schedule, lambda side, repeat: calls.append(side) or Outcome("complete"), logs.append,
+                    before_run=lambda side, repeat: o.containers_stop(lambda: 1))
+        self.assertEqual((calls, schedule.attempts["baseline"], schedule.stop_reason), ([], 0, "containers_present"))
 
     def test_schedule_counts_stopped_attempts_and_resume_keeps_them(self):
         # 시한 넘긴 회차는 시도로 센 뒤 멈추고, --resume은 그 시도를 다시 세어 같은 칸부터 잇는다(2N에 걸린다)
