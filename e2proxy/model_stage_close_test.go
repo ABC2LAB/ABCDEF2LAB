@@ -79,6 +79,11 @@ func TestCloseModelStageAdmitsOnlyConfirmation(t *testing.T) {
 	if e.ModelStageClosed() {
 		t.Fatal("마감 전인데 모델 단계가 닫힘")
 	}
+	// 마감 전에 연 확정 단계 다시 로그인 호출은 마감으로 끊기지 않는다.
+	earlyRelogin, err := e.BeginE3ReloginCall(t.Context(), "e3-relogin-early")
+	if err != nil {
+		t.Fatal(err)
+	}
 	e.CloseModelStage()
 	e.CloseModelStage() // 여러 번 불러도 같다.
 	if !e.ModelStageClosed() {
@@ -107,6 +112,10 @@ func TestCloseModelStageAdmitsOnlyConfirmation(t *testing.T) {
 	if _, err := e.BeginProgramCall(t.Context(), ProgramAuthPrep, "auth-prep"); !errors.Is(err, ErrClosed) {
 		t.Fatalf("마감 뒤 인증 준비: %v", err)
 	}
+	if _, r, err := earlyRelogin.AuthPrep(t.Context(), loginRequest(t, server.URL+"/login"), cookieExtractor("session")); err != nil {
+		t.Fatalf("마감 전에 연 확정 단계 다시 로그인이 끊김: %s %v", r.Reason, err)
+	}
+	_, _ = earlyRelogin.Close(t.Context())
 	// 확정 단계 요청은 나간다.
 	if sent, reason := relogin(t, e, server.URL, true); !sent {
 		t.Fatalf("마감 뒤 확정 단계 다시 로그인이 막힘: %s", reason)
