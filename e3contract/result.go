@@ -95,11 +95,17 @@ const (
 	// ReasonDataCheckContradiction은 교차(B) 조회가 거부 응답(401·403·404)인데 표식 검사가 "있음"인 경우다. 거부와 데이터
 	// 노출이 함께 나온 모순이라 어느 쪽으로도 판정하지 않는다(사용자 결정 2026-11-20).
 	ReasonDataCheckContradiction ProductReason = "product_data_check_contradiction"
+	// ReasonSessionExpired는 교차(B) 조회가 거부(401·403·404)로 끝난 뒤 B 신원을 다시 확인했더니 신원 응답도 401·403인
+	// 경우다. 거부 원인이 접근 통제가 아니라 세션 만료일 수 있어 판정하지 않는다(사용자 결정 2026-11-20 S21 (나)).
+	ReasonSessionExpired ProductReason = "product_session_expired"
+	// ReasonCrossDenialUnverified는 교차 조회 거부 뒤 B 신원을 다시 확인하지 못한 경우다(보내지 못함·결과 불명·시간 초과·
+	// 확정 몫 끝·중지·처음과 다른 주체·그 밖의 비정상 응답). 원인을 모르는 거부를 접근 거부(data_no_match)로 적지 않는다.
+	ReasonCrossDenialUnverified ProductReason = "product_cross_denial_unverified"
 )
 
 // CrossDenied는 교차 조회 응답이 접근 거부(401·403·404)인지다. 거부 응답이면 표식 검사보다 상태를 먼저 본다
-// (사용자 결정 2026-11-20): 표식 검사 결과가 "있음"이 아니면 정상 데이터가 아닌 것으로(cross_normal_data no) 오라클에
-// 넘겨 data_no_match가 되고, "있음"이면 모순(ReasonDataCheckContradiction)이다.
+// (사용자 결정 2026-11-20): 표식 검사 결과가 "있음"이면 모순(ReasonDataCheckContradiction)이다. 아니면 B 신원을 한 번
+// 더 확인해(S21 (나)) 살아 있을 때만 정상 데이터가 아닌 것으로(cross_normal_data no) 오라클에 넘겨 data_no_match가 된다.
 func CrossDenied(status int) bool { return status == 401 || status == 403 || status == 404 }
 
 // WriteOutcome은 확정 단계 생성 요청이 대상에 남긴 결과다.

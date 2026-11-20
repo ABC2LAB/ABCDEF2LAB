@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import ipaddress
 import json
 import os
@@ -151,6 +152,59 @@ POWERCFG = "/mnt/c/Windows/System32/powercfg.exe"
 POWER_SETTINGS = (("SUB_SLEEP", "STANDBYIDLE", "절전"), ("SUB_SLEEP", "HIBERNATEIDLE", "최대 절전"))
 _POWER_INDEX = {side: re.compile(side + r"[^\n]*?0x([0-9a-fA-F]{8})") for side in ("AC", "DC")}
 PowerQuery = Callable[[str, str], "str | None"]
+REG = "/mnt/c/Windows/System32/reg.exe"
+# 재부팅을 기다리는 Windows 업데이트 표시(있으면 재부팅 대기). Windows 업데이트 재부팅 요구와 구성 요소 서비스 재부팅 대기다.
+WINDOWS_REBOOT_KEYS = (
+    (r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired", "Windows 업데이트 재부팅 대기"),
+    (r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending", "구성 요소 업데이트 재부팅 대기"),
+)
+# 설정 > Windows 업데이트 > 업데이트 일시 중지의 만료 시각(UTC ISO). 없거나 지났으면 일시 중지가 아니다.
+WINDOWS_PAUSE = (r"HKLM\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings", "PauseUpdatesExpiryTime")
+_PAUSE_VALUE = re.compile(r"PauseUpdatesExpiryTime\s+REG_SZ\s+([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})Z")
+# (있음, 출력) 또는 None(읽을 수 없음: Windows가 아님·reg.exe 실패)
+RegQuery = Callable[[str, "str | None"], "tuple[bool, str] | None"]
+Now = Callable[[], datetime.datetime]
+
+
+def reg_query(key: str, value: str | None = None) -> tuple[bool, str] | None:
+    """WSL에서 Windows 레지스트리 키(또는 값) 하나를 읽는다(reg query, 읽기만). 종료 코드 0 = 있음, 1 = 없음."""
+    if not os.path.exists(REG):
+        return None
+    try:
+        done = subprocess.run([REG, "query", key, *(["/v", value] if value else [])], stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=COMMAND_TIMEOUT, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode not in (0, 1):
+        return None
+    return done.returncode == 0, done.stdout.decode("utf-8", errors="replace")
+
+
+def _utc_now() -> datetime.datetime:
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+def windows_update_state(reg: RegQuery, now: Now) -> tuple[list[str], str] | None:
+    """재부팅을 기다리는 Windows 업데이트와 업데이트 일시 중지 상태(2026-11-20 사용자). (문제 목록, 설명) 또는 None(읽을 수 없음)."""
+    problems = []
+    for key, label in WINDOWS_REBOOT_KEYS:
+        found = reg(key, None)
+        if found is None:
+            return None
+        if found[0]:
+            problems.append(label)
+    pause = reg(*WINDOWS_PAUSE)
+    if pause is None:
+        return None
+    match = _PAUSE_VALUE.search(pause[1]) if pause[0] else None
+    expiry = (datetime.datetime.fromisoformat(match.group(1)).replace(tzinfo=datetime.timezone.utc) if match else None)
+    if expiry is None or expiry <= now():
+        problems.append("업데이트 일시 중지 안 됨")
+        detail = "일시 중지 없음" if expiry is None else f"일시 중지 {match.group(1)}Z에 끝남"
+    else:
+        detail = f"일시 중지 {match.group(1)}Z까지"
+    reboot = "재부팅 대기 " + ("있음" if any(p.endswith("재부팅 대기") for p in problems) else "없음")
+    return problems, f"Windows 업데이트 {reboot}, {detail}"
 
 
 def powercfg_query(subgroup: str, setting: str) -> str | None:
@@ -166,9 +220,10 @@ def powercfg_query(subgroup: str, setting: str) -> str | None:
     return done.stdout.decode("utf-8", errors="replace") if done.returncode == 0 else None
 
 
-def check_power(query: PowerQuery) -> Result:
-    """측정 PC가 절전·최대 절전으로 멈추지 않는지(2026-11-20 사용자). 전원 연결(AC) 때 두 설정이 '안 함'이어야 한다. 배터리(DC)
-    값은 사유에만 적는다(측정은 전원 연결로 한다). Windows 전원 설정을 읽을 수 없으면(WSL이 아님) 직접 확인하라고 SKIP이다."""
+def check_power(query: PowerQuery, reg: RegQuery, now: Now) -> Result:
+    """측정 PC가 절전·최대 절전·업데이트 재부팅으로 멈추지 않는지(2026-11-20 사용자). 전원 연결(AC) 때 두 설정이 '안 함'이어야
+    한다. 배터리(DC) 값은 사유에만 적는다(측정은 전원 연결로 한다). 재부팅을 기다리는 Windows 업데이트가 없고, 업데이트가 일시
+    중지 중이어야 한다(측정 날 일시 중지, 공식 회차 절차 6절). Windows 설정을 읽을 수 없으면(WSL이 아님) 직접 확인하라고 SKIP이다."""
     found = {}
     for subgroup, setting, label in POWER_SETTINGS:
         text = query(subgroup, setting)
@@ -180,9 +235,101 @@ def check_power(query: PowerQuery) -> Result:
         found[label] = {side: (int(m.group(1), 16) if m else None) for side, m in values.items()}
     bad = [label for label, v in found.items() if v["AC"] != 0]
     detail = ", ".join(f"{label} AC {v['AC']}초·DC {v['DC']}초" for label, v in found.items())
+    # 절전 FAIL을 먼저 낸다. 업데이트 상태를 못 읽어도(SKIP) 절전이 켜진 사실이 가려지지 않게 한다(#823 리뷰).
     if bad:
         return Result(False, "power", f"전원 연결 때 {'·'.join(bad)}이 켜져 있음({detail}) → 측정 동안 '안 함'(0)으로")
-    return Result(True, "power", f"전원 연결 때 절전·최대 절전 안 함({detail}, 0 = 안 함). 측정은 전원 연결로")
+    update = windows_update_state(reg, now)
+    if update is None:
+        return Result(True, "power", "Windows 업데이트 상태를 읽을 수 없음 → 재부팅 대기 업데이트가 없고 업데이트가 일시 중지인지 직접 확인",
+                      skipped=True)
+    problems, update_detail = update
+    if problems:
+        return Result(False, "power", f"{'·'.join(problems)}({update_detail}; {detail}) → 재부팅 대기는 세션 전에 재부팅으로 끝내고, "
+                                      "측정 날 업데이트를 일시 중지(설정 > Windows 업데이트)")
+    return Result(True, "power", f"전원 연결 때 절전·최대 절전 안 함({detail}, 0 = 안 함), {update_detail}. 측정은 전원 연결로")
+
+
+TASKLIST = "/mnt/c/Windows/System32/tasklist.exe"
+DOCKER_DESKTOP_IMAGE = "Docker Desktop.exe"
+# 프로세스 이름 → 실행 중인지(None = 확인 못 함)
+ProcessQuery = Callable[[str], "bool | None"]
+
+
+def windows_process_running(image: str) -> bool | None:
+    """WSL에서 Windows 프로세스가 도는지 본다(tasklist, 읽기만). 출력은 로캘 인코딩이라 바이트로 받는다(없으면 로캘 안내문)."""
+    if not os.path.exists(TASKLIST):
+        return None
+    try:
+        done = subprocess.run([TASKLIST, "/FI", f"IMAGENAME eq {image}", "/NH", "/FO", "CSV"], stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=COMMAND_TIMEOUT, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    return f'"{image}"'.encode("ascii") in done.stdout
+
+
+# 이 배포판 dockerd를 이루는 패키지(Ubuntu·Docker 저장소 이름). 자동 업그레이드로 바뀌면 패키지 스크립트가 서비스를 다시 띄워 도는
+# 회차의 컨테이너가 멈춘다.
+DOCKER_ENGINE_PACKAGES = ("docker.io", "docker-ce", "containerd", "containerd.io", "runc")
+_APT_VALUE = re.compile(r'^([A-Za-z0-9:_-]+)\s+"([^"]*)";$')
+
+
+def check_docker_updates(run: Run, process_running: ProcessQuery) -> Result:
+    """측정 중 Docker가 스스로 업데이트·재시작하지 않는지(2026-11-20 사용자).
+    - Docker Desktop 엔진: 업데이트 설정(설정 > 소프트웨어 업데이트 '항상 업데이트 내려받기')은 설정 파일 키 이름을 공식 문서로
+      확인하지 못해 읽지 않고 직접 확인하라고 SKIP이다.
+    - 이 배포판의 dockerd: 자동 보안 업데이트(unattended-upgrades)가 켜져 있으면 엔진 패키지가 모두 고정(hold)되거나 제외 목록에
+      있어야 한다. Windows에서 Docker Desktop이 돌고 있으면 FAIL이다(공식 회차 절차 3절 2번: 종료한다. 스스로 업데이트·재시작하고,
+      WSL 통합이 켜지면 이 배포판의 Docker 소켓을 가져간다)."""
+    code, out = run(["docker", "info", "--format", "{{.OperatingSystem}}"], COMMAND_TIMEOUT)
+    if code != 0 or not out.strip():
+        return Result(False, "docker_updates", "Docker 엔진 종류를 읽지 못함")
+    if "Docker Desktop" in out:
+        return Result(True, "docker_updates", "Docker Desktop 엔진 → 설정에서 자동 업데이트 내려받기가 꺼져 있는지 직접 확인하고, "
+                                              "측정 중 업데이트·재시작 안 함", skipped=True)
+    code, out = run(["apt-config", "dump"], COMMAND_TIMEOUT)
+    if code != 0:
+        return Result(False, "docker_updates", "apt 설정을 읽지 못함")
+    values: dict[str, list[str]] = {}
+    for line in out.splitlines():
+        match = _APT_VALUE.match(line.strip())
+        if match:
+            values.setdefault(match.group(1), []).append(match.group(2))
+    code, out = run(["dpkg-query", "-W", "-f", "${Package}\t${db:Status-Abbrev}\n", "unattended-upgrades", *DOCKER_ENGINE_PACKAGES],
+                    COMMAND_TIMEOUT)
+    if code not in (0, 1):  # 1 = 목록 일부가 설치되지 않음(정상)
+        return Result(False, "docker_updates", "패키지 상태를 읽지 못함")
+    status = dict(line.split("\t", 1) for line in out.splitlines() if "\t" in line)
+    installed = {name for name, abbrev in status.items() if abbrev[1:2] == "i"}
+    periodic = (values.get("APT::Periodic::Unattended-Upgrade") or ["0"])[-1]
+    code, out = run(["systemctl", "is-active", "apt-daily-upgrade.timer"], COMMAND_TIMEOUT)
+    timer_off = out.strip() in ("inactive", "failed")
+    desktop = process_running(DOCKER_DESKTOP_IMAGE)
+    if desktop:
+        return Result(False, "docker_updates", "Windows에서 Docker Desktop이 돌고 있음 → 측정 전에 종료(3절 2번)")
+    desktop_note = "" if desktop is False else ", Docker Desktop 실행 여부는 확인 못 함(직접 종료 확인)"
+    if "unattended-upgrades" not in installed or periodic in ("", "0") or timer_off:
+        return Result(True, "docker_updates", f"이 배포판 dockerd, 자동 업그레이드 꺼짐{desktop_note}")
+    blacklist = values.get("Unattended-Upgrade::Package-Blacklist::", [])
+
+    def excluded(name: str) -> bool:
+        for entry in blacklist:
+            try:
+                if re.match(entry, name):
+                    return True
+            except re.error:
+                if entry == name:
+                    return True
+        return False
+
+    engine = sorted(name for name in installed if name in DOCKER_ENGINE_PACKAGES)
+    open_ = [name for name in engine if status[name][:1] != "h" and not excluded(name)]
+    if open_:
+        return Result(False, "docker_updates", f"자동 보안 업데이트(unattended-upgrades)가 켜져 있고 {'·'.join(open_)}이 대상 → 업데이트되면 "
+                                               f"dockerd가 다시 떠 회차가 깨짐. 측정 동안 `sudo apt-mark hold {' '.join(open_)}`, 끝나면 unhold")
+    return Result(True, "docker_updates",
+                  f"이 배포판 dockerd, 자동 업그레이드는 켜져 있지만 엔진 패키지({'·'.join(engine)})는 고정·제외{desktop_note}")
 
 
 def check_running_containers(run: Run) -> Result:
@@ -340,7 +487,9 @@ def _free_bytes(path: str) -> int | None:
 
 
 def run_checks(config: dict, repo: Path, run: Run = run_command, read_text: Callable[[str], str | None] = _read_text,
-               free_bytes: Callable[[str], int | None] = _free_bytes, power_query: PowerQuery = powercfg_query) -> list[Result]:
+               free_bytes: Callable[[str], int | None] = _free_bytes, power_query: PowerQuery = powercfg_query,
+               reg: RegQuery = reg_query, now: Now = _utc_now,
+               process_running: ProcessQuery = windows_process_running) -> list[Result]:
     results = check_docker(run)
     results.append(check_version("compose", run, ["docker", "compose", "version", "--short"], MIN_COMPOSE, "2.40.3"))
     results.append(check_go(run, repo))
@@ -350,7 +499,8 @@ def run_checks(config: dict, repo: Path, run: Run = run_command, read_text: Call
     results.append(Result(code == 0, "git", "git 있음" if code == 0 else "git 없음"))
     results.append(check_memory(read_text))
     results.append(check_disk(run, free_bytes))
-    results.append(check_power(power_query))
+    results.append(check_power(power_query, reg, now))
+    results.append(check_docker_updates(run, process_running))
     results.append(check_running_containers(run))
     results.extend(check_listeners(config, read_text))
     results.append(check_subnets(run, repo, read_text))

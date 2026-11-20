@@ -65,6 +65,9 @@ type Call struct {
 type Transport struct {
 	mu        sync.Mutex
 	Behaviors map[Key]Behavior
+	// Later는 같은 열쇠의 두 번째 요청부터 쓰는 동작이다(교차 거부 뒤 B 신원 재확인처럼 같은 요청이 다시 올 때). 없으면
+	// Behaviors 그대로다.
+	Later map[Key]Behavior
 	// RegisterErr는 RegisterMarker가 돌려줄 오류다(ErrNotImplemented 등).
 	RegisterErr error
 	// Tamper는 돌려줄 관찰을 바꾼다. 저널에는 바꾸기 전 값이 봉인된다(저널 대조 실패를 만든다).
@@ -85,6 +88,7 @@ type Transport struct {
 	seq        uint64
 	base       time.Time
 	sinks      map[string]*bytes.Buffer
+	seen       map[Key]int
 }
 
 // New는 빈 가짜 E²다.
@@ -160,6 +164,13 @@ func (t *Transport) do(c Call, b e3contract.RunBinding, create e3contract.CallRe
 		return e3contract.Observation{}, errors.New("e3fake: 생성 본문 없음")
 	}
 	be := t.Behaviors[c.Key]
+	if t.seen == nil {
+		t.seen = map[Key]int{}
+	}
+	t.seen[c.Key]++
+	if later, ok := t.Later[c.Key]; ok && t.seen[c.Key] > 1 {
+		be = later
+	}
 	if be.Err != nil {
 		return e3contract.Observation{}, be.Err
 	}

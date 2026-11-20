@@ -313,7 +313,7 @@
     },
     {
       "id": "S21",
-      "name": "token_expiry_during_confirmation",
+      "name": "token_expiry_before_confirmation",
       "fake": false,
       "real": "runnable",
       "expect": {
@@ -337,6 +337,24 @@
         "reason": "previous_markers_present",
         "requests_zero": true,
         "verdicts": {}
+      }
+    },
+    {
+      "id": "S23",
+      "name": "cross_denial_session_expired",
+      "fake": true,
+      "real": "fake_only",
+      "expect": {
+        "status": "completed",
+        "reason": "",
+        "verdicts": {
+          "book": {
+            "value": "undecidable",
+            "reasons": [
+              "product_session_expired"
+            ]
+          }
+        }
       }
     }
   ]

@@ -30,7 +30,7 @@ Go 조건 1: E③ 제품 경로 통합과 VAmPI 실제 검증, 반례 포함, �
 ## 3. 대상 준비
 
 - 이미지: `deploy/eval/practice/vampi.Dockerfile`(원본 VAmPI에 DB를 미리 채움). 회차마다 새 컨테이너로 띄운다(상태 변경 재현 전 리셋, CLAUDE.md 규칙 6). 대상 쓰기를 남기는 회차 뒤에는 제품의 리셋 확인(`POST /api/product/targets/{id}/reset-confirmation`)을 컨테이너를 새로 띄운 뒤에만 한다(S17은 일부러 안 띄우고 확인).
-- 환경 변수: `vulnerable=1`(BOLA 있음). S02는 `vulnerable=0`인 별도 인스턴스(교차 조회가 404). `tokentimetolive`는 기본 60초다. 제품 E²의 세션 다시 받기(`refresh_session`)로 이어지는지가 이 검증에 포함된다. 바꾸는 회차(S20 재로그인, S21 확정 단계 중 만료)는 회차 조건에 값을 적는다.
+- 환경 변수: `vulnerable=1`(BOLA 있음). S02는 `vulnerable=0`인 별도 인스턴스(교차 조회가 404). `tokentimetolive`는 기본 60초다. 제품 E²의 세션 다시 받기(`refresh_session`)로 이어지는지가 이 검증에 포함된다. 바꾸는 회차(S20 재로그인, S21 확정 전 만료)는 회차 조건에 값을 적는다. 확정 단계는 신원 확인 직전에 두 시험 계정을 다시 로그인시킨다(사용자 결정 2026-11-20 (가), 계약 §7.1).
 - 값 넣는 곳: 제품 직접 실행은 `compose.practice-vampi.yaml`이 `VAMPI_VULNERABLE`(기본 1)·`VAMPI_TOKEN_TTL`(기본 60)을 받는다. 러너 회차는 대상 서비스 환경 overlay로 넣는다.
 - 대상 등록: 제품 대상 등록·DNS 증명·승인에서 경로 접두 `/`, 메서드 GET·POST, 쓰기 동의와 리셋할 수 있는 쓰기(`reversible_writes`)를 켠다(결정 §3 조건 1). 확정 몫은 승인된 실행 정책에서 서버가 계산한다.
 
@@ -78,10 +78,11 @@ Go 조건 1: E③ 제품 경로 통합과 VAmPI 실제 검증, 반례 포함, �
 | S16 | 실행 결속 불일치 | E² 기록 변조 필요 | `confirmation_integrity_failed` / `binding_mismatch` | 없음 | | 가짜만 |
 | S17 | 이전 객체 남긴 채 리셋 확인 | 앞 회차가 만든 객체를 남긴 채 운영자 리셋 확인 → 다음 회차 | `completed`(시작 허용) | confirmed(새 표식으로만, 거짓 CONFIRMED 0) | | 가능(제품 직접 실행) |
 | S18 | ID 충돌 | 같은 제목이 이미 있음(난수라 실제로는 만들기 어려움) | `completed` | undecidable(`product_create_failed`), 생성 1번 | | 가짜만 |
-| S19 | 예산 압박 | 제품 대상 요청 상한을 낮게 잡아 모델 단계가 상한까지 씀 | `completed` | confirmed(확정 몫으로 끝까지) | | 가능(실제 모델) |
+| S19 | 예산 압박 | 제품 대상 요청 상한을 낮게 잡아 모델 단계가 상한까지 씀 | `completed` | confirmed(확정 몫으로 끝까지: 모델 단계는 떼어 둔 확정 몫을 못 씀, 계약 §7.1 몫 집행) | | 가능(실제 모델) |
 | S20 | 세션 재로그인 | `VAMPI_TOKEN_TTL`을 짧게 해 모델 단계 중 재로그인 | `completed` | confirmed(바뀐 계정 결속으로) | | 가능(실제 모델) |
-| S21 | 확정 단계 중 토큰 만료 | `VAMPI_TOKEN_TTL`을 몇 초로 줄여 확정 단계 도중 만료 | `completed` | confirmed | | 가능(스크립트 모델) |
+| S21 | 확정 전 토큰 만료 | `VAMPI_TOKEN_TTL`을 모델 단계보다 짧게(예: 5초) 해 확정 단계 전에 만료 | `completed` | confirmed(확정 직전 다시 로그인으로) | | 가능(스크립트 모델) |
 | S22 | 이전 표식 잔존 점검 | 잔존 점검이 표식을 찾음 | `start_refused` / `previous_markers_present` | 없음 | ✓ | 가짜만(잔존 점검 미구현, 측정 뒤 개선) |
+| S23 | 교차 거부 뒤 세션 만료 | B 조회가 거부(401)이고 B 신원 재확인도 401 | `completed` | undecidable·`product_session_expired`(data_no_match로 적지 않음, 사용자 결정 2026-11-20 S21 (나)) | ✓ | 가짜만(확정 단계 몇 초 사이 만료는 실제로 만들기 어려움) |
 
 - S19~S21은 모두 취약 대상(`vulnerable=1`)이라 기대가 확정이다. 확정이 안 나오면 놓친 확정으로 원인을 찾는다(거짓 CONFIRMED와 따로 센다).
 

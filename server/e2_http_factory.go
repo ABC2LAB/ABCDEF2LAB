@@ -725,7 +725,14 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 			refresh = func(ctx context.Context, label string) (http.Header, string) {
 				// 성공하면 다음 Worker도 새 세션으로 시작한다. 같은 계정 다시 로그인은 줄을 세운다.
 				return sessionStore.refresh(ctx, label, func() (http.Header, string) {
-					return e2HTTPRefreshSession(ctx, execution, dir, origin, authPolicy, sessionStore.refreshes, programCalls, label)
+					return e2HTTPRefreshSession(ctx, execution, dir, origin, authPolicy, sessionStore.refreshes, programCalls, label, false)
+				})
+			}
+			// 확정 단계 직전 다시 로그인도 같은 경로·같은 상한이고, 확정 몫을 쓰는 호출로 연다(사용자 결정 2026-11-20 (가)).
+			// Worker의 refresh_session(위)은 확정 몫을 쓰지 못한다.
+			sessionStore.relogin = func(ctx context.Context, label string) (http.Header, string) {
+				return sessionStore.refresh(ctx, label, func() (http.Header, string) {
+					return e2HTTPRefreshSession(ctx, execution, dir, origin, authPolicy, sessionStore.refreshes, programCalls, label, true)
 				})
 			}
 		}

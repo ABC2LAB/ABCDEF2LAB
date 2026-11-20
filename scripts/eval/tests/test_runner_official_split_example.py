@@ -11,7 +11,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from runner_config import parse_runner_config  # noqa: E402
+from runner import plan_task  # noqa: E402
+from runner_config import RunPlan, parse_runner_config  # noqa: E402
+from runner_engine import EngineAPIError  # noqa: E402
 
 DOCS = Path(__file__).resolve().parents[3] / "docs/evaluation"
 EXAMPLE = DOCS / "runner.official-split.example.json"
@@ -59,13 +61,33 @@ class TestOfficialSplitExample(unittest.TestCase):
         self.assertIsNotNone(config.split)
         self.assertEqual((config.split.product_port, config.split.dns_control_port), (28787, 29083))
         self.assertEqual(config.fault_stall_seconds, 180)  # 멈춤 무효 T(고정 초안 §2)
+        self.assertIs(config.split.e3_disabled_required, True)  # 공식 회차는 E③ 비활성 요구를 켜야 통과한다
 
     def test_common_fields_match_the_engine_direct_example(self):
         example, base = load(EXAMPLE), load(BASE_EXAMPLE)
         added = {"path_key_file", "preservation", "split"}
-        self.assertEqual({key: value for key, value in example.items() if key not in added and key != "run"},
-                         {key: value for key, value in base.items() if key != "run"})
+        self.assertEqual({key: value for key, value in example.items() if key not in added | {"run", "task"}},
+                         {key: value for key, value in base.items() if key not in ("run", "task")})
         self.assertEqual({key: value for key, value in example["run"].items() if key != "fault_stall_seconds"}, base["run"])
+        # 작업 설명의 대상 주소만 다르다: 분리 배치 B의 점검 주소는 대상 이름 origin이다(아래 시험)
+        self.assertEqual({key: value for key, value in example["task"].items() if key != "description"},
+                         {key: value for key, value in base["task"].items() if key != "description"})
+        self.assertEqual(example["task"]["description"],
+                         base["task"]["description"].replace("http://eval-meter:8080", "http://app.eval.test:8080"))
+
+    def test_filled_example_task_passes_the_split_baseline_origin_rule(self):
+        # 분리 배치 B 작업은 대상 이름 origin(http://<split.target_name>:<계측기 포트>)으로 만든다(runner_config.plan_run).
+        # 작업 설명의 첫 URL이 그 주소가 아니면 러너가 작업 생성 때 task_target_mismatch로 회차를 멈춘다(2026-11-20 찾음:
+        # 예시가 엔진 직접 배치 주소 eval-meter:8080을 그대로 두었다).
+        config = parse_runner_config(filled())
+        plan = RunPlan(side="baseline", run_id="r", project="eval-r", source_sha="0" * 40, llm={}, target_image=None,
+                       engine_image=None, images={}, meter_port=8080, compose_files=(), secrets_env_file=Path("/x"),
+                       compose_env={}, e2_mode="none", task_origin=f"http://{config.split.target_name}:8080")
+        request, goal_sha = plan_task(config.task, plan, "http://eval-meter:8080")
+        self.assertRegex(goal_sha, "^[0-9a-f]{64}$")
+        self.assertIn(b"http://app.eval.test:8080", request.body)
+        with self.assertRaises(EngineAPIError):
+            plan_task(dict(config.task, description=load(BASE_EXAMPLE)["task"]["description"]), plan, "http://eval-meter:8080")
 
     def test_no_secret_values(self):
         # 키·비밀번호는 회차 시작 때 따로 만든 파일이다. 예시에는 그 파일 경로만 있고 값은 없다.
