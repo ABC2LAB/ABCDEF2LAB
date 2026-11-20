@@ -144,6 +144,7 @@
     "task_wait_seconds": 120,
     "poll_interval_seconds": 2,
     "boundary_stop_seconds": 30,
+    "e3_disabled_required": true,
     "cli_usage_names": [
       "<4절 2번 도구 면 측정의 cli_differences.baseline_only 이름들>"
     ]
