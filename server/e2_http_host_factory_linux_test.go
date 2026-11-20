@@ -117,12 +117,19 @@ func TestE2HTTPFactoryPreparationFailuresCloseHostBeforeNextRun(t *testing.T) {
 	auth := cookieAuth(E2HTTPFileAuthAccount{Label: "tester-a", Credential: pin})
 	policy.Auth = &auth
 	var sealChecks []E2HTTPSealCheck
+	recordHook := func(_ context.Context, s E2HTTPSealCheck) error {
+		sealChecks = append(sealChecks, s)
+		return errors.New("기록 실패도 봉인 실패가 아니다")
+	}
+	// 기록 훅이 멈춰도(DB 대기 등, 문맥도 무시) 봉인 뒤 회차 마감은 기록 기한 안에 끝나야 한다(#816 리뷰).
+	recordLimit := e2HTTPSealCheckRecordTimeout
+	e2HTTPSealCheckRecordTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { e2HTTPSealCheckRecordTimeout = recordLimit })
+	stuck := make(chan struct{})
+	t.Cleanup(func() { close(stuck) })
+	stuckHook := func(context.Context, E2HTTPSealCheck) error { <-stuck; return nil }
 	input := E2HTTPFileOptions{PolicyFile: cfg.PolicyFile, HostSocket: e2host.ProductSocketPath,
-		Authority: &e2HTTPPolicyAuthorityFixture{ctx: t.Context()}, Supervisor: &e2HTTPSupervisorFixture{},
-		SealChecked: func(_ context.Context, s E2HTTPSealCheck) error {
-			sealChecks = append(sealChecks, s)
-			return errors.New("기록 실패도 봉인 실패가 아니다")
-		}}
+		Authority: &e2HTTPPolicyAuthorityFixture{ctx: t.Context()}, Supervisor: &e2HTTPSupervisorFixture{}}
 	connect := func(ctx context.Context, socket string, scope transmit.Scope, revision string) (*e2host.Client, error) {
 		if socket != e2host.ProductSocketPath {
 			t.Error("제품 Host 소켓 정책 우회")
@@ -130,21 +137,26 @@ func TestE2HTTPFactoryPreparationFailuresCloseHostBeforeNextRun(t *testing.T) {
 		return e2host.OpenClient(ctx, path, scope, revision)
 	}
 	for _, tc := range []struct {
-		name                           string
-		existingJournal, rejectAcquire bool
+		name                                        string
+		existingJournal, rejectAcquire, stuckRecord bool
 	}{
 		{name: "journal-exists", existingJournal: true},
 		{name: "reject-after-auth", rejectAcquire: true},
 		{name: "next-run"},
+		{name: "stuck-record", stuckRecord: true},
 	} {
 		input.OnAcquire = nil
+		input.SealChecked = recordHook
+		if tc.stuckRecord {
+			input.SealChecked = stuckHook
+		}
 		if tc.rejectAcquire {
 			input.OnAcquire = func(context.Context, E2HTTPAcquired) error { return ErrE2HTTPHost }
 		}
 		policy.RunRef = "fixture-host-" + tc.name
 		mu.Lock()
 		sealReply = nil
-		if tc.name == "next-run" {
+		if tc.name == "next-run" || tc.stuckRecord {
 			// 봉인 응답에 Host 봉인 확인 결과가 실리면 그 회차·작업으로 기록 훅에 넘긴다(E1 계약 §6).
 			sealReply = &e2host.SealResult{Phase: "sealed", Head: e2proxy.JournalCheckpoint{Version: e2proxy.JournalVersionV3, JournalID: "journal-fixture",
 				Sequence: 7, MAC: strings.Repeat("e", 64), Scope: transmit.Scope{RunRef: policy.RunRef, TaskRef: "17"}},
@@ -187,13 +199,17 @@ func TestE2HTTPFactoryPreparationFailuresCloseHostBeforeNextRun(t *testing.T) {
 		if err := acquired.Runner.Close(t.Context()); err != nil {
 			t.Fatal(err)
 		}
+		started := time.Now()
 		if err := acquired.Release(t.Context()); err != nil {
 			t.Fatal("실패 회차의 Host 마감 실패", err)
+		}
+		if tc.stuckRecord && time.Since(started) > 5*time.Second {
+			t.Fatalf("멈춘 봉인 확인 기록이 마감을 붙잡음: %s", time.Since(started))
 		}
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if busy || opens != 3 || seals != 3 || records == 0 || posts.Load() != 2 {
+	if busy || opens != 4 || seals != 4 || records == 0 || posts.Load() != 3 {
 		t.Fatalf("준비 실패 뒤 다음 회차 재개 실패: open=%d seal=%d record=%d post=%d busy=%v", opens, seals, records, posts.Load(), busy)
 	}
 	// 결과 없는 봉인 ACK(앞 두 회차)는 기록하지 않고, 결과가 있는 회차만 한 번 넘긴다. 기록 실패도 마감 실패가 아니다.

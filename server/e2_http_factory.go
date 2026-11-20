@@ -90,6 +90,27 @@ type E2HTTPSealCheck struct {
 	Result e2host.SealResult
 }
 
+// e2HTTPSealCheckRecordTimeout은 봉인 확인 결과 기록 한 번에 쓰는 시간 상한이다. 봉인은 이미 신뢰 저장소에 게시됐으므로
+// 기록이 늦거나 멈춰도 회차 마감(Release → CloseTask → audit-close)을 붙잡지 않는다(#816 리뷰). 기록하지 못한 판정은
+// 봉인 미확인으로 보인다. 행 하나를 넣는 DB 쓰기라 짧게 둔다. 시험이 줄인다.
+var e2HTTPSealCheckRecordTimeout = 10 * time.Second
+
+// recordE2HTTPSealCheck는 봉인 확인 기록 훅을 부르되 e2HTTPSealCheckRecordTimeout 안에 끝나지 않으면 기다리지 않는다. 호출자의
+// 취소와는 떼어(중지 정리 문맥이 이미 끝났어도 성공한 봉인의 결과는 남기려고) 별도 기한을 둔다. 훅이 문맥을 무시하고 멈춰
+// 있어도 반환한다(그 훅은 끝날 때까지 혼자 돈다).
+func recordE2HTTPSealCheck(parent context.Context, hook func(context.Context, E2HTTPSealCheck) error, check E2HTTPSealCheck) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), e2HTTPSealCheckRecordTimeout)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- hook(ctx, check) }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // e2HostE3Verifier는 E② Host 클라이언트를 E③ 검증자로 쓴다. 근거 체크포인트도 돌려준다(e2proxy.E3CheckpointVerifier).
 type e2HostE3Verifier struct{ host *e2host.Client }
 
@@ -560,7 +581,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 				}
 				// 봉인은 이미 저장소에 게시됐다. 확인 결과를 남기지 못해도 봉인 성공이고, 판정 표시는 봉인 미확인이다.
 				if result != nil && input.SealChecked != nil {
-					if recordErr := input.SealChecked(context.WithoutCancel(ctx), E2HTTPSealCheck{TaskID: request.TaskIDNumber, RunRef: scope.RunRef, Result: *result}); recordErr != nil {
+					if recordErr := recordE2HTTPSealCheck(ctx, input.SealChecked, E2HTTPSealCheck{TaskID: request.TaskIDNumber, RunRef: scope.RunRef, Result: *result}); recordErr != nil {
 						log.Printf(logT("[e2-host] task %d 봉인 확인 기록 실패(판정은 봉인 미확인)"), request.TaskIDNumber)
 					}
 				}
