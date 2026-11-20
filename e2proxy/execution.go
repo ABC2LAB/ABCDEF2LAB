@@ -43,18 +43,20 @@ type compiledRule struct {
 }
 type Execution struct {
 	// passwords는 호스트가 등록한 비밀번호다. 일반 제어 비밀과 응답 처리 의미를 분리한다.
-	passwords      [][]byte
-	issued         map[string]bool
-	intents        map[int64]struct{}
-	intentGate     chan struct{}
-	mu             sync.Mutex
-	recordMu       sync.Mutex
-	ctx            context.Context
-	cancel         context.CancelFunc
-	cfg            Config
-	rules          []compiledRule
-	calls          map[string]*Call
-	e3Admitted     uint64
+	passwords  [][]byte
+	issued     map[string]bool
+	intents    map[int64]struct{}
+	intentGate chan struct{}
+	mu         sync.Mutex
+	recordMu   sync.Mutex
+	ctx        context.Context
+	cancel     context.CancelFunc
+	cfg        Config
+	rules      []compiledRule
+	calls      map[string]*Call
+	e3Admitted uint64
+	// modelClosed는 모델 단계가 마감됐는지다(CloseModelStage). 그 뒤로는 확정 단계 요청만 받는다.
+	modelClosed    bool
 	e3Created      map[e3contract.CallRef]string
 	callOrder      []*Call
 	events         []Event
@@ -394,7 +396,7 @@ func (e *Execution) BeginCallForIntent(parent context.Context, id int64, command
 	if e == nil || parent == nil || id <= 0 || !validRef(commandRef) {
 		return nil, ErrConfig
 	}
-	return e.beginCall(parent, id, "", commandRef)
+	return e.beginCall(parent, id, "", commandRef, false)
 }
 
 // BeginProgramCall은 실제 intent를 만들거나 빌리지 않는다. 실행 전체의 기존
@@ -410,22 +412,56 @@ func (e *Execution) BeginProgramCall(parent context.Context, program ProgramCall
 	if !program.Valid() {
 		return nil, ErrConfig
 	}
-	return e.beginCall(parent, 0, program, commandRef)
+	return e.beginCall(parent, 0, program, commandRef, false)
 }
 
 // BeginE3ReloginCall은 확정 단계 직전 다시 로그인(사용자 결정 2026-11-20 (가)) 호출을 연다. 경로·감사 행은 Worker의
 // refresh_session과 같고(ProgramRefreshSession), 다른 점은 떼어 둔 확정 몫을 쓴다는 것뿐이다. 신뢰된 호스트의 확정 단계만
 // 부른다. 모델 단계 요청은 확정 몫을 쓰지 못하므로(늦게 도착한 Worker 요청 포함) 예산 통제를 우회할 수 없다.
 func (e *Execution) BeginE3ReloginCall(parent context.Context, commandRef string) (*Call, error) {
-	c, err := e.BeginProgramCall(parent, ProgramRefreshSession, commandRef)
-	if err != nil {
-		return nil, err
+	if e == nil || parent == nil || !validRef(commandRef) {
+		return nil, ErrConfig
 	}
-	c.e3Share = true
-	return c, nil
+	return e.beginCall(parent, 0, ProgramRefreshSession, commandRef, true)
 }
 
-func (e *Execution) beginCall(parent context.Context, id int64, program ProgramCallKind, commandRef string) (*Call, error) {
+// confirmationCall은 확정 단계 호출(E③ 프로그램 요청·확정 단계가 연 다시 로그인)인지다. 확정 몫을 쓰고, 모델 단계가
+// 마감된 뒤에도 열린다.
+func (c *Call) confirmationCall() bool { return c.program.isE3() || c.e3Share }
+
+// CloseModelStage는 모델 단계를 마감한다(감독자가 모델 단계가 끝났다고 본 때, 강제 중지·취소 때). 그 뒤로 E②는 확정 단계
+// 요청만 받는다: 확정 단계 밖 호출(Worker·인증 준비·Worker refresh_session)은 새로 열 수 없고(ErrClosed), 이미 열린 그런
+// 호출은 문맥을 끊어 진행 중 요청도 멈추며, 그 뒤 요청은 closed로 거부한다. 실행 자체(감사·확정 단계 송신)는 닫지 않는다.
+// 실행 전체를 닫는 것은 감독자의 FenceTask다. 여러 번 불러도 같다.
+func (e *Execution) CloseModelStage() {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	e.modelClosed = true
+	var cancels []context.CancelFunc
+	for _, c := range e.calls {
+		if !c.confirmationCall() && c.cancel != nil {
+			cancels = append(cancels, c.cancel)
+		}
+	}
+	e.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
+}
+
+// ModelStageClosed는 모델 단계가 마감됐는지다.
+func (e *Execution) ModelStageClosed() bool {
+	if e == nil {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.modelClosed
+}
+
+func (e *Execution) beginCall(parent context.Context, id int64, program ProgramCallKind, commandRef string, e3Share bool) (*Call, error) {
 	if parent.Err() != nil {
 		return nil, ErrClosed
 	}
@@ -433,7 +469,7 @@ func (e *Execution) beginCall(parent context.Context, id int64, program ProgramC
 	if err != nil {
 		return nil, err
 	}
-	c := &Call{e: e, ref: ref, commandRef: commandRef, intentID: id, program: program, auditComplete: true, reason: Complete, idle: make(chan struct{}), closeGate: make(chan struct{}, 1)}
+	c := &Call{e: e, ref: ref, commandRef: commandRef, intentID: id, program: program, e3Share: e3Share, auditComplete: true, reason: Complete, idle: make(chan struct{}), closeGate: make(chan struct{}, 1)}
 	accepted := false
 	defer func() {
 		if !accepted {
@@ -449,6 +485,10 @@ func (e *Execution) beginCall(parent context.Context, id int64, program ProgramC
 	_, registered := e.intents[id]
 	validAttribution := ValidCallAttribution(id, program) || id == 0 && e.cfg.AuditVersion == JournalVersionV3 && program.isE3()
 	if parent.Err() != nil || !validAttribution || program == "" && !registered || e.blockedLocked() != Complete || len(e.calls) >= e.cfg.Limits.MaxCalls {
+		return nil, ErrClosed
+	}
+	// 모델 단계가 마감되면 확정 단계 호출(E③ 프로그램·확정 단계 다시 로그인)만 새로 연다.
+	if e.modelClosed && !c.confirmationCall() {
 		return nil, ErrClosed
 	}
 	expires := time.Now().Add(e.cfg.Limits.CallTimeout)
@@ -1497,6 +1537,10 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 	// 확정 몫은 확정 단계 요청(E③ 프로그램 요청·확정 단계가 연 다시 로그인)만 쓴다. 그 밖의 요청(모델 단계 Worker·인증
 	// 준비·Worker refresh_session)은 확정 단계 전이든 뒤든 예산의 마지막 확정 몫만큼을 쓰지 못한다(계약 §7.1).
 	shareConsumer := e3 != nil || c.e3Share
+	// 모델 단계가 마감되면 확정 단계 밖 요청은 보내지 않는다(이미 열린 호출의 늦은 요청 포함).
+	if reason == Complete && !shareConsumer && e.modelClosed {
+		reason = Closed
+	}
 	if reason == Complete && shareConsumer && e.e3Admitted >= e.cfg.E3ConfirmationRequests {
 		reason = BudgetExhausted
 	}
