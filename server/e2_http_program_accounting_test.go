@@ -139,7 +139,7 @@ func TestProgramAndWorkerAccountingMatrix(t *testing.T) {
 					program := newE2HTTPProgramCalls()
 					if phase == "refresh" {
 						programRequests, kind = 1, e2proxy.ProgramRefreshSession
-						_, result := e2HTTPRefreshSession(t.Context(), e, dir, target.URL, auth, &e2HTTPRefreshCounter{}, program, "tester-a")
+						_, result := e2HTTPRefreshSession(t.Context(), e, dir, target.URL, auth, &e2HTTPRefreshCounter{}, program, "tester-a", false)
 						if result != authResult {
 							t.Fatal("refresh fixture", result)
 						}

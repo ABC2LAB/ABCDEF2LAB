@@ -181,12 +181,13 @@ func (c *productE3Confirmation) stoppedDeps(taskID string) (e3contract.Deps, fun
 	return deps, release
 }
 
-// e3HandleExecutionEnded는 E② 연결을 주지 못한 사유가 "이 작업의 실행이 이미 끝남"인지다. 실행기·계정 저장소가 없는 사유
-// (runner_missing·runner_not_local·accounts_missing·runtime_unavailable)는 연결이 없는 판이라 여기 들지 않는다.
+// e3HandleExecutionEnded는 E② 연결을 주지 못한 사유가 "이 작업의 실행이 이미 끝남"인지다. 호스트가 닫히는 중·닫힘
+// (runtime_closing·runtime_closed)도 연결이 있던 판이라 여기 든다(#825 윤재상 봇 리뷰). 실행기·계정 저장소가 없는 사유
+// (runner_missing·runner_not_local·accounts_missing·lease_invalid·runtime_unavailable)는 연결이 없는 판이라 여기 들지 않는다.
 func e3HandleExecutionEnded(reason string) bool {
 	switch reason {
 	case server.E3HandleTaskMissing, server.E3HandleTaskMismatch, server.E3HandleTaskFenced, server.E3HandleLeaseMissing,
-		server.E3HandleExecutionStopped:
+		server.E3HandleExecutionStopped, server.E3HandleRuntimeClosing, server.E3HandleRuntimeClosed:
 		return true
 	}
 	return false
@@ -249,6 +250,14 @@ func (c *productE3Confirmation) wiredDeps(taskID string) (e3contract.Deps, func(
 		return deps, func() {}, nil
 	}
 	deps.Transport, deps.Journal = adapter, adapter
+	if relogin, ok := accounts.(server.E2HTTPAccountRelogin); ok {
+		deps.Relogin = func(ctx context.Context, label string) bool {
+			result := relogin.Relogin(ctx, label)
+			// 라벨·세션 값 없이 고정 결과 코드만 남긴다.
+			log.Printf("[e3-confirmation] task %s 확정 전 다시 로그인: %s", taskID, result)
+			return server.E2HTTPAuthSent(result)
+		}
+	}
 	checkpoint := func(ctx context.Context, binding e3contract.RunBinding, ref e3contract.CallRef) (e3v3.Checkpoint, error) {
 		_, cp, err := lazy.VerifiedCheckpoint(ctx, binding, ref)
 		return cp, err
@@ -434,7 +443,7 @@ func (c *productE3Confirmation) timeShare() (time.Duration, error) {
 }
 
 // productE3Admitted는 발급한 실행 정책의 확정 몫(withE3ConfirmationShare)에서 몫에 든 종류 수와 시간 몫을 되읽는다.
-// 요청 몫 = 신원 2 + 종류×3, 시간 몫 = 요청 몫 × 확정 요청 시간 상한(기본값)이다. 칸이 없거나 이 모양이 아니면 -1(몫을 받지
+// 요청 몫 = 고정 4(다시 로그인 2 + 신원 2) + 종류×4, 시간 몫 = 요청 몫 × 확정 요청 시간 상한(기본값)이다. 칸이 없거나 이 모양이 아니면 -1(몫을 받지
 // 못함)이고, 둘 다 0이면 든 종류가 없다.
 func productE3Admitted(l server.E2HTTPFileLimits) (int, time.Duration) {
 	if l.E3ConfirmationRequests == nil || l.E3ConfirmationTimeoutMS == nil {
@@ -444,11 +453,11 @@ func productE3Admitted(l server.E2HTTPFileLimits) (int, time.Duration) {
 	if requests == 0 && timeout == 0 {
 		return 0, 0
 	}
-	identity, perType := uint64(server.E3ConfirmationIdentityRequests), uint64(server.E3ConfirmationRequestsPerType)
-	if requests <= identity || (requests-identity)%perType != 0 || timeout != time.Duration(requests)*server.E3ConfirmationRequestTimeoutDefault {
+	fixed, perType := uint64(server.E3ConfirmationFixedRequests), uint64(server.E3ConfirmationRequestsPerType)
+	if requests <= fixed || (requests-fixed)%perType != 0 || timeout != time.Duration(requests)*server.E3ConfirmationRequestTimeoutDefault {
 		return -1, 0
 	}
-	return int((requests - identity) / perType), timeout
+	return int((requests - fixed) / perType), timeout
 }
 
 // productE3Roles는 선언한 소유(A)·교차(B) 계정 라벨에 그 실행의 인증 준비 결과를 붙인다. 인증 결과가 authenticated가 아니면
