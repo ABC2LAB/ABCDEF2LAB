@@ -116,17 +116,4 @@ describe("오류 본문", () => {
     fail(503, { error: { code: "kg_store_unavailable" } });
     expect((await caught()).code).toBeUndefined();
   });
-  it("옆 칸 reason_code 는 고정 코드 모양일 때만 reasonCode 로 받는다(작업 제어 409, #830)", async () => {
-    fail(409, { error: "첫 진단 회차는 재개를 지원하지 않습니다", reason_code: "resume_unsupported" });
-    const e = await caught();
-    expect([e.status, e.reasonCode, e.message]).toEqual([
-      409,
-      "resume_unsupported",
-      "첫 진단 회차는 재개를 지원하지 않습니다",
-    ]);
-    fail(409, { error: "x", reason_code: "Bad Code <script>" });
-    expect((await caught()).reasonCode).toBeUndefined();
-    fail(409, { error: "x" });
-    expect((await caught()).reasonCode).toBeUndefined();
-  });
 });

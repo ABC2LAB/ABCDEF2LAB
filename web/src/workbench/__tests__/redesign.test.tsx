@@ -28,7 +28,6 @@ import {
   crawlBar,
   eventText,
   group,
-  PauseButton,
   Pth,
   WorkflowCrawlLive,
   WorkflowReport,
@@ -1141,6 +1140,7 @@ describe("시안 짜임 (자산 탐색 · 범위 확인 기록 · 묶음)", () =
       </ShellContext.Provider>,
     );
     const open = screen.getByRole("button", { name: "점검 취소" });
+    expect(screen.queryByRole("button", { name: /^(일시정지|다시 시작)$/ })).toBeNull();
     expect(open.querySelector("svg")).toBeNull();
     fireEvent.click(open);
     const box = screen.getByRole("alertdialog");
@@ -1296,7 +1296,7 @@ describe("대시보드", () => {
   });
 });
 
-it("목록에서 복구한 회차의 일시정지·범위 선택 실행 버튼은 조회 전용으로 잠근다", () => {
+it("목록에서 복구한 회차의 범위 선택 실행 버튼은 조회 전용으로 잠근다", () => {
   const recovered = {
     kind: "recovered" as const,
     ownerContext: catalog.ownerContext,
@@ -1313,9 +1313,6 @@ it("목록에서 복구한 회차의 일시정지·범위 선택 실행 버튼�
     flow: { ...flow, stage: "diagnosing" },
     flowVerified: true,
   });
-  const first = render(<PauseButton />);
-  expect(screen.getByRole("button", { name: "일시정지" })).toBeDisabled();
-  first.unmount();
   useUrl.setState({ flow: { ...flow, stage: "awaiting_selection" } });
   render(
     <ShellContext.Provider value={shell("scope")}>

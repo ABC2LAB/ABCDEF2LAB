@@ -61,8 +61,6 @@ export class ApiError extends Error {
   /** 오류 본문이 `{error: {code, retryable}}` 봉투(KG 조회 v1 §5.4)일 때의 고정 code·재조회 가능 여부. */
   code?: string;
   retryable?: boolean;
-  /** 오류 본문 옆 칸 `reason_code`(예: 작업 제어 409 `resume_unsupported`)의 고정 사유 코드. 소문자 식별자만 받는다. */
-  reasonCode?: string;
   constructor(status: number, message: string, field?: string) {
     super(message);
     this.name = "ApiError";
@@ -111,9 +109,8 @@ async function responseError(res: Response): Promise<ApiError> {
   let field: string | undefined;
   let code: string | undefined;
   let retryable: boolean | undefined;
-  let reasonCode: string | undefined;
   try {
-    const body = (await res.json()) as { error?: unknown; field?: unknown; reason_code?: unknown };
+    const body = (await res.json()) as { error?: unknown; field?: unknown };
     if (typeof body?.error === "string" && body.error) message = body.error;
     // 봉투 오류: code 와 retryable 둘 다 모양이 맞을 때만 받는다
     const e = body?.error as { code?: unknown; retryable?: unknown } | null | undefined;
@@ -125,7 +122,6 @@ async function responseError(res: Response): Promise<ApiError> {
       }
     }
     if (typeof body?.field === "string" && ERROR_FIELD.test(body.field)) field = body.field;
-    if (typeof body?.reason_code === "string" && ERROR_CODE.test(body.reason_code)) reasonCode = body.reason_code;
   } catch {
     /* 본문 없음/비 JSON */
   }
@@ -134,7 +130,6 @@ async function responseError(res: Response): Promise<ApiError> {
     err.code = code;
     err.retryable = retryable;
   }
-  if (reasonCode !== undefined) err.reasonCode = reasonCode;
   return err;
 }
 
