@@ -1453,9 +1453,15 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 		if e3 != nil {
 			previewBody = e.RedactOutput(body)
 		}
+		// 확정 요청은 요청 전용 시간 상한(ctx 기한, 제품 기본 10초) 안에 승인돼야 보낸다. 승인 기한을 그 기한에 맞춰, 운영자가
+		// 결정하지 않으면 승인 기록도 만료(expired)로 남게 한다(#836 이동찬 리뷰).
+		approvalExpires := c.expires
+		if deadline, ok := ctx.Deadline(); e3 != nil && ok && deadline.Before(approvalExpires) {
+			approvalExpires = deadline
+		}
 		proposal := RequestApprovalProposal{
 			Receipt: r, OwnerRef: e.cfg.OwnerRef, AccountRef: e.cfg.AccountRef, SessionRef: e.cfg.SessionRef,
-			ExpiresAt: c.expires, Method: method, URL: req.URL.String(), Host: requestHost,
+			ExpiresAt: approvalExpires, Method: method, URL: req.URL.String(), Host: requestHost,
 			Headers: requestHeaders.Clone(), Body: previewBody,
 		}
 		// 보호 자격 원문은 승인 소비자에게 전달하지 않는다. 참조만 결속한다.
@@ -1482,6 +1488,16 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 			r.Decision, r.Reason = "denied", PolicyDenied
 			if canceled {
 				r.Reason = Closed
+			}
+			// 확정 요청이 승인을 기다리다 요청 시간 상한에 닿았으면 승인 만료다(계약 approval_timeout, #836 이동찬 리뷰).
+			// 운영자 거절이 먼저 왔으면 거절로 둔다. 승인 기한을 요청 상한에 맞췄으므로 기한 만료와 문맥 기한이 경합하는데,
+			// 어느 쪽이 먼저든 감사 사유는 모델 요청의 승인 만료와 같은 policy_denied로 고정한다. 실행 중지 등 기한이 아닌
+			// 취소는 지금처럼 closed·policy_denied다.
+			if e3 != nil && !allowed && e3.approval != RequestApprovalDenied && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				e3.approval = RequestApprovalExpired
+			}
+			if e3 != nil && e3.approval == RequestApprovalExpired {
+				r.Reason = PolicyDenied
 			}
 			return finish(nil, ErrDenied)
 		}

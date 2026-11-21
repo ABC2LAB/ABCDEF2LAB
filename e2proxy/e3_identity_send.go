@@ -193,11 +193,13 @@ func (e *Execution) e3Result(ctx, requestCtx context.Context, call *Call, receip
 
 func (c *e3ProgramCall) finish(r *Receipt, ctx context.Context) {
 	if !r.ForwardAttempted && r.Decision != "allowed" {
-		// 운영자 거절·승인 만료는 계약(e3contract.Transport)대로 따로 남긴다. 감사 사유는 그대로 policy_denied다.
+		// 운영자 거절·승인 만료는 계약(e3contract.Transport)대로 따로 남긴다. 감사 사유는 그대로다(거절·만료는
+		// policy_denied, 거절과 동시에 문맥이 끝났으면 closed).
+		approvalEnded := r.Reason == PolicyDenied || r.Reason == Closed
 		switch {
-		case c.approval == RequestApprovalDenied && r.Reason == PolicyDenied:
+		case c.approval == RequestApprovalDenied && approvalEnded:
 			c.audit.NotSentReason = e3contract.NotSentApprovalDenied
-		case c.approval == RequestApprovalExpired && r.Reason == PolicyDenied:
+		case c.approval == RequestApprovalExpired && approvalEnded:
 			c.audit.NotSentReason = e3contract.NotSentApprovalTimeout
 		case r.Reason == BudgetExhausted || r.Reason == AttemptLimit:
 			c.audit.NotSentReason = e3contract.NotSentBudgetExhausted

@@ -246,3 +246,115 @@ func TestE3CreateApprovalOutcomeSetsNotSentReason(t *testing.T) {
 		})
 	}
 }
+
+// e3WaitingGate는 제품 승인 대기처럼 결정 없이 기다린다. 기한(ExpiresAt)이 먼저 오면 expired, 문맥이 먼저 끝나면
+// undecided를 돌려준다(server.RequestApprovalService와 같은 끝 모양). honorExpiry가 false면 기한을 보지 않는다.
+type e3WaitingGate struct {
+	honorExpiry bool
+	onWait      func()
+	expires     time.Time
+}
+
+func (g *e3WaitingGate) AwaitRequestApproval(ctx context.Context, p RequestApprovalProposal) (bool, error) {
+	outcome, err := g.AwaitRequestApprovalOutcome(ctx, p)
+	return outcome == RequestApprovalAllowed, err
+}
+
+func (g *e3WaitingGate) AwaitRequestApprovalOutcome(ctx context.Context, p RequestApprovalProposal) (RequestApprovalOutcome, error) {
+	g.expires = p.ExpiresAt
+	if g.onWait != nil {
+		g.onWait()
+	}
+	var timer <-chan time.Time
+	if g.honorExpiry {
+		t := time.NewTimer(time.Until(p.ExpiresAt))
+		defer t.Stop()
+		timer = t.C
+	}
+	select {
+	case <-ctx.Done():
+	case <-timer:
+	}
+	if g.honorExpiry && !time.Now().Before(p.ExpiresAt) {
+		return RequestApprovalExpired, nil
+	}
+	return RequestApprovalUndecided, nil
+}
+
+// 제품에서 확정 생성 요청은 요청 전용 시간 상한(기본 10초) 안에 승인돼야 보낸다. 운영자가 결정하지 않아 그 상한에 닿으면
+// 대상 송신 0건, 감사 결정 denied·사유 policy_denied(기한 만료와 문맥 기한 중 어느 쪽이 먼저든), 미송신 사유
+// approval_timeout이다(#836 이동찬 리뷰). 승인 기한은 요청 상한에 맞춘다. 실행 중지처럼 기한이 아닌 취소는 approval_timeout이
+// 아니다(policy_denied).
+func TestE3CreateApprovalWaitHitsRequestTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		honorExpiry bool
+		stop        bool
+		want        e3contract.NotSentReason
+	}{
+		{name: "expiry-aligned", honorExpiry: true, want: e3contract.NotSentApprovalTimeout},
+		{name: "context-deadline", honorExpiry: false, want: e3contract.NotSentApprovalTimeout},
+		{name: "run-stopped", honorExpiry: false, stop: true, want: e3contract.NotSentPolicyDenied},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var requests atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requests.Add(1) }))
+			defer server.Close()
+			spec := e3contract.CreateSpec{Path: "/allowed/books", Method: "POST", Kind: e3contract.BodyJSON,
+				BodyTemplate: `{}`, MarkerField: "marker", IDPath: "id"}
+			e, in, _ := e3CreateFixture(t, server.URL, spec, "")
+			in.Timeout = 150 * time.Millisecond
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			gate := &e3WaitingGate{honorExpiry: tc.honorExpiry}
+			if tc.stop {
+				gate.onWait = func() { time.AfterFunc(30*time.Millisecond, cancel) }
+			}
+			e.cfg.ApprovalMode = ApprovalConfirmEveryRequest
+			e.cfg.RequestApproval = gate
+			started := time.Now()
+			event, err := e.SendE3Create(ctx, in)
+			if requests.Load() != 0 {
+				t.Fatalf("승인 없이 대상에 %d건 도착", requests.Load())
+			}
+			if !gate.expires.Before(started.Add(in.Timeout + time.Second)) {
+				t.Fatal("승인 기한이 확정 요청 시간 상한보다 늦음")
+			}
+			if tc.stop {
+				// 실행 중지는 그 요청의 결과를 돌려주지 않을 수도 있다. 결과가 있으면 승인 만료로 남지 않아야 한다.
+				if err == nil && (event.E3Audit == nil || event.E3Audit.NotSentReason != tc.want) {
+					t.Fatalf("중지가 승인 만료로 남음: %+v", event.Receipt)
+				}
+				return
+			}
+			if err != nil || event.E3Audit == nil || event.E3Audit.NotSentReason != tc.want ||
+				event.Decision != "denied" || event.Reason != PolicyDenied || event.ForwardAttempted {
+				t.Fatalf("요청 상한 승인 만료 기록이 다름: err=%v receipt=%+v", err, event.Receipt)
+			}
+		})
+	}
+}
+
+// 미송신 사유 매핑만 본다: 운영자 거절과 동시에 문맥이 끝나 감사 사유가 closed여도 거절(approval_denied)이다. 결정 없는
+// 취소·중지는 policy_denied, 예산 소진은 confirmation_budget_exhausted다.
+func TestE3ProgramCallFinishMapsApprovalOutcome(t *testing.T) {
+	for _, tc := range []struct {
+		approval RequestApprovalOutcome
+		reason   Reason
+		want     e3contract.NotSentReason
+	}{
+		{RequestApprovalDenied, PolicyDenied, e3contract.NotSentApprovalDenied},
+		{RequestApprovalDenied, Closed, e3contract.NotSentApprovalDenied},
+		{RequestApprovalExpired, PolicyDenied, e3contract.NotSentApprovalTimeout},
+		{RequestApprovalUndecided, Closed, e3contract.NotSentPolicyDenied},
+		{"", PolicyDenied, e3contract.NotSentPolicyDenied},
+		{RequestApprovalDenied, BudgetExhausted, e3contract.NotSentBudgetExhausted},
+	} {
+		c := &e3ProgramCall{approval: tc.approval}
+		r := Receipt{Decision: "denied", Reason: tc.reason, E3Audit: &E3Audit{}}
+		c.finish(&r, t.Context())
+		if r.E3Audit.NotSentReason != tc.want {
+			t.Errorf("%s/%s → %s, 기대 %s", tc.approval, tc.reason, r.E3Audit.NotSentReason, tc.want)
+		}
+	}
+}
