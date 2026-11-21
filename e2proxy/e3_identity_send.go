@@ -171,10 +171,10 @@ func (e *Execution) e3Result(ctx, requestCtx context.Context, call *Call, receip
 		if err := requestCtx.Err(); err != nil {
 			return Event{}, err
 		}
-		if metadata.sendCtx != nil {
-			if err := metadata.sendCtx.Err(); err != nil {
-				return Event{}, err
-			}
+		// 송신 문맥은 doWithE3가 끝날 때 취소되므로(defer) 여기서는 늘 오류가 있다. 송신 상한 초과만 따로 가르고, 철회·마감은
+		// 아래에서 가른다(#839 윤재상 리뷰).
+		if metadata.sendCtx != nil && errors.Is(metadata.sendCtx.Err(), context.DeadlineExceeded) {
+			return Event{}, metadata.sendCtx.Err()
 		}
 		if !metadata.current() {
 			return Event{}, e3contract.ErrAuthorityRevoked
