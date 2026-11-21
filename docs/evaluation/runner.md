@@ -136,6 +136,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   engine-end.json                엔진 끝 신호: 창 동안 첫 끝 상태·시각, down 전 마지막 작업 상태 칸(값 원본 그대로)
   cli-observed-lines.json        (분리 배치 B, B 전용 CLI 이름이 관측된 때만) 관측된 명령마다 한 줄의 모양(따옴표 밖의 관측 이름과 셸 연산자만 그대로, 나머지 낱말은 값·옵션·경로·따옴표 문자열 모두 `<인자>`, 원문 없음, 사람 확인용). 셸 낱말로 못 나누거나 64KiB를 넘는 원문은 보류 표시만
   fault-stall.json               제공자 장애 멈춤(결정안 §7): 장애별 무활동 길이·창 끝까지 이어졌는지·끝 신호, 최장 무활동, T가 설정되면 판정
+  early-end.json                 러너 상한 전에 일찍 끝난 회차의 분류(고정 초안 §26): first_limit·끝 상태·제품 사유, 분류(provider_fault·config·ended_valid·없음)와 근거 호출(순번·결정·상태·끝 모양·시각) 또는 승인 예산 대조·시작 거부 사유
   intercept-summary.json         엔진 승인 기록의 건수: 상태별, 차단 출처별(파일 규칙·내장 규칙·모델·그 밖), 도구별(도구 입력 원문 없음)
   engine-rules.json              `engine_rules`가 있을 때만: 파일 SHA-256, 주입·내장 규칙 수, 내장 통제를 앞지를 수 있는 파일 allow 수, 내장·전체 규칙 해시, 적용 전후 도구 목록(규칙 본문 없음)
   engine-settings.json           작업 생성 전 엔진 실행 설정 스냅샷(프록시는 설정 여부만, API 키 값 없음). 표시 언어를 뺀 값의 SHA-256은 서명 근거 `run_conditions`에
@@ -226,6 +227,15 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   쪽별 `provider_fault_stall` 무효 수를 0이어도 출력하고, 한쪽이라도 2회 이상이면(고정 초안 §3) 측정 전체 실패로 종료 코드 3,
   manifest를 쓰지 않는다. 게이트웨이 행 읽기는 결정·끝 모양 어휘를
   `cmd/eval-meter/gateway.go`와 같게 고정한다(시험이 원문과 대조). 제품(O) 분리 배치 회차도 같은 함수로 `fault-stall.json`을 남긴다(`runner_split_run.product_fault_stall`): 게이트웨이 행 자리에 제품 호출 기록 줄(같은 칸·어휘)을 넣고, 창은 시작 요청 직전부터 계측기 봉인 직후까지다. 호출 기록 완전성(장부 예약 수 = 기록 줄 수)을 확인한 뒤에 만들고, 결과 요약 `fault_stall`에도 싣는다.
+- **일찍 끝난 회차 분류(`early-end.json`, 고정 초안 §26, 2026-11-21 사용자):** 멈춤 기록 다음에 같은 호출 행(B 게이트웨이 행, O 제품
+  호출 기록 줄)과 엔진 첫 끝 상태로 분류한다(`runner_early_end.early_end_record`). 모델 호출 401~404, O 승인 예산 상한에 닿은
+  `budget_limited`(장부 합계 `runner_product_llm.ledger_totals` vs manifest `max_requests`·`max_cost_usd_micros`, 비용은 남은 몫이 가장 작은 예약(입력 4097·출력 1토큰, manifest 단가)보다 작을 때만), O 시작 거부(제품
+  고정 사유)는 `config_end`로 무효이고 세션이 시도로 세지 않고 멈춘다. 러너 상한 전에 O `failed`·`unknown`(B `failed`)으로 끝났고 끝 직전
+  마지막 호출이 제공자 오류(끊김·429·5xx)이며 그 뒤 성공 호출이 없으면 `provider_fault_end`로 무효이고 멈춤 상한에 같이 센다. 그 밖에
+  일찍 끝난 회차는 유효로 두고 분류만 남는다. 호출 행을 읽지 못하거나 없으면(합성 O) 근거 없음으로 두고 무효로 빼지 않는다. 사유
+  순서는 설정 오류 → 멈춤 → 제공자 장애 끝 → 모델 호출 검증이다. 결과 요약 `early_end`에도 싣는다. O 제품이 준비 단계에서 끝나
+  실행 기록이 없으면(`diagnosis-run` `NOT_RUN`·404) 실행 기록을 요구하기 전에 분류하고, 설정 오류·제공자 장애 끝이 아니면
+  `product_not_executed`(분류 `ended_not_executed`)로 끝낸다(무효 시도, 사용자 확정 2026-11-21).
 
 `findings.json`은 baseline·개선 후 모두 **같은 추출 경로**(`baseline_pages_collector` → `baseline_extract`, 수정 없음)를 거친
 투영만 담는다. API 응답 원본·제목·설명·자산 이름은 저장하지 않는다(절대규칙 2). 추출기는 원본 FindingDTO 형식(upstream

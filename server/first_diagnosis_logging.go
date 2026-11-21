@@ -135,6 +135,8 @@ const (
 	reasonClosureCallCountMismatch       = "closure_call_count_mismatch"
 	reasonClosureNotReady                = "closure_not_ready_after_drain"
 	reasonEngineTaskFailed               = "engine_task_failed"
+	// reasonEnginePaused는 회차 도중 운영자 밖 엔진 일시정지로 끝난 실행이다(운영자 중지와 따로 센다).
+	reasonEnginePaused = "engine_paused"
 )
 
 // diagnosisFailureReason은 실패 행의 사유 코드다. 감독자의 검사가 사유를 실었으면 그 코드를, 아니면 단계의 일반 사유를 쓴다.

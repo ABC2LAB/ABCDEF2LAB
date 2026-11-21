@@ -88,6 +88,9 @@ from runner_split import REGISTRATION_PATHS  # noqa: E402
 from runner_fault import (  # noqa: E402
     FAULT_STALL_FORMAT, FAULT_STALL_NAME, FaultRecordError, fault_stall_outcome, fault_stall_record,
 )
+from runner_early_end import (  # noqa: E402
+    CONFIG_END_REASON, EARLY_END_NAME, PROVIDER_FAULT_END_REASON, early_end_record,
+)
 from runner_evidence import (  # noqa: E402
     DRAINED_MARKER, SEALED_MARKER, EvidenceDir, EvidenceError, GatewayFiles, MeterFiles,
     drain_complete, e2_stub_counts, final_log_consistent, forwarded_by_method, forwarded_count, read_private_json, diagnostic_rows, ingress_counts, validate_ingress_layout,
@@ -329,6 +332,7 @@ class _State:
     engine_end: dict = field(default_factory=dict)
     first_limit: dict | None = None
     fault_stall: dict | None = None
+    early_end: dict | None = None
     up_attempted: bool = False
     serving: dict = field(default_factory=dict)
     llm_load_attempted: bool = False
@@ -568,6 +572,10 @@ class _EngineEndWatch:
 # `product_limit:<제품 마감 사유>`다.
 FIRST_LIMIT_ENGINE = "engine_completed"
 FIRST_LIMIT_PRODUCT = "product_limit:"
+# 엔진이 먼저 끝났지만 정상 완료가 아닌 끝 상태(B 작업 failed·timeout, O 제품 초안 cancelled·failed·unknown). 실제 끝 상태를
+# 그대로 남긴다(2026-11-20 사용자, 평가 프로토콜 §5.1·고정 초안 §26: 예전에는 사유와 상관없이 engine_completed로 적혀 사실과 달랐다).
+FIRST_LIMIT_ENGINE_ENDED = "engine_ended:"
+ENGINE_SUCCESS_STATUSES = frozenset({"done", "completed"})  # B 엔진 작업 done, O 제품 초안 completed
 PRODUCT_BUDGET_CLOSING = "budget_limited"
 _FIRST_LIMIT_BY_STOP = {"request_budget": "runner_request_budget", "time_budget": "runner_time_budget"}
 
@@ -577,18 +585,21 @@ def first_limit(stop_reason: str, stop_elapsed: float, time_budget_seconds: floa
 
     러너 상한 시각: 시간 예산은 그 값 자체(정확한 문턱), 요청 예산은 러너가 알아챈 시각(계측기 전달 수를 폴링해서 보므로
     실제로 닿은 때보다 최대 폴링 간격만큼 늦다). 엔진 끝 시각은 상태 읽기가 끝 상태를 돌려준 시각이다(역시 폴링이라 실제
-    끝난 때보다 늦을 수 있다). 엔진 끝 시각이 러너 상한 시각 이하이면 engine_completed다. 창이 끝난 뒤에 거둔 읽기의 끝
+    끝난 때보다 늦을 수 있다). 엔진 끝 시각이 러너 상한 시각 이하이면 엔진이 먼저다: 정상 완료(B done·O completed)면
+    engine_completed, 그 밖의 끝 상태면 engine_ended:<끝 상태>다. 창이 끝난 뒤에 거둔 읽기의 끝
     상태(러너 상한보다 늦음)는 엔진이 먼저 끝났다고 보지 않는다. 두 시각을 같이 남겨 판정을 다시 계산할 수 있게 한다."""
     runner = _FIRST_LIMIT_BY_STOP[stop_reason]
     # 두 시각을 기록과 같은 정밀도(ms, 엔진 끝 시각은 읽을 때 이미 이 정밀도)로 맞춘 뒤 비교한다. 원래 값으로 비교하면
     # 기록된 두 시각만으로 분류를 다시 계산할 수 없다(#676 리뷰: 엔진 40.0·정지 39.9996이 기록에서는 둘 다 40.0).
     limit_at = round(time_budget_seconds if stop_reason == "time_budget" else stop_elapsed, 3)
     engine_at = None if first_terminal is None else round(first_terminal["elapsed_seconds"], 3)
-    value = FIRST_LIMIT_ENGINE if engine_at is not None and engine_at <= limit_at else runner
-    # O: 제품이 먼저 닫혔고 그 마감이 제품 예산 상한이면 제품 상한이 먼저 걸린 것이다(E② 대상 요청 상한 등, 통제 비용).
-    closing = None if first_terminal is None else first_terminal.get("closing_reason")
-    if value == FIRST_LIMIT_ENGINE and closing == PRODUCT_BUDGET_CLOSING:
-        value = FIRST_LIMIT_PRODUCT + closing
+    value = runner
+    if engine_at is not None and engine_at <= limit_at:
+        status = first_terminal["status"]
+        value = FIRST_LIMIT_ENGINE if status in ENGINE_SUCCESS_STATUSES else FIRST_LIMIT_ENGINE_ENDED + str(status)
+        # O: 제품이 먼저 닫혔고 그 마감이 제품 예산 상한이면 제품 상한이 먼저 걸린 것이다(E② 대상 요청 상한 등, 통제 비용).
+        if value == FIRST_LIMIT_ENGINE and first_terminal.get("closing_reason") == PRODUCT_BUDGET_CLOSING:
+            value = FIRST_LIMIT_PRODUCT + PRODUCT_BUDGET_CLOSING
     return {"value": value, "runner_limit": runner, "runner_limit_elapsed_seconds": limit_at,
             "engine_terminal_elapsed_seconds": engine_at}
 
@@ -946,9 +957,23 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     state.fault_stall, stall_reason = fault_stall_outcome(
         _fault_stall(gateway, rows, requested_at, engine_end_at, state.engine_end), spec.fault_stall_seconds)
     _step(state, "evidence_write_failed", lambda: evidence.write_json(FAULT_STALL_NAME, state.fault_stall))
+    # 러너 상한 전에 일찍 끝난 회차의 분류(평가 프로토콜 §5.1·고정 초안 §26, 2026-11-21 사용자). 근거 호출은 게이트웨이 행이다.
+    try:
+        llm_rows, rows_error = gateway.rows(), None
+    except Exception:  # 게이트웨이 행을 못 읽으면 근거 없음으로 분류한다(멈춤 기록과 같이 회차를 무효로 만들지 않는다)
+        llm_rows, rows_error = None, "call_records_unreadable"
+    state.early_end = _step(state, "early_end_failed", lambda: early_end_record(
+        spec.side, state.first_limit, state.engine_end["first_terminal"], llm_rows, rows_error=rows_error))
+    _step(state, "evidence_write_failed", lambda: evidence.write_json(EARLY_END_NAME, state.early_end))
+    if state.early_end["reason"] == CONFIG_END_REASON:
+        # 설정 오류는 세션이 시도로 세지 않고 멈춘다. 그래서 멈춤·검증 사유보다 앞에 둔다(그 사유들은 뒤에 남는다).
+        raise RunFailure(CONFIG_END_REASON, tuple(reason for reason in (stall_reason, *llm_reasons) if reason))
     if stall_reason:
         # 멈춤을 첫 사유로 둔다(세션 집계가 쪽별 멈춤 무효 수를 첫 사유로 센다). 같이 난 모델 호출 검증 사유는 뒤에 남는다.
         raise RunFailure(stall_reason, tuple(llm_reasons))
+    if state.early_end["reason"] == PROVIDER_FAULT_END_REASON:
+        # 제공자 장애로 끝남은 멈춤과 같은 부류라 첫 사유로 둔다(세션이 쪽별 상한에 같이 센다).
+        raise RunFailure(PROVIDER_FAULT_END_REASON, tuple(llm_reasons))
     if llm_reasons:
         # 사유가 여럿이면 정렬 첫째를 회차 사유로, 전부는 llm-summary.json에 남는다.
         raise RunFailure(llm_reasons[0])
@@ -1027,6 +1052,7 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     state.summary = {"meter": meter_summary, "llm": llm_summary, "policy_sha256": policy_sha256(pre),
                      "first_limit": state.first_limit,
                      "fault_stall": state.fault_stall,
+                     "early_end": state.early_end,
                      "run_conditions": conditions, "engine_rules": state.engine_rules, "intercept": state.intercept,
                      "task_request_sha256": spec.task_request_sha256, "observer_format": spec.observer_format,
                      "llm_serving": state.serving or None,

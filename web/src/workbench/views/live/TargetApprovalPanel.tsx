@@ -88,10 +88,13 @@ export function TargetApprovalPanel({
   onChanged,
   requestLimit,
   allowStateChanges = false,
+  onTarget,
 }: {
   url: string;
   disabled: boolean;
   onChanged?: () => void;
+  // 이 주소의 서버 확인 대상(id · 상태). 없거나 모르면 null. 시작 화면이 확정 단계 안내 · 리셋 확인을 붙일 때 쓴다(E③)
+  onTarget?: (target: { id: string; state: Target["state"] } | null) => void;
   // 설치의 회차당 요청 상한(서버 프로필 workflow_request_limit, 모드와 상관없음). 없으면 등록하지 않는다.
   requestLimit?: number;
   allowStateChanges?: boolean;
@@ -112,6 +115,11 @@ export function TargetApprovalPanel({
   const firstField = useRef<HTMLTextAreaElement>(null);
   const origin = originOf(url);
   const selected = details?.origin === origin ? details : null;
+  const selectedId = selected?.id ?? null;
+  const selectedState = selected?.state ?? null;
+  useEffect(() => {
+    onTarget?.(selectedId && selectedState ? { id: selectedId, state: selectedState } : null);
+  }, [onTarget, selectedId, selectedState]);
   const list = useCallback(async () => {
     const version = ++generation.current;
     if (!origin) return;
@@ -397,7 +405,8 @@ export function TargetApprovalPanel({
                 <span>
                   복구 가능한 소유 시험환경이고 POST/PUT/PATCH 검사 권한이 있음 · 사용자 승인 모드는 요청마다 전송 전에
                   확인, AI 자동 모드는 건별 확인 없이 보냄 · 어떤 쓰기 요청이 나갈지 미리 모두 알 수 없고 대상 데이터나
-                  상태가 바뀔 수 있음 · 삭제·초기화·결제는 제외
+                  상태가 바뀔 수 있음 · 정책 선언이 있으면 확정 단계에서 프로그램이 소유자 전용 종류마다 시험 객체를
+                  만듦 · 삭제·초기화·결제는 제외
                 </span>
               </label>
             ) : null}

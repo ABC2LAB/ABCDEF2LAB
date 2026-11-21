@@ -141,7 +141,7 @@ go build -o /srv/first-diagnosis/bin/first-controlled-diagnosis ./cmd/first-cont
 - POST `/api/tasks/{id}/request-approvals/{approvalID}/decision`: `{ "decision": "allow", "request_sha256": "상세에서 읽은 지문" }` 또는 `deny`
 - POST `/api/tasks/{id}/request-approvals/stop`: 현재 결속된 E② 전송 경계 중지. 실행 재개나 전체 변경 API를 열지 않는다.
 
-승인 API는 Authorization Bearer JWT의 HS256·현재 비밀번호 결속·만료·subject를 다시 검사한다. 쿠키/query token만으로 결정할 수 없어 ambient cookie에 의한 CSRF를 허용하지 않는다. 목록과 상세도 task binding을 요구하며 다른 task의 ID를 바꿔 접근할 수 없다. 서버가 이미 가진 task의 종료 상태와 live waiter/기한/지문을 확인하고 CAS로 단회 결정·소비한다. 중복·늦은 결정은 추가 송신을 만들지 않는다.
+승인 API는 Authorization Bearer JWT의 HS256·현재 비밀번호 결속·만료·subject를 다시 검사한다. 쿠키/query token만으로 결정할 수 없어 ambient cookie에 의한 CSRF를 허용하지 않는다. 목록과 상세도 task binding을 요구하며 다른 task의 ID를 바꿔 접근할 수 없다. 서버가 이미 가진 실행 결속 상태(중지 요청·감독자 마감·실행 문맥 취소)와 live waiter/기한/지문을 확인하고 CAS로 단회 결정·소비한다. 결정 권한은 task의 종료 상태가 아니라 실행 결속이 정한다. 모델 단계가 끝나 task가 끝 상태가 된 뒤에도 E③ 확정 단계는 같은 E② 실행 안에서 돌므로, 감독자가 실행을 마감하기 전까지는 그 요청을 승인·거부할 수 있다(2026-11-21 결정). 중복·늦은 결정은 추가 송신을 만들지 않는다.
 
 `allowed`는 송신 성공이 아니다. 소비 이후에도 정책·예산·감사·TLS와 현재 실행 상태를 재검사한다. 결과는 `not_sent`, `awaiting_dispatch`, `dispatch_pending`, `completed`, `unknown`으로 분리한다. 서버가 재시작되면 과거 DB allowed/pending만으로 waiter를 복원하지 않으며, live 실행을 잃은 소비 기록의 미확정 결과는 unknown으로 조회한다. 네트워크 전체의 exactly-once를 보장하지 않는다. 현재 프로세스에 task 권한 결속이 없으면 재시작 후 과거 승인 기록의 결정 권한을 복원하지 않는다. 실행 등록 시 승인행과 독립적으로 실제 task/run을 결속하므로 자동 모드와 첫 Worker 획득 전에도 같은 중지 API를 사용한다. 중지는 신규 송신을 차단하고 감독자의 취소·drain·마감을 요청한다. 이미 전송된 요청이나 대상 변경의 롤백을 뜻하지 않는다. 중복 중지는 종료 상태를 다시 실행 중으로 바꾸지 않는다.
 

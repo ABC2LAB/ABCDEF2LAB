@@ -342,41 +342,6 @@ export function WorkflowNotice() {
   );
 }
 
-/** 일시정지 · 다시 시작 버튼 (탐색 · 심화 진단 중에만). */
-export function PauseButton() {
-  const recovered = useUrl((st) => st.handle?.kind === "recovered");
-  const flow = useUrl((st) => st.flow),
-    busy = useUrl((st) => st.flowBusy),
-    verified = useUrl((st) => st.flowVerified),
-    uncertain = useUrl((st) => st.flowUncertain),
-    job = useUrl((st) => st.job),
-    jobVerified = useUrl((st) => st.verified),
-    jobUncertain = useUrl((st) => st.uncertain);
-  const active =
-    job && ["preparing", "running"].includes(job.state) && flow && ["crawling", "diagnosing"].includes(flow.stage);
-  if (!active) return null;
-  return (
-    <button
-      className={s.btn}
-      type="button"
-      disabled={
-        recovered ||
-        !verified ||
-        uncertain ||
-        busy ||
-        !jobVerified ||
-        jobUncertain ||
-        (!flow.paused && flow.commands.length >= 31)
-      }
-      aria-pressed={flow.paused}
-      onClick={() => void runWorkflowAction(flow.paused ? "resume" : "pause")}
-    >
-      <Icon name={flow.paused ? "play" : "pause"} />
-      <span>{flow.paused ? "다시 시작" : "일시정지"}</span>
-    </button>
-  );
-}
-
 /**
  * 점검 종료(중지) 버튼 + 확인 상자 (시안 lEnd · lConfirm). 종료는 되돌릴 수 없어 한 번 더 묻는다.
  * "종료"(점검 진행)는 빨간 버튼, "점검 취소"(자산 탐색 · 범위 확인)는 시안처럼 보통 버튼이다.
@@ -386,7 +351,6 @@ export function useStopConfirm(label: "종료" | "점검 취소"): { button: Rea
   const g = useUrlGates();
   const jobUncertain = useUrl((st) => st.uncertain);
   const jobVerified = useUrl((st) => st.verified);
-  const flow = useUrl((st) => st.flow);
   const [open, setOpen] = useState(false);
   const opener = useRef<HTMLButtonElement>(null);
   const yes = useRef<HTMLButtonElement>(null);
@@ -394,8 +358,6 @@ export function useStopConfirm(label: "종료" | "점검 취소"): { button: Rea
     if (open) yes.current?.focus();
   }, [open]);
   const verb = label === "종료" ? "종료" : "취소";
-  // 일시정지는 탐색 흐름이 있는 점검의 탐색 · 심화 진단 중에만 있다 (PauseButton 과 같은 조건)
-  const canPause = !!flow && ["crawling", "diagnosing"].includes(flow.stage);
   const button = (
     <>
       {jobUncertain || !jobVerified ? <UrlRefreshButton small={false} /> : null}
@@ -420,9 +382,7 @@ export function useStopConfirm(label: "종료" | "점검 취소"): { button: Rea
         <ul>
           <li>새 요청을 보내지 않고, 응답을 받지 못한 요청은 전송 불명으로 기록합니다.</li>
           <li>{`모은 증거와 발견은 남기고, ${verb} 시점까지의 결과로 보고서를 만듭니다.`}</li>
-          <li>
-            {`끝내지 못한 항목은 미실행으로 남깁니다.${canPause ? " 나중에 이어 하려면 일시정지를 쓰세요." : ""}`}
-          </li>
+          <li>끝내지 못한 항목은 미실행으로 남깁니다.</li>
         </ul>
         <div className={s.acts}>
           <button
@@ -1043,7 +1003,6 @@ export function WorkflowCrawlLive() {
         }
         acts={
           <>
-            <PauseButton />
             {stop.button}
             <InspOpenButton>기록 상세</InspOpenButton>
             {/* [탐색 결과] · [진단 결과▾](예시 화면 진입)는 뺐다(사용자 11/17). 화면 자체는 남아 주소(#explore 등)로 열린다 */}

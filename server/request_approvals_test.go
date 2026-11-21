@@ -106,7 +106,7 @@ func approvalTestDB(t *testing.T) *db.DB {
 }
 func TestRequestApprovalAPIControlledReceiverOwnedPostgres(t *testing.T) {
 	d := approvalTestDB(t)
-	for _, scenario := range []string{"allow", "ended-task", "deny", "expire", "cancel", "stop", "revoke", "policy", "budget", "audit", "store-failure", "decision-store-failure", "consume-store-failure", "decision-db-expired", "consume-db-expired", "decision-store-expired", "consume-store-expired", "unknown", "result-store-failure", "upstream-result-failure"} {
+	for _, scenario := range []string{"allow", "ended-task", "ended-task-deny", "ended-task-closed", "deny", "expire", "cancel", "stop", "revoke", "policy", "budget", "audit", "store-failure", "decision-store-failure", "consume-store-failure", "decision-db-expired", "consume-db-expired", "decision-store-expired", "consume-store-expired", "unknown", "result-store-failure", "upstream-result-failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			task, err := d.CreateTask("synthetic approval", "synthetic", nil, 0, 300)
 			if err != nil {
@@ -153,7 +153,7 @@ func TestRequestApprovalAPIControlledReceiverOwnedPostgres(t *testing.T) {
 			}
 			u, _ := url.Parse(target.URL)
 			cfg := e2proxy.Config{ApprovalMode: e2proxy.ApprovalConfirmEveryRequest, RequestApproval: service, Scope: transmit.Scope{TaskRef: taskRef, RunRef: "run", CaseRef: "case", ResetRef: "reset", PolicyRef: "policy"}, IntentID: 1, OwnerRef: "ARTEX", PolicyRevision: "revision", AccountRef: "account", SessionRef: "protected-session", ExpiresAt: now.Add(time.Minute), Budget: transmit.CumulativeBudget{Ledger: ledger, Key: key, Binding: binding}, Recorder: recorder, Rules: []e2proxy.Rule{{Ref: "rule", Origin: u.Scheme + "://" + u.Host, ConnectIP: netip.MustParseAddr("127.0.0.1"), PathPrefix: "/allowed", PathScopeRef: "path", Methods: []string{"POST"}}}, Limits: e2proxy.Limits{MaxAttempts: 8, MaxCalls: 2, MaxConcurrent: 1, MaxBodyBytes: 1024, RequestTimeout: time.Second, CallTimeout: 3 * time.Second, MaxDenials: 8, MaxTransient: 8, MaxUnknown: 8}}
-			if scenario == "expire" || strings.HasSuffix(scenario, "store-expired") {
+			if scenario == "expire" || strings.HasSuffix(scenario, "store-expired") || scenario == "ended-task-closed" {
 				cfg.Limits.CallTimeout = 250 * time.Millisecond
 			}
 			execution, err := e2proxy.NewExecution(run, cfg)
@@ -262,7 +262,8 @@ func TestRequestApprovalAPIControlledReceiverOwnedPostgres(t *testing.T) {
 				t.Fatal("invalid authorization sent request")
 			}
 
-			if scenario == "ended-task" {
+			if strings.HasPrefix(scenario, "ended-task") {
+				// 모델 단계가 끝나 작업이 done이어도 E② 실행(확정 단계)이 열려 있으면 운영자가 결정한다(S10).
 				if _, err := d.Exec(`UPDATE tasks SET status='done',completed_at=NOW() WHERE id=$1`, task.ID); err != nil {
 					t.Fatal(err)
 				}
@@ -270,13 +271,16 @@ func TestRequestApprovalAPIControlledReceiverOwnedPostgres(t *testing.T) {
 				if err != nil || !view.CanDecide {
 					t.Fatal("fixture must retain live decidable binding", err)
 				}
-				if response := send("POST", path+"/decision", token, decision); response.Code != 403 {
-					t.Fatal("terminal task accepted decision", response.Code)
+				if scenario == "ended-task-closed" {
+					// 감독자가 실행을 마감한 뒤에는 작업 상태와 상관없이 결정을 받지 않는다.
+					service.runFinished(task.ID, nil, false)
+					if response := send("POST", path+"/decision", token, decision); response.Code != 403 {
+						t.Fatal("closed run accepted decision", response.Code)
+					}
 				}
-				cancelRun()
 			}
 			switch scenario {
-			case "deny":
+			case "deny", "ended-task-deny":
 				decision["decision"] = "deny"
 			case "expire":
 				time.Sleep(300 * time.Millisecond)
@@ -332,7 +336,7 @@ func TestRequestApprovalAPIControlledReceiverOwnedPostgres(t *testing.T) {
 				t.Fatalf("DB-expired decision was accepted: %d", response.Code)
 			}
 
-			if scenario == "allow" || scenario == "deny" || scenario == "policy" || scenario == "budget" || scenario == "audit" || scenario == "unknown" || scenario == "result-store-failure" || scenario == "upstream-result-failure" {
+			if scenario == "allow" || scenario == "ended-task" || scenario == "ended-task-deny" || scenario == "deny" || scenario == "policy" || scenario == "budget" || scenario == "audit" || scenario == "unknown" || scenario == "result-store-failure" || scenario == "upstream-result-failure" {
 				if response.Code != 200 {
 					t.Fatalf("decision failed: %d %s", response.Code, response.Body.String())
 				}
@@ -350,14 +354,14 @@ func TestRequestApprovalAPIControlledReceiverOwnedPostgres(t *testing.T) {
 						t.Fatal("CAS failure admitted later call")
 					}
 				}
-				if scenario == "deny" && (receipt.Reason != e2proxy.PolicyDenied || !receipt.AuditComplete) {
+				if (scenario == "deny" || scenario == "ended-task-deny") && (receipt.Reason != e2proxy.PolicyDenied || !receipt.AuditComplete) {
 					t.Fatal("normal denial became infrastructure failure", receipt)
 				}
 			case <-time.After(2 * time.Second):
 				t.Fatal("request waiter did not finish")
 			}
 			expected := int64(0)
-			if scenario == "allow" || scenario == "unknown" || scenario == "result-store-failure" || scenario == "upstream-result-failure" {
+			if scenario == "allow" || scenario == "ended-task" || scenario == "unknown" || scenario == "result-store-failure" || scenario == "upstream-result-failure" {
 				expected = 1
 			}
 			if hits.Load() != expected {
@@ -373,7 +377,7 @@ func TestRequestApprovalAPIControlledReceiverOwnedPostgres(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if scenario == "allow" && (!record.Consumed || record.ExecutionState != "completed") {
+			if (scenario == "allow" || scenario == "ended-task") && (!record.Consumed || record.ExecutionState != "completed") {
 				t.Fatalf("allowed result not recorded: %+v", record)
 			}
 			if scenario == "unknown" && record.ExecutionState != "unknown" {

@@ -260,9 +260,11 @@ type e2HTTPRuntimeTask struct {
 	active            map[int64]chan struct{}
 	lease             *E2HTTPRunOptions
 	validLease        bool
-	control           *agent.E2HTTPControl
-	results           []e2runner.TrustedResult
-	resultsFailed     bool
+	// modelClosed는 모델 단계가 마감됐는지다(CloseModelStage). 뒤늦게 잡은 실행도 같은 마감을 받는다.
+	modelClosed   bool
+	control       *agent.E2HTTPControl
+	results       []e2runner.TrustedResult
+	resultsFailed bool
 	// untrusted는 최종 신뢰 결과가 같은 호출의 E② 실행 기록과 내용이 달랐던 intent다(C09). 그 호출의 결과는
 	// 저장하지 않고, intent는 결과 불명으로 끝나야 마감된다. mu로 보호한다.
 	untrusted map[int64]bool
@@ -670,7 +672,14 @@ func (r *E2HTTPRuntime) PrepareWork(ctx context.Context, task *Task, intent *db.
 			return ctx, nil, errors.Join(ErrE2HTTPHost, cleanupErr)
 		}
 		t.validLease = true
+		modelClosed := t.modelClosed
 		t.mu.Unlock()
+		if modelClosed {
+			// 모델 단계 마감 뒤에 잡은 실행이면 같은 마감을 건다(모델 단계 요청은 나가지 않는다).
+			if local, ok := acquired.Runner.(localE2HTTPRun); ok {
+				local.runner.Execution().CloseModelStage()
+			}
+		}
 	}
 	// 승인 요청 예산을 다 썼으면 이 intent는 시작하지 않고(마감 때 incomplete) 실행 상한으로 마감한다.
 	if err := r.leaseAdmission(task, t, *lease); err != nil {
@@ -861,6 +870,32 @@ func (r *E2HTTPRuntime) E3HandleReason(taskID string) (*e2proxy.Execution, E2HTT
 	default:
 	}
 	return exec, accounts, ""
+}
+
+// CloseModelStage는 이 작업의 E② 실행에서 모델 단계를 마감한다(e2proxy.Execution.CloseModelStage). 그 뒤로는 확정 단계
+// 요청만 나가고, 진행 중 모델 단계 요청은 끊긴다. 실행 전체를 닫는 것(FenceTask)은 감독자만 한다: 확정 단계를 돌리는
+// 마감이면 확정 단계 뒤에, 그 밖의 마감은 마감 정리에서. 실행을 아직 잡지 않았으면 뒤에 잡는 실행에 같은 마감을 건다.
+// 다른 작업이면 할 일이 없다. 여러 번 불러도 같다.
+func (r *E2HTTPRuntime) CloseModelStage(taskID string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	t := r.task
+	r.mu.Unlock()
+	if t == nil || t.id != taskID {
+		return
+	}
+	t.mu.Lock()
+	t.modelClosed = true
+	var exec *e2proxy.Execution
+	if t.lease != nil {
+		if local, ok := t.lease.Runner.(localE2HTTPRun); ok {
+			exec = local.runner.Execution()
+		}
+	}
+	t.mu.Unlock()
+	exec.CloseModelStage()
 }
 
 func (r *E2HTTPRuntime) FenceTask(taskID string) error {

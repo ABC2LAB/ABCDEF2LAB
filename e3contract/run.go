@@ -84,12 +84,27 @@ func RunStopped(ctx context.Context, deps Deps, in Input) RunResult {
 	return res
 }
 
+// RunWithoutExecution은 모델 단계가 E② 실행을 한 번도 잡지 않은 채 스스로 끝났을 때(intent 없음 등) 확정 단계 상태를 요청
+// 없이 정한다(사용자 결정 2026-11-20 분기점 2). 비활성 근거가 있으면 RunStopped와 같은 결과(꺼진 회차는 실제 사유)이고,
+// 확정 단계가 돌 수 있었으면 확정할 후보가 없을 때 disabled(no_confirmation_candidates), 후보가 있으면(비정상)
+// start_refused(e2_execution_unavailable)다. 표식 등록·Transport·Journal·쓰기 기록을 부르지 않는다.
+func RunWithoutExecution(ctx context.Context, deps Deps, in Input) RunResult {
+	r := &run{deps: deps, in: in, seen: map[string]bool{}, stoppedBeforeStage: true, noExecution: true}
+	res := r.run(ctx)
+	if deps.Logger != nil {
+		deps.Logger.Info("E③ 확정 단계 실행 없음 기록", "status", string(res.Status), "reason", res.Reason)
+	}
+	return res
+}
+
 type run struct {
 	deps Deps
 	// stoppedBeforeStage는 RunStopped다. 요청을 시작하기 전(비활성 판정까지만) 멈춘다.
 	stoppedBeforeStage bool
-	in                 Input
-	marker             Marker
+	// noExecution은 RunWithoutExecution이다. E② 실행이 한 번도 없어 요청을 시작하지 않는다.
+	noExecution bool
+	in          Input
+	marker      Marker
 	// random은 이 회차의 난수원이다(Deps.Random, 없으면 crypto/rand). 표식과 요청 본문 칸 ID가 같은 출처에서 새 바이트를 읽는다.
 	random    io.Reader
 	decl      Declaration
@@ -184,6 +199,13 @@ func (r *run) run(ctx context.Context) RunResult {
 	}
 	// 중지 기록(RunStopped): 비활성 근거가 없어 확정 단계가 돌 수 있었다. 요청을 시작하지 않고 중단으로 남긴다.
 	if r.stoppedBeforeStage {
+		if r.noExecution {
+			// E② 실행이 한 번도 없었다. 확정할 후보가 없으면 그것이 진짜 이유이고, 후보가 있는데 실행이 없으면 비정상이다.
+			if len(r.validCandidates()) == 0 {
+				return r.result(StatusDisabled, string(DisabledNoCandidates))
+			}
+			return r.result(StatusStartRefused, string(RefuseE2ExecutionUnavailable))
+		}
 		return r.result(StatusInterrupted, "")
 	}
 	// 몫에 들지 않은 종류는 요청을 보내지 않고 UNDECIDABLE(예산)이다. 든 종류가 없으면 표식·신원 요청도 보내지 않는다.

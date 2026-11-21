@@ -118,6 +118,26 @@ func (w productWriteRecorder) Settle(_ context.Context, b e3contract.RunBinding,
 // 대상 요청을 시작할 때만 불린다(e3contract.Deps.Started). 꺼진 회차는 부르지 않는다.
 func (c *productE3Confirmation) run(ctx context.Context, taskID string, begin func()) error {
 	in, share := c.input(taskID)
+	if c.handle != nil && c.newBridge != nil {
+		if execution, _, reason := c.handle(taskID); execution == nil && reason == server.E3HandleLeaseMissing {
+			// 모델 단계가 E② 실행을 한 번도 잡지 않은 채 스스로 끝났다(intent 없음 등, 사용자 결정 2026-11-20 분기점 2). 연결이
+			// 없는 판(not_wired)이 아니므로 닫힌 연결을 붙여 실제 상태를 남긴다: 꺼진 회차는 실제 사유, 켜진 회차는 확정할
+			// 후보가 없으면 no_confirmation_candidates, 후보가 있으면 e2_execution_unavailable이다(요청 0).
+			deps := c.deps
+			deps.Transport, deps.Journal = productEndedE3Connection{}, productEndedE3Connection{}
+			res := e3contract.RunWithoutExecution(ctx, deps, in)
+			raw, err := json.Marshal(res)
+			if err == nil {
+				err = writeRunPrivateFile(c.runsDir, c.jobID, productE3ConfirmationFile, raw)
+			}
+			log.Printf("[e3-confirmation] 회차 %s 확정 단계 실행 없음 기록 %s %s", c.jobID, res.Status, res.Reason)
+			if err != nil {
+				log.Printf("[e3-confirmation] 회차 %s 기록 실패: e3_result_unrecorded", c.jobID)
+				return errors.New("e3_result_unrecorded")
+			}
+			return nil
+		}
+	}
 	confirmCtx := ctx
 	if share > 0 {
 		// 확정 단계 시간 몫은 Run에 넘기는 문맥의 시한이다(계약 §12). 몫이 0이면 요청을 보내지 않으므로 시한을 두지 않는다.

@@ -45,7 +45,10 @@ func (s *Server) requestApprovalAccess(w http.ResponseWriter, r *http.Request, d
 	s.requestApprovals.mu.Lock()
 	binding, exists := s.requestApprovals.bindings[id]
 	s.requestApprovals.mu.Unlock()
-	if !exists || decision && (binding.stopRequested || binding.phase == "closed" || binding.phase == "failed" || binding.ctx.Err() != nil || db.IsTerminal(row.Status) || row.CompletedAt != nil) {
+	// 결정 권한은 작업 상태가 아니라 실행 결속이 정한다. E③ 확정 단계는 모델 단계가 끝나 작업이 끝 상태가 된 뒤에도
+	// 같은 E② 실행 안에서 돌고, 사용자 승인 모드면 그 요청도 운영자 결정을 기다린다(S10, 2026-11-21 결정). 감독자가
+	// 실행을 마감하면(closed·failed) 그때부터 결정을 받지 않는다.
+	if !exists || decision && (binding.stopRequested || binding.phase == "closed" || binding.phase == "failed" || binding.ctx.Err() != nil) {
 		writeErr(w, 403, "이 작업의 승인 권한이 없습니다")
 		return 0, "", false
 	}

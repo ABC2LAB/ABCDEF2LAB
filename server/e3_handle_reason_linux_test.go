@@ -98,3 +98,51 @@ func TestE3HandleReasonCodesOwnedPostgres(t *testing.T) {
 		t.Fatal("닫힌 작업", reason)
 	}
 }
+
+// 모델 단계 마감(사용자 결정 2026-11-20): 런타임의 CloseModelStage는 지금 실행의 모델 단계를 마감하되 E② 실행 연결은
+// 열어 둔다(확정 단계가 쓴다). 다른 작업이면 아무 일도 하지 않는다. 실행을 잡기 전에 마감하면 표시만 남기고, 실행 전체를
+// 닫는 것은 감독자의 FenceTask다.
+func TestE2HTTPRuntimeCloseModelStageOwnedPostgres(t *testing.T) {
+	_, task, intent := firstDiagnosisActualTask(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	runtime, _ := e2HTTPRuntimeFixture(t, func(o *E2HTTPRuntimeOptions) { o.Expected = firstDiagnosisExpectedE2() })
+	var nilRuntime *E2HTTPRuntime
+	nilRuntime.CloseModelStage(task.ID) // nil이면 아무 일도 하지 않는다.
+	if err := runtime.AdmitTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	// 실행을 잡기 전 마감은 표시만 남긴다.
+	runtime.CloseModelStage(task.ID)
+	runtime.task.mu.Lock()
+	early := runtime.task.modelClosed
+	runtime.task.modelClosed = false
+	runtime.task.mu.Unlock()
+	if !early {
+		t.Fatal("실행 전 모델 단계 마감 표시가 없음")
+	}
+	helper := filepath.Join(firstDiagnosisPrivateTemp(t), "never-run-helper")
+	if err := os.WriteFile(helper, []byte("#!/bin/sh\nexit 7\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	runner := firstDiagnosisAcquiredRunner(t, ctx, E2HTTPRequest{TaskID: task.ID, TaskIDNumber: mustFirstDiagnosisTaskNumber(task.ID), ExplorationID: task.ExpID, IntentID: intent.ID}, helper, "https://owned.test", firstDiagnosisExpectedE2().RunRef)
+	store := newE2HTTPSessionStore(nil, firstDiagnosisExpectedE2().RunRef, nil)
+	runtime.task.mu.Lock()
+	runtime.task.lease, runtime.task.validLease = &E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), sessionStore: store}, true
+	runtime.task.mu.Unlock()
+	runtime.CloseModelStage(task.ID + "0")
+	if runner.Execution().ModelStageClosed() {
+		t.Fatal("다른 작업 번호로 모델 단계가 마감됨")
+	}
+	runtime.CloseModelStage(task.ID)
+	if !runner.Execution().ModelStageClosed() {
+		t.Fatal("모델 단계가 마감되지 않음")
+	}
+	if _, err := runner.Execution().BeginCall(ctx, "late-worker"); err == nil {
+		t.Fatal("모델 단계 마감 뒤 Worker 호출이 열림")
+	}
+	// 확정 단계는 E② 연결을 그대로 받는다.
+	if exec, _, reason := runtime.E3HandleReason(task.ID); reason != "" || exec == nil {
+		t.Fatal("모델 단계 마감이 E② 실행 연결까지 닫음", reason)
+	}
+}
