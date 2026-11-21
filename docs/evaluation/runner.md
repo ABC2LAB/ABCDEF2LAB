@@ -229,7 +229,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   `cmd/eval-meter/gateway.go`와 같게 고정한다(시험이 원문과 대조). 제품(O) 분리 배치 회차도 같은 함수로 `fault-stall.json`을 남긴다(`runner_split_run.product_fault_stall`): 게이트웨이 행 자리에 제품 호출 기록 줄(같은 칸·어휘)을 넣고, 창은 시작 요청 직전부터 계측기 봉인 직후까지다. 호출 기록 완전성(장부 예약 수 = 기록 줄 수)을 확인한 뒤에 만들고, 결과 요약 `fault_stall`에도 싣는다.
 - **일찍 끝난 회차 분류(`early-end.json`, 고정 초안 §26, 2026-11-21 사용자):** 멈춤 기록 다음에 같은 호출 행(B 게이트웨이 행, O 제품
   호출 기록 줄)과 엔진 첫 끝 상태로 분류한다(`runner_early_end.early_end_record`). 모델 호출 401~404, O 승인 예산 상한에 닿은
-  `budget_limited`(장부 합계 `runner_product_llm.ledger_totals` vs manifest `max_requests`·`max_cost_usd_micros`), O 시작 거부(제품
+  `budget_limited`(장부 합계 `runner_product_llm.ledger_totals` vs manifest `max_requests`·`max_cost_usd_micros`, 비용은 남은 몫이 가장 작은 예약(입력 4097·출력 1토큰, manifest 단가)보다 작을 때만), O 시작 거부(제품
   고정 사유)는 `config_end`로 무효이고 세션이 시도로 세지 않고 멈춘다. 러너 상한 전에 O `failed`·`unknown`(B `failed`)으로 끝났고 끝 직전
   마지막 호출이 제공자 오류(끊김·429·5xx)이며 그 뒤 성공 호출이 없으면 `provider_fault_end`로 무효이고 멈춤 상한에 같이 센다. 그 밖에
   일찍 끝난 회차는 유효로 두고 분류만 남는다. 호출 행을 읽지 못하거나 없으면(합성 O) 근거 없음으로 두고 무효로 빼지 않는다. 사유

@@ -55,20 +55,18 @@ def ledger_reservations(data: bytes) -> int:
 
 def ledger_totals(data: bytes) -> dict:
     """승인 장부의 누적 합계(llmpolicy openRouterLedgerScan과 같은 셈). 예약 줄마다 요청 1·비용 +예약, 정산 줄은 그 예약 대신
-    실제 비용을 센다(비용 -= 예약 − 실제). largest_reservation_cost는 이 장부에서 가장 큰 예약 비용이다(승인 예산에 닿았는지
-    볼 때 다음 호출 크기로 쓴다, runner_early_end.approval_budget). 정산 줄의 짝 대조는 제품이 이미 했으므로 여기서는 셈만 한다."""
-    requests = cost = largest = 0
+    실제 비용을 센다(비용 -= 예약 − 실제). 정산 줄의 짝 대조는 제품이 이미 했으므로 여기서는 셈만 한다."""
+    requests = cost = 0
     for line in _lines(data, "product_ledger_invalid"):
         fields = line.split(" ")
         if _RESERVE.fullmatch(line):
             requests += 1
             cost += int(fields[3])
-            largest = max(largest, int(fields[3]))
         elif _SETTLE.fullmatch(line) and int(fields[6]) <= int(fields[3]):
             cost -= int(fields[3]) - int(fields[6])
         else:
             raise ProductLLMError("product_ledger_invalid")
-    return {"requests": requests, "cost": cost, "largest_reservation_cost": largest}
+    return {"requests": requests, "cost": cost}
 
 
 def call_record_lines(data: bytes) -> int:

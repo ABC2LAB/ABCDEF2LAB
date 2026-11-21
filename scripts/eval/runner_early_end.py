@@ -84,16 +84,31 @@ def start_refusal_record(side: str, code: str) -> dict:
             "class": CLASS_CONFIG, "reason": CONFIG_END_REASON, "evidence": {"kind": "start_refused", "code": code}}
 
 
-def approval_budget(totals: dict | None, max_requests: int | None, max_cost_micros: int | None) -> dict | None:
-    """승인 장부 합계(runner_product_llm.ledger_totals)와 manifest 상한으로 승인 예산에 닿았는지. 제품 전송 계층은 다음 호출의
-    예약(요청 1·비용)이 남은 몫을 넘으면 거절한다(llmpolicy openrouter.go). 남은 비용이 이 회차에서 가장 큰 예약보다 작으면
-    같은 크기의 다음 호출이 들어가지 않으므로 닿은 것으로 본다. 장부나 상한이 없으면(합성 회차) None."""
-    if totals is None or max_requests is None or max_cost_micros is None:
+# 제품 전송 계층이 호출 하나에 잡는 가장 작은 예약(llmpolicy openRouterReservedInput·openRouterCallCost): 입력은 보낼 JSON
+# 바이트 수 + framing 여유 4096(openRouterFramingTokens)이라 1바이트 요청이어도 4097토큰, 출력은 요청 max_tokens라 1토큰 이상이다.
+MIN_INPUT_RESERVATION_TOKENS = 4096 + 1
+MIN_OUTPUT_RESERVATION_TOKENS = 1
+_PRICE_UNIT = 1_000_000  # 단가는 백만 토큰당 µ$(manifest max_*_price_usd_micros_per_million)
+
+
+def _call_cost(input_tokens: int, output_tokens: int, input_price: int, output_price: int) -> int:
+    """llmpolicy openRouterCallCost와 같은 올림식(µ$)."""
+    return (-(-input_tokens * input_price // _PRICE_UNIT)) + (-(-output_tokens * output_price // _PRICE_UNIT))
+
+
+def approval_budget(totals: dict | None, caps: tuple[int, int, int, int] | None) -> dict | None:
+    """승인 장부 합계(runner_product_llm.ledger_totals)와 manifest 상한으로 승인 예산에 닿았는지. 장부로 입증할 수 있을 때만
+    닿았다고 한다(#831 리뷰): 요청 수가 상한에 닿았거나, 남은 비용이 어떤 호출의 예약보다도 작다(가장 작은 예약 = 입력 4097토큰·
+    출력 1토큰을 manifest 단가로 올림). 다음 호출은 지난 호출보다 작을 수 있어 '지난 최대 예약보다 작음'은 근거가 아니다.
+    caps = (max_requests, max_cost_usd_micros, 입력 단가, 출력 단가). 장부나 상한이 없으면(합성 회차) None."""
+    if totals is None or caps is None:
         return None
+    max_requests, max_cost_micros, input_price, output_price = caps
+    min_next = _call_cost(MIN_INPUT_RESERVATION_TOKENS, MIN_OUTPUT_RESERVATION_TOKENS, input_price, output_price)
     requests_reached = totals["requests"] >= max_requests
-    cost_reached = totals["largest_reservation_cost"] > 0 and max_cost_micros - totals["cost"] < totals["largest_reservation_cost"]
+    cost_reached = max_cost_micros - totals["cost"] < min_next
     return {"requests": totals["requests"], "max_requests": max_requests, "cost_usd_micros": totals["cost"],
-            "max_cost_usd_micros": max_cost_micros, "largest_reservation_usd_micros": totals["largest_reservation_cost"],
+            "max_cost_usd_micros": max_cost_micros, "min_next_reservation_usd_micros": min_next,
             "reached": requests_reached or cost_reached}
 
 

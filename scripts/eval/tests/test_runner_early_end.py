@@ -152,23 +152,34 @@ class TestEarlyEndRecord(unittest.TestCase):
 
 
 class TestApprovalBudget(unittest.TestCase):
-    def totals(self, requests, cost, largest):
-        return {"requests": requests, "cost": cost, "largest_reservation_cost": largest}
+    # 단가 입력 1000·출력 4000 µ$/백만 토큰 → 가장 작은 예약 = ceil(4097×1000/1e6) + ceil(1×4000/1e6) = 5 + 1 = 6 µ$
+    CAPS = (10, 1000, 1000, 4000)
 
-    def test_requests_or_cost_reach(self):
-        self.assertTrue(approval_budget(self.totals(10, 0, 5), 10, 1000)["reached"])
-        self.assertFalse(approval_budget(self.totals(9, 0, 5), 10, 1000)["reached"])
-        # 남은 비용이 가장 큰 예약보다 작으면 같은 크기의 다음 호출이 들어가지 않는다
-        self.assertTrue(approval_budget(self.totals(1, 996, 5), 10, 1000)["reached"])
-        self.assertFalse(approval_budget(self.totals(1, 995, 5), 10, 1000)["reached"])
-        self.assertFalse(approval_budget(self.totals(0, 0, 0), 10, 1000)["reached"])
-        self.assertIsNone(approval_budget(None, 10, 1000))
-        self.assertIsNone(approval_budget(self.totals(1, 1, 1), None, None))
+    def totals(self, requests, cost):
+        return {"requests": requests, "cost": cost}
+
+    def test_smallest_reservation_matches_the_transport_formula(self):
+        from runner_early_end import MIN_INPUT_RESERVATION_TOKENS, _call_cost
+        self.assertEqual(MIN_INPUT_RESERVATION_TOKENS, 4097)
+        self.assertEqual(_call_cost(4097, 1, 1000, 4000), 6)
+        self.assertEqual(approval_budget(self.totals(0, 0), self.CAPS)["min_next_reservation_usd_micros"], 6)
+
+    def test_requests_reach(self):
+        self.assertTrue(approval_budget(self.totals(10, 0), self.CAPS)["reached"])
+        self.assertFalse(approval_budget(self.totals(9, 0), self.CAPS)["reached"])
+
+    def test_cost_reaches_only_when_no_call_can_fit(self):
+        # 리뷰 반례: 상한 1000·장부 950·지난 최대 예약 100이어도 다음 요청(20 등)은 들어갈 수 있다 → 닿지 않음
+        self.assertFalse(approval_budget(self.totals(1, 950), self.CAPS)["reached"])
+        self.assertFalse(approval_budget(self.totals(1, 994), self.CAPS)["reached"])  # 남은 6 = 가장 작은 예약
+        self.assertTrue(approval_budget(self.totals(1, 995), self.CAPS)["reached"])  # 남은 5 < 6
+        self.assertIsNone(approval_budget(None, self.CAPS))
+        self.assertIsNone(approval_budget(self.totals(1, 1), None))
 
     def test_ledger_totals_follow_the_settle_lines(self):
-        self.assertEqual(ledger_totals(b""), {"requests": 0, "cost": 0, "largest_reservation_cost": 0})
+        self.assertEqual(ledger_totals(b""), {"requests": 0, "cost": 0})
         data = b"r1 10 20 30\nr1 10 20 50\ns1 10 20 30 5 6 7\n"
-        self.assertEqual(ledger_totals(data), {"requests": 2, "cost": 30 + 50 - (30 - 7), "largest_reservation_cost": 50})
+        self.assertEqual(ledger_totals(data), {"requests": 2, "cost": 30 + 50 - (30 - 7)})
         for bad in (b"r1 10 20\n", b"x\n", b"s1 10 20 30 5 6 31\n", b"r1 10 20 30"):
             with self.subTest(bad=bad), self.assertRaises(ProductLLMError):
                 ledger_totals(bad)
@@ -238,12 +249,15 @@ class TestORound(unittest.TestCase):
         def budget(ports):
             ports.statuses = [{"id": "draft-1", "state": "running"},
                               {"id": "draft-1", "state": "completed", "closing_reason": "budget_limited", "outcome": "partial"}]
-        result, _, evidence = o_harness.run(budget, approval_caps=(2, 1000))  # 장부 예약 2줄 = 요청 상한
+        result, _, evidence = o_harness.run(budget, approval_caps=(2, 1000, 1000, 4000))  # 장부 예약 2줄 = 요청 상한
         self.assertEqual((result["status"], result["reasons"][0]), ("invalid", CONFIG_END_REASON), result)
         self.assertEqual(evidence.files["early-end.json"]["evidence"]["kind"], "approval_budget")
-        result, _, _ = o_harness.run(budget, approval_caps=(3, 1000))  # 상한에 안 닿음 = 제품 예산 마감(통제 비용)
+        result, _, _ = o_harness.run(budget, approval_caps=(3, 1000, 1000, 4000))  # 상한에 안 닿음 = 제품 예산 마감(통제 비용)
         self.assertEqual(result["status"], "complete", result)
         self.assertIsNone(result["early_end"]["class"])
+        result, _, evidence = o_harness.run(budget, approval_caps=(3, 65, 1000, 4000))  # 남은 비용 5 < 가장 작은 예약 6
+        self.assertEqual((result["status"], result["reasons"][0]), ("invalid", CONFIG_END_REASON), result)
+        self.assertEqual(evidence.files["early-end.json"]["evidence"]["min_next_reservation_usd_micros"], 6)
 
     def test_start_refusal_is_a_config_end(self):
         def refuse(ports):

@@ -282,7 +282,7 @@ class SplitRunSpec:
     # 확인하고 회차 조건(서명 근거)에 남긴다. purpose와 따로다(2026-11-20 사용자).
     e3_disabled_required: bool = False
     # 승인 요청·비용 상한(manifest). 승인 예산에 닿은 budget_limited를 설정 오류로 가른다(고정 초안 §26). 합성 모델 모드는 None.
-    approval_caps: tuple[int, int] | None = None
+    approval_caps: tuple[int, int, int, int] | None = None
 
 
 class SplitRunPorts(Protocol):
@@ -643,7 +643,7 @@ def _split_early_end(spec, evidence, state, limit: dict, engine_end: dict, calls
     budget = None
     if ledger is not None and spec.approval_caps is not None and limit["value"] == PRODUCT_BUDGET_LIMIT:
         totals = _step(state, "early_end_failed", lambda: ledger_totals(ledger))
-        budget = approval_budget(totals, *spec.approval_caps)
+        budget = approval_budget(totals, spec.approval_caps)
     record = _step(state, "early_end_failed", lambda: early_end_record("ours", limit, engine_end["first_terminal"], rows, budget))
     if not_executed and record["reason"] not in (CONFIG_END_REASON, PROVIDER_FAULT_END_REASON):
         record = dict(record, **{"class": CLASS_NOT_EXECUTED, "reason": PRODUCT_NOT_EXECUTED_REASON})
