@@ -278,6 +278,8 @@ type e2HTTPRuntimeTask struct {
 	promptFailed     bool // mu로 보호한다. 나머지 등록 상태는 gate 안에서만 접근한다.
 	promptRegistered bool
 	promptOwned      bool
+	// promptRegisterErr는 실행 등록 실패의 원인이다(로그 사유용). gate 안에서만 접근한다.
+	promptRegisterErr error
 }
 
 func NewE2HTTPRuntime(parent context.Context, options E2HTTPRuntimeOptions) (*E2HTTPRuntime, error) {
