@@ -20,6 +20,27 @@ type RequestApprovalGate interface {
 	AwaitRequestApproval(context.Context, RequestApprovalProposal) (bool, error)
 }
 
+// RequestApprovalOutcome은 승인 대기가 끝난 모양이다. 허용만 송신으로 이어진다.
+type RequestApprovalOutcome string
+
+const (
+	RequestApprovalAllowed RequestApprovalOutcome = "allowed"
+	// RequestApprovalDenied는 운영자가 거절한 것이다.
+	RequestApprovalDenied RequestApprovalOutcome = "denied"
+	// RequestApprovalExpired는 결정 없이 승인 기한이 지난 것이다.
+	RequestApprovalExpired RequestApprovalOutcome = "expired"
+	// RequestApprovalUndecided는 취소·실행 종료·저장 실패 등으로 결정이 나지 않은 것이다.
+	RequestApprovalUndecided RequestApprovalOutcome = "undecided"
+)
+
+// RequestApprovalOutcomeGate는 거절과 만료를 나눠 돌려주는 확인 경계다(선택). 구현하면 E②는 이것을 부른다. E③ 확정
+// 단계 생성 요청의 미송신 사유를 계약(e3contract.Transport)대로 approval_denied·approval_timeout으로 남기는 데만 쓴다.
+// 감사 기록의 결정·사유(policy_denied)는 바꾸지 않는다.
+type RequestApprovalOutcomeGate interface {
+	RequestApprovalGate
+	AwaitRequestApprovalOutcome(context.Context, RequestApprovalProposal) (RequestApprovalOutcome, error)
+}
+
 // RequestApprovalProposal은 프로그램이 실제 정규화 요청에서 생성한 private 입력이다.
 // 각 호출은 Receipt.AttemptID에 귀속되고, 요청은 승인 대기 동안 보류된다.
 // Headers/Body/URL은 잠재적 비밀을 포함하므로 승인 저장부의 보호·출력 정책이 필요하다.

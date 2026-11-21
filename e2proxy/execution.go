@@ -1459,7 +1459,18 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 			Headers: requestHeaders.Clone(), Body: previewBody,
 		}
 		// 보호 자격 원문은 승인 소비자에게 전달하지 않는다. 참조만 결속한다.
-		allowed, approvalErr := e.cfg.RequestApproval.AwaitRequestApproval(approvalCtx, proposal)
+		var allowed bool
+		var approvalErr error
+		if gate, ok := e.cfg.RequestApproval.(RequestApprovalOutcomeGate); ok {
+			var outcome RequestApprovalOutcome
+			outcome, approvalErr = gate.AwaitRequestApprovalOutcome(approvalCtx, proposal)
+			allowed = outcome == RequestApprovalAllowed
+			if e3 != nil {
+				e3.approval = outcome
+			}
+		} else {
+			allowed, approvalErr = e.cfg.RequestApproval.AwaitRequestApproval(approvalCtx, proposal)
+		}
 		canceled := approvalCtx.Err() != nil || ctx.Err() != nil
 		stopApproval()
 		cancelApproval()

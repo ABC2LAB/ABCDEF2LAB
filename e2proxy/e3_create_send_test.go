@@ -2,6 +2,7 @@ package e2proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -179,5 +180,69 @@ func TestE3CreateUnknownResultDoesNotRetryOrIssueID(t *testing.T) {
 	if writes.Load() != 1 || event.Stage != "result" || event.ResponseComplete || event.E3Audit != nil && event.E3Audit.ObjectIDDigest != "" ||
 		len(e.e3Created) != 0 {
 		t.Fatalf("결과 불명 생성을 재시도하거나 ID를 발급: writes=%d", writes.Load())
+	}
+}
+
+// e3OutcomeGate는 거절·만료를 나눠 돌려주는 승인 경계다(RequestApprovalOutcomeGate).
+type e3OutcomeGate struct {
+	outcome RequestApprovalOutcome
+	calls   atomic.Int64
+}
+
+func (g *e3OutcomeGate) AwaitRequestApproval(context.Context, RequestApprovalProposal) (bool, error) {
+	return g.outcome == RequestApprovalAllowed, nil
+}
+
+func (g *e3OutcomeGate) AwaitRequestApprovalOutcome(context.Context, RequestApprovalProposal) (RequestApprovalOutcome, error) {
+	g.calls.Add(1)
+	return g.outcome, nil
+}
+
+// 사용자 승인 모드에서 확정 단계 생성 요청이 거절·만료되면 보내지 않고 계약대로 approval_denied·approval_timeout을 남긴다
+// (e3contract.Transport, S10). 감사 사유는 policy_denied 그대로다. 결과를 나누지 못하는 승인 경계는 지금처럼 policy_denied다.
+func TestE3CreateApprovalOutcomeSetsNotSentReason(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		gate     RequestApprovalGate
+		want     e3contract.NotSentReason
+		requests int64
+	}{
+		{name: "denied", gate: &e3OutcomeGate{outcome: RequestApprovalDenied}, want: e3contract.NotSentApprovalDenied},
+		{name: "expired", gate: &e3OutcomeGate{outcome: RequestApprovalExpired}, want: e3contract.NotSentApprovalTimeout},
+		{name: "undecided", gate: &e3OutcomeGate{outcome: RequestApprovalUndecided}, want: e3contract.NotSentPolicyDenied},
+		{name: "bool-gate", gate: &e3ApprovalGate{}, want: e3contract.NotSentPolicyDenied},
+		{name: "allowed", gate: &e3OutcomeGate{outcome: RequestApprovalAllowed}, requests: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var requests atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"id":"book-a"}`)
+			}))
+			defer server.Close()
+			spec := e3contract.CreateSpec{Path: "/allowed/books", Method: "POST", Kind: e3contract.BodyJSON,
+				BodyTemplate: `{}`, MarkerField: "marker", IDPath: "id"}
+			e, in, _ := e3CreateFixture(t, server.URL, spec, "")
+			e.cfg.ApprovalMode = ApprovalConfirmEveryRequest
+			e.cfg.RequestApproval = tc.gate
+			event, err := e.SendE3Create(t.Context(), in)
+			if requests.Load() != tc.requests {
+				t.Fatalf("대상 도착 %d건, 기대 %d건", requests.Load(), tc.requests)
+			}
+			if gate, ok := tc.gate.(*e3OutcomeGate); ok && gate.calls.Load() != 1 {
+				t.Fatal("결과를 나누는 승인 경계를 부르지 않음")
+			}
+			if tc.requests == 1 {
+				if err != nil || event.E3Audit == nil || event.E3Audit.NotSentReason != "" {
+					t.Fatalf("허용된 생성이 미송신으로 남음: err=%v", err)
+				}
+				return
+			}
+			if err != nil || event.E3Audit == nil || event.E3Audit.NotSentReason != tc.want ||
+				event.Reason != PolicyDenied || event.Decision != "denied" || event.ForwardAttempted {
+				t.Fatalf("미송신 사유가 다름: err=%v receipt=%+v", err, event.Receipt)
+			}
+		})
 	}
 }

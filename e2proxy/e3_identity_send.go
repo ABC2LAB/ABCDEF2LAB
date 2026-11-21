@@ -39,7 +39,9 @@ type E3IdentityInput struct {
 }
 
 type e3ProgramCall struct {
-	audit       E3Audit
+	audit E3Audit
+	// approval은 이 요청이 사용자 승인을 기다렸을 때의 결과다(승인 대기 없음이면 빈 값).
+	approval    RequestApprovalOutcome
 	kind        ProgramCallKind
 	session     http.Header
 	marker      []byte
@@ -191,8 +193,13 @@ func (e *Execution) e3Result(ctx, requestCtx context.Context, call *Call, receip
 
 func (c *e3ProgramCall) finish(r *Receipt, ctx context.Context) {
 	if !r.ForwardAttempted && r.Decision != "allowed" {
-		switch r.Reason {
-		case BudgetExhausted, AttemptLimit:
+		// 운영자 거절·승인 만료는 계약(e3contract.Transport)대로 따로 남긴다. 감사 사유는 그대로 policy_denied다.
+		switch {
+		case c.approval == RequestApprovalDenied && r.Reason == PolicyDenied:
+			c.audit.NotSentReason = e3contract.NotSentApprovalDenied
+		case c.approval == RequestApprovalExpired && r.Reason == PolicyDenied:
+			c.audit.NotSentReason = e3contract.NotSentApprovalTimeout
+		case r.Reason == BudgetExhausted || r.Reason == AttemptLimit:
 			c.audit.NotSentReason = e3contract.NotSentBudgetExhausted
 		default:
 			c.audit.NotSentReason = e3contract.NotSentPolicyDenied
