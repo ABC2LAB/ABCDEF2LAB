@@ -251,6 +251,7 @@ func TestE3CreateApprovalOutcomeSetsNotSentReason(t *testing.T) {
 // undecided를 돌려준다(server.RequestApprovalService와 같은 끝 모양). honorExpiry가 false면 기한을 보지 않는다.
 type e3WaitingGate struct {
 	honorExpiry bool
+	denyOnDone  bool // 문맥이 끝나는 순간 거절이 온 경우(거절과 요청 상한이 경합)
 	onWait      func()
 	expires     time.Time
 }
@@ -275,6 +276,9 @@ func (g *e3WaitingGate) AwaitRequestApprovalOutcome(ctx context.Context, p Reque
 	case <-ctx.Done():
 	case <-timer:
 	}
+	if g.denyOnDone {
+		return RequestApprovalDenied, nil
+	}
 	if g.honorExpiry && !time.Now().Before(p.ExpiresAt) {
 		return RequestApprovalExpired, nil
 	}
@@ -289,11 +293,15 @@ func TestE3CreateApprovalWaitHitsRequestTimeout(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		honorExpiry bool
+		denyOnDone  bool
 		stop        bool
 		want        e3contract.NotSentReason
+		reason      Reason
 	}{
-		{name: "expiry-aligned", honorExpiry: true, want: e3contract.NotSentApprovalTimeout},
-		{name: "context-deadline", honorExpiry: false, want: e3contract.NotSentApprovalTimeout},
+		{name: "expiry-aligned", honorExpiry: true, want: e3contract.NotSentApprovalTimeout, reason: PolicyDenied},
+		{name: "context-deadline", honorExpiry: false, want: e3contract.NotSentApprovalTimeout, reason: PolicyDenied},
+		// 거절이 요청 상한과 같이 오면 거절이다(만료로 덮지 않는다). 문맥이 끝났으므로 감사 사유는 closed다.
+		{name: "denied-at-deadline", denyOnDone: true, want: e3contract.NotSentApprovalDenied, reason: Closed},
 		{name: "run-stopped", honorExpiry: false, stop: true, want: e3contract.NotSentPolicyDenied},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -306,7 +314,7 @@ func TestE3CreateApprovalWaitHitsRequestTimeout(t *testing.T) {
 			in.Timeout = 150 * time.Millisecond
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
-			gate := &e3WaitingGate{honorExpiry: tc.honorExpiry}
+			gate := &e3WaitingGate{honorExpiry: tc.honorExpiry, denyOnDone: tc.denyOnDone}
 			if tc.stop {
 				gate.onWait = func() { time.AfterFunc(30*time.Millisecond, cancel) }
 			}
@@ -328,7 +336,7 @@ func TestE3CreateApprovalWaitHitsRequestTimeout(t *testing.T) {
 				return
 			}
 			if err != nil || event.E3Audit == nil || event.E3Audit.NotSentReason != tc.want ||
-				event.Decision != "denied" || event.Reason != PolicyDenied || event.ForwardAttempted {
+				event.Decision != "denied" || event.Reason != tc.reason || event.ForwardAttempted {
 				t.Fatalf("요청 상한 승인 만료 기록이 다름: err=%v receipt=%+v", err, event.Receipt)
 			}
 		})
