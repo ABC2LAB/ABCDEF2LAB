@@ -34,7 +34,10 @@ services:
     networks:
       control: {ipv4_address: 172.31.252.10}
     healthcheck:
-      test: [CMD, pg_isready, -U, postgres, -d, abc2lab]
+      # TCP(127.0.0.1)로 본다. 공식 이미지는 새 볼륨을 처음 띄울 때 초기화 스크립트를 소켓 전용 임시 서버
+      # (listen_addresses='')로 돌린 뒤 끄고 진짜 서버를 띄운다. 소켓으로 보면 그 임시 서버에서 healthy가 되어, TCP로
+      # 붙는 install이 진짜 서버가 뜨기 전에 시작해 exit 1로 끝날 수 있다(2026-11-20 회차 둘에서 간헐 compose_up_failed).
+      test: [CMD, pg_isready, -h, 127.0.0.1, -U, postgres, -d, abc2lab]
       interval: 2s
       timeout: 2s
       retries: 30
