@@ -85,6 +85,7 @@ CLI_USAGE_NAME = "cli-usage.json"
 CLI_LINES_NAME = "cli-observed-lines.json"
 BASH_TOOL = "Bash"  # 원본 Worker 셸 도구 이름(activity.tool)
 from runner_split import REGISTRATION_PATHS  # noqa: E402
+from run_signals import interrupt_on_stop_signals  # noqa: E402
 from runner_fault import (  # noqa: E402
     FAULT_STALL_FORMAT, FAULT_STALL_NAME, FaultRecordError, fault_stall_outcome, fault_stall_record,
 )
@@ -1757,6 +1758,8 @@ def _remove_unstarted_run(directory: RunDirectory | None) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # 뒤에서 띄운 세션에서 SIGINT가 무시 상태로 넘어와도 정리 경로(KeyboardInterrupt)로 받고, SIGTERM도 같게(run_signals, 2026-11-21).
+    interrupt_on_stop_signals()
     parser = argparse.ArgumentParser(description="평가 회차 1회 실행(자동 재시도 없음)")
     parser.add_argument("--config", required=True)
     parser.add_argument("--preflight", required=True)
