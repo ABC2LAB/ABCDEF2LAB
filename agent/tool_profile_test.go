@@ -262,3 +262,15 @@ func TestDiagnosisPlannerTaskScopeDescriptionReachesProvider(t *testing.T) {
 		}
 	}
 }
+
+// 진단 Planner·Worker는 작업을 일시정지하는 오케스트레이터 도구(pause_task)를 갖지 않는다. 회차 도중 엔진 일시정지
+// (paused_by_orchestrator) 입구가 아님을 고정한다(서버 계약 §7.3 일시정지 원인 표).
+func TestDiagnosisProfilesHaveNoTaskPauseTool(t *testing.T) {
+	for _, profile := range []toolProfile{diagnosisPlannerProfile, diagnosisWorkerProfile} {
+		for _, entry := range profile.entries {
+			if entry.name == "pause_task" {
+				t.Fatalf("%s 프로필에 작업 일시정지 도구 %s", profile.name, entry.name)
+			}
+		}
+	}
+}

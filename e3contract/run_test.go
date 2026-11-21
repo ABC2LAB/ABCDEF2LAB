@@ -1243,3 +1243,41 @@ func TestRunCrossRecheckIntegrityFailure(t *testing.T) {
 	res := e3contract.Run(context.Background(), deps, f.in)
 	integrityFailed(t, res, e3contract.IntegrityJournalEventMismatch)
 }
+
+// 사용자 결정 2026-11-20 분기점 2: 모델 단계가 E② 실행을 한 번도 잡지 않고 스스로 끝나면 요청 없이 남긴다. 꺼진 회차는 실제
+// 사유, 켜진 회차는 확정할 후보가 없으면 no_confirmation_candidates, 후보가 있으면(비정상) e2_execution_unavailable이다.
+func TestRunWithoutExecution(t *testing.T) {
+	for name, c := range map[string]struct {
+		prepare func(*fixture)
+		status  e3contract.ConfirmationStatus
+		reason  string
+	}{
+		"disabled-declaration": {func(f *fixture) { f.in.Binding.Policy = e3contract.PolicySource{} }, e3contract.StatusDisabled,
+			string(e3contract.DisabledNoDeclaration)},
+		"disabled-accounts": {func(f *fixture) { f.in.Cross.Authenticated = false }, e3contract.StatusDisabled,
+			string(e3contract.DisabledAccountsUnverified)},
+		"no-candidates": {func(f *fixture) { f.in.Candidates = nil }, e3contract.StatusDisabled, string(e3contract.DisabledNoCandidates)},
+		"candidates":    {func(*fixture) {}, e3contract.StatusStartRefused, string(e3contract.RefuseE2ExecutionUnavailable)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			c.prepare(f)
+			started := 0
+			deps := f.deps()
+			deps.Started = func() { started++ }
+			deps.Relogin = func(context.Context, string) bool {
+				t.Error("실행 없음 기록이 다시 로그인함")
+				return true
+			}
+			res := e3contract.RunWithoutExecution(context.Background(), deps, f.in)
+			if res.Status != c.status || res.Reason != c.reason || res.Requests != 0 || len(res.Verdicts) != 0 || started != 0 ||
+				len(f.fake.Calls()) != 0 || len(f.writes.Events()) != 0 {
+				t.Fatalf("%s/%s 요청 %d 판정 %d 시작 %d 대상 %d", res.Status, res.Reason, res.Requests, len(res.Verdicts), started, len(f.fake.Calls()))
+			}
+			noConfirmed(t, res)
+		})
+	}
+	if !e3contract.RefuseE2ExecutionUnavailable.Valid() {
+		t.Fatal("e2_execution_unavailable이 정해진 시작 거부 사유가 아님")
+	}
+}

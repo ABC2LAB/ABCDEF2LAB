@@ -701,8 +701,18 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 			return firstDiagnosisFailure(context.Canceled)
 		}
 		if run.Err() != nil {
+			// 실행 문맥 취소(서버 종료 등)를 엔진 일시정지보다 먼저 본다. 감독자 종료는 실행 문맥을 끊은 뒤 경쟁 방지 일시정지를
+			// 걸므로, 순서가 바뀌면 그 일시정지가 아래 엔진 일시정지 마감으로 잘못 기록된다.
 			server.engine.Pause(taskID, agent.AbortPausedRaceGuard)
 			return firstDiagnosisFailure(run.Err())
+		}
+		if !registered && server.engine.IsPaused(taskID) {
+			// 운영자 일시정지는 엔진 일시정지를 거치지 않는다(control pause는 firstDiagnosisControl이 운영자 중지로 기록하고 위의
+			// userStopped가 받는다, 사용자 결정 2026-11-20 분기점 1). 그러니 회차 도중 엔진 일시정지는 운영자 중지가 아니다.
+			// 운영자 중지와 섞지 않고 감독 실패(engine_paused)로 끝내 정상 완료로 읽히지 않게 하고, 원인 고정 코드를 남긴다.
+			// 지금 첫 진단 서버에서 회차 도중 엔진 일시정지가 생기는 경로는 없다(계약 §7.3 일시정지 원인 표·시험 고정). 방어 경로다.
+			log.Printf(logT("[first-diagnosis] task %s 회차 도중 엔진 일시정지(원인=%s)로 마감"), taskID, server.engine.PauseCause(taskID))
+			return firstDiagnosisCheckFailed(reasonEnginePaused, ErrFirstDiagnosisSupervisor)
 		}
 		if !registered && timeCloseAt.IsZero() {
 			// 시간 상한을 정하지 않은 실행(CLI 단발 실행)은 엔진 기한(작업 시간 상한)을 시간 상한으로 쓴다. 계획이 비어도
@@ -726,7 +736,8 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 			if timeClosing && !timeStopped && !now.Before(drainUntil) && server.engine.inflightCount(taskID) > 0 {
 				// 유예 안에 끝나지 않은 작업은 엔진 정리 순서의 마지막 단계처럼 멈춘다. 그 intent는 exhausted(미완료)로 남는다.
 				timeStopped = true
-				server.engine.cancelExec(taskID, agent.AbortSettleDrainTimeout)
+				// E②는 여기서 닫지 않는다(AbortTimeBudgetDrain): 아래 마감에서 E③ 확정 단계 뒤에 닫는다.
+				server.engine.cancelExec(taskID, agent.AbortTimeBudgetDrain)
 			}
 		}
 		intentState := ""
@@ -760,6 +771,9 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 			s.admissionGranted = false
 			s.mu.Unlock()
 			if !registered {
+				// 모델 단계가 스스로 끝났다(목표 달성·시간 상한·예산 소진 등). 확정 단계 전에 모델 단계를 마감해 그 뒤로는
+				// 확정 단계 요청만 E②를 지나게 한다(모델 단계 마감 뒤 모델 단계 송신 0). E② 실행 전체는 확정 단계 뒤에 닫는다.
+				server.engine.e2HTTP.CloseModelStage(taskID)
 				if e3Confirmation.Run != nil {
 					e3Handled = true
 					// E③ 확정 단계(결정 §5)는 모델 활동이 모두 끝난 뒤에만 돈다. 여기서는 진행 중 작업·모델 호출이 0이고
