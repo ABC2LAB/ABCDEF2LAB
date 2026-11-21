@@ -3,7 +3,6 @@ package e2proxy
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -525,10 +524,9 @@ func TestIssuedSessionsAreRedactedFromRecords(t *testing.T) {
 		t.Fatalf("non test-account run masked structurally: %q", got)
 	}
 	// 가릴 자리가 모자라면 새 세션을 담은 응답은 보류한다. 이미 등록한 값만 다시 오면 자리를 더 쓰지 않아 그대로 보낸다.
+	// 발급 세션 칸은 계정 세션과 따로 센다. 칸을 다 채운 상태를 만든다.
 	e.mu.Lock()
-	for len(e.redactOnly) < maxIssuedRedactValues {
-		e.redactOnly = append(e.redactOnly, []byte(fmt.Sprintf("filler-redact-value-%04d", len(e.redactOnly))))
-	}
+	e.issuedRedactions = maxIssuedRedactValues
 	e.mu.Unlock()
 	mode.Store(0)
 	if resp, r, err := call.Do(context.Background(), coreRequest(t, "GET", srv.URL+"/allowed/me")); err != nil || r.Reason != Complete {
