@@ -398,6 +398,18 @@ class TestSession(unittest.TestCase):
         self.assertEqual((schedule.attempts, schedule.stop_reason), ({"baseline": 1, "ours": 1}, None))
         self.assertEqual([item["run_id"] for item in schedule.early_end_runs], ["o1"])
 
+    def test_resume_rejects_a_config_end_line_out_of_order(self):
+        # 리뷰 반례: 첫 칸이 B0인 기록에 다른 칸(O99)의 설정 오류 줄이 끼면 거부한다
+        bad = [{"event": "attempt", "side": "O", "repeat": 99, "status": "invalid", "reasons": [CONFIG_END_REASON], "run_id": "o1"}]
+        with self.assertRaises(ValueError) as caught:
+            replay(Schedule(1), bad)
+        self.assertEqual(str(caught.exception), "resume_order:O99")
+        # 칸이 맞는 설정 오류 줄은 시도로 세지 않고 지나간다
+        ok = [{"event": "attempt", "side": "B", "repeat": 0, "status": "invalid", "reasons": [CONFIG_END_REASON], "run_id": "b1"}]
+        schedule = Schedule(1)
+        self.assertEqual(replay(schedule, ok), 0)
+        self.assertEqual((schedule.attempts["baseline"], schedule.next_slot()), (0, ("baseline", 0)))
+
     def test_provider_fault_end_counts_with_stalls(self):
         schedule = Schedule(3)
         schedule.record("baseline", Outcome("invalid", [PROVIDER_FAULT_END_REASON], "b1", early_end={"class": CLASS_PROVIDER_FAULT}))

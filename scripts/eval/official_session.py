@@ -361,15 +361,17 @@ def replay(schedule: Schedule, lines: list[dict]) -> int:
             raise ValueError("resume_dry_run_log")
         outcome = Outcome(line["status"], list(line.get("reasons") or []), line.get("run_id"),
                           early_end=line.get("early_end") if isinstance(line.get("early_end"), dict) else None)
+        slot = schedule.next_slot()
+        side = SIDE_OF.get(line.get("side"))
+        # 설정 오류 줄도 그때의 칸(쪽·번호)과 맞아야 한다. 시도로 세지 않을 뿐 순서 검사는 같다(#831 리뷰: 건너뛰면 다른 칸의
+        # 줄이 끼어든 기록 오류를 숨긴다).
+        if slot is None or slot != (side, line.get("repeat")):
+            raise ValueError(f"resume_order:{line.get('side')}{line.get('repeat')}")
         if config_end(outcome):
             # 설정 오류 회차는 시도가 아니다. 목록에만 다시 넣고(검토용) 멈춤은 다시 걸지 않는다: 고친 뒤 잇는 것이다.
             if outcome.early_end is not None:
                 schedule.early_end_runs.append(dict(outcome.early_end, run_id=outcome.run_id, side=line.get("side"), counted=False))
             continue
-        slot = schedule.next_slot()
-        side = SIDE_OF.get(line.get("side"))
-        if slot is None or slot != (side, line.get("repeat")):
-            raise ValueError(f"resume_order:{line.get('side')}{line.get('repeat')}")
         # 시도 뒤 멈춤(stop_after)은 다시 걸지 않는다: 사유를 고친 뒤 잇는 것이다. 시도는 그대로 센다.
         schedule.record(side, outcome)
         count += 1
