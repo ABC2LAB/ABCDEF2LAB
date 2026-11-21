@@ -1281,3 +1281,69 @@ func TestRunWithoutExecution(t *testing.T) {
 		t.Fatal("e2_execution_unavailable이 정해진 시작 거부 사유가 아님")
 	}
 }
+
+// 사용자 승인 모드에서 생성 요청의 승인이 확정 단계 시간 몫 끝과 같은 순간에 만료되면(승인 기한 = 시간 몫 끝), 그 생성은
+// 보내지 않은 것으로 끝나야 한다: 판정 사유 product_create_approval_timeout, 쓰기 기록은 거둠(not_sent), 결과 쓰기 없음(리셋
+// 확인 대상 아님). 끝난 문맥으로 저널을 대조하다 결과 불명·쓰기 unknown으로 남으면 안 된다(리허설 F15, 2026-11-21).
+func TestRunCreateApprovalExpiryAtShareEnd(t *testing.T) {
+	f := newFixture(t)
+	note := key(e3contract.PurposeCreate, e3contract.RoleOwner, "note")
+	f.fake.Behaviors[note] = e3fake.Behavior{NotSent: e3contract.NotSentApprovalTimeout}
+	ctx := &flipDeadline{Context: context.Background(), done: make(chan struct{})}
+	exp := expireOnCreate{Transport: f.fake, ctx: ctx, key: note}
+	deps := f.deps()
+	deps.Transport, deps.Journal = exp, exp
+	res := e3contract.Run(ctx, deps, f.in)
+	noConfirmed(t, res)
+	if res.Status == e3contract.StatusIntegrityFailed {
+		t.Fatalf("승인 만료를 진위 실패로: %+v", res)
+	}
+	if v := verdictOf(t, res, "note"); v.Value != oracle.Undecidable || !hasReason(v, e3contract.ReasonCreateApprovalTimeout) ||
+		hasReason(v, e3contract.ReasonRequestResultUnknown) || hasReason(v, e3contract.ReasonConfirmationBudgetExhaust) {
+		t.Fatalf("note: %+v", v)
+	}
+	withdrawn := 0
+	for _, e := range f.writes.Events() {
+		if e.Type == "note" && !e.Reserve {
+			if e.Write.Outcome != e3contract.WriteNotSent {
+				t.Fatalf("보내지 않은 생성의 쓰기 기록을 %s로 갱신", e.Write.Outcome)
+			}
+			withdrawn++
+		}
+	}
+	if withdrawn != 1 {
+		t.Fatalf("미리 남긴 쓰기 기록을 거두지 않음(거둠 %d건)", withdrawn)
+	}
+	for _, w := range res.Writes {
+		if w.ResourceType == "note" {
+			t.Fatalf("보내지 않은 생성이 결과 쓰기에 남음(리셋 확인 대상이 됨): %+v", w)
+		}
+	}
+	// 시간 몫이 끝났으므로 다음 종류는 보내지 않고 확정 몫 끝으로 남는다.
+	if v := verdictOf(t, res, "secret"); v.Value != oracle.Undecidable || !hasReason(v, e3contract.ReasonConfirmationBudgetExhaust) {
+		t.Fatalf("secret: %+v", v)
+	}
+}
+
+// expireOnCreate는 key 생성 요청의 거부를 돌려주는 순간 확정 단계 문맥의 마감을 지나게 한다(승인 기한 = 시간 몫 끝).
+// 저널 대조는 실제 E²(e2live)처럼 끝난 문맥이면 그 오류를 돌려준다.
+type expireOnCreate struct {
+	*e3fake.Transport
+	ctx *flipDeadline
+	key e3fake.Key
+}
+
+func (e expireOnCreate) Create(ctx context.Context, req e3contract.CreateRequest) (e3contract.Observation, error) {
+	obs, err := e.Transport.Create(ctx, req)
+	if req.ResourceType == e.key.Type {
+		e.ctx.expire()
+	}
+	return obs, err
+}
+
+func (e expireOnCreate) Sealed(ctx context.Context, b e3contract.RunBinding, ref e3contract.CallRef) (e3contract.Observation, error) {
+	if err := ctx.Err(); err != nil {
+		return e3contract.Observation{}, err
+	}
+	return e.Transport.Sealed(ctx, b, ref)
+}
