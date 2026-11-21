@@ -200,7 +200,7 @@ func TestProductE3StoppedAfterExecutionEnded(t *testing.T) {
 		status  e3contract.ConfirmationStatus
 		reason  string
 	}{
-		"lease-missing-would-run":      {ended(server.E3HandleLeaseMissing), true, true, e3contract.StatusInterrupted, ""},
+		"lease-missing-would-run":      {ended(server.E3HandleLeaseMissing), true, true, e3contract.StatusStartRefused, string(e3contract.RefuseE2ExecutionUnavailable)},
 		"task-fenced-would-run":        {ended(server.E3HandleTaskFenced), true, true, e3contract.StatusInterrupted, ""},
 		"execution-stopped-would-run":  {ended(server.E3HandleExecutionStopped), true, true, e3contract.StatusInterrupted, ""},
 		"task-missing-would-run":       {ended(server.E3HandleTaskMissing), true, true, e3contract.StatusInterrupted, ""},
@@ -384,7 +384,7 @@ func TestProductE3WiredRunBuildsBridgeAtMarker(t *testing.T) {
 
 // 사용자 결정 2026-11-20 분기점 2: 모델 단계가 E② 실행을 한 번도 잡지 않고 스스로 끝나 확정 단계 훅이 lease_missing을 보면
 // not_wired가 아니라 실행 없음으로 기록한다(요청 0, 브리지 0). 꺼진 회차(공식 측정 조건)는 실제 사유(declaration_missing)이고
-// Go 조건 2가 이 경로에 걸리지 않게 고정한다. 켜진 회차는 확정할 후보가 없어 no_confirmation_candidates다.
+// Go 조건 2가 이 경로에 걸리지 않게 고정한다. 켜진 회차는 e2_execution_unavailable이다(2026-11-22 F12).
 func TestProductE3RunWithoutExecution(t *testing.T) {
 	for name, tc := range map[string]struct {
 		declare bool
@@ -392,7 +392,7 @@ func TestProductE3RunWithoutExecution(t *testing.T) {
 		reason  string
 	}{
 		"disabled-no-declaration": {false, e3contract.StatusDisabled, string(e3contract.DisabledNoDeclaration)},
-		"enabled-no-candidates":   {true, e3contract.StatusDisabled, string(e3contract.DisabledNoCandidates)},
+		"enabled-no-execution":    {true, e3contract.StatusStartRefused, string(e3contract.RefuseE2ExecutionUnavailable)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newE3HookFixture(t, tc.declare, nil)
@@ -423,5 +423,35 @@ func TestProductE3RunWithoutExecution(t *testing.T) {
 	}
 	if res, raw := readE3Result(t, f.runs); res.Status != e3contract.StatusDisabled || res.Reason != string(e3contract.DisabledNotWired) {
 		t.Fatalf("확정 단계 전에 닫힌 E②: %s", raw)
+	}
+}
+
+// 리허설 F11·F12: 같은 설치의 두 번째 점검이 진단 의도를 하나도 실행하지 못하고 실패로 끝나 중지 기록 훅이 lease_missing을
+// 보면, 인증 준비를 안 해 계정 인증 결과가 비어 있어도 test_accounts_unavailable이 아니라 실행 없음(e2_execution_unavailable)이다.
+// 실행 끝남 사유 중 lease_missing만 실행 없음이다(그 밖의 끝남은 지금처럼 interrupted).
+func TestProductE3StoppedWithoutExecutionNotMaskedByAccounts(t *testing.T) {
+	for name, tc := range map[string]struct {
+		reason string
+		status e3contract.ConfirmationStatus
+		want   string
+	}{
+		"lease-missing": {server.E3HandleLeaseMissing, e3contract.StatusStartRefused, string(e3contract.RefuseE2ExecutionUnavailable)},
+		"task-fenced":   {server.E3HandleTaskFenced, e3contract.StatusDisabled, string(e3contract.DisabledAccountsUnverified)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newE3HookFixture(t, true, nil)
+			c := f.confirmation(nil, map[string]string{}, nil)
+			var created atomic.Int64
+			reason := tc.reason
+			c.handle = func(string) (*e2proxy.Execution, server.E2HTTPAccountBindings, string) { return nil, nil, reason }
+			c.newBridge = countingBridge(&created)
+			if err := c.stopped(t.Context(), "9"); err != nil {
+				t.Fatal(err)
+			}
+			res, raw := readE3Result(t, f.runs)
+			if res.Status != tc.status || res.Reason != tc.want || res.Requests != 0 || created.Load() != 0 {
+				t.Fatalf("중지 기록: %s 브리지 %d", raw, created.Load())
+			}
+		})
 	}
 }
