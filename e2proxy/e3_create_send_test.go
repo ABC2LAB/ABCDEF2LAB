@@ -473,36 +473,29 @@ func TestE3CreateApprovalWaitOutsideRequestTimeout(t *testing.T) {
 	}
 }
 
-// e3RevokingGate는 허용하기 직전에 시험 계정 결속을 철회한다(승인 뒤 송신 전 철회).
-type e3RevokingGate struct{ accounts *e3IdentityAccounts }
-
-func (g *e3RevokingGate) AwaitRequestApproval(ctx context.Context, p RequestApprovalProposal) (bool, error) {
-	outcome, err := g.AwaitRequestApprovalOutcome(ctx, p)
-	return outcome == RequestApprovalAllowed, err
-}
-
-func (g *e3RevokingGate) AwaitRequestApprovalOutcome(context.Context, RequestApprovalProposal) (RequestApprovalOutcome, error) {
-	g.accounts.mu.Lock()
-	g.accounts.current = false
-	g.accounts.mu.Unlock()
-	return RequestApprovalAllowed, nil
-}
-
-// 사용자 승인 모드에서 승인 뒤 송신 전에 결속이 철회되면 진위 실패(ErrAuthorityRevoked)다. 송신 문맥이 끝난 것(취소)으로
-// 바뀌지 않는다(#839 윤재상 리뷰).
+// 사용자 승인 모드에서 승인 뒤, intent 기록과 송신 사이에 결속이 철회되면 진위 실패(ErrAuthorityRevoked)다. 송신 문맥이
+// 끝난 것(취소)으로 바뀌지 않는다(#839 윤재상 리뷰). intent 기록을 막아 그 사이에 철회한다.
 func TestE3CreateRevokedAfterApprovalIsAuthorityRevoked(t *testing.T) {
 	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests.Add(1) }))
 	defer server.Close()
 	spec := e3contract.CreateSpec{Path: "/allowed/books", Method: "POST", Kind: e3contract.BodyJSON,
 		BodyTemplate: `{}`, MarkerField: "marker", IDPath: "id"}
-	e, in, _ := e3CreateFixture(t, server.URL, spec, "")
+	e, in, recorder := e3CreateFixture(t, server.URL, spec, "")
 	accounts, ok := in.Accounts.(*e3IdentityAccounts)
 	if !ok {
 		t.Fatal("fixture accounts type changed")
 	}
+	recorder.blockStage, recorder.entered, recorder.release = "intent", make(chan struct{}, 1), make(chan struct{})
+	go func() {
+		<-recorder.entered
+		accounts.mu.Lock()
+		accounts.current = false
+		accounts.mu.Unlock()
+		close(recorder.release)
+	}()
 	e.cfg.ApprovalMode = ApprovalConfirmEveryRequest
-	e.cfg.RequestApproval = &e3RevokingGate{accounts: accounts}
+	e.cfg.RequestApproval = &e3ApprovingGate{}
 	_, err := e.SendE3Create(t.Context(), in)
 	if requests.Load() != 0 || !errors.Is(err, e3contract.ErrAuthorityRevoked) {
 		t.Fatalf("승인 뒤 철회가 진위 실패로 남지 않음: requests=%d err=%v", requests.Load(), err)
