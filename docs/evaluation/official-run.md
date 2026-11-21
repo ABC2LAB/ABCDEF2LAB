@@ -313,7 +313,7 @@ python3 -I -B scripts/eval/official_session.py --session-dir "$SESSION" --tree "
 | `provider_fault_stall` | 제공자 장애(429·위쪽 끊김) 뒤 다음 활동 사건(요청 시작·응답 완료)까지 T초 이상, 그 사이 엔진 끝 신호 없음(진행 중 요청·스트리밍 조각은 활동 아님, #756). 같은 칸 재실행. 한 쪽이 2회 이상이면 7절 집계가 측정 전체 실패(종료 코드 3)로 멈춘다(2절) |
 | `provider_fault_end` | 러너 상한 전에 O가 `failed`·`unknown`(B는 `failed`)으로 끝났고 끝 직전 마지막 모델 호출이 제공자 오류(끊김·429·5xx), 그 뒤 성공 호출 없음. `early-end.json`의 근거 호출을 본다. 같은 칸 재실행. `provider_fault_stall`과 합쳐 한 쪽이 2회 이상이면 측정 전체 실패(종료 코드 3) |
 | `config_end` | 설정 오류: 모델 호출 401~404(키·크레딧·권한·모델 이름), 승인 예산 상한에 닿은 `budget_limited`(manifest 요청·비용 상한), 시작 거부(`start_refused:<제품 사유>`). **시도로 세지 않고 세션이 멈춘다**(`config_end:<쪽>`). `early-end.json`의 근거를 보고 키·manifest·대상 승인을 고친 뒤 `--resume`으로 같은 칸부터 잇는다 |
-| `product_not_executed` | 제품이 러너 상한 전에 준비 단계에서 끝나 실행 기록이 없음(`diagnosis-run` `NOT_RUN`·404). `early-end.json`의 끝 상태·제품 사유를 본다. 같은 칸 재실행(시도로 셈). 이 회차를 유효로 셀지는 사용자 결정 대기(고정 초안 §26) |
+| `product_not_executed` | 제품이 러너 상한 전에 준비 단계에서 끝나 실행 기록이 없음(`diagnosis-run` `NOT_RUN`·404). `early-end.json`의 끝 상태·제품 사유를 본다. 같은 칸 재실행(시도로 셈, 2N). 유효로 세지 않는다(사용자 확정 2026-11-21, 고정 초안 §26) |
 | `fault_stall_unjudgeable` | T가 설정됐는데 판정 재료(호출 행·시각)를 읽지 못함. 멈춤이 없다고 할 수 없어 무효다. 같은 칸 재실행 |
 | `drain_timeout`, `seal_failed`, `interrupted` | 같은 칸 재실행. 반복되면 원인 수정 |
 

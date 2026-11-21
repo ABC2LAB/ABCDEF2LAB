@@ -585,8 +585,8 @@ PRODUCT_CALLS_NAME = "product-calls.jsonl"
 
 
 # 러너 상한 전에 준비 단계에서 끝나 실행 기록이 없는 회차(제품 `diagnosis-run`이 `execution: NOT_RUN` 또는 404). 실행 기록의
-# 목표 SHA·모델 사용량이 없어 완료 기록을 만들 수 없다. 이런 회차를 유효로 셀지는 채점(B·O 목표 SHA 대조)에 닿아 사용자 결정
-# 대기다(2026-11-21). 그 전까지는 이 사유로 무효(시도로 셈)이고, 일찍 끝난 회차 목록에 따로 나온다.
+# 목표 SHA·모델 사용량이 없어 완료 기록(B·O 목표 SHA 대조)을 만들 수 없다. 그래서 이 사유로 무효(시도로 셈, 2N)이고, 일찍 끝난
+# 회차 목록에 따로 나온다(사용자 확정 2026-11-21, 고정 초안 §26).
 PRODUCT_NOT_EXECUTED_REASON = "product_not_executed"
 CLASS_NOT_EXECUTED = "ended_not_executed"
 
