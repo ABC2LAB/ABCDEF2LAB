@@ -160,6 +160,31 @@ func TestWorkflowProfileBindsCompleteInputAndKeepsApprovedWritesInAutomaticMode(
 		t.Fatal("legacy consent lost writes in manual mode", manualLegacy.inspection.Scope.Methods)
 	}
 	input.WorkflowMode = diagnosisflow.Auto
+	// v1 쓰기 동의(이전 문구 "삭제·초기화·결제는 제외")도 자동 모드에서는 쓰기를 쓰지 않는다(2026-11-21 문구를 실제
+	// 집행에 맞춰 v2로 올림). 사용자 모드는 그대로 쓴다.
+	r.mu.Lock()
+	legacy.WriteConsent = productWriteConsentAutoV1
+	r.records[target.ID], r.approvals[target.ID] = legacy, legacy
+	r.mu.Unlock()
+	input.DisplayName = "V1 consent run"
+	v1, err := runtime.load("ARTEX", input, false, "")
+	if err != nil {
+		t.Fatal("v1 automatic scope", err)
+	}
+	v1.clearMaterials()
+	if !reflect.DeepEqual(v1.inspection.Scope.Methods, []string{"GET", "HEAD"}) {
+		t.Fatal("v1 consent sent writes in automatic mode", v1.inspection.Scope.Methods)
+	}
+	input.WorkflowMode = diagnosisflow.Manual
+	manualV1, err := runtime.load("ARTEX", input, false, "")
+	if err != nil {
+		t.Fatal("v1 manual scope", err)
+	}
+	manualV1.clearMaterials()
+	if !reflect.DeepEqual(manualV1.inspection.Scope.Methods, []string{"GET", "HEAD", "POST"}) {
+		t.Fatal("v1 consent lost writes in manual mode", manualV1.inspection.Scope.Methods)
+	}
+	input.WorkflowMode = diagnosisflow.Auto
 	// Installation opt-in, target consent and ordinary-mode write filtering are
 	// separate boundaries: a signed POST target must not widen the legacy path.
 	input.WorkflowMode = ""
