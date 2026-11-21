@@ -176,6 +176,12 @@ func model(target string) http.Handler {
 		}
 		switch {
 		case names["set_goals"] && !names["add_intent"] && !names["Bash"]:
+			// 목표 분해는 작업(점검)마다 처음에 한 번 온다. 앞 작업이 이미 계획·실행을 했으면 새 작업이 시작된 것이라
+			// 턴을 새로 센다. 프로세스 전체로 세면 같은 설치·같은 대상의 두 번째 점검에서 의도를 내지 않아 E② 실행이 열리지
+			// 않는다(리허설 F11, 2026-11-21). 같은 작업 안의 목표 분해 재요청(계획 전)은 턴을 바꾸지 않는다.
+			if turn.planner > 0 || turn.worker > 0 {
+				*turn = fixtureTurns{}
+			}
 			goals.Add(1)
 			turn.goals++
 			if turn.goals == 1 {
