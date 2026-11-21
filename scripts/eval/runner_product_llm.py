@@ -53,6 +53,22 @@ def ledger_reservations(data: bytes) -> int:
     return count
 
 
+def ledger_totals(data: bytes) -> dict:
+    """승인 장부의 누적 합계(llmpolicy openRouterLedgerScan과 같은 셈). 예약 줄마다 요청 1·비용 +예약, 정산 줄은 그 예약 대신
+    실제 비용을 센다(비용 -= 예약 − 실제). 정산 줄의 짝 대조는 제품이 이미 했으므로 여기서는 셈만 한다."""
+    requests = cost = 0
+    for line in _lines(data, "product_ledger_invalid"):
+        fields = line.split(" ")
+        if _RESERVE.fullmatch(line):
+            requests += 1
+            cost += int(fields[3])
+        elif _SETTLE.fullmatch(line) and int(fields[6]) <= int(fields[3]):
+            cost -= int(fields[3]) - int(fields[6])
+        else:
+            raise ProductLLMError("product_ledger_invalid")
+    return {"requests": requests, "cost": cost}
+
+
 def call_record_lines(data: bytes) -> int:
     """호출 기록 줄 수. 줄 내용의 엄격 검사는 generation-verify가 한다(칸·순번·어휘). 여기서는 줄 경계·상한만 본다."""
     lines = _lines(data, "product_calls_invalid")

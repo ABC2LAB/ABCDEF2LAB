@@ -46,6 +46,9 @@ const (
 	DisabledAccountRolesUndeclared DisabledReason = "account_roles_undeclared"
 	// DisabledPrivilegeUnconfirmed는 두 계정이 같은 권한 등급이라는 운영자 확인이 없는 경우다(계약 §4).
 	DisabledPrivilegeUnconfirmed DisabledReason = "accounts_privilege_unconfirmed"
+	// DisabledNoCandidates는 모델 단계가 E② 실행을 한 번도 잡지 않은 채(대상 요청 0) 스스로 끝나 확정할 후보가 없는 경우다
+	// (사용자 결정 2026-11-20 분기점 2). 요청 없이 끝낸다.
+	DisabledNoCandidates DisabledReason = "no_confirmation_candidates"
 )
 
 // IntegrityReason은 StatusIntegrityFailed의 세부 사유다.

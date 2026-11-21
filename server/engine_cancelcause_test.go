@@ -129,6 +129,7 @@ func TestSettleDrainAndGoalMetCausesAreDistinct(t *testing.T) {
 		code  string
 	}{
 		{agent.AbortSettleDrainTimeout, "settle_drain_timeout"},
+		{agent.AbortTimeBudgetDrain, "time_budget_drain_timeout"},
 		{agent.AbortGoalMet, "goal_met"},
 	} {
 		e := NewEngine(nil)
@@ -213,5 +214,56 @@ func TestBootstrapAdmissionClearsQueuedPauseBarrier(t *testing.T) {
 	s.startAdmittedTask(task, "bootstrap")
 	if e.IsPaused(task.ID) {
 		t.Fatal("bootstrap admission left the queued task behind the pause barrier")
+	}
+}
+
+// 취소는 사유와 관계없이 E② 실행 전체를 닫지 않고 모델 단계만 마감한다(CloseModelStage). 실행 전체를 닫는 것은 감독자
+// 한 곳(확정 단계 뒤 또는 마감 정리)이다. 사유별로 닫으면 새 마감 경로마다 확정 단계 전에 E②가 닫히는 결함이 다시 났다
+// (#809 목표 달성, 2026-11-20 실제 모델 VAmPI 회차 시간 상한 마감).
+func TestCancelExecClosesOnlyModelStage(t *testing.T) {
+	for _, cause := range []*agent.AbortCause{
+		agent.AbortGoalMet, agent.AbortTimeBudgetDrain, agent.AbortSettleDrainTimeout, agent.AbortPausedByUser,
+		agent.AbortTaskDeleted, agent.AbortPausedRaceGuard, agent.AbortShutdown, agent.AbortRunHardTimeout,
+	} {
+		cancelled := false
+		task := &e2HTTPRuntimeTask{id: "t1", cancel: func() { cancelled = true }}
+		e := NewEngine(nil)
+		e.e2HTTP = &E2HTTPRuntime{task: task}
+		e.cancelExec("t1", cause)
+		task.mu.Lock()
+		closed, modelClosed := task.closed, task.modelClosed
+		task.mu.Unlock()
+		if closed || cancelled || !modelClosed {
+			t.Fatalf("%s: E② 실행 닫힘 %v(문맥 취소 %v)·모델 단계 마감 %v", cause.Code, closed, cancelled, modelClosed)
+		}
+	}
+	// 다른 작업의 취소는 이 작업의 모델 단계를 마감하지 않는다.
+	task := &e2HTTPRuntimeTask{id: "t1", cancel: func() {}}
+	e := NewEngine(nil)
+	e.e2HTTP = &E2HTTPRuntime{task: task}
+	e.cancelExec("t2", agent.AbortPausedByUser)
+	if task.modelClosed {
+		t.Fatal("다른 작업의 취소가 모델 단계를 마감함")
+	}
+}
+
+// 일시정지 원인은 고정 코드로 남고(첫 진단 감독자가 중지로 바꿀 때 로그에 씀), 재개하면 지워진다. 정해진 취소 사유가 아니면
+// unknown이다(#830 윤재상 봇 리뷰: 운영자 일시정지와 LLM 대기 등 엔진 사정을 가르게).
+func TestEnginePauseCauseIsRecorded(t *testing.T) {
+	e := NewEngine(nil)
+	if e.PauseCause("t1") != "" {
+		t.Fatal("일시정지 전 원인이 있음")
+	}
+	e.Pause("t1", agent.AbortPausedByOrchestrator)
+	if got := e.PauseCause("t1"); got != agent.AbortPausedByOrchestrator.Code {
+		t.Fatalf("원인 %q", got)
+	}
+	e.Resume(&Task{ID: "t1", notify: make(chan struct{}, 1)})
+	if got := e.PauseCause("t1"); got != "" {
+		t.Fatalf("재개 뒤 원인 %q", got)
+	}
+	e.Pause("t2", errors.New("다른 오류"))
+	if got := e.PauseCause("t2"); got != "unknown" {
+		t.Fatalf("정해지지 않은 원인 %q", got)
 	}
 }

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"log"
 	"mime"
 	"net/http"
@@ -183,10 +184,42 @@ func firstDiagnosisReadRoute(path string) bool {
 	return false
 }
 
-// firstDiagnosisControlRoute는 제품 경로에서 운영자가 admitted 회차를 일시정지·재개하는 조작만 허용한다(C33).
-// 핸들러(control)가 action을 pause|resume로 제한하므로 실행 "시작"·재admission이나 새 전송을 열지 않는다(개발 계획
-// 11/11 §"새 송신을 멈추는 경우": 일시정지는 같은 권한 결속을 유지한 채 재개 전까지 신규 전송·모델 호출 admission을 대기시킨다).
-// 채팅·intent 조종·rerun(종료 task 재admission)·설정 쓰기는 admission/전송 인접 허용 판단이라 여기서 열지 않는다(E² 담당 정렬).
+// firstDiagnosisControlRoute는 제품 경로에서 운영자가 회차를 일시정지·재개하는 조작 경로만 연다(C33). 실제 동작은
+// firstDiagnosisControl이다: 일시정지는 회차를 바로 끝내는 운영자 중지이고(확정 단계 interrupted), 재개는 지원하지 않는다
+// (resume_unsupported, 사용자 결정 2026-11-20 분기점 1). 진짜 재개 지원은 측정 뒤 개선 항목이다(개발 계획). 실행 "시작"·
+// 재admission이나 새 전송을 열지 않는다. 채팅·intent 조종·rerun(종료 task 재admission)·설정 쓰기는 admission/전송 인접 허용
+// 판단이라 여기서 열지 않는다(E² 담당 정렬).
+// firstDiagnosisControlResumeUnsupported는 첫 진단 회차의 재개 요청을 거절하는 고정 사유 코드다.
+const firstDiagnosisControlResumeUnsupported = "resume_unsupported"
+
+// firstDiagnosisControl은 첫 진단 회차의 일시정지·재개 요청이다(사용자 결정 2026-11-20 분기점 1). 겉과 속을 맞춘다:
+// 일시정지는 엔진을 멈춰 두는 것이 아니라 회차를 바로 끝내는 운영자 중지다(요청 승인 중지와 같은 경로, 확정 단계
+// interrupted). 일시정지 상태로 시간 상한까지 걸려 있지 않게 하려는 것이다. 재개는 지원하지 않는다(resume_unsupported).
+func (s *Server) firstDiagnosisControl(w http.ResponseWriter, r *http.Request, t *Task, action string) {
+	if action == "resume" {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": trMsg("첫 진단 회차는 재개를 지원하지 않습니다. 일시정지는 회차를 중지합니다"),
+			"reason_code": firstDiagnosisControlResumeUnsupported})
+		return
+	}
+	number, err := strconv.ParseInt(t.ID, 10, 64)
+	if err != nil || number <= 0 {
+		writeErr(w, http.StatusBadRequest, "작업 ID가 올바르지 않습니다")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	if err := s.requestApprovals.stop(ctx, number, "ARTEX"); err != nil {
+		if errors.Is(err, db.ErrRequestApprovalConflict) {
+			writeErr(w, http.StatusConflict, "이미 종료된 실행은 중지할 수 없습니다")
+			return
+		}
+		writeErr(w, http.StatusServiceUnavailable, "실행 중지 기록을 확인할 수 없습니다")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": t.ID, "paused": false, "queued": false, "status": "stopping",
+		"reason_code": "pause_stops_run"})
+}
+
 func firstDiagnosisControlRoute(r *http.Request) bool {
 	if r.Method != http.MethodPost {
 		return false

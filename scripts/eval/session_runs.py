@@ -17,7 +17,11 @@
 - 제공자 장애 멈춤(결정안 §7): 완료 회차는 모두 같은 T로 판정한 서명 결과(`fault_stall.judged`, `stall_seconds`)여야 한다(T가
   회차·쪽마다 다르거나 판정하지 않은 회차가 있으면 멈춘다, 스모크는 `--allow-unjudged-fault-stall`). 쪽별
   `provider_fault_stall` 무효 수를 0이어도 늘 출력하고, 한쪽이라도 상한(고정 초안 §3) 이상이면 측정 전체 실패다(manifest를
-  쓰지 않는다). 이 상한은 2N 시도 상한(§5.1)과 따로 둔다(고정 초안 §0).
+  쓰지 않는다). 이 상한은 2N 시도 상한(§5.1)과 따로 둔다(고정 초안 §0). 러너 상한 전에 제공자 장애로 끝난 회차
+  (`provider_fault_end`, 평가 프로토콜 §5.1·고정 초안 §26)도 같은 부류라 같은 상한에 같이 센다.
+- 설정 오류로 끝난 회차(`config_end`)는 시도로 세지 않는다(쪽별 줄의 시도·무효율에서 빼고 따로 적는다).
+- 일찍 끝난 회차 규칙이 걸린 회차(제공자 장애 끝·설정 오류·그 밖에 일찍 끝나 유효로 둔 회차)를 회차 ID·끝 상태·사유·근거
+  호출로 따로 목록에 적는다(회차 디렉터리의 `early-end.json`, 측정 뒤 사람이 하나씩 검토한다).
 
 종료 코드: 0 집계·manifest 작성(경고가 있어도), 2 입력 오류(형식·중복·쪽 섞임·멈춤 판정 조건) 또는 manifest 파일이 이미 있음,
 3 측정 실패(쪽별 멈춤 무효가 상한 이상, manifest를 쓰지 않음).
@@ -42,6 +46,7 @@ from aggregate import _optional_stat as optional_stat  # noqa: E402
 from isolation_proof import E2_MODES, E2_SPLIT_PRODUCT  # noqa: E402
 from run_record import RunRecordError, read_runner_key, sign_run_record  # noqa: E402
 from runner import COMPLETE, INVALID, RECORD_NAME, RESULT_FORMAT, RESULT_NAME  # noqa: E402
+from runner_early_end import CONFIG_END_REASON, EARLY_END_NAME, PROVIDER_FAULT_END_REASON  # noqa: E402
 from runner_fault import FAULT_STALL_REASON  # noqa: E402
 
 SIDES = ("baseline", "ours")
@@ -77,6 +82,7 @@ class Attempt:
     record: dict | None  # 완료 회차의 run-record.json
     task_sha256: str | None = None  # 완료 회차의 작업 생성 요청 본문 해시(러너 결과, 서명됨)
     result: dict | None = None  # 완료 회차의 서명 검증한 runner-result.json
+    early_end: dict | None = None  # 일찍 끝난 회차 분류(early-end.json, 분류가 있을 때만)
 
 
 def expected_order(repeats: int) -> list[str]:
@@ -149,7 +155,7 @@ def _attempt(directory: Path, key: bytes, errors: list[str], allow_fixture_e2: b
         if not isinstance(reasons, list) or not reasons or not all(isinstance(r, str) and r for r in reasons):
             errors.append(f"{directory.name}: 무효 결과에 사유가 없음")
             return None
-        return Attempt(directory.name, side, started, INVALID, reasons[0], None)
+        return Attempt(directory.name, side, started, INVALID, reasons[0], None, early_end=_early_end(directory))
     # 서명된 E② 자리. 가짜 E²(stub) 회차는 배치 확인용이라 시범·공식 세션 집계에 넣지 않는다(프로토콜 §2).
     e2_mode = result.get("e2_mode")
     if e2_mode not in E2_MODES:
@@ -180,7 +186,7 @@ def _attempt(directory: Path, key: bytes, errors: list[str], allow_fixture_e2: b
             for phase in ("pre", "post")):
         errors.append(f"{directory.name}: {RECORD_NAME}에 pre·post 스냅샷 경로가 없음")
         return None
-    return Attempt(directory.name, side, started, COMPLETE, None, record, task_sha256, result)
+    return Attempt(directory.name, side, started, COMPLETE, None, record, task_sha256, result, early_end=_early_end(directory))
 
 
 def _stall_seconds(attempt: Attempt) -> int | None:
@@ -245,13 +251,17 @@ def tally(attempts: list[Attempt], repeats: int) -> tuple[list[str], list[str]]:
     lines = ["| 쪽 | 조건 | 시도 | 유효 | 무효 | 무효율 | 무효 사유 |", "|---|---|---|---|---|---|---|"]
     warnings: list[str] = []
     for side in SIDES:
-        mine = [a for a in attempts if a.side == side]
+        # 설정 오류로 끝난 회차는 시도가 아니다(고정 초안 §26). 시도·무효율에서 빼고 따로 적는다.
+        config = sum(1 for a in attempts if a.side == side and a.reason == CONFIG_END_REASON)
+        mine = [a for a in attempts if a.side == side and a.reason != CONFIG_END_REASON]
         valid = [a for a in mine if a.status == COMPLETE]
         invalid = Counter(a.reason for a in mine if a.status == INVALID)
         condition = valid[0].record["condition"] if valid else "—"
         rate = f"{100 * sum(invalid.values()) / len(mine):.0f}%" if mine else "—"
         reasons = ", ".join(f"{r} {n}" for r, n in sorted(invalid.items())) or "—"
         lines.append(f"| {side} | {condition} | {len(mine)} | {len(valid)} | {sum(invalid.values())} | {rate} | {reasons} |")
+        if config:
+            warnings.append(f"경고[설정 오류] {side}: {CONFIG_END_REASON} {config}회 — 시도로 세지 않았다. 설정을 고친 뒤 이어 돌린다")
         if len(mine) > 2 * repeats:
             warnings.append(f"경고[시도 상한] {side}: 시도 {len(mine)}회 > 2N({2 * repeats}) — 더 돌리지 말고 원인부터 고친다")
         if len(valid) < repeats:
@@ -271,16 +281,53 @@ def tally(attempts: list[Attempt], repeats: int) -> tuple[list[str], list[str]]:
 
 
 def fault_stall_tally(attempts: list[Attempt]) -> tuple[list[str], list[str]]:
-    """쪽별 provider_fault_stall 무효 수(0이어도 늘)와 측정 실패 줄(한쪽이라도 상한 이상)."""
-    lines = ["| 쪽 | provider_fault_stall 무효 | 측정 실패 상한 |", "|---|---|---|"]
+    """쪽별 provider_fault_stall·provider_fault_end 무효 수(0이어도 늘)와 측정 실패 줄(둘의 합이 한쪽이라도 상한 이상)."""
+    lines = ["| 쪽 | provider_fault_stall 무효 | provider_fault_end 무효 | 합 | 측정 실패 상한 |", "|---|---|---|---|---|"]
     failures: list[str] = []
     for side in SIDES:
-        count = sum(1 for a in attempts if a.side == side and a.status == INVALID and a.reason == FAULT_STALL_REASON)
-        lines.append(f"| {side} | {count} | {FAULT_STALL_LIMIT_PER_SIDE} |")
+        stalls = sum(1 for a in attempts if a.side == side and a.status == INVALID and a.reason == FAULT_STALL_REASON)
+        ends = sum(1 for a in attempts if a.side == side and a.status == INVALID and a.reason == PROVIDER_FAULT_END_REASON)
+        count = stalls + ends
+        lines.append(f"| {side} | {stalls} | {ends} | {count} | {FAULT_STALL_LIMIT_PER_SIDE} |")
         if count >= FAULT_STALL_LIMIT_PER_SIDE:
-            failures.append(f"측정 실패[멈춤 무효] {side}: {FAULT_STALL_REASON} {count}회 ≥ {FAULT_STALL_LIMIT_PER_SIDE} — "
-                            "남은 회차를 골라 쓰지 않고 측정 전체를 실패로 둔다(결정안 §7, 고정 초안 §3)")
+            failures.append(f"측정 실패[멈춤 무효] {side}: {FAULT_STALL_REASON} {stalls}회 + {PROVIDER_FAULT_END_REASON} {ends}회 ≥ "
+                            f"{FAULT_STALL_LIMIT_PER_SIDE} — 남은 회차를 골라 쓰지 않고 측정 전체를 실패로 둔다(결정안 §7, 고정 초안 §3)")
     return lines, failures
+
+
+def _early_end(directory: Path) -> dict | None:
+    """회차 디렉터리의 early-end.json에서 분류가 있을 때만. 없거나 못 읽으면 None(못 읽음은 러너 결과 사유가 이미 무효로 남긴다)."""
+    try:
+        value = json.loads((directory / EARLY_END_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) and value.get("class") is not None else None
+
+
+def _call_text(call: object) -> str:
+    if not isinstance(call, dict):
+        return "—"
+    end = f" {call.get('unfinished_end')}" if call.get("unfinished_end") else ""
+    return f"#{call.get('seq')} {call.get('decision')} {call.get('status')}{end} {call.get('completed_at')}"
+
+
+def early_end_list(attempts: list[Attempt]) -> list[str]:
+    """일찍 끝난 회차 규칙이 걸린 회차 목록(측정 뒤 사람이 하나씩 검토한다). 없으면 '없음' 한 줄."""
+    picked = [a for a in attempts if a.early_end is not None]
+    if not picked:
+        return ["없음"]
+    lines = ["| 회차 | 쪽 | 분류 | 사유 | 먼저 걸린 것 | 끝 상태 | 제품 사유 | 근거 |", "|---|---|---|---|---|---|---|---|"]
+    for a in picked:
+        e = a.early_end
+        evidence = e.get("evidence") if isinstance(e.get("evidence"), dict) else {}
+        kind = evidence.get("kind", "—")
+        detail = _call_text(evidence["call"]) + (" (검열 가능: 403)" if evidence.get("moderation_possible") else "") if "call" in evidence else (
+            evidence.get("code") or (f"요청 {evidence.get('requests')}/{evidence.get('max_requests')} · 비용 "
+                                     f"{evidence.get('cost_usd_micros')}/{evidence.get('max_cost_usd_micros')}µ$"
+                                     if kind == "approval_budget" else ""))
+        lines.append(f"| {a.run_id} | {a.side} | {e.get('class')} | {e.get('reason') or '유효'} | {e.get('first_limit') or '—'} | "
+                     f"{e.get('end_state') or '—'} | {e.get('reason_code') or '—'} | {kind} {detail} |".rstrip())
+    return lines
 
 
 def build_manifest(runs_root: Path, attempts: list[Attempt]) -> dict:
@@ -371,7 +418,8 @@ def main(argv: list[str] | None = None) -> int:
     for warning in warnings:
         print(warning, file=sys.stderr)
     stall_lines, failures = fault_stall_tally(attempts)
-    print("\n".join(["", "제공자 장애 멈춤 무효(결정안 §7, 0이어도 늘):", *stall_lines]))
+    print("\n".join(["", "제공자 장애 무효(멈춤·일찍 끝남, 결정안 §7, 0이어도 늘):", *stall_lines]))
+    print("\n".join(["", "일찍 끝난 회차 규칙이 걸린 회차(평가 프로토콜 §5.1·고정 초안 §26, 측정 뒤 하나씩 검토):", *early_end_list(attempts)]))
     if failures:
         for failure in failures:
             print(failure, file=sys.stderr)

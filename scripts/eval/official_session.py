@@ -3,10 +3,19 @@
 - 칸 하나 = (쪽, 그 쪽의 유효 회차 번호 `--repeat`). 완료면 다음 칸, 무효면 같은 칸을 같은 번호로 다시 돌린다.
 - 그 쪽 시도가 2N에 닿았는데 유효가 N개 미만이면 그 쪽 칸을 더 시작하지 않고 멈춘다(`attempt_limit`, 원인부터 고친다).
 - 쪽별 `provider_fault_stall` 무효가 상한(고정 초안 §3, 2회) 이상이면 측정 전체 실패로 멈춘다(`fault_stall_limit`).
+  러너 상한 전에 제공자 장애로 끝난 회차(`provider_fault_end`, 평가 프로토콜 §5.1·고정 초안 §26)도 같은 부류라 같은 상한에 같이 센다.
+- 설정 오류로 끝난 회차(`config_end`: 모델 호출 401~404, 승인 예산 상한에 닿은 budget_limited, 시작 거부)는 회차 디렉터리가
+  생겼어도 시도로 세지 않고 멈춘다(`config_end:<쪽>`, 2026-11-21 사용자). 설정을 고친 뒤 `--resume`하면 같은 칸부터 잇는다.
+  세션 기록에는 그 줄이 그대로 남는다(지우지 않는다).
+- 일찍 끝난 회차 규칙이 걸린 회차(제공자 장애 끝·설정 오류·그 밖에 일찍 끝나 유효로 둔 회차)는 마지막 요약 줄의
+  `early_end_runs`에 회차 ID·끝 상태·사유·근거 호출로 따로 모은다(측정 뒤 사람이 하나씩 검토한다).
 - 러너 종료 코드 2(설정·입력 오류)는 시도로 세지 않고 멈춘다(`runner_config_error`).
 - 대기는 이름 패턴이 아니라 PID(러너 프로세스)와 완료 파일(회차 디렉터리의 `runner-result.json`)로 건다. 대기마다 시한을 두고,
   넘으면 사유를 남기고 끝낸다(러너는 SIGINT → 유예 → SIGKILL, 2026-11-20 사용자 규칙).
-- 회차 뒤 실행 중 컨테이너가 0이 될 때까지(시한 안) 기다린다. 남아 있으면 멈춘다(`containers_left`).
+- 회차 뒤 실행 중 컨테이너가 0이 될 때까지(시한 안) 기다린다. 남아 있으면 멈춘다(`containers_left`). 이어서 평가 compose 망
+  (프로젝트 `eval-…`)이 다 지워질 때까지 기다린다. 남아 있으면 멈춘다(`networks_left`). 앞 회차 망이 남은 채로 다음 회차가
+  같은 고정 대역의 망을 만들지 않게 막는 예방 조치다. 2026-11-20 `compose_up_failed`는 이것으로 설명되지 않는다(망 0에서도 남).
+  유력한 원인 후보는 제품 postgres healthcheck가 초기화 임시 서버 동안 통과한 것이다(#833 재현·수정, 실패 회차 로그는 없음).
 - **새 회차 디렉터리가 생겼으면 무슨 일이 있어도 시도 1회로 센다**(2026-11-20 사용자). 결과 파일이 있으면 그 상태를, 없으면
   무효(사유 = 멈춘 사유: `run_wait_timeout`·`result_missing`·`result_unreadable`)로 기록하고 그다음 멈춘다. 종료 코드와 상태가
   어긋나면 무효(`result_status_mismatch`)로 센다. 컨테이너가 남으면 그 회차의 실제 상태로 세고 멈춘다. 회차 디렉터리가 안 생긴
@@ -21,7 +30,7 @@
 - 이어 돌리기(`--resume`): 멈춘 사유를 고친 뒤 같은 세션 디렉터리의 `session-log.jsonl`에 남은 시도(완료·무효)를 다시 세고
   남은 칸부터 잇는다. 멈춤(대기 시한 등)·설정 오류 줄은 시도로 세지 않는다. 점검 모드 기록과 섞이면 입력 오류다.
 기록: 세션 디렉터리의 `session-log.jsonl`(시도마다 한 줄 + 마지막 요약). 집계·채점은 7절(`session_runs.py`·`score.py`)이 한다.
-종료 코드: 0 쪽마다 유효 N회 완료, 3 측정 실패(멈춤 무효 상한), 4 멈춤(시도 상한·설정 오류·대기 시한·결과 없음·컨테이너
+종료 코드: 0 쪽마다 유효 N회 완료, 3 측정 실패(멈춤 무효 상한), 4 멈춤(시도 상한·설정 오류·대기 시한·결과 없음·컨테이너·망
 남음·사용량 상한), 2 입력 오류.
 """
 
@@ -44,6 +53,7 @@ from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from runner_early_end import CONFIG_END_REASON, EARLY_END_NAME, PROVIDER_FAULT_END_REASON  # noqa: E402
 from runner_fault import FAULT_STALL_REASON  # noqa: E402
 from session_runs import FAULT_STALL_LIMIT_PER_SIDE, expected_order  # noqa: E402
 
@@ -64,6 +74,17 @@ class Outcome:
     run_id: str | None = None
     # 시도로 센 뒤 세션을 멈출 사유(회차 디렉터리가 생긴 회차의 대기 시한·결과 없음·컨테이너 남음 등)
     stop_after: str | None = None
+    # 일찍 끝난 회차 분류(회차 디렉터리의 early-end.json 요약). 분류가 없으면 None.
+    early_end: dict | None = None
+
+
+# 쪽별 멈춤 상한에 같이 세는 무효 사유(고정 초안 §3·§26).
+FAULT_LIMIT_REASONS = frozenset({FAULT_STALL_REASON, PROVIDER_FAULT_END_REASON})
+
+
+def config_end(outcome: Outcome) -> bool:
+    """설정 오류로 끝난 회차인지(첫 사유). 시도로 세지 않는다."""
+    return outcome.status == INVALID and bool(outcome.reasons) and outcome.reasons[0] == CONFIG_END_REASON
 
 
 @dataclass
@@ -76,6 +97,7 @@ class Schedule:
     attempts: dict = field(default_factory=lambda: {"baseline": 0, "ours": 0})
     valid: dict = field(default_factory=lambda: {"baseline": 0, "ours": 0})
     stalls: dict = field(default_factory=lambda: {"baseline": 0, "ours": 0})
+    early_end_runs: list = field(default_factory=list)
     stop_reason: str | None = None
     failed: bool = False
 
@@ -100,11 +122,17 @@ class Schedule:
         if outcome.status == "stop":
             self.stop_reason = outcome.reasons[0] if outcome.reasons else "stopped"
             return
+        if outcome.early_end is not None:
+            self.early_end_runs.append(dict(outcome.early_end, run_id=outcome.run_id, side=LETTER_OF[side],
+                                            counted=not config_end(outcome)))
+        if config_end(outcome):
+            self.stop_reason = f"config_end:{side}"  # 시도로 세지 않는다(설정을 고친 뒤 같은 칸부터)
+            return
         self.attempts[side] += 1
         if outcome.status == COMPLETE:
             self.valid[side] += 1
             self.position += 1
-        elif FAULT_STALL_REASON in outcome.reasons:
+        elif any(reason in FAULT_LIMIT_REASONS for reason in outcome.reasons):
             self.stalls[side] += 1
             if self.stalls[side] >= self.fault_limit:
                 self.stop_reason, self.failed = f"fault_stall_limit:{side}", True
@@ -116,7 +144,8 @@ class Schedule:
 
     def summary(self) -> dict:
         return {"repeats": self.repeats, "order": [LETTER_OF[s] for s in self.order], "attempts": self.attempts, "valid": self.valid,
-                "fault_stalls": self.stalls, "complete": self.done(), "stop_reason": self.stop_reason, "measurement_failed": self.failed}
+                "fault_stalls": self.stalls, "complete": self.done(), "stop_reason": self.stop_reason, "measurement_failed": self.failed,
+                "early_end_runs": self.early_end_runs}
 
 
 # ── 실제 실행 ───────────────────────────────────────────────────────────────────────────────────────────────
@@ -150,12 +179,35 @@ def running_containers() -> int | None:
     return len(done.stdout.split()) if done.returncode == 0 else None
 
 
-def containers_stop(count: Callable[[], int | None]) -> str | None:
-    """회차 시작 전 확인: 실행 중 컨테이너가 0개가 아니면 멈출 사유(시도로 세지 않음)."""
+# 평가 회차 compose 프로젝트 이름의 앞부분(runner_config·runner_split_config: project = f"eval-{run_id}").
+EVAL_PROJECT_PREFIX = "eval-"
+_PROJECT_LABEL = "com.docker.compose.project"
+
+
+def eval_networks() -> int | None:
+    """평가 회차 compose 프로젝트가 만든 망 수(compose 프로젝트 라벨이 `eval-`로 시작). 읽지 못하면 None."""
+    try:
+        done = subprocess.run(["docker", "network", "ls", "--filter", f"label={_PROJECT_LABEL}",
+                               "--format", '{{.Label "%s"}}' % _PROJECT_LABEL],
+                              capture_output=True, text=True, timeout=60, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    return sum(1 for project in done.stdout.split() if project.startswith(EVAL_PROJECT_PREFIX))
+
+
+def containers_stop(count: Callable[[], int | None], networks: Callable[[], int | None] = lambda: 0) -> str | None:
+    """회차 시작 전 확인: 실행 중 컨테이너나 평가 compose 망이 남아 있으면 멈출 사유(시도로 세지 않음)."""
     present = count()
     if present is None:
         return "containers_unknown"
-    return None if present == 0 else "containers_present"
+    if present != 0:
+        return "containers_present"
+    left = networks()
+    if left is None:
+        return "networks_unknown"
+    return None if left == 0 else "networks_present"
 
 
 def wait_containers_gone(count: Callable[[], int | None], timeout: float, interval: float,
@@ -229,6 +281,21 @@ def write_manifest(template: Path, target: Path, hours: int) -> None:
         json.dump(value, f, indent=2)
 
 
+_EARLY_END_KEYS = ("class", "reason", "first_limit", "end_state", "reason_code", "evidence")
+
+
+def early_end_summary(path: Path) -> dict | None:
+    """회차 디렉터리의 early-end.json에서 분류가 있는 경우만 요약(분류·사유·끝 상태·근거)을 돌려준다. 없거나 못 읽으면 None
+    (못 읽음은 러너 결과의 사유가 이미 무효로 남긴다)."""
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(value, dict) or value.get("class") is None:
+        return None
+    return {key: value.get(key) for key in _EARLY_END_KEYS}
+
+
 @dataclass
 class RealRunner:
     """러너 한 회차를 띄우고 PID·완료 파일로 기다린다."""
@@ -257,8 +324,13 @@ class RealRunner:
         new = sorted(run_dirs(self.runs_root) - before)
         outcome = self._judge(slot, code, new[-1] if new else None)
         # 회차가 어떻게 끝나든 컨테이너가 내려갈 때까지 기다린다. 안 내려가면 멈추고 사유에 같이 적는다.
-        if outcome.status != "config_error" and not wait_containers_gone(running_containers, self.post_timeout, 5):
-            left = f"containers_left:{slot}"
+        left = None
+        if outcome.status != "config_error":
+            if not wait_containers_gone(running_containers, self.post_timeout, 5):
+                left = f"containers_left:{slot}"
+            elif not wait_containers_gone(eval_networks, self.post_timeout, 5):
+                left = f"networks_left:{slot}"  # 다음 회차 망과 대역이 겹치지 않게 앞 회차 망이 다 지워질 때까지
+        if left is not None:
             if outcome.status == "stop":
                 outcome.reasons.append(left)
             else:
@@ -287,7 +359,7 @@ class RealRunner:
         if status not in (COMPLETE, INVALID) or (code == 0) != (status == COMPLETE):
             reason = f"result_status_mismatch:{slot}"
             return Outcome(INVALID, [reason] + [r for r in reasons if isinstance(r, str)], run_id, stop_after=reason)
-        return Outcome(status, reasons, run_id)
+        return Outcome(status, reasons, run_id, early_end=early_end_summary(self.runs_root / run_id / EARLY_END_NAME))
 
 
 def run_session(schedule: Schedule, run_one: Callable[[str, int], Outcome], log: Callable[[dict], None],
@@ -304,7 +376,7 @@ def run_session(schedule: Schedule, run_one: Callable[[str, int], Outcome], log:
         outcome = run_one(side, repeat)
         schedule.record(side, outcome)
         log({"event": "attempt", "side": LETTER_OF[side], "repeat": repeat, "status": outcome.status, "reasons": outcome.reasons,
-             "run_id": outcome.run_id, "stop_after": outcome.stop_after, "started_at": started,
+             "run_id": outcome.run_id, "stop_after": outcome.stop_after, "early_end": outcome.early_end, "started_at": started,
              "attempts": dict(schedule.attempts), "valid": dict(schedule.valid)})
     log(dict(event="summary", **schedule.summary()))
     return schedule
@@ -318,12 +390,21 @@ def replay(schedule: Schedule, lines: list[dict]) -> int:
             continue
         if line.get("dry_run"):
             raise ValueError("resume_dry_run_log")
+        outcome = Outcome(line["status"], list(line.get("reasons") or []), line.get("run_id"),
+                          early_end=line.get("early_end") if isinstance(line.get("early_end"), dict) else None)
         slot = schedule.next_slot()
         side = SIDE_OF.get(line.get("side"))
+        # 설정 오류 줄도 그때의 칸(쪽·번호)과 맞아야 한다. 시도로 세지 않을 뿐 순서 검사는 같다(#831 리뷰: 건너뛰면 다른 칸의
+        # 줄이 끼어든 기록 오류를 숨긴다).
         if slot is None or slot != (side, line.get("repeat")):
             raise ValueError(f"resume_order:{line.get('side')}{line.get('repeat')}")
+        if config_end(outcome):
+            # 설정 오류 회차는 시도가 아니다. 목록에만 다시 넣고(검토용) 멈춤은 다시 걸지 않는다: 고친 뒤 잇는 것이다.
+            if outcome.early_end is not None:
+                schedule.early_end_runs.append(dict(outcome.early_end, run_id=outcome.run_id, side=line.get("side"), counted=False))
+            continue
         # 시도 뒤 멈춤(stop_after)은 다시 걸지 않는다: 사유를 고친 뒤 잇는 것이다. 시도는 그대로 센다.
-        schedule.record(side, Outcome(line["status"], list(line.get("reasons") or []), line.get("run_id")))
+        schedule.record(side, outcome)
         count += 1
     return count
 
@@ -417,7 +498,8 @@ def main(argv: list[str] | None = None) -> int:
                 guard.base = resumed_base
 
         def before_run(side: str, repeat: int) -> str | None:
-            stop = containers_stop(running_containers)  # 시도로 세지 않는다(남은 컨테이너가 격리 검사를 깨서 시도가 날아가지 않게)
+            # 시도로 세지 않는다(남은 컨테이너가 격리 검사를 깨거나 남은 망이 대역을 막아 시도가 날아가지 않게)
+            stop = containers_stop(running_containers, eval_networks)
             if stop is not None:
                 return stop
             if guard is not None:

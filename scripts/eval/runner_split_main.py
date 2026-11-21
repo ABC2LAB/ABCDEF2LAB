@@ -133,6 +133,19 @@ def _model_budget(manifest: dict | None, config: RunnerConfig) -> str:
     return value
 
 
+def _approval_caps(manifest: dict | None) -> tuple[int, int, int, int] | None:
+    """승인 요청·비용 상한과 단가(manifest max_requests·max_cost_usd_micros·입력/출력 단가). 일찍 끝난 회차가 승인 예산에
+    닿았는지 대조한다(runner_early_end.approval_budget). 합성 모델 모드는 manifest가 없어 None이다. 칸이 양의 정수가 아니면
+    설정 오류다."""
+    if manifest is None:
+        return None
+    caps = (manifest.get("max_requests"), manifest.get("max_cost_usd_micros"),
+            manifest.get("max_input_price_usd_micros_per_million"), manifest.get("max_output_price_usd_micros_per_million"))
+    if any(type(cap) is not int or cap <= 0 for cap in caps):
+        raise SplitConfigError(["split.manifest: BUDGET_INVALID"])
+    return caps
+
+
 def split_run_spec(config: RunnerConfig, plan: SplitPlan, declared: SplitDeclared, rendered: dict,
                    path_key_ref: str | None = None, *, manifest: dict | None = None, repeat_index: int = 0,
                    exploration_policy_sha256: str = "", scripted_plan_sha256: str = "", condition: str = "") -> SplitRunSpec:
@@ -166,7 +179,8 @@ def split_run_spec(config: RunnerConfig, plan: SplitPlan, declared: SplitDeclare
         observer_path=config.observer_path, observer_readonly_ref=config.observer_readonly_ref,
         allowed_listens=frozenset(Listener(entry.address, entry.port) for entry in config.host_listen_allowlist),
         observer_login_file=config.split.observer_password_file is not None,
-        e3_disabled_required=config.split.e3_disabled_required)
+        e3_disabled_required=config.split.e3_disabled_required,
+        approval_caps=_approval_caps(manifest))
     # 실행 입력을 만드는 시점에 v1.1 기록 칸을 본다. 비면 설정 오류(종료 코드 2, 회차를 만들지 않음)다(#745 리뷰).
     missing = missing_record_fields(spec)
     if missing:

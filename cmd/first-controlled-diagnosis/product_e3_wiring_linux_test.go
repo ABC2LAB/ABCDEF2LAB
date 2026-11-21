@@ -381,3 +381,47 @@ func TestProductE3WiredRunBuildsBridgeAtMarker(t *testing.T) {
 		t.Fatalf("결과: %s 브리지 %d 시작 %d", raw, created.Load(), begins)
 	}
 }
+
+// 사용자 결정 2026-11-20 분기점 2: 모델 단계가 E② 실행을 한 번도 잡지 않고 스스로 끝나 확정 단계 훅이 lease_missing을 보면
+// not_wired가 아니라 실행 없음으로 기록한다(요청 0, 브리지 0). 꺼진 회차(공식 측정 조건)는 실제 사유(declaration_missing)이고
+// Go 조건 2가 이 경로에 걸리지 않게 고정한다. 켜진 회차는 확정할 후보가 없어 no_confirmation_candidates다.
+func TestProductE3RunWithoutExecution(t *testing.T) {
+	for name, tc := range map[string]struct {
+		declare bool
+		status  e3contract.ConfirmationStatus
+		reason  string
+	}{
+		"disabled-no-declaration": {false, e3contract.StatusDisabled, string(e3contract.DisabledNoDeclaration)},
+		"enabled-no-candidates":   {true, e3contract.StatusDisabled, string(e3contract.DisabledNoCandidates)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newE3HookFixture(t, tc.declare, nil)
+			c := f.confirmation(nil, e3HookAccounts(), nil)
+			var created atomic.Int64
+			c.handle = func(string) (*e2proxy.Execution, server.E2HTTPAccountBindings, string) {
+				return nil, nil, server.E3HandleLeaseMissing
+			}
+			c.newBridge = countingBridge(&created)
+			begun := 0
+			if err := c.run(t.Context(), "9", func() { begun++ }); err != nil {
+				t.Fatal(err)
+			}
+			res, raw := readE3Result(t, f.runs)
+			if res.Status != tc.status || res.Reason != tc.reason || res.Requests != 0 || created.Load() != 0 || begun != 0 {
+				t.Fatalf("실행 없음 기록: %s 브리지 %d 시작 %d", raw, created.Load(), begun)
+			}
+		})
+	}
+	// 실행 없음이 아닌 닫힘 사유는 확정 단계 훅에서 그대로 not_wired다(확정 단계 전에 E②가 닫힌 결함을 숨기지 않는다).
+	f := newE3HookFixture(t, true, nil)
+	c := f.confirmation(nil, e3HookAccounts(), nil)
+	c.handle = func(string) (*e2proxy.Execution, server.E2HTTPAccountBindings, string) {
+		return nil, nil, server.E3HandleTaskFenced
+	}
+	if err := c.run(t.Context(), "9", func() {}); err != nil {
+		t.Fatal(err)
+	}
+	if res, raw := readE3Result(t, f.runs); res.Status != e3contract.StatusDisabled || res.Reason != string(e3contract.DisabledNotWired) {
+		t.Fatalf("확정 단계 전에 닫힌 E②: %s", raw)
+	}
+}

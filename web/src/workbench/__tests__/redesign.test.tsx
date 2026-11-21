@@ -7,12 +7,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../live/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../live/api")>()),
   fetchRequestApprovals: vi.fn(),
-  fetchTaskFindings: vi.fn(),
+}));
+vi.mock("../live/diagnosticCandidates", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../live/diagnosticCandidates")>()),
+  fetchLiveCandidates: vi.fn(),
 }));
 
 import { catalog, handle, running, scope } from "@/lib/diagnosis/diagnosis-url-fixtures";
 
 import * as api from "../live/api";
+import * as cands from "../live/diagnosticCandidates";
 import { LiveRailTasks } from "../live/rail";
 import { resetUrl, useUrl } from "../live/urlDiagnosis";
 import { useUrlRuns } from "../live/urlRunList";
@@ -24,7 +28,6 @@ import {
   crawlBar,
   eventText,
   group,
-  PauseButton,
   Pth,
   WorkflowCrawlLive,
   WorkflowReport,
@@ -1137,6 +1140,7 @@ describe("시안 짜임 (자산 탐색 · 범위 확인 기록 · 묶음)", () =
       </ShellContext.Provider>,
     );
     const open = screen.getByRole("button", { name: "점검 취소" });
+    expect(screen.queryByRole("button", { name: /^(일시정지|다시 시작)$/ })).toBeNull();
     expect(open.querySelector("svg")).toBeNull();
     fireEvent.click(open);
     const box = screen.getByRole("alertdialog");
@@ -1292,7 +1296,7 @@ describe("대시보드", () => {
   });
 });
 
-it("목록에서 복구한 회차의 일시정지·범위 선택 실행 버튼은 조회 전용으로 잠근다", () => {
+it("목록에서 복구한 회차의 범위 선택 실행 버튼은 조회 전용으로 잠근다", () => {
   const recovered = {
     kind: "recovered" as const,
     ownerContext: catalog.ownerContext,
@@ -1309,9 +1313,6 @@ it("목록에서 복구한 회차의 일시정지·범위 선택 실행 버튼�
     flow: { ...flow, stage: "diagnosing" },
     flowVerified: true,
   });
-  const first = render(<PauseButton />);
-  expect(screen.getByRole("button", { name: "일시정지" })).toBeDisabled();
-  first.unmount();
   useUrl.setState({ flow: { ...flow, stage: "awaiting_selection" } });
   render(
     <ShellContext.Provider value={shell("scope")}>
@@ -1429,41 +1430,33 @@ describe("점검 진행", () => {
         can_decide: true,
       })),
     });
-    // 점검 중 발견 후보 (원본 ARTEX 발견 목록): 서버 순서와 상관없이 최신 순, 증거의 비밀 값은 가린다
-    vi.mocked(api.fetchTaskFindings).mockResolvedValue([
-      {
-        id: "11",
-        finding_id: "1",
-        vulnclass: "info_disclosure",
-        name: "응답에 내부 정보 노출",
-        severity: "info",
-        status: "false_positive",
-        summary: "응답 머리에 서버 버전이 보입니다.",
-        evidence: "",
-        traffic_count: 1,
-        assets: [{ id: "a1", type: "endpoint", label: "GET /api/products/1" }],
-        task_id: "42",
-        source_task_id: "",
-        inherited: false,
-        ts: "2026-11-11T01:00:05Z",
-      },
-      {
-        id: "12",
-        finding_id: "2",
-        vulnclass: "idor",
-        name: "다른 계정으로 /api/users/2 조회 응답",
-        severity: "high",
-        status: "confirmed",
-        summary: "시험 계정 B 로 계정 A 자원을 요청했을 때 200 응답",
-        evidence: JSON.stringify({ status: 200, body: JSON.stringify({ owner: "a", token: "secret-token-value" }) }),
-        traffic_count: 1,
-        assets: [{ id: "a2", type: "endpoint", label: "GET /api/users/2" }],
-        task_id: "42",
-        source_task_id: "",
-        inherited: false,
-        ts: "2026-11-11T01:00:09Z",
-      },
-    ]);
+    // 점검 중 발견 후보 (제품 후보 조회 #694): 후보 ID 내림차순, 추정 등급이 없으면 칸이 없다
+    vi.mocked(cands.fetchLiveCandidates).mockResolvedValue(
+      cands.parseLiveCandidates(
+        {
+          task_id: "42",
+          items: [
+            {
+              candidate_id: "12",
+              state: "manual_review_required",
+              observed_at: "2026-11-11T01:00:09.5Z",
+              suggested_severity: "high",
+            },
+            { candidate_id: "11", state: "manual_review_required", observed_at: "2026-11-11T01:00:05Z" },
+            {
+              candidate_id: "9",
+              state: "manual_review_required",
+              observed_at: "2026-11-11T01:00:01Z",
+              suggested_severity: "info",
+            },
+          ],
+          returned: 3,
+          candidate_total: 3,
+          truncated: false,
+        },
+        "42",
+      ),
+    );
     const f: WorkflowSnapshot = {
       ...flow,
       stage: "diagnosing",
@@ -1536,7 +1529,7 @@ describe("점검 진행", () => {
     const stat = (k: string) => within(stats).getByText(k).parentElement as HTMLElement;
     expect(stat("계획")).toHaveTextContent(/^계획1\/2완료$/);
     expect(stat("심화 점검")).toHaveTextContent(/^심화 점검1\/3마감$/);
-    await waitFor(() => expect(stat("발견 후보")).toHaveTextContent(/^발견 후보2심각 · 높음 1$/));
+    await waitFor(() => expect(stat("발견 후보")).toHaveTextContent(/^발견 후보3예상 심각 · 높음 1$/));
     await waitFor(() => expect(stat("확인 필요")).toHaveTextContent(/^확인 필요2승인 대기$/));
     expect(stat("확인 필요").className).toMatch(/warn/);
     // 계획 단계 목록 · '계획 보기/접기'는 없다(완료 수만 숫자 칸에), 서버 진단 활동 칸도 없다 (사용자 11/17)
@@ -1550,25 +1543,27 @@ describe("점검 진행", () => {
     expect(within(decide).getAllByText("고른 경로 심화 점검").length).toBeGreaterThan(0);
     // '확인 필요' 글은 숫자 칸 이름과 상자 제목 두 군데 (카드마다 붙던 딱지는 없다)
     expect(screen.getAllByText("확인 필요")).toHaveLength(2);
-    // 발견 후보 목록: 최신 순, 줄마다 심각도 · 이름 / 위치 · 유형 · 시각 · 처리 상태(판정 아님), 첫 목록엔 '새로' 없음
+    // 발견 후보 목록: 최근 순, 줄마다 예상 등급(없으면 미평가) · 후보 번호 / 관측 시각 · 검토 필요, 첫 목록엔 '새로' 없음
     const finds = screen.getByRole("region", { name: "발견 후보" });
-    expect(finds.querySelector("[class*=vbar]")).toHaveTextContent("정보성 1");
-    expect(within(finds).getByText("2건 · 최신 순")).toBeInTheDocument();
+    expect(finds.querySelector("[class*=vbar]")).toHaveTextContent(
+      /^예상 심각 0예상 높음 1예상 중간 0예상 낮음 0예상 정보성 1위험도 미평가 1$/,
+    );
+    expect(within(finds).getByText("3건 · 최근 순")).toBeInTheDocument();
     expect(within(finds).getByText(/검증 전 후보입니다/)).toBeInTheDocument();
-    const rows = within(finds).getAllByRole("button", { expanded: false });
-    expect(rows.map((b) => b.textContent?.replace(/\d{2}:\d{2}:\d{2}/, "HH:MM:SS"))).toEqual([
-      "높음다른 계정으로 /api/users/2 조회 응답GET /api/users/2 · idor · HH:MM:SS",
-      "정보성응답에 내부 정보 노출GET /api/products/1 · info_disclosure · HH:MM:SS",
+    const rows = [...(document.getElementById("lFinds") as HTMLElement).children] as HTMLElement[];
+    expect(rows.map((r) => r.textContent?.replace(/\d{2}:\d{2}:\d{2}/, "HH:MM:SS"))).toEqual([
+      "예상 높음후보 #12관측 HH:MM:SS · 검토 필요",
+      "위험도 미평가후보 #11관측 HH:MM:SS · 검토 필요",
+      "예상 정보성후보 #9관측 HH:MM:SS · 검토 필요",
     ]);
+    // 서버가 주는 칸뿐이라 펼칠 상세가 없다(제목 · 경로 · 증거는 응답에 없음)
+    expect(within(finds).queryAllByRole("button")).toHaveLength(0);
+    expect(rows[0].querySelector("time")).toHaveAttribute("datetime", "2026-11-11T01:00:09.5Z");
     expect(within(finds).queryByText("새로")).toBeNull();
-    // 엔진 처리 상태(confirmed · false_positive 등)는 검증 전 후보 줄에 판정처럼 붙이지 않는다 (절대규칙 5, #661 리뷰)
-    expect(finds).not.toHaveTextContent(/검토 확인|오탐 처리|미검토/);
-    expect(within(finds).getByText(/심각도는 엔진이 붙인 값/)).toBeInTheDocument();
-    // 누르면 요약 · 증거 (증거의 토큰 값은 가린다)
-    fireEvent.click(rows[0]);
-    expect(rows[0]).toHaveAttribute("aria-expanded", "true");
-    expect(within(finds).getByText(/시험 계정 B 로 계정 A 자원을 요청/)).toBeInTheDocument();
-    expect(finds).not.toHaveTextContent("secret-token-value");
+    // 확정처럼 읽히는 말은 두지 않는다 (절대규칙 5)
+    expect(finds).not.toHaveTextContent(/확정 높음|검토 확인|오탐 처리|취약점 없음/);
+    expect(within(finds).getByText(/등급은 Worker 가 붙인 예상값/)).toBeInTheDocument();
+    expect(cands.fetchLiveCandidates).toHaveBeenCalledWith("42", expect.any(AbortSignal));
     // 활동 기록은 두지 않는다(사용자 11/17): 서버가 원문 대신 고정 문장만 줘 보여 줄 내용이 없다
     expect(screen.queryByRole("region", { name: "활동 기록" })).toBeNull();
     expect(document.getElementById("lFeed")).toBeNull();

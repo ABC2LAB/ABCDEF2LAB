@@ -190,6 +190,46 @@ A(소유) 조회는 이 순서를 쓰지 않는다. A 조회가 정상이 아니
 - 상태와 관계없이 싣는다. 진위 실패로 판정을 버려도 대상에는 이미 쓰기가 있었다.
 - 서버는 이것으로 대상의 쓰기 기록(`confirmation_writes`, ID 모름은 `id_unknown`)을 남긴다. 그 대상은 운영자 리셋 확인 전까지 다음 회차 확정 단계를 시작하지 않는다(§8). 잔존 점검은 ID를 아는 객체만 읽는다(`id_field` 쓰기는 결과 불명이어도 ID를 안다). ID 모르는 객체(`id_path` 대상의 결과 불명)는 리셋 확인에만 기댄다(표식이 회차마다 새 난수라 남은 객체가 다음 판정을 확정으로 만들지 못한다).
 
+### 7.3 마감 경로와 확정 단계(2026-11-20 사용자 결정)
+
+기본 규칙: 모델 단계가 **스스로 끝난 경우**(목표 달성·시간 상한·예산 소진 등 실행 상한)는 확정 단계가 돌고, **강제로 멈춘 경우**(중지·취소·일시정지·실패)는 확정 단계가 돌지 않고 중지 기록이 `interrupted`(비활성 근거가 있으면 그 사유)다.
+
+E②를 닫는 순서는 이렇다(사유별로 E②를 닫지 않는다).
+- 엔진 취소(`cancelExec`, 사유 무관)는 E② 실행을 닫지 않고 **모델 단계만 마감**한다(`CloseModelStage`). 그 뒤 E②는 확정 단계 요청(E③ 프로그램 요청·확정 단계가 연 다시 로그인)만 받고, 진행 중 모델 단계 요청은 끊으며 새 모델 단계 호출·인증 준비·Worker `refresh_session`은 열지 않는다.
+- 자연 마감은 감독자가 모델 단계를 마감하고(`CloseModelStage`) → 확정 단계 훅 → **감독자가 E② 실행을 닫는다**(`FenceTask`) → drain·감사 마감 순이다.
+- 강제 마감(운영자 중지·초안 중지·대상 철회·결속 계정 변경·문맥 취소·실패)은 그 중지 경로가 E② 실행을 끝내고(요청 승인 중지·작업 문맥 취소), 감독자는 중지 기록만 남긴다.
+
+| 마감 경로 | 기록 결과 | 모델 단계 마감 | E② 실행 닫기 | 확정 단계 |
+|---|---|---|---|---|
+| 목표 달성(Planner met·goalless done) | completed | 엔진 목표 달성 취소 또는 감독자 마감 판정 | 확정 단계 뒤 감독자 | 돈다 |
+| 시간 상한(유예 안에 끝남) | completed, budget_limited | 감독자 마감 판정 | 확정 단계 뒤 감독자 | 돈다 |
+| 시간 상한 유예 초과 | completed, budget_limited | 유예 끝 취소(`time_budget_drain_timeout`) — 진행 중 모델 요청 끊김 | 확정 단계 뒤 감독자 | 돈다 |
+| 예산 소진·실행 상한(요청·도구·계획 라운드·모델 예산) | completed, budget_limited | 감독자 마감 판정 | 확정 단계 뒤 감독자 | 돈다 |
+| 자연 마감인데 E② 실행이 한 번도 없음(no_intents 등) | completed, no_intents 등 | — | — | 요청 없이 기록: 꺼진 회차는 실제 사유, 켜진 회차는 `no_confirmation_candidates`(후보가 있으면 `e2_execution_unavailable`) |
+| 운영자 중지(요청 승인 중지 API) | cancelled | 중지 | 중지 경로 | 중지 기록 `interrupted` |
+| 운영자 일시정지(작업 control pause) | cancelled(운영자 중지와 같음, 엔진 일시정지를 거치지 않음) | 중지 | 중지 경로 | 중지 기록 `interrupted`. 재개는 409 `resume_unsupported`. 화면 버튼은 '종료'(일시정지·다시 시작 없음) |
+| 회차 도중 운영자 밖 엔진 일시정지(아래 원인 표) | failed(감독 실패, 진단 로그 사유 `engine_paused`·서버 로그에 원인 코드) — 운영자 중지와 따로 | 취소 | 마감 정리 | 중지 기록 `interrupted`. 첫 진단 서버에서 생기는 경로는 없다(방어 경로) |
+| 초안 중지·대상 철회·결속 계정 변경·hard 기한·서비스 종료 | cancelled(사유는 각 경로) | 문맥 취소 | 작업 문맥 취소 | 중지 기록 `interrupted` |
+| 실패(엔진 실패·마감 판정 실패·준비 실패) | failed | 취소 | 마감 정리 | 중지 기록 `interrupted` |
+| 마감 판정 뒤 실패(감사 마감 실패 등) | failed | 감독자 마감 판정 | 확정 단계 뒤 감독자 | 이미 돌았다 |
+
+- **엔진 일시정지 원인 표**(`Engine.Pause`를 부르는 곳 전부). 첫 진단 서버(E② HTTP)에서 회차 도중 생기는 것은 운영자 일시정지뿐이고, 그것은 엔진 일시정지가 아니라 운영자 중지로 받는다.
+
+  | 원인 코드 | 부르는 곳 | 첫 진단 회차 도중 | 막는 것(시험) |
+  |---|---|---|---|
+  | `paused_by_user` | 작업 control pause·일괄 control(`applyTaskControl`) | 단일 control은 운영자 중지로 바뀜, 일괄은 없음 | 단일 control → `firstDiagnosisControl`(통합 pause 모드), 일괄 라우트 403(`TestFirstDiagnosisClosesEnginePauseEntries`) |
+  | `llm_unavailable_queued` | 동시 실행 조정(`reconcileConcurrency`) | 없음 | 동시 실행 제한이 꺼져 있어야 동작하지 않음: 설정 라우트 403, 설치·러너가 쓰지 않음, 실제 서버에서 꺼짐 확인(통합 engine-pause 모드). 스케줄러는 자동 허가 끈 서버에서 시작 안 함 |
+  | `queued_for_admission` | 재개·재실행 허가(`admitTask`) | 없음 | 첫 진단 허가는 회차 시작 때 한 번(이미 준비 일시정지 상태), 재개 라우트 403·control 재개 409 |
+  | `paused_by_orchestrator` | 통제 조회 대기(`parkControlledReadTask`), 오케스트레이터 `pause_task` 도구 | 없음 | E② HTTP 서버는 통제 조회 런타임이 없음(통합 engine-pause 모드), 진단 프로필에 `pause_task` 없음(`TestDiagnosisProfilesHaveNoTaskPauseTool`), 대화 라우트 403 |
+  | `paused_on_reload` | 재시작·보관 복원 | 없음(재시작은 회차를 끝냄) | 첫 진단 기동은 일시정지 표시만(엔진 `Pause` 아님), 보관 복원 라우트 403 |
+  | `task_deleted`(삭제 장벽) | `BeginDelete` | 없음 | 삭제 라우트 403 |
+  | `paused_race_guard` | 감독자 자신(준비·마감·종료) | 회차 마감 뒤에만 | 감독자는 실행 문맥 취소를 엔진 일시정지보다 먼저 본다(서버 종료 때 경쟁 방지 일시정지가 `engine_paused`로 잘못 기록되지 않게) |
+
+  모든 통합 마감 경로에서 회차가 `engine_paused`로 끝나지 않음을 고정한다(engine-pause 모드만 일부러 건다). LLM 준비 판정(`ReadyFor`)은 첫 진단에서 모델 결속·프로필 설정만 보고 제공자 오류(429·5xx·끊김)로 바뀌지 않는다. 바뀌어도 엔진은 일시정지하지 않고 Planner·Worker가 모델 없이 기다린다.
+- 워크플로 일시정지(`/api/product/workflows/{job}/pause`)는 마감 경로가 아니라 모델 요청 관문이다. 그 상태로 시간 상한에 닿으면 시간 상한 행과 같고, 관문은 모델 요청에만 걸려 확정 단계 요청은 지난다. 화면에는 이 일시정지 버튼도 두지 않는다(첫 진단 회차 화면 버튼은 '종료'만, 2026-11-20 사용자 결정). API는 남아 있고, 나중에 일시정지를 다시 넣을 때 이 관문을 쓴다.
+- 시험: 감독자 통합 시험(`firstDiagnosisCheckClosingPath`)이 모든 모드에서 확정 단계 훅과 중지 기록 가운데 정확히 하나가 한 번 불리고, 확정 단계 훅 때 E② 연결이 살아 있고 모델 단계가 마감돼 있거나(사유 없음) 실행이 한 번도 없었는지(`lease_missing`), 그 뒤 모델 단계 송신이 0인지 본다.
+- `RunResult.Requests`는 "보낸 요청"이 아니라 확정 단계가 **보내려고 시도한 수**다(E②가 몫 끝·정책으로 보내지 않은 것 포함, 다시 로그인은 실제로 보낸 것만).
+
 ## 8. 리셋 게이트
 
 `ResetGate.Check`는 `{previous_writes, reset_confirmed, residue}`를 돌려준다(결정 §6.1). `CheckRunStart`는 다음 경우 모두 거절한다:
