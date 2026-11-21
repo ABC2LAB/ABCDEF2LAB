@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -285,11 +286,11 @@ func (g *e3WaitingGate) AwaitRequestApprovalOutcome(ctx context.Context, p Reque
 	return RequestApprovalUndecided, nil
 }
 
-// 제품에서 확정 생성 요청은 요청 전용 시간 상한(기본 10초) 안에 승인돼야 보낸다. 운영자가 결정하지 않아 그 상한에 닿으면
-// 대상 송신 0건, 감사 결정 denied·사유 policy_denied(기한 만료와 문맥 기한 중 어느 쪽이 먼저든), 미송신 사유
-// approval_timeout이다(#836 이동찬 리뷰). 승인 기한은 요청 상한에 맞춘다. 실행 중지처럼 기한이 아닌 취소는 approval_timeout이
-// 아니다(policy_denied).
-func TestE3CreateApprovalWaitHitsRequestTimeout(t *testing.T) {
+// 사용자 승인 모드에서 확정 생성 요청의 승인 대기는 요청 시간 상한(제품 10초) 밖이고, 승인 기한과 호출자 문맥(확정 단계
+// 시간 몫) 안에서만 기다린다(사용자 결정 2026-11-21). 결정 없이 시간 몫 기한에 닿으면 대상 송신 0건, 감사 결정
+// denied·사유 policy_denied, 미송신 사유 approval_timeout이다(#836 이동찬 리뷰). 승인 기한은 시간 몫 기한에 맞춘다. 실행
+// 중지처럼 기한이 아닌 취소는 approval_timeout이 아니다.
+func TestE3CreateApprovalWaitBoundedByStageShare(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		honorExpiry bool
@@ -300,7 +301,7 @@ func TestE3CreateApprovalWaitHitsRequestTimeout(t *testing.T) {
 	}{
 		{name: "expiry-aligned", honorExpiry: true, want: e3contract.NotSentApprovalTimeout, reason: PolicyDenied},
 		{name: "context-deadline", honorExpiry: false, want: e3contract.NotSentApprovalTimeout, reason: PolicyDenied},
-		// 거절이 요청 상한과 같이 오면 거절이다(만료로 덮지 않는다). 문맥이 끝났으므로 감사 사유는 closed다.
+		// 거절이 시간 몫 기한과 같이 오면 거절이다(만료로 덮지 않는다). 문맥이 끝났으므로 감사 사유는 closed다.
 		{name: "denied-at-deadline", denyOnDone: true, want: e3contract.NotSentApprovalDenied, reason: Closed},
 		{name: "run-stopped", honorExpiry: false, stop: true, want: e3contract.NotSentPolicyDenied},
 	} {
@@ -311,8 +312,10 @@ func TestE3CreateApprovalWaitHitsRequestTimeout(t *testing.T) {
 			spec := e3contract.CreateSpec{Path: "/allowed/books", Method: "POST", Kind: e3contract.BodyJSON,
 				BodyTemplate: `{}`, MarkerField: "marker", IDPath: "id"}
 			e, in, _ := e3CreateFixture(t, server.URL, spec, "")
-			in.Timeout = 150 * time.Millisecond
-			ctx, cancel := context.WithCancel(t.Context())
+			// 요청 상한(50ms)보다 시간 몫 기한(250ms)이 길다. 승인 대기는 요청 상한에 끊기지 않고 시간 몫까지 간다.
+			in.Timeout = 50 * time.Millisecond
+			share := 250 * time.Millisecond
+			ctx, cancel := context.WithTimeout(t.Context(), share)
 			defer cancel()
 			gate := &e3WaitingGate{honorExpiry: tc.honorExpiry, denyOnDone: tc.denyOnDone}
 			if tc.stop {
@@ -325,8 +328,8 @@ func TestE3CreateApprovalWaitHitsRequestTimeout(t *testing.T) {
 			if requests.Load() != 0 {
 				t.Fatalf("승인 없이 대상에 %d건 도착", requests.Load())
 			}
-			if !gate.expires.Before(started.Add(in.Timeout + time.Second)) {
-				t.Fatal("승인 기한이 확정 요청 시간 상한보다 늦음")
+			if gate.expires.After(started.Add(share + 50*time.Millisecond)) {
+				t.Fatal("승인 기한이 확정 단계 시간 몫보다 늦음")
 			}
 			if tc.stop {
 				// 실행 중지는 그 요청의 결과를 돌려주지 않을 수도 있다. 결과가 있으면 승인 만료로 남지 않아야 한다.
@@ -335,9 +338,12 @@ func TestE3CreateApprovalWaitHitsRequestTimeout(t *testing.T) {
 				}
 				return
 			}
+			if waited := time.Since(started); waited < share-30*time.Millisecond {
+				t.Fatalf("승인 대기가 요청 상한(%s)에 끊김: %s", in.Timeout, waited)
+			}
 			if err != nil || event.E3Audit == nil || event.E3Audit.NotSentReason != tc.want ||
 				event.Decision != "denied" || event.Reason != tc.reason || event.ForwardAttempted {
-				t.Fatalf("요청 상한 승인 만료 기록이 다름: err=%v receipt=%+v", err, event.Receipt)
+				t.Fatalf("시간 몫 승인 만료 기록이 다름: err=%v receipt=%+v", err, event.Receipt)
 			}
 		})
 	}
@@ -364,5 +370,134 @@ func TestE3ProgramCallFinishMapsApprovalOutcome(t *testing.T) {
 		if r.E3Audit.NotSentReason != tc.want {
 			t.Errorf("%s/%s → %s, 기대 %s", tc.approval, tc.reason, r.E3Audit.NotSentReason, tc.want)
 		}
+	}
+}
+
+// e3ApprovingGate는 정해진 시간 뒤 허용한다(문맥이 먼저 끝나면 결정 없음).
+type e3ApprovingGate struct{ after time.Duration }
+
+func (g *e3ApprovingGate) AwaitRequestApproval(ctx context.Context, p RequestApprovalProposal) (bool, error) {
+	outcome, err := g.AwaitRequestApprovalOutcome(ctx, p)
+	return outcome == RequestApprovalAllowed, err
+}
+
+func (g *e3ApprovingGate) AwaitRequestApprovalOutcome(ctx context.Context, _ RequestApprovalProposal) (RequestApprovalOutcome, error) {
+	select {
+	case <-time.After(g.after):
+		return RequestApprovalAllowed, nil
+	case <-ctx.Done():
+		return RequestApprovalUndecided, nil
+	}
+}
+
+// 승인 기한(E② 호출 기한)에 닿아 대기가 끝나도 승인 만료다. 결과를 나누지 않고 결정 없음만 돌려주는 경계여도 같다.
+func TestE3CreateApprovalWaitBoundedByCallDeadline(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests.Add(1) }))
+	defer server.Close()
+	spec := e3contract.CreateSpec{Path: "/allowed/books", Method: "POST", Kind: e3contract.BodyJSON,
+		BodyTemplate: `{}`, MarkerField: "marker", IDPath: "id"}
+	e, in, _ := e3CreateFixture(t, server.URL, spec, "")
+	in.Timeout = 50 * time.Millisecond
+	e.cfg.Limits.CallTimeout = 200 * time.Millisecond
+	e.cfg.ApprovalMode = ApprovalConfirmEveryRequest
+	e.cfg.RequestApproval = &e3WaitingGate{honorExpiry: false}
+	started := time.Now()
+	event, err := e.SendE3Create(t.Context(), in)
+	if requests.Load() != 0 || time.Since(started) < 150*time.Millisecond {
+		t.Fatalf("호출 기한 전에 끝나거나 보냄: requests=%d waited=%s", requests.Load(), time.Since(started))
+	}
+	if err != nil || event.E3Audit == nil || event.E3Audit.NotSentReason != e3contract.NotSentApprovalTimeout || event.Reason != PolicyDenied {
+		t.Fatalf("호출 기한 승인 만료 기록이 다름: err=%v receipt=%+v", err, event.Receipt)
+	}
+}
+
+// 사용자 승인 모드: 요청 상한보다 늦게 와도 승인 기한 안의 허용이면 보낸다. 송신은 승인 뒤부터 요청 상한으로 끊는다.
+// 자동 모드(승인 경계 없음)는 지금처럼 요청 전체가 상한 안이다(사용자 결정 2026-11-21, 자동 모드 영향 없음).
+func TestE3CreateApprovalWaitOutsideRequestTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		gate      RequestApprovalGate
+		slow      time.Duration
+		timeout   time.Duration
+		requests  int64
+		timedOut  bool
+		maxWaited time.Duration
+	}{
+		{name: "approved-after-request-timeout", gate: &e3ApprovingGate{after: 200 * time.Millisecond}, timeout: 80 * time.Millisecond, requests: 1},
+		{name: "send-bounded-after-approval", gate: &e3ApprovingGate{after: 10 * time.Millisecond}, slow: 600 * time.Millisecond, timeout: 100 * time.Millisecond, requests: 1, timedOut: true, maxWaited: 450 * time.Millisecond},
+		{name: "auto-mode-unchanged", slow: 600 * time.Millisecond, timeout: 100 * time.Millisecond, requests: 1, timedOut: true, maxWaited: 450 * time.Millisecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var requests atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				if tc.slow > 0 {
+					select {
+					case <-time.After(tc.slow):
+					case <-r.Context().Done():
+						return
+					}
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"id":"book-a"}`)
+			}))
+			defer server.Close()
+			spec := e3contract.CreateSpec{Path: "/allowed/books", Method: "POST", Kind: e3contract.BodyJSON,
+				BodyTemplate: `{}`, MarkerField: "marker", IDPath: "id"}
+			e, in, _ := e3CreateFixture(t, server.URL, spec, "")
+			in.Timeout = tc.timeout
+			if tc.gate != nil {
+				e.cfg.ApprovalMode = ApprovalConfirmEveryRequest
+				e.cfg.RequestApproval = tc.gate
+			}
+			started := time.Now()
+			event, err := e.SendE3Create(t.Context(), in)
+			waited := time.Since(started)
+			if requests.Load() != tc.requests {
+				t.Fatalf("대상 도착 %d건, 기대 %d건", requests.Load(), tc.requests)
+			}
+			if tc.maxWaited > 0 && waited > tc.maxWaited {
+				t.Fatalf("송신이 요청 상한으로 끊기지 않음: %s", waited)
+			}
+			if tc.timedOut {
+				if err != nil || event.E3Audit == nil || !event.E3Audit.TimedOut || !event.ForwardAttempted || event.ResponseComplete {
+					t.Fatalf("요청 상한 초과가 시간 초과로 남지 않음: err=%v receipt=%+v", err, event.Receipt)
+				}
+				return
+			}
+			if err != nil || event.E3Audit == nil || !event.ResponseComplete || event.E3Audit.NotSentReason != "" || event.E3Audit.TimedOut {
+				t.Fatalf("승인된 생성이 보내지지 않음: err=%v receipt=%+v", err, event.Receipt)
+			}
+		})
+	}
+}
+
+// 사용자 승인 모드에서 승인 뒤, intent 기록과 송신 사이에 결속이 철회되면 진위 실패(ErrAuthorityRevoked)다. 송신 문맥이
+// 끝난 것(취소)으로 바뀌지 않는다(#839 윤재상 리뷰). intent 기록을 막아 그 사이에 철회한다.
+func TestE3CreateRevokedAfterApprovalIsAuthorityRevoked(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests.Add(1) }))
+	defer server.Close()
+	spec := e3contract.CreateSpec{Path: "/allowed/books", Method: "POST", Kind: e3contract.BodyJSON,
+		BodyTemplate: `{}`, MarkerField: "marker", IDPath: "id"}
+	e, in, recorder := e3CreateFixture(t, server.URL, spec, "")
+	accounts, ok := in.Accounts.(*e3IdentityAccounts)
+	if !ok {
+		t.Fatal("fixture accounts type changed")
+	}
+	recorder.blockStage, recorder.entered, recorder.release = "intent", make(chan struct{}, 1), make(chan struct{})
+	go func() {
+		<-recorder.entered
+		accounts.mu.Lock()
+		accounts.current = false
+		accounts.mu.Unlock()
+		close(recorder.release)
+	}()
+	e.cfg.ApprovalMode = ApprovalConfirmEveryRequest
+	e.cfg.RequestApproval = &e3ApprovingGate{}
+	_, err := e.SendE3Create(t.Context(), in)
+	if requests.Load() != 0 || !errors.Is(err, e3contract.ErrAuthorityRevoked) {
+		t.Fatalf("승인 뒤 철회가 진위 실패로 남지 않음: requests=%d err=%v", requests.Load(), err)
 	}
 }

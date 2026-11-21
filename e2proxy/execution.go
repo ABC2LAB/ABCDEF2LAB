@@ -1493,7 +1493,8 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 			// 운영자 거절이 먼저 왔으면 거절로 둔다. 승인 기한을 요청 상한에 맞췄으므로 기한 만료와 문맥 기한이 경합하는데,
 			// 어느 쪽이 먼저든 감사 사유는 모델 요청의 승인 만료와 같은 policy_denied로 고정한다. 실행 중지 등 기한이 아닌
 			// 취소는 지금처럼 closed·policy_denied다.
-			if e3 != nil && !allowed && e3.approval != RequestApprovalDenied && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			if e3 != nil && !allowed && e3.approval != RequestApprovalDenied &&
+				(errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(c.ctx.Err(), context.DeadlineExceeded)) {
 				e3.approval = RequestApprovalExpired
 			}
 			if e3 != nil && e3.approval == RequestApprovalExpired {
@@ -1501,6 +1502,14 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 			}
 			return finish(nil, ErrDenied)
 		}
+	}
+	// 사용자 승인 모드의 확정 생성 요청은 요청 시간 상한을 여기(승인 뒤)부터 센다. 송신 결과의 시간 초과 판정(TimedOut)도
+	// 이 문맥으로 한다.
+	if e3 != nil && e3.timeoutAfterApproval {
+		var cancelSend context.CancelFunc
+		ctx, cancelSend = context.WithTimeout(ctx, e3.timeout)
+		defer cancelSend()
+		e3.sendCtx = ctx
 	}
 	if boundary != nil && boundary.Before(ctx, view) != nil {
 		r.Decision, r.Reason = "denied", PolicyDenied
