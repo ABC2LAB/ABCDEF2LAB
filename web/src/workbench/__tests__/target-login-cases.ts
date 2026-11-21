@@ -1,0 +1,65 @@
+// 로그인 방식 형식 표(합성 값). 화면 검사(validTargetLogin)와 서버 검사(diagnosisprep.ValidTargetLogin)가 같은 답을 내는지
+// 보는 데 쓴다. 특정 대상 앱의 경로·필드 이름이 아니다.
+import type { TargetLogin } from "../live/accounts";
+
+const base: TargetLogin = {
+  path: "/session/new",
+  format: "json",
+  usernameField: "user_name",
+  passwordField: "pass_word",
+  sessionKind: "header",
+  cookies: [],
+  jsonField: "data.access",
+  header: "X-Session",
+  prefix: "Token ",
+};
+const cookieBase: TargetLogin = { ...base, format: "form", sessionKind: "cookies", cookies: ["sid"] };
+
+export const LOGIN_CASES: { name: string; login: TargetLogin; valid: boolean }[] = [
+  { name: "header mode", login: base, valid: true },
+  { name: "header mode without prefix", login: { ...base, prefix: "" }, valid: true },
+  { name: "cookie mode", login: cookieBase, valid: true },
+  { name: "eight cookies", login: { ...cookieBase, cookies: ["a", "b", "c", "d", "e", "f", "g", "h"] }, valid: true },
+  {
+    name: "bracket field names",
+    login: { ...base, usernameField: "user[name]", passwordField: "user[pass]" },
+    valid: true,
+  },
+  { name: "path 512 bytes", login: { ...base, path: `/${"p".repeat(511)}` }, valid: true },
+  { name: "prefix 32 bytes", login: { ...base, prefix: "p".repeat(32) }, valid: true },
+  { name: "eight json segments", login: { ...base, jsonField: "a.b.c.d.e.f.g.h" }, valid: true },
+  { name: "lowercase authorization", login: { ...base, header: "authorization" }, valid: true },
+  { name: "empty path", login: { ...base, path: "" }, valid: false },
+  { name: "relative path", login: { ...base, path: "session" }, valid: false },
+  { name: "double slash path", login: { ...base, path: "//host/x" }, valid: false },
+  { name: "path with query", login: { ...base, path: "/x?y=1" }, valid: false },
+  { name: "path with fragment", login: { ...base, path: "/x#y" }, valid: false },
+  { name: "path with percent", login: { ...base, path: "/x%2f" }, valid: false },
+  { name: "path with semicolon", login: { ...base, path: "/x;y" }, valid: false },
+  { name: "path with backslash", login: { ...base, path: "/x\\y" }, valid: false },
+  { name: "path with space", login: { ...base, path: "/x y" }, valid: false },
+  { name: "path 513 bytes", login: { ...base, path: `/${"p".repeat(512)}` }, valid: false },
+  { name: "same field names", login: { ...base, passwordField: "user_name" }, valid: false },
+  { name: "field with space", login: { ...base, usernameField: "user name" }, valid: false },
+  { name: "empty field", login: { ...base, passwordField: "" }, valid: false },
+  { name: "cookie mode without cookies", login: { ...cookieBase, cookies: [] }, valid: false },
+  {
+    name: "nine cookies",
+    login: { ...cookieBase, cookies: ["a", "b", "c", "d", "e", "f", "g", "h", "i"] },
+    valid: false,
+  },
+  { name: "duplicate cookie", login: { ...cookieBase, cookies: ["sid", "sid"] }, valid: false },
+  { name: "cookie with equals", login: { ...cookieBase, cookies: ["s=d"] }, valid: false },
+  { name: "header mode without header", login: { ...base, header: "" }, valid: false },
+  { name: "header mode without json field", login: { ...base, jsonField: "" }, valid: false },
+  { name: "empty json segment", login: { ...base, jsonField: "a..b" }, valid: false },
+  { name: "nine json segments", login: { ...base, jsonField: "a.b.c.d.e.f.g.h.i" }, valid: false },
+  { name: "header with space", login: { ...base, header: "X Session" }, valid: false },
+  { name: "cookie header", login: { ...base, header: "Cookie" }, valid: false },
+  { name: "host header", login: { ...base, header: "HOST" }, valid: false },
+  { name: "proxy-authorization header", login: { ...base, header: "Proxy-Authorization" }, valid: false },
+  { name: "prefix 33 bytes", login: { ...base, prefix: "p".repeat(33) }, valid: false },
+  { name: "prefix newline", login: { ...base, prefix: "Token\n" }, valid: false },
+  { name: "prefix C1 control", login: { ...base, prefix: "Token\u0085" }, valid: false },
+  { name: "prefix multibyte 33 bytes", login: { ...base, prefix: `${"가".repeat(11)}` }, valid: false },
+];

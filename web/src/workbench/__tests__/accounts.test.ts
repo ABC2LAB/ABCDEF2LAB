@@ -119,6 +119,7 @@ describe("getAccounts (실 GET · 매핑 · fail-closed)", () => {
         approvedBy: "op-1",
         approvedAt: "2026-11-10T00:00:00Z",
         note: undefined,
+        credentialConfigured: false,
       },
       {
         ref: "peer",
@@ -127,6 +128,7 @@ describe("getAccounts (실 GET · 매핑 · fail-closed)", () => {
         approvedBy: undefined,
         approvedAt: undefined,
         note: "실계정 전환 사유: target_reapproved",
+        credentialConfigured: false,
       },
       {
         ref: "guest",
@@ -134,7 +136,9 @@ describe("getAccounts (실 GET · 매핑 · fail-closed)", () => {
         cls: "unmarked",
         approvedBy: undefined,
         approvedAt: undefined,
-        note: "자격 설정됨(값 비표시)",
+        note: undefined,
+        // 자격 등록 여부는 메모가 아니라 credential_configured 칸으로만 나른다(값 없음).
+        credentialConfigured: true,
       },
     ]);
   });
