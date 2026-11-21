@@ -6,7 +6,10 @@
 - 러너 종료 코드 2(설정·입력 오류)는 시도로 세지 않고 멈춘다(`runner_config_error`).
 - 대기는 이름 패턴이 아니라 PID(러너 프로세스)와 완료 파일(회차 디렉터리의 `runner-result.json`)로 건다. 대기마다 시한을 두고,
   넘으면 사유를 남기고 끝낸다(러너는 SIGINT → 유예 → SIGKILL, 2026-11-20 사용자 규칙).
-- 회차 뒤 실행 중 컨테이너가 0이 될 때까지(시한 안) 기다린다. 남아 있으면 멈춘다(`containers_left`).
+- 회차 뒤 실행 중 컨테이너가 0이 될 때까지(시한 안) 기다린다. 남아 있으면 멈춘다(`containers_left`). 이어서 평가 compose 망
+  (프로젝트 `eval-…`)이 다 지워질 때까지 기다린다. 남아 있으면 멈춘다(`networks_left`). 앞 회차 망이 남은 채로 다음 회차가
+  같은 고정 대역의 망을 만들지 않게 막는 예방 조치다. 2026-11-20 `compose_up_failed`는 이것으로 설명되지 않는다(망 0에서도 남).
+  유력한 원인 후보는 제품 postgres healthcheck가 초기화 임시 서버 동안 통과한 것이다(#833 재현·수정, 실패 회차 로그는 없음).
 - **새 회차 디렉터리가 생겼으면 무슨 일이 있어도 시도 1회로 센다**(2026-11-20 사용자). 결과 파일이 있으면 그 상태를, 없으면
   무효(사유 = 멈춘 사유: `run_wait_timeout`·`result_missing`·`result_unreadable`)로 기록하고 그다음 멈춘다. 종료 코드와 상태가
   어긋나면 무효(`result_status_mismatch`)로 센다. 컨테이너가 남으면 그 회차의 실제 상태로 세고 멈춘다. 회차 디렉터리가 안 생긴
@@ -21,7 +24,7 @@
 - 이어 돌리기(`--resume`): 멈춘 사유를 고친 뒤 같은 세션 디렉터리의 `session-log.jsonl`에 남은 시도(완료·무효)를 다시 세고
   남은 칸부터 잇는다. 멈춤(대기 시한 등)·설정 오류 줄은 시도로 세지 않는다. 점검 모드 기록과 섞이면 입력 오류다.
 기록: 세션 디렉터리의 `session-log.jsonl`(시도마다 한 줄 + 마지막 요약). 집계·채점은 7절(`session_runs.py`·`score.py`)이 한다.
-종료 코드: 0 쪽마다 유효 N회 완료, 3 측정 실패(멈춤 무효 상한), 4 멈춤(시도 상한·설정 오류·대기 시한·결과 없음·컨테이너
+종료 코드: 0 쪽마다 유효 N회 완료, 3 측정 실패(멈춤 무효 상한), 4 멈춤(시도 상한·설정 오류·대기 시한·결과 없음·컨테이너·망
 남음·사용량 상한), 2 입력 오류.
 """
 
@@ -150,12 +153,35 @@ def running_containers() -> int | None:
     return len(done.stdout.split()) if done.returncode == 0 else None
 
 
-def containers_stop(count: Callable[[], int | None]) -> str | None:
-    """회차 시작 전 확인: 실행 중 컨테이너가 0개가 아니면 멈출 사유(시도로 세지 않음)."""
+# 평가 회차 compose 프로젝트 이름의 앞부분(runner_config·runner_split_config: project = f"eval-{run_id}").
+EVAL_PROJECT_PREFIX = "eval-"
+_PROJECT_LABEL = "com.docker.compose.project"
+
+
+def eval_networks() -> int | None:
+    """평가 회차 compose 프로젝트가 만든 망 수(compose 프로젝트 라벨이 `eval-`로 시작). 읽지 못하면 None."""
+    try:
+        done = subprocess.run(["docker", "network", "ls", "--filter", f"label={_PROJECT_LABEL}",
+                               "--format", '{{.Label "%s"}}' % _PROJECT_LABEL],
+                              capture_output=True, text=True, timeout=60, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    return sum(1 for project in done.stdout.split() if project.startswith(EVAL_PROJECT_PREFIX))
+
+
+def containers_stop(count: Callable[[], int | None], networks: Callable[[], int | None] = lambda: 0) -> str | None:
+    """회차 시작 전 확인: 실행 중 컨테이너나 평가 compose 망이 남아 있으면 멈출 사유(시도로 세지 않음)."""
     present = count()
     if present is None:
         return "containers_unknown"
-    return None if present == 0 else "containers_present"
+    if present != 0:
+        return "containers_present"
+    left = networks()
+    if left is None:
+        return "networks_unknown"
+    return None if left == 0 else "networks_present"
 
 
 def wait_containers_gone(count: Callable[[], int | None], timeout: float, interval: float,
@@ -257,8 +283,13 @@ class RealRunner:
         new = sorted(run_dirs(self.runs_root) - before)
         outcome = self._judge(slot, code, new[-1] if new else None)
         # 회차가 어떻게 끝나든 컨테이너가 내려갈 때까지 기다린다. 안 내려가면 멈추고 사유에 같이 적는다.
-        if outcome.status != "config_error" and not wait_containers_gone(running_containers, self.post_timeout, 5):
-            left = f"containers_left:{slot}"
+        left = None
+        if outcome.status != "config_error":
+            if not wait_containers_gone(running_containers, self.post_timeout, 5):
+                left = f"containers_left:{slot}"
+            elif not wait_containers_gone(eval_networks, self.post_timeout, 5):
+                left = f"networks_left:{slot}"  # 다음 회차 망과 대역이 겹치지 않게 앞 회차 망이 다 지워질 때까지
+        if left is not None:
             if outcome.status == "stop":
                 outcome.reasons.append(left)
             else:
@@ -417,7 +448,8 @@ def main(argv: list[str] | None = None) -> int:
                 guard.base = resumed_base
 
         def before_run(side: str, repeat: int) -> str | None:
-            stop = containers_stop(running_containers)  # 시도로 세지 않는다(남은 컨테이너가 격리 검사를 깨서 시도가 날아가지 않게)
+            # 시도로 세지 않는다(남은 컨테이너가 격리 검사를 깨거나 남은 망이 대역을 막아 시도가 날아가지 않게)
+            stop = containers_stop(running_containers, eval_networks)
             if stop is not None:
                 return stop
             if guard is not None:
