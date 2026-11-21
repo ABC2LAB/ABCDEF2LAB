@@ -228,17 +228,28 @@ func TestIssuedSessionsDoNotConsumeAccountSlots(t *testing.T) {
 	}
 }
 
-// 칸·몫 설정 범위: 음수, 상한 초과, 칸의 절반을 넘는 몫은 실행을 만들지 않는다. 0은 기본 64칸이다.
+// 칸·몫 설정 범위: 음수, 상한 초과, 칸의 절반을 넘는 몫은 실행을 만들지 않는다. 0은 기본 64칸이다. 다른 칸이 모두 맞는
+// 설정(coreConfig)에서 이 두 칸만 바꿔 본다.
 func TestSessionRedactConfigBounds(t *testing.T) {
-	for name, cfg := range map[string]Config{
-		"negative capacity": {SessionRedactCapacity: -1},
-		"over maximum":      {SessionRedactCapacity: MaxSessionRedactValues + 1},
-		"negative reserve":  {SessionRedactCapacity: 12, ConfirmationRedactReserve: -1},
-		"reserve over half": {SessionRedactCapacity: 12, ConfirmationRedactReserve: 7},
-		"default half":      {ConfirmationRedactReserve: maxRedactValues/2 + 1},
+	for _, tc := range []struct {
+		name              string
+		capacity, reserve int
+		ok                bool
+	}{
+		{name: "default", ok: true},
+		{name: "half reserve", capacity: 12, reserve: 6, ok: true},
+		{name: "maximum", capacity: MaxSessionRedactValues, reserve: MaxSessionRedactValues / 2, ok: true},
+		{name: "negative capacity", capacity: -1},
+		{name: "over maximum", capacity: MaxSessionRedactValues + 1},
+		{name: "negative reserve", capacity: 12, reserve: -1},
+		{name: "reserve over half", capacity: 12, reserve: 7},
+		{name: "default over half", reserve: maxRedactValues/2 + 1},
 	} {
-		if _, err := NewExecution(t.Context(), cfg); !errors.Is(err, ErrConfig) {
-			t.Errorf("%s: 잘못된 칸 설정을 받음: %v", name, err)
+		cfg := coreConfig(t, "http://127.0.0.1:1", &coreRecorder{}, 1)
+		cfg.HeaderMode, cfg.SessionRedactCapacity, cfg.ConfirmationRedactReserve = HeaderTestAccountPassthrough, tc.capacity, tc.reserve
+		_, err := NewExecution(t.Context(), cfg)
+		if (err == nil) != tc.ok {
+			t.Errorf("%s: 칸 %d·몫 %d → err=%v", tc.name, tc.capacity, tc.reserve, err)
 		}
 	}
 	if sessionRedactCapacity(Config{}) != maxRedactValues || sessionRedactCapacity(Config{SessionRedactCapacity: 1092}) != 1092 {
