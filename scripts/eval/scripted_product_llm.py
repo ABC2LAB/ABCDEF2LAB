@@ -30,6 +30,13 @@
   한다.
   모든 목표가 met가 되면 엔진이 작업을 자동 완료한다(`agent/tools.go` prove_goal).
 
+계획 `planner_error_status`(선택, 429·500·502·503 중 하나)면 진단 Planner 요청(`add_intent`가 있고 `Bash`는 없음)에 도구 호출 대신 그
+HTTP 상태와 OpenAI 모양 오류 본문을 돌려준다. 제공자 오류로 계획이 실패해 제품이 러너 상한 전에 일찍 끝나는 회차(평가 프로토콜 §5.1
+'러너 상한 전에 일찍 끝난 회차', 고정 초안 §26)를 무료 합성 회차로 확인하려는 것이다. 합성 O는 제품 로컬 모델 설치로 돌아
+OpenRouter 호출 기록이 없으므로 이 회차는 '근거 없음'으로 분류돼야 한다. 탐색·Worker 요청은 그대로 응답한다.
+`planner_error_after`(선택, 0~64, 기본 0)면 진단 Planner 요청 그 수만큼은 정상으로 답하고 그 뒤부터 오류를 돌려준다. 준비 단계
+계획은 통과하고 실행 단계에서 계획이 실패하는 회차를 흉내 내려는 것이다.
+
 실행: python3 -I -B scripts/eval/scripted_product_llm.py --host <주소> --port <포트> --plan <계획 JSON> --origin <대상 origin>
 종료 코드: 2 계획·인자 오류.
 """
@@ -48,7 +55,8 @@ from pathlib import Path
 
 PLAN_FORMAT = "abc2lab.scripted-product-plan/v1"
 PLAN_FIELDS = frozenset({"format", "model", "exploration", "intents", "commands", "timeout_ms"})
-PLAN_OPTIONAL = frozenset({"finish"})
+PLAN_OPTIONAL = frozenset({"finish", "planner_error_status", "planner_error_after"})
+PROVIDER_ERROR_STATUSES = frozenset({429, 500, 502, 503})
 FINISH_PROVE_GOALS = "prove_goals"
 STEP_KINDS = frozenset({"navigate", "bash"})
 EXPLORATION_TOOL = "report_discovery"
@@ -105,12 +113,18 @@ def load_plan(path: str | Path, origin: str) -> dict:
             or not all(isinstance(step, dict) and len(step) == 1 and set(step) <= STEP_KINDS and _text(next(iter(step.values())))
                        for step in steps)
             or not all(_text(item) for item in intents + commands)
-            or type(plan["timeout_ms"]) is not int or not 1 <= plan["timeout_ms"] <= MAX_TIMEOUT_MS):
+            or type(plan["timeout_ms"]) is not int or not 1 <= plan["timeout_ms"] <= MAX_TIMEOUT_MS
+            or ("planner_error_status" in plan and (type(plan["planner_error_status"]) is not int
+                                                    or plan["planner_error_status"] not in PROVIDER_ERROR_STATUSES))
+            or ("planner_error_after" in plan and ("planner_error_status" not in plan or type(plan["planner_error_after"]) is not int
+                                                   or not 0 <= plan["planner_error_after"] <= MAX_ITEMS))):
         raise PlanError("plan_invalid")
 
     def fill(value: str) -> str:
         return value.replace(ORIGIN_SLOT, origin)
-    return {"model": plan["model"], "timeout_ms": plan["timeout_ms"], "finish": "finish" in plan, "intents": [fill(i) for i in intents],
+    return {"model": plan["model"], "timeout_ms": plan["timeout_ms"], "finish": "finish" in plan,
+            "planner_error_status": plan.get("planner_error_status"), "planner_error_after": plan.get("planner_error_after", 0),
+            "intents": [fill(i) for i in intents],
             "commands": [fill(c) for c in commands],
             "exploration": [{kind: fill(value) for kind, value in step.items()} for step in steps]}
 
@@ -250,12 +264,27 @@ class Script:
         self.plan, self.lock = plan, threading.Lock()
         self.intents_sent = self.commands_sent = 0
         self.proved: set[int] = set()
+        self.planner_passed = 0  # planner_error_after까지 정상으로 답한 진단 Planner 요청 수
         # 프로세스 전체의 계획 명령 결과(Worker 대화에서 본 것). 호출 하나를 (대화, 그 대화 안 Bash 순번)으로 가린다. Planner는
         # 계획의 명령 항목마다 완료된 호출이 있고 실패한 호출이 하나도 없을 때만 목표를 증명한다(#797 리뷰: 일부 Worker만 성공한
         # 회차나, 같은 명령이 계획에 두 번 있는데 한 번만 완료된 회차가 목표 달성으로 끝나 거부·대기 중인 요청을 가리지 않게).
         self.command_results: dict[tuple[str, int], tuple[str, bool]] = {}
         self.failed_commands: set[str] = set()  # 한 번이라도 실패하면 남는다(같은 자리를 다른 대화가 덮어도 지워지지 않게)
-        self.counts = {"requests": 0, "exploration": 0, "planner": 0, "worker": 0, "finish": 0, "done": 0, "skipped": 0}
+        self.counts = {"requests": 0, "exploration": 0, "planner": 0, "worker": 0, "finish": 0, "done": 0, "skipped": 0,
+                       "provider_error": 0}
+
+    def planner_error(self, body: dict) -> int | None:
+        """계획 planner_error_status가 있고 이 요청이 진단 Planner 요청이면 돌려줄 HTTP 상태. 아니면 None."""
+        status, tools = self.plan.get("planner_error_status"), _tools(body)
+        if status is None or PLANNER_TOOL not in tools or WORKER_TOOL in tools or EXPLORATION_TOOL in tools:
+            return None
+        with self.lock:
+            if self.planner_passed < self.plan.get("planner_error_after", 0):
+                self.planner_passed += 1  # 그 수만큼은 정상 응답(decide가 답한다)
+                return None
+            self.counts["requests"] += 1
+            self.counts["provider_error"] += 1
+        return status
 
     def decide(self, body: dict) -> tuple[str, dict] | None:
         tools, messages = _tools(body), _messages(body)
@@ -419,6 +448,10 @@ def make_server(host: str, port: int, script: Script) -> ThreadingHTTPServer:
                     raise ValueError
             except ValueError:
                 self._json(400, {"error": {"message": "invalid request"}})
+                return
+            error = script.planner_error(body)
+            if error is not None:
+                self._json(error, {"error": {"message": "scripted provider error", "code": error}})
                 return
             call = script.decide(body)
             if not body.get("stream"):

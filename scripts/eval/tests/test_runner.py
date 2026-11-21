@@ -1345,7 +1345,7 @@ class TestCompleteRun(unittest.TestCase):
                                                "post-probe.json", "meter-summary.json", "llm-summary.json",
                                                "findings.json", "task.json", "window-watch.json", "engine-end.json",
                                                "isolation-evidence.json", "solve-events.json", "run-record.json", "intercept-summary.json",
-                                               "engine-settings.json", "subnet-check.json", "fault-stall.json", RESULT_NAME})
+                                               "engine-settings.json", "subnet-check.json", "fault-stall.json", "early-end.json", RESULT_NAME})
         self.assertEqual(evidence.files["subnet-check.json"], {"format": "abc2lab-eval-runner-subnet-check-v1",
                                                                "planned": ["10.250.0.0/24"], "overlaps": []})
         # 서명 대상 근거 목록에는 결과 파일 자신이 없다(서명 뒤에 쓴다).

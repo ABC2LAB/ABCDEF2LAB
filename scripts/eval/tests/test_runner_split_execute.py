@@ -516,7 +516,7 @@ class TestOrder(unittest.TestCase):
                                                "post-probe.json", "task.json", "llm-summary.json",
                                                "window-watch.json", "product-end.json", "product-task-end.json", "product-model.json",
                                                "tool-surface.json",
-                                               "product-files.json", "discovery-sources.json", "fault-stall.json", "product-calls.jsonl",
+                                               "product-files.json", "discovery-sources.json", "fault-stall.json", "early-end.json", "product-calls.jsonl",
                                                "e3-traces.json",
                                                RESULT_NAME, "isolation-evidence.json", "solve-events.json", "run-record.json"})
         self.assertEqual(evidence.files["discovery-sources.json"], {
