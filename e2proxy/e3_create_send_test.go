@@ -501,3 +501,33 @@ func TestE3CreateRevokedAfterApprovalIsAuthorityRevoked(t *testing.T) {
 		t.Fatalf("승인 뒤 철회가 진위 실패로 남지 않음: requests=%d err=%v", requests.Load(), err)
 	}
 }
+
+// deadlineOnlyCtx는 기한은 지났지만 타이머 콜백이 아직 돌지 않아 Err()가 빈 문맥이다(부하 중 경합 재현).
+type deadlineOnlyCtx struct {
+	context.Context
+	deadline time.Time
+}
+
+func (c deadlineOnlyCtx) Deadline() (time.Time, bool) { return c.deadline, true }
+func (c deadlineOnlyCtx) Err() error                  { return nil }
+
+// 보낸 뒤 응답을 다 받지 못했고 요청 문맥의 기한이 지났으면, 타이머 콜백이 늦어 Err()가 비어 있어도 시간 초과다.
+// 기한 전이거나 기한이 없으면 시간 초과가 아니다(결과 불명).
+func TestE3ProgramCallFinishTimedOutByDeadline(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ctx  context.Context
+		want bool
+	}{
+		{name: "deadline-passed-err-pending", ctx: deadlineOnlyCtx{Context: t.Context(), deadline: time.Now().Add(-time.Millisecond)}, want: true},
+		{name: "deadline-ahead", ctx: deadlineOnlyCtx{Context: t.Context(), deadline: time.Now().Add(time.Hour)}},
+		{name: "no-deadline", ctx: t.Context()},
+	} {
+		c := &e3ProgramCall{}
+		r := Receipt{Decision: "allowed", ForwardAttempted: true, RequestWritten: true, E3Audit: &E3Audit{}}
+		c.finish(&r, tc.ctx)
+		if r.E3Audit.TimedOut != tc.want {
+			t.Errorf("%s: TimedOut=%v, 기대 %v", tc.name, r.E3Audit.TimedOut, tc.want)
+		}
+	}
+}
