@@ -142,7 +142,30 @@ func approvalPreview(p e2proxy.RequestApprovalProposal, rule E2HTTPFileRule) (st
 	}
 	return u.Scheme + "://" + u.Host, path, preview, nil
 }
-func (s *RequestApprovalService) AwaitRequestApproval(ctx context.Context, p e2proxy.RequestApprovalProposal) (allowed bool, outcome error) {
+func (s *RequestApprovalService) AwaitRequestApproval(ctx context.Context, p e2proxy.RequestApprovalProposal) (bool, error) {
+	var status string
+	return s.awaitRequestApproval(ctx, p, &status)
+}
+
+// AwaitRequestApprovalOutcome은 거절과 만료를 나눠 돌려준다(e2proxy.RequestApprovalOutcomeGate). E③ 확정 단계 생성 요청의
+// 미송신 사유(approval_denied·approval_timeout)에 쓰인다. 허용 판단은 AwaitRequestApproval과 같다.
+func (s *RequestApprovalService) AwaitRequestApprovalOutcome(ctx context.Context, p e2proxy.RequestApprovalProposal) (e2proxy.RequestApprovalOutcome, error) {
+	var status string
+	allowed, err := s.awaitRequestApproval(ctx, p, &status)
+	switch {
+	case allowed:
+		return e2proxy.RequestApprovalAllowed, err
+	case err == nil && status == "denied":
+		return e2proxy.RequestApprovalDenied, nil
+	case err == nil && status == "expired":
+		return e2proxy.RequestApprovalExpired, nil
+	default:
+		return e2proxy.RequestApprovalUndecided, err
+	}
+}
+
+// awaitRequestApproval은 결정을 기다리고, 끝난 모양(진단 로그의 status 값)을 resolved에 남긴다.
+func (s *RequestApprovalService) awaitRequestApproval(ctx context.Context, p e2proxy.RequestApprovalProposal, resolved *string) (allowed bool, outcome error) {
 	status, reason := "failed", "approval_unavailable"
 	defer func() {
 		if errors.Is(outcome, context.Canceled) {
@@ -151,6 +174,7 @@ func (s *RequestApprovalService) AwaitRequestApproval(ctx context.Context, p e2p
 		if errors.Is(outcome, context.DeadlineExceeded) {
 			status, reason = "timeout", "timeout"
 		}
+		*resolved = status
 		task, _ := strconv.ParseInt(p.Receipt.Scope.TaskRef, 10, 64)
 		if task < 0 {
 			task = 0

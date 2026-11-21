@@ -11,7 +11,8 @@
   `early_end_runs`에 회차 ID·끝 상태·사유·근거 호출로 따로 모은다(측정 뒤 사람이 하나씩 검토한다).
 - 러너 종료 코드 2(설정·입력 오류)는 시도로 세지 않고 멈춘다(`runner_config_error`).
 - 대기는 이름 패턴이 아니라 PID(러너 프로세스)와 완료 파일(회차 디렉터리의 `runner-result.json`)로 건다. 대기마다 시한을 두고,
-  넘으면 사유를 남기고 끝낸다(러너는 SIGINT → 유예 → SIGKILL, 2026-11-20 사용자 규칙).
+  넘으면 사유를 남기고 끝낸다(러너는 SIGINT → 유예 → SIGTERM → 유예 → SIGKILL, 2026-11-20 사용자 규칙·2026-11-21 SIGTERM 단계).
+  뒤에서(`&`·nohup) 띄워도 시작할 때 SIGINT를 기본 처리로 되돌려 자식 러너가 SIGINT를 받는다(run_signals).
 - 회차 뒤 실행 중 컨테이너가 0이 될 때까지(시한 안) 기다린다. 남아 있으면 멈춘다(`containers_left`). 이어서 평가 compose 망
   (프로젝트 `eval-…`)이 다 지워질 때까지 기다린다. 남아 있으면 멈춘다(`networks_left`). 앞 회차 망이 남은 채로 다음 회차가
   같은 고정 대역의 망을 만들지 않게 막는 예방 조치다. 2026-11-20 `compose_up_failed`는 이것으로 설명되지 않는다(망 0에서도 남).
@@ -55,6 +56,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from runner_early_end import CONFIG_END_REASON, EARLY_END_NAME, PROVIDER_FAULT_END_REASON  # noqa: E402
 from runner_fault import FAULT_STALL_REASON  # noqa: E402
+from run_signals import interrupt_on_stop_signals  # noqa: E402
 from session_runs import FAULT_STALL_LIMIT_PER_SIDE, expected_order  # noqa: E402
 
 SIDE_OF = {"B": "baseline", "O": "ours"}
@@ -154,11 +156,12 @@ def run_dirs(runs_root: Path) -> set[str]:
 
 
 def wait_process(proc: subprocess.Popen, timeout: float, grace: float) -> int | None:
-    """PID로 기다린다. 시한을 넘으면 프로세스 그룹에 SIGINT → 유예 → SIGKILL을 보내고 None."""
+    """PID로 기다린다. 시한을 넘으면 프로세스 그룹에 SIGINT → 유예 → SIGTERM → 유예 → SIGKILL을 보내고 None. 러너는 SIGINT·SIGTERM을
+    같은 정리 경로로 받는다(run_signals). SIGTERM 단계는 SIGINT가 어떤 이유로든 무시될 때 정리할 기회를 한 번 더 준다."""
     try:
         return proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        for sig, wait in ((signal.SIGINT, grace), (signal.SIGKILL, grace)):
+        for sig, wait in ((signal.SIGINT, grace), (signal.SIGTERM, grace), (signal.SIGKILL, grace)):
             try:
                 os.killpg(proc.pid, sig)
             except ProcessLookupError:
@@ -421,6 +424,8 @@ def parse_outcomes(text: str) -> list[Outcome]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # 뒤에서 띄워도(`&`·nohup) 자식 러너가 SIGINT를 받게 무시 상태를 되돌린다(run_signals, 2026-11-21).
+    interrupt_on_stop_signals()
     ap = argparse.ArgumentParser(description="공식 회차 세션 실행(B O O B B O, 2N 규칙)")
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--session-dir", type=Path, required=True)
@@ -432,7 +437,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--preflight", type=Path)
     ap.add_argument("--admin-password-file", type=Path)
     ap.add_argument("--run-timeout", type=float, default=3600, help="회차 하나 대기 시한(초)")
-    ap.add_argument("--grace", type=float, default=120, help="시한 뒤 SIGINT·SIGKILL 유예(초)")
+    ap.add_argument("--grace", type=float, default=120, help="시한 뒤 SIGINT·SIGTERM·SIGKILL 단계마다 유예(초)")
     ap.add_argument("--post-timeout", type=float, default=300, help="회차 뒤 컨테이너가 0이 되길 기다리는 시한(초)")
     ap.add_argument("--o-manifest-template", type=Path)
     ap.add_argument("--manifest-hours", type=int, default=6)
