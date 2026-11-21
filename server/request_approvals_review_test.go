@@ -337,3 +337,45 @@ func TestRequestApprovalPublicPathUsesWorkflowMasking(t *testing.T) {
 		}
 	}
 }
+
+// 승인 결과 종류(e2proxy.RequestApprovalOutcomeGate): 운영자 거절은 denied, 결정 없이 기한이 지나면 expired, 취소는
+// undecided, 허용은 allowed다. E③ 확정 생성 요청의 미송신 사유(approval_denied·approval_timeout)가 이 값을 쓴다(S10).
+func TestRequestApprovalOutcomeSeparatesDenialAndExpiry(t *testing.T) {
+	var _ e2proxy.RequestApprovalOutcomeGate = (*RequestApprovalService)(nil)
+	for _, tc := range []struct {
+		name  string
+		state string
+		want  e2proxy.RequestApprovalOutcome
+	}{
+		{name: "denied", state: "denied", want: e2proxy.RequestApprovalDenied},
+		{name: "expired", state: "pending", want: e2proxy.RequestApprovalExpired},
+		{name: "cancelled", state: "allowed", want: e2proxy.RequestApprovalUndecided},
+		{name: "allowed", state: "allowed", want: e2proxy.RequestApprovalAllowed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			store := &approvalReviewStore{}
+			s, p := approvalReviewFixture(t, store)
+			if tc.name == "expired" {
+				p.ExpiresAt = time.Now().Add(20 * time.Millisecond)
+			}
+			store.insert = func(context.Context) error {
+				if tc.name != "expired" {
+					go func() { s.mu.Lock(); close(s.waiters[p.Receipt.AttemptID].decision); s.mu.Unlock() }()
+				}
+				return nil
+			}
+			store.get = func() {
+				store.row.State = tc.state
+				if tc.name == "cancelled" {
+					cancel()
+				}
+			}
+			outcome, err := s.AwaitRequestApprovalOutcome(ctx, p)
+			if err != nil || outcome != tc.want {
+				t.Fatalf("결과 종류 %q, 기대 %q (err=%v)", outcome, tc.want, err)
+			}
+		})
+	}
+}
