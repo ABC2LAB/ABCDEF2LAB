@@ -67,6 +67,7 @@ import { ReportReadError } from "./runRows";
 import { TaskActivity } from "./TaskActivity";
 import { AccessMapPanel } from "./UrlAccessMapLive";
 import { reasonText, UrlFacts, UrlHead, UrlNotices, UrlPill, UrlRefreshButton, useUrlHost } from "./urlParts";
+import { VerdictDetailCard } from "./VerdictDetailCard";
 import { crawlPct, useStopConfirm, WorkflowNotice, WorkflowReport } from "./workflowViews";
 
 /** 보고서 위치의 상위 화면 (작업대 / 끝난 점검 / 주소 / 보고서) */
@@ -1219,6 +1220,8 @@ export function FindingPage({
         </div>
         <aside className={s.fdet} aria-label="취약점 상태">
           <StatusCard e={e} host={host} />
+          {/* E③ 확정 단계 판정: 이 후보를 참조하는 제품 판정이 있을 때만(목록과 같은 표시 규칙) */}
+          <VerdictDetailCard taskId={taskId} entryId={e.entry_id} />
           {entrySeverity(e) && e.severity_source === "worker_estimate" ? (
             <Isec t="예상 심각도 근거 · 모델 제안">
               <p>{maskSecrets(e.severity_rationale ?? "")}</p>
