@@ -254,6 +254,11 @@ it("새 origin에는 이전 대상의 쓰기 동의가 넘어가지 않는다", 
   fireEvent.click(screen.getByRole("button", { name: "대상 등록하기" }));
   // 쓰기 동의는 AI 자동 모드가 건별 확인 없이 보낸다는 뜻까지 보인다(C21, #525 이경준 리뷰)
   expect(screen.getByRole("checkbox").closest("label")).toHaveTextContent(/AI 자동 모드는 건별 확인 없이 보냄/);
+  // 실제 집행대로 적는다: DELETE만 보내지 않고, 초기화·결제 같은 경로는 운영자가 제외 경로에 넣어야 막힌다(2026-11-21,
+  // 서버 동의 판 auto_without_confirmation_v2). 이전 문구 "삭제·초기화·결제는 제외"는 지키지 못하는 약속이었다.
+  expect(screen.getByRole("checkbox").closest("label")).toHaveTextContent(/DELETE 요청은 보내지 않음/);
+  expect(screen.getByRole("checkbox").closest("label")).toHaveTextContent(/제외 경로에\s*넣어야 막힘/);
+  expect(screen.getByRole("checkbox").closest("label")).not.toHaveTextContent(/삭제·초기화·결제는 제외/);
   expect(screen.getByRole("checkbox").closest("label")).toHaveTextContent(
     "어떤 쓰기 요청이 나갈지 미리 모두 알 수 없고 대상 데이터나 상태가 바뀔 수 있음",
   );

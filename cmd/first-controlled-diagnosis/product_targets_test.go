@@ -262,6 +262,20 @@ func TestProductTargetWriteConsentVersion(t *testing.T) {
 	if !(productTargetRecord{ReversibleWrites: true, WriteConsent: productWriteConsentAuto}).autoWritesAllowed() || (productTargetRecord{ReversibleWrites: true}).autoWritesAllowed() {
 		t.Fatal("automatic write consent check")
 	}
+	// v1(이전 문구 "삭제·초기화·결제는 제외", 실제로는 DELETE만 막혔음)은 기록을 그대로 읽지만 자동 모드 쓰기에는 쓰지 않는다.
+	// 새 등록은 v2를 남긴다(2026-11-21 문구를 실제 집행에 맞춤).
+	if productWriteConsentAuto != "auto_without_confirmation_v2" {
+		t.Fatal("new registrations must record the v2 consent wording", productWriteConsentAuto)
+	}
+	v1 := productTargetCopy(base)
+	v1.Target.ID = "target-" + strings.Repeat("e", 32)
+	v1.ReversibleWrites, v1.WriteConsent = true, productWriteConsentAutoV1
+	if err := r.replay(v1); err != nil {
+		t.Fatal("v1 consent record rejected", err)
+	}
+	if v1.autoWritesAllowed() {
+		t.Fatal("v1 consent wording allowed automatic writes")
+	}
 }
 
 // 대상 등록의 회차 요청 수는 설치 대상 정책 상한(max_requests) 이하만 받는다. 화면이 설치 값으로 등록해도 서버가 다시

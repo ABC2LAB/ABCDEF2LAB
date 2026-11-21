@@ -74,7 +74,9 @@ type ReadRequest struct {
 //   - 확정 단계 전용 몫(시간·요청)이 다 되면 보내지 않고 NotSent=confirmation_budget_exhausted 관찰을 돌려준다.
 //   - 요청 하나는 요청의 Timeout(확정 요청 전용 시간 상한, 사용자 결정 2026-11-18) 안에 끝나야 한다. 넘으면 E²가 끊고,
 //     보낸 뒤면 Sent=true·ResponseComplete=false·TimedOut=true(결과 불명)를 돌려준다. 다시 보내지 않는다.
-//   - 사용자 승인 모드에서 생성 요청이 거절·만료되면 보내지 않고 NotSent=approval_denied·approval_timeout이다.
+//   - 사용자 승인 모드에서 생성 요청이 거절·만료되면 보내지 않고 NotSent=approval_denied·approval_timeout이다. 그 생성
+//     요청의 운영자 승인 대기는 Timeout에 넣지 않는다. 승인 기한과 호출자 문맥(확정 단계 시간 몫) 안에서만 기다리고,
+//     Timeout은 승인 뒤 송신부터 센다(사용자 결정 2026-11-21). 자동 모드는 요청 전체가 Timeout 안이다.
 //
 // E³와 E²는 지금 같은 서버 프로세스다(server/e2_http_factory.go의 e2proxy.NewExecution). 표식은 Go 값으로만 넘어가고
 // 직렬화되지 않는다. 둘을 다른 프로세스로 나누면 그 전달 경로를 계약 문서에 적고 따로 시험한다.
