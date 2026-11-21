@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -70,10 +71,8 @@ func TestSessionJWTRefreshAndAtomicCapacity(t *testing.T) {
 	if e.AddRedactValues([]byte(tokens[0])) != nil || len(e.redactOnly) != before {
 		t.Fatal("같은 세션이 개수 상한을 소모함")
 	}
-	e.redactOnly = nil
-	for i := 0; i < maxRedactValues-2; i++ {
-		e.redactOnly = append(e.redactOnly, []byte(fmt.Sprintf("synthetic-opaque-session-%03d", i)))
-	}
+	// 계정 세션 칸(기본 64)에 두 자리만 남긴다. 세 조각짜리 새 세션은 하나도 더하지 않는다.
+	e.redactOnly, e.sessionRedactions = nil, maxRedactValues-2
 	before = len(e.redactOnly)
 	if e.AddRedactValues([]byte(tokens[0])) == nil || len(e.redactOnly) != before {
 		t.Fatal("JWT 조각 일부만 등록하고 안전하다고 처리함")
@@ -114,9 +113,7 @@ func TestSessionJWTResponseRotationKeepsModelSession(t *testing.T) {
 	}
 	// 새 세션의 세 조각을 모두 추가할 공간이 없으면 응답을 보류하고 목록을 일부만 바꾸지 않는다.
 	full := &Execution{cfg: Config{HeaderMode: HeaderTestAccountPassthrough}}
-	for i := 0; i < maxIssuedRedactValues-2; i++ {
-		full.redactOnly = append(full.redactOnly, []byte(fmt.Sprintf("issued-opaque-session-%04d", i)))
-	}
+	full.issuedRedactions = maxIssuedRedactValues - 2
 	before := len(full.redactOnly)
 	if full.safeHTTPResponse(response, nil) || len(full.redactOnly) != before {
 		t.Fatal("회전 세션 가림 상한을 우회함")
@@ -181,5 +178,88 @@ func TestRedactOutputPreservesPublicJSONAlongsideEscapedSession(t *testing.T) {
 	}
 	if !bytes.Equal(execution.RedactOutput(output), want) {
 		t.Fatal("이미 가린 출력을 다시 가리면 값이 바뀝니다")
+	}
+}
+
+// 확정 단계 직전 다시 로그인 몫은 처음부터 떼어 둔다. 모델 단계(마감 전)는 칸 − 몫까지만 쓰고, 마감 뒤에는 칸 전체를 쓴다.
+// 칸이 모자라면 아무것도 더하지 않고 ErrSessionRedactCapacity(ErrConfig 갈래)이며 거부 횟수를 센다.
+func TestSessionRedactReserveHeldForConfirmation(t *testing.T) {
+	e := &Execution{cfg: Config{HeaderMode: HeaderTestAccountPassthrough, SessionRedactCapacity: 12, ConfirmationRedactReserve: 6}}
+	add := func(subject string) error { return e.AddRedactValues([]byte(syntheticSessionJWT(subject))) }
+	// JWT 하나는 토큰·payload·signature 세 값이다. 모델 단계는 12 − 6 = 6자리.
+	if add("model-a") != nil || add("model-b") != nil {
+		t.Fatal("모델 단계 몫 안의 세션을 받지 않음")
+	}
+	before := len(e.redactOnly)
+	err := add("model-c")
+	if !errors.Is(err, ErrSessionRedactCapacity) || !errors.Is(err, ErrConfig) || len(e.redactOnly) != before || e.SessionRedactRefusals() != 1 {
+		t.Fatalf("모델 단계가 확정 몫을 씀: err=%v values=%d refusals=%d", err, len(e.redactOnly), e.SessionRedactRefusals())
+	}
+	e.modelClosed = true
+	if add("confirm-a") != nil || add("confirm-b") != nil {
+		t.Fatal("확정 단계 다시 로그인이 떼어 둔 자리를 쓰지 못함")
+	}
+	if err := add("confirm-c"); !errors.Is(err, ErrSessionRedactCapacity) || e.SessionRedactRefusals() != 2 {
+		t.Fatalf("칸을 넘어 등록함: %v", err)
+	}
+	for _, subject := range []string{"model-a", "model-b", "confirm-a", "confirm-b"} {
+		token := syntheticSessionJWT(subject)
+		if bytes.Contains(e.RedactOutput([]byte(token)), []byte(token)) {
+			t.Fatal("등록한 세션이 가려지지 않음")
+		}
+	}
+}
+
+// 대상 응답에서 받은 발급 세션은 계정 세션 칸을 먹지 않는다(모델이 스스로 로그인해 받은 토큰이 확정 몫을 차지하지 않게).
+func TestIssuedSessionsDoNotConsumeAccountSlots(t *testing.T) {
+	e := &Execution{cfg: Config{HeaderMode: HeaderTestAccountPassthrough, SessionRedactCapacity: 6, ConfirmationRedactReserve: 3}}
+	for i := 0; i < 4; i++ {
+		issued := syntheticSessionJWT(fmt.Sprintf("issued-%d", i))
+		response := &http.Response{StatusCode: 200, Header: http.Header{"Set-Cookie": {"session=" + issued + "; HttpOnly"}}}
+		if !e.safeHTTPResponse(response, nil) {
+			t.Fatal("발급 세션 응답을 보류함")
+		}
+	}
+	if e.issuedRedactions != 12 || e.sessionRedactions != 0 {
+		t.Fatalf("출처별 칸이 섞임: issued=%d session=%d", e.issuedRedactions, e.sessionRedactions)
+	}
+	if err := e.AddRedactValues([]byte(syntheticSessionJWT("account-a"))); err != nil {
+		t.Fatal("발급 세션 때문에 계정 세션을 받지 않음", err)
+	}
+}
+
+// 칸·몫 설정 범위: 음수, 상한 초과, 칸의 절반을 넘는 몫은 실행을 만들지 않는다. 0은 기본 64칸이다.
+func TestSessionRedactConfigBounds(t *testing.T) {
+	for name, cfg := range map[string]Config{
+		"negative capacity": {SessionRedactCapacity: -1},
+		"over maximum":      {SessionRedactCapacity: MaxSessionRedactValues + 1},
+		"negative reserve":  {SessionRedactCapacity: 12, ConfirmationRedactReserve: -1},
+		"reserve over half": {SessionRedactCapacity: 12, ConfirmationRedactReserve: 7},
+		"default half":      {ConfirmationRedactReserve: maxRedactValues/2 + 1},
+	} {
+		if _, err := NewExecution(t.Context(), cfg); !errors.Is(err, ErrConfig) {
+			t.Errorf("%s: 잘못된 칸 설정을 받음: %v", name, err)
+		}
+	}
+	if sessionRedactCapacity(Config{}) != maxRedactValues || sessionRedactCapacity(Config{SessionRedactCapacity: 1092}) != 1092 {
+		t.Fatal("기본·설정 칸 계산")
+	}
+}
+
+// 출력 가림 비용: 값마다 출력을 한 번 훑으므로 쌓인 값 수에 비례한다. 상한(칸)이 아니라 실제로 쌓인 값 수가 비용이다.
+// 측정: go test ./e2proxy/ -run '^$' -bench BenchmarkRedactOutputSessionValues -benchtime 50x
+func BenchmarkRedactOutputSessionValues(b *testing.B) {
+	output := bytes.Repeat([]byte(`{"line":"ordinary tool output without secrets 0123456789"}`+"\n"), 64<<10/60)
+	for _, n := range []int{64, 1092, 2208, MaxSessionRedactValues + maxIssuedRedactValues} {
+		b.Run(fmt.Sprintf("values-%d", n), func(b *testing.B) {
+			e := &Execution{cfg: Config{HeaderMode: HeaderTestAccountPassthrough}}
+			for i := 0; i < n; i++ {
+				e.redactOnly = append(e.redactOnly, []byte(fmt.Sprintf("synthetic-session-value-%06d-xxxxxxxx", i)))
+			}
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_ = e.RedactOutput(output)
+			}
+		})
 	}
 }
