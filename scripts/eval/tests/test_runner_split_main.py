@@ -428,6 +428,10 @@ class TestBeforeUp(Fixture):
             code, err = self.run_ours(execute_split_run=lambda *a: self.fail("회차를 시작하면 안 된다"))
         self.assertEqual((code, err.strip()), (2, "split.manifest: BUDGET_INVALID"))
 
+    def test_approval_caps_carry_the_manifest_limits_and_prices(self):
+        self.assertEqual(runner_split_main._approval_caps(MANIFEST), (400, 1000000, 200000, 800000))
+        self.assertIsNone(runner_split_main._approval_caps(None))  # 합성 모델 모드
+
     def test_manifest_without_prices_is_a_config_error(self):
         # 일찍 끝난 회차의 승인 비용 대조(가장 작은 예약)에 단가가 필요하다(#831 리뷰)
         for name in ("max_input_price_usd_micros_per_million", "max_output_price_usd_micros_per_million"):
