@@ -104,7 +104,8 @@ describe("ResetConfirmationBox", () => {
     vi.mocked(apiFetch)
       .mockResolvedValueOnce(required)
       .mockRejectedValueOnce(new ApiError(409, "reset_record_changed"))
-      .mockResolvedValueOnce(newer);
+      .mockResolvedValueOnce(newer)
+      .mockResolvedValueOnce(confirmed);
     const onConfirmed = vi.fn();
     render(<ResetConfirmationBox targetId="target-1" disabled={false} onConfirmed={onConfirmed} />);
     await screen.findByRole("region", { name: "대상 리셋 확인" });
@@ -115,7 +116,36 @@ describe("ResetConfirmationBox", () => {
     expect(onConfirmed).not.toHaveBeenCalled();
     expect(screen.queryByText(/리셋 확인됨/)).toBeNull();
     // 동의는 다시 체크해야 한다(새 기록에 다시 동의)
-    expect(screen.getByLabelText("리셋 진술 동의")).not.toBeChecked();
+    const agreement = screen.getByLabelText("리셋 진술 동의");
+    expect(agreement).not.toBeChecked();
+    await vi.waitFor(() => expect(agreement).toBeEnabled());
+    fireEvent.click(agreement);
+    const retry = screen.getByRole("button", { name: "리셋 확인" });
+    expect(retry).toBeEnabled();
+    await act(async () => fireEvent.click(retry));
+    expect(JSON.parse(String(vi.mocked(apiFetch).mock.calls[3][1]?.body))).toEqual({
+      statement_confirmed: true,
+      writes_ref: newer.reset.last_writes_ref,
+    });
+    expect(onConfirmed).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText(/리셋 확인됨/)).toBeInTheDocument();
+  });
+
+  it("확인 POST가 503이면 다시 읽은 뒤 잠금이 풀려 재시도할 수 있다", async () => {
+    vi.mocked(apiFetch)
+      .mockResolvedValueOnce(required)
+      .mockRejectedValueOnce(new ApiError(503, "product_control_unavailable"))
+      .mockResolvedValueOnce(required);
+    render(<ResetConfirmationBox targetId="target-1" disabled={false} />);
+    await screen.findByRole("region", { name: "대상 리셋 확인" });
+    fireEvent.click(screen.getByLabelText("리셋 진술 동의"));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "리셋 확인" })));
+    expect(await screen.findByRole("alert")).toHaveTextContent("리셋 확인을 남기지 못했습니다. 다시 시도해 주세요.");
+    const agreement = screen.getByLabelText("리셋 진술 동의");
+    await vi.waitFor(() => expect(agreement).toBeEnabled());
+    expect(agreement).not.toBeChecked();
+    fireEvent.click(agreement);
+    expect(screen.getByRole("button", { name: "리셋 확인" })).toBeEnabled();
   });
 
   it("상태를 못 읽으면 '필요 없음'으로 숨기지 않고 알린다", async () => {

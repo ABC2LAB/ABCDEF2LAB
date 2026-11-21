@@ -47,6 +47,9 @@ export function ResetConfirmationBox({
       setState(null);
       setFailed(true);
       reportState.current?.(null);
+    } finally {
+      // 확인 POST 실패 뒤 다시 읽는 동안 잠근 입력은 최신 상태 읽기가 끝나야 다시 연다.
+      if (version === generation.current) setBusy(false);
     }
   }, [targetId]);
 
