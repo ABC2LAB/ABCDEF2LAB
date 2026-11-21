@@ -47,9 +47,11 @@ type productTargetRecord struct {
 	ValidHours       int64                       `json:"valid_hours"`
 	SelectedIP       string                      `json:"selected_ip,omitempty"`
 	ReversibleWrites bool                        `json:"reversible_writes,omitempty"`
-	// WriteConsent는 쓰기 동의를 받을 때 화면이 보인 뜻의 판이다. productWriteConsentAuto는 "사용자 모드는 요청마다 확인,
-	// AI 자동 모드는 건별 확인 없이 보냄"에 동의한 것이다(C21). 이 칸이 없는 이전 등록은 "요청마다 확인"에 동의한
-	// 것이라 자동 모드에서 쓰기를 쓰지 않는다(재등록하면 새 판, #525 이경준 리뷰).
+	// WriteConsent는 쓰기 동의를 받을 때 화면이 보인 뜻의 판이다. productWriteConsentAuto(v2)는 "사용자 모드는 요청마다
+	// 확인, AI 자동 모드는 건별 확인 없이 보냄, DELETE 요청은 보내지 않음, 초기화·결제 같은 경로는 운영자 제외 경로에
+	// 넣어야 막힘"에 동의한 것이다(C21, 2026-11-21 문구를 실제 집행에 맞춤). 이 칸이 없는 이전 등록은 "요청마다 확인"에,
+	// v1은 "삭제·초기화·결제는 제외"(실제로는 DELETE만 막혔음)라는 문구에 동의한 것이라 둘 다 자동 모드에서 쓰기를 쓰지
+	// 않는다(재등록하면 새 판, #525 이경준 리뷰와 같은 방식). 확정 단계 시험 객체 생성 동의는 v1도 같은 뜻이다.
 	WriteConsent   string    `json:"write_consent,omitempty"`
 	ProofExpiresAt time.Time `json:"proof_expires_at"`
 }
@@ -58,7 +60,15 @@ const productMaxTargetAddresses = 32
 const productMaxTargetApprovalHours = diagnosisprep.MaxTargetApprovalHours
 const productTargetProbeTimeout = 3 * time.Second
 
-const productWriteConsentAuto = "auto_without_confirmation_v1"
+const productWriteConsentAuto = "auto_without_confirmation_v2"
+
+// productWriteConsentAutoV1은 이전 문구("삭제·초기화·결제는 제외")의 판이다. 기록은 그대로 읽지만 자동 모드 쓰기에는 쓰지 않는다.
+const productWriteConsentAutoV1 = "auto_without_confirmation_v1"
+
+// knownWriteConsent는 기록에 남을 수 있는 쓰기 동의 판이다.
+func knownWriteConsent(v string) bool {
+	return v == productWriteConsentAuto || v == productWriteConsentAutoV1
+}
 
 // autoWritesAllowed는 이 대상의 쓰기 승인을 AI 자동 모드가 건별 확인 없이 쓸 수 있는지다.
 func (r productTargetRecord) autoWritesAllowed() bool {
@@ -251,7 +261,7 @@ func (r *productTargetRegistry) replay(next productTargetRecord) error {
 	t := next.Target
 	old, exists := r.records[t.ID]
 	if !managementReference.MatchString(t.ID) || next.Principal != "ARTEX" || t.Revision < 1 || t.Origin == "" || len(next.ReadonlyBasis) < 20 ||
-		next.WriteConsent != "" && (next.WriteConsent != productWriteConsentAuto || !next.ReversibleWrites) {
+		next.WriteConsent != "" && (!knownWriteConsent(next.WriteConsent) || !next.ReversibleWrites) {
 		return errPreparation
 	}
 	if !exists {
