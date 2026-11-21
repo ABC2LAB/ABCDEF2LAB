@@ -389,7 +389,7 @@ class EvalSplitOverlayTests(unittest.TestCase):
         self.assertEqual(actions, {
             "api": "curl --fail --silent http://127.0.0.1:28081/api/product/health",
             "e2-host": "/bin/sh -c test -S /run/e2-host/audit.sock || test -f /run/e2-host/legacy-unavailable",
-            "postgres": "pg_isready -U postgres -d abc2lab",
+            "postgres": "pg_isready -h 127.0.0.1 -U postgres -d abc2lab",
             "preparation": "test -S /p/ipc/preparation.sock",
             "workbench": "curl --fail --silent http://10.252.0.12:8787/api/product/health"})
 

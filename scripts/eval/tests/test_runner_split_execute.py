@@ -488,6 +488,18 @@ ORDER_TAIL = ["seal", "meter:drained", "stop_round", "wait_closed", "workflow_sn
               "generation_verify", "llm_verified", "down", "remove_inputs", "sign", "sign"]  # 내린 뒤 러너 기록·결과 서명
 
 
+class TestObserverFlag(unittest.TestCase):
+    def test_flag_is_in_complete_and_invalid_results_without_path(self):
+        result, _, evidence = run(observer_login_file=True)
+        self.assertEqual((result["status"], result["observer_login_file"]), ("complete", True))
+        self.assertNotIn("observer_password", json.dumps(evidence.files, default=str))
+
+        def drop(ports):
+            ports.view["policy_fingerprint_sha256"] = ""
+        bad, _, _ = run(drop, observer_login_file=True)
+        self.assertEqual((bad["status"], bad["observer_login_file"]), ("invalid", True))
+
+
 class TestOrder(unittest.TestCase):
     def test_complete_run_order_and_result(self):
         result, ports, evidence = run()
@@ -498,6 +510,7 @@ class TestOrder(unittest.TestCase):
         self.assertEqual((result["stop_reason"], result["first_limit"]["value"], result["goal_common_sha256"]),
                          ("time_budget", "runner_time_budget", "c" * 64))
         self.assertEqual(result["sampling_overwrites"], {"execution": 0, "preparation": []})
+        self.assertIs(result["observer_login_file"], False)  # 화면 관찰 로그인 파일: 예/아니오만(기본 아니오)
         self.assertEqual(set(evidence.files), {"meter-preflight.json", "subnet-check.json", "pre-checks.json", "post-checks.json",
                                                "pre-probe.json",
                                                "post-probe.json", "task.json", "llm-summary.json",

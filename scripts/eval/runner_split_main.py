@@ -38,6 +38,7 @@ import preservation_v3_fields as v3f
 from runner_split_config import (
     SplitConfigError, SplitPlan, plan_split_run, read_manifest, split_compose_args, split_compose_environment,
 )
+from runner_observer import ObserverFileError, remove_observer_password, write_observer_password
 from runner_split_inputs import SplitInputsError, prepare_split_inputs, remove_split_inputs, run_openssl
 from runner_split_ports import DockerSplitPorts
 from runner_split_run import COMPLETE, SplitRunSpec, execute_split_run, missing_record_fields
@@ -175,6 +176,7 @@ def split_run_spec(config: RunnerConfig, plan: SplitPlan, declared: SplitDeclare
         environment_fingerprint=declared.environment_fingerprint, target_origin=declared.target_origin,
         observer_path=config.observer_path, observer_readonly_ref=config.observer_readonly_ref,
         allowed_listens=frozenset(Listener(entry.address, entry.port) for entry in config.host_listen_allowlist),
+        observer_login_file=config.split.observer_password_file is not None,
         e3_disabled_required=config.split.e3_disabled_required,
         approval_caps=_approval_caps(manifest))
     # 실행 입력을 만드는 시점에 v1.1 기록 칸을 본다. 비면 설정 오류(종료 코드 2, 회차를 만들지 않음)다(#745 리뷰).
@@ -213,6 +215,8 @@ def run_split_ours(config: RunnerConfig, preflight: object, *, repeat_index: int
                                       wide_writes=split.wide_writes, valid_for_hours=split.install_valid_hours,
                                       max_runs=split.max_runs, path_key=path_key, openssl=run_openssl, local_model=local_model,
                                       e2_audit_key_variable=None if split.e2_v3 is None else split.e2_v3.audit_key_variable)
+        if split.observer_password_file is not None:
+            write_observer_password(split.observer_password_file, inputs.admin)
         env = split_compose_environment(plan, evidence_dir=directory.meter, protected_env=inputs.compose_env,
                                         scripted_plan=scripted_plan)
         docker = Docker(docker_runner, client_environment(environ, env), config.docker_timeout_seconds)
@@ -238,11 +242,11 @@ def run_split_ours(config: RunnerConfig, preflight: object, *, repeat_index: int
     except BaseException as exc:
         # 회차 흐름(execute_split_run) 전의 어떤 실패·중단에서도 보호 입력을 먼저 지운다(#674 리뷰: 모델 키 모양 오류·
         # 운영자 중단이 정리를 건너뛰었다). 고정 code 오류는 code만 내고 종료 코드 2, 중단은 정리 뒤 다시 올린다.
-        _abandon(directory, inputs)
+        _abandon(directory, inputs, split.observer_password_file)
         if isinstance(exc, (RunnerConfigError, SplitConfigError)):
             print("\n".join(exc.errors), file=sys.stderr)
             return 2
-        if isinstance(exc, (SplitInputsError, DockerError, ProductAPIError)):
+        if isinstance(exc, (SplitInputsError, DockerError, ProductAPIError, ObserverFileError)):
             print(str(exc), file=sys.stderr)
             return 2
         if isinstance(exc, Exception):
@@ -278,9 +282,13 @@ def _copy_scripted_plan(source, run_directory, origin: str, model: str):
     return target, hashlib.sha256(data).hexdigest()
 
 
-def _abandon(directory, inputs) -> None:
-    """띄우기 전 실패는 시도가 아니다(B와 같이 exit 2, 회차 디렉터리 삭제). 보호 입력(관리자·DB 비밀번호·CA 키)을 먼저
-    지워 디렉터리 삭제가 실패해도 비밀이 남지 않게 한다."""
+def _abandon(directory, inputs, observer_file=None) -> None:
+    """띄우기 전 실패는 시도가 아니다(B와 같이 exit 2, 회차 디렉터리 삭제). 보호 입력(관리자·DB 비밀번호·CA 키)과 관찰
+    로그인 파일을 먼저 지워 디렉터리 삭제가 실패해도 비밀이 남지 않게 한다."""
+    try:
+        remove_observer_password(observer_file)
+    except ObserverFileError:
+        print("observer_file: REMOVE_FAILED — 관찰 로그인 파일을 직접 지워야 한다", file=sys.stderr)
     if inputs is not None:
         try:
             remove_split_inputs(inputs.directory, missing_ok=True)

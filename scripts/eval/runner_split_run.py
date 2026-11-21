@@ -275,6 +275,9 @@ class SplitRunSpec:
     observer_path: str = ""
     observer_readonly_ref: str = ""
     allowed_listens: frozenset = frozenset()  # loopback 밖 호스트 리슨 허용(설정 허용 목록, B allowed_host_listens의 api 경우)
+    # 화면 관찰 로그인 파일(split.observer_password_file)을 썼는지. 결과에 예/아니오만 남긴다(경로·값 없음, 설정 지문 밖).
+    # 공식 O 회차는 모두 관찰하거나 모두 관찰하지 않는다(공식 회차 절차 6절, 2026-11-20 사용자).
+    observer_login_file: bool = False
     # E③ 비활성 요구(설정 split.e3_disabled_required). 켜면 그 회차 정책의 확정 몫 0과 기록 disabled/declaration_missing을
     # 확인하고 회차 조건(서명 근거)에 남긴다. purpose와 따로다(2026-11-20 사용자).
     e3_disabled_required: bool = False
@@ -1093,7 +1096,8 @@ def execute_split_run(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFile
     elif not reasons:
         reasons.append("record_build_failed")  # 완료까지 왔는데 기록이 없으면 서명할 것이 없다
     base = {"format": SPLIT_RESULT_FORMAT, "run_id": spec.run_id, "side": "ours", "layout": LAYOUT, "e2_mode": E2_SPLIT_PRODUCT,
-            "project": spec.project, "started_at": started_at, "finished_at": _stamp(clock)}
+            "project": spec.project, "started_at": started_at, "finished_at": _stamp(clock),
+            "observer_login_file": spec.observer_login_file}
     result = None
     if not reasons:
         payload = dict(base, status=COMPLETE, images=dict(spec.image_ids), task_request_sha256=state.task_request_sha256,

@@ -38,10 +38,12 @@ SPLIT_FIELDS = frozenset({"product_tag", "product_source_sha", "image_ids", "man
                           "registration_valid_hours", "wide_writes", "profile_id", "task_wait_seconds",
                           "poll_interval_seconds", "boundary_stop_seconds", "cli_usage_names"})
 # 선택 칸. 합성 모델 모드(2026-11-18 사용자 결정 (a))는 보존 회차(수용시험 목적)에서만, 실행 출처 synthetic_fixture로만 받는다.
+# observer_password_file: O 회차를 제품 화면으로 지켜볼 때 쓰는 관리자 로그인 파일 경로(runner_observer, 2026-11-20 사용자).
+# 화면 관찰 여부는 회차 조건이 아니라 서명 설정 지문에 넣지 않는다.
 # e3_disabled_required: E③ 비활성 요구(2026-11-20 사용자). 켜면 러너가 그 회차 정책의 확정 몫이 0이고 확정 단계 기록이
 # disabled/declaration_missing인지 확인한다(아니면 회차 무효). 공식 회차(purpose official)는 켜져 있어야 설정 검사를 통과한다.
 # 확정 단계를 켠 회차는 끈다. purpose는 채점 가능 여부만 정하고 이 검사를 걸지 않는다.
-SPLIT_OPTIONAL_FIELDS = frozenset({"synthetic_model", "e2_v3", "e3_disabled_required"})
+SPLIT_OPTIONAL_FIELDS = frozenset({"synthetic_model", "e2_v3", "observer_password_file", "e3_disabled_required"})
 MAX_MANIFEST_BYTES = 64 * 1024
 MAX_EVIDENCE_BYTES = 1 << 30
 MAX_HOURS = 24 * 30
@@ -88,6 +90,8 @@ class SplitConfig:
     cli_usage_names: tuple[str, ...] = ()
     # E② v3 저널 수집(runner_e2v3). 없으면 수집하지 않는다(지금 제품은 v2 저널·Recorder 미주입, 고정 초안 §20).
     e2_v3: E2V3Settings | None = None
+    # 관찰 로그인 파일(runner_observer). 없으면 쓰지 않는다.
+    observer_password_file: Path | None = None
     # E③ 비활성 요구(위 SPLIT_OPTIONAL_FIELDS 설명). 없으면 거짓.
     e3_disabled_required: bool = False
 
@@ -98,6 +102,19 @@ class SplitConfig:
 
 def _int(value: object, low: int, high: int) -> bool:
     return type(value) is int and low <= value <= high
+
+
+def _config_files(raw: dict, config: RunnerConfig) -> list[Path]:
+    """러너 설정이 가리키는 파일들(키·비밀·선언 보조·manifest·합성 계획). 관찰 로그인 파일과 디렉터리를 나누는지 볼 때 쓴다."""
+    paths = [config.secrets_env_file, config.runner_key_path, config.path_key_file, config.engine_rules,
+             (config.findings or {}).get("vocabulary_path"), raw.get("manifest_path"),
+             (raw.get("synthetic_model") or {}).get("plan_path") if isinstance(raw.get("synthetic_model"), dict) else None]
+    return [Path(p) for p in paths if isinstance(p, (str, Path)) and str(p).startswith("/")]
+
+
+def _shares_directory(observer: Path, files: list[Path]) -> bool:
+    folder = observer.resolve().parent
+    return any(path.resolve() == observer.resolve() or path.resolve().is_relative_to(folder) for path in files)
 
 
 def parse_split(raw: object, config: RunnerConfig) -> SplitConfig:
@@ -165,6 +182,16 @@ def parse_split(raw: object, config: RunnerConfig) -> SplitConfig:
     except CliUsageError:
         errors.append("config.split.cli_usage_names: INVALID")
         cli_names = ()
+    observer = raw.get("observer_password_file")
+    if "observer_password_file" in raw:
+        runs_root = Path(config.runs_root).resolve()
+        if not isinstance(observer, str) or not observer.startswith("/") or observer.endswith("/"):
+            errors.append("config.split.observer_password_file: INVALID")
+        elif Path(observer).resolve().is_relative_to(runs_root):
+            errors.append("config.split.observer_password_file: INSIDE_RUNS_ROOT")  # 근거와 같이 복사되지 않게 밖에 둔다
+        elif _shares_directory(Path(observer), _config_files(raw, config)):
+            # 관찰 파일 디렉터리 안에는 다른 설정 파일이 없어야 한다(#824 리뷰: 같은 경로면 쓰기·정리가 그 키 파일을 지운다).
+            errors.append("config.split.observer_password_file: SHARED_DIRECTORY")
     e3_disabled_required = raw.get("e3_disabled_required", False)
     if type(e3_disabled_required) is not bool:
         errors.append("config.split.e3_disabled_required: INVALID")
@@ -190,7 +217,9 @@ def parse_split(raw: object, config: RunnerConfig) -> SplitConfig:
                        poll_interval_seconds=raw["poll_interval_seconds"], boundary_stop_seconds=raw["boundary_stop_seconds"],
                        synthetic_plan_path=None if synthetic is None else Path(synthetic["plan_path"]),
                        synthetic_max_tokens=None if synthetic is None else synthetic["max_tokens"],
-                       cli_usage_names=cli_names, e2_v3=e2_v3, e3_disabled_required=e3_disabled_required)
+                       cli_usage_names=cli_names, e2_v3=e2_v3,
+                       observer_password_file=None if observer is None else Path(observer),
+                       e3_disabled_required=e3_disabled_required)
 
 
 def read_manifest(path: Path) -> dict:
