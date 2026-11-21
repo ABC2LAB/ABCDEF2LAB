@@ -101,6 +101,7 @@ describe("getAccounts (실 GET · 매핑 · fail-closed)", () => {
         { label: "owner", classification: "test", classified_by: "op-1", classified_at: "2026-11-10T00:00:00Z" },
         { label: "peer", classification: "real", reason: "target_reapproved" },
         { label: "guest", classification: "real", credential_configured: true },
+        { label: "odd", classification: "real", credential_configured: "true" }, // 참(boolean)이 아니면 미등록
         { label: "User@x", classification: "test" }, // 라벨 형식 밖 → 버림
         { classification: "test" }, // 라벨 없음 → 버림
       ],
@@ -139,6 +140,15 @@ describe("getAccounts (실 GET · 매핑 · fail-closed)", () => {
         note: undefined,
         // 자격 등록 여부는 메모가 아니라 credential_configured 칸으로만 나른다(값 없음).
         credentialConfigured: true,
+      },
+      {
+        ref: "odd",
+        origin: "https://a.example",
+        cls: "unmarked",
+        approvedBy: undefined,
+        approvedAt: undefined,
+        note: undefined,
+        credentialConfigured: false,
       },
     ]);
   });
