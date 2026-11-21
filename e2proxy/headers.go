@@ -2,6 +2,7 @@ package e2proxy
 
 import (
 	"bytes"
+	"math"
 	"net/http"
 	"strings"
 )
@@ -198,11 +199,12 @@ func (e *Execution) safeHTTPResponseLocked(response *http.Response, body []byte)
 			return false
 		}
 		// 회전 발급한 JWT도 인증 준비와 같은 출력 전용 조각 가림을 적용한다. 응답 보류용 보호 값은 늘리지 않는다.
-		fresh, ok := freshSessionRedactions(e.redactOnly, issued, maxIssuedRedactValues)
-		if !ok {
+		fresh, ok := freshSessionRedactions(e.redactOnly, issued, math.MaxInt)
+		if !ok || e.issuedRedactions+len(fresh) > maxIssuedRedactValues {
 			return false
 		}
 		e.redactOnly = append(e.redactOnly, fresh...)
+		e.issuedRedactions += len(fresh)
 	}
 	return true
 }

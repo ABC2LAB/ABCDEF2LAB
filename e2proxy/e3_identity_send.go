@@ -216,7 +216,7 @@ func (c *e3ProgramCall) finish(r *Receipt, ctx context.Context) {
 			c.audit.NotSentReason = e3contract.NotSentPolicyDenied
 		}
 	}
-	if r.ForwardAttempted && !r.ResponseComplete && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+	if r.ForwardAttempted && !r.ResponseComplete && deadlinePassed(ctx) {
 		c.audit.TimedOut = true
 	}
 	*r.E3Audit = c.audit
@@ -278,4 +278,15 @@ func (c *e3ProgramCall) inspect(response *http.Response, body []byte, r *Receipt
 	_, _ = h.Write([]byte(subject))
 	c.audit.SubjectDigest = hex.EncodeToString(h.Sum(nil))
 	c.audit.Normal = oracle.StateYes
+}
+
+// deadlinePassed는 요청 문맥이 기한에 닿았는지다. 송신은 E② 요청 시간 상한(workCtx)으로도 끊기는데, 그 기한이 호출자 기한과
+// 거의 같으면 호출자 문맥의 타이머 콜백이 늦어 Err()가 아직 비어 있을 수 있다(부하 중 간헐, 2026-11-21). 기한 시각이 지났으면
+// 시간 초과로 본다.
+func deadlinePassed(ctx context.Context) bool {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return true
+	}
+	deadline, ok := ctx.Deadline()
+	return ok && !time.Now().Before(deadline)
 }

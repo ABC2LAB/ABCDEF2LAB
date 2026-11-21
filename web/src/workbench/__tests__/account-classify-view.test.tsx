@@ -25,6 +25,7 @@ function serve(statement: unknown = "소유·승인된 일회용 시험 계정�
         ],
         ...(statement === OMIT ? {} : { account_statement: statement }),
       }) as never;
+    if (path === "/api/product/targets/t1/login" && method === "GET") return Promise.resolve({}) as never;
     if (method === "POST") return Promise.resolve({}) as never; // 등록·mark-test·unmark
     return Promise.reject(new Error(`unexpected ${method} ${path}`)) as never;
   });
@@ -207,5 +208,245 @@ describe("AccountClassifyLive 지연 응답 귀속", () => {
     expect(within(list).getByText("account-b")).toBeInTheDocument();
     expect(within(list).queryByText("account-a")).toBeNull();
     expect(screen.queryByText(/작업을 처리하지 못했습니다/)).toBeNull();
+  });
+});
+
+// 대상 로그인 방식(GET·PUT …/login)과 계정 자격(PUT …/credential). 자격 값은 비제어 입력에서 보낼 때 한 번 읽고 바로 비운다.
+describe("AccountClassifyLive 로그인 방식 · 자격 입력", () => {
+  // 합성 값(특정 대상 앱 값이 아님).
+  const SAVED_LOGIN = {
+    method: "POST",
+    path: "/session/new",
+    format: "json",
+    username_field: "user_name",
+    password_field: "pass_word",
+    json_field: "data.access",
+    header: "X-Session",
+    prefix: "Token ",
+  };
+  const USERNAME = "synthetic-user-7f3a";
+  const PASSWORD = "synthetic-pass-9c2e";
+
+  type Opts = {
+    login?: unknown;
+    putLogin?: (body: unknown) => Promise<unknown>;
+    putCredential?: () => Promise<unknown>;
+    configuredAfterWrite?: boolean;
+  };
+  function serveLogin(opts: Opts = {}) {
+    let credentialWritten = false;
+    api.mockImplementation((path: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (path === "/api/product/targets")
+        return Promise.resolve({ targets: [{ id: "t1", origin: "https://a.example", state: "approved" }] }) as never;
+      if (path === "/api/product/targets/t1/accounts" && method === "GET")
+        return Promise.resolve({
+          accounts: [
+            { label: "owner", classification: "test", classified_by: "op-1", credential_configured: true },
+            {
+              label: "legacy",
+              classification: "real",
+              ...(credentialWritten && opts.configuredAfterWrite ? { credential_configured: true } : {}),
+            },
+          ],
+          account_statement: "진술",
+        }) as never;
+      if (path === "/api/product/targets/t1/login" && method === "GET")
+        return Promise.resolve(opts.login === undefined ? {} : { login: opts.login }) as never;
+      if (path === "/api/product/targets/t1/login" && method === "PUT")
+        return (opts.putLogin ?? ((b) => Promise.resolve({ login: b })))(JSON.parse(String(init?.body))) as never;
+      if (path === "/api/product/targets/t1/accounts/legacy/credential" && method === "PUT") {
+        credentialWritten = true;
+        return (
+          opts.putCredential ?? (() => Promise.resolve({ account: { label: "legacy", credential_configured: true } }))
+        )() as never;
+      }
+      return Promise.reject(new Error(`unexpected ${method} ${path}`)) as never;
+    });
+  }
+
+  const loginSection = () => within(screen.getByRole("region", { name: "대상 로그인 방식" }));
+  const row = (label: string) =>
+    within(screen.getByLabelText("계정 목록")).getByText(label).closest("li") as HTMLElement;
+
+  it("저장된 로그인 방식을 칸에 채우고, 고쳐 저장하면 PUT login(자격 값 없음)", async () => {
+    serveLogin({ login: SAVED_LOGIN });
+    render(<AccountClassifyLive />);
+    await pickTarget();
+    expect(await screen.findByLabelText("로그인 경로 (POST)")).toHaveValue("/session/new");
+    expect(screen.getByLabelText("응답 JSON 칸 (점으로 구분)")).toHaveValue("data.access");
+    expect(screen.getByLabelText("헤더 값 앞붙임 (선택)")).toHaveValue("Token ");
+    expect(loginSection().getByText(/저장된 로그인 방식이 있습니다/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("로그인 경로 (POST)"), { target: { value: "/session/start" } });
+    fireEvent.click(screen.getByRole("button", { name: "로그인 방식 저장" }));
+    await screen.findByText("저장했습니다.");
+    const put = api.mock.calls.find(([p, i]) => p === "/api/product/targets/t1/login" && i?.method === "PUT");
+    expect(JSON.parse(String(put?.[1]?.body))).toEqual({ ...SAVED_LOGIN, path: "/session/start" });
+  });
+
+  it("쿠키 방식으로 바꾸면 쿠키 이름만 보낸다", async () => {
+    serveLogin({ login: SAVED_LOGIN });
+    render(<AccountClassifyLive />);
+    await pickTarget();
+    await screen.findByLabelText("로그인 경로 (POST)");
+    fireEvent.change(screen.getByLabelText("세션 위치"), { target: { value: "cookies" } });
+    fireEvent.change(screen.getByLabelText("세션 쿠키 이름 (쉼표로 구분 · 최대 8개)"), {
+      target: { value: "sid, csrf" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "로그인 방식 저장" }));
+    await screen.findByText("저장했습니다.");
+    const put = api.mock.calls.find(([p, i]) => p === "/api/product/targets/t1/login" && i?.method === "PUT");
+    expect(JSON.parse(String(put?.[1]?.body))).toEqual({
+      method: "POST",
+      path: "/session/new",
+      format: "json",
+      username_field: "user_name",
+      password_field: "pass_word",
+      cookies: ["sid", "csrf"],
+    });
+  });
+
+  it("미설정이면 안내하고, 칸이 형식 밖이면 저장 버튼이 막힌다", async () => {
+    serveLogin();
+    render(<AccountClassifyLive />);
+    await pickTarget();
+    expect(await loginSection().findByText(/저장된 로그인 방식이 없습니다/)).toBeInTheDocument();
+    const save = screen.getByRole("button", { name: "로그인 방식 저장" });
+    expect(save).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("로그인 경로 (POST)"), { target: { value: "/session/new" } });
+    fireEvent.change(screen.getByLabelText("사용자명 칸 이름"), { target: { value: "user_name" } });
+    fireEvent.change(screen.getByLabelText("비밀번호 칸 이름"), { target: { value: "pass_word" } });
+    fireEvent.change(screen.getByLabelText("응답 JSON 칸 (점으로 구분)"), { target: { value: "data.access" } });
+    expect(save).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("로그인 경로 (POST)"), { target: { value: "/session?x=1" } });
+    expect(save).toBeDisabled();
+  });
+
+  it("저장 실패는 서버 사유를 한국어 문구로 보인다", async () => {
+    serveLogin({ login: SAVED_LOGIN, putLogin: () => Promise.reject(new Error("invalid_target_login")) });
+    render(<AccountClassifyLive />);
+    await pickTarget();
+    await screen.findByLabelText("로그인 경로 (POST)");
+    fireEvent.click(screen.getByRole("button", { name: "로그인 방식 저장" }));
+    expect(await loginSection().findByRole("alert")).toHaveTextContent(/승인 경로 밖/);
+  });
+
+  it("형식 밖 login 응답은 미설정이 아니라 읽기 실패로 보인다", async () => {
+    serveLogin({ login: { method: "GET", path: "/x" } });
+    render(<AccountClassifyLive />);
+    await pickTarget();
+    expect(await loginSection().findByText("로그인 방식을 불러오지 못했습니다.")).toBeInTheDocument();
+    expect(loginSection().queryByText(/저장된 로그인 방식이 없습니다/)).toBeNull();
+  });
+
+  it("자격 등록 표시는 credential_configured 로만 보인다", async () => {
+    serveLogin();
+    render(<AccountClassifyLive />);
+    await pickTarget();
+    expect(within(row("owner")).getByText("자격 등록됨")).toBeInTheDocument();
+    expect(within(row("legacy")).getByText("자격 없음")).toBeInTheDocument();
+  });
+
+  it("자격 입력: 보내는 순간 칸을 비우고, 값은 PUT 본문에만 실린다(저장소 · URL · 로그 · 화면에 없음)", async () => {
+    serveLogin({ configuredAfterWrite: true });
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+    const logs = (["log", "info", "warn", "error", "debug"] as const).map((k) => vi.spyOn(console, k));
+    const { container } = render(<AccountClassifyLive />);
+    await pickTarget();
+    fireEvent.click(within(row("legacy")).getByRole("button", { name: "자격 입력" }));
+    const user = within(row("legacy")).getByLabelText("사용자명") as HTMLInputElement;
+    const pass = within(row("legacy")).getByLabelText("비밀번호") as HTMLInputElement;
+    expect(pass).toHaveAttribute("type", "password");
+    // 대상 시험 계정 자격이라 브라우저 비밀번호 관리자에 들어가지 않게 한다(#842 경준 리뷰).
+    for (const el of [user, pass]) {
+      expect(el).toHaveAttribute("autocomplete", "off");
+      expect(el).toHaveAttribute("data-1p-ignore");
+      expect(el).toHaveAttribute("data-lpignore", "true");
+    }
+    // form 제출이 아니다(브라우저 비밀번호 저장 제안 · 주소창 query 로 새지 않게).
+    expect(pass.closest("form")).toBeNull();
+    fireEvent.change(user, { target: { value: USERNAME } });
+    fireEvent.change(pass, { target: { value: PASSWORD } });
+    fireEvent.click(within(row("legacy")).getByRole("button", { name: "자격 등록" }));
+    // 응답을 기다리기 전에 이미 비어 있다.
+    expect(user.value).toBe("");
+    expect(pass.value).toBe("");
+    expect(api).toHaveBeenCalledWith(
+      "/api/product/targets/t1/accounts/legacy/credential",
+      expect.objectContaining({ method: "PUT", body: JSON.stringify({ username: USERNAME, password: PASSWORD }) }),
+    );
+    // 성공하면 목록을 다시 읽어 서버 표시로 바뀌고 입력 칸은 닫힌다.
+    expect(await within(row("legacy")).findByText("자격 등록됨")).toBeInTheDocument();
+    expect(within(row("legacy")).queryByLabelText("비밀번호")).toBeNull();
+    const leaked = (v: unknown) =>
+      JSON.stringify(v ?? null).includes(PASSWORD) || JSON.stringify(v ?? null).includes(USERNAME);
+    expect(container.innerHTML).not.toContain(PASSWORD);
+    expect(container.innerHTML).not.toContain(USERNAME);
+    expect(window.location.href).not.toContain(PASSWORD);
+    expect(setItem.mock.calls.some(leaked)).toBe(false);
+    for (const spy of logs) expect(spy.mock.calls.some(leaked)).toBe(false);
+    setItem.mockRestore();
+    for (const spy of logs) spy.mockRestore();
+  });
+
+  it("6바이트보다 짧은 비밀번호는 등록 뒤 '실행 때 로그인하지 않음'을 따로 알린다(값 없음)", async () => {
+    serveLogin({ configuredAfterWrite: true });
+    const { container } = render(<AccountClassifyLive />);
+    await pickTarget();
+    fireEvent.click(within(row("legacy")).getByRole("button", { name: "자격 입력" }));
+    fireEvent.change(within(row("legacy")).getByLabelText("사용자명"), { target: { value: USERNAME } });
+    fireEvent.change(within(row("legacy")).getByLabelText("비밀번호"), { target: { value: "abcde" } });
+    fireEvent.click(within(row("legacy")).getByRole("button", { name: "자격 등록" }));
+    expect(await screen.findByText(/legacy: 자격은 등록했지만 비밀번호가 6바이트보다 짧아/)).toBeInTheDocument();
+    expect(container.innerHTML).not.toContain("abcde");
+    // 6바이트면 안내하지 않는다.
+    fireEvent.click(within(row("legacy")).getByRole("button", { name: "자격 다시 입력" }));
+    expect(screen.queryByText(/자격은 등록했지만/)).toBeNull();
+    fireEvent.change(within(row("legacy")).getByLabelText("사용자명"), { target: { value: USERNAME } });
+    fireEvent.change(within(row("legacy")).getByLabelText("비밀번호"), { target: { value: "abcdef" } });
+    fireEvent.click(within(row("legacy")).getByRole("button", { name: "자격 등록" }));
+    await waitFor(() => expect(within(row("legacy")).queryByLabelText("비밀번호")).toBeNull());
+    expect(screen.queryByText(/자격은 등록했지만/)).toBeNull();
+  });
+
+  it("등록이 실패해도 칸은 비어 있고, 서버 사유를 그 계정 줄에 한국어로 보인다", async () => {
+    serveLogin({ putCredential: () => Promise.reject(new Error("account_not_found")) });
+    render(<AccountClassifyLive />);
+    await pickTarget();
+    fireEvent.click(within(row("legacy")).getByRole("button", { name: "자격 입력" }));
+    const user = within(row("legacy")).getByLabelText("사용자명") as HTMLInputElement;
+    const pass = within(row("legacy")).getByLabelText("비밀번호") as HTMLInputElement;
+    fireEvent.change(user, { target: { value: USERNAME } });
+    fireEvent.change(pass, { target: { value: PASSWORD } });
+    fireEvent.click(within(row("legacy")).getByRole("button", { name: "자격 등록" }));
+    expect(await within(row("legacy")).findByRole("alert")).toHaveTextContent(/계정을 찾지 못했습니다/);
+    expect(user.value).toBe("");
+    expect(pass.value).toBe("");
+    expect(within(row("legacy")).getByText("자격 없음")).toBeInTheDocument();
+  });
+
+  it("형식 밖 자격(빈 비밀번호)은 보내지 않고 칸을 비운다", async () => {
+    serveLogin();
+    render(<AccountClassifyLive />);
+    await pickTarget();
+    fireEvent.click(within(row("legacy")).getByRole("button", { name: "자격 입력" }));
+    const user = within(row("legacy")).getByLabelText("사용자명") as HTMLInputElement;
+    fireEvent.change(user, { target: { value: USERNAME } });
+    fireEvent.click(within(row("legacy")).getByRole("button", { name: "자격 등록" }));
+    expect(within(row("legacy")).getByRole("alert")).toHaveTextContent(/자격 형식이 맞지 않습니다/);
+    expect(user.value).toBe("");
+    expect(api).not.toHaveBeenCalledWith(expect.stringContaining("/credential"), expect.anything());
+  });
+
+  it("서버가 credential_configured 를 참으로 주지 않으면 등록됨으로 보이지 않는다", async () => {
+    serveLogin({ putCredential: () => Promise.resolve({ account: { label: "legacy" } }) });
+    render(<AccountClassifyLive />);
+    await pickTarget();
+    fireEvent.click(within(row("legacy")).getByRole("button", { name: "자격 입력" }));
+    fireEvent.change(within(row("legacy")).getByLabelText("사용자명"), { target: { value: USERNAME } });
+    fireEvent.change(within(row("legacy")).getByLabelText("비밀번호"), { target: { value: PASSWORD } });
+    fireEvent.click(within(row("legacy")).getByRole("button", { name: "자격 등록" }));
+    expect(await within(row("legacy")).findByRole("alert")).toHaveTextContent(/자격 등록을 확인하지 못했습니다/);
+    expect(within(row("legacy")).getByText("자격 없음")).toBeInTheDocument();
   });
 });
