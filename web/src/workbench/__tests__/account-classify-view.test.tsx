@@ -357,8 +357,12 @@ describe("AccountClassifyLive 로그인 방식 · 자격 입력", () => {
     const user = within(row("legacy")).getByLabelText("사용자명") as HTMLInputElement;
     const pass = within(row("legacy")).getByLabelText("비밀번호") as HTMLInputElement;
     expect(pass).toHaveAttribute("type", "password");
-    expect(pass).toHaveAttribute("autocomplete", "new-password");
-    expect(user).toHaveAttribute("autocomplete", "off");
+    // 대상 시험 계정 자격이라 브라우저 비밀번호 관리자에 들어가지 않게 한다(#842 경준 리뷰).
+    for (const el of [user, pass]) {
+      expect(el).toHaveAttribute("autocomplete", "off");
+      expect(el).toHaveAttribute("data-1p-ignore");
+      expect(el).toHaveAttribute("data-lpignore", "true");
+    }
     // form 제출이 아니다(브라우저 비밀번호 저장 제안 · 주소창 query 로 새지 않게).
     expect(pass.closest("form")).toBeNull();
     fireEvent.change(user, { target: { value: USERNAME } });
@@ -383,6 +387,26 @@ describe("AccountClassifyLive 로그인 방식 · 자격 입력", () => {
     for (const spy of logs) expect(spy.mock.calls.some(leaked)).toBe(false);
     setItem.mockRestore();
     for (const spy of logs) spy.mockRestore();
+  });
+
+  it("6바이트보다 짧은 비밀번호는 등록 뒤 '실행 때 로그인하지 않음'을 따로 알린다(값 없음)", async () => {
+    serveLogin({ configuredAfterWrite: true });
+    const { container } = render(<AccountClassifyLive />);
+    await pickTarget();
+    fireEvent.click(within(row("legacy")).getByRole("button", { name: "자격 입력" }));
+    fireEvent.change(within(row("legacy")).getByLabelText("사용자명"), { target: { value: USERNAME } });
+    fireEvent.change(within(row("legacy")).getByLabelText("비밀번호"), { target: { value: "abcde" } });
+    fireEvent.click(within(row("legacy")).getByRole("button", { name: "자격 등록" }));
+    expect(await screen.findByText(/legacy: 자격은 등록했지만 비밀번호가 6바이트보다 짧아/)).toBeInTheDocument();
+    expect(container.innerHTML).not.toContain("abcde");
+    // 6바이트면 안내하지 않는다.
+    fireEvent.click(within(row("legacy")).getByRole("button", { name: "자격 다시 입력" }));
+    expect(screen.queryByText(/자격은 등록했지만/)).toBeNull();
+    fireEvent.change(within(row("legacy")).getByLabelText("사용자명"), { target: { value: USERNAME } });
+    fireEvent.change(within(row("legacy")).getByLabelText("비밀번호"), { target: { value: "abcdef" } });
+    fireEvent.click(within(row("legacy")).getByRole("button", { name: "자격 등록" }));
+    await waitFor(() => expect(within(row("legacy")).queryByLabelText("비밀번호")).toBeNull());
+    expect(screen.queryByText(/자격은 등록했지만/)).toBeNull();
   });
 
   it("등록이 실패해도 칸은 비어 있고, 서버 사유를 그 계정 줄에 한국어로 보인다", async () => {

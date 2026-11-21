@@ -4,8 +4,9 @@
 // 데이터는 workbench/live/accounts seam 에서만 온다. 토큰·세션은 다루지 않는다(절대규칙 2 · S09).
 // ※ 대상 로그인 방식(경로·형식·필드 이름·세션 위치)과 계정 자격 입력도 여기서 한다. 자격 칸(사용자명·비밀번호)은 React
 //   상태에 두지 않는 비제어 입력이다. 보낼 때 DOM 칸에서 한 번 읽고 바로 비운다(보내지 않는 경우도). URL·브라우저 저장소·
-//   로그에 넣지 않고, 등록 여부는 서버 목록의 credential_configured 로만 보인다. form 요소를 쓰지 않아 브라우저 비밀번호
-//   저장 제안이 뜨지 않게 하고 autoComplete 도 끈다.
+//   로그에 넣지 않고, 등록 여부는 서버 목록의 credential_configured 로만 보인다. 브라우저 비밀번호 관리자에 들어가지
+//   않게 form 요소를 쓰지 않고 autoComplete="off"·관리자 무시 표시(data-1p-ignore 등)를 단다 — 이 칸은 운영자 자신의
+//   로그인이 아니라 대상 시험 계정 자격이다. 브라우저가 모든 경우에 저장 제안을 안 한다고 보장하지는 않는다(#842 경준 리뷰).
 // ※ §8 fail-closed: 서버 분류 'test'(승인된 시험)만 시험 계정. real·미표시·판단 불가는 실계정 취급.
 // ※ 이 분류가 지금 탐색·모델 입력 권한을 바로 주지 않는다(허용은 승인된 일회용 시험 계정의 대상 발급 세션에 한함).
 // ※ 쓰기: 등록(label)·시험 표시(mark-test, 진술 동의 필요)·표시 해제(unmark). 자격 값은 보내지 않는다. export 없음.
@@ -27,6 +28,7 @@ import {
   markTestAccount,
   type ProductTargetRef,
   parseCookieNames,
+  passwordTooShortForRun,
   registerAccount,
   setAccountCredential,
   setTargetLogin,
@@ -74,6 +76,9 @@ export function AccountClassifyLive() {
   const [loginSaved, setLoginSaved] = useState(false);
   // 자격 입력 칸을 연 계정 라벨. 칸 값은 상태가 아니라 DOM(비제어 입력)에만 있다.
   const [credentialFor, setCredentialFor] = useState<string | null>(null);
+  // 자격 등록 뒤 안내(계정 라벨과 바이트 하한만 담는다, 값 없음). 서버는 짧은 비밀번호도 저장해 목록은 '자격 등록됨'이 되므로
+  // 실행 때 쓰이지 않는다는 것을 따로 알린다(#842 경준 리뷰).
+  const [credentialNotice, setCredentialNotice] = useState("");
   const usernameInput = useRef<HTMLInputElement>(null);
   const passwordInput = useRef<HTMLInputElement>(null);
   // 지금 화면에 결속된 대상 id. 쓰기·재조회 응답은 이 값과 같을 때만 반영한다(대상을 바꾼 뒤 늦게 온 이전 대상 응답은 버림).
@@ -104,6 +109,7 @@ export function AccountClassifyLive() {
     setNewLabel("");
     setWriteError("");
     setCredentialFor(null);
+    setCredentialNotice("");
     current.current = selected?.id ?? null;
     if (!selected) return;
     getAccounts(selected)
@@ -187,6 +193,9 @@ export function AccountClassifyLive() {
     const password = p.value;
     u.value = "";
     p.value = "";
+    // 값이 아니라 바이트 수만 본다(실행 때 E② 보호 값 하한).
+    const tooShort = passwordTooShortForRun(password);
+    setCredentialNotice("");
     if (busy || !selected) return;
     if (!validAccountCredential(username, password)) {
       setWriteError(accountWriteFailureText(new Error("invalid_account_credential")));
@@ -198,7 +207,13 @@ export function AccountClassifyLive() {
           if (!configured) throw new Error("credential_not_confirmed");
         }),
       label,
-      () => setCredentialFor(null),
+      () => {
+        setCredentialFor(null);
+        if (tooShort)
+          setCredentialNotice(
+            `${label}: 자격은 등록했지만 비밀번호가 ${MIN_USABLE_PASSWORD_BYTES}바이트보다 짧아 실행 때 이 계정으로 로그인하지 않습니다. 더 긴 비밀번호의 시험 계정을 쓰세요.`,
+          );
+      },
     );
   }
 
@@ -464,6 +479,12 @@ export function AccountClassifyLive() {
                       계정 등록
                     </button>
                   </div>
+                  {credentialNotice ? (
+                    <div className={cx(s.note, s.warn)} role="status">
+                      <Icon name="alert" />
+                      <span>{credentialNotice}</span>
+                    </div>
+                  ) : null}
                   {writeError && !credentialFor ? (
                     <p className={s.empty} role="alert">
                       {writeError}
@@ -518,6 +539,7 @@ export function AccountClassifyLive() {
                                 disabled={busy}
                                 onClick={() => {
                                   setWriteError("");
+                                  setCredentialNotice("");
                                   setCredentialFor(credentialFor === a.ref ? null : a.ref);
                                 }}
                               >
@@ -533,6 +555,9 @@ export function AccountClassifyLive() {
                                     type="text"
                                     aria-label="사용자명"
                                     autoComplete="off"
+                                    data-1p-ignore
+                                    data-lpignore="true"
+                                    data-form-type="other"
                                     spellCheck={false}
                                     placeholder="사용자명"
                                   />
@@ -541,7 +566,10 @@ export function AccountClassifyLive() {
                                     className={s.inp}
                                     type="password"
                                     aria-label="비밀번호"
-                                    autoComplete="new-password"
+                                    autoComplete="off"
+                                    data-1p-ignore
+                                    data-lpignore="true"
+                                    data-form-type="other"
                                     placeholder="비밀번호"
                                   />
                                   <br />

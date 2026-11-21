@@ -383,6 +383,11 @@ export function validAccountCredential(username: string, password: string): bool
   );
 }
 
+/** 비밀번호가 실행 때 E② 보호 값으로 쓰기에 짧은가(안내용, 바이트 수만 본다). */
+export function passwordTooShortForRun(password: string): boolean {
+  return utf8Bytes(password) < MIN_USABLE_PASSWORD_BYTES;
+}
+
 /**
  * 계정 자격 등록(PUT …/accounts/{label}/credential). 값은 요청 본문에만 싣고 어디에도 남기지 않는다. 응답에도 값이 없고,
  * 돌려주는 것은 credential_configured(참이어야 등록됨)뿐이다. 라벨·자격 형식이 밖이면 보내지 않는다.
