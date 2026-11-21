@@ -123,7 +123,15 @@ func (e *Execution) SendE3Create(ctx context.Context, in E3CreateInput) (Event, 
 		label: in.AccountLabel, accountRef: ref, idPath: in.Spec.IDPath, objectID: in.ObjectID}
 	defer clear(metadata.marker)
 	defer clear(metadata.digestKey)
-	requestCtx, cancel := context.WithTimeout(ctx, in.Timeout)
+	// 사용자 승인 모드(요청별 승인 경계가 있는 실행)에서는 운영자 승인 대기를 요청 시간 상한에 넣지 않는다. 대기는 승인
+	// 기한(E② 호출 기한)과 호출자 문맥(확정 단계 시간 몫) 안에서만 하고, 상한은 승인을 받은 뒤 송신부터 센다(사용자 결정
+	// 2026-11-21). 자동 모드는 지금처럼 이 요청 전체가 상한 안이다.
+	requestCtx, cancel := ctx, context.CancelFunc(func() {})
+	if e.needsRequestApproval(PurposeE3Create, in.Spec.Method, body, RequestView{}) {
+		metadata.timeoutAfterApproval = true
+	} else {
+		requestCtx, cancel = context.WithTimeout(ctx, in.Timeout)
+	}
 	defer cancel()
 	_, _, receipt, sendErr := call.doWithE3(requestCtx, request, PurposeE3Create, nil, metadata)
 	result, err := e.e3Result(ctx, requestCtx, call, receipt, sendErr, metadata)

@@ -41,24 +41,28 @@ type E3IdentityInput struct {
 type e3ProgramCall struct {
 	audit E3Audit
 	// approval은 이 요청이 사용자 승인을 기다렸을 때의 결과다(승인 대기 없음이면 빈 값).
-	approval    RequestApprovalOutcome
-	kind        ProgramCallKind
-	session     http.Header
-	marker      []byte
-	subjectPath string
-	digestKey   []byte
-	timeout     time.Duration
-	accounts    E3AccountBindings
-	runRef      string
-	label       string
-	accountRef  string
-	idPath      string
-	objectID    string
-	createdID   string
-	dataPath    string
-	statusPath  string
-	normalValue string
-	markerField string
+	approval RequestApprovalOutcome
+	// timeoutAfterApproval이면 요청 시간 상한(timeout)을 승인을 받은 뒤 송신부터 센다(사용자 승인 모드의 생성 요청,
+	// 사용자 결정 2026-11-21). sendCtx는 그때 만든 송신 문맥이다.
+	timeoutAfterApproval bool
+	sendCtx              context.Context
+	kind                 ProgramCallKind
+	session              http.Header
+	marker               []byte
+	subjectPath          string
+	digestKey            []byte
+	timeout              time.Duration
+	accounts             E3AccountBindings
+	runRef               string
+	label                string
+	accountRef           string
+	idPath               string
+	objectID             string
+	createdID            string
+	dataPath             string
+	statusPath           string
+	normalValue          string
+	markerField          string
 }
 
 var e3SubjectPathPattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`)
@@ -166,6 +170,11 @@ func (e *Execution) e3Result(ctx, requestCtx context.Context, call *Call, receip
 		}
 		if err := requestCtx.Err(); err != nil {
 			return Event{}, err
+		}
+		if metadata.sendCtx != nil {
+			if err := metadata.sendCtx.Err(); err != nil {
+				return Event{}, err
+			}
 		}
 		if !metadata.current() {
 			return Event{}, e3contract.ErrAuthorityRevoked
