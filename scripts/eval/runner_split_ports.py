@@ -41,6 +41,7 @@ from runner_product import ModelKey, ProductDriver
 from run_record import read_runner_key, sign_run_record
 from runner_split import PRODUCT_MODEL_API, read_workflow_defaults, split_conditions, target_registration
 from runner_split_config import SplitConfig, SplitPlan, split_compose_args
+from runner_observer import remove_observer_password
 from runner_split_inputs import SplitInputs, remove_split_inputs
 from runner_split_probe import SplitProbeOutcome, run_split_probes, split_ports
 from runner_window import BackgroundWatch, HostWatch, healthcheck_actions
@@ -305,7 +306,11 @@ class DockerSplitPorts:
         self.docker.compose_down(self.base_args, self.config.run["down_timeout_seconds"])
 
     def remove_inputs(self) -> None:
-        remove_split_inputs(self.inputs.directory, missing_ok=True)
+        # 관찰 로그인 파일(같은 관리자 비밀번호)도 같이 지운다. 하나가 실패해도 나머지를 지운 뒤 실패를 올린다.
+        try:
+            remove_observer_password(self.split.observer_password_file)
+        finally:
+            remove_split_inputs(self.inputs.directory, missing_ok=True)
 
     # ── 관측·점검 ────────────────────────────────────────────────────────────────────────────────────────────
     def snapshot(self, phase: str) -> dict:

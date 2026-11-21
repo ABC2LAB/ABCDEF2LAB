@@ -63,6 +63,14 @@ class TestOfficialSplitExample(unittest.TestCase):
         self.assertEqual(config.fault_stall_seconds, 180)  # 멈춤 무효 T(고정 초안 §2)
         self.assertIs(config.split.e3_disabled_required, True)  # 공식 회차는 E③ 비활성 요구를 켜야 통과한다
 
+    def test_filled_example_keeps_observer_file_and_e3_requirement_together(self):
+        # #824(관찰 로그인 파일)과 #827(E③ 비활성 요구)이 같은 split 블록에서 둘 다 살아남는다(dev 합침 충돌 정리).
+        payload = filled()
+        payload["split"]["observer_password_file"] = "/srv/abc2lab-eval-keys/observer/admin.txt"
+        config = parse_runner_config(payload)
+        self.assertEqual(config.split.observer_password_file, Path("/srv/abc2lab-eval-keys/observer/admin.txt"))
+        self.assertIs(config.split.e3_disabled_required, True)
+
     def test_common_fields_match_the_engine_direct_example(self):
         example, base = load(EXAMPLE), load(BASE_EXAMPLE)
         added = {"path_key_file", "preservation", "split"}
