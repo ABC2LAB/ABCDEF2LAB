@@ -488,6 +488,18 @@ ORDER_TAIL = ["seal", "meter:drained", "stop_round", "wait_closed", "workflow_sn
               "generation_verify", "llm_verified", "down", "remove_inputs", "sign", "sign"]  # 내린 뒤 러너 기록·결과 서명
 
 
+class TestObserverFlag(unittest.TestCase):
+    def test_flag_is_in_complete_and_invalid_results_without_path(self):
+        result, _, evidence = run(observer_login_file=True)
+        self.assertEqual((result["status"], result["observer_login_file"]), ("complete", True))
+        self.assertNotIn("observer_password", json.dumps(evidence.files, default=str))
+
+        def drop(ports):
+            ports.view["policy_fingerprint_sha256"] = ""
+        bad, _, _ = run(drop, observer_login_file=True)
+        self.assertEqual((bad["status"], bad["observer_login_file"]), ("invalid", True))
+
+
 class TestOrder(unittest.TestCase):
     def test_complete_run_order_and_result(self):
         result, ports, evidence = run()
@@ -498,6 +510,7 @@ class TestOrder(unittest.TestCase):
         self.assertEqual((result["stop_reason"], result["first_limit"]["value"], result["goal_common_sha256"]),
                          ("time_budget", "runner_time_budget", "c" * 64))
         self.assertEqual(result["sampling_overwrites"], {"execution": 0, "preparation": []})
+        self.assertIs(result["observer_login_file"], False)  # 화면 관찰 로그인 파일: 예/아니오만(기본 아니오)
         self.assertEqual(set(evidence.files), {"meter-preflight.json", "subnet-check.json", "pre-checks.json", "post-checks.json",
                                                "pre-probe.json",
                                                "post-probe.json", "task.json", "llm-summary.json",
@@ -572,17 +585,20 @@ class TestOrder(unittest.TestCase):
                 self.assertNotIn("up", ports.calls)
 
     def test_official_round_checks_the_e3_share_of_the_policy_it_used(self):
-        # 회차 흐름 연결: 공식 목적이면 제품이 그 회차에 쓴 정책의 확정 몫을 본다. 다른 목적은 몫 칸을 요구하지 않는다.
+        # 회차 흐름 연결: E③ 비활성 요구(설정 칸)가 켜져 있으면 제품이 그 회차에 쓴 정책의 확정 몫을 본다. 꺼져 있으면 몫 칸을
+        # 요구하지 않는다. purpose는 이 검사를 걸지 않는다(2026-11-20 사용자: 배선 확인 회차도 확정 단계를 켤 수 있다).
         def limits(share):
             return lambda p: p.view.update(limits=dict(LIMITS, **share))
-        for purpose, share, status, reasons in (
-                ("official", E3_SHARE_OFF, "complete", None),
-                ("official", {}, "invalid", ["e3_share_unconfirmed"]),  # #716 전 제품 보기 모양
-                ("official", dict(E3_SHARE_OFF, e3_confirmation_requests=2), "invalid", ["e3_share_not_zero"]),
-                ("browser_acceptance", {}, "complete", None),
-                ("browser_acceptance", dict(E3_SHARE_OFF, e3_confirmation_timeout_ms=1000), "complete", None)):
-            with self.subTest(purpose=purpose, share=share):
-                result, _, _ = run(limits(share), purpose=purpose)
+        for purpose, required, share, status, reasons in (
+                ("official", True, E3_SHARE_OFF, "complete", None),
+                ("official", True, {}, "invalid", ["e3_share_unconfirmed"]),  # #716 전 제품 보기 모양
+                ("official", True, dict(E3_SHARE_OFF, e3_confirmation_requests=2), "invalid", ["e3_share_not_zero"]),
+                ("wiring_check", True, dict(E3_SHARE_OFF, e3_confirmation_requests=2), "invalid", ["e3_share_not_zero"]),
+                ("wiring_check", False, dict(E3_SHARE_OFF, e3_confirmation_requests=2), "complete", None),
+                ("browser_acceptance", False, {}, "complete", None),
+                ("browser_acceptance", False, dict(E3_SHARE_OFF, e3_confirmation_timeout_ms=1000), "complete", None)):
+            with self.subTest(purpose=purpose, required=required, share=share):
+                result, _, _ = run(limits(share), purpose=purpose, e3_disabled_required=required)
                 self.assertEqual((result["status"], result.get("reasons")), (status, reasons), result)
 
     def test_official_e3_share_must_be_present_and_zero(self):
@@ -1389,13 +1405,13 @@ class TestE3ConfirmationRow(unittest.TestCase):
     def test_official_round_needs_disabled_declaration_missing(self):
         def file(value):
             return lambda p: setattr(p, "e3_file", value)
-        result, _, evidence = run(purpose="official")
+        result, _, evidence = run(purpose="official", e3_disabled_required=True)
         self.assertEqual(result["status"], "complete", result)
         e3 = evidence.files["product-files.json"]["e3_confirmation"]
         self.assertEqual((e3["status"], e3["reason"], result["e3_confirmation"]["status"]), ("disabled", "declaration_missing", "disabled"))
         # 비활성 회차의 suspected 후보는 공식 회차를 막지 않는다
         suspected = file(self.result(candidates=[{"candidate_ref": "1", "level": "suspected", "reason": "link_none"}]))
-        self.assertEqual(run(suspected, purpose="official")[0]["status"], "complete")
+        self.assertEqual(run(suspected, purpose="official", e3_disabled_required=True)[0]["status"], "complete")
         for mutate, reason in ((file(self.result(reason="not_wired")), "e3_official_not_disabled"),
                                (file(self.result(status="completed", reason=None)), "e3_official_not_disabled"),
                                # 비활성·요청 0이어도 판정이 있으면 모순이라 비활성 근거가 아니다(#742 리뷰)
@@ -1405,8 +1421,24 @@ class TestE3ConfirmationRow(unittest.TestCase):
                                (file(b"{}"), "e3_confirmation_invalid"),
                                (file(self.result(requests=1)), "e3_confirmation_invalid")):
             with self.subTest(reason=reason):
-                result, _, _ = run(mutate, purpose="official")
+                result, _, _ = run(mutate, purpose="official", e3_disabled_required=True)
                 self.assertEqual((result["status"], result["reasons"]), ("invalid", [reason]))
+
+    def test_disabled_requirement_follows_the_setting_and_is_signed(self):
+        # 2026-11-20 사용자: 두 검사는 설정 칸으로 건다. 배선 확인 회차가 칸을 끄면 확정 단계가 돈 기록도 완료이고, 칸을 켜면
+        # 공식과 같이 disabled/declaration_missing만 받는다. 칸 값은 회차 조건(서명 근거)에 남는다.
+        def file(value):
+            return lambda p: setattr(p, "e3_file", value)
+        completed = file(self.result(status="completed", reason=None))
+        on, _, evidence = run(completed, purpose="wiring_check", e3_disabled_required=True)
+        self.assertEqual((on["status"], on["reasons"]), ("invalid", ["e3_official_not_disabled"]))
+        off, _, evidence = run(completed, purpose="wiring_check", e3_disabled_required=False)
+        self.assertEqual(off["status"], "complete", off)
+        conditions = [r for r in evidence.files["isolation-evidence.json"]["rows"] if r["kind"] == "run_conditions"][0]
+        self.assertIs(conditions["e3_disabled_required"], False)
+        signed, _, evidence = run(purpose="official", e3_disabled_required=True)
+        conditions = [r for r in evidence.files["isolation-evidence.json"]["rows"] if r["kind"] == "run_conditions"][0]
+        self.assertEqual((signed["status"], conditions["e3_disabled_required"]), ("complete", True))
 
     def test_official_time_budget_round_reads_the_stop_record(self):
         # 러너 예산이 먼저 끝나 제품 회차를 멈추는 경로(#742 :559 리뷰). #738 중지 기록 뒤 제품은 이 경로에서도 결과 파일을
@@ -1414,7 +1446,7 @@ class TestE3ConfirmationRow(unittest.TestCase):
         # interrupted). 공식 회차는 disabled/declaration_missing만 유효하고, 파일이 없으면 비활성으로 추정하지 않는다.
         def file(value):
             return lambda p: setattr(p, "e3_file", value)
-        result, _, evidence = run(purpose="official")
+        result, _, evidence = run(purpose="official", e3_disabled_required=True)
         self.assertEqual((result["status"], result["product_closed"]["state"], result["first_limit"]["value"]),
                          ("complete", "cancelled", "runner_time_budget"))
         self.assertEqual(evidence.files["product-files.json"]["e3_confirmation"]["reason"], "declaration_missing")
@@ -1424,7 +1456,7 @@ class TestE3ConfirmationRow(unittest.TestCase):
                                 (file(self.result(reason="not_wired")), ["e3_official_not_disabled"]),
                                 (file(RuntimeError("docker_helper_copy_failed")), ["e3_status_not_collected"])):
             with self.subTest(reasons=reasons, mutate=mutate):
-                result, ports, _ = run(mutate, purpose="official")
+                result, ports, _ = run(mutate, purpose="official", e3_disabled_required=True)
                 self.assertEqual((result["status"], result["reasons"]), ("invalid", reasons))
                 self.assertIn("stop_round", ports.calls)  # 같은 시간 상한 경로(제품 회차를 멈춤)에서 읽었다
 
@@ -1432,9 +1464,9 @@ class TestE3ConfirmationRow(unittest.TestCase):
         # 복사 도우미 정리 실패는 보호 볼륨이 잡혀 있을 수 있다는 뜻이라 목적과 상관없이 무효다(#742 리뷰). 일반 복사 실패(파일
         # 없음)는 수용시험이면 기록만, 공식이면 수집 실패다.
         from runner_docker import HelperCleanupError
-        for purpose in ("browser_acceptance", "official"):
-            with self.subTest(purpose=purpose):
-                result, _, _ = run(lambda p: setattr(p, "e3_file", HelperCleanupError()), purpose=purpose)
+        for required in (False, True):
+            with self.subTest(required=required):
+                result, _, _ = run(lambda p: setattr(p, "e3_file", HelperCleanupError()), e3_disabled_required=required)
                 self.assertEqual((result["status"], result.get("reasons")),
                                  ("invalid", ["e3_confirmation_copy_failed", "docker_helper_cleanup_failed"]))
         result, _, _ = run(lambda p: setattr(p, "e3_file", RuntimeError("docker_helper_copy_failed")))

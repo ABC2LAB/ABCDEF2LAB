@@ -1380,6 +1380,10 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "action must be pause|resume")
 		return
 	}
+	if s.firstDiagnosis {
+		s.firstDiagnosisControl(w, r, t, req.Action)
+		return
+	}
 	result, err := s.applyTaskControl(t, req.Action)
 	if err != nil {
 		writeErr(w, 409, err.Error())

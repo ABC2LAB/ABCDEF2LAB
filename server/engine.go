@@ -121,8 +121,10 @@ type Engine struct {
 	lastAct  sync.Map // taskID -> int64 unix, last planner/worker activity (heartbeat)
 	llmCalls sync.Map // taskID -> *int64, actual planner/worker/main-agent LLM calls
 	paused   sync.Map // taskID -> bool, user-paused (planner + workers idle but loops alive)
-	deleting sync.Map // taskID -> bool, delete barrier (no new task-owned writes)
-	dropCnt  sync.Map // taskID -> *int64, running count of dropped (unpersistable) activity records
+	// pauseCauses는 일시정지 원인의 고정 코드다(agent 취소 사유 코드). 첫 진단 감독자가 일시정지를 중지로 바꿀 때 남긴다.
+	pauseCauses sync.Map // taskID -> string
+	deleting    sync.Map // taskID -> bool, delete barrier (no new task-owned writes)
+	dropCnt     sync.Map // taskID -> *int64, running count of dropped (unpersistable) activity records
 
 	// deleteMu makes installing the delete barrier atomic with registering a new
 	// task operation. Once BeginDelete returns, every admitted writer is reflected
@@ -200,7 +202,28 @@ func (e *Engine) nextPlannerRound(taskID string) int {
 // for it (a long worker.Execute would otherwise keep going until it finishes).
 func (e *Engine) Pause(taskID string, cause error) {
 	e.paused.Store(taskID, true)
+	e.pauseCauses.Store(taskID, pauseCauseCode(cause))
 	e.cancelExec(taskID, cause)
+}
+
+// pauseCauseCode는 일시정지 원인의 고정 코드다. 정해진 취소 사유가 아니면 unknown이다.
+func pauseCauseCode(cause error) string {
+	var abort *agent.AbortCause
+	if errors.As(cause, &abort) && abort.Code != "" {
+		return abort.Code
+	}
+	return "unknown"
+}
+
+// PauseCause는 이 작업을 일시정지한 원인의 고정 코드다(일시정지가 아니면 빈 값).
+func (e *Engine) PauseCause(taskID string) string {
+	if !e.IsPaused(taskID) {
+		return ""
+	}
+	if code, ok := e.pauseCauses.Load(taskID); ok {
+		return code.(string)
+	}
+	return "unknown"
 }
 
 // BeginDelete installs an execution barrier before task data/files are removed.
@@ -228,6 +251,7 @@ func (e *Engine) AbortDelete(taskID string, keepPaused bool) {
 	e.deleting.Delete(taskID)
 	if !keepPaused {
 		e.paused.Delete(taskID)
+		e.pauseCauses.Delete(taskID)
 	}
 	e.deleteMu.Unlock()
 	if !keepPaused && e.m != nil {
@@ -304,6 +328,7 @@ func (e *Engine) StopTask(taskID string) {
 	e.lastAct.Delete(taskID)
 	e.llmCalls.Delete(taskID)
 	e.paused.Delete(taskID)
+	e.pauseCauses.Delete(taskID)
 	e.dropCnt.Delete(taskID)
 	e.plannerRound.Delete(taskID)
 	e.settling.Delete(taskID)
@@ -320,12 +345,12 @@ func (e *Engine) StopTask(taskID string) {
 // planner.Plan / worker.Execute), if present. Shared by Pause and the settle
 // sequence's hard-drain backstop.
 func (e *Engine) cancelExec(taskID string, cause error) {
-	// 목표 달성 취소는 Worker·Planner 실행만 멈춘다. E② 작업은 감독자가 E③ 확정 단계 뒤·drain 전에 직접 닫는다
-	// (FirstDiagnosisSupervisor: e3-confirmation → fence). 여기서 닫으면 작업 문맥이 끊겨 E② 실행도 같이 끝나, 목표
-	// 달성으로 끝나는 회차의 확정 단계가 늘 not_wired였다(#805 뒤 실제 제품 합성 회차). 새 송신은 그동안에도 열리지
-	// 않는다: 취소된 Worker 문맥은 PrepareWork에서 거부되고, 작업이 done이라 새 intent를 받지 않는다.
-	if e.e2HTTP != nil && !errors.Is(cause, agent.AbortGoalMet) {
-		_ = e.e2HTTP.FenceTask(taskID)
+	// 취소는 모델 단계(Worker·Planner)만 멈춘다. E②에서는 모델 단계를 마감해 진행 중 모델 단계 요청을 끊고 그 뒤 요청을
+	// 거부한다(CloseModelStage, 확정 단계 요청만 열림). E② 실행 전체를 닫는 것(FenceTask)은 감독자 한 곳에서만 한다:
+	// 확정 단계를 돌리는 마감이면 확정 단계 뒤에, 그 밖의 마감은 마감 정리에서. 취소 사유마다 E②를 닫으면 새 마감
+	// 경로가 생길 때마다 확정 단계 전에 E②가 닫히는 결함이 다시 났다(#809 목표 달성, 2026-11-20 시간 상한 마감).
+	if e.e2HTTP != nil {
+		e.e2HTTP.CloseModelStage(taskID)
 	}
 	// A task cancellation and controlled completion cannot pass one another's
 	// execution decision unnoticed. No registry/DB work is performed here.
@@ -356,6 +381,7 @@ func (e *Engine) Resume(t *Task) {
 		return
 	}
 	e.paused.Delete(t.ID)
+	e.pauseCauses.Delete(t.ID)
 	t.Notify()
 }
 

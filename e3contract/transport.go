@@ -148,13 +148,16 @@ const (
 	// RefuseTargetChanged는 실행 시작 때 발급한 세대·인스턴스 참조가 지금 대상과 맞지 않는 경우다. 모델 단계의 후보와 다른
 	// 대상 상태에서 확정하지 않는다(E③↔E② v3 계약 §6, "모르면 새로 발급").
 	RefuseTargetChanged StartRefusal = "target_changed"
+	// RefuseE2ExecutionUnavailable는 확정할 후보가 있는데 E② 실행을 잡지 못해 확정 단계를 시작하지 못한 비정상 경우다(사용자
+	// 결정 2026-11-20 분기점 2). 요청 없이 끝낸다.
+	RefuseE2ExecutionUnavailable StartRefusal = "e2_execution_unavailable"
 )
 
 // Valid는 정해진 시작 거부 사유인지다.
 func (r StartRefusal) Valid() bool {
 	switch r {
 	case RefuseResetConfirmationMissing, RefusePreviousMarkersPresent, RefuseResetStateUnavailable, RefusePolicySourceUnavailable,
-		RefuseMarkerGenerationFailed, RefuseMarkerRegistrationFailed, RefuseTargetChanged:
+		RefuseMarkerGenerationFailed, RefuseMarkerRegistrationFailed, RefuseTargetChanged, RefuseE2ExecutionUnavailable:
 		return true
 	}
 	return false

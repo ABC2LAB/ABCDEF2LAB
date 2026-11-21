@@ -148,6 +148,14 @@ var rehearsalSetups = map[string]func(*rehearsalWorld){
 		w.target.Behaviors[w.key(e3contract.PurposeRead, e3contract.RoleCross)] = e3fake.Behavior{Status: 404, Normal: oracle.StateNo,
 			MarkerStatus: e3contract.MarkerFailed}
 	},
+	// 교차 조회가 거부(401)로 끝난 뒤 B 신원 재확인도 401이다. 거부 원인이 세션 만료일 수 있어 판정하지 않는다
+	// (사용자 결정 2026-11-20 S21 (나)). 접근 거부(data_no_match)로 적지 않는다.
+	"cross_denial_session_expired": func(w *rehearsalWorld) {
+		w.target.Behaviors[w.key(e3contract.PurposeRead, e3contract.RoleCross)] = e3fake.Behavior{Status: 401, Normal: oracle.StateNo,
+			MarkerStatus: e3contract.MarkerFailed}
+		w.target.Later = map[e3fake.Key]e3fake.Behavior{
+			{Purpose: e3contract.PurposeIdentity, Role: e3contract.RoleCross}: {Status: 401, Normal: oracle.StateNo}}
+	},
 	"declaration_missing": func(w *rehearsalWorld) { w.in.Binding.Policy = e3contract.PolicySource{} },
 	"account_unverified":  func(w *rehearsalWorld) { w.in.Cross.Authenticated = false },
 	// 두 라벨이 대상의 같은 사용자로 로그인한다.

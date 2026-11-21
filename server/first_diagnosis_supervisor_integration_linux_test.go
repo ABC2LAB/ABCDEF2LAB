@@ -168,7 +168,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	e3Logged := mode == "e3-baseline" || mode == "e3-hook" || mode == "e3-hook-disabled"
-	if mode == "cancel" || mode == "user-stop" || mode == "close-fail" || mode == "plan-turns" || goalAfterWork || goalConcurrent || e3Logged {
+	if mode == "cancel" || mode == "user-stop" || mode == "pause" || mode == "engine-pause" || mode == "close-fail" || mode == "plan-turns" || goalAfterWork || goalConcurrent || e3Logged {
 		logger, err := diagnosticlog.Create(firstDiagnosisPrivateTemp(t), "run", mustFirstDiagnosisTaskNumber(task.ID), "")
 		if err != nil {
 			t.Fatal(err)
@@ -193,6 +193,8 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	var hits atomic.Int64
 	targetEntered := make(chan struct{}, 1)
 	targetExited := make(chan struct{}, 1)
+	// 대상이 붙잡은 요청을 받은 시각·놓은 시각이다(시간 상한 모드가 진행 중 요청이 요청 시간 상한 전에 끊겼는지 본다).
+	var targetEnteredAt, targetExitedAt atomic.Int64
 	releaseTarget := make(chan struct{})
 	// 목표를 증명할 intent의 요청은 다른 Worker의 명령이 자리를 잡을 때까지 대상에서 붙잡는다. 두 명령이 실제로 겹쳤는지
 	// overlapped로 남긴다.
@@ -229,6 +231,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 				}
 				select {
 				case targetEntered <- struct{}{}:
+					targetEnteredAt.CompareAndSwap(0, time.Now().UnixNano())
 				default:
 				}
 				openConcurrentGate()
@@ -236,6 +239,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 				case <-r.Context().Done():
 					select {
 					case targetExited <- struct{}{}:
+						targetExitedAt.CompareAndSwap(0, time.Now().UnixNano())
 					default:
 					}
 				case <-releaseTarget:
@@ -260,15 +264,17 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 				flusher.Flush()
 			}
 		}
-		if mode == "cancel" || mode == "user-stop" || mode == "planner-kill" || mode == "time-budget" || mode == "planner-kill-mid-response" {
+		if mode == "cancel" || mode == "user-stop" || mode == "pause" || mode == "engine-pause" || mode == "planner-kill" || mode == "time-budget" || mode == "planner-kill-mid-response" {
 			select {
 			case targetEntered <- struct{}{}:
+				targetEnteredAt.CompareAndSwap(0, time.Now().UnixNano())
 			default:
 			}
 			select {
 			case <-r.Context().Done():
 				select {
 				case targetExited <- struct{}{}:
+					targetExitedAt.CompareAndSwap(0, time.Now().UnixNano())
 				default:
 				}
 			case <-releaseTarget:
@@ -440,7 +446,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	defer func() {
 		closeCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
 		defer stop()
-		if err := runtime.Close(closeCtx); err != nil && !(((mode == "cancel" || mode == "user-stop") || mode == "prepare-fail" || mode == "pre-run-stop" || mode == "goal-met-unmatched-limit") && errors.Is(err, ErrFirstDiagnosisOutcome) || mode == "close-fail" && errors.Is(err, ErrE2HTTPClosure)) {
+		if err := runtime.Close(closeCtx); err != nil && !(((mode == "cancel" || mode == "user-stop" || mode == "pause" || mode == "engine-pause") || mode == "prepare-fail" || mode == "pre-run-stop" || mode == "goal-met-unmatched-limit") && errors.Is(err, ErrFirstDiagnosisOutcome) || mode == "close-fail" && errors.Is(err, ErrE2HTTPClosure)) {
 			t.Error("실제 Engine 경로 최종 종료 실패")
 		}
 
@@ -593,20 +599,39 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	// 같은지 본다(Go 조건 2).
 	e3Hooked := mode == "e3-hook" || mode == "e3-hook-error" || mode == "e3-hook-disabled"
 	// 중지 마감(cancel·user-stop)에서도 E③ 결과가 남도록 중지 기록 훅이 한 번 불리는지 본다(#738 이동찬 리뷰).
-	e3StopHooked := mode == "cancel" || mode == "user-stop" || mode == "pre-run-stop"
+	// 마감 경로 관찰(사용자 결정 2026-11-20): 확정 단계 훅(Run)·중지 기록(Stopped)이 불린 때의 E② 연결 사유·모델 단계
+	// 마감 여부와 그때까지의 대상 요청 수를 남긴다. 실행 뒤 경로별 기대와 "모델 단계 마감 뒤 모델 단계 송신 0"을 본다.
+	var closeProbe struct {
+		runCalls, stopCalls int
+		handle              string
+		modelClosed         bool
+		hitsAtClose         int64
+	}
+	probeClose := func(taskID string, stopped bool) {
+		if stopped {
+			closeProbe.stopCalls++
+		} else {
+			closeProbe.runCalls++
+		}
+		exec, _, reason := runtime.E3HandleReason(taskID)
+		closeProbe.handle, closeProbe.modelClosed, closeProbe.hitsAtClose = reason, exec != nil && exec.ModelStageClosed(), hits.Load()
+	}
+	e3StopHooked := mode == "cancel" || mode == "user-stop" || mode == "pause" || mode == "engine-pause" || mode == "pre-run-stop"
 	e3Calls, e3State := 0, ""
 	var e3StoppedCalls atomic.Int64
 	var e3StoppedCtxLive atomic.Bool
 	stopRecord := func(hookCtx context.Context, taskID string) error {
 		if taskID == task.ID {
 			e3StoppedCalls.Add(1)
+			probeClose(taskID, true)
 		}
 		e3StoppedCtxLive.Store(hookCtx.Err() == nil)
 		return nil
 	}
 	if e3StopHooked {
-		if err := supervisor.SetE3Confirmation(FirstDiagnosisE3Hooks{Run: func(context.Context, string, func()) error {
+		if err := supervisor.SetE3Confirmation(FirstDiagnosisE3Hooks{Run: func(_ context.Context, taskID string, _ func()) error {
 			e3Calls++
+			probeClose(taskID, false)
 			return nil
 		}, Stopped: stopRecord}); err != nil {
 			t.Fatal("E③ 중지 기록 훅 설정 실패", err)
@@ -618,6 +643,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	if e3Hooked {
 		if err := supervisor.SetE3Confirmation(FirstDiagnosisE3Hooks{Stopped: stopRecord, Run: func(hookCtx context.Context, taskID string, begin func()) error {
 			e3Calls++
+			probeClose(taskID, false)
 			exec, _, ok := runtime.E3Handle(taskID)
 			e3HandleOK = ok && exec != nil
 			if mode != "e3-hook-disabled" {
@@ -655,13 +681,37 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	// 훅은 감독자 begin을 부르지 않아 감독자 흐름은 그대로다.
 	var goalE3Calls int
 	var goalE3State string
+	// 시간 상한 마감(유예 뒤 진행 중 작업 취소)에서도 확정 단계 훅 때 E② 실행이 살아 있어야 한다. 2026-11-20 실제 모델
+	// VAmPI 회차는 시간 상한 마감에서 유예 끝 취소가 E② 작업을 먼저 닫아(task_fenced) 확정 단계가 not_wired였다.
+	var timeE3Calls int
+	var timeE3Reason string
+	if mode == "time-budget" {
+		if err := supervisor.SetE3Confirmation(FirstDiagnosisE3Hooks{Stopped: stopRecord, Run: func(hookCtx context.Context, taskID string, _ func()) error {
+			timeE3Calls++
+			probeClose(taskID, false)
+			exec, _, reason := runtime.E3HandleReason(taskID)
+			timeE3Reason = fmt.Sprintf("handle=%q exec=%v ctx=%v", reason, exec != nil, hookCtx.Err() == nil)
+			return nil
+		}}); err != nil {
+			t.Fatal("시간 상한 E③ 확정 단계 훅 설정 실패", err)
+		}
+	}
 	if mode == "goal-met-after-work" {
 		if err := supervisor.SetE3Confirmation(FirstDiagnosisE3Hooks{Stopped: stopRecord, Run: func(hookCtx context.Context, taskID string, _ func()) error {
 			goalE3Calls++
+			probeClose(taskID, false)
 			goalE3State = firstDiagnosisRealE3Hook(t, hookCtx, runtime, taskID)
 			return nil
 		}}); err != nil {
 			t.Fatal("목표 달성 E③ 확정 단계 훅 설정 실패", err)
+		}
+	}
+	if !e3StopHooked && !e3Hooked && mode != "time-budget" && mode != "goal-met-after-work" {
+		if err := supervisor.SetE3Confirmation(FirstDiagnosisE3Hooks{Stopped: stopRecord, Run: func(_ context.Context, taskID string, _ func()) error {
+			probeClose(taskID, false)
+			return nil
+		}}); err != nil {
+			t.Fatal("마감 경로 관찰 훅 설정 실패", err)
 		}
 	}
 	if mode == "pre-run-stop" {
@@ -692,7 +742,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		return
 	}
 	var runErr error
-	if mode == "cancel" || mode == "user-stop" {
+	if mode == "cancel" || mode == "user-stop" || mode == "pause" || mode == "engine-pause" {
 		runCtx, stopRun := context.WithCancel(ctx)
 		defer stopRun()
 		done := make(chan error, 1)
@@ -702,7 +752,26 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		case <-ctx.Done():
 			t.Fatal("취소 인수의 실제 대상 요청이 시작되지 않음")
 		}
-		if mode == "user-stop" {
+		if mode == "pause" {
+			// 제품 경로의 일시정지는 회차를 바로 끝내는 운영자 중지다(사용자 결정 2026-11-20 분기점 1).
+			code, body := firstDiagnosisControlRequest(t, runtime, task.ID, "pause")
+			if code != 200 || !strings.Contains(body, `"status":"stopping"`) {
+				t.Fatalf("일시정지가 중지로 처리되지 않음: %d %s", code, body)
+			}
+		} else if mode == "engine-pause" {
+			// 운영자 control이 아닌 엔진 일시정지는 회차 도중 생기는 경로가 없다(일시정지 원인 표). 방어 경로가 운영자 중지와
+			// 섞이지 않는지 직접 걸어 본다. 그 전에 회차 도중 엔진 일시정지 원인들이 닫혀 있는지 이 실제 서버에서 확인한다.
+			if runtime.server.engine.controlledReads != nil {
+				t.Fatal("E② HTTP 첫 진단 서버에 통제 조회 대기(paused_by_orchestrator) 경로가 열려 있음")
+			}
+			if on, _ := runtime.server.m.ConcurrencyLimit(); on {
+				t.Fatal("첫 진단 서버에 동시 실행 제한이 켜져 있음(llm_unavailable_queued 경로)")
+			}
+			if !runtime.server.firstDiagnosis || runtime.server.engine.IsPaused(task.ID) {
+				t.Fatal("회차 도중 엔진이 이미 일시정지됨")
+			}
+			runtime.server.engine.Pause(task.ID, agent.AbortPausedByOrchestrator)
+		} else if mode == "user-stop" {
 			hash, err := runtime.server.reloadPassHash()
 			if err != nil {
 				t.Fatal(err)
@@ -800,10 +869,20 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		}
 		started := time.Now()
 		runErr = supervisor.Run(ctx, task.ID, 0, "")
-		// 붙잡힌 요청은 Run 시작 뒤에 나갔으므로, E② 요청 시간 상한으로 끝났다면 Run은 그 상한보다 늦게 돌아온다.
-		// 유예 뒤 멈췄다면 그 전에 돌아온다.
-		if elapsed := time.Since(started); elapsed >= time.Duration(policy.Limits.RequestTimeoutMS)*time.Millisecond {
-			t.Fatalf("시간 상한 유예 뒤 진행 중 작업을 멈추지 않음(E② 요청 시간 상한으로 끝남) elapsed=%s", elapsed)
+		// 유예 뒤 진행 중 작업을 멈췄다면 대상이 붙잡은 요청은 E② 요청 시간 상한 전에 끊긴다. 대상이 요청을 붙잡은 시간을
+		// 직접 본다. Run 전체 시간은 정리·감사 마감을 포함해 부하에 따라 흔들리므로(race 부하에서 5초를 넘긴 적 있음,
+		// 2026-11-20 dev·새 판 비교에서 분포가 같았다) 느슨한 상한만 둔다.
+		// 기대 끊김 시점은 시간 상한 시작 + 유예이고, 끊지 않으면 E② 요청 시간 상한에 끊긴다. 그 중간보다 먼저 끊겨야 한다.
+		requestTimeout := time.Duration(policy.Limits.RequestTimeoutMS) * time.Millisecond
+		drainAt := timeBudgetStart + timeBudgetDrain
+		cutBy := drainAt + (requestTimeout-drainAt)/2
+		entered, exited := targetEnteredAt.Load(), targetExitedAt.Load()
+		if entered == 0 || exited == 0 || time.Duration(exited-started.UnixNano()) >= cutBy {
+			t.Fatalf("시간 상한 유예 뒤 진행 중 요청을 끊지 않음(E② 요청 시간 상한 쪽으로 감) cut=%s by=%s",
+				time.Duration(exited-started.UnixNano()), cutBy)
+		}
+		if elapsed := time.Since(started); elapsed >= 2*requestTimeout {
+			t.Fatalf("시간 상한 마감이 너무 늦음 elapsed=%s", elapsed)
 		}
 	} else if mode == "planner-only" || mode == "plan-turns" {
 		// 작업이 없는 실행이다. 계획이 비어도 마감하지 않고(원본과 같은 끝 규칙), 시간 상한에서 no_intents·budget_limited로
@@ -825,6 +904,14 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		go func() { done <- supervisor.Run(ctx, task.ID, 0, "") }()
 		runErr = firstDiagnosisRunPastIdle(t, ctx, supervisor, task, func() bool { return idlePlanner.idle.Load() > 0 }, done)
 	}
+	if reason, ok := diagnosisCheckReason(runErr); ok && reason == reasonEnginePaused && mode != "engine-pause" {
+		// 회차 도중 운영자 밖 엔진 일시정지가 생기는 경로가 없음을 모든 마감 경로에서 고정한다.
+		t.Fatalf("회차 도중 엔진 일시정지로 끝남 mode=%s", mode)
+	}
+	t.Logf("마감 경로 관찰 mode=%s run=%d stop=%d handle=%q modelClosed=%v hitsAtClose=%d hitsNow=%d err=%v",
+		mode, closeProbe.runCalls, closeProbe.stopCalls, closeProbe.handle, closeProbe.modelClosed, closeProbe.hitsAtClose, hits.Load(), runErr)
+	firstDiagnosisCheckClosingPath(t, mode, closeProbe.runCalls, closeProbe.stopCalls, closeProbe.handle, closeProbe.modelClosed,
+		hits.Load()-closeProbe.hitsAtClose)
 	if mode == "planner-only" {
 		// 시간 상한까지 intent가 없으면 실패가 아니라 no_intents로 마감한다(C11 결정 2). 마감 사유는 시간 상한(budget_limited)이고
 		// 대상 송신은 없다.
@@ -1090,6 +1177,9 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		return
 	}
 	if mode == "time-budget" {
+		if timeE3Calls != 1 || timeE3Reason != `handle="" exec=true ctx=true` {
+			t.Fatalf("시간 상한 마감의 확정 단계 훅 때 E② 연결: 호출 %d %s", timeE3Calls, timeE3Reason)
+		}
 		result := supervisor.RunResult()
 		entered, exited := false, false
 		select {
@@ -1147,18 +1237,40 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		}
 		return
 	}
-	if mode == "cancel" || mode == "user-stop" {
-		if runErr == nil || !errors.Is(runErr, context.Canceled) {
+	if mode == "cancel" || mode == "user-stop" || mode == "pause" || mode == "engine-pause" {
+		if mode == "engine-pause" {
+			// 운영자 밖 엔진 일시정지는 운영자 중지(취소)와 섞지 않고 감독 실패 engine_paused로 끝난다.
+			if reason, ok := diagnosisCheckReason(runErr); !ok || reason != reasonEnginePaused || !errors.Is(runErr, ErrFirstDiagnosisSupervisor) || errors.Is(runErr, context.Canceled) {
+				t.Fatalf("엔진 일시정지 마감 사유: %v", runErr)
+			}
+			if runtime.server.requestApprovals.userStopped(mustFirstDiagnosisTaskNumber(task.ID)) {
+				t.Fatal("엔진 일시정지를 운영자 중지로 기록함")
+			}
+		} else if runErr == nil || !errors.Is(runErr, context.Canceled) {
 			t.Fatal("진행 중 실제 HTTP 요청 취소를 성공으로 반환하거나 취소 원인을 잃음")
 		}
 		// 중지 마감은 확정 단계를 부르지 않고 중지 기록을 한 번 남긴다. 실행 문맥이 취소돼도 기록 문맥은 살아 있다.
 		if e3Calls != 0 || e3StoppedCalls.Load() != 1 || !e3StoppedCtxLive.Load() {
 			t.Fatalf("중지 마감의 E③ 기록: 확정 %d·중지 기록 %d·문맥 %v", e3Calls, e3StoppedCalls.Load(), e3StoppedCtxLive.Load())
 		}
-		if mode == "user-stop" {
+		if mode == "pause" {
+			// 재개는 지원하지 않는다: 고정 사유로 거절한다(planning_task_closed 실패로 보이지 않게).
+			code, body := firstDiagnosisControlRequest(t, runtime, task.ID, "resume")
+			if code != 409 || !strings.Contains(body, `"reason_code":"resume_unsupported"`) {
+				t.Fatalf("재개 거절 사유: %d %s", code, body)
+			}
+		}
+		if mode == "user-stop" || mode == "pause" {
 			state := runtime.server.requestApprovals.runState(mustFirstDiagnosisTaskNumber(task.ID))
 			if state.Phase != "closed" || state.Outcome != "cancelled" || !state.DrainComplete || state.ClosureFailed {
 				t.Fatalf("중지 마감 상태 불일치: %+v", state)
+			}
+		}
+		if mode == "engine-pause" {
+			state := runtime.server.requestApprovals.runState(mustFirstDiagnosisTaskNumber(task.ID))
+			t.Logf("엔진 일시정지 마감 상태: %+v closure=%+v", state, supervisor.ClosureResult())
+			if state.Outcome == "cancelled" {
+				t.Fatalf("엔진 일시정지를 취소(운영자 중지)로 닫음: %+v", state)
 			}
 		}
 		closeCtx, stop := context.WithTimeout(context.Background(), 8*time.Second)
@@ -1415,7 +1527,7 @@ func TestFirstDiagnosisCheckReasonsAreLoggable(t *testing.T) {
 	for _, reason := range []string{reasonClosureWorkflowFailed, reasonClosureWorkflowNotReady, reasonClosureIntentReadFailed, reasonClosureCallsWithoutIntents,
 		reasonClosureExecutionMissing, reasonClosureCallsMissing, reasonClosureResultsUnavailable, reasonClosureResultNotClosed, reasonClosureToolOutcomeInvalid,
 		reasonClosureResultMismatch, reasonClosureUntrustedIntentMismatch, reasonClosureProgramCallOpen, reasonClosureCallMismatch, reasonClosureUnknownIntentMismatch,
-		reasonClosurePolicyLimitedUnmatched, reasonClosureIntentStateInvalid, reasonClosureCallCountMismatch, reasonClosureNotReady, reasonEngineTaskFailed} {
+		reasonClosurePolicyLimitedUnmatched, reasonClosureIntentStateInvalid, reasonClosureCallCountMismatch, reasonClosureNotReady, reasonEngineTaskFailed, reasonEnginePaused} {
 		failed := firstDiagnosisCheckFailed(reason, ErrFirstDiagnosisSupervisor)
 		diagnosisStage(ctx, 1, "execution", failed, diagnosisFailureReason("execution", failed), time.Now())
 		if logger.Err() != nil {
@@ -1962,9 +2074,14 @@ func verifySupervisorFailureLog(t *testing.T, path, mode string) {
 		}
 		found++
 		switch mode {
-		case "cancel", "user-stop":
+		case "cancel", "user-stop", "pause":
 			if event.Status != "cancelled" || event.ReasonCode != "user_cancelled" {
 				t.Error("실제 취소와 로그 상태 불일치")
+			}
+		case "engine-pause":
+			// 운영자 밖 엔진 일시정지는 운영자 취소(user_cancelled)가 아니라 실행 단계 실패 engine_paused로 남는다.
+			if event.Status != "failed" || event.Stage != "execution" || event.ReasonCode != reasonEnginePaused {
+				t.Errorf("엔진 일시정지의 로그 상태 불일치: stage=%s status=%s reason=%s", event.Stage, event.Status, event.ReasonCode)
 			}
 		case "close-fail":
 			if event.Status != "failed" || event.Stage != "audit_close" || event.ReasonCode != "audit_failed" {
@@ -2149,4 +2266,60 @@ func firstDiagnosisHarnessDeclaration(t *testing.T, targetRef string) e3contract
 		t.Fatal("시험 선언", err)
 	}
 	return decl
+}
+
+// firstDiagnosisControlRequest는 제품 경로의 작업 control(pause·resume) 요청을 운영자 인증으로 보내고 상태 코드와 본문을 돌려준다.
+func firstDiagnosisControlRequest(t *testing.T, runtime *FirstDiagnosisHTTPRuntime, taskID, action string) (int, string) {
+	t.Helper()
+	hash, err := runtime.server.reloadPassHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := signJWT(runtime.server.signingKey(hash))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("POST", "/api/tasks/"+taskID+"/control", strings.NewReader(`{"action":"`+action+`"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	runtime.Handler().ServeHTTP(rec, req)
+	return rec.Code, rec.Body.String()
+}
+
+// firstDiagnosisCheckClosingPath는 마감 경로 표(사용자 결정 2026-11-20)를 본다. 모든 경로에서 확정 단계 훅(Run)과 중지
+// 기록(Stopped) 가운데 정확히 하나가 한 번 불리고, 확정 단계 훅 때 E② 연결은 살아 있고 모델 단계는 마감돼 있거나(사유
+// 없음), E② 실행을 한 번도 잡지 않은 경우(lease_missing)뿐이다. 닫힘 사유(task_fenced·execution_stopped 등)로 확정 단계
+// 훅이 불리면 그 경로가 확정 단계 전에 E②를 닫은 것이다(#809 목표 달성, #825 중지 기록, 시간 상한 유예 초과). 확정 단계
+// 훅·중지 기록 뒤에는 모델 단계 송신이 0이다. 대표 경로는 어느 쪽으로 끝나는지도 고정한다.
+func firstDiagnosisCheckClosingPath(t *testing.T, mode string, runCalls, stopCalls int, handle string, modelClosed bool, sentAfter int64) {
+	t.Helper()
+	if runCalls+stopCalls != 1 {
+		t.Fatalf("%s: 확정 단계 훅 %d·중지 기록 %d(정확히 하나가 한 번이어야 함)", mode, runCalls, stopCalls)
+	}
+	if runCalls == 1 && !(handle == "" && modelClosed || handle == E3HandleLeaseMissing) {
+		t.Fatalf("%s: 확정 단계 훅 때 E② 연결 %q·모델 단계 마감 %v(확정 단계 전에 E②가 닫혔거나 모델 단계가 열려 있음)", mode, handle, modelClosed)
+	}
+	if sentAfter != 0 {
+		t.Fatalf("%s: 모델 단계 마감(또는 중지) 뒤 대상 송신 %d건", mode, sentAfter)
+	}
+	want := map[string]string{
+		// 모델 단계가 스스로 끝남 → 확정 단계가 돈다.
+		"goal-met-after-work": "run", "time-budget": "run", "request-budget": "run", "request-budget-overflow": "run",
+		"planner-limit": "run", "planner-kill": "run", "command-timeout": "run",
+		// 스스로 끝났지만 E② 실행을 한 번도 잡지 않음 → 확정 단계 훅이 실행 없음으로 기록한다.
+		"planner-only": "no-execution", "plan-turns": "no-execution", "goal-met": "no-execution",
+		// 강제 중지·실패 → 중지 기록(interrupted).
+		"cancel": "stop", "user-stop": "stop", "pause": "stop", "engine-pause": "stop", "prepare-fail": "stop", "goal-met-unmatched-limit": "stop",
+	}[mode]
+	got := "run"
+	switch {
+	case stopCalls == 1:
+		got = "stop"
+	case handle == E3HandleLeaseMissing:
+		got = "no-execution"
+	}
+	if want != "" && got != want {
+		t.Fatalf("%s: 마감 경로 %s, 표에서는 %s", mode, got, want)
+	}
 }

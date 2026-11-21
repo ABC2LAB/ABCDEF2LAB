@@ -80,7 +80,7 @@
    cd "$T" && python3 -I -B scripts/eval/env_check.py --config <4절 7번 runner.json(공식 분리 배치 예시를 채운 파일)>
    ```
 
-   - 확인 항목: Docker 서버·클라이언트 판(29.0 이상), 네이티브 dockerd(Docker Desktop 아님), Compose(2.40 이상), Go(go.mod와 같은 판), Python(3.12 이상), OpenSSL(3.0 이상), git, 메모리, Docker 루트의 남은 공간, 실행 중 컨테이너 0개, 허용 목록 밖 리슨 없음, 회차가 쓸 호스트 포트 비어 있음, 분리 배치 대역 겹침 없음, buildx, 기본 이미지를 받을 수 있음.
+   - 확인 항목: Docker 서버·클라이언트 판(29.0 이상), 네이티브 dockerd(Docker Desktop 아님), Compose(2.40 이상), Go(go.mod와 같은 판), Python(3.12 이상), OpenSSL(3.0 이상), git, 메모리, Docker 루트의 남은 공간, 절전·Windows 업데이트(`power`: 전원 연결 때 절전·최대 절전 '안 함', 재부팅을 기다리는 업데이트 없음, 업데이트 일시 중지 중), Docker 자동 업데이트(`docker_updates`: Windows의 Docker Desktop 꺼짐, 이 배포판 dockerd 엔진 패키지 고정 또는 자동 업그레이드 꺼짐), 실행 중 컨테이너 0개, 허용 목록 밖 리슨 없음, 회차가 쓸 호스트 포트 비어 있음, 분리 배치 대역 겹침 없음, buildx, 기본 이미지를 받을 수 있음.
    - 기준값은 위 표의 개발 머신 실측과 레포 설정이다. 메모리·남은 공간 기준은 개발 머신에서 회차를 실제로 돌린 값과 공식 회차 이미지 합계라서 바닥값이다(빌드 캐시·회차 기록은 더 든다).
 2. **다른 일 끄기:** 다른 Claude Code 세션·개발 서버·시연 컨테이너를 끈다. **Docker Desktop을 종료하고 WSL 통합을 끈다.** 통합을 켰다 끄면 WSL dockerd 소켓이 사라지므로 `sudo systemctl restart docker.socket docker`로 되살린다.
 3. **버전·컨테이너·리슨 확인:**
@@ -195,9 +195,10 @@ install -d -m 700 /srv/abc2lab-eval /srv/abc2lab-eval-keys "$SESSION" "$SESSION/
      - `path_key_file`: 4번 키 경로(`$PATH_KEY_DIR/path.key`). `preservation.series_ref`: `official-<세션 날짜>`.
      - `split.cli_usage_names`: 2번 도구 면 측정의 `cli_differences.baseline_only` 이름 목록.
      - 경로(`runs_root`·`secrets_env_file`·`runner_key_path`·`findings.vocabulary_path`·`split.manifest_path`): 예시는 `/srv/abc2lab-eval…`이다. 그 PC에서 다른 디렉터리를 쓰면 이 경로 칸만 바꾼다. `runs_root`는 세션마다 새 디렉터리다.
+   - **선택(O 회차를 화면으로 지켜볼 때)**: `split.observer_password_file`에 회차 관리자 로그인 파일 경로를 적는다(예: `/srv/abc2lab-eval-keys/observer/admin.txt`, 부모 디렉터리는 0700으로 미리 만든다). 러너가 O 회차마다 그 회차의 아이디·비밀번호를 0600으로 쓰고 회차가 끝나면 지운다([평가 러너](runner.md)). 화면은 Windows 브라우저에서 `http://localhost:<split.product_port>`(예시 28787)이다. 로그인은 O 회차가 시작된 뒤(러너가 제품 작업을 시작한 뒤) 한다. 로그인 실패 제한은 접속 주소별이라 러너와 같은 주소로 잡히므로, 실패하면 파일을 다시 열어 확인하고 되풀이하지 않는다. **공식 O 3회는 모두 관찰하거나 모두 관찰하지 않는다**(2026-11-20 사용자). 세션 중에 이 칸을 넣거나 빼지 않는다. 회차 결과(`runner-result.json`)의 `observer_login_file`(예/아니오만, 경로·값 없음)로 확인한다.
    - **넣지 않는 것**: API 키, 관리자·DB 비밀번호, 경로 가림 키·러너 서명 키의 값, 승인 manifest 내용. 이것들은 회차 시작 때 따로 만드는 파일(3번·4번·5번)이고, `runner.json`에는 그 **경로만** 둔다.
    - `preservation`의 0으로 채운 지문 셋(`mcp_tools_sha256`·`exploration_policy_sha256`·`declared_model_budget_sha256`, 64자리 `0`)은 그대로 둔다. 앞의 둘은 분리 배치(v3) 기록에서 쓰지 않고 측정값(도구 면 측정)과 B `null`로 대신한다. `declared_model_budget_sha256`은 B 기록에 그대로 옮겨지며, 원본 엔진과 평가 게이트웨이에는 모델 예산이 없어서 0×64는 **B 모델 예산 선언 없음**을 뜻한다(O는 제품 설치 예산 값에서 러너가 계산한다).
-   - 예시에 이미 들어 있는 공식 값: `purpose: official`, 검증 창(`llm_gateway.verify_attempts` 40·`verify_interval_seconds` 3, `run.llm_verify_timeout_seconds` 300), 멈춤 무효 T(`run.fault_stall_seconds` 180), 분리 배치 포트(`split.product_port` 28787·`dns_control_port` 29083)와 그 밖의 `split`·`preservation` 칸.
+   - 예시에 이미 들어 있는 공식 값: `purpose: official`, E③ 비활성 요구(`split.e3_disabled_required: true`, 공식 회차는 켜야만 설정 검사를 통과한다), 검증 창(`llm_gateway.verify_attempts` 40·`verify_interval_seconds` 3, `run.llm_verify_timeout_seconds` 300), 멈춤 무효 T(`run.fault_stall_seconds` 180), 분리 배치 포트(`split.product_port` 28787·`dns_control_port` 29083)와 그 밖의 `split`·`preservation` 칸.
    - 채운 뒤 3절 환경 점검을 이 파일로 다시 돌린다. 엔진 직접 배치 예시(`runner.example.json`)로 돌리면 분리 배치 포트가 없어 `ports`가 `SKIP`(종료 코드 2)이다.
 
 ## 5. 사전 점검 (첫 유료 회차 전)
@@ -234,8 +235,23 @@ install -d -m 700 /srv/abc2lab-eval /srv/abc2lab-eval-keys "$SESSION" "$SESSION/
 
 **운영 규칙: 측정 PC가 멈추지 않게(2026-11-20 사용자).**
 - 세션 전 3절 환경 점검의 `power` 항목이 PASS여야 한다. 전원 연결(AC) 때 절전(`STANDBYIDLE`)·최대 절전(`HIBERNATEIDLE`)이 '안 함'(0)이다. 측정은 전원을 연결한 채로 한다(배터리 값은 사유에만 나온다).
-- 측정 구간 동안 PC를 덮거나(덮개 동작이 절전이면), 로그아웃·재시작·Windows 업데이트 재부팅을 하지 않는다. 업데이트는 세션 전에 끝내거나 사용 시간에 걸리지 않게 미룬다.
+- 측정 구간 동안 PC를 덮거나(덮개 동작이 절전이면), 로그아웃·재시작·Windows 업데이트 재부팅을 하지 않는다.
+- **측정 날은 Windows 업데이트를 일시 중지한다**(설정 > Windows 업데이트 > 업데이트 일시 중지, 세션이 끝난 뒤까지). 재부팅을 기다리는 업데이트가 있으면 세션 전에 재부팅으로 끝낸다. `power` 항목이 재부팅 대기 표시(Windows 업데이트 `RebootRequired`·구성 요소 서비스 `RebootPending`)와 일시 중지 만료 시각을 읽어 본다(2026-11-20 사용자).
 - 화면 잠금은 WSL·Docker를 멈추지 않지만, 잠금 뒤 절전으로 이어지는 설정이면 위 절전 '안 함'으로 막힌다. 세션 기록에 `power` 줄을 그대로 옮긴다.
+
+**운영 규칙: 측정 중 Docker가 스스로 업데이트·재시작하지 않게(2026-11-20 사용자).**
+- 이 PC의 엔진은 WSL 배포판의 dockerd(`docker.io`·`containerd`·`runc`)다. Ubuntu 자동 보안 업데이트(`unattended-upgrades`, 매일 `apt-daily-upgrade.timer`)가 켜져 있고 세 패키지는 보안 저장소에 있다. 측정 중에 업데이트되면 패키지 스크립트가 dockerd·containerd를 다시 띄워 도는 회차의 컨테이너가 멈춘다.
+- 세션 전에 고정하고, 세션이 끝나면 푼다.
+
+  ```bash
+  sudo apt-mark hold docker.io containerd runc      # 세션 전
+  sudo apt-mark unhold docker.io containerd runc    # 세션 끝난 뒤(보안 업데이트를 미루지 않게)
+  ```
+
+- Windows의 Docker Desktop은 종료한다(3절 2번). 스스로 업데이트·재시작하고, WSL 통합이 켜지면 이 배포판의 Docker 소켓을 가져간다(2026-11-02 이 PC에서 겪음). `docker_updates` 항목이 Docker Desktop 프로세스와 엔진 패키지 고정을 본다.
+
+**운영 규칙: 관찰자는 화면을 읽기만 한다(2026-11-20 사용자).**
+- O 회차를 제품 화면으로 지켜볼 수 있다. 화면에서는 읽기만 하고, 일시정지·재개·중지·승인·거부·설정 저장·대상 등록처럼 제품 상태를 바꾸는 조작을 하지 않는다. 조작이 회차에 들어가면 B와 같은 조건이 깨진다.
 
 ```bash
 cd "$T"
@@ -246,6 +262,31 @@ python3 -I -B scripts/eval/runner.py --config /srv/abc2lab-eval/runner.json --pr
 python3 -I -B scripts/eval/runner.py --config /srv/abc2lab-eval/runner.json --preflight "$SESSION/preflight.json" \
   --side ours --condition "우리@35b" --repeat 0
 ```
+
+**세션 실행 스크립트(2026-11-20):** 아래 순서·무효 처리를 `scripts/eval/official_session.py`가 한 번에 한다. 먼저 점검 모드로 순서·무효 처리를 확인하고, 그다음 실제로 돌린다.
+
+```bash
+cd "$T"
+# 점검 모드: 러너·Docker·네트워크를 부르지 않고 결과를 흉내 내 순서·무효 처리만 본다(시도마다 차례로 쓰고, 모자라면 complete)
+python3 -I -B scripts/eval/official_session.py --session-dir "$SESSION/dry" --dry-run \
+  --outcomes "complete,invalid:window_boundary_changed,complete,invalid:provider_fault_stall"
+# 실제 세션
+python3 -I -B scripts/eval/official_session.py --session-dir "$SESSION" --tree "$T" \
+  --config /srv/abc2lab-eval/runner.json --preflight "$SESSION/preflight.json" \
+  --admin-password-file /srv/abc2lab-eval/admin.password --o-manifest-template "$SESSION/manifest-template.json" \
+  --run-timeout 3600 --grace 120 --post-timeout 300 \
+  [--key-file <키 파일> --usage-cap-usd <세션 상한> --min-remaining-usd 0.30]
+```
+
+- 칸마다 러너를 프로세스 그룹으로 띄우고 **PID로** 기다린다. 대기 시한(`--run-timeout`)을 넘으면 SIGINT → 유예(`--grace`) → SIGKILL을 보내고 `run_wait_timeout`으로 멈춘다. 이름 패턴(`pgrep -f`)으로 기다리지 않는다(2026-11-20 사용자 규칙).
+- **회차마다 시작 전에 실행 중 컨테이너가 0개인지 본다**(`--resume`의 첫 회차 포함). 남아 있으면 시도로 세지 않고 `containers_present`로 멈춘다(못 읽으면 `containers_unknown`). 남은 컨테이너 때문에 다음 회차가 격리 검사에서 무효가 되어 시도 한 번이 날아가지 않게 한다(2026-11-20 사용자). 이어서 평가 compose 망(compose 프로젝트 라벨이 `eval-`로 시작)이 남아 있으면 같은 방식으로 `networks_present`(못 읽으면 `networks_unknown`)로 멈춘다. 앞 회차 망이 남은 채로 다음 회차가 같은 고정 대역의 망을 만들지 않게 막는 예방 조치다. 2026-11-20에 관측한 `compose_up_failed`는 이것으로 설명되지 않는다(시작 전 망 0이었던 회차에서도 났다). 유력한 원인 후보는 제품 postgres healthcheck가 초기화 임시 서버 동안 통과한 것이다(#833에서 새 볼륨으로 재현하고 고침, 실패 회차 자체의 install 로그는 없다).
+- 회차가 끝나면 **완료 파일**(새 회차 디렉터리의 `runner-result.json`)을 읽는다. 회차가 어떻게 끝나든(시한 넘김·결과 없음 포함) 그 뒤 실행 중 컨테이너가 0이 될 때까지 기다리고(`--post-timeout`), 안 내려가면 멈춘 사유에 `containers_left`를 같이 적는다. 컨테이너가 내려가면 평가 compose 망이 다 지워질 때까지 같은 시한으로 기다리고, 남으면 `networks_left`로 멈춘다.
+- **새 회차 디렉터리가 생겼으면 무슨 일이 있어도 시도 1회로 센다**(2026-11-20 사용자). 결과 파일이 있으면 그 상태로, 없으면 무효(사유 = 멈춘 사유: `run_wait_timeout`·`result_missing`·`result_unreadable`)로 기록하고 멈춘다. 종료 코드와 상태가 어긋나면 무효(`result_status_mismatch`)로 센다. 컨테이너가 남으면 그 회차의 실제 상태로 세고 `containers_left`로 멈춘다(끝까지 간 회차가 버려지지 않는다). 회차 디렉터리가 안 생긴 경우(러너 종료 코드 2 등)만 시도로 세지 않는다. 멈춘 회차를 다시 돌려 기록에서 빼는 길(측정 결과를 골라 버리는 길)을 막고, 시한 넘김이 되풀이되면 2N에 걸리게 한다.
+- O 회차마다 manifest 틀(`--o-manifest-template`, 4절 5번 manifest에서 `approval_id`·`expires_at`만 빼고 같은 칸, 0600)로 새 승인 ID·만료 시각의 manifest를 `split.manifest_path`에 다시 쓴다(못 쓰면 `manifest_write_failed`로 멈춘다).
+- 키 사용량 상한(`--key-file`·`--usage-cap-usd`는 같이 준다)은 회차마다 시작 전에 본다. 세션 첫 확인의 사용량이 기준이고, 그 값을 세션 기록(`usage_base`)에 남겨 `--resume` 뒤에도 세션 전체 기준으로 건다. 넘으면 `usage_cap`, 남은 한도가 하한 이하면 `remaining_floor`, 조회 실패·값을 모름(한도 없는 키 포함)이면 `usage_read_failed`·`usage_unknown`·`remaining_unknown`으로 멈춘다(확인 못 한 채 유료 회차를 시작하지 않는다). 키·승인 ID는 출력하지 않는다.
+- 기록: `$SESSION/session-log.jsonl`(시도마다 쪽·`--repeat`·상태·사유·회차 ID, 마지막 요약). 러너 출력은 `$SESSION/<쪽><번호>-<시각>.stdout|stderr`.
+- 종료 코드: 0 쪽마다 유효 N회 완료, 3 측정 실패(쪽별 `provider_fault_stall` 2회 이상), 4 멈춤(시도 상한·러너 설정 오류·대기 시한·결과 없음·컨테이너 남음·사용량 상한), 2 입력 오류. 멈추면 사유를 고친 뒤 같은 명령에 `--resume`을 붙여 잇는다. 같은 세션 기록의 완료·무효 시도를 다시 세어 남은 칸부터 돌린다(회차 디렉터리가 생긴 뒤 멈춘 시도도 그대로 센다. 회차 디렉터리가 안 생긴 멈춤·설정 오류 줄은 시도로 세지 않는다). 기록만으로 이미 시도 상한·멈춤 무효 상한에 닿았으면 잇지 않는다. 기록이 있는데 `--resume` 없이 시작하면 거부한다.
+- 측정 구간 알림(아래 운영 규칙)은 스크립트를 띄우기 직전·끝난 직후에 사람이 보낸다.
 
 - 조건 이름은 쪽마다 고정이다: B `원본@35b`, O `우리@35b`. `--repeat`는 그 쪽의 유효 회차 번호(0부터)다.
 - 종료 코드 0 완료(서명됨), 1 무효(사유는 `runner-result.json`), 2 설정·입력 오류(회차를 만들지 않음 — 시도로 세지 않는다).

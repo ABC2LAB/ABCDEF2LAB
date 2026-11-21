@@ -125,8 +125,37 @@ class TestRunnerConfigBlock(unittest.TestCase):
             parse_runner_config(official)
         self.assertEqual(caught.exception.errors, ["config.split: PRESERVATION_ONLY"])
         official["preservation"] = model_options()
+        with self.assertRaises(RunnerConfigError) as caught:
+            parse_runner_config(official)
+        self.assertEqual(caught.exception.errors, ["config.split.e3_disabled_required: OFFICIAL_REQUIRES_TRUE"])
+        official["split"] = split_block(e3_disabled_required=True)
         config = parse_runner_config(official)
-        self.assertEqual((config.purpose, config.split.target_name), ("official", "app.eval.test"))
+        self.assertEqual((config.purpose, config.split.target_name, config.split.e3_disabled_required), ("official", "app.eval.test", True))
+
+    def test_e3_disabled_required_is_a_setting_not_the_purpose(self):
+        # 2026-11-20 사용자: E③ 비활성 요구는 purpose가 아니라 설정 칸이다. 공식 회차는 켜야만 통과하고, 그 밖의 목적은 켜도 끄도 된다
+        # (배선 확인·수용시험 회차가 확정 단계를 켤 수 있다).
+        for purpose in ("browser_acceptance", "wiring_check"):
+            for value in (True, False):
+                with self.subTest(purpose=purpose, value=value):
+                    payload = runner_config()
+                    payload.update(purpose=purpose, path_key_file="/srv/eval/path.key", preservation=model_options(),
+                                   split=split_block(e3_disabled_required=value))
+                    self.assertIs(parse_runner_config(payload).split.e3_disabled_required, value)
+        payload = runner_config()
+        payload.update(purpose="wiring_check", path_key_file="/srv/eval/path.key", preservation=model_options(), split=split_block())
+        self.assertIs(parse_runner_config(payload).split.e3_disabled_required, False)  # 없으면 거짓
+        for bad in (1, "true", None):
+            with self.subTest(bad=bad):
+                payload["split"] = split_block(e3_disabled_required=bad)
+                with self.assertRaises(RunnerConfigError) as caught:
+                    parse_runner_config(payload)
+                self.assertEqual(caught.exception.errors, ["config.split.e3_disabled_required: INVALID"])
+        official = runner_config()
+        official.update(path_key_file="/srv/eval/path.key", preservation=model_options(), split=split_block(e3_disabled_required=False))
+        with self.assertRaises(RunnerConfigError) as caught:
+            parse_runner_config(official)
+        self.assertEqual(caught.exception.errors, ["config.split.e3_disabled_required: OFFICIAL_REQUIRES_TRUE"])
 
 
 class TestReadManifest(unittest.TestCase):

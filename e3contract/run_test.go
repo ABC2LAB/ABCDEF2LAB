@@ -1042,3 +1042,242 @@ func TestRefusedAtRunStart(t *testing.T) {
 		}
 	}
 }
+
+// 사용자 결정 2026-11-20 (가): 신원 확인 직전에 A·B를 한 번씩 다시 로그인시킨다. 보낸 다시 로그인은 확정 몫(Requests)으로
+// 세고, 보내지 못했거나 실패해도 멈추지 않는다(바로 뒤 신원 확인이 근거다). 확정 단계가 돌지 않는 회차는 다시 로그인도 없다.
+func TestRunReloginsBeforeIdentity(t *testing.T) {
+	type event struct{ kind, label string }
+	for name, c := range map[string]struct {
+		sent     bool
+		requests int
+	}{
+		"sent":     {true, 8 + 2},
+		"not-sent": {false, 8},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			var order []event
+			deps := f.deps()
+			deps.Relogin = func(_ context.Context, label string) bool {
+				// 다시 로그인 때는 아직 신원 요청이 없어야 한다.
+				if n := countCalls(f.fake.Calls(), func(k e3fake.Key) bool { return true }); n != 0 {
+					t.Errorf("다시 로그인 전에 확정 요청 %d건", n)
+				}
+				order = append(order, event{"relogin", label})
+				return c.sent
+			}
+			res := e3contract.Run(context.Background(), deps, f.in)
+			if res.Status != e3contract.StatusCompleted || res.Requests != c.requests {
+				t.Fatalf("status=%s requests=%d", res.Status, res.Requests)
+			}
+			if len(order) != 2 || order[0] != (event{"relogin", "tester-a"}) || order[1] != (event{"relogin", "tester-b"}) {
+				t.Fatalf("다시 로그인 순서: %+v", order)
+			}
+			for _, typ := range []string{"note", "secret"} {
+				if v := verdictOf(t, res, typ); v.Value != oracle.Confirmed {
+					t.Fatalf("%s: %+v", typ, v)
+				}
+			}
+		})
+	}
+	t.Run("disabled-run-no-relogin", func(t *testing.T) {
+		f := newFixture(t)
+		f.in.Owner.Authenticated = false
+		calls := 0
+		deps := f.deps()
+		deps.Relogin = func(context.Context, string) bool { calls++; return true }
+		res := e3contract.Run(context.Background(), deps, f.in)
+		if res.Status != e3contract.StatusDisabled || calls != 0 || res.Requests != 0 {
+			t.Fatalf("꺼진 회차에서 다시 로그인: %s calls=%d requests=%d", res.Status, calls, res.Requests)
+		}
+	})
+	t.Run("no-admitted-type-no-relogin", func(t *testing.T) {
+		f := newFixture(t)
+		f.in.AdmittedTypes = 0
+		calls := 0
+		deps := f.deps()
+		deps.Relogin = func(context.Context, string) bool { calls++; return true }
+		res := e3contract.Run(context.Background(), deps, f.in)
+		if calls != 0 || res.Requests != 0 {
+			t.Fatalf("몫에 든 종류가 없는데 다시 로그인: calls=%d requests=%d", calls, res.Requests)
+		}
+	})
+	t.Run("stopped-context-no-relogin", func(t *testing.T) {
+		f := newFixture(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		calls := 0
+		deps := f.deps()
+		deps.Started = cancel // 시작 직후 중지된 것처럼
+		deps.Relogin = func(context.Context, string) bool { calls++; return true }
+		res := e3contract.Run(ctx, deps, f.in)
+		noConfirmed(t, res)
+		if calls != 0 {
+			t.Fatalf("중지된 문맥에서 다시 로그인 %d건", calls)
+		}
+	})
+}
+
+// recheckTransport는 B 신원 요청을 센다. 두 번째 B 신원 요청(교차 거부 뒤 재확인)부터 recheck 동작으로 답한다.
+type recheckTransport struct {
+	*e3fake.Transport
+	recheck e3fake.Behavior
+	cross   int
+}
+
+func (r *recheckTransport) Identity(ctx context.Context, req e3contract.IdentityRequest) (e3contract.Observation, error) {
+	if req.Role == e3contract.RoleCross {
+		r.cross++
+		if r.cross == 2 {
+			r.Transport.Behaviors[key(e3contract.PurposeIdentity, e3contract.RoleCross, "")] = r.recheck
+		}
+	}
+	return r.Transport.Identity(ctx, req)
+}
+
+// 사용자 결정 2026-11-20 S21 (나): 교차 조회가 거부(401·403·404)면 B 신원을 한 번 더 확인한다. 살아 있으면(처음과 같은
+// 주체) data_no_match, 신원 응답이 401·403이면 세션 만료(product_session_expired), 그 밖에 확인하지 못하면 확인 못 함
+// (product_cross_denial_unverified)이다. 뒤의 둘은 B 신원 미확인으로 UNDECIDABLE이고, 어느 경우든 CONFIRMED가 아니다.
+// 재확인은 거부일 때만 보내고 확정 몫(종류당 1건)으로 센다.
+func TestRunCrossDenialRechecksIdentity(t *testing.T) {
+	for name, c := range map[string]struct {
+		recheck e3fake.Behavior
+		reason  e3contract.ProductReason
+		sent    bool
+	}{
+		"alive":              {e3fake.Behavior{SubjectID: "user-b"}, "", true},
+		"expired_401":        {e3fake.Behavior{Status: 401, Normal: oracle.StateNo}, e3contract.ReasonSessionExpired, true},
+		"expired_403":        {e3fake.Behavior{Status: 403, Normal: oracle.StateNo}, e3contract.ReasonSessionExpired, true},
+		"other_subject":      {e3fake.Behavior{SubjectID: "user-c"}, e3contract.ReasonCrossDenialUnverified, true},
+		"no_subject":         {e3fake.Behavior{}, e3contract.ReasonCrossDenialUnverified, true},
+		"server_error":       {e3fake.Behavior{Status: 500, Normal: oracle.StateNo}, e3contract.ReasonCrossDenialUnverified, true},
+		"not_found_identity": {e3fake.Behavior{Status: 404, Normal: oracle.StateNo}, e3contract.ReasonCrossDenialUnverified, true},
+		"incomplete":         {e3fake.Behavior{Incomplete: true}, e3contract.ReasonCrossDenialUnverified, true},
+		// 상태 줄(401)만 받고 본문이 끊긴 재확인은 결과 불명이라 만료로 단정하지 않는다.
+		"incomplete_401":  {e3fake.Behavior{Incomplete: true, Status: 401}, e3contract.ReasonCrossDenialUnverified, true},
+		"timed_out":       {e3fake.Behavior{TimedOut: true, Incomplete: true}, e3contract.ReasonCrossDenialUnverified, true},
+		"not_sent_policy": {e3fake.Behavior{NotSent: e3contract.NotSentPolicyDenied}, e3contract.ReasonCrossDenialUnverified, false},
+		"not_sent_budget": {e3fake.Behavior{NotSent: e3contract.NotSentBudgetExhausted}, e3contract.ReasonCrossDenialUnverified, false},
+		"result_unknown":  {e3fake.Behavior{Err: errors.New("결과 불명")}, e3contract.ReasonCrossDenialUnverified, true},
+	} {
+		for _, status := range []int{401, 403, 404} {
+			t.Run(fmt.Sprintf("%s_%d", name, status), func(t *testing.T) {
+				f := newFixture(t)
+				f.in.AdmittedTypes = 1 // note 하나만(재확인 뒤 다른 종류 동작과 섞이지 않게)
+				f.fake.Behaviors[key(e3contract.PurposeRead, e3contract.RoleCross, "note")] = e3fake.Behavior{Status: status,
+					Normal: oracle.StateNo, Presence: e3contract.MarkerAbsent}
+				tr := &recheckTransport{Transport: f.fake, recheck: c.recheck}
+				deps := f.deps()
+				deps.Transport = tr
+				res := e3contract.Run(context.Background(), deps, f.in)
+				noConfirmed(t, res)
+				if tr.cross != 2 {
+					t.Fatalf("B 신원 요청 %d건(처음 + 재확인 1건이어야 함)", tr.cross)
+				}
+				v := verdictOf(t, res, "note")
+				if v.Value != oracle.Undecidable {
+					t.Fatalf("note: %+v", v)
+				}
+				if c.reason == "" {
+					if len(v.ProductReasons) != 0 || !slices.Contains(v.OracleReasons, oracle.ReasonDataNoMatch) ||
+						v.Case.Facts.CrossNormalData != oracle.StateNo || v.IdentityCheck != oracle.StateYes {
+						t.Fatalf("살아 있는 세션의 거부가 data_no_match가 아님: %+v", v)
+					}
+				} else {
+					if !hasReason(v, c.reason) || len(v.ProductReasons) != 1 || slices.Contains(v.OracleReasons, oracle.ReasonDataNoMatch) ||
+						v.IdentityCheck == oracle.StateYes || v.Case.Facts.CrossNormalData != oracle.StateUnknown {
+						t.Fatalf("재확인 실패가 사유 %s로 남지 않음: %+v", c.reason, v)
+					}
+				}
+				// 신원 2 + 생성 + A 조회 + B 조회 + 재확인(보냈으면 셈).
+				want := 5
+				if c.sent || c.recheck.NotSent != "" {
+					want = 6
+				}
+				if res.Requests != want {
+					t.Fatalf("요청 %d건, 원함 %d", res.Requests, want)
+				}
+			})
+		}
+	}
+}
+
+// 거부가 아닌 교차 응답(표식 없음·있음)에는 재확인을 보내지 않는다.
+func TestRunCrossNotDeniedDoesNotRecheck(t *testing.T) {
+	for name, be := range map[string]e3fake.Behavior{
+		"visible": {},
+		"absent":  {Presence: e3contract.MarkerAbsent},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			f.in.AdmittedTypes = 1
+			f.fake.Behaviors[key(e3contract.PurposeRead, e3contract.RoleCross, "note")] = be
+			tr := &recheckTransport{Transport: f.fake, recheck: e3fake.Behavior{SubjectID: "user-b"}}
+			deps := f.deps()
+			deps.Transport = tr
+			res := e3contract.Run(context.Background(), deps, f.in)
+			if tr.cross != 1 || res.Requests != 5 {
+				t.Fatalf("거부 아닌 응답에 재확인: B 신원 %d건 요청 %d", tr.cross, res.Requests)
+			}
+		})
+	}
+}
+
+// 재확인 관찰이 저널과 맞지 않으면 진위 실패다(판정 행 없음).
+func TestRunCrossRecheckIntegrityFailure(t *testing.T) {
+	f := newFixture(t)
+	f.in.AdmittedTypes = 1
+	f.fake.Behaviors[key(e3contract.PurposeRead, e3contract.RoleCross, "note")] = e3fake.Behavior{Status: 404, Normal: oracle.StateNo,
+		Presence: e3contract.MarkerAbsent}
+	tr := &recheckTransport{Transport: f.fake, recheck: e3fake.Behavior{SubjectID: "user-b"}}
+	calls := 0
+	f.fake.Tamper = func(_ e3fake.Call, o *e3contract.Observation) {
+		if o.Purpose == e3contract.PurposeIdentity && o.Role == e3contract.RoleCross {
+			calls++
+			if calls == 2 {
+				o.StatusCode = 418
+			}
+		}
+	}
+	deps := f.deps()
+	deps.Transport = tr
+	res := e3contract.Run(context.Background(), deps, f.in)
+	integrityFailed(t, res, e3contract.IntegrityJournalEventMismatch)
+}
+
+// 사용자 결정 2026-11-20 분기점 2: 모델 단계가 E② 실행을 한 번도 잡지 않고 스스로 끝나면 요청 없이 남긴다. 꺼진 회차는 실제
+// 사유, 켜진 회차는 확정할 후보가 없으면 no_confirmation_candidates, 후보가 있으면(비정상) e2_execution_unavailable이다.
+func TestRunWithoutExecution(t *testing.T) {
+	for name, c := range map[string]struct {
+		prepare func(*fixture)
+		status  e3contract.ConfirmationStatus
+		reason  string
+	}{
+		"disabled-declaration": {func(f *fixture) { f.in.Binding.Policy = e3contract.PolicySource{} }, e3contract.StatusDisabled,
+			string(e3contract.DisabledNoDeclaration)},
+		"disabled-accounts": {func(f *fixture) { f.in.Cross.Authenticated = false }, e3contract.StatusDisabled,
+			string(e3contract.DisabledAccountsUnverified)},
+		"no-candidates": {func(f *fixture) { f.in.Candidates = nil }, e3contract.StatusDisabled, string(e3contract.DisabledNoCandidates)},
+		"candidates":    {func(*fixture) {}, e3contract.StatusStartRefused, string(e3contract.RefuseE2ExecutionUnavailable)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			c.prepare(f)
+			started := 0
+			deps := f.deps()
+			deps.Started = func() { started++ }
+			deps.Relogin = func(context.Context, string) bool {
+				t.Error("실행 없음 기록이 다시 로그인함")
+				return true
+			}
+			res := e3contract.RunWithoutExecution(context.Background(), deps, f.in)
+			if res.Status != c.status || res.Reason != c.reason || res.Requests != 0 || len(res.Verdicts) != 0 || started != 0 ||
+				len(f.fake.Calls()) != 0 || len(f.writes.Events()) != 0 {
+				t.Fatalf("%s/%s 요청 %d 판정 %d 시작 %d 대상 %d", res.Status, res.Reason, res.Requests, len(res.Verdicts), started, len(f.fake.Calls()))
+			}
+			noConfirmed(t, res)
+		})
+	}
+	if !e3contract.RefuseE2ExecutionUnavailable.Valid() {
+		t.Fatal("e2_execution_unavailable이 정해진 시작 거부 사유가 아님")
+	}
+}

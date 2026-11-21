@@ -92,20 +92,20 @@ func TestE2HTTPRefreshUnusableSessionCountsAsFailure(t *testing.T) {
 			canceled, cancel := context.WithCancel(t.Context())
 			cancel()
 			for _, ctx := range []context.Context{nil, canceled} {
-				e2HTTPRefreshSession(ctx, execution, dir, target.URL, auth, counter, nil, "a")
+				e2HTTPRefreshSession(ctx, execution, dir, target.URL, auth, counter, nil, "a", false)
 			}
-			e2HTTPRefreshSession(t.Context(), execution, dir, target.URL, auth, counter, nil, "unknown")
+			e2HTTPRefreshSession(t.Context(), execution, dir, target.URL, auth, counter, nil, "unknown", false)
 			if len(counter.accounts) != 0 {
 				t.Fatal("unadmitted command changed account state")
 			}
 			for range maxSessionRefreshFailuresPerAccount {
-				if _, result := e2HTTPRefreshSession(t.Context(), execution, dir, target.URL, auth, counter, nil, "a"); result != status {
+				if _, result := e2HTTPRefreshSession(t.Context(), execution, dir, target.URL, auth, counter, nil, "a", false); result != status {
 					t.Fatalf("result=%s want=%s", result, status)
 				}
 				clock.Advance(minSessionRefreshInterval)
 			}
 			calls := len(execution.Calls())
-			if _, result := e2HTTPRefreshSession(t.Context(), execution, dir, target.URL, auth, counter, nil, "a"); result != E2HTTPRefreshLimit || len(execution.Calls()) != calls {
+			if _, result := e2HTTPRefreshSession(t.Context(), execution, dir, target.URL, auth, counter, nil, "a", false); result != E2HTTPRefreshLimit || len(execution.Calls()) != calls {
 				t.Fatal("consecutive failure limit did not refuse before BeginCall", result)
 			}
 			mu.Lock()

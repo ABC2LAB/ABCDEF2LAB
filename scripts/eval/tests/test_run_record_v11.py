@@ -525,6 +525,24 @@ class TestRejectedV11(_V11):
         for index, (name, tamper) in enumerate(cases.items()):
             with self.subTest(case=name):
                 self.reject("e3_confirmation|e3_status_expected|goal_common_sha256", f"v{index}", tamper_rows=tamper)
+        # E③ 비활성 요구 칸(2026-11-20 사용자): 불리언이어야 하고, 참이면 기대도 참이고 행이 있으면 disabled/declaration_missing만
+        def required(value, **e3):
+            def tamper(rows):
+                e3_disabled(**e3)(rows)
+                row_of(rows, "run_conditions")["e3_disabled_required"] = value
+            return tamper
+        for index, (name, tamper) in enumerate({
+                "required_not_bool": required(1), "required_without_expected": required(True, expected=False, rows_count=0),
+                "required_not_wired": required(True, reason="not_wired"),
+                "required_completed": required(True, status="completed", reason=None)}.items()):
+            with self.subTest(case=name):
+                self.reject("e3_disabled_required|e3_confirmation", f"r{index}", tamper_rows=tamper)
+        for index, tamper in enumerate((required(True), required(True, rows_count=0), required(False, status="completed", reason=None))):
+            with self.subTest(accepted=index):
+                self.inputs(self.v11(f"ra{index}", tamper_rows=tamper))
+        from isolation_proof import E3_DISABLED_REQUIRED_REASON
+        from run_record import OFFICIAL_E3_DISABLED_REASON
+        self.assertEqual(E3_DISABLED_REQUIRED_REASON, OFFICIAL_E3_DISABLED_REASON)
         # 기대가 참인데 행이 없는 것은 입력 오류가 아니라 수집 실패다(격리 검증은 통과하고 채점 규칙이 다룬다)
         self.assertEqual(self.inputs(self.v11("vm", tamper_rows=e3_disabled(rows_count=0))).e3, (True, None))
         # 칸이 생기기 전 근거는 기대 거짓·목표 SHA 없음으로 읽는다

@@ -118,6 +118,26 @@ func (w productWriteRecorder) Settle(_ context.Context, b e3contract.RunBinding,
 // 대상 요청을 시작할 때만 불린다(e3contract.Deps.Started). 꺼진 회차는 부르지 않는다.
 func (c *productE3Confirmation) run(ctx context.Context, taskID string, begin func()) error {
 	in, share := c.input(taskID)
+	if c.handle != nil && c.newBridge != nil {
+		if execution, _, reason := c.handle(taskID); execution == nil && reason == server.E3HandleLeaseMissing {
+			// 모델 단계가 E② 실행을 한 번도 잡지 않은 채 스스로 끝났다(intent 없음 등, 사용자 결정 2026-11-20 분기점 2). 연결이
+			// 없는 판(not_wired)이 아니므로 닫힌 연결을 붙여 실제 상태를 남긴다: 꺼진 회차는 실제 사유, 켜진 회차는 확정할
+			// 후보가 없으면 no_confirmation_candidates, 후보가 있으면 e2_execution_unavailable이다(요청 0).
+			deps := c.deps
+			deps.Transport, deps.Journal = productEndedE3Connection{}, productEndedE3Connection{}
+			res := e3contract.RunWithoutExecution(ctx, deps, in)
+			raw, err := json.Marshal(res)
+			if err == nil {
+				err = writeRunPrivateFile(c.runsDir, c.jobID, productE3ConfirmationFile, raw)
+			}
+			log.Printf("[e3-confirmation] 회차 %s 확정 단계 실행 없음 기록 %s %s", c.jobID, res.Status, res.Reason)
+			if err != nil {
+				log.Printf("[e3-confirmation] 회차 %s 기록 실패: e3_result_unrecorded", c.jobID)
+				return errors.New("e3_result_unrecorded")
+			}
+			return nil
+		}
+	}
 	confirmCtx := ctx
 	if share > 0 {
 		// 확정 단계 시간 몫은 Run에 넘기는 문맥의 시한이다(계약 §12). 몫이 0이면 요청을 보내지 않으므로 시한을 두지 않는다.
@@ -181,12 +201,13 @@ func (c *productE3Confirmation) stoppedDeps(taskID string) (e3contract.Deps, fun
 	return deps, release
 }
 
-// e3HandleExecutionEnded는 E② 연결을 주지 못한 사유가 "이 작업의 실행이 이미 끝남"인지다. 실행기·계정 저장소가 없는 사유
-// (runner_missing·runner_not_local·accounts_missing·runtime_unavailable)는 연결이 없는 판이라 여기 들지 않는다.
+// e3HandleExecutionEnded는 E② 연결을 주지 못한 사유가 "이 작업의 실행이 이미 끝남"인지다. 호스트가 닫히는 중·닫힘
+// (runtime_closing·runtime_closed)도 연결이 있던 판이라 여기 든다(#825 윤재상 봇 리뷰). 실행기·계정 저장소가 없는 사유
+// (runner_missing·runner_not_local·accounts_missing·lease_invalid·runtime_unavailable)는 연결이 없는 판이라 여기 들지 않는다.
 func e3HandleExecutionEnded(reason string) bool {
 	switch reason {
 	case server.E3HandleTaskMissing, server.E3HandleTaskMismatch, server.E3HandleTaskFenced, server.E3HandleLeaseMissing,
-		server.E3HandleExecutionStopped:
+		server.E3HandleExecutionStopped, server.E3HandleRuntimeClosing, server.E3HandleRuntimeClosed:
 		return true
 	}
 	return false
@@ -249,6 +270,14 @@ func (c *productE3Confirmation) wiredDeps(taskID string) (e3contract.Deps, func(
 		return deps, func() {}, nil
 	}
 	deps.Transport, deps.Journal = adapter, adapter
+	if relogin, ok := accounts.(server.E2HTTPAccountRelogin); ok {
+		deps.Relogin = func(ctx context.Context, label string) bool {
+			result := relogin.Relogin(ctx, label)
+			// 라벨·세션 값 없이 고정 결과 코드만 남긴다.
+			log.Printf("[e3-confirmation] task %s 확정 전 다시 로그인: %s", taskID, result)
+			return server.E2HTTPAuthSent(result)
+		}
+	}
 	checkpoint := func(ctx context.Context, binding e3contract.RunBinding, ref e3contract.CallRef) (e3v3.Checkpoint, error) {
 		_, cp, err := lazy.VerifiedCheckpoint(ctx, binding, ref)
 		return cp, err
@@ -434,7 +463,7 @@ func (c *productE3Confirmation) timeShare() (time.Duration, error) {
 }
 
 // productE3Admitted는 발급한 실행 정책의 확정 몫(withE3ConfirmationShare)에서 몫에 든 종류 수와 시간 몫을 되읽는다.
-// 요청 몫 = 신원 2 + 종류×3, 시간 몫 = 요청 몫 × 확정 요청 시간 상한(기본값)이다. 칸이 없거나 이 모양이 아니면 -1(몫을 받지
+// 요청 몫 = 고정 4(다시 로그인 2 + 신원 2) + 종류×4, 시간 몫 = 요청 몫 × 확정 요청 시간 상한(기본값)이다. 칸이 없거나 이 모양이 아니면 -1(몫을 받지
 // 못함)이고, 둘 다 0이면 든 종류가 없다.
 func productE3Admitted(l server.E2HTTPFileLimits) (int, time.Duration) {
 	if l.E3ConfirmationRequests == nil || l.E3ConfirmationTimeoutMS == nil {
@@ -444,11 +473,11 @@ func productE3Admitted(l server.E2HTTPFileLimits) (int, time.Duration) {
 	if requests == 0 && timeout == 0 {
 		return 0, 0
 	}
-	identity, perType := uint64(server.E3ConfirmationIdentityRequests), uint64(server.E3ConfirmationRequestsPerType)
-	if requests <= identity || (requests-identity)%perType != 0 || timeout != time.Duration(requests)*server.E3ConfirmationRequestTimeoutDefault {
+	fixed, perType := uint64(server.E3ConfirmationFixedRequests), uint64(server.E3ConfirmationRequestsPerType)
+	if requests <= fixed || (requests-fixed)%perType != 0 || timeout != time.Duration(requests)*server.E3ConfirmationRequestTimeoutDefault {
 		return -1, 0
 	}
-	return int((requests - identity) / perType), timeout
+	return int((requests - fixed) / perType), timeout
 }
 
 // productE3Roles는 선언한 소유(A)·교차(B) 계정 라벨에 그 실행의 인증 준비 결과를 붙인다. 인증 결과가 authenticated가 아니면

@@ -61,7 +61,7 @@ from runner_docker import HelperCleanupError, HelperCleanupInterrupt  # noqa: E4
 from runner_e2v3 import EVIDENCE_NAME as E2V3_EVIDENCE_NAME, E2V3Invalid  # noqa: E402
 from runner_e3_traces import EVIDENCE_NAME as E3_TRACES_NAME, FORMAT as E3_TRACES_FORMAT, traces as e3_traces  # noqa: E402
 from cli_usage import OBSERVED_LINES_FORMAT, count_usage, not_found_calls, observed_lines, product_command_record  # noqa: E402
-from isolation_proof import E3_STATUSES, PURPOSE_OFFICIAL  # noqa: E402
+from isolation_proof import E3_STATUSES  # noqa: E402
 from run_record import OFFICIAL_E3_DISABLED_REASON  # noqa: E402
 from runner_evidence import MeterFiles, forwarded_count  # noqa: E402
 from runner_fault import (  # noqa: E402
@@ -270,6 +270,12 @@ class SplitRunSpec:
     observer_path: str = ""
     observer_readonly_ref: str = ""
     allowed_listens: frozenset = frozenset()  # loopback 밖 호스트 리슨 허용(설정 허용 목록, B allowed_host_listens의 api 경우)
+    # 화면 관찰 로그인 파일(split.observer_password_file)을 썼는지. 결과에 예/아니오만 남긴다(경로·값 없음, 설정 지문 밖).
+    # 공식 O 회차는 모두 관찰하거나 모두 관찰하지 않는다(공식 회차 절차 6절, 2026-11-20 사용자).
+    observer_login_file: bool = False
+    # E③ 비활성 요구(설정 split.e3_disabled_required). 켜면 그 회차 정책의 확정 몫 0과 기록 disabled/declaration_missing을
+    # 확인하고 회차 조건(서명 근거)에 남긴다. purpose와 따로다(2026-11-20 사용자).
+    e3_disabled_required: bool = False
 
 
 class SplitRunPorts(Protocol):
@@ -701,8 +707,8 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     # 제품을 멈춘 뒤라 파일이 더 바뀌지 않는다. 정책·실행 조건은 이 초안·작업에 결속돼야 한다(#693 리뷰). 내용 지문이 비면
     # (자격 pin 규칙 등) 짝 대조 칸을 만들 수 없어 무효다.
     policy = checked_control_policy(_step(state, "control_policy_failed", lambda: ports.control_policy(task_id)), draft_id)
-    if spec.purpose == PURPOSE_OFFICIAL:
-        # 공식 측정은 E③ 비활성으로 고정(평가 프로토콜 §5.1): 그 회차가 실제로 쓴 정책의 확정 몫이 0으로 적혀 있어야 한다.
+    if spec.e3_disabled_required:
+        # E③ 비활성 요구(공식 측정은 늘 켬, 평가 프로토콜 §5.1): 그 회차가 실제로 쓴 정책의 확정 몫이 0으로 적혀 있어야 한다.
         check_official_e3_share(policy["limits"])
     fingerprint = policy["policy_fingerprint_sha256"]
     execution = diagnosis_entered(record, draft_id, task_id, policy["policy_revision"])
@@ -723,7 +729,7 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
         "format": PRODUCT_FILES_FORMAT, "file_sha256": files, "diagnosis_entered": entered, "diagnosis_policy_sha256": fingerprint,
         "policy_ref": policy["policy_ref"], "policy_revision": policy["policy_revision"], "limits": policy["limits"],
         "e3_confirmation": e3}))
-    if spec.purpose == PURPOSE_OFFICIAL:
+    if spec.e3_disabled_required:
         if "error" in e3:
             # 복사하지 못함(연결 전 빌드 등)과 모양·모순 오류를 사유로 가른다
             raise RunFailure("e3_status_not_collected" if e3["error"] == "e3_confirmation_not_collected" else "e3_confirmation_invalid")
@@ -815,6 +821,7 @@ def split_run_conditions(spec: SplitRunSpec, state: _SplitState, llm_summary: di
             "execution_source": "synthetic_fixture" if spec.synthetic else "model_run",
             # 제품 회차는 E③ 상태를 늘 기대한다(감독자 연결 전 빌드는 행이 없어 수집 실패로 드러난다, #713)
             "e3_status_expected": True, "goal_common_sha256": goal["common_sha256"],
+            "e3_disabled_required": spec.e3_disabled_required,
             "engine_settings_sha256": digest({"driver_settings_sha256": v3f.settings_sha256(spec.driver_settings, v3f.O_DRIVER_SETTINGS),
                                               "control_limits_sha256": files["control_limits"]}),
             "engine_rules_sha256": None, "output_language": None, "tool_tree_sha256": digest(state.summary["tool_surface"]),
@@ -1004,7 +1011,8 @@ def execute_split_run(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFile
     elif not reasons:
         reasons.append("record_build_failed")  # 완료까지 왔는데 기록이 없으면 서명할 것이 없다
     base = {"format": SPLIT_RESULT_FORMAT, "run_id": spec.run_id, "side": "ours", "layout": LAYOUT, "e2_mode": E2_SPLIT_PRODUCT,
-            "project": spec.project, "started_at": started_at, "finished_at": _stamp(clock)}
+            "project": spec.project, "started_at": started_at, "finished_at": _stamp(clock),
+            "observer_login_file": spec.observer_login_file}
     result = None
     if not reasons:
         payload = dict(base, status=COMPLETE, images=dict(spec.image_ids), task_request_sha256=state.task_request_sha256,

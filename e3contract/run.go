@@ -53,6 +53,9 @@ type Deps struct {
 	// Started는 확정 단계가 실제로 대상 요청을 시작하기 직전(표식을 만들기 전)에 한 번 불린다. 꺼짐·시작 거절·몫에 든
 	// 종류 없음이면 부르지 않는다. 감독자는 이때만 엔진을 정리 상태로 두어, 꺼진 회차의 흐름이 E③가 없을 때와 같게 한다.
 	Started func()
+	// Relogin은 신원 확인 직전에 시험 계정 하나를 다시 로그인시킨다(사용자 결정 2026-11-20 (가)). 로그인 요청을 실제로
+	// 보냈으면 참이다(확정 몫으로 센다). 결과는 판정 근거가 아니고 바로 뒤의 신원 확인이 근거다. 없으면 다시 로그인하지 않는다.
+	Relogin func(ctx context.Context, label string) (sent bool)
 }
 
 // Run은 모델 단계가 끝난 뒤 확정 단계 한 회를 돈다(#596 §5). 순서: 조건 → 정책 동결본 대조 → 리셋 확인 → 표식 생성·등록 →
@@ -81,12 +84,27 @@ func RunStopped(ctx context.Context, deps Deps, in Input) RunResult {
 	return res
 }
 
+// RunWithoutExecution은 모델 단계가 E② 실행을 한 번도 잡지 않은 채 스스로 끝났을 때(intent 없음 등) 확정 단계 상태를 요청
+// 없이 정한다(사용자 결정 2026-11-20 분기점 2). 비활성 근거가 있으면 RunStopped와 같은 결과(꺼진 회차는 실제 사유)이고,
+// 확정 단계가 돌 수 있었으면 확정할 후보가 없을 때 disabled(no_confirmation_candidates), 후보가 있으면(비정상)
+// start_refused(e2_execution_unavailable)다. 표식 등록·Transport·Journal·쓰기 기록을 부르지 않는다.
+func RunWithoutExecution(ctx context.Context, deps Deps, in Input) RunResult {
+	r := &run{deps: deps, in: in, seen: map[string]bool{}, stoppedBeforeStage: true, noExecution: true}
+	res := r.run(ctx)
+	if deps.Logger != nil {
+		deps.Logger.Info("E③ 확정 단계 실행 없음 기록", "status", string(res.Status), "reason", res.Reason)
+	}
+	return res
+}
+
 type run struct {
 	deps Deps
 	// stoppedBeforeStage는 RunStopped다. 요청을 시작하기 전(비활성 판정까지만) 멈춘다.
 	stoppedBeforeStage bool
-	in                 Input
-	marker             Marker
+	// noExecution은 RunWithoutExecution이다. E② 실행이 한 번도 없어 요청을 시작하지 않는다.
+	noExecution bool
+	in          Input
+	marker      Marker
 	// random은 이 회차의 난수원이다(Deps.Random, 없으면 crypto/rand). 표식과 요청 본문 칸 ID가 같은 출처에서 새 바이트를 읽는다.
 	random    io.Reader
 	decl      Declaration
@@ -181,6 +199,13 @@ func (r *run) run(ctx context.Context) RunResult {
 	}
 	// 중지 기록(RunStopped): 비활성 근거가 없어 확정 단계가 돌 수 있었다. 요청을 시작하지 않고 중단으로 남긴다.
 	if r.stoppedBeforeStage {
+		if r.noExecution {
+			// E② 실행이 한 번도 없었다. 확정할 후보가 없으면 그것이 진짜 이유이고, 후보가 있는데 실행이 없으면 비정상이다.
+			if len(r.validCandidates()) == 0 {
+				return r.result(StatusDisabled, string(DisabledNoCandidates))
+			}
+			return r.result(StatusStartRefused, string(RefuseE2ExecutionUnavailable))
+		}
 		return r.result(StatusInterrupted, "")
 	}
 	// 몫에 들지 않은 종류는 요청을 보내지 않고 UNDECIDABLE(예산)이다. 든 종류가 없으면 표식·신원 요청도 보내지 않는다.
@@ -215,6 +240,7 @@ func (r *run) run(ctx context.Context) RunResult {
 		return r.result(StatusStartRefused, string(RefuseMarkerRegistrationFailed))
 	}
 	r.marker = marker
+	r.relogin(ctx)
 
 	subjects, identityReason, evidence := r.identity(ctx)
 	if r.integrity != "" {
@@ -401,6 +427,24 @@ func (r *run) call(ctx context.Context, want Observation, send func() (Observati
 	return obs, true
 }
 
+// relogin은 신원 확인 직전에 A·B를 다시 로그인시킨다(사용자 결정 2026-11-20 (가)). 모델 단계가 길어 대상이 준 세션이
+// 만료됐어도 확정 단계가 새 세션으로 돌게 하려는 것이다. 다시 로그인이 실패하거나 보내지 못해도 멈추지 않는다: 바로 뒤의
+// 신원 확인이 그 세션으로 판정 근거를 정한다(만료면 product_identity_unverified). 보낸 요청은 확정 몫으로 센다. 문맥이
+// 끝났으면 보내지 않는다(뒤의 신원 확인이 중지·시간 몫 끝으로 처리한다).
+func (r *run) relogin(ctx context.Context) {
+	if r.deps.Relogin == nil {
+		return
+	}
+	for _, label := range []string{r.in.Owner.Label, r.in.Cross.Label} {
+		if ctx.Err() != nil {
+			return
+		}
+		if r.deps.Relogin(ctx, label) {
+			r.requests++
+		}
+	}
+}
+
 // identity는 A·B 신원을 확인한다(#596 §5.1). 실패하면 그 대상의 모든 종류가 UNDECIDABLE이고 생성·조회를 하지 않는다.
 func (r *run) identity(ctx context.Context) (oracle.SubjectContext, ProductReason, []CallRef) {
 	subjects := oracle.SubjectContext{OwnerStatus: oracle.SubjectUnknown, EvaluatedStatus: oracle.SubjectUnknown}
@@ -536,7 +580,22 @@ func (r *run) confirmType(ctx context.Context, t TypeDeclaration, subjects oracl
 	facts.SameResource = oracle.StateYes
 	facts.CrossNormalData = cross.Normal
 	if CrossDenied(cross.StatusCode) {
-		// 거부 응답은 상태를 먼저 본다. 표식 검사가 "있음"인 거부는 read가 모순으로 돌려보냈다.
+		// 거부 응답은 상태를 먼저 본다. 표식 검사가 "있음"인 거부는 read가 모순으로 돌려보냈다. 거부가 접근 통제 때문인지
+		// 세션 만료 때문인지 가리려고 B 신원을 한 번 더 확인한다(사용자 결정 2026-11-20 S21 (나)). 살아 있을 때만 접근
+		// 거부(정상 데이터 아님)이고, 만료면 세션 만료, 확인하지 못하면 확인 못 함으로 남긴다(둘 다 B 신원 미확인 → UNDECIDABLE).
+		recheck, reason := r.recheckCross(ctx, subjects)
+		if r.integrity != "" {
+			return Verdict{}
+		}
+		if recheck != (Observation{}) {
+			evidence = append(evidence, recheck.Ref)
+		}
+		if reason != "" {
+			unverified := subjects
+			unverified.EvaluatedStatus = oracle.SubjectUnknown
+			facts.CrossNormalData = oracle.StateUnknown
+			return r.verdict(t, unverified, facts, evidence, reason)
+		}
 		facts.CrossNormalData = oracle.StateNo
 	}
 	if cross.Marker.Status == MarkerComplete && cross.Marker.Presence == MarkerPresent {
@@ -553,6 +612,37 @@ func (r *run) confirmType(ctx context.Context, t TypeDeclaration, subjects oracl
 	// 표식은 이 회차에 새로 만든 무작위 값이고 A의 객체 한 칸에만 넣었다. 공통 화면 틀이 담을 수 없다.
 	facts.TemplateExcluded = oracle.StateYes
 	return r.verdict(t, subjects, facts, evidence, "")
+}
+
+// recheckCross는 교차 조회가 거부로 끝났을 때 B 신원을 한 번 더 확인한다(확정 몫의 종류당 1건, 거부일 때만 씀). 처음
+// 신원과 같은 주체가 정상 응답하면 사유 없음(살아 있음), 신원 응답이 401·403이면 세션 만료, 그 밖에는 확인 못 함이다.
+// 만료여도 다시 로그인해서 다시 조회하지 않는다: 확정 직전에 이미 다시 로그인했으므로 확정 단계 몇 초 사이에 만료되는
+// 것은 수명이 비정상적으로 짧은 대상뿐이고, 사유만 정확히 남긴다.
+func (r *run) recheckCross(ctx context.Context, subjects oracle.SubjectContext) (Observation, ProductReason) {
+	if r.budget || r.stopped {
+		return Observation{}, ReasonCrossDenialUnverified
+	}
+	want := Observation{Purpose: PurposeIdentity, Role: RoleCross, AccountLabel: r.in.Cross.Label}
+	obs, ok := r.call(ctx, want, func() (Observation, error) {
+		return r.deps.Transport.Identity(ctx, IdentityRequest{Binding: r.in.Binding, Spec: r.decl.Identity,
+			Role: RoleCross, AccountLabel: r.in.Cross.Label, Timeout: r.in.RequestTimeout})
+	})
+	if r.integrity != "" {
+		return Observation{}, ""
+	}
+	if !ok {
+		return Observation{}, ReasonCrossDenialUnverified
+	}
+	if !obs.Sent || obs.TimedOut || !obs.ResponseComplete {
+		return obs, ReasonCrossDenialUnverified
+	}
+	if obs.Normal == oracle.StateYes && obs.SubjectDigest != "" && obs.SubjectDigest == subjects.EvaluatedRef {
+		return obs, ""
+	}
+	if obs.StatusCode == 401 || obs.StatusCode == 403 {
+		return obs, ReasonSessionExpired
+	}
+	return obs, ReasonCrossDenialUnverified
 }
 
 // read는 조회 하나를 부르고, 판정에 쓸 수 없으면 사유를 돌려준다. 관찰을 못 받았으면 빈 관찰이다.

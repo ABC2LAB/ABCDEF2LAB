@@ -55,7 +55,7 @@ func TestAuthJWTFragmentsFollowPrepAndRefresh(t *testing.T) {
 			guard.Lock()
 			target.token = next
 			guard.Unlock()
-			header, status := e2HTTPRefreshSession(t.Context(), e, dir, receiver.URL, auth, &e2HTTPRefreshCounter{}, newE2HTTPProgramCalls(), "tester-a")
+			header, status := e2HTTPRefreshSession(t.Context(), e, dir, receiver.URL, auth, &e2HTTPRefreshCounter{}, newE2HTTPProgramCalls(), "tester-a", false)
 			raw, _ = json.Marshal(header)
 			if status != E2HTTPAuthAuthenticated || !strings.Contains(string(raw), next) || target.posts.Load() != 2 {
 				t.Fatal("다시 로그인 세션 교체 실패")

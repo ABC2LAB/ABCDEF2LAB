@@ -144,12 +144,17 @@
 | `product_request_denied`(추가) | E² 정책이 프로그램 요청을 거부 | 그 종류 0 |
 | `product_create_failed`(추가) | 생성 응답이 정상이 아니거나 객체 ID를 못 꺼냄 | 그 종류 0 |
 | `product_data_check_contradiction`(추가, 2026-11-20) | B 조회가 거부 응답(401·403·404)인데 표식 검사가 `present` | - |
+| `product_session_expired`(추가, 2026-11-20) | B 조회 거부 뒤 B 신원 재확인 응답도 401·403(세션 만료일 수 있음) | - (다시 로그인해 다시 조회하지 않음) |
+| `product_cross_denial_unverified`(추가, 2026-11-20) | B 조회 거부 뒤 B 신원을 다시 확인하지 못함(보내지 못함·결과 불명·시간 초과·몫 끝·중지·처음과 다른 주체·그 밖의 비정상 응답) | - |
 
 **B 조회 해석 순서(사용자 결정 2026-11-20).** B 조회 응답은 이 순서로 본다.
 1. 결과 불명·시간 초과·보내지 않음은 위 사유 코드다.
 2. 상태가 거부(401·403·404)면 표식 검사보다 상태를 먼저 본다.
-   - 표식 검사가 `present`가 아니면(`absent`·`failed`·`unsupported`·`partial`) `cross_normal_data = no`로 오라클에 넘긴다. 오라클 사유는 `data_no_match`이고 판정 값은 UNDECIDABLE 그대로다.
    - `present`면 거부와 데이터 노출이 함께 나온 모순이라 판정하지 않는다(`product_data_check_contradiction`, UNDECIDABLE).
+   - 표식 검사가 `present`가 아니면(`absent`·`failed`·`unsupported`·`partial`) 거부가 접근 통제 때문인지 세션 만료 때문인지 가리려고 B 신원을 한 번 더 확인한다(사용자 결정 2026-11-20 S21 (나), 확정 몫의 종류당 1건, 거부일 때만 씀).
+     - 처음 신원과 같은 주체가 정상 응답하면(살아 있음) `cross_normal_data = no`로 오라클에 넘긴다. 오라클 사유는 `data_no_match`이고 판정 값은 UNDECIDABLE 그대로다.
+     - 재확인 응답이 401·403이면 `product_session_expired`, 그 밖에 확인하지 못하면 `product_cross_denial_unverified`다. 둘 다 B 신원을 미확인(`evaluated_status = unknown`)·`cross_normal_data = unknown`으로 넘겨 UNDECIDABLE이다. 원인을 모르는 거부를 접근 거부(`data_no_match`)로 적지 않는다.
+     - 만료여도 다시 로그인해서 다시 조회하지 않는다. 확정 직전에 이미 다시 로그인했으므로(§7.1) 확정 단계 몇 초 사이에 만료되는 것은 수명이 비정상적으로 짧은 대상뿐이고, 사유만 정확히 남긴다.
 3. 그 밖의 상태(2xx 등)는 표식 검사가 `partial`·`unsupported`·`failed`면 위 사유 코드다(`product_data_check_failed` 등).
 4. 표식 검사가 `complete`면 아래 데이터 사실로 오라클이 정한다.
 
@@ -160,7 +165,7 @@ A(소유) 조회는 이 순서를 쓰지 않는다. A 조회가 정상이 아니
 - 신원: C14 인증 성공과 신원 확인이 둘 다 섰을 때만 `verified`이고, 참조는 실행별 키 digest다.
 - 데이터:
   - `same_resource`: 두 조회가 같은 생성 관찰을 읽음.
-  - `owner_normal_data`·`cross_normal_data`: A·B 조회의 정상 여부. B가 거부 응답(401·403·404)이면 `cross_normal_data`는 no다.
+  - `owner_normal_data`·`cross_normal_data`: A·B 조회의 정상 여부. B가 거부 응답(401·403·404)이고 B 신원 재확인에서 살아 있으면 `cross_normal_data`는 no, 재확인을 못 했거나 만료면 unknown이다.
   - `nontrivial_data_match`: B 검사 `complete`에서 `present`면 yes, `absent`면 no.
   - `reflection_excluded`: B 요청에 표식이 없음을 E²가 확인했을 때만 yes.
   - `template_excluded`: 이 회차에 새로 만든 무작위 표식을 A 객체 한 칸에만 넣었으므로 yes.
@@ -171,7 +176,9 @@ A(소유) 조회는 이 순서를 쓰지 않는다. A 조회가 정상이 아니
 - 확정 단계 몫(요청·시간)은 실행 시작 때 정하고, 모델 단계는 그 몫을 뺀 범위에서 돈다(결정 §7 예산).
 - **확정 단계가 꺼질 회차는 몫이 0이다.** 실행 시작 때 쓰는 조건(결정 §3)이 모자라면 꺼진다: 유효한 선언 동결본이 없음, 시험 계정 A·B 인증이 없음, 쓰기 동의가 없음, 제품 경로가 아닌 정책 출처(`kg_snapshot`). 이런 회차는 요청 몫과 시간 몫을 모두 0으로 두고 모델 단계가 실행 예산 전부를 쓴다. 꺼졌는데 몫만 떼면 모델 몫이 이유 없이 줄어든다.
 - 몫은 E² 실행 정책 `limits.e3_confirmation_requests`·`limits.e3_confirmation_timeout_ms`에 명시한다(0 포함, 둘이 같이). 칸이 있으면 0도 정책 내용 지문에 들어가 "칸 없음"과 구분된다. 러너는 이 두 칸으로 꺼진 회차의 몫이 0인지 확인한다.
-- 몫 계산(사용자 결정 2026-11-18 ②): 요청 몫 = 신원 2 + 종류×3, 시간 몫 = 요청 몫 × 확정 요청 전용 시간 상한. 요청·시간 모두 실행 상한의 1/4 안에 드는 만큼만 종류를 받는다(`Input.AdmittedTypes`). 넘치는 종류는 요청을 보내지 않고 UNDECIDABLE(`product_confirmation_budget_exhausted`)이다. 하나도 들지 않으면 몫은 0이고 표식·신원 요청도 보내지 않는다.
+- 몫 계산(사용자 결정 2026-11-18 ②, 2026-11-20 (가)·S21 (나)): 요청 몫 = 고정 4(확정 직전 다시 로그인 A·B 2 + 신원 확인 2) + 종류×4(생성 1 + A 조회 1 + B 조회 1 + B 거부 뒤 신원 재확인 1), 시간 몫 = 요청 몫 × 확정 요청 전용 시간 상한. 요청·시간 모두 실행 상한의 1/4 안에 드는 만큼만 종류를 받는다(`Input.AdmittedTypes`). 넘치는 종류는 요청을 보내지 않고 UNDECIDABLE(`product_confirmation_budget_exhausted`)이다. 하나도 들지 않으면 몫은 0이고 표식·신원 요청도 보내지 않는다.
+- **몫 집행(2026-11-20).** 확정 몫은 확정 단계 요청만 쓴다: E③ 프로그램 요청(신원·생성·조회)과 확정 단계가 연 다시 로그인 호출(`e2proxy.BeginE3ReloginCall`). 그 밖의 요청(모델 단계 Worker, 인증 준비, Worker `refresh_session`)은 확정 단계 전이든 뒤든 대상 예산의 마지막 확정 몫만큼을 쓰지 못한다(`budget_exhausted`). 몫을 "여는" 단계가 없으므로, 확정 단계가 돌기 시작한 뒤 늦게 도착한 모델 단계 요청(취소 중인 Worker·재시도)도 몫을 쓰지 못해 예산 통제를 우회할 수 없다. 남은 예산 조회(`BudgetRemaining`)도 확정 단계가 아직 쓰지 않은 몫을 빼서, 모델 단계는 확정 몫을 남긴 채 예산 소진(`budget_limited`)으로 마감한다. 확정 단계 요청이 몫을 쓸 때마다 떼어 둘 몫이 줄고, 몫을 다 쓰면 확정 단계 요청도 막힌다. 몫이 0인 회차(꺼짐)는 아무 것도 떼지 않고 확정 단계 다시 로그인도 보낼 몫이 없다.
+- **확정 직전 다시 로그인(사용자 결정 2026-11-20 (가)).** 몫에 든 종류가 있고 시작 검사를 통과하면, 표식을 등록한 뒤 신원 확인 직전에 A·B를 한 번씩 다시 로그인시킨다(`Deps.Relogin`). 경로는 Worker의 `refresh_session`과 같고(E② 인증 준비 규칙, 같은 계정 줄 세우기, 계정별 연속 실패 3회·간격 10초 상한) 확정 몫을 쓰는 호출로 연다. 보낸 다시 로그인은 확정 몫으로 센다. 실패하거나 보내지 못해도(간격 상한 등) 멈추지 않고, 바로 뒤의 신원 확인이 판정 근거를 정한다(만료면 `product_identity_unverified`). 모델 단계가 길어 대상이 준 세션이 만료돼도 확정 단계가 새 세션으로 돌게 하려는 것이다. 꺼진 회차·몫에 든 종류가 없는 회차는 다시 로그인하지 않는다.
 - 확정 요청 전용 시간 상한(`Input.RequestTimeout`, 요청마다 `Timeout`)은 E² 요청 시간 상한과 따로다. 기본 10초이고, VAmPI 파일럿에서 확정 요청의 실제 시간을 잰 뒤 정한다. 상한이 없거나 몫이 음수면 `confirmation_share_unavailable`로 꺼진다.
 - 확정 요청(신원·생성·조회)이 이 상한으로 끊기면 결과 불명이다(`TimedOut`). 다시 보내지 않고 판정은 UNDECIDABLE(`product_request_timeout`)이다. 신원 요청이 끊기면 그 대상의 모든 종류가 이 사유이고 생성·조회는 보내지 않는다(다른 계정이 다른 이유로 실패해도 시간 초과를 남긴다).
 - 시험: "disabled → 예약 0"(실행 정책 칸·지문), 상한 전달, 시간 초과, 몫 밖 종류, 몫 0.
@@ -182,6 +189,46 @@ A(소유) 조회는 이 순서를 쓰지 않는다. A 조회가 정상이 아니
 - 객체 ID를 꺼낸 정상 응답만 `created`(ID digest 있음)이고, 시간 초과·결과 불명·비정상 응답·ID 없음은 `unknown`이다. 객체가 생겼다고 본다. `id_field`면 보내기 전에 ID를 알므로 결과와 관계없이 `object_id`(그 ID 원문)가 실린다. 쓰기 기록 예약(`WriteRecorder.Reserve(…, objectID)`)부터 그 ID와 함께 남고, 정산은 같은 ID로만 받는다.
 - 상태와 관계없이 싣는다. 진위 실패로 판정을 버려도 대상에는 이미 쓰기가 있었다.
 - 서버는 이것으로 대상의 쓰기 기록(`confirmation_writes`, ID 모름은 `id_unknown`)을 남긴다. 그 대상은 운영자 리셋 확인 전까지 다음 회차 확정 단계를 시작하지 않는다(§8). 잔존 점검은 ID를 아는 객체만 읽는다(`id_field` 쓰기는 결과 불명이어도 ID를 안다). ID 모르는 객체(`id_path` 대상의 결과 불명)는 리셋 확인에만 기댄다(표식이 회차마다 새 난수라 남은 객체가 다음 판정을 확정으로 만들지 못한다).
+
+### 7.3 마감 경로와 확정 단계(2026-11-20 사용자 결정)
+
+기본 규칙: 모델 단계가 **스스로 끝난 경우**(목표 달성·시간 상한·예산 소진 등 실행 상한)는 확정 단계가 돌고, **강제로 멈춘 경우**(중지·취소·일시정지·실패)는 확정 단계가 돌지 않고 중지 기록이 `interrupted`(비활성 근거가 있으면 그 사유)다.
+
+E②를 닫는 순서는 이렇다(사유별로 E②를 닫지 않는다).
+- 엔진 취소(`cancelExec`, 사유 무관)는 E② 실행을 닫지 않고 **모델 단계만 마감**한다(`CloseModelStage`). 그 뒤 E②는 확정 단계 요청(E③ 프로그램 요청·확정 단계가 연 다시 로그인)만 받고, 진행 중 모델 단계 요청은 끊으며 새 모델 단계 호출·인증 준비·Worker `refresh_session`은 열지 않는다.
+- 자연 마감은 감독자가 모델 단계를 마감하고(`CloseModelStage`) → 확정 단계 훅 → **감독자가 E② 실행을 닫는다**(`FenceTask`) → drain·감사 마감 순이다.
+- 강제 마감(운영자 중지·초안 중지·대상 철회·결속 계정 변경·문맥 취소·실패)은 그 중지 경로가 E② 실행을 끝내고(요청 승인 중지·작업 문맥 취소), 감독자는 중지 기록만 남긴다.
+
+| 마감 경로 | 기록 결과 | 모델 단계 마감 | E② 실행 닫기 | 확정 단계 |
+|---|---|---|---|---|
+| 목표 달성(Planner met·goalless done) | completed | 엔진 목표 달성 취소 또는 감독자 마감 판정 | 확정 단계 뒤 감독자 | 돈다 |
+| 시간 상한(유예 안에 끝남) | completed, budget_limited | 감독자 마감 판정 | 확정 단계 뒤 감독자 | 돈다 |
+| 시간 상한 유예 초과 | completed, budget_limited | 유예 끝 취소(`time_budget_drain_timeout`) — 진행 중 모델 요청 끊김 | 확정 단계 뒤 감독자 | 돈다 |
+| 예산 소진·실행 상한(요청·도구·계획 라운드·모델 예산) | completed, budget_limited | 감독자 마감 판정 | 확정 단계 뒤 감독자 | 돈다 |
+| 자연 마감인데 E② 실행이 한 번도 없음(no_intents 등) | completed, no_intents 등 | — | — | 요청 없이 기록: 꺼진 회차는 실제 사유, 켜진 회차는 `no_confirmation_candidates`(후보가 있으면 `e2_execution_unavailable`) |
+| 운영자 중지(요청 승인 중지 API) | cancelled | 중지 | 중지 경로 | 중지 기록 `interrupted` |
+| 운영자 일시정지(작업 control pause) | cancelled(운영자 중지와 같음, 엔진 일시정지를 거치지 않음) | 중지 | 중지 경로 | 중지 기록 `interrupted`. 재개는 409 `resume_unsupported`. 화면 버튼은 '종료'(일시정지·다시 시작 없음) |
+| 회차 도중 운영자 밖 엔진 일시정지(아래 원인 표) | failed(감독 실패, 진단 로그 사유 `engine_paused`·서버 로그에 원인 코드) — 운영자 중지와 따로 | 취소 | 마감 정리 | 중지 기록 `interrupted`. 첫 진단 서버에서 생기는 경로는 없다(방어 경로) |
+| 초안 중지·대상 철회·결속 계정 변경·hard 기한·서비스 종료 | cancelled(사유는 각 경로) | 문맥 취소 | 작업 문맥 취소 | 중지 기록 `interrupted` |
+| 실패(엔진 실패·마감 판정 실패·준비 실패) | failed | 취소 | 마감 정리 | 중지 기록 `interrupted` |
+| 마감 판정 뒤 실패(감사 마감 실패 등) | failed | 감독자 마감 판정 | 확정 단계 뒤 감독자 | 이미 돌았다 |
+
+- **엔진 일시정지 원인 표**(`Engine.Pause`를 부르는 곳 전부). 첫 진단 서버(E② HTTP)에서 회차 도중 생기는 것은 운영자 일시정지뿐이고, 그것은 엔진 일시정지가 아니라 운영자 중지로 받는다.
+
+  | 원인 코드 | 부르는 곳 | 첫 진단 회차 도중 | 막는 것(시험) |
+  |---|---|---|---|
+  | `paused_by_user` | 작업 control pause·일괄 control(`applyTaskControl`) | 단일 control은 운영자 중지로 바뀜, 일괄은 없음 | 단일 control → `firstDiagnosisControl`(통합 pause 모드), 일괄 라우트 403(`TestFirstDiagnosisClosesEnginePauseEntries`) |
+  | `llm_unavailable_queued` | 동시 실행 조정(`reconcileConcurrency`) | 없음 | 동시 실행 제한이 꺼져 있어야 동작하지 않음: 설정 라우트 403, 설치·러너가 쓰지 않음, 실제 서버에서 꺼짐 확인(통합 engine-pause 모드). 스케줄러는 자동 허가 끈 서버에서 시작 안 함 |
+  | `queued_for_admission` | 재개·재실행 허가(`admitTask`) | 없음 | 첫 진단 허가는 회차 시작 때 한 번(이미 준비 일시정지 상태), 재개 라우트 403·control 재개 409 |
+  | `paused_by_orchestrator` | 통제 조회 대기(`parkControlledReadTask`), 오케스트레이터 `pause_task` 도구 | 없음 | E② HTTP 서버는 통제 조회 런타임이 없음(통합 engine-pause 모드), 진단 프로필에 `pause_task` 없음(`TestDiagnosisProfilesHaveNoTaskPauseTool`), 대화 라우트 403 |
+  | `paused_on_reload` | 재시작·보관 복원 | 없음(재시작은 회차를 끝냄) | 첫 진단 기동은 일시정지 표시만(엔진 `Pause` 아님), 보관 복원 라우트 403 |
+  | `task_deleted`(삭제 장벽) | `BeginDelete` | 없음 | 삭제 라우트 403 |
+  | `paused_race_guard` | 감독자 자신(준비·마감·종료) | 회차 마감 뒤에만 | 감독자는 실행 문맥 취소를 엔진 일시정지보다 먼저 본다(서버 종료 때 경쟁 방지 일시정지가 `engine_paused`로 잘못 기록되지 않게) |
+
+  모든 통합 마감 경로에서 회차가 `engine_paused`로 끝나지 않음을 고정한다(engine-pause 모드만 일부러 건다). LLM 준비 판정(`ReadyFor`)은 첫 진단에서 모델 결속·프로필 설정만 보고 제공자 오류(429·5xx·끊김)로 바뀌지 않는다. 바뀌어도 엔진은 일시정지하지 않고 Planner·Worker가 모델 없이 기다린다.
+- 워크플로 일시정지(`/api/product/workflows/{job}/pause`)는 마감 경로가 아니라 모델 요청 관문이다. 그 상태로 시간 상한에 닿으면 시간 상한 행과 같고, 관문은 모델 요청에만 걸려 확정 단계 요청은 지난다. 화면에는 이 일시정지 버튼도 두지 않는다(첫 진단 회차 화면 버튼은 '종료'만, 2026-11-20 사용자 결정). API는 남아 있고, 나중에 일시정지를 다시 넣을 때 이 관문을 쓴다.
+- 시험: 감독자 통합 시험(`firstDiagnosisCheckClosingPath`)이 모든 모드에서 확정 단계 훅과 중지 기록 가운데 정확히 하나가 한 번 불리고, 확정 단계 훅 때 E② 연결이 살아 있고 모델 단계가 마감돼 있거나(사유 없음) 실행이 한 번도 없었는지(`lease_missing`), 그 뒤 모델 단계 송신이 0인지 본다.
+- `RunResult.Requests`는 "보낸 요청"이 아니라 확정 단계가 **보내려고 시도한 수**다(E②가 몫 끝·정책으로 보내지 않은 것 포함, 다시 로그인은 실제로 보낸 것만).
 
 ## 8. 리셋 게이트
 
