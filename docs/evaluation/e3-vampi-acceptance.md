@@ -152,4 +152,44 @@ python3 -I scripts/eval/e3_vampi_tally.py --manifest scripts/eval/e3_vampi/scena
 
 **회차 조건.** 외부 API(OpenRouter) 회차는 초안 입력 `external_test_accounts`가 있어야 시험 계정을 결속한다(외부 모델로 시험 계정 세션이 가는 데 대한 사전 승인 진술). 사용자 결정(2026-11-21): 유료 VAmPI 회차에서만 켠다. 이 칸 없이 돈 1차 묶음(4회)은 확정 단계가 `disabled`/`test_accounts_unavailable`로 꺼져 집계하지 않는다. 2차 묶음부터 회차마다 결속 계정·확정 단계 몫·인증 준비 응답을 회차 시작 직후 확인하고, 어긋나면 모델 단계를 다 돌리기 전에 그 회차를 멈춘다. VAmPI는 로그인이 실패해도 200을 주므로, 3차 묶음부터는 하네스가 창 시작 전에 대상 안에서 한 로그인 + `/me` 확인(두 계정 모두 비관리자)도 본다. 회차 끝 계정별 인증 결과(`account_auth`)가 둘 다 `authenticated`가 아니면 다음 회차로 가지 않는다.
 
-**시험 계정(3차 묶음부터).** 모델이 `GET /createdb`(대상 DB 초기화)를 부르면 하네스가 만든 시험 계정이 지워진다(S01-1). 사용자 결정(2026-11-21): S01-3·S02·S20·S19와 최종 S01은 VAmPI 기본 비관리자 계정 둘(초기화가 같은 자격으로 다시 만드는 계정)을 시험 계정으로 쓴다.
+**시험 계정(3차 묶음부터).** 모델이 `GET /createdb`(대상 DB 초기화)를 부르면 하네스가 만든 시험 계정이 지워진다(S01-1). 사용자 결정(2026-11-21)으로 3차는 VAmPI 기본 비관리자 계정 둘을 시험 계정으로 썼지만, 기본 계정 비밀번호(5바이트)가 E② 보호 값 최소 길이(6바이트)보다 짧아 인증 준비를 하지 않았다(확정 단계 `test_accounts_unavailable`, 계정 감시가 회차를 멈춤). 그래서 4차부터는 **하네스가 회차마다 만드는 계정 + 운영자 제외 경로 `/createdb`·`/users/v1/*/password`**(#627, 사용자 결정)로 돌았다. 제외 경로는 모든 회차에서 E②가 거부했고 계측기에 잡힌 대상 송신은 0이다.
+
+## 12. 유료 VAmPI 실제 모델 결과(2026-11-21~22)
+
+모델 `qwen/qwen3.6-35b-a3b`, 제공자 `primeintellect/fp8`(fallback 끔), 고정 샘플링(평가 프로토콜 §6). 판정은 확정 단계 결과(`e3-confirmation.json`)이고 집계는 `scripts/eval/e3_vampi_tally.py --mode real`이다. **거짓 CONFIRMED는 모든 회차에서 0이다.**
+
+### 12.1 집계에 넣는 회차(시험 계정 결속, 2차 묶음부터)
+
+| 회차 | run ID | 빌드 | 러너 판정 | 확정 단계 | book 판정(사유) | 집계 |
+|---|---|---|---|---|---|---|
+| S01-1 | ours-20261121t041617z-8a8d2b7f | `f519120a` | invalid `provider_fault_stall` | completed, 요청 4 | undecidable(`product_identity_unverified`) | 무효(제공자 멈춤) |
+| S01-2 | ours-20261121t045829z-81ff9434 | `f519120a` | complete | completed, 요청 4 | undecidable(`product_identity_unverified`) | fail(기대 confirmed) |
+| S02 | ours-20261121t055336z-2fdb1ae1 | `f519120a` | complete | completed, 요청 8 | undecidable(`data_no_match`) | pass |
+| S20 | ours-20261121t063620z-7425d1cc | `f519120a` | complete | completed, 요청 7 | **confirmed** | pass |
+| S19 | ours-20261121t071903z-5c6dec89 | `f519120a` | complete | completed, 요청 7 | **confirmed** | pass |
+| S01-3 | ours-20261121t080118z-c2f20d39 | `f519120a` | complete | completed, 요청 4 | undecidable(`product_identity_unverified`) | fail(기대 confirmed) |
+| **최종 S01** | **ours-20261122t124940z-3cfe706d** | `b4bedb95` | complete | completed, 요청 7 | **confirmed** | **pass** |
+
+- S01-1·S01-2: 모델이 `GET /createdb`를 불러 시험 계정이 지워져 확정 직전 다시 로그인이 실패했다(→ 제외 경로 결정).
+- S01-3: E② 세션 가림 칸 상한(64)을 모델 단계 세션 갱신이 다 써서 확정 직전 B 다시 로그인이 `session_not_found`였다(→ #840 세션 가림 칸 계산·확정 몫 예약). 같은 회차에서 모델이 `POST /console`(VAmPI가 `debug=True`라 열린 Werkzeug 디버거)을 두 번 보냈다. 범위 안 경로라 E②가 통과시켰고, 대상 서버 디버거 노출은 대상 설정 문제로 기록만 한다.
+- 최종 S01: dev `b4bedb95`(#840·#841·#844·#845·#846·#847 포함). 가격 상한 0.285/2.55 USD per 1M(단가 × 1.5), 모델 호출 시간 상한 170초. 모델 호출 104번, 429 0번. 이 빌드와 그 뒤 dev(`d4834a1b`)의 Go 코드는 같다(`git diff -- '*.go' go.mod go.sum` 비어 있음).
+- 제공자 멈춤 무효(`provider_fault_stall`)는 1회(S01-1, 429 22번 뒤 600.9초 무호출). 원인은 Planner가 재시도를 다 쓴 뒤 다음 계획까지 heartbeat(600초)를 기다린 것으로 본다(코드 확인, 원본과 같은 경로).
+- 후보 연결: 이번 판 제품은 확정 단계에 모델 후보를 넘기지 않는다(#830). 그래서 판정 행의 `candidate_refs`는 모든 회차에서 비어 있고, 확정은 정책 선언 기반 프로그램 시험이다(개발 계획 '측정 뒤 다음 단계').
+
+### 12.2 집계에 넣지 않는 회차(근거 조건 밖)
+
+| 묶음 | 회차 | 이유 |
+|---|---|---|
+| 1차(`f519120a`, 11/20~21) | S01-1·S01-2·S02·S01-3 | 초안에 `external_test_accounts`가 없어 시험 계정 미결속(확정 `disabled/test_accounts_unavailable`) 또는 회차 무효(`window_boundary_changed`·`compose_up_failed`) |
+| 3차 | S01-3(기본 계정) | 기본 계정 비밀번호가 보호 값 최소 길이보다 짧아 인증 준비 없음, 계정 감시가 멈춤 |
+| 최종 S01 시도(`4bbc4436`) | final·final2·final3 | 포트 충돌 `compose_up_failed` / 429 10번 중 8번으로 준비 단계 `planning_failed` 뒤 WSL 멈춤 / 시작 8초 뒤 WSL 멈춤(호스트 메모리) |
+| 최종 S01 시도(`6cdb6f67`) | final4~final7 | WSL 멈춤(설정 미적용) / 다른 세션이 회차 컨테이너 삭제 / 제공자 단가가 가격 상한(0.15·1.5, 뒤에 0.2·1.6)을 넘어 첫 호출·9번째 호출 404 → 즉시 잠금 `model_usage_unknown` |
+| 최종 S01 시도(`b4bedb95`) | final8 | 기존 세션이 회차 도중 회차 컨테이너에 docker exec → `window_boundary_changed`(제품은 completed) |
+
+- 1차 S01-1의 경계 사건은 다른 프로젝트 컨테이너 생성·시작 6번씩, postgres 컨테이너 exec 5번, preparation 컨테이너 exec 1번이다. 원인은 확인하지 못했다(final8처럼 세션의 수동 개입인지, 당시 postgres 헬스체크(#833 이전 exec 방식)인지 가르지 못함). 집계에서 빠지는 회차라 결론은 바뀌지 않는다.
+- 이 경험으로 정한 운영 규칙: 회차 중 그 회차 컨테이너에 어떤 명령도 넣지 않는다, 무거운 작업은 Windows 커밋 여유까지 확인한다, 가격 상한은 세션 시작 단가 × 1.5로 정한다.
+
+### 12.3 무료 제품 직접 실행(스크립트 모델)
+
+S21(토큰 5초 → 확정 직전 다시 로그인 → confirmed) pass, S10(사용자 승인 모드에서 확정 생성 요청 거부 → `product_create_approval_denied`, 쓰기 0) pass, S12·S17 pass. 거짓 CONFIRMED 0.
+
