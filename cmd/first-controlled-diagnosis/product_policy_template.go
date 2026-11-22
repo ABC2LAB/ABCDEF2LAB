@@ -90,7 +90,7 @@ func productStatusReadRetriesFor(limits *productRuntimeLimits, workflow bool) (i
 	return retries, retries >= 0 && retries <= urlMaxStatusReadRetries(productShutdownTimeoutSeconds)
 }
 
-// productPlannerLimitsFor는 고른 모드의 Plan당 상한이다. 칸이 없으면 0(agent 기본값 16턴·120초)이고, 있으면 1 이상
+// productPlannerLimitsFor는 고른 모드의 Plan당 상한이다. 칸이 없으면 0(agent 기본값 16턴·170초)이고, 있으면 1 이상
 // agent.E2HTTPPlannerLimits의 코드 상한 이하만 받는다(범위 밖이면 설치 거부). 지금 기본값은 바꾸지 않는다.
 func productPlannerLimitsFor(limits *productRuntimeLimits, workflow bool) (launchConfig, bool) {
 	var out launchConfig
