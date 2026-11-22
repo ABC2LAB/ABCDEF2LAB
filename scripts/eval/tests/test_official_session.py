@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+from decimal import Decimal
 from pathlib import Path
 from unittest import mock
 
@@ -505,6 +506,53 @@ class TestManifest(unittest.TestCase):
             self.assertRegex(second["expires_at"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
             self.assertEqual(second["model"], "m")
 
+    def test_session_caps_replace_template_caps(self):
+        # 사용자 2026-11-22: 한 세션의 O manifest는 시작 때 규칙으로 정한 상한을 쓴다(틀의 고정 숫자가 아니라)
+        with tempfile.TemporaryDirectory() as root:
+            template, target = Path(root, "t.json"), Path(root, "m.json")
+            template.write_text(json.dumps({"model": "m", "max_input_price_usd_micros_per_million": 1,
+                                            "max_output_price_usd_micros_per_million": 2}))
+            caps = {"max_input_price_usd_micros_per_million": 285000, "max_output_price_usd_micros_per_million": 2550000}
+            o.write_manifest(template, target, 6, caps)
+            value = json.loads(target.read_text())
+            self.assertEqual((value["max_input_price_usd_micros_per_million"], value["max_output_price_usd_micros_per_million"]),
+                             (285000, 2550000))
+            o.write_manifest(template, target, 6)
+            self.assertEqual(json.loads(target.read_text())["max_input_price_usd_micros_per_million"], 1)  # 규칙 없으면 틀 그대로
+
+
+class TestPriceCapResume(unittest.TestCase):
+    CAPS = {"max_input_price_usd_micros_per_million": 285000, "max_output_price_usd_micros_per_million": 2550000}
+
+    def test_session_caps_come_from_the_first_passing_record(self):
+        lines = [{"event": "price_caps", "headroom_ok": False, "max_input_price_usd_micros_per_million": 9,
+                  "max_output_price_usd_micros_per_million": 9},
+                 {"event": "price_caps", "headroom_ok": True, **self.CAPS},
+                 {"event": "price_caps", "headroom_ok": True, "max_input_price_usd_micros_per_million": 1,
+                  "max_output_price_usd_micros_per_million": 1}]
+        self.assertEqual(o.session_caps(lines), self.CAPS)
+        self.assertIsNone(o.session_caps([{"event": "attempt"}]))
+        with self.assertRaises(ValueError):
+            o.session_caps([{"event": "price_caps", "headroom_ok": True, "max_input_price_usd_micros_per_million": "285000",
+                             "max_output_price_usd_micros_per_million": 2550000}])
+
+    def test_resume_with_recorded_caps_needs_provider_probe_and_headroom_must_not_exceed_factor(self):
+        with tempfile.TemporaryDirectory() as root:
+            session = Path(root, "s")
+            session.mkdir()
+            Path(session, o.LOG_NAME).write_text(json.dumps({"event": "price_caps", "headroom_ok": True, **self.CAPS}) + "\n")
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                code = o.main(["--session-dir", str(session), "--resume"])
+            self.assertEqual(code, o.EXIT_INPUT)
+            self.assertIn("resume_needs_provider_probe", err.getvalue())
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                code = o.main(["--session-dir", root + "/t", "--dry-run", "--price-cap-factor", "1.1", "--price-min-headroom", "1.2"])
+            self.assertEqual(code, o.EXIT_INPUT)
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                o.main(["--session-dir", root + "/u", "--dry-run", "--price-cap-factor", "abc"])
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -575,49 +623,76 @@ class TestStartChecks(unittest.TestCase):
         self.assertEqual(body["provider"]["only"], ["slug/fp8"])
         self.assertFalse(body["provider"]["allow_fallbacks"])
 
-    PRICE_OK = staticmethod(lambda m: {"found": True, "ok": True, "margin_ok": True, "input_usd_micros_per_million": 1,
-                                       "output_usd_micros_per_million": 1})
+    PRICE_OK = staticmethod(lambda m: {"found": True, "input_usd_micros_per_million": 1, "output_usd_micros_per_million": 1})
 
-    def test_endpoint_price_compares_the_same_tag_in_manifest_units(self):
-        # 2026-11-22 실제 표: PrimeIntellect 0.000000176/0.000001578 USD/토큰 → 176000/1578000 > 상한 150000/1500000
+    def test_endpoint_price_reads_the_same_tag_in_manifest_units(self):
+        # 2026-11-22 실제 표: PrimeIntellect 0.000000176/0.000001578 USD/토큰 → 176000/1578000(부동소수 오차 없이 정수)
         table = {"data": {"endpoints": [
             {"provider_name": "Other", "tag": "other/fp8", "pricing": {"prompt": "0.00000005", "completion": "0.0000007"}},
             {"provider_name": "Provider", "tag": "slug/fp8", "pricing": {"prompt": "0.000000176", "completion": "0.000001578"}}]}}
         urls = []
         get = lambda url: (urls.append(url), (200, table))[1]  # noqa: E731
-        low = dict(self.MANIFEST, max_input_price_usd_micros_per_million=150000, max_output_price_usd_micros_per_million=1500000)
-        out = o.endpoint_price(low, get)
+        out = o.endpoint_price(self.MANIFEST, get)
         self.assertEqual(urls, ["https://gateway.example/api/v1/models/m/x/endpoints"])
-        self.assertEqual((out["input_usd_micros_per_million"], out["output_usd_micros_per_million"]), (176000, 1578000))
-        self.assertFalse(out["ok"])
-        tight = dict(low, max_input_price_usd_micros_per_million=200000, max_output_price_usd_micros_per_million=1600000)
-        out = o.endpoint_price(tight, get)
-        self.assertTrue(out["ok"])
-        self.assertFalse(out["margin_ok"])  # 단가에 너무 가깝다(1.6 < 1.5 × 1.578)
-        roomy = dict(low, max_input_price_usd_micros_per_million=270000, max_output_price_usd_micros_per_million=2400000)
-        self.assertTrue(o.endpoint_price(roomy, get)["margin_ok"])
-        self.assertTrue(o.endpoint_price(tight, get, margin=1.0)["margin_ok"])
-        high = tight
-        self.assertFalse(o.endpoint_price(dict(high, provider_slug="missing/fp8"), get)["found"])
+        self.assertEqual((out["found"], out["input_usd_micros_per_million"], out["output_usd_micros_per_million"]),
+                         (True, 176000, 1578000))
+        self.assertFalse(o.endpoint_price(dict(self.MANIFEST, provider_slug="missing/fp8"), get)["found"])
+        broken = {"data": {"endpoints": [{"tag": "slug/fp8", "pricing": {"prompt": "x", "completion": "1"}}]}}
+        self.assertFalse(o.endpoint_price(self.MANIFEST, lambda url: (200, broken))["found"])
 
-    def test_start_checks_stop_when_price_is_above_cap_or_unknown_before_any_call(self):
+    def test_rule_caps_are_price_times_factor_and_headroom_is_20_percent(self):
+        # 사용자 2026-11-22: 상한 = 세션 시작 직전 재조회 단가 × 1.5, 시작 점검은 상한이 지금 단가보다 20% 이상 높으면 통과
+        priced = {"input_usd_micros_per_million": 190000, "output_usd_micros_per_million": 1700000}
+        caps = o.rule_caps(priced)
+        self.assertEqual(caps, {"max_input_price_usd_micros_per_million": 285000, "max_output_price_usd_micros_per_million": 2550000})
+        self.assertEqual(o.rule_caps({"input_usd_micros_per_million": 176001, "output_usd_micros_per_million": 1})["max_input_price_usd_micros_per_million"],
+                         264002)  # 올림(264001.5 → 264002)
+        self.assertTrue(o.caps_headroom_ok(caps, priced))
+        exactly = {"input_usd_micros_per_million": 237500, "output_usd_micros_per_million": 2125000}  # 상한이 정확히 1.2배
+        self.assertTrue(o.caps_headroom_ok(caps, exactly))
+        risen = {"input_usd_micros_per_million": 237500, "output_usd_micros_per_million": 2125001}
+        self.assertFalse(o.caps_headroom_ok(caps, risen))
+        free = {"input_usd_micros_per_million": 0, "output_usd_micros_per_million": 0}
+        self.assertTrue(o.caps_headroom_ok(o.rule_caps(free), free))
+
+    def test_start_checks_set_session_caps_by_rule_and_stop_on_unknown_price_or_thin_headroom(self):
         import datetime as dt
         afternoon = lambda: dt.datetime(2026, 11, 22, 6, 0, tzinfo=dt.timezone.utc)  # noqa: E731
-        calls = []
+        ok_probe = dict(calls=10, ok=10, rate_limited=0, other=0, statuses={"200": 10}, providers=["Provider"])
+        calls, logs = [], []
+        def probe(m, k):
+            calls.append(1)
+            return ok_probe
+        now_price = lambda m: {"found": True, "input_usd_micros_per_million": 190000, "output_usd_micros_per_million": 1700000}  # noqa: E731
         with tempfile.TemporaryDirectory() as d:
             args = self._args(Path(d))
-            over = lambda m: {"found": True, "ok": False, "input_usd_micros_per_million": 176000,  # noqa: E731
-                              "output_usd_micros_per_million": 1578000}
-            self.assertEqual(o.session_start_checks(args, None, None, lambda e: None, now=afternoon, price=over,
-                                                    probe=lambda m, k: calls.append(1)), "provider_price_above_cap")
+            # 단가를 못 찾으면 상한을 정하지 않고 멈춘다(유료 점검 0)
             self.assertEqual(o.session_start_checks(args, None, None, lambda e: None, now=afternoon,
-                                                    price=lambda m: {"found": False, "ok": False},
-                                                    probe=lambda m, k: calls.append(1)), "provider_price_unknown")
-            thin = lambda m: {"found": True, "ok": True, "margin_ok": False, "input_usd_micros_per_million": 176000,  # noqa: E731
-                              "output_usd_micros_per_million": 1578000}
-            self.assertEqual(o.session_start_checks(args, None, None, lambda e: None, now=afternoon, price=thin,
-                                                    probe=lambda m, k: calls.append(1)), "provider_price_margin")
-        self.assertEqual(calls, [])  # 단가가 안 맞으면 유료 점검 호출도 보내지 않는다
+                                                    price=lambda m: {"found": False}, probe=probe), "provider_price_unknown")
+            self.assertEqual(calls, [])
+            # 새 세션: 상한 = 단가 × 1.5, 세션 기록에 단가와 상한을 남긴다
+            caps = {}
+            self.assertIsNone(o.session_start_checks(args, None, None, logs.append, now=afternoon, price=now_price, probe=probe,
+                                                     caps_sink=caps))
+            self.assertEqual(caps, {"max_input_price_usd_micros_per_million": 285000,
+                                    "max_output_price_usd_micros_per_million": 2550000})
+            rec = [l for l in logs if l["event"] == "price_caps"][0]
+            self.assertEqual((rec["source"], rec["rule_factor"], rec["min_headroom"], rec["input_usd_micros_per_million"],
+                              rec["max_output_price_usd_micros_per_million"], rec["headroom_ok"]),
+                             ("rule", "1.5", "1.2", 190000, 2550000, True))
+            # 이어 돌리기: 기록된 상한을 그대로 쓰고, 그사이 단가가 올라 20% 여유가 없으면 멈춘다(유료 점검 0)
+            calls.clear(); logs.clear()
+            risen = lambda m: {"found": True, "input_usd_micros_per_million": 240000, "output_usd_micros_per_million": 2130000}  # noqa: E731
+            again = {}
+            self.assertEqual(o.session_start_checks(args, None, None, logs.append, now=afternoon, price=risen, probe=probe,
+                                                    recorded_caps=caps, caps_sink=again), "provider_price_headroom")
+            self.assertEqual((calls, again), ([], {}))
+            self.assertEqual([(l["source"], l["headroom_ok"]) for l in logs if l["event"] == "price_caps"], [("session_log", False)])
+            # 조금 오른 정도(20% 안쪽)면 기록된 상한 그대로 잇는다
+            slight = lambda m: {"found": True, "input_usd_micros_per_million": 230000, "output_usd_micros_per_million": 2000000}  # noqa: E731
+            self.assertIsNone(o.session_start_checks(args, None, None, lambda e: None, now=afternoon, price=slight, probe=probe,
+                                                     recorded_caps=caps, caps_sink=again))
+            self.assertEqual(again, caps)
 
     def test_budget_is_checked_and_based_before_any_paid_probe_call(self):
         """#848 동찬 P2: 유료 점검 호출 전에 비용 보호를 확인하고 세션 사용량 기준을 기록한다(점검 비용이 세션 상한에 든다)."""
@@ -638,7 +713,7 @@ class TestStartChecks(unittest.TestCase):
         self.assertIsNone(stop)
         self.assertEqual(order, ["usage", "probe"])  # 확인·기준이 먼저
         self.assertEqual(guard.base, 1.00)  # 점검 호출 전 사용량이 세션 기준
-        self.assertEqual([l["event"] for l in logs], ["provider_price", "usage_base", "provider_probe"])
+        self.assertEqual([l["event"] for l in logs], ["provider_price", "price_caps", "usage_base", "provider_probe"])
         self.assertEqual(guard.check(), "usage_cap")  # 점검 비용(0.02)이 세션 상한(0.01)에 들어간다
 
     def test_budget_is_rechecked_before_each_retry_batch(self):
@@ -656,7 +731,7 @@ class TestStartChecks(unittest.TestCase):
                                           probe=probe, sleep=slept.append, budget=guard.check)
         self.assertEqual(stop, "usage_cap")
         self.assertEqual(len(calls), 1)  # 둘째 묶음은 보내지 않는다
-        self.assertEqual([l["event"] for l in logs], ["provider_price", "provider_probe", "provider_probe_wait"])
+        self.assertEqual([l["event"] for l in logs], ["provider_price", "price_caps", "provider_probe", "provider_probe_wait"])
 
     def test_budget_passes_each_batch_until_probe_clears(self):
         import datetime as dt
@@ -687,7 +762,8 @@ class TestStartChecks(unittest.TestCase):
         manifest.write_text(json.dumps(self.MANIFEST), encoding="utf-8")
         key = tmp / "key"
         key.write_text("synthetic-key\n", encoding="utf-8")
-        base = dict(provider_probe=True, o_manifest_template=manifest, key_file=key, probe_tries=3, probe_wait=1800)
+        base = dict(provider_probe=True, o_manifest_template=manifest, key_file=key, probe_tries=3, probe_wait=1800,
+                    price_cap_factor=o.PRICE_CAP_FACTOR, price_min_headroom=o.PRICE_MIN_HEADROOM)
         base.update(over)
         return mock.Mock(**base)
 
@@ -703,8 +779,8 @@ class TestStartChecks(unittest.TestCase):
         self.assertIsNone(stop)
         self.assertEqual(slept, [1800])
         events = [l["event"] for l in logs]
-        self.assertEqual(events, ["start_window", "provider_price", "provider_probe", "provider_probe_wait", "start_window",
-                                  "provider_probe"])
+        self.assertEqual(events, ["start_window", "provider_price", "price_caps", "provider_probe", "provider_probe_wait",
+                                  "start_window", "provider_probe"])
         self.assertNotIn("synthetic-key", json.dumps(logs))
 
     def test_start_checks_stop_outside_window_on_errors_and_after_tries(self):

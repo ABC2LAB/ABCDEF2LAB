@@ -44,6 +44,7 @@ import argparse
 import datetime
 import json
 import math
+from decimal import ROUND_CEILING, Decimal, InvalidOperation
 import os
 import secrets
 import signal
@@ -311,24 +312,63 @@ def provider_probe(manifest: dict, key: str, calls: int = PROBE_CALLS,
     return out
 
 
-PRICE_MARGIN = 1.5
+# O 가격 상한 규칙(2026-11-22 사용자): 고정 숫자 대신 "세션 시작 직전 재조회 단가 × PRICE_CAP_FACTOR"로 정해 그 세션의 O
+# manifest에 쓰고, 시작 점검은 상한이 지금 단가보다 PRICE_MIN_HEADROOM배 이상(20% 높음)이면 통과한다. B에는 가격 상한이 없어,
+# 상한을 단가에 딱 맞추면 측정 도중 단가가 조금만 올라도 O만 404로 막힌다(11/22 하루에 단가가 두 번 움직였다). 1.5배 여유를
+# 시작 조건으로 요구하면 같은 이유로 세션이 시작을 못 해서, 시작 조건은 20%로 둔다.
+PRICE_CAP_FACTOR = Decimal("1.5")
+PRICE_MIN_HEADROOM = Decimal("1.2")
+PRICE_FIELDS = (("input_usd_micros_per_million", "max_input_price_usd_micros_per_million"),
+                ("output_usd_micros_per_million", "max_output_price_usd_micros_per_million"))
 
 
-def endpoint_price(manifest: dict, get: Callable[[str], tuple[int, dict]] | None = None, margin: float = PRICE_MARGIN) -> dict:
+def endpoint_price(manifest: dict, get: Callable[[str], tuple[int, dict]] | None = None) -> dict:
     """OpenRouter 엔드포인트 표(공개 GET {base_url}/models/{model}/endpoints)에서 manifest `provider_slug`와 같은 tag의 단가를
-    manifest와 같은 단위(USD 마이크로/100만 토큰)로 읽고 manifest 상한과 대조한다. 2026-11-22: PrimeIntellect 단가가
-    0.176/1.578로 올라 상한 0.15/1.5를 넘자 OpenRouter가 404 "No allowed providers"를 주고 회차가 첫 호출에서 끝났다."""
+    manifest와 같은 단위(USD 마이크로/100만 토큰, 정수)로 읽는다. 2026-11-22: PrimeIntellect 단가가 0.176/1.578로 올라 상한
+    0.15/1.5를 넘자 OpenRouter가 404 "No allowed providers"를 주고 회차가 첫 호출에서 끝났다."""
     get = get or _get_json
     base = str(manifest["base_url"]).rstrip("/")
     status, payload = get(f"{base}/models/{manifest['model']}/endpoints")
     endpoints = ((payload.get("data") or {}).get("endpoints") or []) if isinstance(payload, dict) else []
     match = [e for e in endpoints if isinstance(e, dict) and e.get("tag") == manifest["provider_slug"]]
-    out = {"status": status, "tag": manifest["provider_slug"], "found": bool(match),
-           "cap_input_usd_micros_per_million": manifest["max_input_price_usd_micros_per_million"],
-           "cap_output_usd_micros_per_million": manifest["max_output_price_usd_micros_per_million"]}
+    out = {"status": status, "tag": manifest["provider_slug"], "found": bool(match)}
     if not match:
-        out["ok"] = False
         return out
+    pricing = match[0].get("pricing") or {}
+    try:
+        # 문자열 단가(USD/토큰)를 그대로 Decimal로 바꿔 부동소수 오차 없이 마이크로/100만 토큰 정수로 둔다
+        prompt = Decimal(str(pricing["prompt"])) * 10 ** 12
+        completion = Decimal(str(pricing["completion"])) * 10 ** 12
+    except (KeyError, TypeError, ArithmeticError, ValueError):
+        out["found"] = False
+        return out
+    if not (prompt.is_finite() and completion.is_finite()) or prompt < 0 or completion < 0:
+        out["found"] = False
+        return out
+    out.update(input_usd_micros_per_million=int(prompt.to_integral_value(ROUND_CEILING)),
+               output_usd_micros_per_million=int(completion.to_integral_value(ROUND_CEILING)))
+    return out
+
+
+def _factor_arg(text: str) -> Decimal:
+    """배수 인자(1 이상 3 이하 유한 소수). 형식이 틀리면 argparse 입력 오류."""
+    try:
+        value = Decimal(text)
+    except InvalidOperation:
+        raise argparse.ArgumentTypeError(f"배수가 아님: {text}") from None
+    if not value.is_finite() or not Decimal(1) <= value <= Decimal(3):
+        raise argparse.ArgumentTypeError(f"배수 범위(1~3) 밖: {text}")
+    return value
+
+
+def rule_caps(priced: dict, factor: Decimal = PRICE_CAP_FACTOR) -> dict:
+    """상한 규칙: 재조회 단가 × factor(올림 정수). manifest 칸 이름으로 돌려준다."""
+    return {cap: int((Decimal(priced[unit]) * factor).to_integral_value(ROUND_CEILING)) for unit, cap in PRICE_FIELDS}
+
+
+def caps_headroom_ok(caps: dict, priced: dict, headroom: Decimal = PRICE_MIN_HEADROOM) -> bool:
+    """시작 점검: 상한이 지금 단가의 headroom배 이상(입력·출력 둘 다). 단가 0이면 늘 참."""
+    return all(Decimal(caps[cap]) >= Decimal(priced[unit]) * headroom for unit, cap in PRICE_FIELDS)
     pricing = match[0].get("pricing") or {}
     try:
         prompt = round(float(pricing["prompt"]) * 1e12)
@@ -422,11 +462,14 @@ class UsageGuard:
         return None
 
 
-def write_manifest(template: Path, target: Path, hours: int) -> None:
-    """O 회차마다 새 승인 ID·만료 시각으로 manifest를 만든다(0600, 덮어씀). 값은 출력하지 않는다."""
+def write_manifest(template: Path, target: Path, hours: int, caps: dict | None = None) -> None:
+    """O 회차마다 새 승인 ID·만료 시각으로 manifest를 만든다(0600, 덮어씀). 값은 출력하지 않는다. caps가 있으면 그 세션에서
+    정한 가격 상한(상한 규칙)으로 틀의 상한 칸을 바꾼다 — 한 세션의 O는 모두 같은 상한이다."""
     value = json.loads(template.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
         raise ValueError("manifest_template")
+    if caps:
+        value.update({cap: caps[cap] for _, cap in PRICE_FIELDS})
     value["approval_id"] = "official-o-" + secrets.token_hex(8)
     value["expires_at"] = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=hours)).replace(
         microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -538,6 +581,17 @@ def run_session(schedule: Schedule, run_one: Callable[[str, int], Outcome], log:
     return schedule
 
 
+def session_caps(lines: list[dict]) -> dict | None:
+    """세션 기록에서 시작 때 정한 O 가격 상한(첫 통과한 price_caps 줄). 없으면 None, 모양이 틀리면 ValueError."""
+    for line in lines:
+        if line.get("event") == "price_caps" and line.get("headroom_ok") is True:
+            caps = {cap: line.get(cap) for _, cap in PRICE_FIELDS}
+            if not all(type(v) is int and v > 0 for v in caps.values()):
+                raise ValueError("resume_price_caps_invalid")
+            return caps
+    return None
+
+
 def replay(schedule: Schedule, lines: list[dict]) -> int:
     """세션 기록의 시도 줄(완료·무효)을 일정에 다시 넣는다. 넣은 수를 돌려준다. 기록 순서가 일정과 어긋나면 ValueError."""
     count = 0
@@ -581,11 +635,12 @@ def session_start_checks(a: argparse.Namespace, window: tuple[int, int] | None, 
                          probe: Callable[[dict, str], dict] = provider_probe,
                          sleep: Callable[[float], None] = time.sleep,
                          price: Callable[[dict], dict] | None = None,
-                         budget: Callable[[], str | None] | None = None) -> str | None:
+                         budget: Callable[[], str | None] | None = None,
+                         recorded_caps: dict | None = None, caps_sink: dict | None = None) -> str | None:
     """세션 시작 전 운영 점검(2026-11-22 사용자): 시작 시간대(한국 시간) → 제공자 429 점검(같은 모델·제공자 짧은 호출 10번,
     429가 하나라도 나면 probe_wait 뒤 다시). 결과는 세션 기록에 남긴다. 멈출 사유 또는 None."""
     now = now or (lambda: datetime.datetime.now(datetime.timezone.utc))
-    price = price or (lambda m: endpoint_price(m, margin=getattr(a, "price_margin", PRICE_MARGIN)))
+    price = price or endpoint_price
     def window_ok() -> bool:
         ok = window is None or in_window(now(), window)
         if window is not None:
@@ -602,19 +657,24 @@ def session_start_checks(a: argparse.Namespace, window: tuple[int, int] | None, 
         key = a.key_file.read_text(encoding="utf-8").strip()
     except (OSError, ValueError):
         return "provider_probe_input"
-    if not isinstance(manifest, dict) or not all(k in manifest for k in ("model", "provider_slug", "base_url",
-                                                                         "max_input_price_usd_micros_per_million",
-                                                                         "max_output_price_usd_micros_per_million")):
+    if not isinstance(manifest, dict) or not all(k in manifest for k in ("model", "provider_slug", "base_url")):
         return "provider_probe_input"
-    # 단가 ≤ 가격 상한(manifest)이어야 제공자가 받아 준다. 넘으면 호출마다 404라 회차가 첫 호출에서 끝난다(2026-11-22)
+    # 단가 ≤ 가격 상한(manifest)이어야 제공자가 받아 준다. 넘으면 호출마다 404라 회차가 첫 호출에서 끝난다(2026-11-22).
+    # 상한은 규칙(재조회 단가 × factor)으로 세션 시작 때 한 번 정하고, 이어 돌리기(--resume)는 기록된 그 상한을 그대로 쓴다.
     priced = price(manifest)
     log({"event": "provider_price", **priced})
     if not priced.get("found") or "input_usd_micros_per_million" not in priced:
         return "provider_price_unknown"
-    if not priced["ok"]:
-        return "provider_price_above_cap"
-    if not priced.get("margin_ok", False):
-        return "provider_price_margin"
+    factor = Decimal(str(getattr(a, "price_cap_factor", PRICE_CAP_FACTOR)))
+    headroom = Decimal(str(getattr(a, "price_min_headroom", PRICE_MIN_HEADROOM)))
+    caps = dict(recorded_caps) if recorded_caps else rule_caps(priced, factor)
+    ok = caps_headroom_ok(caps, priced, headroom)
+    log({"event": "price_caps", "source": "session_log" if recorded_caps else "rule", "rule_factor": str(factor),
+         "min_headroom": str(headroom), **{unit: priced[unit] for unit, _ in PRICE_FIELDS}, **caps, "headroom_ok": ok})
+    if not ok:
+        return "provider_price_headroom"
+    if caps_sink is not None:
+        caps_sink.update(caps)
     for attempt in range(1, a.probe_tries + 1):
         # 유료 점검 묶음마다 보내기 직전에 비용 보호(세션 상한·잔액 하한)를 확인한다. 첫 확인이 세션 사용량 기준이라 점검 호출
         # 비용도 세션 상한에 들어가고, 앞 묶음 비용으로 상한·잔액에 걸리면 다음 묶음을 보내지 않는다(#848 동찬 P2)
@@ -669,8 +729,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--start-window-kst", help="세션 시작을 허용하는 한국 시간대(예: 14-18). 밖이면 시작하지 않는다")
     ap.add_argument("--provider-probe", action="store_true",
                     help="시작 직전 같은 모델·제공자로 짧은 호출 10번. 429가 하나라도 나면 --probe-wait 뒤 다시 점검")
-    ap.add_argument("--price-margin", type=float, default=PRICE_MARGIN,
-                    help="manifest 가격 상한이 엔드포인트 단가의 이 배수 이상이어야 시작(기본 1.5)")
+    ap.add_argument("--price-cap-factor", type=_factor_arg, default=PRICE_CAP_FACTOR,
+                    help="O 가격 상한 = 세션 시작 직전 재조회 단가 × 이 값(기본 1.5, --provider-probe일 때)")
+    ap.add_argument("--price-min-headroom", type=_factor_arg, default=PRICE_MIN_HEADROOM,
+                    help="시작 점검: 상한이 지금 단가의 이 배수 이상이어야 시작(기본 1.2 = 20%% 높음)")
     ap.add_argument("--probe-wait", type=float, default=1800)
     ap.add_argument("--probe-tries", type=int, default=4)
     a = ap.parse_args(argv)
@@ -683,6 +745,10 @@ def main(argv: list[str] | None = None) -> int:
     a.session_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     log_path = a.session_dir / LOG_NAME
     resumed_base: float | None = None
+    recorded_caps: dict | None = None
+    if a.price_min_headroom > a.price_cap_factor:
+        print("입력 오류: --price-min-headroom이 --price-cap-factor보다 크면 새 세션이 늘 시작하지 못한다", file=sys.stderr)
+        return EXIT_INPUT
     if log_path.exists() and not a.resume:
         print("입력 오류: 세션 기록이 이미 있음(이어 돌리려면 --resume)", file=sys.stderr)
         return EXIT_INPUT
@@ -696,6 +762,10 @@ def main(argv: list[str] | None = None) -> int:
             resumed_base = _usd(bases[0]) if bases else None
             if bases and resumed_base is None:
                 raise ValueError("resume_usage_base_invalid")
+            # 한 세션의 O 가격 상한은 시작 때 정한 값 그대로다(이어 돌릴 때 다시 정하지 않는다)
+            recorded_caps = session_caps(lines)
+            if recorded_caps and not a.provider_probe:
+                raise ValueError("resume_needs_provider_probe")  # 기록된 상한을 지금 단가와 대조하지 않고 잇지 않는다
         except (ValueError, OSError) as exc:
             print(f"입력 오류: {exc}", file=sys.stderr)
             return EXIT_INPUT
@@ -739,7 +809,9 @@ def main(argv: list[str] | None = None) -> int:
             if resumed_base is not None:
                 guard.base = resumed_base
         # 비용 보호기를 먼저 만들어 시작 점검의 유료 호출 전에 확인·기준 기록을 하게 한다(#848 동찬 P2)
-        stop = session_start_checks(a, window, manifest_path, log, budget=guard.check if guard is not None else None)
+        caps: dict = {}
+        stop = session_start_checks(a, window, manifest_path, log, budget=guard.check if guard is not None else None,
+                                    recorded_caps=recorded_caps, caps_sink=caps)
         if stop is not None:
             log({"event": "summary", "start_refused": stop, **schedule.summary()})
             return EXIT_STOPPED
@@ -767,9 +839,12 @@ def main(argv: list[str] | None = None) -> int:
                 if manifest_path is None:
                     return "manifest_path_missing"
                 try:
-                    write_manifest(a.o_manifest_template, manifest_path, a.manifest_hours)
+                    write_manifest(a.o_manifest_template, manifest_path, a.manifest_hours, caps or None)
                 except (OSError, ValueError):
                     return "manifest_write_failed"
+                # 이 O 회차 manifest의 가격 상한(승인 ID는 적지 않는다). 상한 규칙을 쓰지 않으면 틀 값 그대로다
+                log({"event": "o_manifest_caps", "repeat": repeat, "source": "price_caps" if caps else "template",
+                     **({cap: caps[cap] for _, cap in PRICE_FIELDS} if caps else {})})
             return None
 
         runner = RealRunner(a.tree, a.config, a.preflight, runs_root, a.admin_password_file, DEFAULT_CONDITIONS, a.run_timeout,
