@@ -34,6 +34,9 @@
 HTTP 상태와 OpenAI 모양 오류 본문을 돌려준다. 제공자 오류로 계획이 실패해 제품이 러너 상한 전에 일찍 끝나는 회차(평가 프로토콜 §5.1
 '러너 상한 전에 일찍 끝난 회차', 고정 초안 §26)를 무료 합성 회차로 확인하려는 것이다. 합성 O는 제품 로컬 모델 설치로 돌아
 OpenRouter 호출 기록이 없으므로 이 회차는 '근거 없음'으로 분류돼야 한다. 탐색·Worker 요청은 그대로 응답한다.
+계획 `intents`와 `commands`를 둘 다 빈 목록으로 두면 진단 Planner가 의도를 하나도 내지 않고 계획 라운드를 정상으로 끝낸다
+(둘 중 하나만 비우는 것은 계획 오류다). 계획은 정상인데 의도가 0인 회차가 실패가 아니라 `no_intents`로 마감하는지 무료 합성
+회차로 확인하려는 것이다(2026-11-22). 사실이 없어 목표 달성 선언은 일어나지 않고, 회차는 시간 상한에서 끝난다.
 `planner_error_after`(선택, 0~64, 기본 0)면 진단 Planner 요청 그 수만큼은 정상으로 답하고 그 뒤부터 오류를 돌려준다. 준비 단계
 계획은 통과하고 실행 단계에서 계획이 실패하는 회차를 흉내 내려는 것이다.
 
@@ -109,7 +112,7 @@ def load_plan(path: str | Path, origin: str) -> dict:
         raise PlanError("plan_invalid")
     steps, intents, commands = plan["exploration"], plan["intents"], plan["commands"]
     if (not isinstance(steps, list) or not isinstance(intents, list) or not isinstance(commands, list)
-            or not intents or not commands or any(len(items) > MAX_ITEMS for items in (steps, intents, commands))
+            or bool(intents) != bool(commands) or any(len(items) > MAX_ITEMS for items in (steps, intents, commands))
             or not all(isinstance(step, dict) and len(step) == 1 and set(step) <= STEP_KINDS and _text(next(iter(step.values())))
                        for step in steps)
             or not all(_text(item) for item in intents + commands)

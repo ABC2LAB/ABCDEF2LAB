@@ -881,10 +881,11 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 	if result, ok := server.engine.e2HTTP.explorationBudgetOutcome(task, server.firstModelBudget, outcomes); ok {
 		return true, result, nil
 	}
-	if flow := server.engine.e2HTTP.options.Workflow; flow != nil && !flow.DeepReady() {
+	settled := outcomes.Done + outcomes.PolicyLimited + outcomes.Incomplete + outcomes.Unknown + outcomes.Stopped
+	if flow := server.engine.e2HTTP.options.Workflow; flow != nil &&
+		firstDiagnosisWorkflowNotReady(flow.DeepReady(), flow.NoDeepRuns(), settled, server.engine.e2HTTP.lastPlanSucceeded(task.ID)) {
 		return failOutcome(reasonClosureWorkflowNotReady)
 	}
-	settled := outcomes.Done + outcomes.PolicyLimited + outcomes.Incomplete + outcomes.Unknown + outcomes.Stopped
 	if settled == 0 {
 		// 실행이 상한·목표 달성으로 끝날 때까지 intent가 하나도 없었다. 실패가 아니라 no_intents로 마감한다(C11 결정 2).
 		// 작업이 없으므로 대조할 E② 호출도 없어야 한다.
@@ -1333,4 +1334,15 @@ func (s *Server) firstDiagnosisPlanningContext(ctx context.Context) context.Cont
 // firstDiagnosisRunContext는 감독자 Run 하나의 문맥이다(뒷받침 기한 FirstDiagnosisRunTimeout).
 func firstDiagnosisRunContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, FirstDiagnosisRunTimeout)
+}
+
+// firstDiagnosisWorkflowNotReady는 흐름 모드 실행을 마감할 수 없는지 본다. 진단 Worker가 모두 끝났으면(deepReady) 마감한다.
+// 진단 Worker가 한 번도 없었던 실행은 의도가 하나도 없고(settled 0) 마지막 계획이 오류 없이 끝났을 때만 마감해서
+// 아래의 no_intents 정상 마감으로 간다(2026-11-22 사용자 결정). 계획 호출이 실패해 의도가 없는 경우는 지금처럼 실패다:
+// 모델 고장을 '시도한 계획 없음'으로 숨기지 않는다.
+func firstDiagnosisWorkflowNotReady(deepReady, noDeepRuns bool, settled int64, lastPlanSucceeded bool) bool {
+	if deepReady {
+		return false
+	}
+	return !(noDeepRuns && settled == 0 && lastPlanSucceeded)
 }

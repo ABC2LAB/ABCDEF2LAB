@@ -56,6 +56,7 @@ intent 결과는 **그래프의 지금 상태에서 계산하는 투영**이다.
 `outcome`과 `intent_outcomes` 대조식(받는 쪽이 검사하고, 맞지 않으면 응답을 거부한다):
 
 - `no_intents` ⇔ 다섯 개수가 모두 0.
+  - 흐름 모드(`workflow_mode`)도 같다: 진단 Worker가 한 번도 없었고 마지막 계획(Plan)이 오류 없이 끝났으면 `no_intents`로 마감한다. 마지막 계획 호출이 실패했거나 계획 기록이 없으면 `failed`(진단 로그 사유 `closure_workflow_not_ready`)다(2026-11-22 사용자 결정, `firstDiagnosisWorkflowNotReady`).
 - `complete` ⇔ `done + policy_limited ≥ 1` 이고 `incomplete + unknown + stopped = 0`.
 - `partial` ⇔ `incomplete + unknown + stopped ≥ 1`.
 
