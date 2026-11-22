@@ -285,6 +285,7 @@ python3 -I -B scripts/eval/official_session.py --session-dir "$SESSION" --tree "
 
 - **시작 전 운영 점검(2026-11-22 사용자, 평가 의미는 바꾸지 않는다)**. 어느 것도 시도로 세지 않는다.
   - 시작 시간대(`--start-window-kst 14-18`): 세션을 띄운 시각(한국 시간)이 창 밖이면 시작하지 않고 `outside_start_window`로 멈춘다. 결과는 세션 기록 `start_window`에 남는다.
+  - 제공자 단가(`--provider-probe`를 켜면 먼저): 공개 엔드포인트 표(`{base_url}/models/{model}/endpoints`)에서 manifest `provider_slug`와 같은 tag의 단가를 manifest와 같은 단위(USD 마이크로/100만 토큰)로 읽어, 단가가 manifest 가격 상한(`max_input_price_usd_micros_per_million`·`max_output_price_usd_micros_per_million`)을 넘으면 `provider_price_above_cap`, 표에서 못 찾으면 `provider_price_unknown`으로 멈춘다(유료 점검 호출도 보내지 않는다). 2026-11-22 PrimeIntellect 단가가 0.176/1.578로 올라 상한 0.15/1.5를 넘자 OpenRouter가 404 "No allowed providers"를 주고 제품이 첫 호출에서 회차를 `unknown`/`model_usage_unknown`으로 끝냈다. 단가·상한은 세션 기록 `provider_price`에 남는다. 4절 5번 manifest의 가격 상한은 측정 직전 재조회 단가 이상으로 둔다.
   - 제공자 429 점검(`--provider-probe`, `--key-file` 필요): 시작 직전 O manifest 틀(없으면 `split.manifest_path`)의 `model`·`provider_slug`·`base_url`로, 제품 OpenRouter 전송과 같은 provider 칸(`only` 하나·대체 없음·ZDR·데이터 수집 거부·가격 상한)을 붙여 출력 1토큰 호출을 10번 보낸다.
     - 429가 하나라도 나면 `--probe-wait`(기본 1800초) 뒤 다시 점검한다(`--probe-tries`, 기본 4번). 다시 점검하기 전에 시작 시간대도 다시 본다.
     - 끝내 429면 `provider_rate_limited`로 멈춘다. 429가 아닌 오류나 다른 제공자 이름이 나오면 `provider_probe_failed`로 멈춘다.
