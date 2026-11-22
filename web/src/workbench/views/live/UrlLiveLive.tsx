@@ -13,6 +13,7 @@
 import { type KeyboardEvent, type ReactElement, type ReactNode, useEffect, useRef, useState } from "react";
 
 import { ApiError } from "@/lib/diagnosis/api";
+import { activeURLRun } from "@/lib/diagnosis/diagnosis-runs";
 import { type URLDiagnosisJob, type URLDiagnosisUsage, urlPhaseLabels } from "@/lib/diagnosis/diagnosis-url";
 import {
   type DiagnosticOutcome,
@@ -50,7 +51,8 @@ import {
 import { maskSecrets } from "../../live/mask";
 import { ErrorNote, LoadingRow, NotYet } from "../../live/parts";
 import { runDurationMissingWhy, runDurationSec, runStartMissingWhy, runStartText } from "../../live/runTiming";
-import { useUrl, useUrlGates } from "../../live/urlDiagnosis";
+import { selectUrlRun, useUrl, useUrlGates } from "../../live/urlDiagnosis";
+import { useUrlRuns } from "../../live/urlRunList";
 import { factText, URL_ENDED_STATES, type UrlState, urlOutcomeText, urlStateText } from "../../live/urlMap";
 import { type Poll, usePoll } from "../../live/usePoll";
 import { flowStageText, MAX_FLOW_PLAN, type WorkflowSnapshot } from "../../live/workflow";
@@ -83,6 +85,44 @@ const SHORT: Readonly<Record<DiagnosticOutcome, string>> = {
 };
 
 /** 판정 딱지 모양 (확정 = 기본, 검토 필요 = 의심 모양, 정상 = 초록, 그 밖 = 판단 불가 모양). */
+
+/**
+ * 이어 보는 점검이 없을 때(새 브라우저·브라우저 재시작) 서버의 진행 중 점검을 점검마다 '열기' 버튼으로 보인다(사용자
+ * 2026-11-22, 1차 리허설 F14). 연 점검(조회 결속)에서도 승인·거부·범위 선택을 할 수 있다(F16). 자동으로 고르지 않는다.
+ */
+export function UnfollowedActiveRuns() {
+  const runs = useUrlRuns((st) => st.page?.runs ?? []);
+  const { goTo } = useShell();
+  const active = runs.filter(activeURLRun);
+  if (!active.length) return null;
+  return (
+    <div className={cx(s.note, s.warn)} role="note" aria-label="이어 보지 않는 진행 중 점검">
+      <Icon name="alert" />
+      <div>
+        <p>{`이 브라우저가 이어 보지 않는 진행 중 점검이 ${active.length}건 있습니다. 승인 대기가 있을 수 있으니 열어 확인하세요.`}</p>
+        <ul className={s.policy}>
+          {active.map((row) => (
+            <li key={row.id}>
+              <span>{`${row.display_name || row.id}${row.action_required ? " · 확인 필요" : ""}`}</span>{" "}
+              <button
+                className={cx(s.btn, s.sm)}
+                type="button"
+                onClick={() =>
+                  void selectUrlRun(row).then((ok) => {
+                    if (ok) goTo("live");
+                  })
+                }
+              >
+                이 점검 열기
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 export function Outcome({ o, short = false }: { o: DiagnosticOutcome; short?: boolean }) {
   return (
     <span
@@ -507,6 +547,7 @@ export function UrlLiveLive() {
           ) : (
             <>
               <p className={s.empty}>이 브라우저에서 이어 보는 점검이 없습니다.</p>
+              <UnfollowedActiveRuns />
               <UrlNotices />
               <div>
                 <a className={cx(s.btn, s.pri)} href="#new">
