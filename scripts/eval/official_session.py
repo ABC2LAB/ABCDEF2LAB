@@ -148,7 +148,8 @@ class Schedule:
             self.position += 1
         elif any(reason in FAULT_LIMIT_REASONS for reason in outcome.reasons):
             self.stalls[side] += 1
-            if any(event.get("inflight_model_calls_at_fault", 0) > 0 for event in outcome.fault_stall or []):
+            if any(_positive_count(event.get("inflight_model_calls_at_fault")) for event in outcome.fault_stall or []
+                   if isinstance(event, dict)):
                 self.stalls_inflight_model_call[side] += 1
             if self.stalls[side] >= self.fault_limit:
                 self.stop_reason, self.failed = f"fault_stall_limit:{side}", True
@@ -570,6 +571,12 @@ class RealRunner:
                        fault_stall=stall_events(value, reasons))
 
 
+def _positive_count(value: object) -> bool:
+    """1 이상 정수인지. 칸이 없거나(v3 전 기록) 숫자가 아니면 모름이라 세지 않는다 — 0으로 바꿔 '진행 중 없음'으로 적지도 않는다
+    (#852 리뷰: None > 0이 TypeError로 세션을 멈췄다)."""
+    return type(value) is int and value > 0
+
+
 _STALL_EVENT_KEYS = ("kind", "at_seconds", "idle_seconds", "idle_censored", "inflight_at_fault", "inflight_model_calls_at_fault")
 
 
@@ -703,6 +710,9 @@ def session_start_checks(a: argparse.Namespace, window: tuple[int, int] | None, 
         return "provider_price_headroom"
     if caps_sink is not None:
         caps_sink.update(caps)
+    # 유료 점검 호출도 이 세션의 상한으로 보낸다(provider.max_price). 틀의 상한으로 보내면 단가가 틀 값보다 오른 날 규칙 상한은
+    # 넉넉해도 점검이 404로 실패하고, 틀에 가격 칸이 없으면 읽지 못한다(#852 리뷰)
+    probe_manifest = dict(manifest, **caps)
     for attempt in range(1, a.probe_tries + 1):
         # 유료 점검 묶음마다 보내기 직전에 비용 보호(세션 상한·잔액 하한)를 확인한다. 첫 확인이 세션 사용량 기준이라 점검 호출
         # 비용도 세션 상한에 들어가고, 앞 묶음 비용으로 상한·잔액에 걸리면 다음 묶음을 보내지 않는다(#848 동찬 P2)
@@ -710,7 +720,7 @@ def session_start_checks(a: argparse.Namespace, window: tuple[int, int] | None, 
             stop = budget()
             if stop is not None:
                 return stop
-        result = probe(manifest, key)
+        result = probe(probe_manifest, key)
         expected = manifest.get("expected_provider_name")
         mismatch = bool(expected) and any(name != expected for name in result["providers"])
         log({"event": "provider_probe", "attempt": attempt, "model": manifest["model"],

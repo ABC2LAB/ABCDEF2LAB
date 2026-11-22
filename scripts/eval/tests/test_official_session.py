@@ -575,6 +575,23 @@ class TestStallRecord(unittest.TestCase):
         self.assertIsNone(o.stall_events(self.RESULT, ["window_boundary_changed"]))  # 멈춤 무효가 아니면 칸 없음
         self.assertEqual(o.stall_events({"status": "invalid"}, ["provider_fault_stall"]), [])
 
+    def test_stall_record_without_model_call_count_is_unknown_not_a_crash(self):
+        # #852 리뷰: v3 전 기록(칸 없음)이나 숫자가 아닌 칸이면 모름으로 남기고 세지 않는다. 세션이 TypeError로 멈추면 안 된다
+        old = {"status": "invalid", "fault_stall": {"events": [{"stall": True, "kind": "x", "inflight_at_fault": 1}]}}
+        events = o.stall_events(old, ["provider_fault_stall"])
+        self.assertIsNone(events[0]["inflight_model_calls_at_fault"])  # 0으로 바꿔 '진행 중 없음'이라고 적지 않는다
+        odd = events + [{"kind": "y", "inflight_model_calls_at_fault": True}, {"kind": "z", "inflight_model_calls_at_fault": "1"}, "bad"]
+        schedule = Schedule(1)
+        schedule.record("baseline", Outcome("invalid", ["provider_fault_stall"], "b1", fault_stall=odd))
+        self.assertEqual((schedule.stalls["baseline"], schedule.stalls_inflight_model_call["baseline"]), (1, 0))
+        logs = []
+        outcomes = [Outcome("invalid", ["provider_fault_stall"], "b1", fault_stall=events), Outcome("complete", [], "b2"),
+                    Outcome("complete", [], "o1")]
+        run_session(Schedule(1), lambda side, repeat: outcomes.pop(0), logs.append)
+        resumed = Schedule(1)
+        o.replay(resumed, [dict(l, dry_run=False) for l in logs if l["event"] == "attempt"])
+        self.assertEqual((resumed.stalls["baseline"], resumed.stalls_inflight_model_call["baseline"]), (1, 0))
+
     def test_session_log_and_summary_count_stalls_with_inflight_model_call_and_resume_keeps_them(self):
         inflight = [{"kind": "upstream_cut", "inflight_at_fault": 1, "inflight_model_calls_at_fault": 1}]
         # 대상 요청만 걸려 있던 멈춤(모델 호출 0)은 세지 않는다 — 스트리밍 모델 호출 경우만 가른다
@@ -733,6 +750,33 @@ class TestStartChecks(unittest.TestCase):
             self.assertIsNone(o.session_start_checks(args, None, None, lambda e: None, now=afternoon, price=slight, probe=probe,
                                                      recorded_caps=caps, caps_sink=again))
             self.assertEqual(again, caps)
+
+    def test_paid_probe_is_sent_with_the_session_caps_not_the_template_caps(self):
+        # #852 리뷰: 유료 점검 호출의 provider.max_price도 이 세션의 상한(새 세션 = 규칙, 이어 돌리기 = 기록)이어야 한다.
+        # 틀의 상한(여기서는 낮은 1/2)으로 보내면 단가가 오른 날 점검이 404로 실패한다. 틀에 가격 칸이 없어도 된다.
+        import datetime as dt
+        afternoon = lambda: dt.datetime(2026, 11, 22, 6, 0, tzinfo=dt.timezone.utc)  # noqa: E731
+        bodies = []
+        def post(req):
+            bodies.append(json.loads(req.data))
+            return 200, {"provider": "Provider"}
+        probe = lambda m, k: o.provider_probe(m, k, calls=1, post=post)  # noqa: E731
+        with tempfile.TemporaryDirectory() as d:
+            for template in (dict(self.MANIFEST, max_input_price_usd_micros_per_million=1, max_output_price_usd_micros_per_million=2),
+                             {k: v for k, v in self.MANIFEST.items() if not k.startswith("max_")}):
+                bodies.clear()
+                args = self._args(Path(d))
+                args.o_manifest_template.write_text(json.dumps(template), encoding="utf-8")
+                now_price = lambda m: {"found": True, "input_usd_micros_per_million": 190000, "output_usd_micros_per_million": 1700000}  # noqa: E731
+                self.assertIsNone(o.session_start_checks(args, None, None, lambda e: None, now=afternoon, price=now_price,
+                                                         probe=probe, caps_sink={}))
+                self.assertEqual(bodies[0]["provider"]["max_price"], {"prompt": 0.285, "completion": 2.55})  # 새 세션: 규칙 상한
+                bodies.clear()
+                slight = lambda m: {"found": True, "input_usd_micros_per_million": 230000, "output_usd_micros_per_million": 2000000}  # noqa: E731
+                recorded = {"max_input_price_usd_micros_per_million": 300000, "max_output_price_usd_micros_per_million": 2600000}
+                self.assertIsNone(o.session_start_checks(args, None, None, lambda e: None, now=afternoon, price=slight,
+                                                         probe=probe, recorded_caps=recorded, caps_sink={}))
+                self.assertEqual(bodies[0]["provider"]["max_price"], {"prompt": 0.3, "completion": 2.6})  # 이어 돌리기: 기록 상한
 
     def test_budget_is_checked_and_based_before_any_paid_probe_call(self):
         """#848 동찬 P2: 유료 점검 호출 전에 비용 보호를 확인하고 세션 사용량 기준을 기록한다(점검 비용이 세션 상한에 든다)."""
