@@ -577,7 +577,8 @@ class TestStallRecord(unittest.TestCase):
 
     def test_session_log_and_summary_count_stalls_with_inflight_model_call_and_resume_keeps_them(self):
         inflight = [{"kind": "upstream_cut", "inflight_at_fault": 1, "inflight_model_calls_at_fault": 1}]
-        quiet = [{"kind": "rate_limited", "inflight_at_fault": 0, "inflight_model_calls_at_fault": 0}]
+        # 대상 요청만 걸려 있던 멈춤(모델 호출 0)은 세지 않는다 — 스트리밍 모델 호출 경우만 가른다
+        quiet = [{"kind": "rate_limited", "inflight_at_fault": 1, "inflight_model_calls_at_fault": 0}]
         outcomes = [Outcome("invalid", ["provider_fault_stall"], "b1", fault_stall=inflight),
                     Outcome("complete", [], "b2"), Outcome("invalid", ["provider_fault_stall"], "o1", fault_stall=quiet),
                     Outcome("complete", [], "o2")]
