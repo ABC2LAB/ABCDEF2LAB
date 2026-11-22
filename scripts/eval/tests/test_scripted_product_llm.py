@@ -61,6 +61,14 @@ class TestPlan(unittest.TestCase):
         self.assertEqual(loaded["exploration"], [{"navigate": f"{ORIGIN}/"}, {"bash": f"curl -s {ORIGIN}/a"}])
         self.assertNotIn("{origin}", json.dumps(loaded))
 
+    def test_empty_intents_and_commands_plan(self):
+        # 의도·명령을 둘 다 비운 계획은 받는다(계획은 정상인데 의도 0인 회차). 그 계획의 진단 Planner는 의도를 내지 않고 끝낸다.
+        loaded = load_plan(self.write(plan(intents=[], commands=[])), ORIGIN)
+        self.assertEqual((loaded["intents"], loaded["commands"]), ([], []))
+        script = Script(loaded)
+        self.assertIsNone(script.decide(body(tool(PLANNER_TOOL, {"intents": {}}))))
+        self.assertEqual(script.counts["planner"], 0)
+
     def test_closed_plan_shape(self):
         bad = [plan(extra=1), {k: v for k, v in plan().items() if k != "commands"}, plan(format="v0"), plan(model=""),
                plan(intents=[]), plan(commands=[]), plan(commands=[""]), plan(commands=["a\x00b"]), plan(intents=[1]),

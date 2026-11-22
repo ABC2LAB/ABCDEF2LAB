@@ -51,6 +51,8 @@ func (e *Engine) plannerLogStart(ctx context.Context, task *Task) (int64, bool) 
 	return last, err == nil
 }
 func (e *Engine) plannerLogFinish(ctx context.Context, task *Task, last int64, observed bool, operationErr error, started time.Time) {
+	// 마감 판정이 읽는 계획 결과다. 진단 기록이 없는 경로에서도 남긴다.
+	e.e2HTTP.recordPlanResult(task.ID, operationErr == nil)
 	if diagnosticlog.From(ctx) == nil {
 		return
 	}

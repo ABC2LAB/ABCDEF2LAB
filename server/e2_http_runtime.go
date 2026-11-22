@@ -224,6 +224,25 @@ type E2HTTPRuntime struct {
 	// 실행 결과에 싣도록 남긴다. 다른 잠금과 섞이지 않게 따로 잠근다.
 	accountAuthMu sync.Mutex
 	accountAuth   map[string]string
+	// planResults는 작업별 마지막 계획(Plan) 한 번이 오류 없이 끝났는지다(작업 ID → bool). 흐름 모드 마감이 '계획은
+	// 정상인데 의도 0'과 '계획 호출이 실패해 의도 0'을 가르는 데 쓴다.
+	planResults sync.Map
+}
+
+// recordPlanResult는 계획 한 번의 결과를 남긴다(준비 단계의 첫 계획과 실행 단계의 계획 반복 모두).
+func (r *E2HTTPRuntime) recordPlanResult(taskID string, ok bool) {
+	if r != nil {
+		r.planResults.Store(taskID, ok)
+	}
+}
+
+// lastPlanSucceeded는 그 작업의 마지막 계획이 오류 없이 끝났는지 본다. 계획 기록이 없으면 거짓이다.
+func (r *E2HTTPRuntime) lastPlanSucceeded(taskID string) bool {
+	if r == nil {
+		return false
+	}
+	v, ok := r.planResults.Load(taskID)
+	return ok && v.(bool)
 }
 
 // AccountAuth는 이 실행의 시험 계정별 인증 준비 결과의 사본이다(계약 §3.4). 계정을 결속하지 않았으면 nil이다.
