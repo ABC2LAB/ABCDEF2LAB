@@ -10,8 +10,8 @@ import { readURLHandle, storeURLHandle, type URLDiagnosisJob } from "@/lib/diagn
 import { catalog, owner, ready, running } from "@/lib/diagnosis/diagnosis-url-fixtures";
 
 import { LiveGate, setLiveAuthState, useLiveAuthBoot } from "../live/auth";
-import { useSource } from "../live/source";
 import { LiveRailTasks } from "../live/rail";
+import { useSource } from "../live/source";
 import { resetUrl, runUrlAction, UrlFeeds, urlGates, useUrl } from "../live/urlDiagnosis";
 import { loadUrlRuns, useUrlRuns } from "../live/urlRunList";
 import { type Shell, ShellContext, type View } from "../shell";
@@ -716,9 +716,23 @@ describe("브라우저를 다시 띄운 뒤 진행 중 점검 찾기(사용자 2
   it("레일 '진행 중'이 이어 보지 않는 서버 진행 중 점검 수를 세고 진행 목록으로 안내한다", async () => {
     let goTo: View | null = null;
     const shell = {
-      route: "dashboard" as View, navSeq: 1, narrow: false, phone: false, reduce: false, inspOpen: false, railOpen: false,
-      railNewAtRoute: false, goTo: (v: View) => { goTo = v; }, openInsp: () => undefined, closeInsp: () => undefined,
-      openRail: () => undefined, closeRail: () => undefined, foldRail: () => undefined, dashPick: () => undefined,
+      route: "dashboard" as View,
+      navSeq: 1,
+      narrow: false,
+      phone: false,
+      reduce: false,
+      inspOpen: false,
+      railOpen: false,
+      railNewAtRoute: false,
+      goTo: (v: View) => {
+        goTo = v;
+      },
+      openInsp: () => undefined,
+      closeInsp: () => undefined,
+      openRail: () => undefined,
+      closeRail: () => undefined,
+      foldRail: () => undefined,
+      dashPick: () => undefined,
     } as Shell;
     await act(async () => {
       await loadUrlRuns(owner);

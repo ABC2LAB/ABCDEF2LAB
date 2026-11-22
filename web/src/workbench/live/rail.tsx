@@ -5,16 +5,16 @@
 
 import { type ReactNode, useEffect, useState } from "react";
 
-import { urlPhaseLabels } from "@/lib/diagnosis/diagnosis-url";
 import { activeURLRun } from "@/lib/diagnosis/diagnosis-runs";
+import { urlPhaseLabels } from "@/lib/diagnosis/diagnosis-url";
 import { readRequestApprovalState } from "@/lib/diagnosis/request-approvals";
 
 import { useShell, type View } from "../shell";
 import { Icon } from "../ui/icons";
 import s from "../workbench.module.css";
 import { useUrl } from "./urlDiagnosis";
-import { useUrlRuns } from "./urlRunList";
 import { scanViewFor, URL_ENDED_STATES, URL_PRESTART_STATES, urlHost, urlStateText } from "./urlMap";
+import { useUrlRuns } from "./urlRunList";
 import { usePoll } from "./usePoll";
 import { flowStageText } from "./workflow";
 
@@ -135,20 +135,25 @@ export function LiveRailTasks() {
   // 1차 리허설 F14: 브라우저를 다시 띄운 뒤 "진행 중 0"으로 보여 승인 대기를 놓칠 수 있었다)
   const serverActive = useUrlRuns((st) => (st.page?.runs ?? []).filter(activeURLRun).length);
   const unfollowed = !handle && serverActive > 0;
+  let runCount = 0;
+  let runBody: ReactNode = <div className={s["lv-rempty"]}>진행 중인 점검 없음</div>;
+  if (running) {
+    runCount = 1;
+    runBody = row;
+  } else if (unfollowed) {
+    runCount = serverActive;
+    runBody = (
+      <button className={s.rs} type="button" onClick={() => goTo("running")}>
+        <span className={s.mk} aria-hidden="true" />
+        <span className={s.host}>{`이어 보지 않는 진행 중 점검 ${serverActive}건`}</span>
+        <span className={s.rsub}>진행 중인 점검 목록에서 열기</span>
+      </button>
+    );
+  }
   return (
     <>
-      <RailSection id="run" title="진행 중" count={running ? 1 : unfollowed ? serverActive : 0}>
-        {running ? (
-          row
-        ) : unfollowed ? (
-          <button className={s.rs} type="button" onClick={() => goTo("running")}>
-            <span className={s.mk} aria-hidden="true" />
-            <span className={s.host}>{`이어 보지 않는 진행 중 점검 ${serverActive}건`}</span>
-            <span className={s.rsub}>진행 중인 점검 목록에서 열기</span>
-          </button>
-        ) : (
-          <div className={s["lv-rempty"]}>진행 중인 점검 없음</div>
-        )}
+      <RailSection id="run" title="진행 중" count={runCount}>
+        {runBody}
       </RailSection>
       <RailSection id="done" title="끝난 점검" count={done ? 1 : 0}>
         {done ? row : <div className={s["lv-rempty"]}>끝난 점검 없음</div>}

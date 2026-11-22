@@ -250,7 +250,14 @@ it("recovered binding (reopened from the run list) can still send the scope sele
   });
   vi.mocked(apiFetch).mockImplementation(async (_path, init) => {
     const key = (init?.headers as Record<string, string>)["Idempotency-Key"];
-    return { workflow: { ...snapshot, revision: 13, stage: "diagnosing", commands: [{ key, operation: "selection", revision: 13 }] } };
+    return {
+      workflow: {
+        ...snapshot,
+        revision: 13,
+        stage: "diagnosing",
+        commands: [{ key, operation: "selection", revision: 13 }],
+      },
+    };
   });
   expect(await runWorkflowAction("selection", ["endpoint-owned"])).toBe(true);
   expect(apiFetch).toHaveBeenCalledTimes(1);
