@@ -5,7 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { signIn, signOut } from "@/lib/diagnosis/api";
-import { activeURLRun, type URLRunSummary } from "@/lib/diagnosis/diagnosis-runs";
+import { activeURLRun, endedURLRun, type URLRunSummary } from "@/lib/diagnosis/diagnosis-runs";
 import { readURLHandle, storeURLHandle, type URLDiagnosisJob } from "@/lib/diagnosis/diagnosis-url";
 import { catalog, owner, ready, running } from "@/lib/diagnosis/diagnosis-url-fixtures";
 
@@ -745,5 +745,12 @@ describe("브라우저를 다시 띄운 뒤 진행 중 점검 찾기(사용자 2
     const open = screen.getByRole("button", { name: /이어 보지 않는 진행 중 점검 1건/ });
     fireEvent.click(open);
     expect(goTo).toBe("running");
+    // 끝난 점검도 같다(F14b): 이어 보는 점검이 없으면 서버 끝난 점검 수를 세고 끝난 점검 목록으로 안내한다
+    const ended = (useUrlRuns.getState().page?.runs ?? []).filter(endedURLRun).length;
+    expect(ended).toBeGreaterThan(0);
+    const done = screen.getByRole("button", { name: new RegExp(`이어 보지 않는 끝난 점검 ${ended}건`) });
+    fireEvent.click(done);
+    expect(goTo).toBe("finished");
+    expect(screen.queryByText("끝난 점검 없음")).toBeNull();
   });
 });

@@ -56,8 +56,8 @@ class Session:
                  stall: int | None = STALL_T, **result_fields) -> Path:
         directory = self._dir(side, minute)
         # 러너가 설정한 T로 판정한 멈춤 기록(결정안 §7). stall=None이면 판정하지 않은 회차다.
-        fault_stall = ({"format": "abc2lab-eval-runner-fault-stall-v2", "judged": False} if stall is None else
-                       {"format": "abc2lab-eval-runner-fault-stall-v2", "judged": True, "stall_seconds": stall, "stalls": 0})
+        fault_stall = ({"format": "abc2lab-eval-runner-fault-stall-v3", "judged": False} if stall is None else
+                       {"format": "abc2lab-eval-runner-fault-stall-v3", "judged": True, "stall_seconds": stall, "stalls": 0})
         self._result(directory, side, minute, status="complete", task_request_sha256=task.replace("t", "a"),
                      e2_mode=e2_mode, fault_stall=fault_stall, **result_fields)
         record = {"run_id": directory.name, "engine": side, "condition": condition or CONDITION[side],

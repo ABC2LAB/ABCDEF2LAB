@@ -44,6 +44,7 @@ import argparse
 import datetime
 import json
 import math
+from decimal import ROUND_CEILING, Decimal, InvalidOperation
 import os
 import secrets
 import signal
@@ -84,6 +85,8 @@ class Outcome:
     stop_after: str | None = None
     # 일찍 끝난 회차 분류(회차 디렉터리의 early-end.json 요약). 분류가 없으면 None.
     early_end: dict | None = None
+    # 멈춤 무효(provider_fault_stall)였으면 멈춤으로 판정된 장애 사건 요약(장애 시점 진행 중 요청·모델 호출 수 포함). 아니면 None.
+    fault_stall: list | None = None
 
 
 # 쪽별 멈춤 상한에 같이 세는 무효 사유(고정 초안 §3·§26).
@@ -105,6 +108,9 @@ class Schedule:
     attempts: dict = field(default_factory=lambda: {"baseline": 0, "ours": 0})
     valid: dict = field(default_factory=lambda: {"baseline": 0, "ours": 0})
     stalls: dict = field(default_factory=lambda: {"baseline": 0, "ours": 0})
+    # 멈춤 무효 가운데 멈춤 사건 때 모델 호출이 진행 중이던 것(2026-11-22 사용자: B는 스트리밍 조각을 활동으로 세지 않아 긴
+    # 스트리밍 호출 하나로 B만 멈춤 무효가 날 수 있다 — 공정성 기록에서 가른다). 판정·상한 셈은 바꾸지 않는다.
+    stalls_inflight_model_call: dict = field(default_factory=lambda: {"baseline": 0, "ours": 0})
     early_end_runs: list = field(default_factory=list)
     stop_reason: str | None = None
     failed: bool = False
@@ -142,6 +148,9 @@ class Schedule:
             self.position += 1
         elif any(reason in FAULT_LIMIT_REASONS for reason in outcome.reasons):
             self.stalls[side] += 1
+            if any(_positive_count(event.get("inflight_model_calls_at_fault")) for event in outcome.fault_stall or []
+                   if isinstance(event, dict)):
+                self.stalls_inflight_model_call[side] += 1
             if self.stalls[side] >= self.fault_limit:
                 self.stop_reason, self.failed = f"fault_stall_limit:{side}", True
         if outcome.stop_after is not None and self.stop_reason is None:
@@ -152,7 +161,8 @@ class Schedule:
 
     def summary(self) -> dict:
         return {"repeats": self.repeats, "order": [LETTER_OF[s] for s in self.order], "attempts": self.attempts, "valid": self.valid,
-                "fault_stalls": self.stalls, "complete": self.done(), "stop_reason": self.stop_reason, "measurement_failed": self.failed,
+                "fault_stalls": self.stalls, "fault_stalls_inflight_model_call": self.stalls_inflight_model_call,
+                "complete": self.done(), "stop_reason": self.stop_reason, "measurement_failed": self.failed,
                 "early_end_runs": self.early_end_runs}
 
 
@@ -311,24 +321,63 @@ def provider_probe(manifest: dict, key: str, calls: int = PROBE_CALLS,
     return out
 
 
-PRICE_MARGIN = 1.5
+# O 가격 상한 규칙(2026-11-22 사용자): 고정 숫자 대신 "세션 시작 직전 재조회 단가 × PRICE_CAP_FACTOR"로 정해 그 세션의 O
+# manifest에 쓰고, 시작 점검은 상한이 지금 단가보다 PRICE_MIN_HEADROOM배 이상(20% 높음)이면 통과한다. B에는 가격 상한이 없어,
+# 상한을 단가에 딱 맞추면 측정 도중 단가가 조금만 올라도 O만 404로 막힌다(11/22 하루에 단가가 두 번 움직였다). 1.5배 여유를
+# 시작 조건으로 요구하면 같은 이유로 세션이 시작을 못 해서, 시작 조건은 20%로 둔다.
+PRICE_CAP_FACTOR = Decimal("1.5")
+PRICE_MIN_HEADROOM = Decimal("1.2")
+PRICE_FIELDS = (("input_usd_micros_per_million", "max_input_price_usd_micros_per_million"),
+                ("output_usd_micros_per_million", "max_output_price_usd_micros_per_million"))
 
 
-def endpoint_price(manifest: dict, get: Callable[[str], tuple[int, dict]] | None = None, margin: float = PRICE_MARGIN) -> dict:
+def endpoint_price(manifest: dict, get: Callable[[str], tuple[int, dict]] | None = None) -> dict:
     """OpenRouter 엔드포인트 표(공개 GET {base_url}/models/{model}/endpoints)에서 manifest `provider_slug`와 같은 tag의 단가를
-    manifest와 같은 단위(USD 마이크로/100만 토큰)로 읽고 manifest 상한과 대조한다. 2026-11-22: PrimeIntellect 단가가
-    0.176/1.578로 올라 상한 0.15/1.5를 넘자 OpenRouter가 404 "No allowed providers"를 주고 회차가 첫 호출에서 끝났다."""
+    manifest와 같은 단위(USD 마이크로/100만 토큰, 정수)로 읽는다. 2026-11-22: PrimeIntellect 단가가 0.176/1.578로 올라 상한
+    0.15/1.5를 넘자 OpenRouter가 404 "No allowed providers"를 주고 회차가 첫 호출에서 끝났다."""
     get = get or _get_json
     base = str(manifest["base_url"]).rstrip("/")
     status, payload = get(f"{base}/models/{manifest['model']}/endpoints")
     endpoints = ((payload.get("data") or {}).get("endpoints") or []) if isinstance(payload, dict) else []
     match = [e for e in endpoints if isinstance(e, dict) and e.get("tag") == manifest["provider_slug"]]
-    out = {"status": status, "tag": manifest["provider_slug"], "found": bool(match),
-           "cap_input_usd_micros_per_million": manifest["max_input_price_usd_micros_per_million"],
-           "cap_output_usd_micros_per_million": manifest["max_output_price_usd_micros_per_million"]}
+    out = {"status": status, "tag": manifest["provider_slug"], "found": bool(match)}
     if not match:
-        out["ok"] = False
         return out
+    pricing = match[0].get("pricing") or {}
+    try:
+        # 문자열 단가(USD/토큰)를 그대로 Decimal로 바꿔 부동소수 오차 없이 마이크로/100만 토큰 정수로 둔다
+        prompt = Decimal(str(pricing["prompt"])) * 10 ** 12
+        completion = Decimal(str(pricing["completion"])) * 10 ** 12
+    except (KeyError, TypeError, ArithmeticError, ValueError):
+        out["found"] = False
+        return out
+    if not (prompt.is_finite() and completion.is_finite()) or prompt < 0 or completion < 0:
+        out["found"] = False
+        return out
+    out.update(input_usd_micros_per_million=int(prompt.to_integral_value(ROUND_CEILING)),
+               output_usd_micros_per_million=int(completion.to_integral_value(ROUND_CEILING)))
+    return out
+
+
+def _factor_arg(text: str) -> Decimal:
+    """배수 인자(1 이상 3 이하 유한 소수). 형식이 틀리면 argparse 입력 오류."""
+    try:
+        value = Decimal(text)
+    except InvalidOperation:
+        raise argparse.ArgumentTypeError(f"배수가 아님: {text}") from None
+    if not value.is_finite() or not Decimal(1) <= value <= Decimal(3):
+        raise argparse.ArgumentTypeError(f"배수 범위(1~3) 밖: {text}")
+    return value
+
+
+def rule_caps(priced: dict, factor: Decimal = PRICE_CAP_FACTOR) -> dict:
+    """상한 규칙: 재조회 단가 × factor(올림 정수). manifest 칸 이름으로 돌려준다."""
+    return {cap: int((Decimal(priced[unit]) * factor).to_integral_value(ROUND_CEILING)) for unit, cap in PRICE_FIELDS}
+
+
+def caps_headroom_ok(caps: dict, priced: dict, headroom: Decimal = PRICE_MIN_HEADROOM) -> bool:
+    """시작 점검: 상한이 지금 단가의 headroom배 이상(입력·출력 둘 다). 단가 0이면 늘 참."""
+    return all(Decimal(caps[cap]) >= Decimal(priced[unit]) * headroom for unit, cap in PRICE_FIELDS)
     pricing = match[0].get("pricing") or {}
     try:
         prompt = round(float(pricing["prompt"]) * 1e12)
@@ -422,11 +471,14 @@ class UsageGuard:
         return None
 
 
-def write_manifest(template: Path, target: Path, hours: int) -> None:
-    """O 회차마다 새 승인 ID·만료 시각으로 manifest를 만든다(0600, 덮어씀). 값은 출력하지 않는다."""
+def write_manifest(template: Path, target: Path, hours: int, caps: dict | None = None) -> None:
+    """O 회차마다 새 승인 ID·만료 시각으로 manifest를 만든다(0600, 덮어씀). 값은 출력하지 않는다. caps가 있으면 그 세션에서
+    정한 가격 상한(상한 규칙)으로 틀의 상한 칸을 바꾼다 — 한 세션의 O는 모두 같은 상한이다."""
     value = json.loads(template.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
         raise ValueError("manifest_template")
+    if caps:
+        value.update({cap: caps[cap] for _, cap in PRICE_FIELDS})
     value["approval_id"] = "official-o-" + secrets.token_hex(8)
     value["expires_at"] = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=hours)).replace(
         microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -515,7 +567,31 @@ class RealRunner:
         if status not in (COMPLETE, INVALID) or (code == 0) != (status == COMPLETE):
             reason = f"result_status_mismatch:{slot}"
             return Outcome(INVALID, [reason] + [r for r in reasons if isinstance(r, str)], run_id, stop_after=reason)
-        return Outcome(status, reasons, run_id, early_end=early_end_summary(self.runs_root / run_id / EARLY_END_NAME))
+        return Outcome(status, reasons, run_id, early_end=early_end_summary(self.runs_root / run_id / EARLY_END_NAME),
+                       fault_stall=stall_events(value, reasons))
+
+
+def _positive_count(value: object) -> bool:
+    """1 이상 정수인지. 칸이 없거나(v3 전 기록) 숫자가 아니면 모름이라 세지 않는다 — 0으로 바꿔 '진행 중 없음'으로 적지도 않는다
+    (#852 리뷰: None > 0이 TypeError로 세션을 멈췄다)."""
+    return type(value) is int and value > 0
+
+
+_STALL_EVENT_KEYS = ("kind", "at_seconds", "idle_seconds", "idle_censored", "inflight_at_fault", "inflight_model_calls_at_fault")
+
+
+def stall_events(result: dict, reasons: list) -> list | None:
+    """멈춤 무효 회차면 결과의 멈춤 기록(fault_stall)에서 멈춤으로 판정된 사건만 요약한다. 장애 시점에 진행 중이던 요청 수
+    (inflight_at_fault)와 그중 모델 호출 수(inflight_model_calls_at_fault, 기록 형식 v3부터)를 같이 남긴다. 멈춤 무효가 아니면
+    None, 기록이 없거나 모양이 틀리면 빈 목록(멈춤 무효인 건 사유로 이미 안다)."""
+    if FAULT_STALL_REASON not in reasons:
+        return None
+    record = result.get("fault_stall") if isinstance(result, dict) else None
+    events = record.get("events") if isinstance(record, dict) else None
+    if not isinstance(events, list):
+        return []
+    return [{key: event.get(key) for key in _STALL_EVENT_KEYS} for event in events
+            if isinstance(event, dict) and event.get("stall") is True]
 
 
 def run_session(schedule: Schedule, run_one: Callable[[str, int], Outcome], log: Callable[[dict], None],
@@ -533,9 +609,21 @@ def run_session(schedule: Schedule, run_one: Callable[[str, int], Outcome], log:
         schedule.record(side, outcome)
         log({"event": "attempt", "side": LETTER_OF[side], "repeat": repeat, "status": outcome.status, "reasons": outcome.reasons,
              "run_id": outcome.run_id, "stop_after": outcome.stop_after, "early_end": outcome.early_end, "started_at": started,
-             "attempts": dict(schedule.attempts), "valid": dict(schedule.valid)})
+             "attempts": dict(schedule.attempts), "valid": dict(schedule.valid),
+             **({"fault_stall": outcome.fault_stall} if outcome.fault_stall is not None else {})})
     log(dict(event="summary", **schedule.summary()))
     return schedule
+
+
+def session_caps(lines: list[dict]) -> dict | None:
+    """세션 기록에서 시작 때 정한 O 가격 상한(첫 통과한 price_caps 줄). 없으면 None, 모양이 틀리면 ValueError."""
+    for line in lines:
+        if line.get("event") == "price_caps" and line.get("headroom_ok") is True:
+            caps = {cap: line.get(cap) for _, cap in PRICE_FIELDS}
+            if not all(type(v) is int and v > 0 for v in caps.values()):
+                raise ValueError("resume_price_caps_invalid")
+            return caps
+    return None
 
 
 def replay(schedule: Schedule, lines: list[dict]) -> int:
@@ -547,7 +635,8 @@ def replay(schedule: Schedule, lines: list[dict]) -> int:
         if line.get("dry_run"):
             raise ValueError("resume_dry_run_log")
         outcome = Outcome(line["status"], list(line.get("reasons") or []), line.get("run_id"),
-                          early_end=line.get("early_end") if isinstance(line.get("early_end"), dict) else None)
+                          early_end=line.get("early_end") if isinstance(line.get("early_end"), dict) else None,
+                          fault_stall=line.get("fault_stall") if isinstance(line.get("fault_stall"), list) else None)
         slot = schedule.next_slot()
         side = SIDE_OF.get(line.get("side"))
         # 설정 오류 줄도 그때의 칸(쪽·번호)과 맞아야 한다. 시도로 세지 않을 뿐 순서 검사는 같다(#831 리뷰: 건너뛰면 다른 칸의
@@ -581,11 +670,12 @@ def session_start_checks(a: argparse.Namespace, window: tuple[int, int] | None, 
                          probe: Callable[[dict, str], dict] = provider_probe,
                          sleep: Callable[[float], None] = time.sleep,
                          price: Callable[[dict], dict] | None = None,
-                         budget: Callable[[], str | None] | None = None) -> str | None:
+                         budget: Callable[[], str | None] | None = None,
+                         recorded_caps: dict | None = None, caps_sink: dict | None = None) -> str | None:
     """세션 시작 전 운영 점검(2026-11-22 사용자): 시작 시간대(한국 시간) → 제공자 429 점검(같은 모델·제공자 짧은 호출 10번,
     429가 하나라도 나면 probe_wait 뒤 다시). 결과는 세션 기록에 남긴다. 멈출 사유 또는 None."""
     now = now or (lambda: datetime.datetime.now(datetime.timezone.utc))
-    price = price or (lambda m: endpoint_price(m, margin=getattr(a, "price_margin", PRICE_MARGIN)))
+    price = price or endpoint_price
     def window_ok() -> bool:
         ok = window is None or in_window(now(), window)
         if window is not None:
@@ -602,19 +692,27 @@ def session_start_checks(a: argparse.Namespace, window: tuple[int, int] | None, 
         key = a.key_file.read_text(encoding="utf-8").strip()
     except (OSError, ValueError):
         return "provider_probe_input"
-    if not isinstance(manifest, dict) or not all(k in manifest for k in ("model", "provider_slug", "base_url",
-                                                                         "max_input_price_usd_micros_per_million",
-                                                                         "max_output_price_usd_micros_per_million")):
+    if not isinstance(manifest, dict) or not all(k in manifest for k in ("model", "provider_slug", "base_url")):
         return "provider_probe_input"
-    # 단가 ≤ 가격 상한(manifest)이어야 제공자가 받아 준다. 넘으면 호출마다 404라 회차가 첫 호출에서 끝난다(2026-11-22)
+    # 단가 ≤ 가격 상한(manifest)이어야 제공자가 받아 준다. 넘으면 호출마다 404라 회차가 첫 호출에서 끝난다(2026-11-22).
+    # 상한은 규칙(재조회 단가 × factor)으로 세션 시작 때 한 번 정하고, 이어 돌리기(--resume)는 기록된 그 상한을 그대로 쓴다.
     priced = price(manifest)
     log({"event": "provider_price", **priced})
     if not priced.get("found") or "input_usd_micros_per_million" not in priced:
         return "provider_price_unknown"
-    if not priced["ok"]:
-        return "provider_price_above_cap"
-    if not priced.get("margin_ok", False):
-        return "provider_price_margin"
+    factor = Decimal(str(getattr(a, "price_cap_factor", PRICE_CAP_FACTOR)))
+    headroom = Decimal(str(getattr(a, "price_min_headroom", PRICE_MIN_HEADROOM)))
+    caps = dict(recorded_caps) if recorded_caps else rule_caps(priced, factor)
+    ok = caps_headroom_ok(caps, priced, headroom)
+    log({"event": "price_caps", "source": "session_log" if recorded_caps else "rule", "rule_factor": str(factor),
+         "min_headroom": str(headroom), **{unit: priced[unit] for unit, _ in PRICE_FIELDS}, **caps, "headroom_ok": ok})
+    if not ok:
+        return "provider_price_headroom"
+    if caps_sink is not None:
+        caps_sink.update(caps)
+    # 유료 점검 호출도 이 세션의 상한으로 보낸다(provider.max_price). 틀의 상한으로 보내면 단가가 틀 값보다 오른 날 규칙 상한은
+    # 넉넉해도 점검이 404로 실패하고, 틀에 가격 칸이 없으면 읽지 못한다(#852 리뷰)
+    probe_manifest = dict(manifest, **caps)
     for attempt in range(1, a.probe_tries + 1):
         # 유료 점검 묶음마다 보내기 직전에 비용 보호(세션 상한·잔액 하한)를 확인한다. 첫 확인이 세션 사용량 기준이라 점검 호출
         # 비용도 세션 상한에 들어가고, 앞 묶음 비용으로 상한·잔액에 걸리면 다음 묶음을 보내지 않는다(#848 동찬 P2)
@@ -622,7 +720,7 @@ def session_start_checks(a: argparse.Namespace, window: tuple[int, int] | None, 
             stop = budget()
             if stop is not None:
                 return stop
-        result = probe(manifest, key)
+        result = probe(probe_manifest, key)
         expected = manifest.get("expected_provider_name")
         mismatch = bool(expected) and any(name != expected for name in result["providers"])
         log({"event": "provider_probe", "attempt": attempt, "model": manifest["model"],
@@ -669,8 +767,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--start-window-kst", help="세션 시작을 허용하는 한국 시간대(예: 14-18). 밖이면 시작하지 않는다")
     ap.add_argument("--provider-probe", action="store_true",
                     help="시작 직전 같은 모델·제공자로 짧은 호출 10번. 429가 하나라도 나면 --probe-wait 뒤 다시 점검")
-    ap.add_argument("--price-margin", type=float, default=PRICE_MARGIN,
-                    help="manifest 가격 상한이 엔드포인트 단가의 이 배수 이상이어야 시작(기본 1.5)")
+    ap.add_argument("--price-cap-factor", type=_factor_arg, default=PRICE_CAP_FACTOR,
+                    help="O 가격 상한 = 세션 시작 직전 재조회 단가 × 이 값(기본 1.5, --provider-probe일 때)")
+    ap.add_argument("--price-min-headroom", type=_factor_arg, default=PRICE_MIN_HEADROOM,
+                    help="시작 점검: 상한이 지금 단가의 이 배수 이상이어야 시작(기본 1.2 = 20%% 높음)")
     ap.add_argument("--probe-wait", type=float, default=1800)
     ap.add_argument("--probe-tries", type=int, default=4)
     a = ap.parse_args(argv)
@@ -683,6 +783,10 @@ def main(argv: list[str] | None = None) -> int:
     a.session_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     log_path = a.session_dir / LOG_NAME
     resumed_base: float | None = None
+    recorded_caps: dict | None = None
+    if a.price_min_headroom > a.price_cap_factor:
+        print("입력 오류: --price-min-headroom이 --price-cap-factor보다 크면 새 세션이 늘 시작하지 못한다", file=sys.stderr)
+        return EXIT_INPUT
     if log_path.exists() and not a.resume:
         print("입력 오류: 세션 기록이 이미 있음(이어 돌리려면 --resume)", file=sys.stderr)
         return EXIT_INPUT
@@ -696,6 +800,10 @@ def main(argv: list[str] | None = None) -> int:
             resumed_base = _usd(bases[0]) if bases else None
             if bases and resumed_base is None:
                 raise ValueError("resume_usage_base_invalid")
+            # 한 세션의 O 가격 상한은 시작 때 정한 값 그대로다(이어 돌릴 때 다시 정하지 않는다)
+            recorded_caps = session_caps(lines)
+            if recorded_caps and not a.provider_probe:
+                raise ValueError("resume_needs_provider_probe")  # 기록된 상한을 지금 단가와 대조하지 않고 잇지 않는다
         except (ValueError, OSError) as exc:
             print(f"입력 오류: {exc}", file=sys.stderr)
             return EXIT_INPUT
@@ -739,7 +847,9 @@ def main(argv: list[str] | None = None) -> int:
             if resumed_base is not None:
                 guard.base = resumed_base
         # 비용 보호기를 먼저 만들어 시작 점검의 유료 호출 전에 확인·기준 기록을 하게 한다(#848 동찬 P2)
-        stop = session_start_checks(a, window, manifest_path, log, budget=guard.check if guard is not None else None)
+        caps: dict = {}
+        stop = session_start_checks(a, window, manifest_path, log, budget=guard.check if guard is not None else None,
+                                    recorded_caps=recorded_caps, caps_sink=caps)
         if stop is not None:
             log({"event": "summary", "start_refused": stop, **schedule.summary()})
             return EXIT_STOPPED
@@ -767,9 +877,12 @@ def main(argv: list[str] | None = None) -> int:
                 if manifest_path is None:
                     return "manifest_path_missing"
                 try:
-                    write_manifest(a.o_manifest_template, manifest_path, a.manifest_hours)
+                    write_manifest(a.o_manifest_template, manifest_path, a.manifest_hours, caps or None)
                 except (OSError, ValueError):
                     return "manifest_write_failed"
+                # 이 O 회차 manifest의 가격 상한(승인 ID는 적지 않는다). 상한 규칙을 쓰지 않으면 틀 값 그대로다
+                log({"event": "o_manifest_caps", "repeat": repeat, "source": "price_caps" if caps else "template",
+                     **({cap: caps[cap] for _, cap in PRICE_FIELDS} if caps else {})})
             return None
 
         runner = RealRunner(a.tree, a.config, a.preflight, runs_root, a.admin_password_file, DEFAULT_CONDITIONS, a.run_timeout,
