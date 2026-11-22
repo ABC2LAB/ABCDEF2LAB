@@ -378,20 +378,6 @@ def rule_caps(priced: dict, factor: Decimal = PRICE_CAP_FACTOR) -> dict:
 def caps_headroom_ok(caps: dict, priced: dict, headroom: Decimal = PRICE_MIN_HEADROOM) -> bool:
     """시작 점검: 상한이 지금 단가의 headroom배 이상(입력·출력 둘 다). 단가 0이면 늘 참."""
     return all(Decimal(caps[cap]) >= Decimal(priced[unit]) * headroom for unit, cap in PRICE_FIELDS)
-    pricing = match[0].get("pricing") or {}
-    try:
-        prompt = round(float(pricing["prompt"]) * 1e12)
-        completion = round(float(pricing["completion"]) * 1e12)
-    except (KeyError, TypeError, ValueError):
-        out["ok"] = False
-        return out
-    cap_in, cap_out = out["cap_input_usd_micros_per_million"], out["cap_output_usd_micros_per_million"]
-    # 상한은 단가에 딱 맞추지 않고 여유(margin배)를 둔다(사용자 2026-11-22: B에는 가격 상한이 없어, 측정 도중 제공자가 단가를
-    # 조금만 올려도 O만 404로 막혀 세션이 멈춘다. 11/22 S01-final7은 상한 1.6에서 회차 도중 실제 출력 단가가 1.6을 넘었다)
-    out.update(input_usd_micros_per_million=prompt, output_usd_micros_per_million=completion, margin=margin,
-               ok=prompt <= cap_in and completion <= cap_out,
-               margin_ok=cap_in >= margin * prompt and cap_out >= margin * completion)
-    return out
 
 
 def _get_json(url: str) -> tuple[int, dict]:
