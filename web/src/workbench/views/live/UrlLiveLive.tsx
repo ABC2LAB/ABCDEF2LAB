@@ -10,7 +10,7 @@
 // 심각도 · 공격 경로 · 지식 그래프 · 계정 비교 · 재현 명령은 서버가 주지 않아 두지 않는다.
 // 판정은 팀 lib(summarizeDiagnosticEntries · diagnosticOutcome)의 분류만 쓰고 화면이 만들지 않는다.
 
-import { type KeyboardEvent, type ReactElement, type ReactNode, useEffect, useRef, useState } from "react";
+import { type KeyboardEvent, type ReactElement, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 
 import { ApiError } from "@/lib/diagnosis/api";
 import { type URLDiagnosisJob, type URLDiagnosisUsage, urlPhaseLabels } from "@/lib/diagnosis/diagnosis-url";
@@ -82,18 +82,26 @@ const SHORT: Readonly<Record<DiagnosticOutcome, string>> = {
   negative: "정상",
 };
 
-/** 판정 딱지 모양 (확정 = 기본, 검토 필요 = 의심 모양, 정상 = 초록, 그 밖 = 판단 불가 모양). */
-
-/** coverage 403(이 task 에선 제공 안 함)을 task 마다 기억한다. 바뀐 task 는 다시 한 번 부른다. */
-export function useCoverageForbidden(taskId: string | null): { forbidden: boolean; observe: (error: unknown) => void } {
+/**
+ * coverage 403(이 task 에선 제공 안 함)을 task 마다 기억한다. 바뀐 task 는 다시 한 번 부른다.
+ * 403은 그 요청을 보낸 task 에 붙인다(`track(id, 요청)`). usePoll 은 task 가 바뀐 렌더에서 이전 task 의 오류를 잠깐 그대로
+ * 돌려줘서, 렌더 때 오류를 보고 지금 task 에 붙이면 이전 task 의 403 때문에 새 task 를 한 번도 부르지 않게 된다(#851 리뷰).
+ */
+export function useCoverageForbidden(taskId: string | null): {
+  forbidden: boolean;
+  track: <T>(id: string, request: Promise<T>) => Promise<T>;
+} {
   const [forbiddenTask, setForbiddenTask] = useState<string | null>(null);
   const forbidden = !!taskId && forbiddenTask === taskId;
-  return {
-    forbidden,
-    observe: (error: unknown) => {
-      if (taskId && !forbidden && error instanceof ApiError && error.status === 403) setForbiddenTask(taskId);
-    },
-  };
+  const track = useCallback(
+    <T,>(id: string, request: Promise<T>): Promise<T> =>
+      request.catch((error: unknown) => {
+        if (error instanceof ApiError && error.status === 403) setForbiddenTask(id);
+        throw error;
+      }),
+    [],
+  );
+  return { forbidden, track };
 }
 
 /**
@@ -108,6 +116,7 @@ export function heldReason(pending: readonly { method: string }[]): string {
   return `쓰기 ${writes} · 읽기 ${pending.length - writes} · 보내기 전 확인`;
 }
 
+/** 판정 딱지 모양 (확정 = 기본, 검토 필요 = 의심 모양, 정상 = 초록, 그 밖 = 판단 불가 모양). */
 export function Outcome({ o, short = false }: { o: DiagnosticOutcome; short?: boolean }) {
   return (
     <span
@@ -497,11 +506,14 @@ export function UrlLiveLive() {
   // 제품 점검은 공개 진단 API만 열어 coverage 가 403이다(1차 리허설 F6: 15초마다 403이 쌓였다). 한 번 403을 받으면 그
   // task 에서는 다시 부르지 않고 칸을 두지 않는다(서버 응답으로 판단 — 모드를 화면이 추정하지 않는다)
   const covOff = useCoverageForbidden(job?.task_id ?? null);
-  const cov = usePoll(() => fetchCoverage(job?.task_id as string), [job?.task_id], {
-    enabled: visible && !!job?.task_id && !covOff.forbidden,
-    intervalMs: 15000,
-  });
-  covOff.observe(cov.error);
+  const cov = usePoll(
+    () => covOff.track(job?.task_id as string, fetchCoverage(job?.task_id as string)),
+    [job?.task_id],
+    {
+      enabled: visible && !!job?.task_id && !covOff.forbidden,
+      intervalMs: 15000,
+    },
+  );
   // 모델 사용량: 원본 ARTEX 작업 합계(입력 · 캐시 읽기 · 출력). 전송 통제 예산 기록(model_usage)에는 캐시가 없다
   // 점검 중 발견 후보 (제품 후보 조회 #694). 서버가 여는 조건(ProductCandidateJobActive: 시작 확인 · running/stopping ·
   // 마감 · 결과 저장 전)과 같을 때만 읽어 시작 전 · 끝난 뒤에 409 를 일부러 부르지 않는다. 화면이 안 보이면(다른 탭 ·
@@ -1532,10 +1544,9 @@ export function UrlReportLive() {
   // 자산 커버리지 (요약 칸): 서버 task 의 방문 · 검사한 자산 비율(판정 커버리지 아님 · 리뷰 #479).
   // 꺼졌거나 못 읽으면 값을 만들지 않고 "—"
   const covOff = useCoverageForbidden(taskId);
-  const cov = usePoll(() => fetchCoverage(taskId as string), [taskId], {
+  const cov = usePoll(() => covOff.track(taskId as string, fetchCoverage(taskId as string)), [taskId], {
     enabled: visible && !!taskId && !covOff.forbidden,
   });
-  covOff.observe(cov.error);
   const covPct = cov.data?.enabled && cov.data.pct !== null ? Math.round(cov.data.pct * 100) : null;
   const [tab, setTab] = useState<RTab>("list");
   const tabRefs = useRef<Partial<Record<RTab, HTMLButtonElement | null>>>({});

@@ -20,17 +20,44 @@ it("'승인 필요로 보류' 설명은 실제 보류 요청의 메서드로 쓴
   );
 });
 
-it("coverage 403을 한 번 받으면 그 task 에선 다시 부르지 않고, 다른 task 는 다시 한 번 부른다(1차 리허설 F6)", () => {
+it("coverage 403을 한 번 받으면 그 task 에선 다시 부르지 않고, 다른 task 는 다시 한 번 부른다(1차 리허설 F6)", async () => {
   const { result, rerender } = renderHook(({ task }) => useCoverageForbidden(task), {
     initialProps: { task: "1" as string | null },
   });
   expect(result.current.forbidden).toBe(false);
-  act(() => result.current.observe(new ApiError(503, "x")));
+  await act(() => result.current.track("1", Promise.reject(new ApiError(503, "x"))).catch(() => undefined));
   expect(result.current.forbidden).toBe(false); // 403이 아니면 멈추지 않는다(일시 오류)
-  act(() => result.current.observe(new ApiError(403, "승인된 작업의 공개 진단 API만 사용할 수 있습니다")));
+  await act(() =>
+    result.current
+      .track("1", Promise.reject(new ApiError(403, "승인된 작업의 공개 진단 API만 사용할 수 있습니다")))
+      .catch(() => undefined),
+  );
   expect(result.current.forbidden).toBe(true);
   rerender({ task: "2" });
   expect(result.current.forbidden).toBe(false);
+});
+
+it("403은 그 요청을 보낸 task 에 붙는다 — 늦게 온 이전 task 의 403이 지금 task 를 막지 않는다(#851 리뷰)", async () => {
+  const { result, rerender } = renderHook(({ task }) => useCoverageForbidden(task), {
+    initialProps: { task: "A" as string | null },
+  });
+  let rejectA: (e: unknown) => void = () => undefined;
+  const pendingA = result.current.track(
+    "A",
+    new Promise<never>((_, reject) => {
+      rejectA = reject;
+    }),
+  );
+  rerender({ task: "B" }); // A 응답이 오기 전에 B로 바뀜
+  await act(async () => {
+    rejectA(new ApiError(403, "x"));
+    await pendingA.catch(() => undefined);
+  });
+  expect(result.current.forbidden).toBe(false); // B는 막히지 않는다
+  rerender({ task: "A" });
+  expect(result.current.forbidden).toBe(true); // A에는 붙어 있다
+  // 오류는 그대로 다시 던져 호출부(usePoll)가 실패로 본다
+  await expect(result.current.track("B", Promise.reject(new ApiError(500, "y")))).rejects.toThrow();
 });
 
 it("서버 계약(e3contract)의 확정 단계 사유 코드는 모두 화면 문구가 있다(#845 합성 확인: e2_execution_unavailable이 '서버 사유 있음'으로만 보였음)", () => {

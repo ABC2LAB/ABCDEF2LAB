@@ -1062,6 +1062,24 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(screen.getByRole("button", { name: "진행 요약" })).toBeInTheDocument();
   });
 
+  it("점검 진행: task A coverage 403 뒤 같은 화면에서 task B로 바뀌면 B coverage를 부른다(#851 리뷰)", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    const covB = { enabled: true, scopeRows: 1, denominator: 10, tested: 4, pct: 0.4, byType: [] };
+    a.fetchCoverage.mockImplementation(async (id) => {
+      if (id === "42") throw new ApiError(403, "승인된 작업의 공개 진단 API만 사용할 수 있습니다");
+      return covB;
+    });
+    mount("live");
+    const insp = await screen.findByRole("complementary", { name: "진행 요약" });
+    await waitFor(() => expect(a.fetchCoverage).toHaveBeenCalledWith("42"));
+    expect(within(insp).queryByText("커버리지")).toBeNull(); // 403이면 칸을 두지 않는다
+    // 같은 화면(같은 컴포넌트)에서 task 가 B로 바뀐다 — A의 403이 B에 붙으면 B를 한 번도 부르지 않는다
+    u.readURLStatus.mockResolvedValue({ ...running, task_id: "43" });
+    act(() => useUrl.setState({ job: { ...running, task_id: "43" } }));
+    await waitFor(() => expect(a.fetchCoverage).toHaveBeenCalledWith("43"));
+    await waitFor(() => expect(within(insp).getByText("40%")).toBeInTheDocument());
+  });
   it("점검 진행: 커버리지가 꺼졌으면 오른쪽에 커버리지 칸을 두지 않는다", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(running);
