@@ -1030,6 +1030,14 @@ func (c *Controller) FinishDeepWork(ctx context.Context) error {
 	c.record.Snapshot.DeepClosed++
 	return c.saveLocked(ctx, false, "deep_worker_finished", "", "", 0)
 }
+
+// NoDeepRuns는 진단 Worker가 한 번도 시작하지 않았고 흐름이 깨지지 않았는지 본다. 계획이 정상으로 끝났는데 의도가
+// 하나도 없던 실행은 DeepReady가 될 수 없으므로, 마감 판정이 그 경우를 실패와 구분하는 데 쓴다.
+func (c *Controller) NoDeepRuns() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return !c.poisoned && c.record.Snapshot.Failure == "" && c.record.Snapshot.Stage != "failed" && c.record.Snapshot.DeepRuns == 0
+}
 func (c *Controller) DeepReady() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
