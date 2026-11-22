@@ -276,12 +276,23 @@ func TestOpenRouterCooldownSlowProbeSucceedsPastTotal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 시험 호출이 진행 중이고 총 시간이 지난 때에 다른 호출이 대기에 들어온다. 경계 검사가 여기서 잠그면 안 된다.
+	waited := make(chan error, 1)
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		other, waitErr := p.AwaitCooldown(context.Background())
+		other()
+		waited <- waitErr
+	}()
 	resp, err := client.Do(openRouterRequest())
 	release()
 	if err != nil {
 		t.Fatal(err)
 	}
 	_ = resp.Body.Close()
+	if waitErr := <-waited; waitErr != nil {
+		t.Fatal(waitErr)
+	}
 	if snap := p.Snapshot(); snap.Blocked || !p.CooldownUntil().IsZero() {
 		t.Fatalf("성공한 시험 호출 뒤 잠김: %+v", snap)
 	}
