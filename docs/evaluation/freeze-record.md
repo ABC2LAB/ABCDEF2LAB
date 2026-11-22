@@ -25,7 +25,7 @@
 | 가격 상한(입력/출력, USD per 1M) | 규칙: 세션 시작 직전 재조회 단가 × 1.5(올림), 세션 안 고정(`--resume`도 시작 때 값). 이어 돌릴 때의 시작 조건: 상한 ≥ 지금 단가 × 1.2(`provider_price_headroom`, 새 세션은 × 1.5라 늘 통과). 고정 숫자가 아니다. 예: 2026-11-22 단가 0.19 / 1.70 → `285000` / `2550000` | 실행 절차 §4, `official_session.py --provider-probe` | 회차마다 실제 값은 세션 기록 `price_caps`·`o_manifest_caps` 위치 `<채움>` |
 | 모델 호출 하나의 시간 상한 | 170초 (`timeout_seconds`) | 실행 절차 §4 | — |
 | 연속 일시 오류 상한 | 8 (`max_consecutive_transient_errors`) | 실행 절차 §4 | — |
-| 연속 상한 뒤 동작 | 60초 쉬고 시험 호출 1번, 처음 쉰 때부터 5분 넘으면 잠금 | `llmpolicy/openrouter_cooldown.go` | 그 변경이 들어간 커밋 `<채움>` |
+| 연속 상한 뒤 동작 | 60초 쉬고 시험 호출 1번, 처음 쉰 때부터 5분 넘으면 잠금 | `llmpolicy/openrouter_cooldown.go` | #858, dev 머지 커밋 `dd3385a2`(2026-11-22 16:07Z) |
 | 호출당 입력·출력 토큰 상한, 요청 수·비용 상한 | 실행 절차 §4 예시 값 | 실행 절차 §4 | 실제 manifest의 값 `<채움>` |
 
 ## 3. 엔진·회차 상한
@@ -34,7 +34,7 @@
 |---|---|---|---|
 | 회차 요청·시간 예산 | 고정 초안 §10의 값 | 고정 초안 §10, 실행 절차 §2 | 러너 설정의 값 `<채움>` |
 | 먼저 걸리길 의도한 상한 | 고정 초안 §1 | 고정 초안 §1 | — |
-| Planner 계획 한 번의 시간 상한 | 170초 | `agent/e2_http.go` | 그 변경이 들어간 커밋 `<채움>` |
+| Planner 계획 한 번의 시간 상한 | 170초 | `agent/e2_http.go` | #858, dev 머지 커밋 `dd3385a2` |
 | 준비 단계 전체 상한 | 2분 | `server/first_diagnosis_supervisor.go` | — |
 | Planner heartbeat | 600초 (원본 값) | `server/engine.go` | — |
 
@@ -74,11 +74,11 @@
 
 | 항목 | 값 |
 |---|---|
-| O 코드 커밋(dev) | `<채움>` |
+| O 코드 커밋(dev) | `dd3385a24c0eac762566bd98b3d74ba8c3ffa4ec`(tree `12a097c0f5ac9c5088e3944b37a38210c6792093`). 파일럿은 #858 머지 직전에 시작해 로컬 통합본 `9208d7ab`(dev `ebb4b428` + #858 head `701f9945`)으로 돌았고, 통합본의 tree가 머지된 dev의 tree와 같다 |
 | B 코드 커밋과 패치 | 실행 절차 §4의 값, 실제 `<채움>` |
 | 제품 이미지 digest (product / explore-browser / fixture) | `<채움>` |
 | 평가 계측기 이미지 digest | `<채움>` |
 | 대상 이미지 digest | `<채움>` |
 | 러너 코드 커밋 | `<채움>` |
 | 프로파일 지문 | `<채움>` |
-| 파일럿 회차 ID(B·O) | `<채움>` |
+| 파일럿 회차 ID(B·O) | B `baseline-20261122t160622z-80101419` complete, O `ours-20261122t161713z-88e7f6a7` complete(세션 complete, 시도 B1·O1, 2026-11-22 16:06Z 시작) |
