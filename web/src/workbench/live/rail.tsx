@@ -5,7 +5,7 @@
 
 import { type ReactNode, useEffect, useState } from "react";
 
-import { activeURLRun } from "@/lib/diagnosis/diagnosis-runs";
+import { activeURLRun, endedURLRun } from "@/lib/diagnosis/diagnosis-runs";
 import { urlPhaseLabels } from "@/lib/diagnosis/diagnosis-url";
 import { readRequestApprovalState } from "@/lib/diagnosis/request-approvals";
 
@@ -150,13 +150,31 @@ export function LiveRailTasks() {
       </button>
     );
   }
+  // 끝난 점검도 같다: 이어 보는 점검이 없으면 서버 끝난 점검 수를 세고 끝난 점검 목록으로 안내한다(2026-11-22 화면 수정 확인
+  // F14b: 브라우저를 다시 띄운 뒤 서버에 끝난 점검이 있어도 "끝난 점검 없음"이었다. 목록 화면 판정과 같은 endedURLRun)
+  const serverEnded = useUrlRuns((st) => (st.page?.runs ?? []).filter(endedURLRun).length);
+  let doneCount = 0;
+  let doneBody: ReactNode = <div className={s["lv-rempty"]}>끝난 점검 없음</div>;
+  if (done) {
+    doneCount = 1;
+    doneBody = row;
+  } else if (!handle && serverEnded > 0) {
+    doneCount = serverEnded;
+    doneBody = (
+      <button className={s.rs} type="button" onClick={() => goTo("finished")}>
+        <span className={s.mk} aria-hidden="true" />
+        <span className={s.host}>{`이어 보지 않는 끝난 점검 ${serverEnded}건`}</span>
+        <span className={s.rsub}>끝난 점검 목록에서 열기</span>
+      </button>
+    );
+  }
   return (
     <>
       <RailSection id="run" title="진행 중" count={runCount}>
         {runBody}
       </RailSection>
-      <RailSection id="done" title="끝난 점검" count={done ? 1 : 0}>
-        {done ? row : <div className={s["lv-rempty"]}>끝난 점검 없음</div>}
+      <RailSection id="done" title="끝난 점검" count={doneCount}>
+        {doneBody}
       </RailSection>
     </>
   );
