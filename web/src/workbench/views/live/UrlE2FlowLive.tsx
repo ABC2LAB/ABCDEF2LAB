@@ -1,16 +1,19 @@
 "use client";
 
 import { useEffect, useState } from "react";
+
+import { ApiError } from "@/lib/diagnosis/api";
 import {
   COUNT_LABEL,
-  decisionClass,
   type DecisionClass,
+  decisionClass,
   type E2Flow,
   getE2Flow,
   mergeE2Flow,
   REASON_LABEL,
   STAGE_LABEL,
 } from "@/lib/diagnosis/e2flow";
+
 import { useUrl } from "../../live/urlDiagnosis";
 import { useShell } from "../../shell";
 import s from "../../workbench.module.css";
@@ -29,16 +32,23 @@ const COLORS: Record<DecisionClass, string> = {
   unknown: "var(--und)",
 };
 const DECISIONS = { allowed: "허용", denied: "거부", unsupported: "미지원", unknown: "불명" };
+/** 첫 진단 의도 전에는 실행 저널이 없어 서버가 404 "전송 통제 기록이 아직 없습니다"를 준다 — 실패가 아니라 대기 상태다. */
+const PRE_DIAGNOSIS_RETRY_MS = 10000;
+const FLOW_RETRY_MS = 2000;
 export function UrlE2FlowLive() {
-  const { goTo } = useShell();
+  const { goTo, route } = useShell();
   const task = useUrl((st) => st.job?.task_id ?? null);
-  const [state, setState] = useState<{ task: string | null; flow: E2Flow | null; failed: boolean }>({
+  // 작업대는 모든 화면을 시작 때 숨긴 채 붙인다. 이 화면이 보일 때만 읽는다(1차 리허설 F5: 안 보이는데도 2초마다 불러
+  // 첫 진단 의도 전 404가 수백 건 쌓였다)
+  const visible = route === "e2flow";
+  const [state, setState] = useState<{ task: string | null; flow: E2Flow | null; failed: boolean; waiting: boolean }>({
     task: null,
     flow: null,
     failed: false,
+    waiting: false,
   });
   useEffect(() => {
-    if (!task) return;
+    if (!task || !visible) return;
     let current = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let flow: E2Flow | null = null;
@@ -50,18 +60,19 @@ export function UrlE2FlowLive() {
         if (!current) return;
         if (next.more && next.last_index <= (after ?? 0)) throw new Error("invalid_e2_cursor");
         flow = mergeE2Flow(flow, next);
-        setState({ task, flow, failed: false });
+        setState({ task, flow, failed: false, waiting: false });
         // invalid 저널에서는 사건·커서를 지우고 첫 페이지부터 다시 확인한다.
         if (next.more) {
           void poll();
         } else {
-          timer = setTimeout(() => void poll(), 2000);
+          timer = setTimeout(() => void poll(), FLOW_RETRY_MS);
         }
-      } catch {
+      } catch (error) {
         if (current) {
           flow = null;
-          setState({ task, flow: null, failed: true });
-          timer = setTimeout(() => void poll(), 2000);
+          const waiting = error instanceof ApiError && error.status === 404;
+          setState({ task, flow: null, failed: !waiting, waiting });
+          timer = setTimeout(() => void poll(), waiting ? PRE_DIAGNOSIS_RETRY_MS : FLOW_RETRY_MS);
         }
       }
     };
@@ -71,9 +82,10 @@ export function UrlE2FlowLive() {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [task]);
+  }, [task, visible]);
   const flow = state.task === task ? state.flow : null;
   const failed = state.task === task && state.failed;
+  const waiting = state.task === task && state.waiting;
   return (
     <>
       <UrlHead
@@ -91,7 +103,12 @@ export function UrlE2FlowLive() {
             명령 원문·URL query·헤더·본문은 표시하지 않습니다. 실제 호출 참조·시도 ID·가린 경로·관측값만 보입니다.
           </p>
           {!task ? <p className={s.empty}>실제 진단 작업을 선택하세요.</p> : null}
-          {task && !flow && !failed ? <p className={s.empty}>불러오는 중…</p> : null}
+          {task && !flow && !failed && !waiting ? <p className={s.empty}>불러오는 중…</p> : null}
+          {waiting ? (
+            <p className={s.empty} role="status">
+              진단 요청 전 · 아직 전송 통제 기록이 없습니다. 첫 진단 요청이 나가면 기록이 생깁니다.
+            </p>
+          ) : null}
           {failed ? (
             <p className={s.empty} role="alert">
               전송 통제 흐름을 확인하지 못했습니다. 이전 사건은 표시하지 않습니다.
