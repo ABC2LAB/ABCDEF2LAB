@@ -508,3 +508,223 @@ class TestManifest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── 시작 전 운영 점검(2026-11-22 사용자): 포트·메모리 여유·시작 시간대·제공자 429 ──
+def proc_tcp(*ports: int, address: str = "0100007F") -> str:
+    """/proc/net/tcp 모양: LISTEN(0A) 행. 주소는 리틀엔디언 16진수(127.0.0.1 = 0100007F)."""
+    head = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+    rows = "".join(f"   {i}: {address}:{p:04X} 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 1 1\n"
+                   for i, p in enumerate(ports))
+    return head + rows
+
+
+SPLIT_CONFIG = {"ports": {"engine_api_host": 18787, "obs_host": 39291}, "split": {"product_port": 28787, "dns_control_port": 29083}}
+
+
+class TestStartChecks(unittest.TestCase):
+    def test_busy_ports_names_the_config_port_another_process_listens_on(self):
+        # 2026-11-22: 재부팅 뒤 VS Code 원격 서버가 127.0.0.1:39291(ports.obs_host)을 잡아 compose_up_failed
+        read = lambda path: proc_tcp(39291, 5000) if path == "/proc/net/tcp" else None  # noqa: E731
+        self.assertEqual(o.busy_ports(SPLIT_CONFIG, read), ["ports.obs_host=39291"])
+        free = lambda path: proc_tcp(5000) if path == "/proc/net/tcp" else None  # noqa: E731
+        self.assertEqual(o.busy_ports(SPLIT_CONFIG, free), [])
+        self.assertIsNone(o.busy_ports(SPLIT_CONFIG, lambda path: None))  # 못 읽으면 모름(None) — 통과로 보지 않는다
+
+    def test_wait_until_retries_then_gives_up_at_the_deadline(self):
+        clock, waits, answers = [0.0], [], [(False, "heavy_ok: no"), (False, "heavy_ok: no"), (True, "heavy_ok: yes")]
+        ok = o.wait_until(lambda: answers.pop(0), wait=200, interval=60, on_wait=waits.append,
+                          sleep=lambda s: clock.__setitem__(0, clock[0] + s), clock=lambda: clock[0])
+        self.assertTrue(ok)
+        self.assertEqual(waits, ["heavy_ok: no", "heavy_ok: no"])
+        clock[0] = 0.0
+        never = o.wait_until(lambda: (False, "heavy_ok: no"), wait=100, interval=60, on_wait=lambda d: None,
+                             sleep=lambda s: clock.__setitem__(0, clock[0] + s), clock=lambda: clock[0])
+        self.assertFalse(never)
+
+    def test_run_check_uses_exit_code_and_last_line(self):
+        self.assertEqual(o.run_check(["sh", "-c", "echo a; echo heavy_ok: yes"]), (True, "heavy_ok: yes"))
+        self.assertEqual(o.run_check(["sh", "-c", "echo heavy_ok: no; exit 75"]), (False, "heavy_ok: no"))
+
+    def test_start_window_is_kst(self):
+        import datetime as dt
+        window = o.parse_window("14-18")
+        self.assertTrue(o.in_window(dt.datetime(2026, 11, 22, 5, 0, tzinfo=dt.timezone.utc), window))   # 14:00 KST
+        self.assertFalse(o.in_window(dt.datetime(2026, 11, 22, 9, 0, tzinfo=dt.timezone.utc), window))  # 18:00 KST
+        self.assertFalse(o.in_window(dt.datetime(2026, 11, 22, 4, 59, tzinfo=dt.timezone.utc), window))
+        for bad in ("18-14", "x-3", "14", "0-25"):
+            with self.assertRaises(ValueError):
+                o.parse_window(bad)
+
+    MANIFEST = {"model": "m/x", "provider_slug": "slug/fp8", "base_url": "https://gateway.example/api/v1",
+                "expected_provider_name": "Provider", "max_input_price_usd_micros_per_million": 200000,
+                "max_output_price_usd_micros_per_million": 800000}
+
+    def test_provider_probe_counts_429_and_routes_to_the_same_provider(self):
+        sent, replies = [], [(200, {"provider": "Provider"})] * 8 + [(429, {}), (500, {})]
+        def post(req):
+            sent.append(json.loads(req.data))
+            return replies[len(sent) - 1]
+        out = o.provider_probe(self.MANIFEST, "k", post=post)
+        self.assertEqual((out["ok"], out["rate_limited"], out["other"]), (8, 1, 1))
+        self.assertEqual(out["providers"], ["Provider"])
+        self.assertEqual(len(sent), 10)
+        body = sent[0]
+        self.assertEqual(body["model"], "m/x")
+        self.assertEqual(body["max_tokens"], 1)
+        self.assertEqual(body["provider"]["only"], ["slug/fp8"])
+        self.assertFalse(body["provider"]["allow_fallbacks"])
+
+    PRICE_OK = staticmethod(lambda m: {"found": True, "ok": True, "margin_ok": True, "input_usd_micros_per_million": 1,
+                                       "output_usd_micros_per_million": 1})
+
+    def test_endpoint_price_compares_the_same_tag_in_manifest_units(self):
+        # 2026-11-22 실제 표: PrimeIntellect 0.000000176/0.000001578 USD/토큰 → 176000/1578000 > 상한 150000/1500000
+        table = {"data": {"endpoints": [
+            {"provider_name": "Other", "tag": "other/fp8", "pricing": {"prompt": "0.00000005", "completion": "0.0000007"}},
+            {"provider_name": "Provider", "tag": "slug/fp8", "pricing": {"prompt": "0.000000176", "completion": "0.000001578"}}]}}
+        urls = []
+        get = lambda url: (urls.append(url), (200, table))[1]  # noqa: E731
+        low = dict(self.MANIFEST, max_input_price_usd_micros_per_million=150000, max_output_price_usd_micros_per_million=1500000)
+        out = o.endpoint_price(low, get)
+        self.assertEqual(urls, ["https://gateway.example/api/v1/models/m/x/endpoints"])
+        self.assertEqual((out["input_usd_micros_per_million"], out["output_usd_micros_per_million"]), (176000, 1578000))
+        self.assertFalse(out["ok"])
+        tight = dict(low, max_input_price_usd_micros_per_million=200000, max_output_price_usd_micros_per_million=1600000)
+        out = o.endpoint_price(tight, get)
+        self.assertTrue(out["ok"])
+        self.assertFalse(out["margin_ok"])  # 단가에 너무 가깝다(1.6 < 1.5 × 1.578)
+        roomy = dict(low, max_input_price_usd_micros_per_million=270000, max_output_price_usd_micros_per_million=2400000)
+        self.assertTrue(o.endpoint_price(roomy, get)["margin_ok"])
+        self.assertTrue(o.endpoint_price(tight, get, margin=1.0)["margin_ok"])
+        high = tight
+        self.assertFalse(o.endpoint_price(dict(high, provider_slug="missing/fp8"), get)["found"])
+
+    def test_start_checks_stop_when_price_is_above_cap_or_unknown_before_any_call(self):
+        import datetime as dt
+        afternoon = lambda: dt.datetime(2026, 11, 22, 6, 0, tzinfo=dt.timezone.utc)  # noqa: E731
+        calls = []
+        with tempfile.TemporaryDirectory() as d:
+            args = self._args(Path(d))
+            over = lambda m: {"found": True, "ok": False, "input_usd_micros_per_million": 176000,  # noqa: E731
+                              "output_usd_micros_per_million": 1578000}
+            self.assertEqual(o.session_start_checks(args, None, None, lambda e: None, now=afternoon, price=over,
+                                                    probe=lambda m, k: calls.append(1)), "provider_price_above_cap")
+            self.assertEqual(o.session_start_checks(args, None, None, lambda e: None, now=afternoon,
+                                                    price=lambda m: {"found": False, "ok": False},
+                                                    probe=lambda m, k: calls.append(1)), "provider_price_unknown")
+            thin = lambda m: {"found": True, "ok": True, "margin_ok": False, "input_usd_micros_per_million": 176000,  # noqa: E731
+                              "output_usd_micros_per_million": 1578000}
+            self.assertEqual(o.session_start_checks(args, None, None, lambda e: None, now=afternoon, price=thin,
+                                                    probe=lambda m, k: calls.append(1)), "provider_price_margin")
+        self.assertEqual(calls, [])  # 단가가 안 맞으면 유료 점검 호출도 보내지 않는다
+
+    def test_budget_is_checked_and_based_before_any_paid_probe_call(self):
+        """#848 동찬 P2: 유료 점검 호출 전에 비용 보호를 확인하고 세션 사용량 기준을 기록한다(점검 비용이 세션 상한에 든다)."""
+        import datetime as dt
+        afternoon = lambda: dt.datetime(2026, 11, 22, 6, 0, tzinfo=dt.timezone.utc)  # noqa: E731
+        order, reads = [], iter([{"usage": 1.00, "limit_remaining": 10.0}, {"usage": 1.02, "limit_remaining": 9.98}])
+        def read():
+            order.append("usage")
+            return next(reads)
+        logs = []
+        guard = o.UsageGuard(read, cap_usd=0.01, floor_usd=0.30, on_base=lambda base: logs.append({"event": "usage_base", "usage_usd": base}))
+        def probe(m, k):
+            order.append("probe")
+            return dict(calls=10, ok=10, rate_limited=0, other=0, statuses={"200": 10}, providers=["Provider"])
+        with tempfile.TemporaryDirectory() as d:
+            stop = o.session_start_checks(self._args(Path(d)), None, None, logs.append, now=afternoon, price=self.PRICE_OK,
+                                          probe=probe, budget=guard.check)
+        self.assertIsNone(stop)
+        self.assertEqual(order, ["usage", "probe"])  # 확인·기준이 먼저
+        self.assertEqual(guard.base, 1.00)  # 점검 호출 전 사용량이 세션 기준
+        self.assertEqual([l["event"] for l in logs], ["provider_price", "usage_base", "provider_probe"])
+        self.assertEqual(guard.check(), "usage_cap")  # 점검 비용(0.02)이 세션 상한(0.01)에 들어간다
+
+    def test_budget_is_rechecked_before_each_retry_batch(self):
+        """#848 동찬 P2(재시도): 첫 묶음에 429가 섞여 다시 점검할 때, 첫 묶음 비용으로 상한에 걸리면 다음 묶음은 0건."""
+        import datetime as dt
+        afternoon = lambda: dt.datetime(2026, 11, 22, 6, 0, tzinfo=dt.timezone.utc)  # noqa: E731
+        reads = iter([{"usage": 1.00, "limit_remaining": 10.0}, {"usage": 1.03, "limit_remaining": 9.97}])
+        guard = o.UsageGuard(lambda: next(reads), cap_usd=0.02, floor_usd=0.30)
+        calls, slept, logs = [], [], []
+        def probe(m, k):
+            calls.append(1)
+            return dict(calls=10, ok=9, rate_limited=1, other=0, statuses={"200": 9, "429": 1}, providers=["Provider"])
+        with tempfile.TemporaryDirectory() as d:
+            stop = o.session_start_checks(self._args(Path(d)), None, None, logs.append, now=afternoon, price=self.PRICE_OK,
+                                          probe=probe, sleep=slept.append, budget=guard.check)
+        self.assertEqual(stop, "usage_cap")
+        self.assertEqual(len(calls), 1)  # 둘째 묶음은 보내지 않는다
+        self.assertEqual([l["event"] for l in logs], ["provider_price", "provider_probe", "provider_probe_wait"])
+
+    def test_budget_passes_each_batch_until_probe_clears(self):
+        import datetime as dt
+        afternoon = lambda: dt.datetime(2026, 11, 22, 6, 0, tzinfo=dt.timezone.utc)  # noqa: E731
+        checks, results = [], iter([dict(rate_limited=1), dict(rate_limited=0)])
+        def probe(m, k):
+            r = next(results)
+            return dict(calls=10, ok=10 - r["rate_limited"], rate_limited=r["rate_limited"], other=0, statuses={}, providers=["Provider"])
+        with tempfile.TemporaryDirectory() as d:
+            stop = o.session_start_checks(self._args(Path(d)), None, None, lambda e: None, now=afternoon, price=self.PRICE_OK,
+                                          probe=probe, sleep=lambda s: None, budget=lambda: checks.append(1))
+        self.assertIsNone(stop)
+        self.assertEqual(len(checks), 2)  # 묶음마다 한 번씩
+
+    def test_budget_stop_sends_zero_probe_calls(self):
+        import datetime as dt
+        afternoon = lambda: dt.datetime(2026, 11, 22, 6, 0, tzinfo=dt.timezone.utc)  # noqa: E731
+        calls = []
+        with tempfile.TemporaryDirectory() as d:
+            args = self._args(Path(d))
+            for reason in ("remaining_floor", "usage_cap", "usage_read_failed"):
+                self.assertEqual(o.session_start_checks(args, None, None, lambda e: None, now=afternoon, price=self.PRICE_OK,
+                                                        probe=lambda m, k: calls.append(1), budget=lambda r=reason: r), reason)
+        self.assertEqual(calls, [])
+
+    def _args(self, tmp: Path, **over):
+        manifest = tmp / "manifest.json"
+        manifest.write_text(json.dumps(self.MANIFEST), encoding="utf-8")
+        key = tmp / "key"
+        key.write_text("synthetic-key\n", encoding="utf-8")
+        base = dict(provider_probe=True, o_manifest_template=manifest, key_file=key, probe_tries=3, probe_wait=1800)
+        base.update(over)
+        return mock.Mock(**base)
+
+    def test_start_checks_delay_on_429_then_start_and_log_each_probe(self):
+        import datetime as dt
+        with tempfile.TemporaryDirectory() as d:
+            logs, slept = [], []
+            results = [dict(calls=10, ok=9, rate_limited=1, other=0, statuses={"200": 9, "429": 1}, providers=["Provider"]),
+                       dict(calls=10, ok=10, rate_limited=0, other=0, statuses={"200": 10}, providers=["Provider"])]
+            stop = o.session_start_checks(self._args(Path(d)), (14, 18), None, logs.append,
+                                          now=lambda: dt.datetime(2026, 11, 22, 6, 0, tzinfo=dt.timezone.utc),
+                                          probe=lambda m, k: results.pop(0), sleep=slept.append, price=self.PRICE_OK)
+        self.assertIsNone(stop)
+        self.assertEqual(slept, [1800])
+        events = [l["event"] for l in logs]
+        self.assertEqual(events, ["start_window", "provider_price", "provider_probe", "provider_probe_wait", "start_window",
+                                  "provider_probe"])
+        self.assertNotIn("synthetic-key", json.dumps(logs))
+
+    def test_start_checks_stop_outside_window_on_errors_and_after_tries(self):
+        import datetime as dt
+        evening = lambda: dt.datetime(2026, 11, 22, 11, 0, tzinfo=dt.timezone.utc)  # noqa: E731  20:00 KST
+        afternoon = lambda: dt.datetime(2026, 11, 22, 6, 0, tzinfo=dt.timezone.utc)  # noqa: E731
+        limited = dict(calls=10, ok=0, rate_limited=10, other=0, statuses={"429": 10}, providers=[])
+        broken = dict(calls=10, ok=0, rate_limited=0, other=10, statuses={"401": 10}, providers=[])
+        wrong = dict(calls=10, ok=10, rate_limited=0, other=0, statuses={"200": 10}, providers=["Other"])
+        with tempfile.TemporaryDirectory() as d:
+            args = self._args(Path(d))
+            self.assertEqual(o.session_start_checks(args, (14, 18), None, lambda e: None, now=evening), "outside_start_window")
+            self.assertEqual(o.session_start_checks(args, None, None, lambda e: None, now=afternoon,
+                                                    probe=lambda m, k: broken, sleep=lambda s: None, price=self.PRICE_OK),
+                             "provider_probe_failed")
+            self.assertEqual(o.session_start_checks(args, None, None, lambda e: None, now=afternoon,
+                                                    probe=lambda m, k: wrong, sleep=lambda s: None, price=self.PRICE_OK),
+                             "provider_probe_failed")
+            self.assertEqual(o.session_start_checks(args, None, None, lambda e: None, now=afternoon,
+                                                    probe=lambda m, k: limited, sleep=lambda s: None, price=self.PRICE_OK),
+                             "provider_rate_limited")
+            no_probe = self._args(Path(d), provider_probe=False)
+            self.assertIsNone(o.session_start_checks(no_probe, (14, 18), None, lambda e: None, now=afternoon))
