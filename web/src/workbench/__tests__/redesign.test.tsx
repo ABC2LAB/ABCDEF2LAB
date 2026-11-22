@@ -1285,18 +1285,19 @@ describe("대시보드", () => {
         },
       }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "승인 요청 보기" }));
+    // 다시 연 점검도 고르기 전 상세가 승인 대기 요청이다(예전엔 점검 정보로 돌아가 '승인 요청 보기'를 눌러야 했다)
     const recoveredDetail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
-    // 다시 연(복구) 점검 안내 문장은 두지 않는다(사용자 11/17). 승인 버튼은 그대로 잠근다
+    // 다시 연(복구) 점검 안내 문장은 두지 않는다(사용자 11/17). 진행 목록에서 다시 연 점검도 승인할 수 있다
+    // (사용자 2026-11-22, 1차 리허설 F16 — 서버가 실행 결속·주체를 다시 본다)
     expect(within(recoveredDetail).queryByText(/다시 연 점검/)).toBeNull();
-    expect(within(recoveredDetail).getByRole("button", { name: "이 요청 승인" })).toBeDisabled();
+    expect(within(recoveredDetail).getByRole("button", { name: "이 요청 승인" })).toBeEnabled();
     act(() => useUrl.setState({ handle }));
     const createdDetail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
     expect(within(createdDetail).getByRole("button", { name: "이 요청 승인" })).toBeEnabled();
   });
 });
 
-it("목록에서 복구한 회차의 범위 선택 실행 버튼은 조회 전용으로 잠근다", () => {
+it("목록에서 다시 연 회차도 범위 선택 실행 버튼을 쓸 수 있다(사용자 2026-11-22, F16)", () => {
   const recovered = {
     kind: "recovered" as const,
     ownerContext: catalog.ownerContext,
@@ -1319,8 +1320,9 @@ it("목록에서 복구한 회차의 범위 선택 실행 버튼은 조회 전�
       <WorkflowScopeLive />
     </ShellContext.Provider>,
   );
+  // 고른 경로가 있으면(시험 픽스처의 기본 선택) 켜진다. 다시 연 점검이라는 이유로 잠그지 않는다
   for (const button of screen.getAllByRole("button", { name: /선택한 범위로 점검 시작/ })) {
-    expect(button).toBeDisabled();
+    expect(button).toBeEnabled();
   }
   // '목록에서 다시 연 점검은 조회 전용' 문장은 어느 화면에도 두지 않는다 (사용자 11/17)
   expect(document.body).not.toHaveTextContent(/다시 연 점검/);
@@ -1588,10 +1590,11 @@ describe("점검 진행", () => {
         },
       }),
     );
-    // 다시 연(복구) 점검 안내 문장은 두지 않고(사용자 11/17) 승인 버튼만 잠근다
+    // 다시 연(복구) 점검 안내 문장은 두지 않는다(사용자 11/17). 진행 목록에서 다시 연 점검도 승인할 수 있다
+    // (사용자 2026-11-22, 1차 리허설 F16: 새로고침 한 번에 승인을 못 하면 승인 모드 통제가 무너진다)
     expect(screen.queryByText(/다시 연 점검/)).toBeNull();
     const approvals = screen.getAllByRole("button", { name: "승인하고 보내기" });
     expect(approvals).toHaveLength(2);
-    for (const button of approvals) expect(button).toBeDisabled();
+    for (const button of approvals) expect(button).toBeEnabled();
   });
 });

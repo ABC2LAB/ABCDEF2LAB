@@ -4,7 +4,7 @@ import { ApiError, apiFetch } from "@/lib/diagnosis/api";
 import { parseURLJob, urlDiagnosisInput } from "@/lib/diagnosis/diagnosis-url";
 import { catalog, handle, running, scope } from "@/lib/diagnosis/diagnosis-url-fixtures";
 
-import { refreshWorkflow, resetUrl, runUrlAction, runWorkflowAction, useUrl } from "../live/urlDiagnosis";
+import { refreshWorkflow, resetUrl, runUrlAction, runWorkflowAction, urlGates, useUrl } from "../live/urlDiagnosis";
 import { FLOW_VERSION, parseWorkflow, type WorkflowSnapshot } from "../live/workflow";
 
 vi.mock("@/lib/diagnosis/api", async (original) => ({
@@ -230,7 +230,9 @@ it.each([
   expect(apiFetch).not.toHaveBeenCalled();
 });
 
-it("recovered binding cannot create a pause, resume, or selection command", async () => {
+it("recovered binding (reopened from the run list) can still send the scope selection", async () => {
+  // 사용자 2026-11-22(1차 리허설 F16): 브라우저를 다시 띄워 진행 목록에서 연 점검도 범위 선택을 보낼 수 있어야 한다.
+  // 서버가 진단 흐름 결속·주체를 다시 본다. 생성·시작 키는 여전히 물려받지 않는다(urlGates canStart).
   useUrl.setState({
     handle: {
       kind: "recovered",
@@ -246,7 +248,19 @@ it("recovered binding cannot create a pause, resume, or selection command", asyn
     flow: snapshot,
     flowVerified: true,
   });
-  for (const operation of ["pause", "resume", "selection"] as const)
-    expect(await runWorkflowAction(operation, ["endpoint-owned"])).toBe(false);
-  expect(apiFetch).not.toHaveBeenCalled();
+  vi.mocked(apiFetch).mockImplementation(async (_path, init) => {
+    const key = (init?.headers as Record<string, string>)["Idempotency-Key"];
+    return {
+      workflow: {
+        ...snapshot,
+        revision: 13,
+        stage: "diagnosing",
+        commands: [{ key, operation: "selection", revision: 13 }],
+      },
+    };
+  });
+  expect(await runWorkflowAction("selection", ["endpoint-owned"])).toBe(true);
+  expect(apiFetch).toHaveBeenCalledTimes(1);
+  expect(useUrl.getState().flow?.stage).toBe("diagnosing");
+  expect(urlGates(useUrl.getState()).canStart).toBe(false);
 });

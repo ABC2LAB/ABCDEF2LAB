@@ -82,9 +82,11 @@ export function useRequestApprovals(taskId: string, active: boolean): Approvals 
   const gate = useCallback(
     (row: RequestApproval) => {
       const st = useUrl.getState();
+      // 진행 목록에서 다시 연 점검(조회 결속)도 승인·거부할 수 있다(사용자 2026-11-22, 1차 리허설 F16). 결정 권한은
+      // 서버가 실행 결속·주체로 다시 확인한다(#835). 새로고침·브라우저 재시작 뒤 운영자가 승인을 못 하면 승인 모드
+      // 통제가 무너진다. 생성·시작 키는 여전히 물려받지 않는다(urlGates canStart).
       return (
         st.verified &&
-        st.handle?.kind !== "recovered" &&
         !st.uncertain &&
         st.job?.task_id === taskId &&
         ["preparing", "running"].includes(st.job.state) &&
