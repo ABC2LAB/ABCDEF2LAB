@@ -44,7 +44,8 @@ class TestFaultStallRecord(unittest.TestCase):
         self.assertFalse(record["judged"])
         self.assertEqual(record["faults"], {"upstream_cut": 1, "rate_limited": 0})
         self.assertEqual(record["events"], [{"kind": "upstream_cut", "at_seconds": 20.0, "silence_seconds": 359.0,
-                                             "censored": True, "inflight_at_fault": 0, "engine_terminal_within": False,
+                                             "censored": True, "inflight_at_fault": 0, "inflight_model_calls_at_fault": 0,
+                                             "engine_terminal_within": False,
                                              "idle_nanoseconds": 359_000_000_000, "idle_seconds": 359.0, "idle_censored": True,
                                              "engine_terminal_before_idle_end": False}])
         self.assertEqual((record["max_silence_after_fault_seconds"], record["max_silence_after_fault_censored"]), (359.0, True))
@@ -83,7 +84,17 @@ class TestFaultStallRecord(unittest.TestCase):
         record = fault_stall_record(rows, target, START, stamp(30.0), None)
         event = record["events"][0]
         self.assertEqual((event["inflight_at_fault"], event["silence_seconds"], event["censored"]), (1, 24.5, True))
+        self.assertEqual(event["inflight_model_calls_at_fault"], 0)  # 걸려 있던 것은 대상 요청이지 모델 호출이 아니다
         self.assertEqual(record["max_idle_gap_seconds"], 5.0)  # 진행 중인 요청이 있던 구간은 무활동이 아니다
+
+    def test_inflight_model_call_at_fault_is_counted_separately(self):
+        # 2026-11-22 사용자: B의 긴 스트리밍 호출(조각은 활동이 아님)이 진행 중일 때 다른 호출이 429로 끝나면, 그 호출이 끝날
+        # 때까지가 무활동이다. 장애 시점에 진행 중이던 모델 호출 수를 따로 남겨 공정성 기록에서 가른다.
+        rows = [llm(1, 1.0, 200.0), llm(2, 2.0, 2.5, status=429)]
+        record = fault_stall_record(rows, [meter(1, 1.5, 1.6)], START, stamp(300.0), None)
+        event = record["events"][0]
+        self.assertEqual((event["inflight_at_fault"], event["inflight_model_calls_at_fault"]), (1, 1))
+        self.assertEqual(event["idle_seconds"], 197.5)  # 긴 호출이 끝날 때(200초)까지가 무활동
 
     def test_activity_exactly_at_fault_time_is_not_following(self):
         # 다음 활동은 장애 시각 "뒤"에 시작한 것만이다(같은 시각 시작은 장애와 겹친 시도).

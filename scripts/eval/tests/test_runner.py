@@ -3413,7 +3413,7 @@ class TestFaultStallRecord(unittest.TestCase):
         result, _, _, evidence = run(mutate_gateway=lambda g: setattr(g, "llm_rows", runner.EvidenceError("llm_row_invalid")))
         self.assertEqual(result["status"], COMPLETE)
         self.assertEqual(evidence.files["fault-stall.json"],
-                         {"format": "abc2lab-eval-runner-fault-stall-v2", "judged": False, "error": "llm_row_invalid"})
+                         {"format": "abc2lab-eval-runner-fault-stall-v3", "judged": False, "error": "llm_row_invalid"})
         result, _, _, evidence = run(mutate_gateway=lambda g: setattr(g, "llm_rows", RuntimeError("/secret/path")))
         self.assertEqual(evidence.files["fault-stall.json"]["error"], "fault_stall_failed")
         self.assertNotIn("secret", json.dumps(evidence.files["fault-stall.json"]))
