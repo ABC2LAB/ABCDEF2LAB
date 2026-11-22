@@ -392,7 +392,15 @@ func (r *run) call(ctx context.Context, want Observation, send func() (Observati
 		return Observation{}, false
 	}
 	r.seen[key] = true
-	sealed, err := r.deps.Journal.Sealed(ctx, r.in.Binding, obs.Ref)
+	// 대상에 보내지 않은 관찰은 저널 대조도 대상 요청 없는 로컬 검증이다. 승인 만료처럼 확정 단계 시간 몫이 끝나는 순간에 온
+	// 거부를 끝난 문맥으로 대조하면 검증을 못 마쳐 보내지 않은 생성이 쓰기 unknown(리셋 확인 대상)으로 남는다(리허설 F15).
+	// 그래서 취소 없는 문맥에 요청 시간 상한을 걸어 끝까지 대조한다. 보낸 관찰은 지금처럼 호출자 문맥이다(중지·시간 몫 끝 처리).
+	sealCtx, cancelSeal := ctx, context.CancelFunc(func() {})
+	if !obs.Sent {
+		sealCtx, cancelSeal = context.WithTimeout(context.WithoutCancel(ctx), r.in.RequestTimeout)
+	}
+	sealed, err := r.deps.Journal.Sealed(sealCtx, r.in.Binding, obs.Ref)
+	cancelSeal()
 	if err != nil {
 		// 실행 문맥이 끝나(운영자 중지·확정 단계 시간 몫 끝) 조회를 마치지 못한 것은 무결성 실패가 아니라 중지다(계약 §12, v3
 		// 계약 §5). 검증하지 못한 관찰은 쓰지 않는다. 문맥이 살아 있는데 취소 오류가 오면 아래처럼 무결성 실패다.

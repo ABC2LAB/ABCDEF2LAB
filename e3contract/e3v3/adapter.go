@@ -118,7 +118,15 @@ func (a *Adapter) observe(ctx context.Context, binding e3contract.RunBinding, ev
 	if err != nil {
 		return e3contract.Observation{}, err
 	}
-	want, err := a.e2.AccountBindingRef(ctx, binding, ev.AccountLabel)
+	// 대상에 보내지 않은 관찰(연결 전 거부: 승인 거절·만료, 정책 거부, 확정 몫 소진)의 결속 참조 확인은 대상 요청 없는 로컬
+	// 조회다. 사용자 승인 모드의 승인 만료는 승인 기한이 확정 단계 시간 몫 끝에 맞춰져 문맥이 끝나는 바로 그 순간에 온다.
+	// 끝난 문맥으로 조회하면 보내지 않은 생성이 결과 불명·쓰기 unknown으로 남는다(리허설 F15, 2026-11-21). 그래서 취소
+	// 없는 문맥으로 조회한다. 보낸 관찰은 지금처럼 호출자 문맥이다.
+	lookupCtx := ctx
+	if !o.Sent {
+		lookupCtx = context.WithoutCancel(ctx)
+	}
+	want, err := a.e2.AccountBindingRef(lookupCtx, binding, ev.AccountLabel)
 	if err != nil {
 		return e3contract.Observation{}, err
 	}
