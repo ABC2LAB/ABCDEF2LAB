@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"sync"
 	"time"
 
@@ -33,8 +34,10 @@ type firstDiagnosisTargetDrain struct {
 const firstDiagnosisFramingTokens = 4096
 
 type FirstDiagnosisModelBudget struct {
-	mu            sync.Mutex
-	callGate      chan struct{}
+	mu       sync.Mutex
+	callGate chan struct{}
+	// cooldown은 시험이 외부 정책의 쉬는 상태를 바꿔 끼울 때만 채운다.
+	cooldown      firstDiagnosisProviderCooldown
 	limits        diagnosisprep.Budget
 	inputPerCall  int64
 	outputPerCall int64
@@ -239,6 +242,37 @@ func (b *FirstDiagnosisModelBudget) ConfigureConcurrency(n int) error {
 	}
 	b.callGate = make(chan struct{}, n)
 	return nil
+}
+
+// firstDiagnosisProviderCooldown은 쉬는 상태를 읽고 기다리는 데 쓰는 외부 정책의 두 함수다(시험이 바꿔 끼운다).
+type firstDiagnosisProviderCooldown interface {
+	CooldownUntil() time.Time
+	AwaitCooldown(context.Context) (func(), error)
+}
+
+// awaitProviderCooldown은 외부 제공자 정책이 연속 일시 오류로 쉬는 중이면 쉬는 시간이 끝날 때까지 기다린다
+// (llmpolicy/openrouter_cooldown.go). 돌려준 release는 호출이 끝나면 부른다. 기다리다 문맥이 끝나면 오류를 돌려주고,
+// 아직 쉬는 중이면 쉬는 시간이 끝나는 때에 wake를 한 번 부른다: 그 호출을 낸 Planner가 다음 알림·heartbeat(600초)까지
+// 쉬지 않게 한다. 로컬 모델 경로(external 없음)는 쉬지 않는다.
+func (b *FirstDiagnosisModelBudget) awaitProviderCooldown(ctx context.Context, wake func()) (func(), error) {
+	if b == nil || b.external == nil && b.cooldown == nil {
+		return func() {}, nil
+	}
+	var provider firstDiagnosisProviderCooldown = b.external
+	if b.cooldown != nil {
+		provider = b.cooldown
+	}
+	if until := provider.CooldownUntil(); !until.IsZero() {
+		log.Printf("[first-diagnosis] 모델 제공자 연속 일시 오류로 쉬는 중, 약 %d초 뒤 시험 호출", int(time.Until(until).Seconds())+1)
+	}
+	release, err := provider.AwaitCooldown(ctx)
+	if err != nil {
+		if until := provider.CooldownUntil(); !until.IsZero() && wake != nil {
+			time.AfterFunc(time.Until(until), wake)
+		}
+		return func() {}, err
+	}
+	return release, nil
 }
 
 func (b *FirstDiagnosisModelBudget) acquireCall(ctx context.Context) (func(), error) {
