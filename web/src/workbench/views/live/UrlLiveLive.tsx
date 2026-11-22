@@ -84,10 +84,6 @@ const SHORT: Readonly<Record<DiagnosticOutcome, string>> = {
 
 /** 판정 딱지 모양 (확정 = 기본, 검토 필요 = 의심 모양, 정상 = 초록, 그 밖 = 판단 불가 모양). */
 
-/**
- * '승인 필요로 보류' 칸 설명: 실제로 보류된 요청의 메서드로 쓴다(사용자 2026-11-22, 1차 리허설 F13 — 사용자 승인 모드에서
- * '승인 후 전송' 경로는 GET도 보류되는데 늘 "쓰기 메서드"라고 적었다).
- */
 
 /** coverage 403(이 task 에선 제공 안 함)을 task 마다 기억한다. 바뀐 task 는 다시 한 번 부른다. */
 export function useCoverageForbidden(taskId: string | null): { forbidden: boolean; observe: (error: unknown) => void } {
@@ -101,6 +97,10 @@ export function useCoverageForbidden(taskId: string | null): { forbidden: boolea
   };
 }
 
+/**
+ * '승인 필요로 보류' 칸 설명: 실제로 보류된 요청의 메서드로 쓴다(사용자 2026-11-22, 1차 리허설 F13 — 사용자 승인 모드에서
+ * '승인 후 전송' 경로는 GET도 보류되는데 늘 "쓰기 메서드"라고 적었다).
+ */
 export function heldReason(pending: readonly { method: string }[]): string {
   if (!pending.length) return "보내기 전 사람 확인";
   const writes = pending.filter((r) => !["GET", "HEAD"].includes(r.method)).length;
