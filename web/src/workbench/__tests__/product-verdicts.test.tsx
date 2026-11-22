@@ -429,7 +429,9 @@ describe("접근통제 지도 패널 연결", () => {
     });
     render(<AccessMapPanel active />);
     expect(await screen.findByRole("table", { name: "자원 종류 × 소유→교차 제품 판정" })).toBeInTheDocument();
-    expect(screen.getByRole("alert")).toHaveTextContent(/KG 미등록/);
+    // 409는 오류 경고가 아니라 안내로 보인다(1차 리허설 F7) — 뜻(KG 미등록)은 그대로
+    expect(screen.getByText(/KG 미등록/)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.queryByRole("table", { name: /격자/ })).toBeNull();
   });
 });

@@ -94,7 +94,9 @@ describe("보고서 '접근통제 지도' 탭 (AccessMapPanel)", () => {
   it("409 는 KG 미등록 · 실행 전 등의 뜻으로 보이고 빈 격자 · 예시로 대신하지 않는다", async () => {
     f.mockRejectedValue(new ApiError(409, "kg_unregistered"));
     render(<AccessMapPanel active />);
-    expect(await screen.findByRole("alert")).toHaveTextContent(/KG 미등록 · 실행 전 · 세대 무효/);
+    // 1차 리허설 F7: 제품 회차는 늘 409라 오류 경고 대신 안내(note)로 보인다. 뜻(KG 미등록 · 실행 전 · 세대 무효)은 그대로
+    expect(await screen.findByText(/KG 미등록 · 실행 전 · 세대 무효/)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.queryByRole("table")).toBeNull();
     expect(screen.queryByText(/예시/)).toBeNull();
   });

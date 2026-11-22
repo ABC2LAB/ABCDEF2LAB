@@ -198,6 +198,11 @@ function Legend() {
  * 읽기 실패 문구 — 상태 코드마다 뜻이 다르다(product-report-graph-read.md 오류 표). 어느 쪽이든 이전 격자 · 예시 · 빈 격자로
  * 대신하지 않는다.
  */
+/** 409 = 이 점검에 지도 범위가 없음(계약 access-map-read.md 실패 표). 오류가 아니라 안내로 보인다. */
+function noMapScope(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 409;
+}
+
 function failureText(error: unknown): string {
   const status = error instanceof ApiError ? error.status : -1;
   if (status === 409)
@@ -289,7 +294,15 @@ export function AccessMapPanel({ active }: { active: boolean }) {
       </div>
       {!taskId ? <p className={s.empty}>실제 진단 작업을 선택하세요.</p> : null}
       {taskId && !now ? <p className={s.empty}>불러오는 중…</p> : null}
-      {now?.error ? (
+      {now?.error && noMapScope(now.error) ? (
+        // 409(현재 등록·실행 범위 없음)는 이 점검에 평가 KG 지도 범위가 없다는 뜻이다. 제품 회차는 controlled-read KG
+        // 등록을 하지 않아 늘 이렇다(1차 리허설 F7) — 오류 경고 대신 안내하고, 같은 화면의 제품 확정 단계 표를 보게 한다
+        <p className={s.note} role="note">
+          이 점검에는 평가 KG 접근통제 지도 범위가 없습니다(KG 미등록 · 실행 전 · 세대 무효). 교차 계정 확인 결과는 아래
+          제품 확정 단계 표에 있습니다.
+        </p>
+      ) : null}
+      {now?.error && !noMapScope(now.error) ? (
         <div className={cx(s.note, s.warn)} role="alert">
           <Icon name="alert" />
           <span className={s["lv-grow"]}>{failureText(now.error)}</span>
