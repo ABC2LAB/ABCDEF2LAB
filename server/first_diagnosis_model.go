@@ -173,6 +173,13 @@ func (p *firstDiagnosisModelProvider) check(ctx context.Context) error {
 	}
 	return nil
 }
+
+// wakePlanner는 Worker가 끝났을 때와 같은 알림을 한 번 보낸다. 계획 반복과 heartbeat는 그대로다.
+func (p *firstDiagnosisModelProvider) wakePlanner() {
+	if p != nil && p.task != nil {
+		p.task.Notify()
+	}
+}
 func (p *firstDiagnosisModelProvider) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
 	if p == nil || p.server == nil {
 		return llm.Message{}, "", llm.Usage{}, ErrFirstDiagnosisModel
@@ -197,6 +204,13 @@ func (p *firstDiagnosisModelProvider) Complete(ctx context.Context, req llm.Comp
 	rateLimited, rejected := false, false
 	once := func() (llm.Message, string, llm.Usage, error, error) {
 		rateLimited, rejected = false, false
+		// 제공자가 연속 일시 오류로 쉬는 중이면 쉬는 시간이 끝날 때까지 여기서 기다린다(예약 전이라 회계는 그대로다).
+		// 기다리다 호출 문맥이 끝나면 그 호출만 실패하고, 쉬는 시간이 끝날 때 Planner를 한 번 깨운다.
+		releaseProbe, err := budget.awaitProviderCooldown(ctx, p.wakePlanner)
+		if err != nil {
+			return llm.Message{}, "", llm.Usage{}, nil, err
+		}
+		defer releaseProbe()
 		reserved, err := budget.reserve(ctx, p.config, &req)
 		if err != nil {
 			return llm.Message{}, "", llm.Usage{}, nil, err

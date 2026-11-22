@@ -1235,3 +1235,12 @@ func TestE2HTTPPlannerWrapUpStopsAtWrapUpTurns(t *testing.T) {
 		t.Fatalf("model calls=%d want=%d wrap-up turns=%d", provider.calls, want, opts.Settlement.MaxTurns)
 	}
 }
+
+// 계획 한 번의 기본 시간은 모델 호출 하나의 공식 시간 상한(170초)과 같고, 평가 러너의 제공자 멈춤 기준(180초)보다 짧다
+// (2026-11-22 사용자 결정). 계획이 호출 하나보다 먼저 끊기면 느린 시간대의 긴 응답을 받지 못한다.
+func TestE2HTTPPlannerDefaultDurationMatchesModelCallTimeout(t *testing.T) {
+	const modelCallTimeout, providerStall = 170 * time.Second, 180 * time.Second
+	if E2HTTPPlannerDefaultDuration != modelCallTimeout || E2HTTPPlannerDefaultDuration >= providerStall {
+		t.Fatalf("계획 기본 시간 %v", E2HTTPPlannerDefaultDuration)
+	}
+}
