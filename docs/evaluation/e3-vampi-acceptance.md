@@ -162,7 +162,7 @@ python3 -I scripts/eval/e3_vampi_tally.py --manifest scripts/eval/e3_vampi/scena
 
 | 회차 | run ID | 빌드 | 러너 판정 | 확정 단계 | book 판정(사유) | 집계 |
 |---|---|---|---|---|---|---|
-| S01-1 | ours-20261121t041617z-8a8d2b7f | `f519120a` | invalid `provider_fault_stall` | completed, 요청 4 | undecidable(`product_identity_unverified`) | 무효(제공자 멈춤) |
+| S01-1 | ours-20261121t041617z-8a8d2b7f | `f519120a` | invalid `provider_fault_stall` | completed, 요청 4 | undecidable(`product_identity_unverified`) | fail(러너는 무효 `provider_fault_stall`) |
 | S01-2 | ours-20261121t045829z-81ff9434 | `f519120a` | complete | completed, 요청 4 | undecidable(`product_identity_unverified`) | fail(기대 confirmed) |
 | S02 | ours-20261121t055336z-2fdb1ae1 | `f519120a` | complete | completed, 요청 8 | undecidable(`data_no_match`) | pass |
 | S20 | ours-20261121t063620z-7425d1cc | `f519120a` | complete | completed, 요청 7 | **confirmed** | pass |
