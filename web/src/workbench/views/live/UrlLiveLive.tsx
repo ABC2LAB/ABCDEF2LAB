@@ -83,6 +83,32 @@ const SHORT: Readonly<Record<DiagnosticOutcome, string>> = {
 };
 
 /** 판정 딱지 모양 (확정 = 기본, 검토 필요 = 의심 모양, 정상 = 초록, 그 밖 = 판단 불가 모양). */
+
+/**
+ * '승인 필요로 보류' 칸 설명: 실제로 보류된 요청의 메서드로 쓴다(사용자 2026-11-22, 1차 리허설 F13 — 사용자 승인 모드에서
+ * '승인 후 전송' 경로는 GET도 보류되는데 늘 "쓰기 메서드"라고 적었다).
+ */
+
+/** coverage 403(이 task 에선 제공 안 함)을 task 마다 기억한다. 바뀐 task 는 다시 한 번 부른다. */
+function useCoverageForbidden(taskId: string | null): { forbidden: boolean; observe: (error: unknown) => void } {
+  const [forbiddenTask, setForbiddenTask] = useState<string | null>(null);
+  const forbidden = !!taskId && forbiddenTask === taskId;
+  return {
+    forbidden,
+    observe: (error: unknown) => {
+      if (taskId && !forbidden && error instanceof ApiError && error.status === 403) setForbiddenTask(taskId);
+    },
+  };
+}
+
+export function heldReason(pending: readonly { method: string }[]): string {
+  if (!pending.length) return "보내기 전 사람 확인";
+  const writes = pending.filter((r) => !["GET", "HEAD"].includes(r.method)).length;
+  if (writes === pending.length) return "쓰기 메서드 · 보내기 전 확인";
+  if (writes === 0) return "승인 후 전송 경로(읽기) · 보내기 전 확인";
+  return `쓰기 ${writes} · 읽기 ${pending.length - writes} · 보내기 전 확인`;
+}
+
 export function Outcome({ o, short = false }: { o: DiagnosticOutcome; short?: boolean }) {
   return (
     <span
@@ -469,10 +495,14 @@ export function UrlLiveLive() {
   const stop = useStopConfirm("종료");
   const a = useRequestApprovals(job?.task_id ?? "", visible && g.runReadable);
   // 자산 커버리지 (시안 v22 진행 상세): 실제 task 가 생긴 뒤 서버 값. 꺼졌거나 못 읽으면 칸을 두지 않는다
+  // 제품 점검은 공개 진단 API만 열어 coverage 가 403이다(1차 리허설 F6: 15초마다 403이 쌓였다). 한 번 403을 받으면 그
+  // task 에서는 다시 부르지 않고 칸을 두지 않는다(서버 응답으로 판단 — 모드를 화면이 추정하지 않는다)
+  const covOff = useCoverageForbidden(job?.task_id ?? null);
   const cov = usePoll(() => fetchCoverage(job?.task_id as string), [job?.task_id], {
-    enabled: visible && !!job?.task_id,
+    enabled: visible && !!job?.task_id && !covOff.forbidden,
     intervalMs: 15000,
   });
+  covOff.observe(cov.error);
   // 모델 사용량: 원본 ARTEX 작업 합계(입력 · 캐시 읽기 · 출력). 전송 통제 예산 기록(model_usage)에는 캐시가 없다
   // 점검 중 발견 후보 (제품 후보 조회 #694). 서버가 여는 조건(ProductCandidateJobActive: 시작 확인 · running/stopping ·
   // 마감 · 결과 저장 전)과 같을 때만 읽어 시작 전 · 끝난 뒤에 409 를 일부러 부르지 않는다. 화면이 안 보이면(다른 탭 ·
@@ -794,7 +824,7 @@ export function UrlLiveLive() {
                 <div className={s.cell}>
                   <div className={s.k}>승인 필요로 보류</div>
                   <div className={s.v}>{fmtCount(ap.held)}</div>
-                  <div className={s.sub}>쓰기 메서드 · 전송 전 확인</div>
+                  <div className={s.sub}>{heldReason(a.pending)}</div>
                 </div>
                 <div className={s.cell}>
                   <div className={s.k}>전송 불명</div>
@@ -1502,7 +1532,9 @@ export function UrlReportLive() {
   // 저장된 실행 기록(diagnosis-run)은 보고서에서 더 쓰지 않는다(사용자 11/19 — 실행 종료 기록 · 요청 수를 뺌)
   // 자산 커버리지 (요약 칸): 서버 task 의 방문 · 검사한 자산 비율(판정 커버리지 아님 · 리뷰 #479).
   // 꺼졌거나 못 읽으면 값을 만들지 않고 "—"
-  const cov = usePoll(() => fetchCoverage(taskId as string), [taskId], { enabled: visible && !!taskId });
+  const covOff = useCoverageForbidden(taskId);
+  const cov = usePoll(() => fetchCoverage(taskId as string), [taskId], { enabled: visible && !!taskId && !covOff.forbidden });
+  covOff.observe(cov.error);
   const covPct = cov.data?.enabled && cov.data.pct !== null ? Math.round(cov.data.pct * 100) : null;
   const [tab, setTab] = useState<RTab>("list");
   const tabRefs = useRef<Partial<Record<RTab, HTMLButtonElement | null>>>({});
@@ -1586,6 +1618,7 @@ export function UrlReportLive() {
   if (covPct !== null) covSub = `미검사 ${100 - covPct}%`;
   else if (cov.data && !cov.data.enabled) covSub = "이 점검에서 꺼짐";
   else if (cov.data) covSub = "검사 대상 자산 없음";
+  else if (covOff.forbidden) covSub = "이 점검에선 제공 안 함";
   else if (cov.error) covSub = "읽지 못함";
 
   // 탭: 화살표로 옮기고 고른 탭만 Tab 순서에 둔다 (시안 selTab)
