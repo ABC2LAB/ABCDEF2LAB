@@ -192,4 +192,3 @@ python3 -I scripts/eval/e3_vampi_tally.py --manifest scripts/eval/e3_vampi/scena
 ### 12.3 무료 제품 직접 실행(스크립트 모델)
 
 S21(토큰 5초 → 확정 직전 다시 로그인 → confirmed) pass, S10(사용자 승인 모드에서 확정 생성 요청 거부 → `product_create_approval_denied`, 쓰기 0) pass, S12·S17 pass. 거짓 CONFIRMED 0.
-
