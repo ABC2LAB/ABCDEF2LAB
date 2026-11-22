@@ -173,14 +173,14 @@ install -d -m 700 /srv/abc2lab-eval /srv/abc2lab-eval-keys "$SESSION" "$SESSION/
      ( umask 077 && python3 -c "import secrets; print(secrets.token_urlsafe(24))" > /srv/abc2lab-eval/admin.password )
      ```
 
-   - O 승인 manifest(0600): **O 회차마다 새 승인 ID로 다시 만든다**(보정·확인 쌍과 같은 방식). 칸은 아래 값 그대로이고, 단가 상한은 3절 4번 재조회 응답의 `primeintellect/fp8` 단가의 1.5배로 둔다(사용자 2026-11-22: 제공자 PrimeIntellect 유지, 그날 단가 0.19/1.70이라 285000 / 2550000. 단가보다 낮으면 첫 호출이 거절돼 모델 호출 없이 `model_usage_unknown`, 1.5배 미만이면 세션이 `provider_price_margin`으로 시작하지 않는다). `expected_provider_name`은 러너 설정 `llm_gateway.expected_provider_name`과 글자까지 같아야 한다.
+   - O 승인 manifest(0600): **O 회차마다 새 승인 ID로 다시 만든다**(보정·확인 쌍과 같은 방식). 칸은 아래 값 그대로이고, 모델 호출 시간 상한 `timeout_seconds`는 170초다(사용자 2026-11-22: 원본 B는 스트리밍이라 호출 시간 상한이 없고, PrimeIntellect가 느릴 때 초당 22토큰까지 떨어져 120초면 2,640토큰이 넘는 O 호출만 잘렸다. 러너 멈춤 기준 180초보다 짧게 둔다). 단가 상한은 3절 4번 재조회 응답의 `primeintellect/fp8` 단가의 1.5배로 둔다(사용자 2026-11-22: 제공자 PrimeIntellect 유지, 그날 단가 0.19/1.70이라 285000 / 2550000. 단가보다 낮으면 첫 호출이 거절돼 모델 호출 없이 `model_usage_unknown`, 1.5배 미만이면 세션이 `provider_price_margin`으로 시작하지 않는다). `expected_provider_name`은 러너 설정 `llm_gateway.expected_provider_name`과 글자까지 같아야 한다.
 
      ```json
      {"version": 3, "profile_id": 1, "format": "openai", "base_url": "https://openrouter.ai/api/v1", "model": "qwen/qwen3.6-35b-a3b",
       "provider_slug": "primeintellect/fp8", "expected_provider_name": "PrimeIntellect", "approval_id": "<회차마다 새 값>",
       "expires_at": "<UTC, 회차 끝 뒤 몇 시간>", "strict_privacy_ack": true, "account_spend_cap_ack": true,
       "max_requests": 2000, "max_input_tokens": 80000000, "max_output_tokens": 8000000, "max_cost_usd_micros": 5000000,
-      "max_input_tokens_per_call": 262144, "max_output_tokens_per_call": 8192, "timeout_seconds": 120, "max_concurrent": 1,
+      "max_input_tokens_per_call": 262144, "max_output_tokens_per_call": 8192, "timeout_seconds": 170, "max_concurrent": 1,
       "max_input_price_usd_micros_per_million": <재조회 단가의 1.5배, 11/22 기준 285000>, "max_output_price_usd_micros_per_million": <재조회 단가의 1.5배, 11/22 기준 2550000>,
       "max_consecutive_transient_errors": 8,
       "sampling": {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0, "presence_penalty": 1.5, "repetition_penalty": 1.0, "seed": 42}}
