@@ -1,6 +1,11 @@
 package server
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+)
 
 // 흐름 모드 마감: 계획이 오류 없이 끝났는데 의도가 하나도 없던 실행은 마감할 수 있고(no_intents 정상 마감으로 감),
 // 계획 호출이 실패해 의도가 없는 실행은 지금처럼 마감하지 못해 실패로 끝난다(모델 고장을 숨기지 않음).
@@ -44,5 +49,19 @@ func TestE2HTTPRuntimeLastPlanSucceeded(t *testing.T) {
 	r.recordPlanResult("1", false)
 	if r.lastPlanSucceeded("1") {
 		t.Fatal("마지막 계획이 실패인데 성공")
+	}
+}
+
+// 계획이 끝날 때 부르는 기록 함수가 계획 결과를 남긴다(진단 기록이 없는 경로에서도). 마감 판정이 이 값을 읽는다.
+func TestPlannerLogFinishRecordsPlanResult(t *testing.T) {
+	e := &Engine{e2HTTP: &E2HTTPRuntime{}}
+	task := &Task{ID: "5"}
+	e.plannerLogFinish(context.Background(), task, 0, false, errors.New("model failed"), time.Now())
+	if e.e2HTTP.lastPlanSucceeded("5") {
+		t.Fatal("실패한 계획을 성공으로 남김")
+	}
+	e.plannerLogFinish(context.Background(), task, 0, false, nil, time.Now())
+	if !e.e2HTTP.lastPlanSucceeded("5") {
+		t.Fatal("성공한 계획을 남기지 않음")
 	}
 }
