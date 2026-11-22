@@ -311,6 +311,43 @@ def provider_probe(manifest: dict, key: str, calls: int = PROBE_CALLS,
     return out
 
 
+def endpoint_price(manifest: dict, get: Callable[[str], tuple[int, dict]] | None = None) -> dict:
+    """OpenRouter 엔드포인트 표(공개 GET {base_url}/models/{model}/endpoints)에서 manifest `provider_slug`와 같은 tag의 단가를
+    manifest와 같은 단위(USD 마이크로/100만 토큰)로 읽고 manifest 상한과 대조한다. 2026-11-22: PrimeIntellect 단가가
+    0.176/1.578로 올라 상한 0.15/1.5를 넘자 OpenRouter가 404 "No allowed providers"를 주고 회차가 첫 호출에서 끝났다."""
+    get = get or _get_json
+    base = str(manifest["base_url"]).rstrip("/")
+    status, payload = get(f"{base}/models/{manifest['model']}/endpoints")
+    endpoints = ((payload.get("data") or {}).get("endpoints") or []) if isinstance(payload, dict) else []
+    match = [e for e in endpoints if isinstance(e, dict) and e.get("tag") == manifest["provider_slug"]]
+    out = {"status": status, "tag": manifest["provider_slug"], "found": bool(match),
+           "cap_input_usd_micros_per_million": manifest["max_input_price_usd_micros_per_million"],
+           "cap_output_usd_micros_per_million": manifest["max_output_price_usd_micros_per_million"]}
+    if not match:
+        out["ok"] = False
+        return out
+    pricing = match[0].get("pricing") or {}
+    try:
+        prompt = round(float(pricing["prompt"]) * 1e12)
+        completion = round(float(pricing["completion"]) * 1e12)
+    except (KeyError, TypeError, ValueError):
+        out["ok"] = False
+        return out
+    out.update(input_usd_micros_per_million=prompt, output_usd_micros_per_million=completion,
+               ok=prompt <= out["cap_input_usd_micros_per_million"] and completion <= out["cap_output_usd_micros_per_million"])
+    return out
+
+
+def _get_json(url: str) -> tuple[int, dict]:
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url), timeout=30) as response:
+            return response.status, json.load(response)
+    except urllib.error.HTTPError as exc:
+        return exc.code, {}
+    except (OSError, ValueError):
+        return 0, {}
+
+
 def _post_json(req: urllib.request.Request) -> tuple[int, dict]:
     try:
         with urllib.request.urlopen(req, timeout=60) as response:
@@ -535,7 +572,8 @@ def parse_outcomes(text: str) -> list[Outcome]:
 def session_start_checks(a: argparse.Namespace, window: tuple[int, int] | None, manifest_path: Path | None,
                          log: Callable[[dict], None], now: Callable[[], datetime.datetime] | None = None,
                          probe: Callable[[dict, str], dict] = provider_probe,
-                         sleep: Callable[[float], None] = time.sleep) -> str | None:
+                         sleep: Callable[[float], None] = time.sleep,
+                         price: Callable[[dict], dict] = endpoint_price) -> str | None:
     """세션 시작 전 운영 점검(2026-11-22 사용자): 시작 시간대(한국 시간) → 제공자 429 점검(같은 모델·제공자 짧은 호출 10번,
     429가 하나라도 나면 probe_wait 뒤 다시). 결과는 세션 기록에 남긴다. 멈출 사유 또는 None."""
     now = now or (lambda: datetime.datetime.now(datetime.timezone.utc))
@@ -555,8 +593,17 @@ def session_start_checks(a: argparse.Namespace, window: tuple[int, int] | None, 
         key = a.key_file.read_text(encoding="utf-8").strip()
     except (OSError, ValueError):
         return "provider_probe_input"
-    if not isinstance(manifest, dict) or not all(k in manifest for k in ("model", "provider_slug", "base_url")):
+    if not isinstance(manifest, dict) or not all(k in manifest for k in ("model", "provider_slug", "base_url",
+                                                                         "max_input_price_usd_micros_per_million",
+                                                                         "max_output_price_usd_micros_per_million")):
         return "provider_probe_input"
+    # 단가 ≤ 가격 상한(manifest)이어야 제공자가 받아 준다. 넘으면 호출마다 404라 회차가 첫 호출에서 끝난다(2026-11-22)
+    priced = price(manifest)
+    log({"event": "provider_price", **priced})
+    if not priced.get("found") or "input_usd_micros_per_million" not in priced:
+        return "provider_price_unknown"
+    if not priced["ok"]:
+        return "provider_price_above_cap"
     for attempt in range(1, a.probe_tries + 1):
         result = probe(manifest, key)
         expected = manifest.get("expected_provider_name")

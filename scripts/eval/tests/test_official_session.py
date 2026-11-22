@@ -575,6 +575,40 @@ class TestStartChecks(unittest.TestCase):
         self.assertEqual(body["provider"]["only"], ["slug/fp8"])
         self.assertFalse(body["provider"]["allow_fallbacks"])
 
+    PRICE_OK = staticmethod(lambda m: {"found": True, "ok": True, "input_usd_micros_per_million": 1,
+                                       "output_usd_micros_per_million": 1})
+
+    def test_endpoint_price_compares_the_same_tag_in_manifest_units(self):
+        # 2026-11-22 실제 표: PrimeIntellect 0.000000176/0.000001578 USD/토큰 → 176000/1578000 > 상한 150000/1500000
+        table = {"data": {"endpoints": [
+            {"provider_name": "Other", "tag": "other/fp8", "pricing": {"prompt": "0.00000005", "completion": "0.0000007"}},
+            {"provider_name": "Provider", "tag": "slug/fp8", "pricing": {"prompt": "0.000000176", "completion": "0.000001578"}}]}}
+        urls = []
+        get = lambda url: (urls.append(url), (200, table))[1]  # noqa: E731
+        low = dict(self.MANIFEST, max_input_price_usd_micros_per_million=150000, max_output_price_usd_micros_per_million=1500000)
+        out = o.endpoint_price(low, get)
+        self.assertEqual(urls, ["https://gateway.example/api/v1/models/m/x/endpoints"])
+        self.assertEqual((out["input_usd_micros_per_million"], out["output_usd_micros_per_million"]), (176000, 1578000))
+        self.assertFalse(out["ok"])
+        high = dict(low, max_input_price_usd_micros_per_million=200000, max_output_price_usd_micros_per_million=1600000)
+        self.assertTrue(o.endpoint_price(high, get)["ok"])
+        self.assertFalse(o.endpoint_price(dict(high, provider_slug="missing/fp8"), get)["found"])
+
+    def test_start_checks_stop_when_price_is_above_cap_or_unknown_before_any_call(self):
+        import datetime as dt
+        afternoon = lambda: dt.datetime(2026, 11, 22, 6, 0, tzinfo=dt.timezone.utc)  # noqa: E731
+        calls = []
+        with tempfile.TemporaryDirectory() as d:
+            args = self._args(Path(d))
+            over = lambda m: {"found": True, "ok": False, "input_usd_micros_per_million": 176000,  # noqa: E731
+                              "output_usd_micros_per_million": 1578000}
+            self.assertEqual(o.session_start_checks(args, None, None, lambda e: None, now=afternoon, price=over,
+                                                    probe=lambda m, k: calls.append(1)), "provider_price_above_cap")
+            self.assertEqual(o.session_start_checks(args, None, None, lambda e: None, now=afternoon,
+                                                    price=lambda m: {"found": False, "ok": False},
+                                                    probe=lambda m, k: calls.append(1)), "provider_price_unknown")
+        self.assertEqual(calls, [])  # 단가가 안 맞으면 유료 점검 호출도 보내지 않는다
+
     def _args(self, tmp: Path, **over):
         manifest = tmp / "manifest.json"
         manifest.write_text(json.dumps(self.MANIFEST), encoding="utf-8")
@@ -592,11 +626,12 @@ class TestStartChecks(unittest.TestCase):
                        dict(calls=10, ok=10, rate_limited=0, other=0, statuses={"200": 10}, providers=["Provider"])]
             stop = o.session_start_checks(self._args(Path(d)), (14, 18), None, logs.append,
                                           now=lambda: dt.datetime(2026, 11, 22, 6, 0, tzinfo=dt.timezone.utc),
-                                          probe=lambda m, k: results.pop(0), sleep=slept.append)
+                                          probe=lambda m, k: results.pop(0), sleep=slept.append, price=self.PRICE_OK)
         self.assertIsNone(stop)
         self.assertEqual(slept, [1800])
         events = [l["event"] for l in logs]
-        self.assertEqual(events, ["start_window", "provider_probe", "provider_probe_wait", "start_window", "provider_probe"])
+        self.assertEqual(events, ["start_window", "provider_price", "provider_probe", "provider_probe_wait", "start_window",
+                                  "provider_probe"])
         self.assertNotIn("synthetic-key", json.dumps(logs))
 
     def test_start_checks_stop_outside_window_on_errors_and_after_tries(self):
@@ -610,10 +645,13 @@ class TestStartChecks(unittest.TestCase):
             args = self._args(Path(d))
             self.assertEqual(o.session_start_checks(args, (14, 18), None, lambda e: None, now=evening), "outside_start_window")
             self.assertEqual(o.session_start_checks(args, None, None, lambda e: None, now=afternoon,
-                                                    probe=lambda m, k: broken, sleep=lambda s: None), "provider_probe_failed")
+                                                    probe=lambda m, k: broken, sleep=lambda s: None, price=self.PRICE_OK),
+                             "provider_probe_failed")
             self.assertEqual(o.session_start_checks(args, None, None, lambda e: None, now=afternoon,
-                                                    probe=lambda m, k: wrong, sleep=lambda s: None), "provider_probe_failed")
+                                                    probe=lambda m, k: wrong, sleep=lambda s: None, price=self.PRICE_OK),
+                             "provider_probe_failed")
             self.assertEqual(o.session_start_checks(args, None, None, lambda e: None, now=afternoon,
-                                                    probe=lambda m, k: limited, sleep=lambda s: None), "provider_rate_limited")
+                                                    probe=lambda m, k: limited, sleep=lambda s: None, price=self.PRICE_OK),
+                             "provider_rate_limited")
             no_probe = self._args(Path(d), provider_probe=False)
             self.assertIsNone(o.session_start_checks(no_probe, (14, 18), None, lambda e: None, now=afternoon))
