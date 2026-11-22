@@ -73,6 +73,10 @@ type OpenRouterPolicy struct {
 	// transientLimited는 막힘의 원인이 연속 일시 오류 상한(C06)뿐이라는 뜻이다. 다른 원인으로 막히면 거짓으로 돌아간다.
 	// 일시 오류(429·5xx·연결 실패)는 제공자가 처리하지 않은 호출이라 회계 자체를 의심할 이유가 아니다.
 	transientLimited bool
+	// 쉬었다 다시 해 보기(openrouter_cooldown.go). coolSince는 처음 쉬기 시작한 때, coolUntil은 지금 쉬는 시간이 끝나는 때다.
+	// 둘 다 정상 응답 하나가 지운다. probeID는 쉬는 시간 뒤 시험 호출 자리를 쥔 호출의 번호다(0이면 빈 자리).
+	coolSince, coolUntil time.Time
+	probeID, probeSeq    uint64
 	// ledger는 승인별 누적 예약 기록에 이번 예약을 더한다(P3 결정안 C07). 다른 프로세스·재시작의 예약까지 합쳐
 	// 승인 총량을 넘으면 errOpenRouterApprovalExhausted를 돌려준다. 보호 파일 로더만 채운다.
 	ledger    func(input, output, cost int64) error
@@ -229,9 +233,15 @@ func (p *OpenRouterPolicy) reserveDiagnostic(input, output int64) (string, error
 	m := p.manifest
 	cost := openRouterCallCost(m, input, output)
 	reason := ""
+	// 쉬는 총 시간이 지났으면 이 호출을 보내기 전에 잠근다(대기를 거치지 않은 호출도 같은 경계).
+	p.expireCooldownLocked(time.Now())
 	switch {
 	case p.blocked:
 		return "policy_denied", ErrOpenRouterPolicy
+	case !p.coolUntil.IsZero() && p.probeID == 0:
+		// 쉬는 중이고 시험 호출 자리를 받지 않은 호출이다. 보내지 않고 예약 없이 거절한다(잠그지 않는다).
+		p.usage.FailureReason = "provider_cooldown"
+		return "provider_cooldown", ErrOpenRouterPolicy
 	case !time.Now().Before(m.ExpiresAt):
 		reason = "expired"
 	case output <= 0 || output > m.MaxOutputPerCall:

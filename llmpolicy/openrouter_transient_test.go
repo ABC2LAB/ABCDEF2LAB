@@ -98,6 +98,7 @@ func TestOpenRouterTransientFailuresBlockOnlyAtConsecutiveLimit(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
+			openRouterNoCooldown(t) // 쉬는 총 시간이 0이면 상한에서 바로 잠근다(쉬었다 재시도는 openrouter_cooldown_test.go)
 			p := openRouterV2Fixture(t, 2)
 			script := []bool{false, true, false, false} // 실패, 성공, 실패, 실패
 			hits := 0
@@ -332,6 +333,7 @@ func TestOpenRouterBrokenBodyKeepsStatusClassification(t *testing.T) {
 // 동시에 나간 두 호출이 서로 다른 원인으로 실패하면, 막힘 원인이 연속 일시 오류 상한뿐일 때만 TransientLimited다.
 // 일시 오류로 잠긴 뒤 다른 호출이 설정 오류로 끝나거나, 설정 오류로 막힌 뒤 일시 오류가 상한에 닿아도 회계 막힘으로 남는다.
 func TestOpenRouterTransientLimitedOnlyWhenTransientAlone(t *testing.T) {
+	openRouterNoCooldown(t)
 	for name, order := range map[string][2]int{"transient-then-config": {429, 401}, "config-then-transient": {401, 429}} {
 		t.Run(name, func(t *testing.T) {
 			p := openRouterV2Fixture(t, 1)

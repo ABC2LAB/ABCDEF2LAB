@@ -288,6 +288,9 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 	}()
 	valid := false
 	transient := false
+	// providerFault는 이 실패가 제공자 쪽 일시 오류(429·5xx·연결 실패·시간 초과·끊긴 본문)인지다. 요청 내용 거부(400 등)와
+	// 도구 계약 위반은 일시 오류 상한에는 세지만 쉬었다 다시 해 볼 대상이 아니다(같은 요청은 또 거부된다).
+	providerFault := false
 	failureReason := "transport_failure"
 	defer func() {
 		p.mu.Lock()
@@ -296,6 +299,7 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 		p.usage.LatencyMillis += time.Since(start).Milliseconds()
 		if valid {
 			p.transient = 0
+			p.clearCooldownLocked()
 			return
 		}
 		p.usage.Errors++
@@ -304,6 +308,10 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 		if transient {
 			p.transient++
 			if p.transient < m.transientLimit() {
+				return
+			}
+			// 상한에 닿아도 바로 잠그지 않고 쉬었다가 시험 호출 하나를 보낸다. 처음 쉰 때부터 총 시간을 넘기면 잠근다.
+			if providerFault && !p.blocked && p.enterCooldownLocked(time.Now()) {
 				return
 			}
 			// 이미 다른 원인으로 막혀 있으면 그 원인을 그대로 둔다.
@@ -326,6 +334,7 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 		callerStopped = r.Context().Err() != nil
 		diagnostic.ReasonCode = openRouterDiagnosticTransportReason(err, r.Context())
 		transient = openRouterTransientError(err)
+		providerFault = transient
 		return nil, ErrOpenRouterPolicy
 	}
 	if resp.StatusCode >= 100 && resp.StatusCode <= 599 {
@@ -358,6 +367,7 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 	default:
 		transient = false
 	}
+	providerFault = transient && !openRouterRejectedStatus(resp.StatusCode)
 	if readErr != nil || len(data) > openRouterResponseLimit || resp.StatusCode != 200 {
 		switch {
 		case resp.StatusCode == 401:
