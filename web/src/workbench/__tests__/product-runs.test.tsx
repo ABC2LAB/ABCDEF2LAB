@@ -11,6 +11,7 @@ import { catalog, owner, ready, running } from "@/lib/diagnosis/diagnosis-url-fi
 
 import { LiveGate, setLiveAuthState, useLiveAuthBoot } from "../live/auth";
 import { useSource } from "../live/source";
+import { LiveRailTasks } from "../live/rail";
 import { resetUrl, runUrlAction, UrlFeeds, urlGates, useUrl } from "../live/urlDiagnosis";
 import { loadUrlRuns, useUrlRuns } from "../live/urlRunList";
 import { type Shell, ShellContext, type View } from "../shell";
@@ -696,4 +697,39 @@ it.each([403, 404, 503])("활동 조회 HTTP %s를 미지원이나 빈 활동으
     /제공되지 않음|반환된 활동 기록이 없습니다/,
   );
   expect(posts()).toEqual([]);
+});
+
+describe("브라우저를 다시 띄운 뒤 진행 중 점검 찾기(사용자 2026-11-22, 1차 리허설 F14·F16)", () => {
+  it("이어 보는 점검이 없어도 진행 화면이 서버의 진행 중 점검을 '이 점검 열기'로 보이고, 열면 조회 결속으로 이어 본다", async () => {
+    render(<Harness initial="live" />);
+    const note = await screen.findByRole("note", { name: "이어 보지 않는 진행 중 점검" });
+    expect(note).toHaveTextContent("첫 번째 점검");
+    expect(note).not.toHaveTextContent("보존된 점검"); // 끝난 점검은 넣지 않는다
+    expect(useUrl.getState().handle).toBeNull(); // 자동으로 고르지 않는다
+    fireEvent.click(within(note).getByRole("button", { name: "이 점검 열기" }));
+    await waitFor(() => expect(useUrl.getState().job?.id).toBe("job-a"));
+    expect(useUrl.getState().handle?.kind).toBe("recovered");
+    expect(urlGates(useUrl.getState()).canStart).toBe(false); // 생성·시작 키는 물려받지 않는다
+    expect(posts()).toEqual([]);
+  });
+
+  it("레일 '진행 중'이 이어 보지 않는 서버 진행 중 점검 수를 세고 진행 목록으로 안내한다", async () => {
+    let goTo: View | null = null;
+    const shell = {
+      route: "dashboard" as View, navSeq: 1, narrow: false, phone: false, reduce: false, inspOpen: false, railOpen: false,
+      railNewAtRoute: false, goTo: (v: View) => { goTo = v; }, openInsp: () => undefined, closeInsp: () => undefined,
+      openRail: () => undefined, closeRail: () => undefined, foldRail: () => undefined, dashPick: () => undefined,
+    } as Shell;
+    await act(async () => {
+      await loadUrlRuns(owner);
+    });
+    render(
+      <ShellContext.Provider value={shell}>
+        <LiveRailTasks />
+      </ShellContext.Provider>,
+    );
+    const open = screen.getByRole("button", { name: /이어 보지 않는 진행 중 점검 1건/ });
+    fireEvent.click(open);
+    expect(goTo).toBe("running");
+  });
 });
