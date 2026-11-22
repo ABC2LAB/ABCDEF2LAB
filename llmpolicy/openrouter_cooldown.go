@@ -60,7 +60,8 @@ func (p *OpenRouterPolicy) CooldownUntil() time.Time {
 // AwaitCooldown은 쉬는 중이면 쉬는 시간이 끝날 때까지 기다린 뒤 시험 호출 자리 하나를 준다. 쉬지 않거나 이미 잠겼으면
 // 바로 돌아온다(잠김은 예약 단계가 거절한다). 시험 호출 자리는 한 번에 하나라서, 다른 호출이 시험 중이면 그 결과를 기다린다:
 // 성공하면 그대로 지나가고, 실패하면 다음 쉬는 시간을 다시 기다린다. 기다리는 동안에는 예약도 호출 기록도 남기지 않는다.
-// 돌려준 release는 호출이 끝났거나 보내지 못했을 때 부른다(보낸 호출은 transport가 자리를 비우므로 두 번 불러도 된다).
+// 돌려준 release는 호출이 끝났거나 보내지 못했을 때 반드시 부른다. 자리는 release만 비운다: 쉬기 전에 이미 보낸 다른 호출이
+// 끝나면서 자리를 비우면 시험 호출이 둘이 될 수 있어서다(성공한 시험 호출은 쉬는 상태 자체를 지운다).
 func (p *OpenRouterPolicy) AwaitCooldown(ctx context.Context) (release func(), err error) {
 	noop := func() {}
 	if p == nil || ctx == nil {

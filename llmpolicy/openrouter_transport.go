@@ -297,8 +297,6 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 		defer p.mu.Unlock()
 		p.active--
 		p.usage.LatencyMillis += time.Since(start).Milliseconds()
-		// 이 호출이 쉬는 시간 뒤의 시험 호출이었으면 자리를 비운다(결과와 관계없이).
-		p.probeID = 0
 		if valid {
 			p.transient = 0
 			p.clearCooldownLocked()
