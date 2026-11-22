@@ -80,6 +80,12 @@ function serve(map: Record<string, Reply[]>) {
 }
 const GET_T = "GET /api/product/targets";
 const GET_D = (id: string) => `GET /api/product/targets/${id}/declaration`;
+/** 단건 대상(경로·메서드 포함) — 목록 응답은 서버가 경로·메서드를 비워 보낸다(1차 리허설 F3) */
+const GET_ONE = (id: string) => `GET /api/product/targets/${id}`;
+const ONE = (id: string) => {
+  const t = TARGETS.targets.find((x) => x.id === id) as Record<string, unknown>;
+  return { target: { id, revision: t.revision, path_prefixes: t.path_prefixes ?? [], methods: t.methods ?? [] } };
+};
 const PUT_D = (id: string) => `PUT /api/product/targets/${id}/declaration`;
 const reject =
   (status: number, code = "x", field?: string) =>
@@ -353,7 +359,7 @@ describe("PolicyDeclarationLive (입력 · 저장)", () => {
   });
 
   it("승인 범위 밖은 참고 경고만 하고 저장은 막지 않는다", async () => {
-    serve({ [GET_T]: [TARGETS], [GET_D("t2")]: [NONE], [PUT_D("t2")]: [reject(403)] });
+    serve({ [GET_T]: [TARGETS], [GET_ONE("t2")]: [ONE("t2")], [GET_D("t2")]: [NONE], [PUT_D("t2")]: [reject(403)] });
     mount();
     await pick("t2");
     await screen.findByText(/아직 선언이 없습니다/);
@@ -687,5 +693,28 @@ describe("PolicyDeclarationLive (객체 ID 출처, #757 · #766)", () => {
     const msg = await screen.findByText(/서버가 이 칸을 받지 않았습니다\(types\[0\]\.create\.id_field\)/);
     expect(msg.closest("fieldset")).toBe(screen.getByLabelText(ID_NAME).closest("fieldset"));
     expect(msg.parentElement).toContainElement(screen.getByLabelText(ID_NAME));
+  });
+});
+
+describe("승인 범위는 단건 조회로(사용자 2026-11-22, 1차 리허설 F3)", () => {
+  it("목록에 경로·메서드가 비어 와도 단건 조회 값으로 보이고, POST 승인 대상에 'POST 가 없습니다'를 띄우지 않는다", async () => {
+    const stripped = { targets: TARGETS.targets.map((t) => ({ ...t, path_prefixes: undefined, methods: undefined })) };
+    serve({ [GET_T]: [stripped], [GET_ONE("t1")]: [ONE("t1")], [GET_D("t1")]: [NONE] });
+    mount();
+    await pick("t1");
+    await screen.findByText(/아직 선언이 없습니다/);
+    expect(await screen.findByText("GET/POST")).toBeInTheDocument();
+    fillValid();
+    expect(screen.queryByText(/POST 가 없습니다/)).toBeNull();
+  });
+
+  it("단건 조회를 못 하면 경로·메서드를 '—'로 꾸미지 않고 경고도 만들지 않는다", async () => {
+    const stripped = { targets: TARGETS.targets.map((t) => ({ ...t, path_prefixes: undefined, methods: undefined })) };
+    serve({ [GET_T]: [stripped], [GET_ONE("t1")]: [reject(503)], [GET_D("t1")]: [NONE] });
+    mount();
+    await pick("t1");
+    expect(await screen.findByText(/승인 경로·메서드를 읽지 못했습니다/)).toBeInTheDocument();
+    fillValid();
+    expect(screen.queryByText(/POST 가 없습니다/)).toBeNull();
   });
 });

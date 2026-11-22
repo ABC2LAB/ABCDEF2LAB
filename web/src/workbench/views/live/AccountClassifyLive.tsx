@@ -39,6 +39,7 @@ import {
   validAccountCredential,
   validTargetLogin,
 } from "../../live/accounts";
+import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
 import s from "../../workbench.module.css";
 import { UrlHead } from "./urlParts";
@@ -84,12 +85,19 @@ export function AccountClassifyLive() {
   // 지금 화면에 결속된 대상 id. 쓰기·재조회 응답은 이 값과 같을 때만 반영한다(대상을 바꾼 뒤 늦게 온 이전 대상 응답은 버림).
   const current = useRef<string | null>(null);
 
-  // 승인된 대상 목록(선택용).
+  // 승인된 대상 목록(선택용). 화면에 들어올 때마다 다시 읽는다 — 작업대는 모든 화면을 시작 때 숨긴 채 붙여서, 처음 한
+  // 번만 읽으면 그 뒤 승인한 대상이 "승인된 대상이 없습니다"로 남았다(사용자 2026-11-22, 1차 리허설 F2). 정책 선언 화면과
+  // 같은 방식이다
+  const visible = useShell().route === "classify";
   useEffect(() => {
+    if (!visible) return;
     let live = true;
     getProductTargets()
       .then((t) => {
-        if (live) setTargets(t);
+        if (live) {
+          setTargets(t);
+          setTargetsFailed(false);
+        }
       })
       .catch(() => {
         if (live) setTargetsFailed(true);
@@ -97,7 +105,7 @@ export function AccountClassifyLive() {
     return () => {
       live = false;
     };
-  }, []);
+  }, [visible]);
 
   // 고른 대상의 계정 분류(읽기). 대상이 바뀌면 다시 읽고 입력 상태를 비운다.
   useEffect(() => {

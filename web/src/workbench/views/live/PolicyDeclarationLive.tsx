@@ -26,6 +26,7 @@ import {
   emptyDraft,
   emptyType,
   getDeclaration,
+  getDeclarationTargetScope,
   getDeclarationTargets,
   invalidatedReasonText,
   normalizeDraft,
@@ -438,8 +439,18 @@ export function PolicyDeclarationLive() {
   const visible = useShell().route === "declaration";
   const [targets, setTargets] = useState<DeclarationTarget[] | "failed" | null>(null);
   const [targetId, setTargetId] = useState("");
-  const target = Array.isArray(targets) ? (targets.find((t) => t.id === targetId) ?? null) : null;
+  const listed = Array.isArray(targets) ? (targets.find((t) => t.id === targetId) ?? null) : null;
+  // 승인 경로·메서드는 단건 조회로 채운다(목록 응답은 비움, 1차 리허설 F3). 같은 판일 때만 합친다
+  const [scope, setScope] = useState<{ key: string; value: Awaited<ReturnType<typeof getDeclarationTargetScope>> | "failed" } | null>(
+    null,
+  );
   const [attempt, setAttempt] = useState(0);
+  const scopeKey = visible && listed ? `${listed.id}|${listed.revision}` : "";
+  const scopeNow = scope && scope.key === scopeKey ? scope.value : null;
+  const target =
+    listed && scopeNow && scopeNow !== "failed" && scopeNow.revision === listed.revision
+      ? { ...listed, pathPrefixes: scopeNow.pathPrefixes, methods: scopeNow.methods, scopeKnown: true }
+      : listed;
   // 진입 세대: 화면에 다시 들어올 때마다 올린다. 렌더 중에 맞춰서 같은 렌더에서 지난 진입의 결과를 버린다
   const [entry, setEntry] = useState({ visible, gen: 0 });
   if (entry.visible !== visible) setEntry({ visible, gen: visible ? entry.gen + 1 : entry.gen });
@@ -479,6 +490,23 @@ export function PolicyDeclarationLive() {
       controller.abort();
     };
   }, [visible, entry.gen]);
+
+  useEffect(() => {
+    if (!scopeKey || !listed) return;
+    const controller = new AbortController();
+    let live = true;
+    getDeclarationTargetScope(listed.id, controller.signal)
+      .then((value) => {
+        if (live) setScope({ key: scopeKey, value: value ?? "failed" });
+      })
+      .catch(() => {
+        if (live) setScope({ key: scopeKey, value: "failed" });
+      });
+    return () => {
+      live = false;
+      controller.abort();
+    };
+  }, [scopeKey, listed]);
 
   useEffect(() => {
     if (!request || !target) return;
@@ -605,11 +633,19 @@ export function PolicyDeclarationLive() {
                 ))}
               </select>
             ) : null}
-            {target ? (
+            {target && target.scopeKnown ? (
               <p className={s.help}>
                 승인 경로 <span className={s.mono}>{target.pathPrefixes.join(", ") || "—"}</span> · 승인 메서드{" "}
                 <span className={s.mono}>{target.methods.join("/") || "—"}</span> · 승인 판{" "}
                 <span className={s.mono}>{target.revision}</span>
+              </p>
+            ) : null}
+            {target && !target.scopeKnown ? (
+              <p className={s.help}>
+                {scopeNow === "failed"
+                  ? "승인 경로·메서드를 읽지 못했습니다 — 승인 범위 경고를 계산하지 않습니다."
+                  : "승인 경로·메서드를 읽는 중…"}{" "}
+                · 승인 판 <span className={s.mono}>{target.revision}</span>
               </p>
             ) : null}
           </section>
