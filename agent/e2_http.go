@@ -694,9 +694,15 @@ func (w *Worker) executeE2HTTP(ctx context.Context, name string, taskID int64, a
 	system += e2HTTPSessionLines(binding.Sessions)
 	promptInfo.SystemDigest = e2HTTPPromptDigest([]byte(system))
 	if binding.ObservePrompt != nil {
-		body, encodeErr := json.Marshal(promptInfo)
-		if encodeErr != nil || binding.ObservePrompt(ctx, name, body) != nil {
-			log.Print("E② 평가 프롬프트 관측 저장 실패")
+		body, observeErr := json.Marshal(promptInfo)
+		reason := "encode_failed"
+		if observeErr == nil {
+			observeErr = binding.ObservePrompt(ctx, name, body)
+			reason = db.E2PromptFailureReason(observeErr)
+		}
+		if observeErr != nil {
+			// 사유는 저장소 단계 코드만 남긴다(DB 오류 원문·프롬프트 내용은 남기지 않음).
+			log.Printf("E② 평가 프롬프트 관측 저장 실패: 사유=%s", reason)
 			emitE2HTTPPromptActivity(emit, func(stage string) { log.Print(stage) }, intent.ID, name, promptInfo)
 		}
 	} else if emit != nil {
