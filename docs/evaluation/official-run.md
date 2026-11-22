@@ -16,6 +16,8 @@
 | **멈춤 무효 판정이 켜져 있음**(#756): 러너는 설정 `run.fault_stall_seconds`(T)가 있으면 B·O 회차를 같은 T로 판정해 멈춤이면 `provider_fault_stall`로 무효로 하고, 세션 집계는 판정하지 않은 완료 회차·T 섞임을 받지 않으며 쪽별 2회 이상이면 측정 전체 실패(종료 코드 3)다. 시작 전 확인: 4절 7번 `runner.json`에 `run.fault_stall_seconds: 180`(위 줄의 확정값)을 넣었고, 7절 집계를 `--allow-unjudged-fault-stall` 없이 돌린다 | 고정 초안 §2·§3·§16 |
 | 측정 PC(최민준 PC) 확인([개발 계획](../development-plan.md#공식-측정-gono-go-조건) Go 조건 4): 이 PC 환경 점검(공식 runner.json) + 통합 뒤 파일럿. **환경 점검 통과(2026-11-20)**: 공식 분리 배치 예시(4절 7번)로 3절 환경 점검 17/17(`power` 포함). 같은 날 앞선 실행은 `containers`만 FAIL(그때 돌던 VAmPI 검증 회차 컨테이너, 측정 때 0). **통합 뒤 파일럿 한 쌍 남음(조건 4는 아직 다 채우지 않음)**. 이전 측정 PC(윤재상 PC) 점검은 부록 B 기록 | 3절·5절 |
 | 이 문서·공식 분리 배치 프로파일·러너 설정이 태그 커밋에 있다(2절) | 레포 |
+| **시작 시간대·제공자 상태(2026-11-22 사용자, 운영 절차 — 평가 의미는 안 바꿈)**: 파일럿·공식 세션은 **한국 시간 14~18시에 시작**한다(`--start-window-kst 14-18`). 시작 직전 같은 모델·제공자로 짧은 호출 10번을 보내 **429가 하나라도 나면 30분 뒤 다시 점검하고 시작을 미룬다**(`--provider-probe`). 11/21~22 밤 OpenRouter 429가 10번 중 8번까지 나 회차가 `planning_failed`로 끝났다. 점검 결과는 세션 기록에 남는다 | 6절 세션 실행 스크립트 |
+| **머신 여유(2026-11-22 사용자)**: 회차마다 시작 전 메모리 여유 점검(`--heavy-check <heavy_ok.sh>`: Linux available 3GB 이상 + Windows 커밋 여유 5GB 이상)이 통과해야 시작한다. 11/22 밤 Windows 호스트 메모리 고갈로 WSL이 멈춰 회차가 날아갔다 | 6절 |
 
 ## 1. 역할
 
@@ -277,8 +279,18 @@ python3 -I -B scripts/eval/official_session.py --session-dir "$SESSION" --tree "
   --config /srv/abc2lab-eval/runner.json --preflight "$SESSION/preflight.json" \
   --admin-password-file /srv/abc2lab-eval/admin.password --o-manifest-template "$SESSION/manifest-template.json" \
   --run-timeout 3600 --grace 120 --post-timeout 300 \
-  [--key-file <키 파일> --usage-cap-usd <세션 상한> --min-remaining-usd 0.30]
+  [--key-file <키 파일> --usage-cap-usd <세션 상한> --min-remaining-usd 0.30] \
+  --start-window-kst 14-18 --provider-probe --heavy-check /srv/abc2lab-eval/heavy_ok.sh
 ```
+
+- **시작 전 운영 점검(2026-11-22 사용자, 평가 의미는 바꾸지 않는다)**. 어느 것도 시도로 세지 않는다.
+  - 시작 시간대(`--start-window-kst 14-18`): 세션을 띄운 시각(한국 시간)이 창 밖이면 시작하지 않고 `outside_start_window`로 멈춘다. 결과는 세션 기록 `start_window`에 남는다.
+  - 제공자 429 점검(`--provider-probe`, `--key-file` 필요): 시작 직전 O manifest 틀(없으면 `split.manifest_path`)의 `model`·`provider_slug`·`base_url`로, 제품 OpenRouter 전송과 같은 provider 칸(`only` 하나·대체 없음·ZDR·데이터 수집 거부·가격 상한)을 붙여 출력 1토큰 호출을 10번 보낸다.
+    - 429가 하나라도 나면 `--probe-wait`(기본 1800초) 뒤 다시 점검한다(`--probe-tries`, 기본 4번). 다시 점검하기 전에 시작 시간대도 다시 본다.
+    - 끝내 429면 `provider_rate_limited`로 멈춘다. 429가 아닌 오류나 다른 제공자 이름이 나오면 `provider_probe_failed`로 멈춘다.
+    - 매 점검의 호출 수·성공·429·그 밖·상태 코드별 수·응답 제공자 이름은 세션 기록 `provider_probe`에 남긴다(키·응답 본문은 남기지 않는다).
+  - 호스트 포트: 회차마다 시작 전에 회차가 호스트에 열 고정 포트(3절 환경 점검의 `ports`와 같은 넷: `ports.engine_api_host`·`ports.obs_host`·`split.product_port`·`split.dns_control_port`)를 이미 누가 리슨하면 `ports_busy`로 멈추고 포트 이름·번호를 기록한다(`/proc/net/tcp`를 못 읽으면 `ports_unknown`). 2026-11-22 재부팅 뒤 VS Code 원격 서버가 `127.0.0.1:39291`(`ports.obs_host`)을 잡아 `compose_up_failed`로 회차가 무효가 됐다. 세션 도중 포트를 자동으로 바꾸지는 않는다(설정·사전 점검·회차 조건이 세션 안에서 같아야 한다). 막히면 그 프로세스를 끄거나 세션 전에 `runner.json` 포트를 바꿔 3절 점검을 다시 돌린 뒤 `--resume`한다.
+  - 메모리 여유(`--heavy-check`): 회차마다 시작 전에 점검 명령이 0으로 끝나야 시작한다. 아니면 `--heavy-interval`(60초)마다 다시 보며 `--heavy-wait`(1800초)까지 기다리고(`heavy_wait` 기록), 넘으면 `heavy_not_ok`로 멈춘다.
 
 - 칸마다 러너를 프로세스 그룹으로 띄우고 **PID로** 기다린다. 대기 시한(`--run-timeout`)을 넘으면 SIGINT → 유예(`--grace`) → SIGTERM → 유예 → SIGKILL을 보내고 `run_wait_timeout`으로 멈춘다. 러너는 SIGINT·SIGTERM을 같은 정리 경로(내리기·보호 입력 삭제)로 받는다. 세션을 뒤에서 띄우면(`… &`·`nohup … &`) 셸이 SIGINT를 무시 상태로 넘기고 그 상태가 자식 러너까지 물려가 SIGINT가 먹지 않는다. 그래서 세션과 러너는 시작할 때 SIGINT를 기본 처리로 되돌린다(2026-11-21: 기존 세션 하네스에서 상한 멈춤이 안 먹음, `test_run_signals.py`가 뒤에서 띄운 경우를 고정). 이름 패턴(`pgrep -f`)으로 기다리지 않는다(2026-11-20 사용자 규칙).
 - **회차마다 시작 전에 실행 중 컨테이너가 0개인지 본다**(`--resume`의 첫 회차 포함). 남아 있으면 시도로 세지 않고 `containers_present`로 멈춘다(못 읽으면 `containers_unknown`). 남은 컨테이너 때문에 다음 회차가 격리 검사에서 무효가 되어 시도 한 번이 날아가지 않게 한다(2026-11-20 사용자). 이어서 평가 compose 망(compose 프로젝트 라벨이 `eval-`로 시작)이 남아 있으면 같은 방식으로 `networks_present`(못 읽으면 `networks_unknown`)로 멈춘다. 앞 회차 망이 남은 채로 다음 회차가 같은 고정 대역의 망을 만들지 않게 막는 예방 조치다. 2026-11-20에 관측한 `compose_up_failed`는 이것으로 설명되지 않는다(시작 전 망 0이었던 회차에서도 났다). 유력한 원인 후보는 제품 postgres healthcheck가 초기화 임시 서버 동안 통과한 것이다(#833에서 새 볼륨으로 재현하고 고침, 실패 회차 자체의 install 로그는 없다).
