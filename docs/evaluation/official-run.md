@@ -173,7 +173,7 @@ install -d -m 700 /srv/abc2lab-eval /srv/abc2lab-eval-keys "$SESSION" "$SESSION/
      ( umask 077 && python3 -c "import secrets; print(secrets.token_urlsafe(24))" > /srv/abc2lab-eval/admin.password )
      ```
 
-   - O 승인 manifest(0600): **O 회차마다 새 승인 ID로 다시 만든다**(보정·확인 쌍과 같은 방식). 칸은 아래 값 그대로이고, 단가 상한은 3절 4번 재조회 응답의 `primeintellect/fp8` 단가 이상이어야 한다(낮으면 첫 호출이 거절돼 모델 호출 없이 `model_usage_unknown`). `expected_provider_name`은 러너 설정 `llm_gateway.expected_provider_name`과 글자까지 같아야 한다.
+   - O 승인 manifest(0600): **O 회차마다 새 승인 ID로 다시 만든다**(보정·확인 쌍과 같은 방식). 칸은 아래 값 그대로이고, 단가 상한은 3절 4번 재조회 응답의 `primeintellect/fp8` 단가의 1.5배로 둔다(사용자 2026-11-22: 제공자 PrimeIntellect 유지, 그날 단가 0.19/1.70이라 285000 / 2550000. 단가보다 낮으면 첫 호출이 거절돼 모델 호출 없이 `model_usage_unknown`, 1.5배 미만이면 세션이 `provider_price_margin`으로 시작하지 않는다). `expected_provider_name`은 러너 설정 `llm_gateway.expected_provider_name`과 글자까지 같아야 한다.
 
      ```json
      {"version": 3, "profile_id": 1, "format": "openai", "base_url": "https://openrouter.ai/api/v1", "model": "qwen/qwen3.6-35b-a3b",
@@ -181,7 +181,7 @@ install -d -m 700 /srv/abc2lab-eval /srv/abc2lab-eval-keys "$SESSION" "$SESSION/
       "expires_at": "<UTC, 회차 끝 뒤 몇 시간>", "strict_privacy_ack": true, "account_spend_cap_ack": true,
       "max_requests": 2000, "max_input_tokens": 80000000, "max_output_tokens": 8000000, "max_cost_usd_micros": 5000000,
       "max_input_tokens_per_call": 262144, "max_output_tokens_per_call": 8192, "timeout_seconds": 120, "max_concurrent": 1,
-      "max_input_price_usd_micros_per_million": <재조회 단가 × 1.5 이상>, "max_output_price_usd_micros_per_million": <재조회 단가 × 1.5 이상>,
+      "max_input_price_usd_micros_per_million": <재조회 단가의 1.5배, 11/22 기준 285000>, "max_output_price_usd_micros_per_million": <재조회 단가의 1.5배, 11/22 기준 2550000>,
       "max_consecutive_transient_errors": 8,
       "sampling": {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0, "presence_penalty": 1.5, "repetition_penalty": 1.0, "seed": 42}}
      ```
@@ -285,7 +285,7 @@ python3 -I -B scripts/eval/official_session.py --session-dir "$SESSION" --tree "
 
 - **시작 전 운영 점검(2026-11-22 사용자, 평가 의미는 바꾸지 않는다)**. 어느 것도 시도로 세지 않는다.
   - 시작 시간대(`--start-window-kst 14-18`): 세션을 띄운 시각(한국 시간)이 창 밖이면 시작하지 않고 `outside_start_window`로 멈춘다. 결과는 세션 기록 `start_window`에 남는다.
-  - 제공자 단가(`--provider-probe`를 켜면 먼저): 공개 엔드포인트 표(`{base_url}/models/{model}/endpoints`)에서 manifest `provider_slug`와 같은 tag의 단가를 manifest와 같은 단위(USD 마이크로/100만 토큰)로 읽어, 단가가 manifest 가격 상한(`max_input_price_usd_micros_per_million`·`max_output_price_usd_micros_per_million`)을 넘으면 `provider_price_above_cap`, 표에서 못 찾으면 `provider_price_unknown`으로 멈춘다(유료 점검 호출도 보내지 않는다). 2026-11-22 PrimeIntellect 단가가 0.176/1.578로 올라 상한 0.15/1.5를 넘자 OpenRouter가 404 "No allowed providers"를 주고 제품이 첫 호출에서 회차를 `unknown`/`model_usage_unknown`으로 끝냈다. 또 상한이 단가의 `--price-margin`배(기본 1.5) 이상이 아니면 `provider_price_margin`으로 멈춘다(2026-11-22 사용자: B에는 가격 상한이 없어 측정 도중 제공자가 단가를 조금만 올려도 O만 404로 막혀 세션이 멈춘다. 그날 S01-final7은 상한 1.6에서 회차 도중 실제 출력 단가가 1.6을 넘었다). 단가·상한·여유 판정은 세션 기록 `provider_price`에 남는다. 4절 5번 manifest의 가격 상한은 측정 직전 재조회 단가의 1.5배쯤으로 둔다(제공자가 정해진 뒤 값을 맞춘다).
+  - 제공자 단가(`--provider-probe`를 켜면 먼저): 공개 엔드포인트 표(`{base_url}/models/{model}/endpoints`)에서 manifest `provider_slug`와 같은 tag의 단가를 manifest와 같은 단위(USD 마이크로/100만 토큰)로 읽어, 단가가 manifest 가격 상한(`max_input_price_usd_micros_per_million`·`max_output_price_usd_micros_per_million`)을 넘으면 `provider_price_above_cap`, 표에서 못 찾으면 `provider_price_unknown`으로 멈춘다(유료 점검 호출도 보내지 않는다). 2026-11-22 PrimeIntellect 단가가 0.176/1.578로 올라 상한 0.15/1.5를 넘자 OpenRouter가 404 "No allowed providers"를 주고 제품이 첫 호출에서 회차를 `unknown`/`model_usage_unknown`으로 끝냈다. 또 상한이 단가의 `--price-margin`배(기본 1.5) 이상이 아니면 `provider_price_margin`으로 멈춘다(2026-11-22 사용자: B에는 가격 상한이 없어 측정 도중 제공자가 단가를 조금만 올려도 O만 404로 막혀 세션이 멈춘다. 그날 S01-final7은 상한 1.6에서 회차 도중 실제 출력 단가가 1.6을 넘었다). 단가·상한·여유 판정은 세션 기록 `provider_price`에 남는다. 4절 5번 manifest의 가격 상한은 재조회 단가의 1.5배로 둔다(사용자 2026-11-22: PrimeIntellect 유지, 285000 / 2550000. 측정 직전 재조회 단가가 바뀌었으면 그 1.5배로 다시 맞춘다).
   - 비용 보호 먼저(#848 리뷰): 단가 점검을 통과하면 유료 429 점검 호출 전에 키 사용량 상한·잔액 하한을 확인하고 세션 사용량 기준(`usage_base`)을 기록한다. 상한·잔액이 모자라면 호출을 보내지 않고 그 사유로 멈춘다. 점검 호출 비용은 세션 상한에 들어간다.
   - 제공자 429 점검(`--provider-probe`, `--key-file` 필요): 시작 직전 O manifest 틀(없으면 `split.manifest_path`)의 `model`·`provider_slug`·`base_url`로, 제품 OpenRouter 전송과 같은 provider 칸(`only` 하나·대체 없음·ZDR·데이터 수집 거부·가격 상한)을 붙여 출력 1토큰 호출을 10번 보낸다.
     - 429가 하나라도 나면 `--probe-wait`(기본 1800초) 뒤 다시 점검한다(`--probe-tries`, 기본 4번). 다시 점검하기 전에 시작 시간대도 다시 본다.
