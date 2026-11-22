@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -604,4 +606,106 @@ func TestAdapterIncompleteWithStatusIsResultUnknown(t *testing.T) {
 	if !found {
 		t.Fatal("교차 조회 결과 이벤트 없음")
 	}
+}
+
+// 실제 E²(e2live)는 결속 참조 조회·저널 검증에서 끝난 문맥이면 그 오류를 돌려준다. 사용자 승인 모드의 생성 승인이 확정 단계
+// 시간 몫 끝과 같은 순간에 만료되면, 어댑터를 거쳐도 보내지 않은 생성(approval_timeout)으로 끝나야 한다: 판정 사유
+// product_create_approval_timeout, 쓰기 기록 거둠, 결과 쓰기 없음(리허설 F15, 2026-11-21).
+func TestAdapterApprovalExpiryAtShareEnd(t *testing.T) {
+	createNote := key(e3contract.PurposeCreate, e3contract.RoleOwner, "note")
+	w := newWorld(t, map[e3fake.Key]e3fake.Behavior{createNote: {NotSent: e3contract.NotSentApprovalTimeout}})
+	ctx, expire := deadlineAtWill()
+	live := &liveLike{E2: v3fake.New(w.target, []byte("run-audit-key-for-tests-only-32b")), expire: expire, expireType: "note"}
+	a, err := e3v3.New(live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := e3contract.Deps{Transport: a, Journal: a, Declarations: w.decls,
+		Reset: e3fake.Reset{State: e3contract.ResetState{Residue: e3contract.ResidueAbsent}}, Writes: w.writes,
+		Random: bytes.NewReader(seed()), Now: func() time.Time { return t0 }, Logger: slog.New(slog.DiscardHandler)}
+	res := e3contract.Run(ctx, deps, w.in)
+	noConfirmed(t, res)
+	if res.Status == e3contract.StatusIntegrityFailed {
+		t.Fatalf("승인 만료를 진위 실패로: %+v", res)
+	}
+	var note *e3contract.Verdict
+	for i := range res.Verdicts {
+		if res.Verdicts[i].ResourceType == "note" {
+			note = &res.Verdicts[i]
+		}
+	}
+	if note == nil || note.Value != oracle.Undecidable || !slices.Equal(note.ProductReasons, []e3contract.ProductReason{e3contract.ReasonCreateApprovalTimeout}) {
+		t.Fatalf("note: %+v", note)
+	}
+	for _, wr := range res.Writes {
+		if wr.ResourceType == "note" {
+			t.Fatalf("보내지 않은 생성이 결과 쓰기에 남음: %+v", wr)
+		}
+	}
+	withdrawn := 0
+	for _, e := range w.writes.Events() {
+		if e.Type == "note" && !e.Reserve && e.Write.Outcome == e3contract.WriteNotSent {
+			withdrawn++
+		}
+	}
+	if withdrawn != 1 {
+		t.Fatalf("쓰기 기록을 거두지 않음(%d건)", withdrawn)
+	}
+}
+
+// liveLike는 가짜 v3 E²에 실제 E²(e2live.Live)처럼 결속 참조 조회·저널 검증 앞에서 문맥 끝을 확인하는 동작을 더한다.
+// expireType 생성 요청의 결과를 돌려주는 순간 호출자 문맥의 마감을 지나게 한다(승인 기한 = 시간 몫 끝).
+type liveLike struct {
+	*v3fake.E2
+	expire     func()
+	expireType string
+}
+
+func (l *liveLike) Send(ctx context.Context, req e3v3.Request) (e3v3.Event, error) {
+	ev, err := l.E2.Send(ctx, req)
+	if req.Program == e3contract.PurposeCreate && req.ResourceType == l.expireType {
+		l.expire()
+	}
+	return ev, err
+}
+
+func (l *liveLike) AccountBindingRef(ctx context.Context, b e3contract.RunBinding, label string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return l.E2.AccountBindingRef(ctx, b, label)
+}
+
+func (l *liveLike) Verified(ctx context.Context, b e3contract.RunBinding, ref e3contract.CallRef) (e3v3.Event, error) {
+	if err := ctx.Err(); err != nil {
+		return e3v3.Event{}, err
+	}
+	return l.E2.Verified(ctx, b, ref)
+}
+
+// deadlineAtWill은 expire를 부르면 그때부터 마감이 지난 문맥이다.
+func deadlineAtWill() (context.Context, func()) {
+	d := &willDeadline{Context: context.Background(), done: make(chan struct{})}
+	return d, d.expire
+}
+
+type willDeadline struct {
+	context.Context
+	done    chan struct{}
+	once    sync.Once
+	expired atomic.Bool
+}
+
+func (d *willDeadline) Done() <-chan struct{} { return d.done }
+func (d *willDeadline) Err() error {
+	if d.expired.Load() {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+func (d *willDeadline) expire() {
+	d.once.Do(func() {
+		d.expired.Store(true)
+		close(d.done)
+	})
 }

@@ -11,26 +11,59 @@ import (
 var ErrE2Prompt = errors.New("e2_prompt_storage_unavailable")
 var ErrE2PromptBinding = errors.New("e2_prompt_binding_rejected")
 
+// e2PromptError는 실패한 단계를 고정 코드로 실은 ErrE2Prompt다. errors.Is(err, ErrE2Prompt)는 그대로 참이다. 로그에는 이
+// 코드만 쓰고 DB 오류 원문은 쓰지 않는다(값이 섞일 수 있어서). 문맥이 끝난 뒤의 실패면 코드 끝에 _timeout·_canceled를 붙인다.
+type e2PromptError struct{ reason string }
+
+func (e *e2PromptError) Error() string { return ErrE2Prompt.Error() + ": " + e.reason }
+func (e *e2PromptError) Unwrap() error { return ErrE2Prompt }
+
+func e2PromptFail(ctx context.Context, reason string) error {
+	if ctx != nil && ctx.Err() != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			reason += "_timeout"
+		} else {
+			reason += "_canceled"
+		}
+	}
+	return &e2PromptError{reason: reason}
+}
+
+// E2PromptFailureReason은 프롬프트 관측 저장 실패의 단계 코드다(로그용). 단계 코드가 없는 ErrE2Prompt는 "unspecified",
+// 그 밖의 오류는 "other"다.
+func E2PromptFailureReason(err error) string {
+	var e *e2PromptError
+	switch {
+	case err == nil:
+		return ""
+	case errors.As(err, &e):
+		return e.reason
+	case errors.Is(err, ErrE2Prompt):
+		return "unspecified"
+	}
+	return "other"
+}
+
 // 새 실행의 단회 등록이다. run_ref 재사용은 과거 관측과의 혼합을 막는다.
 func (s *ExplorationStore) RegisterE2PromptRun(ctx context.Context, task int64, run string) error {
 	if s == nil || s.db == nil || ctx == nil || task <= 0 || !e2prompt.ValidRun(run) {
-		return ErrE2Prompt
+		return e2PromptFail(ctx, "invalid_input")
 	}
 	result, err := s.db.ExecContext(ctx, `INSERT INTO e2_prompt_runs(run_ref,task_id,exploration_id)
  SELECT $1,t.id,t.exploration_id FROM tasks t WHERE t.id=$2 AND t.exploration_id=$3 AND t.deleted_at IS NULL
  ON CONFLICT DO NOTHING`, run, task, s.expID)
 	if err != nil {
-		return ErrE2Prompt
+		return e2PromptFail(ctx, "register_insert_failed")
 	}
 	n, err := result.RowsAffected()
 	if err != nil {
-		return ErrE2Prompt
+		return e2PromptFail(ctx, "register_rows_unknown")
 	}
 	if n != 1 {
 		if _, err := s.db.ExecContext(ctx, `UPDATE e2_prompt_runs SET failed=true WHERE run_ref=$1 AND task_id=$2 AND exploration_id=$3`, run, task, s.expID); err != nil {
-			return ErrE2Prompt
+			return e2PromptFail(ctx, "register_mark_failed_failed")
 		}
-		return ErrE2Prompt
+		return e2PromptFail(ctx, "run_ref_reused_or_task_missing")
 	}
 	return nil
 }
@@ -38,11 +71,11 @@ func (s *ExplorationStore) RegisterE2PromptRun(ctx context.Context, task int64, 
 // BeginE2PromptWork는 실제 E② 실행을 확인한 host만 호출한다. 모델 도구에 노출하지 않는다.
 func (s *ExplorationStore) BeginE2PromptWork(ctx context.Context, task int64, run string, intent int64) (int64, error) {
 	if s == nil || s.db == nil || ctx == nil || task <= 0 || intent <= 0 || !e2prompt.ValidRun(run) {
-		return 0, ErrE2Prompt
+		return 0, e2PromptFail(ctx, "invalid_input")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, ErrE2Prompt
+		return 0, e2PromptFail(ctx, "begin_tx_failed")
 	}
 	defer tx.Rollback()
 	var seq int64
@@ -51,13 +84,13 @@ func (s *ExplorationStore) BeginE2PromptWork(ctx context.Context, task int64, ru
  AND EXISTS(SELECT 1 FROM exploration_nodes n WHERE n.id=$4 AND n.exploration_id=$3 AND n.kind='intent' AND n.state IN ('open','running'))
  RETURNING next_sequence`, run, task, s.expID, intent, e2prompt.MaxObservations).Scan(&seq)
 	if err != nil {
-		return 0, ErrE2Prompt
+		return 0, e2PromptFail(ctx, "sequence_unavailable")
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO e2_prompt_observations(run_ref,sequence,intent_id) VALUES($1,$2,$3)`, run, seq, intent); err != nil {
-		return 0, ErrE2Prompt
+		return 0, e2PromptFail(ctx, "observation_insert_failed")
 	}
 	if tx.Commit() != nil {
-		return 0, ErrE2Prompt
+		return 0, e2PromptFail(ctx, "commit_failed")
 	}
 	return seq, nil
 }
@@ -65,36 +98,36 @@ func (s *ExplorationStore) BeginE2PromptWork(ctx context.Context, task int64, ru
 // SaveE2PromptActivity는 Activity와 신뢰 실행의 출처 연결을 원자적으로 저장한다.
 func (s *ExplorationStore) SaveE2PromptActivity(ctx context.Context, task int64, run string, seq, intent int64, worker string, detail []byte) error {
 	if _, err := e2prompt.Parse(detail); err != nil || !e2prompt.ValidWorker(worker) {
-		return ErrE2Prompt
+		return e2PromptFail(ctx, "invalid_detail")
 	}
 	if s == nil || s.db == nil || ctx == nil {
-		return ErrE2Prompt
+		return e2PromptFail(ctx, "invalid_input")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return ErrE2Prompt
+		return e2PromptFail(ctx, "begin_tx_failed")
 	}
 	defer tx.Rollback()
 	var sealed bool
 	if tx.QueryRowContext(ctx, `SELECT sealed FROM e2_prompt_runs WHERE run_ref=$1 AND task_id=$2 AND exploration_id=$3 FOR UPDATE`, run, task, s.expID).Scan(&sealed) != nil || sealed {
-		return ErrE2Prompt
+		return e2PromptFail(ctx, "run_sealed_or_missing")
 	}
 	var existing sql.NullInt64
 	if tx.QueryRowContext(ctx, `SELECT activity_id FROM e2_prompt_observations WHERE run_ref=$1 AND sequence=$2 AND intent_id=$3`, run, seq, intent).Scan(&existing) != nil || existing.Valid {
-		return ErrE2Prompt
+		return e2PromptFail(ctx, "observation_unavailable")
 	}
 	var activity int64
 	err = tx.QueryRowContext(ctx, `INSERT INTO activity(exploration_id,node_id,worker,kind,tool,is_error,summary,detail,metadata)
  SELECT $1,n.id,$3,'e2_prompt','E2HTTP',false,'E② 워커 프롬프트 적용',$4,'{}' FROM exploration_nodes n
  WHERE n.id=$2 AND n.exploration_id=$1 AND n.kind='intent' RETURNING id`, s.expID, intent, worker, string(detail)).Scan(&activity)
 	if err != nil {
-		return ErrE2Prompt
+		return e2PromptFail(ctx, "activity_insert_failed")
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE e2_prompt_observations SET activity_id=$3,worker=$4 WHERE run_ref=$1 AND sequence=$2`, run, seq, activity, worker); err != nil {
-		return ErrE2Prompt
+		return e2PromptFail(ctx, "observation_update_failed")
 	}
 	if tx.Commit() != nil {
-		return ErrE2Prompt
+		return e2PromptFail(ctx, "commit_failed")
 	}
 	return nil
 }

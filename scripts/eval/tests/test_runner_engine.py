@@ -52,10 +52,11 @@ DTO_SHAPES = {
 TASK_SHAPES = {
     ("server/server.go", "type createTaskReq struct"): "f07493c7ed7ca34b80af73f43b69b70207d61221e5fd2002f3cd514277b00f77",
     # baseline과 다른 곳은 설명이 빈 요청의 기본 이름(언어 전환)뿐이다. 러너는 빈 설명을 거부하므로 회차에서 타지 않는다.
+    # createTask·launchTask·seed는 2026-11-22(F8) 서버 로그 문구만 중국어 → 영어로 바뀌었다(동작·DTO 같음, 로그 줄 외 diff 없음).
     ("server/server.go", "func (s *Server) createTask("):
-        "f05d1f004bc7c101827a08ffbe1d2b499e6b9547e748753d1ce8aa1aa3ea6f56",
-    ("server/goals.go", "func (s *Server) launchTask("): "2a05e77a7e68b7aa3e5b94bce4bdc0e8e56416de1996c8f7d6a4ac8545e3e513",
-    ("server/server.go", "func (s *Server) seed("): "7d0891d1bdcc78596ed2a3c8e40cd22b0be3866c78cc25962e948ed41430963a",
+        "78ceb906d572da22fa69771df82aaa7e07211cff28755e6dccb8abdb3278e821",
+    ("server/goals.go", "func (s *Server) launchTask("): "9f1aa6d3c4963c5a45876485bde2122e3219fa40b9c91b42bc14fdd8d2d564e9",
+    ("server/server.go", "func (s *Server) seed("): "02bc54e9fb9e534c2f081d8c8159d9b2d84dac54ca1bc2ae8e8b0d3c651e944a",
     ("server/server.go", "func parseTarget("): "4fa3c05b1d4ac4d24a387df3dda6fb87e566f45e9f16f0a2b79fa5e3b47bb3ea",
     ("server/dto.go", "type TaskDTO struct"): "119a0e91764c1e1e9c3a7701e0d0ddb8d63be7d700faf389d160eefadca56163",
     # 보고서 GET의 별도 인증 분기만 추가됐다. 러너의 POST/GET /api/tasks는 이 분기에 들어가지 않는다.

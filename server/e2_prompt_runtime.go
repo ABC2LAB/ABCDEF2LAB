@@ -19,20 +19,25 @@ func (r *E2HTTPRuntime) promptObserver(ctx context.Context, t *e2HTTPRuntimeTask
 	defer cancel()
 	if !t.promptRegistered {
 		t.promptRegistered = true
-		t.promptOwned = t.store.RegisterE2PromptRun(recordCtx, t.number, r.options.Expected.RunRef) == nil
+		t.promptRegisterErr = t.store.RegisterE2PromptRun(recordCtx, t.number, r.options.Expected.RunRef)
+		t.promptOwned = t.promptRegisterErr == nil
 	}
 	var seq int64
 	var recordErr error
 	if t.promptOwned {
 		seq, recordErr = t.store.BeginE2PromptWork(recordCtx, t.number, r.options.Expected.RunRef, intent)
 	} else {
-		recordErr = db.ErrE2Prompt
+		// 등록에 실패한 실행이다. 등록 실패 사유를 그대로 이어 받는다(관측 저장 실패 로그가 같은 사유를 남기게).
+		recordErr = t.promptRegisterErr
+		if recordErr == nil {
+			recordErr = db.ErrE2Prompt
+		}
 	}
 	if recordErr != nil {
 		t.mu.Lock()
 		t.promptFailed = true
 		t.mu.Unlock()
-		log.Print("E② 평가 프롬프트 기대 관측 등록 실패")
+		log.Printf("E② 평가 프롬프트 기대 관측 등록 실패: 사유=%s", db.E2PromptFailureReason(recordErr))
 	}
 	return func(ctx context.Context, worker string, detail []byte) error {
 		persistCtx, cancel := context.WithTimeout(ctx, e2PromptPersistenceTimeout)
