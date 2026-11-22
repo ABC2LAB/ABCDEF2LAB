@@ -164,7 +164,6 @@ describe("UrlAccessMapLive (현재 task · 예시 없음)", () => {
   });
 
   it.each([
-    ["409 KG 미등록 · 실행 전", 409, /지도를 만들 수 없습니다.*빈 지도로 대신하지 않습니다/],
     ["403 권한 거부", 403, /지도를 볼 권한을 확인하지 못했습니다/],
     ["404 task 없음", 404, /task 를 찾지 못했습니다/],
     ["502 중계 실패", 502, /정상 데이터로 보지 않습니다/],
@@ -245,10 +244,19 @@ describe("UrlAccessMapLive (현재 task · 예시 없음)", () => {
     ]);
   });
 
+  it("409(지도 범위 없음)는 오류 경고가 아니라 안내로 보이고 빈 격자를 만들지 않는다(1차 리허설 F7)", async () => {
+    f.mockRejectedValue(new ApiError(409, "x"));
+    show();
+    expect(await screen.findByText(/평가 KG 접근통제 지도 범위가 없습니다/)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("table", { name: /격자/ })).toBeNull();
+    expect(screen.queryByText(/예시/)).toBeNull();
+  });
+
   it("처음 409 뒤 같은 점검의 상태가 바뀌면 열린 화면에서 다시 읽는다", async () => {
     f.mockRejectedValueOnce(new ApiError(409, "x")).mockResolvedValueOnce(apiMap());
     show();
-    expect(await screen.findByRole("alert")).toHaveTextContent(/지도를 만들 수 없습니다/);
+    expect(await screen.findByText(/평가 KG 접근통제 지도 범위가 없습니다/)).toBeInTheDocument();
     act(() => useUrl.setState({ job: { ...running, revision: running.revision + 1 } }));
     expect(await screen.findByRole("table", { name: /격자/ })).toBeInTheDocument();
     expect(screen.queryByRole("alert")).toBeNull();

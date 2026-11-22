@@ -90,7 +90,7 @@ const SHORT: Readonly<Record<DiagnosticOutcome, string>> = {
  */
 
 /** coverage 403(이 task 에선 제공 안 함)을 task 마다 기억한다. 바뀐 task 는 다시 한 번 부른다. */
-function useCoverageForbidden(taskId: string | null): { forbidden: boolean; observe: (error: unknown) => void } {
+export function useCoverageForbidden(taskId: string | null): { forbidden: boolean; observe: (error: unknown) => void } {
   const [forbiddenTask, setForbiddenTask] = useState<string | null>(null);
   const forbidden = !!taskId && forbiddenTask === taskId;
   return {
