@@ -754,7 +754,34 @@ export type DeclarationTarget = {
   revision: number;
   pathPrefixes: string[];
   methods: string[];
+  /**
+   * 경로·메서드를 단건 조회로 확인했는가. 대상 **목록** 응답은 경로·메서드를 비워 보낸다(서버 product_targets.go 목록 뷰,
+   * 1차 리허설 F3: 목록 값으로 "승인 경로 —"·"POST 가 없습니다" 경고가 잘못 떴다). 모르면 경고를 만들지 않는다.
+   */
+  scopeKnown: boolean;
 };
+
+/** 한 대상의 승인 경로·메서드(단건 GET /api/product/targets/{id}). 형식 밖이면 null(fail-closed — 경고만 안 만든다). */
+export async function getDeclarationTargetScope(
+  targetId: string,
+  signal?: AbortSignal,
+): Promise<{ revision: number; pathPrefixes: string[]; methods: string[] } | null> {
+  const res = await apiFetch<unknown>(`/api/product/targets/${encodeURIComponent(targetId)}`, {
+    cache: "no-store",
+    redirect: "error",
+    signal,
+  });
+  const t = isObj(res) && isObj(res.target) ? res.target : null;
+  if (
+    !t ||
+    t.id !== targetId ||
+    !Number.isSafeInteger(t.revision) ||
+    !Array.isArray(t.path_prefixes) ||
+    !Array.isArray(t.methods)
+  )
+    return null;
+  return { revision: Number(t.revision), pathPrefixes: names(t.path_prefixes), methods: names(t.methods) };
+}
 
 const names = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
 
@@ -780,6 +807,7 @@ export async function getDeclarationTargets(signal?: AbortSignal): Promise<Decla
         revision: Number(t.revision),
         pathPrefixes: names(t.path_prefixes),
         methods: names(t.methods),
+        scopeKnown: false,
       });
   }
   return out;
@@ -787,6 +815,7 @@ export async function getDeclarationTargets(signal?: AbortSignal): Promise<Decla
 
 /** 참고 경고: 경로가 승인 접두 밖이거나 메서드가 승인 밖이면 문구. 저장을 막지 않는다 — 실제 허용은 E²가 요청마다 본다. */
 export function scopeWarnings(d: DeclarationDraft, target: DeclarationTarget): DraftIssue[] {
+  if (!target.scopeKnown) return [];
   const inScope = (p: string) =>
     target.pathPrefixes.some((pre) => p === pre || p.startsWith(pre.endsWith("/") ? pre : `${pre}/`));
   const out: DraftIssue[] = [];

@@ -171,6 +171,8 @@ export function UrlNewScanLive() {
   const [excluded, setExcluded] = useState("");
   const [credentialReady, setCredentialReady] = useState(false);
   const [accountRevision, setAccountRevision] = useState(0);
+  // 새 점검 화면 진입 세대(아래 route 효과가 올린다) — 진입마다 정책 선언을 다시 읽는 트리거
+  const [entryGen, setEntryGen] = useState(0);
   // E③: 대상 칸이 서버에서 확인한 대상(id · 상태), 그 대상 선언으로 본 확정 단계 계획, 리셋 확인 상태
   const [productTarget, setProductTarget] = useState<{ id: string; state: string } | null>(null);
   const [confirmationPlan, setConfirmationPlan] = useState<ConfirmationPlan | null>(null);
@@ -180,6 +182,7 @@ export function UrlNewScanLive() {
   const [planUnknown, setPlanUnknown] = useState(false);
   // 승인된 대상만 선언을 읽는다(선언은 승인된 대상에만 저장된다). 못 읽으면 '확정 단계 없음'으로 추정하지 않는다(규칙 5)
   const approvedTargetId = productTarget?.state === "approved" ? productTarget.id : null;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: entryGen 은 화면에 들어올 때마다 다시 읽는 트리거
   useEffect(() => {
     setConfirmationPlan(null);
     setDeclarationActive(false);
@@ -199,7 +202,7 @@ export function UrlNewScanLive() {
         setPlanUnknown(true);
       });
     return () => controller.abort();
-  }, [approvedTargetId]);
+  }, [approvedTargetId, entryGen]);
   // 대상(또는 그 상태)이 바뀌면 지난 리셋 상태를 버린다. 상자는 key 로 다시 그려져 새 상태를 알린다
   const onProductTarget = useCallback((t: { id: string; state: string } | null) => {
     setProductTarget(t);
@@ -224,8 +227,15 @@ export function UrlNewScanLive() {
   // 연결 전 칸의 화면 상태(시안 nAuth · nHow). 서버 입력에 칸이 없어 보내지 않는다. 지금 점검은 로그인 없이 진행된다.
   const [auth, setAuth] = useState<"in" | "pub">("pub");
   const [how, setHow] = useState<"form" | "sess">("form");
+  // 새 점검에 들어올 때마다 대상의 시험 계정 유무·정책 선언을 다시 읽는다. 처음 한 번만 읽으면 그 뒤 계정 분류·정책 선언
+  // 화면에서 더한 계정·선언이 반영되지 않아 "로그인 없이 진행"·확정 단계 안내 없음으로 남았다(1차 리허설 F2와 같은 종류,
+  // 2026-11-22 합친 빌드 자동화에서 재현)
   useEffect(() => {
-    if (route === "new") setPage(1);
+    if (route === "new") {
+      setPage(1);
+      setEntryGen((n) => n + 1);
+      setAccountRevision((n) => n + 1);
+    }
   }, [route]);
   const seenSeq = useRef(useWb.getState().prefill?.seq ?? 0);
   const seenReset = useRef(resetSeq);

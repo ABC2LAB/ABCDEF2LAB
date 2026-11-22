@@ -18,6 +18,7 @@ import {
   emptyCreate,
   emptyRead,
   getDeclaration,
+  getDeclarationTargetScope,
   getDeclarationTargets,
   hasCredentialText,
   looksLikeSecretName,
@@ -465,6 +466,7 @@ describe("API", () => {
     revision: 3,
     pathPrefixes: ["/api"],
     methods: ["GET", "POST"],
+    scopeKnown: true,
   };
 
   it("404 target_not_found 는 대상 없음, 코드 없는 404·405·501 은 라우트 없음 — 둘 다 선언 없음과 다르다. 그 밖은 던진다", async () => {
@@ -569,6 +571,29 @@ describe("API", () => {
       "types.2.read.pathTemplate",
     ]);
     expect(scopeWarnings(base(), target)).toEqual([]);
+  });
+
+  it("경로·메서드를 단건 조회로 확인하기 전(목록 값뿐)에는 경고를 만들지 않는다(1차 리허설 F3)", () => {
+    const d = edit((x) => {
+      x.identity.path = "/me";
+      x.types[0].create.method = "PUT";
+    });
+    // 대상 목록 응답은 경로·메서드를 비워 보낸다 — 빈 목록을 "승인 없음"으로 읽으면 POST 경고가 잘못 뜬다
+    expect(scopeWarnings(d, { ...target, pathPrefixes: [], methods: [], scopeKnown: false })).toEqual([]);
+  });
+
+  it("단건 GET /api/product/targets/{id}로 승인 경로·메서드를 읽고, 형식 밖이면 null", async () => {
+    api.mockResolvedValueOnce({
+      target: { id: "t1", revision: 2, path_prefixes: ["/api", "=/"], methods: ["GET", "POST"] },
+    } as never);
+    expect(await getDeclarationTargetScope("t1")).toEqual({
+      revision: 2,
+      pathPrefixes: ["/api", "=/"],
+      methods: ["GET", "POST"],
+    });
+    expect(api).toHaveBeenLastCalledWith("/api/product/targets/t1", expect.objectContaining({ cache: "no-store" }));
+    api.mockResolvedValueOnce({ target: { id: "other", revision: 2, path_prefixes: [], methods: [] } } as never);
+    expect(await getDeclarationTargetScope("t1")).toBeNull();
   });
 });
 

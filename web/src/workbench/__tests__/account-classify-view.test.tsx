@@ -6,7 +6,34 @@ vi.mock("@/lib/diagnosis/api", () => ({ apiFetch: vi.fn() }));
 
 import { apiFetch } from "@/lib/diagnosis/api";
 
+import { type Shell, ShellContext, type View } from "../shell";
 import { AccountClassifyLive } from "../views/live/AccountClassifyLive";
+
+/** 계정 분류 화면은 보일 때(경로 classify) 대상 목록을 읽는다(F2). 시험은 그 경로로 그린다. */
+function withRoute(route: View) {
+  const shell = {
+    route,
+    navSeq: 1,
+    narrow: false,
+    phone: false,
+    reduce: false,
+    inspOpen: false,
+    railOpen: false,
+    railNewAtRoute: false,
+    goTo: () => undefined,
+    openInsp: () => undefined,
+    closeInsp: () => undefined,
+    openRail: () => undefined,
+    closeRail: () => undefined,
+    foldRail: () => undefined,
+    dashPick: () => undefined,
+  } as Shell;
+  return (
+    <ShellContext.Provider value={shell}>
+      <AccountClassifyLive />
+    </ShellContext.Provider>
+  );
+}
 
 const api = vi.mocked(apiFetch);
 
@@ -44,7 +71,7 @@ async function pickTarget() {
 describe("AccountClassifyLive (실 API 읽기·쓰기)", () => {
   it("규칙2 고지 + 대상 선택 후 분류 목록(시험/실계정)을 그린다", async () => {
     serve();
-    render(<AccountClassifyLive />);
+    render(withRoute("classify"));
     expect(screen.getByText(/비밀번호 · 토큰 · 세션 값은 읽지도 보이지도 않/)).toBeInTheDocument();
     await pickTarget();
     const list = within(screen.getByLabelText("계정 목록"));
@@ -55,7 +82,7 @@ describe("AccountClassifyLive (실 API 읽기·쓰기)", () => {
 
   it("§2: 내보내기·공유·export 버튼을 두지 않는다", async () => {
     serve();
-    render(<AccountClassifyLive />);
+    render(withRoute("classify"));
     await pickTarget();
     for (const el of [...screen.queryAllByRole("button"), ...screen.queryAllByRole("link")]) {
       expect(el.textContent ?? "").not.toMatch(/내보내기|공유|export/i);
@@ -64,7 +91,7 @@ describe("AccountClassifyLive (실 API 읽기·쓰기)", () => {
 
   it("승인된 시험 계정도 '모델 입력 가능'으로 보이지 않는다(권한은 별도)", async () => {
     serve();
-    render(<AccountClassifyLive />);
+    render(withRoute("classify"));
     await pickTarget();
     const list = within(screen.getByLabelText("계정 목록"));
     expect(list.queryByText(/모델 입력 가능/)).toBeNull();
@@ -74,7 +101,7 @@ describe("AccountClassifyLive (실 API 읽기·쓰기)", () => {
 
   it("계정 등록: 라벨 입력 → POST accounts {label}", async () => {
     serve();
-    render(<AccountClassifyLive />);
+    render(withRoute("classify"));
     await pickTarget();
     fireEvent.change(screen.getByLabelText("새 계정 라벨"), { target: { value: "newacct" } });
     fireEvent.click(screen.getByRole("button", { name: "계정 등록" }));
@@ -86,7 +113,7 @@ describe("AccountClassifyLive (실 API 읽기·쓰기)", () => {
 
   it("형식 밖 라벨이면 등록 버튼이 막힌다", async () => {
     serve();
-    render(<AccountClassifyLive />);
+    render(withRoute("classify"));
     await pickTarget();
     fireEvent.change(screen.getByLabelText("새 계정 라벨"), { target: { value: "User@x" } });
     expect(screen.getByRole("button", { name: "계정 등록" })).toBeDisabled();
@@ -94,7 +121,7 @@ describe("AccountClassifyLive (실 API 읽기·쓰기)", () => {
 
   it("시험 표시: 진술 동의 뒤에만 POST mark-test", async () => {
     serve();
-    render(<AccountClassifyLive />);
+    render(withRoute("classify"));
     await pickTarget();
     const legacy = within(screen.getByLabelText("계정 목록")).getByText("legacy").closest("li") as HTMLElement;
     fireEvent.click(within(legacy).getByRole("button", { name: "시험 표시" }));
@@ -116,7 +143,7 @@ describe("AccountClassifyLive (실 API 읽기·쓰기)", () => {
     ["문자열 아님", 7],
   ])("진술이 %s 이면 시험 표시 동의 버튼이 막히고 mark-test 를 보내지 않는다", async (_name, statement) => {
     serve(statement);
-    render(<AccountClassifyLive />);
+    render(withRoute("classify"));
     await pickTarget();
     const legacy = within(screen.getByLabelText("계정 목록")).getByText("legacy").closest("li") as HTMLElement;
     fireEvent.click(within(legacy).getByRole("button", { name: "시험 표시" }));
@@ -129,7 +156,7 @@ describe("AccountClassifyLive (실 API 읽기·쓰기)", () => {
 
   it("표시 해제: POST unmark", async () => {
     serve();
-    render(<AccountClassifyLive />);
+    render(withRoute("classify"));
     await pickTarget();
     const owner = within(screen.getByLabelText("계정 목록")).getByText("owner").closest("li") as HTMLElement;
     fireEvent.click(within(owner).getByRole("button", { name: "표시 해제" }));
@@ -145,7 +172,7 @@ describe("AccountClassifyLive (실 API 읽기·쓰기)", () => {
         ? (Promise.resolve({ targets: [] }) as never)
         : (Promise.reject(new Error("x")) as never),
     );
-    render(<AccountClassifyLive />);
+    render(withRoute("classify"));
     expect(await screen.findByText(/승인된 대상이 없습니다/)).toBeInTheDocument();
     expect(screen.queryByLabelText("계정 목록")).toBeNull();
   });
@@ -184,7 +211,7 @@ describe("AccountClassifyLive 지연 응답 귀속", () => {
   }
 
   async function startUnmarkOnAThenSwitchToB() {
-    render(<AccountClassifyLive />);
+    render(withRoute("classify"));
     const pick = await screen.findByLabelText("분류할 대상");
     fireEvent.change(pick, { target: { value: "t1" } });
     const a = (await screen.findByText("account-a")).closest("li") as HTMLElement;
@@ -271,7 +298,7 @@ describe("AccountClassifyLive 로그인 방식 · 자격 입력", () => {
 
   it("저장된 로그인 방식을 칸에 채우고, 고쳐 저장하면 PUT login(자격 값 없음)", async () => {
     serveLogin({ login: SAVED_LOGIN });
-    render(<AccountClassifyLive />);
+    render(withRoute("classify"));
     await pickTarget();
     expect(await screen.findByLabelText("로그인 경로 (POST)")).toHaveValue("/session/new");
     expect(screen.getByLabelText("응답 JSON 칸 (점으로 구분)")).toHaveValue("data.access");
@@ -286,7 +313,7 @@ describe("AccountClassifyLive 로그인 방식 · 자격 입력", () => {
 
   it("쿠키 방식으로 바꾸면 쿠키 이름만 보낸다", async () => {
     serveLogin({ login: SAVED_LOGIN });
-    render(<AccountClassifyLive />);
+    render(withRoute("classify"));
     await pickTarget();
     await screen.findByLabelText("로그인 경로 (POST)");
     fireEvent.change(screen.getByLabelText("세션 위치"), { target: { value: "cookies" } });
@@ -308,7 +335,7 @@ describe("AccountClassifyLive 로그인 방식 · 자격 입력", () => {
 
   it("미설정이면 안내하고, 칸이 형식 밖이면 저장 버튼이 막힌다", async () => {
     serveLogin();
-    render(<AccountClassifyLive />);
+    render(withRoute("classify"));
     await pickTarget();
     expect(await loginSection().findByText(/저장된 로그인 방식이 없습니다/)).toBeInTheDocument();
     const save = screen.getByRole("button", { name: "로그인 방식 저장" });
@@ -324,7 +351,7 @@ describe("AccountClassifyLive 로그인 방식 · 자격 입력", () => {
 
   it("저장 실패는 서버 사유를 한국어 문구로 보인다", async () => {
     serveLogin({ login: SAVED_LOGIN, putLogin: () => Promise.reject(new Error("invalid_target_login")) });
-    render(<AccountClassifyLive />);
+    render(withRoute("classify"));
     await pickTarget();
     await screen.findByLabelText("로그인 경로 (POST)");
     fireEvent.click(screen.getByRole("button", { name: "로그인 방식 저장" }));
@@ -333,7 +360,7 @@ describe("AccountClassifyLive 로그인 방식 · 자격 입력", () => {
 
   it("형식 밖 login 응답은 미설정이 아니라 읽기 실패로 보인다", async () => {
     serveLogin({ login: { method: "GET", path: "/x" } });
-    render(<AccountClassifyLive />);
+    render(withRoute("classify"));
     await pickTarget();
     expect(await loginSection().findByText("로그인 방식을 불러오지 못했습니다.")).toBeInTheDocument();
     expect(loginSection().queryByText(/저장된 로그인 방식이 없습니다/)).toBeNull();
@@ -341,7 +368,7 @@ describe("AccountClassifyLive 로그인 방식 · 자격 입력", () => {
 
   it("자격 등록 표시는 credential_configured 로만 보인다", async () => {
     serveLogin();
-    render(<AccountClassifyLive />);
+    render(withRoute("classify"));
     await pickTarget();
     expect(within(row("owner")).getByText("자격 등록됨")).toBeInTheDocument();
     expect(within(row("legacy")).getByText("자격 없음")).toBeInTheDocument();
@@ -351,7 +378,7 @@ describe("AccountClassifyLive 로그인 방식 · 자격 입력", () => {
     serveLogin({ configuredAfterWrite: true });
     const setItem = vi.spyOn(Storage.prototype, "setItem");
     const logs = (["log", "info", "warn", "error", "debug"] as const).map((k) => vi.spyOn(console, k));
-    const { container } = render(<AccountClassifyLive />);
+    const { container } = render(withRoute("classify"));
     await pickTarget();
     fireEvent.click(within(row("legacy")).getByRole("button", { name: "자격 입력" }));
     const user = within(row("legacy")).getByLabelText("사용자명") as HTMLInputElement;
@@ -391,7 +418,7 @@ describe("AccountClassifyLive 로그인 방식 · 자격 입력", () => {
 
   it("6바이트보다 짧은 비밀번호는 등록 뒤 '실행 때 로그인하지 않음'을 따로 알린다(값 없음)", async () => {
     serveLogin({ configuredAfterWrite: true });
-    const { container } = render(<AccountClassifyLive />);
+    const { container } = render(withRoute("classify"));
     await pickTarget();
     fireEvent.click(within(row("legacy")).getByRole("button", { name: "자격 입력" }));
     fireEvent.change(within(row("legacy")).getByLabelText("사용자명"), { target: { value: USERNAME } });
@@ -411,7 +438,7 @@ describe("AccountClassifyLive 로그인 방식 · 자격 입력", () => {
 
   it("등록이 실패해도 칸은 비어 있고, 서버 사유를 그 계정 줄에 한국어로 보인다", async () => {
     serveLogin({ putCredential: () => Promise.reject(new Error("account_not_found")) });
-    render(<AccountClassifyLive />);
+    render(withRoute("classify"));
     await pickTarget();
     fireEvent.click(within(row("legacy")).getByRole("button", { name: "자격 입력" }));
     const user = within(row("legacy")).getByLabelText("사용자명") as HTMLInputElement;
@@ -427,7 +454,7 @@ describe("AccountClassifyLive 로그인 방식 · 자격 입력", () => {
 
   it("형식 밖 자격(빈 비밀번호)은 보내지 않고 칸을 비운다", async () => {
     serveLogin();
-    render(<AccountClassifyLive />);
+    render(withRoute("classify"));
     await pickTarget();
     fireEvent.click(within(row("legacy")).getByRole("button", { name: "자격 입력" }));
     const user = within(row("legacy")).getByLabelText("사용자명") as HTMLInputElement;
@@ -440,7 +467,7 @@ describe("AccountClassifyLive 로그인 방식 · 자격 입력", () => {
 
   it("서버가 credential_configured 를 참으로 주지 않으면 등록됨으로 보이지 않는다", async () => {
     serveLogin({ putCredential: () => Promise.resolve({ account: { label: "legacy" } }) });
-    render(<AccountClassifyLive />);
+    render(withRoute("classify"));
     await pickTarget();
     fireEvent.click(within(row("legacy")).getByRole("button", { name: "자격 입력" }));
     fireEvent.change(within(row("legacy")).getByLabelText("사용자명"), { target: { value: USERNAME } });
@@ -448,5 +475,26 @@ describe("AccountClassifyLive 로그인 방식 · 자격 입력", () => {
     fireEvent.click(within(row("legacy")).getByRole("button", { name: "자격 등록" }));
     expect(await within(row("legacy")).findByRole("alert")).toHaveTextContent(/자격 등록을 확인하지 못했습니다/);
     expect(within(row("legacy")).getByText("자격 없음")).toBeInTheDocument();
+  });
+});
+
+describe("대상 목록 다시 읽기(사용자 2026-11-22, 1차 리허설 F2)", () => {
+  it("숨긴 채 붙어 있다가 화면에 들어오면 대상 목록을 다시 읽어 그사이 승인한 대상을 보인다", async () => {
+    const approvedTargets: unknown[] = [];
+    api.mockImplementation((path: string) => {
+      if (path === "/api/product/targets")
+        return Promise.resolve({
+          targets: approvedTargets,
+        }) as never;
+      return Promise.resolve({}) as never;
+    });
+    const view = render(withRoute("dashboard"));
+    expect(api).not.toHaveBeenCalled(); // 숨겨진 동안은 읽지 않는다
+    view.rerender(withRoute("classify"));
+    await screen.findByText(/승인된 대상이 없습니다/);
+    approvedTargets.push({ id: "t1", origin: "https://a.example", state: "approved" }); // 대상 등록 화면에서 승인
+    view.rerender(withRoute("new"));
+    view.rerender(withRoute("classify"));
+    expect(await screen.findByRole("option", { name: /https:\/\/a\.example/ })).toBeInTheDocument();
   });
 });
