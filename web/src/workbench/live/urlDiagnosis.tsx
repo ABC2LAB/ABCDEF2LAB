@@ -209,12 +209,9 @@ async function bootJob(owner: string): Promise<void> {
     busy: !!saved || !!selected,
     uncertain: !!saved || !!selected,
   });
-  if (!saved && !selected) {
-    // 이어 보는 점검이 없어도(새 브라우저·재시작으로 sessionStorage가 빔) 서버 진행 목록을 읽어 둔다 — 레일·진행 화면이
-    // 진행 중 점검을 '열기' 버튼으로 보인다(사용자 2026-11-22, 1차 리허설 F14). 자동으로 고르지는 않는다(여럿일 수 있음).
-    void loadUrlRuns(owner);
-    return;
-  }
+  // 이어 보는 점검이 없으면(새 브라우저·재시작) 여기서 끝낸다. 서버 진행 목록은 기능 확인 직후 읽고(아래 loadUrlRuns),
+  // 레일·진행 화면이 그 목록의 진행 중 점검을 '이 점검 열기'로 보인다(사용자 2026-11-22, F14)
+  if (!saved && !selected) return;
   const request = new AbortController();
   selectionRequest = request;
   try {

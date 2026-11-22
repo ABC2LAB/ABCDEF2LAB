@@ -1285,7 +1285,7 @@ describe("대시보드", () => {
         },
       }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "승인 요청 보기" }));
+    // 다시 연 점검도 고르기 전 상세가 승인 대기 요청이다(예전엔 점검 정보로 돌아가 '승인 요청 보기'를 눌러야 했다)
     const recoveredDetail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
     // 다시 연(복구) 점검 안내 문장은 두지 않는다(사용자 11/17). 진행 목록에서 다시 연 점검도 승인할 수 있다
     // (사용자 2026-11-22, 1차 리허설 F16 — 서버가 실행 결속·주체를 다시 본다)
@@ -1590,10 +1590,11 @@ describe("점검 진행", () => {
         },
       }),
     );
-    // 다시 연(복구) 점검 안내 문장은 두지 않고(사용자 11/17) 승인 버튼만 잠근다
+    // 다시 연(복구) 점검 안내 문장은 두지 않는다(사용자 11/17). 진행 목록에서 다시 연 점검도 승인할 수 있다
+    // (사용자 2026-11-22, 1차 리허설 F16: 새로고침 한 번에 승인을 못 하면 승인 모드 통제가 무너진다)
     expect(screen.queryByText(/다시 연 점검/)).toBeNull();
     const approvals = screen.getAllByRole("button", { name: "승인하고 보내기" });
     expect(approvals).toHaveLength(2);
-    for (const button of approvals) expect(button).toBeDisabled();
+    for (const button of approvals) expect(button).toBeEnabled();
   });
 });

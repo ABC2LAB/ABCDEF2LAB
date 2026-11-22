@@ -91,9 +91,10 @@ const SHORT: Readonly<Record<DiagnosticOutcome, string>> = {
  * 2026-11-22, 1차 리허설 F14). 연 점검(조회 결속)에서도 승인·거부·범위 선택을 할 수 있다(F16). 자동으로 고르지 않는다.
  */
 export function UnfollowedActiveRuns() {
-  const runs = useUrlRuns((st) => st.page?.runs ?? []);
+  // 선택자는 저장소 값 그대로(page)를 고른다 — `?? []`처럼 새 배열을 돌려주면 getSnapshot이 매번 달라져 무한 렌더링이 난다
+  const page = useUrlRuns((st) => st.page);
   const { goTo } = useShell();
-  const active = runs.filter(activeURLRun);
+  const active = (page?.runs ?? []).filter(activeURLRun);
   if (!active.length) return null;
   return (
     <div className={cx(s.note, s.warn)} role="note" aria-label="이어 보지 않는 진행 중 점검">
