@@ -37,6 +37,8 @@ const REASON_TEXT: Readonly<Record<string, string>> = {
   product_write_record_unavailable: "쓰기 기록을 남기지 못해 보내지 않음",
   product_create_request_unavailable: "생성 요청을 만들 수 없어 보내지 않음",
   product_data_check_contradiction: "거부 응답인데 표식이 보임(모순)",
+  product_session_expired: "교차 계정 세션 만료 가능성 · 판정 안 함",
+  product_cross_denial_unverified: "거부 뒤 교차 계정 신원을 다시 확인하지 못함",
   // 확정 단계 꺼짐 사유
   not_wired: "확정 단계가 연결되지 않음",
   declaration_missing: "정책 선언 없음",
@@ -49,6 +51,7 @@ const REASON_TEXT: Readonly<Record<string, string>> = {
   no_confirmable_type: "시험할 자원 종류 없음",
   account_roles_undeclared: "계정 역할을 정하지 않음",
   accounts_privilege_unconfirmed: "두 계정이 같은 권한 등급이라는 확인 없음",
+  no_confirmation_candidates: "모델 단계가 진단 요청 없이 끝나 확정할 후보 없음",
   // 확정 단계 시작 거절 사유
   reset_confirmation_missing: "대상 리셋 확인 없음",
   previous_markers_present: "지난 시험 객체가 남아 있음",
@@ -57,6 +60,7 @@ const REASON_TEXT: Readonly<Record<string, string>> = {
   marker_generation_failed: "표식 생성 실패",
   marker_registration_failed: "표식 등록 실패",
   target_changed: "점검 중 대상이 바뀜",
+  e2_execution_unavailable: "전송 통제 실행을 잡지 못해 시작 안 함",
   // 확정 단계 무결성 실패 사유
   policy_digest_mismatch: "정책 해시 불일치",
   policy_target_mismatch: "정책 대상 불일치",

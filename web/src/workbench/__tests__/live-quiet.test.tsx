@@ -1,10 +1,14 @@
 import "@testing-library/jest-dom/vitest";
+
 import { act, renderHook } from "@testing-library/react";
 import { expect, it } from "vitest";
 
 import { ApiError } from "@/lib/diagnosis/api";
 
+import { UNKNOWN_REASON_TEXT, verdictReasonText } from "../live/verdictReasons";
 import { heldReason, useCoverageForbidden } from "../views/live/UrlLiveLive";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 it("'승인 필요로 보류' 설명은 실제 보류 요청의 메서드로 쓴다(1차 리허설 F13)", () => {
   expect(heldReason([])).toBe("보내기 전 사람 확인");
@@ -27,4 +31,19 @@ it("coverage 403을 한 번 받으면 그 task 에선 다시 부르지 않고, �
   expect(result.current.forbidden).toBe(true);
   rerender({ task: "2" });
   expect(result.current.forbidden).toBe(false);
+});
+
+it("서버 계약(e3contract)의 확정 단계 사유 코드는 모두 화면 문구가 있다(#845 합성 확인: e2_execution_unavailable이 '서버 사유 있음'으로만 보였음)", () => {
+  // Go 계약의 사유 상수를 읽는다 — 새 사유가 생기면 이 시험이 문구 빠짐을 알린다
+  const dir = join(process.cwd(), "..", "e3contract");
+  const codes = new Set<string>();
+  for (const f of readdirSync(dir).filter((n) => n.endsWith(".go") && !n.endsWith("_test.go"))) {
+    for (const m of readFileSync(join(dir, f), "utf8").matchAll(
+      /^\s+\w+\s+(?:StartRefusal|DisabledReason|ProductReason|IntegrityReason)\s*=\s*"([a-z0-9_]+)"/gm,
+    ))
+      codes.add(m[1]);
+  }
+  expect(codes.has("e2_execution_unavailable")).toBe(true);
+  expect(codes.size).toBeGreaterThan(40);
+  expect([...codes].filter((c) => verdictReasonText(c) === UNKNOWN_REASON_TEXT)).toEqual([]);
 });
