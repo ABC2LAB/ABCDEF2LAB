@@ -575,7 +575,7 @@ class TestStartChecks(unittest.TestCase):
         self.assertEqual(body["provider"]["only"], ["slug/fp8"])
         self.assertFalse(body["provider"]["allow_fallbacks"])
 
-    PRICE_OK = staticmethod(lambda m: {"found": True, "ok": True, "input_usd_micros_per_million": 1,
+    PRICE_OK = staticmethod(lambda m: {"found": True, "ok": True, "margin_ok": True, "input_usd_micros_per_million": 1,
                                        "output_usd_micros_per_million": 1})
 
     def test_endpoint_price_compares_the_same_tag_in_manifest_units(self):
@@ -590,8 +590,14 @@ class TestStartChecks(unittest.TestCase):
         self.assertEqual(urls, ["https://gateway.example/api/v1/models/m/x/endpoints"])
         self.assertEqual((out["input_usd_micros_per_million"], out["output_usd_micros_per_million"]), (176000, 1578000))
         self.assertFalse(out["ok"])
-        high = dict(low, max_input_price_usd_micros_per_million=200000, max_output_price_usd_micros_per_million=1600000)
-        self.assertTrue(o.endpoint_price(high, get)["ok"])
+        tight = dict(low, max_input_price_usd_micros_per_million=200000, max_output_price_usd_micros_per_million=1600000)
+        out = o.endpoint_price(tight, get)
+        self.assertTrue(out["ok"])
+        self.assertFalse(out["margin_ok"])  # 단가에 너무 가깝다(1.6 < 1.5 × 1.578)
+        roomy = dict(low, max_input_price_usd_micros_per_million=270000, max_output_price_usd_micros_per_million=2400000)
+        self.assertTrue(o.endpoint_price(roomy, get)["margin_ok"])
+        self.assertTrue(o.endpoint_price(tight, get, margin=1.0)["margin_ok"])
+        high = tight
         self.assertFalse(o.endpoint_price(dict(high, provider_slug="missing/fp8"), get)["found"])
 
     def test_start_checks_stop_when_price_is_above_cap_or_unknown_before_any_call(self):
@@ -607,6 +613,10 @@ class TestStartChecks(unittest.TestCase):
             self.assertEqual(o.session_start_checks(args, None, None, lambda e: None, now=afternoon,
                                                     price=lambda m: {"found": False, "ok": False},
                                                     probe=lambda m, k: calls.append(1)), "provider_price_unknown")
+            thin = lambda m: {"found": True, "ok": True, "margin_ok": False, "input_usd_micros_per_million": 176000,  # noqa: E731
+                              "output_usd_micros_per_million": 1578000}
+            self.assertEqual(o.session_start_checks(args, None, None, lambda e: None, now=afternoon, price=thin,
+                                                    probe=lambda m, k: calls.append(1)), "provider_price_margin")
         self.assertEqual(calls, [])  # 단가가 안 맞으면 유료 점검 호출도 보내지 않는다
 
     def _args(self, tmp: Path, **over):

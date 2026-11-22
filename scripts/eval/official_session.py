@@ -311,7 +311,10 @@ def provider_probe(manifest: dict, key: str, calls: int = PROBE_CALLS,
     return out
 
 
-def endpoint_price(manifest: dict, get: Callable[[str], tuple[int, dict]] | None = None) -> dict:
+PRICE_MARGIN = 1.5
+
+
+def endpoint_price(manifest: dict, get: Callable[[str], tuple[int, dict]] | None = None, margin: float = PRICE_MARGIN) -> dict:
     """OpenRouter 엔드포인트 표(공개 GET {base_url}/models/{model}/endpoints)에서 manifest `provider_slug`와 같은 tag의 단가를
     manifest와 같은 단위(USD 마이크로/100만 토큰)로 읽고 manifest 상한과 대조한다. 2026-11-22: PrimeIntellect 단가가
     0.176/1.578로 올라 상한 0.15/1.5를 넘자 OpenRouter가 404 "No allowed providers"를 주고 회차가 첫 호출에서 끝났다."""
@@ -333,8 +336,12 @@ def endpoint_price(manifest: dict, get: Callable[[str], tuple[int, dict]] | None
     except (KeyError, TypeError, ValueError):
         out["ok"] = False
         return out
-    out.update(input_usd_micros_per_million=prompt, output_usd_micros_per_million=completion,
-               ok=prompt <= out["cap_input_usd_micros_per_million"] and completion <= out["cap_output_usd_micros_per_million"])
+    cap_in, cap_out = out["cap_input_usd_micros_per_million"], out["cap_output_usd_micros_per_million"]
+    # 상한은 단가에 딱 맞추지 않고 여유(margin배)를 둔다(사용자 2026-11-22: B에는 가격 상한이 없어, 측정 도중 제공자가 단가를
+    # 조금만 올려도 O만 404로 막혀 세션이 멈춘다. 11/22 S01-final7은 상한 1.6에서 회차 도중 실제 출력 단가가 1.6을 넘었다)
+    out.update(input_usd_micros_per_million=prompt, output_usd_micros_per_million=completion, margin=margin,
+               ok=prompt <= cap_in and completion <= cap_out,
+               margin_ok=cap_in >= margin * prompt and cap_out >= margin * completion)
     return out
 
 
@@ -573,10 +580,11 @@ def session_start_checks(a: argparse.Namespace, window: tuple[int, int] | None, 
                          log: Callable[[dict], None], now: Callable[[], datetime.datetime] | None = None,
                          probe: Callable[[dict, str], dict] = provider_probe,
                          sleep: Callable[[float], None] = time.sleep,
-                         price: Callable[[dict], dict] = endpoint_price) -> str | None:
+                         price: Callable[[dict], dict] | None = None) -> str | None:
     """세션 시작 전 운영 점검(2026-11-22 사용자): 시작 시간대(한국 시간) → 제공자 429 점검(같은 모델·제공자 짧은 호출 10번,
     429가 하나라도 나면 probe_wait 뒤 다시). 결과는 세션 기록에 남긴다. 멈출 사유 또는 None."""
     now = now or (lambda: datetime.datetime.now(datetime.timezone.utc))
+    price = price or (lambda m: endpoint_price(m, margin=getattr(a, "price_margin", PRICE_MARGIN)))
     def window_ok() -> bool:
         ok = window is None or in_window(now(), window)
         if window is not None:
@@ -604,6 +612,8 @@ def session_start_checks(a: argparse.Namespace, window: tuple[int, int] | None, 
         return "provider_price_unknown"
     if not priced["ok"]:
         return "provider_price_above_cap"
+    if not priced.get("margin_ok", False):
+        return "provider_price_margin"
     for attempt in range(1, a.probe_tries + 1):
         result = probe(manifest, key)
         expected = manifest.get("expected_provider_name")
@@ -652,6 +662,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--start-window-kst", help="세션 시작을 허용하는 한국 시간대(예: 14-18). 밖이면 시작하지 않는다")
     ap.add_argument("--provider-probe", action="store_true",
                     help="시작 직전 같은 모델·제공자로 짧은 호출 10번. 429가 하나라도 나면 --probe-wait 뒤 다시 점검")
+    ap.add_argument("--price-margin", type=float, default=PRICE_MARGIN,
+                    help="manifest 가격 상한이 엔드포인트 단가의 이 배수 이상이어야 시작(기본 1.5)")
     ap.add_argument("--probe-wait", type=float, default=1800)
     ap.add_argument("--probe-tries", type=int, default=4)
     a = ap.parse_args(argv)
