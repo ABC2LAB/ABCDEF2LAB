@@ -7,7 +7,7 @@
 // ※ 절대규칙 2: 자격 값은 받지도 보내지도 않는다. 본문 틀에 자격으로 보이는 칸이 있으면 저장을 막는다. 내보내기·공유 없음.
 // ※ 디자인은 윤재상 기준으로 맞출 뼈대다 — 기존 workbench 클래스·토큰만 쓴다.
 
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
 import { cx } from "../../lib/cx";
 import {
@@ -448,10 +448,15 @@ export function PolicyDeclarationLive() {
   const [attempt, setAttempt] = useState(0);
   const scopeKey = visible && listed ? `${listed.id}|${listed.revision}` : "";
   const scopeNow = scope && scope.key === scopeKey ? scope.value : null;
-  const target =
-    listed && scopeNow && scopeNow !== "failed" && scopeNow.revision === listed.revision
-      ? { ...listed, pathPrefixes: scopeNow.pathPrefixes, methods: scopeNow.methods, scopeKnown: true }
-      : listed;
+  // 합친 대상은 같은 입력이면 같은 객체여야 한다 — 아래 선언 조회 effect가 대상 객체에 걸려 있어, 렌더마다 새 객체면 다시
+  // 읽기를 끝없이 되풀이한다
+  const target = useMemo(
+    () =>
+      listed && scopeNow && scopeNow !== "failed" && scopeNow.revision === listed.revision
+        ? { ...listed, pathPrefixes: scopeNow.pathPrefixes, methods: scopeNow.methods, scopeKnown: true }
+        : listed,
+    [listed, scopeNow],
+  );
   // 진입 세대: 화면에 다시 들어올 때마다 올린다. 렌더 중에 맞춰서 같은 렌더에서 지난 진입의 결과를 버린다
   const [entry, setEntry] = useState({ visible, gen: 0 });
   if (entry.visible !== visible) setEntry({ visible, gen: visible ? entry.gen + 1 : entry.gen });
