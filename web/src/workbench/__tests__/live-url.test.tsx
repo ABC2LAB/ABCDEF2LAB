@@ -2805,6 +2805,47 @@ describe("외부 모델 시험 계정 동의", () => {
     await screen.findByText("등록됨");
     return target;
   }
+  it("새 점검에 다시 들어오면 그사이 등록한 시험 계정을 다시 읽어 동의 칸을 보인다(F2와 같은 종류, 2026-11-22)", async () => {
+    // 처음엔 시험 계정이 없다 → 동의 칸 없음. 계정 분류 화면에서 계정을 등록한 뒤 새 점검으로 돌아오면 다시 읽어야 한다
+    let registered = false;
+    const view = await (async () => {
+      u.readURLCatalog.mockResolvedValue({ ...catalog, profiles: [{ ...catalog.profiles[0], model: externalModel }] });
+      vi.mocked(teamApi.apiFetch).mockImplementation(async (path) => {
+        const p = String(path);
+        if (p.includes("targets/resolve"))
+          return { target: { id: "target-1", origin: "https://target.example", state: "approved" } } as never;
+        if (p.endsWith("/accounts"))
+          return {
+            accounts: registered ? [{ label: "tester", classification: "test" }] : [],
+            external_consent_statement: SERVER_EXTERNAL_ACCOUNT_STATEMENT,
+          } as never;
+        return { credential: { configured: true, model: externalModel.model } } as never;
+      });
+      const r = mount("new");
+      fireEvent.change(await screen.findByLabelText(/점검할 사이트 주소/), {
+        target: { value: "https://target.example/app" },
+      });
+      fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
+      await screen.findByText("등록됨");
+      return r;
+    })();
+    expect(screen.queryByRole("checkbox", { name: /이 점검 회차에서 시험 계정 세션/ })).toBeNull();
+    registered = true; // 계정 분류 화면에서 시험 계정 등록
+    view.rerender(
+      <ShellContext.Provider value={shellValue({ route: "classify", goTo: view.goTo })}>
+        <UrlFeeds />
+        <NewScanByMode />
+      </ShellContext.Provider>,
+    );
+    view.rerender(
+      <ShellContext.Provider value={shellValue({ route: "new", goTo: view.goTo })}>
+        <UrlFeeds />
+        <NewScanByMode />
+      </ShellContext.Provider>,
+    );
+    fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
+    expect(await screen.findByRole("checkbox", { name: /이 점검 회차에서 시험 계정 세션/ })).toBeInTheDocument();
+  });
   it("기본 미선택·명시적 동의만 초안에 전송하고 저장소에는 남기지 않는다", async () => {
     await externalTarget();
     const checkbox = await screen.findByRole("checkbox", { name: /이 점검 회차에서 시험 계정 세션/ });
