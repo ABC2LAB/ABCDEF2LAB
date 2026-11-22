@@ -1,17 +1,19 @@
 "use client";
 
 import { useEffect, useState } from "react";
+
 import { ApiError } from "@/lib/diagnosis/api";
 import {
   COUNT_LABEL,
-  decisionClass,
   type DecisionClass,
+  decisionClass,
   type E2Flow,
   getE2Flow,
   mergeE2Flow,
   REASON_LABEL,
   STAGE_LABEL,
 } from "@/lib/diagnosis/e2flow";
+
 import { useUrl } from "../../live/urlDiagnosis";
 import { useShell } from "../../shell";
 import s from "../../workbench.module.css";

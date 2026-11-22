@@ -1,17 +1,33 @@
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+
 import { ApiError, apiFetch } from "@/lib/diagnosis/api";
 import { e2Attempt, e2Flow } from "@/lib/diagnosis/e2flow-fixtures";
-import { useUrl, resetUrl } from "../live/urlDiagnosis";
+
+import { resetUrl, useUrl } from "../live/urlDiagnosis";
 import { type Shell, ShellContext, type View } from "../shell";
 import { UrlE2FlowLive } from "../views/live/UrlE2FlowLive";
 
 /** 전송 통제 흐름 화면은 보일 때(경로 e2flow)만 읽는다(1차 리허설 F5). */
 function at(route: View = "e2flow") {
-  const shell = { route, navSeq: 1, narrow: false, phone: false, reduce: false, inspOpen: false, railOpen: false,
-    railNewAtRoute: false, goTo: () => undefined, openInsp: () => undefined, closeInsp: () => undefined,
-    openRail: () => undefined, closeRail: () => undefined, foldRail: () => undefined, dashPick: () => undefined } as Shell;
+  const shell = {
+    route,
+    navSeq: 1,
+    narrow: false,
+    phone: false,
+    reduce: false,
+    inspOpen: false,
+    railOpen: false,
+    railNewAtRoute: false,
+    goTo: () => undefined,
+    openInsp: () => undefined,
+    closeInsp: () => undefined,
+    openRail: () => undefined,
+    closeRail: () => undefined,
+    foldRail: () => undefined,
+    dashPick: () => undefined,
+  } as Shell;
   return (
     <ShellContext.Provider value={shell}>
       <UrlE2FlowLive />
@@ -217,7 +233,9 @@ it("숨겨진 채 붙어 있을 때는 e2-flow를 부르지 않는다(1차 리�
 
 it("첫 진단 의도 전 404는 실패가 아니라 '진단 요청 전'으로 보이고 10초 뒤 다시 본다", async () => {
   vi.useFakeTimers();
-  vi.mocked(apiFetch).mockRejectedValueOnce(new ApiError(404, "전송 통제 기록이 아직 없습니다")).mockResolvedValue(e2Flow());
+  vi.mocked(apiFetch)
+    .mockRejectedValueOnce(new ApiError(404, "전송 통제 기록이 아직 없습니다"))
+    .mockResolvedValue(e2Flow());
   render(at());
   await act(async () => {
     await vi.advanceTimersByTimeAsync(0);

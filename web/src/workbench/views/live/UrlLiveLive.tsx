@@ -84,7 +84,6 @@ const SHORT: Readonly<Record<DiagnosticOutcome, string>> = {
 
 /** 판정 딱지 모양 (확정 = 기본, 검토 필요 = 의심 모양, 정상 = 초록, 그 밖 = 판단 불가 모양). */
 
-
 /** coverage 403(이 task 에선 제공 안 함)을 task 마다 기억한다. 바뀐 task 는 다시 한 번 부른다. */
 export function useCoverageForbidden(taskId: string | null): { forbidden: boolean; observe: (error: unknown) => void } {
   const [forbiddenTask, setForbiddenTask] = useState<string | null>(null);
@@ -1533,7 +1532,9 @@ export function UrlReportLive() {
   // 자산 커버리지 (요약 칸): 서버 task 의 방문 · 검사한 자산 비율(판정 커버리지 아님 · 리뷰 #479).
   // 꺼졌거나 못 읽으면 값을 만들지 않고 "—"
   const covOff = useCoverageForbidden(taskId);
-  const cov = usePoll(() => fetchCoverage(taskId as string), [taskId], { enabled: visible && !!taskId && !covOff.forbidden });
+  const cov = usePoll(() => fetchCoverage(taskId as string), [taskId], {
+    enabled: visible && !!taskId && !covOff.forbidden,
+  });
   covOff.observe(cov.error);
   const covPct = cov.data?.enabled && cov.data.pct !== null ? Math.round(cov.data.pct * 100) : null;
   const [tab, setTab] = useState<RTab>("list");
