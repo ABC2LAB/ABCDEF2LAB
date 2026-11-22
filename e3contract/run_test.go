@@ -1245,7 +1245,8 @@ func TestRunCrossRecheckIntegrityFailure(t *testing.T) {
 }
 
 // 사용자 결정 2026-11-20 분기점 2: 모델 단계가 E② 실행을 한 번도 잡지 않고 스스로 끝나면 요청 없이 남긴다. 꺼진 회차는 실제
-// 사유, 켜진 회차는 확정할 후보가 없으면 no_confirmation_candidates, 후보가 있으면(비정상) e2_execution_unavailable이다.
+// 사유, 켜진 회차는 e2_execution_unavailable이다(2026-11-22 F12: 후보 유무로 가르지 않는다). 인증 준비는 E② 실행을 잡을 때
+// 하므로 실행이 없으면 인증 결과가 없다. 그것을 test_accounts_unavailable로 가리지 않는다. 라벨 형식 오류는 그대로 끈다.
 func TestRunWithoutExecution(t *testing.T) {
 	for name, c := range map[string]struct {
 		prepare func(*fixture)
@@ -1254,9 +1255,11 @@ func TestRunWithoutExecution(t *testing.T) {
 	}{
 		"disabled-declaration": {func(f *fixture) { f.in.Binding.Policy = e3contract.PolicySource{} }, e3contract.StatusDisabled,
 			string(e3contract.DisabledNoDeclaration)},
-		"disabled-accounts": {func(f *fixture) { f.in.Cross.Authenticated = false }, e3contract.StatusDisabled,
+		"unauthenticated-without-auth-prep": {func(f *fixture) { f.in.Owner.Authenticated, f.in.Cross.Authenticated = false, false },
+			e3contract.StatusStartRefused, string(e3contract.RefuseE2ExecutionUnavailable)},
+		"disabled-same-labels": {func(f *fixture) { f.in.Cross.Label = f.in.Owner.Label }, e3contract.StatusDisabled,
 			string(e3contract.DisabledAccountsUnverified)},
-		"no-candidates": {func(f *fixture) { f.in.Candidates = nil }, e3contract.StatusDisabled, string(e3contract.DisabledNoCandidates)},
+		"no-candidates": {func(f *fixture) { f.in.Candidates = nil }, e3contract.StatusStartRefused, string(e3contract.RefuseE2ExecutionUnavailable)},
 		"candidates":    {func(*fixture) {}, e3contract.StatusStartRefused, string(e3contract.RefuseE2ExecutionUnavailable)},
 	} {
 		t.Run(name, func(t *testing.T) {

@@ -86,8 +86,8 @@ func RunStopped(ctx context.Context, deps Deps, in Input) RunResult {
 
 // RunWithoutExecution은 모델 단계가 E② 실행을 한 번도 잡지 않은 채 스스로 끝났을 때(intent 없음 등) 확정 단계 상태를 요청
 // 없이 정한다(사용자 결정 2026-11-20 분기점 2). 비활성 근거가 있으면 RunStopped와 같은 결과(꺼진 회차는 실제 사유)이고,
-// 확정 단계가 돌 수 있었으면 확정할 후보가 없을 때 disabled(no_confirmation_candidates), 후보가 있으면(비정상)
-// start_refused(e2_execution_unavailable)다. 표식 등록·Transport·Journal·쓰기 기록을 부르지 않는다.
+// 확정 단계가 돌 수 있었으면 start_refused(e2_execution_unavailable)다(2026-11-22 F12: 후보 유무로 가르지 않고, 인증
+// 준비를 안 했으니 계정 인증 결과 없음으로 끄지 않는다). 표식 등록·Transport·Journal·쓰기 기록을 부르지 않는다.
 func RunWithoutExecution(ctx context.Context, deps Deps, in Input) RunResult {
 	r := &run{deps: deps, in: in, seen: map[string]bool{}, stoppedBeforeStage: true, noExecution: true}
 	res := r.run(ctx)
@@ -200,10 +200,9 @@ func (r *run) run(ctx context.Context) RunResult {
 	// 중지 기록(RunStopped): 비활성 근거가 없어 확정 단계가 돌 수 있었다. 요청을 시작하지 않고 중단으로 남긴다.
 	if r.stoppedBeforeStage {
 		if r.noExecution {
-			// E② 실행이 한 번도 없었다. 확정할 후보가 없으면 그것이 진짜 이유이고, 후보가 있는데 실행이 없으면 비정상이다.
-			if len(r.validCandidates()) == 0 {
-				return r.result(StatusDisabled, string(DisabledNoCandidates))
-			}
+			// E② 실행이 한 번도 없었다(모델 단계가 진단 의도를 하나도 실행하지 않음 등). 확정 단계가 돌 수 있었는데 E② 실행이
+			// 없어 시작하지 못한 것이다(e2_execution_unavailable, 사용자 결정 2026-11-22 F12). 제품이 후보를 넘기지 않아(이번 판
+			// 미구현) 후보 유무로 가르면 늘 후보 없음이 되므로 가르지 않는다.
 			return r.result(StatusStartRefused, string(RefuseE2ExecutionUnavailable))
 		}
 		return r.result(StatusInterrupted, "")
@@ -314,8 +313,11 @@ func (r *run) disabledReason() DisabledReason {
 	}
 	// 계정 역할은 동결한 선언이 정한다(계약 §4). 입력의 A·B가 둘 다 비어 있으면 선언에 역할이 없을 수 있으니 선언을 읽은 뒤
 	// 사유를 정한다(역할 없음 account_roles_undeclared / 계정 없음 test_accounts_unavailable). 요청은 그 전에 나가지 않는다.
+	// E② 실행이 한 번도 없었으면(실행 없음 기록) 인증 준비도 하지 않았다(인증 준비는 E② 실행을 잡을 때 한다). 그때 인증 결과가
+	// 없는 것은 계정 실패가 아니므로 test_accounts_unavailable로 가리지 않는다(리허설 F12). 라벨 형식은 그대로 본다.
 	o, c := r.in.Owner, r.in.Cross
-	if (o.Label != "" || c.Label != "") && (!o.Authenticated || !c.Authenticated || !refPattern.MatchString(o.Label) ||
+	unauthenticated := !r.noExecution && (!o.Authenticated || !c.Authenticated)
+	if (o.Label != "" || c.Label != "") && (unauthenticated || !refPattern.MatchString(o.Label) ||
 		!refPattern.MatchString(c.Label) || o.Label == c.Label) {
 		return DisabledAccountsUnverified
 	}
