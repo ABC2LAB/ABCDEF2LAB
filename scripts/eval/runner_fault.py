@@ -22,7 +22,9 @@ import re
 from datetime import datetime, timedelta, timezone
 
 # v2: 장애별 첫 무활동 구간(idle)과 판정 칸(judged·stall_seconds·stall·stalls)을 더함
-FAULT_STALL_FORMAT = "abc2lab-eval-runner-fault-stall-v2"
+# v3: 장애 시점에 진행 중이던 모델 호출 수(inflight_model_calls_at_fault)를 더함(2026-11-22 사용자: 스트리밍 조각은 활동으로
+#     세지 않아 B의 긴 스트리밍 호출 하나로 B만 멈춤 무효가 날 수 있다 — 그런 경우를 공정성 기록에서 가른다)
+FAULT_STALL_FORMAT = "abc2lab-eval-runner-fault-stall-v3"
 FAULT_STALL_REASON = "provider_fault_stall"
 FAULT_STALL_UNJUDGEABLE = "fault_stall_unjudgeable"
 # 판정 T의 코드 상한(초). 회차 시간 상한(runner_config.MAX_RUN_SECONDS)과 같다. 값 자체는 설정(run.fault_stall_seconds)이다.
@@ -91,6 +93,7 @@ def fault_stall_record(llm_rows: list[dict], meter_rows: list[dict], window_star
     spans = [(_at(row["started_at"]), _at(row["completed_at"])) for row in [*llm_rows, *meter_rows]]
     if any(done < began for began, done in spans):
         raise FaultRecordError("fault_stall_time_invalid")
+    llm_spans = spans[:len(llm_rows)]
     starts = sorted(began for began, _ in spans if start <= began < end)
     # 활동 사건: 모든 행의 시작과 완료(오류 응답 포함). 진행 중 구간은 사건이 아니다. 판정용은 나노초 정수다.
     moments = sorted({moment for span in spans for moment in span})
@@ -117,6 +120,9 @@ def fault_stall_record(llm_rows: list[dict], meter_rows: list[dict], window_star
             "censored": following is None,
             # 장애 시점에 진행 중이던 요청(긴 명령 등). 무활동 판정을 해석할 때 본다.
             "inflight_at_fault": sum(1 for began, done in spans if began < at < done),
+            # 그중 모델 호출(게이트웨이 행)만. B는 스트리밍 조각을 활동으로 세지 않아서, 장애 때 긴 모델 호출이 진행 중이었으면
+            # 그 호출이 끝날 때까지가 무활동으로 잡힌다(시간 상한이 있는 O와 다르게). 공정성 기록에서 이 경우를 가른다.
+            "inflight_model_calls_at_fault": sum(1 for began, done in llm_spans if began < at < done),
             "engine_terminal_within": terminal is not None and at <= terminal <= silence_end,
             # 장애 뒤 다음 활동 사건(요청 시작·응답 완료)까지. 판정은 나노초 정수(idle_nanoseconds)를 T와 비교하고,
             # idle_seconds는 기록용 반올림 값이다.

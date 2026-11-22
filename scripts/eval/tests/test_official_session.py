@@ -277,6 +277,12 @@ class TestRealRunner(unittest.TestCase):
         self.assertEqual((ok.status, ok.run_id, ok.stop_after), ("complete", self.RUN_ID, None))
         bad = self.go(1, True, {"status": "invalid", "reasons": [STALL]})
         self.assertEqual((bad.status, bad.reasons, bad.stop_after), ("invalid", [STALL], None))
+        # 멈춤 무효면 결과의 멈춤 기록에서 멈춤 사건과 그때 진행 중이던 모델 호출 수를 같이 넘긴다(2026-11-22 사용자)
+        stalled = self.go(1, True, {"status": "invalid", "reasons": [STALL], "fault_stall": {"events": [
+            {"kind": "upstream_cut", "at_seconds": 5.0, "idle_seconds": 200.0, "idle_censored": True, "inflight_at_fault": 1,
+             "inflight_model_calls_at_fault": 1, "stall": True}]}})
+        self.assertEqual([e["inflight_model_calls_at_fault"] for e in stalled.fault_stall], [1])
+        self.assertIsNone(ok.fault_stall)
 
     def test_created_run_directory_always_counts_as_an_attempt(self):
         # 2026-11-20 사용자: 회차 디렉터리가 생겼으면 무슨 일이 있어도 시도 1회. 결과 없으면 무효(사유 = 멈춘 사유) 뒤 멈춤.
@@ -552,6 +558,39 @@ class TestPriceCapResume(unittest.TestCase):
             self.assertEqual(code, o.EXIT_INPUT)
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 o.main(["--session-dir", root + "/u", "--dry-run", "--price-cap-factor", "abc"])
+
+
+class TestStallRecord(unittest.TestCase):
+    # 사용자 2026-11-22: 멈춤 무효가 나면 그 순간 진행 중인 모델 호출이 있었는지 세션 기록에 같이 남긴다
+    RESULT = {"status": "invalid", "reasons": ["provider_fault_stall"], "fault_stall": {"judged": True, "events": [
+        {"kind": "rate_limited", "at_seconds": 10.0, "idle_seconds": 3.0, "idle_censored": False, "inflight_at_fault": 0,
+         "inflight_model_calls_at_fault": 0, "stall": False},
+        {"kind": "upstream_cut", "at_seconds": 50.0, "idle_seconds": 190.5, "idle_censored": False, "inflight_at_fault": 2,
+         "inflight_model_calls_at_fault": 1, "stall": True, "silence_seconds": 190.5}]}}
+
+    def test_stall_events_keep_only_stalls_with_inflight_counts(self):
+        self.assertEqual(o.stall_events(self.RESULT, ["provider_fault_stall"]),
+                         [{"kind": "upstream_cut", "at_seconds": 50.0, "idle_seconds": 190.5, "idle_censored": False,
+                           "inflight_at_fault": 2, "inflight_model_calls_at_fault": 1}])
+        self.assertIsNone(o.stall_events(self.RESULT, ["window_boundary_changed"]))  # 멈춤 무효가 아니면 칸 없음
+        self.assertEqual(o.stall_events({"status": "invalid"}, ["provider_fault_stall"]), [])
+
+    def test_session_log_and_summary_count_stalls_with_inflight_model_call_and_resume_keeps_them(self):
+        inflight = [{"kind": "upstream_cut", "inflight_at_fault": 1, "inflight_model_calls_at_fault": 1}]
+        quiet = [{"kind": "rate_limited", "inflight_at_fault": 0, "inflight_model_calls_at_fault": 0}]
+        outcomes = [Outcome("invalid", ["provider_fault_stall"], "b1", fault_stall=inflight),
+                    Outcome("complete", [], "b2"), Outcome("invalid", ["provider_fault_stall"], "o1", fault_stall=quiet),
+                    Outcome("complete", [], "o2")]
+        logs = []
+        schedule = run_session(Schedule(1), lambda side, repeat: outcomes.pop(0), logs.append)
+        attempts = [l for l in logs if l["event"] == "attempt"]
+        self.assertEqual([l.get("fault_stall") for l in attempts], [inflight, None, quiet, None])
+        summary = schedule.summary()
+        self.assertEqual(summary["fault_stalls"], {"baseline": 1, "ours": 1})  # 판정·상한 셈은 그대로
+        self.assertEqual(summary["fault_stalls_inflight_model_call"], {"baseline": 1, "ours": 0})
+        resumed = Schedule(1)
+        o.replay(resumed, [dict(l, dry_run=False) for l in attempts])
+        self.assertEqual(resumed.summary()["fault_stalls_inflight_model_call"], {"baseline": 1, "ours": 0})
 
 
 if __name__ == "__main__":

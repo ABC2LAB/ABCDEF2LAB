@@ -85,6 +85,8 @@ class Outcome:
     stop_after: str | None = None
     # 일찍 끝난 회차 분류(회차 디렉터리의 early-end.json 요약). 분류가 없으면 None.
     early_end: dict | None = None
+    # 멈춤 무효(provider_fault_stall)였으면 멈춤으로 판정된 장애 사건 요약(장애 시점 진행 중 요청·모델 호출 수 포함). 아니면 None.
+    fault_stall: list | None = None
 
 
 # 쪽별 멈춤 상한에 같이 세는 무효 사유(고정 초안 §3·§26).
@@ -106,6 +108,9 @@ class Schedule:
     attempts: dict = field(default_factory=lambda: {"baseline": 0, "ours": 0})
     valid: dict = field(default_factory=lambda: {"baseline": 0, "ours": 0})
     stalls: dict = field(default_factory=lambda: {"baseline": 0, "ours": 0})
+    # 멈춤 무효 가운데 멈춤 사건 때 모델 호출이 진행 중이던 것(2026-11-22 사용자: B는 스트리밍 조각을 활동으로 세지 않아 긴
+    # 스트리밍 호출 하나로 B만 멈춤 무효가 날 수 있다 — 공정성 기록에서 가른다). 판정·상한 셈은 바꾸지 않는다.
+    stalls_inflight_model_call: dict = field(default_factory=lambda: {"baseline": 0, "ours": 0})
     early_end_runs: list = field(default_factory=list)
     stop_reason: str | None = None
     failed: bool = False
@@ -143,6 +148,8 @@ class Schedule:
             self.position += 1
         elif any(reason in FAULT_LIMIT_REASONS for reason in outcome.reasons):
             self.stalls[side] += 1
+            if any(event.get("inflight_model_calls_at_fault", 0) > 0 for event in outcome.fault_stall or []):
+                self.stalls_inflight_model_call[side] += 1
             if self.stalls[side] >= self.fault_limit:
                 self.stop_reason, self.failed = f"fault_stall_limit:{side}", True
         if outcome.stop_after is not None and self.stop_reason is None:
@@ -153,7 +160,8 @@ class Schedule:
 
     def summary(self) -> dict:
         return {"repeats": self.repeats, "order": [LETTER_OF[s] for s in self.order], "attempts": self.attempts, "valid": self.valid,
-                "fault_stalls": self.stalls, "complete": self.done(), "stop_reason": self.stop_reason, "measurement_failed": self.failed,
+                "fault_stalls": self.stalls, "fault_stalls_inflight_model_call": self.stalls_inflight_model_call,
+                "complete": self.done(), "stop_reason": self.stop_reason, "measurement_failed": self.failed,
                 "early_end_runs": self.early_end_runs}
 
 
@@ -558,7 +566,25 @@ class RealRunner:
         if status not in (COMPLETE, INVALID) or (code == 0) != (status == COMPLETE):
             reason = f"result_status_mismatch:{slot}"
             return Outcome(INVALID, [reason] + [r for r in reasons if isinstance(r, str)], run_id, stop_after=reason)
-        return Outcome(status, reasons, run_id, early_end=early_end_summary(self.runs_root / run_id / EARLY_END_NAME))
+        return Outcome(status, reasons, run_id, early_end=early_end_summary(self.runs_root / run_id / EARLY_END_NAME),
+                       fault_stall=stall_events(value, reasons))
+
+
+_STALL_EVENT_KEYS = ("kind", "at_seconds", "idle_seconds", "idle_censored", "inflight_at_fault", "inflight_model_calls_at_fault")
+
+
+def stall_events(result: dict, reasons: list) -> list | None:
+    """멈춤 무효 회차면 결과의 멈춤 기록(fault_stall)에서 멈춤으로 판정된 사건만 요약한다. 장애 시점에 진행 중이던 요청 수
+    (inflight_at_fault)와 그중 모델 호출 수(inflight_model_calls_at_fault, 기록 형식 v3부터)를 같이 남긴다. 멈춤 무효가 아니면
+    None, 기록이 없거나 모양이 틀리면 빈 목록(멈춤 무효인 건 사유로 이미 안다)."""
+    if FAULT_STALL_REASON not in reasons:
+        return None
+    record = result.get("fault_stall") if isinstance(result, dict) else None
+    events = record.get("events") if isinstance(record, dict) else None
+    if not isinstance(events, list):
+        return []
+    return [{key: event.get(key) for key in _STALL_EVENT_KEYS} for event in events
+            if isinstance(event, dict) and event.get("stall") is True]
 
 
 def run_session(schedule: Schedule, run_one: Callable[[str, int], Outcome], log: Callable[[dict], None],
@@ -576,7 +602,8 @@ def run_session(schedule: Schedule, run_one: Callable[[str, int], Outcome], log:
         schedule.record(side, outcome)
         log({"event": "attempt", "side": LETTER_OF[side], "repeat": repeat, "status": outcome.status, "reasons": outcome.reasons,
              "run_id": outcome.run_id, "stop_after": outcome.stop_after, "early_end": outcome.early_end, "started_at": started,
-             "attempts": dict(schedule.attempts), "valid": dict(schedule.valid)})
+             "attempts": dict(schedule.attempts), "valid": dict(schedule.valid),
+             **({"fault_stall": outcome.fault_stall} if outcome.fault_stall is not None else {})})
     log(dict(event="summary", **schedule.summary()))
     return schedule
 
@@ -601,7 +628,8 @@ def replay(schedule: Schedule, lines: list[dict]) -> int:
         if line.get("dry_run"):
             raise ValueError("resume_dry_run_log")
         outcome = Outcome(line["status"], list(line.get("reasons") or []), line.get("run_id"),
-                          early_end=line.get("early_end") if isinstance(line.get("early_end"), dict) else None)
+                          early_end=line.get("early_end") if isinstance(line.get("early_end"), dict) else None,
+                          fault_stall=line.get("fault_stall") if isinstance(line.get("fault_stall"), list) else None)
         slot = schedule.next_slot()
         side = SIDE_OF.get(line.get("side"))
         # 설정 오류 줄도 그때의 칸(쪽·번호)과 맞아야 한다. 시도로 세지 않을 뿐 순서 검사는 같다(#831 리뷰: 건너뛰면 다른 칸의

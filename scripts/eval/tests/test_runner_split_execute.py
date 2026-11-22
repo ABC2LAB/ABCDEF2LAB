@@ -526,7 +526,7 @@ class TestOrder(unittest.TestCase):
         self.assertEqual(result["discovery_sources"], evidence.files["discovery-sources.json"])
         self.assertEqual(evidence.files[RESULT_NAME], result)
         # 멈춤 집계는 B처럼 기록만 한다: 이 가짜 기록(시각 칸 없음)은 고정 코드로 남고 회차는 그대로 완료다
-        self.assertEqual(evidence.files["fault-stall.json"], {"format": "abc2lab-eval-runner-fault-stall-v2", "judged": False,
+        self.assertEqual(evidence.files["fault-stall.json"], {"format": "abc2lab-eval-runner-fault-stall-v3", "judged": False,
                                                               "error": "fault_stall_rows_invalid"})
         self.assertEqual(result["fault_stall"], evidence.files["fault-stall.json"])
         # 결정안 §3.3 제품 블록 근거: 파일 원본 SHA 다섯 + 상한 스냅숏 지문, E② 정책 내용 지문, 도구 면 지문.
@@ -1353,7 +1353,7 @@ class TestProductFaultStall(unittest.TestCase):
         for calls in (b"\xff\n", b"not json\n", b"[1]\n", b'{"seq":1}\n'):
             with self.subTest(calls=calls):
                 record = product_fault_stall(calls, [], "2026-11-18T10:00:00Z", "2026-11-18T10:00:10Z", {})
-                self.assertEqual(record, {"format": "abc2lab-eval-runner-fault-stall-v2", "judged": False,
+                self.assertEqual(record, {"format": "abc2lab-eval-runner-fault-stall-v3", "judged": False,
                                           "error": "fault_stall_rows_invalid"})
         record = product_fault_stall(b"", [], "2026-11-18T10:00:10Z", "2026-11-18T10:00:00Z", {})
         self.assertEqual(record["error"], "fault_stall_time_invalid")  # 창이 거꾸로면 B와 같은 코드
