@@ -32,7 +32,7 @@ import s from "../../workbench.module.css";
 import { ApprovalActions, ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "./approvals";
 import { JobSummary, jobResult, pendingRows, useCoveragePct } from "./jobSummary";
 import { ReportReadError, RunListControls, RunListStatus, RunRow, SelectedRunStatus } from "./runRows";
-import { EntryEp, FindingDetail, ORDER, Outcome, Sev } from "./UrlLiveLive";
+import { EntryEp, FindingDetail, ORDER, Outcome, Sev, UnfollowedActiveRuns } from "./UrlLiveLive";
 import { UrlHead } from "./urlParts";
 import { type Chip, Chips } from "./urlRecords";
 
@@ -208,8 +208,8 @@ export function UrlDashboardLive() {
   // 고르기 전에는 가장 위험한 발견(시안 처음 선택), 없으면 승인 대기 요청(보내기 전에 사람이 정해야 함), 없으면 점검 정보
   const first = a.pending[0];
   let sel: Sel = { kind: "job" };
+  // 다시 연 점검(조회 결속)도 같은 순서로 고른다 — 승인 대기가 먼저 보여야 운영자가 놓치지 않는다(사용자 2026-11-22, F16)
   if (picked) sel = picked;
-  else if (handle?.kind === "recovered") sel = { kind: "job" };
   else if (found[0]) sel = { kind: "finding", id: found[0].entry_id };
   else if (first) sel = { kind: "approval", id: first.id };
 
@@ -364,6 +364,7 @@ export function UrlDashboardLive() {
         <InspHead title="점검 정보" />
         <Isec>
           <p className={s.empty}>이 브라우저에서 이어 보는 점검이 없습니다.</p>
+          <UnfollowedActiveRuns />
           <a className={cx(s.btn, s.pri)} href="#new">
             <Icon name="plus" />새 점검
           </a>

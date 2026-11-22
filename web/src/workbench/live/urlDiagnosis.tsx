@@ -209,6 +209,8 @@ async function bootJob(owner: string): Promise<void> {
     busy: !!saved || !!selected,
     uncertain: !!saved || !!selected,
   });
+  // 이어 보는 점검이 없으면(새 브라우저·재시작) 여기서 끝낸다. 서버 진행 목록은 기능 확인 직후 읽고(아래 loadUrlRuns),
+  // 레일·진행 화면이 그 목록의 진행 중 점검을 '이 점검 열기'로 보인다(사용자 2026-11-22, F14)
   if (!saved && !selected) return;
   const request = new AbortController();
   selectionRequest = request;
@@ -680,9 +682,9 @@ export async function runWorkflowAction(
   const st = useUrl.getState(),
     job = st.job,
     current = st.flow;
+  // 다시 연 점검(조회 결속)도 범위 선택을 보낼 수 있다(사용자 2026-11-22, F16). 서버가 진단 흐름 결속·주체를 다시 본다.
   if (
     flowLock ||
-    st.handle?.kind === "recovered" ||
     (st.flowUncertain && !replay) ||
     !st.flowVerified ||
     !job ||
