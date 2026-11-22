@@ -772,7 +772,13 @@ export async function getDeclarationTargetScope(
     signal,
   });
   const t = isObj(res) && isObj(res.target) ? res.target : null;
-  if (!t || t.id !== targetId || !Number.isSafeInteger(t.revision) || !Array.isArray(t.path_prefixes) || !Array.isArray(t.methods))
+  if (
+    !t ||
+    t.id !== targetId ||
+    !Number.isSafeInteger(t.revision) ||
+    !Array.isArray(t.path_prefixes) ||
+    !Array.isArray(t.methods)
+  )
     return null;
   return { revision: Number(t.revision), pathPrefixes: names(t.path_prefixes), methods: names(t.methods) };
 }

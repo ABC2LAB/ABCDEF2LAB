@@ -441,9 +441,10 @@ export function PolicyDeclarationLive() {
   const [targetId, setTargetId] = useState("");
   const listed = Array.isArray(targets) ? (targets.find((t) => t.id === targetId) ?? null) : null;
   // 승인 경로·메서드는 단건 조회로 채운다(목록 응답은 비움, 1차 리허설 F3). 같은 판일 때만 합친다
-  const [scope, setScope] = useState<{ key: string; value: Awaited<ReturnType<typeof getDeclarationTargetScope>> | "failed" } | null>(
-    null,
-  );
+  const [scope, setScope] = useState<{
+    key: string;
+    value: Awaited<ReturnType<typeof getDeclarationTargetScope>> | "failed";
+  } | null>(null);
   const [attempt, setAttempt] = useState(0);
   const scopeKey = visible && listed ? `${listed.id}|${listed.revision}` : "";
   const scopeNow = scope && scope.key === scopeKey ? scope.value : null;
@@ -633,7 +634,7 @@ export function PolicyDeclarationLive() {
                 ))}
               </select>
             ) : null}
-            {target && target.scopeKnown ? (
+            {target?.scopeKnown ? (
               <p className={s.help}>
                 승인 경로 <span className={s.mono}>{target.pathPrefixes.join(", ") || "—"}</span> · 승인 메서드{" "}
                 <span className={s.mono}>{target.methods.join("/") || "—"}</span> · 승인 판{" "}

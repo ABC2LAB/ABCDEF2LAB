@@ -11,9 +11,23 @@ import { AccountClassifyLive } from "../views/live/AccountClassifyLive";
 
 /** 계정 분류 화면은 보일 때(경로 classify) 대상 목록을 읽는다(F2). 시험은 그 경로로 그린다. */
 function withRoute(route: View) {
-  const shell = { route, navSeq: 1, narrow: false, phone: false, reduce: false, inspOpen: false, railOpen: false,
-    railNewAtRoute: false, goTo: () => undefined, openInsp: () => undefined, closeInsp: () => undefined,
-    openRail: () => undefined, closeRail: () => undefined, foldRail: () => undefined, dashPick: () => undefined } as Shell;
+  const shell = {
+    route,
+    navSeq: 1,
+    narrow: false,
+    phone: false,
+    reduce: false,
+    inspOpen: false,
+    railOpen: false,
+    railNewAtRoute: false,
+    goTo: () => undefined,
+    openInsp: () => undefined,
+    closeInsp: () => undefined,
+    openRail: () => undefined,
+    closeRail: () => undefined,
+    foldRail: () => undefined,
+    dashPick: () => undefined,
+  } as Shell;
   return (
     <ShellContext.Provider value={shell}>
       <AccountClassifyLive />
@@ -466,11 +480,11 @@ describe("AccountClassifyLive 로그인 방식 · 자격 입력", () => {
 
 describe("대상 목록 다시 읽기(사용자 2026-11-22, 1차 리허설 F2)", () => {
   it("숨긴 채 붙어 있다가 화면에 들어오면 대상 목록을 다시 읽어 그사이 승인한 대상을 보인다", async () => {
-    let approved = false;
+    const approvedTargets: unknown[] = [];
     api.mockImplementation((path: string) => {
       if (path === "/api/product/targets")
         return Promise.resolve({
-          targets: approved ? [{ id: "t1", origin: "https://a.example", state: "approved" }] : [],
+          targets: approvedTargets,
         }) as never;
       return Promise.resolve({}) as never;
     });
@@ -478,7 +492,7 @@ describe("대상 목록 다시 읽기(사용자 2026-11-22, 1차 리허설 F2)",
     expect(api).not.toHaveBeenCalled(); // 숨겨진 동안은 읽지 않는다
     view.rerender(withRoute("classify"));
     await screen.findByText(/승인된 대상이 없습니다/);
-    approved = true; // 대상 등록 화면에서 승인
+    approvedTargets.push({ id: "t1", origin: "https://a.example", state: "approved" }); // 대상 등록 화면에서 승인
     view.rerender(withRoute("new"));
     view.rerender(withRoute("classify"));
     expect(await screen.findByRole("option", { name: /https:\/\/a\.example/ })).toBeInTheDocument();
