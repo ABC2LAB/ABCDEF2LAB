@@ -25,6 +25,9 @@
   `containers_present`로 멈춘다(남은 컨테이너 때문에 다음 회차가 격리 검사에서 무효가 되어 시도가 날아가지 않게). 회차가 어떻게
   끝나든(시한 넘김·결과 없음 포함) 회차 뒤 컨테이너가 0이 될 때까지 기다리고, 안 내려가면 멈춘 사유에 `containers_left`를 같이
   적는다(2026-11-20 사용자).
+- 시작 전 운영 점검(2026-11-22 사용자, 평가 의미는 바꾸지 않음·시도로 세지 않음): 시작 시간대(`--start-window-kst`, 한국 시간),
+  시작 직전 같은 모델·제공자 짧은 호출 10번의 429 점검(`--provider-probe`, 429면 `--probe-wait` 뒤 다시), 회차마다 호스트 포트
+  (`ports_busy`)와 메모리 여유 점검 명령(`--heavy-check`). 결과는 세션 기록에 남긴다.
 - 선택: O 회차마다 manifest 틀에서 새 승인 ID·만료 시각으로 manifest를 다시 만든다(`--o-manifest-template`). 키 사용량
   상한(`--key-file`·`--usage-cap-usd`·`--min-remaining-usd`)을 넘으면 다음 회차를 시작하지 않는다. 키·승인 ID는 출력하지 않는다.
 - 점검 모드(`--dry-run --outcomes …`): 러너·Docker·네트워크를 부르지 않고 결과를 차례로 흉내 내어 순서·무효 처리만 확인한다.
@@ -47,6 +50,7 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -57,6 +61,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from runner_early_end import CONFIG_END_REASON, EARLY_END_NAME, PROVIDER_FAULT_END_REASON  # noqa: E402
 from runner_fault import FAULT_STALL_REASON  # noqa: E402
 from run_signals import interrupt_on_stop_signals  # noqa: E402
+from env_check import config_ports  # noqa: E402
+from runner_checks import read_host_listeners  # noqa: E402
 from session_runs import FAULT_STALL_LIMIT_PER_SIDE, expected_order  # noqa: E402
 
 SIDE_OF = {"B": "baseline", "O": "ours"}
@@ -211,6 +217,109 @@ def containers_stop(count: Callable[[], int | None], networks: Callable[[], int 
     if left is None:
         return "networks_unknown"
     return None if left == 0 else "networks_present"
+
+
+# ── 시작 전 운영 점검(2026-11-22 사용자): 호스트 포트·메모리 여유·시작 시간대·제공자 429. 평가 의미는 바꾸지 않는다 ──
+def _proc_read(path: str) -> str | None:
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def busy_ports(config: dict, read_text: Callable[[str], str | None] = _proc_read) -> list[str] | None:
+    """회차가 호스트에 열 고정 포트(env_check와 같은 목록) 중 이미 누가 리슨하는 것. 읽지 못하면 None.
+    2026-11-22: 재부팅 뒤 VS Code 원격 서버가 127.0.0.1:39291(ports.obs_host)을 잡아 compose_up_failed로 회차가 무효가 됐다."""
+    ports = config_ports(config)
+    try:
+        listeners = read_host_listeners(read_text)
+    except Exception:
+        return None
+    return sorted(f"{name}={port}" for name, port in ports.items() if any(item.port == port for item in listeners))
+
+
+def run_check(command: list[str], timeout: float = 120) -> tuple[bool, str]:
+    """외부 점검 명령(예: 무거운 작업 시작 조건 heavy_ok.sh). 종료 코드 0이면 통과. 출력 마지막 줄을 사유로 남긴다."""
+    try:
+        done = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"check_failed:{type(exc).__name__}"
+    lines = [l for l in (done.stdout or "").splitlines() if l.strip()]
+    return done.returncode == 0, (lines[-1][:200] if lines else f"exit={done.returncode}")
+
+
+def wait_until(check: Callable[[], tuple[bool, str]], wait: float, interval: float, on_wait: Callable[[str], None],
+               sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic) -> bool:
+    """check가 통과할 때까지 wait초 안에서 interval마다 다시 본다. 통과 못 할 때마다 on_wait(사유)."""
+    deadline = clock() + wait
+    while True:
+        ok, detail = check()
+        if ok:
+            return True
+        on_wait(detail)
+        if clock() + interval > deadline:
+            return False
+        sleep(interval)
+
+
+KST = datetime.timezone(datetime.timedelta(hours=9))
+
+
+def parse_window(text: str) -> tuple[int, int]:
+    """'14-18' → (14, 18). 시작 시각(한국 시간)이 [앞, 뒤) 안이어야 한다."""
+    start, _, end = text.partition("-")
+    if not (start.isdigit() and end.isdigit()) or not 0 <= int(start) < int(end) <= 24:
+        raise ValueError("start_window_invalid")
+    return int(start), int(end)
+
+
+def in_window(now: datetime.datetime, window: tuple[int, int]) -> bool:
+    hour = now.astimezone(KST).hour
+    return window[0] <= hour < window[1]
+
+
+PROBE_CALLS = 10
+
+
+def provider_probe(manifest: dict, key: str, calls: int = PROBE_CALLS,
+                   post: Callable[[urllib.request.Request], tuple[int, dict]] | None = None) -> dict:
+    """회차와 같은 모델·제공자(manifest의 model·provider_slug·base_url, 제품 openrouter_transport와 같은 provider 칸)로
+    출력 1토큰 호출을 calls번 보낸다. 429 수·그 밖 오류 수·응답 제공자 이름만 센다(키·응답 본문은 남기지 않는다)."""
+    post = post or _post_json
+    base = str(manifest["base_url"]).rstrip("/")
+    provider = {"only": [manifest["provider_slug"]], "allow_fallbacks": False, "require_parameters": True,
+                "data_collection": "deny", "zdr": True,
+                "max_price": {"prompt": manifest["max_input_price_usd_micros_per_million"] / 1_000_000,
+                              "completion": manifest["max_output_price_usd_micros_per_million"] / 1_000_000}}
+    body = json.dumps({"model": manifest["model"], "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1,
+                       "provider": provider}).encode()
+    out = {"calls": calls, "ok": 0, "rate_limited": 0, "other": 0, "statuses": {}, "providers": []}
+    for _ in range(calls):
+        req = urllib.request.Request(f"{base}/chat/completions", data=body, method="POST",
+                                     headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+        status, payload = post(req)
+        out["statuses"][str(status)] = out["statuses"].get(str(status), 0) + 1
+        if status == 200:
+            out["ok"] += 1
+            name = payload.get("provider") if isinstance(payload, dict) else None
+            if isinstance(name, str) and name not in out["providers"]:
+                out["providers"].append(name)
+        elif status == 429:
+            out["rate_limited"] += 1
+        else:
+            out["other"] += 1
+    return out
+
+
+def _post_json(req: urllib.request.Request) -> tuple[int, dict]:
+    try:
+        with urllib.request.urlopen(req, timeout=60) as response:
+            raw = response.read()
+            return response.status, (json.loads(raw) if raw else {})
+    except urllib.error.HTTPError as exc:
+        return exc.code, {}
+    except (OSError, ValueError):
+        return 0, {}
 
 
 def wait_containers_gone(count: Callable[[], int | None], timeout: float, interval: float,
@@ -423,6 +532,51 @@ def parse_outcomes(text: str) -> list[Outcome]:
     return outcomes
 
 
+def session_start_checks(a: argparse.Namespace, window: tuple[int, int] | None, manifest_path: Path | None,
+                         log: Callable[[dict], None], now: Callable[[], datetime.datetime] | None = None,
+                         probe: Callable[[dict, str], dict] = provider_probe,
+                         sleep: Callable[[float], None] = time.sleep) -> str | None:
+    """세션 시작 전 운영 점검(2026-11-22 사용자): 시작 시간대(한국 시간) → 제공자 429 점검(같은 모델·제공자 짧은 호출 10번,
+    429가 하나라도 나면 probe_wait 뒤 다시). 결과는 세션 기록에 남긴다. 멈출 사유 또는 None."""
+    now = now or (lambda: datetime.datetime.now(datetime.timezone.utc))
+    def window_ok() -> bool:
+        ok = window is None or in_window(now(), window)
+        if window is not None:
+            log({"event": "start_window", "window_kst": f"{window[0]}-{window[1]}", "ok": ok,
+                 "kst": now().astimezone(KST).strftime("%H:%M")})
+        return ok
+    if not window_ok():
+        return "outside_start_window"
+    if not a.provider_probe:
+        return None
+    source = a.o_manifest_template or manifest_path
+    try:
+        manifest = json.loads(Path(source).read_text(encoding="utf-8")) if source else None
+        key = a.key_file.read_text(encoding="utf-8").strip()
+    except (OSError, ValueError):
+        return "provider_probe_input"
+    if not isinstance(manifest, dict) or not all(k in manifest for k in ("model", "provider_slug", "base_url")):
+        return "provider_probe_input"
+    for attempt in range(1, a.probe_tries + 1):
+        result = probe(manifest, key)
+        expected = manifest.get("expected_provider_name")
+        mismatch = bool(expected) and any(name != expected for name in result["providers"])
+        log({"event": "provider_probe", "attempt": attempt, "model": manifest["model"],
+             "provider_slug": manifest["provider_slug"], **{k: result[k] for k in ("calls", "ok", "rate_limited", "other",
+                                                                                    "statuses", "providers")}})
+        if result["other"] or mismatch:
+            return "provider_probe_failed"
+        if not result["rate_limited"]:
+            return None
+        if attempt == a.probe_tries:
+            return "provider_rate_limited"
+        log({"event": "provider_probe_wait", "seconds": a.probe_wait})
+        sleep(a.probe_wait)
+        if not window_ok():
+            return "outside_start_window"
+    return "provider_rate_limited"
+
+
 def main(argv: list[str] | None = None) -> int:
     # 뒤에서 띄워도(`&`·nohup) 자식 러너가 SIGINT를 받게 무시 상태를 되돌린다(run_signals, 2026-11-21).
     interrupt_on_stop_signals()
@@ -444,6 +598,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--key-file", type=Path)
     ap.add_argument("--usage-cap-usd", type=float)
     ap.add_argument("--min-remaining-usd", type=float, default=0.30)
+    # 시작 전 운영 점검(2026-11-22 사용자). 평가 의미는 바꾸지 않는다 — 통과 못 하면 시도로 세지 않고 미루거나 멈춘다
+    ap.add_argument("--heavy-check", type=Path, help="회차마다 시작 전 부를 메모리 여유 점검 명령(0이면 통과, 예: heavy_ok.sh)")
+    ap.add_argument("--heavy-wait", type=float, default=1800, help="메모리 점검이 통과하길 기다리는 시한(초)")
+    ap.add_argument("--heavy-interval", type=float, default=60)
+    ap.add_argument("--start-window-kst", help="세션 시작을 허용하는 한국 시간대(예: 14-18). 밖이면 시작하지 않는다")
+    ap.add_argument("--provider-probe", action="store_true",
+                    help="시작 직전 같은 모델·제공자로 짧은 호출 10번. 429가 하나라도 나면 --probe-wait 뒤 다시 점검")
+    ap.add_argument("--probe-wait", type=float, default=1800)
+    ap.add_argument("--probe-tries", type=int, default=4)
     a = ap.parse_args(argv)
     try:
         schedule = Schedule(a.repeats)
@@ -492,9 +655,21 @@ def main(argv: list[str] | None = None) -> int:
         if (a.key_file is None) != (a.usage_cap_usd is None):
             print("입력 오류: --key-file과 --usage-cap-usd는 같이 준다", file=sys.stderr)
             return EXIT_INPUT
+        if a.provider_probe and a.key_file is None:
+            print("입력 오류: --provider-probe는 --key-file이 필요하다", file=sys.stderr)
+            return EXIT_INPUT
+        try:
+            window = parse_window(a.start_window_kst) if a.start_window_kst else None
+        except ValueError as exc:
+            print(f"입력 오류: {exc}", file=sys.stderr)
+            return EXIT_INPUT
         config = json.loads(a.config.read_text(encoding="utf-8"))
         runs_root = Path(config["runs_root"])
         manifest_path = Path(config["split"]["manifest_path"]) if isinstance(config.get("split"), dict) else None
+        stop = session_start_checks(a, window, manifest_path, log)
+        if stop is not None:
+            log({"event": "summary", "start_refused": stop, **schedule.summary()})
+            return EXIT_STOPPED
         guard = None
         if a.key_file:
             guard = UsageGuard(lambda: key_usage(a.key_file), a.usage_cap_usd, a.min_remaining_usd,
@@ -507,6 +682,16 @@ def main(argv: list[str] | None = None) -> int:
             stop = containers_stop(running_containers, eval_networks)
             if stop is not None:
                 return stop
+            busy = busy_ports(config)
+            if busy is None:
+                return "ports_unknown"
+            if busy:
+                log({"event": "ports_busy", "side": side, "repeat": repeat, "ports": busy})
+                return "ports_busy"
+            if a.heavy_check is not None and not wait_until(
+                    lambda: run_check([str(a.heavy_check)]), a.heavy_wait, a.heavy_interval,
+                    lambda detail: log({"event": "heavy_wait", "side": side, "repeat": repeat, "detail": detail})):
+                return "heavy_not_ok"
             if guard is not None:
                 stop = guard.check()
                 if stop is not None:
