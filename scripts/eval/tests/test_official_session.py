@@ -619,6 +619,39 @@ class TestStartChecks(unittest.TestCase):
                                                     probe=lambda m, k: calls.append(1)), "provider_price_margin")
         self.assertEqual(calls, [])  # 단가가 안 맞으면 유료 점검 호출도 보내지 않는다
 
+    def test_budget_is_checked_and_based_before_any_paid_probe_call(self):
+        """#848 동찬 P2: 유료 점검 호출 전에 비용 보호를 확인하고 세션 사용량 기준을 기록한다(점검 비용이 세션 상한에 든다)."""
+        import datetime as dt
+        afternoon = lambda: dt.datetime(2026, 11, 22, 6, 0, tzinfo=dt.timezone.utc)  # noqa: E731
+        order, reads = [], iter([{"usage": 1.00, "limit_remaining": 10.0}, {"usage": 1.02, "limit_remaining": 9.98}])
+        def read():
+            order.append("usage")
+            return next(reads)
+        logs = []
+        guard = o.UsageGuard(read, cap_usd=0.01, floor_usd=0.30, on_base=lambda base: logs.append({"event": "usage_base", "usage_usd": base}))
+        def probe(m, k):
+            order.append("probe")
+            return dict(calls=10, ok=10, rate_limited=0, other=0, statuses={"200": 10}, providers=["Provider"])
+        with tempfile.TemporaryDirectory() as d:
+            stop = o.session_start_checks(self._args(Path(d)), None, None, logs.append, now=afternoon, price=self.PRICE_OK,
+                                          probe=probe, budget=guard.check)
+        self.assertIsNone(stop)
+        self.assertEqual(order, ["usage", "probe"])  # 확인·기준이 먼저
+        self.assertEqual(guard.base, 1.00)  # 점검 호출 전 사용량이 세션 기준
+        self.assertEqual([l["event"] for l in logs], ["provider_price", "usage_base", "provider_probe"])
+        self.assertEqual(guard.check(), "usage_cap")  # 점검 비용(0.02)이 세션 상한(0.01)에 들어간다
+
+    def test_budget_stop_sends_zero_probe_calls(self):
+        import datetime as dt
+        afternoon = lambda: dt.datetime(2026, 11, 22, 6, 0, tzinfo=dt.timezone.utc)  # noqa: E731
+        calls = []
+        with tempfile.TemporaryDirectory() as d:
+            args = self._args(Path(d))
+            for reason in ("remaining_floor", "usage_cap", "usage_read_failed"):
+                self.assertEqual(o.session_start_checks(args, None, None, lambda e: None, now=afternoon, price=self.PRICE_OK,
+                                                        probe=lambda m, k: calls.append(1), budget=lambda r=reason: r), reason)
+        self.assertEqual(calls, [])
+
     def _args(self, tmp: Path, **over):
         manifest = tmp / "manifest.json"
         manifest.write_text(json.dumps(self.MANIFEST), encoding="utf-8")

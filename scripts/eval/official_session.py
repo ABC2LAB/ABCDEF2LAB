@@ -580,7 +580,8 @@ def session_start_checks(a: argparse.Namespace, window: tuple[int, int] | None, 
                          log: Callable[[dict], None], now: Callable[[], datetime.datetime] | None = None,
                          probe: Callable[[dict, str], dict] = provider_probe,
                          sleep: Callable[[float], None] = time.sleep,
-                         price: Callable[[dict], dict] | None = None) -> str | None:
+                         price: Callable[[dict], dict] | None = None,
+                         budget: Callable[[], str | None] | None = None) -> str | None:
     """세션 시작 전 운영 점검(2026-11-22 사용자): 시작 시간대(한국 시간) → 제공자 429 점검(같은 모델·제공자 짧은 호출 10번,
     429가 하나라도 나면 probe_wait 뒤 다시). 결과는 세션 기록에 남긴다. 멈출 사유 또는 None."""
     now = now or (lambda: datetime.datetime.now(datetime.timezone.utc))
@@ -614,6 +615,12 @@ def session_start_checks(a: argparse.Namespace, window: tuple[int, int] | None, 
         return "provider_price_above_cap"
     if not priced.get("margin_ok", False):
         return "provider_price_margin"
+    # 유료 점검 호출 전에 비용 보호(세션 상한·잔액 하한)를 확인하고 세션 사용량 기준을 기록한다 — 점검 호출 비용도 세션 상한에
+    # 들어가고, 상한·잔액이 이미 모자라면 호출을 한 번도 보내지 않는다(#848 동찬 P2)
+    if budget is not None:
+        stop = budget()
+        if stop is not None:
+            return stop
     for attempt in range(1, a.probe_tries + 1):
         result = probe(manifest, key)
         expected = manifest.get("expected_provider_name")
@@ -725,16 +732,17 @@ def main(argv: list[str] | None = None) -> int:
         config = json.loads(a.config.read_text(encoding="utf-8"))
         runs_root = Path(config["runs_root"])
         manifest_path = Path(config["split"]["manifest_path"]) if isinstance(config.get("split"), dict) else None
-        stop = session_start_checks(a, window, manifest_path, log)
-        if stop is not None:
-            log({"event": "summary", "start_refused": stop, **schedule.summary()})
-            return EXIT_STOPPED
         guard = None
         if a.key_file:
             guard = UsageGuard(lambda: key_usage(a.key_file), a.usage_cap_usd, a.min_remaining_usd,
                                on_base=lambda base: log({"event": "usage_base", "usage_usd": base}))
             if resumed_base is not None:
                 guard.base = resumed_base
+        # 비용 보호기를 먼저 만들어 시작 점검의 유료 호출 전에 확인·기준 기록을 하게 한다(#848 동찬 P2)
+        stop = session_start_checks(a, window, manifest_path, log, budget=guard.check if guard is not None else None)
+        if stop is not None:
+            log({"event": "summary", "start_refused": stop, **schedule.summary()})
+            return EXIT_STOPPED
 
         def before_run(side: str, repeat: int) -> str | None:
             # 시도로 세지 않는다(남은 컨테이너가 격리 검사를 깨거나 남은 망이 대역을 막아 시도가 날아가지 않게)
