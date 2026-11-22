@@ -12,7 +12,7 @@
 
 | 항목 | 고정값 | 정본 | 동결 때 채울 것 |
 |---|---|---|---|
-| 모델 | `qwen/qwen3.6-35b-a3b` | 프로토콜 §6 | 엔드포인트 재조회 근거 파일 `<채움>` |
+| 모델 | `qwen/qwen3.6-35b-a3b` | 프로토콜 §6 | 엔드포인트 재조회 근거: 세션 기록 `provider_price`·`price_caps` `<채움>` |
 | 제공자 | `primeintellect/fp8` (PrimeIntellect), fallback 끔 | 프로토콜 §6 | 재조회 시각·status `<채움>` |
 | 제공자 조건(O 요청) | ZDR 켬, `data_collection=deny`, `require_parameters` | `docs/openrouter-first-diagnosis.md` | — |
 | 고정 샘플링 | `temperature=1.0`, `top_p=0.95`, `top_k=20`, `min_p=0.0`, `presence_penalty=1.5`, `repetition_penalty=1.0`, `seed=42` | 프로토콜 §6 | — |
@@ -43,7 +43,7 @@
 | 항목 | 고정값 | 정본 |
 |---|---|---|
 | 제공자 멈춤 무효(`provider_fault_stall`) | 장애(429·위쪽 끊김) 뒤 180초 동안 활동 없음 | 고정 초안 §2·§19 |
-| 활동으로 세는 것 | 모델 호출의 시작·완료, 대상 요청. 스트리밍 조각은 세지 않는다 | `scripts/eval/runner_fault.py` |
+| 활동으로 세는 것 | 요청 시작과 응답 완료(오류 포함). 모델 호출 행과 대상 요청 행 모두. 진행 중인 요청 자체와 스트리밍 조각은 활동이 아니다 | `scripts/eval/runner_fault.py` |
 | 멈춤 사건의 진행 중 모델 호출 | 사건마다 `inflight_model_calls_at_fault`, 세션 요약 `fault_stalls_inflight_model_call`(쪽별). 판정에는 쓰지 않고 공정성 기록에만 쓴다 | `scripts/eval/runner_fault.py`(v3), 세션 기록 |
 | 일찍 끝난 회차 | 고정 초안 §26 | 고정 초안 §26, 프로토콜 |
 | 쪽별 무효 상한 | 고정 초안 §3·§16 | 고정 초안 §3 |
