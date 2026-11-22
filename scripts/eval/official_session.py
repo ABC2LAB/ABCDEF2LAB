@@ -615,13 +615,13 @@ def session_start_checks(a: argparse.Namespace, window: tuple[int, int] | None, 
         return "provider_price_above_cap"
     if not priced.get("margin_ok", False):
         return "provider_price_margin"
-    # 유료 점검 호출 전에 비용 보호(세션 상한·잔액 하한)를 확인하고 세션 사용량 기준을 기록한다 — 점검 호출 비용도 세션 상한에
-    # 들어가고, 상한·잔액이 이미 모자라면 호출을 한 번도 보내지 않는다(#848 동찬 P2)
-    if budget is not None:
-        stop = budget()
-        if stop is not None:
-            return stop
     for attempt in range(1, a.probe_tries + 1):
+        # 유료 점검 묶음마다 보내기 직전에 비용 보호(세션 상한·잔액 하한)를 확인한다. 첫 확인이 세션 사용량 기준이라 점검 호출
+        # 비용도 세션 상한에 들어가고, 앞 묶음 비용으로 상한·잔액에 걸리면 다음 묶음을 보내지 않는다(#848 동찬 P2)
+        if budget is not None:
+            stop = budget()
+            if stop is not None:
+                return stop
         result = probe(manifest, key)
         expected = manifest.get("expected_provider_name")
         mismatch = bool(expected) and any(name != expected for name in result["providers"])

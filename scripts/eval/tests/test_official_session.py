@@ -641,6 +641,36 @@ class TestStartChecks(unittest.TestCase):
         self.assertEqual([l["event"] for l in logs], ["provider_price", "usage_base", "provider_probe"])
         self.assertEqual(guard.check(), "usage_cap")  # 점검 비용(0.02)이 세션 상한(0.01)에 들어간다
 
+    def test_budget_is_rechecked_before_each_retry_batch(self):
+        """#848 동찬 P2(재시도): 첫 묶음에 429가 섞여 다시 점검할 때, 첫 묶음 비용으로 상한에 걸리면 다음 묶음은 0건."""
+        import datetime as dt
+        afternoon = lambda: dt.datetime(2026, 11, 22, 6, 0, tzinfo=dt.timezone.utc)  # noqa: E731
+        reads = iter([{"usage": 1.00, "limit_remaining": 10.0}, {"usage": 1.03, "limit_remaining": 9.97}])
+        guard = o.UsageGuard(lambda: next(reads), cap_usd=0.02, floor_usd=0.30)
+        calls, slept, logs = [], [], []
+        def probe(m, k):
+            calls.append(1)
+            return dict(calls=10, ok=9, rate_limited=1, other=0, statuses={"200": 9, "429": 1}, providers=["Provider"])
+        with tempfile.TemporaryDirectory() as d:
+            stop = o.session_start_checks(self._args(Path(d)), None, None, logs.append, now=afternoon, price=self.PRICE_OK,
+                                          probe=probe, sleep=slept.append, budget=guard.check)
+        self.assertEqual(stop, "usage_cap")
+        self.assertEqual(len(calls), 1)  # 둘째 묶음은 보내지 않는다
+        self.assertEqual([l["event"] for l in logs], ["provider_price", "provider_probe", "provider_probe_wait"])
+
+    def test_budget_passes_each_batch_until_probe_clears(self):
+        import datetime as dt
+        afternoon = lambda: dt.datetime(2026, 11, 22, 6, 0, tzinfo=dt.timezone.utc)  # noqa: E731
+        checks, results = [], iter([dict(rate_limited=1), dict(rate_limited=0)])
+        def probe(m, k):
+            r = next(results)
+            return dict(calls=10, ok=10 - r["rate_limited"], rate_limited=r["rate_limited"], other=0, statuses={}, providers=["Provider"])
+        with tempfile.TemporaryDirectory() as d:
+            stop = o.session_start_checks(self._args(Path(d)), None, None, lambda e: None, now=afternoon, price=self.PRICE_OK,
+                                          probe=probe, sleep=lambda s: None, budget=lambda: checks.append(1))
+        self.assertIsNone(stop)
+        self.assertEqual(len(checks), 2)  # 묶음마다 한 번씩
+
     def test_budget_stop_sends_zero_probe_calls(self):
         import datetime as dt
         afternoon = lambda: dt.datetime(2026, 11, 22, 6, 0, tzinfo=dt.timezone.utc)  # noqa: E731
