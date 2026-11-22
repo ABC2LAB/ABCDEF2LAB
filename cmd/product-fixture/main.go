@@ -176,6 +176,19 @@ func model(target string) http.Handler {
 		}
 		switch {
 		case names["set_goals"] && !names["add_intent"] && !names["Bash"]:
+			// 목표 분해의 첫 요청(도구 결과가 아직 없는 대화)은 작업(점검)마다 한 번 온다. 그때 턴을 새로 센다. 프로세스
+			// 전체로 세면 같은 설치·같은 대상의 두 번째 점검에서 의도를 내지 않아 E② 실행이 열리지 않는다(리허설 F11,
+			// 2026-11-21). 앞 점검이 목표만 받고 끝났어도 새 점검은 새 대화로 시작하므로 같은 경계로 구분된다. 같은
+			// 작업의 이어지는 요청은 앞 도구 결과를 싣고 와서 턴을 바꾸지 않는다(흐름 모드 합성 모델과 같은 경계).
+			fresh := true
+			for _, m := range req.Messages {
+				if m.Role == "tool" {
+					fresh = false
+				}
+			}
+			if fresh {
+				*turn = fixtureTurns{}
+			}
 			goals.Add(1)
 			turn.goals++
 			if turn.goals == 1 {
