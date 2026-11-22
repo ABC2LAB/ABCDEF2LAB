@@ -52,7 +52,7 @@
 
 | 항목 | 고정값 | 정본 | 동결 때 채울 것 |
 |---|---|---|---|
-| 측정 시간대 | KST 14~18시에 시작 | 실행 절차 §0 | 실제 시작 시각 `<채움>` |
+| 측정 시간대 | 공식 세션: KST 14~18시에 시작. 파일럿: 시간대 제한 없음(제공자 429 점검만 켬) | 실행 절차 §0 | 파일럿·공식 세션 실제 시작 시각 `<채움>` |
 | 시작 전 점검 | 포트, 메모리(Linux available 3GB 이상 + Windows 커밋 여유 5GB 이상), 제공자 429 점검 호출, 가격 상한 ≥ 지금 단가 × 1.2 | 실행 절차 §0·§5 | 세션 기록 `$SESSION/session-log.jsonl`의 사건 `start_window`·`provider_price`·`price_caps`·`usage_base`·`provider_probe`(·`provider_probe_wait`)·`ports_busy`·`heavy_wait`·`stopped_before_run`, 회차마다 `o_manifest_caps`. 세션 경로 `<채움>` |
 | 측정 머신 | 고정 초안 §25 | 고정 초안 §25 | env_check 결과 `<채움>` |
 | 라운드 순서·반복 수 | 고정 초안 §11 | 고정 초안 §11 | — |
