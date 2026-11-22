@@ -251,16 +251,33 @@ class TestTally(SessionCase):
         self.s.invalid("ours", 7, "drain_timeout", "provider_fault_stall")
         self.s.complete("ours", 10, 0)
         lines, failures = fault_stall_tally(read_session(self.root, KEY))
-        self.assertIn(f"| baseline | 0 | 0 | 0 | {FAULT_STALL_LIMIT_PER_SIDE} |", lines)
-        self.assertIn(f"| ours | 1 | 0 | 1 | {FAULT_STALL_LIMIT_PER_SIDE} |", lines)
+        self.assertIn(f"| baseline | 0 | 0 | 0 | {FAULT_STALL_LIMIT_PER_SIDE} | 0 (0) |", lines)
+        self.assertIn(f"| ours | 1 | 0 | 1 | {FAULT_STALL_LIMIT_PER_SIDE} | 0 (1) |", lines)  # 멈춤 기록 파일 없음 → 모름
         self.assertEqual(failures, [])
+
+    def test_stall_inflight_model_calls_are_shown_per_side(self):
+        # 사용자 2026-11-22: 멈춤 무효 회차에서 멈춤 사건 때 모델 호출이 진행 중이었는지 쪽별로 센다(공정성 기록, 판정은 그대로).
+        # 무효 결과는 서명이 없어 러너 근거 fault-stall.json(v3)을 읽는다. 칸이 없거나(v3 전) 숫자가 아니면 모름
+        def stalled(side, minute, events):
+            directory = self.s.invalid(side, minute, "provider_fault_stall")
+            if events is not None:
+                (directory / "fault-stall.json").write_text(json.dumps({"format": "abc2lab-eval-runner-fault-stall-v3",
+                                                                        "judged": True, "events": events}))
+        stall = lambda **kw: dict({"stall": True, "inflight_at_fault": 1}, **kw)  # noqa: E731
+        stalled("baseline", 1, [stall(inflight_model_calls_at_fault=1)])          # 긴 스트리밍 호출 진행 중
+        stalled("baseline", 3, [stall(inflight_model_calls_at_fault=0), {"stall": False, "inflight_model_calls_at_fault": 2}])
+        stalled("ours", 5, [stall()])                                             # v3 전 기록 → 모름
+        stalled("ours", 7, [stall(inflight_model_calls_at_fault=True)])           # 숫자가 아님 → 모름
+        lines, _ = fault_stall_tally(read_session(self.root, KEY))
+        self.assertIn(f"| baseline | 2 | 0 | 2 | {FAULT_STALL_LIMIT_PER_SIDE} | 1 (0) |", lines)
+        self.assertIn(f"| ours | 2 | 0 | 2 | {FAULT_STALL_LIMIT_PER_SIDE} | 0 (2) |", lines)
 
     def test_provider_fault_end_counts_with_stalls(self):
         # 고정 초안 §26: 러너 상한 전에 제공자 장애로 끝난 회차는 멈춤과 같은 상한에 같이 센다
         self.s.invalid("baseline", 5, "provider_fault_stall")
         self.s.invalid("baseline", 7, "provider_fault_end")
         lines, failures = fault_stall_tally(read_session(self.root, KEY))
-        self.assertIn(f"| baseline | 1 | 1 | 2 | {FAULT_STALL_LIMIT_PER_SIDE} |", lines)
+        self.assertIn(f"| baseline | 1 | 1 | 2 | {FAULT_STALL_LIMIT_PER_SIDE} | 0 (1) |", lines)
         self.assertEqual(len(failures), 1)
         self.assertIn("provider_fault_end 1회", failures[0])
 

@@ -47,7 +47,7 @@ from isolation_proof import E2_MODES, E2_SPLIT_PRODUCT  # noqa: E402
 from run_record import RunRecordError, read_runner_key, sign_run_record  # noqa: E402
 from runner import COMPLETE, INVALID, RECORD_NAME, RESULT_FORMAT, RESULT_NAME  # noqa: E402
 from runner_early_end import CONFIG_END_REASON, EARLY_END_NAME, PROVIDER_FAULT_END_REASON  # noqa: E402
-from runner_fault import FAULT_STALL_REASON  # noqa: E402
+from runner_fault import FAULT_STALL_NAME, FAULT_STALL_REASON  # noqa: E402
 
 SIDES = ("baseline", "ours")
 SIDE_LETTER = {"baseline": "B", "ours": "O"}
@@ -83,6 +83,9 @@ class Attempt:
     task_sha256: str | None = None  # 완료 회차의 작업 생성 요청 본문 해시(러너 결과, 서명됨)
     result: dict | None = None  # 완료 회차의 서명 검증한 runner-result.json
     early_end: dict | None = None  # 일찍 끝난 회차 분류(early-end.json, 분류가 있을 때만)
+    # 멈춤 무효 회차에서 멈춤으로 판정된 장애 사건 때 모델 호출이 진행 중이었는지(fault-stall.json v3 inflight_model_calls_at_fault).
+    # 참 = 하나라도 진행 중, 거짓 = 모두 0, None = 모름(칸 없음·못 읽음). 판정·상한 셈에는 쓰지 않는 공정성 기록이다(2026-11-22 사용자)
+    stall_inflight: bool | None = None
 
 
 def expected_order(repeats: int) -> list[str]:
@@ -155,7 +158,8 @@ def _attempt(directory: Path, key: bytes, errors: list[str], allow_fixture_e2: b
         if not isinstance(reasons, list) or not reasons or not all(isinstance(r, str) and r for r in reasons):
             errors.append(f"{directory.name}: 무효 결과에 사유가 없음")
             return None
-        return Attempt(directory.name, side, started, INVALID, reasons[0], None, early_end=_early_end(directory))
+        return Attempt(directory.name, side, started, INVALID, reasons[0], None, early_end=_early_end(directory),
+                       stall_inflight=_stall_inflight(directory) if reasons[0] == FAULT_STALL_REASON else None)
     # 서명된 E② 자리. 가짜 E²(stub) 회차는 배치 확인용이라 시범·공식 세션 집계에 넣지 않는다(프로토콜 §2).
     e2_mode = result.get("e2_mode")
     if e2_mode not in E2_MODES:
@@ -282,17 +286,37 @@ def tally(attempts: list[Attempt], repeats: int) -> tuple[list[str], list[str]]:
 
 def fault_stall_tally(attempts: list[Attempt]) -> tuple[list[str], list[str]]:
     """쪽별 provider_fault_stall·provider_fault_end 무효 수(0이어도 늘)와 측정 실패 줄(둘의 합이 한쪽이라도 상한 이상)."""
-    lines = ["| 쪽 | provider_fault_stall 무효 | provider_fault_end 무효 | 합 | 측정 실패 상한 |", "|---|---|---|---|---|"]
+    lines = ["| 쪽 | provider_fault_stall 무효 | provider_fault_end 무효 | 합 | 측정 실패 상한 | 멈춤 때 모델 호출 진행 중(모름) |",
+             "|---|---|---|---|---|---|"]
     failures: list[str] = []
     for side in SIDES:
         stalls = sum(1 for a in attempts if a.side == side and a.status == INVALID and a.reason == FAULT_STALL_REASON)
         ends = sum(1 for a in attempts if a.side == side and a.status == INVALID and a.reason == PROVIDER_FAULT_END_REASON)
         count = stalls + ends
-        lines.append(f"| {side} | {stalls} | {ends} | {count} | {FAULT_STALL_LIMIT_PER_SIDE} |")
+        stalled = [a for a in attempts if a.side == side and a.status == INVALID and a.reason == FAULT_STALL_REASON]
+        inflight = sum(1 for a in stalled if a.stall_inflight is True)
+        unknown = sum(1 for a in stalled if a.stall_inflight is None)
+        lines.append(f"| {side} | {stalls} | {ends} | {count} | {FAULT_STALL_LIMIT_PER_SIDE} | {inflight} ({unknown}) |")
         if count >= FAULT_STALL_LIMIT_PER_SIDE:
             failures.append(f"측정 실패[멈춤 무효] {side}: {FAULT_STALL_REASON} {stalls}회 + {PROVIDER_FAULT_END_REASON} {ends}회 ≥ "
                             f"{FAULT_STALL_LIMIT_PER_SIDE} — 남은 회차를 골라 쓰지 않고 측정 전체를 실패로 둔다(결정안 §7, 고정 초안 §3)")
     return lines, failures
+
+
+def _stall_inflight(directory: Path) -> bool | None:
+    """멈춤 무효 회차의 fault-stall.json(러너 근거, 무효 결과는 서명이 없어 근거 파일을 그대로 읽는다)에서 멈춤 사건 때 진행 중인
+    모델 호출이 있었는지. B는 스트리밍 조각을 활동으로 세지 않아 긴 스트리밍 호출 하나로 B만 멈춤 무효가 날 수 있어, 그 경우를
+    공정성 기록에서 가른다. 칸이 없거나(v3 전) 숫자가 아니거나 못 읽으면 모름(None)이다."""
+    try:
+        record = json.loads((directory / FAULT_STALL_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    events = record.get("events") if isinstance(record, dict) else None
+    stalls = [e for e in events if isinstance(e, dict) and e.get("stall") is True] if isinstance(events, list) else []
+    counts = [e.get("inflight_model_calls_at_fault") for e in stalls]
+    if not stalls or any(type(c) is not int for c in counts):
+        return None
+    return any(c > 0 for c in counts)
 
 
 def _early_end(directory: Path) -> dict | None:
