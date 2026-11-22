@@ -13,7 +13,8 @@ import (
 //   - openRouterCooldown 60초: 평가 러너의 제공자 멈춤 기준(180초 동안 모델 호출 없음)보다 충분히 짧아서, 쉬는 동안에도
 //     시험 호출의 시작·끝이 60초마다 기록된다. 429 구간은 지금까지의 회차에서 수 초~수십 초였다.
 //   - openRouterCooldownTotal 5분: 회차 시간 예산(1500초)의 20%. 처음 쉬기 시작한 때부터 이만큼 지나도록 정상 응답이
-//     없으면 이전처럼 잠근다(연속 일시 오류 상한으로 잠김, 회계는 그대로 믿을 수 있음).
+//     없으면 이전처럼 잠근다(연속 일시 오류 상한으로 잠김, 회계는 그대로 믿을 수 있음). 이 시간이 지난 뒤에는 새 호출을
+//     보내지 않는다: 실패한 시험 호출의 결과에서도, 새 호출의 대기·예약 경계에서도 검사한다(expireCooldownLocked).
 //
 // 시험에서 바꿀 수 있게 변수로 둔다.
 var (
@@ -37,6 +38,18 @@ func (p *OpenRouterPolicy) enterCooldownLocked(now time.Time) bool {
 	}
 	p.coolUntil = now.Add(openRouterCooldown)
 	return true
+}
+
+// expireCooldownLocked는 쉬는 중인데 처음 쉰 때부터 총 시간이 지났으면 잠근다(p.mu를 쥔 채). 새 호출을 보내기 전의
+// 경계(대기·예약)에서 부른다: 쉬는 시간이 끝난 뒤 호출이 한동안 없다가 들어와도, 총 시간이 지났으면 시험 호출을 보내지
+// 않고 잠근다. 이미 보낸 시험 호출이 진행 중이면(probeID != 0) 여기서 잠그지 않고 그 결과가 정한다: 성공이면 풀리고,
+// 실패면 enterCooldownLocked가 총 시간을 보고 잠근다. 그동안 다른 호출은 보내지 않는다.
+func (p *OpenRouterPolicy) expireCooldownLocked(now time.Time) {
+	if p.blocked || p.coolUntil.IsZero() || p.probeID != 0 || now.Sub(p.coolSince) < openRouterCooldownTotal {
+		return
+	}
+	p.blocked, p.transientLimited = true, true
+	p.usage.FailureReason = "provider_cooldown_expired"
 }
 
 // clearCooldownLocked는 정상 응답 하나가 왔을 때 쉬는 상태를 지운다(p.mu를 쥔 채).
@@ -70,6 +83,7 @@ func (p *OpenRouterPolicy) AwaitCooldown(ctx context.Context) (release func(), e
 	for {
 		p.mu.Lock()
 		now := time.Now()
+		p.expireCooldownLocked(now)
 		if p.blocked || p.coolUntil.IsZero() {
 			p.mu.Unlock()
 			return noop, nil

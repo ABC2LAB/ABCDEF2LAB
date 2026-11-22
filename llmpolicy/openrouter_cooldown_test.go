@@ -3,6 +3,7 @@ package llmpolicy
 import (
 	"context"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -168,5 +169,120 @@ func TestOpenRouterRejectionStreakDoesNotCooldown(t *testing.T) {
 	}
 	if !p.Snapshot().Blocked || !p.CooldownUntil().IsZero() {
 		t.Fatalf("거부 연속이 쉬는 상태로 감: blocked=%v", p.Snapshot().Blocked)
+	}
+}
+
+// 쉬는 시간이 끝난 뒤 호출이 한동안 없다가 총 시간이 지나서 들어오면, 시험 호출을 보내지 않고 잠근다(대기 경계).
+// 대기를 거치지 않고 바로 온 호출도 예약 경계에서 같은 검사로 막힌다.
+func TestOpenRouterCooldownExpiresWithoutSendAfterTotal(t *testing.T) {
+	for name, viaAwait := range map[string]bool{"대기 경계": true, "예약 경계": false} {
+		t.Run(name, func(t *testing.T) {
+			openRouterCooldownTimes(t, 20*time.Millisecond, 60*time.Millisecond)
+			p := openRouterV2Fixture(t, 2)
+			var hits atomic.Int64
+			client := openRouterClient(p, openRouterRT(func(*http.Request) (*http.Response, error) {
+				hits.Add(1)
+				return openRouterStatus(429), nil
+			}))
+			for i := 0; i < 2; i++ {
+				_, _ = client.Do(openRouterRequest())
+			}
+			if p.Snapshot().Blocked || p.CooldownUntil().IsZero() {
+				t.Fatal("쉬는 상태가 아님")
+			}
+			time.Sleep(90 * time.Millisecond) // 쉬는 시간도, 총 시간도 지났다. 그동안 호출이 없었다.
+			if viaAwait {
+				release, err := p.AwaitCooldown(context.Background())
+				release()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if snap := p.Snapshot(); !snap.Blocked || !snap.TransientLimited {
+					t.Fatalf("총 시간이 지났는데 대기가 자리를 줌: %+v", snap)
+				}
+			}
+			if _, err := client.Do(openRouterRequest()); err == nil || hits.Load() != 2 {
+				t.Fatalf("총 시간이 지난 뒤 보냄: err=%v hits=%d", err, hits.Load())
+			}
+			if snap := p.Snapshot(); !snap.Blocked || !snap.TransientLimited || !p.CooldownUntil().IsZero() {
+				t.Fatalf("잠기지 않음: %+v", snap)
+			}
+		})
+	}
+}
+
+// 시험 호출이 오래 걸려 총 시간을 넘겨 실패하면 그 결과에서 잠근다. 그 시험 호출이 진행 중인 동안 기다리던 다른 호출은
+// 총 시간이 지나도 보내지 않고, 시험 호출이 끝난 뒤 잠긴 것을 보고 돌아온다(보낸 요청은 시험 호출 하나뿐).
+func TestOpenRouterCooldownSlowProbePastTotal(t *testing.T) {
+	openRouterCooldownTimes(t, 20*time.Millisecond, 80*time.Millisecond)
+	p := openRouterV2Fixture(t, 2)
+	var hits atomic.Int64
+	slow := atomic.Bool{}
+	client := openRouterClient(p, openRouterRT(func(*http.Request) (*http.Response, error) {
+		hits.Add(1)
+		if slow.Load() {
+			time.Sleep(120 * time.Millisecond) // 총 시간을 넘긴다
+		}
+		return openRouterStatus(503), nil
+	}))
+	for i := 0; i < 2; i++ {
+		_, _ = client.Do(openRouterRequest())
+	}
+	slow.Store(true)
+	release, err := p.AwaitCooldown(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		// 시험 호출이 진행 중일 때 온 다른 호출: 자리가 없어 기다리고, 시험 호출이 끝난 뒤 잠김을 보고 돌아온다.
+		time.Sleep(10 * time.Millisecond)
+		other, waitErr := p.AwaitCooldown(context.Background())
+		other()
+		if waitErr != nil {
+			t.Errorf("기다리던 호출: %v", waitErr)
+		}
+		if _, sendErr := client.Do(openRouterRequest()); sendErr == nil {
+			t.Error("잠긴 뒤 보냄")
+		}
+	}()
+	_, _ = client.Do(openRouterRequest())
+	release()
+	wg.Wait()
+	if snap := p.Snapshot(); !snap.Blocked || !snap.TransientLimited || hits.Load() != 3 {
+		t.Fatalf("느린 시험 호출 뒤: blocked=%v limited=%v hits=%d", snap.Blocked, snap.TransientLimited, hits.Load())
+	}
+}
+
+// 시험 호출이 총 시간을 넘겨 끝나도 성공이면 풀린다(정상 응답이 왔다). 진행 중인 시험 호출은 경계 검사가 잠그지 않는다.
+func TestOpenRouterCooldownSlowProbeSucceedsPastTotal(t *testing.T) {
+	openRouterCooldownTimes(t, 20*time.Millisecond, 80*time.Millisecond)
+	p := openRouterV2Fixture(t, 2)
+	ok := atomic.Bool{}
+	client := openRouterClient(p, openRouterRT(func(*http.Request) (*http.Response, error) {
+		if ok.Load() {
+			time.Sleep(120 * time.Millisecond)
+			return openRouterResponse(openRouterReply), nil
+		}
+		return openRouterStatus(429), nil
+	}))
+	for i := 0; i < 2; i++ {
+		_, _ = client.Do(openRouterRequest())
+	}
+	ok.Store(true)
+	release, err := p.AwaitCooldown(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Do(openRouterRequest())
+	release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if snap := p.Snapshot(); snap.Blocked || !p.CooldownUntil().IsZero() {
+		t.Fatalf("성공한 시험 호출 뒤 잠김: %+v", snap)
 	}
 }

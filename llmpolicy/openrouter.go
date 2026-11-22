@@ -233,6 +233,8 @@ func (p *OpenRouterPolicy) reserveDiagnostic(input, output int64) (string, error
 	m := p.manifest
 	cost := openRouterCallCost(m, input, output)
 	reason := ""
+	// 쉬는 총 시간이 지났으면 이 호출을 보내기 전에 잠근다(대기를 거치지 않은 호출도 같은 경계).
+	p.expireCooldownLocked(time.Now())
 	switch {
 	case p.blocked:
 		return "policy_denied", ErrOpenRouterPolicy
