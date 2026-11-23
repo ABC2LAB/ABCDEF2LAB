@@ -752,3 +752,10 @@ func TestFirstDiagnosisPreparationTimeoutCoversGoalAndPlan(t *testing.T) {
 		t.Fatalf("두 호출 뒤 남는 시간 %s", FirstDiagnosisPreparationTimeout-worst)
 	}
 }
+
+// 목표 만들기가 상한에 걸렸을 때: 저장된 목표가 없으면 원래 목표로(폴백), 있으면 저장된 목표로 계획한다(#879 리뷰).
+func TestFirstDiagnosisGoalFallbackOnlyWithoutStoredGoals(t *testing.T) {
+	if !firstDiagnosisGoalFallback(0) || firstDiagnosisGoalFallback(1) || firstDiagnosisGoalFallback(3) {
+		t.Fatal("목표 만들기 상한 뒤 폴백 판단")
+	}
+}

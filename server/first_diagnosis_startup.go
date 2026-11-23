@@ -147,8 +147,14 @@ func (s *Server) createFirstDiagnosisGoals(ctx context.Context, t *Task, emit fu
 		return ErrLocalLLMPolicy
 	}
 	if goalExpired {
-		fallback = true
-		log.Printf("[first-diagnosis] task %s 목표 분해가 상한(%s)을 넘어 끊고 원래 목표로 계획 계속", t.ID, firstDiagnosisGoalCreationTimeout)
+		// 목표 분해가 상한에 걸렸다. set_goals는 목표를 바로 저장하므로, 저장된 목표가 있으면 첫 계획은 그 목표로 돈다
+		// (부분 저장 허용). 기록도 '원래 목표로 계속'이 아니라 '저장된 목표로 계속'이어야 실제 상태와 같다(#879 리뷰).
+		fallback = firstDiagnosisGoalFallback(len(goals))
+		if fallback {
+			log.Printf("[first-diagnosis] task %s 목표 분해가 상한(%s)을 넘어 끊고 원래 목표로 계획 계속", t.ID, firstDiagnosisGoalCreationTimeout)
+		} else {
+			log.Printf("[first-diagnosis] task %s 목표 분해가 상한(%s)을 넘어 끊고 저장된 목표 %d개로 계획 계속", t.ID, firstDiagnosisGoalCreationTimeout, len(goals))
+		}
 		return nil
 	}
 	if failed.Load() || !terminal.Load() || len(goals) == 0 {
@@ -160,6 +166,10 @@ func (s *Server) createFirstDiagnosisGoals(ctx context.Context, t *Task, emit fu
 	}
 	return nil
 }
+
+// firstDiagnosisGoalFallback은 목표 만들기가 상한에 걸렸을 때 원래 작업 목표로 계획하는지다. 저장된 목표가 하나라도
+// 있으면 그 목표로 계획하므로(부분 저장 허용) 폴백이 아니다.
+func firstDiagnosisGoalFallback(storedGoals int) bool { return storedGoals == 0 }
 
 // 조회라는 HTTP 메서드만으로 외부 동기화·자가 갱신·MCP 발견을 허용하지 않는다.
 func firstDiagnosisReadRoute(path string) bool {
