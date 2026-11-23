@@ -2,8 +2,8 @@ package main
 
 import "github.com/Autumn-27/artex/e2proxy"
 
-// summarizeE2ModelWrites projects verified product journal events. An HTTP 2xx
-// is a response, not proof of an object; an unresolved send warrants inspection.
+// summarizeE2ModelWrites는 검증된 제품 저널의 모델 쓰기 시도를 집계한다. 2xx도 객체 생성의 증명은 아니며,
+// 결과를 확인할 수 없는 송신은 운영자가 확인하도록 따로 센다.
 func summarizeE2ModelWrites(events []e2proxy.Event) e2ModelWrites {
 	writes := make(map[string]bool)
 	for _, e := range events {
