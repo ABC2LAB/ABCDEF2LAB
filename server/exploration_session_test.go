@@ -759,3 +759,38 @@ func TestExplorationSessionBoundaryCannotDowngradeModelFailureToCompleted(t *tes
 		t.Fatal("boundary reply downgraded failed exploration to completed")
 	}
 }
+
+// 세션 host가 준 저장 기록 가림(RedactRecord)이 탐색 실행기 활동 기록까지 전달된다(#875 발견 3). 없으면 Redact만 거친다.
+func TestExplorationSessionPassesRecordRedaction(t *testing.T) {
+	run := func(record func([]byte) []byte) []db.Activity {
+		o, b, browser, f, _ := explorationSessionFixture(t, exploration.BrowserToolNames())
+		o.Redact = func(raw []byte) []byte { return raw }
+		o.RedactRecord = record
+		s, err := OpenExplorationSession(t.Context(), o)
+		if err != nil {
+			t.Fatal("open failed", err)
+		}
+		var activity []db.Activity
+		if _, err := s.Run(t.Context(), o.Worker, agent.ExplorationRunOptions{TargetURL: "https://owned.test/", Reporter: &explorationFixtureReporter{}, MaxTurns: 5, MaxDuration: time.Second}, func(a db.Activity) { activity = append(activity, a) }); err != nil {
+			t.Fatal(err)
+		}
+		assertExplorationClosed(t, s, b, browser, f, exploration.Completed)
+		return activity
+	}
+	stored := func(activity []db.Activity) bool {
+		for _, a := range activity {
+			if strings.Contains(a.Summary+a.Detail+string(a.Metadata), "fixture-private-marker") {
+				return true
+			}
+		}
+		return false
+	}
+	if !stored(run(nil)) {
+		t.Fatal("fixture does not store the tool result")
+	}
+	if stored(run(func(raw []byte) []byte {
+		return []byte(strings.ReplaceAll(string(raw), "fixture-private-marker", "[REDACTED]"))
+	})) {
+		t.Fatal("record redaction not passed to the exploration worker")
+	}
+}

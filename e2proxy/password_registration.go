@@ -2,7 +2,6 @@ package e2proxy
 
 import (
 	"bytes"
-	"unicode/utf8"
 )
 
 // AddProtectedPasswords는 인증 준비 호스트만 등록하는 비밀번호다. 출력 가림·세션 유출 검사는 항상 유지한다.
@@ -27,7 +26,7 @@ func (e *Execution) AddProtectedPasswords(values ...[]byte) error {
 		return false
 	}
 	for _, value := range values {
-		if len(value) < minProtectedValueBytes || len(value) > maxRedactValueBytes || !utf8.Valid(value) {
+		if !ValidProtectedPassword(value) {
 			return ErrConfig
 		}
 		if !contains(passwords, value) {
