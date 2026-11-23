@@ -23,6 +23,31 @@ const (
 
 type traceKey struct{}
 type callKey struct{}
+type recordRedactKey struct{}
+
+// WithRecordRedaction은 이 문맥의 감사 기록(도구 입력·사용자 글·문맥 항목·판정 모델 입력)에 쓸 저장 기록 가림을 단다(#886
+// 이동찬 리뷰). E② 진단처럼 모델에 준 값(model_visible_v1 비밀번호)을 기록에는 남기지 않아야 하는 세션이 쓴다. 입력 digest는
+// 승인 훅과의 대조 키라 원문으로 계산한다.
+func WithRecordRedaction(ctx context.Context, redact func(string) string) context.Context {
+	if redact == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, recordRedactKey{}, redact)
+}
+
+func recordRedaction(ctx context.Context) func(string) string {
+	redact, _ := ctx.Value(recordRedactKey{}).(func(string) string)
+	return redact
+}
+
+// recordBytes는 저장할 도구 입력을 가린다. 가림이 없으면 그대로다.
+func recordBytes(ctx context.Context, input []byte) []byte {
+	if redact := recordRedaction(ctx); redact != nil {
+		return []byte(redact(string(input)))
+	}
+	return input
+}
+
 type completion func(status, output string, truncated bool)
 
 type tracedCall struct {
@@ -38,6 +63,7 @@ type tracedCall struct {
 // guess between simultaneous identical requests, even when results arrive FIFO.
 type Trace struct {
 	mu      sync.Mutex
+	redact  func(string) string
 	runID   string
 	user    string
 	userCut bool
@@ -47,7 +73,10 @@ type Trace struct {
 }
 
 func WithTrace(ctx context.Context, user string, prior []db.InterceptContextEntry) (context.Context, *Trace) {
-	t := &Trace{runID: rand.Text(), calls: make(map[string]*tracedCall)}
+	t := &Trace{runID: rand.Text(), calls: make(map[string]*tracedCall), redact: recordRedaction(ctx)}
+	if t.redact != nil {
+		user = t.redact(user)
+	}
 	t.user, t.userCut = bounded(user, promptLimit)
 	for _, e := range prior {
 		t.append(e)
@@ -56,6 +85,9 @@ func WithTrace(ctx context.Context, user string, prior []db.InterceptContextEntr
 }
 
 func (t *Trace) append(e db.InterceptContextEntry) {
+	if t.redact != nil {
+		e.Text = t.redact(e.Text)
+	}
 	var cut bool
 	e.Text, cut = bounded(e.Text, entryLimit)
 	e.Truncated = e.Truncated || cut
@@ -175,6 +207,16 @@ func auditFor(ctx context.Context, dec Decision, input []byte, status string) *d
 	}
 	if status == "denied" {
 		a.EffectiveAction, a.ExecutionStatus = "deny", "not_executed"
+	}
+	if redact := recordRedaction(ctx); redact != nil {
+		// digest(입력·판정 모델 입력)는 원문으로 계산한 값을 둔다. 저장하는 글만 가린다.
+		a.UserMessage = redact(a.UserMessage)
+		if len(a.ModelInput) > 0 {
+			a.ModelInput = json.RawMessage(redact(string(a.ModelInput)))
+		}
+		for i := range a.Context {
+			a.Context[i].Text = redact(a.Context[i].Text)
+		}
 	}
 	return &a
 }

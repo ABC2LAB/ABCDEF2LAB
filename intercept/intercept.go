@@ -678,7 +678,7 @@ func defaultMessage(action, name string) string {
 func (i *Interceptor) Log(ctx context.Context, convID int64, dec Decision, toolName string, input []byte, status string) {
 	taskID, agentName := taskInfoFromCtx(ctx)
 	audit := auditFor(ctx, dec, input, status)
-	id, err := i.db.CreateDecidedIntercept(dec.RuleID, convID, taskID, agentName, toolName, input, status, dec.Message, audit)
+	id, err := i.db.CreateDecidedIntercept(dec.RuleID, convID, taskID, agentName, toolName, recordBytes(ctx, input), status, dec.Message, audit)
 	if err == nil {
 		i.bindResult(ctx, id, audit)
 	}
@@ -698,7 +698,7 @@ func (i *Interceptor) HandleAsk(ctx context.Context, convID int64, dec Decision,
 	taskEmit := taskEmitFromCtx(ctx)
 
 	audit := auditFor(ctx, dec, input, "pending")
-	pendingID, err := i.db.CreateInterceptPending(ruleID, convID, taskID, agentName, toolName, input, dec.Message, audit)
+	pendingID, err := i.db.CreateInterceptPending(ruleID, convID, taskID, agentName, toolName, recordBytes(ctx, input), dec.Message, audit)
 	if err != nil {
 		return false
 	}
