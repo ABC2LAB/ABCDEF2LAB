@@ -624,3 +624,41 @@ func TestReleaseReasonRejectsFormatCharacters(t *testing.T) {
 		t.Error("평범한 사유를 거부")
 	}
 }
+
+// 작업 A를 해제한 뒤 시계가 뒤로 보정되고 작업 B를 해제해도, 해제 상태의 최근 기록은 B다(벽시계가 아니라 기록 순서).
+func TestReleaseLatestRecordFollowsSequenceNotClock(t *testing.T) {
+	f := unknownFixture(t)
+	f.clock.Advance(6*time.Hour + DefaultReleaseQuiet) // A는 실제 시계보다 3시간 앞선 시각으로 기록된다
+	if res := release(t, f.s, f.job, "A 해제"); res.Error != "" {
+		t.Fatal(res.Error)
+	}
+	shutdownLikeExit(t, f.s)
+	clock := newReleaseClock() // 다음 프로세스는 3시간 전 시각에서 시작(시계 역행)
+	next := newReleaseService(t, f.root, f.b, f.boot, secondContainerNamespace, clock)
+	if rec := receiptOf(next, f.job.ID).OperatorRelease; rec.Pending() {
+		t.Fatal("A 해제를 마치지 않음")
+	}
+	b := create(t, next, "job-b")
+	if start(t, next, b, "job-b-start").Error != "" {
+		t.Fatal("B 시작 실패")
+	}
+	awaitExecutionReturned(t, next, b.ID)
+	b = status(t, next, b.ID)
+	clock.Advance(DefaultReleaseQuiet)
+	res := release(t, next, b, "B 해제")
+	if res.Error != "" || res.Release.Record.JobID != b.ID || res.Release.Record.Sequence != 2 {
+		t.Fatalf("B 해제 응답: %#v", res)
+	}
+	if !res.Release.Record.RequestedAt.Before(receiptOf(next, f.job.ID).OperatorRelease.RequestedAt) {
+		t.Fatal("시험 전제(시계 역행)가 성립하지 않음")
+	}
+	if view := releaseStatus(t, next); view.Record == nil || view.Record.JobID != b.ID {
+		t.Fatalf("시계가 뒤로 간 뒤 최근 기록이 B가 아님: %#v", view.Record)
+	}
+	shutdownLikeExit(t, next)
+	third := newReleaseService(t, f.root, f.b, f.boot, "pid:[4026531001]@9000", clock)
+	defer third.Shutdown(context.Background())
+	if view := releaseStatus(t, third); view.Record == nil || view.Record.JobID != b.ID || view.Record.Pending() {
+		t.Fatalf("재접속 뒤 최근 기록이 B 완료가 아님: %#v", view.Record)
+	}
+}

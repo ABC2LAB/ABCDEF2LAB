@@ -48,7 +48,9 @@ type ReleaseRequest struct {
 // ReleaseRecord는 해제 감사 기록이다. 준비 저널의 그 작업 영수증에 붙어 재시작 뒤에도 남는다.
 // 시각은 모두 준비 서비스 프로세스 시계(UTC)다. NewInit·CompletedAt·BoundaryCheckedAt은 새 init이 확인한 뒤에 채운다.
 type ReleaseRecord struct {
-	JobID             string     `json:"job_id"`
+	JobID string `json:"job_id"`
+	// Sequence는 이 설치에서 해제를 기록한 순서(1부터)다. 최근 기록은 벽시계가 아니라 이 순서로 고른다(시계 보정과 무관).
+	Sequence          uint64     `json:"sequence"`
 	Principal         string     `json:"principal"`
 	RequestID         string     `json:"request_id"`
 	Reason            string     `json:"reason"`
@@ -132,7 +134,7 @@ func validReleaseError(code string) bool {
 
 func validReleaseRecordShape(r ReleaseRecord) bool {
 	completed := r.CompletedAt != nil
-	if !reference.MatchString(r.JobID) || !validText(r.Principal, 256) || !reference.MatchString(r.RequestID) || !validReleaseReason(r.Reason) ||
+	if r.Sequence == 0 || !reference.MatchString(r.JobID) || !validText(r.Principal, 256) || !reference.MatchString(r.RequestID) || !validReleaseReason(r.Reason) ||
 		r.RequestedAt.IsZero() || r.ReceiptUpdatedAt.IsZero() || r.ReceiptUpdatedAt.After(r.RequestedAt) ||
 		(r.LastActivityAt != nil && r.LastActivityAt.After(r.RequestedAt)) ||
 		r.QuietSeconds < int64(MinReleaseQuiet/time.Second) || (r.JobState != Unknown && r.JobState != Stopping) ||
