@@ -18,6 +18,10 @@ func TestTraceRecordRedactionKeepsRawDigest(t *testing.T) {
 	ctx, trace := WithTrace(ctx, "log in with "+recordSecret, nil)
 	input := []byte(`{"command":"curl -d pw=` + recordSecret + ` https://example.invalid/login"}`)
 	trace.Start("tool-1", "Bash", input)
+	// 추적 자체(사용자 글·문맥 항목)도 가린 글을 들고 있다. 감사 상세를 만들 때 한 번 더 가리는 것은 겹 방어다.
+	if strings.Contains(trace.user, recordSecret) || len(trace.entries) != 1 || strings.Contains(trace.entries[0].Text, recordSecret) {
+		t.Fatalf("추적에 비밀번호: user=%q entries=%+v", trace.user, trace.entries)
+	}
 	call := WithCall(ctx, "Bash", input)
 	a := auditFor(call, Decision{Action: "deny", ModelInput: json.RawMessage(`{"tool_input":"` + recordSecret + `"}`)}, input, "denied")
 	if a.Correlation != "exact" || a.InputDigest != digestInput(input) {
