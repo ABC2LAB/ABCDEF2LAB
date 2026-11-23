@@ -186,6 +186,15 @@ class TestAuxiliary(SessionCase):
         lines = auxiliary(read_session(self.root, KEY))
         self.assertIn("| baseline | 2 | time_budget 1, 미기록 1 | — | — |", lines)
 
+    def test_split_o_stop_reason_comes_from_the_summary_top_level(self):
+        # 2026-11-23 사용자: 분리 배치 O는 계측기 요약(meter)이 없고 종료 사유를 회차 요약 맨 위(stop_reason)에 남긴다.
+        # '미기록'으로 나오면 안 된다. 예산 초과분은 O 요약에 칸이 없어 모름("—")이다.
+        self.s.complete("ours", 0, 0, stop_reason="time_budget", forwarded_at_stop=153)
+        self.s.complete("ours", 2, 1, stop_reason="engine_completed")
+        self.s.complete("ours", 4, 2)  # 어디에도 없으면 그대로 미기록
+        lines = auxiliary(read_session(self.root, KEY))
+        self.assertIn("| ours | 3 | engine_completed 1, time_budget 1, 미기록 1 | — | — |", lines)
+
     def test_a_boolean_overrun_is_not_a_number(self):
         self._run("baseline", 0, 0, "time_budget", True, 10)
         lines = auxiliary(read_session(self.root, KEY))

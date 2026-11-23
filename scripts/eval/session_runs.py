@@ -393,7 +393,10 @@ def auxiliary(attempts: list[Attempt]) -> list[str]:
     for side in SIDES:
         valid = [a for a in attempts if a.side == side and a.status == COMPLETE]
         meters = [meter if isinstance(meter := a.result.get("meter"), dict) else {} for a in valid]
-        stops = Counter(str(meter.get("stop_reason", "미기록")) for meter in meters)
+        # 분리 배치 O는 계측기 요약(meter)이 없고 종료 사유를 회차 요약 맨 위(stop_reason, runner_split_run._finish_split_summary)에
+        # 남긴다(2026-11-23 사용자: '미기록'으로 나오던 결과 도구 버그). 예산 초과분은 O 요약에 칸이 없어 모름("—")으로 둔다.
+        stops = Counter(str(meter.get("stop_reason", a.result.get("stop_reason", "미기록")) if meter else
+                            a.result.get("stop_reason", "미기록")) for a, meter in zip(valid, meters))
         reasons = ", ".join(f"{reason} {count}" for reason, count in sorted(stops.items())) or "—"
         over = [value if type(value := meter.get("over_budget")) is int else None for meter in meters]
         seconds = [_engine_seconds(a.record) for a in valid]
