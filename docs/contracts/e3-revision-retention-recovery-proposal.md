@@ -106,7 +106,7 @@ finding 상태는 별도 권한을 갖춘 정본/link 조회로 확인할 사항
 | RRD01 | metadata·원문별 보존기간, 책임자, 비용/용량 한계와 규정상 삭제 요구 처리(평가 회차마다 tmpfs로 폐기하는 엔진 DB는 제외) | 현행 자동 TTL/GC 없음과 controlled archive/delete 차단 유지 |
 | RRD02 | pending 발견·열람·격리·삭제의 실제 주체/권한과 증거 보존 절차 | 목록 API/권한을 추정하지 않고 알려진 operation의 기존 Load/Reconcile만 사용 |
 | RRD03 | SQL/descriptor/audit의 일관된 backup·restore 경계 및 실제 namespace/epoch/anchor 승인 주체 | archive를 완전한 복구 자료로 인증하거나 다른 root에 자동 결속하지 않음 |
-| RRD04 | 합법적 삭제/이관에서 불변 FK·정본/link·키 관리와 장기 검증 가능성을 유지할 절차 | cascade나 trigger 비활성화로 기존 차단을 우회하지 않음. 일반 삭제/복원 경로를 열지 않음. **예외(2026-11-23 사용자·팀 결정)**: 제품 끝난 회차 삭제 하나 — 설치자 소유 함수가 전용 역할 호출에서만 그 트랜잭션 안에서 가드를 끄고 커밋 전 다시 켠다. E② 감사·예산·영수증은 남긴다([끝난 회차 삭제](../url-diagnosis-preparation.md#끝난-회차-삭제)) |
+| RRD04 | 합법적 삭제/이관에서 불변 FK·정본/link·키 관리와 장기 검증 가능성을 유지할 절차 | cascade나 trigger 비활성화로 기존 차단을 우회하지 않음. 일반 삭제/복원 경로를 열지 않음 |
 
 ## 6. 계획 수용시험과 이번 문서의 검증 범위
 
