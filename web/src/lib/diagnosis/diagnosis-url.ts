@@ -765,8 +765,8 @@ export function matchURLJob(
 }
 export async function commandURLDiagnosis(
   current: URLDiagnosisJob,
-  // delete: 끝난 회차의 점검 결과를 지운다(2026-11-23). 응답은 지우기 직전 Job 그대로다.
-  action: "validate" | "start" | "stop" | "delete",
+  // hide: 끝난 회차를 목록·조회에서 숨긴다(2026-11-23, 화면 '삭제'). DB는 그대로고 응답은 숨기기 직전 Job 그대로다.
+  action: "validate" | "start" | "stop" | "hide",
   owner: string,
   key?: string,
   confirmation?: { externalTransferConfirmed?: boolean },

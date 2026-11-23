@@ -396,11 +396,22 @@ describe("끝난 점검 삭제", () => {
     expect(within(panel()).queryByRole("button", { name: "삭제" })).toBeNull();
   });
 
+  it("확인 상자는 버튼 줄 안이 아니라 바로 아래에 뜬다(사용자 11/23)", () => {
+    vi.mocked(api.fetchRemediation).mockResolvedValue({ task_id: 42, entries: [] });
+    selectSaved(completed);
+    records(true);
+    const opener = within(panel()).getByRole("button", { name: "삭제" });
+    fireEvent.click(opener);
+    const box = screen.getByRole("alertdialog", { name: "이 점검을 삭제할까요?" });
+    const row = opener.parentElement as HTMLElement;
+    expect(row.contains(box)).toBe(false);
+    expect(row.nextElementSibling).toBe(box);
+  });
+
   it("확인 상자에서 취소하면 보내지 않고 닫는다", () => {
     const box = openDelete();
-    expect(box).toHaveTextContent(
-      "점검 결과와 보고서가 지워지고 되돌릴 수 없습니다. 감사 기록과 실행 횟수는 남습니다.",
-    );
+    // 질문 한 줄만 둔다(사용자 11/23)
+    expect(box).toHaveTextContent(/^이 점검을 삭제할까요\?삭제취소$/);
     fireEvent.click(within(box).getByRole("button", { name: "취소" }));
     expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(deleteURLRun).not.toHaveBeenCalled();
@@ -420,8 +431,13 @@ describe("끝난 점검 삭제", () => {
     [new ApiError(404, "route_not_found"), "서버가 아직 점검 삭제를 지원하지 않습니다."],
     [new ApiError(409, "run_active"), "진행 중이거나 마감 중인 점검은 지울 수 없습니다."],
     [new ApiError(409, "revision_conflict"), "점검 상태가 바뀌었습니다. 다시 연 뒤 지워 주세요."],
-    [new ApiError(503, "unavailable"), "지금은 지울 수 없습니다. 잠시 뒤 다시 시도해 주세요."],
-    [new ApiError(500, "internal"), "삭제하지 못했습니다 (HTTP 500)."],
+    [new ApiError(401, "authentication_required"), "다시 로그인해 주세요."],
+    // 결과를 모르는 실패는 '못 지웠다'로 말하지 않는다(규칙 5, #867 이경준 리뷰)
+    [new ApiError(503, "unavailable"), "삭제됐는지 확인하지 못했습니다. 다시 누르면 확인합니다."],
+    [new ApiError(0, "network"), "삭제됐는지 확인하지 못했습니다. 다시 누르면 확인합니다."],
+    [new ApiError(422, "invalid_contract"), "삭제됐는지 확인하지 못했습니다. 다시 누르면 확인합니다."],
+    [new ApiError(401, "authentication_changed"), "삭제됐는지 확인하지 못했습니다. 다시 누르면 확인합니다."],
+    [new ApiError(500, "internal"), "삭제됐는지 확인하지 못했습니다. 다시 누르면 확인합니다."],
   ])("실패(%s)는 상자를 열어 둔 채 이유를 보이고 선택을 풀지 않는다", async (error, text) => {
     vi.mocked(deleteURLRun).mockRejectedValue(error);
     const box = openDelete();
@@ -429,5 +445,14 @@ describe("끝난 점검 삭제", () => {
     expect(await within(box).findByRole("alert")).toHaveTextContent(text);
     expect(useUrl.getState().handle).not.toBeNull();
     expect(loadUrlRuns).not.toHaveBeenCalled();
+  });
+
+  it("이미 숨긴 회차(not_found)는 지워진 것으로 보고 닫은 뒤 목록을 다시 읽는다", async () => {
+    vi.mocked(deleteURLRun).mockRejectedValue(new ApiError(404, "not_found"));
+    const box = openDelete();
+    fireEvent.click(within(box).getByRole("button", { name: "삭제" }));
+    await waitFor(() => expect(loadUrlRuns).toHaveBeenCalledWith(catalog.ownerContext));
+    expect(useUrl.getState().handle).toBeNull();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
   });
 });
