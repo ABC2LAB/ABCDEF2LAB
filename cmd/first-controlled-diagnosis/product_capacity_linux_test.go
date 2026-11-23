@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/diagnosisprep"
+	"github.com/Autumn-27/artex/llmpolicy"
 )
 
 func TestProductInstallCapacityBoundariesBeforeSideEffects(t *testing.T) {
@@ -250,5 +251,47 @@ func TestProductInstallExternalPerRunDelegation(t *testing.T) {
 	}
 	if _, err := productDelegateProfile(urlPreparationProfile{Budget: budget}, "openrouter", 0, true); err == nil {
 		t.Fatal("위임 실행 0회를 받음")
+	}
+}
+
+// 설치는 OpenRouter 승인으로 모델 예산을 채우고 기한을 승인 만료로 줄인다. v4 승인만 점검당 총량으로 본다.
+func TestProductOpenRouterLimitsPerRunByVersion(t *testing.T) {
+	expires := time.Now().Add(2 * time.Hour).UTC().Truncate(time.Second)
+	parse := func(t *testing.T, version int) *llmpolicy.OpenRouterPolicy {
+		t.Helper()
+		m := map[string]any{
+			"version": version, "profile_id": 7, "format": "openai", "base_url": llmpolicy.OpenRouterBaseURL, "model": llmpolicy.OpenRouterModel,
+			"provider_slug": "fixture/endpoint", "expected_provider_name": "Fixture", "approval_id": "install-limits", "expires_at": expires,
+			"strict_privacy_ack": true, "account_spend_cap_ack": true, "max_requests": 9, "max_input_tokens": 524288, "max_output_tokens": 900, "max_cost_usd_micros": 70000,
+			"max_input_tokens_per_call": 262144, "max_output_tokens_per_call": 100, "timeout_seconds": 2, "max_concurrent": 1,
+			"max_input_price_usd_micros_per_million": 1000000, "max_output_price_usd_micros_per_million": 1000000,
+		}
+		if version >= 2 {
+			m["max_consecutive_transient_errors"] = 3
+		}
+		if version >= 3 {
+			m["sampling"] = map[string]any{"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0, "presence_penalty": 1.5, "repetition_penalty": 1.0, "seed": 42}
+		}
+		if version == 4 {
+			m["provider_routing"] = map[string]any{"mode": "pinned"}
+		}
+		raw, _ := json.Marshal(m)
+		p, err := llmpolicy.ParseOpenRouterManifest(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	base := diagnosisprep.Budget{Requests: 4, DurationSeconds: 30}
+	later := expires.Add(time.Hour)
+	for version, wantPerRun := range map[int]bool{1: false, 3: false, 4: true} {
+		budget, end, perRun := productOpenRouterLimits(parse(t, version), base, later)
+		want := diagnosisprep.Budget{Requests: 4, ModelRequests: 9, InputTokens: 524288, OutputTokens: 900, CostUSDMicros: 70000, DurationSeconds: 30}
+		if perRun != wantPerRun || budget != want || !end.Equal(expires) {
+			t.Fatalf("v%d: perRun=%v budget=%+v end=%v", version, perRun, budget, end)
+		}
+	}
+	if _, end, _ := productOpenRouterLimits(parse(t, 4), base, expires.Add(-time.Hour)); !end.Equal(expires.Add(-time.Hour)) {
+		t.Fatal("설치 기한이 승인 만료보다 이르면 설치 기한을 써야 함")
 	}
 }

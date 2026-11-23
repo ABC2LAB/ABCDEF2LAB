@@ -356,6 +356,17 @@ func productOpenRouterMaxConcurrent(c productInstallInput) int64 {
 	return p.Limits().MaxConcurrent
 }
 
+// productOpenRouterLimits는 OpenRouter 승인으로 회차 예산의 모델 칸을 채우고 설치 기한을 승인 만료로 줄인다.
+// perRunTotals는 승인 총량이 점검 하나의 값(v4)인지다. 참이면 설치가 위임 실행 횟수만큼 합산 예산을 잡는다.
+func productOpenRouterLimits(p *llmpolicy.OpenRouterPolicy, budget diagnosisprep.Budget, end time.Time) (diagnosisprep.Budget, time.Time, bool) {
+	limits := p.Limits()
+	budget.ModelRequests, budget.InputTokens, budget.OutputTokens, budget.CostUSDMicros = limits.Requests, limits.InputTokens, limits.OutputTokens, limits.CostMicros
+	if limits.ExpiresAt.Before(end) {
+		end = limits.ExpiresAt
+	}
+	return budget, end, p.PerRunTotals()
+}
+
 // productInstallDefaults는 설치 입력에서 생략한 수명·위임 실행 횟수를 기본값으로 채운다(2026-11-23 사용자 결정: 30일,
 // 100회). 적은 값(0·음수 포함)은 그대로 두어 뒤의 입력 검사가 판단한다.
 func productInstallDefaults(c *productInstallInput, hoursOmitted, runsOmitted bool) {
@@ -564,12 +575,7 @@ func productInstall(ctx context.Context, root string, c productInstallInput, hos
 			if e != nil {
 				return errPreparation
 			}
-			limits := p.Limits()
-			perRunTotals = p.PerRunTotals()
-			budget.ModelRequests, budget.InputTokens, budget.OutputTokens, budget.CostUSDMicros = limits.Requests, limits.InputTokens, limits.OutputTokens, limits.CostMicros
-			if limits.ExpiresAt.Before(end) {
-				end = limits.ExpiresAt
-			}
+			budget, end, perRunTotals = productOpenRouterLimits(p, budget, end)
 			launch.OpenRouterManifestPath = manifestPath
 			manifestSHA = urlSHA(encoded)
 			if productWrite(manifestPath, encoded) != nil {
