@@ -67,7 +67,7 @@ func validE2HTTPFileAuth(a *E2HTTPFileAuth, mode e2proxy.HeaderMode, rules []E2H
 		// 시험 계정 모드는 인증 준비 칸이 있는 정책에서만 받는다(C14 결정 6). 계정 없이 모델이 쓴 자격을 그대로 보내는 실행은 없다.
 		return mode != e2proxy.HeaderTestAccountPassthrough
 	}
-	if a.PasswordResponse != "" && (a.PasswordResponse != e2proxy.PasswordResponseMaskSpans || mode != e2proxy.HeaderTestAccountPassthrough) || !diagnosisprep.ValidTargetLogin(a.Login) || len(a.Accounts) < 1 || len(a.Accounts) > diagnosisprep.MaxTargetAccounts {
+	if a.PasswordResponse != "" && (a.PasswordResponse != e2proxy.PasswordResponseMaskSpans && a.PasswordResponse != e2proxy.PasswordResponseModelVisible || mode != e2proxy.HeaderTestAccountPassthrough) || !diagnosisprep.ValidTargetLogin(a.Login) || len(a.Accounts) < 1 || len(a.Accounts) > diagnosisprep.MaxTargetAccounts {
 		return false
 	}
 	found := false

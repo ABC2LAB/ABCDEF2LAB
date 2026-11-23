@@ -87,6 +87,9 @@ func (r localE2HTTPRun) HasIntent(id int64) bool { return r.runner.Execution().H
 func (r localE2HTTPRun) RedactOutput(data []byte) []byte {
 	return r.runner.Execution().RedactOutput(data)
 }
+func (r localE2HTTPRun) RedactRecord(data []byte) []byte {
+	return r.runner.Execution().RedactRecord(data)
+}
 func (r localE2HTTPRun) RunForIntent(ctx context.Context, id int64, command string) (e2runner.Result, error) {
 	return r.runner.RunForIntent(ctx, id, command)
 }

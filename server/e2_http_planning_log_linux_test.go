@@ -196,6 +196,7 @@ type planningCountRunner struct{ view e2proxy.ExecutionView }
 func (r *planningCountRunner) SnapshotForIntent(int64) e2proxy.ExecutionView { return r.view }
 func (r *planningCountRunner) HasIntent(id int64) bool                       { return r.view.IntentID == id }
 func (*planningCountRunner) RedactOutput(value []byte) []byte                { return bytes.Clone(value) }
+func (*planningCountRunner) RedactRecord(value []byte) []byte                { return bytes.Clone(value) }
 func (r *planningCountRunner) RunForIntent(_ context.Context, id int64, _ string) (e2runner.Result, error) {
 	r.view.Counts.Calls++
 	return e2runner.Result{ToolOutput: "owned synthetic tool observation", Trusted: e2runner.TrustedResult{Version: e2proxy.Version, Execution: r.view, Call: e2proxy.CallResult{CallRef: "planning-count-call", IntentID: id, Final: true, AuditComplete: true, Reason: e2proxy.Complete, Counts: e2proxy.Counts{Calls: 1}}, Final: true, ProcessBashExited: true, ProcessDrained: true, ProxyDrained: true, Classification: "completed"}}, nil

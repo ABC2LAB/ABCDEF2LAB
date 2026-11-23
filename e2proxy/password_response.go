@@ -18,6 +18,12 @@ import (
 // PasswordResponseMaskSpans는 호스트가 등록한 비밀번호의 일치 구간만 가리는 정책이다.
 // 비어 있는 이전 정책은 전체 보류 동작을 유지한다. 일반 보호 값·세션·E③ 표식 정책과 구별한다.
 const PasswordResponseMaskSpans = "mask_spans_v1"
+
+// PasswordResponseModelVisible은 대상 응답에 비친 시험 계정 비밀번호를 보류·가림 없이 도구(모델)에 주는 정책이다
+// (사용자 결정 2026-11-23: 대상에서 온 정보는 외부 모델로 나가도 되고 그 책임은 사용자에게 있다고 동의 문장으로 공지한다).
+// 비밀번호는 저장 기록(도구 출력 기록·근거·활동·보고서·화면 API)에서만 가린다(RedactRecord). 일반 보호 값(우리 제어 비밀)은
+// 지금처럼 응답을 통째로 보류하고, 로그인은 여전히 프로그램(인증 준비)만 한다.
+const PasswordResponseModelVisible = "model_visible_v1"
 const maxPasswordTransforms = 1 << 16
 const maxPasswordSpans = 4096
 

@@ -156,7 +156,16 @@ func (r *e2RemoteRun) ProgramCalls() map[string]bool {
 
 // 가리지 못한 원문을 돌려주면 안 되므로 실패하면 비운다.
 func (r *e2RemoteRun) RedactOutput(data []byte) []byte {
-	request := r.identity(e2RemoteRedactOp, 0)
+	return r.redact(e2RemoteRedactOp, data)
+}
+
+// RedactRecord는 저장 기록용 가림이다. 실패하면 비우는 것은 RedactOutput과 같다.
+func (r *e2RemoteRun) RedactRecord(data []byte) []byte {
+	return r.redact(e2RemoteRedactRecordOp, data)
+}
+
+func (r *e2RemoteRun) redact(op string, data []byte) []byte {
+	request := r.identity(op, 0)
 	request.Data = data
 	response, err := r.client.bounded(r.ctx, request)
 	if err != nil {
