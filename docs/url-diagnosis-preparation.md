@@ -99,6 +99,7 @@ first-controlled-diagnosis serve-url-api -installation <같은 설치 파일> -c
 | POST /drafts/{id}/validate | {version,expected_revision}로 설치 결속 재검사 |
 | POST /drafts/{id}/start | 같은 본문과 Idempotency-Key로 명시적 단회 시작 |
 | POST /drafts/{id}/stop | {version,expected_revision}로 중지 요청 |
+| POST /drafts/{id}/delete | {version,expected_revision}로 끝난 회차의 점검 결과 삭제(2026-11-23). 아래 [끝난 회차 삭제](#끝난-회차-삭제) |
 
 version은 diagnosis-api.v2다. 임의 principal, task, 파일 경로, socket 주소, 명령, 환경 변수,
 권위·정책·예산 원문을 body로 받지 않는다. 중복 키·대소문자 alias·알 수 없는 필드·과대 본문을 거부한다.
@@ -153,10 +154,32 @@ result_ready=true인 실제 저장 결과만 보고서로 연결하고 마감 �
 저장 파일 손상·부분 기록·journal/head 불일치는 전체 서비스를 unavailable로 닫는다.
 이는 미완 회차를 정상적으로 읽어 unknown으로 복구하는 경우와 다르다.
 현재 자동 복구/관리자 reconciliation UI는 제공하지 않으며 파일을 삭제해 새 권위를 만드는 우회는 허용하지 않는다.
+운영자가 끝난 회차의 점검 결과를 지우는 경로는 아래 [끝난 회차 삭제](#끝난-회차-삭제) 하나뿐이고, 그 회차의 영수증·예약·실행 횟수는 지우지 않는다.
 동일 신뢰 UID가 journal과 head 전체를 과거로 되돌리는 공격을 탐지하는 별도 witness는 제공하지 않는다.
 보고서 재시작 복구도 원래 source digest와 현재 보호 설치 pin이 일치해야 한다.
 설치 구성이 바뀌어 원래 DB 결속을 확인할 수 없으면 다른 task로 추측해 연결하지 않고 조회를 닫는다.
 과거 회차를 새 설치로 이전하는 자동 migration은 이번 범위가 아니다.
+
+### 끝난 회차 삭제
+
+2026-11-23 사용자·팀 결정으로 Workbench '끝난 점검'의 삭제를 둔다. `POST /drafts/{id}/delete`(`{version,expected_revision}`)는
+끝난 회차(completed·cancelled·failed)이고, 시작했다면 실행 반환과 자원 마감(drain 또는 재마감 확인) 증거가 있을 때만 받는다.
+결과 불명·진행 중·마감 미확인 회차와 시작 전 초안은 `run_active`(409), revision이 다르면 `revision_conflict`(409)다.
+
+- **지우는 것**: DB의 그 작업 기록 전부(작업·탐색 그래프·후보·저장 보고서·finding·E③ 판정·봉인 확인·캡처·요청 승인·워크플로·
+  llm_records), 회차 폴더 `runs/<job>`(E② 회차 저널·동결 정책 포함), `data/tasks/<task>`·`data/diagnostic-logs/task-<task>`.
+  DB 삭제는 설치자가 둔 `abc2lab_purge_task` 함수(SECURITY DEFINER, `db/product_run_purge.sql`)를 전용 역할
+  `product_run_purger`로만 부른다. 그 역할은 표 권한이 없다. 함수는 E③ 불변·통제 모드 가드를 그 트랜잭션 안에서만 끄고
+  커밋 전에 다시 켠다. FK 연쇄·RESTRICT는 그대로라 빠진 자식 행이 있으면 전체가 되돌아간다.
+- **남기는 것**: 준비 영수증(지움 표시 `purged`를 한 줄 더 쓴다. 저널은 추가 전용), 그래서 실행 횟수·예산·busy 판정에 계속 든다.
+  E② 호스트 저널(`/h/journals`)·`e2_http_audit_*`(지우면 e2-host가 1:1 대조에 실패해 모든 새 회차가 막힘), `audit_checkpoint_*`,
+  `budget_*`, `llm_usage`, OpenRouter 장부, TLS 접촉 기록, 대상·정책 선언 저널(리셋 게이트가 읽음. 리셋 확인 전 쓰기 기록을 숨기지 않는다).
+- **지운 뒤**: 목록에서 빠지고, status·lookup·delete는 `not_found`, 그 작업의 보고서·판정 조회 권한(authorize_task)은 거부한다.
+  같은 생성 키로 다시 만들면 `idempotency_conflict`다. 되돌리는 명령은 없다.
+- 결과 삭제가 실패하면 표시하지 않아 같은 요청으로 다시 시도한다(각 단계 멱등). 저널을 고쳐 표시를 되돌리거나 끝나지 않은 회차에
+  표시를 붙이면 준비 서비스가 기동하지 않는다.
+- 기존 설치는 설치 컨테이너가 다시 돌 때 함수·역할·`config/purge.dsn`을 맞춘다(멱등). 이 DSN은 설치 고정 목록·API 투영에 넣지
+  않는다(설치 지문이 바뀌면 지난 보고서를 다시 열 수 없음). 맞추지 못하면 기동은 그대로 하고 삭제만 `unavailable`이다.
 
 ### unknown 이후 운영 정지와 복구 한계
 

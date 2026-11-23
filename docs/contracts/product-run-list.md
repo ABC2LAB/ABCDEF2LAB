@@ -10,7 +10,7 @@
 {"version":"diagnosis-api.v2","owner_context":"주체 문맥의 SHA-256","page":{"runs":[{"id":"prep-…","revision":7,"display_name":"새 점검","state":"running","phase":"execution","task_id":"42","started":true,"drain_complete":false,"result_ready":false,"report_available":false,"approval_status":"not_revalidated","action_required":true}],"snapshot":"목록 snapshot의 SHA-256","limit":25,"more":false}}
 ```
 
-정렬은 `preparing`·`running`·`stopping` 회차를 먼저, 같은 그룹은 Job ID 문자열 내림차순이다. **시각순이 아니다.** 생성 시각 `created_at`은 제공하지 않는다. 시작·마감 확인 시각은 기록된 회차에만 아래 선택 필드로 제공하며, 과거 기록의 누락을 추정하지 않는다. 모든 보존 회차를 페이지로 찾을 수 있고 활성 회차가 우선이다.
+정렬은 `preparing`·`running`·`stopping` 회차를 먼저, 같은 그룹은 Job ID 문자열 내림차순이다. **시각순이 아니다.** 생성 시각 `created_at`은 제공하지 않는다. 시작·마감 확인 시각은 기록된 회차에만 아래 선택 필드로 제공하며, 과거 기록의 누락을 추정하지 않는다. 모든 보존 회차를 페이지로 찾을 수 있고(점검 결과를 지운 회차는 빼고 — [끝난 회차 삭제](../url-diagnosis-preparation.md#끝난-회차-삭제). 그 회차의 영수증은 남아 실행 횟수에 든다) 활성 회차가 우선이다.
 
 페이지는 최대 24KiB JSON이며 필요한 경우 개수 한도보다 먼저 자른다. 공개 HTTP envelope는 이 상한+1KiB 이하다. 보호 IPC는 기존 64KiB frame 상한도 유지한다. 전체 원천 Job 수는 기존 설치 저장소 상한을 따른다.
 

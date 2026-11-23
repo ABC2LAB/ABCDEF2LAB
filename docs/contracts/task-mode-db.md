@@ -30,7 +30,7 @@
 
 Go API와 DB trigger가 다운그레이드·task_id/version 재설정·mode 행 DELETE/TRUNCATE를 거부한다. 이 trigger는 mode 전이 제약이며 직접 SQL의 모든 올바른 전환을 reader와 직렬화하는 기능은 아니다. **정상 writer는 반드시 아래 Go 등록 API를 사용한다.** 같은 DB 권한의 관리자 SQL/trigger 해제를 제어하는 배포 권한 분리는 이번 범위가 아니다.
 
-task 삭제 후 mode 행만 남기는 것으로 finding 출처가 보존되는 것은 아니다. 따라서 immutable provenance와 archive 지원이 완성되기 전에는 **controlled task의 hard/soft delete·archive를 DB에서 거부**한다. 기존 archive 진행/삭제 상태의 작업에는 새 mode를 등록하거나 실행 경로를 허용하지 않는다.
+task 삭제 후 mode 행만 남기는 것으로 finding 출처가 보존되는 것은 아니다. 따라서 immutable provenance와 archive 지원이 완성되기 전에는 **controlled task의 hard/soft delete·archive를 DB에서 거부**한다. 예외는 제품 끝난 회차 삭제 함수 `abc2lab_purge_task` 하나다(2026-11-23 사용자·팀 결정). 그 함수는 mode 행·finding까지 같은 트랜잭션에서 지워 남은 finding이 fence를 잃는 경우를 만들지 않는다([끝난 회차 삭제](../url-diagnosis-preparation.md#끝난-회차-삭제)). 기존 archive 진행/삭제 상태의 작업에는 새 mode를 등록하거나 실행 경로를 허용하지 않는다.
 
 관리자 SQL의 `TRUNCATE tasks RESTART IDENTITY`도 허용된 초기화 절차가 아니다. `task_control_modes`에는 cascade FK가 없고 mode 행 삭제도 차단되므로, tasks만 비우고 ID를 재사용하면 새 task가 이전 task의 mode/version fence를 물려받을 수 있다. 테스트·운영 초기화는 전용 데이터베이스를 폐기·재생성하는 방식으로 수행하며, 공유 DB에서 이 truncate를 실행하지 않는다.
 

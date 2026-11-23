@@ -43,6 +43,7 @@
 
 - `product_runtime`에 `e3_evidence_manifests`·`e3_oracle_verdicts`·`e3_verdict_issuances`·`e3_seal_checks` **INSERT만** 더한다(일련번호 USAGE 포함).
 - UPDATE·DELETE·TRUNCATE는 주지 않는다. 기존 행 잠금용 `UPDATE(id)`는 그대로이고, 불변 트리거(`guard_e3_immutable`)가 실제 갱신을 막는다.
+- 예외(2026-11-23 사용자·팀 결정): 끝난 회차 삭제는 설치자 소유 `abc2lab_purge_task`를 전용 역할 `product_run_purger`로만 부른다. 그 회차 작업의 판정·발급·연결·봉인 확인만 지우고 트리거 정의·본문(시작 역할 검사가 고정해 확인)은 바꾸지 않는다([끝난 회차 삭제](../url-diagnosis-preparation.md#끝난-회차-삭제)).
 - 권한 시험: INSERT 성공, 판정 칸 UPDATE·DELETE·TRUNCATE 거부.
 
 ## 6. 봉인 확인 기록 `e3_seal_checks`

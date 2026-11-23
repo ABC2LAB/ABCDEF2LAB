@@ -54,7 +54,7 @@ Workbench는 `http://127.0.0.1:8787/`, 사용자명은 `ABC2LAB`, 비밀번호�
 
 `./install.sh`는 같은 환경변수로 구성 검사·제품 소스 build·`up -d --wait`를 실행한다. `./update.sh`는 검토한 소스에서 같은 절차로 기존 설치를 검증·재사용한다. 비밀번호 복구는 같은 환경변수로 `./reset-password.sh`를 실행해 숨김 입력한다.
 
-기존 설치의 DB 역할도 재사용한다. 그래프 조회의 신규 권한이 필요한 설치는 승인된 관리자가 [기존 설치의 조회 권한 점검](../../docs/contracts/product-report-graph-read.md#기존-설치의-조회-권한-점검)으로 조회 역할과 열 권한을 확인한다. 데이터·예산과 기존 설치 형식은 이 업데이트에서 그대로 유지된다.
+기존 설치의 DB 역할도 재사용한다. 예외로 끝난 점검 삭제(2026-11-23)에 쓰는 삭제 함수 `abc2lab_purge_task`·전용 역할 `product_run_purger`·`config/purge.dsn`은 설치 컨테이너가 돌 때마다 맞춘다(멱등, 실패해도 기동은 막지 않고 삭제만 `unavailable`, [끝난 회차 삭제](../../docs/url-diagnosis-preparation.md#끝난-회차-삭제)). 그래프 조회의 신규 권한이 필요한 설치는 승인된 관리자가 [기존 설치의 조회 권한 점검](../../docs/contracts/product-report-graph-read.md#기존-설치의-조회-권한-점검)으로 조회 역할과 열 권한을 확인한다. 데이터·예산과 기존 설치 형식은 이 업데이트에서 그대로 유지된다.
 
 설치자는 빈 전용 DB, 최소 권한 역할, 로그인 해시·JWT 키, E② CA·감사 키·helper pin, 대상 보안 상한·모델 정책, 위임·private IPC를 생성한다. 설치와 헬스체크는 모델 completion·대상 HTTP를 호출하지 않는다. 재기동은 기존 installation을 검증하고 재사용한다. API는 `product-state`의 `api` 하위 경로와 private IPC만 읽기 전용으로 마운트한다. 투영에는 API launch·설치 메타데이터·모델 launch·JWT·API 및 model-writer DSN만 있으며 CA 개인키·HMAC 감사 키·runtime DSN·실행 저널은 없다. 기존 설치도 installer 재실행 시 원본을 검증해 투영을 생성하며, 불일치한 기존 투영은 덮어쓰지 않는다. [Compose의 volume.subpath](https://docs.docker.com/reference/compose-file/services/#volumes)를 사용한다. 부분 실패의 `.installing`은 자동 삭제하지 않는다. 사용하지 않은 전용 설치인지 운영자가 확인한 뒤 새 볼륨으로 다시 설치한다.
 
