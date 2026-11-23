@@ -240,6 +240,10 @@ func (s *ExplorationStore) AddNode(kind string, payload map[string]any, priority
 			return 0, err
 		}
 	}
+	// 없는 자산 번호는 노드를 만들기 전에 거부한다(외래 키 위반으로 기록이 빠지지 않게, 모델에 도구 오류로 돌려준다).
+	if err := checkAnchorAssets(tx, anchors); err != nil {
+		return 0, err
+	}
 	var id int64
 	if err := tx.QueryRow(`
 INSERT INTO exploration_nodes(exploration_id, kind, payload, priority, state, origin)
@@ -289,6 +293,9 @@ func (s *ExplorationStore) OriginFactID() (int64, error) {
 func (s *ExplorationStore) Anchor(nodeID, assetID int64) error {
 	if nodeID <= 0 || assetID <= 0 {
 		return nil
+	}
+	if err := checkAnchorAssets(s.db, []int64{assetID}); err != nil {
+		return err
 	}
 	_, err := s.db.Exec(`INSERT INTO exploration_anchors(node_id, asset_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, nodeID, assetID)
 	return err
