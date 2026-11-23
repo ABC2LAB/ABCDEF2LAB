@@ -459,3 +459,19 @@ func TestProductAccessMapRoute(t *testing.T) {
 		})
 	}
 }
+
+// 판정 행이 상한(선언 종류 상한 16)을 넘으면 잘라 그리지 않고 응답 전체가 422다(§2.4). IPC는 부르지 않는다.
+func TestProductAccessMapRowCap(t *testing.T) {
+	s, _, _ := trafficEvidenceServer(t)
+	pg := s.m.pg
+	task := productListTask(t, pg)
+	for i := 0; i <= maxProductVerdictListItems; i++ {
+		storeProductVerdictKind(t, pg, task, "kind_"+strconv.Itoa(i), "target-revision-1", oracle.Undecidable)
+	}
+	endpoint := &verdictDetailTestEndpoint{source: productMapSource(), confirmation: productMapCompleted()}
+	reader := productPolicySourceReader{endpoint: endpoint, principal: "ARTEX", jobID: productListJob}
+	env, status, code := readProductAccessMap(t.Context(), pg.DB, task, productListJob, reader)
+	if status != http.StatusUnprocessableEntity || code != productAccessMapIntegrityFailed || env.Cells != nil || len(endpoint.calls) != 0 {
+		t.Fatalf("행 상한: %d %q IPC %d", status, code, len(endpoint.calls))
+	}
+}
