@@ -23,7 +23,7 @@ const (
 	retestServiceRestartReason = "서비스가 재시작되어 재검증이 중단되었습니다. 다시 시작해 주세요"
 )
 
-var ErrRetestNotRunning = errors.New("本次复测已结束或尚未开始，请从漏洞详情发起新的复测")
+var ErrRetestNotRunning = errors.New("this retest has already ended or has not started; start a new retest from the finding details")
 
 // FindingRetest is an immutable historical test once its conversation turn ends.
 // Snapshot is only loaded for the agent, never sent with the history list.
@@ -97,7 +97,7 @@ func (d *DB) CreateFindingRetest(ctx context.Context, findingID int64, notes str
 	}
 	var title string
 	var snapshot []byte
-	err = tx.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(f.name,''), NULLIF(f.vulnclass,''), '未分类'),
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(f.name,''), NULLIF(f.vulnclass,''), '미분류'),
 	jsonb_build_object('finding', to_jsonb(f),
 	 'assets', COALESCE((SELECT jsonb_agg(to_jsonb(a)) FROM assets a WHERE f.asset_ids @> to_jsonb(ARRAY[a.id])), '[]'::jsonb),
 	 'constraints', COALESCE((SELECT jsonb_agg(to_jsonb(c)) FROM task_constraints c JOIN tasks t ON t.exploration_id=c.exploration_id WHERE t.id=f.task_id), '[]'::jsonb))
@@ -117,7 +117,7 @@ func (d *DB) CreateFindingRetest(ctx context.Context, findingID int64, notes str
 		title = string(runes[:100])
 	}
 	c, err := scanConv(tx.QueryRowContext(ctx, `INSERT INTO conversations(agent_key,title) VALUES ($1,$2) RETURNING `+convCols,
-		FindingRetestAgentKey, fmt.Sprintf("复测 #%d · %s", findingID, title)))
+		FindingRetestAgentKey, fmt.Sprintf("재검증 #%d · %s", findingID, title)))
 	if err != nil {
 		return nil, nil, false, err
 	}
@@ -128,7 +128,7 @@ func (d *DB) CreateFindingRetest(ctx context.Context, findingID int64, notes str
 	}
 	msg := r.InitialMessage()
 	_, err = tx.ExecContext(ctx, `INSERT INTO conversation_activities(conversation_id,worker,kind,summary,detail) VALUES ($1,$2,'user',$3,$4)`,
-		c.ID, FindingRetestAgentKey, fmt.Sprintf("请复测漏洞 #%d", findingID), msg)
+		c.ID, FindingRetestAgentKey, fmt.Sprintf("취약점 #%d 재검증 요청", findingID), msg)
 	if err != nil {
 		return nil, nil, false, err
 	}
@@ -139,9 +139,9 @@ func (d *DB) CreateFindingRetest(ctx context.Context, findingID int64, notes str
 }
 
 func (r *FindingRetest) InitialMessage() string {
-	msg := fmt.Sprintf("请复测漏洞 #%d。先调用 get_finding_retest_context 读取本会话关联的原始证据与约束，再执行针对性验证，最后调用 record_finding_retest_result 保存结论。", r.FindingID)
+	msg := fmt.Sprintf("Please retest finding #%d. First call get_finding_retest_context to read the original evidence and constraints linked to this conversation, then run targeted verification, and finally call record_finding_retest_result to save the conclusion.", r.FindingID)
 	if r.Notes != "" {
-		msg += "\n\n本次复测补充说明：\n" + r.Notes
+		msg += "\n\nAdditional notes for this retest:\n" + r.Notes
 	}
 	return msg
 }
@@ -204,14 +204,14 @@ func (d *DB) StartFindingRetest(ctx context.Context, id int64) (started bool, er
 // runtime conversation. Identical retries are safe; a second verdict is refused.
 func (d *DB) RecordFindingRetestResult(ctx context.Context, conversationID int64, verdict, summary, evidence string) error {
 	if verdict != "reproduced" && verdict != "fixed" && verdict != "inconclusive" {
-		return errors.New("verdict 必须为 reproduced / fixed / inconclusive")
+		return errors.New("verdict must be reproduced / fixed / inconclusive")
 	}
 	summary, evidence = strings.TrimSpace(summary), strings.TrimSpace(evidence)
 	if summary == "" || evidence == "" {
-		return errors.New("summary 与 evidence 不能为空；无法确认时说明实际检查及阻塞原因")
+		return errors.New("summary and evidence must not be empty; if you cannot confirm, describe what you actually checked and what blocked you")
 	}
 	if len(summary) > 16000 || len(evidence) > 128000 {
-		return errors.New("复测结论过长（summary ≤ 16KB，evidence ≤ 128KB）")
+		return errors.New("retest conclusion is too long (summary ≤ 16KB, evidence ≤ 128KB)")
 	}
 	return d.WithEvidenceTx(ctx, func(tx *sql.Tx) error {
 		if err := rejectControlledRetestTx(ctx, tx, 0, conversationID); err != nil {

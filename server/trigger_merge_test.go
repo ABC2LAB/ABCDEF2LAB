@@ -27,7 +27,7 @@ func TestMergeAllRunsWritesTaskGoalOnce(t *testing.T) {
 	if got := strings.Count(out.message, longGoal); got != 1 {
 		t.Fatalf("same-task goal should appear exactly once in a merged-all run, got %d", got)
 	}
-	if strings.Count(out.message, "── 触发 ") < 1 || !strings.Contains(out.message, "触发 39") {
+	if strings.Count(out.message, "── Trigger ") < 1 || !strings.Contains(out.message, "Trigger 39") {
 		t.Fatalf("all 39 event bodies should be present: %q", out.message)
 	}
 	// A merged run embeds its header inline, so finalTriggerMessage must not re-add it.
@@ -52,10 +52,10 @@ func TestMergeAllRunsGroupsInterleavedTasks(t *testing.T) {
 	if got := strings.Count(out.message, "GOAL_B"); got != 1 {
 		t.Fatalf("task #2 goal should appear once despite interleaving, got %d", got)
 	}
-	if !strings.Contains(out.message, "共 2 个任务") {
+	if !strings.Contains(out.message, "2 tasks in total") {
 		t.Fatalf("header should report 2 tasks: %q", out.message)
 	}
-	if got := strings.Count(out.message, "── 触发 "); got != 4 {
+	if got := strings.Count(out.message, "── Trigger "); got != 4 {
 		t.Fatalf("all 4 event bodies should be present, got %d", got)
 	}
 }
@@ -73,7 +73,7 @@ func TestFinalTriggerMessageSingleFirePrependsHeaderOnce(t *testing.T) {
 	if got := strings.Count(msg, longGoal); got != 1 {
 		t.Fatalf("single fire should carry the task goal exactly once, got %d", got)
 	}
-	if !strings.HasPrefix(msg, "【任务 #72") {
+	if !strings.HasPrefix(msg, "[Task #72") {
 		t.Fatalf("single fire should be prefixed with the task-context header: %q", msg)
 	}
 }
@@ -106,11 +106,11 @@ func TestTaskContextHeaderTruncatesLongGoal(t *testing.T) {
 // 여기서 보강한다(우발 한국어화 역회귀 가드 · conversations.go 보존 주석과 짝).
 func TestTriggerSynthesisChineseFramingPreserved(t *testing.T) {
 	// 작업 컨텍스트 헤더의 목표 프레이밍(（目标：…）) 보존 — 입력에 CJK 를 안 넣어 프레이밍만 검증.
-	if h := taskContextHeader(7, "d", "g"); !strings.Contains(h, "（目标：") {
+	if h := taskContextHeader(7, "d", "g"); !strings.Contains(h, "(goal: ") {
 		t.Fatalf("작업 컨텍스트 헤더의 목표 프레이밍이 바뀌었습니다(두뇌 입력 번역 금지): %q", h)
 	}
 	// by-task 머지 안내 프레이밍 보존.
-	if out := mergeTriggeredRuns(sameTaskFires(3)); !strings.Contains(out.message, "【本会话合并了") {
+	if out := mergeTriggeredRuns(sameTaskFires(3)); !strings.Contains(out.message, "[This conversation merges") {
 		t.Fatalf("by-task 머지 안내 프레이밍이 바뀌었습니다(두뇌 입력 번역 금지): %q", out.message)
 	}
 }

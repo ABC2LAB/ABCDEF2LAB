@@ -782,9 +782,9 @@ func taskContextHeader(taskID int64, desc, goal string) string {
 		return ""
 	}
 	if goal != "" {
-		return fmt.Sprintf("【任务 #%d %s（目标：%s）】", taskID, trunc(desc, 200), trunc(goal, 500))
+		return fmt.Sprintf("[Task #%d %s (goal: %s)]", taskID, trunc(desc, 200), trunc(goal, 500))
 	}
-	return fmt.Sprintf("【任务 #%d %s】", taskID, trunc(desc, 200))
+	return fmt.Sprintf("[Task #%d %s]", taskID, trunc(desc, 200))
 }
 
 // finalTriggerMessage renders the message actually sent to the agent for a single
@@ -808,16 +808,16 @@ func mergeTriggeredRuns(items []triggeredRun) triggeredRun {
 	}
 	first := items[0]
 	var b strings.Builder
-	fmt.Fprintf(&b, "【本会话合并了任务 #%d 的 %d 条触发事件，请一并处理】\n", first.taskID, len(items))
+	fmt.Fprintf(&b, "[This conversation merges trigger events from task #%d (%d in total); handle them together]\n", first.taskID, len(items))
 	if h := taskContextHeader(first.taskID, first.taskDesc, first.taskGoal); h != "" {
 		fmt.Fprintf(&b, "%s\n", h) // same task → task context appears once
 	}
 	for i, it := range items {
-		fmt.Fprintf(&b, "\n── 触发 %d ──\n%s\n", i+1, it.message)
+		fmt.Fprintf(&b, "\n── Trigger %d ──\n%s\n", i+1, it.message)
 	}
 	return triggeredRun{
 		agentKey:  first.agentKey,
-		title:     fmt.Sprintf("合并触发 · task#%d · %d 条", first.taskID, len(items)),
+		title:     fmt.Sprintf("병합 트리거 · task#%d · %d건", first.taskID, len(items)),
 		message:   b.String(),
 		taskID:    first.taskID,
 		mergeable: true,
@@ -845,7 +845,7 @@ func mergeAllRuns(items []triggeredRun) triggeredRun {
 		groups[it.taskID] = append(groups[it.taskID], it)
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "【本会话合并了队列中的 %d 条触发事件（共 %d 个任务），请一并处理】\n", len(items), len(order))
+	fmt.Fprintf(&b, "[This conversation merges %d queued trigger events (%d tasks in total); handle them together]\n", len(items), len(order))
 	seq := 0
 	for _, tid := range order {
 		g := groups[tid]
@@ -854,12 +854,12 @@ func mergeAllRuns(items []triggeredRun) triggeredRun {
 		}
 		for _, it := range g {
 			seq++
-			fmt.Fprintf(&b, "\n── 触发 %d（task#%d）──\n%s\n", seq, tid, it.message)
+			fmt.Fprintf(&b, "\n── Trigger %d (task#%d) ──\n%s\n", seq, tid, it.message)
 		}
 	}
 	return triggeredRun{
 		agentKey:  first.agentKey,
-		title:     fmt.Sprintf("合并触发 · 全部 · %d 条", len(items)),
+		title:     fmt.Sprintf("병합 트리거 · 전체 · %d건", len(items)),
 		message:   b.String(),
 		taskID:    first.taskID,
 		mergeable: true,

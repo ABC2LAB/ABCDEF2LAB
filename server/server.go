@@ -2002,7 +2002,7 @@ func seedTargetAsset(as *db.AssetStore, store *db.ExplorationStore, taskID int64
 // origin fact (RelDerivedFrom) so it still traces back to a fact node. Best-effort —
 // a failure just falls back to the normal planner-driven flow.
 func (s *Server) seedFirstIntent(t *Task) {
-	summary := fmt.Sprintf("完成任务目标：%s（任务：%s）", t.Goal, t.Description)
+	summary := fmt.Sprintf("Complete the task goal: %s (task: %s)", t.Goal, t.Description)
 	id, err := t.Store.AddIntent(map[string]any{"summary": summary}, 8, nil, "seed")
 	if err != nil {
 		log.Printf("[seed] task %s: failed to issue seed intent: %v", t.ID, err)
