@@ -674,6 +674,23 @@ func TestFirstDiagnosisPreparationOwnedPostgres(t *testing.T) {
 		modelState.mu.Lock()
 		setGoals, addIntent := modelState.emitted["set_goals"]-before["set_goals"], modelState.emitted["add_intent"]-before["add_intent"]
 		modelState.mu.Unlock()
+		// 진단 로그의 목표 만들기 단계는 '원래 목표로 계속'(WARN failed)이 아니라 성공이어야 실제 상태와 같다.
+		raw, err := os.ReadFile(logger.Path())
+		if err != nil {
+			t.Fatal("준비 진단 로그 읽기 실패")
+		}
+		var goalStatus []string
+		for _, line := range bytes.Split(raw, []byte("\n")) {
+			var event struct {
+				Event, Stage, Status string
+			}
+			if json.Unmarshal(line, &event) == nil && event.Event == "stage_finished" && event.Stage == "goal_creation" {
+				goalStatus = append(goalStatus, event.Status)
+			}
+		}
+		if len(goalStatus) != 1 || goalStatus[0] != "succeeded" {
+			t.Fatalf("부분 저장 뒤 목표 만들기 단계 기록: %v", goalStatus)
+		}
 		if goals != 1 || intents != 1 || setGoals != 1 || addIntent != 1 {
 			t.Fatalf("목표 일부 저장 뒤 상한 계획: goals=%d intents=%d set_goals=%d add_intent=%d", goals, intents, setGoals, addIntent)
 		}
