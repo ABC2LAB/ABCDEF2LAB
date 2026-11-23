@@ -230,7 +230,7 @@ func (s *Service) releaseLocked(ctx context.Context, r Request, record receipt) 
 	}
 	rec := ReleaseRecord{JobID: record.Job.ID, Sequence: s.nextReleaseSequenceLocked(), Principal: r.Principal, RequestID: r.RequestID, Reason: r.Release.Reason,
 		RequestedAt: s.releaseClock().UTC(), LastActivityAt: after.LastActivityAt, ReceiptUpdatedAt: *after.ReceiptUpdatedAt,
-		QuietSeconds: after.QuietSeconds, JobState: record.Job.State, PreviousInit: record.ExecutionInitInstance, ExplorationClosed: closed}
+		QuietSeconds: after.QuietSeconds, JobState: record.Job.State, PreviousInit: record.ExecutionInitInstance, ExplorationSession: explorationSession(closed)}
 	next := cloneReceipt(record)
 	next.OperatorRelease = &rec
 	if !validReceiptChange(record, next) || !validStoredRelease(next) {
@@ -248,6 +248,13 @@ func (s *Service) releaseLocked(ctx context.Context, r Request, record receipt) 
 	out.Record = written
 	job := cloneReceipt(next).Job
 	return Response{Version: Version, RequestID: r.RequestID, Job: &job, Release: &out}
+}
+
+func explorationSession(closed bool) string {
+	if closed {
+		return ExplorationSessionClosed
+	}
+	return ExplorationSessionNone
 }
 
 // validReleaseChange는 해제 감사 기록의 영수증 전이를 검사한다. 기록은 막힌 실행에만 붙고, 붙을 때는 다른 칸을

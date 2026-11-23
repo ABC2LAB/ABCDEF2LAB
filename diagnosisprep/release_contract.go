@@ -13,6 +13,12 @@ import (
 // 남기고 스스로 정상 종료한다. 컨테이너 재시작 정책으로 다시 뜬 새 init 인스턴스가 #559 증거(다른 init이 배타 저널
 // 잠금을 얻음 = 이전 PID namespace가 끝나 커널이 남은 프로세스를 모두 종료)와 탐색 경계 세션 없음을 확인한 뒤에만
 // 새 시작 잠금을 푼다. 서버·화면은 Docker를 다루지 않는다.
+// 해제 감사 기록의 탐색 경계 세션 값.
+const (
+	ExplorationSessionNone   = "none"
+	ExplorationSessionClosed = "closed"
+)
+
 const (
 	ReleaseStatus Command = "release_status"
 	Release       Command = "release"
@@ -50,18 +56,20 @@ type ReleaseRequest struct {
 type ReleaseRecord struct {
 	JobID string `json:"job_id"`
 	// Sequence는 이 설치에서 해제를 기록한 순서(1부터)다. 최근 기록은 벽시계가 아니라 이 순서로 고른다(시계 보정과 무관).
-	Sequence          uint64     `json:"sequence"`
-	Principal         string     `json:"principal"`
-	RequestID         string     `json:"request_id"`
-	Reason            string     `json:"reason"`
-	RequestedAt       time.Time  `json:"requested_at"`
-	LastActivityAt    *time.Time `json:"last_activity_at,omitempty"` // 없음 = 그 작업의 엔진 활동 기록이 프로세스에 없음
-	ReceiptUpdatedAt  time.Time  `json:"receipt_updated_at"`
-	QuietSeconds      int64      `json:"quiet_seconds"`
-	JobState          State      `json:"job_state"`
-	PreviousInit      string     `json:"previous_init"`
-	ExplorationClosed bool       `json:"exploration_closed"` // 해제 때 그 작업의 탐색 경계 세션을 닫았는지(없었으면 false)
-	NewInit           string     `json:"new_init,omitempty"`
+	Sequence         uint64     `json:"sequence"`
+	Principal        string     `json:"principal"`
+	RequestID        string     `json:"request_id"`
+	Reason           string     `json:"reason"`
+	RequestedAt      time.Time  `json:"requested_at"`
+	LastActivityAt   *time.Time `json:"last_activity_at,omitempty"` // 없음 = 그 작업의 엔진 활동 기록이 프로세스에 없음
+	ReceiptUpdatedAt time.Time  `json:"receipt_updated_at"`
+	QuietSeconds     int64      `json:"quiet_seconds"`
+	JobState         State      `json:"job_state"`
+	PreviousInit     string     `json:"previous_init"`
+	// ExplorationSession은 해제 때 그 작업의 탐색 경계 세션이 어땠는지다: "none"(열린 세션 없음, 닫을 것 없었음)·"closed"(열려
+	// 있던 세션을 닫고 닫힘을 확인함). 닫지 못하면 해제를 거절하므로 '못 닫음'은 기록되지 않는다.
+	ExplorationSession string `json:"exploration_session"`
+	NewInit            string `json:"new_init,omitempty"`
 	// CompletedBoot은 해제를 마친 서비스의 boot ID다. 재부팅 뒤에는 init 문자열이 우연히 같을 수 있어 boot와 함께 본다.
 	CompletedBoot     string     `json:"completed_boot,omitempty"`
 	CompletedAt       *time.Time `json:"completed_at,omitempty"`
@@ -138,7 +146,7 @@ func validReleaseRecordShape(r ReleaseRecord) bool {
 		r.RequestedAt.IsZero() || r.ReceiptUpdatedAt.IsZero() || r.ReceiptUpdatedAt.After(r.RequestedAt) ||
 		(r.LastActivityAt != nil && r.LastActivityAt.After(r.RequestedAt)) ||
 		r.QuietSeconds < int64(MinReleaseQuiet/time.Second) || (r.JobState != Unknown && r.JobState != Stopping) ||
-		!initInstancePattern.MatchString(r.PreviousInit) {
+		!initInstancePattern.MatchString(r.PreviousInit) || (r.ExplorationSession != ExplorationSessionNone && r.ExplorationSession != ExplorationSessionClosed) {
 		return false
 	}
 	if completed != (r.BoundaryCheckedAt != nil) || completed != (r.NewInit != "") || completed != (r.CompletedBoot != "") {

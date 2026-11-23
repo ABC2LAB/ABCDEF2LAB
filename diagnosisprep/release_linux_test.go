@@ -265,6 +265,9 @@ func TestReleaseHungExecutionAfterQuietRestartsAndCompletes(t *testing.T) {
 		t.Fatalf("해제 실패: %#v", res)
 	}
 	rec := res.Release.Record
+	if rec.ExplorationSession != ExplorationSessionNone {
+		t.Fatalf("열린 세션이 없었는데 경계 세션 값이 %q", rec.ExplorationSession)
+	}
 	if rec.Principal != "owner" || rec.Reason != "실행이 응답하지 않아 해제" || rec.JobState != Stopping || rec.PreviousInit != firstContainerNamespace ||
 		rec.QuietSeconds != int64(DefaultReleaseQuiet/time.Second) || rec.ReceiptUpdatedAt.IsZero() || !rec.Pending() {
 		t.Fatalf("감사 기록 칸이 빠짐: %#v", rec)
@@ -419,7 +422,7 @@ func TestReleaseRefusedWhenExplorationSessionNotClosed(t *testing.T) {
 	// 세션을 닫을 수 있으면 닫고 그 사실을 감사 기록에 남긴다.
 	f.b.set(func(b *releaseBackend) { b.closeErr = nil })
 	res := release(t, f.s, f.job, "경계 세션 닫고 해제")
-	if res.Error != "" || !res.Release.Record.ExplorationClosed {
+	if res.Error != "" || res.Release.Record.ExplorationSession != ExplorationSessionClosed {
 		t.Fatalf("경계 세션 닫기가 감사 기록에 없음: %#v", res)
 	}
 }
