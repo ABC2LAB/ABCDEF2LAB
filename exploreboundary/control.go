@@ -196,6 +196,16 @@ func (m *Manager) Handle(ctx context.Context, in ControlRequest) ControlResponse
 		go m.watch(s)
 		st := s.Status()
 		return ControlResponse{OK: true, State: &st}
+	case OpCurrent:
+		if in.SessionRef != "" || in.Binding != nil || in.Target != nil || in.Flow != nil {
+			return fail(ControlErrInvalid)
+		}
+		s := m.latest()
+		if s == nil {
+			return ControlResponse{OK: true}
+		}
+		st := s.Status()
+		return ControlResponse{OK: true, State: &st}
 	case OpStatus:
 		s := m.session(in.SessionRef)
 		if s == nil {
