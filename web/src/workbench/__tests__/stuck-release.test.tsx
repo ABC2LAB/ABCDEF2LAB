@@ -270,3 +270,50 @@ describe("StuckReleaseBox — 재접속 판정", () => {
     expect(validReason("줄 구분")).toBe(false);
   });
 });
+
+describe("StuckReleaseBox — 이전 기록과 이번 기록 가르기", () => {
+  it("같은 작업의 이전 기록만 다시 오면 '해제가 기록되지 않았어요'로 돌아간다", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(healthReady));
+    const before = blocked({
+      eligible: true,
+      refusal: undefined,
+      eligible_at: "2026-11-23T04:40:00Z",
+      record: record(false),
+    });
+    fetchMock.mockResolvedValueOnce(before);
+    render(<StuckReleaseBox />);
+    await act(() => Promise.resolve());
+    fireEvent.change(screen.getByLabelText("해제 사유"), { target: { value: "응답 없음" } });
+    fireEvent.click(screen.getByLabelText("해제 영향 동의"));
+    fetchMock.mockImplementationOnce(() => Promise.reject(new TypeError("Failed to fetch")));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "멈춘 작업 해제" }));
+    });
+    fetchMock.mockResolvedValueOnce(before); // 다시 붙었는데 이전 요청(product-release-1) 기록 그대로
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_100);
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent("해제가 기록되지 않았어요");
+    expect(screen.queryByText(/재시작 중이에요/)).not.toBeInTheDocument();
+  });
+
+  it("경계 확인이 2분 넘게 끝나지 않으면 탐색 경계를 보라고 안내한다", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(healthReady));
+    await sendRelease(() => Promise.reject(new TypeError("Failed to fetch")));
+    fetchMock.mockResolvedValue(pending);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_100);
+    });
+    expect(screen.getByRole("status")).toHaveTextContent("탐색 경계 세션 없음을 확인하고 있어요");
+    expect(screen.queryByText(/explore-boundary/)).not.toBeInTheDocument();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2 * 60_000 + 6_000);
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent("explore-boundary");
+  });
+
+  it("기록의 request_id가 비었거나 모양 밖이면 받지 않는다", () => {
+    expect(() => parseReleaseView(blocked({ record: { ...record(false), request_id: "" } }))).toThrow(ApiError);
+    expect(() => parseReleaseView(blocked({ record: { ...record(false), request_id: "bad id!" } }))).toThrow(ApiError);
+  });
+});

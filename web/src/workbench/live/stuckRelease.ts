@@ -104,8 +104,10 @@ function parseRecord(v: unknown): ReleaseRecord | null {
     completedAt: time("completed_at"),
     boundaryCheckedAt: time("boundary_checked_at"),
   };
+  // 화면은 이번 요청의 기록을 request_id로 알아본다. 서버가 만들 수 없는 값(빈 값·모양 밖)은 받지 않는다
   if (
     !REF.test(rec.jobId) ||
+    !REF.test(rec.requestId) ||
     rec.requestedAt === "" ||
     rec.receiptUpdatedAt === "" ||
     (rec.completedAt === "") !== (rec.newInit === "")

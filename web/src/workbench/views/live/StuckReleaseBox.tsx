@@ -34,6 +34,9 @@ const RECONNECT_POLL_MS = 2_000;
 const RECOVERY_HINT_MS = 60_000;
 // 재시작을 기다리는 시한. 넘으면 기다림을 멈추고 '다시 연결' 버튼을 보인다
 const RECONNECT_LIMIT_MS = 10 * 60_000;
+// 경계 확인 대기가 이만큼 길어지면 탐색 경계 상태를 보라고 안내한다(대기 자체는 시한 없이 계속한다)
+const BOUNDARY_HINT_MS = 2 * 60_000;
+const minutesOf = (ms: number) => Math.round(ms / 60_000);
 export const RECOVERY_COMMAND = "./scripts/product-compose.sh up -d";
 
 type Phase = "idle" | "sending" | "restarting" | "waiting_boundary" | "released" | "gave_up";
@@ -52,6 +55,8 @@ export function StuckReleaseBox({ onReleased }: { onReleased?: () => void }) {
   const [phase, setPhase] = useState<Phase>("idle");
   const [target, setTarget] = useState<Target | null>(null);
   const [slow, setSlow] = useState(false);
+  const [boundarySince, setBoundarySince] = useState(0);
+  const [boundarySlow, setBoundarySlow] = useState(false);
   const [message, setMessage] = useState("");
 
   const load = useCallback(async () => {
@@ -117,6 +122,8 @@ export function StuckReleaseBox({ onReleased }: { onReleased?: () => void }) {
             return;
           }
           setSlow(false);
+          if (phase !== "waiting_boundary") setBoundarySince(Date.now());
+          else setBoundarySlow(Date.now() - boundarySince > BOUNDARY_HINT_MS);
           setPhase("waiting_boundary");
         } else if (next && phase === "restarting") {
           // 서버가 다시 붙었는데 이번 해제 기록이 없다: 요청이 닿기 전에 끊긴 것이다
@@ -134,7 +141,7 @@ export function StuckReleaseBox({ onReleased }: { onReleased?: () => void }) {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [phase, target, load, onReleased]);
+  }, [phase, target, load, onReleased, boundarySince]);
 
   async function release() {
     if (!view?.eligible || !agreed || !validReason(reason) || phase !== "idle") return;
@@ -181,8 +188,14 @@ export function StuckReleaseBox({ onReleased }: { onReleased?: () => void }) {
         )}
         {phase === "restarting" && slow ? (
           <p className={s.err} role="alert">
-            1분이 지나도 다시 붙지 않아요. 서버에서 <code>{RECOVERY_COMMAND}</code>를 실행해 주세요(기록·볼륨은
-            그대로예요).
+            {minutesOf(RECOVERY_HINT_MS)}분이 지나도 다시 붙지 않아요. 서버에서 <code>{RECOVERY_COMMAND}</code>를 실행해
+            주세요(기록·볼륨은 그대로예요).
+          </p>
+        ) : null}
+        {phase === "waiting_boundary" && boundarySlow ? (
+          <p className={s.err} role="alert">
+            탐색 경계 확인이 {minutesOf(BOUNDARY_HINT_MS)}분 넘게 끝나지 않아요. 탐색 경계(explore-boundary) 컨테이너가
+            떠 있는지 확인해 주세요. 확인되면 자동으로 해제를 마쳐요.
           </p>
         ) : null}
         {phase === "gave_up" ? (
