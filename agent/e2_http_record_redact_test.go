@@ -59,7 +59,8 @@ func TestE2HTTPActivityUsesRecordRedaction(t *testing.T) {
 func TestE2HTTPDiagnosticObservationUsesRecordRedaction(t *testing.T) {
 	scope := recordSplitScope{value: []byte("visible-pass-77")}
 	state := &e2HTTPToolState{}
-	result := e2runner.Result{ToolOutput: `{"username":"alice","password":"visible-pass-77"}`}
+	// 키=값 꼴이 아닌 자리(표 칸)라 자격 꼴 가림이 아니라 저장 기록 정확값 가림만 잡는다.
+	result := e2runner.Result{ToolOutput: `<tr><td>alice</td><td>visible-pass-77</td></tr>`}
 	result.Trusted.Call.CallRef, result.Trusted.Call.IntentID, result.Trusted.Execution.IntentID = "call-1", 22, 22
 	state.observeDiagnostic(scope, 22, "curl -d pw=visible-pass-77 https://example.invalid/login", result)
 	observed, ok := state.observations["call-1"]
