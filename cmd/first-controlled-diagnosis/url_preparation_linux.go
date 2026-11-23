@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -144,6 +145,11 @@ func runURLPreparationService(ctx context.Context, args []string, stdout, stderr
 	if ctx == nil || ctx.Err() != nil {
 		return 1
 	}
+	quiet, err := releaseQuiet(os.Getenv(releaseQuietEnv))
+	if err != nil {
+		fmt.Fprintln(stderr, err.Error())
+		return 2
+	}
 	backend, err := newURLPreparationRuntime(ctx, *path)
 	if err != nil {
 		fmt.Fprintln(stderr, "보호된 준비 설치를 확인할 수 없습니다")
@@ -152,6 +158,13 @@ func runURLPreparationService(ctx context.Context, args []string, stdout, stderr
 	service, err := diagnosisprep.New(ctx, backend.config.StateDir, backend)
 	if err != nil {
 		fmt.Fprintln(stderr, "영속 준비 상태를 확인할 수 없습니다")
+		return 1
+	}
+	if err := service.SetReleaseQuiet(quiet); err != nil {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		_ = service.Shutdown(cleanup)
+		cancel()
+		fmt.Fprintln(stderr, "멈춘 작업 해제 기준을 확인할 수 없습니다")
 		return 1
 	}
 	backend.endpoint = service
@@ -181,10 +194,15 @@ func runURLPreparationService(ctx context.Context, args []string, stdout, stderr
 	go func() { serving <- httpServer.Serve(listener) }()
 	outputErr := json.NewEncoder(stdout).Encode(map[string]any{"service_ready": true, "mode": "url_preparation", "execution": "EXPLICIT_START_REQUIRED", "storage": "durable"})
 	var serveErr error
+	restart := false
 	if outputErr == nil {
 		select {
 		case <-ctx.Done():
 		case serveErr = <-serving:
+		case <-service.RestartRequested():
+			// 운영자 해제(C04): 감사 기록이 저널에 남았다. 새 명령을 막고 정상 종료한다. 미마감 실행이 있으니
+			// Shutdown은 저널 잠금을 프로세스 종료까지 쥐고, 다시 뜬 init이 그 잠금을 얻는 것이 종료 증거가 된다.
+			restart = true
 		}
 	}
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
@@ -195,6 +213,13 @@ func runURLPreparationService(ctx context.Context, args []string, stdout, stderr
 	httpErr := httpServer.Shutdown(cleanup)
 	if httpErr == nil {
 		closeErr = errors.Join(closeErr, backend.closeReports())
+	}
+	if restart {
+		if closeErr != nil || httpErr != nil {
+			log.Print("운영자 해제: 마감을 다 확인하지 못한 채 종료합니다(새 init이 저널 잠금으로 종료를 확인합니다)")
+		}
+		fmt.Fprintln(stderr, "운영자 해제: 준비 서비스를 정상 종료했습니다. 컨테이너 재시작 정책이 다시 띄웁니다")
+		return exitRestartRequested
 	}
 	if outputErr != nil || serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) || closeErr != nil || httpErr != nil {
 		fmt.Fprintln(stderr, "준비 서비스 마감 결과를 확인할 수 없습니다")
@@ -305,15 +330,23 @@ func runURLDiagnosisAPI(ctx context.Context, args []string, stdout, stderr io.Wr
 	go func() { serving <- httpServer.Serve(listener) }()
 	outputErr := json.NewEncoder(stdout).Encode(map[string]any{"service_ready": true, "mode": "url_diagnosis_api", "storage": "private_service_durable"})
 	var serveErr error
+	lost := watchSharedNetwork(ctx, sharedNetworkCheckInterval, net.Interfaces)
+	networkLost := false
 	if outputErr == nil {
 		select {
 		case <-ctx.Done():
 		case serveErr = <-serving:
+		case <-lost:
+			networkLost = true
 		}
 	}
 	cleanup, cancel := launchCleanupContext(ctx, c)
 	defer cancel()
-	if httpServer.Shutdown(cleanup) != nil || outputErr != nil || serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+	shutdownErr := httpServer.Shutdown(cleanup)
+	if networkLost {
+		return exitSharedNetworkLost
+	}
+	if shutdownErr != nil || outputErr != nil || serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 		return 1
 	}
 	return 0
