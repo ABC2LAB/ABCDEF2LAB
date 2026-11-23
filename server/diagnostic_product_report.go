@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"github.com/Autumn-27/artex/diagnosisprep"
+	"github.com/Autumn-27/artex/oracle"
 	"github.com/Autumn-27/artex/report"
 )
 
@@ -49,7 +50,7 @@ func readDiagnosticProductVerdicts(ctx context.Context, tx *sql.Tx, taskID int64
 		out.ProductUnreadable = len(rows)
 		return nil
 	}
-	// 판정 목록과 동일한 결속·동결본·봉인 검증을 통과한 제품 확정만 별도 집계한다.
+	// 판정 목록과 동일한 결속·동결본·봉인 검증을 통과한 행의 결과를 표시한다.
 	list, status, _ := assembleProductVerdictList(taskID, exploration, b.jobID, rows, got, seals)
 	if status != http.StatusOK {
 		return errDiagnosticReportScope
@@ -59,7 +60,8 @@ func readDiagnosticProductVerdicts(ctx context.Context, tx *sql.Tx, taskID int64
 			out.ProductUnverified++
 			continue
 		}
-		if *row.OracleValue == "confirmed" {
+		switch oracle.VerdictValue(*row.OracleValue) {
+		case oracle.Confirmed:
 			confirmation := report.DiagnosticProductConfirmation{
 				VerdictID: *row.VerdictID, ResourceType: *row.ResourceType, EvidenceCalls: *row.EvidenceCalls,
 			}
@@ -67,6 +69,10 @@ func readDiagnosticProductVerdicts(ctx context.Context, tx *sql.Tx, taskID int64
 				confirmation.SealUnconfirmedReason = *seal.Reason
 			}
 			out.ProductConfirmed = append(out.ProductConfirmed, confirmation)
+		case oracle.Suspected:
+			out.ProductSuspected++
+		case oracle.Undecidable:
+			out.ProductUndecidable++
 		}
 	}
 	return nil

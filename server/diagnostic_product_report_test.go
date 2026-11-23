@@ -129,3 +129,40 @@ func TestDiagnosticReportShowsUnconfirmedAndFailedEvidenceSeals(t *testing.T) {
 		})
 	}
 }
+
+func TestDiagnosticReportShowsNonConfirmedProductVerdictCounts(t *testing.T) {
+	s, _, _ := trafficEvidenceServer(t)
+	pg := s.m.pg
+	task := productListTask(t, pg)
+	storeProductVerdictKind(t, pg, task, "document", "revision-1", oracle.Suspected)
+	storeProductVerdictKind(t, pg, task, "note", "revision-1", oracle.Undecidable)
+	storeProductVerdictKind(t, pg, task, "image", "revision-1", oracle.Undecidable)
+	ctx := context.WithValue(t.Context(), diagnosticProductContextKey{}, diagnosticProductBinding{
+		taskID: strconv.FormatInt(task, 10), jobID: productListJob,
+		reader: fixedProductContext{productListContext(matchedProductSource(), nil)},
+	})
+	in, err := loadDiagnosticReport(ctx, pg, task, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := report.PrepareDiagnostic(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Confirmed != 0 || prepared.ProductUnverified != 0 || prepared.ProductSuspected != 1 || prepared.ProductUndecidable != 2 {
+		t.Fatalf("제품 판정 집계: 확정=%d, 확인 실패=%d, 의심=%d, 판정 불가=%d",
+			prepared.Confirmed, prepared.ProductUnverified, prepared.ProductSuspected, prepared.ProductUndecidable)
+	}
+	const summary = "독립 확정 0건 · 의심 1건 · 판정 불가 2건(확정에 세지 않음)"
+	for _, shared := range []bool{false, true} {
+		in.Shared = shared
+		html, err := report.DiagnosticHTML(in)
+		if err != nil || !strings.Contains(string(html), summary) {
+			t.Fatalf("HTML에 제품 판정 요약 없음 (공유=%t): %v", shared, err)
+		}
+		doc, err := report.DiagnosticDOCX(in)
+		if err != nil || !strings.Contains(diagnosticWordText(t, wordParts(t, doc)["word/document.xml"]), summary) {
+			t.Fatalf("DOCX에 제품 판정 요약 없음 (공유=%t): %v", shared, err)
+		}
+	}
+}
