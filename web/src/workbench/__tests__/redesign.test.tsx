@@ -168,6 +168,8 @@ describe("점검 진행 단계 게이지", () => {
     expect(gauge).toHaveAttribute("aria-label", "점검 단계 진행: 점검 완료");
     expect(gauge).toHaveTextContent("점검 완료");
     expect(gauge).not.toHaveTextContent("모든 단계를 마쳤습니다");
+    // 다 끝나면 초록(사용자 11/23)
+    expect(gauge.querySelector('[class*="lghead"]')?.className).toMatch(/done/);
   });
 });
 
