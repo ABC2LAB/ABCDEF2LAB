@@ -81,6 +81,19 @@ func TestDiagnosticTextMarkdownCredentials(t *testing.T) {
 	}
 }
 
+func TestDiagnosticTextMarkdownCredentialTable(t *testing.T) {
+	in := "비밀번호 노출 확인\n| 계정 | Password |\n| --- | --- |\n| admin | synthetic-one |\n| tester | synthetic-two |\n\n후속 검토 필요"
+	got := DiagnosticText(in)
+	if !strings.Contains(got, "자격정보 2건 노출됨") || !strings.Contains(got, "후속 검토 필요") ||
+		strings.Contains(got, "synthetic-") || strings.Contains(got, "| admin |") {
+		t.Fatalf("자격정보 표 가림 실패: %q", got)
+	}
+	plain := "일반 표\n| 이름 | 상태 |\n| --- | --- |\n| admin | ready |"
+	if got := DiagnosticText(plain); got != plain {
+		t.Fatalf("일반 표가 바뀜: %q", got)
+	}
+}
+
 func TestCredentialTextMasksCredentialsButKeepsAddresses(t *testing.T) {
 	in := "Set-Cookie: sid=synthetic-session-41c2; Path=/\nAuthorization: Bearer synthetic-bearer-41c2\n{\"email\":\"user@owned.test\",\"password\":\"synthetic-pass-41c2\"}\n" +
 		"token=synthetic-token-41c2 eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJlLXN5bnRoZXRpYw next https://owned.test/read/item"

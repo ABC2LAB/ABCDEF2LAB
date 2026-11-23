@@ -72,6 +72,7 @@ func TestDiagnosticReportMasksProseCredentials(t *testing.T) {
 	in := diagnosticFixture()
 	in.Entries[0].Summary = "The default password is `synthetic-pass-83z`. The response confirmed that the configuration was exposed."
 	in.Entries[0].Evidence = "Session token `synthetic-token-83z`\n인증 쿠키는 `synthetic-cookie-83z`"
+	in.Entries[0].Report = "비밀번호 노출\n| 계정 | Password |\n| --- | --- |\n| admin | synthetic-pass-83z |\n| tester | synthetic-pass-84z |"
 	in.Entries[0].Evidence += "\nfixture1/synthetic-one, fixture2/synthetic-two 평문으로 노출됨"
 	for _, shared := range []bool{false, true} {
 		in.Shared = shared
@@ -81,6 +82,9 @@ func TestDiagnosticReportMasksProseCredentials(t *testing.T) {
 		}
 		if strings.Contains(string(out), "synthetic-") {
 			t.Fatalf("credential exposed (shared=%t)", shared)
+		}
+		if !shared && !strings.Contains(string(out), "자격정보 2건 노출됨") {
+			t.Fatal("credential table count missing")
 		}
 		if !shared && !strings.Contains(string(out), "configuration was exposed") {
 			t.Fatal("lost the non-secret finding context")

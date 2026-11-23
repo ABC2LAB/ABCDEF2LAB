@@ -25,9 +25,52 @@ var diagnosticSecrets = []*regexp.Regexp{
 	regexp.MustCompile(`(?s)-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----`),
 }
 
-var inlineAccountContext = regexp.MustCompile("(?i)비밀번호|패스워드|자격정보|평문으로[ \\t]+노출|\\b(?:passwords?|passwd|credentials?)\\b")
+var inlineAccountContext = regexp.MustCompile("(?i)비밀번호|패스워드|토큰|자격정보|평문으로[ \\t]+노출|\\b(?:passwords?|passwd|credentials?|tokens?)\\b")
 
 var inlineAccountPair = regexp.MustCompile(`(^|[ \t,:])[\p{L}\p{N}_.@-]+(?:/[^\s,;()]+|\([^\s,;()]+((?:,[^)\r\n]*)?)\))`)
+
+// 자격정보 문맥의 마크다운 표는 값이 어느 열에 있는지 확정하기 어려워 행 전체를 건수로 바꾼다.
+func redactCredentialTables(s string) string {
+	lines := strings.Split(s, "\n")
+	out := make([]string, 0, len(lines))
+	context := false
+	for i := 0; i < len(lines); {
+		line := lines[i]
+		if strings.TrimSpace(line) == "" {
+			context = false
+		}
+		if inlineAccountContext.MatchString(line) {
+			context = true
+		}
+		if context && markdownTableRow(line) {
+			end, count := i, 0
+			for end < len(lines) && markdownTableRow(lines[end]) {
+				header := end == i && inlineAccountContext.MatchString(lines[end]) && end+1 < len(lines) && markdownTableDivider(lines[end+1])
+				if !markdownTableDivider(lines[end]) && !header {
+					count++
+				}
+				end++
+			}
+			if count > 0 {
+				out = append(out, "자격정보 "+strconv.Itoa(count)+"건 노출됨")
+				i = end
+				continue
+			}
+		}
+		out = append(out, line)
+		i++
+	}
+	return strings.Join(out, "\n")
+}
+
+func markdownTableRow(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	return strings.HasPrefix(trimmed, "|") && strings.HasSuffix(trimmed, "|") && strings.Count(trimmed, "|") >= 3
+}
+
+func markdownTableDivider(line string) bool {
+	return strings.Trim(line, " |:-\t") == ""
+}
 
 // redactInlineAccounts는 자격정보가 언급된 줄에서 계정/비밀번호 표기를 가리고 발견 수를 남긴다.
 func redactInlineAccounts(s string) string {
@@ -64,6 +107,7 @@ func redactInlineAccounts(s string) string {
 }
 
 func DiagnosticText(s string) string {
+	s = redactCredentialTables(s)
 	s = redactInlineAccounts(s)
 	s = quotedCredential.ReplaceAllString(s, Redacted)
 	for _, re := range diagnosticSecrets {
