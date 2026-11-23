@@ -30,7 +30,7 @@
 
 | 필드 | 설치자 입력 |
 |---|---|
-| `version` | `1`·`2`·`3`·`4`(`2` 이상은 `max_consecutive_transient_errors`, `3` 이상은 `sampling`, `4`는 `provider_routing`도 있어야 한다). 새 제품 설치는 `4`(자동 넘김)를 쓰고, 평가 manifest는 `3`(고정 모드)을 그대로 쓴다 |
+| `version` | `1`·`2`·`3`·`4`(`2` 이상은 `max_consecutive_transient_errors`, `3` 이상은 `sampling`, `4`는 `provider_routing`도 있어야 한다). 새 제품 설치는 `4`를 쓰고 실제 넘김 확인 전까지는 고정 모드(`{"mode":"pinned"}`)로 둔다. 평가 manifest는 `3`(고정 모드)을 그대로 쓴다 |
 | `profile_id`, `format`, `base_url`, `model` | 실제 DB profile과 정확히 같은 tuple |
 | `provider_slug` | 승인한 정확 endpoint tag 하나(자동 넘김 모드에서는 목록의 첫 항목과 같아야 한다) |
 | `expected_provider_name` | 응답에서 검증할 실제 provider 표시 이름 |
@@ -46,7 +46,7 @@
 | `max_input_price_usd_micros_per_million`, `max_output_price_usd_micros_per_million` | 승인된 100만 토큰당 최대 단가, provider.max_price에 결속 |
 | `max_consecutive_transient_errors` | v2·v3. 연속 일시 오류(429·5xx·연결 실패·응답 본문 읽기 끊김)가 이 수(1~16)에 닿으면 정책을 잠근다. v1은 1로 본다(첫 일시 오류에 잠금). 첫 진단의 모델 호출 하나는 실패하면 두 번 더 보내고(2초·6초 뒤, 매번 새 예약), 요청 한도(429, 청구 없음)면 네 번까지 다시 보낸다(2·6·15·30초). 그 실패도 연속 수에 들어가므로, 3 이하이면(429가 이어지면 5 이하이면) 호출 하나가 승인을 잠글 수 있다 |
 | `sampling` | v3·v4. 매 요청에 넣는 샘플링 일곱 칸 `temperature`(0~2)·`top_p`(0 초과~1)·`top_k`(정수 0~1000)·`min_p`(0~1)·`presence_penalty`(-2~2)·`repetition_penalty`(0 초과~2)·`seed`(정수, ±2^53). 칸이 정확히 일곱이어야 하고(중복·모르는 칸·정수 칸의 소수 거부) 범위 밖이면 거부한다. 제품 기본값은 평가 프로토콜 §6 고정값과 같은 `{"temperature":1.0,"top_p":0.95,"top_k":20,"min_p":0,"presence_penalty":1.5,"repetition_penalty":1.0,"seed":42}`(모델 카드 thinking 모드·일반 작업 권장값 + seed 42)이다. v1·v2는 샘플링을 넣지 않는다(제공자 기본값, 이전 동작) |
-| `provider_routing` | v4만. 제공자 모드다. 고정: `{"mode":"pinned"}` — 승인 endpoint 하나만 쓰고 넘기지 않는다(v1~v3과 같은 요청 바이트). 자동 넘김: `{"mode":"fallback","providers":[{"slug":"<tag>","name":"<표시 이름>"}, …]}` — 2~8개, 순서가 시도 순서, tag와 이름은 각각 중복 없음, 첫 항목은 `provider_slug`·`expected_provider_name`과 같다. 모르는 칸·중복 키는 거부한다. **제품 기본값은 자동 넘김**이고 평가 manifest는 고정 모드다. **실제 넘김 동작 확인 전(2026-11-23)**: OpenRouter 문서는 `only`가 그 요청에 허용할 제공자 목록이라고만 적고, `only`+`order`+`allow_fallbacks=true`에서 목록 안에서만 넘기는지와 넘김 중에도 `zdr`·`data_collection`·`max_price`가 유지되는지는 명시하지 않는다. 응답 쪽 검사는 목록 밖 제공자의 응답을 받지 않을 뿐, 요청 본문이 목록 밖으로 나가는 것 자체를 막지는 못한다. 그래서 실제 호출로 넘김을 확인하기 전(사용량 기록 `returned_providers`와 OpenRouter 활동 기록 대조)에는 민감한 대상·시험 계정을 쓰는 설치는 고정 모드로 두고, 확인 결과를 이 줄에 적은 뒤 자동 넘김을 쓴다 |
+| `provider_routing` | v4만. 제공자 모드다. 고정: `{"mode":"pinned"}` — 승인 endpoint 하나만 쓰고 넘기지 않는다(v1~v3과 같은 요청 바이트). 자동 넘김: `{"mode":"fallback","providers":[{"slug":"<tag>","name":"<표시 이름>"}, …]}` — 2~8개, 순서가 시도 순서, tag와 이름은 각각 중복 없음, 첫 항목은 `provider_slug`·`expected_provider_name`과 같다. 모르는 칸·중복 키는 거부한다. **제품 기본값은 실제 넘김 동작을 확인하기 전까지 고정 모드다**(2026-11-23 사용자 결정, 확인되면 자동 넘김으로 올린다). 평가 manifest는 늘 고정 모드다. **실제 넘김 동작 확인 전(2026-11-23)**: OpenRouter 문서는 `only`가 그 요청에 허용할 제공자 목록이라고만 적고, `only`+`order`+`allow_fallbacks=true`에서 목록 안에서만 넘기는지와 넘김 중에도 `zdr`·`data_collection`·`max_price`가 유지되는지는 명시하지 않는다. 응답 쪽 검사는 목록 밖 제공자의 응답을 받지 않을 뿐, 요청 본문이 목록 밖으로 나가는 것 자체를 막지는 못한다. 그래서 시험 계정 없는 소액 호출로 넘김을 확인하고(사용량 기록 `returned_providers`와 OpenRouter 활동 기록을 대조해 목록 밖으로 나간 요청 0, ZDR·가격 상한 유지), 확인 결과를 이 줄에 적은 뒤 기본값을 자동 넘김으로 올린다 |
 
 manifest와 부모는 기존 보호 파일 계약(실행 UID 소유, 파일0600/부모0700, symlink·hardlink·교체 거부)을 따른다. API 키는 manifest에 넣지 않는다. 기존 보호된 DB profile credential 공급 경로를 사용하며 채팅·명령 인자·환경 변수·PR·로그에 붙여 넣지 않는다. 설치자가 실제 키를 기존 보호 관리 화면/절차로 저장한 뒤 비밀 원문 없이 profile ID와 설정 여부만 인계한다. 이 변경은 새 키 발급·OAuth·계정 권한 확대를 하지 않는다.
 
