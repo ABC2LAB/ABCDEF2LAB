@@ -4,14 +4,19 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/diagnosisprep"
+	"github.com/Autumn-27/artex/exploration"
+	"github.com/Autumn-27/artex/exploreboundary"
 )
 
 // 운영자 해제 전에 그 작업의 탐색 경계 세션을 실제 경계에서 닫고, 닫힌 뒤에는 대상에 닿지 않는다. 다른 작업의 세션은
@@ -166,5 +171,53 @@ func TestProductEndpointReleaseRequiresOperator(t *testing.T) {
 	}
 	if _, err := e.Call(t.Context(), diagnosisprep.Request{Version: diagnosisprep.Version, RequestID: "r3", Principal: "ARTEX", Command: diagnosisprep.ReleaseStatus}); err != nil || base.calls != 1 {
 		t.Fatal("관리자의 해제 상태 조회를 넘기지 않음")
+	}
+}
+
+// stubBoundary는 제어 소켓에 줄 단위로 답한다. 닫기는 성공이라고 답해도 그 뒤 current가 여전히 열린 세션을 보이면
+// 해제는 닫힘을 확인하지 못한 것이다.
+func stubBoundary(t *testing.T, reply func(exploreboundary.ControlRequest) exploreboundary.ControlResponse) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "jr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	path := filepath.Join(dir, "c.sock")
+	l, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { l.Close() })
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				return
+			}
+			var in exploreboundary.ControlRequest
+			if json.NewDecoder(conn).Decode(&in) == nil {
+				_ = json.NewEncoder(conn).Encode(reply(in))
+			}
+			conn.Close()
+		}
+	}()
+	return path
+}
+
+func TestReleaseRequiresSessionGoneAfterClose(t *testing.T) {
+	f := newHostFixture(t)
+	open := exploration.State{Binding: f.binding, Active: true}
+	path := stubBoundary(t, func(in exploreboundary.ControlRequest) exploreboundary.ControlResponse {
+		if in.Op == exploreboundary.OpClose {
+			closed := exploration.State{Binding: f.binding, ClosedReason: exploration.Cancelled}
+			return exploreboundary.ControlResponse{OK: true, State: &closed}
+		}
+		return exploreboundary.ControlResponse{OK: true, State: &open} // 닫았다고 답한 뒤에도 열려 있음
+	})
+	h := &productExplorationHost{}
+	h.control.Path, h.control.Timeout = path, time.Second
+	if _, err := h.closeForRelease(t.Context(), f.binding.JobID); !errors.Is(err, errExplorationOpen) {
+		t.Fatalf("닫기 응답만 믿고 해제를 진행함: %v", err)
 	}
 }
