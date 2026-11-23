@@ -108,18 +108,28 @@ func (s *Service) completeReleasesLocked(ctx context.Context) {
 	}
 }
 
+// latestReleaseLocked는 기록 순서(Sequence)가 가장 큰 해제 기록이다. 벽시계(RequestedAt)로 고르지 않는다.
 func (s *Service) latestReleaseLocked() *ReleaseRecord {
 	var latest *ReleaseRecord
 	for _, r := range s.jobs {
 		if r.OperatorRelease == nil {
 			continue
 		}
-		if latest == nil || r.OperatorRelease.RequestedAt.After(latest.RequestedAt) {
-			copy := cloneReceipt(r).OperatorRelease
-			latest = copy
+		if latest == nil || r.OperatorRelease.Sequence > latest.Sequence {
+			latest = cloneReceipt(r).OperatorRelease
 		}
 	}
 	return latest
+}
+
+func (s *Service) nextReleaseSequenceLocked() uint64 {
+	var top uint64
+	for _, r := range s.jobs {
+		if r.OperatorRelease != nil && r.OperatorRelease.Sequence > top {
+			top = r.OperatorRelease.Sequence
+		}
+	}
+	return top + 1
 }
 
 // releaseViewLocked는 지금 해제할 수 있는지와 그 근거를 만든다. 상태를 바꾸지 않는다.
@@ -218,7 +228,7 @@ func (s *Service) releaseLocked(ctx context.Context, r Request, record receipt) 
 		log.Print("진단 준비: 탐색 경계를 닫는 동안 활동이 생겨 해제를 거절합니다")
 		return responseError(r, "release_"+refusal)
 	}
-	rec := ReleaseRecord{JobID: record.Job.ID, Principal: r.Principal, RequestID: r.RequestID, Reason: r.Release.Reason,
+	rec := ReleaseRecord{JobID: record.Job.ID, Sequence: s.nextReleaseSequenceLocked(), Principal: r.Principal, RequestID: r.RequestID, Reason: r.Release.Reason,
 		RequestedAt: s.releaseClock().UTC(), LastActivityAt: after.LastActivityAt, ReceiptUpdatedAt: *after.ReceiptUpdatedAt,
 		QuietSeconds: after.QuietSeconds, JobState: record.Job.State, PreviousInit: record.ExecutionInitInstance, ExplorationClosed: closed}
 	next := cloneReceipt(record)
