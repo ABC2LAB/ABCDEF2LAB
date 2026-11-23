@@ -1,9 +1,8 @@
 "use client";
 
-// 끝난 점검 '목록에서 숨기기'(2026-11-23 사용자·팀 결정, #867 이동찬 리뷰). 화면 표시 상태일 뿐이다 — 서버·DB·준비
-// 저널에는 아무것도 쓰지 않고, 숨긴 점검도 보고서·판정·승인·실행 이력을 그대로 열 수 있다. '숨긴 점검'에서 다시 열거나
-// 목록에 되돌린다. 이 브라우저에만 owner 문맥별로 기억한다(다른 브라우저·PC에서는 다시 보인다). 저장소를 못 쓰면
-// 이 탭에서만 기억한다.
+// 끝난 점검 '삭제'(2026-11-23 사용자·팀 결정, #867): 화면 목록에서만 뺀다. 서버·DB·준비 저널에는 아무것도 쓰지 않아
+// 기록·보고서·판정·승인·실행 이력은 서버에 그대로다. '삭제한 점검'에서 다시 열거나 목록에 되돌린다. 이 브라우저에만
+// owner 문맥별로 기억한다(다른 브라우저·PC에서는 다시 보인다). 저장소를 못 쓰면 이 탭에서만 기억한다.
 
 import { useEffect } from "react";
 
@@ -18,8 +17,14 @@ const EMPTY: readonly string[] = [];
 interface HiddenRunStore {
   owner: string | null;
   ids: readonly string[];
+  /** 끝난 점검 목록이 '삭제한 점검'을 보는 중인가. 점검을 고르면 화면이 다시 그려지므로(byMode key) 화면 밖에 둔다 */
+  showing: boolean;
 }
-export const useHiddenRuns = create<HiddenRunStore>()(() => ({ owner: null, ids: EMPTY }));
+export const useHiddenRuns = create<HiddenRunStore>()(() => ({ owner: null, ids: EMPTY, showing: false }));
+
+export function setShowingHiddenRuns(showing: boolean): void {
+  useHiddenRuns.setState({ showing });
+}
 
 function read(owner: string): readonly string[] {
   try {

@@ -7,10 +7,11 @@ vi.mock("@/lib/diagnosis/api", () => ({ apiFetch: vi.fn() }));
 import { apiFetch } from "@/lib/diagnosis/api";
 
 import { type Shell, ShellContext, type View } from "../shell";
+import { useWb } from "../store";
 import { AccountClassifyLive } from "../views/live/AccountClassifyLive";
 
 /** 계정 분류 화면은 보일 때(경로 classify) 대상 목록을 읽는다(F2). 시험은 그 경로로 그린다. */
-function withRoute(route: View) {
+function withRoute(route: View, goTo: (v: View) => void = () => undefined) {
   const shell = {
     route,
     navSeq: 1,
@@ -20,7 +21,7 @@ function withRoute(route: View) {
     inspOpen: false,
     railOpen: false,
     railNewAtRoute: false,
-    goTo: () => undefined,
+    goTo,
     openInsp: () => undefined,
     closeInsp: () => undefined,
     openRail: () => undefined,
@@ -69,6 +70,18 @@ async function pickTarget() {
 }
 
 describe("AccountClassifyLive (실 API 읽기·쓰기)", () => {
+  it("새 점검에서 오면 그 대상을 미리 고르고, '새 점검으로'로 돌아간다(사용자 11/23)", async () => {
+    serve();
+    useWb.setState({ focusTarget: { id: "t1", seq: 1 } });
+    const goTo = vi.fn();
+    render(withRoute("classify", goTo));
+    expect(await screen.findByLabelText("계정 목록")).toBeInTheDocument();
+    expect(screen.getByLabelText("분류할 대상")).toHaveValue("t1");
+    fireEvent.click(screen.getByRole("button", { name: "새 점검으로" }));
+    expect(goTo).toHaveBeenCalledWith("new");
+    useWb.setState({ focusTarget: null });
+  });
+
   it("규칙2 고지 + 대상 선택 후 분류 목록(시험/실계정)을 그린다", async () => {
     serve();
     render(withRoute("classify"));

@@ -12,6 +12,7 @@ vi.mock("@/lib/diagnosis/api", async (importOriginal) => {
 import { ApiError, apiFetch } from "@/lib/diagnosis/api";
 
 import { ShellContext, type View } from "../shell";
+import { useWb } from "../store";
 import { PolicyDeclarationLive } from "../views/live/PolicyDeclarationLive";
 
 const api = vi.mocked(apiFetch);
@@ -108,11 +109,11 @@ const invalidRes = (reason: string, decl: Json = stored()) => ({
 const NONE = { state: "none", declaration: null };
 const pending = () => new Promise<never>(() => undefined);
 
-function mount(route: View = "declaration") {
+function mount(route: View = "declaration", goTo: (v: View) => void = () => undefined) {
   function At({ r }: { r: View }) {
     const shell = useContext(ShellContext);
     return (
-      <ShellContext.Provider value={{ ...shell, route: r }}>
+      <ShellContext.Provider value={{ ...shell, route: r, goTo }}>
         <PolicyDeclarationLive />
       </ShellContext.Provider>
     );
@@ -139,6 +140,18 @@ function fillValid() {
 }
 
 describe("PolicyDeclarationLive (대상 · 조회 상태)", () => {
+  it("새 점검에서 오면 그 대상을 미리 고르고, '새 점검으로'로 돌아간다(사용자 11/23)", async () => {
+    serve({ [GET_T]: [TARGETS], [GET_ONE("t1")]: [ONE("t1")], [GET_D("t1")]: [active(stored())] });
+    useWb.setState({ focusTarget: { id: "t1", seq: 7 } });
+    const goTo = vi.fn();
+    mount("declaration", goTo);
+    expect(await screen.findByText(/선언자/)).toHaveTextContent("operator-1");
+    expect(screen.getByLabelText("선언할 대상")).toHaveValue("t1");
+    fireEvent.click(screen.getByRole("button", { name: "새 점검으로" }));
+    expect(goTo).toHaveBeenCalledWith("new");
+    useWb.setState({ focusTarget: null });
+  });
+
   it("승인된 대상만 고를 수 있고, 현재 선언을 서버 값 그대로 보이고 입력에 채운다", async () => {
     serve({ [GET_T]: [TARGETS], [GET_D("t1")]: [active(stored())] });
     mount();

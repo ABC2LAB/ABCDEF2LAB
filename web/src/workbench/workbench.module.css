@@ -949,6 +949,32 @@ a.ph:hover {
   border-color: var(--accent);
   color: var(--accent-ink);
 }
+/* 지금 보는 단계가 이미 끝난 단계면 동그라미는 끝난 단계처럼 초록 체크(밑줄 · 굵기는 지금 단계 그대로) */
+.ph.done[aria-current="step"] .n {
+  background: var(--ok);
+  border-color: var(--ok);
+  color: var(--bg);
+}
+/* 점검 진행 오른쪽 패널의 후보 상세 위 [진행 요약으로] (사용자 11/23) */
+.vi-back {
+  margin-bottom: 10px;
+}
+/* 도는 중인 단계 번호(자산 탐색 1 · 점검 진행 3): 숫자는 그대로 두고 테두리 호만 돈다(사용자 11/23). 움직임 줄이기면 전역 규칙이 끈다 */
+.ph .n.running,
+.ph[aria-current="step"] .n.running {
+  position: relative;
+  border-color: var(--rule-2);
+}
+.ph .n.running::before {
+  content: "";
+  position: absolute;
+  inset: -1.5px;
+  border-radius: 50%;
+  border: 1.5px solid transparent;
+  border-top-color: var(--accent);
+  border-right-color: var(--accent);
+  animation: spin 0.9s linear infinite;
+}
 .ph.later {
   color: var(--ink-3);
   opacity: 0.7;
@@ -1366,6 +1392,10 @@ a.ph:hover {
 .r-s {
   font-size: 13px;
   color: var(--ink-2);
+}
+/* 상태 낱말 사이 구분(붙어서 '승인 범위 확인승인 재확인 전'처럼 보였다, 사용자 11/23) */
+.r-s > span + span::before {
+  content: " · ";
 }
 .r-side {
   display: flex;
@@ -3807,6 +3837,74 @@ button.smm:hover {
   align-items: center;
   min-height: 30px;
 }
+/* 계정 분류 목록(사용자 11/23: 딱지가 .policy 의 16px 아이콘 칸에 끼어 글자가 겹쳤다). 첫 줄 분류 · 별칭 · 자격 · 버튼,
+   그 아래 설명 · 입력 상자. 좁으면 줄을 바꾼다 */
+.acct-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.acct-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 10px 0;
+  border-top: 1px solid var(--rule);
+  font-size: 13px;
+}
+.acct-list li:first-child {
+  border-top: 0;
+}
+.acct-list li > .mono {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.acct-acts {
+  order: 1;
+  margin-left: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.acct-list li > small {
+  order: 2;
+  flex-basis: 100%;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+.acct-list li > .note {
+  order: 3;
+  flex-basis: 100%;
+}
+/* 새 점검: 계정 · 정책 선언 상자(사용자 11/23). 대상 칸 아래에서 계정 분류 · 정책 선언으로 잇는다 */
+.prep-box {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--rule-2);
+  border-radius: 10px;
+}
+.prep-box .policy {
+  margin: 0;
+}
+/* 목록 머리 오른쪽: 건수 + '삭제한 점검' 보기(사용자 11/23) */
+.rec-end {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.sh button.aside[aria-pressed="true"] {
+  color: var(--ink);
+  font-weight: 600;
+  text-decoration: none;
+}
 /* 필터에 걸러 목록이 빈 칸 (시안 rec-none) */
 .rec-none {
   padding: 14px;
@@ -4314,7 +4412,8 @@ button.smm:hover {
   cursor: pointer;
 }
 .lfind-row:hover,
-.lfind-row[aria-expanded="true"] {
+.lfind-row[aria-expanded="true"],
+.lfind-row[aria-current="true"] {
   background: var(--well);
 }
 .lfind-m {
@@ -4470,6 +4569,28 @@ button.smm:hover {
 .now-k .ic {
   width: 13px;
   height: 13px;
+}
+/* 제품 확정 단계 판정 목록(사용자 11/23: .feed 의 62px · 10px 시각 칸에 판정 줄이 끼어 '검사:' 글이 한 글자씩 세로로
+   내려갔다). 한 판정 = 위아래로 쌓은 줄들 */
+.verdict-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.verdict-list > li {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 0;
+  border-top: 1px solid var(--rule);
+  font-size: 13px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.verdict-list > li:first-child {
+  border-top: 0;
 }
 .feed li.fresh {
   animation: fresh 1.4s ease-out;

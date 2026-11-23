@@ -16,9 +16,11 @@ import s from "../../workbench.module.css";
 
 export function RunRow({ row, onPick }: { row: URLRunSummary; onPick?: () => void }) {
   const selected = useUrl((st) => st.selectedID === row.id);
+  // 이미 열어 둔 점검을 다시 누르면 상태를 다시 읽지 않는다 — 다시 읽으면 화면을 새로 그려 오른쪽이 깜빡였다(사용자 11/23).
+  // 최신 상태는 상세의 새로 조회 · 목록 새로 조회로 본다
+  const opened = useUrl((st) => st.selectedID === row.id && st.job?.id === row.id && !st.busy);
   const writeBusy = useUrl((st) => st.writeBusy);
   const { openInsp } = useShell();
-  const named = !!row.display_name?.trim();
   const active = activeURLRun(row);
   const approvalIssue = row.action_required && row.approval_status !== "not_revalidated";
   const showStatus = active || row.action_required;
@@ -30,6 +32,11 @@ export function RunRow({ row, onPick }: { row: URLRunSummary; onPick?: () => voi
       aria-current={selected ? "true" : undefined}
       disabled={writeBusy}
       onClick={() => {
+        if (opened) {
+          onPick?.();
+          openInsp();
+          return;
+        }
         void selectUrlRun(row).then((ok) => {
           if (ok) {
             onPick?.();
@@ -52,9 +59,9 @@ export function RunRow({ row, onPick }: { row: URLRunSummary; onPick?: () => voi
           <span className={s["r-name"]}>{maskSecrets(row.display_name?.trim() || row.id)}</span>
         </span>
         {/* 사람이 할 일이 남은 줄은 종료 여부와 관계없이 승인 상태와 확인 필요를 보인다. */}
-        {showStatus || named || row.reason_code ? (
+        {/* 이름을 붙인 점검도 서버 ID(prep-…)는 보이지 않는다 — 이름 칸을 둔 이유(사용자 11/23) */}
+        {showStatus || row.reason_code ? (
           <span className={s["r-s"]}>
-            {named ? <span>{row.id}</span> : null}
             {active ? <span>{urlPhaseLabels[row.phase]}</span> : null}
             {active || approvalIssue ? <span>{runApprovalLabels[row.approval_status]}</span> : null}
             {row.action_required ? <span>확인 필요</span> : null}

@@ -378,6 +378,35 @@ describe("ProductAccessMapGrid", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("응답 형식을 확인하지 못해");
   });
 
+  it("VAmPI 수용 실측 모양(종류 2: 소유자 전용 1 · 공유 1, 확정 단계 완료)을 칸 상태별 건수 그대로 그린다", async () => {
+    // docs/evaluation/ui-vampi-rehearsal-1123-results.md §3.4: 4칸 = owner_control 2 · confirmed 1 · na 1, 숨긴 기록 0,
+    // 봉인 confirmed. 서버 golden 'completed'에서 판정 불가 종류(note)를 뺀 것 — 같은 서버가 종류 2개 선언에서 만드는 모양이다.
+    // 라벨 · 종류 이름은 합성 값이다(실측 값은 넣지 않는다).
+    const raw = clone(cases.completed);
+    raw.resources = raw.resources.filter((r) => r.resource_type !== "note");
+    raw.cells = raw.cells.filter((c) => c.resource_type !== "note");
+    raw.cells[1].evidence_seal = { status: "confirmed", reason: null };
+    serve(raw);
+    render(<ProductAccessMapGrid taskId={raw.task_id} active />);
+    const table = await screen.findByRole("table", { name: /제품 접근통제 격자/ });
+    expect(within(table).getAllByRole("row")).toHaveLength(1 + 2);
+    const states = [...table.querySelectorAll("[data-state]")].map((el) => el.getAttribute("data-state"));
+    expect(states.filter((x) => x === "owner_control")).toHaveLength(2);
+    expect(states.filter((x) => x === "confirmed")).toHaveLength(1);
+    expect(states.filter((x) => x === "na")).toHaveLength(1);
+    expect(states).toHaveLength(4);
+    expect(table.querySelector("[data-seal]")).toBeNull();
+    // 합계 칩은 교차 칸만: 확정 1 · 공유 선언 1, 판정 불가 · 근거 없음 칩은 없다
+    const counts = screen.getByTestId("product-map-counts");
+    expect([...counts.querySelectorAll("[data-tally]")].map((el) => el.getAttribute("data-tally"))).toEqual([
+      "confirmed",
+      "na",
+    ]);
+    expect(counts.querySelector("[data-tally='confirmed']")).toHaveTextContent("취약 확정 1");
+    expect(counts.querySelector("[data-tally='na']")).toHaveTextContent("— (공유 선언) 1");
+    expect(screen.queryByText(/무결성 확인 실패/)).toBeNull();
+  });
+
   it("탭이 안 보이거나 작업이 없으면 부르지 않는다", () => {
     serve(cases.completed);
     render(<ProductAccessMapGrid taskId="2" active={false} />);
