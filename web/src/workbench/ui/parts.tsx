@@ -125,6 +125,14 @@ export const PH = [
 ] as const;
 export type PhaseKey = (typeof PH)[number][0];
 
+/** 도는 중인 단계 번호에 마우스를 올렸을 때 */
+const RUN_TEXT: Readonly<Record<PhaseKey, string>> = {
+  crawl: "탐색 중",
+  scope: "",
+  live: "점검 중",
+  report: "",
+};
+
 /** 탐색 단계 → 이 점검이 다다른 단계 위치 (0 자산 탐색 · 1 범위 확인 · 2 점검 진행 · 3 보고서). */
 const STAGE_AT = {
   crawling: 0,
@@ -137,7 +145,8 @@ const STAGE_AT = {
 } as const;
 
 /**
- * 단계 표시 `nav.phases`. 지금 보는 화면은 aria-current="step", 이 점검이 이미 지난 단계는 체크(done).
+ * 단계 표시 `nav.phases`. 지금 보는 화면은 aria-current="step", 이 점검이 이미 지난 단계는 체크(done). 지금 보는 단계도
+ * 이미 지났으면 번호 대신 체크다(사용자 11/23: 점검이 끝난 뒤 자산 탐색을 누르면 '1'이 아니라 초록 체크).
  * 보고서는 서버가 결과 저장을 확인하기 전에는 링크가 아닌 span.later.
  * onCurrent: 지금 단계를 눌렀을 때 — 주소가 같아 화면이 안 바뀌므로, 안쪽 페이지(보고서의 발견 상세 등)를 닫을 때 쓴다.
  */
@@ -145,6 +154,8 @@ export function Phases({ phase, onCurrent }: { phase: PhaseKey; onCurrent?: () =
   const rep = useUrl((st) => st.job?.result_ready === true);
   const started = useUrl((st) => st.job?.started === true);
   const stage = useUrl((st) => st.flow?.stage ?? null);
+  const paused = useUrl((st) => st.flow?.paused === true);
+  const jobState = useUrl((st) => st.job?.state ?? null);
   let reached = 0;
   if (stage) reached = STAGE_AT[stage];
   else if (started) reached = 2;
@@ -153,10 +164,17 @@ export function Phases({ phase, onCurrent }: { phase: PhaseKey; onCurrent?: () =
   return (
     <nav className={s.phases} aria-label="점검 단계" data-phase={phase}>
       {PH.map(([k, label], i) => {
-        const done = i < reached && i !== at;
+        const done = i < reached;
+        // 도는 중인 단계 번호의 테두리가 돈다(사용자 11/23): 자산 탐색 중이면 '1', 점검 진행 중이면 '3'. 일시정지 · 결과
+        // 저장 뒤에는 멈춘다. 탐색 흐름이 없는 점검은 서버 상태가 실행 · 정지 중일 때만
+        const diagnosing =
+          stage === "diagnosing" || (stage === null && started && (jobState === "running" || jobState === "stopping"));
+        const running = !paused && ((k === "crawl" && stage === "crawling") || (k === "live" && diagnosing && !rep));
         const inner = (
           <>
-            <span className={s.n}>{done ? <Icon name="check" /> : i + 1}</span>
+            <span className={cx(s.n, running && s.running)} title={running ? RUN_TEXT[k] : undefined}>
+              {done ? <Icon name="check" /> : i + 1}
+            </span>
             {label}
           </>
         );

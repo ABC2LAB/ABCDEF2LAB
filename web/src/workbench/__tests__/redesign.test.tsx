@@ -22,6 +22,7 @@ import { resetUrl, useUrl } from "../live/urlDiagnosis";
 import { useUrlRuns } from "../live/urlRunList";
 import { FLOW_VERSION, type WorkflowSnapshot } from "../live/workflow";
 import { type Shell, ShellContext, type View } from "../shell";
+import { Phases } from "../ui/parts";
 import { UrlDashboardLive } from "../views/live/UrlDashboardLive";
 import { gaugeSegments, prettyEvidence, UrlLiveLive } from "../views/live/UrlLiveLive";
 import {
@@ -145,6 +146,69 @@ describe("레일 현재 표시", () => {
     // 상태 색 점 대신 현재 표시(mk)만 있다
     expect(row.querySelectorAll("span[aria-hidden]")).toHaveLength(1);
     expect(within(row).getByText("탐색 완료 · 범위 확인 대기")).toBeInTheDocument();
+  });
+});
+
+describe("점검 단계 줄", () => {
+  // 사용자 11/23: 점검이 다 끝난 뒤 자산 탐색을 눌러 보면 그 단계도 '1'이 아니라 초록 체크
+  it("지금 보는 단계도 이미 끝났으면 번호 대신 체크, 아직 진행 중인 단계는 번호", () => {
+    useUrl.setState({
+      handle,
+      job: { ...job, started: true, result_ready: true },
+      verified: true,
+      flow: { ...flow, stage: "completed" },
+      flowVerified: true,
+    });
+    const { unmount } = render(<Phases phase="crawl" />);
+    const crawl = screen.getByRole("link", { name: /자산 탐색/ });
+    expect(crawl).toHaveAttribute("aria-current", "step");
+    expect(crawl).toHaveAttribute("title", "이 점검에서 끝난 단계");
+    expect(crawl).toHaveTextContent(/^자산 탐색$/);
+    unmount();
+    useUrl.setState({ job: { ...job, started: false, result_ready: false }, flow: { ...flow, stage: "crawling" } });
+    render(<Phases phase="crawl" />);
+    const now = screen.getByRole("link", { name: /자산 탐색/ });
+    expect(now).not.toHaveAttribute("title");
+    expect(now).toHaveTextContent(/^1자산 탐색$/);
+  });
+
+  // 사용자 11/23: 자산 탐색이 도는 중이면 '1' 테두리가 돈다(찾은 게 없어도 도는 중임을 보인다)
+  it("점검 진행 중이면 '3'이 돌고, 결과가 저장되면 멈춘다", () => {
+    const ring = () => screen.getByRole("link", { name: /점검 진행/ }).querySelector("span") as HTMLElement;
+    useUrl.setState({
+      handle,
+      job: { ...job, started: true, result_ready: false },
+      flow: { ...flow, stage: "diagnosing" },
+    });
+    const first = render(<Phases phase="report" />);
+    expect(ring().className).toMatch(/running/);
+    expect(ring()).toHaveAttribute("title", "점검 중");
+    expect(screen.getByRole("link", { name: /자산 탐색/ }).querySelector("span")?.className).not.toMatch(/running/);
+    first.unmount();
+    useUrl.setState({ job: { ...job, started: true, result_ready: true }, flow: { ...flow, stage: "completed" } });
+    render(<Phases phase="live" />);
+    expect(ring().className).not.toMatch(/running/);
+  });
+
+  it("자산 탐색 중이면 '1'이 돌고, 일시정지 · 탐색 끝 · 다른 단계 번호는 돌지 않는다", () => {
+    const ring = () => screen.getByRole("link", { name: /자산 탐색/ }).querySelector("span") as HTMLElement;
+    useUrl.setState({
+      handle,
+      job: { ...job, started: false, result_ready: false },
+      flow: { ...flow, stage: "crawling" },
+    });
+    const first = render(<Phases phase="live" />);
+    expect(ring().className).toMatch(/running/);
+    expect(ring()).toHaveAttribute("title", "탐색 중");
+    expect(screen.getByRole("link", { name: /범위 확인/ }).querySelector("span")?.className).not.toMatch(/running/);
+    first.unmount();
+    useUrl.setState({ flow: { ...flow, stage: "crawling", paused: true } });
+    const second = render(<Phases phase="crawl" />);
+    expect(ring().className).not.toMatch(/running/);
+    second.unmount();
+    useUrl.setState({ flow: { ...flow, stage: "awaiting_selection" } });
+    render(<Phases phase="crawl" />);
+    expect(ring().className).not.toMatch(/running/);
   });
 });
 
