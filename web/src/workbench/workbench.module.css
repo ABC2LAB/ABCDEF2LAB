@@ -1367,6 +1367,10 @@ a.ph:hover {
   font-size: 13px;
   color: var(--ink-2);
 }
+/* 상태 낱말 사이 구분(붙어서 '승인 범위 확인승인 재확인 전'처럼 보였다, 사용자 11/23) */
+.r-s > span + span::before {
+  content: " · ";
+}
 .r-side {
   display: flex;
   align-items: center;
@@ -3797,6 +3801,17 @@ button.smm:hover {
 .rec-sh {
   align-items: center;
   min-height: 30px;
+}
+/* 목록 머리 오른쪽: 건수 + '삭제한 점검' 보기(사용자 11/23) */
+.rec-end {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.sh button.aside[aria-pressed="true"] {
+  color: var(--ink);
+  font-weight: 600;
+  text-decoration: none;
 }
 /* 필터에 걸러 목록이 빈 칸 (시안 rec-none) */
 .rec-none {
