@@ -237,6 +237,8 @@ type e2HTTPToolState struct {
 	lastCall     string
 	lastLocal    string
 	observations map[string]e2DiagnosticObservation
+	// candidateFlush는 한국어 칸 언어 섞임으로 붙잡아 둔 진단 후보를 저장한다(Worker 세션이 끝난 뒤 한 번, flushHeldCandidates).
+	candidateFlush func(context.Context)
 }
 
 // A nonzero Bash exit is returned with ErrUnavailable by Runner even when the
@@ -788,6 +790,8 @@ func (w *Worker) runE2HTTPSession(ctx context.Context, name string, intent *db.N
 		}
 		emit(activity)
 	})
+	// 다시 쓰라고 했지만 다시 내지 않은 후보를 표시를 붙여 저장한다. 쓰기 수에 들어가야 하므로 Writes보다 먼저다.
+	state.flushHeldCandidates(ctx)
 	counts := WriteCounts{}
 	if toolset != nil {
 		counts = toolset.Writes()
