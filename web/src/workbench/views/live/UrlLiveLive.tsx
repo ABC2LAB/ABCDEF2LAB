@@ -541,9 +541,7 @@ function StageGauge({ segs }: { segs: GaugeSeg[] }) {
   const at = segs.findIndex((x) => x.tone !== "done");
   const allDone = at < 0;
   const now = allDone ? segs[segs.length - 1] : segs[at];
-  const summary = allDone
-    ? "모든 단계 끝남"
-    : `단계 ${at + 1}/${segs.length} ${now.label}${now.sub ? ` · ${now.sub}` : ""}`;
+  const summary = allDone ? "점검 완료" : `단계 ${at + 1}/${segs.length} ${now.label}${now.sub ? ` · ${now.sub}` : ""}`;
   const tone: GaugeTone = allDone ? "done" : now.tone;
   let pct = Math.min(100, Math.max(0, now.pct));
   if (allDone) pct = 100;
@@ -560,7 +558,8 @@ function StageGauge({ segs }: { segs: GaugeSeg[] }) {
         <span className={s.lgstep}>{`단계 ${allDone ? segs.length : at + 1}/${segs.length}`}</span>
       </div>
       <div className={cx(s.lghead, tone === "stop" && s.stop)} aria-hidden="true">
-        {allDone ? `모든 단계를 마쳤습니다${now.sub ? ` · ${now.sub}` : ""}` : gaugeHeadline(now)}
+        {/* 다 끝나면 '점검 완료' 한 마디(사용자 11/23: '모든 단계를 마쳤습니다 · 결과 저장'이 길었다) */}
+        {allDone ? "점검 완료" : gaugeHeadline(now)}
       </div>
       <div className={cx(s.prog, s.lgbar, s[tone])} aria-hidden="true">
         <i style={{ width: `${pct}%` }} />
@@ -572,8 +571,8 @@ function StageGauge({ segs }: { segs: GaugeSeg[] }) {
 /**
  * 끝난 점검의 발견 (사용자 11/17 '보고서 형식으로'): 실제 제품 서버는 점검이 끝나면 점검 중 발견 목록
  * (/api/exploration/findings)을 닫고 저장 보고서만 열어 둔다(cmd/first-controlled-diagnosis url_preparation_runtime.go).
- * 그래서 저장된 판정 결과를 보고서 '발견 목록'과 같은 줄(FindingRows)로 보인다. 줄은 누르지 않는 읽기 줄이다(사용자 11/17 —
- * 보고서로는 위 상태 카드의 [보고서 보기]로 간다).
+ * 그래서 저장된 판정 결과를 보고서 '발견 목록'과 같은 줄(FindingRows)로 보인다. 줄을 누르면 오른쪽 패널에 그 항목의
+ * 상세(PoC · 증거)를 띄운다(사용자 11/23 — 11/17 의 '읽기 줄'에서 바뀜). 보고서로는 위 상태 카드의 [보고서 보기]로 간다.
  */
 function SavedFindings({
   poll,

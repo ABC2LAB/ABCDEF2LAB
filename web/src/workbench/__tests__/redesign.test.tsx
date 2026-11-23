@@ -149,6 +149,28 @@ describe("레일 현재 표시", () => {
   });
 });
 
+describe("점검 진행 단계 게이지", () => {
+  // 사용자 11/23: 다 끝나면 '모든 단계를 마쳤습니다 · 결과 저장' 대신 '점검 완료'
+  it("모든 단계가 끝나고 결과가 저장되면 '점검 완료'", () => {
+    useUrl.setState({
+      handle,
+      job: { ...job, state: "completed", started: true, drain_complete: true, result_ready: true },
+      verified: true,
+      flow: { ...flow, stage: "completed", deep_runs: 1, deep_closed: 1 },
+      flowVerified: true,
+    });
+    render(
+      <ShellContext.Provider value={shell("live")}>
+        <UrlLiveLive />
+      </ShellContext.Provider>,
+    );
+    const gauge = document.getElementById("lGauge") as HTMLElement;
+    expect(gauge).toHaveAttribute("aria-label", "점검 단계 진행: 점검 완료");
+    expect(gauge).toHaveTextContent("점검 완료");
+    expect(gauge).not.toHaveTextContent("모든 단계를 마쳤습니다");
+  });
+});
+
 describe("점검 단계 줄", () => {
   // 사용자 11/23: 점검이 다 끝난 뒤 자산 탐색을 눌러 보면 그 단계도 '1'이 아니라 초록 체크
   it("지금 보는 단계도 이미 끝났으면 번호 대신 체크, 아직 진행 중인 단계는 번호", () => {
