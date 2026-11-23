@@ -77,7 +77,9 @@ export function validReason(reason: string): boolean {
     const code = ch.codePointAt(0) ?? 0;
     return code < 0x20 || (code >= 0x7f && code <= 0x9f);
   });
-  return trimmed !== "" && reasonBytes(trimmed) <= MAX_REASON_BYTES && !control;
+  // 방향 바꿈(U+202E)·폭 없는 문자 같은 서식 문자와 줄·문단 구분자는 화면의 감사 사유 겉보기를 바꾸므로 받지 않는다(서버와 같음)
+  const format = /[\p{Cf}\p{Zl}\p{Zp}]/u.test(trimmed);
+  return trimmed !== "" && reasonBytes(trimmed) <= MAX_REASON_BYTES && !control && !format;
 }
 
 function parseRecord(v: unknown): ReleaseRecord | null {

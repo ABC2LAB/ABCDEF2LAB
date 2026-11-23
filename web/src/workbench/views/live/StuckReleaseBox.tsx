@@ -7,6 +7,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { ApiError } from "@/lib/diagnosis/api";
+
 import { cx } from "../../lib/cx";
 import { dateTimeOf } from "../../live/map";
 import {
@@ -24,13 +26,20 @@ import {
 } from "../../live/stuckRelease";
 import s from "../../workbench.module.css";
 
-// 막는 작업이 있을 때 근거(남은 시간)를 다시 읽는 주기
+// 근거를 다시 읽는 주기. 막는 작업이 없을 때도 읽는다(화면을 열어 둔 동안 다른 점검이 결과 불명이 될 수 있다)
 const REFRESH_MS = 30_000;
-// 재시작 중 health를 보는 주기와 포기 시한(준비 서비스 마감 상한 60초 + 재시작 정책 대기 + api·workbench 재시작)
+// 재시작 중 health를 보는 주기
 const RECONNECT_POLL_MS = 2_000;
+// 이만큼 지나도 다시 붙지 않으면 서버에서 다시 띄우는 명령을 안내한다(준비 서비스 정상 재시작은 보통 수십 초 안)
+const RECOVERY_HINT_MS = 60_000;
+// 재시작을 기다리는 시한. 넘으면 기다림을 멈추고 '다시 연결' 버튼을 보인다
 const RECONNECT_LIMIT_MS = 10 * 60_000;
+export const RECOVERY_COMMAND = "./scripts/product-compose.sh up -d";
 
 type Phase = "idle" | "sending" | "restarting" | "waiting_boundary" | "released" | "gave_up";
+// jobId: 해제를 보낸 작업. prevRequestId: 보내기 전 그 작업에 이미 있던 해제 기록(없으면 빈 값). 다시 붙은 뒤 이것과 다른
+// 기록이 보이면 이번 요청의 기록이다(서버·브라우저 시계를 비교하지 않는다). since: 이번 기다림의 시작(브라우저 시계, 시한·안내용).
+type Target = { jobId: string; prevRequestId: string; since: number };
 
 const timeText = (v: string) => (v ? dateTimeOf(v) || v : "");
 
@@ -41,7 +50,8 @@ export function StuckReleaseBox({ onReleased }: { onReleased?: () => void }) {
   const [reason, setReason] = useState("");
   const [agreed, setAgreed] = useState(false);
   const [phase, setPhase] = useState<Phase>("idle");
-  const [target, setTarget] = useState<{ jobId: string; sentAt: number } | null>(null);
+  const [target, setTarget] = useState<Target | null>(null);
+  const [slow, setSlow] = useState(false);
   const [message, setMessage] = useState("");
 
   const load = useCallback(async () => {
@@ -51,11 +61,13 @@ export function StuckReleaseBox({ onReleased }: { onReleased?: () => void }) {
       if (version !== generation.current) return null;
       setView(next);
       setHidden(false);
+      // 해제를 마친 뒤 다른 작업이 새로 막으면 다시 해제할 수 있게 처음 상태로 돌아간다
+      if (next.jobId) setPhase((p) => (p === "released" ? "idle" : p));
       return next;
     } catch {
       if (version !== generation.current) return null;
       // 관리자가 아니거나(403) 근거를 읽지 못하면 그리지 않는다. 안 보여도 새 시작은 서버가 막으므로 해제 가능으로
-      // 추정하는 것이 아니다. 재시작 중 실패는 아래 재접속이 다시 읽는다.
+      // 추정하는 것이 아니다. 주기적으로 다시 읽는다.
       setHidden(true);
       return null;
     }
@@ -68,51 +80,59 @@ export function StuckReleaseBox({ onReleased }: { onReleased?: () => void }) {
     };
   }, [load]);
 
-  // 막는 작업이 있으면 남은 시간을 주기적으로 다시 읽는다(재시작 중에는 아래 재접속이 맡는다)
+  // 재시작을 기다리지 않을 때는 늘 주기적으로 다시 읽는다(막는 작업 없음·첫 조회 실패에서도)
   useEffect(() => {
-    if (phase !== "idle" || !view?.jobId) return;
+    if (phase !== "idle" && phase !== "released") return;
     const timer = setInterval(() => void load(), REFRESH_MS);
     return () => clearInterval(timer);
-  }, [phase, view?.jobId, load]);
+  }, [phase, load]);
 
-  // 재시작 중: health가 돌아오면 감사 기록을 읽어 결과를 정한다. 경계 확인을 기다리면 계속 본다
+  // 재시작 중: health가 돌아오면 감사 기록으로 결과를 정한다. 경계 확인을 기다리면 계속 본다
   useEffect(() => {
     if ((phase !== "restarting" && phase !== "waiting_boundary") || !target) return;
     let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const controller = new AbortController();
     const tick = async () => {
       if (stopped) return;
-      if (Date.now() - target.sentAt > RECONNECT_LIMIT_MS) {
-        setPhase("gave_up");
-        return;
+      const waited = Date.now() - target.since;
+      if (phase === "restarting") {
+        setSlow(waited > RECOVERY_HINT_MS);
+        if (waited > RECONNECT_LIMIT_MS) {
+          setPhase("gave_up");
+          return;
+        }
       }
       if (await preparationReady(controller.signal)) {
         const next = await load();
         if (stopped) return;
         const rec = next?.record;
-        if (rec && rec.jobId === target.jobId && Date.parse(rec.requestedAt) >= target.sentAt - RECONNECT_LIMIT_MS) {
+        if (rec && rec.jobId === target.jobId && rec.requestId !== target.prevRequestId) {
           if (rec.completedAt) {
             setPhase("released");
+            setSlow(false);
             setAgreed(false);
             setReason("");
             onReleased?.();
             return;
           }
+          setSlow(false);
           setPhase("waiting_boundary");
         } else if (next && phase === "restarting") {
-          // 서버가 다시 붙었는데 해제 기록이 없다: 요청이 닿기 전에 끊긴 것이다
+          // 서버가 다시 붙었는데 이번 해제 기록이 없다: 요청이 닿기 전에 끊긴 것이다
           setPhase("idle");
+          setSlow(false);
           setMessage("해제가 기록되지 않았어요. 근거를 다시 보고 확인해 주세요.");
           return;
         }
       }
-      if (!stopped) setTimeout(() => void tick(), RECONNECT_POLL_MS);
+      if (!stopped) timer = setTimeout(() => void tick(), RECONNECT_POLL_MS);
     };
-    const first = setTimeout(() => void tick(), RECONNECT_POLL_MS);
+    timer = setTimeout(() => void tick(), RECONNECT_POLL_MS);
     return () => {
       stopped = true;
       controller.abort();
-      clearTimeout(first);
+      clearTimeout(timer);
     };
   }, [phase, target, load, onReleased]);
 
@@ -120,15 +140,20 @@ export function StuckReleaseBox({ onReleased }: { onReleased?: () => void }) {
     if (!view?.eligible || !agreed || !validReason(reason) || phase !== "idle") return;
     setPhase("sending");
     setMessage("");
-    const sentAt = Date.now();
+    const prevRequestId = view.record?.jobId === view.jobId ? view.record.requestId : "";
+    const waitFor = { jobId: view.jobId, prevRequestId, since: Date.now() };
     try {
       await requestRelease(view.jobId, view.jobRevision, reason);
-      setTarget({ jobId: view.jobId, sentAt });
+      setTarget(waitFor);
       setPhase("restarting");
     } catch (e) {
-      if (mayBeRestarting(e)) {
-        // 응답 전에 준비 서비스가 종료했을 수 있다. 다시 붙은 뒤 감사 기록으로 판단한다
-        setTarget({ jobId: view.jobId, sentAt });
+      // 응답 전에 준비 서비스가 종료했거나(연결 끊김), 앞서 보낸 같은 요청이 이미 기록됐으면(release_pending_restart)
+      // 다시 붙은 뒤 감사 기록으로 판단한다
+      if (
+        mayBeRestarting(e) ||
+        (e instanceof ApiError && e.status === 409 && e.message === "release_pending_restart")
+      ) {
+        setTarget(waitFor);
         setPhase("restarting");
         return;
       }
@@ -145,22 +170,29 @@ export function StuckReleaseBox({ onReleased }: { onReleased?: () => void }) {
         <h3>멈춘 작업 해제</h3>
         {phase === "gave_up" ? (
           <p className={s.err} role="alert">
-            재시작이 확인되지 않아요. 서버가 다시 떴는지 확인한 뒤 다시 읽어 주세요.
+            재시작이 확인되지 않아요. 서버에서 <code>{RECOVERY_COMMAND}</code>로 다시 띄운 뒤 다시 연결해 주세요.
           </p>
         ) : (
           <p className={s.help} role="status" aria-live="polite">
             {phase === "restarting"
               ? "재시작 중이에요. 잠시 뒤 다시 연결해요."
-              : "다시 연결했어요. 탐색 경계 세션 없음을 확인하고 있어요."}
+              : "재시작은 확인했어요. 탐색 경계 세션 없음을 확인하고 있어요."}
           </p>
         )}
+        {phase === "restarting" && slow ? (
+          <p className={s.err} role="alert">
+            1분이 지나도 다시 붙지 않아요. 서버에서 <code>{RECOVERY_COMMAND}</code>를 실행해 주세요(기록·볼륨은
+            그대로예요).
+          </p>
+        ) : null}
         {phase === "gave_up" ? (
           <button
             className={cx(s.btn, s.sm)}
             type="button"
             onClick={() => {
+              // 기다림만 다시 시작한다. 이번 요청을 알아볼 기준(prevRequestId)은 그대로 둔다
+              if (target) setTarget({ ...target, since: Date.now() });
               setPhase(target ? "restarting" : "idle");
-              if (target) setTarget({ ...target, sentAt: Date.now() });
             }}
           >
             다시 연결

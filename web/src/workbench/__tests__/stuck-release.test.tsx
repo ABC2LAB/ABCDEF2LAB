@@ -169,3 +169,104 @@ describe("StuckReleaseBox", () => {
     expect(screen.queryByText(/재시작 중이에요/)).not.toBeInTheDocument();
   });
 });
+
+const healthReady = () => Promise.resolve(new Response(JSON.stringify({ ready: true }), { status: 200 }));
+
+// 해제 가능 화면에서 사유·동의를 넣고 보낸다. post는 해제 POST의 결과(응답 유실이면 TypeError)다.
+async function sendRelease(post: () => Promise<unknown>) {
+  fetchMock.mockResolvedValueOnce(eligible);
+  render(<StuckReleaseBox />);
+  await act(() => Promise.resolve());
+  fireEvent.change(screen.getByLabelText("해제 사유"), { target: { value: "응답 없음" } });
+  fireEvent.click(screen.getByLabelText("해제 영향 동의"));
+  fetchMock.mockImplementationOnce(post);
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "멈춘 작업 해제" }));
+  });
+}
+
+describe("StuckReleaseBox — 재접속 판정", () => {
+  it("브라우저 시계가 서버와 달라도 이번 요청의 기록을 알아본다", async () => {
+    vi.setSystemTime(new Date("2026-11-23T09:00:00Z")); // 서버 기록 시각보다 4시간 앞
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(healthReady));
+    await sendRelease(() => Promise.reject(new TypeError("Failed to fetch")));
+    fetchMock.mockResolvedValueOnce(releasedView);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_100);
+    });
+    expect(screen.getByRole("status")).toHaveTextContent("해제를 마쳤어요");
+  });
+
+  it("1분이 지나도 다시 붙지 않으면 복구 명령을 안내한다", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("끊김")));
+    await sendRelease(() => Promise.reject(new TypeError("Failed to fetch")));
+    expect(screen.queryByText(/product-compose\.sh up -d/)).not.toBeInTheDocument();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(62_000);
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent("./scripts/product-compose.sh up -d");
+    expect(screen.getByRole("status")).toHaveTextContent("재시작 중이에요");
+  });
+
+  it("10분 넘어 '다시 연결'해도 원래 요청의 기록을 알아본다", async () => {
+    const health = vi.fn().mockRejectedValue(new TypeError("끊김"));
+    vi.stubGlobal("fetch", health);
+    await sendRelease(() => Promise.reject(new TypeError("Failed to fetch")));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10 * 60_000 + 4_000);
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent("재시작이 확인되지 않아요");
+    health.mockImplementation(healthReady);
+    fetchMock.mockResolvedValueOnce(releasedView);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "다시 연결" }));
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_100);
+    });
+    expect(screen.getByRole("status")).toHaveTextContent("해제를 마쳤어요");
+  });
+
+  it("같은 요청이 이미 기록됐으면(409 release_pending_restart) 재시작을 기다린다", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("끊김")));
+    await sendRelease(() => Promise.reject(new ApiError(409, "release_pending_restart")));
+    expect(screen.getByRole("status")).toHaveTextContent("재시작 중이에요");
+  });
+
+  it("막는 작업이 없다가 생기면 주기적으로 다시 읽어 보인다", async () => {
+    fetchMock.mockResolvedValueOnce(notStuck);
+    const { container } = render(<StuckReleaseBox />);
+    await act(() => Promise.resolve());
+    expect(container).toBeEmptyDOMElement();
+    fetchMock.mockResolvedValueOnce(blocked({}));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_100);
+    });
+    expect(screen.getByText(/새 점검 시작을 막고 있어요/)).toBeInTheDocument();
+  });
+
+  it("해제를 마친 뒤 다른 작업이 막으면 버튼이 다시 켜진다", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(healthReady));
+    await sendRelease(() => Promise.reject(new TypeError("Failed to fetch")));
+    fetchMock.mockResolvedValueOnce(releasedView);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_100);
+    });
+    expect(screen.getByRole("status")).toHaveTextContent("해제를 마쳤어요");
+    fetchMock.mockResolvedValueOnce(
+      blocked({ job_id: "prep-def456", eligible: true, refusal: undefined, eligible_at: "2026-11-23T04:40:00Z" }),
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_100);
+    });
+    fireEvent.change(screen.getByLabelText("해제 사유"), { target: { value: "두 번째" } });
+    fireEvent.click(screen.getByLabelText("해제 영향 동의"));
+    expect(screen.getByRole("button", { name: "멈춘 작업 해제" })).toBeEnabled();
+  });
+
+  it("사유의 서식 문자·줄 구분자를 받지 않는다(서버와 같음)", () => {
+    expect(validReason("정상‮사유")).toBe(false);
+    expect(validReason("폭없는​문자")).toBe(false);
+    expect(validReason("줄 구분")).toBe(false);
+  });
+});
