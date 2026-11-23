@@ -10,13 +10,15 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // 제품 판정 목록(#801)은 이 시험 범위가 아니다 — 제품 관리 중계가 아닌 서버처럼(404) 구획을 두지 않게 한다.
-// vi.fn 이 아니어서 resetAllMocks 에도 그대로다
+// vi.fn 이 아니어서 resetAllMocks 에도 그대로다. 보고서 요약 칸 시험만 pv.reply 로 판정 응답을 준다(afterEach 가 되돌림)
+const pv = vi.hoisted(() => ({ reply: null as null | (() => Promise<unknown>) }));
 vi.mock("../live/productVerdicts", async (original) => {
   const real = await original<typeof import("../live/productVerdicts")>();
   const { ApiError: NotInstalled } = await import("@/lib/diagnosis/api");
   return {
     ...real,
     fetchProductVerdicts: async () => {
+      if (pv.reply) return pv.reply();
       throw new NotInstalled(404, "not found");
     },
   };
@@ -95,7 +97,7 @@ import { createInitialState, useWb } from "../store";
 import { Markdown } from "../ui/Markdown";
 import { DashboardByMode, LiveByMode, NewScanByMode, ReportByMode, ScopeByMode } from "../views/live/byMode";
 import { UrlFindingLive } from "../views/live/UrlFindingLive";
-import { buildPocMarkdown, entryEp, FindingDetail } from "../views/live/UrlLiveLive";
+import { buildPocMarkdown, entryEp, FindingDetail, LIVE_DETAIL_POLL_MS } from "../views/live/UrlLiveLive";
 import {
   BACKUP_CONFIRMED_STATEMENT,
   EXCLUDE_EXAMPLE,
@@ -391,6 +393,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  pv.reply = null;
 });
 
 describe("URL 진단 계산", () => {
@@ -1189,6 +1192,65 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(within(finds).getByText("후보 #8").closest("li")).toHaveTextContent(/^위험도 미평가/);
   });
 
+  // 사용자 11/23: 점검 중에 나온 후보를 바로 보고 싶다 — 누르면 오른쪽에 PoC · 증거(보고서와 같은 상세)
+  it("점검 진행 발견 후보를 누르면 오른쪽에 그 후보 상세를 띄우고, [진행 요약으로]로 돌아간다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    c.fetchLiveCandidates.mockResolvedValue(candPage([2, 1]));
+    a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [candidate(1)] });
+    mount("live");
+    const finds = await screen.findByRole("region", { name: "발견 후보" });
+    expect(await screen.findByRole("complementary", { name: "진행 요약" })).toBeInTheDocument();
+    // 고르기 전에는 보고서 자료를 읽지 않는다
+    expect(a.fetchRemediation).not.toHaveBeenCalled();
+    fireEvent.click(await within(finds).findByRole("button", { name: /후보 #1/ }));
+    expect(within(finds).getByRole("button", { name: /후보 #1/ })).toHaveAttribute("aria-current", "true");
+    const side = await screen.findByRole("complementary", { name: "취약점 상세" });
+    expect(a.fetchRemediation).toHaveBeenCalledWith("42", "internal");
+    expect(await within(side).findByRole("heading", { name: "후보 1" })).toBeInTheDocument();
+    expect(side).toHaveTextContent("검토 필요");
+    // 아직 저장되지 않은 후보는 그렇게 적는다('없음'으로 단정하지 않음)
+    fireEvent.click(within(finds).getByRole("button", { name: /후보 #2/ }));
+    expect(await within(side).findByText(/이 후보의 상세가 아직 저장되지 않았습니다/)).toBeInTheDocument();
+    fireEvent.click(within(side).getByRole("button", { name: "진행 요약으로" }));
+    expect(await screen.findByRole("complementary", { name: "진행 요약" })).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "취약점 상세" })).toBeNull();
+  });
+
+  // #874 이동찬 P2: 한 번 읽은 뒤 다시 읽기가 실패하면 오래된 상세를 최신처럼 두지 않는다
+  it("후보 상세를 읽은 뒤 다시 읽기가 실패하면 갱신 실패와 [다시 읽기]를 보이고, 다시 읽으면 사라진다", async () => {
+    vi.useFakeTimers();
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    c.fetchLiveCandidates.mockResolvedValue(candPage([1]));
+    a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [candidate(1)] });
+    mount("live");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    fireEvent.click(within(screen.getByRole("region", { name: "발견 후보" })).getByRole("button", { name: /후보 #1/ }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    const side = screen.getByRole("complementary", { name: "취약점 상세" });
+    expect(within(side).getByRole("heading", { name: "후보 1" })).toBeInTheDocument();
+    expect(within(side).queryByRole("alert")).toBeNull();
+    a.fetchRemediation.mockRejectedValue(new ApiError(503, "unavailable"));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(LIVE_DETAIL_POLL_MS);
+    });
+    const warn = within(side).getByRole("alert");
+    expect(warn).toHaveTextContent("상세를 다시 읽지 못해 갱신이 멈췄습니다 (HTTP 503). 아래는 마지막으로 읽은 상세라");
+    // 마지막으로 읽은 상세는 그대로 남는다
+    expect(within(side).getByRole("heading", { name: "후보 1" })).toBeInTheDocument();
+    a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [candidate(1)] });
+    fireEvent.click(within(warn).getByRole("button", { name: "다시 읽기" }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(within(side).queryByText(/상세를 다시 읽지 못해/)).toBeNull();
+  });
+
   it("점검 진행 발견 후보: 폴링 간격은 5초 이상, 문서가 숨으면 멈추고 다시 보이면 바로 읽는다", async () => {
     expect(cands.LIVE_CANDIDATES_POLL_MS).toBeGreaterThanOrEqual(5000);
     vi.useFakeTimers();
@@ -1645,7 +1707,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(screen.queryByText(/점검을 마쳤습니다/)).toBeNull();
   });
 
-  it("끝난 점검의 발견은 저장된 결과를 보고서 '발견 목록'과 같은 줄로 보이고(점검 중 발견 목록은 안 부름), 줄은 눌러도 아무 데도 안 간다", async () => {
+  it("끝난 점검의 발견은 저장된 결과를 보고서 '발견 목록'과 같은 줄로 보이고(점검 중 발견 목록은 안 부름), 줄을 누르면 오른쪽에 상세", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(completed);
     a.fetchRemediation.mockResolvedValue({
@@ -1660,11 +1722,12 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     // 머리 수는 'n건'만('· 저장된 결과'는 뺐다, 사용자 11/18)
     await waitFor(() => expect(within(sec).getByText("2건")).toBeInTheDocument());
     expect(sec).not.toHaveTextContent("저장된 결과");
-    // 보고서와 같은 줄: 위험도(없으면 '등급 없음') · 제목 · 엔드포인트 · 유형 · 판정. 버튼이 아닌 읽기 줄 (사용자 11/17)
-    expect(within(sec).queryAllByRole("button")).toHaveLength(0);
+    // 보고서와 같은 줄: 위험도(없으면 '등급 없음') · 제목 · 엔드포인트 · 유형 · 판정. 누르면 오른쪽에 상세(사용자 11/23 —
+    // 11/17 의 '읽기 줄'에서 바뀜)
+    expect(within(sec).queryAllByRole("button")).toHaveLength(2);
     const rows = [...(document.getElementById("lSaved") as HTMLElement).children] as HTMLElement[];
     expect(rows).toHaveLength(2);
-    expect(rows[0].tagName).toBe("DIV");
+    expect(rows[0].tagName).toBe("BUTTON");
     expect(rows[0]).toHaveTextContent(/^위험도 미평가후보 1\/api\/items\/\{id\}idor검토 필요$/);
     expect(a.fetchRemediation).toHaveBeenCalledWith("42", "internal");
     // 끝난 점검은 제품 서버가 점검 중 후보 조회를 닫으므로(409) 부르지 않고, 보고서 · 판정 목록으로 안내한다
@@ -1680,6 +1743,12 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     );
     fireEvent.click(rows[1]);
     expect(goTo).not.toHaveBeenCalledWith("report");
+    const side = await screen.findByRole("complementary", { name: "취약점 상세" });
+    expect(within(side).getByRole("heading", { name: "후보 2" })).toBeInTheDocument();
+    // 끝난 점검은 이미 읽은 저장 결과를 쓴다(다시 부르지 않음)
+    expect(a.fetchRemediation).toHaveBeenCalledTimes(1);
+    fireEvent.click(within(side).getByRole("button", { name: "진행 요약으로" }));
+    expect(await screen.findByRole("complementary", { name: "진행 요약" })).toBeInTheDocument();
     // 안내 줄에는 버튼을 또 두지 않는다(상태 카드의 [보고서 보기] 하나)
     expect(within(ended).queryByRole("button")).toBeNull();
   });
@@ -1712,6 +1781,24 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     await waitFor(() => expect(within(header).getByText(/^소요/)).toHaveTextContent(/^소요 5분$/));
     expect(within(header).getByText(/^시작/)).toHaveTextContent(`시작 ${dateTimeOf(STARTED_AT)}`);
     expect(header).not.toHaveTextContent("연결 전");
+  });
+
+  // #875 실측 7절 1(나): 요약 '판정 확정'이 확정 단계 CONFIRMED 를 안 세 '확정 0'으로만 보였다 — 섞지 않고 아래 줄에 따로
+  it("보고서 요약 '판정 확정' 칸 아래 줄에 확정 단계 판정 확정 수를 따로 붙이고, 값을 숨긴 판정은 세지 않는다", async () => {
+    const { parseProductVerdicts } = await import("../live/productVerdicts");
+    const golden = (await import("./product-verdicts.server-golden.json")).default as Record<
+      string,
+      { task_id: string }
+    >;
+    // 진위 확인 통과 CONFIRMED 1 · 진위 실패(값 숨김) 1
+    pv.reply = async () => parseProductVerdicts(golden.mixed_integrity, golden.mixed_integrity.task_id);
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [candidate(1)] });
+    mount("report");
+    const strip = await screen.findByRole("region", { name: "판정 집계" });
+    const cell = within(strip).getByText("판정 확정").parentElement as HTMLElement;
+    await waitFor(() => expect(cell).toHaveTextContent(/^판정 확정0증거 충분 · 확정 단계 확정 1$/));
   });
 
   it("보고서는 결과 저장이 확인된 뒤에만 실제 task 의 조치 자료를 부른다", async () => {
@@ -3087,9 +3174,15 @@ describe("새 점검의 E③ 확정 단계 안내 · 대상 리셋 확인", () =
       ? { owner_account_label: "tester-a", cross_account_label: "tester-b", accounts_same_privilege: true }
       : {}),
   });
-  function serve(decl: unknown, reset: unknown) {
+  /** accounts: 대상 계정 응답(없으면 계정 없음) · "fail" 조회 실패 · "pending" 끝나지 않음. decl 이 "pending" 이면 선언 조회가 끝나지 않음 */
+  function serve(decl: unknown, reset: unknown, accounts?: unknown[] | "fail" | "pending") {
     vi.mocked(teamApi.apiFetch).mockImplementation(async (path) => {
       const p = String(path);
+      if (p.endsWith(`/${TARGET_ID}/accounts`)) {
+        if (accounts === "fail") throw new Error("fixed-account-unavailable");
+        if (accounts === "pending") return new Promise(() => undefined) as never;
+        return { accounts: accounts ?? [] } as never;
+      }
       if (p.includes("targets/resolve"))
         return {
           target: {
@@ -3106,7 +3199,8 @@ describe("새 점검의 E③ 확정 단계 안내 · 대상 리셋 확인", () =
             expires_at: "2099-01-01T00:00:00Z",
           },
         } as never;
-      if (p.endsWith(`/${TARGET_ID}/declaration`)) return decl as never;
+      if (p.endsWith(`/${TARGET_ID}/declaration`))
+        return (decl === "pending" ? new Promise(() => undefined) : decl) as never;
       if (p.endsWith(`/${TARGET_ID}/reset-confirmation`)) return reset as never;
       return { configured: true } as never;
     });
@@ -3171,6 +3265,88 @@ describe("새 점검의 E③ 확정 단계 안내 · 대상 리셋 확인", () =
     expect(await within(summary).findByText("확정 단계: 대상에 시험 객체를 만듭니다")).toBeInTheDocument();
     expect(within(summary).queryByText("대상 리셋 확인 전")).toBeNull();
     expect(screen.queryByRole("region", { name: "대상 리셋 확인" })).toBeNull();
+  });
+
+  it("승인된 대상이면 계정 · 정책 선언 상자를 두고, 버튼은 그 대상을 미리 고르게 한 뒤 그 화면으로 간다(사용자 11/23)", async () => {
+    serve(active(declaration()), noWrites);
+    saveHandle();
+    const { goTo } = mount("new");
+    const box = await screen.findByRole("region", { name: "계정 · 정책 선언" });
+    expect(await within(box).findByText("있음 · 소유자 전용 종류 1개")).toBeInTheDocument();
+    fireEvent.click(within(box).getByRole("button", { name: "계정 분류" }));
+    expect(goTo).toHaveBeenCalledWith("classify");
+    expect(useWb.getState().focusTarget?.id).toBe(TARGET_ID);
+    const seq = useWb.getState().focusTarget?.seq ?? 0;
+    fireEvent.click(within(box).getByRole("button", { name: "정책 선언" }));
+    expect(goTo).toHaveBeenCalledWith("declaration");
+    expect(useWb.getState().focusTarget).toEqual({ id: TARGET_ID, seq: seq + 1 });
+  });
+
+  // 시험 계정 줄은 등록 여부가 아니라 이번 회차가 실제로 로그인하는지를 따른다(#874 이동찬 P2)
+  const accountLine = async () => {
+    const box = await screen.findByRole("region", { name: "계정 · 정책 선언" });
+    return within(box).getByText("시험 계정").parentElement as HTMLElement;
+  };
+  it("로컬 모델 · 시험 계정 등록됨이면 '로그인해서 점검'", async () => {
+    serve(active(declaration()), noWrites, [{ label: "tester", classification: "test" }]);
+    saveHandle();
+    mount("new");
+    const line = await accountLine();
+    await waitFor(() => expect(line).toHaveTextContent("등록됨 · 로그인해서 점검"));
+  });
+  it("외부 모델 · 동의 안 함이면 등록돼 있어도 '로그인 없이 점검'으로 보인다", async () => {
+    u.readURLCatalog.mockResolvedValue({ ...catalog, profiles: [{ ...catalog.profiles[0], model: externalModel }] });
+    serve(active(declaration()), noWrites, [{ label: "tester", classification: "test" }]);
+    saveHandle();
+    mount("new");
+    const line = await accountLine();
+    await waitFor(() => expect(line).toHaveTextContent("등록됨 · 외부 전송 동의 전이라 로그인 없이 점검"));
+    expect(line).not.toHaveTextContent("로그인해서 점검");
+  });
+  it("계정 조회가 실패하면 '확인하지 못함', 끝나지 않았으면 '확인 중'으로 두고 '없음'으로 단정하지 않는다", async () => {
+    serve(active(declaration()), noWrites, "fail");
+    saveHandle();
+    const view = mount("new");
+    const failed = await accountLine();
+    await waitFor(() => expect(failed).toHaveTextContent("확인하지 못함"));
+    expect(failed).not.toHaveTextContent("없음");
+    view.unmount();
+    serve("pending", noWrites, "pending");
+    mount("new");
+    const box = await screen.findByRole("region", { name: "계정 · 정책 선언" });
+    const [account, decl] = within(box).getAllByRole("listitem");
+    expect(account).toHaveTextContent("시험 계정확인 중");
+    expect(decl).toHaveTextContent("정책 선언확인 중");
+    expect(box).not.toHaveTextContent("없음");
+  });
+
+  // #874 이경준 P2: 저장됐지만 무효가 된 선언은 '없음'이 아니라 다시 선언해야 한다고 보인다
+  it("선언이 무효가 됐으면 상자에 '무효 · 다시 선언 필요'로 보이고 경고 표시", async () => {
+    serve(
+      {
+        state: "invalid",
+        invalid_reason: "target_reapproved",
+        target_revision: 3,
+        declared_by: "operator-1",
+        declared_at: "2026-11-18T00:00:00.000000Z",
+        declaration: declaration(),
+      },
+      noWrites,
+    );
+    saveHandle();
+    mount("new");
+    const box = await screen.findByRole("region", { name: "계정 · 정책 선언" });
+    const decl = () => within(box).getAllByRole("listitem")[1];
+    await waitFor(() => expect(decl()).toHaveTextContent("정책 선언무효 · 다시 선언 필요"));
+    expect(decl()).not.toHaveTextContent("없음");
+  });
+
+  it("정책 선언이 없으면 상자에 '없음'으로 보인다", async () => {
+    serve({ state: "none", declaration: null }, noWrites);
+    saveHandle();
+    mount("new");
+    const box = await screen.findByRole("region", { name: "계정 · 정책 선언" });
+    expect(await within(box).findByText("없음 · 확정 단계 없이 점검")).toBeInTheDocument();
   });
 
   it("선언이 없으면 지난 쓰기가 있어도 서버가 거절하지 않으므로 경고는 없고 리셋 확인 상자만 둔다", async () => {

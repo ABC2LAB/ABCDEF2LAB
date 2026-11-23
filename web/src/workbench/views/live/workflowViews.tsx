@@ -259,7 +259,7 @@ const hms = (at: string) => clockOf(at) || "—";
  * 모르는 종류는 코드 그대로 보인다(뜻을 지어내지 않음).
  */
 const EVENT_TEXT: Readonly<Record<string, readonly [string, "in" | "ex" | "out" | ""]>> = {
-  created: ["점검을 만들었습니다", ""],
+  created: ["점검 시작", ""],
   crawl_started: ["탐색 시작", ""],
   crawl_finished: ["탐색을 마쳤습니다", ""],
   visit_started: ["방문 시작", ""],

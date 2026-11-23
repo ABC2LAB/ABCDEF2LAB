@@ -63,7 +63,7 @@ import { InspHead, InspOpenButton, Isec, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "./approvals";
 import { DiagnosticEntrySections, stepHeading } from "./DiagnosticEntrySections";
-import { ProductVerdictReport } from "./productVerdictViews";
+import { ProductVerdictReport, productConfirmedCount, useProductVerdicts } from "./productVerdictViews";
 import { ReportAssetGraph } from "./ReportAssetGraph";
 import { ReportReadError } from "./runRows";
 import { TaskActivity } from "./TaskActivity";
@@ -226,6 +226,69 @@ function FindReadError({ error, onRetry, stale = false }: { error: unknown; onRe
   );
 }
 
+/** 점검 중 고른 후보의 상세(보고서 자료)를 다시 읽는 간격 — 증거가 더 붙을 수 있다 */
+export const LIVE_DETAIL_POLL_MS = 10000;
+
+/**
+ * 점검 진행 오른쪽 패널의 후보 상세(사용자 11/23). 보고서 오른쪽 패널과 같은 FindingDetail(AI 분석 · 실제 요청 · 응답 ·
+ * PoC)을 쓴다. 아직 저장되지 않았거나 못 읽으면 그렇게 적고, [진행 요약으로]로 돌아간다. 후보는 검토 대상이다(절대 규칙 5)
+ */
+function LiveCandidateDetail({
+  entry: entryId,
+  poll,
+  host,
+  taskId,
+  onBack,
+}: {
+  /** 보고서 항목 ID (진행 중 후보는 'candidate-<id>') */
+  entry: string;
+  poll: Poll<Remediation>;
+  host: string | null;
+  taskId: string;
+  onBack: () => void;
+}) {
+  const entry = poll.data?.entries.find((e) => e.entry_id === entryId);
+  // 한 번 읽은 뒤 다시 읽기가 실패해도(usePoll 은 마지막 자료를 남기고 403 · 503 등이면 멈춘다) 오래된 PoC · 증거를 최신처럼
+  // 두지 않는다 — 갱신 실패와 [다시 읽기]를 위에 두고 아래는 마지막으로 읽은 상세라고 적는다(#874 이동찬 P2, 후보 목록과 같은 방식)
+  const status = poll.error instanceof ApiError && poll.error.status ? ` (HTTP ${poll.error.status})` : "";
+  const stale =
+    entry && poll.error ? (
+      <div className={cx(s.note, s.warn)} role="alert">
+        <Icon name="alert" />
+        <span className={s["lv-grow"]}>
+          {`상세를 다시 읽지 못해 갱신이 멈췄습니다${status}. 아래는 마지막으로 읽은 상세라 최신이 아닐 수 있습니다.`}
+        </span>
+        <button className={cx(s.btn, s.sm)} type="button" onClick={poll.reload}>
+          다시 읽기
+        </button>
+      </div>
+    ) : null;
+  let body: ReactNode = <FindingDetail e={entry} host={host} taskId={taskId} onReload={poll.reload} />;
+  if (!entry) {
+    let state: ReactNode = <LoadingRow text="후보 상세를 읽는 중…" />;
+    if (poll.error) state = <ErrorNote error={poll.error} onRetry={poll.reload} />;
+    else if (poll.data)
+      state = <p className={s.empty}>이 후보의 상세가 아직 저장되지 않았습니다. 잠시 뒤 다시 읽습니다.</p>;
+    body = (
+      <>
+        <InspHead title={entryId.startsWith("candidate-") ? `후보 #${entryId.slice("candidate-".length)}` : entryId} />
+        {state}
+      </>
+    );
+  }
+  return (
+    <>
+      <div className={s["vi-back"]}>
+        <button className={cx(s.btn, s.sm)} type="button" onClick={onBack}>
+          진행 요약으로
+        </button>
+      </div>
+      {stale}
+      {body}
+    </>
+  );
+}
+
 /** 후보 목록을 읽지 않는(또는 더 읽지 않는) 까닭. null 이면 실행 중이라 읽는다. */
 export type CandidateIdle = "prestart" | "unknown" | "unverified" | null;
 
@@ -240,10 +303,16 @@ function LiveCandidates({
   poll,
   fresh,
   idle,
+  picked,
+  onPick,
 }: {
   poll: Poll<LiveCandidatePage>;
   fresh: ReadonlySet<string>;
   idle: CandidateIdle;
+  /** 오른쪽에 상세를 띄운 후보 ID */
+  picked: string | null;
+  /** 후보를 누르면 오른쪽에 그 후보의 PoC · 증거(사용자 11/23) */
+  onPick: (id: string) => void;
 }) {
   const page = poll.data;
   const list = page?.items ?? [];
@@ -284,7 +353,12 @@ function LiveCandidates({
       <ul className={s.lfinds} id="lFinds">
         {list.map((c) => (
           <li key={c.candidateId} className={cx(s.lfind, fresh.has(c.candidateId) && s.fresh)}>
-            <div className={s["lfind-row"]}>
+            <button
+              className={s["lfind-row"]}
+              type="button"
+              aria-current={picked === c.candidateId ? "true" : undefined}
+              onClick={() => onPick(c.candidateId)}
+            >
               <CandidateSev sev={c.suggestedSeverity} />
               <span className={s["lfind-m"]}>
                 <span className={s["lfind-t"]}>
@@ -298,7 +372,7 @@ function LiveCandidates({
                   {" · 검토 필요"}
                 </span>
               </span>
-            </div>
+            </button>
           </li>
         ))}
       </ul>
@@ -467,9 +541,7 @@ function StageGauge({ segs }: { segs: GaugeSeg[] }) {
   const at = segs.findIndex((x) => x.tone !== "done");
   const allDone = at < 0;
   const now = allDone ? segs[segs.length - 1] : segs[at];
-  const summary = allDone
-    ? "모든 단계 끝남"
-    : `단계 ${at + 1}/${segs.length} ${now.label}${now.sub ? ` · ${now.sub}` : ""}`;
+  const summary = allDone ? "점검 완료" : `단계 ${at + 1}/${segs.length} ${now.label}${now.sub ? ` · ${now.sub}` : ""}`;
   const tone: GaugeTone = allDone ? "done" : now.tone;
   let pct = Math.min(100, Math.max(0, now.pct));
   if (allDone) pct = 100;
@@ -486,7 +558,8 @@ function StageGauge({ segs }: { segs: GaugeSeg[] }) {
         <span className={s.lgstep}>{`단계 ${allDone ? segs.length : at + 1}/${segs.length}`}</span>
       </div>
       <div className={cx(s.lghead, tone === "stop" && s.stop)} aria-hidden="true">
-        {allDone ? `모든 단계를 마쳤습니다${now.sub ? ` · ${now.sub}` : ""}` : gaugeHeadline(now)}
+        {/* 다 끝나면 '점검 완료' 한 마디(사용자 11/23: '모든 단계를 마쳤습니다 · 결과 저장'이 길었다) */}
+        {allDone ? "점검 완료" : gaugeHeadline(now)}
       </div>
       <div className={cx(s.prog, s.lgbar, s[tone])} aria-hidden="true">
         <i style={{ width: `${pct}%` }} />
@@ -498,17 +571,27 @@ function StageGauge({ segs }: { segs: GaugeSeg[] }) {
 /**
  * 끝난 점검의 발견 (사용자 11/17 '보고서 형식으로'): 실제 제품 서버는 점검이 끝나면 점검 중 발견 목록
  * (/api/exploration/findings)을 닫고 저장 보고서만 열어 둔다(cmd/first-controlled-diagnosis url_preparation_runtime.go).
- * 그래서 저장된 판정 결과를 보고서 '발견 목록'과 같은 줄(FindingRows)로 보인다. 줄은 누르지 않는 읽기 줄이다(사용자 11/17 —
- * 보고서로는 위 상태 카드의 [보고서 보기]로 간다).
+ * 그래서 저장된 판정 결과를 보고서 '발견 목록'과 같은 줄(FindingRows)로 보인다. 줄을 누르면 오른쪽 패널에 그 항목의
+ * 상세(PoC · 증거)를 띄운다(사용자 11/23 — 11/17 의 '읽기 줄'에서 바뀜). 보고서로는 위 상태 카드의 [보고서 보기]로 간다.
  */
-function SavedFindings({ poll }: { poll: Poll<Remediation> }) {
+function SavedFindings({
+  poll,
+  picked,
+  onPick,
+}: {
+  poll: Poll<Remediation>;
+  /** 오른쪽에 상세를 띄운 항목(entry_id) */
+  picked: string | null;
+  /** 누르면 오른쪽에 그 항목의 PoC · 증거(사용자 11/23) */
+  onPick: (entryId: string) => void;
+}) {
   const sorted = poll.data ? sortEntries(poll.data.entries) : [];
   let body: ReactNode;
   if (poll.error) body = <ReportReadError error={poll.error} onRetry={poll.reload} />;
   else if (!poll.data) body = <LoadingRow />;
   else if (!sorted.length)
     body = <p className={s.empty}>저장된 결과가 없습니다. 결과가 없다고 안전하다는 뜻은 아닙니다.</p>;
-  else body = <FindingRows entries={sorted} id="lSaved" />;
+  else body = <FindingRows entries={sorted} id="lSaved" chosen={picked} onPick={(e) => onPick(e.entry_id)} />;
   return (
     <section className={s.sec} aria-labelledby="lSavedH">
       <div className={s.sh}>
@@ -532,7 +615,7 @@ function LivePill({ job, verified, paused }: { job: { state: UrlState }; verifie
 
 /** live 점검 진행 (URL 진단, 시안 data-view="live"). */
 export function UrlLiveLive() {
-  const { route, goTo } = useShell();
+  const { route, goTo, openInsp } = useShell();
   const visible = route === "live";
   const handle = useUrl((st) => st.handle);
   const job = useUrl((st) => st.job);
@@ -565,6 +648,23 @@ export function UrlLiveLive() {
     intervalMs: LIVE_CANDIDATES_POLL_MS,
   });
   const fresh = useFreshIds(job?.task_id, finds.data?.items);
+  // 점검 중 후보를 누르면 오른쪽 패널에 그 후보의 PoC · 증거(사용자 11/23: 끝나야 볼 수 있었다). 보고서와 같은 자료
+  // (GET /api/report/diagnostic/remediation, 후보 = 'candidate-<id>')를 실행 중에도 읽는다 — 실행 중에는 실행 핸들러가 같은
+  // 보고서 API 를 연다. 고른 후보는 task 에 묶어 다른 점검으로 바뀌면 풀린다. 고른 동안만, 쉬었다가 다시 읽는다
+  // 끝난 점검의 '발견 목록'도 같은 방식으로 누르면 오른쪽에 띄운다(이미 읽은 저장 결과를 쓴다). 고른 것은 보고서 항목 ID
+  // (진행 중 후보는 'candidate-<id>')로 둔다
+  const [pick, setPick] = useState<{ task: string; entry: string } | null>(null);
+  const picked = pick && pick.task === job?.task_id ? pick.entry : null;
+  const runEnded = !job || URL_ENDED_STATES.includes(job.state);
+  const pickedRem = usePoll(() => fetchRemediation(job?.task_id as string, "internal"), [job?.task_id, picked], {
+    enabled: visible && !!picked && !runEnded && !!job?.task_id,
+    intervalMs: LIVE_DETAIL_POLL_MS,
+  });
+  const pickEntry = (entry: string) => {
+    if (!job?.task_id) return;
+    setPick({ task: job.task_id, entry });
+    openInsp();
+  };
   // 끝난 점검의 발견: 결과 저장이 확인된 task 의 저장 판정 결과 (보고서와 같은 자료)
   const savedTask = g.reportReadable && job?.task_id ? job.task_id : null;
   const saved = usePoll(() => fetchRemediation(savedTask as string, "internal"), [savedTask], {
@@ -830,9 +930,17 @@ export function UrlLiveLive() {
             </section>
           ) : null}
           {/* 발견: 점검 중엔 발견 후보(실시간), 끝나면 저장된 결과를 보고서 형식으로 */}
-          {!ended && job.task_id ? <LiveCandidates poll={finds} fresh={fresh} idle={findsIdle} /> : null}
+          {!ended && job.task_id ? (
+            <LiveCandidates
+              poll={finds}
+              fresh={fresh}
+              idle={findsIdle}
+              picked={picked?.startsWith("candidate-") ? picked.slice("candidate-".length) : null}
+              onPick={(id) => pickEntry(`candidate-${id}`)}
+            />
+          ) : null}
           {ended && job.task_id ? <CandidatesEnded reportReadable={g.reportReadable} /> : null}
-          {ended && savedTask ? <SavedFindings poll={saved} /> : null}
+          {ended && savedTask ? <SavedFindings poll={saved} picked={picked} onPick={pickEntry} /> : null}
           {ended && !savedTask ? <p className={s.empty}>결과 저장이 확인되면 발견 목록이 여기에 나옵니다.</p> : null}
           {a.message ? <p role="status">{a.message}</p> : null}
           {a.unresolved ? <p role="alert">결정 결과 불명 · 조회로 확인하기 전에는 다시 결정하지 않습니다.</p> : null}
@@ -846,82 +954,94 @@ export function UrlLiveLive() {
         </div>
         {/* 오른쪽 진행 요약: 서버가 점검 중에 주는 값만(전송 통제 · 탐색 현황 · 커버리지 · 점검 정보).
             발견은 가운데에 둔다(점검 중엔 발견 후보, 끝나면 저장된 결과) */}
-        <aside className={s.vi} id="lInsp" aria-label="진행 요약">
-          <InspHead
-            eyebrow={
-              <>
-                {`${urlStateText(job.state, verified)} · `}
-                <span className={s.host}>{host}</span>
-              </>
-            }
-            title="진행 요약"
-          />
-          <Isec t="전송 통제">
-            {g.runReadable && a.poll.error && !a.poll.data ? (
-              <ErrorNote error={a.poll.error} onRetry={a.poll.reload} />
-            ) : null}
-            {g.runReadable && !(a.poll.error && !a.poll.data) ? (
-              <div className={s.meters}>
-                <div className={s.cell}>
-                  <div className={s.k}>허용 범위 안 전송</div>
-                  <div className={s.v} id="luAllowed">
-                    {known(ap.forwarded)}
+        <aside className={s.vi} id="lInsp" aria-label={picked ? "취약점 상세" : "진행 요약"}>
+          {picked && job.task_id ? (
+            <LiveCandidateDetail
+              entry={picked}
+              poll={ended ? saved : pickedRem}
+              host={host}
+              taskId={job.task_id}
+              onBack={() => setPick(null)}
+            />
+          ) : (
+            <>
+              <InspHead
+                eyebrow={
+                  <>
+                    {`${urlStateText(job.state, verified)} · `}
+                    <span className={s.host}>{host}</span>
+                  </>
+                }
+                title="진행 요약"
+              />
+              <Isec t="전송 통제">
+                {g.runReadable && a.poll.error && !a.poll.data ? (
+                  <ErrorNote error={a.poll.error} onRetry={a.poll.reload} />
+                ) : null}
+                {g.runReadable && !(a.poll.error && !a.poll.data) ? (
+                  <div className={s.meters}>
+                    <div className={s.cell}>
+                      <div className={s.k}>허용 범위 안 전송</div>
+                      <div className={s.v} id="luAllowed">
+                        {known(ap.forwarded)}
+                      </div>
+                      <div className={s.sub}>{`허용 판정 ${known(ap.allowed)}`}</div>
+                    </div>
+                    <div className={s.cell}>
+                      <div className={s.k}>막은 요청</div>
+                      <div className={s.v}>{known(ap.blocked)}</div>
+                      <div className={s.sub}>범위 밖 · 안전 규칙</div>
+                    </div>
+                    <div className={s.cell}>
+                      <div className={s.k}>승인 필요로 보류</div>
+                      <div className={s.v}>{fmtCount(ap.held)}</div>
+                      <div className={s.sub}>{heldReason(a.pending)}</div>
+                    </div>
+                    <div className={s.cell}>
+                      <div className={s.k}>전송 불명</div>
+                      <div className={s.v}>{known(ap.unknown)}</div>
+                      <div className={s.sub}>응답 없음</div>
+                    </div>
                   </div>
-                  <div className={s.sub}>{`허용 판정 ${known(ap.allowed)}`}</div>
-                </div>
-                <div className={s.cell}>
-                  <div className={s.k}>막은 요청</div>
-                  <div className={s.v}>{known(ap.blocked)}</div>
-                  <div className={s.sub}>범위 밖 · 안전 규칙</div>
-                </div>
-                <div className={s.cell}>
-                  <div className={s.k}>승인 필요로 보류</div>
-                  <div className={s.v}>{fmtCount(ap.held)}</div>
-                  <div className={s.sub}>{heldReason(a.pending)}</div>
-                </div>
-                <div className={s.cell}>
-                  <div className={s.k}>전송 불명</div>
-                  <div className={s.v}>{known(ap.unknown)}</div>
-                  <div className={s.sub}>응답 없음</div>
-                </div>
-              </div>
-            ) : null}
-            {g.runReadable ? null : <p className={s.empty}>{sendWaitText}</p>}
-          </Isec>
-          {flow ? (
-            <Isec t="탐색 현황">
-              <div className={s.vbar}>
-                <span>
-                  방문 <b>{flow.counts.visited}</b>
-                </span>
-                <span>
-                  발견한 API <b>{flow.counts.found}</b>
-                </span>
-                <span>
-                  심화 선택 <b>{selected}</b>
-                </span>
-              </div>
-            </Isec>
-          ) : null}
-          {cov.data?.enabled && cov.data.denominator > 0 ? (
-            <Isec t="커버리지">
-              <div className={s.prog} aria-hidden="true">
-                <i style={{ width: `${Math.round((cov.data.pct ?? 0) * 100)}%` }} />
-              </div>
-              <div className={s.vbar}>
-                <span>
-                  검사함 <b>{cov.data.tested}</b>
-                  {` / ${cov.data.denominator} 자산`}
-                </span>
-                <span>
-                  <b>{`${Math.round((cov.data.pct ?? 0) * 100)}%`}</b>
-                </span>
-              </div>
-            </Isec>
-          ) : null}
-          <Isec t="점검 정보">
-            <UrlFacts job={job} />
-          </Isec>
+                ) : null}
+                {g.runReadable ? null : <p className={s.empty}>{sendWaitText}</p>}
+              </Isec>
+              {flow ? (
+                <Isec t="탐색 현황">
+                  <div className={s.vbar}>
+                    <span>
+                      방문 <b>{flow.counts.visited}</b>
+                    </span>
+                    <span>
+                      발견한 API <b>{flow.counts.found}</b>
+                    </span>
+                    <span>
+                      심화 선택 <b>{selected}</b>
+                    </span>
+                  </div>
+                </Isec>
+              ) : null}
+              {cov.data?.enabled && cov.data.denominator > 0 ? (
+                <Isec t="커버리지">
+                  <div className={s.prog} aria-hidden="true">
+                    <i style={{ width: `${Math.round((cov.data.pct ?? 0) * 100)}%` }} />
+                  </div>
+                  <div className={s.vbar}>
+                    <span>
+                      검사함 <b>{cov.data.tested}</b>
+                      {` / ${cov.data.denominator} 자산`}
+                    </span>
+                    <span>
+                      <b>{`${Math.round((cov.data.pct ?? 0) * 100)}%`}</b>
+                    </span>
+                  </div>
+                </Isec>
+              ) : null}
+              <Isec t="점검 정보">
+                <UrlFacts job={job} />
+              </Isec>
+            </>
+          )}
         </aside>
         <PaneToggle />
       </div>
@@ -1582,6 +1702,10 @@ export function UrlReportLive() {
   const rem = usePoll(() => fetchRemediation(taskId as string, "internal"), [taskId], {
     enabled: visible && !!taskId,
   });
+  // 확정 단계(IDOR) 판정: 요약 '판정 확정' 칸이 일반 후보 판정만 세서 제품 판정 CONFIRMED 가 '확정 0'으로만 보였다(#875
+  // 실측 7절 1(나)). 평가 · 일반 판정과 섞지 않고(계약 product-verdict-list §2(f)) 그 칸 아래 줄에 따로 적는다. 아래 구획과 한 번만 읽는다
+  const verdicts = useProductVerdicts(taskId, visible);
+  const productConfirmed = verdicts.error ? 0 : productConfirmedCount(verdicts.data);
   // 저장된 실행 기록(diagnosis-run)은 보고서에서 더 쓰지 않는다(사용자 11/19 — 실행 종료 기록 · 요청 수를 뺌)
   // 자산 커버리지 (요약 칸): 서버 task 의 방문 · 검사한 자산 비율(판정 커버리지 아님 · 리뷰 #479).
   // 꺼졌거나 못 읽으면 값을 만들지 않고 "—"
@@ -1840,7 +1964,9 @@ export function UrlReportLive() {
                 <div className={s.cell}>
                   <div className={s.k}>판정 확정</div>
                   <div className={s.v}>{counts.confirmed}</div>
-                  <div className={s.sub}>증거 충분</div>
+                  <div className={s.sub}>
+                    {productConfirmed ? `증거 충분 · 확정 단계 확정 ${productConfirmed}` : "증거 충분"}
+                  </div>
                 </div>
                 <div className={s.cell}>
                   <div className={s.k}>{`${diagnosticOutcomeLabels.review} / 판단 불가`}</div>
@@ -1891,7 +2017,7 @@ export function UrlReportLive() {
               <div role="tabpanel" id="rp-list" aria-label="취약점 목록" hidden={tab !== "list"}>
                 {listBody}
                 {/* 제품 확정 단계 판정은 위 목록(평가 · 일반 발견)과 섞지 않고 따로(#801 §3). 제품 관리 중계가 아니면(404) 두지 않는다 */}
-                <ProductVerdictReport taskId={taskId} active={visible && tab === "list"} />
+                <ProductVerdictReport taskId={taskId} active={visible && tab === "list"} poll={verdicts} />
               </div>
               <div role="tabpanel" id="rp-graph" aria-label="자산 지식 그래프" hidden={tab !== "graph"}>
                 <ReportAssetGraph taskId={taskId} active={visible && tab === "graph"} />
