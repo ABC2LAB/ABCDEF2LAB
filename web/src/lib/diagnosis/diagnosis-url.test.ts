@@ -152,6 +152,22 @@ describe("URL 진단 v2 공개 계약", () => {
       false,
     );
   });
+  it("delete는 현재 revision만 보내고 같은 Job 응답만 받는다(2026-11-23)", async () => {
+    vi.mocked(apiFetch).mockResolvedValue(envelope(ready));
+    expect(await commandURLDiagnosis(ready, "delete", owner)).toEqual(ready);
+    expect(apiFetch).toHaveBeenCalledWith(
+      "/api/diagnoses/v2/drafts/job-1/delete",
+      {
+        method: "POST",
+        redirect: "error",
+        body: JSON.stringify({ version: "diagnosis-api.v2", expected_revision: 2 }),
+      },
+      false,
+    );
+    // 다른 회차의 응답은 지운 것으로 받지 않는다
+    vi.mocked(apiFetch).mockResolvedValue(envelope({ ...ready, id: "job-2" }));
+    await expect(commandURLDiagnosis(ready, "delete", owner)).rejects.toThrow();
+  });
   it("불명 status 복구에서 시작을 다시 보내지 않는다", async () => {
     vi.mocked(apiFetch).mockResolvedValue(envelope({ ...draft, state: "unknown", preparation_started: true }));
     await readURLStatus("job-1", owner);

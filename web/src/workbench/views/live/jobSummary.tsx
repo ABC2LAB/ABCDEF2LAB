@@ -51,6 +51,7 @@ import { Icon } from "../../ui/icons";
 import { HelpTip, InspHead, Isec, Kv } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import type { Approvals } from "./approvals";
+import { DeleteRunButton } from "./DeleteRunButton";
 import { UrlNotices, UrlPill, UrlRefreshButton } from "./urlParts";
 
 /** 진행 중 경과를 다시 세는 주기(ms). 서버 시각이 기준이라 주기는 표시 갱신 간격일 뿐이다. */
@@ -519,6 +520,7 @@ export function JobSummary({
           ) : null}
           {ended ? again : open}
           {ended ? open : null}
+          {ended && job && cap.kind === "v2" ? <DeleteRunButton job={job} owner={cap.catalog.ownerContext} /> : null}
         </div>
         <UrlNotices />
         {uncertain || error ? (

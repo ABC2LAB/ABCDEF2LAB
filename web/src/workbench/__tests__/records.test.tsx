@@ -11,6 +11,14 @@ vi.mock("../live/api", async (importOriginal) => ({
   fetchRequestApprovals: vi.fn(),
   fetchRemediation: vi.fn(),
 }));
+vi.mock("../live/runDelete", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../live/runDelete")>()),
+  deleteURLRun: vi.fn(),
+}));
+vi.mock("../live/urlRunList", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../live/urlRunList")>()),
+  loadUrlRuns: vi.fn(),
+}));
 
 import { ApiError } from "@/lib/diagnosis/api";
 import { activeURLRun, type URLRunSummary } from "@/lib/diagnosis/diagnosis-runs";
@@ -19,8 +27,9 @@ import { catalog, handle, running } from "@/lib/diagnosis/diagnosis-url-fixtures
 
 import * as api from "../live/api";
 import { LiveRailTasks } from "../live/rail";
+import { deleteURLRun } from "../live/runDelete";
 import { resetUrl, useUrl } from "../live/urlDiagnosis";
-import { useUrlRuns } from "../live/urlRunList";
+import { loadUrlRuns, useUrlRuns } from "../live/urlRunList";
 import { type Shell, ShellContext, type View } from "../shell";
 import { RunRow } from "../views/live/runRows";
 import { recDoneKinds, recRunKind, UrlFinishedLive, UrlRunningLive } from "../views/live/urlRecords";
@@ -368,5 +377,57 @@ describe("레일 → 진행 중인 점검 · 끝난 점검", () => {
     expect(row).toHaveAttribute("aria-current", "true");
     fireEvent.click(row);
     expect(goTo).toHaveBeenCalledWith("finished");
+  });
+});
+
+describe("끝난 점검 삭제", () => {
+  const panel = () => screen.getByRole("complementary", { name: "선택한 점검" });
+  const openDelete = () => {
+    vi.mocked(api.fetchRemediation).mockResolvedValue({ task_id: 42, entries: [] });
+    selectSaved(completed);
+    records(true);
+    fireEvent.click(within(panel()).getByRole("button", { name: "삭제" }));
+    return screen.getByRole("alertdialog", { name: "이 점검을 삭제할까요?" });
+  };
+
+  it("진행 중인 점검에는 삭제 버튼이 없다", () => {
+    selectSaved(running);
+    records(false);
+    expect(within(panel()).queryByRole("button", { name: "삭제" })).toBeNull();
+  });
+
+  it("확인 상자에서 취소하면 보내지 않고 닫는다", () => {
+    const box = openDelete();
+    expect(box).toHaveTextContent(
+      "점검 결과와 보고서가 지워지고 되돌릴 수 없습니다. 감사 기록과 실행 횟수는 남습니다.",
+    );
+    fireEvent.click(within(box).getByRole("button", { name: "취소" }));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(deleteURLRun).not.toHaveBeenCalled();
+  });
+
+  it("확인하면 그 점검을 지우고, 지운 뒤에만 선택을 풀고 목록을 다시 읽는다", async () => {
+    vi.mocked(deleteURLRun).mockResolvedValue(undefined);
+    const box = openDelete();
+    fireEvent.click(within(box).getByRole("button", { name: "삭제" }));
+    await waitFor(() => expect(loadUrlRuns).toHaveBeenCalledWith(catalog.ownerContext));
+    expect(deleteURLRun).toHaveBeenCalledWith(completed, catalog.ownerContext);
+    expect(useUrl.getState().handle).toBeNull();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  it.each([
+    [new ApiError(404, "route_not_found"), "서버가 아직 점검 삭제를 지원하지 않습니다."],
+    [new ApiError(409, "run_active"), "진행 중이거나 마감 중인 점검은 지울 수 없습니다."],
+    [new ApiError(409, "revision_conflict"), "점검 상태가 바뀌었습니다. 다시 연 뒤 지워 주세요."],
+    [new ApiError(503, "unavailable"), "지금은 지울 수 없습니다. 잠시 뒤 다시 시도해 주세요."],
+    [new ApiError(500, "internal"), "삭제하지 못했습니다 (HTTP 500)."],
+  ])("실패(%s)는 상자를 열어 둔 채 이유를 보이고 선택을 풀지 않는다", async (error, text) => {
+    vi.mocked(deleteURLRun).mockRejectedValue(error);
+    const box = openDelete();
+    fireEvent.click(within(box).getByRole("button", { name: "삭제" }));
+    expect(await within(box).findByRole("alert")).toHaveTextContent(text);
+    expect(useUrl.getState().handle).not.toBeNull();
+    expect(loadUrlRuns).not.toHaveBeenCalled();
   });
 });

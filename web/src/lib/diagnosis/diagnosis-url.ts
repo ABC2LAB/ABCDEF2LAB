@@ -765,7 +765,8 @@ export function matchURLJob(
 }
 export async function commandURLDiagnosis(
   current: URLDiagnosisJob,
-  action: "validate" | "start" | "stop",
+  // delete: 끝난 회차의 점검 결과를 지운다(2026-11-23). 응답은 지우기 직전 Job 그대로다.
+  action: "validate" | "start" | "stop" | "delete",
   owner: string,
   key?: string,
   confirmation?: { externalTransferConfirmed?: boolean },
