@@ -274,7 +274,8 @@ export function AccountClassifyLive() {
           </button>
         }
       />
-      <div className={s.vb}>
+      {/* 오른쪽 패널에 둘 내용이 없어 가운데 칸을 끝까지 쓴다(사용자 11/23) */}
+      <div className={cx(s.vb, s.solo)}>
         <div className={s.vm}>
           {/* 절대규칙 2 · S09 고지 */}
           <div className={s.note} role="note">
@@ -521,7 +522,7 @@ export function AccountClassifyLive() {
                   {accounts.length === 0 ? (
                     <p className={s.empty}>이 대상에 등록된 계정이 없습니다.</p>
                   ) : (
-                    <ul className={s.policy} aria-label="계정 목록">
+                    <ul className={s["acct-list"]} aria-label="계정 목록">
                       {accounts.map((a) => {
                         const usable = usableAsTestAccount(a.cls);
                         return (
@@ -539,7 +540,7 @@ export function AccountClassifyLive() {
                               {a.approvedBy ? ` · 표시 ${a.approvedBy}` : ""}
                               {a.note ? ` · ${a.note}` : ""}
                             </small>
-                            <span>
+                            <span className={s["acct-acts"]}>
                               {a.cls === "unmarked" ? (
                                 <button
                                   className={cx(s.btn, s.sm)}

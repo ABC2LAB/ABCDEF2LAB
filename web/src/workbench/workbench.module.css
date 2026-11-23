@@ -3802,6 +3802,48 @@ button.smm:hover {
   align-items: center;
   min-height: 30px;
 }
+/* 계정 분류 목록(사용자 11/23: 딱지가 .policy 의 16px 아이콘 칸에 끼어 글자가 겹쳤다). 첫 줄 분류 · 별칭 · 자격 · 버튼,
+   그 아래 설명 · 입력 상자. 좁으면 줄을 바꾼다 */
+.acct-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.acct-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 10px 0;
+  border-top: 1px solid var(--rule);
+  font-size: 13px;
+}
+.acct-list li:first-child {
+  border-top: 0;
+}
+.acct-list li > .mono {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.acct-acts {
+  order: 1;
+  margin-left: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.acct-list li > small {
+  order: 2;
+  flex-basis: 100%;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+.acct-list li > .note {
+  order: 3;
+  flex-basis: 100%;
+}
 /* 새 점검: 계정 · 정책 선언 상자(사용자 11/23). 대상 칸 아래에서 계정 분류 · 정책 선언으로 잇는다 */
 .prep-box {
   display: flex;
