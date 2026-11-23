@@ -31,7 +31,14 @@ func TestPasswordResponseAccountBindingKeepsLegacyDigest(t *testing.T) {
 	if err != nil || newDigest == oldDigest {
 		t.Fatal("새 정책이 구형 결속과 충돌")
 	}
-	for _, accounts := range []productRunAccounts{legacy, modern} {
+	// 11/23 model_visible_v1 결속도 다른 지문이고, 앞의 두 결속과 같이 복원된다.
+	visible := legacy
+	visible.PasswordResponse = e2proxy.PasswordResponseModelVisible
+	visibleDigest, err := runAccountsDigest(visible)
+	if err != nil || visibleDigest == oldDigest || visibleDigest == newDigest {
+		t.Fatal("model_visible_v1 결속 지문이 다른 결속과 충돌")
+	}
+	for _, accounts := range []productRunAccounts{legacy, modern, visible} {
 		digest, _ := runAccountsDigest(accounts)
 		dir := t.TempDir()
 		os.Chmod(dir, 0700)

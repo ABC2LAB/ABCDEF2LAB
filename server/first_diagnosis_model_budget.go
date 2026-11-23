@@ -215,8 +215,24 @@ func NewFirstDiagnosisOpenRouterRunBudget(limits diagnosisprep.Budget, inputPerC
 		return nil, ErrFirstDiagnosisModelBudget
 	}
 	p, err := llmpolicy.LoadOpenRouterManifestFileForRun(manifestPath, run)
+	if err == nil && p.PerRunTotals() {
+		// 제품 설치(v4) 점검은 첫 호출 전에 단가 상한을 재조회 단가 × 1.5로 다시 정한다. 다시 읽지 못하면 설치 상한으로
+		// 진행하고 그 사실이 회차 기록(price_caps)에 남는다(llmpolicy/openrouter_price_requote.go). v1~v3은 부르지 않는다.
+		ctx, cancel := context.WithTimeout(context.Background(), firstDiagnosisPriceRequoteTimeout)
+		requoteErr := p.ApplyRunPriceRequote(ctx, firstDiagnosisOpenRouterEndpoints, time.Now())
+		cancel()
+		if requoteErr != nil {
+			return nil, ErrFirstDiagnosisModelBudget
+		}
+	}
 	return newFirstDiagnosisOpenRouterBudget(limits, inputPerCall, outputPerCall, manifestPath, p, err, observe)
 }
+
+// firstDiagnosisOpenRouterEndpoints는 v4 점검의 단가 재조회 방법이다(시험이 바꾼다).
+var firstDiagnosisOpenRouterEndpoints llmpolicy.OpenRouterEndpointsFetcher = llmpolicy.FetchOpenRouterEndpoints
+
+// firstDiagnosisPriceRequoteTimeout은 점검 시작 때 단가 재조회 전체 시간 상한이다. 넘으면 설치 상한으로 진행한다.
+const firstDiagnosisPriceRequoteTimeout = 15 * time.Second
 
 func newFirstDiagnosisOpenRouterBudget(limits diagnosisprep.Budget, inputPerCall, outputPerCall int64, manifestPath string, p *llmpolicy.OpenRouterPolicy, err error, observe func(diagnosisprep.ModelUsage) error) (*FirstDiagnosisModelBudget, error) {
 	if err != nil || p.CheckAvailable() != nil {

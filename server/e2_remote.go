@@ -36,8 +36,10 @@ const (
 	e2RemoteRunOp      = "run"
 	e2RemoteViewOp     = "view"
 	e2RemoteRedactOp   = "redact"
-	e2RemoteDrainOp    = "drain_intent"
-	e2RemoteStopOp     = "stop"
+	// e2RemoteRedactRecordOp는 저장 기록용 가림이다(비밀번호를 정책과 상관없이 가림, model_visible_v1).
+	e2RemoteRedactRecordOp = "redact_record"
+	e2RemoteDrainOp        = "drain_intent"
+	e2RemoteStopOp         = "stop"
 )
 
 const (
@@ -236,7 +238,10 @@ func (h *e2RemoteHandler) dispatch(ctx context.Context, request e2RemoteRequest)
 		view, err := b.remoteView(ctx, request.IntentID)
 		return e2RemoteResponse{View: &view}, err
 	case e2RemoteRedactOp:
-		data, err := b.remoteRedact(ctx, request.Data)
+		data, err := b.remoteRedact(ctx, request.Data, false)
+		return e2RemoteResponse{Data: data}, err
+	case e2RemoteRedactRecordOp:
+		data, err := b.remoteRedact(ctx, request.Data, true)
 		return e2RemoteResponse{Data: data}, err
 	case e2RemoteDrainOp:
 		return e2RemoteResponse{}, b.remoteDrain(ctx, request.IntentID)
@@ -322,12 +327,24 @@ func (b *E2StandaloneBackend) remoteView(ctx context.Context, intent int64) (e2R
 	return view, nil
 }
 
-func (b *E2StandaloneBackend) remoteRedact(ctx context.Context, data []byte) ([]byte, error) {
+func (b *E2StandaloneBackend) remoteRedact(ctx context.Context, data []byte, record bool) ([]byte, error) {
 	lease, err := b.remoteLease(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return lease.Execution.RedactOutput(data), nil
+	return e2RemoteRedactWith(lease.Execution, data, record), nil
+}
+
+// e2RemoteRedactWith는 원격 가림 연산이 고르는 가림이다. 저장 기록 연산(redact_record)은 RedactRecord, 모델 출력 연산은
+// RedactOutput이다.
+func e2RemoteRedactWith(execution interface {
+	RedactOutput([]byte) []byte
+	RedactRecord([]byte) []byte
+}, data []byte, record bool) []byte {
+	if record {
+		return execution.RedactRecord(data)
+	}
+	return execution.RedactOutput(data)
 }
 
 func (b *E2StandaloneBackend) remoteDrain(ctx context.Context, intent int64) error {

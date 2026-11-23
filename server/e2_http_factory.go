@@ -627,7 +627,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 				}
 				names := patternUsernames.Load()
 				return func(segment string) bool {
-					return string(e.RedactOutput([]byte(segment))) != segment || names != nil && (*names)[segment]
+					return string(e.RedactRecord([]byte(segment))) != segment || names != nil && (*names)[segment]
 				}
 			})
 		}

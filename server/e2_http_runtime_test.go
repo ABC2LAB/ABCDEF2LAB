@@ -336,6 +336,7 @@ func (l *plannerRedactionLease) RedactOutput(data []byte) []byte {
 	}
 	return bytes.ReplaceAll(data, []byte("owned-session-value"), []byte("[REDACTED]"))
 }
+func (l *plannerRedactionLease) RedactRecord(data []byte) []byte { return l.RedactOutput(data) }
 func TestPlannerTargetDataUsesOnlyTheBoundLeaseRedactor(t *testing.T) {
 	runtime, task := e2HTTPRuntimeFixture(t, nil)
 	const data = `[{"endpoint_ref":"endpoint-owned","path":"/read/owned-session-value"}]`

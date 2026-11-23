@@ -401,3 +401,70 @@ func TestFirstDiagnosisOpenRouterRunBudgetPerRun(t *testing.T) {
 		t.Fatal("v1 승인이 회차마다 새로 셈")
 	}
 }
+
+// 제품 설치(v4) 점검 예산은 첫 호출 전에 단가 상한을 재조회 단가 × 1.5로 다시 정하고(2026-11-23 사용자 결정), 다시 읽지
+// 못하면 설치 상한으로 진행한다. v1~v3 승인은 재조회하지 않는다.
+func TestFirstDiagnosisOpenRouterRunBudgetRequotesV4Only(t *testing.T) {
+	write := func(t *testing.T, version int) string {
+		t.Helper()
+		dir := t.TempDir()
+		if os.Chmod(dir, 0700) != nil {
+			t.Fatal("private directory")
+		}
+		m := map[string]any{
+			"version": version, "profile_id": 7, "format": "openai", "base_url": llmpolicy.OpenRouterBaseURL, "model": llmpolicy.OpenRouterModel,
+			"provider_slug": "fixture/endpoint", "expected_provider_name": "Fixture", "approval_id": "url-run-requote-test", "expires_at": time.Now().Add(time.Hour),
+			"strict_privacy_ack": true, "account_spend_cap_ack": true, "max_requests": 2, "max_input_tokens": 524288, "max_output_tokens": 200, "max_cost_usd_micros": 600000,
+			"max_input_tokens_per_call": 262144, "max_output_tokens_per_call": 100, "timeout_seconds": 2, "max_concurrent": 1,
+			"max_input_price_usd_micros_per_million": 200000, "max_output_price_usd_micros_per_million": 1500000,
+		}
+		if version >= 2 {
+			m["max_consecutive_transient_errors"] = 3
+		}
+		if version >= 3 {
+			m["sampling"] = map[string]any{"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0, "presence_penalty": 1.5, "repetition_penalty": 1.0, "seed": 42}
+		}
+		if version == 4 {
+			m["provider_routing"] = map[string]any{"mode": "pinned"}
+		}
+		raw, _ := json.Marshal(m)
+		path := filepath.Join(dir, "model.json")
+		if os.WriteFile(path, raw, 0600) != nil {
+			t.Fatal("manifest")
+		}
+		return path
+	}
+	limits := diagnosisprep.Budget{ModelRequests: 2, InputTokens: 524288, OutputTokens: 200, CostUSDMicros: 600000}
+	observe := func(diagnosisprep.ModelUsage) error { return nil }
+	prior := firstDiagnosisOpenRouterEndpoints
+	t.Cleanup(func() { firstDiagnosisOpenRouterEndpoints = prior })
+	calls := 0
+	var fail error
+	firstDiagnosisOpenRouterEndpoints = func(context.Context, string) ([]byte, error) {
+		calls++
+		// 11/23: 설치 상한 출력 $1.50 < PrimeIntellect 출력 $1.52.
+		return []byte(`{"data":{"endpoints":[{"tag":"fixture/endpoint","pricing":{"prompt":"0.00000017","completion":"0.00000152"}}]}}`), fail
+	}
+	b, err := NewFirstDiagnosisOpenRouterRunBudget(limits, 262144, 100, write(t, 4), "job-requote", observe)
+	if err != nil || calls != 1 {
+		t.Fatalf("v4 예산: %v %d", err, calls)
+	}
+	caps := b.external.Snapshot().PriceCaps
+	if caps == nil || caps.Source != llmpolicy.OpenRouterPriceRequoted || caps.InputMicros != 255000 || caps.OutputMicros != 2280000 {
+		t.Fatalf("v4 상한: %+v", caps)
+	}
+	for _, version := range []int{1, 2, 3} {
+		b, err := NewFirstDiagnosisOpenRouterRunBudget(limits, 262144, 100, write(t, version), "job-requote", observe)
+		if err != nil || calls != 1 || b.external.Snapshot().PriceCaps != nil {
+			t.Fatalf("v%d가 재조회함: %v %d", version, err, calls)
+		}
+	}
+	fail = errors.New("offline")
+	b, err = NewFirstDiagnosisOpenRouterRunBudget(limits, 262144, 100, write(t, 4), "job-requote-offline", observe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if caps := b.external.Snapshot().PriceCaps; caps == nil || caps.Source != llmpolicy.OpenRouterPriceInstallFallback || caps.OutputMicros != 1500000 {
+		t.Fatalf("재조회 실패: %+v", caps)
+	}
+}
