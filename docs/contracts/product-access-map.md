@@ -229,8 +229,8 @@ IPC(최민준 PR):
 |---|---|---|---|---|
 | `judged` | B `confirmed`·`suspected` | 실선, 지도와 같은 상태 색 | **있음**(이 갈래만) | 취약 확정 / 취약 의심 |
 | `owner` | A `owner_control` | 중립색 긴 점선 | 없음 | 소유 계정(선언) |
-| `undecidable` | B `unknown` + 저장 판정 있음(`oracle_value=undecidable`, 또는 `record_invalid`처럼 판정은 있으나 칸 규칙과 안 맞음 — 투영 오류 문구를 같이 보임) | 판단불가 색(회색) 짧은 점선 | 없음 | 판정 불가 · 판정 번호 |
-| `no_verdict` | B `unknown` + 판정 없음(`projection_error`만, `na_evidence_mismatch` 포함) | 옅은 가는 점선(낮은 불투명도) | 없음 | 지도와 같은 투영 오류 문구 |
+| `undecidable` | B `unknown` + 저장 판정(`oracle_value=undecidable`)만 | 판단불가 색(회색) 짧은 점선 | 없음 | 판정 불가 · 판정 번호 |
+| `no_verdict` | B `unknown` + 판정 칸 없음(`projection_error`만. `record_invalid`·`selection_ambiguous`·`na_evidence_mismatch` 포함 — 서버가 이 칸들에 판정 칸을 채우지 않음) | 옅은 가는 점선(낮은 불투명도) | 없음 | 지도와 같은 투영 오류 문구 |
 | `shared` | B `na`(`declared_shared`) | 선 없음(간선 자리는 있고 라벨만) | 없음 | 공유 선언 |
 
 - `no_verdict`는 "미검사"라고 부르지 않는다. `record_missing_after_attempt`는 확정 단계를 마쳤는데 기록이 없는 경우라 시도가 없었다고 단정할 수 없다. 문구는 지도의 투영 오류 문구를 그대로 쓰고 원인을 추정하지 않는다.
