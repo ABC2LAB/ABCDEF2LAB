@@ -158,7 +158,8 @@ type ProductSkippedType struct {
 
 | 상태 | 코드 | 언제 |
 |---|---|---|
-| 400 | `invalid_product_access_map_request` | 경로·메서드·쿼리 |
+| 400 | `invalid_product_access_map_request` | 경로·쿼리·본문 |
+| 405 | `invalid_product_access_map_request` | GET이 아닌 메서드(HEAD·POST 등). `Allow: GET`을 싣는다(제품 판정 목록 #801과 같음) |
 | 401 | `authentication_required` | 인증 없음·만료 |
 | 403 | `product_access_map_forbidden` | 작업 소유 아님 |
 | 409 | `product_access_map_binding_unavailable` | 회차 참조 없음(목록과 같음) |
