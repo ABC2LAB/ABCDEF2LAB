@@ -183,6 +183,13 @@ func firstDiagnosisDeadlineDrain(timeoutSeconds int) time.Duration {
 	return min(FirstDiagnosisTimeBudgetDrain, time.Duration(timeoutSeconds)*time.Second/firstDiagnosisDeadlineDrainShare)
 }
 
+// FirstDiagnosisPreparationTimeout은 준비 단계(모델 결속·목표 만들기·첫 계획) 전체 상한이다. 원래 2분이었는데,
+// 2026-11-23 화면 VAmPI 점검(외부 모델)에서 목표 만들기와 첫 계획이 합쳐 100.5초 걸렸고 앞선 두 시도는 2분 안에 계획
+// 호출을 끝내지 못해 계획 실패로 끝났다. 공식 측정의 O 회차가 같은 이유로 시작도 못 하지 않게 300초로 둔다. Planner 계획
+// 한 번의 상한(E2HTTPPlannerDefaultDuration, 170초)보다 길어서 목표를 만든 뒤 시작한 계획이 이 상한에 먼저 잘리는 일이 줄어든다.
+// 원본 ARTEX(B)에는 이 단계가 없어 B 조건은 바뀌지 않는다.
+const FirstDiagnosisPreparationTimeout = 300 * time.Second
+
 // firstDiagnosisDeadlineDrainShare는 엔진 기한 마감 유예가 작업 시간에서 차지할 수 있는 몫의 분모다.
 const firstDiagnosisDeadlineDrainShare = 4
 
@@ -438,7 +445,7 @@ func (s *FirstDiagnosisSupervisor) PrepareIntents(ctx context.Context, taskID st
 	s.operations.Add(1)
 	s.mu.Unlock()
 	defer func() { s.mu.Lock(); s.preparing = false; s.mu.Unlock(); s.operations.Done() }()
-	prepare, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	prepare, cancel := context.WithTimeout(ctx, FirstDiagnosisPreparationTimeout)
 	s.trackCancel(cancel)
 	defer cancel()
 	defer captureDiagnosisContextError(prepare, &observedContextErr)

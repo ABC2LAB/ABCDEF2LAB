@@ -730,3 +730,11 @@ func TestFirstDiagnosisOpenRouterBudgetRejectedResponseWithUsageIsPerCall(t *tes
 		t.Fatal("next call refused after a per-call rejection", err)
 	}
 }
+
+// 준비 단계 전체 상한은 Planner 계획 한 번의 기본 상한보다 길어야 한다. 짧으면 목표를 만든 뒤 시작한 첫 계획이 계획 상한이
+// 아니라 준비 단계 상한에 먼저 잘려, 외부 모델의 느린 응답 한 번으로 O 회차가 계획 실패로 끝난다(2026-11-23 화면 VAmPI).
+func TestFirstDiagnosisPreparationTimeoutCoversPlanner(t *testing.T) {
+	if FirstDiagnosisPreparationTimeout <= agent.E2HTTPPlannerDefaultDuration {
+		t.Fatalf("준비 단계 상한 %s가 계획 한 번의 상한 %s보다 길지 않음", FirstDiagnosisPreparationTimeout, agent.E2HTTPPlannerDefaultDuration)
+	}
+}
