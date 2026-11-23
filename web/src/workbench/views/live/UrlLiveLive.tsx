@@ -63,7 +63,7 @@ import { InspHead, InspOpenButton, Isec, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "./approvals";
 import { DiagnosticEntrySections, stepHeading } from "./DiagnosticEntrySections";
-import { ProductVerdictReport } from "./productVerdictViews";
+import { ProductVerdictReport, productConfirmedCount, useProductVerdicts } from "./productVerdictViews";
 import { ReportAssetGraph } from "./ReportAssetGraph";
 import { ReportReadError } from "./runRows";
 import { TaskActivity } from "./TaskActivity";
@@ -1702,6 +1702,10 @@ export function UrlReportLive() {
   const rem = usePoll(() => fetchRemediation(taskId as string, "internal"), [taskId], {
     enabled: visible && !!taskId,
   });
+  // 확정 단계(IDOR) 판정: 요약 '판정 확정' 칸이 일반 후보 판정만 세서 제품 판정 CONFIRMED 가 '확정 0'으로만 보였다(#875
+  // 실측 7절 1(나)). 평가 · 일반 판정과 섞지 않고(계약 product-verdict-list §2(f)) 그 칸 아래 줄에 따로 적는다. 아래 구획과 한 번만 읽는다
+  const verdicts = useProductVerdicts(taskId, visible);
+  const productConfirmed = verdicts.error ? 0 : productConfirmedCount(verdicts.data);
   // 저장된 실행 기록(diagnosis-run)은 보고서에서 더 쓰지 않는다(사용자 11/19 — 실행 종료 기록 · 요청 수를 뺌)
   // 자산 커버리지 (요약 칸): 서버 task 의 방문 · 검사한 자산 비율(판정 커버리지 아님 · 리뷰 #479).
   // 꺼졌거나 못 읽으면 값을 만들지 않고 "—"
@@ -1960,7 +1964,9 @@ export function UrlReportLive() {
                 <div className={s.cell}>
                   <div className={s.k}>판정 확정</div>
                   <div className={s.v}>{counts.confirmed}</div>
-                  <div className={s.sub}>증거 충분</div>
+                  <div className={s.sub}>
+                    {productConfirmed ? `증거 충분 · 확정 단계 확정 ${productConfirmed}` : "증거 충분"}
+                  </div>
                 </div>
                 <div className={s.cell}>
                   <div className={s.k}>{`${diagnosticOutcomeLabels.review} / 판단 불가`}</div>
@@ -2011,7 +2017,7 @@ export function UrlReportLive() {
               <div role="tabpanel" id="rp-list" aria-label="취약점 목록" hidden={tab !== "list"}>
                 {listBody}
                 {/* 제품 확정 단계 판정은 위 목록(평가 · 일반 발견)과 섞지 않고 따로(#801 §3). 제품 관리 중계가 아니면(404) 두지 않는다 */}
-                <ProductVerdictReport taskId={taskId} active={visible && tab === "list"} />
+                <ProductVerdictReport taskId={taskId} active={visible && tab === "list"} poll={verdicts} />
               </div>
               <div role="tabpanel" id="rp-graph" aria-label="자산 지식 그래프" hidden={tab !== "graph"}>
                 <ReportAssetGraph taskId={taskId} active={visible && tab === "graph"} />

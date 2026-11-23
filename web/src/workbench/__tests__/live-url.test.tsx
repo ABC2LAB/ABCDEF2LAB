@@ -10,13 +10,15 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // 제품 판정 목록(#801)은 이 시험 범위가 아니다 — 제품 관리 중계가 아닌 서버처럼(404) 구획을 두지 않게 한다.
-// vi.fn 이 아니어서 resetAllMocks 에도 그대로다
+// vi.fn 이 아니어서 resetAllMocks 에도 그대로다. 보고서 요약 칸 시험만 pv.reply 로 판정 응답을 준다(afterEach 가 되돌림)
+const pv = vi.hoisted(() => ({ reply: null as null | (() => Promise<unknown>) }));
 vi.mock("../live/productVerdicts", async (original) => {
   const real = await original<typeof import("../live/productVerdicts")>();
   const { ApiError: NotInstalled } = await import("@/lib/diagnosis/api");
   return {
     ...real,
     fetchProductVerdicts: async () => {
+      if (pv.reply) return pv.reply();
       throw new NotInstalled(404, "not found");
     },
   };
@@ -391,6 +393,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  pv.reply = null;
 });
 
 describe("URL 진단 계산", () => {
@@ -1778,6 +1781,24 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     await waitFor(() => expect(within(header).getByText(/^소요/)).toHaveTextContent(/^소요 5분$/));
     expect(within(header).getByText(/^시작/)).toHaveTextContent(`시작 ${dateTimeOf(STARTED_AT)}`);
     expect(header).not.toHaveTextContent("연결 전");
+  });
+
+  // #875 실측 7절 1(나): 요약 '판정 확정'이 확정 단계 CONFIRMED 를 안 세 '확정 0'으로만 보였다 — 섞지 않고 아래 줄에 따로
+  it("보고서 요약 '판정 확정' 칸 아래 줄에 확정 단계 판정 확정 수를 따로 붙이고, 값을 숨긴 판정은 세지 않는다", async () => {
+    const { parseProductVerdicts } = await import("../live/productVerdicts");
+    const golden = (await import("./product-verdicts.server-golden.json")).default as Record<
+      string,
+      { task_id: string }
+    >;
+    // 진위 확인 통과 CONFIRMED 1 · 진위 실패(값 숨김) 1
+    pv.reply = async () => parseProductVerdicts(golden.mixed_integrity, golden.mixed_integrity.task_id);
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [candidate(1)] });
+    mount("report");
+    const strip = await screen.findByRole("region", { name: "판정 집계" });
+    const cell = within(strip).getByText("판정 확정").parentElement as HTMLElement;
+    await waitFor(() => expect(cell).toHaveTextContent(/^판정 확정0증거 충분 · 확정 단계 확정 1$/));
   });
 
   it("보고서는 결과 저장이 확인된 뒤에만 실제 task 의 조치 자료를 부른다", async () => {

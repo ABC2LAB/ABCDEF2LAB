@@ -46,6 +46,13 @@ export function useProductVerdicts(taskId: string | null, active: boolean): Poll
   });
 }
 
+/** 진위 확인을 통과해 값이 보이는 확정 단계 판정 중 CONFIRMED 수. 진위 실패로 값을 숨긴 행은 세지 않는다. */
+export function productConfirmedCount(list: ProductVerdictList | null | undefined): number {
+  return (list?.items ?? []).filter(
+    (r) => r.recordStatus !== "record_integrity_failed" && r.oracleValue === "confirmed",
+  ).length;
+}
+
 /** 404 = 제품 관리 중계가 아니라 이 경로가 없다(소스 서버 등) → 구획을 두지 않는다('판정 없음'으로 그리지 않음). */
 function notInstalled(error: unknown): boolean {
   return error instanceof ApiError && error.status === 404;
@@ -227,9 +234,18 @@ function Row({ r }: { r: ProductVerdictRow }) {
   );
 }
 
-/** 보고서 '취약점 목록' 탭 아래 구획. */
-export function ProductVerdictReport({ taskId, active }: { taskId: string | null; active: boolean }) {
-  const poll = useProductVerdicts(taskId, active);
+/** 보고서 '취약점 목록' 탭 아래 구획. poll 을 주면 그 조회를 쓴다(보고서 요약 칸과 한 번만 읽게). */
+export function ProductVerdictReport({
+  taskId,
+  active,
+  poll: given,
+}: {
+  taskId: string | null;
+  active: boolean;
+  poll?: Poll<ProductVerdictList>;
+}) {
+  const own = useProductVerdicts(taskId, active && !given);
+  const poll = given ?? own;
   if (!taskId) return null;
   const state = readState(poll);
   if (state === "hide") return null;
