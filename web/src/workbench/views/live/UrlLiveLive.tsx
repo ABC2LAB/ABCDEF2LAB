@@ -2019,8 +2019,10 @@ export function UrlReportLive() {
                 hidden={tab !== "map"}
                 style={{ display: tab === "map" ? "flex" : undefined, flexDirection: "column", gap: 12 }}
               >
-                {/* 이 점검의 저장 지도(GET /api/tasks/{id}/access-map, #683). 탭이 보일 때만 읽고 409(KG 미등록 등)·503 은
-                    그 뜻대로 보인다 — 빈 격자 · 예시로 대신하지 않는다. 넓게 보려면 지도 화면으로 간다 */}
+                {/* 이 점검의 저장 지도(GET /api/tasks/{id}/access-map, #683). 탭이 보일 때만 읽고 409(평가 KG 지도 범위 없음 — KG
+                    미등록 · 실행 전 · 세대 무효)·503 은 그 뜻대로 보인다 — 빈 격자 · 예시로 대신하지 않는다. 제품 회차는 이 경로가
+                    늘 409("현재 세대의 지도 조회 범위를 확인할 수 없습니다", #875 §3.4)라 패널이 제품 지도 격자를 따로 그린다.
+                    넓게 보려면 지도 화면으로 간다 */}
                 <AccessMapPanel active={visible && tab === "map"} />
                 <div>
                   <button className={s.btn} type="button" onClick={() => goTo("accessmap")}>
