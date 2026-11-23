@@ -23,6 +23,10 @@ import (
 )
 
 var reference = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+
+// init 인스턴스 = /proc/self/ns/pid 링크 값 + /proc/self/stat 시작 tick. 예: pid:[4026532281]@123456
+// 해제 감사 기록(release_contract.go)도 같은 형식을 검사하므로 플랫폼과 무관한 이 파일에 둔다.
+var initInstancePattern = regexp.MustCompile(`^pid:\[[0-9]{1,20}\]@[0-9]{1,20}$`)
 var digestPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 var reasonPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 
@@ -166,6 +170,9 @@ func ValidateRequest(r Request) error {
 	if r.Command != ProductControl && r.Product != nil {
 		return ErrProtocol
 	}
+	if (r.Command == Release) != (r.Release != nil) {
+		return ErrProtocol
+	}
 	switch r.Command {
 	case ProductControl:
 		if r.JobID != "" || r.ExpectedRevision != 0 || r.IdempotencyKey != "" || !noInput || r.TaskID != "" || !validProductRequest(r.Product) {
@@ -208,6 +215,14 @@ func ValidateRequest(r Request) error {
 		}
 	case AuthorizeTask:
 		if r.JobID != "" || r.ExpectedRevision != 0 || r.IdempotencyKey != "" || !noInput || !validTask(r.TaskID) {
+			return ErrProtocol
+		}
+	case ReleaseStatus:
+		if r.JobID != "" || r.ExpectedRevision != 0 || r.IdempotencyKey != "" || !noInput || r.TaskID != "" {
+			return ErrProtocol
+		}
+	case Release:
+		if !reference.MatchString(r.JobID) || r.ExpectedRevision == 0 || r.IdempotencyKey != "" || !noInput || r.TaskID != "" || !validReleaseReason(r.Release.Reason) {
 			return ErrProtocol
 		}
 	default:
@@ -349,7 +364,7 @@ func validError(code string) bool {
 	case "invalid_request", "not_found", "forbidden", "revision_conflict", "idempotency_conflict", "approval_changed", "approval_required", "busy", "budget_exhausted", "capacity", "unavailable", "unknown", "service_closed", "snapshot_changed":
 		return true
 	}
-	return false
+	return validReleaseError(code)
 }
 func ValidateResponse(r Request, response Response) error {
 	if ValidateRequest(r) != nil || response.Version != Version || response.RequestID != r.RequestID {
@@ -361,8 +376,11 @@ func ValidateResponse(r Request, response Response) error {
 	if r.Command != ProductControl && response.Product != nil {
 		return ErrProtocol
 	}
+	if r.Command != ReleaseStatus && r.Command != Release && response.Release != nil {
+		return ErrProtocol
+	}
 	if response.Error != "" {
-		if response.Product != nil || response.RunPage != nil {
+		if response.Product != nil || response.RunPage != nil || response.Release != nil || (validReleaseError(response.Error) && r.Command != Release) {
 			return ErrProtocol
 		}
 		if !validError(response.Error) || response.Job != nil || response.Authorized != nil || len(response.Profiles) != 0 {
@@ -432,6 +450,15 @@ func ValidateResponse(r Request, response Response) error {
 				return ErrProtocol
 			}
 			seen[p.ID] = true
+		}
+	case ReleaseStatus:
+		if response.Release == nil || response.Job != nil || response.Authorized != nil || len(response.Profiles) != 0 || !validReleaseView(*response.Release) {
+			return ErrProtocol
+		}
+	case Release:
+		if response.Release == nil || response.Release.Record == nil || response.Release.Record.JobID != r.JobID || response.Release.Refusal != ReleasePending ||
+			!validReleaseView(*response.Release) || response.Job == nil || !validJob(*response.Job) || response.Job.ID != r.JobID || response.Authorized != nil || len(response.Profiles) != 0 {
+			return ErrProtocol
 		}
 	case AuthorizeTask:
 		if response.Authorized == nil || len(response.Profiles) != 0 {
