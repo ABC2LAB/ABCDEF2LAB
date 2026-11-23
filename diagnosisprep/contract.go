@@ -25,9 +25,6 @@ const (
 	Status        Command = "status"
 	Stop          Command = "stop"
 	AuthorizeTask Command = "authorize_task"
-	// Hide는 끝난 회차를 Workbench 목록·조회에서 숨긴다(2026-11-23 사용자·팀 결정, 화면 '삭제'). DB·회차 폴더·저널은
-	// 지우지 않고, 회차 기록은 실행 횟수·예산에 계속 센다.
-	Hide Command = "hide"
 )
 
 type State string
