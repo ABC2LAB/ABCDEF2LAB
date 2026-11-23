@@ -38,7 +38,7 @@ const (
 	// 진단 Planner 한 번(Plan)의 턴·시간 기본값이다(C26). 설치 입력 runtime_limits(C32)가 없으면 이 값이다.
 	// 시간은 모델 호출 하나의 시간 상한(승인 manifest timeout_seconds, 공식 값 170초)과 맞춘다(2026-11-22 사용자 결정).
 	// 계획 한 번이 호출 하나보다 먼저 끊기면 느린 시간대의 긴 응답을 받지 못한다. 평가 러너의 제공자 멈춤 기준(180초)보다는
-	// 짧게 둔다. 준비 단계 전체 상한(2분, first_diagnosis_supervisor.go)은 그대로라 준비 단계의 계획은 그쪽이 먼저 자른다.
+	// 짧게 둔다. 준비 단계의 계획은 준비 단계 전체 상한(400초, server FirstDiagnosisPreparationTimeout) 안에서도 잘린다.
 	E2HTTPPlannerDefaultTurns    = 16
 	E2HTTPPlannerDefaultDuration = 170 * time.Second
 )

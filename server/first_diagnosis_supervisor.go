@@ -183,6 +183,29 @@ func firstDiagnosisDeadlineDrain(timeoutSeconds int) time.Duration {
 	return min(FirstDiagnosisTimeBudgetDrain, time.Duration(timeoutSeconds)*time.Second/firstDiagnosisDeadlineDrainShare)
 }
 
+// FirstDiagnosisPreparationTimeout은 준비 단계(모델 결속·목표 만들기·첫 계획) 전체 상한이다. 원래 2분이었는데,
+// 2026-11-23 화면 VAmPI 점검(외부 모델)에서 목표 만들기와 첫 계획이 합쳐 100.5초 걸렸고 앞선 두 시도는 2분 안에 계획
+// 호출을 끝내지 못해 계획 실패로 끝났다. 목표 만들기와 첫 계획은 같은 준비 문맥에서 차례로 돈다. 그래서 목표 만들기 전체를
+// 따로 묶고(firstDiagnosisGoalCreationLimit, 여러 모델 턴 포함), 준비 상한은 '목표 만들기 상한 + 계획 한 번의 상한 +
+// 결속·처리 여유'로 계산한다(170 + 170 + 60 = 400초, 2026-11-23 사용자 결정·#879 리뷰). 원본 ARTEX(B)에는 이 단계가 없어
+// B 조건은 바뀌지 않는다.
+const (
+	// firstDiagnosisGoalCreationLimit은 목표 만들기(목표 분해, 모델 턴 여러 번) 전체의 상한이다. 넘으면 분해만 끊고
+	// 원래 작업 목표로 계획을 계속한다(P3 결정안 C11 결정 1과 같은 길). 계획 한 번의 상한과 같은 170초로 둔다.
+	firstDiagnosisGoalCreationLimit = agent.E2HTTPPlannerDefaultDuration
+	// firstDiagnosisPreparationMargin은 모델 결속·작업 확인·목표 저장 같은 호출 밖 처리에 남기는 여유다.
+	firstDiagnosisPreparationMargin  = time.Minute
+	FirstDiagnosisPreparationTimeout = firstDiagnosisGoalCreationLimit + agent.E2HTTPPlannerDefaultDuration + firstDiagnosisPreparationMargin
+)
+
+// firstDiagnosisGoalCreationTimeout은 실제로 쓰는 목표 만들기 상한이다(통합 시험만 짧게 바꾼다).
+var firstDiagnosisGoalCreationTimeout = firstDiagnosisGoalCreationLimit
+
+// firstDiagnosisPreparationContext는 준비 단계 하나의 문맥이다(기한 FirstDiagnosisPreparationTimeout).
+func firstDiagnosisPreparationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, FirstDiagnosisPreparationTimeout)
+}
+
 // firstDiagnosisDeadlineDrainShare는 엔진 기한 마감 유예가 작업 시간에서 차지할 수 있는 몫의 분모다.
 const firstDiagnosisDeadlineDrainShare = 4
 
@@ -438,7 +461,7 @@ func (s *FirstDiagnosisSupervisor) PrepareIntents(ctx context.Context, taskID st
 	s.operations.Add(1)
 	s.mu.Unlock()
 	defer func() { s.mu.Lock(); s.preparing = false; s.mu.Unlock(); s.operations.Done() }()
-	prepare, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	prepare, cancel := firstDiagnosisPreparationContext(ctx)
 	s.trackCancel(cancel)
 	defer cancel()
 	defer captureDiagnosisContextError(prepare, &observedContextErr)
