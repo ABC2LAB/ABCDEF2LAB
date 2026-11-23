@@ -276,8 +276,12 @@ func attemptPatterns(b *runBinding) map[string]string {
 			!strings.HasPrefix(row.PathPattern, "/") || len(row.PathPattern) > maxAttemptPatternBytes || strings.ContainsAny(row.PathPattern, "?#\r\n") {
 			continue
 		}
-		// 과거 버전은 경로 조각 원문을 넣을 수 있었다. 저장 시점과 무관하게 표시용 형태를 다시 만든다.
-		out[row.AttemptID] = pathmask.DisplayShape(row.PathPattern)
+		// 이전 표시 파일에는 경로 조각 원문이 있을 수 있다. 새 버전의 검증된 틀만 읽는다.
+		if row.DisplayVersion == 2 && pathmask.ValidDisplayPattern(row.PathPattern) {
+			out[row.AttemptID] = row.PathPattern
+		} else {
+			out[row.AttemptID] = pathmask.DisplayShape(row.PathPattern)
+		}
 	}
 	return out
 }

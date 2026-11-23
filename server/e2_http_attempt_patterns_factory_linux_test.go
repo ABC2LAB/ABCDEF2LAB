@@ -27,6 +27,7 @@ func TestE2HTTPFactoryRecordsProductAttemptPatterns(t *testing.T) {
 		t.Fatal("fixture is not a product policy")
 	}
 	policy.Rules[0].Origin = target.URL
+	policy.Rules[0].PathPrefix = "/allowed"
 	raw, err := json.Marshal(policy)
 	if err != nil || os.WriteFile(cfg.PolicyFile, raw, 0600) != nil {
 		t.Fatal("합성 정책 준비 실패")
@@ -72,7 +73,7 @@ func TestE2HTTPFactoryRecordsProductAttemptPatterns(t *testing.T) {
 		t.Fatal("product attempt pattern file not written", err)
 	}
 	var row E2AttemptPatternRow
-	if json.Unmarshal([]byte(strings.TrimSpace(string(data))), &row) != nil || row.AttemptID != receipt.AttemptID || row.PathPattern != "/{id}/{id}" || strings.Contains(string(data), "48151623") {
+	if json.Unmarshal([]byte(strings.TrimSpace(string(data))), &row) != nil || row.AttemptID != receipt.AttemptID || row.PathPattern != "/allowed/{id}" || strings.Contains(string(data), "48151623") {
 		t.Fatalf("pattern row: %q", data)
 	}
 }
@@ -97,6 +98,7 @@ func TestE2HTTPFactoryAttemptPatternsMaskSessionAndUsername(t *testing.T) {
 	defer target.Close()
 	cfg, _, policy := e2HostPolicyFixture(t)
 	policy.Rules[0].Origin = target.URL
+	policy.Rules[0].PathPrefix = "/allowed"
 	policy.Rules = append(policy.Rules, E2HTTPFileRule{Ref: "auth-login", Origin: target.URL, ConnectIP: "127.0.0.1", PathPrefix: "/login", PathScopeRef: "auth-login", Methods: []string{"POST"}, Purpose: e2proxy.PurposeAuthPrep})
 	policy.HeaderMode = e2proxy.HeaderTestAccountPassthrough
 	policy.Limits.MaxAttempts, policy.Limits.MaxCalls, policy.MaxRequests = 64, 64, 64
@@ -143,7 +145,7 @@ func TestE2HTTPFactoryAttemptPatternsMaskSessionAndUsername(t *testing.T) {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(data), session) || strings.Contains(string(data), username) ||
-		strings.Count(string(data), `"/{id}/{id}/{id}"`) != 2 {
+		strings.Count(string(data), `"/allowed/{id}/{id}"`) != 2 {
 		t.Fatalf("display patterns kept a session or account value: %q", data)
 	}
 }

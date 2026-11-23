@@ -68,6 +68,19 @@ func TestDiagnosticTextMasksInlineAccountPairs(t *testing.T) {
 	}
 }
 
+func TestDiagnosticTextMarkdownCredentials(t *testing.T) {
+	for _, input := range []string{
+		"- **Password**: `synthetic-pass`",
+		"**비밀번호**: `synthetic-pass`",
+		"plaintext passwords `synthetic-pass`",
+		"Session token `synthetic-token`",
+	} {
+		if got := DiagnosticText(input); strings.Contains(got, "synthetic-") {
+			t.Errorf("마크다운 자격값이 남음: %q", got)
+		}
+	}
+}
+
 func TestCredentialTextMasksCredentialsButKeepsAddresses(t *testing.T) {
 	in := "Set-Cookie: sid=synthetic-session-41c2; Path=/\nAuthorization: Bearer synthetic-bearer-41c2\n{\"email\":\"user@owned.test\",\"password\":\"synthetic-pass-41c2\"}\n" +
 		"token=synthetic-token-41c2 eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJlLXN5bnRoZXRpYw next https://owned.test/read/item"

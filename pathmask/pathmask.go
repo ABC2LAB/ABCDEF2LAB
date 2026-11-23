@@ -39,6 +39,7 @@ var staticSuffixes = []string{".js", ".mjs", ".css", ".map", ".png", ".jpg", ".j
 
 var (
 	safeSegment    = regexp.MustCompile(`^[A-Za-z0-9._~-]+$`)
+	templateSlot   = regexp.MustCompile(`^\{[A-Za-z][A-Za-z0-9_]*\}$`)
 	digitSegment   = regexp.MustCompile(`^[0-9]+$`)
 	hexSegment     = regexp.MustCompile(`^[0-9a-fA-F]{16,}$`)
 	encodedSegment = regexp.MustCompile(`^[A-Za-z0-9_-]{20,}$`)
@@ -107,8 +108,8 @@ func maskSegment(raw string, key []byte) (string, bool) {
 // 안전 문자만·32자 이하이고, 길거나 섞인 조각은 값으로 본다. query는 받지 않는다(EscapedPath만). 평가 기록에는 Mask를 쓴다.
 func Readable(escaped string) string { return ReadableWith(escaped, nil) }
 
-// DisplayShape는 이전 제품 기록을 포함해 경로의 슬래시 구조만 남긴다.
-// 짧은 이름도 계정명이나 제목일 수 있으므로 원문 조각은 가린다.
+// DisplayShape는 제품 감사 화면에 슬래시 구조만 남긴다. 짧고 고정된 듯한 조각도 계정명이나 제목일 수 있다.
+// 이전 버전이 만든 표시 패턴에도 같은 규칙을 적용한다.
 func DisplayShape(path string) string {
 	if path == LongPath {
 		return LongPath
@@ -126,6 +127,54 @@ func DisplayShape(path string) string {
 		segments[i] = MaskedSegment
 	}
 	return strings.Join(segments, "/")
+}
+
+// DisplayWithTemplate는 승인 규칙의 틀과 맞는 이름 조각만 표시한다. 규칙 밖 조각과 민감 조각은 가린다.
+// 틀이 없거나 맞지 않으면 슬래시 구조만 남긴다.
+func DisplayWithTemplate(escaped, template string, sensitive func(string) bool) string {
+	shape := DisplayShape(escaped)
+	if shape == LongPath || sensitive == nil || !strings.HasPrefix(escaped, "/") || !strings.HasPrefix(template, "/") ||
+		strings.ContainsAny(template, "?#\r\n") {
+		return shape
+	}
+	parts, approved := strings.Split(escaped, "/"), strings.Split(template, "/")
+	if len(approved) > len(parts) || len(approved)-1 > MaxSegments {
+		return shape
+	}
+	visible := strings.Split(shape, "/")
+	for i := 1; i < len(approved); i++ {
+		if approved[i] == "" || parts[i] == "" {
+			return shape
+		}
+		if templateSlot.MatchString(approved[i]) {
+			visible[i] = approved[i]
+			continue
+		}
+		decoded, err := url.PathUnescape(parts[i])
+		if err != nil || decoded != approved[i] || !safeSegment.MatchString(approved[i]) {
+			return shape
+		}
+		if _, value := valueSegment(parts[i]); !value && !sensitive(decoded) {
+			visible[i] = decoded
+		}
+	}
+	return strings.Join(visible, "/")
+}
+
+// ValidDisplayPattern은 새 표시 파일의 조각이 틀 이름 또는 가림 표식으로만 이뤄졌는지 확인한다.
+func ValidDisplayPattern(path string) bool {
+	if path == LongPath {
+		return true
+	}
+	if !strings.HasPrefix(path, "/") || strings.Count(path, "/") > MaxSegments+1 {
+		return false
+	}
+	for _, part := range strings.Split(path, "/")[1:] {
+		if part != "" && part != MaskedSegment && !templateSlot.MatchString(part) && !safeSegment.MatchString(part) {
+			return false
+		}
+	}
+	return true
 }
 
 // ReadableWith는 Readable에 호출자가 아는 민감 조각 판단을 더한다. sensitive가 참인 이름 조각도 `{id}`로 가린다(실행의

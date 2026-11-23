@@ -375,4 +375,8 @@ func TestE2FlowViewAttachesAttemptPatterns(t *testing.T) {
 	if p1, p2 := pattern(); p1 != "/{id}/{id}/{id}" || p2 != "" {
 		t.Fatalf("patterns: %q %q", p1, p2)
 	}
+	write(`{"attempt_id":"` + a1 + `","path_pattern":"/api/{username}/items/{title}","display_version":2}` + "\n")
+	if p1, p2 := pattern(); p1 != "/api/{username}/items/{title}" || p2 != "" {
+		t.Fatalf("new display pattern: %q %q", p1, p2)
+	}
 }

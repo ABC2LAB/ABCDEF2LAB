@@ -13,11 +13,15 @@ import (
 
 // productAttemptPatterns는 E2AttemptPatternsFile에 시도마다 한 줄을 더한다. 관찰 훅은 동시에 불릴 수 있어 자체 잠금을
 // 쓰고, 파일은 링크를 따라가지 않고 0600으로 연다. 실패는 표시만 빠지므로 실행을 막지 않고 서버 로그에 사유만 남긴다.
-func productAttemptPatterns(stateDir string) e2proxy.AttemptPathObserver {
+func productAttemptPatterns(stateDir string, templates map[string]string, sensitive func() func(string) bool) e2proxy.AttemptPathObserver {
 	var mu sync.Mutex
 	path := filepath.Join(stateDir, E2AttemptPatternsFile)
 	return func(r e2proxy.Receipt, escaped string) {
-		line, ok := e2AttemptPatternLine(r, escaped)
+		var judge func(string) bool
+		if sensitive != nil {
+			judge = sensitive()
+		}
+		line, ok := e2AttemptPatternLine(r, escaped, templates[r.RuleRef], judge)
 		if !ok {
 			return
 		}

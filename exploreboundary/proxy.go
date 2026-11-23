@@ -291,9 +291,6 @@ func (p *Proxy) forward(w http.ResponseWriter, in *http.Request, scheme, host st
 	out.Header.Del(DenialHeader)
 	out.Header.Del(ResultHeader)
 	out.Header.Del(SeqHeader)
-	if !p.cfg.EvalUpstream.IsValid() {
-		out.Header.Set("Accept-Encoding", "identity")
-	}
 	out.Body = io.NopCloser(bytes.NewReader(body))
 	out.ContentLength = int64(len(body))
 	dial := p.dialAddr(d)
@@ -342,22 +339,10 @@ func (p *Proxy) forward(w http.ResponseWriter, in *http.Request, scheme, host st
 		w.WriteHeader(http.StatusBadGateway)
 		return
 	}
-	if !p.cfg.EvalUpstream.IsValid() && responseMayContainCredential(resp, respBody, p.cfg.MaxResponseBytes, requestProtectionValues(out, body)) {
-		clear(respBody)
-		result.Reason = responseWithheld
-		finish()
-		w.Header().Set(ResultHeader, responseWithheld)
-		w.WriteHeader(http.StatusBadGateway)
-		return
-	}
 	result.ResponseSHA256 = sha256.Sum256(respBody)
 	for k, vs := range resp.Header {
 		// 경계 표시 헤더는 경계만 붙인다. 대상이 같은 이름을 보내 결과를 꾸미지 못하게 지운다(#488 리뷰).
 		if strings.EqualFold(k, "Connection") || strings.EqualFold(k, DenialHeader) || strings.EqualFold(k, ResultHeader) || strings.EqualFold(k, SeqHeader) {
-			continue
-		}
-		// 직접 입구의 실행기와 정적 fetch에는 브라우저 세션 발급 헤더가 필요하지 않다.
-		if !p.cfg.EvalUpstream.IsValid() && p.cfg.Ingress == DirectIngress && strings.EqualFold(k, "Set-Cookie") {
 			continue
 		}
 		for _, v := range vs {
