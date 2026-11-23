@@ -197,6 +197,11 @@ const (
 	FirstDiagnosisPreparationTimeout = firstDiagnosisGoalCallAllowance + agent.E2HTTPPlannerDefaultDuration + firstDiagnosisPreparationMargin
 )
 
+// firstDiagnosisPreparationContext는 준비 단계 하나의 문맥이다(기한 FirstDiagnosisPreparationTimeout).
+func firstDiagnosisPreparationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, FirstDiagnosisPreparationTimeout)
+}
+
 // firstDiagnosisDeadlineDrainShare는 엔진 기한 마감 유예가 작업 시간에서 차지할 수 있는 몫의 분모다.
 const firstDiagnosisDeadlineDrainShare = 4
 
@@ -452,7 +457,7 @@ func (s *FirstDiagnosisSupervisor) PrepareIntents(ctx context.Context, taskID st
 	s.operations.Add(1)
 	s.mu.Unlock()
 	defer func() { s.mu.Lock(); s.preparing = false; s.mu.Unlock(); s.operations.Done() }()
-	prepare, cancel := context.WithTimeout(ctx, FirstDiagnosisPreparationTimeout)
+	prepare, cancel := firstDiagnosisPreparationContext(ctx)
 	s.trackCancel(cancel)
 	defer cancel()
 	defer captureDiagnosisContextError(prepare, &observedContextErr)

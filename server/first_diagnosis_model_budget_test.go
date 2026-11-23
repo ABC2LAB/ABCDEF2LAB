@@ -739,6 +739,14 @@ func TestFirstDiagnosisPreparationTimeoutCoversGoalAndPlan(t *testing.T) {
 	if firstDiagnosisGoalCallAllowance < agent.E2HTTPPlannerDefaultDuration || FirstDiagnosisPreparationTimeout < sequential+time.Minute {
 		t.Fatalf("준비 단계 상한 %s가 목표 호출 %s + 계획 %s + 여유 1분보다 짧음", FirstDiagnosisPreparationTimeout, firstDiagnosisGoalCallAllowance, agent.E2HTTPPlannerDefaultDuration)
 	}
+	// 준비 단계 문맥이 이 상한을 기한으로 쓴다.
+	before := time.Now()
+	ctx, cancel := firstDiagnosisPreparationContext(t.Context())
+	deadline, ok := ctx.Deadline()
+	cancel()
+	if !ok || deadline.Before(before.Add(FirstDiagnosisPreparationTimeout)) || deadline.After(time.Now().Add(FirstDiagnosisPreparationTimeout)) {
+		t.Fatalf("준비 문맥 기한 %v (상한 %s)", deadline, FirstDiagnosisPreparationTimeout)
+	}
 	// 경계: 각각 상한까지 걸린 두 호출이 끝난 시점에도 준비 문맥이 남아 있어야 한다.
 	if worst := 2 * agent.E2HTTPPlannerDefaultDuration; FirstDiagnosisPreparationTimeout-worst < time.Minute {
 		t.Fatalf("두 호출 뒤 남는 시간 %s", FirstDiagnosisPreparationTimeout-worst)
