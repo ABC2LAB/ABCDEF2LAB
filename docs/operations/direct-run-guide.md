@@ -104,7 +104,7 @@ dc up -d --no-build
 - **제공자 모드**: 설치 입력 `openrouter_manifest` v4의 `provider_routing`으로 정한다([OpenRouter 연결](../openrouter-first-diagnosis.md)).
   - 고정: `{"mode":"pinned"}`, 승인 제공자 하나만 쓴다.
   - 자동 넘김: `{"mode":"fallback","providers":[…]}`.
-  - 머지 뒤 갱신: 제품 기본값은 넘김 동작을 확인하기 전까지 고정으로 둔다.
+  - 제품 기본값은 자동 넘김이다: PrimeIntellect(`primeintellect/fp8`) → DeepInfra(`deepinfra/fp8`) 순서(둘 다 ZDR·고정 샘플링·도구 호출 지원, 2026-11-23 넘김 확인 뒤 기본값으로 올림). 평가 manifest는 늘 고정 모드다.
   - 호출마다 실제로 응답한 제공자는 사용량 기록(`returned_providers`)에 남는다.
 
 ## 6. VAmPI 띄우기·리셋 (VAmPI 연습만)
@@ -234,5 +234,4 @@ docker ps -a --filter label=com.docker.compose.project=$COMPOSE_PROJECT_NAME
 ## 머지 뒤 갱신할 자리
 
 - 5장: 외부 모델 설치의 점검 1회 제한·점검마다 사용량 승인 제거
-- 5장: 제공자 모드의 제품 기본값(넘김 동작 확인 뒤 자동 넘김)
 - 11장: 멈춘 작업 해제(C04) 버튼·사유·기본 대기 시간·재시작 중 끊김
