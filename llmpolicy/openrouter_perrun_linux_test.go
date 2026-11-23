@@ -55,20 +55,23 @@ func loadForRun(t *testing.T, path, run string) *OpenRouterPolicy {
 	return p
 }
 
-// v4 승인은 점검마다 장부를 따로 센다. 한 점검이 총량을 다 써도 다른 점검은 새로 시작하고, 같은 점검을 다시 읽으면
-// (재시작) 같은 장부를 이어 센다. 다 쓴 점검의 장부는 지우지 않고 남는다.
+// v4 승인은 점검마다 장부를 따로 센다. 한 점검이 총량을 다 써도 다른 점검은 새로 시작하고, 이미 시작한 점검은 다시
+// 열지 않는다. 다 쓴 점검의 장부는 지우지 않고 남는다.
 func TestOpenRouterPerRunLedgerV4(t *testing.T) {
 	path, approval := perRunFixture(t, 4)
 	a := loadForRun(t, path, "job-a")
+	if a.Snapshot().RunLedger == "" || !strings.HasPrefix(a.Snapshot().RunLedger, ".openrouter-"+approval+".run-") {
+		t.Fatalf("회차 기록에 점검 장부가 남지 않음: %q", a.Snapshot().RunLedger)
+	}
 	if !a.PerRunTotals() || reserveFree(a) != nil || reserveFree(a) != nil {
 		t.Fatalf("점검 A 예약: %+v", a.Snapshot())
 	}
 	if err := reserveFree(a); err == nil {
 		t.Fatal("점검 A가 점검당 총량을 넘음")
 	}
-	again := loadForRun(t, path, "job-a")
-	if again.CheckAvailable() == nil || reserveFree(again) == nil {
-		t.Fatal("같은 점검을 다시 읽자 장부가 비워짐")
+	// 같은 점검을 다시 열지 않는다: 장부는 점검 시작 때 한 번만 새로 만든다(이미 있으면 거부).
+	if _, err := LoadOpenRouterManifestFileForRun(path, "job-a"); err == nil {
+		t.Fatal("이미 시작한 점검의 장부로 다시 열림")
 	}
 	b := loadForRun(t, path, "job-b")
 	if b.CheckAvailable() != nil || reserveFree(b) != nil {
@@ -115,6 +118,9 @@ func TestOpenRouterPerRunLedgerV4(t *testing.T) {
 func TestOpenRouterPerRunLoaderKeepsCumulativeBeforeV4(t *testing.T) {
 	path, approval := perRunFixture(t, 3)
 	a := loadForRun(t, path, "job-a")
+	if a.Snapshot().RunLedger != "" {
+		t.Fatal("v3 승인이 점검 장부를 기록함")
+	}
 	if a.PerRunTotals() || reserveFree(a) != nil || reserveFree(a) != nil {
 		t.Fatalf("v3 예약: %+v", a.Snapshot())
 	}
@@ -142,6 +148,72 @@ func TestOpenRouterPerRunHonoursLegacyMarkerAndRunRef(t *testing.T) {
 	for _, run := range []string{"bad\x00run", strings.Repeat("r", openRouterRunRefMax+1)} {
 		if _, err := LoadOpenRouterManifestFileForRun(path, run); err == nil {
 			t.Fatalf("점검 참조 %q를 받음", run[:8])
+		}
+	}
+}
+
+// 점검 중 장부가 지워지거나·잘리거나·다른 파일로 바뀌거나·남이 덧붙이면 0으로 읽거나 이어 쓰지 않고 막는다(사용량 불명).
+func TestOpenRouterPerRunLedgerTamperingFailsClosed(t *testing.T) {
+	for name, tamper := range map[string]func(t *testing.T, ledger string){
+		"deleted": func(t *testing.T, ledger string) {
+			if os.Remove(ledger) != nil {
+				t.Fatal("삭제")
+			}
+		},
+		"truncated": func(t *testing.T, ledger string) {
+			if os.Truncate(ledger, 0) != nil {
+				t.Fatal("자르기")
+			}
+		},
+		"replaced": func(t *testing.T, ledger string) {
+			raw, _ := os.ReadFile(ledger)
+			if os.Remove(ledger) != nil || os.WriteFile(ledger, raw, 0600) != nil {
+				t.Fatal("바꾸기")
+			}
+		},
+		"appended": func(t *testing.T, ledger string) {
+			f, err := os.OpenFile(ledger, os.O_APPEND|os.O_WRONLY, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = f.WriteString("r1 1 1 1\n")
+			_ = f.Close()
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path, _ := perRunFixture(t, 4)
+			p := loadForRun(t, path, "job-a")
+			if reserveFree(p) != nil {
+				t.Fatal("첫 예약")
+			}
+			tamper(t, filepath.Join(filepath.Dir(path), p.Snapshot().RunLedger))
+			if p.CheckAvailable() == nil {
+				t.Fatal("손댄 장부를 쓸 수 있다고 봄")
+			}
+			if err := reserveFree(p); err == nil || !p.Snapshot().Blocked || p.Snapshot().FailureReason != "approval_unavailable" || p.Snapshot().Requests != 1 {
+				t.Fatalf("손댄 장부로 예약함: %+v", p.Snapshot())
+			}
+			if _, err := os.Stat(filepath.Join(filepath.Dir(path), p.Snapshot().RunLedger)); name == "deleted" && !os.IsNotExist(err) {
+				t.Fatal("지워진 장부를 다시 만듦")
+			}
+		})
+	}
+}
+
+// 손대지 않으면 점검마다 승인 총량까지 쓰고(예약·정산 포함), 여러 점검을 이어 돌릴 수 있다.
+func TestOpenRouterPerRunLedgerNormalRuns(t *testing.T) {
+	path, _ := perRunFixture(t, 4)
+	for _, run := range []string{"job-1", "job-2", "job-3"} {
+		p := loadForRun(t, path, run)
+		if reserveFree(p) != nil {
+			t.Fatalf("%s 첫 예약", run)
+		}
+		u := p.Snapshot()
+		if p.settleLedger([3]int64{u.ReservedInputTokens, u.ReservedOutputTokens, u.ReservedCostMicros}, [3]int64{10, 2, 1}) != nil {
+			t.Fatalf("%s 정산", run)
+		}
+		if reserveFree(p) != nil || reserveFree(p) == nil || p.Snapshot().FailureReason != "request_limit" {
+			t.Fatalf("%s 점검당 상한: %+v", run, p.Snapshot())
 		}
 	}
 }
