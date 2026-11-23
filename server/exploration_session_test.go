@@ -60,9 +60,12 @@ type explorationFixtureLease struct {
 	closeErr   error
 	closes     int
 	events     *explorationEvents
+	// statuses는 상태 조회 수다(실행기가 경계에 보내는 생존 신호, 2026-11-24 세션 수명).
+	statuses atomic.Int32
 }
 
 func (l *explorationFixtureLease) Status(context.Context) (exploration.State, error) {
+	l.statuses.Add(1)
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.state, l.err
@@ -348,6 +351,45 @@ func TestExplorationSessionBoundaryRevocationCancelsWorkerAndCleansUp(t *testing
 	assertExplorationClosed(t, s, b, browser, f, exploration.TargetEnded)
 	if s.ClosedReason() != exploration.TargetEnded || f.navigate.Load() != 0 {
 		t.Fatal("revocation reason or no-new-call fence lost")
+	}
+}
+
+// 상태 조회(경계에 보내는 생존 신호)는 모델 호출과 따로 도는 감시 고루틴이 보낸다. 모델 응답이 오래 걸리는 동안에도 조회가
+// 이어져, 경계의 조회 끊김 감지(Heartbeat)가 세션을 잘못 닫지 않는다(2026-11-24 세션 수명).
+func TestExplorationSessionPollsBoundaryWhileModelCallBlocks(t *testing.T) {
+	o, b, _, _, p := explorationSessionFixture(t, exploration.BrowserToolNames())
+	p.block = true
+	p.started = make(chan struct{})
+	s, err := OpenExplorationSession(t.Context(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = s.Run(ctx, o.Worker, agent.ExplorationRunOptions{TargetURL: "https://owned.test/", Reporter: &explorationFixtureReporter{}, MaxTurns: 5, MaxDuration: time.Second}, nil)
+	}()
+	select {
+	case <-p.started:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not start")
+	}
+	// 모델 호출이 막혀 있는 동안 조회 주기(5ms)의 20배 넘게 기다린다.
+	before := b.lease.statuses.Load()
+	time.Sleep(40 * o.StatusInterval)
+	during := b.lease.statuses.Load() - before
+	if during < 10 {
+		t.Fatalf("모델 호출이 막힌 동안 상태 조회가 멈춤: %d번", during)
+	}
+	if b.lease.closed() != 0 {
+		t.Fatal("모델 응답을 기다리는 동안 세션을 닫음")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancel did not stop worker")
 	}
 }
 func TestExplorationSessionCancellationInterruptsInFlightHTTPAndCleanupSurvivesErrors(t *testing.T) {
