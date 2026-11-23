@@ -203,6 +203,16 @@ export function UrlNewScanLive() {
       });
     return () => controller.abort();
   }, [approvedTargetId, entryGen]);
+  // 계정 분류 · 정책 선언 화면으로 가며 이 대상을 미리 고르게 한다
+  const openPrep = (view: "classify" | "declaration") => {
+    if (!approvedTargetId) return;
+    useWb.getState().focusTargetOn(approvedTargetId);
+    goTo(view);
+  };
+  let declarationText = "없음 · 확정 단계 없이 점검";
+  if (declarationActive)
+    declarationText = confirmationPlan ? `있음 · 소유자 전용 종류 ${confirmationPlan.types}개` : "있음";
+  else if (planUnknown) declarationText = "확인하지 못함";
   // 대상(또는 그 상태)이 바뀌면 지난 리셋 상태를 버린다. 상자는 key 로 다시 그려져 새 상태를 알린다
   const onProductTarget = useCallback((t: { id: string; state: string } | null) => {
     setProductTarget(t);
@@ -715,6 +725,28 @@ export function UrlNewScanLive() {
                       disabled={busy}
                       onState={setResetState}
                     />
+                  ) : null}
+                  {/* 계정 분류 · 정책 선언으로 잇는다(사용자 11/23: 새 점검에서 안 이어져 있었다). 승인된 대상만 —
+                      계정 · 선언은 승인된 대상에만 저장된다. 그 화면은 이 대상을 미리 고르고, '새 점검으로'로 돌아온다 */}
+                  {approvedTargetId ? (
+                    <section className={s["prep-box"]} aria-label="계정 · 정책 선언">
+                      <ul className={s.policy}>
+                        <Rule
+                          warn={!hasTestAccounts}
+                          t="시험 계정"
+                          sub={hasTestAccounts ? "등록됨 · 로그인해서 점검" : "없음 · 로그인 없이 점검"}
+                        />
+                        <Rule warn={!declarationActive} t="정책 선언" sub={declarationText} />
+                      </ul>
+                      <div className={s.acts}>
+                        <button className={cx(s.btn, s.sm)} type="button" onClick={() => openPrep("classify")}>
+                          계정 분류
+                        </button>
+                        <button className={cx(s.btn, s.sm)} type="button" onClick={() => openPrep("declaration")}>
+                          정책 선언
+                        </button>
+                      </div>
+                    </section>
                   ) : null}
                   {/* '기존 점검 다시 열기'(진행 · 끝난 점검 목록 링크)는 두지 않는다(사용자 11/18) — 대시보드의 진행 중 · 보존된 끝난 점검 목록('전체 보기')으로 간다 */}
                 </div>

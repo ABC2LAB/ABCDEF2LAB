@@ -3132,6 +3132,29 @@ describe("새 점검의 E③ 확정 단계 안내 · 대상 리셋 확인", () =
     expect(screen.queryByRole("region", { name: "대상 리셋 확인" })).toBeNull();
   });
 
+  it("승인된 대상이면 계정 · 정책 선언 상자를 두고, 버튼은 그 대상을 미리 고르게 한 뒤 그 화면으로 간다(사용자 11/23)", async () => {
+    serve(active(declaration()), noWrites);
+    saveHandle();
+    const { goTo } = mount("new");
+    const box = await screen.findByRole("region", { name: "계정 · 정책 선언" });
+    expect(await within(box).findByText("있음 · 소유자 전용 종류 1개")).toBeInTheDocument();
+    fireEvent.click(within(box).getByRole("button", { name: "계정 분류" }));
+    expect(goTo).toHaveBeenCalledWith("classify");
+    expect(useWb.getState().focusTarget?.id).toBe(TARGET_ID);
+    const seq = useWb.getState().focusTarget?.seq ?? 0;
+    fireEvent.click(within(box).getByRole("button", { name: "정책 선언" }));
+    expect(goTo).toHaveBeenCalledWith("declaration");
+    expect(useWb.getState().focusTarget).toEqual({ id: TARGET_ID, seq: seq + 1 });
+  });
+
+  it("정책 선언이 없으면 상자에 '없음'으로 보인다", async () => {
+    serve({ state: "none", declaration: null }, noWrites);
+    saveHandle();
+    mount("new");
+    const box = await screen.findByRole("region", { name: "계정 · 정책 선언" });
+    expect(await within(box).findByText("없음 · 확정 단계 없이 점검")).toBeInTheDocument();
+  });
+
   it("선언이 없으면 지난 쓰기가 있어도 서버가 거절하지 않으므로 경고는 없고 리셋 확인 상자만 둔다", async () => {
     serve({ state: "none", declaration: null }, resetRequired);
     saveHandle();

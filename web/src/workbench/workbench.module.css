@@ -3802,6 +3802,21 @@ button.smm:hover {
   align-items: center;
   min-height: 30px;
 }
+/* 새 점검: 계정 · 정책 선언 상자(사용자 11/23). 대상 칸 아래에서 계정 분류 · 정책 선언으로 잇는다 */
+.prep-box {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--rule-2);
+  border-radius: 10px;
+}
+.prep-box .policy {
+  margin: 0;
+}
 /* 목록 머리 오른쪽: 건수 + '삭제한 점검' 보기(사용자 11/23) */
 .rec-end {
   display: inline-flex;

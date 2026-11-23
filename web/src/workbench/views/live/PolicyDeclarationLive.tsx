@@ -45,6 +45,7 @@ import {
   validateDraft,
 } from "../../live/declaration";
 import { useShell } from "../../shell";
+import { useWb } from "../../store";
 import { Icon } from "../../ui/icons";
 import s from "../../workbench.module.css";
 import { UrlHead } from "./urlParts";
@@ -436,7 +437,8 @@ function RolesEditor({
 
 /** 정책 선언 (운영자 전용). */
 export function PolicyDeclarationLive() {
-  const visible = useShell().route === "declaration";
+  const { route, goTo } = useShell();
+  const visible = route === "declaration";
   const [targets, setTargets] = useState<DeclarationTarget[] | "failed" | null>(null);
   const [targetId, setTargetId] = useState("");
   const listed = Array.isArray(targets) ? (targets.find((t) => t.id === targetId) ?? null) : null;
@@ -568,6 +570,15 @@ export function PolicyDeclarationLive() {
     setServerField(null);
     setSaved("");
   };
+  // 새 점검에서 '정책 선언'으로 오면 그 대상을 미리 고른다(사용자 11/23). 한 번 온 요청은 한 번만 쓴다
+  const focus = useWb((st) => st.focusTarget);
+  const usedFocus = useRef(0);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: pickTarget 은 렌더마다 새로 만들지만 하는 일이 같다
+  useEffect(() => {
+    if (!visible || !Array.isArray(targets) || !focus || focus.seq === usedFocus.current) return;
+    usedFocus.current = focus.seq;
+    if (targets.some((t) => t.id === focus.id)) pickTarget(focus.id);
+  }, [visible, targets, focus]);
   const update = (next: DeclarationDraft) => {
     editGen.current++;
     reseedAfterSave.current = false;
@@ -605,7 +616,15 @@ export function PolicyDeclarationLive() {
 
   return (
     <>
-      <UrlHead title="정책 선언" crumb="정책 선언" />
+      <UrlHead
+        title="정책 선언"
+        crumb="정책 선언"
+        acts={
+          <button className={cx(s.btn, s.sm)} type="button" onClick={() => goTo("new")}>
+            새 점검으로
+          </button>
+        }
+      />
       <div className={s.vb}>
         <div className={s.vm}>
           <div className={s.note} role="note">
