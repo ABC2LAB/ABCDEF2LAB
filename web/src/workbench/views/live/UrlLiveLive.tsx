@@ -175,7 +175,8 @@ export function Outcome({ o, short = false }: { o: DiagnosticOutcome; short?: bo
 
 /**
  * 후보를 읽지 않는 까닭. 서버 조회 경계(ProductCandidateJobActive)가 열리는 때 — 시작 확인 · running/stopping ·
- * 마감 · 결과 저장 전 — 에만 null(읽음). 끝난 점검은 따로(CandidatesEnded) 안내하므로 여기서는 시작 전과 같이 본다.
+ * 마감 · 결과 저장 전 — 에만 null(읽음). 끝난 점검은 후보 목록 대신 저장된 발견 목록을 보이므로(안내 문장은 뺐다, 사용자 11/23)
+ * 여기서는 시작 전과 같이 본다.
  */
 export function candidateIdle(job: URLDiagnosisJob | null | undefined, verified: boolean): CandidateIdle {
   if (!job) return "prestart";
@@ -419,20 +420,6 @@ function LiveCandidates({
 
 /** 후보 추정 등급 순서(집계 띠). 정보성은 있을 때만 보인다. */
 const SEV_LEVELS: readonly SeverityLevel[] = ["critical", "high", "medium", "low", "info"];
-
-/**
- * 끝난 점검의 안내: 점검 중 후보 목록은 실행 중에만 서버가 열어 둔다(409). 결과 · 확정 단계 판정은 보고서에서 본다.
- */
-function CandidatesEnded({ reportReadable }: { reportReadable: boolean }) {
-  // [보고서 보기]는 위 상태 카드에 이미 있어(결과 저장 확인 때) 여기에 또 두지 않는다
-  return (
-    <p className={s.help} role="note" id="lFindsEnded">
-      {reportReadable
-        ? "점검이 끝나 진행 중 후보 목록을 더 읽지 않습니다. 결과와 확정 단계 판정 목록은 위 [보고서 보기]에서 봅니다."
-        : "점검이 끝나 진행 중 후보 목록을 더 읽지 않습니다. 결과 저장이 확인되면 보고서에서 결과와 판정 목록을 봅니다."}
-    </p>
-  );
-}
 
 /**
  * 점검 진행 상태 카드의 모델 사용량 한 줄 (입 · 출 칩, 사용자 11/17 '입출만'). 출처는 이 진단의 전송 통제 예산 기록
@@ -940,7 +927,6 @@ export function UrlLiveLive() {
               onPick={(id) => pickEntry(`candidate-${id}`)}
             />
           ) : null}
-          {ended && job.task_id ? <CandidatesEnded reportReadable={g.reportReadable} /> : null}
           {ended && savedTask ? <SavedFindings poll={saved} picked={picked} onPick={pickEntry} /> : null}
           {ended && !savedTask ? <p className={s.empty}>결과 저장이 확인되면 발견 목록이 여기에 나옵니다.</p> : null}
           {a.message ? <p role="status">{a.message}</p> : null}
