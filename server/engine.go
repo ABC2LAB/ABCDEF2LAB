@@ -1303,8 +1303,14 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	// 任务已判完成(done via 常规路径)→ 上面 cancelExec 取消了本 run。意图结果已无意义,
 	// 标 stopped(不是 blocked),别污染已完成任务的意图状态。
 	if !completedControlled && ectx.Err() != nil && isTerminalStatus(e.m.TaskStatus(t.ID)) {
-		if err := transitionIntentState(t.Store, intent.ID, "running", "stopped"); err != nil {
-			log.Printf("[worker %s] task %s 의도 #%d 최종 상태 stopped 저장 실패: %v", name, t.ID, intent.ID, err)
+		// Planner가 목표 달성으로 끝내며 취소한 것(취소 원인 goal_met)이면 사유를 남겨 실행 결과에서 미완료로 세지 않는다
+		// (#875 발견 6). 그 밖의 종료 뒤 취소는 지금처럼 사유 없이 stopped다.
+		reason := ""
+		if code, _, _, _ := agent.AbortReason(ectx); code == db.IntentStopReasonGoalMet {
+			reason = db.IntentStopReasonGoalMet
+		}
+		if changed, err := t.Store.CompareAndSetIntentStopped(intent.ID, "running", reason); err != nil || !changed {
+			log.Printf("[worker %s] task %s 의도 #%d 최종 상태 stopped 저장 실패: changed=%v err=%v", name, t.ID, intent.ID, changed, err)
 		}
 		log.Printf("[worker %s] task %s 의도 #%d 작업이 이미 완료되어 취소(stopped)", name, t.ID, intent.ID)
 		e.touch(t.ID)

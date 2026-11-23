@@ -107,18 +107,26 @@ type IntentOutcomes struct {
 	Incomplete    int64 `json:"incomplete"`
 	Unknown       int64 `json:"unknown"`
 	Stopped       int64 `json:"stopped"`
+	// GoalMet은 목표 달성으로 작업이 끝나 취소됐거나 시작하지 않은 intent다(#875 발견 6). 미완료가 아니라 partial에
+	// 넣지 않는다. 이 칸이 생기기 전 기록에는 없어 0으로 읽는다.
+	GoalMet int64 `json:"goal_met"`
+}
+
+// Total은 마감한 intent 수(모든 결과 칸의 합)다.
+func (c IntentOutcomes) Total() int64 {
+	return c.Done + c.PolicyLimited + c.Incomplete + c.Unknown + c.Stopped + c.GoalMet
 }
 
 func (c IntentOutcomes) Valid() bool {
-	return c.Done >= 0 && c.PolicyLimited >= 0 && c.Incomplete >= 0 && c.Unknown >= 0 && c.Stopped >= 0
+	return c.Done >= 0 && c.PolicyLimited >= 0 && c.Incomplete >= 0 && c.Unknown >= 0 && c.Stopped >= 0 && c.GoalMet >= 0
 }
 
-// Outcome은 계약 §3.2의 대조식이다.
+// Outcome은 계약 §3.2의 대조식이다. 목표 달성으로 중단된 intent는 남은 작업이 아니라서 partial로 만들지 않는다.
 func (c IntentOutcomes) Outcome() string {
 	switch {
 	case c.Incomplete+c.Unknown+c.Stopped > 0:
 		return OutcomePartial
-	case c.Done+c.PolicyLimited > 0:
+	case c.Done+c.PolicyLimited+c.GoalMet > 0:
 		return OutcomeComplete
 	default:
 		return OutcomeNoIntents

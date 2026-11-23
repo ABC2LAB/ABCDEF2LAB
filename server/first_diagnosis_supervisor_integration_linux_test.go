@@ -2023,14 +2023,16 @@ func firstDiagnosisCheckGoalConcurrent(t *testing.T, ctx context.Context, mode s
 	unmatched := worker.unmatched
 	worker.mu.Unlock()
 	c := slow.Call.Counts
-	closed := runErr == nil && result != nil && result.Valid() && result.Outcome == diagnosis.OutcomePartial && result.ClosingReason == "" &&
+	closed := runErr == nil && result != nil && result.Valid() && result.ClosingReason == "" &&
 		planner.proved && task.lifecycleSnapshot().Status == "done" && !unmatched && slots && len(results) == 2 && completed == 1 && states["done"] == 1 &&
 		slow.Final && slow.ProcessDrained && slow.ProxyDrained && !slow.ProcessBashExited && slow.Termination == "" && slow.Call.AuditComplete && slow.Execution.AuditComplete
 	var ok bool
 	switch mode {
 	case "goal-met-concurrent-denied":
+		// 목표 달성으로 취소된 진행 중 intent는 사유 goal_met이 남고 미완료가 아니라 목표 달성으로 중단으로 센다(#875 발견 6).
 		ok = closed && hits == 1 && slow.Classification == "policy_not_executed" && c.Denied == 1 && c.ForwardAttempted == 0 && c.Unknown == 0 &&
-			result.IntentOutcomes == (diagnosis.IntentOutcomes{Done: 1, Incomplete: 1}) && slowState == "stopped"
+			result.Outcome == diagnosis.OutcomeComplete && result.IntentOutcomes == (diagnosis.IntentOutcomes{Done: 1, GoalMet: 1}) &&
+			slowState == "stopped" && slowReason == pgdb.IntentStopReasonGoalMet
 	case "goal-met-concurrent-mid-response":
 		const exitWait = 2 * time.Second
 		exited := false
@@ -2039,8 +2041,9 @@ func firstDiagnosisCheckGoalConcurrent(t *testing.T, ctx context.Context, mode s
 			exited = true
 		case <-time.After(exitWait):
 		}
+		// 결과 불명 송신은 목표 달성 뒤에도 따로 보여 partial이다.
 		ok = closed && hits == 2 && exited && slow.Classification == "result_unknown" && c.Denied == 1 && c.ForwardAttempted == 1 && c.Responses == 1 && c.Unknown == 1 &&
-			result.IntentOutcomes == (diagnosis.IntentOutcomes{Done: 1, Unknown: 1}) && slowState == "blocked" && slowReason == "e2_http_result_unknown"
+			result.Outcome == diagnosis.OutcomePartial && result.IntentOutcomes == (diagnosis.IntentOutcomes{Done: 1, Unknown: 1}) && slowState == "blocked" && slowReason == "e2_http_result_unknown"
 	}
 	if !ok {
 		check, _ := diagnosisCheckReason(runErr)

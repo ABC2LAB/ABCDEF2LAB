@@ -73,7 +73,8 @@ export function urlOutcomeText(
   if (compact && job.state === "cancelled") return "중지됨";
   const c = job.intent_outcomes;
   if (!c) return "";
-  const finished = c.done + c.policy_limited;
+  // 목표 달성으로 멈춘 작업은 끊긴 것이 아니라 끝난 쪽에 센다(#875 발견 6).
+  const finished = c.done + c.policy_limited + (c.goal_met ?? 0);
   const remaining = c.incomplete + c.stopped;
   if (job.state === "cancelled") return `중지됨 · 끝난 ${finished} / 끊긴 ${remaining + c.unknown}`;
   if (job.state !== "completed" || !job.outcome) return "";
@@ -86,6 +87,8 @@ export function urlOutcomeText(
   // 결과 불명은 남은 작업과 따로 보인다(미실행·판단불가를 섞지 않는다).
   if (c.unknown > 0) parts.push(`결과 불명 ${c.unknown}`);
   if (c.policy_limited > 0) parts.push(`정책상 검증 안 됨 ${c.policy_limited}`);
+  // 목표 달성으로 작업이 끝나 멈춘 작업은 남은 작업이 아니라 따로 보인다(#875 발견 6).
+  if ((c.goal_met ?? 0) > 0) parts.push(`목표 달성으로 중단 ${c.goal_met}`);
   if (job.closing_reason === "budget_limited")
     parts.push(compact ? "예산 상한에서 마감" : "예산 상한에서 마감 · 찾은 후보는 보존");
   return parts.join(" · ");

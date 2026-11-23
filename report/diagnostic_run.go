@@ -36,7 +36,8 @@ func DiagnosticRunText(run *DiagnosticRun) string {
 			return "중지됨"
 		}
 		c := r.IntentOutcomes
-		return fmt.Sprintf("중지됨 · 끝난 %d / 끊긴 %d", c.Done+c.PolicyLimited, c.Incomplete+c.Stopped+c.Unknown)
+		// 목표 달성으로 멈춘 작업은 끊긴 것이 아니라 끝난 쪽에 센다(#875 발견 6).
+		return fmt.Sprintf("중지됨 · 끝난 %d / 끊긴 %d", c.Done+c.PolicyLimited+c.GoalMet, c.Incomplete+c.Stopped+c.Unknown)
 	case DiagnosticRunFailed:
 		return "실패(정상 마감되지 않음)"
 	case DiagnosticRunClosureFailed:
@@ -69,6 +70,10 @@ func DiagnosticRunText(run *DiagnosticRun) string {
 		}
 		if c.PolicyLimited > 0 {
 			parts = append(parts, fmt.Sprintf("정책상 검증 안 됨 %d", c.PolicyLimited))
+		}
+		// 목표 달성으로 작업이 끝나 멈춘 작업은 남은 작업이 아니라 따로 보인다(#875 발견 6).
+		if c.GoalMet > 0 {
+			parts = append(parts, fmt.Sprintf("목표 달성으로 중단 %d", c.GoalMet))
 		}
 		if r.ClosingReason == diagnosis.ClosingBudgetLimited {
 			parts = append(parts, "예산 상한에서 마감 · 찾은 후보는 보존")
