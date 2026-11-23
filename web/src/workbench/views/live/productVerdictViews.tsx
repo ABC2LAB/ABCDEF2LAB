@@ -2,7 +2,7 @@
 
 // 제품 확정 단계 판정 표시 (계약 docs/contracts/product-verdict-list-proposal.md §3).
 // - 보고서: 평가 판정 행(verdict-<id>)과 섞지 않고 '제품 확정 단계 판정' 구획을 따로 둔다.
-// - 접근통제 지도: 평가 KG 격자에 넣지 않고(축 출처가 다름: KG 등록 대 정책 선언) 아래에 '자원 종류 × 소유→교차' 표를 따로 둔다.
+// - 접근통제 지도의 제품 격자는 productAccessMapView(GET .../product-access-map)가 따로 그린다(계약 product-access-map §3).
 // 확정도 finding 이 아니다(결정 §9) — 후보 상태(수동 검토 필요)는 바꾸지 않는다. 빈 목록은 '판정 없음'이지 '취약점 없음'이 아니다.
 
 import type { ReactNode } from "react";
@@ -251,85 +251,6 @@ function ReportBody({ list }: { list: ProductVerdictList }) {
       ) : (
         <NoVerdicts list={list} />
       )}
-    </>
-  );
-}
-
-/** 지도 표의 한 칸: 같은 자원 종류에 판정이 둘 이상이면 고르지 않는다(접근통제 지도의 selection_ambiguous 와 같은 규칙). */
-function MapCell({ rows }: { rows: ProductVerdictShown[] }) {
-  if (rows.length !== 1) return <span className={cx(s.vd, s.und)}>판정 둘 이상 · 선택 안 함</span>;
-  const r = rows[0];
-  return (
-    <>
-      <Value v={r.oracleValue} />
-      {r.recordStatus === "policy_source_unavailable" ? (
-        <small className={s.help}>{` ${RECORD_STATUS_TEXT.policy_source_unavailable}`}</small>
-      ) : null}
-      {r.evidenceSeal?.status === "unconfirmed" ? (
-        <small className={s.help} data-seal="unconfirmed">{` ${EVIDENCE_SEAL_TEXT.unconfirmed}`}</small>
-      ) : null}
-    </>
-  );
-}
-
-/** 접근통제 지도(보고서 탭 · 지도 화면) 아래 표. */
-export function ProductVerdictMap({ taskId, active }: { taskId: string | null; active: boolean }) {
-  const poll = useProductVerdicts(taskId, active);
-  if (!taskId) return null;
-  const state = readState(poll);
-  if (state === "hide") return null;
-  const list = poll.data;
-  return (
-    <section className={s.isec} aria-label="제품 확정 단계 표">
-      <h2>제품 확정 단계 (정책 선언 기준)</h2>
-      <p className={s.help}>
-        평가 KG 격자와 축 출처가 달라 따로 둡니다. 소유 계정 칸은 정상 대조라 판정 대상이 아니어서 두지 않습니다.
-      </p>
-      {state ?? (list ? <MapBody list={list} /> : null)}
-    </section>
-  );
-}
-
-function MapBody({ list }: { list: ProductVerdictList }) {
-  const shown = list.items.filter((r): r is ProductVerdictShown => r.recordStatus !== "record_integrity_failed");
-  const hidden = list.items.length - shown.length;
-  const types = [...new Set(shown.map((r) => r.resourceType))];
-  const owner = list.policySource?.ownerAccountLabel ?? "소유 계정";
-  const cross = list.policySource?.crossAccountLabel ?? "교차 계정";
-  return (
-    <>
-      <p className={s.help}>
-        <span className={s.pill}>제품</span> {sourceText(list)} · <Confirmation list={list} />
-      </p>
-      {types.length ? (
-        <table aria-label="자원 종류 × 소유→교차 제품 판정">
-          <thead>
-            <tr>
-              <th scope="col">자원 종류</th>
-              <th scope="col">{`${owner} → ${cross}`}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {types.map((t) => (
-              <tr key={t}>
-                <th scope="row" className={s.mono}>
-                  {t}
-                </th>
-                <td>
-                  <MapCell rows={shown.filter((r) => r.resourceType === t)} />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      ) : null}
-      {hidden ? (
-        <p className={cx(s.note, s.warn)} role="note">
-          <Icon name="alert" />
-          <span>{`${RECORD_STATUS_TEXT.record_integrity_failed} ${hidden}건 · 자원 종류도 숨겨져 표에 두지 않습니다`}</span>
-        </p>
-      ) : null}
-      {list.items.length ? null : <NoVerdicts list={list} />}
     </>
   );
 }

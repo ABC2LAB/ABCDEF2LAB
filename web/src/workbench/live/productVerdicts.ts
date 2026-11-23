@@ -131,6 +131,16 @@ const CHECK_KEYS = ["policy", "identity", "data"];
 const SEAL_KEYS = ["status", "reason"];
 const SEAL_UNCONFIRMED_REASONS = new Set<string>(["seal_not_recorded", "evidence_checkpoint_missing"]);
 
+/** 오라클 사유 코드인지(제품 접근통제 지도 파서도 같은 목록을 쓴다). */
+export function isOracleReason(s: string): boolean {
+  return ORACLE_REASONS.has(s);
+}
+
+/** 봉인 확인 칸 검사. 제품 접근통제 지도 파서도 같은 규칙을 쓴다(어긋나면 던진다). */
+export function parseEvidenceSeal(v: unknown, where: string): EvidenceSeal | null {
+  return parseSeal(v, where);
+}
+
 function parseSeal(v: unknown, where: string): EvidenceSeal | null {
   if (v === null) return null;
   const o = obj(v, SEAL_KEYS, where);

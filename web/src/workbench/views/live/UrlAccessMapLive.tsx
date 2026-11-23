@@ -31,7 +31,7 @@ import { useUrl, useUrlSelectionKey } from "../../live/urlDiagnosis";
 import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
 import s from "../../workbench.module.css";
-import { ProductVerdictMap } from "./productVerdictViews";
+import { ProductAccessMapGrid } from "./productAccessMapView";
 import { UrlHead } from "./urlParts";
 
 /**
@@ -296,10 +296,10 @@ export function AccessMapPanel({ active }: { active: boolean }) {
       {taskId && !now ? <p className={s.empty}>불러오는 중…</p> : null}
       {now?.error && noMapScope(now.error) ? (
         // 409(현재 등록·실행 범위 없음)는 이 점검에 평가 KG 지도 범위가 없다는 뜻이다. 제품 회차는 controlled-read KG
-        // 등록을 하지 않아 늘 이렇다(1차 리허설 F7) — 오류 경고 대신 안내하고, 같은 화면의 제품 확정 단계 표를 보게 한다
+        // 등록을 하지 않아 늘 이렇다(1차 리허설 F7) — 오류 경고 대신 안내하고, 같은 화면의 제품 접근통제 지도를 보게 한다
         <p className={s.note} role="note">
           이 점검에는 평가 KG 접근통제 지도 범위가 없습니다(KG 미등록 · 실행 전 · 세대 무효). 교차 계정 확인 결과는 아래
-          제품 확정 단계 표에 있습니다.
+          제품 접근통제 지도에 있습니다.
         </p>
       ) : null}
       {now?.error && !noMapScope(now.error) ? (
@@ -401,8 +401,8 @@ export function AccessMapPanel({ active }: { active: boolean }) {
           </p>
         </section>
       ) : null}
-      {/* 제품 확정 단계 판정은 평가 KG 격자와 축 출처가 달라 아래 표로 따로(#801 §3). 평가 지도가 409(KG 미등록)여도 읽는다 */}
-      <ProductVerdictMap taskId={taskId} active={active} />
+      {/* 제품 접근통제 지도는 평가 KG 격자와 축 출처가 달라 따로 둔다(product-access-map §3). 평가 지도가 409(KG 미등록)여도 읽는다 */}
+      <ProductAccessMapGrid taskId={taskId} active={active} />
     </>
   );
 }
