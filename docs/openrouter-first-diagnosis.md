@@ -43,7 +43,7 @@
 | `max_input_tokens_per_call` | 모델 전체 context인 262144. 호출 하나의 입력 예약 상한이다(실제 예약은 아래 요청 크기 상한과 이 값 중 작은 쪽) |
 | `max_output_tokens_per_call` | profile/요청 출력 상한 이상인 승인된 제한 |
 | `timeout_seconds`, `max_concurrent` | 요청별 1~300초 제한과 동시 요청 상한 |
-| `max_input_price_usd_micros_per_million`, `max_output_price_usd_micros_per_million` | 승인된 100만 토큰당 최대 단가, provider.max_price에 결속 |
+| `max_input_price_usd_micros_per_million`, `max_output_price_usd_micros_per_million` | 승인된 100만 토큰당 최대 단가, provider.max_price에 결속. v4 제품 점검은 아래 '점검 시작 때 단가 상한'대로 점검마다 다시 정하고, 이 값은 재조회에 실패했을 때 쓰는 예비값이다. v1~v3은 이 값 그대로다 |
 | `max_consecutive_transient_errors` | v2·v3. 연속 일시 오류(429·5xx·연결 실패·응답 본문 읽기 끊김)가 이 수(1~16)에 닿으면 정책을 잠근다. v1은 1로 본다(첫 일시 오류에 잠금). 첫 진단의 모델 호출 하나는 실패하면 두 번 더 보내고(2초·6초 뒤, 매번 새 예약), 요청 한도(429, 청구 없음)면 네 번까지 다시 보낸다(2·6·15·30초). 그 실패도 연속 수에 들어가므로, 3 이하이면(429가 이어지면 5 이하이면) 호출 하나가 승인을 잠글 수 있다 |
 | `sampling` | v3·v4. 매 요청에 넣는 샘플링 일곱 칸 `temperature`(0~2)·`top_p`(0 초과~1)·`top_k`(정수 0~1000)·`min_p`(0~1)·`presence_penalty`(-2~2)·`repetition_penalty`(0 초과~2)·`seed`(정수, ±2^53). 칸이 정확히 일곱이어야 하고(중복·모르는 칸·정수 칸의 소수 거부) 범위 밖이면 거부한다. 제품 기본값은 평가 프로토콜 §6 고정값과 같은 `{"temperature":1.0,"top_p":0.95,"top_k":20,"min_p":0,"presence_penalty":1.5,"repetition_penalty":1.0,"seed":42}`(모델 카드 thinking 모드·일반 작업 권장값 + seed 42)이다. v1·v2는 샘플링을 넣지 않는다(제공자 기본값, 이전 동작) |
 | `provider_routing` | v4만. 제공자 모드다. 고정: `{"mode":"pinned"}` — 승인 endpoint 하나만 쓰고 넘기지 않는다(v1~v3과 같은 요청 바이트). 자동 넘김: `{"mode":"fallback","providers":[{"slug":"<tag>","name":"<표시 이름>"}, …]}` — 2~8개, 순서가 시도 순서, tag와 이름은 각각 중복 없음, 첫 항목은 `provider_slug`·`expected_provider_name`과 같다. 모르는 칸·중복 키는 거부한다. **제품 기본값은 자동 넘김**이다: `{"mode":"fallback","providers":[{"slug":"primeintellect/fp8","name":"PrimeIntellect"},{"slug":"deepinfra/fp8","name":"DeepInfra"}]}`(둘 다 ZDR·고정 샘플링 일곱 칸·도구 호출 지원, 2026-11-23 엔드포인트 조회). 평가 manifest는 늘 고정 모드다. 확인 전에는 고정 모드로 두었다(2026-11-23 사용자 결정). 확인하기 전의 걱정: OpenRouter 문서는 `only`가 그 요청에 허용할 제공자 목록이라고만 적고, `only`+`order`+`allow_fallbacks=true`에서 목록 안에서만 넘기는지와 넘김 중에도 `zdr`·`data_collection`·`max_price`가 유지되는지는 명시하지 않는다. 응답 쪽 검사는 목록 밖 제공자의 응답을 받지 않을 뿐, 요청 본문이 목록 밖으로 나가는 것 자체를 막지는 못한다. **실제 넘김 확인(2026-11-23, 시험 계정 없는 소액 호출, 약 $0.0016)**: 제품 llmpolicy 경로(v4 자동 넘김, 목록 `primeintellect/fp8` → `deepinfra/fp8`)로 ① 평소 3번: 모두 PrimeIntellect, 사용량 기록 `returned_providers`와 OpenRouter 생성 기록(`/generation`)의 제공자가 3/3 같음 ② 가격 상한을 PrimeIntellect(0.176/1.578) 아래·DeepInfra(0.10/0.95) 위로 둔 3번: 모두 DeepInfra로 넘어감, 기록 3/3 같음(가격 상한이 넘김에도 걸림) ③ 가격 상한이 목록 둘 다 빼고 목록 밖 제공자만 남긴 경우: 404, 생성 기록·비용 없음(OpenRouter 오류가 요청의 제공자 목록 때문이라고 밝힘) ④ ZDR: 목록에 ZDR 아닌 Darkbloom을 넣고 PrimeIntellect를 가격으로 뺀 직접 호출은 `zdr=true`면 404, 대조군(`zdr` 없음)은 Darkbloom이 응답 — 넘김에도 ZDR 조건이 걸림. 목록 밖으로 나간 요청 0. 한계: 응답 `provider`는 표시 이름이라 같은 제공자의 다른 tag(예: `deepinfra/fp8`과 `deepinfra/fp8/flex`, 둘 다 "DeepInfra")는 응답만으로 가릴 수 없다(`only`에 정확한 tag를 넣는 것으로 막는다). |
@@ -78,6 +78,14 @@ manifest와 부모는 기존 보호 파일 계약(실행 UID 소유, 파일0600/
 - tool-call 이름·ID·JSON과 tool-result 결속을 검증한다. 등록되지 않은 도구, 중복/누락 결과 또는 잘못된 응답은 실행으로 넘기지 않는다. 등록 schema의 필수 필드·기본 타입은 기존 SDK 검증기를 재사용해 호출 전과 결과에 적용한다. 이는 enum·수치 범위·pattern·additionalProperties까지 검증하는 완전한 JSON Schema 구현이 아니며, 실제 의미·실행 권한 검사는 기존 도구와 E② 경계가 담당한다.
 
 URL v2 자동 준비는 [별도 통합 계약](url-openrouter-integration.md)을 따른다. URL 경로는 단일 프로세스·단일 승인·공유 예산으로 준비와 실행을 연결한다. 아래 수동 CLI의 두 단계 승인 절차와 혼동하지 않는다.
+
+## 점검 시작 때 단가 상한 (v4, 2026-11-23 사용자 결정)
+
+- 11/23 화면 VAmPI에서 설치 상한(출력 $1.50)이 PrimeIntellect 단가($1.52)보다 낮아 자동 넘김 설치는 DeepInfra만 남고, 고정 설치는 바로 404 → '결과 불명'이 됐다([실측 기록](evaluation/ui-vampi-rehearsal-1123-results.md) 발견 5). 단가는 하루에도 바뀐다.
+- v4 승인으로 제품 점검을 시작하면 첫 모델 호출 전에 OpenRouter 공개 제공자 목록(`GET /api/v1/models/<model>/endpoints`, 키·인증 헤더 없음, 승인 호출과 같은 주소 정책)을 한 번 읽는다. 넘김 목록(고정 모드면 승인 endpoint 하나) 제공자의 가장 높은 입력·출력 단가 × 1.5(올림)를 그 점검의 `provider.max_price`와 호출 예약 단가로 쓴다. 점검당 비용 상한(`max_cost_usd_micros`)·토큰 상한은 그대로라 총비용은 지금처럼 막힌다.
+- 다시 읽지 못하거나(`requote_unavailable`), 응답을 읽을 수 없거나(`requote_invalid`), 목록 제공자가 하나도 없으면(`no_listed_provider_offered`) 설치 상한을 그대로 쓰고 진행한다.
+- 회차 기록(`/api/tasks/{id}/diagnosis-run`의 `model.price_caps`)에 출처(`requoted`·`install_fallback`), 쓴 상한, 설치 상한, 조회 시각, 실패 사유, 제공자별 조회 단가와 상태(`within_cap`·`over_cap`·`not_offered`·`unknown`)가 남는다. 점검 중 404(받을 제공자 없음)가 나면 한 번 더 읽어 그때 상한을 넘은 제공자를 `over_cap`으로 남기고 `not_found_checked_at`을 적는다. 화면은 이 칸으로 '어느 제공자가 왜(단가 > 상한) 빠졌는지'를 보인다.
+- v1~v3(평가 manifest)은 재조회하지 않는다. 공식 세션은 러너가 세션 시작 직전 재조회 단가 × 1.5로 v3 manifest를 만들고 시작 점검이 상한 ≥ 단가 × 1.2를 확인한다(`scripts/eval/official_session.py`). 회차 안에서 상한이 바뀌면 같은 세션의 회차끼리 조건이 달라지므로 그 경로에는 걸지 않는다(회귀 시험 `TestOpenRouterRunPriceRequoteOnlyV4`·`TestFirstDiagnosisOpenRouterRunBudgetRequotesV4Only`).
 
 ## 공식 실행 순서와 UI 인계
 

@@ -389,6 +389,10 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 			slot.rejected()
 		case resp.StatusCode >= 400 && resp.StatusCode <= 499:
 			diagnostic.ReasonCode = "http_client_error"
+			if resp.StatusCode == http.StatusNotFound {
+				// 받을 제공자가 없다는 404는 단가 상한 때문일 수 있다. 재조회한 v4 점검이면 한 번 더 읽어 빠진 제공자를 남긴다.
+				p.explainNotFound(r.Context(), time.Now())
+			}
 		case readErr != nil:
 			diagnostic.ReasonCode = openRouterDiagnosticTransportReason(readErr, r.Context())
 		default:
