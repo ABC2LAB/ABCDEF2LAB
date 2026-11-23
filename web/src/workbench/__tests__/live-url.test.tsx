@@ -915,7 +915,9 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     u.readURLStatus.mockResolvedValue(externalReady);
     u.commandURLDiagnosis.mockResolvedValue({ ...preparing, scope: externalReady.scope });
     mount("new");
-    const consent = await screen.findByRole("checkbox", { name: /대상 응답·도구 출력의 외부 전송/ });
+    // 11/23 결정: 시험 계정이 없어도 외부 모델 회차는 대상 정보의 외부 전송과 사용자 책임을 시작 확인에서 고지한다.
+    const consent = await screen.findByRole("checkbox", { name: /외부 전송된 정보에 대한 책임은 사용자에게 있습니다/ });
+    expect(consent).toHaveAccessibleName(/대상이 돌려준 비밀번호·개인정보 등 포함/);
     // 서버가 돌려준 범위의 제공자는 요약 패널에 (분석 모델 칸의 제공자 고르기와 별개)
     const sum = screen.getByRole("complementary", { name: "점검 요약" });
     expect(within(sum).getByText(new RegExp(externalModel.provider.replace("/", "\\/")))).toBeInTheDocument();
