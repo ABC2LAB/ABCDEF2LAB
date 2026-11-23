@@ -373,27 +373,62 @@ describe("레일 → 진행 중인 점검 · 끝난 점검", () => {
   });
 });
 
-describe("끝난 점검 목록에서 숨기기 (화면 표시만, 2026-11-23 #867)", () => {
+it("이름을 붙인 점검 줄에는 서버 ID(prep-…)를 보이지 않고 상태 낱말은 따로 읽힌다(사용자 11/23)", () => {
+  const row: URLRunSummary = { ...projection(running), display_name: "test1" };
+  render(
+    <ShellContext.Provider value={shell("running")}>
+      <RunRow row={row} />
+    </ShellContext.Provider>,
+  );
+  const button = screen.getByRole("button", { name: /test1/ });
+  expect(button).not.toHaveTextContent(running.id);
+  const status = button.querySelector("span[class*='r-s']") as HTMLElement;
+  expect(status.children.length).toBeGreaterThan(1);
+});
+
+it("이미 열어 둔 점검을 다시 누르면 상태를 다시 읽지 않는다(깜빡임, 사용자 11/23)", async () => {
+  vi.mocked(api.fetchRemediation).mockResolvedValue({ task_id: 42, entries: [] });
+  selectSaved(completed);
+  records(true);
+  const epoch = useUrl.getState().selectionEpoch;
+  fireEvent.click(
+    within(screen.getByRole("region", { name: "끝난 점검 목록" })).getByRole("button", { name: /job-1/ }),
+  );
+  expect(useUrl.getState().selectionEpoch).toBe(epoch);
+  expect(useUrl.getState().job?.id).toBe(completed.id);
+  expect(within(screen.getByRole("complementary", { name: "선택한 점검" })).queryByRole("status")).toBeNull();
+});
+
+it("점검을 고른 뒤 상태를 읽는 동안 '목록에서 점검을 선택' 안내 대신 불러오는 중만 둔다(깜빡임, 사용자 11/23)", () => {
+  savedRows([completed]);
+  useUrl.setState({ selectedID: completed.id, busy: true, handle: null, job: null });
+  records(true);
+  const detail = screen.getByRole("complementary", { name: "선택한 점검" });
+  expect(within(detail).getByRole("status")).toHaveTextContent("불러오는 중…");
+  expect(detail).not.toHaveTextContent("목록에서 점검을 선택");
+});
+
+describe("끝난 점검 삭제 (화면 목록에서만, 기록은 그대로, 2026-11-23 #867)", () => {
   const panel = () => screen.getByRole("complementary", { name: "선택한 점검" });
   const list = () => screen.getByRole("region", { name: "끝난 점검 목록" });
-  const hiddenChip = () => screen.getByRole("button", { name: /^숨긴 점검/ });
+  const hiddenToggle = () => screen.getByRole("button", { name: /^삭제한 점검/ });
   beforeEach(() => {
     window.localStorage.clear();
-    useHiddenRuns.setState({ owner: null, ids: [] });
+    useHiddenRuns.setState({ owner: null, ids: [], showing: false });
     vi.mocked(api.fetchRemediation).mockResolvedValue({ task_id: 42, entries: [] });
   });
   const openHide = () => {
     selectSaved(completed);
     records(true);
-    const opener = within(panel()).getByRole("button", { name: "목록에서 숨기기" });
+    const opener = within(panel()).getByRole("button", { name: "삭제" });
     fireEvent.click(opener);
-    return { opener, box: screen.getByRole("alertdialog", { name: "이 점검을 목록에서 숨길까요?" }) };
+    return { opener, box: screen.getByRole("alertdialog", { name: "이 점검을 삭제할까요?" }) };
   };
 
-  it("진행 중인 점검에는 숨기기 버튼이 없다", () => {
+  it("진행 중인 점검에는 삭제 버튼이 없다", () => {
     selectSaved(running);
     records(false);
-    expect(within(panel()).queryByRole("button", { name: "목록에서 숨기기" })).toBeNull();
+    expect(within(panel()).queryByRole("button", { name: "삭제" })).toBeNull();
   });
 
   it("처음 버튼은 확인 상자를 켜고 끄고, 상자는 버튼 줄 바로 아래에 질문 한 줄만 둔다", () => {
@@ -401,7 +436,7 @@ describe("끝난 점검 목록에서 숨기기 (화면 표시만, 2026-11-23 #86
     const row = opener.parentElement as HTMLElement;
     expect(row.contains(box)).toBe(false);
     expect(row.nextElementSibling).toBe(box);
-    expect(box).toHaveTextContent(/^이 점검을 목록에서 숨길까요\?숨기기취소$/);
+    expect(box).toHaveTextContent(/^이 점검을 삭제할까요\?삭제취소$/);
     fireEvent.click(opener);
     expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(opener).toHaveAttribute("aria-expanded", "false");
@@ -411,11 +446,11 @@ describe("끝난 점검 목록에서 숨기기 (화면 표시만, 2026-11-23 #86
     expect(within(list()).getByRole("button", { name: /job-1/ })).toBeInTheDocument();
   });
 
-  it("숨기면 기본 목록에서만 빠지고, '숨긴 점검'에서 다시 열면 보고서를 그대로 읽고 목록에 되돌릴 수 있다", async () => {
+  it("삭제하면 서버에 보내지 않고 기본 목록에서만 빠지고, 건수 옆 '삭제한 점검'에서 다시 열어 보고서를 읽고 되돌린다", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const { box } = openHide();
-    fireEvent.click(within(box).getByRole("button", { name: "숨기기" }));
-    // 서버에는 아무것도 보내지 않는다
+    fireEvent.click(within(box).getByRole("button", { name: "삭제" }));
+    // 서버에는 아무것도 보내지 않는다(기록은 서버에 그대로)
     expect(fetchSpy).not.toHaveBeenCalled();
     fetchSpy.mockRestore();
     expect(within(list()).queryByRole("button", { name: /job-1/ })).toBeNull();
@@ -423,20 +458,27 @@ describe("끝난 점검 목록에서 숨기기 (화면 표시만, 2026-11-23 #86
     expect(JSON.parse(window.localStorage.getItem(`abc2lab-hidden-runs:${catalog.ownerContext}`) ?? "[]")).toEqual([
       completed.id,
     ]);
-    // 숨긴 점검 보기 → 그 점검만 보이고, 다시 열면 기존 보고서 조회가 그대로 된다
-    expect(hiddenChip()).toHaveTextContent("1");
-    fireEvent.click(hiddenChip());
-    expect(hiddenChip()).toHaveAttribute("aria-pressed", "true");
+    // '삭제한 점검'은 오른쪽 건수 바로 옆에 붙는다(사용자 11/23)
+    const toggle = hiddenToggle();
+    expect(toggle).toHaveTextContent("삭제한 점검 1");
+    expect(toggle.parentElement).toHaveTextContent(/^0 \/ 0건삭제한 점검 1$/);
+    fireEvent.click(toggle);
+    expect(hiddenToggle()).toHaveAttribute("aria-pressed", "true");
+    expect(within(list()).getByRole("button", { name: /job-1/ })).toBeInTheDocument();
+    // 점검을 고르면 화면이 다시 그려져도(byMode key) '삭제한 점검' 목록에 그대로 남는다
+    cleanup();
+    records(true);
+    expect(hiddenToggle()).toHaveAttribute("aria-pressed", "true");
     expect(within(list()).getByRole("button", { name: /job-1/ })).toBeInTheDocument();
     vi.mocked(api.fetchRemediation).mockClear();
     selectSaved(completed);
     await waitFor(() => expect(api.fetchRemediation).toHaveBeenCalledWith("42", "internal"));
     fireEvent.click(within(panel()).getByRole("button", { name: "목록에 다시 보이기" }));
     expect(window.localStorage.getItem(`abc2lab-hidden-runs:${catalog.ownerContext}`)).toBe("[]");
-    // 숨긴 점검이 없으면 기본 목록으로 돌아가 다시 보인다
-    fireEvent.click(hiddenChip());
+    // 기본 목록으로 돌아가면 다시 보인다
+    fireEvent.click(hiddenToggle());
     expect(within(list()).getByRole("button", { name: /job-1/ })).toBeInTheDocument();
-    expect(within(panel()).getByRole("button", { name: "목록에서 숨기기" })).toBeInTheDocument();
+    expect(within(panel()).getByRole("button", { name: "삭제" })).toBeInTheDocument();
   });
 
   it("브라우저 저장소를 못 써도 이 탭에서는 숨긴다", () => {
@@ -444,7 +486,7 @@ describe("끝난 점검 목록에서 숨기기 (화면 표시만, 2026-11-23 #86
       throw new Error("blocked");
     });
     const { box } = openHide();
-    fireEvent.click(within(box).getByRole("button", { name: "숨기기" }));
+    fireEvent.click(within(box).getByRole("button", { name: "삭제" }));
     expect(within(list()).queryByRole("button", { name: /job-1/ })).toBeNull();
     setItem.mockRestore();
   });

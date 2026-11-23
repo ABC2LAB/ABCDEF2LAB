@@ -30,7 +30,7 @@ import {
 
 import { cx } from "../../lib/cx";
 import { type ConfirmationPlan, confirmationPlanOf } from "../../live/confirmationPlan";
-import { getDeclaration } from "../../live/declaration";
+import { type DeclarationLoad, getDeclaration } from "../../live/declaration";
 import { fmtDur, shortTimeOf } from "../../live/map";
 import { useNow } from "../../live/parts";
 import type { ResetState } from "../../live/resetConfirmation";
@@ -117,6 +117,19 @@ function Unwired({ why }: { why: string }) {
   );
 }
 const NO_INPUT = "서버 진단 입력에 칸이 없습니다";
+/** 새 점검 '계정 · 정책 선언' 상자의 선언 줄 상태 */
+type DeclState = "loading" | "none" | "current" | "invalidated" | "unknown";
+const DECL_STATE_TEXT: Readonly<Record<DeclState, string>> = {
+  loading: "확인 중",
+  none: "없음 · 확정 단계 없이 점검",
+  current: "있음",
+  invalidated: "무효 · 다시 선언 필요",
+  unknown: "확인하지 못함",
+};
+function declStateOf(state: DeclarationLoad["state"]): DeclState {
+  if (state === "none" || state === "current" || state === "invalidated") return state;
+  return "unknown";
+}
 /** 진단 모드를 받지 않는 프로필(탐색 흐름 없음)에서 고른 진단 모드는 보내지 않는다. */
 const NO_MODE = "이 모델 프로필은 진단 모드를 받지 않아 고른 값을 보내지 않습니다";
 
@@ -192,6 +205,9 @@ export function UrlNewScanLive() {
   const [declarationActive, setDeclarationActive] = useState(false);
   const [resetState, setResetState] = useState<ResetState | null>(null);
   const [planUnknown, setPlanUnknown] = useState(false);
+  // '계정 · 정책 선언' 상자의 선언 줄 상태(#874 이동찬 · 이경준 P2). 조회 중 · 못 읽음을 '없음'으로, 저장됐지만 무효가 된
+  // 선언을 '없음'으로 단정하지 않는다(규칙 5). 대상 없음(not_found) · 라우트 없음 · 모양 깨짐 · 조회 실패는 모두 '모름'
+  const [declState, setDeclState] = useState<DeclState>("loading");
   // 승인된 대상만 선언을 읽는다(선언은 승인된 대상에만 저장된다). 못 읽으면 '확정 단계 없음'으로 추정하지 않는다(규칙 5)
   const approvedTargetId = productTarget?.state === "approved" ? productTarget.id : null;
   // biome-ignore lint/correctness/useExhaustiveDependencies: entryGen 은 화면에 들어올 때마다 다시 읽는 트리거
@@ -199,11 +215,13 @@ export function UrlNewScanLive() {
     setConfirmationPlan(null);
     setDeclarationActive(false);
     setPlanUnknown(false);
+    setDeclState("loading");
     if (!approvedTargetId) return;
     const controller = new AbortController();
     getDeclaration(approvedTargetId, controller.signal)
       .then((load) => {
         if (controller.signal.aborted) return;
+        setDeclState(declStateOf(load.state));
         setConfirmationPlan(confirmationPlanOf(load));
         setDeclarationActive(load.state === "current");
         setPlanUnknown(load.state === "unavailable" || load.state === "invalid");
@@ -211,10 +229,21 @@ export function UrlNewScanLive() {
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
         console.warn("정책 선언을 읽지 못해 확정 단계 여부를 모름", error instanceof Error ? error.name : "unknown");
+        setDeclState("unknown");
         setPlanUnknown(true);
       });
     return () => controller.abort();
   }, [approvedTargetId, entryGen]);
+  // 계정 분류 · 정책 선언 화면으로 가며 이 대상을 미리 고르게 한다
+  const openPrep = (view: "classify" | "declaration") => {
+    if (!approvedTargetId) return;
+    useWb.getState().focusTargetOn(approvedTargetId);
+    goTo(view);
+  };
+  const declarationText =
+    declState === "current" && confirmationPlan
+      ? `있음 · 소유자 전용 종류 ${confirmationPlan.types}개`
+      : DECL_STATE_TEXT[declState];
   // 대상(또는 그 상태)이 바뀌면 지난 리셋 상태를 버린다. 상자는 key 로 다시 그려져 새 상태를 알린다
   const onProductTarget = useCallback((t: { id: string; state: string } | null) => {
     setProductTarget(t);
@@ -308,6 +337,14 @@ export function UrlNewScanLive() {
   const testAccountLogin = shown
     ? shown.external_test_accounts === true || (!external && hasTestAccounts)
     : hasTestAccounts && (!external || consentChecked);
+  // 새 점검 '계정 · 정책 선언' 상자의 시험 계정 줄(#874 이동찬 P2): 등록 여부와 이번 회차가 실제로 로그인하는지를
+  // 나눈다. 외부 모델은 동의해야 로그인한다(위 testAccountLogin). 조회 전 · 실패를 '없음'으로 단정하지 않는다(규칙 5)
+  // 로그인 결속이 확실하면(결속된 회차 · 조회로 확인한 초안) 그걸 먼저 보인다
+  let accountText = "없음 · 로그인 없이 점검";
+  if (testAccountLogin) accountText = "등록됨 · 로그인해서 점검";
+  else if (accountPresence.key !== consentKey) accountText = "확인 중";
+  else if (accountPresence.failed) accountText = "확인하지 못함";
+  else if (hasTestAccounts) accountText = "등록됨 · 외부 전송 동의 전이라 로그인 없이 점검";
   // 로그인 칸 '연결 전' 설명: 시험 계정으로 로그인하면 '로그인 없이' 라고 단정하지 않는다.
   const loginUnwiredWhy = testAccountLogin
     ? `${NO_INPUT} · 시험 계정으로 로그인해 점검합니다`
@@ -743,6 +780,24 @@ export function UrlNewScanLive() {
                       disabled={busy}
                       onState={setResetState}
                     />
+                  ) : null}
+                  {/* 계정 분류 · 정책 선언으로 잇는다(사용자 11/23: 새 점검에서 안 이어져 있었다). 승인된 대상만 —
+                      계정 · 선언은 승인된 대상에만 저장된다. 그 화면은 이 대상을 미리 고르고, '새 점검으로'로 돌아온다 */}
+                  {approvedTargetId ? (
+                    <section className={s["prep-box"]} aria-label="계정 · 정책 선언">
+                      <ul className={s.policy}>
+                        <Rule warn={!testAccountLogin} t="시험 계정" sub={accountText} />
+                        <Rule warn={declState !== "current"} t="정책 선언" sub={declarationText} />
+                      </ul>
+                      <div className={s.acts}>
+                        <button className={cx(s.btn, s.sm)} type="button" onClick={() => openPrep("classify")}>
+                          계정 분류
+                        </button>
+                        <button className={cx(s.btn, s.sm)} type="button" onClick={() => openPrep("declaration")}>
+                          정책 선언
+                        </button>
+                      </div>
+                    </section>
                   ) : null}
                   {/* 멈춘 작업 해제(C04): 결과 불명 작업이 설치 전체의 새 점검 시작을 막을 때만 보인다 */}
                   <StuckReleaseBox />

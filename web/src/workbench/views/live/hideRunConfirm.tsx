@@ -1,7 +1,7 @@
 "use client";
 
-// 끝난 점검 '목록에서 숨기기' 버튼 + 확인 상자(2026-11-23 사용자·팀 결정, #867 이동찬 리뷰). 화면 목록에서만 숨기고 서버·DB
-// 기록은 건드리지 않는다(live/hiddenRuns). 숨긴 점검은 '목록에 다시 보이기'로 바로 되돌린다.
+// 끝난 점검 '삭제' 버튼 + 확인 상자(2026-11-23 사용자·팀 결정, #867). 화면 글은 '삭제'지만 동작은 화면 목록에서만 빼는 것이고
+// 서버·DB 기록은 건드리지 않는다(live/hiddenRuns). '삭제한 점검'에서 다시 열면 '목록에 다시 보이기'로 되돌린다.
 // 버튼과 상자를 따로 돌려줘 상자는 버튼 줄 아래에 둔다(점검 종료 확인 useStopConfirm과 같은 배치). 처음 버튼은 상자를 켜고
 // 끈다. 상자는 질문 한 줄만 둔다(사용자 11/23).
 
@@ -51,25 +51,25 @@ export function useHideRunConfirm(target: { job: URLDiagnosisJob; owner: string 
       aria-expanded={open}
       onClick={() => (open ? close() : setOpen(true))}
     >
-      목록에서 숨기기
+      삭제
     </button>
   );
   const box = open ? (
     <div className={s.confirm} role="alertdialog" aria-labelledby="hideRunH">
-      <h2 id="hideRunH">이 점검을 목록에서 숨길까요?</h2>
+      <h2 id="hideRunH">이 점검을 삭제할까요?</h2>
       <div className={s.acts}>
         <button
           ref={yes}
-          className={cx(s.btn, s.pri)}
+          className={cx(s.btn, s.danger)}
           type="button"
           onClick={() => {
             setOpen(false);
             hideRun(owner, job.id);
-            // 숨긴 점검은 기본 목록에서 빠지므로 이어 보기도 푼다(기록은 '숨긴 점검'에서 다시 연다)
+            // 삭제한 점검은 기본 목록에서 빠지므로 이어 보기도 푼다(기록은 '삭제한 점검'에서 다시 연다)
             disconnectUrl();
           }}
         >
-          숨기기
+          삭제
         </button>
         <button className={s.btn} type="button" onClick={close}>
           취소

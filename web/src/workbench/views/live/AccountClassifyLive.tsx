@@ -40,6 +40,7 @@ import {
   validTargetLogin,
 } from "../../live/accounts";
 import { useShell } from "../../shell";
+import { useWb } from "../../store";
 import { Icon } from "../../ui/icons";
 import s from "../../workbench.module.css";
 import { UrlHead } from "./urlParts";
@@ -88,7 +89,17 @@ export function AccountClassifyLive() {
   // 승인된 대상 목록(선택용). 화면에 들어올 때마다 다시 읽는다 — 작업대는 모든 화면을 시작 때 숨긴 채 붙여서, 처음 한
   // 번만 읽으면 그 뒤 승인한 대상이 "승인된 대상이 없습니다"로 남았다(사용자 2026-11-22, 1차 리허설 F2). 정책 선언 화면과
   // 같은 방식이다
-  const visible = useShell().route === "classify";
+  const { route, goTo } = useShell();
+  const visible = route === "classify";
+  // 새 점검에서 '계정 분류'로 오면 그 대상을 미리 고른다(사용자 11/23). 한 번 온 요청은 한 번만 쓴다
+  const focus = useWb((st) => st.focusTarget);
+  const usedFocus = useRef(0);
+  useEffect(() => {
+    if (!visible || !targets || !focus || focus.seq === usedFocus.current) return;
+    usedFocus.current = focus.seq;
+    const found = targets.find((t) => t.id === focus.id);
+    if (found) setSelected(found);
+  }, [visible, targets, focus]);
   useEffect(() => {
     if (!visible) return;
     let live = true;
@@ -254,8 +265,17 @@ export function AccountClassifyLive() {
 
   return (
     <>
-      <UrlHead title="계정 분류" crumb="계정 분류" />
-      <div className={s.vb}>
+      <UrlHead
+        title="계정 분류"
+        crumb="계정 분류"
+        acts={
+          <button className={cx(s.btn, s.sm)} type="button" onClick={() => goTo("new")}>
+            새 점검으로
+          </button>
+        }
+      />
+      {/* 오른쪽 패널에 둘 내용이 없어 가운데 칸을 끝까지 쓴다(사용자 11/23) */}
+      <div className={cx(s.vb, s.solo)}>
         <div className={s.vm}>
           {/* 절대규칙 2 · S09 고지 */}
           <div className={s.note} role="note">
@@ -502,7 +522,7 @@ export function AccountClassifyLive() {
                   {accounts.length === 0 ? (
                     <p className={s.empty}>이 대상에 등록된 계정이 없습니다.</p>
                   ) : (
-                    <ul className={s.policy} aria-label="계정 목록">
+                    <ul className={s["acct-list"]} aria-label="계정 목록">
                       {accounts.map((a) => {
                         const usable = usableAsTestAccount(a.cls);
                         return (
@@ -520,7 +540,7 @@ export function AccountClassifyLive() {
                               {a.approvedBy ? ` · 표시 ${a.approvedBy}` : ""}
                               {a.note ? ` · ${a.note}` : ""}
                             </small>
-                            <span>
+                            <span className={s["acct-acts"]}>
                               {a.cls === "unmarked" ? (
                                 <button
                                   className={cx(s.btn, s.sm)}

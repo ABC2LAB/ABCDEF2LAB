@@ -8,13 +8,14 @@
 // '발견 없음' 은 근거가 있을 때만: 정상 대조 결과가 있고 나머지 판정이 0 일 때. 판정 기록이 없으면 발견 없음이 아니다(절대규칙 5).
 // 어느 묶음에도 들지 않는 값(상태 미확인 · 결과 불명 · 중지 · 실패 · 판정 기록 없음 · 보고서 없음)은 '전체' 에만 보인다.
 
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 
 import { activeURLRun, endedURLRun, type URLRunSummary } from "@/lib/diagnosis/diagnosis-runs";
 
 import { cx } from "../../lib/cx";
 import { fetchRemediation } from "../../live/api";
-import { useHiddenRunIDs } from "../../live/hiddenRuns";
+import { setShowingHiddenRuns, useHiddenRunIDs, useHiddenRuns } from "../../live/hiddenRuns";
+import { maskSecrets } from "../../live/mask";
 import { useUrl, useUrlGates, useUrlSelectionKey } from "../../live/urlDiagnosis";
 import { useUrlRuns } from "../../live/urlRunList";
 import { usePoll } from "../../live/usePoll";
@@ -119,6 +120,21 @@ function NoPick({ title }: { title: string }) {
   );
 }
 
+// 점검을 고르면 상태를 다시 읽는 동안 상세가 비어 '목록에서 점검을 선택…' 안내가 잠깐 떴다 사라졌다(사용자 11/23 깜빡임).
+// 읽는 중에는 고른 줄의 이름만 두고 그 안내를 그리지 않는다
+function PickLoading({ title, name }: { title: string; name: string }) {
+  return (
+    <>
+      <InspHead title={name || title} />
+      <Isec>
+        <p className={s.empty} role="status">
+          불러오는 중…
+        </p>
+      </Isec>
+    </>
+  );
+}
+
 function RecordList({ finished }: { finished: boolean }) {
   const { route, goTo } = useShell();
   const title = finished ? "끝난 점검" : "진행 중인 점검";
@@ -126,9 +142,10 @@ function RecordList({ finished }: { finished: boolean }) {
   const page = useUrlRuns((st) => st.page);
   const owner = useUrlRuns((st) => st.owner);
   const hidden = useHiddenRunIDs(finished ? owner : null);
-  const [showHidden, setShowHidden] = useState(false);
   const listed = (page?.runs ?? []).filter((row) => endedURLRun(row) === finished);
-  // 끝난 점검 중 화면에서 숨긴 것(live/hiddenRuns)은 기본 목록에서 빼고 '숨긴 점검'에서만 보인다. 서버 기록은 그대로다
+  // 점검을 고르면 이 화면이 다시 그려진다(byMode key) — 보는 목록은 화면 밖 상태로 지킨다(사용자 11/23)
+  const showHidden = useHiddenRuns((st) => st.showing) && finished;
+  // 화면에서 삭제한 끝난 점검(live/hiddenRuns)은 기본 목록에서 빼고 '삭제한 점검'에서만 보인다. 서버 기록은 그대로다
   const hiddenCount = finished ? listed.filter((row) => hidden.includes(row.id)).length : 0;
   const rows = finished ? listed.filter((row) => hidden.includes(row.id) === showHidden) : listed;
   const [filter, setFilter] = useState("all");
@@ -156,9 +173,22 @@ function RecordList({ finished }: { finished: boolean }) {
     !finished && !!job?.task_id && job.input.workflow_mode === "user_approval_v1" && gates.runReadable;
   const approvals = useRequestApprovals(job?.task_id ?? "", visible && approvalsOn);
   const selectedHere = !!handle && !!job && shown.some((row) => row.id === selected);
+  const picking = useUrl((st) => st.busy) && !selectedHere ? shown.find((row) => row.id === selected) : undefined;
+  let detail: ReactNode = <NoPick title={title} />;
+  if (selectedHere)
+    detail = (
+      <JobSummary
+        result={result}
+        coverage={coverage}
+        approvals={pendingRows(approvalsOn, approvals)}
+        onApprovals={() => goTo("dashboard")}
+      />
+    );
+  else if (picking)
+    detail = <PickLoading title={title} name={maskSecrets(picking.display_name?.trim() || picking.id)} />;
 
   let emptyText = finished ? "이 상태의 끝난 점검이 없습니다." : "이 상태의 점검이 없습니다.";
-  if (showHidden) emptyText = "숨긴 점검이 없습니다.";
+  if (showHidden) emptyText = "삭제한 점검이 없습니다.";
   return (
     <>
       <UrlHead title={title} crumb={title} acts={<InspOpenButton>상세</InspOpenButton>} />
@@ -173,21 +203,24 @@ function RecordList({ finished }: { finished: boolean }) {
                 count={(key) => (page ? rows.filter((row) => matches(row, key)).length : null)}
                 onPick={setFilter}
               />
-              {finished && (hiddenCount > 0 || showHidden) ? (
-                <button
-                  className={s.fchip}
-                  type="button"
-                  title="목록에서 숨긴 끝난 점검"
-                  aria-pressed={showHidden}
-                  onClick={() => {
-                    setShowHidden(!showHidden);
-                    setFilter("all");
-                  }}
-                >
-                  숨긴 점검<span className={s.c}>{hiddenCount}</span>
-                </button>
-              ) : null}
-              <span className={s.aside}>{page ? `${shown.length} / ${rows.length}건` : "—"}</span>
+              {/* 건수 바로 옆에 '삭제한 점검' 보기(사용자 11/23). 삭제한 점검이 있을 때만 보인다 */}
+              <span className={s["rec-end"]}>
+                <span className={s.aside}>{page ? `${shown.length} / ${rows.length}건` : "—"}</span>
+                {finished && (hiddenCount > 0 || showHidden) ? (
+                  <button
+                    className={s.aside}
+                    type="button"
+                    title="화면에서 삭제한 끝난 점검(기록은 남아 있음)"
+                    aria-pressed={showHidden}
+                    onClick={() => {
+                      setShowingHiddenRuns(!showHidden);
+                      setFilter("all");
+                    }}
+                  >
+                    {`삭제한 점검 ${hiddenCount}`}
+                  </button>
+                ) : null}
+              </span>
             </div>
             <RunListControls />
             <RunListStatus empty={shown.length ? undefined : emptyText} />
@@ -203,16 +236,7 @@ function RecordList({ finished }: { finished: boolean }) {
           </section>
         </div>
         <aside className={s.vi} id={finished ? "doneInsp" : "runInsp"} aria-label="선택한 점검">
-          {selectedHere ? (
-            <JobSummary
-              result={result}
-              coverage={coverage}
-              approvals={pendingRows(approvalsOn, approvals)}
-              onApprovals={() => goTo("dashboard")}
-            />
-          ) : (
-            <NoPick title={title} />
-          )}
+          {detail}
         </aside>
         <PaneToggle />
       </div>
