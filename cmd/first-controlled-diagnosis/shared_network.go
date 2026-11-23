@@ -17,6 +17,12 @@ const sharedNetworkCheckInterval = 2 * time.Second
 // exitSharedNetworkLost는 공유 netns를 잃어 정상 종료했다는 종료 코드다(EX_TEMPFAIL).
 const exitSharedNetworkLost = 75
 
+// sharedNetworkRejoinDelay는 netns를 잃은 걸 본 뒤 종료하기 전 기다리는 시간이다. 준비 컨테이너가 아직 다시 뜨기 전에
+// 종료하면 Docker가 'network_mode: container' 대상이 실행 중이 아니라며 시작에 한 번 실패하고 더 다시 띄우지 않는다
+// (2026-11-23 리허설 실측: 준비 컨테이너가 안 뜬 채 api·workbench가 exited로 남음). 준비 컨테이너는 스스로 종료하면 재시작
+// 정책으로 곧 다시 뜨므로, 이만큼 기다린 뒤 종료하면 새 netns에 붙는다.
+const sharedNetworkRejoinDelay = 5 * time.Second
+
 func hasExternalInterface(list func() ([]net.Interface, error)) (bool, error) {
 	ifaces, err := list()
 	if err != nil {
@@ -32,7 +38,7 @@ func hasExternalInterface(list func() ([]net.Interface, error)) (bool, error) {
 
 // watchSharedNetwork는 시작 때 lo 밖 인터페이스가 있을 때만 감시를 켜고, 그것이 모두 사라지면 돌려준 채널을 닫는다.
 // 처음부터 lo만 있는 배치(망 없음)는 감시하지 않는다. 인터페이스를 못 읽은 회차는 판단하지 않고 다음 주기에 다시 본다.
-func watchSharedNetwork(ctx context.Context, interval time.Duration, list func() ([]net.Interface, error)) <-chan struct{} {
+func watchSharedNetwork(ctx context.Context, interval, rejoinDelay time.Duration, list func() ([]net.Interface, error)) <-chan struct{} {
 	lost := make(chan struct{})
 	armed, err := hasExternalInterface(list)
 	if err != nil || !armed {
@@ -47,7 +53,12 @@ func watchSharedNetwork(ctx context.Context, interval time.Duration, list func()
 				return
 			case <-ticker.C:
 				if ok, err := hasExternalInterface(list); err == nil && !ok {
-					log.Print("공유 네트워크를 잃었습니다(준비 컨테이너 재시작). 정상 종료하고 다시 시작합니다")
+					log.Print("공유 네트워크를 잃었습니다(준비 컨테이너 재시작). 준비 컨테이너가 다시 뜰 시간을 두고 정상 종료합니다")
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(rejoinDelay):
+					}
 					close(lost)
 					return
 				}

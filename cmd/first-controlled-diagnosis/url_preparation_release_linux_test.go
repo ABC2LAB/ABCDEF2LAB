@@ -123,7 +123,7 @@ func TestSharedNetworkWatchFiresWhenOnlyLoopbackRemains(t *testing.T) {
 	l := &interfaceList{ifaces: []net.Interface{loopback, eth0}}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	lost := watchSharedNetwork(ctx, 5*time.Millisecond, l.list)
+	lost := watchSharedNetwork(ctx, 5*time.Millisecond, 30*time.Millisecond, l.list)
 	if closedWithin(lost, 50*time.Millisecond) {
 		t.Fatal("인터페이스가 있는데 종료 신호")
 	}
@@ -132,6 +132,10 @@ func TestSharedNetworkWatchFiresWhenOnlyLoopbackRemains(t *testing.T) {
 		t.Fatal("인터페이스를 못 읽은 회차로 종료")
 	}
 	l.set([]net.Interface{loopback}, nil)
+	// 준비 컨테이너가 다시 뜰 시간을 두고 종료한다(바로 종료하면 Docker가 재시작에 실패하고 멈춘다)
+	if closedWithin(lost, 15*time.Millisecond) {
+		t.Fatal("다시 뜰 시간을 두지 않고 바로 종료")
+	}
 	if !closedWithin(lost, time.Second) {
 		t.Fatal("lo만 남았는데 종료하지 않음")
 	}
@@ -141,7 +145,7 @@ func TestSharedNetworkWatchStaysOffWithoutNetwork(t *testing.T) {
 	l := &interfaceList{ifaces: []net.Interface{loopback}}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if closedWithin(watchSharedNetwork(ctx, 5*time.Millisecond, l.list), 50*time.Millisecond) {
+	if closedWithin(watchSharedNetwork(ctx, 5*time.Millisecond, 30*time.Millisecond, l.list), 50*time.Millisecond) {
 		t.Fatal("처음부터 망이 없는 배치에서 종료 신호")
 	}
 }
