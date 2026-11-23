@@ -375,6 +375,41 @@ E② 실행 자원(러너·샌드박스·E² 송신)뿐이다. 다른 컨테이�
 풀린다(`api`·`workbench`가 준비 컨테이너의 네트워크를 쓰므로 준비 컨테이너만 따로 재시작하지 않는다).
 `down -v`·영수증 삭제는 복구 절차가 아니다.
 
+### 운영자 해제(재기동형, 화면의 [멈춘 작업 해제])
+
+위 전체 재기동을 화면에서 할 수 있게 한 것이다. 제품 서버·화면은 Docker를 다루지 않는다. 준비 서비스가 스스로 정상
+종료하고 컨테이너 재시작 정책(`restart: unless-stopped`)이 다시 띄우며, 잠금 해제의 근거는 위 init 인스턴스 증거 그대로다.
+
+- API: `GET /api/product/preparation/release`(판단 근거), `POST` 같은 경로(`job_id`·`expected_revision`·`reason`).
+  제품 관리자(`ARTEX`)만 쓴다(그 밖 403 `operator_required`). 준비 IPC 명령은 `release_status`·`release`이고 IPC에서도 관리자만 받는다.
+- 해제 조건(하나라도 안 맞으면 409 `release_<사유>`):
+  - 새 시작을 막는 작업이 그 작업 하나다(`other_active`).
+  - 상태가 `unknown` 또는 `stopping`이다. 실행 중이면 먼저 '종료'(`job_running`).
+  - 엔진(Planner·Worker) 마지막 활동과 영수증 마지막 갱신이 모두 활동 없음 기준 T보다 오래됐다(`not_quiet`).
+    T는 `PRODUCT_RELEASE_QUIET_SECONDS`, 기본 1200초, 900초 미만이면 준비 서비스가 시작을 거부한다(Planner는 정상일 때도
+    heartbeat 600초까지 조용할 수 있다).
+  - 실행이 init 인스턴스 증거를 남겼고 지금 서비스가 PID 1이다(`unsupported`).
+- 순서: 근거 확인 → 그 작업의 탐색 경계 세션 닫기·닫힘 확인(경계 제어 `current`·`close`, 다른 작업 세션이면 `other_active`,
+  닫거나 확인하지 못하면 `exploration_open`) → 감사 기록(`operator_release`: 주체·요청 ID·사유·요청 시각·마지막 활동·
+  영수증 갱신·T·작업 상태·이전 init·경계 세션 닫음 여부) → 정상 종료(종료 코드 75, 미마감 기록이 있어 저널 잠금을
+  프로세스 종료까지 쥠) → 재시작 정책으로 새 init → 새 init이 저널 잠금을 얻었고 init(또는 boot)이 바뀌었으며 탐색
+  경계에 열린 세션이 없음을 확인한 뒤에만 `execution_returned`·`resources_recovered`와 감사 기록의 새 init·완료 시각·
+  경계 확인 시각을 남겨 잠금을 푼다. 경계를 확인하지 못하면 잠금을 유지하고 다음 조회·시작 때 다시 본다.
+- `api`·`workbench`는 준비 컨테이너 netns를 같이 쓰므로, 준비 컨테이너가 재시작하면 옛 netns에 lo만 남는다(실측).
+  둘은 lo 밖 인터페이스가 사라지면 스스로 정상 종료(75)하고 재시작 정책이 새 netns에 다시 붙인다. 화면은 그동안
+  '재시작 중'을 보여 주고 다시 붙으면 상태를 새로 읽는다.
+- 결과 불명 사실·결과·모델 사용량·예약·실행 횟수는 바꾸지 않는다. 감사 기록은 지우거나 바꿀 수 없다(영수증 전이 검사).
+- 자동 재시작(장애)의 #559 복구는 지금도 탐색 경계 세션을 확인하지 않는다(위 '전체 재기동' 절차의 이유). 운영자 해제만
+  경계 확인을 거친다.
+
+검증: `TestReleaseHungExecutionAfterQuietRestartsAndCompletes`, `TestReleaseClosureVerificationFailingAfterQuietRestartsAndCompletes`,
+`TestReleaseRefusedBeforeQuiet`, `TestReleaseRefusedWhileOtherScanRuns`, `TestReleaseRefusedWhileJobStillRunning`,
+`TestReleaseRequiresOwningPrincipal`, `TestReleaseRefusedWhenExplorationSessionNotClosed`,
+`TestReleaseCompletionWaitsForBoundaryAndNewInit`, `TestReleaseUnsupportedWithoutInitEvidence`,
+`TestReleaseRecordChangesAreRestricted`(diagnosisprep), `TestProductReleaseRequiresOperator` 외 2(server),
+`TestReleaseClosesOnlyThatJobsExplorationSession`·`TestSharedNetworkWatch*`(제품 실행 파일),
+`TestControlCurrentFindsSessionWithoutRef`(경계).
+
 URL v2 공개 관리 API는 영속 준비 영수증에 결속한 같은 운영자의 task에만
 `POST /api/tasks/{id}/control`의 `pause`·`resume`을 전달한다. chat·steer·rerun·설정 API는 열지 않는다.
 활동 조회·history·stream·seq 상세는 task를 명시해야 한다. 상속된 다른 task 의도 세션은 열지 않으며,

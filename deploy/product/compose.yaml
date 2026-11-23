@@ -64,6 +64,10 @@ services:
     <<: *product
     user: '1000:1000'
     entrypoint: [/app/product-preparation-entrypoint]
+    # 멈춘 작업 해제(C04)의 활동 없음 기준(초). 900 미만은 준비 서비스가 시작을 거부한다. 해제하면 준비 서비스가 스스로
+    # 정상 종료하고 아래 restart 정책으로 다시 뜬다. api·workbench는 netns를 잃으면 스스로 종료해 새 netns에 다시 붙는다.
+    environment:
+      PRODUCT_RELEASE_QUIET_SECONDS: ${PRODUCT_RELEASE_QUIET_SECONDS:-1200}
     depends_on:
       install: {condition: service_completed_successfully}
     # explore-control은 탐색 경계 제어 소켓 디렉터리다(경계가 소켓 소유자를 엔진 uid로 넘긴다). 탐색을 안 켜면 비어 있다.
