@@ -114,24 +114,35 @@ type openRouterEndpointPrice struct {
 	} `json:"pricing"`
 }
 
-// parseOpenRouterEndpoints는 tag별 단가(100만 토큰당 micros, 올림)를 꺼낸다. 단가가 읽히지 않는 줄은 버린다.
-func parseOpenRouterEndpoints(data []byte) (map[string][2]int64, error) {
+// openRouterEndpointPrices는 공개 목록에서 읽은 tag별 단가다. 목록에 있지만 단가를 읽지 못한 tag는 unpriced에 따로 둔다
+// (제공자가 없다는 것과 단가 응답이 이상하다는 것은 다른 사실이다, #888 리뷰).
+type openRouterEndpointPrices struct {
+	priced   map[string][2]int64
+	unpriced map[string]bool
+}
+
+// parseOpenRouterEndpoints는 tag별 단가(100만 토큰당 micros, 올림)를 꺼낸다.
+func parseOpenRouterEndpoints(data []byte) (openRouterEndpointPrices, error) {
 	var body struct {
 		Data struct {
 			Endpoints []openRouterEndpointPrice `json:"endpoints"`
 		} `json:"data"`
 	}
+	out := openRouterEndpointPrices{priced: map[string][2]int64{}, unpriced: map[string]bool{}}
 	if json.Unmarshal(data, &body) != nil {
-		return nil, errOpenRouterRequote
+		return out, errOpenRouterRequote
 	}
-	out := map[string][2]int64{}
 	for _, e := range body.Data.Endpoints {
-		in, okIn := openRouterMicrosPerMillion(e.Pricing.Prompt)
-		outPrice, okOut := openRouterMicrosPerMillion(e.Pricing.Completion)
-		if e.Tag == "" || !okIn || !okOut {
+		if e.Tag == "" {
 			continue
 		}
-		out[e.Tag] = [2]int64{in, outPrice}
+		in, okIn := openRouterMicrosPerMillion(e.Pricing.Prompt)
+		outPrice, okOut := openRouterMicrosPerMillion(e.Pricing.Completion)
+		if !okIn || !okOut {
+			out.unpriced[e.Tag] = true
+			continue
+		}
+		out.priced[e.Tag] = [2]int64{in, outPrice}
 	}
 	return out, nil
 }
@@ -157,29 +168,35 @@ func ratCeil(r *big.Rat, limit int64) (int64, bool) {
 	return q.Int64(), true
 }
 
-// requoteCaps는 넘김 목록 제공자의 조회 단가로 상한을 계산한다. 목록 제공자 중 하나도 지금 없으면 실패다.
-func (m openRouterManifest) requoteCaps(prices map[string][2]int64) (int64, int64, []OpenRouterProviderPrice, bool) {
+// requoteCaps는 넘김 목록 제공자의 조회 단가로 상한을 계산한다. 목록 제공자 가운데 단가를 읽은 곳이 하나도 없으면 실패이고,
+// 그 사유는 목록에 있지만 단가를 못 읽은 제공자가 있으면 requote_invalid, 아예 없으면 no_listed_provider_offered다.
+func (m openRouterManifest) requoteCaps(prices openRouterEndpointPrices) (int64, int64, []OpenRouterProviderPrice, string) {
 	var maxIn, maxOut int64
-	offered := false
+	priced, unpriced := false, false
 	providers := make([]OpenRouterProviderPrice, 0, len(m.providers()))
 	for _, p := range m.providers() {
 		row := OpenRouterProviderPrice{Slug: p.Slug, Name: p.Name, Status: OpenRouterProviderNotOffered}
-		if price, ok := prices[p.Slug]; ok {
+		if price, ok := prices.priced[p.Slug]; ok {
 			in, out := price[0], price[1]
 			row.Status, row.InputMicros, row.OutputMicros = OpenRouterProviderWithinCap, &in, &out
-			maxIn, maxOut, offered = max(maxIn, in), max(maxOut, out), true
+			maxIn, maxOut, priced = max(maxIn, in), max(maxOut, out), true
+		} else if prices.unpriced[p.Slug] {
+			row.Status, unpriced = OpenRouterProviderUnknown, true
 		}
 		providers = append(providers, row)
 	}
-	if !offered {
-		return 0, 0, providers, false
+	if !priced {
+		if unpriced {
+			return 0, 0, providers, openRouterRequoteInvalid
+		}
+		return 0, 0, providers, openRouterRequoteNoProvider
 	}
 	capIn, okIn := ratCeil(big.NewRat(maxIn*openRouterRunPriceFactorNum, openRouterRunPriceFactorDen), openRouterMaxPriceMicros)
 	capOut, okOut := ratCeil(big.NewRat(maxOut*openRouterRunPriceFactorNum, openRouterRunPriceFactorDen), openRouterMaxPriceMicros)
 	if !okIn || !okOut || capIn <= 0 || capOut <= 0 {
-		return 0, 0, providers, false
+		return 0, 0, providers, openRouterRequoteInvalid
 	}
-	return capIn, capOut, providers, true
+	return capIn, capOut, providers, ""
 }
 
 // markOverCap은 상한을 넘는 제공자를 over_cap으로 표시한다.
@@ -224,10 +241,10 @@ func (p *OpenRouterPolicy) ApplyRunPriceRequote(ctx context.Context, fetch OpenR
 			caps.FailureReason = openRouterRequoteInvalid
 			break
 		}
-		capIn, capOut, providers, ok := p.manifest.requoteCaps(prices)
+		capIn, capOut, providers, reason := p.manifest.requoteCaps(prices)
 		caps.Providers = providers
-		if !ok {
-			caps.FailureReason = openRouterRequoteNoProvider
+		if reason != "" {
+			caps.FailureReason = reason
 			break
 		}
 		caps.Source, caps.InputMicros, caps.OutputMicros = OpenRouterPriceRequoted, capIn, capOut

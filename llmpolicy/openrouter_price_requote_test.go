@@ -91,7 +91,8 @@ func TestOpenRouterRunPriceRequoteFallback(t *testing.T) {
 		"조회 실패":     {nil, errors.New("offline"), openRouterRequoteUnavailable, OpenRouterProviderUnknown},
 		"JSON 아님":   {[]byte("<html>"), nil, openRouterRequoteInvalid, OpenRouterProviderUnknown},
 		"목록 제공자 없음": {endpointsJSON(map[string][2]string{"other/fp8": {"0.0000001", "0.000001"}}), nil, openRouterRequoteNoProvider, OpenRouterProviderNotOffered},
-		"단가 읽히지 않음": {endpointsJSON(map[string][2]string{"fixture/endpoint": {"free", "-1"}}), nil, openRouterRequoteNoProvider, OpenRouterProviderNotOffered},
+		// 목록에 있지만 단가를 못 읽은 제공자는 '제공 안 함'이 아니라 '알 수 없음'이고 사유는 응답 이상이다(#888 리뷰).
+		"단가 읽히지 않음": {endpointsJSON(map[string][2]string{"fixture/endpoint": {"free", "-1"}}), nil, openRouterRequoteInvalid, OpenRouterProviderUnknown},
 	}
 	for name, tc := range cases {
 		p := samplingPolicy(t, routingManifest(t, 4, fallbackRoutingJSON))
@@ -183,5 +184,28 @@ func TestOpenRouterMicrosPerMillion(t *testing.T) {
 		if _, ok := openRouterMicrosPerMillion(bad); ok {
 			t.Fatalf("%q를 받음", bad)
 		}
+	}
+}
+
+// 목록 제공자 둘 가운데 하나는 단가를 못 읽고 하나는 읽으면, 읽은 쪽으로 상한을 정하고 못 읽은 쪽은 '알 수 없음'이다.
+// 목록에 아예 없는 제공자만 '제공 안 함'이다.
+func TestOpenRouterRunPriceRequoteUnpricedIsNotAbsent(t *testing.T) {
+	p := samplingPolicy(t, routingManifest(t, 4, fallbackRoutingJSON))
+	fetch, _ := fixedEndpoints(endpointsJSON(map[string][2]string{"fixture/endpoint": {"N/A", "N/A"}, "second/fp8": {"0.0000001", "0.00000095"}}), nil)
+	if err := p.ApplyRunPriceRequote(t.Context(), fetch, requoteNow); err != nil {
+		t.Fatal(err)
+	}
+	caps := p.Snapshot().PriceCaps
+	if caps.Source != OpenRouterPriceRequoted || caps.OutputMicros != 1425000 || caps.Providers[0].Status != OpenRouterProviderUnknown || caps.Providers[0].InputMicros != nil ||
+		caps.Providers[1].Status != OpenRouterProviderWithinCap {
+		t.Fatalf("일부 단가 못 읽음: %+v %+v", caps, caps.Providers)
+	}
+	q := samplingPolicy(t, routingManifest(t, 4, fallbackRoutingJSON))
+	fetch, _ = fixedEndpoints(endpointsJSON(map[string][2]string{"second/fp8": {"0.0000001", "0.00000095"}}), nil)
+	if err := q.ApplyRunPriceRequote(t.Context(), fetch, requoteNow); err != nil {
+		t.Fatal(err)
+	}
+	if got := q.Snapshot().PriceCaps.Providers[0].Status; got != OpenRouterProviderNotOffered {
+		t.Fatalf("목록에 없는 제공자: %s", got)
 	}
 }
