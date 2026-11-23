@@ -108,6 +108,9 @@ type OpenRouterUsage struct {
 	Model                string `json:"model"`
 	Provider             string `json:"provider_slug"`
 	ReturnedProvider     string `json:"returned_provider"`
+	// RunLedger는 이 점검이 시작 때 새로 만든 점검 장부 파일 이름이다(v4 제품 URL 진단, 승인·회차 참조의 해시라 비밀이
+	// 아님). 회차 기록에 남아 그 점검이 어느 장부로 셌는지 보인다. 승인 누적 장부(v1~v3·CLI)는 비운다.
+	RunLedger string `json:"run_ledger,omitempty"`
 	// ReturnedProviders는 자동 넘김 모드에서 응답을 준 제공자 tag별 정상 응답 수다. 고정 모드는 비우고 칸도 쓰지 않는다
 	// (이전 기록과 같은 바이트).
 	ReturnedProviders OpenRouterProviderCounts `json:"returned_providers,omitzero"`
