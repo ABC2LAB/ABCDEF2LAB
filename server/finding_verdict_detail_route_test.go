@@ -18,6 +18,9 @@ import (
 
 // 판정 상세 조회 경로 설치 시험(docs/contracts/finding-verdict-detail-decision.md OD06·OD10).
 
+// verdictTestPolicyTypes는 IPC 응답 검사를 통과하는 동결본 종류 요약이다(present=true면 종류가 1개 이상).
+var verdictTestPolicyTypes = []diagnosisprep.ProductDeclaredType{{Type: "note", Sharing: "owner_only", Confirmable: true}}
+
 func TestFindingVerdictDetailRequestShape(t *testing.T) {
 	for _, tc := range []struct {
 		method, target, body string
@@ -97,8 +100,8 @@ func TestProductPolicySourceReader(t *testing.T) {
 		want     verdictPolicySourceResult
 		calls    int
 	}{
-		"matched":         {endpoint: &verdictDetailTestEndpoint{source: &diagnosisprep.ProductPolicySource{Present: true, SHA256: match}}, want: verdictPolicySourceMatched, calls: 1},
-		"digest_mismatch": {endpoint: &verdictDetailTestEndpoint{source: &diagnosisprep.ProductPolicySource{Present: true, SHA256: other}}, want: verdictPolicySourceMismatch, calls: 1},
+		"matched":         {endpoint: &verdictDetailTestEndpoint{source: &diagnosisprep.ProductPolicySource{Present: true, Types: verdictTestPolicyTypes, SHA256: match}}, want: verdictPolicySourceMatched, calls: 1},
+		"digest_mismatch": {endpoint: &verdictDetailTestEndpoint{source: &diagnosisprep.ProductPolicySource{Present: true, Types: verdictTestPolicyTypes, SHA256: other}}, want: verdictPolicySourceMismatch, calls: 1},
 		"absent":          {endpoint: &verdictDetailTestEndpoint{source: &diagnosisprep.ProductPolicySource{}}, want: verdictPolicySourceUnavailable, calls: 1},
 		"prep_not_found":  {endpoint: &verdictDetailTestEndpoint{reason: "not_found"}, want: verdictPolicySourceUnavailable, calls: 1},
 		"prep_unreadable": {endpoint: &verdictDetailTestEndpoint{reason: "policy_source_unavailable"}, want: verdictPolicySourceUnavailable, calls: 1},
@@ -167,7 +170,7 @@ func TestFindingVerdictDetailRouteProduct(t *testing.T) {
 		check      func(t *testing.T, body map[string]any)
 	}{
 		"verified": {owner: owner, job: &diagnosisprep.Job{ID: "job-synthetic", TaskID: taskRef},
-			source: &diagnosisprep.ProductPolicySource{Present: true, SHA256: hex.EncodeToString(declaration[:])}, status: 200,
+			source: &diagnosisprep.ProductPolicySource{Present: true, Types: verdictTestPolicyTypes, SHA256: hex.EncodeToString(declaration[:])}, status: 200,
 			check: func(t *testing.T, body map[string]any) {
 				checks, _ := body["record_checks"].(map[string]any)
 				if body["source_kind"] != "product" || checks["status"] != "verified" || body["record"] == nil {
@@ -175,7 +178,7 @@ func TestFindingVerdictDetailRouteProduct(t *testing.T) {
 				}
 			}},
 		"policy_digest_mismatch": {owner: owner, job: &diagnosisprep.Job{ID: "job-synthetic", TaskID: taskRef},
-			source: &diagnosisprep.ProductPolicySource{Present: true, SHA256: strings.Repeat("d", 64)}, status: 200,
+			source: &diagnosisprep.ProductPolicySource{Present: true, Types: verdictTestPolicyTypes, SHA256: strings.Repeat("d", 64)}, status: 200,
 			check: func(t *testing.T, body map[string]any) {
 				checks, _ := body["record_checks"].(map[string]any)
 				reasons, _ := checks["reason_codes"].([]any)

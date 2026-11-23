@@ -16,8 +16,9 @@ import (
 
 // policySource는 판정 상세·목록 조회(OD06, 제품 판정 목록 결정 2·3)가 제품 판정의 당시 정책 동결본을 대조할 때 쓰는 IPC다.
 // 회차 소유는 기본 준비 서비스의 상태 조회(Principal·Job)로 확인하고, 동결본(runs/<job>/e3-declaration.json) 바이트의
-// SHA-256과 그 동결본이 정한 계정 라벨 둘, 확정 단계 결과 파일(e3-confirmation.json)의 상태·사유만 돌려준다. 원문·선언
-// 내용·판정은 내보내지 않는다. 동결본이 없으면(선언 없이 시작한 회차) present=false다.
+// SHA-256과 그 동결본이 정한 계정 라벨 둘·종류 요약(이름·공유 여부·확정 가능 여부), 확정 단계 결과 파일
+// (e3-confirmation.json)의 상태·사유·건너뛴 종류만 돌려준다. 원문·경로·본문 틀·표식 칸·판정은 내보내지 않는다. 동결본이
+// 없으면(선언 없이 시작한 회차) present=false다.
 func (e productPreparationEndpoint) policySource(ctx context.Context, r diagnosisprep.Request) (*diagnosisprep.ProductPolicySource, *diagnosisprep.ProductConfirmationState, error) {
 	bound, err := e.base.Call(ctx, diagnosisprep.Request{Version: diagnosisprep.Version, RequestID: r.RequestID, Principal: r.Principal,
 		Command: diagnosisprep.Status, JobID: r.Product.JobID})
@@ -38,7 +39,7 @@ func (e productPreparationEndpoint) policySource(ctx context.Context, r diagnosi
 // 작다. 넘으면 읽지 않고 unreadable이다.
 const productE3ConfirmationMaxBytes = 1 << 20
 
-// readConfirmationState는 확정 단계 결과 파일의 상태·사유만 읽는다(판정·쓰기 기록·결속은 읽지 않는다). 파일이 없으면
+// readConfirmationState는 확정 단계 결과 파일의 상태·사유·건너뛴 종류만 읽는다(판정·쓰기 기록·결속은 읽지 않는다). 파일이 없으면
 // present=false, 있는데 읽지 못하거나 결과 형식·상태 값이 계약 밖이면 unreadable이다(없음과 섞지 않는다).
 func readConfirmationState(runsDir, jobID string) *diagnosisprep.ProductConfirmationState {
 	path := filepath.Join(runsDir, jobID, productE3ConfirmationFile)
@@ -51,22 +52,27 @@ func readConfirmationState(runsDir, jobID string) *diagnosisprep.ProductConfirma
 		return unreadable
 	}
 	var head struct {
-		Version string `json:"version"`
-		Status  string `json:"status"`
-		Reason  string `json:"reason"`
+		Version string                   `json:"version"`
+		Status  string                   `json:"status"`
+		Reason  string                   `json:"reason"`
+		Skipped []e3contract.SkippedType `json:"skipped"`
 	}
 	if json.Unmarshal(raw, &head) != nil || head.Version != e3contract.RunResultVersion {
 		return unreadable
 	}
 	state := diagnosisprep.ProductConfirmationState{Present: true, Status: head.Status, Reason: head.Reason}
+	// 건너뛴 종류는 결과 파일 그대로 옮긴다(종류·사유 코드만). 모양이 계약 밖이면 일부만 싣지 않고 전체를 unreadable로 둔다.
+	for _, s := range head.Skipped {
+		state.Skipped = append(state.Skipped, diagnosisprep.ProductSkippedType{ResourceType: s.ResourceType, Reason: s.Reason})
+	}
 	if state.Status == diagnosisprep.ConfirmationUnreadable || !diagnosisprep.ValidProductConfirmationState(state) {
 		return unreadable
 	}
 	return &state
 }
 
-// readPolicySource는 회차 디렉터리의 동결본 바이트 SHA-256을 계산한다. 회차 디렉터리나 동결본이 없으면 present=false,
-// 있는데 읽지 못하면(권한·모양·크기) 오류다. 읽기 규칙은 확정 단계가 쓰는 productDeclarationReader와 같다.
+// readPolicySource는 회차 디렉터리의 동결본 바이트 SHA-256과 종류 요약을 만든다. 회차 디렉터리나 동결본이 없으면
+// present=false, 있는데 읽지 못하면(권한·모양·크기·선언 형식) 오류다. 읽기 규칙은 확정 단계가 쓰는 productDeclarationReader와 같다.
 func readPolicySource(runsDir, jobID string) (*diagnosisprep.ProductPolicySource, error) {
 	if runsDir == "" || !managementReference.MatchString(jobID) || filepath.Base(jobID) != jobID || jobID == "." || jobID == ".." {
 		return nil, errPreparation
@@ -81,12 +87,23 @@ func readPolicySource(runsDir, jobID string) (*diagnosisprep.ProductPolicySource
 	if err != nil {
 		return nil, errPreparation
 	}
+	// 종류 요약은 이 동결본에서만 만든다(현재 선언·등록으로 대신하지 않는다). 동결본을 풀 수 없거나 요약이 계약 모양이
+	// 아니면(종류 없음·순서·공유 값·확정 가능 여부 어긋남) 일부만 싣지 않고 동결본을 읽지 못한 것으로 다룬다.
+	var d e3contract.Declaration
+	if decodeFrozen(raw, &d) != nil {
+		return nil, errPreparation
+	}
 	sum := sha256.Sum256(raw)
 	source := &diagnosisprep.ProductPolicySource{Present: true, SHA256: hex.EncodeToString(sum[:])}
-	// 계정 라벨은 이 동결본에서만 읽는다(현재 선언·등록으로 대신하지 않는다). 동결본 모양이 깨졌거나 라벨이 계약 모양이
-	// 아니면 라벨 없이 digest만 준다(digest 대조는 그대로 진위를 가린다).
-	var d e3contract.Declaration
-	if decodeFrozen(raw, &d) == nil && d.OwnerAccountLabel != "" && d.CrossAccountLabel != "" {
+	for _, t := range d.Types {
+		source.Types = append(source.Types, diagnosisprep.ProductDeclaredType{Type: t.Type, Sharing: string(t.Sharing), Confirmable: t.Confirmable()})
+	}
+	if !diagnosisprep.ValidProductPolicySourceValue(*source) {
+		return nil, errPreparation
+	}
+	// 계정 라벨도 이 동결본에서만 읽는다. 라벨이 계약 모양이 아니면 라벨 없이 digest·종류만 준다(digest 대조는 그대로
+	// 진위를 가린다).
+	if d.OwnerAccountLabel != "" && d.CrossAccountLabel != "" {
 		labeled := *source
 		labeled.OwnerAccountLabel, labeled.CrossAccountLabel = d.OwnerAccountLabel, d.CrossAccountLabel
 		if diagnosisprep.ValidProductPolicySourceValue(labeled) {
