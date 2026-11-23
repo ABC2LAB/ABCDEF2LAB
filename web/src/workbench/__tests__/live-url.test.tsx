@@ -519,9 +519,8 @@ describe("서버 방식 확인 (catalog)", () => {
     const target = await screen.findByLabelText(/점검할 사이트 주소/);
     // 점검 이름은 선택 칸(사용자 11/18)
     expect(screen.getByLabelText("점검 이름 (선택)")).toHaveValue("");
-    expect(screen.getByLabelText("점검 이름 (선택)")).toHaveAccessibleDescription(
-      "목록과 상세에 표시되고, 모델에 작업 설명으로 전달됩니다.",
-    );
+    // 칸 아래 안내 문장은 두지 않는다(사용자 11/23)
+    expect(screen.getByLabelText("점검 이름 (선택)")).not.toHaveAccessibleDescription();
     // 점검 설정은 2쪽에 있다
     expect(screen.queryByRole("heading", { name: "점검 설정" })).toBeNull();
     fireEvent.change(target, { target: { value: "https://target.example/" } });
