@@ -186,6 +186,15 @@ class TestAuxiliary(SessionCase):
         lines = auxiliary(read_session(self.root, KEY))
         self.assertIn("| baseline | 2 | time_budget 1, 미기록 1 | — | — |", lines)
 
+    def test_split_o_stop_reason_comes_from_the_summary_top_level(self):
+        # 2026-11-23 사용자: 분리 배치 O는 계측기 요약(meter)이 없고 종료 사유를 회차 요약 맨 위(stop_reason)에 남긴다.
+        # '미기록'으로 나오면 안 된다. 예산 초과분은 O 요약에 칸이 없어 모름("—")이다.
+        self.s.complete("ours", 0, 0, stop_reason="time_budget", forwarded_at_stop=153)
+        self.s.complete("ours", 2, 1, stop_reason="engine_completed")
+        self.s.complete("ours", 4, 2)  # 어디에도 없으면 그대로 미기록
+        lines = auxiliary(read_session(self.root, KEY))
+        self.assertIn("| ours | 3 | engine_completed 1, time_budget 1, 미기록 1 | — | — |", lines)
+
     def test_a_boolean_overrun_is_not_a_number(self):
         self._run("baseline", 0, 0, "time_budget", True, 10)
         lines = auxiliary(read_session(self.root, KEY))
@@ -251,16 +260,33 @@ class TestTally(SessionCase):
         self.s.invalid("ours", 7, "drain_timeout", "provider_fault_stall")
         self.s.complete("ours", 10, 0)
         lines, failures = fault_stall_tally(read_session(self.root, KEY))
-        self.assertIn(f"| baseline | 0 | 0 | 0 | {FAULT_STALL_LIMIT_PER_SIDE} |", lines)
-        self.assertIn(f"| ours | 1 | 0 | 1 | {FAULT_STALL_LIMIT_PER_SIDE} |", lines)
+        self.assertIn(f"| baseline | 0 | 0 | 0 | {FAULT_STALL_LIMIT_PER_SIDE} | 0 (0) |", lines)
+        self.assertIn(f"| ours | 1 | 0 | 1 | {FAULT_STALL_LIMIT_PER_SIDE} | 0 (1) |", lines)  # 멈춤 기록 파일 없음 → 모름
         self.assertEqual(failures, [])
+
+    def test_stall_inflight_model_calls_are_shown_per_side(self):
+        # 사용자 2026-11-22: 멈춤 무효 회차에서 멈춤 사건 때 모델 호출이 진행 중이었는지 쪽별로 센다(공정성 기록, 판정은 그대로).
+        # 무효 결과는 서명이 없어 러너 근거 fault-stall.json(v3)을 읽는다. 칸이 없거나(v3 전) 숫자가 아니면 모름
+        def stalled(side, minute, events):
+            directory = self.s.invalid(side, minute, "provider_fault_stall")
+            if events is not None:
+                (directory / "fault-stall.json").write_text(json.dumps({"format": "abc2lab-eval-runner-fault-stall-v3",
+                                                                        "judged": True, "events": events}))
+        stall = lambda **kw: dict({"stall": True, "inflight_at_fault": 1}, **kw)  # noqa: E731
+        stalled("baseline", 1, [stall(inflight_model_calls_at_fault=1)])          # 긴 스트리밍 호출 진행 중
+        stalled("baseline", 3, [stall(inflight_model_calls_at_fault=0), {"stall": False, "inflight_model_calls_at_fault": 2}])
+        stalled("ours", 5, [stall()])                                             # v3 전 기록 → 모름
+        stalled("ours", 7, [stall(inflight_model_calls_at_fault=True)])           # 숫자가 아님 → 모름
+        lines, _ = fault_stall_tally(read_session(self.root, KEY))
+        self.assertIn(f"| baseline | 2 | 0 | 2 | {FAULT_STALL_LIMIT_PER_SIDE} | 1 (0) |", lines)
+        self.assertIn(f"| ours | 2 | 0 | 2 | {FAULT_STALL_LIMIT_PER_SIDE} | 0 (2) |", lines)
 
     def test_provider_fault_end_counts_with_stalls(self):
         # 고정 초안 §26: 러너 상한 전에 제공자 장애로 끝난 회차는 멈춤과 같은 상한에 같이 센다
         self.s.invalid("baseline", 5, "provider_fault_stall")
         self.s.invalid("baseline", 7, "provider_fault_end")
         lines, failures = fault_stall_tally(read_session(self.root, KEY))
-        self.assertIn(f"| baseline | 1 | 1 | 2 | {FAULT_STALL_LIMIT_PER_SIDE} |", lines)
+        self.assertIn(f"| baseline | 1 | 1 | 2 | {FAULT_STALL_LIMIT_PER_SIDE} | 0 (1) |", lines)
         self.assertEqual(len(failures), 1)
         self.assertIn("provider_fault_end 1회", failures[0])
 
