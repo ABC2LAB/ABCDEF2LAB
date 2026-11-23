@@ -40,7 +40,7 @@ const record = (completed: boolean) => ({
   quiet_seconds: 1200,
   job_state: "unknown",
   previous_init: "pid:[1]@5",
-  exploration_closed: false,
+  exploration_session: "none",
   ...(completed
     ? { new_init: "pid:[1]@9", completed_at: "2026-11-23T05:02:00Z", boundary_checked_at: "2026-11-23T05:02:00Z" }
     : {}),
@@ -310,6 +310,16 @@ describe("StuckReleaseBox — 이전 기록과 이번 기록 가르기", () => {
       await vi.advanceTimersByTimeAsync(2 * 60_000 + 6_000);
     });
     expect(screen.getByRole("alert")).toHaveTextContent("explore-boundary");
+  });
+
+  it("기록의 경계 세션 값은 none·closed만 받는다", () => {
+    expect(
+      parseReleaseView(blocked({ record: { ...record(false), exploration_session: "closed" } })).record
+        ?.explorationSession,
+    ).toBe("closed");
+    expect(() => parseReleaseView(blocked({ record: { ...record(false), exploration_session: "failed" } }))).toThrow(
+      ApiError,
+    );
   });
 
   it("기록의 request_id가 비었거나 모양 밖이면 받지 않는다", () => {

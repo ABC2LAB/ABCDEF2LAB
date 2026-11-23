@@ -17,7 +17,8 @@ export type ReleaseRecord = {
   quietSeconds: number;
   jobState: string;
   previousInit: string;
-  explorationClosed: boolean;
+  /** 해제 때 그 작업의 탐색 경계 세션: none(열린 세션 없음)·closed(닫고 확인함). */
+  explorationSession: string;
   newInit: string;
   completedAt: string;
   boundaryCheckedAt: string;
@@ -99,7 +100,7 @@ function parseRecord(v: unknown): ReleaseRecord | null {
     quietSeconds: typeof quiet === "number" && Number.isSafeInteger(quiet) ? quiet : bad(),
     jobState: str("job_state"),
     previousInit: str("previous_init"),
-    explorationClosed: v.exploration_closed === true,
+    explorationSession: str("exploration_session"),
     newInit: str("new_init"),
     completedAt: time("completed_at"),
     boundaryCheckedAt: time("boundary_checked_at"),
@@ -108,6 +109,7 @@ function parseRecord(v: unknown): ReleaseRecord | null {
   if (
     !REF.test(rec.jobId) ||
     !REF.test(rec.requestId) ||
+    !["none", "closed"].includes(rec.explorationSession) ||
     rec.requestedAt === "" ||
     rec.receiptUpdatedAt === "" ||
     (rec.completedAt === "") !== (rec.newInit === "")
