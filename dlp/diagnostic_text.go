@@ -1,9 +1,12 @@
 package dlp
 
-import "regexp"
+import (
+	"regexp"
+	"strconv"
+	"strings"
+)
 
 // 모델이 요약이나 재현 설명에 마크다운으로 인용한 자격값도 가린다.
-// 따옴표 없는 일반 설명은 자격값과 구별할 수 없어 이 규칙에 넣지 않는다.
 var quotedCredential = regexp.MustCompile("(?i)(?:\\b(?:password|passwd|pwd|credentials?|token|api[ _-]?key|client[ _-]?secret|(?:set[ -])?cookie|session[ _-]?id)\\b|비밀번호|패스워드|토큰|쿠키)(?:은|는|이|가)?(?:\\*{1,2})?[ \\t]+(?:(?:is|was|are)[ \\t]+)?(?:`[^`\\r\\n]+`|\"(?:\\\\.|[^\"\\\\\\r\\n])*\"|'(?:\\\\.|[^'\\\\\\r\\n])*')")
 
 // DiagnosticText는 등록 자격정보 치환 뒤에도 남을 수 있는 알려진 비밀 형식을 보호한다.
@@ -22,7 +25,46 @@ var diagnosticSecrets = []*regexp.Regexp{
 	regexp.MustCompile(`(?s)-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----`),
 }
 
+var inlineAccountContext = regexp.MustCompile("(?i)비밀번호|패스워드|자격정보|평문으로[ \\t]+노출|\\b(?:passwords?|passwd|credentials?)\\b")
+
+var inlineAccountPair = regexp.MustCompile(`(^|[ \t,:])[\p{L}\p{N}_.@-]+(?:/[^\s,;()]+|\([^\s,;()]+((?:,[^)\r\n]*)?)\))`)
+
+// redactInlineAccounts는 자격정보가 언급된 줄에서 계정/비밀번호 표기를 가리고 발견 수를 남긴다.
+func redactInlineAccounts(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		if !inlineAccountContext.MatchString(line) {
+			continue
+		}
+		matches := inlineAccountPair.FindAllStringSubmatchIndex(line, -1)
+		if len(matches) == 0 {
+			continue
+		}
+		var out strings.Builder
+		out.WriteString("자격정보 ")
+		out.WriteString(strconv.Itoa(len(matches)))
+		out.WriteString("건 ")
+		last := 0
+		for _, m := range matches {
+			out.WriteString(line[last:m[3]])
+			out.WriteString(Redacted)
+			// 보고서에 함께 적힌 불리언 권한 정보만 남긴다.
+			if m[4] >= 0 {
+				detail := strings.TrimSpace(strings.TrimPrefix(line[m[4]:m[5]], ","))
+				if detail == "admin=true" || detail == "admin=false" {
+					out.WriteString(" (" + detail + ")")
+				}
+			}
+			last = m[1]
+		}
+		out.WriteString(line[last:])
+		lines[i] = out.String()
+	}
+	return strings.Join(lines, "\n")
+}
+
 func DiagnosticText(s string) string {
+	s = redactInlineAccounts(s)
 	s = quotedCredential.ReplaceAllString(s, Redacted)
 	for _, re := range diagnosticSecrets {
 		s = re.ReplaceAllString(s, Redacted)

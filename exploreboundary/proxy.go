@@ -342,7 +342,7 @@ func (p *Proxy) forward(w http.ResponseWriter, in *http.Request, scheme, host st
 		w.WriteHeader(http.StatusBadGateway)
 		return
 	}
-	if !p.cfg.EvalUpstream.IsValid() && responseMayContainCredential(resp, respBody, p.cfg.MaxResponseBytes) {
+	if !p.cfg.EvalUpstream.IsValid() && responseMayContainCredential(resp, respBody, p.cfg.MaxResponseBytes, requestProtectionValues(out, body)) {
 		clear(respBody)
 		result.Reason = responseWithheld
 		finish()

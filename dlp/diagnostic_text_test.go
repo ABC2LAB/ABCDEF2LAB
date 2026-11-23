@@ -53,6 +53,21 @@ func TestDiagnosticTextCredentialDelimiters(t *testing.T) {
 	}
 }
 
+func TestDiagnosticTextMasksInlineAccountPairs(t *testing.T) {
+	for _, tc := range []struct{ in, context string }{
+		{"fixture1/synthetic-one, fixture2/synthetic-two 평문으로 노출됨", "평문으로 노출됨"},
+		{"계정 비밀번호 fixture1(synthetic-one), fixture2(synthetic-two, admin=true) 노출", "admin=true"},
+	} {
+		got := DiagnosticText(tc.in)
+		if strings.Contains(got, "synthetic-") || !strings.Contains(got, "자격정보 2건") || !strings.Contains(got, tc.context) {
+			t.Errorf("보고서의 자격값 또는 관찰 근거 처리 실패: %q", got)
+		}
+	}
+	if got := DiagnosticText("서비스 /users/v1 경로를 확인함"); got != "서비스 /users/v1 경로를 확인함" {
+		t.Fatal("일반 경로를 자격값으로 처리했다")
+	}
+}
+
 func TestCredentialTextMasksCredentialsButKeepsAddresses(t *testing.T) {
 	in := "Set-Cookie: sid=synthetic-session-41c2; Path=/\nAuthorization: Bearer synthetic-bearer-41c2\n{\"email\":\"user@owned.test\",\"password\":\"synthetic-pass-41c2\"}\n" +
 		"token=synthetic-token-41c2 eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJlLXN5bnRoZXRpYw next https://owned.test/read/item"

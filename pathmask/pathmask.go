@@ -107,9 +107,8 @@ func maskSegment(raw string, key []byte) (string, bool) {
 // 안전 문자만·32자 이하이고, 길거나 섞인 조각은 값으로 본다. query는 받지 않는다(EscapedPath만). 평가 기록에는 Mask를 쓴다.
 func Readable(escaped string) string { return ReadableWith(escaped, nil) }
 
-// DisplayShape keeps only slash structure for a product audit view. A short
-// literal segment can be an account name or a title, even if it looks static.
-// This also accepts patterns produced by older versions.
+// DisplayShape는 이전 제품 기록을 포함해 경로의 슬래시 구조만 남긴다.
+// 짧은 이름도 계정명이나 제목일 수 있으므로 원문 조각은 가린다.
 func DisplayShape(path string) string {
 	if path == LongPath {
 		return LongPath

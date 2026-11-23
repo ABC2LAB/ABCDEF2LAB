@@ -534,7 +534,7 @@ func TestE2HTTPFactoryRefreshedSessionReachesNextWorker(t *testing.T) {
 	defer done()
 	_, _ = call.Close(closeCtx)
 	data, err := os.ReadFile(filepath.Join(policy.StateDir, E2AttemptPatternsFile))
-	if err != nil || strings.Contains(string(data), "rotatingsession0002value") || !strings.Contains(string(data), `"/allowed/{id}/items"`) {
+	if err != nil || strings.Contains(string(data), "rotatingsession0002value") || !strings.Contains(string(data), `"/{id}/{id}/{id}"`) {
 		t.Fatalf("refreshed session not masked in display patterns: %q %v", data, err)
 	}
 }
