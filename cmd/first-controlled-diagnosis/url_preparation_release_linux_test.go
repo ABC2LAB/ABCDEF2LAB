@@ -140,3 +140,31 @@ func TestSharedNetworkWatchStaysOffWithoutNetwork(t *testing.T) {
 		t.Fatal("처음부터 망이 없는 배치에서 종료 신호")
 	}
 }
+
+type countingEndpoint struct{ calls int }
+
+func (e *countingEndpoint) Call(_ context.Context, r diagnosisprep.Request) (diagnosisprep.Response, error) {
+	e.calls++
+	return diagnosisprep.Response{Version: diagnosisprep.Version, RequestID: r.RequestID}, nil
+}
+
+// 비공개 IPC에서도 해제 명령은 제품 관리자만 받는다(API가 막아도 한 번 더).
+func TestProductEndpointReleaseRequiresOperator(t *testing.T) {
+	base := &countingEndpoint{}
+	e := productPreparationEndpoint{base: base}
+	for _, r := range []diagnosisprep.Request{
+		{Version: diagnosisprep.Version, RequestID: "r1", Principal: "viewer", Command: diagnosisprep.ReleaseStatus},
+		{Version: diagnosisprep.Version, RequestID: "r2", Principal: "viewer", Command: diagnosisprep.Release, JobID: "prep-a", ExpectedRevision: 2, Release: &diagnosisprep.ReleaseRequest{Reason: "x"}},
+	} {
+		out, err := e.Call(t.Context(), r)
+		if err != nil || out.Error != "forbidden" {
+			t.Fatalf("관리자가 아닌 해제 명령을 받음: %#v %v", out, err)
+		}
+	}
+	if base.calls != 0 {
+		t.Fatal("관리자가 아닌 해제 명령을 준비 서비스로 넘김")
+	}
+	if _, err := e.Call(t.Context(), diagnosisprep.Request{Version: diagnosisprep.Version, RequestID: "r3", Principal: "ARTEX", Command: diagnosisprep.ReleaseStatus}); err != nil || base.calls != 1 {
+		t.Fatal("관리자의 해제 상태 조회를 넘기지 않음")
+	}
+}
