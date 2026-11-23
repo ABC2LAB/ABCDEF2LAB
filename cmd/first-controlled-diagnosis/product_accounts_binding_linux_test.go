@@ -99,7 +99,7 @@ func TestProductRunBindsTestAccountsAndStopsOnUnmark(t *testing.T) {
 	}
 	defer loaded.clearMaterials()
 	auth := loaded.policy.Auth
-	if auth == nil || auth.PasswordResponse != e2proxy.PasswordResponseMaskSpans || len(auth.Accounts) != 1 || auth.Accounts[0].Label != "tester-a" || auth.Login.Path != "/read/login" || loaded.policy.HeaderMode != e2proxy.HeaderTestAccountPassthrough {
+	if auth == nil || auth.PasswordResponse != e2proxy.PasswordResponseModelVisible || len(auth.Accounts) != 1 || auth.Accounts[0].Label != "tester-a" || auth.Login.Path != "/read/login" || loaded.policy.HeaderMode != e2proxy.HeaderTestAccountPassthrough {
 		t.Fatalf("auth section: %+v mode=%s", auth, loaded.policy.HeaderMode)
 	}
 	var rule bool

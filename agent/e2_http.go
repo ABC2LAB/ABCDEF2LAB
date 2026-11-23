@@ -86,7 +86,10 @@ var (
 type E2HTTPScope interface {
 	SnapshotForIntent(intentID int64) e2proxy.ExecutionView
 	HasIntent(intentID int64) bool
+	// RedactOutput은 모델에 가는 글의 가림이다. model_visible_v1 실행은 대상이 비춘 비밀번호를 가리지 않는다.
 	RedactOutput(data []byte) []byte
+	// RedactRecord는 저장 기록(활동·후보 근거·그래프 기록)의 가림이다. 비밀번호를 정책과 상관없이 늘 가린다.
+	RedactRecord(data []byte) []byte
 }
 
 // E2HTTPRunner는 Worker가 명령을 맡기는 경계다.
@@ -539,7 +542,8 @@ type e2HTTPGraphTool struct {
 }
 
 func (t *e2HTTPGraphTool) Call(ctx context.Context, input json.RawMessage, tc *actool.ToolContext) (actool.Result, error) {
-	sanitized := json.RawMessage(t.execution.RedactOutput(input))
+	// 그래프 도구 입력은 탐색 그래프에 저장되므로 저장 기록 가림을 쓴다(모델이 받은 비밀번호도 남기지 않음).
+	sanitized := json.RawMessage(t.execution.RedactRecord(input))
 	if t.Name() == "record_fact" {
 		var payload struct {
 			IntentID int64 `json:"intent_id"`
@@ -766,8 +770,9 @@ func emitE2HTTPPromptActivity(emit func(db.Activity), reportStage func(string), 
 func (w *Worker) runE2HTTPSession(ctx context.Context, name string, intent *db.Node, emit func(db.Activity), opts agentcore.Options, input string, execution E2HTTPScope, state *e2HTTPToolState, toolset *ToolSet) (harness.TerminalReason, WriteCounts, error) {
 	session := agentcore.NewSession(opts)
 	defer session.Close()
-	// 요약은 가린 글에서 자른다(captureRunSessionWith). 아래 emit의 가림은 그 밖의 칸을 위한 두 번째 층이다.
-	redactText := func(text string) string { return string(execution.RedactOutput([]byte(text))) }
+	// 요약은 가린 글에서 자른다(captureRunSessionWith). 아래 emit의 가림은 그 밖의 칸을 위한 두 번째 층이다. 활동은 저장
+	// 기록이라 모델이 받은 비밀번호(model_visible_v1)까지 가린다(RedactRecord).
+	redactText := func(text string) string { return string(execution.RedactRecord([]byte(text))) }
 	_, reason, runErr := captureRunSessionWith(ctx, session, input, redactText, func(activity db.Activity) {
 		if emit == nil {
 			return
@@ -780,10 +785,10 @@ func (w *Worker) runE2HTTPSession(ctx context.Context, name string, intent *db.N
 			activity.Detail = ErrE2HTTPWorker.Error()
 			activity.Metadata = nil
 		} else {
-			activity.Summary = string(execution.RedactOutput([]byte(activity.Summary)))
-			activity.Detail = string(execution.RedactOutput([]byte(activity.Detail)))
+			activity.Summary = string(execution.RedactRecord([]byte(activity.Summary)))
+			activity.Detail = string(execution.RedactRecord([]byte(activity.Detail)))
 			if len(activity.Metadata) > 0 {
-				activity.Metadata = execution.RedactOutput(activity.Metadata)
+				activity.Metadata = execution.RedactRecord(activity.Metadata)
 			}
 		}
 		emit(activity)

@@ -516,7 +516,8 @@ func (r *productTargetRegistry) runAccounts(rec productTargetRecord) (productRun
 	}
 	login.Cookies = append([]string(nil), login.Cookies...)
 	out.Login = &login
-	out.PasswordResponse = e2proxy.PasswordResponseMaskSpans
+	// 대상이 응답으로 비춘 비밀번호는 모델에 주고 저장 기록에서만 가린다(사용자 결정 2026-11-23, 동의 문장으로 공지).
+	out.PasswordResponse = e2proxy.PasswordResponseModelVisible
 	digest, err := runAccountsDigest(out)
 	if err != nil {
 		return productRunAccounts{}, "", errPreparation
@@ -526,7 +527,7 @@ func (r *productTargetRegistry) runAccounts(rec productTargetRecord) (productRun
 
 // runAccountsDigest는 결속 계정 요약이다(로그인 방식 + 라벨·자격 해시). 저장 보고서가 결속 정책에서 같은 값을 다시 만든다.
 func runAccountsDigest(a productRunAccounts) (string, error) {
-	if a.Login == nil || a.PasswordResponse != "" && a.PasswordResponse != e2proxy.PasswordResponseMaskSpans {
+	if a.Login == nil || a.PasswordResponse != "" && a.PasswordResponse != e2proxy.PasswordResponseMaskSpans && a.PasswordResponse != e2proxy.PasswordResponseModelVisible {
 		return "", errPreparation
 	}
 	raw, err := json.Marshal(struct {

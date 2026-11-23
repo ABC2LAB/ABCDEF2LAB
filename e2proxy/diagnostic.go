@@ -73,7 +73,7 @@ func (c *Call) observeHTTP(req *http.Request, resp *http.Response, r Receipt) {
 		if req.URL.Path != strings.TrimSuffix(prefix, "/") && req.URL.Path != prefix {
 			endpoint = strings.TrimSuffix(endpoint, "/") + "/{resource}"
 		}
-		if string(c.e.RedactOutput([]byte(endpoint))) != endpoint || dlp.DiagnosticText(endpoint) != endpoint {
+		if string(c.e.RedactRecord([]byte(endpoint))) != endpoint || dlp.DiagnosticText(endpoint) != endpoint {
 			endpoint = "/{protected}"
 		}
 	}
@@ -85,7 +85,7 @@ func (c *Call) observeHTTP(req *http.Request, resp *http.Response, r Receipt) {
 	if resp != nil && r.ResponseReceived && r.ResponseComplete {
 		for _, header := range []string{"Server", "X-Powered-By"} {
 			value := strings.TrimSpace(resp.Header.Get(header))
-			if string(c.e.RedactOutput([]byte(value))) != value || dlp.DiagnosticText(value) != value {
+			if string(c.e.RedactRecord([]byte(value))) != value || dlp.DiagnosticText(value) != value {
 				continue
 			}
 			match := diagnosticProduct.FindStringSubmatch(value)

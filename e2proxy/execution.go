@@ -1460,10 +1460,9 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 	if needsApproval {
 		approvalCtx, cancelApproval := context.WithCancel(c.ctx)
 		stopApproval := context.AfterFunc(ctx, cancelApproval)
-		previewBody := bytes.Clone(body)
-		if e3 != nil {
-			previewBody = e.RedactOutput(body)
-		}
+		// 승인 미리보기는 운영자 화면·승인 기록에 남는 저장 기록이다. model_visible_v1에서는 모델이 대상이 비춘 비밀번호를
+		// 요청 본문에 넣을 수 있으므로, 모델 단계·확정 단계 모두 비밀번호까지 가린 본문을 남긴다.
+		previewBody := e.RedactRecord(body)
 		// 확정 요청은 요청 전용 시간 상한(ctx 기한, 제품 기본 10초) 안에 승인돼야 보낸다. 승인 기한을 그 기한에 맞춰, 운영자가
 		// 결정하지 않으면 승인 기록도 만료(expired)로 남게 한다(#836 이동찬 리뷰).
 		approvalExpires := c.expires
@@ -1886,17 +1885,33 @@ func stripHeaders(h http.Header) {
 
 // RedactOutput removes host-supplied session credentials from a tool's output.
 // It is a bounded exact-value guard; it is not a universal encoding/DLP oracle.
+// 모델에 가는 글에 쓴다. model_visible_v1 실행은 대상이 비춘 비밀번호를 모델에 주므로 비밀번호는 여기서 가리지 않는다.
+// 저장 기록에는 RedactRecord를 쓴다.
 func (e *Execution) RedactOutput(b []byte) []byte {
+	return e.redact(b, false)
+}
+
+// RedactRecord는 저장 기록(도구 출력 기록·근거·활동·보고서·화면 API·승인 미리보기)에 쓰는 가림이다. RedactOutput과 같고,
+// 비밀번호를 정책과 상관없이 늘 가린다.
+func (e *Execution) RedactRecord(b []byte) []byte {
+	return e.redact(b, true)
+}
+
+func (e *Execution) redact(b []byte, record bool) []byte {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	out := bytes.Clone(b)
 	if len(e.marker) != 0 {
 		out = redactMarker(out, e.marker)
 	}
-	sets := [][][]byte{e.secrets, e.passwords, e.redactOnly}
+	passwords := e.passwords
+	if !record && e.cfg.PasswordResponse == PasswordResponseModelVisible {
+		passwords = nil
+	}
+	sets := [][][]byte{e.secrets, passwords, e.redactOnly}
 	if e.cfg.HeaderMode == HeaderTestAccountPassthrough {
 		// 전체 토큰을 조각보다 먼저 가린다. 계정·갱신 간에 같은 claims를 공유해도 전체 토큰 가림이 깨지지 않는다.
-		values := append(append(append([][]byte(nil), e.secrets...), e.passwords...), e.redactOnly...)
+		values := append(append(append([][]byte(nil), e.secrets...), passwords...), e.redactOnly...)
 		sort.SliceStable(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
 		sets = [][][]byte{values}
 		out = redactEscapedJSONValues(out, values)
@@ -2249,7 +2264,7 @@ func compilePolicyTemplate(cfg Config) ([]compiledRule, HeaderMode, *EvaluationC
 		for _, rule := range rules {
 			login = login || rule.Purpose == PurposeAuthPrep
 		}
-		if cfg.PasswordResponse != PasswordResponseMaskSpans || cfg.HeaderMode != HeaderTestAccountPassthrough || !login {
+		if cfg.PasswordResponse != PasswordResponseMaskSpans && cfg.PasswordResponse != PasswordResponseModelVisible || cfg.HeaderMode != HeaderTestAccountPassthrough || !login {
 			return nil, "", nil, ErrConfig
 		}
 	}
