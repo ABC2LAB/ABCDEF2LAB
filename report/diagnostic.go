@@ -36,6 +36,7 @@ type DiagnosticModelRecord struct {
 type DiagnosticProductConfirmation struct {
 	VerdictID, ResourceType string
 	EvidenceCalls           int
+	SealUnconfirmedReason   string
 }
 type DiagnosticReport struct {
 	SourceFailures      int
@@ -57,6 +58,7 @@ type DiagnosticReport struct {
 	ProductConfirmed                                  []DiagnosticProductConfirmation
 	ProductUnverified                                 int
 	ProductUnreadable                                 int
+	ProductSealUnconfirmed                            int
 	Confirmed, Review, NotExecuted, Unknown, Negative int
 	BySeverity, ByType                                map[string]int
 }
@@ -309,11 +311,18 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 		}
 	}
 	in.ProductConfirmed = append([]DiagnosticProductConfirmation(nil), in.ProductConfirmed...)
+	in.ProductSealUnconfirmed = 0
 	for i := range in.ProductConfirmed {
 		row := &in.ProductConfirmed[i]
 		id, err := strconv.ParseInt(row.VerdictID, 10, 64)
 		if err != nil || id <= 0 || strconv.FormatInt(id, 10) != row.VerdictID || row.EvidenceCalls <= 0 {
 			return DiagnosticReport{}, ErrExportBlocked
+		}
+		if row.SealUnconfirmedReason != "" {
+			if row.SealUnconfirmedReason != "seal_not_recorded" && row.SealUnconfirmedReason != "evidence_checkpoint_missing" {
+				return DiagnosticReport{}, ErrExportBlocked
+			}
+			in.ProductSealUnconfirmed++
 		}
 		in.Confirmed++
 		in.BySeverity["미평가"]++
@@ -490,8 +499,8 @@ dt{font-weight:700}dd{margin-left:0;margin-bottom:8px;overflow-wrap:anywhere}
 <table><thead><tr><th>확정</th><th>검토 필요</th><th>미실행</th><th>오류·결과 불명</th><th>비취약 판정</th></tr></thead>
 <tbody><tr><td>{{.Confirmed}}</td><td>{{.Review}}</td><td>{{.NotExecuted}}</td><td>{{.Unknown}}</td><td>{{.Negative}}</td></tr></tbody></table>
 {{if or .ProductConfirmed .ProductUnverified .ProductUnreadable}}<h3>제품 E③ 확정 단계</h3>
-<p>독립 확정 {{len .ProductConfirmed}}건{{if .ProductUnverified}} · 무결성 또는 출처 미확인 {{.ProductUnverified}}건(확정에 세지 않음){{end}}{{if .ProductUnreadable}} · 제품 확정 단계 판정을 읽지 못함({{.ProductUnreadable}}건, 확정에 세지 않음){{end}}</p>
-<ul>{{range .ProductConfirmed}}<li>제품 판정 {{.VerdictID}} · 자원 종류 {{.ResourceType}} · 근거 호출 {{.EvidenceCalls}}건</li>{{end}}</ul>{{end}}
+<p>독립 확정 {{len .ProductConfirmed}}건{{if .ProductSealUnconfirmed}} · 그중 근거 봉인 미확인 {{.ProductSealUnconfirmed}}건{{end}}{{if .ProductUnverified}} · 확인 실패 {{.ProductUnverified}}건(확정에 안 셈){{end}}{{if .ProductUnreadable}} · 제품 확정 단계 판정을 읽지 못함({{.ProductUnreadable}}건, 확정에 세지 않음){{end}}</p>
+<ul>{{range .ProductConfirmed}}<li>제품 판정 {{.VerdictID}} · 자원 종류 {{.ResourceType}} · 근거 호출 {{.EvidenceCalls}}건{{if .SealUnconfirmedReason}} · 근거 봉인 미확인({{.SealUnconfirmedReason}}){{end}}</li>{{end}}</ul>{{end}}
 <p>실행 completed는 취약점 확정이 아닙니다. 후보는 실제 관찰을 가진 검토 대상이며 자동 검증 또는 권한 있는 사람의 근거 있는 판단이 더 필요합니다.
 심각도·처리 상태·판정·실행 결과를 따로 표시합니다. 유사 제목끼리 합치지 않으며 원래 ID를 유지합니다.</p>
 <h3>확정 결과 심각도별 집계</h3><ul>{{range $key, $count := .BySeverity}}<li>{{$key}}: {{$count}}</li>{{end}}</ul>

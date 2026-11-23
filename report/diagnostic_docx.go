@@ -147,15 +147,22 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 	if len(in.ProductConfirmed) > 0 || in.ProductUnverified > 0 || in.ProductUnreadable > 0 {
 		w.paragraph("Heading2", "제품 E③ 확정 단계")
 		summary := fmt.Sprintf("독립 확정 %d건", len(in.ProductConfirmed))
+		if in.ProductSealUnconfirmed > 0 {
+			summary += fmt.Sprintf(" · 그중 근거 봉인 미확인 %d건", in.ProductSealUnconfirmed)
+		}
 		if in.ProductUnverified > 0 {
-			summary += fmt.Sprintf(" · 무결성 또는 출처 미확인 %d건(확정에 세지 않음)", in.ProductUnverified)
+			summary += fmt.Sprintf(" · 확인 실패 %d건(확정에 안 셈)", in.ProductUnverified)
 		}
 		if in.ProductUnreadable > 0 {
 			summary += fmt.Sprintf(" · 제품 확정 단계 판정을 읽지 못함(%d건, 확정에 세지 않음)", in.ProductUnreadable)
 		}
 		w.paragraph("Normal", summary)
 		for _, row := range in.ProductConfirmed {
-			w.paragraph("Normal", fmt.Sprintf("제품 판정 %s · 자원 종류 %s · 근거 호출 %d건", row.VerdictID, row.ResourceType, row.EvidenceCalls))
+			line := fmt.Sprintf("제품 판정 %s · 자원 종류 %s · 근거 호출 %d건", row.VerdictID, row.ResourceType, row.EvidenceCalls)
+			if row.SealUnconfirmedReason != "" {
+				line += " · 근거 봉인 미확인(" + row.SealUnconfirmedReason + ")"
+			}
+			w.paragraph("Normal", line)
 		}
 	}
 	w.paragraph("Normal", "확정 집계는 유효한 저장 E③ 판정만 포함합니다. HTTP 성공·AI 주장·후보·정상 종료는 확정 근거가 아닙니다. 검토 필요 후보는 확정 심각도·위험도 합계에 포함하지 않습니다.")

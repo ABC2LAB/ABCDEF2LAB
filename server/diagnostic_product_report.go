@@ -60,9 +60,13 @@ func readDiagnosticProductVerdicts(ctx context.Context, tx *sql.Tx, taskID int64
 			continue
 		}
 		if *row.OracleValue == "confirmed" {
-			out.ProductConfirmed = append(out.ProductConfirmed, report.DiagnosticProductConfirmation{
+			confirmation := report.DiagnosticProductConfirmation{
 				VerdictID: *row.VerdictID, ResourceType: *row.ResourceType, EvidenceCalls: *row.EvidenceCalls,
-			})
+			}
+			if seal := row.EvidenceSeal; seal != nil && seal.Status == productEvidenceSealUnconfirmed && seal.Reason != nil {
+				confirmation.SealUnconfirmedReason = *seal.Reason
+			}
+			out.ProductConfirmed = append(out.ProductConfirmed, confirmation)
 		}
 	}
 	return nil
