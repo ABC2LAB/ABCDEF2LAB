@@ -27,13 +27,38 @@ var diagnosticSecrets = []*regexp.Regexp{
 
 var inlineAccountContext = regexp.MustCompile("(?i)비밀번호|패스워드|토큰|자격정보|평문으로[ \\t]+노출|\\b(?:passwords?|passwd|credentials?|tokens?)\\b")
 
-var inlineAccountPair = regexp.MustCompile(`(^|[ \t,:])[\p{L}\p{N}_.@-]+(?:/[^\s,;()]+|\([^\s,;()]+((?:,[^)\r\n]*)?)\))`)
+var inlineAccountPair = regexp.MustCompile(`(^|[ \t,:])[\p{L}\p{N}_.@-]+(?:/[^\s,;()]+|:[^\s,;()/]+|\([^\s,;()]+((?:,[^)\r\n]*)?)\))`)
+
+var httpVersionPair = regexp.MustCompile(`(?i)^https?/[0-9]+(?:\.[0-9]+)?$`)
+
+func nonCredentialSlashPair(pair string) bool {
+	if httpVersionPair.MatchString(pair) {
+		return true
+	}
+	if strings.HasPrefix(strings.ToLower(pair), "http://") || strings.HasPrefix(strings.ToLower(pair), "https://") ||
+		strings.HasPrefix(strings.ToLower(pair), "ftp://") {
+		return true
+	}
+	if name, _, ok := strings.Cut(pair, ":"); ok {
+		return strings.EqualFold(name, "localhost") || strings.Contains(name, ".")
+	}
+	name, _, ok := strings.Cut(pair, "/")
+	if !ok {
+		return false
+	}
+	switch strings.ToLower(name) {
+	case "application", "audio", "font", "image", "message", "model", "multipart", "text", "video":
+		return true
+	}
+	return false
+}
 
 // 자격정보 문맥의 마크다운 표는 값이 어느 열에 있는지 확정하기 어려워 행 전체를 건수로 바꾼다.
-func redactCredentialTables(s string) string {
+func redactCredentialTables(s string) (string, int) {
 	lines := strings.Split(s, "\n")
 	out := make([]string, 0, len(lines))
 	context := false
+	exposures := 0
 	for i := 0; i < len(lines); {
 		line := lines[i]
 		if strings.TrimSpace(line) == "" {
@@ -53,6 +78,7 @@ func redactCredentialTables(s string) string {
 			}
 			if count > 0 {
 				out = append(out, "자격정보 "+strconv.Itoa(count)+"건 노출됨")
+				exposures += count
 				i = end
 				continue
 			}
@@ -60,7 +86,7 @@ func redactCredentialTables(s string) string {
 		out = append(out, line)
 		i++
 	}
-	return strings.Join(out, "\n")
+	return strings.Join(out, "\n"), exposures
 }
 
 func markdownTableRow(line string) bool {
@@ -73,22 +99,29 @@ func markdownTableDivider(line string) bool {
 }
 
 // redactInlineAccounts는 자격정보가 언급된 줄에서 계정/비밀번호 표기를 가리고 발견 수를 남긴다.
-func redactInlineAccounts(s string) string {
+func redactInlineAccounts(s string) (string, int) {
 	lines := strings.Split(s, "\n")
+	exposures := 0
 	for i, line := range lines {
 		if !inlineAccountContext.MatchString(line) {
 			continue
 		}
 		matches := inlineAccountPair.FindAllStringSubmatchIndex(line, -1)
-		if len(matches) == 0 {
+		valid := matches[:0]
+		for _, m := range matches {
+			if !nonCredentialSlashPair(line[m[3]:m[1]]) && !strings.Contains(line[m[3]:m[1]], Redacted) {
+				valid = append(valid, m)
+			}
+		}
+		if len(valid) == 0 {
 			continue
 		}
 		var out strings.Builder
 		out.WriteString("자격정보 ")
-		out.WriteString(strconv.Itoa(len(matches)))
+		out.WriteString(strconv.Itoa(len(valid)))
 		out.WriteString("건 ")
 		last := 0
-		for _, m := range matches {
+		for _, m := range valid {
 			out.WriteString(line[last:m[3]])
 			out.WriteString(Redacted)
 			// 보고서에 함께 적힌 불리언 권한 정보만 남긴다.
@@ -102,18 +135,42 @@ func redactInlineAccounts(s string) string {
 		}
 		out.WriteString(line[last:])
 		lines[i] = out.String()
+		exposures += len(valid)
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(lines, "\n"), exposures
 }
 
 func DiagnosticText(s string) string {
-	s = redactCredentialTables(s)
-	s = redactInlineAccounts(s)
+	out, _ := DiagnosticTextCounted(s)
+	return out
+}
+
+// DiagnosticTextCounted는 보고서에서 새로 가린 자격 값만 센다. 주소·이메일과 이미 가린 자리는 세지 않는다.
+func DiagnosticTextCounted(s string) (string, int) {
+	var count, added int
+	s, added = redactCredentialTables(s)
+	count += added
+	s, added = redactInlineAccounts(s)
+	count += added
+	count += countNewCredentialMatches(quotedCredential, s)
 	s = quotedCredential.ReplaceAllString(s, Redacted)
-	for _, re := range diagnosticSecrets {
+	for i, re := range diagnosticSecrets {
+		if i != 5 && i != 6 {
+			count += countNewCredentialMatches(re, s)
+		}
 		s = re.ReplaceAllString(s, Redacted)
 	}
-	return s
+	return s, count
+}
+
+func countNewCredentialMatches(re *regexp.Regexp, s string) int {
+	count := 0
+	for _, match := range re.FindAllString(s, -1) {
+		if !strings.Contains(match, Redacted) {
+			count++
+		}
+	}
+	return count
 }
 
 // credentialSecrets는 DiagnosticText에서 자격 형태만 남긴 것이다. 주소·이메일은 가리지 않는다. 탐색 도구 결과처럼 모델이
