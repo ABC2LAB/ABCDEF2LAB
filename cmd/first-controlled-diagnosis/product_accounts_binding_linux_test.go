@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/netip"
 	"os"
@@ -351,8 +352,27 @@ func TestExternalConsentRecordedInAccountJournal(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 거부한 시도는 저널에 아무것도 남기지 않고, 남긴 동의 줄은 다시 열어도 받는다.
+	accountDir := r.accountDir
 	if err := r.Close(); err != nil {
 		t.Fatal(err)
+	}
+	// 새로 남긴 동의 줄은 지금 진술(11/23 문장 포함)의 해시다. 이전 진술 해시는 재생 때만 받는다.
+	journal, events, err := diagnosisprep.OpenProtectedJournal(accountDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consents := 0
+	for _, raw := range events {
+		var e productAccountEvent
+		if json.Unmarshal(raw, &e) == nil && e.Action == accountExternalConsent {
+			consents++
+			if e.StatementSHA256 != productExternalConsentStatementSHA256() {
+				t.Fatal("consent recorded with a statement other than the current one")
+			}
+		}
+	}
+	if err := journal.Close(); err != nil || consents != 1 {
+		t.Fatalf("consent lines=%d close=%v", consents, err)
 	}
 	reopened, err := newProductTargetRegistry(root, r.policy, func() error { return nil })
 	if err != nil {
