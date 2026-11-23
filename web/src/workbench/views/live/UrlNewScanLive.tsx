@@ -44,6 +44,7 @@ import s from "../../workbench.module.css";
 import { ApprovedWriteNotice } from "./ApprovedWriteNotice";
 import { ExternalModelSettings } from "./ExternalModelSettings";
 import { ResetConfirmationBox } from "./ResetConfirmationBox";
+import { StuckReleaseBox } from "./StuckReleaseBox";
 import { TargetApprovalPanel } from "./TargetApprovalPanel";
 import { reasonText, UrlHead, UrlNotices, UrlPill } from "./urlParts";
 
@@ -785,6 +786,8 @@ export function UrlNewScanLive() {
                       </div>
                     </section>
                   ) : null}
+                  {/* 멈춘 작업 해제(C04): 결과 불명 작업이 설치 전체의 새 점검 시작을 막을 때만 보인다 */}
+                  <StuckReleaseBox />
                   {/* '기존 점검 다시 열기'(진행 · 끝난 점검 목록 링크)는 두지 않는다(사용자 11/18) — 대시보드의 진행 중 · 보존된 끝난 점검 목록('전체 보기')으로 간다 */}
                 </div>
               </div>

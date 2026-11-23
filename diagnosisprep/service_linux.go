@@ -53,6 +53,8 @@ type receipt struct {
 	StartKey                  string           `json:"start_key,omitempty"`
 	Inspection                storedInspection `json:"inspection"`
 	Job                       Job              `json:"job"`
+	// OperatorRelease는 멈춘 작업 해제 감사 기록이다(C04, release_linux.go). 한번 붙으면 지우지 않는다.
+	OperatorRelease *ReleaseRecord `json:"operator_release,omitempty"`
 }
 type executionHandle struct {
 	cancel context.CancelFunc
@@ -70,6 +72,16 @@ type Service struct {
 	executions map[string]executionHandle
 	// 이 서비스가 PID 1일 때만 채운다. 비어 있으면 init 증거를 쓰지도 남기지도 않는다.
 	initInstance string
+	// boot는 이 서비스가 읽은 boot ID다. 해제 완료 증거(release_linux.go)에 쓴다.
+	boot string
+	// 멈춘 작업 해제(C04): 활동 없음 기준, 영수증 마지막 갱신 시각, 재시작 요청. releaseClock은 해제 근거 전용 시계라
+	// 실행 시각 확인(now)의 호출 횟수·의미를 바꾸지 않는다.
+	releaseClock func() time.Time
+	quiet        time.Duration
+	updatedAt    map[string]time.Time
+	restart      chan struct{}
+	restartOnce  sync.Once
+	restartGrace time.Duration
 	closed       bool
 	failed       bool
 	released     bool
@@ -138,13 +150,18 @@ func newServiceForRuntime(ctx context.Context, root string, backend Backend, boo
 		return nil, err
 	}
 	lifetime, cancel := context.WithCancel(ctx)
-	s := &Service{ctx: lifetime, cancel: cancel, backend: backend, journal: j, jobs: map[string]receipt{}, executions: map[string]executionHandle{}, now: time.Now, initInstance: initInstance}
+	s := &Service{ctx: lifetime, cancel: cancel, backend: backend, journal: j, jobs: map[string]receipt{}, executions: map[string]executionHandle{}, now: time.Now, initInstance: initInstance,
+		boot: boot, quiet: DefaultReleaseQuiet, updatedAt: map[string]time.Time{}, restart: make(chan struct{}), restartGrace: restartResponseGrace, releaseClock: time.Now}
 	fail := func() (*Service, error) { cancel(); _ = j.close(); return nil, errStorage }
 	jobs, err := replayPreparationReceipts(ctx, records, j.snapshotCount)
 	if err != nil {
 		return fail()
 	}
 	s.jobs = jobs
+	// 재시작 전 갱신 시각은 모른다. 기동 시각을 갱신 시각으로 두어 활동 없음 기준을 다시 센다(보수적).
+	for id := range jobs {
+		s.updatedAt[id] = s.releaseClock()
+	}
 	if len(records) > len(jobs) {
 		snapshots, err := preparationSnapshots(jobs)
 		if err != nil {
@@ -194,6 +211,10 @@ func newServiceForRuntime(ctx context.Context, root string, backend Backend, boo
 		if r.StartKey == "" || r.ExecutionReturned && (r.Job.DrainComplete || r.ResourcesRecovered) || !bootIDPattern.MatchString(boot) {
 			continue
 		}
+		// 운영자 해제를 기다리는 기록은 init·boot 증거에 더해 탐색 경계 세션 없음까지 확인한 뒤에 푼다(completeReleasesLocked).
+		if r.OperatorRelease != nil && r.OperatorRelease.Pending() {
+			continue
+		}
 		proofBoot := r.ExecutionBootID
 		if proofBoot == "" {
 			// 구 형식은 과거의 실행 boot를 추정하지 않는다. 현재 미확인 자원을 관찰한 boot만 저장한다.
@@ -226,13 +247,13 @@ func newServiceForRuntime(ctx context.Context, root string, backend Backend, boo
 			log.Print("진단 준비: 이전 컨테이너 init의 종료를 확인해 새 시작 잠금을 풉니다")
 		}
 	}
+	s.mu.Lock()
+	s.completeReleasesLocked(ctx)
+	s.mu.Unlock()
 	return s, nil
 }
 
 var bootIDPattern = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`)
-
-// init 인스턴스 = /proc/self/ns/pid 링크 값 + /proc/self/stat 시작 tick. 예: pid:[4026532281]@123456
-var initInstancePattern = regexp.MustCompile(`^pid:\[[0-9]{1,20}\]@[0-9]{1,20}$`)
 
 // /proc/<pid>/stat에서 comm 괄호 뒤 starttime(전체 22번째 칸)의 위치다. 괄호 뒤는 3번째 칸부터 센다.
 const statStartTimeField = 22 - 3
@@ -297,7 +318,10 @@ func validReceiptChange(old, next receipt) bool {
 	if old.ExecutionReturned && !next.ExecutionReturned || old.ResourcesRecovered && !next.ResourcesRecovered {
 		return false
 	}
-	if old.Principal != next.Principal || old.CreateKey != next.CreateKey || old.Job.ID != next.Job.ID || (next.Job.Revision != old.Job.Revision+1 && !(reflect.DeepEqual(old.Job, next.Job) && (old.ExecutionReturned != next.ExecutionReturned || old.ResourcesRecovered != next.ResourcesRecovered || old.RecoveryWitnessBootID != next.RecoveryWitnessBootID))) || old.Job.Input != next.Job.Input {
+	if !validReleaseChange(old, next) {
+		return false
+	}
+	if old.Principal != next.Principal || old.CreateKey != next.CreateKey || old.Job.ID != next.Job.ID || (next.Job.Revision != old.Job.Revision+1 && !(reflect.DeepEqual(old.Job, next.Job) && (old.ExecutionReturned != next.ExecutionReturned || old.ResourcesRecovered != next.ResourcesRecovered || old.RecoveryWitnessBootID != next.RecoveryWitnessBootID || !reflect.DeepEqual(old.OperatorRelease, next.OperatorRelease)))) || old.Job.Input != next.Job.Input {
 		return false
 	}
 	if old.StartKey != "" {
@@ -321,6 +345,7 @@ func (s *Service) save(r receipt) error {
 		return errStorage
 	}
 	s.jobs[r.Job.ID] = cloneReceipt(r)
+	s.updatedAt[r.Job.ID] = s.releaseClock()
 	return nil
 }
 func responseError(r Request, code string) Response {
@@ -412,6 +437,10 @@ func (s *Service) Call(ctx context.Context, r Request) (Response, error) {
 			}
 		}
 		return Response{Version: Version, RequestID: r.RequestID, Authorized: &allowed, Job: owned}, nil
+	case ReleaseStatus:
+		s.completeReleasesLocked(ctx)
+		view := s.releaseViewLocked()
+		return Response{Version: Version, RequestID: r.RequestID, Release: &view}, nil
 	}
 	record, exists := s.jobs[r.JobID]
 	if !exists || record.Principal != r.Principal {
@@ -477,6 +506,7 @@ func (s *Service) Call(ctx context.Context, r Request) (Response, error) {
 		if inspect.Scope == nil || inspect.ReasonCode != "" || !inspect.Scope.ExpiresAt.After(time.Now()) {
 			return responseError(r, "approval_required"), nil
 		}
+		s.completeReleasesLocked(ctx)
 		// 복구는 실행 backend가 실제 자원 마감을 검증할 때만 가능하다. 상태·체크박스는 증거가 아니다.
 		if verifier, ok := s.backend.(ClosureVerifier); ok {
 			for _, old := range s.jobs {
@@ -496,7 +526,7 @@ func (s *Service) Call(ctx context.Context, r Request) (Response, error) {
 		var runs int64
 		for _, other := range s.jobs {
 			// 상태 게시와 실제 backend 반환은 별개다. 종료와 drain 증거를 모두 요구한다.
-			if active(other.Job.State) || other.StartKey != "" && (!other.ExecutionReturned || !other.Job.DrainComplete && !other.ResourcesRecovered) {
+			if blocksStart(other) {
 				return responseError(r, "busy"), nil
 			}
 			if other.StartKey != "" && other.Inspection.DelegationRef == inspect.DelegationRef {
@@ -536,6 +566,8 @@ func (s *Service) Call(ctx context.Context, r Request) (Response, error) {
 		s.executions[record.Job.ID] = executionHandle{cancel, done}
 		go s.execute(runCtx, cloneReceipt(record), done)
 		return responseJob(r, record.Job), nil
+	case Release:
+		return s.releaseLocked(ctx, r, record), nil
 	case Stop:
 		if r.ExpectedRevision != record.Job.Revision {
 			return responseError(r, "revision_conflict"), nil
@@ -827,7 +859,7 @@ func replayPreparationReceipts(ctx context.Context, records []json.RawMessage, s
 			return nil, errStorage
 		}
 		var r receipt
-		if strictDecode(raw, &r) != nil || r.ExecutionInitInstance != "" && (!initInstancePattern.MatchString(r.ExecutionInitInstance) || r.ExecutionBootID == "") || !validText(r.Principal, 256) || !reference.MatchString(r.CreateKey) || !validJob(r.Job) || r.ExecutionEvidenceVersion > 1 || r.ExecutionEvidenceVersion != 0 && r.StartKey == "" || r.ExecutionBootID != "" && !bootIDPattern.MatchString(r.ExecutionBootID) || r.RecoveryWitnessBootID != "" && (!bootIDPattern.MatchString(r.RecoveryWitnessBootID) || r.ExecutionBootID != "" || r.StartKey == "") || r.ResourcesRecovered && !r.ExecutionReturned || (r.ExecutionReturned || r.ExecutionBootID != "") && r.StartKey == "" || !inspectionOK(r.Inspection.runtime()) || r.Job.SourceDigest != sourceDigest(r.Job.Input, r.Inspection.InstallationDigest) || !reflect.DeepEqual(r.Job.Scope, r.Inspection.Scope) || (r.StartKey != "" && (!reference.MatchString(r.StartKey) || (r.Job.Scope != nil && r.Job.Scope.Model != nil && r.Job.Scope.Model.ExternalTransfer && !r.ExternalTransferConfirmed))) || r.Job.PreparationStarted != (r.StartKey != "") {
+		if strictDecode(raw, &r) != nil || r.ExecutionInitInstance != "" && (!initInstancePattern.MatchString(r.ExecutionInitInstance) || r.ExecutionBootID == "") || !validText(r.Principal, 256) || !reference.MatchString(r.CreateKey) || !validJob(r.Job) || r.ExecutionEvidenceVersion > 1 || r.ExecutionEvidenceVersion != 0 && r.StartKey == "" || r.ExecutionBootID != "" && !bootIDPattern.MatchString(r.ExecutionBootID) || r.RecoveryWitnessBootID != "" && (!bootIDPattern.MatchString(r.RecoveryWitnessBootID) || r.ExecutionBootID != "" || r.StartKey == "") || r.ResourcesRecovered && !r.ExecutionReturned || (r.ExecutionReturned || r.ExecutionBootID != "") && r.StartKey == "" || !inspectionOK(r.Inspection.runtime()) || r.Job.SourceDigest != sourceDigest(r.Job.Input, r.Inspection.InstallationDigest) || !reflect.DeepEqual(r.Job.Scope, r.Inspection.Scope) || (r.StartKey != "" && (!reference.MatchString(r.StartKey) || (r.Job.Scope != nil && r.Job.Scope.Model != nil && r.Job.Scope.Model.ExternalTransfer && !r.ExternalTransferConfirmed))) || r.Job.PreparationStarted != (r.StartKey != "") || !validStoredRelease(r) {
 			return nil, errStorage
 		}
 		key := r.Principal + "\x00" + r.CreateKey

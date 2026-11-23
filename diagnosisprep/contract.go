@@ -195,6 +195,8 @@ type Request struct {
 	TaskID                    string          `json:"task_id,omitempty"`
 	ExternalTransferConfirmed bool            `json:"external_transfer_confirmed,omitempty"`
 	Product                   *ProductRequest `json:"product,omitempty"`
+	// Release는 멈춘 작업 해제(release) 요청의 사유다(release_contract.go).
+	Release *ReleaseRequest `json:"release,omitempty"`
 }
 
 type Response struct {
@@ -206,6 +208,8 @@ type Response struct {
 	Authorized *bool            `json:"authorized,omitempty"`
 	Error      string           `json:"error,omitempty"`
 	Product    *ProductResponse `json:"product,omitempty"`
+	// Release는 멈춘 작업 해제 판단 근거와 감사 기록이다(release_status·release만).
+	Release *ReleaseView `json:"release,omitempty"`
 }
 
 // Endpoint는 이미 설치된 비공개 서비스 연결이다. Call은 변경 요청을 자동 재송신하지 않는다.
