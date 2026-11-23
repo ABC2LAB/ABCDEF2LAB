@@ -185,10 +185,17 @@ func firstDiagnosisDeadlineDrain(timeoutSeconds int) time.Duration {
 
 // FirstDiagnosisPreparationTimeout은 준비 단계(모델 결속·목표 만들기·첫 계획) 전체 상한이다. 원래 2분이었는데,
 // 2026-11-23 화면 VAmPI 점검(외부 모델)에서 목표 만들기와 첫 계획이 합쳐 100.5초 걸렸고 앞선 두 시도는 2분 안에 계획
-// 호출을 끝내지 못해 계획 실패로 끝났다. 공식 측정의 O 회차가 같은 이유로 시작도 못 하지 않게 300초로 둔다. Planner 계획
-// 한 번의 상한(E2HTTPPlannerDefaultDuration, 170초)보다 길어서 목표를 만든 뒤 시작한 계획이 이 상한에 먼저 잘리는 일이 줄어든다.
-// 원본 ARTEX(B)에는 이 단계가 없어 B 조건은 바뀌지 않는다.
-const FirstDiagnosisPreparationTimeout = 300 * time.Second
+// 호출을 끝내지 못해 계획 실패로 끝났다. 목표 만들기 호출과 첫 계획은 같은 준비 문맥에서 차례로 돈다. 그래서 상한은 두
+// 호출이 각자 자기 상한까지 걸려도 들어가게 '목표 호출 하나의 허용 시간 + 계획 한 번의 상한 + 결속·처리 여유'로 계산한다
+// (170 + 170 + 60 = 400초, 2026-11-23 사용자 결정·#879 리뷰). 원본 ARTEX(B)에는 이 단계가 없어 B 조건은 바뀌지 않는다.
+const (
+	// firstDiagnosisGoalCallAllowance는 목표 만들기 모델 호출 하나에 주는 시간이다. 모델 호출 하나의 상한(승인 manifest
+	// timeout_seconds, 공식 값 170초)과 같게 두며, 그 값은 계획 한 번의 상한(agent.E2HTTPPlannerDefaultDuration)과 같다.
+	firstDiagnosisGoalCallAllowance = agent.E2HTTPPlannerDefaultDuration
+	// firstDiagnosisPreparationMargin은 모델 결속·작업 확인·목표 저장 같은 호출 밖 처리에 남기는 여유다.
+	firstDiagnosisPreparationMargin  = time.Minute
+	FirstDiagnosisPreparationTimeout = firstDiagnosisGoalCallAllowance + agent.E2HTTPPlannerDefaultDuration + firstDiagnosisPreparationMargin
+)
 
 // firstDiagnosisDeadlineDrainShare는 엔진 기한 마감 유예가 작업 시간에서 차지할 수 있는 몫의 분모다.
 const firstDiagnosisDeadlineDrainShare = 4

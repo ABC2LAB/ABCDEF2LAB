@@ -18,7 +18,7 @@
 | C08 | intent 하나라도 턴 소진·시간 초과·Bash 미호출·일시 실패면 실행 실패. Planner 라운드·호출 상한 도달도 실패로 끝난다 | 오류 | `server/first_diagnosis_supervisor.go:599-610`, `server/e2_http_runtime.go:301` | P3·최민준 |
 | C09 | 마지막 호출 하나가 intent 결과를 정하고 대조가 깨지면 실행 실패 | 오류 | `agent/e2_http.go:608-623` | P3·최민준 |
 | C10 | 진단 로그 기록 실패·상태 조회 1회 실패가 감사 실패처럼 실행을 취소한다 | 오류 | `cmd/first-controlled-diagnosis/url_preparation_runtime.go:254-257` | P3·최민준 |
-| C11 | 준비 단계 대체 경로 없음. 목표 분해 실패 시 중단(원본은 원래 목표로 계속), 2분 안에 intent 0개면 실패인데 Planner 입력은 "0개도 괜찮다"고 한다 | 오류 | `server/first_diagnosis_startup.go:125`, `server/first_diagnosis_supervisor.go:372-384`, `agent/planner.go:486-490` | P3·최민준 |
+| C11 | 준비 단계 대체 경로 없음. 목표 분해 실패 시 중단(원본은 원래 목표로 계속), 2분 안에 intent 0개면 실패(조사 당시 값, 지금 준비 단계 상한은 400초 — #879)인데 Planner 입력은 "0개도 괜찮다"고 한다 | 오류 | `server/first_diagnosis_startup.go:125`, `server/first_diagnosis_supervisor.go:372-384`, `agent/planner.go:486-490` | P3·최민준 |
 | C12 | 저장된 intercept 정규식 하나가 깨지면 모든 도구 호출이 막힌다(원본은 그 규칙만 건너뜀) | 오류 | `intercept/intercept.go:197-235` | P3·최민준 |
 | C13 | 워크플로 투영 실패 한 번으로 그 뒤 요청이 전부 거부된다 | 오류 | `e2proxy/execution.go:899-903` | P2·이동찬 |
 

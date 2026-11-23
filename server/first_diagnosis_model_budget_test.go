@@ -731,10 +731,16 @@ func TestFirstDiagnosisOpenRouterBudgetRejectedResponseWithUsageIsPerCall(t *tes
 	}
 }
 
-// 준비 단계 전체 상한은 Planner 계획 한 번의 기본 상한보다 길어야 한다. 짧으면 목표를 만든 뒤 시작한 첫 계획이 계획 상한이
-// 아니라 준비 단계 상한에 먼저 잘려, 외부 모델의 느린 응답 한 번으로 O 회차가 계획 실패로 끝난다(2026-11-23 화면 VAmPI).
-func TestFirstDiagnosisPreparationTimeoutCoversPlanner(t *testing.T) {
-	if FirstDiagnosisPreparationTimeout <= agent.E2HTTPPlannerDefaultDuration {
-		t.Fatalf("준비 단계 상한 %s가 계획 한 번의 상한 %s보다 길지 않음", FirstDiagnosisPreparationTimeout, agent.E2HTTPPlannerDefaultDuration)
+// 준비 단계 전체 상한은 차례로 도는 목표 만들기 호출과 첫 계획이 각자 자기 상한(170초)까지 걸려도 들어가야 한다. 짧으면 정상
+// 응답 두 번(예: 각각 160초)으로 첫 계획이 계획 상한이 아니라 준비 단계 상한에 먼저 잘려 O 회차가 계획 실패로 끝난다
+// (2026-11-23 화면 VAmPI, #879 리뷰). 결속·처리 여유 1분을 더 남긴다.
+func TestFirstDiagnosisPreparationTimeoutCoversGoalAndPlan(t *testing.T) {
+	sequential := firstDiagnosisGoalCallAllowance + agent.E2HTTPPlannerDefaultDuration
+	if firstDiagnosisGoalCallAllowance < agent.E2HTTPPlannerDefaultDuration || FirstDiagnosisPreparationTimeout < sequential+time.Minute {
+		t.Fatalf("준비 단계 상한 %s가 목표 호출 %s + 계획 %s + 여유 1분보다 짧음", FirstDiagnosisPreparationTimeout, firstDiagnosisGoalCallAllowance, agent.E2HTTPPlannerDefaultDuration)
+	}
+	// 경계: 각각 상한까지 걸린 두 호출이 끝난 시점에도 준비 문맥이 남아 있어야 한다.
+	if worst := 2 * agent.E2HTTPPlannerDefaultDuration; FirstDiagnosisPreparationTimeout-worst < time.Minute {
+		t.Fatalf("두 호출 뒤 남는 시간 %s", FirstDiagnosisPreparationTimeout-worst)
 	}
 }

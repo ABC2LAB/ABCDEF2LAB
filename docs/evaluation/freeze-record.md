@@ -37,7 +37,7 @@
 | 회차 요청·시간 예산 | 고정 초안 §10의 값 | 고정 초안 §10, 실행 절차 §2 | 요청·시간 예산은 러너 설정이 아니라 사전검사 선언·회차 조건에 있다. Go 3 파일럿(VAmPI): 요청 300·시간 1500초. Juice Shop 파일럿과 공식 세션: 요청 300·시간 1500초(`preflight.official.json`의 B·O `request_budget`·`time_budget_seconds`, 프로파일 `official-split-35b.json` `environment.request_budget` 300). |
 | 먼저 걸리길 의도한 상한 | 고정 초안 §1 | 고정 초안 §1 | — |
 | Planner 계획 한 번의 시간 상한 | 170초 | `agent/e2_http.go` | #858, dev 머지 커밋 `dd3385a2` |
-| 준비 단계 전체 상한(모델 결속·목표 만들기·첫 계획) | 300초 (`FirstDiagnosisPreparationTimeout`, 2분에서 올림 — 2026-11-23 화면 VAmPI에서 외부 모델 계획 단계 100.5초·2분 초과 실패 2번) | `server/first_diagnosis_supervisor.go` | 이 값을 넣은 PR의 dev 머지 커밋 `<채움>` |
+| 준비 단계 전체 상한(모델 결속·목표 만들기·첫 계획) | 400초 (`FirstDiagnosisPreparationTimeout` = 목표 호출 170초 + 계획 170초 + 여유 60초, 2분에서 올림 — 2026-11-23 화면 VAmPI에서 외부 모델 계획 단계 100.5초·2분 초과 실패 2번) | `server/first_diagnosis_supervisor.go` | 이 값을 넣은 PR의 dev 머지 커밋 `<채움>` |
 | Planner heartbeat | 600초 (원본 값) | `server/engine.go` | — |
 
 ## 4. 무효 판정 기준
