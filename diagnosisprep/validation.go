@@ -202,7 +202,7 @@ func ValidateRequest(r Request) error {
 		if !reference.MatchString(r.JobID) || r.ExpectedRevision != 0 || r.IdempotencyKey != "" || !noInput || r.TaskID != "" {
 			return ErrProtocol
 		}
-	case Stop, Delete:
+	case Stop, Hide:
 		if !reference.MatchString(r.JobID) || r.ExpectedRevision == 0 || r.IdempotencyKey != "" || !noInput || r.TaskID != "" {
 			return ErrProtocol
 		}

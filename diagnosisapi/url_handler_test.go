@@ -81,7 +81,7 @@ func TestURLAPIOnlyForwardsTypedCommands(t *testing.T) {
 		{"POST", URLBasePath + "/drafts/job-1/validate", urlMutationBody, "", diagnosisprep.Validate, 200},
 		{"POST", URLBasePath + "/drafts/job-1/start", urlMutationBody, "start-1", diagnosisprep.Start, 200},
 		{"POST", URLBasePath + "/drafts/job-1/stop", urlMutationBody, "", diagnosisprep.Stop, 200},
-		{"POST", URLBasePath + "/drafts/job-1/delete", urlMutationBody, "", diagnosisprep.Delete, 200},
+		{"POST", URLBasePath + "/drafts/job-1/hide", urlMutationBody, "", diagnosisprep.Hide, 200},
 	} {
 		t.Run(string(test.command), func(t *testing.T) {
 			endpoint := &urlTestEndpoint{}
@@ -130,9 +130,10 @@ func TestURLAPIRejectsInvalidRequestsBeforeEndpoint(t *testing.T) {
 		{"public authorize", "POST", URLBasePath + "/drafts/job-1/authorize_task", urlMutationBody, ""},
 		{"patch not supported", "PATCH", URLBasePath + "/drafts/job-1", urlCreateBody, ""},
 		{"unknown command", "POST", URLBasePath + "/drafts/job-1/exec", urlMutationBody, ""},
-		{"delete as DELETE", "DELETE", URLBasePath + "/drafts/job-1/delete", urlMutationBody, ""},
-		{"delete without revision", "POST", URLBasePath + "/drafts/job-1/delete", "{\"version\":\"diagnosis-api.v2\",\"expected_revision\":0}", ""},
-		{"delete with input", "POST", URLBasePath + "/drafts/job-1/delete", urlCreateBody, ""},
+		{"hide as DELETE", "DELETE", URLBasePath + "/drafts/job-1/hide", urlMutationBody, ""},
+		{"old delete route", "POST", URLBasePath + "/drafts/job-1/delete", urlMutationBody, ""},
+		{"hide without revision", "POST", URLBasePath + "/drafts/job-1/hide", "{\"version\":\"diagnosis-api.v2\",\"expected_revision\":0}", ""},
+		{"hide with input", "POST", URLBasePath + "/drafts/job-1/hide", urlCreateBody, ""},
 		{"delete runs path", "DELETE", URLBasePath + "/runs/job-1", "", ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -369,12 +370,12 @@ func TestURLAPIExternalConsentOnlyOnStart(t *testing.T) {
 	}
 }
 
-// 끝나지 않은 회차 삭제 거절(run_active)은 409로 그대로 보인다(2026-11-23).
-func TestURLAPIDeleteRunActiveIsConflict(t *testing.T) {
+// 끝나지 않은 회차 숨기기 거절(run_active)은 409로 그대로 보인다(2026-11-23).
+func TestURLAPIHideRunActiveIsConflict(t *testing.T) {
 	endpoint := &urlTestEndpoint{reply: func(req diagnosisprep.Request) (diagnosisprep.Response, error) {
 		return diagnosisprep.Response{Version: diagnosisprep.Version, RequestID: req.RequestID, Error: "run_active"}, nil
 	}}
-	response := urlTestRequest(urlTestHandler(t, endpoint), "POST", URLBasePath+"/drafts/job-1/delete", urlMutationBody, "")
+	response := urlTestRequest(urlTestHandler(t, endpoint), "POST", URLBasePath+"/drafts/job-1/hide", urlMutationBody, "")
 	if response.Code != 409 || !strings.Contains(response.Body.String(), "run_active") || len(endpoint.calls) != 1 || endpoint.calls[0].ExpectedRevision != 1 {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}

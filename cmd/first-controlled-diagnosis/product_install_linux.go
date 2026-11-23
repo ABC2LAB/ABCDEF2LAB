@@ -167,8 +167,6 @@ func runProductInstall(ctx context.Context, args []string, stdout, stderr io.Wri
 		if err = productPrepareAPIProjection(*root); err != nil {
 			return 1
 		}
-		// 처음 설치 뒤에 생긴 끝난 점검 삭제 기능은 기존 설치에도 맞춘다(멱등, 실패해도 기동은 막지 않음)
-		productMigrateInstalledRunPurge(ctx, *root, *input, stderr)
 		fmt.Fprintln(stdout, "product_already_installed")
 		return 0
 	}
@@ -417,9 +415,6 @@ func productInstall(ctx context.Context, root string, c productInstallInput, hos
 		return errPreparation
 	}
 	if productGrantRoles(ctx, admin.DB, c.DatabaseName, c.TargetPolicy.Workflow != nil) != nil {
-		return errPreparation
-	}
-	if productEnsureRunPurge(ctx, admin.DB, config, c.DatabaseHost, c.DatabaseName) != nil {
 		return errPreparation
 	}
 	if len(hostRoot) == 1 && hostRoot[0] != "" {

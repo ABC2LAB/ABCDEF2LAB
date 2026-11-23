@@ -149,8 +149,8 @@ func (h *URLHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			req.Command = diagnosisprep.Status
-		// delete는 끝난 회차의 점검 결과를 지운다(2026-11-23). 본문은 stop과 같다(version·expected_revision).
-		case "validate", "start", "stop", "delete":
+		// hide는 끝난 회차를 목록·조회에서 숨긴다(2026-11-23, 화면 '삭제'). 본문은 stop과 같다(version·expected_revision).
+		case "validate", "start", "stop", "hide":
 			if r.Method != http.MethodPost {
 				urlFail(w, 405, "method_not_allowed")
 				return

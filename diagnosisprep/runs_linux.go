@@ -17,9 +17,9 @@ func (s *Service) listRunsLocked(ctx context.Context, req Request) Response {
 	runs := make([]RunSummary, 0)
 	now := time.Now()
 	owned := make([]Job, 0)
-	// 지운 회차(Purged)는 목록에 두지 않는다. 기록은 저널에 남아 실행 횟수·예산에는 계속 센다.
+	// 숨긴 회차(Hidden)는 목록에 두지 않는다. 기록은 저널에 남아 실행 횟수·예산에는 계속 센다.
 	for _, record := range s.jobs {
-		if record.Principal == req.Principal && !record.Purged {
+		if record.Principal == req.Principal && !record.Hidden {
 			owned = append(owned, record.Job)
 		}
 	}
@@ -29,7 +29,7 @@ func (s *Service) listRunsLocked(ctx context.Context, req Request) Response {
 	}
 
 	for _, record := range s.jobs {
-		if record.Principal != req.Principal || record.Purged {
+		if record.Principal != req.Principal || record.Hidden {
 			continue
 		}
 		if ctx.Err() != nil {
