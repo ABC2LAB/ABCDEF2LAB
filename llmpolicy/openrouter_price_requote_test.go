@@ -133,8 +133,8 @@ func TestOpenRouterRunPriceRequoteOnlyV4(t *testing.T) {
 	// 이미 호출한 v4 점검도 바꾸지 않는다.
 	p := samplingPolicy(t, routingManifest(t, 4, fallbackRoutingJSON))
 	_ = wireMaxPrice(t, p)
-	if p.ApplyRunPriceRequote(t.Context(), fetch, requoteNow) == nil {
-		t.Fatal("호출 뒤 상한을 바꿈")
+	if p.ApplyRunPriceRequote(t.Context(), fetch, requoteNow) == nil || *calls != 0 {
+		t.Fatalf("호출 뒤 상한을 바꾸거나 목록을 읽음: %d", *calls)
 	}
 }
 
@@ -163,6 +163,8 @@ func TestOpenRouterNotFoundExplainsPriceExclusion(t *testing.T) {
 			t.Fatal("404를 받음")
 		}
 	}
+	// 404 설명은 점검마다 한 번만 읽는다(정책이 막힌 뒤나 동시 호출이 겹쳐도).
+	p.explainNotFound(t.Context(), requoteNow)
 	caps := p.Snapshot().PriceCaps
 	if calls != 2 || caps == nil || caps.NotFoundChecked == nil || caps.Providers[0].Status != OpenRouterProviderOverCap ||
 		*caps.Providers[0].OutputMicros != 3000000 || caps.Providers[1].Status != OpenRouterProviderWithinCap || caps.OutputMicros != 2280000 {
