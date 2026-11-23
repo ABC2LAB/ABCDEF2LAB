@@ -731,13 +731,13 @@ func TestFirstDiagnosisOpenRouterBudgetRejectedResponseWithUsageIsPerCall(t *tes
 	}
 }
 
-// 준비 단계 전체 상한은 차례로 도는 목표 만들기 호출과 첫 계획이 각자 자기 상한(170초)까지 걸려도 들어가야 한다. 짧으면 정상
+// 준비 단계 전체 상한은 차례로 도는 목표 만들기 전체(모델 턴 여러 번, 따로 170초로 묶음)와 첫 계획이 각자 자기 상한까지 걸려도 들어가야 한다. 짧으면 정상
 // 응답 두 번(예: 각각 160초)으로 첫 계획이 계획 상한이 아니라 준비 단계 상한에 먼저 잘려 O 회차가 계획 실패로 끝난다
 // (2026-11-23 화면 VAmPI, #879 리뷰). 결속·처리 여유 1분을 더 남긴다.
 func TestFirstDiagnosisPreparationTimeoutCoversGoalAndPlan(t *testing.T) {
-	sequential := firstDiagnosisGoalCallAllowance + agent.E2HTTPPlannerDefaultDuration
-	if firstDiagnosisGoalCallAllowance < agent.E2HTTPPlannerDefaultDuration || FirstDiagnosisPreparationTimeout < sequential+time.Minute {
-		t.Fatalf("준비 단계 상한 %s가 목표 호출 %s + 계획 %s + 여유 1분보다 짧음", FirstDiagnosisPreparationTimeout, firstDiagnosisGoalCallAllowance, agent.E2HTTPPlannerDefaultDuration)
+	sequential := firstDiagnosisGoalCreationLimit + agent.E2HTTPPlannerDefaultDuration
+	if firstDiagnosisGoalCreationLimit < agent.E2HTTPPlannerDefaultDuration || FirstDiagnosisPreparationTimeout < sequential+time.Minute {
+		t.Fatalf("준비 단계 상한 %s가 목표 만들기 %s + 계획 %s + 여유 1분보다 짧음", FirstDiagnosisPreparationTimeout, firstDiagnosisGoalCreationLimit, agent.E2HTTPPlannerDefaultDuration)
 	}
 	// 준비 단계 문맥이 이 상한을 기한으로 쓴다.
 	before := time.Now()

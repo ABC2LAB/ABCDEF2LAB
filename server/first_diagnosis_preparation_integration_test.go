@@ -40,6 +40,7 @@ type firstDiagnosisPreparationModel struct {
 	mutationError  bool
 	badProfile     bool
 	noGoals        bool // 목표 분해 차례에 도구를 부르지 않고 끝낸다(목표 0개).
+	stallGoals     bool // 목표 분해 차례에 응답하지 않고 요청이 끊길 때까지 기다린다(목표 만들기 상한, #879).
 	noIntents      bool // 계획 차례에 add_intent를 부르지 않고 끝낸다(intent 0개).
 	// loopPlan이면 계획 차례마다 list_assets를 다시 불러 Plan이 턴 상한에서만 끝나게 하고, 계획 요청의 메시지 수 범위를 남긴다.
 	loopPlan         bool
@@ -83,6 +84,12 @@ func (m *firstDiagnosisPreparationModel) ServeHTTP(w http.ResponseWriter, r *htt
 		case "Bash", "WebFetch", "WebSearch", "Read", "Write", "Edit", "MultiEdit", "LS", "Glob", "Grep":
 			m.outbound = true
 		}
+	}
+	if goalRound && m.stallGoals {
+		m.mu.Unlock()
+		<-r.Context().Done()
+		m.mu.Lock()
+		return
 	}
 	if goalRound && m.nextGoalChange != nil {
 		change := m.nextGoalChange
@@ -521,6 +528,77 @@ func TestFirstDiagnosisPreparationOwnedPostgres(t *testing.T) {
 		modelState.mu.Unlock()
 		if goals != 0 || intents != 1 || setGoals != 0 || addIntent != 1 {
 			t.Fatalf("목표 분해 실패 뒤 계획: goals=%d intents=%d set_goals=%d add_intent=%d", goals, intents, setGoals, addIntent)
+		}
+		if targetHits.Load() != 0 {
+			t.Fatal("준비 단계에서 대상 요청이 발생함")
+		}
+	})
+
+	// 목표 분해가 목표 만들기 상한을 넘어도(응답 없이 멈춘 모델 턴) 분해만 끊고 원래 목표로 계획을 계속한다(#879).
+	// 첫 계획은 준비 단계 상한이 아니라 자기 상한 안에서 돈다.
+	t.Run("goal-timeout", func(t *testing.T) {
+		next, err := PrepareFirstDiagnosisTask(ctx, pool, description, "Prepare a fresh owned fixture without executing it.", profileID, 60)
+		if err != nil {
+			t.Fatal("새 빈 준비 task 생성 실패")
+		}
+		manager.LoadExisting()
+		nextServer, err := NewFirstDiagnosisPreparationServer(ctx, manager, skillDir, dataDir, keyDir, manifest)
+		if err != nil {
+			t.Fatal("목표 분해 실패 준비 서버 생성 실패")
+		}
+		nextSupervisor, err := NewFirstDiagnosisSupervisor(ctx, manager)
+		if err != nil || nextSupervisor.Attach(nextServer) != nil {
+			t.Fatal("목표 분해 실패 준비 감독자 결속 실패")
+		}
+		defer func() {
+			cleanup, stop := context.WithTimeout(context.Background(), 5*time.Second)
+			defer stop()
+			shutdown := nextSupervisor.Shutdown()
+			for _, finish := range []func(context.Context, *Server) error{shutdown.BlockAdmission, shutdown.CancelAndDrain, shutdown.CheckResults} {
+				if finish(cleanup, nextServer) != nil {
+					t.Error("목표 분해 실패 준비 writer 정리 실패")
+					break
+				}
+			}
+		}()
+		priorGoalTimeout := firstDiagnosisGoalCreationTimeout
+		firstDiagnosisGoalCreationTimeout = 2 * time.Second
+		defer func() { firstDiagnosisGoalCreationTimeout = priorGoalTimeout }()
+		modelState.mu.Lock()
+		modelState.stallGoals = true
+		before := map[string]int{}
+		for k, v := range modelState.emitted {
+			before[k] = v
+		}
+		modelState.mu.Unlock()
+		defer func() {
+			modelState.mu.Lock()
+			modelState.stallGoals = false
+			modelState.mu.Unlock()
+		}()
+		// 실제 진단 로거를 붙여, 분해 실패 기록이 관찰 불완전(완료 실행을 unknown으로 바꾸는 표시)이 되지 않는지 본다.
+		logger, err := diagnosticlog.Create(privateDir(), "preparation", next.TaskID, "")
+		if err != nil {
+			t.Fatal("준비 진단 로거 생성 실패")
+		}
+		defer logger.Close()
+		bounded, stop := context.WithTimeout(diagnosticlog.With(ctx, logger), 20*time.Second)
+		defer stop()
+		if err := nextSupervisor.PrepareIntents(bounded, strconv.FormatInt(next.TaskID, 10)); err != nil {
+			t.Fatal("목표 만들기 상한을 넘은 뒤 원래 목표로 계속하지 않음")
+		}
+		if logger.Err() != nil || logger.Incomplete() {
+			t.Fatalf("목표 분해 실패 기록이 진단 로그를 깨거나 관찰 불완전으로 표시함: err=%v", logger.Err() != nil)
+		}
+		var goals, intents int
+		if pool.QueryRowContext(ctx, "SELECT count(*) FILTER (WHERE kind='goal'), count(*) FILTER (WHERE kind='intent' AND state='open') FROM exploration_nodes WHERE exploration_id=$1", next.ExplorationID).Scan(&goals, &intents) != nil {
+			t.Fatal("목표 분해 실패 준비 산출물 조회 실패")
+		}
+		modelState.mu.Lock()
+		setGoals, addIntent := modelState.emitted["set_goals"]-before["set_goals"], modelState.emitted["add_intent"]-before["add_intent"]
+		modelState.mu.Unlock()
+		if goals != 0 || intents != 1 || setGoals != 0 || addIntent != 1 {
+			t.Fatalf("목표 만들기 상한 뒤 계획: goals=%d intents=%d set_goals=%d add_intent=%d", goals, intents, setGoals, addIntent)
 		}
 		if targetHits.Load() != 0 {
 			t.Fatal("준비 단계에서 대상 요청이 발생함")
