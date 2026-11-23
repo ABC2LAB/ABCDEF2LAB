@@ -17,6 +17,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"math/big"
 	"net/netip"
 	"net/url"
@@ -176,7 +177,19 @@ func runProductInstall(ctx context.Context, args []string, stdout, stderr io.Wri
 	}
 	defer clear(raw)
 	var c productInstallInput
-	if decodeLaunchJSON(raw, &c) != nil || c.Format != "abc2lab.product-install/v2" || len(c.AdminPassword) < 12 || c.ValidForHours < 1 || c.ValidForHours > productMaxInstallHours || c.MaxRuns < 1 || c.MaxRuns > productMaxDelegatedRuns {
+	if decodeLaunchJSON(raw, &c) != nil {
+		return 2
+	}
+	// 칸을 생략했는지와 0을 적었는지를 가른다. 0은 잘못 적은 값으로 보고 아래 검사가 거부한다.
+	var given struct {
+		ValidForHours *int64 `json:"valid_for_hours"`
+		MaxRuns       *int64 `json:"max_runs"`
+	}
+	if json.Unmarshal(raw, &given) != nil {
+		return 2
+	}
+	productInstallDefaults(&c, given.ValidForHours == nil, given.MaxRuns == nil)
+	if c.Format != "abc2lab.product-install/v2" || len(c.AdminPassword) < 12 || c.ValidForHours < 1 || c.ValidForHours > productMaxInstallHours || c.MaxRuns < 1 || c.MaxRuns > productMaxDelegatedRuns {
 		return 2
 	}
 	if c.DatabasePasswordFile == "" {
@@ -343,20 +356,37 @@ func productOpenRouterMaxConcurrent(c productInstallInput) int64 {
 	return p.Limits().MaxConcurrent
 }
 
-// 설치가 저장하는 위임 프로파일의 회차·합산 예산을 한 경로에서 완성한다.
-func productDelegateProfile(profile urlPreparationProfile, mode string, runs int64) urlPreparationProfile {
-	if mode == "openrouter" {
+// productInstallDefaults는 설치 입력에서 생략한 수명·위임 실행 횟수를 기본값으로 채운다(2026-11-23 사용자 결정: 30일,
+// 100회). 적은 값(0·음수 포함)은 그대로 두어 뒤의 입력 검사가 판단한다.
+func productInstallDefaults(c *productInstallInput, hoursOmitted, runsOmitted bool) {
+	if hoursOmitted {
+		c.ValidForHours = productDefaultInstallHours
+	}
+	if runsOmitted {
+		c.MaxRuns = productDefaultDelegatedRuns
+	}
+}
+
+// 설치가 저장하는 위임 프로파일의 회차·합산 예산을 한 경로에서 완성한다. OpenRouter 승인 총량이 점검 하나의 값(v4,
+// perRunTotals)이면 로컬처럼 위임 실행 횟수만큼 합산 예산을 잡는다(2026-11-23 사용자 결정 (가)). v1~v3 승인은 총량이
+// 승인 전체의 누적 값이라 지금처럼 실행 한 번으로 묶는다. 합산이 int64를 넘으면 설치를 거부한다.
+func productDelegateProfile(profile urlPreparationProfile, mode string, runs int64, perRunTotals bool) (urlPreparationProfile, error) {
+	if mode == "openrouter" && !perRunTotals {
 		runs = 1
+	}
+	if runs < 1 {
+		return urlPreparationProfile{}, errPreparation
 	}
 	profile.MaxRuns = runs
 	profile.AggregateBudget = profile.Budget
-	profile.AggregateBudget.Requests *= runs
-	profile.AggregateBudget.ModelRequests *= runs
-	profile.AggregateBudget.InputTokens *= runs
-	profile.AggregateBudget.OutputTokens *= runs
-	profile.AggregateBudget.CostUSDMicros *= runs
-	profile.AggregateBudget.DurationSeconds *= runs
-	return profile
+	for _, v := range []*int64{&profile.AggregateBudget.Requests, &profile.AggregateBudget.ModelRequests, &profile.AggregateBudget.InputTokens,
+		&profile.AggregateBudget.OutputTokens, &profile.AggregateBudget.CostUSDMicros, &profile.AggregateBudget.DurationSeconds} {
+		if *v < 0 || *v > math.MaxInt64/runs {
+			return urlPreparationProfile{}, errPreparation
+		}
+		*v *= runs
+	}
+	return profile, nil
 }
 
 func productInstall(ctx context.Context, root string, c productInstallInput, hostRoot ...string) error {
@@ -522,6 +552,7 @@ func productInstall(ctx context.Context, root string, c productInstallInput, hos
 		manifestPath := filepath.Join(config, mode+"-model.json")
 		var manifestSHA string
 		end := until
+		perRunTotals := false
 		if mode == "openrouter" {
 			var raw map[string]json.RawMessage
 			if json.Unmarshal(manifest, &raw) != nil {
@@ -534,6 +565,7 @@ func productInstall(ctx context.Context, root string, c productInstallInput, hos
 				return errPreparation
 			}
 			limits := p.Limits()
+			perRunTotals = p.PerRunTotals()
 			budget.ModelRequests, budget.InputTokens, budget.OutputTokens, budget.CostUSDMicros = limits.Requests, limits.InputTokens, limits.OutputTokens, limits.CostMicros
 			if limits.ExpiresAt.Before(end) {
 				end = limits.ExpiresAt
@@ -573,7 +605,11 @@ func productInstall(ctx context.Context, root string, c productInstallInput, hos
 		if e != nil {
 			return errPreparation
 		}
-		installation.Product.Models = append(installation.Product.Models, productDelegateProfile(urlPreparationProfile{ID: "product-model-" + mode, Label: "승인된 URL 진단", Principal: "ARTEX", ModelProfileRef: "model-" + mode, ModelLabel: model, DelegationRef: "product-" + mode, DeriveRuns: true, ValidFrom: now.Add(-30 * time.Second), ValidUntil: end, Budget: budget, Launch: urlProtectedPin{File: launchPath, SHA256: launchSHA}, PolicySHA256: policySHA, ManifestSHA256: manifestSHA, ModelLimitsRef: "installed-model-limits", InputTokensPerCall: int64(contextK) * 1024, OutputTokensPerCall: int64(output)}, mode, c.MaxRuns))
+		delegated, e := productDelegateProfile(urlPreparationProfile{ID: "product-model-" + mode, Label: "승인된 URL 진단", Principal: "ARTEX", ModelProfileRef: "model-" + mode, ModelLabel: model, DelegationRef: "product-" + mode, DeriveRuns: true, ValidFrom: now.Add(-30 * time.Second), ValidUntil: end, Budget: budget, Launch: urlProtectedPin{File: launchPath, SHA256: launchSHA}, PolicySHA256: policySHA, ManifestSHA256: manifestSHA, ModelLimitsRef: "installed-model-limits", InputTokensPerCall: int64(contextK) * 1024, OutputTokensPerCall: int64(output)}, mode, c.MaxRuns, perRunTotals)
+		if e != nil {
+			return e
+		}
+		installation.Product.Models = append(installation.Product.Models, delegated)
 		if first.Format == "" {
 			first = launch
 			if admin.SetActiveProfile(id) != nil {

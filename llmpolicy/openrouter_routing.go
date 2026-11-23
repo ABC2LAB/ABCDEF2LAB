@@ -193,3 +193,10 @@ func (c *OpenRouterProviderCounts) UnmarshalJSON(data []byte) error {
 	copy(c[:], in)
 	return nil
 }
+
+// perRun은 승인 총량이 점검 하나의 값인지다(v4). v1~v3은 승인 하나를 누적해 센다.
+func (p *OpenRouterPolicy) perRun() bool { return p != nil && p.manifest.Version >= 4 }
+
+// PerRunTotals는 이 승인의 총량(max_*)이 점검 하나의 값인지다. 설치는 참이면 위임 실행 횟수만큼 합산 예산을 잡고,
+// 거짓이면 지금처럼 실행 한 번으로 묶는다.
+func (p *OpenRouterPolicy) PerRunTotals() bool { return p.perRun() }

@@ -197,7 +197,11 @@ func TestProductInstallMaximumDelegationReachesPreparationAdmission(t *testing.T
 	profile.ValidUntil = time.Now().UTC().Add(8760 * time.Hour)
 	f.policy.ValidUntil = profile.ValidUntil
 	// 실제 설치기와 같은 생성 함수에서 보호 파일·실제 로더·준비 검증까지 통과시킨다.
-	f.config.Profiles[0] = productDelegateProfile(profile, "local_only", 100000)
+	delegated, err := productDelegateProfile(profile, "local_only", 100000, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.config.Profiles[0] = delegated
 	f.write()
 	backend := f.runtime()
 	inspection := f.inspect(backend)
@@ -221,10 +225,30 @@ func TestProductInstallMaximumDelegationReachesPreparationAdmission(t *testing.T
 	f.assertNoConnections()
 }
 
+// v1~v3 OpenRouter 승인은 총량이 승인 전체의 누적 값이라 실행 한 번으로 묶는다(평가 러너·CLI 경로의 이전 동작).
 func TestProductInstallExternalDelegationRemainsSingleRun(t *testing.T) {
 	budget := diagnosisprep.Budget{Requests: 4, ModelRequests: 20, InputTokens: 8192, OutputTokens: 2048, CostUSDMicros: 300, DurationSeconds: 30}
-	profile := productDelegateProfile(urlPreparationProfile{Budget: budget}, "openrouter", 100000)
-	if profile.MaxRuns != 1 || profile.AggregateBudget != budget {
-		t.Fatal("외부 API 회차를 설치 상한으로 확대")
+	profile, err := productDelegateProfile(urlPreparationProfile{Budget: budget}, "openrouter", 100000, false)
+	if err != nil || profile.MaxRuns != 1 || profile.AggregateBudget != budget {
+		t.Fatal("누적 승인(v1~v3) 외부 API 회차를 설치 상한으로 확대")
+	}
+}
+
+// v4 OpenRouter 승인은 총량이 점검 하나의 값이라 위임 실행 횟수만큼 합산 예산을 잡는다(2026-11-23 사용자 결정 (가)).
+func TestProductInstallExternalPerRunDelegation(t *testing.T) {
+	budget := diagnosisprep.Budget{Requests: 4, ModelRequests: 20, InputTokens: 8192, OutputTokens: 2048, CostUSDMicros: 300, DurationSeconds: 30}
+	profile, err := productDelegateProfile(urlPreparationProfile{Budget: budget}, "openrouter", 100, true)
+	want := diagnosisprep.Budget{Requests: 400, ModelRequests: 2000, InputTokens: 819200, OutputTokens: 204800, CostUSDMicros: 30000, DurationSeconds: 3000}
+	if err != nil || profile.MaxRuns != 100 || profile.Budget != budget || profile.AggregateBudget != want {
+		t.Fatalf("점검당 승인의 합산 예산: %+v %v", profile.AggregateBudget, err)
+	}
+	// 합산이 int64를 넘으면 설치를 거부한다(승인 총량은 2^53까지, 위임 실행은 100000회까지).
+	huge := budget
+	huge.InputTokens = 1 << 53
+	if _, err := productDelegateProfile(urlPreparationProfile{Budget: huge}, "openrouter", productMaxDelegatedRuns*10, true); err == nil {
+		t.Fatal("넘치는 합산 예산을 받음")
+	}
+	if _, err := productDelegateProfile(urlPreparationProfile{Budget: budget}, "openrouter", 0, true); err == nil {
+		t.Fatal("위임 실행 0회를 받음")
 	}
 }

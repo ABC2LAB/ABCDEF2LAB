@@ -27,11 +27,26 @@ var ErrInvalidOpenRouterManifestFile = errors.New("llmpolicy: invalid profile ma
 // It only returns a resolver. Installing it and invalidating old providers is
 // the host's responsibility.
 func LoadOpenRouterManifestFile(path string) (*OpenRouterPolicy, error) {
-	return loadOpenRouterManifestFile(path, io.ReadAll)
+	return loadOpenRouterManifestFile(path, io.ReadAll, "", false)
 }
 
+// LoadOpenRouterManifestFileForRun은 제품 URL 진단 회차 하나가 쓰는 정책을 읽는다(2026-11-23 사용자 결정 (가)).
+// v4 manifest는 승인 총량(max_*)이 점검 하나의 값이라, 예약 장부를 점검마다 따로 센다(run은 그 점검의 회차 참조).
+// 같은 점검을 다시 읽으면(재시작) 같은 장부를 이어 세고, 다른 점검의 장부는 지우지 않고 남긴다. run이 비면 보내지
+// 않는 확인(새 점검을 시작할 수 있는지)만 할 수 있고 예약·호출 기록은 거부한다. v1~v3 manifest는 지금처럼 승인 하나를
+// 누적해 센다(평가 러너·CLI 두 프로세스 경로가 기대는 동작).
+func LoadOpenRouterManifestFileForRun(path, run string) (*OpenRouterPolicy, error) {
+	if strings.IndexByte(run, 0) >= 0 || len(run) > openRouterRunRefMax {
+		return nil, ErrInvalidOpenRouterManifestFile
+	}
+	return loadOpenRouterManifestFile(path, io.ReadAll, run, true)
+}
+
+// openRouterRunRefMax는 점검 참조의 길이 상한이다. 파일 이름에는 참조의 SHA-256 앞부분만 쓴다.
+const openRouterRunRefMax = 256
+
 // Keep the read dependency call-scoped so rechecks can be tested without shared hooks.
-func loadOpenRouterManifestFile(path string, readAll func(io.Reader) ([]byte, error)) (*OpenRouterPolicy, error) {
+func loadOpenRouterManifestFile(path string, readAll func(io.Reader) ([]byte, error), run string, forRun bool) (*OpenRouterPolicy, error) {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path || strings.IndexByte(path, 0) >= 0 {
 		return nil, ErrInvalidOpenRouterManifestFile
 	}
@@ -107,6 +122,18 @@ func loadOpenRouterManifestFile(path string, readAll func(io.Reader) ([]byte, er
 	legacyMarker := ".openrouter-" + approval + ".used"
 	ledgerName := ".openrouter-" + approval + ".ledger"
 	callsName := ".openrouter-" + approval + ".calls"
+	// 점검별 장부(v4, 제품 URL 경로). 승인 장부 파일은 그대로 두고 점검마다 새 파일 쌍을 쓴다. 기록을 지우거나 고치지
+	// 않고 세는 단위만 점검이 된다.
+	noSpend := false
+	if forRun && resolver.perRun() {
+		if run == "" {
+			noSpend = true
+		} else {
+			ref := fmt.Sprintf("%x", sha256.Sum256([]byte(run)))[:32]
+			ledgerName = ".openrouter-" + approval + ".run-" + ref + ".ledger"
+			callsName = ".openrouter-" + approval + ".run-" + ref + ".calls"
+		}
+	}
 	openDirectory := func() (int, error) {
 		fresh, err := openRouterProtectedDirectory(dir)
 		if err != nil {
@@ -132,9 +159,12 @@ func loadOpenRouterManifestFile(path string, readAll func(io.Reader) ([]byte, er
 			return err
 		}
 		defer unix.Close(fresh)
-		totals, err := openRouterReadLedger(fresh, ledgerName, false, resolver.manifest)
-		if err != nil {
-			return err
+		var totals openRouterLedgerTotals
+		if !noSpend {
+			// 새 점검 확인(noSpend)은 아직 장부가 없는 점검이라 합계가 0이다.
+			if totals, err = openRouterReadLedger(fresh, ledgerName, false, resolver.manifest); err != nil {
+				return err
+			}
 		}
 		m := resolver.manifest
 		if !m.fits(totals, m.MaxInputPerCall, 1, openRouterReservedCost(m, 1)) {
@@ -145,6 +175,9 @@ func loadOpenRouterManifestFile(path string, readAll func(io.Reader) ([]byte, er
 	resolver.ledger = func(input, output, cost int64) error {
 		// 승인별 누적 예약(P3 결정안 C07). 배타 잠금 안에서 다시 읽고, 승인 총량 안일 때만 한 줄을 더해 fsync한다.
 		// 재시작·다른 프로세스가 같은 승인을 써도 총량을 넘지 못한다. 예약은 되돌리지 않는다.
+		if noSpend {
+			return ErrOpenRouterPolicy
+		}
 		fresh, err := openDirectory()
 		if err != nil {
 			return err
@@ -153,6 +186,9 @@ func loadOpenRouterManifestFile(path string, readAll func(io.Reader) ([]byte, er
 		return openRouterAppendLedger(fresh, ledgerName, resolver.manifest, input, output, cost)
 	}
 	resolver.settleLedger = func(reserved, actual [3]int64) error {
+		if noSpend {
+			return ErrOpenRouterPolicy
+		}
 		fresh, err := openDirectory()
 		if err != nil {
 			return err
@@ -161,6 +197,9 @@ func loadOpenRouterManifestFile(path string, readAll func(io.Reader) ([]byte, er
 		return openRouterSettleLedger(fresh, ledgerName, resolver.manifest, reserved, actual)
 	}
 	resolver.callLog = func(rec OpenRouterCallRecord) error {
+		if noSpend {
+			return ErrOpenRouterPolicy
+		}
 		fresh, err := openDirectory()
 		if err != nil {
 			return err
