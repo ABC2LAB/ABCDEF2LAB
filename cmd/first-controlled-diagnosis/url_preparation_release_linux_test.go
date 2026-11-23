@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sync"
@@ -118,12 +120,16 @@ func closedWithin(ch <-chan struct{}, d time.Duration) bool {
 	}
 }
 
-// 준비 컨테이너가 재시작하면 같이 쓰던 netns에 lo만 남는다(실측). 그때만 종료 신호를 낸다.
-func TestSharedNetworkWatchFiresWhenOnlyLoopbackRemains(t *testing.T) {
+// 준비 컨테이너가 재시작하면 같이 쓰던 netns에 lo만 남는다(실측). 그때 준비 서비스가 다시 응답할 때까지 기다렸다가 종료
+// 신호를 낸다(먼저 종료하면 Docker가 시작에 실패하고 다시 띄우지 않는다). 시간을 재지 않는다.
+func TestSharedNetworkWatchWaitsForPreparationBeforeExit(t *testing.T) {
 	l := &interfaceList{ifaces: []net.Interface{loopback, eth0}}
+	var mu sync.Mutex
+	back := false
+	ready := func(context.Context) bool { mu.Lock(); defer mu.Unlock(); return back }
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	lost := watchSharedNetwork(ctx, 5*time.Millisecond, 30*time.Millisecond, l.list)
+	lost := watchSharedNetwork(ctx, 5*time.Millisecond, l.list, ready)
 	if closedWithin(lost, 50*time.Millisecond) {
 		t.Fatal("인터페이스가 있는데 종료 신호")
 	}
@@ -132,12 +138,14 @@ func TestSharedNetworkWatchFiresWhenOnlyLoopbackRemains(t *testing.T) {
 		t.Fatal("인터페이스를 못 읽은 회차로 종료")
 	}
 	l.set([]net.Interface{loopback}, nil)
-	// 준비 컨테이너가 다시 뜰 시간을 두고 종료한다(바로 종료하면 Docker가 재시작에 실패하고 멈춘다)
-	if closedWithin(lost, 15*time.Millisecond) {
-		t.Fatal("다시 뜰 시간을 두지 않고 바로 종료")
+	if closedWithin(lost, 100*time.Millisecond) {
+		t.Fatal("준비 서비스가 돌아오기 전에 종료(재시작이 실패해 멈춤)")
 	}
+	mu.Lock()
+	back = true
+	mu.Unlock()
 	if !closedWithin(lost, time.Second) {
-		t.Fatal("lo만 남았는데 종료하지 않음")
+		t.Fatal("준비 서비스가 돌아왔는데 종료하지 않음")
 	}
 }
 
@@ -145,8 +153,44 @@ func TestSharedNetworkWatchStaysOffWithoutNetwork(t *testing.T) {
 	l := &interfaceList{ifaces: []net.Interface{loopback}}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if closedWithin(watchSharedNetwork(ctx, 5*time.Millisecond, 30*time.Millisecond, l.list), 50*time.Millisecond) {
+	if closedWithin(watchSharedNetwork(ctx, 5*time.Millisecond, l.list, func(context.Context) bool { return true }), 50*time.Millisecond) {
 		t.Fatal("처음부터 망이 없는 배치에서 종료 신호")
+	}
+}
+
+// workbench는 옛 netns의 loopback으로 api health를 본다: ready면 준비 서비스가 돌아온 것, api가 사라져 연결이 거부되면
+// api가 이미 (준비 서비스가 돌아온 뒤) 종료한 것이다. 503·다른 오류는 아직이다.
+func TestAPIRejoinReady(t *testing.T) {
+	state := http.StatusServiceUnavailable
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		code := state
+		mu.Unlock()
+		w.WriteHeader(code)
+		_, _ = w.Write([]byte(`{"ready":` + map[bool]string{true: "true", false: "false"}[code == http.StatusOK] + `}`))
+	}))
+	client := &http.Client{Timeout: time.Second}
+	check := apiRejoinReady(client, srv.URL)
+	if check(t.Context()) {
+		t.Fatal("준비 서비스가 안 돌아왔는데(503) 준비됨")
+	}
+	mu.Lock()
+	state = http.StatusOK
+	mu.Unlock()
+	if !check(t.Context()) {
+		t.Fatal("api가 ready인데 준비 안 됨")
+	}
+	srv.Close() // api가 종료해 연결이 거부됨
+	if !check(t.Context()) {
+		t.Fatal("api가 이미 종료(연결 거부)했는데 기다림")
+	}
+	if apiRejoinReady(client, "http://192.0.2.1:9")(func() context.Context {
+		c, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+		t.Cleanup(cancel)
+		return c
+	}()) {
+		t.Fatal("응답 없음(시간 초과)을 준비됨으로 봄")
 	}
 }
 

@@ -330,7 +330,7 @@ func runURLDiagnosisAPI(ctx context.Context, args []string, stdout, stderr io.Wr
 	go func() { serving <- httpServer.Serve(listener) }()
 	outputErr := json.NewEncoder(stdout).Encode(map[string]any{"service_ready": true, "mode": "url_diagnosis_api", "storage": "private_service_durable"})
 	var serveErr error
-	lost := watchSharedNetwork(ctx, sharedNetworkCheckInterval, sharedNetworkRejoinDelay, net.Interfaces)
+	lost := watchSharedNetwork(ctx, sharedNetworkCheckInterval, net.Interfaces, preparationAnswers(endpoint))
 	networkLost := false
 	if outputErr == nil {
 		select {
