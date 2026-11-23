@@ -396,10 +396,11 @@ E② 실행 자원(러너·샌드박스·E² 송신)뿐이다. 다른 컨테이�
   경계에 열린 세션이 없음을 확인한 뒤에만 `execution_returned`·`resources_recovered`와 감사 기록의 새 init·완료 시각·
   경계 확인 시각을 남겨 잠금을 푼다. 경계를 확인하지 못하면 잠금을 유지하고 다음 조회·시작 때 다시 본다.
 - `api`·`workbench`는 준비 컨테이너 netns를 같이 쓰므로, 준비 컨테이너가 재시작하면 옛 netns에 lo만 남는다(실측).
-  둘은 lo 밖 인터페이스가 사라지면 5초 기다린 뒤 스스로 정상 종료(75)하고 재시작 정책이 새 netns에 다시 붙인다(준비
-  컨테이너가 아직 안 떴을 때 종료하면 Docker가 시작에 한 번 실패하고 다시 띄우지 않으므로 기다린다, 실측). 화면은 그동안
-  '재시작 중'을 보여 주고 다시 붙으면 상태를 새로 읽는다. 그래도 `api`·`workbench`가 내려간 채면
-  `./scripts/product-compose.sh up -d`로 다시 띄운다(볼륨·영수증은 그대로).
+  둘은 lo 밖 인터페이스가 사라지면, 준비 서비스가 다시 응답하는 걸 확인한 뒤에만 스스로 정상 종료(75)하고 재시작 정책이
+  새 netns에 다시 붙인다(api는 비공개 소켓으로 준비 서비스 Catalog, workbench는 옛 netns loopback의 api health — ready이거나
+  api가 이미 종료해 연결이 거부되면). 준비 컨테이너가 아직 안 떴을 때 종료하면 Docker가 'network_mode: container' 시작에
+  실패하고 재시작 정책이 더 시도하지 않기 때문이다(2026-11-23 리허설 실측). 화면은 그동안 '재시작 중'을 보이고, 1분 안에
+  다시 붙지 않으면 서버에서 `./scripts/product-compose.sh up -d`를 실행하라고 안내한다(볼륨·영수증은 그대로).
 - 결과 불명 사실·결과·모델 사용량·예약·실행 횟수는 바꾸지 않는다. 감사 기록은 지우거나 바꿀 수 없다(영수증 전이 검사).
 - 자동 재시작(장애)의 #559 복구는 지금도 탐색 경계 세션을 확인하지 않는다(위 '전체 재기동' 절차의 이유). 운영자 해제만
   경계 확인을 거친다.
@@ -409,7 +410,7 @@ E② 실행 자원(러너·샌드박스·E² 송신)뿐이다. 다른 컨테이�
 `TestReleaseRequiresOwningPrincipal`, `TestReleaseRefusedWhenExplorationSessionNotClosed`,
 `TestReleaseCompletionWaitsForBoundaryAndNewInit`, `TestReleaseUnsupportedWithoutInitEvidence`,
 `TestReleaseRecordChangesAreRestricted`(diagnosisprep), `TestProductReleaseRequiresOperator` 외 2(server),
-`TestReleaseClosesOnlyThatJobsExplorationSession`·`TestSharedNetworkWatch*`(제품 실행 파일),
+`TestReleaseClosesOnlyThatJobsExplorationSession`·`TestReleaseRequiresSessionGoneAfterClose`·`TestSharedNetworkWatch*`·`TestAPIRejoinReady`(제품 실행 파일), `TestReleaseCompletionSurvivesClockStepBack`·`TestReleaseCompletionAfterRebootWithSameInitString`·`TestReleaseRefusedWhenActivityResumesDuringBoundaryClose`·`TestReleaseResendForSameJobReportsPending`(diagnosisprep),
 `TestControlCurrentFindsSessionWithoutRef`(경계).
 
 URL v2 공개 관리 API는 영속 준비 영수증에 결속한 같은 운영자의 task에만
