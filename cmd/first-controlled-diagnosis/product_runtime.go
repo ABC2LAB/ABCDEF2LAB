@@ -21,6 +21,7 @@ import (
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/internal/pathscope"
 	"github.com/Autumn-27/artex/llmpolicy"
+	"github.com/Autumn-27/artex/mcphttp"
 	"github.com/Autumn-27/artex/server"
 )
 
@@ -80,6 +81,14 @@ func newProductRuntime(c urlPreparationInstallation, pin urlInputPin) (*productR
 			return nil, errPreparation
 		}
 		pins = append(pins, cp)
+		// 재시작 정리: 열린 탐색 MCP 세션을 기록하고, 시작할 때 이전 실행이 남긴 경계 세션·브라우저 문맥을 정리한다.
+		store, e := newProductMCPSessionStore(c.StateDir)
+		if e != nil {
+			return nil, errPreparation
+		}
+		explorationHost.mcpSessions = store
+		mcphttp.SetScopedSessionRecorder(store)
+		explorationHost.startCleanup(context.Background())
 	}
 	check := func() error {
 		for _, p := range pins {

@@ -131,6 +131,10 @@ type productExplorationHost struct {
 	// skillDir는 api-recon 파일을 읽을 곳이다(비면 explorationSkillDir). bashSeed는 처음 쓸 때 한 번 만든 작업 공간 tar다.
 	skillDir string
 	bashSeed []byte
+	// mcpSessions는 열린 탐색 MCP 세션 기록이다(재시작 정리, product_exploration_cleanup.go). cleaned는 시작 정리를 끝냈는지다.
+	mcpSessions *productMCPSessionStore
+	cleanMu     sync.Mutex
+	cleaned     bool
 }
 
 func newProductExplorationHost(p productExplorationPolicy, caPEM []byte) (*productExplorationHost, error) {
@@ -239,9 +243,13 @@ func (h *productExplorationHost) factory(rec productTargetRecord, current func(p
 	if connection != nil {
 		selected = *connection
 	}
-	return func(_ context.Context, b exploration.Binding, w *agent.Worker) (server.ExplorationPipelineHost, error) {
+	return func(ctx context.Context, b exploration.Binding, w *agent.Worker) (server.ExplorationPipelineHost, error) {
 		if b.TargetRef != rec.Target.ID || b.TargetRevision != rec.Target.Revision || w == nil || maxBytes <= 0 {
 			return server.ExplorationPipelineHost{}, exploration.ErrBinding
+		}
+		// 이전 실행이 남긴 경계 세션을 닫기 전에는 새 탐색을 열지 않는다(재시작 정리).
+		if ctx == nil || h.ensureClean(ctx) != nil {
+			return server.ExplorationPipelineHost{}, exploration.ErrUnavailable
 		}
 		if connection == nil || selected.IP == "" || selected.jobID != b.JobID {
 			return server.ExplorationPipelineHost{}, exploration.ErrBinding
