@@ -12,7 +12,7 @@ import { ApiError, apiFetch } from "@/lib/diagnosis/api";
 import { parseReleaseView, refusalText, validReason } from "../live/stuckRelease";
 import { StuckReleaseBox } from "../views/live/StuckReleaseBox";
 
-const NOW = "2026-11-23T05:00:00Z";
+const NOW = "2026-11-23T05:03:00Z";
 // 서버 diagnosisprep.ReleaseView 모양
 const notStuck = { release: { eligible: false, refusal: "not_stuck", quiet_seconds: 1200, now: NOW } };
 const blocked = (extra: Record<string, unknown>) => ({
@@ -55,6 +55,7 @@ const fetchMock = vi.mocked(apiFetch);
 beforeEach(() => {
   vi.resetAllMocks();
   vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.setSystemTime(new Date(NOW));
 });
 afterEach(() => {
   cleanup();
