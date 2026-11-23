@@ -20,8 +20,8 @@ Linux Docker Engine 26 이상과 Compose 2.35 이상이 필요하다. UID 1000�
     "max_requests": 400,
     "max_targets": 32
   },
-  "valid_for_hours": 24,
-  "max_runs": 3,
+  "valid_for_hours": 720,
+  "max_runs": 100,
   "local_model": {
     "model": "operator-approved-model",
     "base_url": "http://192.0.2.30:8080/v1",
@@ -58,7 +58,7 @@ Workbench는 `http://127.0.0.1:8787/`, 사용자명은 `ABC2LAB`, 비밀번호�
 
 설치자는 빈 전용 DB, 최소 권한 역할, 로그인 해시·JWT 키, E② CA·감사 키·helper pin, 대상 보안 상한·모델 정책, 위임·private IPC를 생성한다. 설치와 헬스체크는 모델 completion·대상 HTTP를 호출하지 않는다. 재기동은 기존 installation을 검증하고 재사용한다. API는 `product-state`의 `api` 하위 경로와 private IPC만 읽기 전용으로 마운트한다. 투영에는 API launch·설치 메타데이터·모델 launch·JWT·API 및 model-writer DSN만 있으며 CA 개인키·HMAC 감사 키·runtime DSN·실행 저널은 없다. 기존 설치도 installer 재실행 시 원본을 검증해 투영을 생성하며, 불일치한 기존 투영은 덮어쓰지 않는다. [Compose의 volume.subpath](https://docs.docker.com/reference/compose-file/services/#volumes)를 사용한다. 부분 실패의 `.installing`은 자동 삭제하지 않는다. 사용하지 않은 전용 설치인지 운영자가 확인한 뒤 새 볼륨으로 다시 설치한다.
 
-설치 수명 `valid_for_hours`는 1…8760시간, 위임 실행 `max_runs`는 1…100000회까지 설정할 수 있다. 위 예시의 24시간·3회는 시험용 값이다. 발표·시연처럼 정해진 날 쓰는 설치는 그날 끝까지 남도록, 실행 횟수는 리허설까지 포함해 잡는다(결과 불명 회차도 횟수에 든다). 설치 기한이 지나면 대상 승인이 남아 있어도 새 실행을 시작할 수 없고(회차 정책 기한은 설치·대상 승인 기한을 넘지 않음), 값은 설치 때 정해진다. 대상 승인 유효 시간은 Workbench 대상 등록 칸에서 4시간(기본)~30일 중 고른다.
+설치 수명 `valid_for_hours`는 1…8760시간, 위임 실행 `max_runs`는 1…100000회까지 설정할 수 있다. 생략하면 기본값 720시간(30일)·100회다(2026-11-23 사용자 결정). 외부 모델(OpenRouter) 설치도 v4 승인이면 같은 `max_runs`까지 점검을 돌린다(v1~v3 승인은 1회). 발표·시연처럼 정해진 날 쓰는 설치는 그날 끝까지 남도록, 실행 횟수는 리허설까지 포함해 잡는다(결과 불명 회차도 횟수에 든다). 설치 기한이 지나면 대상 승인이 남아 있어도 새 실행을 시작할 수 없고(회차 정책 기한은 설치·대상 승인 기한을 넘지 않음), 값은 설치 때 정해진다. 대상 승인 유효 시간은 Workbench 대상 등록 칸에서 4시간(기본)~30일 중 고른다.
 `target_policy.max_targets`는 2…1024이며 기본값 32를 유지한다. 승인·소유 확인 기한이 남은 대상만
 자리를 차지하고 철회·만료 이력은 보존한다. 코드 상한 확대가 기존 설정값·실행 예산을 자동 확대하지 않는다.
 
@@ -70,7 +70,7 @@ OpenRouter는 운영자가 `openrouter_manifest`에 [기존 보호 승인 JSON �
 
 키는 인증된 `POST /api/product/model-credentials`에서 설치된 프로필의 `api_key` 열만 갱신한다. 별도 writer 역할에는 키 읽기·모델·endpoint·예산 변경 권한이 없다. 비제어 password 입력은 전송 즉시 비우며 React 상태·URL·진단 초안·local/session storage·보고서에 키를 넣지 않는다. 시작 시 외부 전송·비용 동의는 별도로 필요하다. 키 변경·응답 유실·사용량 불명은 기존 fail-closed 계약을 따른다. 다음 진단은 인증된 GET에서 `configured`와 승인 모델 ID만 읽어 키를 재사용한다. API 키 값은 브라우저로 반환하지 않는다. 연결 실패 시 합성 모델이나 일반 ARTEX 엔진으로 자동 전환하지 않는다.
 
-유료 승인(OpenRouter manifest)은 승인 총량·만료 안에서 여러 회차가 이어 쓴다. 승인 ID마다 보호 manifest 디렉터리에 누적 예약 기록(`.openrouter-<승인 해시>.ledger`)을 두고, 매 요청 전에 잠금 안에서 다시 읽어 승인 총량을 넘지 않을 때만 예약한다. 응답을 확인한 호출은 실제 사용량으로 정산해 남은 예약을 다시 쓴다(P3 결정안 C07, `docs/openrouter-first-diagnosis.md`). 한도·만료·누적 예산 소진 후에는 기존 운영자 재승인이 필요하다. 예전 1회용 표식(`.used`)·`.ledger`·journal을 지우거나 고쳐 재승인하지 않는다. `.ledger`를 지우면 그 승인의 누적 합계가 0으로 돌아가 총량 보장이 깨진다. 사용자 모델 입력은 설치된 승인 모델에 한정된다.
+유료 승인(OpenRouter manifest)은 v4면 총량이 **점검 하나의 상한**이다: 설치 하나가 `max_runs`까지 점검을 돌리고, 점검마다 예약 기록(`.openrouter-<승인 해시>.run-<…>.ledger`)을 따로 두어 그 점검이 승인 총량을 넘지 않게 한다(점검마다 새 승인을 받지 않는다). v1~v3은 승인 총량·만료 안에서 여러 회차가 이어 쓴다. 같은 v4 승인 파일을 CLI 두 프로세스 경로와 제품 URL 진단에 함께 쓰지 않는다. 두 경로의 장부는 서로 합산되지 않는다. 기록은 보호 manifest 디렉터리에 두고, 매 요청 전에 잠금 안에서 다시 읽어 승인 총량을 넘지 않을 때만 예약한다. 응답을 확인한 호출은 실제 사용량으로 정산해 남은 예약을 다시 쓴다(P3 결정안 C07, `docs/openrouter-first-diagnosis.md`). v1~v3의 한도·만료·누적 예산 소진, v4의 만료·위임 실행 횟수 소진 후에는 기존 운영자 재승인이 필요하다. 예전 1회용 표식(`.used`)·`.ledger`·journal을 지우거나 고쳐 재승인하지 않는다. `.ledger`를 지우면 그 기록의 합계가 0으로 돌아가 총량 보장이 깨진다(점검 하나 안에서 지우거나 고쳐 재시도하지 않는다). 사용자 모델 입력은 설치된 승인 모델에 한정된다.
 
 ## 탐색·선택 워크플로 설치
 

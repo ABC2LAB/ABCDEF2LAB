@@ -297,7 +297,8 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	})
 	var modelBudget *server.FirstDiagnosisModelBudget
 	if l.launch.ModelExecutionMode == "openrouter" {
-		modelBudget, err = server.NewFirstDiagnosisOpenRouterBudget(l.profile.Budget, l.profile.InputTokensPerCall, l.profile.OutputTokensPerCall, l.launch.OpenRouterManifestPath, observe)
+		// v4 승인은 이 회차(Job ID)의 장부로 센다. 장부는 여기서 한 번만 새로 만들고, 이미 있으면 예산을 만들지 않는다.
+		modelBudget, err = server.NewFirstDiagnosisOpenRouterRunBudget(l.profile.Budget, l.profile.InputTokensPerCall, l.profile.OutputTokensPerCall, l.launch.OpenRouterManifestPath, execution.Job.ID, observe)
 	} else {
 		modelBudget, err = server.NewFirstDiagnosisModelBudget(l.profile.Budget, l.profile.InputTokensPerCall, l.profile.OutputTokensPerCall, observe)
 	}

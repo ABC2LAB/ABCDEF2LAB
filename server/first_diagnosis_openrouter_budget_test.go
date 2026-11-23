@@ -339,3 +339,65 @@ func TestFirstDiagnosisOpenRouterBudgetUnbilledFailuresCostNothing(t *testing.T)
 		}
 	}
 }
+
+// 제품 URL 회차 예산: v4 승인은 회차(run)마다 장부를 따로 세서, 앞 회차가 승인 총량을 다 써도 다음 회차를 만들 수
+// 있다. 회차 참조 없이는 만들지 않는다. v1 승인은 이 생성자로도 승인 하나를 누적해 센다.
+func TestFirstDiagnosisOpenRouterRunBudgetPerRun(t *testing.T) {
+	write := func(t *testing.T, version int) string {
+		t.Helper()
+		dir := t.TempDir()
+		if os.Chmod(dir, 0700) != nil {
+			t.Fatal("private directory")
+		}
+		m := map[string]any{
+			"version": version, "profile_id": 7, "format": "openai", "base_url": llmpolicy.OpenRouterBaseURL, "model": llmpolicy.OpenRouterModel,
+			"provider_slug": "fixture/endpoint", "expected_provider_name": "Fixture", "approval_id": "url-run-budget-test", "expires_at": time.Now().Add(time.Hour),
+			"strict_privacy_ack": true, "account_spend_cap_ack": true, "max_requests": 2, "max_input_tokens": 524288, "max_output_tokens": 200, "max_cost_usd_micros": 600000,
+			"max_input_tokens_per_call": 262144, "max_output_tokens_per_call": 100, "timeout_seconds": 2, "max_concurrent": 1,
+			"max_input_price_usd_micros_per_million": 1000000, "max_output_price_usd_micros_per_million": 1000000,
+		}
+		if version == 4 {
+			m["max_consecutive_transient_errors"] = 3
+			m["sampling"] = map[string]any{"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0, "presence_penalty": 1.5, "repetition_penalty": 1.0, "seed": 42}
+			m["provider_routing"] = map[string]any{"mode": "pinned"}
+		}
+		raw, _ := json.Marshal(m)
+		path := filepath.Join(dir, "model.json")
+		if os.WriteFile(path, raw, 0600) != nil {
+			t.Fatal("manifest")
+		}
+		return path
+	}
+	limits := diagnosisprep.Budget{ModelRequests: 2, InputTokens: 524288, OutputTokens: 200, CostUSDMicros: 600000}
+	observe := func(diagnosisprep.ModelUsage) error { return nil }
+	// 장부를 다 쓴 상태를 만든다: 그 회차 장부에 승인 총량만큼 예약 줄을 쓴다.
+	exhaust := func(t *testing.T, path, name string) {
+		t.Helper()
+		line := "r1 262144 100 262244\n"
+		if os.WriteFile(filepath.Join(filepath.Dir(path), name), []byte(line+line), 0600) != nil {
+			t.Fatal("장부")
+		}
+	}
+	approval := fmt.Sprintf("%x", sha256.Sum256([]byte("url-run-budget-test")))
+	runName := func(run string) string {
+		return fmt.Sprintf(".openrouter-%s.run-%s.ledger", approval, fmt.Sprintf("%x", sha256.Sum256([]byte(run)))[:32])
+	}
+
+	v4 := write(t, 4)
+	exhaust(t, v4, runName("job-a"))
+	if _, err := NewFirstDiagnosisOpenRouterRunBudget(limits, 262144, 100, v4, "job-a", observe); err == nil {
+		t.Fatal("다 쓴 회차를 다시 열어 예산을 만듦")
+	}
+	if _, err := NewFirstDiagnosisOpenRouterRunBudget(limits, 262144, 100, v4, "job-b", observe); err != nil {
+		t.Fatalf("앞 회차가 다음 회차를 막음: %v", err)
+	}
+	if _, err := NewFirstDiagnosisOpenRouterRunBudget(limits, 262144, 100, v4, "", observe); err == nil {
+		t.Fatal("회차 참조 없이 예산을 만듦")
+	}
+
+	v1 := write(t, 1)
+	exhaust(t, v1, ".openrouter-"+approval+".ledger")
+	if _, err := NewFirstDiagnosisOpenRouterRunBudget(limits, 262144, 100, v1, "job-b", observe); err == nil {
+		t.Fatal("v1 승인이 회차마다 새로 셈")
+	}
+}

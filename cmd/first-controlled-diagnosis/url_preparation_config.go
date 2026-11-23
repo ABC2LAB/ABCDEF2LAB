@@ -425,7 +425,9 @@ func urlLoadProfileForReport(c urlPreparationInstallation, installationPin urlIn
 			return nil, errPreparation
 		}
 		if !reportOnly {
-			external, err := llmpolicy.LoadOpenRouterManifestFile(manifestPath)
+			// 새 점검을 시작할 수 있는지만 본다(보내지 않음). v4 승인은 새 점검의 장부가 비어 있으므로 승인 크기만,
+			// v1~v3 승인은 지금처럼 승인 누적 장부의 남은 양을 본다.
+			external, err := llmpolicy.LoadOpenRouterManifestFileForRun(manifestPath, "")
 			if err != nil {
 				return nil, errPreparation
 			}
