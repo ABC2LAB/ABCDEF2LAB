@@ -68,6 +68,7 @@ import { ReportAssetGraph } from "./ReportAssetGraph";
 import { ReportReadError } from "./runRows";
 import { TaskActivity } from "./TaskActivity";
 import { AccessMapPanel } from "./UrlAccessMapLive";
+import { PriceCapsNotice } from "./PriceCapsNotice";
 import { reasonText, UrlFacts, UrlHead, UrlNotices, UrlPill, UrlRefreshButton, useUrlHost } from "./urlParts";
 import { VerdictDetailCard } from "./VerdictDetailCard";
 import { crawlPct, useStopConfirm, WorkflowNotice, WorkflowReport } from "./workflowViews";
@@ -848,6 +849,8 @@ export function UrlLiveLive() {
           {job.diagnostic_log_incomplete ? (
             <p className={s.help}>{reasonText("diagnostic_logging_incomplete")}</p>
           ) : null}
+          {/* 끝난 점검의 단가 상한 안내(v4 제품 점검): '결과 불명'이 단가 상한 때문이면 어느 제공자가 왜 빠졌는지 */}
+          {ended && job.task_id ? <PriceCapsNotice taskId={String(job.task_id)} /> : null}
           {/* 상단 카드: 지금 하는 일을 크게(끝나면 결과와 [보고서 보기]), 숫자 칸(계획 · 심화 점검 · 발견 후보 · 확인 필요),
               작업 합계 토큰. 계획 단계 목록은 두지 않는다(사용자 11/17 '계획 접기 빼기' — 완료 수만 숫자 칸에).
               결과 불명이면 첫 줄 대신 아래 안내가 말하고, 진행률 · 남은 시간은 서버가 주지 않아 두지 않는다.
