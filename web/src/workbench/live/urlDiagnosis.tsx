@@ -475,6 +475,10 @@ async function runUrlActionNow(
           input.workflow_mode,
           input.excluded_paths ?? "",
           input.external_test_accounts === true,
+          {
+            exclusionsReviewed: input.exclusions_reviewed === true,
+            backupConfirmed: input.backup_confirmed === true,
+          },
         );
         const cap = st.cap;
         if (cap.kind !== "v2" || !cap.catalog.profiles.some((p) => p.id === checked.profile_id)) return false;

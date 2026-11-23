@@ -14,6 +14,10 @@ export type WorkflowLimits = {
 };
 export type URLDiagnosisInput = {
   external_test_accounts?: true;
+  // 시작 확인 화면에서 운영자가 한 진술이다. 초안 입력과 함께 서버 준비 저널에 남는 기록일 뿐, 서버가 사실 여부를
+  // 확인하거나 요청 허용에 쓰지 않는다. 없으면 진술하지 않은 것이다(이 칸이 생기기 전 초안 · CLI · 평가 러너).
+  exclusions_reviewed?: true;
+  backup_confirmed?: true;
   target_url: string;
   profile_id: string;
   display_name?: string;
@@ -202,6 +206,8 @@ function targetURL(v: unknown): string {
     return invalid();
   return parsed.href;
 }
+/** 시작 확인 두 진술. 체크한 것만 입력에 실린다(체크하지 않은 것은 칸을 만들지 않는다). */
+export type URLStartConfirmation = { exclusionsReviewed?: boolean; backupConfirmed?: boolean };
 /** URL은 요청일 뿐이다. DNS·실제 연결·경로 허가는 서버와 E②가 검증한다. */
 export function urlDiagnosisInput(
   target: string,
@@ -210,9 +216,12 @@ export function urlDiagnosisInput(
   workflowMode?: WorkflowMode,
   excludedPaths = "",
   externalTestAccounts = false,
+  startConfirmation: URLStartConfirmation = {},
 ): URLDiagnosisInput {
   return parseInput({
     ...(externalTestAccounts ? { external_test_accounts: true } : {}),
+    ...(startConfirmation.exclusionsReviewed ? { exclusions_reviewed: true } : {}),
+    ...(startConfirmation.backupConfirmed ? { backup_confirmed: true } : {}),
     target_url: target.trim(),
     profile_id: profile,
     ...(workflowMode ? { workflow_mode: workflowMode } : {}),
@@ -222,8 +231,20 @@ export function urlDiagnosisInput(
 }
 function parseInput(v: unknown): URLDiagnosisInput {
   if (!object(v) || !ref(v.profile_id) || (v.display_name !== undefined && !text(v.display_name))) return invalid();
-  exact(v, ["target_url", "profile_id", "display_name", "workflow_mode", "excluded_paths", "external_test_accounts"]);
+  exact(v, [
+    "target_url",
+    "profile_id",
+    "display_name",
+    "workflow_mode",
+    "excluded_paths",
+    "external_test_accounts",
+    "exclusions_reviewed",
+    "backup_confirmed",
+  ]);
   if (v.external_test_accounts !== undefined && v.external_test_accounts !== true) return invalid();
+  // 서버는 거짓이면 칸을 생략한다(omitempty). true 가 아닌 값은 진술로 읽지 않고 버린다.
+  if (v.exclusions_reviewed !== undefined && v.exclusions_reviewed !== true) return invalid();
+  if (v.backup_confirmed !== undefined && v.backup_confirmed !== true) return invalid();
   if (v.workflow_mode !== undefined && v.workflow_mode !== "ai_auto_v1" && v.workflow_mode !== "user_approval_v1")
     return invalid();
   if (v.excluded_paths !== undefined) {
@@ -246,6 +267,8 @@ function parseInput(v: unknown): URLDiagnosisInput {
   }
   return {
     ...(v.external_test_accounts === true ? { external_test_accounts: true as const } : {}),
+    ...(v.exclusions_reviewed === true ? { exclusions_reviewed: true as const } : {}),
+    ...(v.backup_confirmed === true ? { backup_confirmed: true as const } : {}),
     target_url: targetURL(v.target_url),
     profile_id: v.profile_id,
     ...(v.workflow_mode ? { workflow_mode: v.workflow_mode as WorkflowMode } : {}),
@@ -258,6 +281,8 @@ export function sameURLInput(a: URLDiagnosisInput, b: URLDiagnosisInput): boolea
     a.target_url === b.target_url &&
     a.profile_id === b.profile_id &&
     a.external_test_accounts === b.external_test_accounts &&
+    a.exclusions_reviewed === b.exclusions_reviewed &&
+    a.backup_confirmed === b.backup_confirmed &&
     (a.display_name ?? "") === (b.display_name ?? "") &&
     (a.workflow_mode ?? "") === (b.workflow_mode ?? "") &&
     (a.excluded_paths ?? "") === (b.excluded_paths ?? "")
