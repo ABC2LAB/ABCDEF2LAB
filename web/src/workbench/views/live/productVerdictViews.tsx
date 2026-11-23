@@ -10,7 +10,7 @@ import type { ReactNode } from "react";
 import { ApiError } from "@/lib/diagnosis/api";
 
 import { cx } from "../../lib/cx";
-import { dateTimeOf } from "../../live/map";
+import { clockOf, dateTimeOf } from "../../live/map";
 import {
   CHECK_TEXT,
   CONFIRMATION_TEXT,
@@ -104,11 +104,11 @@ function NoVerdicts({ list }: { list: ProductVerdictList }) {
   );
 }
 
-/** 출처 딱지: '제품' 딱지 뒤 정책 선언 참조 (계약 §3 `제품 · 정책 선언 declaration-<job>`, 대상 승인 판은 행들이 같은 판일 때만). */
+/** 출처 딱지: '제품' 딱지 뒤 정책 선언 참조 (계약 §3 `제품 · 정책 선언 declaration-<job>`). 대상 승인 판은 목록에서 뺐다(사용자 11/23). */
 function sourceText(list: ProductVerdictList): string {
   const p = list.policySource;
   if (!p) return "정책 선언 동결본 미확인";
-  return `정책 선언 ${p.ref}${p.targetApprovalRevision ? ` · 대상 승인 판 ${p.targetApprovalRevision}` : ""}`;
+  return `정책 선언 ${p.ref}`;
 }
 
 /** 읽기 상태(불러오는 중 · 실패 · 미설치)를 공통으로. 그릴 목록이 있으면 null. */
@@ -137,17 +137,28 @@ function Value({ v }: { v: OracleValue }) {
   return <span className={cx(s.vd, VALUE_CLASS[v])}>{ORACLE_VALUE_TEXT[v]}</span>;
 }
 
-/** 값이 보이는 판정 한 건의 내용. 목록 줄과 판정 상세(후보 상세 페이지)가 같은 규칙으로 그린다. */
-export function VerdictBody({ r }: { r: ProductVerdictShown }) {
+/**
+ * 값이 보이는 판정 한 건의 내용. 목록 줄과 판정 상세(후보 상세 페이지)가 같은 규칙으로 그린다.
+ * compact(보고서 목록 줄, 사용자 11/23 '글 다 필요해?'): 판정 번호 · 정상 검사 줄 · 봉인 확인됨을 빼고 관찰 시각만 붙인다.
+ * 검사에 '아니오 · 모름'이 있거나 봉인이 확인되지 않았으면 그대로 보인다. 판정 상세는 다 보인다.
+ */
+export function VerdictBody({ r, compact = false }: { r: ProductVerdictShown; compact?: boolean }) {
+  const allYes = r.checks.policy === "yes" && r.checks.identity === "yes" && r.checks.data === "yes";
+  const showChecks = !compact || !allYes;
+  const showSeal = !!r.evidenceSeal && (!compact || r.evidenceSeal.status !== "confirmed");
   return (
     <>
       <div>
         <Value v={r.oracleValue} /> <b className={s.mono}>{r.resourceType}</b>{" "}
-        <span className={s.help}>{`판정 #${r.verdictId}`}</span>
+        <span className={s.help}>
+          {compact ? `관찰 ${clockOf(r.observedAt) || r.observedAt}` : `판정 #${r.verdictId}`}
+        </span>
       </div>
-      <div className={s.help}>
-        {`검사: 정책 ${CHECK_TEXT[r.checks.policy]} · 신원 ${CHECK_TEXT[r.checks.identity]} · 데이터 ${CHECK_TEXT[r.checks.data]} · 근거 호출 ${r.evidenceCalls}건 · 관찰 ${dateTimeOf(r.observedAt) || r.observedAt}`}
-      </div>
+      {showChecks ? (
+        <div className={s.help}>
+          {`검사: 정책 ${CHECK_TEXT[r.checks.policy]} · 신원 ${CHECK_TEXT[r.checks.identity]} · 데이터 ${CHECK_TEXT[r.checks.data]} · 근거 호출 ${r.evidenceCalls}건 · 관찰 ${dateTimeOf(r.observedAt) || r.observedAt}`}
+        </div>
+      ) : null}
       {r.oracleReasonCodes.length ? (
         <div className={s.help}>
           판정 사유 <ReasonCodes codes={r.oracleReasonCodes} />
@@ -170,7 +181,7 @@ export function VerdictBody({ r }: { r: ProductVerdictShown }) {
           <span>{`${RECORD_STATUS_TEXT.policy_source_unavailable} · 당시 정책 동결본을 읽지 못해 대조하지 못했습니다(값은 저장된 그대로)`}</span>
         </div>
       ) : null}
-      {r.evidenceSeal ? (
+      {showSeal && r.evidenceSeal ? (
         <div
           className={r.evidenceSeal.status === "confirmed" ? s.help : cx(s.note, s.warn)}
           data-seal={r.evidenceSeal.status}
@@ -185,7 +196,7 @@ export function VerdictBody({ r }: { r: ProductVerdictShown }) {
 function ShownRow({ r }: { r: ProductVerdictShown }) {
   return (
     <li data-verdict={r.verdictId}>
-      <VerdictBody r={r} />
+      <VerdictBody r={r} compact />
     </li>
   );
 }
@@ -238,8 +249,15 @@ function ReportBody({ list }: { list: ProductVerdictList }) {
   return (
     <>
       {/* 덧붙인 안내 문장('위 목록과 섞지 않습니다 …')은 뺐다(사용자 11/23: 글이 이상함). 섞지 않는 건 구획을 따로 둔 것으로 보인다 */}
+      {/* 확정 단계가 정상으로 마쳤으면 '확정 단계 마침'은 두지 않는다(사용자 11/23). 미확인 · 중단 · 거절 등만 붙인다 */}
       <p className={s.help}>
-        <span className={s.pill}>제품</span> {sourceText(list)} · <Confirmation list={list} />
+        <span className={s.pill}>제품</span> {sourceText(list)}
+        {list.confirmation?.status === "completed" ? null : (
+          <>
+            {" · "}
+            <Confirmation list={list} />
+          </>
+        )}
       </p>
       {list.items.length ? (
         <ul className={s["verdict-list"]}>

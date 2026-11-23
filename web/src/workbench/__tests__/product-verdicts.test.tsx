@@ -13,7 +13,7 @@ vi.mock("@/lib/diagnosis/api", async (original) => ({
 
 import { ApiError, apiFetch } from "@/lib/diagnosis/api";
 
-import { dateTimeOf } from "../live/map";
+import { clockOf } from "../live/map";
 import { isProductVerdictsShapeError, parseProductVerdicts } from "../live/productVerdicts";
 import { ProductVerdictReport } from "../views/live/productVerdictViews";
 import golden from "./product-verdicts.server-golden.json";
@@ -249,14 +249,18 @@ describe("ProductVerdictReport", () => {
     const sec = await screen.findByRole("region", { name: "제품 확정 단계 판정" });
     await waitFor(() => expect(within(sec).getByText("2건")).toBeInTheDocument());
     expect(vi.mocked(apiFetch).mock.calls[0][0]).toBe("/api/tasks/2/product-verdicts");
-    expect(sec).toHaveTextContent("제품 정책 선언 declaration-job-synthetic · 대상 승인 판 target-revision-1");
+    // 목록은 짧게(사용자 11/23): 출처 딱지만, 확정 단계가 정상으로 마쳤으면 그 말은 두지 않는다
+    expect(sec).toHaveTextContent("제품 정책 선언 declaration-job-synthetic");
+    expect(sec).not.toHaveTextContent("대상 승인 판");
     expect(sec).not.toHaveTextContent("섞지 않습니다");
-    expect(sec).toHaveTextContent("확정 단계 마침");
+    expect(sec).not.toHaveTextContent("확정 단계 마침");
     const [ok, failed] = within(sec).getAllByRole("listitem");
     expect(ok).toHaveTextContent("확정");
     expect(ok).toHaveTextContent("document");
-    expect(ok).toHaveTextContent("검사: 정책 예 · 신원 예 · 데이터 예 · 근거 호출 1건");
-    expect(ok).toHaveTextContent(`관찰 ${dateTimeOf("2026-11-18T09:00:00.000000Z")}`);
+    // 검사가 다 '예'면 검사 줄과 판정 번호는 두지 않고 관찰 시각만
+    expect(ok).not.toHaveTextContent("검사:");
+    expect(ok).not.toHaveTextContent("판정 #");
+    expect(ok).toHaveTextContent(`관찰 ${clockOf("2026-11-18T09:00:00.000000Z")}`);
     expect(ok).toHaveTextContent("확정 판정 · 검토 대상 후보 1건");
     expect(ok).not.toHaveTextContent("수동 검토 필요 그대로");
     expect(failed).toHaveTextContent("값 숨김");
@@ -270,7 +274,9 @@ describe("ProductVerdictReport", () => {
     let sec = await screen.findByRole("region", { name: "제품 확정 단계 판정" });
     await waitFor(() => expect(within(sec).getAllByRole("listitem")).toHaveLength(2));
     let [first, second] = within(sec).getAllByRole("listitem");
-    expect(first).toHaveTextContent("봉인 확인됨");
+    // 목록에서 봉인 확인됨은 따로 두지 않는다(계약 e3-product-verdict-store: 확인됨은 '그대로'). 판정 상세는 보인다
+    expect(first).not.toHaveTextContent("봉인");
+    expect(first).toHaveTextContent("document");
     expect(second).not.toHaveTextContent("봉인");
     a.unmount();
     serve(cases.seal_not_recorded);
