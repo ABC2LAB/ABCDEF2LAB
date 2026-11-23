@@ -5,6 +5,7 @@ import (
 	"flag"
 	"github.com/Autumn-27/artex/server"
 	"io"
+	"net"
 	"net/http"
 	"time"
 )
@@ -24,14 +25,22 @@ func runProductFront(ctx context.Context, args []string, stdout, stderr io.Write
 	httpServer := &http.Server{Addr: *listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 32768}
 	done := make(chan error, 1)
 	go func() { done <- httpServer.ListenAndServe() }()
+	lost := watchSharedNetwork(ctx, sharedNetworkCheckInterval, net.Interfaces, apiRejoinReady(&http.Client{Timeout: sharedNetworkCheckInterval}, *origin))
+	networkLost := false
 	select {
 	case <-ctx.Done():
 	case <-done:
 		return 1
+	case <-lost:
+		networkLost = true
 	}
 	cleanup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if httpServer.Shutdown(cleanup) != nil {
+	shutdownErr := httpServer.Shutdown(cleanup)
+	if networkLost {
+		return exitSharedNetworkLost
+	}
+	if shutdownErr != nil {
 		return 1
 	}
 	return 0

@@ -11,7 +11,7 @@
 | C01 | E② 누적 정지. 제품 기본값은 거부 2(워크플로 16)·결과 불명 1·일시 실패 1이면 실행 전체 정지. 시도 상한(8/200)은 보내지 않은 거부까지 센다 | 오류 | `e2proxy/execution.go:777-794`, `cmd/first-controlled-diagnosis/product_install_linux.go:235` | P2·이동찬 |
 | C02 | 대상 연결 실패·TLS 실패가 결과 불명이 된다(연결 시도 표시를 연결 전에 세움) | 오류 | `e2proxy/execution.go:1103-1124` | P2·이동찬 |
 | C03 | Worker가 실행 전체의 unknown 건수를 보고 다른 Worker의 unknown에도 멈춘다 | 오류 | `agent/e2_http.go:262-271` | P2·이동찬 |
-| C04 | 결과 불명 작업 하나가 설치 전체의 새 시작을 막고 해제 API가 없다 | 오류 | `diagnosisprep/service_linux.go:322-325` | P3·이경준 |
+| C04 | 결과 불명 작업 하나가 설치 전체의 새 시작을 막고 해제 API가 없다 → 운영자 재기동형 해제(`docs/url-diagnosis-preparation.md` '운영자 해제') | 오류 | `diagnosisprep/release_linux.go` `blocksStart`(busy 판정)·`releaseLocked`(해제) | P3·이경준 |
 | C05 | 모델 호출 오류 한 번이 실행 차단·결과 불명으로 이어진다(실행 중 중지·대상 철회도 같은 길) | 오류 | `server/first_diagnosis_model_budget.go:258-271` | P3·최민준 |
 | C06 | OpenRouter가 200이 아닌 응답(429·5xx 포함) 한 번에 정책을 영구 차단하고 재시도하지 않는다 | 오류 | `llmpolicy/openrouter_transport.go:207-254` | P3·최민준 |
 | C07 | 유료 API 승인이 1회용이라 같은 승인으로 두 번째 실행이 거부된다 | 오류 | `llmpolicy/openrouter_file_linux.go:113-133` | P3·최민준 |

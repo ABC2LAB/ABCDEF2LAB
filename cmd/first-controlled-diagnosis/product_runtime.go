@@ -585,6 +585,10 @@ type productPreparationEndpoint struct {
 }
 
 func (e productPreparationEndpoint) Call(ctx context.Context, r diagnosisprep.Request) (diagnosisprep.Response, error) {
+	// 멈춘 작업 해제는 제품 관리자(운영자)만 쓴다. API도 막지만 비공개 IPC에서도 한 번 더 막는다.
+	if (r.Command == diagnosisprep.Release || r.Command == diagnosisprep.ReleaseStatus) && r.Principal != "ARTEX" {
+		return diagnosisprep.Response{Version: diagnosisprep.Version, RequestID: r.RequestID, Error: "forbidden"}, nil
+	}
 	if r.Command != diagnosisprep.ProductControl {
 		return e.base.Call(ctx, r)
 	}
