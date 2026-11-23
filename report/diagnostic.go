@@ -51,6 +51,8 @@ type DiagnosticReport struct {
 	Entries                                           []DiagnosticEntry
 	Confirmed, Review, NotExecuted, Unknown, Negative int
 	BySeverity, ByType                                map[string]int
+	// Product는 확정 단계(E③) 제품 판정 구역이다(diagnostic_product.go).
+	Product ProductVerdicts
 }
 type DiagnosticEntry struct {
 	Steps                                                     []reproduction.Step
@@ -300,6 +302,9 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 			e.Digest = "[REDACTED]"
 		}
 	}
+	if err := prepareProductVerdicts(&in); err != nil {
+		return DiagnosticReport{}, err
+	}
 	return in, nil
 }
 
@@ -468,6 +473,10 @@ dt{font-weight:700}dd{margin-left:0;margin-bottom:8px;overflow-wrap:anywhere}
 심각도·처리 상태·판정·실행 결과를 따로 표시합니다. 유사 제목끼리 합치지 않으며 원래 ID를 유지합니다.</p>
 <h3>확정 결과 심각도별 집계</h3><ul>{{range $key, $count := .BySeverity}}<li>{{$key}}: {{$count}}</li>{{end}}</ul>
 <h3>확정 결과 유형별 집계</h3><ul>{{range $key, $count := .ByType}}<li>{{$key}}: {{$count}}</li>{{end}}</ul>
+{{with .Product}}{{if .Provided}}<h3>확정 단계 판정</h3>{{if .Unavailable}}<p>확정 단계 판정 목록을 읽지 못했습니다. 위 확정 수에는 확정 단계 판정이 들어 있지 않습니다.</p>{{else}}
+<p>정책 선언 기준 교차 계정 확인(IDOR)의 판정입니다. 진위 확인을 통과하고 근거가 봉인된 취약 확정만 위 확정 수에 셉니다. 취약 확정 {{.Confirmed}} · 취약 의심 {{.Suspected}} · 판정 불가 {{.Undecidable}}{{if .Unsealed}} · 근거 봉인 미확인 확정 {{.Unsealed}}(확정 수에 안 셈){{end}}.</p>
+{{if .Truncated}}<p>{{.Total}}건 중 {{len .Items}}건 표시(크기 상한).</p>{{end}}{{if .Failed}}<p>확인 실패 {{.Failed}}건(확정에 안 셈). 진위 확인에 실패해 값과 검사를 표시하지 않습니다.</p>{{end}}
+{{if .Items}}<table><thead><tr><th>판정</th><th>자원 종류</th><th>결과</th><th>근거</th><th>증거 호출</th><th>봉인</th><th>관찰 시각</th></tr></thead><tbody>{{range .Items}}{{if .Verified}}<tr><td>verdict-{{.VerdictID}}</td><td>{{.ResourceType}}</td><td>{{.ValueText}}</td><td>{{.ReasonText}}</td><td>{{.EvidenceCalls}}</td><td>{{.SealText}}</td><td>{{.ObservedAt}}</td></tr>{{else}}<tr><td>{{if .VerdictID}}verdict-{{.VerdictID}}{{else}}번호 없음{{end}}</td><td colspan="6">확인 실패(확정에 안 셈)</td></tr>{{end}}{{end}}</tbody></table>{{else}}<p>확정 단계 판정 0건.</p>{{end}}{{end}}{{end}}{{end}}
 <h2>4장. 취약점별 상세 결과</h2><p>확정 항목과 검토 필요·미실행·불명·비취약 항목은 결과 구분을 기준으로 분리해서 검토하세요.</p>
 {{range .Entries}}<article id="{{.ID}}"><h3>{{.ID}} · {{.Title}}</h3>
 <dl><dt>유형</dt><dd>{{.VulnClass}}</dd><dt>결과 구분</dt><dd>{{.Outcome}}</dd>

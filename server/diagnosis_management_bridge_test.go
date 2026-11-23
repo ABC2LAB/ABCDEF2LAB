@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -237,5 +238,43 @@ func TestManagementBridgeAcceptsReportWithSeparateImageBudget(t *testing.T) {
 	bridge.ServeHTTP(response, request)
 	if response.Code != 200 || response.Body.Len() != n {
 		t.Fatal("캡처 별도 예산의 보고서를 브리지가 거부함", response.Code, response.Body.Len())
+	}
+}
+
+// 보고서 요청에만 중계가 만든 확정 단계 판정 헤더를 붙인다. 밖에서 온 같은 이름 헤더는 넘기지 않는다(#875 발견 1).
+// 이 시험의 중계는 작업 결속·판정 목록 읽기를 갖지 않아 '읽지 못함' 값을 붙인다.
+func TestManagementBridgeReportProductVerdictsHeader(t *testing.T) {
+	seen := map[string][]string{}
+	var mu sync.Mutex
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen[r.URL.Path] = r.Header.Values(reportProductVerdictsHeader)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{}`)
+	}))
+	defer upstream.Close()
+	bridge, err := newDiagnosisManagementBridge(t.Context(), upstream.URL, bridgeTestAuth, bridgeTestAllowed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forged := encodeWire(t, reportProductVerdictsWire{State: reportProductVerdictsOK, Total: 1, Items: []reportProductVerdictWire{{VerdictID: "1", Verified: true, ResourceType: "book", OracleValue: "confirmed", Seal: "confirmed", ObservedAt: "2026-11-23T10:38:07Z"}}})
+	for _, path := range []string{"/api/report/diagnostic?task=42&audience=internal", "/api/tasks/42/request-approvals"} {
+		r := httptest.NewRequest("GET", path, nil)
+		r.Header.Set("Authorization", "Bearer synthetic-bridge")
+		r.Header.Set(reportProductVerdictsHeader, forged)
+		w := httptest.NewRecorder()
+		bridge.ServeHTTP(w, r)
+		if w.Code != 200 {
+			t.Fatal(path, w.Code)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if got := seen["/api/report/diagnostic"]; len(got) != 1 || got[0] != reportProductVerdictsUnavailableHeader() {
+		t.Fatalf("보고서 요청 헤더: %v", got)
+	}
+	if got := seen["/api/tasks/42/request-approvals"]; len(got) != 0 {
+		t.Fatalf("보고서 밖 요청에 헤더: %v", got)
 	}
 }

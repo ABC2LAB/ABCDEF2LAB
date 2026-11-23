@@ -72,6 +72,8 @@ func (s *Server) diagnosticReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data.Shared = audience != "internal"
+	// 제품 관리 중계가 붙인 확정 단계 판정 목록(진위 확인 뒤)을 저장 행과 대조해 구역을 채운다. 없으면 구역을 그리지 않는다.
+	data.Product = reportProductVerdictsFromRequest(r.Context(), s.m.pg, r, taskID)
 	var body []byte
 	if format == "docx" {
 		body, err = report.DiagnosticDOCX(data)

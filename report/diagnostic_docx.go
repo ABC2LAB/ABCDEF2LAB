@@ -155,6 +155,7 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 		severity = append(severity, []string{k, strconv.Itoa(in.BySeverity[k])})
 	}
 	w.table(severity)
+	w.productVerdicts(in.Product)
 	w.chapter("4장. 취약점별 상세 결과")
 	for i, e := range in.Entries {
 		style := "Heading2"
@@ -328,4 +329,44 @@ func (w *diagnosticWord) remediationContext(b *remediation.Bundle) {
 	if conflicts := remediationTechnologyConflicts(b.Technologies); len(conflicts) > 0 {
 		w.paragraph("Normal", "기술 상충 가능·대조 필요: "+strings.Join(conflicts, ", ")+". 여러 기술이 함께 쓰이는지 확인하세요.")
 	}
+}
+
+// productVerdicts는 확정 단계 판정 구역이다(HTML 보고서와 같은 내용, diagnostic_product.go).
+func (w *diagnosticWord) productVerdicts(p ProductVerdicts) {
+	if !p.Provided {
+		return
+	}
+	w.paragraph("Heading2", "확정 단계 판정")
+	if p.Unavailable {
+		w.paragraph("Normal", "확정 단계 판정 목록을 읽지 못했습니다. 위 확정 수에는 확정 단계 판정이 들어 있지 않습니다.")
+		return
+	}
+	summary := fmt.Sprintf("정책 선언 기준 교차 계정 확인(IDOR)의 판정입니다. 진위 확인을 통과하고 근거가 봉인된 취약 확정만 위 확정 수에 셉니다. 취약 확정 %d · 취약 의심 %d · 판정 불가 %d", p.Confirmed, p.Suspected, p.Undecidable)
+	if p.Unsealed > 0 {
+		summary += fmt.Sprintf(" · 근거 봉인 미확인 확정 %d(확정 수에 안 셈)", p.Unsealed)
+	}
+	w.paragraph("Normal", summary+".")
+	if p.Truncated() {
+		w.paragraph("Normal", fmt.Sprintf("%d건 중 %d건 표시(크기 상한).", p.Total, len(p.Items)))
+	}
+	if p.Failed > 0 {
+		w.paragraph("Normal", fmt.Sprintf("확인 실패 %d건(확정에 안 셈). 진위 확인에 실패해 값과 검사를 표시하지 않습니다.", p.Failed))
+	}
+	if len(p.Items) == 0 {
+		w.paragraph("Normal", "확정 단계 판정 0건.")
+		return
+	}
+	rows := [][]string{{"판정", "자원 종류", "결과", "근거", "증거 호출", "봉인", "관찰 시각"}}
+	for _, e := range p.Items {
+		if !e.Verified {
+			id := "번호 없음"
+			if e.VerdictID != "" {
+				id = "verdict-" + e.VerdictID
+			}
+			rows = append(rows, []string{id, "", "확인 실패(확정에 안 셈)", "", "", "", ""})
+			continue
+		}
+		rows = append(rows, []string{"verdict-" + e.VerdictID, e.ResourceType, e.ValueText(), e.ReasonText(), strconv.Itoa(e.EvidenceCalls), e.SealText(), e.ObservedAt.UTC().Format(time.RFC3339)})
+	}
+	w.table(rows)
 }

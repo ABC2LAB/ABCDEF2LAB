@@ -239,6 +239,10 @@ func (b *diagnosisManagementBridge) ServeHTTP(w http.ResponseWriter, r *http.Req
 	if graphRead {
 		out.Header.Set(reportReadScopeHeader, reportReadDigest(readBinding))
 	}
+	if r.Method == http.MethodGet && r.URL.Path == "/api/report/diagnostic" {
+		// 보고서의 확정 단계 판정 구역: 판정 목록 API와 같은 진위 확인을 거친 목록만 넘긴다(report_product_verdicts.go).
+		out.Header.Set(reportProductVerdictsHeader, b.reportProductVerdicts(r.Context(), currentOwner, task))
+	}
 	if r.Method == http.MethodPost {
 		out.Header.Set("Content-Type", "application/json")
 	}
