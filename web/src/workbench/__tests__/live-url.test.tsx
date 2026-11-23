@@ -95,7 +95,7 @@ import { createInitialState, useWb } from "../store";
 import { Markdown } from "../ui/Markdown";
 import { DashboardByMode, LiveByMode, NewScanByMode, ReportByMode, ScopeByMode } from "../views/live/byMode";
 import { UrlFindingLive } from "../views/live/UrlFindingLive";
-import { buildPocMarkdown, entryEp, FindingDetail } from "../views/live/UrlLiveLive";
+import { buildPocMarkdown, entryEp, FindingDetail, LIVE_DETAIL_POLL_MS } from "../views/live/UrlLiveLive";
 import {
   BACKUP_CONFIRMED_STATEMENT,
   EXCLUDE_EXAMPLE,
@@ -1212,6 +1212,40 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     fireEvent.click(within(side).getByRole("button", { name: "진행 요약으로" }));
     expect(await screen.findByRole("complementary", { name: "진행 요약" })).toBeInTheDocument();
     expect(screen.queryByRole("complementary", { name: "취약점 상세" })).toBeNull();
+  });
+
+  // #874 이동찬 P2: 한 번 읽은 뒤 다시 읽기가 실패하면 오래된 상세를 최신처럼 두지 않는다
+  it("후보 상세를 읽은 뒤 다시 읽기가 실패하면 갱신 실패와 [다시 읽기]를 보이고, 다시 읽으면 사라진다", async () => {
+    vi.useFakeTimers();
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    c.fetchLiveCandidates.mockResolvedValue(candPage([1]));
+    a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [candidate(1)] });
+    mount("live");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    fireEvent.click(within(screen.getByRole("region", { name: "발견 후보" })).getByRole("button", { name: /후보 #1/ }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    const side = screen.getByRole("complementary", { name: "취약점 상세" });
+    expect(within(side).getByRole("heading", { name: "후보 1" })).toBeInTheDocument();
+    expect(within(side).queryByRole("alert")).toBeNull();
+    a.fetchRemediation.mockRejectedValue(new ApiError(503, "unavailable"));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(LIVE_DETAIL_POLL_MS);
+    });
+    const warn = within(side).getByRole("alert");
+    expect(warn).toHaveTextContent("상세를 다시 읽지 못해 갱신이 멈췄습니다 (HTTP 503). 아래는 마지막으로 읽은 상세라");
+    // 마지막으로 읽은 상세는 그대로 남는다
+    expect(within(side).getByRole("heading", { name: "후보 1" })).toBeInTheDocument();
+    a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [candidate(1)] });
+    fireEvent.click(within(warn).getByRole("button", { name: "다시 읽기" }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(within(side).queryByText(/상세를 다시 읽지 못해/)).toBeNull();
   });
 
   it("점검 진행 발견 후보: 폴링 간격은 5초 이상, 문서가 숨으면 멈추고 다시 보이면 바로 읽는다", async () => {

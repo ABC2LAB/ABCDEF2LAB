@@ -227,7 +227,7 @@ function FindReadError({ error, onRetry, stale = false }: { error: unknown; onRe
 }
 
 /** 점검 중 고른 후보의 상세(보고서 자료)를 다시 읽는 간격 — 증거가 더 붙을 수 있다 */
-const LIVE_DETAIL_POLL_MS = 10000;
+export const LIVE_DETAIL_POLL_MS = 10000;
 
 /**
  * 점검 진행 오른쪽 패널의 후보 상세(사용자 11/23). 보고서 오른쪽 패널과 같은 FindingDetail(AI 분석 · 실제 요청 · 응답 ·
@@ -248,6 +248,21 @@ function LiveCandidateDetail({
   onBack: () => void;
 }) {
   const entry = poll.data?.entries.find((e) => e.entry_id === entryId);
+  // 한 번 읽은 뒤 다시 읽기가 실패해도(usePoll 은 마지막 자료를 남기고 403 · 503 등이면 멈춘다) 오래된 PoC · 증거를 최신처럼
+  // 두지 않는다 — 갱신 실패와 [다시 읽기]를 위에 두고 아래는 마지막으로 읽은 상세라고 적는다(#874 이동찬 P2, 후보 목록과 같은 방식)
+  const status = poll.error instanceof ApiError && poll.error.status ? ` (HTTP ${poll.error.status})` : "";
+  const stale =
+    entry && poll.error ? (
+      <div className={cx(s.note, s.warn)} role="alert">
+        <Icon name="alert" />
+        <span className={s["lv-grow"]}>
+          {`상세를 다시 읽지 못해 갱신이 멈췄습니다${status}. 아래는 마지막으로 읽은 상세라 최신이 아닐 수 있습니다.`}
+        </span>
+        <button className={cx(s.btn, s.sm)} type="button" onClick={poll.reload}>
+          다시 읽기
+        </button>
+      </div>
+    ) : null;
   let body: ReactNode = <FindingDetail e={entry} host={host} taskId={taskId} onReload={poll.reload} />;
   if (!entry) {
     let state: ReactNode = <LoadingRow text="후보 상세를 읽는 중…" />;
@@ -268,6 +283,7 @@ function LiveCandidateDetail({
           진행 요약으로
         </button>
       </div>
+      {stale}
       {body}
     </>
   );
