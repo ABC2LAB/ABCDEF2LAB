@@ -150,14 +150,57 @@ func TestAnchorAssetsCheckLocksAgainstConcurrentDelete(t *testing.T) {
 	}
 }
 
-// 잠금을 거치지 않은 경로에서 자산 외래 키 위반이 나도 원시 DB 오류 대신 없는 자산 번호 오류로 돌려준다.
+// 잠금을 거치지 않은 경로에서 외래 키 위반이 나도 원시 DB 오류 대신 제약별 고정 오류로 돌려준다. 자산 키만 없는 자산 번호
+// 오류이고, 노드 키는 노드 없음 오류다(#881 리뷰: 노드 쪽을 자산 없음으로 분류하지 않음).
 func TestAnchorInsertErrorMapsForeignKeyViolation(t *testing.T) {
 	var u *UnknownAssetsError
-	if err := anchorInsertError(&pgconn.PgError{Code: "23503", ConstraintName: "exploration_anchors_asset_id_fkey"}, 9); !errors.As(err, &u) || !slices.Equal(u.IDs, []int64{9}) {
-		t.Fatalf("외래 키 위반 변환: %v", err)
+	if err := anchorInsertError(&pgconn.PgError{Code: "23503", ConstraintName: anchorAssetFKey}, 9); !errors.As(err, &u) || !slices.Equal(u.IDs, []int64{9}) {
+		t.Fatalf("자산 외래 키 위반 변환: %v", err)
 	}
-	other := &pgconn.PgError{Code: "23505"}
-	if err := anchorInsertError(other, 9); err != other {
-		t.Fatalf("다른 오류를 바꿈: %v", err)
+	if err := anchorInsertError(&pgconn.PgError{Code: "23503", ConstraintName: anchorNodeFKey}, 9); !errors.Is(err, ErrAnchorNodeMissing) || errors.As(err, &u) {
+		t.Fatalf("노드 외래 키 위반 변환: %v", err)
+	}
+	for _, other := range []*pgconn.PgError{{Code: "23505"}, {Code: "23503", ConstraintName: "other_fkey"}} {
+		if err := anchorInsertError(other, 9); err != other {
+			t.Fatalf("다른 오류를 바꿈: %v", err)
+		}
+	}
+}
+
+// 실제 DB에서도 두 제약을 구별한다: 없는 노드에 있는 자산을 붙이면 노드 없음, 있는 노드에 없는 자산을 붙이면 자산 없음이다.
+func TestAnchorDistinguishesNodeAndAssetForeignKeys(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) — skipping", err)
+	}
+	defer d.Close()
+	task, err := d.CreateTask("anchor fkeys", "goal", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.DeleteTask(task.ID)
+	assetID, err := d.Assets().UpsertRootDomain(UpsertRootDomainReq{Domain: fmt.Sprintf("anchor-fk-%d.example.test", time.Now().UnixNano()), TaskID: task.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec(`DELETE FROM assets WHERE id=$1`, assetID)
+	store := d.Exploration(task.ExplorationID)
+	var missingNode, missingAsset int64
+	if err := d.QueryRow(`SELECT COALESCE(max(id),0)+1000 FROM exploration_nodes`).Scan(&missingNode); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.QueryRow(`SELECT COALESCE(max(id),0)+1000 FROM assets`).Scan(&missingAsset); err != nil {
+		t.Fatal(err)
+	}
+	var u *UnknownAssetsError
+	if err := store.Anchor(missingNode, assetID); !errors.Is(err, ErrAnchorNodeMissing) || errors.As(err, &u) {
+		t.Fatalf("없는 노드: %v", err)
+	}
+	node, err := store.AddNode(KindFact, map[string]any{"summary": "x"}, 5, "confirmed", "worker", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Anchor(node, missingAsset); !errors.As(err, &u) || !slices.Equal(u.IDs, []int64{missingAsset}) {
+		t.Fatalf("없는 자산: %v", err)
 	}
 }

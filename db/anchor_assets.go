@@ -62,12 +62,28 @@ func checkAnchorAssets(q rowsQuerier, ids []int64) error {
 	return nil
 }
 
-// anchorInsertError는 앵커 INSERT 오류다. 확인과 잠금 뒤에도 자산 외래 키 위반(23503)이 나면(잠금을 거치지 않은 경로 등)
-// 원시 DB 오류 대신 *UnknownAssetsError로 바꿔 모델에 표 이름·제약 이름이 가지 않게 한다.
+// 앵커 표의 두 외래 키 이름이다(PostgreSQL 기본 이름, db/schema.sql exploration_anchors).
+const (
+	anchorAssetFKey = "exploration_anchors_asset_id_fkey"
+	anchorNodeFKey  = "exploration_anchors_node_id_fkey"
+)
+
+// ErrAnchorNodeMissing은 앵커를 붙일 탐색 노드가 없을 때다(노드 외래 키 위반). 자산이 없다는 안내와 구별한다(#881 이동찬
+// 리뷰: 노드 쪽 위반을 자산 없음으로 바꾸면 있는 자산을 다시 찾으라는 잘못된 안내가 간다). 모델이 읽을 수 있어 영어다.
+var ErrAnchorNodeMissing = errors.New("the exploration node for this anchor no longer exists, so nothing was saved")
+
+// anchorInsertError는 앵커 INSERT 오류다. 확인과 잠금 뒤에도 외래 키 위반(23503)이 나면(잠금을 거치지 않은 경로 등) 원시 DB
+// 오류 대신 제약별 고정 오류로 바꿔 모델에 표 이름·제약 이름이 가지 않게 한다. 자산 키 위반만 *UnknownAssetsError다.
 func anchorInsertError(err error, assetID int64) error {
 	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+	if !errors.As(err, &pgErr) || pgErr.Code != "23503" {
+		return err
+	}
+	switch pgErr.ConstraintName {
+	case anchorAssetFKey:
 		return &UnknownAssetsError{IDs: []int64{assetID}}
+	case anchorNodeFKey:
+		return ErrAnchorNodeMissing
 	}
 	return err
 }
