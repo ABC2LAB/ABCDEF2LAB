@@ -114,17 +114,18 @@ func TestModelRequestCarryingTestAccountPasswordIsDenied(t *testing.T) {
 		r    req
 		deny bool
 	}{
-		"json body":     {req{method: "POST", path: "/allowed/login", body: `{"username":"alice","password":"` + password + `"}`, media: "application/json"}, true},
-		"json escaped":  {req{method: "POST", path: "/allowed/login", body: `{"password":"` + passwordUnicode(password) + `"}`, media: "application/json"}, true},
-		"form body":     {req{method: "POST", path: "/allowed/login", body: "user=alice&pw=" + url.QueryEscape(password), media: "application/x-www-form-urlencoded"}, true},
-		"query":         {req{method: "GET", path: "/allowed/page?pw=" + passwordPercent(password)}, true},
-		"case folded":   {req{method: "GET", path: "/allowed/page?pw=" + url.QueryEscape(strings.ToUpper(password))}, true},
-		"basic auth":    {req{method: "GET", path: "/allowed/page", header: map[string]string{"Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte("alice:"+password))}}, true},
-		"raw header":    {req{method: "GET", path: "/allowed/page", header: map[string]string{"X-Note": "pw " + password}}, true},
-		"broken escape": {req{method: "POST", path: "/allowed/login", body: `{"p":"\u12` + password + `"}`, media: "application/json"}, true},
-		"other user pw": {req{method: "POST", path: "/allowed/login", body: `{"username":"bob","password":"leaked-by-target-1"}`, media: "application/json"}, false},
-		"broken only":   {req{method: "GET", path: "/allowed/page?q=%ZZ%27--"}, false},
-		"plain":         {req{method: "GET", path: "/allowed/page"}, false},
+		"json body":        {req{method: "POST", path: "/allowed/login", body: `{"username":"alice","password":"` + password + `"}`, media: "application/json"}, true},
+		"json escaped":     {req{method: "POST", path: "/allowed/login", body: `{"password":"` + passwordUnicode(password) + `"}`, media: "application/json"}, true},
+		"form body":        {req{method: "POST", path: "/allowed/login", body: "user=alice&pw=" + url.QueryEscape(password), media: "application/x-www-form-urlencoded"}, true},
+		"query":            {req{method: "GET", path: "/allowed/page?pw=" + passwordPercent(password)}, true},
+		"case folded":      {req{method: "GET", path: "/allowed/page?pw=" + url.QueryEscape(strings.ToUpper(password))}, true},
+		"basic auth":       {req{method: "GET", path: "/allowed/page", header: map[string]string{"Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte("alice:"+password))}}, true},
+		"raw header":       {req{method: "GET", path: "/allowed/page", header: map[string]string{"X-Note": "pw " + password}}, true},
+		"broken escape":    {req{method: "POST", path: "/allowed/login", body: `{"p":"\u12` + password + `"}`, media: "application/json"}, true},
+		"other user pw":    {req{method: "POST", path: "/allowed/login", body: `{"username":"bob","password":"leaked-by-target-1"}`, media: "application/json"}, false},
+		"broken only":      {req{method: "GET", path: "/allowed/page?q=%ZZ%27--"}, false},
+		"broken json only": {req{method: "POST", path: "/allowed/login", body: `{"p":"\u12zz' OR 1=1--"}`, media: "application/json"}, false},
+		"plain":            {req{method: "GET", path: "/allowed/page"}, false},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -169,5 +170,30 @@ func TestModelRequestCarryingTestAccountPasswordIsDenied(t *testing.T) {
 				t.Fatalf("비밀번호 없는 요청을 막음: err=%v reason=%s", err, receipt.Reason)
 			}
 		})
+	}
+}
+
+// 인증 준비(프로그램 로그인)는 비밀번호를 담아 보내야 하므로 이 거부를 받지 않는다.
+func TestAuthPrepStillSendsRegisteredPassword(t *testing.T) {
+	password := "seeded-login-pass-1"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: "session", Value: "synthetic-issued-session-77"})
+		io.WriteString(w, `{"ok":true}`)
+	}))
+	defer srv.Close()
+	cfg := passwordConfig(t, srv.URL, &coreRecorder{})
+	cfg.PasswordResponse = PasswordResponseModelVisible
+	e, c := authProgramOpen(t, cfg)
+	if err := e.AddProtectedPasswords([]byte(password)); err != nil {
+		t.Fatal(err)
+	}
+	login, err := http.NewRequest("POST", srv.URL+"/login", strings.NewReader(`{"email":"tester","password":"`+password+`"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	login.Header.Set("Content-Type", "application/json")
+	headers, receipt, err := c.AuthPrep(t.Context(), login, cookieExtractor("session"))
+	if err != nil || headers.Get("Cookie") != "session=synthetic-issued-session-77" || receipt.Reason != Complete {
+		t.Fatalf("프로그램 로그인을 막음: %v %+v", err, receipt)
 	}
 }
