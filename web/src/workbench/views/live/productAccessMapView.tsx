@@ -6,7 +6,7 @@
 // 확정 단계 결과가 아직 없으면(confirmation=null) 격자 대신 안내만 보인다(O2).
 // ※ 운영자 전용: 내보내기 · 공유 · 모델 입력에 넣지 않는다(지도 화면 고지 그대로).
 
-import type { CSSProperties } from "react";
+import type { CSSProperties, ReactNode } from "react";
 
 import { ApiError } from "@/lib/diagnosis/api";
 
@@ -17,11 +17,15 @@ import {
   isProductAccessMapShapeError,
   PRODUCT_MAP_ERROR_TEXT,
   PRODUCT_MAP_STATE_TEXT,
+  PRODUCT_MAP_TALLY_ORDER,
+  PRODUCT_MAP_TALLY_TEXT,
   type ProductAccessMap,
   type ProductMapCell,
   type ProductMapState,
+  type ProductMapTally,
+  productMapTally,
 } from "../../live/productAccessMap";
-import { CONFIRMATION_TEXT, EVIDENCE_SEAL_TEXT, ORACLE_VALUE_TEXT } from "../../live/productVerdicts";
+import { CONFIRMATION_TEXT, EVIDENCE_SEAL_TEXT } from "../../live/productVerdicts";
 import { type Poll, usePoll } from "../../live/usePoll";
 import { verdictReasonText } from "../../live/verdictReasons";
 import { Icon } from "../../ui/icons";
@@ -41,7 +45,14 @@ const STATE_STYLE: Record<ProductMapState, CSSProperties> = {
     borderStyle: "dashed",
   },
 };
-const COUNT_ORDER: ProductMapState[] = ["confirmed", "suspected", "unknown", "na"];
+/** 합계 칩 색. 판정 없는 칸은 판단불가 판정과 같은 색이되 점선으로 갈라 보인다. */
+const TALLY_STYLE: Record<ProductMapTally, CSSProperties> = {
+  confirmed: STATE_STYLE.confirmed,
+  suspected: STATE_STYLE.suspected,
+  undecidable: STATE_STYLE.unknown,
+  no_verdict: { ...STATE_STYLE.unknown, borderStyle: "dashed" },
+  na: STATE_STYLE.na,
+};
 
 const wrapStyle: CSSProperties = { overflowX: "auto", marginTop: 10 };
 const tableStyle: CSSProperties = { borderCollapse: "collapse", width: "100%", fontSize: 13 };
@@ -158,18 +169,28 @@ function Body({ poll }: { poll: Poll<ProductAccessMap> }) {
         제품 지도를 불러오는 중…
       </p>
     );
+  // 저장 자료라 주기 조회를 하지 않는다. 확정 단계가 끝난 뒤 · 읽은 직후에 끝난 경우를 위해 다시 읽기 버튼을 늘 둔다.
+  const reload = (
+    <button className={cx(s.btn, s.sm)} type="button" onClick={poll.reload}>
+      제품 지도 다시 읽기
+    </button>
+  );
   if (!map.confirmation)
     return (
-      <p className={s.note} role="note" data-testid="product-map-pending">
-        확정 단계가 끝나면 교차 계정 결과가 채워집니다. 아직 확정 단계 결과가 없습니다(진행 중이거나 시작 전).
-      </p>
+      <div className={s.note} role="note" data-testid="product-map-pending">
+        <Icon name="info" />
+        <span className={s["lv-grow"]}>
+          확정 단계가 끝나면 교차 계정 결과가 채워집니다. 아직 확정 단계 결과가 없습니다(진행 중이거나 시작 전).
+        </span>
+        {reload}
+      </div>
     );
-  return <Grid map={map} />;
+  return <Grid map={map} reload={reload} />;
 }
 
-function Grid({ map }: { map: ProductAccessMap }) {
-  const cross = map.cells.filter((c) => c.role === "cross");
-  const counts = COUNT_ORDER.map((st) => [st, cross.filter((c) => c.state === st).length] as const).filter(
+function Grid({ map, reload }: { map: ProductAccessMap; reload: ReactNode }) {
+  const tallies = map.cells.map(productMapTally);
+  const counts = PRODUCT_MAP_TALLY_ORDER.map((t) => [t, tallies.filter((x) => x === t).length] as const).filter(
     ([, n]) => n > 0,
   );
   const c = map.confirmation;
@@ -188,13 +209,14 @@ function Grid({ map }: { map: ProductAccessMap }) {
       </p>
       {counts.length ? (
         <div style={chipRow} data-testid="product-map-counts">
-          {counts.map(([st, n]) => (
-            <span key={st} style={{ ...chipBase, ...STATE_STYLE[st] }}>
-              {PRODUCT_MAP_STATE_TEXT[st]} <b>{n}</b>
+          {counts.map(([t, n]) => (
+            <span key={t} style={{ ...chipBase, ...TALLY_STYLE[t] }} data-tally={t}>
+              {PRODUCT_MAP_TALLY_TEXT[t]} <b>{n}</b>
             </span>
           ))}
         </div>
       ) : null}
+      <div style={chipRow}>{reload}</div>
       {map.hiddenRecords ? (
         <p className={cx(s.note, s.warn)} role="note">
           <Icon name="alert" />
@@ -239,7 +261,7 @@ function Grid({ map }: { map: ProductAccessMap }) {
         </table>
       </div>
       <p className={s.help}>
-        ‘판단 불가’ · ‘관측 근거 없음’은 취약점이 없다는 뜻이 아닙니다. 확정도 검토 대상 후보이며 자동 확정 발견이
+        ‘판정 불가’ · ‘관측 근거 없음’은 취약점이 없다는 뜻이 아닙니다. 확정도 검토 대상 후보이며 자동 확정 발견이
         아닙니다.
       </p>
     </>
@@ -248,8 +270,8 @@ function Grid({ map }: { map: ProductAccessMap }) {
 
 function Cell({ cell }: { cell: ProductMapCell }) {
   const v = cell.verdict;
-  // 판단 불가 판정은 오라클 값 이름으로, 판정 없는 칸은 투영 오류 문구로 보인다(둘을 합치지 않는다).
-  const label = v?.oracleValue === "undecidable" ? ORACLE_VALUE_TEXT.undecidable : PRODUCT_MAP_STATE_TEXT[cell.state];
+  // 판정 불가는 저장 판정이면 판정 번호 · 사유를, 판정 없는 칸이면 투영 오류 문구를 붙여 가른다(둘을 합치지 않는다).
+  const label = PRODUCT_MAP_STATE_TEXT[cell.state];
   const reasons = v ? [...v.oracleReasonCodes, ...v.productReasonCodes] : [];
   return (
     <span

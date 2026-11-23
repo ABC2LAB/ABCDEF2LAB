@@ -375,20 +375,45 @@ export const getProductAccessMap = fetchProductAccessMap;
 
 // ---------- 표시 글 ----------
 
-/** 칸 이름. owner_control 은 A 조회 성공으로 읽히지 않게 중립 문구다(O1). */
+/**
+ * 칸 이름. 확정 · 의심 · 판정 불가는 평가 지도(lib/diagnosis/kg.ts DECISION_LABEL)와 같은 글이다(계약 §3).
+ * owner_control 은 A 조회 성공으로 읽히지 않게 중립 문구다(O1).
+ */
 export const PRODUCT_MAP_STATE_TEXT: Record<ProductMapState, string> = {
   owner_control: "소유 계정(선언) · 판정 대상 아님",
   na: "— (공유 선언)",
-  confirmed: "확정",
-  suspected: "의심",
-  unknown: "판단 불가",
+  confirmed: "취약 확정",
+  suspected: "취약 의심",
+  unknown: "판정 불가",
 };
+
+/**
+ * 합계 칩의 갈래. 저장된 판단불가 판정(undecidable)과 판정이 없는 칸(투영 오류)은 둘 다 state=unknown 이지만 합치지 않는다
+ * (계약 §2.3 — undecidable 과 observation_unavailable 을 합치지 않는다).
+ */
+export type ProductMapTally = "confirmed" | "suspected" | "undecidable" | "no_verdict" | "na";
+export const PRODUCT_MAP_TALLY_ORDER: ProductMapTally[] = ["confirmed", "suspected", "undecidable", "no_verdict", "na"];
+export const PRODUCT_MAP_TALLY_TEXT: Record<ProductMapTally, string> = {
+  confirmed: "취약 확정",
+  suspected: "취약 의심",
+  undecidable: "판정 불가(저장 판정)",
+  no_verdict: "판정 기록 · 근거 없음",
+  na: "— (공유 선언)",
+};
+
+/** 교차(B) 칸의 합계 갈래. 소유 칸은 판정 대상이 아니라 세지 않는다(null). */
+export function productMapTally(cell: ProductMapCell): ProductMapTally | null {
+  if (cell.role !== "cross") return null;
+  if (cell.state === "confirmed" || cell.state === "suspected" || cell.state === "na") return cell.state;
+  return cell.verdict ? "undecidable" : "no_verdict";
+}
 
 export const PRODUCT_MAP_ERROR_TEXT: Record<ProductMapError, string> = {
   selection_ambiguous: "판정 둘 이상 · 선택 안 함",
   record_invalid: "판정 기록이 칸 규칙과 맞지 않음",
   record_hidden: "무결성 실패로 숨긴 판정이 이 종류일 수 있음",
   record_missing_after_attempt: "확정 단계를 마쳤는데 판정 기록 없음",
-  observation_unavailable: "관측 근거 없음(확정 단계 미완료)",
+  // 확정 단계 상태(완료 아님 · 읽기 실패 · 진위 실패 등)는 격자 위 줄에 따로 보인다. 여기서 원인을 추정하지 않는다.
+  observation_unavailable: "관측 근거 없음",
   na_evidence_mismatch: "공유 선언과 확정 단계 건너뜀 기록이 맞지 않음",
 };

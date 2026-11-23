@@ -14,7 +14,7 @@ vi.mock("@/lib/diagnosis/api", async (original) => ({
 
 import { ApiError, apiFetch } from "@/lib/diagnosis/api";
 import { running } from "@/lib/diagnosis/diagnosis-url-fixtures";
-import { checkAccessMapResponse } from "@/lib/diagnosis/kg";
+import { buildCellResolver, checkAccessMapResponse, mapApiAccessMap } from "@/lib/diagnosis/kg";
 
 import { isProductAccessMapShapeError, parseProductAccessMap } from "../live/productAccessMap";
 import { resetUrl, useUrl } from "../live/urlDiagnosis";
@@ -101,7 +101,57 @@ describe("parseProductAccessMap", () => {
   });
 
   it("평가 지도 파서는 제품 지도 상태(owner_control · na)를 받지 않는다(파서 분리)", () => {
-    expect(() => checkAccessMapResponse(cases.completed, cases.completed.task_id)).toThrow();
+    // 평가 지도 모양은 다 맞추고 상태만 제품 값으로 바꾼다 — task_id 검사에서 먼저 던지지 않고 상태 검사까지 가게 한다
+    const evalCell = {
+      principal: "reader",
+      owner_ref: "owner",
+      resource_ref: "document:one",
+      resource_label: "document:one",
+      state: "unknown",
+      oracle_value: null,
+      applicable: true,
+      record_id: null,
+      case_ref: null,
+      observed_at: null,
+      policy_check: "unknown",
+      identity_check: "unknown",
+      data_check: "unknown",
+      same_resource: "unknown",
+      owner_normal_data: "unknown",
+      cross_normal_data: "unknown",
+      nontrivial_data_match: "unknown",
+      reflection_excluded: "unknown",
+      template_excluded: "unknown",
+      reason_codes: [],
+      canary_fields: [],
+      projection_error: "observation_unavailable",
+    };
+    const evalBody = (state: string) => ({
+      task_id: 41,
+      run_ref: "execution-41",
+      reset_generation: "reset-1",
+      axis: "horizontal",
+      policy_version: `kg-fixture/v1:map-snapshot:${"a".repeat(64)}`,
+      cells: [{ ...evalCell, state }],
+    });
+    expect(() => checkAccessMapResponse(evalBody("unknown"), "41")).not.toThrow();
+    for (const state of ["owner_control", "na"]) {
+      // 평가 경로는 모르는 상태를 칸 단위로 fail-closed(판정 불가 · 미등록 state)로 내린다 — 제품 상태로 칠하지 않는다
+      const map = mapApiAccessMap(checkAccessMapResponse(evalBody(state), "41"));
+      const cell = buildCellResolver(map.cells)("reader", "document:one");
+      expect(cell.decision, state).toBe("unknown");
+      expect(cell.projectionError, state).toBe("observation_unavailable");
+      const bare = mapApiAccessMap(
+        checkAccessMapResponse({ ...evalBody(state), cells: [{ ...evalCell, state, projection_error: null }] }, "41"),
+      );
+      expect(buildCellResolver(bare.cells)("reader", "document:one"), state).toMatchObject({
+        decision: "unknown",
+        projectionError: `미등록 state: ${state}`,
+      });
+    }
+    // 제품 응답 통째로는 평가 파서가 받지 않는다(형식 · 칸 모양이 다르다)
+    const numeric = { ...clone(cases.completed), task_id: Number(cases.completed.task_id) };
+    expect(() => checkAccessMapResponse(numeric, cases.completed.task_id)).toThrow();
   });
 
   it("confirmable ⇔ owner_only 를 두 방향 다 본다", () => {
@@ -258,7 +308,7 @@ describe("parseProductAccessMap", () => {
 });
 
 describe("ProductAccessMapGrid", () => {
-  it("종류 × A/B 격자: 소유 칸은 중립 문구, 확정 · 판단 불가 · 공유 선언을 서버 상태대로", async () => {
+  it("종류 × A/B 격자: 소유 칸은 중립 문구, 확정 · 판정 불가 · 공유 선언을 서버 상태대로(평가 지도와 같은 글)", async () => {
     serve(cases.completed);
     render(<ProductAccessMapGrid taskId={cases.completed.task_id} active />);
     const table = await screen.findByRole("table", { name: "자원 종류 × 소유 · 교차 계정 제품 접근통제 격자" });
@@ -266,12 +316,30 @@ describe("ProductAccessMapGrid", () => {
     expect(within(table).getByRole("columnheader", { name: /tester-b\s*교차\(B\)/ })).toBeInTheDocument();
     const doc = within(table).getByRole("row", { name: /document/ });
     expect(doc).toHaveTextContent("소유 계정(선언) · 판정 대상 아님");
-    expect(doc).toHaveTextContent("확정");
+    expect(doc).toHaveTextContent("취약 확정");
+    // 근거 체크포인트는 있는데 봉인 확인 기록이 없으면 봉인 미확인을 칸에 보인다(지운 예전 표 시험이 보던 것)
+    expect(doc.querySelector("[data-seal='unconfirmed']")).toHaveTextContent("봉인 미확인");
     // 소유 칸이 성공 · 정상처럼 보이지 않는다
     expect(doc).not.toHaveTextContent(/성공|정상|통과/);
-    expect(within(table).getByRole("row", { name: /note/ })).toHaveTextContent("판단 불가");
+    expect(within(table).getByRole("row", { name: /note/ })).toHaveTextContent("판정 불가");
     expect(within(table).getByRole("row", { name: /post/ })).toHaveTextContent("— (공유 선언)");
-    expect(screen.getByTestId("product-map-counts")).toHaveTextContent("확정 1");
+    const counts = screen.getByTestId("product-map-counts");
+    expect(counts).toHaveTextContent("취약 확정 1");
+    expect(counts.querySelector("[data-tally='undecidable']")).toHaveTextContent("판정 불가(저장 판정) 1");
+    expect(counts.querySelector("[data-tally='no_verdict']")).toBeNull();
+  });
+
+  it("합계 칩은 저장된 판정 불가와 판정 없는 칸을 합치지 않는다", async () => {
+    serve(cases.interrupted_suspected);
+    render(<ProductAccessMapGrid taskId={cases.interrupted_suspected.task_id} active />);
+    const counts = await screen.findByTestId("product-map-counts");
+    expect(counts.querySelector("[data-tally='suspected']")).toHaveTextContent("취약 의심 1");
+    expect(counts.querySelector("[data-tally='no_verdict']")).toHaveTextContent("판정 기록 · 근거 없음 1");
+    expect(counts.querySelector("[data-tally='undecidable']")).toBeNull();
+    // 관측 근거 없음 문구는 원인(확정 단계 미완료)을 추정하지 않는다
+    const doc = screen.getByRole("row", { name: /document/ });
+    expect(doc).toHaveTextContent("관측 근거 없음");
+    expect(doc).not.toHaveTextContent("미완료");
   });
 
   it("확정 단계 결과가 없으면 격자 대신 안내만", async () => {
@@ -279,6 +347,11 @@ describe("ProductAccessMapGrid", () => {
     render(<ProductAccessMapGrid taskId={cases.pending.task_id} active />);
     expect(await screen.findByTestId("product-map-pending")).toHaveTextContent("확정 단계가 끝나면");
     expect(screen.queryByRole("table")).toBeNull();
+    // 안내 화면에서도 다시 읽을 수 있다 — 확정 단계가 끝나면 같은 화면에서 격자로 바뀐다
+    serve({ ...clone(cases.completed), task_id: cases.pending.task_id });
+    screen.getByRole("button", { name: "제품 지도 다시 읽기" }).click();
+    expect(await screen.findByRole("table", { name: /제품 접근통제 격자/ })).toBeInTheDocument();
+    expect(apiFetch).toHaveBeenCalledTimes(2);
   });
 
   it("숨긴 행 건수와 칸의 '숨긴 판정일 수 있음'을 보이고, 판정 없음을 안전으로 칠하지 않는다", async () => {
