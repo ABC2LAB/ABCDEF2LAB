@@ -134,11 +134,28 @@ func (s *Server) createFirstDiagnosisGoals(ctx context.Context, t *Task, emit fu
 			emit(a)
 		}
 	}
+	// 목표 분해 전체(모델 턴 여러 번)를 목표 만들기 상한 안에 묶는다. 넘으면 분해만 끊고 원래 목표로 계획을 계속해,
+	// 첫 계획이 준비 단계 상한에 먼저 잘리지 않게 한다(firstDiagnosisGoalCreationLimit, #879). 끊긴 호출은 일시 오류로
+	// 세어 승인을 막지 않고, 예산은 예약량을 쓴 것으로 정산한다(C05·C06).
+	goalCtx, stopGoals := context.WithTimeout(ctx, firstDiagnosisGoalCreationTimeout)
 	s.engine.BeginLLMCall(t.ID)
-	goals := agent.DecomposeGoalsWithProvider(agent.WithE2HTTPPlanning(ctx), runtime, s.m.dir, t.Goal, t.Description, s.m.assets, t.Store, taskID, runtime.nonStreaming(), runtime.maxTokens(), capture)
+	goals := agent.DecomposeGoalsWithProvider(agent.WithE2HTTPPlanning(goalCtx), runtime, s.m.dir, t.Goal, t.Description, s.m.assets, t.Store, taskID, runtime.nonStreaming(), runtime.maxTokens(), capture)
 	s.engine.EndLLMCall(t.ID)
+	goalExpired := errors.Is(goalCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
+	stopGoals()
 	if ctx.Err() != nil {
 		return ErrLocalLLMPolicy
+	}
+	if goalExpired {
+		// 목표 분해가 상한에 걸렸다. set_goals는 목표를 바로 저장하므로, 저장된 목표가 있으면 첫 계획은 그 목표로 돈다
+		// (부분 저장 허용). 기록도 '원래 목표로 계속'이 아니라 '저장된 목표로 계속'이어야 실제 상태와 같다(#879 리뷰).
+		fallback = firstDiagnosisGoalFallback(len(goals))
+		if fallback {
+			log.Printf("[first-diagnosis] task %s 목표 분해가 상한(%s)을 넘어 끊고 원래 목표로 계획 계속", t.ID, firstDiagnosisGoalCreationTimeout)
+		} else {
+			log.Printf("[first-diagnosis] task %s 목표 분해가 상한(%s)을 넘어 끊고 저장된 목표 %d개로 계획 계속", t.ID, firstDiagnosisGoalCreationTimeout, len(goals))
+		}
+		return nil
 	}
 	if failed.Load() || !terminal.Load() || len(goals) == 0 {
 		// 목표 분해는 계획을 돕는 단계이지 필수 단계가 아니다(P3 결정안 C11 결정 1). 원본(startTaskEngine)처럼
@@ -149,6 +166,10 @@ func (s *Server) createFirstDiagnosisGoals(ctx context.Context, t *Task, emit fu
 	}
 	return nil
 }
+
+// firstDiagnosisGoalFallback은 목표 만들기가 상한에 걸렸을 때 원래 작업 목표로 계획하는지다. 저장된 목표가 하나라도
+// 있으면 그 목표로 계획하므로(부분 저장 허용) 폴백이 아니다.
+func firstDiagnosisGoalFallback(storedGoals int) bool { return storedGoals == 0 }
 
 // 조회라는 HTTP 메서드만으로 외부 동기화·자가 갱신·MCP 발견을 허용하지 않는다.
 func firstDiagnosisReadRoute(path string) bool {

@@ -105,12 +105,12 @@ func TestFirstDiagnosisRetryModelCallRateLimitSchedule(t *testing.T) {
 	if msg, _, _, err := firstDiagnosisRetryModelCallWith(t.Context(), short, long, func() bool { return true }, once, always); err != nil || msg.Text() != "ok" || n != 4 {
 		t.Fatalf("rate limit recovery: err=%v attempts=%d", err, n)
 	}
-	// 기본 간격표는 요청 한도 쪽이 더 길고, 합계가 준비 계획 상한(2분)보다 짧다.
+	// 기본 간격표는 요청 한도 쪽이 더 길고, 합계가 준비 단계 상한(FirstDiagnosisPreparationTimeout)보다 짧다.
 	var total time.Duration
 	for _, d := range firstDiagnosisRateLimitRetryDelays {
 		total += d
 	}
-	if len(firstDiagnosisRateLimitRetryDelays) <= len(firstDiagnosisModelRetryDelays) || total >= 2*time.Minute {
+	if len(firstDiagnosisRateLimitRetryDelays) <= len(firstDiagnosisModelRetryDelays) || total >= FirstDiagnosisPreparationTimeout {
 		t.Fatalf("rate limit schedule %v", firstDiagnosisRateLimitRetryDelays)
 	}
 }

@@ -730,3 +730,32 @@ func TestFirstDiagnosisOpenRouterBudgetRejectedResponseWithUsageIsPerCall(t *tes
 		t.Fatal("next call refused after a per-call rejection", err)
 	}
 }
+
+// 준비 단계 전체 상한은 차례로 도는 목표 만들기 전체(모델 턴 여러 번, 따로 170초로 묶음)와 첫 계획이 각자 자기 상한까지 걸려도 들어가야 한다. 짧으면 정상
+// 응답 두 번(예: 각각 160초)으로 첫 계획이 계획 상한이 아니라 준비 단계 상한에 먼저 잘려 O 회차가 계획 실패로 끝난다
+// (2026-11-23 화면 VAmPI, #879 리뷰). 결속·처리 여유 1분을 더 남긴다.
+func TestFirstDiagnosisPreparationTimeoutCoversGoalAndPlan(t *testing.T) {
+	sequential := firstDiagnosisGoalCreationLimit + agent.E2HTTPPlannerDefaultDuration
+	if firstDiagnosisGoalCreationLimit < agent.E2HTTPPlannerDefaultDuration || FirstDiagnosisPreparationTimeout < sequential+time.Minute {
+		t.Fatalf("준비 단계 상한 %s가 목표 만들기 %s + 계획 %s + 여유 1분보다 짧음", FirstDiagnosisPreparationTimeout, firstDiagnosisGoalCreationLimit, agent.E2HTTPPlannerDefaultDuration)
+	}
+	// 준비 단계 문맥이 이 상한을 기한으로 쓴다.
+	before := time.Now()
+	ctx, cancel := firstDiagnosisPreparationContext(t.Context())
+	deadline, ok := ctx.Deadline()
+	cancel()
+	if !ok || deadline.Before(before.Add(FirstDiagnosisPreparationTimeout)) || deadline.After(time.Now().Add(FirstDiagnosisPreparationTimeout)) {
+		t.Fatalf("준비 문맥 기한 %v (상한 %s)", deadline, FirstDiagnosisPreparationTimeout)
+	}
+	// 경계: 각각 상한까지 걸린 두 호출이 끝난 시점에도 준비 문맥이 남아 있어야 한다.
+	if worst := 2 * agent.E2HTTPPlannerDefaultDuration; FirstDiagnosisPreparationTimeout-worst < time.Minute {
+		t.Fatalf("두 호출 뒤 남는 시간 %s", FirstDiagnosisPreparationTimeout-worst)
+	}
+}
+
+// 목표 만들기가 상한에 걸렸을 때: 저장된 목표가 없으면 원래 목표로(폴백), 있으면 저장된 목표로 계획한다(#879 리뷰).
+func TestFirstDiagnosisGoalFallbackOnlyWithoutStoredGoals(t *testing.T) {
+	if !firstDiagnosisGoalFallback(0) || firstDiagnosisGoalFallback(1) || firstDiagnosisGoalFallback(3) {
+		t.Fatal("목표 만들기 상한 뒤 폴백 판단")
+	}
+}
