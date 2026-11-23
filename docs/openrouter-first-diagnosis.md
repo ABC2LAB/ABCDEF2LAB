@@ -30,9 +30,9 @@
 
 | 필드 | 설치자 입력 |
 |---|---|
-| `version` | `1`·`2`·`3`(`2`·`3`은 `max_consecutive_transient_errors`, `3`은 `sampling`도 있어야 한다). 새 설치는 `3`을 쓴다 |
+| `version` | `1`·`2`·`3`·`4`(`2` 이상은 `max_consecutive_transient_errors`, `3` 이상은 `sampling`, `4`는 `provider_routing`도 있어야 한다). 새 제품 설치는 `4`(자동 넘김)를 쓰고, 평가 manifest는 `3`(고정 모드)을 그대로 쓴다 |
 | `profile_id`, `format`, `base_url`, `model` | 실제 DB profile과 정확히 같은 tuple |
-| `provider_slug` | 승인한 정확 endpoint tag 하나 |
+| `provider_slug` | 승인한 정확 endpoint tag 하나(자동 넘김 모드에서는 목록의 첫 항목과 같아야 한다) |
 | `expected_provider_name` | 응답에서 검증할 실제 provider 표시 이름 |
 | `approval_id`, `expires_at` | 단계별 승인 식별자와 미래 만료 시각 |
 | `strict_privacy_ack` | 제공사 조건과 계정/guardrail의 ZDR-only 선택을 실제 확인한 경우에만 true |
@@ -45,7 +45,8 @@
 | `timeout_seconds`, `max_concurrent` | 요청별 1~300초 제한과 동시 요청 상한 |
 | `max_input_price_usd_micros_per_million`, `max_output_price_usd_micros_per_million` | 승인된 100만 토큰당 최대 단가, provider.max_price에 결속 |
 | `max_consecutive_transient_errors` | v2·v3. 연속 일시 오류(429·5xx·연결 실패·응답 본문 읽기 끊김)가 이 수(1~16)에 닿으면 정책을 잠근다. v1은 1로 본다(첫 일시 오류에 잠금). 첫 진단의 모델 호출 하나는 실패하면 두 번 더 보내고(2초·6초 뒤, 매번 새 예약), 요청 한도(429, 청구 없음)면 네 번까지 다시 보낸다(2·6·15·30초). 그 실패도 연속 수에 들어가므로, 3 이하이면(429가 이어지면 5 이하이면) 호출 하나가 승인을 잠글 수 있다 |
-| `sampling` | v3만. 매 요청에 넣는 샘플링 일곱 칸 `temperature`(0~2)·`top_p`(0 초과~1)·`top_k`(정수 0~1000)·`min_p`(0~1)·`presence_penalty`(-2~2)·`repetition_penalty`(0 초과~2)·`seed`(정수, ±2^53). 칸이 정확히 일곱이어야 하고(중복·모르는 칸·정수 칸의 소수 거부) 범위 밖이면 거부한다. 제품 기본값은 평가 프로토콜 §6 고정값과 같은 `{"temperature":1.0,"top_p":0.95,"top_k":20,"min_p":0,"presence_penalty":1.5,"repetition_penalty":1.0,"seed":42}`(모델 카드 thinking 모드·일반 작업 권장값 + seed 42)이다. v1·v2는 샘플링을 넣지 않는다(제공자 기본값, 이전 동작) |
+| `sampling` | v3·v4. 매 요청에 넣는 샘플링 일곱 칸 `temperature`(0~2)·`top_p`(0 초과~1)·`top_k`(정수 0~1000)·`min_p`(0~1)·`presence_penalty`(-2~2)·`repetition_penalty`(0 초과~2)·`seed`(정수, ±2^53). 칸이 정확히 일곱이어야 하고(중복·모르는 칸·정수 칸의 소수 거부) 범위 밖이면 거부한다. 제품 기본값은 평가 프로토콜 §6 고정값과 같은 `{"temperature":1.0,"top_p":0.95,"top_k":20,"min_p":0,"presence_penalty":1.5,"repetition_penalty":1.0,"seed":42}`(모델 카드 thinking 모드·일반 작업 권장값 + seed 42)이다. v1·v2는 샘플링을 넣지 않는다(제공자 기본값, 이전 동작) |
+| `provider_routing` | v4만. 제공자 모드다. 고정: `{"mode":"pinned"}` — 승인 endpoint 하나만 쓰고 넘기지 않는다(v1~v3과 같은 요청 바이트). 자동 넘김: `{"mode":"fallback","providers":[{"slug":"<tag>","name":"<표시 이름>"}, …]}` — 2~8개, 순서가 시도 순서, tag와 이름은 각각 중복 없음, 첫 항목은 `provider_slug`·`expected_provider_name`과 같다. 모르는 칸·중복 키는 거부한다. **제품 기본값은 자동 넘김**이고 평가 manifest는 고정 모드다 |
 
 manifest와 부모는 기존 보호 파일 계약(실행 UID 소유, 파일0600/부모0700, symlink·hardlink·교체 거부)을 따른다. API 키는 manifest에 넣지 않는다. 기존 보호된 DB profile credential 공급 경로를 사용하며 채팅·명령 인자·환경 변수·PR·로그에 붙여 넣지 않는다. 설치자가 실제 키를 기존 보호 관리 화면/절차로 저장한 뒤 비밀 원문 없이 profile ID와 설정 여부만 인계한다. 이 변경은 새 키 발급·OAuth·계정 권한 확대를 하지 않는다.
 
@@ -53,7 +54,7 @@ manifest와 부모는 기존 보호 파일 계약(실행 UID 소유, 파일0600/
 
 2026-11-14 공식 [endpoint 목록](https://openrouter.ai/api/v1/models/qwen/qwen3.6-35b-a3b/endpoints)에서 tools/tool_choice를 광고한 tag는 `primeintellect/fp8`, `darkbloom/fp4`, `akashml/fp8`, `parasail/fp8`, `deepinfra/fp8`, `dekallm`, `venice/fp8`, `atlas-cloud/fp8`였다(`atlas-cloud/fp8`는 조회 시점 상태 값 -5). 2026-11-08 Qwen3.5 목록(`darkbloom/fp4`, `parasail/fp8`, `venice`, `alibaba`, `atlas-cloud/fp8`)은 이력이다. 이 목록은 설치 승인이나 현재 수용 시험을 대신하지 않는다. required/named-function choice 지원도 제공사별로 다르므로 실행 전 최신 metadata와 선택한 도구 모드를 다시 대조한다.
 
-신뢰된 모델 클라이언트가 다음을 고정 삽입한다: `provider.only=[승인 tag]`, `allow_fallbacks=false`, `require_parameters=true`, `data_collection=deny`, `zdr=true`, 승인 단가의 `max_price`. v3 manifest면 `sampling` 일곱 칸도 넣는다. 이 값은 평가 게이트웨이의 주입과 같은 뜻으로 호출자(엔진)가 보낸 `temperature`를 덮어쓰고, 나머지 샘플링 칸은 요청 허용 목록 밖이라 호출자가 보낼 수 없다. 그래서 전송되는 샘플링 값의 출처는 manifest 하나이고 모델 입력으로 바꿀 수 없다. 실제로 보낸 바이트에서 다시 읽은 값을 사용량 기록(`sampling`)에 남겨, 평가 러너가 원본 게이트웨이의 적용값과 대조한다(탐색 분리 배치 결정안 D(b)). `require_parameters=true`라 일곱 칸을 다 지원하지 않는 endpoint는 OpenRouter가 거부한다. 실패 시 조건을 느슨하게 재요청하지 않는다. 응답의 모델과 제공사 표시 이름도 대조한다.
+신뢰된 모델 클라이언트가 다음을 고정 삽입한다: `provider.only=[승인 tag]`, `allow_fallbacks=false`, `require_parameters=true`, `data_collection=deny`, `zdr=true`, 승인 단가의 `max_price`. 자동 넘김 모드(v4 `provider_routing.mode=fallback`)에서는 `only`와 `order`에 승인 목록을 같은 순서로 넣고 `allow_fallbacks=true`로 보내 목록 안에서만 순서대로 넘어가게 한다. `require_parameters`·`data_collection=deny`·`zdr`·`max_price`는 모드와 상관없이 같은 값이다. 어느 모드든 응답의 `provider`가 승인 목록의 표시 이름이 아니면 그 응답을 받지 않고 정책을 잠근다(OpenRouter가 넘김 조건을 어떻게 적용하든 목록 밖 제공자의 결과는 쓰지 않는다). 호출마다 실제로 응답한 제공자는 진단 기록의 `provider_ref`(tag의 digest)에 남고, 사용량 기록 `returned_providers`에 tag별 정상 응답 수가 쌓인다(고정 모드에는 이 칸이 없다). v3 manifest면 `sampling` 일곱 칸도 넣는다. 이 값은 평가 게이트웨이의 주입과 같은 뜻으로 호출자(엔진)가 보낸 `temperature`를 덮어쓰고, 나머지 샘플링 칸은 요청 허용 목록 밖이라 호출자가 보낼 수 없다. 그래서 전송되는 샘플링 값의 출처는 manifest 하나이고 모델 입력으로 바꿀 수 없다. 실제로 보낸 바이트에서 다시 읽은 값을 사용량 기록(`sampling`)에 남겨, 평가 러너가 원본 게이트웨이의 적용값과 대조한다(탐색 분리 배치 결정안 D(b)). `require_parameters=true`라 일곱 칸을 다 지원하지 않는 endpoint는 OpenRouter가 거부한다. 실패 시 조건을 느슨하게 재요청하지 않는다. 응답의 모델과 제공사 표시 이름도 대조한다.
 
 사용량 기록(`OpenRouterUsage`, 실행 기록 `model`)의 `sampling_overwrites`는 v3 manifest 샘플링이 호출자(엔진)가 보낸 `temperature`를 덮어쓴 요청 수다. 실제로 보낸 요청만 세고, 값이 manifest와 같아도 엔진이 칸을 보냈으면 센다. 평가 게이트웨이(원본 B)는 같은 칸을 거부하고 제품(O)은 덮어쓰므로, 두 쪽이 같은 샘플링 조건이라는 말은 엔진이 그 칸을 보내지 않을 때만 맞다. 평가 러너는 이 값이 0인지 본다(탐색 분리 배치 결정안 4-4). v1·v2 승인은 덮어쓰기가 없어 `null`이다.
 

@@ -196,3 +196,16 @@ func TestFirstDiagnosisModelUsageOverwritesAreExecutionOnly(t *testing.T) {
 		t.Fatalf("v1 execution overwrites %+v", got)
 	}
 }
+
+// 자동 넘김 모드의 제공자별 응답 수도 실행 구간만 남긴다(준비 단계 호출은 뺀다). 고정 모드는 빈 값 그대로다.
+func TestExecutionModelUsageReturnedProviders(t *testing.T) {
+	after := llmpolicy.OpenRouterUsage{Requests: 5, ReturnedProviders: llmpolicy.OpenRouterProviderCounts{{Slug: "first/fp8", Responses: 3}, {Slug: "second/fp8", Responses: 2}}}
+	preparation := llmpolicy.OpenRouterUsage{Requests: 3, ReturnedProviders: llmpolicy.OpenRouterProviderCounts{{Slug: "first/fp8", Responses: 3}}}
+	got := executionModelUsage(after, preparation)
+	if got.Requests != 2 || got.ReturnedProviders != (llmpolicy.OpenRouterProviderCounts{{Slug: "second/fp8", Responses: 2}}) {
+		t.Fatalf("%+v", got)
+	}
+	if got := executionModelUsage(llmpolicy.OpenRouterUsage{Requests: 2}, llmpolicy.OpenRouterUsage{Requests: 1}); got.ReturnedProviders != (llmpolicy.OpenRouterProviderCounts{}) {
+		t.Fatalf("고정 모드: %+v", got)
+	}
+}
