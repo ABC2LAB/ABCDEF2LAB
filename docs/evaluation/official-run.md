@@ -139,6 +139,8 @@ install -d -m 700 /srv/abc2lab-eval /srv/abc2lab-eval-keys "$SESSION" "$SESSION/
    docker image inspect --format '{{.Id}}' <위 태그들>   # runner.json images.*.id·split.image_ids에 넣는다
    ```
 
+   **이미지 재사용:** 같은 동결 SHA로 파일럿 때 빌드한 이미지를 공식 세션에 재사용할 수 있다. 다시 빌드하지 않고 `runner.json`의 이미지 ID를 파일럿과 같은 값으로 둔다. 러너가 회차마다 설정의 이미지 ID와 로컬 이미지를 대조하고 다르면 `image_id_mismatch`로 멈춘다. 파일럿과 공식 세션이 같은 이미지여야 파일럿이 공식 조건을 확인한 것이 된다. 동결 SHA가 바뀌면 다시 빌드한다.
+
 2. **도구 면 측정과 B 전용 CLI 목록:** B 엔진과 제품 샌드박스의 CLI·MCP 목록을 재고, B에만 있는 CLI 이름을 러너 설정 `split.cli_usage_names`에 넣는다(B 회차가 그 이름의 호출 수를 센다).
 
    ```bash
