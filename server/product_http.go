@@ -140,6 +140,15 @@ func NewProductDiagnosisHandler(ctx context.Context, pool *sql.DB, keyDir, dataD
 			writeJSON(w, 400, map[string]string{"error": "model_not_installed"})
 			return
 		}
+		if r.URL.Path == productReleasePath {
+			owner, e := authenticate(r)
+			if e != nil {
+				writeJSON(w, 401, map[string]string{"error": "authentication_required"})
+				return
+			}
+			productReleaseHTTP(w, r, owner, endpoint)
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/api/product/workflows/") {
 			owner, e := authenticate(r)
 			if e != nil || owner != "ARTEX" {
