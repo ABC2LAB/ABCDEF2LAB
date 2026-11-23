@@ -30,7 +30,7 @@ import {
 
 import { cx } from "../../lib/cx";
 import { type ConfirmationPlan, confirmationPlanOf } from "../../live/confirmationPlan";
-import { getDeclaration } from "../../live/declaration";
+import { type DeclarationLoad, getDeclaration } from "../../live/declaration";
 import { fmtDur, shortTimeOf } from "../../live/map";
 import { useNow } from "../../live/parts";
 import type { ResetState } from "../../live/resetConfirmation";
@@ -117,6 +117,19 @@ function Unwired({ why }: { why: string }) {
   );
 }
 const NO_INPUT = "서버 진단 입력에 칸이 없습니다";
+/** 새 점검 '계정 · 정책 선언' 상자의 선언 줄 상태 */
+type DeclState = "loading" | "none" | "current" | "invalidated" | "unknown";
+const DECL_STATE_TEXT: Readonly<Record<DeclState, string>> = {
+  loading: "확인 중",
+  none: "없음 · 확정 단계 없이 점검",
+  current: "있음",
+  invalidated: "무효 · 다시 선언 필요",
+  unknown: "확인하지 못함",
+};
+function declStateOf(state: DeclarationLoad["state"]): DeclState {
+  if (state === "none" || state === "current" || state === "invalidated") return state;
+  return "unknown";
+}
 /** 진단 모드를 받지 않는 프로필(탐색 흐름 없음)에서 고른 진단 모드는 보내지 않는다. */
 const NO_MODE = "이 모델 프로필은 진단 모드를 받지 않아 고른 값을 보내지 않습니다";
 
@@ -192,8 +205,9 @@ export function UrlNewScanLive() {
   const [declarationActive, setDeclarationActive] = useState(false);
   const [resetState, setResetState] = useState<ResetState | null>(null);
   const [planUnknown, setPlanUnknown] = useState(false);
-  // 선언 조회가 끝났는가(성공 · 실패). 끝나기 전에는 '없음'으로 단정하지 않는다(규칙 5, #874 이동찬 P2)
-  const [declarationRead, setDeclarationRead] = useState(false);
+  // '계정 · 정책 선언' 상자의 선언 줄 상태(#874 이동찬 · 이경준 P2). 조회 중 · 못 읽음을 '없음'으로, 저장됐지만 무효가 된
+  // 선언을 '없음'으로 단정하지 않는다(규칙 5). 대상 없음(not_found) · 라우트 없음 · 모양 깨짐 · 조회 실패는 모두 '모름'
+  const [declState, setDeclState] = useState<DeclState>("loading");
   // 승인된 대상만 선언을 읽는다(선언은 승인된 대상에만 저장된다). 못 읽으면 '확정 단계 없음'으로 추정하지 않는다(규칙 5)
   const approvedTargetId = productTarget?.state === "approved" ? productTarget.id : null;
   // biome-ignore lint/correctness/useExhaustiveDependencies: entryGen 은 화면에 들어올 때마다 다시 읽는 트리거
@@ -201,13 +215,13 @@ export function UrlNewScanLive() {
     setConfirmationPlan(null);
     setDeclarationActive(false);
     setPlanUnknown(false);
-    setDeclarationRead(false);
+    setDeclState("loading");
     if (!approvedTargetId) return;
     const controller = new AbortController();
     getDeclaration(approvedTargetId, controller.signal)
       .then((load) => {
         if (controller.signal.aborted) return;
-        setDeclarationRead(true);
+        setDeclState(declStateOf(load.state));
         setConfirmationPlan(confirmationPlanOf(load));
         setDeclarationActive(load.state === "current");
         setPlanUnknown(load.state === "unavailable" || load.state === "invalid");
@@ -215,7 +229,7 @@ export function UrlNewScanLive() {
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
         console.warn("정책 선언을 읽지 못해 확정 단계 여부를 모름", error instanceof Error ? error.name : "unknown");
-        setDeclarationRead(true);
+        setDeclState("unknown");
         setPlanUnknown(true);
       });
     return () => controller.abort();
@@ -226,11 +240,10 @@ export function UrlNewScanLive() {
     useWb.getState().focusTargetOn(approvedTargetId);
     goTo(view);
   };
-  let declarationText = "없음 · 확정 단계 없이 점검";
-  if (!declarationRead) declarationText = "확인 중";
-  else if (declarationActive)
-    declarationText = confirmationPlan ? `있음 · 소유자 전용 종류 ${confirmationPlan.types}개` : "있음";
-  else if (planUnknown) declarationText = "확인하지 못함";
+  const declarationText =
+    declState === "current" && confirmationPlan
+      ? `있음 · 소유자 전용 종류 ${confirmationPlan.types}개`
+      : DECL_STATE_TEXT[declState];
   // 대상(또는 그 상태)이 바뀌면 지난 리셋 상태를 버린다. 상자는 key 로 다시 그려져 새 상태를 알린다
   const onProductTarget = useCallback((t: { id: string; state: string } | null) => {
     setProductTarget(t);
@@ -774,7 +787,7 @@ export function UrlNewScanLive() {
                     <section className={s["prep-box"]} aria-label="계정 · 정책 선언">
                       <ul className={s.policy}>
                         <Rule warn={!testAccountLogin} t="시험 계정" sub={accountText} />
-                        <Rule warn={!declarationActive} t="정책 선언" sub={declarationText} />
+                        <Rule warn={declState !== "current"} t="정책 선언" sub={declarationText} />
                       </ul>
                       <div className={s.acts}>
                         <button className={cx(s.btn, s.sm)} type="button" onClick={() => openPrep("classify")}>

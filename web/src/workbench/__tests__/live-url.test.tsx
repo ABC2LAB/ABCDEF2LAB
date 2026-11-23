@@ -3265,6 +3265,27 @@ describe("새 점검의 E③ 확정 단계 안내 · 대상 리셋 확인", () =
     expect(box).not.toHaveTextContent("없음");
   });
 
+  // #874 이경준 P2: 저장됐지만 무효가 된 선언은 '없음'이 아니라 다시 선언해야 한다고 보인다
+  it("선언이 무효가 됐으면 상자에 '무효 · 다시 선언 필요'로 보이고 경고 표시", async () => {
+    serve(
+      {
+        state: "invalid",
+        invalid_reason: "target_reapproved",
+        target_revision: 3,
+        declared_by: "operator-1",
+        declared_at: "2026-11-18T00:00:00.000000Z",
+        declaration: declaration(),
+      },
+      noWrites,
+    );
+    saveHandle();
+    mount("new");
+    const box = await screen.findByRole("region", { name: "계정 · 정책 선언" });
+    const decl = () => within(box).getAllByRole("listitem")[1];
+    await waitFor(() => expect(decl()).toHaveTextContent("정책 선언무효 · 다시 선언 필요"));
+    expect(decl()).not.toHaveTextContent("없음");
+  });
+
   it("정책 선언이 없으면 상자에 '없음'으로 보인다", async () => {
     serve({ state: "none", declaration: null }, noWrites);
     saveHandle();
