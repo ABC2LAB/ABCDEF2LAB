@@ -83,13 +83,23 @@ func (s *Service) completeReleasesLocked(ctx context.Context) {
 				continue
 			}
 		}
+		// 해제를 기록한 프로세스와 지금 프로세스는 벽시계가 다를 수 있다(시계 보정). 완료 시각이 기록 시각보다 앞서지 않게 둔다.
 		now := s.releaseClock().UTC()
+		if now.Before(r.OperatorRelease.RequestedAt) {
+			now = r.OperatorRelease.RequestedAt
+		}
 		next := cloneReceipt(r)
 		next.ExecutionReturned, next.ResourcesRecovered = true, true
 		next.OperatorRelease.NewInit = s.initInstance
+		next.OperatorRelease.CompletedBoot = s.boot
 		next.OperatorRelease.CompletedAt = &now
 		checked := now
 		next.OperatorRelease.BoundaryCheckedAt = &checked
+		// 저장은 재생 검사를 거치지 않는다. 다음 기동에서 읽지 못할 기록을 남기지 않도록 같은 검사를 먼저 돈다.
+		if !validReceiptChange(r, next) || !validStoredRelease(next) {
+			log.Print("진단 준비: 해제 완료 기록이 검사를 통과하지 못해 해제를 보류합니다")
+			continue
+		}
 		if s.save(next) != nil {
 			log.Print("진단 준비: 해제 완료 기록을 저장하지 못했습니다")
 			return
@@ -182,9 +192,7 @@ func (s *Service) releaseLocked(ctx context.Context, r Request, record receipt) 
 		// 요청한 작업이 아니라 다른 작업이 새 시작을 막거나 해제를 기다린다.
 		refusal = ReleaseOtherActive
 	}
-	if refusal == ReleasePending {
-		refusal = ReleaseOtherActive
-	}
+	// 같은 작업의 대기(ReleasePending)는 그대로 돌려준다: 응답을 잃고 다시 보낸 경우 이미 기록됐다는 뜻이다.
 	if refusal != "" {
 		return responseError(r, "release_"+refusal)
 	}
@@ -200,17 +208,34 @@ func (s *Service) releaseLocked(ctx context.Context, r Request, record receipt) 
 			return responseError(r, "release_"+ReleaseExplorationOpen)
 		}
 	}
+	// 경계 닫기를 기다리는 동안 엔진 활동이 다시 생겼을 수 있다(엔진 활동 시각은 이 잠금과 따로 갱신된다). 다시 보고 거절한다.
+	after := s.releaseViewLocked()
+	if !after.Eligible || after.JobID != record.Job.ID {
+		refusal := after.Refusal
+		if refusal == "" || after.JobID != record.Job.ID {
+			refusal = ReleaseOtherActive
+		}
+		log.Print("진단 준비: 탐색 경계를 닫는 동안 활동이 생겨 해제를 거절합니다")
+		return responseError(r, "release_"+refusal)
+	}
 	rec := ReleaseRecord{JobID: record.Job.ID, Principal: r.Principal, RequestID: r.RequestID, Reason: r.Release.Reason,
-		RequestedAt: s.releaseClock().UTC(), LastActivityAt: view.LastActivityAt, ReceiptUpdatedAt: *view.ReceiptUpdatedAt,
-		QuietSeconds: view.QuietSeconds, JobState: record.Job.State, PreviousInit: record.ExecutionInitInstance, ExplorationClosed: closed}
+		RequestedAt: s.releaseClock().UTC(), LastActivityAt: after.LastActivityAt, ReceiptUpdatedAt: *after.ReceiptUpdatedAt,
+		QuietSeconds: after.QuietSeconds, JobState: record.Job.State, PreviousInit: record.ExecutionInitInstance, ExplorationClosed: closed}
 	next := cloneReceipt(record)
 	next.OperatorRelease = &rec
+	if !validReceiptChange(record, next) || !validStoredRelease(next) {
+		log.Print("진단 준비: 해제 기록이 검사를 통과하지 못해 해제를 거절합니다")
+		return responseError(r, "unavailable")
+	}
 	if err := s.save(next); err != nil {
 		return responseError(r, "unavailable")
 	}
 	log.Print("진단 준비: 운영자 해제를 기록했습니다. 준비 서비스를 정상 종료하고 다시 시작합니다")
 	s.requestRestartLocked()
 	out := s.releaseViewLocked()
+	// 응답의 기록은 방금 남긴 것이다(벽시계로 고르는 '최신'은 시계가 뒤로 가면 다른 작업 기록일 수 있다).
+	written := cloneReceipt(next).OperatorRelease
+	out.Record = written
 	job := cloneReceipt(next).Job
 	return Response{Version: Version, RequestID: r.RequestID, Job: &job, Release: &out}
 }
@@ -234,7 +259,7 @@ func validReleaseChange(old, next receipt) bool {
 		return reflect.DeepEqual(old.OperatorRelease, next.OperatorRelease)
 	}
 	done := *next.OperatorRelease
-	done.NewInit, done.CompletedAt, done.BoundaryCheckedAt = "", nil, nil
+	done.NewInit, done.CompletedBoot, done.CompletedAt, done.BoundaryCheckedAt = "", "", nil, nil
 	return reflect.DeepEqual(*old.OperatorRelease, done) && reflect.DeepEqual(old.Job, next.Job) && next.ExecutionReturned && next.ResourcesRecovered
 }
 
@@ -247,5 +272,10 @@ func validStoredRelease(r receipt) bool {
 	if !validReleaseRecordShape(*rel) || rel.JobID != r.Job.ID || rel.Principal != r.Principal || r.StartKey == "" || rel.PreviousInit != r.ExecutionInitInstance {
 		return false
 	}
-	return rel.Pending() || (r.ExecutionReturned && r.ResourcesRecovered)
+	if rel.Pending() {
+		return true
+	}
+	// 같은 boot면 init이 바뀌어야 하고, 다른 boot(재부팅)면 init 문자열이 우연히 같아도 된다.
+	newInit := rel.NewInit != rel.PreviousInit || rel.CompletedBoot != r.ExecutionBootID
+	return bootIDPattern.MatchString(rel.CompletedBoot) && newInit && r.ExecutionReturned && r.ResourcesRecovered
 }

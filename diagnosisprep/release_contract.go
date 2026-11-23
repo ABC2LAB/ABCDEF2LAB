@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // 멈춘 작업 해제(C04, 재기동형). 결과 불명 작업 하나가 설치 전체의 새 시작을 막을 때 운영자가 쓴다.
@@ -59,6 +60,8 @@ type ReleaseRecord struct {
 	PreviousInit      string     `json:"previous_init"`
 	ExplorationClosed bool       `json:"exploration_closed"` // 해제 때 그 작업의 탐색 경계 세션을 닫았는지(없었으면 false)
 	NewInit           string     `json:"new_init,omitempty"`
+	// CompletedBoot은 해제를 마친 서비스의 boot ID다. 재부팅 뒤에는 init 문자열이 우연히 같을 수 있어 boot와 함께 본다.
+	CompletedBoot     string     `json:"completed_boot,omitempty"`
 	CompletedAt       *time.Time `json:"completed_at,omitempty"`
 	BoundaryCheckedAt *time.Time `json:"boundary_checked_at,omitempty"`
 }
@@ -100,7 +103,16 @@ type ExplorationBoundary interface {
 var ErrExplorationBusy = errors.New("다른 실행의 탐색 경계 세션이 열려 있습니다")
 
 func validReleaseReason(s string) bool {
-	return validText(s, MaxReleaseReasonBytes) && strings.TrimSpace(s) != ""
+	if !validText(s, MaxReleaseReasonBytes) || strings.TrimSpace(s) == "" {
+		return false
+	}
+	// 감사 사유는 화면에 그대로 보인다. 방향 바꿈(U+202E)·폭 없는 문자 같은 서식 문자와 줄·문단 구분자는 겉보기를 바꾸므로 받지 않는다.
+	for _, r := range s {
+		if unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp) {
+			return false
+		}
+	}
+	return true
 }
 
 func validReleaseRefusal(code string) bool {
@@ -113,8 +125,9 @@ func validReleaseRefusal(code string) bool {
 }
 
 func validReleaseError(code string) bool {
+	// release_pending_restart는 같은 작업을 다시 보냈을 때(응답 유실 뒤 재시도) 이미 기록돼 재시작을 기다린다는 뜻이다.
 	suffix, ok := strings.CutPrefix(code, "release_")
-	return ok && suffix != ReleasePending && validReleaseRefusal(suffix)
+	return ok && validReleaseRefusal(suffix)
 }
 
 func validReleaseRecordShape(r ReleaseRecord) bool {
@@ -126,10 +139,11 @@ func validReleaseRecordShape(r ReleaseRecord) bool {
 		!initInstancePattern.MatchString(r.PreviousInit) {
 		return false
 	}
-	if completed != (r.BoundaryCheckedAt != nil) || completed != (r.NewInit != "") {
+	if completed != (r.BoundaryCheckedAt != nil) || completed != (r.NewInit != "") || completed != (r.CompletedBoot != "") {
 		return false
 	}
-	return !completed || (initInstancePattern.MatchString(r.NewInit) && r.NewInit != r.PreviousInit && !r.CompletedAt.Before(r.RequestedAt))
+	// 새 init이 이전 init과 다른지는 boot와 함께 봐야 해서 영수증 검사(validStoredRelease)가 맡는다.
+	return !completed || (initInstancePattern.MatchString(r.NewInit) && !r.CompletedAt.Before(r.RequestedAt))
 }
 
 func validReleaseView(v ReleaseView) bool {

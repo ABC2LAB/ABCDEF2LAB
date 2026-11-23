@@ -19,6 +19,7 @@ type releaseBackend struct {
 	clearErr   error
 	verifyErr  error
 	openJob    string // 열린 탐색 경계 세션의 작업(빈 값 = 없음)
+	onClose    func() // 경계 닫기 중에 일어나는 일(엔진 활동 등)
 	closeCalls int
 	clearCalls int
 	verifies   int
@@ -34,6 +35,9 @@ func (b *releaseBackend) CloseExploration(_ context.Context, e Execution) (bool,
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.closeCalls++
+	if b.onClose != nil {
+		b.onClose()
+	}
 	if b.closeErr != nil {
 		return false, b.closeErr
 	}
@@ -492,6 +496,7 @@ func TestReleaseRecordChangesAreRestricted(t *testing.T) {
 	completed := cloneReceipt(pending)
 	now := time.Now().UTC()
 	completed.OperatorRelease.NewInit, completed.OperatorRelease.CompletedAt, completed.OperatorRelease.BoundaryCheckedAt = secondContainerNamespace, &now, &now
+	completed.OperatorRelease.CompletedBoot = completed.ExecutionBootID
 	completed.ExecutionReturned, completed.ResourcesRecovered = true, true
 	if !validReceiptChange(base, pending) || !validReceiptChange(pending, completed) || !validStoredRelease(completed) {
 		t.Fatal("정상 전이를 거부")
@@ -520,6 +525,102 @@ func TestReleaseRecordChangesAreRestricted(t *testing.T) {
 		}
 	}
 	if validStoredRelease(sameInit) {
-		t.Error("같은 init으로 마친 기록을 받음")
+		t.Error("같은 boot·같은 init으로 마친 기록을 받음")
+	}
+	// 재부팅 뒤에는 init 문자열이 우연히 같아도 boot가 달라 받는다(다음 기동이 읽지 못하는 기록을 남기지 않음).
+	rebooted := cloneReceipt(sameInit)
+	rebooted.OperatorRelease.CompletedBoot = otherBoot(t, sameInit.ExecutionBootID)
+	if !validStoredRelease(rebooted) {
+		t.Error("재부팅 뒤 같은 init 문자열의 완료 기록을 거부")
+	}
+}
+
+func otherBoot(t *testing.T, boot string) string {
+	t.Helper()
+	other := "00000000-0000-4000-8000-000000000000"
+	if other == boot {
+		other = "00000000-0000-4000-8000-000000000001"
+	}
+	return other
+}
+
+// 해제를 기록한 프로세스의 시계가 다음 프로세스보다 앞서 있어도(시계 보정) 완료 기록이 다음 기동에서 읽힌다.
+func TestReleaseCompletionSurvivesClockStepBack(t *testing.T) {
+	f := unknownFixture(t)
+	f.clock.Advance(6*time.Hour + DefaultReleaseQuiet) // 실제 시계보다 3시간 앞
+	if res := release(t, f.s, f.job, "시계가 앞선 해제"); res.Error != "" {
+		t.Fatal(res.Error)
+	}
+	shutdownLikeExit(t, f.s)
+	next := newReleaseService(t, f.root, f.b, f.boot, secondContainerNamespace, nil)
+	rec := receiptOf(next, f.job.ID).OperatorRelease
+	if rec.Pending() || rec.CompletedAt.Before(rec.RequestedAt) {
+		t.Fatalf("완료 시각이 기록 시각보다 앞섬: %#v", rec)
+	}
+	shutdownLikeExit(t, next)
+	third, err := newServiceForRuntime(context.Background(), f.root, f.b, f.boot, secondContainerNamespace, nil)
+	if err != nil {
+		t.Fatalf("다음 기동이 해제 완료 기록을 읽지 못함: %v", err)
+	}
+	defer third.Shutdown(context.Background())
+}
+
+// 재부팅 뒤 init 문자열이 우연히 같아도 boot가 달라 해제를 마치고, 그 기록을 다음 기동이 읽는다.
+func TestReleaseCompletionAfterRebootWithSameInitString(t *testing.T) {
+	f := unknownFixture(t)
+	f.clock.Advance(DefaultReleaseQuiet)
+	if res := release(t, f.s, f.job, "재부팅"); res.Error != "" {
+		t.Fatal(res.Error)
+	}
+	shutdownLikeExit(t, f.s)
+	boot := otherBoot(t, f.boot)
+	next := newReleaseService(t, f.root, f.b, boot, firstContainerNamespace, nil)
+	rec := receiptOf(next, f.job.ID).OperatorRelease
+	if rec.Pending() || rec.NewInit != rec.PreviousInit || rec.CompletedBoot != boot {
+		t.Fatalf("재부팅 뒤 해제를 마치지 않음: %#v", rec)
+	}
+	shutdownLikeExit(t, next)
+	third, err := newServiceForRuntime(context.Background(), f.root, f.b, boot, firstContainerNamespace, nil)
+	if err != nil {
+		t.Fatalf("다음 기동이 재부팅 뒤 완료 기록을 읽지 못함: %v", err)
+	}
+	defer third.Shutdown(context.Background())
+}
+
+// 경계를 닫는 동안 엔진 활동이 다시 생기면 기록·재시작 없이 거절한다.
+func TestReleaseRefusedWhenActivityResumesDuringBoundaryClose(t *testing.T) {
+	f := unknownFixture(t)
+	f.clock.Advance(DefaultReleaseQuiet)
+	f.b.set(func(b *releaseBackend) {
+		b.onClose = func() { b.activity[f.job.ID] = f.clock.Now() } // 잠금 밖에서 엔진이 다시 움직임
+	})
+	if res := release(t, f.s, f.job, "닫는 중 활동"); res.Error != "release_"+ReleaseNotQuiet {
+		t.Fatalf("닫는 동안 생긴 활동을 무시함: %#v", res)
+	}
+	if receiptOf(f.s, f.job.ID).OperatorRelease != nil || restartRequested(f.s) {
+		t.Fatal("거절된 해제가 기록·재시작을 남김")
+	}
+}
+
+// 응답을 잃고 같은 작업을 다시 보내면 '이미 기록됨(재시작 대기)'을 돌려준다. 다른 작업이라고 하지 않는다.
+func TestReleaseResendForSameJobReportsPending(t *testing.T) {
+	f := unknownFixture(t)
+	f.clock.Advance(DefaultReleaseQuiet)
+	if res := release(t, f.s, f.job, "첫 요청"); res.Error != "" {
+		t.Fatal(res.Error)
+	}
+	if res := release(t, f.s, f.job, "다시 보냄"); res.Error != "release_"+ReleasePending {
+		t.Fatalf("같은 작업 재전송: %#v", res)
+	}
+}
+
+func TestReleaseReasonRejectsFormatCharacters(t *testing.T) {
+	for _, reason := range []string{"정상\u202e사유", "폭없는\u200b문자", "줄\u2028구분", "탭\t문자", "   "} {
+		if validReleaseReason(reason) {
+			t.Errorf("서식·제어 문자 사유를 받음: %q", reason)
+		}
+	}
+	if !validReleaseReason("응답 없음, 담당자 확인") {
+		t.Error("평범한 사유를 거부")
 	}
 }

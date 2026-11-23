@@ -25,7 +25,7 @@ func runProductFront(ctx context.Context, args []string, stdout, stderr io.Write
 	httpServer := &http.Server{Addr: *listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 32768}
 	done := make(chan error, 1)
 	go func() { done <- httpServer.ListenAndServe() }()
-	lost := watchSharedNetwork(ctx, sharedNetworkCheckInterval, net.Interfaces)
+	lost := watchSharedNetwork(ctx, sharedNetworkCheckInterval, net.Interfaces, apiRejoinReady(&http.Client{Timeout: sharedNetworkCheckInterval}, *origin))
 	networkLost := false
 	select {
 	case <-ctx.Done():
