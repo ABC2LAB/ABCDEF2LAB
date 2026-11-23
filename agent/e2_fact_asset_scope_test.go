@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/Autumn-27/artex/db"
@@ -54,13 +55,13 @@ func TestE2FactAssetReferenceChecksTaskScope(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			id, err := write(worker, tc.ids)
-			if id != 0 || err == nil || err.Error() != "asset_reference_invalid" {
+			if id != 0 || err == nil || err.Error() != db.ErrFactAssetReference.Error() || !strings.Contains(err.Error(), "list_assets") {
 				t.Fatal("unbound reference was stored or returned a storage-level error")
 			}
 		})
 	}
 	wrong := newE2HTTPWorkerToolSet(store, nil, "fixture-worker", b.ID, intent)
-	if id, err := write(wrong, fmt.Sprintf("[%d]", foreign)); id != 0 || err == nil || err.Error() != "asset_reference_invalid" {
+	if id, err := write(wrong, fmt.Sprintf("[%d]", foreign)); id != 0 || err == nil || err.Error() != db.ErrFactAssetReference.Error() || !strings.Contains(err.Error(), "list_assets") {
 		t.Fatal("mismatched task and exploration were accepted")
 	}
 	id, err := write(worker, fmt.Sprintf("[%d]", valid))

@@ -232,7 +232,7 @@ func (s *ExplorationStore) AddNode(kind string, payload map[string]any, priority
 	return s.addNode(kind, payload, priority, state, origin, anchors, 0)
 }
 
-var ErrFactAssetReference = errors.New("asset_reference_invalid")
+var ErrFactAssetReference = errors.New("asset_reference_invalid: use an ID from list_assets or leave asset_ids empty")
 
 // AddTaskFact는 결속 작업에 연결된 자산만 진단 사실의 출처로 받는다.
 func (s *ExplorationStore) AddTaskFact(taskID int64, payload map[string]any, origin string, anchors []int64) (int64, error) {
@@ -274,6 +274,9 @@ WHERE l.task_id=$1 AND l.asset_id=$2 FOR KEY SHARE OF a, l`, taskID, assetID).Sc
 			return 0, err
 		}
 	}
+	if err := checkAnchorAssets(tx, anchors); err != nil {
+		return 0, err
+	}
 	var id int64
 	if err := tx.QueryRow(`
 INSERT INTO exploration_nodes(exploration_id, kind, payload, priority, state, origin)
@@ -283,7 +286,7 @@ VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
 	}
 	for _, a := range anchors {
 		if _, err := tx.Exec(`INSERT INTO exploration_anchors(node_id, asset_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, id, a); err != nil {
-			return 0, err
+			return 0, anchorInsertError(err, a)
 		}
 	}
 	return id, tx.Commit()
@@ -324,8 +327,18 @@ func (s *ExplorationStore) Anchor(nodeID, assetID int64) error {
 	if nodeID <= 0 || assetID <= 0 {
 		return nil
 	}
-	_, err := s.db.Exec(`INSERT INTO exploration_anchors(node_id, asset_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, nodeID, assetID)
-	return err
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := checkAnchorAssets(tx, []int64{assetID}); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO exploration_anchors(node_id, asset_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, nodeID, assetID); err != nil {
+		return anchorInsertError(err, assetID)
+	}
+	return tx.Commit()
 }
 
 // Link adds a typed exploration edge (idempotent).

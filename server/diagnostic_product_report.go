@@ -46,7 +46,7 @@ func readDiagnosticProductVerdicts(ctx context.Context, tx *sql.Tx, taskID int64
 	}
 	got, err := b.reader.read(ctx)
 	if err != nil {
-		out.ProductUnverified = len(rows)
+		out.ProductUnreadable = len(rows)
 		return nil
 	}
 	// 판정 목록과 동일한 결속·동결본·봉인 검증을 통과한 제품 확정만 별도 집계한다.
