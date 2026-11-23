@@ -93,6 +93,15 @@ func newURLDiagnosisManagementHandler(ctx context.Context, pool *sql.DB, keyDir,
 			runtimeBridge.serveProductVerdictList(w, r.WithContext(requestContext))
 			return
 		}
+		// 제품 접근통제 지도도 같은 자리다(product-access-map §2.1). 제품이 아니면 실행 API로 넘기지 않는다.
+		if ProductAccessMapPath(r) {
+			if runtimeBridge == nil {
+				http.NotFound(w, r)
+				return
+			}
+			runtimeBridge.serveProductAccessMap(w, r.WithContext(requestContext))
+			return
+		}
 		mux.ServeHTTP(w, r.WithContext(requestContext))
 	}), nil
 }

@@ -22,6 +22,15 @@ vi.mock("../live/productVerdicts", async (original) => {
     },
   };
 });
+// 제품 접근통제 지도(product-access-map)도 이 시험 범위가 아니다 — 제품 관리 중계가 아닌 서버처럼(404) 구획을 두지 않는다
+vi.mock("../live/productAccessMap", async (original) => {
+  const real = await original<typeof import("../live/productAccessMap")>();
+  const { ApiError: NotInstalled } = await import("@/lib/diagnosis/api");
+  const notInstalled = async (): Promise<never> => {
+    throw new NotInstalled(404, "not found");
+  };
+  return { ...real, fetchProductAccessMap: notInstalled, getProductAccessMap: notInstalled };
+});
 vi.mock("@/lib/diagnosis/api", async (original) => ({
   ...(await original<typeof import("@/lib/diagnosis/api")>()),
   apiFetch: vi.fn(),
