@@ -189,7 +189,8 @@ export function candidateIdle(job: URLDiagnosisJob | null | undefined, verified:
 /** 후보 등급 딱지. 추정 등급은 '예상 …', 없으면 '위험도 미평가'(낮음 · 정보성으로 바꾸지 않는다). */
 function CandidateSev({ sev }: { sev: SeverityLevel | null }) {
   const k = sev ? sevKey(sev) : null;
-  return <span className={cx(s.sev, k && s[k])}>{candidateSeverityText(sev)}</span>;
+  // 등급이 없으면 '위험도 미평가' 회색 딱지(사용자 11/23)
+  return <span className={cx(s.sev, k ? s[k] : s["sev-none"])}>{candidateSeverityText(sev)}</span>;
 }
 
 /**
@@ -1060,7 +1061,7 @@ export function Sev({ e }: { e: RemediationEntry }) {
   const k = sevKey(entrySeverity(e) ?? "");
   return (
     <span
-      className={cx(s.sev, k && s[k])}
+      className={cx(s.sev, k ? s[k] : s["sev-none"])}
       title={e.severity_source === "worker_estimate" ? maskSecrets(e.severity_rationale ?? "") : undefined}
     >
       {entrySeverityLabel(e)}

@@ -1876,6 +1876,8 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     // 발견 목록에 후보가 있다. 위험도 딱지가 맨 앞(심각도 없으면 '위험도 미평가'), 아래 줄은 엔드포인트 · 유형
     const row = within(screen.getByRole("tabpanel", { name: "취약점 목록" })).getByRole("button", { name: /후보 1/ });
     expect(row.firstElementChild).toHaveTextContent("위험도 미평가");
+    // 위험도 미평가는 회색 딱지(사용자 11/23)
+    expect(row.firstElementChild?.className).toMatch(/sev-none/);
     expect(row).toHaveTextContent("GET /api/items/{id}idor");
     expect(within(row).getByText("{id}").tagName).toBe("I");
     // 상세 머리: 유형 · 주소, 엔드포인트 (시안 findingHtml)

@@ -30,6 +30,20 @@
   --mid-bg: #fff2e0;
   --lo: #2f5f99;
   --lo-bg: #eaf1fa;
+  /* 위험도 딱지 전용(사용자 11/23 '색을 확실하게, 높음은 빨강'): 치명 진한 빨강 채움 · 높음 빨강 · 중간 주황 · 낮음 노랑 · 정보 회색.
+     오류 · 경고 색(--hi 등)과 나눠 둔다 */
+  --sev-crit: #ffffff;
+  --sev-crit-bg: #8f1414;
+  --sev-hi: #cc1f1f;
+  --sev-hi-bg: #fde6e6;
+  --sev-mid: #b34700;
+  --sev-mid-bg: #ffead6;
+  --sev-lo: #7a5f00;
+  --sev-lo-bg: #fff4c2;
+  --sev-info: #4b5563;
+  --sev-info-bg: #eceff2;
+  --sev-none: #545d69;
+  --sev-none-bg: #f1f3f5;
   --ok: #11703f;
   --ok-bg: #e6f4ec;
   --warn: #935100;
@@ -72,6 +86,18 @@
     --mid-bg: #33240d;
     --lo: #90b6eb;
     --lo-bg: #16263c;
+    --sev-crit: #ffffff;
+    --sev-crit-bg: #c42222;
+    --sev-hi: #ff6b6b;
+    --sev-hi-bg: #3f1616;
+    --sev-mid: #ffa149;
+    --sev-mid-bg: #3b2410;
+    --sev-lo: #ffd43b;
+    --sev-lo-bg: #342b08;
+    --sev-info: #a7b0bc;
+    --sev-info-bg: #222a31;
+    --sev-none: #9aa3ae;
+    --sev-none-bg: #1b2126;
     --ok: #5ecb8f;
     --ok-bg: #0f2a1c;
     --warn: #f2b654;
@@ -113,6 +139,18 @@
   --mid-bg: #33240d;
   --lo: #90b6eb;
   --lo-bg: #16263c;
+  --sev-crit: #ffffff;
+  --sev-crit-bg: #c42222;
+  --sev-hi: #ff6b6b;
+  --sev-hi-bg: #3f1616;
+  --sev-mid: #ffa149;
+  --sev-mid-bg: #3b2410;
+  --sev-lo: #ffd43b;
+  --sev-lo-bg: #342b08;
+  --sev-info: #a7b0bc;
+  --sev-info-bg: #222a31;
+  --sev-none: #9aa3ae;
+  --sev-none-bg: #1b2126;
   --ok: #5ecb8f;
   --ok-bg: #0f2a1c;
   --warn: #f2b654;
@@ -1096,32 +1134,31 @@ a.ph:hover {
   font-weight: 600;
   white-space: nowrap;
 }
-.sev::before {
-  content: "";
-  width: 7px;
-  height: 7px;
-  border-radius: 2px;
-  background: currentColor;
-}
+/* 딱지 앞 작은 색 네모는 뺐다(사용자 11/23) — 색은 딱지 바탕 · 글씨로 충분 */
 .sev.crit {
-  background: var(--crit-bg);
-  color: var(--crit);
+  background: var(--sev-crit-bg);
+  color: var(--sev-crit);
 }
 .sev.hi {
-  background: var(--hi-bg);
-  color: var(--hi);
+  background: var(--sev-hi-bg);
+  color: var(--sev-hi);
 }
 .sev.mid {
-  background: var(--mid-bg);
-  color: var(--mid);
+  background: var(--sev-mid-bg);
+  color: var(--sev-mid);
 }
 .sev.lo {
-  background: var(--lo-bg);
-  color: var(--lo);
+  background: var(--sev-lo-bg);
+  color: var(--sev-lo);
 }
 .sev.info {
-  background: var(--accent-bg);
-  color: var(--accent-ink);
+  background: var(--sev-info-bg);
+  color: var(--sev-info);
+}
+/* 위험도 미평가: 회색 딱지(사용자 11/23). 테두리 없이 다른 딱지와 같은 모양 */
+.sev.sev-none {
+  background: var(--sev-none-bg);
+  color: var(--sev-none);
 }
 .vd {
   display: inline-flex;
@@ -4399,7 +4436,8 @@ button.smm:hover {
 }
 .lfind-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  /* 위험도 칸 폭은 보고서 목록(.frow)과 같게 — 줄마다 딱지 길이 · 제목 위치가 맞는다 */
+  grid-template-columns: 104px minmax(0, 1fr);
   gap: 12px;
   align-items: center;
   width: 100%;
@@ -4615,7 +4653,9 @@ button.smm:hover {
 }
 .frow {
   display: grid;
-  grid-template-columns: 70px minmax(0, 1fr) auto;
+  /* 위험도 칸: 가장 긴 딱지('위험도 미평가', 약 100px)가 들어가는 고정 폭(사용자 11/23: 70px 을 넘어 제목 쪽으로 튀어나왔다).
+     줄마다 따로 격자라 고정 폭이어야 제목 줄이 맞는다 */
+  grid-template-columns: 104px minmax(0, 1fr) auto;
   gap: 4px 14px;
   align-items: center;
   width: 100%;
@@ -4641,6 +4681,14 @@ button.smm:hover {
 }
 .frow.still:hover {
   background: var(--bg);
+}
+/* 목록 줄의 위험도 딱지는 칸 폭을 꽉 채워 길이를 맞춘다(사용자 11/23 '칸 맞춰줘') */
+.frow > .sev,
+.lfind-row > .sev {
+  width: 100%;
+  box-sizing: border-box;
+  /* 글자는 딱지 가운데(사용자 11/23 '글자 칸 맞춰줘') */
+  justify-content: center;
 }
 .frow .fm {
   min-width: 0;
@@ -4676,6 +4724,8 @@ button.smm:hover {
   .frow > .sev {
     grid-column: 1;
     justify-self: start;
+    /* 좁은 화면은 딱지가 제목 위 줄로 올라가므로 칸 폭을 채우지 않는다 */
+    width: auto;
   }
   .frow .fm {
     grid-column: 1 / -1;
