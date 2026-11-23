@@ -50,6 +50,8 @@ type ControlRequest struct {
 	Seq          uint64                            `json:"seq,omitempty"`
 	// Offset은 records의 쪽 시작 위치(기록 행 순서의 0부터)다. 응답의 Next를 다음 요청에 넣는다.
 	Offset uint64 `json:"offset,omitempty"`
+	// Cause는 close의 세부 원인이다. 서버가 보낼 수 있는 값은 restart_cleanup뿐이다(control_lost는 경계만 쓴다).
+	Cause string `json:"cause,omitempty"`
 }
 
 // WireObservation은 private 관찰의 소켓 표현이다. 공개 JSON에서 빠지는 응답 형식·해시도 이 채널로만 넘긴다.
@@ -126,8 +128,32 @@ type Manager struct {
 	Proxies []*Proxy
 	// CloseWait는 마감 때 진행 중 요청을 기다리는 상한이다.
 	CloseWait time.Duration
+	// Heartbeat는 실행기 상태 조회가 끊겼다고 보는 시간이다. 열린 세션에 open·status가 이만큼 오지 않으면 경계가
+	// 세션을 runtime_unavailable(closed_by control_lost)로 닫는다. 0이면 보지 않는다(docs/contracts/exploration-boundary.md
+	// 세션 수명). 실행기는 모델 호출과 따로 도는 감시 고루틴에서 1초마다 status를 보내므로, 모델 응답이 오래 걸려도 끊기지 않는다.
+	Heartbeat time.Duration
 	mu        sync.Mutex
 	current   *Session
+	// lastSeen은 지금 세션에 실행기의 open·status가 마지막으로 온 때다. current(지금 있는 세션 조회)는 세지 않는다.
+	lastSeen time.Time
+}
+
+// heartbeatChecks는 Heartbeat 한 번 동안 끊김을 확인하는 횟수다(감지가 Heartbeat보다 최대 1/4 늦다).
+const heartbeatChecks = 4
+
+func (m *Manager) seen(s *Session) {
+	m.mu.Lock()
+	if m.current == s {
+		m.lastSeen = s.policy.Now()
+	}
+	m.mu.Unlock()
+}
+
+// controlLost는 s가 지금 세션이고 실행기 조회가 Heartbeat보다 오래 없었는지다.
+func (m *Manager) controlLost(s *Session) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.Heartbeat > 0 && m.current == s && s.policy.Now().Sub(m.lastSeen) > m.Heartbeat
 }
 
 // Current는 프록시가 쓰는 지금 세션이다. 닫힌 세션은 돌려주지 않는다.
@@ -192,6 +218,7 @@ func (m *Manager) Handle(ctx context.Context, in ControlRequest) ControlResponse
 			}
 		}
 		m.current = s
+		m.lastSeen = s.policy.Now()
 		m.mu.Unlock()
 		go m.watch(s)
 		st := s.Status()
@@ -211,16 +238,17 @@ func (m *Manager) Handle(ctx context.Context, in ControlRequest) ControlResponse
 		if s == nil {
 			return fail(ControlErrInvalid)
 		}
+		m.seen(s)
 		st := s.Status()
 		return ControlResponse{OK: true, State: &st}
 	case OpClose:
 		s := m.session(in.SessionRef)
-		if s == nil || !in.Reason.Valid() {
+		if s == nil || !in.Reason.Valid() || in.Cause != "" && in.Cause != CloseCauseRestartCleanup {
 			return fail(ControlErrInvalid)
 		}
 		wait, cancel := context.WithTimeout(ctx, m.CloseWait)
 		defer cancel()
-		st, err := s.Close(wait, in.Reason)
+		st, err := s.closeCause(wait, in.Reason, in.Cause)
 		if err != nil {
 			return fail(ControlErrInvalid)
 		}
@@ -306,11 +334,30 @@ func (m *Manager) Seal(by string, drain func(wait time.Duration) int) error {
 	return ev.seal(s.inflight+pending, closedAtSeal, by, s.policy.Now().UTC())
 }
 
-// watch는 세션이 닫히면 열린 터널을 끊어 새 송신과 남은 연결을 함께 정리한다(§6).
+// watch는 세션이 닫히면 열린 터널을 끊어 새 송신과 남은 연결을 함께 정리한다(§6). Heartbeat가 있으면 실행기 상태 조회가
+// 끊긴 세션을 닫는다. 실행기(준비 서비스)가 갑자기 죽으면 브라우저에 남은 페이지가 스스로 보내는 요청(타이머·주기
+// 조회·자동 새로고침)이 세션 기한까지 대상에 닿을 수 있어서다(2026-11-24 사용자 결정).
 func (m *Manager) watch(s *Session) {
-	<-s.Closed()
-	for _, p := range m.Proxies {
-		p.CloseTunnels()
+	var tick <-chan time.Time
+	if m.Heartbeat > 0 {
+		ticker := time.NewTicker(m.Heartbeat / heartbeatChecks)
+		defer ticker.Stop()
+		tick = ticker.C
+	}
+	for {
+		select {
+		case <-s.Closed():
+			for _, p := range m.Proxies {
+				p.CloseTunnels()
+			}
+			return
+		case <-tick:
+			if m.controlLost(s) {
+				wait, cancel := context.WithTimeout(context.Background(), m.CloseWait)
+				_, _ = s.closeCause(wait, exploration.RuntimeUnavailable, CloseCauseControlLost)
+				cancel()
+			}
+		}
 	}
 }
 
