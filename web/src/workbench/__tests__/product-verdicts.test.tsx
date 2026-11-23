@@ -249,16 +249,16 @@ describe("ProductVerdictReport", () => {
     const sec = await screen.findByRole("region", { name: "제품 확정 단계 판정" });
     await waitFor(() => expect(within(sec).getByText("2건")).toBeInTheDocument());
     expect(vi.mocked(apiFetch).mock.calls[0][0]).toBe("/api/tasks/2/product-verdicts");
-    expect(sec).toHaveTextContent(
-      "출처: 제품 확정 단계 · 정책 선언 declaration-job-synthetic · 대상 승인 판 target-revision-1",
-    );
+    expect(sec).toHaveTextContent("제품 정책 선언 declaration-job-synthetic · 대상 승인 판 target-revision-1");
+    expect(sec).not.toHaveTextContent("섞지 않습니다");
     expect(sec).toHaveTextContent("확정 단계 마침");
     const [ok, failed] = within(sec).getAllByRole("listitem");
     expect(ok).toHaveTextContent("확정");
     expect(ok).toHaveTextContent("document");
     expect(ok).toHaveTextContent("검사: 정책 예 · 신원 예 · 데이터 예 · 근거 호출 1건");
     expect(ok).toHaveTextContent(`관찰 ${dateTimeOf("2026-11-18T09:00:00.000000Z")}`);
-    expect(ok).toHaveTextContent("검토 대상 후보 1건 · 발견(finding)을 만들지 않고 후보는 수동 검토 필요 그대로입니다");
+    expect(ok).toHaveTextContent("확정 판정 · 검토 대상 후보 1건");
+    expect(ok).not.toHaveTextContent("수동 검토 필요 그대로");
     expect(failed).toHaveTextContent("값 숨김");
     expect(failed).toHaveTextContent("판정 기록 무결성 확인 실패 · 값 숨김");
     expect(failed).not.toHaveTextContent("note");
@@ -345,7 +345,7 @@ describe("ProductVerdictReport", () => {
     render(<ProductVerdictReport taskId="2" active />);
     const sec = await screen.findByRole("region", { name: "제품 확정 단계 판정" });
     await waitFor(() => expect(within(sec).getAllByRole("listitem")).toHaveLength(2));
-    expect(sec).toHaveTextContent("출처: 제품 확정 단계 · 정책 선언 동결본 미확인");
+    expect(sec).toHaveTextContent("제품 정책 선언 동결본 미확인");
     expect(within(sec).getAllByText(/당시 원본 미확인 · 당시 정책 동결본을 읽지 못해/)).toHaveLength(2);
   });
 

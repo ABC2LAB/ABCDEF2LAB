@@ -104,11 +104,11 @@ function NoVerdicts({ list }: { list: ProductVerdictList }) {
   );
 }
 
-/** 출처 딱지: 제품 · 정책 선언 참조 (대상 승인 판은 행들이 같은 판일 때만). */
+/** 출처 딱지: '제품' 딱지 뒤 정책 선언 참조 (계약 §3 `제품 · 정책 선언 declaration-<job>`, 대상 승인 판은 행들이 같은 판일 때만). */
 function sourceText(list: ProductVerdictList): string {
   const p = list.policySource;
-  if (!p) return "출처: 제품 확정 단계 · 정책 선언 동결본 미확인";
-  return `출처: 제품 확정 단계 · 정책 선언 ${p.ref}${p.targetApprovalRevision ? ` · 대상 승인 판 ${p.targetApprovalRevision}` : ""}`;
+  if (!p) return "정책 선언 동결본 미확인";
+  return `정책 선언 ${p.ref}${p.targetApprovalRevision ? ` · 대상 승인 판 ${p.targetApprovalRevision}` : ""}`;
 }
 
 /** 읽기 상태(불러오는 중 · 실패 · 미설치)를 공통으로. 그릴 목록이 있으면 null. */
@@ -159,8 +159,9 @@ export function VerdictBody({ r }: { r: ProductVerdictShown }) {
         </div>
       ) : null}
       <div className={s.help}>
+        {/* 확정도 발견(finding)이 아니라 계약 §3 그대로 '검토 대상 후보 N건'이다. 뒤에 붙인 설명 문장은 뺐다(사용자 11/23) */}
         {r.oracleValue === "confirmed"
-          ? `확정 판정 · 검토 대상 후보 ${r.candidateRefs.length}건 · 발견(finding)을 만들지 않고 후보는 수동 검토 필요 그대로입니다`
+          ? `확정 판정 · 검토 대상 후보 ${r.candidateRefs.length}건`
           : `연결된 후보 ${r.candidateRefs.length}건`}
       </div>
       {r.recordStatus === "policy_source_unavailable" ? (
@@ -236,14 +237,12 @@ export function ProductVerdictReport({ taskId, active }: { taskId: string | null
 function ReportBody({ list }: { list: ProductVerdictList }) {
   return (
     <>
+      {/* 덧붙인 안내 문장('위 목록과 섞지 않습니다 …')은 뺐다(사용자 11/23: 글이 이상함). 섞지 않는 건 구획을 따로 둔 것으로 보인다 */}
       <p className={s.help}>
         <span className={s.pill}>제품</span> {sourceText(list)} · <Confirmation list={list} />
       </p>
-      <p className={s.help}>
-        위 목록(평가 · 일반 발견)과 섞지 않습니다. 확정 단계가 시험 계정 둘로 직접 확인한 판정입니다.
-      </p>
       {list.items.length ? (
-        <ul className={s.feed}>
+        <ul className={s["verdict-list"]}>
           {list.items.map((r, i) => (
             <Row key={r.verdictId ?? `hidden-${i}`} r={r} />
           ))}
