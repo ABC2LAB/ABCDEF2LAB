@@ -1,6 +1,6 @@
 # 제품 접근통제 지도 (수평: 자원 종류 × A/B) — 계약 초안
 
-작성: 2026-11-22 · 이경준 · **팀 리뷰용 초안.** 검토 기준: `dev` `164e2148`.
+작성: 2026-11-22 · 이경준 · **팀 리뷰용 초안**(11/23 #855 리뷰 반영: §1 양방향 검사, O1~O3 결정). 검토 기준: `dev` `164e2148`.
 연결: [access-map-read](./access-map-read.md)(평가 지도, 바꾸지 않음) · [product-verdict-list-proposal](./product-verdict-list-proposal.md)(제품 판정 목록 #801) · [e3-product-confirmation-interface](./e3-product-confirmation-interface.md)(확정 단계) · [access-map-phase2-proposal](./access-map-phase2-proposal.md)(`na` 의미)
 
 ## 0. 왜·무엇을
@@ -13,7 +13,7 @@
 - **수평 축만.** 행 = 선언한 자원 종류, 열 = 소유(A)·교차(B) 시험 계정. 수직(관리자↔일반)은 선언에 역할 등급이 없어 만들 수 없고, 발표 뒤 과제다.
 - **순서**: 지도(12/3쯤) → 보고서 KG 그래프(12/7쯤, §5). 준비 서비스 IPC 칸(§1)은 최민준, 서버 API·화면(§2·§3)은 이경준. 머지는 둘 다 측정 뒤.
 
-비범위: 수직 축, 정책 선언에 역할 등급 넣기, 평가 지도 변경, 판정·확정 단계 동작 변경, 진행 중 실시간 갱신(지도는 확정 단계가 끝난 회차를 읽는다. 진행 중이면 §2.4대로 보인다).
+비범위: 수직 축, 정책 선언에 역할 등급 넣기, 평가 지도 변경, 판정·확정 단계 동작 변경, 진행 중 실시간 갱신(지도는 확정 단계가 끝난 회차를 읽는다. 끝나기 전에는 서버가 §2.3대로 B 셀을 `observation_unavailable`로 주고, 화면은 §3대로 격자 대신 안내를 보인다).
 
 ## 1. 준비 서비스 IPC `policy_source` 칸 추가 (최민준)
 
@@ -52,7 +52,7 @@ type ProductSkippedType struct {
 
 모양 검사(`validProductPolicySource`·`validProductConfirmationState`에 더함, 보내는 쪽과 받는 쪽이 같은 함수):
 - `Present=false`면 `Types`는 비어 있다(지금 규칙 그대로).
-- `Present=true`면 `Types`는 1개 이상 `e3contract.MaxDeclarationTypes`(16) 이하, `type` 엄격 오름차순·중복 없음, `sharing`은 두 값 중 하나, `confirmable=true`면 `sharing=owner_only`.
+- `Present=true`면 `Types`는 1개 이상 `e3contract.MaxDeclarationTypes`(16) 이하, `type` 엄격 오름차순·중복 없음, `sharing`은 두 값 중 하나, **`confirmable` ⇔ `sharing=owner_only`(양방향)**. 선언 검증(`e3contract/declaration.go` `case !t.Confirmable(): bad("create.marker_field")`)이 `owner_only` 종류에 `Confirmable()`을 요구하므로 유효한 동결본에서는 늘 성립한다. 그래도 받는 쪽(관리 API 지도 투영)은 이 칸으로 `na`/`declared_shared`를 칠하므로, 형식이 틀린 프레임(`owner_only`·`confirmable=false` 또는 `shared`·`confirmable=true`)을 모양 검사에서 거부해야 한다(fail-closed). 둘을 다 보내는 것은 투영이 `sharing` 해석을 따로 하지 않고 동결본 쪽 `Confirmable()` 결과를 그대로 쓰게 하려는 것이다.
 - `Status=unreadable`이거나 `Present=false`면 `Skipped`는 비어 있다. `Skipped`는 16개 이하, `resource_type`은 `typePattern`·중복 없음, `reason`은 `confirmationReason` 모양.
 - 동결본은 있는데 `types` 요약을 만들 수 없으면(형식 오류) 지금처럼 동결본을 읽지 못한 것과 같이 다룬다(`policy_source_unavailable`). 일부 종류만 싣지 않는다.
 
@@ -126,7 +126,8 @@ type ProductSkippedType struct {
 
 **A(owner) 열** — 정상 대조 계정이라 판정 대상이 아니다.
 - `state="owner_control"`, `applicable=null`, 판정 칸 전부 `null`/`[]`. 확정 단계의 A 조회 결과는 B 셀의 사유(`product_owner_marker_unobserved` 등)로 보인다.
-- (평가 지도는 소유자 칸을 `observation_unavailable`/`blank`로 둔다. 제품 지도는 A가 선언으로 정해진 소유 계정이라는 양의 근거가 있어 따로 둔다 — §6 O1.)
+- 이 상태는 **"선언이 이 계정을 소유 계정으로 정했다"는 뜻뿐이다.** A 조회가 성공했다거나 A가 자기 객체를 읽었다는 관찰이 아니다(그 관찰은 이 칸에 싣지 않는다).
+- 평가 지도는 소유자 칸을 `observation_unavailable`/`blank`로 둔다. 제품 지도는 선언이라는 양의 근거가 있어 따로 둔다(§6 O1 결정). `owner_control`은 제품 지도 응답에만 있고 평가 지도 `state` 값에 더하지 않는다.
 
 **B(cross) 열 × `confirmable=false`(공유 종류)** — 선언이 "교차 조회 허용"을 명시한 것이 적용불가의 양의 근거다.
 - `state="na"`, `applicable=false`, `na_basis="declared_shared"`, 판정 칸 `null`/`[]`.
@@ -172,7 +173,9 @@ type ProductSkippedType struct {
 
 - 지도 화면(`UrlAccessMapLive`)과 보고서 탭 지도: 평가 지도가 409일 때 지금의 안내 + `ProductVerdictMap` 표 대신 제품 지도 격자를 그린다. 평가 지도가 200이면 평가 격자를 그대로 두고 제품 격자는 따로 둔다(두 출처를 한 격자에 섞지 않는다).
 - seam: `lib/diagnosis/kg.ts`에 `getProductAccessMap(taskId)` + exact 파서(§2.2 allowlist, 서버가 만들 수 없는 값은 받지 않음 — #689 방어 파서 원칙). 레이아웃이 바뀌어도 이 getter만 갈아 끼우게 둔다.
-- 셀 표시: `owner_control` = "소유(대조)", `na` = "—(공유 선언)", 나머지는 평가 지도 리졸버와 같은 라벨·색. `projection_error`는 셀 설명 문구로.
+- **파서 분리**: 제품 지도 파서는 평가 지도 파서(`checkAccessMapResponse`·`API_STATE_DECISION`)와 따로 둔다. `owner_control`·`na`·`na_basis`는 제품 파서에서만 받고, 평가 지도 응답에 이 값이 오면 지금처럼 fail-closed(`미등록 state`)다. 두 파서가 상태 표를 공유하지 않는다.
+- 셀 표시: `owner_control` = "소유 계정(선언) · 판정 대상 아님" — 체크·성공 색을 쓰지 않는 중립 표시로, A 조회 성공으로 읽히지 않게 한다. `na` = "—(공유 선언)", 나머지는 평가 지도와 같은 라벨·색. `projection_error`는 셀 설명 문구로.
+- **확정 단계 전·진행 중 안내(§6 O2 결정)**: `confirmation=null`(확정 결과 파일 없음 = 아직 확정 단계를 끝내지 않음)이면 격자를 그리지 않고 "확정 단계가 끝나면 교차 계정 결과가 채워집니다" 안내만 보인다. `confirmation`이 있으면(완료·중지·꺼짐·시작 거절·진위 실패·읽기 실패) 격자를 그리고 상태·사유를 격자 위에 보인다. 서버 응답은 그대로다(B 셀은 §2.3대로 `observation_unavailable`).
 - 출처 딱지: "제품 · 정책 선언 declaration-<job> · 수평(종류 × A/B)". 운영자 전용 고지는 지금 그대로.
 - 지금의 `ProductVerdictMap` 표는 제품 지도 연결 PR에서 격자로 대체하고, 보고서의 "제품 확정 단계 판정" 구획(목록)은 그대로 둔다.
 
@@ -180,7 +183,7 @@ type ProductSkippedType struct {
 
 IPC(최민준 PR):
 - 동결본 → `types` 요약 정확히 일치(공유·소유자 전용 섞인 선언, 16개 상한), 동결본 순서 유지.
-- 모양 검사 거부: 오름차순 아님·중복·잘못된 sharing·`confirmable && shared`·`present=false`인데 types 있음·`unreadable`인데 skipped 있음.
+- 모양 검사 거부: 오름차순 아님·중복·잘못된 sharing·**`owner_only`인데 `confirmable=false`·`shared`인데 `confirmable=true`(두 방향 각각)**·`present=false`인데 types 있음·`unreadable`인데 skipped 있음. 보내는 쪽(준비 서비스)과 받는 쪽(관리 API `ValidateResponse`)이 같은 검사로 거부하는지 둘 다.
 - 판정 상세·제품 판정 목록 응답 바이트가 칸 추가 전과 같음.
 
 서버 API(이경준 PR):
@@ -196,8 +199,8 @@ IPC(최민준 PR):
 
 `coverage-graph?view=kg-v1`도 같은 결속을 읽어 제품 회차에서 비어 있다. 지도 API가 들어간 뒤 같은 투영(§2.3)을 그래프 노드(계정·자원 종류)·간선(판정)으로 내보내는 제품 전용 보기를 따로 정한다. 평가 `kg-v1` 경로는 바꾸지 않는다. 칸 모양은 지도 PR 리뷰가 끝난 뒤 이 문서에 덧붙인다.
 
-## 6. Open
+## 6. 결정 (2026-11-23, #855 리뷰 — 최민준·이동찬)
 
-- **O1** A 열을 `owner_control`이라는 새 상태로 둘지, 평가 지도처럼 `observation_unavailable`로 둘지. 초안은 새 상태(선언이 정한 소유 계정이라는 근거가 있고, 회색 "모름" 열이 발표 화면에서 판정 누락처럼 보이는 것을 피함).
-- **O2** 회차 진행 중 지도: 지금 초안은 확정 단계 전이면 B 셀이 전부 `observation_unavailable`. 진행 중엔 지도 대신 "확정 단계 뒤 채워짐" 안내만 보일지 화면에서 정한다(서버 계약 영향 없음).
-- **O3** `skipped` 사유가 `not_owner_only` 외로 늘면 `na_basis`도 늘릴지. 지금은 `declared_shared` 하나.
+- **O1 → 제품 지도 전용 `owner_control`.** 평가 지도 상태 값과 섞지 않게 제품 지도 파서에서만 받는다(§3 파서 분리). 화면은 소유 계정 선언 근거임을 분명히 하고 A 조회 성공으로 읽히지 않게 한다(§2.3·§3).
+- **O2 → 확정 단계 전·진행 중에는 안내를 먼저.** `confirmation=null`이면 격자 대신 안내(§3). 서버 계약 영향 없음.
+- **O3 → 지금은 `declared_shared` 하나.** `not_owner_only`는 선언 검증상 "공유 선언"과 같은 뜻이다. 건너뜀 사유가 늘면 그때 이 문서(`na_basis`·§2.3 대조 규칙)를 같이 고친다. 고치기 전에 새 사유가 오면 §2.3대로 `na_evidence_mismatch`로 떨어진다.
