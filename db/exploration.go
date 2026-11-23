@@ -253,7 +253,7 @@ VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
 	}
 	for _, a := range anchors {
 		if _, err := tx.Exec(`INSERT INTO exploration_anchors(node_id, asset_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, id, a); err != nil {
-			return 0, err
+			return 0, anchorInsertError(err, a)
 		}
 	}
 	return id, tx.Commit()
@@ -294,11 +294,19 @@ func (s *ExplorationStore) Anchor(nodeID, assetID int64) error {
 	if nodeID <= 0 || assetID <= 0 {
 		return nil
 	}
-	if err := checkAnchorAssets(s.db, []int64{assetID}); err != nil {
+	// 확인(행 잠금)과 INSERT를 한 트랜잭션에 둔다. 따로 하면 그 사이 삭제로 외래 키 오류가 난다(#881 리뷰).
+	tx, err := s.db.Begin()
+	if err != nil {
 		return err
 	}
-	_, err := s.db.Exec(`INSERT INTO exploration_anchors(node_id, asset_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, nodeID, assetID)
-	return err
+	defer tx.Rollback()
+	if err := checkAnchorAssets(tx, []int64{assetID}); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO exploration_anchors(node_id, asset_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, nodeID, assetID); err != nil {
+		return anchorInsertError(err, assetID)
+	}
+	return tx.Commit()
 }
 
 // Link adds a typed exploration edge (idempotent).

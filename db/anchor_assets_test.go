@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // 모델이 준 자산 번호가 자산 그래프에 없으면 노드를 만들기 전에 거부하고, 외래 키 오류 대신 영어 도구 오류를 돌려준다
@@ -104,5 +106,58 @@ func TestAnchorAssetsRejectUnknownBeforeSave(t *testing.T) {
 	unknown(t, store.Anchor(fact, missing), []int64{missing})
 	if err := store.Anchor(recorded.NodeID, assetID); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// 확인한 자산 행은 앵커 INSERT까지 잠겨, 그 사이 자산 삭제가 커밋되지 못하고 기다린다(#881 이동찬 리뷰: 삭제 경쟁).
+func TestAnchorAssetsCheckLocksAgainstConcurrentDelete(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) — skipping", err)
+	}
+	defer d.Close()
+	task, err := d.CreateTask("anchor lock", "goal", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.DeleteTask(task.ID)
+	assetID, err := d.Assets().UpsertRootDomain(UpsertRootDomainReq{Domain: fmt.Sprintf("anchor-lock-%d.example.test", time.Now().UnixNano()), TaskID: task.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec(`DELETE FROM assets WHERE id=$1`, assetID)
+
+	tx, err := d.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if err := checkAnchorAssets(tx, []int64{assetID}); err != nil {
+		t.Fatal(err)
+	}
+	other, err := d.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Rollback()
+	if _, err := other.Exec(`SET LOCAL lock_timeout = '300ms'`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = other.Exec(`DELETE FROM assets WHERE id=$1`, assetID)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
+		t.Fatalf("확인 뒤 자산 삭제가 잠금을 기다리지 않음: %v", err)
+	}
+}
+
+// 잠금을 거치지 않은 경로에서 자산 외래 키 위반이 나도 원시 DB 오류 대신 없는 자산 번호 오류로 돌려준다.
+func TestAnchorInsertErrorMapsForeignKeyViolation(t *testing.T) {
+	var u *UnknownAssetsError
+	if err := anchorInsertError(&pgconn.PgError{Code: "23503", ConstraintName: "exploration_anchors_asset_id_fkey"}, 9); !errors.As(err, &u) || !slices.Equal(u.IDs, []int64{9}) {
+		t.Fatalf("외래 키 위반 변환: %v", err)
+	}
+	other := &pgconn.PgError{Code: "23505"}
+	if err := anchorInsertError(other, 9); err != other {
+		t.Fatalf("다른 오류를 바꿈: %v", err)
 	}
 }

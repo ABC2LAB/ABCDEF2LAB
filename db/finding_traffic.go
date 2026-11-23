@@ -382,7 +382,7 @@ VALUES($1,'finding',$2,9,'confirmed',$3) RETURNING id`, in.ExplorationID, string
 	}
 	for _, asset := range in.AssetIDs {
 		if _, err := tx.Exec(`INSERT INTO exploration_anchors(node_id,asset_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, out.NodeID, asset); err != nil {
-			return nil, err
+			return nil, anchorInsertError(err, asset)
 		}
 	}
 	if in.IntentID > 0 {

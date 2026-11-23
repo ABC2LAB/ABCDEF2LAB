@@ -1,8 +1,11 @@
 package db
 
 import (
+	"errors"
 	"fmt"
 	"slices"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // UnknownAssetsError는 모델이 준 자산 번호 가운데 자산 그래프에 없는 번호다. 탐색 노드(사실·의도·취약점)를 저장하기 전에
@@ -17,7 +20,9 @@ func (e *UnknownAssetsError) Error() string {
 }
 
 // checkAnchorAssets는 자산 번호가 모두 있는지 본다. 하나라도 없으면 *UnknownAssetsError이고, 호출자는 아무것도 저장하지
-// 않고 멈춘다. 저장과 같은 트랜잭션에서 확인하도록 *sql.Tx도 받는다(rowsQuerier).
+// 않고 멈춘다. 앵커 INSERT와 같은 트랜잭션에서 불러야 한다. 확인한 자산 행을 FOR KEY SHARE로 잡아, 확인 뒤·INSERT 전에
+// 커밋되는 자산 삭제(작업·회사 삭제)가 트랜잭션이 끝날 때까지 기다리게 한다(#881 이동찬 리뷰: 삭제 경쟁으로 외래 키 오류가
+// 모델에 다시 가는 경로).
 func checkAnchorAssets(q rowsQuerier, ids []int64) error {
 	if len(ids) == 0 {
 		return nil
@@ -25,7 +30,7 @@ func checkAnchorAssets(q rowsQuerier, ids []int64) error {
 	want := slices.Clone(ids)
 	slices.Sort(want)
 	want = slices.Compact(want)
-	rows, err := q.Query(`SELECT id FROM assets WHERE id = ANY($1::bigint[])`, want)
+	rows, err := q.Query(`SELECT id FROM assets WHERE id = ANY($1::bigint[]) FOR KEY SHARE`, want)
 	if err != nil {
 		return err
 	}
@@ -55,4 +60,14 @@ func checkAnchorAssets(q rowsQuerier, ids []int64) error {
 		return &UnknownAssetsError{IDs: missing}
 	}
 	return nil
+}
+
+// anchorInsertError는 앵커 INSERT 오류다. 확인과 잠금 뒤에도 자산 외래 키 위반(23503)이 나면(잠금을 거치지 않은 경로 등)
+// 원시 DB 오류 대신 *UnknownAssetsError로 바꿔 모델에 표 이름·제약 이름이 가지 않게 한다.
+func anchorInsertError(err error, assetID int64) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+		return &UnknownAssetsError{IDs: []int64{assetID}}
+	}
+	return err
 }
