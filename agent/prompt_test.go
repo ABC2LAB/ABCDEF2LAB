@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"unicode"
 )
 
 func TestRenderSystemOverrideAndFallback(t *testing.T) {
@@ -155,6 +156,20 @@ func TestLangDirectiveAppendedToUserFacingRoles(t *testing.T) {
 			if strings.Index(sys, marker) <= strings.Index(sys, "BODY-ONLY") {
 				t.Fatalf("%s/%s: langDirective must be appended after the body: %q", code, role, sys)
 			}
+		}
+	}
+}
+
+// 한국어 칸에 한자·가나가 섞여 나온 적이 있어(2026-11-23 화면 VAmPI) 출력 규칙에 한글만 쓰라는 문장을 둔다(2026-11-24).
+// 규칙 문장 자체에는 한자·가나를 넣지 않는다(모델에 그 글자를 보여 주지 않는다).
+func TestLangDirectiveForbidsHanAndKana(t *testing.T) {
+	dir := langDirective("ko")
+	if !strings.Contains(dir, "do not use Chinese characters (Hanzi/Hanja/Kanji) or Japanese kana") {
+		t.Fatalf("langDirective must forbid Han and kana in Korean text, got %q", dir)
+	}
+	for _, r := range dir {
+		if unicode.Is(unicode.Han, r) || unicode.Is(unicode.Hiragana, r) || unicode.Is(unicode.Katakana, r) {
+			t.Fatalf("langDirective itself contains %q", r)
 		}
 	}
 }
