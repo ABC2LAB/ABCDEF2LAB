@@ -88,7 +88,11 @@ func languageCandidateToolState(t *testing.T) (*candidateMemoryStore, func(strin
 }
 
 func candidateInput(summary, remediation, rationale string) string {
-	in := map[string]any{"call_ref": "lang-call", "vulnclass": "IDOR", "name": "합성 후보", "summary": summary, "remediation": remediation}
+	return namedCandidateInput("합성 후보", summary, remediation, rationale)
+}
+
+func namedCandidateInput(name, summary, remediation, rationale string) string {
+	in := map[string]any{"call_ref": "lang-call", "vulnclass": "IDOR", "name": name, "summary": summary, "remediation": remediation}
 	if rationale != "" {
 		in["suggested_severity"], in["severity_rationale"] = "high", rationale
 	}
@@ -154,7 +158,7 @@ func TestCandidateLanguageCleanUntouched(t *testing.T) {
 	}
 }
 
-// 다시 쓰기 요청은 call_ref마다 한 번이다. 관찰이 없는 call_ref는 언어를 보기 전에 거부한다(다시 쓰기 횟수를 쓰지 않음).
+// 다시 쓰기 요청은 후보마다 한 번이다. 관찰이 없는 call_ref는 언어를 보기 전에 거부한다(다시 쓰기 횟수를 쓰지 않음).
 func TestCandidateLanguageRewritePerCallRef(t *testing.T) {
 	store, call := languageCandidateTool(t)
 	mixed := candidateInput("권한 검사가 "+hanStrict+"하지 않습니다.", "", "")
@@ -247,5 +251,32 @@ func TestE2HTTPSessionSavesHeldCandidateAtEnd(t *testing.T) {
 	}
 	if len(store.candidates) != 1 || !store.candidates[0].LanguageMixed || store.candidates[0].LanguageRewrites != 1 {
 		t.Fatalf("세션 끝에 붙잡은 후보를 저장하지 않음: %d건", len(store.candidates))
+	}
+}
+
+// 같은 호출(call_ref)에서 이름이 다른 후보는 따로 다룬다(#896 동찬 P2). 섞인 A를 붙잡은 뒤 같은 호출의 다른 후보 B를
+// 내도 A를 버리지 않고, B가 섞였으면 B도 한 번 다시 쓰게 한다. Worker 끝에 A·B 모두 남는다.
+func TestCandidateLanguageSameCallRefDistinctCandidates(t *testing.T) {
+	store, call, state, _ := languageCandidateToolState(t)
+	mixed := "권한 검사가 " + hanStrict + "하지 않습니다."
+	if isErr, _ := call(namedCandidateInput("후보 A", mixed, "", "")); !isErr {
+		t.Fatal("A 첫 섞임")
+	}
+	if isErr, text := call(namedCandidateInput("후보 B", "다른 관찰입니다.", "", "")); isErr {
+		t.Fatalf("깨끗한 B 거부: %q", text)
+	}
+	if isErr, text := call(namedCandidateInput("후보 C", mixed, "", "")); !isErr || !strings.Contains(text, "language_mixed") {
+		t.Fatalf("같은 호출의 다른 후보 C를 다시 쓴 판으로 봄: %q", text)
+	}
+	if len(store.candidates) != 1 || store.candidates[0].Name != "후보 B" || store.candidates[0].LanguageRewrites != 0 {
+		t.Fatalf("B만 저장돼야 함: %+v", store.candidates)
+	}
+	state.flushHeldCandidates(t.Context())
+	got := map[string]bool{}
+	for _, c := range store.candidates {
+		got[c.Name] = c.LanguageMixed
+	}
+	if len(store.candidates) != 3 || !got["후보 A"] || got["후보 B"] || !got["후보 C"] {
+		t.Fatalf("Worker 끝 저장: %v", got)
 	}
 }

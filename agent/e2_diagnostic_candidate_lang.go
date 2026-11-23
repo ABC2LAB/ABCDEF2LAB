@@ -3,8 +3,11 @@ package agent
 import (
 	"context"
 	"regexp"
+	"strings"
 	"time"
 	"unicode"
+
+	"github.com/Autumn-27/artex/db"
 )
 
 // 한국어 화면 칸 언어 섞임 검사(2026-11-24 사용자 결정). 모델(Qwen)이 한국어 설명·조치·근거를 쓰다가 같은 뜻의 중국어
@@ -23,7 +26,15 @@ var (
 
 // candidateLanguageMixedError는 모델에게 돌려주는 다시 쓰기 요청이다(모델이 읽는 글이라 영어).
 const candidateLanguageMixedError = "diagnostic_candidate_language_mixed: summary, remediation and severity_rationale must be Korean written in Hangul only. " +
-	"Rewrite them without Chinese characters (Hanzi/Hanja/Kanji) or Japanese kana, keeping quoted target responses, code and URLs unchanged, and submit the same call_ref again."
+	"Rewrite them without Chinese characters (Hanzi/Hanja/Kanji) or Japanese kana, keeping quoted target responses, code and URLs unchanged, " +
+	"and submit the same candidate again with the same call_ref, related_call_refs, vulnclass and name."
+
+// candidateLanguageKey는 다시 쓰기·붙잡기의 후보 식별자다. 저장소가 같은 후보로 보는 기준(실행·호출·유형·이름·증거
+// digest, db.RecordDiagnosticCandidate)과 같다. 같은 호출의 다른 후보는 따로 붙잡고 따로 다시 쓰게 한다. 모델이 다시
+// 쓰면서 유형·이름을 바꾸면 다른 후보로 보고, 붙잡아 둔 첫 제출은 Worker 끝에 표시를 붙여 저장한다(잃지 않는다).
+func candidateLanguageKey(c db.DiagnosticCandidate) string {
+	return strings.Join([]string{c.RunRef, c.CallRef, c.VulnClass, c.Name, c.EvidenceDigest}, "\x00")
+}
 
 // mixedForeignScript는 모델이 쓴 한국어 문장에 한자·가나가 섞였는지다.
 func mixedForeignScript(text string) bool {
