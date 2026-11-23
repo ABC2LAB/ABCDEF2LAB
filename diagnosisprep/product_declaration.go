@@ -108,25 +108,67 @@ var writesRefPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // OD06). 동결본 원문·선언 내용은 담지 않는다. 동결본이 없으면 Present가 false이고 SHA256은 비어 있다.
 // OwnerAccountLabel·CrossAccountLabel은 동결본이 정한 소유(A)·교차(B) 시험 계정 라벨이다(제품 판정 목록 결정 2). C14 등록
 // 라벨이라 자격·세션이 아니다. 동결본에서만 읽고 현재 등록·현재 선언으로 대신하지 않으며, 동결본이 없거나 라벨을 정하지
-// 않았으면 둘 다 비어 있다.
+// 않았으면 둘 다 비어 있다. Present가 true면 Types는 늘 1개 이상이다(요약을 만들 수 없는 동결본은 읽지 못한 것으로 다룬다).
 type ProductPolicySource struct {
 	Present           bool   `json:"present"`
 	SHA256            string `json:"sha256,omitempty"`
 	OwnerAccountLabel string `json:"owner_account_label,omitempty"`
 	CrossAccountLabel string `json:"cross_account_label,omitempty"`
+	// Types는 동결본 types[]의 요약이다(제품 접근통제 지도 §1, 동결본 순서 = type 오름차순). 종류 이름·공유 여부·확정 가능
+	// 여부만이고 경로·본문 틀·표식 칸·ID 칸은 담지 않는다. 동결본에서만 읽고 현재 선언으로 대신하지 않는다.
+	Types []ProductDeclaredType `json:"types,omitempty"`
 }
 
-var policySourceDigest = regexp.MustCompile(`^[0-9a-f]{64}$`)
+// ProductDeclaredType은 동결본 자원 종류 하나의 요약이다. Confirmable은 e3contract.TypeDeclaration.Confirmable() 결과이고,
+// 유효한 동결본에서는 Sharing이 owner_only인 것과 같다. 둘을 다 싣는 것은 받는 쪽이 sharing을 따로 해석하지 않게 하려는
+// 것이고, 어긋난 값은 모양 검사가 거부한다.
+type ProductDeclaredType struct {
+	Type        string `json:"type"`
+	Sharing     string `json:"sharing"`
+	Confirmable bool   `json:"confirmable"`
+}
+
+var (
+	policySourceDigest = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	// declaredTypeName은 e3contract의 자원 종류 이름 모양과 같다(그쪽 정규식은 내보내지 않는다).
+	declaredTypeName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+)
 
 func validProductPolicySource(p ProductPolicySource) bool {
 	if !p.Present {
-		return p.SHA256 == "" && p.OwnerAccountLabel == "" && p.CrossAccountLabel == ""
+		return p.SHA256 == "" && p.OwnerAccountLabel == "" && p.CrossAccountLabel == "" && len(p.Types) == 0
 	}
 	if (p.OwnerAccountLabel == "") != (p.CrossAccountLabel == "") || p.OwnerAccountLabel != "" &&
 		(!ValidAccountLabel(p.OwnerAccountLabel) || !ValidAccountLabel(p.CrossAccountLabel) || p.OwnerAccountLabel == p.CrossAccountLabel) {
 		return false
 	}
-	return policySourceDigest.MatchString(p.SHA256)
+	return policySourceDigest.MatchString(p.SHA256) && validDeclaredTypes(p.Types)
+}
+
+// validDeclaredTypes는 동결본 종류 요약의 모양이다. 받는 쪽(지도 투영)이 Confirmable로 적용불가(공유 선언)를 칠하므로
+// confirmable ⇔ owner_only를 두 방향 다 요구한다. 한 방향만 보면 소유자 전용 종류가 공유 선언으로 보일 수 있다.
+func validDeclaredTypes(types []ProductDeclaredType) bool {
+	if len(types) == 0 || len(types) > e3contract.MaxDeclarationTypes {
+		return false
+	}
+	for i, t := range types {
+		if !declaredTypeName.MatchString(t.Type) || i > 0 && types[i-1].Type >= t.Type {
+			return false
+		}
+		switch e3contract.Sharing(t.Sharing) {
+		case e3contract.SharingOwnerOnly:
+			if !t.Confirmable {
+				return false
+			}
+		case e3contract.SharingShared:
+			if t.Confirmable {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // ProductConfirmationState는 회차 하나의 E③ 확정 단계 결과 파일(runs/<job>/e3-confirmation.json)의 상태·사유만이다(제품
@@ -137,6 +179,14 @@ type ProductConfirmationState struct {
 	Present bool   `json:"present"`
 	Status  string `json:"status,omitempty"`
 	Reason  string `json:"reason,omitempty"`
+	// Skipped는 확정 결과 파일의 건너뛴 종류 그대로다(종류·사유 코드, 제품 접근통제 지도 §1). 결과에 없으면 비운다.
+	Skipped []ProductSkippedType `json:"skipped,omitempty"`
+}
+
+// ProductSkippedType은 확정 단계가 시험하지 않고 건너뛴 자원 종류와 사유 코드다(e3contract.SkippedType).
+type ProductSkippedType struct {
+	ResourceType string `json:"resource_type"`
+	Reason       string `json:"reason"`
 }
 
 // ConfirmationUnreadable은 확정 단계 결과 파일이 있는데 읽지 못했다는 상태다(e3contract 상태 값과 겹치지 않는다).
@@ -157,10 +207,24 @@ func ValidProductConfirmationState(c ProductConfirmationState) bool {
 
 func validProductConfirmationState(c ProductConfirmationState) bool {
 	if !c.Present {
-		return c.Status == "" && c.Reason == ""
+		return c.Status == "" && c.Reason == "" && len(c.Skipped) == 0
 	}
 	if c.Status == ConfirmationUnreadable {
-		return c.Reason == ""
+		return c.Reason == "" && len(c.Skipped) == 0
 	}
-	return confirmationStatuses[c.Status] && (c.Reason == "" || confirmationReason.MatchString(c.Reason))
+	return confirmationStatuses[c.Status] && (c.Reason == "" || confirmationReason.MatchString(c.Reason)) && validSkippedTypes(c.Skipped)
+}
+
+func validSkippedTypes(skipped []ProductSkippedType) bool {
+	if len(skipped) > e3contract.MaxDeclarationTypes {
+		return false
+	}
+	seen := make(map[string]bool, len(skipped))
+	for _, s := range skipped {
+		if !declaredTypeName.MatchString(s.ResourceType) || seen[s.ResourceType] || !confirmationReason.MatchString(s.Reason) {
+			return false
+		}
+		seen[s.ResourceType] = true
+	}
+	return true
 }
