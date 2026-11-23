@@ -3087,9 +3087,15 @@ describe("새 점검의 E③ 확정 단계 안내 · 대상 리셋 확인", () =
       ? { owner_account_label: "tester-a", cross_account_label: "tester-b", accounts_same_privilege: true }
       : {}),
   });
-  function serve(decl: unknown, reset: unknown) {
+  /** accounts: 대상 계정 응답(없으면 계정 없음) · "fail" 조회 실패 · "pending" 끝나지 않음. decl 이 "pending" 이면 선언 조회가 끝나지 않음 */
+  function serve(decl: unknown, reset: unknown, accounts?: unknown[] | "fail" | "pending") {
     vi.mocked(teamApi.apiFetch).mockImplementation(async (path) => {
       const p = String(path);
+      if (p.endsWith(`/${TARGET_ID}/accounts`)) {
+        if (accounts === "fail") throw new Error("fixed-account-unavailable");
+        if (accounts === "pending") return new Promise(() => undefined) as never;
+        return { accounts: accounts ?? [] } as never;
+      }
       if (p.includes("targets/resolve"))
         return {
           target: {
@@ -3106,7 +3112,8 @@ describe("새 점검의 E③ 확정 단계 안내 · 대상 리셋 확인", () =
             expires_at: "2099-01-01T00:00:00Z",
           },
         } as never;
-      if (p.endsWith(`/${TARGET_ID}/declaration`)) return decl as never;
+      if (p.endsWith(`/${TARGET_ID}/declaration`))
+        return (decl === "pending" ? new Promise(() => undefined) : decl) as never;
       if (p.endsWith(`/${TARGET_ID}/reset-confirmation`)) return reset as never;
       return { configured: true } as never;
     });
@@ -3186,6 +3193,44 @@ describe("새 점검의 E③ 확정 단계 안내 · 대상 리셋 확인", () =
     fireEvent.click(within(box).getByRole("button", { name: "정책 선언" }));
     expect(goTo).toHaveBeenCalledWith("declaration");
     expect(useWb.getState().focusTarget).toEqual({ id: TARGET_ID, seq: seq + 1 });
+  });
+
+  // 시험 계정 줄은 등록 여부가 아니라 이번 회차가 실제로 로그인하는지를 따른다(#874 이동찬 P2)
+  const accountLine = async () => {
+    const box = await screen.findByRole("region", { name: "계정 · 정책 선언" });
+    return within(box).getByText("시험 계정").parentElement as HTMLElement;
+  };
+  it("로컬 모델 · 시험 계정 등록됨이면 '로그인해서 점검'", async () => {
+    serve(active(declaration()), noWrites, [{ label: "tester", classification: "test" }]);
+    saveHandle();
+    mount("new");
+    const line = await accountLine();
+    await waitFor(() => expect(line).toHaveTextContent("등록됨 · 로그인해서 점검"));
+  });
+  it("외부 모델 · 동의 안 함이면 등록돼 있어도 '로그인 없이 점검'으로 보인다", async () => {
+    u.readURLCatalog.mockResolvedValue({ ...catalog, profiles: [{ ...catalog.profiles[0], model: externalModel }] });
+    serve(active(declaration()), noWrites, [{ label: "tester", classification: "test" }]);
+    saveHandle();
+    mount("new");
+    const line = await accountLine();
+    await waitFor(() => expect(line).toHaveTextContent("등록됨 · 외부 전송 동의 전이라 로그인 없이 점검"));
+    expect(line).not.toHaveTextContent("로그인해서 점검");
+  });
+  it("계정 조회가 실패하면 '확인하지 못함', 끝나지 않았으면 '확인 중'으로 두고 '없음'으로 단정하지 않는다", async () => {
+    serve(active(declaration()), noWrites, "fail");
+    saveHandle();
+    const view = mount("new");
+    const failed = await accountLine();
+    await waitFor(() => expect(failed).toHaveTextContent("확인하지 못함"));
+    expect(failed).not.toHaveTextContent("없음");
+    view.unmount();
+    serve("pending", noWrites, "pending");
+    mount("new");
+    const box = await screen.findByRole("region", { name: "계정 · 정책 선언" });
+    const [account, decl] = within(box).getAllByRole("listitem");
+    expect(account).toHaveTextContent("시험 계정확인 중");
+    expect(decl).toHaveTextContent("정책 선언확인 중");
+    expect(box).not.toHaveTextContent("없음");
   });
 
   it("정책 선언이 없으면 상자에 '없음'으로 보인다", async () => {

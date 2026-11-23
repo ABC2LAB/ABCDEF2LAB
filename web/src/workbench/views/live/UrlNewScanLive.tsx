@@ -191,6 +191,8 @@ export function UrlNewScanLive() {
   const [declarationActive, setDeclarationActive] = useState(false);
   const [resetState, setResetState] = useState<ResetState | null>(null);
   const [planUnknown, setPlanUnknown] = useState(false);
+  // 선언 조회가 끝났는가(성공 · 실패). 끝나기 전에는 '없음'으로 단정하지 않는다(규칙 5, #874 이동찬 P2)
+  const [declarationRead, setDeclarationRead] = useState(false);
   // 승인된 대상만 선언을 읽는다(선언은 승인된 대상에만 저장된다). 못 읽으면 '확정 단계 없음'으로 추정하지 않는다(규칙 5)
   const approvedTargetId = productTarget?.state === "approved" ? productTarget.id : null;
   // biome-ignore lint/correctness/useExhaustiveDependencies: entryGen 은 화면에 들어올 때마다 다시 읽는 트리거
@@ -198,11 +200,13 @@ export function UrlNewScanLive() {
     setConfirmationPlan(null);
     setDeclarationActive(false);
     setPlanUnknown(false);
+    setDeclarationRead(false);
     if (!approvedTargetId) return;
     const controller = new AbortController();
     getDeclaration(approvedTargetId, controller.signal)
       .then((load) => {
         if (controller.signal.aborted) return;
+        setDeclarationRead(true);
         setConfirmationPlan(confirmationPlanOf(load));
         setDeclarationActive(load.state === "current");
         setPlanUnknown(load.state === "unavailable" || load.state === "invalid");
@@ -210,6 +214,7 @@ export function UrlNewScanLive() {
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
         console.warn("정책 선언을 읽지 못해 확정 단계 여부를 모름", error instanceof Error ? error.name : "unknown");
+        setDeclarationRead(true);
         setPlanUnknown(true);
       });
     return () => controller.abort();
@@ -221,7 +226,8 @@ export function UrlNewScanLive() {
     goTo(view);
   };
   let declarationText = "없음 · 확정 단계 없이 점검";
-  if (declarationActive)
+  if (!declarationRead) declarationText = "확인 중";
+  else if (declarationActive)
     declarationText = confirmationPlan ? `있음 · 소유자 전용 종류 ${confirmationPlan.types}개` : "있음";
   else if (planUnknown) declarationText = "확인하지 못함";
   // 대상(또는 그 상태)이 바뀌면 지난 리셋 상태를 버린다. 상자는 key 로 다시 그려져 새 상태를 알린다
@@ -317,6 +323,14 @@ export function UrlNewScanLive() {
   const testAccountLogin = shown
     ? shown.external_test_accounts === true || (!external && hasTestAccounts)
     : hasTestAccounts && (!external || consentChecked);
+  // 새 점검 '계정 · 정책 선언' 상자의 시험 계정 줄(#874 이동찬 P2): 등록 여부와 이번 회차가 실제로 로그인하는지를
+  // 나눈다. 외부 모델은 동의해야 로그인한다(위 testAccountLogin). 조회 전 · 실패를 '없음'으로 단정하지 않는다(규칙 5)
+  // 로그인 결속이 확실하면(결속된 회차 · 조회로 확인한 초안) 그걸 먼저 보인다
+  let accountText = "없음 · 로그인 없이 점검";
+  if (testAccountLogin) accountText = "등록됨 · 로그인해서 점검";
+  else if (accountPresence.key !== consentKey) accountText = "확인 중";
+  else if (accountPresence.failed) accountText = "확인하지 못함";
+  else if (hasTestAccounts) accountText = "등록됨 · 외부 전송 동의 전이라 로그인 없이 점검";
   // 로그인 칸 '연결 전' 설명: 시험 계정으로 로그인하면 '로그인 없이' 라고 단정하지 않는다.
   const loginUnwiredWhy = testAccountLogin
     ? `${NO_INPUT} · 시험 계정으로 로그인해 점검합니다`
@@ -758,11 +772,7 @@ export function UrlNewScanLive() {
                   {approvedTargetId ? (
                     <section className={s["prep-box"]} aria-label="계정 · 정책 선언">
                       <ul className={s.policy}>
-                        <Rule
-                          warn={!hasTestAccounts}
-                          t="시험 계정"
-                          sub={hasTestAccounts ? "등록됨 · 로그인해서 점검" : "없음 · 로그인 없이 점검"}
-                        />
+                        <Rule warn={!testAccountLogin} t="시험 계정" sub={accountText} />
                         <Rule warn={!declarationActive} t="정책 선언" sub={declarationText} />
                       </ul>
                       <div className={s.acts}>
