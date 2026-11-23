@@ -97,21 +97,26 @@ func TestCleanupStaleClosesBoundarySessionAndBrowserContext(t *testing.T) {
 	}
 }
 
-// MCP가 세션 지우기를 거부하면 기록을 남겨 다음 시작 때 다시 지운다. 경계 세션은 그래도 닫는다(페이지가 대상에 닿지 못함).
+// MCP가 세션 지우기를 거부하면(오류·405 종료 미허용) 기록을 남겨 다음 시작 때 다시 지운다. 경계 세션은 그래도 닫는다
+// (페이지가 대상에 닿지 못함).
 func TestCleanupStaleKeepsUndeletedBrowserContext(t *testing.T) {
-	f, mcp := cleanupFixture(t, http.StatusInternalServerError)
-	if err := f.host.mcpSessions.Opened(f.host.mcpURL, "mcp-session-old"); err != nil {
-		t.Fatal(err)
-	}
-	closed, err := f.host.cleanupStale(t.Context())
-	if err != nil || closed {
-		t.Fatalf("열린 경계 세션이 없을 때: closed=%v err=%v", closed, err)
-	}
-	if len(mcp.got()) != 1 {
-		t.Fatal("MCP 세션 지우기를 시도하지 않음")
-	}
-	if left, err := f.host.mcpSessions.pending(); err != nil || len(left) != 1 {
-		t.Fatalf("지우지 못한 기록을 잃음: %v %v", left, err)
+	for _, status := range []int{http.StatusInternalServerError, http.StatusMethodNotAllowed} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			f, mcp := cleanupFixture(t, status)
+			if err := f.host.mcpSessions.Opened(f.host.mcpURL, "mcp-session-old"); err != nil {
+				t.Fatal(err)
+			}
+			closed, err := f.host.cleanupStale(t.Context())
+			if err != nil || closed {
+				t.Fatalf("열린 경계 세션이 없을 때: closed=%v err=%v", closed, err)
+			}
+			if len(mcp.got()) != 1 {
+				t.Fatal("MCP 세션 지우기를 시도하지 않음")
+			}
+			if left, err := f.host.mcpSessions.pending(); err != nil || len(left) != 1 || left[0].SessionID != "mcp-session-old" {
+				t.Fatalf("지우지 못한 기록을 잃음: %v %v", left, err)
+			}
+		})
 	}
 }
 

@@ -67,9 +67,10 @@ func currentScopedRecorder() ScopedSessionRecorder {
 	return scopedRecorder
 }
 
-// scopedSessionGone은 세션 지우기 응답이 '지웠거나 이미 없음'인지다.
+// scopedSessionGone은 세션 지우기 응답이 '지웠거나 이미 없음'인지다. 405는 서버가 클라이언트의 세션 종료를 허용하지
+// 않는다는 응답이라(MCP 전송 규격 Session Management) 지운 것으로 보지 않는다 — 브라우저 문맥이 살아 있을 수 있다.
 func scopedSessionGone(status int) bool {
-	return status == http.StatusNotFound || status == http.StatusMethodNotAllowed || status >= 200 && status < 300
+	return status == http.StatusNotFound || status >= 200 && status < 300
 }
 
 // DeleteScopedSession은 이전 실행이 남긴 탐색 MCP 세션 하나를 지운다(그 브라우저 문맥이 닫힌다). 이미 없으면 성공이다.
@@ -126,11 +127,13 @@ func (c *Client) CloseContext(ctx context.Context) error {
 		return err
 	}
 	defer res.Body.Close()
-	if !scopedSessionGone(res.StatusCode) {
+	gone := scopedSessionGone(res.StatusCode)
+	// 보통 마감에서 405(종료 미허용)는 원래처럼 오류로 돌려주지 않는다. 다만 지운 것이 아니라 기록은 남긴다.
+	if !gone && res.StatusCode != http.StatusMethodNotAllowed {
 		return errors.New("mcp session close rejected")
 	}
 	// 지운 세션만 기록에서 뺀다. 지우지 못했으면 남겨서 다음 시작 때 다시 지운다.
-	if r := currentScopedRecorder(); r != nil {
+	if r := currentScopedRecorder(); gone && r != nil {
 		r.Closed(c.url, sid)
 	}
 	return nil

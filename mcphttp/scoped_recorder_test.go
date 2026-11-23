@@ -87,6 +87,15 @@ func TestScopedSessionRecorderTracksOpenAndDeletedOnly(t *testing.T) {
 	if err := client.CloseContext(t.Context()); err == nil || len(rec.closed) != 1 {
 		t.Fatalf("거부된 지우기를 기록에서 뺌: %v %v", rec.closed, err)
 	}
+	// 405(서버가 세션 종료를 허용하지 않음): 보통 마감은 원래처럼 오류가 아니지만, 지운 것이 아니라 기록을 남긴다.
+	refused := scopedMCPFixture(t, http.StatusMethodNotAllowed, &deleted, &mu)
+	client, err = NewScoped(ctx, "owned", refused.URL+"/mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.CloseContext(t.Context()); err != nil || len(rec.closed) != 1 {
+		t.Fatalf("405를 지운 세션으로 기록에서 뺌: %v %v", rec.closed, err)
+	}
 }
 
 func TestDeleteScopedSession(t *testing.T) {
@@ -107,8 +116,10 @@ func TestDeleteScopedSession(t *testing.T) {
 			t.Fatalf("잘못된 입력을 받음: %+v", bad)
 		}
 	}
-	fail := scopedMCPFixture(t, http.StatusBadGateway, &deleted, &mu)
-	if DeleteScopedSession(t.Context(), fail.URL+"/mcp", "x") == nil {
-		t.Fatal("거부를 성공으로 봄")
+	for _, status := range []int{http.StatusBadGateway, http.StatusMethodNotAllowed} {
+		fail := scopedMCPFixture(t, status, &deleted, &mu)
+		if DeleteScopedSession(t.Context(), fail.URL+"/mcp", "x") == nil {
+			t.Fatalf("%d 거부를 성공으로 봄", status)
+		}
 	}
 }
