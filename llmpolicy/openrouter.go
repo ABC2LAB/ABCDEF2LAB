@@ -93,6 +93,8 @@ type OpenRouterPolicy struct {
 	callLogFailures int64
 	// refunded는 장부에 정산을 남긴 호출들의 예약 − 실제 합계다. 프로세스 안 검사는 예약 합계에서 이것을 뺀다.
 	refunded [3]int64
+	// priceFetch는 v4 점검이 단가를 다시 읽은 방법이다(ApplyRunPriceRequote). 404가 나면 같은 방법으로 원인을 한 번 더 본다.
+	priceFetch OpenRouterEndpointsFetcher
 }
 type OpenRouterUsage struct {
 	Requests             int64  `json:"requests"`
@@ -125,6 +127,9 @@ type OpenRouterUsage struct {
 	// 결정). manifest v3에서만 0부터 세고, 덮어쓰기가 없는 v1·v2 승인에서는 null(해당 없음)이다.
 	SamplingOverwrites *int64 `json:"sampling_overwrites"`
 	FailureReason      string `json:"failure_reason,omitempty"`
+	// PriceCaps는 v4 점검이 시작 때 다시 정한 단가 상한과 그 근거다(openrouter_price_requote.go). v1~v3과 재조회 전에는
+	// 비어 있고 칸도 쓰지 않는다(이전 기록과 같은 바이트).
+	PriceCaps *OpenRouterRunPriceCaps `json:"price_caps,omitempty"`
 }
 
 func (p *OpenRouterPolicy) Target() ProfileTarget {
@@ -151,6 +156,11 @@ func (p *OpenRouterPolicy) Snapshot() OpenRouterUsage {
 		// 정책 안의 계수와 포인터를 공유하지 않게 값 사본을 돌려준다.
 		count := *u.SamplingOverwrites
 		u.SamplingOverwrites = &count
+	}
+	if u.PriceCaps != nil {
+		caps := *u.PriceCaps
+		caps.Providers = append([]OpenRouterProviderPrice(nil), caps.Providers...)
+		u.PriceCaps = &caps
 	}
 	u.Blocked = p.blocked
 	u.TransientLimited = p.blocked && p.transientLimited
