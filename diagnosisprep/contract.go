@@ -74,6 +74,14 @@ type Input struct {
 	// 운영자 진술이다(CLAUDE.md 규칙 2, C14 결정 4). 참이면 외부 API 실행도 시험 계정을 결속·로그인한다. 로컬 모델 실행은
 	// 이 값과 상관없이 시험 계정을 쓴다. 결속을 바꾸므로 초안 입력(원본 요약)에 들어간다.
 	ExternalTestAccounts bool `json:"external_test_accounts,omitempty"`
+	// ExclusionsReviewed·BackupConfirmed는 운영자가 시작 확인 화면에서 한 진술이다. 초안 입력과 함께 준비 저널에 남겨
+	// 누가 무엇을 확인하고 시작했는지 나중에 볼 수 있게 한다(감사 기록). 서버는 이 진술의 사실 여부를 확인하지 않고,
+	// 요청 허용·거부에도 쓰지 않는다(GET 자체는 통제하지 않는다). 없으면 진술하지 않은 것이다(옛 화면·CLI·평가 러너).
+	// 그래서 없는 초안도 거부하지 않고, omitempty로 두어 진술이 없는 입력의 기록 바이트·원본 요약이 전과 같게 한다.
+	// ExclusionsReviewed: GET으로 상태가 바뀌는 주소를 확인해 제외 경로에 넣었거나 그런 주소가 없음을 확인했다.
+	ExclusionsReviewed bool `json:"exclusions_reviewed,omitempty"`
+	// BackupConfirmed: 점검 대상이 복사본(시험 환경)이거나 원본이면 백업이 있다.
+	BackupConfirmed bool `json:"backup_confirmed,omitempty"`
 }
 
 type Profile struct {

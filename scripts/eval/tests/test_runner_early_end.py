@@ -445,7 +445,8 @@ class TestSession(unittest.TestCase):
                             {"class": CLASS_CONFIG, "reason": CONFIG_END_REASON, "first_limit": None, "end_state": None,
                              "reason_code": "approval_required", "evidence": {"kind": "start_refused", "code": "approval_required"}})]
         lines, failures = session_runs.fault_stall_tally(attempts)
-        self.assertIn("| baseline | 1 | 1 | 2 | 2 |", lines)
+        # 멈춤 무효 baseline-2는 fault-stall.json을 읽지 않은 Attempt라 진행 중 호출을 모른다(0건 확인, 1건 모름).
+        self.assertIn("| baseline | 1 | 1 | 2 | 2 | 0 (1) |", lines)
         self.assertEqual(len(failures), 1)
         listed = session_runs.early_end_list(attempts)
         self.assertEqual(len(listed), 4)

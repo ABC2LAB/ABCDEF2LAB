@@ -64,7 +64,7 @@ func productListContext(source *diagnosisprep.ProductPolicySource, confirmation 
 
 func matchedProductSource() *diagnosisprep.ProductPolicySource {
 	d := productListDeclaration()
-	return &diagnosisprep.ProductPolicySource{Present: true, SHA256: hex.EncodeToString(d[:]), OwnerAccountLabel: "tester-a", CrossAccountLabel: "tester-b"}
+	return &diagnosisprep.ProductPolicySource{Present: true, Types: verdictTestPolicyTypes, SHA256: hex.EncodeToString(d[:]), OwnerAccountLabel: "tester-a", CrossAccountLabel: "tester-b"}
 }
 
 // forgeProductRow는 판정 하나의 정본·발급 결속만 바꿔 다시 서명한다. 같은 회차 판정들이 함께 쓰는 근거 manifest는 그대로
@@ -242,6 +242,39 @@ func TestProductVerdictListRowAuthenticity(t *testing.T) {
 		*env.PolicySource.TargetApprovalRevision != "target-revision-1" || *env.PolicySource.OwnerAccountLabel != "tester-a" ||
 		*env.PolicySource.CrossAccountLabel != "tester-b" || env.Confirmation == nil || env.Confirmation.Status != "completed" || env.Confirmation.Reason != nil {
 		t.Fatalf("최상위 칸: %+v %+v", env.PolicySource, env.Confirmation)
+	}
+}
+
+// IPC에 더한 동결본 종류 요약·건너뛴 종류(제품 접근통제 지도 §1)는 제품 판정 목록이 쓰지 않는다. 그 칸이 달라도 목록 응답
+// 바이트는 같다(지도 API가 따로 읽는다).
+func TestProductVerdictListIgnoresDeclaredTypesAndSkipped(t *testing.T) {
+	s, _, _ := trafficEvidenceServer(t)
+	pg := s.m.pg
+	task := productListTask(t, pg)
+	storeProductVerdictKind(t, pg, task, "document", "target-revision-1", oracle.Confirmed)
+	plain := matchedProductSource()
+	plain.Types = nil
+	withTypes := matchedProductSource()
+	withTypes.Types = []diagnosisprep.ProductDeclaredType{{Type: "document", Sharing: "owner_only", Confirmable: true}, {Type: "post", Sharing: "shared"}}
+	wire := func(got productVerdictContext) string {
+		t.Helper()
+		env, status, _ := productListInTx(t, pg, task, got, nil)
+		raw, err := json.Marshal(env)
+		if status != http.StatusOK || err != nil || len(env.Items) != 1 {
+			t.Fatalf("목록: %d %v %+v", status, err, env)
+		}
+		return string(raw)
+	}
+	before := wire(productListContext(plain, &diagnosisprep.ProductConfirmationState{Present: true, Status: "completed"}))
+	after := wire(productListContext(withTypes, &diagnosisprep.ProductConfirmationState{Present: true, Status: "completed",
+		Skipped: []diagnosisprep.ProductSkippedType{{ResourceType: "post", Reason: "not_owner_only"}}}))
+	if before != after {
+		t.Fatalf("종류 요약·건너뛴 종류에 따라 목록 응답이 달라짐:\n%s\n%s", before, after)
+	}
+	for _, leak := range []string{`"types"`, `"skipped"`, `"sharing"`, `"confirmable"`, "not_owner_only"} {
+		if strings.Contains(after, leak) {
+			t.Fatalf("목록 응답에 %s가 나감: %s", leak, after)
+		}
 	}
 }
 
@@ -446,7 +479,7 @@ func TestProductVerdictListRoute(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			d := productListDeclaration()
-			endpoint := &verdictDetailTestEndpoint{source: &diagnosisprep.ProductPolicySource{Present: true, SHA256: hex.EncodeToString(d[:]),
+			endpoint := &verdictDetailTestEndpoint{source: &diagnosisprep.ProductPolicySource{Present: true, Types: verdictTestPolicyTypes, SHA256: hex.EncodeToString(d[:]),
 				OwnerAccountLabel: "tester-a", CrossAccountLabel: "tester-b"}, err: tc.ipcErr}
 			bridge := &diagnosisManagementBridge{
 				authenticate:      func(*http.Request) (string, error) { return tc.owner, tc.authErr },

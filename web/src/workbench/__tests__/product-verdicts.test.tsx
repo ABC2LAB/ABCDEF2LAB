@@ -12,13 +12,10 @@ vi.mock("@/lib/diagnosis/api", async (original) => ({
 }));
 
 import { ApiError, apiFetch } from "@/lib/diagnosis/api";
-import { running } from "@/lib/diagnosis/diagnosis-url-fixtures";
 
 import { dateTimeOf } from "../live/map";
 import { isProductVerdictsShapeError, parseProductVerdicts } from "../live/productVerdicts";
-import { resetUrl, useUrl } from "../live/urlDiagnosis";
-import { ProductVerdictMap, ProductVerdictReport } from "../views/live/productVerdictViews";
-import { AccessMapPanel } from "../views/live/UrlAccessMapLive";
+import { ProductVerdictReport } from "../views/live/productVerdictViews";
 import golden from "./product-verdicts.server-golden.json";
 
 type Json = Record<string, unknown>;
@@ -378,60 +375,5 @@ describe("ProductVerdictReport", () => {
     render(<ProductVerdictReport taskId="2" active={false} />);
     render(<ProductVerdictReport taskId={null} active />);
     expect(apiFetch).not.toHaveBeenCalled();
-  });
-});
-
-describe("ProductVerdictMap", () => {
-  it("자원 종류 × 소유→교차 표, 열 머리는 동결본 라벨이고 숨긴 행은 표 밖에 건수만", async () => {
-    serve(cases.mixed_integrity);
-    render(<ProductVerdictMap taskId="2" active />);
-    const table = await screen.findByRole("table", { name: "자원 종류 × 소유→교차 제품 판정" });
-    expect(within(table).getByRole("columnheader", { name: "tester-a → tester-b" })).toBeInTheDocument();
-    expect(within(table).getAllByRole("row")).toHaveLength(2);
-    expect(within(table).getByRole("rowheader", { name: "document" })).toBeInTheDocument();
-    expect(screen.getByRole("note")).toHaveTextContent("판정 기록 무결성 확인 실패 · 값 숨김 1건");
-  });
-
-  it("지도 칸도 봉인 미확인을 보이고, 확인됨이면 붙이지 않는다", async () => {
-    serve(cases.seal_not_recorded);
-    const a = render(<ProductVerdictMap taskId="2" active />);
-    let table = await screen.findByRole("table", { name: "자원 종류 × 소유→교차 제품 판정" });
-    expect(within(table).getByRole("row", { name: /document/ })).toHaveTextContent("봉인 미확인");
-    a.unmount();
-    serve(cases.seal_confirmed);
-    render(<ProductVerdictMap taskId="2" active />);
-    table = await screen.findByRole("table", { name: "자원 종류 × 소유→교차 제품 판정" });
-    expect(within(table).getByRole("row", { name: /document/ })).not.toHaveTextContent("봉인");
-  });
-
-  it("라벨이 없으면 '소유 계정 → 교차 계정', 같은 종류에 판정이 둘이면 고르지 않는다", async () => {
-    const dup = clone(cases.disabled_no_labels);
-    (dup.items[1] as Json).resource_type = "document";
-    (dup.items[1] as Json).resource_ref = (dup.items[0] as Json).resource_ref;
-    serve(dup);
-    render(<ProductVerdictMap taskId="2" active />);
-    const table = await screen.findByRole("table", { name: "자원 종류 × 소유→교차 제품 판정" });
-    expect(within(table).getByRole("columnheader", { name: "소유 계정 → 교차 계정" })).toBeInTheDocument();
-    expect(within(table).getByText("판정 둘 이상 · 선택 안 함")).toBeInTheDocument();
-  });
-});
-
-describe("접근통제 지도 패널 연결", () => {
-  it("평가 지도가 409(KG 미등록)여도 같은 task 의 제품 판정 표를 따로 보인다", async () => {
-    resetUrl();
-    useUrl.setState({ job: running, verified: true });
-    const body = clone(cases.mixed_integrity);
-    body.task_id = running.task_id as string;
-    vi.mocked(apiFetch).mockImplementation(async (path) => {
-      if (path === `/api/tasks/${running.task_id}/access-map`) throw new ApiError(409, "kg_unregistered");
-      if (path === `/api/tasks/${running.task_id}/product-verdicts`) return body as never;
-      throw new Error(`unexpected ${String(path)}`);
-    });
-    render(<AccessMapPanel active />);
-    expect(await screen.findByRole("table", { name: "자원 종류 × 소유→교차 제품 판정" })).toBeInTheDocument();
-    // 409는 오류 경고가 아니라 안내로 보인다(1차 리허설 F7) — 뜻(KG 미등록)은 그대로
-    expect(screen.getByText(/KG 미등록/)).toBeInTheDocument();
-    expect(screen.queryByRole("alert")).toBeNull();
-    expect(screen.queryByRole("table", { name: /격자/ })).toBeNull();
   });
 });

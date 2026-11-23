@@ -18,6 +18,7 @@ import {
   type URLDiagnosisInput,
   type URLDiagnosisModel,
   type URLDiagnosisProfile,
+  type URLStartConfirmation,
   urlDiagnosisInput,
   type WorkflowMode,
 } from "@/lib/diagnosis/diagnosis-url";
@@ -59,10 +60,11 @@ function draftInput(
   mode?: WorkflowMode,
   excludes = "",
   externalTestAccounts = false,
+  startConfirmation: URLStartConfirmation = {},
 ): URLDiagnosisInput | null {
   if (!profile) return null;
   try {
-    return urlDiagnosisInput(target, profile, name, mode, excludes, externalTestAccounts);
+    return urlDiagnosisInput(target, profile, name, mode, excludes, externalTestAccounts, startConfirmation);
   } catch {
     return null;
   }
@@ -135,6 +137,15 @@ const DEPTHS = ["빠르게", "보통", "꼼꼼하게"] as const;
 
 /** 제외 경로 칸의 흐린 예시. 경로 단위라 query(?) 없이 — 서버 · 웹 입력 검사가 '?' 를 받지 않는다. */
 export const EXCLUDE_EXAMPLE = "/logout\n/delete";
+/**
+ * GET 으로 상태가 바뀌는 주소의 예시. 안내 글로만 보인다 — 어떤 대상의 실제 경로가 아니고, 제외 경로 칸을 채우지도 않는다
+ * (대상마다 주소가 달라 운영자가 직접 확인해 넣어야 한다).
+ */
+export const STATE_CHANGING_GET_EXAMPLES = ["/logout", "/account/delete", "/unsubscribe", "/verify-email"] as const;
+/** 시작 확인 두 진술의 문장. 초안 입력(exclusions_reviewed · backup_confirmed)에 이 진술 여부가 기록된다. */
+export const EXCLUSIONS_REVIEWED_STATEMENT =
+  "GET으로 상태가 바뀌는 주소를 확인해 제외 경로에 넣었거나, 그런 주소가 없음을 확인했습니다.";
+export const BACKUP_CONFIRMED_STATEMENT = "점검 대상이 복사본(시험 환경)이거나, 원본이면 백업이 있습니다.";
 
 /** 외부 모델 연결 방식(mode)의 화면 이름 (시안 #nProv). */
 const PROVIDER_NAME: Readonly<Record<URLDiagnosisModel["mode"], string>> = { openrouter: "OpenRouter" };
@@ -230,6 +241,8 @@ export function UrlNewScanLive() {
     statement: "",
   });
   const [accountConsent, setAccountConsent] = useState({ key: "", checked: false });
+  // 시작 확인 두 진술. 초안 입력에 들어가 초안을 만들 때 굳으므로 '승인 범위 확인' 전에 받는다.
+  const [startConfirm, setStartConfirm] = useState({ key: "", exclusions: false, backup: false });
   // 주소 칸을 한 번이라도 고쳤는가: 처음 들어온 빈 칸에는 빨간 안내를 띄우지 않고, 지웠을 때만 띄운다 (시안 #nHost)
   const [touched, setTouched] = useState(false);
   // 지금 보이는 쪽 (1 대상 · 2 분석 모델 · 점검 설정). 새 점검에 다시 들어오면 1쪽부터 (시안 v64)
@@ -281,6 +294,16 @@ export function UrlNewScanLive() {
   const consentKey = `${tv}\u0000${pv}\u0000${resetSeq}\u0000${accountRevision}`;
   // 입력이 바뀐 렌더부터 이전 동의를 배제한다(늦은 effect/응답을 기다리지 않는다).
   if (accountConsent.key !== consentKey) setAccountConsent({ key: consentKey, checked: false });
+  // 시작 확인은 대상 · 모델 · 진단 모드 · 제외 경로를 보고 한 진술이라, 그중 하나라도 바뀌면 다시 받는다.
+  const confirmKey = `${tv}\u0000${pv}\u0000${mv}\u0000${ev}\u0000${resetSeq}`;
+  if (startConfirm.key !== confirmKey) setStartConfirm({ key: confirmKey, exclusions: false, backup: false });
+  // 초안이 있으면 서버가 기록한 진술을 그대로 보인다(없는 진술을 체크된 것처럼 보이지 않는다).
+  const exclusionsReviewed = shown
+    ? shown.exclusions_reviewed === true
+    : startConfirm.key === confirmKey && startConfirm.exclusions;
+  const backupConfirmed = shown
+    ? shown.backup_confirmed === true
+    : startConfirm.key === confirmKey && startConfirm.backup;
   // 대상에 시험 계정이 있는지는 로컬·외부 모두 조회한다 (서버 runBindsAccounts: 로컬 모드는 동의 없이도, 외부 모드는 external_test_accounts 동의 시 결속).
   const hasTestAccounts = accountPresence.key === consentKey && accountPresence.value;
   const consentChecked =
@@ -334,9 +357,12 @@ export function UrlNewScanLive() {
         profile?.workflow ? workflowMode : undefined,
         profile?.workflow ? excluded : "",
         consentChecked,
+        { exclusionsReviewed, backupConfirmed },
       );
 
   const hint = urlTargetHint(tv);
+  // 두 진술이 다 있어야 초안을 만든다. 서버는 이 칸으로 막지 않으므로(CLI · 평가 러너는 보내지 않는다) 화면이 받는다.
+  const startConfirmed = exclusionsReviewed && backupConfirmed;
   // 막힌 이유: 1쪽(주소)과 2쪽(모델 · 키)을 나눠, 1쪽에서는 주소 이유만 보인다
   const why1: string[] = [];
   const why2: string[] = [];
@@ -349,6 +375,7 @@ export function UrlNewScanLive() {
       why2.push(kind === "external" ? "설치된 외부 모델 프로필이 없습니다" : "설치된 로컬 모델 프로필이 없습니다");
     else if (!profile) why2.push("모델을 고르세요");
     if (external && !credentialReady) why2.push("외부 API 키를 등록하세요");
+    if (!startConfirmed) why2.push("시작 확인 두 가지에 체크하세요");
   }
   const why = [...why1, ...why2];
   // 1쪽 → 2쪽: 주소만 보고 넘긴다 (모델은 2쪽에서 고름). 조회 중인 진단은 잠긴 입력이라 그냥 넘긴다
@@ -364,7 +391,7 @@ export function UrlNewScanLive() {
   const next = () => {
     if (canNext) turn(2);
   };
-  const canSend = !shown && !!input && g.canValidate && !busy && (!external || credentialReady);
+  const canSend = !shown && !!input && g.canValidate && !busy && (!external || credentialReady) && startConfirmed;
   const send = async () => {
     if (canSend && input) await runUrlAction("validate", input);
   };
@@ -1043,6 +1070,66 @@ export function UrlNewScanLive() {
                       />
                     </div>
                   ) : null}
+                  {/* 시작 확인: 진술은 초안 입력에 기록된다. GET 요청을 막는 장치가 아니라 운영자가 확인했다는 기록이다 */}
+                  <div className={s.field}>
+                    <span className={s.lbl} id="nConfirmL">
+                      시작 확인 · 필수
+                    </span>
+                    <div className={cx(s.note, s.warn)} role="note">
+                      <Icon name="alert" />
+                      <span>
+                        GET으로 상태가 바뀌는 주소(로그아웃, 삭제 링크, 구독 해지, 이메일 확인 링크 등)는 제외 경로에
+                        넣으세요. 점검은 찾은 주소를 실제로 열어 보고, GET 요청은 따로 막지 않습니다.
+                        <br />
+                        예시:{" "}
+                        {STATE_CHANGING_GET_EXAMPLES.map((path, i) => (
+                          <span key={path}>
+                            {i ? " · " : ""}
+                            <span className={s.mono}>{path}</span>
+                          </span>
+                        ))}{" "}
+                        (예시일 뿐이며 대상마다 주소가 다릅니다. 자동으로 채워지지 않습니다.)
+                        {profile && !profile.workflow ? (
+                          <>
+                            <br />이 모델 프로필은 제외 경로를 받지 않습니다. 그런 주소가 없을 때만 체크하세요.
+                          </>
+                        ) : null}
+                      </span>
+                    </div>
+                    <fieldset className={s.confirmset} aria-labelledby="nConfirmL">
+                      <label className={s.ckline}>
+                        <input
+                          type="checkbox"
+                          checked={exclusionsReviewed}
+                          disabled={g.inputLocked || busy}
+                          onChange={(e) =>
+                            setStartConfirm({ key: confirmKey, exclusions: e.target.checked, backup: backupConfirmed })
+                          }
+                        />
+                        <span>{EXCLUSIONS_REVIEWED_STATEMENT}</span>
+                      </label>
+                      <label className={s.ckline}>
+                        <input
+                          type="checkbox"
+                          checked={backupConfirmed}
+                          disabled={g.inputLocked || busy}
+                          onChange={(e) =>
+                            setStartConfirm({
+                              key: confirmKey,
+                              exclusions: exclusionsReviewed,
+                              backup: e.target.checked,
+                            })
+                          }
+                        />
+                        <span>{BACKUP_CONFIRMED_STATEMENT}</span>
+                      </label>
+                    </fieldset>
+                    <p className={s.help}>
+                      {shown
+                        ? "이 점검을 만들 때 기록된 확인입니다."
+                        : "두 확인은 점검 기록에 남습니다. 둘 다 체크해야 승인 범위 확인으로 넘어갑니다."}
+                    </p>
+                  </div>
                 </div>
               </div>
             </div>

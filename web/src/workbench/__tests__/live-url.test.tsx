@@ -96,7 +96,13 @@ import { Markdown } from "../ui/Markdown";
 import { DashboardByMode, LiveByMode, NewScanByMode, ReportByMode, ScopeByMode } from "../views/live/byMode";
 import { UrlFindingLive } from "../views/live/UrlFindingLive";
 import { buildPocMarkdown, entryEp, FindingDetail } from "../views/live/UrlLiveLive";
-import { EXCLUDE_EXAMPLE } from "../views/live/UrlNewScanLive";
+import {
+  BACKUP_CONFIRMED_STATEMENT,
+  EXCLUDE_EXAMPLE,
+  EXCLUSIONS_REVIEWED_STATEMENT,
+  STATE_CHANGING_GET_EXAMPLES,
+} from "../views/live/UrlNewScanLive";
+import { UrlFacts } from "../views/live/urlParts";
 import { WorkflowCrawlLive } from "../views/live/workflowViews";
 import s from "../workbench.module.css";
 
@@ -122,6 +128,15 @@ function candPage(ids: number[], opts: { truncated?: boolean; sev?: Record<numbe
   );
 }
 const noop = () => undefined;
+/** 시작 확인 두 진술이 기록된 입력 칸. */
+const START_CONFIRMED = { exclusions_reviewed: true, backup_confirmed: true } as const;
+const exclusionsBox = () => screen.getByRole("checkbox", { name: EXCLUSIONS_REVIEWED_STATEMENT });
+const backupBox = () => screen.getByRole("checkbox", { name: BACKUP_CONFIRMED_STATEMENT });
+/** 새 점검 2쪽에서 시작 확인 두 진술에 체크한다. 둘 다 있어야 '승인 범위 확인'이 켜진다. */
+function tickStartConfirm() {
+  fireEvent.click(exclusionsBox());
+  fireEvent.click(backupBox());
+}
 
 it("URL 입력 뒤 외부 LLM을 펼쳐 모델·키를 등록하고 범위 조회만 한다", async () => {
   u.readURLCatalog.mockResolvedValue({ ...catalog, profiles: [{ ...catalog.profiles[0], model: externalModel }] });
@@ -146,13 +161,14 @@ it("URL 입력 뒤 외부 LLM을 펼쳐 모델·키를 등록하고 범위 조�
   fireEvent.change(key, { target: { value: "synthetic-input-provider-key" } });
   fireEvent.click(screen.getByRole("button", { name: "키 등록" }));
   expect(key).toHaveValue("");
+  tickStartConfirm();
   await waitFor(() => expect(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]).toBeEnabled());
   expect(u.createURLDraft).not.toHaveBeenCalled();
   expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
   fireEvent.click(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]);
   await waitFor(() => expect(u.createURLDraft).toHaveBeenCalledTimes(1));
   const input = u.createURLDraft.mock.calls[0][0];
-  expect(Object.keys(input).sort()).toEqual(["profile_id", "target_url"]);
+  expect(Object.keys(input).sort()).toEqual(["backup_confirmed", "exclusions_reviewed", "profile_id", "target_url"]);
   expect(JSON.stringify(input)).not.toContain("synthetic-input-provider-key");
   expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
 });
@@ -478,7 +494,8 @@ describe("서버 방식 확인 (catalog)", () => {
     expect(screen.getByLabelText("워커 수")).toBeEnabled();
     expect(screen.getByLabelText("워커 수")).toHaveValue("");
     fireEvent.change(screen.getByLabelText("워커 수"), { target: { value: "4" } });
-    // 꺼진 칸은 시작 조건에 들지 않는다: 주소 · 모델만으로 범위 확인을 보낼 수 있다
+    // 꺼진 칸은 시작 조건에 들지 않는다: 주소 · 모델과 시작 확인만으로 범위 확인을 보낼 수 있다
+    tickStartConfirm();
     expect(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]).toBeEnabled();
     // 승인 없이 쓰기 요청을 보내는 선택지는 없다 — 실행 허용은 설치 정책 · 진단 모드가 정함 (절대규칙 3 · 6, 리뷰 #479)
     expect(screen.queryByText(/승인 없이/)).toBeNull();
@@ -502,7 +519,7 @@ describe("서버 방식 확인 (catalog)", () => {
     for (const t of ["로그인", "점검 범위", "점검 목표"])
       expect(within(sum).getByText(t).nextElementSibling).toHaveTextContent(/^— 연결 전/);
     // 워크플로 없는 프로필은 제외 경로가 없다
-    expect(screen.queryByLabelText(/제외 경로/)).toBeNull();
+    expect(screen.queryByLabelText(/^제외 경로/)).toBeNull();
     expect(u.readURLCatalog).toHaveBeenCalledTimes(1);
   });
 
@@ -527,8 +544,9 @@ describe("서버 방식 확인 (catalog)", () => {
     fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
     expect(screen.getByRole("heading", { name: "점검 설정" })).toBeInTheDocument();
     // 제외 경로 칸의 흐린 예시는 안전 장치 (?) 메모와 같은 주소 (시안 v50)
-    expect(screen.getByLabelText(/제외 경로/)).toHaveAttribute("placeholder", "/logout\n/delete");
-    // 점검 이름 없이 주소만으로 범위 확인을 보낼 수 있고, 입력에 display_name 이 없다
+    expect(screen.getByLabelText(/^제외 경로/)).toHaveAttribute("placeholder", "/logout\n/delete");
+    // 점검 이름 없이 주소와 시작 확인만으로 범위 확인을 보낼 수 있고, 입력에 display_name 이 없다
+    tickStartConfirm();
     const send = screen.getAllByRole("button", { name: "승인 범위 확인" })[0];
     expect(send).toBeEnabled();
     await act(async () => {
@@ -538,6 +556,7 @@ describe("서버 방식 확인 (catalog)", () => {
       target_url: "https://target.example/",
       profile_id: "profile-1",
       workflow_mode: "user_approval_v1",
+      ...START_CONFIRMED,
     });
   });
 
@@ -551,6 +570,7 @@ describe("서버 방식 확인 (catalog)", () => {
     fireEvent.change(name, { target: { value: "  쇼핑몰\t주문 점검  " } });
     expect(name).toHaveValue("  쇼핑몰주문 점검  ");
     fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
+    tickStartConfirm();
     await act(async () => {
       fireEvent.click(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]);
     });
@@ -708,6 +728,7 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     // 로컬로 돌아오면 모델 칸 · 범위 확인이 그대로
     fireEvent.click(screen.getByRole("radio", { name: "로컬 실행" }));
     expect(screen.getByLabelText("모델")).toBeInTheDocument();
+    tickStartConfirm();
     expect(send).toBeEnabled();
   });
 
@@ -726,12 +747,15 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     fireEvent.click(user);
     expect(user).toBeChecked();
     fireEvent.click(auto);
+    // 진단 모드를 바꾸면 시작 확인이 풀리므로 모드를 정한 뒤 체크한다
+    tickStartConfirm();
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "승인 범위 확인" }));
     });
     expect(u.createURLDraft.mock.calls[0][0]).toEqual({
       target_url: "https://target.example/",
       profile_id: "profile-1",
+      ...START_CONFIRMED,
     });
   });
 
@@ -800,6 +824,12 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
   });
 
   it("URL · 프로필로 초안을 한 번 만들고 범위 확인까지 한 뒤 서버가 정한 범위를 오른쪽에 보인다", async () => {
+    // 서버는 받은 입력을 그대로 돌려준다(시작 확인 진술 포함). 입력이 다르면 화면이 응답을 버린다
+    const confirmedDraft = { ...draft, input: { ...draft.input, ...START_CONFIRMED } };
+    const confirmedReady = { ...ready, input: confirmedDraft.input };
+    u.createURLDraft.mockResolvedValue(confirmedDraft);
+    u.commandURLDiagnosis.mockResolvedValue(confirmedReady);
+    u.readURLStatus.mockResolvedValue(confirmedReady);
     const { goTo } = mount("new");
     const target = (await screen.findByLabelText(/점검할 사이트 주소/)) as HTMLInputElement;
     const send = () => screen.getAllByRole("button", { name: "승인 범위 확인" });
@@ -815,15 +845,24 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     expect((screen.getByLabelText("모델") as HTMLSelectElement).value).toBe("profile-1");
     // 범위 확인 전에는 서버 범위가 없다
     expect(screen.queryByText("승인된 사이트 및 경로에만 요청")).toBeNull();
+    // 시작 확인 두 진술이 다 있어야 범위 확인을 보낼 수 있다: 하나만으로는 꺼져 있고, 눌러도 초안을 만들지 않는다
+    expect(send()[0]).toBeDisabled();
+    expect(send()[0].parentElement).toHaveTextContent("시작 확인 두 가지에 체크하세요");
+    fireEvent.click(exclusionsBox());
+    expect(send()[0]).toBeDisabled();
+    fireEvent.submit(target.closest("form") as HTMLFormElement);
+    expect(u.createURLDraft).not.toHaveBeenCalled();
+    fireEvent.click(backupBox());
+    expect(send()[0]).toBeEnabled();
     await act(async () => {
       fireEvent.click(send()[0]);
     });
     expect(u.createURLDraft).toHaveBeenCalledTimes(1);
     const [input, key, who] = u.createURLDraft.mock.calls[0];
-    expect(input).toEqual({ target_url: "https://target.example/", profile_id: "profile-1" });
+    expect(input).toEqual({ target_url: "https://target.example/", profile_id: "profile-1", ...START_CONFIRMED });
     expect(typeof key).toBe("string");
     expect(who).toBe(owner);
-    expect(u.commandURLDiagnosis).toHaveBeenCalledWith(draft, "validate", owner);
+    expect(u.commandURLDiagnosis).toHaveBeenCalledWith(confirmedDraft, "validate", owner);
     // 같은 화면에서 서버가 돌려준 범위 · 상한과 시작 단계가 나온다(다른 화면으로 가지 않는다)
     expect(await screen.findByText("승인된 사이트 및 경로에만 요청")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "점검 시작" })).toBeDisabled();
@@ -2820,6 +2859,7 @@ describe("외부 모델 시험 계정 동의", () => {
     fireEvent.change(target, { target: { value: "https://target.example/app" } });
     fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
     await screen.findByText("등록됨");
+    tickStartConfirm();
     return target;
   }
   it("새 점검에 다시 들어오면 그사이 등록한 시험 계정을 다시 읽어 동의 칸을 보인다(F2와 같은 종류, 2026-11-22)", async () => {
@@ -2939,6 +2979,7 @@ it("외부 모델에서 실제 시험 계정이 있어도 미선택이면 동의
   fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
   const checkbox = await screen.findByRole("checkbox", { name: /이 점검 회차에서 시험 계정 세션/ });
   expect(checkbox).not.toBeChecked();
+  tickStartConfirm();
   await waitFor(() => expect(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]).toBeEnabled());
   fireEvent.click(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]);
   await waitFor(() => expect(u.createURLDraft).toHaveBeenCalledTimes(1));
@@ -3181,5 +3222,126 @@ describe("새 점검의 E③ 확정 단계 안내 · 대상 리셋 확인", () =
     const summary = await screen.findByRole("complementary", { name: "점검 요약" });
     expect(await within(summary).findByText("확정 단계 여부를 확인하지 못했습니다")).toBeInTheDocument();
     expect(within(summary).queryByText("확정 단계: 대상에 시험 객체를 만듭니다")).toBeNull();
+  });
+});
+
+describe("새 점검의 시작 확인 (제외 경로 검토 · 복사본/백업)", () => {
+  const limits = {
+    format: "abc2lab.workbench-flow/v1" as const,
+    max_pages: 10,
+    max_endpoints: 20,
+    max_response_bytes: 1000,
+    allow_reversible_writes: false,
+  };
+  const confirmedInput = { ...draft.input, ...START_CONFIRMED };
+  const send = () => screen.getAllByRole("button", { name: "승인 범위 확인" })[0];
+  /** 탐색 흐름이 있는 프로필로 2쪽까지 간다(제외 경로 칸이 보인다). */
+  async function page2() {
+    u.readURLCatalog.mockResolvedValue({ ...catalog, profiles: [{ ...catalog.profiles[0], workflow: limits }] });
+    mount("new");
+    const target = await screen.findByLabelText(/점검할 사이트 주소/);
+    fireEvent.change(target, { target: { value: "https://target.example/" } });
+    fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
+    return target;
+  }
+
+  it("GET 으로 상태가 바뀌는 주소 안내와 예시를 보이고, 예시로 제외 경로 칸을 채우지 않는다", async () => {
+    await page2();
+    const notice = screen.getByText(
+      /GET으로 상태가 바뀌는 주소\(로그아웃, 삭제 링크, 구독 해지, 이메일 확인 링크 등\)는/,
+    );
+    expect(notice).toBeVisible();
+    expect(notice).toHaveTextContent("제외 경로에 넣으세요");
+    expect(notice).toHaveTextContent("예시:");
+    for (const path of STATE_CHANGING_GET_EXAMPLES) expect(notice).toHaveTextContent(path);
+    expect(notice).toHaveTextContent("자동으로 채워지지 않습니다");
+    expect(screen.getByLabelText(/^제외 경로/)).toHaveValue("");
+    expect(exclusionsBox()).not.toBeChecked();
+    expect(backupBox()).not.toBeChecked();
+  });
+
+  it("두 진술이 다 있어야 초안을 만들고, 입력에 두 진술이 true 로 실린다", async () => {
+    await page2();
+    expect(send()).toBeDisabled();
+    fireEvent.click(backupBox());
+    expect(send()).toBeDisabled();
+    fireEvent.click(exclusionsBox());
+    expect(send()).toBeEnabled();
+    // 하나를 풀면 다시 꺼진다
+    fireEvent.click(backupBox());
+    expect(send()).toBeDisabled();
+    fireEvent.click(backupBox());
+    await act(async () => {
+      fireEvent.click(send());
+    });
+    expect(u.createURLDraft).toHaveBeenCalledTimes(1);
+    expect(u.createURLDraft.mock.calls[0][0]).toEqual({
+      target_url: "https://target.example/",
+      profile_id: "profile-1",
+      workflow_mode: "user_approval_v1",
+      exclusions_reviewed: true,
+      backup_confirmed: true,
+    });
+  });
+
+  it("제외 경로 · 진단 모드 · 대상을 바꾸면 앞서 한 확인이 풀린다", async () => {
+    const target = await page2();
+    tickStartConfirm();
+    expect(send()).toBeEnabled();
+    // 제외 경로를 고치면 그 목록을 보고 한 확인이 아니게 된다
+    fireEvent.change(screen.getByLabelText(/^제외 경로/), { target: { value: "/logout" } });
+    expect(exclusionsBox()).not.toBeChecked();
+    expect(backupBox()).not.toBeChecked();
+    expect(send()).toBeDisabled();
+    tickStartConfirm();
+    expect(send()).toBeEnabled();
+    fireEvent.click(screen.getByRole("radio", { name: /^AI 자동/ }));
+    expect(exclusionsBox()).not.toBeChecked();
+    expect(backupBox()).not.toBeChecked();
+    tickStartConfirm();
+    // 대상을 바꿨다가 같은 주소로 돌아와도 이전 확인은 살아나지 않는다
+    fireEvent.click(screen.getAllByRole("button", { name: /이전/ })[0]);
+    fireEvent.change(target, { target: { value: "https://second.example/" } });
+    fireEvent.change(target, { target: { value: "https://target.example/" } });
+    fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
+    expect(exclusionsBox()).not.toBeChecked();
+    expect(backupBox()).not.toBeChecked();
+    expect(send()).toBeDisabled();
+    expect(u.createURLDraft).not.toHaveBeenCalled();
+  });
+
+  it("초안이 있으면 서버에 기록된 진술을 읽기 전용으로 보인다", async () => {
+    saveHandle({ ...handle, input: confirmedInput });
+    u.readURLStatus.mockResolvedValue({ ...ready, input: confirmedInput });
+    mount("new");
+    await screen.findByText("https://target.example · / · GET");
+    fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
+    expect(exclusionsBox()).toBeChecked();
+    expect(exclusionsBox()).toBeDisabled();
+    expect(backupBox()).toBeChecked();
+    expect(backupBox()).toBeDisabled();
+    expect(screen.getByText("이 점검을 만들 때 기록된 확인입니다.")).toBeVisible();
+  });
+
+  it("진술이 없는 초안(이 칸이 생기기 전 · CLI)은 체크된 것처럼 보이지 않는다", async () => {
+    saveHandle();
+    mount("new");
+    await screen.findByText("https://target.example · / · GET");
+    fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
+    expect(exclusionsBox()).not.toBeChecked();
+    expect(exclusionsBox()).toBeDisabled();
+    expect(backupBox()).not.toBeChecked();
+    expect(backupBox()).toBeDisabled();
+  });
+
+  it("점검 정보에는 기록된 진술만 '시작 전 확인' 줄로 보인다", () => {
+    const view = render(<UrlFacts job={{ ...running, input: confirmedInput }} />);
+    expect(screen.getByText("시작 전 확인").nextElementSibling).toHaveTextContent(
+      "제외 경로 검토함 · 복사본/백업 있음",
+    );
+    view.rerender(<UrlFacts job={{ ...running, input: { ...draft.input, backup_confirmed: true } }} />);
+    expect(screen.getByText("시작 전 확인").nextElementSibling).toHaveTextContent(/^복사본\/백업 있음$/);
+    view.rerender(<UrlFacts job={running} />);
+    expect(screen.queryByText("시작 전 확인")).toBeNull();
   });
 });

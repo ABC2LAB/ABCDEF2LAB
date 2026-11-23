@@ -2466,6 +2466,15 @@ select.inp {
   margin-top: 3px;
   accent-color: var(--accent);
 }
+/* 새 점검 '시작 전 확인' 두 체크 줄 (fieldset 테두리 · 여백 없이 줄 묶음으로) */
+.confirmset {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
 .goals {
   display: flex;
   flex-wrap: wrap;

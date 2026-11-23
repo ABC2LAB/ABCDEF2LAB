@@ -205,6 +205,20 @@ func NewFirstDiagnosisModelBudget(limits diagnosisprep.Budget, inputPerCall, out
 // 검증된 실제 비용만 복사하며 두 원장의 금액을 더하지 않는다.
 func NewFirstDiagnosisOpenRouterBudget(limits diagnosisprep.Budget, inputPerCall, outputPerCall int64, manifestPath string, observe func(diagnosisprep.ModelUsage) error) (*FirstDiagnosisModelBudget, error) {
 	p, err := llmpolicy.LoadOpenRouterManifestFile(manifestPath)
+	return newFirstDiagnosisOpenRouterBudget(limits, inputPerCall, outputPerCall, manifestPath, p, err, observe)
+}
+
+// NewFirstDiagnosisOpenRouterRunBudget은 제품 URL 진단 회차 하나의 예산이다. v4 승인은 점검(run = 회차 참조)마다
+// 장부를 따로 세고(llmpolicy.LoadOpenRouterManifestFileForRun), v1~v3 승인은 위와 같이 승인 하나를 누적해 센다.
+func NewFirstDiagnosisOpenRouterRunBudget(limits diagnosisprep.Budget, inputPerCall, outputPerCall int64, manifestPath, run string, observe func(diagnosisprep.ModelUsage) error) (*FirstDiagnosisModelBudget, error) {
+	if run == "" {
+		return nil, ErrFirstDiagnosisModelBudget
+	}
+	p, err := llmpolicy.LoadOpenRouterManifestFileForRun(manifestPath, run)
+	return newFirstDiagnosisOpenRouterBudget(limits, inputPerCall, outputPerCall, manifestPath, p, err, observe)
+}
+
+func newFirstDiagnosisOpenRouterBudget(limits diagnosisprep.Budget, inputPerCall, outputPerCall int64, manifestPath string, p *llmpolicy.OpenRouterPolicy, err error, observe func(diagnosisprep.ModelUsage) error) (*FirstDiagnosisModelBudget, error) {
 	if err != nil || p.CheckAvailable() != nil {
 		return nil, ErrFirstDiagnosisModelBudget
 	}

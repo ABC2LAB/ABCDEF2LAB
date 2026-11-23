@@ -18,7 +18,7 @@ func TestProductInstallRejectsUnapprovedInputBeforeSideEffects(t *testing.T) {
 		{"format": "unknown"}, {"admin_password": "short"}, {"nonmutating_scope_acknowledged": false},
 		{"target_origin": "http://juice.test:9443"}, {"target_origin": "https://u:p@juice.test:9443"},
 		{"target_origin": "https://juice.test:9443?x=1"}, {"target_ip": "127.0.0.1", "allow_private_target": false},
-		{"path_prefixes": []string{"/%2e"}}, {"target_policy": map[string]any{"allowed_ports": []int{0}}}, {"target_policy": map[string]any{"private_cidrs": []string{"0.0.0.0/0"}}}, {"valid_for_hours": 8761}, {"max_runs": 100001}, {"unexpected": true},
+		{"path_prefixes": []string{"/%2e"}}, {"target_policy": map[string]any{"allowed_ports": []int{0}}}, {"target_policy": map[string]any{"private_cidrs": []string{"0.0.0.0/0"}}}, {"valid_for_hours": 8761}, {"max_runs": 100001}, {"valid_for_hours": -1}, {"max_runs": -1}, {"unexpected": true},
 		{"runtime_limits": map[string]any{"product": map[string]any{"run_seconds": 3601}}}, {"runtime_limits": map[string]any{"product": map[string]any{"run_seconds": 0}}}, {"runtime_limits": map[string]any{"product": map[string]any{"model_concurrency": 2}}}, {"runtime_limits": map[string]any{"product": map[string]any{"planner_turns_per_plan": 0}}}, {"runtime_limits": map[string]any{"product": map[string]any{"planner_seconds_per_plan": 3601}}}, {"runtime_limits": map[string]any{"product": map[string]any{"status_read_retries": 201}}},
 	} {
 		root := t.TempDir()
@@ -164,4 +164,35 @@ func TestProductAPIProjectionCopiesBoundInstallationWithoutExecutionSecrets(t *t
 		t.Fatal("unbound model launch projected")
 	}
 	f.assertNoConnections()
+}
+
+// 설치 수명·위임 실행 횟수는 생략하면 기본값(30일·100회)이고, 생략한 입력도 입력 검사를 통과한다(2026-11-23 사용자 결정).
+func TestProductInstallDefaultsWhenOmitted(t *testing.T) {
+	c := productInstallInput{}
+	productInstallDefaults(&c, true, true)
+	if c.ValidForHours != 720 || c.MaxRuns != 100 {
+		t.Fatalf("기본값: %d시간 %d회", c.ValidForHours, c.MaxRuns)
+	}
+	set := productInstallInput{ValidForHours: 24, MaxRuns: 0}
+	productInstallDefaults(&set, false, false)
+	if set.ValidForHours != 24 || set.MaxRuns != 0 {
+		t.Fatal("적은 값을 기본값으로 덮어씀(0은 입력 검사가 거부해야 함)")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("installer deliberately rejects root")
+	}
+	root := t.TempDir()
+	if os.Chmod(root, 0700) != nil {
+		t.Fatal("fixture permissions")
+	}
+	raw, _ := json.Marshal(map[string]any{"format": "abc2lab.product-install/v2", "database_host": "192.0.2.10", "database_name": "abc2lab", "admin_password": "synthetic-only-install-password", "local_model": map[string]any{"model": "owned-synthetic", "base_url": "http://192.0.2.30:8080/v1", "addresses": []string{"192.0.2.30"}, "context_window_k": 128, "max_tokens": 2048}})
+	input := filepath.Join(root, "input.json")
+	if os.WriteFile(input, raw, 0600) != nil {
+		t.Fatal("private fixture")
+	}
+	var stdout, stderr bytes.Buffer
+	// 입력 검사를 지나 보호 디렉터리 준비(1)까지 간다. 입력 검사에 걸리면 2다.
+	if code := runProductInstall(t.Context(), []string{"-input", input, "-root", root}, &stdout, &stderr); code != 1 {
+		t.Fatalf("수명·횟수를 생략한 입력이 입력 검사에서 막힘: %d", code)
+	}
 }
