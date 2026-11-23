@@ -1189,6 +1189,31 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(within(finds).getByText("후보 #8").closest("li")).toHaveTextContent(/^위험도 미평가/);
   });
 
+  // 사용자 11/23: 점검 중에 나온 후보를 바로 보고 싶다 — 누르면 오른쪽에 PoC · 증거(보고서와 같은 상세)
+  it("점검 진행 발견 후보를 누르면 오른쪽에 그 후보 상세를 띄우고, [진행 요약으로]로 돌아간다", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    c.fetchLiveCandidates.mockResolvedValue(candPage([2, 1]));
+    a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [candidate(1)] });
+    mount("live");
+    const finds = await screen.findByRole("region", { name: "발견 후보" });
+    expect(await screen.findByRole("complementary", { name: "진행 요약" })).toBeInTheDocument();
+    // 고르기 전에는 보고서 자료를 읽지 않는다
+    expect(a.fetchRemediation).not.toHaveBeenCalled();
+    fireEvent.click(await within(finds).findByRole("button", { name: /후보 #1/ }));
+    expect(within(finds).getByRole("button", { name: /후보 #1/ })).toHaveAttribute("aria-current", "true");
+    const side = await screen.findByRole("complementary", { name: "취약점 상세" });
+    expect(a.fetchRemediation).toHaveBeenCalledWith("42", "internal");
+    expect(await within(side).findByRole("heading", { name: "후보 1" })).toBeInTheDocument();
+    expect(side).toHaveTextContent("검토 필요");
+    // 아직 저장되지 않은 후보는 그렇게 적는다('없음'으로 단정하지 않음)
+    fireEvent.click(within(finds).getByRole("button", { name: /후보 #2/ }));
+    expect(await within(side).findByText(/이 후보의 상세가 아직 저장되지 않았습니다/)).toBeInTheDocument();
+    fireEvent.click(within(side).getByRole("button", { name: "진행 요약으로" }));
+    expect(await screen.findByRole("complementary", { name: "진행 요약" })).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "취약점 상세" })).toBeNull();
+  });
+
   it("점검 진행 발견 후보: 폴링 간격은 5초 이상, 문서가 숨으면 멈추고 다시 보이면 바로 읽는다", async () => {
     expect(cands.LIVE_CANDIDATES_POLL_MS).toBeGreaterThanOrEqual(5000);
     vi.useFakeTimers();
@@ -1645,7 +1670,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(screen.queryByText(/점검을 마쳤습니다/)).toBeNull();
   });
 
-  it("끝난 점검의 발견은 저장된 결과를 보고서 '발견 목록'과 같은 줄로 보이고(점검 중 발견 목록은 안 부름), 줄은 눌러도 아무 데도 안 간다", async () => {
+  it("끝난 점검의 발견은 저장된 결과를 보고서 '발견 목록'과 같은 줄로 보이고(점검 중 발견 목록은 안 부름), 줄을 누르면 오른쪽에 상세", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(completed);
     a.fetchRemediation.mockResolvedValue({
@@ -1660,11 +1685,12 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     // 머리 수는 'n건'만('· 저장된 결과'는 뺐다, 사용자 11/18)
     await waitFor(() => expect(within(sec).getByText("2건")).toBeInTheDocument());
     expect(sec).not.toHaveTextContent("저장된 결과");
-    // 보고서와 같은 줄: 위험도(없으면 '등급 없음') · 제목 · 엔드포인트 · 유형 · 판정. 버튼이 아닌 읽기 줄 (사용자 11/17)
-    expect(within(sec).queryAllByRole("button")).toHaveLength(0);
+    // 보고서와 같은 줄: 위험도(없으면 '등급 없음') · 제목 · 엔드포인트 · 유형 · 판정. 누르면 오른쪽에 상세(사용자 11/23 —
+    // 11/17 의 '읽기 줄'에서 바뀜)
+    expect(within(sec).queryAllByRole("button")).toHaveLength(2);
     const rows = [...(document.getElementById("lSaved") as HTMLElement).children] as HTMLElement[];
     expect(rows).toHaveLength(2);
-    expect(rows[0].tagName).toBe("DIV");
+    expect(rows[0].tagName).toBe("BUTTON");
     expect(rows[0]).toHaveTextContent(/^위험도 미평가후보 1\/api\/items\/\{id\}idor검토 필요$/);
     expect(a.fetchRemediation).toHaveBeenCalledWith("42", "internal");
     // 끝난 점검은 제품 서버가 점검 중 후보 조회를 닫으므로(409) 부르지 않고, 보고서 · 판정 목록으로 안내한다
@@ -1680,6 +1706,12 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     );
     fireEvent.click(rows[1]);
     expect(goTo).not.toHaveBeenCalledWith("report");
+    const side = await screen.findByRole("complementary", { name: "취약점 상세" });
+    expect(within(side).getByRole("heading", { name: "후보 2" })).toBeInTheDocument();
+    // 끝난 점검은 이미 읽은 저장 결과를 쓴다(다시 부르지 않음)
+    expect(a.fetchRemediation).toHaveBeenCalledTimes(1);
+    fireEvent.click(within(side).getByRole("button", { name: "진행 요약으로" }));
+    expect(await screen.findByRole("complementary", { name: "진행 요약" })).toBeInTheDocument();
     // 안내 줄에는 버튼을 또 두지 않는다(상태 카드의 [보고서 보기] 하나)
     expect(within(ended).queryByRole("button")).toBeNull();
   });

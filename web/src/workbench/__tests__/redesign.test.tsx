@@ -1622,8 +1622,8 @@ describe("점검 진행", () => {
       "위험도 미평가후보 #11관측 HH:MM:SS · 검토 필요",
       "예상 정보성후보 #9관측 HH:MM:SS · 검토 필요",
     ]);
-    // 서버가 주는 칸뿐이라 펼칠 상세가 없다(제목 · 경로 · 증거는 응답에 없음)
-    expect(within(finds).queryAllByRole("button")).toHaveLength(0);
+    // 목록 응답엔 제목 · 경로 · 증거가 없어 줄은 그대로 두고, 누르면 오른쪽에 보고서 자료로 상세를 띄운다(사용자 11/23)
+    expect(within(finds).queryAllByRole("button")).toHaveLength(3);
     expect(rows[0].querySelector("time")).toHaveAttribute("datetime", "2026-11-11T01:00:09.5Z");
     expect(within(finds).queryByText("새로")).toBeNull();
     // 확정처럼 읽히는 말은 두지 않는다 (절대규칙 5)
