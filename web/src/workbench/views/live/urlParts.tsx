@@ -107,8 +107,16 @@ const MODE_TEXT: Readonly<Record<NonNullable<URLDiagnosisJob["input"]["workflow_
   none: "설치 범위",
 };
 
+/** 초안 입력에 기록된 시작 확인 진술을 한 줄로. 기록된 것이 없으면 빈 글. */
+export function startConfirmationText(input: URLDiagnosisJob["input"]): string {
+  return [input.exclusions_reviewed ? "제외 경로 검토함" : "", input.backup_confirmed ? "복사본/백업 있음" : ""]
+    .filter(Boolean)
+    .join(" · ");
+}
+
 /**
- * 점검 정보 (진행 요약 맨 아래, 사용자 11/17 '깔끔하게'): 사람이 보는 값만 줄로 — 대상 · 방식 · 모델 · 제외 경로.
+ * 점검 정보 (진행 요약 맨 아래, 사용자 11/17 '깔끔하게'): 사람이 보는 값만 줄로 — 대상 · 방식 · 모델 · 제외 경로 ·
+ * 시작 전 확인(기록된 운영자 진술).
  * 진행 확인(준비 · 시작 · 마감 · 저장)은 맨 위 단계 게이지와 겹쳐, 진단 ID · task · 설정 지문 · 실행 권위 같은 기록 값은
  * 운영자가 볼 일이 없어 두지 않는다(사용자 11/17 — 진단 ID 는 왼쪽 점검 목록 줄에 있다).
  */
@@ -135,6 +143,13 @@ export function UrlFacts({ job }: { job: URLDiagnosisJob }) {
         <div>
           <dt>제외 경로</dt>
           <dd>{job.input.excluded_paths}</dd>
+        </div>
+      ) : null}
+      {/* 초안 입력에 기록된 운영자 진술만 보인다. 없는 진술을 '확인함'으로 채우지 않는다(옛 초안 · CLI · 평가 러너) */}
+      {startConfirmationText(job.input) ? (
+        <div>
+          <dt>시작 전 확인</dt>
+          <dd>{startConfirmationText(job.input)}</dd>
         </div>
       ) : null}
     </dl>
