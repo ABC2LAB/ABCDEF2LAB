@@ -334,6 +334,9 @@ func readDiagnosticReportWithCaptures(ctx context.Context, tx *sql.Tx, taskID in
 	if err := readWorkflowReport(ctx, tx, taskID, &out); err != nil {
 		return out, err
 	}
+	if err := readDiagnosticProductVerdicts(ctx, tx, taskID, &out); err != nil {
+		return out, err
+	}
 
 	return out, nil
 }

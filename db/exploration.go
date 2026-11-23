@@ -229,12 +229,46 @@ func (s *ExplorationStore) Root() (description, goal string, err error) {
 
 // AddNode writes a typed reasoning node with optional anchors to asset ids.
 func (s *ExplorationStore) AddNode(kind string, payload map[string]any, priority int, state, origin string, anchors []int64) (int64, error) {
+	return s.addNode(kind, payload, priority, state, origin, anchors, 0)
+}
+
+var ErrFactAssetReference = errors.New("asset_reference_invalid")
+
+// AddTaskFact는 결속 작업에 연결된 자산만 진단 사실의 출처로 받는다.
+func (s *ExplorationStore) AddTaskFact(taskID int64, payload map[string]any, origin string, anchors []int64) (int64, error) {
+	if taskID <= 0 || len(anchors) > MaxTaskAssetMutationCount {
+		return 0, ErrFactAssetReference
+	}
+	return s.addNode(KindFact, payload, 5, "confirmed", origin, anchors, taskID)
+}
+
+func (s *ExplorationStore) addNode(kind string, payload map[string]any, priority int, state, origin string, anchors []int64, taskID int64) (int64, error) {
 	raw, _ := json.Marshal(payload)
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback()
+	if taskID > 0 {
+		var bound bool
+		if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM tasks WHERE id=$1 AND exploration_id=$2 AND deleted_at IS NULL)`, taskID, s.expID).Scan(&bound); err != nil {
+			return 0, err
+		}
+		if !bound {
+			return 0, ErrFactAssetReference
+		}
+		for _, assetID := range anchors {
+			var checked int64
+			err := tx.QueryRow(`SELECT a.id FROM task_asset_links l JOIN assets a ON a.id=l.asset_id
+WHERE l.task_id=$1 AND l.asset_id=$2 FOR KEY SHARE OF a, l`, taskID, assetID).Scan(&checked)
+			if err == sql.ErrNoRows {
+				return 0, ErrFactAssetReference
+			}
+			if err != nil {
+				return 0, err
+			}
+		}
+	}
 	if kind == KindFinding {
 		if err := rejectControlledTaskTx(context.Background(), tx, 0, s.expID, 0); err != nil {
 			return 0, err

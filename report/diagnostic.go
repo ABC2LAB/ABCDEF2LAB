@@ -32,6 +32,11 @@ type DiagnosticModelRecord struct {
 	Model, Worker string
 	Records       int64
 }
+
+type DiagnosticProductConfirmation struct {
+	VerdictID, ResourceType string
+	EvidenceCalls           int
+}
 type DiagnosticReport struct {
 	SourceFailures      int
 	TaskTitle           string
@@ -49,6 +54,8 @@ type DiagnosticReport struct {
 	GeneratedAt                                       time.Time
 	Shared                                            bool
 	Entries                                           []DiagnosticEntry
+	ProductConfirmed                                  []DiagnosticProductConfirmation
+	ProductUnverified                                 int
 	Confirmed, Review, NotExecuted, Unknown, Negative int
 	BySeverity, ByType                                map[string]int
 }
@@ -82,7 +89,7 @@ func DiagnosticText(s string) string { return dlp.DiagnosticText(s) }
 
 // 템플릿 자동 이스케이프만 사용하며 링크·스크립트·외부 리소스를 만들지 않는다.
 func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
-	if in.TaskID <= 0 || in.GeneratedAt.IsZero() || len(in.Entries) > MaxFindings {
+	if in.TaskID <= 0 || in.GeneratedAt.IsZero() || len(in.Entries)+len(in.ProductConfirmed) > MaxFindings {
 		return DiagnosticReport{}, ErrExportBlocked
 	}
 	if in.Workflow != nil {
@@ -300,6 +307,23 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 			e.Digest = "[REDACTED]"
 		}
 	}
+	in.ProductConfirmed = append([]DiagnosticProductConfirmation(nil), in.ProductConfirmed...)
+	for i := range in.ProductConfirmed {
+		row := &in.ProductConfirmed[i]
+		id, err := strconv.ParseInt(row.VerdictID, 10, 64)
+		if err != nil || id <= 0 || strconv.FormatInt(id, 10) != row.VerdictID || row.EvidenceCalls <= 0 {
+			return DiagnosticReport{}, ErrExportBlocked
+		}
+		in.Confirmed++
+		in.BySeverity["미평가"]++
+		if in.Shared {
+			row.ResourceType = "[REDACTED]"
+			in.ByType["[REDACTED]"]++
+		} else {
+			row.ResourceType = DiagnosticText(row.ResourceType)
+			in.ByType["IDOR"]++
+		}
+	}
 	return in, nil
 }
 
@@ -464,6 +488,9 @@ dt{font-weight:700}dd{margin-left:0;margin-bottom:8px;overflow-wrap:anywhere}
 <h2>3장. 진단 결과 요약</h2><h3>관리자 요약</h3><p>실행 결과: {{.RunText}}. 실행 결과는 취약점이 없다는 뜻이 아닙니다.</p>{{if .SourceFailures}}<p>근거 불러오기 실패: {{.SourceFailures}}건. 해당 항목의 재현·캡처·프롬프트는 제공하지 않습니다.</p>{{end}}
 <table><thead><tr><th>확정</th><th>검토 필요</th><th>미실행</th><th>오류·결과 불명</th><th>비취약 판정</th></tr></thead>
 <tbody><tr><td>{{.Confirmed}}</td><td>{{.Review}}</td><td>{{.NotExecuted}}</td><td>{{.Unknown}}</td><td>{{.Negative}}</td></tr></tbody></table>
+{{if or .ProductConfirmed .ProductUnverified}}<h3>제품 E③ 확정 단계</h3>
+<p>독립 확정 {{len .ProductConfirmed}}건{{if .ProductUnverified}} · 무결성 또는 출처 미확인 {{.ProductUnverified}}건{{end}}</p>
+<ul>{{range .ProductConfirmed}}<li>제품 판정 {{.VerdictID}} · 자원 종류 {{.ResourceType}} · 근거 호출 {{.EvidenceCalls}}건</li>{{end}}</ul>{{end}}
 <p>실행 completed는 취약점 확정이 아닙니다. 후보는 실제 관찰을 가진 검토 대상이며 자동 검증 또는 권한 있는 사람의 근거 있는 판단이 더 필요합니다.
 심각도·처리 상태·판정·실행 결과를 따로 표시합니다. 유사 제목끼리 합치지 않으며 원래 ID를 유지합니다.</p>
 <h3>확정 결과 심각도별 집계</h3><ul>{{range $key, $count := .BySeverity}}<li>{{$key}}: {{$count}}</li>{{end}}</ul>

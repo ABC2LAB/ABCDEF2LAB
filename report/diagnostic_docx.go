@@ -144,6 +144,13 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 		w.paragraph("Normal", fmt.Sprintf("근거 불러오기 실패: %d건. 해당 항목의 재현·캡처·프롬프트는 제공하지 않습니다.", in.SourceFailures))
 	}
 	w.table([][]string{{"확정", "검토 필요", "미실행", "판단 불가·결과 불명", "비취약"}, {strconv.Itoa(in.Confirmed), strconv.Itoa(in.Review), strconv.Itoa(in.NotExecuted), strconv.Itoa(in.Unknown), strconv.Itoa(in.Negative)}})
+	if len(in.ProductConfirmed) > 0 || in.ProductUnverified > 0 {
+		w.paragraph("Heading2", "제품 E③ 확정 단계")
+		w.paragraph("Normal", fmt.Sprintf("독립 확정 %d건 · 무결성 또는 출처 미확인 %d건", len(in.ProductConfirmed), in.ProductUnverified))
+		for _, row := range in.ProductConfirmed {
+			w.paragraph("Normal", fmt.Sprintf("제품 판정 %s · 자원 종류 %s · 근거 호출 %d건", row.VerdictID, row.ResourceType, row.EvidenceCalls))
+		}
+	}
 	w.paragraph("Normal", "확정 집계는 유효한 저장 E③ 판정만 포함합니다. HTTP 성공·AI 주장·후보·정상 종료는 확정 근거가 아닙니다. 검토 필요 후보는 확정 심각도·위험도 합계에 포함하지 않습니다.")
 	keys := []string{}
 	for k := range in.BySeverity {

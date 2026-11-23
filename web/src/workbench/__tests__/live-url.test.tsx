@@ -1783,8 +1783,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(header).not.toHaveTextContent("연결 전");
   });
 
-  // #875 실측 7절 1(나): 요약 '판정 확정'이 확정 단계 CONFIRMED 를 안 세 '확정 0'으로만 보였다 — 섞지 않고 아래 줄에 따로
-  it("보고서 요약 '판정 확정' 칸 아래 줄에 확정 단계 판정 확정 수를 따로 붙이고, 값을 숨긴 판정은 세지 않는다", async () => {
+  it("보고서 요약에 검증된 제품 확정만 합산하고 제품 출처를 표시한다", async () => {
     const { parseProductVerdicts } = await import("../live/productVerdicts");
     const golden = (await import("./product-verdicts.server-golden.json")).default as Record<
       string,
@@ -1798,7 +1797,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     mount("report");
     const strip = await screen.findByRole("region", { name: "판정 집계" });
     const cell = within(strip).getByText("판정 확정").parentElement as HTMLElement;
-    await waitFor(() => expect(cell).toHaveTextContent(/^판정 확정0증거 충분 · 확정 단계 확정 1$/));
+    await waitFor(() => expect(cell).toHaveTextContent(/^판정 확정1증거 충분 · 확정 단계 확정 1$/));
   });
 
   it("보고서는 결과 저장이 확인된 뒤에만 실제 task 의 조치 자료를 부른다", async () => {
