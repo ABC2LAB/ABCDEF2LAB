@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -179,6 +180,14 @@ func TestReportProductVerdictsEndToEnd(t *testing.T) {
 	body, err := report.DiagnosticHTML(data)
 	if err != nil || !strings.Contains(string(body), "<h3>확정 단계 판정</h3>") || !strings.Contains(string(body), "verdict-"+*env.Items[0].VerdictID) {
 		t.Fatalf("보고서: %v", err)
+	}
+	// 보고서 처리기도 헤더를 읽어 구역을 그린다(내부용 HTML).
+	handlerReq := httptest.NewRequest(http.MethodGet, "/api/report/diagnostic?task="+strconv.FormatInt(task, 10)+"&audience=internal", nil)
+	handlerReq.Header.Set(reportProductVerdictsHeader, value)
+	rec := httptest.NewRecorder()
+	s.diagnosticReport(rec, handlerReq)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<h3>확정 단계 판정</h3>") || !strings.Contains(rec.Body.String(), "verdict-"+*env.Items[0].VerdictID) {
+		t.Fatalf("보고서 처리기: %d", rec.Code)
 	}
 	// 헤더의 판정 값을 바꾸면 저장 판정과 달라 확인 실패다.
 	wire := reportWireOf(t, value)
