@@ -219,9 +219,7 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 			}
 		}
 	}
-	provider := map[string]any{"only": []string{m.ProviderSlug}, "allow_fallbacks": false, "require_parameters": true, "data_collection": "deny", "zdr": true,
-		"max_price": map[string]float64{"prompt": float64(m.InputPrice) / 1000000, "completion": float64(m.OutputPrice) / 1000000}}
-	body["provider"], _ = json.Marshal(provider)
+	body["provider"], _ = json.Marshal(m.wireProvider())
 	// 덮어쓰기 전에 엔진이 샘플링 칸을 보냈는지 본다(허용 목록상 temperature 하나). 셈은 실제로 보낼 때만 더한다.
 	_, engineSampling := body["temperature"]
 	overwrote := m.Sampling != nil && engineSampling
@@ -413,7 +411,12 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 			Cost   *float64 `json:"cost"`
 		} `json:"usage"`
 	}
-	if json.Unmarshal(data, &result) != nil || result.Model != OpenRouterModel || result.Provider != m.ExpectedProviderName ||
+	// 응답을 준 제공자는 승인 목록 안이어야 한다(고정 모드는 하나). 목록 밖이면 넘김 설정과 상관없이 받지 않는다.
+	returnedSlug, providerAllowed := "", false
+	if json.Unmarshal(data, &result) == nil {
+		returnedSlug, providerAllowed = m.providerSlug(result.Provider)
+	}
+	if !providerAllowed || result.Model != OpenRouterModel ||
 		result.Usage == nil || result.Usage.Cost == nil || result.Usage.Input < 1 || result.Usage.Input > input ||
 		result.Usage.Output < 0 || result.Usage.Output > output || math.IsNaN(*result.Usage.Cost) || math.IsInf(*result.Usage.Cost, 0) || *result.Usage.Cost < 0 {
 		return nil, ErrOpenRouterPolicy
@@ -424,12 +427,17 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 	}
 	p.mu.Lock()
 	p.usage.ReturnedProvider = result.Provider
+	if m.fallback() {
+		p.usage.ReturnedProviders.add(returnedSlug)
+	}
 	p.usage.InputTokens += result.Usage.Input
 	p.usage.OutputTokens += result.Usage.Output
 	p.usage.CostMicros += int64(cost)
 	p.settleLocked([3]int64{input, output, reserved}, [3]int64{result.Usage.Input, result.Usage.Output, int64(cost)})
 	p.mu.Unlock()
 	slot.succeeded(result.Usage.Input, result.Usage.Output, int64(cost))
+	// 호출마다 실제로 응답한 제공자를 진단 기록에 남긴다(고정 모드는 승인 tag 그대로).
+	diagnostic.ProviderRef = returnedSlug
 	diagnostic.InputTokens, diagnostic.OutputTokens = result.Usage.Input, result.Usage.Output
 	diagnostic.CostMicros, diagnostic.CostUncertain = int64(cost), false
 	if !validOpenRouterWireTools(data, body["tools"]) {

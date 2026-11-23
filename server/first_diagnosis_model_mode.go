@@ -139,6 +139,7 @@ func executionModelUsage(usage, baseline llmpolicy.OpenRouterUsage) llmpolicy.Op
 	usage.OutputTokens -= baseline.OutputTokens
 	usage.CostMicros -= baseline.CostMicros
 	usage.LatencyMillis -= baseline.LatencyMillis
+	usage.ReturnedProviders = usage.ReturnedProviders.Minus(baseline.ReturnedProviders)
 	if usage.SamplingOverwrites != nil && baseline.SamplingOverwrites != nil {
 		// Snapshot이 돌려준 포인터는 사본이지만, 정책 쪽 계수를 건드리지 않도록 새 값으로 바꾼다.
 		count := *usage.SamplingOverwrites - *baseline.SamplingOverwrites
