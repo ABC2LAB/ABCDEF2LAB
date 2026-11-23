@@ -175,7 +175,8 @@ export function Outcome({ o, short = false }: { o: DiagnosticOutcome; short?: bo
 
 /**
  * 후보를 읽지 않는 까닭. 서버 조회 경계(ProductCandidateJobActive)가 열리는 때 — 시작 확인 · running/stopping ·
- * 마감 · 결과 저장 전 — 에만 null(읽음). 끝난 점검은 따로(CandidatesEnded) 안내하므로 여기서는 시작 전과 같이 본다.
+ * 마감 · 결과 저장 전 — 에만 null(읽음). 끝난 점검은 후보 목록 대신 저장된 발견 목록을 보이므로(안내 문장은 뺐다, 사용자 11/23)
+ * 여기서는 시작 전과 같이 본다.
  */
 export function candidateIdle(job: URLDiagnosisJob | null | undefined, verified: boolean): CandidateIdle {
   if (!job) return "prestart";
@@ -189,7 +190,8 @@ export function candidateIdle(job: URLDiagnosisJob | null | undefined, verified:
 /** 후보 등급 딱지. 추정 등급은 '예상 …', 없으면 '위험도 미평가'(낮음 · 정보성으로 바꾸지 않는다). */
 function CandidateSev({ sev }: { sev: SeverityLevel | null }) {
   const k = sev ? sevKey(sev) : null;
-  return <span className={cx(s.sev, k && s[k])}>{candidateSeverityText(sev)}</span>;
+  // 등급이 없으면 '위험도 미평가' 회색 딱지(사용자 11/23)
+  return <span className={cx(s.sev, k ? s[k] : s["sev-none"])}>{candidateSeverityText(sev)}</span>;
 }
 
 /**
@@ -420,20 +422,6 @@ function LiveCandidates({
 const SEV_LEVELS: readonly SeverityLevel[] = ["critical", "high", "medium", "low", "info"];
 
 /**
- * 끝난 점검의 안내: 점검 중 후보 목록은 실행 중에만 서버가 열어 둔다(409). 결과 · 확정 단계 판정은 보고서에서 본다.
- */
-function CandidatesEnded({ reportReadable }: { reportReadable: boolean }) {
-  // [보고서 보기]는 위 상태 카드에 이미 있어(결과 저장 확인 때) 여기에 또 두지 않는다
-  return (
-    <p className={s.help} role="note" id="lFindsEnded">
-      {reportReadable
-        ? "점검이 끝나 진행 중 후보 목록을 더 읽지 않습니다. 결과와 확정 단계 판정 목록은 위 [보고서 보기]에서 봅니다."
-        : "점검이 끝나 진행 중 후보 목록을 더 읽지 않습니다. 결과 저장이 확인되면 보고서에서 결과와 판정 목록을 봅니다."}
-    </p>
-  );
-}
-
-/**
  * 점검 진행 상태 카드의 모델 사용량 한 줄 (입 · 출 칩, 사용자 11/17 '입출만'). 출처는 이 진단의 전송 통제 예산 기록
  * (job.model_usage): 제품(첫 진단) 서버가 원본 토큰 집계(/api/exploration/tokens)를 열지 않아 그쪽은 읽지 않는다.
  * 줄 어디에 올려도 두 수의 정확한 값을 한꺼번에 보인다. 실패 · 중지로 사용량을 못 받은 호출은 예약량으로 셌으므로
@@ -557,7 +545,7 @@ function StageGauge({ segs }: { segs: GaugeSeg[] }) {
         </ol>
         <span className={s.lgstep}>{`단계 ${allDone ? segs.length : at + 1}/${segs.length}`}</span>
       </div>
-      <div className={cx(s.lghead, tone === "stop" && s.stop)} aria-hidden="true">
+      <div className={cx(s.lghead, tone === "stop" && s.stop, allDone && s.done)} aria-hidden="true">
         {/* 다 끝나면 '점검 완료' 한 마디(사용자 11/23: '모든 단계를 마쳤습니다 · 결과 저장'이 길었다) */}
         {allDone ? "점검 완료" : gaugeHeadline(now)}
       </div>
@@ -939,7 +927,6 @@ export function UrlLiveLive() {
               onPick={(id) => pickEntry(`candidate-${id}`)}
             />
           ) : null}
-          {ended && job.task_id ? <CandidatesEnded reportReadable={g.reportReadable} /> : null}
           {ended && savedTask ? <SavedFindings poll={saved} picked={picked} onPick={pickEntry} /> : null}
           {ended && !savedTask ? <p className={s.empty}>결과 저장이 확인되면 발견 목록이 여기에 나옵니다.</p> : null}
           {a.message ? <p role="status">{a.message}</p> : null}
@@ -1060,7 +1047,7 @@ export function Sev({ e }: { e: RemediationEntry }) {
   const k = sevKey(entrySeverity(e) ?? "");
   return (
     <span
-      className={cx(s.sev, k && s[k])}
+      className={cx(s.sev, k ? s[k] : s["sev-none"])}
       title={e.severity_source === "worker_estimate" ? maskSecrets(e.severity_rationale ?? "") : undefined}
     >
       {entrySeverityLabel(e)}
