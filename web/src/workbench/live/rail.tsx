@@ -12,6 +12,7 @@ import { readRequestApprovalState } from "@/lib/diagnosis/request-approvals";
 import { useShell, type View } from "../shell";
 import { Icon } from "../ui/icons";
 import s from "../workbench.module.css";
+import { useHiddenRunIDs } from "./hiddenRuns";
 import { useUrl } from "./urlDiagnosis";
 import { scanViewFor, URL_ENDED_STATES, URL_PRESTART_STATES, urlHost, urlStateText } from "./urlMap";
 import { useUrlRuns } from "./urlRunList";
@@ -152,7 +153,12 @@ export function LiveRailTasks() {
   }
   // 끝난 점검도 같다: 이어 보는 점검이 없으면 서버 끝난 점검 수를 세고 끝난 점검 목록으로 안내한다(2026-11-22 화면 수정 확인
   // F14b: 브라우저를 다시 띄운 뒤 서버에 끝난 점검이 있어도 "끝난 점검 없음"이었다. 목록 화면 판정과 같은 endedURLRun)
-  const serverEnded = useUrlRuns((st) => (st.page?.runs ?? []).filter(endedURLRun).length);
+  // 화면에서 숨긴 끝난 점검(live/hiddenRuns)은 세지 않는다
+  const runOwner = useUrlRuns((st) => st.owner);
+  const hiddenRuns = useHiddenRunIDs(runOwner);
+  const serverEnded = useUrlRuns(
+    (st) => (st.page?.runs ?? []).filter((row) => endedURLRun(row) && !hiddenRuns.includes(row.id)).length,
+  );
   let doneCount = 0;
   let doneBody: ReactNode = <div className={s["lv-rempty"]}>끝난 점검 없음</div>;
   if (done) {

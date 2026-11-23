@@ -51,7 +51,7 @@ import { Icon } from "../../ui/icons";
 import { HelpTip, InspHead, Isec, Kv } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import type { Approvals } from "./approvals";
-import { useDeleteRunConfirm } from "./deleteRunConfirm";
+import { useHideRunConfirm } from "./hideRunConfirm";
 import { UrlNotices, UrlPill, UrlRefreshButton } from "./urlParts";
 
 /** 진행 중 경과를 다시 세는 주기(ms). 서버 시각이 기준이라 주기는 표시 갱신 간격일 뿐이다. */
@@ -385,8 +385,8 @@ export function JobSummary({
   const error = useUrl((st) => st.error);
   // 경과는 서버 started_at 기준이라 새로고침해도 0 으로 돌아가지 않는다. 화면은 이 주기로만 다시 센다.
   const now = useNow(ELAPSED_TICK_MS);
-  // 끝난 점검만 삭제할 수 있다. 확인 상자는 버튼 줄 아래에 둔다(사용자 11/23)
-  const deleteRun = useDeleteRunConfirm(
+  // 끝난 점검만 목록에서 숨길 수 있다(화면 표시만, 기록은 그대로). 확인 상자는 버튼 줄 아래에 둔다(사용자 11/23)
+  const hideRun = useHideRunConfirm(
     handle && job && URL_ENDED_STATES.includes(job.state) && cap.kind === "v2"
       ? { job, owner: cap.catalog.ownerContext }
       : null,
@@ -526,9 +526,9 @@ export function JobSummary({
           ) : null}
           {ended ? again : open}
           {ended ? open : null}
-          {deleteRun.button}
+          {hideRun.button}
         </div>
-        {deleteRun.box}
+        {hideRun.box}
         <UrlNotices />
         {uncertain || error ? (
           <div className={s.acts}>

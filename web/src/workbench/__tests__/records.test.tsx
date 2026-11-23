@@ -11,14 +11,6 @@ vi.mock("../live/api", async (importOriginal) => ({
   fetchRequestApprovals: vi.fn(),
   fetchRemediation: vi.fn(),
 }));
-vi.mock("../live/runDelete", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../live/runDelete")>()),
-  deleteURLRun: vi.fn(),
-}));
-vi.mock("../live/urlRunList", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../live/urlRunList")>()),
-  loadUrlRuns: vi.fn(),
-}));
 
 import { ApiError } from "@/lib/diagnosis/api";
 import { activeURLRun, type URLRunSummary } from "@/lib/diagnosis/diagnosis-runs";
@@ -26,12 +18,13 @@ import type { URLDiagnosisJob } from "@/lib/diagnosis/diagnosis-url";
 import { catalog, handle, running } from "@/lib/diagnosis/diagnosis-url-fixtures";
 
 import * as api from "../live/api";
+import { useHiddenRuns } from "../live/hiddenRuns";
 import { LiveRailTasks } from "../live/rail";
-import { deleteURLRun } from "../live/runDelete";
 import { resetUrl, useUrl } from "../live/urlDiagnosis";
-import { loadUrlRuns, useUrlRuns } from "../live/urlRunList";
+import { useUrlRuns } from "../live/urlRunList";
 import { type Shell, ShellContext, type View } from "../shell";
 import { RunRow } from "../views/live/runRows";
+import { UrlDashboardLive } from "../views/live/UrlDashboardLive";
 import { recDoneKinds, recRunKind, UrlFinishedLive, UrlRunningLive } from "../views/live/urlRecords";
 
 const noop = () => undefined;
@@ -380,79 +373,103 @@ describe("레일 → 진행 중인 점검 · 끝난 점검", () => {
   });
 });
 
-describe("끝난 점검 삭제", () => {
+describe("끝난 점검 목록에서 숨기기 (화면 표시만, 2026-11-23 #867)", () => {
   const panel = () => screen.getByRole("complementary", { name: "선택한 점검" });
-  const openDelete = () => {
+  const list = () => screen.getByRole("region", { name: "끝난 점검 목록" });
+  const hiddenChip = () => screen.getByRole("button", { name: /^숨긴 점검/ });
+  beforeEach(() => {
+    window.localStorage.clear();
+    useHiddenRuns.setState({ owner: null, ids: [] });
     vi.mocked(api.fetchRemediation).mockResolvedValue({ task_id: 42, entries: [] });
+  });
+  const openHide = () => {
     selectSaved(completed);
     records(true);
-    fireEvent.click(within(panel()).getByRole("button", { name: "삭제" }));
-    return screen.getByRole("alertdialog", { name: "이 점검을 삭제할까요?" });
+    const opener = within(panel()).getByRole("button", { name: "목록에서 숨기기" });
+    fireEvent.click(opener);
+    return { opener, box: screen.getByRole("alertdialog", { name: "이 점검을 목록에서 숨길까요?" }) };
   };
 
-  it("진행 중인 점검에는 삭제 버튼이 없다", () => {
+  it("진행 중인 점검에는 숨기기 버튼이 없다", () => {
     selectSaved(running);
     records(false);
-    expect(within(panel()).queryByRole("button", { name: "삭제" })).toBeNull();
+    expect(within(panel()).queryByRole("button", { name: "목록에서 숨기기" })).toBeNull();
   });
 
-  it("확인 상자는 버튼 줄 안이 아니라 바로 아래에 뜬다(사용자 11/23)", () => {
-    vi.mocked(api.fetchRemediation).mockResolvedValue({ task_id: 42, entries: [] });
-    selectSaved(completed);
-    records(true);
-    const opener = within(panel()).getByRole("button", { name: "삭제" });
-    fireEvent.click(opener);
-    const box = screen.getByRole("alertdialog", { name: "이 점검을 삭제할까요?" });
+  it("처음 버튼은 확인 상자를 켜고 끄고, 상자는 버튼 줄 바로 아래에 질문 한 줄만 둔다", () => {
+    const { opener, box } = openHide();
     const row = opener.parentElement as HTMLElement;
     expect(row.contains(box)).toBe(false);
     expect(row.nextElementSibling).toBe(box);
-  });
-
-  it("확인 상자에서 취소하면 보내지 않고 닫는다", () => {
-    const box = openDelete();
-    // 질문 한 줄만 둔다(사용자 11/23)
-    expect(box).toHaveTextContent(/^이 점검을 삭제할까요\?삭제취소$/);
-    fireEvent.click(within(box).getByRole("button", { name: "취소" }));
+    expect(box).toHaveTextContent(/^이 점검을 목록에서 숨길까요\?숨기기취소$/);
+    fireEvent.click(opener);
     expect(screen.queryByRole("alertdialog")).toBeNull();
-    expect(deleteURLRun).not.toHaveBeenCalled();
+    expect(opener).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(opener);
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "취소" }));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(within(list()).getByRole("button", { name: /job-1/ })).toBeInTheDocument();
   });
 
-  it("확인하면 그 점검을 지우고, 지운 뒤에만 선택을 풀고 목록을 다시 읽는다", async () => {
-    vi.mocked(deleteURLRun).mockResolvedValue(undefined);
-    const box = openDelete();
-    fireEvent.click(within(box).getByRole("button", { name: "삭제" }));
-    await waitFor(() => expect(loadUrlRuns).toHaveBeenCalledWith(catalog.ownerContext));
-    expect(deleteURLRun).toHaveBeenCalledWith(completed, catalog.ownerContext);
+  it("숨기면 기본 목록에서만 빠지고, '숨긴 점검'에서 다시 열면 보고서를 그대로 읽고 목록에 되돌릴 수 있다", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const { box } = openHide();
+    fireEvent.click(within(box).getByRole("button", { name: "숨기기" }));
+    // 서버에는 아무것도 보내지 않는다
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+    expect(within(list()).queryByRole("button", { name: /job-1/ })).toBeNull();
     expect(useUrl.getState().handle).toBeNull();
-    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(JSON.parse(window.localStorage.getItem(`abc2lab-hidden-runs:${catalog.ownerContext}`) ?? "[]")).toEqual([
+      completed.id,
+    ]);
+    // 숨긴 점검 보기 → 그 점검만 보이고, 다시 열면 기존 보고서 조회가 그대로 된다
+    expect(hiddenChip()).toHaveTextContent("1");
+    fireEvent.click(hiddenChip());
+    expect(hiddenChip()).toHaveAttribute("aria-pressed", "true");
+    expect(within(list()).getByRole("button", { name: /job-1/ })).toBeInTheDocument();
+    vi.mocked(api.fetchRemediation).mockClear();
+    selectSaved(completed);
+    await waitFor(() => expect(api.fetchRemediation).toHaveBeenCalledWith("42", "internal"));
+    fireEvent.click(within(panel()).getByRole("button", { name: "목록에 다시 보이기" }));
+    expect(window.localStorage.getItem(`abc2lab-hidden-runs:${catalog.ownerContext}`)).toBe("[]");
+    // 숨긴 점검이 없으면 기본 목록으로 돌아가 다시 보인다
+    fireEvent.click(hiddenChip());
+    expect(within(list()).getByRole("button", { name: /job-1/ })).toBeInTheDocument();
+    expect(within(panel()).getByRole("button", { name: "목록에서 숨기기" })).toBeInTheDocument();
   });
 
-  it.each([
-    [new ApiError(404, "route_not_found"), "서버가 아직 점검 삭제를 지원하지 않습니다."],
-    [new ApiError(409, "run_active"), "진행 중이거나 마감 중인 점검은 지울 수 없습니다."],
-    [new ApiError(409, "revision_conflict"), "점검 상태가 바뀌었습니다. 다시 연 뒤 지워 주세요."],
-    [new ApiError(401, "authentication_required"), "다시 로그인해 주세요."],
-    // 결과를 모르는 실패는 '못 지웠다'로 말하지 않는다(규칙 5, #867 이경준 리뷰)
-    [new ApiError(503, "unavailable"), "삭제됐는지 확인하지 못했습니다. 다시 누르면 확인합니다."],
-    [new ApiError(0, "network"), "삭제됐는지 확인하지 못했습니다. 다시 누르면 확인합니다."],
-    [new ApiError(422, "invalid_contract"), "삭제됐는지 확인하지 못했습니다. 다시 누르면 확인합니다."],
-    [new ApiError(401, "authentication_changed"), "삭제됐는지 확인하지 못했습니다. 다시 누르면 확인합니다."],
-    [new ApiError(500, "internal"), "삭제됐는지 확인하지 못했습니다. 다시 누르면 확인합니다."],
-  ])("실패(%s)는 상자를 열어 둔 채 이유를 보이고 선택을 풀지 않는다", async (error, text) => {
-    vi.mocked(deleteURLRun).mockRejectedValue(error);
-    const box = openDelete();
-    fireEvent.click(within(box).getByRole("button", { name: "삭제" }));
-    expect(await within(box).findByRole("alert")).toHaveTextContent(text);
-    expect(useUrl.getState().handle).not.toBeNull();
-    expect(loadUrlRuns).not.toHaveBeenCalled();
+  it("브라우저 저장소를 못 써도 이 탭에서는 숨긴다", () => {
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    const { box } = openHide();
+    fireEvent.click(within(box).getByRole("button", { name: "숨기기" }));
+    expect(within(list()).queryByRole("button", { name: /job-1/ })).toBeNull();
+    setItem.mockRestore();
   });
 
-  it("이미 숨긴 회차(not_found)는 지워진 것으로 보고 닫은 뒤 목록을 다시 읽는다", async () => {
-    vi.mocked(deleteURLRun).mockRejectedValue(new ApiError(404, "not_found"));
-    const box = openDelete();
-    fireEvent.click(within(box).getByRole("button", { name: "삭제" }));
-    await waitFor(() => expect(loadUrlRuns).toHaveBeenCalledWith(catalog.ownerContext));
-    expect(useUrl.getState().handle).toBeNull();
-    expect(screen.queryByRole("alertdialog")).toBeNull();
+  it("대시보드의 끝난 점검 목록에서도 숨긴 점검을 뺀다", () => {
+    savedRows([completed]);
+    window.localStorage.setItem(`abc2lab-hidden-runs:${catalog.ownerContext}`, JSON.stringify([completed.id]));
+    render(
+      <ShellContext.Provider value={shell("dashboard")}>
+        <UrlDashboardLive />
+      </ShellContext.Provider>,
+    );
+    const done = screen.getByRole("heading", { name: "보존된 끝난 점검" }).closest("section") as HTMLElement;
+    expect(done).toHaveTextContent("0건");
+    expect(within(done).queryByRole("button", { name: /job-1/ })).toBeNull();
+  });
+
+  it("레일의 이어 보지 않는 끝난 점검 수에서 숨긴 점검을 뺀다", () => {
+    savedRows([completed]);
+    window.localStorage.setItem(`abc2lab-hidden-runs:${catalog.ownerContext}`, JSON.stringify([completed.id]));
+    render(
+      <ShellContext.Provider value={shell("dashboard")}>
+        <LiveRailTasks />
+      </ShellContext.Provider>,
+    );
+    expect(screen.queryByText(/이어 보지 않는 끝난 점검/)).toBeNull();
   });
 });
