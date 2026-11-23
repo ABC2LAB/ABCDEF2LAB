@@ -772,8 +772,7 @@ func (w *Worker) runE2HTTPSession(ctx context.Context, name string, intent *db.N
 	defer session.Close()
 	// 요약은 가린 글에서 자른다(captureRunSessionWith). 아래 emit의 가림은 그 밖의 칸을 위한 두 번째 층이다. 활동은 저장
 	// 기록이라 모델이 받은 비밀번호(model_visible_v1)까지 가린다(RedactRecord).
-	redactText := func(text string) string { return string(execution.RedactRecord([]byte(text))) }
-	_, reason, runErr := captureRunSessionWith(ctx, session, input, redactText, func(activity db.Activity) {
+	_, reason, runErr := captureRunSessionWith(ctx, session, input, e2HTTPRecordText(execution), func(activity db.Activity) {
 		if emit == nil {
 			return
 		}
@@ -785,11 +784,7 @@ func (w *Worker) runE2HTTPSession(ctx context.Context, name string, intent *db.N
 			activity.Detail = ErrE2HTTPWorker.Error()
 			activity.Metadata = nil
 		} else {
-			activity.Summary = string(execution.RedactRecord([]byte(activity.Summary)))
-			activity.Detail = string(execution.RedactRecord([]byte(activity.Detail)))
-			if len(activity.Metadata) > 0 {
-				activity.Metadata = execution.RedactRecord(activity.Metadata)
-			}
+			activity = e2HTTPRecordActivity(execution, activity)
 		}
 		emit(activity)
 	})
@@ -1169,4 +1164,19 @@ func e2HTTPSessionLines(sessions map[string]http.Header) string {
 		}
 	}
 	return b.String()
+}
+
+// e2HTTPRecordText는 활동 기록에 넣을 글의 가림이다. 저장 기록이라 RedactRecord를 쓴다(model_visible_v1 비밀번호 포함).
+func e2HTTPRecordText(execution E2HTTPScope) func(string) string {
+	return func(text string) string { return string(execution.RedactRecord([]byte(text))) }
+}
+
+// e2HTTPRecordActivity는 저장 직전 활동의 요약·상세·메타데이터를 저장 기록 가림으로 한 번 더 가린다.
+func e2HTTPRecordActivity(execution E2HTTPScope, activity db.Activity) db.Activity {
+	activity.Summary = string(execution.RedactRecord([]byte(activity.Summary)))
+	activity.Detail = string(execution.RedactRecord([]byte(activity.Detail)))
+	if len(activity.Metadata) > 0 {
+		activity.Metadata = execution.RedactRecord(activity.Metadata)
+	}
+	return activity
 }

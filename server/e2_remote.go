@@ -332,10 +332,19 @@ func (b *E2StandaloneBackend) remoteRedact(ctx context.Context, data []byte, rec
 	if err != nil {
 		return nil, err
 	}
+	return e2RemoteRedactWith(lease.Execution, data, record), nil
+}
+
+// e2RemoteRedactWith는 원격 가림 연산이 고르는 가림이다. 저장 기록 연산(redact_record)은 RedactRecord, 모델 출력 연산은
+// RedactOutput이다.
+func e2RemoteRedactWith(execution interface {
+	RedactOutput([]byte) []byte
+	RedactRecord([]byte) []byte
+}, data []byte, record bool) []byte {
 	if record {
-		return lease.Execution.RedactRecord(data), nil
+		return execution.RedactRecord(data)
 	}
-	return lease.Execution.RedactOutput(data), nil
+	return execution.RedactOutput(data)
 }
 
 func (b *E2StandaloneBackend) remoteDrain(ctx context.Context, intent int64) error {

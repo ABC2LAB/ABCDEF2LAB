@@ -7,7 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/e2proxy"
+	"github.com/Autumn-27/artex/e2runner"
 	actool "github.com/Autumn-27/norma/tool"
 )
 
@@ -38,5 +40,30 @@ func TestE2HTTPGraphInputUsesRecordRedaction(t *testing.T) {
 	}
 	if strings.Contains(stored, "visible-pass-77") || !strings.Contains(stored, "[REDACTED]") {
 		t.Fatalf("그래프에 비밀번호가 저장됨: %q", stored)
+	}
+}
+
+// 활동 기록(captureRunSessionWith의 글 가림과 저장 직전 칸 가림)은 저장 기록 가림을 쓴다.
+func TestE2HTTPActivityUsesRecordRedaction(t *testing.T) {
+	scope := recordSplitScope{value: []byte("visible-pass-77")}
+	if got := e2HTTPRecordText(scope)("echo visible-pass-77"); strings.Contains(got, "visible-pass-77") {
+		t.Fatalf("활동 글에 비밀번호: %q", got)
+	}
+	a := e2HTTPRecordActivity(scope, db.Activity{Summary: "s visible-pass-77", Detail: "d visible-pass-77", Metadata: []byte(`{"v":"visible-pass-77"}`)})
+	if strings.Contains(a.Summary+a.Detail+string(a.Metadata), "visible-pass-77") {
+		t.Fatalf("활동 칸에 비밀번호: %+v", a)
+	}
+}
+
+// 진단 후보 근거(관찰)는 저장 기록이라 명령·도구 출력의 비밀번호를 가린다.
+func TestE2HTTPDiagnosticObservationUsesRecordRedaction(t *testing.T) {
+	scope := recordSplitScope{value: []byte("visible-pass-77")}
+	state := &e2HTTPToolState{}
+	result := e2runner.Result{ToolOutput: `{"username":"alice","password":"visible-pass-77"}`}
+	result.Trusted.Call.CallRef, result.Trusted.Call.IntentID, result.Trusted.Execution.IntentID = "call-1", 22, 22
+	state.observeDiagnostic(scope, 22, "curl -d pw=visible-pass-77 https://example.invalid/login", result)
+	observed, ok := state.observations["call-1"]
+	if !ok || strings.Contains(observed.Evidence, "visible-pass-77") || !strings.Contains(observed.Evidence, "[REDACTED]") {
+		t.Fatalf("후보 근거에 비밀번호: ok=%v", ok)
 	}
 }
