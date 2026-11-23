@@ -1,7 +1,7 @@
 import { ApiError, apiFetch } from "./api";
 
-export const EXTERNAL_ACCOUNT_STATEMENT = "체크하면 시험 계정 세션(쿠키·토큰)을 외부 모델 제공자에게 보냅니다.";
-export const EXTERNAL_ACCOUNT_PASSWORD_NOTICE = "계정 비밀번호는 모델에 전달되지 않습니다.";
+export const EXTERNAL_ACCOUNT_STATEMENT =
+  "체크하면 시험 계정 세션(쿠키·토큰)과 대상 응답·도구 출력을 외부 모델 제공자에게 보냅니다.";
 // biome-ignore lint/suspicious/noControlCharactersInRegex: Reject C0 and DEL in server consent statements.
 const statementControls = /[\x00-\x1f\x7f]/;
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);

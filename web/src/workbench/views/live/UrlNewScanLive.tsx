@@ -23,7 +23,6 @@ import {
   type WorkflowMode,
 } from "@/lib/diagnosis/diagnosis-url";
 import {
-  EXTERNAL_ACCOUNT_PASSWORD_NOTICE,
   EXTERNAL_ACCOUNT_STATEMENT,
   readExternalTestAccountPresence,
 } from "@/lib/diagnosis/external-account-consent";
@@ -510,7 +509,7 @@ export function UrlNewScanLive() {
           />
           <span>
             {scope?.model?.external_transfer
-              ? "대상 응답·도구 출력의 외부 전송과 비용 상한에 동의하고, 위 범위로 점검을 시작합니다."
+              ? "대상 응답·도구 출력(대상이 돌려준 비밀번호·개인정보 등 포함)이 외부 모델 제공자로 전송되며, 외부 전송된 정보에 대한 책임은 사용자에게 있습니다. 이에 동의하고 비용 상한 안에서 위 범위로 점검을 시작합니다."
               : "위 범위로 점검을 시작합니다."}
           </span>
         </label>
@@ -591,11 +590,7 @@ export function UrlNewScanLive() {
                 disabled={g.inputLocked || busy}
                 onChange={(e) => setAccountConsent({ key: consentKey, checked: e.target.checked })}
               />
-              <span>
-                {accountPresence.statement}
-                <br />
-                {EXTERNAL_ACCOUNT_PASSWORD_NOTICE}
-              </span>
+              <span>{accountPresence.statement}</span>
             </label>
             <p className={s.help}>체크하지 않으면 시험 계정 없이 진행합니다.</p>
           </>
