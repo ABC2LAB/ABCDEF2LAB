@@ -109,6 +109,13 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 		}
 		in.Workflow = &flow
 	}
+	in.WorkflowApprovals = append([]WorkflowApproval(nil), in.WorkflowApprovals...)
+	for i := range in.WorkflowApprovals {
+		a := &in.WorkflowApprovals[i]
+		for _, field := range []*string{&a.Method, &a.Path, &a.State, &a.ExecutionState, &a.Attempt} {
+			*field = DiagnosticText(*field)
+		}
+	}
 	if in.ApprovedScope != nil {
 		scope := *in.ApprovedScope
 		scope.Origin = DiagnosticText(scope.Origin)

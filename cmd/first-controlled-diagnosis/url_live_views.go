@@ -18,6 +18,7 @@ import (
 
 	"github.com/Autumn-27/artex/e2config"
 	"github.com/Autumn-27/artex/e2proxy"
+	"github.com/Autumn-27/artex/pathmask"
 	"github.com/Autumn-27/artex/server"
 )
 
@@ -275,7 +276,8 @@ func attemptPatterns(b *runBinding) map[string]string {
 			!strings.HasPrefix(row.PathPattern, "/") || len(row.PathPattern) > maxAttemptPatternBytes || strings.ContainsAny(row.PathPattern, "?#\r\n") {
 			continue
 		}
-		out[row.AttemptID] = row.PathPattern
+		// 과거 버전은 경로 조각 원문을 넣을 수 있었다. 저장 시점과 무관하게 표시용 형태를 다시 만든다.
+		out[row.AttemptID] = pathmask.DisplayShape(row.PathPattern)
 	}
 	return out
 }

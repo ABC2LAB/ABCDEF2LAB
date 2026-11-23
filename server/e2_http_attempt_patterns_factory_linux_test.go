@@ -72,7 +72,7 @@ func TestE2HTTPFactoryRecordsProductAttemptPatterns(t *testing.T) {
 		t.Fatal("product attempt pattern file not written", err)
 	}
 	var row E2AttemptPatternRow
-	if json.Unmarshal([]byte(strings.TrimSpace(string(data))), &row) != nil || row.AttemptID != receipt.AttemptID || row.PathPattern != "/allowed/{id}" || strings.Contains(string(data), "48151623") {
+	if json.Unmarshal([]byte(strings.TrimSpace(string(data))), &row) != nil || row.AttemptID != receipt.AttemptID || row.PathPattern != "/{id}/{id}" || strings.Contains(string(data), "48151623") {
 		t.Fatalf("pattern row: %q", data)
 	}
 }
@@ -143,7 +143,7 @@ func TestE2HTTPFactoryAttemptPatternsMaskSessionAndUsername(t *testing.T) {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(data), session) || strings.Contains(string(data), username) ||
-		!strings.Contains(string(data), `"/allowed/{id}/items"`) || !strings.Contains(string(data), `"/allowed/users/{id}"`) {
+		strings.Count(string(data), `"/{id}/{id}/{id}"`) != 2 {
 		t.Fatalf("display patterns kept a session or account value: %q", data)
 	}
 }

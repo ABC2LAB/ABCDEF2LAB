@@ -2,6 +2,10 @@ package dlp
 
 import "regexp"
 
+// 모델이 요약이나 재현 설명에 마크다운으로 인용한 자격값도 가린다.
+// 따옴표 없는 일반 설명은 자격값과 구별할 수 없어 이 규칙에 넣지 않는다.
+var quotedCredential = regexp.MustCompile("(?i)(?:\\b(?:password|passwd|pwd|credentials?|token|api[ _-]?key|client[ _-]?secret|(?:set[ -])?cookie|session[ _-]?id)\\b|비밀번호|패스워드|토큰|쿠키)(?:은|는|이|가)?(?:\\*{1,2})?[ \\t]+(?:(?:is|was|are)[ \\t]+)?(?:`[^`\\r\\n]+`|\"(?:\\\\.|[^\"\\\\\\r\\n])*\"|'(?:\\\\.|[^'\\\\\\r\\n])*')")
+
 // DiagnosticText는 등록 자격정보 치환 뒤에도 남을 수 있는 알려진 비밀 형식을 보호한다.
 // 공유 export의 닫힌 스키마/전체 마스킹을 대체하지 않으며 임의의 비밀을 판별한다고 주장하지 않는다.
 var diagnosticSecrets = []*regexp.Regexp{
@@ -19,6 +23,7 @@ var diagnosticSecrets = []*regexp.Regexp{
 }
 
 func DiagnosticText(s string) string {
+	s = quotedCredential.ReplaceAllString(s, Redacted)
 	for _, re := range diagnosticSecrets {
 		s = re.ReplaceAllString(s, Redacted)
 	}
@@ -35,6 +40,7 @@ var credentialSecrets = []*regexp.Regexp{diagnosticSecrets[0], diagnosticSecrets
 // CredentialText는 알려진 자격 형식(인증·쿠키 헤더 줄, 비밀번호·토큰 키=값, Bearer·Basic 값, JWT, 개인키)만 가린다.
 // 임의의 비밀을 판별한다고 주장하지 않는다.
 func CredentialText(s string) string {
+	s = quotedCredential.ReplaceAllString(s, Redacted)
 	for _, re := range credentialSecrets {
 		s = re.ReplaceAllString(s, Redacted)
 	}

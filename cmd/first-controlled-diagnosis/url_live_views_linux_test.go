@@ -350,8 +350,8 @@ func TestE2FlowViewAttachesAttemptPatterns(t *testing.T) {
 		record(liveEvent("result", "call-1", a2, 2, "denied", e2proxy.PolicyDenied))
 	})
 	rows := []string{
-		`{"attempt_id":"` + a1 + `","path_pattern":"/api/orders/{id}"}`,
-		`{"attempt_id":"` + a2 + `","path_pattern":"/x?token=secret"}`, // query가 섞인 줄은 버린다
+		`{"attempt_id":"` + a1 + `","path_pattern":"/api/syntheticuser/synthetictitle"}`, // 이전 버전 표시 파일
+		`{"attempt_id":"` + a2 + `","path_pattern":"/x?token=secret"}`,                   // query가 섞인 줄은 버린다
 		`{"attempt_id":"zz","path_pattern":"/y"}`,
 		`not json`,
 	}
@@ -372,7 +372,7 @@ func TestE2FlowViewAttachesAttemptPatterns(t *testing.T) {
 		t.Fatal("patterns without a pattern file")
 	}
 	write(strings.Join(rows, "\n") + "\n")
-	if p1, p2 := pattern(); p1 != "/api/orders/{id}" || p2 != "" {
+	if p1, p2 := pattern(); p1 != "/{id}/{id}/{id}" || p2 != "" {
 		t.Fatalf("patterns: %q %q", p1, p2)
 	}
 }

@@ -107,6 +107,28 @@ func maskSegment(raw string, key []byte) (string, bool) {
 // 안전 문자만·32자 이하이고, 길거나 섞인 조각은 값으로 본다. query는 받지 않는다(EscapedPath만). 평가 기록에는 Mask를 쓴다.
 func Readable(escaped string) string { return ReadableWith(escaped, nil) }
 
+// DisplayShape keeps only slash structure for a product audit view. A short
+// literal segment can be an account name or a title, even if it looks static.
+// This also accepts patterns produced by older versions.
+func DisplayShape(path string) string {
+	if path == LongPath {
+		return LongPath
+	}
+	segments := strings.Split(path, "/")
+	count := 0
+	for i, segment := range segments {
+		if segment == "" {
+			continue
+		}
+		count++
+		if count > MaxSegments {
+			return LongPath
+		}
+		segments[i] = MaskedSegment
+	}
+	return strings.Join(segments, "/")
+}
+
 // ReadableWith는 Readable에 호출자가 아는 민감 조각 판단을 더한다. sensitive가 참인 이름 조각도 `{id}`로 가린다(실행의
 // 보호·가림 값이 든 조각, 시험 계정 사용자명 등). 판단은 조각 단위라 값이 조각 일부에만 있어도 조각 전체를 가린다.
 func ReadableWith(escaped string, sensitive func(segment string) bool) string {

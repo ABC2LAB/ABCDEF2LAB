@@ -67,6 +67,25 @@ func TestDiagnosticReportInternalSharedAndEscaping(t *testing.T) {
 		t.Fatal("shared counts changed")
 	}
 }
+
+func TestDiagnosticReportMasksProseCredentials(t *testing.T) {
+	in := diagnosticFixture()
+	in.Entries[0].Summary = "The default password is `synthetic-pass-83z`. The response confirmed that the configuration was exposed."
+	in.Entries[0].Evidence = "Session token `synthetic-token-83z`\n인증 쿠키는 `synthetic-cookie-83z`"
+	for _, shared := range []bool{false, true} {
+		in.Shared = shared
+		out, err := DiagnosticHTML(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(out), "synthetic-") {
+			t.Fatalf("credential exposed (shared=%t)", shared)
+		}
+		if !shared && !strings.Contains(string(out), "configuration was exposed") {
+			t.Fatal("lost the non-secret finding context")
+		}
+	}
+}
 func TestDiagnosticReportRejectsUnverifiedConfirmationAndBounds(t *testing.T) {
 	for _, modify := range []func(*DiagnosticReport){
 		func(in *DiagnosticReport) { in.Entries[3].Outcome = "confirmed" },

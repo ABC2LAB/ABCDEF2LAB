@@ -54,6 +54,7 @@ type Record struct {
 // Result는 전달한 요청의 결과 메타데이터다. 값 대신 이름·형식·해시만 담는다.
 type Result struct {
 	Status              int
+	Reason              string
 	Bytes               int64
 	ResponseReceived    bool
 	ResponseContentType string
@@ -516,7 +517,7 @@ func (t *Ticket) Done(r Result) {
 		if t.dest == DestApproved {
 			pattern = s.policy.PathPattern(t.req.EscapedPath)
 		}
-		s.recordLocked(Record{SessionRef: s.binding.SessionRef, Seq: t.seq, At: at, Decision: "forwarded", Ingress: t.req.Ingress, Dest: t.dest, Method: t.req.Method, Status: r.Status, Bytes: r.Bytes,
+		s.recordLocked(Record{SessionRef: s.binding.SessionRef, Seq: t.seq, At: at, Decision: "forwarded", Reason: r.Reason, Ingress: t.req.Ingress, Dest: t.dest, Method: t.req.Method, Status: r.Status, Bytes: r.Bytes,
 			PathPattern: pattern, ExternalHost: t.external, FetchDest: t.req.FetchDest, FetchMode: t.req.FetchMode, HasAuthHeader: t.req.HasAuth})
 		if t.dest == DestApproved {
 			source, kind := sourceFor(t.req)

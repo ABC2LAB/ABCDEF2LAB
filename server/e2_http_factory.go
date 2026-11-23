@@ -17,7 +17,6 @@ import (
 	"reflect"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
@@ -614,22 +613,10 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 			}
 			recorder = e2HTTPJournalObserver{next: recorder, observe: input.RequestApprovals.observe}
 		}
-		// 표시용 패턴은 이 실행의 보호·가림 값(비밀번호·세션)이 든 조각과 결속 시험 계정 사용자명과 같은 조각을 가린다
-		// (S09·절대 규칙 2). 실행을 만들기 전에 관찰 훅을 넘기므로 실행 참조는 만든 뒤 채우고, 그 전에는 줄을 쓰지 않는다.
-		var patternExecution atomic.Pointer[e2proxy.Execution]
-		var patternUsernames atomic.Pointer[map[string]bool]
+		// 표시용 형태에는 경로 조각 원문이 없으므로 실행 자격정보를 읽을 필요가 없다.
 		observer := input.AttemptPathObserver
 		if productPatterns {
-			observer = productAttemptPatterns(policy.StateDir, func() func(string) bool {
-				e := patternExecution.Load()
-				if e == nil {
-					return nil
-				}
-				names := patternUsernames.Load()
-				return func(segment string) bool {
-					return string(e.RedactOutput([]byte(segment))) != segment || names != nil && (*names)[segment]
-				}
-			})
+			observer = productAttemptPatterns(policy.StateDir)
 		}
 		auditVersion := e2proxy.Version
 		if hostRecorder != nil {
@@ -649,11 +636,6 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 			SessionRedactCapacity: redactCapacity, ConfirmationRedactReserve: redactReserve, E3WriteConsent: policy.E3WriteConsent, E3Resettable: policy.E3Resettable, RequestBoundary: workflowBoundary(input.Workflow), CheckAuthority: transmissionCheck, ApprovalMode: policy.ApprovalMode, RequestApproval: gate, Evaluation: policy.Evaluation, HeaderMode: policy.HeaderMode, PasswordResponse: e2HTTPPasswordResponse(policy.Auth), Scope: scope, IntentID: request.IntentID, OwnerRef: policy.OwnerRef, PolicyRevision: policy.PolicyRevision, AccountRef: policy.AccountRef, SessionRef: policy.SessionRef, ExpiresAt: policy.ValidUntil, Rules: rules, ExcludedPaths: policy.excludedPaths(), Budget: transmit.CumulativeBudget{Ledger: ledger, Key: grantKey, Binding: budgetBinding}, Recorder: recorder, RootCAs: upstreamRoots, Limits: limits, AttemptPathObserver: observer})
 		if createErr != nil {
 			return failed(nil, nil)
-		}
-		patternExecution.Store(execution)
-		if policy.Auth != nil {
-			names := e2HTTPAccountUsernames(dir, *policy.Auth)
-			patternUsernames.Store(&names)
 		}
 		if input.RequestApprovals != nil {
 			input.RequestApprovals.attachExecution(request.TaskIDNumber, execution)

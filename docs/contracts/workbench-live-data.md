@@ -110,7 +110,7 @@
     {"call_ref": "call-…", "intent_id": 4, "closed": true, "closed_index": 41,
      "attempts": [
        {"attempt_id": "…", "index": 40, "sequence": 7, "stage": "result", "method": "POST", "rule_ref": "target-path-a",
-        "path_pattern": "/api/orders/{id}", "decision": "allowed", "reason": "unknown",
+        "path_pattern": "/{id}/{id}/{id}", "decision": "allowed", "reason": "unknown",
         "forward_attempted": true, "request_written": true, "response_received": false, "response_complete": false,
         "status_code": 0, "response_truncated": false, "at": "2026-11-13T01:02:03Z"}
      ]}
@@ -120,7 +120,7 @@
 
 - `index`는 그 시도 행을 만든 마지막 사건 번호다(`intent`만 있으면 그 사건, `result`가 오면 `result` 사건). `closed_index`는 호출 마감 사건 번호다(아직 열려 있으면 칸 없음).
 - `status_code`가 0이면 응답을 받지 못한 것이다(화면 "응답 없음").
-- `path_pattern`은 그 시도의 요청 경로 패턴이다(값처럼 보이는 조각은 `{id}`로 가림, 이름 조각은 그대로, `pathmask.Readable`). E② 경계가 시도마다 실행 상태 디렉터리의 표시용 파일(`attempt-patterns.jsonl`, 감사 기록 아님)에 시도 ID와 함께 남기고, 이 조회가 시도 ID로 붙인다. 이름 조각이라도 그 실행의 보호·가림 값(비밀번호·발급 세션)이 든 조각과 결속 시험 계정 사용자명과 같은 조각은 `{id}`로 가린다(S09·절대 규칙 2). 가림 판단을 할 수 없는 시점의 시도는 줄을 남기지 않는다. 경로를 만들 수 없던 거부·기록이 빠진 시도는 비운다. 원문 경로·query는 없다.
+- `path_pattern`은 경로의 슬래시 구조만 남기고 비어 있지 않은 모든 조각을 `{id}`로 가린 표시값이다. 짧은 이름도 사용자명이나 문서 제목일 수 있다. E② 경계가 시도 ID와 함께 실행 상태 디렉터리의 표시용 파일(`attempt-patterns.jsonl`)에 기록하고, 조회는 이전 버전 기록에도 같은 가림을 적용한다. 기록이 없거나 형식이 맞지 않으면 비운다. 이 값은 승인 범위 판정이나 감사 검증에 쓰지 않는다.
 - `stage`: `intent`(보내기 전 판정) · `result`(송신 결과) · `control`(실행 통제 사건) · `call_closed`(호출 마감).
 - `decision`: `allowed` · `denied` · `unsupported`.
 - `reason`: 아래 16개 중 하나. 웹 `e2flow.ts`의 옛 enum(#183 제안 값)은 이것으로 바꾼다.
