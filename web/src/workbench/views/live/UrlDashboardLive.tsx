@@ -18,6 +18,7 @@ import { entrySeverity } from "@/lib/diagnosis/severity";
 import { SEVL, type SevKey } from "../../data/findings";
 import { cx } from "../../lib/cx";
 import { fetchRemediation } from "../../live/api";
+import { useHiddenRunIDs } from "../../live/hiddenRuns";
 import { fmtTokens, sevKey } from "../../live/map";
 import { maskSecrets } from "../../live/mask";
 import { LoadingRow, NotYet } from "../../live/parts";
@@ -182,6 +183,7 @@ export function UrlDashboardLive() {
   const page = useUrlRuns((st) => st.page);
   const rows = page?.runs ?? [];
   const listReady = useUrlRuns((st) => !!st.page && !st.error);
+  const hiddenRuns = useHiddenRunIDs(useUrlRuns((st) => st.owner));
   const job = useUrl((st) => st.job);
   const verified = useUrl((st) => st.verified);
   const flow = useUrl((st) => st.flow);
@@ -299,8 +301,10 @@ export function UrlDashboardLive() {
     );
 
   const actRows = rows.filter(activeURLRun);
-  const doneRows = rows.filter(endedURLRun);
-  const otherCount = rows.length - actRows.length - doneRows.length;
+  const endedRows = rows.filter(endedURLRun);
+  // 화면에서 숨긴 끝난 점검(live/hiddenRuns)은 대시보드 목록에서도 뺀다. 서버 기록은 그대로다
+  const doneRows = endedRows.filter((row) => !hiddenRuns.includes(row.id));
+  const otherCount = rows.length - actRows.length - endedRows.length;
 
   // 오른쪽 상세
   const chosen: RequestApproval | undefined =

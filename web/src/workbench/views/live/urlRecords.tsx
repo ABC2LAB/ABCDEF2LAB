@@ -14,6 +14,7 @@ import { activeURLRun, endedURLRun, type URLRunSummary } from "@/lib/diagnosis/d
 
 import { cx } from "../../lib/cx";
 import { fetchRemediation } from "../../live/api";
+import { useHiddenRunIDs } from "../../live/hiddenRuns";
 import { useUrl, useUrlGates, useUrlSelectionKey } from "../../live/urlDiagnosis";
 import { useUrlRuns } from "../../live/urlRunList";
 import { usePoll } from "../../live/usePoll";
@@ -123,7 +124,13 @@ function RecordList({ finished }: { finished: boolean }) {
   const title = finished ? "끝난 점검" : "진행 중인 점검";
   const visible = route === (finished ? "finished" : "running");
   const page = useUrlRuns((st) => st.page);
-  const rows = (page?.runs ?? []).filter((row) => endedURLRun(row) === finished);
+  const owner = useUrlRuns((st) => st.owner);
+  const hidden = useHiddenRunIDs(finished ? owner : null);
+  const [showHidden, setShowHidden] = useState(false);
+  const listed = (page?.runs ?? []).filter((row) => endedURLRun(row) === finished);
+  // 끝난 점검 중 화면에서 숨긴 것(live/hiddenRuns)은 기본 목록에서 빼고 '숨긴 점검'에서만 보인다. 서버 기록은 그대로다
+  const hiddenCount = finished ? listed.filter((row) => hidden.includes(row.id)).length : 0;
+  const rows = finished ? listed.filter((row) => hidden.includes(row.id) === showHidden) : listed;
   const [filter, setFilter] = useState("all");
   const matches = (row: URLRunSummary, key: string) =>
     key === "all" || (key === "prestart" ? ["ready", "awaiting_approval"].includes(row.state) : row.state === key);
@@ -150,7 +157,8 @@ function RecordList({ finished }: { finished: boolean }) {
   const approvals = useRequestApprovals(job?.task_id ?? "", visible && approvalsOn);
   const selectedHere = !!handle && !!job && shown.some((row) => row.id === selected);
 
-  const emptyText = finished ? "이 상태의 끝난 점검이 없습니다." : "이 상태의 점검이 없습니다.";
+  let emptyText = finished ? "이 상태의 끝난 점검이 없습니다." : "이 상태의 점검이 없습니다.";
+  if (showHidden) emptyText = "숨긴 점검이 없습니다.";
   return (
     <>
       <UrlHead title={title} crumb={title} acts={<InspOpenButton>상세</InspOpenButton>} />
@@ -165,6 +173,20 @@ function RecordList({ finished }: { finished: boolean }) {
                 count={(key) => (page ? rows.filter((row) => matches(row, key)).length : null)}
                 onPick={setFilter}
               />
+              {finished && (hiddenCount > 0 || showHidden) ? (
+                <button
+                  className={s.fchip}
+                  type="button"
+                  title="목록에서 숨긴 끝난 점검"
+                  aria-pressed={showHidden}
+                  onClick={() => {
+                    setShowHidden(!showHidden);
+                    setFilter("all");
+                  }}
+                >
+                  숨긴 점검<span className={s.c}>{hiddenCount}</span>
+                </button>
+              ) : null}
               <span className={s.aside}>{page ? `${shown.length} / ${rows.length}건` : "—"}</span>
             </div>
             <RunListControls />
