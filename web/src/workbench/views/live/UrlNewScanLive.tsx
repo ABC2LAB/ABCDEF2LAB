@@ -707,7 +707,6 @@ export function UrlNewScanLive() {
                     <input
                       className={cx(s.inp, s["w-url"])}
                       id="luName"
-                      aria-describedby="luNameHelp"
                       type="text"
                       value={nv}
                       disabled={g.inputLocked}
@@ -724,9 +723,6 @@ export function UrlNewScanLive() {
                         )
                       }
                     />
-                    <p id="luNameHelp" className={s.help}>
-                      목록과 상세에 표시되고, 모델에 작업 설명으로 전달됩니다.
-                    </p>
                   </div>
                   <TargetApprovalPanel
                     requestLimit={profile?.workflow_request_limit}
