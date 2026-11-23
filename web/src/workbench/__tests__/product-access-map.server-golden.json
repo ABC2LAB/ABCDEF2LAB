@@ -1,0 +1,930 @@
+{
+  "completed": {
+    "format": "jindo.workbench-product-access-map/v1",
+    "task_id": "162",
+    "source_kind": "product",
+    "axis": "horizontal",
+    "policy_source": {
+      "ref": "declaration-job-synthetic",
+      "digest_sha256": "26bf52f44204817e9ba66fc86e6b5f4e15560630b39f4ba7209f3ed7910e1e0b"
+    },
+    "confirmation": {
+      "status": "completed",
+      "reason": null
+    },
+    "principals": [
+      {
+        "label": "tester-a",
+        "role": "owner"
+      },
+      {
+        "label": "tester-b",
+        "role": "cross"
+      }
+    ],
+    "resources": [
+      {
+        "resource_type": "document",
+        "sharing": "owner_only",
+        "confirmable": true
+      },
+      {
+        "resource_type": "note",
+        "sharing": "owner_only",
+        "confirmable": true
+      },
+      {
+        "resource_type": "post",
+        "sharing": "shared",
+        "confirmable": false
+      }
+    ],
+    "hidden_records": 0,
+    "cells": [
+      {
+        "principal": "tester-a",
+        "resource_type": "document",
+        "state": "owner_control",
+        "applicable": null,
+        "na_basis": null,
+        "verdict_id": null,
+        "record_status": null,
+        "oracle_value": null,
+        "checks": null,
+        "oracle_reason_codes": [],
+        "product_reason_codes": [],
+        "candidate_refs": [],
+        "observed_at": null,
+        "evidence_seal": null,
+        "projection_error": null
+      },
+      {
+        "principal": "tester-b",
+        "resource_type": "document",
+        "state": "confirmed",
+        "applicable": true,
+        "na_basis": null,
+        "verdict_id": "177",
+        "record_status": "verified",
+        "oracle_value": "confirmed",
+        "checks": {
+          "policy": "yes",
+          "identity": "yes",
+          "data": "yes"
+        },
+        "oracle_reason_codes": [
+          "policy_deny_resolved"
+        ],
+        "product_reason_codes": [],
+        "candidate_refs": [
+          "candidate-1"
+        ],
+        "observed_at": "2026-11-18T09:00:00.000000Z",
+        "evidence_seal": {
+          "status": "unconfirmed",
+          "reason": "seal_not_recorded"
+        },
+        "projection_error": null
+      },
+      {
+        "principal": "tester-a",
+        "resource_type": "note",
+        "state": "owner_control",
+        "applicable": null,
+        "na_basis": null,
+        "verdict_id": null,
+        "record_status": null,
+        "oracle_value": null,
+        "checks": null,
+        "oracle_reason_codes": [],
+        "product_reason_codes": [],
+        "candidate_refs": [],
+        "observed_at": null,
+        "evidence_seal": null,
+        "projection_error": null
+      },
+      {
+        "principal": "tester-b",
+        "resource_type": "note",
+        "state": "unknown",
+        "applicable": true,
+        "na_basis": null,
+        "verdict_id": "178",
+        "record_status": "verified",
+        "oracle_value": "undecidable",
+        "checks": {
+          "policy": "yes",
+          "identity": "yes",
+          "data": "yes"
+        },
+        "oracle_reason_codes": [
+          "policy_deny_resolved"
+        ],
+        "product_reason_codes": [],
+        "candidate_refs": [
+          "candidate-1"
+        ],
+        "observed_at": "2026-11-18T09:00:00.000000Z",
+        "evidence_seal": {
+          "status": "unconfirmed",
+          "reason": "seal_not_recorded"
+        },
+        "projection_error": null
+      },
+      {
+        "principal": "tester-a",
+        "resource_type": "post",
+        "state": "owner_control",
+        "applicable": null,
+        "na_basis": null,
+        "verdict_id": null,
+        "record_status": null,
+        "oracle_value": null,
+        "checks": null,
+        "oracle_reason_codes": [],
+        "product_reason_codes": [],
+        "candidate_refs": [],
+        "observed_at": null,
+        "evidence_seal": null,
+        "projection_error": null
+      },
+      {
+        "principal": "tester-b",
+        "resource_type": "post",
+        "state": "na",
+        "applicable": false,
+        "na_basis": "declared_shared",
+        "verdict_id": null,
+        "record_status": null,
+        "oracle_value": null,
+        "checks": null,
+        "oracle_reason_codes": [],
+        "product_reason_codes": [],
+        "candidate_refs": [],
+        "observed_at": null,
+        "evidence_seal": null,
+        "projection_error": null
+      }
+    ]
+  },
+  "completed_skip_mismatch": {
+    "format": "jindo.workbench-product-access-map/v1",
+    "task_id": "163",
+    "source_kind": "product",
+    "axis": "horizontal",
+    "policy_source": {
+      "ref": "declaration-job-synthetic",
+      "digest_sha256": "26bf52f44204817e9ba66fc86e6b5f4e15560630b39f4ba7209f3ed7910e1e0b"
+    },
+    "confirmation": {
+      "status": "completed",
+      "reason": null
+    },
+    "principals": [
+      {
+        "label": "tester-a",
+        "role": "owner"
+      },
+      {
+        "label": "tester-b",
+        "role": "cross"
+      }
+    ],
+    "resources": [
+      {
+        "resource_type": "document",
+        "sharing": "owner_only",
+        "confirmable": true
+      },
+      {
+        "resource_type": "note",
+        "sharing": "owner_only",
+        "confirmable": true
+      },
+      {
+        "resource_type": "post",
+        "sharing": "shared",
+        "confirmable": false
+      }
+    ],
+    "hidden_records": 0,
+    "cells": [
+      {
+        "principal": "tester-a",
+        "resource_type": "document",
+        "state": "owner_control",
+        "applicable": null,
+        "na_basis": null,
+        "verdict_id": null,
+        "record_status": null,
+        "oracle_value": null,
+        "checks": null,
+        "oracle_reason_codes": [],
+        "product_reason_codes": [],
+        "candidate_refs": [],
+        "observed_at": null,
+        "evidence_seal": null,
+        "projection_error": null
+      },
+      {
+        "principal": "tester-b",
+        "resource_type": "document",
+        "state": "unknown",
+        "applicable": true,
+        "na_basis": null,
+        "verdict_id": null,
+        "record_status": null,
+        "oracle_value": null,
+        "checks": null,
+        "oracle_reason_codes": [],
+        "product_reason_codes": [],
+        "candidate_refs": [],
+        "observed_at": null,
+        "evidence_seal": null,
+        "projection_error": "record_missing_after_attempt"
+      },
+      {
+        "principal": "tester-a",
+        "resource_type": "note",
+        "state": "owner_control",
+        "applicable": null,
+        "na_basis": null,
+        "verdict_id": null,
+        "record_status": null,
+        "oracle_value": null,
+        "checks": null,
+        "oracle_reason_codes": [],
+        "product_reason_codes": [],
+        "candidate_refs": [],
+        "observed_at": null,
+        "evidence_seal": null,
+        "projection_error": null
+      },
+      {
+        "principal": "tester-b",
+        "resource_type": "note",
+        "state": "suspected",
+        "applicable": true,
+        "na_basis": null,
+        "verdict_id": "179",
+        "record_status": "verified",
+        "oracle_value": "suspected",
+        "checks": {
+          "policy": "yes",
+          "identity": "yes",
+          "data": "yes"
+        },
+        "oracle_reason_codes": [
+          "policy_deny_resolved"
+        ],
+        "product_reason_codes": [],
+        "candidate_refs": [
+          "candidate-1"
+        ],
+        "observed_at": "2026-11-18T09:00:00.000000Z",
+        "evidence_seal": {
+          "status": "unconfirmed",
+          "reason": "seal_not_recorded"
+        },
+        "projection_error": null
+      },
+      {
+        "principal": "tester-a",
+        "resource_type": "post",
+        "state": "owner_control",
+        "applicable": null,
+        "na_basis": null,
+        "verdict_id": null,
+        "record_status": null,
+        "oracle_value": null,
+        "checks": null,
+        "oracle_reason_codes": [],
+        "product_reason_codes": [],
+        "candidate_refs": [],
+        "observed_at": null,
+        "evidence_seal": null,
+        "projection_error": null
+      },
+      {
+        "principal": "tester-b",
+        "resource_type": "post",
+        "state": "unknown",
+        "applicable": false,
+        "na_basis": null,
+        "verdict_id": null,
+        "record_status": null,
+        "oracle_value": null,
+        "checks": null,
+        "oracle_reason_codes": [],
+        "product_reason_codes": [],
+        "candidate_refs": [],
+        "observed_at": null,
+        "evidence_seal": null,
+        "projection_error": "na_evidence_mismatch"
+      }
+    ]
+  },
+  "disabled_reason": {
+    "format": "jindo.workbench-product-access-map/v1",
+    "task_id": "164",
+    "source_kind": "product",
+    "axis": "horizontal",
+    "policy_source": {
+      "ref": "declaration-job-synthetic",
+      "digest_sha256": "26bf52f44204817e9ba66fc86e6b5f4e15560630b39f4ba7209f3ed7910e1e0b"
+    },
+    "confirmation": {
+      "status": "disabled",
+      "reason": "account_roles_undeclared"
+    },
+    "principals": [
+      {
+        "label": "tester-a",
+        "role": "owner"
+      },
+      {
+        "label": "tester-b",
+        "role": "cross"
+      }
+    ],
+    "resources": [
+      {
+        "resource_type": "document",
+        "sharing": "owner_only",
+        "confirmable": true
+      },
+      {
+        "resource_type": "note",
+        "sharing": "owner_only",
+        "confirmable": true
+      },
+      {
+        "resource_type": "post",
+        "sharing": "shared",
+        "confirmable": false
+      }
+    ],
+    "hidden_records": 0,
+    "cells": [
+      {
+        "principal": "tester-a",
+        "resource_type": "document",
+        "state": "owner_control",
+        "applicable": null,
+        "na_basis": null,
+        "verdict_id": null,
+        "record_status": null,
+        "oracle_value": null,
+        "checks": null,
+        "oracle_reason_codes": [],
+        "product_reason_codes": [],
+        "candidate_refs": [],
+        "observed_at": null,
+        "evidence_seal": null,
+        "projection_error": null
+      },
+      {
+        "principal": "tester-b",
+        "resource_type": "document",
+        "state": "unknown",
+        "applicable": true,
+        "na_basis": null,
+        "verdict_id": null,
+        "record_status": null,
+        "oracle_value": null,
+        "checks": null,
+        "oracle_reason_codes": [],
+        "product_reason_codes": [],
+        "candidate_refs": [],
+        "observed_at": null,
+        "evidence_seal": null,
+        "projection_error": "observation_unavailable"
+      },
+      {
+        "principal": "tester-a",
+        "resource_type": "note",
+        "state": "owner_control",
+        "applicable": null,
+        "na_basis": null,
+        "verdict_id": null,
+        "record_status": null,
+        "oracle_value": null,
+        "checks": null,
+        "oracle_reason_codes": [],
+        "product_reason_codes": [],
+        "candidate_refs": [],
+        "observed_at": null,
+        "evidence_seal": null,
+        "projection_error": null
+      },
+      {
+        "principal": "tester-b",
+        "resource_type": "note",
+        "state": "unknown",
+        "applicable": true,
+        "na_basis": null,
+        "verdict_id": null,
+        "record_status": null,
+        "oracle_value": null,
+        "checks": null,
+        "oracle_reason_codes": [],
+        "product_reason_codes": [],
+        "candidate_refs": [],
+        "observed_at": null,
+        "evidence_seal": null,
+        "projection_error": "observation_unavailable"
+      },
+      {
+        "principal": "tester-a",
+        "resource_type": "post",
+        "state": "owner_control",
+        "applicable": null,
+        "na_basis": null,
+        "verdict_id": null,
+        "record_status": null,
+        "oracle_value": null,
+        "checks": null,
+        "oracle_reason_codes": [],
+        "product_reason_codes": [],
+        "candidate_refs": [],
+        "observed_at": null,
+        "evidence_seal": null,
+        "projection_error": null
+      },
+      {
+        "principal": "tester-b",
+        "resource_type": "post",
+        "state": "na",
+        "applicable": false,
+        "na_basis": "declared_shared",
+        "verdict_id": null,
+        "record_status": null,
+        "oracle_value": null,
+        "checks": null,
+        "oracle_reason_codes": [],
+        "product_reason_codes": [],
+        "candidate_refs": [],
+        "observed_at": null,
+        "evidence_seal": null,
+        "projection_error": null
+      }
+    ]
+  },
+  "hidden": {
+    "format": "jindo.workbench-product-access-map/v1",
+    "task_id": "162",
+    "source_kind": "product",
+    "axis": "horizontal",
+    "policy_source": {
+      "ref": "declaration-job-synthetic",
+      "digest_sha256": "26bf52f44204817e9ba66fc86e6b5f4e15560630b39f4ba7209f3ed7910e1e0b"
+    },
+    "confirmation": {
+      "status": "completed",
+      "reason": null
+    },
+    "principals": [
+      {
+        "label": "tester-a",
+        "role": "owner"
+      },
+      {
+        "label": "tester-b",
+        "role": "cross"
+      }
+    ],
+    "resources": [
+      {
+        "resource_type": "document",
+        "sharing": "owner_only",
+        "confirmable": true
+      },
+      {
+        "resource_type": "note",
+        "sharing": "owner_only",
+        "confirmable": true
+      },
+      {
+        "resource_type": "post",
+        "sharing": "shared",
+        "confirmable": false
+      }
+    ],
+    "hidden_records": 1,
+    "cells": [
+      {
+        "principal": "tester-a",
+        "resource_type": "document",
+        "state": "owner_control",
+        "applicable": null,
+        "na_basis": null,
+        "verdict_id": null,
+        "record_status": null,
+        "oracle_value": null,
+        "checks": null,
+        "oracle_reason_codes": [],
+        "product_reason_codes": [],
+        "candidate_refs": [],
+        "observed_at": null,
+        "evidence_seal": null,
+        "projection_error": null
+      },
+      {
+        "principal": "tester-b",
+        "resource_type": "document",
+        "state": "unknown",
+        "applicable": true,
+        "na_basis": null,
+        "verdict_id": null,
+        "record_status": null,
+        "oracle_value": null,
+        "checks": null,
+        "oracle_reason_codes": [],
+        "product_reason_codes": [],
+        "candidate_refs": [],
+        "observed_at": null,
+        "evidence_seal": null,
+        "projection_error": "record_hidden"
+      },
+      {
+        "principal": "tester-a",
+        "resource_type": "note",
+        "state": "owner_control",
+        "applicable": null,
+        "na_basis": null,
+        "verdict_id": null,
+        "record_status": null,
+        "oracle_value": null,
+        "checks": null,
+        "oracle_reason_codes": [],
+        "product_reason_codes": [],
+        "candidate_refs": [],
+        "observed_at": null,
+        "evidence_seal": null,
+        "projection_error": null
+      },
+      {
+        "principal": "tester-b",
+        "resource_type": "note",
+        "state": "unknown",
+        "applicable": true,
+        "na_basis": null,
+        "verdict_id": "178",
+        "record_status": "verified",
+        "oracle_value": "undecidable",
+        "checks": {
+          "policy": "yes",
+          "identity": "yes",
+          "data": "yes"
+        },
+        "oracle_reason_codes": [
+          "policy_deny_resolved"
+        ],
+        "product_reason_codes": [],
+        "candidate_refs": [
+          "candidate-1"
+        ],
+        "observed_at": "2026-11-18T09:00:00.000000Z",
+        "evidence_seal": {
+          "status": "unconfirmed",
+          "reason": "seal_not_recorded"
+        },
+        "projection_error": null
+      },
+      {
+        "principal": "tester-a",
+        "resource_type": "post",
+        "state": "owner_control",
+        "applicable": null,
+        "na_basis": null,
+        "verdict_id": null,
+        "record_status": null,
+        "oracle_value": null,
+        "checks": null,
+        "oracle_reason_codes": [],
+        "product_reason_codes": [],
+        "candidate_refs": [],
+        "observed_at": null,
+        "evidence_seal": null,
+        "projection_error": null
+      },
+      {
+        "principal": "tester-b",
+        "resource_type": "post",
+        "state": "na",
+        "applicable": false,
+        "na_basis": "declared_shared",
+        "verdict_id": null,
+        "record_status": null,
+        "oracle_value": null,
+        "checks": null,
+        "oracle_reason_codes": [],
+        "product_reason_codes": [],
+        "candidate_refs": [],
+        "observed_at": null,
+        "evidence_seal": null,
+        "projection_error": null
+      }
+    ]
+  },
+  "interrupted_suspected": {
+    "format": "jindo.workbench-product-access-map/v1",
+    "task_id": "163",
+    "source_kind": "product",
+    "axis": "horizontal",
+    "policy_source": {
+      "ref": "declaration-job-synthetic",
+      "digest_sha256": "26bf52f44204817e9ba66fc86e6b5f4e15560630b39f4ba7209f3ed7910e1e0b"
+    },
+    "confirmation": {
+      "status": "interrupted",
+      "reason": null
+    },
+    "principals": [
+      {
+        "label": "tester-a",
+        "role": "owner"
+      },
+      {
+        "label": "tester-b",
+        "role": "cross"
+      }
+    ],
+    "resources": [
+      {
+        "resource_type": "document",
+        "sharing": "owner_only",
+        "confirmable": true
+      },
+      {
+        "resource_type": "note",
+        "sharing": "owner_only",
+        "confirmable": true
+      },
+      {
+        "resource_type": "post",
+        "sharing": "shared",
+        "confirmable": false
+      }
+    ],
+    "hidden_records": 0,
+    "cells": [
+      {
+        "principal": "tester-a",
+        "resource_type": "document",
+        "state": "owner_control",
+        "applicable": null,
+        "na_basis": null,
+        "verdict_id": null,
+        "record_status": null,
+        "oracle_value": null,
+        "checks": null,
+        "oracle_reason_codes": [],
+        "product_reason_codes": [],
+        "candidate_refs": [],
+        "observed_at": null,
+        "evidence_seal": null,
+        "projection_error": null
+      },
+      {
+        "principal": "tester-b",
+        "resource_type": "document",
+        "state": "unknown",
+        "applicable": true,
+        "na_basis": null,
+        "verdict_id": null,
+        "record_status": null,
+        "oracle_value": null,
+        "checks": null,
+        "oracle_reason_codes": [],
+        "product_reason_codes": [],
+        "candidate_refs": [],
+        "observed_at": null,
+        "evidence_seal": null,
+        "projection_error": "observation_unavailable"
+      },
+      {
+        "principal": "tester-a",
+        "resource_type": "note",
+        "state": "owner_control",
+        "applicable": null,
+        "na_basis": null,
+        "verdict_id": null,
+        "record_status": null,
+        "oracle_value": null,
+        "checks": null,
+        "oracle_reason_codes": [],
+        "product_reason_codes": [],
+        "candidate_refs": [],
+        "observed_at": null,
+        "evidence_seal": null,
+        "projection_error": null
+      },
+      {
+        "principal": "tester-b",
+        "resource_type": "note",
+        "state": "suspected",
+        "applicable": true,
+        "na_basis": null,
+        "verdict_id": "179",
+        "record_status": "verified",
+        "oracle_value": "suspected",
+        "checks": {
+          "policy": "yes",
+          "identity": "yes",
+          "data": "yes"
+        },
+        "oracle_reason_codes": [
+          "policy_deny_resolved"
+        ],
+        "product_reason_codes": [],
+        "candidate_refs": [
+          "candidate-1"
+        ],
+        "observed_at": "2026-11-18T09:00:00.000000Z",
+        "evidence_seal": {
+          "status": "unconfirmed",
+          "reason": "seal_not_recorded"
+        },
+        "projection_error": null
+      },
+      {
+        "principal": "tester-a",
+        "resource_type": "post",
+        "state": "owner_control",
+        "applicable": null,
+        "na_basis": null,
+        "verdict_id": null,
+        "record_status": null,
+        "oracle_value": null,
+        "checks": null,
+        "oracle_reason_codes": [],
+        "product_reason_codes": [],
+        "candidate_refs": [],
+        "observed_at": null,
+        "evidence_seal": null,
+        "projection_error": null
+      },
+      {
+        "principal": "tester-b",
+        "resource_type": "post",
+        "state": "na",
+        "applicable": false,
+        "na_basis": "declared_shared",
+        "verdict_id": null,
+        "record_status": null,
+        "oracle_value": null,
+        "checks": null,
+        "oracle_reason_codes": [],
+        "product_reason_codes": [],
+        "candidate_refs": [],
+        "observed_at": null,
+        "evidence_seal": null,
+        "projection_error": null
+      }
+    ]
+  },
+  "pending": {
+    "format": "jindo.workbench-product-access-map/v1",
+    "task_id": "164",
+    "source_kind": "product",
+    "axis": "horizontal",
+    "policy_source": {
+      "ref": "declaration-job-synthetic",
+      "digest_sha256": "26bf52f44204817e9ba66fc86e6b5f4e15560630b39f4ba7209f3ed7910e1e0b"
+    },
+    "confirmation": null,
+    "principals": [
+      {
+        "label": "tester-a",
+        "role": "owner"
+      },
+      {
+        "label": "tester-b",
+        "role": "cross"
+      }
+    ],
+    "resources": [
+      {
+        "resource_type": "document",
+        "sharing": "owner_only",
+        "confirmable": true
+      },
+      {
+        "resource_type": "note",
+        "sharing": "owner_only",
+        "confirmable": true
+      },
+      {
+        "resource_type": "post",
+        "sharing": "shared",
+        "confirmable": false
+      }
+    ],
+    "hidden_records": 0,
+    "cells": [
+      {
+        "principal": "tester-a",
+        "resource_type": "document",
+        "state": "owner_control",
+        "applicable": null,
+        "na_basis": null,
+        "verdict_id": null,
+        "record_status": null,
+        "oracle_value": null,
+        "checks": null,
+        "oracle_reason_codes": [],
+        "product_reason_codes": [],
+        "candidate_refs": [],
+        "observed_at": null,
+        "evidence_seal": null,
+        "projection_error": null
+      },
+      {
+        "principal": "tester-b",
+        "resource_type": "document",
+        "state": "unknown",
+        "applicable": true,
+        "na_basis": null,
+        "verdict_id": null,
+        "record_status": null,
+        "oracle_value": null,
+        "checks": null,
+        "oracle_reason_codes": [],
+        "product_reason_codes": [],
+        "candidate_refs": [],
+        "observed_at": null,
+        "evidence_seal": null,
+        "projection_error": "observation_unavailable"
+      },
+      {
+        "principal": "tester-a",
+        "resource_type": "note",
+        "state": "owner_control",
+        "applicable": null,
+        "na_basis": null,
+        "verdict_id": null,
+        "record_status": null,
+        "oracle_value": null,
+        "checks": null,
+        "oracle_reason_codes": [],
+        "product_reason_codes": [],
+        "candidate_refs": [],
+        "observed_at": null,
+        "evidence_seal": null,
+        "projection_error": null
+      },
+      {
+        "principal": "tester-b",
+        "resource_type": "note",
+        "state": "unknown",
+        "applicable": true,
+        "na_basis": null,
+        "verdict_id": null,
+        "record_status": null,
+        "oracle_value": null,
+        "checks": null,
+        "oracle_reason_codes": [],
+        "product_reason_codes": [],
+        "candidate_refs": [],
+        "observed_at": null,
+        "evidence_seal": null,
+        "projection_error": "observation_unavailable"
+      },
+      {
+        "principal": "tester-a",
+        "resource_type": "post",
+        "state": "owner_control",
+        "applicable": null,
+        "na_basis": null,
+        "verdict_id": null,
+        "record_status": null,
+        "oracle_value": null,
+        "checks": null,
+        "oracle_reason_codes": [],
+        "product_reason_codes": [],
+        "candidate_refs": [],
+        "observed_at": null,
+        "evidence_seal": null,
+        "projection_error": null
+      },
+      {
+        "principal": "tester-b",
+        "resource_type": "post",
+        "state": "na",
+        "applicable": false,
+        "na_basis": "declared_shared",
+        "verdict_id": null,
+        "record_status": null,
+        "oracle_value": null,
+        "checks": null,
+        "oracle_reason_codes": [],
+        "product_reason_codes": [],
+        "candidate_refs": [],
+        "observed_at": null,
+        "evidence_seal": null,
+        "projection_error": null
+      }
+    ]
+  }
+}

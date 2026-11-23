@@ -158,7 +158,8 @@ type ProductSkippedType struct {
 
 | 상태 | 코드 | 언제 |
 |---|---|---|
-| 400 | `invalid_product_access_map_request` | 경로·메서드·쿼리 |
+| 400 | `invalid_product_access_map_request` | 경로·쿼리·본문 |
+| 405 | `invalid_product_access_map_request` | GET이 아닌 메서드(HEAD·POST 등). `Allow: GET`을 싣는다(제품 판정 목록 #801과 같음) |
 | 401 | `authentication_required` | 인증 없음·만료 |
 | 403 | `product_access_map_forbidden` | 작업 소유 아님 |
 | 409 | `product_access_map_binding_unavailable` | 회차 참조 없음(목록과 같음) |
@@ -172,9 +173,11 @@ type ProductSkippedType struct {
 ## 3. 화면 (이경준)
 
 - 지도 화면(`UrlAccessMapLive`)과 보고서 탭 지도: 평가 지도가 409일 때 지금의 안내 + `ProductVerdictMap` 표 대신 제품 지도 격자를 그린다. 평가 지도가 200이면 평가 격자를 그대로 두고 제품 격자는 따로 둔다(두 출처를 한 격자에 섞지 않는다).
-- seam: `lib/diagnosis/kg.ts`에 `getProductAccessMap(taskId)` + exact 파서(§2.2 allowlist, 서버가 만들 수 없는 값은 받지 않음 — #689 방어 파서 원칙). 레이아웃이 바뀌어도 이 getter만 갈아 끼우게 둔다.
+- seam: `web/src/workbench/live/productAccessMap.ts`에 `getProductAccessMap(taskId)` + exact 파서(§2.2 allowlist, 서버가 만들 수 없는 값은 받지 않음 — #689 방어 파서 원칙). 레이아웃이 바뀌어도 이 getter만 갈아 끼우게 둔다. 제품 판정 목록 seam(`fetchProductVerdicts`)과 같은 자리이고, `lib/diagnosis`는 `workbench`를 가져오지 않아 `kg.ts`에 두지 않는다(#871에서 정정).
 - **파서 분리**: 제품 지도 파서는 평가 지도 파서(`checkAccessMapResponse`·`API_STATE_DECISION`)와 따로 둔다. `owner_control`·`na`·`na_basis`는 제품 파서에서만 받고, 평가 지도 응답에 이 값이 오면 지금처럼 fail-closed(`미등록 state`)다. 두 파서가 상태 표를 공유하지 않는다.
-- 셀 표시: `owner_control` = "소유 계정(선언) · 판정 대상 아님" — 체크·성공 색을 쓰지 않는 중립 표시로, A 조회 성공으로 읽히지 않게 한다. `na` = "—(공유 선언)", 나머지는 평가 지도와 같은 라벨·색. `projection_error`는 셀 설명 문구로.
+- 셀 표시: `owner_control` = "소유 계정(선언) · 판정 대상 아님" — 체크·성공 색을 쓰지 않는 중립 표시로, A 조회 성공으로 읽히지 않게 한다. `na` = "—(공유 선언)", 나머지는 평가 지도와 같은 라벨·색(취약 확정·취약 의심·판정 불가). `projection_error`는 셀 설명 문구로, 원인을 추정하지 않는다(`observation_unavailable` = "관측 근거 없음" — 확정 단계 상태는 격자 위 줄에 따로).
+- **합계 칩**: 교차(B) 칸만 센다. 저장된 판단불가 판정(`state=unknown`·`oracle_value=undecidable`)과 판정 없는 칸(`state=unknown`·`projection_error`)은 칩을 나눈다("판정 불가(저장 판정)" / "판정 기록 · 근거 없음", §2.3의 합치지 않는다는 규칙).
+- **다시 읽기**: 저장 자료라 주기 조회는 하지 않지만, 안내 화면·격자 화면·오류 화면 모두 "제품 지도 다시 읽기"를 둔다(확정 단계가 읽은 직후에 끝난 경우 같은 화면에서 새로 읽는다).
 - **확정 단계 전·진행 중 안내(§6 O2 결정)**: `confirmation=null`(확정 결과 파일 없음 = 아직 확정 단계를 끝내지 않음)이면 격자를 그리지 않고 "확정 단계가 끝나면 교차 계정 결과가 채워집니다" 안내만 보인다. `confirmation`이 있으면(완료·중지·꺼짐·시작 거절·진위 실패·읽기 실패) 격자를 그리고 상태·사유를 격자 위에 보인다. 서버 응답은 그대로다(B 셀은 §2.3대로 `observation_unavailable`).
 - 출처 딱지: "제품 · 정책 선언 declaration-<job> · 수평(종류 × A/B)". 운영자 전용 고지는 지금 그대로.
 - 지금의 `ProductVerdictMap` 표는 제품 지도 연결 PR에서 격자로 대체하고, 보고서의 "제품 확정 단계 판정" 구획(목록)은 그대로 둔다.
