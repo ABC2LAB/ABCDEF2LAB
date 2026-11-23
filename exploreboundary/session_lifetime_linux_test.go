@@ -136,3 +136,16 @@ func TestNormalCloseHasNoCause(t *testing.T) {
 		t.Fatalf("보통 마감에 원인: %+v", got)
 	}
 }
+
+// 연 직후에는 조회가 아직 없어도 연 시각부터 센다(열자마자 닫지 않는다).
+func TestHeartbeatCountsFromOpen(t *testing.T) {
+	m, source, clock, _ := lifetimeManager(t)
+	if resp := openVia(t, m, source); !resp.OK {
+		t.Fatal(resp.Error)
+	}
+	clock.add(lifetimeHeartbeat / 2)
+	time.Sleep(4 * lifetimeHeartbeat) // 경계 확인 주기가 여러 번 돈다
+	if m.Current() == nil {
+		t.Fatal("연 직후 조회 전인 세션을 닫음")
+	}
+}
