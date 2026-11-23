@@ -74,8 +74,9 @@ func TestDiagnosticTextMarkdownCredentials(t *testing.T) {
 		"**비밀번호**: `synthetic-pass`",
 		"plaintext passwords `synthetic-pass`",
 		"Session token `synthetic-token`",
+		`Password "synthetic\"secret"`,
 	} {
-		if got := DiagnosticText(input); strings.Contains(got, "synthetic-") {
+		if got := DiagnosticText(input); strings.Contains(got, "synthetic") || strings.Contains(got, `secret"`) {
 			t.Errorf("마크다운 자격값이 남음: %q", got)
 		}
 	}
