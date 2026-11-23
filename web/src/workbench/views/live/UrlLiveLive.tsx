@@ -558,7 +558,7 @@ function StageGauge({ segs }: { segs: GaugeSeg[] }) {
         </ol>
         <span className={s.lgstep}>{`단계 ${allDone ? segs.length : at + 1}/${segs.length}`}</span>
       </div>
-      <div className={cx(s.lghead, tone === "stop" && s.stop)} aria-hidden="true">
+      <div className={cx(s.lghead, tone === "stop" && s.stop, allDone && s.done)} aria-hidden="true">
         {/* 다 끝나면 '점검 완료' 한 마디(사용자 11/23: '모든 단계를 마쳤습니다 · 결과 저장'이 길었다) */}
         {allDone ? "점검 완료" : gaugeHeadline(now)}
       </div>

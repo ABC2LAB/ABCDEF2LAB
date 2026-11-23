@@ -4358,6 +4358,10 @@ button.smm:hover {
 .lghead.stop {
   color: var(--und);
 }
+/* 다 끝난 점검의 '점검 완료'는 초록(사용자 11/23) */
+.lghead.done {
+  color: var(--ok);
+}
 .prog.lgbar {
   height: 8px;
   border-radius: 4px;
