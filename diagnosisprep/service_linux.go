@@ -44,15 +44,18 @@ type receipt struct {
 	ExecutionBootID          string `json:"execution_boot_id,omitempty"`
 	// 실행을 시작한 준비 서비스가 PID 1이던 init 인스턴스(PID namespace + 시작 tick)다.
 	// 컨테이너 재시작 복구 증거로만 쓴다(C04).
-	ExecutionInitInstance     string           `json:"execution_init_instance,omitempty"`
-	ExecutionReturned         bool             `json:"execution_returned,omitempty"`
-	ResourcesRecovered        bool             `json:"resources_recovered,omitempty"`
-	ExternalTransferConfirmed bool             `json:"external_transfer_confirmed,omitempty"`
-	Principal                 string           `json:"principal"`
-	CreateKey                 string           `json:"create_key"`
-	StartKey                  string           `json:"start_key,omitempty"`
-	Inspection                storedInspection `json:"inspection"`
-	Job                       Job              `json:"job"`
+	ExecutionInitInstance     string `json:"execution_init_instance,omitempty"`
+	ExecutionReturned         bool   `json:"execution_returned,omitempty"`
+	ResourcesRecovered        bool   `json:"resources_recovered,omitempty"`
+	ExternalTransferConfirmed bool   `json:"external_transfer_confirmed,omitempty"`
+	// Purged는 점검 결과를 지운 회차다(2026-11-23). Job은 그대로 두고 이 칸만 켠 receipt를 한 줄 더 쓴다 — 저널은 추가
+	// 전용이고, 시작한 회차는 실행 횟수·예산 계산에 계속 들어가야 한다. 켜진 뒤에는 되돌리거나 바꾸지 않는다.
+	Purged     bool             `json:"purged,omitempty"`
+	Principal  string           `json:"principal"`
+	CreateKey  string           `json:"create_key"`
+	StartKey   string           `json:"start_key,omitempty"`
+	Inspection storedInspection `json:"inspection"`
+	Job        Job              `json:"job"`
 }
 type executionHandle struct {
 	cancel context.CancelFunc
@@ -284,7 +287,22 @@ func executionBootID() string {
 	}
 	return value
 }
+
+// purgeable은 점검 결과를 지워도 되는 회차인지 본다. 끝난 상태이고, 시작했다면 실행이 실제로 반환됐고 자원 마감
+// 증거(drain 완료 또는 재마감 확인)가 있어야 한다. 결과 불명·진행 중·마감 미확인 회차는 지우지 않는다.
+func purgeable(r receipt) bool {
+	return terminal(r.Job.State) && (r.StartKey == "" || r.ExecutionReturned && (r.Job.DrainComplete || r.ResourcesRecovered))
+}
+
 func validReceiptChange(old, next receipt) bool {
+	// 지운 회차는 더 바뀌지 않고, 지움은 Job·실행 증거를 그대로 둔 채 켜기만 한다
+	if old.Purged {
+		return false
+	}
+	if next.Purged && (!reflect.DeepEqual(old.Job, next.Job) || !purgeable(next) || old.ExecutionReturned != next.ExecutionReturned ||
+		old.ResourcesRecovered != next.ResourcesRecovered || old.RecoveryWitnessBootID != next.RecoveryWitnessBootID) {
+		return false
+	}
 	if old.StartKey != "" && old.ExecutionEvidenceVersion != next.ExecutionEvidenceVersion {
 		return false
 	}
@@ -297,7 +315,7 @@ func validReceiptChange(old, next receipt) bool {
 	if old.ExecutionReturned && !next.ExecutionReturned || old.ResourcesRecovered && !next.ResourcesRecovered {
 		return false
 	}
-	if old.Principal != next.Principal || old.CreateKey != next.CreateKey || old.Job.ID != next.Job.ID || (next.Job.Revision != old.Job.Revision+1 && !(reflect.DeepEqual(old.Job, next.Job) && (old.ExecutionReturned != next.ExecutionReturned || old.ResourcesRecovered != next.ResourcesRecovered || old.RecoveryWitnessBootID != next.RecoveryWitnessBootID))) || old.Job.Input != next.Job.Input {
+	if old.Principal != next.Principal || old.CreateKey != next.CreateKey || old.Job.ID != next.Job.ID || (next.Job.Revision != old.Job.Revision+1 && !(reflect.DeepEqual(old.Job, next.Job) && (old.ExecutionReturned != next.ExecutionReturned || old.ResourcesRecovered != next.ResourcesRecovered || old.RecoveryWitnessBootID != next.RecoveryWitnessBootID || old.Purged != next.Purged))) || old.Job.Input != next.Job.Input {
 		return false
 	}
 	if old.StartKey != "" {
@@ -365,7 +383,8 @@ func (s *Service) Call(ctx context.Context, r Request) (Response, error) {
 		input, _ := CanonicalInput(*r.Input)
 		for _, existing := range s.jobs {
 			if existing.Principal == r.Principal && existing.CreateKey == r.IdempotencyKey {
-				if existing.Job.Input != input {
+				// 지운 회차의 생성 키로는 되살리지도 새로 만들지도 않는다
+				if existing.Purged || existing.Job.Input != input {
 					return responseError(r, "idempotency_conflict"), nil
 				}
 				return responseJob(r, existing.Job), nil
@@ -395,7 +414,7 @@ func (s *Service) Call(ctx context.Context, r Request) (Response, error) {
 		return responseJob(r, job), nil
 	case Lookup:
 		for _, j := range s.jobs {
-			if j.Principal == r.Principal && j.CreateKey == r.IdempotencyKey {
+			if j.Principal == r.Principal && j.CreateKey == r.IdempotencyKey && !j.Purged {
 				return responseJob(r, j.Job), nil
 			}
 		}
@@ -404,7 +423,8 @@ func (s *Service) Call(ctx context.Context, r Request) (Response, error) {
 		allowed := false
 		var owned *Job
 		for _, j := range s.jobs {
-			if j.Principal == r.Principal && j.Job.TaskID == r.TaskID {
+			// 지운 회차의 작업은 보고서·판정·실행 기록 조회를 열지 않는다
+			if j.Principal == r.Principal && j.Job.TaskID == r.TaskID && !j.Purged {
 				allowed = true
 				copy := cloneReceipt(j).Job
 				owned = &copy
@@ -414,7 +434,7 @@ func (s *Service) Call(ctx context.Context, r Request) (Response, error) {
 		return Response{Version: Version, RequestID: r.RequestID, Authorized: &allowed, Job: owned}, nil
 	}
 	record, exists := s.jobs[r.JobID]
-	if !exists || record.Principal != r.Principal {
+	if !exists || record.Principal != r.Principal || record.Purged {
 		return responseError(r, "not_found"), nil
 	}
 	switch r.Command {
@@ -558,6 +578,29 @@ func (s *Service) Call(ctx context.Context, r Request) (Response, error) {
 		}
 		if h, ok := s.executions[record.Job.ID]; ok {
 			h.cancel()
+		}
+		return responseJob(r, record.Job), nil
+	case Delete:
+		if r.ExpectedRevision != record.Job.Revision {
+			return responseError(r, "revision_conflict"), nil
+		}
+		if !purgeable(record) {
+			return responseError(r, "run_active"), nil
+		}
+		purger, ok := s.backend.(RunPurger)
+		if !ok {
+			return responseError(r, "unavailable"), nil
+		}
+		// 결과를 먼저 지우고 표시를 남긴다. 지우기가 실패하면 표시하지 않아 다시 시도할 수 있고, 표시 저장이 실패해도
+		// 같은 회차로 다시 부르면 PurgeRun이 멱등이라 같은 결과다.
+		if err := purger.PurgeRun(ctx, Execution{Principal: record.Principal, Job: record.Job, Inspection: record.Inspection.runtime()}); err != nil {
+			log.Print("진단 준비: 끝난 회차의 점검 결과를 지우지 못했습니다")
+			return responseError(r, "unavailable"), nil
+		}
+		next := cloneReceipt(record)
+		next.Purged = true
+		if err := s.save(next); err != nil {
+			return responseError(r, "unavailable"), nil
 		}
 		return responseJob(r, record.Job), nil
 	}
@@ -827,7 +870,7 @@ func replayPreparationReceipts(ctx context.Context, records []json.RawMessage, s
 			return nil, errStorage
 		}
 		var r receipt
-		if strictDecode(raw, &r) != nil || r.ExecutionInitInstance != "" && (!initInstancePattern.MatchString(r.ExecutionInitInstance) || r.ExecutionBootID == "") || !validText(r.Principal, 256) || !reference.MatchString(r.CreateKey) || !validJob(r.Job) || r.ExecutionEvidenceVersion > 1 || r.ExecutionEvidenceVersion != 0 && r.StartKey == "" || r.ExecutionBootID != "" && !bootIDPattern.MatchString(r.ExecutionBootID) || r.RecoveryWitnessBootID != "" && (!bootIDPattern.MatchString(r.RecoveryWitnessBootID) || r.ExecutionBootID != "" || r.StartKey == "") || r.ResourcesRecovered && !r.ExecutionReturned || (r.ExecutionReturned || r.ExecutionBootID != "") && r.StartKey == "" || !inspectionOK(r.Inspection.runtime()) || r.Job.SourceDigest != sourceDigest(r.Job.Input, r.Inspection.InstallationDigest) || !reflect.DeepEqual(r.Job.Scope, r.Inspection.Scope) || (r.StartKey != "" && (!reference.MatchString(r.StartKey) || (r.Job.Scope != nil && r.Job.Scope.Model != nil && r.Job.Scope.Model.ExternalTransfer && !r.ExternalTransferConfirmed))) || r.Job.PreparationStarted != (r.StartKey != "") {
+		if strictDecode(raw, &r) != nil || r.ExecutionInitInstance != "" && (!initInstancePattern.MatchString(r.ExecutionInitInstance) || r.ExecutionBootID == "") || !validText(r.Principal, 256) || !reference.MatchString(r.CreateKey) || !validJob(r.Job) || r.ExecutionEvidenceVersion > 1 || r.ExecutionEvidenceVersion != 0 && r.StartKey == "" || r.ExecutionBootID != "" && !bootIDPattern.MatchString(r.ExecutionBootID) || r.RecoveryWitnessBootID != "" && (!bootIDPattern.MatchString(r.RecoveryWitnessBootID) || r.ExecutionBootID != "" || r.StartKey == "") || r.ResourcesRecovered && !r.ExecutionReturned || (r.ExecutionReturned || r.ExecutionBootID != "") && r.StartKey == "" || !inspectionOK(r.Inspection.runtime()) || r.Job.SourceDigest != sourceDigest(r.Job.Input, r.Inspection.InstallationDigest) || !reflect.DeepEqual(r.Job.Scope, r.Inspection.Scope) || (r.StartKey != "" && (!reference.MatchString(r.StartKey) || (r.Job.Scope != nil && r.Job.Scope.Model != nil && r.Job.Scope.Model.ExternalTransfer && !r.ExternalTransferConfirmed))) || r.Job.PreparationStarted != (r.StartKey != "") || r.Purged && !purgeable(r) {
 			return nil, errStorage
 		}
 		key := r.Principal + "\x00" + r.CreateKey
@@ -842,7 +885,7 @@ func replayPreparationReceipts(ctx context.Context, records []json.RawMessage, s
 			if !validReceiptChange(old, r) {
 				return nil, errStorage
 			}
-		} else if r.Job.Revision != 1 || r.StartKey != "" {
+		} else if r.Job.Revision != 1 || r.StartKey != "" || r.Purged {
 			return nil, errStorage
 		}
 		createKeys[key] = r.Job.ID

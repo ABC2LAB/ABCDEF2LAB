@@ -202,7 +202,7 @@ func ValidateRequest(r Request) error {
 		if !reference.MatchString(r.JobID) || r.ExpectedRevision != 0 || r.IdempotencyKey != "" || !noInput || r.TaskID != "" {
 			return ErrProtocol
 		}
-	case Stop:
+	case Stop, Delete:
 		if !reference.MatchString(r.JobID) || r.ExpectedRevision == 0 || r.IdempotencyKey != "" || !noInput || r.TaskID != "" {
 			return ErrProtocol
 		}
@@ -346,7 +346,7 @@ func validJobResult(j Job) bool {
 }
 func validError(code string) bool {
 	switch code {
-	case "invalid_request", "not_found", "forbidden", "revision_conflict", "idempotency_conflict", "approval_changed", "approval_required", "busy", "budget_exhausted", "capacity", "unavailable", "unknown", "service_closed", "snapshot_changed":
+	case "invalid_request", "not_found", "forbidden", "revision_conflict", "idempotency_conflict", "approval_changed", "approval_required", "busy", "budget_exhausted", "capacity", "unavailable", "unknown", "service_closed", "snapshot_changed", "run_active":
 		return true
 	}
 	return false

@@ -25,6 +25,8 @@ const (
 	Status        Command = "status"
 	Stop          Command = "stop"
 	AuthorizeTask Command = "authorize_task"
+	// Delete는 끝난 회차의 점검 결과를 지운다(2026-11-23). 회차 기록 자체는 남겨 실행 횟수·예산에 계속 센다.
+	Delete Command = "delete"
 )
 
 type State string
@@ -270,4 +272,10 @@ type Backend interface {
 // 원래 결과 불명 사실과 예약을 수정하거나 실행을 다시 시작하지 않는다.
 type ClosureVerifier interface {
 	VerifyClosure(context.Context, Execution) error
+}
+
+// RunPurger는 끝난 회차의 점검 결과(DB 작업 기록·회차 폴더·진단 로그)를 지운다. 같은 회차로 다시 불러도 같은 결과여야
+// 한다(멱등). E② 감사 저널·예산·대상 리셋 기록은 지우지 않는다. 구현이 없으면 서비스는 삭제를 거절한다.
+type RunPurger interface {
+	PurgeRun(context.Context, Execution) error
 }

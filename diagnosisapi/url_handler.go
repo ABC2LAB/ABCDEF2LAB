@@ -149,7 +149,8 @@ func (h *URLHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			req.Command = diagnosisprep.Status
-		case "validate", "start", "stop":
+		// delete는 끝난 회차의 점검 결과를 지운다(2026-11-23). 본문은 stop과 같다(version·expected_revision).
+		case "validate", "start", "stop", "delete":
 			if r.Method != http.MethodPost {
 				urlFail(w, 405, "method_not_allowed")
 				return
@@ -247,7 +248,7 @@ func urlErrorStatus(code string) (int, bool) {
 		return 403, true
 	case "not_found":
 		return 404, true
-	case "revision_conflict", "idempotency_conflict", "approval_changed", "approval_required", "busy", "budget_exhausted", "snapshot_changed":
+	case "revision_conflict", "idempotency_conflict", "approval_changed", "approval_required", "busy", "budget_exhausted", "snapshot_changed", "run_active":
 		return 409, true
 	case "capacity", "unavailable", "unknown", "service_closed":
 		return 503, true
