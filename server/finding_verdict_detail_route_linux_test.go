@@ -76,16 +76,19 @@ func TestFindingVerdictDetailInstalledOnlyInProductRelayOwnedPostgres(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, target := range []string{"/api/tasks/1/product-verdicts", "/api/tasks/1/product-verdicts/extra"} {
-			w := httptest.NewRecorder()
-			handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, target, nil))
-			switch {
-			case !product && w.Code != http.StatusNotFound:
-				t.Fatalf("제품 아닌 관리 API가 판정 목록을 받음: %s %d", target, w.Code)
-			case product && target == "/api/tasks/1/product-verdicts" && w.Code != http.StatusUnauthorized:
-				t.Fatalf("제품 중계 인증 거부: %d %s", w.Code, w.Body)
-			case product && target != "/api/tasks/1/product-verdicts" && w.Code != http.StatusBadRequest:
-				t.Fatalf("모양이 틀린 판정 목록 경로: %d %s", w.Code, w.Body)
+		// 제품 접근통제 지도(product-access-map §2.1)도 같은 자리·같은 규칙이다.
+		for _, base := range []string{"/api/tasks/1/product-verdicts", "/api/tasks/1/product-access-map"} {
+			for _, target := range []string{base, base + "/extra"} {
+				w := httptest.NewRecorder()
+				handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, target, nil))
+				switch {
+				case !product && w.Code != http.StatusNotFound:
+					t.Fatalf("제품 아닌 관리 API가 제품 경로를 받음: %s %d", target, w.Code)
+				case product && target == base && w.Code != http.StatusUnauthorized:
+					t.Fatalf("제품 중계 인증 거부: %s %d %s", target, w.Code, w.Body)
+				case product && target != base && w.Code != http.StatusBadRequest:
+					t.Fatalf("모양이 틀린 제품 경로: %s %d %s", target, w.Code, w.Body)
+				}
 			}
 		}
 	}
