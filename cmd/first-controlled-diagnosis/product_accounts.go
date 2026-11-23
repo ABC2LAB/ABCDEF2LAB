@@ -24,14 +24,27 @@ import (
 // productAccountStatement는 시험 계정 표시 때 승인자가 동의하는 진술이다. 저널에는 이 문장의 SHA-256만 남긴다.
 const productAccountStatement = "이 계정은 우리 조직이 소유한 일회용 시험 계정이고 실제 사용자 데이터가 없으며, 대상 운영 주체가 이 계정으로 시험하는 것을 허락했다."
 
-// productExternalConsentStatement는 외부 API 모델 실행에 시험 계정 세션을 보내는 것에 대한 진술이다(CLAUDE.md 규칙 2,
-// C14 결정 4, docs/external-llm-notice-ko.md). 초안 입력 external_test_accounts가 이 진술에 동의한다는 뜻이고, 저널에는
-// 이 문장의 SHA-256과 주체·시각·작업만 남긴다.
-const productExternalConsentStatement = "이 점검 회차에서 시험 계정 세션(대상이 발급한 쿠키·토큰)을 외부 모델 제공자에게 보내는 것을 대상 운영 주체에게 사전 공지했고 승인을 받았다. 비밀번호는 보내지 않는다."
+// productExternalConsentStatement는 외부 API 모델 실행에 시험 계정 세션과 대상에서 온 정보(대상 응답·도구 출력)를 보내는 것에
+// 대한 진술이다(CLAUDE.md 규칙 2, C14 결정 4, docs/external-llm-notice-ko.md, 사용자 결정 2026-11-23: 대상에서 온 정보는
+// 외부 모델로 나가도 되고 책임은 사용자에게 있다고 공지한다). 초안 입력 external_test_accounts가 이 진술에 동의한다는 뜻이고,
+// 저널에는 이 문장의 SHA-256과 주체·시각·작업만 남긴다. 화면은 이 문장을 서버에서 받아 그대로 보인다.
+const productExternalConsentStatement = "이 점검 회차에서 시험 계정 세션(대상이 발급한 쿠키·토큰)을 외부 모델 제공자에게 보내는 것을 대상 운영 주체에게 사전 공지했고 승인을 받았습니다. 대상 응답·도구 출력(대상이 돌려준 비밀번호·개인정보 등 포함)이 외부 모델 제공자로 전송되며, 외부 전송된 정보에 대한 책임은 사용자에게 있습니다. 로그인 비밀번호는 프로그램이 입력하며 모델에 넣지 않습니다."
+
+// productExternalConsentStatementV1은 11/23 전 진술이다. 이미 계정 저널에 남은 동의 줄을 다시 읽을 때만 받고 새로 남기지 않는다.
+const productExternalConsentStatementV1 = "이 점검 회차에서 시험 계정 세션(대상이 발급한 쿠키·토큰)을 외부 모델 제공자에게 보내는 것을 대상 운영 주체에게 사전 공지했고 승인을 받았다. 비밀번호는 보내지 않는다."
 
 func productExternalConsentStatementSHA256() string {
-	sum := sha256.Sum256([]byte(productExternalConsentStatement))
+	return statementSHA256(productExternalConsentStatement)
+}
+
+func statementSHA256(statement string) string {
+	sum := sha256.Sum256([]byte(statement))
 	return hex.EncodeToString(sum[:])
+}
+
+// knownExternalConsentStatementSHA256은 저널 재생이 받는 동의 진술 해시다(지금 진술 + 이전 진술).
+func knownExternalConsentStatementSHA256(digest string) bool {
+	return digest == productExternalConsentStatementSHA256() || digest == statementSHA256(productExternalConsentStatementV1)
 }
 
 func productAccountStatementSHA256() string {
@@ -84,7 +97,7 @@ func (r *productTargetRegistry) replayAccount(e productAccountEvent) error {
 		return errPreparation
 	}
 	if e.Action == accountExternalConsent {
-		if e.Label != "" || e.Login != nil || e.CredentialSHA256 != "" || e.StatementSHA256 != productExternalConsentStatementSHA256() || !managementReference.MatchString(e.JobRef) {
+		if e.Label != "" || e.Login != nil || e.CredentialSHA256 != "" || !knownExternalConsentStatementSHA256(e.StatementSHA256) || !managementReference.MatchString(e.JobRef) {
 			return errPreparation
 		}
 		return nil

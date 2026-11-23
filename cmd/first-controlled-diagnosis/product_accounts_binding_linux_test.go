@@ -366,6 +366,15 @@ func TestExternalConsentRecordedInAccountJournal(t *testing.T) {
 	if err := r.replayAccount(good); err != nil {
 		t.Fatal("valid consent line rejected on replay:", err)
 	}
+	// 11/23 전 진술로 남은 동의 줄도 다시 읽는다(진술을 바꿔도 이전 설치의 저널이 열려야 한다). 새로 남기는 줄은 지금 진술이다.
+	previous := good
+	previous.StatementSHA256, previous.JobRef = statementSHA256(productExternalConsentStatementV1), "job-replay-v1"
+	if err := r.replayAccount(previous); err != nil {
+		t.Fatal("previous consent statement rejected on replay:", err)
+	}
+	if productExternalConsentStatementSHA256() == statementSHA256(productExternalConsentStatementV1) {
+		t.Fatal("consent statement did not change")
+	}
 	for name, change := range map[string]func(*productAccountEvent){
 		"statement": func(e *productAccountEvent) { e.StatementSHA256 = productAccountStatementSHA256() },
 		"label":     func(e *productAccountEvent) { e.Label = "tester-a" },
@@ -381,6 +390,10 @@ func TestExternalConsentRecordedInAccountJournal(t *testing.T) {
 	// 다른 줄에 작업 칸이 섞이면 거부한다.
 	if err := r.replayAccount(productAccountEvent{TargetID: target.ID, Label: "tester-x", Action: accountRegister, Actor: "ARTEX", At: time.Now(), TargetRevision: rec.Target.Revision, JobRef: "job-x"}); err == nil {
 		t.Fatal("job ref on a register line accepted")
+	}
+	// 11/23 사용자 결정 문장(대상에서 온 정보의 외부 전송과 사용자 책임)이 진술에 그대로 있어야 한다.
+	if !strings.Contains(productExternalConsentStatement, "대상 응답·도구 출력(대상이 돌려준 비밀번호·개인정보 등 포함)이 외부 모델 제공자로 전송되며, 외부 전송된 정보에 대한 책임은 사용자에게 있습니다") {
+		t.Fatal("consent statement misses the 11/23 notice")
 	}
 	if productExternalConsentStatementSHA256() == productAccountStatementSHA256() || !strings.Contains(productExternalConsentStatement, "외부 모델 제공자") {
 		t.Fatal("consent statement not distinct")
