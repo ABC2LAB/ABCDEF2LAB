@@ -210,13 +210,14 @@ dc up -d --no-build
 ```bash
 # (가)
 ./scripts/product-compose.sh down                 # 데이터 볼륨은 남긴다(다시 올리면 기존 설치를 재사용)
-# (나) VAmPI 연습: 일회용이면 볼륨까지
-dc down -v --timeout 60
+# (나) VAmPI 연습: 볼륨은 남긴다(-v 금지 — 이 dc는 compose.yaml도 읽어 postgres-data·product-state·e2-host-state까지 지운다)
+dc down --timeout 60
 # 남은 것 확인: 내 프로젝트 라벨만
 docker ps -a --filter label=com.docker.compose.project=$COMPOSE_PROJECT_NAME
 ```
 - 정리는 내가 띄운 compose 프로젝트·라벨로만 한다. `docker rm -f $(docker ps -aq)` 같은 전체 삭제는 하지 않는다(같은 PC의 다른 회차를 지운다).
 - 제품 설치에서 `down -v`는 영속 상태(키·승인·감사·보고서)를 지운다. 복구 절차로 쓰지 않는다.
+- VAmPI 대상만 처음 상태로 되돌리려면 볼륨을 지우지 말고 리셋 절차(6장)를 쓴다. 연습 overlay에는 VAmPI 전용 볼륨이 없다.
 
 ## 13. 로그 위치
 
