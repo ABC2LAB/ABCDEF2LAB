@@ -69,9 +69,14 @@ func TestOpenRouterPerRunLedgerV4(t *testing.T) {
 	if err := reserveFree(a); err == nil {
 		t.Fatal("점검 A가 점검당 총량을 넘음")
 	}
-	// 같은 점검을 다시 열지 않는다: 장부는 점검 시작 때 한 번만 새로 만든다(이미 있으면 거부).
+	// 같은 점검을 다시 열지 않는다: 장부는 점검 시작 때 한 번만 새로 만든다(이미 있으면 거부). 아직 예약하지 않아
+	// 장부가 비어 있는 점검도 마찬가지다.
 	if _, err := LoadOpenRouterManifestFileForRun(path, "job-a"); err == nil {
 		t.Fatal("이미 시작한 점검의 장부로 다시 열림")
+	}
+	loadForRun(t, path, "job-empty")
+	if _, err := LoadOpenRouterManifestFileForRun(path, "job-empty"); err == nil {
+		t.Fatal("빈 장부로 시작한 점검을 다시 열음")
 	}
 	b := loadForRun(t, path, "job-b")
 	if b.CheckAvailable() != nil || reserveFree(b) != nil {
@@ -93,7 +98,8 @@ func TestOpenRouterPerRunLedgerV4(t *testing.T) {
 			ledgers = append(ledgers, e.Name())
 		}
 	}
-	if len(ledgers) != 2 {
+	// job-a·job-b와 비어 있는 job-empty의 장부 셋(지우지 않고 남는다)
+	if len(ledgers) != 3 {
 		t.Fatalf("점검별 장부 파일: %v", ledgers)
 	}
 	for _, name := range ledgers {
@@ -106,8 +112,12 @@ func TestOpenRouterPerRunLedgerV4(t *testing.T) {
 	}
 	// 승인 누적 경로(CLI)는 v4 승인도 지금처럼 누적 장부를 쓴다.
 	cumulative, err := LoadOpenRouterManifestFile(path)
-	if err != nil || reserveFree(cumulative) != nil {
+	if err != nil || reserveFree(cumulative) != nil || reserveFree(cumulative) != nil {
 		t.Fatal("누적 로더 예약 실패", err)
+	}
+	// 새 점검 확인은 승인 누적 장부를 보지 않는다(그 장부를 다 써도 새 점검은 시작할 수 있다).
+	if loadForRun(t, path, "").CheckAvailable() != nil {
+		t.Fatal("새 점검 확인이 승인 누적 장부에 막힘")
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".openrouter-"+approval+".ledger")); err != nil {
 		t.Fatal("누적 로더가 승인 장부를 쓰지 않음")
@@ -186,7 +196,12 @@ func TestOpenRouterPerRunLedgerTamperingFailsClosed(t *testing.T) {
 			if reserveFree(p) != nil {
 				t.Fatal("첫 예약")
 			}
-			tamper(t, filepath.Join(filepath.Dir(path), p.Snapshot().RunLedger))
+			u := p.Snapshot()
+			tamper(t, filepath.Join(filepath.Dir(path), u.RunLedger))
+			// 첫 예약의 정산도 손댄 장부에는 쓰지 않는다.
+			if p.settleLedger([3]int64{u.ReservedInputTokens, u.ReservedOutputTokens, u.ReservedCostMicros}, [3]int64{10, 2, 1}) == nil {
+				t.Fatal("손댄 장부에 정산을 씀")
+			}
 			if p.CheckAvailable() == nil {
 				t.Fatal("손댄 장부를 쓸 수 있다고 봄")
 			}
