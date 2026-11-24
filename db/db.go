@@ -18,7 +18,12 @@ import (
 )
 
 //go:embed schema.sql
-var schemaSQL string
+var baseSchemaSQL string
+
+//go:embed remediation_followup.sql
+var followupSchemaSQL string
+
+var schemaSQL = baseSchemaSQL + "\n" + followupSchemaSQL
 
 const schemaMigrationLockKey int64 = 7337741001
 

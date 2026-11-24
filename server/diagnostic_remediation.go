@@ -56,7 +56,7 @@ type diagnosticRemediationEntryDTO struct {
 	Record            *diagnosticRemediationDTO `json:"record,omitempty"`
 }
 
-func attachDiagnosticRemediations(ctx context.Context, tx *sql.Tx, taskID int64, out *report.DiagnosticReport) error {
+func attachDiagnosticRemediations(ctx context.Context, tx *sql.Tx, taskID int64, out *report.DiagnosticReport, includeMissing bool) error {
 	records, err := db.ListDiagnosticRemediationRecords(ctx, tx, taskID, report.MaxFindings+1)
 	if err != nil {
 		return err
@@ -64,15 +64,22 @@ func attachDiagnosticRemediations(ctx context.Context, tx *sql.Tx, taskID int64,
 	if len(records) > report.MaxFindings {
 		return report.ErrExportBlocked
 	}
-	entries := map[string]*report.DiagnosticEntry{}
+	entries := map[string]int{}
 	for i := range out.Entries {
-		entries[out.Entries[i].ID] = &out.Entries[i]
+		entries[out.Entries[i].ID] = i
 	}
 	for _, record := range records {
-		entry := entries[record.EntryID]
-		if entry == nil {
+		index, exists := entries[record.EntryID]
+		if !exists {
+			if includeMissing {
+				if len(out.Entries) >= report.MaxFindings {
+					return report.ErrExportBlocked
+				}
+				out.Entries = append(out.Entries, report.DiagnosticEntry{ID: record.EntryID, Title: "원래 조치 근거 확인 불가", RemediationArtifactID: record.ID, SourceLoadFailed: true})
+			}
 			continue
 		}
+		entry := &out.Entries[index]
 		entry.RemediationArtifactID = record.ID
 		entry.RemediationCreatedAt = record.CreatedAt
 		entry.RemediationStale = record.Stale

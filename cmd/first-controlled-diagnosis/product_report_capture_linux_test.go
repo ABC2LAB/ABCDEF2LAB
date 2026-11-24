@@ -38,6 +38,11 @@ type productReportFrame struct{ png []byte }
 type productReportTestAuthority struct{ job diagnosisprep.Job }
 
 func (a productReportTestAuthority) Call(_ context.Context, r diagnosisprep.Request) (diagnosisprep.Response, error) {
+	if r.Command == diagnosisprep.ProductControl && r.Product.Operation == "target" && a.job.Scope != nil && r.Product.TargetID == a.job.Scope.TargetRef && r.Principal == "ARTEX" {
+		s := a.job.Scope
+		target := &diagnosisprep.ProductTarget{ID: s.TargetRef, Origin: s.Origin, State: "approved", PathPrefixes: s.PathPrefixes, Methods: s.Methods, Requests: s.Budget.Requests, ExpiresAt: s.ExpiresAt}
+		return diagnosisprep.Response{Version: r.Version, RequestID: r.RequestID, Product: &diagnosisprep.ProductResponse{Target: target}}, nil
+	}
 	if r.Command != diagnosisprep.AuthorizeTask {
 		return diagnosisprep.Response{}, diagnosisprep.ErrProtocol
 	}
@@ -252,6 +257,42 @@ func TestProductReportCaptureReadsOwnedPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatal("제품 관리 서버 기동 실패", err)
 	}
+	t.Run("remediation-followup-role", func(t *testing.T) {
+		_, err := installer.SaveDiagnosticRemediation(t.Context(), row.ID, entry, source.SourceDigest, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		completed := job
+		completed.Started, completed.DrainComplete, completed.ResultReady = true, true, true
+		completed.State, completed.Phase, completed.AuthorityState = diagnosisprep.Completed, diagnosisprep.Report, diagnosisprep.AuthorityConsumed
+		completed.Scope = &diagnosisprep.Scope{TargetRef: "owned", ScopeRef: "scope-owned", Origin: "https://report.owned.test", PathPrefixes: []string{"/"}, Methods: []string{"GET"}, QueryPolicy: "any", BodyPolicy: "bounded", ApprovalMode: "installed_delegation", AttestationRef: "owned", Budget: diagnosisprep.Budget{Requests: 4, ModelRequests: 3, InputTokens: 30, OutputTokens: 20, DurationSeconds: 60}, ExpiresAt: time.Now().UTC().Add(time.Hour)}
+		h, err := server.NewProductDiagnosisHandler(t.Context(), apiPool, keyDir, dataDir, productReportTestAuthority{job: completed}, upstream.URL, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		q := httptest.NewRequest("GET", fmt.Sprintf("/api/tasks/%d/remediation-followup", row.ID), nil)
+		q.Header.Set("Authorization", "Bearer "+session.Token)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, q)
+		var draft struct {
+			Items []struct {
+				Entry string `json:"entry_id"`
+			}
+		}
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &draft) != nil || len(draft.Items) != 1 || draft.Items[0].Entry != entry {
+			t.Fatal("제품 역할에서 이행점검 초안 조회 실패", w.Code, w.Body.String())
+		}
+		var ok bool
+		err = apiPool.QueryRow(`SELECT has_table_privilege(current_user,'remediation_followup_reviews','SELECT')
+			AND has_table_privilege(current_user,'remediation_followup_reviews','INSERT')
+			AND has_column_privilege(current_user,'remediation_followup_reviews','revision','UPDATE')
+			AND NOT has_column_privilege(current_user,'remediation_followup_reviews','record_id','UPDATE')
+			AND NOT has_table_privilege(current_user,'remediation_followup_reviews','DELETE,TRUNCATE')
+			AND NOT has_table_privilege('product_runtime','remediation_followup_reviews','SELECT,INSERT,UPDATE,DELETE')`).Scan(&ok)
+		if err != nil || !ok {
+			t.Fatal("이행점검 역할 권한", err)
+		}
+	})
 	read := func(leaf string) *httptest.ResponseRecorder {
 		q := httptest.NewRequest("GET", fmt.Sprintf("/api/tasks/%d/%s", row.ID, leaf), nil)
 		q.Header.Set("Authorization", "Bearer "+session.Token)

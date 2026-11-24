@@ -25,16 +25,21 @@ import (
 
 func diagnosticServerCandidate(t *testing.T, s *Server, taskID int64, classification string, observations ...e2proxy.HTTPObservation) int64 {
 	t.Helper()
+	return diagnosticServerRunCandidate(t, s, taskID, "synthetic-report-run", classification, observations...)
+}
+
+func diagnosticServerRunCandidate(t *testing.T, s *Server, taskID int64, run, classification string, observations ...e2proxy.HTTPObservation) int64 {
+	t.Helper()
 	task := s.m.ResolveTask(strconv.FormatInt(taskID, 10))
 	intent, err := task.Store.AddIntent(map[string]any{"description": "synthetic report observation"}, 5, nil, "test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	evidence := map[string]any{"tool_output": "synthetic observed response <script>not executable</script>", "command": "synthetic fixture input", "trusted": map[string]any{
-		"classification": classification, "execution": map[string]any{"scope": map[string]any{"TaskRef": fmt.Sprint(taskID), "RunRef": "synthetic-report-run"}, "intent_id": intent},
+		"classification": classification, "execution": map[string]any{"scope": map[string]any{"TaskRef": fmt.Sprint(taskID), "RunRef": run}, "intent_id": intent},
 		"call": map[string]any{"call_ref": fmt.Sprintf("call-%d", intent), "intent_id": intent, "observations": observations}, "output_truncated": false}}
 	raw, _ := json.Marshal(evidence)
-	c := db.DiagnosticCandidate{TaskID: taskID, IntentID: intent, RunRef: "synthetic-report-run", CallRef: fmt.Sprintf("call-%d", intent), VulnClass: "XSS", Name: "합성 XSS 후보", Summary: "관측된 응답을 사람이 검토해야 합니다.", Remediation: "출력 문맥별 인코딩 적용 여부를 확인하세요.", Classification: classification, Verification: "manual_review_required", EvidenceVersion: 1, EvidenceDigest: db.DiagnosticEvidenceDigest(string(raw)), ObservedAt: time.Now().UTC(), Evidence: string(raw)}
+	c := db.DiagnosticCandidate{TaskID: taskID, IntentID: intent, RunRef: run, CallRef: fmt.Sprintf("call-%d", intent), VulnClass: "XSS", Name: "합성 XSS 후보", Summary: "관측된 응답을 사람이 검토해야 합니다.", Remediation: "출력 문맥별 인코딩 적용 여부를 확인하세요.", Classification: classification, Verification: "manual_review_required", EvidenceVersion: 1, EvidenceDigest: db.DiagnosticEvidenceDigest(string(raw)), ObservedAt: time.Now().UTC(), Evidence: string(raw)}
 	id, err := task.Store.RecordDiagnosticCandidate(context.Background(), c)
 	if err != nil {
 		t.Fatal(err)
