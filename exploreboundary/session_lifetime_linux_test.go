@@ -149,3 +149,32 @@ func TestHeartbeatCountsFromOpen(t *testing.T) {
 		t.Fatal("연 직후 조회 전인 세션을 닫음")
 	}
 }
+
+// 실제 제어 소켓 클라이언트(ControlClient.CloseStale)로 닫아도 감사 원자료에 closed_by restart_cleanup이 남는다
+// (#892 재상 봇 리뷰: Manager.Handle을 직접 부르는 시험만으로는 클라이언트가 원인을 싣는지 못 본다).
+func TestCloseStaleClientRecordsRestartCleanup(t *testing.T) {
+	m, client, source := controlFixture(t, sameUID)
+	dir := evidenceDir(t)
+	ev, err := OpenEvidence(dir, evidenceTestMaxBytes, evidenceKey(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Policy.Evidence = ev
+	binding := fixtureBinding(exploration.ReadOnly, exploration.FullLocal)
+	if _, err := (ControlBoundary{Client: client, SourceDigest: fixtureDigest, Target: source.Current}).Open(t.Context(), binding); err != nil {
+		t.Fatal(err)
+	}
+	st, err := client.CurrentSession(t.Context())
+	if err != nil || st == nil || !st.Active {
+		t.Fatalf("열린 세션: %+v %v", st, err)
+	}
+	if closed, err := client.CloseStale(t.Context(), st.Binding); err != nil || closed.Active || closed.ClosedReason != exploration.Cancelled {
+		t.Fatalf("재시작 정리: %+v %v", closed, err)
+	}
+	if err := m.Seal(SealedByShutdown, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := readMarker(t, dir).Session; got == nil || got.ClosedBy != CloseCauseRestartCleanup {
+		t.Fatalf("감사 원자료: %+v", got)
+	}
+}

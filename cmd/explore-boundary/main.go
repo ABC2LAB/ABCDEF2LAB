@@ -208,8 +208,12 @@ func build(c config) (*parts, error) {
 			return nil, errors.New("evidence_unavailable")
 		}
 	}
+	heartbeat, err := sessionHeartbeat(c.SessionHeartbeatMS)
+	if err != nil {
+		return nil, err
+	}
 	m := &exploreboundary.Manager{Policy: exploreboundary.Policy{ControlEndpoints: controls, Resolver: res, PathPattern: pattern, MaxDeniedRecords: c.MaxDeniedRecords, Evidence: evidence},
-		CloseWait: time.Duration(c.CloseWaitMS) * time.Millisecond, Heartbeat: sessionHeartbeat(c.SessionHeartbeatMS)}
+		CloseWait: time.Duration(c.CloseWaitMS) * time.Millisecond, Heartbeat: heartbeat}
 	proxy := func(ingress exploreboundary.Ingress) (*exploreboundary.Proxy, error) {
 		return exploreboundary.NewProxy(exploreboundary.ProxyConfig{Ingress: ingress, Current: m.Current, CA: ca, CAKey: key, Roots: roots,
 			MaxRequestBytes: c.MaxRequestBytes, MaxResponseBytes: c.MaxResponseBytes, MaxTunnels: c.MaxTunnels, Timeout: timeout, LeafValidity: time.Duration(c.LeafValiditySec) * time.Second,
@@ -361,9 +365,18 @@ func main() {
 // 모델 호출과 따로 돈다) 30배 여유를 둔다. 준비 서비스가 죽은 뒤 남은 브라우저 페이지가 대상에 보낼 수 있는 시간이 이만큼으로 줄어든다.
 const defaultSessionHeartbeat = 30 * time.Second
 
-func sessionHeartbeat(ms int) time.Duration {
-	if ms <= 0 {
-		return defaultSessionHeartbeat
+// minSessionHeartbeat는 설정으로 줄 수 있는 가장 짧은 끊김 시간이다. 실행기 조회 주기(1초)의 5배 아래로 두면 조회 한두 번이
+// 늦기만 해도 살아 있는 세션을 닫는다(1ms 같은 값으로 모든 세션이 바로 닫히지 않게, #892 재상 봇 리뷰).
+const minSessionHeartbeat = 5 * time.Second
+
+// sessionHeartbeat는 설정 칸을 끊김 시간으로 바꾼다. 칸이 없으면(0) 기본값, 음수이거나 하한보다 짧으면 설정 오류다.
+func sessionHeartbeat(ms int) (time.Duration, error) {
+	if ms == 0 {
+		return defaultSessionHeartbeat, nil
 	}
-	return time.Duration(ms) * time.Millisecond
+	d := time.Duration(ms) * time.Millisecond
+	if ms < 0 || d < minSessionHeartbeat {
+		return 0, errors.New("config_invalid")
+	}
+	return d, nil
 }
