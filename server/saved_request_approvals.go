@@ -14,7 +14,10 @@ import (
 	"github.com/Autumn-27/artex/diagnosisflow"
 )
 
-const maxSavedRequestApprovals = 1000
+const (
+	maxSavedRequestApprovals     = 1000
+	savedRequestApprovalsTimeout = 5 * time.Second
+)
 
 // 저장된 회차는 호출자가 전달한 참조가 아니라 작업에 결속된 워크플로에서 찾는다.
 func savedApprovalRequestTask(r *http.Request) (int64, bool) {
@@ -94,7 +97,7 @@ func (s *Server) serveSavedRequestApprovals(w http.ResponseWriter, r *http.Reque
 		writeErr(w, http.StatusForbidden, "저장 승인 이력의 작업 결속을 확인할 수 없습니다")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), savedRequestApprovalsTimeout)
 	defer cancel()
 	run, err := storedApprovalRun(ctx, s.m.pg.DB, task)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -134,6 +137,10 @@ func (s *Server) serveSavedRequestApprovals(w http.ResponseWriter, r *http.Reque
 	defer rows.Close()
 	out := make([]SavedApproval, 0)
 	for rows.Next() {
+		if len(out) >= maxSavedRequestApprovals {
+			writeErr(w, http.StatusUnprocessableEntity, "승인 이력이 조회 상한을 초과했습니다")
+			return
+		}
 		var raw []byte
 		var storedID string
 		var a db.RequestApproval
@@ -142,7 +149,7 @@ func (s *Server) serveSavedRequestApprovals(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		v, valid := projectSavedApproval(a, task, run)
-		if !valid || v.ID != storedID || len(out) >= maxSavedRequestApprovals {
+		if !valid || v.ID != storedID {
 			writeErr(w, http.StatusServiceUnavailable, "승인 이력의 범위를 확인할 수 없습니다")
 			return
 		}

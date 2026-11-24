@@ -172,6 +172,41 @@ func TestSavedRequestApprovalsReadOnlyPostgres(t *testing.T) {
 		t.Fatalf("missing history treated as success or storage failure: %d", w.Code)
 	}
 	handler = makeHandler()
+	t.Run("history limit", func(t *testing.T) {
+		add := func(first, last int) {
+			t.Helper()
+			_, err := store.ExecContext(t.Context(), `INSERT INTO request_approvals(id, task_id, owner_ref, expires_at, record)
+SELECT synthetic.id, a.task_id, a.owner_ref, a.expires_at,
+       a.record || jsonb_build_object('id', synthetic.id, 'attempt_id', synthetic.id)
+FROM request_approvals a
+CROSS JOIN (SELECT 'synthetic-limit-' || n AS id FROM generate_series($1::int, $2::int) AS n) synthetic
+WHERE a.id='synthetic-allow' AND a.task_id=$3`, first, last, task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		defer func() {
+			if _, err := store.ExecContext(t.Context(), `DELETE FROM request_approvals WHERE task_id=$1 AND id LIKE 'synthetic-limit-%'`, task.ID); err != nil {
+				t.Error(err)
+			}
+		}()
+		const existing = 5
+		add(1, maxSavedRequestApprovals-existing)
+		w := request("GET", base)
+		var got struct {
+			Approvals []SavedApproval `json:"approvals"`
+		}
+		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &got) != nil || len(got.Approvals) != maxSavedRequestApprovals {
+			t.Fatalf("조회 상한과 같은 건수: 응답=%d 건수=%d", w.Code, len(got.Approvals))
+		}
+		add(maxSavedRequestApprovals-existing+1, maxSavedRequestApprovals-existing+1)
+		if w := request("GET", base); w.Code != http.StatusUnprocessableEntity || bytes.Contains(w.Body.Bytes(), []byte(`"approvals"`)) {
+			t.Fatalf("상한 초과 시 422와 오류만 필요: 응답=%d", w.Code)
+		}
+		if w := request("GET", base+"/synthetic-allow"); w.Code != http.StatusOK {
+			t.Fatalf("목록 상한이 개별 조회에 영향을 줌: 응답=%d", w.Code)
+		}
+	})
 	if _, err := store.ExecContext(t.Context(), `UPDATE request_approvals SET record=jsonb_set(record,'{id}',to_jsonb('synthetic-mismatch'::text)) WHERE id='synthetic-deny'`); err != nil {
 		t.Fatal(err)
 	}
