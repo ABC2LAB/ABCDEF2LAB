@@ -259,12 +259,13 @@ func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTP
 				event("candidate_validated", "failed", "candidate_language_mixed", in.CallRef)
 				return actool.Errorf(candidateLanguageMixedError), nil
 			}
-			delete(languageHeld, key)
 			event("candidate_validated", "succeeded", "", in.CallRef)
 			id, ok := saved(ctx, candidate, event)
 			if !ok {
+				// 다시 쓴 제출을 저장하지 못하면 붙잡아 둔 첫 제출은 그대로 둔다(Worker 끝에 표시를 붙여 저장해 후보를 잃지 않는다).
 				return actool.Errorf("diagnostic_candidate_store_failed"), nil
 			}
+			delete(languageHeld, key)
 			return actool.Text("Unconfirmed candidate recorded: " + strconv.FormatInt(id, 10) + ". Manual review required; this is not an E3 verdict or confirmed finding."), nil
 		},
 	})

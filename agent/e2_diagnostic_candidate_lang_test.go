@@ -280,3 +280,45 @@ func TestCandidateLanguageSameCallRefDistinctCandidates(t *testing.T) {
 		t.Fatalf("Worker 끝 저장: %v", got)
 	}
 }
+
+// failingCandidateStore는 fail이 참인 동안 저장에 실패한다(DB 오류·문맥 취소).
+type failingCandidateStore struct {
+	candidateMemoryStore
+	fail bool
+}
+
+func (s *failingCandidateStore) RecordDiagnosticCandidate(ctx context.Context, c db.DiagnosticCandidate) (int64, error) {
+	if s.fail {
+		return 0, context.Canceled
+	}
+	return s.candidateMemoryStore.RecordDiagnosticCandidate(ctx, c)
+}
+
+// 다시 쓴 제출의 저장이 실패하면 붙잡아 둔 첫 제출을 버리지 않는다(#896 재상 봇 P3). Worker 끝에 표시를 붙여 저장한다.
+func TestCandidateLanguageHeldSurvivesFailedResubmitSave(t *testing.T) {
+	execution, _, binding := e2WorkerFixture(t)
+	state := &e2HTTPToolState{}
+	result := e2runner.Result{ToolOutput: "합성 응답", Trusted: e2runner.TrustedResult{Execution: execution.SnapshotForIntent(binding.IntentID), Final: true, ProcessBashExited: true, ProcessDrained: true, ProxyDrained: true, Classification: "completed", Call: e2proxy.CallResult{IntentID: binding.IntentID, CallRef: "lang-call", Final: true, AuditComplete: true, Counts: e2proxy.Counts{Responses: 1, ForwardAttempted: 1}, Observations: []e2proxy.HTTPObservation{{Sequence: 1, AttemptRef: "lang-attempt", Method: "GET", Endpoint: "/documents", Decision: "allowed", StatusCode: 200, ResponseComplete: true, ForwardAttempted: true, AuditComplete: true, ObservedAt: time.Now().UTC()}}}}}
+	state.observeDiagnostic(execution, binding.IntentID, "synthetic fixture", result)
+	store := &failingCandidateStore{}
+	tool := newE2DiagnosticCandidateTool(store, binding, state)
+	call := func(input string) (bool, string) {
+		r, err := tool.Call(t.Context(), json.RawMessage(input), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r.IsError, r.Flatten()
+	}
+	if isErr, _ := call(candidateInput("권한 검사가 "+hanStrict+"하지 않습니다.", "", "")); !isErr {
+		t.Fatal("첫 섞임")
+	}
+	store.fail = true
+	if isErr, text := call(candidateInput("권한 검사가 엄격하지 않습니다.", "", "")); !isErr || !strings.Contains(text, "store_failed") {
+		t.Fatalf("저장 실패가 오류로 안 돌아옴: %q", text)
+	}
+	store.fail = false
+	state.flushHeldCandidates(t.Context())
+	if len(store.candidates) != 1 || !store.candidates[0].LanguageMixed || store.candidates[0].LanguageRewrites != 1 {
+		t.Fatalf("저장 실패 뒤 붙잡은 첫 제출을 잃음: %d건", len(store.candidates))
+	}
+}
