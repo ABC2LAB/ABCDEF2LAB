@@ -21,7 +21,7 @@ import { useWb } from "../../store";
 import { Icon } from "../../ui/icons";
 import s from "../../workbench.module.css";
 import { AccountManager } from "./AccountManager";
-import { UrlHead } from "./urlParts";
+import { BackButton, UrlHead } from "./urlParts";
 
 /** 계정 분류 (운영자 전용). */
 export function AccountClassifyLive() {
@@ -63,15 +63,7 @@ export function AccountClassifyLive() {
 
   return (
     <>
-      <UrlHead
-        title="계정 분류"
-        crumb="계정 분류"
-        acts={
-          <button className={cx(s.btn, s.sm)} type="button" onClick={() => goTo("new")}>
-            새 점검으로
-          </button>
-        }
-      />
+      <UrlHead title="계정 분류" crumb="계정 분류" acts={<BackButton to="새 점검" onClick={() => goTo("new")} />} />
       {/* 오른쪽 패널에 둘 내용이 없어 가운데 칸을 끝까지 쓴다(사용자 11/23) */}
       <div className={cx(s.vb, s.solo)}>
         <div className={s.vm}>

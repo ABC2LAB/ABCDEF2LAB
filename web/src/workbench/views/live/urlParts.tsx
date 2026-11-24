@@ -14,6 +14,32 @@ import { Icon } from "../../ui/icons";
 import { MenuButton, type PhaseKey, Phases } from "../../ui/parts";
 import s from "../../workbench.module.css";
 
+/** 받침 있는 말 뒤엔 '으로', 없거나 ㄹ 받침이면 '로' (읽기용 이름 '새 점검으로 돌아가기') */
+function toParticle(word: string): string {
+  const code = word.charCodeAt(word.length - 1) - 0xac00;
+  if (code < 0 || code > 11171) return "(으)로";
+  const final = code % 28;
+  return final === 0 || final === 8 ? "로" : "으로";
+}
+
+/**
+ * 뒤로 가기 버튼. 모든 화면이 같은 모양(작은 버튼 · 왼쪽 화살표)과 '← 갈 곳' 글을 쓴다(사용자 11/24: 모양 · 멘트 통합).
+ * 읽기 프로그램에는 '갈 곳으로 돌아가기'로 읽힌다.
+ */
+export function BackButton({ to, onClick }: { to: string; onClick: () => void }) {
+  return (
+    <button
+      className={cx(s.btn, s.sm, s["back-btn"])}
+      type="button"
+      onClick={onClick}
+      aria-label={`${to}${toParticle(to)} 돌아가기`}
+    >
+      <Icon name="arrow" />
+      {to}
+    </button>
+  );
+}
+
 /**
  * 화면 머리 (위치 · h1 · 상태 알약 · 버튼 · 메타 줄 · 점검 단계).
  * 위치 줄은 상위 화면 · 주소가 있을 때만 그린다(시안 v83: "작업대" 뿌리는 뺐다). 위치가 제목과 같기만 하면

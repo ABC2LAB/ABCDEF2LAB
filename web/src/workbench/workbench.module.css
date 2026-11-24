@@ -1790,8 +1790,8 @@ a.ph:hover {
   min-width: 0;
   overflow-wrap: anywhere;
 }
-/* 뒤로: 오른쪽 화살표를 돌려 쓴다 */
-.fpage-back .ic {
+/* 뒤로 가기(BackButton): 오른쪽 화살표를 돌려 왼쪽으로 쓴다 */
+.back-btn .ic {
   transform: rotate(180deg);
 }
 /* 페이지 카드 안 상세 보고서 머리(제목 · 복사)와 본문 사이 */
@@ -3921,7 +3921,7 @@ button.smm:hover {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  max-width: 520px;
+  max-width: 640px;
   padding: 18px 20px;
   border: 1px solid var(--rule);
   border-radius: 12px;
@@ -3931,6 +3931,16 @@ button.smm:hover {
 .acct-quick h3 {
   margin: 0;
   font-size: 14px;
+}
+/* 상자 안 '로그인 방식' 칸: 아래 시험 계정과 줄로 나눈다 */
+.acct-login {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.acct-quick-h {
+  padding-top: 14px;
+  border-top: 1px solid var(--rule);
 }
 .acct-pair {
   display: flex;
@@ -4271,6 +4281,71 @@ button.smm:hover {
   border-top: 1px solid var(--warn-line);
   border-radius: 0;
   background: none;
+}
+/* 대기 중인 요청이 없으면 노란 상자 대신 보통 칸(끝난 요청 목록만) */
+.ldecide.ldecide-done {
+  border-color: var(--rule);
+  background: var(--bg);
+}
+/* 승인 요청 목록(사용자 11/24): 한 줄 = 메서드 · 경로 · 계획 · 상태 · 받은 시각, 누르면 그 아래 펼침 */
+.apq {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.apq-item {
+  border-top: 1px solid var(--warn-line);
+}
+.ldecide-done .apq-item {
+  border-top-color: var(--rule);
+}
+.apq-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 2px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.apq-row .p {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.apq-plan {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.apq-at {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+.apq-item.on .apq-row,
+.apq-row:hover {
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+.apq-item .lv-aprev {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 2px 12px;
+}
+.apq-item .lv-aprev .code {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 .meters {
   display: grid;
@@ -5050,6 +5125,11 @@ button.smm:hover {
   padding: 4px 10px;
   font-size: 12px;
   color: var(--rail-mut);
+}
+/* 레일 묶음 줄이 많을 때 마지막 '전체 n건' 줄: 목록 화면으로 가는 줄이라 흐리게 */
+.rs.rs-more .host {
+  font-weight: 400;
+  opacity: 0.75;
 }
 /* 레일: 두 칸 스위치 (데이터 원천) */
 .swatches .sw-row.lv-two {
