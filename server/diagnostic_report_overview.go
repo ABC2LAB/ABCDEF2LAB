@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/llmpolicy"
@@ -55,7 +56,12 @@ func readDiagnosticModelAccounting(ctx context.Context, tx *sql.Tx, task int64) 
 	}
 	out := make([]report.DiagnosticModelAccounting, 0, len(preparation)+1)
 	for _, entry := range preparation {
-		row, err := project("preparation", "준비", entry.Usage)
+		result := "실패"
+		if entry.Succeeded {
+			result = "성공"
+		}
+		phaseText := fmt.Sprintf("준비 (%s · 준비 작업 %s)", entry.SavedAt.UTC().Format(time.RFC3339Nano), result)
+		row, err := project("preparation", phaseText, entry.Usage)
 		if err != nil {
 			return nil, err
 		}

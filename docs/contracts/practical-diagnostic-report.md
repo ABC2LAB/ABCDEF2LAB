@@ -42,7 +42,7 @@
 - 캡처 상태: 행 없음 `not_captured`, adapter/비민감 영역 승인 없음 `not_supported`, Source 실패 `failed`, 읽기 권한/저장소 없음 `storage_unavailable`, 공유 사본 `shared_omitted`, 이미지 예산 초과 `capacity_omitted`, 현재 결속·PNG 검증 실패 `binding_invalid`. 오래된 증거는 재현 Step·이미지·프롬프트를 반환하지 않는다.
 - 조회는 `GET /api/report/diagnostic?task=<id>&audience=internal|shared&format=html|docx`. 기본은 기존 공유 HTML이다. PNG 조회는 `/api/report/diagnostic/image?task=<id>&audience=internal&entry=<id>&step=<id>&digest=<image-sha256>`이며 동일 권한·현재 버전을 검사한다. 재시작한 보고서 전용 handler에도 같은 GET을 등록한다. 조치 목록과 공유 내보내기는 PNG blob을 읽지 않고, 이미지 GET은 선택 entry의 현재 근거와 해당 이미지 한 행만 읽는다. 응답은 no-store, nosniff와 비활성 CSP를 유지한다.
 - 개요의 승인 URL·모델 정책은 보호된 preparation service의 `AuthorizeTask`가 돌려준 해당 Job Scope만 사용한다. 모델 사용량은 실제 `llm_usage` 행을 별도 표시하고 기록 부재를 NOT_RUN으로 추정하지 않는다.
-- 내부용 HTML·DOCX는 같은 작업의 `first_diagnosis_model_preparation_v1`과 `first_diagnosis_run_v1.model` 저장 기록을 준비·진단 단계별 호출·오류·토큰·기록 비용으로 표시한다. 두 기록은 합산하지 않으며 보고서 생성 중 모델 원장이나 외부 제공자에 접속하지 않는다. 미확정 호출이 있으면 저장 비용 수치는 실제 청구액과 다를 수 있다. 기록 비용 0은 실제 0과 정산 미확정을 구별할 수 없으므로 `0 또는 미확인`으로 표시한다. 이 단계별 정산과 `llm_usage` 세부 행 상태는 별개다. 공유용 보고서에는 단계별 정산을 표시하지 않는다.
+- 내부용 HTML·DOCX는 같은 작업의 `first_diagnosis_model_preparation_v1`과 `first_diagnosis_run_v1.model` 저장 기록을 준비·진단 단계별 호출·오류·토큰·기록 비용으로 표시한다. 준비 기록이 여러 개면 각 줄에 저장 시각(UTC)과 준비 작업 성공·실패를 표시한다. 두 단계는 합산하지 않으며 보고서 생성 중 모델 원장이나 외부 제공자에 접속하지 않는다. 미확정 호출이 있으면 저장 비용 수치는 실제 청구액과 다를 수 있다. 기록 비용 0은 실제 0과 정산 미확정을 구별할 수 없으므로 `0 또는 미확인`으로 표시한다. 이 단계별 정산과 `llm_usage` 세부 행 상태는 별개다. 공유용 보고서에는 단계별 정산을 표시하지 않는다.
 - 조치는 기존 명시적 POST와 CAS·영속 Bundle을 쓴다. 생성기 `remediation-v6`는 추가된 실제 E③ 단계와 Method를 반영한다. 이전 저장본은 기존 stale 검증으로 차단한다. Workbench 복사는 서버가 재검증한 entry/record/input digest/전체 프롬프트가 표시 저장본과 같을 때만 수행한다.
 
 ## 실제 캡처 adapter 연결 조건

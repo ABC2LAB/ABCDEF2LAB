@@ -97,6 +97,15 @@ func TestDiagnosticReportShowsStoredPhaseModelUsage(t *testing.T) {
 	if err := saveDiagnosisPreparationModelUsage(t.Context(), pg.DB, task.ID, prep, true); err != nil {
 		t.Fatal(err)
 	}
+	if err := saveDiagnosisPreparationModelUsage(t.Context(), pg.DB, task.ID, llmpolicy.OpenRouterUsage{Requests: 1, Errors: 1}, false); err != nil {
+		t.Fatal(err)
+	}
+	preparation, err := readDiagnosisPreparationUsage(t.Context(), pg.DB, task.ID)
+	if err != nil || len(preparation) != 2 {
+		t.Fatal("준비 기록 시험 자료를 읽지 못함", err)
+	}
+	wantSuccess := "준비 (" + preparation[0].SavedAt.UTC().Format(time.RFC3339Nano) + " · 준비 작업 성공) · 호출 2건"
+	wantFailure := "준비 (" + preparation[1].SavedAt.UTC().Format(time.RFC3339Nano) + " · 준비 작업 실패) · 호출 1건"
 	state := requestApprovalRunState{RunRef: "synthetic-run", Phase: "closed", Outcome: "completed", DrainComplete: true}
 	if err := saveDiagnosisRunWithModel(t.Context(), pg.DB, task.ID, state, run); err != nil {
 		t.Fatal(err)
@@ -105,8 +114,8 @@ func TestDiagnosticReportShowsStoredPhaseModelUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(data.ModelAccounting) != 2 || data.ModelAccounting[0].Phase != "preparation" || data.ModelAccounting[1].Phase != "execution" ||
-		data.ModelAccounting[0].CostMicros != 19000 || data.ModelAccounting[1].CostMicros != 10000 {
+	if len(data.ModelAccounting) != 3 || data.ModelAccounting[0].Phase != "preparation" || data.ModelAccounting[1].Phase != "preparation" ||
+		data.ModelAccounting[2].Phase != "execution" || data.ModelAccounting[0].CostMicros != 19000 || data.ModelAccounting[2].CostMicros != 10000 {
 		t.Fatalf("stored phase usage absent from report: %+v", data.ModelAccounting)
 	}
 	html, err := report.DiagnosticHTML(data)
@@ -118,14 +127,23 @@ func TestDiagnosticReportShowsStoredPhaseModelUsage(t *testing.T) {
 		!strings.Contains(diagnosticWordText(t, wordParts(t, docx)["word/document.xml"]), "$0.010000") {
 		t.Fatal("DOCX report omitted stored phase costs", err)
 	}
+	for _, content := range []string{string(html), diagnosticWordText(t, wordParts(t, docx)["word/document.xml"])} {
+		if !strings.Contains(content, wantSuccess) || !strings.Contains(content, wantFailure) {
+			t.Fatal("준비 기록의 저장 시각·결과가 표시되지 않음")
+		}
+	}
 	data.Shared = true
 	shared, err := report.PrepareDiagnostic(data)
 	if err != nil || len(shared.ModelAccounting) != 0 {
 		t.Fatal("shared report exposed internal model accounting", err)
 	}
 	html, err = report.DiagnosticHTML(data)
-	if err != nil || strings.Contains(string(html), "$0.019000") || strings.Contains(string(html), "$0.010000") {
+	if err != nil || strings.Contains(string(html), "$0.019000") || strings.Contains(string(html), "$0.010000") || strings.Contains(string(html), "준비 작업 성공") || strings.Contains(string(html), "준비 작업 실패") {
 		t.Fatal("shared HTML exposed internal model accounting", err)
+	}
+	docx, err = report.DiagnosticDOCX(data)
+	if err != nil || strings.Contains(diagnosticWordText(t, wordParts(t, docx)["word/document.xml"]), "준비 작업 ") {
+		t.Fatal("공유 DOCX에 준비 기록이 표시됨", err)
 	}
 	zeroTask, err := pg.CreateTask("synthetic uncertain model cost", "fixture", nil, 0, 0)
 	if err != nil {
