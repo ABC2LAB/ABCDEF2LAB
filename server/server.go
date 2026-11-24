@@ -292,8 +292,14 @@ func newServerConfiguredWithOptions(ctx context.Context, m *Manager, skillDir st
 		chatCancel: map[string]context.CancelCauseFunc{}, triggerQ: map[string][]triggeredRun{},
 		triggerActive: map[string]int{}, triggerCfg: map[string]triggerBehavior{},
 		profChatAgents: map[int64]*agent.ChatAgent{},
-		provByProfile:  map[int64]*provEntry{}, llmHealth: newLLMHealthRegistry(m.pg),
-		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1)}
+		provByProfile:  map[int64]*provEntry{},
+		taskAgents:     map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1)}
+	// 고정 모델 정책은 공용 모델 풀을 쓰지 않아 상태 테이블 권한도 필요 없다.
+	var healthDB *db.DB
+	if !s.hasModelPolicy() {
+		healthDB = m.pg
+	}
+	s.llmHealth = newLLMHealthRegistry(healthDB)
 	// First-run protection: cache the password hash and, while none is set, issue
 	// the console setup token (or apply ARTEX_ADMIN_PASSWORD) before any request.
 	s.firstDiagnosis = startup.noAutomaticAdmission

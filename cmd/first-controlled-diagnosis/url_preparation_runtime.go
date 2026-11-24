@@ -375,12 +375,14 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	prepareCtx, finishPrepare := context.WithCancel(ctx)
 	manager, err := server.NewFirstDiagnosisManager(prepareCtx, l.launch.DataDir, pool)
 	if err != nil {
+		diagnostics.reason = "preparation_manager_failed"
 		finishPrepare()
 		_ = pool.Close()
 		return knownFailure("preparation_host_failed", true)
 	}
 	supervisor, err := server.NewFirstDiagnosisSupervisor(prepareCtx, manager)
 	if err != nil {
+		diagnostics.reason = "preparation_supervisor_failed"
 		finishPrepare()
 		manager.Close()
 		return knownFailure("preparation_host_failed", true)
@@ -389,19 +391,28 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	commonSum, productSum := sha256.Sum256([]byte(goalCommon)), sha256.Sum256([]byte(goalProduct))
 	goalCommonSHA, goalProductSHA := hex.EncodeToString(commonSum[:]), hex.EncodeToString(productSum[:])
 	if supervisor.SetGoalDigests(goalCommonSHA, goalProductSHA) != nil {
+		diagnostics.reason = "preparation_goal_binding_failed"
 		finishPrepare()
 		manager.Close()
 		return knownFailure("preparation_host_failed", true)
 	}
 	options, optionsErr := l.launch.modelOptions()
 	if optionsErr != nil {
+		diagnostics.reason = "preparation_options_invalid"
 		finishPrepare()
 		manager.Close()
 		return knownFailure("preparation_host_failed", true)
 	}
 	options.Budget = modelBudget
 	preparation, err := server.NewFirstDiagnosisPreparationServerWithModel(prepareCtx, manager, l.launch.SkillDir, l.launch.DataDir, l.launch.KeyDir, options)
-	if err != nil || supervisor.Attach(preparation) != nil {
+	if err != nil {
+		diagnostics.reason = "preparation_server_failed"
+		finishPrepare()
+		manager.Close()
+		return knownFailure("preparation_host_failed", true)
+	}
+	if supervisor.Attach(preparation) != nil {
+		diagnostics.reason = "preparation_supervisor_attach_failed"
 		finishPrepare()
 		manager.Close()
 		return knownFailure("preparation_host_failed", true)
