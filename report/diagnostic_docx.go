@@ -105,7 +105,15 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 	} else {
 		w.paragraph("Normal", "저장된 승인 범위 상세 미확보 또는 공유용 비공개. 작업 목표는 승인 범위가 아닙니다.")
 	}
-	w.paragraph("Normal", "모델 사용량 기록 상태: "+in.ModelRecordState+". 기록 부재를 미실행으로 단정하지 않습니다.")
+	if len(in.ModelAccounting) == 0 {
+		w.paragraph("Normal", "저장된 준비·진단 단계 모델 정산 기록이 없습니다. 모델 미실행을 뜻하지 않습니다.")
+	} else {
+		w.paragraph("Normal", "저장된 준비·진단 단계별 모델 사용량입니다. 비용 수치는 미확정 호출이 있으면 실제 청구액과 다를 수 있으며 단계 합계나 최종 청구액으로 단정하지 않습니다.")
+		for _, row := range in.ModelAccounting {
+			w.paragraph("Normal", fmt.Sprintf("%s · 호출 %d건 · 오류 %d건 · 입력 %d토큰 · 출력 %d토큰 · 기록 비용 %s", row.PhaseText, row.Requests, row.Errors, row.InputTokens, row.OutputTokens, row.CostText))
+		}
+	}
+	w.paragraph("Normal", "작업별 LLM 세부 사용량 행 상태: "+in.ModelRecordState+". 단계별 정산 기록과 별개입니다.")
 	if in.ModelRecordsOmitted > 0 {
 		w.paragraph("Normal", fmt.Sprintf("추가 모델 사용량 묶음 %d개 생략. 저장된 원본 기록은 유지합니다.", in.ModelRecordsOmitted))
 	}

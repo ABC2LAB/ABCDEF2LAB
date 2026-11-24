@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
+	"testing"
+	"time"
+
 	"github.com/Autumn-27/artex/diagnosis"
 	"github.com/Autumn-27/artex/llmpolicy"
 	"github.com/Autumn-27/artex/report"
-	"strings"
-	"testing"
 )
 
 func TestFirstDiagnosisPreparationModelUsageOwnedPostgres(t *testing.T) {
@@ -80,6 +82,62 @@ func TestDiagnosisRunPreservesModelUsageOwnedPostgres(t *testing.T) {
 	changed.Requests++
 	if err := saveDiagnosisRunWithModel(t.Context(), pg.DB, task.ID, state, &changed); !errors.Is(err, ErrFirstDiagnosisOutcome) {
 		t.Fatal("different usage overwrote an existing run")
+	}
+}
+
+func TestDiagnosticReportShowsStoredPhaseModelUsage(t *testing.T) {
+	pg := approvalTestDB(t)
+	task, err := pg.CreateTask("synthetic model report", "fixture", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pg.DeleteTask(task.ID) })
+	prep := llmpolicy.OpenRouterUsage{Requests: 2, CostMicros: 19000, InputTokens: 17, OutputTokens: 9}
+	run := &llmpolicy.OpenRouterUsage{Requests: 1, CostMicros: 10000, InputTokens: 7, OutputTokens: 3}
+	if err := saveDiagnosisPreparationModelUsage(t.Context(), pg.DB, task.ID, prep, true); err != nil {
+		t.Fatal(err)
+	}
+	state := requestApprovalRunState{RunRef: "synthetic-run", Phase: "closed", Outcome: "completed", DrainComplete: true}
+	if err := saveDiagnosisRunWithModel(t.Context(), pg.DB, task.ID, state, run); err != nil {
+		t.Fatal(err)
+	}
+	data, err := loadDiagnosticReport(t.Context(), pg, task.ID, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data.ModelAccounting) != 2 || data.ModelAccounting[0].Phase != "preparation" || data.ModelAccounting[1].Phase != "execution" ||
+		data.ModelAccounting[0].CostMicros != 19000 || data.ModelAccounting[1].CostMicros != 10000 {
+		t.Fatalf("stored phase usage absent from report: %+v", data.ModelAccounting)
+	}
+	html, err := report.DiagnosticHTML(data)
+	if err != nil || !strings.Contains(string(html), "$0.019000") || !strings.Contains(string(html), "$0.010000") {
+		t.Fatal("HTML report omitted stored phase costs", err)
+	}
+	docx, err := report.DiagnosticDOCX(data)
+	if err != nil || !strings.Contains(diagnosticWordText(t, wordParts(t, docx)["word/document.xml"]), "$0.019000") ||
+		!strings.Contains(diagnosticWordText(t, wordParts(t, docx)["word/document.xml"]), "$0.010000") {
+		t.Fatal("DOCX report omitted stored phase costs", err)
+	}
+	data.Shared = true
+	shared, err := report.PrepareDiagnostic(data)
+	if err != nil || len(shared.ModelAccounting) != 0 {
+		t.Fatal("shared report exposed internal model accounting", err)
+	}
+	html, err = report.DiagnosticHTML(data)
+	if err != nil || strings.Contains(string(html), "$0.019000") || strings.Contains(string(html), "$0.010000") {
+		t.Fatal("shared HTML exposed internal model accounting", err)
+	}
+	zeroTask, err := pg.CreateTask("synthetic uncertain model cost", "fixture", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pg.DeleteTask(zeroTask.ID) })
+	if err := saveDiagnosisPreparationModelUsage(t.Context(), pg.DB, zeroTask.ID, llmpolicy.OpenRouterUsage{Requests: 1}, false); err != nil {
+		t.Fatal(err)
+	}
+	zero, err := loadDiagnosticReport(t.Context(), pg, zeroTask.ID, time.Now())
+	if err != nil || len(zero.ModelAccounting) != 1 || zero.ModelAccounting[0].CostText != "0 또는 미확인" {
+		t.Fatal("zero record presented as known cost", err)
 	}
 }
 
