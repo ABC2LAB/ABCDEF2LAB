@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"html"
 	"io"
 	"net"
 	"net/http"
@@ -453,8 +452,16 @@ running:
 		t.Fatal("저장과 복사 본문 불일치")
 	}
 	code, body, headers := client.request("GET", "/api/report/diagnostic?task="+task.ID+"&audience=internal&download=1", "")
-	if code != 200 || headers.Get("Content-Disposition") == "" || !strings.Contains(html.UnescapeString(string(body)), record.Bundle.AIPrompt) {
-		t.Fatal("저장과 HTML 본문 불일치")
+	if code != 404 || headers.Get("Content-Disposition") != "" || strings.Contains(string(body), record.Bundle.AIPrompt) {
+		t.Fatal("미확정 후보만 있는 회차에 취약점 보고서가 생성됨")
+	}
+	code, _, _ = client.request("GET", "/api/report/diagnostic?task="+task.ID+"&audience=internal&format=docx", "")
+	if code != 404 {
+		t.Fatal("미확정 후보만 있는 회차에 Word 보고서가 생성됨")
+	}
+	code, body, _ = client.request("GET", "/api/report/diagnostic?task="+task.ID+"&audience=internal&format=review-json", "")
+	if code != 200 || !strings.Contains(string(body), source.EntryID) {
+		t.Fatal("미확정 후보 검토 기록 누락")
 	}
 	if code, _, _ := client.request("GET", "/api/report/diagnostic?task=999999999", ""); code != 403 {
 		t.Fatal("다른 task 보고서 허용")
