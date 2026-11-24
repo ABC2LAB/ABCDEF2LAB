@@ -481,6 +481,7 @@ func e2HTTPHasMCPTool(tools []actool.CoreTool) bool {
 func newE2HTTPWorkerToolSet(ts *db.ExplorationStore, as *db.AssetStore, name string, taskID, intentID int64) *ToolSet {
 	toolset := NewToolSet(ts, name)
 	toolset.SetTaskID(taskID)
+	toolset.scopedFactAnchors = true
 	if as != nil {
 		toolset.SetAssetStore(as, as.Companies())
 		toolset.SetCoverageEnabled(as.CoverageEnabled(taskID))

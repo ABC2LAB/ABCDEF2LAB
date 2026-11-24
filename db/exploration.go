@@ -229,14 +229,52 @@ func (s *ExplorationStore) Root() (description, goal string, err error) {
 
 // AddNode writes a typed reasoning node with optional anchors to asset ids.
 func (s *ExplorationStore) AddNode(kind string, payload map[string]any, priority int, state, origin string, anchors []int64) (int64, error) {
+	return s.addNode(kind, payload, priority, state, origin, anchors, 0)
+}
+
+// ErrFactAssetReference는 결속 작업이나 사실의 자산 참조를 확인하지 못했을 때 반환한다.
+var ErrFactAssetReference = errors.New("asset_reference_invalid: use an ID from list_assets or leave asset_ids empty")
+
+// ErrFactAssetLimit은 한 사실에 연결할 수 있는 자산 수를 넘었을 때 반환한다.
+var ErrFactAssetLimit = fmt.Errorf("asset_reference_limit: supply at most %d asset IDs per fact", MaxTaskAssetMutationCount)
+
+// AddTaskFact는 결속 작업에 연결됐거나 list_assets 범위에 속한 자산을 사실의 출처로 받는다.
+func (s *ExplorationStore) AddTaskFact(taskID int64, payload map[string]any, origin string, anchors []int64) (int64, error) {
+	if taskID <= 0 {
+		return 0, ErrFactAssetReference
+	}
+	if len(anchors) > MaxTaskAssetMutationCount {
+		return 0, ErrFactAssetLimit
+	}
+	return s.addNode(KindFact, payload, 5, "confirmed", origin, anchors, taskID)
+}
+
+func (s *ExplorationStore) addNode(kind string, payload map[string]any, priority int, state, origin string, anchors []int64, taskID int64) (int64, error) {
 	raw, _ := json.Marshal(payload)
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback()
+	if taskID > 0 {
+		var bound bool
+		if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM tasks WHERE id=$1 AND exploration_id=$2 AND deleted_at IS NULL)`, taskID, s.expID).Scan(&bound); err != nil {
+			return 0, err
+		}
+		if !bound {
+			return 0, ErrFactAssetReference
+		}
+		if err := checkFactAnchorAssets(tx, taskID, anchors); err != nil {
+			return 0, err
+		}
+	}
 	if kind == KindFinding {
 		if err := rejectControlledTaskTx(context.Background(), tx, 0, s.expID, 0); err != nil {
+			return 0, err
+		}
+	}
+	if taskID == 0 {
+		if err := checkAnchorAssets(tx, anchors); err != nil {
 			return 0, err
 		}
 	}
@@ -249,7 +287,7 @@ VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
 	}
 	for _, a := range anchors {
 		if _, err := tx.Exec(`INSERT INTO exploration_anchors(node_id, asset_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, id, a); err != nil {
-			return 0, err
+			return 0, anchorInsertError(err, a)
 		}
 	}
 	return id, tx.Commit()
@@ -290,8 +328,18 @@ func (s *ExplorationStore) Anchor(nodeID, assetID int64) error {
 	if nodeID <= 0 || assetID <= 0 {
 		return nil
 	}
-	_, err := s.db.Exec(`INSERT INTO exploration_anchors(node_id, asset_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, nodeID, assetID)
-	return err
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := checkAnchorAssets(tx, []int64{assetID}); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO exploration_anchors(node_id, asset_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, nodeID, assetID); err != nil {
+		return anchorInsertError(err, assetID)
+	}
+	return tx.Commit()
 }
 
 // Link adds a typed exploration edge (idempotent).

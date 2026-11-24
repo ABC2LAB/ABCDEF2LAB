@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 
@@ -51,12 +53,13 @@ func compactIntents(ns []*db.Node, parentsOf, yieldsOf map[int64][]int64) []map[
 // ToolSet exposes the PG-backed dual graph (asset + exploration) to an LLM agent.
 // One ToolSet is created per planner/worker run; per-run signals live here.
 type ToolSet struct {
-	findingRecorder FindingRecorder
-	as              *db.AssetStore   // asset store (optional; nil = asset tools not available)
-	cs              *db.CompanyStore // company store (optional)
-	ts              *db.ExplorationStore
-	worker          string
-	taskID          int64 // PG tasks.id; 0 when unknown (tests / orchestrator cross-task reads)
+	findingRecorder   FindingRecorder
+	as                *db.AssetStore   // asset store (optional; nil = asset tools not available)
+	cs                *db.CompanyStore // company store (optional)
+	ts                *db.ExplorationStore
+	worker            string
+	taskID            int64 // PG tasks.id; 0 when unknown (tests / orchestrator cross-task reads)
+	scopedFactAnchors bool
 	// coverageDisabled mirrors tasks.coverage_enabled=false. Stored inverted so the
 	// zero value (all existing ToolSet constructions) means ENABLED — matching the
 	// DB default (true). When true: graphOverviewData drops the coverage block, the
@@ -1340,7 +1343,29 @@ func (t *ToolSet) recordOneFact(it factItem, defaultIntent int64) (int64, error)
 		}
 	}
 	// a fact is its OWN node kind (distinct from a vuln finding).
-	id, err := t.ts.AddNode(db.KindFact, payload, 5, "confirmed", t.worker, pidList(it.AssetIDs))
+	anchors := pidList(it.AssetIDs)
+	var id int64
+	var err error
+	if t.scopedFactAnchors {
+		if len(it.AssetIDs) > db.MaxTaskAssetMutationCount {
+			return 0, db.ErrFactAssetLimit
+		}
+		if len(anchors) != len(it.AssetIDs) {
+			return 0, db.ErrFactAssetReference
+		}
+		id, err = t.ts.AddTaskFact(t.taskID, payload, t.worker, anchors)
+		if err != nil && !errors.Is(err, db.ErrFactAssetReference) && !errors.Is(err, db.ErrFactAssetLimit) {
+			var sqlErr interface{ SQLState() string }
+			if errors.As(err, &sqlErr) {
+				log.Printf("[diagnostic-fact] 사실 저장 실패 작업=%d SQLSTATE=%s", t.taskID, sqlErr.SQLState())
+			} else {
+				log.Printf("[diagnostic-fact] 사실 저장 실패 작업=%d 오류 유형=%T", t.taskID, err)
+			}
+			return 0, fmt.Errorf("fact_storage_unavailable")
+		}
+	} else {
+		id, err = t.ts.AddNode(db.KindFact, payload, 5, "confirmed", t.worker, anchors)
+	}
 	if err != nil {
 		return 0, err
 	}

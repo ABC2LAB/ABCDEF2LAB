@@ -113,10 +113,15 @@ func loadDiagnosticReportWithCaptures(ctx context.Context, pg *db.DB, taskID int
 	if err != nil {
 		return out, err
 	}
+	product, err := loadDiagnosticProductSnapshot(ctx, tx, taskID, len(out.Entries))
+	if err != nil {
+		return out, err
+	}
 	if err = tx.Commit(); err != nil {
 		return out, err
 	}
-	return out, nil
+	err = product.addToReport(ctx, &out)
+	return out, err
 }
 func readDiagnosticReport(ctx context.Context, tx *sql.Tx, taskID int64, at time.Time) (report.DiagnosticReport, error) {
 	return readDiagnosticReportWithCaptures(ctx, tx, taskID, at, true)
@@ -334,7 +339,6 @@ func readDiagnosticReportWithCaptures(ctx context.Context, tx *sql.Tx, taskID in
 	if err := readWorkflowReport(ctx, tx, taskID, &out); err != nil {
 		return out, err
 	}
-
 	return out, nil
 }
 func equalDigest(a, b []byte) bool {

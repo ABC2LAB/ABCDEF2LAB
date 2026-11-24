@@ -1738,9 +1738,11 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(screen.queryByRole("region", { name: "발견 후보" })).toBeNull();
     expect(document.getElementById("lFindsEnded")).toBeNull();
     expect(document.body).not.toHaveTextContent("점검이 끝나 진행 중 후보 목록");
-    // 상태 카드 숫자 칸: 발견 2 · 확정 0
-    expect(within(document.getElementById("lMeta") as HTMLElement).getByText("발견").parentElement).toHaveTextContent(
-      /^발견2확정 0$/,
+    // 제품 판정 경로가 없는 서버(404)는 기존 합계만 표시한다.
+    await waitFor(() =>
+      expect(within(document.getElementById("lMeta") as HTMLElement).getByText("발견").parentElement).toHaveTextContent(
+        /^발견2판정 확정 0$/,
+      ),
     );
     fireEvent.click(rows[1]);
     expect(goTo).not.toHaveBeenCalledWith("report");
@@ -1782,22 +1784,88 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(header).not.toHaveTextContent("연결 전");
   });
 
-  // #875 실측 7절 1(나): 요약 '판정 확정'이 확정 단계 CONFIRMED 를 안 세 '확정 0'으로만 보였다 — 섞지 않고 아래 줄에 따로
-  it("보고서 요약 '판정 확정' 칸 아래 줄에 확정 단계 판정 확정 수를 따로 붙이고, 값을 숨긴 판정은 세지 않는다", async () => {
+  it.each([
+    ["mixed_integrity", "판정 확정1증거 충분 · 확정 단계 확정 1"],
+    ["source_not_found", "판정 확정0증거 충분"],
+  ])("보고서 요약에 검증된 제품 확정만 합산한다 (%s)", async (fixture, summary) => {
     const { parseProductVerdicts } = await import("../live/productVerdicts");
     const golden = (await import("./product-verdicts.server-golden.json")).default as Record<
       string,
       { task_id: string }
     >;
-    // 진위 확인 통과 CONFIRMED 1 · 진위 실패(값 숨김) 1
-    pv.reply = async () => parseProductVerdicts(golden.mixed_integrity, golden.mixed_integrity.task_id);
+    // 당시 원본 미확인 행에는 confirmed 값이 있어도 요약에 더해지면 안 된다.
+    pv.reply = async () => parseProductVerdicts(golden[fixture], golden[fixture].task_id);
     saveHandle();
     u.readURLStatus.mockResolvedValue(completed);
     a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [candidate(1)] });
     mount("report");
     const strip = await screen.findByRole("region", { name: "판정 집계" });
     const cell = within(strip).getByText("판정 확정").parentElement as HTMLElement;
-    await waitFor(() => expect(cell).toHaveTextContent(/^판정 확정0증거 충분 · 확정 단계 확정 1$/));
+    if (fixture === "source_not_found") {
+      expect(await screen.findAllByText(/당시 원본 미확인 · 당시 정책 동결본/)).toHaveLength(2);
+    }
+    await waitFor(() => expect(cell.textContent).toBe(summary));
+  });
+
+  it("끝난 점검의 진행 요약에도 검증된 제품 확정 수를 합산한다", async () => {
+    const { parseProductVerdicts } = await import("../live/productVerdicts");
+    const { mixed_integrity: golden } = (await import("./product-verdicts.server-golden.json")).default;
+    pv.reply = async () => parseProductVerdicts(golden, golden.task_id);
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [candidate(1)] });
+    mount("live");
+    await waitFor(() =>
+      expect(within(document.getElementById("lMeta") as HTMLElement).getByText("발견").parentElement).toHaveTextContent(
+        /^발견1판정 확정 1$/,
+      ),
+    );
+  });
+
+  it.each(["live", "report"] as const)("제품 판정 조회 중과 503 실패를 확정 합계에 표시한다 (%s)", async (view) => {
+    const { ApiError } = await import("@/lib/diagnosis/api");
+    const pending = Promise.withResolvers<never>();
+    pv.reply = () => pending.promise;
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [confirmed(1)] });
+    mount(view);
+    const summary =
+      view === "live"
+        ? await within(await screen.findByRole("region", { name: "지금 상태" })).findByText("발견")
+        : within(await screen.findByRole("region", { name: "판정 집계" })).getByText("판정 확정");
+    const cell = summary.parentElement as HTMLElement;
+    const known = view === "live" ? "판정 확정 1" : "판정 확정1";
+    expect(cell).toHaveTextContent(known);
+    expect(cell).toHaveTextContent("확정 단계 판정 읽는 중");
+
+    await act(async () => pending.reject(new ApiError(503, "unavailable")));
+
+    const unreadable = "확정 단계 판정 읽지 못함 · 합계에 빠짐";
+    expect(cell).toHaveTextContent(known);
+    expect(cell).toHaveTextContent(unreadable);
+    expect(cell).not.toHaveTextContent("읽는 중");
+    if (view === "report") {
+      fireEvent.click(screen.getByRole("tab", { name: "접근통제 지도" }));
+      expect(cell).toBeVisible();
+      expect(cell).toHaveTextContent(unreadable);
+      fireEvent.click(screen.getByRole("tab", { name: "보고서" }));
+      expect(screen.getByRole("region", { name: "취약점 점검 보고서" })).toHaveTextContent(unreadable);
+    }
+  });
+
+  it("보고서 Markdown의 합계와 제품 확정 출처를 함께 표시한다", () => {
+    const md = buildPocMarkdown([candidate(1)], {
+      targetUrl: "https://target.example/",
+      mode: null,
+      model: null,
+      excluded: null,
+      crawl: null,
+      productConfirmed: 2,
+    });
+    expect(md).toContain("- 취약점: 확정 2건 · 검토 필요 1건");
+    expect(md).toContain("- 제품 확정 판정: 2건");
+    expect(md).not.toContain("제품 E③ 확정 단계");
   });
 
   it("보고서는 결과 저장이 확인된 뒤에만 실제 task 의 조치 자료를 부른다", async () => {
