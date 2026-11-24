@@ -22,10 +22,7 @@ import {
   urlDiagnosisInput,
   type WorkflowMode,
 } from "@/lib/diagnosis/diagnosis-url";
-import {
-  EXTERNAL_ACCOUNT_STATEMENT,
-  readExternalTestAccountPresence,
-} from "@/lib/diagnosis/external-account-consent";
+import { EXTERNAL_ACCOUNT_STATEMENT, readExternalTestAccountPresence } from "@/lib/diagnosis/external-account-consent";
 
 import { cx } from "../../lib/cx";
 import { type ConfirmationPlan, confirmationPlanOf } from "../../live/confirmationPlan";
@@ -40,8 +37,10 @@ import { useWb } from "../../store";
 import { Icon } from "../../ui/icons";
 import { CloseInspButton, HelpTip, InspOpenButton, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
+import { AccountManager } from "./AccountManager";
 import { ApprovedWriteNotice } from "./ApprovedWriteNotice";
 import { ExternalModelSettings } from "./ExternalModelSettings";
+import { QuickTestAccount } from "./QuickTestAccount";
 import { ResetConfirmationBox } from "./ResetConfirmationBox";
 import { StuckReleaseBox } from "./StuckReleaseBox";
 import { TargetApprovalPanel } from "./TargetApprovalPanel";
@@ -132,14 +131,9 @@ function declStateOf(state: DeclarationLoad["state"]): DeclState {
 /** 진단 모드를 받지 않는 프로필(탐색 흐름 없음)에서 고른 진단 모드는 보내지 않는다. */
 const NO_MODE = "이 모델 프로필은 진단 모드를 받지 않아 고른 값을 보내지 않습니다";
 
-/** 시안 로그인 계정 줄 (역할 이름만, 값은 비운다). */
 /** 시안 #nWorkers 선택지. 화면 상태만이고 서버 진단 입력에 칸이 없어 보내지 않는다(실제 값은 엔진 설정). */
 const WORKER_CHOICES = [1, 2, 3, 4, 6, 8] as const;
-const LOGIN_ACCOUNTS = [
-  ["A", "관리자"],
-  ["B", "일반 · 테스트"],
-] as const;
-/** 시안 점검 목표. login: 계정이 있어야 하는 목표('로그인 없이 점검'이면 고를 수 없음, 시안 .goal[data-login]) */
+/** 시안 점검 목표. login: 시험 계정 로그인이 있어야 하는 목표(이번 회차가 로그인하지 않으면 흐리게 막는다, 시안 .goal[data-login]) */
 const GOALS = [
   ["남의 정보 보기 (IDOR)", true],
   ["관리자 기능 접근", true],
@@ -266,9 +260,6 @@ export function UrlNewScanLive() {
   const [touched, setTouched] = useState(false);
   // 지금 보이는 쪽 (1 대상 · 2 분석 모델 · 점검 설정). 새 점검에 다시 들어오면 1쪽부터 (시안 v64)
   const [page, setPage] = useState<1 | 2>(1);
-  // 연결 전 칸의 화면 상태(시안 nAuth · nHow). 서버 입력에 칸이 없어 보내지 않는다. 지금 점검은 로그인 없이 진행된다.
-  const [auth, setAuth] = useState<"in" | "pub">("pub");
-  const [how, setHow] = useState<"form" | "sess">("form");
   // 새 점검에 들어올 때마다 대상의 시험 계정 유무·정책 선언을 다시 읽는다. 처음 한 번만 읽으면 그 뒤 계정 분류·정책 선언
   // 화면에서 더한 계정·선언이 반영되지 않아 "로그인 없이 진행"·확정 단계 안내 없음으로 남았다(1차 리허설 F2와 같은 종류,
   // 2026-11-22 합친 빌드 자동화에서 재현)
@@ -371,6 +362,19 @@ export function UrlNewScanLive() {
       controller.abort();
     };
   }, [tv, consentKey]);
+  // [자세히 관리]로 이 자리에서 계정 분류 화면과 같은 관리(로그인 방식 · 등록 · 시험 표시 · 해제 · 자격)를 펼친다(사용자 11/24).
+  // 대상이 바뀌면 닫는다
+  const [acctOpenFor, setAcctOpenFor] = useState<string | null>(null);
+  const acctOpen = !!approvedTargetId && acctOpenFor === approvedTargetId;
+  let tvOrigin = "";
+  try {
+    tvOrigin = tv ? new URL(tv).origin : "";
+  } catch {
+    tvOrigin = "";
+  }
+  // 시험 계정 두 줄(A 소유 · B 교차) 아래 한 줄: 이번 회차가 실제로 로그인하는지(등록 여부와 다름, #874 리뷰)
+  // 승인 전엔 로그인 줄을 두지 않는다(상자가 '대상 승인 전'으로 알린다)
+  const acctBody: ReactNode = approvedTargetId ? <p className={s.help}>{accountText}</p> : null;
   const lockedKind = external ? "external" : "local";
   const shownKind = shown ? lockedKind : kind;
   // 분석 모델 칸의 짜임(모델 · 서버 주소 / 제공자 · API 키 · 경고)은 고른 쪽을 따른다. 그쪽 설치 프로필이 없어도 모양은 보인다
@@ -776,18 +780,14 @@ export function UrlNewScanLive() {
                       onState={setResetState}
                     />
                   ) : null}
-                  {/* 계정 분류 · 정책 선언으로 잇는다(사용자 11/23: 새 점검에서 안 이어져 있었다). 승인된 대상만 —
-                      계정 · 선언은 승인된 대상에만 저장된다. 그 화면은 이 대상을 미리 고르고, '새 점검으로'로 돌아온다 */}
+                  {/* 정책 선언으로 잇는다(사용자 11/23: 새 점검에서 안 이어져 있었다). 승인된 대상만 — 선언은 승인된 대상에만
+                      저장된다. 그 화면은 이 대상을 미리 고르고, '새 점검으로'로 돌아온다. 시험 계정 줄은 아래 '계정 분류' 칸으로 옮겼다(11/24) */}
                   {approvedTargetId ? (
-                    <section className={s["prep-box"]} aria-label="계정 · 정책 선언">
+                    <section className={s["prep-box"]} aria-label="정책 선언">
                       <ul className={s.policy}>
-                        <Rule warn={!testAccountLogin} t="시험 계정" sub={accountText} />
                         <Rule warn={declState !== "current"} t="정책 선언" sub={declarationText} />
                       </ul>
                       <div className={s.acts}>
-                        <button className={cx(s.btn, s.sm)} type="button" onClick={() => openPrep("classify")}>
-                          계정 분류
-                        </button>
                         <button className={cx(s.btn, s.sm)} type="button" onClick={() => openPrep("declaration")}>
                           정책 선언
                         </button>
@@ -800,114 +800,55 @@ export function UrlNewScanLive() {
                 </div>
               </div>
 
-              {/* 로그인 (시안 #nAuth): 서버 진단 입력에 계정 칸이 아직 없다. 화면은 시안처럼 고르고 고칠 수 있게 두되,
-                  여기 넣은 값은 이 화면 상태에만 있고 서버·저장소로 보내지 않는다(연결 전) */}
-              <div className={s.fsec}>
+              {/* 계정 분류(사용자 11/24): 시안의 로그인 계정 입력 칸(서버로 가지 않는 '연결 전' 칸, 계정 A 관리자 · B 일반)을 빼고
+                  이 대상에 실제로 등록된 계정을 보인다. 계정은 점검마다가 아니라 대상마다 계정 분류 화면에서 등록하고, 점검은 그걸
+                  쓴다. 역할(소유 · 교차)은 정책 선언에서 온다. 응답에 자격 · 세션 값은 없다(라벨 · 분류 · 자격 등록 여부만) */}
+              <section className={s.fsec} aria-label="계정 분류">
                 <div className={cx(s["fsec-h"], s["fsec-ht"])}>
-                  <h2>로그인</h2>
-                  <Unwired why={loginUnwiredWhy} />
+                  <h2>계정 분류</h2>
                 </div>
                 <div className={s["fsec-b"]}>
-                  <div className={s.seg} role="radiogroup" aria-label="로그인 여부">
-                    <label>
-                      <input
-                        type="radio"
-                        name="nAuth"
-                        value="in"
-                        checked={auth === "in"}
-                        onChange={() => setAuth("in")}
-                      />
-                      <span>로그인해서 점검</span>
-                    </label>
-                    <label>
-                      <input
-                        type="radio"
-                        name="nAuth"
-                        value="pub"
-                        checked={auth === "pub"}
-                        onChange={() => setAuth("pub")}
-                      />
-                      <span>로그인 없이 점검</span>
-                    </label>
-                  </div>
-                  <dl className={s.pubnote} hidden={auth !== "pub"}>
-                    <dt>점검</dt>
-                    <dd>
-                      {GOALS.filter(([, login]) => !login).map(([t]) => (
-                        <span className={s.pg} key={t}>
-                          {t}
-                        </span>
-                      ))}
-                    </dd>
-                    <dt>빠짐</dt>
-                    <dd>
-                      {GOALS.filter(([, login]) => login).map(([t]) => (
-                        <span className={cx(s.pg, s.off)} key={t}>
-                          {t}
-                        </span>
-                      ))}
-                      <small>계정이 있어야 함</small>
-                    </dd>
-                  </dl>
-                  <div className={s["fsec-b"]} hidden={auth !== "in"}>
-                    <div className={s.seg} role="radiogroup" aria-label="로그인 방법">
-                      <label>
-                        <input
-                          type="radio"
-                          name="nHow"
-                          value="form"
-                          checked={how === "form"}
-                          onChange={() => setHow("form")}
-                        />
-                        <span>아이디 · 비밀번호</span>
-                      </label>
-                      <label>
-                        <input
-                          type="radio"
-                          name="nHow"
-                          value="sess"
-                          checked={how === "sess"}
-                          onChange={() => setHow("sess")}
-                        />
-                        <span>쿠키 붙여넣기</span>
-                      </label>
+                  {/* 시험 계정 A(소유) · B(교차) 두 줄(사용자 11/24: 수평만이라 둘이면 됨, 로그인 창처럼 넣는 것부터) */}
+                  {/* 승인 전에도 보인다(사용자 11/24) — 칸은 채울 수 있고 저장만 승인 뒤에 */}
+                  <QuickTestAccount
+                    target={approvedTargetId ? { id: approvedTargetId, origin: tvOrigin, state: "approved" } : null}
+                    owner={confirmationPlan?.ownerAccount}
+                    cross={confirmationPlan?.crossAccount}
+                    revision={accountRevision}
+                    onAdded={() => setAccountRevision((n) => n + 1)}
+                  />
+                  {acctBody}
+                  {approvedTargetId ? (
+                    <div className={s.acts}>
+                      <button
+                        className={cx(s.btn, s.sm)}
+                        type="button"
+                        aria-expanded={acctOpen}
+                        onClick={() => setAcctOpenFor(acctOpen ? null : approvedTargetId)}
+                      >
+                        {acctOpen ? "닫기" : "자세히 관리"}
+                      </button>
                     </div>
-                    {how === "form"
-                      ? LOGIN_ACCOUNTS.map(([id, role]) => (
-                          <div className={s.acct} key={id}>
-                            <span className={s.an}>
-                              {`계정 ${id}`}
-                              <small className={id === "A" ? s.adm : undefined}>{role}</small>
-                            </span>
-                            <input
-                              className={s.inp}
-                              placeholder="아이디"
-                              autoComplete="off"
-                              aria-label={`계정 ${id} (${role}) 아이디`}
-                            />
-                            <input
-                              className={s.inp}
-                              type="password"
-                              placeholder="비밀번호"
-                              autoComplete="new-password"
-                              aria-label={`계정 ${id} (${role}) 비밀번호`}
-                            />
-                          </div>
-                        ))
-                      : LOGIN_ACCOUNTS.map(([id, role]) => (
-                          <div className={s.field} key={id}>
-                            <label className={s.lbl} htmlFor={`nS${id}`}>{`계정 ${id} 쿠키 · ${role}`}</label>
-                            <textarea
-                              className={s.inp}
-                              id={`nS${id}`}
-                              placeholder="Cookie: session=…"
-                              autoComplete="off"
-                            />
-                          </div>
-                        ))}
-                  </div>
+                  ) : null}
+                  {approvedTargetId && acctOpen ? (
+                    <div className={s["acct-edit"]}>
+                      {/* 절대규칙 2 · S09 고지(계정 분류 화면과 같은 뜻, 짧게) */}
+                      <div className={s.note} role="note">
+                        <Icon name="info" />
+                        <span>비밀번호 · 토큰 · 세션 값은 화면에 남기지 않고 서버 보호 파일로만 보냅니다.</span>
+                      </div>
+                      {/* 로그인 상자(A · B)는 위에 이미 있어 펼친 관리에는 두지 않는다 */}
+                      <AccountManager
+                        target={{ id: approvedTargetId, origin: tvOrigin, state: "approved" }}
+                        pair={false}
+                        owner={confirmationPlan?.ownerAccount}
+                        cross={confirmationPlan?.crossAccount}
+                        onChanged={() => setAccountRevision((n) => n + 1)}
+                      />
+                    </div>
+                  ) : null}
                 </div>
-              </div>
+              </section>
             </div>
 
             {/* biome-ignore lint/a11y/useSemanticElements: 시안 마크업 그대로 (fieldset 테두리 · 여백 없이 묶음만) */}
@@ -1025,9 +966,9 @@ export function UrlNewScanLive() {
                     {/* biome-ignore lint/a11y/useSemanticElements: 시안 마크업 그대로 */}
                     <div className={s.goals} role="group" aria-labelledby="nGoalL">
                       {GOALS.map(([t, login]) => (
-                        // 시안처럼 계정이 있어야 하는 목표는 '로그인 없이'일 때 흐리게 막는다
-                        <label className={cx(s.goal, login && auth !== "in" && s.off)} key={t}>
-                          <input type="checkbox" disabled={login && auth !== "in"} />
+                        // 계정이 있어야 하는 목표는 이번 회차가 시험 계정으로 로그인하지 않으면 흐리게 막는다(11/24: 시안의 로그인 고르기 칸을 빼서 실제 결속을 따른다)
+                        <label className={cx(s.goal, login && !testAccountLogin && s.off)} key={t}>
+                          <input type="checkbox" disabled={login && !testAccountLogin} />
                           <span>{t}</span>
                         </label>
                       ))}
