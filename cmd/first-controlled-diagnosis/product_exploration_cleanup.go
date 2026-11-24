@@ -123,8 +123,7 @@ func (s *productMCPSessionStore) pending() ([]productMCPSession, error) {
 }
 
 // cleanupStale은 이전 실행이 남긴 경계 세션을 닫고 닫힘을 확인한 뒤, 기록된 MCP 세션을 지운다. 경계 세션을 닫지
-// 못하면 오류다(새 탐색을 열면 안 된다). MCP 세션은 지울 수 있는 만큼 지우고, 남은 것은 다음에 다시 지운다(경계가
-// 닫혀 있어 그 페이지는 대상에 닿지 못한다).
+// 못하면 오류다(새 탐색을 열면 안 된다). MCP 세션은 지울 수 있는 만큼 지우고, 남은 것은 새 탐색을 열 때마다 다시 지운다.
 func (h *productExplorationHost) cleanupStale(ctx context.Context) (closed bool, err error) {
 	st, err := h.control.CurrentSession(ctx)
 	if err != nil {
@@ -140,14 +139,24 @@ func (h *productExplorationHost) cleanupStale(ctx context.Context) (closed bool,
 		closed = true
 		log.Printf("[exploration] 재시작 정리: 이전 실행이 남긴 탐색 경계 세션을 닫음(작업 %s)", st.Binding.JobID)
 	}
+	h.deleteRecordedContexts(ctx)
+	return closed, nil
+}
+
+// deleteRecordedContexts는 기록된 탐색 MCP 세션(브라우저 문맥)을 지우고, 지운 것만 기록에서 뺀다. 지우지 못한 것은 남는다.
+// 남은 문맥이 있는 채로 새 탐색 세션이 열리면, 그 페이지가 스스로 보내는 요청은 경계가 지금 열린 세션으로 판정한다
+// (경계 브라우저 입구는 세션별로 묶이지 않는다, exploreboundary/proxy.go). 그래서 승인 범위 밖으로는 나가지 않지만 새
+// 회차의 요청 수·기록에 섞일 수 있다. 탐색을 막지는 않고(성능), 남은 채로 여는 것을 로그로 남긴다(#892 재상 봇 리뷰).
+func (h *productExplorationHost) deleteRecordedContexts(ctx context.Context) {
 	if h.mcpSessions == nil {
-		return closed, nil
+		return
 	}
 	list, err := h.mcpSessions.pending()
 	if err != nil {
 		log.Print("[exploration] 재시작 정리: 탐색 MCP 세션 기록을 읽지 못함")
-		return closed, nil
+		return
 	}
+	left := 0
 	for _, e := range list {
 		if e.Address != h.mcpURL {
 			// 다른 주소의 기록은 이 설치의 MCP가 아니다. 보내지 않고 기록에서 뺀다.
@@ -155,26 +164,43 @@ func (h *productExplorationHost) cleanupStale(ctx context.Context) (closed bool,
 			continue
 		}
 		if err := mcphttp.DeleteScopedSession(ctx, e.Address, e.SessionID); err != nil {
-			log.Print("[exploration] 재시작 정리: 남은 탐색 브라우저 문맥을 닫지 못함(다음 시작 때 다시 함)")
+			left++
 			continue
 		}
 		h.mcpSessions.Closed(e.Address, e.SessionID)
 		log.Print("[exploration] 재시작 정리: 남은 탐색 브라우저 문맥을 닫음")
 	}
-	return closed, nil
+	if left > 0 {
+		log.Printf("[exploration] 재시작 정리: 남은 탐색 브라우저 문맥 %d개를 닫지 못함(새 탐색을 열 때 다시 함, 그 페이지 요청은 새 세션의 승인 범위 안에서만 나감)", left)
+	}
 }
 
-// ensureClean은 시작 정리가 끝났는지다. 끝나지 않았으면 한 번 더 해 본다. 새 탐색 세션을 열기 전에 부른다.
+// ensureClean은 새 탐색 세션을 열기 전에 부른다. 처음에는 시작 정리를 끝냈는지 보고(못 했으면 한 번 더 하고, 경계 세션을
+// 닫지 못하면 새 탐색을 열지 않는다), 그 뒤로는 지우지 못하고 남은 브라우저 문맥만 다시 지워 본다(탐색은 막지 않는다).
 func (h *productExplorationHost) ensureClean(ctx context.Context) error {
 	h.cleanMu.Lock()
 	defer h.cleanMu.Unlock()
 	if h.cleaned {
+		h.deleteRecordedContexts(ctx)
 		return nil
 	}
 	if _, err := h.cleanupStale(ctx); err != nil {
 		return errors.Join(exploration.ErrUnavailable, err)
 	}
 	h.cleaned = true
+	return nil
+}
+
+// wireCleanup은 제품 실행 준비 때 재시작 정리를 붙인다: 열린 탐색 MCP 세션을 보호 상태 디렉터리에 기록하게 하고
+// (mcphttp 기록기), 시작 정리를 띄운다.
+func (h *productExplorationHost) wireCleanup(ctx context.Context, stateDir string) error {
+	store, err := newProductMCPSessionStore(stateDir)
+	if err != nil {
+		return err
+	}
+	h.mcpSessions = store
+	mcphttp.SetScopedSessionRecorder(store)
+	h.startCleanup(ctx)
 	return nil
 }
 

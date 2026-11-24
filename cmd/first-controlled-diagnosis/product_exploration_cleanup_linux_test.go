@@ -3,14 +3,18 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/exploration"
+	"github.com/Autumn-27/artex/mcphttp"
 )
 
 // 재시작 정리(2026-11-24): 새로 시작한 준비 서비스가 이전 실행이 남긴 경계 세션을 닫고, 기록된 MCP 세션(브라우저 문맥)을 지운다.
@@ -24,12 +28,37 @@ type mcpDeleteFixture struct {
 func (m *mcpDeleteFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if r.Method == http.MethodPost {
+		// 탐색 MCP 세션 열기(initialize)만 흉내 낸다(wireCleanup 시험).
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		if json.NewDecoder(r.Body).Decode(&req) != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if req.Method == "notifications/initialized" {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		w.Header().Set("Mcp-Session-Id", "mcp-session-wired")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{"protocolVersion": "2025-06-18"}})
+		return
+	}
 	if r.Method != http.MethodDelete {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
 	m.deleted = append(m.deleted, r.Header.Get("Mcp-Session-Id"))
 	w.WriteHeader(m.status)
+}
+
+func (m *mcpDeleteFixture) setStatus(status int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.status = status
 }
 
 func (m *mcpDeleteFixture) got() []string {
@@ -151,5 +180,53 @@ func TestProductMCPSessionStoreBounds(t *testing.T) {
 	store.Closed("http://explore-mcp:8931/mcp", "sa")
 	if left, _ := store.pending(); len(left) != maxProductMCPSessions-1 {
 		t.Fatalf("지운 세션: %d", len(left))
+	}
+}
+
+// 시작 정리에서 지우지 못한 브라우저 문맥은 새 탐색을 열 때마다 다시 지워 본다(#892 재상 봇 P2). 탐색은 막지 않는다.
+func TestEnsureCleanRetriesUndeletedContexts(t *testing.T) {
+	f, mcp := cleanupFixture(t, http.StatusInternalServerError)
+	if err := f.host.mcpSessions.Opened(f.host.mcpURL, "mcp-session-old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.host.ensureClean(t.Context()); err != nil {
+		t.Fatal("지우기 실패로 탐색을 막음:", err)
+	}
+	if left, _ := f.host.mcpSessions.pending(); len(left) != 1 {
+		t.Fatalf("지우지 못한 기록을 잃음: %v", left)
+	}
+	mcp.setStatus(http.StatusOK)
+	if err := f.host.ensureClean(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if left, _ := f.host.mcpSessions.pending(); len(left) != 0 {
+		t.Fatalf("새 탐색 전에 다시 지우지 않음: %v", left)
+	}
+	if got := mcp.got(); len(got) != 2 || got[0] != "mcp-session-old" || got[1] != "mcp-session-old" {
+		t.Fatalf("지우기 요청: %v", got)
+	}
+}
+
+// 제품 실행 준비의 연결(wireCleanup): 그 뒤로 여는 탐색 MCP 세션이 보호 상태 디렉터리에 기록되고, 지우면 빠진다.
+func TestWireCleanupRecordsScopedSessions(t *testing.T) {
+	f, _ := cleanupFixture(t, http.StatusOK)
+	t.Cleanup(func() { mcphttp.SetScopedSessionRecorder(nil) })
+	if err := f.host.wireCleanup(t.Context(), t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	client, err := mcphttp.NewScoped(ctx, "explore_browser", f.host.mcpURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if left, err := f.host.mcpSessions.pending(); err != nil || len(left) != 1 || left[0].SessionID != "mcp-session-wired" {
+		t.Fatalf("연결 뒤 연 세션이 기록되지 않음: %v %v", left, err)
+	}
+	if err := client.CloseContext(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if left, _ := f.host.mcpSessions.pending(); len(left) != 0 {
+		t.Fatalf("지운 세션이 기록에 남음: %v", left)
 	}
 }

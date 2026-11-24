@@ -23,8 +23,8 @@ func NewScoped(ctx context.Context, server, address string) (*Client, error) {
 		return nil, err
 	}
 	if r := currentScopedRecorder(); r != nil && c.sessionID != "" {
-		// 기록하지 못해도 탐색은 계속한다. 이 세션을 못 지우고 죽어도 경계가 조회 끊김으로 세션을 닫아 남은 페이지가
-		// 대상에 닿지 못한다(문맥 정리만 못 함). 사유는 서버 로그에 남긴다.
+		// 기록하지 못해도 탐색은 계속한다. 이 세션을 못 지우고 죽으면 경계가 조회 끊김으로 세션을 닫아 다음 탐색 세션이
+		// 열리기 전까지 남은 페이지는 대상에 닿지 못한다(그 뒤로는 새 세션의 승인 범위 안에서 섞일 수 있다, 계약 §6.1).
 		if err := r.Opened(address, c.sessionID); err != nil {
 			log.Print("[mcp] 탐색 MCP 세션 기록 실패(재시작 정리에서 빠질 수 있음)")
 		}
