@@ -517,6 +517,10 @@ function Detail({ graph, node }: { graph: CgGraph; node: CgNode | null }) {
         <li>{node.inScope ? "점검 범위 안" : "범위 밖(연결용)"}</li>
         <li>{node.tested ? "검사함 — 탐색 · 점검이 다룬 자산입니다(취약점이 없다는 뜻은 아닙니다)" : "미검사"}</li>
         {node.assetId ? <li>{`자산 #${node.assetId}`}</li> : null}
+        {node.origin ? <li>{`origin ${node.origin}`}</li> : null}
+        {node.displayPath ? (
+          <li>{`표시 경로 ${node.displayPath} — 경로 조각을 가린 구조입니다(요청 · 진단 근거 아님)`}</li>
+        ) : null}
         {node.port ? <li>{`포트 ${node.port}`}</li> : null}
         {node.statusCode ? <li>{`관찰한 상태 코드 ${node.statusCode}`}</li> : null}
         <li>

@@ -27,6 +27,10 @@ export type CgNode = {
   assetId: number | null;
   port: number | null;
   statusCode: number | null;
+  /** 서버가 준 origin(공개 처리 뒤 scheme://host[:port]). 검증을 못 넘으면 null */
+  origin: string | null;
+  /** 엔드포인트만: 가린 경로 구조(`/` 또는 `/{id}` 1~32개 + 끝 슬래시). 서버가 안 주거나 모양이 다르면 null */
+  displayPath: string | null;
 };
 export type CgEdge = { src: string; dst: string };
 export type CgGraph = {
@@ -61,6 +65,8 @@ export function parseCoverageGraph(raw: CoverageGraph): CgGraph {
       assetId: posInt(n.asset_id),
       port: posInt(n.port),
       statusCode: posInt((n as { status_code?: unknown }).status_code),
+      origin: originOf(n.url),
+      displayPath: n.kind === "endpoint" ? displayPathOf(n.display_path) : null,
     });
   }
   const edges: CgEdge[] = [];
@@ -83,6 +89,25 @@ export function parseCoverageGraph(raw: CoverageGraph): CgGraph {
   return { nodes, edges, dropped: { nodes: droppedNodes, edges: droppedEdges } };
 }
 
+/** 표시 경로 계약(coverage-graph-display-path.md): 루트 `/` 또는 1~32개의 `/{id}`와 선택적 끝 슬래시. 그 밖은 버린다. */
+const DISPLAY_PATH = /^(?:\/|(?:\/\{id\}){1,32}\/?)$/;
+function displayPathOf(v: unknown): string | null {
+  return typeof v === "string" && DISPLAY_PATH.test(v) ? v : null;
+}
+
+/** origin 만 받는다: http(s), 자격 · 경로 · query · fragment 없음. 서버 공개 처리와 같은 모양이 아니면 보이지 않는다. */
+function originOf(v: unknown): string | null {
+  if (typeof v !== "string" || !v) return null;
+  let u: URL;
+  try {
+    u = new URL(v);
+  } catch {
+    return null;
+  }
+  const plain = !u.username && !u.password && !u.search && !u.hash && u.pathname === "/";
+  return (u.protocol === "http:" || u.protocol === "https:") && plain ? u.origin : null;
+}
+
 function createsCycle(parent: ReadonlyMap<string, string>, child: string, to: string): boolean {
   for (let at: string | undefined = to; at !== undefined; at = parent.get(at)) if (at === child) return true;
   return false;
@@ -95,16 +120,19 @@ export function coverageGraphStats(g: CgGraph): { inScope: number; tested: numbe
 }
 
 /**
- * 노드 이름. 서비스는 포트 · 상태 코드, 엔드포인트는 자산 번호다 — 보고서 공개 처리(server/report_graph_read.go
- * publicCoverageGraph)가 경로를 지우고 origin 만 남겨 엔드포인트 라벨이 서로 같기 때문이다.
+ * 노드 이름. 서비스는 포트 · 상태 코드다. 엔드포인트는 가린 표시 경로 + 자산 번호다 — 조각이 모두 `{id}`로 가려져
+ * 같은 모양이 여럿일 수 있어(#904) 번호로 가른다. 표시 경로가 없으면(이전 서버 · 생략) 자산 번호만이다. 서버 공개 처리가
+ * 엔드포인트 라벨을 origin 으로 덮어 서로 같기 때문에 라벨은 쓰지 않는다.
  */
-// TODO(이경준): 서버가 마스킹한 표시용 경로 칸(#878 방식, 예: /api/users/{id})을 내면 엔드포인트는 그 칸을 쓴다.
 export function coverageNodeLabel(n: CgNode): string {
   if (n.kind === "service") {
     const parts = [n.port ? `:${n.port}` : "", n.statusCode ? String(n.statusCode) : ""].filter(Boolean);
     return parts.length ? parts.join(" · ") : n.label || assetName(n);
   }
-  if (n.kind === "endpoint") return assetName(n);
+  if (n.kind === "endpoint") {
+    if (!n.displayPath) return assetName(n);
+    return n.assetId ? `${n.displayPath} · #${n.assetId}` : n.displayPath;
+  }
   return n.label || assetName(n);
 }
 

@@ -109,6 +109,125 @@ describe("parseCoverageGraph — 응답은 데이터(절대 규칙 4)", () => {
   });
 });
 
+// #904 서버 합성 응답(docs/contracts/fixtures/coverage-graph-display-path.json · coverage-graph-legacy.json)의 엔드포인트 부분 사본.
+// #904 머지 뒤에는 그 파일을 바로 읽어도 된다.
+const DISPLAY_FIXTURE: CoverageGraph = {
+  nodes: [
+    node("c:1", "company", { label: "회사 #1", in_scope: false }),
+    node("a:14", "service", {
+      label: "https://api.example.test",
+      asset_id: 14,
+      url: "https://api.example.test",
+      port: 443,
+      status_code: 200,
+    }),
+    node("a:21", "endpoint", {
+      label: "https://api.example.test",
+      asset_id: 21,
+      url: "https://api.example.test",
+      tested: true,
+      display_path: "/{id}/{id}",
+    }),
+    node("a:22", "endpoint", {
+      label: "https://api.example.test",
+      asset_id: 22,
+      url: "https://api.example.test",
+      tested: true,
+      display_path: "/{id}/{id}/{id}",
+    }),
+    node("a:23", "endpoint", {
+      label: "https://api.example.test",
+      asset_id: 23,
+      url: "https://api.example.test",
+      display_path: "/{id}/{id}/{id}",
+    }),
+    node("a:24", "endpoint", {
+      label: "https://api.example.test",
+      asset_id: 24,
+      url: "https://api.example.test",
+      display_path: "/",
+    }),
+    node("a:25", "endpoint", { label: "https://api.example.test", asset_id: 25, url: "https://api.example.test" }),
+  ],
+  edges: [{ src: "a:14", dst: "c:1" }, ...[21, 22, 23, 24, 25].map((id) => ({ src: `a:${id}`, dst: "a:14" }))],
+};
+const LEGACY_FIXTURE: CoverageGraph = {
+  nodes: [
+    node("a:14", "service", {
+      label: "https://api.example.test",
+      asset_id: 14,
+      url: "https://api.example.test",
+      port: 443,
+      status_code: 200,
+    }),
+    node("a:22", "endpoint", {
+      label: "https://api.example.test",
+      asset_id: 22,
+      url: "https://api.example.test",
+      tested: true,
+    }),
+  ],
+  edges: [{ src: "a:22", dst: "a:14" }],
+};
+
+describe("표시 경로(display_path, #904)", () => {
+  const labels = (raw: CoverageGraph) => {
+    const g = parseCoverageGraph(raw);
+    return Object.fromEntries(g.nodes.map((n) => [n.key, coverageNodeLabel(n)]));
+  };
+
+  it("엔드포인트는 가린 경로 + 자산 번호 — 같은 모양도 key · 번호로 갈린다, 없으면 자산 번호만", () => {
+    const g = parseCoverageGraph(DISPLAY_FIXTURE);
+    expect(g.dropped).toEqual({ nodes: 0, edges: 0 });
+    expect(labels(DISPLAY_FIXTURE)).toMatchObject({
+      "a:21": "/{id}/{id} · #21",
+      "a:22": "/{id}/{id}/{id} · #22",
+      "a:23": "/{id}/{id}/{id} · #23",
+      "a:24": "/ · #24",
+      "a:25": "엔드포인트 #25",
+    });
+    const by = new Map(g.nodes.map((n) => [n.key, n]));
+    expect(by.get("a:21")?.origin).toBe("https://api.example.test");
+    expect(by.get("a:22")?.displayPath).toBe(by.get("a:23")?.displayPath);
+  });
+
+  it("이전 응답(칸 없음)도 그대로 읽는다", () => {
+    const g = parseCoverageGraph(LEGACY_FIXTURE);
+    expect(g.dropped).toEqual({ nodes: 0, edges: 0 });
+    expect(labels(LEGACY_FIXTURE)).toEqual({ "a:14": ":443 · 200", "a:22": "엔드포인트 #22" });
+  });
+
+  it("계약 밖 모양 · 엔드포인트 아닌 노드의 칸 · 경로 붙은 origin 은 쓰지 않는다", () => {
+    const bad = ["/api/users", "", "/{id}//{id}", "{id}", "/{ID}", `${"/{id}".repeat(33)}`, "/{id}/?q=1"];
+    const raw: CoverageGraph = {
+      nodes: [
+        ...bad.map((p, i) => node(`e:${i}`, "endpoint", { asset_id: 300 + i, display_path: p })),
+        node("e:ok", "endpoint", { asset_id: 400, display_path: `${"/{id}".repeat(32)}/` }),
+        node("s:1", "service", { asset_id: 500, display_path: "/{id}", url: "https://user:pw@api.example.test/x?y=1" }),
+      ],
+      edges: [],
+    };
+    const g = parseCoverageGraph(raw);
+    for (const n of g.nodes.filter((x) => x.key.startsWith("e:") && x.key !== "e:ok"))
+      expect(n.displayPath, n.key).toBeNull();
+    expect(g.nodes.find((n) => n.key === "e:ok")?.displayPath).toBe(`${"/{id}".repeat(32)}/`);
+    const svc = g.nodes.find((n) => n.key === "s:1");
+    expect(svc?.displayPath).toBeNull();
+    expect(svc?.origin).toBeNull();
+  });
+
+  it("상세에 origin 과 표시 경로를 따로 보인다", async () => {
+    serve(DISPLAY_FIXTURE);
+    render(<CoverageGraphSection taskId="1" active />);
+    const svg = await screen.findByTestId("coverage-graph");
+    fireEvent.keyDown(within(svg).getByRole("button", { name: /엔드포인트 \/\{id\}\/\{id\} · #21/ }), { key: "Enter" });
+    const detail = screen.getByTestId("coverage-graph-detail");
+    expect(detail).toHaveTextContent("origin https://api.example.test");
+    expect(detail).toHaveTextContent("표시 경로 /{id}/{id}");
+    expect(detail).toHaveTextContent("요청 · 진단 근거 아님");
+  });
+});
+
 describe("visibleCoverageGraph — 접힘", () => {
   it(`같은 부모 · 같은 종류가 ${FOLD_LIMIT}개를 넘으면 나머지를 '…' 하나로, 펼치면 ${FOLD_STEP}개씩`, () => {
     const g = parseCoverageGraph(sample(45, 3));
