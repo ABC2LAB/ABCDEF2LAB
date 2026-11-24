@@ -13,6 +13,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/Autumn-27/artex/candidateverify"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/dlp"
 	"github.com/Autumn-27/artex/e2runner"
@@ -100,7 +101,8 @@ func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTP
 	saved := func(ctx context.Context, c db.DiagnosticCandidate, event func(name, status, reason, ref string)) (int64, bool) {
 		var id int64
 		var err error
-		if fenced, ok := store.(diagnosticCandidateFenceStore); ok {
+		// Unsupported and legacy candidates keep their existing save semantics.
+		if fenced, ok := store.(diagnosticCandidateFenceStore); ok && candidateverify.SupportedV2(c) {
 			id, err = fenced.RecordDiagnosticCandidateWithFence(ctx, c, func() (db.DiagnosticCandidateSaveFence, error) {
 				if binding.Runner == nil {
 					return db.DiagnosticCandidateSaveFence{}, db.ErrDiagnosticCandidate
