@@ -62,6 +62,7 @@ import { Markdown } from "../../ui/Markdown";
 import { InspHead, InspOpenButton, Isec, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "./approvals";
+import { CoverageGraphSection } from "./coverageGraphView";
 import { DiagnosticEntrySections, stepHeading } from "./DiagnosticEntrySections";
 import { PriceCapsNotice } from "./PriceCapsNotice";
 import { ProductVerdictReport, productConfirmationSummary, useProductVerdicts } from "./productVerdictViews";
@@ -2026,7 +2027,12 @@ export function UrlReportLive() {
               <div role="tabpanel" id="rp-graph" aria-label="자산 지식 그래프" hidden={tab !== "graph"}>
                 {/* 제품 소유 · 접근 그래프는 접근통제 지도와 같은 자료(product-access-map)라 여기 두지 않고 접근통제 지도 탭의
                     [격자 | 그래프] 보기로 옮겼다(11/24 — 자산 지식 그래프와 혼동) */}
-                <ReportAssetGraph taskId={taskId} active={visible && tab === "graph"} />
+                {/* 탐색이 관찰한 자산 · 엔드포인트 관계(coverage-graph)를 먼저, 포함 근거 · 출처(KG 조회 v1)는 그 아래 */}
+                <CoverageGraphSection taskId={taskId} active={visible && tab === "graph"} />
+                <section className={s.isec} aria-label="포함 근거 · 출처">
+                  <h2>포함 근거 · 출처 (KG 조회 v1)</h2>
+                  <ReportAssetGraph taskId={taskId} active={visible && tab === "graph"} />
+                </section>
               </div>
               <div
                 role="tabpanel"
