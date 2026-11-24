@@ -139,7 +139,18 @@ func Open(ctx context.Context, b exploration.Binding, sourceDigest string, sourc
 // Closed는 세션이 닫히면 닫힌다. 네트워크 조립은 이 신호로 진행 중인 연결을 끊는다(§6).
 func (s *Session) Closed() <-chan struct{} { return s.closedCh }
 
-func (s *Session) closeLocked(reason exploration.Reason) {
+// 세션이 닫힌 세부 원인(감사 원자료의 closed_by). 실행기의 정상 마감·상한·철회는 비워 두고, 아래 둘만 남긴다
+// (docs/contracts/exploration-boundary.md 세션 수명). 탐색 실행기가 사라진 뒤 페이지가 스스로 보내는 요청을 끊은 경우다.
+const (
+	// CloseCauseRestartCleanup은 새로 시작한 준비 서비스가 이전 실행이 남긴 세션을 닫은 것이다.
+	CloseCauseRestartCleanup = "restart_cleanup"
+	// CloseCauseControlLost는 경계가 실행기의 상태 조회가 끊긴 것을 보고 스스로 닫은 것이다.
+	CloseCauseControlLost = "control_lost"
+)
+
+func (s *Session) closeLocked(reason exploration.Reason) { s.closeCauseLocked(reason, "") }
+
+func (s *Session) closeCauseLocked(reason exploration.Reason, cause string) {
 	if !s.active {
 		return
 	}
@@ -147,7 +158,7 @@ func (s *Session) closeLocked(reason exploration.Reason) {
 	s.reason = reason
 	close(s.closedCh)
 	if s.policy.Evidence != nil {
-		s.policy.Evidence.closed(reason, s.policy.Now().UTC())
+		s.policy.Evidence.closed(reason, cause, s.policy.Now().UTC())
 	}
 }
 
@@ -165,11 +176,15 @@ func (s *Session) Status() exploration.State {
 // Close는 새 요청을 막고 진행 중 요청이 끝나기를 ctx 안에서 기다린다. 기다리지 못하면 연결이 남은 상태를 그대로
 // 돌려주므로 호출자는 마감을 확정할 수 없다(탐색 몫을 모름으로 남긴다).
 func (s *Session) Close(ctx context.Context, reason exploration.Reason) (exploration.State, error) {
-	if ctx == nil || !reason.Valid() {
+	return s.closeCause(ctx, reason, "")
+}
+
+func (s *Session) closeCause(ctx context.Context, reason exploration.Reason, cause string) (exploration.State, error) {
+	if ctx == nil || !reason.Valid() || cause != "" && cause != CloseCauseRestartCleanup && cause != CloseCauseControlLost {
 		return exploration.State{}, ErrConfig
 	}
 	s.mu.Lock()
-	s.closeLocked(reason)
+	s.closeCauseLocked(reason, cause)
 	idle := s.idle
 	s.mu.Unlock()
 	select {

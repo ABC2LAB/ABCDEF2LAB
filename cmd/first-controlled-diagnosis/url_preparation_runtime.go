@@ -858,6 +858,10 @@ func (b *urlPreparationRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request
 	if auth.Job.Scope != nil {
 		r = r.WithContext(server.WithDiagnosticReportScope(r.Context(), task, *auth.Job.Scope))
 	}
+	if b.product != nil && r.URL.Path == "/api/report/diagnostic" {
+		r = r.WithContext(server.WithDiagnosticProductReport(r.Context(), task, auth.Job.ID,
+			productPreparationEndpoint{base: b.endpoint, product: b.product}))
+	}
 	b.mu.RLock()
 	if live := b.live[task]; live != nil {
 		b.mu.RUnlock()

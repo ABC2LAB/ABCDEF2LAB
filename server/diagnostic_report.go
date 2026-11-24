@@ -113,10 +113,15 @@ func loadDiagnosticReportWithCaptures(ctx context.Context, pg *db.DB, taskID int
 	if err != nil {
 		return out, err
 	}
+	product, err := loadDiagnosticProductSnapshot(ctx, tx, taskID, len(out.Entries))
+	if err != nil {
+		return out, err
+	}
 	if err = tx.Commit(); err != nil {
 		return out, err
 	}
-	return out, nil
+	err = product.addToReport(ctx, &out)
+	return out, err
 }
 func readDiagnosticReport(ctx context.Context, tx *sql.Tx, taskID int64, at time.Time) (report.DiagnosticReport, error) {
 	return readDiagnosticReportWithCaptures(ctx, tx, taskID, at, true)
@@ -172,7 +177,7 @@ func readDiagnosticReportWithCaptures(ctx context.Context, tx *sql.Tx, taskID in
 		if c.SuggestedSeverity != "" {
 			severity = c.SuggestedSeverity
 		}
-		out.Entries = append(out.Entries, report.DiagnosticEntry{ID: fmt.Sprintf("candidate-%d", c.ID), Kind: "candidate", Run: c.RunRef, IntentID: c.IntentID, Title: c.Name, VulnClass: c.VulnClass, Severity: severity, SeveritySource: c.SeveritySource, SeverityRationale: c.SeverityRationale, Status: c.Classification, Verification: c.Verification, Outcome: outcome, Summary: c.Summary, Remediation: c.Remediation, Evidence: c.Evidence, EvidenceVersion: c.EvidenceVersion, Digest: c.EvidenceDigest, ObservedAt: c.ObservedAt, Truncated: c.OutputTruncated})
+		out.Entries = append(out.Entries, report.DiagnosticEntry{ID: fmt.Sprintf("candidate-%d", c.ID), Kind: "candidate", LanguageMixed: c.LanguageMixed, Run: c.RunRef, IntentID: c.IntentID, Title: c.Name, VulnClass: c.VulnClass, Severity: severity, SeveritySource: c.SeveritySource, SeverityRationale: c.SeverityRationale, Status: c.Classification, Verification: c.Verification, Outcome: outcome, Summary: c.Summary, Remediation: c.Remediation, Evidence: c.Evidence, EvidenceVersion: c.EvidenceVersion, Digest: c.EvidenceDigest, ObservedAt: c.ObservedAt, Truncated: c.OutputTruncated})
 	}
 	if len(out.Entries) > report.MaxFindings {
 		return out, report.ErrExportBlocked
@@ -334,7 +339,6 @@ func readDiagnosticReportWithCaptures(ctx context.Context, tx *sql.Tx, taskID in
 	if err := readWorkflowReport(ctx, tx, taskID, &out); err != nil {
 		return out, err
 	}
-
 	return out, nil
 }
 func equalDigest(a, b []byte) bool {

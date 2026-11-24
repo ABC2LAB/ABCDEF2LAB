@@ -32,6 +32,12 @@ type DiagnosticModelRecord struct {
 	Model, Worker string
 	Records       int64
 }
+
+type DiagnosticProductConfirmation struct {
+	VerdictID, ResourceType string
+	EvidenceCalls           int
+	SealUnconfirmedReason   string
+}
 type DiagnosticReport struct {
 	SourceFailures          int
 	ExposedCredentialValues int
@@ -50,6 +56,12 @@ type DiagnosticReport struct {
 	GeneratedAt                                       time.Time
 	Shared                                            bool
 	Entries                                           []DiagnosticEntry
+	ProductConfirmed                                  []DiagnosticProductConfirmation
+	ProductSuspected, ProductUndecidable              int
+	ProductUnverified                                 int
+	ProductSourceUnavailable                          int
+	ProductUnreadable                                 int
+	ProductSealUnconfirmed                            int
 	Confirmed, Review, NotExecuted, Unknown, Negative int
 	BySeverity, ByType                                map[string]int
 }
@@ -73,6 +85,8 @@ type DiagnosticEntry struct {
 	RemediationBundle                                         *remediation.Bundle
 	RemediationSource                                         *remediation.Input
 	Stale, Truncated                                          bool
+	// LanguageMixed는 모델이 쓴 설명·조치·근거에 한자·가나가 섞인 채 저장된 후보다(한 번 다시 쓰게 했지만 남음, 2026-11-24).
+	LanguageMixed bool
 }
 
 // 자격정보 형식·연락처를 보수적으로 제거한다. 공유 사본은 자유문장 전체를 가린다.
@@ -83,7 +97,7 @@ func DiagnosticText(s string) string { return dlp.DiagnosticText(s) }
 
 // 템플릿 자동 이스케이프만 사용하며 링크·스크립트·외부 리소스를 만들지 않는다.
 func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
-	if in.TaskID <= 0 || in.GeneratedAt.IsZero() || len(in.Entries) > MaxFindings {
+	if in.TaskID <= 0 || in.GeneratedAt.IsZero() || len(in.Entries)+len(in.ProductConfirmed) > MaxFindings {
 		return DiagnosticReport{}, ErrExportBlocked
 	}
 	in.ExposedCredentialValues = 0
@@ -321,6 +335,29 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 			e.Digest = "[REDACTED]"
 		}
 	}
+	in.ProductConfirmed = append([]DiagnosticProductConfirmation(nil), in.ProductConfirmed...)
+	in.ProductSealUnconfirmed = 0
+	for i := range in.ProductConfirmed {
+		row := &in.ProductConfirmed[i]
+		id, err := strconv.ParseInt(row.VerdictID, 10, 64)
+		if err != nil || id <= 0 || strconv.FormatInt(id, 10) != row.VerdictID || row.EvidenceCalls <= 0 {
+			return DiagnosticReport{}, ErrExportBlocked
+		}
+		if row.SealUnconfirmedReason != "" {
+			if row.SealUnconfirmedReason != "seal_not_recorded" && row.SealUnconfirmedReason != "evidence_checkpoint_missing" {
+				return DiagnosticReport{}, ErrExportBlocked
+			}
+			in.ProductSealUnconfirmed++
+		}
+		in.Confirmed++
+		in.BySeverity["미평가"]++
+		in.ByType["제품 접근통제(IDOR)"]++
+		if in.Shared {
+			row.ResourceType = "[REDACTED]"
+		} else {
+			row.ResourceType = DiagnosticText(row.ResourceType)
+		}
+	}
 	return in, nil
 }
 
@@ -485,6 +522,9 @@ dt{font-weight:700}dd{margin-left:0;margin-bottom:8px;overflow-wrap:anywhere}
 <h2>3장. 진단 결과 요약</h2><h3>관리자 요약</h3><p>실행 결과: {{.RunText}}. 실행 결과는 취약점이 없다는 뜻이 아닙니다.</p>{{if .SourceFailures}}<p>근거 불러오기 실패: {{.SourceFailures}}건. 해당 항목의 재현·캡처·프롬프트는 제공하지 않습니다.</p>{{end}}{{if .ExposedCredentialValues}}<p>대상이 노출한 자격 값: 노출됨 {{.ExposedCredentialValues}}건. 보고서에서는 값을 가렸습니다.</p>{{end}}
 <table><thead><tr><th>확정</th><th>검토 필요</th><th>미실행</th><th>오류·결과 불명</th><th>비취약 판정</th></tr></thead>
 <tbody><tr><td>{{.Confirmed}}</td><td>{{.Review}}</td><td>{{.NotExecuted}}</td><td>{{.Unknown}}</td><td>{{.Negative}}</td></tr></tbody></table>
+{{if or .ProductConfirmed .ProductSuspected .ProductUndecidable .ProductUnverified .ProductSourceUnavailable .ProductUnreadable}}<h3>제품 E③ 확정 단계</h3>
+<p>독립 확정 {{len .ProductConfirmed}}건{{if .ProductSealUnconfirmed}} · 그중 근거 봉인 미확인 {{.ProductSealUnconfirmed}}건{{end}}{{if or .ProductSuspected .ProductUndecidable}} · 의심 {{.ProductSuspected}}건 · 판정 불가 {{.ProductUndecidable}}건(확정에 세지 않음){{end}}{{if .ProductUnverified}} · 확인 실패 {{.ProductUnverified}}건(확정에 안 셈){{end}}{{if .ProductSourceUnavailable}} · 당시 원본 미확인 {{.ProductSourceUnavailable}}건(확정에 세지 않음){{end}}{{if .ProductUnreadable}} · 제품 확정 단계 판정을 읽지 못함({{.ProductUnreadable}}건, 확정에 세지 않음){{end}}</p>
+<ul>{{range .ProductConfirmed}}<li>제품 판정 {{.VerdictID}} · 자원 종류 {{.ResourceType}} · 근거 호출 {{.EvidenceCalls}}건{{if .SealUnconfirmedReason}} · 근거 봉인 미확인({{.SealUnconfirmedReason}}){{end}}</li>{{end}}</ul>{{end}}
 <p>실행 completed는 취약점 확정이 아닙니다. 후보는 실제 관찰을 가진 검토 대상이며 자동 검증 또는 권한 있는 사람의 근거 있는 판단이 더 필요합니다.
 심각도·처리 상태·판정·실행 결과를 따로 표시합니다. 유사 제목끼리 합치지 않으며 원래 ID를 유지합니다.</p>
 <h3>확정 결과 심각도별 집계</h3><ul>{{range $key, $count := .BySeverity}}<li>{{$key}}: {{$count}}</li>{{end}}</ul>
@@ -495,6 +535,7 @@ dt{font-weight:700}dd{margin-left:0;margin-bottom:8px;overflow-wrap:anywhere}
 <dt>검증 방법</dt><dd>{{.Verification}}</dd><dt>심각도</dt><dd>{{.SeverityText}}</dd>{{if .SeverityRationale}}<dt>예상 심각도 근거 · 모델 제안</dt><dd>{{.SeverityRationale}}</dd>{{end}}<dt>처리/실행 상태</dt><dd>{{.Status}}</dd>
 <dt>회차 / intent</dt><dd>{{if .Run}}{{.Run}}{{else}}회차 미기록{{end}} / {{if .IntentID}}{{.IntentID}}{{else}}intent 미기록{{end}}</dd><dt>관찰 시각</dt><dd>{{if .ObservedAt.IsZero}}미기록{{else}}{{.ObservedAt}}{{end}}</dd>
 <dt>증거 버전 / digest</dt><dd>{{.EvidenceVersion}} / {{.Digest}}</dd></dl>
+{{if .LanguageMixed}}<p>다른 언어 섞임: 모델이 쓴 설명·조치·근거에 한자·가나가 섞여 있습니다. 한 번 한국어로 다시 쓰게 했지만 남았습니다.</p>{{end}}
 {{if .Stale}}<p>주의: 증거와 상세 보고서 버전이 달라 확정 집계에서 제외했습니다. 갱신이 필요합니다.</p>{{end}}
 {{if .Truncated}}<p>주의: 실제 도구 출력이 잘렸습니다. 완전한 재현 증거가 아닙니다.</p>{{end}}
 <h4>① 판정과 영향</h4><h5>관찰과 주장</h5><pre>{{if .Summary}}{{.Summary}}{{else}}추가 설명 미기록{{end}}</pre><h4>저장된 상세 설명</h4><pre>{{if .Report}}{{.Report}}{{else}}별도 상세 보고서 미작성{{end}}</pre>

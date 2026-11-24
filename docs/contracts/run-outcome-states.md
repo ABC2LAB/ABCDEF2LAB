@@ -24,9 +24,10 @@ intent 결과는 **그래프의 지금 상태에서 계산하는 투영**이다.
 | `incomplete` | `exhausted`, `stopped`, `blocked` + 위·아래에 없는 사유(사유 없음 포함), 실행 마감 때 남은 `open` | 턴·시간 상한, Bash 미호출, 일시 실패, 모델 할당량, Planner가 그 방향을 멈춤, 예산 상한으로 시작하지 못함. |
 | `unknown` | `blocked` + `e2_http_result_unknown` | 결과 불명 송신이 있다. |
 | `stopped` | `paused` (실행 마감 때) | 운영자 중지·대상 철회로 끊겼다. |
+| `goal_met` | `stopped` + `goal_met`, 목표 달성 마감 때 남은 `open` | 목표를 달성해 작업이 끝나(원본과 같은 끝 규칙) 진행 중이던 작업이 취소됐거나 시작하지 않았다. 남은 작업이 아니다(2026-11-24 사용자 결정, #875 발견 6). 목표 달성은 계획자(모델) 판단이지 프로그램이 검증한 사실이 아니라서, 화면·보고서는 "목표 달성(계획자 판단)으로 중단 n"으로 보이고 중지된 실행의 "끝난"에도 넣지 않는다. |
 
 - `deleted`는 세지 않는다. `running`이 남아 있으면 마감 전이다(지금처럼 기다린다).
-- 그래프 `stopped`(Planner `kill_work`·task 마감 뒤 취소)는 운영자 중지가 아니라서 `incomplete`로 센다. 운영자 중지는 지금 코드에서 `paused`로 남는다(`server/engine.go` cancel 처리).
+- 그래프 `stopped`(Planner `kill_work`·task 마감 뒤 취소)는 운영자 중지가 아니라서 `incomplete`로 센다. 단 목표 달성(작업 `done`)으로 끝나 취소된 intent는 엔진이 사유 `goal_met`을 붙이고 `goal_met`으로 센다. 실행 상한(`budget_limited`) 마감에서 남은 `open`은 지금처럼 `incomplete`다. 운영자 중지는 지금 코드에서 `paused`로 남는다(`server/engine.go` cancel 처리).
 - intent `stopped`는 보통 실행 `state`가 `cancelled`일 때 나온다. 그래서 `intent_outcomes`는 `cancelled`에도 싣는다(3.2). `completed`에 `paused`가 남는 경로는 지금 코드에 없지만(완료 판정은 열린·진행 중 intent가 있으면 기다린다), C26에서 Planner `goal_met`이 복원되면 생길 수 있어 `completed`의 대조식에도 `stopped`를 넣어 둔다.
 - `unknown` intent의 쓰기 요청은 다시 보내지 않고, 그 intent에 기대는 후속 intent만 보류한다(개발 계획, C01). 지금 구현 범위는 6절 3을 본다(다른 intent 재전송 차단·후속 보류는 열린 항목 3).
 
@@ -49,15 +50,15 @@ intent 결과는 **그래프의 지금 상태에서 계산하는 투영**이다.
 |---|---|---|---|
 | `outcome` | `completed` | `complete` · `partial` · `no_intents` | 아래 대조식. |
 | `closing_reason` | `completed` (없을 수 있음) | `budget_limited` | Planner 라운드·도구 호출·intent 재실행 상한, 승인 모델 예산, E② 승인 요청 예산 또는 회차 실행 시간(3.5)에 닿아 새 작업 없이 마감했다. 찾은 후보·근거는 보존한다. |
-| `intent_outcomes` | `completed` · `cancelled` | `{done, policy_limited, incomplete, unknown, stopped}` 정수 | 위 2절 투영의 개수. 모두 0 이상. `cancelled`에서는 "끝난 것·끊긴 것"을 보이는 데 쓴다(#429 이경준 제안). |
+| `intent_outcomes` | `completed` · `cancelled` | `{done, policy_limited, incomplete, unknown, stopped, goal_met}` 정수 | 위 2절 투영의 개수. 모두 0 이상. `goal_met`은 이 칸이 생기기 전 기록에는 없고 0으로 읽는다. `cancelled`에서는 "끝난 것·끊긴 것"을 보이는 데 쓴다(#429 이경준 제안). |
 | `diagnostic_log_incomplete` | `completed` | 참·거짓 | 진단 로그 기록 실패·관찰 불완전(C10). `reason_code`에 넣던 경고를 여기로 옮긴다(#418 이경준 지적: 다른 사유가 있으면 경고가 덮였다). |
 | `account_auth` | `completed` · `cancelled` · `failed` (시험 계정을 결속한 실행만) | 라벨 → `authenticated` · `login_failed` · `session_not_found` · `result_unknown` · `not_sent` | 실행 시작 때 인증 준비의 계정별 결과(C14 결정 3, S08). 라벨은 계정 등록 라벨(소문자·숫자·`_`·`-`, 사용자명 원문 아님), 값은 결과뿐이고 자격·세션 값은 없다. 1…16개. 인증 준비가 없던 실행(계정 미결속, 그리고 지금은 외부 API 실행 — 사전 공지·승인 동의 칸이 생기기 전까지 결속하지 않음)에는 칸이 없다. 받는 쪽은 모드로 거부하지 않는다(동의 칸이 생기면 외부 API 실행에도 실림). 아래 3.4. |
 
 `outcome`과 `intent_outcomes` 대조식(받는 쪽이 검사하고, 맞지 않으면 응답을 거부한다):
 
-- `no_intents` ⇔ 다섯 개수가 모두 0.
+- `no_intents` ⇔ 여섯 개수가 모두 0.
   - 흐름 모드(`workflow_mode`)도 같다: 진단 Worker가 한 번도 없었고 마지막 계획(Plan)이 오류 없이 끝났으면 `no_intents`로 마감한다. 마지막 계획 호출이 실패했거나 계획 기록이 없으면 `failed`(진단 로그 사유 `closure_workflow_not_ready`)다(2026-11-22 사용자 결정, `firstDiagnosisWorkflowNotReady`).
-- `complete` ⇔ `done + policy_limited ≥ 1` 이고 `incomplete + unknown + stopped = 0`.
+- `complete` ⇔ `done + policy_limited + goal_met ≥ 1` 이고 `incomplete + unknown + stopped = 0`. `goal_met`은 남은 작업이 아니라서 `partial`을 만들지 않는다.
 - `partial` ⇔ `incomplete + unknown + stopped ≥ 1`.
 
 조합 규칙:

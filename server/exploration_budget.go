@@ -74,7 +74,8 @@ func (r *E2HTTPRuntime) hasClosedExplorationBudget(task *Task, budget *FirstDiag
 }
 
 func (r *E2HTTPRuntime) explorationBudgetOutcome(task *Task, budget *FirstDiagnosisModelBudget, out diagnosis.IntentOutcomes) (diagnosis.RunResult, bool) {
-	if out.Done != 0 || out.PolicyLimited != 0 || out.Unknown != 0 || out.Stopped != 0 || out.Incomplete < 0 || !r.hasClosedExplorationBudget(task, budget) {
+	// 목표 달성으로 중단된 작업(GoalMet)이 있으면 진단이 실제로 돈 실행이라 이 마감이 아니다(일반 마감이 complete로 센다).
+	if out.Done != 0 || out.PolicyLimited != 0 || out.Unknown != 0 || out.Stopped != 0 || out.GoalMet != 0 || out.Incomplete < 0 || !r.hasClosedExplorationBudget(task, budget) {
 		return diagnosis.RunResult{}, false
 	}
 

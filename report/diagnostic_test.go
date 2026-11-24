@@ -2,6 +2,7 @@ package report
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/Autumn-27/artex/remediation"
 	"html"
@@ -147,6 +148,36 @@ func TestDiagnosticReportRejectsUnverifiedConfirmationAndBounds(t *testing.T) {
 	}
 	if _, err := DiagnosticHTML(in); err == nil {
 		t.Fatal("overflow accepted")
+	}
+}
+
+func TestPrepareDiagnosticValidatesProductConfirmation(t *testing.T) {
+	valid := DiagnosticProductConfirmation{VerdictID: "42", ResourceType: "document", EvidenceCalls: 1}
+	for _, tc := range []struct {
+		name   string
+		change func(*DiagnosticProductConfirmation)
+	}{
+		{"non-numeric verdict ID", func(row *DiagnosticProductConfirmation) { row.VerdictID = "verdict-42" }},
+		{"non-canonical verdict ID", func(row *DiagnosticProductConfirmation) { row.VerdictID = "042" }},
+		{"non-positive verdict ID", func(row *DiagnosticProductConfirmation) { row.VerdictID = "0" }},
+		{"zero evidence calls", func(row *DiagnosticProductConfirmation) { row.EvidenceCalls = 0 }},
+		{"negative evidence calls", func(row *DiagnosticProductConfirmation) { row.EvidenceCalls = -1 }},
+		{"unknown seal reason", func(row *DiagnosticProductConfirmation) { row.SealUnconfirmedReason = "unexpected" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := diagnosticFixture()
+			in.ProductConfirmed = []DiagnosticProductConfirmation{valid}
+			tc.change(&in.ProductConfirmed[0])
+			if _, err := PrepareDiagnostic(in); !errors.Is(err, ErrExportBlocked) {
+				t.Fatalf("잘못된 제품 판정을 허용함: %v", err)
+			}
+		})
+	}
+	in := diagnosticFixture()
+	in.ProductConfirmed = []DiagnosticProductConfirmation{valid}
+	prepared, err := PrepareDiagnostic(in)
+	if err != nil || prepared.Confirmed != 4 || prepared.ByType["IDOR"] != 1 || prepared.ByType["제품 접근통제(IDOR)"] != 1 {
+		t.Fatalf("일반·제품 판정의 집계가 다름: %+v, %v", prepared.ByType, err)
 	}
 }
 

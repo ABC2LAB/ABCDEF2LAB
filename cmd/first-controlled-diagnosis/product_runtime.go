@@ -80,6 +80,10 @@ func newProductRuntime(c urlPreparationInstallation, pin urlInputPin) (*productR
 			return nil, errPreparation
 		}
 		pins = append(pins, cp)
+		// 재시작 정리: 열린 탐색 MCP 세션을 기록하고, 시작할 때 이전 실행이 남긴 경계 세션·브라우저 문맥을 정리한다.
+		if explorationHost.wireCleanup(context.Background(), c.StateDir) != nil {
+			return nil, errPreparation
+		}
 	}
 	check := func() error {
 		for _, p := range pins {
