@@ -32,6 +32,10 @@ type DiagnosticModelRecord struct {
 	Model, Worker string
 	Records       int64
 }
+type DiagnosticModelAccounting struct {
+	Phase, PhaseText, CostText                              string
+	Requests, Errors, InputTokens, OutputTokens, CostMicros int64
+}
 
 type DiagnosticProductConfirmation struct {
 	VerdictID, ResourceType string
@@ -45,6 +49,7 @@ type DiagnosticReport struct {
 	TaskCreatedAt           time.Time
 	ApprovedScope           *diagnosisprep.Scope
 	ModelRecords            []DiagnosticModelRecord
+	ModelAccounting         []DiagnosticModelAccounting
 	ModelRecordState        string
 	ModelRecordsOmitted     int64
 	Workflow                *diagnosisflow.Snapshot
@@ -168,6 +173,7 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 		in.TaskTitle = "[REDACTED]"
 		in.ApprovedScope = nil
 		in.ModelRecords = nil
+		in.ModelAccounting = nil
 	}
 	in.Confirmed, in.Review, in.NotExecuted, in.Unknown, in.Negative = 0, 0, 0, 0, 0
 	in.SourceFailures = 0
@@ -514,7 +520,7 @@ dt{font-weight:700}dd{margin-left:0;margin-bottom:8px;overflow-wrap:anywhere}
 </style></head><body>
 <h1>웹 취약점 진단 결과보고서</h1><p>진단 종합 보고서 · 문서 형식 diagnostic-report/v2</p><h2>목차</h2><ol><li>취약점 진단 개요</li><li>진단 방법 및 수행 현황</li><li>진단 결과 요약</li><li>취약점별 상세 결과</li><li>증적 부록</li></ol><p>작업 #{{.TaskID}} · 전체 저장 회차 · 생성 {{.GeneratedAt}}</p>
 {{if .Shared}}<p>공유용 마스킹 사본. 자유문장과 원문 증거는 포함하지 않습니다.</p>{{else}}<p>인증된 관리자용 상세 사본. 자격정보 형식을 가렸습니다. 외부 공유 전 별도 검토가 필요합니다.</p>{{end}}
-<h2>1장. 취약점 진단 개요</h2><p>작업 {{.TaskTitle}} · 작업 생성 {{.TaskCreatedAt}}</p>{{with .ApprovedScope}}<h3>해당 회차의 저장 승인 범위</h3><dl><dt>대상</dt><dd>{{.Origin}}</dd><dt>경로·메서드</dt><dd>{{join .PathPrefixes ", "}} · {{join .Methods ", "}}</dd><dt>승인 방식·만료</dt><dd>{{.ApprovalMode}} · {{.ExpiresAt}}</dd><dt>요청·모델 요청 상한</dt><dd>{{.Budget.Requests}} · {{.Budget.ModelRequests}}</dd>{{with .Model}}<dt>승인 모델 정책</dt><dd>{{.Model}} · {{.Provider}}</dd>{{end}}</dl>{{else}}<p>저장된 승인 범위 상세 미확보 또는 공유용 비공개. 작업 목표를 승인 범위로 간주하지 않습니다.</p>{{end}}<h3>저장된 모델·실행 정보</h3><p>사용량 기록 상태 {{.ModelRecordState}}. 기록 부재를 미실행으로 단정하지 않습니다.</p>{{if .ModelRecordsOmitted}}<p>추가 모델 사용량 묶음 {{.ModelRecordsOmitted}}개 생략. 저장된 원본 기록은 유지합니다.</p>{{end}}<ul>{{range .ModelRecords}}<li>{{.Model}} · {{.Worker}} · 사용량 기록 {{.Records}}행</li>{{end}}</ul><h3>진단 범위와 한계</h3><p>선택한 작업에 직접 속한 저장 결과만 포함합니다. 연결된 다른 작업·전체 자산·모든 검사항목의 검사 완료를 의미하지 않습니다.
+<h2>1장. 취약점 진단 개요</h2><p>작업 {{.TaskTitle}} · 작업 생성 {{.TaskCreatedAt}}</p>{{with .ApprovedScope}}<h3>해당 회차의 저장 승인 범위</h3><dl><dt>대상</dt><dd>{{.Origin}}</dd><dt>경로·메서드</dt><dd>{{join .PathPrefixes ", "}} · {{join .Methods ", "}}</dd><dt>승인 방식·만료</dt><dd>{{.ApprovalMode}} · {{.ExpiresAt}}</dd><dt>요청·모델 요청 상한</dt><dd>{{.Budget.Requests}} · {{.Budget.ModelRequests}}</dd>{{with .Model}}<dt>승인 모델 정책</dt><dd>{{.Model}} · {{.Provider}}</dd>{{end}}</dl>{{else}}<p>저장된 승인 범위 상세 미확보 또는 공유용 비공개. 작업 목표를 승인 범위로 간주하지 않습니다.</p>{{end}}<h3>저장된 모델·실행 정보</h3>{{if .ModelAccounting}}<p>저장된 준비·진단 단계별 모델 사용량입니다. 비용 수치는 미확정 호출이 있으면 실제 청구액과 다를 수 있으며 단계 합계나 최종 청구액으로 단정하지 않습니다.</p><ul>{{range .ModelAccounting}}<li>{{.PhaseText}} · 호출 {{.Requests}}건 · 오류 {{.Errors}}건 · 입력 {{.InputTokens}}토큰 · 출력 {{.OutputTokens}}토큰 · 기록 비용 {{.CostText}}</li>{{end}}</ul>{{else}}<p>저장된 준비·진단 단계 모델 정산 기록이 없습니다. 모델 미실행을 뜻하지 않습니다.</p>{{end}}<p>작업별 LLM 세부 사용량 행 상태 {{.ModelRecordState}}. 이 상태는 위 단계별 정산 기록과 별개입니다.</p>{{if .ModelRecordsOmitted}}<p>추가 모델 사용량 묶음 {{.ModelRecordsOmitted}}개 생략. 저장된 원본 기록은 유지합니다.</p>{{end}}<ul>{{range .ModelRecords}}<li>{{.Model}} · {{.Worker}} · 사용량 기록 {{.Records}}행</li>{{end}}</ul><h3>진단 범위와 한계</h3><p>선택한 작업에 직접 속한 저장 결과만 포함합니다. 연결된 다른 작업·전체 자산·모든 검사항목의 검사 완료를 의미하지 않습니다.
 실행 허용 범위·계정 준비·대상·기간은 각 실행 기록에서 확인해야 합니다. 기록되지 않은 관찰, 캡처, 원인이나 검증 성공을 생성하지 않습니다.
 새 대상 요청·로그인·재현·외부 리소스 조회 없이 저장 자료만 사용했습니다.</p>
 <h2>2장. 진단 방법 및 수행 현황</h2><p>아래 내용은 실제 저장한 실행·탐색 기록입니다. 목록에 없는 검사나 환경·모델은 수행·확인한 것으로 추정하지 않습니다.</p>{{with .Workflow}}<h3>실제 탐색·선택 기록</h3><p>모드 {{.Mode}} · 저장 단계 {{.Stage}} · 마지막 저장 {{.UpdatedAt}}. 이 기록은 재실행 권한 또는 현재 실행 중임의 증거가 아닙니다.</p><p>발견 {{.Counts.Found}} · 응답 관찰 {{.Counts.Visited}} · 요청 쓰기 {{.Counts.Sent}} · 전송 시도 {{.Counts.Attempted}} · 차단 {{.Counts.Blocked}} · 불명 {{.Counts.Unknown}}</p><table><thead><tr><th>메서드</th><th>경로</th><th>실제 방문</th><th>선택</th><th>응답</th><th>증거 call</th></tr></thead><tbody>{{range .Endpoints}}<tr><td>{{.Method}}</td><td>{{.Path}}</td><td>{{.Visited}}</td><td>{{.Selected}}</td><td>{{.Status}}</td><td>{{.CallRef}}</td></tr>{{end}}</tbody></table><p>제한된 정적 탐색입니다. 미방문·미선택 항목을 검사 완료로 표시하지 않습니다. 엔드포인트 선택과 개별 송신 승인은 별개입니다.</p>{{end}}
