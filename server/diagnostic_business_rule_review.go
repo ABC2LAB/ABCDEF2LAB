@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Autumn-27/artex/candidateverify"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/report"
 )
@@ -84,16 +85,17 @@ func writeDiagnosticBusinessRuleReviews(w http.ResponseWriter, data report.Diagn
 		Summary string `json:"summary"`
 	}
 	type verification struct {
-		ID             string        `json:"id"`
-		Status         string        `json:"status"`
-		Reason         string        `json:"reason"`
-		EvidenceDigest string        `json:"evidence_digest,omitempty"`
-		AttemptRefs    []string      `json:"attempt_refs,omitempty"`
-		Observations   []observation `json:"observations"`
+		ID             string                     `json:"id"`
+		Status         string                     `json:"status"`
+		Reason         string                     `json:"reason"`
+		EvidenceDigest string                     `json:"evidence_digest,omitempty"`
+		AttemptRefs    []string                   `json:"attempt_refs,omitempty"`
+		Observations   []observation              `json:"observations"`
+		Sources        []candidateverify.SourceV2 `json:"sources,omitempty"`
 	}
 	verifications := []verification{}
 	assessments := map[int64]report.CandidateAssessment{}
-	if data.Run != nil && data.Run.VerificationVersion == "passive/v1" {
+	if data.Run != nil && (data.Run.VerificationVersion == "passive/v1" || data.Run.VerificationVersion == diagnosisVerificationV2) {
 		for _, assessment := range data.Run.CandidateAssessments {
 			assessments[assessment.CandidateID] = assessment
 		}
@@ -102,7 +104,7 @@ func writeDiagnosticBusinessRuleReviews(w http.ResponseWriter, data report.Diagn
 		if candidate.BusinessRuleReview != nil {
 			entries = append(entries, entry{ID: candidate.ID, BusinessRuleReview: *candidate.BusinessRuleReview})
 		}
-		if candidate.Kind != "candidate" || data.Run == nil || data.Run.VerificationVersion != "passive/v1" {
+		if candidate.Kind != "candidate" || data.Run == nil || (data.Run.VerificationVersion != "passive/v1" && data.Run.VerificationVersion != diagnosisVerificationV2) {
 			continue
 		}
 		id, err := strconv.ParseInt(strings.TrimPrefix(candidate.ID, "candidate-"), 10, 64)
@@ -110,10 +112,14 @@ func writeDiagnosticBusinessRuleReviews(w http.ResponseWriter, data report.Diagn
 			continue
 		}
 		assessment, found := assessments[id]
+		if !found && data.Run.State == report.DiagnosticRunRunning {
+			verifications = append(verifications, verification{ID: candidate.ID, Status: "insufficient", Reason: "verification_not_complete", EvidenceDigest: candidate.Digest, Observations: []observation{}})
+			continue
+		}
 		if !found && !candidate.SourceLoadFailed {
 			continue
 		}
-		row := verification{ID: candidate.ID, Status: assessment.Status, Reason: assessment.Reason, EvidenceDigest: candidate.Digest, AttemptRefs: append([]string(nil), assessment.AttemptRefs...), Observations: []observation{}}
+		row := verification{ID: candidate.ID, Status: assessment.Status, Reason: assessment.Reason, EvidenceDigest: candidate.Digest, AttemptRefs: append([]string(nil), assessment.AttemptRefs...), Observations: []observation{}, Sources: append([]candidateverify.SourceV2(nil), assessment.Sources...)}
 		if candidate.SourceLoadFailed {
 			row.Status, row.Reason = "insufficient", "source_unavailable"
 		}

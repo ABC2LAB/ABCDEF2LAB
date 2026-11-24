@@ -19,9 +19,10 @@ const (
 )
 
 type Result struct {
-	Status   string   `json:"status"`
-	Reason   string   `json:"reason"`
-	Attempts []string `json:"attempt_refs,omitempty"`
+	Status   string     `json:"status"`
+	Reason   string     `json:"reason"`
+	Attempts []string   `json:"attempt_refs,omitempty"`
+	Sources  []SourceV2 `json:"sources,omitempty"`
 }
 
 type evidence struct {

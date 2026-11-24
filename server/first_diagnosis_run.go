@@ -15,6 +15,7 @@ import (
 	"github.com/Autumn-27/artex/candidateverify"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/diagnosis"
+	"github.com/Autumn-27/artex/e2runner"
 	"github.com/Autumn-27/artex/internal/diagnosticlog"
 	"github.com/Autumn-27/artex/llmpolicy"
 	"github.com/golang-jwt/jwt/v5"
@@ -125,7 +126,11 @@ func (s *FirstDiagnosisSupervisor) PersistRunOutcomeStoredStop(ctx context.Conte
 	if !validDiagnosisRunResult(state, result) {
 		result = nil
 	}
-	err := saveDiagnosisRunRecordGoal(ctx, s.m.pg.DB, mustFirstDiagnosisTaskNumber(task), state, server.FirstDiagnosisModelUsage(), result, s.goalDigests())
+	var trusted []e2runner.TrustedResult
+	if server.engine != nil && server.engine.e2HTTP != nil {
+		trusted = server.engine.e2HTTP.Results(task)
+	}
+	err := saveDiagnosisRunRecordGoal(ctx, s.m.pg.DB, mustFirstDiagnosisTaskNumber(task), state, server.FirstDiagnosisModelUsage(), result, s.goalDigests(), trusted)
 	status, reason := diagnosisLogOutcome(ctx, err, "result_storage_failed")
 	stored := err == nil
 	_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "server", Event: "result_save_finished", TaskID: mustFirstDiagnosisTaskNumber(task), RunRef: state.RunRef, Stage: "result_storage", Status: status, ReasonCode: reason, DurationMS: time.Since(startedAt).Milliseconds(), ResultStored: &stored})
@@ -184,7 +189,7 @@ func saveDiagnosisRunRecord(ctx context.Context, pool *sql.DB, task int64, state
 
 // saveDiagnosisRunRecordGoal은 saveDiagnosisRunRecord에 목표 SHA 칸을 더한다. 같은 task의 기록이 이미 있으면 목표 칸까지
 // 같아야 같은 기록으로 본다.
-func saveDiagnosisRunRecordGoal(ctx context.Context, pool *sql.DB, task int64, state requestApprovalRunState, model *llmpolicy.OpenRouterUsage, result *diagnosis.RunResult, goal *diagnosisGoalDigests) error {
+func saveDiagnosisRunRecordGoal(ctx context.Context, pool *sql.DB, task int64, state requestApprovalRunState, model *llmpolicy.OpenRouterUsage, result *diagnosis.RunResult, goal *diagnosisGoalDigests, trusted ...[]e2runner.TrustedResult) error {
 	if ctx == nil || pool == nil || task <= 0 || !validDiagnosisRun(state) || !validDiagnosisRunResult(state, result) {
 		return ErrFirstDiagnosisOutcome
 	}
@@ -198,19 +203,41 @@ func saveDiagnosisRunRecordGoal(ctx context.Context, pool *sql.DB, task int64, s
 	if tx.QueryRowContext(ctx, `SELECT exploration_id FROM tasks WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, task).Scan(&exploration) != nil {
 		return ErrFirstDiagnosisOutcome
 	}
+	policy, err := readDiagnosisVerificationPolicy(ctx, tx, task)
+	if err != nil || policy != nil && policy.RunRef != state.RunRef {
+		return ErrFirstDiagnosisOutcome
+	}
 	language := &diagnosisLanguageCounts{}
 	if language.Rewrites, language.Mixed, err = db.CountDiagnosticCandidateLanguage(ctx, tx, exploration, state.RunRef); err != nil {
 		return ErrFirstDiagnosisOutcome
 	}
 	candidates, err := db.ListDiagnosticCandidatesQuery(ctx, tx, exploration, task, state.RunRef, db.MaxDiagnosticCandidates+1)
-	verification := &diagnosisVerificationRecord{Version: "passive/v1", Candidates: make([]diagnosisCandidateAssessment, 0, len(candidates))}
+	version := "passive/v1"
+	if policy != nil {
+		version = diagnosisVerificationV2
+	}
+	verification := &diagnosisVerificationRecord{Version: version, Candidates: make([]diagnosisCandidateAssessment, 0, len(candidates))}
 	if err != nil || len(candidates) > db.MaxDiagnosticCandidates {
 		// 후보 근거 손상 때문에 정본 종료 기록을 잃지 않는다.
 		verification.SourceUnavailable = true
 		candidates = nil
 	}
 	for _, candidate := range candidates {
-		result := candidateverify.Assess(candidate)
+		var result candidateverify.Result
+		if policy == nil {
+			result = candidateverify.Assess(candidate)
+		} else {
+			if !candidateverify.SupportedV2(candidate) {
+				result = candidateverify.Result{Status: candidateverify.Unsupported, Reason: "type_not_supported"}
+			} else if state.Outcome != "completed" || state.ClosureFailed {
+				result = candidateverify.Result{Status: candidateverify.Insufficient, Reason: "run_not_completed"}
+			} else if len(trusted) == 0 || trusted[0] == nil {
+				verification.SourceUnavailable = true
+				result = candidateverify.Result{Status: candidateverify.Insufficient, Reason: "source_unavailable"}
+			} else {
+				result = candidateverify.AssessV2(candidate, trusted[0])
+			}
+		}
 		verification.Candidates = append(verification.Candidates, diagnosisCandidateAssessment{CandidateID: candidate.ID, EvidenceDigest: candidate.EvidenceDigest, Result: result})
 		switch result.Status {
 		case candidateverify.Confirmed:

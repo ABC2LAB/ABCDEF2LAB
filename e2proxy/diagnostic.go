@@ -15,10 +15,13 @@ import (
 // HTTPObservation은 실제 통제 경로의 제한된 비민감 projection이다. 본문·쿠키·계정 값은 없다.
 // 응답 코드·제품 헤더의 관찰은 취약점 확정이나 실제 백엔드 구현의 증명이 아니다.
 type HTTPObservation struct {
-	Sequence         uint64 `json:"sequence"`
-	AttemptRef       string `json:"attempt_ref"`
-	Method           string `json:"method"`
-	Endpoint         string `json:"endpoint"`
+	Sequence   uint64 `json:"sequence"`
+	AttemptRef string `json:"attempt_ref"`
+	Method     string `json:"method"`
+	Endpoint   string `json:"endpoint"`
+	// ExactFunction is true only for the exact approved path without a query.
+	// Masked resource paths cannot establish same-function identity.
+	ExactFunction    bool   `json:"exact_function,omitempty"`
 	RuleRef          string `json:"rule_ref"`
 	Decision         string `json:"decision"`
 	Reason           Reason `json:"reason"`
@@ -84,7 +87,7 @@ func (c *Call) observeHTTP(req *http.Request, resp *http.Response, r Receipt) {
 	if !supportedMethod(method) {
 		method = "UNSUPPORTED"
 	}
-	obs := HTTPObservation{Sequence: r.Sequence, AttemptRef: r.AttemptID, Method: method, Endpoint: endpoint, RuleRef: r.RuleRef, Decision: r.Decision, Reason: r.Reason, StatusCode: r.StatusCode, ResponseComplete: r.ResponseComplete, ResponseTruncated: r.ResponseTruncated, ForwardAttempted: r.ForwardAttempted, AuditComplete: r.AuditComplete, ObservedAt: r.At}
+	obs := HTTPObservation{Sequence: r.Sequence, AttemptRef: r.AttemptID, Method: method, Endpoint: endpoint, ExactFunction: prefix != "" && req.URL.EscapedPath() == prefix && req.URL.RawQuery == "" && !strings.Contains(endpoint, "{"), RuleRef: r.RuleRef, Decision: r.Decision, Reason: r.Reason, StatusCode: r.StatusCode, ResponseComplete: r.ResponseComplete, ResponseTruncated: r.ResponseTruncated, ForwardAttempted: r.ForwardAttempted, AuditComplete: r.AuditComplete, ObservedAt: r.At}
 	if resp != nil && r.ResponseReceived && r.ResponseComplete {
 		if (method == http.MethodGet || method == http.MethodHead) && r.StatusCode == http.StatusOK {
 			mediaType, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))

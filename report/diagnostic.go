@@ -225,16 +225,16 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 			return DiagnosticReport{}, ErrExportBlocked
 		}
 		seen[e.ID] = true
-		if (e.Kind != "candidate" && e.Kind != "finding" && e.Kind != "verdict") || !strings.HasPrefix(e.ID, e.Kind+"-") || (e.Verification != "stored_verification" && e.Verification != "manual_review_required" && e.Verification != "passive_observation_v1") {
+		if (e.Kind != "candidate" && e.Kind != "finding" && e.Kind != "verdict") || !strings.HasPrefix(e.ID, e.Kind+"-") || (e.Verification != "stored_verification" && e.Verification != "manual_review_required" && e.Verification != "passive_observation_v1" && e.Verification != "passive_observation_v2") {
 			return DiagnosticReport{}, ErrExportBlocked
 		}
-		if e.Verification == "passive_observation_v1" && e.Outcome != "confirmed" {
+		if (e.Verification == "passive_observation_v1" || e.Verification == "passive_observation_v2") && e.Outcome != "confirmed" {
 			return DiagnosticReport{}, ErrExportBlocked
 		}
 		switch e.Outcome {
 		case "confirmed":
 			legacyFinding := e.Kind == "finding" && e.Verification == "stored_verification"
-			passiveCandidate := e.Kind == "candidate" && e.Verification == "passive_observation_v1" && in.Run != nil && in.Run.VerificationVersion == "passive/v1" &&
+			passiveCandidate := e.Kind == "candidate" && in.Run != nil && ((e.Verification == "passive_observation_v1" && in.Run.VerificationVersion == "passive/v1") || (e.Verification == "passive_observation_v2" && in.Run.VerificationVersion == "passive/v2")) &&
 				((e.Status == "html_nosniff_missing_twice" && e.VulnClass == "security_headers") || (e.Status == "server_version_banner_twice" && e.VulnClass == "information_disclosure"))
 			if !legacyFinding && !passiveCandidate || e.Stale {
 				return DiagnosticReport{}, ErrExportBlocked

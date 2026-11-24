@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Autumn-27/artex/candidateverify"
 	"github.com/Autumn-27/artex/diagnosis"
 )
 
@@ -13,6 +14,7 @@ const (
 	DiagnosticRunCancelled     = "cancelled"
 	DiagnosticRunFailed        = "failed"
 	DiagnosticRunClosureFailed = "closure_failed"
+	DiagnosticRunRunning       = "running"
 )
 
 // DiagnosticRun은 저장된 실행 종료 기록의 상태와 실행 결과다(실행 결과 상태 값 계약 §5-5). 저장 보고서만 보는
@@ -34,6 +36,7 @@ type CandidateAssessment struct {
 	Status         string
 	Reason         string
 	AttemptRefs    []string
+	Sources        []candidateverify.SourceV2
 }
 
 // DiagnosticRunText는 실행 결과 한 줄이다. 화면(web urlOutcomeText)과 같은 문구를 쓴다. 기록이 없거나 형식이 맞지
@@ -44,6 +47,8 @@ func DiagnosticRunText(run *DiagnosticRun) string {
 	}
 	r := run.Result
 	switch run.State {
+	case DiagnosticRunRunning:
+		return "진행 중(후보 검증 및 실행 종료 기록 없음)"
 	case DiagnosticRunCancelled:
 		if r == nil || !r.StoppedValid() {
 			return "중지됨"

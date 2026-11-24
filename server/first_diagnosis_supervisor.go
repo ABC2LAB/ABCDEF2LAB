@@ -652,6 +652,10 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 		}
 	}
 	if snapshotRef == "" {
+		state := server.requestApprovals.runState(number)
+		if err := saveDiagnosisVerificationPolicy(run, s.m.pg.DB, number, state.RunRef); err != nil {
+			return firstDiagnosisFailure(err)
+		}
 		server.requestApprovals.runStarted(number)
 	}
 	// 획득 전 중지도 동일한 감독자 마감 경로를 거친다.

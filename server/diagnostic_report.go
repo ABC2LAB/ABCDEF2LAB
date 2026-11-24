@@ -81,8 +81,16 @@ func (s *Server) diagnosticReport(w http.ResponseWriter, r *http.Request) {
 	}
 	// 새 완료 회차의 취약점 보고서에는 확정 항목만 싣는다.
 	// 종료 기록과 이행점검이 읽는 원본 스냅샷은 그대로 둔다.
-	if data.Run != nil && data.Run.VerificationVersion == "passive/v1" {
+	if data.Run != nil && (data.Run.VerificationVersion == "passive/v1" || data.Run.VerificationVersion == diagnosisVerificationV2) {
 		if !projectConfirmedReport(&data) {
+			if data.Run.State == report.DiagnosticRunRunning {
+				writeErr(w, http.StatusConflict, "점검 진행 중이며 확정된 취약점 보고서는 아직 없습니다. 내부 검토 기록을 확인하세요.")
+				return
+			}
+			if data.Run.VerificationSourceUnavailable {
+				writeErr(w, http.StatusServiceUnavailable, "검증 원천을 확인할 수 없어 취약점 보고서를 생성하지 않았습니다.")
+				return
+			}
 			writeErr(w, http.StatusNotFound, "확정된 취약점이 없어 보고서를 생성하지 않았습니다. 점검 완료 기록에서 미완료 후보를 확인하세요.")
 			return
 		}
@@ -210,7 +218,7 @@ func readDiagnosticEntries(ctx context.Context, tx *sql.Tx, taskID int64, at tim
 		return out, err
 	}
 	assessments := make(map[int64]report.CandidateAssessment)
-	if out.Run != nil && out.Run.VerificationVersion == "passive/v1" {
+	if out.Run != nil && (out.Run.VerificationVersion == "passive/v1" || out.Run.VerificationVersion == diagnosisVerificationV2) {
 		for _, a := range out.Run.CandidateAssessments {
 			if a.CandidateID <= 0 || assessments[a.CandidateID].CandidateID != 0 {
 				return out, errDiagnosticReportScope
@@ -244,12 +252,18 @@ func readDiagnosticEntries(ctx context.Context, tx *sql.Tx, taskID int64, at tim
 			severity = c.SuggestedSeverity
 		}
 		entry := report.DiagnosticEntry{ID: fmt.Sprintf("candidate-%d", c.ID), Kind: "candidate", LanguageMixed: c.LanguageMixed, Run: c.RunRef, IntentID: c.IntentID, Title: c.Name, VulnClass: c.VulnClass, Severity: severity, SeveritySource: c.SeveritySource, SeverityRationale: c.SeverityRationale, Status: c.Classification, Verification: c.Verification, Outcome: outcome, Summary: c.Summary, Remediation: c.Remediation, Evidence: c.Evidence, EvidenceVersion: c.EvidenceVersion, Digest: c.EvidenceDigest, ObservedAt: c.ObservedAt, Truncated: c.OutputTruncated}
-		if out.Run != nil && out.Run.VerificationVersion == "passive/v1" && !out.Run.VerificationSourceUnavailable && c.RunRef == out.Run.RunRef {
+		if out.Run != nil && (out.Run.VerificationVersion == "passive/v1" || out.Run.VerificationVersion == diagnosisVerificationV2) && out.Run.State != report.DiagnosticRunRunning && !out.Run.VerificationSourceUnavailable && c.RunRef == out.Run.RunRef {
 			a, found := assessments[c.ID]
 			if !found || a.EvidenceDigest != c.EvidenceDigest {
 				return out, errDiagnosticReportScope
 			}
 			check := candidateverify.Assess(c)
+			if out.Run.VerificationVersion == diagnosisVerificationV2 {
+				check = candidateverify.Result{Status: a.Status, Reason: a.Reason, Attempts: a.AttemptRefs, Sources: a.Sources}
+				if !candidateverify.ValidateStoredV2(c, check) {
+					return out, errDiagnosticReportScope
+				}
+			}
 			if check.Status != a.Status || check.Reason != a.Reason || !equalStringSlices(check.Attempts, a.AttemptRefs) {
 				return out, errDiagnosticReportScope
 			}
@@ -257,6 +271,9 @@ func readDiagnosticEntries(ctx context.Context, tx *sql.Tx, taskID int64, at tim
 			switch check.Status {
 			case candidateverify.Confirmed:
 				entry.Outcome, entry.Verification = "confirmed", "passive_observation_v1"
+				if out.Run.VerificationVersion == diagnosisVerificationV2 {
+					entry.Verification = "passive_observation_v2"
+				}
 				entry.Severity, entry.SeveritySource, entry.SeverityRationale = "info", "", ""
 				if c.VerificationClaim == "html_nosniff_missing" {
 					entry.Title = "HTML 문서 보안 헤더 누락"

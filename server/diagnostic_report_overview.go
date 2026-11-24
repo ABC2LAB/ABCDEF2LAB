@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Autumn-27/artex/candidateverify"
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/llmpolicy"
 	"github.com/Autumn-27/artex/report"
@@ -18,9 +19,16 @@ import (
 // 계약 §5-5). 기록이 없으면 nil이다. 기록 형식이 맞지 않으면 상태 없는 값을 돌려 보고서에 "확인할 수 없음"으로 쓴다
 // (완료·발견 없음으로 바꾸지 않는다).
 func readDiagnosticRun(ctx context.Context, tx *sql.Tx, task int64) (*report.DiagnosticRun, error) {
+	policy, policyErr := readDiagnosisVerificationPolicy(ctx, tx, task)
+	if policyErr != nil {
+		return nil, policyErr
+	}
 	var raw []byte
 	err := tx.QueryRowContext(ctx, `SELECT n.payload FROM tasks t JOIN exploration_nodes n ON n.exploration_id=t.exploration_id WHERE t.id=$1 AND t.deleted_at IS NULL AND n.kind='fact' AND n.state='confirmed' AND n.origin=$2 AND n.payload->>'task_id'=$3 ORDER BY n.id DESC LIMIT 1`, task, diagnosisRunOrigin, strconv.FormatInt(task, 10)).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
+		if policy != nil {
+			return &report.DiagnosticRun{State: report.DiagnosticRunRunning, RunRef: policy.RunRef, VerificationVersion: policy.Version}, nil
+		}
 		return nil, nil
 	}
 	if err != nil {
@@ -35,11 +43,17 @@ func readDiagnosticRun(ctx context.Context, tx *sql.Tx, task int64) (*report.Dia
 		state = report.DiagnosticRunClosureFailed
 	}
 	run := &report.DiagnosticRun{State: state, RunRef: record.Run.RunRef, Result: record.Result}
-	if record.Verification != nil && record.Verification.Version == "passive/v1" {
+	if policy != nil && (policy.RunRef != record.Run.RunRef || record.Verification == nil || record.Verification.Version != policy.Version) {
+		return nil, ErrFirstDiagnosisOutcome
+	}
+	if record.Verification != nil && (record.Verification.Version == "passive/v1" || record.Verification.Version == diagnosisVerificationV2) {
 		run.VerificationVersion = record.Verification.Version
 		run.VerificationSourceUnavailable = record.Verification.SourceUnavailable
 		for _, row := range record.Verification.Candidates {
-			run.CandidateAssessments = append(run.CandidateAssessments, report.CandidateAssessment{CandidateID: row.CandidateID, EvidenceDigest: row.EvidenceDigest, Status: row.Result.Status, Reason: row.Result.Reason, AttemptRefs: append([]string(nil), row.Result.Attempts...)})
+			if record.Verification.Version == diagnosisVerificationV2 && !candidateverify.ValidSourcesV2(row.Result) {
+				return nil, ErrFirstDiagnosisOutcome
+			}
+			run.CandidateAssessments = append(run.CandidateAssessments, report.CandidateAssessment{CandidateID: row.CandidateID, EvidenceDigest: row.EvidenceDigest, Status: row.Result.Status, Reason: row.Result.Reason, AttemptRefs: append([]string(nil), row.Result.Attempts...), Sources: append([]candidateverify.SourceV2(nil), row.Result.Sources...)})
 		}
 	}
 	return run, nil
