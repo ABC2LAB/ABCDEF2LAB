@@ -204,12 +204,19 @@ func (r *productTargetRegistry) listAccounts(principal, id string) ([]diagnosisp
 	}
 	out := make([]diagnosisprep.ProductAccount, 0, len(byTarget))
 	for _, st := range byTarget {
-		view := accountView(rec, st, r.now())
-		view.CredentialConfigured = r.credentialConfigured(id, st)
-		out = append(out, view)
+		out = append(out, r.accountResponse(rec, st))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Label < out[j].Label })
 	return out, nil
+}
+
+// 계정 API 응답 시점의 자격과 로그인 설정을 같은 잠금 안에서 읽는다.
+func (r *productTargetRegistry) accountResponse(rec productTargetRecord, st *productAccountState) diagnosisprep.ProductAccount {
+	view := accountView(rec, st, r.now())
+	view.CredentialConfigured = r.credentialConfigured(rec.Target.ID, st)
+	_, hasLogin := r.logins[rec.Target.ID]
+	view.LoginMethodMissing = view.CredentialConfigured && !hasLogin
+	return view
 }
 
 // registerAccount는 대상에 계정 라벨을 붙인다. 분류는 real로 시작한다. 철회된 대상에는 붙이지 않는다.
@@ -233,7 +240,7 @@ func (r *productTargetRegistry) registerAccount(principal, id, label string) (di
 	if err := r.appendAccount(productAccountEvent{TargetID: id, Label: label, Action: accountRegister, Actor: principal, At: r.now(), TargetRevision: rec.Target.Revision}); err != nil {
 		return diagnosisprep.ProductAccount{}, errPreparation
 	}
-	return accountView(rec, r.accounts[id][label], r.now()), nil
+	return r.accountResponse(rec, r.accounts[id][label]), nil
 }
 
 // markTestAccount는 승인된 대상의 승인자가 진술에 동의해 계정을 시험 계정으로 표시한다. 표시는 지금 대상 판에만 묶인다.
@@ -254,14 +261,14 @@ func (r *productTargetRegistry) markTestAccount(principal, id, label string, sta
 		return diagnosisprep.ProductAccount{}, errors.New("target_not_approved")
 	}
 	// 승인자 = 대상 등록 기록의 운영자(DNS 소유 증명과 본인 진술을 한 사람)다. accountTarget이 이미 그 운영자만 받는다.
-	if view := accountView(rec, st, r.now()); view.Classification == "test" {
-		return view, nil
+	if accountView(rec, st, r.now()).Classification == "test" {
+		return r.accountResponse(rec, st), nil
 	}
 	if err := r.appendAccount(productAccountEvent{TargetID: id, Label: label, Action: accountMarkTest, Actor: principal, At: r.now(), TargetRevision: rec.Target.Revision,
 		StatementSHA256: productAccountStatementSHA256()}); err != nil {
 		return diagnosisprep.ProductAccount{}, errPreparation
 	}
-	return accountView(rec, st, r.now()), nil
+	return r.accountResponse(rec, st), nil
 }
 
 // recordExternalConsent는 외부 API 실행의 시험 계정 동의를 대상 계정 저널에 남긴다(진술 해시·주체·시각·작업). 남길 수
@@ -296,7 +303,7 @@ func (r *productTargetRegistry) unmarkAccount(principal, id, label string) (diag
 		return diagnosisprep.ProductAccount{}, errors.New("account_not_found")
 	}
 	if !st.marked {
-		return accountView(rec, st, r.now()), nil
+		return r.accountResponse(rec, st), nil
 	}
 	// 해제는 더 안전한 쪽이라 자격 파일을 못 지워도 기록한다. 저널에서 자격 해시가 빠지므로 남은 파일은 쓰이지 않는다.
 	if err := r.removeCredential(id, label); err != nil {
@@ -305,7 +312,7 @@ func (r *productTargetRegistry) unmarkAccount(principal, id, label string) (diag
 	if err := r.appendAccount(productAccountEvent{TargetID: id, Label: label, Action: accountUnmark, Actor: principal, At: r.now(), TargetRevision: rec.Target.Revision}); err != nil {
 		return diagnosisprep.ProductAccount{}, errPreparation
 	}
-	return accountView(rec, st, r.now()), nil
+	return r.accountResponse(rec, st), nil
 }
 
 // validTargetLoginFor는 로그인 방식이 형식에 맞고 경로가 그 대상의 승인 경로 접두 안이며 정규 경로인지 본다.
@@ -445,9 +452,7 @@ func (r *productTargetRegistry) setAccountCredential(principal, id, label string
 		CredentialSHA256: hex.EncodeToString(sum[:])}); err != nil {
 		return diagnosisprep.ProductAccount{}, errPreparation
 	}
-	view := accountView(rec, st, r.now())
-	view.CredentialConfigured = r.credentialConfigured(id, st)
-	return view, nil
+	return r.accountResponse(rec, st), nil
 }
 
 // writePrivateFileAtomic은 같은 디렉터리의 새 임시 파일(0600)에 쓰고 fsync한 뒤 이름을 바꾸고 디렉터리를 fsync한다.

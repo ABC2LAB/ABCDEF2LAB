@@ -143,6 +143,8 @@ type ProductAccount struct {
 	MarkedRevision uint64 `json:"marked_revision,omitempty"`
 	// CredentialConfigured는 보호 파일에 자격이 있다는 뜻이다. 값·해시는 내보내지 않는다.
 	CredentialConfigured bool `json:"credential_configured,omitempty"`
+	// LoginMethodMissing은 자격이 등록돼 있지만 대상의 로그인 방식이 설정되지 않은 경우다.
+	LoginMethodMissing bool `json:"login_method_missing,omitempty"`
 }
 
 // 대상 계정 상한·라벨 형식이다. 라벨은 소문자·숫자·밑줄·하이픈만 받아 사용자명·이메일 원문을 넣지 못하게 한다.
@@ -213,7 +215,7 @@ type ProductResponse struct {
 }
 
 func validProductAccount(a ProductAccount) bool {
-	if !ValidAccountLabel(a.Label) || !reference.MatchString(a.RegisteredBy) || a.RegisteredAt.IsZero() {
+	if !ValidAccountLabel(a.Label) || !reference.MatchString(a.RegisteredBy) || a.RegisteredAt.IsZero() || (a.LoginMethodMissing && !a.CredentialConfigured) {
 		return false
 	}
 	switch a.Classification {

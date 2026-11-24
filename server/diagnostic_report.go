@@ -33,6 +33,7 @@ func diagnosticReadFailureCode(err error) int {
 }
 func unavailableDiagnosticEntry(entry *report.DiagnosticEntry) {
 	entry.SourceLoadFailed = true
+	entry.BusinessRuleReview = nil
 	entry.Severity, entry.SeveritySource, entry.SeverityRationale = "미평가", "", ""
 	entry.Steps = nil
 	entry.CurrentSource = nil
@@ -57,7 +58,9 @@ func (s *Server) diagnosticReport(w http.ResponseWriter, r *http.Request) {
 	taskID, err := strconv.ParseInt(r.URL.Query().Get("task"), 10, 64)
 	audience := r.URL.Query().Get("audience")
 	format := r.URL.Query().Get("format")
-	if (format != "" && format != "html" && format != "docx") || err != nil || taskID <= 0 || r.URL.Query().Get("run") != "" || (audience != "" && audience != "shared" && audience != "internal") {
+	reviewJSON := format == "review-json"
+	if (format != "" && format != "html" && format != "docx" && !reviewJSON) || (reviewJSON && audience != "internal") ||
+		err != nil || taskID <= 0 || r.URL.Query().Get("run") != "" || (audience != "" && audience != "shared" && audience != "internal") {
 		writeErr(w, 400, "작업 ID와 보고서 공개 범위를 확인하세요. 회차 필터는 지원하지 않습니다.")
 		return
 	}
@@ -65,10 +68,14 @@ func (s *Server) diagnosticReport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 503, "보고서 저장소를 사용할 수 없습니다.")
 		return
 	}
-	data, err := loadDiagnosticReportWithCaptures(r.Context(), s.m.pg, taskID, time.Now(), audience == "internal")
+	data, err := loadDiagnosticReportWithCaptures(r.Context(), s.m.pg, taskID, time.Now(), audience == "internal" && !reviewJSON)
 	if err != nil {
 		code := diagnosticReadFailureCode(err)
 		writeErr(w, code, "보고서 범위 또는 저장 증거를 확인할 수 없습니다.")
+		return
+	}
+	if reviewJSON {
+		writeDiagnosticBusinessRuleReviews(w, data)
 		return
 	}
 	data.Shared = audience != "internal"
@@ -177,7 +184,8 @@ func readDiagnosticReportWithCaptures(ctx context.Context, tx *sql.Tx, taskID in
 		if c.SuggestedSeverity != "" {
 			severity = c.SuggestedSeverity
 		}
-		out.Entries = append(out.Entries, report.DiagnosticEntry{ID: fmt.Sprintf("candidate-%d", c.ID), Kind: "candidate", LanguageMixed: c.LanguageMixed, Run: c.RunRef, IntentID: c.IntentID, Title: c.Name, VulnClass: c.VulnClass, Severity: severity, SeveritySource: c.SeveritySource, SeverityRationale: c.SeverityRationale, Status: c.Classification, Verification: c.Verification, Outcome: outcome, Summary: c.Summary, Remediation: c.Remediation, Evidence: c.Evidence, EvidenceVersion: c.EvidenceVersion, Digest: c.EvidenceDigest, ObservedAt: c.ObservedAt, Truncated: c.OutputTruncated})
+		entry := report.DiagnosticEntry{ID: fmt.Sprintf("candidate-%d", c.ID), Kind: "candidate", LanguageMixed: c.LanguageMixed, Run: c.RunRef, IntentID: c.IntentID, Title: c.Name, VulnClass: c.VulnClass, Severity: severity, SeveritySource: c.SeveritySource, SeverityRationale: c.SeverityRationale, Status: c.Classification, Verification: c.Verification, Outcome: outcome, Summary: c.Summary, Remediation: c.Remediation, Evidence: c.Evidence, EvidenceVersion: c.EvidenceVersion, Digest: c.EvidenceDigest, ObservedAt: c.ObservedAt, Truncated: c.OutputTruncated}
+		out.Entries = append(out.Entries, entry)
 	}
 	if len(out.Entries) > report.MaxFindings {
 		return out, report.ErrExportBlocked
@@ -332,6 +340,9 @@ func readDiagnosticReportWithCaptures(ctx context.Context, tx *sql.Tx, taskID in
 			continue
 		}
 		entry.StepsTruncated = source.Context.ObservationsTruncated
+		if entry.Kind == "candidate" && entry.Outcome == "review" {
+			entry.BusinessRuleReview = diagnosticBusinessRuleReview(entry)
+		}
 		if err := attachDiagnosticCaptures(ctx, tx, taskID, entry, &captureBytes, images); err != nil {
 			return out, err
 		}

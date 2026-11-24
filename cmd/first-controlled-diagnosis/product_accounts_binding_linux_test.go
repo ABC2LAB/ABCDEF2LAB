@@ -91,6 +91,17 @@ func TestProductRunBindsTestAccountsAndStopsOnUnmark(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// 자격을 등록했어도 시험 계정 확인을 생략하면 익명 점검은 열리고, 자격은 실행에 결속하지 않는다.
+	unclassified, err := runtime.load("ARTEX", input, false, "")
+	if err != nil {
+		t.Fatal("자격이 있지만 시험 계정 확인을 하지 않은 점검", err)
+	}
+	defer unclassified.clearMaterials()
+	registered, err := r.listAccounts("ARTEX", target.ID)
+	if err != nil || len(registered) != 2 || !registered[0].CredentialConfigured || !registered[1].CredentialConfigured ||
+		unclassified.policy.Auth != nil || len(unclassified.productAccounts) != 0 || unclassified.policy.HeaderMode != e2proxy.HeaderPreserve {
+		t.Fatal("등록 여부와 실행에 결속할 시험 계정 여부를 구분하지 못함")
+	}
 	if _, err := r.markTestAccount("ARTEX", target.ID, "tester-a", true); err != nil {
 		t.Fatal(err)
 	}
@@ -212,13 +223,15 @@ func TestProductRunAccountsSelection(t *testing.T) {
 		}
 	}
 	for _, label := range []string{"tester-a", "real-c"} {
-		if _, err := r.setAccountCredential("ARTEX", target.ID, label, diagnosisprep.AccountCredential{Username: "u", Password: "p-" + label}); err != nil {
-			t.Fatal(err)
+		account, err := r.setAccountCredential("ARTEX", target.ID, label, diagnosisprep.AccountCredential{Username: "u", Password: "p-" + label})
+		if err != nil || !account.CredentialConfigured || !account.LoginMethodMissing {
+			t.Fatal("자격 등록 응답에서 로그인 방식 미설정 상태 누락", err)
 		}
 	}
 	for _, label := range []string{"tester-a", "tester-b"} {
-		if _, err := r.markTestAccount("ARTEX", target.ID, label, true); err != nil {
-			t.Fatal(err)
+		account, err := r.markTestAccount("ARTEX", target.ID, label, true)
+		if err != nil || account.LoginMethodMissing != (label == "tester-a") {
+			t.Fatal("시험 계정 표시 후 자격과 로그인 설정 상태 불일치", err)
 		}
 	}
 	if got, digest, err := r.runAccounts(rec); err != nil || digest != "" || len(got.Accounts) != 0 {
@@ -226,6 +239,15 @@ func TestProductRunAccountsSelection(t *testing.T) {
 	}
 	if _, err := r.setTargetLogin("ARTEX", target.ID, cookieLogin()); err != nil {
 		t.Fatal(err)
+	}
+	accounts, err := r.listAccounts("ARTEX", target.ID)
+	if err != nil || len(accounts) != 3 {
+		t.Fatal("로그인 방식 설정 후 계정 목록 조회 실패", err)
+	}
+	for _, account := range accounts {
+		if account.LoginMethodMissing || account.CredentialConfigured != (account.Label != "tester-b") {
+			t.Fatal("로그인 방식 설정 후 계정 상태 불일치", account.Label)
+		}
 	}
 	got, digest, err := r.runAccounts(rec)
 	if err != nil || digest == "" || len(got.Accounts) != 1 || got.Accounts[0].Label != "tester-a" {

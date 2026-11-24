@@ -644,7 +644,7 @@ func validJournalEvent(event Event, version string) bool {
 
 func validJournalReason(reason string) bool {
 	switch Reason(reason) {
-	case Complete, Unsupported, PolicyDenied, Closed, AuditFailed, Expired,
+	case Complete, Unsupported, PolicyDenied, WorkflowPaused, Closed, AuditFailed, Expired,
 		Revoked, BudgetExhausted, TransportFailed, Unknown, AttemptLimit, DenialLimit,
 		TransientLimit, UnknownLimit, Invalid, Withheld:
 		return true

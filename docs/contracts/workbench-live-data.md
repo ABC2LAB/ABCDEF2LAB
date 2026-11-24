@@ -37,6 +37,8 @@
 
 `ProductAccount`: `label`, `classification`(`test`|`real`), `reason`(`target_reapproved`|`target_expired`|`manual_unmark`, 없을 수 있음), `registered_by`, `registered_at`, `classified_by`, `classified_at`, `marked_revision`, `credential_configured`(bool, 값 없음).
 
+계정 목록과 계정 변경 응답에서 자격이 저장됐지만 대상 로그인 방식이 없으면 `login_method_missing: true`를 함께 준다. 이때 점검은 익명으로 진행한다. 로그인 방식을 등록하면 다음 조회부터 이 필드를 생략한다. 실제 로그인 결과는 회차의 `account_auth`에서 확인한다.
+
 화면 분류 대응: `test` → `test_approved`, `real` → `unmarked`. 서버에는 "승인 대기" 상태가 없다(표시하는 사람이 곧 승인자). 화면의 `test_pending`은 서버 값으로는 나오지 않는다. `approvedBy`·`approvedAt`은 `classified_by`·`classified_at`이다. 실행에서 계정별 로그인 결과는 실행 결과 `account_auth` 칸이다([실행 결과 계약](run-outcome-states.md) 3.4).
 
 ## 2. 접근통제 지도 — 지금 연결 가능
@@ -134,6 +136,7 @@
 | `complete` | 허용 | 응답 받음 |
 | `withheld` | 허용(응답 보류) | 응답 보류·잘림 |
 | `policy_denied` | 차단 | 정책 밖(범위·메서드·위험 요청) |
+| `workflow_paused` | 차단 | 진단 흐름 일시정지로 대기 중 요청이 만료되거나 취소됨 |
 | `unsupported` | 차단 | 지원 안 하는 요청 |
 | `invalid` | 차단 | 잘못된 요청 |
 | `budget_exhausted` | 차단 | 예산 소진 |

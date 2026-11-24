@@ -39,6 +39,7 @@ symlink, hardlink, 상대·탈출 경로, 저장소 `.git` 아래 및 일반 `we
 - `model/provider`: 고정 허용 식별자만 원문. 임의 로컬 모델이나 승인된 provider 식별자는 별도 해시 참조다.
 - `duration_ms`, 토큰·비용·건수: 실제 관측값. 원문 에러를 분석해 숫자를 만들지 않는다.
 - `count_known`이 있는 집계는 0과 조회 불가를 구분한다. 조회 불가를 0으로 확정하지 않는다.
+- `account_auth_checked`의 `account_label`은 설정에서 검증된 32자 이하 시험 계정 라벨이다. 다른 이벤트에는 이 칸을 허용하지 않는다. 설정에 따라 계정 라벨이 실제 사용자명과 같을 수 있으므로 보호 로그를 공유할 때는 라벨도 가린다. 자격 파일의 사용자명·비밀번호·토큰·쿠키와 대상 응답 본문은 기록하지 않는다. 재로그인 간격·횟수 제한이나 호출 시작 실패로 보내지 못했을 때는 `not_sent`·`auth_not_sent`를 남긴다.
 
 task로 여러 준비/실행/조회 파일을 묶고, run/call/attempt 해시와 intent ID로 상세 흐름을 찾는다.
 동일 task의 준비 단계는 run을 아직 모를 수 있다. 서버가 신뢰된 실행을 결속하기 전까지 run을 생성하지 않는다.
@@ -56,6 +57,7 @@ task로 여러 준비/실행/조회 파일을 묶고, run/call/attempt 해시와
 8. `candidate_submitted/validated/saved/duplicate`: 후보 증거 참조 검증과 DB 결과. 일반 후보는 `manual_review_required`다.
 9. `result_save_started/finished`, `run_summary`, `run_finished`, `diagnosis_finished`: 실행·감사·저장 마감과 실제 종료 단계.
 10. `service_request_finished`, `report_queried`: 보고서 서비스의 HTTP 응답 범주와 실제 저장 결과 조회. URL이나 본문을 기록하지 않는다.
+11. `account_auth_checked`: 최초 인증 준비 또는 재로그인에서 계정별 세션 확보 결과. `reason_code`는 자격 파일 읽기 실패, 로그인 거절, 응답에서 안전한 세션을 얻지 못함, 세션 가림 등록 실패·용량 초과, 결과 불명 등을 고정 코드로 구분한다. `auth_session_unavailable`은 토큰 위치 오류와 E②의 세션 안전성 거절을 함께 포함하므로 이 코드만으로 더 좁은 원인을 확정하지 않는다. 이 이벤트의 성공도 대상의 신원 경로 검증이나 이후 세션 유효성을 증명하지 않는다.
 
 `run_summary`는 일반 HTTP의 기존 승인/실행 상태와 OpenRouterUsage를 재사용한다.
 실제 송신 수, 허용/거절/차단 수, 후보 수와 감사·drain·결과 저장 확인을 구분한다.

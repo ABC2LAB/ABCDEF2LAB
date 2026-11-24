@@ -12,6 +12,16 @@ import (
 // refuse all subsequent admission.
 var ErrBoundaryProjection = errors.New("workflow_projection_failed")
 
+// ErrWorkflowPaused는 흐름이 일시정지되어 요청 경계의 대기가 끝난 경우다.
+var ErrWorkflowPaused = errors.New(string(WorkflowPaused))
+
+func boundaryDenialReason(err error) Reason {
+	if errors.Is(err, ErrWorkflowPaused) {
+		return WorkflowPaused
+	}
+	return PolicyDenied
+}
+
 // RequestView는 기존 E② 정규화·고정 범위 검사 뒤의 추가 제한 입력이다.
 // 잠재적 비밀인 URL을 일반 JSON/로그로 출력하지 않는다.
 type RequestView struct {
