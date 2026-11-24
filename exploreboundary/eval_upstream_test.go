@@ -61,7 +61,8 @@ func (s *countedServer) addrPort() netip.AddrPort {
 // Host는 승인 대상 그대로라, 계측기가 대상으로 넘기고 탐색 입구 행으로 센다. 경계 판정·기록은 그대로다(계약 §4.2).
 func TestEvalUpstreamCarriesApprovedHTTPToMeterIngress(t *testing.T) {
 	target := newCountedServer(t, "target")
-	meter := newCountedServer(t, "via meter")
+	const meterResponse = "password=synthetic-meter-contract"
+	meter := newCountedServer(t, meterResponse)
 	session, _, _ := fixtureSession(t, exploration.ReadOnly, exploration.FullLocal, func(tg *Target, p *Policy) {
 		tg.Scheme, tg.SPKISHA256 = "http", ""
 		tg.Port, tg.ConnectIP = target.addrPort().Port(), target.addrPort().Addr()
@@ -86,8 +87,8 @@ func TestEvalUpstreamCarriesApprovedHTTPToMeterIngress(t *testing.T) {
 	}
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || string(body) != "via meter" || resp.Header.Get(SeqHeader) == "" {
-		t.Fatalf("approved request not carried through the eval upstream: %d %q", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusOK || string(body) != meterResponse || resp.Header.Get(SeqHeader) == "" {
+		t.Fatalf("approved response not carried through the eval upstream: status %d", resp.StatusCode)
 	}
 	meter.mu.Lock()
 	hosts, requests := append([]string{}, meter.hosts...), append([]string{}, meter.requests...)

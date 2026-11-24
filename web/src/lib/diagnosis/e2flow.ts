@@ -74,11 +74,14 @@ export type E2Flow = {
   more: boolean;
   omitted_calls: number;
   counts: E2Counts;
+  model_writes?: { responded_2xx: number; unverified: number };
   calls: E2Call[];
 };
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const natural = (v: unknown): v is number => Number.isSafeInteger(v) && Number(v) >= 0;
 const ref = (v: unknown): v is string => typeof v === "string" && /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(v);
+// biome-ignore lint/suspicious/noControlCharactersInRegex: 화면용 경로의 제어 문자와 공백을 거부한다.
+const unsafePathPattern = /[?#\\\x00-\x20\x7f]/;
 const invalid = (): never => {
   throw new ApiError(422, "invalid_e2_flow_contract");
 };
@@ -128,7 +131,7 @@ function attempt(v: unknown): E2Attempt {
   if (
     typeof v.path_pattern !== "string" ||
     v.path_pattern.length > 2048 ||
-    (v.path_pattern !== "" && (!v.path_pattern.startsWith("/") || /[?#\\\x00-\x20\x7f]/.test(v.path_pattern)))
+    (v.path_pattern !== "" && (!v.path_pattern.startsWith("/") || unsafePathPattern.test(v.path_pattern)))
   )
     return invalid();
   if (v.rule_ref !== "" && !ref(v.rule_ref)) return invalid();
@@ -158,7 +161,7 @@ function attempt(v: unknown): E2Attempt {
 export function parseE2Flow(v: unknown): E2Flow {
   if (!object(v) || v.format !== "abc2lab.e2-flow-view/v1" || !["verified", "invalid"].includes(String(v.journal)))
     return invalid();
-  exact(v, ["format", "journal", "last_index", "more", "omitted_calls", "counts", "calls"]);
+  exact(v, ["format", "journal", "last_index", "more", "omitted_calls", "counts", "calls", "model_writes"]);
   if (
     !natural(v.last_index) ||
     typeof v.more !== "boolean" ||
@@ -176,6 +179,13 @@ export function parseE2Flow(v: unknown): E2Flow {
   // 검증 실패 응답에 사건이 섞여 와도 절대 그리지 않는다.
   if (v.journal === "invalid")
     return { format: v.format, journal: "invalid", last_index: 0, more: false, omitted_calls: 0, counts, calls: [] };
+  let modelWrites: E2Flow["model_writes"];
+  if (v.model_writes !== undefined) {
+    const raw = v.model_writes;
+    if (!object(raw) || !natural(raw.responded_2xx) || !natural(raw.unverified)) return invalid();
+    exact(raw, ["responded_2xx", "unverified"]);
+    modelWrites = { responded_2xx: raw.responded_2xx, unverified: raw.unverified };
+  }
   const ids = new Set<string>();
   const calls: E2Call[] = [];
   for (const row of v.calls) {
@@ -214,6 +224,7 @@ export function parseE2Flow(v: unknown): E2Flow {
     more: v.more,
     omitted_calls: v.omitted_calls,
     counts,
+    ...(modelWrites ? { model_writes: modelWrites } : {}),
     calls,
   };
 }
@@ -290,7 +301,7 @@ export async function getE2Flow(task: string | null, after?: number, signal?: Ab
   return parseE2Flow(
     await apiFetch<unknown>(
       `/api/tasks/${encodeURIComponent(task)}/e2-flow${after === undefined ? "" : `?after=${after}`}`,
-      { cache: "no-store", redirect: "error", signal },
+      { cache: "no-store", redirect: "error", signal, headers: { "X-Jindo-E2-Model-Writes": "1" } },
       false,
     ),
   );

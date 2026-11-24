@@ -134,6 +134,48 @@ func TestLiveDataViewPaths(t *testing.T) {
 	}
 }
 
+func TestE2FlowSummaryCountsResultsIndependentlyOfPageAndClose(t *testing.T) {
+	complete := liveEvent("result", "call-complete", strings.Repeat("a", 32), 1, "allowed", e2proxy.Complete)
+	denied := liveEvent("result", "call-denied", strings.Repeat("b", 32), 2, "denied", e2proxy.PolicyDenied)
+	withheld := liveEvent("result", "call-withheld", strings.Repeat("c", 32), 3, "allowed", e2proxy.Withheld)
+	withheld.ForwardAttempted, withheld.RequestWritten, withheld.ResponseReceived = true, true, true
+	unknown := liveEvent("result", "call-unknown", strings.Repeat("d", 32), 4, "allowed", e2proxy.Unknown)
+	events := []e2proxy.Event{complete, denied, withheld, unknown,
+		liveEvent("call_closed", "call-withheld", "", 0, "", e2proxy.Withheld),
+		liveEvent("control", "", "", 0, "", e2proxy.Closed)}
+	for i := range events {
+		events[i].Index = uint64(i + 1)
+	}
+	after := uint64(len(events))
+	want := e2FlowCounts{Attempts: 4, Calls: 4, Allowed: 3, Denied: 1, ForwardAttempted: 3, Responses: 2, Unknown: 1, Withheld: 1}
+	for _, cursor := range []*uint64{nil, &after} {
+		if got := e2FlowOf(events, cursor).Counts; got != want {
+			t.Fatalf("scope-normalized counts: %+v", got)
+		}
+	}
+}
+
+func TestE2FlowModelWriteSummaryIsOptIn(t *testing.T) {
+	runsDir, _ := liveRunFixture(t, func(record func(e2proxy.Event)) {
+		record(liveEvent("result", "call-write", strings.Repeat("a", 32), 1, "allowed", e2proxy.Complete))
+	})
+	for _, include := range []bool{false, true} {
+		w := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/api/tasks/9/e2-flow", nil)
+		if include {
+			request.Header.Set(server.E2ModelWritesHeader, "1")
+		}
+		serveLiveData(w, request, runsDir, liveJob, "e2-flow")
+		var out e2FlowView
+		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &out) != nil {
+			t.Fatal("verified flow unavailable")
+		}
+		if include && (out.ModelWrites == nil || *out.ModelWrites != (e2ModelWrites{Responded2xx: 1})) || !include && out.ModelWrites != nil {
+			t.Fatal("unexpected model-write projection")
+		}
+	}
+}
+
 // 통제 정책 투영은 승인 범위(origin·경로·메서드·상한·계정 라벨)만 보이고 키·자격·CA·helper·상태 디렉터리는 내보내지 않는다.
 func TestControlPolicyViewProjectsScopeWithoutSecrets(t *testing.T) {
 	runsDir, policy := liveRunFixture(t, nil)
@@ -350,8 +392,8 @@ func TestE2FlowViewAttachesAttemptPatterns(t *testing.T) {
 		record(liveEvent("result", "call-1", a2, 2, "denied", e2proxy.PolicyDenied))
 	})
 	rows := []string{
-		`{"attempt_id":"` + a1 + `","path_pattern":"/api/orders/{id}"}`,
-		`{"attempt_id":"` + a2 + `","path_pattern":"/x?token=secret"}`, // query가 섞인 줄은 버린다
+		`{"attempt_id":"` + a1 + `","path_pattern":"/api/syntheticuser/synthetictitle"}`, // 이전 버전 표시 파일
+		`{"attempt_id":"` + a2 + `","path_pattern":"/x?token=secret"}`,                   // query가 섞인 줄은 버린다
 		`{"attempt_id":"zz","path_pattern":"/y"}`,
 		`not json`,
 	}
@@ -372,7 +414,11 @@ func TestE2FlowViewAttachesAttemptPatterns(t *testing.T) {
 		t.Fatal("patterns without a pattern file")
 	}
 	write(strings.Join(rows, "\n") + "\n")
-	if p1, p2 := pattern(); p1 != "/api/orders/{id}" || p2 != "" {
+	if p1, p2 := pattern(); p1 != "/{id}/{id}/{id}" || p2 != "" {
 		t.Fatalf("patterns: %q %q", p1, p2)
+	}
+	write(`{"attempt_id":"` + a1 + `","path_pattern":"/api/{username}/items/{title}","display_version":2}` + "\n")
+	if p1, p2 := pattern(); p1 != "/api/{username}/items/{title}" || p2 != "" {
+		t.Fatalf("new display pattern: %q %q", p1, p2)
 	}
 }

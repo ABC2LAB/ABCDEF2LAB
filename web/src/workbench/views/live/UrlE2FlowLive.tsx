@@ -124,8 +124,8 @@ export function UrlE2FlowLive() {
               <section className={s.isec} aria-label="전송 통제 요약">
                 <h2>전송 통제 요약</h2>
                 <p className={s.help}>
-                  서버 전체 저널 누계입니다. 허용은 송신 결정이며 대상 도달·완전 쓰기의 증거가 아닙니다. 차단은 송신 전
-                  확인된 경우만 표시합니다.
+                  화면용 저널 누계입니다. E③ 확정 단계의 호출·시도는 저장된 실행 기록에 포함됩니다. 허용은 송신 결정이며
+                  차단은 송신 전 확인된 경우만 표시합니다.
                 </p>
                 <div className={s.chiprow}>
                   {(Object.keys(COUNT_LABEL) as (keyof typeof COUNT_LABEL)[]).map((k) => (
@@ -134,6 +134,12 @@ export function UrlE2FlowLive() {
                     </span>
                   ))}
                 </div>
+                {flow.model_writes && (flow.model_writes.responded_2xx > 0 || flow.model_writes.unverified > 0) ? (
+                  <p className={s.help}>
+                    모델 단계 쓰기 요청 중 2xx 응답 {flow.model_writes.responded_2xx}건 · 결과 확인 필요{" "}
+                    {flow.model_writes.unverified}건. 다음 점검 전에 대상의 상태를 확인하세요.
+                  </p>
+                ) : null}
                 <p className={s.help}>
                   마지막 사건 번호 {flow.last_index} · 이전 호출 {flow.omitted_calls}개 생략
                 </p>

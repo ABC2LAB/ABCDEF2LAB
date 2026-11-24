@@ -48,11 +48,15 @@ afterEach(() => {
   vi.useRealTimers();
 });
 it("실제 task·16사유·10누계·시도와 가린 경로를 표시한다", async () => {
-  vi.mocked(apiFetch).mockResolvedValue(e2Flow({ omitted_calls: 7 }));
+  vi.mocked(apiFetch).mockResolvedValue(
+    e2Flow({ omitted_calls: 7, model_writes: { responded_2xx: 2, unverified: 1 } }),
+  );
   render(at());
   expect(await screen.findByText("a".repeat(32))).toBeInTheDocument();
   expect(screen.getByText("GET /orders/{id}")).toBeInTheDocument();
   expect(screen.getByText(/이전 호출 7개 생략/)).toBeInTheDocument();
+  expect(screen.getByText(/E③ 확정 단계의 호출·시도는 저장된 실행 기록에 포함됩니다/)).toBeInTheDocument();
+  expect(screen.getByText(/2xx 응답 2건 · 결과 확인 필요 1건/)).toBeInTheDocument();
   expect(screen.queryByText(/예시 데이터/)).toBeNull();
   expect(screen.getByText(/완전 수신 확인/)).toBeInTheDocument();
   expect(vi.mocked(apiFetch).mock.calls[0][0]).toBe("/api/tasks/42/e2-flow");
@@ -95,7 +99,9 @@ it("저널 검증 실패는 이미 보인 사건도 제거한다", async () => {
   expect(screen.queryByRole("heading", { name: "전송 통제 요약" })).toBeNull();
 });
 it("task 변경은 사건·커서를 초기화하고 늦은 이전 task 응답을 버린다", async () => {
-  let release: (value: unknown) => void = () => {};
+  let release: (value: unknown) => void = () => {
+    // 첫 요청에서 지연 응답으로 바꾼다.
+  };
   vi.mocked(apiFetch).mockImplementation((path) =>
     String(path).includes("/42/")
       ? new Promise((resolve) => {
@@ -213,7 +219,12 @@ it("조회 실패 후 이전 사건·커서를 버리고 첫 페이지로 재조
 it("task가 바뀐 렌더부터 이전 사건을 숨긴다", async () => {
   vi.mocked(apiFetch)
     .mockResolvedValueOnce(e2Flow())
-    .mockImplementation(() => new Promise(() => {}));
+    .mockImplementation(
+      () =>
+        new Promise(() => {
+          // 재조회 응답을 대기 상태로 유지한다.
+        }),
+    );
   render(at());
   await screen.findByText("a".repeat(32));
   act(() => useUrl.setState({ job: { task_id: "43" } as never }));
