@@ -255,3 +255,60 @@ func TestExplorationStartsFromEveryApprovedPath(t *testing.T) {
 		}
 	}
 }
+
+// 저장 기록 전용 가림(RedactRecord): 대상이 돌려준 시험 계정 비밀번호는 모델 입력에는 그대로 가고(11/23 규칙), 활동 기록에서만
+// 가려진다(2026-11-24 사용자 결정, #875 발견 3). RedactRecord가 없으면 지금처럼 Redact만 쓴다.
+func TestExplorationRecordRedactionIsRecordOnly(t *testing.T) {
+	const reflected = "reflected-tester-password"
+	run := func(recordOnly func([]byte) []byte) (*explorationProvider, []db.Activity) {
+		provider := &explorationProvider{}
+		w := NewWorker(provider, "owned", t.TempDir(), nil, 0, 10)
+		w.SetNonStreaming(func() bool { return true })
+		o := explorationOptions(&recordingDiscoveryReporter{n: 1})
+		for i, tool := range o.BrowserTools {
+			o.BrowserTools[i] = actool.Build(actool.Spec{Name: tool.Name(), Description: "Owned browser fixture", Schema: map[string]any{"type": "object"}, Run: func(context.Context, json.RawMessage, *actool.ToolContext) (actool.Result, error) {
+				return actool.Text(`{"users":[{"username":"tester","password":"` + reflected + `"}]}`), nil
+			}})
+		}
+		o.RedactRecord = recordOnly
+		var activity []db.Activity
+		if _, err := w.ExecuteExploration(t.Context(), o, func(a db.Activity) { activity = append(activity, a) }); err != nil {
+			t.Fatal(err)
+		}
+		return provider, activity
+	}
+	modelSaw := func(p *explorationProvider) bool {
+		for _, r := range p.requests {
+			for _, msg := range r.Messages {
+				for _, block := range msg.Content {
+					for _, v := range block.Content {
+						if strings.Contains(v.Text, reflected) {
+							return true
+						}
+					}
+				}
+			}
+		}
+		return false
+	}
+	recorded := func(activity []db.Activity) bool {
+		for _, a := range activity {
+			if strings.Contains(a.Summary, reflected) || strings.Contains(a.Detail, reflected) || strings.Contains(string(a.Metadata), reflected) {
+				return true
+			}
+		}
+		return false
+	}
+	provider, activity := run(func(b []byte) []byte { return []byte(strings.ReplaceAll(string(b), reflected, "[REDACTED]")) })
+	if !modelSaw(provider) {
+		t.Fatal("record-only redaction hid the target response from the model")
+	}
+	if len(activity) == 0 || recorded(activity) {
+		t.Fatalf("reflected password stored in activity (n=%d)", len(activity))
+	}
+	// 가림 목록이 없는 실행은 지금처럼 기록에 남는다(이 시험이 가림이 없는 경우를 실제로 구별하는지).
+	provider, activity = run(nil)
+	if !modelSaw(provider) || !recorded(activity) {
+		t.Fatal("fixture does not exercise the record path")
+	}
+}
