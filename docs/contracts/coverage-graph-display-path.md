@@ -12,7 +12,7 @@
 
 서버는 HTTP(S) URL의 이스케이프된 경로에 기존 `pathmask.DisplayShape`를 적용한다. 사용자 정보, 쿼리 이름과 값, 프래그먼트는 표시값에 들어가지 않는다. 숫자, 짧은 이름, 문자열 ID, 인코딩된 조각을 포함해 비어 있지 않은 조각은 모두 `{id}`가 된다. 경로 끝에 슬래시가 있으면 유지한다. 인코딩된 슬래시는 구분자로 세지 않는다.
 
-표시값은 저장된 URL의 구조다. 실제 요청이나 진단 완료의 증거로 쓰지 않는다. `tested`는 기존 fact 앵커 표시이고 `in_scope`는 기존 그래프 포함 범위를 뜻한다. 선택·중복 제거·간선·권한·요청 생성에는 표시값을 쓰지 않는다. 같은 표시값의 노드도 기존 `key`로 구분한다.
+표시값은 저장된 URL의 구조다. 실제 요청이나 진단 완료의 증거로 쓰지 않는다. `tested`는 기존 fact 앵커 표시이고 `in_scope`는 기존 그래프 포함 범위를 뜻한다. 선택·중복 제거·간선·권한·요청 생성에는 표시값을 쓰지 않는다. 같은 깊이와 끝 슬래시를 가진 엔드포인트는 의도적으로 같은 표시값을 갖는다. 노드와 간선은 기존 `key`로 구분한다.
 
 ## 이름 조각의 공개 근거
 
@@ -24,7 +24,7 @@
 
 - [새 응답 합성 fixture](fixtures/coverage-graph-display-path.json), [필드 없는 합성 fixture](fixtures/coverage-graph-legacy.json). 테스트 데이터다. 새 응답의 `a:22`와 `a:23`은 숫자 ID와 문자열 ID가 같은 모양으로 가려져도 별개 노드인 사례다.
 - `web/src/lib/diagnosis/engine.ts`의 `EngineCoverageNode`에 `display_path?: string`을 추가한다. 기준 dev의 `getCoverageGraph`는 배열을 그대로 전달하고 `web/src/workbench/live/api.ts`의 `fetchCoverageGraph`가 이를 재사용한다.
-- #902의 `web/src/workbench/live/coverageGraph.ts`에서 `parseCoverageGraph`가 값을 검증해 `CgNode`에 전달하고 `coverageNodeLabel`이 우선 표시한다. 루트 `/` 또는 1~32개의 `/{id}`와 선택적 끝 슬래시를 허용한다. 필드가 없으면 기존 라벨·origin 또는 자산 번호를 사용한다. 상세에서는 origin과 표시 경로를 분리한다.
+- #902의 `web/src/workbench/live/coverageGraph.ts`에서 `parseCoverageGraph`가 값을 검증해 `CgNode`에 전달하고 `coverageNodeLabel`이 우선 표시한다. 루트 `/` 또는 1~32개의 `/{id}`와 선택적 끝 슬래시를 허용한다. 필드가 없으면 기존 라벨·origin 또는 자산 번호를 사용한다. 상세에서는 origin과 표시 경로를 분리한다. 같은 origin과 표시 경로를 가진 노드가 여럿이면 보조 라벨에 기존 `asset_id`를 붙인다(예: `/{id}/{id}/{id} · #22`, `/{id}/{id}/{id} · #23`). 자산 번호가 없는 경우 `key`를 사용한다.
 - 확인한 클라이언트는 여분 키를 거부하지 않으며 #902는 모르는 키를 사용하지 않는다. 신규 클라이언트는 필드 부재를 처리하므로 배포 순서를 고정할 필요가 없다. 별도의 엄격 파서가 있다면 선택 필드를 먼저 허용한다.
 
 `?view=kg-v1`과 접근통제 지도에는 이 필드를 추가하지 않는다. 작업·원천 권한, 읽기 전용 조회, 기존 정렬과 관리 중계의 응답 상한을 유지한다.
