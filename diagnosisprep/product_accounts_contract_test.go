@@ -140,3 +140,32 @@ func TestProductAccountStatementOnlyOnList(t *testing.T) {
 		t.Fatal("statement outside the list or with control characters accepted")
 	}
 }
+
+func TestProductCredentialUsernameWhitespace(t *testing.T) {
+	for _, tc := range []struct {
+		name, username string
+		want           bool
+	}{
+		{"plain", "seeded-user", true},
+		{"internal space", "seeded user", true},
+		{"leading space", " seeded-user", false},
+		{"trailing space", "seeded-user ", false},
+		{"leading tab", "\tseeded-user", false},
+		{"trailing Unicode space", "seeded-user\u00a0", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := ProductRequest{
+				Operation: "account_credential_set",
+				TargetID:  "target-abc",
+				Account:   &AccountRequest{Label: "tester-a"},
+				Credential: &AccountCredential{
+					Username: tc.username,
+					Password: " password with spaces ",
+				},
+			}
+			if got := validProductRequest(&r); got != tc.want {
+				t.Fatalf("request valid = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}

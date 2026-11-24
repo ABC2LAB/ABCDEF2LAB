@@ -137,15 +137,18 @@ func TestProductLoginAndCredentialHTTP(t *testing.T) {
 	}
 	before := len(p.requests)
 	for name, c := range map[string][3]string{
-		"login get method":     {"PUT", base + "/login", strings.Replace(login, `"POST"`, `"GET"`, 1)},
-		"login extra field":    {"PUT", base + "/login", strings.TrimSuffix(login, "}") + `,"approved":true}`},
-		"login post verb":      {"POST", base + "/login", login},
-		"credential newline":   {"PUT", base + "/accounts/tester-a/credential", `{"username":"u","password":"a\nb"}`},
-		"credential extra":     {"PUT", base + "/accounts/tester-a/credential", `{"username":"u","password":"p","label":"x"}`},
-		"credential post":      {"POST", base + "/accounts/tester-a/credential", `{"username":"u","password":"p"}`},
-		"credential bad label": {"PUT", base + "/accounts/Tester/credential", `{"username":"u","password":"p"}`},
-		"credential no pass":   {"PUT", base + "/accounts/tester-a/credential", `{"username":"u"}`},
-		"login suffix":         {"GET", base + "/login/x", ""},
+		"login get method":          {"PUT", base + "/login", strings.Replace(login, `"POST"`, `"GET"`, 1)},
+		"login extra field":         {"PUT", base + "/login", strings.TrimSuffix(login, "}") + `,"approved":true}`},
+		"login post verb":           {"POST", base + "/login", login},
+		"credential leading space":  {"PUT", base + "/accounts/tester-a/credential", `{"username":" u","password":"p"}`},
+		"credential trailing space": {"PUT", base + "/accounts/tester-a/credential", `{"username":"u ","password":"p"}`},
+		"credential Unicode space":  {"PUT", base + "/accounts/tester-a/credential", `{"username":"u\u00a0","password":"p"}`},
+		"credential newline":        {"PUT", base + "/accounts/tester-a/credential", `{"username":"u","password":"a\nb"}`},
+		"credential extra":          {"PUT", base + "/accounts/tester-a/credential", `{"username":"u","password":"p","label":"x"}`},
+		"credential post":           {"POST", base + "/accounts/tester-a/credential", `{"username":"u","password":"p"}`},
+		"credential bad label":      {"PUT", base + "/accounts/Tester/credential", `{"username":"u","password":"p"}`},
+		"credential no pass":        {"PUT", base + "/accounts/tester-a/credential", `{"username":"u"}`},
+		"login suffix":              {"GET", base + "/login/x", ""},
 	} {
 		if w := invoke(c[0], c[1], c[2]); w.Code < 400 || len(p.requests) != before {
 			t.Errorf("%s reached preparation (code %d)", name, w.Code)
