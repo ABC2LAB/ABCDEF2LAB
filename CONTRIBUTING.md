@@ -61,6 +61,17 @@ npm run build:static
 3. 커밋 제목은 `태그: 요약` 형태로 50자 이내로 작성합니다. `feat`, `fix`, `refactor`, `docs`, `test`, `style`, `chore`를 사용합니다.
 4. PR의 base는 `dev`이며, 무엇을 바꿨는지·왜 필요한지·어떻게 확인했는지를 적습니다. 본인 외 리뷰어를 한 명 이상 요청합니다.
 5. 검토가 끝나기 전에는 병합하지 않습니다. 병합은 merge commit 방식이며 `dev`에서 `main`으로의 통합은 저장소 관리자가 진행합니다.
+6. 병합은 리뷰어가 합니다. 필요한 승인이 모두 현재 head에 있고, CI가 모두 통과하고, 열린 변경 요청이 없을 때 head를 고정해(`--match-head-commit`) merge commit으로 병합합니다. 어떤 승인 뒤 바뀐 것이 문서뿐이면 그 승인을 인정하고, 병합 코멘트에 "○○ 승인(커밋) 뒤 바뀐 것은 문서만"이라고 적습니다. 코드가 한 줄이라도 바뀌었으면 그 리뷰어의 재승인을 받습니다.
+7. 아래 실행 경로의 파일을 하나라도 바꾼 PR은 `합성 통과` 라벨이 있을 때만 병합합니다(사람·봇 모두). 시험 파일(`*_test.go`)만 바뀐 PR은 해당하지 않습니다. 라벨은 러너 세션의 무료 합성 회차(실제 제품을 끝까지 한 번 돌리는 확인)가 통과하면 러너 세션이나 저장소 관리자가 붙이고, 결과는 PR 코멘트로 남깁니다. 라벨을 붙인 뒤 새 커밋이 올라오면 그 라벨은 무효이므로(라벨 시각보다 head 커밋이 늦으면) 병합하지 않고 다시 확인합니다. 단위 시험은 통과했는데 실제 회차에서 깨진 일이 반복돼 생긴 규칙입니다.
+   - E②(실제 전송 통제): `e2proxy/`, `e2runner/`, `e2host/`, `e2sandbox/`, `e2config/`, `e2checkpoint/`, `transmit/`, `agent/e2_*`, `server/e2_*`, `cmd/e2-*/`, `deploy/e2-network-boundary/`
+   - E③(증거 판정): `e3contract/`, `e3binding/`, `e3record/`, `oracle/`, `server/e3_*`, `cmd/first-controlled-diagnosis/product_e3*`
+   - 준비 서비스: `diagnosisprep/`, `diagnosis/`, `server/first_diagnosis_*`, `server/diagnosis_*`, `cmd/first-controlled-diagnosis/url_preparation*`, `cmd/first-controlled-diagnosis/product_runtime*`, `cmd/first-controlled-diagnosis/product_targets*`, `cmd/first-controlled-diagnosis/product_policy*`, `cmd/first-controlled-diagnosis/product_preflight*`, `cmd/first-controlled-diagnosis/product_exploration*`
+   - 인증: `server/auth.go`, `server/*auth*`, `cmd/first-controlled-diagnosis/product_accounts*`
+   - 진단 흐름: `diagnosisflow/`
+   - 엔진: `server/engine*.go`
+   - 탐색 경계: `exploreboundary/`, `exploresandbox/`, `exploration/`
+   - 설치: `cmd/first-controlled-diagnosis/product_install*`, `deploy/product/`, `deploy/engine-isolated/`, `install.sh`, `update.sh`, `reset-password.sh`, `docker-compose.yml`, `Dockerfile*`
+   - DB 스키마: `db/*.sql`
 
 루트 설정·CI·Compose·라이선스 변경은 저장소 관리자와 조율합니다.
 자동 도구 서명이나 개인 작업 세션 링크를 커밋·PR 본문에 넣지 않습니다.

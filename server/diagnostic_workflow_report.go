@@ -4,9 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"strconv"
+
 	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/report"
-	"strconv"
 )
 
 func readWorkflowReport(ctx context.Context, tx *sql.Tx, taskID int64, out *report.DiagnosticReport) error {
@@ -32,14 +33,17 @@ func readWorkflowReport(ctx context.Context, tx *sql.Tx, taskID int64, out *repo
 	}
 	flow := diagnosisflow.Project(record.Snapshot)
 	out.Workflow = &flow
-	rows, err := tx.QueryContext(ctx, `SELECT COALESCE(record->>'method',''),COALESCE(record->>'path',''),COALESCE(record->>'state',''),COALESCE(record->>'execution_state',''),COALESCE(record->>'attempt_id','') FROM request_approvals WHERE task_id=$1 AND owner_ref='ARTEX' AND record->>'run_ref'=$2 ORDER BY id LIMIT 100`, taskID, flow.RunRef)
+	rows, err := tx.QueryContext(ctx, `SELECT COALESCE(record->>'method',''),COALESCE(record->>'path',''),COALESCE(record->>'state',''),COALESCE(record->>'execution_state',''),COALESCE(record->>'attempt_id',''), COUNT(*) OVER ()
+FROM request_approvals
+WHERE task_id=$1 AND owner_ref='ARTEX' AND record->>'run_ref'=$2
+ORDER BY id LIMIT $3`, taskID, flow.RunRef, report.MaxWorkflowApprovals)
 	if err != nil {
 		return errDiagnosticReportScope
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var v report.WorkflowApproval
-		if rows.Scan(&v.Method, &v.Path, &v.State, &v.ExecutionState, &v.Attempt) != nil {
+		if rows.Scan(&v.Method, &v.Path, &v.State, &v.ExecutionState, &v.Attempt, &out.WorkflowApprovalTotal) != nil {
 			return errDiagnosticReportScope
 		}
 		v.Path = report.DiagnosticText(v.Path)

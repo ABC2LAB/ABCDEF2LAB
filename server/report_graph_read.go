@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"net/url"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -229,38 +230,45 @@ func (s *Server) serveCoverageGraph(w http.ResponseWriter, r *http.Request, boun
 		w.WriteHeader(200)
 		_, _ = w.Write(kgBody)
 	default:
-		publicCoverageGraph(graph)
 		w.Header().Set(reportReadScopeHeader, reportReadDigest(binding))
-		writeJSON(w, 200, graph)
+		writeJSON(w, 200, publicCoverageGraph(graph))
 	}
 }
 
-// 기존 DTO를 유지하되 원문 URL의 자격·경로·query와 자유 문구는 보고서로 복사하지 않는다.
-func publicCoverageGraph(g *db.CoverageGraphData) {
+// 공개 응답은 원문 URL의 자격·경로 조각·쿼리와 자유 문구를 제거한 복사본이다.
+func publicCoverageGraph(g *db.CoverageGraphData) coverageGraphPublic {
+	out := coverageGraphPublic{
+		Nodes: make([]coverageGraphPublicNode, len(g.Nodes)),
+		Edges: slices.Clone(g.Edges),
+	}
 	remap := map[string]string{}
-	for i := range g.Nodes {
-		n := &g.Nodes[i]
+	for i, node := range g.Nodes {
+		out.Nodes[i].CoverageGraphNode = node
+		n := &out.Nodes[i]
 		if strings.HasPrefix(n.Key, "r:") && !reportPublicHost(strings.TrimPrefix(n.Key, "r:")) {
 			hash := sha256.Sum256([]byte(n.Key))
 			next := "r:" + hex.EncodeToString(hash[:16])
 			remap[n.Key], n.Key = next, next
 		}
 	}
-	for i := range g.Edges {
-		if next, ok := remap[g.Edges[i].Src]; ok {
-			g.Edges[i].Src = next
+	for i := range out.Edges {
+		if next, ok := remap[out.Edges[i].Src]; ok {
+			out.Edges[i].Src = next
 		}
-		if next, ok := remap[g.Edges[i].Dst]; ok {
-			g.Edges[i].Dst = next
+		if next, ok := remap[out.Edges[i].Dst]; ok {
+			out.Edges[i].Dst = next
 		}
 	}
-	for i := range g.Nodes {
-		n := &g.Nodes[i]
+	for i := range out.Nodes {
+		n := &out.Nodes[i]
 		n.Label = "자산 #" + strconv.FormatInt(n.AssetID, 10)
 		if n.Kind == "company" {
 			n.Label = "회사 #" + strconv.FormatInt(n.CompanyID, 10)
 		}
 		if u, err := url.Parse(n.URL); err == nil && (u.Scheme == "http" || u.Scheme == "https") && reportPublicHost(u.Hostname()) {
+			if n.Kind == "endpoint" {
+				n.DisplayPath = coverageGraphDisplayPath(u.EscapedPath())
+			}
 			n.URL = (&url.URL{Scheme: u.Scheme, Host: u.Host}).String()
 			n.Label = n.URL
 		} else {
@@ -279,11 +287,12 @@ func publicCoverageGraph(g *db.CoverageGraphData) {
 		}
 		n.AppName, n.PageTitle, n.ServiceType = "", "", ""
 	}
-	sort.Slice(g.Nodes, func(i, j int) bool { return g.Nodes[i].Key < g.Nodes[j].Key })
-	sort.Slice(g.Edges, func(i, j int) bool {
-		a, b := g.Edges[i], g.Edges[j]
+	sort.Slice(out.Nodes, func(i, j int) bool { return out.Nodes[i].Key < out.Nodes[j].Key })
+	sort.Slice(out.Edges, func(i, j int) bool {
+		a, b := out.Edges[i], out.Edges[j]
 		return a.Src < b.Src || a.Src == b.Src && a.Dst < b.Dst
 	})
+	return out
 }
 
 func reportPublicHost(host string) bool {

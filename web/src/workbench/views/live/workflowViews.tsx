@@ -341,6 +341,80 @@ export function WorkflowNotice() {
   );
 }
 
+/** 일시정지가 가능한 흐름 단계(서버 diagnosisflow controller 의 pause 조건과 같다). */
+const PAUSABLE_STAGES: readonly string[] = ["crawling", "diagnosing"];
+/** 서버가 받는 명령 기록 상한(32) — 일시정지는 31개부터 거부되고 재개는 늘 받는다(diagnosisflow controller). */
+const PAUSE_COMMAND_LIMIT = 31;
+/**
+ * 종료 확인 상자의 대안 안내. 일시정지는 모델 요청 관문일 뿐이라 회차 시간 상한은 계속 흐른다
+ * (docs/contracts/e3-product-confirmation-interface.md §7) — 시간도 멈추는 것처럼 읽히지 않게 쓴다(#913 리뷰 윤재상 P3).
+ */
+export const PAUSE_HINT = "잠시 멈추려면 일시정지를 쓰세요(일시정지 중에도 점검 시간 상한은 흐릅니다).";
+
+/**
+ * 일시정지 · 다시 시작 버튼 (탐색 · 심화 진단 중에만). 흐름 API(POST /api/product/workflows/{id}/pause · resume)만 쓴다 —
+ * 점검 제어 API(/api/tasks/{id}/control)의 일시정지는 회차를 끝내는 중지라 부르지 않는다(개발 계획 2026-11-24 사용자 결정,
+ * 11/24 화면 VAmPI 회차 2: 일시정지 30초 동안 대상 송신 0, 재개 뒤 바로 다시 송신). 결과는 서버 흐름 스냅숏(paused)으로만 그린다.
+ */
+type PauseState = {
+  flow: WorkflowSnapshot | null;
+  flowBusy: boolean;
+  flowVerified: boolean;
+  flowUncertain: boolean;
+  job: { state: string } | null;
+  verified: boolean;
+  uncertain: boolean;
+};
+
+/** 버튼을 둘 단계인가: 실행 중인 점검의 탐색 · 심화 진단(서버 pause 단계 조건). 일시정지 중이면 [다시 시작]으로 둔다. */
+function pauseShown(st: PauseState): st is PauseState & { flow: WorkflowSnapshot } {
+  return (
+    !!st.job && ["preparing", "running"].includes(st.job.state) && !!st.flow && PAUSABLE_STAGES.includes(st.flow.stage)
+  );
+}
+
+/** 지금 누를 수 있는가: 흐름 · 점검 상태를 확인했고 명령 처리 중 · 결과 불명이 아님. */
+function pauseReady(st: PauseState): boolean {
+  return st.flowVerified && !st.flowUncertain && !st.flowBusy && st.verified && !st.uncertain;
+}
+
+/**
+ * 지금 [일시정지]를 실제로 누를 수 있는가(버튼 · 종료 확인 상자 안내가 같은 판정을 쓴다, #913 리뷰). 이미 일시정지 중이거나
+ * 명령 기록이 서버 상한(31)에 닿았으면 아니다.
+ */
+export function canPauseNow(st: PauseState): boolean {
+  return pauseShown(st) && pauseReady(st) && !st.flow.paused && st.flow.commands.length < PAUSE_COMMAND_LIMIT;
+}
+
+export function PauseButton() {
+  // 목록에서 다시 연 점검(조회 결속)도 누를 수 있다 — 범위 선택과 같다(사용자 2026-11-22, F16). 서버가 흐름 결속 · 주체를 다시 본다
+  const st: PauseState = {
+    flow: useUrl((x) => x.flow),
+    flowBusy: useUrl((x) => x.flowBusy),
+    flowVerified: useUrl((x) => x.flowVerified),
+    flowUncertain: useUrl((x) => x.flowUncertain),
+    job: useUrl((x) => x.job),
+    verified: useUrl((x) => x.verified),
+    uncertain: useUrl((x) => x.uncertain),
+  };
+  if (!pauseShown(st)) return null;
+  const paused = st.flow.paused;
+  // 다시 시작은 서버가 명령 수와 상관없이 받는다 — 상태만 확인됐으면 연다
+  const enabled = paused ? pauseReady(st) : canPauseNow(st);
+  return (
+    <button
+      className={s.btn}
+      type="button"
+      disabled={!enabled}
+      aria-pressed={paused}
+      onClick={() => void runWorkflowAction(paused ? "resume" : "pause")}
+    >
+      <Icon name={paused ? "play" : "pause"} />
+      <span>{paused ? "다시 시작" : "일시정지"}</span>
+    </button>
+  );
+}
+
 /**
  * 점검 종료(중지) 버튼 + 확인 상자 (시안 lEnd · lConfirm). 종료는 되돌릴 수 없어 한 번 더 묻는다.
  * "종료"(점검 진행)는 빨간 버튼, "점검 취소"(자산 탐색 · 범위 확인)는 시안처럼 보통 버튼이다.
@@ -357,6 +431,8 @@ export function useStopConfirm(label: "종료" | "점검 취소"): { button: Rea
     if (open) yes.current?.focus();
   }, [open]);
   const verb = label === "종료" ? "종료" : "취소";
+  // 이어 하기 안내는 지금 [일시정지]를 실제로 누를 수 있을 때만(이미 일시정지 · 명령 상한이면 빼고, #913 리뷰 이동찬 P2)
+  const canPause = useUrl((x) => canPauseNow(x));
   const button = (
     <>
       {jobUncertain || !jobVerified ? <UrlRefreshButton small={false} /> : null}
@@ -381,7 +457,7 @@ export function useStopConfirm(label: "종료" | "점검 취소"): { button: Rea
         <ul>
           <li>새 요청을 보내지 않고, 응답을 받지 못한 요청은 전송 불명으로 기록합니다.</li>
           <li>{`모은 증거와 발견은 남기고, ${verb} 시점까지의 결과로 보고서를 만듭니다.`}</li>
-          <li>끝내지 못한 항목은 미실행으로 남깁니다.</li>
+          <li>{`끝내지 못한 항목은 미실행으로 남깁니다.${canPause ? ` ${PAUSE_HINT}` : ""}`}</li>
         </ul>
         <div className={s.acts}>
           <button
@@ -1004,6 +1080,7 @@ export function WorkflowCrawlLive() {
         }
         acts={
           <>
+            <PauseButton />
             {stop.button}
             <InspOpenButton>기록 상세</InspOpenButton>
             {/* [탐색 결과] · [진단 결과▾](예시 화면 진입)는 뺐다(사용자 11/17). 화면 자체는 남아 주소(#explore 등)로 열린다 */}

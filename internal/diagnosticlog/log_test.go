@@ -39,6 +39,19 @@ func (m *memoryWriter) Truncate(n int64) error {
 func testEvent() Event {
 	return Event{Component: "cli", Event: "stage_finished", Stage: "configuration", Status: "succeeded"}
 }
+func TestAccountAuthEventRejectsUnboundedLabels(t *testing.T) {
+	e := Event{Component: "server", Event: "account_auth_checked", Stage: "execution", Status: "failed",
+		ReasonCode: "auth_session_unavailable", AccountLabel: "tester_a"}
+	if !valid(e) {
+		t.Fatal("fixed account auth event rejected")
+	}
+	for _, label := range []string{"tester@example", "tester\nvalue", "Tester", strings.Repeat("a", 33)} {
+		e.AccountLabel = label
+		if valid(e) {
+			t.Fatal("unbounded account label accepted")
+		}
+	}
+}
 func TestConcurrentJSONLAndCorrelation(t *testing.T) {
 	w := &memoryWriter{}
 	l := &Logger{writer: w, task: 42, run: "raw-private-run"}

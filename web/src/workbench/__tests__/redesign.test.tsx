@@ -1473,6 +1473,26 @@ describe("점검 진행", () => {
     expect(gaugeSegments({ ...flow, stage: "unknown" }, false)).toBeNull();
   });
 
+  it("심화 진단 중 머리에 [일시정지]가 종료 옆에 있고, 흐름이 일시정지면 [다시 시작] · '일시정지됨' (11/24 사용자 결정)", () => {
+    useUrl.setState({ handle, job, verified: true, flow: { ...flow, stage: "diagnosing" }, flowVerified: true });
+    const a = render(
+      <ShellContext.Provider value={shell("live")}>
+        <UrlLiveLive />
+      </ShellContext.Provider>,
+    );
+    expect(screen.getByRole("button", { name: "일시정지" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "종료" })).toBeInTheDocument();
+    a.unmount();
+    useUrl.setState({ flow: { ...flow, stage: "diagnosing", paused: true } });
+    render(
+      <ShellContext.Provider value={shell("live")}>
+        <UrlLiveLive />
+      </ShellContext.Provider>,
+    );
+    expect(screen.getByRole("button", { name: "다시 시작" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getAllByText("일시정지됨").length).toBeGreaterThan(0);
+  });
+
   it("계획 목록이 상한(20개)만큼 꽉 차 오면 상태 카드 계획 칸은 'N+ · 목록 일부만 받음' (전체 완료율로 쓰지 않음)", () => {
     const twenty = Array.from({ length: 20 }, (_, i) => ({ id: i + 1, state: "done", title: `계획 ${i + 1}` }));
     useUrl.setState({

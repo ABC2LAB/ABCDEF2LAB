@@ -34,6 +34,7 @@
 
 ## 구현 계약
 
+- 저장 요청 승인 이력은 같은 작업·소유자·회차에서 ID 순서로 최대 100건을 싣는다. 같은 조회 스냅샷의 전체 건수가 더 많으면 내부용·공유용 HTML과 Word 모두에 전체 건수와 표시 건수를 밝힌다.
 - `reproduction.FromStored`는 호스트 소유 `observed` 관측 중 실제 시각·실행·원본 Step·증거 참조가 모두 있는 행만 사용하며 저장 순서를 유지한다. E③는 저장 manifest의 owner read / cross read / 비교 snapshot을 독립 결속 검사한 뒤 투영한다. E③ manifest에 없는 HTTP 경로·일반 call ID는 공란으로 보존한다.
 - Step에는 task/entry/run/call/원본 Step/evidence version/evidence digest와 전체 정규화 관측의 SHA256 결속을 둔다. Step ID는 그 결속에서 결정한다. 내용·회차·증거가 바뀌면 이전 이미지를 재사용하지 않는다.
 - `db.Open`의 기존 advisory lock·DDL 재시도 안에서 버전 있는 `diagnostic_captures_v1.sql`을 적용한다. PNG는 기존 PostgreSQL의 보호된 BYTEA 행에 저장한다. 파일 경로·URL·SVG·base64 그래프 fact를 받는 공개 업로드 API는 없다.
@@ -41,6 +42,8 @@
 - `reportcapture.Collect` → sealed `Asset` → `DB.SaveDiagnosticCapture`는 현재 DB 근거에서 Step 결속을 다시 유도한 뒤 추가한다. 실패·미지원 상태는 현재 근거를 다시 확인한 뒤 성공으로 한 번 승격할 수 있다. 반복 실패는 멱등이며, 성공 캡처는 재수집으로 덮어쓰지 않는다. DB trigger는 성공 행 UPDATE·직접 DELETE·TRUNCATE와 결속 변경을 거부한다(기존 부모 task 삭제 cascade는 보존). 이미지 최대 1 MiB·4096변·8백만 픽셀, 승인 영역 최대 16개다. PNG는 재인코딩하며 조회·출력 때 digest/크기/정적 PNG chunk를 검증한다. 텍스트 입력 16 MiB와 이미지는 별도 예산으로 검사한다. 내부 내보내기의 이미지 base64 예산은 4 MiB이며 넘는 이미지만 `capacity_omitted`(용량 초과로 생략)로 바꾸고 텍스트를 유지한다. 최종 파일 상한은 두 예산을 합친 20 MiB다.
 - 캡처 상태: 행 없음 `not_captured`, adapter/비민감 영역 승인 없음 `not_supported`, Source 실패 `failed`, 읽기 권한/저장소 없음 `storage_unavailable`, 공유 사본 `shared_omitted`, 이미지 예산 초과 `capacity_omitted`, 현재 결속·PNG 검증 실패 `binding_invalid`. 오래된 증거는 재현 Step·이미지·프롬프트를 반환하지 않는다.
 - 조회는 `GET /api/report/diagnostic?task=<id>&audience=internal|shared&format=html|docx`. 기본은 기존 공유 HTML이다. PNG 조회는 `/api/report/diagnostic/image?task=<id>&audience=internal&entry=<id>&step=<id>&digest=<image-sha256>`이며 동일 권한·현재 버전을 검사한다. 재시작한 보고서 전용 handler에도 같은 GET을 등록한다. 조치 목록과 공유 내보내기는 PNG blob을 읽지 않고, 이미지 GET은 선택 entry의 현재 근거와 해당 이미지 한 행만 읽는다. 응답은 no-store, nosniff와 비활성 CSP를 유지한다.
+- 내부 보고서는 접근통제·업무 규칙 후보의 주 호출에서 감사된 2xx 응답을 재현 단계와 연결할 수 있을 때 관찰 사실과 선택 질문을 표시한다. `BOLA/IDOR`와 `Business Logic - Negative Quantity`처럼 유형을 복합 표기한 후보에도 해당 유형의 질문을 적용한다. 후보의 검토 상태와 제품 E③ 판정은 각각 기존 근거를 따른다. HTTP 응답 코드로 사용자 신원, 역할, 소유권 또는 권한을 추정하지 않는다.
+- 화면은 같은 작업 조회 권한으로 `GET /api/report/diagnostic?task=<id>&audience=internal&format=review-json`을 호출할 수 있다. 응답은 `task_id`(십진 문자열)와 `entries`(해당 항목이 없으면 빈 배열)를 포함한다. 각 항목의 `id`는 보고서의 `candidate-<id>`이며 `status=deferred`, `reason=business_rule_unverified`, `observation`, `question`을 제공한다. 관찰에는 주 호출에서 재현 단계에 연결된 각 응답의 단계 번호, HTTP 메서드와 상태 코드를 표시한다. 질문은 이 가운데 성공 응답을 받은 요청에 적용한다. 관련 호출에서만 성공 응답이 있으면 해당 후보에 질문을 붙이지 않는다. 질문 원장이나 답변 저장 계약은 없다.
 - 개요의 승인 URL·모델 정책은 보호된 preparation service의 `AuthorizeTask`가 돌려준 해당 Job Scope만 사용한다. 모델 사용량은 실제 `llm_usage` 행을 별도 표시하고 기록 부재를 NOT_RUN으로 추정하지 않는다.
 - 내부용 HTML·DOCX는 같은 작업의 `first_diagnosis_model_preparation_v1`과 `first_diagnosis_run_v1.model` 저장 기록을 준비·진단 단계별 호출·오류·토큰·기록 비용으로 표시한다. 준비 기록이 여러 개면 각 줄에 저장 시각(UTC)과 준비 작업 성공·실패를 표시한다. 두 단계는 합산하지 않으며 보고서 생성 중 모델 원장이나 외부 제공자에 접속하지 않는다. 미확정 호출이 있으면 저장 비용 수치는 실제 청구액과 다를 수 있다. 기록 비용 0은 실제 0과 정산 미확정을 구별할 수 없으므로 `0 또는 미확인`으로 표시한다. 이 단계별 정산과 `llm_usage` 세부 행 상태는 별개다. 공유용 보고서에는 단계별 정산을 표시하지 않는다.
 - 조치는 기존 명시적 POST와 CAS·영속 Bundle을 쓴다. 생성기 `remediation-v6`는 추가된 실제 E③ 단계와 Method를 반영한다. 이전 저장본은 기존 stale 검증으로 차단한다. Workbench 복사는 서버가 재검증한 entry/record/input digest/전체 프롬프트가 표시 저장본과 같을 때만 수행한다.

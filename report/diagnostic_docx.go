@@ -136,6 +136,9 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 		w.paragraph("Normal", "구조화된 탐색·Planner/Worker 수행 기록 미확보. 미검사 범위를 수행 완료로 표시하지 않습니다.")
 	}
 	if len(in.WorkflowApprovals) > 0 {
+		if summary := in.WorkflowApprovalSummary(); summary != "" {
+			w.paragraph("Normal", summary)
+		}
 		rows := [][]string{{"메서드·경로", "승인 결정", "실행 상태"}}
 		for _, a := range in.WorkflowApprovals {
 			path := a.Path
@@ -202,6 +205,11 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 		w.paragraph(style, e.ID+" · "+e.Title)
 		w.paragraph("Heading2", "① 판정과 영향")
 		w.table([][]string{{"항목", "값"}, {"고유 ID / 유형", e.ID + " / " + e.VulnClass}, {"판정 / 검증", e.Outcome + " / " + e.Verification}, {"위험도 / 상태", e.SeverityText() + " / " + e.Status}, {"실행 / intent", e.Run + " / " + strconv.FormatInt(e.IntentID, 10)}, {"증거 버전 / digest", strconv.FormatInt(e.EvidenceVersion, 10) + " / " + e.Digest}})
+		if review := e.BusinessRuleReview; review != nil {
+			w.paragraph("Heading2", "업무 규칙 미확인 · 판정 보류")
+			w.paragraph("Normal", review.Observation)
+			w.paragraph("Normal", "검토 질문(선택): "+review.Question)
+		}
 		if e.Stale {
 			w.paragraph("Normal", "증거 버전 불일치: 오래된 자료를 확정으로 집계하지 않습니다.")
 		}

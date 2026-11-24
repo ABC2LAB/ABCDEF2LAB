@@ -6,6 +6,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { ApiError } from "@/lib/diagnosis/api";
 import { decideRequestApproval, getRequestApproval, type RequestApproval } from "@/lib/diagnosis/request-approvals";
 
 import { cx } from "../../lib/cx";
@@ -109,20 +110,39 @@ export function useRequestApprovals(taskId: string, active: boolean): Approvals 
     const token = generation.current;
     setBusy(row.id);
     setMessage("");
+    const mine = () => token === generation.current && identity.current === taskId;
+    // 결정 전 확인: 여기서 멈추면 결정을 보내지 않은 것이다 — 결과 불명(다시 보내지 말라) 잠금을 걸지 않고 사유를 알린다
+    // (11/24 화면 VAmPI 발견 2: 이미 닫힌 요청을 누르면 '결정 결과를 확인하지 못했습니다'만 보였다)
+    let fresh: RequestApproval;
     try {
-      const fresh = await getRequestApproval(taskId, row.id);
-      if (token !== generation.current || identity.current !== taskId || !gate(row)) return;
-      if (
-        fresh.run_ref !== row.run_ref ||
-        fresh.attempt_id !== row.attempt_id ||
-        fresh.request_sha256 !== row.request_sha256 ||
-        !fresh.live ||
-        !fresh.can_decide
-      )
-        throw new Error("approval_changed");
+      fresh = await getRequestApproval(taskId, row.id);
+    } catch {
+      if (mine()) {
+        setMessage(NOT_SENT_TEXT.unread);
+        lock.current = false;
+        setBusy(null);
+      }
+      return;
+    }
+    if (!mine() || !gate(row)) {
+      if (mine()) {
+        lock.current = false;
+        setBusy(null);
+      }
+      return;
+    }
+    const notSent = precheck(row, fresh);
+    if (notSent) {
+      setMessage(notSent);
+      lock.current = false;
+      setBusy(null);
+      poll.reload();
+      return;
+    }
+    try {
       setUnconfirmed(row.id);
       await decideRequestApproval(taskId, fresh, decision);
-      if (token !== generation.current || identity.current !== taskId) return;
+      if (!mine()) return;
       setUnconfirmed(null);
       setMessage(
         decision === "allow"
@@ -130,11 +150,17 @@ export function useRequestApprovals(taskId: string, active: boolean): Approvals 
           : "이 요청을 거부했습니다.",
       );
       poll.reload();
-    } catch {
-      if (token === generation.current && identity.current === taskId) {
-        setUnconfirmed(row.id);
-        setMessage("결정 결과를 확인하지 못했습니다. 다시 보내지 말고 목록을 다시 조회하세요.");
+    } catch (error) {
+      if (!mine()) return;
+      if (error instanceof ApiError && error.status === 409) {
+        // 409 는 저장 전에 거절한 것이다(db.ErrRequestApprovalConflict 조건부 저장) — 이번 결정은 반영되지 않았다
+        setUnconfirmed(null);
+        setMessage(NOT_SENT_TEXT.conflict);
+        poll.reload();
+        return;
       }
+      setUnconfirmed(row.id);
+      setMessage("결정 결과를 확인하지 못했습니다. 다시 보내지 말고 목록을 다시 조회하세요.");
     } finally {
       if (token === generation.current && identity.current === taskId) {
         lock.current = false;
@@ -144,6 +170,39 @@ export function useRequestApprovals(taskId: string, active: boolean): Approvals 
   };
 
   return { poll, runMatches, rows, pending, busy, unresolved, message, canDecide, decide };
+}
+
+/** 결정을 보내지 않았거나(결정 전 확인) 서버가 반영하지 않은(409) 경우의 안내. 결과 불명과 섞지 않는다. */
+export const NOT_SENT_TEXT = {
+  unread: "요청 상태를 확인하지 못해 결정을 보내지 않았습니다. 목록을 다시 조회한 뒤 다시 고르세요.",
+  changed: "요청 내용이 바뀌어 결정을 보내지 않았습니다. 목록을 다시 조회한 뒤 다시 고르세요.",
+  conflict:
+    "서버가 이번 결정을 받지 않았습니다(이미 결정 · 만료 · 취소된 요청이거나 실행 상태가 바뀜). 목록을 다시 조회합니다.",
+} as const;
+
+/** 이미 끝난 요청의 안내(서버 상태 그대로). 결정을 보내지 않았다는 말을 붙인다. */
+const CLOSED_TEXT: Record<RequestApproval["state"], string> = {
+  pending: "더 이상 결정할 수 없는 요청입니다(실행이 끝났거나 닫혔습니다)",
+  allowed: "이미 허용된 요청입니다",
+  denied: "이미 거부된 요청입니다",
+  expired: "승인 기한이 지나 닫힌 요청입니다",
+  cancelled: "취소돼 닫힌 요청입니다",
+};
+
+/**
+ * 결정 직전에 다시 읽은 요청을 본다. 보내도 되면 null, 아니면 화면 안내. 같은 요청(실행 · 시도 · 내용 해시)이 아니면 '바뀜',
+ * 결정할 수 없는 상태면 '이미 끝남'으로 가른다(둘 다 결정은 보내지 않는다).
+ */
+export function precheck(row: RequestApproval, fresh: RequestApproval): string | null {
+  if (
+    fresh.run_ref !== row.run_ref ||
+    fresh.attempt_id !== row.attempt_id ||
+    fresh.request_sha256 !== row.request_sha256
+  )
+    return NOT_SENT_TEXT.changed;
+  if (fresh.state !== "pending" || !fresh.live || !fresh.can_decide)
+    return `${CLOSED_TEXT[fresh.state]}. 결정을 보내지 않았습니다.`;
+  return null;
 }
 
 /** 서버가 붙이는 미리보기 안내 키. 값은 서버 문장 그대로 보여 준다. */

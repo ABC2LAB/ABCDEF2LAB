@@ -43,6 +43,7 @@ type Event struct {
 	RunRef               string    `json:"run_ref,omitempty"`
 	IntentID             int64     `json:"intent_id,omitempty"`
 	CallRef              string    `json:"call_ref,omitempty"`
+	AccountLabel         string    `json:"account_label,omitempty"`
 	Stage                string    `json:"stage,omitempty"`
 	Status               string    `json:"status,omitempty"`
 	ReasonCode           string    `json:"reason_code,omitempty"`
@@ -275,8 +276,9 @@ func (l *Logger) Close() error {
 	return l.err
 }
 func valid(e Event) bool {
-	return allowed(components, e.Component, false) && allowed(events, e.Event, false) && allowed(stages, e.Stage, true) && allowed(statuses, e.Status, true) && allowed(reasons, e.ReasonCode, true) && allowed(tools, e.Tool, true) && allowed(roles, e.Role, true) && allowed(models, e.Model, true) && allowed(providers, e.Provider, true) && allowed(levels, e.Level, true) && e.CandidateID >= 0 && len(e.AttemptRef) <= maxReferenceBytes && e.TaskID >= 0 && e.IntentID >= 0 && e.DurationMS >= 0 && e.Count >= 0 && e.HTTPStatus >= 0 && e.HTTPStatus <= 599 && e.InputTokens >= 0 && e.OutputTokens >= 0 && e.ReservedTokens >= 0 && finite(e.ReservedCostUSD) && finite(e.ReportedCostUSD) && e.TargetRequests >= 0 && e.Approved >= 0 && e.Denied >= 0 && e.Blocked >= 0 && e.Candidates >= 0 && e.ReservedInputTokens >= 0 && e.ReservedOutputTokens >= 0 && e.ReservedCostMicros >= 0 && e.CostMicros >= 0 && len(e.ModelRef) <= maxReferenceBytes && len(e.ProviderRef) <= maxReferenceBytes && len(e.RunRef) <= maxReferenceBytes && len(e.CallRef) <= maxReferenceBytes
+	return allowed(components, e.Component, false) && allowed(events, e.Event, false) && allowed(stages, e.Stage, true) && allowed(statuses, e.Status, true) && allowed(reasons, e.ReasonCode, true) && allowed(tools, e.Tool, true) && allowed(roles, e.Role, true) && allowed(models, e.Model, true) && allowed(providers, e.Provider, true) && allowed(levels, e.Level, true) && e.CandidateID >= 0 && len(e.AttemptRef) <= maxReferenceBytes && validAccountLabel(e.AccountLabel) && (e.AccountLabel == "") == (e.Event != "account_auth_checked") && e.TaskID >= 0 && e.IntentID >= 0 && e.DurationMS >= 0 && e.Count >= 0 && e.HTTPStatus >= 0 && e.HTTPStatus <= 599 && e.InputTokens >= 0 && e.OutputTokens >= 0 && e.ReservedTokens >= 0 && finite(e.ReservedCostUSD) && finite(e.ReportedCostUSD) && e.TargetRequests >= 0 && e.Approved >= 0 && e.Denied >= 0 && e.Blocked >= 0 && e.Candidates >= 0 && e.ReservedInputTokens >= 0 && e.ReservedOutputTokens >= 0 && e.ReservedCostMicros >= 0 && e.CostMicros >= 0 && len(e.ModelRef) <= maxReferenceBytes && len(e.ProviderRef) <= maxReferenceBytes && len(e.RunRef) <= maxReferenceBytes && len(e.CallRef) <= maxReferenceBytes
 }
+func validAccountLabel(label string) bool                    { return label == "" || accountLabel.MatchString(label) }
 func finite(n float64) bool                                  { return n >= 0 && !math.IsNaN(n) && !math.IsInf(n, 0) }
 func allowed(set map[string]bool, s string, empty bool) bool { return empty && s == "" || set[s] }
 

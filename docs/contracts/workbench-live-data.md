@@ -31,11 +31,13 @@
 | `POST …/accounts/{label}/mark-test` `{"statement_confirmed": true}` | 시험 계정 표시(본인 진술 동의 필수, 없으면 409 `statement_required`) |
 | `POST …/accounts/{label}/unmark` `{}` | 표시 해제 |
 | `GET`·`PUT /api/product/targets/{id}/login` | 대상 로그인 방식(경로·형식·필드 이름·세션 위치). 자격 값 없음 |
-| `PUT …/accounts/{label}/credential` `{"username","password"}` | 자격 등록(서버 보호 파일, 응답·목록에 값·해시 없음) |
+| `PUT …/accounts/{label}/credential` `{"username","password"}` | 자격 등록(서버 보호 파일, 응답·목록에 값·해시 없음). 사용자명 앞뒤에 공백이 있으면 `invalid_account_credential`(400). 화면도 등록 전에 같은 규칙을 확인한다. |
 
 화면(`AccountClassifyLive`, 2026-11-21): 대상을 고르면 로그인 방식을 읽어 칸에 채우고 저장한다(형식 검사는 서버 `ValidTargetLogin`과 같은 규칙, 승인 경로 안인지는 서버만 본다). 계정마다 자격을 입력한다. 자격 칸은 React 상태에 두지 않는 비제어 입력이고 보낼 때 한 번 읽고 바로 비운다(실패·형식 밖도). URL·브라우저 저장소·로그에 넣지 않는다. 브라우저 비밀번호 관리자에 들어가지 않게 form 제출을 쓰지 않고 `autoComplete="off"`·관리자 무시 표시를 단다(모든 브라우저가 저장 제안을 안 한다고 보장하지는 않는다). 비밀번호가 E② 보호 값 하한(6바이트)보다 짧으면 서버는 저장하지만 실행 때 그 계정으로 로그인하지 않으므로, 등록 뒤 라벨과 함께 따로 알린다(값 없음). 등록 여부는 목록의 `credential_configured`가 참일 때만 '자격 등록됨'이다. 쓰기 실패는 서버 사유 코드를 한국어 문구로 보인다.
 
 `ProductAccount`: `label`, `classification`(`test`|`real`), `reason`(`target_reapproved`|`target_expired`|`manual_unmark`, 없을 수 있음), `registered_by`, `registered_at`, `classified_by`, `classified_at`, `marked_revision`, `credential_configured`(bool, 값 없음).
+
+계정 목록과 계정 변경 응답에서 자격이 저장됐지만 대상 로그인 방식이 없으면 `login_method_missing: true`를 함께 준다. 이때 점검은 익명으로 진행한다. 로그인 방식을 등록하면 다음 조회부터 이 필드를 생략한다. 실제 로그인 결과는 회차의 `account_auth`에서 확인한다.
 
 화면 분류 대응: `test` → `test_approved`, `real` → `unmarked`. 서버에는 "승인 대기" 상태가 없다(표시하는 사람이 곧 승인자). 화면의 `test_pending`은 서버 값으로는 나오지 않는다. `approvedBy`·`approvedAt`은 `classified_by`·`classified_at`이다. 실행에서 계정별 로그인 결과는 실행 결과 `account_auth` 칸이다([실행 결과 계약](run-outcome-states.md) 3.4).
 

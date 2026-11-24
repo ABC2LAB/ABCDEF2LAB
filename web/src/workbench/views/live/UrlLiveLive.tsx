@@ -90,7 +90,7 @@ import {
   useUrlHost,
 } from "./urlParts";
 import { VerdictDetailCard } from "./VerdictDetailCard";
-import { crawlPct, useStopConfirm, WorkflowNotice, WorkflowReport } from "./workflowViews";
+import { crawlPct, PauseButton, useStopConfirm, WorkflowNotice, WorkflowReport } from "./workflowViews";
 
 /** 보고서 위치의 상위 화면 (작업대 / 끝난 점검 / 주소 / 보고서) */
 const FINISHED = { href: "#finished", label: "끝난 점검" };
@@ -740,7 +740,7 @@ export function UrlLiveLive() {
   }
 
   const ended = URL_ENDED_STATES.includes(job.state);
-  // 서버가 보고한 흐름 상태만 표시한다. 화면에서는 종료만 제공한다.
+  // 서버가 보고한 흐름 상태만 표시한다. 일시정지 · 다시 시작은 흐름 API(PauseButton), 점검 제어 API 는 부르지 않는다.
   const pausedNow = flow ? !!flow.paused : false;
   const run = a.poll.data?.run;
   const ap = approvalCounts(run, a.poll.data?.approvals);
@@ -874,6 +874,7 @@ export function UrlLiveLive() {
         pill={<LivePill job={job} verified={verified} paused={pausedNow} />}
         acts={
           <>
+            <PauseButton />
             {stop.button}
             {/* 좁은 화면에서만 보이는 오른쪽 서랍 열기 (넓은 화면은 PaneToggle) */}
             <InspOpenButton>진행 요약</InspOpenButton>

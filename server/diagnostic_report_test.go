@@ -20,10 +20,16 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/report"
 )
 
 func diagnosticServerCandidate(t *testing.T, s *Server, taskID int64, classification string, observations ...e2proxy.HTTPObservation) int64 {
+	t.Helper()
+	return diagnosticServerCandidateWithClass(t, s, taskID, classification, "XSS", observations...)
+}
+
+func diagnosticServerCandidateWithClass(t *testing.T, s *Server, taskID int64, classification, class string, observations ...e2proxy.HTTPObservation) int64 {
 	t.Helper()
 	task := s.m.ResolveTask(strconv.FormatInt(taskID, 10))
 	intent, err := task.Store.AddIntent(map[string]any{"description": "synthetic report observation"}, 5, nil, "test")
@@ -34,12 +40,80 @@ func diagnosticServerCandidate(t *testing.T, s *Server, taskID int64, classifica
 		"classification": classification, "execution": map[string]any{"scope": map[string]any{"TaskRef": fmt.Sprint(taskID), "RunRef": "synthetic-report-run"}, "intent_id": intent},
 		"call": map[string]any{"call_ref": fmt.Sprintf("call-%d", intent), "intent_id": intent, "observations": observations}, "output_truncated": false}}
 	raw, _ := json.Marshal(evidence)
-	c := db.DiagnosticCandidate{TaskID: taskID, IntentID: intent, RunRef: "synthetic-report-run", CallRef: fmt.Sprintf("call-%d", intent), VulnClass: "XSS", Name: "합성 XSS 후보", Summary: "관측된 응답을 사람이 검토해야 합니다.", Remediation: "출력 문맥별 인코딩 적용 여부를 확인하세요.", Classification: classification, Verification: "manual_review_required", EvidenceVersion: 1, EvidenceDigest: db.DiagnosticEvidenceDigest(string(raw)), ObservedAt: time.Now().UTC(), Evidence: string(raw)}
+	c := db.DiagnosticCandidate{TaskID: taskID, IntentID: intent, RunRef: "synthetic-report-run", CallRef: fmt.Sprintf("call-%d", intent), VulnClass: class, Name: "합성 " + class + " 후보", Summary: "관측된 응답을 사람이 검토해야 합니다.", Remediation: "출력 문맥별 인코딩 적용 여부를 확인하세요.", Classification: classification, Verification: "manual_review_required", EvidenceVersion: 1, EvidenceDigest: db.DiagnosticEvidenceDigest(string(raw)), ObservedAt: time.Now().UTC(), Evidence: string(raw)}
 	id, err := task.Store.RecordDiagnosticCandidate(context.Background(), c)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return id
+}
+
+func TestDiagnosticReportBusinessRuleReview(t *testing.T) {
+	s, f, request := trafficEvidenceServer(t)
+	stored, err := s.m.pg.GetFinding(f.FindingID)
+	if err != nil || stored.TaskID == nil {
+		t.Fatal("저장된 작업 조회 실패", err)
+	}
+	task := *stored.TaskID
+	observation := e2proxy.HTTPObservation{
+		Sequence: 1, AttemptRef: "synthetic-attempt", Method: "GET", Endpoint: "/sensitive-fixture-path",
+		Decision: "allowed", StatusCode: 200, ResponseComplete: true, ForwardAttempted: true,
+		AuditComplete: true, ObservedAt: time.Now().UTC(),
+	}
+	policyCandidate := diagnosticServerCandidateWithClass(t, s, task, "completed", "IDOR", observation)
+	diagnosticServerCandidate(t, s, task, "completed", observation)
+	diagnosticServerCandidateWithClass(t, s, task, "policy_not_executed", "IDOR")
+	observation.StatusCode = 403
+	diagnosticServerCandidateWithClass(t, s, task, "completed", "IDOR", observation)
+
+	path := fmt.Sprintf("/api/report/diagnostic?task=%d", task)
+	query := "&format=review-json&audience=internal"
+	response := request("GET", path+query, "")
+	if response.Code != 200 {
+		t.Fatalf("검토 조회 상태 %d", response.Code)
+	}
+	var decoded struct {
+		TaskID  string `json:"task_id"`
+		Entries []struct {
+			ID, Status, Reason, Observation, Question string
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.TaskID != strconv.FormatInt(task, 10) || len(decoded.Entries) != 1 {
+		t.Fatalf("해당 항목만 검토 보류돼야 함: %+v", decoded)
+	}
+	entry := decoded.Entries[0]
+	if entry.ID != fmt.Sprintf("candidate-%d", policyCandidate) || entry.Status != "deferred" || entry.Reason != "business_rule_unverified" ||
+		entry.Observation != "재현 단계 1 (GET, HTTP 200)" || entry.Question == "" {
+		t.Fatalf("관찰 및 보류 정보 누락: %+v", entry)
+	}
+	for _, raw := range []string{"sensitive-fixture-path", "synthetic observed response", "synthetic fixture input"} {
+		if strings.Contains(response.Body.String(), raw) {
+			t.Fatal("검토 응답에 원문이 포함됨")
+		}
+	}
+	internal := request("GET", path+"&audience=internal", "")
+	if internal.Code != 200 || !strings.Contains(internal.Body.String(), entry.Question) || !strings.Contains(internal.Body.String(), "판정 보류") {
+		t.Fatal("내부 보고서에 검토 정보가 없음")
+	}
+	word := request("GET", path+"&audience=internal&format=docx", "")
+	if word.Code != 200 || !strings.Contains(diagnosticWordText(t, wordParts(t, word.Body.Bytes())["word/document.xml"]), entry.Question) {
+		t.Fatal("내부 DOCX에 검토 정보가 없음")
+	}
+	shared := request("GET", path, "")
+	if shared.Code != 200 || strings.Contains(shared.Body.String(), entry.Question) {
+		t.Fatal("공유 보고서에 내부 검토 정보가 포함됨")
+	}
+	if got := request("GET", path+"&format=review-json", ""); got.Code != 400 {
+		t.Fatalf("내부 보고서 범위 지정 없이 조회됨: %d", got.Code)
+	}
+	anonymous := httptest.NewRecorder()
+	s.Handler().ServeHTTP(anonymous, httptest.NewRequest("GET", path+query, nil))
+	if anonymous.Code != 401 {
+		t.Fatalf("인증 없이 검토 조회됨: %d", anonymous.Code)
+	}
 }
 func TestDiagnosticReportDatabaseScopeAndNoFalseConfirmation(t *testing.T) {
 	s, f, req := trafficEvidenceServer(t)
@@ -386,5 +460,49 @@ func TestDiagnosticReportE3DigestsAndConfirmationGuardsIndependently(t *testing.
 				t.Fatal("corrupt E3 digest accepted")
 			}
 		})
+	}
+}
+
+func TestDiagnosticWorkflowApprovalCountIsScoped(t *testing.T) {
+	s, _, _ := trafficEvidenceServer(t)
+	ctx := t.Context()
+	tx, err := s.m.pg.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	for _, query := range []string{
+		`CREATE TEMP TABLE diagnosis_workflows (job_id text, task_id bigint, owner_ref text, record jsonb)`,
+		`CREATE TEMP TABLE request_approvals (id bigint, task_id bigint, owner_ref text, record jsonb)`,
+	} {
+		if _, err := tx.ExecContext(ctx, query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	flow := diagnosisflow.Record{Owner: "ARTEX", Snapshot: diagnosisflow.Snapshot{Format: diagnosisflow.Version, TaskID: "7", RunRef: "owned"}}
+	raw, err := json.Marshal(flow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO diagnosis_workflows VALUES ('test',7,'ARTEX',$1::jsonb)`, string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO request_approvals
+SELECT n, 7, 'ARTEX', jsonb_build_object('run_ref', 'owned', 'attempt_id', n::text)
+FROM generate_series(1, $1::int) AS n
+UNION ALL
+SELECT id, task, owner, jsonb_build_object('run_ref', run, 'attempt_id', 'foreign')
+FROM (VALUES (-1, 8, 'ARTEX', 'owned'), (-2, 7, 'OTHER', 'owned'), (-3, 7, 'ARTEX', 'other')) AS x(id, task, owner, run)`, report.MaxWorkflowApprovals+1); err != nil {
+		t.Fatal(err)
+	}
+	var out report.DiagnosticReport
+	if err := readWorkflowReport(ctx, tx, 7, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.WorkflowApprovalTotal != report.MaxWorkflowApprovals+1 || len(out.WorkflowApprovals) != report.MaxWorkflowApprovals {
+		t.Fatalf("approval total=%d rows=%d", out.WorkflowApprovalTotal, len(out.WorkflowApprovals))
+	}
+	if out.WorkflowApprovals[0].Attempt != "1" || out.WorkflowApprovals[len(out.WorkflowApprovals)-1].Attempt != strconv.Itoa(report.MaxWorkflowApprovals) {
+		t.Fatal("wrong approval scope or order")
 	}
 }

@@ -374,12 +374,20 @@ export async function setTargetLogin(targetId: string, login: TargetLogin): Prom
   return saved;
 }
 
-/** 자격 형식 검사(diagnosisprep.ValidAccountCredential): 사용자명 1~256·비밀번호 1~512바이트, NUL·줄바꿈 없음. */
+// Go의 strings.TrimSpace가 사용하는 Unicode White_Space 문자 집합이다.
+const USERNAME_WHITESPACE = /[\t-\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/;
+
+/** 진단 준비 서비스와 같은 자격 형식 검사를 적용한다. */
 export function validAccountCredential(username: string, password: string): boolean {
   const u = utf8Bytes(username);
   const p = utf8Bytes(password);
   return (
-    u >= 1 && u <= MAX_USERNAME_BYTES && p >= 1 && p <= MAX_PASSWORD_BYTES && !/[\0\r\n]/.test(username + password)
+    u >= 1 &&
+    u <= MAX_USERNAME_BYTES &&
+    p >= 1 &&
+    p <= MAX_PASSWORD_BYTES &&
+    !USERNAME_WHITESPACE.test(username.slice(0, 1) + username.slice(-1)) &&
+    !/[\0\r\n]/.test(username + password)
   );
 }
 
@@ -415,7 +423,7 @@ export async function setAccountCredential(
 const WRITE_FAILURE_TEXT: Record<string, string> = {
   invalid_target_login: "로그인 방식이 서버 형식에 맞지 않거나 로그인 경로가 이 대상의 승인 경로 밖입니다.",
   invalid_account_credential:
-    "자격 형식이 맞지 않습니다(사용자명 1~256바이트 · 비밀번호 1~512바이트, 줄바꿈 없음). 다시 입력하세요.",
+    "자격 형식이 맞지 않습니다. 사용자명은 앞뒤 공백 없이 1~256바이트, 비밀번호는 1~512바이트로 입력하세요. 줄바꿈은 사용할 수 없습니다.",
   invalid_account_label: "계정 라벨 형식이 맞지 않습니다(소문자 · 숫자 · _ · -).",
   invalid_account_request: "서버가 계정 요청 형식을 받지 않았습니다.",
   invalid_product_request: "서버가 요청 형식을 받지 않았습니다.",
