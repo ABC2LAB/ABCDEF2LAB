@@ -25,7 +25,7 @@ import (
 //     不可漏推。
 
 // ErrNotificationChannelNotFound 渠道不存在。
-var ErrNotificationChannelNotFound = errors.New("通知渠道不存在")
+var ErrNotificationChannelNotFound = errors.New("알림 채널이 존재하지 않습니다")
 
 // 投递状态。
 const (
@@ -138,7 +138,7 @@ func (d *DB) SaveNotificationChannel(ctx context.Context, c *NotificationChannel
 	// 「未指定」与「显式 0」的区别只有调用方知道（请求体里字段缺省 vs 明确传 0），
 	// 所以默认值由 server 层在字段缺省时填，见 notifyCreateChannel。
 	if c.RatePerMin < 0 {
-		return 0, errors.New("限流值不能为负")
+		return 0, errors.New("속도 제한 값은 음수일 수 없습니다")
 	}
 	if c.Config == nil {
 		c.Config = json.RawMessage(`{}`)
@@ -184,7 +184,7 @@ func (d *DB) SetNotificationChannelEnabled(ctx context.Context, id int64, enable
 		if !enabled {
 			if _, err := tx.ExecContext(ctx, `UPDATE notification_deliveries SET state=$2, last_error=$3
 WHERE channel_id=$1 AND state IN ($4,$5)`,
-				id, NotifyStateSkipped, "渠道已停用", NotifyStatePending, NotifyStateSending); err != nil {
+				id, NotifyStateSkipped, "채널이 비활성화되었습니다", NotifyStatePending, NotifyStateSending); err != nil {
 				return err
 			}
 		}
@@ -251,7 +251,7 @@ func RecordNotificationEventTx(ctx context.Context, tx *sql.Tx, kind string, fin
 func (d *DB) AddNotificationEvent(ctx context.Context, kind string, findingID int64, snap notify.Snapshot) (int64, error) {
 	raw, err := json.Marshal(snap)
 	if err != nil {
-		return 0, fmt.Errorf("序列化通知事件快照失败: %w", err)
+		return 0, fmt.Errorf("알림 이벤트 스냅샷 직렬화 실패: %w", err)
 	}
 	var id int64
 	err = d.QueryRowContext(ctx, `INSERT INTO notification_events(kind,finding_id,snapshot) VALUES($1,$2,$3) RETURNING id`,

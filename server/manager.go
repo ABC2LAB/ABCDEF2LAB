@@ -400,7 +400,7 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 					// fmt.Errorf("recover traffic delete staging: %w", err) 로 감싸 기동 실패로
 					// 전파할 뿐 writeErr·actool 어느 경로에도 닿지 않는 운영자 기동 로그라,
 					// F3b(사용자 노출 writeErr) 범위가 아니어서 원문을 보존한다(Z2 계열).
-					return false, errors.New("归档流量暂存日志缺少任务 ID")
+					return false, errors.New("보관 트래픽 임시 로그에 작업 ID가 없습니다")
 				}
 				task, taskErr := pg.GetTask(taskID)
 				if taskErr != nil {
