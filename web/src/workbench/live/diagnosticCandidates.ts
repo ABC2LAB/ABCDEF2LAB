@@ -177,15 +177,15 @@ export function candidateCountText(page: LiveCandidatePage): string {
 const ERROR_TEXT: Readonly<Record<number, string>> = {
   0: "서버에 연결하지 못했습니다.",
   401: "로그인이 필요합니다.",
-  403: "이 점검의 후보를 볼 권한을 확인하지 못했습니다(작업 · 대상 승인 변경 · 만료 · 철회).",
+  403: "이 점검의 취약점을 볼 권한을 확인하지 못했습니다(작업 · 대상 승인 변경 · 만료 · 철회).",
   404: "점검을 찾지 못했습니다.",
   502: "서버 내부 응답을 확인하지 못했습니다.",
-  503: "후보 저장 근거를 지금 읽을 수 없습니다.",
+  503: "취약점 저장 근거를 지금 읽을 수 없습니다.",
 };
 
 /** 409 외 조회 실패 안내 글(사람이 보는 글). 상태 코드만 붙이고 서버 원문은 쓰지 않는다. */
 export function candidateErrorText(e: unknown): string {
   if (isLiveCandidatesShapeError(e) || (e instanceof ApiError && e.status === 422))
-    return "서버 응답 형식이 계약과 달라 후보를 표시하지 않습니다.";
-  return (e instanceof ApiError && ERROR_TEXT[e.status]) || "후보를 읽지 못했습니다.";
+    return "서버 응답 형식이 계약과 달라 취약점을 표시하지 않습니다.";
+  return (e instanceof ApiError && ERROR_TEXT[e.status]) || "취약점을 읽지 못했습니다.";
 }

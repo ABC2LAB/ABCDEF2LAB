@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 vi.mock("@/lib/diagnosis/api", async (original) => ({
   ...(await original<typeof import("@/lib/diagnosis/api")>()),
@@ -10,7 +10,12 @@ vi.mock("@/lib/diagnosis/api", async (original) => ({
 import { ApiError, apiFetch } from "@/lib/diagnosis/api";
 
 import { dateTimeOf } from "../live/map";
-import { PLAIN_TARGET_WARNING, TARGET_APPROVAL_HOURS, TargetApprovalPanel } from "../views/live/TargetApprovalPanel";
+import {
+  PLAIN_TARGET_WARNING,
+  TARGET_APPROVAL_HOURS,
+  TARGET_READONLY_STATEMENT,
+  TargetApprovalPanel,
+} from "../views/live/TargetApprovalPanel";
 
 const pending = {
   id: `target-${"a".repeat(32)}`,
@@ -31,6 +36,8 @@ const approved = {
   expires_at: "2099-01-01T00:00:00Z",
 };
 const url = `${pending.origin}/read`;
+/** 점검 근거 진술 체크(글 칸 대신, 사용자 11/24) */
+const attest = () => screen.getByRole("checkbox", { name: /점검 권한이 있고/ });
 beforeEach(() => vi.resetAllMocks());
 afterEach(cleanup);
 it.each([
@@ -82,9 +89,9 @@ it("등록 화면에 GET/HEAD · query 무해성을 서버가 검증하지 않�
   render(<TargetApprovalPanel requestLimit={4} url={url} disabled={false} />);
   await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1));
   fireEvent.click(screen.getByRole("button", { name: "대상 등록하기" }));
-  // 할 일 한 줄은 늘 보이고, 무해성 미검증 고지 등 원래 고지 문장은 (?) 메모를 열면 보인다(둘째 줄은 뺐다, 사용자 11/18)
+  // 진술 체크 한 줄은 늘 보이고, 무해성 미검증 고지 등 원래 고지 문장은 (?) 메모를 열면 보인다(사용자 11/18 · 11/24)
   const note = document.getElementById("targetHarmlessNote") as HTMLElement;
-  expect(note).toHaveTextContent("상태를 바꿀 수 있는 경로는 넣지 마세요");
+  expect(note).toHaveTextContent(TARGET_READONLY_STATEMENT);
   expect(note).not.toHaveTextContent("서버는 GET · HEAD · query 의 무해성을 검증하지 않음");
   expect(screen.getByText(/서버는 GET\/HEAD 의 무해성을 검증하지 않습니다/)).not.toBeVisible();
   fireEvent.click(screen.getByRole("button", { name: "읽기 승인 설명 보기" }));
@@ -99,9 +106,9 @@ it("등록의 읽기 범위와 TLS 사전 접촉을 안내한다", async () => {
   fireEvent.click(screen.getByRole("button", { name: "대상 등록하기" }));
   fireEvent.click(screen.getByRole("button", { name: "읽기 승인 설명 보기" }));
   expect(screen.getByText(/후보 IP별 연결\(https 대상은 TLS 확인\)/)).toBeVisible();
-  fireEvent.change(screen.getByLabelText("점검 근거"), {
-    target: { value: "승인된 테스트 소유 환경의 읽기 전용 GET 경로입니다." },
-  });
+  // 진술에 체크하기 전에는 등록하지 않는다
+  expect(screen.getByRole("button", { name: "대상 등록" })).toBeDisabled();
+  fireEvent.click(attest());
   fireEvent.click(screen.getByRole("button", { name: "대상 등록" }));
   await screen.findByRole("button", { name: "TXT 레코드 확인" });
   const [path, init, retry] = vi.mocked(apiFetch).mock.calls[1];
@@ -112,69 +119,44 @@ it("등록의 읽기 범위와 TLS 사전 접촉을 안내한다", async () => {
     url,
     path_prefixes: ["/read"],
     methods: ["GET", "HEAD"],
-    readonly_basis: "승인된 테스트 소유 환경의 읽기 전용 GET 경로입니다.",
+    readonly_basis: TARGET_READONLY_STATEMENT,
     requests: 4,
     valid_hours: 4,
   });
   expect(screen.queryByText(/승인된 대상:/)).toBeNull();
 });
-it("승인 유효 시간은 기본 4시간이고, 서버 상한(720) 안 고정 선택지에서 고른 값만 등록에 싣는다", async () => {
-  // 선택지는 1…720 안이고 기본 4시간이 들어 있다(대상 승인 계약 UI 기본값, diagnosisprep.MaxTargetApprovalHours)
-  const hours = TARGET_APPROVAL_HOURS.map((c) => c.hours);
-  expect(hours).toEqual([4, 24, 72, 168, 720]);
-  expect(hours.every((h) => h >= 1 && h <= 720)).toBe(true);
+it("경로 · 점검 근거 글 · 유효 시간 칸 없이, 주소의 경로를 계약 기본 4시간으로 등록한다 (사용자 11/24)", async () => {
+  // 서버 상한(diagnosisprep.MaxTargetApprovalHours 720) 안, 대상 승인 계약의 UI 기본값
+  expect(TARGET_APPROVAL_HOURS).toBe(4);
+  // 운영자 진술은 서버가 20자 이상만 받는다
+  expect(new TextEncoder().encode(TARGET_READONLY_STATEMENT).length).toBeGreaterThanOrEqual(20);
+  const narrow = "https://owned.example.test/users/v1";
   vi.mocked(apiFetch).mockResolvedValueOnce({}).mockResolvedValueOnce({ target: pending });
-  render(<TargetApprovalPanel requestLimit={4} url={url} disabled={false} />);
+  render(<TargetApprovalPanel requestLimit={4} url={narrow} disabled={false} />);
   await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1));
   fireEvent.click(screen.getByRole("button", { name: "대상 등록하기" }));
-  const select = screen.getByLabelText("승인 유효 시간") as HTMLSelectElement;
-  expect(select).toHaveDisplayValue("4시간 (기본)");
-  expect([...select.options].map((o) => o.textContent)).toEqual(["4시간 (기본)", "1일", "3일", "7일", "30일"]);
-  // 칸 밑엔 할 일 한 줄만, 설치 기간 · 범위 불변 설명은 (?) 메모를 열어야 보인다(#802 리뷰)
-  expect(document.getElementById("targetValidHoursNote")).toHaveTextContent(
-    "승인 시각부터 이 시간이 지나면 새 점검을 못 합니다 · 시연 날까지 남게 고르세요",
-  );
-  expect(screen.getByText(/설치 유효 기간이 먼저 끝나면 그때 막힙니다/)).not.toBeVisible();
-  fireEvent.click(screen.getByRole("button", { name: "승인 유효 시간 설명 보기" }));
-  expect(screen.getByText(/설치 유효 기간이 먼저 끝나면 그때 막힙니다/)).toBeVisible();
-  fireEvent.change(select, { target: { value: "168" } });
-  fireEvent.change(screen.getByLabelText("점검 근거"), {
-    target: { value: "승인된 테스트 소유 환경의 읽기 전용 GET 경로입니다." },
-  });
+  expect(screen.queryByLabelText("승인 유효 시간")).toBeNull();
+  expect(screen.queryByLabelText("점검할 경로 (조회만)")).toBeNull();
+  expect(screen.queryByLabelText("점검 근거")).toBeNull();
+  // 승인될 경로는 주소에서 읽어 보인다 — 좁히려면 주소를 그 경로까지 넣는다
+  expect(document.getElementById("targetScopeLine")).toHaveTextContent("승인 경로 /users/v1 아래");
+  fireEvent.click(attest());
   fireEvent.click(screen.getByRole("button", { name: "대상 등록" }));
   await screen.findByRole("button", { name: "TXT 레코드 확인" });
   const body = JSON.parse(String(vi.mocked(apiFetch).mock.calls[1][1]?.body));
-  expect(body.valid_hours).toBe(168);
-  // 유효 시간만 바뀌고 승인 범위(경로 · 메서드 · 요청 상한)는 그대로
-  expect(body).toMatchObject({ path_prefixes: ["/read"], methods: ["GET", "HEAD"], requests: 4 });
+  expect(body).toMatchObject({
+    path_prefixes: ["/users/v1"],
+    methods: ["GET", "HEAD"],
+    readonly_basis: TARGET_READONLY_STATEMENT,
+    requests: 4,
+    valid_hours: 4,
+  });
 });
 it("승인된 대상의 만료는 읽을 수 있는 현지 시각으로 보인다", async () => {
   vi.mocked(apiFetch).mockResolvedValueOnce({ target: approved });
   render(<TargetApprovalPanel requestLimit={4} url={url} disabled={false} />);
   await screen.findByText(new RegExp(`만료 ${dateTimeOf(approved.expires_at)}`));
   expect(screen.queryByText(/2099-01-01T00:00:00Z/)).toBeNull();
-});
-it("정확 일치(=/…)와 접두의 query 차이를 안내하고 =/ 표현을 그대로 제출한다", async () => {
-  vi.mocked(apiFetch).mockResolvedValueOnce({}).mockResolvedValueOnce({ target: pending });
-  render(<TargetApprovalPanel requestLimit={4} url={url} disabled={false} />);
-  await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1));
-  fireEvent.click(screen.getByRole("button", { name: "대상 등록하기" }));
-  // 경로 쓰는 법은 칸 옆 (?) 메모에(사용자 11/18 '간략하게') — 열면 보인다
-  const note = document.getElementById("targetPathMatchNote") as HTMLElement;
-  expect(note).not.toBeVisible();
-  fireEvent.click(screen.getByRole("button", { name: "경로 쓰는 법 보기" }));
-  expect(note).toBeVisible();
-  // 메모 위치 기준(tipline)이 칸 이름 줄에 있어야 그 바로 아래에 뜬다 — 없으면 화면 칸 맨 아래로 가 안 보였다
-  expect(note.closest("[role='note']")?.parentElement?.parentElement?.className).toMatch(/tipline/);
-  expect(note).toHaveTextContent("접두 승인 · 그 아래 모든 경로와 query 를 허용합니다");
-  expect(note).toHaveTextContent("정확 일치 · 그 경로 하나만, query 가 붙은 요청(/?x=1, /? 포함)은 허용하지 않습니다");
-  fireEvent.change(screen.getByLabelText("점검할 경로 (조회만)"), { target: { value: "=/\n/users/v1" } });
-  fireEvent.change(screen.getByLabelText("점검 근거"), {
-    target: { value: "승인된 테스트 소유 환경의 읽기 전용 GET 경로입니다." },
-  });
-  fireEvent.click(screen.getByRole("button", { name: "대상 등록" }));
-  await screen.findByRole("button", { name: "TXT 레코드 확인" });
-  expect(JSON.parse(String(vi.mocked(apiFetch).mock.calls[1][1]?.body)).path_prefixes).toEqual(["=/", "/users/v1"]);
 });
 it.each([
   "network-secret-detail",
@@ -252,18 +234,19 @@ it("새 origin에는 이전 대상의 쓰기 동의가 넘어가지 않는다", 
   const view = render(<TargetApprovalPanel requestLimit={4} url={url} disabled={false} allowStateChanges />);
   await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1));
   fireEvent.click(screen.getByRole("button", { name: "대상 등록하기" }));
+  const write = () => screen.getByRole("checkbox", { name: /복구 가능한 소유 시험환경/ });
   // 쓰기 동의는 AI 자동 모드가 건별 확인 없이 보낸다는 뜻까지 보인다(C21, #525 이경준 리뷰)
-  expect(screen.getByRole("checkbox").closest("label")).toHaveTextContent(/AI 자동 모드는 건별 확인 없이 보냄/);
+  expect(write().closest("label")).toHaveTextContent(/AI 자동 모드는 건별 확인 없이 보냄/);
   // 실제 집행대로 적는다: DELETE만 보내지 않고, 초기화·결제 같은 경로는 운영자가 제외 경로에 넣어야 막힌다(2026-11-21,
   // 서버 동의 판 auto_without_confirmation_v2). 이전 문구 "삭제·초기화·결제는 제외"는 지키지 못하는 약속이었다.
-  expect(screen.getByRole("checkbox").closest("label")).toHaveTextContent(/DELETE 요청은 보내지 않음/);
-  expect(screen.getByRole("checkbox").closest("label")).toHaveTextContent(/제외 경로에\s*넣어야 막힘/);
-  expect(screen.getByRole("checkbox").closest("label")).not.toHaveTextContent(/삭제·초기화·결제는 제외/);
-  expect(screen.getByRole("checkbox").closest("label")).toHaveTextContent(
+  expect(write().closest("label")).toHaveTextContent(/DELETE 요청은 보내지 않음/);
+  expect(write().closest("label")).toHaveTextContent(/제외 경로에\s*넣어야 막힘/);
+  expect(write().closest("label")).not.toHaveTextContent(/삭제·초기화·결제는 제외/);
+  expect(write().closest("label")).toHaveTextContent(
     "어떤 쓰기 요청이 나갈지 미리 모두 알 수 없고 대상 데이터나 상태가 바뀔 수 있음",
   );
-  fireEvent.click(screen.getByRole("checkbox"));
-  expect(screen.getByRole("checkbox")).toBeChecked();
+  fireEvent.click(write());
+  expect(write()).toBeChecked();
   view.rerender(
     <TargetApprovalPanel requestLimit={4} url="https://second.example.test/read" disabled={false} allowStateChanges />,
   );
@@ -271,10 +254,8 @@ it("새 origin에는 이전 대상의 쓰기 동의가 넘어가지 않는다", 
   // 주소가 바뀌면 등록 칸은 다시 접힌다. 다시 펼쳐도 이전 대상의 동의는 없다
   expect(screen.queryByRole("checkbox")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "대상 등록하기" }));
-  expect(screen.getByRole("checkbox")).not.toBeChecked();
-  fireEvent.change(screen.getByLabelText("점검 근거"), {
-    target: { value: "승인된 테스트 소유 환경의 읽기 전용 GET 경로입니다." },
-  });
+  expect(write()).not.toBeChecked();
+  fireEvent.click(attest());
   fireEvent.click(screen.getByRole("button", { name: "대상 등록" }));
   await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(3));
   expect(JSON.parse(String(vi.mocked(apiFetch).mock.calls[2][1]?.body)).methods).toEqual(["GET", "HEAD"]);
@@ -287,11 +268,11 @@ it("시안 v91 모양: 소유 확인 필요 딱지 · 등록 칸은 접혀 있�
   expect(screen.getByText("소유 확인 필요")).toBeVisible();
   expect(screen.getByText(/아직 승인되지 않은 대상입니다/)).toHaveTextContent("owned.example.test");
   // 접혀 있을 때는 입력칸이 없다 (시안처럼 한 줄 + 버튼)
-  expect(screen.queryByLabelText("점검 근거")).toBeNull();
+  expect(screen.queryByRole("checkbox", { name: /점검 권한이 있고/ })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "대상 등록하기" }));
-  await waitFor(() => expect(screen.getByLabelText("점검할 경로 (조회만)")).toHaveFocus());
+  await waitFor(() => expect(attest()).toHaveFocus());
   fireEvent.click(screen.getByRole("button", { name: "접기" }));
-  expect(screen.queryByLabelText("점검 근거")).toBeNull();
+  expect(screen.queryByRole("checkbox", { name: /점검 권한이 있고/ })).toBeNull();
   expect(apiFetch).toHaveBeenCalledTimes(1);
 });
 it("시안 v91 모양: 소유 확인 대기는 TXT 레코드 이름 · 유형 · 값과 복사 버튼", async () => {
@@ -323,9 +304,7 @@ it("설치 상한이 없으면 등록하지 않고 이유를 보인다", async (
   render(<TargetApprovalPanel url={url} disabled={false} />);
   await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1));
   fireEvent.click(screen.getByRole("button", { name: "대상 등록하기" }));
-  fireEvent.change(screen.getByLabelText("점검 근거"), {
-    target: { value: "승인된 테스트 소유 환경의 읽기 전용 GET 경로입니다." },
-  });
+  fireEvent.click(attest());
   expect(screen.getByText("설치의 회차당 요청 상한을 받지 못해 대상을 등록할 수 없습니다")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "대상 등록" })).toBeDisabled();
   expect(apiFetch).toHaveBeenCalledTimes(1);
@@ -339,9 +318,7 @@ it("설치 상한으로 등록하고 등록·승인 화면에 회차당 요청 �
   fireEvent.click(screen.getByRole("button", { name: "대상 등록하기" }));
   // 등록 칸엔 상한 줄을 두지 않는다(사용자 11/18) — 값은 설치 상한 그대로 보낸다
   expect(document.getElementById("targetRequestLimit")).toBeNull();
-  fireEvent.change(screen.getByLabelText("점검 근거"), {
-    target: { value: "승인된 테스트 소유 환경의 읽기 전용 GET 경로입니다." },
-  });
+  fireEvent.click(attest());
   fireEvent.click(screen.getByRole("button", { name: "대상 등록" }));
   await screen.findByRole("button", { name: "TXT 레코드 확인" });
   expect(JSON.parse(String(vi.mocked(apiFetch).mock.calls[1][1]?.body)).requests).toBe(400);
@@ -350,4 +327,85 @@ it("설치 상한으로 등록하고 등록·승인 화면에 회차당 요청 �
   vi.mocked(apiFetch).mockResolvedValueOnce({ target: { ...approved, requests: 400 } });
   render(<TargetApprovalPanel url={url} disabled={false} requestLimit={400} />);
   await screen.findByText(/회차당 요청 상한 400 · 만료/);
+});
+
+// 새 점검 주소 옆 인증 칸(사용자 11/24): 상자는 머리 딱지 · 접힌 상자 없이 열리고, 상태는 onStatus 로 부모에 알린다
+describe("주소 옆 인증 칸 모드(openSignal · onStatus)", () => {
+  it("등록 전에는 상자 없이 'none' 을 알리고, 신호가 오르면 등록 칸을 펼친다", async () => {
+    vi.mocked(apiFetch).mockResolvedValueOnce({});
+    const onStatus = vi.fn();
+    const { rerender } = render(
+      <TargetApprovalPanel requestLimit={4} url={url} disabled={false} openSignal={0} onStatus={onStatus} />,
+    );
+    await waitFor(() => expect(onStatus).toHaveBeenLastCalledWith("none"));
+    // 서버 답 전에는 '등록 안 됨'이 아니라 '묻는 중'이었다
+    expect(onStatus.mock.calls[0][0]).toBe("loading");
+    expect(screen.queryByRole("button", { name: "대상 등록하기" })).toBeNull();
+    expect(screen.queryByText("소유 확인 필요")).toBeNull();
+    expect(document.getElementById("targetApproval")).toBeNull();
+    rerender(<TargetApprovalPanel requestLimit={4} url={url} disabled={false} openSignal={1} onStatus={onStatus} />);
+    expect(await screen.findByRole("checkbox", { name: /점검 권한이 있고/ })).toBeInTheDocument();
+    expect(attest()).toHaveFocus();
+    expect(screen.queryByText("소유 확인 필요")).toBeNull();
+    // 접기 버튼 없이 [URL 인증]을 다시 누르면(신호가 또 오르면) 닫힌다(사용자 11/24)
+    expect(screen.queryByRole("button", { name: "접기" })).toBeNull();
+    rerender(<TargetApprovalPanel requestLimit={4} url={url} disabled={false} openSignal={2} onStatus={onStatus} />);
+    expect(screen.queryByRole("checkbox", { name: /점검 권한이 있고/ })).toBeNull();
+    rerender(<TargetApprovalPanel requestLimit={4} url={url} disabled={false} openSignal={3} onStatus={onStatus} />);
+    expect(await screen.findByRole("checkbox", { name: /점검 권한이 있고/ })).toBeInTheDocument();
+  });
+
+  it("등록 뒤 TXT 대기 · 승인 상태를 알리고, 상자 안 딱지는 두지 않는다", async () => {
+    vi.mocked(apiFetch).mockResolvedValueOnce({ target: pending });
+    const onStatus = vi.fn();
+    render(<TargetApprovalPanel requestLimit={4} url={url} disabled={false} openSignal={0} onStatus={onStatus} />);
+    await waitFor(() => expect(onStatus).toHaveBeenLastCalledWith("pending"));
+    expect(screen.getByRole("button", { name: "TXT 레코드 확인" })).toBeInTheDocument();
+    expect(screen.queryByText("소유 확인 필요")).toBeNull();
+    cleanup();
+    vi.mocked(apiFetch).mockResolvedValueOnce({ target: approved });
+    render(<TargetApprovalPanel requestLimit={4} url={url} disabled={false} openSignal={0} onStatus={onStatus} />);
+    await waitFor(() => expect(onStatus).toHaveBeenLastCalledWith("approved"));
+    expect(screen.getByText(/서버가 확인한 연결/)).toBeInTheDocument();
+    expect(screen.queryByText("승인된 대상")).toBeNull();
+  });
+
+  it("확인 실패 · API 없음 · 쓸 수 없는 주소를 '등록 안 됨'과 나눠 알린다", async () => {
+    const onStatus = vi.fn();
+    vi.mocked(apiFetch).mockRejectedValueOnce(new Error("network"));
+    render(<TargetApprovalPanel requestLimit={4} url={url} disabled={false} openSignal={0} onStatus={onStatus} />);
+    await waitFor(() => expect(onStatus).toHaveBeenLastCalledWith("uncertain"));
+    // 접혀 있어도 다시 조회는 보인다
+    expect(screen.getByRole("button", { name: "대상 승인 다시 조회" })).toBeInTheDocument();
+    cleanup();
+    vi.mocked(apiFetch).mockReset();
+    vi.mocked(apiFetch).mockRejectedValueOnce(new ApiError(404, "unsupported"));
+    render(<TargetApprovalPanel requestLimit={4} url={url} disabled={false} openSignal={0} onStatus={onStatus} />);
+    await waitFor(() => expect(onStatus).toHaveBeenLastCalledWith("unsupported"));
+    cleanup();
+    render(
+      <TargetApprovalPanel requestLimit={4} url="ftp://x.test/" disabled={false} openSignal={0} onStatus={onStatus} />,
+    );
+    await waitFor(() => expect(onStatus).toHaveBeenLastCalledWith("invalid"));
+  });
+
+  it("확인 실패여도 [URL 인증]으로 등록 칸을 열고 한 번 더 묻는다 · 확인될 때까지 등록은 꺼 두고 '승인 안 됨'으로 단정하지 않는다", async () => {
+    vi.mocked(apiFetch).mockRejectedValue(new ApiError(503, "mirror_offline_not_saved"));
+    const onStatus = vi.fn();
+    const { rerender } = render(
+      <TargetApprovalPanel requestLimit={4} url={url} disabled={false} openSignal={0} onStatus={onStatus} />,
+    );
+    await waitFor(() => expect(onStatus).toHaveBeenLastCalledWith("uncertain"));
+    rerender(<TargetApprovalPanel requestLimit={4} url={url} disabled={false} openSignal={1} onStatus={onStatus} />);
+    expect(await screen.findByRole("checkbox", { name: /점검 권한이 있고/ })).toBeDisabled();
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("button", { name: "대상 등록" })).toBeDisabled();
+    expect(screen.getByText(/승인 상태를 확인하지 못했습니다/)).toBeInTheDocument();
+    expect(screen.queryByText(/아직 승인되지 않은 대상입니다/)).toBeNull();
+    // 다시 물어 답을 받으면 등록할 수 있다
+    vi.mocked(apiFetch).mockResolvedValueOnce({});
+    fireEvent.click(screen.getByRole("button", { name: "대상 승인 다시 조회" }));
+    await waitFor(() => expect(onStatus).toHaveBeenLastCalledWith("none"));
+    expect(attest()).toBeEnabled();
+  });
 });

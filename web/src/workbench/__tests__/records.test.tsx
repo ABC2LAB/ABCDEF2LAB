@@ -309,6 +309,16 @@ describe("서버 보존 목록의 상태 필터와 선택한 보고서", () => {
     const panel = screen.getByRole("complementary", { name: "선택한 점검" });
     expect(within(panel).getByText("실행 결과").nextElementSibling).toHaveTextContent(result);
   });
+  // #914 인계: 끝난 회차에 account_auth 가 없으면 '인증 준비 기록 없음'(로그인 성공 · 실패로 단정하지 않음)
+  it("끝난 회차에 인증 준비 기록이 없으면 그렇게 적는다", () => {
+    vi.mocked(api.fetchRemediation).mockResolvedValue({ task_id: 42, entries: [] });
+    selectSaved({ ...completed });
+    records(true);
+    const panel = screen.getByRole("complementary", { name: "선택한 점검" });
+    const sec = within(panel).getByRole("heading", { name: "시험 계정 인증" }).parentElement as HTMLElement;
+    expect(sec).toHaveTextContent("이 회차에는 인증 준비 기록이 없습니다.");
+    expect(sec).not.toHaveTextContent(/인증됨|로그인 실패/);
+  });
   it("시험 계정은 라벨 순서로 보이고 도움말 버튼으로 서버 라벨을 확인할 수 있다", async () => {
     vi.mocked(api.fetchRemediation).mockResolvedValue({ task_id: 42, entries: [] });
     selectSaved({ ...completed, account_auth: { shopper: "login_failed", "acct-a": "authenticated" } });

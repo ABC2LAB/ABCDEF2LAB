@@ -41,7 +41,7 @@ export const RUN_CHIPS: ReadonlyArray<Chip<RunKind>> = [
 export const DONE_CHIPS: ReadonlyArray<Chip<DoneKind>> = [
   ["all", "전체", true, "끝난 점검 모두"],
   ["hit", "발견 있음", true, "확정 발견이 있는 점검"],
-  ["review", "검토 필요", false, "사람이 검토할 후보가 있는 점검"],
+  ["review", "검토 필요", false, "사람이 검토할 취약점이 있는 점검"],
   [
     "clean",
     "발견 없음",
