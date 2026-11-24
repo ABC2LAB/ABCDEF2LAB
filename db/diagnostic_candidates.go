@@ -36,13 +36,17 @@ type DiagnosticCandidate struct {
 	ObservedAt        time.Time `json:"observed_at"`
 	Evidence          string    `json:"evidence"`
 	OutputTruncated   bool      `json:"output_truncated"`
-	// LanguageMixed는 모델이 쓴 설명·조치·근거에 한자·가나가 섞인 채 저장됐다는 표시다('다른 언어 섞임'). LanguageRewrites는
-	// 그 때문에 다시 쓰게 한 횟수(0·1)다(2026-11-24, agent/e2_diagnostic_candidate_lang.go). 둘 다 0이면 칸을 쓰지 않는다.
+	// LanguageMixed는 모델이 쓴 이름·설명·조치·근거에 한자·가나가 섞인 채 저장됐다는 표시다('다른 언어 섞임').
+	// LanguageRewrites는 그 때문에 다시 쓰게 한 횟수(0~MaxDiagnosticLanguageRewrites)다(2026-11-24,
+	// agent/e2_diagnostic_candidate_lang.go). 둘 다 0이면 칸을 쓰지 않는다.
 	LanguageMixed    bool `json:"language_mixed,omitempty"`
 	LanguageRewrites int  `json:"language_rewrites,omitempty"`
 }
 
 var ErrDiagnosticCandidate = errors.New("diagnostic_candidate_invalid")
+
+// MaxDiagnosticLanguageRewrites는 한국어 칸 언어 섞임으로 한 후보를 다시 쓰게 하는 최대 횟수다(2026-11-24 사용자 결정).
+const MaxDiagnosticLanguageRewrites = 2
 
 const diagnosticCandidateOrigin = "e2_diagnostic_candidate_v1"
 const MaxDiagnosticCandidates = 10000
@@ -69,8 +73,8 @@ func (c DiagnosticCandidate) Validate() error {
 		len(c.Summary) > 8192 || len(c.Remediation) > 8192 || len(c.Evidence) > 256<<10 {
 		return ErrDiagnosticCandidate
 	}
-	// 섞임 표시는 한 번 다시 쓰게 한 뒤에만 붙는다.
-	if c.LanguageRewrites < 0 || c.LanguageRewrites > 1 || c.LanguageMixed && c.LanguageRewrites != 1 {
+	// 섞임 표시는 한 번 이상 다시 쓰게 한 뒤에만 붙는다.
+	if c.LanguageRewrites < 0 || c.LanguageRewrites > MaxDiagnosticLanguageRewrites || c.LanguageMixed && c.LanguageRewrites < 1 {
 		return ErrDiagnosticCandidate
 	}
 	switch c.Classification {
@@ -357,7 +361,8 @@ func CountDiagnosticCandidateLanguage(ctx context.Context, q DiagnosticCandidate
 	if explorationID <= 0 || runRef == "" {
 		return 0, 0, ErrDiagnosticCandidate
 	}
-	rows, err := q.QueryContext(ctx, `SELECT COALESCE(sum(CASE WHEN n.payload->'diagnostic_candidate_v1'->>'language_rewrites'='1' THEN 1 ELSE 0 END),0),
+	// 다시 쓰기 횟수는 저장 검사(Validate)를 거친 0~2만 있으므로 그 값만 더한다(형 변환 실패로 집계가 깨지지 않게).
+	rows, err := q.QueryContext(ctx, `SELECT COALESCE(sum(CASE n.payload->'diagnostic_candidate_v1'->>'language_rewrites' WHEN '1' THEN 1 WHEN '2' THEN 2 ELSE 0 END),0),
   COALESCE(sum(CASE WHEN n.payload->'diagnostic_candidate_v1'->>'language_mixed'='true' THEN 1 ELSE 0 END),0)
 FROM exploration_nodes n
 WHERE n.exploration_id=$1 AND n.origin=$2 AND n.kind='fact' AND n.payload->'diagnostic_candidate_v1'->>'run_ref'=$3`, explorationID, diagnosticCandidateOrigin, runRef)
