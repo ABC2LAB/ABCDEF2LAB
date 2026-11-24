@@ -2050,6 +2050,19 @@ a.ph:hover {
   padding: 1px 6px;
   color: var(--ink-2);
 }
+/* 유형 딱지 여러 개(CWE 마다 하나): 딱지마다 한 덩어리로 꺾어 테두리가 줄마다 깨지지 않게(사용자 11/24) */
+.chip-list {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+}
+.chip-list .chip {
+  display: inline-block;
+  max-width: 100%;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
 .acts {
   display: flex;
   flex-wrap: wrap;

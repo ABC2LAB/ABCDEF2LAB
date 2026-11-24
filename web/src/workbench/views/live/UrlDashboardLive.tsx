@@ -28,7 +28,7 @@ import { useUrlRuns } from "../../live/urlRunList";
 import { usePoll } from "../../live/usePoll";
 import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
-import { InspHead, InspOpenButton, Isec, PaneToggle } from "../../ui/parts";
+import { InspHead, InspOpenButton, Isec, PaneToggle, useScrollTopOnChange } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { ApprovalActions, ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "./approvals";
 import { JobSummary, jobResult, pendingRows, useCoveragePct } from "./jobSummary";
@@ -211,6 +211,8 @@ export function UrlDashboardLive() {
   else if (found[0]) sel = { kind: "finding", id: found[0].entry_id };
   else if (first) sel = { kind: "approval", id: first.id };
 
+  // 다른 항목을 고르면 오른쪽 패널을 맨 위로(사용자 11/24)
+  const inspRef = useScrollTopOnChange<HTMLElement>(sel.kind === "job" ? "job" : `${sel.kind}:${sel.id}`);
   const host = handle ? urlHost(handle.input.target_url) : null;
   // 보낼 요청 승인 대기 줄: 사용자 승인 모드가 아니면 없음([]), 아직 못 읽었으면 모름(null)
   const pending = pendingRows(approvalsOn, a);
@@ -460,7 +462,7 @@ export function UrlDashboardLive() {
             )}
           </section>
         </div>
-        <aside className={s.vi} id="dInsp" aria-label="선택한 항목 상세">
+        <aside className={s.vi} id="dInsp" ref={inspRef} aria-label="선택한 항목 상세">
           {insp}
         </aside>
         <PaneToggle />

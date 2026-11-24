@@ -16,6 +16,32 @@ import { Icon } from "./icons";
  * 상세 서랍 닫기 버튼 (좁은 화면에서만 보임). 원본 `closeBtn(label)`.
  * data-insp-close 는 openInsp 가 포커스할 버튼을 찾는 표식이라 지우지 말 것.
  */
+/**
+ * 고른 항목(key)이 바뀌면 그 패널을 맨 위로 올린다(사용자 11/24: 오른쪽 패널을 내려 둔 채 다른 취약점을 누르면 아래에서
+ * 시작했다). 처음 그릴 때와 같은 항목을 다시 그릴 때는 건드리지 않는다.
+ */
+export function useScrollTopOnChange<T extends HTMLElement>(key: string | null) {
+  const ref = useRef<T>(null);
+  const last = useRef(key);
+  useEffect(() => {
+    if (last.current === key) return;
+    last.current = key;
+    if (ref.current) ref.current.scrollTop = 0;
+  }, [key]);
+  return ref;
+}
+
+/**
+ * 취약점 유형 글(예: 'CWE-200 (…), CWE-287 (…)')을 CWE 마다 나눈다. 한 딱지에 길게 넣으면 줄이 꺾일 때 테두리가 줄마다
+ * 따로 그려져 깨져 보였다(사용자 11/24). CWE 앞 쉼표에서만 나눠 괄호 안 쉼표는 그대로 둔다.
+ */
+export function vulnClassParts(v: string): string[] {
+  return v
+    .split(/,\s*(?=CWE-\d)/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+}
+
 export function CloseInspButton({ label }: { label: string }) {
   const { closeInsp } = useShell();
   // insp-only: 좁은 화면 서랍 닫기 (넓은 화면은 패널 칸의 PaneToggle)

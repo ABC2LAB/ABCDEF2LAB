@@ -68,7 +68,7 @@ import { flowStageText, MAX_FLOW_PLAN, type WorkflowSnapshot } from "../../live/
 import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
 import { Markdown } from "../../ui/Markdown";
-import { InspHead, InspOpenButton, Isec, PaneToggle } from "../../ui/parts";
+import { InspHead, InspOpenButton, Isec, PaneToggle, useScrollTopOnChange, vulnClassParts } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { ApprovalQueue, useRequestApprovals } from "./approvals";
 import { DiagnosticEntrySections, stepHeading } from "./DiagnosticEntrySections";
@@ -666,6 +666,8 @@ export function UrlLiveLive() {
   // (진행 중 후보는 'candidate-<id>')로 둔다
   const [pick, setPick] = useState<{ task: string; entry: string } | null>(null);
   const picked = pick && pick.task === job?.task_id ? pick.entry : null;
+  // 다른 후보를 고르면 오른쪽 패널을 맨 위로(사용자 11/24)
+  const liveInspRef = useScrollTopOnChange<HTMLElement>(picked);
   const runEnded = !job || URL_ENDED_STATES.includes(job.state);
   // 같은 자료로 후보 줄에 취약점 이름도 붙인다(사용자 11/24). 그래서 고른 동안만이 아니라 후보가 있으면 읽고, 새 후보가
   // 오면 바로 다시 읽는다(그 사이엔 쉬었다가)
@@ -949,7 +951,7 @@ export function UrlLiveLive() {
         </div>
         {/* 오른쪽 진행 요약: 서버가 점검 중에 주는 값만(전송 통제 · 탐색 현황 · 커버리지 · 점검 정보).
             발견은 가운데에 둔다(점검 중엔 발견 후보, 끝나면 저장된 결과) */}
-        <aside className={s.vi} id="lInsp" aria-label={picked ? "취약점 상세" : "진행 요약"}>
+        <aside className={s.vi} id="lInsp" ref={liveInspRef} aria-label={picked ? "취약점 상세" : "진행 요약"}>
           {picked && job.task_id ? (
             <LiveCandidateDetail
               entry={picked}
@@ -1334,7 +1336,19 @@ function StatusCard({ e, host }: { e: RemediationEntry; host?: string | null }) 
         </div>
         <div>
           <dt>유형</dt>
-          <dd>{e.vuln_class ? <span className={s.chip}>{maskSecrets(e.vuln_class)}</span> : "—"}</dd>
+          <dd>
+            {e.vuln_class ? (
+              <span className={s["chip-list"]}>
+                {vulnClassParts(maskSecrets(e.vuln_class)).map((part) => (
+                  <span key={part} className={s.chip}>
+                    {part}
+                  </span>
+                ))}
+              </span>
+            ) : (
+              "—"
+            )}
+          </dd>
         </div>
         <div>
           <dt>{entryPathLabel(e)}</dt>
@@ -1708,6 +1722,8 @@ export function UrlReportLive() {
   const [tab, setTab] = useState<RTab>("list");
   const tabRefs = useRef<Partial<Record<RTab, HTMLButtonElement | null>>>({});
   const [sel, setSel] = useState<string | null>(null);
+  // 다른 취약점을 고르면 오른쪽 패널을 맨 위로(사용자 11/24)
+  const reportInspRef = useScrollTopOnChange<HTMLElement>(sel);
   // 오른쪽 패널 머리 '상세 보기'로 연 발견 (그 발견이 목록에서 사라지면 — 다른 점검 등 — 목록으로 돌아간다).
   // 단독 발견 상세(#finding)도 같은 발견을 보도록 공용 상태(findingPick)에 둔다
   const detail = usePickedFinding(taskId);
@@ -2053,7 +2069,7 @@ export function UrlReportLive() {
               </div>
             </section>
           </div>
-          <aside className={s.vi} id="rInsp" aria-label="취약점 상세">
+          <aside className={s.vi} id="rInsp" ref={reportInspRef} aria-label="취약점 상세">
             <FindingDetail
               e={chosen}
               host={host}
