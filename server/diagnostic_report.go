@@ -185,9 +185,6 @@ func readDiagnosticReportWithCaptures(ctx context.Context, tx *sql.Tx, taskID in
 			severity = c.SuggestedSeverity
 		}
 		entry := report.DiagnosticEntry{ID: fmt.Sprintf("candidate-%d", c.ID), Kind: "candidate", LanguageMixed: c.LanguageMixed, Run: c.RunRef, IntentID: c.IntentID, Title: c.Name, VulnClass: c.VulnClass, Severity: severity, SeveritySource: c.SeveritySource, SeverityRationale: c.SeverityRationale, Status: c.Classification, Verification: c.Verification, Outcome: outcome, Summary: c.Summary, Remediation: c.Remediation, Evidence: c.Evidence, EvidenceVersion: c.EvidenceVersion, Digest: c.EvidenceDigest, ObservedAt: c.ObservedAt, Truncated: c.OutputTruncated}
-		if outcome == "review" {
-			entry.BusinessRuleReview = diagnosticBusinessRuleReview(c)
-		}
 		out.Entries = append(out.Entries, entry)
 	}
 	if len(out.Entries) > report.MaxFindings {
@@ -343,6 +340,9 @@ func readDiagnosticReportWithCaptures(ctx context.Context, tx *sql.Tx, taskID in
 			continue
 		}
 		entry.StepsTruncated = source.Context.ObservationsTruncated
+		if entry.Kind == "candidate" && entry.Outcome == "review" {
+			entry.BusinessRuleReview = diagnosticBusinessRuleReview(entry)
+		}
 		if err := attachDiagnosticCaptures(ctx, tx, taskID, entry, &captureBytes, images); err != nil {
 			return out, err
 		}

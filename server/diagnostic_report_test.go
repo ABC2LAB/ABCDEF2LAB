@@ -85,7 +85,7 @@ func TestDiagnosticReportBusinessRuleReview(t *testing.T) {
 	}
 	entry := decoded.Entries[0]
 	if entry.ID != fmt.Sprintf("candidate-%d", policyCandidate) || entry.Status != "deferred" || entry.Reason != "business_rule_unverified" ||
-		!strings.Contains(entry.Observation, "GET") || !strings.Contains(entry.Observation, "200") || entry.Question == "" {
+		entry.Observation != "재현 단계 1 (GET, HTTP 200)" || entry.Question == "" {
 		t.Fatalf("관찰 및 보류 정보 누락: %+v", entry)
 	}
 	for _, raw := range []string{"sensitive-fixture-path", "synthetic observed response", "synthetic fixture input"} {
