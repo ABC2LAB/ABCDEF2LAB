@@ -144,7 +144,7 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 		w.paragraph("Normal", fmt.Sprintf("근거 불러오기 실패: %d건. 해당 항목의 재현·캡처·프롬프트는 제공하지 않습니다.", in.SourceFailures))
 	}
 	w.table([][]string{{"확정", "검토 필요", "미실행", "판단 불가·결과 불명", "비취약"}, {strconv.Itoa(in.Confirmed), strconv.Itoa(in.Review), strconv.Itoa(in.NotExecuted), strconv.Itoa(in.Unknown), strconv.Itoa(in.Negative)}})
-	if len(in.ProductConfirmed) > 0 || in.ProductSuspected > 0 || in.ProductUndecidable > 0 || in.ProductUnverified > 0 || in.ProductUnreadable > 0 {
+	if len(in.ProductConfirmed) > 0 || in.ProductSuspected > 0 || in.ProductUndecidable > 0 || in.ProductUnverified > 0 || in.ProductSourceUnavailable > 0 || in.ProductUnreadable > 0 {
 		w.paragraph("Heading2", "제품 E③ 확정 단계")
 		summary := fmt.Sprintf("독립 확정 %d건", len(in.ProductConfirmed))
 		if in.ProductSealUnconfirmed > 0 {
@@ -155,6 +155,9 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 		}
 		if in.ProductUnverified > 0 {
 			summary += fmt.Sprintf(" · 확인 실패 %d건(확정에 안 셈)", in.ProductUnverified)
+		}
+		if in.ProductSourceUnavailable > 0 {
+			summary += fmt.Sprintf(" · 당시 원본 미확인 %d건(확정에 세지 않음)", in.ProductSourceUnavailable)
 		}
 		if in.ProductUnreadable > 0 {
 			summary += fmt.Sprintf(" · 제품 확정 단계 판정을 읽지 못함(%d건, 확정에 세지 않음)", in.ProductUnreadable)
