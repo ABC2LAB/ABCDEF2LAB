@@ -29,6 +29,7 @@ import {
   type CoverageKind,
   coverageGraphStats,
   coverageNodeLabel,
+  coverageNodeTitle,
   FOLD_LIMIT,
   FOLD_STEP,
   layoutCoverageGraph,
@@ -68,6 +69,8 @@ const FIT_PAD = 60;
 const ZOOM_MIN = 0.15;
 const ZOOM_MAX = 4;
 const WHEEL_RATE = 0.0015;
+/** +/− 버튼 한 번의 배율 */
+const ZOOM_STEP = 1.25;
 /** 끌기로 보는 최소 이동(px). 이보다 적게 움직이면 누름으로 본다. */
 const DRAG_SLOP = 4;
 /** 엔드포인트 이름은 확대했거나 수가 적을 때만 늘 보인다(많으면 겹쳐 읽히지 않음). 고르거나 올리면 늘 보인다. */
@@ -77,7 +80,7 @@ const LABEL_MAX = 26;
 
 type View = { x: number; y: number; k: number };
 
-/** 그래프 탭 맨 위 구획. 탭이 보일 때만, 작업마다 한 번 읽는다(저장 자료 — 다시 읽기 버튼으로만 갱신). */
+/** 그래프 탭 맨 위 구획. 탭이 보일 때만 읽고, 탭에 다시 들어오거나 [다시 읽기]를 누르면 다시 읽는다(주기 조회 없음). */
 export function CoverageGraphSection({ taskId, active }: { taskId: string | null; active: boolean }) {
   const poll = usePoll(() => fetchCoverageGraph(taskId as string), [taskId], { enabled: active && !!taskId });
   const graph = useMemo(() => (poll.data ? parseCoverageGraph(poll.data) : null), [poll.data]);
@@ -177,13 +180,66 @@ type Gesture =
   | { mode: "node"; key: string; startX: number; startY: number; moved: boolean }
   | { mode: "pan"; startX: number; startY: number; view: View; moved: boolean };
 
+/**
+ * 응답 상태(형식 오류 · 버린 수 · 빈 그래프)와 그림을 나눈다. 그림(Canvas)은 노드가 있을 때만 붙고 내용이 바뀌면 새로 붙는다 —
+ * 빈 그래프 뒤 노드가 들어와도 휠 리스너 · 화면 맞춤이 새 svg 에 다시 잡힌다(#902 리뷰 이동찬 · 윤재상).
+ */
 function Graph({ graph, onReload }: { graph: CgGraph; onReload: () => void }) {
+  const reload = (
+    <button className={cx(s.btn, s.sm)} type="button" onClick={onReload}>
+      다시 읽기
+    </button>
+  );
+  if (graph.malformed) {
+    return (
+      <div className={cx(s.note, s.warn)} role="alert">
+        <Icon name="alert" />
+        <span className={s["lv-grow"]}>자산 그래프 응답 형식을 확인하지 못해 표시하지 않습니다.</span>
+        {reload}
+      </div>
+    );
+  }
+  const shape = `${graph.nodes.length}|${graph.edges.length}|${graph.nodes.at(0)?.key ?? ""}|${graph.nodes.at(-1)?.key ?? ""}`;
+  return (
+    <>
+      {graph.dropped.nodes + graph.dropped.edges ? (
+        <p className={cx(s.note, s.warn)} role="note">
+          <Icon name="alert" />
+          <span>{`응답 형식이 맞지 않는 노드 ${graph.dropped.nodes} · 간선 ${graph.dropped.edges}건은 그리지 않았습니다`}</span>
+        </p>
+      ) : null}
+      {graph.nodes.length === 0 ? (
+        <div className={s.note} role="note">
+          <Icon name="info" />
+          <span className={s["lv-grow"]}>
+            탐색이 관찰해 저장한 자산이 아직 없습니다. 취약점이 없다는 뜻이 아니라 그릴 관찰 기록이 없다는 뜻입니다.
+          </span>
+          {reload}
+        </div>
+      ) : (
+        <Canvas key={shape} graph={graph} onReload={onReload} />
+      )}
+    </>
+  );
+}
+
+function Canvas({ graph, onReload }: { graph: CgGraph; onReload: () => void }) {
   const [expanded, setExpanded] = useState<ReadonlyMap<string, number>>(() => new Map());
   const [picked, setPicked] = useState<string | null>(null);
   const [hover, setHover] = useState<string | null>(null);
   const [moved, setMoved] = useState<ReadonlyMap<string, Point>>(() => new Map());
   const vis = useMemo(() => visibleCoverageGraph(graph, expanded), [graph, expanded]);
-  const layout = useMemo(() => layoutCoverageGraph(vis), [vis]);
+  // 펼칠 때는 앞 배치(끌어 옮긴 자리 포함)를 이어받아 보이던 노드가 튀지 않게 한다
+  const prev = useRef<ReadonlyMap<string, Point> | null>(null);
+  const movedRef = useRef(moved);
+  movedRef.current = moved;
+  const layout = useMemo(() => {
+    const seed = prev.current ? new Map([...prev.current, ...movedRef.current]) : undefined;
+    return layoutCoverageGraph(vis, seed);
+  }, [vis]);
+  useEffect(() => {
+    prev.current = layout;
+  }, [layout]);
   const [view, setView] = useState<View>(() => fitView(layout.values()));
   const svgRef = useRef<SVGSVGElement>(null);
   const gesture = useRef<Gesture | null>(null);
@@ -202,11 +258,14 @@ function Graph({ graph, onReload }: { graph: CgGraph; onReload: () => void }) {
     return { x: p.x, y: p.y };
   }, []);
 
-  // 휠 확대는 기본 스크롤을 막아야 해서 passive 가 아닌 리스너로 단다(React onWheel 은 passive)
+  // Ctrl · ⌘ + 휠 확대는 기본 동작(브라우저 확대)을 막아야 해서 passive 가 아닌 리스너로 단다(React onWheel 은 passive).
+  // Canvas 는 svg 와 함께 붙고 떨어지므로 mount 때 한 번 달면 된다
   useEffect(() => {
     const el = svgRef.current;
     if (!el) return;
     const onWheel = (ev: WheelEvent) => {
+      // 그냥 휠은 페이지 스크롤로 둔다 — 그래프 위를 지나가며 내릴 때 확대로 가로채지 않게(#902 리뷰 윤재상)
+      if (!ev.ctrlKey && !ev.metaKey) return;
       ev.preventDefault();
       const p = toSvg(ev.clientX, ev.clientY);
       setView((v) => {
@@ -267,76 +326,73 @@ function Graph({ graph, onReload }: { graph: CgGraph; onReload: () => void }) {
   };
 
   const chosen = picked ? graph.nodes.find((n) => n.key === picked) : undefined;
-  const dropped = graph.dropped.nodes + graph.dropped.edges;
+  const zoomBy = (factor: number) =>
+    setView((v) => {
+      const k = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, v.k * factor));
+      const cx0 = VIEW_W / 2;
+      const cy0 = VIEW_H / 2;
+      return { k, x: cx0 - ((cx0 - v.x) * k) / v.k, y: cy0 - ((cy0 - v.y) * k) / v.k };
+    });
 
   return (
     <>
-      {dropped ? (
-        <p className={cx(s.note, s.warn)} role="note">
-          <Icon name="alert" />
-          <span>{`응답 형식이 맞지 않는 노드 ${graph.dropped.nodes} · 간선 ${graph.dropped.edges}건은 그리지 않았습니다`}</span>
-        </p>
-      ) : null}
-      {graph.nodes.length === 0 ? (
-        <p className={s.empty}>
-          탐색이 관찰해 저장한 자산이 아직 없습니다. 취약점이 없다는 뜻이 아니라 그릴 관찰 기록이 없다는 뜻입니다.
-        </p>
-      ) : (
-        <div
-          style={{ position: "relative", border: "1px solid var(--rule)", borderRadius: 10, background: "var(--bg)" }}
+      <div style={{ position: "relative", border: "1px solid var(--rule)", borderRadius: 10, background: "var(--bg)" }}>
+        <Legend
+          stats={stats}
+          onReload={onReload}
+          onFit={() => setView(fitView(vis.nodes.map((n) => at(n.key))))}
+          onZoom={zoomBy}
+        />
+        {/* biome-ignore lint/a11y/useSemanticElements: SVG 그림이라 fieldset 을 둘 수 없다 — 노드(버튼)를 묶는 group 이다 */}
+        <svg
+          ref={svgRef}
+          viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
+          width="100%"
+          style={{ display: "block", height: VIEW_H, touchAction: "none", cursor: "grab", userSelect: "none" }}
+          role="group"
+          aria-label="자산 관계 그래프"
+          data-testid="coverage-graph"
+          onPointerDown={onDown}
+          onPointerMove={onMove}
+          onPointerUp={onUp}
+          onPointerCancel={() => {
+            gesture.current = null;
+          }}
         >
-          <Legend stats={stats} onReload={onReload} onFit={() => setView(fitView(vis.nodes.map((n) => at(n.key))))} />
-          {/* biome-ignore lint/a11y/useSemanticElements: SVG 그림이라 fieldset 을 둘 수 없다 — 노드(버튼)를 묶는 group 이다 */}
-          <svg
-            ref={svgRef}
-            viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
-            width="100%"
-            style={{ display: "block", height: VIEW_H, touchAction: "none", cursor: "grab", userSelect: "none" }}
-            role="group"
-            aria-label="자산 관계 그래프"
-            data-testid="coverage-graph"
-            onPointerDown={onDown}
-            onPointerMove={onMove}
-            onPointerUp={onUp}
-            onPointerCancel={() => {
-              gesture.current = null;
-            }}
-          >
-            <g transform={`translate(${view.x} ${view.y}) scale(${view.k})`}>
-              {vis.edges.map((e) => {
-                const a = at(e.src);
-                const b = at(e.dst);
-                return (
-                  <line
-                    key={`${e.src}>${e.dst}`}
-                    x1={a.x}
-                    y1={a.y}
-                    x2={b.x}
-                    y2={b.y}
-                    style={{ stroke: "var(--rule-2)" }}
-                    strokeWidth={1.2 / view.k}
-                  />
-                );
-              })}
-              {vis.nodes.map((n) => (
-                <Node
-                  key={n.key}
-                  n={n}
-                  p={at(n.key)}
-                  k={view.k}
-                  selected={n.key === picked}
-                  labelled={
-                    n.fold || n.node.kind !== "endpoint" || showEndpointLabels || n.key === hover || n.key === picked
-                  }
-                  onDown={onNodeDown(n.key)}
-                  onKey={onKey(n)}
-                  onHover={(on) => setHover(on ? n.key : null)}
+          <g transform={`translate(${view.x} ${view.y}) scale(${view.k})`}>
+            {vis.edges.map((e) => {
+              const a = at(e.src);
+              const b = at(e.dst);
+              return (
+                <line
+                  key={`${e.src}>${e.dst}`}
+                  x1={a.x}
+                  y1={a.y}
+                  x2={b.x}
+                  y2={b.y}
+                  style={{ stroke: "var(--rule-2)" }}
+                  strokeWidth={1.2 / view.k}
                 />
-              ))}
-            </g>
-          </svg>
-        </div>
-      )}
+              );
+            })}
+            {vis.nodes.map((n) => (
+              <Node
+                key={n.key}
+                n={n}
+                p={at(n.key)}
+                k={view.k}
+                selected={n.key === picked}
+                labelled={
+                  n.fold || n.node.kind !== "endpoint" || showEndpointLabels || n.key === hover || n.key === picked
+                }
+                onDown={onNodeDown(n.key)}
+                onKey={onKey(n)}
+                onHover={(on) => setHover(on ? n.key : null)}
+              />
+            ))}
+          </g>
+        </svg>
+      </div>
       <Detail graph={graph} node={chosen ?? null} />
     </>
   );
@@ -390,6 +446,7 @@ function Node({
   const node = n.node;
   const r = KIND_RADIUS[node.kind];
   const name = coverageNodeLabel(node);
+  const title = coverageNodeTitle(node);
   const status = nodeStatus(node);
   const state = STATUS_TEXT[status];
   return (
@@ -397,7 +454,7 @@ function Node({
     <g
       role="button"
       tabIndex={0}
-      aria-label={`${COVERAGE_KIND_TEXT[node.kind]} ${name} · ${state}`}
+      aria-label={`${title} · ${state}`}
       aria-pressed={selected}
       data-node={node.kind}
       data-state={status}
@@ -408,7 +465,7 @@ function Node({
       onPointerEnter={() => onHover(true)}
       onPointerLeave={() => onHover(false)}
     >
-      <title>{`${COVERAGE_KIND_TEXT[node.kind]} · ${name} · ${state}`}</title>
+      <title>{`${title} · ${state}`}</title>
       {node.tested && node.inScope ? (
         <circle r={r + 3.5} style={{ fill: "none", stroke: "var(--accent)" }} strokeWidth={2.5} />
       ) : null}
@@ -431,10 +488,12 @@ function Legend({
   stats,
   onReload,
   onFit,
+  onZoom,
 }: {
   stats: { inScope: number; tested: number };
   onReload: () => void;
   onFit: () => void;
+  onZoom: (factor: number) => void;
 }) {
   const dot = (style: CSSProperties) => (
     <span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 999, ...style }} />
@@ -462,6 +521,12 @@ function Legend({
         <span className={s["lv-grow"]} data-testid="coverage-graph-stats">
           범위 안 <b>{stats.inScope}</b> · 검사함 <b>{stats.tested}</b>
         </span>
+        <button className={cx(s.btn, s.sm)} type="button" onClick={() => onZoom(ZOOM_STEP)} aria-label="확대">
+          +
+        </button>
+        <button className={cx(s.btn, s.sm)} type="button" onClick={() => onZoom(1 / ZOOM_STEP)} aria-label="축소">
+          −
+        </button>
         <button className={cx(s.btn, s.sm)} type="button" onClick={onFit}>
           맞추기
         </button>
@@ -492,8 +557,8 @@ function Legend({
         </span>
       </div>
       <p className={s.help} style={{ margin: 0 }}>
-        노드를 끌어 옮기고 휠로 확대 · 축소합니다. 빈 곳을 끌면 화면이 움직입니다. 점선 '…'는 접힌 노드이며 누르면{" "}
-        {FOLD_STEP}개씩 더 펼칩니다.
+        노드를 끌어 옮기고, 빈 곳을 끌면 화면이 움직입니다. 확대 · 축소는 +/− 버튼이나 Ctrl(⌘)+휠입니다. 점선 '…'는 접힌
+        노드이며 누르면 {FOLD_STEP}개씩 더 펼칩니다.
       </p>
     </div>
   );
@@ -512,7 +577,7 @@ function Detail({ graph, node }: { graph: CgGraph; node: CgNode | null }) {
   const children = graph.edges.filter((e) => e.dst === node.key).length;
   return (
     <section className={s.isec} aria-label="고른 자산" data-testid="coverage-graph-detail">
-      <h3>{`${COVERAGE_KIND_TEXT[node.kind]} · ${coverageNodeLabel(node)}`}</h3>
+      <h3>{coverageNodeTitle(node)}</h3>
       <ul className={s.tml}>
         <li>{node.inScope ? "점검 범위 안" : "범위 밖(연결용)"}</li>
         <li>{node.tested ? "검사함 — 탐색 · 점검이 다룬 자산입니다(취약점이 없다는 뜻은 아닙니다)" : "미검사"}</li>
@@ -523,9 +588,7 @@ function Detail({ graph, node }: { graph: CgGraph; node: CgNode | null }) {
         ) : null}
         {node.port ? <li>{`포트 ${node.port}`}</li> : null}
         {node.statusCode ? <li>{`관찰한 상태 코드 ${node.statusCode}`}</li> : null}
-        <li>
-          {parent ? `속한 자산: ${COVERAGE_KIND_TEXT[parent.kind]} · ${coverageNodeLabel(parent)}` : "최상위 자산"}
-        </li>
+        <li>{parent ? `속한 자산: ${coverageNodeTitle(parent)}` : "최상위 자산"}</li>
         <li>{`직접 포함한 자산 ${children}`}</li>
       </ul>
     </section>

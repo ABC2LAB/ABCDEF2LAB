@@ -38,6 +38,8 @@ export type CgGraph = {
   /** child → parent. 노드마다 부모 하나(첫 간선)만 둔다 — 포함 트리라 두 번째 부모는 그리지 않고 dropped 로 센다 */
   edges: CgEdge[];
   dropped: { nodes: number; edges: number };
+  /** nodes · edges 가 배열이 아니다(응답 형식 오류) — 빈 그래프로 보이지 않고 형식 오류로 알린다 */
+  malformed: boolean;
 };
 
 const KIND_SET: ReadonlySet<string> = new Set(COVERAGE_KINDS);
@@ -49,6 +51,7 @@ export function parseCoverageGraph(raw: CoverageGraph): CgGraph {
   const nodes: CgNode[] = [];
   const seen = new Set<string>();
   let droppedNodes = 0;
+  const malformed = !Array.isArray(raw.nodes) || !Array.isArray(raw.edges);
   for (const n of Array.isArray(raw.nodes) ? raw.nodes : []) {
     const key = (n as { key?: unknown } | null)?.key;
     if (!n || typeof key !== "string" || !key || seen.has(key) || !isKind(n.kind)) {
@@ -86,7 +89,7 @@ export function parseCoverageGraph(raw: CoverageGraph): CgGraph {
     parent.set(src, dst);
     edges.push({ src, dst });
   }
-  return { nodes, edges, dropped: { nodes: droppedNodes, edges: droppedEdges } };
+  return { nodes, edges, dropped: { nodes: droppedNodes, edges: droppedEdges }, malformed };
 }
 
 /** 표시 경로 계약(coverage-graph-display-path.md): 루트 `/` 또는 1~32개의 `/{id}`와 선택적 끝 슬래시. 그 밖은 버린다. */
@@ -133,7 +136,18 @@ export function coverageNodeLabel(n: CgNode): string {
     if (!n.displayPath) return assetName(n);
     return n.assetId ? `${n.displayPath} · #${n.assetId}` : n.displayPath;
   }
+  // 공개할 수 없는 루트 도메인은 서버가 key 를 해시로 바꾸고 라벨을 '자산 #0'으로 둔다 — 번호처럼 보이지 않게
+  if (!n.assetId && HIDDEN_LABEL.test(n.label)) return `${COVERAGE_KIND_TEXT[n.kind]}(이름 비공개)`;
   return n.label || assetName(n);
+}
+
+const HIDDEN_LABEL = /^자산 #0$/;
+
+/** 종류 이름을 붙인 이름(읽기 · 상세용). 이름이 이미 종류로 시작하면('엔드포인트 #100') 두 번 붙이지 않는다. */
+export function coverageNodeTitle(n: CgNode): string {
+  const kind = COVERAGE_KIND_TEXT[n.kind];
+  const name = coverageNodeLabel(n);
+  return name.startsWith(kind) ? name : `${kind} ${name}`;
 }
 
 function assetName(n: CgNode): string {
@@ -150,11 +164,14 @@ export type VisFold = {
   fold: true;
   key: string;
   groupId: string;
-  parentKey: string;
+  /** null = 최상위(부모 없는) 묶음 — 간선 없이 둔다 */
+  parentKey: string | null;
   kind: CoverageKind;
   hidden: number;
 };
 export type VisNode = VisAsset | VisFold;
+/** 최상위 접힘 묶음 id 앞머리. 노드 key 는 서버가 'a:' · 'c:' · 'r:' 로 시작해 겹치지 않는다 */
+const ROOT_GROUP = "root";
 export type VisGraph = { nodes: VisNode[]; edges: CgEdge[] };
 
 /** 검사한 것 먼저, 그다음 이름 순 — 접힐 때 검사한 자산이 보이는 쪽에 남는다. */
@@ -178,8 +195,28 @@ export function visibleCoverageGraph(g: CgGraph, expanded: ReadonlyMap<string, n
   }
   const nodes: VisNode[] = [];
   const edges: CgEdge[] = [];
-  const queue = g.nodes.filter((n) => !hasParent.has(n.key));
-  for (const n of queue) nodes.push({ fold: false, key: n.key, node: n });
+  // 부모 없는 노드(서버 anchor 로 바로 들어온 엔드포인트 등)도 종류별 FOLD_LIMIT 개로 접는다(#902 리뷰)
+  const queue: CgNode[] = [];
+  const roots = new Map<CoverageKind, CgNode[]>();
+  for (const n of g.nodes) {
+    if (hasParent.has(n.key)) continue;
+    const list = roots.get(n.kind);
+    if (list) list.push(n);
+    else roots.set(n.kind, [n]);
+  }
+  for (const kind of COVERAGE_KINDS) {
+    const list = roots.get(kind);
+    if (!list) continue;
+    list.sort(childOrder);
+    const groupId = `${ROOT_GROUP}::${kind}`;
+    const shown = expanded.get(groupId) ?? FOLD_LIMIT;
+    for (const n of list.slice(0, shown)) {
+      nodes.push({ fold: false, key: n.key, node: n });
+      queue.push(n);
+    }
+    const hidden = list.length - Math.min(shown, list.length);
+    if (hidden > 0) nodes.push({ fold: true, key: `fold:${groupId}`, groupId, parentKey: null, kind, hidden });
+  }
   for (let i = 0; i < queue.length; i++) {
     const parent = queue[i];
     const groups = new Map<CoverageKind, CgNode[]>();
@@ -224,6 +261,8 @@ const CUTOFF = 140;
 const REPULSE = 2600;
 const SPRING = 0.06;
 const GRAVITY = 0.004;
+/** 앞 배치 자리로 당기는 힘. 밀어내기보다 커야 보이던 노드가 제자리를 지킨다. */
+const ANCHOR = 0.2;
 /** 전체 계산량 상한: 반복 수 × 노드 수 ≈ 이 값. 노드가 많으면 반복을 줄여 화면이 멈추지 않게 한다. */
 const WORK_BUDGET = 40000;
 const MIN_ITER = 40;
@@ -232,8 +271,8 @@ const MAX_ITER = 220;
 const isLeafKind = (n: VisNode) => n.fold || n.node.kind === "endpoint" || n.node.kind === "app";
 
 /** 노드 key → 좌표(원점 중심). 같은 VisGraph 면 늘 같은 결과다(난수 없음). */
-export function layoutCoverageGraph(vis: VisGraph): Map<string, Point> {
-  const pos = radialStart(vis);
+export function layoutCoverageGraph(vis: VisGraph, seed?: ReadonlyMap<string, Point>): Map<string, Point> {
+  const pos = seed?.size ? seededStart(vis, seed) : radialStart(vis);
   const keys = vis.nodes.map((n) => n.key);
   const n = keys.length;
   if (n < 2) return pos;
@@ -246,6 +285,8 @@ export function layoutCoverageGraph(vis: VisGraph): Map<string, Point> {
     ys[i] = p.y;
   });
   const leaf = vis.nodes.map(isLeafKind);
+  // 이미 그려 둔 노드는 제자리로 당긴다 — 펼치기 · 다시 배치 때 보이던 노드가 튀지 않게(#902 리뷰)
+  const anchors = keys.map((k) => seed?.get(k) ?? null);
   const springs = vis.edges.map((e) => {
     const a = index.get(e.src) as number;
     return [a, index.get(e.dst) as number, leaf[a] ? REST_LEAF : REST_INNER] as const;
@@ -304,8 +345,14 @@ export function layoutCoverageGraph(vis: VisGraph): Map<string, Point> {
     }
     const maxStep = 30 * temp + 1;
     for (let i = 0; i < n; i++) {
-      fx[i] -= xs[i] * GRAVITY;
-      fy[i] -= ys[i] * GRAVITY;
+      const anchor = anchors[i];
+      if (anchor) {
+        fx[i] += (anchor.x - xs[i]) * ANCHOR;
+        fy[i] += (anchor.y - ys[i]) * ANCHOR;
+      } else {
+        fx[i] -= xs[i] * GRAVITY;
+        fy[i] -= ys[i] * GRAVITY;
+      }
       const m = Math.sqrt(fx[i] * fx[i] + fy[i] * fy[i]);
       const s = m > maxStep ? maxStep / m : 1;
       xs[i] += fx[i] * s;
@@ -317,6 +364,40 @@ export function layoutCoverageGraph(vis: VisGraph): Map<string, Point> {
     out.set(k, { x: xs[i], y: ys[i] });
   });
   return out;
+}
+
+/**
+ * 이어 배치: 앞 배치에 있던 노드는 그 자리에서, 새 노드는 부모 둘레(번호로 정한 각도, 결정적)에서 시작한다.
+ * 부모도 새 노드면 부모가 먼저 놓인 뒤 놓이도록 간선 순서(부모 → 자식)대로 채운다. 부모 없는 새 노드는 방사형 자리다.
+ */
+function seededStart(vis: VisGraph, seed: ReadonlyMap<string, Point>): Map<string, Point> {
+  const radial = radialStart(vis);
+  const parent = new Map(vis.edges.map((e) => [e.src, e.dst]));
+  const pos = new Map<string, Point>();
+  const place = (key: string, depth: number): Point => {
+    const done = pos.get(key);
+    if (done) return done;
+    const known = seed.get(key);
+    const up = parent.get(key);
+    let p: Point;
+    if (known) p = known;
+    else if (up && depth < COVERAGE_KINDS.length + 1) {
+      const base = place(up, depth + 1);
+      const angle = ((hashKey(key) % 360) * Math.PI) / 180;
+      p = { x: base.x + REST_LEAF * Math.cos(angle), y: base.y + REST_LEAF * Math.sin(angle) };
+    } else p = radial.get(key) ?? { x: 0, y: 0 };
+    pos.set(key, p);
+    return p;
+  };
+  for (const n of vis.nodes) place(n.key, 0);
+  return pos;
+}
+
+/** 문자열 → 0 이상 정수(각도 고르기용, 결정적). */
+function hashKey(key: string): number {
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+  return h;
 }
 
 /** 첫 배치: 뿌리들을 가운데, 자식은 잎 수에 비례한 각도 몫 안에 깊이별 고리로 둔다. */

@@ -2,7 +2,7 @@
 // 버리고 센다. 같은 부모 · 같은 종류가 FOLD_LIMIT 를 넘으면 '…'로 접고 누르면 FOLD_STEP 씩 펼친다. 배치는 결정적이다.
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/diagnosis/api", async (original) => ({
@@ -16,6 +16,7 @@ import type { CoverageGraph } from "../live/api";
 import {
   coverageGraphStats,
   coverageNodeLabel,
+  coverageNodeTitle,
   FOLD_LIMIT,
   FOLD_STEP,
   layoutCoverageGraph,
@@ -318,8 +319,8 @@ describe("CoverageGraphSection — 그리기", () => {
     const service = within(svg).getByRole("button", { name: /서비스 :3000 · 200/ });
     fireEvent.keyDown(service, { key: "Enter" });
     const detail = screen.getByTestId("coverage-graph-detail");
-    expect(detail).toHaveTextContent("서비스 · :3000 · 200");
-    expect(detail).toHaveTextContent("속한 자산: 서브도메인 · app.example.test");
+    expect(detail).toHaveTextContent("서비스 :3000 · 200");
+    expect(detail).toHaveTextContent("속한 자산: 서브도메인 app.example.test");
     expect(detail).toHaveTextContent("직접 포함한 자산 25");
     expect(detail).toHaveTextContent("취약점이 없다는 뜻은 아닙니다");
   });
@@ -352,5 +353,97 @@ describe("CoverageGraphSection — 그리기", () => {
     render(<CoverageGraphSection taskId="1" active={false} />);
     render(<CoverageGraphSection taskId={null} active />);
     expect(apiFetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("#902 리뷰 반영", () => {
+  const scaleOf = (svg: HTMLElement) => {
+    const m = /scale\(([0-9.]+)\)/.exec(svg.querySelector("g")?.getAttribute("transform") ?? "");
+    return m ? Number(m[1]) : Number.NaN;
+  };
+
+  it("빈 그래프 뒤 다시 읽어 노드가 생기면 Ctrl+휠 확대가 붙고 화면 맞춤도 새로 한다(이동찬 · 윤재상 재현)", async () => {
+    vi.mocked(apiFetch)
+      .mockResolvedValueOnce({ nodes: [], edges: [] } as never)
+      .mockResolvedValueOnce(sample(3) as never);
+    render(<CoverageGraphSection taskId="1" active />);
+    const empty = await screen.findByText(/관찰해 저장한 자산이 아직 없습니다/);
+    // 빈 그래프에도 다시 읽기가 있다
+    fireEvent.click(within(empty.closest("[role='note']") as HTMLElement).getByRole("button", { name: "다시 읽기" }));
+    const svg = await screen.findByTestId("coverage-graph");
+    const before = scaleOf(svg);
+    // 빈 배치(가운데 · 배율 1)에 멈추지 않고 새 노드에 맞춘다
+    expect(svg.querySelector("g")?.getAttribute("transform")).not.toBe("translate(500 310) scale(1)");
+    const ev = new WheelEvent("wheel", { deltaY: -200, ctrlKey: true, bubbles: true, cancelable: true });
+    svg.dispatchEvent(ev);
+    expect(ev.defaultPrevented).toBe(true);
+    await waitFor(() => expect(scaleOf(svg)).toBeGreaterThan(before));
+  });
+
+  it("그냥 휠은 페이지 스크롤로 둔다(가로채지 않음), +/− 버튼으로도 확대 · 축소한다", async () => {
+    serve(sample(3));
+    render(<CoverageGraphSection taskId="1" active />);
+    const svg = await screen.findByTestId("coverage-graph");
+    const before = scaleOf(svg);
+    const plain = new WheelEvent("wheel", { deltaY: -200, bubbles: true, cancelable: true });
+    svg.dispatchEvent(plain);
+    expect(plain.defaultPrevented).toBe(false);
+    expect(scaleOf(svg)).toBe(before);
+    fireEvent.click(screen.getByRole("button", { name: "확대" }));
+    expect(scaleOf(svg)).toBeGreaterThan(before);
+    fireEvent.click(screen.getByRole("button", { name: "축소" }));
+    fireEvent.click(screen.getByRole("button", { name: "축소" }));
+    expect(scaleOf(svg)).toBeLessThan(before);
+  });
+
+  it("nodes · edges 가 배열이 아니면 빈 그래프가 아니라 형식 오류로 알린다", async () => {
+    expect(parseCoverageGraph({ nodes: {}, edges: [] } as unknown as CoverageGraph).malformed).toBe(true);
+    serve({ nodes: {}, edges: [] });
+    render(<CoverageGraphSection taskId="1" active />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("응답 형식을 확인하지 못해");
+    expect(screen.queryByText(/관찰해 저장한 자산이 아직 없습니다/)).toBeNull();
+  });
+
+  it("부모 없는 노드도 종류별로 접는다(서버 anchor 로 바로 들어온 엔드포인트 500개)", () => {
+    const raw: CoverageGraph = {
+      nodes: Array.from({ length: 500 }, (_, i) => node(`a:${1000 + i}`, "endpoint", { asset_id: 1000 + i })),
+      edges: [],
+    };
+    const v = visibleCoverageGraph(parseCoverageGraph(raw), new Map());
+    expect(v.nodes.filter((n) => !n.fold)).toHaveLength(FOLD_LIMIT);
+    expect(v.nodes.filter((n) => n.fold)).toEqual([
+      expect.objectContaining({ hidden: 500 - FOLD_LIMIT, parentKey: null }),
+    ]);
+    expect(v.edges).toHaveLength(0);
+  });
+
+  it("종류 이름을 두 번 붙이지 않고, 공개 못 하는 루트('자산 #0')는 이름 비공개로", () => {
+    const g = parseCoverageGraph({
+      nodes: [
+        node("a:100", "endpoint", { asset_id: 100 }),
+        node("r:0123abcd", "root_domain", { label: "자산 #0", in_scope: false }),
+      ],
+      edges: [],
+    });
+    expect(g.nodes.map(coverageNodeTitle)).toEqual(["엔드포인트 #100", "루트 도메인(이름 비공개)"]);
+  });
+
+  it("'…'를 펼쳐도 보이던 노드는 거의 제자리다(앞 배치를 이어받음)", () => {
+    const g = parseCoverageGraph(sample(45));
+    const v1 = visibleCoverageGraph(g, new Map());
+    const l1 = layoutCoverageGraph(v1);
+    const v2 = visibleCoverageGraph(g, new Map([["a:3::endpoint", FOLD_LIMIT + FOLD_STEP]]));
+    const l2 = layoutCoverageGraph(v2, l1);
+    const shared = v1.nodes.filter((n) => !n.fold).map((n) => n.key);
+    const moves = shared.map((k) => {
+      const a = l1.get(k) as { x: number; y: number };
+      const b = l2.get(k) as { x: number; y: number };
+      return Math.hypot(a.x - b.x, a.y - b.y);
+    });
+    const avg = moves.reduce((x, y) => x + y, 0) / moves.length;
+    // 리뷰 실측(이어받기 전): 평균 106px · 최대 253px
+    expect(avg).toBeLessThan(40);
+    // 같은 입력이면 같은 결과(결정적)
+    expect([...layoutCoverageGraph(v2, l1).entries()]).toEqual([...l2.entries()]);
   });
 });
