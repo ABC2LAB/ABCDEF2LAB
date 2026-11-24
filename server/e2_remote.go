@@ -55,7 +55,10 @@ type e2RemoteRequest struct {
 	ExplorationID int64  `json:"exploration_id,omitempty"`
 	IntentID      int64  `json:"intent_id,omitempty"`
 	Command       string `json:"command,omitempty"`
-	Data          []byte `json:"data,omitempty"`
+	// TimeoutMS는 run 요청에만 싣는 명령 시간 예산이다(진단 Bash timeout_ms). Host 쪽 러너가 운영자 승인 대기 동안
+	// 멈춰 쓴다(#898 발견 3). 없으면 러너의 CommandTimeout이다.
+	TimeoutMS int64  `json:"timeout_ms,omitempty"`
+	Data      []byte `json:"data,omitempty"`
 }
 
 func (r e2RemoteRequest) identity() E2HTTPRequest {
@@ -192,7 +195,7 @@ func (h *e2RemoteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var request e2RemoteRequest
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, e2RemoteMaxBodyBytes))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&request) != nil || request.Format != E2RemoteFormat {
+	if decoder.Decode(&request) != nil || request.Format != E2RemoteFormat || !validE2RemoteTimeout(request) {
 		e2RemoteWrite(w, http.StatusBadRequest, e2RemoteResponse{Code: "bad_request"})
 		return
 	}
@@ -202,6 +205,14 @@ func (h *e2RemoteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	e2RemoteWrite(w, http.StatusOK, response)
+}
+
+// validE2RemoteTimeout은 명령 시간 예산이 run 요청에만, 러너 상한 안에서만 오는지 본다.
+func validE2RemoteTimeout(request e2RemoteRequest) bool {
+	if request.TimeoutMS == 0 {
+		return true
+	}
+	return request.Op == e2RemoteRunOp && request.TimeoutMS > 0 && request.TimeoutMS <= e2runner.MaxCommandBudget.Milliseconds()
 }
 
 // 0이 아닌 종료 코드도 Runner는 ErrUnavailable로 돌려준다. 이것과 진짜 실패를 구분해서 넘긴다.
@@ -231,6 +242,9 @@ func (h *e2RemoteHandler) dispatch(ctx context.Context, request e2RemoteRequest)
 		// Execute는 intent를 스스로 등록하므로, 먼저 등록된 것만 여기서 통과시킨다.
 		if err := b.remoteRegistered(ctx, request.IntentID); err != nil {
 			return e2RemoteResponse{}, err
+		}
+		if request.TimeoutMS > 0 {
+			ctx = e2runner.WithCommandBudget(ctx, time.Duration(request.TimeoutMS)*time.Millisecond)
 		}
 		result, err := b.Execute(ctx, request.identity(), request.Command)
 		return e2RemoteResponse{Result: &result, RunError: e2RemoteRunError(err)}, nil

@@ -306,7 +306,7 @@ func newE2HTTPBashTool(execution E2HTTPScope, run e2HTTPRunFunc, hostTimeout tim
 	return actool.Build(actool.Spec{
 		Name:        "Bash",
 		Description: "Execute a shell command in the bound E2 call scope and return separate tool output and trusted execution status.",
-		Prompt:      "Use command and optional timeout_ms. Timeout can only reduce the host limit. Background mode and direct host filesystem tools are unavailable.",
+		Prompt:      "Use command and optional timeout_ms. Timeout can only reduce the host limit. Time a request spends waiting for operator approval does not count against timeout_ms. Background mode and direct host filesystem tools are unavailable.",
 		Schema: map[string]any{
 			"type": "object", "additionalProperties": false,
 			"properties": map[string]any{
@@ -349,7 +349,10 @@ func newE2HTTPBashTool(execution E2HTTPScope, run e2HTTPRunFunc, hostTimeout tim
 				result := e2runner.Result{Trusted: e2runner.TrustedResult{Version: e2proxy.Version, Execution: snapshot, Classification: "policy_not_executed"}}
 				return encodeE2HTTPResult(result, true, controlView), nil
 			}
-			callCtx, cancel := context.WithTimeout(ctx, timeout)
+			// timeout_ms는 러너가 운영자 승인을 기다리는 동안 멈춰 쓰는 명령 예산이다(#898 발견 3: 모델이 준 10~15초가 승인
+			// 대기 중에 끝나 승인 요청이 운영자 결정 전에 닫혔다). 원격(E② Host)이면 요청에 실려 Host 쪽 러너가 쓴다. 이 문맥의
+			// 바깥 상한은 지금처럼 Host 한도이고, E② call 기한(승인 만료)·회차 기한도 그대로다.
+			callCtx, cancel := context.WithTimeout(e2runner.WithCommandBudget(ctx, timeout), min(hostTimeout, e2HTTPMaxToolDuration))
 			defer cancel()
 			result, runErr := run(callCtx, command)
 			// Refresh the real execution projection. A tool's stdout or a stale

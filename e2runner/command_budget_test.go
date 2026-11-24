@@ -1,0 +1,108 @@
+package e2runner
+
+import (
+	"context"
+	"sync"
+	"testing"
+	"time"
+)
+
+type fakeWaiter struct {
+	mu      sync.Mutex
+	waiting bool
+	changed chan struct{}
+}
+
+func (w *fakeWaiter) ApprovalWaiting() (bool, <-chan struct{}) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.changed == nil {
+		w.changed = make(chan struct{})
+	}
+	return w.waiting, w.changed
+}
+
+func (w *fakeWaiter) set(waiting bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.waiting = waiting
+	if w.changed != nil {
+		close(w.changed)
+		w.changed = nil
+	}
+}
+
+func TestCommandBudgetValue(t *testing.T) {
+	if d, ok := CommandBudget(WithCommandBudget(context.Background(), 2*time.Second)); !ok || d != 2*time.Second {
+		t.Fatalf("budget roundtrip: %v %v", d, ok)
+	}
+	for _, d := range []time.Duration{0, -time.Second} {
+		if _, ok := CommandBudget(WithCommandBudget(context.Background(), d)); ok {
+			t.Fatalf("non-positive budget accepted: %v", d)
+		}
+	}
+	if _, ok := CommandBudget(context.Background()); ok {
+		t.Fatal("missing budget accepted")
+	}
+}
+
+// 승인 대기가 없으면 예산이 다 될 때 기한 초과(DeadlineExceeded 원인)로 닫힌다.
+func TestCommandBudgetExpiresWithoutApprovalWait(t *testing.T) {
+	ctx, attach, stop := startCommandBudget(context.Background(), 30*time.Millisecond)
+	defer stop()
+	attach(&fakeWaiter{})
+	select {
+	case <-ctx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("budget never expired")
+	}
+	if !commandTimedOut(ctx) {
+		t.Fatal("budget expiry not reported as timeout")
+	}
+}
+
+// 승인을 기다리는 동안은 예산이 줄지 않고, 대기가 끝나면 남은 예산이 다시 흐른다(#898 발견 3).
+func TestCommandBudgetPausesWhileApprovalWaits(t *testing.T) {
+	const budget = 60 * time.Millisecond
+	waiter := &fakeWaiter{waiting: true}
+	start := time.Now()
+	ctx, attach, stop := startCommandBudget(context.Background(), budget)
+	defer stop()
+	attach(waiter)
+	select {
+	case <-ctx.Done():
+		t.Fatal("budget consumed while approval waited")
+	case <-time.After(4 * budget):
+	}
+	waiter.set(false)
+	select {
+	case <-ctx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("budget did not resume after approval wait")
+	}
+	if !commandTimedOut(ctx) || time.Since(start) < 4*budget {
+		t.Fatalf("resumed budget wrong: timedOut=%v elapsed=%v", commandTimedOut(ctx), time.Since(start))
+	}
+}
+
+// 부모 문맥(회차 기한)은 승인 대기 중에도 그대로 닫는다. stop으로 닫은 것은 시간 초과가 아니다.
+func TestCommandBudgetKeepsParentDeadline(t *testing.T) {
+	parent, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	ctx, attach, stop := startCommandBudget(parent, time.Hour)
+	defer stop()
+	attach(&fakeWaiter{waiting: true})
+	select {
+	case <-ctx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("parent deadline ignored during approval wait")
+	}
+	if !commandTimedOut(ctx) {
+		t.Fatal("parent deadline not reported as timeout")
+	}
+	ctx2, _, stop2 := startCommandBudget(context.Background(), time.Hour)
+	stop2()
+	if ctx2.Err() == nil || commandTimedOut(ctx2) {
+		t.Fatal("stopped budget reported as timeout")
+	}
+}

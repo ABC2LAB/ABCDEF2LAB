@@ -543,3 +543,19 @@ func TestE2EvalServiceRejectsABadEngineToken(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// 진단 Bash의 명령 시간 예산(timeout_ms)이 원격 요청에 실려 Host 쪽 러너가 쓴다(#898 발견 3: Host 쪽만 call의 승인 대기
+// 상태를 안다). 예산이 없으면 러너의 CommandTimeout이다.
+func TestE2RemoteCarriesCommandBudget(t *testing.T) {
+	f := startE2RemoteFixture(t)
+	run := f.acquire(t)
+	ctx := context.Background()
+	limited, _ := run.RunForIntent(e2runner.WithCommandBudget(ctx, 200*time.Millisecond), 17, "sleep 1")
+	if limited.Trusted.Termination != e2runner.TerminationTimeout {
+		t.Fatalf("budget not applied on the host: class=%s termination=%q", limited.Trusted.Classification, limited.Trusted.Termination)
+	}
+	plain, err := run.RunForIntent(ctx, 17, "sleep 1")
+	if err != nil || plain.Trusted.Termination != "" || !plain.Trusted.ProcessBashExited {
+		t.Fatalf("command without budget: err=%v class=%s termination=%q", err, plain.Trusted.Classification, plain.Trusted.Termination)
+	}
+}

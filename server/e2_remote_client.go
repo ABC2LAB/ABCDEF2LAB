@@ -177,6 +177,10 @@ func (r *e2RemoteRun) redact(op string, data []byte) []byte {
 func (r *e2RemoteRun) RunForIntent(ctx context.Context, id int64, command string) (e2runner.Result, error) {
 	request := r.identity(e2RemoteRunOp, id)
 	request.Command = command
+	// 명령 시간 예산(timeout_ms)은 Host 쪽 러너가 승인 대기 동안 멈춰 쓴다(#898 발견 3). 1ms 미만은 싣지 않는다(러너 기본값).
+	if budget, ok := e2runner.CommandBudget(ctx); ok && budget.Milliseconds() > 0 {
+		request.TimeoutMS = budget.Milliseconds()
+	}
 	response, err := r.client.call(ctx, request)
 	if err != nil || response.Result == nil {
 		return e2runner.Result{}, ErrE2Control

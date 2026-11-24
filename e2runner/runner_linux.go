@@ -27,7 +27,7 @@ import (
 const (
 	maxCommandBytes         = 1 << 20
 	maxOutputBytes          = 4 << 20
-	maxRunnerCommandTimeout = time.Hour
+	maxRunnerCommandTimeout = MaxCommandBudget
 	maxRunnerDrainTimeout   = 2 * time.Minute
 	maxCACertificateBytes   = 1 << 20
 )
@@ -222,8 +222,14 @@ func (r *Runner) RunForIntent(ctx context.Context, intentID int64, command strin
 		r.intentGates[intentID] = intentGate
 	}
 	r.mu.Unlock()
-	ctx, cancel := context.WithTimeout(ctx, r.cfg.CommandTimeout)
-	defer cancel()
+	// 명령 시간: CommandTimeout과 Worker가 준 예산(timeout_ms) 중 작은 쪽을, 운영자 승인을 기다리는 동안은 멈춰 쓴다
+	// (#898 발견 3). 대기열 시간은 지금처럼 예산에 든다. 회차 기한·E② call 기한은 그대로다.
+	limit := r.cfg.CommandTimeout
+	if budget, ok := CommandBudget(ctx); ok && budget < limit {
+		limit = budget
+	}
+	ctx, attachBudget, stopBudget := startCommandBudget(ctx, limit)
+	defer stopBudget()
 	expiry := time.NewTimer(time.Until(r.cfg.Execution.Snapshot().ExpiresAt))
 	defer expiry.Stop()
 	acquire := func(gate chan struct{}) bool {
@@ -293,6 +299,7 @@ func (r *Runner) RunForIntent(ctx context.Context, intentID int64, command strin
 	}
 	stopped = r.stopped
 	r.mu.Unlock()
+	attachBudget(call)
 	if stopped {
 		state.initFailed = true
 		state.initInterrupted = true
@@ -303,7 +310,7 @@ func (r *Runner) RunForIntent(ctx context.Context, intentID int64, command strin
 			if cause := e2sandbox.StartupInterruption(err); cause != nil {
 				state.initInterrupted = true
 				state.setTermination(TerminationCanceled)
-				if errors.Is(cause, context.DeadlineExceeded) || errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+				if errors.Is(cause, context.DeadlineExceeded) || commandTimedOut(runCtx) {
 					state.setTermination(TerminationTimeout)
 				}
 			} else {
@@ -320,9 +327,13 @@ func (r *Runner) RunForIntent(ctx context.Context, intentID int64, command strin
 			state.setTermination("bash_exited")
 		case <-state.call.Context().Done():
 			state.setTermination("call_stopped")
+			// call 문맥은 명령 문맥이 닫히면 같이 닫힌다. 명령 시간이 끝나 닫힌 것이면 시간 초과다.
+			if commandTimedOut(runCtx) {
+				state.setTermination(TerminationTimeout)
+			}
 		case <-runCtx.Done():
 			state.setTermination("canceled")
-			if runCtx.Err() == context.DeadlineExceeded {
+			if commandTimedOut(runCtx) {
 				state.setTermination(TerminationTimeout)
 			}
 		case <-processWait:
