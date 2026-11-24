@@ -1,0 +1,30 @@
+# 자산 그래프 표시 경로
+
+무인자 `GET /api/tasks/{id}/coverage-graph` 공개 응답에 아래 필드를 추가한다. 권한과 읽기 문맥은 [제품 보고서 그래프 계약](product-report-graph-read.md)을 따른다.
+
+| 필드 | 형식 | 의미 |
+|---|---|---|
+| `nodes[].display_path` | 선택적 문자열 | 엔드포인트 URL의 경로에서 구분용 슬래시와 `{id}`만 남긴 표시값 |
+| `nodes[].url`, `nodes[].label` | 기존과 동일 | 유효한 HTTP(S) URL에서는 origin만 표시 |
+| `nodes[].key`, `asset_id`, `edges` | 기존과 동일 | 노드 식별과 간선 연결 |
+
+`display_path`는 `kind: "endpoint"`에만 적용한다. 명시된 루트 경로는 `/`로 표시한다. URL 또는 경로가 없거나 유효하지 않으면 필드를 생략한다. 빈 조각이 연속하거나 조각이 32개를 넘는 경로도 생략한다. `null`과 빈 문자열은 보내지 않는다.
+
+서버는 HTTP(S) URL의 이스케이프된 경로에 기존 `pathmask.DisplayShape`를 적용한다. 사용자 정보, 쿼리 이름과 값, 프래그먼트는 표시값에 들어가지 않는다. 숫자, 짧은 이름, 문자열 ID, 인코딩된 조각을 포함해 비어 있지 않은 조각은 모두 `{id}`가 된다. 경로 끝에 슬래시가 있으면 유지한다. 인코딩된 슬래시는 구분자로 세지 않는다.
+
+표시값은 저장된 URL의 구조다. 실제 요청이나 진단 완료의 증거로 쓰지 않는다. `tested`는 기존 fact 앵커 표시이고 `in_scope`는 기존 그래프 포함 범위를 뜻한다. 선택·중복 제거·간선·권한·요청 생성에는 표시값을 쓰지 않는다. 같은 표시값의 노드도 기존 `key`로 구분한다.
+
+## 이름 조각의 공개 근거
+
+그래프는 작업과 직접 원천의 자산을 읽는다. 각 엔드포인트 관찰에는 그 URL에 결속된 회차 승인 틀이나 E② 시도 ID가 없다. #878의 `display_version: 2` 기록은 그 실행의 시도 ID로 연결된다. 현재 정책, 모델 제출 경로, 비슷한 URL이나 같은 origin의 시도 패턴은 결속 근거로 사용하지 않는다.
+
+이름 조각이 필요하면 작업·회차·자산 관찰·승인 규칙을 검증 가능하게 연결해야 한다. 실행 시점의 보호값을 적용해 `pathmask.DisplayWithTemplate`로 만든 결과와 표시 버전만 저장하는 방식을 검토할 수 있다. 조회용 보호값 저장은 필요하지 않다. 결속을 확인할 수 없는 이전 기록과 탐색 전용 자산에는 구조만 표시한다.
+
+## UI 인계
+
+- [새 응답 합성 fixture](fixtures/coverage-graph-display-path.json), [필드 없는 합성 fixture](fixtures/coverage-graph-legacy.json). 테스트 데이터다. 새 응답의 `a:22`와 `a:23`은 숫자 ID와 문자열 ID가 같은 모양으로 가려져도 별개 노드인 사례다.
+- `web/src/lib/diagnosis/engine.ts`의 `EngineCoverageNode`에 `display_path?: string`을 추가한다. 기준 dev의 `getCoverageGraph`는 배열을 그대로 전달하고 `web/src/workbench/live/api.ts`의 `fetchCoverageGraph`가 이를 재사용한다.
+- #902의 `web/src/workbench/live/coverageGraph.ts`에서 `parseCoverageGraph`가 값을 검증해 `CgNode`에 전달하고 `coverageNodeLabel`이 우선 표시한다. 루트 `/` 또는 1~32개의 `/{id}`와 선택적 끝 슬래시를 허용한다. 필드가 없으면 기존 라벨·origin 또는 자산 번호를 사용한다. 상세에서는 origin과 표시 경로를 분리한다.
+- 확인한 클라이언트는 여분 키를 거부하지 않으며 #902는 모르는 키를 사용하지 않는다. 신규 클라이언트는 필드 부재를 처리하므로 배포 순서를 고정할 필요가 없다. 별도의 엄격 파서가 있다면 선택 필드를 먼저 허용한다.
+
+`?view=kg-v1`과 접근통제 지도에는 이 필드를 추가하지 않는다. 작업·원천 권한, 읽기 전용 조회, 기존 정렬과 관리 중계의 응답 상한을 유지한다.
