@@ -14,7 +14,7 @@ import { LiveRailTasks } from "../live/rail";
 import { useSource } from "../live/source";
 import { resetUrl, runUrlAction, UrlFeeds, urlGates, useUrl } from "../live/urlDiagnosis";
 import { urlHost, urlStateText } from "../live/urlMap";
-import { loadUrlRuns, useUrlRuns } from "../live/urlRunList";
+import { loadUrlRuns, refreshUrlRunsQuietly, useUrlRuns } from "../live/urlRunList";
 import { type Shell, ShellContext, type View } from "../shell";
 import { DashboardByMode, FinishedByMode, LiveByMode, ReportByMode, RunningByMode } from "../views/live/byMode";
 import { Download } from "../views/live/UrlLiveLive";
@@ -256,6 +256,36 @@ describe("서버 목록에서 새 세션으로 기존 Job 다시 연결", () => 
     expect(rowX).toHaveTextContent("소요 25분");
     expect(rowY).toHaveTextContent("소요 26분");
     expect(requests.filter((r) => /\/drafts\/job-[xy]\/status$/.test(r.path)).length).toBeGreaterThanOrEqual(2);
+  });
+  it("대시보드엔 [새로고침] · [목록 새로 조회]가 없고 점검 목록은 바탕에서 깜빡임 없이 다시 읽는다(사용자 11/24)", async () => {
+    const { unmount } = render(<Harness initial="dashboard" />);
+    expect(await screen.findByRole("button", { name: /첫 번째 점검/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "새로고침" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "목록 새로 조회" })).toBeNull();
+    // 다른 브라우저가 새 점검을 시작하면 바탕 다시 읽기로 목록에 들어온다. 읽는 동안 보던 목록은 그대로
+    const d: URLDiagnosisJob = { ...a, id: "job-d", input: { ...a.input, display_name: "다른 곳에서 시작한 점검" } };
+    jobs[d.id] = structuredClone(d);
+    let during: number | null = null;
+    const done = new Promise<void>((resolve) => {
+      const stop = useUrlRuns.subscribe((st) => {
+        if (st.loading && during === null) during = st.page?.runs.length ?? 0;
+        if (!st.loading && during !== null) {
+          stop();
+          resolve();
+        }
+      });
+    });
+    act(() => refreshUrlRunsQuietly(owner));
+    await act(async () => {
+      await done;
+    });
+    expect(during).toBe(3);
+    expect(await screen.findByRole("button", { name: /다른 곳에서 시작한 점검/ })).toBeInTheDocument();
+    expect(useUrlRuns.getState().error).toBe("");
+    unmount();
+    // 끝난 점검 목록 화면엔 [목록 새로 조회]가 그대로 있다
+    render(<Harness initial="finished" />);
+    expect(await screen.findByRole("button", { name: "목록 새로 조회" })).toBeInTheDocument();
   });
   it("선택한 ID의 status를 검증하고 생성·시작 키 없이 task 활동·보고서를 연다", async () => {
     render(<Harness />);

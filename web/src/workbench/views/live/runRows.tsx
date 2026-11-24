@@ -133,23 +133,31 @@ export function RunListStatus({ empty }: { empty?: string }) {
   );
 }
 
-export function RunListControls() {
+/**
+ * 목록 조회 버튼 줄. refresh=false 면 [목록 새로 조회]를 두지 않는다 — 대시보드는 머리 [새로고침]이 목록까지 다시 읽어 같은
+ * 버튼이 둘이 됐다(사용자 11/24). 다음 쪽이 있으면 [더 불러오기]는 그대로
+ */
+export function RunListControls({ refresh = true }: { refresh?: boolean }) {
   const { page, owner, loading } = useUrlRuns();
   const cap = useUrl((st) => st.cap);
   if (cap.kind !== "v2") return null;
+  const more = !!page?.more && owner === cap.catalog.ownerContext;
+  if (!refresh && !more) return null;
   return (
     <div className={s.acts}>
-      <button
-        type="button"
-        className={cx(s.btn, s.sm)}
-        disabled={loading}
-        onClick={() => {
-          void loadUrlRuns(cap.catalog.ownerContext);
-        }}
-      >
-        <Icon name="refresh" />
-        목록 새로 조회
-      </button>
+      {refresh ? (
+        <button
+          type="button"
+          className={cx(s.btn, s.sm)}
+          disabled={loading}
+          onClick={() => {
+            void loadUrlRuns(cap.catalog.ownerContext);
+          }}
+        >
+          <Icon name="refresh" />
+          목록 새로 조회
+        </button>
+      ) : null}
       {page?.more && owner === cap.catalog.ownerContext ? (
         <button
           type="button"
