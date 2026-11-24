@@ -61,7 +61,7 @@ import { Icon } from "../../ui/icons";
 import { Markdown } from "../../ui/Markdown";
 import { InspHead, InspOpenButton, Isec, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
-import { ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "./approvals";
+import { ApprovalQueue, useRequestApprovals } from "./approvals";
 import { DiagnosticEntrySections, stepHeading } from "./DiagnosticEntrySections";
 import { PriceCapsNotice } from "./PriceCapsNotice";
 import { ProductKgGraphSection } from "./productKgGraphView";
@@ -892,49 +892,8 @@ export function UrlLiveLive() {
             </section>
           ) : null}
           {stateNote}
-          {/* 확인 필요: 보내기 전에 사람이 정할 요청을 노란 상자 하나에. 줄마다 메서드 · 경로 · 계획 제목 옆에 승인 · 거부,
-              그 아래 보낼 요청 미리보기와 승인 정보(무엇을 승인하는지 보고 정하게 접지 않는다) */}
-          {a.pending.length ? (
-            <section className={s.ldecide} aria-labelledby="lDecideH">
-              <div className={s.sh}>
-                <h2 id="lDecideH">확인 필요</h2>
-                <span className={s.n}>{`${a.pending.length}건`}</span>
-              </div>
-              {a.pending.map((r) => (
-                <div className={s.decide} key={r.id}>
-                  <div className={s.dm}>
-                    <b>
-                      <span className={cx(s.m, s[r.method])}>{r.method}</span>
-                      <span className={s.p}>{r.path}</span>
-                    </b>
-                    <span>{flow?.plan?.find((p) => p.id === r.intent_id)?.title ?? "계획 제목 없음"}</span>
-                  </div>
-                  <div className={s.acts}>
-                    <button
-                      className={cx(s.btn, s.pri, s.sm)}
-                      type="button"
-                      disabled={!a.canDecide(r)}
-                      onClick={() => void a.decide(r, "allow")}
-                    >
-                      {a.busy === r.id ? "보내는 중…" : "승인하고 보내기"}
-                    </button>
-                    <button
-                      className={cx(s.btn, s.sm)}
-                      type="button"
-                      disabled={!a.canDecide(r)}
-                      onClick={() => void a.decide(r, "deny")}
-                    >
-                      거부
-                    </button>
-                  </div>
-                  <div className={s["lv-aprev"]}>
-                    <ApprovalRequestCode row={r} />
-                    <ApprovalFacts row={r} />
-                  </div>
-                </div>
-              ))}
-            </section>
-          ) : null}
+          {/* 승인 요청: 한 줄씩 쌓이는 목록(사용자 11/24). 줄을 누르면 미리보기 · 승인 정보 · 승인/거부가 펼쳐진다 */}
+          <ApprovalQueue a={a} planTitle={(id) => flow?.plan?.find((p) => p.id === id)?.title} />
           {/* 발견: 점검 중엔 발견 후보(실시간), 끝나면 저장된 결과를 보고서 형식으로 */}
           {!ended && job.task_id ? (
             <LiveCandidates

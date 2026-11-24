@@ -4282,6 +4282,71 @@ button.smm:hover {
   border-radius: 0;
   background: none;
 }
+/* 대기 중인 요청이 없으면 노란 상자 대신 보통 칸(끝난 요청 목록만) */
+.ldecide.ldecide-done {
+  border-color: var(--rule);
+  background: var(--bg);
+}
+/* 승인 요청 목록(사용자 11/24): 한 줄 = 메서드 · 경로 · 계획 · 상태 · 받은 시각, 누르면 그 아래 펼침 */
+.apq {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.apq-item {
+  border-top: 1px solid var(--warn-line);
+}
+.ldecide-done .apq-item {
+  border-top-color: var(--rule);
+}
+.apq-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 2px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.apq-row .p {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.apq-plan {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.apq-at {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+.apq-item.on .apq-row,
+.apq-row:hover {
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+.apq-item .lv-aprev {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 2px 12px;
+}
+.apq-item .lv-aprev .code {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
 .meters {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
