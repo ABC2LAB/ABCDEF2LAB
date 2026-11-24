@@ -125,6 +125,8 @@ type Call struct {
 	// 범위 밖 요청이 아니므로 거부 상한(MaxDenials) 계수에서 뺀다(#487 리뷰 P3). 감사 계수(Denied)는 그대로다.
 	closedRefusals uint64
 	closeGate      chan struct{}
+	// approvals는 이 call에서 운영자 승인을 기다리는 요청 수다(러너의 명령 시간 예산을 그동안 멈춘다).
+	approvals approvalWait
 }
 
 func validRef(v string) bool { return safeRef.MatchString(v) && !strings.Contains(v, "://") }
@@ -1492,6 +1494,8 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 		// 보호 자격 원문은 승인 소비자에게 전달하지 않는다. 참조만 결속한다.
 		var allowed bool
 		var approvalErr error
+		// 승인을 기다리는 동안은 러너가 명령 시간 예산을 쓰지 않는다(#898 발견 3). call 기한·회차 기한은 그대로다.
+		c.approvals.add(1)
 		if gate, ok := e.cfg.RequestApproval.(RequestApprovalOutcomeGate); ok {
 			var outcome RequestApprovalOutcome
 			outcome, approvalErr = gate.AwaitRequestApprovalOutcome(approvalCtx, proposal)
@@ -1502,6 +1506,7 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 		} else {
 			allowed, approvalErr = e.cfg.RequestApproval.AwaitRequestApproval(approvalCtx, proposal)
 		}
+		c.approvals.add(-1)
 		canceled := approvalCtx.Err() != nil || ctx.Err() != nil
 		stopApproval()
 		cancelApproval()

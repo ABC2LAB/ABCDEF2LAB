@@ -543,3 +543,40 @@ func TestE2EvalServiceRejectsABadEngineToken(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// 진단 Bash의 명령 시간 예산(timeout_ms)이 원격 요청에 실려 Host 쪽 러너가 쓴다(#898 발견 3: Host 쪽만 call의 승인 대기
+// 상태를 안다). 예산이 없으면 러너의 CommandTimeout이다.
+func TestE2RemoteCarriesCommandBudget(t *testing.T) {
+	f := startE2RemoteFixture(t)
+	run := f.acquire(t)
+	ctx := context.Background()
+	limited, _ := run.RunForIntent(e2runner.WithCommandBudget(ctx, 200*time.Millisecond), 17, "sleep 1")
+	if limited.Trusted.Termination != e2runner.TerminationTimeout {
+		t.Fatalf("budget not applied on the host: class=%s termination=%q", limited.Trusted.Classification, limited.Trusted.Termination)
+	}
+	// 예산 시작 시각도 실린다: 3초 예산이 2.5초 전에 시작됐으면 Host가 새 3초를 주지 않는다(#910 이동찬 리뷰).
+	late, _ := run.RunForIntent(e2runner.WithCommandBudgetFrom(ctx, 3*time.Second, time.Now().Add(-2500*time.Millisecond)), 17, "sleep 1")
+	if late.Trusted.Termination != e2runner.TerminationTimeout {
+		t.Fatalf("budget start not carried to the host: class=%s termination=%q", late.Trusted.Classification, late.Trusted.Termination)
+	}
+	plain, err := run.RunForIntent(ctx, 17, "sleep 1")
+	if err != nil || plain.Trusted.Termination != "" || !plain.Trusted.ProcessBashExited {
+		t.Fatalf("command without budget: err=%v class=%s termination=%q", err, plain.Trusted.Classification, plain.Trusted.Termination)
+	}
+}
+
+// 시작 시각이 예산보다 오래됐으면(원격 왕복이 예산을 다 씀) Host가 call을 만들지 않고 대상에도 보내지 않는다(#910 이동찬 리뷰).
+func TestE2RemoteExhaustedBudgetOpensNoCall(t *testing.T) {
+	f := startE2RemoteFixture(t)
+	run := f.acquire(t)
+	ctx := context.Background()
+	calls, sent := len(run.Calls()), f.received.Load()
+	expired, err := run.RunForIntent(e2runner.WithCommandBudgetFrom(ctx, time.Second, time.Now().Add(-5*time.Second)), 17, f.curl("/allowed"))
+	if !e2runner.AdmissionNotSent(expired) || err == nil || len(run.Calls()) != calls || f.received.Load() != sent {
+		t.Fatalf("exhausted budget opened a host call: notSent=%v err=%v calls=%d→%d received=%d→%d", e2runner.AdmissionNotSent(expired), err, calls, len(run.Calls()), sent, f.received.Load())
+	}
+	// 같은 Host에서 예산이 남은 요청은 그대로 보낸다(위 거부가 대상 쪽 문제 때문이 아님).
+	if result, err := run.RunForIntent(e2runner.WithCommandBudget(ctx, 5*time.Second), 17, f.curl("/allowed")); err != nil || !result.Trusted.Final || f.received.Load() != sent+1 {
+		t.Fatalf("budgeted request after refusal: err=%v final=%v received=%d", err, result.Trusted.Final, f.received.Load())
+	}
+}

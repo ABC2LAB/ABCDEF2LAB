@@ -27,7 +27,7 @@ import (
 const (
 	maxCommandBytes         = 1 << 20
 	maxOutputBytes          = 4 << 20
-	maxRunnerCommandTimeout = time.Hour
+	maxRunnerCommandTimeout = MaxCommandBudget
 	maxRunnerDrainTimeout   = 2 * time.Minute
 	maxCACertificateBytes   = 1 << 20
 )
@@ -222,8 +222,21 @@ func (r *Runner) RunForIntent(ctx context.Context, intentID int64, command strin
 		r.intentGates[intentID] = intentGate
 	}
 	r.mu.Unlock()
-	ctx, cancel := context.WithTimeout(ctx, r.cfg.CommandTimeout)
-	defer cancel()
+	// 명령 시간: CommandTimeout과 Worker가 준 예산(timeout_ms)의 남은 몫 중 작은 쪽을, 운영자 승인을 기다리는 동안만 멈춰
+	// 쓴다(#898 발견 3). 예산은 도구 시작부터 흘러 원격 왕복·Host 등록·대기열 시간이 빠진다(#910 이동찬 리뷰). 회차 기한·
+	// E② call 기한은 그대로다.
+	limit := r.cfg.CommandTimeout
+	if budget, start, ok := CommandBudget(ctx); ok {
+		if remaining := remainingCommandBudget(budget, start, time.Now()); remaining < limit {
+			limit = max(remaining, 0)
+		}
+	}
+	ctx, attachBudget, stopBudget := startCommandBudget(ctx, limit)
+	defer stopBudget()
+	// 예산이 이미 끝났으면 슬롯·call 없이 미송신으로 끝낸다(#910 이동찬 리뷰). 슬롯을 잡은 뒤에도 아래에서 한 번 더 본다.
+	if ctx.Err() != nil {
+		return r.admissionNotSent(ctx, intentID)
+	}
 	expiry := time.NewTimer(time.Until(r.cfg.Execution.Snapshot().ExpiresAt))
 	defer expiry.Stop()
 	acquire := func(gate chan struct{}) bool {
@@ -293,6 +306,7 @@ func (r *Runner) RunForIntent(ctx context.Context, intentID int64, command strin
 	}
 	stopped = r.stopped
 	r.mu.Unlock()
+	attachBudget(call)
 	if stopped {
 		state.initFailed = true
 		state.initInterrupted = true
@@ -303,7 +317,7 @@ func (r *Runner) RunForIntent(ctx context.Context, intentID int64, command strin
 			if cause := e2sandbox.StartupInterruption(err); cause != nil {
 				state.initInterrupted = true
 				state.setTermination(TerminationCanceled)
-				if errors.Is(cause, context.DeadlineExceeded) || errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+				if errors.Is(cause, context.DeadlineExceeded) || commandTimedOut(runCtx) {
 					state.setTermination(TerminationTimeout)
 				}
 			} else {
@@ -320,9 +334,13 @@ func (r *Runner) RunForIntent(ctx context.Context, intentID int64, command strin
 			state.setTermination("bash_exited")
 		case <-state.call.Context().Done():
 			state.setTermination("call_stopped")
+			// call 문맥은 명령 문맥이 닫히면 같이 닫힌다. 명령 시간이 끝나 닫힌 것이면 시간 초과다.
+			if commandTimedOut(runCtx) {
+				state.setTermination(TerminationTimeout)
+			}
 		case <-runCtx.Done():
 			state.setTermination("canceled")
-			if runCtx.Err() == context.DeadlineExceeded {
+			if commandTimedOut(runCtx) {
 				state.setTermination(TerminationTimeout)
 			}
 		case <-processWait:
