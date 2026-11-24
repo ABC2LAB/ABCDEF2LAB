@@ -1196,8 +1196,12 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     mount("live");
     const finds = await screen.findByRole("region", { name: "발견 후보" });
     expect(await screen.findByRole("complementary", { name: "진행 요약" })).toBeInTheDocument();
-    // 고르기 전에는 보고서 자료를 읽지 않는다
-    expect(a.fetchRemediation).not.toHaveBeenCalled();
+    // 후보 줄에는 무슨 취약점인지(보고서 자료의 그 후보 제목)를 붙인다 — 고르기 전에도 읽는다(사용자 11/24). 아직 저장 안 된
+    // 후보는 번호 그대로
+    await waitFor(() => expect(a.fetchRemediation).toHaveBeenCalledWith("42", "internal"));
+    const row1 = (await within(finds).findByText("후보 1")).closest("li") as HTMLElement;
+    expect(row1).toHaveTextContent(/후보 1후보 #1 · 관측/);
+    expect(within(finds).getByText("후보 #2").closest("li")).toHaveTextContent(/^위험도 미평가후보 #2관측/);
     fireEvent.click(await within(finds).findByRole("button", { name: /후보 #1/ }));
     expect(within(finds).getByRole("button", { name: /후보 #1/ })).toHaveAttribute("aria-current", "true");
     const side = await screen.findByRole("complementary", { name: "취약점 상세" });
