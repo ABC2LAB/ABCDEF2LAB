@@ -26,6 +26,7 @@ type DiagnosticCandidate struct {
 	RunRef            string    `json:"run_ref"`
 	CallRef           string    `json:"call_ref"`
 	VulnClass         string    `json:"vulnclass"`
+	VerificationClaim string    `json:"verification_claim,omitempty"`
 	Name              string    `json:"name"`
 	Summary           string    `json:"summary"`
 	Remediation       string    `json:"remediation"`
@@ -71,6 +72,9 @@ func (c DiagnosticCandidate) Validate() error {
 	if len(c.RunRef) > 256 || len(c.CallRef) > 256 || strings.TrimSpace(c.Name) == "" ||
 		len(c.Name) > 512 || strings.TrimSpace(c.VulnClass) == "" || len(c.VulnClass) > 128 ||
 		len(c.Summary) > 8192 || len(c.Remediation) > 8192 || len(c.Evidence) > 256<<10 {
+		return ErrDiagnosticCandidate
+	}
+	if c.VerificationClaim != "" && c.VerificationClaim != "html_nosniff_missing" && c.VerificationClaim != "server_version_banner" {
 		return ErrDiagnosticCandidate
 	}
 	// 섞임 표시는 한 번 이상 다시 쓰게 한 뒤에만 붙는다.
@@ -165,7 +169,7 @@ func (s *ExplorationStore) RecordDiagnosticCandidate(ctx context.Context, c Diag
 	}
 	// 같은 call/type/name 제출은 기존 후보를 반환한다. 다른 관찰과 이름만으로 합치지 않는다.
 	var existing int64
-	err = tx.QueryRowContext(ctx, `SELECT id FROM exploration_nodes WHERE exploration_id=$1 AND origin=$2 AND payload->'diagnostic_candidate_v1'->>'run_ref'=$3 AND payload->'diagnostic_candidate_v1'->>'call_ref'=$4 AND payload->'diagnostic_candidate_v1'->>'vulnclass'=$5 AND payload->'diagnostic_candidate_v1'->>'name'=$6 AND payload->'diagnostic_candidate_v1'->>'intent_id'=$7 AND payload->'diagnostic_candidate_v1'->>'evidence_digest'=$8 ORDER BY id LIMIT 1`, s.expID, diagnosticCandidateOrigin, c.RunRef, c.CallRef, c.VulnClass, c.Name, strconv.FormatInt(c.IntentID, 10), c.EvidenceDigest).Scan(&existing)
+	err = tx.QueryRowContext(ctx, `SELECT id FROM exploration_nodes WHERE exploration_id=$1 AND origin=$2 AND payload->'diagnostic_candidate_v1'->>'run_ref'=$3 AND payload->'diagnostic_candidate_v1'->>'call_ref'=$4 AND payload->'diagnostic_candidate_v1'->>'vulnclass'=$5 AND payload->'diagnostic_candidate_v1'->>'name'=$6 AND payload->'diagnostic_candidate_v1'->>'intent_id'=$7 AND payload->'diagnostic_candidate_v1'->>'evidence_digest'=$8 AND COALESCE(payload->'diagnostic_candidate_v1'->>'verification_claim','')=$9 ORDER BY id LIMIT 1`, s.expID, diagnosticCandidateOrigin, c.RunRef, c.CallRef, c.VulnClass, c.Name, strconv.FormatInt(c.IntentID, 10), c.EvidenceDigest, c.VerificationClaim).Scan(&existing)
 	if err == nil {
 
 		err := tx.Commit()

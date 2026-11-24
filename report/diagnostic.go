@@ -2,7 +2,9 @@ package report
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -223,13 +225,25 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 			return DiagnosticReport{}, ErrExportBlocked
 		}
 		seen[e.ID] = true
-		if (e.Kind != "candidate" && e.Kind != "finding" && e.Kind != "verdict") || !strings.HasPrefix(e.ID, e.Kind+"-") || (e.Verification != "stored_verification" && e.Verification != "manual_review_required") {
+		if (e.Kind != "candidate" && e.Kind != "finding" && e.Kind != "verdict") || !strings.HasPrefix(e.ID, e.Kind+"-") || (e.Verification != "stored_verification" && e.Verification != "manual_review_required" && e.Verification != "passive_observation_v1") {
+			return DiagnosticReport{}, ErrExportBlocked
+		}
+		if e.Verification == "passive_observation_v1" && e.Outcome != "confirmed" {
 			return DiagnosticReport{}, ErrExportBlocked
 		}
 		switch e.Outcome {
 		case "confirmed":
-			if e.Kind != "finding" || e.Verification != "stored_verification" || e.Stale {
+			legacyFinding := e.Kind == "finding" && e.Verification == "stored_verification"
+			passiveCandidate := e.Kind == "candidate" && e.Verification == "passive_observation_v1" && in.Run != nil && in.Run.VerificationVersion == "passive/v1" &&
+				((e.Status == "html_nosniff_missing_twice" && e.VulnClass == "security_headers") || (e.Status == "server_version_banner_twice" && e.VulnClass == "information_disclosure"))
+			if !legacyFinding && !passiveCandidate || e.Stale {
 				return DiagnosticReport{}, ErrExportBlocked
+			}
+			if passiveCandidate {
+				sum := sha256.Sum256([]byte(e.Evidence))
+				if e.Digest != hex.EncodeToString(sum[:]) {
+					return DiagnosticReport{}, ErrExportBlocked
+				}
 			}
 			in.Confirmed++
 		case "review":

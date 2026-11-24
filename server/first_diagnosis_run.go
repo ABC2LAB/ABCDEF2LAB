@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Autumn-27/artex/candidateverify"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/diagnosis"
 	"github.com/Autumn-27/artex/internal/diagnosticlog"
@@ -35,7 +36,22 @@ type diagnosisRunRecord struct {
 	Goal *diagnosisGoalDigests `json:"goal,omitempty"`
 	// Language는 이 실행의 진단 후보에서 한국어 칸 언어 섞임으로 다시 쓰게 한 횟수와 '다른 언어 섞임' 표시가 붙은 후보
 	// 수다(2026-11-24, agent/e2_diagnostic_candidate_lang.go). 이 칸 이전 기록에는 없다.
-	Language *diagnosisLanguageCounts `json:"language,omitempty"`
+	Language     *diagnosisLanguageCounts     `json:"language,omitempty"`
+	Verification *diagnosisVerificationRecord `json:"verification,omitempty"`
+}
+
+type diagnosisVerificationRecord struct {
+	Version             string                         `json:"version"`
+	SourceUnavailable   bool                           `json:"source_unavailable,omitempty"`
+	NonIDORConfirmed    int                            `json:"non_idor_confirmed"`
+	NonIDORNegative     int                            `json:"non_idor_negative"`
+	VerificationPending int                            `json:"verification_pending"`
+	Candidates          []diagnosisCandidateAssessment `json:"candidates"`
+}
+type diagnosisCandidateAssessment struct {
+	CandidateID    int64                  `json:"candidate_id"`
+	EvidenceDigest string                 `json:"evidence_digest"`
+	Result         candidateverify.Result `json:"result"`
 }
 
 // diagnosisLanguageCounts는 저장된 진단 후보 기준이다. 다시 쓰라고 했지만 모델이 다시 내지 않은 요청은 진단 로그
@@ -186,6 +202,25 @@ func saveDiagnosisRunRecordGoal(ctx context.Context, pool *sql.DB, task int64, s
 	if language.Rewrites, language.Mixed, err = db.CountDiagnosticCandidateLanguage(ctx, tx, exploration, state.RunRef); err != nil {
 		return ErrFirstDiagnosisOutcome
 	}
+	candidates, err := db.ListDiagnosticCandidatesQuery(ctx, tx, exploration, task, state.RunRef, db.MaxDiagnosticCandidates+1)
+	verification := &diagnosisVerificationRecord{Version: "passive/v1", Candidates: make([]diagnosisCandidateAssessment, 0, len(candidates))}
+	if err != nil || len(candidates) > db.MaxDiagnosticCandidates {
+		// 후보 근거 손상 때문에 정본 종료 기록을 잃지 않는다.
+		verification.SourceUnavailable = true
+		candidates = nil
+	}
+	for _, candidate := range candidates {
+		result := candidateverify.Assess(candidate)
+		verification.Candidates = append(verification.Candidates, diagnosisCandidateAssessment{CandidateID: candidate.ID, EvidenceDigest: candidate.EvidenceDigest, Result: result})
+		switch result.Status {
+		case candidateverify.Confirmed:
+			verification.NonIDORConfirmed++
+		case candidateverify.Negative:
+			verification.NonIDORNegative++
+		default:
+			verification.VerificationPending++
+		}
+	}
 	var existing []byte
 	err = tx.QueryRowContext(ctx, `SELECT payload FROM exploration_nodes WHERE exploration_id=$1 AND kind='fact' AND state='confirmed' AND origin=$2 AND payload->>'task_id'=$3 ORDER BY id DESC LIMIT 1`, exploration, diagnosisRunOrigin, strconv.FormatInt(task, 10)).Scan(&existing)
 	if err == nil {
@@ -209,7 +244,9 @@ func saveDiagnosisRunRecordGoal(ctx context.Context, pool *sql.DB, task int64, s
 		goalB, errF := json.Marshal(old.Goal)
 		languageA, errG := json.Marshal(language)
 		languageB, errH := json.Marshal(old.Language)
-		if !bytes.Equal(a, b) || errA != nil || errB != nil || !bytes.Equal(modelA, modelB) || errC != nil || errD != nil || !bytes.Equal(resultA, resultB) || errE != nil || errF != nil || !bytes.Equal(goalA, goalB) || errG != nil || errH != nil || !bytes.Equal(languageA, languageB) {
+		verificationA, errI := json.Marshal(verification)
+		verificationB, errJ := json.Marshal(old.Verification)
+		if !bytes.Equal(a, b) || errA != nil || errB != nil || !bytes.Equal(modelA, modelB) || errC != nil || errD != nil || !bytes.Equal(resultA, resultB) || errE != nil || errF != nil || !bytes.Equal(goalA, goalB) || errG != nil || errH != nil || !bytes.Equal(languageA, languageB) || errI != nil || errJ != nil || !bytes.Equal(verificationA, verificationB) {
 			return ErrFirstDiagnosisOutcome
 		}
 		return tx.Commit()
@@ -217,7 +254,7 @@ func saveDiagnosisRunRecordGoal(ctx context.Context, pool *sql.DB, task int64, s
 	if !errors.Is(err, sql.ErrNoRows) {
 		return ErrFirstDiagnosisOutcome
 	}
-	payload, err := json.Marshal(diagnosisRunRecord{Version: 1, TaskID: task, SavedAt: time.Now().UTC(), Run: state, Model: model, Result: result, Goal: goal, Language: language})
+	payload, err := json.Marshal(diagnosisRunRecord{Version: 1, TaskID: task, SavedAt: time.Now().UTC(), Run: state, Model: model, Result: result, Goal: goal, Language: language, Verification: verification})
 	if err != nil {
 		return ErrFirstDiagnosisOutcome
 	}

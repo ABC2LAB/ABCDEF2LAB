@@ -20,7 +20,20 @@ const (
 // 없다는 뜻이 아니다.
 type DiagnosticRun struct {
 	State  string
+	RunRef string
 	Result *diagnosis.RunResult
+	// VerificationVersion은 수동적 독립 관찰 검증 이전의 저장 보고서에는 없다.
+	VerificationVersion           string
+	VerificationSourceUnavailable bool
+	CandidateAssessments          []CandidateAssessment
+}
+
+type CandidateAssessment struct {
+	CandidateID    int64
+	EvidenceDigest string
+	Status         string
+	Reason         string
+	AttemptRefs    []string
 }
 
 // DiagnosticRunText는 실행 결과 한 줄이다. 화면(web urlOutcomeText)과 같은 문구를 쓴다. 기록이 없거나 형식이 맞지

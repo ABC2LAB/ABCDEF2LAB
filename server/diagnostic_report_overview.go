@@ -34,7 +34,15 @@ func readDiagnosticRun(ctx context.Context, tx *sql.Tx, task int64) (*report.Dia
 	if record.Run.ClosureFailed {
 		state = report.DiagnosticRunClosureFailed
 	}
-	return &report.DiagnosticRun{State: state, Result: record.Result}, nil
+	run := &report.DiagnosticRun{State: state, RunRef: record.Run.RunRef, Result: record.Result}
+	if record.Verification != nil && record.Verification.Version == "passive/v1" {
+		run.VerificationVersion = record.Verification.Version
+		run.VerificationSourceUnavailable = record.Verification.SourceUnavailable
+		for _, row := range record.Verification.Candidates {
+			run.CandidateAssessments = append(run.CandidateAssessments, report.CandidateAssessment{CandidateID: row.CandidateID, EvidenceDigest: row.EvidenceDigest, Status: row.Result.Status, Reason: row.Result.Reason, AttemptRefs: append([]string(nil), row.Result.Attempts...)})
+		}
+	}
+	return run, nil
 }
 
 // 저장된 준비·실행 정산을 출처별로 표시한다. 두 단계를 합산하거나 미확정 비용을 0으로 단정하지 않는다.
