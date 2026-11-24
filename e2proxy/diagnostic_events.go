@@ -15,7 +15,7 @@ func diagnosticReceipt(ctx context.Context, r Receipt, event, status, reason str
 }
 func diagnosticReason(reason Reason) string {
 	switch reason {
-	case Complete, Withheld, Unsupported, PolicyDenied, Closed, AuditFailed, Expired, Revoked, BudgetExhausted, TransportFailed, Unknown, AttemptLimit, DenialLimit, TransientLimit, UnknownLimit, Invalid:
+	case Complete, Withheld, Unsupported, PolicyDenied, WorkflowPaused, Closed, AuditFailed, Expired, Revoked, BudgetExhausted, TransportFailed, Unknown, AttemptLimit, DenialLimit, TransientLimit, UnknownLimit, Invalid:
 		return string(reason)
 	}
 	return "invalid"

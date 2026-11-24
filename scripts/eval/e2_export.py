@@ -35,7 +35,7 @@ STATE_COMPLETE, STATE_INCOMPLETE = "complete", "incomplete"
 STAGE_INTENT, STAGE_RESULT, STAGE_CONTROL, STAGE_CALL_CLOSED = "intent", "result", "control", "call_closed"
 ALLOWED = "allowed"
 E2_DECISIONS = frozenset({ALLOWED, "denied", "unsupported"})
-E2_REASONS = frozenset({"complete", "unsupported", "policy_denied", "closed", "audit_failed", "expired", "revoked", "budget_exhausted",
+E2_REASONS = frozenset({"complete", "unsupported", "policy_denied", "workflow_paused", "closed", "audit_failed", "expired", "revoked", "budget_exhausted",
                         "transport_failed", "unknown", "attempt_limit", "denial_limit", "transient_limit", "unknown_limit", "invalid",
                         WITHHELD})
 HEADER_PASSTHROUGH = "evaluation_caller_passthrough"
