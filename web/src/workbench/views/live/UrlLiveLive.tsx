@@ -10,7 +10,16 @@
 // 심각도 · 공격 경로 · 지식 그래프 · 계정 비교 · 재현 명령은 서버가 주지 않아 두지 않는다.
 // 판정은 팀 lib(summarizeDiagnosticEntries · diagnosticOutcome)의 분류만 쓰고 화면이 만들지 않는다.
 
-import { type KeyboardEvent, type ReactElement, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import {
+  type KeyboardEvent,
+  type ReactElement,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { ApiError } from "@/lib/diagnosis/api";
 import { activeURLRun } from "@/lib/diagnosis/diagnosis-runs";
@@ -61,7 +70,7 @@ import { Icon } from "../../ui/icons";
 import { Markdown } from "../../ui/Markdown";
 import { InspHead, InspOpenButton, Isec, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
-import { ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "./approvals";
+import { ApprovalQueue, useRequestApprovals } from "./approvals";
 import { CoverageGraphSection } from "./coverageGraphView";
 import { DiagnosticEntrySections, stepHeading } from "./DiagnosticEntrySections";
 import { PriceCapsNotice } from "./PriceCapsNotice";
@@ -70,7 +79,16 @@ import { ReportAssetGraph } from "./ReportAssetGraph";
 import { ReportReadError } from "./runRows";
 import { TaskActivity } from "./TaskActivity";
 import { AccessMapPanel } from "./UrlAccessMapLive";
-import { reasonText, UrlFacts, UrlHead, UrlNotices, UrlPill, UrlRefreshButton, useUrlHost } from "./urlParts";
+import {
+  BackButton,
+  reasonText,
+  UrlFacts,
+  UrlHead,
+  UrlNotices,
+  UrlPill,
+  UrlRefreshButton,
+  useUrlHost,
+} from "./urlParts";
 import { VerdictDetailCard } from "./VerdictDetailCard";
 import { crawlPct, useStopConfirm, WorkflowNotice, WorkflowReport } from "./workflowViews";
 
@@ -283,9 +301,7 @@ function LiveCandidateDetail({
   return (
     <>
       <div className={s["vi-back"]}>
-        <button className={cx(s.btn, s.sm)} type="button" onClick={onBack}>
-          진행 요약으로
-        </button>
+        <BackButton to="진행 요약" onClick={onBack} />
       </div>
       {stale}
       {body}
@@ -309,8 +325,11 @@ function LiveCandidates({
   idle,
   picked,
   onPick,
+  titles,
 }: {
   poll: Poll<LiveCandidatePage>;
+  /** 후보 ID → 취약점 이름(보고서 자료의 'candidate-<id>' 항목 제목). 아직 못 읽은 후보는 없다 */
+  titles: ReadonlyMap<string, string>;
   fresh: ReadonlySet<string>;
   idle: CandidateIdle;
   /** 오른쪽에 상세를 띄운 후보 ID */
@@ -365,11 +384,13 @@ function LiveCandidates({
             >
               <CandidateSev sev={c.suggestedSeverity} />
               <span className={s["lfind-m"]}>
+                {/* 줄 제목은 무슨 취약점인지(사용자 11/24: 다 '후보 #n'이라 뭔지 몰랐다). 이름을 아직 못 읽었으면 후보 번호 */}
                 <span className={s["lfind-t"]}>
-                  {`후보 #${c.candidateId}`}
+                  {titles.get(c.candidateId) ?? `후보 #${c.candidateId}`}
                   {fresh.has(c.candidateId) ? <span className={cx(s.tag, s.new)}>새로</span> : null}
                 </span>
                 <span className={s["lfind-s"]}>
+                  {titles.has(c.candidateId) ? `후보 #${c.candidateId} · ` : null}
                   <time dateTime={c.observedAt} title={dateTimeOf(c.observedAt)}>
                     {`관측 ${clockOf(c.observedAt)}`}
                   </time>
@@ -646,10 +667,26 @@ export function UrlLiveLive() {
   const [pick, setPick] = useState<{ task: string; entry: string } | null>(null);
   const picked = pick && pick.task === job?.task_id ? pick.entry : null;
   const runEnded = !job || URL_ENDED_STATES.includes(job.state);
-  const pickedRem = usePoll(() => fetchRemediation(job?.task_id as string, "internal"), [job?.task_id, picked], {
-    enabled: visible && !!picked && !runEnded && !!job?.task_id,
-    intervalMs: LIVE_DETAIL_POLL_MS,
-  });
+  // 같은 자료로 후보 줄에 취약점 이름도 붙인다(사용자 11/24). 그래서 고른 동안만이 아니라 후보가 있으면 읽고, 새 후보가
+  // 오면 바로 다시 읽는다(그 사이엔 쉬었다가)
+  const newestCandidate = finds.data?.items[0]?.candidateId ?? null;
+  const pickedRem = usePoll(
+    () => fetchRemediation(job?.task_id as string, "internal"),
+    [job?.task_id, picked, newestCandidate],
+    {
+      enabled: visible && !runEnded && !!job?.task_id && (!!picked || !!newestCandidate),
+      intervalMs: LIVE_DETAIL_POLL_MS,
+    },
+  );
+  const candidateTitles = useMemo(() => {
+    const out = new Map<string, string>();
+    for (const e of pickedRem.data?.entries ?? []) {
+      if (!e.entry_id.startsWith("candidate-")) continue;
+      const title = maskSecrets(e.title).trim();
+      if (title) out.set(e.entry_id.slice("candidate-".length), title);
+    }
+    return out;
+  }, [pickedRem.data]);
   const pickEntry = (entry: string) => {
     if (!job?.task_id) return;
     setPick({ task: job.task_id, entry });
@@ -885,49 +922,8 @@ export function UrlLiveLive() {
             </section>
           ) : null}
           {stateNote}
-          {/* 확인 필요: 보내기 전에 사람이 정할 요청을 노란 상자 하나에. 줄마다 메서드 · 경로 · 계획 제목 옆에 승인 · 거부,
-              그 아래 보낼 요청 미리보기와 승인 정보(무엇을 승인하는지 보고 정하게 접지 않는다) */}
-          {a.pending.length ? (
-            <section className={s.ldecide} aria-labelledby="lDecideH">
-              <div className={s.sh}>
-                <h2 id="lDecideH">확인 필요</h2>
-                <span className={s.n}>{`${a.pending.length}건`}</span>
-              </div>
-              {a.pending.map((r) => (
-                <div className={s.decide} key={r.id}>
-                  <div className={s.dm}>
-                    <b>
-                      <span className={cx(s.m, s[r.method])}>{r.method}</span>
-                      <span className={s.p}>{r.path}</span>
-                    </b>
-                    <span>{flow?.plan?.find((p) => p.id === r.intent_id)?.title ?? "계획 제목 없음"}</span>
-                  </div>
-                  <div className={s.acts}>
-                    <button
-                      className={cx(s.btn, s.pri, s.sm)}
-                      type="button"
-                      disabled={!a.canDecide(r)}
-                      onClick={() => void a.decide(r, "allow")}
-                    >
-                      {a.busy === r.id ? "보내는 중…" : "승인하고 보내기"}
-                    </button>
-                    <button
-                      className={cx(s.btn, s.sm)}
-                      type="button"
-                      disabled={!a.canDecide(r)}
-                      onClick={() => void a.decide(r, "deny")}
-                    >
-                      거부
-                    </button>
-                  </div>
-                  <div className={s["lv-aprev"]}>
-                    <ApprovalRequestCode row={r} />
-                    <ApprovalFacts row={r} />
-                  </div>
-                </div>
-              ))}
-            </section>
-          ) : null}
+          {/* 승인 요청: 한 줄씩 쌓이는 목록(사용자 11/24). 줄을 누르면 미리보기 · 승인 정보 · 승인/거부가 펼쳐진다 */}
+          <ApprovalQueue a={a} planTitle={(id) => flow?.plan?.find((p) => p.id === id)?.title} />
           {/* 발견: 점검 중엔 발견 후보(실시간), 끝나면 저장된 결과를 보고서 형식으로 */}
           {!ended && job.task_id ? (
             <LiveCandidates
@@ -936,6 +932,7 @@ export function UrlLiveLive() {
               idle={findsIdle}
               picked={picked?.startsWith("candidate-") ? picked.slice("candidate-".length) : null}
               onPick={(id) => pickEntry(`candidate-${id}`)}
+              titles={candidateTitles}
             />
           ) : null}
           {ended && savedTask ? <SavedFindings poll={saved} picked={picked} onPick={pickEntry} /> : null}
@@ -1388,15 +1385,7 @@ export function FindingPage({
     <section className={s.fpage} aria-label="취약점 상세 페이지">
       {/* ARTEX 발견 상세 머리: ← · 제목 · 위험도 · 판정 딱지를 한 줄로 (유형 · 대상 · ID 는 오른쪽 상태 카드) */}
       <div className={s["fpage-h"]}>
-        <button
-          className={cx(s["icon-btn"], s["fpage-back"])}
-          type="button"
-          onClick={onBack}
-          aria-label="취약점 목록으로"
-          title="취약점 목록으로"
-        >
-          <Icon name="arrow" />
-        </button>
+        <BackButton to="취약점 목록" onClick={onBack} />
         <h2 ref={head} tabIndex={-1}>
           {maskSecrets(e.title) || e.entry_id}
         </h2>

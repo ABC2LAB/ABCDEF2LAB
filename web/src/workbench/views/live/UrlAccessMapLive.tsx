@@ -32,7 +32,7 @@ import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
 import s from "../../workbench.module.css";
 import { ProductAccessMapSection } from "./productAccessMapSection";
-import { UrlHead } from "./urlParts";
+import { BackButton, UrlHead } from "./urlParts";
 
 /**
  * decision → 셀 색(인라인 React.CSSProperties). kg.ts 의 DECISION_CELL(옛 abc2lab.css 클래스)과
@@ -225,10 +225,16 @@ type Read = { key: string; map: AccessMap | null; error: unknown };
 
 /** 접근통제 지도 화면 (운영자 전용 · 현재 Job 의 task). 본문은 보고서 '접근통제 지도' 탭과 같은 AccessMapPanel 이다. */
 export function UrlAccessMapLive() {
-  const { route } = useShell();
+  const { route, goTo } = useShell();
   return (
     <>
-      <UrlHead title="접근통제 지도" crumb="접근통제 지도" />
+      {/* 보고서 '접근통제 지도' 탭의 [화면 열기]로 오므로 돌아가는 버튼을 둔다(사용자 11/24). 화면은 숨김으로만 바뀌어 보고서는
+          그 탭을 연 채로 남아 있다 */}
+      <UrlHead
+        title="접근통제 지도"
+        crumb="접근통제 지도"
+        acts={<BackButton to="보고서" onClick={() => goTo("report")} />}
+      />
       <div className={s.vb}>
         <div className={s.vm}>
           <AccessMapPanel active={route === "accessmap"} />

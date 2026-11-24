@@ -147,7 +147,7 @@ describe("PolicyDeclarationLive (대상 · 조회 상태)", () => {
     mount("declaration", goTo);
     expect(await screen.findByText(/선언자/)).toHaveTextContent("operator-1");
     expect(screen.getByLabelText("선언할 대상")).toHaveValue("t1");
-    fireEvent.click(screen.getByRole("button", { name: "새 점검으로" }));
+    fireEvent.click(screen.getByRole("button", { name: "새 점검으로 돌아가기" }));
     expect(goTo).toHaveBeenCalledWith("new");
     useWb.setState({ focusTarget: null });
   });

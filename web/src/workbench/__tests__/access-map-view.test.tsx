@@ -85,7 +85,7 @@ const apiMap = (task = 42, over: Record<string, unknown> = {}) => ({
   ...over,
 });
 const noop = () => undefined;
-function shellAt(route: View): Shell {
+function shellAt(route: View, goTo: (v: View) => void = noop): Shell {
   return {
     route,
     navSeq: 1,
@@ -95,7 +95,7 @@ function shellAt(route: View): Shell {
     inspOpen: false,
     railOpen: false,
     railNewAtRoute: false,
-    goTo: noop,
+    goTo,
     openInsp: noop,
     closeInsp: noop,
     openRail: noop,
@@ -130,6 +130,20 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("UrlAccessMapLive (현재 task · 예시 없음)", () => {
+  it("머리의 [← 보고서]는 보고서 화면으로 돌아간다(사용자 11/24: 지도 화면에 뒤로 가기가 없음)", () => {
+    vi.mocked(getAccessMap).mockReturnValue(new Promise(() => undefined));
+    const goTo = vi.fn();
+    render(
+      <ShellContext.Provider value={shellAt("accessmap", goTo)}>
+        <UrlAccessMapLive />
+      </ShellContext.Provider>,
+    );
+    const back = screen.getByRole("button", { name: "보고서로 돌아가기" });
+    // 뒤로 가기는 모든 화면이 같은 모양 · 글('← 갈 곳')을 쓴다(사용자 11/24)
+    expect(back).toHaveTextContent(/^보고서$/);
+    fireEvent.click(back);
+    expect(goTo).toHaveBeenCalledWith("report");
+  });
   it("현재 task 의 지도를 읽어 수평 판정 · 격자를 그리고, 예시 배너는 없다", async () => {
     f.mockResolvedValue(apiMap());
     show();
