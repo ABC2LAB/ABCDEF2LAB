@@ -24,7 +24,7 @@ intent 결과는 **그래프의 지금 상태에서 계산하는 투영**이다.
 | `incomplete` | `exhausted`, `stopped`, `blocked` + 위·아래에 없는 사유(사유 없음 포함), 실행 마감 때 남은 `open` | 턴·시간 상한, Bash 미호출, 일시 실패, 모델 할당량, Planner가 그 방향을 멈춤, 예산 상한으로 시작하지 못함. |
 | `unknown` | `blocked` + `e2_http_result_unknown` | 결과 불명 송신이 있다. |
 | `stopped` | `paused` (실행 마감 때) | 운영자 중지·대상 철회로 끊겼다. |
-| `goal_met` | `stopped` + `goal_met`, 목표 달성 마감 때 남은 `open` | 목표를 달성해 작업이 끝나(원본과 같은 끝 규칙) 진행 중이던 작업이 취소됐거나 시작하지 않았다. 남은 작업이 아니다(2026-11-24 사용자 결정, #875 발견 6). |
+| `goal_met` | `stopped` + `goal_met`, 목표 달성 마감 때 남은 `open` | 목표를 달성해 작업이 끝나(원본과 같은 끝 규칙) 진행 중이던 작업이 취소됐거나 시작하지 않았다. 남은 작업이 아니다(2026-11-24 사용자 결정, #875 발견 6). 목표 달성은 계획자(모델) 판단이지 프로그램이 검증한 사실이 아니라서, 화면·보고서는 "목표 달성(계획자 판단)으로 중단 n"으로 보이고 중지된 실행의 "끝난"에도 넣지 않는다. |
 
 - `deleted`는 세지 않는다. `running`이 남아 있으면 마감 전이다(지금처럼 기다린다).
 - 그래프 `stopped`(Planner `kill_work`·task 마감 뒤 취소)는 운영자 중지가 아니라서 `incomplete`로 센다. 단 목표 달성(작업 `done`)으로 끝나 취소된 intent는 엔진이 사유 `goal_met`을 붙이고 `goal_met`으로 센다. 실행 상한(`budget_limited`) 마감에서 남은 `open`은 지금처럼 `incomplete`다. 운영자 중지는 지금 코드에서 `paused`로 남는다(`server/engine.go` cancel 처리).

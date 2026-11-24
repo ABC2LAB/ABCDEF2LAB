@@ -36,8 +36,11 @@ func DiagnosticRunText(run *DiagnosticRun) string {
 			return "중지됨"
 		}
 		c := r.IntentOutcomes
-		// 목표 달성으로 멈춘 작업은 끊긴 것이 아니라 끝난 쪽에 센다(#875 발견 6).
-		return fmt.Sprintf("중지됨 · 끝난 %d / 끊긴 %d", c.Done+c.PolicyLimited+c.GoalMet, c.Incomplete+c.Stopped+c.Unknown)
+		// 목표 달성으로 멈춘 작업은 검사를 끝낸 것도 끊긴 것도 아니라 따로 보인다(#875 발견 6, #894 경준 리뷰).
+		if c.GoalMet > 0 {
+			return fmt.Sprintf("중지됨 · 끝난 %d · 목표 달성(계획자 판단)으로 중단 %d / 끊긴 %d", c.Done+c.PolicyLimited, c.GoalMet, c.Incomplete+c.Stopped+c.Unknown)
+		}
+		return fmt.Sprintf("중지됨 · 끝난 %d / 끊긴 %d", c.Done+c.PolicyLimited, c.Incomplete+c.Stopped+c.Unknown)
 	case DiagnosticRunFailed:
 		return "실패(정상 마감되지 않음)"
 	case DiagnosticRunClosureFailed:
@@ -71,9 +74,10 @@ func DiagnosticRunText(run *DiagnosticRun) string {
 		if c.PolicyLimited > 0 {
 			parts = append(parts, fmt.Sprintf("정책상 검증 안 됨 %d", c.PolicyLimited))
 		}
-		// 목표 달성으로 작업이 끝나 멈춘 작업은 남은 작업이 아니라 따로 보인다(#875 발견 6).
+		// 목표 달성으로 작업이 끝나 멈춘 작업은 남은 작업이 아니라 따로 보인다(#875 발견 6). 목표 달성은 계획자(모델) 판단이지
+		// 프로그램이 검증한 사실이 아니라서 문구에 그렇게 적는다(#894 경준 리뷰, 절대 규칙 4).
 		if c.GoalMet > 0 {
-			parts = append(parts, fmt.Sprintf("목표 달성으로 중단 %d", c.GoalMet))
+			parts = append(parts, fmt.Sprintf("목표 달성(계획자 판단)으로 중단 %d", c.GoalMet))
 		}
 		if r.ClosingReason == diagnosis.ClosingBudgetLimited {
 			parts = append(parts, "예산 상한에서 마감 · 찾은 후보는 보존")
