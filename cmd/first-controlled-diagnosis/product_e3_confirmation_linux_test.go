@@ -687,6 +687,23 @@ func TestProductE3RolesFromDeclaration(t *testing.T) {
 	}
 }
 
+type e3AuthRuntimeFixture struct{ initial, current map[string]string }
+
+func (f e3AuthRuntimeFixture) AccountAuth() map[string]string      { return f.initial }
+func (f e3AuthRuntimeFixture) AccountAuthForE3() map[string]string { return f.current }
+
+func TestProductE3RolesUseCurrentSessionBinding(t *testing.T) {
+	runtime := e3AuthRuntimeFixture{
+		initial: map[string]string{"tester-a": server.E2HTTPAuthAuthenticated, "tester-b": server.E2HTTPAuthSessionNotFound},
+		current: map[string]string{"tester-a": server.E2HTTPAuthAuthenticated, "tester-b": server.E2HTTPAuthAuthenticated},
+	}
+	decl := e3contract.Declaration{OwnerAccountLabel: "tester-a", CrossAccountLabel: "tester-b"}
+	owner, cross := productE3Roles(decl, func() map[string]string { return launchAccountAuthForE3(runtime) })
+	if !owner.Authenticated || !cross.Authenticated || launchAccountAuth(runtime)["tester-b"] != server.E2HTTPAuthSessionNotFound {
+		t.Fatal("E3 gate ignored current binding or changed historical preparation result")
+	}
+}
+
 // 쓰기 기록을 남기지 못하면 훅이 오류를 돌려준다(감독자가 단계·상태를 남긴다). 결과 파일은 그래도 쓴다.
 // failingWrites는 쓰기 기록의 Reserve·Settle 중 하나를 실패시키고 나머지는 실제 기록에 넘긴다.
 type failingWrites struct {

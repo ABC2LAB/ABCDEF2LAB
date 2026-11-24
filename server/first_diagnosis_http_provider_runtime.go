@@ -256,6 +256,14 @@ func (r *FirstDiagnosisHTTPRuntime) AccountAuth() map[string]string {
 	return r.host.runtime.AccountAuth()
 }
 
+// AccountAuthForE3는 현재 회차 세션 결속만 E③ 시작 검사에 제공한다. 저장되는 최초 인증 결과는 AccountAuth가 담당한다.
+func (r *FirstDiagnosisHTTPRuntime) AccountAuthForE3() map[string]string {
+	if r == nil || r.host == nil || r.host.runtime == nil {
+		return nil
+	}
+	return r.host.runtime.AccountAuthForE3()
+}
+
 // RecordProductVerdict는 제품 확정 단계 판정 하나를 이 실행의 DB 역할로 저장한다(INSERT만, 바꾸지 않음, docs/contracts/
 // e3-product-verdict-store.md §4·§5).
 func (r *FirstDiagnosisHTTPRuntime) RecordProductVerdict(ctx context.Context, v db.ProductVerdict) (db.ProductVerdictResult, error) {

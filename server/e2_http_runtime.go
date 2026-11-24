@@ -258,6 +258,47 @@ func (r *E2HTTPRuntime) AccountAuth() map[string]string {
 	return diagnosis.CloneAccountAuth(r.accountAuth)
 }
 
+// AccountAuthForE3는 최초 인증 결과를 덮어쓰지 않고, E③ 직전에 같은 회차에 현재 결속된 세션이 있는지 다시 본다.
+// 갱신 성공으로 새 세션을 얻은 계정도 허용하되 토큰의 현재 유효성·신원은 이후 E③ 재로그인과 신원 요청이 검증한다.
+func (r *E2HTTPRuntime) AccountAuthForE3() map[string]string {
+	auth := r.AccountAuth()
+	if r == nil || len(auth) == 0 {
+		return auth
+	}
+	unavailable := func() map[string]string {
+		for label, initial := range auth {
+			if initial == E2HTTPAuthAuthenticated {
+				auth[label] = E2HTTPAuthSessionNotFound
+			}
+		}
+		return auth
+	}
+	r.mu.Lock()
+	task := r.task
+	r.mu.Unlock()
+	if task == nil {
+		return unavailable()
+	}
+	task.mu.Lock()
+	lease := task.lease
+	usable := !task.closed && !task.blocked && task.validLease
+	task.mu.Unlock()
+	if !usable {
+		return unavailable()
+	}
+	if lease == nil || lease.sessionStore == nil {
+		return unavailable()
+	}
+	for label, initial := range auth {
+		if _, ok := lease.sessionStore.AccountBindingRef(r.options.Expected.RunRef, label); ok {
+			auth[label] = E2HTTPAuthAuthenticated
+		} else if initial == E2HTTPAuthAuthenticated {
+			auth[label] = E2HTTPAuthSessionNotFound
+		}
+	}
+	return auth
+}
+
 type e2HTTPRuntimeTask struct {
 	notSentCommands map[string]bool
 
