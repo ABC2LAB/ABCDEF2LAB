@@ -1470,10 +1470,10 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 		// 승인 미리보기는 운영자 화면·승인 기록에 남는 저장 기록이다. model_visible_v1에서는 모델이 대상이 비춘 비밀번호를
 		// 요청 본문에 넣을 수 있으므로, 모델 단계·확정 단계 모두 비밀번호까지 가린 본문을 남긴다.
 		previewBody := e.RedactRecord(body)
-		// 확정 요청은 요청 전용 시간 상한(ctx 기한, 제품 기본 10초) 안에 승인돼야 보낸다. 승인 기한을 그 기한에 맞춰, 운영자가
-		// 결정하지 않으면 승인 기록도 만료(expired)로 남게 한다(#836 이동찬 리뷰).
+		// 승인은 호출·정책 기한뿐 아니라 요청자의 명령 기한 안에서만 유효하다. 화면에 표시하는 만료 시각도
+		// 실제 요청 문맥보다 늦지 않게 맞춘다. 확정 요청의 짧은 전용 상한에도 같은 규칙을 적용한다.
 		approvalExpires := c.expires
-		if deadline, ok := ctx.Deadline(); e3 != nil && ok && deadline.Before(approvalExpires) {
+		if deadline, ok := ctx.Deadline(); ok && deadline.Before(approvalExpires) {
 			approvalExpires = deadline
 		}
 		proposal := RequestApprovalProposal{

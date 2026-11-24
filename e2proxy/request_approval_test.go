@@ -22,6 +22,29 @@ func (f requestApprovalFunc) AwaitRequestApproval(ctx context.Context, p Request
 	return f(ctx, p)
 }
 
+func TestRequestApprovalAdvertisesEffectiveCommandDeadline(t *testing.T) {
+	var hits atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1) }))
+	defer target.Close()
+	cfg := coreConfig(t, target.URL, &coreRecorder{}, 1)
+	cfg.Limits.CallTimeout = time.Minute
+	cfg.ApprovalMode = ApprovalConfirmEveryRequest
+	var offered RequestApprovalProposal
+	cfg.RequestApproval = requestApprovalFunc(func(ctx context.Context, p RequestApprovalProposal) (bool, error) {
+		offered = p
+		<-ctx.Done()
+		return false, ctx.Err()
+	})
+	_, call := coreOpen(t, cfg)
+	command, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	deadline, _ := command.Deadline()
+	_, receipt, _ := call.Do(command, coreRequest(t, "GET", target.URL+"/allowed"))
+	if offered.ExpiresAt.IsZero() || offered.ExpiresAt.After(deadline.Add(time.Millisecond)) || hits.Load() != 0 || !receipt.NotSent {
+		t.Fatal("approval displayed longer than the command could remain valid")
+	}
+}
+
 func TestRequestApprovalHoldAndSingleDispatch(t *testing.T) {
 	var hits atomic.Int64
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
