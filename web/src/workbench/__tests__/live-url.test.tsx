@@ -763,14 +763,15 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     expect(screen.getByLabelText(/점검할 사이트 주소/)).toBeDisabled();
   });
 
-  it("끝난 점검을 이어 보면 입력이 잠긴 이유와 [새로 입력]으로 새 점검을 안내하고, 누르면 진단 모드를 고를 수 있다", async () => {
+  it("끝난 점검을 보다가 새 점검에 오면 그 점검을 떼고 바로 빈 입력 — 잠금 안내 · [새로 입력] 없음(사용자 11/24)", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(completed);
     mount("new");
-    expect(await screen.findByText(/끝난 점검이라 입력이 잠겨 있습니다/)).toBeInTheDocument();
-    expect(screen.getByLabelText(/점검할 사이트 주소/)).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "새로 입력" }));
     await waitFor(() => expect(screen.getByLabelText(/점검할 사이트 주소/)).toBeEnabled());
+    expect(screen.getByLabelText(/점검할 사이트 주소/)).toHaveValue("");
+    expect(useUrl.getState().handle).toBeNull();
+    expect(screen.queryByText(/입력이 잠겨 있습니다/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "새로 입력" })).toBeNull();
     fireEvent.change(screen.getByLabelText(/점검할 사이트 주소/), { target: { value: "https://target.example/" } });
     fireEvent.click(screen.getByRole("button", { name: /다음/ }));
     const auto = screen.getByRole("radio", { name: /^AI 자동/ });

@@ -262,13 +262,27 @@ export function UrlNewScanLive() {
   // 새 점검에 들어올 때마다 대상의 시험 계정 유무·정책 선언을 다시 읽는다. 처음 한 번만 읽으면 그 뒤 계정 분류·정책 선언
   // 화면에서 더한 계정·선언이 반영되지 않아 "로그인 없이 진행"·확정 단계 안내 없음으로 남았다(1차 리허설 F2와 같은 종류,
   // 2026-11-22 합친 빌드 자동화에서 재현)
+  // 새 점검에 들어온 순간 보던 점검이 끝난 점검이면 그 점검을 떼고 빈 입력으로 시작한다(사용자 11/24: '끝난 점검이라 입력이
+  // 잠겨 있습니다 · 새로 입력' 없이 새 점검을 누르면 바로 다른 점검). 들어온 순간에만 본다 — 새 점검 화면에 있는 동안 고른
+  // 끝난 점검은 떼지 않는다. 진행 중 · 범위 확인 뒤 점검은 그대로 이어 본다
+  const freshOnEntry = useRef(false);
   useEffect(() => {
     if (route === "new") {
       setPage(1);
       setEntryGen((n) => n + 1);
       setAccountRevision((n) => n + 1);
+      freshOnEntry.current = true;
     }
   }, [route]);
+  const endedJob = !!job && URL_ENDED_STATES.includes(job.state);
+  useEffect(() => {
+    if (route !== "new" || !freshOnEntry.current || busy) return;
+    // 이어 보는 점검의 상태를 아직 읽는 중이면 기다린다
+    if (handle && !job) return;
+    if (endedJob) disconnectUrl();
+    // 조회 중이라 떼지 못했으면(disconnectUrl 이 그냥 돌아옴) 다음 바뀜에 다시 본다
+    freshOnEntry.current = endedJob && !!useUrl.getState().handle;
+  }, [route, handle, job, endedJob, busy]);
   const seenSeq = useRef(useWb.getState().prefill?.seq ?? 0);
   const seenReset = useRef(resetSeq);
 
@@ -438,8 +452,7 @@ export function UrlNewScanLive() {
   const invalid = !shown && !!target.trim() && !input && !!profile;
   // 이어 보는 점검이 있으면 입력은 그 점검 값으로 잠긴다. 왜 잠겼고 어떻게 푸는지 한 줄로 (끝남 · 진행 중 · 범위 확인 뒤)
   let lockNote = " 범위 확인한 입력은 잠겨 있습니다. 바꾸려면 새로 입력을 누르세요.";
-  if (ended) lockNote = " 끝난 점검이라 입력이 잠겨 있습니다. 새 점검은 새로 입력을 누르세요.";
-  else if (started) lockNote = " 진행 중인 점검이라 입력이 잠겨 있습니다. 끝나거나 멈춘 뒤 새로 입력할 수 있습니다.";
+  if (started) lockNote = " 진행 중인 점검이라 입력이 잠겨 있습니다. 끝나거나 멈춘 뒤 새로 입력할 수 있습니다.";
   // 주소 밑 한 줄 (시안 #nHost): 이어 보는 점검이 아직 도는 중이면 그 점검으로, 아니면 주소 입력 안내
   let hostLine: ReactNode = null;
   if (shown && started && !ended) {
@@ -663,7 +676,8 @@ export function UrlNewScanLive() {
             else void send();
           }}
         >
-          {handle ? (
+          {/* 끝난 점검은 들어오자마자 떼므로(위 freshOnEntry) 잠금 안내 · [새로 입력]을 두지 않는다(사용자 11/24) */}
+          {handle && !ended ? (
             <div className={s.note} role="note">
               <Icon name="info" />
               <span className={s["lv-grow"]}>
@@ -671,14 +685,8 @@ export function UrlNewScanLive() {
                 {job ? <UrlPill job={job} verified={verified} /> : null}
                 {lockNote}
               </span>
-              {!started || ended ? (
-                // 끝난 점검이면 새 점검이 다음 할 일이라 강조한다
-                <button
-                  className={cx(s.btn, s.sm, ended && s.pri)}
-                  type="button"
-                  disabled={busy}
-                  onClick={disconnectUrl}
-                >
+              {!started ? (
+                <button className={cx(s.btn, s.sm)} type="button" disabled={busy} onClick={disconnectUrl}>
                   새로 입력
                 </button>
               ) : null}
