@@ -100,7 +100,7 @@ describe("UrlFindingLive (단독 발견 상세 · 저장 결과)", () => {
     // E③ 원문 판정 · 다계정 비교 칸은 두지 않는다(백엔드 후속)
     expect(screen.queryByText(/다계정|교차 계정 비교/)).toBeNull();
     // 목록으로 갈 때 공용 선택을 지운다(남으면 보고서가 같은 상세를 다시 연다)
-    fireEvent.click(screen.getByRole("button", { name: "취약점 목록으로" }));
+    fireEvent.click(screen.getByRole("button", { name: "취약점 목록으로 돌아가기" }));
     expect(goTo).toHaveBeenCalledWith("report");
     expect(useFindingPick.getState()).toEqual({ task: null, entry: null });
   });
@@ -259,7 +259,7 @@ describe("UrlFindingLive (단독 발견 상세 · 저장 결과)", () => {
     expect(screen.getByText(/보고서 취약점 목록에서 취약점을 고르고/)).toBeInTheDocument();
     expect(a.fetchRemediation).not.toHaveBeenCalled();
     pickFinding("41", "candidate-1"); // 다른 task 에서 고른 것도 목록으로 가며 지운다
-    fireEvent.click(screen.getByRole("button", { name: "보고서 취약점 목록으로" }));
+    fireEvent.click(screen.getByRole("button", { name: "취약점 목록으로 돌아가기" }));
     expect(goTo).toHaveBeenCalledWith("report");
     expect(useFindingPick.getState()).toEqual({ task: null, entry: null });
   });

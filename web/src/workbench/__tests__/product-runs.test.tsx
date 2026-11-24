@@ -13,6 +13,7 @@ import { LiveGate, setLiveAuthState, useLiveAuthBoot } from "../live/auth";
 import { LiveRailTasks } from "../live/rail";
 import { useSource } from "../live/source";
 import { resetUrl, runUrlAction, UrlFeeds, urlGates, useUrl } from "../live/urlDiagnosis";
+import { urlHost, urlStateText } from "../live/urlMap";
 import { loadUrlRuns, useUrlRuns } from "../live/urlRunList";
 import { type Shell, ShellContext, type View } from "../shell";
 import { DashboardByMode, FinishedByMode, LiveByMode, ReportByMode, RunningByMode } from "../views/live/byMode";
@@ -713,7 +714,7 @@ describe("브라우저를 다시 띄운 뒤 진행 중 점검 찾기(사용자 2
     expect(posts()).toEqual([]);
   });
 
-  it("레일 '진행 중'이 이어 보지 않는 서버 진행 중 점검 수를 세고 진행 목록으로 안내한다", async () => {
+  it("레일은 이어 보지 않는 서버 점검도 줄마다 주소 · 상태로 보이고, 누르면 그 점검을 열어 목록 화면으로 간다(사용자 11/24)", async () => {
     let goTo: View | null = null;
     const shell = {
       route: "dashboard" as View,
@@ -742,15 +743,26 @@ describe("브라우저를 다시 띄운 뒤 진행 중 점검 찾기(사용자 2
         <LiveRailTasks />
       </ShellContext.Provider>,
     );
-    const open = screen.getByRole("button", { name: /이어 보지 않는 진행 중 점검 1건/ });
-    fireEvent.click(open);
-    expect(goTo).toBe("running");
-    // 끝난 점검도 같다(F14b): 이어 보는 점검이 없으면 서버 끝난 점검 수를 세고 끝난 점검 목록으로 안내한다
-    const ended = (useUrlRuns.getState().page?.runs ?? []).filter(endedURLRun).length;
+    // '이어 보지 않는 … n건 · 목록에서 열기' 같은 안내 줄은 없다 — 이어 보는 줄과 같은 모양(주소 · 상태)
+    expect(screen.queryByText(/이어 보지 않는/)).toBeNull();
+    const runs = useUrlRuns.getState().page?.runs ?? [];
+    const runList = document.getElementById("rsec-run") as HTMLElement;
+    const doneList = document.getElementById("rsec-done") as HTMLElement;
+    const activeCount = runs.filter(activeURLRun).length;
+    const ended = runs.filter(endedURLRun).length;
+    expect(activeCount).toBeGreaterThan(0);
     expect(ended).toBeGreaterThan(0);
-    const done = screen.getByRole("button", { name: new RegExp(`이어 보지 않는 끝난 점검 ${ended}건`) });
-    fireEvent.click(done);
-    expect(goTo).toBe("finished");
+    await waitFor(() =>
+      expect(within(runList).getAllByRole("button")[0]).toHaveTextContent(urlHost(running.input.target_url)),
+    );
+    expect(within(runList).getAllByRole("button")).toHaveLength(activeCount);
+    expect(within(runList).getAllByRole("button")[0]).toHaveTextContent(urlStateText("running"));
+    expect(within(doneList).getAllByRole("button")).toHaveLength(ended);
     expect(screen.queryByText("끝난 점검 없음")).toBeNull();
+    // 줄을 누르면 그 점검을 열고(상태 다시 읽기) 그 목록 화면으로. 여는 건 서버 방식(v2)을 확인한 뒤라 그 상태로 둔다
+    act(() => useUrl.setState({ cap: { kind: "v2", catalog } }));
+    fireEvent.click(within(runList).getAllByRole("button")[0]);
+    await waitFor(() => expect(goTo).toBe("running"));
+    expect(useUrl.getState().selectedID).toBe(runs.find(activeURLRun)?.id);
   });
 });

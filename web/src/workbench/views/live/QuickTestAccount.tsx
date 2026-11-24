@@ -27,6 +27,7 @@ import {
   validAccountCredential,
 } from "../../live/accounts";
 import s from "../../workbench.module.css";
+import { TargetLoginForm } from "./TargetLoginForm";
 
 /** 두 줄의 계정 이름: 선언의 소유 · 교차 → 이미 있는 시험 계정 → 기본 이름. 두 이름이 같아지지 않게 한다. */
 export function pairLabels(rows: ClassifiedAccount[] | null, owner?: string, cross?: string): [string, string] {
@@ -213,7 +214,9 @@ export function QuickTestAccount({
 
   return (
     <section className={s["acct-quick"]} aria-label="시험 계정">
-      <h3>시험 계정</h3>
+      {/* 로그인 창처럼 위에서부터: 대상 로그인 방식 → 시험 계정 A · B(사용자 11/24) */}
+      <TargetLoginForm targetId={targetId} onSaved={onAdded} />
+      <h3 className={s["acct-quick-h"]}>시험 계정</h3>
       {slots.map((x) => {
         const a = find(x.label);
         const test = !!a && usableAsTestAccount(a.cls);

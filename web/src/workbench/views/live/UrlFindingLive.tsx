@@ -15,7 +15,7 @@ import { useShell } from "../../shell";
 import s from "../../workbench.module.css";
 import { ReportReadError } from "./runRows";
 import { FindingPage } from "./UrlLiveLive";
-import { UrlHead, useUrlHost } from "./urlParts";
+import { BackButton, UrlHead, useUrlHost } from "./urlParts";
 
 /**
  * 저장 결과를 읽은 것. key = 그 요청을 시작한 진입 — 선택 + task + 진입 세대. 다른 진입(직전에 들어왔을 때)의 성공 · 실패는
@@ -70,11 +70,7 @@ export function UrlFindingLive() {
     clearFindingPick();
     goTo("report");
   };
-  const toReport = (
-    <button className={cx(s.btn, s.sm)} type="button" onClick={backToList}>
-      보고서 취약점 목록으로
-    </button>
-  );
+  const toReport = <BackButton to="취약점 목록" onClick={backToList} />;
 
   let body: ReactNode;
   if (!job?.task_id) body = <p className={s.empty}>실제 진단 작업을 선택하세요.</p>;
