@@ -51,7 +51,7 @@ const REASON_TEXT: Readonly<Record<string, string>> = {
   no_confirmable_type: "시험할 자원 종류 없음",
   account_roles_undeclared: "계정 역할을 정하지 않음",
   accounts_privilege_unconfirmed: "두 계정이 같은 권한 등급이라는 확인 없음",
-  no_confirmation_candidates: "모델 단계가 진단 요청 없이 끝나 확정할 후보 없음",
+  no_confirmation_candidates: "모델 단계가 진단 요청 없이 끝나 확정할 취약점 없음",
   // 확정 단계 시작 거절 사유
   reset_confirmation_missing: "대상 리셋 확인 없음",
   previous_markers_present: "지난 시험 객체가 남아 있음",

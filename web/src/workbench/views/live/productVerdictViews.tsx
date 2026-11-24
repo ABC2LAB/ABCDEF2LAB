@@ -188,8 +188,8 @@ export function VerdictBody({ r, compact = false }: { r: ProductVerdictShown; co
       <div className={s.help}>
         {/* 확정도 발견(finding)이 아니라 계약 §3 그대로 '검토 대상 후보 N건'이다. 뒤에 붙인 설명 문장은 뺐다(사용자 11/23) */}
         {r.oracleValue === "confirmed"
-          ? `확정 판정 · 검토 대상 후보 ${r.candidateRefs.length}건`
-          : `연결된 후보 ${r.candidateRefs.length}건`}
+          ? `확정 판정 · 검토 대상 취약점 ${r.candidateRefs.length}건`
+          : `연결된 취약점 ${r.candidateRefs.length}건`}
       </div>
       {r.recordStatus === "policy_source_unavailable" ? (
         <div className={cx(s.note, s.warn)} role="note">

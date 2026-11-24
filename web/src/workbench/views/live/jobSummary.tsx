@@ -511,6 +511,12 @@ export function JobSummary({
           />
         </Isec>
       ) : null}
+      {/* 끝난 회차에 계정별 인증 준비 기록이 없으면 그렇게 적는다(#914 인계). 없다고 로그인 성공 · 실패로 단정하지 않는다 */}
+      {job && !job.account_auth && URL_ENDED_STATES.includes(job.state) ? (
+        <Isec t="시험 계정 인증">
+          <p className={s.help}>이 회차에는 인증 준비 기록이 없습니다.</p>
+        </Isec>
+      ) : null}
       <Isec>
         <div className={s.acts}>
           {pending > 0 && onApprovals ? (

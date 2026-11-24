@@ -11,7 +11,7 @@ const ref = (v: unknown): v is string => typeof v === "string" && /^[a-zA-Z0-9][
 export async function readExternalTestAccountPresence(
   target: string,
   signal?: AbortSignal,
-): Promise<{ hasTestAccounts: boolean; statement: string }> {
+): Promise<{ hasTestAccounts: boolean; statement: string; loginMethodMissing: boolean }> {
   const origin = new URL(target).origin;
   const resolved = await apiFetch<unknown>(
     `/api/product/targets/resolve?url=${encodeURIComponent(target)}`,
@@ -23,7 +23,7 @@ export async function readExternalTestAccountPresence(
     resolved.target === undefined &&
     (Object.keys(resolved).length === 0 || (Array.isArray(resolved.targets) && resolved.targets.length === 0))
   )
-    return { hasTestAccounts: false, statement: "" };
+    return { hasTestAccounts: false, statement: "", loginMethodMissing: false };
   const t = resolved.target;
   if (!object(t) || !ref(t.id) || t.origin !== origin || t.state !== "approved")
     throw new ApiError(422, "invalid_target_contract");
@@ -52,5 +52,15 @@ export async function readExternalTestAccountPresence(
     !statementControls.test(result.external_consent_statement)
       ? result.external_consent_statement
       : "";
-  return { hasTestAccounts: accounts.some((a) => object(a) && a.classification === "test"), statement };
+  // 자격은 저장됐는데 이 대상의 로그인 방식이 없으면 서버가 login_method_missing: true 를 준다(#914, workbench-live-data).
+  // 대상 설정 상태일 뿐이라 MFA · 지원 안 함으로 읽지 않고, 없다고 로그인 성공으로도 읽지 않는다. 시험 계정만 본다
+  const loginMethodMissing = accounts.some(
+    (a) =>
+      object(a) && a.classification === "test" && a.credential_configured === true && a.login_method_missing === true,
+  );
+  return {
+    hasTestAccounts: accounts.some((a) => object(a) && a.classification === "test"),
+    statement,
+    loginMethodMissing,
+  };
 }

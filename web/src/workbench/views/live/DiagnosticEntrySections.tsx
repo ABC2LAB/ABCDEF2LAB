@@ -10,6 +10,7 @@ import { DIAGNOSTIC_CAPTURE_LIMITS, type RemediationEntry, type ReproductionStep
 import { entrySeverityLabel } from "@/lib/diagnosis/severity";
 
 import { cx } from "../../lib/cx";
+import { type BusinessRuleReview, fetchBusinessRuleReviews, reviewUnsupported } from "../../live/businessRuleReview";
 import { maskForCopy, maskSecrets } from "../../live/mask";
 import { Markdown } from "../../ui/Markdown";
 import { Isec } from "../../ui/parts";
@@ -150,6 +151,61 @@ export function pocCopyText(entry: RemediationEntry): string {
   return maskForCopy(out.join("\n"));
 }
 
+/**
+ * 업무 규칙 검토 칸(#914 인계): 서버가 이 후보에 관찰 · 검토 질문을 줬을 때만 보인다. 관찰을 먼저, 질문은 '확인할 질문(선택)'.
+ * '업무 규칙 미확인' 딱지는 서버 status deferred · reason business_rule_unverified 그대로다 — 후보의 검토 상태 · 판정은 바꾸지
+ * 않는다(규칙 5). 옛 서버(형식 없음)면 칸을 두지 않고, 그 밖의 실패는 한 줄로 알린다(없음으로 단정하지 않음).
+ */
+function BusinessRuleReviewBox({ task, entryId }: { task: string; entryId: string }) {
+  const key = `${task}:${entryId}`;
+  const [got, setGot] = useState<{ key: string; review: BusinessRuleReview | null; failed: boolean } | null>(null);
+  useEffect(() => {
+    if (!entryId.startsWith("candidate-")) return;
+    let live = true;
+    fetchBusinessRuleReviews(task)
+      .then((m) => {
+        if (live) setGot({ key, review: m.get(entryId) ?? null, failed: false });
+      })
+      .catch((error: unknown) => {
+        if (!live) return;
+        const unsupported = reviewUnsupported(error);
+        if (!unsupported) console.warn("업무 규칙 검토 읽기 실패", error);
+        setGot({ key, review: null, failed: !unsupported });
+      });
+    return () => {
+      live = false;
+    };
+  }, [task, entryId, key]);
+  if (got?.key !== key) return null;
+  if (got.failed)
+    return (
+      <Isec>
+        <p className={s.help}>업무 규칙 검토를 읽지 못했습니다.</p>
+      </Isec>
+    );
+  if (!got.review) return null;
+  return (
+    <Isec>
+      <section className={s.brr} aria-label="업무 규칙 검토">
+        <div className={s["dcard-h"]}>
+          <h3>업무 규칙 검토</h3>
+          <span className={cx(s.tag, s.ap)}>업무 규칙 미확인</span>
+        </div>
+        <dl className={s.kv}>
+          <div>
+            <dt>관찰</dt>
+            <dd>{maskSecrets(got.review.observation)}</dd>
+          </div>
+          <div>
+            <dt>확인할 질문(선택)</dt>
+            <dd>{maskSecrets(got.review.question)}</dd>
+          </div>
+        </dl>
+      </section>
+    </Isec>
+  );
+}
+
 export function DiagnosticEntrySections({
   task,
   entry,
@@ -247,6 +303,7 @@ export function DiagnosticEntrySections({
           {truncNote}
           {e3Help}
         </Isec>
+        <BusinessRuleReviewBox task={task} entryId={entry.entry_id} />
         <Isec>
           <h3>증거 / PoC</h3>
           <p className={s.help}>
@@ -286,6 +343,8 @@ export function DiagnosticEntrySections({
       {/* ARTEX 발견 상세처럼(사용자 11/17): 판정 · 유형 · 위험도 · 시각은 위 상태 칸이 말하고, 상세 보고(Markdown) · 증거는
           칸 안 카드로 펼쳐 두되 높이를 묶은 상자에서 스크롤한다. 검증 방식 · 실행 · 증거 버전 · 단계별 호출/근거 ID · digest
           같은 기록 값('기술 정보')은 보는 사람에게 필요 없어 뺐다(사용자 11/19) — 내부 상세 사본(내려받기)에는 남는다 */}
+      {/* 업무 규칙 검토(#914): 사람이 확인할 일이라 맨 위에 둔다. 서버가 준 후보에만 */}
+      <BusinessRuleReviewBox task={task} entryId={entry.entry_id} />
       <Isec>
         {/* AI(엔진)가 쓴 요약 · 상세 보고라 '판정'으로 읽히지 않게 이름을 AI 분석으로(사용자 11/19) — 판정은 상태 칸 딱지 */}
         <h3>① AI 분석</h3>
