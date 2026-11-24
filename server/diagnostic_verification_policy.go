@@ -53,7 +53,10 @@ func saveDiagnosisVerificationPolicy(ctx context.Context, pool *sql.DB, taskID i
 
 func readDiagnosisVerificationPolicy(ctx context.Context, tx *sql.Tx, taskID int64) (*diagnosisVerificationPolicy, error) {
 	var raw []byte
-	err := tx.QueryRowContext(ctx, `SELECT n.payload FROM tasks t JOIN exploration_nodes n ON n.exploration_id=t.exploration_id WHERE t.id=$1 AND t.deleted_at IS NULL AND n.kind='fact' AND n.state='confirmed' AND n.origin=$2 AND n.payload->>'task_id'=$3 ORDER BY n.id DESC LIMIT 1`, taskID, diagnosisVerificationPolicyOrigin, strconv.FormatInt(taskID, 10)).Scan(&raw)
+	var kind, state string
+	// Find the marker by its server-owned exploration and origin first. A
+	// corrupted task_id in its payload must not make a v2 run look legacy.
+	err := tx.QueryRowContext(ctx, `SELECT n.payload,n.kind,n.state FROM tasks t JOIN exploration_nodes n ON n.exploration_id=t.exploration_id WHERE t.id=$1 AND t.deleted_at IS NULL AND n.origin=$2 ORDER BY n.id DESC LIMIT 1`, taskID, diagnosisVerificationPolicyOrigin).Scan(&raw, &kind, &state)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -61,7 +64,7 @@ func readDiagnosisVerificationPolicy(ctx context.Context, tx *sql.Tx, taskID int
 		return nil, err
 	}
 	var policy diagnosisVerificationPolicy
-	if json.Unmarshal(raw, &policy) != nil || policy.Version != diagnosisVerificationV2 || policy.TaskID != taskID || policy.RunRef == "" {
+	if kind != "fact" || state != "confirmed" || json.Unmarshal(raw, &policy) != nil || policy.Version != diagnosisVerificationV2 || policy.TaskID != taskID || policy.RunRef == "" {
 		return nil, ErrFirstDiagnosisOutcome
 	}
 	return &policy, nil

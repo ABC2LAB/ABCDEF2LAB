@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http/httptest"
 	"strings"
@@ -257,6 +258,110 @@ func TestConfirmedReportProjectionKeepsE3Once(t *testing.T) {
 			got := projectConfirmedReport(&data)
 			if got != tc.want || len(data.Entries) != tc.count || len(data.ProductConfirmed) != len(tc.e3) {
 				t.Fatalf("projected=%t entries=%d E3=%d", got, len(data.Entries), len(data.ProductConfirmed))
+			}
+		})
+	}
+}
+
+func TestPassiveV2CorruptRunCannotExportPostgres(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*diagnosisRunRecord)
+	}{
+		{"bad-version", func(r *diagnosisRunRecord) { r.Version = 99 }},
+		{"wrong-task", func(r *diagnosisRunRecord) { r.TaskID++ }},
+		{"wrong-run", func(r *diagnosisRunRecord) { r.Run.RunRef = "other-run" }},
+		{"wrong-task-and-run", func(r *diagnosisRunRecord) { r.TaskID++; r.Run.RunRef = "other-run" }},
+		{"missing-verification", func(r *diagnosisRunRecord) { r.Verification = nil }},
+		{"wrong-verification", func(r *diagnosisRunRecord) { r.Verification.Version = "passive/v1" }},
+		{"invalid-outcome", func(r *diagnosisRunRecord) { r.Run.Outcome = "invalid" }},
+		{"missing-saved-at", func(r *diagnosisRunRecord) { r.SavedAt = time.Time{} }},
+		{"dismissed-row", func(r *diagnosisRunRecord) {}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, f, request := trafficEvidenceServer(t)
+			stored, err := s.m.pg.GetFinding(f.FindingID)
+			if err != nil || stored.TaskID == nil {
+				t.Fatal(err)
+			}
+			taskID := *stored.TaskID
+			if err := saveDiagnosisVerificationPolicy(t.Context(), s.m.pg.DB, taskID, passiveRunRef); err != nil {
+				t.Fatal(err)
+			}
+			storePassiveCandidate(t, s, taskID, "html_nosniff_missing", "nosniff_missing", "")
+			path := fmt.Sprintf("/api/report/diagnostic?task=%d", taskID)
+			for _, query := range []string{"&audience=internal", "&audience=shared", "&audience=internal&format=docx", "&audience=shared&format=docx"} {
+				if got := request("GET", path+query, ""); got.Code != 409 {
+					t.Fatalf("running report %s: %d", query, got.Code)
+				}
+			}
+			record := diagnosisRunRecord{Version: 1, TaskID: taskID, SavedAt: time.Now().UTC(), Run: requestApprovalRunState{RunRef: passiveRunRef, Phase: "closed", Outcome: "completed", DrainComplete: true}, Verification: &diagnosisVerificationRecord{Version: diagnosisVerificationV2}}
+			tc.mutate(&record)
+			raw, err := json.Marshal(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = s.m.pg.ExecContext(t.Context(), `INSERT INTO exploration_nodes(exploration_id,kind,state,origin,payload) VALUES((SELECT exploration_id FROM tasks WHERE id=$1),'fact','confirmed',$2,$3::jsonb)`, taskID, diagnosisRunOrigin, string(raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.name == "dismissed-row" {
+				if _, err := s.m.pg.ExecContext(t.Context(), `UPDATE exploration_nodes SET state='dismissed' WHERE exploration_id=(SELECT exploration_id FROM tasks WHERE id=$1) AND origin=$2`, taskID, diagnosisRunOrigin); err != nil {
+					t.Fatal(err)
+				}
+			}
+			tx, err := s.m.pg.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := readDiagnosticRun(t.Context(), tx, taskID); !errors.Is(err, ErrFirstDiagnosisOutcome) {
+				t.Fatalf("corrupt v2 run should fail at run loader: %v", err)
+			}
+			tx.Rollback()
+			for _, query := range []string{"&audience=internal", "&audience=shared", "&audience=internal&download=1", "&audience=shared&download=1", "&audience=internal&format=docx", "&audience=shared&format=docx"} {
+				got := request("GET", path+query, "")
+				if got.Code != 503 || strings.Contains(got.Body.String(), "합성 관찰") || strings.Contains(got.Body.String(), "HTML 문서 보안 헤더 누락") || got.Header().Get("Content-Disposition") != "" {
+					t.Fatalf("corrupt run export %s: status=%d disposition=%q", query, got.Code, got.Header().Get("Content-Disposition"))
+				}
+			}
+			if got := request("GET", path+"&audience=internal&format=review-json", ""); got.Code != 503 {
+				t.Fatalf("corrupt run review status=%d", got.Code)
+			}
+		})
+	}
+}
+
+func TestPassiveV2CorruptPolicyCannotBecomeLegacyPostgres(t *testing.T) {
+	for _, field := range []string{"version", "task_id", "state"} {
+		t.Run(field, func(t *testing.T) {
+			s, f, request := trafficEvidenceServer(t)
+			stored, err := s.m.pg.GetFinding(f.FindingID)
+			if err != nil || stored.TaskID == nil {
+				t.Fatal(err)
+			}
+			taskID := *stored.TaskID
+			if err := saveDiagnosisVerificationPolicy(t.Context(), s.m.pg.DB, taskID, passiveRunRef); err != nil {
+				t.Fatal(err)
+			}
+			storePassiveCandidate(t, s, taskID, "html_nosniff_missing", "nosniff_missing", "")
+			value := `"invalid"`
+			if field == "task_id" {
+				value = fmt.Sprint(taskID + 1)
+			}
+			if field == "state" {
+				_, err = s.m.pg.ExecContext(t.Context(), `UPDATE exploration_nodes SET state='dismissed' WHERE exploration_id=(SELECT exploration_id FROM tasks WHERE id=$1) AND origin=$2`, taskID, diagnosisVerificationPolicyOrigin)
+			} else {
+				_, err = s.m.pg.ExecContext(t.Context(), `UPDATE exploration_nodes SET payload=jsonb_set(payload,ARRAY[$1]::text[], $2::jsonb) WHERE exploration_id=(SELECT exploration_id FROM tasks WHERE id=$3) AND origin=$4`, field, value, taskID, diagnosisVerificationPolicyOrigin)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := fmt.Sprintf("/api/report/diagnostic?task=%d", taskID)
+			for _, query := range []string{"&audience=internal", "&audience=shared&download=1", "&audience=internal&format=docx", "&audience=shared&format=docx", "&audience=internal&format=review-json"} {
+				got := request("GET", path+query, "")
+				if got.Code != 503 || got.Header().Get("Content-Disposition") != "" || strings.Contains(got.Body.String(), "합성 관찰") {
+					t.Fatalf("damaged policy fell back to legacy export %s: %d", query, got.Code)
+				}
 			}
 		})
 	}
