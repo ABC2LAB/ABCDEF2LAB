@@ -113,7 +113,7 @@ export function RingCard({
         <ul className={s["dring-l"]}>
           {legend.map((l) => (
             <li key={l.key}>
-              <i style={l.color ? { background: l.color } : undefined} aria-hidden="true" />
+              <i className={s["dring-sw"]} style={l.color ? { background: l.color } : undefined} aria-hidden="true" />
               <span>{l.label}</span>
               <b>{l.value}</b>
             </li>
