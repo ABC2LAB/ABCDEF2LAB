@@ -14,7 +14,7 @@ import (
 )
 
 func TestDiagnosticApprovalDecisionIsNotTransmission(t *testing.T) {
-	for _, scenario := range []string{"allow", "deny", "cancelled", "expired"} {
+	for _, scenario := range []string{"allow", "deny", "cancelled", "expired", "command_timeout"} {
 		t.Run(scenario, func(t *testing.T) {
 			l, err := diagnosticlog.Create(t.TempDir(), "run", 1, "run")
 			if err != nil {
@@ -31,8 +31,9 @@ func TestDiagnosticApprovalDecisionIsNotTransmission(t *testing.T) {
 			binding.ctx = ctx
 			s.bindings[1] = binding
 			s.mu.Unlock()
-			if scenario == "expired" {
+			if scenario == "expired" || scenario == "command_timeout" {
 				p.ExpiresAt = time.Now().Add(50 * time.Millisecond)
+				p.CommandDeadline = scenario == "command_timeout"
 			}
 			inserted := make(chan struct{})
 			store.insert = func(context.Context) error { close(inserted); return nil }
@@ -72,12 +73,14 @@ func TestDiagnosticApprovalDecisionIsNotTransmission(t *testing.T) {
 				t.Fatal("private request leaked")
 			}
 			statuses := map[string]string{}
+			reasons := map[string]string{}
 			for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
 				var e diagnosticlog.Event
 				if json.Unmarshal([]byte(line), &e) != nil {
 					t.Fatal("invalid JSONL")
 				}
 				statuses[e.Event] = e.Status
+				reasons[e.Event] = e.ReasonCode
 				if strings.HasPrefix(e.Event, "http_") {
 					t.Fatal("approval became transmission")
 				}
@@ -92,8 +95,14 @@ func TestDiagnosticApprovalDecisionIsNotTransmission(t *testing.T) {
 			if scenario == "deny" {
 				want = "denied"
 			}
+			if scenario == "command_timeout" {
+				want = "timeout"
+			}
 			if statuses["request_approval_pending"] != "pending" || statuses["request_approval_resolved"] != want {
 				t.Fatalf("wrong status: %+v", statuses)
+			}
+			if scenario == "command_timeout" && reasons["request_approval_resolved"] != "command_timeout" {
+				t.Fatalf("command timeout reason absent: %+v", reasons)
 			}
 			if scenario == "allow" || scenario == "deny" {
 				if statuses["request_approval_decided"] != want {

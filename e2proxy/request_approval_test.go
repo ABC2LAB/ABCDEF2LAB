@@ -40,7 +40,7 @@ func TestRequestApprovalAdvertisesEffectiveCommandDeadline(t *testing.T) {
 	defer cancel()
 	deadline, _ := command.Deadline()
 	_, receipt, _ := call.Do(command, coreRequest(t, "GET", target.URL+"/allowed"))
-	if offered.ExpiresAt.IsZero() || offered.ExpiresAt.After(deadline.Add(time.Millisecond)) || hits.Load() != 0 || !receipt.NotSent {
+	if offered.ExpiresAt.IsZero() || offered.ExpiresAt.After(deadline.Add(time.Millisecond)) || !offered.CommandDeadline || hits.Load() != 0 || !receipt.NotSent {
 		t.Fatal("approval displayed longer than the command could remain valid")
 	}
 }

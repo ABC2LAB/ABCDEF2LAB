@@ -1465,20 +1465,22 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 	}
 	needsApproval := e.needsRequestApproval(purpose, method, body, view)
 	if needsApproval {
-		approvalCtx, cancelApproval := context.WithCancel(c.ctx)
-		stopApproval := context.AfterFunc(ctx, cancelApproval)
+		approvalCtx, cancelApproval := context.WithCancelCause(c.ctx)
+		stopApproval := context.AfterFunc(ctx, func() { cancelApproval(context.Cause(ctx)) })
 		// 승인 미리보기는 운영자 화면·승인 기록에 남는 저장 기록이다. model_visible_v1에서는 모델이 대상이 비춘 비밀번호를
 		// 요청 본문에 넣을 수 있으므로, 모델 단계·확정 단계 모두 비밀번호까지 가린 본문을 남긴다.
 		previewBody := e.RedactRecord(body)
 		// 승인은 호출·정책 기한뿐 아니라 요청자의 명령 기한 안에서만 유효하다. 화면에 표시하는 만료 시각도
 		// 실제 요청 문맥보다 늦지 않게 맞춘다. 확정 요청의 짧은 전용 상한에도 같은 규칙을 적용한다.
 		approvalExpires := c.expires
+		commandDeadline := false
 		if deadline, ok := ctx.Deadline(); ok && deadline.Before(approvalExpires) {
 			approvalExpires = deadline
+			commandDeadline = e3 == nil
 		}
 		proposal := RequestApprovalProposal{
 			Receipt: r, OwnerRef: e.cfg.OwnerRef, AccountRef: e.cfg.AccountRef, SessionRef: e.cfg.SessionRef,
-			ExpiresAt: approvalExpires, Method: method, URL: req.URL.String(), Host: requestHost,
+			ExpiresAt: approvalExpires, CommandDeadline: commandDeadline, Method: method, URL: req.URL.String(), Host: requestHost,
 			Headers: requestHeaders.Clone(), Body: previewBody,
 		}
 		// 보호 자격 원문은 승인 소비자에게 전달하지 않는다. 참조만 결속한다.
@@ -1496,7 +1498,7 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 		}
 		canceled := approvalCtx.Err() != nil || ctx.Err() != nil
 		stopApproval()
-		cancelApproval()
+		cancelApproval(context.Canceled)
 		if approvalErr != nil && !(canceled && (errors.Is(approvalErr, context.Canceled) || errors.Is(approvalErr, context.DeadlineExceeded))) {
 			r.Decision, r.Reason = "denied", AuditFailed
 			return finish(nil, ErrAudit)

@@ -155,6 +155,36 @@ func TestRequestApprovalWakeRechecksCancellationAndExpiry(t *testing.T) {
 		})
 	}
 }
+
+func TestRequestApprovalCommandDeadlineIsNotApprovalExpiry(t *testing.T) {
+	store := &approvalReviewStore{}
+	s, p := approvalReviewFixture(t, store)
+	p.ExpiresAt = time.Now().Add(20 * time.Millisecond)
+	p.CommandDeadline = true
+	outcome, err := s.AwaitRequestApprovalOutcome(t.Context(), p)
+	if err != nil || outcome != e2proxy.RequestApprovalUndecided || store.row.State != "cancelled" || store.row.ExecutionState != "not_sent" {
+		t.Fatalf("command deadline: outcome=%q err=%v state=%q execution=%q", outcome, err, store.row.State, store.row.ExecutionState)
+	}
+}
+
+func TestRequestApprovalRecordedDenialPrecedesLaterCommandTimeout(t *testing.T) {
+	store := &approvalReviewStore{}
+	s, p := approvalReviewFixture(t, store)
+	p.ExpiresAt = time.Now().Add(20 * time.Millisecond)
+	p.CommandDeadline = true
+	store.insert = func(context.Context) error {
+		go func() { s.mu.Lock(); close(s.waiters[p.Receipt.AttemptID].decision); s.mu.Unlock() }()
+		return nil
+	}
+	store.get = func() {
+		store.row.State = "denied"
+		time.Sleep(time.Until(p.ExpiresAt) + time.Millisecond)
+	}
+	outcome, err := s.AwaitRequestApprovalOutcome(t.Context(), p)
+	if err != nil || outcome != e2proxy.RequestApprovalDenied || store.row.State != "denied" || store.row.ExecutionState != "not_sent" {
+		t.Fatalf("recorded denial lost: outcome=%q err=%v state=%q execution=%q", outcome, err, store.row.State, store.row.ExecutionState)
+	}
+}
 func TestRequestApprovalPrivatePathIsRedacted(t *testing.T) {
 	_, p := approvalReviewFixture(t, &approvalReviewStore{})
 	_, path, _, err := approvalPreview(p, E2HTTPFileRule{PathPrefix: "/objects"})

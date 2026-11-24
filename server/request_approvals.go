@@ -164,6 +164,22 @@ func (s *RequestApprovalService) AwaitRequestApprovalOutcome(ctx context.Context
 	}
 }
 
+// The displayed deadline can be the model command deadline. A command timeout
+// cancels that request; it does not count as an operator approval expiry.
+func requestApprovalEndState(ctx, runCtx context.Context, p e2proxy.RequestApprovalProposal) (state, status, reason string) {
+	if (ctx != nil && ctx.Err() != nil && !errors.Is(context.Cause(ctx), context.DeadlineExceeded)) ||
+		(runCtx != nil && runCtx.Err() != nil && !errors.Is(context.Cause(runCtx), context.DeadlineExceeded)) {
+		return "cancelled", "cancelled", "cancelled"
+	}
+	if !time.Now().Before(p.ExpiresAt) {
+		if p.CommandDeadline {
+			return "cancelled", "timeout", "command_timeout"
+		}
+		return "expired", "expired", "expired"
+	}
+	return "cancelled", "cancelled", "cancelled"
+}
+
 // awaitRequestApproval은 결정을 기다리고, 끝난 모양(진단 로그의 status 값)을 resolved에 남긴다.
 func (s *RequestApprovalService) awaitRequestApproval(ctx context.Context, p e2proxy.RequestApprovalProposal, resolved *string) (allowed bool, outcome error) {
 	status, reason := "failed", "approval_unavailable"
@@ -194,10 +210,7 @@ func (s *RequestApprovalService) awaitRequestApproval(ctx context.Context, p e2p
 	}
 	if ctx.Err() != nil || binding.ctx.Err() != nil || !time.Now().Before(p.ExpiresAt) {
 		s.mu.Unlock()
-		status, reason = "cancelled", "cancelled"
-		if !time.Now().Before(p.ExpiresAt) {
-			status, reason = "expired", "expired"
-		}
+		_, status, reason = requestApprovalEndState(ctx, binding.ctx, p)
 		return false, nil
 	}
 	origin, path, preview, err := approvalPreview(p, rule)
@@ -249,21 +262,20 @@ func (s *RequestApprovalService) awaitRequestApproval(ctx context.Context, p e2p
 	if err != nil {
 		return false, errRequestApproval
 	}
+	if current.State == "denied" {
+		status, reason = "denied", "policy_denied"
+		return false, nil
+	}
 	if ctx.Err() != nil || binding.ctx.Err() != nil || !time.Now().Before(a.ExpiresAt) {
+		endState, endStatus, endReason := requestApprovalEndState(ctx, binding.ctx, p)
 		if current.State == "pending" || current.State == "allowed" {
-			current.State = "cancelled"
-			if !time.Now().Before(a.ExpiresAt) {
-				current.State = "expired"
-			}
+			current.State = endState
 			current.ExecutionState = "not_sent"
 			if s.store.SwapRequestApproval(persistCtx, current, false) != nil {
 				return false, errRequestApproval
 			}
 		}
-		status, reason = "cancelled", "cancelled"
-		if !time.Now().Before(a.ExpiresAt) {
-			status, reason = "expired", "expired"
-		}
+		status, reason = endStatus, endReason
 		return false, nil
 	}
 	if current.State != "allowed" || current.Consumed {

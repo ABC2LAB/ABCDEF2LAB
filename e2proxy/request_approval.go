@@ -47,16 +47,19 @@ type RequestApprovalOutcomeGate interface {
 // 보호 세션 헤더 값은 포함하지 않으며 AccountRef/SessionRef로만 연결한다.
 // 복사본을 수정해도 전송 요청은 바뀌지 않는다. 수정 실행은 새로운 제안이어야 한다.
 type RequestApprovalProposal struct {
-	OwnerRef   string      `json:"-"`
-	Receipt    Receipt     `json:"-"`
-	AccountRef string      `json:"-"`
-	SessionRef string      `json:"-"`
-	ExpiresAt  time.Time   `json:"-"`
-	Method     string      `json:"-"`
-	URL        string      `json:"-"`
-	Host       string      `json:"-"`
-	Headers    http.Header `json:"-"`
-	Body       []byte      `json:"-"`
+	OwnerRef   string    `json:"-"`
+	Receipt    Receipt   `json:"-"`
+	AccountRef string    `json:"-"`
+	SessionRef string    `json:"-"`
+	ExpiresAt  time.Time `json:"-"`
+	// CommandDeadline marks an earlier model command deadline. It is not an
+	// operator approval expiry; the request must remain unsent in either case.
+	CommandDeadline bool        `json:"-"`
+	Method          string      `json:"-"`
+	URL             string      `json:"-"`
+	Host            string      `json:"-"`
+	Headers         http.Header `json:"-"`
+	Body            []byte      `json:"-"`
 }
 
 func (RequestApprovalProposal) String() string   { return "e2proxy.RequestApprovalProposal" }
