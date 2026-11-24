@@ -34,6 +34,7 @@ type combinedDiagnosisProvider struct {
 	firstDiagnosisE2Provider
 	submitted        bool
 	passive          bool
+	beforeSave       bool
 	secondSent       bool
 	secondCommand    string
 	candidateCallRef string
@@ -50,8 +51,16 @@ func (p *combinedDiagnosisProvider) Complete(ctx context.Context, req llm.Comple
 	if err != nil || p.result == nil || p.submitted {
 		return msg, stop, usage, err
 	}
+	if p.passive && p.beforeSave && !p.secondSent {
+		p.candidateCallRef = p.result.Trusted.Call.CallRef
+		p.secondSent = true
+		input, _ := json.Marshal(map[string]any{"command": p.secondCommand, "timeout_ms": 5000})
+		return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: "passive-later-bash", Name: "Bash", Input: input}}}, "tool_use", llm.Usage{}, nil
+	}
 	p.submitted = true
-	p.candidateCallRef = p.result.Trusted.Call.CallRef
+	if p.candidateCallRef == "" {
+		p.candidateCallRef = p.result.Trusted.Call.CallRef
+	}
 	class := "access_control"
 	if p.passive {
 		class = "security_headers"
@@ -113,7 +122,12 @@ func TestFirstDiagnosisCombinedPassiveV2PostSaveProductPostgres(t *testing.T) {
 	runFirstDiagnosisCombinedAcceptance(t, false, true)
 }
 
-func runFirstDiagnosisCombinedAcceptance(t *testing.T, browser, passive bool) {
+func TestFirstDiagnosisCombinedPassiveV2PreSaveProductPostgres(t *testing.T) {
+	runFirstDiagnosisCombinedAcceptance(t, false, true, true)
+}
+
+func runFirstDiagnosisCombinedAcceptance(t *testing.T, browser, passive bool, preSave ...bool) {
+	reordered := len(preSave) > 0 && preSave[0]
 	helper := firstDiagnosisNativeHelper(t)
 	f := newControlledLocalDatabaseFixture(t)
 	installer := &db.DB{DB: f.Installer}
@@ -229,6 +243,7 @@ func runFirstDiagnosisCombinedAcceptance(t *testing.T, browser, passive bool) {
 	worker := &combinedDiagnosisProvider{firstDiagnosisE2Provider: firstDiagnosisE2Provider{command: "curl --silent --show-error --max-time 15 " + target.URL + "/allowed; curl --silent --show-error --max-time 15 " + target.URL + "/denied"}}
 	if passive {
 		worker.passive = true
+		worker.beforeSave = reordered
 		worker.command = "curl --silent --show-error --max-time 15 " + target.URL + "/allowed"
 		worker.secondCommand = worker.command
 	}
@@ -388,6 +403,13 @@ running:
 		if candidate.Classification != "completed" || candidate.VerificationClaim != "html_nosniff_missing" || candidate.Verification != "manual_review_required" || candidate.CallRef != worker.candidateCallRef || !strings.Contains(candidate.Evidence, "nosniff_missing") {
 			t.Fatal("후보 저장 시점의 첫 E② 관찰이 다름")
 		}
+		wantFence := uint64(1)
+		if reordered {
+			wantFence = 2
+		}
+		if candidate.SaveFence == nil || candidate.SaveFence.AttemptHighWater != wantFence {
+			t.Fatal("후보 저장 커밋 후의 승인 시도 순서 표식 누락")
+		}
 	} else if candidate.Classification != "partial_policy_denial" || candidate.Verification != "manual_review_required" || !strings.Contains(candidate.Evidence, "owned_fixture") || candidate.CallRef != worker.result.Trusted.Call.CallRef {
 		t.Fatal("실제 관찰과 저장 후보가 다름")
 	}
@@ -475,7 +497,11 @@ running:
 	if counts.Calls != wantCalls || counts.Allowed != wantAllowed || counts.Denied != wantDenied || counts.Responses != wantResponses || counts.ForwardAttempted != wantResponses || counts.Unknown != 0 {
 		t.Fatal("저장된 종료 상태의 실제 송신 건수 불일치")
 	}
-	if passive && (saved.Verification == nil || saved.Verification.Version != diagnosisVerificationV2 || saved.Verification.NonIDORConfirmed != 1 || len(saved.Verification.Candidates) != 1 || len(saved.Verification.Candidates[0].Result.Sources) != 2) {
+	wantConfirmed, wantPending := 1, 0
+	if reordered {
+		wantConfirmed, wantPending = 0, 1
+	}
+	if passive && (saved.Verification == nil || saved.Verification.Version != diagnosisVerificationV2 || saved.Verification.NonIDORConfirmed != wantConfirmed || saved.Verification.VerificationPending != wantPending || len(saved.Verification.Candidates) != 1 || len(saved.Verification.Candidates[0].Result.Sources) == 0) {
 		t.Fatal("후보 이후 독립 관찰의 최종 판정 누락")
 	}
 
@@ -513,7 +539,7 @@ running:
 		t.Fatal("저장과 복사 본문 불일치")
 	}
 	code, body, headers := client.request("GET", "/api/report/diagnostic?task="+task.ID+"&audience=internal&download=1", "")
-	if passive {
+	if passive && !reordered {
 		if code != 200 || !strings.Contains(string(body), "HTML 문서 보안 헤더 누락") || strings.Contains(string(body), record.Bundle.AIPrompt) {
 			t.Fatal("독립 검증된 후보의 HTML 보고서 누락")
 		}
@@ -521,7 +547,7 @@ running:
 		t.Fatal("미확정 후보만 있는 회차에 취약점 보고서가 생성됨")
 	}
 	code, _, _ = client.request("GET", "/api/report/diagnostic?task="+task.ID+"&audience=internal&format=docx", "")
-	if passive && code != 200 || !passive && code != 404 {
+	if passive && !reordered && code != 200 || (!passive || reordered) && code != 404 {
 		t.Fatal("미확정 후보만 있는 회차에 Word 보고서가 생성됨")
 	}
 	code, body, _ = client.request("GET", "/api/report/diagnostic?task="+task.ID+"&audience=internal&format=review-json", "")

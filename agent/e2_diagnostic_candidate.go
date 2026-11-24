@@ -78,6 +78,10 @@ type diagnosticCandidateStore interface {
 	RecordDiagnosticCandidate(context.Context, db.DiagnosticCandidate) (int64, error)
 }
 
+type diagnosticCandidateFenceStore interface {
+	RecordDiagnosticCandidateWithFence(context.Context, db.DiagnosticCandidate, func() (db.DiagnosticCandidateSaveFence, error)) (int64, error)
+}
+
 func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTPExecution, state *e2HTTPToolState, onSaved ...func()) actool.CoreTool {
 	// 같은 워커 안의 중복 제출은 순차 처리하고 DB는 intent 잠금으로 중복을 제어한다.
 	var mu sync.Mutex
@@ -94,7 +98,26 @@ func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTP
 	languagePending := map[string]*languageWait{}
 	languageDone := map[string]int{}
 	saved := func(ctx context.Context, c db.DiagnosticCandidate, event func(name, status, reason, ref string)) (int64, bool) {
-		id, err := store.RecordDiagnosticCandidate(ctx, c)
+		var id int64
+		var err error
+		if fenced, ok := store.(diagnosticCandidateFenceStore); ok {
+			id, err = fenced.RecordDiagnosticCandidateWithFence(ctx, c, func() (db.DiagnosticCandidateSaveFence, error) {
+				if binding.Runner == nil {
+					return db.DiagnosticCandidateSaveFence{}, db.ErrDiagnosticCandidate
+				}
+				view := binding.Runner.SnapshotForIntent(c.IntentID)
+				if !view.AuditComplete || view.IntentID != c.IntentID || view.Scope.TaskRef != strconv.FormatInt(c.TaskID, 10) || view.Scope.RunRef != c.RunRef || view.Counts.Attempts == 0 {
+					return db.DiagnosticCandidateSaveFence{}, db.ErrDiagnosticCandidate
+				}
+				scope, marshalErr := json.Marshal(view.Scope)
+				if marshalErr != nil {
+					return db.DiagnosticCandidateSaveFence{}, marshalErr
+				}
+				return db.DiagnosticCandidateSaveFence{AttemptHighWater: view.Counts.Attempts, TaskRef: view.Scope.TaskRef, RunRef: view.Scope.RunRef, ScopeDigest: db.DiagnosticEvidenceDigest(string(scope)), PolicyRevision: view.PolicyRevision}, nil
+			})
+		} else {
+			id, err = store.RecordDiagnosticCandidate(ctx, c)
+		}
 		if err != nil {
 			event("candidate_saved", "failed", "candidate_store_failed", c.CallRef)
 			return 0, false

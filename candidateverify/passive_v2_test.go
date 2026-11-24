@@ -3,6 +3,7 @@ package candidateverify
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/e2proxy"
@@ -33,8 +34,50 @@ func v2Fixture(t *testing.T, first, second string) (db.DiagnosticCandidate, []e2
 	other.Call = e2proxy.CloneCallResult(primary.Call)
 	other.Call.CallRef = "call-after-save"
 	other.Call.Observations[0].AttemptRef = "attempt-after-save"
+	other.Call.Observations[0].Sequence = 2
 	other.Call.Observations[0].HTMLSecurity = second
+	scope, _ := json.Marshal(primary.Execution.Scope)
+	c.SaveFence = &db.DiagnosticCandidateSaveFence{AttemptHighWater: 1, TaskRef: "1", RunRef: c.RunRef, ScopeDigest: db.DiagnosticEvidenceDigest(string(scope)), PolicyRevision: primary.Execution.PolicyRevision, CapturedAt: time.Now().UTC()}
 	return c, []e2runner.TrustedResult{primary, other}
+}
+
+func TestPassiveV2RequiresPostSaveAttempt(t *testing.T) {
+	for _, tc := range []struct {
+		name, state string
+		fence       uint64
+		second      uint64
+	}{
+		{"both-before-save", "nosniff_missing", 2, 2},
+		{"normal-before-save", "nosniff_present", 2, 2},
+		{"same-sequence", "nosniff_missing", 1, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, calls := v2Fixture(t, tc.state, tc.state)
+			c.SaveFence.AttemptHighWater = tc.fence
+			calls[1].Call.Observations[0].Sequence = tc.second
+			got := AssessV2(c, calls)
+			if got.Status != Insufficient {
+				t.Fatalf("pre-save observation promoted: %+v", got)
+			}
+		})
+	}
+	c, calls := v2Fixture(t, "nosniff_missing", "nosniff_missing")
+	calls[1].Call.Observations[0].ObservedAt = calls[0].Call.Observations[0].ObservedAt
+	c.SaveFence = nil
+	if got := AssessV2(c, calls); got.Status != Insufficient {
+		t.Fatalf("equal timestamps without trusted save order promoted: %+v", got)
+	}
+	c, calls = v2Fixture(t, "nosniff_missing", "nosniff_present")
+	c.SaveFence.AttemptHighWater = 2
+	third := calls[1]
+	third.Call = e2proxy.CloneCallResult(third.Call)
+	third.Call.CallRef = "third-call"
+	third.Call.Observations[0].AttemptRef = "third-attempt"
+	third.Call.Observations[0].Sequence = 3
+	third.Call.Observations[0].HTMLSecurity = "nosniff_missing"
+	if got := AssessV2(c, append(calls, third)); got.Status != Insufficient || got.Reason != "observations_inconsistent" {
+		t.Fatalf("pre-save conflict ignored: %+v", got)
+	}
 }
 
 func TestPassiveV2PostSaveObservation(t *testing.T) {
@@ -58,6 +101,19 @@ func TestPassiveV2PostSaveObservation(t *testing.T) {
 			if got.Status == Confirmed {
 				if !ValidateStoredV2(c, got) {
 					t.Fatal("stored verdict validation failed")
+				}
+				wrongFence := c
+				copyFence := *c.SaveFence
+				copyFence.AttemptHighWater = 2
+				wrongFence.SaveFence = &copyFence
+				if ValidateStoredV2(wrongFence, got) {
+					t.Fatal("tampered save order accepted")
+				}
+				wrongTime := got
+				wrongTime.Sources = append([]SourceV2(nil), got.Sources...)
+				wrongTime.Sources[1].Observation.ObservedAt = wrongTime.Sources[1].Observation.ObservedAt.Add(time.Second)
+				if ValidateStoredV2(c, wrongTime) {
+					t.Fatal("tampered source time accepted")
 				}
 				got.Sources[1].Digest = "tampered"
 				if ValidateStoredV2(c, got) {

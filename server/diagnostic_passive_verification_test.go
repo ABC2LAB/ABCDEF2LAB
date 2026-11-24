@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Autumn-27/artex/candidateverify"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
@@ -52,7 +53,19 @@ func storePassiveCandidate(t *testing.T, s *Server, taskID int64, claim, first, 
 		t.Fatal(err)
 	}
 	c := db.DiagnosticCandidate{TaskID: taskID, IntentID: intent, RunRef: passiveRunRef, CallRef: "passive-call-a", VulnClass: class, VerificationClaim: claim, Name: "합성 관찰", Summary: "모델 주장", Classification: "completed", Verification: "manual_review_required", EvidenceVersion: 1, Evidence: string(raw), EvidenceDigest: db.DiagnosticEvidenceDigest(string(raw)), ObservedAt: time.Now().UTC()}
-	id, err := task.Store.RecordDiagnosticCandidate(t.Context(), c)
+	var envelope struct {
+		Trusted e2runner.TrustedResult `json:"trusted"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	scope, err := json.Marshal(envelope.Trusted.Execution.Scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := task.Store.RecordDiagnosticCandidateWithFence(t.Context(), c, func() (db.DiagnosticCandidateSaveFence, error) {
+		return db.DiagnosticCandidateSaveFence{AttemptHighWater: 1, TaskRef: fmt.Sprint(taskID), RunRef: passiveRunRef, ScopeDigest: db.DiagnosticEvidenceDigest(string(scope))}, nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,6 +125,7 @@ func TestPassiveV2ProductPostSaveAndRunningReportPostgres(t *testing.T) {
 				other.Call = e2proxy.CloneCallResult(primary.Call)
 				other.Call.CallRef = "call-after-save"
 				other.Call.Observations[0].AttemptRef = "attempt-after-save"
+				other.Call.Observations[0].Sequence = 2
 				other.Call.Observations[0].HTMLSecurity = tc.second
 				calls = append(calls, other)
 			}
@@ -160,6 +174,9 @@ func TestPassiveV2ProductPostSaveAndRunningReportPostgres(t *testing.T) {
 			if record.Verification == nil || record.Verification.Version != diagnosisVerificationV2 || record.Verification.NonIDORConfirmed != tc.confirmed || record.Verification.NonIDORNegative != tc.negative || record.Verification.VerificationPending != tc.pending || record.Verification.SourceUnavailable != tc.sourceUnavailable {
 				t.Fatalf("v2 result %+v", record.Verification)
 			}
+			if tc.confirmed > 0 && !candidateverify.ValidateStoredV2(rows[0], record.Verification.Candidates[0].Result) {
+				t.Fatal("stored v2 verdict rejected before report projection")
+			}
 			hash, err := s.reloadPassHash()
 			if err != nil {
 				t.Fatal(err)
@@ -201,6 +218,18 @@ func TestPassiveV2ProductPostSaveAndRunningReportPostgres(t *testing.T) {
 				shared := request("GET", path+"&audience=shared", "")
 				if shared.Code != 200 || strings.Contains(shared.Body.String(), "모델 주장") {
 					t.Fatalf("shared report %d", shared.Code)
+				}
+				if tc.name == "confirmed" {
+					_, err := s.m.pg.ExecContext(t.Context(), `UPDATE exploration_nodes SET payload=jsonb_set(payload,'{fence,attempt_high_water}','2'::jsonb) WHERE exploration_id=(SELECT exploration_id FROM tasks WHERE id=$1) AND origin=$2 AND payload->>'candidate_id'=$3`, taskID, "diagnostic_candidate_save_fence_v2", fmt.Sprint(candidateID))
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, query := range []string{"&audience=internal", "&audience=shared&format=docx", "&audience=internal&format=review-json"} {
+						broken := request("GET", path+query, "")
+						if broken.Code != 422 || broken.Header().Get("Content-Disposition") != "" || strings.Contains(broken.Body.String(), "HTML 문서 보안 헤더 누락") {
+							t.Fatalf("tampered save fence exported %s: %d", query, broken.Code)
+						}
+					}
 				}
 			}
 		})

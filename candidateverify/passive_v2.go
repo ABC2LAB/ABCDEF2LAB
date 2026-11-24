@@ -74,9 +74,13 @@ func AssessV2(c db.DiagnosticCandidate, calls []e2runner.TrustedResult) Result {
 		return Result{Status: Insufficient, Reason: "function_binding_unavailable"}
 	}
 	sources := []SourceV2{makeSource(*primary, base)}
+	if !validSaveFenceV2(c, sources[0]) {
+		return Result{Status: Insufficient, Reason: "candidate_save_order_unavailable", Sources: sources}
+	}
 	seenCalls := map[string]bool{c.CallRef: true}
 	seenAttempts := map[string]bool{base.AttemptRef: true}
 	conflict := false
+	preSaveSeen := false
 	ordered := append([]e2runner.TrustedResult(nil), calls...)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Call.CallRef < ordered[j].Call.CallRef })
 	for _, call := range ordered {
@@ -91,6 +95,16 @@ func AssessV2(c db.DiagnosticCandidate, calls []e2runner.TrustedResult) Result {
 			return Result{Status: Insufficient, Reason: "observation_not_independent"}
 		}
 		seenCalls[call.Call.CallRef], seenAttempts[obs.AttemptRef] = true, true
+		if obs.Sequence <= c.SaveFence.AttemptHighWater {
+			preSaveSeen = true
+			if otherState != state {
+				conflict = true
+				if len(sources) < 2 {
+					sources = append(sources, makeSource(call, obs))
+				}
+			}
+			continue
+		}
 		if otherState != state {
 			if !conflict {
 				if len(sources) < 2 {
@@ -105,12 +119,15 @@ func AssessV2(c db.DiagnosticCandidate, calls []e2runner.TrustedResult) Result {
 		}
 	}
 	if len(sources) < 2 {
-		return Result{Status: Insufficient, Reason: "independent_observation_missing", Attempts: []string{base.AttemptRef}, Sources: sources}
+		reason := "independent_observation_missing"
+		if preSaveSeen {
+			reason = "post_save_observation_missing"
+		}
+		return Result{Status: Insufficient, Reason: reason, Attempts: []string{base.AttemptRef}, Sources: sources}
 	}
 	if conflict {
 		return Result{Status: Insufficient, Reason: "observations_inconsistent", Sources: sources}
 	}
-	sort.Slice(sources, func(i, j int) bool { return sources[i].CallRef < sources[j].CallRef })
 	refs := make([]string, 0, len(sources))
 	for _, source := range sources {
 		refs = append(refs, source.Observation.AttemptRef)
@@ -143,6 +160,13 @@ func stringTaskID(id int64) string { return strconv.FormatInt(id, 10) }
 func makeSource(call e2runner.TrustedResult, obs e2proxy.HTTPObservation) SourceV2 {
 	scope, _ := json.Marshal(call.Execution.Scope)
 	return SourceV2{CallRef: call.Call.CallRef, IntentID: call.Call.IntentID, TaskRef: call.Execution.Scope.TaskRef, RunRef: call.Execution.Scope.RunRef, ScopeDigest: db.DiagnosticEvidenceDigest(string(scope)), PolicyRevision: call.Execution.PolicyRevision, Observation: obs, Digest: sourceDigest(obs)}
+}
+
+func validSaveFenceV2(c db.DiagnosticCandidate, primary SourceV2) bool {
+	f := c.SaveFence
+	return f != nil && !f.CapturedAt.IsZero() && f.AttemptHighWater > 0 && primary.Observation.Sequence > 0 &&
+		primary.Observation.Sequence <= f.AttemptHighWater && f.TaskRef == stringTaskID(c.TaskID) && f.RunRef == c.RunRef &&
+		f.ScopeDigest == primary.ScopeDigest && f.PolicyRevision == primary.PolicyRevision && primary.CallRef == c.CallRef
 }
 
 func v2Observation(t e2runner.TrustedResult, claim string) (e2proxy.HTTPObservation, string, bool) {
@@ -183,7 +207,7 @@ func ValidSourcesV2(result Result) bool {
 	}
 	seenCalls, seenAttempts := map[string]bool{}, map[string]bool{}
 	for _, s := range result.Sources {
-		if s.CallRef == "" || s.IntentID <= 0 || s.TaskRef == "" || s.RunRef == "" || s.ScopeDigest == "" || s.Observation.AttemptRef == "" || s.Digest != sourceDigest(s.Observation) || seenCalls[s.CallRef] || seenAttempts[s.Observation.AttemptRef] {
+		if s.CallRef == "" || s.IntentID <= 0 || s.TaskRef == "" || s.RunRef == "" || s.ScopeDigest == "" || s.Observation.Sequence == 0 || s.Observation.ObservedAt.IsZero() || s.Observation.AttemptRef == "" || s.Digest != sourceDigest(s.Observation) || seenCalls[s.CallRef] || seenAttempts[s.Observation.AttemptRef] {
 			return false
 		}
 		seenCalls[s.CallRef], seenAttempts[s.Observation.AttemptRef] = true, true
@@ -197,7 +221,7 @@ func ValidateStoredV2(c db.DiagnosticCandidate, r Result) bool {
 	if r.Status != Confirmed && r.Status != Negative {
 		return ValidSourcesV2(r)
 	}
-	if !ValidSourcesV2(r) || c.Validate() != nil {
+	if !ValidSourcesV2(r) || c.Validate() != nil || r.Sources[0].CallRef != c.CallRef || !validSaveFenceV2(c, r.Sources[0]) || r.Sources[1].Observation.Sequence <= c.SaveFence.AttemptHighWater {
 		return false
 	}
 	var original struct {

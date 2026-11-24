@@ -42,6 +42,20 @@ type DiagnosticCandidate struct {
 	// agent/e2_diagnostic_candidate_lang.go). 둘 다 0이면 칸을 쓰지 않는다.
 	LanguageMixed    bool `json:"language_mixed,omitempty"`
 	LanguageRewrites int  `json:"language_rewrites,omitempty"`
+	// SaveFence is server-owned metadata outside the immutable candidate payload.
+	SaveFence *DiagnosticCandidateSaveFence `json:"-"`
+}
+
+// DiagnosticCandidateSaveFence is captured only after the first candidate
+// insert commits. AttemptHighWater is the E② execution-wide admitted attempt
+// count at that point; it is not a timestamp from a model or another host.
+type DiagnosticCandidateSaveFence struct {
+	AttemptHighWater uint64    `json:"attempt_high_water"`
+	TaskRef          string    `json:"task_ref"`
+	RunRef           string    `json:"run_ref"`
+	ScopeDigest      string    `json:"scope_digest"`
+	PolicyRevision   string    `json:"policy_revision"`
+	CapturedAt       time.Time `json:"captured_at"`
 }
 
 var ErrDiagnosticCandidate = errors.New("diagnostic_candidate_invalid")
@@ -50,6 +64,7 @@ var ErrDiagnosticCandidate = errors.New("diagnostic_candidate_invalid")
 const MaxDiagnosticLanguageRewrites = 2
 
 const diagnosticCandidateOrigin = "e2_diagnostic_candidate_v1"
+const diagnosticCandidateSaveFenceOrigin = "diagnostic_candidate_save_fence_v2"
 const MaxDiagnosticCandidates = 10000
 
 func DiagnosticEvidenceDigest(evidence string) string {
@@ -150,6 +165,21 @@ func (c DiagnosticCandidate) Validate() error {
 // RecordDiagnosticCandidate는 신뢰된 E② 어댑터 전용이며 모델의 확정/증거 본문을 받지 않는다.
 // task/intent 귀속 확인과 fact/edge 삽입을 같은 트랜잭션으로 처리한다.
 func (s *ExplorationStore) RecordDiagnosticCandidate(ctx context.Context, c DiagnosticCandidate) (int64, error) {
+	return s.recordDiagnosticCandidate(ctx, c, nil)
+}
+
+// RecordDiagnosticCandidateWithFence captures the execution's admitted-attempt
+// high-water only after the first candidate insert commits. A duplicate never
+// rewrites or backfills the first save fence. If the post-commit capture fails,
+// the candidate remains available for review but cannot receive a v2 verdict.
+func (s *ExplorationStore) RecordDiagnosticCandidateWithFence(ctx context.Context, c DiagnosticCandidate, capture func() (DiagnosticCandidateSaveFence, error)) (int64, error) {
+	if capture == nil {
+		return 0, ErrDiagnosticCandidate
+	}
+	return s.recordDiagnosticCandidate(ctx, c, capture)
+}
+
+func (s *ExplorationStore) recordDiagnosticCandidate(ctx context.Context, c DiagnosticCandidate, capture func() (DiagnosticCandidateSaveFence, error)) (int64, error) {
 	c = c.NormalizedSeverity()
 	if ctx == nil || c.ID != 0 || c.Validate() != nil {
 		return 0, ErrDiagnosticCandidate
@@ -173,6 +203,13 @@ func (s *ExplorationStore) RecordDiagnosticCandidate(ctx context.Context, c Diag
 	if err == nil {
 
 		err := tx.Commit()
+		if err == nil && capture != nil {
+			var present bool
+			err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM exploration_nodes WHERE exploration_id=$1 AND kind='fact' AND state='confirmed' AND origin=$2 AND payload->>'candidate_id'=$3)`, s.expID, diagnosticCandidateSaveFenceOrigin, strconv.FormatInt(existing, 10)).Scan(&present)
+			if err == nil && !present {
+				err = ErrDiagnosticCandidate
+			}
+		}
 		if err == nil {
 			_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "db", Event: "candidate_duplicate", Stage: "candidate_storage", Status: "manual_review_required", TaskID: c.TaskID, RunRef: c.RunRef, IntentID: c.IntentID, CallRef: c.CallRef, CandidateID: existing})
 		}
@@ -195,7 +232,28 @@ func (s *ExplorationStore) RecordDiagnosticCandidate(ctx context.Context, c Diag
 	if err != nil {
 		return 0, err
 	}
-	return id, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	if capture == nil {
+		return id, nil
+	}
+	fence, err := capture()
+	if err != nil || fence.AttemptHighWater == 0 || fence.TaskRef != strconv.FormatInt(c.TaskID, 10) || fence.RunRef != c.RunRef || fence.ScopeDigest == "" {
+		return id, ErrDiagnosticCandidate
+	}
+	// Append a separate fact with the existing INSERT permission. The candidate
+	// payload is never updated. clock_timestamp() is after the first commit and
+	// is for provenance, not cross-host ordering comparisons.
+	rawFence, err := json.Marshal(fence)
+	if err != nil {
+		return id, err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO exploration_nodes(exploration_id,kind,state,origin,payload) VALUES($1,'fact','confirmed',$2,jsonb_build_object('candidate_id',$3::bigint,'task_id',$4::bigint,'fence',jsonb_set($5::jsonb,'{captured_at}',to_jsonb(clock_timestamp()),true)))`, s.expID, diagnosticCandidateSaveFenceOrigin, id, c.TaskID, string(rawFence))
+	if err != nil {
+		return id, err
+	}
+	return id, nil
 }
 
 // ListDiagnosticCandidates는 연결 task를 합치지 않고 선택한 회차만 읽는다.
@@ -247,7 +305,14 @@ func ListDiagnosticCandidatesQuery(ctx context.Context, q DiagnosticCandidateQue
 		return nil, ErrDiagnosticCandidate
 	}
 	rows, err := q.QueryContext(ctx, `SELECT n.id,n.payload FROM exploration_nodes n JOIN tasks t ON t.exploration_id=n.exploration_id WHERE t.id=$1 AND n.exploration_id=$2 AND n.origin=$3 AND n.kind='fact' AND ($4='' OR n.payload->'diagnostic_candidate_v1'->>'run_ref'=$4) ORDER BY n.id LIMIT $5`, taskID, explorationID, diagnosticCandidateOrigin, runRef, limit)
-	return readDiagnosticCandidateRows(rows, err, taskID, runRef)
+	candidates, err := readDiagnosticCandidateRows(rows, err, taskID, runRef)
+	if err != nil {
+		return nil, err
+	}
+	if err := attachDiagnosticCandidateSaveFences(ctx, q, explorationID, taskID, candidates); err != nil {
+		return nil, err
+	}
+	return candidates, nil
 }
 
 const LiveDiagnosticCandidateLimit = 200
@@ -357,6 +422,50 @@ func decodeDiagnosticCandidate(id int64, raw []byte, taskID int64, runRef string
 	c = c.NormalizedSeverity()
 	c.ID = id
 	return c, nil
+}
+
+// The marker is an append-only fact written after the candidate's first
+// commit. A missing marker leaves old candidates reviewable but unconfirmable.
+func attachDiagnosticCandidateSaveFences(ctx context.Context, q DiagnosticCandidateQueryer, explorationID, taskID int64, candidates []DiagnosticCandidate) error {
+	if len(candidates) == 0 {
+		return nil
+	}
+	byID := make(map[int64]*DiagnosticCandidate, len(candidates))
+	for i := range candidates {
+		byID[candidates[i].ID] = &candidates[i]
+	}
+	rows, err := q.QueryContext(ctx, `SELECT payload FROM exploration_nodes WHERE exploration_id=$1 AND kind='fact' AND state='confirmed' AND origin=$2 AND payload->>'task_id'=$3 ORDER BY id LIMIT $4`, explorationID, diagnosticCandidateSaveFenceOrigin, strconv.FormatInt(taskID, 10), MaxDiagnosticCandidates+1)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		count++
+		if count > MaxDiagnosticCandidates {
+			return ErrDiagnosticCandidate
+		}
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return err
+		}
+		var marker struct {
+			CandidateID int64                        `json:"candidate_id"`
+			TaskID      int64                        `json:"task_id"`
+			Fence       DiagnosticCandidateSaveFence `json:"fence"`
+		}
+		if json.Unmarshal(raw, &marker) != nil || marker.CandidateID <= 0 || marker.TaskID != taskID {
+			return ErrDiagnosticCandidate
+		}
+		if candidate := byID[marker.CandidateID]; candidate != nil {
+			if candidate.SaveFence != nil || marker.Fence.AttemptHighWater == 0 || marker.Fence.CapturedAt.IsZero() || marker.Fence.TaskRef != strconv.FormatInt(taskID, 10) || marker.Fence.RunRef != candidate.RunRef {
+				return ErrDiagnosticCandidate
+			}
+			fence := marker.Fence
+			candidate.SaveFence = &fence
+		}
+	}
+	return rows.Err()
 }
 
 // CountDiagnosticCandidateLanguage는 한 실행(run_ref)의 진단 후보 가운데 한국어 칸 언어 섞임 때문에 다시 쓰게 한 횟수의
